@@ -87,6 +87,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div class="status">
         <span>本地乐观渲染 <b id="wasmState">检测中…</b></span>
         <span>首笔 <b id="firstStroke">—</b></span>
+        <span>首帧 <b id="firstPaint">—</b></span>
+        <span>内核预热 <b id="kernelWarm">—</b></span>
         <span>bit-exact <b id="bitExact">—</b></span>
       </div>
     </div>
@@ -111,7 +113,8 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 供 CDP / 自动化验收读取的统计（Phase 2 出口条件：bit-exact 与首笔 < 16ms）。
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
-  firstStrokeMs: null, lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
+  firstStrokeMs: null, firstPaintMs: null, kernelWarmMs: null,
+  lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
   bitExact: null, resyncs: 0,
 };
 
@@ -431,10 +434,31 @@ async function ensureDocument() {
   $("identity").textContent = state.docId + " · " + value.token.slice(0, 8) + "…";
   await refreshLayers();
   await refreshThumb();
-  await initWasm();
-  if (state.wasm) { await loadKernel(0); if (kernelReady()) preview.style.visibility = "hidden"; }
+  // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
+  // WASM 内核在后台预热，就绪后再换成客户端渲染——首帧因此不等待内核折叠。
+  const bootStarted = performance.now();
+  window.yanshiStats.bootAt = bootStarted;
   await refreshPreview();
+  const bootFirstPaint = $("firstPaint");
+  if (bootFirstPaint) bootFirstPaint.textContent = "…";
   connect();
+  void warmKernel();
+}
+
+// 后台预热 WASM 内核：装载原子并切换为客户端渲染；失败则保持服务端渲染。
+async function warmKernel() {
+  const started = performance.now();
+  await initWasm();
+  if (!state.wasm) return;
+  const ok = await loadKernel(0);
+  window.yanshiStats.kernelWarmMs = performance.now() - started;
+  const warm = $("kernelWarm");
+  if (warm) warm.textContent = window.yanshiStats.kernelWarmMs.toFixed(0) + "ms";
+  if (ok && kernelReady()) {
+    preview.style.visibility = "hidden";
+    // 注意：`refreshPreview(true)` 表示「从服务端取像素」，这里要的是内核路径。
+    await refreshPreview();
+  }
 }
 
 async function refreshLayers() {
@@ -478,6 +502,12 @@ async function refreshPreview(fromKernel = false) {
   if (value.thumb_url) {
     preview.style.visibility = "visible";
     preview.onload = () => {
+      // 6.2「打开即图片」：服务端铺底像素**解码完成**才算首帧。
+      if (window.yanshiStats.firstPaintMs === null && window.yanshiStats.bootAt) {
+        window.yanshiStats.firstPaintMs = performance.now() - window.yanshiStats.bootAt;
+        const firstPaint = $("firstPaint");
+        if (firstPaint) firstPaint.textContent = window.yanshiStats.firstPaintMs.toFixed(0) + "ms";
+      }
       board.width = preview.naturalWidth;
       board.height = preview.naturalHeight;
       state.viewport = { x: 0, y: 0, w: preview.naturalWidth, h: preview.naturalHeight };
@@ -719,10 +749,10 @@ $("open").addEventListener("click", ensureDocument);
     $("identity").textContent = state.docId;
     await refreshLayers();
     await refreshThumb();
-    await initWasm();
-    if (state.wasm) { await loadKernel(0); if (kernelReady()) preview.style.visibility = "hidden"; }
+    window.yanshiStats.bootAt = performance.now();
     await refreshPreview();
     connect();
+    void warmKernel();
   }
 })();
 </script>

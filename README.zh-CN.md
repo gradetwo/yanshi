@@ -88,6 +88,8 @@ cargo run -p yanshi-http --bin yanshi-serve -- --bind 127.0.0.1:8080 --root ./wo
 
 * **本地乐观渲染**：浏览器加载 `yanshi_wasm.wasm`（与服务端同一份 Rust 计算内核），
   拖动时只把**新增笔段**增量盖章到已缓存 tile，落笔才异步提交一个原子，随后按服务端权威状态校正。
+* **打开即图片**：页面先用服务端缓存的 HEAD 渲染铺底（实测 512² 文档 199ms、1024² 文档 434ms），
+  WASM 内核在后台预热，首帧不再等待客户端折叠；内核就绪后自动接管。
 * **一致性自检**：界面上的「一致性自检」按钮会比对本地渲染 PNG 与服务端 blob 的 SHA-256。
 * WASM 产物构建：`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` +
   `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript <wasm>`；
