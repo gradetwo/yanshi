@@ -9,6 +9,8 @@
 //! | [`ids`] | 5.1 | 客户端 ULID、序号与各类标识 |
 //! | [`atom`] | 5.1 / 5.2 | 原子结构与原子类型 |
 //! | [`state`] | 4.1 – 4.5 | 文档状态模型（图层、对象、选区、检查点、头部指针） |
+//! | [`fold`] | 5.3 / 5.4 | 折叠求值、有效集、级联失效、reapply、LWW |
+//! | [`log`] | 5.1 / 12.2 | Append-Only 日志、ULID 幂等、提交时 precondition 校验 |
 //! | [`conflict`] | 12.3 | 采样性替换冲突检测（生成性叠加走 LWW） |
 //!
 //! 折叠代数的五条不变量（设计文档 5.3）由 `tests/` 下的属性测试与 fuzz 用例保证：
@@ -20,7 +22,9 @@
 pub mod atom;
 pub mod conflict;
 pub mod error;
+pub mod fold;
 pub mod ids;
+pub mod log;
 pub mod state;
 
 pub use atom::{
@@ -29,10 +33,14 @@ pub use atom::{
 };
 pub use conflict::{Bbox, ConflictInfo, CONFLICT_ACTOR};
 pub use error::{ErrorCode, ErrorContext, Result, YanshiError};
+pub use fold::{
+    apply, compute_suppressed, fold_atoms, FoldEngine, FoldResult, FoldWarning, WarningKind,
+};
 pub use ids::{
     now_ms, ActorId, ChangesetId, CheckpointId, DocId, LayerId, MaskId, ObjectId, Seq, SessionId,
     SnapshotId, StyleId, Ulid, UlidGen,
 };
+pub use log::{AppendOutcome, AtomLog, CommitContext};
 pub use state::{
     Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, Object, ObjectRef,
     ObjectType, Selection, Style, Transform, Violation,

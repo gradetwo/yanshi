@@ -549,7 +549,8 @@ impl DocumentState {
     /// 返回全部违规项，属性测试断言其为空。
     pub fn violations(&self) -> Vec<Violation> {
         let mut violations = Vec::new();
-        for layer in self.layers.values() {
+        // 仅存活实体需要满足引用完整性：已 tombstone 的图层/对象不再是活引用。
+        for layer in self.layers.values().filter(|l| !l.is_deleted()) {
             if let Some(parent) = &layer.parent_id {
                 match self.layers.get(parent) {
                     None => violations.push(Violation::MissingLayerRef {
@@ -584,7 +585,7 @@ impl DocumentState {
             }
         }
         // 图层组父链环检测。
-        for layer in self.layers.values() {
+        for layer in self.layers.values().filter(|l| !l.is_deleted()) {
             let mut seen = BTreeSet::new();
             let mut cursor = layer.parent_id.clone();
             while let Some(parent) = cursor {
