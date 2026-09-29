@@ -1317,6 +1317,32 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 
 > 三者都**不由实现方擅自选择**：D0 是本项目反复强调的核心约束（服务端与内核 bit-exact）。
 
+## 二之六之十二、单效果成本（512²，默认参数）与一次默认值调整
+
+`crates/yanshi-render/tests/doc_consistency.rs::single_effect_cost_budget`（`--ignored`）
+在 512² 缓冲上按**默认参数**测每个效果，3 次取最小；预算为调整类 < 60ms、滤镜类 < 200ms，
+**超预算时测试报出具体名字**，让回归一眼可定位。
+
+| 效果 | 耗时 | | 效果 | 耗时 |
+|---|---|---|---|---|
+| `filter:motion_blur` | 88.5ms | | `filter:box_blur` | 8.8ms |
+| `filter:clarity`（半径 16 时 80.0ms） | **46.7ms** | | `adjustment:posterize` | 5.5ms |
+| `filter:glow` | 46.3ms | | `adjustment:split_toning` | 5.1ms |
+| `adjustment:curves` | 27.1ms | | `adjustment:color_balance` | 4.6ms |
+| `filter:dehaze` | 21.0ms | | `filter:vignette` / `film_grain` | 4.1ms |
+| `adjustment:levels` | 14.2ms | | `adjustment:vibrance` | 2.6ms |
+| `adjustment:hsl` | 13.2ms | | 其余 8 项（含两个 `invert`、`brightness_contrast` 等） | ≈ 2.0ms |
+| `filter:sharpen` | 11.6ms | | | |
+| `filter:gaussian_blur`（默认 σ=1） | 11.1ms | | | |
+
+**观察**：25 项里 20 项 ≤ 15ms；重的是**模糊类**（`motion_blur` / `clarity` / `glow`，机制见上一节的
+O(radius) 结论），以及 `curves`（逐像素求样条，27ms —— 同样属于"查表会改结果"的 D0 取舍范畴）。
+
+**本轮的一次默认值调整**：`clarity` 的默认 `radius` 由 **16 改为 8**，默认成本由 80.0ms 降到 **46.7ms**。
+* 只影响**未显式传 radius** 的新调用：已落地的原子把参数存在 payload 里，历史渲染不变 ✓
+* 数学未变，D0 不受影响 ✓（不是算法取舍，是默认值选择）
+* 如需大半径仍可显式传参（上限仍为 64）
+
 ## 二之七、拖动笔迹性能实测与「预览覆盖层」的否定结论
 
 在真实 Chromium（真实 pointer 事件、真实重绘路径）下测量拖动成本：

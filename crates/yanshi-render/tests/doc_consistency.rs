@@ -106,3 +106,78 @@ fn readmes_agree_on_the_effect_inventory() {
         missing.join("\n")
     );
 }
+
+/// 单效果成本预算：把「哪个效果变慢」变成**点名式**回归（而不是整档超预算后无从下手）。
+///
+/// 512² 缓冲、各效果**默认参数**、release 下取 3 次最小值；预算留足噪声余量
+/// （本机 >4ms 量级单次计时波动可达 3×，见 implementation-notes 的多次警示）。
+///
+/// 实测表见 implementation-notes「单效果成本（512²，默认参数）」；超预算时本测试会**报出名字**。
+#[test]
+#[ignore = "性能预算：CI 用 --ignored 执行（单效果成本，512²）"]
+fn single_effect_cost_budget() {
+    use std::time::{Duration, Instant};
+    use yanshi_render::{apply_adjustment, apply_filter, Buffer};
+
+    fn sample() -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 512, 512);
+        for (index, pixel) in buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+            let value = (index % 251) as f32 / 251.0;
+            pixel.copy_from_slice(&[value, value * 0.8, value * 0.6, 1.0]);
+        }
+        buffer
+    }
+
+    let mut rows: Vec<(String, Duration)> = Vec::new();
+
+    // 滤镜：默认参数（与工具层一致）。
+    for name in yanshi_render::FILTER_NAMES {
+        let params = match name {
+            "dehaze" => serde_json::json!({"air": [0.85, 0.85, 0.85]}),
+            _ => serde_json::json!({}),
+        };
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            let mut buffer = sample();
+            let started = Instant::now();
+            apply_filter(&mut buffer, name, &params, 1.0, (512.0, 512.0));
+            best = best.min(started.elapsed());
+        }
+        rows.push((format!("filter:{name}"), best));
+    }
+    for name in yanshi_render::ADJUSTMENT_NAMES {
+        let params = match name {
+            "curves" => serde_json::json!({"points": [[0.0, 0.0], [1.0, 1.0]]}),
+            _ => serde_json::json!({}),
+        };
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            let mut buffer = sample();
+            let started = Instant::now();
+            apply_adjustment(&mut buffer, name, &params, 1.0);
+            best = best.min(started.elapsed());
+        }
+        rows.push((format!("adjustment:{name}"), best));
+    }
+
+    rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+    println!("512² 单效果成本（默认参数，3 次最小）：");
+    for (name, elapsed) in &rows {
+        println!("  {name}: {elapsed:?}");
+    }
+
+    // 预算：调整类应 < 60ms；滤镜类应 < 200ms（模糊类默认半径下）。
+    // 超预算时报出**具体名字**，让回归一眼可定位。
+    for (name, elapsed) in &rows {
+        let budget = if name.starts_with("adjustment:") {
+            Duration::from_millis(60)
+        } else {
+            Duration::from_millis(200)
+        };
+        assert!(
+            *elapsed < budget,
+            "效果 {name} 在 512² 默认参数下耗时 {elapsed:?}，超出预算 {budget:?} —— \
+             这属于单效果回归，请对照 implementation-notes 的「单效果成本」表"
+        );
+    }
+}

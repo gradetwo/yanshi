@@ -1280,10 +1280,13 @@ pub fn apply_filter(
             params.get("omega").and_then(Value::as_f64).unwrap_or(0.85) as f32,
             params.get("floor").and_then(Value::as_f64).unwrap_or(0.1) as f32,
         ),
+        // 默认半径取 8（原为 16）：`box_blur` 是 O(radius)/像素，半径 16 在 512² 上默认就要
+        // 约 80ms，对交互式预览过重。**只影响未显式给出 radius 的新调用**：已落地的原子把参数
+        // 存在 payload 里，历史结果不受影响；数学本身未改，D0 不受影响。
         FilterKind::Clarity => clarity(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(0.5) as f32,
-            params.get("radius").and_then(Value::as_u64).unwrap_or(16) as u32,
+            params.get("radius").and_then(Value::as_u64).unwrap_or(8) as u32,
         ),
         FilterKind::Glow => glow(
             &mut filtered,
