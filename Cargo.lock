@@ -581,6 +581,7 @@ dependencies = [
  "serde_json",
  "yanshi-core",
  "yanshi-render",
+ "yanshi-wasm",
 ]
 
 [[package]]
