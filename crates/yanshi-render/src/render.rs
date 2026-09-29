@@ -27,7 +27,7 @@ use crate::geometry::{
 use crate::object::{parse_object, Primitive, ShapeKind};
 use crate::tile::{Tile, TileCache, TileGrid, TileKey};
 use serde_json::Value;
-use yanshi_core::{Bbox, BlobStore, DocumentState, Layer, Result, YanshiError};
+use yanshi_core::{Bbox, BlobStore, DocumentState, Layer, Object, Result, YanshiError};
 
 /// 渲染选项。
 #[derive(Debug, Clone, PartialEq)]
@@ -636,6 +636,7 @@ impl Renderer {
         layer_buffer: &mut Buffer,
         stats: &mut RenderStats,
     ) -> Result<()> {
+        let mut probe_objects = stage_probe::ObjectTimings::default();
         for object in state.objects_in_layer(&layer.id) {
             if !object.visible {
                 continue;
@@ -667,6 +668,8 @@ impl Renderer {
                 .get("opacity")
                 .and_then(Value::as_f64)
                 .unwrap_or(1.0) as f32;
+            let probe_label = object_probe_label(object, &primitive);
+            let mut probe_object_stage = stage_probe::Stage::start();
             match primitive {
                 Primitive::Stroke { geometry, brush } => {
                     let brush = BrushSpec {
@@ -1014,6 +1017,8 @@ impl Renderer {
                         .push(format!("{reason}（对象 {}）", object.id));
                 }
             }
+            probe_objects.record(&probe_label, probe_object_stage.stop());
+            probe_objects.report();
         }
         Ok(())
     }
@@ -1127,6 +1132,42 @@ mod stage_probe {
         }
     }
 
+    /// 按对象累计耗时（诊断用）。
+    #[derive(Default)]
+    pub struct ObjectTimings {
+        entries: Vec<(String, Duration, u32)>,
+    }
+
+    impl ObjectTimings {
+        /// 记录一次对象渲染耗时。
+        pub fn record(&mut self, label: &str, elapsed: Duration) {
+            if !enabled() {
+                return;
+            }
+            match self.entries.iter_mut().find(|entry| entry.0 == label) {
+                Some(entry) => {
+                    entry.1 += elapsed;
+                    entry.2 += 1;
+                }
+                None => self.entries.push((label.to_owned(), elapsed, 1)),
+            }
+        }
+
+        /// 按总耗时降序打印（最多 8 项）。
+        pub fn report(&self) {
+            if !enabled() || self.entries.is_empty() {
+                return;
+            }
+            let mut entries = self.entries.clone();
+            entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+            let mut line = String::from("  对象耗时:");
+            for (label, total, count) in entries.iter().take(8) {
+                line.push_str(&format!(" {label}={total:?}×{count}"));
+            }
+            eprintln!("{line}");
+        }
+    }
+
     /// 打印各阶段耗时。
     pub fn report(
         has_background: bool,
@@ -1161,6 +1202,15 @@ mod stage_probe {
         }
     }
 
+    /// wasm32 上不记录对象耗时。
+    #[derive(Default)]
+    pub struct ObjectTimings;
+
+    impl ObjectTimings {
+        pub const fn record(&mut self, _label: &str, _elapsed: Duration) {}
+        pub const fn report(&self) {}
+    }
+
     /// 空报告。
     pub fn report(
         _has_background: bool,
@@ -1171,6 +1221,32 @@ mod stage_probe {
         _quantize: Duration,
     ) {
     }
+}
+
+/// 探针标签：把对象标成「类型:细节」（如 `filter:gaussian_blur`、`liquify:pinch`），
+/// 以便分段计时直接回答"是哪个效果拖慢了整层"。
+#[cfg(not(target_arch = "wasm32"))]
+fn object_probe_label(object: &Object, primitive: &Primitive) -> String {
+    let kind = object
+        .data
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match primitive {
+        Primitive::Filter { name, .. } => format!("filter:{name}"),
+        Primitive::Adjustment { kind, .. } => format!("adjustment:{}", kind.as_str()),
+        Primitive::Liquify { mode, .. } => format!("liquify:{mode}"),
+        Primitive::Retouch { kind, .. } => format!("retouch:{kind}"),
+        Primitive::Stroke { .. } => "stroke".to_owned(),
+        Primitive::RasterPatch { .. } => "raster_patch".to_owned(),
+        _ => kind.to_owned(),
+    }
+}
+
+/// wasm32 上不需要标签。
+#[cfg(target_arch = "wasm32")]
+fn object_probe_label(_object: &Object, _primitive: &Primitive) -> String {
+    String::new()
 }
 
 /// 解析文档背景色（`{"r": 0-255, ...}`）。
