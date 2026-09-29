@@ -2994,3 +2994,108 @@ fn annotations_can_be_filtered_by_suggestion() {
     );
     assert_eq!(resolved["count"], json!(2), "{resolved}");
 }
+
+/// 批量拒绝（与批量接受对称）：逐条不中断、幂等、且不接受与拒绝互相矛盾。
+#[test]
+fn batch_reject_is_symmetric_with_batch_accept() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_batch_reject", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Annotation,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context =
+        ToolContext::new(&mut workspace, "doc_batch_reject", "human:1", "session:web")
+            .with_owner(true)
+            .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+
+    let mut ids = Vec::new();
+    for summary in ["a", "b", "accepted"] {
+        let response = registry.call(
+            &mut context,
+            "suggest",
+            &json!({"summary": summary, "patch": [{"tool": "add_adjustment",
+                "arguments": {"layer_id": "L", "adjustment_type": "invert"}}]}),
+        );
+        ids.push(response["suggestion_id"].as_str().unwrap().to_owned());
+    }
+    // 第三条先接受，之后批量拒绝它应当失败（precondition_failed）。
+    let accepted = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": ids[2]}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+
+    let mut batch: Vec<serde_json::Value> = ids.iter().map(|id| json!(id)).collect();
+    batch.push(json!("01ZZZZZZZZZZZZZZZZZZZZZZZZZZ"));
+    let rejected = registry.call(
+        &mut context,
+        "reject_suggestions",
+        &json!({"suggestion_ids": batch, "reason": "本轮不做"}),
+    );
+    assert_eq!(
+        rejected["rejected"],
+        json!(2),
+        "两条应被拒绝（第三条已接受，拒不了）: {rejected}"
+    );
+    assert_eq!(
+        rejected["failed"],
+        json!(2),
+        "已接受的一条 + 未知 id 各算一次失败：{rejected}"
+    );
+    let results = rejected["results"].as_array().unwrap();
+    assert_eq!(results[0]["ok"], json!(true));
+    assert_eq!(results[2]["ok"], json!(false));
+    assert_eq!(
+        results[2]["error_code"],
+        json!("precondition_failed"),
+        "{rejected}"
+    );
+    assert_eq!(
+        results[3]["error_code"],
+        json!("reference_not_found"),
+        "{rejected}"
+    );
+
+    // 幂等：单条重复拒绝不再写原子。
+    let again = registry.call(
+        &mut context,
+        "reject_suggestion",
+        &json!({"suggestion_id": ids[0], "reason": "再来一次"}),
+    );
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(again["already_rejected"], json!(true), "{again}");
+    assert_eq!(
+        again["rejected_annotations"].as_array().unwrap().len(),
+        0,
+        "重复拒绝不应再改动标注：{again}"
+    );
+
+    // 列表状态：两条 rejected、一条 accepted。
+    let listed = registry.call(&mut context, "list_suggestions", &json!({}));
+    let statuses: Vec<String> = listed["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["status"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(statuses.contains(&"accepted".to_owned()), "{listed}");
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| *status == "rejected")
+            .count(),
+        2,
+        "{listed}"
+    );
+}

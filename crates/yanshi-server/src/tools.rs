@@ -1319,6 +1319,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "reject_suggestions",
+        profile: Profile::Collab,
+        summary: "批量拒绝建议（最多 64 条）：逐条记录原因并联动标注状态，个别失败不中断",
+        mutating: true,
+        params: &[
+            param!("suggestion_ids", Array, true, "建议 id 列表"),
+            param!("reason", String, false, "统一的拒绝原因"),
+        ],
+    },
+    ToolSpec {
         name: "list_suggestions",
         profile: Profile::Collab,
         summary: "列出建议及其状态（pending / accepted / rejected，由 accept/reject 原子推导）",
@@ -1442,6 +1452,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestion" => write_accept_suggestion(ctx, args),
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
+        "reject_suggestions" => write_reject_suggestions(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -3743,6 +3754,128 @@ fn accept_one(ctx: &mut ToolContext<'_>, suggestion_id: &str) -> Result<Value> {
 fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let suggestion_id = require_str(args, "suggestion_id")?;
     let reason = optional_str(args, "reason").unwrap_or_default();
+    reject_one(ctx, &suggestion_id, &reason)
+}
+
+/// 批量拒绝：与批量接受对称 —— **逐条尝试、个别失败不中断**，逐条返回结果。
+fn write_reject_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let ids = require_array(args, "suggestion_ids")?;
+    if ids.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("suggestion_ids 不能为空"),
+        ));
+    }
+    if ids.len() > 64 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("一次最多拒绝 64 条建议（收到 {}）", ids.len())),
+        ));
+    }
+    let reason = optional_str(args, "reason").unwrap_or_default();
+    let mut rejected = 0usize;
+    let mut results = Vec::new();
+    for value in ids {
+        let Some(id) = value.as_str() else {
+            results.push(json!({"suggestion_id": value, "ok": false, "error": "id 必须是字符串"}));
+            continue;
+        };
+        match reject_one(ctx, id, &reason) {
+            Ok(result) => {
+                rejected += 1;
+                results.push(json!({
+                    "suggestion_id": id,
+                    "ok": true,
+                    "already_rejected": result["already_rejected"],
+                    "rejected_annotations": result["rejected_annotations"],
+                }));
+            }
+            Err(error) => results.push(json!({
+                "suggestion_id": id,
+                "ok": false,
+                "error_code": error.code.as_str(),
+                "detail": error.context.detail,
+            })),
+        }
+    }
+    Ok(json!({
+        "results": results,
+        "rejected": rejected,
+        "failed": results.len() - rejected,
+    }))
+}
+
+/// 拒绝单条建议（含状态闸门，与接受侧镜像）。
+fn reject_one(ctx: &mut ToolContext<'_>, suggestion_id: &str, reason: &str) -> Result<Value> {
+    // 先确认这确实是一条**已存在**的 suggest 原子。
+    // （此前的实现不校验存在性：拒绝一个拼错的 id 也会"成功"并写入无意义原子 ✗ —— 由批量拒绝的
+    //   测试发现：未知 id 竟然返回 ok。）
+    {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let atom = document.log().get(suggestion_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("建议 {suggestion_id} 不在日志中")),
+            )
+            .with_atom(suggestion_id.to_owned())
+        })?;
+        if atom.kind != AtomKind::Suggest {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{suggestion_id} 是 {} 原子，不是建议（suggest）",
+                    atom.kind
+                )),
+            ));
+        }
+    }
+    // 状态闸门（与 `accept_one` 镜像，避免自相矛盾的历史）：
+    //   * 已拒绝 → 幂等返回（不重复写原子）；
+    //   * 已接受 → `precondition_failed`（已采纳的建议不能被"拒绝"）。
+    let (accepted_by, rejected_by) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let mut accepted_by = None;
+        let mut rejected_by = None;
+        for atom in document.log().iter() {
+            if atom.payload.get("target_atom_id").and_then(Value::as_str) != Some(suggestion_id) {
+                continue;
+            }
+            match atom.kind {
+                AtomKind::AcceptSuggestion => accepted_by = Some(atom.id.clone()),
+                AtomKind::RejectSuggestion => rejected_by = Some(atom.id.clone()),
+                _ => {}
+            }
+        }
+        (accepted_by, rejected_by)
+    };
+    if let Some(reject_atom) = rejected_by {
+        return Ok(json!({
+            "suggestion_id": suggestion_id,
+            "reason": reason,
+            "rejected_annotations": Vec::<Value>::new(),
+            "already_rejected": true,
+            "reject_atom_id": reject_atom,
+            "note": "该建议此前已被拒绝，本次不重复写入",
+        }));
+    }
+    if let Some(accept_atom) = accepted_by {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "建议 {suggestion_id} 已被接受（原子 {accept_atom}），不能拒绝已接受的建议；如需撤销请用 revert"
+            )),
+        ));
+    }
     let result = ctx.commit(
         AtomKind::RejectSuggestion,
         json!({"target_atom_id": suggestion_id, "reason": reason}),
@@ -3758,7 +3891,7 @@ fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         // 过滤条件没有 suggestion_id 字段，按状态取回后在内存里筛（待处理标注数量很小）。
         let filter = AnnotationFilter {
             status: Some(AnnotationStatus::Pending),
-            suggestion_id: Some(suggestion_id.clone()),
+            suggestion_id: Some(suggestion_id.to_owned()),
             ..AnnotationFilter::default()
         };
         let ids: Vec<String> = document
@@ -3779,6 +3912,7 @@ fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         "reason": reason,
         "rejected_annotations": rejected_annotations,
         "pending_annotations": pending,
+        "already_rejected": false,
     }))
 }
 

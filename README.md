@@ -36,7 +36,7 @@ cargo run -p yanshi-http --bin yanshi-serve -- --root ./workspace
 |---|---|---|
 | `yanshi-core` core engine | ✅ | append-only atom log (client ULIDs for idempotency + server-authoritative `seq`), fold evaluation with cascading revert invalidation, `state@seq` and `declare_head`, logical snapshots, three-tier Blob CAS lifecycle and GC |
 | `yanshi-render` compute kernel | ✅ | D0 CPU bit-exact: f16 linear tiles, premultiplied blending, brush stamping, shapes, adjustments/filters, dual dirty propagation, tiered thumbnails, dependency-free deterministic PNG |
-| `yanshi-server` server semantics | ✅ | document service, Job protocol (TTL/cancel/polling), capability tokens, control-flow vs data-flow broadcast boundaries, append-only annotation channel, file persistence, the 27 core tools plus profile-gated groups (64 tools in total with every implemented group enabled) |
+| `yanshi-server` server semantics | ✅ | document service, Job protocol (TTL/cancel/polling), capability tokens, control-flow vs data-flow broadcast boundaries, append-only annotation channel, file persistence, the 27 core tools plus profile-gated groups (65 tools in total with every implemented group enabled) |
 | `yanshi-http` transport & viewer | ✅ | dependency-free HTTP/1.1 + RFC 6455 (hand-written SHA-1 handshake, frame codec, fragmentation, ping/pong), keep-alive connection reuse, minimal single-page web viewer |
 | `yanshi-mcp` | ✅ | MCP stdio (`initialize` / `tools/list` / `tools/call` / `ping`), profile layering, submit-and-poll |
 | `yanshi-wasm` browser compute kernel | ✅ | wasm32 build, local incremental folding + optimistic rendering, pending-stroke overlay, LRU tile pool with a 90% watermark fallback |
