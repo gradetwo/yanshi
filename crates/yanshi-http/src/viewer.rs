@@ -107,7 +107,7 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 供 CDP / 自动化验收读取的统计（Phase 2 出口条件：bit-exact 与首笔 < 16ms）。
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
-  firstStrokeMs: null, lastApplyMs: null, applies: 0,
+  firstStrokeMs: null, lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
   bitExact: null, resyncs: 0,
 };
 
@@ -279,9 +279,13 @@ function drawKernelRegion(x, y, w, h) {
   const started = performance.now();
   const rgba = state.kernel.render_region_rgba(x, y, w, h);
   if (!rgba || rgba.length < w * h * 4) return;
+  const renderedAt = performance.now();
   // putImageData 不做 CSS 缩放：画布与文档同分辨率，坐标一一对应。
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
   const elapsed = performance.now() - started;
+  window.yanshiStats.lastRenderMs = renderedAt - started;
+  window.yanshiStats.lastPutMs = performance.now() - renderedAt;
+  window.yanshiStats.lastArea = w * h;
   window.yanshiStats.lastApplyMs = elapsed;
   if (window.yanshiStats.firstStrokeMs === null && state.dragging) {
     window.yanshiStats.firstStrokeMs = elapsed;
@@ -310,7 +314,8 @@ async function updatePreviewOverlay(pending) {
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
   drawKernelBox(response.dirty_bbox);
   const elapsed = performance.now() - started;
-  window.yanshiStats.lastApplyMs = elapsed;
+  window.yanshiStats.lastOverlayMs = elapsed;
+  window.yanshiStats.overlayApplies = (window.yanshiStats.overlayApplies || 0) + 1;
   if (typeof window.yanshiStats.firstStrokeMs !== "number") {
     window.yanshiStats.firstStrokeMs = elapsed;
     $("firstStroke").textContent = elapsed.toFixed(2) + "ms";
