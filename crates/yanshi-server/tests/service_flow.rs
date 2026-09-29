@@ -1781,3 +1781,90 @@ fn accept_suggestion_replays_the_patch_and_resolves_annotations() {
         "{missing}"
     );
 }
+
+/// 建议预览：逐步校验与归类，且**不产生任何副作用**（不写日志）。
+#[test]
+fn preview_suggestion_validates_without_applying() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_preview", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_preview", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    let head_before = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+
+    let preview = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "add_adjustment", "arguments": {"layer_id": "layer_1",
+                "adjustment_type": "exposure", "params": {"ev": 0.5}}},
+            {"tool": "clone_stamp", "arguments": {"layer_id": "layer_1",
+                "points": [[10, 10]], "source_offset": [-8, -8]}},
+            {"tool": "get_document", "arguments": {}},
+            {"tool": "not_a_tool", "arguments": {}},
+            {"tool": "add_filter", "arguments": {"layer_id": "layer_1",
+                "filter_name": "gaussian_blur", "params": {"sigma": 999}}}
+        ]}),
+    );
+    assert_eq!(preview["total_steps"], json!(5), "{preview}");
+    assert_eq!(preview["invalid_steps"], json!(3), "{preview}");
+    assert_eq!(preview["applicable"], json!(false), "含非法步骤时不可应用");
+    let steps = preview["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["valid"], json!(true));
+    assert_eq!(steps[0]["class"], json!("effect"));
+    assert_eq!(steps[1]["class"], json!("retouch"));
+    assert_eq!(steps[2]["valid"], json!(false), "只读工具应判非法");
+    assert_eq!(steps[3]["valid"], json!(false), "未知工具应判非法");
+    assert_eq!(steps[4]["valid"], json!(false), "越界参数应判非法");
+    // 预览必须无副作用：HEAD 不变。
+    let head_after = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+    assert_eq!(
+        head_before, head_after,
+        "预览不得写入日志：{head_before} vs {head_after}"
+    );
+
+    // 全部合法时可应用。
+    let good = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [{"tool": "create_layer", "arguments": {"layer_id": "layer_2"}}]}),
+    );
+    assert_eq!(good["applicable"], json!(true), "{good}");
+    assert_eq!(good["steps"][0]["class"], json!("structure"));
+
+    // 用 suggestion_id 预览已记录的建议。
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        // 用**已存在**的图层：suggest 会提交原子，引用不存在的目标会被折叠拒绝。
+        &json!({"patch": [{"tool": "add_adjustment", "arguments": {"layer_id": "layer_1",
+            "adjustment_type": "invert"}}]}),
+    );
+    let suggestion_id = suggestion["suggestion_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("suggest 应返回 suggestion_id：{suggestion}"))
+        .to_owned();
+    let by_id = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(by_id["applicable"], json!(true), "{by_id}");
+    assert_eq!(by_id["suggestion_id"], json!(suggestion_id));
+}

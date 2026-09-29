@@ -762,6 +762,17 @@ rejected）全部成功。
 / `reject_suggestion` → patch 应用 → 标注状态更新（resolved/rejected）**。
 AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pending)`。
 
+**建议预览（`preview_suggestion`）**：在不应用的前提下逐步给出
+`{index, tool, class, layer_id, object_id, valid, error}`，以及 `total_steps`/`invalid_steps`/`applicable`。
+`class` 为 effect / retouch / geometry / structure / other 的粗分类，便于人工与 AI 审阅。
+
+一个必须守住的一致性：预览**必须与接受同标准**。最初预览只做 `validate_args`（形状/类型），
+而效果类工具的参数范围校验（如 `sigma` 上限）在处理器内部按效果名区分，于是出现
+「预览说可应用、接受时被拒」的误导（测试当场抓到：`sigma: 999` 被判合法）。
+现在预览对 `add_adjustment`/`add_filter` 复用**同一个** `validate_effect`，
+并在响应里注明「静态检查；个别工具的运行期限制（如外扩上限）在应用时最终判定」。
+预览的 `applicable` 为 `false` 时不应提交接受。
+
 **可复现验收**：`scripts/phase4b-demo.sh` 把整条环路脚本化（只创建新文档，依赖仅 curl + python3）：
 
 ```

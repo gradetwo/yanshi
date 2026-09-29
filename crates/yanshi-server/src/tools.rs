@@ -1271,6 +1271,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "preview_suggestion",
+        profile: Profile::Collab,
+        summary: "预览建议（不应用）：逐步校验工具名与参数、报告目标与变更类别，便于人工/AI 审阅",
+        mutating: false,
+        params: &[
+            param!("suggestion_id", String, false, "建议 id（与 patch 二选一）"),
+            param!("patch", Array, false, "直接给出 patch 做预校验（与 suggestion_id 二选一）"),
+        ],
+    },
+    ToolSpec {
         name: "accept_suggestion",
         profile: Profile::Collab,
         summary: "接受建议：按序重放 patch（只允许会产生状态效果的步骤），提交 accept_suggestion 原子并把关联标注置为 resolved",
@@ -1403,6 +1413,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
         "comment" => write_comment(ctx, args),
         "suggest" => write_suggest(ctx, args),
+        "preview_suggestion" => read_preview_suggestion(ctx, args),
         "accept_suggestion" => write_accept_suggestion(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
@@ -2822,6 +2833,159 @@ fn all_implemented_profiles() -> Vec<Profile> {
         Profile::Structure,
         Profile::Retouch,
     ]
+}
+
+/// 建议预览（不应用）：逐步校验并归类，供人工/AI 在应用前审阅。
+///
+/// 只做**静态**判断：工具是否存在、是否 mutating、参数是否通过校验、目标是谁、
+/// 属于哪类变更。精确的 dirty 范围需要在应用时才知道（内核按对象与效果计算），
+/// 因此这里如实说明，而不是猜一个数字。
+fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let suggestion_id = optional_str(args, "suggestion_id");
+    let patch = if let Some(patch) = args.get("patch") {
+        patch.as_array().cloned().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("patch 必须是数组"),
+            )
+        })?
+    } else {
+        let Some(suggestion_id) = suggestion_id.clone() else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("需要 suggestion_id 或 patch"),
+            ));
+        };
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let atom = document.log().get(&suggestion_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("建议 {suggestion_id} 不在日志中")),
+            )
+        })?;
+        if atom.kind != AtomKind::Suggest {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{suggestion_id} 不是建议（suggest）原子")),
+            ));
+        }
+        atom.payload
+            .get("patch")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let registry = ToolRegistry::with_profiles(&all_implemented_profiles());
+    let mut steps = Vec::new();
+    let mut invalid = 0usize;
+    for (index, step) in patch.iter().enumerate() {
+        let tool = step
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let step_args = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let mut entry = json!({
+            "index": index,
+            "tool": tool,
+            "class": tool_class(&tool),
+            "layer_id": step_args.get("layer_id").cloned().unwrap_or(Value::Null),
+            "object_id": step_args.get("object_id").cloned().unwrap_or(Value::Null),
+        });
+        match registry.get(&tool) {
+            None => {
+                invalid += 1;
+                entry["valid"] = json!(false);
+                entry["error"] = json!(format!("未知工具 {tool}"));
+            }
+            Some(spec) if !spec.mutating => {
+                invalid += 1;
+                entry["valid"] = json!(false);
+                entry["error"] = json!(format!("{tool} 是只读工具，不能作为补丁步骤"));
+            }
+            Some(spec) => match validate_args(spec, &step_args) {
+                Ok(()) => {
+                    // 效果类工具的参数范围校验在处理器内部（按效果名区分），
+                    // 预览必须一并执行，否则会出现「预览说可以用、接受时却被拒」的误导。
+                    match preview_effect_check(&tool, &step_args) {
+                        Ok(()) => entry["valid"] = json!(true),
+                        Err(error) => {
+                            invalid += 1;
+                            entry["valid"] = json!(false);
+                            entry["error"] = json!(format!("{:?}", error.context.detail));
+                        }
+                    }
+                }
+                Err(error) => {
+                    invalid += 1;
+                    entry["valid"] = json!(false);
+                    entry["error"] = json!(format!("{:?}", error.context.detail));
+                }
+            },
+        }
+        steps.push(entry);
+    }
+    Ok(json!({
+        "suggestion_id": suggestion_id,
+        "steps": steps,
+        "total_steps": patch.len(),
+        "invalid_steps": invalid,
+        "applicable": invalid == 0 && !patch.is_empty(),
+        "notes": "静态检查：工具存在性、mutating、参数形状与效果类取值范围；\
+                  个别工具的运行期限制（如外扩上限）在应用时最终判定",
+    }))
+}
+
+/// 预览里补充执行的「效果类参数」校验（与处理器共用同一函数，避免两条标准漂移）。
+fn preview_effect_check(tool: &str, args: &Value) -> Result<()> {
+    let (kind, key) = match tool {
+        "add_adjustment" => (EffectKind::Adjustment, "adjustment_type"),
+        "add_filter" => (EffectKind::Filter, "filter_name"),
+        _ => return Ok(()),
+    };
+    let Some(name) = args.get(key).and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+    validate_effect(kind, name, &params)
+}
+
+/// 补丁步骤的粗分类（供预览展示；精确影响范围在应用时由内核计算）。
+fn tool_class(tool: &str) -> &'static str {
+    if tool.starts_with("add_adjustment")
+        || tool.starts_with("add_filter")
+        || tool.starts_with("update_adjustment")
+        || tool.starts_with("update_filter")
+    {
+        "effect"
+    } else if tool.starts_with("clone_stamp")
+        || tool.starts_with("heal_stamp")
+        || tool == "smudge"
+        || tool == "patch"
+        || tool.starts_with("liquify")
+    {
+        "retouch"
+    } else if tool.starts_with("draw_")
+        || tool == "fill"
+        || tool == "erase"
+        || tool.starts_with("move_")
+        || tool == "transform"
+    {
+        "geometry"
+    } else if tool.starts_with("create_")
+        || tool.starts_with("reorder_")
+        || tool == "set_property"
+        || tool.starts_with("delete_")
+    {
+        "structure"
+    } else {
+        "other"
+    }
 }
 
 /// 接受建议：按序重放 patch（设计 12.6：`accept_suggestion → reapply`）。
