@@ -727,6 +727,31 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
   `dirty_kind` 均为 `structure`，渲染结果肉眼可见正确；带这两个效果的文档在真实 Chromium 中
   **bit-exact 自检通过**（客户端 WASM == 服务端 PNG 哈希），页面零 JS 异常。
 
+## 二之五、Phase 4b 起步：建议（suggest）与拒绝流程
+
+按设计 12.6 实现（`suggest` 原子**包含 patch**；`accept_suggestion → reapply`；
+`reject_suggestion → 记录原因`）：
+
+| 工具 | 说明 |
+|---|---|
+| `suggest` | 记录一条建议：`patch` 采用**工具调用序列** `[{"tool":..,"arguments":{..}}]`（非空、≤64 步、形状校验），并可选 `annotation_id`/`summary` |
+| `list_suggestions` | 列出建议及其状态；状态由后续的 `accept_suggestion`/`reject_suggestion` 原子推导（pending/accepted/rejected），可按状态过滤 |
+| `reject_suggestion` | 提交 `reject_suggestion` 原子记录原因，并把**引用该建议**的待处理标注一并置为 `rejected` |
+
+配套改动：`create_annotation` 增加 `suggestion_id` 参数（标注结构本就有该字段，此前被写死为
+`None`），使「标注 → 建议」的追踪真正可用。
+
+patch 采用工具调用序列（而不是原始原子）的原因：AI 的输出天然是这个形状，且
+`accept_suggestion` 只需按序重放即可实现设计里的「→ reapply」。
+
+**线上实测（真实服务端）**：创建标注 → `suggest`（2 步 patch）→ `list_suggestions` 显示 1 条
+pending/2 步 → 创建关联标注（pending 变 2）→ `reject_suggestion`（记录原因，联动 1 条标注转为
+rejected）全部成功。
+
+**尚未实现（下一步）**：`accept_suggestion` —— 需要按序重放 patch（通过工具分发表调用），
+并在成功后提交 `accept_suggestion` 原子、把关联标注置为 `resolved`。当前 `list_suggestions`
+已能识别 `accepted` 状态（读 `accept_suggestion` 原子），因此只差提交侧。
+
 ## 三、尚未实现（与 README 路线图一致）
 
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。

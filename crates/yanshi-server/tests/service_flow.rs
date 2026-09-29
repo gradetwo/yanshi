@@ -1104,6 +1104,145 @@ fn mask_clips_layer_content_end_to_end() {
     }
 }
 
+/// Phase 4b 起步：建议（suggest）记录 patch、可被拒绝并联动标注状态。
+#[test]
+fn suggestions_are_recorded_listed_and_rejected() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_sug", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+        yanshi_server::Profile::Annotation,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_sug", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+
+    // 人类标注（4a 已有能力），AI 解析后给出建议（4b）。
+    let annotation = registry.call(
+        &mut context,
+        "create_annotation",
+        &json!({"type": "region", "content": "这里太暗了", "intent": "modify",
+                "target": {"type": "region", "bbox": {"x": 8, "y": 8, "w": 32, "h": 32}}}),
+    );
+    assert_eq!(annotation["ok"], json!(true), "{annotation}");
+    let pending = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"status": "pending"}),
+    );
+    assert_eq!(
+        pending["pending"],
+        json!(1),
+        "应能看到待处理标注：{pending}"
+    );
+
+    // AI 建议：patch 是一串工具调用，accept 时按序重放。
+    let annotation_id = annotation["annotation_id"]
+        .as_str()
+        .unwrap_or("anno_1")
+        .to_owned();
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({
+            "annotation_id": annotation_id,
+            "summary": "提高曝光并加暗角",
+            "patch": [
+                {"tool": "add_adjustment", "arguments": {"layer_id": "layer_1",
+                    "adjustment_type": "exposure", "params": {"ev": 0.6}}},
+                {"tool": "add_filter", "arguments": {"layer_id": "layer_1",
+                    "filter_name": "vignette", "params": {"strength": 0.4}}}
+            ]
+        }),
+    );
+    assert_eq!(suggestion["ok"], json!(true), "{suggestion}");
+    assert_eq!(suggestion["steps"], json!(2));
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap().to_owned();
+
+    // 形状校验：空 patch / 缺 tool / arguments 非对象都要被拒。
+    for payload in [
+        json!({"patch": []}),
+        json!({"patch": [{"arguments": {}}]}),
+        json!({"patch": [{"tool": "add_filter", "arguments": 3}]}),
+        json!({"patch": [{"tool": ""}]}),
+    ] {
+        let response = registry.call(&mut context, "suggest", &payload);
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{payload}: {response}"
+        );
+    }
+
+    // 列表：默认 pending；按状态过滤可用。
+    let listed = registry.call(&mut context, "list_suggestions", &json!({}));
+    assert_eq!(
+        listed["suggestions"].as_array().unwrap().len(),
+        1,
+        "{listed}"
+    );
+    assert_eq!(listed["suggestions"][0]["status"], json!("pending"));
+    assert_eq!(
+        listed["suggestions"][0]["annotation_id"],
+        json!(annotation_id)
+    );
+    assert_eq!(
+        listed["suggestions"][0]["patch"].as_array().unwrap().len(),
+        2
+    );
+
+    // 把标注关联到建议，然后拒绝：应记录原因并把标注置为 rejected。
+    let linked = registry.call(
+        &mut context,
+        "create_annotation",
+        &json!({"type": "region", "content": "再来一处", "intent": "style",
+                "target": {"type": "region", "bbox": {"x": 0, "y": 0, "w": 16, "h": 16}},
+                "suggestion_id": suggestion_id}),
+    );
+    assert_eq!(linked["ok"], json!(true), "{linked}");
+    let rejected = registry.call(
+        &mut context,
+        "reject_suggestion",
+        &json!({"suggestion_id": suggestion_id, "reason": "方向不对"}),
+    );
+    assert_eq!(rejected["ok"], json!(true), "{rejected}");
+    assert_eq!(rejected["reason"], json!("方向不对"));
+    assert_eq!(
+        rejected["rejected_annotations"].as_array().unwrap().len(),
+        1,
+        "引用该建议的标注应被置为 rejected：{rejected}"
+    );
+    let still_pending = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"status": "pending"}),
+    );
+    assert_eq!(
+        still_pending["suggestions"].as_array().unwrap().len(),
+        0,
+        "{still_pending}"
+    );
+    let rejected_only = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"status": "rejected"}),
+    );
+    assert_eq!(rejected_only["suggestions"][0]["reason"], json!("方向不对"));
+}
+
 #[test]
 fn capability_tokens_gate_http_and_allow_stdio() {
     let mut workspace = workspace();

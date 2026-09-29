@@ -1004,6 +1004,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "{target:'region',bbox} 或 {target:'object',object_id}"
             ),
             param!("content", String, false, "内容或路径"),
+            param!("suggestion_id", String, false, "关联建议 id（4b：标注 → 建议的追踪）"),
         ],
     },
     ToolSpec {
@@ -1259,6 +1260,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：collab ----
     ToolSpec {
+        name: "suggest",
+        profile: Profile::Collab,
+        summary: "记录一条建议（suggest 原子，含 patch）：AI 解析标注后提出可执行的补丁步骤",
+        mutating: true,
+        params: &[
+            param!("patch", Array, true, "补丁步骤 [{\"tool\":\"add_filter\",\"arguments\":{...}}, ...]（非空）"),
+            param!("annotation_id", String, false, "关联的标注 id（写入建议以追踪来源）"),
+            param!("summary", String, false, "人类可读的说明"),
+        ],
+    },
+    ToolSpec {
+        name: "reject_suggestion",
+        profile: Profile::Collab,
+        summary: "拒绝建议：记录原因，并把引用该建议的标注置为 rejected（12.6）",
+        mutating: true,
+        params: &[
+            param!("suggestion_id", String, true, "建议 id（suggest 原子的 id）"),
+            param!("reason", String, false, "拒绝原因"),
+        ],
+    },
+    ToolSpec {
+        name: "list_suggestions",
+        profile: Profile::Collab,
+        summary: "列出建议及其状态（pending / accepted / rejected，由 accept/reject 原子推导）",
+        mutating: false,
+        params: &[param!("status", String, false, "按状态过滤：pending/accepted/rejected")],
+    },
+    ToolSpec {
         name: "comment",
         profile: Profile::Collab,
         summary: "发表评论（协作原子，不产生状态效果）",
@@ -1364,6 +1393,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "liquify_twirl" => write_liquify(ctx, args, "twirl"),
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
         "comment" => write_comment(ctx, args),
+        "suggest" => write_suggest(ctx, args),
+        "reject_suggestion" => write_reject_suggestion(ctx, args),
+        "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
@@ -2707,6 +2739,183 @@ fn read_list_effects(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }))
 }
 
+/// 记录一条建议（12.6：`suggest` 原子**包含 patch**）。
+///
+/// patch 采用「工具调用序列」表示（`[{\"tool\": ..., \"arguments\": {...}}]`）：
+/// 这样 `accept_suggestion` 只需按序重新执行它们即可实现「→ reapply」，
+/// 且与 AI 的输出形式天然一致。这里只校验形状，工具名与参数在**接受时**校验
+/// —— 因为那时才知道当前 profile 暴露了哪些工具。
+fn write_suggest(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let patch = require_array(args, "patch")?;
+    if patch.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("patch 不能为空"),
+        ));
+    }
+    if patch.len() > 64 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("patch 步骤过多（{} > 64）", patch.len())),
+        ));
+    }
+    for (index, step) in patch.iter().enumerate() {
+        let Some(object) = step.as_object() else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 必须是对象")),
+            ));
+        };
+        let Some(tool) = object.get("tool").and_then(Value::as_str) else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 缺少 tool")),
+            ));
+        };
+        if tool.trim().is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 的 tool 为空")),
+            ));
+        }
+        if let Some(arguments) = object.get("arguments") {
+            if !arguments.is_object() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("patch[{index}] 的 arguments 必须是对象")),
+                ));
+            }
+        }
+    }
+    let result = ctx.commit(
+        AtomKind::Suggest,
+        json!({
+            "patch": patch,
+            "annotation_id": optional_str(args, "annotation_id"),
+            "summary": optional_str(args, "summary"),
+        }),
+    )?;
+    Ok(json!({
+        "suggestion_id": result.atom_id,
+        "seq": result.seq,
+        "steps": patch.len(),
+    }))
+}
+
+/// 拒绝建议：提交 `reject_suggestion` 原子记录原因，并把引用它的标注置为 rejected。
+fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let suggestion_id = require_str(args, "suggestion_id")?;
+    let reason = optional_str(args, "reason").unwrap_or_default();
+    let result = ctx.commit(
+        AtomKind::RejectSuggestion,
+        json!({"target_atom_id": suggestion_id, "reason": reason}),
+    )?;
+    // 把引用该建议的标注一并置为 rejected（12.6：记录原因 + 状态更新）。
+    let (rejected_annotations, pending) = {
+        let document = ctx.workspace.document_mut(&ctx.doc_id).map_err(|_| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        // 过滤条件没有 suggestion_id 字段，按状态取回后在内存里筛（待处理标注数量很小）。
+        let filter = AnnotationFilter {
+            status: Some(AnnotationStatus::Pending),
+            ..AnnotationFilter::default()
+        };
+        let ids: Vec<String> = document
+            .annotations()
+            .list(&filter)
+            .into_iter()
+            .filter(|annotation| {
+                annotation.suggestion_id.as_deref() == Some(suggestion_id.as_str())
+            })
+            .map(|annotation| annotation.id)
+            .collect();
+        let mut rejected = Vec::new();
+        for id in ids {
+            rejected.push(document.annotations_mut().reject(&id, ctx.now)?);
+        }
+        (rejected, document.annotations().pending_count())
+    };
+    let _ = result;
+    Ok(json!({
+        "suggestion_id": suggestion_id,
+        "reason": reason,
+        "rejected_annotations": rejected_annotations,
+        "pending_annotations": pending,
+    }))
+}
+
+/// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
+fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let filter = optional_str(args, "status");
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let log = document.log();
+    // 先收集 accept/reject 的结果，再给建议打状态。
+    let mut accepted: BTreeSet<String> = BTreeSet::new();
+    let mut rejected: BTreeMap<String, String> = BTreeMap::new();
+    for atom in log.iter() {
+        match atom.kind {
+            AtomKind::AcceptSuggestion => {
+                if let Some(target) = atom.payload.get("target_atom_id").and_then(Value::as_str) {
+                    accepted.insert(target.to_owned());
+                }
+            }
+            AtomKind::RejectSuggestion => {
+                if let Some(target) = atom.payload.get("target_atom_id").and_then(Value::as_str) {
+                    let reason = atom
+                        .payload
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    rejected.insert(target.to_owned(), reason);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut suggestions = Vec::new();
+    for atom in log.iter() {
+        if atom.kind != AtomKind::Suggest {
+            continue;
+        }
+        let status = if accepted.contains(&atom.id) {
+            "accepted"
+        } else if rejected.contains_key(&atom.id) {
+            "rejected"
+        } else {
+            "pending"
+        };
+        if let Some(filter) = filter.as_deref() {
+            if filter != status {
+                continue;
+            }
+        }
+        suggestions.push(json!({
+            "suggestion_id": atom.id,
+            "seq": atom.seq,
+            "actor": atom.actor,
+            "annotation_id": atom.payload.get("annotation_id").cloned().unwrap_or(Value::Null),
+            "summary": atom.payload.get("summary").cloned().unwrap_or(Value::Null),
+            "patch": atom.payload.get("patch").cloned().unwrap_or(Value::Null),
+            "status": status,
+            "reason": rejected.get(&atom.id).cloned().unwrap_or_default(),
+        }));
+    }
+    let pending = suggestions
+        .iter()
+        .filter(|suggestion| suggestion["status"] == json!("pending"))
+        .count();
+    Ok(json!({"suggestions": suggestions, "pending": pending}))
+}
+
 fn write_comment(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let text = require_str(args, "text")?;
     let mut payload = json!({"text": text});
@@ -2917,7 +3126,7 @@ fn write_create_annotation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             target,
             content,
             intent,
-            suggestion_id: None,
+            suggestion_id: optional_str(args, "suggestion_id"),
         },
         ctx.now,
     );
