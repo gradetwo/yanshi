@@ -543,6 +543,172 @@ fn document_thumbnail_is_cover_whole_canvas_not_the_last_region() {
         .document_thumbnail_is_current());
 }
 
+/// Phase 3 起步：调色与滤镜工具必须真的改变像素，并按结构 dirty 整层失效。
+#[test]
+fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(NewDocument::new("doc_fx", 96, 96), "human:1", "session:web")
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_fx", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    // 一块中灰矩形，便于观察调色/模糊效果。
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({
+            "layer_id": "layer_1",
+            "object_id": "obj_base",
+            "data": {
+                "geometry": {"kind": "rect", "bbox": {"x": 8, "y": 8, "w": 64, "h": 64}},
+                "color": {"r": 128, "g": 128, "b": 128, "a": 255},
+            },
+        }),
+    );
+
+    // 采样函数：把 render_region 的结果 PNG 解出某像素。
+    let sample = |context: &mut ToolContext<'_>, x: u32, y: u32| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 96, "h": 96}}),
+        );
+        let hash: yanshi_core::BlobHash = response["thumb_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let (_, _, pixels) = decode_png(&store.get(&hash).unwrap());
+        let index = ((y * 96 + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+
+    let before = sample(&mut context, 40, 40);
+    assert_eq!(before[0], 128, "底色应为中灰：{before:?}");
+
+    // 1) 调整：反相 → 像素反转；dirty 应为整层结构。
+    let inverted = registry.call(
+        &mut context,
+        "add_adjustment",
+        &json!({"layer_id": "layer_1", "adjustment_type": "invert", "name": "invert"}),
+    );
+    assert_eq!(inverted["ok"], json!(true), "{inverted}");
+    assert_eq!(inverted["dirty_kind"], json!("structure"), "调整影响整层");
+    // 内核在线性光里做反相，因此 sRGB 字节 128 会落到亮部（≈229）而不是 127。
+    let after = sample(&mut context, 40, 40);
+    assert!(after[0] > 200, "线性光反相应把中灰推到亮部，得到 {after:?}");
+    assert_eq!(after[0], after[1], "灰度像素反相后仍为中性灰：{after:?}");
+
+    // 2) 参数校验：未实现的类型/越界参数一律 invalid_argument 且不写日志。
+    // 通过工具读原子数（`context` 已可变借用 workspace，不能再直接访问）。
+    let atoms_before = registry.call(&mut context, "get_document", &json!({}))["atoms"]
+        .as_u64()
+        .unwrap();
+    for (name, payload) in [
+        (
+            "add_adjustment",
+            json!({"layer_id": "layer_1", "adjustment_type": "curves"}),
+        ),
+        (
+            "add_filter",
+            json!({"layer_id": "layer_1", "filter_name": "motion_blur"}),
+        ),
+        (
+            "add_filter",
+            json!({"layer_id": "layer_1", "filter_name": "gaussian_blur", "params": {"sigma": 999}}),
+        ),
+        (
+            "add_adjustment",
+            json!({"layer_id": "layer_1", "adjustment_type": "levels", "params": {"black": 0.8, "white": 0.2}}),
+        ),
+    ] {
+        let response = registry.call(&mut context, name, &payload);
+        assert_eq!(response["ok"], json!(false), "{name} {payload}: {response}");
+        assert_eq!(response["error_code"], json!("invalid_argument"));
+    }
+    let supported = registry.call(&mut context, "list_effects", &json!({}));
+    assert!(
+        supported["supported"]["adjustments"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("levels")),
+        "应列出内核支持的清单"
+    );
+    assert_eq!(
+        registry.call(&mut context, "get_document", &json!({}))["atoms"]
+            .as_u64()
+            .unwrap(),
+        atoms_before,
+        "被拒绝的效果不得写入日志"
+    );
+
+    // 3) 滤镜：高斯模糊应把硬边缘抹开（边缘像素被拉近底色）。
+    let sharp_edge = sample(&mut context, 8, 8);
+    let blurred = registry.call(
+        &mut context,
+        "add_filter",
+        &json!({"layer_id": "layer_1", "filter_name": "gaussian_blur", "params": {"sigma": 3.0}}),
+    );
+    assert_eq!(blurred["ok"], json!(true), "{blurred}");
+    let soft_edge = sample(&mut context, 8, 8);
+    assert_ne!(sharp_edge, soft_edge, "模糊必须改变边缘像素");
+
+    // 4) 更新滤镜参数（叠加到现有参数上）。
+    let effects = registry.call(&mut context, "list_effects", &json!({}));
+    assert_eq!(effects["count"], json!(2), "{effects}");
+    let filter_object = effects["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|effect| effect["filter_name"] == json!("gaussian_blur"))
+        .and_then(|effect| effect["object_id"].as_str())
+        .expect("应能找到刚创建的高斯模糊对象")
+        .to_owned();
+    let updated = registry.call(
+        &mut context,
+        "update_filter",
+        &json!({"object_id": filter_object, "params": {"sigma": 6.0}}),
+    );
+    assert_eq!(updated["ok"], json!(true), "{updated}");
+    let after_update = registry.call(&mut context, "list_effects", &json!({}));
+    let sigma = after_update["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|effect| effect["object_id"] == json!(filter_object))
+        .unwrap()["params"]["sigma"]
+        .clone();
+    assert_eq!(sigma, json!(6.0), "参数应被叠加更新");
+
+    // 删除滤镜 → 像素回到「只有反相」的状态（append-only：用 tombstone 而不是改历史）。
+    let deleted = registry.call(
+        &mut context,
+        "delete_object",
+        &json!({"object_id": filter_object}),
+    );
+    assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    let restored = sample(&mut context, 8, 8);
+    assert_eq!(restored, sharp_edge, "删除滤镜后应回到只有反相的画面");
+}
+
 #[test]
 fn capability_tokens_gate_http_and_allow_stdio() {
     let mut workspace = workspace();

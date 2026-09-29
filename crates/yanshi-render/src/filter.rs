@@ -306,6 +306,18 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
     }
 }
 
+/// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
+pub const ADJUSTMENT_NAMES: [&str; 4] = ["brightness_contrast", "saturation", "invert", "levels"];
+
+/// 内核支持的滤镜名。
+pub const FILTER_NAMES: [&str; 5] = [
+    "box_blur",
+    "gaussian_blur",
+    "brightness_contrast",
+    "saturation",
+    "invert",
+];
+
 /// 应用一个调整对象；返回是否被识别。
 pub fn apply_adjustment(
     buffer: &mut Buffer,

@@ -36,7 +36,7 @@ cargo run -p yanshi-http --bin yanshi-serve -- --root ./workspace
 |---|---|---|
 | `yanshi-core` core engine | ✅ | append-only atom log (client ULIDs for idempotency + server-authoritative `seq`), fold evaluation with cascading revert invalidation, `state@seq` and `declare_head`, logical snapshots, three-tier Blob CAS lifecycle and GC |
 | `yanshi-render` compute kernel | ✅ | D0 CPU bit-exact: f16 linear tiles, premultiplied blending, brush stamping, shapes, adjustments/filters, dual dirty propagation, tiered thumbnails, dependency-free deterministic PNG |
-| `yanshi-server` server semantics | ✅ | document service, Job protocol (TTL/cancel/polling), capability tokens, control-flow vs data-flow broadcast boundaries, append-only annotation channel, file persistence, the 27 core tools plus profile-gated groups |
+| `yanshi-server` server semantics | ✅ | document service, Job protocol (TTL/cancel/polling), capability tokens, control-flow vs data-flow broadcast boundaries, append-only annotation channel, file persistence, the 27 core tools plus profile-gated groups (49 tools in total with every implemented group enabled) |
 | `yanshi-http` transport & viewer | ✅ | dependency-free HTTP/1.1 + RFC 6455 (hand-written SHA-1 handshake, frame codec, fragmentation, ping/pong), keep-alive connection reuse, minimal single-page web viewer |
 | `yanshi-mcp` | ✅ | MCP stdio (`initialize` / `tools/list` / `tools/call` / `ping`), profile layering, submit-and-poll |
 | `yanshi-wasm` browser compute kernel | ✅ | wasm32 build, local incremental folding + optimistic rendering, pending-stroke overlay, LRU tile pool with a 90% watermark fallback |
@@ -166,6 +166,22 @@ the subscribed viewport. MCP stdio never receives pushes; it polls `get_log` / `
 
 Invalid colours are rejected in the tool layer (`invalid_argument`) and never reach the atom log.
 
+#### Colour grading and filters (`retouch` group)
+
+```bash
+# adjustment: brightness_contrast / saturation / invert / levels
+curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'
+# filter: box_blur / gaussian_blur / brightness_contrast / saturation / invert
+curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
+```
+
+Effects apply to **everything below them in the same layer**, so both tools place the new object at the top
+of the layer unless you pass `z_index`. Adjustments run in linear light (inverting sRGB byte 128 yields 229,
+not 127). Unimplemented effect names and out-of-range parameters are rejected with `invalid_argument`, and
+`list_effects` reports the supported names.
+
 ### Desktop entry (Omarchy / Hyprland)
 
 The client *is* the web editor, so no native GUI toolkit is involved: run the server as a systemd user
@@ -254,7 +270,7 @@ The server exposes them at `/favicon.svg`, `/favicon.png`, `/favicon.ico` and `/
 | Phase 0: technical validation | fold-engine prototype, algebraic property tests and fuzz, CPU D0 baseline renderer, Blob CAS race and three-tier lifecycle/GC prototype, liquify and WebGPU feasibility | ✅ done |
 | Phase 1: atom core + fold + server-side rendering | atom model and append-only log, ULID idempotency, authoritative seq, fold evaluation with cascading invalidation, state@seq, Blob CAS submission ordering, layer isolation and tile chunking, server CPU rendering, 27 core tools, Job protocol, capability tokens, broadcast boundaries, HTTP/WS transport, minimal web viewer | ✅ done |
 | Phase 2: WASM core + WS collaboration + local optimistic rendering | WASM compute kernel, control/data-flow separated WS broadcast, local optimistic rendering, WASM LRU pool and viewport linkage, Job protocol, import_image | ✅ done (L3/L4 caching and cross-fade correction outstanding) |
-| Phase 3: basic retouch + GPU compositing + general brushes | GPU composition backend, general raster brushes and style system, clone/heal/patch plus basic liquify and colour grading, checkpoints and history browsing, conflict handling and the resolve_conflict macro, AI semantic tools | planned (next) |
+| Phase 3: basic retouch + GPU compositing + general brushes | GPU composition backend, general raster brushes and style system, clone/heal/patch plus basic liquify and colour grading, checkpoints and history browsing, conflict handling and the resolve_conflict macro, AI semantic tools | in progress — colour grading and filters are done (`add_adjustment` / `add_filter` / `update_*` / `list_effects` in the `retouch` group); retouch and liquify are still `Primitive::Unsupported` in the kernel, so no empty tools are exposed |
 | Phase 4a / 4b: annotations / AI annotation parsing | separate annotation channel with CRUD and visualisation; AI parses annotations, proposes suggestions, accept/reject flow | 4a channel + CRUD done, 4b planned |
 | Phase 5: plugins + advanced features | WASM plugin sandbox and capability model, instance and group references, advanced path editing, owner/editor/viewer permissions | planned |
 

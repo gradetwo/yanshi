@@ -17,7 +17,7 @@ use crate::object::{layer_bbox, object_bbox};
 use crate::tile::{TileGrid, TileKey};
 use serde_json::Value;
 use std::collections::{BTreeSet, VecDeque};
-use yanshi_core::{Atom, AtomKind, AtomLog, Bbox, DocumentState, ObjectId};
+use yanshi_core::{Atom, AtomKind, AtomLog, Bbox, DocumentState, ObjectId, ObjectType};
 
 /// dirty 类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +198,24 @@ pub fn plan_dirty(
         }
         AtomKind::CreateSelection | AtomKind::CreateMask | AtomKind::CreateStyle => {
             DirtySet::none()
+        }
+        // 通用对象创建：按**对象类型**判定失效范围。
+        // 调整/滤镜作用于同层下方全部内容（6.6），必须有整层结构 dirty，
+        // 否则新建一个调色对象不会触发任何重绘（曾经的缺口：落到 `_ => none()`）。
+        AtomKind::CreateObject => {
+            let object_type = atom
+                .object_id()
+                .and_then(|object_id| state.objects.get(object_id))
+                .map(|object| object.object_type);
+            match object_type {
+                Some(ObjectType::Adjustment) | Some(ObjectType::Filter) => {
+                    dirty_for_layer(state, atom.layer_id(), format!("{} 影响整层", atom.kind))
+                }
+                Some(ObjectType::Instance) | Some(ObjectType::Group) => {
+                    DirtySet::whole_document(state, "实例/组引用作用范围未知")
+                }
+                _ => dirty_for_object(state, previous, atom, "创建对象"),
+            }
         }
         AtomKind::Tombstone => dirty_for_tombstone(state, previous, atom),
         AtomKind::SetProperty => dirty_for_property(state, previous, atom),

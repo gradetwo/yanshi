@@ -72,12 +72,14 @@ impl Default for HttpOptions {
             doc_id: "default".to_owned(),
             width: 1024,
             height: 1024,
+            // Web 查看器/人类客户端默认启用全部已实现的工具组（10.2：Web 编辑器启用全量）。
             profiles: vec![
                 Profile::Core,
                 Profile::History,
                 Profile::Annotation,
                 Profile::Collab,
                 Profile::Structure,
+                Profile::Retouch,
             ],
             max_connections: 64,
             push_interval_ms: 25,
@@ -1369,6 +1371,30 @@ mod tests {
             json!("yanshi://doc/1"),
             "非 blob URL 不改写"
         );
+    }
+
+    /// 回归：新增工具组必须同时纳入服务端默认 profile，否则会出现
+    /// 「工具存在但线上报未知工具」的割裂（`add_adjustment` 曾如此）。
+    #[test]
+    fn default_http_profiles_cover_every_implemented_group() {
+        let options = HttpOptions::default();
+        let registry = ToolRegistry::with_profiles(&options.profiles);
+        let mut groups: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for tool in registry.tools() {
+            groups.insert(tool.profile.as_str());
+        }
+        assert!(groups.contains("core"));
+        assert!(groups.contains("history"));
+        assert!(groups.contains("annotation"));
+        assert!(groups.contains("collab"));
+        assert!(groups.contains("structure"));
+        assert!(groups.contains("retouch"), "retouch 组必须默认启用：{groups:?}");
+        for required in ["add_adjustment", "add_filter", "update_filter", "list_effects"] {
+            assert!(
+                registry.get(required).is_some(),
+                "{required} 应在默认 profile 下可用"
+            );
+        }
     }
 
     #[test]

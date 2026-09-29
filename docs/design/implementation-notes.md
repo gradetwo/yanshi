@@ -332,6 +332,41 @@ WebSocket 消息（JSON 文本帧）：
 3. 首帧装载（`loadKernel` + 整幅渲染 ≈2.1s）也需要按 13.1 view 模式优化：直接用服务端 HEAD 渲染缓存铺底，
    WASM 只接管后续增量。
 
+## 二之四、Phase 3 起步：调色与滤镜工具（retouch 组）
+
+工具层新增 5 个工具（`profile: retouch`，服务端默认已启用）：
+
+| 工具 | 说明 |
+|---|---|
+| `add_adjustment` | 创建调整对象：`brightness_contrast` / `saturation` / `invert` / `levels` |
+| `add_filter` | 创建滤镜对象：`box_blur` / `gaussian_blur` / `brightness_contrast` / `saturation` / `invert` |
+| `update_adjustment` / `update_filter` | 参数叠加更新（走 `supersede`） |
+| `list_effects` | 列出当前调整/滤镜对象与生效顺序，并回带内核支持的名字清单 |
+
+实现约定与踩到的坑：
+
+- **只暴露内核已实现的子集**：修图（`clone_stamp`/`heal`/`smudge`）与液化在 `parse_object` 里仍是
+  `Primitive::Unsupported`，因此**不注册**对应工具（避免空壳工具）。支持的名字清单由
+  `yanshi_render::{ADJUSTMENT_NAMES, FILTER_NAMES}` 单一来源导出，工具层据此校验。
+- **`CreateObject` 的 dirty 判定曾缺失**：原先落到 `_ => DirtySet::none()`，即用 `CreateObject`
+  创建调整/滤镜**不会触发任何重绘**。现按对象类型判定：调整/滤镜 → 整层结构 dirty（6.6），
+  实例/组 → 全量，其余按几何包围盒。回归测试
+  `dirty::tests::creating_an_adjustment_or_filter_invalidates_the_whole_layer`。
+- **调整/滤镜只作用于同层下方内容**（渲染按 `(z_index, id)` 顺序累积），因此 `add_adjustment` /
+  `add_filter` 在未显式给 `z_index` 时**默认放到同层最上方**；否则默认 z 序会让效果排在底图之前，
+  表现为「加了调整却没有任何变化」（实测踩到过）。
+- **参数校验在工具层**（5.7）：`sigma` 0.05–128、`radius` 1–128、`passes` 1–8、`brightness` −1–1、
+  `contrast`/`amount` 0–8、`gamma` 0.01–10、`levels` 要求 `black < white`；非法参数与未实现类型
+  一律 `invalid_argument` 且不写日志。
+- **线性光语义**：内核在线性光里做调整，因此 sRGB 字节 128 反相后是 **229**（不是 127）。
+  测试按此断言并加注释，避免后人误判为 bug。
+- **默认 profile 回归**：新增工具组必须同时纳入服务端默认 profile，否则会出现「工具存在但线上报
+  未知工具」的割裂（`add_adjustment` 实测踩到）。回归测试
+  `server::tests::default_http_profiles_cover_every_implemented_group`。
+- **验收**：真实服务上对 512×512 场景依次 `saturation 2.4` 与 `gaussian_blur σ=7`，
+  `dirty_kind` 均为 `structure`，渲染结果肉眼可见正确；带这两个效果的文档在真实 Chromium 中
+  **bit-exact 自检通过**（客户端 WASM == 服务端 PNG 哈希），页面零 JS 异常。
+
 ## 三、尚未实现（与 README 路线图一致）
 
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。

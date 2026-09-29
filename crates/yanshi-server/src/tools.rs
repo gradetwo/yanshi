@@ -1047,6 +1047,82 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("annotation_id", String, true, "标注 id")],
     },
+    // ---- 扩展：retouch（调色与滤镜；内核已实现的子集）----
+    ToolSpec {
+        name: "add_adjustment",
+        profile: Profile::Retouch,
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("adjustment_type", String, true, "调整类型（见工具说明）"),
+            param!(
+                "params",
+                Object,
+                false,
+                "类型参数，如 {brightness:0.1, contrast:1.2}"
+            ),
+            param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
+            param!(
+                "z_index",
+                Integer,
+                false,
+                "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
+            ),
+            param!("name", String, false, "对象名（元数据）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "add_filter",
+        profile: Profile::Retouch,
+        summary:
+            "新增滤镜图层对象：box_blur / gaussian_blur / brightness_contrast / saturation / invert",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("filter_name", String, true, "滤镜名（见工具说明）"),
+            param!("params", Object, false, "滤镜参数，如 {sigma:2.0}"),
+            param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
+            param!(
+                "z_index",
+                Integer,
+                false,
+                "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
+            ),
+            param!("name", String, false, "对象名（元数据）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "update_adjustment",
+        profile: Profile::Retouch,
+        summary: "修改调整图层参数（叠加到现有参数上）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "调整对象 id"),
+            param!("params", Object, true, "要覆盖的参数"),
+            param!("opacity", Number, false, "整体不透明度 0-1"),
+        ],
+    },
+    ToolSpec {
+        name: "update_filter",
+        profile: Profile::Retouch,
+        summary: "修改滤镜参数（叠加到现有参数上）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "滤镜对象 id"),
+            param!("params", Object, true, "要覆盖的参数"),
+            param!("opacity", Number, false, "整体不透明度 0-1"),
+        ],
+    },
+    ToolSpec {
+        name: "list_effects",
+        profile: Profile::Retouch,
+        summary: "列出当前文档的调整/滤镜对象（含参数与生效顺序）",
+        mutating: false,
+        params: &[param!("layer_id", String, false, "按图层过滤")],
+    },
     // ---- 扩展：collab ----
     ToolSpec {
         name: "comment",
@@ -1140,6 +1216,11 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_annotation" => read_get_annotation(ctx, args),
         "resolve_annotation" => write_resolve_annotation(ctx, args, AnnotationStatus::Resolved),
         "reject_annotation" => write_resolve_annotation(ctx, args, AnnotationStatus::Rejected),
+        "add_adjustment" => write_add_effect(ctx, args, EffectKind::Adjustment),
+        "add_filter" => write_add_effect(ctx, args, EffectKind::Filter),
+        "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
+        "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
+        "list_effects" => read_list_effects(ctx, args),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -1762,6 +1843,243 @@ fn write_lock_layer(ctx: &mut ToolContext<'_>, args: &Value, locked: bool) -> Re
         json!({"layer_id": layer_id, "key": "locked", "value": locked}),
     )?;
     finish_mutation(ctx, &result, None)
+}
+
+/// 调整 / 滤镜（都通过 `CreateObject` 创建，由内核的 `parse_object` 统一解释）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectKind {
+    /// 调整对象（`data.adjustment_type`）。
+    Adjustment,
+    /// 滤镜对象（`data.filter_name`）。
+    Filter,
+}
+
+impl EffectKind {
+    /// 对象类型名（5.1 `type` 字段）。
+    const fn object_type(self) -> &'static str {
+        match self {
+            Self::Adjustment => "adjustment",
+            Self::Filter => "filter",
+        }
+    }
+
+    /// 内核支持的名字（单一来源：`yanshi_render`）。
+    fn supported(self) -> &'static [&'static str] {
+        match self {
+            Self::Adjustment => &yanshi_render::ADJUSTMENT_NAMES,
+            Self::Filter => &yanshi_render::FILTER_NAMES,
+        }
+    }
+
+    /// 参数键名（`adjustment_type` / `filter_name`）。
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Adjustment => "adjustment_type",
+            Self::Filter => "filter_name",
+        }
+    }
+}
+
+/// 校验效果参数：内核没实现的类型/越界数值一律在工具层拒绝（5.7），不写入日志。
+fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
+    if !kind.supported().contains(&name) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "内核未实现该{}：{name}；支持 {}",
+                match kind {
+                    EffectKind::Adjustment => "调整类型",
+                    EffectKind::Filter => "滤镜",
+                },
+                kind.supported().join(" / ")
+            )),
+        ));
+    }
+    let Some(object) = params.as_object() else {
+        if params.is_null() {
+            return Ok(());
+        }
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("params 必须是 JSON 对象"),
+        ));
+    };
+    let number = |key: &str| object.get(key).and_then(Value::as_f64);
+    let check = |key: &str, low: f64, high: f64| -> Result<()> {
+        if let Some(value) = number(key) {
+            if !(low..=high).contains(&value) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{key} 必须在 [{low}, {high}] 内，得到 {value}")),
+                ));
+            }
+        }
+        Ok(())
+    };
+    // 参数范围按内核的数学假设：对比度/饱和度/半径/sigma 为正，白平衡与亮度有界。
+    check("brightness", -1.0, 1.0)?;
+    check("contrast", 0.0, 8.0)?;
+    check("amount", 0.0, 8.0)?;
+    check("sigma", 0.05, 128.0)?;
+    check("radius", 1.0, 128.0)?;
+    check("passes", 1.0, 8.0)?;
+    check("gamma", 0.01, 10.0)?;
+    check("black", 0.0, 1.0)?;
+    check("white", 0.0, 1.0)?;
+    if let (Some(black), Some(white)) = (number("black"), number("white")) {
+        if black >= white {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("levels 需要 black < white，得到 {black} / {white}")),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let name = require_str(args, kind.key())?;
+    let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+    validate_effect(kind, &name, &params)?;
+    let object_id = optional_str(args, "object_id")
+        .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+    let opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    let mut data = json!({
+        kind.key(): name,
+        "params": params,
+        "opacity": opacity,
+    });
+    if let Some(label) = optional_str(args, "name") {
+        data["name"] = json!(label);
+    }
+    // 调整/滤镜只作用于**同层下方**内容（6.6），因此缺省把效果放在同层最上方：
+    // 否则默认 z 序会让它排在底图之前，表现为「加了调整却没有任何变化」。
+    let z_index = match args.get("z_index").and_then(Value::as_i64) {
+        Some(z_index) => z_index,
+        None => {
+            let state = document_state(ctx)?;
+            state
+                .alive_objects()
+                .iter()
+                .filter(|object| object.layer_id == layer_id)
+                .map(|object| object.z_index)
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0)
+        }
+    };
+    let result = ctx.commit(
+        AtomKind::CreateObject,
+        json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "type": kind.object_type(),
+            "z_index": z_index,
+            "data": data,
+        }),
+    )?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let patch = require_object(args, "params")?.clone();
+    let state = document_state(ctx)?;
+    let object = state.objects.get(&object_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("对象 {object_id} 不存在")),
+        )
+        .with_object(object_id.clone())
+    })?;
+    if object.object_type
+        != match kind {
+            EffectKind::Adjustment => ObjectType::Adjustment,
+            EffectKind::Filter => ObjectType::Filter,
+        }
+    {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{object_id} 不是{}对象", kind.object_type())),
+        ));
+    }
+    let existing_name = object
+        .data
+        .get(kind.key())
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut merged = object
+        .data
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if let (Value::Object(target), Value::Object(patch)) = (&mut merged, &patch) {
+        for (key, value) in patch {
+            target.insert(key.clone(), value.clone());
+        }
+    } else {
+        merged = patch.clone();
+    }
+    validate_effect(kind, &existing_name, &merged)?;
+    let mut data = object.data.clone();
+    data["params"] = merged;
+    if let Some(opacity) = args.get("opacity").and_then(Value::as_f64) {
+        data["opacity"] = json!(opacity.clamp(0.0, 1.0));
+    }
+    let layer_id = object.layer_id.clone();
+    let result = ctx.commit(
+        AtomKind::Supersede,
+        json!({"object_id": object_id, "layer_id": layer_id, "data": data}),
+    )?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+fn read_list_effects(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_filter = optional_str(args, "layer_id");
+    let state = document_state(ctx)?;
+    let effects: Vec<Value> = state
+        .alive_objects()
+        .into_iter()
+        .filter(|object| {
+            matches!(
+                object.object_type,
+                ObjectType::Adjustment | ObjectType::Filter
+            )
+        })
+        .filter(|object| {
+            layer_filter
+                .as_deref()
+                .is_none_or(|id| object.layer_id == id)
+        })
+        .map(|object| {
+            json!({
+                "object_id": object.id,
+                "layer_id": object.layer_id,
+                "type": object.object_type,
+                "name": object.data.get("name"),
+                "adjustment_type": object.data.get("adjustment_type"),
+                "filter_name": object.data.get("filter_name"),
+                "params": object.data.get("params"),
+                "opacity": object.data.get("opacity"),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "effects": effects,
+        "count": effects.len(),
+        "supported": {
+            "adjustments": yanshi_render::ADJUSTMENT_NAMES,
+            "filters": yanshi_render::FILTER_NAMES,
+        },
+    }))
 }
 
 fn write_comment(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

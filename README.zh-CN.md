@@ -28,7 +28,7 @@ cargo run -p yanshi-http --bin yanshi-serve -- --root ./workspace
 |---|---|---|
 | `yanshi-core` 核心引擎 | ✅ | append-only 原子日志（客户端 ULID 幂等 + 服务端权威 `seq`）、折叠求值与级联失效、`state@seq` 与 `declare_head`、逻辑快照、Blob CAS 三级生命周期与 GC |
 | `yanshi-render` 渲染计算内核 | ✅ | D0 CPU bit-exact：f16 线性 tile、预乘混合、笔触 stamping、形状、调整/滤镜、双 dirty 传播、分级缩略图、零依赖确定性 PNG |
-| `yanshi-server` 服务端语义层 | ✅ | 文档服务、Job 协议（TTL/取消/轮询）、capability token、控制流/数据流广播边界、标注独立通道、文件持久化、核心 27 工具 + 扩展组 |
+| `yanshi-server` 服务端语义层 | ✅ | 文档服务、Job 协议（TTL/取消/轮询）、capability token、控制流/数据流广播边界、标注独立通道、文件持久化、核心 27 工具 + 扩展组（启用全部已实现工具组共 49 个） |
 | `yanshi-http` 传输层与查看器 | ✅ | 零依赖 HTTP/1.1 + RFC 6455（手写 SHA-1 握手、帧编解码、分片、ping/pong）、连接复用、最小 Web 查看器 |
 | `yanshi-mcp` | ✅ | MCP stdio（`initialize` / `tools/list` / `tools/call` / `ping`），profile 分层，提交 + 轮询 |
 | `yanshi-wasm` 浏览器计算内核 | ✅ | wasm32 构建，本地增量折叠 + 乐观渲染、待提交覆盖层、LRU tile 内存池与 90% 水位兜底 |
@@ -153,6 +153,21 @@ MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮�
 
 非法颜色在工具层即被拒绝（`invalid_argument`），不会写入原子日志。
 
+#### 调色与滤镜（`retouch` 组）
+
+```bash
+# 调整：brightness_contrast / saturation / invert / levels
+curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'
+# 滤镜：box_blur / gaussian_blur / brightness_contrast / saturation / invert
+curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
+```
+
+效果只作用于**同层下方**内容，因此两个工具缺省把新对象放到该层最上方（也可显式给 `z_index`）。
+调整在线性光里计算（sRGB 字节 128 反相得 229，不是 127）。未实现的类型与越界参数一律
+`invalid_argument`，`list_effects` 会回带内核支持的名字清单。
+
 ### 桌面入口（Omarchy / Hyprland）
 
 客户端就是 Web 编辑器，所以桌面侧不需要任何原生 GUI 工具包：把服务端做成 systemd user
@@ -216,7 +231,7 @@ hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 | Phase 0：技术验证 | 折叠引擎原型、代数属性测试与 fuzz、CPU D0 基线渲染器、Blob CAS 竞态与三级生命周期 / GC 原型、液化方案与 WebGPU 可行性验证 | ✅ 已完成 |
 | Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界、HTTP/WS 传输、最小 Web 查看器 | ✅ 已完成 |
 | Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染、WASM LRU 内存池与视口联动、Job 协议、import_image | ✅ 已完成（L3/L4 缓存与 cross-fade 校正待补） |
-| Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 规划中（下一步） |
+| Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 进行中 —— 调色与滤镜已完成（`retouch` 组的 `add_adjustment` / `add_filter` / `update_*` / `list_effects`）；修图与液化在内核里仍是 `Primitive::Unsupported`，因此不注册空壳工具 |
 | Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 4a 通道与 CRUD 已完成，4b 规划中 |
 | Phase 5：插件 + 高级功能 | WASM 插件沙箱与能力模型、实例与组引用、高级路径编辑、owner/editor/viewer 权限 | 规划中 |
 
