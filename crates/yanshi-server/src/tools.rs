@@ -3609,6 +3609,51 @@ fn accept_one(ctx: &mut ToolContext<'_>, suggestion_id: &str) -> Result<Value> {
             ErrorContext::detail("建议没有可重放的步骤"),
         ));
     }
+    // 1.5) 状态闸门（设计未规定，此处记录决定）：
+    //   * 已接受的建议 → **不再重复施加效果**，返回既有结果（`already_accepted: true`）。
+    //     理由：accept 的语义是「采纳这份提议」，重复采纳不该把效果叠两遍；
+    //     批量接受场景下 AI 很容易重复提交同一个 id，这属于必须防的footgun。
+    //   * 已拒绝的建议 → 拒绝接受（`precondition_failed`），避免状态自相矛盾。
+    let (accepted_by, rejected_by) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let mut accepted_by = None;
+        let mut rejected_by = None;
+        for atom in document.log().iter() {
+            let target = atom.payload.get("target_atom_id").and_then(Value::as_str);
+            if target != Some(suggestion_id.as_str()) {
+                continue;
+            }
+            match atom.kind {
+                AtomKind::AcceptSuggestion => accepted_by = Some(atom.id.clone()),
+                AtomKind::RejectSuggestion => rejected_by = Some(atom.id.clone()),
+                _ => {}
+            }
+        }
+        (accepted_by, rejected_by)
+    };
+    if let Some(accept_atom) = accepted_by {
+        return Ok(json!({
+            "suggestion_id": suggestion_id,
+            "applied_atom_ids": Vec::<String>::new(),
+            "accept_atom_id": accept_atom,
+            "resolved_annotations": Vec::<Value>::new(),
+            "already_accepted": true,
+            "note": "该建议此前已被接受，本次不重复施加效果",
+        }));
+    }
+    if let Some(reject_atom) = rejected_by {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "建议 {suggestion_id} 已被拒绝（原子 {reject_atom}），不能接受已拒绝的建议"
+            )),
+        ));
+    }
     // 2) **全量预检**：任何一步不合法就整体拒绝，保证「要么全部落地、要么一步没写」。
     //    注册表用「所有已实现 profile 的并集」，与 HTTP 服务端默认集一致。
     preflight_patch(ctx, &patch)?;

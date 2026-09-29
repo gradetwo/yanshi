@@ -2505,3 +2505,197 @@ fn patch_can_create_and_use_a_layer_within_one_suggestion() {
         &pixels[index..index + 4]
     );
 }
+
+/// 建议接受的**状态闸门**（设计未规定，此处固定行为防 footgun）：
+/// 已接受的建议不得重复施加效果；已拒绝的建议不得再被接受。
+#[test]
+fn accept_is_not_reapplied_and_rejected_suggestions_cannot_be_accepted() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_gate", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_gate", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "L", "object_id": "base",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}},
+                         "color": {"r": 100, "g": 100, "b": 100, "a": 255}}}),
+    );
+    let sample = |context: &mut ToolContext<'_>| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 64, "h": 64}, "raw": true}),
+        );
+        let hash: yanshi_core::BlobHash = response["raw_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let pixels = store.get(&hash).unwrap();
+        let index = ((32 * 64 + 32) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+
+    // 先接受一次：曝光 +1EV。
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"patch": [{"tool": "add_adjustment", "arguments": {"layer_id": "L",
+            "adjustment_type": "exposure", "params": {"ev": 1.0}}}]}),
+    );
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap().to_owned();
+    let first = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    assert_eq!(
+        first["applied_atom_ids"].as_array().unwrap().len(),
+        1,
+        "{first}"
+    );
+    let after_first = sample(&mut context);
+
+    // 再次接受同一条：不得重复施加（否则像素会再亮一档）。
+    let second = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(second["ok"], json!(true), "{second}");
+    assert_eq!(second["already_accepted"], json!(true), "{second}");
+    assert_eq!(
+        second["applied_atom_ids"].as_array().unwrap().len(),
+        0,
+        "重复接受不应再写原子：{second}"
+    );
+    let after_second = sample(&mut context);
+    assert_eq!(
+        after_first, after_second,
+        "重复接受不得改变像素：{after_first:?} → {after_second:?}"
+    );
+
+    // 已拒绝的建议不得被接受。
+    let rejected = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"patch": [{"tool": "add_adjustment", "arguments": {"layer_id": "L",
+            "adjustment_type": "invert"}}]}),
+    );
+    let rejected_id = rejected["suggestion_id"].as_str().unwrap().to_owned();
+    registry.call(
+        &mut context,
+        "reject_suggestion",
+        &json!({"suggestion_id": rejected_id, "reason": "先不做"}),
+    );
+    let refused = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": rejected_id}),
+    );
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        refused["error_code"],
+        json!("precondition_failed"),
+        "{refused}"
+    );
+    assert!(
+        refused["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("已被拒绝"),
+        "{refused}"
+    );
+
+    // 批量接受：重复 id 不应造成二次施加效果（两次都 ok，第二次是幂等返回）。
+    let batch = registry.call(
+        &mut context,
+        "accept_suggestions",
+        &json!({"suggestion_ids": [suggestion_id, suggestion_id]}),
+    );
+    assert_eq!(
+        batch["accepted"],
+        json!(2),
+        "两次都应成功（第二次是幂等返回）：{batch}"
+    );
+    assert_eq!(batch["failed"], json!(0), "{batch}");
+    let after_batch = sample(&mut context);
+    assert_eq!(after_first, after_batch, "批量重复接受同样不得改变像素");
+}
+
+/// 顺序巡检：补丁里删掉图层后再引用它，预览必须判为非法（删除会把目标移出已知集合）。
+#[test]
+fn preview_flags_references_after_deletion_in_the_same_patch() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_delete_order", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context =
+        ToolContext::new(&mut workspace, "doc_delete_order", "human:1", "session:web")
+            .with_owner(true)
+            .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "doomed"}));
+
+    let preview = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "delete_layer", "arguments": {"layer_id": "doomed"}},
+            {"tool": "add_adjustment", "arguments": {"layer_id": "doomed",
+                "adjustment_type": "invert"}}
+        ]}),
+    );
+    assert_eq!(preview["applicable"], json!(false), "{preview}");
+    assert_eq!(
+        preview["steps"][0]["valid"],
+        json!(true),
+        "删除本身合法：{preview}"
+    );
+    assert_eq!(
+        preview["steps"][1]["valid"],
+        json!(false),
+        "删除后引用应非法：{preview}"
+    );
+    assert!(
+        preview["steps"][1]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("尚未创建"),
+        "应指出引用问题：{preview}"
+    );
+    // 预览无副作用。
+    let head = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+    assert!(head.as_u64().unwrap() > 0);
+}
