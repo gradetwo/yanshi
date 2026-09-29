@@ -520,7 +520,8 @@ impl fmt::Display for AtomKind {
 pub struct Atom {
     /// 客户端生成的 ULID，服务端按 id 去重。
     pub id: AtomId,
-    /// 服务端权威序号；未提交时为 [`SEQ_UNASSIGNED`]。
+    /// 服务端权威序号；未提交时为 [`SEQ_UNASSIGNED`]（客户端提交时省略该字段）。
+    #[serde(default)]
     pub seq: Seq,
     /// 因果记录，非排序依据。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

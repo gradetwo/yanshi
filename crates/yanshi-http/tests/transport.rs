@@ -581,3 +581,191 @@ fn document_persistence_over_http_survives_restart() {
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 12.2：客户端自带 ULID 的原子提交必须幂等（重试安全）；这也是 WASM 乐观渲染的服务端入口。
+#[test]
+fn client_supplied_atom_ids_are_idempotent() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let token = create_document(addr, "doc_atoms");
+
+    let mut client = HttpClient::new(addr);
+    // 客户端构造的原子（没有 seq；服务端授予权威 seq）。
+    let atom = json!({
+        "id": "01CLIENT0000000000000000AB",
+        "kind": "create_layer",
+        "actor": "human:wasm",
+        "session": "session:wasm",
+        "timestamp": 1_700_000_000_000i64,
+        "payload": {"layer_id": "layer_wasm", "name": "wasm"}
+    });
+    let (status, body) = client.json(
+        "POST",
+        &format!("/api/atoms?doc=doc_atoms&token={token}"),
+        None,
+        Some(&atom),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["atom_id"], json!("01CLIENT0000000000000000AB"));
+    assert_eq!(body["seq"], json!(2), "create_document 占 seq 1");
+    assert_eq!(body["duplicate"], json!(false));
+
+    // 同一 id 重试：幂等命中，seq 不变、不产生新原子。
+    let (status, retry) = client.json(
+        "POST",
+        &format!("/api/atoms?doc=doc_atoms&token={token}"),
+        None,
+        Some(&atom),
+    );
+    assert_eq!(status, 200, "{retry}");
+    assert_eq!(retry["duplicate"], json!(true));
+    assert_eq!(retry["seq"], json!(2));
+
+    // 下一个客户端原子拿到连续 seq；客户端据此做本地乐观预测与校正。
+    let mut second = atom.clone();
+    second["id"] = json!("01CLIENT0000000000000000AC");
+    second["kind"] = json!("draw_stroke");
+    second["payload"] = json!({
+        "object_id": "obj_wasm",
+        "layer_id": "layer_wasm",
+        "data": {"points": [[4.0, 4.0], [40.0, 30.0]], "size": 5.0, "color": [20, 20, 30, 255]}
+    });
+    let (status, body) = client.json(
+        "POST",
+        &format!("/api/atoms?doc=doc_atoms&token={token}"),
+        None,
+        Some(&second),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["seq"], json!(3));
+    assert_eq!(body["dirty_kind"], json!("geometry"));
+
+    // 原子确实进了权威日志，且 session 保持客户端给的会话。
+    let log = tool(addr, "doc_atoms", &token, "get_log", json!({})).1;
+    let atoms = log["atoms"].as_array().unwrap();
+    assert_eq!(atoms.len(), 3);
+    assert_eq!(atoms[2]["session"], json!("session:wasm"));
+    assert_eq!(atoms[2]["seq"], json!(3));
+
+    // 缺 id / 非法 JSON → 400，且不写入日志。
+    let (status, body) = client.json(
+        "POST",
+        &format!("/api/atoms?doc=doc_atoms&token={token}"),
+        None,
+        Some(&json!({"kind": "comment", "actor": "human:1", "session": "s", "timestamp": 1})),
+    );
+    assert_eq!(status, 400, "{body}");
+    let (status, _) = client.json(
+        "POST",
+        &format!("/api/atoms?doc=doc_atoms&token={token}"),
+        None,
+        Some(&json!({"nonsense": true})),
+    );
+    assert_eq!(status, 400);
+    let log = tool(addr, "doc_atoms", &token, "get_log", json!({})).1;
+    assert_eq!(log["count"], json!(3), "被拒绝的提交不进日志");
+
+    // 无 token → 403（与工具路径一致）。
+    let (status, _) = client.json("POST", "/api/atoms?doc=doc_atoms", None, Some(&second));
+    assert_eq!(status, 403);
+}
+
+/// `/wasm/*` 只提供白名单产物，且目录缺失时给出可操作的 404。
+#[test]
+fn wasm_assets_are_served_from_the_configured_directory() {
+    let mut root = std::env::temp_dir();
+    root.push(format!("yanshi-wasm-assets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("yanshi_wasm.js"),
+        b"export default async function init() {}",
+    )
+    .unwrap();
+    std::fs::write(root.join("yanshi_wasm_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    std::fs::write(root.join("secret.txt"), b"nope").unwrap();
+
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        wasm_dir: Some(root.clone()),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+
+    let health = client.json("GET", "/health", None, None).1;
+    assert_eq!(health["wasm"], json!(true), "产物齐全时 /health 报告可用");
+
+    let (status, headers, bytes) = client.request("GET", "/wasm/yanshi_wasm.js", None, None);
+    assert_eq!(status, 200);
+    assert!(headers["content-type"].starts_with("text/javascript"));
+    assert!(String::from_utf8(bytes).unwrap().contains("export default"));
+
+    let (status, headers, bytes) = client.request("GET", "/wasm/yanshi_wasm_bg.wasm", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(headers["content-type"], "application/wasm");
+    assert_eq!(&bytes[0..4], b"\0asm");
+
+    // 白名单之外 / 路径穿越 / 缺失文件。
+    assert_eq!(client.request("GET", "/wasm/secret.txt", None, None).0, 404);
+    assert_eq!(
+        client.request("GET", "/wasm/../Cargo.toml", None, None).0,
+        400
+    );
+    assert_eq!(client.request("GET", "/wasm/missing.js", None, None).0, 404);
+    assert_eq!(
+        client.request("POST", "/wasm/yanshi_wasm.js", None, None).0,
+        405
+    );
+    handle.shutdown();
+
+    // 目录缺失：/health 报不可用，资源 404 且提示如何构建。
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        wasm_dir: Some(root.join("missing")),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let health = client.json("GET", "/health", None, None).1;
+    assert_eq!(health["wasm"], json!(false));
+    let (status, body) = client.json("GET", "/wasm/yanshi_wasm.js", None, None);
+    assert_eq!(status, 404);
+    assert!(body["context"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("wasm-bindgen"));
+    handle.shutdown();
+
+    // --no-wasm：明确不提供。
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        wasm_dir: None,
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    assert_eq!(
+        client.json("GET", "/health", None, None).1["wasm"],
+        json!(false)
+    );
+    let (status, body) = client.json("GET", "/wasm/yanshi_wasm.js", None, None);
+    assert_eq!(status, 404);
+    assert!(body["context"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("--no-wasm"));
+    handle.shutdown();
+
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -58,6 +58,8 @@ pub struct HttpOptions {
     pub push_interval_ms: u64,
     /// 是否在工具响应里把 `yanshi://blob/<hash>` 改写成可直接访问的 URL。
     pub rewrite_blob_urls: bool,
+    /// WASM 计算内核产物目录（`/wasm/*` 从这里取；`None` 表示不提供）。
+    pub wasm_dir: Option<PathBuf>,
 }
 
 impl Default for HttpOptions {
@@ -78,6 +80,8 @@ impl Default for HttpOptions {
             max_connections: 64,
             push_interval_ms: 25,
             rewrite_blob_urls: true,
+            // 默认指向仓库内 `wasm-bindgen --target web` 的输出目录（相对当前工作目录）。
+            wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
         }
     }
 }
@@ -100,6 +104,8 @@ impl HttpOptions {
             };
             match arg {
                 "--bind" => options.bind = value_of("--bind")?,
+                "--wasm-dir" => options.wasm_dir = Some(value_of("--wasm-dir")?.into()),
+                "--no-wasm" => options.wasm_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
                 "--doc" => options.doc_id = value_of("--doc")?,
                 "--width" => {
@@ -145,6 +151,8 @@ impl HttpOptions {
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
            --profile <list>   启用工具组，逗号分隔\n\
+           --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）\n\
+           --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
            --help             显示帮助\n\
          \n\
          打开 http://127.0.0.1:8080/ 使用最小 Web 查看器（URL 中的 token 即文档 capability）。\n"
@@ -339,6 +347,19 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    if path == "/api/atoms" {
+        return match method {
+            // 客户端自带 ULID 的原子提交（12.2 幂等与重试安全）。
+            "POST" => atom_submit(state, request),
+            _ => method_not_allowed(request, "POST"),
+        };
+    }
+    if let Some(file) = path.strip_prefix("/wasm/") {
+        return match method {
+            "GET" => wasm_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(id) = path.strip_prefix("/api/documents/") {
         return match method {
             "GET" => document_summary(state, request, id),
@@ -383,6 +404,7 @@ fn health(state: &ServerState) -> Response {
             "uptime_ms": yanshi_core::now_ms() - state.started_at,
             "profiles": state.registry.profiles().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
             "tools": state.registry.len(),
+            "wasm": wasm_available(state),
         }),
     )
 }
@@ -653,6 +675,88 @@ fn doc_param(request: &Request) -> Result<String, Response> {
     match request.param("doc") {
         Some(doc) if !doc.trim().is_empty() => Ok(doc.to_owned()),
         _ => Err(crate::http::bad_request("缺少 doc 参数")),
+    }
+}
+
+/// WASM 产物是否可用（`/health` 与查看器据此决定是否启用本地乐观渲染）。
+fn wasm_available(state: &ServerState) -> bool {
+    state
+        .options
+        .wasm_dir
+        .as_ref()
+        .map(|dir| {
+            dir.join("yanshi_wasm.js").is_file() && dir.join("yanshi_wasm_bg.wasm").is_file()
+        })
+        .unwrap_or(false)
+}
+
+/// 只允许取 `wasm-bindgen --target web` 生成的白名单文件，避免路径穿越。
+fn wasm_asset(state: &ServerState, file: &str) -> Response {
+    const ALLOWED: [(&str, &str); 4] = [
+        ("yanshi_wasm.js", "text/javascript; charset=utf-8"),
+        ("yanshi_wasm_bg.wasm", "application/wasm"),
+        ("yanshi_wasm.d.ts", "text/plain; charset=utf-8"),
+        ("yanshi_wasm_bg.wasm.d.ts", "text/plain; charset=utf-8"),
+    ];
+    if file.contains("..") || file.contains('/') {
+        return crate::http::bad_request("非法资源名");
+    }
+    let Some((_, content_type)) = ALLOWED.iter().find(|(name, _)| *name == file) else {
+        return crate::http::not_found(format!("未知 WASM 资源 {file}"));
+    };
+    let Some(dir) = &state.options.wasm_dir else {
+        return crate::http::not_found("服务端未启用 WASM 计算内核（--no-wasm）");
+    };
+    let path = dir.join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::bytes(200, content_type, bytes)
+            .with_header("Cache-Control", "no-cache"),
+        Err(_) => crate::http::not_found(format!(
+            "WASM 产物缺失：{}（先运行 cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release 与 wasm-bindgen）",
+            path.display()
+        )),
+    }
+}
+
+/// `POST /api/atoms?doc=<id>`：客户端构造的原子（自带 ULID）直接提交。
+///
+/// 与工具路径的区别：**id 由客户端生成**，重复提交同一 id 幂等命中（12.2），
+/// 客户端因此可以安全重试；这是 WASM 侧本地乐观渲染的服务端入口。
+fn atom_submit(state: &ServerState, request: &Request) -> Response {
+    let doc_id = match doc_param(request) {
+        Ok(doc_id) => doc_id,
+        Err(response) => return response,
+    };
+    let principal = match authorize(state, request, &doc_id) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    let atom: yanshi_core::Atom = match serde_json::from_slice(&request.body) {
+        Ok(atom) => atom,
+        Err(error) => {
+            return crate::http::bad_request(format!("原子不是合法 JSON（5.1 形状）：{error}"))
+        }
+    };
+    if atom.id.is_empty() {
+        return crate::http::bad_request("原子缺少客户端生成的 id（ULID）");
+    }
+    let Ok(mut workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    if workspace.document(&doc_id).is_none() {
+        let spec = NewDocument::new(doc_id.clone(), state.options.width, state.options.height);
+        if let Err(error) = workspace.open_or_create(spec, &principal.actor, "session:http") {
+            return Response::from_error(&error);
+        }
+    }
+    let owner = principal.role.can_revert_others();
+    match workspace.commit(&doc_id, atom, &principal.actor, owner) {
+        Ok(result) => {
+            let value = yanshi_server::tools::commit_response(&result, None, None, Vec::new());
+            let value = rewrite_blob_urls(value, &doc_id, request.token().as_deref());
+            Response::json(200, &value)
+        }
+        Err(error) => Response::from_error(&error),
     }
 }
 
@@ -939,6 +1043,11 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
         ("POST /api/tools/{name}?doc=", "工具调用（需 token）"),
         ("POST /api/tools", "工具调用（body 里带 tool）"),
         ("GET /api/blob/{hash}?doc=", "取回 CAS 中的 PNG（需 token）"),
+        (
+            "POST /api/atoms?doc=",
+            "客户端自带 ULID 的原子提交（12.2 幂等，需 token）",
+        ),
+        ("GET /wasm/{file}", "WASM 计算内核产物（js/wasm）"),
         ("GET /ws?doc=&token=", "WebSocket 升级与推送（需 token）"),
     ])
 }
