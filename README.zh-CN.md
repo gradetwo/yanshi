@@ -267,6 +267,10 @@ hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 设计文档与测试的对应关系、实测性能数据与已知限制见
 [docs/design/implementation-notes.md](docs/design/implementation-notes.md)。
 
+## 验收脚本
+
+`scripts/` 是可复现的验收证据：Phase 4b 建议环路演示、基于 Chromium 的「内核 vs 服务端」逐像素自检（D1：差异像素 ≤16 且 ≤1 LSB）、画笔拖动成本探针。前置条件与实测基线见 [scripts/README.md](scripts/README.md)。
+
 ## 演示脚本
 
 - `scripts/phase4b-demo.sh` —— 端到端演示「标注 → AI 建议 → 接受/拒绝」环路（只依赖 curl + python3，打到运行中的服务端）。

@@ -307,6 +307,10 @@ The server exposes them at `/favicon.svg`, `/favicon.png`, `/favicon.ico` and `/
 The mapping from design document to tests, the measured performance data and the known limitations live in
 [docs/design/implementation-notes.md](docs/design/implementation-notes.md).
 
+## Verification scripts
+
+`scripts/` holds reproducible acceptance evidence: the Phase 4b annotation/AI-suggestion loop demo, a Chromium-based kernel-vs-server pixel self-check (D1: at most 16 differing pixels and 1 LSB), and a brush-drag cost probe. See [scripts/README.md](scripts/README.md) for prerequisites and measured baselines.
+
 ## Demos
 
 - `scripts/phase4b-demo.sh` — end-to-end annotation → AI suggestion → accept/reject loop against a running server (curl + python3 only).
