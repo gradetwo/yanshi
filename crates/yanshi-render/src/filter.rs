@@ -37,6 +37,8 @@ pub enum AdjustmentKind {
     ColorBalance,
     /// 分离色调。
     SplitToning,
+    /// 自然饱和度。
+    Vibrance,
 }
 
 impl AdjustmentKind {
@@ -54,6 +56,8 @@ impl AdjustmentKind {
             "posterize" => Some(Self::Posterize),
             "color_balance" => Some(Self::ColorBalance),
             "split_toning" => Some(Self::SplitToning),
+            // `saturation` 的同义词之一，保持向后兼容。
+            "vibrance_natural" => Some(Self::Vibrance),
             _ => None,
         }
     }
@@ -72,11 +76,12 @@ impl AdjustmentKind {
             Self::Posterize => "posterize",
             Self::ColorBalance => "color_balance",
             Self::SplitToning => "split_toning",
+            Self::Vibrance => "vibrance",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 11] = [
+    pub const ALL: [AdjustmentKind; 12] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -88,6 +93,7 @@ impl AdjustmentKind {
         Self::Posterize,
         Self::ColorBalance,
         Self::SplitToning,
+        Self::Vibrance,
     ];
 }
 
@@ -254,6 +260,34 @@ pub fn levels_channel(buffer: &mut Buffer, black: f32, white: f32, gamma: f32, c
 /// 色阶（三通道同时）。
 pub fn levels(buffer: &mut Buffer, black: f32, white: f32, gamma: f32) {
     levels_channel(buffer, black, white, gamma, "rgb");
+}
+
+/// 自然饱和度：**低饱和**像素提升更强，高饱和像素几乎不动（避免过饱和与色偏）。
+///
+/// 权重取 `1 - 当前饱和度`（直通空间的 `chroma / max`），因此灰色不产生色偏（权重为 0
+/// 时差值也为 0），已饱和的颜色几乎不变。`amount` 为 0 时不改动。
+pub fn vibrance(buffer: &mut Buffer, amount: f32) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let amount = amount.clamp(0.0, 2.0);
+    if amount <= 0.0 {
+        return;
+    }
+    for_each_straight_color(buffer, |color| {
+        let max = color[0].max(color[1]).max(color[2]);
+        let min = color[0].min(color[1]).min(color[2]);
+        let saturation = if max <= 0.0 {
+            0.0
+        } else {
+            ((max - min) / max).clamp(0.0, 1.0)
+        };
+        // 低饱和 → 权重接近 1；已饱和 → 接近 0。
+        let weight = 1.0 - saturation;
+        let luma = LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2];
+        for value in color.iter_mut() {
+            let boosted = *value + (*value - luma) * amount * weight;
+            *value = boosted.clamp(0.0, 1.0);
+        }
+    });
 }
 
 /// 色彩平衡：按亮度分档（阴影 / 中间调 / 高光）分别做 RGB 偏移。
@@ -955,7 +989,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 11] = [
+pub const ADJUSTMENT_NAMES: [&str; 12] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -967,6 +1001,7 @@ pub const ADJUSTMENT_NAMES: [&str; 11] = [
     "posterize",
     "color_balance",
     "split_toning",
+    "vibrance",
 ];
 
 /// 内核支持的滤镜名。
@@ -1061,6 +1096,10 @@ pub fn apply_adjustment(
                 .get("channel")
                 .and_then(Value::as_str)
                 .unwrap_or("rgb"),
+        ),
+        AdjustmentKind::Vibrance => vibrance(
+            &mut adjusted,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.5) as f32,
         ),
         AdjustmentKind::SplitToning => split_toning(
             &mut adjusted,
@@ -1760,6 +1799,63 @@ mod tests {
                     "越界参数不得破坏预乘不变量：{pixel:?}"
                 );
             }
+        }
+    }
+
+    /// 自然饱和度：低饱和像素提升更强；灰色不变；已饱和颜色几乎不动。
+    #[test]
+    fn vibrance_boosts_low_saturation_more() {
+        // 灰 / 低饱和 / 高饱和 三个像素。
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 3, 1);
+            buffer.set_pixel(0, 0, [0.5, 0.5, 0.5, 1.0]);
+            buffer.set_pixel(1, 0, [0.45, 0.5, 0.55, 1.0]);
+            buffer.set_pixel(2, 0, [0.9, 0.1, 0.1, 1.0]);
+            buffer
+        };
+        let before = make();
+        let mut after = make();
+        vibrance(&mut after, 1.0);
+        // 灰色完全不变。
+        assert_eq!(
+            before.pixel(0, 0),
+            after.pixel(0, 0),
+            "灰色不应产生色偏（权重为 0 且差值为 0）"
+        );
+        // 低饱和像素的通道差应增大。
+        let before_low = before.pixel(1, 0);
+        let after_low = after.pixel(1, 0);
+        assert!(
+            (after_low[2] - after_low[0]).abs() > (before_low[2] - before_low[0]).abs(),
+            "低饱和像素应被拉开：{before_low:?} → {after_low:?}"
+        );
+        // 比的是**相对**增益（增益 ÷ 原通道差）：饱和像素的绝对差本来就大 8 倍，
+        // 直接比绝对值会得出相反结论（这是写测试时第三次踩同一个坑）。
+        let before_high = before.pixel(2, 0);
+        let after_high = after.pixel(2, 0);
+        let low_base = (before_low[2] - before_low[0]).abs();
+        let high_base = (before_high[0] - before_high[1]).abs();
+        let low_relative = ((after_low[2] - after_low[0]).abs() - low_base) / low_base;
+        let high_relative = ((after_high[0] - after_high[1]).abs() - high_base) / high_base;
+        assert!(
+            high_relative < low_relative * 0.5,
+            "已饱和颜色的**相对**提升应明显更弱：low={low_relative} high={high_relative}"
+        );
+        // amount=0 不改动；越界参数不越界。
+        let mut zero = make();
+        let snapshot = zero.pixel(1, 0);
+        vibrance(&mut zero, 0.0);
+        assert_eq!(snapshot, zero.pixel(1, 0));
+        let mut extremes = make();
+        vibrance(&mut extremes, 9.0);
+        for x in 0..3 {
+            let pixel = extremes.pixel(x, 0);
+            assert!(
+                pixel
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v) && v.is_finite()),
+                "越界 amount 不得产出非法值：{pixel:?}"
+            );
         }
     }
 

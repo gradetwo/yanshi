@@ -626,7 +626,7 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         // 设计里有、内核尚未实现的类型必须在工具层被拒（不放空壳能力）。
         (
             "add_adjustment",
-            json!({"layer_id": "layer_1", "adjustment_type": "dehaze"}),
+            json!({"layer_id": "layer_1", "adjustment_type": "film_grain"}),
         ),
         (
             "add_filter",
@@ -927,6 +927,7 @@ fn clone_stamp_copies_content_and_is_reversible() {
         ("color_balance", json!({"shadows": [0.1, 0.2]})),
         // 四个分量 → 非法（三分量且在范围内才是合法的，上面接受用例已覆盖）。
         ("split_toning", json!({"shadows": [0.1, 0.2, 0.3, 0.4]})),
+        ("vibrance", json!({"amount": 9.0})),
         (
             "split_toning",
             json!({"shadows": [0.0, 0.0, 0.0], "balance": 5.0}),
