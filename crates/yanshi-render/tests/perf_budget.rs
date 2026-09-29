@@ -350,3 +350,202 @@ fn perf_overdraw_and_cache_hit_rate() {
         renderer.cache().stats().misses
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 全效果文档的 release 预算与逐类成本
+//
+// 说明：此前记录的「1024² 全效果渲染 182 秒」是 **debug** 构建的数字，
+// release 下同一份工作约 4 秒（约 40× 差距）。这个用例在 release 下打印逐类成本，
+// 并为「全效果文档」设一条预算，防止后续改动把成本推高。
+// ---------------------------------------------------------------------------
+
+fn effects_object(id: &str, object_type: ObjectType, z: i64, data: serde_json::Value) -> Object {
+    Object {
+        id: id.to_owned(),
+        layer_id: "layer_1".to_owned(),
+        object_type,
+        z_index: z,
+        visible: true,
+        locked: false,
+        metadata: serde_json::Value::Null,
+        transform: Transform::IDENTITY,
+        style: None,
+        versions: Vec::new(),
+        current_version: None,
+        created_by: "human:1".to_owned(),
+        deleted_by: None,
+        data,
+        blobs: Vec::new(),
+    }
+}
+
+/// 构造一份「Phase 3 全效果」文档：形状 + 笔迹 + 调色 + 滤镜 + 修图 + 液化 + 蒙版。
+fn effects_document(with_effects: bool) -> DocumentState {
+    let mut state = DocumentState::empty();
+    state.width = 1024;
+    state.height = 1024;
+    state.layers.insert("layer_1".to_owned(), layer("layer_1", 0));
+    state.objects.insert(
+        "bg".to_owned(),
+        effects_object(
+            "bg",
+            ObjectType::Shape,
+            0,
+            json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 1024, "h": 1024}},
+                   "color": {"r": 46, "g": 74, "b": 122, "a": 255}}),
+        ),
+    );
+    for (index, x) in [160.0f64, 420.0, 680.0].iter().enumerate() {
+        state.objects.insert(
+            format!("e{index}"),
+            effects_object(
+                &format!("e{index}"),
+                ObjectType::Shape,
+                1,
+                json!({"geometry": {"kind": "ellipse", "bbox": {"x": x, "y": 420.0, "w": 200.0, "h": 200.0}},
+                       "color": {"r": 232, "g": 197, "b": 71, "a": 255}}),
+            ),
+        );
+    }
+    state.objects.insert(
+        "ink".to_owned(),
+        effects_object(
+            "ink",
+            ObjectType::Stroke,
+            2,
+            json!({"points": [[120.0, 760.0], [900.0, 700.0]], "size": 26.0,
+                   "color": [240, 240, 245, 255]}),
+        ),
+    );
+    if !with_effects {
+        return state;
+    }
+    state.objects.insert(
+        "adj_curves".to_owned(),
+        effects_object(
+            "adj_curves",
+            ObjectType::Adjustment,
+            3,
+            json!({"adjustment_type": "curves", "params": {"points": [[0.0, 0.0], [0.35, 0.5], [1.0, 1.0]]}}),
+        ),
+    );
+    state.objects.insert(
+        "adj_hsl".to_owned(),
+        effects_object(
+            "adj_hsl",
+            ObjectType::Adjustment,
+            4,
+            json!({"adjustment_type": "hsl", "params": {"hue": 12.0, "saturation": 1.15}}),
+        ),
+    );
+    state.objects.insert(
+        "flt_glow".to_owned(),
+        effects_object(
+            "flt_glow",
+            ObjectType::Filter,
+            5,
+            json!({"filter_name": "glow", "params": {"threshold": 0.55, "radius": 14, "intensity": 1.1}}),
+        ),
+    );
+    state.objects.insert(
+        "flt_noise".to_owned(),
+        effects_object(
+            "flt_noise",
+            ObjectType::Filter,
+            6,
+            json!({"filter_name": "noise", "params": {"amount": 0.18, "seed": 2026}}),
+        ),
+    );
+    state.objects.insert(
+        "flt_vignette".to_owned(),
+        effects_object(
+            "flt_vignette",
+            ObjectType::Filter,
+            7,
+            json!({"filter_name": "vignette", "params": {"strength": 0.55, "radius": 0.45, "softness": 0.8}}),
+        ),
+    );
+    state.objects.insert(
+        "ret_clone".to_owned(),
+        effects_object(
+            "ret_clone",
+            ObjectType::Retouch,
+            8,
+            json!({"retouch_type": "clone_stamp", "points": [[760.0, 760.0], [860.0, 790.0]],
+                   "source_offset": [-80.0, -80.0], "size": 48.0, "hardness": 0.5}),
+        ),
+    );
+    state.objects.insert(
+        "liq".to_owned(),
+        effects_object(
+            "liq",
+            ObjectType::Liquify,
+            9,
+            json!({"points": [[500.0, 820.0]], "size": 100.0, "strength": 0.3, "direction": [1.0, 0.0]}),
+        ),
+    );
+    state.masks.insert(
+        "mk".to_owned(),
+        yanshi_core::Selection {
+            id: "mk".to_owned(),
+            shape: json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 1024, "h": 900}}),
+            feather: 30.0,
+            mode: "new".to_owned(),
+            invert: false,
+            linked_layer: Some("layer_1".to_owned()),
+            refined_edges: false,
+            blobs: Vec::new(),
+            created_by: "human:1".to_owned(),
+            deleted_by: None,
+        },
+    );
+    state.layers.get_mut("layer_1").unwrap().mask_id = Some("mk".to_owned());
+    state
+}
+
+#[test]
+#[ignore = "性能预算验收：CI 用 --ignored 执行（Phase 3 全效果成本）"]
+fn perf_phase3_effects_on_a_large_canvas() {
+    let store = MemoryBlobStore::new();
+    let grid = TileGrid::new(256, 1024, 1024).unwrap();
+
+    // 逐类成本：无效果 / 全效果 的整幅渲染。
+    let mut timings: Vec<(&str, Duration)> = Vec::new();
+    for (label, with_effects) in [("仅形状+笔迹", false), ("全效果", true)] {
+        let state = effects_document(with_effects);
+        let mut renderer = Renderer::with_budget(grid.clone(), 256 * 1024 * 1024);
+        let started = Instant::now();
+        let rendered = renderer
+            .render_region(&state, &store, Bbox::new(0.0, 0.0, 1024.0, 1024.0))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(rendered.rgba8.len(), 1024 * 1024 * 4);
+        println!(
+            "{label}：整幅 1024² 冷渲染 {elapsed:?}（外扩 {}px）",
+            rendered.stats.filter_padding
+        );
+        timings.push((label, elapsed));
+    }
+
+    // 单块 tile 冷渲染（客户端组合路径的成本单位）。
+    let state = effects_document(true);
+    let mut renderer = Renderer::with_budget(grid.clone(), 256 * 1024 * 1024);
+    let started = Instant::now();
+    let tile = renderer
+        .render_region(&state, &store, Bbox::new(384.0, 384.0, 256.0, 256.0))
+        .unwrap();
+    let tile_elapsed = started.elapsed();
+    assert_eq!(tile.rgba8.len(), 256 * 256 * 4);
+    println!("全效果：单块 256² tile 冷渲染 {tile_elapsed:?}");
+
+    let (_, full) = timings.last().expect("应有全效果耗时");
+    let full = *full;
+    assert!(
+        full < Duration::from_secs(15),
+        "Phase 3 全效果整幅渲染 {full:?} 超预算（release 实测约 4s；debug 会慢约 40×）"
+    );
+    assert!(
+        tile_elapsed < Duration::from_secs(2),
+        "Phase 3 全效果单块 tile 渲染 {tile_elapsed:?} 超预算"
+    );
+}
