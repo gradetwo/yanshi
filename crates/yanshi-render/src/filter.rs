@@ -396,11 +396,16 @@ pub fn noise(buffer: &mut Buffer, amount: f32, seed: u64) {
     if amount <= 0.0 {
         return;
     }
-    let width = buffer.width();
-    let height = buffer.height();
-    for y in 0..height {
-        for x in 0..width {
-            let index = y as u64 * width as u64 + x as u64;
+    // 噪声序号必须由**文档坐标**决定：客户端按 tile 组合渲染，
+    // 若用缓冲内序号，同一像素在不同分块下会得到不同噪声（与服务端不一致）。
+    let origin = buffer.bbox();
+    for y in 0..buffer.height() {
+        for x in 0..buffer.width() {
+            let document_x = origin.x as i64 + x as i64;
+            let document_y = origin.y as i64 + y as i64;
+            let index = (document_y as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(document_x as u64);
             let mut rng = Prng::derive(seed, index);
             let factor = 1.0 + amount * rng.signed();
             let pixel = buffer.pixel(x, y);
@@ -1042,6 +1047,39 @@ mod tests {
             "模糊应保持总能量：{}",
             sum(&horizontal)
         );
+    }
+
+    /// 噪点必须**与分块无关**：同一像素在整幅渲染与偏移区域渲染里必须得到同一值。
+    #[test]
+    fn noise_is_independent_of_the_rendered_region() {
+        let full = {
+            let mut buffer = Buffer::new(0, 0, 32, 32);
+            for y in 0..32 {
+                for x in 0..32 {
+                    buffer.set_pixel(x, y, [0.5, 0.5, 0.5, 1.0]);
+                }
+            }
+            noise(&mut buffer, 0.5, 99);
+            buffer
+        };
+        // 只渲染右下 16×16（文档坐标偏移 16,16），像素值必须与整幅一致。
+        let mut tile = Buffer::new(16, 16, 16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                tile.set_pixel(x, y, [0.5, 0.5, 0.5, 1.0]);
+            }
+        }
+        noise(&mut tile, 0.5, 99);
+        for y in 0..16 {
+            for x in 0..16 {
+                let expected = full.pixel(x + 16, y + 16);
+                let actual = tile.pixel(x, y);
+                assert!(
+                    (expected[0] - actual[0]).abs() < 1e-6,
+                    "({x},{y}) 分块噪声 {actual:?} != 整幅 {expected:?}"
+                );
+            }
+        }
     }
 
     /// 暗角：用**文档尺寸**计算，因此分块渲染与整幅渲染的角落亮度一致，且角落明显暗于中心。
