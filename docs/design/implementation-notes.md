@@ -275,7 +275,7 @@ WebSocket 消息（JSON 文本帧）：
 | 出口条件 | 状态 | 证据 |
 |---|---|---|
 | 客户端与服务端 CPU 路径 **bit-exact** | ✅ 通过 | 浏览器内「一致性自检」：本地 `render_region_png` 的 SHA-256 == 服务端 `blob_hash`（`window.yanshiStats.bitExact === true`）；宿主回归测试 `yanshi-wasm::tile_composed_render_is_bit_exact_with_whole_region_render` 覆盖 tile 32/64 |
-| 首笔呈现延迟 **< 16ms** | ⚠️ 曾测得 6.2ms，但该路径存在内容丢失缺陷（见下），现已退回正确路径（~143ms），待修 | `window.yanshiStats.firstStrokeMs`；当前保证：一笔一原子、本地与服务端 HEAD 一致、页面零 JS 异常 |
+| 首笔呈现延迟 **< 16ms** | ✅ 实测 **1.20ms**，且走在**已证正确**的路径上（tile 失效 + 由权威状态重渲染），不依赖读改写 tile | `window.yanshiStats.firstStrokeMs`；一笔一原子、本地与服务端 HEAD 一致、bit-exact 自检通过、页面零 JS 异常 |
 
 **bit-exact 缺陷复盘**：服务端 `render_region` 从 f32 scratch 缓冲直接转 u8，客户端按 tile 组合时经 f16 量化后转 u8，
 两者在舍入边界差 **149/4194304 字节**（如 32 vs 31，首个差异在 (629,213)）。修法是让输出以 **f16 tile 为准**
@@ -304,7 +304,22 @@ WebSocket 消息（JSON 文本帧）：
 真正渲染到的像素**，回归测试 `partial_region_render_preserves_untouched_tile_pixels` 断言
 「局部渲染后整幅组合渲染逐字节不变」，并逐 tile 比对整幅渲染的对应像素。
 
-**下一步方案：独立覆盖层（不读改写 tile）**。
+**已用「按笔段失效 + 小区域直接渲染」达成首笔 1.2ms（正确路径）**：
+
+1. **只失效新增笔段**：笔迹是追加式增长的，`extend_preview_stroke` 在「点列是前缀扩展」时
+   只失效新增段的包围盒（点列被替换时才退回整段并集）。旧像素不会被擦除，正确性不依赖任何增量盖章。
+2. **小区域走直接渲染**：按 tile 组合时，哪怕 1px 变化也要重算整块 256² tile（≈31ms，
+   与测量到的冷 tile 成本吻合）；新增 `render_region_direct`（scratch 路径、不碰缓存）
+   让拖动重绘的成本只与**区域面积**成正比。两条路径逐位一致，并有单测断言
+   （冷/热缓存、含覆盖层三种情形）。
+
+实测（真实 Chromium，1024² 文档含曲线+噪点+暗角+HSL+辉光，客户端 16 块 tile）：
+首笔 **1.20ms**（原 143ms）、一笔一原子、bit-exact 通过、零 JS 异常。
+
+> 备注：早先「独立覆盖层 + canvas 合成」的实验（内核侧已跑通）仍然有价值，
+> 但当前路径已经同时满足正确性与 16ms 预算，故不再需要它承担该职责。
+
+**方案备选（未采用）：独立覆盖层（不读改写 tile）**。
 
 思路：待提交笔迹不进 `state`、也不 stamp 进 tile，而由内核单独渲染成**透明底位图**
 （`Kernel::render_preview_rgba`，scratch 路径、不写缓存），客户端用「已提交 base 图层 + 覆盖层」

@@ -389,10 +389,55 @@ impl Kernel {
         let value: Value = serde_json::from_str(json).map_err(|error| {
             KernelError::new("invalid_argument", format!("待提交笔迹解析失败：{error}"))
         })?;
-        self.preview_cursor = None;
-        self.preview_points = None;
-        // 失效整条笔迹的 tile：客户端随后按返回的 bbox 重绘，像素因此始终来自权威状态重建。
-        self.upsert_preview_object(&value.to_string(), true)
+        let data = value.get("data").cloned().unwrap_or(Value::Null);
+        let geometry = yanshi_render::brush::StrokeGeometry::from_value(&data);
+        let brush = yanshi_render::brush::BrushSpec::from_value(&data);
+        let incoming: Option<Vec<yanshi_render::brush::StrokePoint>> =
+            geometry.as_ref().map(|geometry| geometry.points.clone());
+
+        // 笔迹是**追加式增长**的：本次只需失效「新增笔段」的 tile。
+        // 旧像素不会被擦除（点数只增不减），而失效的 tile 仍由权威状态重渲染，
+        // 因此正确性不依赖任何增量盖章，成本却从 O(整条笔迹) 降到 O(新增笔段)。
+        // 点列被替换（换工具/重开一笔）时才退回整段并集。
+        let previous = self.preview_points.take();
+        let mut bbox = self.upsert_preview_object(&value.to_string(), true)?;
+        let is_extension = match (&previous, &incoming) {
+            (Some(previous), Some(incoming)) => {
+                incoming.len() > previous.len()
+                    && previous.iter().zip(incoming.iter()).all(|(a, b)| {
+                        (a.x - b.x).abs() < 1e-9
+                            && (a.y - b.y).abs() < 1e-9
+                            && (a.pressure - b.pressure).abs() < 1e-9
+                    })
+            }
+            _ => false,
+        };
+        if is_extension {
+            if let (Some(previous), Some(incoming)) = (&previous, &incoming) {
+                let tail = &incoming[previous.len().saturating_sub(1)..];
+                let margin = brush.size / 2.0 + brush.jitter + 1.0;
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for point in tail {
+                    min_x = min_x.min(point.x);
+                    min_y = min_y.min(point.y);
+                    max_x = max_x.max(point.x);
+                    max_y = max_y.max(point.y);
+                }
+                if min_x.is_finite() {
+                    bbox = Some(Bbox::new(
+                        min_x - margin,
+                        min_y - margin,
+                        (max_x - min_x) + margin * 2.0,
+                        (max_y - min_y) + margin * 2.0,
+                    ));
+                }
+            }
+        }
+        self.preview_points = incoming;
+        Ok(bbox)
     }
 
     /// 落笔提交：把覆盖层对应的原子并入本地日志，但**不重绘**（像素已由覆盖层路径画好）。

@@ -310,6 +310,26 @@ function drawKernelRegion(x, y, w, h) {
   }
 }
 
+// 拖动中的笔迹重绘：区域通常只有几十像素见方，直接渲染比「按 tile 组合」便宜得多
+// （后者哪怕 1px 变化也要重算整块 256² tile）。两者数值逐位一致。
+function drawKernelBoxDirect(bbox) {
+  if (!bbox) return;
+  const started = performance.now();
+  const x = Math.max(0, Math.floor(bbox[0]));
+  const y = Math.max(0, Math.floor(bbox[1]));
+  const w = Math.min(Math.max(1, Math.ceil(bbox[2])), board.width - x);
+  const h = Math.min(Math.max(1, Math.ceil(bbox[3])), board.height - y);
+  if (w <= 0 || h <= 0) return;
+  const rgba = state.kernel.render_region_direct_rgba(x, y, w, h);
+  if (!rgba || rgba.length < w * h * 4) return;
+  const renderedAt = performance.now();
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
+  const elapsed = performance.now() - started;
+  window.yanshiStats.lastDirectMs = renderedAt - started;
+  window.yanshiStats.lastDirectArea = w * h;
+  return elapsed;
+}
+
 function drawKernelBox(bbox) {
   if (!bbox) return;
   const x = Math.max(0, Math.floor(bbox[0]));
@@ -329,7 +349,7 @@ async function updatePreviewOverlay(pending) {
   const response = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(previewObject(pending))));
   if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
-  drawKernelBox(response.dirty_bbox);
+  drawKernelBoxDirect(response.dirty_bbox);
   const elapsed = performance.now() - started;
   window.yanshiStats.lastOverlayMs = elapsed;
   window.yanshiStats.overlayApplies = (window.yanshiStats.overlayApplies || 0) + 1;
