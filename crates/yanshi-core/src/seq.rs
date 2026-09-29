@@ -31,7 +31,7 @@ use crate::log::AtomLog;
 use crate::state::{DeclareHead, DocumentState, HeadBase};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `state@seq` 的求值结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +113,9 @@ impl StateAtCache {
 }
 
 /// 计算 `state@seq_n`（设计文档 5.5）。
+///
+/// 实现为**迭代**而非递归：`declare_head` 链可能很长（重型原子会强制快照并留下跳变），
+/// 递归会耗尽栈空间。链上每一层都会写入缓存，重复求值 O(1)。
 pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<StateAt> {
     if let Some(hit) = cache.memo.get(&n) {
         cache.hits += 1;
@@ -120,11 +123,25 @@ pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<State
     }
     cache.misses += 1;
 
-    let head_atom = log.last_declare_head_upto(n);
-    let mut base = DocumentState::empty();
-    let mut origin_seq = 0;
-    if let Some(head) = head_atom {
-        origin_seq = head.seq;
+    /// 一层 `declare_head` 跳变：把 `state@from` 作为 base，折叠 `(from, upto]`。
+    struct Level {
+        head: DeclareHead,
+        /// 折叠区间上界（含）。
+        upto: Seq,
+        /// 折叠区间下界（不含），等于该 `declare_head` 的 seq。
+        from: Seq,
+    }
+
+    // 阶段一：沿 declare_head 链向内走，直到命中缓存或链底。
+    let mut levels: Vec<Level> = Vec::new();
+    let mut cursor = n;
+    let mut cached_tail: Option<StateAt> = None;
+    while let Some(head) = log.last_declare_head_upto(cursor) {
+        if let Some(hit) = cache.memo.get(&cursor) {
+            cache.hits += 1;
+            cached_tail = Some(hit.clone());
+            break;
+        }
         let base_seq = resolve_base_seq(log, head)?;
         if base_seq >= head.seq {
             return Err(YanshiError::new(
@@ -136,25 +153,77 @@ pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<State
             )
             .with_atom(head.id.clone()));
         }
-        base = state_at(log, base_seq, cache)?.state;
-        // 求值起点跳变：此后的折叠以 H 为起点。
-        base.declare_head = Some(declare_head_record(head)?);
-        base.head_seq = head.seq;
-        base.head_atom = Some(head.id.clone());
+        levels.push(Level {
+            head: declare_head_record(head)?,
+            upto: cursor,
+            from: head.seq,
+        });
+        cursor = base_seq;
     }
 
-    let slice = log.range_exclusive_inclusive(origin_seq, n);
-    let FoldResult {
-        mut state,
-        warnings,
-        suppressed,
-        ..
-    } = fold_atoms(base, slice);
+    let mut warnings: Vec<FoldWarning> = Vec::new();
+    let mut suppressed: BTreeSet<AtomId> = BTreeSet::new();
 
-    // 折叠到达 n（即使最后一个原子被撤销，“已折叠到”的位置仍是 n）。
-    state.head_seq = state
-        .head_seq
-        .max(if slice.is_empty() { origin_seq } else { n });
+    // 阶段二：求出链底状态 `state@cursor`（缓存命中，或从空白起点折叠 (0, cursor]）。
+    let mut state = match cached_tail {
+        Some(hit) => {
+            warnings.extend(hit.warnings);
+            suppressed.extend(hit.suppressed);
+            hit.state
+        }
+        None if cursor == 0 => DocumentState::empty(),
+        None => {
+            let slice = log.range_exclusive_inclusive(0, cursor);
+            let FoldResult {
+                mut state,
+                warnings: tail_warnings,
+                suppressed: tail_suppressed,
+                ..
+            } = fold_atoms(DocumentState::empty(), slice);
+            state.head_seq = state.head_seq.max(cursor);
+            warnings.extend(tail_warnings.iter().cloned());
+            suppressed.extend(tail_suppressed.iter().cloned());
+            cache.insert(StateAt {
+                seq: cursor,
+                origin_seq: 0,
+                state: state.clone(),
+                suppressed: tail_suppressed,
+                warnings: tail_warnings,
+            });
+            state
+        }
+    };
+
+    // 阶段三：由内向外逐层折叠，每层都写回缓存。
+    for level in levels.iter().rev() {
+        state.declare_head = Some(level.head.clone());
+        state.head_seq = level.from;
+        state.head_atom = Some(level.head.atom_id.clone());
+
+        let slice = log.range_exclusive_inclusive(level.from, level.upto);
+        let folded = fold_atoms(state, slice);
+        state = folded.state;
+        state.head_seq = state.head_seq.max(if slice.is_empty() {
+            level.from
+        } else {
+            level.upto
+        });
+        warnings.extend(folded.warnings.iter().cloned());
+        suppressed.extend(folded.suppressed.iter().cloned());
+
+        cache.insert(StateAt {
+            seq: level.upto,
+            origin_seq: level.from,
+            state: state.clone(),
+            suppressed: folded.suppressed,
+            warnings: folded.warnings,
+        });
+    }
+
+    let origin_seq = levels.last().map(|level| level.from).unwrap_or(0);
+    if levels.is_empty() {
+        state.head_seq = state.head_seq.max(n);
+    }
     let result = StateAt {
         seq: n,
         origin_seq,

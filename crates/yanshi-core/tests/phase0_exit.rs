@@ -206,7 +206,7 @@ fn orphans_are_reclaimed_only_after_ttl() {
 #[test]
 #[ignore = "长跑 fuzz：10 万原子，CI 用 --ignored 执行（Phase 0 出口条件）"]
 fn fuzz_100k_atoms_keeps_all_invariants() {
-    let config = ScenarioConfig::fuzz(202_600_00, 100_000);
+    let config = ScenarioConfig::fuzz(20_260_000, 100_000);
     let started = Instant::now();
     let scenario = generate(&config);
     let generation = started.elapsed();
