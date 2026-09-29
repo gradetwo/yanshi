@@ -1,0 +1,22 @@
+[package]
+name = "yanshi-http"
+description = "偃师 Yanshi 零依赖 HTTP/1.1 与 WebSocket 传输层"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "yanshi-serve"
+path = "src/main.rs"
+
+[dependencies]
+yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
+yanshi-server = { path = "../yanshi-server", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
