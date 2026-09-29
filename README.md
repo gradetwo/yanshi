@@ -4,8 +4,9 @@
 
 偃师用文档状态、语义命令、可编辑对象、多级预览、版本日志和协作机制，替代传统图形界面的面板加鼠标轨迹。人类与 AI 在同一套对象模型和原子类型上协作：人类使用微观工具，AI 使用宏观语义工具。
 
-当前仓库处于 **Phase 0 / Phase 1：核心引擎与渲染内核开发中**，实现范围仅限无 GUI 的 Rust 无头引擎
-（`yanshi-core` 历史资产层与折叠引擎 + `yanshi-render` 渲染计算内核层）。
+当前仓库处于 **Phase 0 / Phase 1：核心引擎、渲染内核与无头服务端开发中**，实现范围仅限无 GUI 的 Rust 无头引擎
+（`yanshi-core` 历史资产层与折叠引擎 + `yanshi-render` 渲染计算内核层 +
+`yanshi-server` 服务端语义层与工具协议 + `yanshi-mcp` MCP stdio 服务器）。
 
 ## 设计文档
 
@@ -30,7 +31,9 @@
 yanshi/
 ├── crates/
 │   ├── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
-│   └── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
+│   ├── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
+│   ├── yanshi-server/        # 服务端语义层：文档服务、Job、capability token、广播、标注、27 工具
+│   └── yanshi-mcp/           # MCP stdio 服务器（JSON-RPC over stdio）
 ├── docs/
 │   └── design/               # 冻结设计文档、实现说明与修订历史
 ├── .github/workflows/ci.yml  # 持续集成：fmt / clippy / test / 长时 fuzz
@@ -51,12 +54,36 @@ cargo test --workspace                  # 单元测试 + 属性测试 + Phase 0 
 cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz + 渲染性能预算
 cargo run -p yanshi-core --example quickstart   # 端到端示例：提交 → 撤销 → 时间旅行 → GC
 cargo run -p yanshi-render --example render_demo  # 渲染示例：输出 PNG 到 target/render-demo/
+cargo run -p yanshi-mcp -- --list-tools         # 列出 MCP 工具清单（JSON）
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
 > 长时 fuzz 默认被 `#[ignore]` 标记，CI 以 `--ignored` 单独执行（`.github/workflows/ci.yml` 的 `fuzz` 作业）。
-> 服务端进程、CLI 与 MCP/HTTP/WebSocket 传输层属于路线图内容，当前尚未提供。
+
+### 通过 MCP 使用（Agent 接入）
+
+`yanshi-mcp` 是一个 MCP stdio 服务器：每行一个 JSON-RPC 消息，本地进程豁免鉴权（12.7）。
+
+```bash
+# 内存模式，默认文档 default（1024×1024）
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | cargo run -q -p yanshi-mcp
+
+# 持久化到 ./workspace，暴露标注与历史工具组
+cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annotation,history
+```
+
+典型调用序列（10.1 返回 `atom_id`/`seq`/`preview.thumb_url`）：
+
+```jsonc
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_layer","arguments":{"layer_id":"layer_1"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draw_stroke","arguments":{
+  "layer_id":"layer_1","data":{"points":[[40,40],[400,300]],"size":12,"color":{"r":40,"g":40,"b":60,"a":255}}}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"render_region","arguments":{
+  "region":{"x":0,"y":0,"w":256,"h":256},"include_image":true}}}
+```
+
+> HTTP 与 WebSocket 传输层（需要网络依赖）、最小 Web 查看器属于路线图内容；当前提供 MCP stdio。
 
 ## 设计要点
 
@@ -74,6 +101,11 @@ cargo fmt --all
   实例 master、组成员）计算；失效 tile 集合必须覆盖所有变化像素，判定不了时宁可放大范围。
 - **缩略图与导出**：doc/layer/object/history/selection 分级尺寸、32×32 分块增量更新、
   宽高比适配；PNG 使用零依赖确定性编码器（WebP/AVIF 属传输层，尚未实现）。
+- **无头服务端与工具层**：提交校验 → 权威 seq → 增量折叠 → 双 dirty → 控制流广播 → Job → 快照；
+  核心层 27 个工具默认注册、扩展组按 `profile` 启用；`batch` 内共享变更集；
+  采样性替换冲突自动创建冲突图层并返回 `conflict_layer_id`；
+  标注走独立 append-only 通道；capability token 保护 HTTP/WS 而豁免 stdio；
+  MCP stdio 走「提交 + 轮询」，原子 JSONL + CAS + 渲染缓存持久化，重启即恢复。
 - **许可证**：MIT。
 
 ## 路线图
@@ -81,7 +113,7 @@ cargo fmt --all
 | 阶段 | 内容摘要 | 状态 |
 |---|---|---|
 | Phase 0：技术验证 | 折叠引擎原型、代数属性测试与 fuzz、CPU D0 基线渲染器、Blob CAS 竞态与三级生命周期 / GC 原型、液化方案与 WebGPU 可行性验证 | 进行中 |
-| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU/SIMD 渲染、最小 Web 查看器、核心层 27 工具 | 核心引擎部分进行中 |
+| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界 | 除 HTTP/WS 传输与最小 Web 查看器外已完成 |
 | Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染与 tile cross-fade 校正、L3/L4 缓存、异步渲染、import_image、Job 协议 | 规划中 |
 | Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 规划中 |
 | Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 规划中 |
@@ -91,7 +123,7 @@ cargo fmt --all
 
 | 命令 | 覆盖 |
 |---|---|
-| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突/渲染内核）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 + 渲染的 D0 确定性、分块无关性、dirty 覆盖、缩略图增量属性测试 |
+| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突/渲染内核/服务端/工具层）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 + 渲染的 D0 确定性、分块无关性、dirty 覆盖、缩略图增量属性测试 + 服务端端到端（冲突图层、Job、广播、标注、时间旅行、鉴权、GC）+ MCP stdio 子进程往返与重启恢复 |
 | `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）：9.8 万原子、约 930 次 `declare_head` 跳变、回收窗口重放；渲染性能预算（8.5 / 14.10）与 overdraw / tile 命中率统计 |
 | `cargo doc --workspace --no-deps` | 无 rustdoc 警告（`missing_docs` 已开启） |
 
@@ -119,6 +151,6 @@ Copyright (c) 2026 The Yanshi Authors
 
 Yanshi is an AI-native collaborative painting and design engine. It replaces the traditional panel-and-mouse-trajectory GUI with document state, semantic commands, editable objects, multi-level previews, a versioned append-only atom log, and collaboration primitives, so that humans and AI agents work on one shared object model — humans through fine-grained tools, AI through high-level semantic tools.
 
-The repository is currently in **Phase 0 / Phase 1: core engine development**. The only implemented component is the headless Rust core crate (`crates/yanshi-core`): the append-only atom log with client-generated ULIDs and server-authoritative sequence numbers, fold evaluation with cascading revert invalidation and reapply, the `state@seq` historical evaluation formula with `declare_head`, the three-tier Blob CAS lifecycle (active / historical / orphan) with a garbage-collection root set equal to the full-log reference closure, and property/fuzz tests for the fold algebra invariants.
+The repository is currently in **Phase 0 / Phase 1**. Implemented: the headless core engine (`crates/yanshi-core`) with the append-only atom log (client ULIDs, server-authoritative seq), fold evaluation with cascading revert invalidation and reapply, the `state@seq` formula with `declare_head`, the three-tier Blob CAS lifecycle with a GC root set equal to the full-log reference closure, and property/fuzz tests; the render compute kernel (`crates/yanshi-render`) with f16 linear tiles, premultiplied blending, brush stamping, shapes, adjustments/filters, geometry/structure dirty propagation, thumbnails and a dependency-free PNG encoder; the headless server (`crates/yanshi-server`) with document service, Job protocol, capability tokens, control/data-flow broadcast boundaries, an append-only annotation channel, file persistence and the 27 core tools with profile-based exposure; and an MCP stdio server (`crates/yanshi-mcp`).
 
-The renderer, server, HTTP/WebSocket/MCP transports, WASM compute kernel, Web editor, retouch and semantic tools, plugin system, and annotation channel are **not** implemented yet; they are planned roadmap items. The frozen design document is `docs/design/yanshi-v1.0-draft4.md` (Chinese). Licensed under MIT.
+Not implemented yet (roadmap): HTTP and WebSocket transports, the minimal web viewer, the WASM compute kernel, the Web editor, retouch and semantic tools, the plugin sandbox, and GPU compositing. The frozen design document is `docs/design/yanshi-v1.0-draft4.md` (Chinese). Licensed under MIT.

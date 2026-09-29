@@ -152,10 +152,50 @@
 SIMD/多线程（14.2）与 GPU 合成后端（14.3）属后续阶段；计算内核层的任何
 SIMD 版本必须保持 D0 逐位一致。
 
+### 1.3 `yanshi-server` / `yanshi-mcp`（无头服务端与工具层）
+
+| 模块 | 设计文档 | 内容 |
+|---|---|---|
+| `token` | 12.7 | 文档级 capability token（256 bit）、角色、传输分类与鉴权 |
+| `job` | 6.7 | Job 状态机、TTL 兜底、取消、GC、容量上限 |
+| `broadcast` | 6.8 / 12.8 | 控制流全局广播 / 数据流视口过滤，含 14.9 统计 |
+| `annotations` | 4.6 / 13.4 | 标注独立 append-only 通道与过滤 |
+| `document` | 3 / 6.2 / 12.1 | 文档服务：提交校验 → 权威 seq → 增量折叠 → dirty → 广播 → Job → 快照 |
+| `persist` | 18 | 原子 JSONL、`meta.json`、渲染缓存、`blobs/` CAS |
+| `service` | 3 | 多文档工作区：创建/打开/关闭/列表、提交落盘、令牌发放与恢复 |
+| `tools` | 10 章 | 核心 27 工具 + profile 分层 + 10.1/5.7 响应 |
+| `base64` | 7.5 | MCP `image` content 的 base64 编码 |
+| `yanshi-mcp` | 3 / 6.7 | MCP stdio：`initialize` / `tools/list` / `tools/call` / `ping` |
+
+## 一之二、服务端与工具层的实现级约定
+
+- **鉴权**（12.7）：stdio 与进程内调用豁免鉴权并按 owner 处理；HTTP/WS 必须携带
+  文档级 capability token；令牌随 `meta.json` 持久化，重启后仍有效。
+- **通道分工**（6.7）：只有 WebSocket 订阅者接收推送；MCP stdio 订阅者
+  `PushChannel::Poll` 收到 0 条推送，改用 `get_log` / `get_job` / `get_render_status` 轮询。
+- **控制流广播**（6.8）：**所有**原子元数据（含创建类）全局广播、不按视口过滤——
+  漏收创建类原子会让客户端折叠状态与权威状态不一致；数据流（tile/缩略图）按视口过滤。
+- **冲突处理**（12.3）：`retouch` / `liquify` / `sampling: true` 的 RasterPatch 属采样性替换；
+  服务端发现同图层、跨会话、区域相交时**不追加原子**，先以 `system:conflict` actor
+  创建 `metadata.conflict = true` 的冲突图层，再返回 `conflict` 错误并附 `conflict_layer_id`；
+  客户端换新 ULID 改投冲突图层即可提交。
+- **渲染异步**（6.7）：原子提交立即返回；重型原子（retouch/liquify/declare_head 等）创建 Job。
+  `wait_for_render`（默认 true，预算 500ms）在进程内实现中直接跑完 Job；
+  `--no-wait` 时返回 `job_pending`，由 Agent 用 `get_render_status` 轮询。
+  预览默认只渲染 dirty 区域（8.2/8.3），避免每次修改都全图重算。
+- **变更集**（5.6）：`batch` 内的原子共享一个 `changeset_id`；单步失败不回滚已提交原子
+  （append-only），逐项返回 5.7 错误。
+- **标注**（4.6）：独立 append-only 通道，更新/解决/拒绝都是追加新版本；
+  不进原子日志、不参与折叠，可用 `list_annotations` 过滤轮询。
+- **工具暴露**（10.2）：只注册**已实现**的工具，避免 Agent 看到空壳；
+  未实现的语义/修图工具（inpaint_region、semantic_replace、clone_stamp 等）属后续阶段。
+- **持久化**（18）：原子按 JSONL 追加（含权威 seq），崩溃残留的半行在加载时忽略；
+  渲染缓存写入 `render.png` + `render.seq`，重启后 `mark_rendered` 让「打开即图片」成立。
+
 ## 三、尚未实现（与 README 路线图一致）
 
-- **Phase 1 其余部分**：服务端进程与 HTTP/WebSocket/MCP 传输层、Web 查看器、
-  核心层 27 个工具的协议封装、文档级 capability token、WS 广播边界。
+- **Phase 1 其余部分**：HTTP 与 WebSocket 传输（需要网络依赖）与最小 Web 查看器。
+  服务端语义层、核心层 27 个工具、capability token、广播边界与 MCP stdio 已完成。
   （图层隔离、Tile 分块、几何/结构双 dirty 传播、服务端 CPU 渲染已由 `yanshi-render` 覆盖；
   SIMD/多线程优化与 GPU 合成后端仍属后续阶段。）
 - **Phase 2 起**：WASM 计算内核、控制流/数据流分离的广播、本地乐观渲染、Job 协议、
@@ -181,3 +221,11 @@ SIMD 版本必须保持 D0 逐位一致。
 | 缩略图分块增量（7.4） | `render_properties.rs::thumbnail_blocks_match_full_rebuild` |
 | 区域渲染 / 缩略图预算（8.5 / 14.10） | `crates/yanshi-render/tests/perf_budget.rs`（`--ignored`） |
 | Overdraw 与 tile 命中率（Phase 0 / 14.9） | `perf_budget.rs::perf_overdraw_and_cache_hit_rate`（`--ignored`） |
+| 冲突处理与冲突图层（12.3） | `crates/yanshi-server/tests/service_flow.rs::sampling_replace_conflict_creates_conflict_layer_and_returns_error` |
+| Job 协议 TTL/取消/渲染水位（6.7） | `service_flow.rs::jobs_ttl_cancel_and_render_watermark` |
+| 广播边界（6.8） | `service_flow.rs::broadcast_separates_control_and_data_flow`、`src/broadcast.rs` 单元测试 |
+| 标注独立通道（4.6） | `service_flow.rs::annotations_stay_out_of_the_atom_log` |
+| capability token（12.7） | `service_flow.rs::capability_tokens_gate_http_and_allow_stdio` |
+| 核心 27 工具协议（10.1/10.2） | `service_flow.rs::tool_layer_covers_core_workflow`、`crates/yanshi-mcp/src/lib.rs` 单元测试 |
+| MCP stdio 线协议 | `crates/yanshi-mcp/tests/stdio.rs`（spawn 真实二进制） |
+| 持久化与重启恢复（18 / 14.5） | `crates/yanshi-server/src/persist.rs` 单元测试、`yanshi-mcp/tests/stdio.rs::stdio_handshake_draw_render_and_persist` |
