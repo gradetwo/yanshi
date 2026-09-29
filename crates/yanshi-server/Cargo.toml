@@ -1,0 +1,20 @@
+[package]
+name = "yanshi-server"
+description = "偃师 Yanshi 无头服务端：文档服务、Job 协议、capability token、广播与工具层"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

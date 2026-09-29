@@ -484,6 +484,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yanshi-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "yanshi-core",
+ "yanshi-render",
+ "yanshi-server",
+]
+
+[[package]]
 name = "yanshi-render"
 version = "0.1.0"
 dependencies = [
@@ -491,6 +502,17 @@ dependencies = [
  "serde",
  "serde_json",
  "yanshi-core",
+]
+
+[[package]]
+name = "yanshi-server"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "yanshi-core",
+ "yanshi-render",
 ]
 
 [[package]]

@@ -16,7 +16,9 @@ pub const DEFAULT_TILE_SIZE: u32 = 256;
 pub const ALLOWED_TILE_SIZES: [u32; 5] = [32, 64, 128, 256, 512];
 
 /// Tile 在网格中的坐标。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct TileKey {
     /// 列。
     pub x: u32,

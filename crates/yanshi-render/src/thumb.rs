@@ -18,7 +18,9 @@ use yanshi_core::{Bbox, BlobStore, DocumentState, Result};
 pub const THUMB_BLOCK: u32 = 32;
 
 /// 缩略图类型与尺寸（7.2）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum ThumbKind {
     /// 文档缩略图 64。
     Doc64,

@@ -1,0 +1,25 @@
+[package]
+name = "yanshi-mcp"
+description = "偃师 Yanshi MCP stdio 服务器：把核心工具暴露给 Agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "yanshi-mcp"
+path = "src/main.rs"
+
+[dependencies]
+yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
+yanshi-server = { path = "../yanshi-server", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+
