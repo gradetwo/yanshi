@@ -891,6 +891,7 @@ impl Renderer {
                     continue;
                 }
                 Primitive::Liquify {
+                    mode,
                     points,
                     size,
                     strength,
@@ -924,8 +925,29 @@ impl Renderer {
                                 // smoothstep 衰减：中心 1、边缘 0。
                                 let t = 1.0 - distance / radius;
                                 let falloff = t * t * (3.0 - 2.0 * t);
-                                shift_x += ux * max_shift * falloff;
-                                shift_y += uy * max_shift * falloff;
+                                match mode.as_str() {
+                                    // 旋转：把采样点绕中心转过 `strength × falloff` 弧度。
+                                    "twirl" => {
+                                        let angle = strength.clamp(-2.0, 2.0) * falloff;
+                                        let (sin, cos) = angle.sin_cos();
+                                        let rotated_x = dx * cos - dy * sin;
+                                        let rotated_y = dx * sin + dy * cos;
+                                        shift_x += dx - rotated_x;
+                                        shift_y += dy - rotated_y;
+                                    }
+                                    // 收缩：采样点向中心靠拢（采样更靠近中心的内容 →
+                                    // 内容看起来被吸向中心）。负强度即膨胀。
+                                    "pinch" => {
+                                        let scale = strength.clamp(-2.0, 2.0) * falloff;
+                                        shift_x -= dx * scale;
+                                        shift_y -= dy * scale;
+                                    }
+                                    // 推力：沿 direction 平移。
+                                    _ => {
+                                        shift_x += ux * max_shift * falloff;
+                                        shift_y += uy * max_shift * falloff;
+                                    }
+                                }
                             }
                             if shift_x == 0.0 && shift_y == 0.0 {
                                 continue;
@@ -1907,6 +1929,124 @@ mod tests {
         }
         let rendered = renderer.render_document(&broken, &store).unwrap();
         assert_eq!(rendered.stats.unsupported.len(), 1, "缺失蒙版必须告警");
+    }
+
+    /// 液化 twirl：横向条纹应被旋转出倾斜（同一列上出现横向位移差）。
+    #[test]
+    fn liquify_twirl_rotates_content() {
+        let mut state = white_document();
+        state.width = 96;
+        state.height = 96;
+        // 一半黑一半白的水平分界（y=48），便于观察旋转。
+        state.objects.insert(
+            "top".to_owned(),
+            object(
+                "top",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 96, "h": 48}},
+                       "color": {"r": 10, "g": 10, "b": 10, "a": 255}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        let before = renderer.render_document(&state, &store).unwrap();
+
+        state.objects.insert(
+            "twirl".to_owned(),
+            object(
+                "twirl",
+                "layer_1",
+                ObjectType::Liquify,
+                1,
+                json!({"liquify_type": "twirl", "points": [[48.0, 48.0]], "size": 40.0, "strength": 1.0}),
+            ),
+        );
+        let after = renderer.render_document(&state, &store).unwrap();
+        // 分界附近应出现旋转：左右两侧（相对中心对称）的分界高度不再相同。
+        // 用足够宽的扫描窗口，避免旋转把分界推出窗口导致误判。
+        // 分界高度 = 该列上最后一个暗像素的 y（从底部向上找）。
+        let boundary = |buffer: &RegionRender, x: u32| {
+            (8..88)
+                .rev()
+                .find(|y| buffer.pixel(x, *y).unwrap()[0] < 128)
+        };
+        let left = boundary(&after, 36);
+        let right = boundary(&after, 60);
+        assert!(left.is_some() && right.is_some(), "两侧都应能找到分界");
+        assert_ne!(
+            left, right,
+            "旋转应让左右两侧的分界位置不同：{left:?} vs {right:?}"
+        );
+        // 未旋转时两侧分界相同（对照）。
+        assert_eq!(boundary(&before, 36), boundary(&before, 60));
+        // 远处不受影响。
+        assert_eq!(before.pixel(2, 2).unwrap(), after.pixel(2, 2).unwrap());
+        assert!(after.stats.unsupported.is_empty());
+    }
+
+    /// 液化 pinch：边界应被吸向中心（同一行上分界向内移动）。
+    #[test]
+    fn liquify_pinch_pulls_content_inward() {
+        let mut state = white_document();
+        state.width = 96;
+        state.height = 96;
+        state.objects.insert(
+            "left".to_owned(),
+            object(
+                "left",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 48, "h": 96}},
+                       "color": {"r": 10, "g": 10, "b": 10, "a": 255}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        // 先渲染未液化的版本（对照组），再插入液化对象。
+        let before = renderer.render_document(&state, &store).unwrap();
+        // 竖直分界在 x=48；把收缩中心放在右侧 (64,48)，径向缩放才会把边界拉向中心。
+        // （中心若正好落在分界线上，分界线是径向缩放的不变量，看不出效果。）
+        state.objects.insert(
+            "pinch".to_owned(),
+            object(
+                "pinch",
+                "layer_1",
+                ObjectType::Liquify,
+                1,
+                json!({"liquify_type": "pinch", "points": [[64.0, 48.0]], "size": 60.0, "strength": 0.5}),
+            ),
+        );
+        let after = renderer.render_document(&state, &store).unwrap();
+        // 分界位置（y=48 上第一个变亮的 x）应因收缩而向中心移动。
+        let edge = |buffer: &RegionRender| (8..88).find(|x| buffer.pixel(*x, 48).unwrap()[0] > 128);
+        let before_edge = edge(&before).expect("原图应能找到分界");
+        let after_edge = edge(&after).expect("收缩后仍应有分界");
+        assert!(
+            after_edge > before_edge,
+            "pinch（中心在右）应把分界拉向中心：{before_edge} → {after_edge}"
+        );
+        assert!(after.stats.unsupported.is_empty());
+        // 未实现的模式必须告警。
+        let mut bad = state.clone();
+        bad.objects.insert(
+            "warp".to_owned(),
+            object(
+                "warp",
+                "layer_1",
+                ObjectType::Liquify,
+                2,
+                json!({"liquify_type": "warp", "points": [[48.0, 48.0]], "size": 40.0, "strength": 0.5}),
+            ),
+        );
+        let rendered = renderer.render_document(&bad, &store).unwrap();
+        assert_eq!(
+            rendered.stats.unsupported.len(),
+            1,
+            "未实现的液化模式必须告警"
+        );
     }
 
     /// 液化：硬边界应沿方向被推开，影响范围外不动，且区域渲染与整幅一致。

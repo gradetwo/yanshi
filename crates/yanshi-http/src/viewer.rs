@@ -431,6 +431,8 @@ async function submitAtom(atom) {
 
 async function checkBitExact() {
   if (!kernelReady()) { log("没有 WASM 内核，无法自检", "#c33"); return; }
+  // 以**服务端返回的尺寸**为准：`state.docSize` 可能因刷新时序而滞后，
+  // 那样会出现「尺寸不一致」的误报（实测遇到）。
   const { w, h } = state.docSize;
   // 取服务端**原始像素**（而不是哈希）：哈希相等无法说明差多少，
   // 而跨「客户端预览 / 服务端权威」路径的比较在设计上属 D1（允许 ±1 LSB）。
@@ -441,7 +443,22 @@ async function checkBitExact() {
   if (!server.raw_url) { log("服务端未返回原始像素，无法自检", "#c33"); return; }
   const response = await fetch(api(server.raw_url.replace("yanshi://blob/", "/api/blob/")));
   const serverPixels = new Uint8Array(await response.arrayBuffer());
-  const localPixels = state.kernel.render_region_rgba(0, 0, w, h);
+  // 用服务端实际渲染的尺寸请求本地像素，避免双方尺寸口径不同。
+  const width = server.width || w;
+  const height = server.height || h;
+  const localPixels = state.kernel.render_region_rgba(0, 0, width, height);
+  if (localPixels.length === 0) {
+    // 内核没产出像素（未就绪 / 文档尺寸不符 / 内核处于错误状态）：明确报出来，
+    // 不要伪装成「尺寸不一致」，否则会误导排查方向。
+    window.yanshiStats.bitExact = false;
+    $("bitExact").textContent = "内核无输出";
+    log(
+      `自检失败：本地内核未产出像素（请求 ${width}×${height}）；` +
+      `内核 HEAD ${window.yanshiStats.kernelHead}，文档尺寸 ${state.docSize.w}×${state.docSize.h}`,
+      "#c33"
+    );
+    return;
+  }
   if (localPixels.length !== serverPixels.length) {
     window.yanshiStats.bitExact = false;
     $("bitExact").textContent = "尺寸不一致";

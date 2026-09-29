@@ -190,7 +190,8 @@ curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKE
 ```bash
 # retouch tools: clone_stamp / heal_stamp (colour-matched) / smudge (drags along the stroke)
 #   / patch (captures source_region as a blob and lands it at target)
-#   / liquify_push (pushes pixels along direction inside the stroke area)
+#   / liquify_push (pushes along direction), liquify_twirl (rotates), liquify_pinch (contracts;
+#     a negative strength expands)
 # clone stamp: copy existing content from the source offset onto the stroke
 curl -s -X POST "http://127.0.0.1:8080/api/tools/clone_stamp?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","points":[[300,300],[360,340]],"source_offset":[-120,-80],"size":40}'

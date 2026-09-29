@@ -1168,6 +1168,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "liquify_twirl",
+        profile: Profile::Retouch,
+        summary: "液化（旋转）：把笔迹范围内的像素绕笔迹点旋转（强度为弧度上限，负值反向）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("size", Number, false, "影响直径（缺省 80）"),
+            param!("strength", Number, false, "强度 0-2（缺省 0.5，1.0 ≈ 57°）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
+        name: "liquify_pinch",
+        profile: Profile::Retouch,
+        summary: "液化（收缩/膨胀）：正强度把内容吸向中心，负强度向外膨胀",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("size", Number, false, "影响直径（缺省 80）"),
+            param!("strength", Number, false, "强度 -2..2（缺省 0.5；正=收缩）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
         name: "patch",
         profile: Profile::Retouch,
         summary: "图章补丁：把 source_region 的像素抓取为 blob，并作为 raster_patch 落到 target 位置（blob 先行，6.3）",
@@ -1332,7 +1360,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
         "patch" => write_patch(ctx, args),
-        "liquify_push" => write_liquify(ctx, args),
+        "liquify_push" => write_liquify(ctx, args, "push"),
+        "liquify_twirl" => write_liquify(ctx, args, "twirl"),
+        "liquify_pinch" => write_liquify(ctx, args, "pinch"),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2512,8 +2542,8 @@ fn write_patch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     finish_mutation(ctx, &result, region)
 }
 
-/// 基础液化（推力）：创建 `liquify` 对象。
-fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+/// 液化（`push` / `twirl` / `pinch`）：创建 `liquify` 对象。
+fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value, mode: &str) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let points = require_array(args, "points")?;
     if points.is_empty() {
@@ -2543,15 +2573,21 @@ fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
     }
-    let direction = require_array(args, "direction")?;
-    let dx = direction.first().and_then(Value::as_f64).unwrap_or(0.0);
-    let dy = direction.get(1).and_then(Value::as_f64).unwrap_or(0.0);
-    if dx == 0.0 && dy == 0.0 {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("direction 不能是 [0,0]"),
-        ));
-    }
+    // 只有推力模式需要方向；旋转/收缩由笔迹点位置决定。
+    let (dx, dy) = if mode == "push" {
+        let direction = require_array(args, "direction")?;
+        let dx = direction.first().and_then(Value::as_f64).unwrap_or(0.0);
+        let dy = direction.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+        if dx == 0.0 && dy == 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("direction 不能是 [0,0]"),
+            ));
+        }
+        (dx, dy)
+    } else {
+        (0.0, 0.0)
+    };
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(80.0);
     if !(2.0..=2048.0).contains(&size) {
         return Err(YanshiError::new(
@@ -2560,10 +2596,18 @@ fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         ));
     }
     let strength = args.get("strength").and_then(Value::as_f64).unwrap_or(0.5);
-    if !(0.0..=2.0).contains(&strength) {
+    // 收缩/膨胀需要符号，因此 pinch 允许负值。
+    let (low, high) = if mode == "pinch" {
+        (-2.0, 2.0)
+    } else {
+        (0.0, 2.0)
+    };
+    if !(low..=high).contains(&strength) {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("strength 必须在 [0, 2] 内，得到 {strength}")),
+            ErrorContext::detail(format!(
+                "{mode} 的 strength 必须在 [{low}, {high}] 内，得到 {strength}"
+            )),
         ));
     }
     let liquify_reach = size / 2.0 + strength * size + 2.0;
@@ -2599,7 +2643,7 @@ fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "layer_id": layer_id,
             "z_index": z_index,
             "data": {
-                "liquify_type": "push",
+                "liquify_type": mode,
                 "points": parsed,
                 "size": size,
                 "strength": strength,

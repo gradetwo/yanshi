@@ -513,6 +513,17 @@ offset 200 的 `clone_stamp` 在服务端（整幅）正常、在客户端（til
 release 下两项渲染合计 4.4s 的观测一致。已把该用例加进 perf 预算测试（release 预算：
 整幅 < 15s、单块 < 2s），防止后续回归。
 
+**本轮新增：液化 twirl / pinch**（`mode` 由 `liquify_type` 解析，默认 `push`）：
+
+* **twirl**：把采样点绕笔迹点旋转 `strength × falloff` 弧度（`strength 1.0 ≈ 57°`）；
+* **pinch**：采样点沿半径向中心靠拢（`shift = -(p-c)×strength×falloff`），
+  正强度=收缩、负强度=膨胀；`direction` 仅 `push` 需要。
+
+位移仍只由原子参数决定、反向映射 + 双线性重采样、外扩上界仍按 `size/2 + |strength|×size` 申报。
+测试覆盖：twirl 使左右两侧分界高度不同、pinch（中心放在分界右侧）把分界拉向中心、
+未实现模式（`warp`）仍告警。**踩到两个测试自身的坑**并已在注释里写明：pinch 的中心若正好落在
+分界线上，分界线是径向缩放的不变量（测不出效果）；`before` 必须在插入液化对象**之前**渲染。
+
 **已完成优化：区域相关外扩**（`Renderer::padding_for_region`）。
 
 原实现取「全文档所有对象需求的最大值」作为外扩，于是远离修图笔迹的 tile 也按 106px 膨胀

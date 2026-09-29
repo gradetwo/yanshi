@@ -99,13 +99,15 @@ pub enum Primitive {
     /// 采用**反向映射**：目标像素去「应用本对象之前」的副本采样，
     /// 因此不会出现空洞，且位移只由原子参数决定（确定性）。
     Liquify {
+        /// 模式：`push`（推力）/ `twirl`（旋转）/ `pinch`（收缩，负强度即膨胀）。
+        mode: String,
         /// 笔迹点列。
         points: Vec<(f64, f64)>,
         /// 影响半径（直径 = `size`）。
         size: f64,
-        /// 推力强度（0..2）。
+        /// 强度（0..2；`pinch` 允许负值表示膨胀）。
         strength: f64,
-        /// 方向（单位向量，归一化后使用）。
+        /// 方向（`push` 使用；单位向量，归一化后使用）。
         direction: (f64, f64),
     },
     /// 无法渲染。
@@ -251,16 +253,29 @@ pub fn parse_object(object: &Object) -> Primitive {
                     )
                 })
                 .unwrap_or((0.0, 0.0));
+            let mode = object
+                .data
+                .get("liquify_type")
+                .or_else(|| object.data.get("mode"))
+                .and_then(Value::as_str)
+                .unwrap_or("push")
+                .to_owned();
+            let known = matches!(mode.as_str(), "push" | "twirl" | "pinch");
             if points.is_empty() {
                 Primitive::Unsupported {
                     reason: "liquify 缺少 points".to_owned(),
                 }
-            } else if direction.0 == 0.0 && direction.1 == 0.0 {
+            } else if !known {
                 Primitive::Unsupported {
-                    reason: "liquify 缺少 direction（或为零向量）".to_owned(),
+                    reason: format!("液化模式未实现: {mode}（内核支持 push/twirl/pinch）"),
+                }
+            } else if mode == "push" && direction.0 == 0.0 && direction.1 == 0.0 {
+                Primitive::Unsupported {
+                    reason: "push 模式缺少 direction（或为零向量）".to_owned(),
                 }
             } else {
                 Primitive::Liquify {
+                    mode,
                     points,
                     size: object
                         .data

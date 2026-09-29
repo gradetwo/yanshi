@@ -906,6 +906,44 @@ fn clone_stamp_copies_content_and_is_reversible() {
         );
     }
 
+    // 液化三模式：twirl / pinch 可用（pinch 允许负强度=膨胀），模式参数校验按名区分。
+    let twirled = registry.call(
+        &mut context,
+        "liquify_twirl",
+        &json!({"layer_id": "layer_1", "points": [[50.0, 50.0]], "size": 40.0, "strength": 1.0}),
+    );
+    assert_eq!(twirled["ok"], json!(true), "{twirled}");
+    let pinched = registry.call(
+        &mut context,
+        "liquify_pinch",
+        &json!({"layer_id": "layer_1", "points": [[60.0, 60.0]], "size": 40.0, "strength": -0.6}),
+    );
+    assert_eq!(
+        pinched["ok"],
+        json!(true),
+        "pinch 负强度（膨胀）应被接受：{pinched}"
+    );
+    let bad_strength = registry.call(
+        &mut context,
+        "liquify_twirl",
+        &json!({"layer_id": "layer_1", "points": [[10.0, 10.0]], "strength": -1.0}),
+    );
+    assert_eq!(
+        bad_strength["error_code"],
+        json!("invalid_argument"),
+        "twirl 不接受负强度：{bad_strength}"
+    );
+    let missing_direction = registry.call(
+        &mut context,
+        "liquify_push",
+        &json!({"layer_id": "layer_1", "points": [[10.0, 10.0]], "size": 40.0}),
+    );
+    assert_eq!(
+        missing_direction["error_code"],
+        json!("invalid_argument"),
+        "push 必须给 direction"
+    );
+
     // 参数校验：零偏移无意义、点列非法都要被拒。
     for payload in [
         json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),
