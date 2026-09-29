@@ -405,6 +405,28 @@ impl Renderer {
     pub fn filter_padding(&self, state: &DocumentState) -> u32 {
         let mut padding = 0u32;
         for object in state.alive_objects() {
+            // 修图对象从偏移位置采样：区域渲染必须外扩到源像素，否则边缘会缺一块。
+            if object.object_type == yanshi_core::ObjectType::Retouch {
+                let size = object
+                    .data
+                    .get("size")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(24.0);
+                let offset = object
+                    .data
+                    .get("source_offset")
+                    .and_then(Value::as_array)
+                    .map(|pair| {
+                        (
+                            pair.first().and_then(Value::as_f64).unwrap_or(0.0).abs(),
+                            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0).abs(),
+                        )
+                    })
+                    .unwrap_or((0.0, 0.0));
+                let reach = (offset.0.max(offset.1) + size / 2.0 + 2.0).ceil() as u32;
+                padding = padding.max(reach);
+                continue;
+            }
             if object.object_type != yanshi_core::ObjectType::Filter {
                 continue;
             }
@@ -559,6 +581,76 @@ impl Renderer {
                         &bytes[..expected],
                         opacity,
                     );
+                }
+                Primitive::Retouch {
+                    kind,
+                    points,
+                    offset,
+                    size,
+                    hardness,
+                    opacity,
+                    jitter,
+                } => {
+                    if kind != "clone_stamp" {
+                        stats
+                            .unsupported
+                            .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
+                        continue;
+                    }
+                    // 源必须是**应用本对象之前**的图层内容：先拷贝一份，避免自反馈。
+                    let source = layer_buffer.clone();
+                    let brush = crate::brush::BrushSpec {
+                        size: size.max(1.0),
+                        hardness: hardness.clamp(0.0, 1.0),
+                        color: [0.0, 0.0, 0.0, 1.0],
+                        opacity: opacity.clamp(0.0, 1.0),
+                        flow: 1.0,
+                        spacing: 0.15,
+                        jitter: jitter.max(0.0),
+                        ..Default::default()
+                    };
+                    let samples: Vec<(f64, f64, f64)> =
+                        points.iter().map(|(x, y)| (*x, *y, 1.0)).collect();
+                    let stamps =
+                        crate::geometry::dashed_line(&samples, brush.spacing_pixels(), None);
+                    let radius = brush.size / 2.0;
+                    let origin = layer_buffer.origin();
+                    for (cx, cy) in stamps.iter().map(|s| (s.0, s.1)) {
+                        // 采样源像素（文档坐标 + 偏移），越界则跳过该 stamp。
+                        let sx = cx + offset.0 - origin.0 as f64;
+                        let sy = cy + offset.1 - origin.1 as f64;
+                        if sx < 0.0 || sy < 0.0 {
+                            continue;
+                        }
+                        let (sx, sy) = (sx as u32, sy as u32);
+                        if sx >= source.width() || sy >= source.height() {
+                            continue;
+                        }
+                        let sampled = source.pixel(sx, sy);
+                        if sampled[3] <= 0.0 {
+                            continue;
+                        }
+                        let straight = [
+                            sampled[0] / sampled[3],
+                            sampled[1] / sampled[3],
+                            sampled[2] / sampled[3],
+                        ];
+                        crate::brush::draw_stamp(
+                            layer_buffer,
+                            cx,
+                            cy,
+                            radius,
+                            brush.hardness,
+                            [
+                                straight[0],
+                                straight[1],
+                                straight[2],
+                                (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
+                            ],
+                            BlendMode::Normal,
+                        );
+                    }
+                    continue;
                 }
                 Primitive::Unsupported { reason } => {
                     stats
@@ -1274,6 +1366,63 @@ mod tests {
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
+    }
+
+    /// clone_stamp：必须把偏移处的已有内容复制到笔迹位置，且**只**改笔迹覆盖处。
+    #[test]
+    fn clone_stamp_copies_pixels_from_the_source_offset() {
+        let mut state = white_document();
+        state.width = 64;
+        state.height = 64;
+        // 源：左上 16×16 的红色块。
+        state.objects.insert(
+            "obj_src".to_owned(),
+            object(
+                "obj_src",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 16, "h": 16}},
+                       "color": {"r": 220, "g": 30, "b": 30, "a": 255}}),
+            ),
+        );
+        // 修图：在 (40,40) 处取样偏移 (-40,-40) → 等价于把左上角红块复制到右下角。
+        state.objects.insert(
+            "obj_clone".to_owned(),
+            object(
+                "obj_clone",
+                "layer_1",
+                ObjectType::Retouch,
+                1,
+                json!({"retouch_type": "clone_stamp", "points": [[44.0, 44.0]],
+                       "source_offset": [-40.0, -40.0], "size": 10.0, "hardness": 1.0, "opacity": 1.0}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        let rendered = renderer.render_document(&state, &store).unwrap();
+        let cloned = rendered.pixel(44, 44).unwrap();
+        assert!(
+            cloned[0] > 200 && cloned[1] < 60,
+            "应复制到红色：{cloned:?}"
+        );
+        // 未覆盖处不受影响。
+        let untouched = rendered.pixel(30, 30).unwrap();
+        assert!(
+            untouched[0] > 240 && untouched[1] > 240,
+            "其它像素不应改变：{untouched:?}"
+        );
+        assert!(rendered.stats.unsupported.is_empty());
+
+        // 区域渲染必须外扩到源像素：只渲染右下 16×16 也应得到同样的复制结果。
+        let region = renderer
+            .render_region(&state, &store, Bbox::new(36.0, 36.0, 16.0, 16.0))
+            .unwrap();
+        let local = region.pixel(8, 8).unwrap();
+        assert_eq!(
+            local, cloned,
+            "区域渲染与整幅渲染必须逐字节一致：{local:?} vs {cloned:?}"
+        );
     }
 
     #[test]

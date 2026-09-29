@@ -171,7 +171,7 @@ the subscribed viewport. MCP stdio never receives pushes; it polls `get_log` / `
 
 Invalid colours are rejected in the tool layer (`invalid_argument`) and never reach the atom log.
 
-#### Colour grading and filters (`retouch` group)
+#### Colour grading, filters and retouch (`retouch` group)
 
 ```bash
 # adjustment: brightness_contrast / saturation / invert / levels /
@@ -182,6 +182,12 @@ curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$
 #         brightness_contrast / saturation / invert
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
+```
+
+```bash
+# clone stamp: copy existing content from the source offset onto the stroke
+curl -s -X POST "http://127.0.0.1:8080/api/tools/clone_stamp?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","points":[[300,300],[360,340]],"source_offset":[-120,-80],"size":40}'
 ```
 
 Effects apply to **everything below them in the same layer**, so both tools place the new object at the top

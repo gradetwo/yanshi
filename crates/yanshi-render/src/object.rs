@@ -72,6 +72,26 @@ pub enum Primitive {
         /// MIME 类型（内核目前只支持 `image/x-yanshi-raw`）。
         mime_type: String,
     },
+    /// 修图（clone_stamp）：从**同一图层已绘制内容**按偏移采样后盖回。
+    ///
+    /// 指向历史状态的 `source_state_version` 采样尚未实现（设计 Phase 3 后续），
+    /// 当前语义等价于「源 = 应用本对象之前的图层内容」，即经典仿制图章。
+    Retouch {
+        /// 修图类型（目前仅 `clone_stamp`）。
+        kind: String,
+        /// 采样点列。
+        points: Vec<(f64, f64)>,
+        /// 采样偏移（源 = 目标 + offset）。
+        offset: (f64, f64),
+        /// 笔刷大小。
+        size: f64,
+        /// 硬度（0=软边，1=硬边）。
+        hardness: f64,
+        /// 不透明度。
+        opacity: f64,
+        /// 抖动。
+        jitter: f64,
+    },
     /// 无法渲染。
     Unsupported {
         /// 原因（用于告警与可观测性）。
@@ -120,9 +140,70 @@ pub fn parse_object(object: &Object) -> Primitive {
         ObjectType::Text => Primitive::Unsupported {
             reason: "text 光栅化需要内嵌字体子集（18 章，尚未实现）".to_owned(),
         },
-        ObjectType::Retouch => Primitive::Unsupported {
-            reason: "retouch 需要 source_state_version 采样（Phase 3）".to_owned(),
-        },
+        ObjectType::Retouch => {
+            let kind = object
+                .data
+                .get("retouch_type")
+                .and_then(Value::as_str)
+                .unwrap_or("clone_stamp")
+                .to_owned();
+            let points: Vec<(f64, f64)> = object
+                .data
+                .get("points")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| {
+                            let pair = value.as_array()?;
+                            Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if points.is_empty() {
+                Primitive::Unsupported {
+                    reason: "retouch 缺少 points".to_owned(),
+                }
+            } else {
+                let offset = object
+                    .data
+                    .get("source_offset")
+                    .and_then(Value::as_array)
+                    .map(|pair| {
+                        (
+                            pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+                            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                        )
+                    })
+                    .unwrap_or((0.0, 0.0));
+                Primitive::Retouch {
+                    kind,
+                    points,
+                    offset,
+                    size: object
+                        .data
+                        .get("size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(24.0),
+                    hardness: object
+                        .data
+                        .get("hardness")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.6),
+                    opacity: object
+                        .data
+                        .get("opacity")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(1.0),
+                    jitter: object
+                        .data
+                        .get("jitter")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0),
+                }
+            }
+        }
         ObjectType::Liquify => Primitive::Unsupported {
             reason: "liquify 求解器属 Phase 0/3 验证项".to_owned(),
         },
@@ -249,6 +330,33 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
     // 对象的仿射 `transform` 尚未进入内核（Phase 3 起按对象应用），
     // 因此这里返回的是对象**本地**包围盒。
     let local = match parse_object(object) {
+        Primitive::Retouch {
+            points,
+            size,
+            jitter,
+            ..
+        } => {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for (x, y) in &points {
+                min_x = min_x.min(*x);
+                min_y = min_y.min(*y);
+                max_x = max_x.max(*x);
+                max_y = max_y.max(*y);
+            }
+            if !min_x.is_finite() {
+                return None;
+            }
+            let margin = size / 2.0 + jitter;
+            Bbox::new(
+                min_x - margin,
+                min_y - margin,
+                (max_x - min_x) + margin * 2.0,
+                (max_y - min_y) + margin * 2.0,
+            )
+        }
         Primitive::Stroke { geometry, brush } => {
             let mut min_x = f64::INFINITY;
             let mut min_y = f64::INFINITY;

@@ -462,6 +462,19 @@ fn args_object(args: &Value) -> Result<&Map<String, Value>> {
     })
 }
 
+/// 读取必需数组参数（返回数组元素的克隆，避免借用冲突）。
+fn require_array(args: &Value, key: &str) -> Result<Vec<Value>> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("缺少必需参数 {key}（应为数组）")),
+            )
+        })
+}
+
 fn require_str(args: &Value, key: &str) -> Result<String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -1123,6 +1136,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("layer_id", String, false, "按图层过滤")],
     },
+    // ---- 扩展：retouch（修图）----
+    ToolSpec {
+        name: "clone_stamp",
+        profile: Profile::Retouch,
+        summary: "仿制图章：把 source_offset 处的已有内容复制到 points 轨迹上（源为应用本对象前的图层内容）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("source_offset", Array, true, "采样偏移 [dx,dy]，源 = 目标 + 偏移"),
+            param!("size", Number, false, "笔刷直径（缺省 24）"),
+            param!("hardness", Number, false, "硬度 0-1（缺省 0.6）"),
+            param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
     // ---- 扩展：collab ----
     ToolSpec {
         name: "comment",
@@ -1221,6 +1251,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
+        "clone_stamp" => write_clone_stamp(ctx, args),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2139,6 +2170,104 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
     let result = ctx.commit(
         AtomKind::Supersede,
         json!({"object_id": object_id, "layer_id": layer_id, "data": data}),
+    )?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+/// 仿制图章：创建 `retouch` 对象（内核只实现了 `clone_stamp` 这一种修图）。
+fn write_clone_stamp(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let points = require_array(args, "points")?;
+    if points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("clone_stamp 至少需要一个点"),
+        ));
+    }
+    let mut parsed: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+    for point in points {
+        let pair = point.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("clone_stamp 的 points 必须是 [[x,y], ...]"),
+            )
+        })?;
+        let x = pair.first().and_then(Value::as_f64);
+        let y = pair.get(1).and_then(Value::as_f64);
+        match (x, y) {
+            (Some(x), Some(y)) => parsed.push([x, y]),
+            _ => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("clone_stamp 的点必须是数字"),
+                ))
+            }
+        }
+    }
+    let offset = require_array(args, "source_offset")?;
+    let dx = offset.first().and_then(Value::as_f64).unwrap_or(0.0);
+    let dy = offset.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+    if dx == 0.0 && dy == 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("source_offset 不能是 [0,0]（那样只会自我复制）"),
+        ));
+    }
+    if dx.abs() > 4096.0 || dy.abs() > 4096.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("source_offset 超出合理范围（|dx|,|dy| ≤ 4096）"),
+        ));
+    }
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    if !(1.0..=1024.0).contains(&size) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("size 必须在 [1, 1024] 内，得到 {size}")),
+        ));
+    }
+    let hardness = args.get("hardness").and_then(Value::as_f64).unwrap_or(0.6);
+    let opacity = args.get("opacity").and_then(Value::as_f64).unwrap_or(1.0);
+    for (key, value) in [("hardness", hardness), ("opacity", opacity)] {
+        if !(0.0..=1.0).contains(&value) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key} 必须在 [0, 1] 内，得到 {value}")),
+            ));
+        }
+    }
+    let object_id = optional_str(args, "object_id")
+        .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+    let z_index = match args.get("z_index").and_then(Value::as_i64) {
+        Some(z_index) => z_index,
+        None => {
+            let state = document_state(ctx)?;
+            state
+                .alive_objects()
+                .iter()
+                .filter(|object| object.layer_id == layer_id)
+                .map(|object| object.z_index)
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0)
+        }
+    };
+    let result = ctx.commit(
+        AtomKind::Retouch,
+        json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "z_index": z_index,
+            "data": {
+                "retouch_type": "clone_stamp",
+                "points": parsed,
+                "source_offset": [dx, dy],
+                "size": size,
+                "hardness": hardness,
+                "opacity": opacity,
+            },
+        }),
     )?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)

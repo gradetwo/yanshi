@@ -710,6 +710,112 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
     assert_eq!(restored, sharp_edge, "删除滤镜后应回到只有反相的画面");
 }
 
+/// Phase 3 修图：clone_stamp 必须把偏移处的已有内容复制到笔迹位置，并可撤销。
+#[test]
+fn clone_stamp_copies_content_and_is_reversible() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clone", 96, 96),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_clone", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+
+    // 左上角放一块红，再用仿制图章把它复制到右下角。
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "layer_1", "object_id": "src",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 20, "h": 20}},
+                         "color": "#dc1e1e"}}),
+    );
+    let sample = |context: &mut ToolContext<'_>, x: u32, y: u32| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 96, "h": 96}}),
+        );
+        let hash: yanshi_core::BlobHash = response["thumb_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let (_, _, pixels) = decode_png(&store.get(&hash).unwrap());
+        let index = ((y * 96 + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+
+    let before = sample(&mut context, 60, 60);
+    assert!(
+        before[0] > 240 && before[1] > 240,
+        "目标处原本是白底：{before:?}"
+    );
+    let cloned = registry.call(
+        &mut context,
+        "clone_stamp",
+        &json!({"layer_id": "layer_1", "points": [[64.0, 64.0]],
+                "source_offset": [-50.0, -50.0], "size": 16.0, "hardness": 1.0}),
+    );
+    assert_eq!(cloned["ok"], json!(true), "{cloned}");
+    assert_eq!(
+        cloned["dirty_kind"],
+        json!("geometry"),
+        "修图只影响笔迹范围"
+    );
+    let after = sample(&mut context, 60, 60);
+    assert!(after[0] > 180 && after[1] < 90, "应复制到红色：{after:?}");
+
+    // 参数校验：零偏移无意义、点列非法都要被拒。
+    for payload in [
+        json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),
+        json!({"layer_id": "layer_1", "points": [], "source_offset": [10.0, 10.0]}),
+        json!({"layer_id": "layer_1", "points": [["x", 1.0]], "source_offset": [10.0, 10.0]}),
+        json!({"layer_id": "layer_1", "points": [[1.0, 1.0]], "source_offset": [10.0, 10.0], "size": 0.0}),
+    ] {
+        let response = registry.call(&mut context, "clone_stamp", &payload);
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{payload}: {response}"
+        );
+    }
+
+    // 撤销（tombstone）后回到白底。
+    let list = registry.call(&mut context, "list_objects", &json!({"type": "retouch"}));
+    let object_id = list["objects"][0]["object_id"].as_str().unwrap().to_owned();
+    let deleted = registry.call(
+        &mut context,
+        "delete_object",
+        &json!({"object_id": object_id}),
+    );
+    assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    let restored = sample(&mut context, 60, 60);
+    assert!(
+        restored[0] > 240 && restored[1] > 240,
+        "撤销后应回到白底：{restored:?}"
+    );
+}
+
 #[test]
 fn capability_tokens_gate_http_and_allow_stdio() {
     let mut workspace = workspace();

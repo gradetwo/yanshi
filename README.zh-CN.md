@@ -157,7 +157,7 @@ MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮�
 
 非法颜色在工具层即被拒绝（`invalid_argument`），不会写入原子日志。
 
-#### 调色与滤镜（`retouch` 组）
+#### 调色、滤镜与修图（`retouch` 组）
 
 ```bash
 # 调整：brightness_contrast / saturation / invert / levels /
@@ -168,6 +168,12 @@ curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$
 #       brightness_contrast / saturation / invert
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
+```
+
+```bash
+# 仿制图章：把 source_offset 处的已有内容复制到笔迹轨迹上
+curl -s -X POST "http://127.0.0.1:8080/api/tools/clone_stamp?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","points":[[300,300],[360,340]],"source_offset":[-120,-80],"size":40}'
 ```
 
 效果只作用于**同层下方**内容，因此两个工具缺省把新对象放到该层最上方（也可显式给 `z_index`）。
