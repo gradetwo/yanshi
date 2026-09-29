@@ -1,0 +1,104 @@
+# 偃师 Yanshi
+
+> AI 原生协作绘画与设计引擎
+
+偃师用文档状态、语义命令、可编辑对象、多级预览、版本日志和协作机制，替代传统图形界面的面板加鼠标轨迹。人类与 AI 在同一套对象模型和原子类型上协作：人类使用微观工具，AI 使用宏观语义工具。
+
+当前仓库处于 **Phase 0 / Phase 1：核心引擎开发中**，实现范围仅限无 GUI 的 Rust 核心引擎。
+
+## 设计文档
+
+- [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) —— 冻结设计文档 v1.0-draft4（中文）。这是全部语义与协议的权威定义；代码不得与设计文档静默分叉，行为变更必须同时更新设计文档。
+
+## 当前状态
+
+本仓库当前只交付 **核心引擎的 Phase 0 / Phase 1 内容**，正在开发中：
+
+- **原子日志**：append-only，客户端生成 ULID 保证幂等与重试安全，服务端分配权威 `seq`。
+- **折叠求值**：按 `seq` 线性扫描维护有效原子链，`revert` 级联失效，`reapply` 只恢复目标原子（不恢复级联链）。
+- **state@seq**：按公式 `state@seq_n := fold(A_n, base_state(H_n))` 求值任意历史状态，`declare_head` 统一切换求值起点。
+- **Blob CAS 三级生命周期**：活跃 / 历史 / 孤儿三级；GC 根集 = 全日志引用闭包，只清理从未被日志引用的孤儿，历史 blob 永不因 GC 丢失。
+- **属性测试**：折叠代数不变量（幂等性、收敛性、无孤儿引用、revert-reapply 往返、历史可重放）以属性测试和 fuzz 覆盖。
+
+尚未实现、属于路线图规划中的部分包括：渲染器与合成后端、服务端与 HTTP/WebSocket/MCP 传输层、WASM 计算内核、Web 编辑器、修图与语义工具、插件系统、标注通道。README 中不描述其为可用能力。
+
+## 仓库结构
+
+```
+yanshi/
+├── crates/
+│   └── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
+├── docs/
+│   └── design/               # 冻结设计文档及修订历史
+├── .github/workflows/ci.yml  # 持续集成：fmt / clippy / test / 长时 fuzz
+├── CONTRIBUTING.md
+└── LICENSE                   # MIT
+```
+
+- `crates/yanshi-core` 是当前唯一的核心 crate，无 GUI 依赖，客户端与服务端共享同一份计算内核代码。
+
+## 快速开始
+
+需要 Rust stable 1.85 或更高版本。
+
+```bash
+cargo test --workspace          # 单元测试 + 属性测试
+cargo run -p yanshi-cli -- --help   # (规划中，见路线图)
+cargo clippy --workspace --all-targets
+```
+
+> `yanshi-cli` 属于路线图内容，当前尚未提供，第二条命令在 Phase 1 完成前会失败。
+
+长时模糊测试（默认被 `#[ignore]` 标记）：
+
+```bash
+cargo test --workspace --release -- --ignored
+```
+
+## 设计要点
+
+- **原子日志**：append-only，不删除、不修改；客户端 ULID 幂等，服务端 `seq` 为唯一权威全序。`parents` 只用于因果审计，不参与排序。
+- **折叠求值**：原子按 `seq` 线性扫描，维护每个对象的有效原子链；`revert` 级联失效，依赖被撤销原子的后续原子记录 `cascade_invalidation` 警告后跳过；`reapply` 只恢复目标原子，级联链需显式重新提交。
+- **state@seq 与 declare_head**：`state@seq_n := fold(A_n, base_state(H_n))`，`H_n` 为 `seq ≤ n` 中最近一次 `declare_head`。`declare_head` 是重型原子，统一实现时间旅行、`revert_to`、`restore_checkpoint`，提交后触发快照与全量 tile 失效，日志始终保持 append-only。
+- **Blob CAS 三级生命周期**：活跃（当前 HEAD 折叠状态引用，热存储）、历史（被日志任意原子引用但不在当前状态，冷归档 + zstd，保留可回取）、孤儿（上传成功但从未被引用，TTL 7 天后清理）。GC 根集 = 全日志引用闭包，快照产出的活跃 Manifest 只用于冷热迁移标记，不是 GC 根集。
+- **确定性分级**：D0 计算内核层 CPU bit-exact 基线；D1 合成后端层、预览、缩略图允许 ±1 LSB；D2 插件与外部服务允许差异。计算内核层是唯一权威来源。
+- **广播边界**：控制流（全部原子元数据）全局广播，客户端折叠需要完整原子元数据；数据流（tile 位图、缩略图、blob 二进制）按视口订阅过滤或按需拉取。
+- **工具暴露分层**：核心层 27 个工具默认注册，扩展组按 `profile` 参数启用，以控制 Agent 的函数选择负担与 token 开销。
+- **许可证**：MIT。
+
+## 路线图
+
+| 阶段 | 内容摘要 | 状态 |
+|---|---|---|
+| Phase 0：技术验证 | 折叠引擎原型、代数属性测试与 fuzz、CPU D0 基线渲染器、Blob CAS 竞态与三级生命周期 / GC 原型、液化方案与 WebGPU 可行性验证 | 进行中 |
+| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU/SIMD 渲染、最小 Web 查看器、核心层 27 工具 | 核心引擎部分进行中 |
+| Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染与 tile cross-fade 校正、L3/L4 缓存、异步渲染、import_image、Job 协议 | 规划中 |
+| Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 规划中 |
+| Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 规划中 |
+| Phase 5：插件 + 高级功能 | WASM 插件沙箱与能力模型、实例与组引用、高级路径编辑、owner/editor/viewer 权限 | 规划中 |
+
+## 贡献
+
+欢迎贡献，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须保证：
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+三者全部通过，且新增折叠或 GC 语义必须附带属性测试。
+
+## 许可证
+
+本项目以 [MIT 许可证](LICENSE) 发布。
+
+Copyright (c) 2026 The Yanshi Authors
+
+## English Abstract
+
+Yanshi is an AI-native collaborative painting and design engine. It replaces the traditional panel-and-mouse-trajectory GUI with document state, semantic commands, editable objects, multi-level previews, a versioned append-only atom log, and collaboration primitives, so that humans and AI agents work on one shared object model — humans through fine-grained tools, AI through high-level semantic tools.
+
+The repository is currently in **Phase 0 / Phase 1: core engine development**. The only implemented component is the headless Rust core crate (`crates/yanshi-core`): the append-only atom log with client-generated ULIDs and server-authoritative sequence numbers, fold evaluation with cascading revert invalidation and reapply, the `state@seq` historical evaluation formula with `declare_head`, the three-tier Blob CAS lifecycle (active / historical / orphan) with a garbage-collection root set equal to the full-log reference closure, and property/fuzz tests for the fold algebra invariants.
+
+The renderer, server, HTTP/WebSocket/MCP transports, WASM compute kernel, Web editor, retouch and semantic tools, plugin system, and annotation channel are **not** implemented yet; they are planned roadmap items. The frozen design document is `docs/design/yanshi-v1.0-draft4.md` (Chinese). Licensed under MIT.

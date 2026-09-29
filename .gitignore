@@ -1,0 +1,22 @@
+# Rust 构建产物
+/target
+**/*.rs.bk
+
+# 注意：本仓库未来包含二进制目标（服务端与 CLI），
+# 因此 Cargo.lock 必须纳入版本控制，不在此忽略。
+
+# 调试与性能分析产物
+*.pdb
+*.profraw
+
+# Fuzz 产物
+/fuzz/corpus
+/fuzz/artifacts
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+
+# 临时目录
+/tmp/
