@@ -623,10 +623,10 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         .as_u64()
         .unwrap();
     for (name, payload) in [
-        // 设计里有、内核尚未实现的类型必须在工具层被拒（不放空壳能力）。
+        // 刻意用**明确不存在**的名字，避免"实现了该类型就要回来改测试"的反复（已换过四次）。
         (
             "add_adjustment",
-            json!({"layer_id": "layer_1", "adjustment_type": "film_grain"}),
+            json!({"layer_id": "layer_1", "adjustment_type": "not_an_effect"}),
         ),
         (
             "add_filter",
