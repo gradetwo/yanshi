@@ -9,9 +9,9 @@
 | 文件 | 安装位置 | 说明 |
 |---|---|---|
 | `../systemd/yanshi-serve.service` | `~/.config/systemd/user/yanshi-serve.service` | 回环 8110 上的无头服务端 |
-| `../icons/yanshi.png` | `~/.local/share/icons/hicolor/256x256/apps/yanshi.png` | 由引擎自己渲染的图标（见 `make-icon.sh`） |
+| `../icons/yanshi.png` | `~/.local/share/icons/hicolor/256x256/apps/yanshi.png` | 桌面图标（由 `assets/brand/svg/icon-light.svg` 渲染） |
 | `Yanshi.desktop` | `~/.local/share/applications/Yanshi.desktop` | Omarchy web app 条目（`omarchy-launch-webapp`） |
-| `make-icon.sh` | — | 重新生成图标（一条 curl 画一枚「偃师印」） |
+| `assets/brand/render.sh` | — | 从品牌 SVG 重新生成图标/favicon/logo 的各尺寸 PNG |
 
 ## 一次性安装
 
@@ -27,8 +27,8 @@ systemctl --user enable --now yanshi-serve.service
 systemctl --user status yanshi-serve.service --no-pager | head -5
 curl -s http://127.0.0.1:8110/health
 
-# 2) 图标（可用引擎重新渲染，仓库里已带一份）
-deploy/omarchy/make-icon.sh            # 或直接用 deploy/icons/yanshi.png
+# 2) 图标（由品牌 SVG 渲染，仓库里已带一份；需要其它尺寸就跑渲染脚本）
+assets/brand/render.sh                 # 或直接用 deploy/icons/yanshi.png
 
 # 3) web app 条目（Omarchy 自带命令，会写 .desktop 并安装图标）
 omarchy-webapp-install "Yanshi" "http://127.0.0.1:8110/?doc=yanshi" deploy/icons/yanshi.png

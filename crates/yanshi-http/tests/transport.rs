@@ -862,3 +862,83 @@ fn one_connection_serves_multiple_requests() {
     );
     handle.shutdown();
 }
+
+/// 品牌资源：favicon 与 /brand/* 白名单，路径穿越与未知文件被拒。
+#[test]
+fn brand_assets_are_served_from_the_configured_directory() {
+    let mut root = std::env::temp_dir();
+    root.push(format!("yanshi-brand-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("svg")).unwrap();
+    std::fs::create_dir_all(root.join("png")).unwrap();
+    std::fs::write(
+        root.join("svg/icon-light.svg"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    )
+    .unwrap();
+    std::fs::write(root.join("png/favicon-32.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    std::fs::write(root.join("secret.txt"), b"nope").unwrap();
+
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        brand_dir: Some(root.clone()),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+
+    let (status, headers, bytes) = client.request("GET", "/favicon.svg", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(headers["content-type"], "image/svg+xml");
+    assert!(String::from_utf8_lossy(&bytes).contains("<svg"));
+
+    let (status, headers, bytes) = client.request("GET", "/favicon.png", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(&bytes[0..4], b"\x89PNG");
+
+    let (status, headers, _) = client.request("GET", "/brand/svg/icon-light.svg", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(headers["content-type"], "image/svg+xml");
+
+    assert_eq!(
+        client.request("GET", "/brand/secret.txt", None, None).0,
+        404
+    );
+    assert_eq!(
+        client.request("GET", "/brand/../Cargo.toml", None, None).0,
+        400
+    );
+    // 页面引用了 favicon 与页头 logo。
+    let (_, _, page) = client.request("GET", "/", None, None);
+    let page = String::from_utf8_lossy(&page);
+    assert!(page.contains("rel=\"icon\""), "页面应声明 favicon");
+    assert!(
+        page.contains("brand/svg/icon-light.svg"),
+        "页头应使用品牌图标"
+    );
+    handle.shutdown();
+
+    // --no-brand：明确不提供。
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        brand_dir: None,
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json("GET", "/favicon.svg", None, None);
+    assert_eq!(status, 404);
+    assert!(body["context"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("--no-brand"));
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

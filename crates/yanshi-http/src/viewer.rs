@@ -17,12 +17,16 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>偃师 Yanshi 查看器</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+<link rel="apple-touch-icon" href="/brand/png/favicon-180.png" />
 <style>
   :root { color-scheme: light dark; --line: #8884; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  header h1 { font-size: 15px; margin: 0 12px 0 0; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 6px; }
+  .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
   /* 布局由 canvas 驱动（文档分辨率位图 + 固有宽高比）；#preview 绝对定位覆盖其上作为服务端渲染兜底。 */
@@ -44,7 +48,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>偃师 Yanshi</h1>
+  <h1><img class="brand-mark" src="/brand/svg/icon-light.svg" alt="" />偃师 Yanshi</h1>
   <span id="identity"></span>
   <button id="open">打开 / 新建文档</button>
   <span class="status">

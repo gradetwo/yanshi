@@ -60,6 +60,8 @@ pub struct HttpOptions {
     pub rewrite_blob_urls: bool,
     /// WASM 计算内核产物目录（`/wasm/*` 从这里取；`None` 表示不提供）。
     pub wasm_dir: Option<PathBuf>,
+    /// 品牌资源目录（`/brand/*` 与 `/favicon.*` 从这里取；`None` 表示不提供）。
+    pub brand_dir: Option<PathBuf>,
 }
 
 impl Default for HttpOptions {
@@ -82,6 +84,7 @@ impl Default for HttpOptions {
             rewrite_blob_urls: true,
             // 默认指向仓库内 `wasm-bindgen --target web` 的输出目录（相对当前工作目录）。
             wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
+            brand_dir: Some(PathBuf::from("assets/brand")),
         }
     }
 }
@@ -106,6 +109,8 @@ impl HttpOptions {
                 "--bind" => options.bind = value_of("--bind")?,
                 "--wasm-dir" => options.wasm_dir = Some(value_of("--wasm-dir")?.into()),
                 "--no-wasm" => options.wasm_dir = None,
+                "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
+                "--no-brand" => options.brand_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
                 "--doc" => options.doc_id = value_of("--doc")?,
                 "--width" => {
@@ -153,6 +158,8 @@ impl HttpOptions {
            --profile <list>   启用工具组，逗号分隔\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）\n\
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
+           --brand-dir <dir>  品牌资源目录（缺省 assets/brand）\n\
+           --no-brand         不提供品牌资源（favicon/logo）\n\
            --help             显示帮助\n\
          \n\
          打开 http://127.0.0.1:8080/ 使用最小 Web 查看器（URL 中的 token 即文档 capability）。\n"
@@ -371,6 +378,25 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     if let Some(file) = path.strip_prefix("/wasm/") {
         return match method {
             "GET" => wasm_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if let Some(file) = path.strip_prefix("/brand/") {
+        return match method {
+            "GET" => brand_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    // 浏览器默认来取 favicon：SVG 走 icon-light（512 viewBox，缩到 16px 依然清晰），
+    // PNG/ICO 走 assets/brand/png 里预先渲染好的尺寸。
+    if path == "/favicon.svg" || path == "/favicon.png" || path == "/favicon.ico" {
+        let file = match path {
+            "/favicon.svg" => "svg/icon-light.svg",
+            "/favicon.png" => "png/favicon-32.png",
+            _ => "png/favicon.ico",
+        };
+        return match method {
+            "GET" => brand_asset(state, file),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -729,6 +755,43 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
             "WASM 产物缺失：{}（先运行 cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release 与 wasm-bindgen）",
             path.display()
         )),
+    }
+}
+
+/// 品牌资源白名单（避免把任意仓库文件暴露出去）。
+const BRAND_FILES: [(&str, &str); 14] = [
+    ("svg/favicon.svg", "image/svg+xml"),
+    ("svg/icon-light.svg", "image/svg+xml"),
+    ("svg/icon-dark.svg", "image/svg+xml"),
+    ("svg/logo-horizontal.svg", "image/svg+xml"),
+    ("svg/logo-horizontal-cn.svg", "image/svg+xml"),
+    ("svg/logo-vertical.svg", "image/svg+xml"),
+    ("svg/logo-primary.svg", "image/svg+xml"),
+    ("svg/logo-ultra-mini.svg", "image/svg+xml"),
+    ("svg/logo-mono-dark.svg", "image/svg+xml"),
+    ("png/favicon-16.png", "image/png"),
+    ("png/favicon-32.png", "image/png"),
+    ("png/favicon-180.png", "image/png"),
+    ("png/favicon.ico", "image/x-icon"),
+    ("png/yanshi-icon-256.png", "image/png"),
+];
+
+/// `GET /brand/{file}` 与 favicon：只提供白名单里的品牌资源。
+fn brand_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..") {
+        return crate::http::bad_request("非法资源名");
+    }
+    let Some((_, content_type)) = BRAND_FILES.iter().find(|(name, _)| *name == file) else {
+        return crate::http::not_found(format!("未知品牌资源 {file}"));
+    };
+    let Some(dir) = &state.options.brand_dir else {
+        return crate::http::not_found("服务端未启用品牌资源（--no-brand）");
+    };
+    let path = dir.join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::bytes(200, content_type, bytes)
+            .with_header("Cache-Control", "public, max-age=3600"),
+        Err(_) => crate::http::not_found(format!("品牌资源缺失：{}", path.display())),
     }
 }
 
@@ -1120,6 +1183,8 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
             "完整原子读取（客户端本地折叠，需 token）",
         ),
         ("GET /wasm/{file}", "WASM 计算内核产物（js/wasm）"),
+        ("GET /brand/{file}", "品牌资源（SVG 与预渲染 PNG）"),
+        ("GET /favicon.svg", "站点图标（SVG / PNG / ICO）"),
         ("GET /ws?doc=&token=", "WebSocket 升级与推送（需 token）"),
     ])
 }
