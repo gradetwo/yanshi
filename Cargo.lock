@@ -484,6 +484,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yanshi-render"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "yanshi-core",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,342 @@
+//! 几何与覆盖率光栅化（设计文档 8.1 / 8.4）。
+//!
+//! 所有形状都先光栅化成**覆盖率网格**（`0.0 – 1.0`，行主序），再参与合成。
+//! 覆盖率使用确定性算法：轴对齐矩形用解析面积，椭圆与多边形用固定超采样网格
+//! （默认 4×4），不使用任何平台相关的浮点库。
+
+use yanshi_core::Bbox;
+
+/// 形状覆盖率网格。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coverage {
+    /// 覆盖的文档坐标范围（像素网格对齐到整数边界）。
+    pub bbox: Bbox,
+    /// 宽（像素）。
+    pub width: u32,
+    /// 高（像素）。
+    pub height: u32,
+    /// 行主序覆盖率，长度 `width * height`。
+    pub data: Vec<f32>,
+}
+
+/// 默认超采样倍率（每轴）。
+pub const DEFAULT_SUPERSAMPLE: u32 = 4;
+
+impl Coverage {
+    /// 空覆盖率网格。
+    pub fn empty() -> Self {
+        Self {
+            bbox: Bbox::new(0.0, 0.0, 0.0, 0.0),
+            width: 0,
+            height: 0,
+            data: Vec::new(),
+        }
+    }
+
+    /// 文档坐标处的覆盖率（越界返回 0）。
+    pub fn at_doc(&self, x: f64, y: f64) -> f32 {
+        let lx = x - self.bbox.x;
+        let ly = y - self.bbox.y;
+        if lx < 0.0 || ly < 0.0 {
+            return 0.0;
+        }
+        self.at(lx as u32, ly as u32)
+    }
+
+    /// 覆盖率取值（网格局部坐标，越界返回 0）。
+    pub fn at(&self, x: u32, y: u32) -> f32 {
+        if x >= self.width || y >= self.height {
+            return 0.0;
+        }
+        self.data[(y * self.width + x) as usize]
+    }
+
+    /// 任意大小的网格（文档坐标像素对齐）。
+    pub fn new_aligned(bbox: Bbox, fill: f32) -> Self {
+        let x0 = bbox.x.floor();
+        let y0 = bbox.y.floor();
+        let x1 = (bbox.x + bbox.w).ceil();
+        let y1 = (bbox.y + bbox.h).ceil();
+        let width = (x1 - x0).max(0.0) as u32;
+        let height = (y1 - y0).max(0.0) as u32;
+        Self {
+            bbox: Bbox::new(x0, y0, width as f64, height as f64),
+            width,
+            height,
+            data: vec![fill; (width * height) as usize],
+        }
+    }
+
+    /// 覆盖率网格对应的像素中心是否落在形状内。
+    pub fn sample_center(&self, x: u32, y: u32) -> bool {
+        self.at(x, y) > 0.5
+    }
+}
+
+fn grid_size(bbox: &Bbox) -> (i64, i64, i64, i64) {
+    let x0 = bbox.x.floor() as i64;
+    let y0 = bbox.y.floor() as i64;
+    let x1 = (bbox.x + bbox.w).ceil() as i64;
+    let y1 = (bbox.y + bbox.h).ceil() as i64;
+    (x0, y0, x1, y1)
+}
+
+/// 轴对齐矩形的精确覆盖率（像素与矩形的重叠面积）。
+pub fn rect_coverage(bbox: Bbox) -> Coverage {
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return Coverage::empty();
+    }
+    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for py in 0..height {
+        let top = (y0 + py as i64) as f64;
+        let bottom = top + 1.0;
+        let overlap_y = (bottom.min(bbox.y + bbox.h) - top.max(bbox.y)).clamp(0.0, 1.0);
+        for px in 0..width {
+            let left = (x0 + px as i64) as f64;
+            let right = left + 1.0;
+            let overlap_x = (right.min(bbox.x + bbox.w) - left.max(bbox.x)).clamp(0.0, 1.0);
+            data.push((overlap_x * overlap_y) as f32);
+        }
+    }
+    Coverage {
+        bbox: Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64),
+        width,
+        height,
+        data,
+    }
+}
+
+/// 椭圆覆盖率（超采样，确定性）。
+pub fn ellipse_coverage(bbox: Bbox, supersample: u32) -> Coverage {
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return Coverage::empty();
+    }
+    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    let cx = bbox.x + bbox.w / 2.0;
+    let cy = bbox.y + bbox.h / 2.0;
+    let rx = bbox.w / 2.0;
+    let ry = bbox.h / 2.0;
+    let ss = supersample.max(1);
+    let samples = (ss * ss) as f32;
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for py in 0..height {
+        for px in 0..width {
+            let mut hits = 0.0f32;
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let x = x0 as f64 + px as f64 + (sx as f64 + 0.5) / ss as f64;
+                    let y = y0 as f64 + py as f64 + (sy as f64 + 0.5) / ss as f64;
+                    let nx = (x - cx) / rx;
+                    let ny = (y - cy) / ry;
+                    if nx * nx + ny * ny <= 1.0 {
+                        hits += 1.0;
+                    }
+                }
+            }
+            data.push(hits / samples);
+        }
+    }
+    Coverage {
+        bbox: Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64),
+        width,
+        height,
+        data,
+    }
+}
+
+/// 多边形覆盖率（偶奇规则 + 超采样）。
+pub fn polygon_coverage(points: &[(f64, f64)], supersample: u32) -> Coverage {
+    if points.len() < 3 {
+        return Coverage::empty();
+    }
+    let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let bbox = Bbox::new(
+        min_x,
+        min_y,
+        (max_x - min_x).max(0.0),
+        (max_y - min_y).max(0.0),
+    );
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return Coverage::empty();
+    }
+    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    let ss = supersample.max(1);
+    let samples = (ss * ss) as f32;
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for py in 0..height {
+        for px in 0..width {
+            let mut hits = 0.0f32;
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let x = x0 as f64 + px as f64 + (sx as f64 + 0.5) / ss as f64;
+                    let y = y0 as f64 + py as f64 + (sy as f64 + 0.5) / ss as f64;
+                    if point_in_polygon(x, y, points) {
+                        hits += 1.0;
+                    }
+                }
+            }
+            data.push(hits / samples);
+        }
+    }
+    Coverage {
+        bbox: Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64),
+        width,
+        height,
+        data,
+    }
+}
+
+/// 偶奇规则的点在多边形内判定。
+pub fn point_in_polygon(x: f64, y: f64, points: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let count = points.len();
+    let mut j = count - 1;
+    for i in 0..count {
+        let (xi, yi) = points[i];
+        let (xj, yj) = points[j];
+        if (yi > y) != (yj > y) {
+            let t = (y - yi) / (yj - yi);
+            if x < xi + t * (xj - xi) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// 从折线展开 stamp 位置（等距采样，确定性）。
+///
+/// `points` 为 `(x, y, pressure)`；`spacing` 为 stamp 间距（像素）；
+/// `dash` 为可选的虚线段长度（`None` 表示实线）。
+pub fn dashed_line(
+    points: &[(f64, f64, f64)],
+    spacing: f64,
+    dash: Option<f64>,
+) -> Vec<(f64, f64, f64)> {
+    let mut stamps = Vec::new();
+    if points.is_empty() {
+        return stamps;
+    }
+    let spacing = spacing.max(0.05);
+    let first = points[0];
+    if dash.map(|d| (0.0f64 % (d * 2.0)) < d).unwrap_or(true) {
+        stamps.push(first);
+    }
+    let mut next_at = spacing;
+    let mut arc = 0.0f64;
+    for window in points.windows(2) {
+        let (x0, y0, p0) = window[0];
+        let (x1, y1, p1) = window[1];
+        let segment = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        if segment <= f64::EPSILON {
+            continue;
+        }
+        while next_at <= arc + segment + 1e-9 {
+            let t = ((next_at - arc) / segment).clamp(0.0, 1.0);
+            let keep = dash.map(|d| (next_at % (d * 2.0)) < d).unwrap_or(true);
+            if keep {
+                stamps.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, p0 + (p1 - p0) * t));
+            }
+            next_at += spacing;
+        }
+        arc += segment;
+    }
+    stamps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_coverage_is_analytic() {
+        let coverage = rect_coverage(Bbox::new(1.0, 1.0, 2.0, 2.0));
+        assert_eq!((coverage.width, coverage.height), (2, 2));
+        for value in &coverage.data {
+            assert!((value - 1.0).abs() < 1e-6);
+        }
+
+        // 半像素偏移：每个像素覆盖 0.5。
+        let half = rect_coverage(Bbox::new(0.5, 0.0, 1.0, 1.0));
+        assert_eq!(half.at(0, 0), 0.5);
+        assert_eq!(half.at(1, 0), 0.5);
+    }
+
+    #[test]
+    fn rect_coverage_clips_outside_pixels() {
+        // 网格按整数像素边界对齐：[-0.25, 0.25)² 覆盖 4 个像素的各 1/16。
+        let coverage = rect_coverage(Bbox::new(-0.25, -0.25, 0.5, 0.5));
+        assert_eq!((coverage.width, coverage.height), (2, 2));
+        let total: f32 = coverage.data.iter().sum();
+        assert!((total - 0.25).abs() < 1e-6, "total={total}");
+        for value in &coverage.data {
+            assert!((value - 0.0625).abs() < 1e-6);
+        }
+        assert_eq!(rect_coverage(Bbox::new(0.0, 0.0, 0.0, 5.0)).width, 0);
+    }
+
+    #[test]
+    fn ellipse_coverage_is_centered_and_normalized() {
+        let coverage = ellipse_coverage(Bbox::new(0.0, 0.0, 8.0, 8.0), DEFAULT_SUPERSAMPLE);
+        assert_eq!((coverage.width, coverage.height), (8, 8));
+        // 中心像素高覆盖，角像素为 0。
+        assert!(coverage.at(4, 4) > 0.9);
+        assert_eq!(coverage.at(0, 0), 0.0);
+        assert_eq!(coverage.at(7, 7), 0.0);
+        // 总覆盖率接近 π·r² = π·16 ≈ 50.27。
+        let total: f32 = coverage.data.iter().sum();
+        assert!((total - 50.27).abs() < 1.5, "total={total}");
+    }
+
+    #[test]
+    fn polygon_coverage_matches_area() {
+        // 10×10 的直角三角形，面积 50。
+        let triangle = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)];
+        let coverage = polygon_coverage(&triangle, DEFAULT_SUPERSAMPLE);
+        let total: f32 = coverage.data.iter().sum();
+        assert!((total - 50.0).abs() < 1.5, "total={total}");
+        assert_eq!(polygon_coverage(&[(0.0, 0.0), (1.0, 1.0)], 4).width, 0);
+    }
+
+    #[test]
+    fn polygon_hole_is_produced_by_subtracting_inner_shape() {
+        let outer = polygon_coverage(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], 4);
+        let inner = polygon_coverage(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)], 4);
+        // 覆盖率网格的局部原点是各自 bbox 的整数像素对齐点，用文档坐标取值更直观。
+        assert_eq!(outer.at_doc(1.0, 1.0), 1.0, "外框内");
+        assert_eq!(outer.at_doc(5.0, 5.0), 1.0, "外框内（中心）");
+        assert_eq!(inner.at_doc(5.0, 5.0), 1.0, "内框覆盖中心");
+        assert_eq!(inner.at_doc(1.0, 1.0), 0.0, "内框之外");
+        // 环形 = 外框 - 内框。
+        assert_eq!(outer.at_doc(1.0, 1.0) - inner.at_doc(1.0, 1.0), 1.0);
+        assert_eq!(outer.at_doc(5.0, 5.0) - inner.at_doc(5.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn stamp_spacing_is_uniform() {
+        let stamps = dashed_line(&[(0.0, 0.0, 1.0), (10.0, 0.0, 0.0)], 2.0, None);
+        assert_eq!(stamps.len(), 6);
+        assert_eq!(stamps[0], (0.0, 0.0, 1.0));
+        assert!((stamps[1].0 - 2.0).abs() < 1e-6);
+        assert!((stamps.last().unwrap().0 - 10.0).abs() < 1e-6);
+        assert!((stamps[1].2 - 0.8).abs() < 1e-6, "压力线性插值");
+    }
+
+    #[test]
+    fn dash_pattern_skips_segments() {
+        let stamps = dashed_line(&[(0.0, 0.0, 1.0), (12.0, 0.0, 1.0)], 1.0, Some(2.0));
+        assert!(!stamps.is_empty());
+        assert!(stamps.len() < 13, "虚线应少于实线 stamp 数");
+    }
+}

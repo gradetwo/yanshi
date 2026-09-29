@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/yanshi-core"]
+members = ["crates/yanshi-core", "crates/yanshi-render"]
 
 [workspace.package]
 version = "0.1.0"

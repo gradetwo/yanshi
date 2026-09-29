@@ -1,0 +1,19 @@
+[package]
+name = "yanshi-render"
+description = "偃师 Yanshi 渲染计算内核层（D0 CPU 基线）与 CPU 合成后端"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
