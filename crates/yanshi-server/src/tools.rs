@@ -1154,6 +1154,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
+        name: "estimate_dehaze",
+        profile: Profile::Retouch,
+        summary: "估计去雾参数（只读）：扫描当前画面给出建议大气光 air 与暗通道均值，供 add_filter(dehaze) 使用",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
         name: "liquify_push",
         profile: Profile::Retouch,
         summary: "基础液化（推力）：把笔迹范围内的像素沿 direction 推开（反向映射 + 双线性重采样）",
@@ -1422,6 +1429,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
         "patch" => write_patch(ctx, args),
+        "estimate_dehaze" => read_estimate_dehaze(ctx),
         "liquify_push" => write_liquify(ctx, args, "push"),
         "liquify_twirl" => write_liquify(ctx, args, "twirl"),
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
@@ -2170,6 +2178,7 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         (EffectKind::Filter, "sharpen") => &[("amount", 0.0, 5.0), ("radius", 1.0, 8.0)],
         (EffectKind::Filter, "noise") => &[("amount", 0.0, 1.0), ("seed", 0.0, u64::MAX as f64)],
         (EffectKind::Filter, "clarity") => &[("amount", 0.0, 2.0), ("radius", 2.0, 64.0)],
+        (EffectKind::Filter, "dehaze") => &[("omega", 0.0, 1.0), ("floor", 0.02, 0.8)],
         (EffectKind::Filter, "glow") => &[
             ("threshold", 0.0, 1.0),
             ("radius", 1.0, 64.0),
@@ -2217,6 +2226,43 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!(
                         "levels 需要 black < white，得到 {black} / {white}"
+                    )),
+                ));
+            }
+        }
+    }
+    if name == "dehaze" {
+        // 大气光必须是调用方给定的 [r,g,b]（滤镜内部不做全局估计，否则分块 != 整幅）。
+        let air = object.get("air").ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("dehaze 需要 air: [r,g,b]（可用 estimate_dehaze 估计）"),
+            )
+        })?;
+        let Some(array) = air.as_array() else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("dehaze 的 air 必须是 [r,g,b]"),
+            ));
+        };
+        if array.len() != 3 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("dehaze 的 air 必须是三个分量"),
+            ));
+        }
+        for component in array {
+            let Some(value) = component.as_f64() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("dehaze 的 air 分量必须是数字"),
+                ));
+            };
+            if !(0.0..=1.0).contains(&value) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "dehaze 的 air 分量必须在 [0, 1] 内，得到 {value}"
                     )),
                 ));
             }
@@ -2665,6 +2711,40 @@ fn write_patch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     )?;
     let region = region_of(&result).or(Some(Bbox::new(tx, ty, width as f64, height as f64)));
     finish_mutation(ctx, &result, region)
+}
+
+/// 估计去雾参数（只读）：整幅渲染后按暗通道先验给出建议大气光。
+///
+/// 之所以做成**独立只读工具**而不是让滤镜内部估计：全局统计量若在滤镜内按区域计算，
+/// 同一像素在分块渲染与整幅渲染下结果不同，「分块 == 整幅」立刻失效（此前已踩过）。
+/// 估计值由调用方写进原子参数，因此渲染始终是逐像素确定性的；
+/// 这个两步式流程也天然适配 Phase 4b 的「估计 → 作为 patch 应用」。
+fn read_estimate_dehaze(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let (width, height) = {
+        let state = document_state(ctx)?;
+        (state.width, state.height)
+    };
+    let (raw_width, raw_height, pixels) = ctx.workspace.render_region_raw(
+        &ctx.doc_id,
+        Bbox::new(0.0, 0.0, width as f64, height as f64),
+    )?;
+    let (air, dark_mean) = yanshi_render::estimate_atmospheric_light(
+        raw_width, raw_height, &pixels,
+    )
+    .ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("像素数与尺寸不匹配，无法估计"),
+        )
+    })?;
+    // 雾越浓（暗通道均值越高）建议越强，但留出保守上限。
+    let suggested_omega = (0.6 + dark_mean * 0.6).clamp(0.6, 0.95);
+    Ok(json!({
+        "air": air,
+        "dark_channel_mean": dark_mean,
+        "suggested": {"omega": suggested_omega, "floor": 0.1},
+        "note": "把 air/omega/floor 传给 add_filter {filter_name: \"dehaze\"}；渲染逐像素确定性",
+    }))
 }
 
 /// 液化（`push` / `twirl` / `pinch`）：创建 `liquify` 对象。

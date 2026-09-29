@@ -1977,3 +1977,104 @@ fn batch_accept_and_suggestion_paging() {
         );
     }
 }
+
+/// 去雾是「只读估计 + 参数驱动滤镜」两步式：估计值必须能直接喂给滤镜且改变像素。
+#[test]
+fn dehaze_estimate_then_apply_changes_pixels() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_haze", 96, 96),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_haze", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    // 雾化画面：彩色场景与白雾按 0.5 混合（暗通道先验要求各通道有差异）。
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "layer_1", "object_id": "dark",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 48, "h": 96}},
+                         "color": {"r": 84, "g": 84, "b": 92, "a": 255}}}),
+    );
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "layer_1", "object_id": "warm",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 48, "y": 0, "w": 48, "h": 96}},
+                         "color": {"r": 218, "g": 160, "b": 148, "a": 255}}}),
+    );
+    let sample = |context: &mut ToolContext<'_>, x: u32, y: u32| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 96, "h": 96}, "raw": true}),
+        );
+        let hash: yanshi_core::BlobHash = response["raw_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let pixels = store.get(&hash).unwrap();
+        let index = ((y * 96 + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+
+    // 只读估计：返回可用的大气光与建议强度。
+    let estimate = registry.call(&mut context, "estimate_dehaze", &json!({}));
+    assert_eq!(estimate["ok"], json!(true), "{estimate}");
+    let air = estimate["air"].clone();
+    assert!(
+        air.as_array().unwrap().len() == 3,
+        "air 应为三分量：{estimate}"
+    );
+    let omega = estimate["suggested"]["omega"].clone();
+    assert!(omega.as_f64().unwrap() > 0.5, "建议强度应合理：{estimate}");
+
+    let before = sample(&mut context, 24, 48);
+    // 参数驱动滤镜：air 缺失必须被拒（防止滤镜内部做全局估计）。
+    let missing_air = registry.call(
+        &mut context,
+        "add_filter",
+        &json!({"layer_id": "layer_1", "filter_name": "dehaze", "params": {"omega": 0.8}}),
+    );
+    assert_eq!(
+        missing_air["error_code"],
+        json!("invalid_argument"),
+        "{missing_air}"
+    );
+    let applied = registry.call(
+        &mut context,
+        "add_filter",
+        &json!({"layer_id": "layer_1", "filter_name": "dehaze",
+                "params": {"air": air, "omega": omega, "floor": 0.1}}),
+    );
+    assert_eq!(applied["ok"], json!(true), "{applied}");
+    assert_eq!(applied["dirty_kind"], json!("structure"));
+    let after = sample(&mut context, 24, 48);
+    assert_ne!(before, after, "去雾必须改变像素：{before:?} → {after:?}");
+    // 暗部应更暗（对比度回升）。
+    assert!(
+        after[0] < before[0] + 5,
+        "暗部不应变亮：{before:?} → {after:?}"
+    );
+}

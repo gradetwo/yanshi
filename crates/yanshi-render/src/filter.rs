@@ -116,6 +116,8 @@ pub enum FilterKind {
     Glow,
     /// 局部对比度（clarity）。
     Clarity,
+    /// 去雾（暗通道先验，大气光由参数给出）。
+    Dehaze,
 }
 
 impl FilterKind {
@@ -130,6 +132,7 @@ impl FilterKind {
             "vignette" => Some(Self::Vignette),
             "glow" => Some(Self::Glow),
             "clarity" => Some(Self::Clarity),
+            "dehaze" => Some(Self::Dehaze),
             "brightness_contrast" => Some(Self::BrightnessContrast),
             "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
@@ -148,6 +151,7 @@ impl FilterKind {
             Self::Vignette => "vignette",
             Self::Glow => "glow",
             Self::Clarity => "clarity",
+            Self::Dehaze => "dehaze",
             Self::BrightnessContrast => "brightness_contrast",
             Self::Saturation => "saturation",
             Self::Invert => "invert",
@@ -185,6 +189,8 @@ impl FilterKind {
             Self::Sharpen => radius.ceil() as u32,
             // 两趟方框模糊，邻域按 2 倍半径申报（glow 与 clarity 同理）。
             Self::Glow | Self::Clarity => (radius.ceil() as u32) * 2,
+            // 去雾内部对透射率图做 radius=4 的模糊，固定外扩 8。
+            Self::Dehaze => 8,
             _ => 0,
         }
     }
@@ -675,6 +681,94 @@ pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
     }
 }
 
+/// 去雾（暗通道先验）：`air` 为**调用方给定**的大气光，`omega` 控制去雾强度，
+/// `floor` 是透射率下限（避免除零与过度放大噪声）。
+///
+/// 大气光必须是参数而不是在滤镜内部估计：否则同一像素在分块渲染与整幅渲染下会得到
+/// 不同的全局统计量，`分块 == 整幅` 立刻失效（这类问题此前已踩过）。只读工具
+/// `estimate_dehaze` 负责扫描文档给出建议值，再由调用方写进原子参数——这与
+/// Phase 4b 的「先预览/估计、再作为 patch 应用」是同一套思路。
+pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
+    let omega = omega.clamp(0.0, 1.0);
+    let floor = floor.clamp(0.02, 0.8);
+    let air = air.map(|value| value.clamp(0.05, 1.0));
+    let air_luma = (0.2126 * air[0] + 0.7152 * air[1] + 0.0722 * air[2]).max(1e-3);
+    let width = buffer.width();
+    let height = buffer.height();
+    // 透射率图（先算再模糊，抑制块状伪影）。
+    let mut transmission = Buffer::new(buffer.origin().0, buffer.origin().1, width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = buffer.pixel(x, y);
+            // 暗通道：直通空间的最小通道值。
+            let dark = pixel[0].min(pixel[1]).min(pixel[2]);
+            let t = (1.0 - omega * dark / air_luma).clamp(floor, 1.0);
+            transmission.set_pixel(x, y, [t, t, t, 1.0]);
+        }
+    }
+    box_blur(&mut transmission, 4, 1);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = buffer.pixel(x, y);
+            let alpha = pixel[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let t = transmission.pixel(x, y)[0].clamp(floor, 1.0);
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                // 直通空间恢复后重新预乘。
+                let straight = pixel[channel] / alpha;
+                let recovered = (straight - air[channel]) / t + air[channel];
+                out[channel] = (recovered.clamp(0.0, 1.0)) * alpha;
+            }
+            buffer.set_pixel(x, y, out);
+        }
+    }
+}
+
+/// 暗通道均值与「大气光」估计（供只读工具 `estimate_dehaze` 使用）。
+///
+/// 返回 `(air, dark_mean)`：`air` 取暗通道最亮的那 0.1% 像素的平均颜色。
+pub fn estimate_atmospheric_light(
+    width: u32,
+    height: u32,
+    rgba8: &[u8],
+) -> Option<([f32; 3], f32)> {
+    let expected = (width as usize) * (height as usize) * 4;
+    if rgba8.len() < expected || width == 0 || height == 0 {
+        return None;
+    }
+    // 用 (暗通道, 索引) 排序取前 0.1%。
+    let mut dark_channels: Vec<(f32, usize)> = Vec::with_capacity(expected / 4);
+    let mut sum = 0.0f32;
+    for index in 0..expected / 4 {
+        let base = index * 4;
+        let r = rgba8[base] as f32 / 255.0;
+        let g = rgba8[base + 1] as f32 / 255.0;
+        let b = rgba8[base + 2] as f32 / 255.0;
+        let dark = r.min(g).min(b);
+        sum += dark;
+        dark_channels.push((dark, index));
+    }
+    let count = dark_channels.len().max(1);
+    dark_channels.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let take = ((count as f32 * 0.001).ceil() as usize).max(1);
+    let mut air = [0.0f32; 3];
+    for (_, index) in dark_channels.iter().take(take) {
+        let base = index * 4;
+        air[0] += rgba8[base] as f32 / 255.0;
+        air[1] += rgba8[base + 1] as f32 / 255.0;
+        air[2] += rgba8[base + 2] as f32 / 255.0;
+    }
+    let scale = 1.0 / take as f32;
+    for value in air.iter_mut() {
+        *value = (*value * scale).clamp(0.05, 1.0);
+    }
+    Some((air, sum / count as f32))
+}
+
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
 pub fn vignette(
     buffer: &mut Buffer,
@@ -876,7 +970,7 @@ pub const ADJUSTMENT_NAMES: [&str; 11] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 11] = [
+pub const FILTER_NAMES: [&str; 12] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
@@ -885,6 +979,7 @@ pub const FILTER_NAMES: [&str; 11] = [
     "vignette",
     "glow",
     "clarity",
+    "dehaze",
     "brightness_contrast",
     "saturation",
     "invert",
@@ -1080,6 +1175,12 @@ pub fn apply_filter(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(0.05) as f32,
             params.get("seed").and_then(Value::as_u64).unwrap_or(0),
+        ),
+        FilterKind::Dehaze => dehaze(
+            &mut filtered,
+            triple(params.get("air")),
+            params.get("omega").and_then(Value::as_f64).unwrap_or(0.85) as f32,
+            params.get("floor").and_then(Value::as_f64).unwrap_or(0.1) as f32,
         ),
         FilterKind::Clarity => clarity(
             &mut filtered,
@@ -1511,6 +1612,88 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 去雾：雾化（与大气光混合）的图像经去雾后对比度应回升；平坦雾区保持不变。
+    #[test]
+    fn dehaze_restores_contrast_on_a_foggy_image() {
+        // 构造「彩色场景混白雾」：暗通道先验要求场景**各通道有差异**，
+        // 纯灰度图会让 min(r,g,b) 等于亮度本身，先验退化（第一版测试就踩了这个）。
+        let air = [0.85f32, 0.88, 0.9];
+        let scene = |x: u32| -> [f32; 3] {
+            if x < 16 {
+                [0.08, 0.08, 0.10]
+            } else {
+                [0.60, 0.25, 0.20]
+            }
+        };
+        let mut buffer = Buffer::new(0, 0, 32, 8);
+        for y in 0..8 {
+            for x in 0..32 {
+                let base = scene(x);
+                buffer.set_pixel(
+                    x,
+                    y,
+                    [
+                        base[0] * 0.5 + air[0] * 0.5,
+                        base[1] * 0.5 + air[1] * 0.5,
+                        base[2] * 0.5 + air[2] * 0.5,
+                        1.0,
+                    ],
+                );
+            }
+        }
+        // 用红通道衡量对比度：亮部偏红、暗部接近中性。
+        let before_diff = buffer.pixel(28, 4)[0] - buffer.pixel(4, 4)[0];
+        dehaze(&mut buffer, air, 0.9, 0.1);
+        let after_diff = buffer.pixel(28, 4)[0] - buffer.pixel(4, 4)[0];
+        assert!(
+            after_diff > before_diff,
+            "去雾应提升对比度：{before_diff} → {after_diff}"
+        );
+        // 平坦雾区（全为 air）经去雾后仍接近原值。
+        let mut flat = Buffer::new(0, 0, 16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                flat.set_pixel(x, y, [air[0], air[1], air[2], 1.0]);
+            }
+        }
+        let flat_before = flat.pixel(8, 8)[0];
+        dehaze(&mut flat, air, 0.9, 0.1);
+        assert!(
+            (flat.pixel(8, 8)[0] - flat_before).abs() < 0.05,
+            "纯大气光区域不应被大幅改动：{flat_before} → {}",
+            flat.pixel(8, 8)[0]
+        );
+        // 预乘不变量与越界参数。
+        let mut extremes = Buffer::new(0, 0, 8, 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                extremes.set_pixel(x, y, [0.2, 0.2, 0.2, 0.4]);
+            }
+        }
+        dehaze(&mut extremes, [9.0, -9.0, 0.5], 9.0, -9.0);
+        for y in 0..8 {
+            for x in 0..8 {
+                let pixel = extremes.pixel(x, y);
+                assert!(
+                    pixel.iter().all(|v| v.is_finite() && *v >= 0.0) && pixel[0] <= pixel[3] + 1e-3,
+                    "越界参数不得破坏预乘不变量：{pixel:?}"
+                );
+            }
+        }
+        // 估计器：雾图的暗通道均值应明显大于 0，且 air 接近亮部。
+        let mut rgba8 = Vec::with_capacity(32 * 8 * 4);
+        for _ in 0..8 {
+            for x in 0..32 {
+                let value = if x < 16 { 0.55f32 } else { 0.8 };
+                let byte = (value * 255.0) as u8;
+                rgba8.extend_from_slice(&[byte, byte, byte, 255]);
+            }
+        }
+        let (estimated, dark_mean) = estimate_atmospheric_light(32, 8, &rgba8).expect("估计应成功");
+        assert!(dark_mean > 0.4, "雾图暗通道均值应偏高：{dark_mean}");
+        assert!(estimated[0] > 0.7, "大气光应接近亮部：{estimated:?}");
     }
 
     /// 局部对比度：软边变陡、平坦区不变、极暗处抑制（中间调加权）。

@@ -100,8 +100,9 @@ pub use color::{
 };
 pub use dirty::{invalidated_tiles, plan_dirty, plan_dirty_with_log, DirtyKind, DirtySet};
 pub use filter::{
-    apply_adjustment, apply_filter, box_blur, brightness_contrast, gaussian_blur, invert, levels,
-    saturation, AdjustmentKind, FilterKind, ADJUSTMENT_NAMES, FILTER_NAMES,
+    apply_adjustment, apply_filter, box_blur, brightness_contrast, color_balance, dehaze,
+    estimate_atmospheric_light, gaussian_blur, invert, levels, saturation, split_toning,
+    AdjustmentKind, FilterKind, ADJUSTMENT_NAMES, FILTER_NAMES,
 };
 pub use geometry::{
     dashed_line, ellipse_coverage, point_in_polygon, polygon_coverage, rect_coverage, Coverage,
