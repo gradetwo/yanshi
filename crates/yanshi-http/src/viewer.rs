@@ -272,6 +272,9 @@ async function loadKernel(since = 0) {
   }
   if (!state.kernel || since === 0) {
     state.kernel = new state.wasm.WasmKernel(state.docId, 256, w, h, 64 * 1024 * 1024);
+    // 诊断句柄：仅在 `?debug=1` 时挂到 window 上，供 scripts/browser-kernel-perf.mjs
+    // 直接测量内核区域渲染成本（默认不暴露，避免把内部对象变成事实上的公开 API）。
+    if (new URLSearchParams(location.search).has("debug")) window.yanshiKernel = state.kernel;
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
     if (!loaded.ok) {
       log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");

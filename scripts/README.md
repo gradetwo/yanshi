@@ -43,6 +43,28 @@ node scripts/browser-drag-perf.mjs "http://127.0.0.1:8110/?doc=myDoc&token=..." 
 > **测量口径提醒**：只测同步处理耗时。若在每段后 `await requestAnimationFrame`，
 > 量到的主要是 60fps 帧边界（~16.7ms），真实工作量（~1ms）会被淹没 —— 首版探针就踩了这个坑。
 
+## `browser-kernel-perf.mjs` — 客户端 WASM 内核区域渲染成本
+
+```bash
+node scripts/browser-kernel-perf.mjs "http://127.0.0.1:8110/?doc=myDoc&token=...&debug=1"
+```
+
+需要 URL 带 `debug=1`（内核句柄 `window.yanshiKernel` 仅在调试模式暴露）。输出 8²–512² 的
+5 次取最小时耗与 ns/px，可与服务端口径横向对比。
+
+| 区域 | 客户端内核 | 服务端（raw） |
+|---|---|---|
+| 64² | 4.5ms | 0.89ms |
+| 128² | 4.8ms | 3.09ms |
+| 256² | 6.5ms | 12.24ms |
+| 512² | 26.9ms | 49.07ms |
+
+客户端约 **4.2ms 固定开销 + 约 87ns/px**（512²），每像素比服务端快约 2×（少了 PNG、缩略图与
+背景扁平化）；服务端约 187ns/px。
+
+> **必须让机器空闲再测**：同一次 64² 测量在 `cargo build` 刚结束时得到 13.5ms、空闲时 4.5ms（3×）。
+> 本机噪声极大，只能支撑量级结论；脚本已内置 5 次取最小。
+
 ### 参考基线（本机，1024²，release 服务端）
 
 | 指标 | 值 |
