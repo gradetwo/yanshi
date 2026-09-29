@@ -626,7 +626,7 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         // 设计里有、内核尚未实现的类型必须在工具层被拒（不放空壳能力）。
         (
             "add_adjustment",
-            json!({"layer_id": "layer_1", "adjustment_type": "hsl"}),
+            json!({"layer_id": "layer_1", "adjustment_type": "color_balance"}),
         ),
         (
             "add_filter",

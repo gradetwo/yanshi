@@ -1051,7 +1051,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels / exposure / white_balance / curves",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels / exposure / white_balance / curves / hsl",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -1925,6 +1925,11 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
             &[("temperature", -1.0, 1.0), ("tint", -1.0, 1.0)]
         }
         (EffectKind::Adjustment, "curves") => &[],
+        (EffectKind::Adjustment, "hsl") => &[
+            ("hue", -180.0, 180.0),
+            ("saturation", 0.0, 4.0),
+            ("lightness", -1.0, 1.0),
+        ],
         (EffectKind::Filter, "box_blur") => &[("radius", 1.0, 128.0), ("passes", 1.0, 8.0)],
         (EffectKind::Filter, "gaussian_blur") => &[("sigma", 0.05, 128.0)],
         (EffectKind::Filter, "motion_blur") => &[

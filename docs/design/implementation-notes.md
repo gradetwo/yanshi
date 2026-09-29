@@ -394,6 +394,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `exposure` | `ev` −10..10 | 线性光下 `×2^ev` |
 | 调整 `white_balance` | `temperature`/`tint` −1..1 | 暖/冷 + 品红/绿 |
 | 调整 `curves` | `points`[[x,y]...]、`channel` rgb/r/g/b | **单调三次插值**（Fritsch–Carlson），保证不过冲 |
+| 调整 `hsl` | `hue` −180..180、`saturation` 0..4、`lightness` −1..1 | 标准 HSL：色相旋转 / 饱和度缩放 / 明度偏移 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
 | 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |

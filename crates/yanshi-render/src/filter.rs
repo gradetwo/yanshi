@@ -29,6 +29,8 @@ pub enum AdjustmentKind {
     WhiteBalance,
     /// 曲线（单调三次插值）。
     Curves,
+    /// 色相/饱和度/明度。
+    Hsl,
 }
 
 impl AdjustmentKind {
@@ -42,6 +44,7 @@ impl AdjustmentKind {
             "exposure" => Some(Self::Exposure),
             "white_balance" => Some(Self::WhiteBalance),
             "curves" => Some(Self::Curves),
+            "hsl" | "hue_saturation" => Some(Self::Hsl),
             _ => None,
         }
     }
@@ -56,11 +59,12 @@ impl AdjustmentKind {
             Self::Exposure => "exposure",
             Self::WhiteBalance => "white_balance",
             Self::Curves => "curves",
+            Self::Hsl => "hsl",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 7] = [
+    pub const ALL: [AdjustmentKind; 8] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -68,6 +72,7 @@ impl AdjustmentKind {
         Self::Exposure,
         Self::WhiteBalance,
         Self::Curves,
+        Self::Hsl,
     ];
 }
 
@@ -203,6 +208,56 @@ pub fn levels(buffer: &mut Buffer, black: f32, white: f32, gamma: f32) {
             let normalized = ((*value - black) / (white - black)).clamp(0.0, 1.0);
             *value = normalized.powf(inverse_gamma);
         }
+    });
+}
+
+/// HSL 调整：色相旋转（度）+ 饱和度倍率 + 明度偏移。
+///
+/// 与其它调整一致，作用于**直通线性**通道并钳制到 [0,1]。HSL 采用标准定义：
+/// 色相 0°=红、120°=绿、240°=蓝；`lightness` 为 HSL 明度的加性偏移。
+pub fn hsl(buffer: &mut Buffer, hue_degrees: f32, saturation: f32, lightness: f32) {
+    let hue_shift = hue_degrees.clamp(-360.0, 360.0) / 360.0;
+    let saturation = saturation.clamp(0.0, 8.0);
+    let lightness = lightness.clamp(-1.0, 1.0);
+    for_each_straight_color(buffer, |color| {
+        let (r, g, b) = (color[0], color[1], color[2]);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let chroma = max - min;
+        let l = (max + min) / 2.0;
+        let mut h = if chroma <= 0.0 {
+            0.0
+        } else if max == r {
+            ((g - b) / chroma).rem_euclid(6.0) / 6.0
+        } else if max == g {
+            (((b - r) / chroma) + 2.0) / 6.0
+        } else {
+            (((r - g) / chroma) + 4.0) / 6.0
+        };
+        let s = if l <= 0.0 || l >= 1.0 {
+            0.0
+        } else {
+            chroma / (1.0 - (2.0 * l - 1.0).abs())
+        };
+        // 色相旋转 + 饱和度缩放 + 明度偏移。
+        h = (h + hue_shift).rem_euclid(1.0);
+        let s = (s * saturation).clamp(0.0, 1.0);
+        let l = (l + lightness).clamp(0.0, 1.0);
+        // HSL → RGB。
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+        let m = l - c / 2.0;
+        let (r1, g1, b1) = match (h * 6.0) as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        color[0] = (r1 + m).clamp(0.0, 1.0);
+        color[1] = (g1 + m).clamp(0.0, 1.0);
+        color[2] = (b1 + m).clamp(0.0, 1.0);
     });
 }
 
@@ -606,7 +661,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 7] = [
+pub const ADJUSTMENT_NAMES: [&str; 8] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -614,6 +669,7 @@ pub const ADJUSTMENT_NAMES: [&str; 7] = [
     "exposure",
     "white_balance",
     "curves",
+    "hsl",
 ];
 
 /// 内核支持的滤镜名。
@@ -701,6 +757,18 @@ pub fn apply_adjustment(
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0) as f32,
             params.get("tint").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        ),
+        AdjustmentKind::Hsl => hsl(
+            &mut adjusted,
+            params.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            params
+                .get("saturation")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0) as f32,
+            params
+                .get("lightness")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0) as f32,
         ),
         AdjustmentKind::Curves => curves(
             &mut adjusted,
@@ -1047,6 +1115,44 @@ mod tests {
             "模糊应保持总能量：{}",
             sum(&horizontal)
         );
+    }
+
+    /// HSL：色相旋转 120° 应把红转到绿；饱和度 0 应变灰；明度偏移不该跳出色域。
+    #[test]
+    fn hsl_rotates_hue_and_desaturates() {
+        let red = || {
+            let mut buffer = Buffer::new(0, 0, 1, 1);
+            buffer.set_pixel(0, 0, [1.0, 0.0, 0.0, 1.0]);
+            buffer
+        };
+        let mut rotated = red();
+        hsl(&mut rotated, 120.0, 1.0, 0.0);
+        let pixel = rotated.pixel(0, 0);
+        assert!(
+            pixel[1] > 0.9 && pixel[0] < 0.1,
+            "红转 120° 应为绿：{pixel:?}"
+        );
+
+        let mut grey = red();
+        hsl(&mut grey, 0.0, 0.0, 0.0);
+        let pixel = grey.pixel(0, 0);
+        assert!(
+            (pixel[0] - pixel[1]).abs() < 1e-3 && (pixel[1] - pixel[2]).abs() < 1e-3,
+            "饱和度 0 应为中性灰：{pixel:?}"
+        );
+
+        // 明度偏移与色相旋转都不该产出越界值（预乘不变量）。
+        for (hue, sat, light) in [(0.0, 1.0, 0.9), (200.0, 3.0, -0.5), (359.0, 0.2, 0.4)] {
+            let mut buffer = red();
+            hsl(&mut buffer, hue, sat, light);
+            let pixel = buffer.pixel(0, 0);
+            assert!(
+                pixel
+                    .iter()
+                    .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0),
+                "hsl({hue},{sat},{light}) 越界：{pixel:?}"
+            );
+        }
     }
 
     /// 噪点必须**与分块无关**：同一像素在整幅渲染与偏移区域渲染里必须得到同一值。

@@ -1270,7 +1270,7 @@ mod tests {
 
         // 未实现的类型必须产生告警且不改动像素（`curves` 已实现，这里用内核没有的类型）。
         state.objects.get_mut("obj_adj").unwrap().data =
-            json!({"adjustment_type": "hsl", "params": {}});
+            json!({"adjustment_type": "color_balance", "params": {}});
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
