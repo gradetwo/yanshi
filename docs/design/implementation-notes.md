@@ -1235,7 +1235,7 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 | 区域渲染（缓存命中） | < 10ms | 部分覆盖 | 理由：实测约 49–70ms，**未达标**；region_render_matches_the_design_budget_tiers 守护回归基线并每次打印差距，根因见「交互路径预算」节 |
 | 区域渲染（未命中·简单） | < 100ms | 已覆盖 | perf_budget.rs::region_render_matches_the_design_budget_tiers |
 | 区域渲染（未命中·复杂） | < 300ms | 已覆盖 | perf_budget.rs::region_render_matches_the_design_budget_tiers |
-| 时间旅行（近期历史 / checkpoint） | < 300ms | 部分覆盖 | 理由：功能由 service_flow.rs::time_travel_and_checkpoint_restore 覆盖，延迟未设门禁 |
+| 时间旅行（近期历史 / checkpoint） | < 300ms | 已覆盖 | perf_budget.rs::time_travel_budget_near_history |
 | 时间旅行（老历史，含归档取回） | 秒级，UI 提示 | 未覆盖 | 理由：需要归档层取回路径与长历史夹具，尚未搭建 |
 | 内存（4K/10 图层） | < 4GB | 部分覆盖 | 理由：缓存预算由 perf_budget.rs::profile_4k_full_render_cache_capacity 守护；整机 RSS 实测 0.08GB 记录于本文档，但 RSS 未纳入自动门禁 |
 | 内存（8K/5 图层） | < 8GB | 未覆盖 | 理由：未测（8K 单层即约 268MB，夹具与时间成本高） |
@@ -1244,8 +1244,12 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 | 8h 会话性能衰减 | < 20% | 未覆盖 | 理由：需要 8 小时压测，尚未纳入长跑作业 |
 <!-- budget-coverage:end -->
 
-**这张表的价值在于"承认"**：16 项里 7 项已覆盖、5 项部分覆盖（含 1 项明确未达标）、
+**这张表的价值在于"承认"**：16 项里 **8 项已覆盖**、4 项部分覆盖（含 1 项明确未达标）、
 3 项未覆盖、1 项不适用 —— 比"设计说会自动回归"这种无人核对的表述诚实得多。
+
+**本轮补齐的一行**：时间旅行（近期历史 / checkpoint）此前只有功能测试、没有延迟门禁；
+新增 `commit_budget_single_and_batch` 同文件的 `time_travel_budget_near_history`
+（200 原子历史 + checkpoint），实测 **167µs**（预算 300ms，余量约 1800×）。
 
 ## 二之七、拖动笔迹性能实测与「预览覆盖层」的否定结论
 

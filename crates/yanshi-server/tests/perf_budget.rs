@@ -765,3 +765,113 @@ fn commit_budget_single_and_batch() {
         "批量提交 20 原子 {batch_best:?} 超出 10ms 预算（14.10）"
     );
 }
+
+/// 14.10 预算表：时间旅行（近期历史 / checkpoint）< 300ms。
+///
+/// 覆盖的是「从 HEAD 回看近期历史」的**状态重建**成本（`state_at` 路径），
+/// 以及 checkpoint 建立后的取用。老历史含归档取回（秒级、UI 提示）另有条目，暂未设门禁。
+#[test]
+#[ignore = "性能预算验收：CI 用 --ignored 执行（14.10 时间旅行预算）"]
+fn time_travel_budget_near_history() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(
+            NewDocument::new("doc_travel", 512, 512),
+            "human:1",
+            "session:a",
+        )
+        .unwrap();
+    workspace
+        .commit(
+            "doc_travel",
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "layer_1", "name": "base"}),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    // 造一段中等长度的历史（200 个原子），并记录第 20 个原子处的目标 seq。
+    let mut target_seq = 0;
+    for index in 0..200 {
+        let result = workspace
+            .commit(
+                "doc_travel",
+                Atom::new(
+                    AtomKind::CreateObject,
+                    "human:1",
+                    "session:a",
+                    json!({
+                        "object_id": format!("obj_{index}"),
+                        "layer_id": "layer_1",
+                        "kind": "shape",
+                        "data": {
+                            "geometry": {"kind": "rect",
+                                "bbox": {"x": (index % 32) as f64 * 12.0, "y": (index / 32) as f64 * 12.0,
+                                         "w": 10.0, "h": 10.0}},
+                            "color": {"r": 90, "g": 140, "b": 190, "a": 255}
+                        }
+                    }),
+                ),
+                "human:1",
+                true,
+            )
+            .unwrap();
+        if index == 20 {
+            target_seq = result.seq;
+        }
+    }
+
+    // 近期历史：连续 5 次回看同一 seq，取最小值。
+    let mut best = Duration::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let _ = workspace
+            .document_mut("doc_travel")
+            .unwrap()
+            .state_at(target_seq)
+            .expect("近期历史应可重建");
+        best = best.min(started.elapsed());
+    }
+    println!("时间旅行（近期历史，seq {target_seq}，最小）: {best:?}｜预算 < 300ms（14.10）");
+    assert!(
+        best < Duration::from_millis(300),
+        "近期历史重建 {best:?} 超出 300ms 预算（14.10）"
+    );
+
+    // checkpoint 建立后从 checkpoint 出发的回看也应在预算内。
+    let checkpoint = workspace
+        .commit(
+            "doc_travel",
+            Atom::new(
+                AtomKind::CreateCheckpoint,
+                "human:1",
+                "session:a",
+                json!({"checkpoint_id": "ckpt_1", "name": "v1", "anchor_seq": target_seq}),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    let mut checkpoint_best = Duration::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let _ = workspace
+            .document_mut("doc_travel")
+            .unwrap()
+            .state_at(target_seq)
+            .expect("checkpoint 路径应可重建");
+        checkpoint_best = checkpoint_best.min(started.elapsed());
+    }
+    println!(
+        "时间旅行（checkpoint seq {} 之后回看，最小）: {checkpoint_best:?}｜预算 < 300ms",
+        checkpoint.seq
+    );
+    assert!(
+        checkpoint_best < Duration::from_millis(300),
+        "checkpoint 路径重建 {checkpoint_best:?} 超出 300ms 预算（14.10）"
+    );
+}
