@@ -2124,3 +2124,103 @@ fn dehaze_estimate_then_apply_changes_pixels() {
         "暗部不应变亮：{before:?} → {after:?}"
     );
 }
+
+/// 预览必须挡住补丁顺序错误（这类错误若留到接受阶段，会造成部分应用的状态）。
+#[test]
+fn preview_detects_patch_order_problems() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_order", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_order", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "existing"}),
+    );
+
+    // 顺序错误：先往新图层画，再创建它。
+    let wrong = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "draw_shape", "arguments": {"layer_id": "fresh",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}},
+                         "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}},
+            {"tool": "create_layer", "arguments": {"layer_id": "fresh"}}
+        ]}),
+    );
+    assert_eq!(wrong["applicable"], json!(false), "{wrong}");
+    assert_eq!(wrong["steps"][0]["valid"], json!(false), "{wrong}");
+    assert!(
+        wrong["steps"][0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("尚未创建"),
+        "错误信息应指出顺序问题：{wrong}"
+    );
+    // patch 自身的模拟不应改变文档。
+    let head_before = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+
+    // 正确顺序：先创建图层再画 → 两步都合法。
+    let right = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "create_layer", "arguments": {"layer_id": "fresh"}},
+            {"tool": "draw_shape", "arguments": {"layer_id": "fresh",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}},
+                         "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}}
+        ]}),
+    );
+    assert_eq!(right["applicable"], json!(true), "{right}");
+
+    // 对象引用：patch 内先创建对象再更新它 → 合法；更新不存在的对象 → 非法。
+    let update_existing = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "add_adjustment", "arguments": {"layer_id": "existing", "object_id": "fx1",
+                "adjustment_type": "exposure", "params": {"ev": 0.2}}},
+            {"tool": "update_adjustment", "arguments": {"object_id": "fx1", "params": {"ev": 0.4}}}
+        ]}),
+    );
+    assert_eq!(
+        update_existing["applicable"],
+        json!(true),
+        "{update_existing}"
+    );
+    let update_missing = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "update_adjustment", "arguments": {"object_id": "nope", "params": {"ev": 0.4}}}
+        ]}),
+    );
+    assert_eq!(
+        update_missing["applicable"],
+        json!(false),
+        "{update_missing}"
+    );
+    assert!(
+        update_missing["steps"][0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("不存在"),
+        "{update_missing}"
+    );
+    // 预览全程无副作用。
+    let head_after = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+    assert_eq!(head_before, head_after, "预览不得写入日志");
+}

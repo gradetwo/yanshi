@@ -3026,6 +3026,22 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     let mut invalid = 0usize;
     let mut aggregate_affects = "none";
     let mut aggregate_region: Option<Bbox> = None;
+    // 依赖顺序模拟：按 patch 顺序跟踪「此刻已知的图层/对象」，
+    // 这样能挡住「先画后建图层」这类会在**接受过程中**失败、留下部分应用状态的补丁。
+    let (mut known_layers, mut known_objects) = {
+        let state = document_state(ctx)?;
+        let layers: BTreeSet<String> = state
+            .alive_layers()
+            .iter()
+            .map(|layer| layer.id.clone())
+            .collect();
+        let objects: BTreeSet<String> = state
+            .alive_objects()
+            .iter()
+            .map(|object| object.id.clone())
+            .collect();
+        (layers, objects)
+    };
     for (index, step) in patch.iter().enumerate() {
         let tool = step
             .get("tool")
@@ -3071,7 +3087,11 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
                 Ok(()) => {
                     // 效果类工具的参数范围校验在处理器内部（按效果名区分），
                     // 预览必须一并执行，否则会出现「预览说可以用、接受时却被拒」的误导。
-                    match preview_effect_check(&tool, &step_args) {
+                    let effect_check = preview_effect_check(&tool, &step_args);
+                    // 依赖顺序：引用此刻尚不存在的图层/对象时，接受会在中途失败。
+                    let order_check =
+                        check_step_order(&tool, &step_args, &mut known_layers, &mut known_objects);
+                    match effect_check.and(order_check) {
                         Ok(()) => entry["valid"] = json!(true),
                         Err(error) => {
                             invalid += 1;
@@ -3114,6 +3134,88 @@ fn preview_effect_check(tool: &str, args: &Value) -> Result<()> {
     };
     let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
     validate_effect(kind, name, &params)
+}
+
+/// 按 patch 顺序检查引用有效性，并更新「已知图层/对象」集合。
+///
+/// 规则：`create_layer`/`create_*`/`draw_*` 等创建型步骤把目标加入集合；
+/// 其余引用 `layer_id`/`object_id` 的步骤要求目标**此刻已存在**；
+/// `delete_*` 会把目标移出集合（后续再引用即报错）。
+fn check_step_order(
+    tool: &str,
+    args: &Value,
+    layers: &mut BTreeSet<String>,
+    objects: &mut BTreeSet<String>,
+) -> Result<()> {
+    let layer_id = args.get("layer_id").and_then(Value::as_str);
+    let object_id = args.get("object_id").and_then(Value::as_str);
+    let creates_layer = tool == "create_layer";
+    let creates_object = matches!(
+        tool,
+        "create_object"
+            | "import_image"
+            | "draw_stroke"
+            | "draw_shape"
+            | "draw_text"
+            | "fill"
+            | "erase"
+            | "retouch"
+            | "liquify"
+            | "clone_stamp"
+            | "heal_stamp"
+            | "smudge"
+            | "patch"
+            | "add_adjustment"
+            | "add_filter"
+    );
+    let deletes_layer = tool == "delete_layer";
+    let deletes_object = matches!(tool, "delete_object" | "tombstone");
+
+    if !creates_layer && !deletes_layer {
+        if let Some(layer_id) = layer_id {
+            if !layers.contains(layer_id) {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!(
+                        "该步骤引用的图层 {layer_id} 在此时尚未创建（补丁顺序问题）"
+                    )),
+                ));
+            }
+        }
+    }
+    if !creates_object && !deletes_object {
+        if let Some(object_id) = object_id {
+            if !objects.contains(object_id) {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!(
+                        "该步骤引用的对象 {object_id} 在此时不存在（补丁顺序问题）"
+                    )),
+                ));
+            }
+        }
+    }
+    if creates_layer {
+        if let Some(layer_id) = layer_id {
+            layers.insert(layer_id.to_owned());
+        }
+    }
+    if creates_object {
+        if let Some(object_id) = object_id {
+            objects.insert(object_id.to_owned());
+        }
+    }
+    if deletes_layer {
+        if let Some(layer_id) = layer_id {
+            layers.remove(layer_id);
+        }
+    }
+    if deletes_object {
+        if let Some(object_id) = object_id {
+            objects.remove(object_id);
+        }
+    }
+    Ok(())
 }
 
 /// 预估某一步骤的影响范围（按内核真实的 dirty 语义推导）。
