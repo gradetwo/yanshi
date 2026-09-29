@@ -117,6 +117,21 @@ impl WasmKernel {
         }
     }
 
+    /// 直绘一个小区域（拖动中的笔迹反馈）。
+    ///
+    /// 查看器一直依赖它；此前该方法**并不存在**，JS 抛 `TypeError: ... is not a function`
+    /// 被事件处理器吞掉，于是拖动与落笔后画布都没有内容（「操作后画布空白」缺陷）。
+    pub fn render_region_direct_rgba(&mut self, x: f64, y: f64, w: f64, h: f64) -> Vec<u8> {
+        self.inner
+            .render_region_direct_rgba(
+                x.max(0.0) as u32,
+                y.max(0.0) as u32,
+                w.max(1.0) as u32,
+                h.max(1.0) as u32,
+            )
+            .unwrap_or_default()
+    }
+
     /// 设置/更新**本地待提交覆盖层**（拖动中的笔迹），返回需要重绘的区域。
     ///
     /// 覆盖层不进原子日志：落笔时才用 `apply_atom_json` + `POST /api/atoms` 提交最终原子。
@@ -145,10 +160,14 @@ impl WasmKernel {
         }
     }
 
-    /// 落笔提交：合并进本地日志但不重绘（像素已由增量盖章画好），返回 `{ok, seq}`。
+    /// 落笔提交：合并进本地日志并**失效重算受影响 tile**，返回
+    /// `{ok, report: {seq, dirty_bbox, dirty_tiles, head}}`。
+    ///
+    /// 调用方应据此重绘 `dirty_bbox`；不要再假定"覆盖层像素已在 tile 里"（那条假设在
+    /// 覆盖层与提交原子落在不同图层时不成立，会造成落笔后画布空白）。
     pub fn commit_preview(&mut self, atom_json: &str) -> String {
         match self.inner.commit_preview(atom_json) {
-            Ok(seq) => json!({"ok": true, "seq": seq, "repaint": false}).to_string(),
+            Ok(report) => json!({"ok": true, "report": report, "seq": report.seq}).to_string(),
             Err(error) => error.to_json().to_string(),
         }
     }

@@ -29,9 +29,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
-  /* 布局由 canvas 驱动（文档分辨率位图 + 固有宽高比）；#preview 绝对定位覆盖其上作为服务端渲染兜底。 */
+  /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
+     #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
+     两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
+     提交后画布变空白（刷新才恢复）。 */
   #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
-  #preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block; }
+  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   aside { display: grid; gap: 12px; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
   .card h2 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
@@ -60,8 +63,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 </header>
 <main>
   <div class="stage">
-    <img id="preview" alt="文档预览" />
     <canvas id="board"></canvas>
+    <canvas id="overlay"></canvas>
   </div>
   <aside>
     <div class="card">
@@ -75,6 +78,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="redo">重做</button>
         <button data-tool="refresh">刷新</button>
         <button data-tool="check">一致性自检</button>
+        <button id="addLayer">＋ 图层</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
         <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
@@ -148,9 +152,36 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const api = (path) => path + (path.includes("?") ? "&" : "?") + "doc=" + state.docId + "&token=" + state.token;
-const preview = $("preview");
 const board = $("board");
+const overlay = $("overlay");
 const ctx = board.getContext("2d");
+const octx = overlay.getContext("2d");
+// 服务端渲染结果用离屏图像承载，**画进内容画布**（不再用覆盖 <img>，避免出现
+// 「看到的像素来自被拉伸的 img、点击落在下面的 canvas」这种几何不一致）。
+const preview = new Image();
+
+/// 内容层尺寸变化时同步覆盖层的显示矩形（画布按 CSS 缩放，覆盖层必须精确对齐它）。
+function syncOverlayGeometry() {
+  const stage = board.parentElement;
+  const rect = board.getBoundingClientRect();
+  const stageRect = stage.getBoundingClientRect();
+  overlay.style.left = Math.round(rect.left - stageRect.left) + "px";
+  overlay.style.top = Math.round(rect.top - stageRect.top) + "px";
+  overlay.style.width = Math.round(rect.width) + "px";
+  overlay.style.height = Math.round(rect.height) + "px";
+}
+
+/// 设定文档分辨率（内容画布与覆盖层同尺寸、同坐标系），并清空两层。
+function sizeBoards(width, height) {
+  board.width = width;
+  board.height = height;
+  overlay.width = width;
+  overlay.height = height;
+  ctx.clearRect(0, 0, width, height);
+  octx.clearRect(0, 0, width, height);
+  state.viewport = { x: 0, y: 0, w: width, h: height };
+  syncOverlayGeometry();
+}
 
 function log(line, cls) {
   const el = document.createElement("div");
@@ -180,10 +211,8 @@ async function callTool(name, args, options = {}) {
       state.lastAtom = value.atom_id;
       if (name === "revert") state.reverted.push(value.atom_id);
     }
-    if (value.preview && value.preview.thumb_url) {
-      preview.src = value.preview.thumb_url + (value.preview.thumb_url.includes("?") ? "&" : "?") + "t=" + Date.now();
-    }
-    if (options.refresh !== false) refreshThumb();
+    // 提交后自动刷新缩略图（此前必须手动点「刷新」才更新）。
+    if (options.refresh !== false) scheduleThumbRefresh();
   } else {
     log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
   }
@@ -316,6 +345,7 @@ function drawKernelRegion(x, y, w, h) {
 // 拖动中的笔迹重绘：区域通常只有几十像素见方，直接渲染比「按 tile 组合」便宜得多
 // （后者哪怕 1px 变化也要重算整块 256² tile）。两者数值逐位一致。
 function drawKernelBoxDirect(bbox) {
+  if (window.yanshiStats.tracePaints) log("direct bbox=" + JSON.stringify(bbox) + " board=" + board.width + "x" + board.height);
   if (!bbox) return;
   const started = performance.now();
   const x = Math.max(0, Math.floor(bbox[0]));
@@ -324,6 +354,7 @@ function drawKernelBoxDirect(bbox) {
   const h = Math.min(Math.max(1, Math.ceil(bbox[3])), board.height - y);
   if (w <= 0 || h <= 0) return;
   const rgba = state.kernel.render_region_direct_rgba(x, y, w, h);
+  if (window.yanshiStats.tracePaints) log("direct 渲染 " + x + "," + y + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
@@ -352,6 +383,7 @@ async function updatePreviewOverlay(pending) {
   const response = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(previewObject(pending))));
   if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
+  if (window.yanshiStats.tracePaints) log("盖章返回 dirty_bbox=" + JSON.stringify(response.dirty_bbox) + " keys=" + Object.keys(response).join(","));
   drawKernelBoxDirect(response.dirty_bbox);
   const elapsed = performance.now() - started;
   window.yanshiStats.lastOverlayMs = elapsed;
@@ -429,6 +461,7 @@ async function submitAtom(atom) {
     // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
     await resync();
   }
+  scheduleThumbRefresh();
   return response;
 }
 
@@ -552,7 +585,6 @@ async function warmKernel() {
   const warm = $("kernelWarm");
   if (warm) warm.textContent = window.yanshiStats.kernelWarmMs.toFixed(0) + "ms";
   if (ok && kernelReady()) {
-    preview.style.visibility = "hidden";
     // 注意：`refreshPreview(true)` 表示「从服务端取像素」，这里要的是内核路径。
     await refreshPreview();
   }
@@ -585,14 +617,13 @@ async function refreshPreview(fromKernel = false) {
   const { w, h } = state.docSize;
   if (!fromKernel && kernelReady()) {
     // 本地乐观路径：直接由 WASM 内核出像素，不等服务端。
-    board.width = w;
-    board.height = h;
-    state.viewport = { x: 0, y: 0, w, h };
+    sizeBoards(w, h);
     state.kernel.set_viewport(0, 0, w, h);
     drawKernelRegion(0, 0, w, h);
     subscribeViewport();
     return;
   }
+  // 只有在**没有内核**时才用服务端像素兜底（有内核时内核是主画布的唯一权威来源）。
   const value = await callTool("render_region", {
     region: { x: 0, y: 0, w, h },
   }, { refresh: false });
@@ -662,13 +693,23 @@ function connect() {
         }
       }
     } else if (message.type === "event" && message.event && message.event.event === "tiles") {
-      log("tiles " + (message.event.keys || []).length + " 个失效");
-      setStatus({ dirty: (message.event.keys || []).length });
+      // 降噪：失效 tile 数只更新状态栏，日志最多每 2 秒一条（此前每个事件都写一行）。
+      const count = (message.event.keys || []).length;
+      setStatus({ dirty: count });
+      const now = performance.now();
+      if (now - (window.yanshiStats.lastTileLogMs || 0) > 2000) {
+        window.yanshiStats.lastTileLogMs = now;
+        window.yanshiStats.tileInvalidations = (window.yanshiStats.tileInvalidations || 0) + count;
+        log("tiles " + count + " 个失效（累计 " + window.yanshiStats.tileInvalidations + "）");
+      }
     } else if (message.type === "event" && message.event && message.event.event === "thumbnail") {
       scheduleThumbRefresh();
     } else if (message.type === "ack") {
       const result = message.result || {};
-      if (result.preview && result.preview.thumb_url) preview.src = result.preview.thumb_url + "&t=" + Date.now();
+      // 注意：ack 里的 preview 是**缩略图级**的服务端预览，不能画进主画布。
+      // 内核就绪时主画布的唯一权威来源是内核；把服务端预览覆盖上去会让刚提交的笔迹
+      // 「看起来消失」（服务端预览可能早于该原子生成），这与用户报告的
+      // 「操作后画布空白、刷新才可见」是同一个根因。
     }
   };
 }
@@ -688,23 +729,25 @@ function colorCss() {
   return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16), a: 255 };
 }
 
+// 只重绘**覆盖层**（拖动中的笔迹/选区）。内容层绝不能被清空 —— 此前两者共用一个画布，
+// 拖动结束的最后一次重绘会把已提交的内容一起擦掉，表现为「操作后画布空白，刷新才恢复」。
 function redraw() {
-  ctx.clearRect(0, 0, board.width, board.height);
+  octx.clearRect(0, 0, overlay.width, overlay.height);
   if (!state.dragging) return;
-  ctx.strokeStyle = $("color").value;
-  ctx.lineWidth = Number($("size").value);
+  octx.strokeStyle = $("color").value;
+  octx.lineWidth = Number($("size").value);
   if (state.tool === "rect" && state.points.length === 2) {
     const [a, b] = state.points;
-    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    octx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
   } else if (state.tool === "ellipse" && state.points.length === 2) {
     const [a, b] = state.points;
-    ctx.beginPath();
-    ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    octx.beginPath();
+    octx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
+    octx.stroke();
   } else {
-    ctx.beginPath();
-    state.points.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
-    ctx.stroke();
+    octx.beginPath();
+    state.points.forEach((point, index) => index ? octx.lineTo(point.x, point.y) : octx.moveTo(point.x, point.y));
+    octx.stroke();
   }
 }
 
@@ -744,12 +787,18 @@ board.addEventListener("pointerup", async (event) => {
   state.dragging = null;
   if (state.tool === "rect" || state.tool === "ellipse") state.points.push(localPoint(event));
   if (pendingStroke && kernelReady()) {
-    // 落笔：像素已由增量盖章画好，这里只合并本地日志（不整块重绘，避免抬手卡顿）。
+    // 落笔：内核合并本地日志并失效重算受影响 tile，这里**按返回的脏区重绘**。
+    // （不要假定覆盖层像素已在 tile 里：覆盖层与提交原子落在不同图层时不成立，
+    //   那正是「操作后画布空白、刷新才可见」的原因。）
     const atom = strokeAtom(pendingStroke, true);
     const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
     if (committed.ok) {
       state.localSeq = committed.seq;
       window.yanshiStats.kernelHead = committed.seq;
+      if (committed.report) {
+        drawKernelDirty(committed.report);
+        window.yanshiStats.commits = (window.yanshiStats.commits || 0) + 1;
+      }
     } else {
       await resync();
     }
@@ -848,10 +897,27 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
   });
 }
 
+$("addLayer").addEventListener("click", async () => {
+  const layerId = "layer_" + ulid();
+  const created = await callTool("create_layer", { layer_id: layerId, name: "layer" }, { refresh: false });
+  if (!created.ok) {
+    log("新建图层失败：" + (created.error_code || "unknown"), "#c33");
+    return;
+  }
+  await refreshLayers();
+  const select = $("layer");
+  select.value = layerId;
+  state.layerId = layerId;
+  log("已新建图层 " + layerId);
+});
+
 $("open").addEventListener("click", ensureDocument);
 
 (async () => {
-  window.addEventListener("resize", () => { if (state.socket) subscribeViewport(); });
+  window.addEventListener("resize", () => {
+    syncOverlayGeometry();
+    if (state.socket) subscribeViewport();
+  });
   if (!state.token) {
     await ensureDocument();
   } else {
@@ -975,6 +1041,40 @@ mod tests {
         assert!(
             duplicates.is_empty(),
             "查看器脚本顶层存在重复声明（会导致 SyntaxError）：{duplicates:?}"
+        );
+        // **JS ↔ wasm 接口面一致性**：查看器里调用的每个 `state.kernel.<方法>` 都必须在
+        // wasm 绑定里真实存在。实际缺陷：查看器长期调用 `render_region_direct_rgba`，而该方法
+        // 从未实现 —— 浏览器抛 "not a function" 被事件处理器吞掉，表现为「拖动无反馈、
+        // 操作后画布空白」。这类名字不匹配在 Rust 侧编译期发现不了，必须在这里拦住。
+        let wasm_bindings = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yanshi-wasm/src/lib.rs"),
+        )
+        .expect("应能读取 wasm 绑定源码");
+        let exported: Vec<&str> = wasm_bindings
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pub fn "))
+            .filter_map(|rest| rest.split(['(', '<']).next())
+            .collect();
+        let mut missing: Vec<String> = Vec::new();
+        let mut rest = script;
+        while let Some(index) = rest.find("state.kernel.") {
+            rest = &rest[index + "state.kernel.".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
+            // 只检查方法调用（后面紧跟括号），跳过属性读取。
+            if rest[name.len()..].starts_with('(')
+                && !name.is_empty()
+                && !exported.contains(&name.as_str())
+                && !missing.contains(&name)
+            {
+                missing.push(name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "查看器调用了 wasm 绑定里不存在的方法：{missing:?}（浏览器里会抛 not a function）"
         );
         assert!(script.contains("async function refreshPreview("));
         assert!(names.len() > 15, "顶层声明数量异常：{names:?}");

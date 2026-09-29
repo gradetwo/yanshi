@@ -19,7 +19,7 @@ use yanshi_core::fold::FoldWarning;
 use yanshi_core::{
     Atom, AtomLog, Bbox, BlobHash, DocumentState, IncrementalFolder, ObjectType, Seq,
 };
-use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind};
+use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind, DirtySet};
 use yanshi_render::png::encode_png;
 use yanshi_render::render::Renderer;
 use yanshi_render::tile::{TileGrid, TileKey};
@@ -58,6 +58,19 @@ impl KernelError {
             "context": {"detail": self.detail},
         })
     }
+}
+
+/// 落笔提交的结果：与 [`ApplyReport`] 的脏区部分同形，供调用方只重绘脏区。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommitReport {
+    /// 归属的日志序号。
+    pub seq: u64,
+    /// 需要重绘的区域。
+    pub dirty_bbox: Option<[f64; 4]>,
+    /// 被失效并重算的 tile。
+    pub dirty_tiles: Vec<TileKey>,
+    /// 本地日志 HEAD。
+    pub head: u64,
 }
 
 /// 单次原子应用的报告（对应服务端 10.1 的 dirty 字段）。
@@ -440,10 +453,17 @@ impl Kernel {
         Ok(bbox)
     }
 
-    /// 落笔提交：把覆盖层对应的原子并入本地日志，但**不重绘**（像素已由覆盖层路径画好）。
+    /// 落笔提交：把覆盖层对应的原子并入本地日志，**并让受影响 tile 失效重算**。
+    ///
+    /// 返回 `CommitReport`（与 `apply_atom` 的 `dirty_bbox` 同形），调用方据此只重绘脏区。
+    ///
+    /// 历史缺陷：早期实现假定了"覆盖层的像素已经盖章进 tile"因而不重绘 ✗。这在覆盖层
+    /// 与提交原子落在**不同图层**时不成立（新建图层后落笔），于是落笔后按 tile 渲染拿到的是
+    /// 旧内容，表现为"每次操作后画布空白、刷新或重做才可见"。现在与 `apply_atom` 走同一条
+    /// 失效路径（`plan_dirty_with_log` + `apply_dirty`），不再依赖该假设。
     ///
     /// 服务端权威 seq 与本地预测不一致时，调用方应改用 `resync()` 全量重建。
-    pub fn commit_preview(&mut self, atom_json: &str) -> Result<Seq, KernelError> {
+    pub fn commit_preview(&mut self, atom_json: &str) -> Result<CommitReport, KernelError> {
         let mut atom: Atom = serde_json::from_str(atom_json).map_err(|error| {
             KernelError::new("invalid_argument", format!("原子解析失败：{error}"))
         })?;
@@ -461,7 +481,10 @@ impl Kernel {
                 ),
             ));
         }
+        let applied_id = atom.id.clone();
         atom.seq = 0;
+        // 折叠前后都要有 state：脏区规划需要"前一份状态"。
+        let previous = self.state.clone();
         let outcome = self
             .log
             .append(atom)
@@ -473,7 +496,22 @@ impl Kernel {
             .map_err(|error| KernelError::new("precondition_failed", error.to_string()))?;
         self.state = folded.state;
         self.atoms_applied += 1;
-        Ok(seq)
+
+        // 与 apply_atom 相同的失效路径：落笔后必须重算受影响 tile，否则渲染读到旧内容。
+        let applied = self.log.get(&applied_id).cloned();
+        let dirty = match applied.as_ref() {
+            Some(applied) => plan_dirty_with_log(&self.state, Some(&previous), &self.log, applied),
+            None => DirtySet::none(),
+        };
+        let tiles = self.renderer.apply_dirty(&self.state, &dirty);
+        self.last_tiles = tiles.clone();
+        self.enforce_watermark();
+        Ok(CommitReport {
+            seq,
+            dirty_bbox: dirty.bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+            dirty_tiles: tiles,
+            head: self.log.head_seq(),
+        })
     }
 
     /// 清除本地待提交覆盖层（落笔提交后调用），返回需要重绘的区域。
@@ -635,6 +673,29 @@ impl Kernel {
 
     /// 渲染区域（乐观渲染 / 校正渲染都用它）。
     ///
+    /// **直绘**：用 `Renderer::render_region` 的 scratch 路径渲染一个小区域（不做 tile 组合）。
+    ///
+    /// 拖动中的笔迹区域通常只有几十像素见方，走 tile 组合哪怕 1px 变化也要重算整块 256² tile；
+    /// scratch 直绘只算该区域，代价与面积成正比。两者数值逐位一致（同一套渲染实现）。
+    ///
+    /// 历史缺陷：查看器一直在调用本方法，但**它此前并不存在** —— wasm 侧抛
+    /// `TypeError: ... is not a function`，异常被事件处理器吞掉，于是拖动中没有任何
+    /// `putImageData`，表现为「拖动无反馈、落笔后画布空白」。现在补上实现并由测试固定。
+    pub fn render_region_direct_rgba(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, KernelError> {
+        let bbox = Bbox::new(x as f64, y as f64, width as f64, height as f64);
+        let rendered = self
+            .renderer
+            .render_region(&self.state, &self.store, bbox)
+            .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
+        Ok(rendered.rgba8)
+    }
+
     /// 实现按 **tile 组合**而不是 `Renderer::render_region` 的 scratch 直绘：
     /// 前者复用 LRU tile 缓存（首笔/缩放时只重算失效 tile），后者每次都会重绘区域内所有对象。
     /// 单块 tile 仍由 `render_tile` 渲染，因此滤镜的邻域 padding 依旧正确（见 `render_tile` 文档）。
@@ -1156,5 +1217,313 @@ mod tests {
         assert_eq!(summary["layers"], json!(1));
         assert_eq!(summary["objects"], json!(2));
         assert_eq!(summary["width"], json!(128));
+    }
+}
+
+#[cfg(test)]
+mod second_layer_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn atom(id_suffix: u8, seq: u64, kind: &str, payload: Value) -> Value {
+        json!({
+            "id": format!("01BBBBBBBBBBBBBBBBBBBBBBBB{id_suffix:02}"),
+            "seq": seq,
+            "kind": kind,
+            "actor": "human:1",
+            "session": "s",
+            "timestamp": seq,
+            "payload": payload,
+        })
+    }
+
+    /// 回归：**第二个图层上的内容必须被内核渲染出来**。
+    ///
+    /// 实际使用中发现的缺陷：新建图层后画的内容服务端看得到、浏览器内核渲染为空白。
+    /// 症状是「每次操作后画布空白，刷新/重做才可见」——因为落笔总是发生在查看器自动创建
+    /// 的图层之上。这里用最小场景固定住：两个图层各画一笔，第二笔必须出现在渲染结果里。
+    #[test]
+    fn content_on_the_second_layer_is_rendered() {
+        let mut kernel = Kernel::new("doc_1", 32, 128, 128, 8 * 1024 * 1024).unwrap();
+        let atoms = [
+            atom(
+                1,
+                1,
+                "create_document",
+                json!({"doc_id": "doc_1", "width": 128, "height": 128, "color_space": "srgb",
+                       "background": {"r": 255, "g": 255, "b": 255, "a": 255}}),
+            ),
+            atom(
+                2,
+                2,
+                "create_layer",
+                json!({"layer_id": "layer_1", "name": "first"}),
+            ),
+            atom(
+                3,
+                3,
+                "create_layer",
+                json!({"layer_id": "layer_2", "name": "second"}),
+            ),
+            atom(
+                4,
+                4,
+                "draw_stroke",
+                json!({"object_id": "obj_first", "layer_id": "layer_1",
+                       "data": {"points": [[10.0, 10.0], [40.0, 10.0]], "size": 6.0,
+                                "color": [20, 20, 20, 255]}}),
+            ),
+            atom(
+                5,
+                5,
+                "draw_stroke",
+                json!({"object_id": "obj_second", "layer_id": "layer_2",
+                       "data": {"points": [[70.0, 90.0], [110.0, 90.0]], "size": 8.0,
+                                "color": [200, 20, 20, 255]}}),
+            ),
+        ];
+        for value in &atoms {
+            kernel
+                .apply_atom_json(&value.to_string())
+                .unwrap_or_else(|error| panic!("应用原子失败：{error:?}"));
+        }
+
+        let result = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .expect("渲染应成功");
+
+        // 第二笔是红色，落在 y≈90、x∈[66,114]；统计该区域内的红色像素。
+        let mut red_on_second = 0;
+        for y in 80..100usize {
+            for x in 60..120usize {
+                let index = (y * 128 + x) * 4;
+                let (r, g, b) = (
+                    result.rgba8[index],
+                    result.rgba8[index + 1],
+                    result.rgba8[index + 2],
+                );
+                if r > 120 && g < 120 && b < 120 {
+                    red_on_second += 1;
+                }
+            }
+        }
+        // 第一笔在 y≈10，按同样方式统计。
+        let mut dark_on_first = 0;
+        for y in 0..25usize {
+            for x in 0..50usize {
+                let index = (y * 128 + x) * 4;
+                if result.rgba8[index] < 120 {
+                    dark_on_first += 1;
+                }
+            }
+        }
+        assert!(
+            dark_on_first > 0,
+            "第一个图层上的笔迹也没渲染出来（基线不成立）"
+        );
+        assert!(
+            red_on_second > 0,
+            "第二个图层上的内容没有被渲染（第二个图层被跳过）——这是实际使用中报告的空白画布缺陷"
+        );
+    }
+}
+
+#[cfg(test)]
+mod preview_commit_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn doc_and_layers() -> Vec<Value> {
+        vec![
+            json!({"id": "01CCCCCCCCCCCCCCCCCCCCCCCC01", "seq": 1, "kind": "create_document",
+                   "actor": "human:1", "session": "s", "timestamp": 1,
+                   "payload": {"doc_id": "doc_1", "width": 128, "height": 128, "color_space": "srgb",
+                               "background": {"r": 255, "g": 255, "b": 255, "a": 255}}}),
+            json!({"id": "01CCCCCCCCCCCCCCCCCCCCCCCC02", "seq": 2, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 2,
+                   "payload": {"layer_id": "layer_1", "name": "first"}}),
+            json!({"id": "01CCCCCCCCCCCCCCCCCCCCCCCC03", "seq": 3, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 3,
+                   "payload": {"layer_id": "layer_2", "name": "second"}}),
+        ]
+    }
+
+    fn red_pixels(result: &RenderResult, region: (usize, usize, usize, usize)) -> usize {
+        let (x0, y0, x1, y1) = region;
+        let width = result.width as usize;
+        let mut count = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let index = (y * width + x) * 4;
+                if result.rgba8[index] > 120
+                    && result.rgba8[index + 1] < 120
+                    && result.rgba8[index + 2] < 120
+                {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// 回归（用户实际报告）：**在第二个图层上落笔后，画布不能变空白**。
+    ///
+    /// 走的是浏览器真实路径：`extend_preview_stroke` 增量盖章 → `commit_preview` 落笔。
+    /// 早期 `commit_preview` 假定"覆盖层像素已经盖章进 tile"因而不失效 tile ✗，
+    /// 当覆盖层与提交原子不在同一图层时不成立 —— 落笔后按 tile 渲染读到旧内容。
+    #[test]
+    fn stroke_committed_on_the_second_layer_stays_visible() {
+        let mut kernel = Kernel::new("doc_1", 32, 128, 128, 8 * 1024 * 1024).unwrap();
+        for value in doc_and_layers() {
+            kernel.apply_atom_json(&value.to_string()).unwrap();
+        }
+
+        // 覆盖层：在第二个图层上画一笔。
+        let preview = json!({"object_id": PREVIEW_OBJECT_ID, "layer_id": "layer_2",
+                             "type": "stroke",
+                             "data": {"points": [[20.0, 100.0], [100.0, 100.0]], "size": 10.0,
+                                      "color": {"r": 220, "g": 20, "b": 20, "a": 255}}});
+        kernel
+            .extend_preview_stroke(&preview.to_string())
+            .expect("覆盖层盖章应成功");
+
+        // 落笔提交（seq 由内核补 0，此处不带 seq 走本地预测路径）。
+        let atom = json!({"id": "01CCCCCCCCCCCCCCCCCCCCCCCC04", "kind": "draw_stroke",
+                          "actor": "human:web", "session": "session:wasm", "timestamp": 4,
+                          "payload": {"object_id": "obj_second", "layer_id": "layer_2",
+                                      "data": {"points": [[20.0, 100.0], [100.0, 100.0]], "size": 10.0,
+                                               "color": [220, 20, 20, 255]}}});
+        let report = kernel
+            .commit_preview(&atom.to_string())
+            .expect("落笔提交应成功");
+        assert!(
+            report.dirty_bbox.is_some(),
+            "落笔提交必须给出脏区，否则调用方无从重绘（这正是画布空白的原因）"
+        );
+
+        let result = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .expect("渲染应成功");
+        let red = red_pixels(&result, (0, 85, 128, 115));
+        assert!(
+            red > 0,
+            "落笔后第二个图层上的笔迹没有出现在渲染结果里（画布空白缺陷复发）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod preview_bbox_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn setup() -> Kernel {
+        let mut kernel = Kernel::new("doc_1", 32, 128, 128, 8 * 1024 * 1024).unwrap();
+        for value in [
+            json!({"id": "01DDDDDDDDDDDDDDDDDDDDDDDD01", "seq": 1, "kind": "create_document",
+                   "actor": "human:1", "session": "s", "timestamp": 1,
+                   "payload": {"doc_id": "doc_1", "width": 128, "height": 128, "color_space": "srgb",
+                               "background": {"r": 255, "g": 255, "b": 255, "a": 255}}}),
+            json!({"id": "01DDDDDDDDDDDDDDDDDDDDDDDD02", "seq": 2, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 2,
+                   "payload": {"layer_id": "layer_1", "name": "first"}}),
+            json!({"id": "01DDDDDDDDDDDDDDDDDDDDDDDD03", "seq": 3, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 3,
+                   "payload": {"layer_id": "layer_2", "name": "second"}}),
+        ] {
+            kernel.apply_atom_json(&value.to_string()).unwrap();
+        }
+        kernel
+    }
+
+    fn preview(points: Value) -> String {
+        json!({"object_id": PREVIEW_OBJECT_ID, "layer_id": "layer_2", "type": "stroke",
+               "data": {"points": points, "size": 10.0,
+                        "color": {"r": 220, "g": 20, "b": 20, "a": 255}}})
+        .to_string()
+    }
+
+    /// 查看器每次 pointermove 都会增量盖章，**每一次都必须返回可重绘的区域**。
+    /// 若某次返回 None，查看器就什么都画不出来（表现为拖动中没有反馈、落笔后画布空白）。
+    #[test]
+    fn every_preview_stamp_reports_a_repaint_bbox() {
+        let mut kernel = setup();
+        let first = kernel
+            .extend_preview_stroke(&preview(json!([[20.0, 100.0], [60.0, 100.0]])))
+            .expect("第一次盖章");
+        assert!(first.is_some(), "第一次盖章必须给出脏区");
+
+        let second = kernel
+            .extend_preview_stroke(&preview(json!([
+                [20.0, 100.0],
+                [60.0, 100.0],
+                [100.0, 100.0]
+            ])))
+            .expect("第二次盖章（增量）");
+        assert!(
+            second.is_some(),
+            "增量盖章必须给出新增笔段的脏区，否则查看器无法重绘（画布空白缺陷）"
+        );
+
+        // 第三次：点列不变（例如合成事件重复），仍应给出可重绘区域或明确无变化，但不能 panic。
+        let third = kernel.extend_preview_stroke(&preview(json!([
+            [20.0, 100.0],
+            [60.0, 100.0],
+            [100.0, 100.0]
+        ])));
+        assert!(third.is_ok(), "重复盖章不应失败：{third:?}");
+    }
+}
+
+#[cfg(test)]
+mod direct_render_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 回归：**预览盖章后立刻直接渲染**必须能工作（查看器每次 pointermove 都这么做）。
+    ///
+    /// 实际使用时表现为「拖动中无反馈、落笔后画布空白」：`render_region_direct_rgba`
+    /// 在 wasm 里 panic（JS 异常被事件处理器吞掉），于是没有任何 putImageData。
+    #[test]
+    fn direct_render_after_preview_on_second_layer() {
+        let mut kernel = Kernel::new("doc_1", 32, 128, 128, 8 * 1024 * 1024).unwrap();
+        for value in [
+            json!({"id": "01EEEEEEEEEEEEEEEEEEEEEEEE01", "seq": 1, "kind": "create_document",
+                   "actor": "human:1", "session": "s", "timestamp": 1,
+                   "payload": {"doc_id": "doc_1", "width": 128, "height": 128, "color_space": "srgb",
+                               "background": {"r": 255, "g": 255, "b": 255, "a": 255}}}),
+            json!({"id": "01EEEEEEEEEEEEEEEEEEEEEEEE02", "seq": 2, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 2,
+                   "payload": {"layer_id": "layer_1", "name": "first"}}),
+            json!({"id": "01EEEEEEEEEEEEEEEEEEEEEEEE03", "seq": 3, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 3,
+                   "payload": {"layer_id": "layer_2", "name": "second"}}),
+        ] {
+            kernel.apply_atom_json(&value.to_string()).unwrap();
+        }
+
+        let preview = json!({"object_id": PREVIEW_OBJECT_ID, "layer_id": "layer_2", "type": "stroke",
+                             "data": {"points": [[20.0, 100.0]], "size": 10.0,
+                                      "color": {"r": 220, "g": 20, "b": 20, "a": 255}}});
+        let bbox = kernel
+            .extend_preview_stroke(&preview.to_string())
+            .expect("盖章应成功")
+            .expect("应给出脏区");
+
+        let x = bbox.x.floor().max(0.0) as u32;
+        let y = bbox.y.floor().max(0.0) as u32;
+        let w = bbox.w.ceil().max(1.0) as u32;
+        let h = bbox.h.ceil().max(1.0) as u32;
+        let rgba = kernel
+            .render_region_direct_rgba(x, y, w, h)
+            .expect("直接渲染不应失败（查看器依赖它做拖动反馈）");
+        assert_eq!(rgba.len(), (w * h * 4) as usize, "像素数应与区域匹配");
+        let mut dark = 0;
+        for index in (0..rgba.len()).step_by(4) {
+            if rgba[index] < 200 || rgba[index + 1] < 200 || rgba[index + 2] < 200 {
+                dark += 1;
+            }
+        }
+        assert!(dark > 0, "直接渲染应包含刚盖章的笔迹");
     }
 }
