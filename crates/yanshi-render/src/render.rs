@@ -928,8 +928,36 @@ impl Renderer {
                     let (ux, uy) = (direction.0 / length, direction.1 / length);
                     // 位移随距离平滑衰减，最大位移 = strength * 直径。
                     let max_shift = (strength.clamp(-2.0, 2.0)) * size;
-                    let source = layer_buffer.clone();
                     let origin = layer_buffer.origin();
+                    // **只快照采样可能触达的区域**，而不是整层克隆。
+                    // 原实现每个对象克隆整层：1024² + PAD 约 26MB，4K 上约 268MB ✗，
+                    // 且成本随画布线性增长，而液化真正读取的范围只有「影响圈 + 最大位移」。
+                    // 采样点在文档坐标下最多偏离目标 `|max_shift|`，因此快照
+                    // = 各点圆 ± (radius + |max_shift| + 2) 与层缓冲求交；
+                    // 局部坐标换算后读到的像素与整层克隆时**完全相同**，故逐位等价。
+                    let margin = max_shift.abs().ceil() + 2.0;
+                    let mut snapshot_min_x = f64::INFINITY;
+                    let mut snapshot_min_y = f64::INFINITY;
+                    let mut snapshot_max_x = f64::NEG_INFINITY;
+                    let mut snapshot_max_y = f64::NEG_INFINITY;
+                    for (px, py) in &points {
+                        snapshot_min_x = snapshot_min_x.min(px - radius - margin);
+                        snapshot_min_y = snapshot_min_y.min(py - radius - margin);
+                        snapshot_max_x = snapshot_max_x.max(px + radius + margin);
+                        snapshot_max_y = snapshot_max_y.max(py + radius + margin);
+                    }
+                    let snapshot_bbox = Bbox::new(
+                        snapshot_min_x,
+                        snapshot_min_y,
+                        snapshot_max_x - snapshot_min_x,
+                        snapshot_max_y - snapshot_min_y,
+                    );
+                    let source = layer_buffer.crop(&snapshot_bbox);
+                    let source_origin = source.origin();
+                    // 注意：**采样夹取**用快照尺寸，而**迭代边界**仍用层缓冲尺寸 ——
+                    // 两者混用会让迭代被裁到快照范围、圈内像素被静默跳过（测试抓到的正是这个错）。
+                    let source_width = source.width();
+                    let source_height = source.height();
                     let width = layer_buffer.width();
                     let height = layer_buffer.height();
                     // **只在受影响区域内迭代**：圆外像素的位移恒为 0，原代码路径在那里就是
@@ -999,8 +1027,8 @@ impl Renderer {
                                 continue;
                             }
                             // 反向映射：目标像素取「源 − 位移」处的**双线性**采样。
-                            let sample_x = document_x - shift_x - origin.0 as f64;
-                            let sample_y = document_y - shift_y - origin.1 as f64;
+                            let sample_x = document_x - shift_x - source_origin.0 as f64;
+                            let sample_y = document_y - shift_y - source_origin.1 as f64;
                             if sample_x < -1.0
                                 || sample_y < -1.0
                                 || sample_x > width as f64
@@ -1014,10 +1042,10 @@ impl Renderer {
                             let fy = (sample_y - y0) as f32;
                             let clamp =
                                 |value: i64, limit: u32| value.clamp(0, limit as i64 - 1) as u32;
-                            let x0i = clamp(x0 as i64, width);
-                            let y0i = clamp(y0 as i64, height);
-                            let x1i = clamp(x0 as i64 + 1, width);
-                            let y1i = clamp(y0 as i64 + 1, height);
+                            let x0i = clamp(x0 as i64, source_width);
+                            let y0i = clamp(y0 as i64, source_height);
+                            let x1i = clamp(x0 as i64 + 1, source_width);
+                            let y1i = clamp(y0 as i64 + 1, source_height);
                             let p00 = source.pixel(x0i, y0i);
                             let p10 = source.pixel(x1i, y0i);
                             let p01 = source.pixel(x0i, y1i);
@@ -2200,6 +2228,29 @@ mod tests {
             assert!(
                 inside_changed > 20,
                 "{mode}: 影响圈内仅有 {inside_changed} 个像素变化，效果没有真正生效（检查 fixture）"
+            );
+        }
+    }
+
+    /// 微基准：整层克隆的成本（说明「局部快照」在多大画布上才真正值钱）。
+    #[test]
+    #[ignore = "诊断：整层克隆成本"]
+    fn layer_clone_cost_probe() {
+        for side in [1024u32, 4096] {
+            let padded = side + 256; // 每边 128 的外扩
+            let mut buffer = Buffer::new(0, 0, padded, padded);
+            buffer.fill([0.4, 0.5, 0.6, 1.0]);
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                let clone = buffer.clone();
+                std::hint::black_box(&clone);
+                best = best.min(started.elapsed());
+            }
+            let bytes = (padded as usize).pow(2) * 16;
+            println!(
+                "  整层克隆 {side}²（PAD 后 {padded}² ≈ {:.0}MB）: {best:?}",
+                bytes as f64 / (1024.0 * 1024.0)
             );
         }
     }
