@@ -68,7 +68,9 @@ impl FromStr for BlobHash {
     fn from_str(s: &str) -> Result<Self> {
         let valid = s.len() == 71
             && s.starts_with("sha256:")
-            && s[7..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+            && s[7..]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
         if !valid {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -209,7 +211,8 @@ impl Refs {
     }
 }
 
-fn collect_refs(value: &Value, key: Option<&str>, refs: &mut Refs) {    match value {
+fn collect_refs(value: &Value, key: Option<&str>, refs: &mut Refs) {
+    match value {
         Value::Object(map) => {
             // `{"type": "atom"|"checkpoint", "id": "..."}` 形式的 declare_head.base
             let kind = map.get("type").and_then(Value::as_str);
@@ -391,11 +394,7 @@ impl AtomKind {
     pub const fn is_generative(self) -> bool {
         matches!(
             self,
-            Self::DrawStroke
-                | Self::Fill
-                | Self::DrawShape
-                | Self::DrawText
-                | Self::Erase
+            Self::DrawStroke | Self::Fill | Self::DrawShape | Self::DrawText | Self::Erase
         )
     }
 
@@ -763,7 +762,12 @@ mod tests {
 
     #[test]
     fn atom_new_assigns_ulid_and_unsubmitted_seq() {
-        let atom = Atom::new(AtomKind::DrawStroke, "ai:1", "s1", json!({"object_id": "o"}));
+        let atom = Atom::new(
+            AtomKind::DrawStroke,
+            "ai:1",
+            "s1",
+            json!({"object_id": "o"}),
+        );
         assert_eq!(atom.seq, SEQ_UNASSIGNED);
         assert!(!atom.is_submitted());
         assert_eq!(atom.id.len(), crate::ids::ULID_LEN);
@@ -773,7 +777,12 @@ mod tests {
 
     #[test]
     fn revert_target_and_heavy_classification() {
-        let revert = Atom::new(AtomKind::Revert, "human:1", "s1", json!({"target": "atom_x"}));
+        let revert = Atom::new(
+            AtomKind::Revert,
+            "human:1",
+            "s1",
+            json!({"target": "atom_x"}),
+        );
         assert_eq!(revert.target_atom(), Some("atom_x"));
         assert!(!revert.is_heavy());
 
@@ -788,7 +797,12 @@ mod tests {
         );
         assert!(raster.is_heavy());
 
-        let stroke = Atom::new(AtomKind::CreateObject, "ai:1", "s1", json!({"type": "stroke"}));
+        let stroke = Atom::new(
+            AtomKind::CreateObject,
+            "ai:1",
+            "s1",
+            json!({"type": "stroke"}),
+        );
         assert!(!stroke.is_heavy());
     }
 

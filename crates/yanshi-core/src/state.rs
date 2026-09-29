@@ -495,8 +495,7 @@ impl DocumentState {
 
     /// 存活对象，按 (图层, z 序, id) 升序。
     pub fn alive_objects(&self) -> Vec<&Object> {
-        let mut objects: Vec<&Object> =
-            self.objects.values().filter(|o| !o.is_deleted()).collect();
+        let mut objects: Vec<&Object> = self.objects.values().filter(|o| !o.is_deleted()).collect();
         objects.sort_by_key(|o| (o.layer_id.clone(), o.z_index, o.id.clone()));
         objects
     }
@@ -788,7 +787,9 @@ mod tests {
         assert!(state.is_consistent());
 
         // 对象指向不存在的图层。
-        state.objects.insert("o_bad".into(), object("o_bad", "l_missing", 1));
+        state
+            .objects
+            .insert("o_bad".into(), object("o_bad", "l_missing", 1));
         let violations = state.violations();
         assert!(violations.iter().any(|v| matches!(
             v,

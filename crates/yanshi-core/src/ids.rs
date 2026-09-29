@@ -311,6 +311,12 @@ mod tests {
         let ids_a: Vec<String> = (0..64).map(|_| a.next_id()).collect();
         let ids_b: Vec<String> = (0..64).map(|_| b.next_id()).collect();
         assert_eq!(ids_a, ids_b);
-        assert_eq!(ids_a.iter().collect::<std::collections::BTreeSet<_>>().len(), 64);
+        assert_eq!(
+            ids_a
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            64
+        );
     }
 }

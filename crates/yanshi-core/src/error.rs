@@ -116,6 +116,8 @@ impl ErrorContext {
 }
 
 /// 引擎统一错误类型。
+///
+/// `context` 装箱以保持 `Result` 的 Err 变体足够小（clippy `result_large_err`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{code}: {}", .context.detail.as_deref().unwrap_or(""))]
 pub struct YanshiError {
@@ -124,7 +126,7 @@ pub struct YanshiError {
     /// 是否可重试。
     pub retryable: bool,
     /// 错误上下文。
-    pub context: ErrorContext,
+    pub context: Box<ErrorContext>,
 }
 
 impl YanshiError {
@@ -133,7 +135,7 @@ impl YanshiError {
         Self {
             code,
             retryable: code.default_retryable(),
-            context,
+            context: Box::new(context),
         }
     }
 
@@ -211,7 +213,10 @@ mod tests {
     fn error_code_literals_match_schema() {
         assert_eq!(ErrorCode::ReferenceNotFound.as_str(), "reference_not_found");
         assert_eq!(ErrorCode::InvalidArgument.as_str(), "invalid_argument");
-        assert_eq!(ErrorCode::PreconditionFailed.as_str(), "precondition_failed");
+        assert_eq!(
+            ErrorCode::PreconditionFailed.as_str(),
+            "precondition_failed"
+        );
         assert_eq!(ErrorCode::Conflict.as_str(), "conflict");
         assert_eq!(ErrorCode::PermissionDenied.as_str(), "permission_denied");
         assert_eq!(ErrorCode::ResourceExhausted.as_str(), "resource_exhausted");
@@ -234,10 +239,7 @@ mod tests {
         assert_eq!(json["error_code"], "precondition_failed");
         assert_eq!(json["retryable"], false);
         assert_eq!(json["context"]["object_id"], "obj_1");
-        assert_eq!(
-            json["context"]["atom_id"],
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-        );
+        assert_eq!(json["context"]["atom_id"], "01ARZ3NDEKTSV4RRFFQ69G5FAV");
         // 未设置的字段不出现。
         assert!(json["context"].get("layer_id").is_none());
         assert!(json["context"].get("blob_hash").is_none());
