@@ -3,10 +3,9 @@
 [中文](README.zh-CN.md) | **English**
 
 Yanshi is a headless image editor engine: an append-only atom log, a folded state, a pure-Rust
-render compute kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer.
-
-The kernel compiles natively for the server and to WebAssembly for the browser, so optimistic
-local rendering and server rendering are one implementation.
+render compute kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer. The
+kernel compiles natively for the server and to WebAssembly for the browser, so optimistic local
+rendering and server rendering are one implementation.
 
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
@@ -55,21 +54,7 @@ gh workflow run heavy.yml && gh run list            # nightly + on demand; logs 
 cargo test --release --workspace -- --ignored --nocapture   # or run them locally
 ```
 
-## Tools and effects
-
-27 core tools are registered; enabling every implemented group gives 65 tools in total. Groups:
-core, history, retouch, annotation, collab, structure (`--profile`).
-
-Adjustments (12): brightness_contrast, saturation, invert, levels, exposure, white_balance, curves,
-hsl, posterize, color_balance, split_toning, vibrance. `levels` takes a per-channel `channel`.
-
-Filters (13): box_blur, gaussian_blur, motion_blur, sharpen, clarity, dehaze, film_grain, noise,
-vignette, glow, brightness_contrast, saturation, invert.
-
-Other: clone_stamp, heal_stamp, smudge, patch, liquify_push, liquify_twirl, liquify_pinch; masks
-(rect, ellipse, polygon, feather); comments, annotations and the AI suggestion loop.
-
-## Use it
+## Use
 
 ```bash
 cargo run --release -p yanshi-mcp                   # MCP over stdio (agent integration)
@@ -84,10 +69,9 @@ curl -s -X POST http://127.0.0.1:8110/api/documents -d '{"doc_id":"demo","width"
 curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TOKEN" -d '{"layer_id":"layer_1"}'
 ```
 
-## Desktop entry (Linux: Omarchy / Hyprland)
+The tool and effect inventory is in [docs/tools.md](docs/tools.md).
 
-The instructions below use `systemctl --user`, so they apply to Linux only. On macOS the server
-runs the same way (`make run`); only the autostart wiring differs.
+## Desktop entry (Linux: Omarchy / Hyprland)
 
 ```bash
 cp deploy/systemd/yanshi-serve.service ~/.config/systemd/user/
@@ -99,37 +83,28 @@ systemctl --user daemon-reload && systemctl --user enable --now yanshi-serve
 o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
 ```
 
+Uses `systemctl --user`, so Linux only; on macOS the server runs the same way (`make run`).
 Details: [deploy/omarchy/README.md](deploy/omarchy/README.md).
-
-## Layout
-
-```
-crates/yanshi-core/     atoms, log, fold, state@seq, snapshots, Blob CAS, conflicts, annotations
-crates/yanshi-render/   render kernel: brush, shapes, adjustments, filters, dirty, tiles, PNG
-crates/yanshi-server/   document service, jobs, tokens, broadcast, tool layer
-crates/yanshi-http/     HTTP/WebSocket transport, viewer, yanshi-serve binary
-crates/yanshi-mcp/      MCP stdio server
-crates/yanshi-wasm/     browser kernel (wasm-bindgen)
-scripts/  deploy/  docs/design/
-```
 
 ## Documentation
 
-- [Design document](docs/design/yanshi-v1.0-draft4.md) — specification.
+- [Design document](docs/design/yanshi-v1.0-draft4.md) — the specification.
 - [Implementation notes](docs/design/implementation-notes.md) — module map, decisions where the
   specification is silent, measured performance data, known deviations.
+- [docs/tools.md](docs/tools.md) — tools, adjustments, filters, retouch, masks, collaboration.
 - [scripts/README.md](scripts/README.md) — acceptance scripts.
+- Repository layout: `crates/yanshi-core` (atoms, log, fold, CAS), `-render` (compute kernel),
+  `-server` (document service, tool layer), `-http` (transport, viewer, `yanshi-serve`),
+  `-mcp`, `-wasm` (browser kernel); `scripts/`, `deploy/`, `docs/design/`.
 - [SECURITY.md](SECURITY.md) — threat model and reporting.
 
 ## Status
 
-Implemented: atom log and fold (five invariants under property tests), CPU rendering (the compute
-kernel is bit-exact; blur-family filters are allowed ±1 LSB by an approved scope decision), server
-rendering with thumbnails and tiles, the tool layer and profiles, HTTP/WebSocket with capability
-tokens, the annotation channel and suggestion loop, and the browser WASM kernel.
-
-Not implemented: GPU compositing (feasibility measured and recorded in the notes), plugin hosting,
-collaboration beyond a single server.
+The atom log and fold, CPU rendering (the compute kernel is bit-exact; blur-family filters are
+allowed ±1 LSB by an approved scope decision), server rendering with thumbnails and tiles, the tool
+layer, HTTP/WebSocket with capability tokens, the annotation channel and suggestion loop, and the
+browser WASM kernel are implemented. GPU compositing (feasibility measured), plugin hosting and
+collaboration beyond one server are not.
 
 ## License
 

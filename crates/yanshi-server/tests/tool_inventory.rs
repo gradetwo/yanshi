@@ -32,9 +32,9 @@ fn read(relative: &str) -> String {
 }
 
 /// 文档里声明的工具数量（`N core tools` / `N tools in total`，以及中文版）。
-/// 文档必须用这两种锚点声明数量（数字在锚点**之前**，便于解析）：
-/// * 核心：`the 27 core tools` / `27 个核心工具`
-/// * 总数：`64 tools in total` / `64 个工具。`
+/// 文档必须用锚点声明数量（数字在锚点**之前**，便于解析）：
+/// * 核心：`27 core tools`
+/// * 总数：`65 tools in total`
 fn declared_counts(text: &str) -> Option<(usize, usize)> {
     let core = find_first(text, &["core tools", "个核心工具"])?;
     let total = find_first(text, &["tools in total", "个工具。"])?;
@@ -102,7 +102,8 @@ fn documented_tool_counts_match_the_registry() {
     let actual_core = ToolRegistry::with_profiles(&[Profile::Core]).tools().len();
     println!("实际：core {actual_core} 个 / 全部 {actual_total} 个");
 
-    for relative in ["README.md", "README.zh-CN.md"] {
+    // 数量声明放在 docs/tools.md（README 保持精简）。
+    for relative in ["docs/tools.md"] {
         let text = read(relative);
         let (core, total) = declared_counts(&text)
             .unwrap_or_else(|| panic!("{relative} 未声明工具数量（测试因此失去意义）"));

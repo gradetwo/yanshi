@@ -23,9 +23,9 @@ fn read(name: &str) -> String {
 /// 每个调整/滤镜名字都要出现在两份 README 与设计实现说明里。
 #[test]
 fn every_effect_name_is_documented() {
+    // 效果清单放在 docs/tools.md（README 保持精简，只留命令与安装/编译步骤）。
     let docs = [
-        ("README.md", read("README.md")),
-        ("README.zh-CN.md", read("README.zh-CN.md")),
+        ("docs/tools.md", read("docs/tools.md")),
         (
             "docs/design/implementation-notes.md",
             read("docs/design/implementation-notes.md"),
