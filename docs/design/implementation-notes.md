@@ -1179,6 +1179,18 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 `#[cfg(target_arch = "wasm32")]` 是**编译期空操作**（连时间类型都不出现）。
 修复后浏览器自检恢复：`liq3` HEAD 19/19、`fx3` HEAD 18/18，均**差异 0 像素 / 最大通道差 0** ✓。
 
+**防复发（本轮补上）**：
+1. `scripts/wasm-smoke.sh` —— 在 node 里真跑 wasm：加载原子 → 区域渲染（RGBA+PNG）→
+   **写入路径**（乐观预览 + 提交）。已做**反向验证**：把 `Instant::now()` 放回去，
+   脚本立即以 wasm 调用栈报错并非零退出 ✓
+2. `crates/yanshi-render/tests/wasm_target_guard.rs` —— 普通测试套件里的「带理由白名单绊线」：
+   统计 wasm 相关 crate 里 `Instant::now` / `SystemTime::now` 的出现次数，
+   任何新增用法都会失败并要求作者显式登记理由 ✓
+   该守卫**第一次运行就发现两处我不知道的用法**：`yanshi-core/src/ids.rs` 的
+   `SystemTime::now()`（ULID 进程种子与 `now_ms()`）—— 目前只在宿主/服务端路径被调用
+   （客户端由 JS 提供 id 与 timestamp ✓ 冒烟脚本的写入路径用例就是盯住这一点），
+   已按「潜在风险」登记在案而不是默默放行。
+
 **教训**：
 1. **原生全绿 ≠ 浏览器可用** —— `wasm32` 缺少一部分 `std`（`Instant`、部分时间/线程设施），
    凡是新引入的平台相关调用都必须按目标平台门控；

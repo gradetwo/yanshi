@@ -1149,11 +1149,6 @@ mod stage_probe {
 mod stage_probe {
     use std::time::Duration;
 
-    /// wasm32 上永远返回 false（`Instant` 不可用）。
-    pub const fn enabled() -> bool {
-        false
-    }
-
     /// 空计时点。
     pub struct Stage;
 

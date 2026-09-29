@@ -24,6 +24,23 @@ BASE_URL=http://127.0.0.1:8080 scripts/phase4b-demo.sh
 覆盖：人类标注 → AI 建议（含 patch）→ 只读步骤被拒 → 接受并重放（**像素指纹必须变化**）→
 拒绝并记录原因 → 补丁内先建图层再绘制（**图层数必须增加**）。只创建**新文档**，不动既有数据。
 
+## `wasm-smoke.sh` — wasm 运行时冒烟门禁（**不需要浏览器**）
+
+```bash
+scripts/wasm-smoke.sh
+```
+
+把内核编译为 wasm32，在 node 里真正构造内核、渲染并走一次写入路径（预览 + 提交）。
+存在的理由：`cargo test` 在宿主上跑，**原生全绿不代表浏览器可用** —— 曾经一个诊断探针在
+wasm32 上调用了 `std::time::Instant::now()`（该目标不支持，直接 panic），原生毫无反应、
+浏览器端每次渲染都崩。该脚本就是为拦住这类回归。
+
+已做**反向验证**：把那个 `Instant::now()` 放回去，脚本立刻以 wasm 栈报错并非零退出 ✓
+
+配套还有 `crates/yanshi-render/tests/wasm_target_guard.rs`（普通测试套件里跑）：
+用「带理由的白名单绊线」统计 `Instant::now` / `SystemTime::now` 的出现次数，
+任何新增用法都会失败，迫使作者显式确认是否已按目标平台门控。
+
 ## `browser-pixel-check.mjs` — 内核 vs 服务端逐像素自检（D1 口径）
 
 ```bash
