@@ -305,6 +305,10 @@ The server exposes them at `/favicon.svg`, `/favicon.png`, `/favicon.ico` and `/
 The mapping from design document to tests, the measured performance data and the known limitations live in
 [docs/design/implementation-notes.md](docs/design/implementation-notes.md).
 
+## Demos
+
+- `scripts/phase4b-demo.sh` — end-to-end annotation → AI suggestion → accept/reject loop against a running server (curl + python3 only).
+
 ## Contributing
 
 Contributions are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md) first. Before submitting:

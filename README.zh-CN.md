@@ -265,6 +265,10 @@ hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 设计文档与测试的对应关系、实测性能数据与已知限制见
 [docs/design/implementation-notes.md](docs/design/implementation-notes.md)。
 
+## 演示脚本
+
+- `scripts/phase4b-demo.sh` —— 端到端演示「标注 → AI 建议 → 接受/拒绝」环路（只依赖 curl + python3，打到运行中的服务端）。
+
 ## 贡献
 
 欢迎贡献，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须保证：

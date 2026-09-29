@@ -762,6 +762,20 @@ rejected）全部成功。
 / `reject_suggestion` → patch 应用 → 标注状态更新（resolved/rejected）**。
 AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pending)`。
 
+**可复现验收**：`scripts/phase4b-demo.sh` 把整条环路脚本化（只创建新文档，依赖仅 curl + python3）：
+
+```
+① 人类标注 → ② AI 建议（2 步 patch）→ ③ 关联第二标注（追踪）→
+④a 只读步骤被拒 → ④b 接受并重放（像素指纹 e3b5003e… → 24b23a41…，证明真的改了像素）
+→ ⑤ 另建建议并拒绝（记录原因）
+```
+
+实测输出显示：应用原子 2、解决标注 1、pending 递减；建议状态列表为
+`accepted / pending / rejected` 三种并存，可作为回归与演示之用。
+
+> 细节：被拒的「只读步骤」建议在状态列表里仍是 `pending` —— 它在**接受时**被拒，
+> 因此没有产生 accept/reject 原子。设计未规定此情形，保持现状并在此备注。
+
 ## 三、尚未实现（与 README 路线图一致）
 
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
