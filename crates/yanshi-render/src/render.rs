@@ -48,7 +48,8 @@ impl Default for RenderOptions {
             include_hidden_layers: false,
             background: None,
             expand_for_filters: true,
-            max_filter_padding: 64,
+            // 与外扩上限保持一致：小于它会让声明了较大邻域的调用被静默截断。
+            max_filter_padding: MAX_EFFECT_PADDING,
         }
     }
 }
@@ -198,12 +199,20 @@ impl Renderer {
         bbox: Bbox,
     ) -> Result<RegionRender> {
         let region = clamp_region(state, &bbox)?;
+        let declared = self.filter_padding(state);
         let padding = if self.options.expand_for_filters {
-            self.filter_padding(state)
-                .min(self.options.max_filter_padding)
+            declared.min(self.options.max_filter_padding)
         } else {
             0
         };
+        let mut mask_truncated = None;
+        if declared > padding {
+            // 历史原子可能声明了超限外扩：必须可观测，否则表现为「分块与整幅静默不一致」。
+            mask_truncated = Some(format!(
+                "区域外扩被截断：声明 {declared}px，上限 {}px；该区域的分块渲染可能与整幅渲染不一致",
+                self.options.max_filter_padding
+            ));
+        }
         let padded = Bbox::new(
             region.x - padding as f64,
             region.y - padding as f64,
@@ -219,6 +228,9 @@ impl Renderer {
             filter_padding: padding,
             ..RenderStats::default()
         };
+        if let Some(warning) = mask_truncated {
+            stats.unsupported.push(warning);
+        }
 
         // 背景：文档 background 为不透明时先铺底。
         let background = self
@@ -857,6 +869,15 @@ impl Renderer {
 }
 
 /// 内核内部使用的位图格式：未压缩 RGBA8（WebP/AVIF 编解码属传输层，尚未实现）。
+/// 渲染器保证「分块渲染 == 整幅渲染」的最大区域外扩量（像素）。
+///
+/// 邻域运算（滤镜、蒙版羽化、修图/液化的源采样）靠区域外扩来保证这一点；
+/// 外扩越大，单块缓冲越大（内存与耗时都线性增长），因此有上限。
+/// **参数超出该上限的调用必须被拒绝**：否则 tile 渲染取不到邻域/源像素，
+/// 客户端与服务端的结果会静默不一致（实测 `source_offset = 200` 时 bit-exact 失败）。
+pub const MAX_EFFECT_PADDING: u32 = 128;
+
+/// 位图补丁的原始像素 MIME（RGBA8 直通字节）。
 pub const RAW_RGBA_MIME: &str = "image/x-yanshi-raw";
 
 /// 笔迹几何的文档包围盒（含笔尖半径）。

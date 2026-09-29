@@ -345,7 +345,35 @@ WebSocket 消息（JSON 文本帧）：
 后续可再把首帧降到 100ms 以内：用文档级缩略图（更小的 PNG）或 1/2 缩放图先铺底，
 再由内核覆盖成清晰像素。
 
-**已知缺陷（本轮二分定位）：`clone_stamp` 破坏客户端/服务端 bit-exact**。
+**已修复：区域外扩被静默截断（`clone_stamp` 一度破坏 bit-exact）**。
+
+`RenderOptions.max_filter_padding` 默认 **64**，而 `filter_padding` 会按对象声明外扩
+（修图 `|offset| + size/2 + 2`、液化 `size/2 + strength*size`、蒙版羽化 `半径 + 1`）后
+再 `.min(64)` —— **超出部分被静默截断**，于是 tile 渲染取不到源/邻域像素：
+offset 200 的 `clone_stamp` 在服务端（整幅）正常、在客户端（tile 组合）取不到源，bit-exact 失败；
+而辉光（radius 14 → 外扩 28 < 64）恰好没被截断，所以此前一直通过。
+
+修复三件套：
+1. `max_filter_padding` 直接等于 `MAX_EFFECT_PADDING`（128），声明多少就外扩多少（不再静默截断）；
+2. 工具层按同一常量**拒绝超限参数**（`source_offset`/`smudge_length`/`size`/`strength` 组合的
+   可达范围），把「静默不一致」变成显式限制并给出原因；
+3. 渲染期对**历史原子**（可能超限）写入 `stats.unsupported` 告警，避免无声无息。
+
+**当前 bit-exact 状态**（每份 1024² 文档只差一个特性，真实 Chromium + CDP）：
+
+| 文档 | 内容 | 结果 |
+|---|---|---|
+| c1 | 形状 + `clone_stamp`（offset 60） | ✅ |
+| c2 | + `smudge` | ✅ |
+| c3 | + `liquify_push` | ✅ |
+| c4 | + 蒙版（羽化 24） | ✅ |
+| fx3 系列 | 曲线 + 白平衡 + HSL + 辉光 + 噪点 + 暗角 | ✅ |
+| **phase3b** | **上述全部 + `heal_stamp` + 长笔迹** | ❌ |
+
+结论：剩下的唯一嫌疑是 **`heal_stamp`**（唯一从未单独做过 bit-exact 验证的特性）或它与
+其它效果的交互。下一步：单独构造只含 `heal_stamp` 的文档做 bit-exact 定位并修复。
+
+**原始记录（上一轮二分）：`clone_stamp` 破坏客户端/服务端 bit-exact**。
 
 全链路文档（形状 + 曲线/白平衡/HSL + 辉光/噪点/暗角 + clone_stamp + 液化 + 蒙版）在真实
 Chromium 中 bit-exact 自检**失败**。用「逐个特性叠加」二分（每份 1024² 文档只差一个特性）：

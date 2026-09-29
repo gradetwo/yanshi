@@ -2328,6 +2328,21 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
         }
     }
     // 涂抹的采样偏移由笔迹方向推导，不需要 `source_offset`；其余修图类型必须显式给出。
+    // 区域外扩有上限：超出后 tile 渲染取不到源像素，分块与整幅会静默不一致。
+    let size_hint = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    let reach_limit = yanshi_render::MAX_EFFECT_PADDING as f64;
+    let enforce_reach = |reach: f64, what: &str| -> Result<()> {
+        if reach > reach_limit {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{what} 需要区域外扩 {reach:.0}px，超过内核上限 {reach_limit:.0}px；\
+                     超出后分块渲染取不到源像素，会导致客户端与服务端结果不一致"
+                )),
+            ));
+        }
+        Ok(())
+    };
     let (dx, dy) = if retouch_type == "smudge" {
         let length = args
             .get("smudge_length")
@@ -2339,6 +2354,7 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
                 ErrorContext::detail(format!("smudge_length 必须在 [0.5, 512] 内，得到 {length}")),
             ));
         }
+        enforce_reach(length + size_hint / 2.0 + 2.0, "smudge_length 与 size 组合")?;
         (0.0, 0.0)
     } else {
         let offset = require_array(args, "source_offset")?;
@@ -2350,12 +2366,10 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
                 ErrorContext::detail("source_offset 不能是 [0,0]（那样只会自我复制）"),
             ));
         }
-        if dx.abs() > 4096.0 || dy.abs() > 4096.0 {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail("source_offset 超出合理范围（|dx|,|dy| ≤ 4096）"),
-            ));
-        }
+        enforce_reach(
+            dx.abs().max(dy.abs()) + size_hint / 2.0 + 2.0,
+            "source_offset 与 size 组合",
+        )?;
         (dx, dy)
     };
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
@@ -2534,6 +2548,16 @@ fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!("strength 必须在 [0, 2] 内，得到 {strength}")),
+        ));
+    }
+    let liquify_reach = size / 2.0 + strength * size + 2.0;
+    if liquify_reach > yanshi_render::MAX_EFFECT_PADDING as f64 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "size 与 strength 组合需要区域外扩 {liquify_reach:.0}px，超过内核上限 {}px",
+                yanshi_render::MAX_EFFECT_PADDING
+            )),
         ));
     }
     let object_id = optional_str(args, "object_id")

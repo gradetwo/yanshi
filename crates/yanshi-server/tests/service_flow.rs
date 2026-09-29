@@ -799,6 +799,25 @@ fn clone_stamp_copies_content_and_is_reversible() {
         "heal 应比 clone 更接近白色目标处：clone={after:?} heal={healed_pixel:?}"
     );
 
+    // 区域外扩上限：offset/size 组合超出内核可达范围时必须拒绝（否则分块与整幅会不一致）。
+    let too_far = registry.call(
+        &mut context,
+        "clone_stamp",
+        &json!({"layer_id": "layer_1", "points": [[40.0, 40.0]], "source_offset": [-200.0, -200.0], "size": 16.0}),
+    );
+    assert_eq!(
+        too_far["error_code"],
+        json!("invalid_argument"),
+        "{too_far}"
+    );
+    assert!(
+        too_far["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("超过内核上限"),
+        "错误信息应说明原因：{too_far}"
+    );
+
     // 涂抹：方向由笔迹推导，无需 source_offset。
     let smudged = registry.call(
         &mut context,
