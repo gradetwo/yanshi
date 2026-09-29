@@ -426,13 +426,21 @@ impl Document {
         let atom_session = atom.session.clone();
         let atom_id = atom.id.clone();
 
-        let outcome = {
+        let validation = {
             let exists = |hash: &BlobHash| self.store.exists(hash);
             let mut context = CommitContext::new(&self.state, &exists, actor, &atom_session);
             if owner {
                 context = context.allow_cross_actor_revert(true);
             }
-            self.log.append_validated(atom, &context)?
+            self.log.append_validated(atom, &context)
+        };
+        let outcome = match validation {
+            Ok(outcome) => outcome,
+            // 12.3 第 2 步：采样性替换冲突时先确保冲突图层存在，再把错误交回客户端。
+            Err(error) if error.code == ErrorCode::Conflict => {
+                return Err(self.ensure_conflict_layer(error)?)
+            }
+            Err(error) => return Err(error),
         };
         self.commits += 1;
         let seq = outcome.seq();
@@ -542,6 +550,70 @@ impl Document {
             job_id,
             snapshotted,
         })
+    }
+
+    /// 确保冲突图层存在（12.3）：不存在则以系统 actor（`system:conflict`）追加 `create_layer`。
+    fn ensure_conflict_layer(&mut self, mut error: YanshiError) -> Result<YanshiError> {
+        let existing = self
+            .state
+            .layers
+            .values()
+            .find(|layer| {
+                !layer.is_deleted()
+                    && layer
+                        .metadata
+                        .get("conflict")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            })
+            .map(|layer| layer.id.clone());
+        let layer_id = match existing {
+            Some(layer_id) => layer_id,
+            None => {
+                let layer_id = format!("layer_conflict_{}", yanshi_core::Ulid::new().encode());
+                let z_index = self
+                    .state
+                    .alive_layers()
+                    .iter()
+                    .map(|layer| layer.z_index + 1)
+                    .max()
+                    .unwrap_or(1);
+                let atom = yanshi_core::conflict::conflict_layer_atom(
+                    layer_id.clone(),
+                    Some(&self.id),
+                    z_index,
+                );
+                self.append_system_atom(atom)?;
+                layer_id
+            }
+        };
+        error
+            .context
+            .extra
+            .insert("conflict_layer_id".to_owned(), json!(layer_id));
+        Ok(error)
+    }
+
+    /// 追加服务端系统原子（不经客户端校验路径），并完成折叠、dirty 与广播。
+    fn append_system_atom(&mut self, atom: Atom) -> Result<Seq> {
+        let previous = Some(self.state.clone());
+        let outcome = self.log.append(atom)?;
+        let seq = outcome.seq();
+        let appended = self
+            .log
+            .by_seq(seq)
+            .cloned()
+            .ok_or_else(|| internal("系统原子未进入日志"))?;
+        let folded = self.folder.fold(&self.log, self.log.head_seq())?;
+        self.state = folded.state;
+        let dirty = plan_dirty_with_log(&self.state, previous.as_ref(), &self.log, &appended);
+        let tiles = self.renderer.apply_dirty(&self.state, &dirty);
+        self.broadcaster.publish_atom(&appended);
+        if !tiles.is_empty() {
+            self.broadcaster
+                .publish_tiles(self.renderer.grid().tile_size(), &tiles);
+        }
+        Ok(seq)
     }
 
     /// `state@seq_n`（5.5 时间旅行）。
