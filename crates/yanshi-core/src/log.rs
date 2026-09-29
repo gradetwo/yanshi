@@ -81,6 +81,9 @@ impl<'a> CommitContext<'a> {
     }
 }
 
+/// 冲突检测的并发窗口上限，与设计文档 6.2 的重放上限一致。
+pub const CONFLICT_WINDOW_ATOMS: Seq = 1000;
+
 /// 原子引用的实体必须存在、必须不存在，或不做检查。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefMode {
@@ -269,6 +272,31 @@ impl AtomLog {
                     }
                 }
                 RefMode::Ignore => {}
+            }
+        }
+        // set_property 的属性值引用（mask_id / style_id / parent_id / layer_id）。
+        if atom.kind == AtomKind::SetProperty {
+            if let (Some(key), Some(value)) = (
+                crate::atom::payload_str(&atom.payload, "key"),
+                atom.payload
+                    .get("value")
+                    .and_then(serde_json::Value::as_str),
+            ) {
+                let alive = match key {
+                    "mask_id" => state.masks.get(value).is_some_and(|m| !m.is_deleted()),
+                    "style_id" => state.styles.get(value).is_some_and(|s| !s.is_deleted()),
+                    "parent_id" | "layer_id" => state.layer_alive(value),
+                    _ => true,
+                };
+                if !alive {
+                    return Err(YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(format!(
+                            "set_property {key} 引用的实体 {value} 不存在或已删除"
+                        )),
+                    )
+                    .with_atom(atom.id.clone()));
+                }
             }
         }
         // 蒙版 / 选区 / 风格的主实体引用（创建类原子要求尚不存在）。
@@ -553,13 +581,17 @@ impl AtomLog {
     }
 
     /// 并发窗口：`parents` 所指向 head 之后的原子（离线重连时 parents 可能落后）。
+    ///
+    /// 窗口按设计文档 6.2 的重放上限截断为最近 [`CONFLICT_WINDOW_ATOMS`] 个原子：
+    /// 超出窗口的并发互踩不再由服务端自动判定，交由 `resolve_conflict` 人工处理。
     fn concurrent_window<'a>(&'a self, atom: &'a Atom) -> impl Iterator<Item = &'a Atom> + 'a {
-        let base = atom
+        let parents_head = atom
             .parents
             .iter()
             .filter_map(|parent| self.seq_of(parent))
             .max()
             .unwrap_or(0);
+        let base = parents_head.max(self.head_seq().saturating_sub(CONFLICT_WINDOW_ATOMS));
         self.atoms
             .iter()
             .filter(move |existing| existing.seq > base && existing.id != atom.id)

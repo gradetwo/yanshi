@@ -78,6 +78,23 @@ impl Snapshot {
         Ok(snapshot)
     }
 
+    /// 由已经求得的状态生成快照（服务端已有 HEAD 状态时避免重复折叠）。
+    ///
+    /// `seq_at` 必须是该状态对应的序列位置（即 `state.head_seq` 或调用方确认的位置）。
+    pub fn from_state(seq_at: Seq, base_ref: SnapshotBase, state: DocumentState) -> Result<Self> {
+        let manifest: Vec<BlobHash> = state.active_blob_manifest().into_iter().collect();
+        let mut snapshot = Self {
+            id: Ulid::new().encode(),
+            base_ref,
+            seq_at,
+            state,
+            manifest,
+            crc: String::new(),
+        };
+        snapshot.crc = snapshot.compute_crc()?;
+        Ok(snapshot)
+    }
+
     /// 以某个 `declare_head` 原子为 base_ref 生成快照。
     pub fn create_at_head(
         log: &AtomLog,

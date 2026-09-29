@@ -196,13 +196,17 @@ pub fn fold_atoms(base: DocumentState, atoms: &[Atom]) -> FoldResult {
             Ok(()) => match apply(&mut state, atom) {
                 Ok(()) => {
                     applied.push(atom.id.clone());
-                    state.head_seq = atom.seq;
-                    state.head_atom = Some(atom.id.clone());
                 }
                 Err(error) => warnings.push(cascade_warning(atom, &error)),
             },
             Err(error) => warnings.push(cascade_warning(atom, &error)),
         }
+    }
+    // head 指针 = 本次折叠区间内 seq 最大的原子（无论是否产生状态效果）：
+    // 撤销、协作原子同样推进 head，文档的 head 是“历史位置”而非“最后一次有效修改”。
+    if let Some(last) = atoms.last() {
+        state.head_seq = state.head_seq.max(last.seq);
+        state.head_atom = Some(last.id.clone());
     }
     FoldResult {
         state,

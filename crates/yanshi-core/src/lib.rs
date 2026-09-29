@@ -16,6 +16,7 @@
 //! | [`snapshot`] | 4.5 / 6.5 | 逻辑快照、CRC、可清理策略（旁路缓存，非原子） |
 //! | [`changeset`] | 5.6 | 变更集分组与整体撤销规划 |
 //! | [`conflict`] | 12.3 | 采样性替换冲突检测（生成性叠加走 LWW） |
+//! | [`testkit`] | 5.3 / 19 | 确定性场景生成器：属性测试、fuzz 与基准共用 |
 //!
 //! 折叠代数的五条不变量（设计文档 5.3）由 `tests/` 下的属性测试与 fuzz 用例保证：
 //! 幂等性、收敛性、无孤儿引用、`revert`-`reapply` 往返、历史可重放。
@@ -52,6 +53,7 @@ pub mod log;
 pub mod seq;
 pub mod snapshot;
 pub mod state;
+pub mod testkit;
 
 pub use atom::{
     payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind, BlobHash, BlobRef,

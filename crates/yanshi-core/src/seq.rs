@@ -55,6 +55,11 @@ impl StateAt {
     pub fn is_clean(&self) -> bool {
         self.warnings.is_empty()
     }
+
+    /// 该原子是否被有效 revert 撤销（设计文档 5.3 有效集）。
+    pub fn is_suppressed(&self, atom_id: &str) -> bool {
+        self.suppressed.contains(atom_id)
+    }
 }
 
 /// `state@seq` 求值缓存（快照之外的进程内记忆化，避免重复折叠）。

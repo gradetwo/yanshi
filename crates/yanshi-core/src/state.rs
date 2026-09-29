@@ -544,6 +544,20 @@ impl DocumentState {
         manifest
     }
 
+    /// 比较文档内容，忽略折叠元数据（head 指针）。
+    ///
+    /// 用于 `revert` / `reapply` 往返等语义等价断言：撤销与恢复不改变文档内容，
+    /// 只改变 head 指针。
+    pub fn same_content(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.head_seq = 0;
+        left.head_atom = None;
+        right.head_seq = 0;
+        right.head_atom = None;
+        left == right
+    }
+
     /// 结构不变量检查：折叠结果中不得存在指向已失效实体的引用（设计文档 5.3）。
     ///
     /// 返回全部违规项，属性测试断言其为空。

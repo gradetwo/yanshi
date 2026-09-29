@@ -1,0 +1,901 @@
+//! 确定性场景生成器：属性测试、fuzz 与基准共用。
+//!
+//! 生成器按“客户端提交”的真实路径驱动引擎：先按设计文档 6.3 把 blob 写入 CAS，
+//! 再用 [`crate::log::AtomLog::append_validated`] 提交原子（走 12.2 提交时校验），
+//! 被拒绝的原子**不进日志**并记录错误码。
+//!
+//! 折叠侧采用设计文档 6.2/6.5 的策略：以快照为基线、只在快照窗口内重放，
+//! 因此 10 万原子级别的场景也不会退化成 O(n²)。
+//!
+//! 生成器使用固定种子的 [`crate::ids::UlidGen`]，同一 seed 完全可复现。
+
+use crate::atom::{Atom, AtomKind, BlobHash, BlobRef};
+use crate::blob::{BlobStore, MemoryBlobStore};
+use crate::error::ErrorCode;
+use crate::fold::{apply, fold_atoms};
+use crate::ids::{Seq, UlidGen};
+use crate::log::{AtomLog, CommitContext};
+use crate::snapshot::{Snapshot, SnapshotBase};
+use crate::state::DocumentState;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::BTreeMap;
+
+/// 场景配置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScenarioConfig {
+    /// 随机种子。
+    pub seed: u64,
+    /// 生成步数（即尝试提交的原子数）。
+    pub steps: usize,
+    /// 带 blob 的对象写入的字节数（0 表示不产生 blob）。
+    pub blob_bytes: usize,
+    /// 快照窗口：每积累这么多原子就推进一次基线快照（0 表示不推进，全程重放）。
+    pub snapshot_window: usize,
+    /// 撤销/恢复操作的千分比。
+    pub revert_permille: u32,
+    /// 采样性替换（retouch）操作的千分比。
+    pub sampling_permille: u32,
+    /// 实体数量上限（图层、对象、蒙版、风格各自）。
+    pub max_entities: usize,
+}
+
+impl Default for ScenarioConfig {
+    fn default() -> Self {
+        Self {
+            seed: 2026,
+            steps: 200,
+            blob_bytes: 0,
+            snapshot_window: 0,
+            revert_permille: 120,
+            sampling_permille: 40,
+            max_entities: 12,
+        }
+    }
+}
+
+impl ScenarioConfig {
+    /// 小规模场景（属性测试默认）。
+    pub fn small(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::default()
+        }
+    }
+
+    /// 大规模 fuzz 场景（Phase 0 出口条件：10 万原子）。
+    pub fn fuzz(seed: u64, steps: usize) -> Self {
+        Self {
+            seed,
+            steps,
+            blob_bytes: 2048,
+            snapshot_window: 500,
+            revert_permille: 60,
+            sampling_permille: 20,
+            max_entities: 64,
+        }
+    }
+}
+
+/// 单步记录。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepRecord {
+    /// 客户端生成的原子 id。
+    pub atom_id: String,
+    /// 原子类型。
+    pub kind: AtomKind,
+    /// 操作者。
+    pub actor: String,
+    /// 会话。
+    pub session: String,
+    /// 提交后的权威 seq（被拒绝时为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<Seq>,
+    /// 是否被接受进日志。
+    pub accepted: bool,
+    /// 被拒绝时的错误码。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ErrorCode>,
+}
+
+/// 生成统计。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioStats {
+    /// 接受的原子数。
+    pub accepted: usize,
+    /// 拒绝的原子数。
+    pub rejected: usize,
+    /// 各错误码拒绝次数。
+    pub rejections_by_code: BTreeMap<String, usize>,
+    /// 写入 CAS 的 blob 数（去重前）。
+    pub blobs_written: usize,
+    /// 生成的快照数。
+    pub snapshots: usize,
+}
+
+/// 生成结果。
+pub struct Scenario {
+    /// 原子日志。
+    pub log: AtomLog,
+    /// blob CAS。
+    pub store: MemoryBlobStore,
+    /// 每步记录。
+    pub steps: Vec<StepRecord>,
+    /// 统计。
+    pub stats: ScenarioStats,
+    /// 增量维护的最终状态（应与 `state_at(head)` 收敛）。
+    pub final_state: DocumentState,
+    /// 生成的快照（按写入顺序）。
+    pub snapshots: Vec<Snapshot>,
+}
+
+impl Scenario {
+    /// 全部生效 blob hash。
+    pub fn blob_hashes(&self) -> Vec<BlobHash> {
+        self.store
+            .list()
+            .map(|entries| entries.into_iter().map(|entry| entry.blob_hash).collect())
+            .unwrap_or_default()
+    }
+
+    /// 最终状态的活跃 blob Manifest。
+    pub fn active_manifest(&self) -> std::collections::BTreeSet<BlobHash> {
+        self.final_state.active_blob_manifest()
+    }
+}
+
+/// 极简确定性 RNG（splitmix64）。
+#[derive(Debug, Clone)]
+pub struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    /// 以种子构造。
+    pub fn new(seed: u64) -> Self {
+        Self {
+            state: seed ^ 0x9E37_79B9_7F4A_7C15,
+        }
+    }
+
+    /// 下一个 u64。
+    pub fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// `0..bound` 的随机数（bound 为 0 时返回 0）。
+    pub fn below(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            0
+        } else {
+            (self.next_u64() % bound as u64) as usize
+        }
+    }
+
+    /// 千分比概率。
+    pub fn permille(&mut self, permille: u32) -> bool {
+        (self.next_u64() % 1000) < u64::from(permille)
+    }
+
+    /// 从列表随机取一个元素的克隆。
+    pub fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
+        if items.is_empty() {
+            None
+        } else {
+            let index = self.below(items.len());
+            items.get(index)
+        }
+    }
+
+    /// 洗牌（Fisher-Yates）。
+    pub fn shuffle<T>(&mut self, items: &mut [T]) {
+        if items.len() < 2 {
+            return;
+        }
+        for index in (1..items.len()).rev() {
+            let swap = self.below(index + 1);
+            items.swap(index, swap);
+        }
+    }
+}
+
+/// 会话模型：两个会话交替提交，用于触发跨会话冲突与权限路径。
+const SESSIONS: [(&str, &str); 2] = [("human:1", "session:a"), ("ai:1", "session:b")];
+
+#[derive(Debug, Default)]
+struct Model {
+    layers: Vec<String>,
+    objects: Vec<(String, String)>,
+    styles: Vec<String>,
+    masks: Vec<String>,
+    selections: Vec<String>,
+    /// 可作为 revert/reapply 目标的状态原子（按 seq 升序）。
+    state_atoms: Vec<(String, Seq, AtomKind)>,
+    suppressed: Vec<String>,
+    next_layer: usize,
+    next_object: usize,
+    next_style: usize,
+    next_mask: usize,
+    next_selection: usize,
+}
+
+/// 生成一个场景。
+pub fn generate(config: &ScenarioConfig) -> Scenario {
+    let mut rng = Rng::new(config.seed);
+    let mut ids = UlidGen::seeded(config.seed);
+    let mut log = AtomLog::new();
+    let mut store = MemoryBlobStore::new();
+    let mut model = Model::default();
+    let mut steps = Vec::with_capacity(config.steps);
+    let mut stats = ScenarioStats::default();
+    let mut snapshots: Vec<Snapshot> = Vec::new();
+
+    // 折叠基线：快照状态 + 基线之后的原子重放（6.2 / 6.5）。
+    let mut base_state = DocumentState::empty();
+    let mut base_seq: Seq = 0;
+    let mut state = DocumentState::empty();
+
+    for step in 0..config.steps {
+        let session_index = if rng.permille(700) { 0 } else { 1 };
+        let (actor, session) = SESSIONS[session_index];
+        let atom = build_atom(
+            &mut rng, &mut ids, &mut store, &model, &state, config, actor, session, step,
+        );
+        let atom_id = atom.id.clone();
+        let kind = atom.kind;
+        let outcome = {
+            let exists = |hash: &BlobHash| store.exists(hash);
+            let commit = CommitContext::new(&state, &exists, actor, session);
+            log.append_validated(atom, &commit)
+        };
+
+        match outcome {
+            Ok(appended) => {
+                let seq = appended.seq();
+                stats.accepted += 1;
+                steps.push(StepRecord {
+                    atom_id: atom_id.clone(),
+                    kind,
+                    actor: actor.to_owned(),
+                    session: session.to_owned(),
+                    seq: Some(seq),
+                    accepted: true,
+                    error_code: None,
+                });
+                update_model(&mut model, &log, &atom_id, seq, kind);
+
+                // 折叠推进：declare_head 触发起点跳变（完整求值），撤销/恢复在窗口内重放，
+                // 其余原子直接应用。窗口由快照基线保证（6.2 / 6.5）。
+                match kind {
+                    AtomKind::DeclareHead => {
+                        let mut cache = crate::seq::StateAtCache::new();
+                        match crate::seq::state_at(&log, seq, &mut cache) {
+                            Ok(evaluated) => {
+                                state = evaluated.state;
+                                base_state = state.clone();
+                                base_seq = seq;
+                            }
+                            Err(_) => state = fold_atoms(base_state.clone(), &[]).state,
+                        }
+                    }
+                    AtomKind::Revert | AtomKind::Reapply => {
+                        let slice = log.range_exclusive_inclusive(base_seq, seq);
+                        state = fold_atoms(base_state.clone(), slice).state;
+                    }
+                    _ => {
+                        let Some(head) = log.by_seq(seq).cloned() else {
+                            continue;
+                        };
+                        // 与折叠器保持一致：precondition 失败即为级联失效，不得单方面应用。
+                        if crate::fold::precondition(&state, &head).is_ok() {
+                            let _ = apply(&mut state, &head);
+                            state.head_seq = head.seq;
+                            state.head_atom = Some(head.id.clone());
+                        } else {
+                            let slice = log.range_exclusive_inclusive(base_seq, seq);
+                            state = fold_atoms(base_state.clone(), slice).state;
+                        }
+                    }
+                }
+                // 撤销目标不得越出当前基线窗口，否则窗口重放不再等价于完整折叠。
+                model
+                    .state_atoms
+                    .retain(|(_, target_seq, _)| *target_seq > base_seq);
+
+                if config.snapshot_window > 0 && seq - base_seq >= config.snapshot_window as u64 {
+                    let base_ref = match log.last_declare_head_upto(seq) {
+                        Some(head) => SnapshotBase::DeclareHead(head.id.clone()),
+                        None => SnapshotBase::Snapshot("root".to_owned()),
+                    };
+                    if let Ok(snapshot) = Snapshot::from_state(seq, base_ref, state.clone()) {
+                        base_state = snapshot.state.clone();
+                        base_seq = seq;
+                        stats.snapshots += 1;
+                        snapshots.push(snapshot);
+                    }
+                }
+            }
+            Err(error) => {
+                stats.rejected += 1;
+                *stats
+                    .rejections_by_code
+                    .entry(error.code.as_str().to_owned())
+                    .or_insert(0) += 1;
+                steps.push(StepRecord {
+                    atom_id,
+                    kind,
+                    actor: actor.to_owned(),
+                    session: session.to_owned(),
+                    seq: None,
+                    accepted: false,
+                    error_code: Some(error.code),
+                });
+            }
+        }
+    }
+
+    Scenario {
+        log,
+        store,
+        steps,
+        stats,
+        final_state: state,
+        snapshots,
+    }
+}
+
+fn update_model(model: &mut Model, log: &AtomLog, atom_id: &str, seq: Seq, kind: AtomKind) {
+    let Some(atom) = log.get(atom_id) else {
+        return;
+    };
+    match kind {
+        AtomKind::CreateLayer => {
+            if let Some(layer_id) = crate::atom::payload_str(&atom.payload, "layer_id") {
+                model.layers.push(layer_id.to_owned());
+            }
+        }
+        AtomKind::CreateObject | AtomKind::ImportImage => {
+            if let (Some(object_id), Some(layer_id)) = (
+                crate::atom::payload_str(&atom.payload, "object_id"),
+                crate::atom::payload_str(&atom.payload, "layer_id"),
+            ) {
+                model
+                    .objects
+                    .push((object_id.to_owned(), layer_id.to_owned()));
+            }
+        }
+        AtomKind::CreateStyle => {
+            if let Some(style_id) = crate::atom::payload_str(&atom.payload, "style_id") {
+                model.styles.push(style_id.to_owned());
+            }
+        }
+        AtomKind::CreateMask => {
+            if let Some(mask_id) = crate::atom::payload_str(&atom.payload, "mask_id") {
+                model.masks.push(mask_id.to_owned());
+            }
+        }
+        AtomKind::CreateSelection => {
+            if let Some(selection_id) = crate::atom::payload_str(&atom.payload, "selection_id") {
+                model.selections.push(selection_id.to_owned());
+            }
+        }
+        _ => {}
+    }
+    if kind.is_state_effect() {
+        model.state_atoms.push((atom_id.to_owned(), seq, kind));
+    }
+    if kind == AtomKind::Revert {
+        if let Some(target) = atom.target_atom() {
+            model.suppressed.push(target.to_owned());
+            model.state_atoms.retain(|(id, _, _)| id != target);
+        }
+    }
+    if kind == AtomKind::Reapply {
+        if let Some(target) = atom.target_atom() {
+            model.suppressed.retain(|id| id != target);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_atom(
+    rng: &mut Rng,
+    ids: &mut UlidGen,
+    store: &mut MemoryBlobStore,
+    model: &Model,
+    state: &DocumentState,
+    config: &ScenarioConfig,
+    actor: &str,
+    session: &str,
+    step: usize,
+) -> Atom {
+    let mut atom = match choose_op(rng, model, state, config, step) {
+        Op::CreateDocument => Atom::new(
+            AtomKind::CreateDocument,
+            actor,
+            session,
+            json!({
+                "doc_id": "doc_1",
+                "width": 512,
+                "height": 512,
+                "color_space": "srgb",
+            }),
+        ),
+        Op::CreateLayer => {
+            let layer_id = format!("layer_{}", model.next_layer);
+            Atom::new(
+                AtomKind::CreateLayer,
+                actor,
+                session,
+                json!({"layer_id": layer_id, "name": layer_id}),
+            )
+        }
+        Op::CreateNestedLayer => {
+            let layer_id = format!("layer_{}", model.next_layer);
+            let parent = rng.pick(&model.layers).cloned();
+            Atom::new(
+                AtomKind::CreateLayer,
+                actor,
+                session,
+                json!({"layer_id": layer_id, "parent_id": parent, "type": "layer_group"}),
+            )
+        }
+        Op::CreateObject => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let object_id = format!("obj_{}", model.next_object);
+            Atom::new(
+                AtomKind::CreateObject,
+                actor,
+                session,
+                json!({
+                    "object_id": object_id,
+                    "layer_id": layer_id,
+                    "type": ObjectKind::pick(rng).as_str(),
+                    "z_index": rng.below(8),
+                }),
+            )
+        }
+        Op::DrawStroke => {
+            let object_id = format!("obj_{}", model.next_object);
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::DrawStroke,
+                actor,
+                session,
+                json!({
+                    "object_id": object_id,
+                    "layer_id": layer_id,
+                    "brush": "round",
+                    "size": 1.0 + rng.below(20) as f64 / 4.0,
+                    "data": {"points": [[0.0, 0.0], [rng.below(64) as f64, rng.below(64) as f64]]},
+                }),
+            )
+        }
+        Op::Supersede => {
+            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::Supersede,
+                actor,
+                session,
+                json!({"object_id": object_id, "data": {"v": step}}),
+            )
+        }
+        Op::SetPropertyObject => {
+            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            let (key, value) = match rng.below(3) {
+                0 => ("visible", json!(rng.permille(500))),
+                1 => ("locked", json!(rng.permille(500))),
+                _ => ("z_index", json!(rng.below(8))),
+            };
+            Atom::new(
+                AtomKind::SetProperty,
+                actor,
+                session,
+                json!({"object_id": object_id, "key": key, "value": value}),
+            )
+        }
+        Op::SetPropertyLayer => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let (key, value) = match rng.below(3) {
+                0 => ("visible", json!(rng.permille(500))),
+                1 => ("opacity", json!(rng.below(100) as f64 / 100.0)),
+                _ => ("blend_mode", json!("multiply")),
+            };
+            Atom::new(
+                AtomKind::SetProperty,
+                actor,
+                session,
+                json!({"layer_id": layer_id, "key": key, "value": value}),
+            )
+        }
+        Op::ReorderLayers => {
+            let mut order: Vec<String> = state
+                .alive_layers()
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect();
+            rng.shuffle(&mut order);
+            Atom::new(
+                AtomKind::ReorderLayers,
+                actor,
+                session,
+                json!({"order": order}),
+            )
+        }
+        Op::CreateStyle => {
+            let style_id = format!("style_{}", model.next_style);
+            Atom::new(
+                AtomKind::CreateStyle,
+                actor,
+                session,
+                json!({"style_id": style_id, "name": style_id, "category": "ink"}),
+            )
+        }
+        Op::StyledObject => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let object_id = format!("obj_{}", model.next_object);
+            let style_id = rng.pick(&model.styles).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::DrawShape,
+                actor,
+                session,
+                json!({
+                    "object_id": object_id,
+                    "layer_id": layer_id,
+                    "style_id": style_id,
+                    "data": {"geometry": {"kind": "rect"}},
+                }),
+            )
+        }
+        Op::CreateMask => {
+            let mask_id = format!("mask_{}", model.next_mask);
+            Atom::new(
+                AtomKind::CreateMask,
+                actor,
+                session,
+                json!({"mask_id": mask_id, "shape": {"kind": "rect"}, "feather": 2.0}),
+            )
+        }
+        Op::BindMask => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let mask_id = rng.pick(&model.masks).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::SetProperty,
+                actor,
+                session,
+                json!({"layer_id": layer_id, "key": "mask_id", "value": mask_id}),
+            )
+        }
+        Op::CreateSelection => {
+            let selection_id = format!("sel_{}", model.next_selection);
+            Atom::new(
+                AtomKind::CreateSelection,
+                actor,
+                session,
+                json!({"selection_id": selection_id, "shape": {"kind": "ellipse"}}),
+            )
+        }
+        Op::TombstoneObject => {
+            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::Tombstone,
+                actor,
+                session,
+                json!({"object_id": object_id}),
+            )
+        }
+        Op::TombstoneLayer => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::Tombstone,
+                actor,
+                session,
+                json!({"layer_id": layer_id}),
+            )
+        }
+        Op::CreateCheckpoint => {
+            let checkpoint_id = format!("ckpt_{}", step);
+            Atom::new(
+                AtomKind::CreateCheckpoint,
+                actor,
+                session,
+                json!({
+                    "checkpoint_id": checkpoint_id,
+                    "name": checkpoint_id,
+                    "anchor_seq": state.head_seq,
+                }),
+            )
+        }
+        Op::DeclareHead => {
+            let target = model
+                .state_atoms
+                .iter()
+                .rev()
+                .take(8)
+                .map(|(id, _, _)| id.clone())
+                .next()
+                .unwrap_or_default();
+            Atom::new(
+                AtomKind::DeclareHead,
+                actor,
+                session,
+                json!({"base": {"type": "atom", "id": target}, "reason": "revert_to"}),
+            )
+        }
+        Op::Retouch => {
+            let (object_id, layer_id) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            Atom::new(
+                AtomKind::Retouch,
+                actor,
+                session,
+                json!({
+                    "object_id": object_id,
+                    "layer_id": layer_id,
+                    "region": {
+                        "x": rng.below(64) as f64,
+                        "y": rng.below(64) as f64,
+                        "w": 8.0,
+                        "h": 8.0,
+                    },
+                }),
+            )
+        }
+        Op::RasterPatch => {
+            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let object_id = format!("obj_{}", model.next_object);
+            let mut payload = json!({
+                "object_id": object_id,
+                "layer_id": layer_id,
+                "type": "raster_patch",
+                "sampling": rng.permille(500),
+                "prompt": "把天空换成晚霞",
+                "region": {"x": 0, "y": 0, "w": 32, "h": 32},
+            });
+            if config.blob_bytes > 0 {
+                let mut bytes = vec![0u8; config.blob_bytes];
+                let stamp = (step as u32).to_le_bytes();
+                for (index, slot) in bytes.iter_mut().enumerate() {
+                    *slot = (index as u8).wrapping_add(stamp[index % 4]);
+                }
+                if let Ok(blob_ref) = write_blob(store, &bytes, "image/webp") {
+                    payload["bitmap"] = json!(blob_ref);
+                }
+            }
+            Atom::new(AtomKind::CreateObject, actor, session, payload)
+        }
+        Op::Revert => {
+            let target = rng
+                .pick(&model.state_atoms)
+                .map(|(id, _, _)| id.clone())
+                .unwrap_or_default();
+            Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
+        }
+        Op::Reapply => {
+            let target = rng.pick(&model.suppressed).cloned().unwrap_or_default();
+            Atom::new(AtomKind::Reapply, actor, session, json!({"target": target}))
+        }
+        Op::RevertStaleTarget => {
+            // 刻意构造一个指向很旧原子的 revert：用于覆盖拒绝路径。
+            let target = model
+                .state_atoms
+                .first()
+                .map(|(id, _, _)| id.clone())
+                .unwrap_or_default();
+            Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
+        }
+        Op::InvalidReference => {
+            let object_id = format!("obj_missing_{step}");
+            Atom::new(
+                AtomKind::Supersede,
+                actor,
+                session,
+                json!({"object_id": object_id, "data": {"v": -1}}),
+            )
+        }
+    };
+    atom.id = ids.next_id();
+    atom
+}
+
+fn write_blob(store: &MemoryBlobStore, bytes: &[u8], mime: &str) -> crate::error::Result<BlobRef> {
+    crate::blob::stage_blob(store, bytes, mime)
+}
+
+/// 对象类型选择。
+#[derive(Debug, Clone, Copy)]
+enum ObjectKind {
+    Stroke,
+    Shape,
+    Text,
+}
+
+impl ObjectKind {
+    fn pick(rng: &mut Rng) -> Self {
+        match rng.below(3) {
+            0 => Self::Stroke,
+            1 => Self::Shape,
+            _ => Self::Text,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stroke => "stroke",
+            Self::Shape => "shape",
+            Self::Text => "text",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    CreateDocument,
+    CreateLayer,
+    CreateNestedLayer,
+    CreateObject,
+    DrawStroke,
+    Supersede,
+    SetPropertyObject,
+    SetPropertyLayer,
+    ReorderLayers,
+    CreateStyle,
+    StyledObject,
+    CreateMask,
+    BindMask,
+    CreateSelection,
+    TombstoneObject,
+    TombstoneLayer,
+    CreateCheckpoint,
+    DeclareHead,
+    Retouch,
+    RasterPatch,
+    Revert,
+    Reapply,
+    RevertStaleTarget,
+    InvalidReference,
+}
+
+fn choose_op(
+    rng: &mut Rng,
+    model: &Model,
+    state: &DocumentState,
+    config: &ScenarioConfig,
+    step: usize,
+) -> Op {
+    // 开头先建立文档、图层与对象，之后按权重随机。
+    if state.doc_id.is_none() {
+        return Op::CreateDocument;
+    }
+    if model.layers.is_empty() {
+        return Op::CreateLayer;
+    }
+    // 保证带 blob 的场景一定覆盖“大二进制外置 + 提交顺序协议”。
+    if config.blob_bytes > 0 && step == 2 {
+        return Op::RasterPatch;
+    }
+    if model.objects.is_empty() && !rng.permille(200) {
+        return Op::CreateObject;
+    }
+    if config.revert_permille > 0 && rng.permille(config.revert_permille) {
+        return if model.suppressed.is_empty() || rng.permille(300) {
+            Op::Revert
+        } else {
+            Op::Reapply
+        };
+    }
+    if config.sampling_permille > 0 && rng.permille(config.sampling_permille) {
+        return Op::Retouch;
+    }
+    match rng.below(100) {
+        0..=11 => Op::CreateLayer,
+        12..=19 => {
+            if model.layers.len() > 1 && rng.permille(400) {
+                Op::CreateNestedLayer
+            } else {
+                Op::CreateObject
+            }
+        }
+        20..=33 => Op::DrawStroke,
+        34..=45 => Op::Supersede,
+        46..=54 => Op::SetPropertyObject,
+        55..=60 => Op::SetPropertyLayer,
+        61..=65 => {
+            if model.layers.len() > 1 {
+                Op::ReorderLayers
+            } else {
+                Op::CreateLayer
+            }
+        }
+        66..=69 => Op::CreateStyle,
+        70..=73 => {
+            if model.styles.is_empty() {
+                Op::CreateStyle
+            } else if model.layers.is_empty() {
+                Op::CreateLayer
+            } else {
+                Op::StyledObject
+            }
+        }
+        74..=77 => Op::CreateMask,
+        78..=81 => {
+            if model.masks.is_empty() {
+                Op::CreateMask
+            } else {
+                Op::BindMask
+            }
+        }
+        82..=84 => Op::CreateSelection,
+        85..=88 => Op::TombstoneObject,
+        89..=90 => {
+            if model.layers.len() > 2 {
+                Op::TombstoneLayer
+            } else {
+                Op::CreateLayer
+            }
+        }
+        91..=92 => Op::CreateCheckpoint,
+        93..=94 => {
+            if model.state_atoms.is_empty() || step < 4 {
+                Op::CreateObject
+            } else {
+                Op::DeclareHead
+            }
+        }
+        95..=96 => Op::RasterPatch,
+        97 => Op::InvalidReference,
+        98 => Op::RevertStaleTarget,
+        _ => {
+            if model.layers.is_empty() {
+                Op::CreateLayer
+            } else {
+                Op::CreateObject
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rng_is_deterministic() {
+        let mut a = Rng::new(7);
+        let mut b = Rng::new(7);
+        let seq_a: Vec<u64> = (0..32).map(|_| a.next_u64()).collect();
+        let seq_b: Vec<u64> = (0..32).map(|_| b.next_u64()).collect();
+        assert_eq!(seq_a, seq_b);
+        assert!(seq_a.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn scenario_is_reproducible() {
+        let config = ScenarioConfig::small(11);
+        let first = generate(&config);
+        let second = generate(&config);
+        assert_eq!(first.log.len(), second.log.len());
+        let ids_a: Vec<&str> = first.log.iter().map(|atom| atom.id.as_str()).collect();
+        let ids_b: Vec<&str> = second.log.iter().map(|atom| atom.id.as_str()).collect();
+        assert_eq!(ids_a, ids_b);
+        assert_eq!(first.steps, second.steps);
+    }
+
+    #[test]
+    fn scenario_produces_every_session_and_rejections() {
+        let scenario = generate(&ScenarioConfig::small(3));
+        assert!(scenario.log.len() > 20, "场景应产生足量原子");
+        let sessions: std::collections::BTreeSet<&str> = scenario
+            .log
+            .iter()
+            .map(|atom| atom.session.as_str())
+            .collect();
+        assert!(sessions.contains("session:a"));
+        assert!(sessions.contains("session:b"));
+        assert!(scenario.stats.rejected > 0, "生成器应覆盖提交被拒绝的路径");
+        assert!(scenario.final_state.is_consistent());
+    }
+}
