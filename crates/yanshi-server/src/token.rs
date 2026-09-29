@@ -200,6 +200,19 @@ impl TokenAuthority {
         self.tokens.remove(token.as_str()).is_some()
     }
 
+    /// 恢复一个已持久化的令牌（服务端重启，12.7）。
+    pub fn restore(&mut self, token: &str, actor: &str, role: Role) -> Result<()> {
+        let token = CapabilityToken::parse(token)?;
+        self.tokens.insert(
+            token.as_str().to_owned(),
+            Principal {
+                actor: actor.to_owned(),
+                role,
+            },
+        );
+        Ok(())
+    }
+
     /// 已发放令牌数。
     pub fn len(&self) -> usize {
         self.tokens.len()

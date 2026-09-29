@@ -407,11 +407,17 @@ impl Document {
     /// 以指定 actor 提交，可选 owner 权限（跨 actor revert，12.5）。
     pub fn commit_as(
         &mut self,
-        atom: Atom,
+        mut atom: Atom,
         actor: &str,
         owner: bool,
         changeset_id: Option<ChangesetId>,
     ) -> Result<CommitResult> {
+        // 变更集是原子字段（5.1）；显式写在原子上者优先。
+        if atom.changeset_id.is_none() {
+            if let Some(id) = &changeset_id {
+                atom.changeset_id = Some(id.clone());
+            }
+        }
         let previous = if needs_previous_state(atom.kind) {
             Some(self.state.clone())
         } else {

@@ -10,6 +10,7 @@
 //! | [`broadcast`] | 6.8 / 12.8 | 控制流全局广播 / 数据流视口过滤 |
 //! | [`annotations`] | 4.6 / 13.4 | 标注独立 append-only 通道 |
 //! | [`document`] | 3 / 6.2 / 12.1 | 文档服务：提交、增量折叠、dirty、渲染、Job、广播 |
+//! | [`persist`] | 18 | 文件持久化：原子 JSONL、CAS、渲染缓存、令牌 |
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -18,6 +19,8 @@ pub mod annotations;
 pub mod broadcast;
 pub mod document;
 pub mod job;
+pub mod persist;
+pub mod service;
 pub mod token;
 
 pub use annotations::{
@@ -32,6 +35,8 @@ pub use document::{
     CommitResult, Document, DocumentSettings, NewDocument, RenderStatus, RenderedPreview,
 };
 pub use job::{Job, JobId, JobManager, JobStatus, DEFAULT_JOB_TTL_SECONDS};
+pub use persist::{DocumentMeta, FileStore, TokenRecord};
+pub use service::{DocumentSummary, Workspace};
 pub use token::{
     CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind, TOKEN_HEX_LEN,
 };
