@@ -672,3 +672,96 @@ fn server_region_renders_use_the_tile_cache() {
         after_second.tiles, after_second.used_bytes, after_second.misses
     );
 }
+
+/// 14.10 预算表：原子提交（服务端处理）——单原子 < 20ms、批量 < 10ms。
+///
+/// 这里量的是**服务端处理**（提交 + 折叠 + dirty 计算），不含网络往返。
+#[test]
+#[ignore = "性能预算验收：CI 用 --ignored 执行（14.10 提交预算）"]
+fn commit_budget_single_and_batch() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(
+            NewDocument::new("doc_commit", 512, 512),
+            "human:1",
+            "session:a",
+        )
+        .unwrap();
+    workspace
+        .commit(
+            "doc_commit",
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "layer_1", "name": "base"}),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+
+    // 单原子提交：连续提交 30 个形状，取最小耗时（噪声机器上用最小值更稳）。
+    let mut best = Duration::MAX;
+    for index in 0..30 {
+        let atom = Atom::new(
+            AtomKind::CreateObject,
+            "human:1",
+            "session:a",
+            json!({
+                "object_id": format!("shape_{index}"),
+                "layer_id": "layer_1",
+                "kind": "shape",
+                "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 10.0 + index as f64, "y": 10.0, "w": 40.0, "h": 40.0}},
+                    "color": {"r": 100, "g": 100, "b": 100, "a": 255}
+                }
+            }),
+        );
+        let started = Instant::now();
+        workspace
+            .commit("doc_commit", atom, "human:1", true)
+            .expect("提交应成功");
+        best = best.min(started.elapsed());
+    }
+    println!("单原子提交（服务端，最小）: {best:?}｜预算 < 20ms（14.10）");
+    assert!(
+        best < Duration::from_millis(20),
+        "单原子提交 {best:?} 超出 20ms 预算（14.10）"
+    );
+
+    // 批量提交：一个变更集里 N 个原子，取最小耗时。
+    let mut batch_best = Duration::MAX;
+    for round in 0..10 {
+        let atoms: Vec<Atom> = (0..20)
+            .map(|index| {
+                Atom::new(
+                    AtomKind::CreateObject,
+                    "human:1",
+                    "session:a",
+                    json!({
+                        "object_id": format!("batch_{round}_{index}"),
+                        "layer_id": "layer_1",
+                        "kind": "shape",
+                        "data": {
+                            "geometry": {"kind": "rect", "bbox": {"x": 5.0, "y": 5.0, "w": 20.0, "h": 20.0}},
+                            "color": {"r": 40, "g": 90, "b": 140, "a": 255}
+                        }
+                    }),
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        let changeset = format!("cs-{round}");
+        workspace
+            .commit_changeset("doc_commit", atoms, "human:1", true, changeset)
+            .expect("批量提交应成功");
+        batch_best = batch_best.min(started.elapsed());
+    }
+    let per_atom = batch_best / 20;
+    println!("批量提交 20 原子（服务端，最小）: {batch_best:?}｜每原子 {per_atom:?}｜预算 < 10ms（14.10）");
+    assert!(
+        batch_best < Duration::from_millis(10),
+        "批量提交 20 原子 {batch_best:?} 超出 10ms 预算（14.10）"
+    );
+}

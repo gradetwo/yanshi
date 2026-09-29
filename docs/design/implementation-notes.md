@@ -1213,6 +1213,40 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 各档实测（同一注册表）：core 27 ｜ history 32 ｜ retouch 40 ｜ annotation 34 ｜ collab 34 ｜ structure 32 ｜
 **全部 64**。
 
+## 二之六之十、14.10 预算表覆盖情况（机器校验）
+
+设计 14.10 称「本表关键行纳入 CI benchmark 套件，自动回归」。为了让这句话**可核对**，
+下面这张表由 `crates/yanshi-server/tests/budget_coverage.rs` 解析校验：
+
+* 每行必须给出**状态**；状态为「已覆盖」时，证据里的 `文件::测试函数` 必须**真实存在**
+  （脚本路径同理），否则测试失败；
+* 状态为「部分覆盖 / 未覆盖 / 不适用」时，证据必须写明**理由**；
+* 预算项**集合**必须与设计 14.10 的条目一一对应 —— 删掉一行同样会失败。
+
+<!-- budget-coverage:start -->
+| 预算项 | 目标 | 状态 | 证据 |
+|---|---|---|---|
+| 打开文档 view 模式 | < 100ms | 已覆盖 | perf_budget.rs::perf_view_open_under_100ms |
+| 打开文档 edit 模式（可交互） | < 1s | 部分覆盖 | 理由：客户端首帧实测 199–434ms（见本文档「首帧」节），尚无自动门禁 |
+| 首笔呈现延迟（本地） | < 16ms | 已覆盖 | scripts/browser-drag-perf.mjs |
+| 持续笔迹帧预算 | < 8ms | 已覆盖 | scripts/browser-drag-perf.mjs |
+| 原子提交（单原子，服务端处理） | < 20ms | 已覆盖 | perf_budget.rs::commit_budget_single_and_batch |
+| 原子提交（批量，服务端处理） | < 10ms | 已覆盖 | perf_budget.rs::commit_budget_single_and_batch |
+| 区域渲染（缓存命中） | < 10ms | 部分覆盖 | 理由：实测约 49–70ms，**未达标**；region_render_matches_the_design_budget_tiers 守护回归基线并每次打印差距，根因见「交互路径预算」节 |
+| 区域渲染（未命中·简单） | < 100ms | 已覆盖 | perf_budget.rs::region_render_matches_the_design_budget_tiers |
+| 区域渲染（未命中·复杂） | < 300ms | 已覆盖 | perf_budget.rs::region_render_matches_the_design_budget_tiers |
+| 时间旅行（近期历史 / checkpoint） | < 300ms | 部分覆盖 | 理由：功能由 service_flow.rs::time_travel_and_checkpoint_restore 覆盖，延迟未设门禁 |
+| 时间旅行（老历史，含归档取回） | 秒级，UI 提示 | 未覆盖 | 理由：需要归档层取回路径与长历史夹具，尚未搭建 |
+| 内存（4K/10 图层） | < 4GB | 部分覆盖 | 理由：缓存预算由 perf_budget.rs::profile_4k_full_render_cache_capacity 守护；整机 RSS 实测 0.08GB 记录于本文档，但 RSS 未纳入自动门禁 |
+| 内存（8K/5 图层） | < 8GB | 未覆盖 | 理由：未测（8K 单层即约 268MB，夹具与时间成本高） |
+| 显存（4K/10 图层，合成后端） | < 6GB | 不适用 | 理由：GPU 合成后端经实测可行性核对后未实施，见「GPU 合成后端可行性核对」节 |
+| 网络延迟（公网） | < 200ms | 未覆盖 | 理由：需要真实公网环境，本地与 CI 均无法代表 |
+| 8h 会话性能衰减 | < 20% | 未覆盖 | 理由：需要 8 小时压测，尚未纳入长跑作业 |
+<!-- budget-coverage:end -->
+
+**这张表的价值在于"承认"**：16 项里 7 项已覆盖、5 项部分覆盖（含 1 项明确未达标）、
+3 项未覆盖、1 项不适用 —— 比"设计说会自动回归"这种无人核对的表述诚实得多。
+
 ## 二之七、拖动笔迹性能实测与「预览覆盖层」的否定结论
 
 在真实 Chromium（真实 pointer 事件、真实重绘路径）下测量拖动成本：

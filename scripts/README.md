@@ -49,6 +49,10 @@ node scripts/browser-pixel-check.mjs "http://127.0.0.1:8110/?doc=myDoc&token=...
 
 读取编辑器内置自检结果：差异像素 ≤16 且最大通道差 ≤1 LSB 记为通过，退出码 0/1 便于接入 CI。
 
+> 预算覆盖情况（设计 14.10 的每一行是否有测试/脚本证据）记录在
+> `docs/design/implementation-notes.md` 的「14.10 预算表覆盖情况」节，
+> 由 `crates/yanshi-server/tests/budget_coverage.rs` 校验：声称「已覆盖」的证据必须真实存在。
+
 ## `browser-drag-perf.mjs` — 拖动笔迹成本
 
 ```bash
