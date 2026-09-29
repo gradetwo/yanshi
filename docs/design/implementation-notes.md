@@ -399,6 +399,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
 | 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |
 | 滤镜 `vignette` | `strength`/`radius`/`softness` | 以**文档**中心与对角线归一化 |
+| 滤镜 `glow` | `threshold`/`radius`/`intensity` | 高光阈值 → 两趟方框模糊 → **加性**合成（同时加 alpha，否则光晕出不了笔迹范围） |
 
 实现时踩到 / 需要守住的约定：
 

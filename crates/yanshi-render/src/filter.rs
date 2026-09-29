@@ -97,6 +97,8 @@ pub enum FilterKind {
     Noise,
     /// 暗角。
     Vignette,
+    /// 辉光（bloom）。
+    Glow,
 }
 
 impl FilterKind {
@@ -109,6 +111,7 @@ impl FilterKind {
             "sharpen" => Some(Self::Sharpen),
             "noise" => Some(Self::Noise),
             "vignette" => Some(Self::Vignette),
+            "glow" => Some(Self::Glow),
             "brightness_contrast" => Some(Self::BrightnessContrast),
             "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
@@ -125,6 +128,7 @@ impl FilterKind {
             Self::Sharpen => "sharpen",
             Self::Noise => "noise",
             Self::Vignette => "vignette",
+            Self::Glow => "glow",
             Self::BrightnessContrast => "brightness_contrast",
             Self::Saturation => "saturation",
             Self::Invert => "invert",
@@ -160,6 +164,8 @@ impl FilterKind {
             // 否则边缘会采到画外产生接缝。
             Self::MotionBlur => (distance / 2.0).ceil() as u32,
             Self::Sharpen => radius.ceil() as u32,
+            // 两趟方框模糊，邻域按 2 倍半径申报。
+            Self::Glow => (radius.ceil() as u32) * 2,
             _ => 0,
         }
     }
@@ -475,6 +481,58 @@ pub fn noise(buffer: &mut Buffer, amount: f32, seed: u64) {
     }
 }
 
+/// 辉光：提取高光区域模糊后**加性**合成（bloom）。
+///
+/// `threshold` 为直通亮度阈值，`radius` 为方框模糊半径，`intensity` 为加性强度。
+/// 合成后把 rgb 钳制到 alpha，保持预乘不变量。
+pub fn glow(buffer: &mut Buffer, threshold: f32, radius: u32, intensity: f32) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let threshold = threshold.clamp(0.0, 1.0);
+    let intensity = intensity.clamp(0.0, 4.0);
+    if intensity <= 0.0 {
+        return;
+    }
+    // 1) 高光掩模（预乘空间，阈值按直通亮度判定）。
+    let mut highlights = Buffer::new(
+        buffer.origin().0,
+        buffer.origin().1,
+        buffer.width(),
+        buffer.height(),
+    );
+    let width = buffer.width();
+    let height = buffer.height();
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = buffer.pixel(x, y);
+            let alpha = pixel[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let luma = LUMA[0] * pixel[0] + LUMA[1] * pixel[1] + LUMA[2] * pixel[2];
+            if luma > threshold * alpha {
+                highlights.set_pixel(x, y, pixel);
+            }
+        }
+    }
+    // 2) 模糊高光（两趟方框近似高斯）。
+    box_blur(&mut highlights, radius.clamp(1, 64), 2);
+    // 3) 加性合成。辉光同时增加 alpha（发光本身会让原本透明处出现光），
+    //    再按**合成后**的 alpha 钳制，从而既保持预乘不变量又能扩散到笔迹之外。
+    for y in 0..height {
+        for x in 0..width {
+            let source = buffer.pixel(x, y);
+            let bloom = highlights.pixel(x, y);
+            let alpha = (source[3] + bloom[3] * intensity).clamp(0.0, 1.0);
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                out[channel] = (source[channel] + bloom[channel] * intensity).clamp(0.0, alpha);
+            }
+            buffer.set_pixel(x, y, out);
+        }
+    }
+}
+
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
 pub fn vignette(
     buffer: &mut Buffer,
@@ -673,13 +731,14 @@ pub const ADJUSTMENT_NAMES: [&str; 8] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 9] = [
+pub const FILTER_NAMES: [&str; 10] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
     "sharpen",
     "noise",
     "vignette",
+    "glow",
     "brightness_contrast",
     "saturation",
     "invert",
@@ -842,6 +901,18 @@ pub fn apply_filter(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(0.05) as f32,
             params.get("seed").and_then(Value::as_u64).unwrap_or(0),
+        ),
+        FilterKind::Glow => glow(
+            &mut filtered,
+            params
+                .get("threshold")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.6) as f32,
+            params.get("radius").and_then(Value::as_u64).unwrap_or(8) as u32,
+            params
+                .get("intensity")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.8) as f32,
         ),
         FilterKind::Vignette => vignette(
             &mut filtered,
@@ -1038,6 +1109,10 @@ mod tests {
             ("sharpen", json!({"amount": 1.5, "radius": 1})),
             ("noise", json!({"amount": 0.4, "seed": 7})),
             ("vignette", json!({"strength": 0.8, "radius": 0.1})),
+            (
+                "glow",
+                json!({"threshold": 0.2, "radius": 2, "intensity": 1.0}),
+            ),
         ] {
             let mut buffer = make();
             let before: Vec<_> = (0..4).map(|x| buffer.pixel(x, 0)).collect();
@@ -1115,6 +1190,35 @@ mod tests {
             "模糊应保持总能量：{}",
             sum(&horizontal)
         );
+    }
+
+    /// 辉光：亮点应把光晕扩散到邻近暗部，纯暗区域不应被改动，且保持预乘不变量。
+    #[test]
+    fn glow_bleeds_light_into_neighbours_only() {
+        let mut buffer = Buffer::new(0, 0, 16, 16);
+        buffer.set_pixel(8, 8, [1.0, 1.0, 1.0, 1.0]);
+        let before_corner = buffer.pixel(0, 0);
+        glow(&mut buffer, 0.5, 3, 1.0);
+        let spark = buffer.pixel(8, 8);
+        let around = buffer.pixel(10, 8);
+        let corner = buffer.pixel(0, 0);
+        assert!(spark[0] > 0.9, "亮点本身应保留：{spark:?}");
+        // 单像素高光经 radius 3 两趟模糊后摊得很薄，量级很小但必须非零。
+        assert!(around[0] > 0.005, "邻近像素应收到光晕：{around:?}");
+        assert!(
+            around[3] > 0.005,
+            "辉光应同时增加 alpha（否则无法扩散到笔迹外）"
+        );
+        assert_eq!(corner, before_corner, "远处暗部不应被改动：{corner:?}");
+        for y in 0..16 {
+            for x in 0..16 {
+                let pixel = buffer.pixel(x, y);
+                assert!(
+                    pixel[0] <= pixel[3] + 1e-3 && pixel[0] >= 0.0 && pixel[0].is_finite(),
+                    "辉光破坏预乘不变量：{pixel:?}"
+                );
+            }
+        }
     }
 
     /// HSL：色相旋转 120° 应把红转到绿；饱和度 0 应变灰；明度偏移不该跳出色域。

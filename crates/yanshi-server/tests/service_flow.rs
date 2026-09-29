@@ -630,7 +630,7 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         ),
         (
             "add_filter",
-            json!({"layer_id": "layer_1", "filter_name": "glow"}),
+            json!({"layer_id": "layer_1", "filter_name": "posterize"}),
         ),
         (
             "add_filter",
