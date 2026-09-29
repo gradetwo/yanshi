@@ -255,7 +255,11 @@ impl Renderer {
         let cropped = accumulation.crop(&region);
         let tiles = self.store_tiles(&cropped);
         stats.tiles_rendered = tiles.len();
-        let rgba8 = cropped.to_rgba8(background);
+        // 输出像素先按 **f16 量化**（14.1：内存 tile 用 f16 线性，合成正确性以 tile 为准），
+        // 再转显示空间。这样「整幅区域渲染」与「按 tile 组合渲染」（客户端 WASM 内核走后者）
+        // 逐字节一致，不会因 f32 scratch 与 f16 tile 的舍入差出现 ±1 分歧（Phase 2 bit-exact）；
+        // 且量化是就地计算，不依赖 tile 是否仍在缓存里（小预算下会被淘汰）。
+        let rgba8 = quantize_to_rgba8(&cropped, background);
 
         Ok(RegionRender {
             bbox: region,
@@ -469,6 +473,15 @@ impl Renderer {
 
 /// 内核内部使用的位图格式：未压缩 RGBA8（WebP/AVIF 编解码属传输层，尚未实现）。
 pub const RAW_RGBA_MIME: &str = "image/x-yanshi-raw";
+
+/// f16 量化后转显示空间 RGBA8（与 tile 存储精度一致，且与缓存状态无关）。
+fn quantize_to_rgba8(buffer: &Buffer, background: Option<[u8; 4]>) -> Vec<u8> {
+    let mut quantized = buffer.crop(&buffer.bbox());
+    for value in quantized.pixels_mut() {
+        *value = crate::half::quantize_f16(*value);
+    }
+    quantized.to_rgba8(background)
+}
 
 fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
     let x0 = bbox.x.floor().max(0.0);

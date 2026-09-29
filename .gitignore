@@ -20,3 +20,5 @@
 
 # 临时目录
 /tmp/
+# wasm-bindgen 产物（构建生成，见 deploy 说明）
+crates/yanshi-wasm/pkg/

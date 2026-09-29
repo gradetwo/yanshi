@@ -678,6 +678,44 @@ mod tests {
         assert_eq!(after.rgba8, expected, "视口内像素应与整幅渲染一致");
     }
 
+    /// Phase 2 出口条件：客户端（按 tile 组合）与服务端（整幅区域渲染）必须 bit-exact。
+    ///
+    /// 这条测试曾经抓到真缺陷：服务端从 f32 scratch 直接转 u8、客户端经 f16 tile 转 u8，
+    /// 在舍入边界上差 149/4.2M 字节（如 32 vs 31）。现在两条路径都以 f16 为准。
+    #[test]
+    fn tile_composed_render_is_bit_exact_with_whole_region_render() {
+        use yanshi_render::render::Renderer;
+        use yanshi_render::tile::TileGrid;
+
+        let atoms = scene_atoms();
+        let kernel = kernel_with(&atoms, DEFAULT_MEMORY_LIMIT);
+        let state = kernel.state();
+
+        for tile_size in [32u32, 64] {
+            let grid = TileGrid::new(tile_size, state.width, state.height).unwrap();
+            let mut server_side = Renderer::with_budget(grid, DEFAULT_MEMORY_LIMIT);
+            let whole = server_side
+                .render_region(
+                    state,
+                    &MemoryBlobStore::new(),
+                    Bbox::new(0.0, 0.0, state.width as f64, state.height as f64),
+                )
+                .unwrap();
+
+            let mut client_side = kernel_with(&atoms, DEFAULT_MEMORY_LIMIT);
+            let composed = client_side
+                .render_region(Bbox::new(0.0, 0.0, state.width as f64, state.height as f64))
+                .unwrap();
+
+            assert_eq!(whole.width, composed.width);
+            assert_eq!(whole.height, composed.height);
+            assert_eq!(
+                whole.rgba8, composed.rgba8,
+                "tile_size={tile_size}：服务端整幅渲染与客户端按 tile 组合必须逐字节一致"
+            );
+        }
+    }
+
     #[test]
     fn blobs_are_stored_locally_and_required_before_use() {
         let mut kernel = Kernel::new("doc_1", 32, 64, 64, DEFAULT_MEMORY_LIMIT).unwrap();

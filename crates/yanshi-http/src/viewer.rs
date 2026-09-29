@@ -25,8 +25,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   header h1 { font-size: 15px; margin: 0 12px 0 0; }
   main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
-  #preview { display: block; width: 100%; height: auto; max-height: calc(100vh - 96px); object-fit: contain; image-rendering: pixelated; }
-  #board { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
+  /* 布局由 canvas 驱动（文档分辨率位图 + 固有宽高比）；#preview 绝对定位覆盖其上作为服务端渲染兜底。 */
+  #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
+  #preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block; }
   aside { display: grid; gap: 12px; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
   .card h2 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
@@ -361,7 +362,7 @@ async function ensureDocument() {
   await refreshLayers();
   await refreshThumb();
   await initWasm();
-  if (kernelReady()) { await loadKernel(0); preview.style.display = "none"; }
+  if (state.wasm) { await loadKernel(0); if (kernelReady()) preview.style.visibility = "hidden"; }
   await refreshPreview();
   connect();
 }
@@ -405,7 +406,7 @@ async function refreshPreview(fromKernel = false) {
     region: { x: 0, y: 0, w, h },
   }, { refresh: false });
   if (value.thumb_url) {
-    preview.style.display = "";
+    preview.style.visibility = "visible";
     preview.onload = () => {
       board.width = preview.naturalWidth;
       board.height = preview.naturalHeight;
@@ -639,7 +640,7 @@ $("open").addEventListener("click", ensureDocument);
     await refreshLayers();
     await refreshThumb();
     await initWasm();
-    if (kernelReady()) { await loadKernel(0); preview.style.display = "none"; }
+    if (state.wasm) { await loadKernel(0); if (kernelReady()) preview.style.visibility = "hidden"; }
     await refreshPreview();
     connect();
   }

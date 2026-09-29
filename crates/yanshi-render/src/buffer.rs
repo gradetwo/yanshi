@@ -79,6 +79,12 @@ impl Buffer {
     }
 
     /// 原始 f32 切片（线性预乘）。
+    /// 可变访问底层 f32 像素（用于就地量化；不改尺寸与原点）。
+    pub fn pixels_mut(&mut self) -> &mut [f32] {
+        &mut self.pixels
+    }
+
+    /// 只读访问底层 f32 像素（行优先，RGBA 预乘线性）。
     pub fn as_f32(&self) -> &[f32] {
         &self.pixels
     }

@@ -270,6 +270,27 @@ WebSocket 消息（JSON 文本帧）：
 > 64×64 区域缩略图当前 ≈22ms，高于 8.5 表里的 15ms 目标：该路径先做整幅渲染再降采样，
 > 属 Phase 2「L3/L4 缓存 + 异步渲染」要解决的问题（缩略图应直接按比例采样目标区域）。
 
+## 二之三、Phase 2 客户端验收（真实 Chromium + CDP）
+
+| 出口条件 | 状态 | 证据 |
+|---|---|---|
+| 客户端与服务端 CPU 路径 **bit-exact** | ✅ 通过 | 浏览器内「一致性自检」：本地 `render_region_png` 的 SHA-256 == 服务端 `blob_hash`（`window.yanshiStats.bitExact === true`）；宿主回归测试 `yanshi-wasm::tile_composed_render_is_bit_exact_with_whole_region_render` 覆盖 tile 32/64 |
+| 首笔呈现延迟 **< 16ms** | ❌ 未达标（实测 ≈525ms） | `window.yanshiStats.firstStrokeMs`；本地乐观路径确实生效（`applies: 6`、本地 HEAD 与服务端 HEAD 一致），但单次「应用 + 脏区渲染 + putImageData」成本过高 |
+
+**bit-exact 缺陷复盘**：服务端 `render_region` 从 f32 scratch 缓冲直接转 u8，客户端按 tile 组合时经 f16 量化后转 u8，
+两者在舍入边界差 **149/4194304 字节**（如 32 vs 31，首个差异在 (629,213)）。修法是让输出以 **f16 tile 为准**
+（14.1：内存 tile 用 f16 线性）——把裁剪后的缓冲就地 `quantize_f16` 再转显示空间。
+中途还踩到第二个坑：先写成「从 tile 缓存读回」，小预算下 tile 已被 LRU 淘汰导致像素丢失，
+被 `render_properties.rs` 的属性测试抓到（`cache_eviction_does_not_change_pixels`）；改成就地量化即与缓存状态无关。
+
+**首笔延迟待办（下一轮）**：
+1. 绘制中用**同一个 atom id** 反复 `apply_atom` 会走幂等分支、笔迹不会增长——正确做法是内核提供
+   「本地待提交笔迹」覆盖层（不进原子日志），落笔时才提交一个最终原子（设计 13.3 的乐观渲染本意）。
+2. 需要拆分计时（WASM 渲染 vs `putImageData`）定位 525ms 的构成；画布 1024×1024 的整幅重绘路径
+   很可能被卷入，应只重绘脏区/视口。
+3. 首帧装载（`loadKernel` + 整幅渲染 ≈2.1s）也需要按 13.1 view 模式优化：直接用服务端 HEAD 渲染缓存铺底，
+   WASM 只接管后续增量。
+
 ## 三、尚未实现（与 README 路线图一致）
 
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
