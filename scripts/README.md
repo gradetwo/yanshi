@@ -14,6 +14,22 @@ chromium --remote-debugging-port=9333 --headless=new about:blank
 依赖仅 `curl`、`python3`、`node`（≥18，用到内置 `fetch`/`WebSocket`）。浏览器类脚本通过 CDP 驱动，
 驱动的是**编辑器自身的真实路径**，而不是另写一套比对逻辑。
 
+## `browser-ui-check.mjs` — 查看器 UI 回归检查（真实 Chromium）
+
+走用户同一条路径：新建图层 → 画一笔 → 断言**画布确有已绘制像素**、内容画布与覆盖层几何一致、
+页面里没有覆盖用的 `#preview`、提交后缩略图自动刷新。它对应的是一组真实使用缺陷
+（操作后画布空白、右边颜色不同且点击无效、缩略图不刷新），因此**每次改查看器都应跑**。
+
+前置与 `browser-pixel-check.mjs` 相同（服务端 + 带远程调试的 Chromium）：
+
+```bash
+chromium --remote-debugging-port=9333 --headless=new about:blank
+node scripts/browser-ui-check.mjs "http://127.0.0.1:8110/?doc=ui&token=<token>"
+UI_DEBUG=1 UI_TRACE=1 node scripts/browser-ui-check.mjs "<url>"   # 额外打印页面日志与绘制打点
+```
+
+环境变量：`UI_TIMEOUT_MS`（总体超时，缺省 180s；调试目标无响应时脚本会以退出码 3 结束）。
+
 ## 重活交给 GitHub（CI/CD）
 
 * **快反馈**（`.github/workflows/ci.yml`，push/PR）：rustfmt、clippy、workspace 测试（stable/beta）、

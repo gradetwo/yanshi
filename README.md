@@ -92,7 +92,8 @@ Details: [deploy/omarchy/README.md](deploy/omarchy/README.md).
 - [Implementation notes](docs/design/implementation-notes.md) — module map, decisions where the
   specification is silent, measured performance data, known deviations.
 - [docs/tools.md](docs/tools.md) — tools, adjustments, filters, retouch, masks, collaboration.
-- [scripts/README.md](scripts/README.md) — acceptance scripts.
+- [scripts/README.md](scripts/README.md) — acceptance scripts, including the browser UI check
+  that asserts a stroke stays on the canvas after a commit.
 - Repository layout: `crates/yanshi-core` (atoms, log, fold, CAS), `-render` (compute kernel),
   `-server` (document service, tool layer), `-http` (transport, viewer, `yanshi-serve`),
   `-mcp`, `-wasm` (browser kernel); `scripts/`, `deploy/`, `docs/design/`.

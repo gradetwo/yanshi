@@ -91,7 +91,7 @@ o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yansh
 - [实现说明](docs/design/implementation-notes.md) —— 模块对应关系、设计未规定处的取舍、
   实测性能数据、已知偏差。
 - [docs/tools.md](docs/tools.md) —— 工具、调整、滤镜、修图、蒙版、协作。
-- [scripts/README.md](scripts/README.md) —— 验收脚本。
+- [scripts/README.md](scripts/README.md) —— 验收脚本，含「落笔后画布仍有内容」的真实浏览器 UI 检查。
 - 仓库结构：`crates/yanshi-core`（原子、日志、折叠、CAS）、`-render`（计算内核）、
   `-server`（文档服务与工具层）、`-http`（传输、查看器、`yanshi-serve`）、`-mcp`、`-wasm`
   （浏览器内核）；以及 `scripts/`、`deploy/`、`docs/design/`。
