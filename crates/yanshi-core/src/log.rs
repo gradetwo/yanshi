@@ -429,6 +429,19 @@ impl AtomLog {
                     )
                     .with_atom(atom.id.clone()));
                 }
+                // 跨 declare_head 的撤销无法仅凭 base_state(H_n) 表达（见 seq 模块约定）。
+                if target.seq <= commit.state.eval_origin_seq() {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "目标原子 {} (seq {}) 位于当前求值起点 seq {} 之前，需先回到该起点或重新提交等价操作",
+                            target.id,
+                            target.seq,
+                            commit.state.eval_origin_seq()
+                        )),
+                    )
+                    .with_atom(atom.id.clone()));
+                }
                 if atom.kind == AtomKind::Revert
                     && target.actor != commit.actor
                     && !commit.allow_cross_actor_revert
@@ -496,19 +509,28 @@ impl AtomLog {
                 }
             }
             HeadBase::Checkpoint(checkpoint_id) => {
-                let Some(checkpoint) = state.checkpoints.get(&checkpoint_id) else {
-                    return Err(YanshiError::new(
-                        ErrorCode::ReferenceNotFound,
-                        ErrorContext::detail(format!("检查点 {checkpoint_id} 不存在")),
-                    )
-                    .with_atom(atom.id.clone()));
-                };
-                if checkpoint.anchor_seq > self.head_seq() {
+                // 检查点从日志解析（设计文档 4.5：轻量元数据原子），
+                // 因此即使它不在当前折叠窗口内也能作为求值起点。
+                let anchor =
+                    crate::seq::checkpoint_anchor_seq(self, &checkpoint_id, self.head_seq())
+                        .or_else(|| {
+                            state
+                                .checkpoints
+                                .get(&checkpoint_id)
+                                .map(|checkpoint| checkpoint.anchor_seq)
+                        })
+                        .ok_or_else(|| {
+                            YanshiError::new(
+                                ErrorCode::ReferenceNotFound,
+                                ErrorContext::detail(format!("检查点 {checkpoint_id} 不存在")),
+                            )
+                            .with_atom(atom.id.clone())
+                        })?;
+                if anchor > self.head_seq() {
                     return Err(YanshiError::new(
                         ErrorCode::InvalidArgument,
                         ErrorContext::detail(format!(
-                            "检查点锚定 seq {} 晚于当前 head {}",
-                            checkpoint.anchor_seq,
+                            "检查点锚定 seq {anchor} 晚于当前 head {}",
                             self.head_seq()
                         )),
                     )

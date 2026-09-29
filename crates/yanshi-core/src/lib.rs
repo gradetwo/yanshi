@@ -11,10 +11,29 @@
 //! | [`state`] | 4.1 – 4.5 | 文档状态模型（图层、对象、选区、检查点、头部指针） |
 //! | [`fold`] | 5.3 / 5.4 | 折叠求值、有效集、级联失效、reapply、LWW |
 //! | [`log`] | 5.1 / 12.2 | Append-Only 日志、ULID 幂等、提交时 precondition 校验 |
+//! | [`seq`] | 5.5 | `state@seq` 求值公式、declare_head、增量折叠 |
 //! | [`conflict`] | 12.3 | 采样性替换冲突检测（生成性叠加走 LWW） |
 //!
 //! 折叠代数的五条不变量（设计文档 5.3）由 `tests/` 下的属性测试与 fuzz 用例保证：
 //! 幂等性、收敛性、无孤儿引用、`revert`-`reapply` 往返、历史可重放。
+//!
+//! ```
+//! use yanshi_core::{Atom, AtomKind, AtomLog, FoldEngine};
+//!
+//! let mut log = AtomLog::new();
+//! let atom = Atom::new(
+//!     AtomKind::CreateDocument,
+//!     "human:1",
+//!     "session:a",
+//!     serde_json::json!({"doc_id": "doc_1", "width": 64, "height": 64}),
+//! );
+//! let id = atom.id.clone();
+//! log.append(atom).unwrap();
+//!
+//! let state = FoldEngine::new().fold(&log).unwrap().state;
+//! assert_eq!(state.head_atom.as_deref(), Some(id.as_str()));
+//! assert_eq!(state.width, 64);
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -25,6 +44,7 @@ pub mod error;
 pub mod fold;
 pub mod ids;
 pub mod log;
+pub mod seq;
 pub mod state;
 
 pub use atom::{
@@ -41,6 +61,7 @@ pub use ids::{
     SnapshotId, StyleId, Ulid, UlidGen,
 };
 pub use log::{AppendOutcome, AtomLog, CommitContext};
+pub use seq::{state_at, IncrementalFolder, StateAt, StateAtCache};
 pub use state::{
     Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, Object, ObjectRef,
     ObjectType, Selection, Style, Transform, Violation,
