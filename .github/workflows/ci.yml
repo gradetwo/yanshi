@@ -64,6 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: fuzz
-      - name: Run ignored long-running property tests
-        # 10 万原子折叠 fuzz（Phase 0 出口条件），保留输出以便读取耗时与统计。
+      - name: Run ignored long-running tests (fuzz + perf budgets)
+        # 10 万原子折叠 fuzz（Phase 0 出口条件）与渲染性能预算（8.5 / 14.10），
+        # 保留输出以便读取耗时、接受率、tile 命中率等统计。
         run: cargo test --workspace --release -- --ignored --nocapture
