@@ -29,6 +29,7 @@
 
 ```
 yanshi/
+├── deploy/                   # 部署产物：systemd user 服务 + Omarchy/Hyprland 桌面入口
 ├── crates/
 │   ├── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
 │   ├── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
@@ -86,6 +87,23 @@ cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annot
   "layer_id":"layer_1","data":{"points":[[40,40],[400,300]],"size":12,"color":{"r":40,"g":40,"b":60,"a":255}}}}}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"render_region","arguments":{
   "region":{"x":0,"y":0,"w":256,"h":256},"include_image":true}}}
+```
+
+### 桌面入口（Omarchy / Hyprland）
+
+客户端就是 Web 编辑器，所以桌面侧不需要任何原生 GUI 工具包：把服务端做成 systemd user
+服务，再用 Omarchy 自带的 `omarchy-webapp-install` 注册成 web app（`chromium --app`），
+最后加一个键位。完整步骤与实测记录见 **[deploy/omarchy/README.md](deploy/omarchy/README.md)**。
+
+```bash
+cargo build --release -p yanshi-http
+cp deploy/systemd/yanshi-serve.service ~/.config/systemd/user/
+systemctl --user enable --now yanshi-serve     # 回环 8110，开机自启
+deploy/omarchy/make-icon.sh                    # 图标也由引擎自己渲染
+omarchy-webapp-install "Yanshi" "http://127.0.0.1:8110/?doc=yanshi" deploy/icons/yanshi.png
+# 在 ~/.config/hypr/bindings.lua 追加：
+#   o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
+hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 ```
 
 ### 通过 HTTP / WebSocket 使用

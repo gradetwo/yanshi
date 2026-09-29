@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Name=Yanshi
+Comment=Yanshi
+Exec=omarchy-launch-webapp "http://127.0.0.1:8110/?doc=yanshi"
+Terminal=false
+Type=Application
+Icon=yanshi
+StartupNotify=true
