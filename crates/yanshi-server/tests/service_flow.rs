@@ -623,13 +623,14 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         .as_u64()
         .unwrap();
     for (name, payload) in [
+        // 设计里有、内核尚未实现的类型必须在工具层被拒（不放空壳能力）。
         (
             "add_adjustment",
-            json!({"layer_id": "layer_1", "adjustment_type": "curves"}),
+            json!({"layer_id": "layer_1", "adjustment_type": "hsl"}),
         ),
         (
             "add_filter",
-            json!({"layer_id": "layer_1", "filter_name": "motion_blur"}),
+            json!({"layer_id": "layer_1", "filter_name": "glow"}),
         ),
         (
             "add_filter",

@@ -385,6 +385,34 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 3. 首帧装载（`loadKernel` + 整幅渲染 ≈2.1s）也需要按 13.1 view 模式优化：直接用服务端 HEAD 渲染缓存铺底，
    WASM 只接管后续增量。
 
+## 二之三、Phase 3 调色/滤镜内核扩展（本轮新增）
+
+内核新增 3 种调整 + 4 种滤镜，全部只用参数决定、可复现，并已由工具层放行：
+
+| 类型 | 参数 | 说明 |
+|---|---|---|
+| 调整 `exposure` | `ev` −10..10 | 线性光下 `×2^ev` |
+| 调整 `white_balance` | `temperature`/`tint` −1..1 | 暖/冷 + 品红/绿 |
+| 调整 `curves` | `points`[[x,y]...]、`channel` rgb/r/g/b | **单调三次插值**（Fritsch–Carlson），保证不过冲 |
+| 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
+| 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
+| 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |
+| 滤镜 `vignette` | `strength`/`radius`/`softness` | 以**文档**中心与对角线归一化 |
+
+实现时踩到 / 需要守住的约定：
+
+- **预乘不变量**：调整必须像 `brightness_contrast` 一样把直通颜色钳制到 [0,1]，
+  否则 `rgb > alpha` 会破坏预乘 tile 的假设。测试逐个效果断言 `rgb ≤ alpha` 且数值有限。
+- **滤镜必须申报邻域半径**（`FilterKind::padding`）：`motion_blur` 取 `distance/2`、
+  `sharpen` 取 `radius`。若不申报，区域渲染不会外扩，边缘会采到画外产生接缝。
+- **暗角必须用文档尺寸而非所在缓冲**：按 tile 渲染时缓冲只是文档的一部分，
+  以缓冲自身为中心会让块与块之间出现明显接缝。`apply_filter` 因此新增 `canvas` 参数。
+  测试同时断言「分块渲染的像素与整幅渲染对应位置一致」。
+- **工具层校验必须按效果名区分**：`radius` 对模糊是像素（1..128）、对暗角是归一化（0..2）、
+  对锐化是 1..8；`amount` 对饱和度 0..8、锐化 0..5、噪点 0..1。
+  最初写成一套全局范围，结果**合法的暗角参数被拒**（实测踩到），现已改为按 (kind, name) 查表。
+- 未实现类型（如 `hsl`、`glow`）继续在工具层被拒，服务端测试用它们守住「不放空壳能力」。
+
 ## 二之四、Phase 3 起步：调色与滤镜工具（retouch 组）
 
 工具层新增 5 个工具（`profile: retouch`，服务端默认已启用）：

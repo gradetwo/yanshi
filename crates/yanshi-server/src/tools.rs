@@ -1051,7 +1051,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels / exposure / white_balance / curves",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -1905,33 +1905,125 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         ));
     };
     let number = |key: &str| object.get(key).and_then(Value::as_f64);
-    let check = |key: &str, low: f64, high: f64| -> Result<()> {
+    // 参数范围按内核的数学假设逐项校验。注意同名参数在不同效果里含义不同
+    // （`radius` 对模糊滤镜是像素、对暗角是归一化半径；`amount` 对饱和度/锐化/噪点各异），
+    // 因此必须**按效果名**分别限定，否则会出现「合法参数被拒」或「非法参数放行」。
+    let name = name.to_owned();
+    let checks: &[(&str, f64, f64)] = match (kind, name.as_str()) {
+        (EffectKind::Adjustment, "brightness_contrast") => {
+            &[("brightness", -1.0, 1.0), ("contrast", 0.0, 8.0)]
+        }
+        (EffectKind::Adjustment, "saturation") => &[("amount", 0.0, 8.0)],
+        (EffectKind::Adjustment, "invert") => &[],
+        (EffectKind::Adjustment, "levels") => &[
+            ("black", 0.0, 1.0),
+            ("white", 0.0, 1.0),
+            ("gamma", 0.01, 10.0),
+        ],
+        (EffectKind::Adjustment, "exposure") => &[("ev", -10.0, 10.0)],
+        (EffectKind::Adjustment, "white_balance") => {
+            &[("temperature", -1.0, 1.0), ("tint", -1.0, 1.0)]
+        }
+        (EffectKind::Adjustment, "curves") => &[],
+        (EffectKind::Filter, "box_blur") => &[("radius", 1.0, 128.0), ("passes", 1.0, 8.0)],
+        (EffectKind::Filter, "gaussian_blur") => &[("sigma", 0.05, 128.0)],
+        (EffectKind::Filter, "motion_blur") => &[
+            ("angle", -360.0, 360.0),
+            ("distance", 0.0, 512.0),
+            ("samples", 2.0, 64.0),
+        ],
+        (EffectKind::Filter, "sharpen") => &[("amount", 0.0, 5.0), ("radius", 1.0, 8.0)],
+        (EffectKind::Filter, "noise") => &[("amount", 0.0, 1.0), ("seed", 0.0, u64::MAX as f64)],
+        (EffectKind::Filter, "vignette") => &[
+            ("strength", 0.0, 1.0),
+            ("radius", 0.0, 2.0),
+            ("softness", 0.02, 2.0),
+        ],
+        (EffectKind::Filter, "brightness_contrast") => {
+            &[("brightness", -1.0, 1.0), ("contrast", 0.0, 8.0)]
+        }
+        (EffectKind::Filter, "saturation") => &[("amount", 0.0, 8.0)],
+        (EffectKind::Filter, "invert") => &[],
+        _ => &[],
+    };
+    for (key, low, high) in checks {
         if let Some(value) = number(key) {
-            if !(low..=high).contains(&value) {
+            if !(*low..=*high).contains(&value) {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
-                    ErrorContext::detail(format!("{key} 必须在 [{low}, {high}] 内，得到 {value}")),
+                    ErrorContext::detail(format!(
+                        "{name} 的 {key} 必须在 [{low}, {high}] 内，得到 {value}"
+                    )),
                 ));
             }
         }
-        Ok(())
-    };
-    // 参数范围按内核的数学假设：对比度/饱和度/半径/sigma 为正，白平衡与亮度有界。
-    check("brightness", -1.0, 1.0)?;
-    check("contrast", 0.0, 8.0)?;
-    check("amount", 0.0, 8.0)?;
-    check("sigma", 0.05, 128.0)?;
-    check("radius", 1.0, 128.0)?;
-    check("passes", 1.0, 8.0)?;
-    check("gamma", 0.01, 10.0)?;
-    check("black", 0.0, 1.0)?;
-    check("white", 0.0, 1.0)?;
-    if let (Some(black), Some(white)) = (number("black"), number("white")) {
-        if black >= white {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("levels 需要 black < white，得到 {black} / {white}")),
-            ));
+    }
+    if name == "levels" {
+        if let (Some(black), Some(white)) = (number("black"), number("white")) {
+            if black >= white {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "levels 需要 black < white，得到 {black} / {white}"
+                    )),
+                ));
+            }
+        }
+    }
+    if name == "curves" {
+        if let Some(channel) = object.get("channel").and_then(Value::as_str) {
+            if !["rgb", "r", "g", "b"].contains(&channel) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "curves 的 channel 只能是 rgb/r/g/b，得到 {channel}"
+                    )),
+                ));
+            }
+        }
+        if let Some(points) = object.get("points") {
+            let Some(points) = points.as_array() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("curves 的 points 必须是 [[x,y], ...] 数组"),
+                ));
+            };
+            if points.len() < 2 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("curves 至少需要两个控制点"),
+                ));
+            }
+            for point in points {
+                let Some(pair) = point.as_array() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("curves 的控制点必须是 [x,y]"),
+                    ));
+                };
+                if pair.len() != 2 {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("curves 的控制点必须是 [x,y]"),
+                    ));
+                }
+                for value in pair {
+                    let Some(value) = value.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail("curves 控制点必须是数字"),
+                        ));
+                    };
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "curves 控制点必须在 [0,1] 归一化空间，得到 {value}"
+                            )),
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(())

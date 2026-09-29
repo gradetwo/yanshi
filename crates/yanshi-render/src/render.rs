@@ -511,7 +511,13 @@ impl Renderer {
                     }
                 }
                 Primitive::Filter { name, params } => {
-                    if !apply_filter(layer_buffer, &name, &params, opacity) {
+                    if !apply_filter(
+                        layer_buffer,
+                        &name,
+                        &params,
+                        opacity,
+                        (state.width as f64, state.height as f64),
+                    ) {
                         stats
                             .unsupported
                             .push(format!("滤镜未实现: {name}（对象 {}）", object.id));
@@ -1262,8 +1268,9 @@ mod tests {
         assert!(pixel[2] > 200, "{pixel:?}");
         assert!(inverted.stats.unsupported.is_empty());
 
+        // 未实现的类型必须产生告警且不改动像素（`curves` 已实现，这里用内核没有的类型）。
         state.objects.get_mut("obj_adj").unwrap().data =
-            json!({"adjustment_type": "curves", "params": {}});
+            json!({"adjustment_type": "hsl", "params": {}});
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
