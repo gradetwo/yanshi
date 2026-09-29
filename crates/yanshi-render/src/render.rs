@@ -314,6 +314,57 @@ impl Renderer {
         let Some(bbox) = geometry_bbox(geometry, brush.size) else {
             return Ok(Vec::new());
         };
+        self.stamp_samples_into_tiles(state, store, brush, geometry, bbox, None)
+    }
+
+    /// 增量盖章（跨帧连续采样）：`cursor` 保证逐段与一次性整段的 stamp 逐点相同。
+    ///
+    /// **暂勿用于产品路径**：读改写 tile 的路径实测会让 tile 丢掉场景内容
+    /// （见 `docs/design/implementation-notes.md` 的复盘），待缺陷定位后启用。
+    pub fn stamp_into_tiles_incremental(
+        &mut self,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        brush: &crate::brush::BrushSpec,
+        geometry: &crate::brush::StrokeGeometry,
+        cursor: &mut crate::geometry::StrokeCursor,
+    ) -> Result<Vec<TileKey>> {
+        let Some(bbox) = geometry_bbox(geometry, brush.size) else {
+            return Ok(Vec::new());
+        };
+        self.stamp_samples_into_tiles(state, store, brush, geometry, bbox, Some(cursor))
+    }
+
+    fn stamp_samples_into_tiles(
+        &mut self,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        brush: &crate::brush::BrushSpec,
+        geometry: &crate::brush::StrokeGeometry,
+        bbox: Bbox,
+        cursor: Option<&mut crate::geometry::StrokeCursor>,
+    ) -> Result<Vec<TileKey>> {
+        // 采样只生成一次（跨 tile 共用），否则每个 tile 都会推进游标、产出不同采样。
+        let samples: Vec<(f64, f64, f64)> = geometry
+            .points
+            .iter()
+            .map(|point| (point.x, point.y, point.pressure))
+            .collect();
+        let spacing = brush.spacing_pixels();
+        let (stamps, base_index) = match cursor {
+            Some(cursor) => {
+                let stamps = crate::geometry::dashed_line_from(&samples, brush.dash, cursor);
+                let base = cursor.stamp_index.saturating_sub(stamps.len() as u64);
+                (stamps, base)
+            }
+            None => (
+                crate::geometry::dashed_line(&samples, spacing, brush.dash),
+                0,
+            ),
+        };
+        if stamps.is_empty() {
+            return Ok(Vec::new());
+        }
         let keys: Vec<TileKey> = self
             .grid
             .keys_for_bbox(&bbox)
@@ -343,7 +394,7 @@ impl Renderer {
                 &tile.to_rgba8(None),
                 1.0,
             );
-            stamp_stroke(&mut buffer, brush, geometry);
+            crate::brush::stamp_samples_from(&mut buffer, brush, &stamps, base_index);
             self.cache
                 .insert(tile_from_buffer(&buffer, &self.grid, *key));
         }
@@ -517,7 +568,9 @@ impl Renderer {
         let keys = self.grid.keys_for_bbox(&buffer.bbox());
         let mut stored = Vec::with_capacity(keys.len());
         for key in keys {
-            let tile = tile_from_buffer(buffer, &self.grid, key);
+            // 已有 tile 时只覆盖本次渲染真正覆盖到的像素，避免局部渲染清空其余像素。
+            let previous = self.cache.peek(key).cloned();
+            let tile = tile_from_buffer_preserving(buffer, &self.grid, key, previous.as_ref());
             self.cache.insert(tile);
             stored.push(key);
         }
@@ -715,9 +768,27 @@ pub fn shape_outline(kind: ShapeKind, bbox: Bbox, points: &[(f64, f64)]) -> Vec<
 
 /// 从区域缓冲区切出一个 tile（tile 内越出文档/缓冲区的部分保持透明）。
 pub fn tile_from_buffer(buffer: &Buffer, grid: &TileGrid, key: TileKey) -> Tile {
+    tile_from_buffer_preserving(buffer, grid, key, None)
+}
+
+/// 由缓冲生成 tile；`previous` 非空时，**缓冲未覆盖的像素沿用旧 tile**。
+///
+/// 关键正确性：`render_region` 只渲染一小块区域（例如 1×1 探针或局部 dirty）时，
+/// 若把整块 tile 都按「缓冲未覆盖 = 透明」写回缓存，其余像素会被清空；
+/// 之后任何**按 tile 组合**的渲染（客户端 WASM 内核、增量 dirty 渲染）都会丢内容。
+/// 这是实测到的真实缺陷（表现为画面上出现白块/内容消失）。
+pub fn tile_from_buffer_preserving(
+    buffer: &Buffer,
+    grid: &TileGrid,
+    key: TileKey,
+    previous: Option<&Tile>,
+) -> Tile {
     let size = grid.tile_size();
     let bounds = grid.bounds(key);
-    let mut tile = Tile::new(key, size);
+    let mut tile = match previous {
+        Some(previous) if previous.size() == size => previous.clone(),
+        _ => Tile::new(key, size),
+    };
     let origin_x = bounds.x as i64;
     let origin_y = bounds.y as i64;
     let (buffer_origin_x, buffer_origin_y) = buffer.origin();
@@ -1019,6 +1090,74 @@ mod tests {
             "增量盖章与整段盖章差异过大：{diff}/{} 字节",
             incremental.rgba8.len()
         );
+    }
+
+    /// 回归：局部区域渲染不得清空该 tile 的其余像素。
+    ///
+    /// 曾经 `store_tiles` 把「缓冲未覆盖 = 透明」整块写回缓存，于是 1×1 探针渲染
+    /// 会把整块 tile 抹空；之后任何按 tile 组合的渲染（客户端 WASM 内核）就丢内容。
+    #[test]
+    fn partial_region_render_preserves_untouched_tile_pixels() {
+        let mut state = white_document();
+        state.width = 64;
+        state.height = 64;
+        state.objects.insert(
+            "stroke_a".to_owned(),
+            object(
+                "stroke_a",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({"points": [[4.0, 4.0], [56.0, 40.0]], "size": 6.0,
+                       "color": {"r": 20, "g": 20, "b": 30, "a": 255}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let grid = TileGrid::new(32, 64, 64).unwrap();
+        let mut renderer = Renderer::with_budget(grid, 8 * 1024 * 1024);
+
+        let full = renderer
+            .render_region(&state, &store, Bbox::new(0.0, 0.0, 64.0, 64.0))
+            .unwrap();
+
+        // 局部渲染（1×1 探针）后，整幅组合渲染必须与第一次逐字节一致。
+        let _ = renderer
+            .render_region(&state, &store, Bbox::new(36.0, 15.0, 1.0, 1.0))
+            .unwrap();
+        let after_probe = renderer
+            .render_region(&state, &store, Bbox::new(0.0, 0.0, 64.0, 64.0))
+            .unwrap();
+        let diff = full
+            .rgba8
+            .iter()
+            .zip(after_probe.rgba8.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(diff, 0, "局部渲染不得改变其它像素（差异 {diff} 字节）");
+
+        // 也检查按 tile 直接读取的路径（客户端内核就是这么读的）。
+        for key in [
+            TileKey::new(0, 0),
+            TileKey::new(1, 0),
+            TileKey::new(0, 1),
+            TileKey::new(1, 1),
+        ] {
+            let tile = renderer.render_tile(&state, &store, key).unwrap();
+            let rgba = tile.to_rgba8(Some([255, 255, 255, 255]));
+            let origin_x = (key.x * 32) as usize;
+            let origin_y = (key.y * 32) as usize;
+            for y in 0..32usize {
+                for x in 0..32usize {
+                    let index = (y * 32 + x) * 4;
+                    let full_index = (((origin_y + y) * 64) + origin_x + x) * 4;
+                    assert_eq!(
+                        &rgba[index..index + 4],
+                        &full.rgba8[full_index..full_index + 4],
+                        "tile {key:?} 的像素 ({x},{y}) 与整幅渲染不一致"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

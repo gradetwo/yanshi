@@ -275,7 +275,7 @@ WebSocket 消息（JSON 文本帧）：
 | 出口条件 | 状态 | 证据 |
 |---|---|---|
 | 客户端与服务端 CPU 路径 **bit-exact** | ✅ 通过 | 浏览器内「一致性自检」：本地 `render_region_png` 的 SHA-256 == 服务端 `blob_hash`（`window.yanshiStats.bitExact === true`）；宿主回归测试 `yanshi-wasm::tile_composed_render_is_bit_exact_with_whole_region_render` 覆盖 tile 32/64 |
-| 首笔呈现延迟 **< 16ms** | ✅ 通过（实测 **6.2ms**） | `window.yanshiStats.firstStrokeMs`；两笔测试中 HEAD 21→23（一笔一原子）、本地与服务端 HEAD 一致、页面零 JS 异常 |
+| 首笔呈现延迟 **< 16ms** | ⚠️ 曾测得 6.2ms，但该路径存在内容丢失缺陷（见下），现已退回正确路径（~143ms），待修 | `window.yanshiStats.firstStrokeMs`；当前保证：一笔一原子、本地与服务端 HEAD 一致、页面零 JS 异常 |
 
 **bit-exact 缺陷复盘**：服务端 `render_region` 从 f32 scratch 缓冲直接转 u8，客户端按 tile 组合时经 f16 量化后转 u8，
 两者在舍入边界差 **149/4194304 字节**（如 32 vs 31，首个差异在 (629,213)）。修法是让输出以 **f16 tile 为准**
@@ -296,11 +296,24 @@ WebSocket 消息（JSON 文本帧）：
 4. **覆盖层状态更新不失效 tile**（`upsert_preview_object(.., invalidate=false)`）：
    每帧都失效整条增长笔迹的 tile 会把增量盖章打回整块重绘（实测浪费 ~130ms/帧）。
 
-**已知保真度限制（下一步）**：逐段盖章时每一段从弧长 0 重新起算采样相位，接缝带内的盖章位置
-最多相差一个间距（1.5px），因此乐观预览与「一次性整段渲染」在笔迹带内约有 **7.6%**
-（12.5% 上限，测试断言 `diff * 8 < len`）的浓度差异；接缝带外无差异。
-设计 13.3 允许这种瞬时差异（服务端确认后以权威状态校正），正解是把弧长与采样相位跨帧保持
-（`dashed_line` 增加 `start_arc`/相位状态），使逐段采样与整段采样逐点一致。
+**已修复：局部渲染会清空 tile 其余像素**（影响所有「按 tile 组合」的渲染路径）。
+
+`Renderer::store_tiles` 原先把每次区域渲染的结果**整块**写回缓存，缓冲未覆盖的像素被当作透明，
+于是哪怕一次 1×1 的区域渲染都会把该 tile 的其余内容抹掉；客户端 WASM 内核正是按 tile 组合渲染，
+因此会出现白块/内容消失。现在 `tile_from_buffer_preserving` 会在已有 tile 的基础上**只覆盖本次
+真正渲染到的像素**，回归测试 `partial_region_render_preserves_untouched_tile_pixels` 断言
+「局部渲染后整幅组合渲染逐字节不变」，并逐 tile 比对整幅渲染的对应像素。
+
+**未解决：增量盖章（读改写 tile）会让 tile 丢内容**。为拿回首笔延迟而实现的
+`Renderer::stamp_into_tiles_incremental`（把新笔段直接 stamp 到缓存 tile 上）在真实路径上会让
+tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；第 3 帧首次触及该 tile 时发生）。
+已排除的原因：u8 往返量化（改为 f32/f16 直通后差异字节数不变）、tile 缺失时未渲染、
+`store_tiles` 局部覆盖（已修）、覆盖层对象 z 序、缓冲原点/尺寸不匹配。
+在定位清楚之前，覆盖层走**失效 + 客户端重绘**这条已证正确的路径
+（`Kernel::extend_preview_stroke`），因此：
+- 采样相位连续的增量能力（`StrokeCursor` / `dashed_line_from` / `stamp_samples_from`）已实现并单测通过
+  （逐段采样与一次性整段**逐点相同**），等缺陷修好后即可启用；
+- **首笔延迟回到 ~143ms**（此前 6.2ms 的测量是在带此缺陷的路径上得到的，不应作为达标证据）。
 
 **首笔延迟历史拆解**（真实 Chromium，覆盖层单帧）：
 

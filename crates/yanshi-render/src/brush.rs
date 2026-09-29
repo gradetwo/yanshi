@@ -169,14 +169,50 @@ pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeome
         .map(|point| (point.x, point.y, point.pressure))
         .collect();
     let stamps = dashed_line(&samples, spacing, brush.dash);
+    stamp_samples(buffer, brush, &stamps)
+}
+
+/// 笔迹的**增量**盖章：只画上一帧之后新增的采样，并推进游标。
+///
+/// 与 [`stamp_stroke`] 的区别是采样相位跨帧连续，因此「拖动中逐帧盖章」与
+/// 「落笔后一次性整段盖章」产出**逐点相同**的 stamp（13.3 本地乐观渲染的保真度前提）。
+pub fn stamp_stroke_incremental(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stroke: &StrokeGeometry,
+    cursor: &mut crate::geometry::StrokeCursor,
+) -> usize {
+    let samples: Vec<(f64, f64, f64)> = stroke
+        .points
+        .iter()
+        .map(|point| (point.x, point.y, point.pressure))
+        .collect();
+    let stamps = crate::geometry::dashed_line_from(&samples, brush.dash, cursor);
+    let base_index = cursor.stamp_index - stamps.len() as u64;
+    stamp_samples_from(buffer, brush, &stamps, base_index)
+}
+
+/// 把预先生成的采样盖章到缓冲（抖动序号从 0 起，与一次性整段一致）。
+pub fn stamp_samples(buffer: &mut Buffer, brush: &BrushSpec, stamps: &[(f64, f64, f64)]) -> usize {
+    stamp_samples_from(buffer, brush, stamps, 0)
+}
+
+/// 把预先生成的采样盖章到缓冲，抖动序号从 `base_index` 起。
+pub fn stamp_samples_from(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stamps: &[(f64, f64, f64)],
+    base_index: u64,
+) -> usize {
     let radius = brush.size / 2.0;
     let mut rng = Prng::new(brush.seed);
     let mut drawn = 0usize;
 
-    for (index, (x, y, pressure)) in stamps.iter().enumerate() {
+    for (offset, (x, y, pressure)) in stamps.iter().enumerate() {
+        let index = base_index as usize + offset;
         let (mut cx, mut cy) = (*x, *y);
         if brush.jitter > 0.0 {
-            // 每个 stamp 独立的确定性抖动。
+            // 每个 stamp 独立的确定性抖动（序号跨帧连续，保证与一次性整段一致）。
             let mut stamp_rng = Prng::derive(brush.seed, index as u64);
             cx += stamp_rng.signed() as f64 * brush.jitter;
             cy += stamp_rng.signed() as f64 * brush.jitter;

@@ -85,6 +85,30 @@ impl Buffer {
     }
 
     /// 只读访问底层 f32 像素（行优先，RGBA 预乘线性）。
+    /// 由 f32 线性预乘像素构造（长度必须为 `width * height * 4`）。
+    ///
+    /// 与 `blit_rgba8` 的区别是**不经过 8 位量化**——tile 增量盖章每帧都要读改写，
+    /// 走 u8 会在多帧后累积可见漂移。
+    pub fn from_f32(
+        origin_x: i64,
+        origin_y: i64,
+        width: u32,
+        height: u32,
+        pixels: &[f32],
+    ) -> Option<Self> {
+        if pixels.len() != (width * height * 4) as usize {
+            return None;
+        }
+        Some(Self {
+            origin_x,
+            origin_y,
+            width,
+            height,
+            pixels: pixels.to_vec(),
+        })
+    }
+
+    /// 只读访问底层 f32 像素（行优先，RGBA 预乘线性）。
     pub fn as_f32(&self) -> &[f32] {
         &self.pixels
     }

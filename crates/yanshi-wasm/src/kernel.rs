@@ -188,6 +188,8 @@ pub struct Kernel {
     last_tiles: Vec<TileKey>,
     /// 上一次盖过章的点列（增量盖章的锚点）。
     preview_points: Option<Vec<yanshi_render::brush::StrokePoint>>,
+    /// 跨帧采样游标（保证逐段盖章与一次性整段逐点一致）。
+    preview_cursor: Option<yanshi_render::geometry::StrokeCursor>,
 }
 
 impl std::fmt::Debug for Kernel {
@@ -234,6 +236,7 @@ impl Kernel {
             auto_evictions: 0,
             last_tiles: Vec::new(),
             preview_points: None,
+            preview_cursor: None,
         })
     }
 
@@ -376,122 +379,33 @@ impl Kernel {
         Ok(dirty)
     }
 
-    /// **增量**更新待提交笔迹：只把「新增的那一段」盖章到已缓存 tile 上。
+    /// 更新待提交笔迹：失效覆盖层的 tile 并返回需要重绘的区域。
     ///
-    /// 这是 13.3「操作立即显示」的关键路径：成本 ∝ 新增笔段长度（通常几像素到几十像素），
-    /// 而不是整块 tile 面积。返回需要重绘的区域（仅新增段）。
+    /// **为什么不是增量盖章**：`Renderer::stamp_into_tiles_incremental` 的读改写路径实测会
+    /// 让 tile 丢掉场景内容（表现为画面上出现白块/内容消失，见 implementation-notes 的复盘），
+    /// 在定位清楚之前这里走「失效 + 客户端重绘」这条**已证正确**的路径。
+    /// 采样相位连续的增量能力（`StrokeCursor`）已在渲染内核里实现并单测通过，待缺陷修好后启用。
     pub fn extend_preview_stroke(&mut self, json: &str) -> Result<Option<Bbox>, KernelError> {
         let value: Value = serde_json::from_str(json).map_err(|error| {
             KernelError::new("invalid_argument", format!("待提交笔迹解析失败：{error}"))
         })?;
-        let data = value.get("data").cloned().unwrap_or(Value::Null);
-        let geometry = yanshi_render::brush::StrokeGeometry::from_value(&data)
-            .ok_or_else(|| KernelError::new("invalid_argument", "待提交笔迹缺少 points"))?;
-        let brush = yanshi_render::brush::BrushSpec::from_value(&data);
-        let layer_id = value
-            .get("layer_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .filter(|id| self.state.layers.contains_key(id))
-            .or_else(|| {
-                self.state
-                    .alive_layers()
-                    .first()
-                    .map(|layer| layer.id.clone())
-            })
-            .ok_or_else(|| KernelError::new("precondition_failed", "文档没有存活图层"))?;
-
-        // 与上一次盖过的点列比较，取出新增段。
-        let new_points = geometry.points.clone();
-        let segment = match &self.preview_points {
-            None => new_points.clone(),
-            Some(previous) => {
-                // 以「上一次的最后一个点」为锚，接到当前点列中与之不同的后缀。
-                let anchor = previous.last().cloned();
-                let mut points = Vec::new();
-                if let Some(anchor) = anchor {
-                    let mut start = None;
-                    for (index, point) in new_points.iter().enumerate() {
-                        if (point.x - anchor.x).abs() < 1e-9 && (point.y - anchor.y).abs() < 1e-9 {
-                            start = Some(index);
-                        }
-                    }
-                    match start {
-                        Some(index) => points.extend_from_slice(&new_points[index..]),
-                        // 点列被替换（例如换工具）时整段重盖。
-                        None => points.extend_from_slice(&new_points),
-                    }
-                } else {
-                    points.extend_from_slice(&new_points);
-                }
-                points
-            }
-        };
-        self.preview_points = Some(new_points);
-
-        // 覆盖层对象仍然写进本地 state：这样整块重绘（失效/装载）也能复现同样的像素。
-        let mut object_json = value.clone();
-        if let Some(map) = object_json.as_object_mut() {
-            map.insert("layer_id".to_owned(), Value::String(layer_id));
-            map.entry("type".to_owned())
-                .or_insert_with(|| Value::String("stroke".to_owned()));
-        }
-        // 只更新状态，不失效：像素交给下面的增量盖章。
-        self.upsert_preview_object(&object_json.to_string(), false)?;
-
-        if segment.is_empty() {
-            return Ok(None);
-        }
-        let segment = yanshi_render::brush::StrokeGeometry { points: segment };
-        let bbox = yanshi_render::object_bbox(&yanshi_core::Object {
-            id: PREVIEW_OBJECT_ID.to_owned(),
-            layer_id: self
-                .state
-                .alive_layers()
-                .first()
-                .map(|layer| layer.id.clone())
-                .unwrap_or_default(),
-            object_type: ObjectType::Stroke,
-            z_index: 0,
-            visible: true,
-            locked: false,
-            metadata: Value::Null,
-            transform: yanshi_core::Transform::IDENTITY,
-            style: None,
-            versions: Vec::new(),
-            current_version: None,
-            created_by: "preview".to_owned(),
-            deleted_by: None,
-            data: json!({"points": segment.points.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(), "size": brush.size}),
-            blobs: Vec::new(),
-        });
-        // 借用拆分：renderer/state 与 store 分别可变/不可变借用。
-        let Kernel {
-            renderer,
-            state,
-            store,
-            ..
-        } = self;
-        renderer
-            .stamp_into_tiles(state, store, &brush, &segment)
-            .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
-        Ok(bbox)
+        self.preview_cursor = None;
+        self.preview_points = None;
+        // 失效整条笔迹的 tile：客户端随后按返回的 bbox 重绘，像素因此始终来自权威状态重建。
+        self.upsert_preview_object(&value.to_string(), true)
     }
 
-    /// 落笔提交：把覆盖层对应的原子并入本地日志，但**不重绘**（像素已由增量盖章画好）。
+    /// 落笔提交：把覆盖层对应的原子并入本地日志，但**不重绘**（像素已由覆盖层路径画好）。
     ///
-    /// 为什么需要它：覆盖层是逐段盖章上去的，像素已经等于该原子渲染的结果；
-    /// 若走常规 `apply_atom`，`plan_dirty` 会把覆盖区域整块 tile 失效重绘，
-    /// 在指针抬起时造成一次明显卡顿（实测 158ms）。这里只做日志与折叠的合并。
     /// 服务端权威 seq 与本地预测不一致时，调用方应改用 `resync()` 全量重建。
     pub fn commit_preview(&mut self, atom_json: &str) -> Result<Seq, KernelError> {
         let mut atom: Atom = serde_json::from_str(atom_json).map_err(|error| {
             KernelError::new("invalid_argument", format!("原子解析失败：{error}"))
         })?;
-        // 覆盖层对象从本地 state 摘掉：它的像素已经烙进 tile，状态由新原子接管。
+        // 覆盖层对象从本地 state 摘掉：它的像素已经画进 tile，状态由新原子接管。
         self.preview_points = None;
+        self.preview_cursor = None;
         self.state.objects.remove(PREVIEW_OBJECT_ID);
-        // 本地日志合并（seq 由本地 HEAD 推导；服务端确认后以权威值为准做校正）。
         let expected = self.log.head_seq() + 1;
         if atom.is_submitted() && atom.seq != expected {
             return Err(KernelError::new(
@@ -520,6 +434,7 @@ impl Kernel {
     /// 清除本地待提交覆盖层（落笔提交后调用），返回需要重绘的区域。
     pub fn clear_preview(&mut self) -> Option<Bbox> {
         self.preview_points = None;
+        self.preview_cursor = None;
         let bbox = self.remove_preview_bbox();
         self.invalidate_bbox(bbox);
         bbox
@@ -1105,6 +1020,21 @@ mod tests {
             incremental
                 .extend_preview_stroke(&stroke(full_points[..count].to_vec()))
                 .unwrap();
+            // 逐帧 1×1 探针会把局部渲染混进被测路径；仅在调试时启用。
+            if std::env::var("YANSHI_DEBUG_PROBE").is_ok() {
+                let probe = incremental
+                    .render_region(Bbox::new(36.0, 15.0, 1.0, 1.0))
+                    .unwrap();
+                println!(
+                    "  帧 {count}: 场景(36,15) = {:?}",
+                    [
+                        probe.rgba8[0],
+                        probe.rgba8[1],
+                        probe.rgba8[2],
+                        probe.rgba8[3]
+                    ]
+                );
+            }
         }
         let incremental_pixels = incremental
             .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
@@ -1119,10 +1049,8 @@ mod tests {
             .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
             .unwrap();
 
-        // 已知保真度差异（recorded in implementation-notes）：
-        // 逐段盖章在**接缝处会把重叠的 stamp 叠加两次**（整段一次的采样间距是连续的），
-        // 因此接缝带上比一次性整段更浓一点。设计 13.3 允许这种瞬时差异
-        // （服务端确认后以权威状态为准做校正），但必须**有界且局限在笔迹附近**。
+        // 现状覆盖层路径（失效 + 客户端重绘）必须与一次性整段渲染**逐字节一致**：
+        // 像素始终由权威状态重建，不存在接缝叠加或内容丢失。
         let mut diff = 0usize;
         let mut far_from_stroke = 0usize;
         for (index, (a, b)) in incremental_pixels
@@ -1144,19 +1072,13 @@ mod tests {
                 far_from_stroke += 1;
             }
         }
-        // 差异带宽由「逐段重新起算采样相位」造成（每段从弧长 0 起算，盖章位置最多偏移一个
-        // 间距 1.5px，并沿整条笔迹分布），因此只能要求有界、且不污染场景其余部分。
-        assert!(
-            far_from_stroke * 2 < diff.max(1),
-            "差异应集中在笔迹带附近：带外 {far_from_stroke} / 总差异 {diff}"
-        );
-        // 上限 12.5%：实测 ~7.6%（接缝带内的浓度差）。这是**乐观预览**的允许误差——
-        // 服务端确认后本地状态会重折，权威渲染随即将接缝校正掉（13.3）。
-        assert!(
-            diff * 8 < incremental_pixels.rgba8.len(),
-            "增量笔迹与整段覆盖层差异过大：{diff}/{}",
+        assert_eq!(
+            diff,
+            0,
+            "覆盖层路径必须与一次性整段渲染逐字节一致（差异 {diff}/{}）",
             incremental_pixels.rgba8.len()
         );
+        assert_eq!(far_from_stroke, 0);
         assert_eq!(incremental.head_seq(), single.head_seq(), "覆盖层不改 HEAD");
         assert_eq!(
             incremental.log().len(),

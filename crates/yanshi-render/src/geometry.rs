@@ -263,6 +263,87 @@ pub fn point_in_polygon(x: f64, y: f64, points: &[(f64, f64)]) -> bool {
 ///
 /// `points` 为 `(x, y, pressure)`；`spacing` 为 stamp 间距（像素）；
 /// `dash` 为可选的虚线段长度（`None` 表示实线）。
+/// 笔迹采样的跨帧游标（13.3 本地乐观渲染：逐段盖章必须与一次性整段逐点一致）。
+///
+/// `dashed_line` 每次都从弧长 0 重新起算采样相位，于是「每帧提交增长中的笔迹」会在
+/// 接缝处错开最多一个间距。携带游标即可让第 N 帧只产出弧长 `> consumed_arc` 的采样，
+/// 位置与一次性整段完全相同（抖动用的全局 stamp 序号也一并保持）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrokeCursor {
+    /// 已经产出过采样的弧长（上一帧末端的弧长）。
+    pub consumed_arc: f64,
+    /// 下一个 stamp 的弧长位置。
+    pub next_at: f64,
+    /// 已产出的 stamp 数（抖动等确定性随机量的全局序号）。
+    pub stamp_index: u64,
+    /// 间距。
+    pub spacing: f64,
+}
+
+impl StrokeCursor {
+    /// 以间距开游标。
+    pub fn start(spacing: f64) -> Self {
+        let spacing = spacing.max(0.05);
+        Self {
+            consumed_arc: 0.0,
+            next_at: spacing,
+            stamp_index: 0,
+            spacing,
+        }
+    }
+}
+
+/// 从游标处继续采样（返回**新增**的 stamp，并推进游标）。
+pub fn dashed_line_from(
+    points: &[(f64, f64, f64)],
+    dash: Option<f64>,
+    cursor: &mut StrokeCursor,
+) -> Vec<(f64, f64, f64)> {
+    let mut stamps = Vec::new();
+    if points.is_empty() {
+        return stamps;
+    }
+    let spacing = cursor.spacing;
+    // 首帧补上起点（与 `dashed_line` 一致）。
+    if cursor.stamp_index == 0 && cursor.consumed_arc <= 0.0 {
+        let first = points[0];
+        if dash.map(|d| (0.0f64 % (d * 2.0)) < d).unwrap_or(true) {
+            stamps.push(first);
+            cursor.stamp_index += 1;
+        }
+    }
+    let mut arc = 0.0f64;
+    let mut total = 0.0f64;
+    for window in points.windows(2) {
+        let (x0, y0, p0) = window[0];
+        let (x1, y1, p1) = window[1];
+        let segment = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        if segment <= f64::EPSILON {
+            continue;
+        }
+        let segment_end = arc + segment;
+        // 只产出「上一帧尚未覆盖」的弧长区间。
+        while cursor.next_at <= segment_end + 1e-9 {
+            if cursor.next_at > cursor.consumed_arc + 1e-9 {
+                let t = ((cursor.next_at - arc) / segment).clamp(0.0, 1.0);
+                let keep = dash
+                    .map(|d| (cursor.next_at % (d * 2.0)) < d)
+                    .unwrap_or(true);
+                if keep {
+                    stamps.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, p0 + (p1 - p0) * t));
+                    cursor.stamp_index += 1;
+                }
+            }
+            cursor.next_at += spacing;
+        }
+        arc = segment_end;
+        total = segment_end;
+    }
+    cursor.consumed_arc = total;
+    stamps
+}
+
+/// 一次性采样整条折线（间距 + 可选虚线）；跨帧场景请用 [`dashed_line_from`]。
 pub fn dashed_line(
     points: &[(f64, f64, f64)],
     spacing: f64,
@@ -297,6 +378,62 @@ pub fn dashed_line(
         arc += segment;
     }
     stamps
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    /// 13.3 的关键不变量：携带游标逐段采样，必须与一次性整段采样**逐点相同**。
+    #[test]
+    fn incremental_sampling_matches_single_shot_exactly() {
+        let points: Vec<(f64, f64, f64)> = (0..12)
+            .map(|i| {
+                (
+                    10.0 + i as f64 * 7.3,
+                    20.0 + (i as f64 * 1.7).sin() * 9.0,
+                    1.0,
+                )
+            })
+            .collect();
+        let spacing = 1.7;
+        let one_shot = dashed_line(&points, spacing, None);
+
+        // 逐段推进（每帧多一个点）。
+        let mut cursor = StrokeCursor::start(spacing);
+        let mut incremental = Vec::new();
+        for count in 1..=points.len() {
+            incremental.extend(dashed_line_from(&points[..count], None, &mut cursor));
+        }
+
+        assert_eq!(
+            incremental.len(),
+            one_shot.len(),
+            "逐段与一次性产出的 stamp 数必须相同"
+        );
+        for (index, (a, b)) in incremental.iter().zip(one_shot.iter()).enumerate() {
+            assert!(
+                (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9,
+                "第 {index} 个 stamp 位置不同：{a:?} vs {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_keeps_dash_phase_across_frames() {
+        let points: Vec<(f64, f64, f64)> = (0..8).map(|i| (i as f64 * 5.0, 0.0, 1.0)).collect();
+        let spacing = 1.0;
+        let dashed = dashed_line(&points, spacing, Some(3.0));
+        let mut cursor = StrokeCursor::start(spacing);
+        let mut incremental = Vec::new();
+        for count in 2..=points.len() {
+            incremental.extend(dashed_line_from(&points[..count], Some(3.0), &mut cursor));
+        }
+        assert_eq!(incremental.len(), dashed.len(), "虚线相位也必须连续");
+        for (a, b) in incremental.iter().zip(dashed.iter()) {
+            assert!((a.0 - b.0).abs() < 1e-9, "{a:?} vs {b:?}");
+        }
+    }
 }
 
 #[cfg(test)]
