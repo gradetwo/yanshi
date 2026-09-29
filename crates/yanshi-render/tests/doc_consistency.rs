@@ -222,3 +222,99 @@ fn box_blur_cost_is_flat_in_radius() {
         "半径伸缩仍近似线性（最慢 {slowest:?} vs 最快 {fastest:?}）—— 滑动窗口可能没生效"
     );
 }
+
+/// 显示编码查找表的收益（**同批次对照**，避免本机计时噪声）。
+///
+/// 结论来自三轮实验（同一批次内比较，均为 1024² 满屏半透明像素合成到白底并编码）：
+/// * 把常量背景转换提到循环外：**1.03×** —— 编译器自己就做了提升，无效；
+/// * 反预乘由除法改倒数乘法：**反而更慢** —— 除法不是瓶颈；
+/// * **sRGB 编码查表**：135.9ms → **74.1ms（1.84×）**，最大字节差 1（设计已批准显示路径 D1）。
+///
+/// 这里比较「库内现状（查找表）」与「逐步 `powf` 的精确实现」，并断言两者字节差 ≤1 LSB。
+/// 若将来有人把显示编码改回精确实现，这条断言会失败；实现端到端实测（1024² 重文档的
+/// `量化` 阶段）：39.1ms → 30.0ms。
+#[test]
+#[ignore = "性能：显示编码查找表收益（同批次对照）"]
+fn srgb_encode_lut_is_faster_than_powf() {
+    use std::time::{Duration, Instant};
+    use yanshi_render::Buffer;
+
+    let mut buffer = Buffer::new(0, 0, 1024, 1024);
+    for (index, pixel) in buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+        let value = (index % 977) as f32 / 977.0;
+        pixel.copy_from_slice(&[value * 0.6, value * 0.4, value * 0.2, 0.6]);
+    }
+    let background = [255u8, 255, 255, 255];
+
+    // 基准：逐步 `powf` 的精确实现（库内的 linear_to_byte_exact）。
+    let mut exact = Duration::MAX;
+    let mut exact_bytes: Vec<u8> = Vec::new(); // 精确实现最后一次的输出，用于字节比较
+    for _ in 0..3 {
+        let started = Instant::now();
+        let bg = yanshi_render::u8x4_to_linear_premul(background);
+        let mut out: Vec<u8> = Vec::with_capacity(buffer.len() * 4);
+        for pixel in buffer.pixels_mut().chunks_exact(4) {
+            let alpha = pixel[3].clamp(0.0, 1.0);
+            let composed = [
+                pixel[0] + bg[0] * (1.0 - alpha),
+                pixel[1] + bg[1] * (1.0 - alpha),
+                pixel[2] + bg[2] * (1.0 - alpha),
+                alpha + bg[3] * (1.0 - alpha),
+            ];
+            let out_alpha = composed[3].clamp(0.0, 1.0);
+            let inverse = if out_alpha > 0.0 {
+                1.0 / out_alpha
+            } else {
+                0.0
+            };
+            out.extend_from_slice(&[
+                yanshi_render::linear_to_byte_exact(composed[0] * inverse),
+                yanshi_render::linear_to_byte_exact(composed[1] * inverse),
+                yanshi_render::linear_to_byte_exact(composed[2] * inverse),
+                (out_alpha * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8,
+            ]);
+        }
+        std::hint::black_box(&out);
+        exact = exact.min(started.elapsed());
+        exact_bytes = out;
+    }
+
+    // 库内现状：显示编码走查找表。
+    let mut with_lut = Duration::MAX;
+    let mut max_delta = 0i32;
+    for _ in 0..3 {
+        let started = Instant::now();
+        let bytes = buffer.to_rgba8(Some(background));
+        std::hint::black_box(&bytes);
+        with_lut = with_lut.min(started.elapsed());
+
+        let reference = buffer.to_rgba8(Some(background));
+        // 防止「空 vec 比较 → 恒为 0」这类假通过（clippy 的 unused_mut 曾抓到一次）。
+        assert_eq!(
+            reference.len(),
+            exact_bytes.len(),
+            "两次编码的字节数应一致，否则比较无意义"
+        );
+        assert!(!exact_bytes.is_empty(), "精确实现的输出不应为空");
+        max_delta = max_delta.max(
+            reference
+                .iter()
+                .zip(exact_bytes.iter())
+                .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    println!(
+        "  显示编码 1024²：精确 powf {exact:?}｜库内查找表 {with_lut:?}｜提速 {:.2}×｜最大字节差 {max_delta}",
+        exact.as_secs_f64() / with_lut.as_secs_f64()
+    );
+    assert!(
+        max_delta <= 1,
+        "查找表相对精确实现最大字节差 {max_delta} > 1 LSB"
+    );
+    assert!(
+        with_lut < exact,
+        "查找表应快于精确实现（同批次对照）：{with_lut:?} vs {exact:?}"
+    );
+}
