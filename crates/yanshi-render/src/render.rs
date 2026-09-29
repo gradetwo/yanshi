@@ -237,6 +237,9 @@ impl Renderer {
             .options
             .background
             .or_else(|| parse_background(&state.background));
+        // 阶段计时（诊断用，默认关闭）：`YANSHI_RENDER_PROBE=1` 时打印各阶段耗时。
+        // 存在的理由：背景合成带来的约 4× 差距曾三次被"合理推测"误判，只有分段计时能定位。
+        let probe_started = std::time::Instant::now();
         let mut accumulation = match background {
             Some(color) if color[3] > 0 => Buffer::filled(
                 origin_x,
@@ -247,33 +250,56 @@ impl Renderer {
             ),
             _ => Buffer::new(origin_x, origin_y, width, height),
         };
+        let probe_fill = probe_started.elapsed();
+        let mut probe_render = std::time::Duration::ZERO;
+        let mut probe_composite = std::time::Duration::ZERO;
 
         for layer in state.alive_layers() {
             if !layer.visible && !self.options.include_hidden_layers {
                 continue;
             }
             stats.layers += 1;
+            let probe_stage = std::time::Instant::now();
             let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
             self.render_layer_objects(state, store, layer, &mut layer_buffer, &mut stats)?;
             apply_layer_mask(state, layer, &mut layer_buffer, &mut stats);
+            probe_render += probe_stage.elapsed();
             if layer.clipping_mask {
                 // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
                 layer_buffer.multiply_alpha_by(&accumulation);
             }
             layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
             let mode = BlendMode::from_name(&layer.blend_mode);
+            let probe_stage = std::time::Instant::now();
             accumulation.composite(&layer_buffer, mode, 1.0);
+            probe_composite += probe_stage.elapsed();
         }
 
         // 裁剪回请求区域并切片入缓存。
+        let probe_stage = std::time::Instant::now();
         let cropped = accumulation.crop(&region);
         let tiles = self.store_tiles(&cropped);
         stats.tiles_rendered = tiles.len();
+        let probe_crop = probe_stage.elapsed();
         // 输出像素先按 **f16 量化**（14.1：内存 tile 用 f16 线性，合成正确性以 tile 为准），
         // 再转显示空间。这样「整幅区域渲染」与「按 tile 组合渲染」（客户端 WASM 内核走后者）
         // 逐字节一致，不会因 f32 scratch 与 f16 tile 的舍入差出现 ±1 分歧（Phase 2 bit-exact）；
         // 且量化是就地计算，不依赖 tile 是否仍在缓存里（小预算下会被淘汰）。
+        let probe_stage = std::time::Instant::now();
         let rgba8 = quantize_to_rgba8(&cropped, background);
+        // 环境变量只读一次（默认路径零开销）。
+        static PROBE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *PROBE_ENABLED.get_or_init(|| std::env::var_os("YANSHI_RENDER_PROBE").is_some()) {
+            eprintln!(
+                "PROBE 有背景={} 填充={:?} 图层={:?} 合成={:?} 裁剪+存tile={:?} 量化={:?}",
+                background.is_some(),
+                probe_fill,
+                probe_render,
+                probe_composite,
+                probe_crop,
+                probe_stage.elapsed()
+            );
+        }
 
         Ok(RegionRender {
             bbox: region,
