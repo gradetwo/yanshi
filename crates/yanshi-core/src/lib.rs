@@ -11,6 +11,7 @@
 //! | [`state`] | 4.1 – 4.5 | 文档状态模型（图层、对象、选区、检查点、头部指针） |
 //! | [`fold`] | 5.3 / 5.4 | 折叠求值、有效集、级联失效、reapply、LWW |
 //! | [`log`] | 5.1 / 12.2 | Append-Only 日志、ULID 幂等、提交时 precondition 校验 |
+//! | [`blob`] | 6.3 | Blob CAS、三级生命周期、GC 根集与活跃 Manifest |
 //! | [`seq`] | 5.5 | `state@seq` 求值公式、declare_head、增量折叠 |
 //! | [`conflict`] | 12.3 | 采样性替换冲突检测（生成性叠加走 LWW） |
 //!
@@ -39,6 +40,7 @@
 #![warn(missing_docs)]
 
 pub mod atom;
+pub mod blob;
 pub mod conflict;
 pub mod error;
 pub mod fold;
@@ -50,6 +52,10 @@ pub mod state;
 pub use atom::{
     payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind, BlobHash, BlobRef,
     PluginRef, Refs, CAS_THRESHOLD_BYTES, SCHEMA_VERSION, SEQ_UNASSIGNED,
+};
+pub use blob::{
+    plan_gc, run_gc, stage_blob, BlobEntry, BlobLifecycleMetrics, BlobStore, BlobTier, FsBlobStore,
+    GcPlan, GcReport, MemoryBlobStore, DEFAULT_ORPHAN_TTL_SECONDS,
 };
 pub use conflict::{Bbox, ConflictInfo, CONFLICT_ACTOR};
 pub use error::{ErrorCode, ErrorContext, Result, YanshiError};
