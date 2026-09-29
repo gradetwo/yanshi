@@ -1138,6 +1138,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
+        name: "liquify_push",
+        profile: Profile::Retouch,
+        summary: "基础液化（推力）：把笔迹范围内的像素沿 direction 推开（反向映射 + 双线性重采样）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("direction", Array, true, "推力方向 [dx,dy]（非零）"),
+            param!("size", Number, false, "影响直径（缺省 80）"),
+            param!("strength", Number, false, "强度 0-2（缺省 0.5）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
         name: "patch",
         profile: Profile::Retouch,
         summary: "图章补丁：把 source_region 的像素抓取为 blob，并作为 raster_patch 落到 target 位置（blob 先行，6.3）",
@@ -1301,6 +1316,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
         "patch" => write_patch(ctx, args),
+        "liquify_push" => write_liquify(ctx, args),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2406,6 +2422,95 @@ fn write_patch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         }),
     )?;
     let region = region_of(&result).or(Some(Bbox::new(tx, ty, width as f64, height as f64)));
+    finish_mutation(ctx, &result, region)
+}
+
+/// 基础液化（推力）：创建 `liquify` 对象。
+fn write_liquify(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let points = require_array(args, "points")?;
+    if points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("liquify 至少需要一个点"),
+        ));
+    }
+    let mut parsed: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+    for point in &points {
+        let pair = point.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("liquify 的 points 必须是 [[x,y], ...]"),
+            )
+        })?;
+        match (
+            pair.first().and_then(Value::as_f64),
+            pair.get(1).and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => parsed.push([x, y]),
+            _ => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("liquify 的点必须是数字"),
+                ))
+            }
+        }
+    }
+    let direction = require_array(args, "direction")?;
+    let dx = direction.first().and_then(Value::as_f64).unwrap_or(0.0);
+    let dy = direction.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+    if dx == 0.0 && dy == 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("direction 不能是 [0,0]"),
+        ));
+    }
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(80.0);
+    if !(2.0..=2048.0).contains(&size) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("size 必须在 [2, 2048] 内，得到 {size}")),
+        ));
+    }
+    let strength = args.get("strength").and_then(Value::as_f64).unwrap_or(0.5);
+    if !(0.0..=2.0).contains(&strength) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("strength 必须在 [0, 2] 内，得到 {strength}")),
+        ));
+    }
+    let object_id = optional_str(args, "object_id")
+        .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+    let z_index = match args.get("z_index").and_then(Value::as_i64) {
+        Some(z_index) => z_index,
+        None => {
+            let state = document_state(ctx)?;
+            state
+                .alive_objects()
+                .iter()
+                .filter(|object| object.layer_id == layer_id)
+                .map(|object| object.z_index)
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0)
+        }
+    };
+    let result = ctx.commit(
+        AtomKind::Liquify,
+        json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "z_index": z_index,
+            "data": {
+                "liquify_type": "push",
+                "points": parsed,
+                "size": size,
+                "strength": strength,
+                "direction": [dx, dy],
+            },
+        }),
+    )?;
+    let region = region_of(&result);
     finish_mutation(ctx, &result, region)
 }
 

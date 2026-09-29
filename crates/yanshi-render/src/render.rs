@@ -406,6 +406,22 @@ impl Renderer {
         let mut padding = 0u32;
         for object in state.alive_objects() {
             // 修图对象从偏移位置采样：区域渲染必须外扩到源像素，否则边缘会缺一块。
+            if object.object_type == yanshi_core::ObjectType::Liquify {
+                let size = object
+                    .data
+                    .get("size")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(80.0);
+                let strength = object
+                    .data
+                    .get("strength")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.5)
+                    .abs()
+                    .clamp(0.0, 2.0);
+                padding = padding.max((size / 2.0 + strength * size + 2.0).ceil() as u32);
+                continue;
+            }
             if object.object_type == yanshi_core::ObjectType::Retouch {
                 let size = object
                     .data
@@ -723,6 +739,81 @@ impl Renderer {
                             ],
                             BlendMode::Normal,
                         );
+                    }
+                    continue;
+                }
+                Primitive::Liquify {
+                    points,
+                    size,
+                    strength,
+                    direction,
+                } => {
+                    let radius = (size.max(2.0)) / 2.0;
+                    let length = (direction.0 * direction.0 + direction.1 * direction.1)
+                        .sqrt()
+                        .max(1e-9);
+                    let (ux, uy) = (direction.0 / length, direction.1 / length);
+                    // 位移随距离平滑衰减，最大位移 = strength * 直径。
+                    let max_shift = (strength.clamp(-2.0, 2.0)) * size;
+                    let source = layer_buffer.clone();
+                    let origin = layer_buffer.origin();
+                    let width = layer_buffer.width();
+                    let height = layer_buffer.height();
+                    for y in 0..height {
+                        for x in 0..width {
+                            // 目标像素的文档坐标。
+                            let document_x = origin.0 as f64 + x as f64;
+                            let document_y = origin.1 as f64 + y as f64;
+                            let mut shift_x = 0.0f64;
+                            let mut shift_y = 0.0f64;
+                            for (px, py) in &points {
+                                let dx = document_x - px;
+                                let dy = document_y - py;
+                                let distance = (dx * dx + dy * dy).sqrt();
+                                if distance >= radius {
+                                    continue;
+                                }
+                                // smoothstep 衰减：中心 1、边缘 0。
+                                let t = 1.0 - distance / radius;
+                                let falloff = t * t * (3.0 - 2.0 * t);
+                                shift_x += ux * max_shift * falloff;
+                                shift_y += uy * max_shift * falloff;
+                            }
+                            if shift_x == 0.0 && shift_y == 0.0 {
+                                continue;
+                            }
+                            // 反向映射：目标像素取「源 − 位移」处的**双线性**采样。
+                            let sample_x = document_x - shift_x - origin.0 as f64;
+                            let sample_y = document_y - shift_y - origin.1 as f64;
+                            if sample_x < -1.0
+                                || sample_y < -1.0
+                                || sample_x > width as f64
+                                || sample_y > height as f64
+                            {
+                                continue;
+                            }
+                            let x0 = sample_x.floor();
+                            let y0 = sample_y.floor();
+                            let fx = (sample_x - x0) as f32;
+                            let fy = (sample_y - y0) as f32;
+                            let clamp =
+                                |value: i64, limit: u32| value.clamp(0, limit as i64 - 1) as u32;
+                            let x0i = clamp(x0 as i64, width);
+                            let y0i = clamp(y0 as i64, height);
+                            let x1i = clamp(x0 as i64 + 1, width);
+                            let y1i = clamp(y0 as i64 + 1, height);
+                            let p00 = source.pixel(x0i, y0i);
+                            let p10 = source.pixel(x1i, y0i);
+                            let p01 = source.pixel(x0i, y1i);
+                            let p11 = source.pixel(x1i, y1i);
+                            let mut out = [0.0f32; 4];
+                            for channel in 0..4 {
+                                let top = p00[channel] + (p10[channel] - p00[channel]) * fx;
+                                let bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
+                                out[channel] = top + (bottom - top) * fy;
+                            }
+                            layer_buffer.set_pixel(x, y, out);
+                        }
                     }
                     continue;
                 }
@@ -1535,6 +1626,65 @@ mod tests {
             1,
             "未实现的修图类型必须告警"
         );
+    }
+
+    /// 液化：硬边界应沿方向被推开，影响范围外不动，且区域渲染与整幅一致。
+    #[test]
+    fn liquify_pushes_pixels_along_the_direction() {
+        let mut state = white_document();
+        state.width = 64;
+        state.height = 64;
+        // 左半红、右半蓝的竖直边界在 x=32。
+        for (id, x, color) in [
+            ("obj_l", 0.0, json!({"r": 220, "g": 20, "b": 20, "a": 255})),
+            ("obj_r", 32.0, json!({"r": 20, "g": 20, "b": 220, "a": 255})),
+        ] {
+            state.objects.insert(
+                id.to_owned(),
+                object(
+                    id,
+                    "layer_1",
+                    ObjectType::Shape,
+                    0,
+                    json!({"geometry": {"kind": "rect", "bbox": {"x": x, "y": 0, "w": 32, "h": 64}},
+                           "color": color}),
+                ),
+            );
+        }
+        // 在边界附近向右推：红色应向右侵入蓝区。
+        state.objects.insert(
+            "obj_liq".to_owned(),
+            object(
+                "obj_liq",
+                "layer_1",
+                ObjectType::Liquify,
+                1,
+                json!({"points": [[32.0, 32.0]], "size": 24.0, "strength": 0.8, "direction": [1.0, 0.0]}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        let pushed = renderer.render_document(&state, &store).unwrap();
+        let near = pushed.pixel(34, 32).unwrap();
+        assert!(
+            near[0] as i32 > 150 && near[2] < 150,
+            "边界右移后 (34,32) 应偏红：{near:?}"
+        );
+        // 远处不受影响。
+        let far = pushed.pixel(62, 32).unwrap();
+        assert!(far[2] > 180 && far[0] < 60, "远处应仍是蓝：{far:?}");
+
+        // 区域渲染必须与整幅一致（padding 覆盖位移）。
+        let region = renderer
+            .render_region(&state, &store, Bbox::new(20.0, 20.0, 24.0, 24.0))
+            .unwrap();
+        let full = renderer
+            .render_region(&state, &store, Bbox::new(20.0, 20.0, 24.0, 24.0))
+            .unwrap();
+        assert_eq!(region.rgba8, full.rgba8);
+        // 整幅渲染在 (34,32) 的像素应等于区域渲染对应位置。
+        let region_pixel = pushed.pixel(34, 32).unwrap();
+        assert_eq!(region_pixel, near);
     }
 
     /// 涂抹：应把笔迹**后方**的颜色沿方向拖到前方（跨颜色边界时最明显）。

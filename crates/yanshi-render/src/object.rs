@@ -94,6 +94,20 @@ pub enum Primitive {
         /// 涂抹半径（仅 `smudge` 使用：每 stamp 沿笔迹后退多少像素采样）。
         smudge_length: f64,
     },
+    /// 基础液化：把笔迹范围内的像素按方向推开（推力）。
+    ///
+    /// 采用**反向映射**：目标像素去「应用本对象之前」的副本采样，
+    /// 因此不会出现空洞，且位移只由原子参数决定（确定性）。
+    Liquify {
+        /// 笔迹点列。
+        points: Vec<(f64, f64)>,
+        /// 影响半径（直径 = `size`）。
+        size: f64,
+        /// 推力强度（0..2）。
+        strength: f64,
+        /// 方向（单位向量，归一化后使用）。
+        direction: (f64, f64),
+    },
     /// 无法渲染。
     Unsupported {
         /// 原因（用于告警与可观测性）。
@@ -211,9 +225,57 @@ pub fn parse_object(object: &Object) -> Primitive {
                 }
             }
         }
-        ObjectType::Liquify => Primitive::Unsupported {
-            reason: "liquify 求解器属 Phase 0/3 验证项".to_owned(),
-        },
+        ObjectType::Liquify => {
+            let points: Vec<(f64, f64)> = object
+                .data
+                .get("points")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| {
+                            let pair = value.as_array()?;
+                            Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let direction = object
+                .data
+                .get("direction")
+                .and_then(Value::as_array)
+                .map(|pair| {
+                    (
+                        pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+                        pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                    )
+                })
+                .unwrap_or((0.0, 0.0));
+            if points.is_empty() {
+                Primitive::Unsupported {
+                    reason: "liquify 缺少 points".to_owned(),
+                }
+            } else if direction.0 == 0.0 && direction.1 == 0.0 {
+                Primitive::Unsupported {
+                    reason: "liquify 缺少 direction（或为零向量）".to_owned(),
+                }
+            } else {
+                Primitive::Liquify {
+                    points,
+                    size: object
+                        .data
+                        .get("size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(80.0),
+                    strength: object
+                        .data
+                        .get("strength")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.5),
+                    direction,
+                }
+            }
+        }
         ObjectType::Instance | ObjectType::Group => Primitive::Unsupported {
             reason: "实例/组引用解析属 Phase 5（9 章）".to_owned(),
         },
@@ -337,6 +399,34 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
     // 对象的仿射 `transform` 尚未进入内核（Phase 3 起按对象应用），
     // 因此这里返回的是对象**本地**包围盒。
     let local = match parse_object(object) {
+        Primitive::Liquify {
+            points,
+            size,
+            strength,
+            ..
+        } => {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for (x, y) in &points {
+                min_x = min_x.min(*x);
+                min_y = min_y.min(*y);
+                max_x = max_x.max(*x);
+                max_y = max_y.max(*y);
+            }
+            if !min_x.is_finite() {
+                return None;
+            }
+            // 影响半径 + 最大位移（强度按直径缩放）都要计入。
+            let reach = size / 2.0 + strength.abs().clamp(0.0, 2.0) * size;
+            Bbox::new(
+                min_x - reach,
+                min_y - reach,
+                (max_x - min_x) + reach * 2.0,
+                (max_y - min_y) + reach * 2.0,
+            )
+        }
         Primitive::Retouch {
             points,
             size,

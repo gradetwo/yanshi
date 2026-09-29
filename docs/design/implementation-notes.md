@@ -419,6 +419,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 修图 `heal`（工具 `heal_stamp`） | 同上 | 复制源纹理的同时，按**源/目标局部均值差**把低频颜色对齐到目标处 |
 | 修图 `smudge`（工具 `smudge`） | `points`/`size`/`smudge_length`/`hardness`/`opacity` | 每 stamp 沿笔迹方向**后退** `smudge_length` 采样，把后方内容拖到前方 |
 | 图章补丁（工具 `patch`，对象类型 `raster_patch`） | `source_region`/`target`/`opacity` | 抓取源区域**原始 RGBA8** → 存 blob → 作为 `raster_patch` 落到目标位置 |
+| 基础液化（工具 `liquify_push`，对象类型 `liquify`） | `points`/`direction`/`size`/`strength` | 推力位移场（smoothstep 衰减）+ **反向映射 + 双线性重采样** |
 
 实现时踩到 / 需要守住的约定：
 
@@ -437,6 +438,9 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 - **修图对象的区域渲染必须外扩到源像素**：`clone_stamp` 从 `目标 + source_offset` 采样，
   `filter_padding` 因此把 `|offset| + size/2 + 2` 计入外扩量；否则只渲染笔迹附近时，
   源像素落在区域之外会得到「复制不完整」。测试断言「区域渲染与整幅渲染逐像素一致」。
+- **液化必须反向映射并申报外扩量**：正向映射会在拉伸区留下空洞，因此改为「目标像素取
+  `源 − 位移`」的双线性采样；`filter_padding` 把 `size/2 + strength*size` 计入外扩，
+  否则区域渲染会缺掉位移所需的源像素。位移只由原子参数决定，因此仍然确定、可复现。
 - **`patch` 走「渲染原始像素 → 存 blob → 建原子」三步**：`render_region` 只返回 PNG blob，
   不带像素，因此新增 `Document::render_region_raw` / `Workspace::render_region_raw`
   返回原始 RGBA8（sRGB 直通，与 `blit_rgba8` 的输入约定一致），且**不写渲染缓存与缩略图状态**。

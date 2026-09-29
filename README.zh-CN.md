@@ -172,6 +172,7 @@ curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKE
 
 ```bash
 # 修图工具：clone_stamp（仿制图章）/ heal_stamp（修复画笔）/ smudge（涂抹）/ patch（图章补丁）
+# liquify_push 用法：把笔迹范围内的像素沿 direction 推开
 # patch 用法：抓取源区域像素后落到目标位置
 #   -d '{"layer_id":"layer_1","source_region":{"x":40,"y":40,"w":80,"h":80},"target":[300,300]}'
 # 仿制图章（heal_stamp 用法相同，另会把低频颜色对齐到目标处）：

@@ -843,6 +843,32 @@ fn clone_stamp_copies_content_and_is_reversible() {
         "{bad_patch}"
     );
 
+    // 液化（推力）：把边界附近的像素推开；零方向与越界强度必须被拒。
+    let pushed = registry.call(
+        &mut context,
+        "liquify_push",
+        &json!({"layer_id": "layer_1", "points": [[50.0, 50.0]], "direction": [1.0, 0.0],
+                "size": 40.0, "strength": 0.6}),
+    );
+    assert_eq!(pushed["ok"], json!(true), "{pushed}");
+    assert_eq!(
+        pushed["dirty_kind"],
+        json!("geometry"),
+        "液化只影响笔迹范围"
+    );
+    for payload in [
+        json!({"layer_id": "layer_1", "points": [[10.0, 10.0]], "direction": [0.0, 0.0]}),
+        json!({"layer_id": "layer_1", "points": [], "direction": [1.0, 0.0]}),
+        json!({"layer_id": "layer_1", "points": [[1.0, 1.0]], "direction": [1.0, 0.0], "strength": 9.0}),
+    ] {
+        let response = registry.call(&mut context, "liquify_push", &payload);
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{payload}: {response}"
+        );
+    }
+
     // 参数校验：零偏移无意义、点列非法都要被拒。
     for payload in [
         json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),
