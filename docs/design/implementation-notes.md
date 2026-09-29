@@ -898,6 +898,15 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 > 测试里踩到的一个 API 语义：`draw_shape` 传 `object_id` 时走的是 **supersede**（要求对象已存在），
 > 想新建对象就不要传 id。反例测试因此改用「不传 id + 区域不相交」构造。
 
+**标注 ↔ 建议的关联查询（本轮）**：`AnnotationFilter` 增加 `suggestion_id` 字段，
+`list_annotations` 暴露同名参数，可与其他条件组合（如 `suggestion_id + status=pending`）。
+同时**清理了两处临时实现**：`accept_suggestion` 与 `reject_suggestion` 原先都是"取回后在内存里筛"，
+注释里还写着"过滤条件没有该字段" ✗ —— 现在直接用过滤器 ✓。
+
+测试覆盖：2 条引用 + 1 条不引用 → 按建议筛出 2、全部 3、组合筛出 2；
+接受建议后 `suggestion_id + pending` 变为 0、`suggestion_id + resolved` 变为 2 ✓。
+线上实测：按建议过滤 `count=1`、全部 `count=2` ✓
+
 **建议优先级（本轮）**：`suggest` 增加 `priority`（0..9，缺省 5，越界报 `invalid_argument`），
 写入原子 payload；`list_suggestions` 回显并按「**优先级降序、同优先级 seq 升序**」排序，
 便于人工先审阅要紧的建议。测试覆盖：响应回显生效值、越界被拒、以及**故意按低→高→缺省顺序创建**

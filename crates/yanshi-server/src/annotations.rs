@@ -267,6 +267,9 @@ pub struct AnnotationFilter {
     /// 按对象目标过滤。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<ObjectId>,
+    /// 按关联建议过滤（4b：查询「引用了某条建议的标注」）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion_id: Option<String>,
 }
 
 /// 标注通道（append-only 版本链）。
@@ -499,6 +502,11 @@ fn matches_filter(annotation: &Annotation, filter: &AnnotationFilter) -> bool {
     }
     if let Some(intent) = filter.intent {
         if annotation.intent != intent {
+            return false;
+        }
+    }
+    if let Some(suggestion_id) = &filter.suggestion_id {
+        if annotation.suggestion_id.as_deref() != Some(suggestion_id.as_str()) {
             return false;
         }
     }

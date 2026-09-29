@@ -1036,6 +1036,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("actor", String, false, "按作者过滤"),
             param!("intent", String, false, "按意图过滤"),
             param!("object_id", String, false, "按对象目标过滤"),
+            param!("suggestion_id", String, false, "按关联建议过滤（4b：查「引用了该建议的标注」）"),
         ],
     },
     ToolSpec {
@@ -3710,15 +3711,13 @@ fn accept_one(ctx: &mut ToolContext<'_>, suggestion_id: &str) -> Result<Value> {
         })?;
         let filter = AnnotationFilter {
             status: Some(AnnotationStatus::Pending),
+            suggestion_id: Some(suggestion_id.clone()),
             ..AnnotationFilter::default()
         };
         let ids: Vec<String> = document
             .annotations()
             .list(&filter)
             .into_iter()
-            .filter(|annotation| {
-                annotation.suggestion_id.as_deref() == Some(suggestion_id.as_str())
-            })
             .map(|annotation| annotation.id)
             .collect();
         let mut resolved = Vec::new();
@@ -3759,15 +3758,13 @@ fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         // 过滤条件没有 suggestion_id 字段，按状态取回后在内存里筛（待处理标注数量很小）。
         let filter = AnnotationFilter {
             status: Some(AnnotationStatus::Pending),
+            suggestion_id: Some(suggestion_id.clone()),
             ..AnnotationFilter::default()
         };
         let ids: Vec<String> = document
             .annotations()
             .list(&filter)
             .into_iter()
-            .filter(|annotation| {
-                annotation.suggestion_id.as_deref() == Some(suggestion_id.as_str())
-            })
             .map(|annotation| annotation.id)
             .collect();
         let mut rejected = Vec::new();
@@ -4189,6 +4186,7 @@ fn annotation_filter(args: &Value) -> Result<AnnotationFilter> {
             .map(|text| AnnotationIntent::parse(&text))
             .transpose()?,
         object_id: optional_str(args, "object_id"),
+        suggestion_id: optional_str(args, "suggestion_id"),
     })
 }
 

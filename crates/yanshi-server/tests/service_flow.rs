@@ -2915,3 +2915,82 @@ fn suggestion_priority_is_validated_and_orders_the_list() {
         .collect();
     assert_eq!(priorities, vec![9, 5, 1], "{listed}");
 }
+
+/// 标注 ↔ 建议的关联查询：`list_annotations(suggestion_id=...)` 应能直接筛出引用该建议的标注。
+#[test]
+fn annotations_can_be_filtered_by_suggestion() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_link", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Annotation,
+        yanshi_server::Profile::Collab,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_link", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"summary": "提亮", "patch": [{"tool": "add_adjustment",
+            "arguments": {"layer_id": "L", "adjustment_type": "exposure", "params": {"ev": 0.5}}}]}),
+    );
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap().to_owned();
+
+    // 两条引用该建议、一条不引用。
+    for (content, linked) in [("一", true), ("二", true), ("三", false)] {
+        let mut payload = json!({"type": "region", "content": content, "intent": "modify",
+            "target": {"type": "region", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}});
+        if linked {
+            payload["suggestion_id"] = json!(suggestion_id);
+        }
+        let response = registry.call(&mut context, "create_annotation", &payload);
+        assert_eq!(response["ok"], json!(true), "{response}");
+    }
+
+    let linked = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(
+        linked["count"],
+        json!(2),
+        "应只筛出引用该建议的标注：{linked}"
+    );
+    let all = registry.call(&mut context, "list_annotations", &json!({}));
+    assert_eq!(all["count"], json!(3), "{all}");
+    // 组合过滤：状态 + 建议。
+    let pending_linked = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"suggestion_id": suggestion_id, "status": "pending"}),
+    );
+    assert_eq!(pending_linked["count"], json!(2), "{pending_linked}");
+
+    // 接受建议后，这两条应被置为 resolved，因此 pending+suggestion_id 筛出 0 条。
+    registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    let after = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"suggestion_id": suggestion_id, "status": "pending"}),
+    );
+    assert_eq!(after["count"], json!(0), "{after}");
+    let resolved = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"suggestion_id": suggestion_id, "status": "resolved"}),
+    );
+    assert_eq!(resolved["count"], json!(2), "{resolved}");
+}
