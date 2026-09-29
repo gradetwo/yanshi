@@ -69,11 +69,20 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="undo">撤销</button>
         <button data-tool="redo">重做</button>
         <button data-tool="refresh">刷新</button>
+        <button data-tool="check">一致性自检</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
         <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
         <input id="color" type="color" value="#222222" />
         <label>图层 <select id="layer"></select></label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>WASM 计算内核</h2>
+      <div class="status">
+        <span>本地乐观渲染 <b id="wasmState">检测中…</b></span>
+        <span>首笔 <b id="firstStroke">—</b></span>
+        <span>bit-exact <b id="bitExact">—</b></span>
       </div>
     </div>
     <div class="card">
@@ -94,6 +103,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 // 服务端会把 yanshi://blob/<hash> 改写成 /api/blob/<hash>?doc=..&token=..
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。
 const blobUrl = (hash) => api("/api/blob/" + hash);
+// 供 CDP / 自动化验收读取的统计（Phase 2 出口条件：bit-exact 与首笔 < 16ms）。
+window.yanshiStats = {
+  wasm: false, kernelHead: 0, serverHead: 0,
+  firstStrokeMs: null, lastApplyMs: null, applies: 0,
+  bitExact: null, resyncs: 0,
+};
+
 const params = new URLSearchParams(location.search);
 const state = {
   docId: params.get("doc") || "default",
@@ -107,6 +123,10 @@ const state = {
   viewport: { x: 0, y: 0, w: 1024, h: 1024 },
   dragging: null,
   points: [],
+  wasm: null,
+  kernel: null,
+  localSeq: 0,
+  pending: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -164,6 +184,165 @@ async function refreshThumb() {
   if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
 }
 
+// —— WASM 计算内核（本地乐观渲染，13.3） ——
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+function ulid() {
+  let time = Date.now();
+  let out = "";
+  for (let index = 9; index >= 0; index--) {
+    out = CROCKFORD[time % 32] + out;
+    time = Math.floor(time / 32);
+  }
+  for (let index = 0; index < 16; index++) out += CROCKFORD[Math.floor(Math.random() * 32)];
+  return out;
+}
+
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function kernelReady() {
+  return !!(state.kernel && state.wasm);
+}
+
+function setWasmState(text, color) {
+  const element = $("wasmState");
+  element.textContent = text;
+  element.style.color = color || "";
+}
+
+async function initWasm() {
+  try {
+    const health = await (await fetch("/health")).json();
+    if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
+    // 动态 import：不需要打包器，直接吃 wasm-bindgen --target web 的输出。
+    const module = await import("/wasm/yanshi_wasm.js");
+    await module.default();
+    state.wasm = module;
+    window.yanshiStats.wasm = true;
+    setWasmState("已加载", "#2a2");
+    log("WASM 计算内核已加载：" + module.WasmKernel.name);
+  } catch (error) {
+    setWasmState("不可用", "#c33");
+    log("WASM 内核不可用，退化为服务端渲染：" + error.message, "#c33");
+  }
+}
+
+async function loadKernel(since = 0) {
+  if (!state.wasm) return false;
+  const { w, h } = state.docSize;
+  const atoms = await fetch(api("/api/atoms") + "&since=" + since).then((r) => r.json());
+  if (!atoms.ok) {
+    log("读取原子失败：" + JSON.stringify(atoms).slice(0, 160), "#c33");
+    return false;
+  }
+  if (!state.kernel || since === 0) {
+    state.kernel = new state.wasm.WasmKernel(state.docId, 256, w, h, 64 * 1024 * 1024);
+    const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
+    if (!loaded.ok) {
+      log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");
+      state.kernel = null;
+      return false;
+    }
+  } else {
+    for (const atom of atoms.atoms) {
+      const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(atom)));
+      if (!response.ok) { log("内核增量折叠失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return false; }
+    }
+  }
+  state.localSeq = atoms.head_seq;
+  window.yanshiStats.kernelHead = atoms.head_seq;
+  window.yanshiStats.serverHead = atoms.head_seq;
+  state.kernel.set_viewport(0, 0, w, h);
+  return true;
+}
+
+function drawKernelRegion(x, y, w, h) {
+  const started = performance.now();
+  const rgba = state.kernel.render_region_rgba(x, y, w, h);
+  if (!rgba || rgba.length < w * h * 4) return;
+  // putImageData 不做 CSS 缩放：画布与文档同分辨率，坐标一一对应。
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
+  const elapsed = performance.now() - started;
+  window.yanshiStats.lastApplyMs = elapsed;
+  if (window.yanshiStats.firstStrokeMs === null && state.dragging) {
+    window.yanshiStats.firstStrokeMs = elapsed;
+    $("firstStroke").textContent = elapsed.toFixed(2) + "ms";
+  }
+}
+
+function drawKernelDirty(report) {
+  const bbox = report && report.dirty_bbox;
+  if (!bbox) return;
+  const x = Math.max(0, Math.floor(bbox[0]));
+  const y = Math.max(0, Math.floor(bbox[1]));
+  const w = Math.max(1, Math.ceil(bbox[2]));
+  const h = Math.max(1, Math.ceil(bbox[3]));
+  drawKernelRegion(x, y, Math.min(w, board.width - x), Math.min(h, board.height - y));
+}
+
+// 把客户端构造的原子立刻应用到本地内核（乐观渲染），返回是否成功。
+function applyLocal(atom) {
+  const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(atom)));
+  window.yanshiStats.applies += 1;
+  if (response.ok) {
+    drawKernelDirty(response.report);
+    state.localSeq = response.report.head;
+    window.yanshiStats.kernelHead = response.report.head;
+    return true;
+  }
+  if (response.error_code === "out_of_order") return false;
+  log("本地应用被拒：" + JSON.stringify(response).slice(0, 160), "#c33");
+  return false;
+}
+
+// 服务端校正：seq 预测错了（别人插了原子）或提交被拒时，全量重建本地状态。
+async function resync() {
+  window.yanshiStats.resyncs += 1;
+  if (await loadKernel(0)) await refreshPreview(true);
+}
+
+async function submitAtom(atom) {
+  const response = await fetch(api("/api/atoms"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(atom),
+  }).then((r) => r.json());
+  $("last").textContent = JSON.stringify(response).slice(0, 600);
+  window.yanshiStats.serverHead = response.head ?? window.yanshiStats.serverHead;
+  setStatus({ head: response.head, dirty: (response.dirty_tiles || []).length });
+  if (!response.ok) {
+    log("提交被拒（回滚本地乐观渲染）：" + response.error_code, "#c33");
+    await resync();
+    return null;
+  }
+  if (response.seq !== undefined && response.seq > state.localSeq) {
+    // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
+    await resync();
+  }
+  return response;
+}
+
+async function checkBitExact() {
+  if (!kernelReady()) { log("没有 WASM 内核，无法自检", "#c33"); return; }
+  const { w, h } = state.docSize;
+  const localPng = state.kernel.render_region_png(0, 0, w, h);
+  const localHash = "sha256:" + (await sha256Hex(localPng));
+  const server = await callTool("render_region", { region: { x: 0, y: 0, w, h } }, { refresh: false });
+  const matches = server.blob_hash === localHash;
+  window.yanshiStats.bitExact = matches;
+  $("bitExact").textContent = matches ? "通过" : "不一致";
+  $("bitExact").style.color = matches ? "#2a2" : "#c33";
+  log(
+    matches
+      ? "bit-exact 自检通过：本地 " + localHash.slice(0, 22) + "… 与服务端一致"
+      : "bit-exact 不一致：本地 " + localHash + " 服务端 " + server.blob_hash,
+    matches ? undefined : "#c33"
+  );
+}
+
 async function ensureDocument() {
   const response = await fetch("/api/documents", {
     method: "POST",
@@ -181,6 +360,8 @@ async function ensureDocument() {
   $("identity").textContent = state.docId + " · " + value.token.slice(0, 8) + "…";
   await refreshLayers();
   await refreshThumb();
+  await initWasm();
+  if (kernelReady()) { await loadKernel(0); preview.style.display = "none"; }
   await refreshPreview();
   connect();
 }
@@ -207,13 +388,24 @@ async function refreshLayers() {
   select.onchange = () => { state.layerId = select.value; };
 }
 
-async function refreshPreview() {
+async function refreshPreview(fromKernel = false) {
   // 渲染**整幅文档**（不是固定的 512×512 区域），否则大画布会被裁掉。
   const { w, h } = state.docSize;
+  if (!fromKernel && kernelReady()) {
+    // 本地乐观路径：直接由 WASM 内核出像素，不等服务端。
+    board.width = w;
+    board.height = h;
+    state.viewport = { x: 0, y: 0, w, h };
+    state.kernel.set_viewport(0, 0, w, h);
+    drawKernelRegion(0, 0, w, h);
+    subscribeViewport();
+    return;
+  }
   const value = await callTool("render_region", {
     region: { x: 0, y: 0, w, h },
   }, { refresh: false });
   if (value.thumb_url) {
+    preview.style.display = "";
     preview.onload = () => {
       board.width = preview.naturalWidth;
       board.height = preview.naturalHeight;
@@ -244,9 +436,21 @@ function connect() {
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "event" && message.event && message.event.event === "atom") {
-      const atom = message.event;
-      log("atom seq=" + atom.seq + " " + atom.kind + (atom.heavy ? " [heavy]" : ""));
-      setStatus({ head: atom.seq });
+      const event = message.event;
+      log("atom seq=" + event.seq + " " + event.kind + (event.heavy ? " [heavy]" : ""));
+      setStatus({ head: event.seq });
+      // 13.3：其他客户端（以及自己）的原子经全局广播到达后增量折叠并重绘。
+      if (kernelReady() && event.atom) {
+        const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(event.atom)));
+        if (response.ok) {
+          drawKernelDirty(response.report);
+          state.localSeq = response.report.head;
+          window.yanshiStats.kernelHead = response.report.head;
+          window.yanshiStats.serverHead = event.seq;
+        } else if (response.error_code === "out_of_order" || response.error_code === "precondition_failed") {
+          resync();
+        }
+      }
     } else if (message.type === "event" && message.event && message.event.event === "tiles") {
       log("tiles " + (message.event.keys || []).length + " 个失效");
       setStatus({ dirty: (message.event.keys || []).length });
@@ -302,10 +506,15 @@ function localPoint(event) {
   };
 }
 
+let pendingStroke = null;
+
 board.addEventListener("pointerdown", (event) => {
-  board.setPointerCapture(event.pointerId);
+  try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
   state.dragging = event.pointerId;
   state.points = [localPoint(event)];
+  pendingStroke = kernelReady()
+    ? { atomId: ulid(), objectId: "obj_" + ulid(), layerId: state.layerId, tool: state.tool, base: 0 }
+    : null;
 });
 
 board.addEventListener("pointermove", (event) => {
@@ -313,6 +522,11 @@ board.addEventListener("pointermove", (event) => {
   const point = localPoint(event);
   if (state.tool === "rect" || state.tool === "ellipse") state.points = [state.points[0], point];
   else state.points.push(point);
+  if (pendingStroke && (state.points.length % 4 === 1 || state.points.length < 4)) {
+    // 乐观渲染：把「到目前为止」的笔迹作为本地原子立即画出来（不等服务端）。
+    const atom = strokeAtom(pendingStroke, false);
+    if (!applyLocal(atom)) pendingStroke = null;
+  }
   redraw();
 });
 
@@ -320,10 +534,46 @@ board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
   if (state.tool === "rect" || state.tool === "ellipse") state.points.push(localPoint(event));
-  await commitShape();
+  if (pendingStroke && kernelReady()) {
+    // 乐观原子已经在本地日志里；提交后服务端授予权威 seq，同 id 幂等。
+    const atom = strokeAtom(pendingStroke, true);
+    if (applyLocal(atom)) await submitAtom(atom);
+    pendingStroke = null;
+  } else {
+    await commitShape();
+  }
   state.points = [];
   redraw();
 });
+
+// 由当前指针轨迹构造 draw_stroke / draw_shape / erase 原子（客户端 ULID，5.1）。
+function strokeAtom(pending, final) {
+  const color = colorCss();
+  const size = Number($("size").value);
+  const points = state.points.map((p) => [Math.round(p.x), Math.round(p.y)]);
+  let kind = "draw_stroke";
+  let data = { points, size, color, hardness: 0.7 };
+  if (pending.tool === "rect" || pending.tool === "ellipse") {
+    const [a, b] = state.points;
+    const bbox = {
+      x: Math.round(Math.min(a.x, b.x)), y: Math.round(Math.min(a.y, b.y)),
+      w: Math.max(1, Math.round(Math.abs(b.x - a.x))), h: Math.max(1, Math.round(Math.abs(b.y - a.y))),
+    };
+    kind = "draw_shape";
+    data = { geometry: { kind: pending.tool, bbox }, color };
+  } else if (pending.tool === "erase") {
+    kind = "erase";
+    data = { points, size: size * 1.5, color: { r: 0, g: 0, b: 0, a: 0 } };
+  }
+  return {
+    id: pending.atomId,
+    kind,
+    actor: "human:web",
+    session: "session:wasm",
+    timestamp: Date.now(),
+    payload: { object_id: pending.objectId, layer_id: pending.layerId, data },
+  };
+}
 
 async function commitShape() {
   const color = colorCss();
@@ -370,6 +620,7 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
       return;
     }
     if (tool === "refresh") { await refreshPreview(); refreshThumb(); return; }
+    if (tool === "check") { await checkBitExact(); return; }
     state.tool = tool;
     for (const other of document.querySelectorAll("button[data-tool]")) {
       other.setAttribute("aria-pressed", String(other === button));
@@ -387,6 +638,8 @@ $("open").addEventListener("click", ensureDocument);
     $("identity").textContent = state.docId;
     await refreshLayers();
     await refreshThumb();
+    await initWasm();
+    if (kernelReady()) { await loadKernel(0); preview.style.display = "none"; }
     await refreshPreview();
     connect();
   }
@@ -502,7 +755,7 @@ mod tests {
             duplicates.is_empty(),
             "查看器脚本顶层存在重复声明（会导致 SyntaxError）：{duplicates:?}"
         );
-        assert!(script.contains("async function refreshPreview()"));
+        assert!(script.contains("async function refreshPreview("));
         assert!(names.len() > 15, "顶层声明数量异常：{names:?}");
     }
 }
