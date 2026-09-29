@@ -181,3 +181,44 @@ fn single_effect_cost_budget() {
         );
     }
 }
+
+/// 方框模糊的**半径伸缩**诊断（滑动窗口应呈 O(1)/像素，即耗时基本不随半径增长）。
+///
+/// 背景：设计方已批准模糊族放宽到 D1，朴素窗口求和（O(radius)/像素）被换成滑动窗口。
+/// 改前同批次实测：`clarity` 半径 4/16/64 → 33 / 81 / **288ms**（近似线性增长）。
+#[test]
+#[ignore = "性能：方框模糊半径伸缩（滑动窗口后应近似平坦）"]
+fn box_blur_cost_is_flat_in_radius() {
+    use std::time::{Duration, Instant};
+    use yanshi_render::{apply_filter, Buffer};
+
+    let mut report = Vec::new();
+    for radius in [4u64, 16, 64] {
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            let mut buffer = Buffer::new(0, 0, 512, 512);
+            for (index, pixel) in buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+                let value = (index % 251) as f32 / 251.0;
+                pixel.copy_from_slice(&[value, value * 0.8, value * 0.6, 1.0]);
+            }
+            let started = Instant::now();
+            apply_filter(
+                &mut buffer,
+                "clarity",
+                &serde_json::json!({"amount": 0.9, "radius": radius}),
+                1.0,
+                (512.0, 512.0),
+            );
+            best = best.min(started.elapsed());
+        }
+        println!("  clarity radius {radius}: {best:?}");
+        report.push((radius, best));
+    }
+    // 滑动窗口下，半径 64 不应比半径 4 慢出一个数量级（改前是 288ms vs 33ms ≈ 8.7×）。
+    let slowest = report.iter().map(|(_, elapsed)| *elapsed).max().unwrap();
+    let fastest = report.iter().map(|(_, elapsed)| *elapsed).min().unwrap();
+    assert!(
+        slowest.as_secs_f64() < fastest.as_secs_f64() * 3.0,
+        "半径伸缩仍近似线性（最慢 {slowest:?} vs 最快 {fastest:?}）—— 滑动窗口可能没生效"
+    );
+}

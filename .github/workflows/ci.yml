@@ -1,3 +1,9 @@
+# 快速反馈：push / PR 上跑「几分钟内能出结果」的检查。
+#
+# 分工原则（本轮调整）：
+#   * 本文件 = 格式化、lint、单元/集成测试、wasm 冒烟 —— 目标 < 10 分钟；
+#   * `heavy.yml` = 耗时长 / 吃 CPU / 吃内存的长任务（10 万原子 fuzz、性能预算、4K 剖面、
+#     内核原生计时），改为**每夜定时 + 手动触发**，不再阻塞每次 push。
 name: CI
 
 on:
@@ -5,6 +11,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -51,20 +58,27 @@ jobs:
         with:
           key: ${{ matrix.rust }}
       - name: Run tests
+        # 不含 `--ignored`：长任务在 heavy.yml。
         run: cargo test --workspace
 
-  fuzz:
-    name: long property test
+  wasm-smoke:
+    name: wasm smoke (node)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          key: fuzz
-      - name: Run ignored long-running tests (fuzz + perf budgets)
-        # 10 万原子折叠 fuzz（Phase 0 出口条件）与渲染性能预算（8.5 / 14.10），
-        # 保留输出以便读取耗时、接受率、tile 命中率等统计。
-        run: cargo test --workspace --release -- --ignored --nocapture
+          key: wasm
+      - name: Install wasm-bindgen-cli (pinned)
+        # 版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水与 .wasm 不兼容。
+        run: |
+          if ! command -v wasm-bindgen >/dev/null 2>&1; then
+            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          fi
+      - name: Run wasm runtime smoke check
+        # 这是唯一能抓住「原生全绿、浏览器/内核全崩」那类回归的检查
+        # （曾有一个探针在 wasm32 上调用 Instant::now() 导致渲染必崩）。
+        run: scripts/wasm-smoke.sh

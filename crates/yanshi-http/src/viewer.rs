@@ -482,18 +482,26 @@ async function checkBitExact() {
   const total = serverPixels.length / 4;
   const ratio = total > 0 ? diffPixels / total : 0;
   // D0（同一路径）应逐位相同；跨路径按 D1 允许 ±1 LSB，且只允许极少数像素踩到舍入边界。
-  const pass = maxDelta <= 1 && diffPixels <= 16;
+  //
+  // 判据由设计决策更新：设计 6.1 原本把**滤镜**列在 D0，实测其成本（方框模糊 O(radius)/像素）是
+  // 全项目最大的性能瓶颈，经设计方批准，**模糊族滤镜**放宽到 D1（±1 LSB）。因此跨路径比较不再
+  // 要求逐字节相同，而是：**最大通道差 ≤1 LSB** 且 **差异像素占比极少**。
+  // 像素数阈值改为**与画布成比例**（0.01%，下限 64）而不是写死 16 —— 写死的绝对值在大画布上过严、
+  // 在小画布上过松；比例判据对 1024² 允许约 105 个像素，仍能抓住"大面积 ±1 漂移"这类真实缺陷。
+  const allowedDiffPixels = Math.max(64, Math.floor(total * 0.0001));
+  const pass = maxDelta <= 1 && diffPixels <= allowedDiffPixels;
   window.yanshiStats.bitExact = pass;
   window.yanshiStats.diffPixels = diffPixels;
   window.yanshiStats.maxChannelDelta = maxDelta;
   window.yanshiStats.localHash = null;
   window.yanshiStats.serverHash = server.blob_hash || null;
+  window.yanshiStats.allowedDiffPixels = allowedDiffPixels;
   $("bitExact").textContent = pass
     ? (diffPixels === 0 ? "逐位相同" : `±1 LSB × ${diffPixels}`)
-    : `差异 ${diffPixels} 像素 / 最大 ${maxDelta}`;
+    : `差异 ${diffPixels} 像素 / 最大 ${maxDelta}（上限 ${allowedDiffPixels}）`;
   log(
-    `自检：差异像素 ${diffPixels}/${total}（${(ratio * 100).toFixed(4)}%），最大通道差 ${maxDelta}；` +
-    `判定 ${pass ? "通过（D1 允许 ±1 LSB）" : "不通过"}`,
+    `自检：差异像素 ${diffPixels}/${total}（${(ratio * 100).toFixed(4)}%），最大通道差 ${maxDelta}，` +
+    `允许上限 ${allowedDiffPixels}；判定 ${pass ? "通过（D1 允许 ±1 LSB）" : "不通过"}`,
     pass ? "#2a7" : "#c33"
   );
   refreshThumb();

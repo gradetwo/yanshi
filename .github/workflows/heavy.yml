@@ -1,0 +1,44 @@
+# 重活：耗时长 / 吃 CPU / 吃内存的验收任务。
+#
+# 为什么单独一个工作流：
+#   * 这些任务本机跑一轮要十几分钟（10 万原子 fuzz ≈100s、服务端性能预算 ≈150s、
+#     4K 剖面 ≈150s、内核原生计时等），挂在 push 上会让反馈变慢；
+#   * 放到 GitHub 上跑，本地就能继续做别的开发，只需**定时查看**结果；
+#   * 日志上传为 artifact，便于远程读取（`gh run view --log` 或下载 artifact）。
+#
+# 触发：每夜定时 + 手动（`gh workflow run heavy.yml`）。
+name: Heavy verification
+
+on:
+  schedule:
+    # 每日 18:10 UTC（北京时间次日 02:10）。
+    - cron: "10 18 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  ignored-suite:
+    name: full --ignored suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: heavy
+      - name: Run every ignored test (fuzz + perf budgets + diagnostics)
+        # 覆盖：10 万原子折叠 fuzz（Phase 0 出口条件）、服务端性能预算（14.10 各项）、
+        # 4K 剖面、单效果成本、内核原生计时、tile 一致性等全部 `#[ignore]` 长任务。
+        run: |
+          set -o pipefail
+          cargo test --release --workspace -- --ignored --nocapture 2>&1 | tee ignored-suite.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ignored-suite-log
+          path: ignored-suite.log
+          if-no-files-found: warn

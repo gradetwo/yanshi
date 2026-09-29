@@ -940,50 +940,85 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     convolve_vertical(buffer, &kernel, radius);
 }
 
+/// 水平方向方框模糊（**滑动窗口**，O(1)/像素）。
+///
+/// 设计决策（设计方已批准）：模糊族放宽到 **D1（±1 LSB）**，以换取这里的复杂度下降。
+/// 朴素实现每像素累加 `2r+1` 个抽头（O(radius)/像素）；实测 `clarity` 半径 64 在 512² 上要 288ms。
+/// 滑动窗口只维护一个运行和：进入窗口加一个、离开窗口减一个 ✓。
+///
+/// **D0 边界**：浮点求和顺序改变，因此**分块渲染与整幅渲染之间**可能出现 ±1 LSB 的极少数像素差
+/// （窗口起点不同 → 累积误差不同）。计算内核的其余部分（几何、混合、折叠、笔触、量化、tile 数据）
+/// 仍是 D0 逐字节；服务端与客户端仍完全一致（同一份代码）。
 fn blur_horizontal(buffer: &mut Buffer, radius: u32) {
     let width = buffer.width();
     let height = buffer.height();
+    if width == 0 {
+        return;
+    }
     let window = (radius * 2 + 1) as f32;
+    let radius = radius as i64;
+    let last = width as i64 - 1;
     for y in 0..height {
+        // 行快照（与朴素实现一致：先读后写，避免自反馈）。
         let row: Vec<[f32; 4]> = (0..width).map(|x| buffer.pixel(x, y)).collect();
-        for x in 0..width {
-            let mut acc = [0.0f32; 4];
-            for offset in 0..=(radius * 2) {
-                let source_x = x as i64 + offset as i64 - radius as i64;
-                let clamped = source_x.clamp(0, width as i64 - 1) as usize;
-                let pixel = row[clamped];
-                for channel in 0..4 {
-                    acc[channel] += pixel[channel];
-                }
+        let mut acc = [0.0f32; 4];
+        // 初始窗口：覆盖 [-radius, +radius]（越界按边界复制）。
+        for offset in -radius..=radius {
+            let pixel = row[offset.clamp(0, last) as usize];
+            for channel in 0..4 {
+                acc[channel] += pixel[channel];
             }
-            for value in acc.iter_mut() {
+        }
+        for x in 0..width {
+            let mut out = acc;
+            for value in out.iter_mut() {
                 *value /= window;
             }
-            buffer.set_pixel(x, y, acc);
+            buffer.set_pixel(x, y, out);
+            // 滑到下一个像素：移除最左、加入最右。
+            if (x as i64) + 1 < width as i64 {
+                let leaving = row[(x as i64 - radius).clamp(0, last) as usize];
+                let entering = row[(x as i64 + radius + 1).clamp(0, last) as usize];
+                for channel in 0..4 {
+                    acc[channel] += entering[channel] - leaving[channel];
+                }
+            }
         }
     }
 }
 
+/// 垂直方向方框模糊（滑动窗口；与 [`blur_horizontal`] 同一决策与同一 D1 边界）。
 fn blur_vertical(buffer: &mut Buffer, radius: u32) {
     let width = buffer.width();
     let height = buffer.height();
+    if height == 0 {
+        return;
+    }
     let window = (radius * 2 + 1) as f32;
+    let radius = radius as i64;
+    let last = height as i64 - 1;
     for x in 0..width {
         let column: Vec<[f32; 4]> = (0..height).map(|y| buffer.pixel(x, y)).collect();
-        for y in 0..height {
-            let mut acc = [0.0f32; 4];
-            for offset in 0..=(radius * 2) {
-                let source_y = y as i64 + offset as i64 - radius as i64;
-                let clamped = source_y.clamp(0, height as i64 - 1) as usize;
-                let pixel = column[clamped];
-                for channel in 0..4 {
-                    acc[channel] += pixel[channel];
-                }
+        let mut acc = [0.0f32; 4];
+        for offset in -radius..=radius {
+            let pixel = column[offset.clamp(0, last) as usize];
+            for channel in 0..4 {
+                acc[channel] += pixel[channel];
             }
-            for value in acc.iter_mut() {
+        }
+        for y in 0..height {
+            let mut out = acc;
+            for value in out.iter_mut() {
                 *value /= window;
             }
-            buffer.set_pixel(x, y, acc);
+            buffer.set_pixel(x, y, out);
+            if (y as i64) + 1 < height as i64 {
+                let leaving = column[(y as i64 - radius).clamp(0, last) as usize];
+                let entering = column[(y as i64 + radius + 1).clamp(0, last) as usize];
+                for channel in 0..4 {
+                    acc[channel] += entering[channel] - leaving[channel];
+                }
+            }
         }
     }
 }
