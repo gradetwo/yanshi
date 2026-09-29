@@ -418,6 +418,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 修图 `clone_stamp`（对象类型 `retouch`） | `points`/`source_offset`/`size`/`hardness`/`opacity` | 从**应用本对象之前**的图层内容按偏移采样后盖回（经典仿制图章） |
 | 修图 `heal`（工具 `heal_stamp`） | 同上 | 复制源纹理的同时，按**源/目标局部均值差**把低频颜色对齐到目标处 |
 | 修图 `smudge`（工具 `smudge`） | `points`/`size`/`smudge_length`/`hardness`/`opacity` | 每 stamp 沿笔迹方向**后退** `smudge_length` 采样，把后方内容拖到前方 |
+| 图章补丁（工具 `patch`，对象类型 `raster_patch`） | `source_region`/`target`/`opacity` | 抓取源区域**原始 RGBA8** → 存 blob → 作为 `raster_patch` 落到目标位置 |
 
 实现时踩到 / 需要守住的约定：
 
@@ -436,6 +437,11 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 - **修图对象的区域渲染必须外扩到源像素**：`clone_stamp` 从 `目标 + source_offset` 采样，
   `filter_padding` 因此把 `|offset| + size/2 + 2` 计入外扩量；否则只渲染笔迹附近时，
   源像素落在区域之外会得到「复制不完整」。测试断言「区域渲染与整幅渲染逐像素一致」。
+- **`patch` 走「渲染原始像素 → 存 blob → 建原子」三步**：`render_region` 只返回 PNG blob，
+  不带像素，因此新增 `Document::render_region_raw` / `Workspace::render_region_raw`
+  返回原始 RGBA8（sRGB 直通，与 `blit_rgba8` 的输入约定一致），且**不写渲染缓存与缩略图状态**。
+  提交顺序遵守 6.3：blob 先 `put` 成功再提交原子，否则会被 12.2 的引用校验拒绝。
+  内核侧沿用既有 `raster_patch`：`region` 即落点矩形，宽高取自源区域。
 - **涂抹做成「方向相关的无状态采样」**：真实涂抹需要跨 stamp 的状态传递，工程量大且易失
   确定性；这里改为「每个 stamp 沿笔迹方向后退 `smudge_length` 采样**应用本对象之前的副本**」，
   视觉上等价于把后方颜色拖到前方，同时保持确定性与无自反馈。工具层据此不需要 `source_offset`，

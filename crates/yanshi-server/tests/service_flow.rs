@@ -819,6 +819,30 @@ fn clone_stamp_copies_content_and_is_reversible() {
         "{bad_smudge}"
     );
 
+    // 图章补丁：把源区域（左上红块）抓成 blob 后落到右下。
+    let patched = registry.call(
+        &mut context,
+        "patch",
+        &json!({"layer_id": "layer_1", "source_region": {"x": 4, "y": 4, "w": 20, "h": 20},
+                "target": [70.0, 10.0]}),
+    );
+    assert_eq!(patched["ok"], json!(true), "{patched}");
+    let patch_pixel = sample(&mut context, 74, 14);
+    assert!(
+        patch_pixel[0] > 180 && patch_pixel[1] < 90,
+        "补丁应带上红色：{patch_pixel:?}"
+    );
+    let bad_patch = registry.call(
+        &mut context,
+        "patch",
+        &json!({"layer_id": "layer_1", "source_region": {"x": 0, "y": 0, "w": 0, "h": 0}, "target": [1.0, 1.0]}),
+    );
+    assert_eq!(
+        bad_patch["error_code"],
+        json!("invalid_argument"),
+        "{bad_patch}"
+    );
+
     // 参数校验：零偏移无意义、点列非法都要被拒。
     for payload in [
         json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),

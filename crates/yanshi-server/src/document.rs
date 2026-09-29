@@ -635,6 +635,18 @@ impl Document {
     }
 
     /// 渲染区域并输出 PNG 到 CAS（7.5：返回 URL 而非 base64）。
+    /// 渲染区域并返回**原始 RGBA8**（sRGB 直通字节），供 `patch` 抓取源像素。
+    ///
+    /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
+    /// 因为调用方要的是像素而不是可展示的产物。
+    pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
+        let rendered = self
+            .renderer
+            .render_region(&self.state, &*self.store, bbox)?;
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// 渲染区域并编码为 PNG 写入 CAS（7.2）；整幅覆盖时同时更新文档级缩略图。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
         let region = bbox;
         let rendered = self

@@ -367,6 +367,12 @@ impl Workspace {
     ///
     /// 只有覆盖整幅画布的渲染才落盘为「HEAD 渲染缓存」（14.5 打开即图片）；
     /// 局部 dirty 渲染虽然也进 CAS，但不会覆盖文档级缓存。
+    /// 渲染区域并返回原始 RGBA8（供 `patch` 抓取源像素；不触碰渲染缓存状态）。
+    pub fn render_region_raw(&mut self, doc_id: &str, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?.render_region_raw(bbox)
+    }
+
+    /// 渲染区域、写入渲染缓存并返回可展示的预览（含 PNG blob 与取回地址）。
     pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
         let (preview, head, png, full_frame) = {
             let document = self.document_mut(doc_id)?;

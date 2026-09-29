@@ -1138,6 +1138,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
+        name: "patch",
+        profile: Profile::Retouch,
+        summary: "图章补丁：把 source_region 的像素抓取为 blob，并作为 raster_patch 落到 target 位置（blob 先行，6.3）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("source_region", Object, true, "源区域 {x,y,w,h}"),
+            param!("target", Array, true, "落点左上角 [x,y]"),
+            param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
         name: "smudge",
         profile: Profile::Retouch,
         summary: "涂抹：沿笔迹方向把后方的已有内容拖到前方（每 stamp 后退 smudge_length 像素采样）",
@@ -1286,6 +1300,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "clone_stamp" => write_retouch(ctx, args, "clone_stamp"),
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
+        "patch" => write_patch(ctx, args),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2321,6 +2336,76 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
         }),
     )?;
     let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+/// 图章补丁：抓取源区域像素 → 存 blob（**先于**原子，6.3）→ 建 `raster_patch` 对象。
+fn write_patch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let source = parse_bbox(require_object(args, "source_region")?)?;
+    if source.w < 1.0 || source.h < 1.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("source_region 的宽高必须 ≥ 1"),
+        ));
+    }
+    let target = require_array(args, "target")?;
+    let tx = target.first().and_then(Value::as_f64);
+    let ty = target.get(1).and_then(Value::as_f64);
+    let (Some(tx), Some(ty)) = (tx, ty) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("target 必须是 [x, y]"),
+        ));
+    };
+    let opacity = args.get("opacity").and_then(Value::as_f64).unwrap_or(1.0);
+    if !(0.0..=1.0).contains(&opacity) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("opacity 必须在 [0, 1] 内，得到 {opacity}")),
+        ));
+    }
+    // 1) 抓取源像素（原始 RGBA8；不写渲染缓存）。
+    let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, source)?;
+    // 2) blob 先行：提交顺序协议要求原子写入前引用必须已存在（12.2）。
+    let blob_hash = ctx.workspace.store().put(&pixels)?;
+    // 3) 落到目标位置：`region` 即落点矩形（内核据此放置）。
+    let object_id = optional_str(args, "object_id")
+        .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+    let z_index = match args.get("z_index").and_then(Value::as_i64) {
+        Some(z_index) => z_index,
+        None => {
+            let state = document_state(ctx)?;
+            state
+                .alive_objects()
+                .iter()
+                .filter(|object| object.layer_id == layer_id)
+                .map(|object| object.z_index)
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0)
+        }
+    };
+    let result = ctx.commit(
+        AtomKind::CreateObject,
+        json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "type": "raster_patch",
+            "z_index": z_index,
+            "data": {
+                "bitmap": {
+                    "blob_hash": blob_hash.to_string(),
+                    "mime_type": yanshi_render::RAW_RGBA_MIME,
+                },
+                "region": {"x": tx, "y": ty, "w": width, "h": height},
+                "width": width,
+                "height": height,
+                "opacity": opacity,
+            },
+        }),
+    )?;
+    let region = region_of(&result).or(Some(Bbox::new(tx, ty, width as f64, height as f64)));
     finish_mutation(ctx, &result, region)
 }
 
