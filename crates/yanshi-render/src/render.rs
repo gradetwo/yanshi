@@ -58,6 +58,8 @@ pub struct RenderStats {
     pub layers: usize,
     /// 参与渲染的对象数。
     pub objects: usize,
+    /// 因包围盒与渲染区域不相交而被裁剪的对象数（O(dirty) 渲染的关键）。
+    pub objects_culled: usize,
     /// 未实现类型/格式的告警。
     pub unsupported: Vec<String>,
     /// 写入缓存的 tile 数。
@@ -323,6 +325,26 @@ impl Renderer {
             if !object.visible {
                 continue;
             }
+            // 几何裁剪：包围盒与渲染区域不相交的对象直接跳过。
+            // 调整/滤镜对象作用于整层、无法用几何裁剪；未实现类型必须保留以便产生告警。
+            let primitive = parse_object(object);
+            let affects_whole_layer = matches!(
+                primitive,
+                Primitive::Adjustment { .. }
+                    | Primitive::Filter { .. }
+                    | Primitive::Unsupported { .. }
+            );
+            if !affects_whole_layer {
+                let intersects = crate::object::object_bbox(object)
+                    .map(|bbox| {
+                        bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
+                    })
+                    .unwrap_or(false);
+                if !intersects {
+                    stats.objects_culled += 1;
+                    continue;
+                }
+            }
             stats.objects += 1;
             // 对象不透明度：`data.opacity`（缺省 1）。
             let opacity = object
@@ -330,7 +352,7 @@ impl Renderer {
                 .get("opacity")
                 .and_then(Value::as_f64)
                 .unwrap_or(1.0) as f32;
-            match parse_object(object) {
+            match primitive {
                 Primitive::Stroke { geometry, brush } => {
                     let brush = BrushSpec {
                         opacity: brush.opacity * f64::from(opacity),

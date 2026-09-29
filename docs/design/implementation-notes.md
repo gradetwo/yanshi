@@ -6,6 +6,8 @@
 
 ## 一、模块与章节对应
 
+### 1.1 `yanshi-core`（历史资产层与折叠引擎）
+
 | 模块 | 设计文档 | 内容 |
 |---|---|---|
 | `error` | 5.7 | 错误码、上下文、`ok/error_code/retryable/context` 响应 schema |
@@ -20,6 +22,25 @@
 | `changeset` | 5.6 | 变更集聚合、整体撤销计划 |
 | `conflict` | 12.3 | 采样性替换冲突检测、冲突图层原子 |
 | `testkit` | 5.3 / 19 | 确定性场景生成器（属性测试、fuzz 共用） |
+
+### 1.2 `yanshi-render`（渲染计算内核层，D0 CPU 基线）
+
+| 模块 | 设计文档 | 内容 |
+|---|---|---|
+| `half` | 6.1 | IEEE-754 binary16 存储（内存 tile 用 f16 线性） |
+| `color` | 6.1 | 线性光空间、预乘 alpha、sRGB 传递函数、u8 打包 |
+| `blend` | 6.1 | 9 种混合模式的 W3C 合成公式 |
+| `prng` | 6.1 / 11.1 | 由 `seed` 驱动的确定性随机源（抖动） |
+| `geometry` | 8.1 | 覆盖率光栅化（矩形解析、椭圆/多边形超采样）与 stamp 展开 |
+| `tile` | 6.4 / 13.3 | Tile、TileGrid（32–512）、TileCache（字节预算 LRU、视口淘汰） |
+| `buffer` | 6.4 / 8.3 | 区域像素缓冲（线性预乘 f32），覆盖率填充、合成、blit、蒙版 |
+| `object` | 4.2 | 对象 → 渲染图元解析与效果包围盒 |
+| `brush` | 11.1 | 通用光栅笔刷 stamping（间距/硬度/压力/流量/抖动/虚线） |
+| `filter` | 4.2 | 调整与滤镜内核（模糊、亮度对比、饱和度、色阶、反相） |
+| `dirty` | 6.6 | 几何 / 结构双 dirty 传播与依赖闭包 → tile 失效集 |
+| `render` | 6.2 / 8.3 | 文档渲染：图层隔离、蒙版、调整/滤镜作用域、位图补丁、区域裁剪 |
+| `thumb` | 7 章 | 缩略图分级尺寸、宽高比适配、32×32 分块增量更新 |
+| `png` | 18 章 | 零依赖确定性 PNG 编码器（stored deflate + CRC32/Adler32） |
 
 ## 二、实现级明确化
 
@@ -89,10 +110,54 @@
   一旦出现 `declare_head`，后续快照即以该原子为 base。
 - **测试**：`src/snapshot.rs::tests`。
 
+### 9. 渲染内核的实现级约定
+
+- **D0 基线**：像素运算为标量 `f32`，顺序固定；f16 存储往返可复现；
+  随机量只来自原子 `seed`；所有合成在线性光空间、预乘 alpha 下完成。
+  新增 SIMD/GPU 内核必须保持逐位一致（计算内核层）或通过 D1 容差（合成后端层）。
+- **tile 分块不是语义单位**：`tests/render_properties.rs::tile_size_does_not_change_pixels`
+  断言 32/64 分块输出逐字节一致；缓存淘汰同样不影响像素。
+- **dirty 契约**：`dirty::plan_dirty` 产出的失效 tile 集合必须覆盖所有真正变化的像素
+  （属性测试 `dirty_set_covers_every_changed_pixel` 逐像素校验）。
+  无法精确判定依赖时宁可放大范围（整层或整文档），因为放大只多渲染、不会留陈旧 tile。
+- **调整/滤镜对象的作用域**：作用于**同图层中位于其下方**（更低 `z_index`）的内容；
+  滤镜需要邻域，渲染器按文档内最大滤镜半径扩展渲染区域后再裁剪
+  （`RenderOptions::expand_for_filters`，上限 `max_filter_padding = 64`）。
+- **图层蒙版**用蒙版 `shape` 的覆盖率乘以图层 alpha；剪贴蒙版用下方内容的 alpha 裁剪本层。
+- **位图补丁格式**：内核内使用 `image/x-yanshi-raw`（未压缩 RGBA8，尺寸取自
+  `data.width/height` 或 `region`）。WebP/AVIF 编解码属传输层，遇到其它 MIME 记为
+  `RenderStats::unsupported` 告警而不是失败。
+- **未实现的渲染类型**（文本光栅化、retouch/liquify、实例/组引用）同样只记告警；
+  缺失 blob 则返回 `reference_not_found`（这是协议级错误，不是降级）。
+- **缩略图宽高比**：文档非正方形时按“最长边适配 + 居中留白”排版（7.2 只规定边长）。
+- **PNG 输出**是验收载体（无外部依赖、可逐字节复现）；14.4 要求的 WebP/AVIF 与 zstd
+  属传输层编码，尚未实现。
+
+### 10. 性能基线（单线程标量实现实测）
+
+`cargo test -p yanshi-render --release --test perf_budget -- --ignored --nocapture`
+（4 核容器、release、单线程、标量 f32；数字随机器波动，用于跟踪回归）：
+
+| 场景 | 实测 | 设计目标（8.5 / 14.10） |
+|---|---|---|
+| 区域渲染（缓存命中，256×256） | ≈ 50 µs | < 10 ms |
+| 区域渲染（未命中，256×256，60 笔 + 8 形状，1024×1024 文档） | ≈ 55 ms | < 100 ms |
+| 区域渲染（未命中，含高斯模糊 σ=3） | ≈ 65 ms | < 300 ms |
+| 区域缩略图更新（64×64 区域 → 64） | ≈ 22 ms | < 15 ms（含一次区域渲染，留 5 倍 CI 余量） |
+| 整文档渲染（1024×1024，60 笔 + 8 形状） | ≈ 530 ms | 信息项 |
+| 200 笔 overdraw 整文档 | ≈ 1.3 s | 信息项 |
+
+已做的关键优化：对象包围盒裁剪（不渲染区域之外的对象）、预乘表示的
+`source-over` 快速路径（省去反预乘除法）、stamping 内层循环的裁剪与直接索引写入。
+SIMD/多线程（14.2）与 GPU 合成后端（14.3）属后续阶段；计算内核层的任何
+SIMD 版本必须保持 D0 逐位一致。
+
 ## 三、尚未实现（与 README 路线图一致）
 
-- **Phase 1 其余部分**：服务端进程与 HTTP/WebSocket/MCP 传输层、图层隔离与 Tile 分块渲染、
-  服务端 CPU/SIMD 渲染、Web 查看器、核心层 27 个工具的协议封装。
+- **Phase 1 其余部分**：服务端进程与 HTTP/WebSocket/MCP 传输层、Web 查看器、
+  核心层 27 个工具的协议封装、文档级 capability token、WS 广播边界。
+  （图层隔离、Tile 分块、几何/结构双 dirty 传播、服务端 CPU 渲染已由 `yanshi-render` 覆盖；
+  SIMD/多线程优化与 GPU 合成后端仍属后续阶段。）
 - **Phase 2 起**：WASM 计算内核、控制流/数据流分离的广播、本地乐观渲染、Job 协议、
   `import_image`、Job TTL 与取消。
 - **Phase 3 起**：GPU 合成后端、修图与液化、`resolve_conflict` 工具展开、
@@ -111,3 +176,8 @@
 | Blob CAS 并发读写竞态（16 章 Phase 0 验证项） | `src/blob.rs::tests::ten_concurrent_writers_of_same_hash_produce_one_file` |
 | 错误协议 schema（5.7） | `src/error.rs::tests::error_response_matches_document_schema` |
 | 提交顺序协议（6.3） | `src/log.rs::tests::commit_validation_rejects_missing_blob`、`tests/fold_properties.rs::atom_metadata_stays_small_and_references_existing_blobs` |
+| D0 bit-exact 渲染（6.1） | `crates/yanshi-render/tests/render_properties.rs::rendering_is_bit_exact`、`tile_size_does_not_change_pixels` |
+| O(dirty) 渲染正确性（6.2 / 6.6） | `render_properties.rs::dirty_set_covers_every_changed_pixel`、`cache_eviction_does_not_change_pixels` |
+| 缩略图分块增量（7.4） | `render_properties.rs::thumbnail_blocks_match_full_rebuild` |
+| 区域渲染 / 缩略图预算（8.5 / 14.10） | `crates/yanshi-render/tests/perf_budget.rs`（`--ignored`） |
+| Overdraw 与 tile 命中率（Phase 0 / 14.9） | `perf_budget.rs::perf_overdraw_and_cache_hit_rate`（`--ignored`） |

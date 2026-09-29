@@ -107,6 +107,10 @@ impl BlendMode {
 
 /// 按混合模式把 `source` 合成到 `backdrop` 上（两者均为线性光预乘像素）。
 pub fn blend_pixel(mode: BlendMode, source: LinearRgba, backdrop: LinearRgba) -> LinearRgba {
+    if mode == BlendMode::Normal {
+        // Normal 在预乘表示下无需反预乘，直接叠加（热路径）。
+        return over(source, backdrop);
+    }
     let alpha_s = source[3].clamp(0.0, 1.0);
     let alpha_b = backdrop[3].clamp(0.0, 1.0);
     if alpha_s <= 0.0 {
@@ -129,8 +133,24 @@ pub fn blend_pixel(mode: BlendMode, source: LinearRgba, backdrop: LinearRgba) ->
 }
 
 /// source-over 合成（等价于 [`BlendMode::Normal`]）。
+///
+/// 在预乘表示下就是 `co = Ps + Pb·(1 - αs)`、`αo = αs + αb·(1 - αs)`，
+/// 与 W3C 公式在实数上等价，且避免了两次反预乘除法（渲染热路径）。
 pub fn over(source: LinearRgba, backdrop: LinearRgba) -> LinearRgba {
-    blend_pixel(BlendMode::Normal, source, backdrop)
+    let alpha_s = source[3];
+    if alpha_s <= 0.0 {
+        return backdrop;
+    }
+    if alpha_s >= 1.0 {
+        return source;
+    }
+    let inverse = 1.0 - alpha_s;
+    [
+        source[0] + backdrop[0] * inverse,
+        source[1] + backdrop[1] * inverse,
+        source[2] + backdrop[2] * inverse,
+        alpha_s + backdrop[3] * inverse,
+    ]
 }
 
 /// 按不透明度缩放预乘像素（alpha 与颜色同时缩放）。

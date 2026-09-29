@@ -114,8 +114,26 @@ impl Buffer {
 
     /// 以指定混合模式叠加。
     pub fn blend_mode(&mut self, x: u32, y: u32, source: LinearRgba, mode: BlendMode) {
+        if mode == BlendMode::Normal {
+            // 热路径：预乘表示的 source-over 不需要反预乘。
+            self.blend(x, y, source);
+            return;
+        }
         let backdrop = self.pixel(x, y);
         self.set_pixel(x, y, blend_pixel(mode, source, backdrop));
+    }
+
+    /// 直接索引的 source-over（调用方保证坐标已裁剪在缓冲区内）。
+    ///
+    /// 用于笔刷 stamping 等内层热路径：省去逐像素的边界判断与局部坐标换算。
+    pub fn blend_at(&mut self, x: u32, y: u32, source: LinearRgba) {
+        debug_assert!(x < self.width && y < self.height, "blend_at 越界");
+        let index = ((y * self.width + x) * 4) as usize;
+        let inverse = 1.0 - source[3];
+        self.pixels[index] = source[0] + self.pixels[index] * inverse;
+        self.pixels[index + 1] = source[1] + self.pixels[index + 1] * inverse;
+        self.pixels[index + 2] = source[2] + self.pixels[index + 2] * inverse;
+        self.pixels[index + 3] = source[3] + self.pixels[index + 3] * inverse;
     }
 
     /// 整体填充。

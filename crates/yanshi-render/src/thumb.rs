@@ -170,18 +170,45 @@ impl Thumb {
         Bbox::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
 
+    /// 内容在缩略图内的排布（保持宽高比、居中，其余留空）。
+    ///
+    /// 设计文档只规定缩略图边长（64/128/256 等），文档本身可能不是正方形；
+    /// 这里按“最长边适配 + 居中”排版，避免把内容拉伸变形。
+    pub fn content_box(&self, doc_size: Bbox) -> Bbox {
+        if doc_size.w <= 0.0 || doc_size.h <= 0.0 {
+            return Bbox::new(0.0, 0.0, 0.0, 0.0);
+        }
+        let scale = (self.size as f64 / doc_size.w).min(self.size as f64 / doc_size.h);
+        let width = (doc_size.w * scale).round().max(1.0);
+        let height = (doc_size.h * scale).round().max(1.0);
+        Bbox::new(
+            ((self.size as f64 - width) / 2.0).floor(),
+            ((self.size as f64 - height) / 2.0).floor(),
+            width,
+            height,
+        )
+    }
+
     /// 文档区域对应的 dirty 块集合（7.4）。
     pub fn dirty_blocks_for(&self, doc_bbox: &Bbox, doc_size: Bbox) -> BTreeSet<(u32, u32)> {
         let mut blocks = BTreeSet::new();
-        let scale_x = self.size as f64 / doc_size.w.max(1.0);
-        let scale_y = self.size as f64 / doc_size.h.max(1.0);
-        let x0 = ((doc_bbox.x - doc_size.x) * scale_x).floor().max(0.0) as u32;
-        let y0 = ((doc_bbox.y - doc_size.y) * scale_y).floor().max(0.0) as u32;
+        let content = self.content_box(doc_size);
+        if content.w <= 0.0 || content.h <= 0.0 {
+            return blocks;
+        }
+        let scale_x = content.w / doc_size.w.max(1.0);
+        let scale_y = content.h / doc_size.h.max(1.0);
+        let x0 = (content.x + (doc_bbox.x - doc_size.x) * scale_x)
+            .floor()
+            .max(0.0) as u32;
+        let y0 = (content.y + (doc_bbox.y - doc_size.y) * scale_y)
+            .floor()
+            .max(0.0) as u32;
         // 右/下边界是开区间：用 `ceil - 1` 求最后一个被覆盖的像素。
-        let x1 = ((doc_bbox.x + doc_bbox.w - doc_size.x) * scale_x)
+        let x1 = (content.x + (doc_bbox.x + doc_bbox.w - doc_size.x) * scale_x)
             .ceil()
             .max(1.0) as u32;
-        let y1 = ((doc_bbox.y + doc_bbox.h - doc_size.y) * scale_y)
+        let y1 = (content.y + (doc_bbox.y + doc_bbox.h - doc_size.y) * scale_y)
             .ceil()
             .max(1.0) as u32;
         let last_x = (x1 - 1).min(self.size.saturating_sub(1)) / THUMB_BLOCK;
@@ -210,8 +237,11 @@ impl Thumb {
         doc_size: Bbox,
         blocks: &BTreeSet<(u32, u32)>,
     ) {
-        let scale_x = source.width() as f64 / doc_size.w.max(1.0);
-        let scale_y = source.height() as f64 / doc_size.h.max(1.0);
+        let content = self.content_box(doc_size);
+        if content.w <= 0.0 || content.h <= 0.0 {
+            self.stats.blocks_rendered = 0;
+            return;
+        }
         let mut rendered = 0usize;
         for (block_x, block_y) in blocks {
             let bounds = self.block_bounds(*block_x, *block_y);
@@ -221,23 +251,25 @@ impl Thumb {
             let end_y = (bounds.y + bounds.h) as u32;
             for thumb_y in start_y..end_y {
                 for thumb_x in start_x..end_x {
-                    // 缩略图像素映射回源缓冲区的像素窗口。
-                    let source_x0 = ((thumb_x as f64 / self.size as f64) * doc_size.w * scale_x)
+                    // 缩略图内容区像素映射回源缓冲区的像素窗口。
+                    let u0 = (thumb_x as f64 - content.x) / content.w;
+                    let u1 = ((thumb_x + 1) as f64 - content.x) / content.w;
+                    let v0 = (thumb_y as f64 - content.y) / content.h;
+                    let v1 = ((thumb_y + 1) as f64 - content.y) / content.h;
+                    if u1 <= 0.0 || v1 <= 0.0 || u0 >= 1.0 || v0 >= 1.0 {
+                        continue; // 留白区域保持透明
+                    }
+                    let source_x0 = (u0.clamp(0.0, 1.0) * source.width() as f64)
                         .floor()
                         .max(0.0) as u32;
-                    let source_y0 = ((thumb_y as f64 / self.size as f64) * doc_size.h * scale_y)
+                    let source_y0 = (v0.clamp(0.0, 1.0) * source.height() as f64)
                         .floor()
                         .max(0.0) as u32;
                     let source_x1 =
-                        ((((thumb_x + 1) as f64 / self.size as f64) * doc_size.w * scale_x)
-                            .ceil()
-                            .max(1.0) as u32)
-                            .min(source.width().max(1));
-                    let source_y1 =
-                        ((((thumb_y + 1) as f64 / self.size as f64) * doc_size.h * scale_y)
-                            .ceil()
-                            .max(1.0) as u32)
-                            .min(source.height().max(1));
+                        (u1.clamp(0.0, 1.0) * source.width() as f64).ceil().max(1.0) as u32;
+                    let source_y1 = (v1.clamp(0.0, 1.0) * source.height() as f64)
+                        .ceil()
+                        .max(1.0) as u32;
                     let mut accumulator = [0.0f64; 4];
                     let mut count = 0.0f64;
                     for source_y in source_y0..source_y1.max(source_y0 + 1) {
@@ -431,6 +463,33 @@ mod tests {
         .unwrap();
         assert_eq!(object.size, 16);
         assert!(object.pixel(8, 8).unwrap()[0] < 40);
+    }
+
+    #[test]
+    fn non_square_documents_are_letterboxed() {
+        // 64×32 文档 → 64 方形缩略图：内容应为 64×32 居中，上下留空。
+        let mut state = document_with_rect();
+        state.width = 64;
+        state.height = 32;
+        let store = MemoryBlobStore::new();
+        let mut renderer = Renderer::new(TileGrid::new(32, 64, 32).unwrap());
+        let thumb =
+            render_thumbnail(&mut renderer, &state, &store, ThumbKind::Doc64, None).unwrap();
+        let content = thumb.content_box(Bbox::new(0.0, 0.0, 64.0, 32.0));
+        assert_eq!((content.w, content.h), (64.0, 32.0));
+        assert_eq!(content.y, 16.0, "纵向居中留白");
+
+        // 内容区之内有像素，之外透明。
+        assert!(thumb.pixel(32, 32).unwrap()[3] > 0, "内容区内可见");
+        assert_eq!(thumb.pixel(32, 4).unwrap(), [0, 0, 0, 0], "上方留白透明");
+        assert_eq!(thumb.pixel(32, 60).unwrap(), [0, 0, 0, 0], "下方留白透明");
+
+        // dirty 块按内容区映射：整篇文档 → 覆盖全部块。
+        let blocks = thumb.dirty_blocks_for(
+            &Bbox::new(0.0, 0.0, 64.0, 32.0),
+            Bbox::new(0.0, 0.0, 64.0, 32.0),
+        );
+        assert_eq!(blocks.len(), thumb.stats.blocks_total);
     }
 
     #[test]

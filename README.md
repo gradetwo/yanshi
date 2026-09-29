@@ -4,7 +4,8 @@
 
 偃师用文档状态、语义命令、可编辑对象、多级预览、版本日志和协作机制，替代传统图形界面的面板加鼠标轨迹。人类与 AI 在同一套对象模型和原子类型上协作：人类使用微观工具，AI 使用宏观语义工具。
 
-当前仓库处于 **Phase 0 / Phase 1：核心引擎开发中**，实现范围仅限无 GUI 的 Rust 核心引擎。
+当前仓库处于 **Phase 0 / Phase 1：核心引擎与渲染内核开发中**，实现范围仅限无 GUI 的 Rust 无头引擎
+（`yanshi-core` 历史资产层与折叠引擎 + `yanshi-render` 渲染计算内核层）。
 
 ## 设计文档
 
@@ -28,7 +29,8 @@
 ```
 yanshi/
 ├── crates/
-│   └── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
+│   ├── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
+│   └── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
 ├── docs/
 │   └── design/               # 冻结设计文档、实现说明与修订历史
 ├── .github/workflows/ci.yml  # 持续集成：fmt / clippy / test / 长时 fuzz
@@ -36,7 +38,9 @@ yanshi/
 └── LICENSE                   # MIT
 ```
 
-- `crates/yanshi-core` 是当前唯一的核心 crate，无 GUI 依赖，客户端与服务端共享同一份计算内核代码。
+- `crates/yanshi-core`：无 GUI 依赖的历史资产层与折叠引擎。
+- `crates/yanshi-render`：设计文档 6.1 的**计算内核层**参考实现（纯 CPU、D0 bit-exact），
+  客户端与服务端共享同一份代码；合成后端层（GPU/tile 上传）尚未实现。
 
 ## 快速开始
 
@@ -44,8 +48,9 @@ yanshi/
 
 ```bash
 cargo test --workspace                  # 单元测试 + 属性测试 + Phase 0 出口用例
-cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz
+cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz + 渲染性能预算
 cargo run -p yanshi-core --example quickstart   # 端到端示例：提交 → 撤销 → 时间旅行 → GC
+cargo run -p yanshi-render --example render_demo  # 渲染示例：输出 PNG 到 target/render-demo/
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
@@ -62,6 +67,13 @@ cargo fmt --all
 - **确定性分级**：D0 计算内核层 CPU bit-exact 基线；D1 合成后端层、预览、缩略图允许 ±1 LSB；D2 插件与外部服务允许差异。计算内核层是唯一权威来源。
 - **广播边界**：控制流（全部原子元数据）全局广播，客户端折叠需要完整原子元数据；数据流（tile 位图、缩略图、blob 二进制）按视口订阅过滤或按需拉取。
 - **工具暴露分层**：核心层 27 个工具默认注册，扩展组按 `profile` 参数启用，以控制 Agent 的函数选择负担与 token 开销。
+- **渲染计算内核层（D0）**：`yanshi-render` 用纯 CPU 标量 `f32` 实现合成、笔触 stamping、覆盖率光栅化、
+  调整与滤镜、位图补丁；内存 tile 为 f16 线性预乘；随机量只来自原子 `seed`，因此逐位可复现。
+  tile 分块与缓存淘汰不影响像素（属性测试逐字节校验）。
+- **双 dirty 传播**：几何 dirty 取对象包围盒并集，结构 dirty 通过依赖图闭包（同层上方对象、
+  实例 master、组成员）计算；失效 tile 集合必须覆盖所有变化像素，判定不了时宁可放大范围。
+- **缩略图与导出**：doc/layer/object/history/selection 分级尺寸、32×32 分块增量更新、
+  宽高比适配；PNG 使用零依赖确定性编码器（WebP/AVIF 属传输层，尚未实现）。
 - **许可证**：MIT。
 
 ## 路线图
@@ -79,8 +91,8 @@ cargo fmt --all
 
 | 命令 | 覆盖 |
 |---|---|
-| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 |
-| `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）：9.8 万原子、约 930 次 `declare_head` 跳变、回收窗口重放，校验无孤儿引用、增量与完整折叠收敛、GC 不破坏可回放性 |
+| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突/渲染内核）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 + 渲染的 D0 确定性、分块无关性、dirty 覆盖、缩略图增量属性测试 |
+| `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）：9.8 万原子、约 930 次 `declare_head` 跳变、回收窗口重放；渲染性能预算（8.5 / 14.10）与 overdraw / tile 命中率统计 |
 | `cargo doc --workspace --no-deps` | 无 rustdoc 警告（`missing_docs` 已开启） |
 
 设计文档与测试的对应关系见 [docs/design/implementation-notes.md](docs/design/implementation-notes.md) 的“验收载体”一节。

@@ -240,6 +240,9 @@ pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeome
 }
 
 /// 画一个圆形 stamp（软边由硬度控制；覆盖率按像素中心到笔尖中心的距离）。
+///
+/// 内层循环先把 stamp 的包围盒裁剪到缓冲区范围，再走 [`Buffer::blend_at`] 的
+/// 直接索引路径，避免逐像素的边界判断与坐标换算（渲染热路径）。
 pub fn draw_stamp(
     buffer: &mut Buffer,
     center_x: f64,
@@ -249,29 +252,43 @@ pub fn draw_stamp(
     color: LinearRgba,
     mode: BlendMode,
 ) {
-    let x0 = (center_x - radius).floor() as i64;
-    let y0 = (center_y - radius).floor() as i64;
-    let x1 = (center_x + radius).ceil() as i64;
-    let y1 = (center_y + radius).ceil() as i64;
+    let (origin_x, origin_y) = buffer.origin();
+    let document_x0 = (center_x - radius).floor() as i64;
+    let document_y0 = (center_y - radius).floor() as i64;
+    let document_x1 = (center_x + radius).ceil() as i64;
+    let document_y1 = (center_y + radius).ceil() as i64;
+
+    // 裁剪到缓冲区范围（局部坐标）。
+    let start_x = (document_x0 - origin_x).max(0) as u32;
+    let start_y = (document_y0 - origin_y).max(0) as u32;
+    let end_x = (document_x1 - origin_x)
+        .min(buffer.width() as i64 - 1)
+        .max(-1);
+    let end_y = (document_y1 - origin_y)
+        .min(buffer.height() as i64 - 1)
+        .max(-1);
+    if end_x < 0 || end_y < 0 || start_x as i64 > end_x || start_y as i64 > end_y {
+        return;
+    }
+    let end_x = end_x as u32;
+    let end_y = end_y as u32;
+
     let hard_edge = radius * hardness.clamp(0.0, 1.0);
     let soft_span = (radius - hard_edge).max(1e-6);
-    for document_y in y0..=y1 {
-        for document_x in x0..=x1 {
-            let local_x = document_x - buffer.origin().0;
-            let local_y = document_y - buffer.origin().1;
-            if local_x < 0 || local_y < 0 {
-                continue;
-            }
-            let (local_x, local_y) = (local_x as u32, local_y as u32);
-            if local_x >= buffer.width() || local_y >= buffer.height() {
-                continue;
-            }
+    let radius_squared = radius * radius;
+    let use_fast_path = mode == BlendMode::Normal;
+
+    for local_y in start_y..=end_y {
+        let document_y = origin_y + local_y as i64;
+        let dy = document_y as f64 + 0.5 - center_y;
+        for local_x in start_x..=end_x {
+            let document_x = origin_x + local_x as i64;
             let dx = document_x as f64 + 0.5 - center_x;
-            let dy = document_y as f64 + 0.5 - center_y;
-            let distance = (dx * dx + dy * dy).sqrt();
-            if distance > radius {
+            let distance_squared = dx * dx + dy * dy;
+            if distance_squared > radius_squared {
                 continue;
             }
+            let distance = distance_squared.sqrt();
             let coverage = if distance <= hard_edge {
                 1.0
             } else {
@@ -283,7 +300,11 @@ pub fn draw_stamp(
                 continue;
             }
             let source = premultiply([color[0], color[1], color[2], alpha]);
-            buffer.blend_mode(local_x, local_y, source, mode);
+            if use_fast_path {
+                buffer.blend_at(local_x, local_y, source);
+            } else {
+                buffer.blend_mode(local_x, local_y, source, mode);
+            }
         }
     }
 }

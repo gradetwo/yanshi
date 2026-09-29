@@ -46,6 +46,15 @@ impl Prng {
     pub fn range(&mut self, low: f32, high: f32) -> f32 {
         low + (high - low) * self.unit()
     }
+
+    /// `0..bound` 的均匀整数（`bound` 为 0 时返回 0）。
+    pub fn below(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            0
+        } else {
+            (self.next_u64() % bound as u64) as usize
+        }
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +78,15 @@ mod tests {
         let again: Vec<f32> = (0..32).map(|i| Prng::derive(42, i).unit()).collect();
         assert_eq!(first, again);
         assert!(first.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn below_stays_in_range() {
+        let mut rng = Prng::new(3);
+        for _ in 0..1000 {
+            assert!(rng.below(7) < 7);
+        }
+        assert_eq!(rng.below(0), 0);
     }
 
     #[test]
