@@ -1276,6 +1276,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("patch", Array, true, "补丁步骤 [{\"tool\":\"add_filter\",\"arguments\":{...}}, ...]（非空）"),
             param!("annotation_id", String, false, "关联的标注 id（写入建议以追踪来源）"),
             param!("summary", String, false, "人类可读的说明"),
+            param!("priority", Integer, false, "优先级 0..9（越大越紧急，缺省 5）；list_suggestions 按它排序"),
         ],
     },
     ToolSpec {
@@ -2951,18 +2952,31 @@ fn write_suggest(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
     }
+    // 优先级：0..9，缺省 5（中等）。用于 list_suggestions 排序，便于人工先看要紧的。
+    let priority = match args.get("priority").and_then(Value::as_i64) {
+        None => 5,
+        Some(value) if (0..=9).contains(&value) => value,
+        Some(value) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("priority 必须在 0..9 内，得到 {value}")),
+            ))
+        }
+    };
     let result = ctx.commit(
         AtomKind::Suggest,
         json!({
             "patch": patch,
             "annotation_id": optional_str(args, "annotation_id"),
             "summary": optional_str(args, "summary"),
+            "priority": priority,
         }),
     )?;
     Ok(json!({
         "suggestion_id": result.atom_id,
         "seq": result.seq,
         "steps": patch.len(),
+        "priority": priority,
     }))
 }
 
@@ -3832,11 +3846,23 @@ fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             "actor": atom.actor,
             "annotation_id": atom.payload.get("annotation_id").cloned().unwrap_or(Value::Null),
             "summary": atom.payload.get("summary").cloned().unwrap_or(Value::Null),
+            "priority": atom.payload.get("priority").cloned().unwrap_or(json!(5)),
             "patch": atom.payload.get("patch").cloned().unwrap_or(Value::Null),
             "status": status,
             "reason": rejected.get(&atom.id).cloned().unwrap_or_default(),
         }));
     }
+    // 排序：优先级降序，其次 seq 升序（同优先级按时间先后）—— 让审阅者先看要紧的建议。
+    suggestions.sort_by(|left, right| {
+        let left_priority = left["priority"].as_i64().unwrap_or(5);
+        let right_priority = right["priority"].as_i64().unwrap_or(5);
+        right_priority.cmp(&left_priority).then(
+            left["seq"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&right["seq"].as_u64().unwrap_or(0)),
+        )
+    });
     let total = suggestions.len();
     let pending = suggestions
         .iter()

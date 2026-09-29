@@ -2836,3 +2836,82 @@ fn annotation_lifecycle_rules_are_enforced() {
     );
     assert_eq!(pending["pending"], json!(1), "只剩重开的那条：{pending}");
 }
+
+/// 建议优先级：写入、校验、并在列表里**按优先级排序**（同优先级按先后）。
+#[test]
+fn suggestion_priority_is_validated_and_orders_the_list() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_prio", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_prio", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+
+    // 故意按「低 → 高 → 缺省」的顺序创建，检验排序而非插入顺序。
+    for (summary, priority) in [("低", Some(1)), ("高", Some(9)), ("缺省", None)] {
+        let mut payload = json!({"summary": summary, "patch": [{"tool": "add_adjustment",
+            "arguments": {"layer_id": "L", "adjustment_type": "invert"}}]});
+        if let Some(priority) = priority {
+            payload["priority"] = json!(priority);
+        }
+        let response = registry.call(&mut context, "suggest", &payload);
+        assert_eq!(response["ok"], json!(true), "{response}");
+        assert_eq!(
+            response["priority"],
+            json!(priority.unwrap_or(5)),
+            "响应应回显生效的优先级：{response}"
+        );
+    }
+    // 越界优先级必须被拒。
+    for invalid in [-1, 10] {
+        let response = registry.call(
+            &mut context,
+            "suggest",
+            &json!({"priority": invalid, "patch": [{"tool": "add_adjustment",
+                "arguments": {"layer_id": "L", "adjustment_type": "invert"}}]}),
+        );
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{invalid}: {response}"
+        );
+        assert!(
+            response["context"]["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("0..9"),
+            "{invalid}: {response}"
+        );
+    }
+
+    let listed = registry.call(&mut context, "list_suggestions", &json!({}));
+    let summaries: Vec<String> = listed["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["summary"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        summaries,
+        vec!["高".to_owned(), "缺省".to_owned(), "低".to_owned()],
+        "应按优先级降序（同优先级按先后）：{listed}"
+    );
+    let priorities: Vec<i64> = listed["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["priority"].as_i64().unwrap_or(0))
+        .collect();
+    assert_eq!(priorities, vec![9, 5, 1], "{listed}");
+}
