@@ -13,6 +13,8 @@
 //! | [`log`] | 5.1 / 12.2 | Append-Only 日志、ULID 幂等、提交时 precondition 校验 |
 //! | [`blob`] | 6.3 | Blob CAS、三级生命周期、GC 根集与活跃 Manifest |
 //! | [`seq`] | 5.5 | `state@seq` 求值公式、declare_head、增量折叠 |
+//! | [`snapshot`] | 4.5 / 6.5 | 逻辑快照、CRC、可清理策略（旁路缓存，非原子） |
+//! | [`changeset`] | 5.6 | 变更集分组与整体撤销规划 |
 //! | [`conflict`] | 12.3 | 采样性替换冲突检测（生成性叠加走 LWW） |
 //!
 //! 折叠代数的五条不变量（设计文档 5.3）由 `tests/` 下的属性测试与 fuzz 用例保证：
@@ -41,12 +43,14 @@
 
 pub mod atom;
 pub mod blob;
+pub mod changeset;
 pub mod conflict;
 pub mod error;
 pub mod fold;
 pub mod ids;
 pub mod log;
 pub mod seq;
+pub mod snapshot;
 pub mod state;
 
 pub use atom::{
@@ -57,6 +61,7 @@ pub use blob::{
     plan_gc, run_gc, stage_blob, BlobEntry, BlobLifecycleMetrics, BlobStore, BlobTier, FsBlobStore,
     GcPlan, GcReport, MemoryBlobStore, DEFAULT_ORPHAN_TTL_SECONDS,
 };
+pub use changeset::{Changeset, ChangesetBuilder};
 pub use conflict::{Bbox, ConflictInfo, CONFLICT_ACTOR};
 pub use error::{ErrorCode, ErrorContext, Result, YanshiError};
 pub use fold::{
@@ -68,6 +73,10 @@ pub use ids::{
 };
 pub use log::{AppendOutcome, AtomLog, CommitContext};
 pub use seq::{state_at, IncrementalFolder, StateAt, StateAtCache};
+pub use snapshot::{
+    crc32, snapshot_decision, Snapshot, SnapshotBase, SnapshotDecision, SnapshotStore,
+    SnapshotTrigger,
+};
 pub use state::{
     Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, Object, ObjectRef,
     ObjectType, Selection, Style, Transform, Violation,
