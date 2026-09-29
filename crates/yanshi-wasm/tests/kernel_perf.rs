@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{json, Value};
 use yanshi_core::Bbox;
 use yanshi_wasm::Kernel;
 
@@ -56,6 +56,71 @@ fn kernel_render_cost_on_the_host() {
         println!(
             "  {side:>4.0}²: {elapsed:?}｜每像素 {:.1}ns",
             elapsed.as_secs_f64() * 1e9 / (side * side)
+        );
+    }
+
+    // 2×2 二分：有/无背景 × 有/无对象，定位「带背景慢 4×」到底来自背景填充还是对象混合。
+    for (label, has_background, has_shape) in [
+        ("无背景·无对象", false, false),
+        ("无背景·有对象", false, true),
+        ("有背景·无对象", true, false),
+        ("有背景·有对象", true, true),
+    ] {
+        let mut atoms = vec![
+            json!({"seq": 1, "id": "01AAAAAAAAAAAAAAAAAAAAAAAA", "kind": "create_document",
+                   "actor": "human:1", "session": "session:a", "timestamp": 1,
+                   "payload": {"doc_id": "doc_bisect", "width": 1024, "height": 1024}}),
+            json!({"seq": 2, "id": "01BBBBBBBBBBBBBBBBBBBBBBBB", "kind": "create_layer",
+                   "actor": "human:1", "session": "session:a", "timestamp": 2,
+                   "payload": {"layer_id": "layer_1", "name": "base"}}),
+        ];
+        if has_background {
+            atoms[0]["payload"]["background"] = json!({"r": 255, "g": 255, "b": 255, "a": 255});
+        }
+        if has_shape {
+            atoms.push(json!({"seq": 3, "id": "01CCCCCCCCCCCCCCCCCCCCCCCC",
+                "kind": "create_object", "actor": "human:1", "session": "session:a",
+                "timestamp": 3,
+                "payload": {"object_id": "shape_1", "layer_id": "layer_1", "kind": "shape",
+                            "data": {"geometry": {"kind": "rect",
+                                     "bbox": {"x": 100.0, "y": 100.0, "w": 600.0, "h": 600.0}},
+                                     "color": {"r": 200, "g": 120, "b": 60, "a": 255}}}}));
+        }
+        let mut kernel = Kernel::new("doc_bisect", 256, 1024, 1024, 64 * 1024 * 1024).unwrap();
+        kernel
+            .load_atoms_json(&Value::Array(atoms).to_string())
+            .expect("夹具应能加载");
+        let region = Bbox::new(0.0, 0.0, 512.0, 512.0);
+        let elapsed = best_of(5, || {
+            let _ = kernel.render_region(region).expect("渲染应成功");
+        });
+        println!(
+            "  512² {label}: {elapsed:?}｜每像素 {:.1}ns",
+            elapsed.as_secs_f64() * 1e9 / (512.0 * 512.0)
+        );
+    }
+
+    // 量化器本身的两条分支对比（决定「有背景慢 4×」是否发生在量化阶段）。
+    {
+        let mut buffer = yanshi_render::Buffer::new(0, 0, 512, 512);
+        for (index, pixel) in buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+            let value = (index % 97) as f32 / 97.0;
+            pixel.copy_from_slice(&[value, value * 0.5, value * 0.25, 0.75]);
+        }
+        let background = [255u8, 255, 255, 255];
+        let none_ms = best_of(5, || {
+            std::hint::black_box(buffer.to_rgba8(None));
+        });
+        let some_ms = best_of(5, || {
+            std::hint::black_box(buffer.to_rgba8(Some(background)));
+        });
+        println!(
+            "  量化器 512²：无背景 {:?}（{:.1}ns/px）｜有背景 {:?}（{:.1}ns/px）｜倍数 {:.2}×",
+            none_ms,
+            none_ms.as_secs_f64() * 1e9 / 262144.0,
+            some_ms,
+            some_ms.as_secs_f64() * 1e9 / 262144.0,
+            some_ms.as_secs_f64() / none_ms.as_secs_f64()
         );
     }
 
