@@ -932,8 +932,30 @@ impl Renderer {
                     let origin = layer_buffer.origin();
                     let width = layer_buffer.width();
                     let height = layer_buffer.height();
-                    for y in 0..height {
-                        for x in 0..width {
+                    // **只在受影响区域内迭代**：圆外像素的位移恒为 0，原代码路径在那里就是
+                    // `continue`（不改动像素），因此把循环收缩到「各点圆的外接正方形 ∩ 缓冲」
+                    // 是**逐位等价**的，却能把 1024² 的 100 万像素降到只处理圆覆盖的十余万像素。
+                    // （此前实测：size=400 的 twirl 净成本 110–130ms，其中绝大部分花在圆外像素上。）
+                    let mut affected_min_x = f64::INFINITY;
+                    let mut affected_min_y = f64::INFINITY;
+                    let mut affected_max_x = f64::NEG_INFINITY;
+                    let mut affected_max_y = f64::NEG_INFINITY;
+                    for (px, py) in &points {
+                        affected_min_x = affected_min_x.min(px - radius);
+                        affected_min_y = affected_min_y.min(py - radius);
+                        affected_max_x = affected_max_x.max(px + radius);
+                        affected_max_y = affected_max_y.max(py + radius);
+                    }
+                    let start_x =
+                        ((affected_min_x - origin.0 as f64).floor().max(0.0) as u32).min(width);
+                    let start_y =
+                        ((affected_min_y - origin.1 as f64).floor().max(0.0) as u32).min(height);
+                    let end_x =
+                        ((affected_max_x - origin.0 as f64).ceil().max(0.0) as u32 + 1).min(width);
+                    let end_y =
+                        ((affected_max_y - origin.1 as f64).ceil().max(0.0) as u32 + 1).min(height);
+                    for y in start_y..end_y {
+                        for x in start_x..end_x {
                             // 目标像素的文档坐标。
                             let document_x = origin.0 as f64 + x as f64;
                             let document_y = origin.1 as f64 + y as f64;
@@ -2107,6 +2129,135 @@ mod tests {
         }
         let rendered = renderer.render_document(&broken, &store).unwrap();
         assert_eq!(rendered.stats.unsupported.len(), 1, "缺失蒙版必须告警");
+    }
+
+    /// 不变量：liquify 只影响其影响圈内的像素，**圆外像素必须逐位不变**。
+    ///
+    /// 这条性质正是「把循环收缩到受影响外接方框」优化所依赖的前提；
+    /// 一旦外框算错（漏掉某些像素），本测试就会红。
+    #[test]
+    fn liquify_leaves_pixels_outside_its_circles_untouched() {
+        let mut state = white_document();
+        state.width = 128;
+        state.height = 128;
+        // 中心放一个小方块（周围留白）：这样 twirl/pinch 旋转缩放它、push 沿 x 推动它，
+        // 三种模式都会在影响圈内产生**可见**变化。
+        // 前两版 fixture 分别是纯色矩形与上下分界 —— 纯色旋转看不出变化，
+        // 水平分界沿 x 推动也看不出变化，于是"圈内应改变"的断言失败（都是 fixture 的问题）。
+        state.objects.insert(
+            "square".to_owned(),
+            object(
+                "square",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 54, "y": 54, "w": 20, "h": 20}},
+                       "color": {"r": 20, "g": 20, "b": 20, "a": 255}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        let before = renderer.render_document(&state, &store).unwrap();
+
+        for mode in ["twirl", "pinch", "push"] {
+            let mut liquified_state = state.clone();
+            liquified_state.objects.insert(
+                "liquify".to_owned(),
+                object(
+                    "liquify",
+                    "layer_1",
+                    ObjectType::Liquify,
+                    1,
+                    json!({"mode": mode, "points": [[64.0, 64.0]], "size": 64.0,
+                           "strength": 0.9, "direction": [1.0, 0.0]}),
+                ),
+            );
+            let after = renderer.render_document(&liquified_state, &store).unwrap();
+            // 影响圈半径 = size/2 = 32，中心 (64,64)。
+            let mut outside_changed = Vec::new();
+            let mut inside_changed = 0usize;
+            for y in 0..128u32 {
+                for x in 0..128u32 {
+                    let index = ((y * 128 + x) * 4) as usize;
+                    let changed = before.rgba8[index..index + 4] != after.rgba8[index..index + 4];
+                    let dx = x as f64 - 64.0;
+                    let dy = y as f64 - 64.0;
+                    if (dx * dx + dy * dy).sqrt() <= 32.0 {
+                        if changed {
+                            inside_changed += 1;
+                        }
+                    } else if changed {
+                        outside_changed.push((x, y));
+                    }
+                }
+            }
+            assert!(
+                outside_changed.is_empty(),
+                "{mode}: 影响圈外有 {} 个像素被改动，例如 {:?}",
+                outside_changed.len(),
+                &outside_changed[..outside_changed.len().min(4)]
+            );
+            assert!(
+                inside_changed > 20,
+                "{mode}: 影响圈内仅有 {inside_changed} 个像素变化，效果没有真正生效（检查 fixture）"
+            );
+        }
+    }
+
+    /// 性能诊断：liquify 三种模式在 1024² 上的渲染成本（用于"循环不变量外提"类改动的前后对比）。
+    #[test]
+    #[ignore = "诊断：liquify 成本"]
+    fn liquify_cost_probe() {
+        for mode in ["twirl", "pinch", "push"] {
+            let mut state = white_document();
+            state.width = 1024;
+            state.height = 1024;
+            state.objects.insert(
+                "shape".to_owned(),
+                object(
+                    "shape",
+                    "layer_1",
+                    ObjectType::Shape,
+                    0,
+                    json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 1024, "h": 1024}},
+                           "color": {"r": 90, "g": 120, "b": 160, "a": 255}}),
+                ),
+            );
+            state.objects.insert(
+                "liquify".to_owned(),
+                object(
+                    "liquify",
+                    "layer_1",
+                    ObjectType::Liquify,
+                    1,
+                    json!({"mode": mode, "points": [[512.0, 512.0]], "size": 400.0,
+                           "strength": 0.8, "direction": [1.0, 0.0]}),
+                ),
+            );
+            let store = MemoryBlobStore::new();
+            // 先测「不加 liquify」的同一文档作为基线，再测加上之后的时间，两者相减才是 liquify 的成本。
+            let without = state.objects.remove("liquify").unwrap();
+            let mut renderer = renderer();
+            let mut baseline = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                let _ = renderer.render_document(&state, &store).unwrap();
+                baseline = baseline.min(started.elapsed());
+            }
+            state.objects.insert("liquify".to_owned(), without);
+            let mut with_liquify = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                let _ = renderer.render_document(&state, &store).unwrap();
+                with_liquify = with_liquify.min(started.elapsed());
+            }
+            println!(
+                "  liquify {mode}（1024²，size 400）: 总 {:?}｜基线 {:?}｜**净成本 {:?}**",
+                with_liquify,
+                baseline,
+                with_liquify.saturating_sub(baseline)
+            );
+        }
     }
 
     /// 液化 twirl：横向条纹应被旋转出倾斜（同一列上出现横向位移差）。
