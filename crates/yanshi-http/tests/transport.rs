@@ -863,6 +863,35 @@ fn one_connection_serves_multiple_requests() {
     handle.shutdown();
 }
 
+/// 联系方式：页面内置反馈邮箱（邮件预填文档 id 与 HEAD 便于排查）。
+#[test]
+fn viewer_exposes_the_contact_mailbox() {
+    // 用 0 端口避免与正在运行的服务（8110）冲突。
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, _, page) = client.request("GET", "/", None, None);
+    assert_eq!(status, 200);
+    let page = String::from_utf8_lossy(&page);
+    assert!(
+        page.contains("mailto:yanshi@wangda.today"),
+        "页面应提供反馈邮箱链接"
+    );
+    assert!(page.contains("yanshi@wangda.today</a>"), "邮箱应可见");
+    assert!(
+        page.contains("refreshContactLink"),
+        "邮件正文应带上文档与 HEAD 上下文"
+    );
+    assert!(page.contains("安全漏洞"), "应提示安全漏洞不要开公开 issue");
+    handle.shutdown();
+}
+
 /// 品牌资源：favicon 与 /brand/* 白名单，路径穿越与未知文件被拒。
 #[test]
 fn brand_assets_are_served_from_the_configured_directory() {

@@ -104,6 +104,15 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <h2>最近一次响应</h2>
       <div id="last" style="font-family:ui-monospace,monospace;font-size:11px"></div>
     </div>
+    <div class="card">
+      <h2>反馈</h2>
+      <div class="status" style="flex-direction:column; align-items:flex-start; gap:6px">
+        <span>问题反馈、协作沟通、缺陷上报：</span>
+        <a id="contact" href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20"
+           style="color:#3f7fd4; font-family:ui-monospace,monospace; font-size:12px">yanshi@wangda.today</a>
+        <span style="opacity:.7">安全漏洞请勿开公开 issue，直接发邮件。</span>
+      </div>
+    </div>
   </aside>
 </main>
 <script>
@@ -278,6 +287,7 @@ async function loadKernel(since = 0) {
   state.localSeq = atoms.head_seq;
   window.yanshiStats.kernelHead = atoms.head_seq;
   window.yanshiStats.serverHead = atoms.head_seq;
+  if (typeof refreshContactLink === "function") refreshContactLink();
   state.kernel.set_viewport(0, 0, w, h);
   return true;
 }
@@ -442,6 +452,7 @@ async function ensureDocument() {
   const bootFirstPaint = $("firstPaint");
   if (bootFirstPaint) bootFirstPaint.textContent = "…";
   connect();
+  refreshContactLink();
   void warmKernel();
 }
 
@@ -518,6 +529,18 @@ async function refreshPreview(fromKernel = false) {
     preview.src = value.thumb_url + "&t=" + Date.now();
     setStatus({ rendered: value.head_seq !== undefined ? value.head_seq : undefined, dirty: 0 });
   }
+}
+
+// 反馈邮件里预填文档 id 与 HEAD，便于定位问题（不包含任何画布内容）。
+function refreshContactLink() {
+  const link = $("contact");
+  if (!link) return;
+  const subject = encodeURIComponent(`[Yanshi] ${state.docId || "document"}`);
+  const body = encodeURIComponent(
+    `\n\n---\n文档: ${state.docId || "-"}\n本地 HEAD: ${window.yanshiStats.kernelHead}\n` +
+    `服务端 HEAD: ${window.yanshiStats.serverHead}\n地址: ${location.href.split("?")[0]}\n`
+  );
+  link.href = `mailto:yanshi@wangda.today?subject=${subject}&body=${body}`;
 }
 
 function connect() {
@@ -752,6 +775,7 @@ $("open").addEventListener("click", ensureDocument);
     window.yanshiStats.bootAt = performance.now();
     await refreshPreview();
     connect();
+    refreshContactLink();
     void warmKernel();
   }
 })();

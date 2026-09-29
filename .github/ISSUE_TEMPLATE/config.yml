@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Email the maintainers
+    url: mailto:yanshi@wangda.today
+    about: Prefer not to use GitHub? Bug reports, questions and collaboration all work by email.
+  - name: Report a security vulnerability
+    url: https://github.com/gradetwo/yanshi/security/advisories/new
+    about: Please report vulnerabilities privately instead of opening a public issue.

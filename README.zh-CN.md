@@ -262,6 +262,12 @@ cargo test --workspace
 
 三者全部通过，且新增折叠或 GC 语义必须附带属性测试。提交信息使用英文。
 
+## 联系我们
+
+- **联系邮箱**：<yanshi@wangda.today> —— 问题咨询、协作沟通、缺陷反馈、行为准则相关事宜都用这个地址。
+- **缺陷与建议**：优先在仓库开 issue；不想用 GitHub 也可以直接发邮件。
+- **安全漏洞**：请**不要**开公开 issue，直接发邮件到 <yanshi@wangda.today>（详见 [SECURITY.md](SECURITY.md)）。
+
 ## 许可证
 
 本项目以 [MIT 许可证](LICENSE) 发布。

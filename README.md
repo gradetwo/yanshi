@@ -303,6 +303,12 @@ cargo test --workspace
 All three must pass, and new fold or GC semantics must come with property tests. Commit messages are in
 English.
 
+## Contact
+
+- **Email**: <yanshi@wangda.today> — questions, collaboration, bug reports and code-of-conduct matters.
+- **Bugs and feature requests**: open an issue, or email the address above if you prefer not to use GitHub.
+- **Security issues**: please do **not** open a public issue; email <yanshi@wangda.today> (see [SECURITY.md](SECURITY.md)).
+
 ## License
 
 Released under the [MIT license](LICENSE).
