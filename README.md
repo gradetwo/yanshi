@@ -178,7 +178,7 @@ Invalid colours are rejected in the tool layer (`invalid_argument`) and never re
 
 ```bash
 # adjustment: brightness_contrast / saturation / invert / levels /
-#             exposure / white_balance / curves / hsl / posterize / color_balance
+#             exposure / white_balance / curves / hsl / posterize / color_balance / split_toning
 #             (levels takes a channel)
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'

@@ -635,6 +635,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `levels`（扩展） | 增加 `channel`（rgb/r/g/b） | 分通道色阶，与 `curves` 同一套通道命名 |
 | 调整 `posterize` | `levels` 2..64 | 直通通道量化到 N 个台阶（如 3 级 → 0/0.5/1） |
 | 调整 `color_balance` | `shadows`/`midtones`/`highlights` 各 `[r,g,b]`（−1..1） | 按线性亮度分档加权偏移：`shadows=(1-luma)²`、`highlights=luma²`、中间调为余量 |
+| 调整 `split_toning` | `shadows`/`highlights` 各 `[r,g,b]`、`balance` −1..1、`amount` 0..1 | 权重为 smoothstep（分界 `mid = 0.5 + balance×0.25`），阴影/高光分别着色 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
 | 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |

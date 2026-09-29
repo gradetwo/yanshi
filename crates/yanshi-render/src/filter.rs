@@ -35,6 +35,8 @@ pub enum AdjustmentKind {
     Posterize,
     /// 色彩平衡（阴影/中间调/高光）。
     ColorBalance,
+    /// 分离色调。
+    SplitToning,
 }
 
 impl AdjustmentKind {
@@ -51,6 +53,7 @@ impl AdjustmentKind {
             "hsl" | "hue_saturation" => Some(Self::Hsl),
             "posterize" => Some(Self::Posterize),
             "color_balance" => Some(Self::ColorBalance),
+            "split_toning" => Some(Self::SplitToning),
             _ => None,
         }
     }
@@ -68,11 +71,12 @@ impl AdjustmentKind {
             Self::Hsl => "hsl",
             Self::Posterize => "posterize",
             Self::ColorBalance => "color_balance",
+            Self::SplitToning => "split_toning",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 10] = [
+    pub const ALL: [AdjustmentKind; 11] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -83,6 +87,7 @@ impl AdjustmentKind {
         Self::Hsl,
         Self::Posterize,
         Self::ColorBalance,
+        Self::SplitToning,
     ];
 }
 
@@ -267,6 +272,37 @@ pub fn color_balance(
                 + midtones[channel] * midtone_weight
                 + highlights[channel] * highlight_weight;
             color[channel] = (color[channel] + delta).clamp(0.0, 1.0);
+        }
+    });
+}
+
+/// 分离色调：阴影与高光分别着色，`balance` 移动分界点，`amount` 控制总强度。
+///
+/// 权重用 smoothstep 在 `mid ± 0.25` 之间过渡（`mid = 0.5 + balance × 0.25`），
+/// 因此权重单调、确定，且 `balance` 的语义直观（正值把分界推向亮部）。
+pub fn split_toning(
+    buffer: &mut Buffer,
+    shadows: [f32; 3],
+    highlights: [f32; 3],
+    balance: f32,
+    amount: f32,
+) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let shadows = shadows.map(|value| value.clamp(-1.0, 1.0));
+    let highlights = highlights.map(|value| value.clamp(-1.0, 1.0));
+    let mid = 0.5 + balance.clamp(-1.0, 1.0) * 0.25;
+    for_each_straight_color(buffer, |color| {
+        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
+        let t = ((luma - (mid - 0.25)) / 0.5).clamp(0.0, 1.0);
+        let highlight_weight = t * t * (3.0 - 2.0 * t);
+        let shadow_weight = 1.0 - highlight_weight;
+        for channel in 0..3 {
+            let tint = shadows[channel] * shadow_weight + highlights[channel] * highlight_weight;
+            color[channel] = (color[channel] + amount * tint).clamp(0.0, 1.0);
         }
     });
 }
@@ -784,7 +820,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 10] = [
+pub const ADJUSTMENT_NAMES: [&str; 11] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -795,6 +831,7 @@ pub const ADJUSTMENT_NAMES: [&str; 10] = [
     "hsl",
     "posterize",
     "color_balance",
+    "split_toning",
 ];
 
 /// 内核支持的滤镜名。
@@ -887,6 +924,13 @@ pub fn apply_adjustment(
                 .get("channel")
                 .and_then(Value::as_str)
                 .unwrap_or("rgb"),
+        ),
+        AdjustmentKind::SplitToning => split_toning(
+            &mut adjusted,
+            triple(params.get("shadows")),
+            triple(params.get("highlights")),
+            params.get("balance").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32,
         ),
         AdjustmentKind::ColorBalance => color_balance(
             &mut adjusted,
@@ -1420,6 +1464,61 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 分离色调：暗部取阴影色、亮部取高光色；`balance` 移动分界。
+    #[test]
+    fn split_toning_tints_shadows_and_highlights() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 3, 1);
+            buffer.set_pixel(0, 0, [0.05, 0.05, 0.05, 1.0]);
+            buffer.set_pixel(1, 0, [0.5, 0.5, 0.5, 1.0]);
+            // 亮部用 0.6 而不是 0.95：后者加上着色会直接触顶被钳，看不出通道差。
+            buffer.set_pixel(2, 0, [0.6, 0.6, 0.6, 1.0]);
+            buffer
+        };
+        // 阴影加蓝、高光加黄。
+        let mut toned = make();
+        split_toning(&mut toned, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
+        let dark = toned.pixel(0, 0);
+        let bright = toned.pixel(2, 0);
+        assert!(dark[2] > dark[0] + 0.2, "暗部应偏蓝：{dark:?}");
+        // 高光权重在该亮度约 0.78，所以通道差约 0.17（不是满额 0.3）。
+        assert!(bright[0] > bright[2] + 0.1, "亮部应偏黄：{bright:?}");
+
+        // balance 把分界点推向亮部（mid 0.5 → 0.75），因此中间灰落入**阴影侧**。
+        let mut shifted = make();
+        split_toning(&mut shifted, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 1.0, 1.0);
+        let neutral = shifted.pixel(1, 0);
+        assert!(
+            neutral[2] > neutral[0],
+            "balance=+1 把分界推高，中间灰应取阴影色：{neutral:?}"
+        );
+        // 反向（mid → 0.25）时中间灰落入高光侧。
+        let mut back = make();
+        split_toning(&mut back, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], -1.0, 1.0);
+        let neutral_back = back.pixel(1, 0);
+        assert!(
+            neutral_back[0] > neutral_back[2],
+            "balance=-1 把分界压低，中间灰应取高光色：{neutral_back:?}"
+        );
+
+        // amount=0 不改动；越界参数不产生非法值。
+        let mut zero = make();
+        let before = zero.pixel(1, 0);
+        split_toning(&mut zero, [1.0; 3], [1.0; 3], 0.0, 0.0);
+        assert_eq!(before, zero.pixel(1, 0));
+        let mut extremes = make();
+        split_toning(&mut extremes, [9.0; 3], [-9.0; 3], 9.0, 9.0);
+        for x in 0..3 {
+            let pixel = extremes.pixel(x, 0);
+            assert!(
+                pixel
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v) && v.is_finite()),
+                "越界参数不得产出非法值：{pixel:?}"
+            );
+        }
     }
 
     /// 色彩平衡：阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间的像素。
