@@ -594,14 +594,24 @@ pub fn motion_blur(buffer: &mut Buffer, angle_degrees: f32, distance: f32, sampl
     let (dx, dy) = (radians.cos(), radians.sin());
     let width = buffer.width();
     let height = buffer.height();
+    // 采样偏移是**循环不变量**（只与 angle/distance/samples 有关），却在每个像素的每次采样里
+    // 被重算：512² × 16 次采样下这是纯粹的重复浮点运算。提到循环外后，每个采样点使用的
+    // 仍是同样的 `dx * t` / `dy * t` 值，加法顺序与舍入不变，因此**逐位等价**（D0 不受影响）。
+    let offsets: Vec<(f32, f32)> = (0..samples)
+        .map(|i| {
+            // 采样覆盖 [-distance/2, +distance/2]。
+            let t = (i as f32 / (samples - 1) as f32 - 0.5) * distance;
+            (dx * t, dy * t)
+        })
+        .collect();
     for y in 0..height {
         for x in 0..width {
             let mut sum = [0.0f32; 4];
-            for i in 0..samples {
-                // 采样覆盖 [-distance/2, +distance/2]。
-                let t = (i as f32 / (samples - 1) as f32 - 0.5) * distance;
-                let sx = (x as f32 + dx * t).round().clamp(0.0, width as f32 - 1.0) as u32;
-                let sy = (y as f32 + dy * t).round().clamp(0.0, height as f32 - 1.0) as u32;
+            for (offset_x, offset_y) in &offsets {
+                let sx = (x as f32 + offset_x).round().clamp(0.0, width as f32 - 1.0) as u32;
+                let sy = (y as f32 + offset_y)
+                    .round()
+                    .clamp(0.0, height as f32 - 1.0) as u32;
                 let pixel = source.pixel(sx, sy);
                 for channel in 0..4 {
                     sum[channel] += pixel[channel];
@@ -1713,6 +1723,57 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 运动模糊：结果必须等于「按角度/距离/采样数取样的源像素均值」——
+    /// 这条断言把采样偏移与舍入语义**独立重算**一遍并比对，
+    /// 因此它同时守护「把偏移提到循环外」这类等价改写（改了语义就会红）。
+    #[test]
+    fn motion_blur_matches_an_independent_average() {
+        let mut source = Buffer::new(0, 0, 32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let value = ((x * 7 + y * 13) % 29) as f32 / 29.0;
+                source.set_pixel(x, y, [value, value * 0.5, value * 0.25, 1.0]);
+            }
+        }
+        let (angle, distance, samples) = (30.0f32, 6.0f32, 8u32);
+        let mut blurred = source.clone();
+        motion_blur(&mut blurred, angle, distance, samples);
+
+        // 独立重算：同样的角度/距离/采样数、同样的 round 与 clamp。
+        let radians = angle.to_radians();
+        let (dx, dy) = (radians.cos(), radians.sin());
+        for y in 0..32u32 {
+            for x in 0..32u32 {
+                let mut sum = [0.0f32; 4];
+                for i in 0..samples {
+                    let t = (i as f32 / (samples - 1) as f32 - 0.5) * distance;
+                    let sx = (x as f32 + dx * t).round().clamp(0.0, 31.0) as u32;
+                    let sy = (y as f32 + dy * t).round().clamp(0.0, 31.0) as u32;
+                    let pixel = source.pixel(sx, sy);
+                    for channel in 0..4 {
+                        sum[channel] += pixel[channel];
+                    }
+                }
+                let scale = 1.0 / samples as f32;
+                let expected = [
+                    sum[0] * scale,
+                    sum[1] * scale,
+                    sum[2] * scale,
+                    sum[3] * scale,
+                ];
+                let actual = blurred.pixel(x, y);
+                for channel in 0..4 {
+                    assert!(
+                        (actual[channel] - expected[channel]).abs() < 1e-6,
+                        "({x},{y}) 通道 {channel}: 实际 {:?} 与独立重算 {:?} 不符",
+                        actual,
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     /// 胶片颗粒：同 seed 可复现、不同 seed 不同、块内一致、**与缓冲分块无关**（文档坐标决定）。
