@@ -29,8 +29,8 @@ use std::sync::Mutex;
 /// 孤儿 blob 的默认 TTL：7 天（设计文档 6.3）。
 pub const DEFAULT_ORPHAN_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 
-/// 超过该字节数的 payload 必须走 CAS（设计文档 6.3）。
-pub const CAS_THRESHOLD_BYTES: usize = 4096;
+/// 超过该字节数的 payload 必须走 CAS（设计文档 6.3），定义见 [`crate::atom`]。
+pub use crate::atom::CAS_THRESHOLD_BYTES;
 
 /// blob 生命周期级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

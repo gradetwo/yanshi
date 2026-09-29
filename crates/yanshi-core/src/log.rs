@@ -58,7 +58,7 @@ pub struct CommitContext<'a> {
 }
 
 impl<'a> CommitContext<'a> {
-    /// 构造；blob 恒不存在的场景（如纯测试）用 [`CommitContext::no_blobs`]。
+    /// 构造。测试或不涉及 blob 的场景可传入恒返回 `false` 的闭包。
     pub fn new(
         state: &'a DocumentState,
         blob_exists: &'a dyn Fn(&BlobHash) -> bool,

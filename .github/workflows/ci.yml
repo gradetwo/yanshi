@@ -65,4 +65,5 @@ jobs:
         with:
           key: fuzz
       - name: Run ignored long-running property tests
-        run: cargo test --workspace --release -- --ignored
+        # 10 万原子折叠 fuzz（Phase 0 出口条件），保留输出以便读取耗时与统计。
+        run: cargo test --workspace --release -- --ignored --nocapture
