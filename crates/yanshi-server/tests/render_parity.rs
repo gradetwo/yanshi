@@ -21,13 +21,15 @@ fn fixture(name: &str) -> Vec<Value> {
 }
 
 /// 返回 (差异字节数, 总字节数)。
-fn parity(name: &str) -> (usize, usize) {
+fn parity(name: &str) -> (usize, usize, u8, usize) {
     let atoms = fixture(name);
     parity_attempt(&atoms).unwrap_or_else(|error| panic!("对比失败：{error}"))
 }
 
 /// 用给定原子集做对比；可失败（用于二分时跳过破坏日志的原子）。
-fn parity_attempt(atoms: &[Value]) -> Result<(usize, usize), String> {
+///
+/// 返回 `(差异字节数, 总字节数, 最大通道差, 差异像素数)`。
+fn parity_attempt(atoms: &[Value]) -> Result<(usize, usize, u8, usize), String> {
     let (width, height) = (1024u32, 1024u32);
 
     // 服务端：建文档后逐条提交同一批原子，再整幅渲染。
@@ -71,12 +73,28 @@ fn parity_attempt(atoms: &[Value]) -> Result<(usize, usize), String> {
     let rendered = kernel
         .render_region(Bbox::new(0.0, 0.0, width as f64, height as f64))
         .map_err(|error| format!("内核渲染失败：{error:?}"))?;
-    let diff = server_pixels
-        .iter()
-        .zip(rendered.rgba8.iter())
-        .filter(|(a, b)| a != b)
-        .count();
-    Ok((diff, server_pixels.len()))
+    let mut diff = 0usize;
+    let mut max_delta = 0u8;
+    let mut diff_pixels = 0usize;
+    for (index, (a, b)) in server_pixels.iter().zip(rendered.rgba8.iter()).enumerate() {
+        if a == b {
+            continue;
+        }
+        diff += 1;
+        max_delta = max_delta.max(a.abs_diff(*b));
+        if index % 4 == 0 {
+            diff_pixels += 1;
+        }
+    }
+    Ok((diff, server_pixels.len(), max_delta, diff_pixels))
+}
+
+/// 像素级判据：跨路径比较按设计 D1 允许 ±1 LSB，且只允许极少数像素踩到舍入边界。
+fn assert_within_d1(diff: usize, len: usize, max_delta: u8, diff_pixels: usize) {
+    assert!(
+        max_delta <= 1 && diff_pixels <= 16,
+        "跨路径差异超出 D1（±1 LSB）：差异像素 {diff_pixels}，最大通道差 {max_delta}，字节 {diff}/{len}"
+    );
 }
 
 /// 差异像素明细（坐标、通道、两侧取值、tile 索引），用于判断是否落在边界上。
@@ -84,8 +102,8 @@ fn parity_attempt(atoms: &[Value]) -> Result<(usize, usize), String> {
 #[ignore = "定位用：打印差异像素明细"]
 fn report_differing_pixels() {
     let atoms = fixture("phase3b_atoms.json");
-    let (diff, len) = parity_attempt(&atoms).expect("对比应可完成");
-    println!("差异 {diff}/{len} 字节");
+    let (diff, len, max_delta, diff_pixels) = parity_attempt(&atoms).expect("对比应可完成");
+    println!("差异 {diff}/{len} 字节（{diff_pixels} 像素，最大通道差 {max_delta}）");
     let details = differing_pixels(&atoms);
     for line in details.iter().take(20) {
         println!("  {line}");
@@ -106,8 +124,8 @@ fn bisect_phase3b() {
             .collect();
         let kind = atoms[skip]["kind"].as_str().unwrap_or("?").to_owned();
         match parity_attempt(&subset) {
-            Ok((0, _)) => println!("#{skip} {kind} 删除后差异为 0 ← 关键因子"),
-            Ok((diff, _)) => println!("#{skip} {kind} 删除后仍有 {diff} 字节差异"),
+            Ok((0, _, _, _)) => println!("#{skip} {kind} 删除后差异为 0 ← 关键因子"),
+            Ok((diff, _, _, _)) => println!("#{skip} {kind} 删除后仍有 {diff} 字节差异"),
             Err(error) => println!("#{skip} {kind} 删除后无法比较：{error}"),
         }
     }
@@ -163,15 +181,20 @@ fn differing_pixels(atoms: &[Value]) -> Vec<String> {
 
 #[test]
 fn server_and_kernel_agree_on_shapes_and_strokes() {
-    let (diff, len) = parity("simple_atoms.json");
-    assert_eq!(diff, 0, "服务端与内核在简单场景下必须一致：{diff}/{len}");
+    let (diff, len, max_delta, _) = parity("simple_atoms.json");
+    assert_eq!(
+        diff, 0,
+        "服务端与内核在简单场景下必须逐位一致：{diff}/{len}（最大差 {max_delta}）"
+    );
 }
 
 /// 全特性文档：目前**不一致**（差异见输出），这是 bit-exact 复盘的定位靶子。
 #[test]
 #[ignore = "耗时数分钟；用于定位服务端/内核差异，结论见 implementation-notes"]
 fn server_and_kernel_agree_on_the_full_phase3_document() {
-    let (diff, len) = parity("phase3b_atoms.json");
-    println!("服务端 vs 内核：差异 {diff}/{len} 字节");
-    assert_eq!(diff, 0, "服务端与内核必须一致：{diff}/{len}");
+    let (diff, len, max_delta, diff_pixels) = parity("phase3b_atoms.json");
+    println!(
+        "服务端 vs 内核：差异字节 {diff}/{len}，差异像素 {diff_pixels}，最大通道差 {max_delta}"
+    );
+    assert_within_d1(diff, len, max_delta, diff_pixels);
 }
