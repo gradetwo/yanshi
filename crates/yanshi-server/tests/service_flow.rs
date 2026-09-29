@@ -2224,3 +2224,98 @@ fn preview_detects_patch_order_problems() {
     let head_after = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
     assert_eq!(head_before, head_after, "预览不得写入日志");
 }
+
+/// 建议冲突检测：同图层/同对象/区域相交的待处理建议应被标出；不重叠的不应误报。
+#[test]
+fn suggestion_conflicts_are_reported() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_conflict", 128, 128),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_conflict", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+
+    // 两条都在 L 层上做整层调整 → 必然冲突（作用于整层）。
+    for summary in ["提亮", "压暗"] {
+        registry.call(
+            &mut context,
+            "suggest",
+            &json!({"summary": summary, "patch": [{"tool": "add_adjustment",
+                "arguments": {"layer_id": "L", "adjustment_type": "exposure",
+                              "params": {"ev": if summary == "提亮" { 0.3 } else { -0.3 }}}}]}),
+        );
+    }
+    // 一条在远角画小矩形（与上面的整层改动同层 → 仍冲突，因为一方是整层）。
+    registry.call(
+        &mut context,
+        "suggest",
+        &json!({"summary": "角落画点", "patch": [{"tool": "draw_shape",
+            "arguments": {"layer_id": "L", "data": {"geometry": {"kind": "rect",
+                "bbox": {"x": 100, "y": 100, "w": 8, "h": 8}},
+                "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}}]}),
+    );
+
+    let listed = registry.call(&mut context, "list_suggestions", &json!({}));
+    let conflicts = listed["conflicts"].as_array().unwrap();
+    assert!(
+        !conflicts.is_empty(),
+        "同层的整层改动应被标为冲突：{listed}"
+    );
+    assert!(
+        conflicts.iter().any(|conflict| conflict["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("整层")),
+        "冲突原因应说明整层作用：{listed}"
+    );
+}
+
+/// 反例：互不相交、对象不同的区域改动不应被误报为冲突。
+#[test]
+fn disjoint_suggestions_do_not_conflict() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_no_conflict", 128, 128),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_no_conflict", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+    // 不传 object_id（带了会走 supersede 语义、要求对象已存在），靠**区域不相交**区分。
+    for (summary, x) in [("left", 8.0), ("right", 80.0)] {
+        let response = registry.call(
+            &mut context,
+            "suggest",
+            &json!({"summary": summary, "patch": [{"tool": "draw_shape",
+                "arguments": {"layer_id": "L",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": x, "y": 8, "w": 16, "h": 16}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}}]}),
+        );
+        assert_eq!(response["ok"], json!(true), "{response}");
+    }
+    let listed = registry.call(&mut context, "list_suggestions", &json!({}));
+    assert_eq!(
+        listed["conflicts"].as_array().unwrap().len(),
+        0,
+        "区域不相交、对象不同的建议不应误报冲突：{listed}"
+    );
+}

@@ -3136,6 +3136,87 @@ fn preview_effect_check(tool: &str, args: &Value) -> Result<()> {
     validate_effect(kind, name, &params)
 }
 
+/// 建议的作用域：整层/整文档级别、区域并集、以及涉及的图层与对象 id。
+struct SuggestScope {
+    /// `document` / `layer` / `region` / `none`。
+    affects: &'static str,
+    /// 区域并集。
+    region: Option<Bbox>,
+    /// 涉及的图层 id。
+    layers: BTreeSet<String>,
+    /// 涉及的对象 id。
+    objects: BTreeSet<String>,
+}
+
+/// 由 patch 推导作用域（复用逐步的影响预估，保证与预览口径一致）。
+fn suggestion_scope(patch: &[Value]) -> SuggestScope {
+    let mut scope = SuggestScope {
+        affects: "none",
+        region: None,
+        layers: BTreeSet::new(),
+        objects: BTreeSet::new(),
+    };
+    for step in patch {
+        let Some(object) = step.as_object() else {
+            continue;
+        };
+        let tool = object
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let args = object
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let (affects, region) = estimate_step_impact(tool, &args);
+        match affects {
+            "document" => scope.affects = "document",
+            "layer" if scope.affects != "document" => scope.affects = "layer",
+            "region" if scope.affects == "none" => scope.affects = "region",
+            _ => {}
+        }
+        if let Some(bbox) = region {
+            scope.region = Some(match scope.region {
+                Some(existing) => existing.union(&bbox),
+                None => bbox,
+            });
+        }
+        if let Some(layer_id) = args.get("layer_id").and_then(Value::as_str) {
+            scope.layers.insert(layer_id.to_owned());
+        }
+        if let Some(object_id) = args.get("object_id").and_then(Value::as_str) {
+            scope.objects.insert(object_id.to_owned());
+        }
+    }
+    scope
+}
+
+/// 两条建议是否冲突：同图层（层/文档级）、同对象、或区域相交。
+fn scopes_conflict(a: &SuggestScope, b: &SuggestScope) -> Option<String> {
+    if a.affects == "document" || b.affects == "document" {
+        return Some("两者之一会改变图层结构（整文档失效）".to_owned());
+    }
+    if !a.objects.is_disjoint(&b.objects) {
+        return Some("两者修改同一个对象".to_owned());
+    }
+    let layer_level = |scope: &SuggestScope| scope.affects == "layer";
+    if layer_level(a) || layer_level(b) {
+        if !a.layers.is_disjoint(&b.layers) {
+            return Some("同图层上存在作用于整层的改动（调整/滤镜）".to_owned());
+        }
+        // 一方整层、另一方同层区域 → 仍然冲突。
+        if layer_level(a) && !a.layers.is_disjoint(&b.layers) {
+            return Some("一方作用于整层，另一方也改动该层".to_owned());
+        }
+    }
+    match (a.region, b.region) {
+        (Some(left), Some(right)) if left.intersects(&right) => {
+            Some("两者的影响区域相交".to_owned())
+        }
+        _ => None,
+    }
+}
+
 /// 按 patch 顺序检查引用有效性，并更新「已知图层/对象」集合。
 ///
 /// 规则：`create_layer`/`create_*`/`draw_*` 等创建型步骤把目标加入集合；
@@ -3693,9 +3774,33 @@ fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         .iter()
         .filter(|suggestion| suggestion["status"] == json!("pending"))
         .count();
+    // 冲突检测：比较各**待处理**建议的作用域（同图层/同对象/区域相交）。
+    let pending_patches: Vec<(String, SuggestScope)> = suggestions
+        .iter()
+        .filter(|suggestion| suggestion["status"] == json!("pending"))
+        .filter_map(|suggestion| {
+            let id = suggestion["suggestion_id"].as_str()?.to_owned();
+            let patch = suggestion["patch"].as_array()?;
+            Some((id, suggestion_scope(patch)))
+        })
+        .collect();
+    let mut conflicts = Vec::new();
+    for (index, (left_id, left)) in pending_patches.iter().enumerate() {
+        for (right_id, right) in pending_patches.iter().skip(index + 1) {
+            if let Some(reason) = scopes_conflict(left, right) {
+                conflicts.push(json!({
+                    "suggestion_id": left_id,
+                    "conflicts_with": right_id,
+                    "reason": reason,
+                }));
+            }
+        }
+    }
+
     let page: Vec<Value> = suggestions.into_iter().skip(offset).take(limit).collect();
     Ok(json!({
         "suggestions": page,
+        "conflicts": conflicts,
         "pending": pending,
         "total": total,
         "offset": offset,
