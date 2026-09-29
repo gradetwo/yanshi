@@ -228,3 +228,114 @@ fn perf_open_without_render_cache_does_not_replay() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 4K 全幅渲染的**缓存容量剖面**：验证「默认 64MB 渲染缓存装不下 4K 的 f32 工作集，
+/// 因此整幅渲染会反复淘汰重算」这一假设。
+///
+/// 这是**测量**而不是断言：两条配置各测一次，把数字打印出来对比。
+/// 若大缓存显著更快，说明慢的根因是缓存容量而非算法。
+#[test]
+#[ignore = "缓存容量剖面：CI 用 --ignored 执行（4K 全幅渲染，较慢）"]
+fn profile_4k_full_render_cache_capacity() {
+    for (label, cache_bytes, layers) in [
+        ("默认 64MB / 10 图层", 64 * 1024 * 1024usize, 10usize),
+        ("512MB / 10 图层", 512 * 1024 * 1024usize, 10usize),
+        ("512MB / 1 图层", 512 * 1024 * 1024usize, 1usize),
+        (
+            "512MB / 0 图层（纯量化基线）",
+            512 * 1024 * 1024usize,
+            0usize,
+        ),
+    ] {
+        let settings = DocumentSettings {
+            render_cache_bytes: cache_bytes,
+            ..DocumentSettings::default()
+        };
+        let mut workspace = Workspace::in_memory(settings);
+        workspace
+            .create_document(
+                NewDocument::new("doc_4k", 4096, 4096),
+                "human:1",
+                "session:a",
+            )
+            .unwrap();
+        // 10 图层，每层一个 2000² 形状（与实测内存预算时的负载一致）。
+        for index in 1..=layers {
+            workspace
+                .commit(
+                    "doc_4k",
+                    Atom::new(
+                        AtomKind::CreateLayer,
+                        "human:1",
+                        "session:a",
+                        json!({"layer_id": format!("L{index}"), "name": format!("layer{index}")}),
+                    ),
+                    "human:1",
+                    true,
+                )
+                .unwrap();
+            workspace
+                .commit(
+                    "doc_4k",
+                    Atom::new(
+                        AtomKind::CreateObject,
+                        "human:1",
+                        "session:a",
+                        json!({
+                            "object_id": format!("obj{index}"),
+                            "layer_id": format!("L{index}"),
+                            "kind": "shape",
+                            "data": {
+                                "geometry": {"kind": "rect", "bbox": {"x": index * 100, "y": index * 100, "w": 2000, "h": 2000}},
+                                "color": {"r": index * 20, "g": 100, "b": 200, "a": 255}
+                            }
+                        }),
+                    ),
+                    "human:1",
+                    true,
+                )
+                .unwrap();
+        }
+        // **多次测量取最小/中位数**：这台机器上 4–7s 量级的单次计时噪声可达 ±1s（±15%），
+        // 单次结果不足以支撑任何结论（第一版就是这样把噪声当成了 6% 的优化）。
+        let full = Bbox::new(0.0, 0.0, 4096.0, 4096.0);
+        let _ = workspace.render_region("doc_4k", full).unwrap();
+        let mut png_samples = Vec::new();
+        let mut raw_samples = Vec::new();
+        for _ in 0..3 {
+            let started = Instant::now();
+            let _ = workspace.render_region("doc_4k", full).unwrap();
+            png_samples.push(started.elapsed());
+            let raw_started = Instant::now();
+            let _ = workspace.render_region_raw("doc_4k", full).unwrap();
+            raw_samples.push(raw_started.elapsed());
+        }
+        png_samples.sort();
+        raw_samples.sort();
+        let elapsed = png_samples[0];
+        let raw_elapsed = raw_samples[0];
+        println!(
+            "   ↳ 3 次采样：PNG 最小 {:?} / 中位 {:?}；raw 最小 {:?} / 中位 {:?}；编码成本 ≈ {:?}",
+            png_samples[0],
+            png_samples[1],
+            raw_samples[0],
+            raw_samples[1],
+            elapsed.saturating_sub(raw_elapsed)
+        );
+        let document = workspace.document("doc_4k").unwrap();
+        let stats = document.cache_stats();
+        println!(
+            "4K 全幅渲染（{label}，缓存预算 {}MB）：最小 {elapsed:?}（3 次）｜缓存 tiles={} 占用 {:.1}MB 淘汰 {} 次",
+            cache_bytes / (1024 * 1024),
+            stats.tiles,
+            stats.used_bytes as f64 / (1024.0 * 1024.0),
+            stats.evictions
+        );
+        // 只断言「能渲染出来且缓存不越界」，速度对比仅作观测。
+        assert!(
+            stats.used_bytes <= cache_bytes,
+            "缓存占用 {} 超过预算 {cache_bytes}",
+            stats.used_bytes
+        );
+    }
+}
