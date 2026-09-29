@@ -2699,3 +2699,140 @@ fn preview_flags_references_after_deletion_in_the_same_patch() {
     let head = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
     assert!(head.as_u64().unwrap() > 0);
 }
+
+/// 标注状态机（设计 4.6 只列三态，转换规则未规定 → 此处固定行为）：
+/// 幂等解决、禁止 resolved↔rejected 直接翻转、可重开、删除是软删除且允许从任意状态执行。
+#[test]
+fn annotation_lifecycle_rules_are_enforced() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_life", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Annotation,
+        yanshi_server::Profile::Collab,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_life", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    let create = |context: &mut ToolContext<'_>, content: &str| -> String {
+        let response = registry.call(
+            context,
+            "create_annotation",
+            &json!({"type": "region", "content": content, "intent": "modify",
+                    "target": {"type": "region", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}}),
+        );
+        response["annotation_id"].as_str().unwrap().to_owned()
+    };
+
+    // 幂等：重复 resolve 不新增版本、不动 revision。
+    let first = create(&mut context, "第一次");
+    let resolved = registry.call(
+        &mut context,
+        "resolve_annotation",
+        &json!({"annotation_id": first}),
+    );
+    assert_eq!(resolved["ok"], json!(true), "{resolved}");
+    let revision = resolved["annotation"]["revision"].clone();
+    let again = registry.call(
+        &mut context,
+        "resolve_annotation",
+        &json!({"annotation_id": first}),
+    );
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        again["annotation"]["revision"], revision,
+        "重复解决应幂等：{again}"
+    );
+
+    // 禁止直接用 reject 翻转一个已解决的标注。
+    let flipped = registry.call(
+        &mut context,
+        "reject_annotation",
+        &json!({"annotation_id": first}),
+    );
+    assert_eq!(
+        flipped["error_code"],
+        json!("precondition_failed"),
+        "{flipped}"
+    );
+    assert!(
+        flipped["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("重开"),
+        "错误应提示先重开：{flipped}"
+    );
+
+    // 重开后可以再解决（reopen 必须清空 resolved_by/resolved_at）。
+    let reopened = registry.call(
+        &mut context,
+        "update_annotation",
+        &json!({"annotation_id": first, "status": "pending", "content": "重开后的描述"}),
+    );
+    assert_eq!(reopened["ok"], json!(true), "{reopened}");
+    assert_eq!(
+        reopened["annotation"]["status"],
+        json!("pending"),
+        "{reopened}"
+    );
+    assert!(
+        reopened["annotation"]["resolved_by"].is_null(),
+        "重开应清空 resolved_by"
+    );
+    assert!(
+        reopened["annotation"]["resolved_at"].is_null(),
+        "重开应清空 resolved_at"
+    );
+    assert_eq!(reopened["annotation"]["content"], json!("重开后的描述"));
+    assert_eq!(reopened["pending"], json!(1));
+
+    // update_annotation 不接受其它状态（不得绕过状态机）。
+    let bypass = registry.call(
+        &mut context,
+        "update_annotation",
+        &json!({"annotation_id": first, "status": "resolved"}),
+    );
+    assert_eq!(bypass["error_code"], json!("invalid_argument"), "{bypass}");
+
+    // 软删除：允许从任意状态执行，记录仍可取回（append-only 资产不可回滚删除）。
+    let second = create(&mut context, "待删除");
+    registry.call(
+        &mut context,
+        "resolve_annotation",
+        &json!({"annotation_id": second}),
+    );
+    let deleted = registry.call(
+        &mut context,
+        "delete_annotation",
+        &json!({"annotation_id": second}),
+    );
+    assert_eq!(
+        deleted["ok"],
+        json!(true),
+        "已解决的标注应可删除：{deleted}"
+    );
+    let fetched = registry.call(
+        &mut context,
+        "get_annotation",
+        &json!({"annotation_id": second}),
+    );
+    assert_eq!(fetched["ok"], json!(true), "软删除后仍应可取回：{fetched}");
+    assert_eq!(fetched["annotation"]["status"], json!("rejected"));
+    assert_eq!(
+        fetched["annotation"]["content"],
+        json!(""),
+        "删除会清空内容"
+    );
+    let pending = registry.call(
+        &mut context,
+        "list_annotations",
+        &json!({"status": "pending"}),
+    );
+    assert_eq!(pending["pending"], json!(1), "只剩重开的那条：{pending}");
+}

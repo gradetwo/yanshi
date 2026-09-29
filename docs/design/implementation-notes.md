@@ -947,6 +947,31 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 脏区域**直接渲染**（`render_region_direct`，避免整块 tile 重算）与**区域相关外扩**
 （tile 缓冲从 468² 降到 288²，远离修图笔迹的 tile 快 2.3×），两者都已在浏览器实测。
 
+## 二之六之二、标注状态机（设计 4.6 只列三态，转换规则未规定）
+
+设计 4.6 给出 `status: pending | resolved | rejected` 与「独立 append-only 通道」，
+但**未规定**转换规则与重开语义。此处记录决定（原则：与建议层的状态闸门对称，禁止自相矛盾的历史）：
+
+| 转换 | 行为 | 理由 |
+|---|---|---|
+| resolved → resolved | **幂等**返回当前版本（不新增版本、revision 不变） | 重复动作不该污染版本历史 |
+| rejected → rejected | 同上 | 对称 |
+| resolved → rejected | `precondition_failed`，提示先重开 | 否则历史里同时存在"已解决"和"已拒绝"两种结论 |
+| rejected → resolved | 同上 | 对称 |
+| resolved/rejected → pending | 允许（**重开**），并清空 `resolved_by`/`resolved_at` | 人类确实会重开已关闭的问题 |
+| 任意 → rejected（delete） | 允许 | 删除是**软删除**（append-only 通道里资产不可回滚删除，见第 1330 行原则），记录仍可取回、内容清空 |
+
+**重开入口**：`update_annotation` 增加 `status` 参数，且**只接受 `pending`** ——
+解决/拒绝必须走 `resolve_annotation`/`reject_annotation`，不允许用 update 绕过状态机。
+
+测试覆盖：幂等解决（revision 不变）、resolved→rejected 被拒且错误提示"重开"、
+重开清空 `resolved_by`/`resolved_at` 且 pending 计数正确、update 传其它状态被拒、
+已解决标注可软删除且删除后仍可取回（状态 rejected、内容为空）。
+
+线上实测：重复 resolve 的 revision 均为 2；直接 reject 已解决标注返回
+`precondition_failed`（提示先重开）；重开返回 `status=pending` 且 `resolved_by` 字段消失
+（序列化时 `skip_serializing_if = is_none`，字段缺失即为已清空的证据）。
+
 ## 二之七、拖动笔迹性能实测与「预览覆盖层」的否定结论
 
 在真实 Chromium（真实 pointer 事件、真实重绘路径）下测量拖动成本：

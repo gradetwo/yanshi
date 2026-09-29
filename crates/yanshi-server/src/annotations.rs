@@ -226,6 +226,14 @@ pub struct Annotation {
     pub revision: u32,
 }
 
+/// 取某标注的最新版本（内部辅助）。
+fn latest_of(versions: &mut [Annotation]) -> Annotation {
+    versions
+        .last()
+        .cloned()
+        .unwrap_or_else(|| unreachable!("版本列表非空"))
+}
+
 /// 创建标注的入参。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewAnnotation {
@@ -356,16 +364,31 @@ impl AnnotationStore {
     }
 
     /// 标记解决（可由某个原子触发，见 12.6 `accept_suggestion → reapply`）。
+    ///
+    /// 状态机（设计 4.6 只列了三态，未规定转换规则，此处记录决定）：
+    /// * 已 resolved → **幂等**返回当前版本（不新增版本、不动 revision）；
+    /// * 已 rejected → `precondition_failed`（必须先重开，避免历史自相矛盾）。
     pub fn resolve(&mut self, id: &str, atom_id: Option<AtomId>, now: i64) -> Result<Annotation> {
-        self.transition(id, AnnotationStatus::Resolved, atom_id, now)
+        self.transition_gated(id, AnnotationStatus::Resolved, atom_id, now)
     }
 
-    /// 标记拒绝。
+    /// 标记拒绝。规则与 [`Self::resolve`] 对称（幂等 / 不得从 resolved 直接翻转）。
     pub fn reject(&mut self, id: &str, now: i64) -> Result<Annotation> {
-        self.transition(id, AnnotationStatus::Rejected, None, now)
+        self.transition_gated(id, AnnotationStatus::Rejected, None, now)
     }
 
-    /// 删除：append-only 通道里删除等价于标记拒绝并清空内容。
+    /// 重开为待处理：允许从 resolved / rejected 回到 pending，并清空 `resolved_by`/`resolved_at`。
+    pub fn reopen(&mut self, id: &str, now: i64) -> Result<Annotation> {
+        self.transition(id, AnnotationStatus::Pending, None, now)?;
+        let versions = self.versions.get_mut(id).ok_or_else(|| not_found(id))?;
+        if let Some(latest) = versions.last_mut() {
+            latest.resolved_by = None;
+            latest.resolved_at = None;
+        }
+        Ok(latest_of(versions))
+    }
+
+    /// 删除：append-only 通道里删除等价于标记拒绝并清空内容（**允许从任意状态**执行）。
     pub fn delete(&mut self, id: &str, now: i64) -> Result<Annotation> {
         let annotation = self.transition(id, AnnotationStatus::Rejected, None, now)?;
         let versions = self.versions.get_mut(id).ok_or_else(|| not_found(id))?;
@@ -406,6 +429,36 @@ impl AnnotationStore {
             ..AnnotationFilter::default()
         })
         .len()
+    }
+
+    /// 带状态机闸门的转换：幂等 + 禁止 resolved ↔ rejected 直接翻转。
+    fn transition_gated(
+        &mut self,
+        id: &str,
+        status: AnnotationStatus,
+        atom_id: Option<AtomId>,
+        now: i64,
+    ) -> Result<Annotation> {
+        let current = self.get(id)?;
+        if current.status == status {
+            // 幂等：不新增版本、不递增 revision。
+            return Ok(current);
+        }
+        if matches!(
+            (current.status, status),
+            (AnnotationStatus::Resolved, AnnotationStatus::Rejected)
+                | (AnnotationStatus::Rejected, AnnotationStatus::Resolved)
+        ) {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "标注 {id} 当前为 {}，不能直接翻转为 {}：请先重开（status=pending）",
+                    current.status.as_str(),
+                    status.as_str()
+                )),
+            ));
+        }
+        self.transition(id, status, atom_id, now)
     }
 
     fn transition(

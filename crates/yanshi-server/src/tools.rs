@@ -1010,12 +1010,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "update_annotation",
         profile: Profile::Annotation,
-        summary: "更新标注（追加新版本）",
+        summary: "更新标注（追加新版本）；status=pending 表示重开（已 resolved/rejected 的标注须先重开才能再解决）",
         mutating: false,
         params: &[
             param!("annotation_id", String, true, "标注 id"),
             param!("content", String, false, "新内容"),
             param!("intent", String, false, "新意图"),
+            param!("status", String, false, "仅支持 pending：把已解决/已拒绝的标注重开为待处理"),
         ],
     },
     ToolSpec {
@@ -4100,11 +4101,32 @@ fn write_update_annotation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     let intent = optional_str(args, "intent")
         .map(|text| AnnotationIntent::parse(&text))
         .transpose()?;
+    // 设计 4.6 只列三态、未规定转换规则：这里只接受 `pending`（重开），
+    // 其余状态转换必须走 resolve_annotation / reject_annotation，避免用 update 绕过状态机。
+    let reopen = match optional_str(args, "status") {
+        None => false,
+        Some(status) if status == "pending" => true,
+        Some(other) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "update_annotation 的 status 只支持 pending（重开），得到 {other}；\
+                     解决/拒绝请用 resolve_annotation / reject_annotation"
+                )),
+            ))
+        }
+    };
     let document = ctx.workspace.document_mut(&ctx.doc_id)?;
     let annotation = document
         .annotations_mut()
         .update(&id, content, intent, None, ctx.now)?;
-    Ok(json!({"annotation": annotation}))
+    let annotation = if reopen {
+        // 重开会清空 resolved_by/resolved_at。
+        document.annotations_mut().reopen(&id, ctx.now)?
+    } else {
+        annotation
+    };
+    Ok(json!({"annotation": annotation, "pending": document.annotations().pending_count()}))
 }
 
 fn write_delete_annotation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
