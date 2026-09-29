@@ -114,6 +114,8 @@ pub enum FilterKind {
     Vignette,
     /// 辉光（bloom）。
     Glow,
+    /// 局部对比度（clarity）。
+    Clarity,
 }
 
 impl FilterKind {
@@ -127,6 +129,7 @@ impl FilterKind {
             "noise" => Some(Self::Noise),
             "vignette" => Some(Self::Vignette),
             "glow" => Some(Self::Glow),
+            "clarity" => Some(Self::Clarity),
             "brightness_contrast" => Some(Self::BrightnessContrast),
             "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
@@ -144,6 +147,7 @@ impl FilterKind {
             Self::Noise => "noise",
             Self::Vignette => "vignette",
             Self::Glow => "glow",
+            Self::Clarity => "clarity",
             Self::BrightnessContrast => "brightness_contrast",
             Self::Saturation => "saturation",
             Self::Invert => "invert",
@@ -179,8 +183,8 @@ impl FilterKind {
             // 否则边缘会采到画外产生接缝。
             Self::MotionBlur => (distance / 2.0).ceil() as u32,
             Self::Sharpen => radius.ceil() as u32,
-            // 两趟方框模糊，邻域按 2 倍半径申报。
-            Self::Glow => (radius.ceil() as u32) * 2,
+            // 两趟方框模糊，邻域按 2 倍半径申报（glow 与 clarity 同理）。
+            Self::Glow | Self::Clarity => (radius.ceil() as u32) * 2,
             _ => 0,
         }
     }
@@ -634,6 +638,43 @@ pub fn glow(buffer: &mut Buffer, threshold: f32, radius: u32, intensity: f32) {
     }
 }
 
+/// 局部对比度（clarity）：大半径非锐化掩模，并按亮度做中间调加权。
+///
+/// `detail = src - blur`，`out = src + amount × detail × midtone_weight`，
+/// 其中 `midtone_weight = 1 - (2·luma - 1)²`（中间调最强，极暗/极亮处抑制），
+/// 避免在纯黑纯白处产生光晕。输出钳制到 alpha，保持预乘不变量。
+pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let amount = amount.clamp(0.0, 2.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let mut blurred = buffer.clone();
+    box_blur(&mut blurred, radius.clamp(2, 64), 2);
+    let width = buffer.width();
+    let height = buffer.height();
+    for y in 0..height {
+        for x in 0..width {
+            let source = buffer.pixel(x, y);
+            let alpha = source[3];
+            let low = blurred.pixel(x, y);
+            let luma =
+                (LUMA[0] * source[0] + LUMA[1] * source[1] + LUMA[2] * source[2]).clamp(0.0, 1.0);
+            let centered = 2.0 * luma - 1.0;
+            let midtone_weight = (1.0 - centered * centered).clamp(0.0, 1.0);
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                let detail = source[channel] - low[channel];
+                out[channel] = (source[channel] + amount * detail * midtone_weight)
+                    .max(0.0)
+                    .min(alpha.max(0.0));
+            }
+            buffer.set_pixel(x, y, out);
+        }
+    }
+}
+
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
 pub fn vignette(
     buffer: &mut Buffer,
@@ -835,7 +876,7 @@ pub const ADJUSTMENT_NAMES: [&str; 11] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 10] = [
+pub const FILTER_NAMES: [&str; 11] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
@@ -843,6 +884,7 @@ pub const FILTER_NAMES: [&str; 10] = [
     "noise",
     "vignette",
     "glow",
+    "clarity",
     "brightness_contrast",
     "saturation",
     "invert",
@@ -1038,6 +1080,11 @@ pub fn apply_filter(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(0.05) as f32,
             params.get("seed").and_then(Value::as_u64).unwrap_or(0),
+        ),
+        FilterKind::Clarity => clarity(
+            &mut filtered,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.5) as f32,
+            params.get("radius").and_then(Value::as_u64).unwrap_or(16) as u32,
         ),
         FilterKind::Glow => glow(
             &mut filtered,
@@ -1464,6 +1511,73 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 局部对比度：软边变陡、平坦区不变、极暗处抑制（中间调加权）。
+    #[test]
+    fn clarity_steepens_soft_edges_and_spares_flats() {
+        // 中灰底上一条模糊的亮带（软边）。
+        let mut buffer = Buffer::new(0, 0, 32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let value = if (12..20).contains(&x) { 0.6 } else { 0.4 };
+                buffer.set_pixel(x, y, [value, value, value, 1.0]);
+            }
+        }
+        // 带内 (16) 比带外 (11) 更亮；clarity 应把这一差拉大。
+        let before_left = buffer.pixel(11, 16)[0];
+        let before_right = buffer.pixel(16, 16)[0];
+        clarity(&mut buffer, 1.0, 8);
+        let after_left = buffer.pixel(11, 16)[0];
+        let after_right = buffer.pixel(16, 16)[0];
+        // 边缘两侧的差应被拉大（左侧更暗、右侧更亮），平坦区基本不变。
+        assert!(
+            (after_right - after_left) > (before_right - before_left),
+            "局部对比度应拉大边缘差：{before_left}/{before_right} → {after_left}/{after_right}"
+        );
+        let flat_before = 0.4f32;
+        let flat_after = buffer.pixel(2, 2)[0];
+        assert!(
+            (flat_after - flat_before).abs() < 0.02,
+            "平坦区不应被改动：{flat_after}"
+        );
+
+        // 极暗处的中间调加权应抑制效果。
+        let mut dark = Buffer::new(0, 0, 32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let value = if (12..20).contains(&x) { 0.08 } else { 0.02 };
+                dark.set_pixel(x, y, [value, value, value, 1.0]);
+            }
+        }
+        let dark_before = dark.pixel(11, 16)[0];
+        clarity(&mut dark, 1.0, 8);
+        let dark_delta = (dark.pixel(11, 16)[0] - dark_before).abs();
+        let mid_delta = (after_left - before_left).abs();
+        assert!(
+            dark_delta < mid_delta,
+            "极暗处的提升应弱于中间调：{dark_delta} vs {mid_delta}"
+        );
+
+        // 预乘不变量与越界参数。
+        let mut extremes = Buffer::new(0, 0, 8, 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                extremes.set_pixel(x, y, [0.3, 0.3, 0.3, 0.5]);
+            }
+        }
+        clarity(&mut extremes, 9.0, 999);
+        for y in 0..8 {
+            for x in 0..8 {
+                let pixel = extremes.pixel(x, y);
+                assert!(
+                    pixel.iter().all(|v| v.is_finite())
+                        && pixel[0] <= pixel[3] + 1e-3
+                        && pixel[0] >= 0.0,
+                    "越界参数不得破坏预乘不变量：{pixel:?}"
+                );
+            }
+        }
     }
 
     /// 分离色调：暗部取阴影色、亮部取高光色；`balance` 移动分界。

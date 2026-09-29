@@ -182,7 +182,7 @@ Invalid colours are rejected in the tool layer (`invalid_argument`) and never re
 #             (levels takes a channel)
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'
-# filter: box_blur / gaussian_blur / motion_blur / sharpen / noise / vignette / glow /
+# filter: box_blur / gaussian_blur / motion_blur / sharpen / clarity / noise / vignette / glow /
 #         brightness_contrast / saturation / invert
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
