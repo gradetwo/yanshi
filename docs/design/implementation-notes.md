@@ -224,6 +224,8 @@ WebSocket 消息（JSON 文本帧）：
   只有全幅 `render_region` 或 doc 级 `thumbnail()` 才会更新，并记录对应的 seq。
 - `Workspace::ensure_document_thumbnail()`：缩略图与 HEAD 不一致时重新生成，
   保证 6.2「打开即图片」展示的是**当前**画面而不是历史某一帧。
+- 查看器画布渲染**整幅文档**（用 `get_document` 拿到的宽高），不是固定区域——
+  早期实现写死 `512×512`，720×480 的文档右边缘被裁掉（真实浏览器截图才发现）。
 - 工具 `get_document` / `get_state` 返回文档级缩略图，`preview_size` 可选 `64/128/256/false`。
 
 ## 一之二、服务端与工具层的实现级约定
@@ -256,7 +258,11 @@ WebSocket 消息（JSON 文本帧）：
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
   服务端语义层、核心层 27 个工具、capability token、广播边界、MCP stdio、
   零依赖 HTTP/1.1 + WebSocket 传输与最小 Web 查看器均已完成。
-- **Web 查看器**：页面本身在无浏览器环境下无法做视觉验收，采用三层替代验收：
+- **Web 查看器**：桌面环境就绪后已做**真实浏览器**验收（Chromium 153 / Hyprland 0.56.2）：
+  真实窗口截图确认整页渲染正确；用 CDP 发真实鼠标事件画一笔，head 7→8、
+  日志面板收到 WS 推送的 `atom seq=8 draw_stroke` 与 `tiles 4 个失效`、画布与缩略图同步更新、
+  页面零 JS 异常；服务端 `get_log` 确认原子落在 `session:http`（命令走 HTTP、推送走 WS 的分工）。
+  此前无浏览器时采用的三层替代验收：
   ① 仓库内单测做 `node --check` 式的语法与**顶层重复声明**检测
   （`viewer.rs::viewer_script_has_no_duplicate_top_level_declarations`，
   曾捕获 `const preview` 与 `async function preview` 冲突导致的整页 SyntaxError）；

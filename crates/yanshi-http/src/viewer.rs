@@ -25,7 +25,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   header h1 { font-size: 15px; margin: 0 12px 0 0; }
   main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
-  #preview { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+  #preview { display: block; width: 100%; height: auto; max-height: calc(100vh - 96px); object-fit: contain; image-rendering: pixelated; }
   #board { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
   aside { display: grid; gap: 12px; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
@@ -103,6 +103,7 @@ const state = {
   lastAtom: null,
   reverted: [],
   socket: null,
+  docSize: { w: 1024, h: 1024 },
   viewport: { x: 0, y: 0, w: 1024, h: 1024 },
   dragging: null,
   points: [],
@@ -160,6 +161,7 @@ async function refreshThumb() {
   }).then((r) => r.json());
   if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
   if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
+  if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
 }
 
 async function ensureDocument() {
@@ -178,9 +180,9 @@ async function ensureDocument() {
   history.replaceState(null, "", url);
   $("identity").textContent = state.docId + " · " + value.token.slice(0, 8) + "…";
   await refreshLayers();
+  await refreshThumb();
   await refreshPreview();
   connect();
-  refreshThumb();
 }
 
 async function refreshLayers() {
@@ -206,14 +208,17 @@ async function refreshLayers() {
 }
 
 async function refreshPreview() {
+  // 渲染**整幅文档**（不是固定的 512×512 区域），否则大画布会被裁掉。
+  const { w, h } = state.docSize;
   const value = await callTool("render_region", {
-    region: { x: 0, y: 0, w: 512, h: 512 },
+    region: { x: 0, y: 0, w, h },
   }, { refresh: false });
   if (value.thumb_url) {
     preview.onload = () => {
       board.width = preview.naturalWidth;
       board.height = preview.naturalHeight;
       state.viewport = { x: 0, y: 0, w: preview.naturalWidth, h: preview.naturalHeight };
+      setStatus({});
       if (state.socket && state.socket.readyState === 1) subscribeViewport();
       redraw();
     };
@@ -381,9 +386,9 @@ $("open").addEventListener("click", ensureDocument);
   } else {
     $("identity").textContent = state.docId;
     await refreshLayers();
+    await refreshThumb();
     await refreshPreview();
     connect();
-    refreshThumb();
   }
 })();
 </script>
