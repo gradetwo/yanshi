@@ -9,6 +9,7 @@
 ## 设计文档
 
 - [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) —— 冻结设计文档 v1.0-draft4（中文）。这是全部语义与协议的权威定义；代码不得与设计文档静默分叉，行为变更必须同时更新设计文档。
+- [docs/design/implementation-notes.md](docs/design/implementation-notes.md) —— 实现说明：模块与章节对应表、文档留白处的实现级明确化、尚未实现清单、验收载体（测试 ↔ 文档要求）。
 
 ## 当前状态
 
@@ -29,7 +30,7 @@ yanshi/
 ├── crates/
 │   └── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
 ├── docs/
-│   └── design/               # 冻结设计文档及修订历史
+│   └── design/               # 冻结设计文档、实现说明与修订历史
 ├── .github/workflows/ci.yml  # 持续集成：fmt / clippy / test / 长时 fuzz
 ├── CONTRIBUTING.md
 └── LICENSE                   # MIT
@@ -42,18 +43,15 @@ yanshi/
 需要 Rust stable 1.85 或更高版本。
 
 ```bash
-cargo test --workspace          # 单元测试 + 属性测试
-cargo run -p yanshi-cli -- --help   # (规划中，见路线图)
-cargo clippy --workspace --all-targets
+cargo test --workspace                  # 单元测试 + 属性测试 + Phase 0 出口用例
+cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz
+cargo run -p yanshi-core --example quickstart   # 端到端示例：提交 → 撤销 → 时间旅行 → GC
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all
 ```
 
-> `yanshi-cli` 属于路线图内容，当前尚未提供，第二条命令在 Phase 1 完成前会失败。
-
-长时模糊测试（默认被 `#[ignore]` 标记）：
-
-```bash
-cargo test --workspace --release -- --ignored
-```
+> 长时 fuzz 默认被 `#[ignore]` 标记，CI 以 `--ignored` 单独执行（`.github/workflows/ci.yml` 的 `fuzz` 作业）。
+> 服务端进程、CLI 与 MCP/HTTP/WebSocket 传输层属于路线图内容，当前尚未提供。
 
 ## 设计要点
 

@@ -12,7 +12,7 @@
 use crate::atom::{Atom, AtomKind, BlobHash, BlobRef};
 use crate::blob::{BlobStore, MemoryBlobStore};
 use crate::error::ErrorCode;
-use crate::fold::{apply, fold_atoms};
+use crate::fold::{apply, fold_atoms, precondition};
 use crate::ids::{Seq, UlidGen};
 use crate::log::{AtomLog, CommitContext};
 use crate::snapshot::{Snapshot, SnapshotBase};
@@ -36,7 +36,7 @@ pub struct ScenarioConfig {
     pub revert_permille: u32,
     /// 采样性替换（retouch）操作的千分比。
     pub sampling_permille: u32,
-    /// 实体数量上限（图层、对象、蒙版、风格各自）。
+    /// 存活实体数量上限（图层 / 对象 / 蒙版 / 风格各自）。
     pub max_entities: usize,
 }
 
@@ -72,7 +72,7 @@ impl ScenarioConfig {
             snapshot_window: 500,
             revert_permille: 60,
             sampling_permille: 20,
-            max_entities: 64,
+            max_entities: 32,
         }
     }
 }
@@ -107,9 +107,7 @@ pub struct ScenarioStats {
     pub rejected: usize,
     /// 各错误码拒绝次数。
     pub rejections_by_code: BTreeMap<String, usize>,
-    /// 写入 CAS 的 blob 数（去重前）。
-    pub blobs_written: usize,
-    /// 生成的快照数。
+    /// 生成快照数。
     pub snapshots: usize,
 }
 
@@ -130,7 +128,7 @@ pub struct Scenario {
 }
 
 impl Scenario {
-    /// 全部生效 blob hash。
+    /// 全部 blob hash。
     pub fn blob_hashes(&self) -> Vec<BlobHash> {
         self.store
             .list()
@@ -141,6 +139,16 @@ impl Scenario {
     /// 最终状态的活跃 blob Manifest。
     pub fn active_manifest(&self) -> std::collections::BTreeSet<BlobHash> {
         self.final_state.active_blob_manifest()
+    }
+
+    /// 接受率（0.0 – 1.0）。
+    pub fn acceptance_rate(&self) -> f64 {
+        let total = self.stats.accepted + self.stats.rejected;
+        if total == 0 {
+            1.0
+        } else {
+            self.stats.accepted as f64 / total as f64
+        }
     }
 }
 
@@ -182,12 +190,12 @@ impl Rng {
     }
 
     /// 从列表随机取一个元素的克隆。
-    pub fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
+    pub fn pick<T: Clone>(&mut self, items: &[T]) -> Option<T> {
         if items.is_empty() {
             None
         } else {
             let index = self.below(items.len());
-            items.get(index)
+            items.get(index).cloned()
         }
     }
 
@@ -206,6 +214,7 @@ impl Rng {
 /// 会话模型：两个会话交替提交，用于触发跨会话冲突与权限路径。
 const SESSIONS: [(&str, &str); 2] = [("human:1", "session:a"), ("ai:1", "session:b")];
 
+/// 生成器维护的实体视图：只保留**当前存活**的实体，避免生成注定被拒绝的原子。
 #[derive(Debug, Default)]
 struct Model {
     layers: Vec<String>,
@@ -213,14 +222,53 @@ struct Model {
     styles: Vec<String>,
     masks: Vec<String>,
     selections: Vec<String>,
-    /// 可作为 revert/reapply 目标的状态原子（按 seq 升序）。
-    state_atoms: Vec<(String, Seq, AtomKind)>,
+    /// 可作为 revert/reapply 目标的状态原子（seq 升序，窗口内）。
+    revertable: Vec<(String, Seq)>,
+    /// 当前处于撤销状态的原子。
     suppressed: Vec<String>,
-    next_layer: usize,
-    next_object: usize,
-    next_style: usize,
-    next_mask: usize,
-    next_selection: usize,
+}
+
+/// 存活实体视图：图层、对象（含归属图层）、风格、蒙版、选区。
+#[derive(Debug, Default, Clone)]
+struct AliveView {
+    layers: Vec<String>,
+    objects: Vec<(String, String)>,
+    styles: Vec<String>,
+    masks: Vec<String>,
+    selections: Vec<String>,
+}
+
+fn alive_view(state: &DocumentState) -> AliveView {
+    AliveView {
+        layers: state
+            .alive_layers()
+            .iter()
+            .map(|layer| layer.id.clone())
+            .collect(),
+        objects: state
+            .alive_objects()
+            .iter()
+            .map(|object| (object.id.clone(), object.layer_id.clone()))
+            .collect(),
+        styles: state
+            .styles
+            .values()
+            .filter(|style| !style.is_deleted())
+            .map(|style| style.id.clone())
+            .collect(),
+        masks: state
+            .masks
+            .values()
+            .filter(|mask| !mask.is_deleted())
+            .map(|mask| mask.id.clone())
+            .collect(),
+        selections: state
+            .selections
+            .values()
+            .filter(|selection| !selection.is_deleted())
+            .map(|selection| selection.id.clone())
+            .collect(),
+    }
 }
 
 /// 生成一个场景。
@@ -253,72 +301,8 @@ pub fn generate(config: &ScenarioConfig) -> Scenario {
             log.append_validated(atom, &commit)
         };
 
-        match outcome {
-            Ok(appended) => {
-                let seq = appended.seq();
-                stats.accepted += 1;
-                steps.push(StepRecord {
-                    atom_id: atom_id.clone(),
-                    kind,
-                    actor: actor.to_owned(),
-                    session: session.to_owned(),
-                    seq: Some(seq),
-                    accepted: true,
-                    error_code: None,
-                });
-                update_model(&mut model, &log, &atom_id, seq, kind);
-
-                // 折叠推进：declare_head 触发起点跳变（完整求值），撤销/恢复在窗口内重放，
-                // 其余原子直接应用。窗口由快照基线保证（6.2 / 6.5）。
-                match kind {
-                    AtomKind::DeclareHead => {
-                        let mut cache = crate::seq::StateAtCache::new();
-                        match crate::seq::state_at(&log, seq, &mut cache) {
-                            Ok(evaluated) => {
-                                state = evaluated.state;
-                                base_state = state.clone();
-                                base_seq = seq;
-                            }
-                            Err(_) => state = fold_atoms(base_state.clone(), &[]).state,
-                        }
-                    }
-                    AtomKind::Revert | AtomKind::Reapply => {
-                        let slice = log.range_exclusive_inclusive(base_seq, seq);
-                        state = fold_atoms(base_state.clone(), slice).state;
-                    }
-                    _ => {
-                        let Some(head) = log.by_seq(seq).cloned() else {
-                            continue;
-                        };
-                        // 与折叠器保持一致：precondition 失败即为级联失效，不得单方面应用。
-                        if crate::fold::precondition(&state, &head).is_ok() {
-                            let _ = apply(&mut state, &head);
-                            state.head_seq = head.seq;
-                            state.head_atom = Some(head.id.clone());
-                        } else {
-                            let slice = log.range_exclusive_inclusive(base_seq, seq);
-                            state = fold_atoms(base_state.clone(), slice).state;
-                        }
-                    }
-                }
-                // 撤销目标不得越出当前基线窗口，否则窗口重放不再等价于完整折叠。
-                model
-                    .state_atoms
-                    .retain(|(_, target_seq, _)| *target_seq > base_seq);
-
-                if config.snapshot_window > 0 && seq - base_seq >= config.snapshot_window as u64 {
-                    let base_ref = match log.last_declare_head_upto(seq) {
-                        Some(head) => SnapshotBase::DeclareHead(head.id.clone()),
-                        None => SnapshotBase::Snapshot("root".to_owned()),
-                    };
-                    if let Ok(snapshot) = Snapshot::from_state(seq, base_ref, state.clone()) {
-                        base_state = snapshot.state.clone();
-                        base_seq = seq;
-                        stats.snapshots += 1;
-                        snapshots.push(snapshot);
-                    }
-                }
-            }
+        let appended = match outcome {
+            Ok(appended) => appended,
             Err(error) => {
                 stats.rejected += 1;
                 *stats
@@ -334,6 +318,66 @@ pub fn generate(config: &ScenarioConfig) -> Scenario {
                     accepted: false,
                     error_code: Some(error.code),
                 });
+                continue;
+            }
+        };
+
+        let seq = appended.seq();
+        stats.accepted += 1;
+        steps.push(StepRecord {
+            atom_id: atom_id.clone(),
+            kind,
+            actor: actor.to_owned(),
+            session: session.to_owned(),
+            seq: Some(seq),
+            accepted: true,
+            error_code: None,
+        });
+
+        // 折叠推进：declare_head 触发起点跳变（完整求值），撤销/恢复在窗口内重放，
+        // 其余原子直接应用。窗口由快照基线保证（6.2 / 6.5）。
+        match kind {
+            AtomKind::DeclareHead => {
+                let mut cache = crate::seq::StateAtCache::new();
+                match crate::seq::state_at(&log, seq, &mut cache) {
+                    Ok(evaluated) => {
+                        state = evaluated.state;
+                        base_state = state.clone();
+                        base_seq = seq;
+                    }
+                    Err(_) => state = fold_atoms(base_state.clone(), &[]).state,
+                }
+            }
+            AtomKind::Revert | AtomKind::Reapply => {
+                let slice = log.range_exclusive_inclusive(base_seq, seq);
+                state = fold_atoms(base_state.clone(), slice).state;
+            }
+            _ => {
+                if let Some(head) = log.by_seq(seq).cloned() {
+                    // 与折叠器保持一致：precondition 失败即为级联失效，不得单方面应用。
+                    if precondition(&state, &head).is_ok() {
+                        let _ = apply(&mut state, &head);
+                        state.head_seq = head.seq;
+                        state.head_atom = Some(head.id.clone());
+                    } else {
+                        let slice = log.range_exclusive_inclusive(base_seq, seq);
+                        state = fold_atoms(base_state.clone(), slice).state;
+                    }
+                }
+            }
+        }
+
+        update_model(&mut model, &state, &log, &atom_id, seq, kind, base_seq);
+        if config.snapshot_window > 0 && seq - base_seq >= config.snapshot_window as u64 {
+            let base_ref = match log.last_declare_head_upto(seq) {
+                Some(head) => SnapshotBase::DeclareHead(head.id.clone()),
+                None => SnapshotBase::Snapshot("root".to_owned()),
+            };
+            if let Ok(snapshot) = Snapshot::from_state(seq, base_ref, state.clone()) {
+                base_state = snapshot.state.clone();
+                base_seq = seq;
+                stats.snapshots += 1;
+                snapshots.push(snapshot);
             }
         }
     }
@@ -348,57 +392,50 @@ pub fn generate(config: &ScenarioConfig) -> Scenario {
     }
 }
 
-fn update_model(model: &mut Model, log: &AtomLog, atom_id: &str, seq: Seq, kind: AtomKind) {
-    let Some(atom) = log.get(atom_id) else {
-        return;
-    };
+fn update_model(
+    model: &mut Model,
+    state: &DocumentState,
+    log: &AtomLog,
+    atom_id: &str,
+    seq: Seq,
+    kind: AtomKind,
+    base_seq: Seq,
+) {
+    // 存活实体直接从折叠状态派生，保证生成器只会挑选真实存活的目标。
+    let alive = alive_view(state);
+    model.layers = alive.layers;
+    model.objects = alive.objects;
+    model.styles = alive.styles;
+    model.masks = alive.masks;
+    model.selections = alive.selections;
+
+    if kind.is_state_effect() {
+        model.revertable.push((atom_id.to_owned(), seq));
+    }
     match kind {
-        AtomKind::CreateLayer => {
-            if let Some(layer_id) = crate::atom::payload_str(&atom.payload, "layer_id") {
-                model.layers.push(layer_id.to_owned());
+        AtomKind::Revert => {
+            if let Some(target) = log.get(atom_id).and_then(|atom| atom.target_atom()) {
+                model.revertable.retain(|(id, _)| id != target);
+                if !model.suppressed.iter().any(|id| id == target) {
+                    model.suppressed.push(target.to_owned());
+                }
             }
         }
-        AtomKind::CreateObject | AtomKind::ImportImage => {
-            if let (Some(object_id), Some(layer_id)) = (
-                crate::atom::payload_str(&atom.payload, "object_id"),
-                crate::atom::payload_str(&atom.payload, "layer_id"),
-            ) {
-                model
-                    .objects
-                    .push((object_id.to_owned(), layer_id.to_owned()));
-            }
-        }
-        AtomKind::CreateStyle => {
-            if let Some(style_id) = crate::atom::payload_str(&atom.payload, "style_id") {
-                model.styles.push(style_id.to_owned());
-            }
-        }
-        AtomKind::CreateMask => {
-            if let Some(mask_id) = crate::atom::payload_str(&atom.payload, "mask_id") {
-                model.masks.push(mask_id.to_owned());
-            }
-        }
-        AtomKind::CreateSelection => {
-            if let Some(selection_id) = crate::atom::payload_str(&atom.payload, "selection_id") {
-                model.selections.push(selection_id.to_owned());
+        AtomKind::Reapply => {
+            if let Some(target) = log.get(atom_id).and_then(|atom| atom.target_atom()) {
+                model.suppressed.retain(|id| id != target);
+                if let Some(target_seq) = log.seq_of(target) {
+                    model.revertable.push((target.to_owned(), target_seq));
+                }
             }
         }
         _ => {}
     }
-    if kind.is_state_effect() {
-        model.state_atoms.push((atom_id.to_owned(), seq, kind));
-    }
-    if kind == AtomKind::Revert {
-        if let Some(target) = atom.target_atom() {
-            model.suppressed.push(target.to_owned());
-            model.state_atoms.retain(|(id, _, _)| id != target);
-        }
-    }
-    if kind == AtomKind::Reapply {
-        if let Some(target) = atom.target_atom() {
-            model.suppressed.retain(|id| id != target);
-        }
-    }
+    // 撤销目标不得越出当前基线窗口，否则窗口重放不再等价于完整折叠。
+    model.revertable.retain(|(_, seq)| *seq > base_seq);
+    model
+        .suppressed
+        .retain(|id| log.seq_of(id).map(|seq| seq > base_seq).unwrap_or(false));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,6 +450,13 @@ fn build_atom(
     session: &str,
     step: usize,
 ) -> Atom {
+    // 实体 id 由步号派生：天然唯一，且不依赖提交是否成功。
+    let new_layer = format!("layer_{step}");
+    let new_object = format!("obj_{step}");
+    let new_style = format!("style_{step}");
+    let new_mask = format!("mask_{step}");
+    let new_selection = format!("sel_{step}");
+
     let mut atom = match choose_op(rng, model, state, config, step) {
         Op::CreateDocument => Atom::new(
             AtomKind::CreateDocument,
@@ -425,34 +469,29 @@ fn build_atom(
                 "color_space": "srgb",
             }),
         ),
-        Op::CreateLayer => {
-            let layer_id = format!("layer_{}", model.next_layer);
-            Atom::new(
-                AtomKind::CreateLayer,
-                actor,
-                session,
-                json!({"layer_id": layer_id, "name": layer_id}),
-            )
-        }
+        Op::CreateLayer => Atom::new(
+            AtomKind::CreateLayer,
+            actor,
+            session,
+            json!({"layer_id": new_layer, "name": new_layer}),
+        ),
         Op::CreateNestedLayer => {
-            let layer_id = format!("layer_{}", model.next_layer);
-            let parent = rng.pick(&model.layers).cloned();
+            let parent = rng.pick(&model.layers);
             Atom::new(
                 AtomKind::CreateLayer,
                 actor,
                 session,
-                json!({"layer_id": layer_id, "parent_id": parent, "type": "layer_group"}),
+                json!({"layer_id": new_layer, "parent_id": parent, "type": "layer_group"}),
             )
         }
         Op::CreateObject => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
-            let object_id = format!("obj_{}", model.next_object);
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
             Atom::new(
                 AtomKind::CreateObject,
                 actor,
                 session,
                 json!({
-                    "object_id": object_id,
+                    "object_id": new_object,
                     "layer_id": layer_id,
                     "type": ObjectKind::pick(rng).as_str(),
                     "z_index": rng.below(8),
@@ -460,14 +499,13 @@ fn build_atom(
             )
         }
         Op::DrawStroke => {
-            let object_id = format!("obj_{}", model.next_object);
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
             Atom::new(
                 AtomKind::DrawStroke,
                 actor,
                 session,
                 json!({
-                    "object_id": object_id,
+                    "object_id": new_object,
                     "layer_id": layer_id,
                     "brush": "round",
                     "size": 1.0 + rng.below(20) as f64 / 4.0,
@@ -476,7 +514,7 @@ fn build_atom(
             )
         }
         Op::Supersede => {
-            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
             Atom::new(
                 AtomKind::Supersede,
                 actor,
@@ -485,7 +523,7 @@ fn build_atom(
             )
         }
         Op::SetPropertyObject => {
-            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
             let (key, value) = match rng.below(3) {
                 0 => ("visible", json!(rng.permille(500))),
                 1 => ("locked", json!(rng.permille(500))),
@@ -499,7 +537,7 @@ fn build_atom(
             )
         }
         Op::SetPropertyLayer => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
             let (key, value) = match rng.below(3) {
                 0 => ("visible", json!(rng.permille(500))),
                 1 => ("opacity", json!(rng.below(100) as f64 / 100.0)),
@@ -526,43 +564,36 @@ fn build_atom(
                 json!({"order": order}),
             )
         }
-        Op::CreateStyle => {
-            let style_id = format!("style_{}", model.next_style);
-            Atom::new(
-                AtomKind::CreateStyle,
-                actor,
-                session,
-                json!({"style_id": style_id, "name": style_id, "category": "ink"}),
-            )
-        }
+        Op::CreateStyle => Atom::new(
+            AtomKind::CreateStyle,
+            actor,
+            session,
+            json!({"style_id": new_style, "name": new_style, "category": "ink"}),
+        ),
         Op::StyledObject => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
-            let object_id = format!("obj_{}", model.next_object);
-            let style_id = rng.pick(&model.styles).cloned().unwrap_or_default();
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
+            let style_id = rng.pick(&model.styles).unwrap_or_default();
             Atom::new(
                 AtomKind::DrawShape,
                 actor,
                 session,
                 json!({
-                    "object_id": object_id,
+                    "object_id": new_object,
                     "layer_id": layer_id,
                     "style_id": style_id,
                     "data": {"geometry": {"kind": "rect"}},
                 }),
             )
         }
-        Op::CreateMask => {
-            let mask_id = format!("mask_{}", model.next_mask);
-            Atom::new(
-                AtomKind::CreateMask,
-                actor,
-                session,
-                json!({"mask_id": mask_id, "shape": {"kind": "rect"}, "feather": 2.0}),
-            )
-        }
+        Op::CreateMask => Atom::new(
+            AtomKind::CreateMask,
+            actor,
+            session,
+            json!({"mask_id": new_mask, "shape": {"kind": "rect"}, "feather": 2.0}),
+        ),
         Op::BindMask => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
-            let mask_id = rng.pick(&model.masks).cloned().unwrap_or_default();
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
+            let mask_id = rng.pick(&model.masks).unwrap_or_default();
             Atom::new(
                 AtomKind::SetProperty,
                 actor,
@@ -570,17 +601,14 @@ fn build_atom(
                 json!({"layer_id": layer_id, "key": "mask_id", "value": mask_id}),
             )
         }
-        Op::CreateSelection => {
-            let selection_id = format!("sel_{}", model.next_selection);
-            Atom::new(
-                AtomKind::CreateSelection,
-                actor,
-                session,
-                json!({"selection_id": selection_id, "shape": {"kind": "ellipse"}}),
-            )
-        }
+        Op::CreateSelection => Atom::new(
+            AtomKind::CreateSelection,
+            actor,
+            session,
+            json!({"selection_id": new_selection, "shape": {"kind": "ellipse"}}),
+        ),
         Op::TombstoneObject => {
-            let (object_id, _) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
             Atom::new(
                 AtomKind::Tombstone,
                 actor,
@@ -589,7 +617,7 @@ fn build_atom(
             )
         }
         Op::TombstoneLayer => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
             Atom::new(
                 AtomKind::Tombstone,
                 actor,
@@ -598,7 +626,7 @@ fn build_atom(
             )
         }
         Op::CreateCheckpoint => {
-            let checkpoint_id = format!("ckpt_{}", step);
+            let checkpoint_id = format!("ckpt_{step}");
             Atom::new(
                 AtomKind::CreateCheckpoint,
                 actor,
@@ -612,12 +640,9 @@ fn build_atom(
         }
         Op::DeclareHead => {
             let target = model
-                .state_atoms
-                .iter()
-                .rev()
-                .take(8)
-                .map(|(id, _, _)| id.clone())
-                .next()
+                .revertable
+                .last()
+                .map(|(id, _)| id.clone())
                 .unwrap_or_default();
             Atom::new(
                 AtomKind::DeclareHead,
@@ -627,7 +652,7 @@ fn build_atom(
             )
         }
         Op::Retouch => {
-            let (object_id, layer_id) = rng.pick(&model.objects).cloned().unwrap_or_default();
+            let (object_id, layer_id) = rng.pick(&model.objects).unwrap_or_default();
             Atom::new(
                 AtomKind::Retouch,
                 actor,
@@ -645,10 +670,9 @@ fn build_atom(
             )
         }
         Op::RasterPatch => {
-            let layer_id = rng.pick(&model.layers).cloned().unwrap_or_default();
-            let object_id = format!("obj_{}", model.next_object);
+            let layer_id = rng.pick(&model.layers).unwrap_or_default();
             let mut payload = json!({
-                "object_id": object_id,
+                "object_id": new_object,
                 "layer_id": layer_id,
                 "type": "raster_patch",
                 "sampling": rng.permille(500),
@@ -656,11 +680,7 @@ fn build_atom(
                 "region": {"x": 0, "y": 0, "w": 32, "h": 32},
             });
             if config.blob_bytes > 0 {
-                let mut bytes = vec![0u8; config.blob_bytes];
-                let stamp = (step as u32).to_le_bytes();
-                for (index, slot) in bytes.iter_mut().enumerate() {
-                    *slot = (index as u8).wrapping_add(stamp[index % 4]);
-                }
+                let bytes = blob_bytes(step, config.blob_bytes);
                 if let Ok(blob_ref) = write_blob(store, &bytes, "image/webp") {
                     payload["bitmap"] = json!(blob_ref);
                 }
@@ -669,21 +689,21 @@ fn build_atom(
         }
         Op::Revert => {
             let target = rng
-                .pick(&model.state_atoms)
-                .map(|(id, _, _)| id.clone())
+                .pick(&model.revertable)
+                .map(|(id, _)| id)
                 .unwrap_or_default();
             Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
         }
         Op::Reapply => {
-            let target = rng.pick(&model.suppressed).cloned().unwrap_or_default();
+            let target = rng.pick(&model.suppressed).unwrap_or_default();
             Atom::new(AtomKind::Reapply, actor, session, json!({"target": target}))
         }
         Op::RevertStaleTarget => {
-            // 刻意构造一个指向很旧原子的 revert：用于覆盖拒绝路径。
+            // 刻意构造一个指向很旧原子的 revert：覆盖跨求值起点 / 已出窗口的拒绝路径。
             let target = model
-                .state_atoms
+                .revertable
                 .first()
-                .map(|(id, _, _)| id.clone())
+                .map(|(id, _)| id.clone())
                 .unwrap_or_default();
             Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
         }
@@ -699,6 +719,16 @@ fn build_atom(
     };
     atom.id = ids.next_id();
     atom
+}
+
+/// 生成与步号相关、但仍可从内容判断的确定性 blob 内容。
+fn blob_bytes(step: usize, size: usize) -> Vec<u8> {
+    let mut bytes = vec![0u8; size];
+    let stamp = (step as u32).to_le_bytes();
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        *slot = (index as u8).wrapping_add(stamp[index % 4]);
+    }
+    bytes
 }
 
 fn write_blob(store: &MemoryBlobStore, bytes: &[u8], mime: &str) -> crate::error::Result<BlobRef> {
@@ -781,7 +811,7 @@ fn choose_op(
         return Op::CreateObject;
     }
     if config.revert_permille > 0 && rng.permille(config.revert_permille) {
-        return if model.suppressed.is_empty() || rng.permille(300) {
+        return if model.suppressed.is_empty() || rng.permille(400) {
             Op::Revert
         } else {
             Op::Reapply
@@ -790,71 +820,44 @@ fn choose_op(
     if config.sampling_permille > 0 && rng.permille(config.sampling_permille) {
         return Op::Retouch;
     }
+
+    // 实体数量上限：达到上限后只做修改类操作，避免状态无界增长。
+    let can_add_layer = model.layers.len() < config.max_entities;
+    let can_add_object = model.objects.len() < config.max_entities * 2;
+    let can_add_aux = model.styles.len() < config.max_entities
+        && model.masks.len() < config.max_entities
+        && model.selections.len() < config.max_entities;
+
     match rng.below(100) {
-        0..=11 => Op::CreateLayer,
-        12..=19 => {
-            if model.layers.len() > 1 && rng.permille(400) {
-                Op::CreateNestedLayer
+        0..=9 if can_add_layer => Op::CreateLayer,
+        10..=17 if can_add_layer && model.layers.len() > 1 && rng.permille(300) => {
+            Op::CreateNestedLayer
+        }
+        18..=19 if can_add_layer => Op::CreateLayer,
+        20..=30 if can_add_object => Op::CreateObject,
+        31..=36 if can_add_object => Op::DrawStroke,
+        37..=52 => Op::Supersede,
+        53..=62 => Op::SetPropertyObject,
+        63..=68 => Op::SetPropertyLayer,
+        69..=73 if model.layers.len() > 1 => Op::ReorderLayers,
+        74..=77 if can_add_aux => Op::CreateStyle,
+        78..=80 if can_add_object && !model.styles.is_empty() => Op::StyledObject,
+        81..=84 if can_add_aux => Op::CreateMask,
+        85..=87 if !model.masks.is_empty() => Op::BindMask,
+        88..=90 if can_add_aux => Op::CreateSelection,
+        91..=93 if !model.objects.is_empty() => Op::TombstoneObject,
+        94 if model.layers.len() > 2 && rng.permille(200) => Op::TombstoneLayer,
+        95..=96 => Op::CreateCheckpoint,
+        97 if !model.revertable.is_empty() && step > 4 => Op::DeclareHead,
+        98 if can_add_object => Op::RasterPatch,
+        99 => {
+            if rng.permille(500) {
+                Op::InvalidReference
             } else {
-                Op::CreateObject
+                Op::RevertStaleTarget
             }
         }
-        20..=33 => Op::DrawStroke,
-        34..=45 => Op::Supersede,
-        46..=54 => Op::SetPropertyObject,
-        55..=60 => Op::SetPropertyLayer,
-        61..=65 => {
-            if model.layers.len() > 1 {
-                Op::ReorderLayers
-            } else {
-                Op::CreateLayer
-            }
-        }
-        66..=69 => Op::CreateStyle,
-        70..=73 => {
-            if model.styles.is_empty() {
-                Op::CreateStyle
-            } else if model.layers.is_empty() {
-                Op::CreateLayer
-            } else {
-                Op::StyledObject
-            }
-        }
-        74..=77 => Op::CreateMask,
-        78..=81 => {
-            if model.masks.is_empty() {
-                Op::CreateMask
-            } else {
-                Op::BindMask
-            }
-        }
-        82..=84 => Op::CreateSelection,
-        85..=88 => Op::TombstoneObject,
-        89..=90 => {
-            if model.layers.len() > 2 {
-                Op::TombstoneLayer
-            } else {
-                Op::CreateLayer
-            }
-        }
-        91..=92 => Op::CreateCheckpoint,
-        93..=94 => {
-            if model.state_atoms.is_empty() || step < 4 {
-                Op::CreateObject
-            } else {
-                Op::DeclareHead
-            }
-        }
-        95..=96 => Op::RasterPatch,
-        97 => Op::InvalidReference,
-        98 => Op::RevertStaleTarget,
-        _ => {
-            if model.layers.is_empty() {
-                Op::CreateLayer
-            } else {
-                Op::CreateObject
-            }
-        }
+        _ => Op::Supersede,
     }
 }
 
@@ -897,5 +900,49 @@ mod tests {
         assert!(sessions.contains("session:b"));
         assert!(scenario.stats.rejected > 0, "生成器应覆盖提交被拒绝的路径");
         assert!(scenario.final_state.is_consistent());
+    }
+
+    #[test]
+    fn acceptance_rate_is_high_for_a_bounded_scene() {
+        let scenario = generate(&ScenarioConfig {
+            seed: 42,
+            steps: 600,
+            blob_bytes: 0,
+            snapshot_window: 200,
+            revert_permille: 100,
+            sampling_permille: 30,
+            max_entities: 12,
+        });
+        assert!(
+            scenario.acceptance_rate() > 0.8,
+            "接受率过低：{:.2}（{:?}）",
+            scenario.acceptance_rate(),
+            scenario.stats.rejections_by_code
+        );
+        assert!(scenario.final_state.is_consistent());
+        assert_eq!(
+            scenario.final_state,
+            crate::FoldEngine::new().fold(&scenario.log).unwrap().state,
+            "生成器维护的状态必须与完整折叠一致"
+        );
+    }
+
+    #[test]
+    fn scenario_respects_entity_bounds() {
+        let config = ScenarioConfig {
+            seed: 9,
+            steps: 800,
+            blob_bytes: 0,
+            snapshot_window: 100,
+            revert_permille: 80,
+            sampling_permille: 0,
+            max_entities: 6,
+        };
+        let scenario = generate(&config);
+        assert!(
+            scenario.final_state.objects.len() <= config.max_entities * 8,
+            "对象数量 {} 超出预期",
+            scenario.final_state.objects.len()
+        );
     }
 }
