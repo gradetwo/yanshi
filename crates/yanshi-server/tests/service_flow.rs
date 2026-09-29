@@ -785,6 +785,20 @@ fn clone_stamp_copies_content_and_is_reversible() {
     let after = sample(&mut context, 60, 60);
     assert!(after[0] > 180 && after[1] < 90, "应复制到红色：{after:?}");
 
+    // 修复画笔：同一位置同一源，颜色应向目标处靠拢。
+    let healed = registry.call(
+        &mut context,
+        "heal_stamp",
+        &json!({"layer_id": "layer_1", "points": [[76.0, 76.0]],
+                "source_offset": [-50.0, -50.0], "size": 16.0, "hardness": 1.0}),
+    );
+    assert_eq!(healed["ok"], json!(true), "{healed}");
+    let healed_pixel = sample(&mut context, 76, 76);
+    assert!(
+        healed_pixel[1] > after[1] + 20,
+        "heal 应比 clone 更接近白色目标处：clone={after:?} heal={healed_pixel:?}"
+    );
+
     // 参数校验：零偏移无意义、点列非法都要被拒。
     for payload in [
         json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),

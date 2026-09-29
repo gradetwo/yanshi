@@ -1138,6 +1138,22 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
+        name: "heal_stamp",
+        profile: Profile::Retouch,
+        summary: "修复画笔：复制 source_offset 处的纹理，并把低频颜色/明度对齐到目标处",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("source_offset", Array, true, "采样偏移 [dx,dy]，源 = 目标 + 偏移"),
+            param!("size", Number, false, "笔刷直径（缺省 24）"),
+            param!("hardness", Number, false, "硬度 0-1（缺省 0.6）"),
+            param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
         name: "clone_stamp",
         profile: Profile::Retouch,
         summary: "仿制图章：把 source_offset 处的已有内容复制到 points 轨迹上（源为应用本对象前的图层内容）",
@@ -1251,7 +1267,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
-        "clone_stamp" => write_clone_stamp(ctx, args),
+        "clone_stamp" => write_retouch(ctx, args, "clone_stamp"),
+        "heal_stamp" => write_retouch(ctx, args, "heal"),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2175,14 +2192,14 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
     finish_mutation(ctx, &result, region)
 }
 
-/// 仿制图章：创建 `retouch` 对象（内核只实现了 `clone_stamp` 这一种修图）。
-fn write_clone_stamp(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+/// 修图对象（`clone_stamp` / `heal`）：内核只实现了这两种，其余类型不放行。
+fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let points = require_array(args, "points")?;
     if points.is_empty() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail("clone_stamp 至少需要一个点"),
+            ErrorContext::detail("修图至少需要一个点"),
         ));
     }
     let mut parsed: Vec<[f64; 2]> = Vec::with_capacity(points.len());
@@ -2190,7 +2207,7 @@ fn write_clone_stamp(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         let pair = point.as_array().ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail("clone_stamp 的 points 必须是 [[x,y], ...]"),
+                ErrorContext::detail("修图的 points 必须是 [[x,y], ...]"),
             )
         })?;
         let x = pair.first().and_then(Value::as_f64);
@@ -2200,7 +2217,7 @@ fn write_clone_stamp(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             _ => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
-                    ErrorContext::detail("clone_stamp 的点必须是数字"),
+                    ErrorContext::detail("修图的点必须是数字"),
                 ))
             }
         }
@@ -2260,7 +2277,7 @@ fn write_clone_stamp(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "layer_id": layer_id,
             "z_index": z_index,
             "data": {
-                "retouch_type": "clone_stamp",
+                "retouch_type": retouch_type,
                 "points": parsed,
                 "source_offset": [dx, dy],
                 "size": size,

@@ -171,7 +171,8 @@ curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKE
 ```
 
 ```bash
-# 仿制图章：把 source_offset 处的已有内容复制到笔迹轨迹上
+# 仿制图章（heal_stamp 用法相同，另会把低频颜色对齐到目标处）：
+# 把 source_offset 处的已有内容复制到笔迹轨迹上
 curl -s -X POST "http://127.0.0.1:8080/api/tools/clone_stamp?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","points":[[300,300],[360,340]],"source_offset":[-120,-80],"size":40}'
 ```

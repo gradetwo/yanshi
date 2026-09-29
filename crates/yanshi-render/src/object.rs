@@ -77,7 +77,7 @@ pub enum Primitive {
     /// 指向历史状态的 `source_state_version` 采样尚未实现（设计 Phase 3 后续），
     /// 当前语义等价于「源 = 应用本对象之前的图层内容」，即经典仿制图章。
     Retouch {
-        /// 修图类型（目前仅 `clone_stamp`）。
+        /// 修图类型（`clone_stamp` / `heal`）。
         kind: String,
         /// 采样点列。
         points: Vec<(f64, f64)>,

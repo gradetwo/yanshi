@@ -591,12 +591,13 @@ impl Renderer {
                     opacity,
                     jitter,
                 } => {
-                    if kind != "clone_stamp" {
+                    if kind != "clone_stamp" && kind != "heal" {
                         stats
                             .unsupported
                             .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
                         continue;
                     }
+                    let healing = kind == "heal";
                     // 源必须是**应用本对象之前**的图层内容：先拷贝一份，避免自反馈。
                     let source = layer_buffer.clone();
                     let brush = crate::brush::BrushSpec {
@@ -630,11 +631,56 @@ impl Renderer {
                         if sampled[3] <= 0.0 {
                             continue;
                         }
-                        let straight = [
+                        let mut straight = [
                             sampled[0] / sampled[3],
                             sampled[1] / sampled[3],
                             sampled[2] / sampled[3],
                         ];
+                        if healing {
+                            // 修复画笔：保留源纹理，但把低频颜色/明度对齐到目标处。
+                            // 两侧均值都取自**应用本对象之前**的副本，因此结果确定且无自反馈。
+                            let dest_x = (cx - origin.0 as f64).max(0.0) as u32;
+                            let dest_y = (cy - origin.1 as f64).max(0.0) as u32;
+                            let radius_u32 = radius.max(1.0) as u32;
+                            let mut source_mean = [0.0f32; 3];
+                            let mut dest_mean = [0.0f32; 3];
+                            let mut samples_count = 0.0f32;
+                            // 8 个固定方向 × 半径中点，确定性采样。
+                            // 只统计**源与目标都不透明**的样本：图层缓冲在未绘制处是透明的，
+                            // 那种位置没有颜色信息可用；若一个有效样本都没有（例如目标处图层为空），
+                            // 就退回纯 clone 语义（不做低频校正）。
+                            for step in 0..8 {
+                                let angle = std::f32::consts::TAU * (step as f32) / 8.0;
+                                let ox = (angle.cos() * (radius_u32 as f32 * 0.5)).round() as i64;
+                                let oy = (angle.sin() * (radius_u32 as f32 * 0.5)).round() as i64;
+                                let source_x =
+                                    (sx as i64 + ox).clamp(0, source.width() as i64 - 1) as u32;
+                                let source_y =
+                                    (sy as i64 + oy).clamp(0, source.height() as i64 - 1) as u32;
+                                let dest_x =
+                                    (dest_x as i64 + ox).clamp(0, source.width() as i64 - 1) as u32;
+                                let dest_y = (dest_y as i64 + oy)
+                                    .clamp(0, source.height() as i64 - 1)
+                                    as u32;
+                                let a = source.pixel(source_x, source_y);
+                                let b = source.pixel(dest_x, dest_y);
+                                if a[3] <= 0.0 || b[3] <= 0.0 {
+                                    continue;
+                                }
+                                for channel in 0..3 {
+                                    source_mean[channel] += a[channel] / a[3];
+                                    dest_mean[channel] += b[channel] / b[3];
+                                }
+                                samples_count += 1.0;
+                            }
+                            if samples_count > 0.0 {
+                                for channel in 0..3 {
+                                    let delta =
+                                        (dest_mean[channel] - source_mean[channel]) / samples_count;
+                                    straight[channel] = (straight[channel] + delta).clamp(0.0, 1.0);
+                                }
+                            }
+                        }
                         crate::brush::draw_stamp(
                             layer_buffer,
                             cx,
@@ -1366,6 +1412,101 @@ mod tests {
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
+    }
+
+    /// heal：复制源纹理的同时，把低频颜色对齐到目标处（修复画笔）。
+    #[test]
+    fn heal_matches_the_destination_colour() {
+        let mut state = white_document();
+        state.width = 64;
+        state.height = 64;
+        // 目标处必须是**图层里已绘制**的内容（浅灰底），否则没有颜色信息可对齐。
+        state.objects.insert(
+            "obj_bg".to_owned(),
+            object(
+                "obj_bg",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}},
+                       "color": {"r": 200, "g": 200, "b": 200, "a": 255}}),
+            ),
+        );
+        // 源：偏暗的蓝灰块（左上）。
+        state.objects.insert(
+            "obj_src".to_owned(),
+            object(
+                "obj_src",
+                "layer_1",
+                ObjectType::Shape,
+                1,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 24, "h": 24}},
+                       "color": {"r": 30, "g": 40, "b": 60, "a": 255}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+
+        let retouch = |renderer: &mut Renderer, kind: &str| {
+            let mut state = state.clone();
+            state.objects.insert(
+                "obj_retouch".to_owned(),
+                object(
+                    "obj_retouch",
+                    "layer_1",
+                    ObjectType::Retouch,
+                    2,
+                    json!({"retouch_type": kind, "points": [[44.0, 44.0]],
+                           "source_offset": [-40.0, -40.0], "size": 12.0,
+                           "hardness": 1.0, "opacity": 1.0}),
+                ),
+            );
+            renderer
+                .render_document(&state, &store)
+                .unwrap()
+                .pixel(44, 44)
+                .unwrap()
+        };
+
+        let cloned = retouch(&mut renderer, "clone_stamp");
+        let healed = retouch(&mut renderer, "heal");
+        let background = renderer
+            .render_document(&state, &store)
+            .unwrap()
+            .pixel(44, 44)
+            .unwrap();
+        // clone 直接搬来暗蓝灰；heal 应被浅灰底抬高，明显更接近底色。
+        assert!(
+            cloned[0] < 100 && cloned[2] > cloned[0],
+            "clone 应搬来暗蓝灰：{cloned:?}"
+        );
+        assert!(
+            healed[0] > cloned[0] + 40 && healed[1] > cloned[1] + 40,
+            "heal 应把低频颜色对齐到目标处：clone={cloned:?} heal={healed:?}"
+        );
+        assert!(
+            (healed[0] as i32 - background[0] as i32).unsigned_abs()
+                < (cloned[0] as i32 - background[0] as i32).unsigned_abs(),
+            "heal 应比 clone 更接近目标处底色：heal={healed:?} clone={cloned:?} bg={background:?}"
+        );
+        // 未实现类型仍要告警。
+        let mut bad = state.clone();
+        bad.objects.insert(
+            "obj_retouch".to_owned(),
+            object(
+                "obj_retouch",
+                "layer_1",
+                ObjectType::Retouch,
+                2,
+                json!({"retouch_type": "smudge", "points": [[44.0, 44.0]], "source_offset": [-40.0, -40.0]}),
+            ),
+        );
+        let rendered = renderer.render_document(&bad, &store).unwrap();
+        assert_eq!(
+            rendered.stats.unsupported.len(),
+            1,
+            "未实现的修图类型必须告警"
+        );
     }
 
     /// clone_stamp：必须把偏移处的已有内容复制到笔迹位置，且**只**改笔迹覆盖处。
