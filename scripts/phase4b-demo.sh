@@ -37,11 +37,11 @@ echo "基线像素指纹：$BEFORE"
 step "① 人类标注"
 ANNOTATION="$(tool create_annotation '{"type":"region","content":"整幅太暗，提亮一点","intent":"modify","target":{"type":"region","bbox":{"x":0,"y":0,"w":256,"h":256}}}' | pick "['annotation_id']")"
 PENDING="$(tool list_annotations '{"status":"pending"}' | pick "['pending']")"
-echo "标注 id：$ANNOTATION（待处理 $PENDING）"
+echo "标注 id：${ANNOTATION}（待处理 ${PENDING}）"
 
 step "② AI 解析并给出建议（patch = 工具调用序列）"
 SUGGESTION="$(tool suggest "{\"annotation_id\":\"$ANNOTATION\",\"summary\":\"曝光 +0.8EV 后反相\",\"patch\":[{\"tool\":\"add_adjustment\",\"arguments\":{\"layer_id\":\"L\",\"adjustment_type\":\"exposure\",\"params\":{\"ev\":0.8}}},{\"tool\":\"add_adjustment\",\"arguments\":{\"layer_id\":\"L\",\"adjustment_type\":\"invert\"}}]}" | pick "['suggestion_id']")"
-tool list_suggestions '{"status":"pending"}' | pick "['pending']" | xargs -I{} echo "待处理建议：{}（建议 id $SUGGESTION）"
+tool list_suggestions '{"status":"pending"}' | pick "['pending']" | xargs -I{} echo "待处理建议：{}（建议 id ${SUGGESTION}）"
 
 step "③ 再建一条标注并关联该建议（追踪）"
 tool create_annotation "{\"type\":\"region\",\"content\":\"跟随建议\",\"intent\":\"style\",\"target\":{\"type\":\"region\",\"bbox\":{\"x\":0,\"y\":0,\"w\":64,\"h\":64}},\"suggestion_id\":\"$SUGGESTION\"}" >/dev/null
@@ -94,10 +94,10 @@ if [ "$BEFORE_CREATE" = "$AFTER_CREATE" ]; then
   exit 1
 fi
 if [ "$LAYERS_AFTER" -le "$LAYERS_BEFORE" ]; then
-  echo "❌ 图层数未增加（$LAYERS_BEFORE → $LAYERS_AFTER）：create_layer 步骤未生效" >&2
+  echo "❌ 图层数未增加（$LAYERS_BEFORE → ${LAYERS_AFTER}）：create_layer 步骤未生效" >&2
   exit 1
 fi
-echo "✅ 补丁内建层+绘制已落地（图层 $LAYERS_BEFORE → $LAYERS_AFTER；像素指纹 $BEFORE_CREATE → $AFTER_CREATE）"
+echo "✅ 补丁内建层+绘制已落地（图层 $LAYERS_BEFORE → ${LAYERS_AFTER}；像素指纹 $BEFORE_CREATE → ${AFTER_CREATE}）"
 
 echo
 echo "建议状态："
@@ -109,4 +109,4 @@ for item in d['suggestions']:
 print('  pending =', d['pending'])
 "
 echo
-echo "✅ Phase 4b 环路演示完成（文档 $DOC）"
+echo "✅ Phase 4b 环路演示完成（文档 ${DOC}）"

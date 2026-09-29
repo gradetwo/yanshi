@@ -21,9 +21,19 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
     --help|-h) sed -n '2,10p' "$0"; exit 0 ;;
-    *) echo "未知参数：$1（可用 --port/--root）" >&2; exit 2 ;;
+    *) echo "未知参数：${1}（可用 --port/--root）" >&2; exit 2 ;;
   esac
 done
+
+# 端口预检：已经有同类实例在跑时不要报一堆构建/绑定错误，直接告诉用户地址。
+if curl -s -m 1 -o /dev/null "http://127.0.0.1:${PORT}/health"; then
+  if curl -s -m 1 "http://127.0.0.1:${PORT}/health" | grep -q '"ok":true'; then
+    echo "已有 Yanshi 实例在 http://127.0.0.1:${PORT}/ 运行；如需另起一个：make run PORT=9000"
+    exit 0
+  fi
+  echo "端口 ${PORT} 已被其它程序占用；换一个端口：make run PORT=9000" >&2
+  exit 1
+fi
 
 echo "== 构建 WASM 客户端内核（可选）"
 if cargo build -q -p yanshi-wasm --target wasm32-unknown-unknown --release 2>/dev/null; then
@@ -45,5 +55,5 @@ echo "== 构建服务端（release）"
 cargo build --release -p yanshi-http
 
 mkdir -p "$ROOT"
-echo "== 启动：http://127.0.0.1:$PORT/   （数据目录 $ROOT）"
+echo "== 启动：http://127.0.0.1:$PORT/   （数据目录 ${ROOT}）"
 exec target/release/yanshi-serve --bind "127.0.0.1:$PORT" --root "$ROOT" --doc "$DOC"

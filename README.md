@@ -84,7 +84,10 @@ curl -s -X POST http://127.0.0.1:8110/api/documents -d '{"doc_id":"demo","width"
 curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TOKEN" -d '{"layer_id":"layer_1"}'
 ```
 
-## Desktop entry (Omarchy / Hyprland)
+## Desktop entry (Linux: Omarchy / Hyprland)
+
+The instructions below use `systemctl --user`, so they apply to Linux only. On macOS the server
+runs the same way (`make run`); only the autostart wiring differs.
 
 ```bash
 cp deploy/systemd/yanshi-serve.service ~/.config/systemd/user/

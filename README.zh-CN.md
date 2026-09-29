@@ -84,7 +84,10 @@ curl -s -X POST http://127.0.0.1:8110/api/documents -d '{"doc_id":"demo","width"
 curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TOKEN" -d '{"layer_id":"layer_1"}'
 ```
 
-## 桌面入口（Omarchy / Hyprland）
+## 桌面入口（Linux：Omarchy / Hyprland）
+
+下面用到 `systemctl --user`，因此仅适用于 Linux。macOS 上服务端用法相同（`make run`），
+只是自启动的接线方式不同。
 
 ```bash
 cp deploy/systemd/yanshi-serve.service ~/.config/systemd/user/
