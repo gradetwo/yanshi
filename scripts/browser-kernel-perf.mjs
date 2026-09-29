@@ -42,16 +42,27 @@ const send = (method, params = {}) =>
     pending.set(current, resolve);
     ws.send(JSON.stringify({ id: current, method, params }));
   });
-const evaluate = async (expression) =>
-  (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
-    ?.result?.value;
+const evaluate = async (expression) => {
+  const response = await send("Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  if (response.result?.exceptionDetails) {
+    console.error("页面内求值异常:", JSON.stringify(response.result.exceptionDetails).slice(0, 400));
+  }
+  return response.result?.result?.value;
+};
 
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 let ready = null;
 for (let attempt = 0; attempt < 150; attempt++) {
-  ready = await evaluate("!!window.yanshiKernel && window.yanshiStats.kernelHead > 0");
+  // 就绪判定：内核句柄存在且 head 已加载（空文档 head 为 0，因此不能用 > 0 判定）。
+  ready = await evaluate(
+    "!!window.yanshiKernel && window.yanshiStats.wasm === true && window.yanshiStats.kernelHead !== null",
+  );
   if (ready) break;
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
@@ -59,6 +70,44 @@ if (!ready) {
   console.error("内核未就绪（服务端 /health 的 wasm 是否为 true？URL 是否带 debug=1？）");
   process.exit(1);
 }
+// 二分：固定开销落在哪一段（JS↔WASM 调用 / 渲染元信息 / RGBA 输出 / PNG 输出）。
+const bisect = await evaluate(`(() => {
+  const kernel = window.yanshiKernel;
+  const best = (rounds, body) => {
+    body();
+    let minimum = Infinity;
+    for (let index = 0; index < rounds; index++) {
+      const started = performance.now();
+      body();
+      minimum = Math.min(minimum, performance.now() - started);
+    }
+    return minimum;
+  };
+  // 逐项 try/catch：任一入口不可用或抛错时，把原因带回 JS 侧而不是整体失败。
+  const probe = (rounds, body) => {
+    try {
+      return best(rounds, body);
+    } catch (error) {
+      return "err: " + (error && error.message ? error.message : String(error));
+    }
+  };
+  return {
+    stats: probe(200, () => kernel.stats()),
+    state_json: probe(50, () => kernel.state_json()),
+    render_info_8: probe(5, () => kernel.render_region_info(8, 8, 8, 8)),
+    render_info_512: probe(5, () => kernel.render_region_info(8, 8, 512, 512)),
+    rgba_8: probe(5, () => kernel.render_region_rgba(8, 8, 8, 8)),
+    rgba_512: probe(5, () => kernel.render_region_rgba(8, 8, 512, 512)),
+    png_512: probe(5, () => kernel.render_region_png(8, 8, 512, 512)),
+  };
+})()`);
+console.log("固定开销二分（5–200 次取最小）:");
+for (const [key, value] of Object.entries(bisect ?? {})) {
+  console.log(
+    `  ${key.padEnd(16)}: ${typeof value === "number" ? value.toFixed(3) + "ms" : value}`,
+  );
+}
+
 const result = await evaluate(`(() => {
   const kernel = window.yanshiKernel;
   const sides = [8, 16, 32, 64, 128, 256, 512];

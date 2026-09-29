@@ -529,3 +529,65 @@ fn region_render_matches_the_design_budget_tiers() {
         "未命中复杂 {complex:?} 相对预算/基线明显回归（设计 300ms）"
     );
 }
+
+/// 原生参照：单个 256² tile 的渲染 + 量化成本，用来判断客户端观测到的「每次调用固定开销」
+/// 是 WASM 侧固有成本，还是本机噪声放大的结果。
+#[test]
+#[ignore = "性能参照：CI 用 --ignored 执行（单 tile 渲染原生成本）"]
+fn native_single_tile_render_reference() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(
+            NewDocument::new("doc_tile", 1024, 1024),
+            "human:1",
+            "session:a",
+        )
+        .unwrap();
+    workspace
+        .commit(
+            "doc_tile",
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "layer_1", "name": "base"}),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    workspace
+        .commit(
+            "doc_tile",
+            Atom::new(
+                AtomKind::CreateObject,
+                "human:1",
+                "session:a",
+                json!({
+                    "object_id": "shape_1",
+                    "layer_id": "layer_1",
+                    "kind": "shape",
+                    "data": {
+                        "geometry": {"kind": "rect", "bbox": {"x": 100.0, "y": 100.0, "w": 600.0, "h": 600.0}},
+                        "color": {"r": 200, "g": 120, "b": 60, "a": 255}
+                    }
+                }),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    // 8×8（一个 tile 的极小切片）与 256×256（整 tile）对比：客户端在两者上观测到的差异很小，
+    // 若原生同样如此，则说明成本确实与输出像素数无关，而在「至少渲染一个 tile」这件事上。
+    for side in [8.0f64, 256.0] {
+        let region = Bbox::new(0.0, 0.0, side, side);
+        let _ = workspace.render_region_raw("doc_tile", region).unwrap();
+        let mut best = Duration::MAX;
+        for _ in 0..5 {
+            let started = Instant::now();
+            let _ = workspace.render_region_raw("doc_tile", region).unwrap();
+            best = best.min(started.elapsed());
+        }
+        println!("原生 {side:.0}² 区域 raw 渲染（最小）: {best:?}");
+    }
+}
