@@ -1831,6 +1831,22 @@ fn preview_suggestion_validates_without_applying() {
         ]}),
     );
     assert_eq!(preview["total_steps"], json!(5), "{preview}");
+    // 影响范围预估：效果类=整层、修图=区域，汇总取更保守者。
+    let steps = preview["steps"].as_array().unwrap();
+    assert_eq!(
+        steps[0]["affects"],
+        json!("layer"),
+        "调整作用于整层：{preview}"
+    );
+    assert_eq!(
+        steps[1]["affects"],
+        json!("region"),
+        "修图只影响笔迹范围：{preview}"
+    );
+    assert_eq!(preview["estimated_dirty"], json!("layer"), "{preview}");
+    let region = steps[1]["estimated_region"].as_array().unwrap();
+    assert_eq!(region.len(), 4, "区域步骤应给出包围盒：{preview}");
+    assert!(region[2].as_f64().unwrap() > 0.0, "{preview}");
     assert_eq!(preview["invalid_steps"], json!(3), "{preview}");
     assert_eq!(preview["applicable"], json!(false), "含非法步骤时不可应用");
     let steps = preview["steps"].as_array().unwrap();
@@ -1855,6 +1871,35 @@ fn preview_suggestion_validates_without_applying() {
     );
     assert_eq!(good["applicable"], json!(true), "{good}");
     assert_eq!(good["steps"][0]["class"], json!("structure"));
+    assert_eq!(
+        good["steps"][0]["affects"],
+        json!("document"),
+        "新建图层按内核语义是整文档失效：{good}"
+    );
+    assert_eq!(good["estimated_dirty"], json!("document"));
+
+    // 纯几何补丁：汇总应为 region，并给出并集包围盒。
+    let geometric = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"patch": [
+            {"tool": "draw_stroke", "arguments": {"layer_id": "layer_1", "size": 8,
+                "data": {"points": [[10, 10], [30, 20]]}}},
+            {"tool": "draw_shape", "arguments": {"layer_id": "layer_1",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 16, "h": 16}},
+                         "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}}
+        ]}),
+    );
+    assert_eq!(geometric["estimated_dirty"], json!("region"), "{geometric}");
+    let merged = geometric["estimated_region"].as_array().unwrap();
+    assert!(
+        merged[0].as_f64().unwrap() <= 10.0,
+        "并集应含第一笔：{geometric}"
+    );
+    assert!(
+        merged[0].as_f64().unwrap() + merged[2].as_f64().unwrap() >= 56.0,
+        "并集应含矩形：{geometric}"
+    );
 
     // 用 suggestion_id 预览已记录的建议。
     let suggestion = registry.call(

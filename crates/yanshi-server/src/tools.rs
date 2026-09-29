@@ -3023,6 +3023,8 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     let registry = ToolRegistry::with_profiles(&all_implemented_profiles());
     let mut steps = Vec::new();
     let mut invalid = 0usize;
+    let mut aggregate_affects = "none";
+    let mut aggregate_region: Option<Bbox> = None;
     for (index, step) in patch.iter().enumerate() {
         let tool = step
             .get("tool")
@@ -3030,13 +3032,29 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             .unwrap_or_default()
             .to_owned();
         let step_args = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let (affects, region) = estimate_step_impact(&tool, &step_args);
         let mut entry = json!({
             "index": index,
             "tool": tool,
             "class": tool_class(&tool),
+            "affects": affects,
+            "estimated_region": region.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
             "layer_id": step_args.get("layer_id").cloned().unwrap_or(Value::Null),
             "object_id": step_args.get("object_id").cloned().unwrap_or(Value::Null),
         });
+        // 汇总：document > layer > region。
+        match affects {
+            "document" => aggregate_affects = "document",
+            "layer" if aggregate_affects != "document" => aggregate_affects = "layer",
+            "region" if aggregate_affects == "none" => aggregate_affects = "region",
+            _ => {}
+        }
+        if let Some(bbox) = region {
+            aggregate_region = Some(match aggregate_region {
+                Some(existing) => existing.union(&bbox),
+                None => bbox,
+            });
+        }
         match registry.get(&tool) {
             None => {
                 invalid += 1;
@@ -3076,6 +3094,8 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         "total_steps": patch.len(),
         "invalid_steps": invalid,
         "applicable": invalid == 0 && !patch.is_empty(),
+        "estimated_dirty": aggregate_affects,
+        "estimated_region": aggregate_region.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
         "notes": "静态检查：工具存在性、mutating、参数形状与效果类取值范围；\
                   个别工具的运行期限制（如外扩上限）在应用时最终判定",
     }))
@@ -3093,6 +3113,138 @@ fn preview_effect_check(tool: &str, args: &Value) -> Result<()> {
     };
     let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
     validate_effect(kind, name, &params)
+}
+
+/// 预估某一步骤的影响范围（按内核真实的 dirty 语义推导）。
+///
+/// 返回 `(affects, region)`：`affects` ∈ `document` / `layer` / `region` / `unknown`，
+/// `region` 为可推导时的影响包围盒。这是**预估**而不是实测：精确范围由内核在应用时
+/// 按对象与效果计算，这里只依据「效果类作用于整层」「几何类按包围盒」等既定语义给出，
+/// 目的是让审阅者在应用前知道量级（例如「这一步会改整层」）。
+fn estimate_step_impact(tool: &str, args: &Value) -> (&'static str, Option<Bbox>) {
+    let number = |key: &str| args.get(key).and_then(Value::as_f64);
+    // 参数既可能平铺（`points`/`bbox`），也可能嵌在 `data` 里（工具调用的常见形状）。
+    let data = args.get("data");
+    let lookup = |key: &str| -> Option<&Value> {
+        args.get(key)
+            .or_else(|| data.and_then(|data| data.get(key)))
+    };
+    let points_bbox = |margin: f64| -> Option<Bbox> {
+        let points = lookup("points")?.as_array()?;
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for point in points {
+            let pair = point.as_array()?;
+            let x = pair.first()?.as_f64()?;
+            let y = pair.get(1)?.as_f64()?;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        if !min_x.is_finite() {
+            return None;
+        }
+        let margin = margin.max(0.0);
+        Some(Bbox::new(
+            min_x - margin,
+            min_y - margin,
+            (max_x - min_x) + margin * 2.0,
+            (max_y - min_y) + margin * 2.0,
+        ))
+    };
+    let region_bbox = || -> Option<Bbox> {
+        args.get("region")
+            .and_then(Bbox::from_value)
+            .or_else(|| lookup("bbox").and_then(Bbox::from_value))
+            .or_else(|| {
+                // 形状对象的 bbox 常在 `data.geometry.bbox`。
+                data.and_then(|data| data.get("geometry"))
+                    .and_then(|geometry| geometry.get("bbox"))
+                    .and_then(Bbox::from_value)
+            })
+            .or_else(|| {
+                let (x, y) = (number("x")?, number("y")?);
+                Some(Bbox::new(x, y, number("w")?, number("h")?))
+            })
+    };
+    if matches!(tool, "create_layer" | "reorder_layers" | "delete_layer") {
+        // 图层结构变化按内核语义是整文档失效。
+        return ("document", None);
+    }
+    if tool.starts_with("add_adjustment")
+        || tool.starts_with("add_filter")
+        || tool.starts_with("update_adjustment")
+        || tool.starts_with("update_filter")
+    {
+        // 6.6：调整/滤镜作用于同层下方全部内容 → 整层结构 dirty。
+        return ("layer", None);
+    }
+    if tool == "set_property" {
+        let key = args.get("key").and_then(Value::as_str).unwrap_or_default();
+        return match key {
+            // 这些属性会改变依赖闭包 → 整层。
+            "z_index" | "visible" | "layer_id" | "mask_id" | "style_id" | "type" => ("layer", None),
+            // 其余属性（如元数据）按对象范围。
+            _ => ("region", object_bbox_from_args(args)),
+        };
+    }
+    if tool.starts_with("clone_stamp") || tool.starts_with("heal_stamp") || tool == "smudge" {
+        // 修图：笔迹范围 + 采样偏移/涂抹距离 + 笔刷半径。
+        let size = number("size").unwrap_or(24.0);
+        let reach = number("source_offset")
+            .map(f64::abs)
+            .unwrap_or(0.0)
+            .max(number("smudge_length").unwrap_or(0.0));
+        return ("region", points_bbox(size / 2.0 + reach + 2.0));
+    }
+    if tool.starts_with("liquify") {
+        let size = number("size").unwrap_or(80.0);
+        let strength = number("strength").unwrap_or(0.5).abs().min(2.0);
+        return ("region", points_bbox(size / 2.0 + strength * size + 2.0));
+    }
+    if tool == "patch" {
+        let width = args
+            .get("source_region")
+            .and_then(Bbox::from_value)
+            .map(|bbox| bbox.w)
+            .unwrap_or(0.0);
+        let height = args
+            .get("source_region")
+            .and_then(Bbox::from_value)
+            .map(|bbox| bbox.h)
+            .unwrap_or(0.0);
+        let target = args.get("target").and_then(Value::as_array);
+        return match target {
+            Some(pair) => {
+                let x = pair.first().and_then(Value::as_f64).unwrap_or(0.0);
+                let y = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+                ("region", Some(Bbox::new(x, y, width, height)))
+            }
+            None => ("region", None),
+        };
+    }
+    if tool.starts_with("draw_") || tool == "fill" || tool == "erase" || tool == "import_image" {
+        let size = number("size").unwrap_or(0.0);
+        return ("region", points_bbox(size / 2.0 + 2.0).or_else(region_bbox));
+    }
+    if tool.starts_with("move_") || tool == "transform" || tool.starts_with("delete_") {
+        return ("region", object_bbox_from_args(args));
+    }
+    if tool.starts_with("create_mask") {
+        // 蒙版羽化会扩展到整层。
+        return ("layer", None);
+    }
+    ("unknown", None)
+}
+
+/// 从 `object_id` 参数推导对象包围盒（拿不到就用 `region`/`bbox` 参数兜底）。
+fn object_bbox_from_args(args: &Value) -> Option<Bbox> {
+    args.get("region")
+        .and_then(Bbox::from_value)
+        .or_else(|| args.get("bbox").and_then(Bbox::from_value))
 }
 
 /// 补丁步骤的粗分类（供预览展示；精确影响范围在应用时由内核计算）。

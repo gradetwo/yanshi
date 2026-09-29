@@ -793,6 +793,28 @@ AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pendi
 并在响应里注明「静态检查；个别工具的运行期限制（如外扩上限）在应用时最终判定」。
 预览的 `applicable` 为 `false` 时不应提交接受。
 
+**影响范围预估（`preview_suggestion` 增强）**：每步额外给出
+`affects`（`document` / `layer` / `region` / `unknown`）与 `estimated_region`，
+并在响应里汇总 `estimated_dirty` + `estimated_region`（多步取并集、`document` 覆盖一切）。
+推导规则对齐**内核真实的 dirty 语义**，因此预估与实测同源：
+
+| 步骤类型 | affects | 依据 |
+|---|---|---|
+| `create_layer` / `reorder_layers` / `delete_layer` | `document` | 图层结构变化按内核语义整文档失效 |
+| `add_adjustment` / `add_filter` / `update_*` | `layer` | 6.6：调整/滤镜作用于同层下方全部内容 |
+| `set_property` 的 `z_index`/`visible`/`layer_id`/`mask_id`/`style_id`/`type` | `layer` | 这些键会改变依赖闭包 |
+| `clone_stamp` / `heal_stamp` / `smudge` | `region` | 笔迹范围 + `max(|offset|, smudge_length)` + 半径 |
+| `liquify_*` | `region` | 笔迹范围 + `size/2 + strength×size` |
+| `draw_*` / `fill` / `erase` / `import_image` | `region` | 点列/形状包围盒 + 笔刷半径 |
+| `patch` | `region` | `target` + 源区域宽高 |
+| 其它 | `unknown` | 保守标注，不猜 |
+
+参数既可能平铺（`points`/`bbox`）也可能嵌在 `data` 里（工具调用的常见形状），两种都解析
+（第一版只解析平铺形式，几何补丁的预估直接是 `null`，被测试抓到）。
+
+这是**预估**而不是实测：精确范围仍由内核在应用时按对象与效果计算，响应里的 `notes`
+也如实说明这一点。
+
 **批量接受与轮询友好列表**：
 
 * `accept_suggestions`：一次最多 64 条，**逐条尝试、个别失败不中断**，逐条返回
