@@ -73,6 +73,32 @@ import sys, json
 d = json.load(sys.stdin)
 print('拒绝建议 %s：原因「%s」，联动标注 %d 条' % (d['suggestion_id'], d['reason'], len(d['rejected_annotations'])))
 "
+step "⑥ 补丁内先建图层再绘制（协作原子豁免嵌套引用校验后打通）"
+LAYERS_BEFORE="$(tool get_document '{}' | pick "['layers']")"
+CREATE_USE="$(tool suggest '{"summary":"新建图层并画方块","patch":[{"tool":"create_layer","arguments":{"layer_id":"fresh"}},{"tool":"draw_shape","arguments":{"layer_id":"fresh","data":{"geometry":{"kind":"rect","bbox":{"x":32,"y":32,"w":48,"h":48}},"color":{"r":255,"g":0,"b":0,"a":255}}}}]}' | pick "['suggestion_id']")"
+if [ -z "$CREATE_USE" ] || [ "$CREATE_USE" = "None" ]; then
+  echo "❌ 先建后画的补丁无法记录（嵌套引用校验回归）" >&2
+  exit 1
+fi
+BEFORE_CREATE="$(fingerprint)"
+tool accept_suggestion "{\"suggestion_id\":\"$CREATE_USE\"}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('应用原子数：%d' % len(d['applied_atom_ids']))
+assert d['ok'], d
+"
+AFTER_CREATE="$(fingerprint)"
+LAYERS_AFTER="$(tool get_document '{}' | pick "['layers']")"
+if [ "$BEFORE_CREATE" = "$AFTER_CREATE" ]; then
+  echo "❌ 新建图层上的绘制没有改变像素" >&2
+  exit 1
+fi
+if [ "$LAYERS_AFTER" -le "$LAYERS_BEFORE" ]; then
+  echo "❌ 图层数未增加（$LAYERS_BEFORE → $LAYERS_AFTER）：create_layer 步骤未生效" >&2
+  exit 1
+fi
+echo "✅ 补丁内建层+绘制已落地（图层 $LAYERS_BEFORE → $LAYERS_AFTER；像素指纹 $BEFORE_CREATE → $AFTER_CREATE）"
+
 echo
 echo "建议状态："
 tool list_suggestions '{}' | python3 -c "
