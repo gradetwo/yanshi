@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use yanshi_core::{Bbox, ErrorCode, ErrorContext, YanshiError};
+use yanshi_core::{Bbox, ErrorCode, ErrorContext, Seq, YanshiError};
 use yanshi_server::broadcast::PushChannel;
 use yanshi_server::token::{Role, TransportKind};
 use yanshi_server::tools::{Profile, ToolContext, ToolRegistry};
@@ -351,7 +351,9 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         return match method {
             // 客户端自带 ULID 的原子提交（12.2 幂等与重试安全）。
             "POST" => atom_submit(state, request),
-            _ => method_not_allowed(request, "POST"),
+            // 完整原子读取：WASM 客户端据此本地折叠（`get_log` 只给元数据）。
+            "GET" => atom_list(state, request),
+            _ => method_not_allowed(request, "GET, POST"),
         };
     }
     if let Some(file) = path.strip_prefix("/wasm/") {
@@ -718,6 +720,52 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
     }
 }
 
+/// `GET /api/atoms?doc=<id>&since=<seq>`：完整原子（含 payload），供客户端本地折叠。
+///
+/// 客户端折叠必须拿到完整原子（6.8）；`get_log` 工具只返回元数据用于轮询与展示。
+fn atom_list(state: &ServerState, request: &Request) -> Response {
+    let doc_id = match doc_param(request) {
+        Ok(doc_id) => doc_id,
+        Err(response) => return response,
+    };
+    if let Err(response) = authorize(state, request, &doc_id) {
+        return response;
+    }
+    let since: Seq = request
+        .param("since")
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0);
+    let limit: usize = request
+        .param("limit")
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(10_000)
+        .min(100_000);
+    let Ok(workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    let Some(document) = workspace.document(&doc_id) else {
+        return crate::http::not_found(format!("文档 {doc_id} 未打开"));
+    };
+    let atoms: Vec<&yanshi_core::Atom> = document
+        .log()
+        .iter()
+        .filter(|atom| atom.seq > since)
+        .take(limit)
+        .collect();
+    let head = document.head_seq();
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "doc_id": doc_id,
+            "head_seq": head,
+            "since": since,
+            "count": atoms.len(),
+            "atoms": atoms,
+        }),
+    )
+}
+
 /// `POST /api/atoms?doc=<id>`：客户端构造的原子（自带 ULID）直接提交。
 ///
 /// 与工具路径的区别：**id 由客户端生成**，重复提交同一 id 幂等命中（12.2），
@@ -1046,6 +1094,10 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
         (
             "POST /api/atoms?doc=",
             "客户端自带 ULID 的原子提交（12.2 幂等，需 token）",
+        ),
+        (
+            "GET /api/atoms?doc=&since=",
+            "完整原子读取（客户端本地折叠，需 token）",
         ),
         ("GET /wasm/{file}", "WASM 计算内核产物（js/wasm）"),
         ("GET /ws?doc=&token=", "WebSocket 升级与推送（需 token）"),

@@ -63,7 +63,11 @@ fn default_zoom() -> f64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BroadcastEvent {
-    /// 控制流：原子元数据（大二进制已外置，体积可忽略）。
+    /// 控制流：原子元数据（大二进制已外置至 CAS，原子本体体积可忽略）。
+    ///
+    /// 这里携带**完整原子**而非仅摘要：客户端折叠状态需要全部原子（含创建类与
+    /// 载荷里的对象 id / 点列 / 颜色），只发 id/kind 会让客户端与服务端状态不一致
+    /// （6.8 的划界依据）。位图仍然不在广播里，客户端按需从 CAS 拉取。
     Atom {
         /// 原子 id。
         atom_id: String,
@@ -77,6 +81,8 @@ pub enum BroadcastEvent {
         session: SessionId,
         /// 是否重型原子（触发快照）。
         heavy: bool,
+        /// 完整原子（客户端本地折叠用；blob 已外置）。
+        atom: Box<Atom>,
     },
     /// 数据流：tile 更新（已按视口过滤）。
     Tiles {
@@ -219,6 +225,7 @@ impl Broadcaster {
             actor: atom.actor.clone(),
             session: atom.session.clone(),
             heavy: atom.is_heavy(),
+            atom: Box::new(atom.clone()),
         };
         self.stats.control_events += 1;
         let deliveries = self.deliver(event.clone());

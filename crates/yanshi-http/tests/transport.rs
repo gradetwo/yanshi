@@ -666,6 +666,37 @@ fn client_supplied_atom_ids_are_idempotent() {
     let log = tool(addr, "doc_atoms", &token, "get_log", json!({})).1;
     assert_eq!(log["count"], json!(3), "被拒绝的提交不进日志");
 
+    // GET /api/atoms 返回**完整**原子（含 payload），供客户端本地折叠。
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/atoms?doc=doc_atoms&since=1&token={token}"),
+        None,
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["count"], json!(2), "since=1 之后还有 2 个原子");
+    assert_eq!(body["head_seq"], json!(3));
+    let atoms = body["atoms"].as_array().unwrap();
+    assert_eq!(atoms[0]["id"], json!("01CLIENT0000000000000000AB"));
+    assert_eq!(
+        atoms[0]["payload"]["layer_id"],
+        json!("layer_wasm"),
+        "客户端折叠需要完整 payload，而不是只有元数据"
+    );
+    assert_eq!(atoms[1]["payload"]["data"]["size"], json!(5.0));
+    assert_eq!(
+        client
+            .json(
+                "GET",
+                &format!("/api/atoms?doc=doc_atoms&token={token}"),
+                None,
+                None
+            )
+            .1["count"],
+        json!(3),
+        "不带 since 时返回全部原子"
+    );
+
     // 无 token → 403（与工具路径一致）。
     let (status, _) = client.json("POST", "/api/atoms?doc=doc_atoms", None, Some(&second));
     assert_eq!(status, 403);
