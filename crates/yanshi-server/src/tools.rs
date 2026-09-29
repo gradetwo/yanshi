@@ -1271,6 +1271,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "accept_suggestions",
+        profile: Profile::Collab,
+        summary: "批量接受建议（最多 64 条）：逐条重放 patch，个别失败不中断，逐条返回结果",
+        mutating: true,
+        params: &[
+            param!("suggestion_ids", Array, true, "建议 id 列表"),
+        ],
+    },
+    ToolSpec {
         name: "preview_suggestion",
         profile: Profile::Collab,
         summary: "预览建议（不应用）：逐步校验工具名与参数、报告目标与变更类别，便于人工/AI 审阅",
@@ -1304,7 +1313,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Collab,
         summary: "列出建议及其状态（pending / accepted / rejected，由 accept/reject 原子推导）",
         mutating: false,
-        params: &[param!("status", String, false, "按状态过滤：pending/accepted/rejected")],
+        params: &[
+            param!("status", String, false, "按状态过滤：pending/accepted/rejected"),
+            param!("since_seq", Integer, false, "只返回 seq 大于该值的建议（AI 轮询增量用）"),
+            param!("limit", Integer, false, "最多返回多少条（缺省 50，上限 500）"),
+            param!("offset", Integer, false, "跳过前 N 条（分页）"),
+        ],
     },
     ToolSpec {
         name: "comment",
@@ -1415,6 +1429,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "suggest" => write_suggest(ctx, args),
         "preview_suggestion" => read_preview_suggestion(ctx, args),
         "accept_suggestion" => write_accept_suggestion(ctx, args),
+        "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
@@ -2994,6 +3009,60 @@ fn tool_class(tool: &str) -> &'static str {
 /// 只允许「会产生状态效果」的步骤：把只读工具塞进 patch 没有意义，也容易出现意外行为。
 fn write_accept_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let suggestion_id = require_str(args, "suggestion_id")?;
+    accept_one(ctx, &suggestion_id)
+}
+
+/// 批量接受：逐条尝试，**不因个别失败中断**，逐条报告结果。
+fn write_accept_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let ids = require_array(args, "suggestion_ids")?;
+    if ids.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("suggestion_ids 不能为空"),
+        ));
+    }
+    if ids.len() > 64 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("一次最多接受 64 条建议（收到 {}）", ids.len())),
+        ));
+    }
+    let mut accepted = 0usize;
+    let mut results = Vec::new();
+    for value in ids {
+        let Some(id) = value.as_str() else {
+            results.push(json!({"suggestion_id": value, "ok": false, "error": "id 必须是字符串"}));
+            continue;
+        };
+        match accept_one(ctx, id) {
+            Ok(result) => {
+                accepted += 1;
+                results.push(json!({
+                    "suggestion_id": id,
+                    "ok": true,
+                    "applied_atom_ids": result["applied_atom_ids"],
+                    "resolved_annotations": result["resolved_annotations"],
+                }));
+            }
+            Err(error) => results.push(json!({
+                "suggestion_id": id,
+                "ok": false,
+                "error_code": error.code.as_str(),
+                "detail": error.context.detail,
+            })),
+        }
+    }
+    Ok(json!({
+        "results": results,
+        "accepted": accepted,
+        "failed": results.len() - accepted,
+        "pending_annotations": 0,
+    }))
+}
+
+/// 接受单条建议：查找 patch → 重放 → 提交接受原子 → 更新关联标注。
+fn accept_one(ctx: &mut ToolContext<'_>, suggestion_id: &str) -> Result<Value> {
+    let suggestion_id = suggestion_id.to_owned();
     // 1) 取出建议的 patch（必须是一条 suggest 原子）。
     let (patch, annotation_id) = {
         let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
@@ -3176,6 +3245,10 @@ fn write_reject_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
 /// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
 fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let filter = optional_str(args, "status");
+    // AI 侧轮询：`since_seq` 取增量，`limit`/`offset` 用于分页。
+    let since = optional_u64(args, "since_seq").unwrap_or(0);
+    let limit = optional_u64(args, "limit").unwrap_or(50).clamp(1, 500) as usize;
+    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,
@@ -3209,7 +3282,7 @@ fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     }
     let mut suggestions = Vec::new();
     for atom in log.iter() {
-        if atom.kind != AtomKind::Suggest {
+        if atom.kind != AtomKind::Suggest || atom.seq <= since {
             continue;
         }
         let status = if accepted.contains(&atom.id) {
@@ -3235,11 +3308,20 @@ fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             "reason": rejected.get(&atom.id).cloned().unwrap_or_default(),
         }));
     }
+    let total = suggestions.len();
     let pending = suggestions
         .iter()
         .filter(|suggestion| suggestion["status"] == json!("pending"))
         .count();
-    Ok(json!({"suggestions": suggestions, "pending": pending}))
+    let page: Vec<Value> = suggestions.into_iter().skip(offset).take(limit).collect();
+    Ok(json!({
+        "suggestions": page,
+        "pending": pending,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "since_seq": since,
+    }))
 }
 
 fn write_comment(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

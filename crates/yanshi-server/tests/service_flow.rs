@@ -1868,3 +1868,104 @@ fn preview_suggestion_validates_without_applying() {
     assert_eq!(by_id["applicable"], json!(true), "{by_id}");
     assert_eq!(by_id["suggestion_id"], json!(suggestion_id));
 }
+
+/// Phase 4b 完善：批量接受（个别失败不中断）+ 列表分页/增量轮询。
+#[test]
+fn batch_accept_and_suggestion_paging() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_batch", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_batch", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+
+    // 三条可接受的建议 + 一条坏的（未知建议 id）。
+    let mut ids = Vec::new();
+    for adjustment in ["invert", "saturation", "levels"] {
+        let response = registry.call(
+            &mut context,
+            "suggest",
+            &json!({"summary": adjustment, "patch": [{"tool": "add_adjustment",
+                "arguments": {"layer_id": "layer_1", "adjustment_type": adjustment,
+                              "params": {"amount": 1.2, "black": 0.0, "white": 1.0}}}]}),
+        );
+        assert_eq!(response["ok"], json!(true), "{response}");
+        ids.push(response["suggestion_id"].clone());
+    }
+
+    // 分页与增量：limit/offset/total 一致，since_seq 能取增量。
+    let all = registry.call(&mut context, "list_suggestions", &json!({"limit": 2}));
+    assert_eq!(all["total"], json!(3), "{all}");
+    assert_eq!(
+        all["suggestions"].as_array().unwrap().len(),
+        2,
+        "limit 应生效"
+    );
+    let page2 = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"limit": 2, "offset": 2}),
+    );
+    assert_eq!(
+        page2["suggestions"].as_array().unwrap().len(),
+        1,
+        "offset 应生效"
+    );
+    let since_last = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"since_seq": all["suggestions"][1]["seq"].as_u64().unwrap()}),
+    );
+    assert_eq!(
+        since_last["total"],
+        json!(1),
+        "since_seq 应只返回增量：{since_last}"
+    );
+
+    // 批量接受：3 条成功 + 1 条未知（不中断整批）。
+    let mut batch = ids.clone();
+    batch.push(json!("01ZZZZZZZZZZZZZZZZZZZZZZZZZZ"));
+    let accepted = registry.call(
+        &mut context,
+        "accept_suggestions",
+        &json!({"suggestion_ids": batch}),
+    );
+    assert_eq!(accepted["accepted"], json!(3), "{accepted}");
+    assert_eq!(accepted["failed"], json!(1), "{accepted}");
+    let results = accepted["results"].as_array().unwrap();
+    assert_eq!(results[3]["ok"], json!(false));
+    assert_eq!(results[3]["error_code"], json!("reference_not_found"));
+    // 全部达成 accepted 状态。
+    let done = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"status": "accepted"}),
+    );
+    assert_eq!(done["total"], json!(3), "{done}");
+    // 空列表与超限列表要被拒。
+    for payload in [
+        json!({"suggestion_ids": []}),
+        json!({"suggestion_ids": [1, 2]}),
+    ] {
+        let response = registry.call(&mut context, "accept_suggestions", &payload);
+        assert!(
+            response["ok"] == json!(false) || response["accepted"] == json!(0),
+            "{payload}: {response}"
+        );
+    }
+}

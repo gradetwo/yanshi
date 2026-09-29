@@ -773,6 +773,17 @@ AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pendi
 并在响应里注明「静态检查；个别工具的运行期限制（如外扩上限）在应用时最终判定」。
 预览的 `applicable` 为 `false` 时不应提交接受。
 
+**批量接受与轮询友好列表**：
+
+* `accept_suggestions`：一次最多 64 条，**逐条尝试、个别失败不中断**，逐条返回
+  `{suggestion_id, ok, applied_atom_ids/resolved_annotations}` 或 `{error_code, detail}`，
+  并汇总 `accepted`/`failed`。单条接受与批量接受共用同一个 `accept_one`，不存在两套语义。
+* `list_suggestions` 增加 `since_seq`（AI 轮询取增量）、`limit`（缺省 50，上限 500）、`offset`，
+  响应带 `total` —— 便于「拉取新建议 → 预览 → 批量接受」的自动化循环。
+
+线上实测：`limit=1` 时分页返回 1 条且 `total=2`；`accept_suggestions` 一次接受 2 条全部成功，
+`accepted` 状态计数同步变为 2。
+
 **可复现验收**：`scripts/phase4b-demo.sh` 把整条环路脚本化（只创建新文档，依赖仅 curl + python3）：
 
 ```
