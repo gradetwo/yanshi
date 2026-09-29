@@ -1,0 +1,135 @@
+[
+ {
+  "actor": "human:web",
+  "id": "01M3PXFMT8ANNS5BCXYTCQY002",
+  "kind": "create_document",
+  "payload": {
+   "background": {
+    "a": 255,
+    "b": 255,
+    "g": 255,
+    "r": 255
+   },
+   "color_space": "srgb",
+   "doc_id": "phase3b",
+   "height": 1024,
+   "width": 1024
+  },
+  "schema_version": 1,
+  "session": "session:web",
+  "timestamp": 1790696739656
+ },
+ {
+  "actor": "human:web",
+  "id": "01M3PXFMVWANNS5BCXYTCQY003",
+  "kind": "create_layer",
+  "payload": {
+   "layer_id": "L",
+   "name": "L"
+  },
+  "refs": {
+   "layers": [
+    "L"
+   ]
+  },
+  "schema_version": 1,
+  "session": "session:http",
+  "timestamp": 1790696739708
+ },
+ {
+  "actor": "human:web",
+  "id": "01M3PXFN6RANNS5BCXYTCQY005",
+  "kind": "draw_shape",
+  "payload": {
+   "data": {
+    "color": "#2e4a7a",
+    "geometry": {
+     "bbox": {
+      "h": 1024,
+      "w": 1024,
+      "x": 0,
+      "y": 0
+     },
+     "kind": "rect"
+    }
+   },
+   "layer_id": "L",
+   "object_id": "obj_01M3PXFN6RANNS5BCXYTCQY004"
+  },
+  "refs": {
+   "layers": [
+    "L"
+   ],
+   "objects": [
+    "obj_01M3PXFN6RANNS5BCXYTCQY004"
+   ]
+  },
+  "schema_version": 1,
+  "session": "session:http",
+  "timestamp": 1790696740056
+ },
+ {
+  "actor": "human:web",
+  "id": "01M3PXFNGNANNS5BCXYTCQY007",
+  "kind": "draw_shape",
+  "payload": {
+   "data": {
+    "color": "#e0523c",
+    "geometry": {
+     "bbox": {
+      "h": 200,
+      "w": 200,
+      "x": 160,
+      "y": 160
+     },
+     "kind": "ellipse"
+    }
+   },
+   "layer_id": "L",
+   "object_id": "obj_01M3PXFNGNANNS5BCXYTCQY006"
+  },
+  "refs": {
+   "layers": [
+    "L"
+   ],
+   "objects": [
+    "obj_01M3PXFNGNANNS5BCXYTCQY006"
+   ]
+  },
+  "schema_version": 1,
+  "session": "session:http",
+  "timestamp": 1790696740373
+ },
+ {
+  "actor": "human:web",
+  "id": "01M3PXFNHKANNS5BCXYTCQY009",
+  "kind": "draw_shape",
+  "payload": {
+   "data": {
+    "color": "#3fa46a",
+    "geometry": {
+     "bbox": {
+      "h": 200,
+      "w": 200,
+      "x": 420,
+      "y": 160
+     },
+     "kind": "ellipse"
+    }
+   },
+   "layer_id": "L",
+   "object_id": "obj_01M3PXFNHKANNS5BCXYTCQY008"
+  },
+  "refs": {
+   "layers": [
+    "L"
+   ],
+   "objects": [
+    "obj_01M3PXFNHKANNS5BCXYTCQY008"
+   ]
+  },
+  "schema_version": 1,
+  "session": "session:http",
+  "timestamp": 1790696740403
+ }
+]
