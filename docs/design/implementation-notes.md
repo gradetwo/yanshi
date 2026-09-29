@@ -634,6 +634,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `hsl` | `hue` −180..180、`saturation` 0..4、`lightness` −1..1 | 标准 HSL：色相旋转 / 饱和度缩放 / 明度偏移 |
 | 调整 `levels`（扩展） | 增加 `channel`（rgb/r/g/b） | 分通道色阶，与 `curves` 同一套通道命名 |
 | 调整 `posterize` | `levels` 2..64 | 直通通道量化到 N 个台阶（如 3 级 → 0/0.5/1） |
+| 调整 `color_balance` | `shadows`/`midtones`/`highlights` 各 `[r,g,b]`（−1..1） | 按线性亮度分档加权偏移：`shadows=(1-luma)²`、`highlights=luma²`、中间调为余量 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
 | 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |
@@ -797,6 +798,30 @@ AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pendi
 
 > 细节：被拒的「只读步骤」建议在状态列表里仍是 `pending` —— 它在**接受时**被拒，
 > 因此没有产生 accept/reject 原子。设计未规定此情形，保持现状并在此备注。
+
+## 二之六、GPU 合成后端可行性核对（本轮实测，结论：暂不实施）
+
+按设计第 6.1 / 13.x 章核对：**合成后端层**只负责 tile 上传、显示合成、blit 与双缓冲，
+**不含计算内核**（内核保持 CPU、D0 bit-exact）；该层按 **D1** 容差（±1 LSB），
+客户端三级降级 `WebGPU → WebGL2 → GPU 回退 CPU`；服务端 CPU/SIMD 为基线、GPU 仅作可选加速。
+设计文档本身把「Vello + WASM + WebGPU 可行性」列为 **Phase 0 待验证项**。
+
+**本机实测**（用于决定是否值得投入）：
+
+| 探测项 | 结果 |
+|---|---|
+| `navigator.gpu` | 存在，但 `requestAdapter()` **拿不到 adapter**（headless Chromium + SwiftShader 软件栈） |
+| WebGL2 | 可用，但 renderer 是 `ANGLE (Google, Vulkan 1.3.0 SwiftShader)`，即**软件光栅化** |
+| 宿主 GPU | Intel Haswell-ULT 核显（较老，无法在 headless 环境暴露可用的 WebGPU/Vulkan 适配器） |
+
+**结论**：在当前环境下无法验证 GPU 合成的收益（没有真实 GPU 适配器，软件 WebGL2 只会更慢），
+而引入 `wgpu`/Vello 会带来大量依赖，与"零依赖 + 单一二进制"的项目取向冲突。
+因此**不实施** GPU 合成后端，并把上述实测数据作为该 Phase 0 项的答案记录下来：
+它需要一台有可用 GPU 适配器与 WebGPU 浏览器的机器才能推进。
+
+作为替代（同一设计章节目标：减少「合成/上传」开销），已在客户端落实的是：
+脏区域**直接渲染**（`render_region_direct`，避免整块 tile 重算）与**区域相关外扩**
+（tile 缓冲从 468² 降到 288²，远离修图笔迹的 tile 快 2.3×），两者都已在浏览器实测。
 
 ## 三、尚未实现（与 README 路线图一致）
 

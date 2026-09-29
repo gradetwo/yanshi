@@ -626,7 +626,7 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
         // 设计里有、内核尚未实现的类型必须在工具层被拒（不放空壳能力）。
         (
             "add_adjustment",
-            json!({"layer_id": "layer_1", "adjustment_type": "color_balance"}),
+            json!({"layer_id": "layer_1", "adjustment_type": "split_toning"}),
         ),
         (
             "add_filter",
@@ -924,6 +924,8 @@ fn clone_stamp_copies_content_and_is_reversible() {
     for (adjustment, params) in [
         ("levels", json!({"channel": "cyan"})),
         ("posterize", json!({"levels": 1})),
+        ("color_balance", json!({"shadows": [0.1, 0.2]})),
+        ("color_balance", json!({"highlights": [2.0, 0.0, 0.0]})),
     ] {
         let response = registry.call(
             &mut context,

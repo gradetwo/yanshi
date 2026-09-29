@@ -163,7 +163,8 @@ MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮�
 
 ```bash
 # 调整：brightness_contrast / saturation / invert / levels /
-#       exposure / white_balance / curves / hsl / posterize（levels 支持 channel 分通道）
+#       exposure / white_balance / curves / hsl / posterize / color_balance
+#       （levels 支持 channel 分通道）
 curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
      -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'
 # 滤镜：box_blur / gaussian_blur / motion_blur / sharpen / noise / vignette / glow /

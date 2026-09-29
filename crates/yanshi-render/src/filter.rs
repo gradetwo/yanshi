@@ -33,6 +33,8 @@ pub enum AdjustmentKind {
     Hsl,
     /// 色调分离。
     Posterize,
+    /// 色彩平衡（阴影/中间调/高光）。
+    ColorBalance,
 }
 
 impl AdjustmentKind {
@@ -48,6 +50,7 @@ impl AdjustmentKind {
             "curves" => Some(Self::Curves),
             "hsl" | "hue_saturation" => Some(Self::Hsl),
             "posterize" => Some(Self::Posterize),
+            "color_balance" => Some(Self::ColorBalance),
             _ => None,
         }
     }
@@ -64,11 +67,12 @@ impl AdjustmentKind {
             Self::Curves => "curves",
             Self::Hsl => "hsl",
             Self::Posterize => "posterize",
+            Self::ColorBalance => "color_balance",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 9] = [
+    pub const ALL: [AdjustmentKind; 10] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -78,6 +82,7 @@ impl AdjustmentKind {
         Self::Curves,
         Self::Hsl,
         Self::Posterize,
+        Self::ColorBalance,
     ];
 }
 
@@ -234,6 +239,36 @@ pub fn levels_channel(buffer: &mut Buffer, black: f32, white: f32, gamma: f32, c
 /// 色阶（三通道同时）。
 pub fn levels(buffer: &mut Buffer, black: f32, white: f32, gamma: f32) {
     levels_channel(buffer, black, white, gamma, "rgb");
+}
+
+/// 色彩平衡：按亮度分档（阴影 / 中间调 / 高光）分别做 RGB 偏移。
+///
+/// 档位权重由线性亮度推导：`shadows = (1-luma)²`、`highlights = luma²`、
+/// `midtones = 1 - shadows - highlights`。每个分量取值 -1..1，按档位加权后加到直通通道上。
+pub fn color_balance(
+    buffer: &mut Buffer,
+    shadows: [f32; 3],
+    midtones: [f32; 3],
+    highlights: [f32; 3],
+) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let clamp_component = |value: f32| value.clamp(-1.0, 1.0);
+    let shadows = shadows.map(clamp_component);
+    let midtones = midtones.map(clamp_component);
+    let highlights = highlights.map(clamp_component);
+    for_each_straight_color(buffer, |color| {
+        let luma = LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2];
+        let luma = luma.clamp(0.0, 1.0);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let highlight_weight = luma * luma;
+        let midtone_weight = (1.0 - shadow_weight - highlight_weight).max(0.0);
+        for channel in 0..3 {
+            let delta = shadows[channel] * shadow_weight
+                + midtones[channel] * midtone_weight
+                + highlights[channel] * highlight_weight;
+            color[channel] = (color[channel] + delta).clamp(0.0, 1.0);
+        }
+    });
 }
 
 /// 色调分离：把每个直通通道量化到 `levels` 个台阶。
@@ -749,7 +784,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 9] = [
+pub const ADJUSTMENT_NAMES: [&str; 10] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -759,6 +794,7 @@ pub const ADJUSTMENT_NAMES: [&str; 9] = [
     "curves",
     "hsl",
     "posterize",
+    "color_balance",
 ];
 
 /// 内核支持的滤镜名。
@@ -774,6 +810,18 @@ pub const FILTER_NAMES: [&str; 10] = [
     "saturation",
     "invert",
 ];
+
+/// 解析 `[r,g,b]` 形式的三元组，缺省为零（不改变该档）。
+fn triple(value: Option<&Value>) -> [f32; 3] {
+    let Some(array) = value.and_then(Value::as_array) else {
+        return [0.0, 0.0, 0.0];
+    };
+    let mut out = [0.0f32; 3];
+    for (index, slot) in out.iter_mut().enumerate() {
+        *slot = array.get(index).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    }
+    out
+}
 
 /// 解析曲线控制点（`[[x,y], ...]`，0..1 归一化）；非法输入退回恒等曲线。
 fn curve_points(params: &Value) -> Vec<(f32, f32)> {
@@ -839,6 +887,12 @@ pub fn apply_adjustment(
                 .get("channel")
                 .and_then(Value::as_str)
                 .unwrap_or("rgb"),
+        ),
+        AdjustmentKind::ColorBalance => color_balance(
+            &mut adjusted,
+            triple(params.get("shadows")),
+            triple(params.get("midtones")),
+            triple(params.get("highlights")),
         ),
         AdjustmentKind::Posterize => posterize(
             &mut adjusted,
@@ -1366,6 +1420,56 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 色彩平衡：阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间的像素。
+    #[test]
+    fn color_balance_affects_tone_bands_separately() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 3, 1);
+            buffer.set_pixel(0, 0, [0.05, 0.05, 0.05, 1.0]); // 暗
+            buffer.set_pixel(1, 0, [0.5, 0.5, 0.5, 1.0]); // 中
+            buffer.set_pixel(2, 0, [0.95, 0.95, 0.95, 1.0]); // 亮
+            buffer
+        };
+        // 只加阴影档的红：暗部提升最多，亮部几乎不变。
+        let mut shadows = make();
+        color_balance(&mut shadows, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3]);
+        // 注意比较的是**增量**而不是绝对值：绝对值当然仍随底色增大。
+        let dark_delta = shadows.pixel(0, 0)[0] - 0.05;
+        let mid_delta = shadows.pixel(1, 0)[0] - 0.5;
+        let bright_delta = shadows.pixel(2, 0)[0] - 0.95;
+        assert!(dark_delta > 0.2, "暗部应被显著提升：{dark_delta}");
+        assert!(
+            dark_delta > mid_delta && mid_delta > bright_delta,
+            "阴影档增量应随亮度递减：{dark_delta}/{mid_delta}/{bright_delta}"
+        );
+        assert!(bright_delta < 0.01, "亮部几乎不变：{bright_delta}");
+
+        // 只加高光档的蓝：亮部提升最多。
+        let mut highlights = make();
+        color_balance(&mut highlights, [0.0; 3], [0.0; 3], [0.0, 0.0, 0.3]);
+        // 0.95 加 0.271 会触顶被钳到 1.0，因此断言「饱和到白」而不是比增量。
+        let bright_blue = highlights.pixel(2, 0)[2];
+        let dark_blue_delta = highlights.pixel(0, 0)[2] - 0.05;
+        assert!(
+            bright_blue > 0.999,
+            "亮部高光档应把蓝推到饱和：{bright_blue}"
+        );
+        assert!(dark_blue_delta < 0.01, "暗部几乎不变：{dark_blue_delta}");
+
+        // 中间调 + 越界参数不应产出非法值。
+        let mut extremes = make();
+        color_balance(&mut extremes, [9.0, -9.0, 0.0], [1.0; 3], [0.0, 0.0, -9.0]);
+        for x in 0..3 {
+            let pixel = extremes.pixel(x, 0);
+            assert!(
+                pixel
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v) && v.is_finite()),
+                "越界参数不得产出非法值：{pixel:?}"
+            );
+        }
     }
 
     /// 分通道色阶只影响指定通道；色调分离把通道量化到有限台阶。

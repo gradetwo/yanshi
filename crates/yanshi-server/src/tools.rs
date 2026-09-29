@@ -1080,7 +1080,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize / color_balance",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2142,6 +2142,8 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         (EffectKind::Adjustment, "saturation") => &[("amount", 0.0, 8.0)],
         (EffectKind::Adjustment, "invert") => &[],
         (EffectKind::Adjustment, "posterize") => &[("levels", 2.0, 64.0)],
+        // 色彩平衡三档各自是 [r,g,b]，分量范围在下面的 triple 校验里逐项检查。
+        (EffectKind::Adjustment, "color_balance") => &[],
         (EffectKind::Adjustment, "levels") => &[
             ("black", 0.0, 1.0),
             ("white", 0.0, 1.0),
@@ -2215,6 +2217,41 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
                         "levels 需要 black < white，得到 {black} / {white}"
                     )),
                 ));
+            }
+        }
+    }
+    if name == "color_balance" {
+        for key in ["shadows", "midtones", "highlights"] {
+            let Some(value) = object.get(key) else {
+                continue;
+            };
+            let Some(array) = value.as_array() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("color_balance 的 {key} 必须是 [r,g,b]")),
+                ));
+            };
+            if array.len() != 3 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("color_balance 的 {key} 必须是三个分量")),
+                ));
+            }
+            for component in array {
+                let Some(value) = component.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("color_balance 的 {key} 分量必须是数字")),
+                    ));
+                };
+                if !(-1.0..=1.0).contains(&value) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "color_balance 的 {key} 分量必须在 [-1, 1] 内，得到 {value}"
+                        )),
+                    ));
+                }
             }
         }
     }
