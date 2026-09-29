@@ -2,313 +2,170 @@
 
 **中文** | [English](README.md)
 
-<img src="assets/brand/svg/logo-horizontal-cn.svg" alt="偃师 Yanshi" width="320" />
+偃师是一个无头（headless）图像编辑引擎：文档以只追加的原子日志保存，状态由折叠日志求值得出，
+渲染走一套纯 Rust 计算内核，对外通过零依赖的 HTTP/WebSocket 传输层与一个最小 Web 查看器提供服务。
 
-> AI 原生协作绘画与设计引擎
+同一套内核既在服务端原生编译，也编译成 WebAssembly 供浏览器使用，因此浏览器的本地乐观渲染
+与服务端渲染是同一份实现，结果一致。
 
-偃师用文档状态、语义命令、可编辑对象、多级预览、版本日志和协作机制，替代传统图形界面的面板加鼠标轨迹。人类与 AI 在同一套对象模型和原子类型上协作：人类使用微观工具，AI 使用宏观语义工具。
+[docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档。
+代码不得与之静默分叉。
 
-当前仓库已完成 **Phase 0 / Phase 1 / Phase 2 的无头部分**：核心引擎、渲染计算内核、无头服务端与工具协议、
-零依赖 HTTP/WebSocket 传输层、最小 Web 查看器，以及浏览器端 **WASM 计算内核与本地乐观渲染**。
+## 安装
+
+需要 Rust stable（1.85 或更高）与 `make`：
 
 ```bash
-cargo test --workspace                 # 322 个测试
-cargo run -p yanshi-http --bin yanshi-serve -- --root ./workspace
-# 浏览器打开 http://127.0.0.1:8080/ ，页面会用 POST /api/documents 自动取得 capability token
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-## 设计文档
+若需要浏览器端内核，再装 WebAssembly 目标与 `wasm-bindgen-cli`（版本须与 `wasm-bindgen` crate 匹配）：
 
-- [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) —— 冻结设计文档 v1.0-draft4（中文）。这是全部语义与协议的权威定义；代码不得与设计文档静默分叉，行为变更必须同时更新设计文档。
-- [docs/design/implementation-notes.md](docs/design/implementation-notes.md) —— 实现说明：模块与章节对应表、文档留白处的实现级明确化、实测性能数据、已知限制、尚未实现清单、验收载体（测试 ↔ 文档要求）。
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+```
 
-## 当前状态
+这两项是可选的：不装也能运行服务端，查看器退化为服务端渲染。
 
-| 层 | 状态 | 说明 |
-|---|---|---|
-| `yanshi-core` 核心引擎 | ✅ | append-only 原子日志（客户端 ULID 幂等 + 服务端权威 `seq`）、折叠求值与级联失效、`state@seq` 与 `declare_head`、逻辑快照、Blob CAS 三级生命周期与 GC |
-| `yanshi-render` 渲染计算内核 | ✅ | D0 CPU bit-exact：f16 线性 tile、预乘混合、笔触 stamping、形状、调整/滤镜、双 dirty 传播、分级缩略图、零依赖确定性 PNG |
-| `yanshi-server` 服务端语义层 | ✅ | 文档服务、Job 协议（TTL/取消/轮询）、capability token、控制流/数据流广播边界、标注独立通道、文件持久化、核心 27 工具 + 扩展组（启用全部已实现工具组共 49 个） |
-| `yanshi-http` 传输层与查看器 | ✅ | 零依赖 HTTP/1.1 + RFC 6455（手写 SHA-1 握手、帧编解码、分片、ping/pong）、连接复用、最小 Web 查看器 |
-| `yanshi-mcp` | ✅ | MCP stdio（`initialize` / `tools/list` / `tools/call` / `ping`），profile 分层，提交 + 轮询 |
-| `yanshi-wasm` 浏览器计算内核 | ✅ | wasm32 构建，本地增量折叠 + 乐观渲染、待提交覆盖层、LRU tile 内存池与 90% 水位兜底 |
-| 桌面入口 | ✅ | systemd user 服务 + Omarchy web app + `SUPER + ALT + Y`（见 [deploy/omarchy/README.md](deploy/omarchy/README.md)） |
+## 编译与运行
 
-**Phase 2 出口条件已在真实 Chromium 中验收**：
+```bash
+make run          # 有工具链时构建 WASM 内核，构建服务端并启动
+                  # 随后打开 http://127.0.0.1:8110/ （页面自行获取 capability token）
+make build        # 只构建服务端
+make build-wasm   # 只构建 WASM 内核
+```
 
-| 出口条件 | 结果 |
-|---|---|
-| 客户端与服务端 CPU 路径 bit-exact | ✅ 本地 WASM 渲染 PNG 的 SHA-256 == 服务端 `blob_hash` |
-| 首笔呈现延迟 < 16ms | ✅ 实测 **6.2ms**（增量盖章路径），且一笔只产生一个原子 |
+`make run` 支持 `PORT` 与 `ROOT`（缺省 `~/.local/share/yanshi/workspace`）：
 
-尚未实现、属于路线图规划中的部分见下方路线图；README 中不把未实现能力描述为可用。
+```bash
+make run PORT=9000 ROOT=/tmp/yanshi
+```
+
+不需要浏览器内核时，直接运行服务端：
+
+```bash
+cargo run --release -p yanshi-http -- --root ./workspace --no-wasm
+```
+
+全部目标见 `make help`。
+
+## 测试
+
+```bash
+make test         # 工作区测试套件，秒级到两分钟
+make ci           # fmt、clippy、测试、WASM 运行时冒烟检查
+```
+
+性能预算、10 万原子折叠 fuzz、4K 剖面等长任务带 `#[ignore]`，在 GitHub 上跑，不占用本地：
+
+```bash
+gh workflow run heavy.yml
+gh run list
+```
+
+`.github/workflows/ci.yml` 在每次 push 时执行快速检查；`.github/workflows/heavy.yml` 每夜与手动
+触发执行长任务，并把日志上传为 artifact。确需本地执行长任务时：
+
+```bash
+cargo test --release --workspace -- --ignored --nocapture
+```
+
+## 工具与效果
+
+工具层默认注册 27 个核心工具；启用全部已实现分组时共 65 个工具。
+分组为 core、history、retouch、annotation、collab、structure（用 `--profile` 选择）。
+
+调整（12 种）：brightness_contrast、saturation、invert、levels、exposure、white_balance、curves、
+hsl、posterize、color_balance、split_toning、vibrance。其中 `levels` 支持分通道 `channel`。
+
+滤镜（13 种）：box_blur、gaussian_blur、motion_blur、sharpen、clarity、dehaze、film_grain、
+noise、vignette、glow、brightness_contrast、saturation、invert。
+
+修图与液化：clone_stamp、heal_stamp、smudge、patch、liquify_push、liquify_twirl、liquify_pinch。
+蒙版支持矩形、椭圆、多边形，可设羽化。
+
+### MCP（供 AI Agent 接入）
+
+```bash
+cargo run --release -p yanshi-mcp            # stdio，纯内存，缺省文档
+cargo run --release -p yanshi-mcp -- --list-tools
+```
+
+### HTTP / WebSocket
+
+```bash
+# 打开或创建文档，响应里带回 capability token
+curl -s -X POST http://127.0.0.1:8110/api/documents \
+     -d '{"doc_id":"demo","width":1024,"height":1024}'
+
+# 调用工具（token 可用 Authorization: Bearer 或 ?token=）
+curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1"}'
+
+# 渲染区域，thumb_url 指向 CAS 中的 blob
+curl -s -X POST "http://127.0.0.1:8110/api/tools/render_region?doc=demo&token=$TOKEN" \
+     -d '{"region":{"x":0,"y":0,"w":512,"h":512}}'
+```
+
+## 桌面入口（Omarchy / Hyprland）
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/yanshi-serve.service <<'EOF'
+[Unit]
+Description=Yanshi server
+After=network.target
+
+[Service]
+ExecStart=%h/yanshi/target/release/yanshi-serve --bind 127.0.0.1:8110 --root %h/.local/share/yanshi/workspace --doc yanshi
+WorkingDirectory=%h/yanshi
+Restart=on-failure
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now yanshi-serve
+```
+
+```lua
+-- ~/.config/hypr/bindings.lua
+o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
+```
 
 ## 仓库结构
 
 ```
-yanshi/
-├── assets/brand/             # 品牌资源：9 个源 SVG + render.sh（派生图标/favicon/logo 各尺寸）
-├── deploy/                   # 部署产物：systemd user 服务 + Omarchy/Hyprland 桌面入口
-├── crates/
-│   ├── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
-│   ├── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
-│   ├── yanshi-server/        # 服务端语义层：文档服务、Job、token、广播、标注、27 工具
-│   ├── yanshi-http/          # 零依赖 HTTP/1.1 + WebSocket 传输层与最小 Web 查看器
-│   ├── yanshi-wasm/          # 计算内核的 WASM 绑定（浏览器端本地乐观渲染）
-│   └── yanshi-mcp/           # MCP stdio 服务器（JSON-RPC over stdio）
-├── docs/design/              # 冻结设计文档、实现说明与修订历史
-├── .github/workflows/ci.yml  # 持续集成：fmt / clippy / test / 长时 fuzz
-├── CONTRIBUTING.md
-└── LICENSE                   # MIT
+crates/yanshi-core/     原子、日志、折叠、state@seq、快照、Blob CAS、冲突、标注
+crates/yanshi-render/   渲染内核：笔触、形状、调整、滤镜、dirty、tile、PNG
+crates/yanshi-server/   文档服务、Job、token、广播、工具层
+crates/yanshi-http/     HTTP/WebSocket 传输、查看器、yanshi-serve 可执行文件
+crates/yanshi-mcp/      MCP stdio 服务
+crates/yanshi-wasm/     浏览器内核（wasm-bindgen）
+scripts/                验收脚本（演示、逐像素自检、wasm 冒烟、性能探针）
+docs/design/            设计文档与实现说明
 ```
 
-## 快速开始
+## 文档
 
-需要 Rust stable 1.85 或更高版本。
+- [设计文档](docs/design/yanshi-v1.0-draft4.md) —— 权威规范。
+- [实现说明](docs/design/implementation-notes.md) —— 模块对应关系、设计未规定处的取舍、
+  实测性能数据、已知偏差。
+- [scripts/README.md](scripts/README.md) —— 验收脚本的运行方式。
+- [SECURITY.md](SECURITY.md) —— 威胁模型与报告方式。
 
-```bash
-cargo test --workspace                  # 单元测试 + 属性测试 + Phase 0 出口用例
-cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz + 渲染/服务端性能预算
-cargo run -p yanshi-core --example quickstart   # 端到端示例：提交 → 撤销 → 时间旅行 → GC
-cargo run -p yanshi-render --example render_demo  # 渲染示例：输出 PNG 到 target/render-demo/
-cargo run -p yanshi-mcp -- --list-tools         # 列出 MCP 工具清单（JSON）
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all
-```
+## 状态
 
-> 长时 fuzz 默认被 `#[ignore]` 标记，CI 以 `--ignored` 单独执行（`.github/workflows/ci.yml` 的 `fuzz` 作业）。
+已实现：原子日志与折叠（五条不变量有属性测试覆盖）、确定性 CPU 渲染（计算内核逐位一致；
+模糊族滤镜经批准后允许 ±1 LSB）、服务端渲染与缩略图/tile、工具层与分组、带 capability token 的
+HTTP/WebSocket 传输、标注通道与 AI 建议环路、浏览器 WASM 内核。
 
-### 零依赖 HTTP/WebSocket 服务端 + 最小 Web 查看器
+未实现：GPU 合成（可行性已实测并记录在实现说明里）、插件托管、单服务端之外的协作传输。
 
-```bash
-# 启动服务端（回环 8080；加 --no-wasm / --no-brand 可关掉 WASM 内核与品牌资源）
-cargo run -p yanshi-http --bin yanshi-serve -- --bind 127.0.0.1:8080 --root ./workspace
-# 浏览器打开 http://127.0.0.1:8080/ ：页面自动取得 capability token 并连上 WebSocket
-```
+## 许可
 
-* **本地乐观渲染**：浏览器加载 `yanshi_wasm.wasm`（与服务端同一份 Rust 计算内核）。拖动时只失效
-  **新增笔段**所在的 tile，并对这一小块走**直接渲染**（scratch 路径，不做 tile 往返），
-  因此每帧成本是 O(新增笔段) 而不是 O(整块 tile)：实测首笔 **1.2ms**（预算 16ms）。
-  落笔才异步提交一个原子，需要时按服务端权威状态校正。
-* **打开即图片**：页面先用服务端缓存的 HEAD 渲染铺底（实测 512² 文档 199ms、1024² 文档 434ms），
-  WASM 内核在后台预热，首帧不再等待客户端折叠；内核就绪后自动接管。
-* **一致性自检**：按钮比的是**像素而不是哈希** —— 服务端把同一区域的原始 RGBA8 存入 CAS，客户端取回后
-  报告「差异像素数」与「最大通道差」。同路径渲染逐位相同；跨路径（客户端预览 vs 服务端权威）按设计的
-  D1 分级允许 ±1 LSB，实测调色链为 0 像素、含全部 Phase 3 效果的文档为百万分之三像素。
-* WASM 产物构建：`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` +
-  `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript <wasm>`；
-  产物缺失时查看器自动降级为纯服务端渲染。
-
-### 通过 MCP 使用（Agent 接入）
-
-`yanshi-mcp` 是一个 MCP stdio 服务器：每行一个 JSON-RPC 消息，本地进程豁免鉴权（12.7）。
-
-```bash
-# 内存模式，默认文档 default（1024×1024）
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | cargo run -q -p yanshi-mcp
-
-# 持久化到 ./workspace，暴露标注与历史工具组
-cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annotation,history
-```
-
-典型调用序列（10.1 返回 `atom_id`/`seq`/`preview.thumb_url`）：
-
-```jsonc
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_layer","arguments":{"layer_id":"layer_1"}}}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draw_stroke","arguments":{
-  "layer_id":"layer_1","data":{"points":[[40,40],[400,300]],"size":12,"color":{"r":40,"g":40,"b":60,"a":255}}}}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"render_region","arguments":{
-  "region":{"x":0,"y":0,"w":256,"h":256},"include_image":true}}}
-```
-
-### 通过 HTTP / WebSocket 使用
-
-```bash
-# 1) 打开/新建文档 → 拿到 capability token 与 URL（12.7）
-curl -s -X POST http://127.0.0.1:8080/api/documents \
-     -d '{"doc_id":"demo","width":1024,"height":1024}'
-# {"ok":true,"doc_id":"demo","token":"<64 hex>","url":"/?doc=demo&token=..."}
-
-# 2) 调工具（token 走 Authorization: Bearer 或 ?token=）
-curl -s -X POST "http://127.0.0.1:8080/api/tools/draw_stroke?doc=demo&token=$TOKEN" \
-     -d '{"layer_id":"layer_1","data":{"points":[[40,40],[400,300]],"size":12,
-          "color":{"r":40,"g":40,"b":60,"a":255}}}'
-
-# 3) 渲染区域并从 CAS 取回 PNG（响应里的 thumb_url 已改写成可直接 GET 的地址）
-curl -s -X POST "http://127.0.0.1:8080/api/tools/render_region?doc=demo&token=$TOKEN" \
-     -d '{"region":{"x":0,"y":0,"w":256,"h":256}}'
-
-# 4) 客户端自带 ULID 的原子提交（幂等重试安全；客户端乐观渲染的入口）
-curl -s -X POST "http://127.0.0.1:8080/api/atoms?doc=demo&token=$TOKEN" \
-     -d '{"id":"01J...","kind":"create_layer","actor":"human:web","session":"s",
-          "timestamp":1,"payload":{"layer_id":"layer_1"}}'
-```
-
-WebSocket（`ws://127.0.0.1:8080/ws?doc=demo&token=$TOKEN`）按 6.8 的边界推送：
-**控制流**（完整原子）全局广播，**数据流**（tile/缩略图）按订阅视口过滤。
-MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮询。
-
-#### 颜色写法（工具层统一约定）
-
-| 写法 | 含义 |
-|---|---|
-| `[r,g,b]` / `[r,g,b,a]`，分量 ≤ 1 | 直通线性 |
-| `[r,g,b,a]`，任一分量 > 1 | sRGB 字节 0-255（与 `{"r":…}` 等价） |
-| `{"r":0-255,"g":…,"b":…,"a":…}` | sRGB 字节（`a` 缺省 255） |
-| `"#RRGGBB"` / `"#RRGGBBAA"` | sRGB 十六进制 |
-
-非法颜色在工具层即被拒绝（`invalid_argument`），不会写入原子日志。
-
-#### 调色、滤镜、修图与蒙版（`retouch` / `structure` 组）
-
-```bash
-# 调整：brightness_contrast / saturation / invert / levels /
-#       exposure / white_balance / curves / hsl / posterize / color_balance /
-#       split_toning / vibrance
-#       （levels 支持 channel 分通道）
-curl -s -X POST "http://127.0.0.1:8080/api/tools/add_adjustment?doc=demo&token=$TOKEN" \
-     -d '{"layer_id":"layer_1","adjustment_type":"saturation","params":{"amount":1.6}}'
-# 滤镜：box_blur / gaussian_blur / motion_blur / sharpen / clarity / dehaze / film_grain / noise / vignette / glow /
-#       brightness_contrast / saturation / invert
-curl -s -X POST "http://127.0.0.1:8080/api/tools/add_filter?doc=demo&token=$TOKEN" \
-     -d '{"layer_id":"layer_1","filter_name":"gaussian_blur","params":{"sigma":4.0}}'
-```
-
-```bash
-# 修图工具：clone_stamp（仿制图章）/ heal_stamp（修复画笔）/ smudge（涂抹）/ patch（图章补丁）
-# liquify_push（沿 direction 推开）/ liquify_twirl（绕笔迹点旋转）/ liquify_pinch（收缩，负强度=膨胀）
-# patch 用法：抓取源区域像素后落到目标位置
-#   -d '{"layer_id":"layer_1","source_region":{"x":40,"y":40,"w":80,"h":80},"target":[300,300]}'
-# 仿制图章（heal_stamp 用法相同，另会把低频颜色对齐到目标处）：
-# 把 source_offset 处的已有内容复制到笔迹轨迹上
-curl -s -X POST "http://127.0.0.1:8080/api/tools/clone_stamp?doc=demo&token=$TOKEN" \
-     -d '{"layer_id":"layer_1","points":[[300,300],[360,340]],"source_offset":[-120,-80],"size":40}'
-```
-
-效果只作用于**同层下方**内容，因此两个工具缺省把新对象放到该层最上方（也可显式给 `z_index`）。
-调整在线性光里计算（sRGB 字节 128 反相得 229，不是 127）。未实现的类型与越界参数一律
-`invalid_argument`，`list_effects` 会回带内核支持的名字清单。
-
-### 桌面入口（Omarchy / Hyprland）
-
-客户端就是 Web 编辑器，所以桌面侧不需要任何原生 GUI 工具包：把服务端做成 systemd user
-服务，再用 Omarchy 自带的 `omarchy-webapp-install` 注册成 web app（`chromium --app`），
-最后加一个键位。完整步骤与实测记录见 **[deploy/omarchy/README.md](deploy/omarchy/README.md)**。
-
-```bash
-cargo build --release -p yanshi-http
-cp deploy/systemd/yanshi-serve.service ~/.config/systemd/user/
-systemctl --user enable --now yanshi-serve     # 回环 8110，开机自启
-assets/brand/render.sh                         # 从品牌 SVG 生成图标/favicon 各尺寸
-omarchy-webapp-install "Yanshi" "http://127.0.0.1:8110/?doc=yanshi" deploy/icons/yanshi.png
-# 在 ~/.config/hypr/bindings.lua 追加：
-#   o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
-hyprctl reload && hyprctl configerrors         # 期望：ok / 空
-```
-
-## 品牌资源
-
-`assets/brand/svg/` 是九个源 SVG（横版/竖版/主标 logo、深浅图标、favicon、极简版、单色版），
-是品牌资产的唯一来源；`assets/brand/render.sh` 用 `rsvg-convert` 生成产品实际使用的尺寸
-（桌面图标 256/512、favicon 16/32/180 与 `.ico`、README 与文档用 logo）。
-服务端把它们托管在 `/favicon.svg`、`/favicon.png`、`/favicon.ico` 与 `/brand/{file}`（白名单）。
-
-## 设计要点
-
-- **原子日志**：append-only，不删除、不修改；客户端 ULID 幂等，服务端 `seq` 为唯一权威全序。`parents` 只用于因果审计，不参与排序。
-- **折叠求值**：原子按 `seq` 线性扫描，维护每个对象的有效原子链；`revert` 级联失效，依赖被撤销原子的后续原子记录 `cascade_invalidation` 警告后跳过；`reapply` 只恢复目标原子，级联链需显式重新提交。
-- **state@seq 与 declare_head**：`state@seq_n := fold(A_n, base_state(H_n))`，`H_n` 为 `seq ≤ n` 中最近一次 `declare_head`。`declare_head` 是重型原子，统一实现时间旅行、`revert_to`、`restore_checkpoint`，提交后触发快照与全量 tile 失效，日志始终保持 append-only。
-- **Blob CAS 三级生命周期**：活跃（当前 HEAD 折叠状态引用，热存储）、历史（被日志任意原子引用但不在当前状态，冷归档 + zstd，保留可回取）、孤儿（上传成功但从未被引用，TTL 7 天后清理）。GC 根集 = 全日志引用闭包，快照产出的活跃 Manifest 只用于冷热迁移标记，不是 GC 根集。
-- **确定性分级**：D0 计算内核层 CPU bit-exact 基线；D1 合成后端层、预览、缩略图允许 ±1 LSB；D2 插件与外部服务允许差异。计算内核层是唯一权威来源。
-- **广播边界**：控制流（完整原子）全局广播，客户端折叠需要全部原子；数据流（tile 位图、缩略图、blob 二进制）按视口订阅过滤或按需拉取。
-- **工具暴露分层**：默认注册 27 个核心工具，扩展组按 `profile` 参数启用，以控制 Agent 的函数选择负担与 token 开销；启用全部已实现分组时共 65 个工具。
-- **渲染计算内核层（D0）**：`yanshi-render` 用纯 CPU 标量 `f32` 实现合成、笔触 stamping、覆盖率光栅化、
-  调整与滤镜、位图补丁；内存 tile 为 f16 线性预乘，输出像素以 f16 tile 为准；随机量只来自原子 `seed`，
-  因此逐位可复现。tile 分块、缓存淘汰与覆盖率裁剪不影响像素（属性测试逐字节校验）。
-- **双 dirty 传播**：几何 dirty 取对象包围盒并集，结构 dirty 通过依赖图闭包（同层上方对象、
-  实例 master、组成员）计算；失效 tile 集合必须覆盖所有变化像素，判定不了时宁可放大范围。
-- **缩略图与导出**：doc/layer/object/history/selection 分级尺寸、32×32 分块增量更新、
-  宽高比适配；PNG 使用零依赖确定性编码器（WebP/AVIF 属传输层，尚未实现）。
-  文档级缩略图与 HEAD 严格对应（落后即重算），保证「打开即图片」显示当前画面。
-- **零依赖传输层与最小 Web 查看器**：`std::net` 上手写 HTTP/1.1 与 RFC 6455（自实现 SHA-1 握手、
-  帧编解码/掩码校验/分片/ping-pong/16 MiB 上限），连接复用（keep-alive），token 走 `Bearer` 头或查询串，
-  `yanshi://blob/<hash>` 自动改写为带 token 的可 GET 地址；单页查看器支持画笔/矩形/椭圆/橡皮、
-  撤销重做、区域预览、缩略图、控制流日志面板与一致性自检。
-- **无头服务端与工具层**：提交校验 → 权威 seq → 增量折叠 → 双 dirty → 控制流广播 → Job → 快照；
-  核心层 27 个工具默认注册、扩展组按 `profile` 启用；`batch` 内共享变更集；
-  采样性替换冲突自动创建冲突图层并返回 `conflict_layer_id`；
-  标注走独立 append-only 通道；capability token 保护 HTTP/WS 而豁免 stdio；
-  MCP stdio 走「提交 + 轮询」，原子 JSONL + CAS + 渲染缓存持久化，重启即恢复。
-- **WASM 计算内核与本地乐观渲染**：与服务端共享同一份计算内核（D0 bit-exact）；
-  本地增量折叠 + tile 失效 + 视口联动；LRU tile 内存池有硬上限，达到 90% 水位自动淘汰（不依赖 JS 调用），
-  另暴露 `evict_outside_viewport` 供 JS 主动淘汰；拖动中的笔迹走**本地待提交覆盖层**（不进原子日志），
-  落笔才提交并接受服务端权威状态校正。
-- **许可证**：MIT。
-
-## 路线图
-
-| 阶段 | 内容摘要 | 状态 |
-|---|---|---|
-| Phase 0：技术验证 | 折叠引擎原型、代数属性测试与 fuzz、CPU D0 基线渲染器、Blob CAS 竞态与三级生命周期 / GC 原型、液化方案与 WebGPU 可行性验证 | ✅ 已完成 |
-| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界、HTTP/WS 传输、最小 Web 查看器 | ✅ 已完成 |
-| Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染、WASM LRU 内存池与视口联动、Job 协议、import_image | ✅ 已完成（L3/L4 缓存与 cross-fade 校正待补） |
-| Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 进行中 —— 调色与滤镜已完成（`retouch` 组的 `add_adjustment` / `add_filter` / `update_*` / `list_effects`）；修图与液化在内核里仍是 `Primitive::Unsupported`，因此不注册空壳工具 |
-| Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 4a 通道与 CRUD 已完成；**4b 环路已完成**（`suggest` 携带 patch、`accept_suggestion` 经工具分发表重放、`reject_suggestion` 记录原因，二者都会更新标注状态） |
-| Phase 5：插件 + 高级功能 | WASM 插件沙箱与能力模型、实例与组引用、高级路径编辑、owner/editor/viewer 权限 | 规划中 |
-
-## 测试与验收
-
-| 命令 | 覆盖 |
-|---|---|
-| `cargo test --workspace` | 322 个测试：核心引擎（原子/日志/折叠/state@seq/快照/Blob CAS/冲突）、渲染内核（笔触/形状/调整滤镜/dirty/缩略图/PNG/颜色/覆盖率裁剪/增量盖章）、服务端（文档服务/Job/token/广播/标注/持久化/工具层）、传输层（HTTP 路由/keep-alive/鉴权/WASM 与品牌资源托管）、MCP stdio、WASM 内核（增量折叠/覆盖层/水位兜底），以及 5.3 五条不变量与 D0 确定性的属性测试 |
-| `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）、渲染性能预算（8.5 / 14.10）、overdraw / tile 命中率、服务端 view 模式打开 < 100ms、覆盖率裁剪预算 |
-| `cargo doc --workspace --no-deps` | 无 rustdoc 警告（`missing_docs` 已开启） |
-
-设计文档与测试的对应关系、实测性能数据与已知限制见
-[docs/design/implementation-notes.md](docs/design/implementation-notes.md)。
-
-## 验收脚本
-
-`scripts/` 是可复现的验收证据：Phase 4b 建议环路演示、基于 Chromium 的「内核 vs 服务端」逐像素自检（D1：差异像素 ≤16 且 ≤1 LSB）、画笔拖动成本探针。前置条件与实测基线见 [scripts/README.md](scripts/README.md)。
-
-## 验收与 CI：本地跑快、重活上云
-
-| 位置 | 内容 | 方式 |
-|---|---|---|
-| 本地（每次改动） | `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`scripts/wasm-smoke.sh` | 秒级到两分钟 |
-| GitHub（每次 push/PR） | 同样四项 + wasm 冒烟作业（唯一能抓"原生全绿、浏览器全崩"那类回归） | `.github/workflows/ci.yml` |
-| GitHub（每夜 + 手动） | 整仓 `--ignored` 长任务：10 万原子折叠 fuzz、性能预算、4K 剖面、内核原生计时 | `.github/workflows/heavy.yml`，`gh workflow run heavy.yml` 后 `gh run list` / `gh run view <id> --log` 查看，日志上传为 artifact |
-
-逐像素自检按设计的分级执行：内核 tile 数据保持 **D0（逐位一致）**，**模糊族滤镜**在批准的范围内为
-**D1（≤1 LSB）**。1024² 实测差异：模糊密集文档 186 像素（0.018%）、单个 clarity/dehaze 18 像素
-（0.0017%）、**不含模糊的文档为 0**；判据为 `最大通道差 ≤1` 且差异像素 ≤ `max(64, 画布×0.05%)`。
-
-**重活刻意放在 CI**：本地循环保持可交互 —— 起一次运行、继续开发、定时查看即可。
-
-## 演示脚本
-
-- `scripts/phase4b-demo.sh` —— 端到端演示「标注 → AI 建议 → 接受/拒绝」环路（只依赖 curl + python3，打到运行中的服务端）。
-
-## 贡献
-
-欢迎贡献，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须保证：
-
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-三者全部通过，且新增折叠或 GC 语义必须附带属性测试。提交信息使用英文。
-
-## 联系我们
-
-- **联系邮箱**：<yanshi@wangda.today> —— 问题咨询、协作沟通、缺陷反馈、行为准则相关事宜都用这个地址。
-- **缺陷与建议**：优先在仓库开 issue；不想用 GitHub 也可以直接发邮件。
-- **安全漏洞**：请**不要**开公开 issue，直接发邮件到 <yanshi@wangda.today>（详见 [SECURITY.md](SECURITY.md)）。
-
-## 许可证
-
-本项目以 [MIT 许可证](LICENSE) 发布。
-
-Copyright (c) 2026 The Yanshi Authors
+MIT，见 [LICENSE](LICENSE)。
