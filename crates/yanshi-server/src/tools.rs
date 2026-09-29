@@ -1271,6 +1271,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "accept_suggestion",
+        profile: Profile::Collab,
+        summary: "接受建议：按序重放 patch（只允许会产生状态效果的步骤），提交 accept_suggestion 原子并把关联标注置为 resolved",
+        mutating: true,
+        params: &[
+            param!("suggestion_id", String, true, "建议 id（suggest 原子的 id）"),
+        ],
+    },
+    ToolSpec {
         name: "reject_suggestion",
         profile: Profile::Collab,
         summary: "拒绝建议：记录原因，并把引用该建议的标注置为 rejected（12.6）",
@@ -1394,6 +1403,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
         "comment" => write_comment(ctx, args),
         "suggest" => write_suggest(ctx, args),
+        "accept_suggestion" => write_accept_suggestion(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
@@ -2799,6 +2809,158 @@ fn write_suggest(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "suggestion_id": result.atom_id,
         "seq": result.seq,
         "steps": patch.len(),
+    }))
+}
+
+/// 所有已实现 profile 的并集（与 HTTP 服务端默认集一致）。
+fn all_implemented_profiles() -> Vec<Profile> {
+    vec![
+        Profile::Core,
+        Profile::History,
+        Profile::Annotation,
+        Profile::Collab,
+        Profile::Structure,
+        Profile::Retouch,
+    ]
+}
+
+/// 接受建议：按序重放 patch（设计 12.6：`accept_suggestion → reapply`）。
+///
+/// 重放走**同一张工具分发表**，因此与人工操作完全同路径（同样的校验、dirty 传播与响应）。
+/// 只允许「会产生状态效果」的步骤：把只读工具塞进 patch 没有意义，也容易出现意外行为。
+fn write_accept_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let suggestion_id = require_str(args, "suggestion_id")?;
+    // 1) 取出建议的 patch（必须是一条 suggest 原子）。
+    let (patch, annotation_id) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let atom = document.log().get(&suggestion_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("建议 {suggestion_id} 不在日志中")),
+            )
+            .with_atom(suggestion_id.clone())
+        })?;
+        if atom.kind != AtomKind::Suggest {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{suggestion_id} 是 {} 原子，不是建议（suggest）",
+                    atom.kind
+                )),
+            ));
+        }
+        let patch = atom
+            .payload
+            .get("patch")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let annotation_id = atom
+            .payload
+            .get("annotation_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        (patch, annotation_id)
+    };
+    if patch.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("建议没有可重放的步骤"),
+        ));
+    }
+    // 2) 只允许产生状态效果的步骤。用「所有已实现 profile 的并集」构造注册表：
+    //    建议可能包含任何已放行工具的步骤（与 HTTP 服务端默认集一致）。
+    let registry = ToolRegistry::with_profiles(&all_implemented_profiles());
+    for (index, step) in patch.iter().enumerate() {
+        let tool = step.get("tool").and_then(Value::as_str).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 缺少 tool")),
+            )
+        })?;
+        let spec = registry.get(tool).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 引用了未知工具 {tool}")),
+            )
+        })?;
+        if !spec.mutating {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "patch[{index}] 的 {tool} 是只读工具，不能作为补丁步骤"
+                )),
+            ));
+        }
+    }
+    // 3) 逐条重放。
+    let mut applied: Vec<String> = Vec::new();
+    for (index, step) in patch.iter().enumerate() {
+        let tool = step.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let step_args = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let spec = registry.get(tool).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("patch[{index}] 引用了未知工具 {tool}")),
+            )
+        })?;
+        validate_args(spec, &step_args)?;
+        let value = dispatch(spec, ctx, &step_args)?;
+        if let Some(atom_id) = value.get("atom_id").and_then(Value::as_str) {
+            applied.push(atom_id.to_owned());
+        }
+    }
+    // 4) 提交接受原子并更新关联标注。
+    let result = ctx.commit(
+        AtomKind::AcceptSuggestion,
+        json!({
+            "target_atom_id": suggestion_id,
+            "applied_atom_ids": applied,
+            "annotation_id": annotation_id,
+        }),
+    )?;
+    let accept_atom = result.atom_id.clone();
+    let (resolved, pending) = {
+        let document = ctx.workspace.document_mut(&ctx.doc_id).map_err(|_| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let filter = AnnotationFilter {
+            status: Some(AnnotationStatus::Pending),
+            ..AnnotationFilter::default()
+        };
+        let ids: Vec<String> = document
+            .annotations()
+            .list(&filter)
+            .into_iter()
+            .filter(|annotation| {
+                annotation.suggestion_id.as_deref() == Some(suggestion_id.as_str())
+            })
+            .map(|annotation| annotation.id)
+            .collect();
+        let mut resolved = Vec::new();
+        for id in ids {
+            resolved.push(document.annotations_mut().resolve(
+                &id,
+                Some(accept_atom.clone()),
+                ctx.now,
+            )?);
+        }
+        (resolved, document.annotations().pending_count())
+    };
+    Ok(json!({
+        "suggestion_id": suggestion_id,
+        "applied_atom_ids": applied,
+        "accept_atom_id": accept_atom,
+        "resolved_annotations": resolved,
+        "pending_annotations": pending,
     }))
 }
 

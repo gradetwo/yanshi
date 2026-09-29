@@ -1628,3 +1628,156 @@ fn tool_layer_covers_core_workflow() {
     let listed = registry.call(&mut context, "list_objects", &json!({}));
     assert_eq!(listed["count"], json!(1), "撤销删除后对象复活");
 }
+
+/// Phase 4b 闭环：接受建议 → 按序重放 patch（真的改变像素）→ 关联标注置为 resolved。
+#[test]
+fn accept_suggestion_replays_the_patch_and_resolves_annotations() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_accept", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+        yanshi_server::Profile::Annotation,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_accept", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "layer_1", "object_id": "base",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}},
+                         "color": {"r": 120, "g": 120, "b": 120, "a": 255}}}),
+    );
+    let sample = |context: &mut ToolContext<'_>, x: u32, y: u32| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 64, "h": 64}}),
+        );
+        let hash: yanshi_core::BlobHash = response["thumb_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let (_, _, pixels) = decode_png(&store.get(&hash).unwrap());
+        let index = ((y * 64 + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+    let before = sample(&mut context, 32, 32);
+
+    let annotation = registry.call(
+        &mut context,
+        "create_annotation",
+        &json!({"type": "region", "content": "整体提亮", "intent": "modify",
+                "target": {"type": "region", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}}}),
+    );
+    let annotation_id = annotation["annotation_id"].as_str().unwrap().to_owned();
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({
+            "annotation_id": annotation_id,
+            "summary": "曝光 +1EV 后反相",
+            "patch": [
+                {"tool": "add_adjustment", "arguments": {"layer_id": "layer_1",
+                    "adjustment_type": "exposure", "params": {"ev": 1.0}}},
+                {"tool": "add_adjustment", "arguments": {"layer_id": "layer_1",
+                    "adjustment_type": "invert"}}
+            ]
+        }),
+    );
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap().to_owned();
+    let linked = registry.call(
+        &mut context,
+        "create_annotation",
+        &json!({"type": "region", "content": "跟随建议", "intent": "style",
+                "target": {"type": "region", "bbox": {"x": 0, "y": 0, "w": 32, "h": 32}},
+                "suggestion_id": suggestion_id}),
+    );
+    assert_eq!(linked["ok"], json!(true), "{linked}");
+
+    // 只读步骤不得作为补丁步骤。
+    let read_only = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"patch": [{"tool": "get_document", "arguments": {}}]}),
+    );
+    let read_only_id = read_only["suggestion_id"].as_str().unwrap().to_owned();
+    let refused = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": read_only_id}),
+    );
+    assert_eq!(
+        refused["error_code"],
+        json!("invalid_argument"),
+        "{refused}"
+    );
+
+    // 接受：patch 真正重放 + 标注置为 resolved。
+    let accepted = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+    assert_eq!(
+        accepted["applied_atom_ids"].as_array().unwrap().len(),
+        2,
+        "{accepted}"
+    );
+    assert_eq!(
+        accepted["resolved_annotations"].as_array().unwrap().len(),
+        1,
+        "引用该建议的标注应被置为 resolved：{accepted}"
+    );
+    let after = sample(&mut context, 32, 32);
+    assert!(
+        after[0] > before[0] + 40,
+        "曝光+反相应显著提亮（线性光反相把中灰推到亮部）：{before:?} → {after:?}"
+    );
+    let listed = registry.call(
+        &mut context,
+        "list_suggestions",
+        &json!({"status": "accepted"}),
+    );
+    assert!(
+        listed["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["suggestion_id"] == json!(suggestion_id)),
+        "{listed}"
+    );
+    // 未知建议必须报引用错误。
+    let missing = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": "01ZZZZZZZZZZZZZZZZZZZZZZZZZZ"}),
+    );
+    assert_eq!(
+        missing["error_code"],
+        json!("reference_not_found"),
+        "{missing}"
+    );
+}

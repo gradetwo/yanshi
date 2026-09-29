@@ -251,7 +251,7 @@ hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 | Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界、HTTP/WS 传输、最小 Web 查看器 | ✅ 已完成 |
 | Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染、WASM LRU 内存池与视口联动、Job 协议、import_image | ✅ 已完成（L3/L4 缓存与 cross-fade 校正待补） |
 | Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 进行中 —— 调色与滤镜已完成（`retouch` 组的 `add_adjustment` / `add_filter` / `update_*` / `list_effects`）；修图与液化在内核里仍是 `Primitive::Unsupported`，因此不注册空壳工具 |
-| Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 4a 通道与 CRUD 已完成，4b 规划中 |
+| Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 4a 通道与 CRUD 已完成；**4b 环路已完成**（`suggest` 携带 patch、`accept_suggestion` 经工具分发表重放、`reject_suggestion` 记录原因，二者都会更新标注状态） |
 | Phase 5：插件 + 高级功能 | WASM 插件沙箱与能力模型、实例与组引用、高级路径编辑、owner/editor/viewer 权限 | 规划中 |
 
 ## 测试与验收

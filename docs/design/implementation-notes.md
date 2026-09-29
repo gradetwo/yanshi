@@ -748,9 +748,19 @@ patch 采用工具调用序列（而不是原始原子）的原因：AI 的输�
 pending/2 步 → 创建关联标注（pending 变 2）→ `reject_suggestion`（记录原因，联动 1 条标注转为
 rejected）全部成功。
 
-**尚未实现（下一步）**：`accept_suggestion` —— 需要按序重放 patch（通过工具分发表调用），
-并在成功后提交 `accept_suggestion` 原子、把关联标注置为 `resolved`。当前 `list_suggestions`
-已能识别 `accepted` 状态（读 `accept_suggestion` 原子），因此只差提交侧。
+**`accept_suggestion`（已实现）**：按序重放 patch → 提交 `accept_suggestion` 原子 →
+把引用该建议的待处理标注置为 `resolved`（记录 `resolved_by` = 接受原子、`resolved_at`）。
+
+* 重放走**同一张工具分发表**（`validate_args` + `dispatch`），因此与人工操作完全同路径：
+  同样的参数校验、dirty 传播与响应；
+* 注册表用**所有已实现 profile 的并集**构造（与 HTTP 服务端默认集一致），
+  这样 patch 里可以出现 `add_adjustment`/`add_filter`/`clone_stamp` 等扩展组工具；
+* **只允许 mutating 工具**作为补丁步骤：把只读工具塞进 patch 没有意义（测试覆盖了拒绝路径）；
+* 未知建议 `reference_not_found`、非 suggest 原子 `invalid_argument`、空 patch 明确报错。
+
+至此 4b 的核心环路可用：**人类标注 → AI 解析 → `suggest`（含 patch）→ 人工 `accept_suggestion`
+/ `reject_suggestion` → patch 应用 → 标注状态更新（resolved/rejected）**。
+AI 侧感知新标注仍走设计 976 的轮询：`list_annotations(status=pending)`。
 
 ## 三、尚未实现（与 README 路线图一致）
 
