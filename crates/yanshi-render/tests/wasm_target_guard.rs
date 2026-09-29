@@ -18,10 +18,10 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
     vec![
         (
             "crates/yanshi-render/src/render.rs",
-            4,
+            6,
             "（1）`stage_probe` 模块里的 `Instant::now()`（1 处代码 + 1 处说明注释），\
              代码那处位于 `#[cfg(not(target_arch = \"wasm32\"))]` 分支，wasm32 走编译期空操作；\
-             （2）`#[cfg(test)]` 测试模块里的 2 处 `Instant::now()`（液化的成本探针）—— \
+             （2）`#[cfg(test)]` 测试模块里的 4 处 `Instant::now()`（液化成本探针与两个微基准）—— \
              测试代码不参与 wasm 构建，永不编译进客户端",
         ),
         (

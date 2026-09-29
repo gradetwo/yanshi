@@ -2204,6 +2204,119 @@ mod tests {
         }
     }
 
+    /// 微基准：`Buffer` 访问器的成本（双线性采样每个目标像素要 4 次 get + 1 次 set）。
+    /// 结论：约 3ns —— 访问器**不是**热点（被向量化）。
+    #[test]
+    #[ignore = "诊断：Buffer 访问器成本"]
+    fn buffer_accessor_cost_probe() {
+        let width = 1024u32;
+        let mut buffer = Buffer::new(0, 0, width, width);
+        buffer.fill([0.4, 0.5, 0.6, 1.0]);
+        let samples = 160_000usize;
+        // 4 次 get + 1 次 set，模拟一次双线性采样并写回。
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let mut acc = 0.0f32;
+            for index in 0..samples {
+                let x = (index % 1000) as u32;
+                let y = (index / 1000) as u32;
+                let p00 = buffer.pixel(x, y);
+                let p10 = buffer.pixel(x + 1, y);
+                let p01 = buffer.pixel(x, y + 1);
+                let p11 = buffer.pixel(x + 1, y + 1);
+                let out = [
+                    (p00[0] + p10[0] + p01[0] + p11[0]) * 0.25,
+                    (p00[1] + p10[1] + p01[1] + p11[1]) * 0.25,
+                    (p00[2] + p10[2] + p01[2] + p11[2]) * 0.25,
+                    (p00[3] + p10[3] + p01[3] + p11[3]) * 0.25,
+                ];
+                buffer.set_pixel(x, y, out);
+                acc += out[0];
+            }
+            std::hint::black_box(acc);
+            best = best.min(started.elapsed());
+        }
+        println!(
+            "  4×get+1×set（{} 次）: {best:?}｜每次 {:.0}ns",
+            samples,
+            best.as_secs_f64() * 1e9 / samples as f64
+        );
+    }
+
+    /// 微基准：复刻 liquify twirl 的**内层数学**（距离 + smoothstep + sin_cos + 双线性），
+    /// 结论：**约 66ns/像素** —— 与实测液化净成本（约 30ms / 16 万像素 ≈ 190ns/像素）
+    /// 同量级，差额来自 `layer_buffer.clone()`（26MB）与循环开销；**没有**结构性重复
+    /// （整幅渲染 `tiles_rendered=1`，不是按 tile 重做）。
+    #[test]
+    #[ignore = "诊断：liquify 内层数学成本"]
+    fn liquify_inner_math_probe() {
+        let width = 1024u32;
+        let mut buffer = Buffer::new(0, 0, width, width);
+        buffer.fill([0.4, 0.5, 0.6, 1.0]);
+        let (px, py) = (512.0f64, 512.0f64);
+        let size = 400.0f64;
+        let radius = size / 2.0;
+        let strength = 0.8f64;
+        let affected = 160_000usize;
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let mut acc = 0.0f32;
+            for index in 0..affected {
+                let x = (index % 400) as u32 + 312;
+                let y = (index / 400) as u32 + 312;
+                let document_x = x as f64;
+                let document_y = y as f64;
+                let dx = document_x - px;
+                let dy = document_y - py;
+                let distance = (dx * dx + dy * dy).sqrt();
+                if distance >= radius {
+                    continue;
+                }
+                let t = 1.0 - distance / radius;
+                let falloff = t * t * (3.0 - 2.0 * t);
+                let angle = strength * falloff;
+                let (sin, cos) = angle.sin_cos();
+                let rotated_x = dx * cos - dy * sin;
+                let rotated_y = dx * sin + dy * cos;
+                let shift_x = dx - rotated_x;
+                let shift_y = dy - rotated_y;
+                if shift_x == 0.0 && shift_y == 0.0 {
+                    continue;
+                }
+                let sample_x = document_x - shift_x;
+                let sample_y = document_y - shift_y;
+                let x0 = sample_x.floor();
+                let y0 = sample_y.floor();
+                let fx = (sample_x - x0) as f32;
+                let fy = (sample_y - y0) as f32;
+                let clamp = |value: i64, limit: u32| value.clamp(0, limit as i64 - 1) as u32;
+                let (x0i, y0i) = (clamp(x0 as i64, width), clamp(y0 as i64, width));
+                let (x1i, y1i) = (clamp(x0 as i64 + 1, width), clamp(y0 as i64 + 1, width));
+                let p00 = buffer.pixel(x0i, y0i);
+                let p10 = buffer.pixel(x1i, y0i);
+                let p01 = buffer.pixel(x0i, y1i);
+                let p11 = buffer.pixel(x1i, y1i);
+                let mut out = [0.0f32; 4];
+                for channel in 0..4 {
+                    let top = p00[channel] + (p10[channel] - p00[channel]) * fx;
+                    let bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
+                    out[channel] = top + (bottom - top) * fy;
+                }
+                buffer.set_pixel(x, y, out);
+                acc += out[0];
+            }
+            std::hint::black_box(acc);
+            best = best.min(started.elapsed());
+        }
+        println!(
+            "  liquify twirl 内层数学（{} 像素）: {best:?}｜每像素 {:.0}ns",
+            affected,
+            best.as_secs_f64() * 1e9 / affected as f64
+        );
+    }
+
     /// 性能诊断：liquify 三种模式在 1024² 上的渲染成本（用于"循环不变量外提"类改动的前后对比）。
     #[test]
     #[ignore = "诊断：liquify 成本"]
@@ -2239,23 +2352,26 @@ mod tests {
             let without = state.objects.remove("liquify").unwrap();
             let mut renderer = renderer();
             let mut baseline = std::time::Duration::MAX;
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let started = std::time::Instant::now();
                 let _ = renderer.render_document(&state, &store).unwrap();
                 baseline = baseline.min(started.elapsed());
             }
             state.objects.insert("liquify".to_owned(), without);
             let mut with_liquify = std::time::Duration::MAX;
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let started = std::time::Instant::now();
                 let _ = renderer.render_document(&state, &store).unwrap();
                 with_liquify = with_liquify.min(started.elapsed());
             }
+            let rendered = renderer.render_document(&state, &store).unwrap();
             println!(
-                "  liquify {mode}（1024²，size 400）: 总 {:?}｜基线 {:?}｜**净成本 {:?}**",
+                "  liquify {mode}（1024²，size 400）: 总 {:?}｜基线 {:?}｜**净成本 {:?}**｜tiles_rendered={} 对象={}",
                 with_liquify,
                 baseline,
-                with_liquify.saturating_sub(baseline)
+                with_liquify.saturating_sub(baseline),
+                rendered.stats.tiles_rendered,
+                rendered.stats.objects
             );
         }
     }
