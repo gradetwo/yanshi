@@ -1388,8 +1388,16 @@ mod tests {
         assert!(groups.contains("annotation"));
         assert!(groups.contains("collab"));
         assert!(groups.contains("structure"));
-        assert!(groups.contains("retouch"), "retouch 组必须默认启用：{groups:?}");
-        for required in ["add_adjustment", "add_filter", "update_filter", "list_effects"] {
+        assert!(
+            groups.contains("retouch"),
+            "retouch 组必须默认启用：{groups:?}"
+        );
+        for required in [
+            "add_adjustment",
+            "add_filter",
+            "update_filter",
+            "list_effects",
+        ] {
             assert!(
                 registry.get(required).is_some(),
                 "{required} 应在默认 profile 下可用"
