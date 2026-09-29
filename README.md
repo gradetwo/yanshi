@@ -171,7 +171,7 @@ the subscribed viewport. MCP stdio never receives pushes; it polls `get_log` / `
 
 Invalid colours are rejected in the tool layer (`invalid_argument`) and never reach the atom log.
 
-#### Colour grading, filters and retouch (`retouch` group)
+#### Colour grading, filters, retouch and masks (`retouch` / `structure` groups)
 
 ```bash
 # adjustment: brightness_contrast / saturation / invert / levels /

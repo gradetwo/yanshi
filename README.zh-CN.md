@@ -157,7 +157,7 @@ MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮�
 
 非法颜色在工具层即被拒绝（`invalid_argument`），不会写入原子日志。
 
-#### 调色、滤镜与修图（`retouch` 组）
+#### 调色、滤镜、修图与蒙版（`retouch` / `structure` 组）
 
 ```bash
 # 调整：brightness_contrast / saturation / invert / levels /

@@ -1060,6 +1060,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("annotation_id", String, true, "标注 id")],
     },
+    // ---- 扩展：structure（蒙版；内核已实现按形状覆盖率 + 羽化 + 反选调制图层 alpha）----
+    ToolSpec {
+        name: "create_mask",
+        profile: Profile::Structure,
+        summary: "创建蒙版（形状覆盖率 + 羽化 + 反选），随后用 set_property 把 mask_id 挂到图层",
+        mutating: true,
+        params: &[
+            param!("mask_id", String, true, "蒙版 id"),
+            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}"),
+            param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
+            param!("invert", Boolean, false, "反选（缺省 false）"),
+            param!("mode", String, false, "组合模式 new/add/subtract/intersect（缺省 new）"),
+            param!("linked_layer", String, false, "关联图层 id"),
+        ],
+    },
     // ---- 扩展：retouch（调色与滤镜；内核已实现的子集）----
     ToolSpec {
         name: "add_adjustment",
@@ -1312,6 +1327,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
+        "create_mask" => write_create_mask(ctx, args),
         "clone_stamp" => write_retouch(ctx, args, "clone_stamp"),
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
@@ -2236,6 +2252,47 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
         AtomKind::Supersede,
         json!({"object_id": object_id, "layer_id": layer_id, "data": data}),
     )?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+/// 创建蒙版：内核按形状覆盖率调制图层 alpha（支持羽化与反选）。
+fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let mask_id = require_str(args, "mask_id")?;
+    let shape = require_object(args, "shape")?.clone();
+    if shape.get("kind").and_then(Value::as_str).is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("shape 必须带 kind（rect/ellipse/polygon）"),
+        ));
+    }
+    let feather = args.get("feather").and_then(Value::as_f64).unwrap_or(0.0);
+    if !(0.0..=512.0).contains(&feather) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("feather 必须在 [0, 512] 内，得到 {feather}")),
+        ));
+    }
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "new".to_owned());
+    if !["new", "add", "subtract", "intersect"].contains(&mode.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "mode 必须是 new/add/subtract/intersect，得到 {mode}"
+            )),
+        ));
+    }
+    let mut payload = json!({
+        "mask_id": mask_id,
+        "shape": shape,
+        "feather": feather,
+        "mode": mode,
+        "invert": args.get("invert").and_then(Value::as_bool).unwrap_or(false),
+    });
+    if let Some(linked) = optional_str(args, "linked_layer") {
+        payload["linked_layer"] = json!(linked);
+    }
+    let result = ctx.commit(AtomKind::CreateMask, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
 }

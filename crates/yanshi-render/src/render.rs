@@ -243,7 +243,7 @@ impl Renderer {
             stats.layers += 1;
             let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
             self.render_layer_objects(state, store, layer, &mut layer_buffer, &mut stats)?;
-            apply_layer_mask(state, layer, &mut layer_buffer);
+            apply_layer_mask(state, layer, &mut layer_buffer, &mut stats);
             if layer.clipping_mask {
                 // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
                 layer_buffer.multiply_alpha_by(&accumulation);
@@ -969,11 +969,20 @@ pub fn coverage_from_shape(shape: &Value) -> Coverage {
 }
 
 /// 图层蒙版：用蒙版覆盖率乘以图层 alpha（蒙版缺失或已删除时保持原样）。
-pub fn apply_layer_mask(state: &DocumentState, layer: &Layer, layer_buffer: &mut Buffer) {
+pub fn apply_layer_mask(
+    state: &DocumentState,
+    layer: &Layer,
+    layer_buffer: &mut Buffer,
+    stats: &mut RenderStats,
+) {
     let Some(mask_id) = &layer.mask_id else {
         return;
     };
     let Some(mask) = state.masks.get(mask_id) else {
+        // 引用不存在的蒙版必须可观测（9 章校验也会报 missing）。
+        stats
+            .unsupported
+            .push(format!("蒙版不存在: {mask_id}（图层 {}）", layer.id));
         return;
     };
     if mask.is_deleted() {
@@ -995,6 +1004,12 @@ pub fn apply_layer_mask(state: &DocumentState, layer: &Layer, layer_buffer: &mut
                 mask_buffer.set_pixel(x, y, [0.0, 0.0, 0.0, 1.0 - pixel[3]]);
             }
         }
+    }
+    // 羽化：对蒙版 alpha 做方框模糊（`feather` 是过渡总宽度，半径取一半）。
+    // 此前这里被静默忽略，表现为「设了羽化却没有软边」。
+    if mask.feather > 0.0 {
+        let radius = (mask.feather / 2.0).round().max(1.0) as u32;
+        crate::filter::box_blur(&mut mask_buffer, radius, 1);
     }
     layer_buffer.multiply_alpha_by(&mask_buffer);
 }
@@ -1626,6 +1641,115 @@ mod tests {
             1,
             "未实现的修图类型必须告警"
         );
+    }
+
+    /// 蒙版：范围外应被裁掉、反选应翻转、羽化应产生软边，缺失蒙版必须告警。
+    #[test]
+    fn layer_mask_clips_inverts_and_feathers() {
+        fn scene(shape: serde_json::Value, feather: f64, invert: bool) -> DocumentState {
+            let mut state = white_document();
+            state.width = 64;
+            state.height = 64;
+            state.objects.insert(
+                "obj_fill".to_owned(),
+                object(
+                    "obj_fill",
+                    "layer_1",
+                    ObjectType::Shape,
+                    0,
+                    json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}},
+                           "color": {"r": 10, "g": 10, "b": 10, "a": 255}}),
+                ),
+            );
+            state.masks.insert(
+                "mask_1".to_owned(),
+                yanshi_core::Selection {
+                    id: "mask_1".to_owned(),
+                    shape,
+                    feather,
+                    mode: "new".to_owned(),
+                    invert,
+                    linked_layer: Some("layer_1".to_owned()),
+                    refined_edges: false,
+                    blobs: Vec::new(),
+                    created_by: "human:1".to_owned(),
+                    deleted_by: None,
+                },
+            );
+            if let Some(layer) = state.layers.get_mut("layer_1") {
+                layer.mask_id = Some("mask_1".to_owned());
+            }
+            state
+        }
+
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        // 左半矩形蒙版：右半应被裁掉。
+        let masked = renderer
+            .render_document(
+                &scene(
+                    json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 64}}),
+                    0.0,
+                    false,
+                ),
+                &store,
+            )
+            .unwrap();
+        // 合成结果叠在白色文档底上，因此按**颜色**判断：蒙版内是深色填充，蒙版外是白底。
+        assert!(masked.pixel(16, 32).unwrap()[0] < 120, "蒙版内应保留内容");
+        assert!(
+            masked.pixel(48, 32).unwrap()[0] > 200,
+            "蒙版外应被裁掉（露白底）"
+        );
+
+        // 反选后相反。
+        let inverted = renderer
+            .render_document(
+                &scene(
+                    json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 64}}),
+                    0.0,
+                    true,
+                ),
+                &store,
+            )
+            .unwrap();
+        assert!(
+            inverted.pixel(48, 32).unwrap()[0] < 120,
+            "反选后蒙版外应保留"
+        );
+        assert!(
+            inverted.pixel(8, 32).unwrap()[0] > 200,
+            "反选后蒙版内应被裁掉"
+        );
+
+        // 羽化：边界附近应出现中间值（软边）。
+        let feathered = renderer
+            .render_document(
+                &scene(
+                    json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 64}}),
+                    12.0,
+                    false,
+                ),
+                &store,
+            )
+            .unwrap();
+        let edge = feathered.pixel(32, 32).unwrap()[0];
+        assert!(
+            edge > 20 && edge < 235,
+            "羽化后边界应是中间值（软边）：{edge}"
+        );
+
+        // 引用不存在的蒙版必须告警而不是静默忽略。
+        let mut broken = scene(
+            json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 64}}),
+            0.0,
+            false,
+        );
+        if let Some(layer) = broken.layers.get_mut("layer_1") {
+            layer.mask_id = Some("mask_missing".to_owned());
+        }
+        let rendered = renderer.render_document(&broken, &store).unwrap();
+        assert_eq!(rendered.stats.unsupported.len(), 1, "缺失蒙版必须告警");
     }
 
     /// 液化：硬边界应沿方向被推开，影响范围外不动，且区域渲染与整幅一致。

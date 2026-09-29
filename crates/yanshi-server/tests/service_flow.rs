@@ -900,6 +900,104 @@ fn clone_stamp_copies_content_and_is_reversible() {
     );
 }
 
+/// 蒙版：创建 + 挂到图层后，图层内容应只在蒙版范围内可见（含羽化与缺蒙版告警）。
+#[test]
+fn mask_clips_layer_content_end_to_end() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_mask", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Structure,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_mask", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    // 铺满整层的深色，再用左半蒙版裁掉右半。
+    registry.call(
+        &mut context,
+        "draw_shape",
+        &json!({"layer_id": "layer_1", "object_id": "fill",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}},
+                         "color": {"r": 10, "g": 10, "b": 10, "a": 255}}}),
+    );
+    let sample = |context: &mut ToolContext<'_>, x: u32, y: u32| -> [u8; 4] {
+        let response = registry.call(
+            context,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 64, "h": 64}}),
+        );
+        let hash: yanshi_core::BlobHash = response["thumb_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let (_, _, pixels) = decode_png(&store.get(&hash).unwrap());
+        let index = ((y * 64 + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    };
+    assert!(
+        sample(&mut context, 48, 32)[0] < 120,
+        "挂蒙版前右半应是深色"
+    );
+
+    let created = registry.call(
+        &mut context,
+        "create_mask",
+        &json!({"mask_id": "mask_1", "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 64}},
+                "linked_layer": "layer_1"}),
+    );
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let attached = registry.call(
+        &mut context,
+        "set_property",
+        &json!({"layer_id": "layer_1", "key": "mask_id", "value": "mask_1"}),
+    );
+    assert_eq!(attached["ok"], json!(true), "{attached}");
+    assert_eq!(
+        attached["dirty_kind"],
+        json!("structure"),
+        "挂蒙版属结构变更"
+    );
+
+    assert!(sample(&mut context, 16, 32)[0] < 120, "蒙版内应保留深色");
+    assert!(
+        sample(&mut context, 48, 32)[0] > 200,
+        "蒙版外应被裁掉（露白底）"
+    );
+
+    // 参数校验。
+    for payload in [
+        json!({"mask_id": "m2", "shape": {}}),
+        json!({"mask_id": "m2", "shape": {"kind": "rect"}, "feather": 9999}),
+        json!({"mask_id": "m2", "shape": {"kind": "rect"}, "mode": "weird"}),
+    ] {
+        let response = registry.call(&mut context, "create_mask", &payload);
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{payload}: {response}"
+        );
+    }
+}
+
 #[test]
 fn capability_tokens_gate_http_and_allow_stdio() {
     let mut workspace = workspace();
