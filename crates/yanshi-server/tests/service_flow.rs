@@ -906,6 +906,37 @@ fn clone_stamp_copies_content_and_is_reversible() {
         );
     }
 
+    // 分通道色阶与色调分离：可用且参数校验按效果区分。
+    for (adjustment, params) in [
+        (
+            "levels",
+            json!({"black": 0.05, "white": 0.95, "gamma": 1.1, "channel": "b"}),
+        ),
+        ("posterize", json!({"levels": 5})),
+    ] {
+        let response = registry.call(
+            &mut context,
+            "add_adjustment",
+            &json!({"layer_id": "layer_1", "adjustment_type": adjustment, "params": params}),
+        );
+        assert_eq!(response["ok"], json!(true), "{adjustment}: {response}");
+    }
+    for (adjustment, params) in [
+        ("levels", json!({"channel": "cyan"})),
+        ("posterize", json!({"levels": 1})),
+    ] {
+        let response = registry.call(
+            &mut context,
+            "add_adjustment",
+            &json!({"layer_id": "layer_1", "adjustment_type": adjustment, "params": params}),
+        );
+        assert_eq!(
+            response["error_code"],
+            json!("invalid_argument"),
+            "{adjustment}: {response}"
+        );
+    }
+
     // 液化三模式：twirl / pinch 可用（pinch 允许负强度=膨胀），模式参数校验按名区分。
     let twirled = registry.call(
         &mut context,

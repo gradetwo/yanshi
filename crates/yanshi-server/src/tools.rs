@@ -1079,7 +1079,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels / exposure / white_balance / curves / hsl",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2073,6 +2073,7 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         }
         (EffectKind::Adjustment, "saturation") => &[("amount", 0.0, 8.0)],
         (EffectKind::Adjustment, "invert") => &[],
+        (EffectKind::Adjustment, "posterize") => &[("levels", 2.0, 64.0)],
         (EffectKind::Adjustment, "levels") => &[
             ("black", 0.0, 1.0),
             ("white", 0.0, 1.0),
@@ -2127,6 +2128,17 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         }
     }
     if name == "levels" {
+        if let Some(channel) = object.get("channel").and_then(Value::as_str) {
+            // 分通道色阶：与 curves 同一套通道命名。
+            if !["rgb", "r", "g", "b"].contains(&channel) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "levels 的 channel 只能是 rgb/r/g/b，得到 {channel}"
+                    )),
+                ));
+            }
+        }
         if let (Some(black), Some(white)) = (number("black"), number("white")) {
             if black >= white {
                 return Err(YanshiError::new(

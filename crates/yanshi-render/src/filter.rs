@@ -31,6 +31,8 @@ pub enum AdjustmentKind {
     Curves,
     /// 色相/饱和度/明度。
     Hsl,
+    /// 色调分离。
+    Posterize,
 }
 
 impl AdjustmentKind {
@@ -45,6 +47,7 @@ impl AdjustmentKind {
             "white_balance" => Some(Self::WhiteBalance),
             "curves" => Some(Self::Curves),
             "hsl" | "hue_saturation" => Some(Self::Hsl),
+            "posterize" => Some(Self::Posterize),
             _ => None,
         }
     }
@@ -60,11 +63,12 @@ impl AdjustmentKind {
             Self::WhiteBalance => "white_balance",
             Self::Curves => "curves",
             Self::Hsl => "hsl",
+            Self::Posterize => "posterize",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 8] = [
+    pub const ALL: [AdjustmentKind; 9] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -73,6 +77,7 @@ impl AdjustmentKind {
         Self::WhiteBalance,
         Self::Curves,
         Self::Hsl,
+        Self::Posterize,
     ];
 }
 
@@ -205,14 +210,39 @@ pub fn invert(buffer: &mut Buffer) {
 }
 
 /// 色阶：`black`/`white` 为输入黑白点（`0..1`），`gamma` 为中间调。
-pub fn levels(buffer: &mut Buffer, black: f32, white: f32, gamma: f32) {
+/// 色阶：`channel` 为 `rgb` / `r` / `g` / `b`，可按通道单独调整。
+pub fn levels_channel(buffer: &mut Buffer, black: f32, white: f32, gamma: f32, channel: &str) {
     let black = black.clamp(0.0, 0.999);
     let white = white.clamp(black + 1e-3, 1.0);
     let inverse_gamma = 1.0 / gamma.max(1e-3);
+    let map = |value: f32| {
+        let normalized = ((value - black) / (white - black)).clamp(0.0, 1.0);
+        normalized.powf(inverse_gamma)
+    };
+    for_each_straight_color(buffer, |color| match channel {
+        "r" => color[0] = map(color[0]),
+        "g" => color[1] = map(color[1]),
+        "b" => color[2] = map(color[2]),
+        _ => {
+            for value in color.iter_mut() {
+                *value = map(*value);
+            }
+        }
+    });
+}
+
+/// 色阶（三通道同时）。
+pub fn levels(buffer: &mut Buffer, black: f32, white: f32, gamma: f32) {
+    levels_channel(buffer, black, white, gamma, "rgb");
+}
+
+/// 色调分离：把每个直通通道量化到 `levels` 个台阶。
+pub fn posterize(buffer: &mut Buffer, levels: u32) {
+    let levels = levels.clamp(2, 64);
+    let steps = (levels - 1) as f32;
     for_each_straight_color(buffer, |color| {
         for value in color.iter_mut() {
-            let normalized = ((*value - black) / (white - black)).clamp(0.0, 1.0);
-            *value = normalized.powf(inverse_gamma);
+            *value = (*value * steps).round() / steps;
         }
     });
 }
@@ -719,7 +749,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 8] = [
+pub const ADJUSTMENT_NAMES: [&str; 9] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -728,6 +758,7 @@ pub const ADJUSTMENT_NAMES: [&str; 8] = [
     "white_balance",
     "curves",
     "hsl",
+    "posterize",
 ];
 
 /// 内核支持的滤镜名。
@@ -799,11 +830,19 @@ pub fn apply_adjustment(
             params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32,
         ),
         AdjustmentKind::Invert => invert(&mut adjusted),
-        AdjustmentKind::Levels => levels(
+        AdjustmentKind::Levels => levels_channel(
             &mut adjusted,
             params.get("black").and_then(Value::as_f64).unwrap_or(0.0) as f32,
             params.get("white").and_then(Value::as_f64).unwrap_or(1.0) as f32,
             params.get("gamma").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            params
+                .get("channel")
+                .and_then(Value::as_str)
+                .unwrap_or("rgb"),
+        ),
+        AdjustmentKind::Posterize => posterize(
+            &mut adjusted,
+            params.get("levels").and_then(Value::as_u64).unwrap_or(6) as u32,
         ),
         AdjustmentKind::Exposure => exposure(
             &mut adjusted,
@@ -1327,6 +1366,42 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 分通道色阶只影响指定通道；色调分离把通道量化到有限台阶。
+    #[test]
+    fn levels_channel_and_posterize() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 1, 1);
+            buffer.set_pixel(0, 0, [0.25, 0.5, 0.75, 1.0]);
+            buffer
+        };
+        let mut red_only = make();
+        levels_channel(&mut red_only, 0.0, 1.0, 1.0, "r");
+        let pixel = red_only.pixel(0, 0);
+        assert!(
+            (pixel[1] - 0.5).abs() < 1e-3 && (pixel[2] - 0.75).abs() < 1e-3,
+            "只应改红通道：{pixel:?}"
+        );
+
+        // 色调分离 3 级（台阶 0 / 0.5 / 1）：用**非中点**输入避免半数舍入的歧义。
+        let mut quantized = Buffer::new(0, 0, 1, 1);
+        quantized.set_pixel(0, 0, [0.2, 0.5, 0.8, 1.0]);
+        posterize(&mut quantized, 3);
+        let pixel = quantized.pixel(0, 0);
+        assert!((pixel[0] - 0.0).abs() < 1e-3, "0.2 应量化到 0：{pixel:?}");
+        assert!((pixel[1] - 0.5).abs() < 1e-3, "0.5 应保持：{pixel:?}");
+        assert!((pixel[2] - 1.0).abs() < 1e-3, "0.8 应量化到 1：{pixel:?}");
+        // 极端级别数不应产出越界值。
+        for levels in [2u32, 4, 64, 1000] {
+            let mut buffer = make();
+            posterize(&mut buffer, levels);
+            let pixel = buffer.pixel(0, 0);
+            assert!(
+                pixel.iter().all(|v| (0.0..=1.0).contains(v)),
+                "levels={levels} 越界：{pixel:?}"
+            );
+        }
     }
 
     #[test]
