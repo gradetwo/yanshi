@@ -16,7 +16,7 @@ rust-version = "1.85"
 license = "MIT"
 authors = ["The Yanshi Authors"]
 description = "偃师 Yanshi — AI-native collaborative painting and design engine"
-repository = "https://github.com/yanshi-labs/yanshi"
+repository = "https://github.com/gradetwo/yanshi"
 keywords = ["painting", "graphics", "ai", "collaboration", "crdt"]
 categories = ["graphics", "multimedia"]
 
