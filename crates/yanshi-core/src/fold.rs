@@ -427,6 +427,53 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         | AtomKind::AcceptSuggestion
         | AtomKind::RejectSuggestion => {}
     }
+    check_auxiliary_refs(state, atom)
+}
+
+/// 检查辅助引用（`style_id` / `mask_id` / `parent_id` 与 `set_property` 的属性值）。
+///
+/// 这些引用必须指向当时存活的实体，否则被撤销的 `create_mask` 等原子会留下
+/// 指向已失效实体的引用，破坏 5.3「无孤儿引用」不变量。
+fn check_auxiliary_refs(state: &DocumentState, atom: &Atom) -> Result<()> {
+    let mut checks: Vec<(&str, &str)> = Vec::new();
+    for key in ["style_id", "mask_id", "parent_id"] {
+        // 创建类原子声明的实体 id 自身尚不存在，不是“辅助引用”。
+        let is_primary = matches!(
+            (atom.kind, key),
+            (AtomKind::CreateMask, "mask_id") | (AtomKind::CreateStyle, "style_id")
+        );
+        if is_primary {
+            continue;
+        }
+        if let Some(id) = payload_str(&atom.payload, key) {
+            checks.push((key, id));
+        }
+    }
+    if atom.kind == AtomKind::SetProperty {
+        if let (Some(key), Some(value)) = (
+            payload_str(&atom.payload, "key"),
+            atom.payload.get("value").and_then(Value::as_str),
+        ) {
+            match key {
+                "mask_id" => checks.push(("mask_id", value)),
+                "style_id" => checks.push(("style_id", value)),
+                "parent_id" => checks.push(("parent_id", value)),
+                "layer_id" => checks.push(("layer_id", value)),
+                _ => {}
+            }
+        }
+    }
+    for (key, id) in checks {
+        let alive = match key {
+            "style_id" => state.styles.get(id).is_some_and(|s| !s.is_deleted()),
+            "mask_id" => state.masks.get(id).is_some_and(|m| !m.is_deleted()),
+            "parent_id" | "layer_id" => state.layer_alive(id),
+            _ => true,
+        };
+        if !alive {
+            return Err(missing_error(key, id));
+        }
+    }
     Ok(())
 }
 
@@ -1339,6 +1386,103 @@ mod tests {
         assert_eq!(
             result.warning_count(WarningKind::DeclareHeadOutsideFormula),
             1
+        );
+    }
+
+    #[test]
+    fn reverting_mask_creation_cascades_to_dependent_layer_property() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateMask,
+                "a_mask",
+                json!({"mask_id": "mask_1", "shape": {"kind": "rect"}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_bind_mask",
+                json!({"layer_id": "layer_1", "key": "mask_id", "value": "mask_1"}),
+            ),
+        );
+        // 绑定有效：图层指向存在的蒙版。
+        let bound = fold(&atoms);
+        assert_eq!(
+            bound.state.layers["layer_1"].mask_id.as_deref(),
+            Some("mask_1")
+        );
+        assert!(bound.state.is_consistent());
+
+        // 撤销蒙版创建：绑定原子级联失效，图层不再指向失效蒙版。
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_del_mask", json!({"target": "a_mask"})),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_suppressed("a_mask"));
+        assert_eq!(result.warning_count(WarningKind::CascadeInvalidation), 1);
+        assert!(result.state.layers["layer_1"].mask_id.is_none());
+        assert!(
+            result.state.is_consistent(),
+            "{:?}",
+            result.state.violations()
+        );
+    }
+
+    #[test]
+    fn object_with_style_reference_keeps_no_orphans() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateStyle,
+                "a_style",
+                json!({"style_id": "style_1", "name": "ink"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::DrawStroke,
+                "a_stroke",
+                json!({
+                    "object_id": "obj_styled",
+                    "layer_id": "layer_1",
+                    "style_id": "style_1",
+                    "data": {"points": [[0, 0], [1, 1]]},
+                }),
+            ),
+        );
+        let styled = fold(&atoms);
+        assert_eq!(
+            styled.state.objects["obj_styled"].style.as_deref(),
+            Some("style_1")
+        );
+        assert!(styled.state.is_consistent());
+
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Revert,
+                "a_del_style",
+                json!({"target": "a_style"}),
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_suppressed("a_style"));
+        assert_eq!(
+            result.warning_count(WarningKind::CascadeInvalidation),
+            1,
+            "依赖失效风格的笔触级联失效（跳过而非产生孤儿引用）"
+        );
+        assert!(!result.state.objects.contains_key("obj_styled"));
+        assert!(
+            result.state.is_consistent(),
+            "{:?}",
+            result.state.violations()
         );
     }
 
