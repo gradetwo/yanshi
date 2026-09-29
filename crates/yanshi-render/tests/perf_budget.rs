@@ -530,15 +530,37 @@ fn perf_phase3_effects_on_a_large_canvas() {
     }
 
     // 单块 tile 冷渲染（客户端组合路径的成本单位）。
+    // 区域相关外扩的意义就在这里：远离修图笔迹的 tile 不必按整篇文档的最大外扩渲染。
     let state = effects_document(true);
-    let mut renderer = Renderer::with_budget(grid.clone(), 256 * 1024 * 1024);
-    let started = Instant::now();
-    let tile = renderer
-        .render_region(&state, &store, Bbox::new(384.0, 384.0, 256.0, 256.0))
-        .unwrap();
-    let tile_elapsed = started.elapsed();
-    assert_eq!(tile.rgba8.len(), 256 * 256 * 4);
-    println!("全效果：单块 256² tile 冷渲染 {tile_elapsed:?}");
+    let mut far_elapsed = None;
+    let mut near_elapsed = None;
+    for (label, x, y) in [
+        ("远离修图（左上）", 0.0, 0.0),
+        ("邻近修图（右下）", 384.0, 384.0),
+    ] {
+        let mut renderer = Renderer::with_budget(grid.clone(), 256 * 1024 * 1024);
+        let started = Instant::now();
+        let tile = renderer
+            .render_region(&state, &store, Bbox::new(x, y, 256.0, 256.0))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(tile.rgba8.len(), 256 * 256 * 4);
+        println!(
+            "全效果：单块 256² tile（{label}）冷渲染 {elapsed:?}，外扩 {}px",
+            tile.stats.filter_padding
+        );
+        if x == 0.0 {
+            far_elapsed = Some(elapsed);
+        } else {
+            near_elapsed = Some(elapsed);
+        }
+    }
+    let tile_elapsed = far_elapsed.expect("应测过左侧 tile");
+    let near = near_elapsed.expect("应测过右侧 tile");
+    assert!(
+        tile_elapsed < near,
+        "远离修图的 tile 应比邻近的更快：{tile_elapsed:?} vs {near:?}"
+    );
 
     let (_, full) = timings.last().expect("应有全效果耗时");
     let full = *full;

@@ -199,7 +199,7 @@ impl Renderer {
         bbox: Bbox,
     ) -> Result<RegionRender> {
         let region = clamp_region(state, &bbox)?;
-        let declared = self.filter_padding(state);
+        let declared = self.padding_for_region(state, &region);
         let padding = if self.options.expand_for_filters {
             declared.min(self.options.max_filter_padding)
         } else {
@@ -414,6 +414,127 @@ impl Renderer {
     }
 
     /// 文档内滤镜对象所需的最大邻域半径（像素）。
+    /// **区域相关**的外扩：整层类效果取全局半径，空间局部对象只在与其影响范围相交时计入。
+    ///
+    /// * 整层类（调整/滤镜/蒙版羽化）作用于整个图层缓冲，与区域无关 → 全局半径；
+    /// * 空间局部（修图/液化的源采样）只修改自身包围盒（含源偏移）内的像素 →
+    ///   只在与「区域 + 全局半径」相交时才把它的可达距离计入。
+    ///
+    /// 这样远离修图笔迹的 tile 不必按整篇文档的最大外扩渲染（实测可省约 2/3 面积），
+    /// 而正确性由「分块组合 == 整幅渲染」的测试与浏览器自检守住。
+    pub fn padding_for_region(&self, state: &DocumentState, region: &Bbox) -> u32 {
+        let global = self.global_padding(state);
+        let reach_area = Bbox::new(
+            region.x - global as f64,
+            region.y - global as f64,
+            region.w + global as f64 * 2.0,
+            region.h + global as f64 * 2.0,
+        );
+        self.local_padding(state, &reach_area).max(global)
+    }
+
+    /// 整层类效果的外扩（调整不产生外扩；滤镜与蒙版羽化产生邻域需求）。
+    fn global_padding(&self, state: &DocumentState) -> u32 {
+        let mut padding = 0u32;
+        for layer in state.alive_layers() {
+            let Some(mask_id) = &layer.mask_id else {
+                continue;
+            };
+            let Some(mask) = state.masks.get(mask_id) else {
+                continue;
+            };
+            if mask.is_deleted() || mask.feather <= 0.0 {
+                continue;
+            }
+            let radius = (mask.feather / 2.0).round().max(1.0) as u32;
+            padding = padding.max(radius + 1);
+        }
+        for object in state.alive_objects() {
+            if object.object_type != yanshi_core::ObjectType::Filter {
+                continue;
+            }
+            let name = object
+                .data
+                .get("filter_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let params = object.data.get("params").cloned().unwrap_or(Value::Null);
+            if let Some(kind) = FilterKind::from_name(name) {
+                padding = padding.max(kind.padding(&params));
+            }
+        }
+        padding
+    }
+
+    /// 空间局部对象（修图/液化）在给定区域内需要的外扩。
+    fn local_padding(&self, state: &DocumentState, area: &Bbox) -> u32 {
+        let mut padding = 0u32;
+        for object in state.alive_objects() {
+            let reach: u32 = match object.object_type {
+                yanshi_core::ObjectType::Retouch => {
+                    let size = object
+                        .data
+                        .get("size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(24.0);
+                    let offset = object
+                        .data
+                        .get("source_offset")
+                        .and_then(Value::as_array)
+                        .map(|pair| {
+                            (
+                                pair.first().and_then(Value::as_f64).unwrap_or(0.0).abs(),
+                                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0).abs(),
+                            )
+                        })
+                        .unwrap_or((0.0, 0.0));
+                    let smudge = object
+                        .data
+                        .get("smudge_length")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    (offset.0.max(offset.1).max(smudge) + size / 2.0 + 2.0).ceil() as u32
+                }
+                yanshi_core::ObjectType::Liquify => {
+                    let size = object
+                        .data
+                        .get("size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(80.0);
+                    let strength = object
+                        .data
+                        .get("strength")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.5)
+                        .abs()
+                        .clamp(0.0, 2.0);
+                    (size / 2.0 + strength * size + 2.0).ceil() as u32
+                }
+                _ => continue,
+            };
+            // 该对象本身的包围盒（含源偏移）与目标区域相交时才需要外扩。
+            let bbox = crate::object::object_bbox(object);
+            let Some(bbox) = bbox else {
+                padding = padding.max(reach);
+                continue;
+            };
+            let expanded = Bbox::new(
+                bbox.x - reach as f64,
+                bbox.y - reach as f64,
+                bbox.w + reach as f64 * 2.0,
+                bbox.h + reach as f64 * 2.0,
+            );
+            if expanded.intersects(area) {
+                padding = padding.max(reach);
+            }
+        }
+        padding
+    }
+
+    /// 整篇文档的最大外扩（所有对象需求的并集；诊断与测试用）。
+    ///
+    /// 渲染路径请用 [`Renderer::padding_for_region`]：它按区域收紧外扩，避免远离修图笔迹的
+    /// tile 也按整篇文档的最大值膨胀缓冲。
     pub fn filter_padding(&self, state: &DocumentState) -> u32 {
         let mut padding = 0u32;
         // 蒙版羽化同样是「有限支撑的邻域运算」：区域渲染必须外扩，
