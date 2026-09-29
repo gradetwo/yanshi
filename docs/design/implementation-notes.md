@@ -256,9 +256,13 @@ WebSocket 消息（JSON 文本帧）：
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
   服务端语义层、核心层 27 个工具、capability token、广播边界、MCP stdio、
   零依赖 HTTP/1.1 + WebSocket 传输与最小 Web 查看器均已完成。
-- **Web 查看器**：页面本身在无浏览器环境下无法做视觉验收，采用
-  ① `node --check` 语法检查（含顶层重复声明检测，曾捕获一次整页 SyntaxError）、
-  ② 逐个调用页面用到的 HTTP/WS 端点的集成测试来替代。
+- **Web 查看器**：页面本身在无浏览器环境下无法做视觉验收，采用三层替代验收：
+  ① 仓库内单测做 `node --check` 式的语法与**顶层重复声明**检测
+  （`viewer.rs::viewer_script_has_no_duplicate_top_level_declarations`，
+  曾捕获 `const preview` 与 `async function preview` 冲突导致的整页 SyntaxError）；
+  ② 逐个调用页面用到的 HTTP/WS 端点的集成测试（`crates/yanshi-http/tests/transport.rs`）；
+  ③ 本地用桩 DOM/WebSocket 在 node 下真实执行页面脚本，验证
+  「建文档 → 身份显示 → WS 连接（含 doc/token）→ subscribe 视口 → 缩略图 → 推送事件」全链路无异常。
   （图层隔离、Tile 分块、几何/结构双 dirty 传播、服务端 CPU 渲染已由 `yanshi-render` 覆盖；
   SIMD/多线程优化与 GPU 合成后端仍属后续阶段。）
 - **Phase 2 起**：WASM 计算内核、控制流/数据流分离的广播、本地乐观渲染、Job 协议、
