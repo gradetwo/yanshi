@@ -309,7 +309,20 @@ The mapping from design document to tests, the measured performance data and the
 
 ## Verification scripts
 
-`scripts/` holds reproducible acceptance evidence: the Phase 4b annotation/AI-suggestion loop demo, a Chromium-based kernel-vs-server pixel self-check (D1: at most 16 differing pixels and 1 LSB), and a brush-drag cost probe. See [scripts/README.md](scripts/README.md) for prerequisites and measured baselines.
+`scripts/` holds reproducible acceptance evidence: the Phase 4b annotation/AI-suggestion loop demo, a Chromium-based kernel-vs-server pixel self-check, a wasm runtime smoke check, a brush-drag cost probe, and first-paint / kernel-region timing probes. See [scripts/README.md](scripts/README.md) for prerequisites and measured baselines.
+
+The pixel self-check applies the design's determinism tiers: the compute kernel's tile data stays **D0** (bit-exact), while the **blur-family filters** are **D1** (≤1 LSB) under an approved scoping decision. Measured divergence at 1024²: 186 pixels (0.018%) for a blur-heavy document, 18 (0.0017%) with a single clarity/dehaze, and **0** for documents without blur. The criterion is therefore `maxDelta ≤ 1` plus at most `max(64, 0.05% of canvas)` differing pixels.
+
+### CI: fast locally, heavy on GitHub
+
+| Where | What | How |
+|---|---|---|
+| local, every change | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `scripts/wasm-smoke.sh` | seconds to a couple of minutes |
+| GitHub, every push/PR | the same four on stable and beta, plus the wasm smoke job | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| GitHub, nightly + manual | the whole `--ignored` suite: 100k-atom fold fuzz, perf budgets, 4K profile, kernel native timing | [`.github/workflows/heavy.yml`](.github/workflows/heavy.yml) — `gh workflow run heavy.yml`, then `gh run list` / `gh run view <id> --log`; logs are uploaded as artifacts |
+
+Heavy work deliberately lives on CI so the local loop stays interactive: start a run, keep
+developing, and poll it from time to time.
 
 ## Demos
 

@@ -271,6 +271,20 @@ hyprctl reload && hyprctl configerrors         # 期望：ok / 空
 
 `scripts/` 是可复现的验收证据：Phase 4b 建议环路演示、基于 Chromium 的「内核 vs 服务端」逐像素自检（D1：差异像素 ≤16 且 ≤1 LSB）、画笔拖动成本探针。前置条件与实测基线见 [scripts/README.md](scripts/README.md)。
 
+## 验收与 CI：本地跑快、重活上云
+
+| 位置 | 内容 | 方式 |
+|---|---|---|
+| 本地（每次改动） | `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`scripts/wasm-smoke.sh` | 秒级到两分钟 |
+| GitHub（每次 push/PR） | 同样四项 + wasm 冒烟作业（唯一能抓"原生全绿、浏览器全崩"那类回归） | `.github/workflows/ci.yml` |
+| GitHub（每夜 + 手动） | 整仓 `--ignored` 长任务：10 万原子折叠 fuzz、性能预算、4K 剖面、内核原生计时 | `.github/workflows/heavy.yml`，`gh workflow run heavy.yml` 后 `gh run list` / `gh run view <id> --log` 查看，日志上传为 artifact |
+
+逐像素自检按设计的分级执行：内核 tile 数据保持 **D0（逐位一致）**，**模糊族滤镜**在批准的范围内为
+**D1（≤1 LSB）**。1024² 实测差异：模糊密集文档 186 像素（0.018%）、单个 clarity/dehaze 18 像素
+（0.0017%）、**不含模糊的文档为 0**；判据为 `最大通道差 ≤1` 且差异像素 ≤ `max(64, 画布×0.05%)`。
+
+**重活刻意放在 CI**：本地循环保持可交互 —— 起一次运行、继续开发、定时查看即可。
+
 ## 演示脚本
 
 - `scripts/phase4b-demo.sh` —— 端到端演示「标注 → AI 建议 → 接受/拒绝」环路（只依赖 curl + python3，打到运行中的服务端）。
