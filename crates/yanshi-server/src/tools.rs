@@ -3072,40 +3072,20 @@ fn read_preview_suggestion(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
                 None => bbox,
             });
         }
-        match registry.get(&tool) {
-            None => {
+        // 与接受路径共用同一个校验函数（未知工具、只读、参数、效果范围、引用顺序）。
+        match check_single_step(
+            &registry,
+            &tool,
+            &step_args,
+            &mut known_layers,
+            &mut known_objects,
+        ) {
+            Ok(()) => entry["valid"] = json!(true),
+            Err(error) => {
                 invalid += 1;
                 entry["valid"] = json!(false);
-                entry["error"] = json!(format!("未知工具 {tool}"));
+                entry["error"] = json!(format!("{:?}", error.context.detail));
             }
-            Some(spec) if !spec.mutating => {
-                invalid += 1;
-                entry["valid"] = json!(false);
-                entry["error"] = json!(format!("{tool} 是只读工具，不能作为补丁步骤"));
-            }
-            Some(spec) => match validate_args(spec, &step_args) {
-                Ok(()) => {
-                    // 效果类工具的参数范围校验在处理器内部（按效果名区分），
-                    // 预览必须一并执行，否则会出现「预览说可以用、接受时却被拒」的误导。
-                    let effect_check = preview_effect_check(&tool, &step_args);
-                    // 依赖顺序：引用此刻尚不存在的图层/对象时，接受会在中途失败。
-                    let order_check =
-                        check_step_order(&tool, &step_args, &mut known_layers, &mut known_objects);
-                    match effect_check.and(order_check) {
-                        Ok(()) => entry["valid"] = json!(true),
-                        Err(error) => {
-                            invalid += 1;
-                            entry["valid"] = json!(false);
-                            entry["error"] = json!(format!("{:?}", error.context.detail));
-                        }
-                    }
-                }
-                Err(error) => {
-                    invalid += 1;
-                    entry["valid"] = json!(false);
-                    entry["error"] = json!(format!("{:?}", error.context.detail));
-                }
-            },
         }
         steps.push(entry);
     }
@@ -3215,6 +3195,68 @@ fn scopes_conflict(a: &SuggestScope, b: &SuggestScope) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// 单步校验：工具存在且 mutating、参数形状、效果类取值范围、引用顺序。
+///
+/// 预览与接受**共用这一个函数**，因此两条路径的标准不会分叉。
+fn check_single_step(
+    registry: &ToolRegistry,
+    tool: &str,
+    args: &Value,
+    layers: &mut BTreeSet<String>,
+    objects: &mut BTreeSet<String>,
+) -> Result<()> {
+    let spec = registry.get(tool).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("未知工具 {tool}")),
+        )
+    })?;
+    if !spec.mutating {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{tool} 是只读工具，不能作为补丁步骤")),
+        ));
+    }
+    validate_args(spec, args)?;
+    preview_effect_check(tool, args)?;
+    check_step_order(tool, args, layers, objects)
+}
+
+/// 接受前的**全量预检**：任一步不合法就整体拒绝，避免「部分应用」。
+///
+/// 注意这不能覆盖**运行期**失败（例如折叠层的其它前置条件）；它覆盖的是
+/// 未知工具、只读步骤、参数非法与引用顺序这四类最常见问题——
+/// 也就是预览已经能报出来的那些。做完这轮预检后，接受要么全部落地，要么一步都没写。
+fn preflight_patch(ctx: &mut ToolContext<'_>, patch: &[Value]) -> Result<()> {
+    let registry = ToolRegistry::with_profiles(&all_implemented_profiles());
+    let (mut layers, mut objects) = {
+        let state = document_state(ctx)?;
+        (
+            state
+                .alive_layers()
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect::<BTreeSet<String>>(),
+            state
+                .alive_objects()
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<String>>(),
+        )
+    };
+    for step in patch {
+        let tool = step.get("tool").and_then(Value::as_str).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("补丁步骤缺少 tool"),
+            )
+        })?;
+        let args = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        check_single_step(&registry, tool, &args, &mut layers, &mut objects)?;
+    }
+    Ok(())
 }
 
 /// 按 patch 顺序检查引用有效性，并更新「已知图层/对象」集合。
@@ -3567,31 +3609,10 @@ fn accept_one(ctx: &mut ToolContext<'_>, suggestion_id: &str) -> Result<Value> {
             ErrorContext::detail("建议没有可重放的步骤"),
         ));
     }
-    // 2) 只允许产生状态效果的步骤。用「所有已实现 profile 的并集」构造注册表：
-    //    建议可能包含任何已放行工具的步骤（与 HTTP 服务端默认集一致）。
+    // 2) **全量预检**：任何一步不合法就整体拒绝，保证「要么全部落地、要么一步没写」。
+    //    注册表用「所有已实现 profile 的并集」，与 HTTP 服务端默认集一致。
+    preflight_patch(ctx, &patch)?;
     let registry = ToolRegistry::with_profiles(&all_implemented_profiles());
-    for (index, step) in patch.iter().enumerate() {
-        let tool = step.get("tool").and_then(Value::as_str).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("patch[{index}] 缺少 tool")),
-            )
-        })?;
-        let spec = registry.get(tool).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("patch[{index}] 引用了未知工具 {tool}")),
-            )
-        })?;
-        if !spec.mutating {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "patch[{index}] 的 {tool} 是只读工具，不能作为补丁步骤"
-                )),
-            ));
-        }
-    }
     // 3) 逐条重放。
     let mut applied: Vec<String> = Vec::new();
     for (index, step) in patch.iter().enumerate() {

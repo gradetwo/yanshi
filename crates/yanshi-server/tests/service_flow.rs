@@ -2319,3 +2319,106 @@ fn disjoint_suggestions_do_not_conflict() {
         "区域不相交、对象不同的建议不应误报冲突：{listed}"
     );
 }
+
+/// 接受建议前必须**全量预检**：任一步不合法就整体拒绝，日志不得被写入（避免部分应用）。
+#[test]
+fn accept_preflights_the_whole_patch_before_writing() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_preflight", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_preflight", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "L"}));
+
+    // 第 1 步合法、第 2 步是只读工具 → 预检整体拒绝。
+    // （注意：引用不存在的图层连 suggest 都提交不了 —— 折叠层的引用校验会挡下，
+    //   因此这里用「只读步骤」构造，语义无歧义。）
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"patch": [
+            {"tool": "add_adjustment", "arguments": {"layer_id": "L",
+                "adjustment_type": "exposure", "params": {"ev": 0.3}}},
+            {"tool": "get_document", "arguments": {}}
+        ]}),
+    );
+    let suggestion_id = suggestion["suggestion_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("suggest 应成功：{suggestion}"))
+        .to_owned();
+    let head_before = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+    let objects_before = registry.call(&mut context, "list_objects", &json!({}))["count"].clone();
+
+    let rejected = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(rejected["ok"], json!(false), "{rejected}");
+    assert_eq!(
+        rejected["error_code"],
+        json!("invalid_argument"),
+        "{rejected}"
+    );
+    assert!(
+        rejected["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("只读工具"),
+        "应说明是只读步骤：{rejected}"
+    );
+
+    // 关键断言：**一步都没写**（HEAD 与对象数都不变），不留下部分应用状态。
+    let head_after = registry.call(&mut context, "get_document", &json!({}))["head_seq"].clone();
+    let objects_after = registry.call(&mut context, "list_objects", &json!({}))["count"].clone();
+    assert_eq!(
+        head_before, head_after,
+        "预检失败不得写入任何原子：{head_before} vs {head_after}"
+    );
+    assert_eq!(objects_before, objects_after, "预检失败不得创建对象");
+
+    // 完全合法的补丁（两步都在已存在的图层上）应完整落地。
+    let good = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"patch": [
+            {"tool": "add_adjustment", "arguments": {"layer_id": "L",
+                "adjustment_type": "exposure", "params": {"ev": 0.4}}},
+            {"tool": "add_filter", "arguments": {"layer_id": "L",
+                "filter_name": "vignette", "params": {"strength": 0.3}}}
+        ]}),
+    );
+    let good_id = good["suggestion_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("合法补丁的 suggest 应成功：{good}"))
+        .to_owned();
+    let accepted = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": good_id}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+    assert_eq!(
+        accepted["applied_atom_ids"].as_array().unwrap().len(),
+        2,
+        "{accepted}"
+    );
+    let head_final = registry.call(&mut context, "get_document", &json!({}))["head_seq"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        head_final > head_before.as_u64().unwrap(),
+        "合法补丁应真正落地：{head_before} → {head_final}"
+    );
+}
