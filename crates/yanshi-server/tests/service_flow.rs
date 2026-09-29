@@ -2422,3 +2422,86 @@ fn accept_preflights_the_whole_patch_before_writing() {
         "合法补丁应真正落地：{head_before} → {head_final}"
     );
 }
+
+/// 回归：补丁里「先创建图层、再在同一条补丁内绘制」必须能记录并成功接受。
+///
+/// 修复前这类建议**连 suggest 都提交不了**：`validate_secondary_refs` 会把 payload 中
+/// 嵌套步骤里的 `layer_id` 当成该原子自身的引用（refs 是递归收集的），
+/// 于是按「必须已存在」拒绝了整条建议。协作原子不产生状态效果，豁免该校验。
+#[test]
+fn patch_can_create_and_use_a_layer_within_one_suggestion() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_create_use", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Collab,
+    ]);
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_create_use", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    registry.call(&mut context, "create_layer", &json!({"layer_id": "base"}));
+
+    let suggestion = registry.call(
+        &mut context,
+        "suggest",
+        &json!({"summary": "新建图层并画一个方块", "patch": [
+            {"tool": "create_layer", "arguments": {"layer_id": "fresh"}},
+            {"tool": "draw_shape", "arguments": {"layer_id": "fresh",
+                "data": {"geometry": {"kind": "rect", "bbox": {"x": 8, "y": 8, "w": 16, "h": 16}},
+                         "color": {"r": 255, "g": 0, "b": 0, "a": 255}}}}
+        ]}),
+    );
+    assert_eq!(
+        suggestion["ok"],
+        json!(true),
+        "先建后画应能记录：{suggestion}"
+    );
+    let suggestion_id = suggestion["suggestion_id"].as_str().unwrap().to_owned();
+
+    // 预览也应认为可应用（顺序正确）。
+    let preview = registry.call(
+        &mut context,
+        "preview_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(preview["applicable"], json!(true), "{preview}");
+
+    let accepted = registry.call(
+        &mut context,
+        "accept_suggestion",
+        &json!({"suggestion_id": suggestion_id}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+    assert_eq!(
+        accepted["applied_atom_ids"].as_array().unwrap().len(),
+        2,
+        "{accepted}"
+    );
+
+    // 像素真的出现了：新图层上的红色方块。
+    let response = registry.call(
+        &mut context,
+        "render_region",
+        &json!({"region": {"x": 0, "y": 0, "w": 64, "h": 64}, "raw": true}),
+    );
+    let hash: yanshi_core::BlobHash = response["raw_url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    let pixels = store.get(&hash).unwrap();
+    let index = ((16 * 64 + 16) * 4) as usize;
+    assert!(
+        pixels[index] > 200 && pixels[index + 1] < 60,
+        "新建图层上的红方块应可见：{:?}",
+        &pixels[index..index + 4]
+    );
+}

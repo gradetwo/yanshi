@@ -351,6 +351,19 @@ impl AtomLog {
     }
 
     fn validate_secondary_refs(&self, atom: &Atom, state: &DocumentState) -> Result<()> {
+        // 纯协作原子（不产生状态效果、不参与折叠，见设计 5.2 注）不校验二次引用：
+        // `refs` 是**递归**收集的（供依赖追踪/CAS 使用），而协作原子会把 payload 里
+        // 嵌套的内容（例如 suggest 的 patch 步骤）也收集进来。那些引用属于**将来要执行的
+        // 步骤**，不属于该原子自身，按「必须已存在」校验会误拒「补丁内先建后用」这类用法。
+        if matches!(
+            atom.kind,
+            AtomKind::Comment
+                | AtomKind::Suggest
+                | AtomKind::AcceptSuggestion
+                | AtomKind::RejectSuggestion
+        ) {
+            return Ok(());
+        }
         let primary_object = atom.object_id();
         for object_id in &atom.refs.objects {
             if primary_object == Some(object_id.as_str()) {
@@ -1042,5 +1055,45 @@ mod tests {
         let mut duplicated = log.atoms().to_vec();
         duplicated.push(create_doc());
         assert!(AtomLog::with_atoms(duplicated).is_err());
+    }
+
+    #[cfg(test)]
+    mod collab_ref_tests {
+        use super::*;
+        use crate::atom::{Atom, AtomKind};
+        use serde_json::json;
+
+        /// 协作原子 payload 里嵌套的 patch 步骤引用了尚未存在的实体时，
+        /// **不得**把它当成该原子自身的引用而拒绝（否则「补丁内先建层再画」根本无法记录）。
+        #[test]
+        fn nested_patch_refs_do_not_invalidate_a_suggestion() {
+            let atom = Atom::new(
+                AtomKind::Suggest,
+                "human:1",
+                "session:web",
+                json!({
+                    "patch": [
+                        {"tool": "create_layer", "arguments": {"layer_id": "layer_new"}},
+                        {"tool": "draw_shape", "arguments": {
+                            "layer_id": "layer_new",
+                            "data": {"geometry": {"kind": "rect",
+                                    "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}},
+                                    "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}}
+                    ]
+                }),
+            );
+            // refs 仍是**递归**收集的（依赖追踪需要），但二次引用校验对协作原子豁免。
+            assert!(
+                atom.refs.layers.iter().any(|id| id == "layer_new"),
+                "递归收集应保留嵌套引用：{:?}",
+                atom.refs.layers
+            );
+            let state = DocumentState::empty();
+            let log = AtomLog::new();
+            assert!(
+                log.validate_secondary_refs(&atom, &state).is_ok(),
+                "协作原子不应因嵌套引用被拒"
+            );
+        }
     }
 }
