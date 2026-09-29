@@ -412,6 +412,19 @@ impl Document {
     }
 
     /// 以指定 actor 提交，可选 owner 权限（跨 actor revert，12.5）。
+    /// 渲染缓存统计（可观测性：设计 1319 行要求包含缓存/生命周期指标）。
+    pub fn cache_stats(&self) -> yanshi_render::TileCacheStats {
+        self.renderer.cache().stats()
+    }
+
+    /// 文档占用的像素缓冲字节数（图层 + 对象的近似占用，用于观测）。
+    pub fn pixel_bytes(&self) -> usize {
+        let state = self.state();
+        let layers = state.alive_layers().len();
+        (state.width as usize) * (state.height as usize) * 4 * layers
+    }
+
+    /// 提交一个原子（可指定 changeset 归属与跨 actor 权限）。
     pub fn commit_as(
         &mut self,
         mut atom: Atom,

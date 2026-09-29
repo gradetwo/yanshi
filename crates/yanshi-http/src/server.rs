@@ -447,8 +447,35 @@ fn health(state: &ServerState) -> Response {
             "profiles": state.registry.profiles().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
             "tools": state.registry.len(),
             "wasm": wasm_available(state),
+            "cache": cache_stats(state),
+            "rss_bytes": rss_bytes(),
         }),
     )
+}
+
+/// 渲染缓存与像素缓冲的可观测性（设计 1319 行：可观测性含缓存/生命周期指标）。
+fn cache_stats(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    let (tiles, used_bytes, evictions, misses) = workspace.cache_stats();
+    json!({
+        "tiles": tiles,
+        "used_bytes": used_bytes,
+        "evictions": evictions,
+        "misses": misses,
+        "pixel_bytes_estimate": workspace.pixel_bytes_estimate(),
+    })
+}
+
+/// 进程常驻内存（Linux：/proc/self/statm 的第二个字段 × 页大小）。
+///
+/// 只做观测，不参与调度；非 Linux 环境返回 `null`（不假装有数据）。
+fn rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // 页大小取 sysconf 的常见默认值 4096；仅用于量级观测。
+    Some(pages.saturating_mul(4096))
 }
 
 fn list_documents(state: &ServerState) -> Response {
@@ -1231,6 +1258,23 @@ mod tests {
         assert_eq!(health.status, 200);
         assert_eq!(body_json(&health)["ok"], json!(true));
         assert!(body_json(&health)["tools"].as_u64().unwrap() > 27);
+        // 可观测性：缓存与内存字段必须存在（设计 1319 行的可观测性要求）。
+        let health = body_json(&health);
+        assert!(
+            health["cache"]["used_bytes"].is_u64(),
+            "缓存字段缺失：{health}"
+        );
+        assert!(
+            health["cache"]["evictions"].is_u64(),
+            "淘汰计数缺失：{health}"
+        );
+        // 未打开任何文档时缓存为空，且像素估算为 0。
+        assert_eq!(health["cache"]["tiles"], json!(0), "{health}");
+        assert_eq!(
+            health["cache"]["pixel_bytes_estimate"],
+            json!(0),
+            "{health}"
+        );
 
         let viewer = route(&state, &request("GET", "/"));
         assert_eq!(viewer.status, 200);

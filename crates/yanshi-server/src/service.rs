@@ -495,6 +495,34 @@ impl Workspace {
     }
 
     /// 文档数量。
+    /// 汇总所有已打开文档的渲染缓存统计（`/health` 用）。
+    pub fn cache_stats(&self) -> (usize, usize, u64, u64) {
+        let mut tiles = 0usize;
+        let mut used_bytes = 0usize;
+        let mut evictions = 0u64;
+        let mut misses = 0u64;
+        for document in self.documents.values() {
+            let stats = document.cache_stats();
+            tiles += stats.tiles;
+            used_bytes += stats.used_bytes;
+            evictions += stats.evictions;
+            misses += stats.misses;
+        }
+        (tiles, used_bytes, evictions, misses)
+    }
+
+    /// 所有已打开文档的像素缓冲**估算上界**（按「每层整幅 RGBA8」计）。
+    ///
+    /// 注意这是**上界**而非实测：图层实际存的是矢量/原子描述，只有在渲染成栅格时才占用
+    /// 相应内存（实测 4K/10 图层 RSS 约 0.08GB，而该估算为 0.63GB）。命名上明确 `estimate`。
+    pub fn pixel_bytes_estimate(&self) -> usize {
+        self.documents
+            .values()
+            .map(|document| document.pixel_bytes())
+            .sum()
+    }
+
+    /// 已打开文档数量。
     pub fn len(&self) -> usize {
         self.documents.len()
     }
