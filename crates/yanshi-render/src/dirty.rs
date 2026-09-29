@@ -32,6 +32,18 @@ pub enum DirtyKind {
     Full,
 }
 
+impl DirtyKind {
+    /// 稳定字符串名（错误/响应里对外暴露）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Geometry => "geometry",
+            Self::Structure => "structure",
+            Self::Full => "full",
+        }
+    }
+}
+
 /// dirty 集合。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirtySet {

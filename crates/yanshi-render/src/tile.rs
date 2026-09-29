@@ -354,6 +354,13 @@ impl TileCache {
         self.budget_bytes
     }
 
+    /// 调整字节预算（低于当前占用时立即按 LRU 淘汰）。
+    pub fn set_budget(&mut self, budget_bytes: usize) {
+        let one_tile = (self.grid.tile_size() * self.grid.tile_size() * 4 * 2) as usize;
+        self.budget_bytes = budget_bytes.max(one_tile);
+        self.evict_to_fit();
+    }
+
     /// 统计。
     pub fn stats(&self) -> TileCacheStats {
         TileCacheStats {
@@ -431,6 +438,8 @@ impl TileCache {
     }
 
     /// 视口淘汰：丢掉与视口不相交的 tile（13.3 `evict_outside_viewport`）。
+    ///
+    /// 与「dirty 失效」不同，这里丢掉的是仍然有效但不再可见的数据，因此计入淘汰统计（14.9）。
     pub fn evict_outside_viewport(&mut self, viewport: &Bbox) -> usize {
         let keep: std::collections::HashSet<TileKey> =
             self.grid.keys_for_bbox(viewport).into_iter().collect();
@@ -440,7 +449,33 @@ impl TileCache {
             .filter(|key| !keep.contains(key))
             .copied()
             .collect();
-        self.invalidate(&doomed)
+        let removed = self.invalidate(&doomed);
+        self.evictions += removed as u64;
+        removed
+    }
+
+    /// 按 LRU 淘汰到目标字节数以下，返回淘汰数量（13.3 水位兜底用）。
+    pub fn evict_to_bytes(&mut self, target_bytes: usize) -> usize {
+        let mut evicted = 0;
+        while self.used_bytes > target_bytes && !self.order.is_empty() {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(tile) = self.tiles.remove(&victim) {
+                self.used_bytes = self.used_bytes.saturating_sub(tile.byte_len());
+                self.evictions += 1;
+                evicted += 1;
+            }
+        }
+        evicted
+    }
+
+    /// 水位比例（`used / budget`，用于 13.3 的 90% 兜底判定）。
+    pub fn watermark(&self) -> f64 {
+        if self.budget_bytes == 0 {
+            return 0.0;
+        }
+        self.used_bytes as f64 / self.budget_bytes as f64
     }
 
     /// 清空缓存。
@@ -609,5 +644,34 @@ mod tests {
         tile.blit_rgba8(1, 1, 4, 4, &patch);
         assert_eq!(tile.get(1, 1)[3], 1.0);
         assert_eq!(tile.get(0, 0)[3], 0.0);
+    }
+
+    #[test]
+    fn evict_to_bytes_respects_target_and_reports_watermark() {
+        let grid = TileGrid::new(32, 128, 64).unwrap();
+        let mut cache = TileCache::new(grid.clone(), 4 * 32 * 32 * 4 * 2);
+        for key in [
+            TileKey::new(0, 0),
+            TileKey::new(1, 0),
+            TileKey::new(2, 0),
+            TileKey::new(3, 0),
+        ] {
+            cache.insert(Tile::from_f32(key, 32, &vec![0.5f32; 32 * 32 * 4]).unwrap());
+        }
+        assert_eq!(cache.len(), 4);
+        assert!((cache.watermark() - 1.0).abs() < 1e-9);
+
+        // 淘汰到一半预算：LRU 顺序是插入顺序，所以 (0,0)/(1,0) 先出局。
+        let evicted = cache.evict_to_bytes(2 * 32 * 32 * 4 * 2);
+        assert_eq!(evicted, 2);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.keys(), vec![TileKey::new(2, 0), TileKey::new(3, 0)]);
+        assert!((cache.watermark() - 0.5).abs() < 1e-9);
+
+        // 视口淘汰与水位统计叠加。
+        let removed = cache.evict_outside_viewport(&Bbox::new(0.0, 0.0, 96.0, 32.0));
+        assert_eq!(removed, 1, "只保留 (2,0)：(3,0) 在视口外");
+        assert_eq!(cache.len(), 1);
+        assert!(cache.stats().evictions >= 3);
     }
 }

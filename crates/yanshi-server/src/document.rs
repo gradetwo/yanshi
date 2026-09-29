@@ -885,12 +885,7 @@ fn needs_previous_state(kind: AtomKind) -> bool {
 }
 
 fn dirty_kind_str(dirty: &DirtySet) -> &'static str {
-    match dirty.kind {
-        yanshi_render::dirty::DirtyKind::None => "none",
-        yanshi_render::dirty::DirtyKind::Geometry => "geometry",
-        yanshi_render::dirty::DirtyKind::Structure => "structure",
-        yanshi_render::dirty::DirtyKind::Full => "full",
-    }
+    dirty.kind.as_str()
 }
 
 fn preview_url(hash: &BlobHash) -> String {
