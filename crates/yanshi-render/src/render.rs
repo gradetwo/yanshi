@@ -590,14 +590,18 @@ impl Renderer {
                     hardness,
                     opacity,
                     jitter,
+                    smudge_length,
                 } => {
-                    if kind != "clone_stamp" && kind != "heal" {
+                    if kind != "clone_stamp" && kind != "heal" && kind != "smudge" {
                         stats
                             .unsupported
                             .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
                         continue;
                     }
                     let healing = kind == "heal";
+                    // 涂抹：偏移随笔迹方向变化（把后方像素拖到前方），
+                    // 仍然只从**应用本对象之前**的副本采样，因此确定且无自反馈。
+                    let smudging = kind == "smudge";
                     // 源必须是**应用本对象之前**的图层内容：先拷贝一份，避免自反馈。
                     let source = layer_buffer.clone();
                     let brush = crate::brush::BrushSpec {
@@ -616,10 +620,34 @@ impl Renderer {
                         crate::geometry::dashed_line(&samples, brush.spacing_pixels(), None);
                     let radius = brush.size / 2.0;
                     let origin = layer_buffer.origin();
+                    let mut previous_stamp: Option<(f64, f64)> = None;
                     for (cx, cy) in stamps.iter().map(|s| (s.0, s.1)) {
+                        // 涂抹的每 stamp 采样偏移：沿笔迹方向后退 `smudge_length`。
+                        let stamp_offset = if smudging {
+                            match previous_stamp {
+                                Some((px, py)) => {
+                                    let dx = cx - px;
+                                    let dy = cy - py;
+                                    let length = (dx * dx + dy * dy).sqrt();
+                                    if length <= 1e-9 {
+                                        previous_stamp = Some((cx, cy));
+                                        continue;
+                                    }
+                                    let back = smudge_length.max(1.0);
+                                    (-dx / length * back, -dy / length * back)
+                                }
+                                None => {
+                                    previous_stamp = Some((cx, cy));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            offset
+                        };
+                        previous_stamp = Some((cx, cy));
                         // 采样源像素（文档坐标 + 偏移），越界则跳过该 stamp。
-                        let sx = cx + offset.0 - origin.0 as f64;
-                        let sy = cy + offset.1 - origin.1 as f64;
+                        let sx = cx + stamp_offset.0 - origin.0 as f64;
+                        let sy = cy + stamp_offset.1 - origin.1 as f64;
                         if sx < 0.0 || sy < 0.0 {
                             continue;
                         }
@@ -1498,7 +1526,7 @@ mod tests {
                 "layer_1",
                 ObjectType::Retouch,
                 2,
-                json!({"retouch_type": "smudge", "points": [[44.0, 44.0]], "source_offset": [-40.0, -40.0]}),
+                json!({"retouch_type": "warp", "points": [[44.0, 44.0]], "source_offset": [-40.0, -40.0]}),
             ),
         );
         let rendered = renderer.render_document(&bad, &store).unwrap();
@@ -1507,6 +1535,53 @@ mod tests {
             1,
             "未实现的修图类型必须告警"
         );
+    }
+
+    /// 涂抹：应把笔迹**后方**的颜色沿方向拖到前方（跨颜色边界时最明显）。
+    #[test]
+    fn smudge_drags_colour_along_the_stroke() {
+        let mut state = white_document();
+        state.width = 64;
+        state.height = 64;
+        // 左半红、右半蓝（图层的两块不透明矩形）。
+        for (id, x, color) in [
+            ("obj_l", 0.0, json!({"r": 220, "g": 20, "b": 20, "a": 255})),
+            ("obj_r", 32.0, json!({"r": 20, "g": 20, "b": 220, "a": 255})),
+        ] {
+            state.objects.insert(
+                id.to_owned(),
+                object(
+                    id,
+                    "layer_1",
+                    ObjectType::Shape,
+                    0,
+                    json!({"geometry": {"kind": "rect", "bbox": {"x": x, "y": 0, "w": 32, "h": 64}},
+                           "color": color}),
+                ),
+            );
+        }
+        let store = MemoryBlobStore::new();
+        let mut renderer = renderer();
+        // 从红区向右拖进蓝区：应把红色带进蓝区。
+        state.objects.insert(
+            "obj_smudge".to_owned(),
+            object(
+                "obj_smudge",
+                "layer_1",
+                ObjectType::Retouch,
+                1,
+                json!({"retouch_type": "smudge", "points": [[30.0, 32.0], [34.0, 32.0], [38.0, 32.0], [42.0, 32.0]],
+                       "size": 14.0, "hardness": 1.0, "opacity": 1.0, "smudge_length": 10.0}),
+            ),
+        );
+        let rendered = renderer.render_document(&state, &store).unwrap();
+        let dragged = rendered.pixel(42, 32).unwrap();
+        let original = rendered.pixel(42, 60).unwrap();
+        assert!(
+            dragged[0] as i32 > original[0] as i32 + 30,
+            "涂抹应把红色拖进蓝区：dragged={dragged:?} original={original:?}"
+        );
+        assert!(rendered.stats.unsupported.is_empty());
     }
 
     /// clone_stamp：必须把偏移处的已有内容复制到笔迹位置，且**只**改笔迹覆盖处。

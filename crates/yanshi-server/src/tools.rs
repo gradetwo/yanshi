@@ -1138,6 +1138,22 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
+        name: "smudge",
+        profile: Profile::Retouch,
+        summary: "涂抹：沿笔迹方向把后方的已有内容拖到前方（每 stamp 后退 smudge_length 像素采样）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
+            param!("size", Number, false, "笔刷直径（缺省 24）"),
+            param!("smudge_length", Number, false, "采样后退距离（缺省 12）"),
+            param!("hardness", Number, false, "硬度 0-1（缺省 0.6）"),
+            param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
+        ],
+    },
+    ToolSpec {
         name: "heal_stamp",
         profile: Profile::Retouch,
         summary: "修复画笔：复制 source_offset 处的纹理，并把低频颜色/明度对齐到目标处",
@@ -1269,6 +1285,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_effects" => read_list_effects(ctx, args),
         "clone_stamp" => write_retouch(ctx, args, "clone_stamp"),
         "heal_stamp" => write_retouch(ctx, args, "heal"),
+        "smudge" => write_retouch(ctx, args, "smudge"),
         "comment" => write_comment(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -2222,21 +2239,37 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
             }
         }
     }
-    let offset = require_array(args, "source_offset")?;
-    let dx = offset.first().and_then(Value::as_f64).unwrap_or(0.0);
-    let dy = offset.get(1).and_then(Value::as_f64).unwrap_or(0.0);
-    if dx == 0.0 && dy == 0.0 {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("source_offset 不能是 [0,0]（那样只会自我复制）"),
-        ));
-    }
-    if dx.abs() > 4096.0 || dy.abs() > 4096.0 {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("source_offset 超出合理范围（|dx|,|dy| ≤ 4096）"),
-        ));
-    }
+    // 涂抹的采样偏移由笔迹方向推导，不需要 `source_offset`；其余修图类型必须显式给出。
+    let (dx, dy) = if retouch_type == "smudge" {
+        let length = args
+            .get("smudge_length")
+            .and_then(Value::as_f64)
+            .unwrap_or(12.0);
+        if !(0.5..=512.0).contains(&length) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("smudge_length 必须在 [0.5, 512] 内，得到 {length}")),
+            ));
+        }
+        (0.0, 0.0)
+    } else {
+        let offset = require_array(args, "source_offset")?;
+        let dx = offset.first().and_then(Value::as_f64).unwrap_or(0.0);
+        let dy = offset.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+        if dx == 0.0 && dy == 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("source_offset 不能是 [0,0]（那样只会自我复制）"),
+            ));
+        }
+        if dx.abs() > 4096.0 || dy.abs() > 4096.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("source_offset 超出合理范围（|dx|,|dy| ≤ 4096）"),
+            ));
+        }
+        (dx, dy)
+    };
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
     if !(1.0..=1024.0).contains(&size) {
         return Err(YanshiError::new(
@@ -2280,6 +2313,7 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
                 "retouch_type": retouch_type,
                 "points": parsed,
                 "source_offset": [dx, dy],
+                "smudge_length": args.get("smudge_length").and_then(Value::as_f64).unwrap_or(12.0),
                 "size": size,
                 "hardness": hardness,
                 "opacity": opacity,

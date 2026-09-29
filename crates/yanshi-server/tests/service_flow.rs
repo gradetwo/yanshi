@@ -799,6 +799,26 @@ fn clone_stamp_copies_content_and_is_reversible() {
         "heal 应比 clone 更接近白色目标处：clone={after:?} heal={healed_pixel:?}"
     );
 
+    // 涂抹：方向由笔迹推导，无需 source_offset。
+    let smudged = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[50.0, 50.0], [58.0, 50.0], [66.0, 50.0]],
+                "size": 14.0, "smudge_length": 8.0, "hardness": 1.0}),
+    );
+    assert_eq!(smudged["ok"], json!(true), "{smudged}");
+    assert_eq!(smudged["dirty_kind"], json!("geometry"));
+    let bad_smudge = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[10.0, 10.0]], "smudge_length": 9999}),
+    );
+    assert_eq!(
+        bad_smudge["error_code"],
+        json!("invalid_argument"),
+        "{bad_smudge}"
+    );
+
     // 参数校验：零偏移无意义、点列非法都要被拒。
     for payload in [
         json!({"layer_id": "layer_1", "points": [[64.0, 64.0]], "source_offset": [0.0, 0.0]}),

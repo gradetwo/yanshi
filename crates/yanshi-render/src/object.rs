@@ -91,6 +91,8 @@ pub enum Primitive {
         opacity: f64,
         /// 抖动。
         jitter: f64,
+        /// 涂抹半径（仅 `smudge` 使用：每 stamp 沿笔迹后退多少像素采样）。
+        smudge_length: f64,
     },
     /// 无法渲染。
     Unsupported {
@@ -201,6 +203,11 @@ pub fn parse_object(object: &Object) -> Primitive {
                         .get("jitter")
                         .and_then(Value::as_f64)
                         .unwrap_or(0.0),
+                    smudge_length: object
+                        .data
+                        .get("smudge_length")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(12.0),
                 }
             }
         }
