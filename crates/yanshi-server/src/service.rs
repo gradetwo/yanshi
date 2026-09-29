@@ -17,6 +17,50 @@ use crate::document::{
 use crate::persist::{DocumentMeta, FileStore};
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
+/// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocThumbSize {
+    /// 不生成缩略图。
+    Skip,
+    /// 64px。
+    S64,
+    /// 128px。
+    S128,
+    /// 256px（默认）。
+    S256,
+}
+
+impl DocThumbSize {
+    /// 对应的缩略图类型。
+    pub const fn kind(self) -> ThumbKind {
+        match self {
+            Self::S64 => ThumbKind::Doc64,
+            Self::S128 => ThumbKind::Doc128,
+            Self::Skip | Self::S256 => ThumbKind::Doc256,
+        }
+    }
+
+    /// 由参数解析（`64` / `128` / `256` / `false`）。
+    pub fn parse(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Bool(false) => Self::Skip,
+            serde_json::Value::Bool(true) | serde_json::Value::Null => Self::S256,
+            serde_json::Value::Number(number) => match number.as_u64() {
+                Some(64) | Some(32) => Self::S64,
+                Some(128) => Self::S128,
+                _ => Self::S256,
+            },
+            serde_json::Value::String(text) => match text.as_str() {
+                "skip" | "none" | "false" => Self::Skip,
+                "64" => Self::S64,
+                "128" => Self::S128,
+                _ => Self::S256,
+            },
+            _ => Self::S256,
+        }
+    }
+}
+
 /// 文档摘要（文档列表）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentSummary {
@@ -319,29 +363,72 @@ impl Workspace {
         Ok(results)
     }
 
-    /// 渲染区域（并把渲染结果落盘为 HEAD 渲染缓存）。
+    /// 渲染区域。
+    ///
+    /// 只有覆盖整幅画布的渲染才落盘为「HEAD 渲染缓存」（14.5 打开即图片）；
+    /// 局部 dirty 渲染虽然也进 CAS，但不会覆盖文档级缓存。
     pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
-        let (preview, head, png) = {
+        let (preview, head, png, full_frame) = {
             let document = self.document_mut(doc_id)?;
+            let (width, height) = (document.state().width, document.state().height);
             let preview = document.render_region(bbox)?;
             let png = document.store().get(&preview.blob_hash)?;
-            (preview, document.head_seq(), png)
+            let covers =
+                bbox.x <= 0.0 && bbox.y <= 0.0 && bbox.w >= width as f64 && bbox.h >= height as f64;
+            (preview, document.head_seq(), png, covers)
         };
-        if let Some(persist) = &self.persist {
-            let _ = persist.save_render(doc_id, head, &png);
+        if full_frame {
+            if let Some(persist) = &self.persist {
+                let _ = persist.save_render(doc_id, head, &png);
+            }
         }
         Ok(preview)
     }
 
-    /// 生成缩略图。
+    /// 生成缩略图；文档级缩略图会落盘为渲染缓存（14.5）。
     pub fn thumbnail(
         &mut self,
         doc_id: &str,
         kind: ThumbKind,
         target: Option<Bbox>,
     ) -> Result<RenderedPreview> {
-        let document = self.document_mut(doc_id)?;
-        document.thumbnail(kind, target)
+        let (preview, head, png) = {
+            let document = self.document_mut(doc_id)?;
+            let preview = document.thumbnail(kind, target)?;
+            let png = document.store().get(&preview.blob_hash)?;
+            (preview, document.head_seq(), png)
+        };
+        if target.is_none() && kind.is_document_level() {
+            if let Some(persist) = &self.persist {
+                let _ = persist.save_render(doc_id, head, &png);
+            }
+        }
+        Ok(preview)
+    }
+
+    /// 确保存在文档级缩略图并返回它的地址（6.2「打开即图片」）。
+    ///
+    /// 已有缓存（渲染过全幅或从磁盘恢复）直接返回；否则按 `preview_size` 生成一张。
+    pub fn ensure_document_thumbnail(
+        &mut self,
+        doc_id: &str,
+        size: DocThumbSize,
+    ) -> Result<Option<String>> {
+        {
+            let document = self.document_mut(doc_id)?;
+            // 只有与 HEAD 一致的缩略图才算「打开即图片」的缓存；落后则重新生成。
+            if document.document_thumbnail_is_current() {
+                if let Some(url) = document.document_thumbnail_url() {
+                    return Ok(Some(url));
+                }
+            }
+        }
+        if matches!(size, DocThumbSize::Skip) {
+            return Ok(None);
+        }
+        let kind = size.kind();
+        let preview = self.thumbnail(doc_id, kind, None)?;
+        Ok(Some(preview.url))
     }
 
     /// 渲染状态。

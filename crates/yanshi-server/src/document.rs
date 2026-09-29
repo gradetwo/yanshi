@@ -182,7 +182,12 @@ pub struct Document {
     broadcaster: Broadcaster,
     annotations: AnnotationStore,
     render_watermark: Seq,
+    /// 最近一次任意渲染结果（可能只是 dirty 区域，10.1 `preview` 用它）。
     last_render_blob: Option<BlobHash>,
+    /// 文档级缩略图（覆盖整幅画布），6.2/7.3「打开即图片」用它。
+    document_thumbnail: Option<BlobHash>,
+    /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
+    document_thumbnail_seq: Seq,
     created_at: i64,
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
@@ -264,6 +269,8 @@ impl Document {
             annotations: AnnotationStore::new(),
             render_watermark: 0,
             last_render_blob: None,
+            document_thumbnail: None,
+            document_thumbnail_seq: 0,
             created_at,
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
@@ -638,6 +645,11 @@ impl Document {
         let blob_hash = self.store.put(&png)?;
         self.render_watermark = self.log.head_seq();
         self.last_render_blob = Some(blob_hash.clone());
+        // 只有覆盖整幅画布的渲染才是「文档级」预览（7.3），局部 dirty 渲染不算。
+        if covers_canvas(region, self.state.width, self.state.height) {
+            self.document_thumbnail = Some(blob_hash.clone());
+            self.document_thumbnail_seq = self.render_watermark;
+        }
         self.complete_render_jobs()?;
         Ok(RenderedPreview {
             bbox: [
@@ -666,6 +678,10 @@ impl Document {
         let png = encode_png(thumb.size, thumb.size, &thumb.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
         let blob_hash = self.store.put(&png)?;
+        if target.is_none() && kind.is_document_level() {
+            self.document_thumbnail = Some(blob_hash.clone());
+            self.document_thumbnail_seq = self.render_watermark;
+        }
         self.broadcaster.publish_thumbnail(kind);
         Ok(RenderedPreview {
             bbox: target
@@ -698,13 +714,35 @@ impl Document {
             head_seq: self.log.head_seq(),
             rendered_seq: self.render_watermark,
             atom_seq: Some(atom.seq),
-            thumb_url: self.last_render_blob.as_ref().map(preview_url),
+            thumb_url: self.document_thumbnail_url(),
         })
     }
 
-    /// 当前 HEAD 的渲染地址（若已渲染过）。
+    /// 最近一次渲染结果的地址（可能是局部 dirty 区域）。
     pub fn latest_preview_url(&self) -> Option<String> {
         self.last_render_blob.as_ref().map(preview_url)
+    }
+
+    /// 文档级缩略图地址（覆盖整幅画布，6.2「打开即图片」）。
+    pub fn document_thumbnail_url(&self) -> Option<String> {
+        self.document_thumbnail.as_ref().map(preview_url)
+    }
+
+    /// 文档级缩略图是否与当前 HEAD 一致（落后就需要重新生成）。
+    pub fn document_thumbnail_is_current(&self) -> bool {
+        self.document_thumbnail.is_some() && self.document_thumbnail_seq == self.log.head_seq()
+    }
+
+    /// 文档级缩略图对应的 seq。
+    pub const fn document_thumbnail_seq(&self) -> Seq {
+        self.document_thumbnail_seq
+    }
+
+    /// 记录文档级缩略图（服务端从持久化渲染缓存恢复时使用）。
+    pub fn set_document_thumbnail(&mut self, blob: BlobHash, seq: Seq) {
+        self.document_thumbnail = Some(blob.clone());
+        self.last_render_blob = Some(blob);
+        self.document_thumbnail_seq = seq.min(self.log.head_seq());
     }
 
     /// 执行待处理的重型渲染 job，返回完成的 job。
@@ -732,7 +770,12 @@ impl Document {
     /// 标记「已渲染到某个 seq」（服务端重启后从持久化渲染缓存恢复时使用，14.5）。
     pub fn mark_rendered(&mut self, seq: Seq, preview_blob: Option<BlobHash>) {
         self.render_watermark = seq.min(self.log.head_seq());
-        self.last_render_blob = preview_blob;
+        if let Some(blob) = preview_blob {
+            // 持久化的渲染缓存是文档级预览（`Workspace` 只在大范围渲染时落盘）。
+            self.document_thumbnail = Some(blob.clone());
+            self.last_render_blob = Some(blob);
+            self.document_thumbnail_seq = self.render_watermark;
+        }
     }
 
     fn complete_render_jobs(&mut self) -> Result<()> {
@@ -820,6 +863,11 @@ impl Document {
                 applied: Vec::new(),
             })
     }
+}
+
+/// 渲染区域是否覆盖整幅画布（用于判定「文档级」预览）。
+fn covers_canvas(region: Bbox, width: u32, height: u32) -> bool {
+    region.x <= 0.0 && region.y <= 0.0 && region.w >= width as f64 && region.h >= height as f64
 }
 
 fn needs_previous_state(kind: AtomKind) -> bool {

@@ -45,6 +45,11 @@ pub enum ThumbKind {
 }
 
 impl ThumbKind {
+    /// 是否是文档级缩略图（7.3 分级：doc 覆盖整幅画布，可作为「打开即图片」的缓存）。
+    pub const fn is_document_level(self) -> bool {
+        matches!(self, Self::Doc64 | Self::Doc128 | Self::Doc256)
+    }
+
     /// 全部类型。
     pub const ALL: [ThumbKind; 10] = [
         Self::Doc64,

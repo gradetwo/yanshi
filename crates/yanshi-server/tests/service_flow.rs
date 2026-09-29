@@ -419,6 +419,130 @@ fn time_travel_and_checkpoint_restore() {
     assert_eq!(state.objects["obj_1"].versions.len(), 1, "回到跳变起点");
 }
 
+/// 读取 PNG 的 IHDR 宽高（验证缩略图与区域预览的尺寸语义）。
+fn png_size(bytes: &[u8]) -> (u32, u32) {
+    assert_eq!(
+        &bytes[0..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    );
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    (width, height)
+}
+
+#[test]
+fn document_thumbnail_is_cover_whole_canvas_not_the_last_region() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let registry = ToolRegistry::core();
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_1", "human:1", "session:web");
+
+    // 小范围笔触 → dirty 区域预览是局部图。
+    let stroke = registry.call(
+        &mut context,
+        "draw_stroke",
+        &json!({
+            "layer_id": "layer_1",
+            "data": {"points": [[8.0, 8.0], [20.0, 12.0]], "size": 3.0},
+        }),
+    );
+    assert_eq!(stroke["ok"], json!(true), "{stroke}");
+    let region_url = stroke["preview"]["thumb_url"].as_str().unwrap().to_owned();
+    let region_hash: yanshi_core::BlobHash = region_url
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    let region_png = store.get(&region_hash).unwrap();
+    let (region_w, region_h) = png_size(&region_png);
+    assert!(
+        region_w < 96 && region_h < 96,
+        "局部预览：{region_w}×{region_h}"
+    );
+
+    // get_document 返回的是**文档级**缩略图（覆盖整幅画布，缺省 256），不是那张局部图。
+    let document = registry.call(&mut context, "get_document", &json!({}));
+    assert_eq!(document["ok"], json!(true), "{document}");
+    assert_eq!(document["thumb_size"], json!(256));
+    let thumb_url = document["thumb_url"].as_str().unwrap().to_owned();
+    assert_ne!(thumb_url, region_url, "缩略图不应等于最近一次区域渲染");
+    let thumb_hash: yanshi_core::BlobHash = thumb_url
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    let thumb_png = store.get(&thumb_hash).unwrap();
+    let (thumb_w, thumb_h) = png_size(&thumb_png);
+    assert_eq!((thumb_w, thumb_h), (256, 256), "文档级缩略图固化为 256×256");
+
+    // 第二次调用直接复用缓存（不重新生成）。
+    let cached = registry.call(&mut context, "get_document", &json!({}));
+    assert_eq!(cached["thumb_url"], document["thumb_url"]);
+
+    // `preview_size: false` 明确跳过缩略图；64 档位给出小图。
+    let skipped = registry.call(
+        &mut context,
+        "get_document",
+        &json!({"preview_size": false}),
+    );
+    assert!(skipped["thumb_url"].is_string(), "已缓存时仍返回地址");
+    let small = registry.call(
+        &mut context,
+        "render_region",
+        &json!({"region": {"x": 0, "y": 0, "w": 96, "h": 96}}),
+    );
+    assert_eq!(small["ok"], json!(true));
+    // 覆盖整幅画布的渲染会成为文档级预览（96 >= 96 画布）。
+    let full = registry.call(
+        &mut context,
+        "render_region",
+        &json!({"region": {"x": 0, "y": 0, "w": 96, "h": 96}}),
+    );
+    let full_hash: yanshi_core::BlobHash = full["thumb_url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    assert_eq!(png_size(&store.get(&full_hash).unwrap()), (96, 96));
+    let after_full = registry.call(&mut context, "get_document", &json!({}));
+    assert_eq!(
+        after_full["thumb_url"], full["thumb_url"],
+        "整幅渲染会替换文档级预览（打开即图片）"
+    );
+
+    // 再改一笔：HEAD 前进而缩略图落在后面 → 必须重新生成，不能返回过期缓存
+    // （否则「打开即图片」会显示旧画面）。
+    let later = registry.call(
+        &mut context,
+        "draw_stroke",
+        &json!({
+            "layer_id": "layer_1",
+            "data": {"points": [[90.0, 90.0], [94.0, 94.0]], "size": 2.0},
+        }),
+    );
+    assert_eq!(later["ok"], json!(true), "{later}");
+    let refreshed = registry.call(&mut context, "get_document", &json!({}));
+    assert_ne!(
+        refreshed["thumb_url"], after_full["thumb_url"],
+        "缩略图落后于 HEAD 时必须重新生成"
+    );
+    let refreshed_hash: yanshi_core::BlobHash = refreshed["thumb_url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    assert_eq!(
+        png_size(&store.get(&refreshed_hash).unwrap()),
+        (256, 256),
+        "重新生成的是缺省 256 档文档级缩略图"
+    );
+    assert!(workspace
+        .document("doc_1")
+        .unwrap()
+        .document_thumbnail_is_current());
+}
+
 #[test]
 fn capability_tokens_gate_http_and_allow_stdio() {
     let mut workspace = workspace();
@@ -547,6 +671,187 @@ fn orphan_blobs_are_reclaimed_but_history_is_kept() {
     );
     assert_eq!(historical, 0, "当前状态直接引用它，属于活跃集");
     let _ = store;
+}
+
+#[test]
+fn invalid_colors_are_rejected_and_byte_arrays_paint_correctly() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_color", 64, 64),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::core();
+    let store = workspace.store();
+    let mut context = ToolContext::new(&mut workspace, "doc_color", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+
+    registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+
+    // 非法颜色在工具层就被拒绝（不会写入原子）。
+    for bad in [
+        json!([0.2, 0.3]),
+        json!({"r": 300, "g": 0, "b": 0}),
+        json!("#12345"),
+        json!("green"),
+    ] {
+        let response = registry.call(
+            &mut context,
+            "draw_stroke",
+            &json!({"layer_id": "layer_1", "data": {"points": [[2.0, 2.0], [10.0, 10.0]], "color": bad}}),
+        );
+        assert_eq!(response["ok"], json!(false), "{response}");
+        assert_eq!(response["error_code"], json!("invalid_argument"));
+        assert!(response["context"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("颜色格式非法"));
+    }
+
+    // 字节数组与 {r,g,b,a} 两种写法渲染出同样的绿色笔迹（历史白色事故的回归）。
+    for (label, color) in [
+        ("array", json!([40, 120, 60, 255])),
+        ("object", json!({"r": 40, "g": 120, "b": 60, "a": 255})),
+    ] {
+        let response = registry.call(
+            &mut context,
+            "draw_stroke",
+            &json!({
+                "layer_id": "layer_1",
+                "data": {"points": [[8.0, 40.0], [56.0, 40.0]], "size": 9.0, "color": color},
+            }),
+        );
+        assert_eq!(response["ok"], json!(true), "{label}: {response}");
+        let hash: yanshi_core::BlobHash = response["preview"]["thumb_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("yanshi://blob/")
+            .parse()
+            .unwrap();
+        let png = store.get(&hash).unwrap();
+        let (width, height, pixels) = decode_png(&png);
+        assert!(width > 0 && height > 0);
+        // 预览区域就是 dirty bbox：找一个落在线上的像素看它是不是绿色。
+        let painted = pixels
+            .chunks(4)
+            .filter(|pixel| {
+                pixel[1] as i32 > pixel[0] as i32 + 20 && pixel[1] as i32 > pixel[2] as i32 + 20
+            })
+            .count();
+        assert!(
+            painted > 20,
+            "{label}: 预览里应有成片的绿色像素，实际 {painted} 个（整幅 {}×{}）",
+            width,
+            height
+        );
+        let white = pixels
+            .chunks(4)
+            .filter(|pixel| pixel[0] > 250 && pixel[1] > 250 && pixel[2] > 250)
+            .count();
+        assert!(
+            white * 2 < pixels.len() / 4,
+            "{label}: 不应整片饱和成白色（白像素 {white} / {}）",
+            pixels.len() / 4
+        );
+    }
+}
+
+/// 极简 PNG 解码（本仓库的 PNG 用 stored deflate，因此 zlib 展开即可）。
+fn decode_png(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
+    assert_eq!(
+        &bytes[0..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    );
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as usize;
+    // 跳过 IHDR，累加 IDAT。
+    let mut idat = Vec::new();
+    let mut offset = 8usize;
+    while offset + 8 <= bytes.len() {
+        let length = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
+        let kind = &bytes[offset + 4..offset + 8];
+        let body = &bytes[offset + 8..offset + 8 + length];
+        if kind == b"IDAT" {
+            idat.extend_from_slice(body);
+        }
+        if kind == b"IEND" {
+            break;
+        }
+        offset += 12 + length;
+    }
+    let raw = inflate(&idat);
+    let stride = width * 4;
+    let mut pixels = Vec::with_capacity(stride * height);
+    let mut previous = vec![0u8; stride];
+    let mut position = 0usize;
+    for _ in 0..height {
+        let filter = raw[position];
+        position += 1;
+        let mut line = raw[position..position + stride].to_vec();
+        position += stride;
+        for index in 0..stride {
+            let a = if index >= 4 { line[index - 4] } else { 0 };
+            let b = previous[index];
+            let c = if index >= 4 { previous[index - 4] } else { 0 };
+            let value = match filter {
+                1 => line[index].wrapping_add(a),
+                2 => line[index].wrapping_add(b),
+                3 => line[index].wrapping_add(((a as u16 + b as u16) / 2) as u8),
+                4 => {
+                    let p = a as i16 + b as i16 - c as i16;
+                    let pa = (p - a as i16).abs();
+                    let pb = (p - b as i16).abs();
+                    let pc = (p - c as i16).abs();
+                    let predictor = if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    };
+                    line[index].wrapping_add(predictor)
+                }
+                _ => line[index],
+            };
+            line[index] = value;
+        }
+        pixels.extend_from_slice(&line);
+        previous = line;
+    }
+    (width, height, pixels)
+}
+
+/// zlib 展开：本仓库的 PNG 固定使用 **stored** deflate 块（见 `yanshi_render::png`），
+/// 因此这里只需跳过 2 字节 zlib 头并逐块拷贝即可，无需 huffman 解码。
+fn inflate(data: &[u8]) -> Vec<u8> {
+    assert_eq!((data[0], data[1]), (0x78, 0x01), "zlib 头");
+    let mut out = Vec::new();
+    let mut position = 2usize;
+    loop {
+        let header = data[position];
+        position += 1;
+        assert_eq!((header >> 1) & 0b11, 0, "只支持 stored deflate 块");
+        let length = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
+        position += 4;
+        out.extend_from_slice(&data[position..position + length]);
+        position += length;
+        if header & 1 == 1 {
+            break;
+        }
+    }
+    out
 }
 
 #[test]

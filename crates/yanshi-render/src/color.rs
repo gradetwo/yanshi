@@ -162,3 +162,195 @@ mod tests {
         );
     }
 }
+
+/// 解析工具/原子里的颜色描述，统一为**直通线性** RGBA（`0..1`）。
+///
+/// 接受三种写法（工具层与渲染层共用同一实现，避免出现两套解析）：
+///
+/// | 写法 | 含义 |
+/// |---|---|
+/// | `[r, g, b]` / `[r, g, b, a]`，所有分量 ≤ 1 | 直通线性（alpha 缺省 1.0） |
+/// | `[r, g, b, a]`，任一分量 > 1 | sRGB 字节 `0-255`（Agent 常写 `[40,120,60,255]`） |
+/// | `{"r": 0-255, "g": …, "b": …, "a": …}` | sRGB 字节（alpha 缺省 255） |
+/// | `"#RRGGBB"` / `"#RRGGBBAA"` / `"#RGB"` | sRGB 十六进制 |
+///
+/// 历史事故：`[40, 120, 60, 255]` 曾被当作线性浮点直通，alpha = 255 直接饱和成白色，
+/// 于是「画了一笔却什么都没看见」。字节写法与 `{"r": …}` 必须等价。
+pub fn parse_spec_color(value: &serde_json::Value) -> Option<LinearRgba> {
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => {
+            let numbers: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
+            if numbers.len() < 3 || numbers.len() != items.len() {
+                return None;
+            }
+            if numbers.iter().any(|component| *component > 1.0) {
+                let byte = |index: usize, default: u8| -> Option<u8> {
+                    let raw = numbers.get(index).copied().unwrap_or(default as f64);
+                    if !(0.0..=255.0).contains(&raw) {
+                        return None;
+                    }
+                    Some(raw.round() as u8)
+                };
+                let bytes = [byte(0, 0)?, byte(1, 0)?, byte(2, 0)?, byte(3, 255)?];
+                Some(straight_linear_from_bytes(bytes))
+            } else {
+                let channel = |index: usize, default: f32| {
+                    numbers.get(index).copied().unwrap_or(default as f64) as f32
+                };
+                let color = [
+                    channel(0, 0.0),
+                    channel(1, 0.0),
+                    channel(2, 0.0),
+                    channel(3, 1.0),
+                ];
+                if color
+                    .iter()
+                    .any(|component| !component.is_finite() || *component < 0.0)
+                {
+                    return None;
+                }
+                Some(color)
+            }
+        }
+        Value::Object(map) => {
+            let channel = |key: &str, default: u8| -> Option<u8> {
+                match map.get(key) {
+                    None => Some(default),
+                    Some(Value::Number(number)) => {
+                        let raw = number.as_f64()?;
+                        if !(0.0..=255.0).contains(&raw) {
+                            return None;
+                        }
+                        Some(raw.round() as u8)
+                    }
+                    Some(_) => None,
+                }
+            };
+            Some(straight_linear_from_bytes([
+                channel("r", 0)?,
+                channel("g", 0)?,
+                channel("b", 0)?,
+                channel("a", 255)?,
+            ]))
+        }
+        Value::String(text) => parse_hex_color(text),
+        _ => None,
+    }
+}
+
+/// `#RGB` / `#RRGGBB` / `#RRGGBBAA` → 直通线性。
+pub fn parse_hex_color(text: &str) -> Option<LinearRgba> {
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    let expand = |pair: &str| u8::from_str_radix(pair, 16).ok();
+    let bytes = match hex.len() {
+        3 => [
+            expand(&hex[0..1].repeat(2))?,
+            expand(&hex[1..2].repeat(2))?,
+            expand(&hex[2..3].repeat(2))?,
+            255,
+        ],
+        6 | 8 => [
+            expand(&hex[0..2])?,
+            expand(&hex[2..4])?,
+            expand(&hex[4..6])?,
+            if hex.len() == 8 {
+                expand(&hex[6..8])?
+            } else {
+                255
+            },
+        ],
+        _ => return None,
+    };
+    Some(straight_linear_from_bytes(bytes))
+}
+
+/// sRGB 字节 → 直通线性 RGBA。
+pub fn straight_linear_from_bytes(bytes: [u8; 4]) -> LinearRgba {
+    let premultiplied = u8x4_to_linear_premul(bytes);
+    unpremultiply(premultiplied)
+}
+
+/// 颜色描述是否可解析；不可解析时给出给人看的错误说明（5.7 `invalid_argument`）。
+pub fn color_error(value: &serde_json::Value) -> Option<String> {
+    if parse_spec_color(value).is_some() {
+        return None;
+    }
+    Some(format!(
+        "颜色格式非法：{}；支持 [r,g,b,a]（0-1 线性或 0-255 sRGB 字节）、\
+         {{\"r\":0-255,\"g\":…,\"b\":…,\"a\":…}} 或 \"#RRGGBB\"",
+        compact(value)
+    ))
+}
+
+fn compact(value: &serde_json::Value) -> String {
+    let text = value.to_string();
+    if text.len() > 48 {
+        format!("{}…", &text[..48])
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod spec_color_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn linear_and_byte_forms_are_equivalent() {
+        let linear = parse_spec_color(&json!([0.5, 0.25, 0.0, 1.0])).unwrap();
+        assert_eq!(linear, [0.5, 0.25, 0.0, 1.0]);
+
+        let bytes = parse_spec_color(&json!([128, 64, 0, 255])).unwrap();
+        let object = parse_spec_color(&json!({"r": 128, "g": 64, "b": 0, "a": 255})).unwrap();
+        assert_eq!(bytes, object, "字节数组与对象写法必须等价");
+
+        // 历史事故：255 的 alpha 曾被当成线性浮点 → 饱和成白色。
+        let green = parse_spec_color(&json!([40, 120, 60, 255])).unwrap();
+        assert!((green[3] - 1.0).abs() < 1e-6, "alpha 应为 1：{green:?}");
+        assert!(
+            green[1] > green[0] && green[1] > green[2],
+            "应仍是绿色：{green:?}"
+        );
+        assert!(green[0] < 0.1 && green[1] < 0.4, "不应饱和：{green:?}");
+    }
+
+    #[test]
+    fn alpha_defaults_and_hex_forms() {
+        assert_eq!(parse_spec_color(&json!([0.0, 0.0, 0.0])).unwrap()[3], 1.0);
+        assert_eq!(
+            parse_spec_color(&json!({"r": 255, "g": 0, "b": 0})).unwrap()[3],
+            1.0
+        );
+        assert_eq!(
+            parse_spec_color(&json!("#ff0000")).unwrap()[0..3],
+            parse_spec_color(&json!({"r": 255, "g": 0, "b": 0, "a": 255})).unwrap()[0..3]
+        );
+        assert_eq!(
+            parse_spec_color(&json!("#f00")).unwrap(),
+            parse_spec_color(&json!("#ff0000")).unwrap()
+        );
+        let half = parse_spec_color(&json!("#00000080")).unwrap();
+        assert!((half[3] - 128.0 / 255.0).abs() < 1e-3, "{half:?}");
+    }
+
+    #[test]
+    fn malformed_colors_are_reported() {
+        for bad in [
+            json!([0.0, 0.0]),
+            json!([1.0, 2.0, 3.0, 999.0]),
+            json!({"r": -5, "g": 0, "b": 0}),
+            json!({"r": "red"}),
+            json!("#gg0000"),
+            json!("#12345"),
+            json!("red"),
+            json!(null),
+            json!(7),
+        ] {
+            assert!(parse_spec_color(&bad).is_none(), "{bad} 应被拒绝");
+            assert!(color_error(&bad).is_some(), "{bad} 应给出错误说明");
+        }
+        assert!(color_error(&json!([30, 30, 40, 255])).is_none());
+    }
+}

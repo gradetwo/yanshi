@@ -779,6 +779,47 @@ mod tests {
         );
     }
 
+    /// 历史事故回归：`color: [40, 120, 60, 255]` 曾被当作线性浮点直通，
+    /// alpha=255 直接饱和 → 画了一笔却只看到白色。字节数组与对象写法必须等价。
+    #[test]
+    fn byte_array_colors_paint_the_same_as_srgb_objects() {
+        let stroke = |color: serde_json::Value| {
+            let mut state = white_document();
+            state.objects.insert(
+                "obj_1".to_owned(),
+                object(
+                    "obj_1",
+                    "layer_1",
+                    ObjectType::Stroke,
+                    0,
+                    json!({
+                        "points": [[6.0, 20.0], [26.0, 20.0]],
+                        "size": 7.0,
+                        "color": color,
+                    }),
+                ),
+            );
+            renderer()
+                .render_document(&state, &MemoryBlobStore::new())
+                .unwrap()
+        };
+
+        let from_array = stroke(json!([40, 120, 60, 255]));
+        let from_object = stroke(json!({"r": 40, "g": 120, "b": 60, "a": 255}));
+        for x in [10, 16, 22] {
+            let a = from_array.pixel(x, 20).unwrap();
+            let b = from_object.pixel(x, 20).unwrap();
+            assert_eq!(a, b, "x={x} 两种颜色写法必须渲染一致");
+            assert!(
+                a[1] as i32 > a[0] as i32 + 20 && a[1] as i32 > a[2] as i32 + 20,
+                "x={x} 应是绿色而不是被饱和成白色：{a:?}"
+            );
+            assert!(a[1] < 200, "x={x} 不应接近白色：{a:?}");
+        }
+        // 笔迹之外仍是背景。
+        assert_eq!(from_array.pixel(16, 2), Some([255, 255, 255, 255]));
+    }
+
     #[test]
     fn layer_order_and_opacity_affect_composite() {
         let mut state = white_document();

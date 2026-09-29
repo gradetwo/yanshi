@@ -5,7 +5,6 @@
 //! 返回 [`Primitive::Unsupported`]，由调用方计入告警而不是让整次渲染失败。
 
 use crate::brush::{BrushSpec, StrokeGeometry};
-use crate::color::u8x4_to_linear_premul;
 use crate::color::LinearRgba;
 use serde_json::Value;
 use yanshi_core::{Bbox, BlobHash, Object, ObjectType};
@@ -239,39 +238,8 @@ fn parse_raster_patch(data: &Value) -> Primitive {
 
 /// 解析颜色：支持 `[r, g, b, a]`（线性直通）与 `{"r": 0-255, ...}`（sRGB 字节）。
 pub fn parse_color(value: &Value) -> LinearRgba {
-    if let Some(array) = value.as_array() {
-        let mut color = [0.0f32, 0.0, 0.0, 1.0];
-        for (index, item) in array.iter().take(4).enumerate() {
-            color[index] = item.as_f64().unwrap_or(0.0) as f32;
-        }
-        return color;
-    }
-    if value.is_object() {
-        let channel = |key: &str, default: u8| {
-            value
-                .get(key)
-                .and_then(Value::as_u64)
-                .unwrap_or(default as u64) as u8
-        };
-        let bytes = [
-            channel("r", 0),
-            channel("g", 0),
-            channel("b", 0),
-            channel("a", 255),
-        ];
-        let premultiplied = u8x4_to_linear_premul(bytes);
-        let alpha = premultiplied[3];
-        if alpha > 0.0 {
-            return [
-                premultiplied[0] / alpha,
-                premultiplied[1] / alpha,
-                premultiplied[2] / alpha,
-                alpha,
-            ];
-        }
-        return [0.0, 0.0, 0.0, 0.0];
-    }
-    [0.0, 0.0, 0.0, 1.0]
+    // 统一走 `color::parse_spec_color`（线性数组 / sRGB 字节数组 / 对象 / 十六进制）。
+    crate::color::parse_spec_color(value).unwrap_or([0.0, 0.0, 0.0, 1.0])
 }
 
 /// 对象的效果包围盒（文档坐标）；无法判定时返回 `None`。

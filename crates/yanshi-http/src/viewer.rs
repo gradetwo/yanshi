@@ -178,7 +178,7 @@ async function ensureDocument() {
   history.replaceState(null, "", url);
   $("identity").textContent = state.docId + " · " + value.token.slice(0, 8) + "…";
   await refreshLayers();
-  await preview();
+  await refreshPreview();
   connect();
   refreshThumb();
 }
@@ -205,7 +205,7 @@ async function refreshLayers() {
   select.onchange = () => { state.layerId = select.value; };
 }
 
-async function preview() {
+async function refreshPreview() {
   const value = await callTool("render_region", {
     region: { x: 0, y: 0, w: 512, h: 512 },
   }, { refresh: false });
@@ -347,7 +347,7 @@ async function commitShape() {
       data: { geometry: { kind: state.tool, bbox }, color },
     });
   }
-  await preview();
+  await refreshPreview();
 }
 
 for (const button of document.querySelectorAll("button[data-tool]")) {
@@ -355,16 +355,16 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
     const tool = button.dataset.tool;
     if (tool === "undo") {
       if (state.lastAtom) await callTool("revert", { atom_id: state.lastAtom });
-      await preview();
+      await refreshPreview();
       return;
     }
     if (tool === "redo") {
       const atom = state.reverted.pop();
       if (atom) await callTool("reapply", { atom_id: atom });
-      await preview();
+      await refreshPreview();
       return;
     }
-    if (tool === "refresh") { await preview(); refreshThumb(); return; }
+    if (tool === "refresh") { await refreshPreview(); refreshThumb(); return; }
     state.tool = tool;
     for (const other of document.querySelectorAll("button[data-tool]")) {
       other.setAttribute("aria-pressed", String(other === button));
@@ -381,7 +381,7 @@ $("open").addEventListener("click", ensureDocument);
   } else {
     $("identity").textContent = state.docId;
     await refreshLayers();
-    await preview();
+    await refreshPreview();
     connect();
     refreshThumb();
   }
@@ -425,5 +425,79 @@ mod tests {
         assert!(!PAGE.contains("https://cdn"));
         assert!(!PAGE.contains("<script src="));
         assert!(page_len() > 4000);
+    }
+
+    /// 回归：内联脚本里 `const preview = $("preview")` 与 `async function preview()`
+    /// 曾经同名冲突，导致整页 JS 直接 SyntaxError（浏览器里白屏）。
+    ///
+    /// 只检查**顶层**（花括号深度 0）声明：函数/块内的同名变量是合法的遮蔽。
+    #[test]
+    fn viewer_script_has_no_duplicate_top_level_declarations() {
+        let script = PAGE
+            .split_once("<script>")
+            .and_then(|(_, rest)| rest.split_once("</script>"))
+            .map(|(script, _)| script)
+            .expect("页面含内联脚本");
+
+        let mut names: Vec<&str> = Vec::new();
+        let mut depth: i32 = 0;
+        for raw_line in script.lines() {
+            // 去掉行注释后统计花括号深度（跳过字符串字面量里的括号）。
+            let line = match raw_line.split_once("//") {
+                Some((code, _)) if !code.contains('"') && !code.contains('\'') => code,
+                _ => raw_line,
+            };
+            if depth == 0 {
+                let trimmed = line.trim_start();
+                for prefix in ["const ", "let ", "var ", "async function ", "function "] {
+                    if let Some(rest) = trimmed.strip_prefix(prefix) {
+                        let name = rest
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                            .next()
+                            .unwrap_or("");
+                        if !name.is_empty() {
+                            names.push(name);
+                        }
+                        break;
+                    }
+                }
+            }
+            let mut in_string: Option<char> = None;
+            let mut escaped = false;
+            for character in line.chars() {
+                match in_string {
+                    Some(quote) => {
+                        if escaped {
+                            escaped = false;
+                        } else if character == '\\' {
+                            escaped = true;
+                        } else if character == quote {
+                            in_string = None;
+                        }
+                    }
+                    None => match character {
+                        '"' | '\'' => in_string = Some(character),
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    },
+                }
+            }
+        }
+
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        let mut duplicates: Vec<&str> = Vec::new();
+        for pair in sorted.windows(2) {
+            if pair[0] == pair[1] && !duplicates.contains(&pair[1]) {
+                duplicates.push(pair[1]);
+            }
+        }
+        assert!(
+            duplicates.is_empty(),
+            "查看器脚本顶层存在重复声明（会导致 SyntaxError）：{duplicates:?}"
+        );
+        assert!(script.contains("async function refreshPreview()"));
+        assert!(names.len() > 15, "顶层声明数量异常：{names:?}");
     }
 }

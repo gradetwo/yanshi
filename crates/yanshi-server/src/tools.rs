@@ -24,7 +24,7 @@ use crate::annotations::{
 use crate::base64;
 use crate::document::{CommitResult, RenderedPreview};
 use crate::job::JobStatus;
-use crate::service::Workspace;
+use crate::service::{DocThumbSize, Workspace};
 
 /// 工具分层（10.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -487,6 +487,27 @@ fn optional_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
+/// 校验 `data.color` / `data.stroke_color`（统一由 `yanshi_render` 解析）。
+///
+/// 非法颜色必须在工具层就被拒绝：历史事故里 `[40,120,60,255]` 被渲染层当作线性浮点，
+/// alpha=255 饱和成白色，用户「画了一笔却什么都没看见」。
+fn validate_colors(data: &Value) -> Result<()> {
+    for key in ["color", "stroke_color", "fill_color", "background_color"] {
+        if let Some(value) = data.get(key) {
+            if value.is_null() {
+                continue;
+            }
+            if let Some(message) = yanshi_render::color::color_error(value) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("data.{key} {message}")),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn missing(key: &str) -> YanshiError {
     YanshiError::new(
         ErrorCode::InvalidArgument,
@@ -588,9 +609,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_document",
         profile: Profile::Core,
-        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位）",
+        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位、文档级缩略图）",
         mutating: false,
-        params: NO_PARAMS,
+        params: &[param!(
+            "preview_size",
+            Object,
+            false,
+            "缩略图档位 64/128/256 或 false 跳过（缺省 256）"
+        )],
     },
     ToolSpec {
         name: "get_state",
@@ -600,6 +626,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("include_objects", Boolean, false, "是否包含对象列表"),
             param!("include_hidden", Boolean, false, "是否包含不可见图层/对象"),
+            param!(
+                "preview_size",
+                Object,
+                false,
+                "缩略图档位 64/128/256 或 false（缺省 256）"
+            ),
         ],
     },
     ToolSpec {
@@ -710,7 +742,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_stroke",
         profile: Profile::Core,
-        summary: "绘制笔触（微观工具；重复 object_id 表示追加版本）",
+        summary: "绘制笔触（data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -1069,7 +1101,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
 
 fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     match spec.name {
-        "get_document" => read_get_document(ctx),
+        "get_document" => read_get_document(ctx, args),
         "get_state" => read_get_state(ctx, args),
         "list_layers" => read_list_layers(ctx),
         "list_objects" => read_list_objects(ctx, args),
@@ -1124,15 +1156,19 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 // 只读工具
 // ---------------------------------------------------------------------------
 
-fn read_get_document(ctx: &mut ToolContext<'_>) -> Result<Value> {
+fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut summary = ctx.workspace.summary_json(&ctx.doc_id)?;
-    if let Some(url) = ctx
-        .workspace
-        .document(&ctx.doc_id)
-        .and_then(|document| document.latest_preview_url())
-    {
+    // 6.2「打开即图片」：返回**文档级**缩略图（覆盖整幅画布），
+    // 没有缓存时按 preview_size 现场生成（默认 256；`preview_size: false` 可跳过）。
+    let size = args
+        .get("preview_size")
+        .map(DocThumbSize::parse)
+        .unwrap_or(DocThumbSize::S256);
+    if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
         summary["thumb_url"] = json!(url);
+        summary["thumb_size"] = json!(size.kind().size());
     }
+    summary["preview_size"] = json!(size.kind().size());
     Ok(summary)
 }
 
@@ -1175,11 +1211,11 @@ fn read_get_state(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .map(summary_object)
             .collect::<Vec<_>>());
     }
-    if let Some(url) = ctx
-        .workspace
-        .document(&ctx.doc_id)
-        .and_then(|document| document.latest_preview_url())
-    {
+    let size = args
+        .get("preview_size")
+        .map(DocThumbSize::parse)
+        .unwrap_or(DocThumbSize::S256);
+    if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
         value["thumb_url"] = json!(url);
     }
     Ok(value)
@@ -1548,6 +1584,7 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let data = require_object(args, "data")?.clone();
+    validate_colors(&data)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
     let payload = json!({
@@ -1632,6 +1669,7 @@ fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             ErrorContext::detail("update_stroke 需要 core / preset / advanced 至少一项"),
         ));
     }
+    validate_colors(&data)?;
     let layer_id = object.layer_id.clone();
     let payload = json!({
         "object_id": object_id,

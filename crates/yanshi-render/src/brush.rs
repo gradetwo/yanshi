@@ -143,39 +143,10 @@ impl BrushSpec {
             spec.min_size_ratio = min_ratio.clamp(0.0, 1.0);
         }
         if let Some(color) = value.get("color") {
-            if let Some(array) = color.as_array() {
-                if array.len() >= 3 {
-                    let mut rgba = [0.0f32, 0.0, 0.0, 1.0];
-                    for (index, item) in array.iter().take(4).enumerate() {
-                        rgba[index] = item.as_f64().unwrap_or(0.0) as f32;
-                    }
-                    spec.color = rgba;
-                }
-            } else if color.is_object() {
-                let channel = |key: &str, default: u8| {
-                    color
-                        .get(key)
-                        .and_then(Value::as_u64)
-                        .unwrap_or(default as u64) as u8
-                };
-                let rgba8 = [
-                    channel("r", 0),
-                    channel("g", 0),
-                    channel("b", 0),
-                    channel("a", 255),
-                ];
-                let premultiplied = crate::color::u8x4_to_linear_premul(rgba8);
-                let alpha = premultiplied[3];
-                spec.color = if alpha > 0.0 {
-                    [
-                        premultiplied[0] / alpha,
-                        premultiplied[1] / alpha,
-                        premultiplied[2] / alpha,
-                        alpha,
-                    ]
-                } else {
-                    [0.0, 0.0, 0.0, 0.0]
-                };
+            // 统一走 `color::parse_spec_color`：数组 > 0-1 视为 sRGB 字节，
+            // 对象与十六进制同样接受（详见该函数文档里的历史事故说明）。
+            if let Some(parsed) = crate::color::parse_spec_color(color) {
+                spec.color = parsed;
             }
         }
         spec
