@@ -14,6 +14,23 @@ chromium --remote-debugging-port=9333 --headless=new about:blank
 依赖仅 `curl`、`python3`、`node`（≥18，用到内置 `fetch`/`WebSocket`）。浏览器类脚本通过 CDP 驱动，
 驱动的是**编辑器自身的真实路径**，而不是另写一套比对逻辑。
 
+## 重活交给 GitHub（CI/CD）
+
+* **快反馈**（`.github/workflows/ci.yml`，push/PR）：rustfmt、clippy、workspace 测试（stable/beta）、
+  **wasm 冒烟**（唯一能抓"原生全绿、浏览器全崩"那类回归的检查）；
+* **重活**（`.github/workflows/heavy.yml`，每夜定时 + 手动）：整仓 `--ignored` 长任务
+  （10 万原子 fuzz、性能预算、4K 剖面、单效果成本、内核原生计时），日志上传为 artifact。
+
+```bash
+gh workflow run heavy.yml          # 手动触发
+gh run list --limit 5              # 查看状态
+gh run view <id> --log | tail -50  # 读日志
+gh run download <id> -n ignored-suite-log   # 下载 artifact
+```
+
+**本机只跑快测试**（`cargo test --workspace` + `scripts/wasm-smoke.sh`），
+长任务交给 CI 并行执行，本地继续其他开发，**定时查看**结果即可 —— 这也是本仓库的分工约定。
+
 ## `phase4b-demo.sh` — 建议环路端到端演示
 
 ```bash

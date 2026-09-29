@@ -337,6 +337,13 @@ fn profile_4k_full_render_cache_capacity() {
             "缓存占用 {} 超过预算 {cache_bytes}",
             stats.used_bytes
         );
+        // 设计决策（本轮确认）：4K 全幅归为**导出/批处理**路径，预算 ≤10s CPU（10 图层）。
+        // 实测约 6.4–6.7s（libpng 编码另计），因此断言留 3× 余量以免本机/CI 抖动误报；
+        // 与设计 14.1 的内存目标（< 4GB）一起构成 4K 的两条明确定义。
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "4K 全幅渲染（{label}）耗时 {elapsed:?}，相对导出预算（10s，实测约 6.7s）明显回归"
+        );
     }
 }
 

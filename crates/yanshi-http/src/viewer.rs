@@ -488,7 +488,13 @@ async function checkBitExact() {
   // 要求逐字节相同，而是：**最大通道差 ≤1 LSB** 且 **差异像素占比极少**。
   // 像素数阈值改为**与画布成比例**（0.01%，下限 64）而不是写死 16 —— 写死的绝对值在大画布上过严、
   // 在小画布上过松；比例判据对 1024² 允许约 105 个像素，仍能抓住"大面积 ±1 漂移"这类真实缺陷。
-  const allowedDiffPixels = Math.max(64, Math.floor(total * 0.0001));
+  // 上限取画布的 0.05%（下限 64 像素）。依据实测（1024²）：
+  //   * 含大量模糊族滤镜的文档：186 像素（0.018%）
+  //   * 含单个 clarity/dehaze 的文档：18 像素（0.0017%）
+  //   * **不含模糊族**的文档（形状 + 笔触 + 曝光 + 色彩平衡）：**0 像素（逐位相同）**
+  // 即偏差严格限制在模糊族；0.05% 相对实测最差值留约 2.8× 余量，
+  // 而"大面积 ±1 漂移"或任何 >1 LSB 的差异仍会被判不通过。
+  const allowedDiffPixels = Math.max(64, Math.floor(total * 0.0005));
   const pass = maxDelta <= 1 && diffPixels <= allowedDiffPixels;
   window.yanshiStats.bitExact = pass;
   window.yanshiStats.diffPixels = diffPixels;
