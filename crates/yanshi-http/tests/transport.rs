@@ -610,6 +610,9 @@ fn client_supplied_atom_ids_are_idempotent() {
     assert_eq!(body["atom_id"], json!("01CLIENT0000000000000000AB"));
     assert_eq!(body["seq"], json!(2), "create_document 占 seq 1");
     assert_eq!(body["duplicate"], json!(false));
+    // 回带权威原子（含 seq），客户端据此本地应用而不必猜 seq。
+    assert_eq!(body["atom"]["id"], json!("01CLIENT0000000000000000AB"));
+    assert_eq!(body["atom"]["seq"], json!(2));
 
     // 同一 id 重试：幂等命中，seq 不变、不产生新原子。
     let (status, retry) = client.json(
@@ -799,4 +802,63 @@ fn wasm_assets_are_served_from_the_configured_directory() {
     handle.shutdown();
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 回归：服务端声称 keep-alive 就必须真的复用连接。
+///
+/// 曾经的缺陷是一条连接只处理一个请求却回 `Connection: keep-alive`，
+/// 浏览器复用该连接时拿到已关闭的 socket，表现为随机的 `Failed to fetch`。
+#[test]
+fn one_connection_serves_multiple_requests() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let token = create_document(addr, "doc_keepalive");
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let listing = "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n";
+    stream.write_all(listing.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let (status, headers, body) = read_response(&mut stream);
+    assert_eq!(status, 200);
+    assert_eq!(
+        headers.get("connection").map(String::as_str),
+        Some("keep-alive")
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["ok"],
+        json!(true)
+    );
+
+    // 同一条连接上继续发两个请求（工具调用 + 文档摘要）。
+    let body = json!({"layer_id": "layer_1"}).to_string();
+    let call = format!(
+        "POST /api/tools/create_layer?doc=doc_keepalive&token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+         Connection: keep-alive\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(call.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let (status, _, body) = read_response(&mut stream);
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["ok"],
+        json!(true)
+    );
+
+    let summary = format!(
+        "GET /api/documents/doc_keepalive?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(summary.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let (status, headers, body) = read_response(&mut stream);
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("connection").map(String::as_str), Some("close"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["document"]["head_seq"],
+        json!(2)
+    );
+    handle.shutdown();
 }

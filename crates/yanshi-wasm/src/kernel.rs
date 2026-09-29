@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use yanshi_core::blob::{BlobStore, MemoryBlobStore};
 use yanshi_core::fold::FoldWarning;
-use yanshi_core::{Atom, AtomLog, Bbox, BlobHash, DocumentState, IncrementalFolder, Seq};
+use yanshi_core::{
+    Atom, AtomLog, Bbox, BlobHash, DocumentState, IncrementalFolder, ObjectType, Seq,
+};
 use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind};
 use yanshi_render::png::encode_png;
 use yanshi_render::render::Renderer;
@@ -129,6 +131,22 @@ pub struct RenderResult {
     pub warnings: Vec<String>,
 }
 
+/// 两个区域（任一可空）的并集。
+fn union_bbox(a: Option<Bbox>, b: Option<Bbox>) -> Option<Bbox> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let x = a.x.min(b.x);
+            let y = a.y.min(b.y);
+            let right = (a.x + a.w).max(b.x + b.w);
+            let bottom = (a.y + a.h).max(b.y + b.h);
+            Some(Bbox::new(x, y, right - x, bottom - y))
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 /// 把请求区域夹到画布内（至少 1×1 像素）。
 fn clamp_to_canvas(region: Bbox, width: u32, height: u32) -> Bbox {
     let x = region.x.max(0.0).min((width as f64 - 1.0).max(0.0));
@@ -137,6 +155,9 @@ fn clamp_to_canvas(region: Bbox, width: u32, height: u32) -> Bbox {
     let h = region.h.max(1.0).min(height as f64 - y).max(1.0);
     Bbox::new(x, y, w, h)
 }
+
+/// 本地待提交覆盖层的保留对象 id（不进原子日志，13.3 乐观渲染）。
+pub const PREVIEW_OBJECT_ID: &str = "__yanshi_preview__";
 
 /// 计算内核实例。
 pub struct Kernel {
@@ -250,6 +271,106 @@ impl Kernel {
     pub fn evict_outside_viewport(&mut self, viewport: Bbox) -> usize {
         self.viewport = viewport;
         self.renderer.cache_mut().evict_outside_viewport(&viewport)
+    }
+
+    /// 设置/更新**本地待提交覆盖层**（13.3 乐观渲染）。
+    ///
+    /// 覆盖层只改本地 `state` 的像素，`log` 完全不动——这样「拖动中的笔迹」不会污染
+    /// 原子日志，也不会因为反复 apply 同一个 id 而走幂等分支（历史缺陷：笔迹只画开头一段）。
+    /// 返回需要重绘的区域（旧覆盖层 ∪ 新覆盖层，保证上一帧的笔迹被擦掉）。
+    pub fn set_preview_object(&mut self, json: &str) -> Result<Option<Bbox>, KernelError> {
+        // 覆盖层用**最小字段**构造，不要求调用方提供 versions/created_by 等日志语义字段。
+        let value: Value = serde_json::from_str(json).map_err(|error| {
+            KernelError::new("invalid_argument", format!("待提交对象解析失败：{error}"))
+        })?;
+        let layer_id = value
+            .get("layer_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| KernelError::new("invalid_argument", "待提交对象缺少 layer_id"))?
+            .to_owned();
+        let object_type: ObjectType = serde_json::from_value(
+            value.get("type").cloned().unwrap_or(Value::Null),
+        )
+        .map_err(|error| {
+            KernelError::new("invalid_argument", format!("待提交对象类型非法：{error}"))
+        })?;
+        let data = value.get("data").cloned().unwrap_or(Value::Null);
+        let z_index = value
+            .get("z_index")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX);
+
+        // 目标图层不存在（或已删除）时退到第一个存活图层，避免覆盖层静默不可见。
+        let layer_ok = self
+            .state
+            .layers
+            .get(&layer_id)
+            .map(|layer| !layer.is_deleted())
+            .unwrap_or(false);
+        let layer_id = if layer_ok {
+            layer_id
+        } else {
+            self.state
+                .alive_layers()
+                .first()
+                .map(|layer| layer.id.clone())
+                .ok_or_else(|| KernelError::new("precondition_failed", "文档没有存活图层"))?
+        };
+
+        let object = yanshi_core::Object {
+            id: PREVIEW_OBJECT_ID.to_owned(),
+            layer_id,
+            object_type,
+            z_index,
+            visible: value
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            locked: false,
+            metadata: Value::Null,
+            transform: yanshi_core::Transform::IDENTITY,
+            style: None,
+            versions: Vec::new(),
+            current_version: None,
+            created_by: "preview".to_owned(),
+            deleted_by: None,
+            data,
+            blobs: Vec::new(),
+        };
+
+        let previous = self.remove_preview_bbox();
+        let current = yanshi_render::object_bbox(&object);
+        self.state
+            .objects
+            .insert(PREVIEW_OBJECT_ID.to_owned(), object);
+        let dirty = union_bbox(previous, current);
+        self.invalidate_bbox(dirty);
+        Ok(dirty)
+    }
+
+    /// 清除本地待提交覆盖层（落笔提交后调用），返回需要重绘的区域。
+    pub fn clear_preview(&mut self) -> Option<Bbox> {
+        let bbox = self.remove_preview_bbox();
+        self.invalidate_bbox(bbox);
+        bbox
+    }
+
+    /// 当前是否存在待提交覆盖层。
+    pub fn has_preview(&self) -> bool {
+        self.state.objects.contains_key(PREVIEW_OBJECT_ID)
+    }
+
+    fn remove_preview_bbox(&mut self) -> Option<Bbox> {
+        self.state
+            .objects
+            .remove(PREVIEW_OBJECT_ID)
+            .and_then(|object| yanshi_render::object_bbox(&object))
+    }
+
+    fn invalidate_bbox(&mut self, bbox: Option<Bbox>) {
+        let Some(bbox) = bbox else { return };
+        let keys = self.renderer.grid().keys_for_bbox(&bbox);
+        self.renderer.cache_mut().invalidate(&keys);
     }
 
     /// 写入本地 blob（设计 6.3：blob 先行），返回 CAS 哈希。
@@ -414,20 +535,21 @@ impl Kernel {
             let tile_size = tile.size() as i64;
             let dx = bounds.x as i64 - origin_x;
             let dy = bounds.y as i64 - origin_y;
+            // 按行切片拷贝（逐像素拷贝在 1024×1024 上要几十毫秒）。
+            let first_column = dx.max(0);
+            let last_column = (dx + tile_size).min(width as i64);
+            if last_column <= first_column {
+                continue;
+            }
+            let span = (last_column - first_column) as usize * 4;
             for row in 0..tile_size {
                 let out_y = dy + row;
                 if out_y < 0 || out_y >= height as i64 {
                     continue;
                 }
-                for column in 0..tile_size {
-                    let out_x = dx + column;
-                    if out_x < 0 || out_x >= width as i64 {
-                        continue;
-                    }
-                    let src = ((row * tile_size + column) * 4) as usize;
-                    let dst = ((out_y * width as i64 + out_x) * 4) as usize;
-                    rgba8[dst..dst + 4].copy_from_slice(&tile_rgba[src..src + 4]);
-                }
+                let src = ((row * tile_size + (first_column - dx)) * 4) as usize;
+                let dst = ((out_y * width as i64 + first_column) * 4) as usize;
+                rgba8[dst..dst + span].copy_from_slice(&tile_rgba[src..src + span]);
             }
         }
 
@@ -714,6 +836,81 @@ mod tests {
                 "tile_size={tile_size}：服务端整幅渲染与客户端按 tile 组合必须逐字节一致"
             );
         }
+    }
+
+    /// 待提交覆盖层：笔迹随指针增长可见，且**完全不动原子日志**。
+    #[test]
+    fn preview_overlay_grows_without_touching_the_atom_log() {
+        let atoms = scene_atoms();
+        let mut kernel = kernel_with(&atoms, DEFAULT_MEMORY_LIMIT);
+        let log_before = kernel.log().len();
+        let head_before = kernel.head_seq();
+
+        let stroke = |points: serde_json::Value| {
+            json!({
+                "id": "preview",
+                "layer_id": "layer_1",
+                "type": "stroke",
+                "visible": true,
+                "data": {"points": points, "size": 6.0, "color": [20, 20, 30, 255]},
+            })
+            .to_string()
+        };
+
+        // 第一段。
+        let first = kernel
+            .set_preview_object(&stroke(json!([[10.0, 10.0], [40.0, 20.0]])))
+            .unwrap()
+            .expect("应返回重绘区域");
+        assert!(kernel.has_preview());
+        let painted = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .unwrap();
+        // 笔迹中段被画上（背景是白色，取整行最小值判断）。
+        let sample = |rgba: &[u8], x: u32, y: u32| {
+            let index = ((y * 128 + x) * 4) as usize;
+            rgba[index]
+        };
+        let dark = |rgba: &[u8], y: u32| (0..128).filter(|x| sample(rgba, *x, y) < 200).count();
+        let dark_before = dark(&painted.rgba8, 15);
+        assert!(dark_before > 0, "第一段应画出来");
+
+        // 第二段（笔迹变长）：返回的区域必须覆盖新旧两段，且像素确实增长。
+        let second = kernel
+            .set_preview_object(&stroke(json!([[10.0, 10.0], [110.0, 90.0]])))
+            .unwrap()
+            .expect("应返回重绘区域");
+        assert!(
+            second.w > first.w || second.h > first.h,
+            "并集区域应覆盖增长后的笔迹：{first:?} → {second:?}"
+        );
+        let painted = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .unwrap();
+        let dark_after = dark(&painted.rgba8, 15) + dark(&painted.rgba8, 40);
+        assert!(
+            dark_after > dark_before,
+            "笔迹应随指针增长：{dark_before} → {dark_after}"
+        );
+
+        // 覆盖层不写日志：原子数与 HEAD 都不变。
+        assert_eq!(kernel.log().len(), log_before, "覆盖层不得写入原子日志");
+        assert_eq!(kernel.head_seq(), head_before);
+
+        // 清除覆盖层后像素回到提交状态。
+        let cleared = kernel.clear_preview().expect("应返回重绘区域");
+        assert!(!kernel.has_preview());
+        assert!(cleared.w > 0.0);
+        let after = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .unwrap();
+        // 与「从未设置覆盖层」的基线比较：场景本身的笔迹应原样回来，且不残留覆盖层像素。
+        let mut baseline = kernel_with(&atoms, DEFAULT_MEMORY_LIMIT);
+        let baseline = baseline
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .unwrap();
+        assert_eq!(after.rgba8, baseline.rgba8, "清除覆盖层后应回到提交状态");
+        assert_eq!(kernel.log().len(), log_before);
     }
 
     #[test]

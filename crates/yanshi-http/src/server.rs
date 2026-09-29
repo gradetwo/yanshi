@@ -293,21 +293,33 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
 
 fn handle_connection(state: Arc<ServerState>, stream: TcpStream) -> std::io::Result<()> {
     stream.set_nodelay(true).ok();
+    // 空闲 30s 视为断开，避免长期占着线程（keep-alive 连接会复用到客户端关闭为止）。
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
     let mut reader = BufReader::new(stream.try_clone()?);
-    let Some(request) = Request::read(&mut reader)? else {
-        return Ok(());
-    };
-    state.requests.fetch_add(1, Ordering::Relaxed);
     let mut writer = stream;
-    if request.is_websocket_upgrade() {
-        return handle_websocket(state, request, writer, reader);
+    // HTTP/1.1 keep-alive：一条连接上顺序处理多个请求。
+    // 曾经这里只处理一个请求却回了 `Connection: keep-alive`，浏览器复用连接后拿到已关闭的
+    // socket，表现为随机的 `TypeError: Failed to fetch`（缩略图刷新时尤其明显）。
+    loop {
+        let Some(request) = Request::read(&mut reader)? else {
+            return Ok(());
+        };
+        state.requests.fetch_add(1, Ordering::Relaxed);
+        if request.is_websocket_upgrade() {
+            return handle_websocket(state, request, writer, reader);
+        }
+        let keep_alive = !request
+            .header("connection")
+            .map(|value| value.eq_ignore_ascii_case("close"))
+            .unwrap_or(false);
+        let response = route(&state, &request);
+        response.write(&mut writer, keep_alive)?;
+        if !keep_alive {
+            return Ok(());
+        }
     }
-    let keep_alive = request
-        .header("connection")
-        .map(|value| value.eq_ignore_ascii_case("keep-alive"))
-        .unwrap_or(false);
-    let response = route(&state, &request);
-    response.write(&mut writer, keep_alive)
 }
 
 /// 路由（`Request` → `Response`）。
@@ -800,7 +812,15 @@ fn atom_submit(state: &ServerState, request: &Request) -> Response {
     let owner = principal.role.can_revert_others();
     match workspace.commit(&doc_id, atom, &principal.actor, owner) {
         Ok(result) => {
-            let value = yanshi_server::tools::commit_response(&result, None, None, Vec::new());
+            let mut value = yanshi_server::tools::commit_response(&result, None, None, Vec::new());
+            // 回带**服务端权威原子**（含 seq）：客户端据此把同一原子应用到本地日志，
+            // 不必猜测 seq，也不会因为并发原子错位（WASM 乐观渲染的校正依据）。
+            if let Some(appended) = workspace
+                .document(&doc_id)
+                .and_then(|document| document.log().by_seq(result.seq).cloned())
+            {
+                value["atom"] = json!(appended);
+            }
             let value = rewrite_blob_urls(value, &doc_id, request.token().as_deref());
             Response::json(200, &value)
         }

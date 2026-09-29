@@ -117,6 +117,37 @@ impl WasmKernel {
         }
     }
 
+    /// 设置/更新**本地待提交覆盖层**（拖动中的笔迹），返回需要重绘的区域。
+    ///
+    /// 覆盖层不进原子日志：落笔时才用 `apply_atom_json` + `POST /api/atoms` 提交最终原子。
+    pub fn set_preview_object(&mut self, json: &str) -> String {
+        match self.inner.set_preview_object(json) {
+            Ok(bbox) => json!({
+                "ok": true,
+                "dirty_bbox": bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+                "has_preview": true,
+            })
+            .to_string(),
+            Err(error) => error.to_json().to_string(),
+        }
+    }
+
+    /// 清除本地待提交覆盖层，返回需要重绘的区域。
+    pub fn clear_preview(&mut self) -> String {
+        let bbox = self.inner.clear_preview();
+        json!({
+            "ok": true,
+            "dirty_bbox": bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+            "has_preview": false,
+        })
+        .to_string()
+    }
+
+    /// 是否存在待提交覆盖层。
+    pub fn has_preview(&self) -> bool {
+        self.inner.has_preview()
+    }
+
     /// 13.3：JS 侧按视口主动淘汰。
     pub fn evict_outside_viewport(&mut self, x: f64, y: f64, w: f64, h: f64) -> usize {
         self.inner.evict_outside_viewport(parse_bbox(x, y, w, h))
@@ -236,6 +267,19 @@ mod tests {
         let error: Value = serde_json::from_str(&kernel.apply_atom_json("{not json")).unwrap();
         assert_eq!(error["ok"], json!(false));
         assert_eq!(error["error_code"], json!("invalid_argument"));
+
+        // 待提交覆盖层：增长 - 清除，且不动原子日志。
+        let head = kernel.head_seq();
+        let preview = json!({"layer_id": "layer_1", "type": "stroke", "data": {"points": [[6.0, 40.0], [50.0, 46.0]], "size": 5.0}});
+        let first: Value =
+            serde_json::from_str(&kernel.set_preview_object(&preview.to_string())).unwrap();
+        assert_eq!(first["ok"], json!(true));
+        assert!(first["dirty_bbox"].is_array());
+        assert!(kernel.has_preview());
+        assert_eq!(kernel.head_seq(), head, "覆盖层不改 HEAD");
+        let cleared: Value = serde_json::from_str(&kernel.clear_preview()).unwrap();
+        assert_eq!(cleared["has_preview"], json!(false));
+        assert!(!kernel.has_preview());
 
         // 视口淘汰返回数量。
         let evicted = kernel.evict_outside_viewport(0.0, 0.0, 32.0, 32.0);

@@ -174,7 +174,21 @@ async function callTool(name, args, options = {}) {
   return value;
 }
 
+let thumbTimer = null;
+let thumbInFlight = false;
+// 去抖 + 合并：WS 缩略图事件可能密集到达，逐个 fetch 会把连接打满（曾出现成片 Failed to fetch）。
+function scheduleThumbRefresh() {
+  if (thumbTimer) return;
+  thumbTimer = setTimeout(() => {
+    thumbTimer = null;
+    refreshThumb();
+  }, 400);
+}
+
 async function refreshThumb() {
+  if (thumbInFlight) return;
+  thumbInFlight = true;
+  try {
   const value = await fetch(api("/api/tools/get_document"), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -183,6 +197,7 @@ async function refreshThumb() {
   if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
   if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
   if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
+  } finally { thumbInFlight = false; }
 }
 
 // —— WASM 计算内核（本地乐观渲染，13.3） ——
@@ -274,14 +289,60 @@ function drawKernelRegion(x, y, w, h) {
   }
 }
 
-function drawKernelDirty(report) {
-  const bbox = report && report.dirty_bbox;
+function drawKernelBox(bbox) {
   if (!bbox) return;
   const x = Math.max(0, Math.floor(bbox[0]));
   const y = Math.max(0, Math.floor(bbox[1]));
   const w = Math.max(1, Math.ceil(bbox[2]));
   const h = Math.max(1, Math.ceil(bbox[3]));
   drawKernelRegion(x, y, Math.min(w, board.width - x), Math.min(h, board.height - y));
+}
+
+function drawKernelDirty(report) {
+  drawKernelBox(report && report.dirty_bbox);
+}
+
+// 拖动中的笔迹：更新本地覆盖层并只重绘其并集区域（不进原子日志）。
+async function updatePreviewOverlay(pending) {
+  const started = performance.now();
+  const response = JSON.parse(state.kernel.set_preview_object(JSON.stringify(previewObject(pending))));
+  if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
+  window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
+  drawKernelBox(response.dirty_bbox);
+  const elapsed = performance.now() - started;
+  window.yanshiStats.lastApplyMs = elapsed;
+  if (typeof window.yanshiStats.firstStrokeMs !== "number") {
+    window.yanshiStats.firstStrokeMs = elapsed;
+    $("firstStroke").textContent = elapsed.toFixed(2) + "ms";
+  }
+}
+
+// 覆盖层对象（最小字段：layer_id/type/data；内核会补 z 序与可见性）。
+function previewObject(pending) {
+  const color = colorCss();
+  const size = Number($("size").value);
+  const points = state.points.map((p) => [p.x, p.y]);
+  if (pending.tool === "rect" || pending.tool === "ellipse") {
+    const [a, b] = state.points;
+    return {
+      layer_id: pending.layerId,
+      type: "shape",
+      data: {
+        geometry: {
+          kind: pending.tool,
+          bbox: {
+            x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+            w: Math.max(1, Math.abs(b.x - a.x)), h: Math.max(1, Math.abs(b.y - a.y)),
+          },
+        },
+        color,
+      },
+    };
+  }
+  if (pending.tool === "erase") {
+    return { layer_id: pending.layerId, type: "stroke", data: { points, size: size * 1.5, color: { r: 255, g: 255, b: 255, a: 255 } } };
+  }
+  return { layer_id: pending.layerId, type: "stroke", data: { points, size, color, hardness: 0.7 } };
 }
 
 // 把客户端构造的原子立刻应用到本地内核（乐观渲染），返回是否成功。
@@ -319,7 +380,7 @@ async function submitAtom(atom) {
     await resync();
     return null;
   }
-  if (response.seq !== undefined && response.seq > state.localSeq) {
+  if (response.seq !== undefined && response.seq > state.localSeq + 1) {
     // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
     await resync();
   }
@@ -456,7 +517,7 @@ function connect() {
       log("tiles " + (message.event.keys || []).length + " 个失效");
       setStatus({ dirty: (message.event.keys || []).length });
     } else if (message.type === "event" && message.event && message.event.event === "thumbnail") {
-      refreshThumb();
+      scheduleThumbRefresh();
     } else if (message.type === "ack") {
       const result = message.result || {};
       if (result.preview && result.preview.thumb_url) preview.src = result.preview.thumb_url + "&t=" + Date.now();
@@ -523,10 +584,9 @@ board.addEventListener("pointermove", (event) => {
   const point = localPoint(event);
   if (state.tool === "rect" || state.tool === "ellipse") state.points = [state.points[0], point];
   else state.points.push(point);
-  if (pendingStroke && (state.points.length % 4 === 1 || state.points.length < 4)) {
-    // 乐观渲染：把「到目前为止」的笔迹作为本地原子立即画出来（不等服务端）。
-    const atom = strokeAtom(pendingStroke, false);
-    if (!applyLocal(atom)) pendingStroke = null;
+  if (pendingStroke && state.points.length >= 2) {
+    // 乐观渲染：拖动中只更新**本地覆盖层**（不进原子日志），落笔才提交最终原子。
+    updatePreviewOverlay(pendingStroke);
   }
   redraw();
 });
@@ -536,9 +596,20 @@ board.addEventListener("pointerup", async (event) => {
   state.dragging = null;
   if (state.tool === "rect" || state.tool === "ellipse") state.points.push(localPoint(event));
   if (pendingStroke && kernelReady()) {
-    // 乐观原子已经在本地日志里；提交后服务端授予权威 seq，同 id 幂等。
+    // 落笔：先撤掉覆盖层（只重绘其区域），再提交最终原子并应用权威版本。
+    const cleared = JSON.parse(state.kernel.clear_preview());
+    drawKernelBox(cleared.dirty_bbox);
     const atom = strokeAtom(pendingStroke, true);
-    if (applyLocal(atom)) await submitAtom(atom);
+    const response = await submitAtom(atom);
+    if (response) {
+      // 用权威 seq 把同一个原子应用到本地日志（若 seq 不符 submitAtom 已 resync）。
+      const applied = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(response.atom || atom)));
+      if (applied.ok) {
+        drawKernelDirty(applied.report);
+        state.localSeq = applied.report.head;
+        window.yanshiStats.kernelHead = applied.report.head;
+      }
+    }
     pendingStroke = null;
   } else {
     await commitShape();
