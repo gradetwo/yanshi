@@ -11,17 +11,21 @@
 //! | [`annotations`] | 4.6 / 13.4 | 标注独立 append-only 通道 |
 //! | [`document`] | 3 / 6.2 / 12.1 | 文档服务：提交、增量折叠、dirty、渲染、Job、广播 |
 //! | [`persist`] | 18 | 文件持久化：原子 JSONL、CAS、渲染缓存、令牌 |
+//! | [`tools`] | 10 章 | 工具协议层：核心 27 工具、profile 分层、10.1/5.7 响应 |
+//! | [`base64`] | 7.5 | MCP image content 需要的 base64 编码 |
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod annotations;
+pub mod base64;
 pub mod broadcast;
 pub mod document;
 pub mod job;
 pub mod persist;
 pub mod service;
 pub mod token;
+pub mod tools;
 
 pub use annotations::{
     Annotation, AnnotationFilter, AnnotationId, AnnotationIntent, AnnotationStatus,
@@ -39,4 +43,8 @@ pub use persist::{DocumentMeta, FileStore, TokenRecord};
 pub use service::{DocumentSummary, Workspace};
 pub use token::{
     CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind, TOKEN_HEX_LEN,
+};
+pub use tools::{
+    commit_response, error_response, ok_response, profile_summary, validate_args, ParamKind,
+    ParamSpec, PreviewInfo, Profile, ToolContext, ToolRegistry, ToolSpec,
 };
