@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | [`error`] | 5.7 | 统一错误协议 |
 //! | [`ids`] | 5.1 | 客户端 ULID、序号与各类标识 |
+//! | [`atom`] | 5.1 / 5.2 | 原子结构与原子类型 |
 //!
 //! 折叠代数的五条不变量（设计文档 5.3）由 `tests/` 下的属性测试与 fuzz 用例保证：
 //! 幂等性、收敛性、无孤儿引用、`revert`-`reapply` 往返、历史可重放。
@@ -14,9 +15,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod atom;
 pub mod error;
 pub mod ids;
 
+pub use atom::{
+    payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind, BlobHash, BlobRef,
+    PluginRef, Refs, CAS_THRESHOLD_BYTES, SCHEMA_VERSION, SEQ_UNASSIGNED,
+};
 pub use error::{ErrorCode, Result, YanshiError};
 pub use ids::{
     now_ms, ActorId, ChangesetId, CheckpointId, DocId, LayerId, MaskId, ObjectId, Seq, SessionId,

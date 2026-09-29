@@ -13,6 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 服务端权威序号：折叠的唯一排序依据（设计文档 5.1）。
 pub type Seq = u64;
 
+/// 原子标识（客户端生成的 ULID 字符串）。
+pub type AtomId = String;
+
 /// 文档标识。
 pub type DocId = String;
 /// 图层标识。

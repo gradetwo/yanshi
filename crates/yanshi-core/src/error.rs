@@ -249,10 +249,7 @@ mod tests {
         assert!(ErrorCode::JobPending.default_retryable());
         assert!(!ErrorCode::PreconditionFailed.default_retryable());
         assert!(!ErrorCode::ReferenceNotFound.default_retryable());
-        assert_eq!(
-            YanshiError::new(ErrorCode::Conflict, ErrorContext::default()).retryable,
-            true
-        );
+        assert!(YanshiError::new(ErrorCode::Conflict, ErrorContext::default()).retryable);
     }
 
     #[test]
