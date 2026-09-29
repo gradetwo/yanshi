@@ -213,10 +213,12 @@ fn fuzz_100k_atoms_keeps_all_invariants() {
 
     let head = scenario.log.head_seq();
     assert!(
-        scenario.log.len() >= 90_000,
-        "接受率过低：{} / {}",
+        scenario.acceptance_rate() >= 0.9,
+        "接受率过低：{:.3}（{} / {}，拒绝分布 {:?}）",
+        scenario.acceptance_rate(),
         scenario.log.len(),
-        config.steps
+        config.steps,
+        scenario.stats.rejections_by_code
     );
 
     // 完整折叠（从空白起点重放全部原子）。

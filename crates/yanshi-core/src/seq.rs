@@ -31,7 +31,7 @@ use crate::log::AtomLog;
 use crate::state::{DeclareHead, DocumentState, HeadBase};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// `state@seq` 的求值结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,20 +63,50 @@ impl StateAt {
 }
 
 /// `state@seq` 求值缓存（快照之外的进程内记忆化，避免重复折叠）。
-#[derive(Debug, Default, Clone)]
+///
+/// 缓存是**有界**的：`state@seq` 的结果是完整状态，长日志下无界缓存会吃掉数 GB 内存。
+/// 超出容量时按插入顺序淘汰最早的条目；被淘汰只是回到重新折叠，不影响正确性。
+#[derive(Debug, Clone)]
 pub struct StateAtCache {
     memo: BTreeMap<Seq, StateAt>,
+    order: VecDeque<Seq>,
+    max_entries: usize,
     hits: usize,
     misses: usize,
 }
 
+impl Default for StateAtCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StateAtCache {
-    /// 空缓存。
+    /// 默认容量（32 个状态）。
+    pub const DEFAULT_CAPACITY: usize = 32;
+
+    /// 以默认容量构造空缓存。
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
-    /// 缓存条目数。
+    /// 指定容量构造空缓存（容量至少为 1）。
+    pub fn with_capacity(max_entries: usize) -> Self {
+        Self {
+            memo: BTreeMap::new(),
+            order: VecDeque::new(),
+            max_entries: max_entries.max(1),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// 容量上限。
+    pub fn capacity(&self) -> usize {
+        self.max_entries
+    }
+
+    /// 当前条目数。
     pub fn len(&self) -> usize {
         self.memo.len()
     }
@@ -99,6 +129,7 @@ impl StateAtCache {
     /// 清空缓存。
     pub fn clear(&mut self) {
         self.memo.clear();
+        self.order.clear();
     }
 
     /// 取某个 seq 的缓存结果。
@@ -106,9 +137,18 @@ impl StateAtCache {
         self.memo.get(&seq)
     }
 
-    /// 写入缓存。
+    /// 写入缓存并执行淘汰。
     pub fn insert(&mut self, value: StateAt) {
-        self.memo.insert(value.seq, value);
+        let seq = value.seq;
+        if self.memo.insert(seq, value).is_none() {
+            self.order.push_back(seq);
+        }
+        while self.memo.len() > self.max_entries {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.memo.remove(&oldest);
+        }
     }
 }
 

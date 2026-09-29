@@ -64,13 +64,16 @@ impl ScenarioConfig {
     }
 
     /// 大规模 fuzz 场景（Phase 0 出口条件：10 万原子）。
+    ///
+    /// 撤销比例刻意低于小规模属性测试：10 万原子下每次撤销都要在快照窗口内重放，
+    /// 小规模测试负责高密度覆盖撤销语义，这里负责长历史与规模。
     pub fn fuzz(seed: u64, steps: usize) -> Self {
         Self {
             seed,
             steps,
             blob_bytes: 2048,
             snapshot_window: 500,
-            revert_permille: 60,
+            revert_permille: 30,
             sampling_permille: 20,
             max_entities: 32,
         }
@@ -286,6 +289,8 @@ pub fn generate(config: &ScenarioConfig) -> Scenario {
     let mut base_state = DocumentState::empty();
     let mut base_seq: Seq = 0;
     let mut state = DocumentState::empty();
+    // 跨步复用 `state@seq` 缓存：日志只追加，已求值的 seq 结果永远有效。
+    let mut state_cache = crate::seq::StateAtCache::new();
 
     for step in 0..config.steps {
         let session_index = if rng.permille(700) { 0 } else { 1 };
@@ -337,23 +342,21 @@ pub fn generate(config: &ScenarioConfig) -> Scenario {
         // 折叠推进：declare_head 触发起点跳变（完整求值），撤销/恢复在窗口内重放，
         // 其余原子直接应用。窗口由快照基线保证（6.2 / 6.5）。
         match kind {
-            AtomKind::DeclareHead => {
-                let mut cache = crate::seq::StateAtCache::new();
-                match crate::seq::state_at(&log, seq, &mut cache) {
-                    Ok(evaluated) => {
-                        state = evaluated.state;
-                        base_state = state.clone();
-                        base_seq = seq;
-                    }
-                    Err(_) => state = fold_atoms(base_state.clone(), &[]).state,
+            AtomKind::DeclareHead => match crate::seq::state_at(&log, seq, &mut state_cache) {
+                Ok(evaluated) => {
+                    state = evaluated.state;
+                    base_state = state.clone();
+                    base_seq = seq;
                 }
-            }
+                Err(_) => state = fold_atoms(base_state.clone(), &[]).state,
+            },
             AtomKind::Revert | AtomKind::Reapply => {
                 let slice = log.range_exclusive_inclusive(base_seq, seq);
                 state = fold_atoms(base_state.clone(), slice).state;
             }
             _ => {
-                if let Some(head) = log.by_seq(seq).cloned() {
+                // 刚追加的原子就是 head，无需按 seq 反查。
+                if let Some(head) = log.head_atom().cloned() {
                     // 与折叠器保持一致：precondition 失败即为级联失效，不得单方面应用。
                     if precondition(&state, &head).is_ok() {
                         let _ = apply(&mut state, &head);

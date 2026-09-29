@@ -632,9 +632,16 @@ impl AtomLog {
         self.by_id.get(id).map(|index| self.atoms[*index].seq)
     }
 
-    /// 按 seq 取原子（seq 从 1 连续分配时等价于下标 -1）。
+    /// 按 seq 取原子。
+    ///
+    /// 二分查找 O(log n)：seq 连续时等价于下标 -1，但 [`AtomLog::with_atoms`]
+    /// 允许从带空洞的日志恢复，因此这里不做下标假设。
     pub fn by_seq(&self, seq: Seq) -> Option<&Atom> {
-        self.atoms.iter().find(|a| a.seq == seq)
+        if seq == 0 {
+            return None;
+        }
+        let index = self.atoms.partition_point(|atom| atom.seq < seq);
+        self.atoms.get(index).filter(|atom| atom.seq == seq)
     }
 
     /// 全部原子（seq 升序）。
@@ -1001,6 +1008,27 @@ mod tests {
         assert!(roots.contains(&blob_a));
         assert!(!roots.contains(&blob_b));
         assert_eq!(log.atoms_referencing_blob(&blob_a).len(), 1);
+    }
+
+    #[test]
+    fn by_seq_handles_gaps_and_misses() {
+        let mut log = AtomLog::new();
+        log.append(create_doc()).unwrap();
+        log.append(create_layer()).unwrap();
+        log.append(create_object()).unwrap();
+        assert_eq!(log.by_seq(0), None);
+        assert_eq!(log.by_seq(1).map(|a| a.id.as_str()), Some("atom_doc"));
+        assert_eq!(log.by_seq(3).map(|a| a.id.as_str()), Some("atom_obj"));
+        assert_eq!(log.by_seq(4), None);
+        assert_eq!(log.by_seq(99), None);
+
+        // 带空洞的日志（恢复路径）同样正确。
+        let mut sparse = log.atoms().to_vec();
+        sparse[2].seq = 10;
+        let sparse = AtomLog::with_atoms(sparse).unwrap();
+        assert_eq!(sparse.by_seq(2).map(|a| a.id.as_str()), Some("atom_layer"));
+        assert_eq!(sparse.by_seq(3), None);
+        assert_eq!(sparse.by_seq(10).map(|a| a.id.as_str()), Some("atom_obj"));
     }
 
     #[test]
