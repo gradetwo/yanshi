@@ -799,6 +799,24 @@ fn clone_stamp_copies_content_and_is_reversible() {
         "heal 应比 clone 更接近白色目标处：clone={after:?} heal={healed_pixel:?}"
     );
 
+    // 自检用的 raw 输出：返回原始 RGBA8 blob，供客户端逐像素比对。
+    let raw = registry.call(
+        &mut context,
+        "render_region",
+        &json!({"region": {"x": 0, "y": 0, "w": 32, "h": 32}, "raw": true}),
+    );
+    assert_eq!(raw["ok"], json!(true), "{raw}");
+    assert_eq!(raw["width"], json!(32));
+    assert_eq!(raw["height"], json!(32));
+    assert_eq!(raw["mime_type"], json!(yanshi_render::RAW_RGBA_MIME));
+    let raw_hash: yanshi_core::BlobHash = raw["raw_url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("yanshi://blob/")
+        .parse()
+        .unwrap();
+    assert_eq!(store.get(&raw_hash).unwrap().len(), 32 * 32 * 4);
+
     // 区域外扩上限：offset/size 组合超出内核可达范围时必须拒绝（否则分块与整幅会不一致）。
     let too_far = registry.call(
         &mut context,

@@ -1503,6 +1503,22 @@ fn read_get_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 }
 
 fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // `raw: true`：额外把**原始 RGBA8** 存入 CAS 并返回取回地址，供客户端做逐像素比对
+    // （哈希相等无法说明差多少；跨客户端/服务端路径的差异属于 D1 的 ±1 LSB）。
+    if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
+        let region = parse_bbox(require_object(args, "region")?)?;
+        let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+        let raw_hash = ctx.workspace.store().put(&pixels)?;
+        let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        return Ok(json!({
+            "ok": true,
+            "head_seq": document.head_seq(),
+            "width": width,
+            "height": height,
+            "raw_url": format!("yanshi://blob/{raw_hash}"),
+            "mime_type": yanshi_render::RAW_RGBA_MIME,
+        }));
+    }
     let region = parse_bbox(require_object(args, "region")?)?;
     let include_image = optional_bool(args, "include_image").unwrap_or(false);
     let preview = ctx.workspace.render_region(&ctx.doc_id, region)?;

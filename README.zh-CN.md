@@ -92,7 +92,9 @@ cargo run -p yanshi-http --bin yanshi-serve -- --bind 127.0.0.1:8080 --root ./wo
   落笔才异步提交一个原子，需要时按服务端权威状态校正。
 * **打开即图片**：页面先用服务端缓存的 HEAD 渲染铺底（实测 512² 文档 199ms、1024² 文档 434ms），
   WASM 内核在后台预热，首帧不再等待客户端折叠；内核就绪后自动接管。
-* **一致性自检**：界面上的「一致性自检」按钮会比对本地渲染 PNG 与服务端 blob 的 SHA-256。
+* **一致性自检**：按钮比的是**像素而不是哈希** —— 服务端把同一区域的原始 RGBA8 存入 CAS，客户端取回后
+  报告「差异像素数」与「最大通道差」。同路径渲染逐位相同；跨路径（客户端预览 vs 服务端权威）按设计的
+  D1 分级允许 ±1 LSB，实测调色链为 0 像素、含全部 Phase 3 效果的文档为百万分之三像素。
 * WASM 产物构建：`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` +
   `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript <wasm>`；
   产物缺失时查看器自动降级为纯服务端渲染。

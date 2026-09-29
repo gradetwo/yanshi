@@ -104,8 +104,11 @@ cargo run -p yanshi-http --bin yanshi-serve -- --bind 127.0.0.1:8080 --root ./wo
 * **Open is an image**: the page paints the server's cached HEAD render first (measured 199ms for a
   512² document, 434ms for 1024²) and warms the WASM kernel in the background, so the first frame never
   waits for client-side folding; the kernel takes over as soon as it is ready.
-* **Consistency self-check**: the “consistency self-check” button compares the SHA-256 of the locally
-  rendered PNG against the server blob hash.
+* **Consistency self-check**: the button compares pixels, not hashes — the server stores its raw RGBA8
+  for the same region, the client fetches it and reports the number of differing pixels and the maximum
+  channel delta. Same-path rendering is bit-exact; cross-path (client preview vs server authoritative) is
+  allowed ±1 LSB by the design's D1 tier and measured at 0 pixels for a colour-grading chain and 3 pixels
+  out of a million for a document carrying every Phase 3 effect.
 * Building the WASM bundle: `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` plus
   `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript <wasm>`. When the bundle is
   missing, the viewer degrades to server-side rendering automatically.

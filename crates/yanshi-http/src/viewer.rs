@@ -432,19 +432,51 @@ async function submitAtom(atom) {
 async function checkBitExact() {
   if (!kernelReady()) { log("没有 WASM 内核，无法自检", "#c33"); return; }
   const { w, h } = state.docSize;
-  const localPng = state.kernel.render_region_png(0, 0, w, h);
-  const localHash = "sha256:" + (await sha256Hex(localPng));
-  const server = await callTool("render_region", { region: { x: 0, y: 0, w, h } }, { refresh: false });
-  const matches = server.blob_hash === localHash;
-  window.yanshiStats.bitExact = matches;
-  $("bitExact").textContent = matches ? "通过" : "不一致";
-  $("bitExact").style.color = matches ? "#2a2" : "#c33";
+  // 取服务端**原始像素**（而不是哈希）：哈希相等无法说明差多少，
+  // 而跨「客户端预览 / 服务端权威」路径的比较在设计上属 D1（允许 ±1 LSB）。
+  const server = await callTool("render_region", {
+    region: { x: 0, y: 0, w, h },
+    raw: true,
+  }, { refresh: false });
+  if (!server.raw_url) { log("服务端未返回原始像素，无法自检", "#c33"); return; }
+  const response = await fetch(api(server.raw_url.replace("yanshi://blob/", "/api/blob/")));
+  const serverPixels = new Uint8Array(await response.arrayBuffer());
+  const localPixels = state.kernel.render_region_rgba(0, 0, w, h);
+  if (localPixels.length !== serverPixels.length) {
+    window.yanshiStats.bitExact = false;
+    $("bitExact").textContent = "尺寸不一致";
+    log(`自检失败：本地 ${localPixels.length} 字节 vs 服务端 ${serverPixels.length} 字节`, "#c33");
+    return;
+  }
+  let diffPixels = 0;
+  let maxDelta = 0;
+  for (let index = 0; index < serverPixels.length; index += 4) {
+    let pixelDiffers = false;
+    for (let channel = 0; channel < 4; channel++) {
+      const delta = Math.abs(serverPixels[index + channel] - localPixels[index + channel]);
+      if (delta > 0) { pixelDiffers = true; }
+      if (delta > maxDelta) { maxDelta = delta; }
+    }
+    if (pixelDiffers) diffPixels += 1;
+  }
+  const total = serverPixels.length / 4;
+  const ratio = total > 0 ? diffPixels / total : 0;
+  // D0（同一路径）应逐位相同；跨路径按 D1 允许 ±1 LSB，且只允许极少数像素踩到舍入边界。
+  const pass = maxDelta <= 1 && diffPixels <= 16;
+  window.yanshiStats.bitExact = pass;
+  window.yanshiStats.diffPixels = diffPixels;
+  window.yanshiStats.maxChannelDelta = maxDelta;
+  window.yanshiStats.localHash = null;
+  window.yanshiStats.serverHash = server.blob_hash || null;
+  $("bitExact").textContent = pass
+    ? (diffPixels === 0 ? "逐位相同" : `±1 LSB × ${diffPixels}`)
+    : `差异 ${diffPixels} 像素 / 最大 ${maxDelta}`;
   log(
-    matches
-      ? "bit-exact 自检通过：本地 " + localHash.slice(0, 22) + "… 与服务端一致"
-      : "bit-exact 不一致：本地 " + localHash + " 服务端 " + server.blob_hash,
-    matches ? undefined : "#c33"
+    `自检：差异像素 ${diffPixels}/${total}（${(ratio * 100).toFixed(4)}%），最大通道差 ${maxDelta}；` +
+    `判定 ${pass ? "通过（D1 允许 ±1 LSB）" : "不通过"}`,
+    pass ? "#2a7" : "#c33"
   );
+  refreshThumb();
 }
 
 async function ensureDocument() {
