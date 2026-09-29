@@ -75,6 +75,16 @@ cargo fmt --all
 | Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 规划中 |
 | Phase 5：插件 + 高级功能 | WASM 插件沙箱与能力模型、实例与组引用、高级路径编辑、owner/editor/viewer 权限 | 规划中 |
 
+## 测试与验收
+
+| 命令 | 覆盖 |
+|---|---|
+| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 |
+| `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）：9.8 万原子、约 930 次 `declare_head` 跳变、回收窗口重放，校验无孤儿引用、增量与完整折叠收敛、GC 不破坏可回放性 |
+| `cargo doc --workspace --no-deps` | 无 rustdoc 警告（`missing_docs` 已开启） |
+
+设计文档与测试的对应关系见 [docs/design/implementation-notes.md](docs/design/implementation-notes.md) 的“验收载体”一节。
+
 ## 贡献
 
 欢迎贡献，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交前必须保证：

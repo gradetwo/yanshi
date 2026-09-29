@@ -257,14 +257,22 @@ fn fuzz_100k_atoms_keeps_all_invariants() {
         assert!(scenario.store.exists(hash), "历史 blob {hash} 被误删");
     }
 
-    // 稳定复现：同一日志再折叠一次结果一致（幂等性）。
-    let again = fold_atoms(DocumentState::empty(), scenario.log.atoms());
+    // 稳定性：重复求值一致（幂等性）。
+    let again = state_at(&scenario.log, head, &mut StateAtCache::new()).unwrap();
     assert_eq!(again.state, full.state);
 
+    // `fold_atoms` 不带 declare_head 跳变语义（5.5 由 state@seq 承担），
+    // 因此只对同一输入的重复折叠断言幂等。
+    let naive_a = fold_atoms(DocumentState::empty(), scenario.log.atoms());
+    let naive_b = fold_atoms(DocumentState::empty(), scenario.log.atoms());
+    assert_eq!(naive_a.state, naive_b.state);
+
+    let declare_heads = scenario.log.declare_heads().count();
     println!(
-        "10 万原子 fuzz：原子 {} / 快照 {} / 接受 {} / 拒绝 {} / 生成 {:?} / 折叠 {:?} / blob {}",
+        "10 万原子 fuzz：原子 {} / 快照 {} / declare_head {} / 接受 {} / 拒绝 {} / 生成 {:?} / 折叠 {:?} / blob {}",
         scenario.log.len(),
         scenario.snapshots.len(),
+        declare_heads,
         scenario.stats.accepted,
         scenario.stats.rejected,
         generation,
