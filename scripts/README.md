@@ -64,6 +64,17 @@ node scripts/browser-drag-perf.mjs "http://127.0.0.1:8110/?doc=myDoc&token=..." 
 > **测量口径提醒**：只测同步处理耗时。若在每段后 `await requestAnimationFrame`，
 > 量到的主要是 60fps 帧边界（~16.7ms），真实工作量（~1ms）会被淹没 —— 首版探针就踩了这个坑。
 
+## `browser-first-paint.mjs` — 打开文档的首帧与可交互时间
+
+```bash
+node scripts/browser-first-paint.mjs "http://127.0.0.1:8110/?doc=myDoc&token=..."
+# 可用 FIRST_PAINT_BUDGET_MS / KERNEL_WARM_BUDGET_MS 调整预算，退出码 0/1 可接 CI
+```
+
+默认**禁用缓存**重载（否则第二次运行量到的是浏览器缓存而不是冷启动），数字取自编辑器自身的
+`window.yanshiStats.firstPaintMs` / `kernelWarmMs`，因此量的是真实用户路径。
+本机基线：简单文档首帧 101ms、内核预热 48ms；含蒙版与液化的重文档 458ms / 60ms。
+
 ## `browser-kernel-perf.mjs` — 客户端 WASM 内核区域渲染成本
 
 ```bash

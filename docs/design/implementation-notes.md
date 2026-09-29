@@ -1226,8 +1226,8 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 <!-- budget-coverage:start -->
 | 预算项 | 目标 | 状态 | 证据 |
 |---|---|---|---|
-| 打开文档 view 模式 | < 100ms | 已覆盖 | perf_budget.rs::perf_view_open_under_100ms |
-| 打开文档 edit 模式（可交互） | < 1s | 部分覆盖 | 理由：客户端首帧实测 199–434ms（见本文档「首帧」节），尚无自动门禁 |
+| 打开文档 view 模式 | < 100ms | 部分覆盖 | 理由：服务端语义由 perf_budget.rs::perf_view_open_under_100ms 守护；**浏览器端到端**首帧实测 101ms（简单文档）/ 458ms（含蒙版与液化的文档），见 scripts/browser-first-paint.mjs —— 复杂文档时超出 100ms 目标 |
+| 打开文档 edit 模式（可交互） | < 1s | 已覆盖 | scripts/browser-first-paint.mjs |
 | 首笔呈现延迟（本地） | < 16ms | 已覆盖 | scripts/browser-drag-perf.mjs |
 | 持续笔迹帧预算 | < 8ms | 已覆盖 | scripts/browser-drag-perf.mjs |
 | 原子提交（单原子，服务端处理） | < 20ms | 已覆盖 | perf_budget.rs::commit_budget_single_and_batch |
@@ -1253,7 +1253,13 @@ at <yanshi_wasm::kernel::Kernel>::render_region
 （每原子 219µs，设计预算 10ms ✓）—— 差别来自测量方法，不是产品。
 结论：**性能测试必须先保证"被测状态可比"**，否则测到的是夹具的增长曲线。
 
-**本轮补齐的一行**：时间旅行（近期历史 / checkpoint）此前只有功能测试、没有延迟门禁；
+**本轮新增的可复现证据**：`scripts/browser-first-paint.mjs`（默认禁用缓存重载，避免量到浏览器缓存）
+把「打开文档」的两段体验变成可执行门禁：首帧（服务端铺底）与内核预热（可交互）。
+实测：简单文档首帧 **101ms**、内核预热 48ms；含蒙版与液化的重文档首帧 **458ms**、预热 60ms。
+据此把 **edit 模式行列**为已覆盖，同时把 **view 模式行降为部分覆盖** —— 因为浏览器端到端
+在复杂文档上**并未达到 100ms**，此前只有服务端语义测试，属于「用另一件事的达标冒充达标」✗。
+
+**此前补齐的一行**：时间旅行（近期历史 / checkpoint）此前只有功能测试、没有延迟门禁；
 新增 `commit_budget_single_and_batch` 同文件的 `time_travel_budget_near_history`
 （200 原子历史 + checkpoint），实测 **167µs**（预算 300ms，余量约 1800×）。
 
