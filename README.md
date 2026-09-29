@@ -33,6 +33,7 @@ yanshi/
 │   ├── yanshi-core/          # 核心引擎：原子日志、折叠求值、状态、Blob CAS
 │   ├── yanshi-render/        # 渲染计算内核层：D0 CPU 基线、tile、dirty、缩略图、PNG
 │   ├── yanshi-server/        # 服务端语义层：文档服务、Job、capability token、广播、标注、27 工具
+│   ├── yanshi-http/          # 零依赖 HTTP/1.1 + WebSocket 传输层与最小 Web 查看器
 │   └── yanshi-mcp/           # MCP stdio 服务器（JSON-RPC over stdio）
 ├── docs/
 │   └── design/               # 冻结设计文档、实现说明与修订历史
@@ -55,6 +56,10 @@ cargo test --workspace --release -- --ignored   # 10 万原子折叠 fuzz + 渲�
 cargo run -p yanshi-core --example quickstart   # 端到端示例：提交 → 撤销 → 时间旅行 → GC
 cargo run -p yanshi-render --example render_demo  # 渲染示例：输出 PNG 到 target/render-demo/
 cargo run -p yanshi-mcp -- --list-tools         # 列出 MCP 工具清单（JSON）
+
+# 启动零依赖 HTTP/WebSocket 服务端 + 最小 Web 查看器
+cargo run -p yanshi-http --bin yanshi-serve -- --bind 127.0.0.1:8080 --root ./workspace
+# 浏览器打开 http://127.0.0.1:8080/ ，页面会用 POST /api/documents 自动取得 capability token
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
@@ -83,7 +88,41 @@ cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annot
   "region":{"x":0,"y":0,"w":256,"h":256},"include_image":true}}}
 ```
 
-> HTTP 与 WebSocket 传输层（需要网络依赖）、最小 Web 查看器属于路线图内容；当前提供 MCP stdio。
+### 通过 HTTP / WebSocket 使用
+
+`yanshi-serve` 只用 `std::net` 实现 HTTP/1.1 与 RFC 6455 WebSocket（含手写 SHA-1 握手、
+帧编解码/分片/ping-pong），没有网络依赖：
+
+```bash
+# 1) 打开/新建文档 → 拿到 capability token 与 URL（12.7）
+curl -s -X POST http://127.0.0.1:8080/api/documents \
+     -d '{"doc_id":"demo","width":1024,"height":1024}'
+# {"ok":true,"doc_id":"demo","token":"<64 hex>","url":"/?doc=demo&token=..."}
+
+# 2) 调工具（token 走 Authorization: Bearer 或 ?token=）
+curl -s -X POST "http://127.0.0.1:8080/api/tools/draw_stroke?doc=demo&token=$TOKEN" \
+     -d '{"layer_id":"layer_1","data":{"points":[[40,40],[400,300]],"size":12,
+          "color":{"r":40,"g":40,"b":60,"a":255}}}'
+
+# 3) 渲染区域并从 CAS 取回 PNG（响应里的 thumb_url 已改写成可直接 GET 的地址）
+curl -s -X POST "http://127.0.0.1:8080/api/tools/render_region?doc=demo&token=$TOKEN" \
+     -d '{"region":{"x":0,"y":0,"w":256,"h":256}}'
+```
+
+WebSocket（`ws://127.0.0.1:8080/ws?doc=demo&token=$TOKEN`）按 6.8 的边界推送：
+**控制流**（全部原子元数据）全局广播，**数据流**（tile/缩略图）按订阅视口过滤。
+MCP stdio 不做推送，改用 `get_log` / `get_job` / `get_render_status` 轮询。
+
+#### 颜色写法（工具层统一约定）
+
+| 写法 | 含义 |
+|---|---|
+| `[r,g,b]` / `[r,g,b,a]`，分量 ≤ 1 | 直通线性 |
+| `[r,g,b,a]`，任一分量 > 1 | sRGB 字节 0-255（与 `{"r":…}` 等价） |
+| `{"r":0-255,"g":…,"b":…,"a":…}` | sRGB 字节（`a` 缺省 255） |
+| `"#RRGGBB"` / `"#RRGGBBAA"` | sRGB 十六进制 |
+
+非法颜色在工具层即被拒绝（`invalid_argument`），不会写入原子日志。
 
 ## 设计要点
 
@@ -101,6 +140,10 @@ cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annot
   实例 master、组成员）计算；失效 tile 集合必须覆盖所有变化像素，判定不了时宁可放大范围。
 - **缩略图与导出**：doc/layer/object/history/selection 分级尺寸、32×32 分块增量更新、
   宽高比适配；PNG 使用零依赖确定性编码器（WebP/AVIF 属传输层，尚未实现）。
+- **零依赖传输层与最小 Web 查看器**：`std::net` 上手写 HTTP/1.1 与 RFC 6455（自实现 SHA-1 握手、
+  帧编解码/掩码校验/分片/ping-pong/16 MiB 上限），token 走 `Bearer` 头或查询串，
+  `yanshi://blob/<hash>` 自动改写为带 token 的可 GET 地址；单页查看器支持画笔/矩形/椭圆/橡皮、
+  撤销重做、区域预览、缩略图与控制流日志面板。
 - **无头服务端与工具层**：提交校验 → 权威 seq → 增量折叠 → 双 dirty → 控制流广播 → Job → 快照；
   核心层 27 个工具默认注册、扩展组按 `profile` 启用；`batch` 内共享变更集；
   采样性替换冲突自动创建冲突图层并返回 `conflict_layer_id`；
@@ -113,7 +156,7 @@ cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annot
 | 阶段 | 内容摘要 | 状态 |
 |---|---|---|
 | Phase 0：技术验证 | 折叠引擎原型、代数属性测试与 fuzz、CPU D0 基线渲染器、Blob CAS 竞态与三级生命周期 / GC 原型、液化方案与 WebGPU 可行性验证 | 进行中 |
-| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界 | 除 HTTP/WS 传输与最小 Web 查看器外已完成 |
+| Phase 1：原子核心 + 折叠 + 服务端渲染 | 原子模型与 append-only 日志、ULID 幂等、权威 seq、折叠求值与级联失效、state@seq、Blob CAS 提交顺序协议、图层隔离与 Tile 分块、服务端 CPU 渲染、核心层 27 工具、Job 协议、capability token、广播边界、HTTP/WS 传输、最小 Web 查看器 | 已完成（WASM/SIMD 内核与 GPU 合成属 Phase 2+） |
 | Phase 2：WASM 核心 + WS 协作 + 本地乐观渲染 | WASM 计算内核层、控制流/数据流分离的 WS 广播、本地乐观渲染与 tile cross-fade 校正、L3/L4 缓存、异步渲染、import_image、Job 协议 | 规划中 |
 | Phase 3：基础修图 + GPU 合成 + 通用笔刷 | GPU 合成后端、通用光栅笔刷与风格系统、clone/heal/patch 与基础液化调色、检查点与历史浏览、冲突处理与 resolve_conflict 组合宏、AI 语义工具 | 规划中 |
 | Phase 4a / 4b：标注基础 / 标注 AI 解析与建议 | 标注独立通道与 CRUD、标注可视化；AI 解析标注、生成建议、接受/拒绝流程 | 规划中 |
@@ -123,7 +166,7 @@ cargo run -q -p yanshi-mcp -- --root ./workspace --doc demo --profile core,annot
 
 | 命令 | 覆盖 |
 |---|---|
-| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突/渲染内核/服务端/工具层）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 + 渲染的 D0 确定性、分块无关性、dirty 覆盖、缩略图增量属性测试 + 服务端端到端（冲突图层、Job、广播、标注、时间旅行、鉴权、GC）+ MCP stdio 子进程往返与重启恢复 |
+| `cargo test --workspace` | 单元测试（原子/日志/折叠/state@seq/快照/Blob CAS/冲突/渲染内核/服务端/工具层/SHA-1 与 WS 帧/HTTP 路由/查看器）+ 5.3 五条不变量属性测试 + Phase 0 极端序列与 GC 可回放性 + 渲染的 D0 确定性、分块无关性、dirty 覆盖、缩略图增量属性测试 + 服务端端到端（冲突图层、Job、广播、标注、时间旅行、鉴权、GC、颜色与缩略图回归）+ MCP stdio 子进程往返与重启恢复 + 原始 TCP 的 HTTP/WS 集成（含握手 Accept、鉴权 403、视口过滤、ping/pong、404/405） |
 | `cargo test --workspace --release -- --ignored` | 10 万原子折叠 fuzz（Phase 0 出口条件）：9.8 万原子、约 930 次 `declare_head` 跳变、回收窗口重放；渲染性能预算（8.5 / 14.10）与 overdraw / tile 命中率统计 |
 | `cargo doc --workspace --no-deps` | 无 rustdoc 警告（`missing_docs` 已开启） |
 
@@ -151,6 +194,6 @@ Copyright (c) 2026 The Yanshi Authors
 
 Yanshi is an AI-native collaborative painting and design engine. It replaces the traditional panel-and-mouse-trajectory GUI with document state, semantic commands, editable objects, multi-level previews, a versioned append-only atom log, and collaboration primitives, so that humans and AI agents work on one shared object model — humans through fine-grained tools, AI through high-level semantic tools.
 
-The repository is currently in **Phase 0 / Phase 1**. Implemented: the headless core engine (`crates/yanshi-core`) with the append-only atom log (client ULIDs, server-authoritative seq), fold evaluation with cascading revert invalidation and reapply, the `state@seq` formula with `declare_head`, the three-tier Blob CAS lifecycle with a GC root set equal to the full-log reference closure, and property/fuzz tests; the render compute kernel (`crates/yanshi-render`) with f16 linear tiles, premultiplied blending, brush stamping, shapes, adjustments/filters, geometry/structure dirty propagation, thumbnails and a dependency-free PNG encoder; the headless server (`crates/yanshi-server`) with document service, Job protocol, capability tokens, control/data-flow broadcast boundaries, an append-only annotation channel, file persistence and the 27 core tools with profile-based exposure; and an MCP stdio server (`crates/yanshi-mcp`).
+The repository is currently in **Phase 0 / Phase 1**. Implemented: the headless core engine (`crates/yanshi-core`) with the append-only atom log (client ULIDs, server-authoritative seq), fold evaluation with cascading revert invalidation and reapply, the `state@seq` formula with `declare_head`, the three-tier Blob CAS lifecycle with a GC root set equal to the full-log reference closure, and property/fuzz tests; the render compute kernel (`crates/yanshi-render`) with f16 linear tiles, premultiplied blending, brush stamping, shapes, adjustments/filters, geometry/structure dirty propagation, thumbnails and a dependency-free PNG encoder; the headless server (`crates/yanshi-server`) with document service, Job protocol, capability tokens, control/data-flow broadcast boundaries, an append-only annotation channel, file persistence and the 27 core tools with profile-based exposure; an MCP stdio server (`crates/yanshi-mcp`); and a dependency-free HTTP/1.1 + RFC 6455 WebSocket transport with a minimal single-page web viewer (`crates/yanshi-http`, hand-written SHA-1 handshake, frame codec with fragmentation and ping/pong, capability tokens over `Bearer`/query string, control-flow-global vs viewport-filtered data-flow push).
 
-Not implemented yet (roadmap): HTTP and WebSocket transports, the minimal web viewer, the WASM compute kernel, the Web editor, retouch and semantic tools, the plugin sandbox, and GPU compositing. The frozen design document is `docs/design/yanshi-v1.0-draft4.md` (Chinese). Licensed under MIT.
+Not implemented yet (roadmap): the WASM compute kernel and SIMD/GPU paths, the full web editor, retouch and semantic tools, the plugin sandbox, and desktop GUI work. The frozen design document is `docs/design/yanshi-v1.0-draft4.md` (Chinese). Licensed under MIT.

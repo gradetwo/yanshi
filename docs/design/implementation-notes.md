@@ -167,6 +167,65 @@ SIMD 版本必须保持 D0 逐位一致。
 | `base64` | 7.5 | MCP `image` content 的 base64 编码 |
 | `yanshi-mcp` | 3 / 6.7 | MCP stdio：`initialize` / `tools/list` / `tools/call` / `ping` |
 
+### 1.4 `yanshi-http`（零依赖 HTTP/1.1 + WebSocket 传输层）
+
+| 模块 | 设计文档 | 内容 |
+|---|---|---|
+| `sha1` | 握手 | 手写 SHA-1（仅用于 `Sec-WebSocket-Accept`；签名留给 17 章 Ed25519） |
+| `ws` | 6.8 / 12.8 | RFC 6455 握手、帧编解码（7/16/64 位长度、掩码强校验、16 MiB 上限）、分片重组、ping/pong/close |
+| `http` | 10 章 | 请求解析、查询解码、响应写出、5.7 错误码 → HTTP 状态映射 |
+| `server` | 3 / 6.8 / 12.7 | 路由、鉴权、WS 会话与推送线程 |
+| `viewer` | 6.2 / 7 章 | 最小 Web 查看器（单页 HTML/JS，零前端依赖） |
+
+路由表（`server::routes()` 同名函数可自省）：
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/health` | 无 | 存活与统计 |
+| GET | `/` | 无 | 最小 Web 查看器 |
+| GET | `/api/documents` | 无 | 文档列表（**仅元数据**，不含像素与日志） |
+| POST | `/api/documents` | 无 | 打开/新建文档 → `{doc_id, token, url}`（12.7） |
+| GET/DELETE | `/api/documents/{id}` | token | 摘要 / 关闭 |
+| POST | `/api/tools/{name}?doc=` | token | 工具调用（10.1 / 5.7） |
+| POST | `/api/tools`（body 带 `tool`） | token | 同上 |
+| GET | `/api/blob/{hash}?doc=` | token | 取回 CAS 中的 PNG |
+| GET | `/ws?doc=&token=` | token | WebSocket 升级与推送 |
+
+WebSocket 消息（JSON 文本帧）：
+
+- 客户端 → 服务端：`{"type":"subscribe","viewport":{x,y,w,h},"zoom"}`、
+  `{"type":"tool","request_id":N,"name":"…","arguments":{…}}`、`{"type":"ping"}`。
+- 服务端 → 客户端：`{"type":"subscribed",…}`、`{"type":"ack","request_id":N,"result":{10.1}}`、
+  `{"type":"error",…}`、`{"type":"pong"}`，
+  以及 `{"type":"event","event":{…}}`（`atom` / `tiles` / `thumbnail` / `job_finished` / `annotation`）。
+
+## 一之三、颜色约定（含一次真实事故）
+
+工具层与渲染层共用唯一入口 `yanshi_render::color::parse_spec_color`：
+
+| 写法 | 含义 |
+|---|---|
+| `[r,g,b]` / `[r,g,b,a]`，所有分量 ≤ 1 | 直通**线性**（alpha 缺省 1.0） |
+| `[r,g,b,a]`，任一分量 > 1 | sRGB **字节** `0-255`（与 `{r,g,b,a}` 等价） |
+| `{"r":0-255,"g":…,"b":…,"a":…}` | sRGB 字节（alpha 缺省 255） |
+| `"#RRGGBB"` / `"#RRGGBBAA"` / `"#RGB"` | sRGB 十六进制 |
+
+**事故**：数组颜色最初无条件按线性浮点直通解析，`[40,120,60,255]` 的 alpha=255
+在预乘/合成时直接饱和，笔迹画成了纯白 —— 用户视角是「画了一笔却什么都没看见」。
+现在：渲染层把 > 1 的数组当字节；工具层在提交前用 `color_error` 校验，
+非法颜色返回 `invalid_argument` 且**不写入日志**。回归测试见
+`crates/yanshi-render/src/render.rs::byte_array_colors_paint_the_same_as_srgb_objects`
+与 `crates/yanshi-server/tests/service_flow.rs::invalid_colors_are_rejected_and_byte_arrays_paint_correctly`。
+
+## 一之四、缩略图与预览的语义区分
+
+- `Document::latest_preview_url()`：**最近一次**渲染结果，可能只是 dirty 区域（10.1 `preview` 用它）。
+- `Document::document_thumbnail_url()`：**覆盖整幅画布**的文档级缩略图（7.3 分级），
+  只有全幅 `render_region` 或 doc 级 `thumbnail()` 才会更新，并记录对应的 seq。
+- `Workspace::ensure_document_thumbnail()`：缩略图与 HEAD 不一致时重新生成，
+  保证 6.2「打开即图片」展示的是**当前**画面而不是历史某一帧。
+- 工具 `get_document` / `get_state` 返回文档级缩略图，`preview_size` 可选 `64/128/256/false`。
+
 ## 一之二、服务端与工具层的实现级约定
 
 - **鉴权**（12.7）：stdio 与进程内调用豁免鉴权并按 owner 处理；HTTP/WS 必须携带
@@ -194,8 +253,12 @@ SIMD 版本必须保持 D0 逐位一致。
 
 ## 三、尚未实现（与 README 路线图一致）
 
-- **Phase 1 其余部分**：HTTP 与 WebSocket 传输（需要网络依赖）与最小 Web 查看器。
-  服务端语义层、核心层 27 个工具、capability token、广播边界与 MCP stdio 已完成。
+- **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
+  服务端语义层、核心层 27 个工具、capability token、广播边界、MCP stdio、
+  零依赖 HTTP/1.1 + WebSocket 传输与最小 Web 查看器均已完成。
+- **Web 查看器**：页面本身在无浏览器环境下无法做视觉验收，采用
+  ① `node --check` 语法检查（含顶层重复声明检测，曾捕获一次整页 SyntaxError）、
+  ② 逐个调用页面用到的 HTTP/WS 端点的集成测试来替代。
   （图层隔离、Tile 分块、几何/结构双 dirty 传播、服务端 CPU 渲染已由 `yanshi-render` 覆盖；
   SIMD/多线程优化与 GPU 合成后端仍属后续阶段。）
 - **Phase 2 起**：WASM 计算内核、控制流/数据流分离的广播、本地乐观渲染、Job 协议、
@@ -229,3 +292,10 @@ SIMD 版本必须保持 D0 逐位一致。
 | 核心 27 工具协议（10.1/10.2） | `service_flow.rs::tool_layer_covers_core_workflow`、`crates/yanshi-mcp/src/lib.rs` 单元测试 |
 | MCP stdio 线协议 | `crates/yanshi-mcp/tests/stdio.rs`（spawn 真实二进制） |
 | 持久化与重启恢复（18 / 14.5） | `crates/yanshi-server/src/persist.rs` 单元测试、`yanshi-mcp/tests/stdio.rs::stdio_handshake_draw_render_and_persist` |
+| HTTP 传输与 5.7 状态码映射 | `crates/yanshi-http/tests/transport.rs::http_round_trip_health_viewer_and_errors`、`tool_call_renders_region_and_serves_png_from_cas` |
+| capability token 鉴权（HTTP/WS） | `transport.rs::capability_token_gates_http_endpoints`、`websocket_rejects_bad_tokens_and_unknown_messages` |
+| WebSocket 握手与 ping/pong | `transport.rs::websocket_handshake_uses_rfc6455_accept_key` |
+| 推送边界：控制流全局 / 数据流视口过滤 | `transport.rs::websocket_pushes_control_flow_globally_and_data_flow_by_viewport` |
+| 颜色约定与字节数组事故回归 | `crates/yanshi-render/src/color.rs` 单测、`render.rs::byte_array_colors_paint_the_same_as_srgb_objects`、`service_flow.rs::invalid_colors_are_rejected_and_byte_arrays_paint_correctly` |
+| 缩略图与 HEAD 一致性 | `service_flow.rs::document_thumbnail_is_cover_whole_canvas_not_the_last_region` |
+| 查看器脚本可解析性 | `crates/yanshi-http/src/viewer.rs::viewer_script_has_no_duplicate_top_level_declarations` |
