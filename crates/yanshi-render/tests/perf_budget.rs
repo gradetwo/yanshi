@@ -384,7 +384,9 @@ fn effects_document(with_effects: bool) -> DocumentState {
     let mut state = DocumentState::empty();
     state.width = 1024;
     state.height = 1024;
-    state.layers.insert("layer_1".to_owned(), layer("layer_1", 0));
+    state
+        .layers
+        .insert("layer_1".to_owned(), layer("layer_1", 0));
     state.objects.insert(
         "bg".to_owned(),
         effects_object(
