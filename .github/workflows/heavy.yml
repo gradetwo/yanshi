@@ -26,7 +26,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 钉住工具链版本：与本地一致，避免「本地 clippy 通过、CI clippy 报错」的版本漂移。
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: heavy

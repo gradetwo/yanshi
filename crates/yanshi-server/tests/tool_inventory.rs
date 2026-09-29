@@ -103,15 +103,16 @@ fn documented_tool_counts_match_the_registry() {
     println!("实际：core {actual_core} 个 / 全部 {actual_total} 个");
 
     // 数量声明放在 docs/tools.md（README 保持精简）。
-    for relative in ["docs/tools.md"] {
-        let text = read(relative);
-        let (core, total) = declared_counts(&text)
-            .unwrap_or_else(|| panic!("{relative} 未声明工具数量（测试因此失去意义）"));
-        assert_eq!(
-            (core, total),
-            (actual_core, actual_total),
-            "{relative} 声明的工具数量与注册表不符（core {core} vs {actual_core}，\
-             全部 {total} vs {actual_total}）"
-        );
-    }
+    // 注意：不要写成 `for relative in ["docs/tools.md"]` —— 新版 clippy 的
+    // `single_element_loop` 会把它判为错误（CI 的 stable 比本地新时才会出现）。
+    let relative = "docs/tools.md";
+    let text = read(relative);
+    let (core, total) = declared_counts(&text)
+        .unwrap_or_else(|| panic!("{relative} 未声明工具数量（测试因此失去意义）"));
+    assert_eq!(
+        (core, total),
+        (actual_core, actual_total),
+        "{relative} 声明的工具数量与注册表不符（core {core} vs {actual_core}，\
+         全部 {total} vs {actual_total}）"
+    );
 }
