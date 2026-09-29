@@ -50,13 +50,13 @@ fn bogus_id_cases() -> Vec<(&'static str, Value, Vec<&'static str>)> {
         ),
         (
             "set_property",
-            json!({"layer_id": "no_such_layer", "key": "visible", "value": false}),
+            json!({"layer_id": "no_such_layer", "key": "visible", "value": {"visible": false}}),
             vec!["reference_not_found"],
         ),
         // 对象类
         (
             "move_object",
-            json!({"object_id": "no_such_object", "delta": [1.0, 1.0]}),
+            json!({"object_id": "no_such_object", "delta": {"x": 1.0, "y": 1.0}}),
             vec!["reference_not_found"],
         ),
         (
@@ -270,5 +270,113 @@ fn no_tool_panics_on_empty_arguments() {
         panicked.is_empty(),
         "以下工具在空参下 panic（共 {} 个）：{panicked:?}",
         panicked.len()
+    );
+}
+
+/// 参数形状审计：类型错误、空数组、越界数值、**未知参数名**。
+///
+/// 最后一类最危险：若拼错的参数名被静默忽略，调用方会以为设置生效了，
+/// 实际却按默认值渲染 —— 属于"看起来成功、结果不对"的静默错误。
+#[test]
+fn malformed_arguments_are_rejected() {
+    let registry = registry();
+    let cases: Vec<(&str, Value, &str)> = vec![
+        // 类型错误：应为字符串却给数字。
+        ("create_layer", json!({"layer_id": 42}), "layer_id 类型错误"),
+        (
+            "delete_layer",
+            json!({"layer_id": ["a"]}),
+            "layer_id 类型错误（数组）",
+        ),
+        // 空数组：需要非空/有意义的数组。
+        (
+            "draw_stroke",
+            json!({"layer_id": "layer_1", "data": {"points": [], "size": 2}}),
+            "空 points",
+        ),
+        ("suggest", json!({"patch": []}), "空 patch"),
+        (
+            "accept_suggestions",
+            json!({"suggestion_ids": []}),
+            "空 suggestion_ids",
+        ),
+        (
+            "reject_suggestions",
+            json!({"suggestion_ids": []}),
+            "空 suggestion_ids",
+        ),
+        // 越界数值。
+        (
+            "add_filter",
+            json!({"layer_id": "layer_1", "filter_name": "noise", "params": {"amount": 99}}),
+            "noise.amount 越界",
+        ),
+        (
+            "add_filter",
+            json!({"layer_id": "layer_1", "filter_name": "film_grain", "params": {"size": 999}}),
+            "film_grain.size 越界",
+        ),
+        (
+            "add_adjustment",
+            json!({"layer_id": "layer_1", "adjustment_type": "posterize", "params": {"levels": 1}}),
+            "posterize.levels 越界",
+        ),
+        // 未知参数名（拼写错误）：**若被静默忽略即为缺陷**。
+        (
+            "add_filter",
+            json!({"layer_id": "layer_1", "filter_name": "noise", "param": {"amount": 0.1}}),
+            "params 拼写错误",
+        ),
+        (
+            "create_layer",
+            json!({"layer_id": "L2", "nmae": "typo"}),
+            "顶层未知参数",
+        ),
+    ];
+
+    let mut silent = Vec::new();
+    let mut wrong_code = Vec::new();
+    for (tool, args, label) in cases {
+        let mut workspace = workspace();
+        workspace
+            .create_document(
+                NewDocument::new("doc_shape", 32, 32),
+                "human:1",
+                "session:audit",
+            )
+            .unwrap();
+        {
+            let mut ctx = context(&mut workspace, "doc_shape");
+            registry.call(&mut ctx, "create_layer", &json!({"layer_id": "layer_1"}));
+        }
+        let response = {
+            let mut ctx = context(&mut workspace, "doc_shape");
+            registry.call(&mut ctx, tool, &args)
+        };
+        if response["ok"] == json!(true) {
+            silent.push(format!("{label} → {tool} 竟然成功：{response}"));
+            continue;
+        }
+        let code = response["error_code"].as_str().unwrap_or_default();
+        if ![
+            "invalid_argument",
+            "reference_not_found",
+            "precondition_failed",
+        ]
+        .contains(&code)
+        {
+            wrong_code.push(format!("{label} → {tool} 错误码 {code}：{response}"));
+        }
+    }
+    assert!(
+        wrong_code.is_empty(),
+        "错误码不符合预期：\n{}",
+        wrong_code.join("\n")
+    );
+    assert!(
+        silent.is_empty(),
+        "以下畸形参数被**静默接受**（共 {} 处）：\n{}",
+        silent.len(),
+        silent.join("\n")
     );
 }

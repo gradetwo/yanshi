@@ -116,6 +116,8 @@ pub enum ParamKind {
     Object,
     /// 数组。
     Array,
+    /// 任意 JSON 值（用于多态参数，如 `set_property.value` 随 `key` 变化）。
+    Any,
 }
 
 impl ParamKind {
@@ -128,6 +130,7 @@ impl ParamKind {
             Self::Boolean => "boolean",
             Self::Object => "object",
             Self::Array => "array",
+            Self::Any => "any",
         }
     }
 }
@@ -626,7 +629,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!(
             "preview_size",
-            Object,
+            Any,
             false,
             "缩略图档位 64/128/256 或 false 跳过（缺省 256）"
         )],
@@ -641,7 +644,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("include_hidden", Boolean, false, "是否包含不可见图层/对象"),
             param!(
                 "preview_size",
-                Object,
+                Any,
                 false,
                 "缩略图档位 64/128/256 或 false（缺省 256）"
             ),
@@ -681,7 +684,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "渲染区域并返回预览地址（8.3 局部渲染）",
         mutating: false,
         params: &[
-            param!("region", Object, true, "区域 {x,y,w,h} 或 [x,y,w,h]"),
+            param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]"),
+            param!("raw", Boolean, false, "返回未编码的直通 RGBA8（写入 CAS 并返回 raw_url），供逐像素自检"),
             param!(
                 "include_image",
                 Boolean,
@@ -1359,7 +1363,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("key", String, true, "属性名"),
-            param!("value", Object, false, "属性值"),
+            param!("value", Any, false, "属性值（类型随 key 变化：布尔/字符串/对象）"),
             param!("object_id", String, false, "对象 id"),
             param!("layer_id", String, false, "图层 id"),
         ],
@@ -1910,8 +1914,28 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     finish_mutation(ctx, &result, bbox)
 }
 
+/// 校验 `data.points` 非空（空点列会提交一个无意义的原子 —— 审计发现的静默接受）。
+fn require_non_empty_points(args: &Value) -> Result<()> {
+    let Some(points) = args
+        .get("data")
+        .and_then(|data| data.get("points"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    if points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("data.points 不能为空数组"),
+        ));
+    }
+    Ok(())
+}
+
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
+    // 空点列会提交一个无意义的原子（审计发现的静默接受）。
+    require_non_empty_points(args)?;
     let data = require_object(args, "data")?.clone();
     validate_colors(&data)?;
     let object_id = optional_str(args, "object_id")
@@ -4356,14 +4380,101 @@ fn read_get_annotation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 }
 
 /// 参数对象必须是 JSON 对象（工具层统一入口校验）。
+///
+/// 这里做三件事（此前**只检查必填项是否存在** ✗，导致几类静默错误）：
+/// 1. **拒绝未知参数**：拼错的名字（如 `param` 写成 `params`）不会被静默忽略，
+///    而是报错并列出可用参数 —— 对 AI 与人都更有用；
+/// 2. 必填项存在性；
+/// 3. **声明类型校验**（`ParamKind` 此前只用于生成 MCP schema ✗）。
+///
+/// 可选参数显式传 `null` 视为"未提供"（客户端序列化常见）。
+/// **框架级参数**：由调用方（HTTP/MCP）用于定位文档与会话，不属于任何单个工具的参数表，
+/// 但会随参数体一起送达 —— 因此校验时必须放行。
+///
+/// 背景：MCP 层支持"工具参数里的 `doc_id` 优先"（`crates/yanshi-mcp/src/lib.rs`），
+/// 若把未知参数一律拒绝，就会**破坏 MCP 调用** ✗（该风险由 `tool_validation_audit` 与
+/// 既有的 MCP 测试共同暴露）。
+const FRAMEWORK_PARAMS: [&str; 3] = ["doc_id", "actor", "session"];
+
+/// 参数对象必须是 JSON 对象（工具层统一入口校验）。
+///
+/// 三件事（此前**只检查必填项是否存在**，导致几类静默错误）：
+/// 1. **拒绝未知参数**（框架级参数除外）：拼错的名字不会被静默忽略，而是报错并列出可用参数；
+/// 2. 必填项存在性；
+/// 3. **声明类型校验**（`ParamKind` 此前只用于生成 MCP inputSchema）。
 pub fn validate_args(spec: &ToolSpec, args: &Value) -> Result<()> {
     let object = args_object(args)?;
+    // 1) 未知参数（框架级参数除外）。
+    for key in object.keys() {
+        if FRAMEWORK_PARAMS.contains(&key.as_str()) {
+            continue;
+        }
+        if !spec.params.iter().any(|param| param.name == key) {
+            let accepted: Vec<&str> = spec.params.iter().map(|param| param.name).collect();
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{} 不接受参数 {key}（拼写错误？）；可用参数：{}；框架级参数：{}",
+                    spec.name,
+                    if accepted.is_empty() {
+                        "无".to_owned()
+                    } else {
+                        accepted.join(", ")
+                    },
+                    FRAMEWORK_PARAMS.join(", ")
+                )),
+            ));
+        }
+    }
     for param in spec.params {
-        if param.required && !object.contains_key(param.name) {
-            return Err(missing(param.name));
+        let Some(value) = object.get(param.name) else {
+            if param.required {
+                return Err(missing(param.name));
+            }
+            continue;
+        };
+        // 可选参数显式传 null：视为未提供。
+        if value.is_null() && !param.required {
+            continue;
+        }
+        let matches = match param.kind {
+            ParamKind::String => value.is_string(),
+            ParamKind::Integer => {
+                value.is_i64()
+                    || value.is_u64()
+                    || value.as_f64().is_some_and(|number| number.fract() == 0.0)
+            }
+            ParamKind::Number => value.is_number(),
+            ParamKind::Boolean => value.is_boolean(),
+            ParamKind::Object => value.is_object(),
+            ParamKind::Array => value.is_array(),
+            ParamKind::Any => true,
+        };
+        if !matches {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "参数 {} 类型应为 {}，实际为 {}",
+                    param.name,
+                    param.kind.json_type(),
+                    json_type_name(value)
+                )),
+            ));
         }
     }
     Ok(())
+}
+
+/// JSON 值的类型名（用于错误信息）。
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 /// 工具统计（10.2 的暴露分层效果）。
