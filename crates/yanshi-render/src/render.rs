@@ -404,6 +404,21 @@ impl Renderer {
     /// 文档内滤镜对象所需的最大邻域半径（像素）。
     pub fn filter_padding(&self, state: &DocumentState) -> u32 {
         let mut padding = 0u32;
+        // 蒙版羽化同样是「有限支撑的邻域运算」：区域渲染必须外扩，
+        // 否则 tile 边界会被 clamp，与整幅渲染不一致（bit-exact 自检会失败）。
+        for layer in state.alive_layers() {
+            let Some(mask_id) = &layer.mask_id else {
+                continue;
+            };
+            let Some(mask) = state.masks.get(mask_id) else {
+                continue;
+            };
+            if mask.is_deleted() || mask.feather <= 0.0 {
+                continue;
+            }
+            let radius = (mask.feather / 2.0).round().max(1.0) as u32;
+            padding = padding.max(radius + 1);
+        }
         for object in state.alive_objects() {
             // 修图对象从偏移位置采样：区域渲染必须外扩到源像素，否则边缘会缺一块。
             if object.object_type == yanshi_core::ObjectType::Liquify {
