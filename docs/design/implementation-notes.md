@@ -253,6 +253,23 @@ WebSocket 消息（JSON 文本帧）：
 - **持久化**（18）：原子按 JSONL 追加（含权威 seq），崩溃残留的半行在加载时忽略；
   渲染缓存写入 `render.png` + `render.seq`，重启后 `mark_rendered` 让「打开即图片」成立。
 
+## 二之二、已实测的性能数据（release，单线程标量，4 核 Haswell 笔记本）
+
+| 场景 | 实测 | 预算 |
+|---|---|---|
+| view 模式打开（122 / 602 个原子，含日志加载 + 折叠 + 缩略图） | 28.8ms / 33.7ms | < 100ms（Phase 1 出口条件） |
+| 无渲染缓存打开（不重放历史） | 65µs | — |
+| 文档摘要查询（已打开） | 1.6µs | — |
+| 单原子提交（提交校验 + 折叠 + 双 dirty） | 0.43ms / 2.67ms | < 20ms（14.10） |
+| 缓存命中区域渲染 256×256 | ≈50µs | < 10ms（8.5） |
+| 未命中区域渲染 256×256（60 笔） | ≈55ms | < 100ms（8.5） |
+| 未命中区域渲染（含高斯模糊） | ≈65ms | < 300ms（8.5） |
+| 64×64 区域缩略图 | ≈22ms | < 15ms（需重渲染场景，当前超出，见下） |
+| 全幅 1024×1024 渲染 | ≈527ms | — |
+
+> 64×64 区域缩略图当前 ≈22ms，高于 8.5 表里的 15ms 目标：该路径先做整幅渲染再降采样，
+> 属 Phase 2「L3/L4 缓存 + 异步渲染」要解决的问题（缩略图应直接按比例采样目标区域）。
+
 ## 三、尚未实现（与 README 路线图一致）
 
 - **Phase 1 其余部分**：WASM 计算内核与 SIMD、GPU 合成；编辑器侧的多选/变形/文字渲染等交互。
@@ -293,7 +310,9 @@ WebSocket 消息（JSON 文本帧）：
 | O(dirty) 渲染正确性（6.2 / 6.6） | `render_properties.rs::dirty_set_covers_every_changed_pixel`、`cache_eviction_does_not_change_pixels` |
 | 缩略图分块增量（7.4） | `render_properties.rs::thumbnail_blocks_match_full_rebuild` |
 | 区域渲染 / 缩略图预算（8.5 / 14.10） | `crates/yanshi-render/tests/perf_budget.rs`（`--ignored`） |
-| Overdraw 与 tile 命中率（Phase 0 / 14.9） | `perf_budget.rs::perf_overdraw_and_cache_hit_rate`（`--ignored`） |
+| Overdraw 与 tile 命中率（Phase 0 / 14.9） | `crates/yanshi-render/tests/perf_budget.rs::perf_overdraw_and_cache_hit_rate`（`--ignored`） |
+| **Phase 1 出口条件：view 模式打开 < 100ms** | `crates/yanshi-server/tests/perf_budget.rs::perf_view_open_under_100ms`（`--ignored`） |
+| 打开即图片：无渲染缓存时不重放历史 | `crates/yanshi-server/tests/perf_budget.rs::perf_open_without_render_cache_does_not_replay`（`--ignored`） |
 | 冲突处理与冲突图层（12.3） | `crates/yanshi-server/tests/service_flow.rs::sampling_replace_conflict_creates_conflict_layer_and_returns_error` |
 | Job 协议 TTL/取消/渲染水位（6.7） | `service_flow.rs::jobs_ttl_cancel_and_render_watermark` |
 | 广播边界（6.8） | `service_flow.rs::broadcast_separates_control_and_data_flow`、`src/broadcast.rs` 单元测试 |

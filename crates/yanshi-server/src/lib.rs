@@ -40,7 +40,7 @@ pub use document::{
 };
 pub use job::{Job, JobId, JobManager, JobStatus, DEFAULT_JOB_TTL_SECONDS};
 pub use persist::{DocumentMeta, FileStore, TokenRecord};
-pub use service::{DocumentSummary, Workspace};
+pub use service::{DocThumbSize, DocumentSummary, Workspace};
 pub use token::{
     CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind, TOKEN_HEX_LEN,
 };
