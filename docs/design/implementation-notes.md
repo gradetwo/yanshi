@@ -275,7 +275,7 @@ WebSocket 消息（JSON 文本帧）：
 | 出口条件 | 状态 | 证据 |
 |---|---|---|
 | 客户端与服务端 CPU 路径 **bit-exact** | ✅ 通过 | 浏览器内「一致性自检」：本地 `render_region_png` 的 SHA-256 == 服务端 `blob_hash`（`window.yanshiStats.bitExact === true`）；宿主回归测试 `yanshi-wasm::tile_composed_render_is_bit_exact_with_whole_region_render` 覆盖 tile 32/64 |
-| 首笔呈现延迟 **< 16ms** | ❌ 未达标（实测 ≈525ms） | `window.yanshiStats.firstStrokeMs`；本地乐观路径确实生效（`applies: 6`、本地 HEAD 与服务端 HEAD 一致），但单次「应用 + 脏区渲染 + putImageData」成本过高 |
+| 首笔呈现延迟 **< 16ms** | ✅ 通过（实测 **6.2ms**） | `window.yanshiStats.firstStrokeMs`；两笔测试中 HEAD 21→23（一笔一原子）、本地与服务端 HEAD 一致、页面零 JS 异常 |
 
 **bit-exact 缺陷复盘**：服务端 `render_region` 从 f32 scratch 缓冲直接转 u8，客户端按 tile 组合时经 f16 量化后转 u8，
 两者在舍入边界差 **149/4194304 字节**（如 32 vs 31，首个差异在 (629,213)）。修法是让输出以 **f16 tile 为准**
@@ -283,7 +283,26 @@ WebSocket 消息（JSON 文本帧）：
 中途还踩到第二个坑：先写成「从 tile 缓存读回」，小预算下 tile 已被 LRU 淘汰导致像素丢失，
 被 `render_properties.rs` 的属性测试抓到（`cache_eviction_does_not_change_pixels`）；改成就地量化即与缓存状态无关。
 
-**首笔延迟实测拆解**（真实 Chromium，覆盖层单帧）：
+**首笔延迟的修复路径**（525ms → 143ms → **6.2ms**）：
+
+1. **覆盖率生成与遍历裁剪到目标缓冲**（`shape_coverage_in` / `*_coverage_clipped` / `fill_coverage` 只走交集）：
+   一块覆盖全画布的形状原先在每个 tile 渲染时都按自身 1024×1024 bbox 迭代。单块 tile 冷渲染
+   **81.7ms → 30.9ms**，512×504 区域 **145ms → 103ms**；缓存命中 39µs。像素不变（属性测试全绿）。
+2. **覆盖层增量盖章**（`Renderer::stamp_into_tiles` + `Kernel::extend_preview_stroke`）：
+   只把新增笔段 stamp 到已缓存 tile 上，成本 ∝ 笔段长度（最后一帧 999 像素 = 8~9ms），
+   而不是整块 tile 面积。
+3. **落笔不再整块重绘**（`Kernel::commit_preview`）：像素已由增量盖章画好，
+   `plan_dirty` 的整块失效重绘会在抬手时造成 158ms 卡顿。
+4. **覆盖层状态更新不失效 tile**（`upsert_preview_object(.., invalidate=false)`）：
+   每帧都失效整条增长笔迹的 tile 会把增量盖章打回整块重绘（实测浪费 ~130ms/帧）。
+
+**已知保真度限制（下一步）**：逐段盖章时每一段从弧长 0 重新起算采样相位，接缝带内的盖章位置
+最多相差一个间距（1.5px），因此乐观预览与「一次性整段渲染」在笔迹带内约有 **7.6%**
+（12.5% 上限，测试断言 `diff * 8 < len`）的浓度差异；接缝带外无差异。
+设计 13.3 允许这种瞬时差异（服务端确认后以权威状态校正），正解是把弧长与采样相位跨帧保持
+（`dashed_line` 增加 `start_arc`/相位状态），使逐段采样与整段采样逐点一致。
+
+**首笔延迟历史拆解**（真实 Chromium，覆盖层单帧）：
 
 | 环节 | 耗时 |
 |---|---|

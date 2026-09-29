@@ -152,6 +152,70 @@ fn bench(label: &str, iterations: u32, mut body: impl FnMut()) -> Duration {
     elapsed
 }
 
+/// 覆盖率裁剪回归（14.10 / Phase 2 首笔预算的基础）：
+/// 一块覆盖全画布的背景 + 若干对象时，渲染**单个 tile** 的成本必须与 tile 面积成正比，
+/// 而不是与对象自身 bbox（整幅画布）成正比。
+#[test]
+#[ignore = "性能预算验收：CI 用 --ignored 执行（8.5 / 14.10）"]
+fn perf_tile_render_is_clipped_to_the_target_buffer() {
+    let store = MemoryBlobStore::new();
+    let mut state = benchmark_document(10, false);
+    // 再加一块覆盖整幅画布的背景矩形：未裁剪时它会让每个 tile 都按 1024×1024 迭代。
+    state.objects.insert(
+        "bg_full".to_owned(),
+        base_object(
+            "bg_full",
+            "layer_1",
+            ObjectType::Shape,
+            0,
+            json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 1024, "h": 1024}},
+                   "color": {"r": 20, "g": 20, "b": 24, "a": 255}}),
+        ),
+    );
+
+    let grid = TileGrid::new(256, 1024, 1024).unwrap();
+    let mut renderer = Renderer::new(grid.clone());
+    let tile = bench(
+        "单块 256×256 tile 冷渲染（含全画布背景）",
+        5,
+        || {
+            renderer.cache_mut().clear();
+            let _ = renderer
+                .render_tile(&state, &store, TileKey::new(1, 1))
+                .unwrap();
+        },
+    );
+    let region = bench("512×504 区域冷渲染（9 块 tile）", 3, || {
+        renderer.cache_mut().clear();
+        let _ = renderer
+            .render_region(&state, &store, Bbox::new(100.0, 200.0, 512.0, 504.0))
+            .unwrap();
+    });
+    // 缓存命中必须走 `render_tile`（`render_region` 是 scratch 直绘，不读缓存）。
+    renderer.cache_mut().clear();
+    let _ = renderer
+        .render_tile(&state, &store, TileKey::new(1, 1))
+        .unwrap();
+    let warm = bench("同一 tile 缓存命中", 50, || {
+        let _ = renderer
+            .render_tile(&state, &store, TileKey::new(1, 1))
+            .unwrap();
+    });
+    println!("（裁剪前实测：单块 81.7ms、区域 145ms）");
+
+    // 预算（留余量给共享 CI 抖动）：单块 < 60ms、区域 < 200ms、命中 < 5ms。
+    // 目标值记在 implementation-notes：单块要进 10ms 以内还需要「笔触采样按 tile 裁剪」。
+    assert!(
+        tile < Duration::from_millis(60),
+        "单块 tile 冷渲染 {tile:?} 超预算（覆盖率裁剪前 81.7ms）"
+    );
+    assert!(
+        region < Duration::from_millis(200),
+        "区域冷渲染 {region:?} 超预算（裁剪前 145ms；覆盖全画布对象按 bbox 迭代的缺陷已修）"
+    );
+    assert!(warm < Duration::from_millis(5), "缓存命中 {warm:?} 偏慢");
+}
+
 #[test]
 #[ignore = "性能预算验收：CI 用 --ignored 执行（8.5 / 14.10）"]
 fn perf_budget_region_render_and_thumbnails() {

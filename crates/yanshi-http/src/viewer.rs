@@ -306,10 +306,10 @@ function drawKernelDirty(report) {
   drawKernelBox(report && report.dirty_bbox);
 }
 
-// 拖动中的笔迹：更新本地覆盖层并只重绘其并集区域（不进原子日志）。
+// 拖动中的笔迹：**增量盖章**（只处理新增笔段），并只重绘该段区域。
 async function updatePreviewOverlay(pending) {
   const started = performance.now();
-  const response = JSON.parse(state.kernel.set_preview_object(JSON.stringify(previewObject(pending))));
+  const response = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(previewObject(pending))));
   if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
   drawKernelBox(response.dirty_bbox);
@@ -601,19 +601,19 @@ board.addEventListener("pointerup", async (event) => {
   state.dragging = null;
   if (state.tool === "rect" || state.tool === "ellipse") state.points.push(localPoint(event));
   if (pendingStroke && kernelReady()) {
-    // 落笔：先撤掉覆盖层（只重绘其区域），再提交最终原子并应用权威版本。
-    const cleared = JSON.parse(state.kernel.clear_preview());
-    drawKernelBox(cleared.dirty_bbox);
+    // 落笔：像素已由增量盖章画好，这里只合并本地日志（不整块重绘，避免抬手卡顿）。
     const atom = strokeAtom(pendingStroke, true);
+    const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
+    if (committed.ok) {
+      state.localSeq = committed.seq;
+      window.yanshiStats.kernelHead = committed.seq;
+    } else {
+      await resync();
+    }
     const response = await submitAtom(atom);
-    if (response) {
-      // 用权威 seq 把同一个原子应用到本地日志（若 seq 不符 submitAtom 已 resync）。
-      const applied = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(response.atom || atom)));
-      if (applied.ok) {
-        drawKernelDirty(applied.report);
-        state.localSeq = applied.report.head;
-        window.yanshiStats.kernelHead = applied.report.head;
-      }
+    if (response && response.seq !== undefined && response.seq !== committed.seq) {
+      // 服务端把原子排在了别处（并发），以权威日志为准重建。
+      await resync();
     }
     pendingStroke = null;
   } else {

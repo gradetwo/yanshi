@@ -132,6 +132,27 @@ impl WasmKernel {
         }
     }
 
+    /// **增量**更新待提交笔迹（拖动中的每一帧走这条路：成本 ∝ 新增笔段）。
+    pub fn extend_preview_stroke(&mut self, json: &str) -> String {
+        match self.inner.extend_preview_stroke(json) {
+            Ok(bbox) => json!({
+                "ok": true,
+                "dirty_bbox": bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+                "has_preview": true,
+            })
+            .to_string(),
+            Err(error) => error.to_json().to_string(),
+        }
+    }
+
+    /// 落笔提交：合并进本地日志但不重绘（像素已由增量盖章画好），返回 `{ok, seq}`。
+    pub fn commit_preview(&mut self, atom_json: &str) -> String {
+        match self.inner.commit_preview(atom_json) {
+            Ok(seq) => json!({"ok": true, "seq": seq, "repaint": false}).to_string(),
+            Err(error) => error.to_json().to_string(),
+        }
+    }
+
     /// 清除本地待提交覆盖层，返回需要重绘的区域。
     pub fn clear_preview(&mut self) -> String {
         let bbox = self.inner.clear_preview();
@@ -277,6 +298,19 @@ mod tests {
         assert!(first["dirty_bbox"].is_array());
         assert!(kernel.has_preview());
         assert_eq!(kernel.head_seq(), head, "覆盖层不改 HEAD");
+        // 增量路径。
+        let extended: Value = serde_json::from_str(
+            &kernel.extend_preview_stroke(&json!({"layer_id": "layer_1", "type": "stroke", "data": {"points": [[6.0, 40.0], [20.0, 44.0]], "size": 5.0}}).to_string()),
+        )
+        .unwrap();
+        assert_eq!(extended["ok"], json!(true));
+        let extended2: Value = serde_json::from_str(
+            &kernel.extend_preview_stroke(&json!({"layer_id": "layer_1", "type": "stroke", "data": {"points": [[6.0, 40.0], [20.0, 44.0], [34.0, 48.0]], "size": 5.0}}).to_string()),
+        )
+        .unwrap();
+        assert_eq!(extended2["ok"], json!(true), "{extended2}");
+        assert_eq!(kernel.head_seq(), head, "增量覆盖层不改 HEAD");
+
         let cleared: Value = serde_json::from_str(&kernel.clear_preview()).unwrap();
         assert_eq!(cleared["has_preview"], json!(false));
         assert!(!kernel.has_preview());

@@ -82,11 +82,37 @@ fn grid_size(bbox: &Bbox) -> (i64, i64, i64, i64) {
 }
 
 /// 轴对齐矩形的精确覆盖率（像素与矩形的重叠面积）。
+/// 覆盖率生成的像素网格与裁剪区域求交；空交集返回 `None`。
+///
+/// 一块覆盖全画布的形状在渲染单个 tile 时，若按自身 bbox 生成覆盖率会白算十几倍
+/// （1024×1024 = 100 万像素 vs 256×256 = 6.5 万），因此生成阶段就要裁剪。
+fn clipped_grid(bbox: Bbox, clip: &Bbox) -> Option<(i64, i64, i64, i64)> {
+    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let (cx0, cy0, cx1, cy1) = grid_size(clip);
+    let nx0 = x0.max(cx0);
+    let ny0 = y0.max(cy0);
+    let nx1 = x1.min(cx1);
+    let ny1 = y1.min(cy1);
+    if nx1 <= nx0 || ny1 <= ny0 {
+        None
+    } else {
+        Some((nx0, ny0, nx1, ny1))
+    }
+}
+
+/// 矩形覆盖率（全 bbox）。
 pub fn rect_coverage(bbox: Bbox) -> Coverage {
+    rect_coverage_clipped(bbox, &bbox)
+}
+
+/// 矩形覆盖率，只生成与 `clip` 相交的像素。
+pub fn rect_coverage_clipped(bbox: Bbox, clip: &Bbox) -> Coverage {
     if bbox.w <= 0.0 || bbox.h <= 0.0 {
         return Coverage::empty();
     }
-    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let Some((x0, y0, x1, y1)) = clipped_grid(bbox, clip) else {
+        return Coverage::empty();
+    };
     let width = (x1 - x0).max(0) as u32;
     let height = (y1 - y0).max(0) as u32;
     let mut data = Vec::with_capacity((width * height) as usize);
@@ -111,10 +137,17 @@ pub fn rect_coverage(bbox: Bbox) -> Coverage {
 
 /// 椭圆覆盖率（超采样，确定性）。
 pub fn ellipse_coverage(bbox: Bbox, supersample: u32) -> Coverage {
+    ellipse_coverage_clipped(bbox, supersample, &bbox)
+}
+
+/// 椭圆覆盖率，只生成与 `clip` 相交的像素。
+pub fn ellipse_coverage_clipped(bbox: Bbox, supersample: u32, clip: &Bbox) -> Coverage {
     if bbox.w <= 0.0 || bbox.h <= 0.0 {
         return Coverage::empty();
     }
-    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let Some((x0, y0, x1, y1)) = clipped_grid(bbox, clip) else {
+        return Coverage::empty();
+    };
     let width = (x1 - x0).max(0) as u32;
     let height = (y1 - y0).max(0) as u32;
     let cx = bbox.x + bbox.w / 2.0;
@@ -151,6 +184,15 @@ pub fn ellipse_coverage(bbox: Bbox, supersample: u32) -> Coverage {
 
 /// 多边形覆盖率（偶奇规则 + 超采样）。
 pub fn polygon_coverage(points: &[(f64, f64)], supersample: u32) -> Coverage {
+    polygon_coverage_clipped(
+        points,
+        supersample,
+        &Bbox::new(0.0, 0.0, f64::INFINITY, f64::INFINITY),
+    )
+}
+
+/// 多边形覆盖率，只生成与 `clip` 相交的像素。
+pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &Bbox) -> Coverage {
     if points.len() < 3 {
         return Coverage::empty();
     }
@@ -167,7 +209,9 @@ pub fn polygon_coverage(points: &[(f64, f64)], supersample: u32) -> Coverage {
     if bbox.w <= 0.0 || bbox.h <= 0.0 {
         return Coverage::empty();
     }
-    let (x0, y0, x1, y1) = grid_size(&bbox);
+    let Some((x0, y0, x1, y1)) = clipped_grid(bbox, clip) else {
+        return Coverage::empty();
+    };
     let width = (x1 - x0).max(0) as u32;
     let height = (y1 - y0).max(0) as u32;
     let ss = supersample.max(1);

@@ -163,24 +163,27 @@ impl Buffer {
             color[2].clamp(0.0, 1.0),
             color[3].clamp(0.0, 1.0),
         ];
-        for (row, y) in (0..coverage.height).enumerate() {
-            for x in 0..coverage.width {
-                let coverage_value = coverage.data[row * coverage.width as usize + x as usize];
+        // 只遍历「覆盖率网格 ∩ 本缓冲」——未裁剪的调用方（例如蒙版）也不会白跑。
+        let doc_x0 = coverage.bbox.x as i64;
+        let doc_y0 = coverage.bbox.y as i64;
+        let start_x = (self.origin_x - doc_x0).max(0) as u32;
+        let start_y = (self.origin_y - doc_y0).max(0) as u32;
+        let end_x = (self.origin_x + self.width as i64 - doc_x0).min(coverage.width as i64);
+        let end_y = (self.origin_y + self.height as i64 - doc_y0).min(coverage.height as i64);
+        if end_x <= start_x as i64 || end_y <= start_y as i64 {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        for y in start_y..end_y as u32 {
+            let local_y = (doc_y0 + y as i64 - self.origin_y) as u32;
+            let row = (y * coverage.width) as usize;
+            for x in start_x..end_x as u32 {
+                let coverage_value = coverage.data[row + x as usize];
                 if coverage_value <= 0.0 {
                     continue;
                 }
-                let document_x = coverage.bbox.x as i64 + x as i64;
-                let document_y = coverage.bbox.y as i64 + y as i64;
-                let local_x = document_x - self.origin_x;
-                let local_y = document_y - self.origin_y;
-                if local_x < 0 || local_y < 0 {
-                    continue;
-                }
-                let (local_x, local_y) = (local_x as u32, local_y as u32);
-                if local_x >= self.width || local_y >= self.height {
-                    continue;
-                }
-                let alpha = base[3] * coverage_value * opacity.clamp(0.0, 1.0);
+                let local_x = (doc_x0 + x as i64 - self.origin_x) as u32;
+                let alpha = base[3] * coverage_value * opacity;
                 let source = premultiply([base[0], base[1], base[2], alpha]);
                 self.blend_mode(local_x, local_y, source, mode);
             }
