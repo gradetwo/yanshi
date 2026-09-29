@@ -368,13 +368,25 @@ impl Workspace {
     }
 
     /// 鉴权（决定提交时的 actor 与权限）。
+    ///
+    /// 文档若尚未打开但磁盘存在，会先按需加载（含 token 恢复，12.7）——
+    /// HTTP/WS 请求带着 token 打进来时不该因为进程刚重启就失败。
     pub fn authorize(
-        &self,
+        &mut self,
         doc_id: &str,
         token: Option<&CapabilityToken>,
         transport: TransportKind,
         fallback_actor: &str,
     ) -> Result<Principal> {
+        if !self.documents.contains_key(doc_id) {
+            let exists = match &self.persist {
+                Some(persist) => !persist.load_atoms(doc_id)?.is_empty(),
+                None => false,
+            };
+            if exists {
+                self.open_document(doc_id)?;
+            }
+        }
         let document = self.document(doc_id).ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::ReferenceNotFound,

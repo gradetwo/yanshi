@@ -129,10 +129,40 @@ pub fn encode_frame(opcode: OpCode, fin: bool, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// 编码客户端帧（带掩码）。服务端与测试客户端都可以用它构造合法客户端帧。
+pub fn encode_client_frame(opcode: OpCode, fin: bool, payload: &[u8], mask: [u8; 4]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 14);
+    out.push((if fin { 0x80 } else { 0x00 }) | opcode.as_u8());
+    let length = payload.len();
+    if length < 126 {
+        out.push(0x80 | length as u8);
+    } else if length <= u16::MAX as usize {
+        out.push(0x80 | 126);
+        out.extend_from_slice(&(length as u16).to_be_bytes());
+    } else {
+        out.push(0x80 | 127);
+        out.extend_from_slice(&(length as u64).to_be_bytes());
+    }
+    out.extend_from_slice(&mask);
+    for (index, byte) in payload.iter().enumerate() {
+        out.push(byte ^ mask[index % 4]);
+    }
+    out
+}
+
+/// 读取一帧，**不要求掩码**（WebSocket 客户端与测试用）。
+pub fn read_frame_any<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
+    read_frame_inner(reader, false)
+}
+
 /// 读取一帧；流结束（EOF）返回 `Ok(None)`。
 ///
 /// 客户端到服务端的帧必须带掩码（RFC 6455 §5.1），否则报 `InvalidData`。
 pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
+    read_frame_inner(reader, true)
+}
+
+fn read_frame_inner<R: Read>(reader: &mut R, require_mask: bool) -> io::Result<Option<Frame>> {
     let mut header = [0u8; 2];
     match reader.read_exact(&mut header) {
         Ok(()) => {}
@@ -171,16 +201,20 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
     if opcode.is_control() && (!fin || length > 125) {
         return Err(invalid("控制帧必须不分片且载荷 ≤ 125 字节"));
     }
-    if !masked {
+    if require_mask && !masked {
         return Err(invalid("客户端帧必须带掩码"));
     }
 
     let mut mask = [0u8; 4];
-    reader.read_exact(&mut mask)?;
+    if masked {
+        reader.read_exact(&mut mask)?;
+    }
     let mut payload = vec![0u8; length];
     reader.read_exact(&mut payload)?;
-    for (index, byte) in payload.iter_mut().enumerate() {
-        *byte ^= mask[index % 4];
+    if masked {
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[index % 4];
+        }
     }
     Ok(Some(Frame {
         fin,
@@ -348,6 +382,28 @@ mod tests {
         out.extend_from_slice(&mask);
         out.extend_from_slice(&payload);
         out
+    }
+
+    #[test]
+    fn client_frame_helper_is_accepted_by_the_server_reader() {
+        let masked = encode_client_frame(OpCode::Text, true, b"hello", [1, 2, 3, 4]);
+        let frame = read_frame(&mut Cursor::new(masked.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame, Frame::text("hello"));
+        // 客户端读取服务端帧时不要求掩码。
+        let server_frame = encode_frame(OpCode::Text, true, b"hi");
+        assert_eq!(
+            read_frame_any(&mut Cursor::new(server_frame))
+                .unwrap()
+                .unwrap(),
+            Frame::text("hi")
+        );
+        // 掩码帧同样可被 read_frame_any 读出。
+        assert_eq!(
+            read_frame_any(&mut Cursor::new(masked)).unwrap().unwrap(),
+            Frame::text("hello")
+        );
     }
 
     #[test]
