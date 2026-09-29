@@ -2181,6 +2181,7 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         (EffectKind::Filter, "noise") => &[("amount", 0.0, 1.0), ("seed", 0.0, u64::MAX as f64)],
         (EffectKind::Filter, "clarity") => &[("amount", 0.0, 2.0), ("radius", 2.0, 64.0)],
         (EffectKind::Filter, "dehaze") => &[("omega", 0.0, 1.0), ("floor", 0.02, 0.8)],
+        (EffectKind::Filter, "film_grain") => &[("amount", 0.0, 1.0), ("size", 1.0, 8.0)],
         (EffectKind::Filter, "glow") => &[
             ("threshold", 0.0, 1.0),
             ("radius", 1.0, 64.0),

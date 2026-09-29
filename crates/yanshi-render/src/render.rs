@@ -238,8 +238,8 @@ impl Renderer {
             .background
             .or_else(|| parse_background(&state.background));
         // 阶段计时（诊断用，默认关闭）：`YANSHI_RENDER_PROBE=1` 时打印各阶段耗时。
-        // 存在的理由：背景合成带来的约 4× 差距曾三次被"合理推测"误判，只有分段计时能定位。
-        let probe_started = std::time::Instant::now();
+        // wasm32 下是空操作（见 `stage_probe` 的说明：`Instant` 在 wasm32 会 panic）。
+        let mut probe_fill_stage = stage_probe::Stage::start();
         let mut accumulation = match background {
             Some(color) if color[3] > 0 => Buffer::filled(
                 origin_x,
@@ -250,7 +250,7 @@ impl Renderer {
             ),
             _ => Buffer::new(origin_x, origin_y, width, height),
         };
-        let probe_fill = probe_started.elapsed();
+        let probe_fill = probe_fill_stage.stop();
         let mut probe_render = std::time::Duration::ZERO;
         let mut probe_composite = std::time::Duration::ZERO;
 
@@ -259,47 +259,42 @@ impl Renderer {
                 continue;
             }
             stats.layers += 1;
-            let probe_stage = std::time::Instant::now();
+            let mut probe_stage = stage_probe::Stage::start();
             let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
             self.render_layer_objects(state, store, layer, &mut layer_buffer, &mut stats)?;
             apply_layer_mask(state, layer, &mut layer_buffer, &mut stats);
-            probe_render += probe_stage.elapsed();
+            probe_render += probe_stage.stop();
             if layer.clipping_mask {
                 // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
                 layer_buffer.multiply_alpha_by(&accumulation);
             }
             layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
             let mode = BlendMode::from_name(&layer.blend_mode);
-            let probe_stage = std::time::Instant::now();
+            let mut probe_stage = stage_probe::Stage::start();
             accumulation.composite(&layer_buffer, mode, 1.0);
-            probe_composite += probe_stage.elapsed();
+            probe_composite += probe_stage.stop();
         }
 
         // 裁剪回请求区域并切片入缓存。
-        let probe_stage = std::time::Instant::now();
+        let mut probe_stage = stage_probe::Stage::start();
         let cropped = accumulation.crop(&region);
         let tiles = self.store_tiles(&cropped);
         stats.tiles_rendered = tiles.len();
-        let probe_crop = probe_stage.elapsed();
+        let probe_crop = probe_stage.stop();
         // 输出像素先按 **f16 量化**（14.1：内存 tile 用 f16 线性，合成正确性以 tile 为准），
         // 再转显示空间。这样「整幅区域渲染」与「按 tile 组合渲染」（客户端 WASM 内核走后者）
         // 逐字节一致，不会因 f32 scratch 与 f16 tile 的舍入差出现 ±1 分歧（Phase 2 bit-exact）；
         // 且量化是就地计算，不依赖 tile 是否仍在缓存里（小预算下会被淘汰）。
-        let probe_stage = std::time::Instant::now();
+        let mut probe_stage = stage_probe::Stage::start();
         let rgba8 = quantize_to_rgba8(&cropped, background);
-        // 环境变量只读一次（默认路径零开销）。
-        static PROBE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *PROBE_ENABLED.get_or_init(|| std::env::var_os("YANSHI_RENDER_PROBE").is_some()) {
-            eprintln!(
-                "PROBE 有背景={} 填充={:?} 图层={:?} 合成={:?} 裁剪+存tile={:?} 量化={:?}",
-                background.is_some(),
-                probe_fill,
-                probe_render,
-                probe_composite,
-                probe_crop,
-                probe_stage.elapsed()
-            );
-        }
+        stage_probe::report(
+            background.is_some(),
+            probe_fill,
+            probe_render,
+            probe_composite,
+            probe_crop,
+            probe_stage.stop(),
+        );
 
         Ok(RegionRender {
             bbox: region,
@@ -1095,6 +1090,92 @@ fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
         ));
     }
     Ok(Bbox::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+/// 渲染阶段计时探针（诊断用）。
+///
+/// **wasm32 上必须是空操作**：`std::time::Instant::now()` 在 `wasm32-unknown-unknown`
+/// 上不支持，会直接 panic（曾因此让浏览器端每次渲染都崩，而原生测试全绿 ——
+/// 教训：原生通过不等于浏览器通过，探针一定要按目标平台分派）。
+#[cfg(not(target_arch = "wasm32"))]
+mod stage_probe {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    /// 是否启用（环境变量只读一次）。
+    pub fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("YANSHI_RENDER_PROBE").is_some())
+    }
+
+    /// 一个计时点；未启用时不取时间。
+    pub struct Stage(Option<Instant>);
+
+    impl Stage {
+        pub fn start() -> Self {
+            Stage(if enabled() {
+                Some(Instant::now())
+            } else {
+                None
+            })
+        }
+        pub fn stop(&mut self) -> Duration {
+            match self.0.take() {
+                Some(started) => started.elapsed(),
+                None => Duration::ZERO,
+            }
+        }
+    }
+
+    /// 打印各阶段耗时。
+    pub fn report(
+        has_background: bool,
+        fill: Duration,
+        layers: Duration,
+        composite: Duration,
+        crop: Duration,
+        quantize: Duration,
+    ) {
+        if enabled() {
+            eprintln!(
+                "PROBE 有背景={has_background} 填充={fill:?} 图层={layers:?} 合成={composite:?} \
+                 裁剪+存tile={crop:?} 量化={quantize:?}"
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod stage_probe {
+    use std::time::Duration;
+
+    /// wasm32 上永远返回 false（`Instant` 不可用）。
+    pub const fn enabled() -> bool {
+        false
+    }
+
+    /// 空计时点。
+    pub struct Stage;
+
+    impl Stage {
+        pub const fn start() -> Self {
+            Stage
+        }
+        pub const fn stop(&mut self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    /// 空报告。
+    pub fn report(
+        _has_background: bool,
+        _fill: Duration,
+        _layers: Duration,
+        _composite: Duration,
+        _crop: Duration,
+        _quantize: Duration,
+    ) {
+    }
 }
 
 /// 解析文档背景色（`{"r": 0-255, ...}`）。

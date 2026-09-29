@@ -645,6 +645,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 滤镜 `clarity` | `amount` 0..2、`radius` 2..64 | 大半径非锐化掩模 + **中间调加权**（`1-(2·luma-1)²`），避免极暗/极亮处出现光晕 |
 | 滤镜 `dehaze` | `air` `[r,g,b]`（**必填**）、`omega` 0..1、`floor` 0.02..0.8 | 暗通道先验；大气光由参数给出，透射率图做 radius=4 模糊（外扩固定 8） |
 | 只读工具 `estimate_dehaze` | — | 整幅扫描后给出建议 `air`/`omega`，供 `add_filter(dehaze)` 使用 |
+| 滤镜 `film_grain` | `amount` 0..1、`size` 1..8、`seed` | 按**文档坐标**取块坐标生成确定性颗粒（同 [`noise`] 的纪律），按亮度加权（中间调最强），无邻域 |
 | 修图 `clone_stamp`（对象类型 `retouch`） | `points`/`source_offset`/`size`/`hardness`/`opacity` | 从**应用本对象之前**的图层内容按偏移采样后盖回（经典仿制图章） |
 | 修图 `heal`（工具 `heal_stamp`） | 同上 | 复制源纹理的同时，按**源/目标局部均值差**把低频颜色对齐到目标处 |
 | 修图 `smudge`（工具 `smudge`） | `points`/`size`/`smudge_length`/`hardness`/`opacity` | 每 stamp 沿笔迹方向**后退** `smudge_length` 采样，把后方内容拖到前方 |
@@ -925,7 +926,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **12 种** / 滤镜 **12 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **12 种** / 滤镜 **13 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，
@@ -1155,6 +1156,34 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 > 方法教训（第四次）：**比较两条路径前必须先确认它们在做同一件事**。
 > 这次差一点就以"服务端慢了 4.4×"去做一轮无谓的优化 —— 而真实差别只是
 > 一个有背景、一个没有。分段计时（本次新增的探针）是唯一能戳破这类错觉的工具。
+
+## 二之六之八、一次**严重回归**：`Instant::now()` 在 wasm32 上 panic（已修复）
+
+**症状**：浏览器端编辑器在任何文档上都不再可用 —— 内核在首次渲染时 panic，
+之后该内核对象永久报 `Error: recursive use of a function ... unsafe aliasing`
+（那是 panic 后借用标志未复位的**后果**，不是原因）。而**原生测试全绿** ✗。
+
+**定位手段（值得记下）**：用 CDP 抓 `Runtime.exceptionThrown` 的**调用栈**，wasm 侧的帧直接指出：
+
+```
+at <std::time::Instant>::now
+at <yanshi_render::render::Renderer>::render_region
+at <yanshi_wasm::kernel::Kernel>::render_region
+```
+
+**根因**：上一轮为定位「背景 4× 差距」加入的分段计时探针，把 `Instant::now()` 放在了
+环境变量判断**之前** → `std::time::Instant::now()` 在 `wasm32-unknown-unknown` 上**不受支持并 panic**
+（原生当然正常 ✓）。也就是说，一个"默认零开销"的诊断探针把客户端整体搞崩了 ✗✗。
+
+**修复**：探针按目标平台分派 —— `#[cfg(not(target_arch = "wasm32"))]` 走真实计时，
+`#[cfg(target_arch = "wasm32")]` 是**编译期空操作**（连时间类型都不出现）。
+修复后浏览器自检恢复：`liq3` HEAD 19/19、`fx3` HEAD 18/18，均**差异 0 像素 / 最大通道差 0** ✓。
+
+**教训**：
+1. **原生全绿 ≠ 浏览器可用** —— `wasm32` 缺少一部分 `std`（`Instant`、部分时间/线程设施），
+   凡是新引入的平台相关调用都必须按目标平台门控；
+2. **诊断代码也要按生产标准审查** —— 这次是"探针"本身造成的事故；
+3. 崩溃时先抓**调用栈**（wasm 帧名可读），比读代码猜快得多。
 
 ## 二之七、拖动笔迹性能实测与「预览覆盖层」的否定结论
 

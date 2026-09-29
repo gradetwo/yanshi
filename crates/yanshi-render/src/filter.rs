@@ -124,6 +124,8 @@ pub enum FilterKind {
     Clarity,
     /// 去雾（暗通道先验，大气光由参数给出）。
     Dehaze,
+    /// 胶片颗粒。
+    FilmGrain,
 }
 
 impl FilterKind {
@@ -139,6 +141,7 @@ impl FilterKind {
             "glow" => Some(Self::Glow),
             "clarity" => Some(Self::Clarity),
             "dehaze" => Some(Self::Dehaze),
+            "film_grain" => Some(Self::FilmGrain),
             "brightness_contrast" => Some(Self::BrightnessContrast),
             "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
@@ -158,6 +161,7 @@ impl FilterKind {
             Self::Glow => "glow",
             Self::Clarity => "clarity",
             Self::Dehaze => "dehaze",
+            Self::FilmGrain => "film_grain",
             Self::BrightnessContrast => "brightness_contrast",
             Self::Saturation => "saturation",
             Self::Invert => "invert",
@@ -197,6 +201,8 @@ impl FilterKind {
             Self::Glow | Self::Clarity => (radius.ceil() as u32) * 2,
             // 去雾内部对透射率图做 radius=4 的模糊，固定外扩 8。
             Self::Dehaze => 8,
+            // 胶片颗粒逐像素（块坐标）计算，无邻域。
+            Self::FilmGrain => 0,
             _ => 0,
         }
     }
@@ -288,6 +294,52 @@ pub fn vibrance(buffer: &mut Buffer, amount: f32) {
             *value = boosted.clamp(0.0, 1.0);
         }
     });
+}
+
+/// 胶片颗粒：按文档坐标 + `seed` 生成的确定性颗粒，颗粒尺寸可分块（`size` 像素见方）。
+///
+/// 与 [`noise`] 同一条纪律：随机数序号**只由文档坐标与显式 seed 决定**，
+/// 绝不用缓冲内序号 —— 否则同一像素在不同 tile 分块下会得到不同颗粒，
+/// 客户端按 tile 组合渲染就会与服务端不一致（这条坑此前踩过）。
+///
+/// 与 `noise` 的区别：颗粒按 `size` 聚成块（更接近胶片），并按亮度加权
+/// （`1-(2·luma-1)²`），使中间调颗粒最明显、纯黑纯白处收敛，避免"塑料噪点"。
+pub fn film_grain(buffer: &mut Buffer, amount: f32, size: u32, seed: u64) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let size = size.clamp(1, 8) as i64;
+    let origin = buffer.bbox();
+    for y in 0..buffer.height() {
+        for x in 0..buffer.width() {
+            let document_x = origin.x as i64 + x as i64;
+            let document_y = origin.y as i64 + y as i64;
+            // 以 size 为粒度取块坐标：块内所有像素共享同一颗粒值。
+            let block_x = document_x.div_euclid(size);
+            let block_y = document_y.div_euclid(size);
+            let index = (block_y as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(block_x as u64);
+            let mut rng = Prng::derive(seed, index);
+            let grain = rng.signed();
+            let pixel = buffer.pixel(x, y);
+            let alpha = pixel[3];
+            let luma =
+                (LUMA[0] * pixel[0] + LUMA[1] * pixel[1] + LUMA[2] * pixel[2]) / alpha.max(1e-3);
+            let centered = 2.0 * luma.clamp(0.0, 1.0) - 1.0;
+            let weight = 1.0 - centered * centered;
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                // 颗粒为加性（胶片颗粒是密度扰动），按 alpha 缩放以保持预乘不变量。
+                let delta = grain * amount * weight * 0.25 * alpha;
+                out[channel] = pixel[channel] + delta;
+            }
+            buffer.set_pixel(x, y, out);
+        }
+    }
 }
 
 /// 色彩平衡：按亮度分档（阴影 / 中间调 / 高光）分别做 RGB 偏移。
@@ -1005,7 +1057,7 @@ pub const ADJUSTMENT_NAMES: [&str; 12] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 12] = [
+pub const FILTER_NAMES: [&str; 13] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
@@ -1015,6 +1067,7 @@ pub const FILTER_NAMES: [&str; 12] = [
     "glow",
     "clarity",
     "dehaze",
+    "film_grain",
     "brightness_contrast",
     "saturation",
     "invert",
@@ -1213,6 +1266,12 @@ pub fn apply_filter(
         FilterKind::Noise => noise(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(0.05) as f32,
+            params.get("seed").and_then(Value::as_u64).unwrap_or(0),
+        ),
+        FilterKind::FilmGrain => film_grain(
+            &mut filtered,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.3) as f32,
+            params.get("size").and_then(Value::as_u64).unwrap_or(2) as u32,
             params.get("seed").and_then(Value::as_u64).unwrap_or(0),
         ),
         FilterKind::Dehaze => dehaze(
@@ -1651,6 +1710,77 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// 胶片颗粒：同 seed 可复现、不同 seed 不同、块内一致、**与缓冲分块无关**（文档坐标决定）。
+    #[test]
+    fn film_grain_is_deterministic_seeded_and_tile_independent() {
+        let make = |origin_x: i64| {
+            let mut buffer = Buffer::new(origin_x, 0, 32, 8);
+            buffer.fill([0.5, 0.5, 0.5, 1.0]);
+            buffer
+        };
+        // 同 seed 两次结果一致。
+        let mut first = make(0);
+        film_grain(&mut first, 0.5, 2, 7);
+        let mut second = make(0);
+        film_grain(&mut second, 0.5, 2, 7);
+        for y in 0..8 {
+            for x in 0..32 {
+                assert_eq!(
+                    first.pixel(x, y),
+                    second.pixel(x, y),
+                    "同 seed 必须逐位一致"
+                );
+            }
+        }
+        // 不同 seed 结果不同。
+        let mut other = make(0);
+        film_grain(&mut other, 0.5, 2, 8);
+        assert_ne!(
+            first.pixel(0, 0),
+            other.pixel(0, 0),
+            "不同 seed 应产生不同颗粒"
+        );
+        // 块内一致：size=2 时同一 2×2 块内颗粒值相同。
+        assert_eq!(
+            first.pixel(4, 4),
+            first.pixel(5, 4),
+            "size=2 时同一块内应共享颗粒值"
+        );
+        assert_eq!(first.pixel(4, 4), first.pixel(4, 5));
+
+        // **分块无关**：整幅渲染与「从 x=16 起的小区域」渲染在重叠像素上必须一致。
+        let mut whole = make(0);
+        film_grain(&mut whole, 0.5, 2, 11);
+        let mut right = make(16);
+        film_grain(&mut right, 0.5, 2, 11);
+        for y in 0..8 {
+            for x in 0..16 {
+                assert_eq!(
+                    whole.pixel(x + 16, y),
+                    right.pixel(x, y),
+                    "颗粒必须只由文档坐标决定（分块渲染不得改变结果）"
+                );
+            }
+        }
+        // amount=0 不改动；越界参数不破坏预乘不变量。
+        let mut zero = make(0);
+        let before = zero.pixel(3, 3);
+        film_grain(&mut zero, 0.0, 99, 1);
+        assert_eq!(before, zero.pixel(3, 3));
+        let mut extremes = Buffer::new(0, 0, 8, 8);
+        extremes.fill([0.2, 0.2, 0.2, 0.5]);
+        film_grain(&mut extremes, 9.0, 0, u64::MAX);
+        for y in 0..8 {
+            for x in 0..8 {
+                let pixel = extremes.pixel(x, y);
+                assert!(
+                    pixel.iter().all(|v| v.is_finite() && *v >= 0.0) && pixel[0] <= pixel[3] + 1e-3,
+                    "越界参数不得破坏预乘不变量：{pixel:?}"
+                );
+            }
+        }
     }
 
     /// 去雾：雾化（与大气光混合）的图像经去雾后对比度应回升；平坦雾区保持不变。
