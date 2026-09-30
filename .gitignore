@@ -22,3 +22,7 @@
 /tmp/
 # wasm-bindgen 产物（构建生成，见 deploy 说明）
 crates/yanshi-wasm/pkg/
+
+# Python 工具的字节码缓存（`scripts/safe_edit.py` 被 import 时会生成 ✓）
+__pycache__/
+*.pyc

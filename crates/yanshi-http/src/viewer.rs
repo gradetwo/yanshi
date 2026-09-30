@@ -188,6 +188,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 </dialog>
 <dialog id="openDialog">
   <h2 style="margin-top:0">打开文档</h2>
+  <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。
+       入口放在文档列表**之前** ✓ —— 这样"打开示例看看"是第一步 ✓，而不是在一堆自己的文档里翻 ✗。 -->
+  <h3 style="margin:12px 0 4px">示例作品</h3>
+  <p style="opacity:.75;font-size:12px;margin:0 0 6px">
+    用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。
+  </p>
+  <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
+  <h3 style="margin:16px 0 4px">我的文档</h3>
   <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
   <hr />
   <h2>导入本地图片</h2>
@@ -1081,9 +1089,42 @@ if (DEBUG) {
 
 /// 打开对话框：列出**服务器上的文档**（`GET /api/documents`，设计第 611 行提到文档列表用
 /// `doc_thumb` 缩略图），点击即切换；下方提供**本地图片导入**。
+/// **示例作品** ✓：id + 一句话说明 ✓。它们由"用应用自己画一遍"产生 ✓（见 docs/samples.md ✓）——
+/// 这不只是好看 ✓：画的过程会**暴露真实问题** ✓（本会话就是用这种方式发现了若干 bug ✓）。
+const SAMPLES = [
+  { id: "sample-oil", label: "油画 · 风景", hint: "油画介质：鬃毛、载墨、湿画法混色" },
+  { id: "sample-watercolor", label: "水彩 · 山与湖", hint: "水彩介质：渗开边界、边缘沉积、留白" },
+  { id: "sample-brush", label: "笔刷 · 草木", hint: "曲线/动力学/纹理/湿笔（appearance）" },
+  { id: "sample-reference", label: "功能清单 · 海报", hint: "文本（含中文）、图形、选区、蒙版、移动、导出" },
+];
+
+function renderSamples() {
+  const box = $("sampleList");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const sample of SAMPLES) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.style.cssText = "display:flex;flex-direction:column;gap:2px;padding:8px;text-align:left";
+    const title = document.createElement("span");
+    title.style.cssText = "font-size:12px;font-weight:600";
+    title.textContent = sample.label;
+    const hint = document.createElement("span");
+    hint.style.cssText = "font-size:11px;opacity:.7";
+    hint.textContent = sample.hint;
+    card.append(title, hint);
+    card.addEventListener("click", async () => {
+      closeOpenDialog();
+      await switchDocument(sample.id);
+    });
+    box.appendChild(card);
+  }
+}
+
 async function showOpenDialog() {
   const dialog = $("openDialog");
   const list = $("docList");
+  renderSamples();
   list.textContent = "载入中…";
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
