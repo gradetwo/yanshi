@@ -666,6 +666,40 @@ const selectionResult = await evaluate(`(async () => {
   }
 })()`);
 
+// 布局结构断言 ✓ —— 加这一段的直接原因：我在"移动选项栏"时把 <nav id="tools"> 的
+// 开闭标签一起删掉了 ✗，20 个按钮于是变成 main 的网格子元素、三列铺满整页 ✓，
+// 而当时的检查只测"按钮是否在视口内" ✓ 竟然全部通过 ✗（布局错了却全绿 ✓）。
+// 教训：检查必须断言**结构**（谁是子元素、每列多宽），不能只看可见性 ✓。
+const layoutStructure = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const nav = document.querySelector("main > nav#tools");
+  const aside = document.querySelector("main > aside");
+  const stage = document.querySelector("main > .stage");
+  const options = document.getElementById("options");
+  return {
+    navExists: Boolean(nav),
+    navWidth: nav ? Math.round(nav.getBoundingClientRect().width) : -1,
+    asideWidth: aside ? Math.round(aside.getBoundingClientRect().width) : -1,
+    stageWidth: stage ? Math.round(stage.getBoundingClientRect().width) : -1,
+    optionsInMain: Boolean(document.querySelector("main > #options")),
+    optionsAboveMain: Boolean(options) && options.getBoundingClientRect().bottom <=
+      document.querySelector("main").getBoundingClientRect().top + 1,
+    buttons: document.querySelectorAll("#tools button").length,
+  };
+})())`));
+if (!layoutStructure) {
+  problems.push("布局结构断言失败：拿不到结构数据");
+} else {
+  if (!layoutStructure.navExists) problems.push("布局结构错误：main 下没有 nav#tools（工具按钮的包裹元素丢了？）");
+  if (layoutStructure.navWidth > 80) problems.push("工具条应窄（≤80px），实际 " + layoutStructure.navWidth + "px");
+  if (layoutStructure.buttons < 15) problems.push("工具条内按钮过少：" + layoutStructure.buttons);
+  if (layoutStructure.asideWidth < 240) problems.push("右侧面板应≥240px，实际 " + layoutStructure.asideWidth + "px");
+  if (layoutStructure.stageWidth < 200) problems.push("画布区应≥200px，实际 " + layoutStructure.stageWidth + "px");
+  if (layoutStructure.optionsInMain) problems.push("选项栏不应作为 main 的网格子元素（会占用首列）");
+  if (!layoutStructure.optionsAboveMain) problems.push("选项栏应在 main 之上（整宽一行）");
+  console.log("  布局结构：工具条 " + layoutStructure.navWidth + "px（" + layoutStructure.buttons + " 个按钮）｜画布 " +
+    layoutStructure.stageWidth + "px｜面板 " + layoutStructure.asideWidth + "px");
+}
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));

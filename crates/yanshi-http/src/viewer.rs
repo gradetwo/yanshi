@@ -54,8 +54,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .options .tool-name { font-weight: 600; min-width: 4em; }
   .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
   .options input[type="range"] { width: 120px; }
+  /* 工具条：可纵向滚动 ✓ —— 截图里"填充图层"曾被窗口底部截断 ✗（窄条 + 20 个工具必然超出）。 */
   #tools { display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0;
-           background: #171a1f; border-right: 1px solid var(--line); align-content: start; }
+           background: #171a1f; border-right: 1px solid var(--line); align-content: start;
+           overflow-y: auto; max-height: calc(100vh - 150px); }
   #tools button { padding: 6px 2px; font-size: 11px; line-height: 1.15; width: 100%; min-width: 0;
                   white-space: normal; }
   .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
@@ -145,7 +147,6 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <button id="openClose">关闭</button>
   </div>
 </dialog>
-<main>
   <div class="options" id="options">
     <span class="tool-name" id="toolName">画笔</span>
   <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
@@ -154,6 +155,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
   </div>
+
+<main>
   <nav id="tools" aria-label="工具">
   <button data-tool="brush" aria-pressed="true">画笔</button>
   <button data-tool="rect">矩形</button>
@@ -174,6 +177,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <button data-tool="mask_rect">矩形蒙版</button>
   <button data-tool="mask_ellipse">椭圆蒙版</button>
   <button id="fillLayer">填充图层</button>
+  </nav>
   </nav>
   <div class="stage">
     <canvas id="board"></canvas>
