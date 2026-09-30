@@ -27,7 +27,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header h1 { font-size: 15px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 6px; }
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
-  main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
+  /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
+     右侧露出一块灰色死区，点击落在 .stage 上而不是 canvas 上（用户报告的「右边一块没法用」）。 */
+  main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; justify-items: start; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
   /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
      #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
@@ -53,7 +55,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <header>
   <h1><img class="brand-mark" src="/brand/svg/icon-light.svg" alt="" />偃师 Yanshi</h1>
   <span id="identity"></span>
-  <button id="open">打开 / 新建文档</button>
+  <button id="newDoc">新建</button>
+  <button id="openDoc">打开</button>
   <span class="status">
     <span><span class="dot" id="conn"></span> <span id="connText">未连接</span></span>
     <span>head <b id="head">0</b></span>
@@ -274,6 +277,32 @@ function setWasmState(text, color) {
   element.style.color = color || "";
 }
 
+// 页面依赖的内核方法清单。**必须与 crates/yanshi-wasm/src/lib.rs 的导出逐一对应**：
+// 曾经查看器调用了一个从未实现的 `render_region_direct_rgba`，浏览器抛
+// "not a function" 被事件处理器吞掉，表现为「拖动无反馈、操作后画布空白」。
+// 这里在启动时显式校验：版本不匹配时给出**可操作**的提示，而不是静默失效。
+const REQUIRED_KERNEL_METHODS = [
+  "render_region_rgba",
+  "render_region_direct_rgba",
+  "apply_atom_json",
+  "extend_preview_stroke",
+  "commit_preview",
+  "set_viewport",
+  "head_seq",
+];
+
+function verifyKernelSurface(kernel) {
+  const missing = REQUIRED_KERNEL_METHODS.filter((name) => typeof kernel[name] !== "function");
+  if (missing.length === 0) return true;
+  const message = "WASM 内核与页面版本不一致，缺少方法：" + missing.join(", ") +
+    "。请强制刷新（Ctrl+Shift+R / Cmd+Shift+R）。";
+  log(message, "#c33");
+  setWasmState("版本不匹配", "#c33");
+  setStatus({ kernelError: message });
+  window.yanshiStats.kernelSurfaceError = message;
+  return false;
+}
+
 async function initWasm() {
   try {
     const health = await (await fetch("/health")).json();
@@ -304,6 +333,7 @@ async function loadKernel(since = 0) {
     // 诊断句柄：仅在 `?debug=1` 时挂到 window 上，供 scripts/browser-kernel-perf.mjs
     // 直接测量内核区域渲染成本（默认不暴露，避免把内部对象变成事实上的公开 API）。
     if (new URLSearchParams(location.search).has("debug")) window.yanshiKernel = state.kernel;
+    verifyKernelSurface(state.kernel);
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
     if (!loaded.ok) {
       log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");
@@ -344,6 +374,16 @@ function drawKernelRegion(x, y, w, h) {
 
 // 拖动中的笔迹重绘：区域通常只有几十像素见方，直接渲染比「按 tile 组合」便宜得多
 // （后者哪怕 1px 变化也要重算整块 256² tile）。两者数值逐位一致。
+// 把绘制异常变成可见信息（日志 + 状态栏 + window.yanshiStats），只报一次以免刷屏。
+function reportPaintError(where, error) {
+  const message = where + "失败：" + (error && error.message ? error.message : String(error));
+  if (window.yanshiStats.lastPaintError === message) return;
+  window.yanshiStats.lastPaintError = message;
+  window.yanshiStats.paintErrors = (window.yanshiStats.paintErrors || 0) + 1;
+  log(message, "#c33");
+  setStatus({ paintError: message });
+}
+
 function drawKernelBoxDirect(bbox) {
   if (window.yanshiStats.tracePaints) log("direct bbox=" + JSON.stringify(bbox) + " board=" + board.width + "x" + board.height);
   if (!bbox) return;
@@ -380,6 +420,17 @@ function drawKernelDirty(report) {
 // 拖动中的笔迹：**增量盖章**（只处理新增笔段），并只重绘该段区域。
 async function updatePreviewOverlay(pending) {
   const started = performance.now();
+  // 任何绘制异常都要**显式可见**：此前 TypeError 被事件处理器吞掉，
+  // 现象只是「画布空白」，排查代价很高。
+  try {
+    return await updatePreviewOverlayInner(pending, started);
+  } catch (error) {
+    reportPaintError("覆盖层绘制", error);
+    return undefined;
+  }
+}
+
+async function updatePreviewOverlayInner(pending, started) {
   const response = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(previewObject(pending))));
   if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
@@ -544,6 +595,44 @@ async function checkBitExact() {
     pass ? "#2a7" : "#c33"
   );
   refreshThumb();
+}
+
+/// 新建文档：生成新的文档 id（服务端按需创建），并重置本地视图状态。
+async function newDocument() {
+  const suffix = Date.now().toString(36);
+  await switchDocument("yanshi-" + suffix);
+}
+
+/// 打开文档：提示输入文档 id（本地工具，缺省空即用当前）。
+async function promptDocument() {
+  const input = window.prompt("要打开的文档 id（不存在则新建）：", state.docId || "default");
+  if (input === null) return;
+  const docId = input.trim();
+  if (!docId) return;
+  await switchDocument(docId);
+}
+
+/// 切换文档：关闭旧连接、清空日志与本地状态，再走一遍打开流程。
+///
+/// 此前「打开 / 新建文档」按钮只是用**当前** doc_id 再调一次 `/api/documents`，
+/// 因此点了等于没点（用户报告「点击后没有打开或者创建新的功能」）。
+async function switchDocument(docId) {
+  if (state.socket) {
+    try { state.socket.close(); } catch (_) { /* 已关闭 */ }
+    state.socket = null;
+  }
+  state.docId = docId;
+  state.token = "";
+  state.localSeq = 0;
+  state.lastAtom = null;
+  state.reverted = [];
+  state.dragging = null;
+  state.points = [];
+  $("log").innerHTML = "";
+  $("last").textContent = "";
+  // 画布立刻清空，避免切换期间仍显示上一个文档的内容。
+  sizeBoards(1024, 1024);
+  await ensureDocument();
 }
 
 async function ensureDocument() {
@@ -732,6 +821,8 @@ function colorCss() {
 // 只重绘**覆盖层**（拖动中的笔迹/选区）。内容层绝不能被清空 —— 此前两者共用一个画布，
 // 拖动结束的最后一次重绘会把已提交的内容一起擦掉，表现为「操作后画布空白，刷新才恢复」。
 function redraw() {
+  // 每次重绘前同步几何：窗口缩放、滚动或布局变化都会让覆盖层偏离内容层。
+  syncOverlayGeometry();
   octx.clearRect(0, 0, overlay.width, overlay.height);
   if (!state.dragging) return;
   octx.strokeStyle = $("color").value;
@@ -911,13 +1002,15 @@ $("addLayer").addEventListener("click", async () => {
   log("已新建图层 " + layerId);
 });
 
-$("open").addEventListener("click", ensureDocument);
+$("newDoc").addEventListener("click", newDocument);
+$("openDoc").addEventListener("click", promptDocument);
 
 (async () => {
   window.addEventListener("resize", () => {
     syncOverlayGeometry();
     if (state.socket) subscribeViewport();
   });
+  window.addEventListener("scroll", syncOverlayGeometry, { passive: true });
   if (!state.token) {
     await ensureDocument();
   } else {

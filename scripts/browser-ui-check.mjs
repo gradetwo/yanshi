@@ -113,6 +113,19 @@ for (let step = 0; step < 6; step++) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
+// 新建文档按钮：必须真的切换到新文档（此前它用当前 doc_id 再打开一次，点了等于没点）。
+const identityBefore = await evaluate(`document.getElementById("identity").textContent`);
+await evaluate(`document.getElementById("newDoc").click()`);
+await new Promise((resolve) => setTimeout(resolve, 2000));
+const identityAfter = await evaluate(`document.getElementById("identity").textContent`);
+const newDocPainted = await evaluate(blankCheck);
+
+// 打开文档按钮：用覆盖 window.prompt 指定一个文档 id，断言真的切过去。
+await evaluate(`window.prompt = () => "uicheck-opened-1"`);
+await evaluate(`document.getElementById("openDoc").click()`);
+await new Promise((resolve) => setTimeout(resolve, 2000));
+const identityOpened = await evaluate(`document.getElementById("identity").textContent`);
+
 const geometry = await evaluate(`(() => {
   const board = document.getElementById("board");
   const overlay = document.getElementById("overlay");
@@ -121,6 +134,7 @@ const geometry = await evaluate(`(() => {
   const overlayRect = overlay ? overlay.getBoundingClientRect() : null;
   return {
     canvas: { w: board.width, h: board.height, cssW: Math.round(rect.width), cssH: Math.round(rect.height) },
+    stage: { cssW: Math.round(board.parentElement.getBoundingClientRect().width) },
     overlay: overlayRect ? { cssW: Math.round(overlayRect.width), cssH: Math.round(overlayRect.height) } : null,
     preview: preview ? {} : null,
   };
@@ -154,6 +168,21 @@ if (geometry.preview !== null) {
   problems.push("页面里仍存在覆盖用的 #preview 元素（会与画布几何冲突）");
 }
 if (thumbBefore === thumbAfter) problems.push("提交后缩略图未自动刷新");
+if (identityAfter === identityBefore) {
+  problems.push(`「新建」按钮没有新建文档（identity 仍是 ${identityBefore}）`);
+}
+if (newDocPainted.painted !== 0) {
+  problems.push(`新建文档后画布上仍有旧内容（着色 ${newDocPainted.painted}）`);
+}
+if (!identityOpened.includes("uicheck-opened-1")) {
+  problems.push(`「打开」按钮没有切换文档（identity=${identityOpened}）`);
+}
+// 舞台必须收缩到画布尺寸：否则右侧出现灰色死区，点击落在 stage 上而不是 canvas 上。
+if (geometry.stage.cssW - geometry.canvas.cssW > 4) {
+  problems.push(
+    `舞台比画布宽 ${geometry.stage.cssW - geometry.canvas.cssW}px（右侧灰色死区，点击无效）`
+  );
+}
 
 if (process.env.UI_DEBUG === "1") {
   console.log("  --- 调试 ---");
@@ -164,6 +193,8 @@ if (process.env.UI_DEBUG === "1") {
 }
 console.log(`  画布：操作前不透明 ${before.opaque}/着色 ${before.painted}｜操作后不透明 ${after.opaque}/着色 ${after.painted}`);
 console.log(`  图层数：${layerCountBefore} → ${layerCountAfter}`);
+console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未生效" : "已生效"}｜打开 ${identityOpened.includes("uicheck-opened-1") ? "已生效" : "未生效"}`);
+console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);
 console.log(`  缩略图：${thumbBefore === thumbAfter ? "未变化" : "已自动刷新"}`);

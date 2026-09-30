@@ -345,7 +345,10 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     }
     if path == "/" {
         return match method {
-            "GET" => Response::html(viewer::PAGE),
+            // 页面与 WASM 内核必须**同版本**：页面改动后若被缓存，会出现
+            // 「新页面 + 旧内核」的方法缺失（本次报告的真实缺陷就是这种组合）。
+            // 因此页面也必须 no-cache，让普通刷新即可拿到新版本。
+            "GET" => Response::html(viewer::PAGE).with_header("Cache-Control", "no-cache"),
             _ => method_not_allowed(request, "GET"),
         };
     }
