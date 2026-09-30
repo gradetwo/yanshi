@@ -21,9 +21,37 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
 <link rel="apple-touch-icon" href="/brand/png/favicon-180.png" />
 <style>
-  :root { color-scheme: light dark; --line: #8884; }
+  /* **配色令牌集中在这里** ✓ —— 之前只有一个 `--line` ✓，其余颜色散落硬编码 ✗
+     （`#171a1f`、`#1b1f26`、`#222`… ✓），改主题要满文件找 ✓。
+     现在收敛成一套语义令牌 ✓：底色 / 面板 / 面板浮层 / 分隔线 / 正文 / 次要文字 / 强调色 ✓。
+     对比度按 WCAG 正文标准取 ≥4.5:1 ✓（检查脚本会**实测**这一条 ✓，见 browser-ui-check ✓）。 */
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;          /* 页面底色 */
+    --surface: #171a1f;     /* 顶栏 / 工具条 / 状态栏 */
+    --surface-2: #1b1f26;   /* 卡片 / 弹出面板 */
+    --line: #2b313b;        /* 分隔线 */
+    --text: #e7eaef;        /* 正文（对 --bg 约 14.6:1 ✓） */
+    --muted: #a3adbb;       /* 次要文字（对 --bg 约 7.8:1 ✓） */
+    --accent: #3d6bb3;      /* 强调 / 选中 / 焦点环 */
+    --accent-soft: #2b4a7d; /* 选中态的柔化底色 */
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
+  /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  /* 可点区域下限 ✓：界面控件不低于 26px 高 ✓（密集的深色界面里最影响手感 ✓）。
+     **收窄到具体控件** ✓ —— 第一版写成裸 `button, select, input` ✗，实测两个介质用例的画布
+     同时变空 ✗（可见它影响了画布/舞台的重绘路径 ✓）；现在只作用于界面控件 ✓，
+     与检查里量高的那组选择器完全一致 ✓。 */
+  header button, #tools button, aside button, .options select, .options input,
+  #quickPanel button, .statusbar button { min-height: 26px; }
+  /* 滚动条跟随主题 ✓（否则深色界面里出现一条亮色滚动条，很扎眼 ✓）。 */
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header h1 { font-size: 15px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 6px; }
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
@@ -50,25 +78,25 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* minmax(0,1fr)：否则网格列按 max-content 撑开，卡片里的按钮行会溢出到视口外
      （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
   .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
-             background: #171a1f; border-bottom: 1px solid var(--line); }
+             background: var(--surface); border-bottom: 1px solid var(--line); }
   .options .tool-name { font-weight: 600; min-width: 4em; }
   .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
   .options input[type="range"] { width: 120px; }
   /* 工具条：可纵向滚动 ✓ —— 截图里"填充图层"曾被窗口底部截断 ✗（窄条 + 20 个工具必然超出）。 */
   #tools { display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0;
-           background: #171a1f; border-right: 1px solid var(--line); align-content: start;
+           background: var(--surface); border-right: 1px solid var(--line); align-content: start;
            overflow-y: auto; max-height: calc(100vh - 150px); }
   #tools button { padding: 7px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
                   align-items: center; }
   #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
                stroke-linecap: round; stroke-linejoin: round; }
-  #tools button[aria-pressed="true"] { background: #2b4a7d; border-color: #3d6bb3; }
+  #tools button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
-               background: #171a1f; border-top: 1px solid var(--line); }
+               background: var(--surface); border-top: 1px solid var(--line); }
   .statusbar .spacer { flex: 1 1 auto; }
   /* 光标处快捷面板 ✓（`position: fixed` ✓ ⇒ 坐标即光标位置 ✓，不受画布滚动影响 ✓）。 */
   #quickPanel { position: fixed; z-index: 40; min-width: 196px; max-width: 260px; padding: 8px 10px;
-                background: #1b1f26; border: 1px solid var(--line); border-radius: 8px;
+                background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
                 box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
   #quickPanel[hidden] { display: none; }
   #quickPanel .qp-title { display: flex; justify-content: space-between; align-items: baseline;
@@ -77,7 +105,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   #quickPanel .qp-section { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
   #quickPanel .qp-section:empty { display: none; }
   #quickPanel button { min-width: 30px; padding: 4px 7px; font-size: 11px; }
-  #quickPanel button[aria-pressed="true"] { background: #2b4a7d; border-color: #3d6bb3; }
+  #quickPanel button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   #quickPanel .qp-swatch { width: 22px; height: 22px; min-width: 0; padding: 0; border-radius: 4px;
                            border: 1px solid var(--line); }
   #quickPanel .qp-swatch[aria-pressed="true"] { outline: 2px solid #6ea8fe; outline-offset: 1px; }
@@ -739,6 +767,11 @@ async function blitServerBox(bbox) {
 
 /// 补画**当前视口** ✓（不知道原子的脏区时用它 ✓，一次请求即可 ✓）。
 async function blitServerViewport() {
+  // **等下一帧再画** ✓ —— 本会话实测：补画确实执行了 ✓（`serverBlits` 计数增加 ✓、面积 262144 ✓），
+  // 但最终画布仍是空白 ✗。原因是**布局变化会重设画布尺寸** ✓（`sizeBoards` 改 `board.width` ⇒ 清空 ✓），
+  // 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓。
+  // 因此让补画落在**下一帧**（布局稳定之后 ✓）—— 这是"最后画的人赢"那条经验的延续 ✓。
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
   const { x, y, w, h } = state.viewport;
   return blitServerBox([x, y, w, h]);
 }

@@ -1470,7 +1470,14 @@ if (!wcObject) {
 } else if (wcObject.medium.version !== 2) {
   problems.push(`水彩介质版本应为 2，实际 ${JSON.stringify(wcObject.medium)}`);
 } else if (wcAfter <= wcBefore) {
-  problems.push(`水彩落笔后画布有墨像素应增加（前 ${wcBefore} → 后 ${wcAfter}）`);
+  // 与介质段同样的诊断 ✓（画布为 0 时最需要知道走的是哪条路径 ✓）。
+  const wcDiag = await evaluate(`JSON.stringify({
+    resyncs: window.yanshiStats.resyncs, serverBlits: window.yanshiStats.serverBlits,
+    lastServerBlitArea: window.yanshiStats.lastServerBlitArea,
+    kernelHead: window.yanshiStats.kernelHead, serverHead: window.yanshiStats.serverHead,
+    medium: window.yanshiStats.medium,
+  })`);
+  problems.push(`水彩落笔后画布有墨像素应增加（前 ${wcBefore} → 后 ${wcAfter}）｜诊断 ${wcDiag}`);
 }
 const wcResult = { ok: Boolean(wcObject), medium: wcObject ? wcObject.medium : null, before: wcBefore, after: wcAfter };
 
@@ -1588,9 +1595,73 @@ if (geometry.stage.cssW - geometry.canvas.cssW > 4) {
   );
 }
 
-if (process.env.UI_DEBUG === "1") {
-  console.log("  --- 调试 ---");
-  console.log("  stats:", JSON.stringify(await evaluate("window.yanshiStats")));
+  // 暗色主题打磨 ✓ —— **量化**验收（不靠"看起来还行" ✗）：
+//   ① 正文对比度按 WCAG 公式实算 ≥4.5:1 ✓；② 可点控件高度 ≥24px ✓；
+//   ③ 存在 :focus-visible 焦点环规则 ✓；④ 语义令牌可解析 ✓。
+//
+// 本段整块在**模板字面量内部** ✓ ⇒ 注释里也不能出现反引号 ✗
+//（本会话为此连撞三次 ✓：反引号会提前闭合模板 ✓，症状是 missing ) after argument list ✓）。
+const themeAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  try {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const hexToRgb = (value) => {
+      const hex = String(value).trim().replace("#", "");
+      if (hex.length !== 6) return null;
+      return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+    };
+    const luminance = (rgb) => {
+      const channel = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+    };
+    const fg = hexToRgb(rootStyle.getPropertyValue("--text"));
+    const bg = hexToRgb(rootStyle.getPropertyValue("--bg"));
+    let contrast = null;
+    if (fg && bg) {
+      const a = luminance(fg);
+      const b = luminance(bg);
+      contrast = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    }
+    const controls = [...document.querySelectorAll(
+      "header button, #tools button, aside button, .options select, .options input, #quickPanel button, .statusbar button")];
+    const heights = controls.map((c) => Math.round(c.getBoundingClientRect().height)).filter((h) => h > 0);
+    const minHeight = heights.length ? Math.min(...heights) : 0;
+    let focusRule = false;
+    for (const sheet of document.styleSheets) {
+      for (const rule of sheet.cssRules || []) {
+        if (rule.selectorText && rule.selectorText.includes(":focus-visible")) focusRule = true;
+      }
+    }
+    const tokens = ["--bg", "--surface", "--surface-2", "--line", "--text", "--muted", "--accent", "--accent-soft"]
+      .map((name) => rootStyle.getPropertyValue(name).trim())
+      .filter(Boolean);
+    return { contrast, minHeight, focusRule, tokens: tokens.length, controls: controls.length };
+  } catch (error) {
+    return { error: String(error && error.message ? error.message : error) };
+  }
+})())`));
+if (themeAudit.error) {
+  problems.push(`暗色主题检查本身出错（页面侧异常）：${themeAudit.error}`);
+} else {
+  if (!(themeAudit.contrast >= 4.5)) {
+    problems.push(`正文对比度不足 4.5:1（实际 ${themeAudit.contrast === null ? "无法计算" : themeAudit.contrast.toFixed(2)}）`);
+  }
+  if (themeAudit.minHeight < 24) {
+    problems.push(`可点控件偏小：最小高度 ${themeAudit.minHeight}px（须 ≥24px，共 ${themeAudit.controls} 个）`);
+  }
+  if (!themeAudit.focusRule) {
+    problems.push("缺少 :focus-visible 焦点环规则（键盘可达性）");
+  }
+  if (themeAudit.tokens < 8) {
+    problems.push(`语义令牌不完整：只有 ${themeAudit.tokens} 个`);
+  }
+  console.log(`  暗色主题：正文对比度 ${themeAudit.contrast === null ? "?" : themeAudit.contrast.toFixed(2)}:1（须 ≥4.5）` +
+    `｜控件 ${themeAudit.controls} 个，最小高度 ${themeAudit.minHeight}px（须 ≥24）` +
+    `｜焦点环 ${themeAudit.focusRule ? "✓" : "✗"}｜令牌 ${themeAudit.tokens}/8`);
+
+console.log("  stats:", JSON.stringify(await evaluate("window.yanshiStats")));
   console.log("  日志:", JSON.stringify(await evaluate(`document.getElementById("log").innerText.slice(-800)`)));
   console.log("  最近响应:", JSON.stringify(await evaluate(`document.getElementById("last").innerText.slice(0, 400)`)));
   console.log("  状态栏:", JSON.stringify(await evaluate(`document.getElementById("status") ? document.getElementById("status").innerText : ""`)));
