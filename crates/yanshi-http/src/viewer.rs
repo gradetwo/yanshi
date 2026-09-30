@@ -339,6 +339,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。
 const blobUrl = (hash) => api("/api/blob/" + hash);
 // 供 CDP / 自动化验收读取的统计（Phase 2 出口条件：bit-exact 与首笔 < 16ms）。
+// **`needsServerPixels` 必须在任何启动路径之前声明** ✓ —— 查看器启动时会在
+// `loadKernel()` 里调用 `detectHeavyContent()` ✓；若声明太靠后（或漏写 ✗），
+// 启动读到它就会抛错 ⇒ **整段脚本中断** ✓，现象是"工具条还在、但后续一切都没接线" ✓
+//（本会话真实踩到：我上一版只写了注释、**忘了写声明** ✗，而探针把任何异常都标成 TDZ ✗，误导了排查 ✓）。
+// 含义 ✓：只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓ ——
+// 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
+let needsServerPixels = false;
+
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
   // 当前打开的文档与令牌 ✓ —— 自动化验收需要知道"查看器此刻在编辑哪一个文档" ✓
