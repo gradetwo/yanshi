@@ -441,6 +441,19 @@ impl Workspace {
                 }
                 let meta = persist.load_meta(&doc_id)?;
                 let atoms = persist.load_atoms(&doc_id)?;
+                // **未打开的文档也要如实计数** ✓ —— 这里原来**写死 `layers: 0, objects: 0`** ✗，
+                // 于是"任何关闭着的文档"都被报成零对象 ✓（列表里 144 项全显示为空 ✓）。
+                // **后果很实在** ✗：我按这个字段挑"空文档"去清理 ✓ ⇒ 把
+                // `sample-watercolor`（56 个对象 ✓）与 `sample-brush`（260 个 ✓）当成空的清掉了 ✗
+                //（幸好是**移到备份**而不是删除 ✓，已全部恢复 ✓）。
+                // **教训** ✓：两个来源互相矛盾时（`get_document` 说有 56 ✓、列表说 0 ✗）
+                // **必须先对账再动手** ✓ —— 我这次是先动手后发现 ✗。
+                // 做法 ✓：原子**本来就已读出** ✓（上一行 ✓）⇒ 折一遍即可 ✓，成本是增量的 ✓，
+                // 口径与"已打开文档"**完全一致** ✓（同一套折叠 ✓ ⇒ 不会两处各算一套 ✗）。
+                let folded = yanshi_core::fold::fold_atoms(
+                    yanshi_core::state::DocumentState::default(),
+                    &atoms,
+                );
                 summaries.insert(
                     doc_id.clone(),
                     DocumentSummary {
@@ -449,8 +462,18 @@ impl Workspace {
                         height: meta.as_ref().map(|meta| meta.height).unwrap_or(0),
                         atoms: atoms.len(),
                         head_seq: atoms.last().map(|atom| atom.seq).unwrap_or(0),
-                        layers: 0,
-                        objects: 0,
+                        layers: folded
+                            .state
+                            .layers
+                            .values()
+                            .filter(|layer| !layer.is_deleted())
+                            .count(),
+                        objects: folded
+                            .state
+                            .objects
+                            .values()
+                            .filter(|object| !object.is_deleted())
+                            .count(),
                         created_at: meta.as_ref().map(|meta| meta.created_at).unwrap_or(0),
                         persisted: true,
                     },

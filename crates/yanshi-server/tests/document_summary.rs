@@ -133,3 +133,71 @@ fn the_document_summary_counts_live_entities_only() {
         "墓碑计数应能反映被删除的图层：{summary_after}"
     );
 }
+
+/// **关掉的文档也必须报出真实计数** ✓（回归测试 ✓ —— 修复前这里恒为 0 ✓）。
+///
+/// **这条测试的来历值得写下来** ✓：列表接口对**未打开的文档**曾经**写死 `layers: 0, objects: 0`** ✗
+///（因为计数原本只从内存里的态读 ✓）。后果很实在 ✗：我按列表里的"对象数 = 0"挑选要清理的空文档 ✓
+/// ⇒ 把有 **56** 个对象的水彩示例与有 **260** 个对象的笔刷示例当成空文档清掉了 ✗
+///（我当时的另一个测量 `get_document` 明明说有 56 ✓ —— **两个来源矛盾时我没有先对账就动手** ✗；
+/// 幸好用的是**移动到备份**而不是删除 ✓，已全部恢复 ✓）。
+/// 现在两条路径用**同一套折叠** ✓ ⇒ 口径一致 ✓，不会再出现"一个说有、一个说 0" ✓。
+#[test]
+fn closed_documents_report_their_real_counts() {
+    let mut root = std::env::temp_dir();
+    root.push(format!(
+        "yanshi-doc-summary-{}-{}",
+        std::process::id(),
+        yanshi_core::now_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            NewDocument::new("closed_doc", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "closed_doc", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        for slot in 0..2 {
+            let drawn = registry.call(
+                &mut ctx,
+                "draw_shape",
+                &json!({"layer_id": "L", "object_id": format!("box{slot}"), "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 4.0, "y": 4.0, "w": 8.0, "h": 8.0}},
+                    "color": {"r": 30, "g": 30, "b": 30, "a": 255}}}),
+            );
+            assert_eq!(drawn["ok"], json!(true), "{drawn}");
+        }
+    }
+    // **先看"打开着"的口径** ✓（这是基准 ✓）。
+    let while_open = workspace
+        .list_documents()
+        .expect("列表应成功")
+        .into_iter()
+        .find(|summary| summary.doc_id == "closed_doc")
+        .expect("应能找到该文档");
+    assert_eq!(while_open.layers, 1, "打开着：图层数");
+    assert_eq!(while_open.objects, 2, "打开着：对象数");
+    // **关掉它** ✓ —— 修复前这里会变成 0 ✗（而磁盘上的原子一条没少 ✓）。
+    workspace.close_document("closed_doc");
+    let while_closed = workspace
+        .list_documents()
+        .expect("列表应成功")
+        .into_iter()
+        .find(|summary| summary.doc_id == "closed_doc")
+        .expect("关闭后**仍然**应该列出来 ✓（文档没被删 ✓）");
+    assert_eq!(
+        (while_closed.layers, while_closed.objects),
+        (1, 2),
+        "关闭后计数应与打开时**一致** ✓（修复前恒为 0 ✗）"
+    );
+    assert_eq!(while_closed.persisted, true, "磁盘上仍然保留 ✓");
+    let _ = std::fs::remove_dir_all(&root);
+}
