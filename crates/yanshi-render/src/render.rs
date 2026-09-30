@@ -643,7 +643,10 @@ impl Renderer {
             }
             // 几何裁剪：包围盒与渲染区域不相交的对象直接跳过。
             // 调整/滤镜对象作用于整层、无法用几何裁剪；未实现类型必须保留以便产生告警。
-            let primitive = parse_object(object);
+            // 对象变换在此统一施加（此前内核完全不读 `object.transform` ✗，
+            // 导致 `move_object` 返回 ok 但画面不变）。
+            let primitive =
+                crate::object::transform_primitive(parse_object(object), &object.transform);
             let affects_whole_layer = matches!(
                 primitive,
                 Primitive::Adjustment { .. }

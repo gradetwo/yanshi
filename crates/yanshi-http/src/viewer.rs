@@ -131,6 +131,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="liquify_twirl">液化旋</button>
         <button data-tool="liquify_pinch">液化缩</button>
         <button data-tool="eyedropper">吸管</button>
+        <button data-tool="move_object">移动</button>
         <button data-tool="mask_rect">矩形蒙版</button>
         <button data-tool="mask_ellipse">椭圆蒙版</button>
         <button id="fillLayer">填充图层</button>
@@ -221,6 +222,10 @@ window.yanshiStats = {
 };
 
 const params = new URLSearchParams(location.search);
+// `?debug=1` 时暴露工具调用入口：自动化验收需要**读服务端的真实响应**（例如 list_objects 的 bbox），
+// 而不是靠画布像素反推。此前我在检查脚本里写了一个并不存在的 `window.yanshiCallTool` ✗，
+// 于是整段用例静默返回空对象 ✓ —— 现在把它真正接上。
+const DEBUG = params.get("debug") === "1";
 const state = {
   docId: params.get("doc") || "default",
   token: params.get("token") || "",
@@ -242,6 +247,8 @@ const state = {
   zoom: 1,
   // 仿制图章 / 修复画笔的源点（文档坐标）：Alt+点击设置（与常见图像编辑器一致）。
   sourcePoint: null,
+  // 移动工具选中的对象（含 bbox，用于命中测试与显示选中框）。
+  selectedObject: null,
   dragging: null,
   points: [],
   wasm: null,
@@ -826,6 +833,11 @@ async function newDocument() {
   await switchDocument("yanshi-" + suffix);
 }
 
+if (DEBUG) {
+  // 已定义在最上层的工具入口（`callTool` 是模块作用域函数）。
+  window.yanshiCallTool = (tool, args) => callTool(tool, args || {}, { refresh: false });
+}
+
 /// 打开对话框：列出**服务器上的文档**（`GET /api/documents`，设计第 611 行提到文档列表用
 /// `doc_thumb` 缩略图），点击即切换；下方提供**本地图片导入**。
 async function showOpenDialog() {
@@ -1372,6 +1384,7 @@ function redraw() {
   syncOverlayGeometry();
   octx.clearRect(0, 0, overlay.width, overlay.height);
   redrawSourceMark();
+  drawSelectionBox();
   if (!state.dragging) return;
   octx.strokeStyle = $("color").value;
   octx.lineWidth = Number($("size").value);
@@ -1451,6 +1464,41 @@ async function fillCurrentLayer() {
   }
   log("已填充图层 " + state.layerId);
   await refreshPreview();
+}
+
+/// 移动工具（设计 13.3 基础工具「移动」）：点击选中光标下最上层的对象，拖动后提交
+/// `move_object{object_id, delta:{dx,dy}}`（注意参数名是 **dx/dy**，不是 x/y ✓）。
+const MOVE_TOOL = "move_object";
+let moveState = null;
+
+/// 命中测试：`list_objects` 的 bbox 是 `[x,y,w,h]`（文档坐标）✓。
+async function pickObjectAt(point) {
+  const value = await callTool("list_objects", { include_hidden: false }, { refresh: false });
+  if (!value.ok) return null;
+  const candidates = (value.objects || []).filter((object) => {
+    const bbox = object.bbox;
+    if (!bbox || bbox.length < 4) return false;
+    return point.x >= bbox[0] && point.y >= bbox[1] &&
+           point.x <= bbox[0] + bbox[2] && point.y <= bbox[1] + bbox[3];
+  });
+  if (candidates.length === 0) return null;
+  // 取 z_index 最大者（同 z 取列表中较晚者，即较新对象）。
+  candidates.sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
+  return candidates[candidates.length - 1];
+}
+
+/// 绘制选中框（覆盖层）。
+function drawSelectionBox() {
+  const object = state.selectedObject;
+  if (!object || !object.bbox) return;
+  const [x, y, w, h] = object.bbox;
+  const topLeft = toCanvas({ x, y });
+  octx.save();
+  octx.strokeStyle = "#4a7dff";
+  octx.lineWidth = 1;
+  octx.setLineDash([4, 3]);
+  octx.strokeRect(topLeft.x, topLeft.y, w, h);
+  octx.restore();
 }
 
 /// 蒙版工具（设计 13.3「蒙版编辑」）：拖动出一个形状 → `create_mask` → 用 `set_property`
@@ -1623,6 +1671,25 @@ window.addEventListener("keydown", (event) => {
 });
 
 board.addEventListener("pointerdown", (event) => {
+  if (state.tool === MOVE_TOOL) {
+    const start = localPoint(event);
+    void pickObjectAt(start).then((object) => {
+      state.selectedObject = object;
+      if (!object) {
+        log("移动：此处没有对象");
+        redraw();
+        return;
+      }
+      moveState = { objectId: object.object_id, start, bbox: object.bbox };
+      log("已选中 " + object.object_id + "（拖动即可移动）");
+      redraw();
+    });
+    try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
+    state.dragging = event.pointerId;
+    state.points = [start];
+    event.preventDefault();
+    return;
+  }
   if (state.tool === "eyedropper" && kernelReady()) {
     pickColorAt(event);
     event.preventDefault();
@@ -1639,6 +1706,24 @@ board.addEventListener("pointerdown", (event) => {
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
   const point = localPoint(event);
+  if (state.tool === MOVE_TOOL) {
+    state.points = moveState ? [moveState.start, point] : [point];
+    if (moveState && state.selectedObject) {
+      // 覆盖层实时显示"移动后"的位置（不改数据）。
+      const dx = point.x - moveState.start.x;
+      const dy = point.y - moveState.start.y;
+      const [x, y, w, h] = moveState.bbox;
+      const topLeft = toCanvas({ x: x + dx, y: y + dy });
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      octx.save();
+      octx.strokeStyle = "#4a7dff";
+      octx.lineWidth = 1;
+      octx.setLineDash([4, 3]);
+      octx.strokeRect(topLeft.x, topLeft.y, w, h);
+      octx.restore();
+    }
+    return;
+  }
   if (state.tool === "rect" || state.tool === "ellipse") state.points = [state.points[0], point];
   else state.points.push(point);
   if (pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
@@ -1651,6 +1736,39 @@ board.addEventListener("pointermove", (event) => {
 board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
+  if (state.tool === MOVE_TOOL) {
+    const end = localPoint(event);
+    const pending = moveState;
+    moveState = null;
+    state.points = [];
+    if (!pending) {
+      redraw();
+      return;
+    }
+    const dx = Math.round(end.x - pending.start.x);
+    const dy = Math.round(end.y - pending.start.y);
+    if (dx === 0 && dy === 0) {
+      redraw();
+      return;
+    }
+    const moved = await callTool(
+      "move_object",
+      { object_id: pending.objectId, delta: { dx, dy } },
+      { refresh: false }
+    );
+    if (!moved.ok) {
+      log("移动失败：" + (moved.error_code || "unknown") + " " +
+          ((moved.context && moved.context.detail) || ""), "#c33");
+      redraw();
+      return;
+    }
+    log("已移动 " + pending.objectId + "（dx=" + dx + ", dy=" + dy + "）");
+    // 更新选中框到新位置。
+    state.selectedObject = await pickObjectAt(end);
+    await refreshPreview();
+    redraw();
+    return;
+  }
   if (MASK_TOOLS.has(state.tool)) {
     state.points.push(localPoint(event));
     await commitMask();

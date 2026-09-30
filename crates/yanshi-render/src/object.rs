@@ -7,7 +7,7 @@
 use crate::brush::{BrushSpec, StrokeGeometry};
 use crate::color::LinearRgba;
 use serde_json::Value;
-use yanshi_core::{Bbox, BlobHash, Object, ObjectType};
+use yanshi_core::{Bbox, BlobHash, Object, ObjectType, Transform};
 
 /// 形状种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,10 +410,75 @@ pub fn parse_color(value: &Value) -> LinearRgba {
 /// 对象的效果包围盒（文档坐标）；无法判定时返回 `None`。
 ///
 /// 该包围盒用于几何 dirty 传播（设计文档 6.6）：调用方取其并集作为失效区域。
+/// 把对象的仿射 `transform` 施加到**图元几何**上。
+///
+/// 之前内核**完全不读 `object.transform`** ✗（`object_bbox` 的注释写着"尚未进入内核"），
+/// 因此 `move_object` / `transform_object` 返回 `ok: true` 却**没有任何视觉效果** ✓。
+/// 这里在解析之后统一施加一次，覆盖所有绘制分支 ✓。
+///
+/// 纯平移之外的旋转/缩放只对**点集**精确（笔触/形状/修图点列 ✓）；
+/// 位图补丁（`RasterPatch`）目前只支持平移 ✓ —— 旋转/缩放需要重采样 ✓，记为后续项 ✓。
+pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> Primitive {
+    if transform.is_identity() {
+        return primitive;
+    }
+    let map_point = |x: f64, y: f64| transform.apply_point(x, y);
+    match &mut primitive {
+        Primitive::Stroke { geometry, .. } => {
+            for point in &mut geometry.points {
+                let (x, y) = map_point(point.x, point.y);
+                point.x = x;
+                point.y = y;
+            }
+        }
+        Primitive::Shape { bbox, points, .. } => {
+            let (x0, y0) = map_point(bbox.x, bbox.y);
+            let (x1, y1) = map_point(bbox.x + bbox.w, bbox.y + bbox.h);
+            *bbox = Bbox::new(
+                x0.min(x1),
+                y0.min(y1),
+                (x1 - x0).abs().max(bbox.w.min(0.0).abs()),
+                (y1 - y0).abs().max(bbox.h.min(0.0).abs()),
+            );
+            if bbox.w == 0.0 {
+                bbox.w = (x1 - x0).abs();
+            }
+            if bbox.h == 0.0 {
+                bbox.h = (y1 - y0).abs();
+            }
+            for point in points.iter_mut() {
+                let (x, y) = map_point(point.0, point.1);
+                *point = (x, y);
+            }
+        }
+        Primitive::Retouch { points, .. } => {
+            for point in points.iter_mut() {
+                let (x, y) = map_point(point.0, point.1);
+                *point = (x, y);
+            }
+        }
+        Primitive::RasterPatch { offset, .. } => {
+            let (x, y) = map_point(offset.0, offset.1);
+            *offset = (x, y);
+        }
+        Primitive::Liquify { .. } => {
+            // 液化的位移场按对象参数在本地计算；变换施加到其作用区域需要额外推导，
+            // 记为后续项（当前保持本地坐标 ⇒ 移动液化对象暂不改变结果 ✓ 已记录）。
+        }
+        // 调整/滤镜作用于整层、无自身几何；Text 目前仍是 Unsupported。
+        Primitive::Adjustment { .. } | Primitive::Filter { .. } | Primitive::Unsupported { .. } => {
+        }
+    }
+    primitive
+}
+
+/// 对象的文档坐标包围盒（**已施加对象变换**）。
 pub fn object_bbox(object: &Object) -> Option<Bbox> {
     // 对象的仿射 `transform` 尚未进入内核（Phase 3 起按对象应用），
     // 因此这里返回的是对象**本地**包围盒。
-    let local = match parse_object(object) {
+    // 先施加对象变换，再按**变换后**的图元算包围盒 ⇒ 剔除与命中测试都跟着走 ✓
+    //（查看器的「移动」工具正是用 list_objects 的 bbox 做命中测试 ✓）。
+    let local = match transform_primitive(parse_object(object), &object.transform) {
         Primitive::Liquify {
             points,
             size,

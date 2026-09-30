@@ -37,6 +37,32 @@ impl Transform {
     };
 
     /// 是否为单位变换。
+    /// 施加变换到一点：`p' = pivot + M·(p − pivot)`。
+    ///
+    /// 设计只给了 `transform: {matrix, pivot}`（第 167 行）✓、未规定应用细节 ✓ ——
+    /// 这里采用通用语义（先平移去枢轴、乘矩阵、再平移回枢轴）✓，并记录为设计未规定项 ✓。
+    pub fn apply_point(&self, x: f64, y: f64) -> (f64, f64) {
+        let [a, b, c, d, e, f] = self.matrix;
+        let dx = x - self.pivot[0];
+        let dy = y - self.pivot[1];
+        (
+            self.pivot[0] + a * dx + c * dy + e,
+            self.pivot[1] + b * dx + d * dy + f,
+        )
+    }
+
+    /// 变换是否只含平移（用于判断能否直接平移到 `offset` 而不需要重采样）。
+    pub fn translation(&self) -> Option<(f64, f64)> {
+        let [a, b, c, d, e, f] = self.matrix;
+        if (a - 1.0).abs() < 1e-9 && b.abs() < 1e-9 && c.abs() < 1e-9 && (d - 1.0).abs() < 1e-9 {
+            // 枢轴对纯平移无影响。
+            Some((e, f))
+        } else {
+            None
+        }
+    }
+
+    /// 是否为恒等变换。
     pub fn is_identity(&self) -> bool {
         self.matrix == Self::IDENTITY.matrix
     }

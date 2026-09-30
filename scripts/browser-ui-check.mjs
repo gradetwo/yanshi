@@ -384,7 +384,7 @@ const maskToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: maskDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}&debug=1` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -400,8 +400,13 @@ const maskResult = await evaluate(`(async () => {
   // 铺满底色
   document.getElementById("color").value = "#1f6feb";
   document.getElementById("fillLayer").click();
-  await new Promise((r) => setTimeout(r, 2000));
-  const filled = ink();
+  // 轮询而非固定等待：重活（fill 是 heavy 原子）在慢机器上可能超过固定 sleep，
+  // 固定等待会得到 0 并误报"前置条件不成立"（本文件已多次因此误判）。
+  let filled = ink();
+  for (let i = 0; i < 30 && filled === 0; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    filled = ink();
+  }
   // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
   document.getElementById("feather").value = "0";
   document.querySelector('button[data-tool="mask_rect"]').click();
@@ -409,9 +414,54 @@ const maskResult = await evaluate(`(async () => {
   fire("pointermove", at(0.75, 0.75), 301);
   await new Promise((r) => setTimeout(r, 100));
   fire("pointerup", at(0.75, 0.75), 301);
-  await new Promise((r) => setTimeout(r, 2500));
+  let masked = ink();
+  for (let i = 0; i < 30 && masked >= filled; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    masked = ink();
+  }
   document.querySelector('button[data-tool="brush"]').click();
-  return { filled, masked: ink(), log: document.getElementById("log").innerText.slice(0, 200) };
+  return { filled, masked, log: document.getElementById("log").innerText.slice(0, 200) };
+})()`);
+
+// 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
+// 通过 list_objects 断言 bbox **恰好**平移该位移（绝对量断言，不依赖指纹）。
+const moveDoc = "uicheck-move-" + Date.now().toString(36);
+const moveToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: moveDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${moveDoc}&token=${moveToken}&debug=1` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const moveResult = await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+  document.getElementById("zoomFit").click();
+  await new Promise((r) => setTimeout(r, 800));
+  // 画一个矩形（0.2,0.2 → 0.4,0.4）
+  document.querySelector('button[data-tool="rect"]').click();
+  fire("pointerdown", at(0.2, 0.2), 401);
+  fire("pointermove", at(0.4, 0.4), 401);
+  await new Promise((r) => setTimeout(r, 100));
+  fire("pointerup", at(0.4, 0.4), 401);
+  await new Promise((r) => setTimeout(r, 2000));
+  const before = await window.yanshiCallTool("list_objects", {});
+  // 拖到 +0.2,+0.1（以画布比例折算成文档像素）
+  document.querySelector('button[data-tool="move_object"]').click();
+  fire("pointerdown", at(0.3, 0.3), 402);
+  await new Promise((r) => setTimeout(r, 400));
+  fire("pointermove", at(0.5, 0.4), 402);
+  await new Promise((r) => setTimeout(r, 120));
+  fire("pointerup", at(0.5, 0.4), 402);
+  await new Promise((r) => setTimeout(r, 2200));
+  const after = await window.yanshiCallTool("list_objects", {});
+  const beforeBbox = (before.objects || []).map((o) => o.bbox).filter(Boolean)[0];
+  const afterBbox = (after.objects || []).map((o) => o.bbox).filter(Boolean)[0];
+  return { beforeBbox, afterBbox, log: document.getElementById("log").innerText.slice(0, 200) };
 })()`);
 
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
@@ -781,6 +831,25 @@ if (!maskResult.log.includes("添加") || maskResult.log.includes("失败")) {
   problems.push(`蒙版日志未报告成功：${JSON.stringify(maskResult.log.slice(0, 120))}`);
 }
 
+// 移动工具
+if (!moveResult.beforeBbox || !moveResult.afterBbox) {
+  problems.push(`移动用例缺少 bbox：${JSON.stringify(moveResult)}`);
+} else {
+  const dx = Math.round(moveResult.afterBbox[0] - moveResult.beforeBbox[0]);
+  const dy = Math.round(moveResult.afterBbox[1] - moveResult.beforeBbox[1]);
+  // 期望位移 ≈ 画布 0.2/0.1 比例 × 文档边长（512）。
+  const wantX = Math.round(512 * 0.2);
+  const wantY = Math.round(512 * 0.1);
+  if (Math.abs(dx - wantX) > 2 || Math.abs(dy - wantY) > 2) {
+    problems.push(
+      `移动位移不对：期望 ≈(${wantX}, ${wantY})，实际 (${dx}, ${dy})｜bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`
+    );
+  }
+  if (!moveResult.log.includes("已移动")) {
+    problems.push(`移动日志未报告成功：${JSON.stringify(moveResult.log.slice(0, 120))}`);
+  }
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -898,6 +967,7 @@ console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
 console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
 console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);
