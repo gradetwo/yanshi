@@ -1834,6 +1834,74 @@ if (themeAudit.error) {
     `｜控件 ${themeAudit.controls} 个，最小高度 ${themeAudit.minHeight}px（须 ≥24）` +
     `｜焦点环 ${themeAudit.focusRule ? "✓" : "✗"}｜令牌 ${themeAudit.tokens}/8`);
 
+// **多步拖拽的选区必须提交完整矩形** ✓ —— 子 agent 报的 #4：
+// 拖 (64,372)→(432,500) 十步，却提交了 `{w:36.8,h:12.8}` ✗（只取了前两次移动事件 ✓）。
+// 同时核对状态栏说真话 ✓（#5：创建选区后仍显示"无选区" ✗，遗留选区会静默裁掉一切 ✓）。
+const selectionDrag = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const select = document.querySelector('button[data-tool="select_rect"]');
+  if (!select) return { error: "找不到选区工具" };
+  select.click();
+  const rect = board.getBoundingClientRect();
+  const toClient = (dx, dy) => ({
+    clientX: rect.left + (dx - state.viewport.x) * (rect.width / board.width),
+    clientY: rect.top + (dy - state.viewport.y) * (rect.height / board.height),
+  });
+  const fire = (type, dx, dy) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 991, pointerType: "mouse", isPrimary: true,
+    buttons: type === "pointerup" ? 0 : 1, ...toClient(dx, dy),
+  }));
+  const from = { x: 64, y: 60 };
+  const to = { x: 320, y: 180 };
+  fire("pointerdown", from.x, from.y);
+  // **十步** ✓（正是子 agent 的复现条件 ✓）。
+  for (let i = 1; i <= 10; i++) {
+    fire("pointermove", from.x + ((to.x - from.x) * i) / 10, from.y + ((to.y - from.y) * i) / 10);
+  }
+  fire("pointerup", to.x, to.y);
+  return { from, to, expected: { w: to.x - from.x, h: to.y - from.y } };
+})())`));
+await new Promise((r) => setTimeout(r, 2500));
+// **用查看器此刻的文档与令牌** ✓ —— 本会话第三次栽在"查的是旧文档"上 ✗（前面段落会切换文档 ✓）。
+const currentDocInfo = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+const selectionResult2 = await fetch(
+  `${origin}/api/tools/list_selections?doc=${currentDocInfo.docId || mediumDoc}&token=${currentDocInfo.token || mediumToken}`,
+  { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+).then((r) => r.json()).catch(() => ({}));
+const hintText = await evaluate(`document.getElementById("selectionHint").textContent`);
+{
+  const selections = selectionResult2.selections || [];
+  // 矩形在 `shape.bbox` ✓，不是顶层 `bbox` ✗ —— 我第一版读错字段 ⇒ 明明建了选区却报"没有选区" ✗。
+  const last = selections.length ? selections[selections.length - 1] : null;
+  const raw = last ? (last.shape && last.shape.bbox) || last.bbox || null : null;
+  // 矩形既可能是 `[x,y,w,h]` ✓ 也可能是 `{x,y,w,h}` ✗ —— 我第一版只按下标读 ⇒ 对象时得到 NaN ✓。
+  const bbox = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? [raw.x, raw.y, raw.w, raw.h] : null);
+  if (selectionDrag.error) {
+    problems.push(`选区拖拽用例未执行：${selectionDrag.error}`);
+  } else if (!bbox) {
+    problems.push(`选区拖拽后没有选区（期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}）`);
+  } else if (Math.abs(bbox[2] - selectionDrag.expected.w) > 4 || Math.abs(bbox[3] - selectionDrag.expected.h) > 4) {
+    problems.push(`多步拖拽提交了错误的矩形：得 ${JSON.stringify(bbox.slice(2))}，期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}`);
+  } else {
+    console.log(`  选区拖拽：十步拖出 ${Math.round(bbox[2])}×${Math.round(bbox[3])}（期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}）｜状态栏「${hintText}」`);
+  }
+  if (!hintText || hintText.includes("无选区")) {
+    problems.push(`创建选区后状态栏仍显示「${hintText}」（应如实报告选区 ✓）`);
+  }
+  // **本段结束必须清除选区** ✓ —— 否则后面所有绘制都被它裁掉 ✗
+  //（实测：紧随其后的文本用例只画出 17 个像素 ✓，正好演示了 #5 的"静默裁掉一切" ✓）。
+  await evaluate(`(() => { const b = document.getElementById("clearSelection"); if (b) b.click(); })()`);
+  // **轮询**而不是固定等待 ✓：清除是异步的（提交原子 + 重新取选区列表 ✓）。
+  let clearedHint = "";
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    clearedHint = await evaluate(`document.getElementById("selectionHint").textContent`);
+    if (clearedHint && clearedHint.includes("无选区")) break;
+  }
+  if (clearedHint && !clearedHint.includes("无选区")) {
+    problems.push(`清除选区后状态栏仍显示「${clearedHint}」`);
+  }
+}
+
 // **含 CJK 的文本必须响应字号** ✓ —— 这是四位子 agent 报的文本类 bug 中最直观的一条 ✗：
 // 字号 42 与 120 得到**完全相同**的 92×14 墨迹 ✓（根因：render 分支先按 5×7 换算缩放，
 // 图集路径又按 16 除一次 ⇒ 实际缩放恒为 1 ✓）。修复后按同一份文档量两种字号 ✓。
