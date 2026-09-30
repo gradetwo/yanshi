@@ -82,6 +82,7 @@ pub mod buffer;
 pub mod color;
 pub mod dirty;
 pub mod filter;
+pub mod font;
 pub mod geometry;
 pub mod half;
 pub mod object;
