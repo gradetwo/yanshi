@@ -1368,7 +1368,7 @@ fn orphan_blobs_are_reclaimed_but_history_is_kept() {
 
     // 孤儿 blob：上传但从未被引用。
     let orphan = workspace.store().put(b"never-referenced").unwrap();
-    let (report, historical) = workspace
+    let (report, plan) = workspace
         .document("doc_1")
         .unwrap()
         .collect_garbage(yanshi_core::now_ms() + 30 * 24 * 60 * 60 * 1000)
@@ -1378,7 +1378,7 @@ fn orphan_blobs_are_reclaimed_but_history_is_kept() {
         workspace.store().exists(&blob),
         "被日志引用的 blob 永不删除（原则 21）"
     );
-    assert_eq!(historical, 0, "当前状态直接引用它，属于活跃集");
+    assert_eq!(plan.historical.len(), 0, "当前状态直接引用它，属于活跃集");
     let _ = store;
 }
 

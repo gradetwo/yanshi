@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **27 core tools**. With every implemented group enabled there are
-**65 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+**66 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every adjustment and
@@ -34,6 +34,16 @@ lands it at `target`), liquify_push (pushes along `direction`), liquify_twirl (r
 liquify_pinch (contracts; a negative strength expands).
 
 Masks take a `shape` of `rect`, `ellipse` or `polygon`, with `feather`.
+
+## Storage maintenance
+
+`collect_garbage` runs the design's orphan collection (6.3): the root set is the whole log's
+reference closure plus the active manifest, so anything a revert, a time traveller or a Stash
+references is never touched. It defaults to a **dry run** that only reports counts and bytes per
+lifecycle tier (active / historical / orphan / expiring); pass `confirm: true` to actually reclaim
+orphans older than the TTL (7 days by default; pass `ttl_seconds` to tighten it, which is how
+render-produced orphans - written seconds ago - become reclaimable). Render previews, exports and pixel self-checks
+write blobs that no atom references, so this is the tool that reclaims them.
 
 ## Collaboration (Phase 4b)
 

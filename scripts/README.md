@@ -33,6 +33,18 @@ UI_DEBUG=1 UI_TRACE=1 node scripts/browser-ui-check.mjs "<url>"   # 额外打印
 
 环境变量：`UI_TIMEOUT_MS`（总体超时，缺省 180s；调试目标无响应时脚本会以退出码 3 结束）。
 
+## 验证脚本会写入渲染 blob
+
+这些脚本对**正在运行的服务端**做真实的整幅/区域渲染，因此会在工作区的 CAS 里留下
+**不被任何原子引用的渲染产物（孤儿）**。用工具 `collect_garbage` 清理（默认干跑）：
+
+```bash
+curl -s -X POST "http://127.0.0.1:8110/api/tools/collect_garbage?doc=<id>&token=<token>" -d '{}'
+# 确认后真正回收（根集 = 所有文档的引用闭包 ∪ 活跃 Manifest，引用中的 blob 永不被删）
+curl -s -X POST "http://127.0.0.1:8110/api/tools/collect_garbage?doc=<id>&token=<token>" \
+     -d '{"confirm":true,"ttl_seconds":0}'
+```
+
 ## 重活交给 GitHub（CI/CD）
 
 * **快反馈**（`.github/workflows/ci.yml`，push/PR）：rustfmt、clippy、workspace 测试（stable/beta）、

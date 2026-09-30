@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use yanshi_core::blob::{run_gc, BlobStore, GcReport};
+use yanshi_core::blob::{plan_gc, run_gc, BlobStore, GcPlan, GcReport};
 use yanshi_core::{
     fold::{FoldResult, WarningKind},
     Atom, AtomId, AtomKind, AtomLog, Bbox, BlobHash, ChangesetId, CommitContext, DocumentState,
@@ -696,6 +696,19 @@ impl Document {
         })
     }
 
+    /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
+    ///
+    /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。
+    pub fn render_document_preview(&mut self) -> Result<RenderedPreview> {
+        let preview = self.thumbnail(ThumbKind::Doc256, None)?;
+        self.render_watermark = self.log.head_seq();
+        self.document_thumbnail_seq = self.render_watermark;
+        // 让响应里的 `preview` 指向这张小图（此前的整幅 PNG 只是更大，用途相同）。
+        self.last_render_blob = Some(preview.blob_hash.clone());
+        self.complete_render_jobs()?;
+        Ok(preview)
+    }
+
     /// 生成缩略图并输出 PNG 到 CAS（7 章）。
     pub fn thumbnail(&mut self, kind: ThumbKind, target: Option<Bbox>) -> Result<RenderedPreview> {
         let thumb: Thumb =
@@ -776,10 +789,14 @@ impl Document {
         if pending.is_empty() {
             return Ok(Vec::new());
         }
-        // 渲染一次即覆盖所有待处理 job（同一 HEAD 的渲染结果相同）；
-        // `render_region` 内部会把它们标记为 committed 并广播 job 完成事件。
-        let bbox = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
-        let _ = self.render_region(bbox)?;
+        // 一次提交只生成**文档级预览（256²）**，不再写整幅 PNG。
+        //
+        // 设计决策 A（设计方确认）：提交只写 256² 文档预览，整幅 PNG 仅在**显式导出**
+        // （客户端调用 `render_region`/导出工具）时生成。原因：此前每个提交都写一张整幅 PNG，
+        // 实测一个工作区累积到 1.3GB / 245 个 PNG（平均约 5MB）。
+        // 体验不受影响：画布像素由内核或客户端的显式 `render_region` 提供，
+        // 缩略图本来就是 256² —— 客户端拿到的 `preview` 因此更小且足够。
+        let _ = self.render_document_preview()?;
         let now = yanshi_core::now_ms();
         let mut completed = Vec::new();
         for job in pending {
@@ -858,8 +875,39 @@ impl Document {
         FoldEngine::new().declare_head_atom(actor, session, base, reason)
     }
 
+    /// 该文档的 GC 根集：**全日志引用闭包 ∪ 活跃 Manifest**（设计 6.3）。
+    ///
+    /// 工作区级 GC 需要把**所有文档**的根集并起来，否则会删掉别的文档引用的 blob。
+    pub fn gc_roots(
+        &self,
+        now: i64,
+    ) -> Result<std::collections::BTreeSet<yanshi_core::atom::BlobHash>> {
+        Ok(self.plan_garbage(now)?.roots)
+    }
+
+    /// Blob GC 的**计划**（不删除任何东西）：用于干跑与容量报告。
+    ///
+    /// 设计 6.3：根集 = 全日志引用闭包 ∪ 活跃 Manifest；三级生命周期（活跃/历史/孤儿）；
+    /// **只清理孤儿**（且需超过 TTL）。revert、时间旅行、Stash 引用的 blob 永不回收。
+    pub fn plan_garbage(&self, now: i64) -> Result<GcPlan> {
+        // 必须是**纯计划**：`run_gc` 会真的删除过期孤儿 ✗ —— 曾因此让「干跑」删了数据。
+        let manifest = self.state.active_blob_manifest();
+        plan_gc(
+            &*self.store,
+            &self.log,
+            &manifest,
+            &Default::default(),
+            now,
+            self.settings.orphan_ttl_seconds,
+        )
+    }
+
     /// Blob GC（6.3）：根集 = 全日志引用闭包 ∪ 活跃 Manifest。
-    pub fn collect_garbage(&self, now: i64) -> Result<(GcReport, usize)> {
+    ///
+    /// 返回 `(报告, 计划)` —— 计划里含活跃/历史/孤儿/可清理四类的**同一次扫描**结果，
+    /// 调用方不必再扫一遍（此前工具层先 `plan_garbage` 再 `collect_garbage`，
+    /// 两次扫描之间状态可能变化，导致报告与实际情况不一致）。
+    pub fn collect_garbage(&self, now: i64) -> Result<(GcReport, GcPlan)> {
         let manifest = self.state.active_blob_manifest();
         let (report, plan) = run_gc(
             &*self.store,
@@ -869,7 +917,7 @@ impl Document {
             now,
             self.settings.orphan_ttl_seconds,
         )?;
-        Ok((report, plan.historical.len()))
+        Ok((report, plan))
     }
 
     /// 提交时的 dirty 规划（供测试与工具层查询）。
@@ -1181,11 +1229,11 @@ mod tests {
             document.commit(atom).unwrap();
         }
         let head_before = document.head_seq();
-        let (report, historical) = document
+        let (report, plan) = document
             .collect_garbage(yanshi_core::now_ms() + 30 * 24 * 60 * 60 * 1000)
             .unwrap();
         assert_eq!(report.deleted.len(), 0, "没有孤儿可清理");
-        assert_eq!(historical, 0, "当前状态没有历史级 blob");
+        assert_eq!(plan.historical.len(), 0, "当前状态没有历史级 blob");
         assert_eq!(head_before, document.head_seq());
     }
 }

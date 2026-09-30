@@ -915,6 +915,26 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("job_id", String, true, "job id")],
     },
     ToolSpec {
+        // 设计 6.3 的孤儿 GC。此前 `Document::collect_garbage` 已实现但**没有任何入口** ✗：
+        // 渲染产生的 blob（预览/导出/逐像素自检）不属于任何原子引用，属于「孤儿」，
+        // 只能靠 TTL 到期回收，而没有任何东西触发 GC。实测一个工作区因此累积到 1.3GB。
+        //
+        // 默认**干跑**（`confirm=false`）只报告，不删除任何东西；`confirm=true` 才真正回收。
+        name: "collect_garbage",
+        profile: Profile::Structure,
+        summary: "Blob 孤儿回收（设计 6.3）：默认只报告，confirm=true 才删除",
+        mutating: false,
+        params: &[
+            param!("confirm", Boolean, false, "true 才真正删除孤儿；缺省 false 只报告"),
+            param!(
+                "ttl_seconds",
+                Integer,
+                false,
+                "覆盖孤儿 TTL（秒）。只影响「多久没被引用才算过期」；缺省用服务端配置（7 天）"
+            ),
+        ],
+    },
+    ToolSpec {
         name: "get_render_status",
         profile: Profile::Core,
         summary: "查询某个原子是否已渲染",
@@ -1403,6 +1423,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
         "render_region" => read_render_region(ctx, args),
+        "collect_garbage" => read_collect_garbage(ctx, args),
         "create_layer" => write_create_layer(ctx, args),
         "update_layer" => write_update_layer(ctx, args),
         "delete_layer" => write_delete_layer(ctx, args),
@@ -1624,6 +1645,66 @@ fn read_get_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         value["version_chain"] = json!(object.versions);
     }
     Ok(value)
+}
+
+/// 孤儿 GC：默认只报告（干跑），`confirm: true` 才删除。
+///
+/// **安全保证**（设计 6.3）：根集 = 全日志引用闭包 ∪ 活跃 Manifest，因此
+/// revert、时间旅行、Stash 引用的 blob 一定不会被回收；只有既无引用、又超过 TTL 的孤儿才会被删。
+fn read_collect_garbage(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let confirm = args
+        .get("confirm")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let now = ctx.now;
+    // TTL 覆盖：渲染产生的孤儿（预览/导出/自检）往往刚刚写入，按缺省 7 天无法回收。
+    // 缩小 TTL 会更激进地回收孤儿，但**根集永不受影响**（日志/Manifest 引用的 blob 不会被删）。
+    let ttl = args
+        .get("ttl_seconds")
+        .and_then(Value::as_i64)
+        .map(|value| value.max(0))
+        .unwrap_or_else(|| ctx.workspace.settings().orphan_ttl_seconds);
+    // **工作区级**：根集必须覆盖**所有文档**的引用闭包，否则会删掉别的文档引用的 blob。
+    // **一次扫描**同时得到计划与（可选的）回收报告：分两次扫描会因中间状态变化而不一致。
+    let (report, plan) = if confirm {
+        let (report, plan) = ctx.workspace.collect_garbage_with_ttl(now, ttl)?;
+        (Some(report), plan)
+    } else {
+        (None, ctx.workspace.plan_garbage_with_ttl(now, ttl)?)
+    };
+
+    let expiring_bytes: u64 = plan.expiring.iter().map(|entry| entry.size).sum();
+    let orphan_bytes: u64 = plan.orphans.iter().map(|entry| entry.size).sum();
+    let historical_bytes: u64 = plan.historical.iter().map(|entry| entry.size).sum();
+
+    let mut response = json!({
+        "dry_run": !confirm,
+        "ttl_seconds": ttl,
+        "scanned": plan.active.len() + plan.historical.len() + plan.orphans.len(),
+        "active": plan.active.len(),
+        "historical": plan.historical.len(),
+        "historical_bytes": historical_bytes,
+        "orphans": plan.orphans.len(),
+        "orphan_bytes": orphan_bytes,
+        "expiring": plan.expiring.len(),
+        "expiring_bytes": expiring_bytes,
+        "reclaimed_blobs": 0,
+        "reclaimed_bytes": 0,
+        "note": if confirm {
+            "已回收超过 TTL 的孤儿；日志与 Manifest 引用的 blob 不会被删除"
+        } else {
+            "干跑：未删除任何 blob；确认回收请传 confirm=true"
+        },
+    });
+
+    if let Some(report) = report {
+        response["reclaimed_blobs"] = json!(report.deleted.len());
+        response["reclaimed_bytes"] = json!(report.bytes_reclaimed);
+        response["scanned"] = json!(report.scanned);
+        response["retained_active"] = json!(report.retained_active);
+        response["retained_historical"] = json!(report.retained_historical);
+    }
+    Ok(response)
 }
 
 fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

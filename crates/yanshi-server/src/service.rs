@@ -267,6 +267,102 @@ impl Workspace {
     }
 
     /// 可变文档引用。
+    /// GC 的输入：**所有文档**引用闭包的并集（安全），加上某个文档的日志/Manifest（分类诊断）。
+    fn gc_inputs(
+        &self,
+        now: i64,
+    ) -> Result<(
+        std::collections::BTreeSet<yanshi_core::atom::BlobHash>,
+        yanshi_core::log::AtomLog,
+        std::collections::BTreeSet<yanshi_core::atom::BlobHash>,
+    )> {
+        let mut extra_roots: std::collections::BTreeSet<yanshi_core::atom::BlobHash> =
+            std::collections::BTreeSet::new();
+        for document in self.documents.values() {
+            extra_roots.extend(document.gc_roots(now)?);
+        }
+        match self.documents.values().next() {
+            Some(primary) => Ok((
+                extra_roots,
+                primary.log().clone(),
+                primary.state().active_blob_manifest(),
+            )),
+            None => Ok((
+                extra_roots,
+                yanshi_core::log::AtomLog::new(),
+                std::collections::BTreeSet::new(),
+            )),
+        }
+    }
+
+    /// **工作区级** GC 计划（不删除任何东西）。用于干跑与容量报告。
+    pub fn plan_garbage(&self, now: i64) -> Result<yanshi_core::blob::GcPlan> {
+        self.plan_garbage_with_ttl(now, self.settings.orphan_ttl_seconds)
+    }
+
+    /// 同上，但显式指定 TTL（调用方可能希望更激进地回收刚产生的孤儿）。
+    pub fn plan_garbage_with_ttl(
+        &self,
+        now: i64,
+        ttl_seconds: i64,
+    ) -> Result<yanshi_core::blob::GcPlan> {
+        let (extra_roots, log, manifest) = self.gc_inputs(now)?;
+        yanshi_core::blob::plan_gc(
+            &*self.store,
+            &log,
+            &manifest,
+            &extra_roots,
+            now,
+            ttl_seconds,
+        )
+    }
+
+    /// 内部：旧的 run_gc 计划路径（保留给诊断使用）。
+    #[allow(dead_code)]
+    fn plan_garbage_via_run_gc(&self, now: i64) -> Result<yanshi_core::blob::GcPlan> {
+        let (extra_roots, log, manifest) = self.gc_inputs(now)?;
+        let (_, plan) = yanshi_core::blob::run_gc(
+            &*self.store,
+            &log,
+            &manifest,
+            &extra_roots,
+            now,
+            self.settings.orphan_ttl_seconds,
+        )?;
+        Ok(plan)
+    }
+
+    /// **工作区级**孤儿回收（设计 6.3）：根集 = **所有文档**的日志引用闭包 ∪ 各自活跃 Manifest。
+    ///
+    /// 为什么必须跨文档：GC 按根集删除「孤儿」，而一个 blob 可能被**别的文档**引用。
+    /// 只按当前文档取根集会把其它文档引用的 blob 判成孤儿并删掉（数据丢失）。
+    /// 这一点由干跑实测发现：某工作区 280 个 blob 在单文档视角下**全部**显示为孤儿。
+    pub fn collect_garbage(
+        &self,
+        now: i64,
+    ) -> Result<(yanshi_core::blob::GcReport, yanshi_core::blob::GcPlan)> {
+        self.collect_garbage_with_ttl(now, self.settings.orphan_ttl_seconds)
+    }
+
+    /// 同上，但显式指定 TTL。
+    pub fn collect_garbage_with_ttl(
+        &self,
+        now: i64,
+        ttl_seconds: i64,
+    ) -> Result<(yanshi_core::blob::GcReport, yanshi_core::blob::GcPlan)> {
+        let (extra_roots, log, manifest) = self.gc_inputs(now)?;
+        yanshi_core::blob::run_gc(
+            &*self.store,
+            &log,
+            &manifest,
+            &extra_roots,
+            now,
+            ttl_seconds,
+        )
+    }
+
+    /// 打开（或按需创建）文档。
+    /// 取可变文档引用（不存在则 `reference_not_found`）。
     pub fn document_mut(&mut self, doc_id: &str) -> Result<&mut Document> {
         self.documents.get_mut(doc_id).ok_or_else(|| {
             YanshiError::new(
