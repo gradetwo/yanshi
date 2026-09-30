@@ -2157,7 +2157,7 @@ console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON
 // **设计 11.1 的其余介质** ✓：马克笔与铅笔走**同一条**用户路径 ✓
 //（选中介质 ⇒ 用"介质"工具落笔 ✓ ⇒ 服务端记录 `medium {id, version}` ✓ ⇒ 画布有墨 ✓）。
 // 断言刻意与已有介质用例一致 ✓：**只有"能画出来且描述符正确"才算通过** ✓。
-for (const [key, id, label] of [["marker", "marker", "马克笔"], ["pencil", "pencil", "铅笔"]]) {
+for (const [key, id, label] of [["marker", "marker", "马克笔"], ["pencil", "pencil", "铅笔"], ["pixel", "pixel", "像素"]]) {
   const docId = `${mediumDoc}-${key}`;
   const created = await fetch(`${origin}/api/documents`, {
     method: "POST", headers: { "content-type": "application/json" },

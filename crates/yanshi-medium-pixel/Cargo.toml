@@ -1,0 +1,12 @@
+[package]
+name = "yanshi-medium-pixel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "像素介质插件：ABI v2（硬边方形笔尖、完全不抗锯齿、颜色精确；确定性；无 imports）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
