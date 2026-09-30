@@ -466,7 +466,25 @@ mod tests {
 
         let response = call(&mut server, 2, "tools/list", json!({}));
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 27, "核心层应有 27 个工具");
+        // **不要硬编码工具数量** ✗ —— 本轮新增 `replace_object_data` 时，
+        // 这里写死的 27 直接让测试变红 ✓，而它真正想守的是"MCP 暴露的工具与注册表一致" ✓。
+        // 因此改成两条**真正的**断言：与注册表逐一对应 ✓，以及一个宽松的下界（防止空列表假过 ✓）。
+        let registry: Vec<String> = yanshi_server::ToolRegistry::core()
+            .tools()
+            .iter()
+            .map(|tool| tool.name.to_owned())
+            .collect();
+        assert_eq!(
+            tools.len(),
+            registry.len(),
+            "MCP 暴露的工具数应与核心注册表一致（注册表 {} 个）",
+            registry.len()
+        );
+        assert!(
+            tools.len() >= 20,
+            "核心工具数明显偏少（{}），列表可能没生成出来",
+            tools.len()
+        );
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
