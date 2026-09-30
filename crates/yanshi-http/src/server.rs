@@ -543,6 +543,41 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
         .and_then(Value::as_str)
         .unwrap_or(&state.options.doc_id)
         .to_owned();
+    // 「另存为副本」：`copy_from` + `from_token`（源文档的令牌，用于鉴权 ✓）。
+    // 设计未规定文档命名/重命名 ✗ —— 文档以 doc_id 为主键 ✓，用户确认采用可逆的
+    // 「另存为副本」（新 id、原文档保留 ✓；真改名会牵动日志/持久化/令牌，不可逆 ✗）。
+    if let Some(from) = body.get("copy_from").and_then(Value::as_str) {
+        let from = from.to_owned();
+        let from_token = body
+            .get("from_token")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let actor = body
+            .get("actor")
+            .and_then(Value::as_str)
+            .unwrap_or("human:web")
+            .to_owned();
+        // 源文档必须用**它自己的令牌**授权（目标文档的令牌管不到源文档 ✓）。
+        if let Err(response) = authorize_with_token(state, &from, from_token) {
+            return response;
+        }
+        let Ok(mut workspace) = state.workspace.lock() else {
+            return internal("工作区锁中毒");
+        };
+        let copied = match workspace.duplicate_document(&from, &doc_id, &actor, "session:web") {
+            Ok(copied) => copied,
+            Err(error) => return Response::from_error(&error),
+        };
+        let token = match workspace.issue_token(&doc_id, &actor, Role::Editor) {
+            Ok(token) => token,
+            Err(error) => return Response::from_error(&error),
+        };
+        return Response::json(
+            200,
+            &json!({"ok": true, "doc_id": doc_id, "token": token.as_str(),
+                    "copied_atoms": copied, "copy_from": from}),
+        );
+    }
     let width = body
         .get("width")
         .and_then(Value::as_u64)
@@ -600,6 +635,26 @@ fn authorize(
         .map_err(|_| internal("工作区锁中毒"))?;
     workspace
         .authorize(doc_id, token.as_ref(), TransportKind::Http, "local:http")
+        .map_err(|error| Response::from_error(&error))
+}
+
+/// 用**显式令牌**授权某个文档（用于「另存为副本」：目标文档的令牌管不到源文档 ✓）。
+fn authorize_with_token(state: &ServerState, doc_id: &str, token: &str) -> Result<(), Response> {
+    let token = if token.is_empty() {
+        None
+    } else {
+        Some(
+            yanshi_server::CapabilityToken::parse(token)
+                .map_err(|error| Response::from_error(&error))?,
+        )
+    };
+    let mut workspace = state
+        .workspace
+        .lock()
+        .map_err(|_| internal("工作区锁中毒"))?;
+    workspace
+        .authorize(doc_id, token.as_ref(), TransportKind::Http, "local:http")
+        .map(|_| ())
         .map_err(|error| Response::from_error(&error))
 }
 
@@ -1414,6 +1469,82 @@ mod tests {
         let mut request = request("POST", &format!("/api/blob?doc={doc_id}&token={token}"));
         request.body = bytes;
         body_json(&route(state, &request))
+    }
+
+    #[test]
+    fn copying_a_document_requires_the_source_token_and_produces_a_listed_copy() {
+        let state = state();
+        let token = editor_token(&state, "doc_src");
+        assert_eq!(
+            call_tool(
+                &state,
+                "doc_src",
+                &token,
+                "create_layer",
+                &json!({"layer_id": "L"})
+            )["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            call_tool(
+                &state,
+                "doc_src",
+                &token,
+                "fill",
+                &json!({"layer_id": "L",
+                        "data": {"color": {"r": 10, "g": 90, "b": 200, "a": 255},
+                                 "region": {"x": 0, "y": 0, "w": 32, "h": 32}}})
+            )["ok"],
+            json!(true)
+        );
+
+        // ① 没有源文档令牌 ⇒ 必须被拒绝（目标文档的令牌管不到源文档）。
+        let mut create = request("POST", "/api/documents");
+        create.body =
+            serde_json::to_vec(&json!({"doc_id": "doc_copy_bad", "copy_from": "doc_src"})).unwrap();
+        let denied = body_json(&route(&state, &create));
+        assert_eq!(denied["ok"], json!(false), "缺少源令牌应被拒绝：{denied}");
+
+        // ② 带上源令牌 ⇒ 成功，并返回副本自己的令牌。
+        let mut create = request("POST", "/api/documents");
+        create.body = serde_json::to_vec(&json!({
+            "doc_id": "doc_copy_ok", "copy_from": "doc_src", "from_token": token
+        }))
+        .unwrap();
+        let copied = body_json(&route(&state, &create));
+        assert_eq!(copied["ok"], json!(true), "另存为副本应成功：{copied}");
+        assert!(
+            copied["copied_atoms"].as_u64().unwrap_or(0) >= 1,
+            "{copied}"
+        );
+        let copy_token = copied["token"].as_str().expect("应返回副本令牌").to_owned();
+
+        // ③ 副本出现在文档列表里，且能用自己的令牌读写。
+        let listed = body_json(&route(&state, &request("GET", "/api/documents")));
+        let ids: Vec<String> = listed["documents"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["doc_id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            ids.contains(&"doc_copy_ok".to_owned()),
+            "文档列表应含副本：{listed}"
+        );
+        assert_eq!(
+            call_tool(
+                &state,
+                "doc_copy_ok",
+                &copy_token,
+                "create_layer",
+                &json!({"layer_id": "L2"})
+            )["ok"],
+            json!(true),
+            "副本应可用自己的令牌继续编辑"
+        );
     }
 
     #[test]

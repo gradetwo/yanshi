@@ -98,6 +98,21 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span id="undoDepth">撤销 0 / 重做 0</span>
   </span>
 </header>
+<dialog id="newDialog">
+  <h2 style="margin-top:0">新建文档</h2>
+  <p style="opacity:.75;font-size:12px;margin:4px 0">
+    文档以 id 作为名字（也是主键）。换个名字即可并存多份作品；重名会提示。
+  </p>
+  <label style="display:flex;gap:8px;align-items:center">
+    名称
+    <input id="newName" type="text" placeholder="例如 我的第一幅画" style="flex:1 1 auto" />
+  </label>
+  <div id="newHint" style="font-size:12px;opacity:.75;min-height:16px;margin:6px 0"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button id="newCancel">取消</button>
+    <button id="newCreate">创建</button>
+  </div>
+</dialog>
 <dialog id="openDialog">
   <h2 style="margin-top:0">打开文档</h2>
   <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
@@ -107,6 +122,15 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。
   </p>
   <input id="importFile" type="file" accept="image/*" />
+  <hr />
+  <h2>另存为副本</h2>
+  <p style="opacity:.75;font-size:12px;margin:4px 0">
+    以**新 id**保存一份完整副本（原文档保留，可逆）。文档以 id 为主键，因此这里填的是新文档的 id。
+  </p>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input id="copyName" type="text" placeholder="新文档 id" style="flex:1 1 auto" />
+    <button id="copyDoc">另存为…</button>
+  </div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
     <button id="openClose">关闭</button>
   </div>
@@ -827,10 +851,46 @@ async function checkBitExact() {
   refreshThumb();
 }
 
-/// 新建文档：生成新的文档 id（服务端按需创建），并重置本地视图状态。
-async function newDocument() {
-  const suffix = Date.now().toString(36);
-  await switchDocument("yanshi-" + suffix);
+/// 新建文档：**先让用户输入名字** ✓（用户要求），再按该 id 创建并切换。
+///
+/// 文档以 `doc_id` 作为名字与主键 ✓；`POST /api/documents` 是"打开或创建"语义 ✓，
+/// 因此这里**先查列表**：重名时提示换名字，而不是悄悄打开已有文档 ✓。
+function newDocument() {
+  const dialog = $("newDialog");
+  const name = $("newName");
+  name.value = "yanshi-" + Date.now().toString(36);
+  $("newHint").textContent = "";
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  name.focus();
+  name.select();
+}
+
+async function createNamedDocument() {
+  const name = ($("newName").value || "").trim();
+  const hint = $("newHint");
+  if (!name) {
+    hint.textContent = "请输入名称";
+    return;
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    hint.textContent = "名称只能用字母、数字、点、下划线与连字符（它会进入 URL 与文件路径）";
+    return;
+  }
+  try {
+    const listed = await fetch("/api/documents").then((response) => response.json());
+    if ((listed.documents || []).some((info) => info.doc_id === name)) {
+      hint.textContent = "已存在同名文档，请换一个名字，或用「打开…」";
+      return;
+    }
+  } catch (_) {
+    // 列不出来就交给服务端判断（打开或创建），不阻塞创建 ✓。
+  }
+  const dialog = $("newDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  log("新建文档：" + name);
+  await switchDocument(name);
 }
 
 if (DEBUG) {
@@ -940,7 +1000,7 @@ async function promptDocument() {
 ///
 /// 此前「打开 / 新建文档」按钮只是用**当前** doc_id 再调一次 `/api/documents`，
 /// 因此点了等于没点（用户报告「点击后没有打开或者创建新的功能」）。
-async function switchDocument(docId) {
+async function switchDocument(docId, token) {
   if (state.socket) {
     const previous = state.socket;
     state.socket = null; // 先置空，onclose 便不会重连
@@ -948,7 +1008,9 @@ async function switchDocument(docId) {
   }
   window.yanshiKernelReady = false;
   state.docId = docId;
-  state.token = "";
+  // 显式传入的令牌优先（「另存为副本」刚创建文档时已经拿到令牌，避免再建一次文档）；
+  // 否则交给 ensureDocument 去创建/打开并取回令牌。
+  state.token = token || "";
   state.localSeq = 0;
   state.undoStack = [];
   state.redoStack = [];
@@ -962,7 +1024,11 @@ async function switchDocument(docId) {
   state.displayScale = null;
   state.viewport = { x: 0, y: 0, w: 1024, h: 1024 };
   sizeBoards(1024, 1024);
-  await ensureDocument();
+  if (state.token) {
+    await loadDocumentData();
+  } else {
+    await ensureDocument();
+  }
 }
 
 async function ensureDocument() {
@@ -975,11 +1041,16 @@ async function ensureDocument() {
   if (!value.ok) { log("打开文档失败：" + JSON.stringify(value), "#c33"); return; }
   state.token = value.token;
   state.docId = value.doc_id;
+  await loadDocumentData();
+}
+
+/// 拿到令牌之后的统一装载流程（`ensureDocument` 与「另存为副本」共用 ✓）。
+async function loadDocumentData() {
   const url = new URL(location.href);
   url.searchParams.set("doc", state.docId);
   url.searchParams.set("token", state.token);
   history.replaceState(null, "", url);
-  $("identity").textContent = state.docId + " · " + value.token.slice(0, 8) + "…";
+  $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
   await refreshLayers();
   await refreshThumb();
   // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
@@ -1954,8 +2025,41 @@ $("historyKind").addEventListener("change", refreshHistory);
 $("historyActor").addEventListener("change", refreshHistory);
 
 $("newDoc").addEventListener("click", newDocument);
+$("newCancel").addEventListener("click", () => {
+  const dialog = $("newDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+});
+$("newCreate").addEventListener("click", createNamedDocument);
+$("newName").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") void createNamedDocument();
+});
 $("openDoc").addEventListener("click", showOpenDialog);
 $("openClose").addEventListener("click", closeOpenDialog);
+$("copyDoc").addEventListener("click", async () => {
+  const name = ($("copyName").value || "").trim();
+  if (!name) {
+    log("另存为：请先填新文档 id", "#c33");
+    return;
+  }
+  if (name === state.docId) {
+    log("另存为：新 id 不能与当前文档相同", "#c33");
+    return;
+  }
+  // 源文档要用**它自己的令牌**授权（目标文档的令牌管不到源文档）✓。
+  const response = await fetch("/api/documents", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: name, copy_from: state.docId, from_token: state.token }),
+  }).then((value) => value.json());
+  if (!response.ok) {
+    log("另存为失败：" + (response.error_code || response.context?.detail || "unknown"), "#c33");
+    return;
+  }
+  log("已另存为副本 " + response.doc_id + "（复制 " + response.copied_atoms + " 个原子，原文档保留）");
+  closeOpenDialog();
+  await switchDocument(response.doc_id, response.token);
+});
 $("importFile").addEventListener("change", async (event) => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;

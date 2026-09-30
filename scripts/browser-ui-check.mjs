@@ -464,6 +464,59 @@ const moveResult = await evaluate(`(async () => {
   return { beforeBbox, afterBbox, log: document.getElementById("log").innerText.slice(0, 200) };
 })()`);
 
+// 新建（用户要求：**给用户输入名字的机会**）与另存为副本。
+const namedNew = "uicheck-named-" + Date.now().toString(36);
+const copyName = namedNew + "-copy";
+const namingResult = await evaluate(`(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // ① 新建：点「新建」→ 对话框应出现并**预填**一个名字 → 改成我们指定的名字 → 创建。
+  document.getElementById("newDoc").click();
+  await wait(400);
+  const dialog = document.getElementById("newDialog");
+  const prefilled = document.getElementById("newName").value;
+  document.getElementById("newName").value = ${JSON.stringify(namedNew)};
+  document.getElementById("newCreate").click();
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    if (document.getElementById("identity").textContent.includes(${JSON.stringify(namedNew)})) break;
+  }
+  const identity = document.getElementById("identity").textContent;
+  // 画点内容，便于比较副本。
+  document.getElementById("zoomFit").click();
+  await wait(700);
+  document.getElementById("color").value = "#c81e3c";
+  document.getElementById("size").value = "40";
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+  fire("pointerdown", at(0.4, 0.4), 501);
+  fire("pointermove", at(0.6, 0.5), 501);
+  await wait(90);
+  fire("pointerup", at(0.6, 0.5), 501);
+  let before = ${canvasFingerprint};
+  for (let i = 0; i < 30 && before.sum === 0; i++) { await wait(250); before = ${canvasFingerprint}; }
+
+  // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
+  document.getElementById("openDoc").click();
+  await wait(1200);
+  document.getElementById("copyName").value = ${JSON.stringify(copyName)};
+  document.getElementById("copyDoc").click();
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    if (document.getElementById("identity").textContent.includes(${JSON.stringify(copyName)})) break;
+  }
+  let after = ${canvasFingerprint};
+  for (let i = 0; i < 30 && after.sum === 0; i++) { await wait(250); after = ${canvasFingerprint}; }
+  return {
+    prefilled,
+    identity,
+    before: before.sum,
+    after: after.sum,
+    log: document.getElementById("log").innerText.slice(0, 200),
+  };
+})()`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));
@@ -566,6 +619,20 @@ await evaluate(`document.getElementById("zoomFit").click()`);
 await new Promise((r) => setTimeout(r, 1000));
 
 // 吸管 + 填充图层（设计 13.3 基础工具）。
+// **自给自足**：用自己的新文档（前面「新建/另存为」段会把页面切到副本，
+// 共享状态会让本段读到别的文档内容 —— 这一课本文件已记录多次）。
+const pickDoc = "uicheck-pick-" + Date.now().toString(36);
+const pickToken = await fetch(`${origin}/api/documents`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: pickDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${pickDoc}&token=${pickToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+
 // 吸管：先画一笔已知颜色，再用吸管点它 → `#color` 应变成该颜色（精确、局部、无缓存问题）。
 const pickResult = await evaluate(`(async () => {
   // 本段按「画布比例坐标 == 文档坐标」计算，先复位到适配（1:1）。
@@ -850,6 +917,21 @@ if (!moveResult.beforeBbox || !moveResult.afterBbox) {
   }
 }
 
+// 新建（可输入名字）与另存为副本
+if (!namingResult.prefilled) {
+  problems.push("「新建」对话框没有预填名字（用户要求：新建时能输入名字）");
+}
+if (!namingResult.identity.includes(namedNew)) {
+  problems.push(`「新建」没有切到用户输入的名字：identity=${JSON.stringify(namingResult.identity)}`);
+}
+if (namingResult.before === 0) {
+  problems.push("新建文档里画不出内容（前置条件不成立）");
+} else if (namingResult.after !== namingResult.before) {
+  problems.push(
+    `另存为副本内容不一致：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify(namingResult.log.slice(0, 120))}`
+  );
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -968,6 +1050,7 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+console.log(`  新建/另存为：预填 ${JSON.stringify(namingResult.prefilled)}｜identity ${JSON.stringify(namingResult.identity)}｜副本内容 ${namingResult.before} → ${namingResult.after}`);
 console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
 console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);

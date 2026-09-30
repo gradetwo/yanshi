@@ -198,6 +198,44 @@ impl Workspace {
         self.document_mut(&doc_id)
     }
 
+    /// 复制一个文档为**新 id 的副本**（"另存为"）。
+    ///
+    /// 设计**没有规定**文档命名/重命名 ✗ —— 文档以 `doc_id` 为主键 ✓，日志、令牌与持久化
+    /// 路径都以它为准 ✓。用户确认采用**路线 A：另存为副本**（新 id、原文档保留、可逆 ✓）—— 与
+    /// 真改名（迁移 id，会牵动日志/持久化/令牌，不可逆）相比没有数据风险 ✓。
+    ///
+    /// 实现是**逐原子原样重放** ✓：新文档与源文档的日志内容一致，因此折叠后的状态与渲染结果
+    /// 完全一致 ✓（blob 是 CAS 内容寻址，天然共享，不复制字节 ✓）。
+    /// 返回重放的原子数 ✓。
+    pub fn duplicate_document(
+        &mut self,
+        from: &str,
+        to: &str,
+        actor: &str,
+        session: &str,
+    ) -> Result<usize> {
+        let (width, height, background, atoms) = {
+            let source = self.open_document(from)?;
+            let state = source.state();
+            let atoms: Vec<yanshi_core::Atom> = source.log().atoms().to_vec();
+            (state.width, state.height, state.background.clone(), atoms)
+        };
+        let mut spec = NewDocument::new(to, width, height);
+        spec.background = background;
+        self.create_document(spec, actor, session)?;
+        let mut copied = 0usize;
+        for atom in atoms {
+            // 跳过**文档自建**事件：新文档由 `create_document` 自己产生了一条等价事件 ✓，
+            // 原样重放源文档那条会出现两个 create ✗。
+            if atom.kind == yanshi_core::AtomKind::CreateDocument {
+                continue;
+            }
+            self.commit(to, atom, actor, false)?;
+            copied += 1;
+        }
+        Ok(copied)
+    }
+
     /// 打开（或返回已打开的）文档：从磁盘加载日志并重建状态。
     pub fn open_document(&mut self, doc_id: &str) -> Result<&mut Document> {
         if !self.documents.contains_key(doc_id) {
