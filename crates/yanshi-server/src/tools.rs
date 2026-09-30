@@ -888,6 +888,58 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_object_history",
+        profile: Profile::History,
+        summary: "一个对象的原子版本链（设计 776）",
+        mutating: false,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
+        name: "find_atom",
+        profile: Profile::History,
+        summary: "按条件检索原子（设计 776）",
+        mutating: false,
+        params: &[
+            param!("kind", String, false, "原子种类"),
+            param!("actor", String, false, "提交者"),
+            param!("object_id", String, false, "涉及的对象"),
+            param!("layer_id", String, false, "涉及的图层"),
+            param!("since_seq", Integer, false, "起始序号（不含）"),
+            param!("limit", Integer, false, "最多返回多少条"),
+        ],
+    },
+    ToolSpec {
+        name: "get_diff",
+        profile: Profile::History,
+        summary: "两个序号之间的日志差分（设计 776）",
+        mutating: false,
+        params: &[
+            param!("from_seq", Integer, true, "起点序号（不含）"),
+            param!("to_seq", Integer, false, "终点序号（含）；缺省到 HEAD"),
+            param!("limit", Integer, false, "最多返回多少条原子"),
+        ],
+    },
+    ToolSpec {
+        name: "get_ancestors",
+        profile: Profile::History,
+        summary: "这个对象依赖谁（引用图的向上方向，设计 776）",
+        mutating: false,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
+        name: "get_descendants",
+        profile: Profile::History,
+        summary: "谁依赖这个对象（引用图的向下方向，设计 776）",
+        mutating: false,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
         name: "get_changesets",
         profile: Profile::Changeset,
         summary: "列出日志里的变更集（设计 793）",
@@ -1617,6 +1669,11 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "get_object_history" => read_get_object_history(ctx, args),
+        "find_atom" => read_find_atom(ctx, args),
+        "get_diff" => read_get_diff(ctx, args),
+        "get_ancestors" => read_get_ancestors(ctx, args),
+        "get_descendants" => read_get_descendants(ctx, args),
         "get_changesets" => read_get_changesets(ctx, args),
         "revert_changeset" => write_revert_changeset(ctx, args),
         "path_edit" => write_path_edit(ctx, args),
@@ -3044,6 +3101,264 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     Ok(
         json!({"ok": true, "group_id": group_id, "delta": {"dx": dx, "dy": dy}, "head": result.head_seq}),
     )
+}
+
+/// 原子涉及的 `object_id` / `layer_id` ✓（工具与历史检索都按这两个字段过滤 ✓）。
+fn atom_object_id(atom: &yanshi_core::Atom) -> Option<&str> {
+    atom.payload.get("object_id").and_then(Value::as_str)
+}
+
+fn atom_layer_id(atom: &yanshi_core::Atom) -> Option<&str> {
+    atom.payload.get("layer_id").and_then(Value::as_str)
+}
+
+/// 一份"原子的摘要" ✓（历史类只读工具共用一个形状 ✓ ⇒ 不会各自长出不同字段 ✓）。
+fn atom_summary(atom: &yanshi_core::Atom) -> Value {
+    json!({
+        "atom_id": atom.id,
+        "seq": atom.seq,
+        "kind": atom.kind,
+        "actor": atom.actor,
+        "session": atom.session,
+        "changeset_id": atom.changeset_id,
+        "timestamp": atom.timestamp,
+        "object_id": atom_object_id(atom),
+        "layer_id": atom_layer_id(atom),
+        "heavy": atom.is_heavy(),
+        "state_effect": atom.kind.is_state_effect(),
+    })
+}
+
+/// **一个对象的原子版本链** ✓（设计 776 的 `get_object_history` ✓）。
+///
+/// **设计只列了名字 ⇒ 记录选择** ✓：这里报的是"这个对象**当前生效**的原子链" ✓
+///（`state.objects[id].versions` ✓，由折叠层维护 ✓）—— 也就是"它是怎么变成现在这样的" ✓。
+/// 因此它天然**不含**被 `supersede` 掉的中间版本 ✗（那些不在生效链上 ✓）；
+/// 想看**全部**经过的原子请用 `find_atom {object_id}` ✓（那是日志检索 ✓，两者互补 ✓）。
+///
+/// 每条还给出 `reverted` ✓：扫描日志里指向它的最近一次 `Revert`/`Reapply` ✓。
+/// **边界如实说明 ✓**：只做**一层**判定 ✓（与提交校验一致 ✓ —— 校验层目前不允许
+/// revert/reapply 一个 revert 原子 ✓，见 `revert_changeset` 的说明 ✓）。
+fn read_get_object_history(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let state = document.state().clone();
+    let Some(object) = state.objects.get(object_id.as_str()) else {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("对象 {object_id} 不存在")),
+        ));
+    };
+    let versions: Vec<String> = object.versions.clone();
+    // 最近一次动作 ✓（一层 ✓）。
+    let mut action: std::collections::BTreeMap<String, (u64, String)> =
+        std::collections::BTreeMap::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Revert && atom.kind != AtomKind::Reapply {
+            continue;
+        }
+        if let Some(target) = atom.payload.get("target").and_then(Value::as_str) {
+            action.insert(target.to_owned(), (atom.seq, atom.kind.as_str().to_owned()));
+        }
+    }
+    let by_id: std::collections::BTreeMap<String, Value> = document
+        .log()
+        .iter()
+        .map(|atom| (atom.id.clone(), atom_summary(atom)))
+        .collect();
+    let chain: Vec<Value> = versions
+        .iter()
+        .filter_map(|atom_id| by_id.get(atom_id).cloned())
+        .map(|mut summary| {
+            let reverted = summary
+                .get("atom_id")
+                .and_then(Value::as_str)
+                .and_then(|atom_id| action.get(atom_id))
+                .map(|(_, kind)| kind == "revert")
+                .unwrap_or(false);
+            summary["reverted"] = json!(reverted);
+            summary
+        })
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "type": format!("{:?}", object.object_type).to_lowercase(),
+        "deleted": object.is_deleted(),
+        "versions": chain,
+        "count": chain.len(),
+        "head_seq": document.head_seq(),
+    }))
+}
+
+/// **按条件检索原子** ✓（设计 776 的 `find_atom` ✓）。
+///
+/// 与 `get_log` 的差别 ✓：这里多了 **`object_id` / `layer_id`** 两个过滤 ✓，
+/// 并且**报告匹配总数** ✓（`get_log` 只按 `limit` 返回 ✓，调用方无法知道还有多少 ✓）；
+/// 这两点正是"找某个对象到底经历了什么"时最需要的 ✓。
+fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let since = optional_u64(args, "since_seq").unwrap_or(0);
+    let limit = optional_u64(args, "limit").unwrap_or(200).min(2000) as usize;
+    let kind_filter = optional_str(args, "kind");
+    let actor_filter = optional_str(args, "actor");
+    let object_filter = optional_str(args, "object_id");
+    let layer_filter = optional_str(args, "layer_id");
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let matched: Vec<&yanshi_core::Atom> = document
+        .log()
+        .iter()
+        .filter(|atom| atom.seq > since)
+        .filter(|atom| {
+            kind_filter
+                .as_deref()
+                .is_none_or(|kind| atom.kind.as_str() == kind)
+        })
+        .filter(|atom| {
+            actor_filter
+                .as_deref()
+                .is_none_or(|actor| atom.actor == actor)
+        })
+        .filter(|atom| {
+            object_filter
+                .as_deref()
+                .is_none_or(|object_id| atom_object_id(atom) == Some(object_id))
+        })
+        .filter(|atom| {
+            layer_filter
+                .as_deref()
+                .is_none_or(|layer_id| atom_layer_id(atom) == Some(layer_id))
+        })
+        .collect();
+    let total = matched.len();
+    let atoms: Vec<Value> = matched.into_iter().take(limit).map(atom_summary).collect();
+    Ok(json!({
+        "ok": true,
+        "atoms": atoms,
+        "returned": atoms.len(),
+        "total_matched": total,
+        "truncated": total > limit,
+    }))
+}
+
+/// **两个序号之间的日志差分** ✓（设计 776 的 `get_diff` ✓）。
+///
+/// **设计只列了名字 ⇒ 记录选择** ✓：这里做的是**日志层**的差分 ✓ ——
+/// `(from_seq, to_seq]` 区间内的原子 ✓、按种类汇总 ✓、以及涉及到的对象与图层集合 ✓。
+/// 它**不**做像素/求值层差分 ✗（那会把"两个状态各渲染一遍"的成本塞进一个只读工具 ✓，
+/// 而且渲染缓存与容差语义会牵进来 ✓）—— 需要像素对比请用 `render_region` 各渲染一次 ✓。
+fn read_get_diff(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let from_seq = optional_u64(args, "from_seq").unwrap_or(0);
+    let limit = optional_u64(args, "limit").unwrap_or(500).min(5000) as usize;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let head = document.head_seq();
+    let to_seq = optional_u64(args, "to_seq").unwrap_or(head);
+    if to_seq < from_seq {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("to_seq {to_seq} 小于 from_seq {from_seq}")),
+        ));
+    }
+    let mut atoms: Vec<Value> = Vec::new();
+    let mut by_kind: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut objects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for atom in document.log().iter() {
+        if atom.seq <= from_seq || atom.seq > to_seq {
+            continue;
+        }
+        *by_kind.entry(atom.kind.as_str().to_owned()).or_insert(0) += 1;
+        if let Some(object_id) = atom_object_id(atom) {
+            objects.insert(object_id.to_owned());
+        }
+        if let Some(layer_id) = atom_layer_id(atom) {
+            layers.insert(layer_id.to_owned());
+        }
+        if atoms.len() < limit {
+            atoms.push(atom_summary(atom));
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "from_seq": from_seq,
+        "to_seq": to_seq,
+        "head_seq": head,
+        "atoms": atoms,
+        "atom_count": atoms.len(),
+        "by_kind": by_kind,
+        "objects": objects.into_iter().collect::<Vec<_>>(),
+        "layers": layers.into_iter().collect::<Vec<_>>(),
+    }))
+}
+
+/// **引用图的向上方向** ✓（设计 776 的 `get_ancestors` ✓）。
+///
+/// **设计只列了名字 ⇒ 记录选择** ✓：历史组里这一对按**引用关系**解释 ✓ ——
+/// `ancestors` = "我依赖谁" ✓（例如实例 → master → … ✓），
+/// `descendants` = "谁依赖我" ✓（与 `get_dependency_graph` 的 `dependents` 同一套闭包 ✓）。
+/// **为什么这样选** ✓：对象**自身的原子版本链**已经由 `get_object_history` 提供 ✓，
+/// 两者不重复 ✓；而"依赖方向"在 `get_dependency_graph` 里已经算得很准 ✓，复用即可 ✓。
+fn read_get_ancestors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let state = document_state(ctx)?;
+    if !state.objects.contains_key(object_id.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("对象 {object_id} 不存在")),
+        ));
+    }
+    let mut chain: Vec<Value> = Vec::new();
+    let mut cursor = object_id.clone();
+    let mut visited: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        let master = state
+            .objects
+            .get(&cursor)
+            .and_then(|object| object.data.get("master_ref"))
+            .and_then(|master_ref| master_ref.get("object_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(master) = master else { break };
+        if !visited.insert(master.clone()) {
+            chain.push(json!({"object_id": master, "cycle": true}));
+            break;
+        }
+        chain.push(json!({"object_id": master}));
+        cursor = master;
+    }
+    Ok(json!({"ok": true, "object_id": object_id, "ancestors": chain, "count": chain.len()}))
+}
+
+fn read_get_descendants(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let state = document_state(ctx)?;
+    if !state.objects.contains_key(object_id.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("对象 {object_id} 不存在")),
+        ));
+    }
+    let descendants = yanshi_render::dirty::dependents_of(&state, &object_id);
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "descendants": descendants,
+        "count": descendants.len(),
+    }))
 }
 
 fn read_get_changesets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

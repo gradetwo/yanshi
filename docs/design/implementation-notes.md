@@ -3978,3 +3978,30 @@ LZ77 用 15 位哈希 + 链式回溯（上限 96 步 ✓，只影响压缩率不
 本地**只跑改动涉及的包与测试** ✓（不再每轮全量 workspace ✓）。这更快 ✓，
 代价是跨 crate 的回归要靠"改动落在哪个 crate"来判断 ✓ —— 本轮触及 `yanshi-server`（工具层 ✓）
 与 `yanshi-core`（未改 ✓，但工具依赖它 ✓）⇒ 两者都跑了 clippy ✓。
+
+### 设计 776：history 组五个只读工具（本轮，worktree）
+
+**本轮按给你的清单里的第 1 项推进** ✓（无需你拍板 ✓、都是既有日志上的只读操作 ✓）。
+设计只列了名字 ✓（"history | get_object_history, get_diff, get_changesets, get_ancestors,
+get_descendants, find_atom, …" ✓）⇒ **语义由本仓库定义并记录** ✓，分工信条 ✓：
+* `get_object_history` ✓：一个对象**当前生效**的原子版本链（`state.objects[id].versions` ✓）
+  ⇒ 回答"它是怎么变成现在这样的" ✓；因此**天然不含**被 supersede 掉的中间版本 ✗ ——
+  想看**全部**经过的原子用 `find_atom {object_id}` ✓（日志检索 ✓），两者互补 ✓；
+* `find_atom` ✓：比 `get_log` 多两件事 ✓ —— **`object_id`/`layer_id` 过滤** ✓ 与**匹配总数** ✓
+  （`total_matched` ✓ + `truncated` ✓）—— 后者正是"找某对象经历了什么"时最需要的 ✓；
+* `get_diff` ✓：**日志层**差分 ✓（`(from_seq, to_seq]` ✓ + 按种类汇总 ✓ + 涉及对象/图层 ✓）。
+  **刻意不做像素层差分** ✓：那会把"两个状态各渲染一遍"的成本与容差语义塞进一个只读工具 ✓；
+* `get_ancestors`/`get_descendants` ✓：**引用图**上下两向 ✓（与 `get_dependency_graph` 同一套闭包 ✓）。
+  **为什么按引用解释而不是按原子链** ✓：对象自身的原子链已由 `get_object_history` 提供 ✓，不重叠 ✓。
+
+**验收** ✓（本地 ✓、只跑涉及的包 ✓）：4 条测试 ✓（版本链两条且含 `draw_stroke` + `supersede` ✓；
+`find_atom` 按对象过滤 + 总数/截断如实报告 ✓；`get_diff` 汇总与空区间/反向报错 ✓；
+两层实例的 ancestors/descendants 传递闭包 ✓）⇒ 与既有 history/changeset/instances/path_edit 一并通过 ✓；
+`docs/tools.md` 计数同步为 **39 / 87** ✓（history 在默认 profile 里 ✓）。
+
+**又一处"我猜错了名字"的教训 ✓**：我把原子种类写成 `stroke` ✗，实际是 `draw_stroke` ✓
+（`AtomKind::as_str()` ✓）—— 测试当场指出 ✓，**工具本身是对的** ✓。
+规则重申 ✓：**断言里的常量要取自被测系统的定义** ✓（枚举的 `as_str()` ✓），不要凭印象写 ✗。
+
+**按你的最新指示 ✓**：本轮**没有触发任何 GitHub Actions** ✓，本地**只跑 `yanshi-server` 相关测试与 clippy** ✓
+（不跑整个 workspace ✓）。
