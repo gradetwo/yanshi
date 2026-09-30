@@ -831,33 +831,28 @@ impl Renderer {
                     position,
                     ..
                 } => {
-                    // 路线 A 的最小切片：内置 5×7 ASCII 位图字体 ✓（CJK 子集为后续项 ✓）。
-                    // 文本同样受选区约束 ✓（逐像素 ✓）。
-                    let scale = crate::object::text_scale_for_size(size);
+                    // 文本走**内置 5×7 ASCII**（纯 ASCII ✓）或**内嵌 OFL 图集**（含 CJK ✓）。
+                    // **缩放由字体层按路径决定** ✓ —— 这里只传磅值 `size` ✓。
+                    //
+                    // 此前这里先算 `round(size/7)`（5×7 的缩放 ✓）再交给两条路径 ✓，
+                    // 而图集路径又按 16 除一次 ✓ ⇒ 含 CJK 的文本缩放**恒为 1** ✗
+                    //（子 agent 实测：字号 42 与 120 得到**完全相同**的 92×14 墨迹 ✓）。
                     let text_clip = object_clip(state, &layer.id, object);
-                    let drawn = match &text_clip {
-                        Some(clip) => crate::font::draw_text_clipped(
-                            layer_buffer,
-                            text.as_str(),
-                            position.0,
-                            position.1,
-                            scale,
-                            color,
-                            align.as_str(),
-                            0.0,
-                            &|x, y| clip.coverage(x, y),
-                        ),
-                        None => crate::font::draw_text(
-                            layer_buffer,
-                            text.as_str(),
-                            position.0,
-                            position.1,
-                            scale,
-                            color,
-                            align.as_str(),
-                            0.0,
-                        ),
+                    let coverage = |x: f64, y: f64| match &text_clip {
+                        Some(clip) => clip.coverage(x, y),
+                        None => 1.0,
                     };
+                    let drawn = crate::font::draw_text_sized(
+                        layer_buffer,
+                        text.as_str(),
+                        position.0,
+                        position.1,
+                        size,
+                        color,
+                        align.as_str(),
+                        0.0,
+                        &coverage,
+                    );
                     if drawn == 0 {
                         stats.unsupported.push(format!(
                             "文本未绘制出像素（对象 {}，文本 {:?}）",

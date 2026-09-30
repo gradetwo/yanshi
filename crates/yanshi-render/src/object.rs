@@ -571,9 +571,12 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             position,
             ..
         } => {
-            let scale = text_scale_for_size(size);
             let (width, height) =
-                crate::font::BitmapFont::builtin().measure(text.as_str(), scale, 0);
+                // **与绘制同源** ✓：ASCII 用 5×7 度量 ✓、含 CJK 用图集度量 ✓。
+                // 此前这里固定用 5×7 度量 ✗ ⇒ CJK 文本的包围盒远大于实际墨迹 ✓
+                //（子 agent 实测 510×119 vs 92×14 ✓）⇒ 脏区规划会把无关区域算进来 ✓，
+                // 而真正越界的那一小块又可能算不进去 ✓ ⇒ 画布与缩略图/导出不一致 ✓（一致性自检不通过 ✓）。
+                crate::font::measure_sized(text.as_str(), size, 0.0);
             return Some(Bbox::new(
                 position.0,
                 position.1,

@@ -113,7 +113,7 @@ mod tests {
         assert!(!atlas.is_empty(), "内嵌图集应可用（头部或路径有问题？）");
         assert_eq!(
             atlas.len(),
-            7116,
+            7136,
             "字形数量应与生成结果一致（GB2312 一级 + 二级）"
         );
         for (ch, code) in [

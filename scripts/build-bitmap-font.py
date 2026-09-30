@@ -65,6 +65,13 @@ def glyph_set() -> list[int]:
                 continue
             codes.add(ord(text))
 
+    # **常用标点补充** ✓ —— GB2312 符号区不含破折号/省略号等 ✓，
+    # 而子 agent 实测它们在界面里会显示成 `?` ✗（"features 1.0 — 0123456789" ✓）。
+    # 这里按 Unicode 显式补一批通用标点与排版符号 ✓。
+    codes.update(
+        ord(ch)
+        for ch in "—–…·•‰′″‹›«»×÷±§¶†‡°€£¥¢©®™←→↑↓↔⇔≈≠≤≥∞∑∏√∫"
+    )
     return sorted(codes)
 
 

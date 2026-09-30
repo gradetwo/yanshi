@@ -1834,6 +1834,59 @@ if (themeAudit.error) {
     `｜控件 ${themeAudit.controls} 个，最小高度 ${themeAudit.minHeight}px（须 ≥24）` +
     `｜焦点环 ${themeAudit.focusRule ? "✓" : "✗"}｜令牌 ${themeAudit.tokens}/8`);
 
+// **含 CJK 的文本必须响应字号** ✓ —— 这是四位子 agent 报的文本类 bug 中最直观的一条 ✗：
+// 字号 42 与 120 得到**完全相同**的 92×14 墨迹 ✓（根因：render 分支先按 5×7 换算缩放，
+// 图集路径又按 16 除一次 ⇒ 实际缩放恒为 1 ✓）。修复后按同一份文档量两种字号 ✓。
+const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const layer = "uicheck-textsize";
+  return { layer };
+})())`));
+{
+  const docId = mediumDoc;
+  const createLayer = await fetch(`${origin}/api/tools/create_layer?doc=${docId}&token=${mediumToken}`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layer_id: "uicheck-textsize", name: "text size check" }),
+  }).then((r) => r.json()).catch(() => ({}));
+  const drawAndMeasure = async (size, objectId) => {
+    const drawn = await fetch(`${origin}/api/tools/draw_text?doc=${docId}&token=${mediumToken}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ layer_id: "uicheck-textsize", object_id: objectId,
+        data: { text: "中文永", font: "builtin", size, color: { r: 255, g: 0, b: 0, a: 255 },
+                position: [8, 8], align: "left" } }),
+    }).then((r) => r.json()).catch(() => ({}));
+    if (!drawn.ok) return { error: drawn.error_code || "draw failed" };
+    const rendered = await fetch(`${origin}/api/tools/render_region?doc=${docId}&token=${mediumToken}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: { x: 0, y: 0, w: 260, h: 200 }, raw: true }),
+    }).then((r) => r.json()).catch(() => ({}));
+    if (!rendered.raw_url) return { error: "no raw_url" };
+    const bytes = new Uint8Array(await fetch(`${origin}${rendered.raw_url}`).then((r) => r.arrayBuffer()));
+    let ink = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      if (bytes[i] > 128 && bytes[i + 1] < 128 && bytes[i + 2] < 128) ink += 1;
+    }
+    return { ink };
+  };
+  if (!createLayer.ok && createLayer.error_code !== "precondition_failed") {
+    problems.push(`文本字号用例：新建图层失败 ${JSON.stringify(createLayer).slice(0, 140)}`);
+  } else {
+    const small = await drawAndMeasure(21, "uicheck_text_small");
+    const large = await drawAndMeasure(42, "uicheck_text_large");
+    const clear = await fetch(`${origin}/api/tools/delete_object?doc=${docId}&token=${mediumToken}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ object_id: "uicheck_text_small" }),
+    }).catch(() => {});
+    void clear;
+    if (small.error || large.error) {
+      problems.push(`文本字号用例未取到像素：${JSON.stringify({ small, large })}`);
+    } else if (large.ink <= small.ink * 1.5) {
+      problems.push(`含 CJK 的文本没有响应字号（21 → ${small.ink} 像素，42 → ${large.ink} 像素）`);
+    } else {
+      console.log(`  文本字号：CJK 21 → ${small.ink} 像素｜42 → ${large.ink} 像素（须显著增多）`);
+    }
+  }
+}
+
 // **重新打开一份含介质的文档，画布不能是白板** ✓ —— 这是四位子 agent 独立复现的**阻断性 bug** ✗：
 // 文档里只要有 heavy 内容（介质笔画 = `import_image`/`raster_patch` ✓），客户端内核
 // `render_region_rgba` 就返回 **len 0** ✓，而查看器原先**直接 return** ✗ ⇒ 首屏全白 ✓，
