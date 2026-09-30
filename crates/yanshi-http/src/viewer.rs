@@ -114,6 +114,21 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
     </div>
     <div class="card">
+      <h2>调整 / 滤镜</h2>
+      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
+        <select id="effectKind">
+          <option value="adjustment">调整</option>
+          <option value="filter">滤镜</option>
+        </select>
+        <select id="effectName"></select>
+        <button id="effectApply">应用</button>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
+        <input id="effectParams" value="{}" style="flex:1; font-family:ui-monospace,monospace" />
+      </div>
+      <div id="effectsList" style="font-family:ui-monospace,monospace;font-size:11px;max-height:120px;overflow:auto"></div>
+    </div>
+    <div class="card">
       <h2>历史（原子日志）</h2>
       <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
         <select id="historyKind"><option value="">全部类型</option></select>
@@ -316,16 +331,10 @@ async function callTool(name, args, options = {}) {
   $("last").textContent = JSON.stringify(value).slice(0, 600);
   if (value.ok) {
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
-    if (value.atom_id && name !== "revert" && name !== "reapply") {
-      // 普通变更：入撤销栈，并清空重做栈（标准编辑器行为）。
-      state.undoStack.push(value.atom_id);
-      state.redoStack.length = 0;
-      updateUndoStatus();
-    }
-    // 提交后自动刷新缩略图与历史列表（此前必须手动刷新）。
     if (options.refresh !== false) {
-      scheduleThumbRefresh();
-      void refreshHistory();
+      // `revert` / `reapply` 自身不入撤销栈：它们由撤销/重做逻辑显式管理栈。
+      const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+      afterMutation(trackable);
     }
   } else {
     log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
@@ -631,6 +640,20 @@ async function resync() {
   if (await loadKernel(0)) await refreshPreview(true);
 }
 
+/// **提交后的收尾动作，集中在这里**（缩略图、历史列表、撤销/重做栈）。
+///
+/// 曾经这些动作散落在 `callTool` 与 `submitAtom` 两条路径里 ✗，结果是"笔迹路径漏刷历史/漏入栈"
+/// 这类疏漏出现了两次 ✓。现在两条路径都只调这一个函数 ✓；将来再加收尾动作也只改这里。
+function afterMutation(atomId) {
+  if (atomId) {
+    state.undoStack.push(atomId);
+    state.redoStack.length = 0;
+    updateUndoStatus();
+  }
+  scheduleThumbRefresh();
+  void refreshHistory();
+}
+
 async function submitAtom(atom) {
   const response = await fetch(api("/api/atoms"), {
     method: "POST",
@@ -649,15 +672,8 @@ async function submitAtom(atom) {
     // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
     await resync();
   }
-  // 笔迹走的是 `/api/atoms`，不经 callTool：这里补入撤销栈，并刷新历史列表
-  //（否则历史里只能看到 create_document / create_layer 这类经 callTool 的原子）。
-  if (response.atom_id) {
-    state.undoStack.push(response.atom_id);
-    state.redoStack.length = 0;
-    updateUndoStatus();
-    void refreshHistory();
-  }
-  scheduleThumbRefresh();
+  // 笔迹走 `/api/atoms`（不经 callTool），但收尾动作与其它提交**完全一致** ✓。
+  afterMutation(response.atom_id);
   return response;
 }
 
@@ -879,6 +895,88 @@ function updateUndoStatus() {
   const redo = document.querySelector('button[data-tool="redo"]');
   if (undo) undo.disabled = state.undoStack.length === 0;
   if (redo) redo.disabled = state.redoStack.length === 0;
+}
+
+/// 效果目录来自服务端 `/api/effects`（内容就是内核的 `ADJUSTMENT_NAMES` / `FILTER_NAMES`），
+/// 因此查看器**不硬编码效果名** ✓，也就不会与内核漂移 ✓。
+let effectCatalog = { adjustment: [], filter: [] };
+
+async function loadEffectCatalog() {
+  const value = await fetch(api("/api/effects"), {
+    method: "GET",
+    headers: { "content-type": "application/json" },
+  }).then((response) => response.json());
+  effectCatalog = { adjustment: value.adjustments || [], filter: value.filters || [] };
+  fillEffectNames();
+}
+
+/// 按当前「调整 / 滤镜」选择填充效果下拉。
+function fillEffectNames() {
+  const kind = $("effectKind").value;
+  const select = $("effectName");
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const name of effectCatalog[kind] || []) select.appendChild(new Option(name, name));
+  if (previous && (effectCatalog[kind] || []).includes(previous)) select.value = previous;
+}
+
+/// 应用当前效果到选中图层。
+///
+/// 参数缺省为 `{}` —— **不复制内核的默认值** ✓：缺参时由内核自己决定默认 ✓，
+/// 应用后再用 `list_effects` 读回**实际生效的参数**展示，做到零漂移。
+async function applyEffect() {
+  const kind = $("effectKind").value;
+  const name = $("effectName").value;
+  if (!name) return;
+  let params = {};
+  const text = $("effectParams").value.trim();
+  if (text) {
+    try {
+      params = JSON.parse(text);
+    } catch (error) {
+      log("参数不是合法 JSON：" + error.message, "#c33");
+      return;
+    }
+  }
+  const tool = kind === "adjustment" ? "add_adjustment" : "add_filter";
+  const args =
+    kind === "adjustment"
+      ? { layer_id: state.layerId, adjustment_type: name, params }
+      : { layer_id: state.layerId, filter_name: name, params };
+  const value = await callTool(tool, args, { refresh: false });
+  if (!value.ok) {
+    log("应用失败：" + (value.error_code || "unknown") + " " +
+        ((value.context && value.context.detail) || ""), "#c33");
+    return;
+  }
+  log("已应用" + (kind === "adjustment" ? "调整" : "滤镜") + " " + name);
+  await refreshEffects();
+  await refreshPreview();
+}
+
+/// 列出当前文档的调整/滤镜对象（含**实际生效的参数**与顺序）。
+async function refreshEffects() {
+  const value = await callTool("list_effects", {}, { refresh: false });
+  const list = $("effectsList");
+  if (!value.ok) {
+    list.textContent = "读取失败：" + (value.error_code || "unknown");
+    return;
+  }
+  const effects = value.effects || [];
+  list.innerHTML = "";
+  if (effects.length === 0) {
+    list.textContent = "（当前文档没有调整/滤镜）";
+    return;
+  }
+  for (const effect of effects) {
+    const row = document.createElement("div");
+    // 字段名以 `list_effects` 的响应为准：adjustment_type / filter_name / params / layer_id。
+    const name = effect.adjustment_type || effect.filter_name || effect.name || "?";
+    row.textContent =
+      name + " " + JSON.stringify(effect.params || {}) +
+      " @" + (effect.layer_id || "-");
+    list.appendChild(row);
+  }
 }
 
 /// 历史浏览（设计 13.2）：数据源是原子日志，支持按原子步进、按 actor / 类型筛选。
@@ -1370,6 +1468,8 @@ $("zoomActual").addEventListener("click", () => {
   renderViewport();
 });
 
+$("effectKind").addEventListener("change", fillEffectNames);
+$("effectApply").addEventListener("click", applyEffect);
 $("historyReload").addEventListener("click", refreshHistory);
 $("historyKind").addEventListener("change", refreshHistory);
 $("historyActor").addEventListener("change", refreshHistory);
@@ -1394,6 +1494,8 @@ $("openDoc").addEventListener("click", promptDocument);
     $("identity").textContent = state.docId;
     await refreshLayers();
     await refreshThumb();
+    await loadEffectCatalog();
+    await refreshEffects();
     await refreshHistory();
     window.yanshiStats.bootAt = performance.now();
     await refreshPreview();

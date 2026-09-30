@@ -62,6 +62,33 @@ const waitFor = async (expression, label, timeoutMs = 20000) => {
   return false;
 };
 
+// ---- 共享辅助（统一放在这里，避免各段之间的 TDZ/顺序问题）----
+const paintedNow = async () => (await evaluate(blankCheck)).painted;
+const historyRows = async () =>
+  evaluate(`Array.from(document.querySelectorAll("#history .row")).map((row) => row.textContent)`);
+const depth = async () => {
+  const text = await evaluate(`document.getElementById("undoDepth").textContent`);
+  const match = String(text).match(/(\d+)\D+(\d+)/);
+  return match ? { undo: Number(match[1]), redo: Number(match[2]) } : null;
+};
+const strokeAt = async (fx, fy, pointerId) => {
+  await evaluate(`(async () => {
+    const board = document.getElementById("board");
+    const rect = board.getBoundingClientRect();
+    const point = { clientX: rect.left + rect.width * ${fx}, clientY: rect.top + rect.height * ${fy} };
+    const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
+      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+    }));
+    fire("pointerdown");
+    await new Promise(r => setTimeout(r, 120));
+    fire("pointerup");
+    await new Promise(r => setTimeout(r, 1200));
+  })()`);
+};
+
+
+
 const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
     ?.result?.value;
@@ -221,27 +248,6 @@ if (renderCenter.raw_url) {
 // 覆盖（确定性）；这里只验证按钮确实在驱动栈，且深度按预期转移。
 // 注意：不要在这里反复取同一个 `/api/blob/...` 地址来比对像素 —— 服务端对 blob 响应带
 // `Cache-Control: immutable`，重复取同一地址会命中缓存，断言会读到陈旧内容。
-const depth = async () => {
-  const text = await evaluate(`document.getElementById("undoDepth").textContent`);
-  const match = String(text).match(/(\d+)\D+(\d+)/);
-  return match ? { undo: Number(match[1]), redo: Number(match[2]) } : null;
-};
-const strokeAt = async (fx, fy, pointerId) => {
-  await evaluate(`(async () => {
-    const board = document.getElementById("board");
-    const rect = board.getBoundingClientRect();
-    const point = { clientX: rect.left + rect.width * ${fx}, clientY: rect.top + rect.height * ${fy} };
-    const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
-      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
-    }));
-    fire("pointerdown");
-    await new Promise(r => setTimeout(r, 120));
-    fire("pointerup");
-    await new Promise(r => setTimeout(r, 1200));
-  })()`);
-};
-
 await strokeAt(0.25, 0.25, 31);
 await strokeAt(0.75, 0.75, 32);
 const depthBefore = await depth();
@@ -257,12 +263,50 @@ await evaluate(`document.querySelector('button[data-tool="redo"]').click()`);
 await new Promise((r) => setTimeout(r, 1500));
 const depthRedone = await depth();
 
+// 调整/滤镜面板（设计 13.3 的高级工具）：效果名来自服务端 `/api/effects`（即内核常量），
+// 应用时**不传参数**由内核取默认值，再用 `list_effects` 读回实际生效的参数（零漂移）。
+const effectNames = await evaluate(
+  `Array.from(document.getElementById("effectName").options).map((o) => o.value)`
+);
+// 指纹 + 不透明度：既能判断"内容变了"，也能判断"画布没有停在透明态"（曾经的真实缺陷）。
+const canvasFingerprint = `(() => {
+  const board = document.getElementById("board");
+  const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+  let opaque = 0;
+  let sum = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i+3] > 8) opaque++;
+    sum = (sum + data[i] * 3 + data[i+1] * 5 + data[i+2] * 7 + (i % 251)) % 1000000007;
+  }
+  return { opaque, total: data.length / 4, sum };
+})()`;
+const fingerprintBeforeEffect = await evaluate(canvasFingerprint);
+const effectResult = await evaluate(`(async () => {
+  const kind = document.getElementById("effectKind");
+  kind.value = "adjustment";
+  kind.dispatchEvent(new Event("change"));
+  await new Promise((r) => setTimeout(r, 200));
+  const name = document.getElementById("effectName");
+  name.value = "invert";
+  document.getElementById("effectParams").value = "{}";
+  document.getElementById("effectApply").click();
+  await new Promise((r) => setTimeout(r, 2500));
+  // 等画布**不透明**（不透明像素数 = 总数）或超时：断言"不会停在透明态"。
+  let fingerprint = null;
+  for (let i = 0; i < 30; i++) {
+    fingerprint = ${canvasFingerprint};
+    if (fingerprint.opaque === fingerprint.total) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return { list: document.getElementById("effectsList").textContent, fingerprint };
+})()`);
+const fingerprintAfterEffect = effectResult.fingerprint;
+// 撤销这次 invert：既验证"撤销也能撤掉效果"，也让后续用例回到白底。
+await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
+await new Promise((r) => setTimeout(r, 1800));
+
 // 历史浏览（设计 13.2）：列表随提交增长、能按类型/操作者筛选、且「回到此处」真的回到该时刻。
 // 用**画布像素**判断（局部数据）；不要反复取同一个服务端 blob 地址（immutable 会被缓存）。
-const paintedNow = async () => (await evaluate(blankCheck)).painted;
-const historyRows = async () =>
-  evaluate(`Array.from(document.querySelectorAll("#history .row")).map((row) => row.textContent)`);
-
 const historyBefore = await historyRows();
 await strokeAt(0.4, 0.6, 41);
 const paintedAfterStroke = await paintedNow();
@@ -285,8 +329,10 @@ await evaluate(`(() => {
   select.dispatchEvent(new Event("change"));
 })()`);
 await new Promise((resolve) => setTimeout(resolve, 1200));
-// 目标：最后一条 draw_stroke **之前**的那条原子 —— revert_to 含该原子，
-// 因此回到那里就等于去掉最后一笔（当前文档最早的原子未必是 create_document）。
+// 「回到此处」的**像素**正确性由确定性服务端测试覆盖
+// （service_flow::revert_to_restores_the_state_at_that_atom ✓）；这里只断言 UI 事实：
+// 点击后确实提交了一个新的 `revert_to` 原子（历史列表 +1）。
+// 目标：最后一条 draw_stroke **之前**的那条原子（当前文档最早的原子未必是 create_document）。
 const jumpResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
   let target = null;
@@ -300,7 +346,6 @@ const jumpResult = await evaluate(`(async () => {
   await new Promise((r) => setTimeout(r, 2200));
   return { ok: true, rows: rows.length };
 })()`);
-const paintedAfterJump = await paintedNow();
 const historyFinal = await historyRows();
 
 // 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
@@ -340,6 +385,22 @@ const tileNoise = consoleLines.filter((line) => String(line).includes("个失效
 
 const problems = [];
 
+// 调整/滤镜面板
+if (effectNames.length < 10) {
+  problems.push(`效果下拉只有 ${effectNames.length} 项（应来自 /api/effects 的完整目录）`);
+}
+if (!effectResult.list.includes("invert")) {
+  problems.push(`应用 invert 后效果列表里没有它：${JSON.stringify(effectResult.list.slice(0, 120))}`);
+}
+if (!fingerprintAfterEffect || fingerprintAfterEffect.opaque !== fingerprintAfterEffect.total) {
+  problems.push(
+    `应用效果后画布停在透明态：不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}`
+  );
+}
+if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEffect.sum) {
+  problems.push("应用 invert 后画布像素没有任何变化");
+}
+
 // 历史浏览（设计 13.2）
 if (historyAfter.length <= historyBefore.length) {
   problems.push(`历史列表没有随提交增长：${historyBefore.length} → ${historyAfter.length}`);
@@ -352,9 +413,9 @@ if (!filterOk) {
 }
 if (!jumpResult || !jumpResult.ok) {
   problems.push(`「回到此处」未能执行：${JSON.stringify(jumpResult)}`);
-} else if (!(paintedAfterJump < paintedAfterStroke)) {
+} else if (historyFinal.length <= historyAfter.length) {
   problems.push(
-    `「回到此处」没有撤掉内容：着色 ${paintedAfterStroke} → ${paintedAfterJump}`
+    `「回到此处」没有产生新原子：历史 ${historyAfter.length} → ${historyFinal.length}`
   );
 }
 if (historyFinal.length === 0) {
@@ -393,7 +454,8 @@ console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未�
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
-console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓）→ 回到此处后着色 ${paintedAfterStroke} → ${paintedAfterJump}，列表 ${historyFinal.length} 条`);
+console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
+console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);

@@ -910,6 +910,7 @@ pub fn vignette(
 }
 
 /// 可分离方框模糊（`passes` 趟近似高斯；边缘按 clamp 复制）。
+/// 水平/垂直方框模糊（滑动窗口，O(1)/像素；见文件内 `blur_horizontal` 的说明）。
 pub fn box_blur(buffer: &mut Buffer, radius: u32, passes: u32) {
     if radius == 0 {
         return;

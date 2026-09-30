@@ -75,8 +75,9 @@ The tool and effect inventory is in [docs/tools.md](docs/tools.md).
 
 Drag to paint; `＋ 图层` adds a layer; `撤销` / `重做` undo and redo repeatedly (multi-level). Wheel zooms around the cursor,
 middle-drag pans, `+` / `-` / `0` zoom in, out and fit, and `1:1` shows one document pixel per CSS
-pixel, `导出 PNG` downloads the full-resolution render, and the history panel lists the atom log with
-kind and actor filters plus a jump-back action. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
+pixel, `导出 PNG` downloads the full-resolution render, the history panel lists the atom log with kind and actor
+filters plus a jump-back action, and the effects panel applies any adjustment or filter to the
+current layer (names come from the kernel, parameters default to the kernel's own values). `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)
 

@@ -365,6 +365,23 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // 效果目录（只读）：给查看器/客户端列出**内核支持**的调整与滤镜名。
+    // 之所以不给参数默认值：默认值由内核在缺参时决定，抄一份到别处必然与内核漂移 ✗；
+    // 调用方不传 params 即得到内核默认值，随后用 `list_effects` 读回实际生效的参数 ✓。
+    // 设计未规定该端点（10.2 只规定了工具），属于查看器所需的只读支撑接口，已记录在实现说明。
+    if path == "/api/effects" {
+        if method != "GET" {
+            return method_not_allowed(request, "GET");
+        }
+        return Response::json(
+            200,
+            &json!({
+                "adjustments": yanshi_render::filter::ADJUSTMENT_NAMES,
+                "filters": yanshi_render::filter::FILTER_NAMES,
+            }),
+        )
+        .with_header("Cache-Control", "no-cache");
+    }
     if path == "/" {
         return match method {
             // 页面与 WASM 内核必须**同版本**：页面改动后若被缓存，会出现
