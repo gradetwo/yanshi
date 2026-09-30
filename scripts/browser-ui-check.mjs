@@ -631,7 +631,8 @@ const selectionResult = await evaluate(`(async () => {
     stage = "文本";
     const textButton = document.querySelector('button[data-tool="text"]');
     if (!textButton) throw new Error("工具栏里没有文本按钮");
-    window.prompt = () => "AB";
+    // 用 **CJK** 验收：这条路径会走内嵌 OFL 图集 ✓（纯 ASCII 走内置 5×7 ✓）。
+    window.prompt = () => "中文永";
     const beforeText = await stable();
     textButton.click();
     fire("pointerdown", at(0.3, 0.12), 622);

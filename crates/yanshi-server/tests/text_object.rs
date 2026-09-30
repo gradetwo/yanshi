@@ -7,6 +7,7 @@
 
 use serde_json::json;
 use yanshi_core::Bbox;
+use yanshi_core::{Atom, AtomKind};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
 fn workspace() -> Workspace {
@@ -180,5 +181,86 @@ fn cjk_text_renders_through_the_embedded_atlas() {
     assert!(
         (150..400).contains(&count),
         "三个 CJK 字的像素数应在实测量级内（实际 {count}）"
+    );
+}
+
+/// 文本是**可编辑的文本对象** ✓（不是烘焙进像素的位图 ✓）。
+///
+/// 设计 4.2 把 `Text` 列为对象类型之一 ✓、5.2 把「修改内容」交给 `supersede` ✓
+/// （设计里"改颜色 = supersede"是同一机制 ✓）。本用例证明：**换掉对象的 `data` 之后，
+/// 渲染跟着变** ✓，且对象类型仍是 `text` ✓ —— 即文字始终是日志里的一个对象 ✓。
+#[test]
+fn text_stays_an_editable_object() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_text", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_text",
+            &json!({"layer_id": "L", "object_id": "t_edit",
+                    "data": {"text": "AB", "font": "builtin", "size": 21.0,
+                             "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                             "position": [8.0, 8.0], "align": "left"}}),
+        );
+    }
+    let (before_count, _) = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert!(before_count > 0, "先画出文本（前置条件）");
+
+    // 用 `supersede` 换掉对象的数据 —— 这是设计规定的"修改内容"机制 ✓。
+    let atom = Atom::new(
+        AtomKind::Supersede,
+        "human:web",
+        "session:web",
+        json!({
+            "object_id": "t_edit",
+            "data": {
+                "text": "中文永",
+                "font": "builtin",
+                "size": 21.0,
+                "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                "position": [8.0, 8.0],
+                "align": "left"
+            }
+        }),
+    );
+    workspace
+        .commit("doc_text", atom, "human:web", false)
+        .expect("supersede 应被接受");
+
+    // ① 渲染必须跟着变（内容确实是"活的"）。
+    let (after_count, _) = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert!(
+        after_count != before_count,
+        "替换文本后渲染应改变（此前 {before_count}，之后 {after_count}）"
+    );
+    assert!(after_count > 0, "替换后的 CJK 文本应渲染出像素");
+
+    // ② 对象类型仍是 `text` ✓（不是位图补丁）⇒ 文字保持可编辑 ✓。
+    let listed = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_objects", &json!({}))
+    };
+    let object = listed["objects"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["object_id"] == json!("t_edit"))
+        })
+        .cloned()
+        .expect("对象应仍在列表中");
+    assert_eq!(
+        object["type"],
+        json!("text"),
+        "文本对象必须保持 `text` 类型（可编辑 ✓），而不是被烘焙成位图 ✗"
     );
 }

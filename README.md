@@ -89,8 +89,11 @@ feather setting (drag a shape to create the mask and attach it to the current la
 shapes, fills, text, liquify and retouch - per pixel, so nothing outside it is touched, and `清除选区`
 removes it, after which the same objects render unconstrained again because the constraint is
 recomputed from the log. `文本`
-places a text object at the clicked point using the builtin ASCII bitmap font (CJK needs a font
-subset and is still to come). `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
+places a text object at the clicked point. Text stays an editable object in the log - editing its data
+through `supersede` changes the render - and the kernel rasterises it with an embedded open-source
+font: a built-in 5×7 ASCII font plus a 1-bit 16×16 atlas generated from Noto Sans CJK (SIL OFL 1.1),
+covering ASCII, the 3755 GB2312 level-1 common hanzi and the GB2312 symbol rows. Provenance, format
+and the regeneration command live in `assets/fonts/`. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)
 
