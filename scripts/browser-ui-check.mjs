@@ -2036,7 +2036,10 @@ const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   await new Promise((r) => setTimeout(r, 2500));
   // 把选择器**手动改回** `example` ✓（模拟"界面状态陈旧" ✓），然后整页重载 ✓。
   await evaluate(`(() => { const s = document.getElementById("medium"); s.value = "example"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
-  await send("Page.navigate", { url });
+  // **必须重载"当前这份文档"** ✓ —— 第一版用的是检查开头保存的 `url` ✗，
+  // 而检查中途切过文档 ✓ ⇒ 重载回到的是**另一份** ✓，于是永远看不到刚画的水彩 ✓
+  //（真机验证时用的是当前文档 ✓ 所以那边是通过的 ✓ —— 环境不一致会让假失败与假通过都出现 ✓）。
+  await send("Page.navigate", { url: `${origin}/?doc=${docInfo.docId}` });
   await send("Page.bringToFront", {});
   for (let i = 0; i < 80; i++) {
     const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0`);
