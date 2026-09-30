@@ -32,7 +32,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* 第一列用 minmax(0,1fr)：`1fr` 的最小尺寸是 auto ⇒ 左列被内容撑开后整个页面横向溢出，
      画布被挤到屏幕外（用户截图里的「排版都出去了」）。
      `body { overflow-x: hidden }` 只是掩盖症状，真正要允许列收缩。 */
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
+  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
           /* 兜底：实测 main 自身的 scrollWidth 会达到 2007（其子元素的 rect 都在 1265 内，
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
@@ -49,6 +49,18 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   /* minmax(0,1fr)：否则网格列按 max-content 撑开，卡片里的按钮行会溢出到视口外
      （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
+  .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
+             background: #171a1f; border-bottom: 1px solid var(--line); }
+  .options .tool-name { font-weight: 600; min-width: 4em; }
+  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
+  .options input[type="range"] { width: 120px; }
+  #tools { display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0;
+           background: #171a1f; border-right: 1px solid var(--line); align-content: start; }
+  #tools button { padding: 6px 2px; font-size: 11px; line-height: 1.15; width: 100%; min-width: 0;
+                  white-space: normal; }
+  .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
+               background: #171a1f; border-top: 1px solid var(--line); }
+  .statusbar .spacer { flex: 1 1 auto; }
   aside { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
   aside .card { min-width: 0; }
   /* 面板内的可伸缩元素：下拉的选项名可能很长（图层 id）。光限制 select 不够 ——
@@ -94,8 +106,6 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span>head <b id="head">0</b></span>
     <span>rendered <b id="rendered">0</b></span>
     <span>dirty <b id="dirty">0</b></span>
-    <span>缩放 <b id="zoom">100%</b></span>
-    <span id="undoDepth">撤销 0 / 重做 0</span>
   </span>
 </header>
 <dialog id="newDialog">
@@ -136,49 +146,52 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   </div>
 </dialog>
 <main>
+  <div class="options" id="options">
+    <span class="tool-name" id="toolName">画笔</span>
+  <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
+  <input id="color" type="color" value="#222222" />
+  <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
+  <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
+  <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
+  </div>
+  <nav id="tools" aria-label="工具">
+  <button data-tool="brush" aria-pressed="true">画笔</button>
+  <button data-tool="rect">矩形</button>
+  <button data-tool="ellipse">椭圆</button>
+  <button data-tool="erase">橡皮</button>
+  <button data-tool="clone_stamp">仿制</button>
+  <button data-tool="heal_stamp">修复</button>
+  <button data-tool="smudge">涂抹</button>
+  <button data-tool="liquify_push">液化推</button>
+  <button data-tool="liquify_twirl">液化旋</button>
+  <button data-tool="liquify_pinch">液化缩</button>
+  <button data-tool="eyedropper">吸管</button>
+  <button data-tool="move_object">移动</button>
+  <button data-tool="select_rect">选区</button>
+  <button id="clearSelection">清除选区</button>
+  <button data-tool="text">文本</button>
+  <button data-tool="mask_rect">矩形蒙版</button>
+  <button data-tool="mask_ellipse">椭圆蒙版</button>
+  <button id="fillLayer">填充图层</button>
+  </nav>
   <div class="stage">
     <canvas id="board"></canvas>
     <canvas id="overlay"></canvas>
   </div>
   <aside>
     <div class="card">
-      <h2>工具</h2>
-      <div style="display:flex; gap:6px; flex-wrap:wrap">
-        <button data-tool="brush" aria-pressed="true">画笔</button>
-        <button data-tool="rect">矩形</button>
-        <button data-tool="ellipse">椭圆</button>
-        <button data-tool="erase">橡皮</button>
-        <button data-tool="clone_stamp">仿制</button>
-        <button data-tool="heal_stamp">修复</button>
-        <button data-tool="smudge">涂抹</button>
-        <button data-tool="liquify_push">液化推</button>
-        <button data-tool="liquify_twirl">液化旋</button>
-        <button data-tool="liquify_pinch">液化缩</button>
-        <button data-tool="eyedropper">吸管</button>
-        <button data-tool="move_object">移动</button>
-        <button data-tool="select_rect">选区</button>
-        <button id="clearSelection">清除选区</button>
-        <button data-tool="text">文本</button>
-        <button data-tool="mask_rect">矩形蒙版</button>
-        <button data-tool="mask_ellipse">椭圆蒙版</button>
-        <button id="fillLayer">填充图层</button>
-        <button data-tool="undo">撤销</button>
-        <button data-tool="redo">重做</button>
-        <button data-tool="refresh">刷新</button>
-        <button data-tool="check">一致性自检</button>
-        <button id="addLayer">＋ 图层</button>
-        <button id="exportPng">导出 PNG</button>
-        <button id="zoomFit">适配</button>
-        <button id="zoomActual">1:1</button>
+      <h2>操作</h2>
+      <div class="toolbar">
+  <button data-tool="undo">撤销</button>
+  <button data-tool="redo">重做</button>
+  <button data-tool="refresh">刷新</button>
+  <button data-tool="check">一致性自检</button>
+  <button id="addLayer">＋ 图层</button>
+  <button id="exportPng">导出 PNG</button>
+  <button id="zoomFit">适配</button>
+  <button id="zoomActual">1:1</button>
       </div>
-      <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
-        <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
-        <input id="color" type="color" value="#222222" />
-        <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
-        <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
-        <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
         <label>图层 <select id="layer"></select></label>
-      </div>
     </div>
     <div class="card">
       <h2>WASM 计算内核</h2>
@@ -237,6 +250,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
   </aside>
 </main>
+<footer class="statusbar">
+    <span>缩放 <b id="zoom">100%</b></span>
+    <span id="undoDepth">撤销 0 / 重做 0</span>
+  <span id="selectionHint">无选区</span>
+  <span class="spacer"></span>
+  <span>画布 <b id="canvasSize">—</b></span>
+</footer>
 <script>
 // 服务端会把 yanshi://blob/<hash> 改写成 /api/blob/<hash>?doc=..&token=..
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。

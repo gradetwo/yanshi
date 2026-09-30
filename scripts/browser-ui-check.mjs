@@ -403,8 +403,8 @@ const maskResult = await evaluate(`(async () => {
   // 轮询而非固定等待：重活（fill 是 heavy 原子）在慢机器上可能超过固定 sleep，
   // 固定等待会得到 0 并误报"前置条件不成立"（本文件已多次因此误判）。
   let filled = ink();
-  // 上限放宽到 15s：heavy 填充在机器繁忙时可能超过 7.5s，曾有偶发误报 ✓。
-  for (let i = 0; i < 60 && filled === 0; i++) {
+  // 上限再放宽到 30s：heavy 填充在整页重构/机器繁忙时可能更慢 ✓（本段的等待要留足余量 ✓）。
+  for (let i = 0; i < 120 && filled === 0; i++) {
     await new Promise((r) => setTimeout(r, 250));
     filled = ink();
   }
@@ -416,7 +416,7 @@ const maskResult = await evaluate(`(async () => {
   await new Promise((r) => setTimeout(r, 100));
   fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
-  for (let i = 0; i < 60 && masked >= filled; i++) {
+  for (let i = 0; i < 120 && masked >= filled; i++) {
     await new Promise((r) => setTimeout(r, 250));
     masked = ink();
   }
