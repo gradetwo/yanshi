@@ -134,6 +134,97 @@ fn clamp_u32(value: u64) -> u32 {
 ///
 /// 返回**实际写入缓冲区的像素数**（把字形方块逐像素计数；越界像素不计），便于测试与统计。
 #[allow(clippy::too_many_arguments)] // 签名由设计接口固定（buffer/文本/位置/倍率/颜色/对齐/盒宽）。
+/// 图集路径的缩放 ✓：单元 16×16 ⇒ `round(size/16)` ✓（**最小 1** ✓）。
+pub fn atlas_scale_for_size(size: f64) -> u32 {
+    let scale = (size.max(1.0) / f64::from(crate::font_atlas::CELL)).round() as i64;
+    scale.clamp(1, 64) as u32
+}
+
+/// 这份文本走**图集**路径吗 ✓（含 ASCII 之外的**可打印**字符 ⇒ 是 ✓；控制字符忽略 ✓）？
+///
+/// 与 `draw_text` 内部的分流判据**必须完全一致** ✓ —— 度量与绘制若各判一次，
+/// 就会出现"包围盒说一个尺寸、实际画另一个尺寸" ✗（正是子 agent 报的 #3 ✓：
+/// CJK 文本包围盒 510×119 而实际墨迹 92×14 ✓ ⇒ 脏区过小 ⇒ 画布与缩略图/导出不一致 ✓）。
+pub fn uses_atlas(text: &str) -> bool {
+    let font = BitmapFont::builtin();
+    text.chars()
+        .any(|ch| !ch.is_control() && font.glyph(ch).is_none())
+}
+
+/// **按尺寸量测**文本 ✓：ASCII 走 5×7 度量 ✓，其余走 16×16 图集度量 ✓。
+///
+/// 返回 `(宽, 高)`（文档像素 ✓）。`box_width > 0` 时按对齐方式与文本宽度取最大 ✓。
+pub fn measure_sized(text: &str, size: f64, box_width: f64) -> (u32, u32) {
+    if !uses_atlas(text) {
+        let scale = text_scale_for_size_local(size);
+        let (width, height) = BitmapFont::builtin().measure(text, scale, 0);
+        return (width.max(box_width as u32), height);
+    }
+    let scale = atlas_scale_for_size(size);
+    let cell = crate::font_atlas::CELL * scale;
+    let lines = text.split('\n').count().max(1) as u32;
+    let widest = text
+        .split('\n')
+        .map(|line| line.chars().count() as u32 * cell)
+        .max()
+        .unwrap_or(0);
+    (
+        widest.max(box_width as u32),
+        cell * lines + scale * lines.saturating_sub(1),
+    )
+}
+
+/// 5×7 字体的缩放 ✓（与 `object::text_scale_for_size` 同规则 ✓，此处避免循环依赖 ✓）。
+fn text_scale_for_size_local(size: f64) -> u32 {
+    let scale = (size.max(1.0) / f64::from(GLYPH_HEIGHT)).round() as i64;
+    scale.clamp(1, 64) as u32
+}
+
+/// **按尺寸绘制** ✓（`size` 是磅值 ✓，不是缩放 ✓）—— 分流与缩放都在这里决定 ✓，
+/// 调用方不必（也不该 ✗）先自行换算 ✓：此前 render 分支先算 `round(size/7)` ✓，
+/// 图集路径又按 16 除一次 ✓ ⇒ 含 CJK 的文本缩放恒为 1 ✗（子 agent 报的 #1 ✓）。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_sized(
+    buffer: &mut Buffer,
+    text: &str,
+    x: f64,
+    y: f64,
+    size: f64,
+    color: [f32; 4],
+    align: &str,
+    box_width: f64,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) -> u32 {
+    if uses_atlas(text) {
+        draw_atlas_text_with_scale(
+            buffer,
+            text,
+            x,
+            y,
+            atlas_scale_for_size(size),
+            color,
+            align,
+            box_width,
+            coverage,
+        )
+    } else {
+        draw_text_clipped(
+            buffer,
+            text,
+            x,
+            y,
+            text_scale_for_size_local(size),
+            color,
+            align,
+            box_width,
+            coverage,
+        )
+    }
+}
+
+/// 用内置 5×7 ASCII 字体绘制 ✓（`scale` 是**缩放倍数** ✓；含 CJK 时请用 [`draw_text_sized`] ✓，
+/// 它按路径决定缩放 ✓ —— 直接传 5×7 的缩放给图集路径会造成双重缩放 ✗）。
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text(
     buffer: &mut Buffer,
     text: &str,
@@ -1068,6 +1159,31 @@ const GLYPH_ART: [&str; GLYPH_COUNT] = [
 /// 与 ASCII 路径的差别：单元是 16×16 ✓、缩放为 `round(size / 16)` ✓（最小 1 ✓）；
 /// 图集里**没有**的字符回退到内置 `?` 字形 ✓（再没有就跳过 ✓，绝不 panic ✓）。
 #[allow(clippy::too_many_arguments)]
+fn draw_atlas_text_with_scale(
+    buffer: &mut Buffer,
+    text: &str,
+    x: f64,
+    y: f64,
+    scale: u32,
+    color: [f32; 4],
+    align: &str,
+    box_width: f64,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) -> u32 {
+    draw_atlas_text(
+        buffer,
+        text,
+        x,
+        y,
+        scale.saturating_mul(crate::font_atlas::CELL),
+        color,
+        align,
+        box_width,
+        coverage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_atlas_text(
     buffer: &mut Buffer,
     text: &str,
@@ -1111,6 +1227,13 @@ fn draw_atlas_text(
         let line_y = origin_y + line_index as i64 * line_height;
         let mut pen_x = origin_x;
         for ch in line.chars() {
+            // **空白字符只推进、不落笔** ✓ —— 生成器会跳过空位图（空格就是空位图 ✓），
+            // 于是图集里没有它 ✓ ⇒ 原先会回退成 `?` ✗（子 agent 实测："偃师 Yanshi 示例" 里
+            // 空格与破折号都显示成 `?` ✓）。缩进/换行语义由**推进**表达 ✓，不该画出任何字形 ✓。
+            if ch.is_whitespace() {
+                pen_x += advance;
+                continue;
+            }
             let bitmap = atlas.glyph(ch as u32);
             let glyph_rows = bitmap.map(|_| ());
             let _ = glyph_rows;
@@ -1171,6 +1294,103 @@ fn draw_atlas_text(
 
 #[cfg(test)]
 mod tests {
+    use crate::buffer::Buffer;
+
+    /// 统计画布上"有墨"的像素数 ✓（与检查脚本同一口径 ✓）。
+    fn ink_count(buffer: &Buffer) -> usize {
+        let (w, h) = (buffer.width(), buffer.height());
+        let mut n = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let pixel = buffer.pixel(x, y);
+                if pixel[3] > 0.004 && (pixel[0] < 0.96 || pixel[1] < 0.96 || pixel[2] < 0.96) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    fn draw_sized(text: &str, size: f64) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 256, 160);
+        draw_text_sized(
+            &mut buffer,
+            text,
+            4.0,
+            4.0,
+            size,
+            [0.0, 0.0, 0.0, 1.0],
+            "left",
+            0.0,
+            &|_, _| 1.0,
+        );
+        buffer
+    }
+
+    /// **含 CJK 的文本必须响应字号** ✓ —— 子 agent 报的 #1：字号 42 与 120 得到完全相同的墨迹 ✗。
+    #[test]
+    fn cjk_text_honours_the_size() {
+        let small = ink_count(&draw_sized("中文永", 21.0));
+        let large = ink_count(&draw_sized("中文永", 42.0));
+        assert!(
+            small > 0 && large > 0,
+            "CJK 文本应画出像素（小 {small}、大 {large}）"
+        );
+        assert!(
+            large > small * 2,
+            "字号翻倍后墨迹应显著增多（小 {small} → 大 {large}）"
+        );
+        // 5×7 路径也仍然响应字号 ✓（回归 ✓）。
+        let ascii_small = ink_count(&draw_sized("AB", 14.0));
+        let ascii_large = ink_count(&draw_sized("AB", 42.0));
+        assert!(
+            ascii_large > ascii_small * 2,
+            "ASCII 也应响应字号（{ascii_small} → {ascii_large}）"
+        );
+    }
+
+    /// **空白字符只推进、不画 `?`** ✓ —— 子 agent 报的 #2：空格与破折号都显示成 `?` ✗。
+    #[test]
+    fn whitespace_advances_without_a_question_mark() {
+        let with_space = ink_count(&draw_sized("中 文", 32.0));
+        let without = ink_count(&draw_sized("中文", 32.0));
+        assert!(with_space > 0, "应画出像素");
+        // 不画 `?` ⇒ 墨迹量应与"去掉空格但位置前移"接近 ✓：这里只要求**不显著增多** ✓
+        //（若把空格画成 `?`，墨迹会明显多出一整格 ✓）。
+        assert!(
+            with_space <= without,
+            "空格不应画出 `?`（含空格 {with_space} 应 ≤ 无空格 {without}）"
+        );
+    }
+
+    /// **包围盒与墨迹同源** ✓ —— 子 agent 报的 #3：CJK 包围盒 510×119 而墨迹仅 92×14 ✗。
+    #[test]
+    fn the_text_bbox_matches_the_ink() {
+        for (text, size) in [("中文永", 32.0), ("AB", 21.0)] {
+            let (width, height) = measure_sized(text, size, 0.0);
+            let buffer = draw_sized(text, size);
+            let mut max_x = 0u32;
+            let mut max_y = 0u32;
+            for y in 0..buffer.height() {
+                for x in 0..buffer.width() {
+                    if buffer.pixel(x, y)[3] > 0.004 {
+                        max_x = max_x.max(x + 1);
+                        max_y = max_y.max(y + 1);
+                    }
+                }
+            }
+            // 墨迹从 (4,4) 起 ✓ ⇒ 右下界约为 4 + 尺寸 ✓；允许一格（含行距）误差 ✓。
+            let cell = if uses_atlas(text) {
+                crate::font_atlas::CELL * atlas_scale_for_size(size)
+            } else {
+                GLYPH_HEIGHT * crate::object::text_scale_for_size(size)
+            };
+            assert!(
+                max_x + 8 <= width + cell && max_y + 8 <= height + cell,
+                "「{text}」@ {size}: 量测 {width}×{height} 与墨迹 {max_x}×{max_y} 相差超过一格"
+            );
+        }
+    }
     use super::*;
 
     /// 取缓冲内 alpha > 0.5 的像素数（用于对齐断言）。
