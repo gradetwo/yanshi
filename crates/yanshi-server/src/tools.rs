@@ -888,6 +888,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "path_edit",
+        profile: Profile::Structure,
+        summary: "笔迹路径编辑（设计 792；本片只实现 reverse/close/join）",
+        mutating: true,
+        params: &[
+            param!("op", String, true, "reverse | close | join"),
+            param!("object_id", String, true, "目标笔迹对象 id"),
+            param!("other_id", String, false, "join 的第二个笔迹"),
+        ],
+    },
+    ToolSpec {
         name: "get_dependency_graph",
         profile: Profile::Core,
         summary: "查看对象依赖图（设计 9.4；544 的传播闭包）",
@@ -1588,6 +1599,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "path_edit" => write_path_edit(ctx, args),
         "get_dependency_graph" => read_get_dependency_graph(ctx, args),
         "update_sync_policy" => write_update_sync_policy(ctx, args),
         "update_override" => write_update_override(ctx, args),
@@ -3011,6 +3023,179 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     )?;
     Ok(
         json!({"ok": true, "group_id": group_id, "delta": {"dx": dx, "dy": dy}, "head": result.head_seq}),
+    )
+}
+
+/// **笔迹路径编辑** ✓（设计 792 行：`path_edit`（split, merge, join, close, reverse, boolean,
+/// convert_to_shape, convert_to_path ✓））。
+///
+/// **本片只做三个算子** ✓，而且理由要说清楚 ✓：设计把 `path_edit` 列在工具表里 ✓，
+/// 但**没有规定"路径对象"在内核里怎么表达** ✗（`ObjectType` 里没有 Path ✓，
+/// `Region` 里的 `path` 是另一回事 ✓）。`split`/`merge`/`boolean`/`convert_to_*`
+/// 都需要那套模型 ✓ ⇒ 它们是**设计决策** ✓，本片**显式拒绝并说明** ✓，
+/// **不擅自发明** ✗（"静默接受一个不会生效的姿势"是本项目反复吃亏的地方 ✓）。
+///
+/// 能做且语义明确的是这三个 ✓ —— 它们都落在**既有**的笔迹几何上 ✓（`data.points` ✓）：
+/// * `reverse` ✓：反转点序 ✓。这条**不只是换个顺序** ✓：配合 `appearance` 的
+///   `paint_load`（墨沿笔迹耗尽 ✓）与 `mixing`（笔尖取下方已有色 ✓），
+///   反向之后**渲染结果会变** ✓ ⇒ 是一条可验证的性质 ✓；
+/// * `close` ✓：把首点追加到末尾 ✓（已闭合则**幂等** ✓）；
+/// * `join` ✓：把第二条笔迹的点接到第一条之后 ✓，并 tombstone 第二条 ✓（两步 ⇒ **一个变更集** ✓，
+///   与 `detach_instance` 同一处理 ✓）。
+///   **设计未规定合并后的画笔/外观归属 ⇒ 记录选择** ✓：保留**第一条**的
+///   `size`/`color`/`hardness`/`appearance` ✓（"接进第一条"是最小惊讶 ✓）。
+fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let op = require_str(args, "op")?;
+    let object_id = require_str(args, "object_id")?;
+    let unsupported = |name: &str| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "path_edit 的 {name} 需要设计尚未规定的「路径对象」模型（内核 ObjectType 里没有 Path）\
+                 ⇒ 这是一个设计决策，本片不擅自发明；已实现的是 reverse / close / join"
+            )),
+        )
+    };
+    match op.as_str() {
+        "reverse" | "close" => {}
+        "join" => {}
+        "split" | "merge" | "boolean" | "convert_to_shape" | "convert_to_path" => {
+            return Err(unsupported(&op));
+        }
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知的 path_edit 算子 {other}（本片支持 reverse / close / join）"
+                )),
+            ));
+        }
+    }
+
+    // 读目标笔迹的点 ✓（对象类型必须是笔迹 ✓ —— 形状/文本没有"点序"可言 ✓）。
+    let (mut points, data) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Stroke {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{object_id} 不是笔迹（path_edit 只作用于笔迹的 points）"
+                )),
+            ));
+        }
+        let points: Vec<Value> = object
+            .data
+            .get("points")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        (points, object.data.clone())
+    };
+    if points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{object_id} 没有 points")),
+        ));
+    }
+
+    match op.as_str() {
+        "reverse" => {
+            points.reverse();
+            let mut data = data;
+            data["points"] = json!(points);
+            let result = ctx.commit(
+                AtomKind::Supersede,
+                json!({"object_id": object_id, "data": data}),
+            )?;
+            let head = result.head_seq;
+            return Ok(json!({"ok": true, "op": "reverse", "object_id": object_id,
+                             "points": points.len(), "head": head}));
+        }
+        "close" => {
+            // **幂等** ✓：已经闭合（末点等于首点 ✓）就什么都不做 ✓，但仍返回 `ok` 与 `closed: true` ✓。
+            let already = points.len() >= 2 && points.first() == points.last();
+            if already {
+                return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
+                                 "closed": true, "changed": false}));
+            }
+            let first = points[0].clone();
+            points.push(first);
+            let mut data = data;
+            data["points"] = json!(points);
+            let result = ctx.commit(
+                AtomKind::Supersede,
+                json!({"object_id": object_id, "data": data}),
+            )?;
+            let head = result.head_seq;
+            return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
+                             "closed": true, "changed": true, "points": points.len(), "head": head}));
+        }
+        _ => {}
+    }
+
+    // `join` ✓：接上第二条笔迹 ✓，然后把第二条 tombstone ✓（一个变更集 ✓）。
+    let other_id = require_str(args, "other_id")?;
+    if other_id == object_id {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("join 的两个对象不能是同一个".to_owned()),
+        ));
+    }
+    let other_points: Vec<Value> = {
+        let state = document_state(ctx)?;
+        let Some(other) = state.objects.get(other_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {other_id} 不存在")),
+            ));
+        };
+        if other.object_type != yanshi_core::ObjectType::Stroke {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{other_id} 不是笔迹")),
+            ));
+        }
+        other
+            .data
+            .get("points")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    if other_points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{other_id} 没有 points")),
+        ));
+    }
+    let joined = points.len() + other_points.len();
+    points.extend(other_points);
+    let mut data = data;
+    data["points"] = json!(points);
+    // 两步归一个变更集 ✓（与 `detach_instance` 同一处理 ✓）。
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous_changeset = ctx.changeset.replace(changeset.clone());
+    let updated = ctx.commit(
+        AtomKind::Supersede,
+        json!({"object_id": object_id, "data": data}),
+    );
+    let removed = updated
+        .as_ref()
+        .ok()
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": other_id})));
+    ctx.changeset = previous_changeset;
+    let updated = updated?;
+    let removed = removed.expect("接上成功后才 tombstone 第二条")?;
+    Ok(
+        json!({"ok": true, "op": "join", "object_id": object_id, "joined_from": other_id,
+              "points": joined, "changeset_id": changeset,
+              "head": updated.head_seq.max(removed.head_seq)}),
     )
 }
 
