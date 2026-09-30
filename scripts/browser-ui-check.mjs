@@ -397,13 +397,22 @@ const maskResult = await evaluate(`(async () => {
   const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
   document.getElementById("zoomFit").click();
   await new Promise((r) => setTimeout(r, 800));
-  // 铺满底色
+  // 铺底：**用画笔铺**而不是 heavy 填充 ✓ ——
+  // 填充是 heavy 原子，其异步渲染落地时间不稳定，本段曾多次误报"填充没有产生内容" ✗
+  //（选区/文本段改用画笔铺底后就没再出现 ✓，这里沿用同一做法 ✓）。
   document.getElementById("color").value = "#1f6feb";
-  document.getElementById("fillLayer").click();
-  // 轮询而非固定等待：重活（fill 是 heavy 原子）在慢机器上可能超过固定 sleep，
-  // 固定等待会得到 0 并误报"前置条件不成立"（本文件已多次因此误判）。
+  document.querySelector('button[data-tool="brush"]').click();
+  document.getElementById("size").value = "200";
+  for (let row = 0; row < 4; row++) {
+    const y = 0.15 + row * 0.23;
+    fire("pointerdown", at(0.02, y), 640 + row);
+    fire("pointermove", at(0.5, y), 640 + row);
+    fire("pointermove", at(0.98, y), 640 + row);
+    await new Promise((r) => setTimeout(r, 60));
+    fire("pointerup", at(0.98, y), 640 + row);
+    await new Promise((r) => setTimeout(r, 300));
+  }
   let filled = ink();
-  // 上限再放宽到 30s：heavy 填充在整页重构/机器繁忙时可能更慢 ✓（本段的等待要留足余量 ✓）。
   for (let i = 0; i < 120 && filled === 0; i++) {
     await new Promise((r) => setTimeout(r, 250));
     filled = ink();
