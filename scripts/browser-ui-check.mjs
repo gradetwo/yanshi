@@ -2449,6 +2449,136 @@ console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);
 console.log(`  缩略图：${thumbBefore === thumbAfter ? "未变化" : "已自动刷新"}`);
 console.log(`  'tiles 个失效' 噪声行：${tileNoise}`);
+// **图层面板** ✓（用户点名的图层功能：列表 / 上下移动 / 锁定 / 显示隐藏 / 复制 ✓）。
+//
+// 断言读**面板 DOM + 服务端 `list_layers`** 两边 ✓，并交叉核对 ✓ ——
+// 只读 DOM 只能证明"画出来了" ✗，只读服务端只能证明"数据对" ✗；
+// **两边一致**才说明面板真的反映了真相 ✓（本项目吃过"面板与实际漂移"的亏 ✓）。
+const layerPanel = await evaluate(`(async () => {
+  // **判墨口径** ✓：与脚本别处一致（不看纯白背景 ✓）—— 直接在页面里量 ✓，
+  // 因为"隐藏→量→再显示→量"之间不能回到 Node（那会把状态拆成多次 evaluate ✓，
+  // 中间还可能被重画打断 ✓）。
+  const ink = () => {
+    const board = document.getElementById("board");
+    const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] > 8 && (data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200)) count++;
+    }
+    return count;
+  };
+  const rows = () => [...document.querySelectorAll("#layerList .layer-row")];
+  const ids = () => rows().map((row) => row.dataset.layerId);
+  const out = {};
+  out.rowCount = rows().length;
+  out.ids = ids();
+  out.selected = document.querySelector("#layerList .layer-row.selected")?.dataset.layerId || null;
+  out.current = document.getElementById("layer")?.value || null;
+  // 服务端真相 ✓（自下而上 ✓）。
+  // **必须走查看器自己的调用入口** ✓ —— 我第一版直接 「fetch('/api/tools/list_layers')」 ✗，
+  // 少了 ?doc=&token= ✓ ⇒ 服务端返回错误 ✓、layers 为空 ✓ ⇒ 断言读到 [] ✗
+  //（"服务端自下而上 []" ✓ 就是这条假失败 ✓）。查看器已经把带凭据的入口暴露成
+  // window.yanshiCallTool ✓ ⇒ 用它 ✓，读到的才是真正的服务端状态 ✓。
+  const listed = await window.yanshiCallTool("list_layers", {});
+  out.serverOrder = (listed.layers || []).map((layer) => layer.layer_id);
+  // **面板应自上而下显示** ✓ ⇒ 第一行应当是服务端的**最后一个** ✓。
+  out.firstRowIsTop = out.ids[0] === out.serverOrder[out.serverOrder.length - 1];
+  // ① **新建** ⇒ 多一行 ✓。
+  document.getElementById("layerAdd").click();
+  await new Promise((r) => setTimeout(r, 900));
+  out.afterAdd = rows().length;
+  // ② **复制** ⇒ 多一行 ✓，且名字带"副本" ✓。
+  document.getElementById("layerDuplicate").click();
+  await new Promise((r) => setTimeout(r, 1200));
+  out.afterDuplicate = rows().length;
+  out.copyName = rows().map((row) => row.querySelector(".layer-name")?.textContent || "")
+    .find((text) => text.includes("副本")) || null;
+  // ③ **上移** ⇒ 顺序变化 ✓（比较行序快照 ✓）。
+  const beforeMove = ids().join(",");
+  const selectedBefore = document.getElementById("layer")?.value;
+  document.getElementById("layerUp").click();
+  await new Promise((r) => setTimeout(r, 900));
+  out.moveChanged = ids().join(",") !== beforeMove;
+  out.selectedKept = document.getElementById("layer")?.value === selectedBefore;
+  document.getElementById("layerDown").click();
+  await new Promise((r) => setTimeout(r, 900));
+  // ④ **显示/隐藏** ⇒ 画布墨量变化 ✓（把有内容的图层藏起来 ✓ ⇒ 墨量应变为 0 ✓）。
+  const paintedBefore = ink();
+  // **每次都要重新查询行** ✓ —— 我第一版把行元素**存下来**、点第二次时再用 ✗，
+  // 而 refreshLayers() 每次都会**重建整个列表** ✓ ⇒ 存下来的节点已经**脱离文档** ✓
+  // ⇒ 第二次点击打在空气上 ✗（症状：隐藏成功、显示回来却没反应 ✓，看起来像产品 bug ✗）。
+  // 这与本项目早先遇到的"过期选择/过期元素"是同一类 ✓。
+  const rowById = (id) => rows().find((row) => row.dataset.layerId === id);
+  const clickFlag = async (id, action) => {
+    const row = rowById(id);
+    if (!row) return false;
+    row.querySelector('[data-action="' + action + '"]').click();
+    return true;
+  };
+  out.hidContentRow = await clickFlag("layer_paint", "visible");
+  // **轮询而不是固定 sleep** ✓：重画要经过"工具返回 → resync → rAF 补画" ✓，
+  // 固定 1200ms 在冷启动时不够、在热路径上又白等 ✓。
+  for (let i = 0; i < 40 && ink() !== 0; i++) await new Promise((r) => setTimeout(r, 150));
+  out.paintedAfterHide = ink();
+  await clickFlag("layer_paint", "visible");
+  for (let i = 0; i < 40 && ink() === 0; i++) await new Promise((r) => setTimeout(r, 150));
+  out.paintedAfterShow = ink();
+  out.paintedBefore = paintedBefore;
+  // ⑤ **锁定** ⇒ 面板状态变 ✓（并按设计**阻止改内容** ✓）。
+  const lockRow = rows().find((row) => row.dataset.layerId === "layer_paint");
+  if (lockRow) {
+    lockRow.querySelector('[data-action="locked"]').click();
+    await new Promise((r) => setTimeout(r, 900));
+  }
+  const listed2 = await window.yanshiCallTool("list_layers", {});
+  out.lockedOnServer = (listed2.layers || []).some((layer) => layer.layer_id === "layer_paint" && layer.locked);
+  out.lockIcon = lockRow ? lockRow.querySelector('[data-action="locked"]')?.textContent : null;
+  return out;
+})()`);
+
+const layerProblems = [];
+if (!layerPanel) layerProblems.push("图层面板未取到状态");
+// **一行是正常的起点** ✓（检查用的文档只有一个图层 ✓）—— 我第一版要求"至少两行" ✗，
+// 那是把"＋ 之后"的期望写到了"之前" ✓。
+if ((layerPanel?.rowCount || 0) < 1) {
+  layerProblems.push(`图层面板应至少一行（实得 ${layerPanel?.rowCount}）`);
+}
+if (!layerPanel?.firstRowIsTop) {
+  layerProblems.push(
+    `面板应自上而下显示最上层（第一行 ${layerPanel?.ids?.[0]}，服务端自下而上 ${JSON.stringify(layerPanel?.serverOrder)}）`,
+  );
+}
+if (layerPanel?.selected !== layerPanel?.current) {
+  layerProblems.push(`面板选中项应与 #layer 一致（面板 ${layerPanel?.selected} vs 选择器 ${layerPanel?.current}）`);
+}
+if ((layerPanel?.afterAdd || 0) !== (layerPanel?.rowCount || 0) + 1) {
+  layerProblems.push(`「＋」应新增一行（${layerPanel?.rowCount} → ${layerPanel?.afterAdd}）`);
+}
+if ((layerPanel?.afterDuplicate || 0) !== (layerPanel?.afterAdd || 0) + 1) {
+  layerProblems.push(`「⧉」应新增一行（${layerPanel?.afterAdd} → ${layerPanel?.afterDuplicate}）`);
+}
+if (!String(layerPanel?.copyName || "").includes("副本")) {
+  layerProblems.push(`复制出来的图层名应含「副本」（实得 ${layerPanel?.copyName}）`);
+}
+if (!layerPanel?.moveChanged) layerProblems.push("「↑」应改变图层顺序");
+if (!layerPanel?.selectedKept) layerProblems.push("上下移动不该把选中项换掉");
+if (!layerPanel?.hidContentRow) layerProblems.push("找不到有内容的图层行（layer_paint）");
+if ((layerPanel?.paintedAfterHide || 0) !== 0 && (layerPanel?.paintedBefore || 0) > 0) {
+  layerProblems.push(
+    `隐藏有内容的图层后画面应变空（${layerPanel?.paintedBefore} → ${layerPanel?.paintedAfterHide}）`,
+  );
+}
+if ((layerPanel?.paintedAfterShow || 0) !== (layerPanel?.paintedBefore || 0)) {
+  layerProblems.push(
+    `再显示之后画面应恢复（${layerPanel?.paintedBefore} → ${layerPanel?.paintedAfterShow}）`,
+  );
+}
+if (!layerPanel?.lockedOnServer) layerProblems.push("点锁图标之后服务端应记录 locked=true");
+console.log(`  图层面板：${layerPanel?.rowCount} 行（自上而下 ✓ ${layerPanel?.firstRowIsTop ? "是" : "否"}）｜＋⇒${layerPanel?.afterAdd}｜⧉⇒${layerPanel?.afterDuplicate}（${layerPanel?.copyName}）｜上移生效 ${layerPanel?.moveChanged ? "✓" : "✗"}｜隐藏 ${layerPanel?.paintedBefore}→${layerPanel?.paintedAfterHide}→${layerPanel?.paintedAfterShow}｜锁定 ${layerPanel?.lockedOnServer ? "✓" : "✗"}（图标 ${layerPanel?.lockIcon}）`);
+const layerShot = await capture("05-layer-panel");
+console.log(`  截图：${layerShot || "（无）"}`);
+for (const problem of layerProblems) problems.push(problem);
+
 // **面板可见性与全屏画布** ✓（用户要求：左侧工具栏两列 + 可隐藏 ✓、右侧各窗口可隐藏 ✓、全屏画布 ✓）。
 //
 // 断言刻意读**计算样式与几何** ✓（`getComputedStyle` / `getBoundingClientRect` ✓），

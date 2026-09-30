@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**91 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+**92 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -74,6 +74,17 @@ turns a stroke into a path by taking its sample points as nodes with empty handl
 and the retired stroke into one changeset. `path_edit` now accepts both kinds, and their operations differ:
 reversing a path also swaps each node's `in` and `out` handles, since reversing only the nodes would silently
 deform the curve, and closing a path sets the flag rather than appending a node.
+
+Layer locking is now enforced rather than merely recorded: the commit layer refuses any atom that changes
+an object whose own lock or whose layer's lock is set, and refuses creating objects on a locked layer, while
+`locked` and `visible` remain changeable so a lock can always be released; a layer's own management atoms,
+such as renaming, opacity, ordering, stay allowed, since the lock is over content, not over the layer record.
+`duplicate_layer` copies a layer with its live objects, sharing the same blobs since the log is content
+addressed, and places the copy directly above the original by submitting a complete z-order, because giving
+it a bare `z_index + 1` would collide with the layer above and leave the copy's position decided by id. The
+web layer panel lists layers top first with per-row visibility and lock toggles and buttons for adding,
+duplicating, deleting and moving, keeping the existing select as the single source of selection so the panel
+and the rest of the viewer cannot drift apart.
 
 `transform_object` and `restore_object` join the `structure` group. `transform_object` is the
 human-readable counterpart to `move_object`: it takes exactly one of a rotation in degrees, a scale, or a

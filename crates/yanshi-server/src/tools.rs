@@ -736,6 +736,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: LAYER_ID,
     },
     ToolSpec {
+        name: "duplicate_layer",
+        profile: Profile::Structure,
+        summary: "复制图层（含其上的对象）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "要复制的图层"),
+            param!("new_layer_id", String, false, "新图层 id；缺省自动生成"),
+            param!("name", String, false, "新图层名；缺省为「原名 副本」"),
+        ],
+    },
+    ToolSpec {
         name: "reorder_layers",
         profile: Profile::Core,
         summary: "重排图层（必须携带完整目标 z 序）",
@@ -1709,6 +1720,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_layer" => write_update_layer(ctx, args),
         "delete_layer" => write_delete_layer(ctx, args),
         "reorder_layers" => write_reorder_layers(ctx, args),
+        "duplicate_layer" => write_duplicate_layer(ctx, args),
         "import_image" => write_import_image(ctx, args),
         "draw_stroke" => write_draw(ctx, args, AtomKind::DrawStroke),
         "draw_shape" => write_draw(ctx, args, AtomKind::DrawShape),
@@ -2301,6 +2313,172 @@ fn write_delete_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let result = ctx.commit(AtomKind::Tombstone, json!({"layer_id": layer_id}))?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// **复制图层** ✓（用户点名的图层功能之一 ✓；后端此前**没有** ✗）。
+///
+/// **记录的选择** ✓：
+/// * **忠实复制** ✓：名称（缺省加 " 副本" ✓）、`type`/`parent_id`/`blend_mode`/`opacity`/
+///   `visible`/`locked` 全部照搬 ✓，对象连 `data`/`transform`/`z_index`/`metadata` 一起搬 ✓；
+/// * **对象引用同一批 blob** ✓（不复制像素 ✓）—— 日志模型里这是**正确**的 ✓：
+///   blob 是内容寻址的 ✓ ⇒ 两份对象共享一份数据 ✓；编辑只改对象与原子 ✓，不会回头改 blob ✓；
+/// * **副本落在原图层正上方** ✓：`alive_layers()` 的 z 序是"越大越上" ✓，
+///   而 `ReorderLayers` 按**列表下标**赋 z ✓ ⇒ 这里提交一份**完整顺序**（副本插在原图层后一位 ✓）
+///   ⇒ 位置**确定** ✓。**这一步不能省** ✗：只给 `z_index + 1` 会和上方图层**撞号** ✓，
+///   撞号后由 id 决定先后 ✓ ⇒ "副本有时在上面、有时在下面" ✗ —— 那是最难察觉的一类错 ✓。
+/// * **一个变更集** ✓ ⇒ 一次可整体撤销 ✓。
+///
+/// **边界** ✓：锁定不影响"复制"（复制是**读**操作 ✓，与"改内容"不同 ✓）——
+/// 副本会**保留**锁定状态 ✓（忠实复制 ✓），想编辑再解锁 ✓。
+fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let new_layer_id = args
+        .get("new_layer_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("layer_{}", yanshi_core::Ulid::new().encode()));
+    let (source, objects, order) = {
+        let state = document_state(ctx)?;
+        let Some(layer) = state.layers.get(layer_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("图层 {layer_id} 不存在")),
+            ));
+        };
+        if layer.is_deleted() {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("图层 {layer_id} 已被删除")),
+            ));
+        }
+        // 该图层上的**存活对象** ✓，按 (z_index, id) 升序 ✓（与渲染顺序一致 ✓）。
+        let mut objects: Vec<(String, i64, Value, Value, Value, bool, bool)> = state
+            .objects
+            .values()
+            .filter(|object| !object.is_deleted() && object.layer_id == layer_id)
+            .map(|object| {
+                (
+                    object.id.clone(),
+                    object.z_index,
+                    object.data.clone(),
+                    json!(object.transform.matrix.to_vec()),
+                    json!(object.transform.pivot.to_vec()),
+                    object.visible,
+                    object.locked,
+                )
+            })
+            .collect();
+        // 按 `(z_index, id)` 升序 ✓ —— 与渲染顺序一致 ✓（clippy 建议 `sort_by_key` ✓ 采纳 ✓）。
+        objects.sort_by_key(|object| (object.1, object.0.clone()));
+        let order: Vec<String> = state.alive_layers().iter().map(|l| l.id.clone()).collect();
+        (
+            json!({
+                "name": layer.name,
+                "type": format!("{:?}", layer.layer_type).to_lowercase(),
+                "parent_id": layer.parent_id,
+                "blend_mode": layer.blend_mode,
+                "opacity": layer.opacity,
+                "visible": layer.visible,
+                "locked": layer.locked,
+                "z_index": layer.z_index,
+            }),
+            objects,
+            order,
+        )
+    };
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "{} 副本",
+                source["name"].as_str().unwrap_or(layer_id.as_str())
+            )
+        });
+    // 新顺序：副本插在原图层**后一位** ✓（= 正上方 ✓）。
+    let position = order.iter().position(|id| id == &layer_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("图层 {layer_id} 不在存活图层序列里")),
+        )
+    })? + 1;
+    let mut target_order = order.clone();
+    target_order.insert(position, new_layer_id.clone());
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let mut head = 0u64;
+    let mut failure: Option<YanshiError> = None;
+    let mut created_objects = 0usize;
+    let mut layer_payload = source.clone();
+    layer_payload["layer_id"] = json!(new_layer_id);
+    layer_payload["name"] = json!(name);
+    // **构造期先不加锁** ✓ —— 这一步是本轮补锁之后**测试当场逼出来**的 ✓：
+    // 副本若一开始就带锁 ✓，新加的锁定校验会**拒绝往副本里加对象** ✗
+    //（"不能在锁定的图层 L1b 上新建对象" ✓）⇒ 复制一个被锁的图层会失败 ✓。
+    // 取舍 ✓：**先建成解锁的 ✓、把对象放进去 ✓、最后再补上锁** ✓
+    // ⇒ 结果与"忠实复制"完全一致 ✓（副本最终带锁 ✓），也不需要在校验里开特例 ✓
+    //（开特例是更差的做法 ✗：那会让"锁定"重新变成可以绕过的摆设 ✓）。
+    let source_locked = layer_payload["locked"].as_bool().unwrap_or(false);
+    layer_payload["locked"] = json!(false);
+    match ctx.commit(AtomKind::CreateLayer, layer_payload) {
+        Ok(result) => head = head.max(result.head_seq),
+        Err(error) => failure = Some(error),
+    }
+    if failure.is_none() {
+        for (_, z_index, data, matrix, pivot, visible, locked) in &objects {
+            let object_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
+            let payload = json!({
+                "object_id": object_id,
+                "layer_id": new_layer_id,
+                "z_index": z_index,
+                "visible": visible,
+                "locked": locked,
+                "transform": {"matrix": matrix, "pivot": pivot},
+                "data": data,
+            });
+            match ctx.commit(AtomKind::CreateObject, payload) {
+                Ok(result) => {
+                    head = head.max(result.head_seq);
+                    created_objects += 1;
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+    // **最后补上锁** ✓（只有源图层是锁的才需要 ✓）。
+    if failure.is_none() && source_locked {
+        match ctx.commit(
+            AtomKind::SetProperty,
+            json!({"layer_id": new_layer_id, "key": "locked", "value": true}),
+        ) {
+            Ok(result) => head = head.max(result.head_seq),
+            Err(error) => failure = Some(error),
+        }
+    }
+    if failure.is_none() {
+        match ctx.commit(AtomKind::ReorderLayers, json!({"order": target_order})) {
+            Ok(result) => head = head.max(result.head_seq),
+            Err(error) => failure = Some(error),
+        }
+    }
+    ctx.changeset = previous;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(json!({
+        "ok": true,
+        "layer_id": new_layer_id,
+        "from": layer_id,
+        "name": name,
+        "objects": created_objects,
+        "z_index": position,
+        "changeset_id": changeset,
+        "head": head,
+    }))
 }
 
 fn write_reorder_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

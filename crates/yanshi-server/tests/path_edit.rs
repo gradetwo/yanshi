@@ -289,33 +289,49 @@ fn operations_that_need_an_unspecified_path_model_are_refused() {
         .unwrap();
     let registry = registry();
     draw_long_stroke(&mut workspace, &registry);
-    for op in [
-        "split",
-        "merge",
-        "boolean",
-        "convert_to_shape",
-        "convert_to_path",
-    ] {
+    // **本用例在路径片全部落地之后被改写过** ✓ —— 这是它现在的契约 ✓：
+    // 设计 792 的八个算子里，除了 `convert_to_path`（它其实是**笔迹 ⇒ 路径** ✓，
+    // 已作为独立工具 ✓，作为 `path_edit` 算子没有意义 ✓）之外，**全部已实现** ✓。
+    //
+    // **为什么必须改** ✗：我第 45/46/47 轮陆续实现了 `split`/`merge`/`convert_to_shape`/`boolean` ✓，
+    // 而这条测试还在断言它们"因缺少路径对象模型被拒" ✗ ⇒ 早该跟着改 ✓。
+    // **它当时为什么没被发现** ✗：我说"本地只跑改动涉及的包与测试" ✓，
+    // 但**是按测试文件名挑的** ✓ —— 跑了新的 `path_split_merge.rs` ✓，
+    // 却漏了更早的 `path_edit.rs` ✗，而后者测的正是**同一个工具** ✓。
+    // **教训** ✓：选测试的判据应当是"**这个工具/模块的测试文件有哪些**" ✓，
+    // 而不是"这轮新建的测试文件叫什么" ✗ —— 否则最容易漏掉最老的回归测试 ✓。
+    {
+        // **只剩一个算子在拒绝** ✓ ⇒ 不再写单元素 `for` ✓（clippy 当场指出 ✓）。
+        let op = "convert_to_path";
         let mut ctx = context(&mut workspace);
         let refused = registry.call(
             &mut ctx,
             "path_edit",
             &json!({"op": op, "object_id": "s1", "other_id": "s1"}),
         );
-        assert_eq!(refused["ok"], json!(false), "{op} 应被拒绝：{refused}");
         assert_eq!(
-            refused["error_code"].as_str().unwrap_or_default(),
-            "invalid_argument",
-            "{op} 应给出 invalid_argument：{refused}"
+            refused["ok"],
+            json!(false),
+            "{op} 作为算子应被拒绝：{refused}"
         );
         let detail = refused["context"]["detail"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
         assert!(
-            detail.contains("路径对象"),
-            "{op} 的错误里应说明缺的是「路径对象」模型：{detail}"
+            detail.contains("路径对象") || detail.contains("convert_to_path"),
+            "{op} 的错误应说清它是独立工具、不是算子：{detail}"
         );
+    }
+    // **已实现的算子不该再被当成"不支持"** ✓（一条正例 ✓，防止将来把实现改回去 ✗）。
+    {
+        let mut ctx = context(&mut workspace);
+        let reversed = registry.call(
+            &mut ctx,
+            "path_edit",
+            &json!({"op": "reverse", "object_id": "s1"}),
+        );
+        assert_eq!(reversed["ok"], json!(true), "reverse 应当可用：{reversed}");
     }
     // 未知算子 ✓ 与**非笔迹对象** ✓ 也要被拒 ✓。
     {
