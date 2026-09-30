@@ -687,15 +687,8 @@ impl Renderer {
                     // 选区「约束落笔」（路线 A）：把覆盖度折进印章 ✓ ——
                     // 只影响本次新落笔 ✓、从不触碰选区外像素 ✓（与整幅/分次渲染无关 ✓）。
                     // 只把"早于该对象"的选区计入 ✓（用日志里的原子 id 判定先后 ✓）。
-                    let mut clip = crate::selection::SelectionSet::new();
-                    let mut any = false;
-                    for (created_by, shape) in layer_selections(state, &layer.id) {
-                        if created_by.as_str() < object.created_by.as_str() {
-                            clip.push(shape);
-                            any = true;
-                        }
-                    }
-                    if any {
+                    let clip = object_clip(state, &layer.id, object);
+                    if let Some(clip) = &clip {
                         // 与 `stamp_stroke` 保持一致的采样：**同样的间距与 dash** ✓
                         let samples: Vec<(f64, f64, f64)> = geometry
                             .points
@@ -726,7 +719,12 @@ impl Renderer {
                     stroke_color,
                 } => {
                     // 只生成落在本层缓冲内的覆盖率（tile 渲染时省下十几倍工作量）。
-                    let coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());
+                    let mut coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());
+                    // 选区「约束落笔」：**逐像素**乘进覆盖率 ✓（从不触碰选区外 ✓）。
+                    let shape_clip = object_clip(state, &layer.id, object);
+                    if let Some(clip) = &shape_clip {
+                        clip_coverage(&mut coverage, clip);
+                    }
                     layer_buffer.fill_coverage(&coverage, color, BlendMode::Normal, opacity);
                     if stroke_width > 0.0 {
                         let outline = shape_outline(kind, bbox, &points);
@@ -748,7 +746,29 @@ impl Renderer {
                                     })
                                     .collect(),
                             };
-                            stamp_stroke(layer_buffer, &brush, &geometry);
+                            match &shape_clip {
+                                Some(clip) => {
+                                    let samples: Vec<(f64, f64, f64)> = geometry
+                                        .points
+                                        .iter()
+                                        .map(|point| (point.x, point.y, point.pressure))
+                                        .collect();
+                                    let stamps = crate::geometry::dashed_line(
+                                        &samples,
+                                        brush.spacing_pixels(),
+                                        brush.dash,
+                                    );
+                                    crate::brush::stamp_samples_clipped(
+                                        layer_buffer,
+                                        &brush,
+                                        &stamps,
+                                        &|x, y| clip.coverage(x, y),
+                                    );
+                                }
+                                None => {
+                                    stamp_stroke(layer_buffer, &brush, &geometry);
+                                }
+                            }
                         }
                     }
                 }
@@ -866,16 +886,9 @@ impl Renderer {
                             points.iter().map(|(x, y)| (*x, *y, 1.0)).collect();
                         // 擦除同样受选区约束 ✓ —— 否则选区下擦除会擦掉选区**外**的内容 ✓
                         //（那是数据丢失 ✓，而不是功能缺失 ✓）。
-                        let mut clip = crate::selection::SelectionSet::new();
-                        let mut any_clip = false;
-                        for (created_by, shape) in layer_selections(state, &layer.id) {
-                            if created_by.as_str() < object.created_by.as_str() {
-                                clip.push(shape);
-                                any_clip = true;
-                            }
-                        }
+                        let clip = object_clip(state, &layer.id, object);
                         for stamp in crate::geometry::dashed_line(&samples, spacing, None) {
-                            if any_clip {
+                            if let Some(clip) = &clip {
                                 crate::brush::erase_stamp_clipped(
                                     layer_buffer,
                                     stamp.0,
@@ -1620,8 +1633,44 @@ pub fn premultiplied(color: LinearRgba) -> LinearRgba {
 ///
 /// `linked_layer` 为空 ⇒ 作用于全文档 ✓；有值 ⇒ 只作用于该图层 ✓；
 /// 已删除的选区不参与 ✓。没有选区时返回空表 ⇒ **零开销** ✓。
-/// 接线恢复后使用（目前渲染路径尚未接入 ⇒ 先允许未使用）✓。
-#[allow(dead_code)]
+/// 该对象生效的选区（路线 A：只约束**在其创建之后创建的对象** ✓）。
+///
+/// 用日志里的原子 id（真 ULID，单调 ✓）判定先后 ✓，而不是用户传入的 `selection_id`
+/// （后者可以是任意字符串 ✗ —— 本会话就因此先失败过一次 ✓）。
+pub fn object_clip(
+    state: &DocumentState,
+    layer_id: &str,
+    object: &yanshi_core::Object,
+) -> Option<crate::selection::SelectionSet> {
+    let mut clip = crate::selection::SelectionSet::new();
+    let mut any = false;
+    for (created_by, shape) in layer_selections(state, layer_id) {
+        if created_by.as_str() < object.created_by.as_str() {
+            clip.push(shape);
+            any = true;
+        }
+    }
+    any.then_some(clip)
+}
+
+/// 把选区覆盖度**逐像素**乘进形状覆盖率 ✓ —— 选区外一个像素都不会被写 ✓。
+pub fn clip_coverage(
+    coverage: &mut crate::geometry::Coverage,
+    clip: &crate::selection::SelectionSet,
+) {
+    for y in 0..coverage.height {
+        for x in 0..coverage.width {
+            let index = (y * coverage.width + x) as usize;
+            // 取**像素中心** ✓ —— 与笔触那条链（ 的 +0.5）保持一致 ✓。
+            // 用左边界取样会让选区边界那一列被多算进去（实测越界 128 个像素 = 一整列 ✗）。
+            let document_x = coverage.bbox.x + f64::from(x) + 0.5;
+            let document_y = coverage.bbox.y + f64::from(y) + 0.5;
+            coverage.data[index] *= clip.coverage(document_x, document_y).clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// 本图层相关的选区（含 ，供判定先后）✓。
 pub fn layer_selections(
     state: &DocumentState,
     layer_id: &str,

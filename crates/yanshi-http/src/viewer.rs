@@ -156,6 +156,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="liquify_pinch">液化缩</button>
         <button data-tool="eyedropper">吸管</button>
         <button data-tool="move_object">移动</button>
+        <button data-tool="select_rect">选区</button>
+        <button id="clearSelection">清除选区</button>
+        <button data-tool="text">文本</button>
         <button data-tool="mask_rect">矩形蒙版</button>
         <button data-tool="mask_ellipse">椭圆蒙版</button>
         <button id="fillLayer">填充图层</button>
@@ -173,6 +176,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <input id="color" type="color" value="#222222" />
         <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
         <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
+        <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
         <label>图层 <select id="layer"></select></label>
       </div>
     </div>
@@ -273,6 +277,9 @@ const state = {
   sourcePoint: null,
   // 移动工具选中的对象（含 bbox，用于命中测试与显示选中框）。
   selectedObject: null,
+  // 当前选区（用于"清除选区"与覆盖层显示）。
+  selectionId: null,
+  selectionShape: null,
   dragging: null,
   points: [],
   wasm: null,
@@ -1456,10 +1463,20 @@ function redraw() {
   octx.clearRect(0, 0, overlay.width, overlay.height);
   redrawSourceMark();
   drawSelectionBox();
+  drawSelectionOutline();
   if (!state.dragging) return;
   octx.strokeStyle = $("color").value;
   octx.lineWidth = Number($("size").value);
-  if (state.points.length === 2 && (state.tool === "rect" || MASK_TOOLS.has(state.tool))) {
+  if (state.points.length === 2 && state.tool === "select_rect") {
+    const [a, b] = state.points;
+    const topLeft = toCanvas({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) });
+    const bottomRight = toCanvas({ x: Math.max(a.x, b.x), y: Math.max(a.y, b.y) });
+    octx.save();
+    octx.strokeStyle = "#ffd166";
+    octx.setLineDash([6, 4]);
+    octx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+    octx.restore();
+  } else if (state.points.length === 2 && (state.tool === "rect" || MASK_TOOLS.has(state.tool))) {
     const [a, b] = state.points;
     const pa = toCanvas(a);
     const pb = toCanvas(b);
@@ -1556,6 +1573,108 @@ async function pickObjectAt(point) {
   // 取 z_index 最大者（同 z 取列表中较晚者，即较新对象）。
   candidates.sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
   return candidates[candidates.length - 1];
+}
+
+/// 在覆盖层画出当前选区轮廓 ✓（让用户看得见"落笔会被限制在哪里" ✓）。
+function drawSelectionOutline() {
+  const shape = state.selectionShape;
+  if (!shape || shape.kind !== "rect" || !shape.bbox) return;
+  const topLeft = toCanvas({ x: shape.bbox.x, y: shape.bbox.y });
+  const bottomRight = toCanvas({ x: shape.bbox.x + shape.bbox.w, y: shape.bbox.y + shape.bbox.h });
+  octx.save();
+  octx.strokeStyle = "#ffd166";
+  octx.lineWidth = 1;
+  octx.setLineDash([6, 4]);
+  octx.strokeRect(
+    topLeft.x, topLeft.y,
+    bottomRight.x - topLeft.x, bottomRight.y - topLeft.y
+  );
+  octx.restore();
+}
+
+/// 选区工具：拖出一个矩形选区，约束其后的**笔触与擦除/形状/填充**落笔 ✓（路线 A）。
+///
+/// 语义细节（已记录）：选区**不绑定图层**（作用于全文档 ✓），且只约束
+/// **在其创建之后创建的对象** ✓ —— 与"选区影响后续编辑"一致 ✓。
+async function commitSelection() {
+  const points = state.points;
+  if (points.length < 2) {
+    log("选区需要拖出一个区域", "#c33");
+    return;
+  }
+  const [a, b] = points;
+  const bbox = {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    w: Math.max(1, Math.abs(b.x - a.x)),
+    h: Math.max(1, Math.abs(b.y - a.y)),
+  };
+  const selectionId = "sel_" + ulid();
+  const created = await callTool(
+    "create_selection",
+    {
+      selection_id: selectionId,
+      shape: { kind: "rect", bbox },
+      feather: Number($("feather").value) || 0,
+      invert: false,
+      mode: "new",
+    },
+    { refresh: false }
+  );
+  if (!created.ok) {
+    log("创建选区失败：" + (created.error_code || "unknown") + " " +
+        ((created.context && created.context.detail) || ""), "#c33");
+    return;
+  }
+  state.selectionId = selectionId;
+  state.selectionShape = { kind: "rect", bbox };
+  log("已创建选区 " + selectionId + "（其后的落笔只在选区内生效）");
+  await refreshPreview();
+}
+
+async function clearSelection() {
+  if (!state.selectionId) {
+    log("当前没有选区");
+    return;
+  }
+  const removed = await callTool(
+    "delete_selection",
+    { selection_id: state.selectionId },
+    { refresh: false }
+  );
+  if (!removed.ok) {
+    log("清除选区失败：" + (removed.error_code || "unknown"), "#c33");
+    return;
+  }
+  log("已清除选区 " + state.selectionId + "（已画内容按日志重算，保持原样）");
+  state.selectionId = null;
+  state.selectionShape = null;
+  await refreshPreview();
+}
+
+/// 文本工具：点击位置 + 输入文字 ⇒ `draw_text`（内核用内置 5×7 ASCII 位图字体 ✓）。
+async function commitText(point) {
+  const text = window.prompt("要输入的文本（内置字体支持 ASCII；CJK 为后续项）", "");
+  if (text === null || text === "") return;
+  const size = Number($("textSize").value) || 21;
+  const drawn = await callTool("draw_text", {
+    layer_id: state.layerId,
+    data: {
+      text,
+      font: "builtin",
+      size,
+      color: colorCss(),
+      position: [Math.round(point.x), Math.round(point.y)],
+      align: "left",
+    },
+  }, { refresh: false });
+  if (!drawn.ok) {
+    log("输入文本失败：" + (drawn.error_code || "unknown") + " " +
+        ((drawn.context && drawn.context.detail) || ""), "#c33");
+    return;
+  }
+  log("已输入文本 " + JSON.stringify(text) + "（字号 " + size + "）");
+  await refreshPreview();
 }
 
 /// 绘制选中框（覆盖层）。
@@ -1742,6 +1861,11 @@ window.addEventListener("keydown", (event) => {
 });
 
 board.addEventListener("pointerdown", (event) => {
+  if (state.tool === "text") {
+    event.preventDefault();
+    void commitText(localPoint(event));
+    return;
+  }
   if (state.tool === MOVE_TOOL) {
     const start = localPoint(event);
     void pickObjectAt(start).then((object) => {
@@ -1837,6 +1961,13 @@ board.addEventListener("pointerup", async (event) => {
     // 更新选中框到新位置。
     state.selectedObject = await pickObjectAt(end);
     await refreshPreview();
+    redraw();
+    return;
+  }
+  if (state.tool === "select_rect") {
+    state.points.push(localPoint(event));
+    await commitSelection();
+    state.points = [];
     redraw();
     return;
   }
@@ -2035,6 +2166,7 @@ $("newName").addEventListener("keydown", (event) => {
   if (event.key === "Enter") void createNamedDocument();
 });
 $("openDoc").addEventListener("click", showOpenDialog);
+$("clearSelection").addEventListener("click", () => { void clearSelection(); });
 $("openClose").addEventListener("click", closeOpenDialog);
 $("copyDoc").addEventListener("click", async () => {
   const name = ($("copyName").value || "").trim();

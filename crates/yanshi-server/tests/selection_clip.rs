@@ -200,3 +200,75 @@ fn without_a_selection_rendering_is_unchanged() {
         "没有选区时笔画应铺满（左侧也应有改动）"
     );
 }
+
+/// 形状/填充同样受选区约束 ✓（与笔触同一"逐像素覆盖度"模式 ✓）。
+#[test]
+fn a_selection_clips_a_fill_and_is_reversible() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    }
+    let blank = render(&mut workspace);
+
+    // 选区：左半（0..64）。
+    {
+        let mut ctx = context(&mut workspace);
+        let created = registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_fill",
+                    "shape": {"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 64.0, "h": 128.0}},
+                    "feather": 0.0, "invert": false, "mode": "new"}),
+        );
+        assert_eq!(created["ok"], json!(true), "{created}");
+    }
+
+    // 铺满整幅的填充：应**只**在左半生效。
+    {
+        let mut ctx = context(&mut workspace);
+        let filled = registry.call(
+            &mut ctx,
+            "fill",
+            &json!({"layer_id": "L", "object_id": "z_fill",
+                    "data": {"color": {"r": 250, "g": 40, "b": 40, "a": 255},
+                             "region": {"x": 0, "y": 0, "w": 128, "h": 128}}}),
+        );
+        assert_eq!(filled["ok"], json!(true), "{filled}");
+    }
+    let clipped = render(&mut workspace);
+    let changes = changed(&blank, &clipped);
+    assert!(!changes.is_empty(), "选区内应当被填充（前置条件）");
+    let outside: Vec<(usize, usize)> = changes.iter().copied().filter(|(x, _)| *x >= 64).collect();
+    assert!(
+        outside.is_empty(),
+        "选区外不应被填充（越界 {} 个像素，例如 {:?}）",
+        outside.len(),
+        outside.iter().take(5).collect::<Vec<_>>()
+    );
+
+    // 删除选区 ⇒ 同一填充恢复为铺满整幅 ✓（可逆 ✓）。
+    {
+        let mut ctx = context(&mut workspace);
+        let deleted = registry.call(
+            &mut ctx,
+            "delete_selection",
+            &json!({"selection_id": "sel_fill"}),
+        );
+        assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    }
+    let unclipped = render(&mut workspace);
+    let after = changed(&blank, &unclipped);
+    assert!(
+        after.iter().any(|(x, _)| *x >= 64),
+        "删除选区后填充应恢复为整幅（选区外仍无改动 ⇒ 裁剪被错误地烘焙进像素）"
+    );
+}
