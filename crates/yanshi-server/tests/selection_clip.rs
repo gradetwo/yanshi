@@ -62,7 +62,6 @@ fn changed(base: &[u8], now: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[test]
-#[ignore = "选区裁剪接线撤回中（服务端分次渲染下会丢笔画）；接线上线后恢复"]
 fn a_selection_clips_new_painting_and_is_reversible() {
     let mut workspace = workspace();
     workspace
@@ -76,15 +75,22 @@ fn a_selection_clips_new_painting_and_is_reversible() {
     {
         let mut ctx = context(&mut workspace);
         registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
-        // 已有内容：铺满底色。
+    }
+    // 已有内容：铺满底色（**等它渲染完成** ✓，否则会与后面的笔画渲染竞态 ✗）。
+    let filled = {
+        let mut ctx = context(&mut workspace);
+        // **对象 id 决定叠放次序**（`objects_in_layer` 按 id 的 BTreeMap 序 ✓）：
+        // 底色取一个排在前面的 id ✓，笔画取 `z_` 前缀 ✓ —— 否则后画的底色会把笔画盖住 ✗
+        // （本用例曾经因此报"笔画完全没有痕迹" ✗，而我一度误以为是自己的选区裁剪 ✗）。
         registry.call(
             &mut ctx,
             "fill",
-            &json!({"layer_id": "L",
+            &json!({"layer_id": "L", "object_id": "a_background",
                     "data": {"color": {"r": 40, "g": 120, "b": 200, "a": 255},
                              "region": {"x": 0, "y": 0, "w": 128, "h": 128}}}),
-        );
-    }
+        )
+    };
+    assert_eq!(filled["ok"], json!(true), "{filled}");
     let baseline = render(&mut workspace);
 
     // 选区：中间 40..88 的竖直带。
@@ -106,7 +112,7 @@ fn a_selection_clips_new_painting_and_is_reversible() {
         let drawn = registry.call(
             &mut ctx,
             "draw_stroke",
-            &json!({"layer_id": "L", "object_id": "line1",
+            &json!({"layer_id": "L", "object_id": "z_line1",
                     "data": {"points": [[4.0, 64.0], [124.0, 64.0]], "size": 20.0,
                              "hardness": 1.0,
                              "color": {"r": 250, "g": 240, "b": 20, "a": 255}}}),
@@ -155,7 +161,6 @@ fn a_selection_clips_new_painting_and_is_reversible() {
 }
 
 #[test]
-#[ignore = "选区裁剪接线撤回中（服务端分次渲染下会丢笔画）；接线上线后恢复"]
 fn without_a_selection_rendering_is_unchanged() {
     // 向后兼容的硬性要求：**没有选区时渲染结果与接线前逐字节一致**。
     // 这里用"同一文档渲染两次"与"有无选区机制不影响无选区文档"来守住这一点：
@@ -182,7 +187,7 @@ fn without_a_selection_rendering_is_unchanged() {
         registry.call(
             &mut ctx,
             "draw_stroke",
-            &json!({"layer_id": "L", "object_id": "line2",
+            &json!({"layer_id": "L", "object_id": "z_line2",
                     "data": {"points": [[4.0, 64.0], [124.0, 64.0]], "size": 20.0,
                              "hardness": 1.0,
                              "color": {"r": 250, "g": 240, "b": 20, "a": 255}}}),

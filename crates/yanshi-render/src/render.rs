@@ -684,13 +684,38 @@ impl Renderer {
                         opacity: brush.opacity * f64::from(opacity),
                         ..brush
                     };
-                    // 选区「约束落笔」的接线**仍撤回** ✗ —— 本文件顶部的说明与
-                    // `docs/design/implementation-notes.md` 记录了根因定位过程：
-                    // 内核侧把覆盖度折进印章是**正确**的（渲染器级用例通过 ✓、单元测试覆盖 ✓），
-                    // 但在**服务端的分次（脏区）渲染**下，走裁剪分支时笔画会被丢掉 ✗
-                    //（表现为用户笔画消失 ⇒ 不可接受 ✗）。下一轮先比对
-                    // `stamp_stroke` 与裁剪路径在脏区分块/增量盖章上的差异 ✓，再决定接法 ✓。
-                    stamp_stroke(layer_buffer, &brush, &geometry);
+                    // 选区「约束落笔」（路线 A）：把覆盖度折进印章 ✓ ——
+                    // 只影响本次新落笔 ✓、从不触碰选区外像素 ✓（与整幅/分次渲染无关 ✓）。
+                    // 只把"早于该对象"的选区计入 ✓（用日志里的原子 id 判定先后 ✓）。
+                    let mut clip = crate::selection::SelectionSet::new();
+                    let mut any = false;
+                    for (created_by, shape) in layer_selections(state, &layer.id) {
+                        if created_by.as_str() < object.created_by.as_str() {
+                            clip.push(shape);
+                            any = true;
+                        }
+                    }
+                    if any {
+                        // 与 `stamp_stroke` 保持一致的采样：**同样的间距与 dash** ✓
+                        let samples: Vec<(f64, f64, f64)> = geometry
+                            .points
+                            .iter()
+                            .map(|point| (point.x, point.y, point.pressure))
+                            .collect();
+                        let stamps = crate::geometry::dashed_line(
+                            &samples,
+                            brush.spacing_pixels(),
+                            brush.dash,
+                        );
+                        crate::brush::stamp_samples_clipped(
+                            layer_buffer,
+                            &brush,
+                            &stamps,
+                            &|x, y| clip.coverage(x, y),
+                        );
+                    } else {
+                        stamp_stroke(layer_buffer, &brush, &geometry);
+                    }
                 }
                 Primitive::Shape {
                     kind,
@@ -839,15 +864,37 @@ impl Renderer {
                         let spacing = (size.max(1.0) * 0.15).max(1.0);
                         let samples: Vec<(f64, f64, f64)> =
                             points.iter().map(|(x, y)| (*x, *y, 1.0)).collect();
+                        // 擦除同样受选区约束 ✓ —— 否则选区下擦除会擦掉选区**外**的内容 ✓
+                        //（那是数据丢失 ✓，而不是功能缺失 ✓）。
+                        let mut clip = crate::selection::SelectionSet::new();
+                        let mut any_clip = false;
+                        for (created_by, shape) in layer_selections(state, &layer.id) {
+                            if created_by.as_str() < object.created_by.as_str() {
+                                clip.push(shape);
+                                any_clip = true;
+                            }
+                        }
                         for stamp in crate::geometry::dashed_line(&samples, spacing, None) {
-                            crate::brush::erase_stamp(
-                                layer_buffer,
-                                stamp.0,
-                                stamp.1,
-                                brush_radius,
-                                erase_hardness,
-                                strength,
-                            );
+                            if any_clip {
+                                crate::brush::erase_stamp_clipped(
+                                    layer_buffer,
+                                    stamp.0,
+                                    stamp.1,
+                                    brush_radius,
+                                    erase_hardness,
+                                    strength,
+                                    &|x, y| clip.coverage(x, y),
+                                );
+                            } else {
+                                crate::brush::erase_stamp(
+                                    layer_buffer,
+                                    stamp.0,
+                                    stamp.1,
+                                    brush_radius,
+                                    erase_hardness,
+                                    strength,
+                                );
+                            }
                         }
                         continue;
                     }

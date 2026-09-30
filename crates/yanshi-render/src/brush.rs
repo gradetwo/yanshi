@@ -230,12 +230,15 @@ pub fn stamp_samples_clipped(
         if stamp_radius <= 0.0 {
             continue;
         }
-        let alpha = (brush.color[3] * brush.flow as f32 * brush.opacity as f32)
-            * coverage(cx, cy).clamp(0.0, 1.0);
+        let alpha = brush.color[3] * brush.flow as f32 * brush.opacity as f32;
         if alpha <= 0.0 {
             continue;
         }
-        draw_stamp(
+        // 先按印章中心快速跳过完全在选区外的印章 ✓，再**逐像素**施加覆盖度 ✓。
+        if coverage(cx, cy) <= 0.0 {
+            continue;
+        }
+        draw_stamp_clipped(
             buffer,
             cx,
             cy,
@@ -243,6 +246,7 @@ pub fn stamp_samples_clipped(
             brush.hardness,
             [brush.color[0], brush.color[1], brush.color[2], alpha],
             brush.blend_mode,
+            coverage,
         );
         drawn += 1;
     }
@@ -312,7 +316,7 @@ fn for_each_covered_pixel(
     center_y: f64,
     radius: f64,
     hardness: f64,
-    mut visit: impl FnMut(u32, u32, f64),
+    mut visit: impl FnMut(u32, u32, f64, f64, f64),
 ) {
     let (origin_x, origin_y) = buffer.origin();
     let document_x0 = (center_x - radius).floor() as i64;
@@ -356,7 +360,13 @@ fn for_each_covered_pixel(
                 let t = 1.0 - (distance - hard_edge) / soft_span;
                 (t * t * (3.0 - 2.0 * t)).clamp(0.0, 1.0)
             };
-            visit(local_x, local_y, coverage);
+            visit(
+                local_x,
+                local_y,
+                coverage,
+                document_x as f64 + 0.5,
+                document_y as f64 + 0.5,
+            );
         }
     }
 }
@@ -373,6 +383,31 @@ pub fn erase_stamp(
     hardness: f64,
     strength: f64,
 ) {
+    erase_stamp_clipped(
+        buffer,
+        center_x,
+        center_y,
+        radius,
+        hardness,
+        strength,
+        &|_, _| 1.0,
+    )
+}
+
+/// 与 [`erase_stamp`] 相同，但**逐像素**乘以选区覆盖度 ✓ —— 选区外一个像素都不擦 ✓。
+///
+/// 为什么擦除也要受约束：不受约束时，选区激活期间擦除会擦掉选区**外**的内容 ✓ ——
+/// 那是**数据丢失** ✓，而不是功能缺失 ✓。
+#[allow(clippy::too_many_arguments)]
+pub fn erase_stamp_clipped(
+    buffer: &mut Buffer,
+    center_x: f64,
+    center_y: f64,
+    radius: f64,
+    hardness: f64,
+    strength: f64,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) {
     let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 {
         return;
@@ -384,8 +419,12 @@ pub fn erase_stamp(
         center_y,
         radius,
         hardness,
-        |x, y, coverage| {
-            let keep = (1.0 - coverage * strength) as f32;
+        |x, y, stamp_coverage, document_x, document_y| {
+            let selection = coverage(document_x, document_y).clamp(0.0, 1.0);
+            if selection <= 0.0 {
+                return;
+            }
+            let keep = (1.0 - stamp_coverage * strength * f64::from(selection)) as f32;
             if keep >= 1.0 {
                 return;
             }
@@ -407,6 +446,52 @@ pub fn erase_stamp(
     }
 }
 
+/// 与 [`draw_stamp`] 相同，但**逐像素**乘以选区覆盖度 ✓。
+///
+/// 为什么必须逐像素：按"印章中心"取覆盖度时 ✓，中心落在选区内、
+/// 半径却伸到选区外的印章仍会把墨画到外面 ✗（实测越界 160 个像素，
+/// 全部集中在 x=37..39 与 88 一带 ✓ = 笔刷半径外溢 ✓）。
+/// 逐像素施加后，**选区外一个像素都不会被写到** ✓✓。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_stamp_clipped(
+    buffer: &mut Buffer,
+    center_x: f64,
+    center_y: f64,
+    radius: f64,
+    hardness: f64,
+    color: LinearRgba,
+    mode: BlendMode,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) {
+    let use_fast_path = mode == BlendMode::Normal;
+    let mut updates: Vec<(u32, u32, LinearRgba)> = Vec::new();
+    for_each_covered_pixel(
+        buffer,
+        center_x,
+        center_y,
+        radius,
+        hardness,
+        |x, y, stamp_coverage, document_x, document_y| {
+            let selection = coverage(document_x, document_y).clamp(0.0, 1.0);
+            if selection <= 0.0 {
+                return;
+            }
+            let alpha = color[3] * stamp_coverage as f32 * selection;
+            if alpha <= 0.0 {
+                return;
+            }
+            updates.push((x, y, premultiply([color[0], color[1], color[2], alpha])));
+        },
+    );
+    for (x, y, source) in updates {
+        if use_fast_path {
+            buffer.blend_at(x, y, source);
+        } else {
+            buffer.blend_mode(x, y, source, mode);
+        }
+    }
+}
+
 /// 画一个圆形笔刷印章（按覆盖度合成颜色）。
 pub fn draw_stamp(
     buffer: &mut Buffer,
@@ -425,7 +510,7 @@ pub fn draw_stamp(
         center_y,
         radius,
         hardness,
-        |x, y, coverage| {
+        |x, y, coverage, _, _| {
             let alpha = color[3] * coverage as f32;
             if alpha <= 0.0 {
                 return;

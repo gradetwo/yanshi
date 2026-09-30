@@ -148,7 +148,6 @@ fn pixel(data: &[u8], x: usize, y: usize) -> [u8; 4] {
 }
 
 #[test]
-#[ignore = "选区裁剪接线撤回中：内核做法已验证正确，但服务端分次渲染下会丢笔画；接线上线后恢复"]
 fn selection_clips_new_painting_inside_and_leaves_older_content_alone() {
     let with = render(&document(true));
     let without = render(&document(false));
