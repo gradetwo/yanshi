@@ -1052,6 +1052,97 @@ async function loadMedium(name) {
   return spec;
 }
 
+/// **整笔**用插件介质铺开 ✓ —— 沿路径逐点落笔 ✓，最后合成**一个**对象 ✓。
+///
+/// 为什么整笔合成一个对象（而不是每点一个对象 ✓）：
+/// * 日志干净 ✓（一笔 = 一个原子 ✓）、**一次撤销** ✓；
+/// * 载墨/混色是**沿笔迹**演化的 ✓（同一条笔触内的状态 ✓），拆成多个对象反而无法表达 ✓。
+///
+/// 载墨耗尽 ✓：每点的 `load` 随**累计路径长度**下降 ✓（点按几乎不耗 ✓、长拖会枯笔 ✓）。
+/// 混色 ✓：每个点取**此刻画布上笔尖处**的颜色作为目标色 ✓（与油画湿画法的直觉一致 ✓）。
+async function mediumStroke(name, points) {
+  if (!points || points.length === 0) return;
+  const spec = await loadMedium(name);
+  const size = Math.min(48, spec.maxDab);
+  const plugin = spec.instance.exports;
+  const spacing = Math.max(1, size / 4);
+  const tip = hexToUnit($("color").value);
+  const wetness = (Number($("strength").value) || 40) / 100;
+
+  // 把路径按间距重采样 ✓（拖动事件本身不均匀 ✓）。
+  const stamps = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const from = points[i - 1];
+    const to = points[i];
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.max(1, Math.ceil(distance / spacing));
+    for (let step = 1; step <= steps; step++) {
+      stamps.push({
+        x: from.x + ((to.x - from.x) * step) / steps,
+        y: from.y + ((to.y - from.y) * step) / steps,
+      });
+    }
+  }
+
+  // 整笔的包围盒（合成一张图 ✓，只上传一次 ✓）。
+  const half = size / 2;
+  const minX = Math.floor(Math.min(...stamps.map((p) => p.x)) - half);
+  const minY = Math.floor(Math.min(...stamps.map((p) => p.y)) - half);
+  const maxX = Math.ceil(Math.max(...stamps.map((p) => p.x)) + half);
+  const maxY = Math.ceil(Math.max(...stamps.map((p) => p.y)) + half);
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const paint = canvas.getContext("2d");
+  // 画布上已有像素（供混色取色 ✓）：用内容画布当前内容作为底 ✓。
+  const source = board.getContext("2d").getImageData(
+    Math.max(0, Math.min(board.width - width, Math.round(minX - state.viewport.x))),
+    Math.max(0, Math.min(board.height - height, Math.round(minY - state.viewport.y))),
+    Math.min(width, board.width), Math.min(height, board.height),
+  );
+  const dabCanvas = document.createElement("canvas");
+  dabCanvas.width = size;
+  dabCanvas.height = size;
+  const dabContext = dabCanvas.getContext("2d");
+  let total = 0;
+  let travelled = 0;
+  for (let i = 0; i < stamps.length; i++) {
+    const point = stamps[i];
+    if (i > 0) {
+      travelled += Math.hypot(point.x - stamps[i - 1].x, point.y - stamps[i - 1].y);
+    }
+    // 载墨：走满约 40 个笔尖直径就基本枯笔 ✓（`paint_load` 的直观类比 ✓）。
+    const load = Math.max(0, 1 - travelled / (size * 40));
+    if (load <= 0) break;
+    // 目标色：从**内容画布**上取笔尖处的颜色 ✓（含已铺下的湿颜料 ✓）。
+    const docX = Math.max(0, Math.min(board.width - 1, Math.round(point.x - state.viewport.x)));
+    const docY = Math.max(0, Math.min(board.height - 1, Math.round(point.y - state.viewport.y)));
+    const dest = board.getContext("2d").getImageData(docX, docY, 1, 1).data;
+    if (typeof plugin.yanshi_input_ptr === "function") {
+      const floats = plugin.yanshi_input_len() / 4;
+      const input = new Float32Array(plugin.memory.buffer, plugin.yanshi_input_ptr(), Math.max(floats, 10));
+      input.set([tip[0], tip[1], tip[2], 1, dest[0] / 255, dest[1] / 255, dest[2] / 255, dest[3] / 255, load, wetness], 0);
+    }
+    const written = plugin.yanshi_dab(Number($("strength").value) || 40, size, 1000);
+    if (written === 0) break;
+    const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
+    dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), size, size), 0, 0);
+    // 以 source-over 叠加 ✓ ⇒ 同一条笔触内的颜料会累积 ✓（油画堆料 ✓）。
+    paint.drawImage(dabCanvas, point.x - half - minX, point.y - half - minY);
+    total += 1;
+  }
+  void source;
+  if (total === 0) {
+    log("介质整笔：没有落笔（载墨为 0？）");
+    return;
+  }
+  const rgba = new Uint8Array(paint.getImageData(0, 0, width, height).data.buffer);
+  return commitMediumBitmap(rgba, { x: minX, y: minY, w: width, h: height }, spec, total);
+}
+
 /// 用**插件介质**在点击处落一个点 ✓：插件产出 RGBA → 上传 CAS → `import_image` →
 /// 再用 `replace_object_data` 把介质描述符钉到对象上 ✓。
 ///
@@ -1111,6 +1202,11 @@ async function mediumDabInner(name, point) {
   canvas.getContext("2d").putImageData(image, 0, 0);
   const rgba = new Uint8Array(canvas.getContext("2d").getImageData(0, 0, size, size).data.buffer);
 
+  return commitMediumBitmap(rgba, { x, y, w: size, h: size }, spec, 1);
+}
+
+/// 介质产出的位图入库 ✓：上传 CAS → 建层 → `import_image` → 把 `{id, version}` 钉到对象数据上 ✓。
+async function commitMediumBitmap(rgba, region, spec, stamps) {
   const upload = await fetch(api("/api/blob"), {
     method: "POST",
     headers: { "content-type": "image/x-yanshi-raw" },
@@ -1120,7 +1216,6 @@ async function mediumDabInner(name, point) {
     log("介质上传失败：" + (upload.error_code || "unknown"), "#c33");
     return;
   }
-
   const layerId = "medium_" + ulid();
   const created = await callTool("create_layer", { layer_id: layerId, name: spec.id }, { refresh: false });
   if (!created.ok) {
@@ -1128,44 +1223,35 @@ async function mediumDabInner(name, point) {
     return;
   }
   const objectId = "dab_" + ulid();
-  const x = Math.round(point.x - size / 2);
-  const y = Math.round(point.y - size / 2);
+  const bitmap = { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" };
   const imported = await callTool("import_image", {
-    layer_id: layerId,
-    object_id: objectId,
-    bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
-    region: { x, y, w: size, h: size },
+    layer_id: layerId, object_id: objectId, bitmap, region,
   }, { refresh: false });
   if (!imported.ok) {
     log("介质落笔失败：" + (imported.error_code || "unknown") + " " +
         ((imported.context && imported.context.detail) || ""), "#c33");
     return;
   }
-  // 介质描述符（id + version）钉在对象数据上 ⇒ 随原子记录、随日志固化 ✓。
   const replaced = await callTool("replace_object_data", {
     object_id: objectId,
-    data: {
-      bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
-      region: { x, y, w: size, h: size },
-      width: size,
-      height: size,
-      medium: { id: spec.id, version: spec.version },
-    },
+    data: { bitmap, region, width: region.w, height: region.h,
+            medium: { id: spec.id, version: spec.version } },
   }, { refresh: false });
   if (!replaced.ok) {
     log("介质描述符记录失败：" + (replaced.error_code || "unknown"), "#c33");
     return;
   }
   window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
-    status: "dabbed", size, objectId, layerId,
+    status: "dabbed", size: region.w, objectId, layerId, stamps,
   });
-  log("已用介质「" + spec.id + " v" + spec.version + "」落笔（" + size + "×" + size + "）");
+  log("已用介质「" + spec.id + " v" + spec.version + "」落笔（" + region.w + "×" + region.h + "，" + stamps + " 个点）");
   await refreshLayers();
   $("layer").value = layerId;
   state.layerId = layerId;
   await refreshEffects();
   await refreshPreview();
 }
+
 
 /// 导入本地图片：浏览器解码 → 原始 RGBA → 上传（`POST /api/blob`）→ `import_image`。
 ///
@@ -1812,6 +1898,8 @@ const MOVE_TOOL = "move_object";
 const MOVE_LAYER_TOOL = "move_layer";
 // 整层拖动状态（起点 + 目标图层 ✓）。
 let layerMoveState = null;
+// 介质整笔状态（沿路径累积的点 ✓）。
+let mediumStrokeState = null;
 let moveState = null;
 
 /// 命中测试：`list_objects` 的 bbox 是 `[x,y,w,h]`（文档坐标）✓。
@@ -2122,16 +2210,15 @@ board.addEventListener("pointerdown", (event) => {
     return;
   }
   if (state.tool === "medium_dab") {
-    // 介质插件（设计 11.1）：宿主实例化插件 → 产出 RGBA → 入 CAS 与日志 ✓。
+    // 介质插件（设计 11.1）：**拖动整笔** ✓ —— 沿路径连续落笔 ✓，
+    // 载墨沿笔迹耗尽 ✓、每点取笔尖处画面颜色混色 ✓，最后合成**一个**对象入 CAS 与日志 ✓。
     event.preventDefault();
     const point = localPoint(event);
-    void mediumDab($("medium").value, { x: point.x, y: point.y }).catch((error) => {
-      const message = error && error.message ? error.message : String(error);
-      window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
-        status: "rejected", error: message,
-      });
-      log("介质落笔失败（未捕获）：" + message, "#c33");
-    });
+    mediumStrokeState = { points: [point] };
+    state.dragging = event.pointerId;
+    state.points = [point];
+    try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
+    return;
     return;
   }
   if (state.tool === MOVE_LAYER_TOOL) {
@@ -2184,6 +2271,18 @@ board.addEventListener("pointermove", (event) => {
     redraw();
     return;
   }
+  if (state.tool === "medium_dab" && mediumStrokeState) {
+    // 抽稀：两点间距小于 1/4 笔尖直径就不记 ✓（否则同一位置会叠很多次 ✓，既慢又浓 ✗）。
+    const last = mediumStrokeState.points[mediumStrokeState.points.length - 1];
+    const gap = Math.hypot(point.x - last.x, point.y - last.y);
+    const spacing = Math.max(1, (Number($("size").value) || 6) / 4);
+    if (gap >= spacing) {
+      mediumStrokeState.points.push(point);
+      state.points = mediumStrokeState.points.slice();
+      redraw();
+    }
+    return;
+  }
   if (state.tool === MOVE_TOOL) {
     state.points = moveState ? [moveState.start, point] : [point];
     if (moveState && state.selectedObject) {
@@ -2214,6 +2313,26 @@ board.addEventListener("pointermove", (event) => {
 board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
+  if (state.tool === "medium_dab") {
+    const pending = mediumStrokeState;
+    mediumStrokeState = null;
+    state.points = [];
+    if (!pending) {
+      redraw();
+      return;
+    }
+    try {
+      await mediumStroke($("medium").value, pending.points);
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
+        status: "rejected", error: message,
+      });
+      log("介质落笔失败（未捕获）：" + message, "#c33");
+    }
+    redraw();
+    return;
+  }
   if (state.tool === MOVE_LAYER_TOOL) {
     const end = localPoint(event);
     const pending = layerMoveState;
