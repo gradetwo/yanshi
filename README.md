@@ -81,6 +81,11 @@ the history panel lists the atom log with kind and actor
 filters plus a jump-back action, and the effects panel applies any adjustment or filter to the
 current layer (names come from the kernel, parameters default to the kernel's own values).
 
+Strokes accept an `appearance` block (the design's `advanced.appearance`): `size_curve`, `opacity_curve`
+and `pressure_curve` shape the stroke, `dynamics` with `seed` adds deterministic jitter, scatter, size
+and angle variation, and a procedural `noise` or `grain` `texture` modulates the ink. Without an
+appearance block a stroke renders exactly as before, byte for byte.
+
 The toolbar also drives the pixel tools: brush and eraser, fill layer, eyedropper, clone stamp and
 heal (Alt+click sets the source), smudge, the three liquify modes, and rect or ellipse masks with a
 feather setting (drag a shape to create the mask and attach it to the current layer).
@@ -92,7 +97,7 @@ recomputed from the log. `文本`
 places a text object at the clicked point. Text stays an editable object in the log - editing its data
 through `supersede` changes the render - and the kernel rasterises it with an embedded open-source
 font: a built-in 5×7 ASCII font plus a 1-bit 16×16 atlas generated from Noto Sans CJK (SIL OFL 1.1),
-covering ASCII, the 3755 GB2312 level-1 common hanzi and the GB2312 symbol rows. Provenance, format
+covering ASCII, 6763 GB2312 level-1 and level-2 hanzi (3755 common plus 3008 less common) and the GB2312 symbol rows. Provenance, format
 and the regeneration command live in `assets/fonts/`. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)

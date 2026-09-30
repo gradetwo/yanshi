@@ -684,31 +684,25 @@ impl Renderer {
                         opacity: brush.opacity * f64::from(opacity),
                         ..brush
                     };
-                    // 选区「约束落笔」（路线 A）：把覆盖度折进印章 ✓ ——
-                    // 只影响本次新落笔 ✓、从不触碰选区外像素 ✓（与整幅/分次渲染无关 ✓）。
-                    // 只把"早于该对象"的选区计入 ✓（用日志里的原子 id 判定先后 ✓）。
+                    // ① 外观参数（设计 808 行 `advanced.appearance`）：曲线 / 动力学 / 纹理 ✓。
+                    //    **没有 appearance 时整条路径与接线前逐字节一致** ✓（有回归测试守住 ✓）。
+                    let appearance = crate::brush::StrokeAppearance::from_data(&object.data);
+                    // ② 选区「约束落笔」（路线 A）：逐像素覆盖度 ✓。
                     let clip = object_clip(state, &layer.id, object);
-                    if let Some(clip) = &clip {
-                        // 与 `stamp_stroke` 保持一致的采样：**同样的间距与 dash** ✓
-                        let samples: Vec<(f64, f64, f64)> = geometry
-                            .points
-                            .iter()
-                            .map(|point| (point.x, point.y, point.pressure))
-                            .collect();
-                        let stamps = crate::geometry::dashed_line(
-                            &samples,
-                            brush.spacing_pixels(),
-                            brush.dash,
-                        );
-                        crate::brush::stamp_samples_clipped(
-                            layer_buffer,
-                            &brush,
-                            &stamps,
-                            &|x, y| clip.coverage(x, y),
-                        );
-                    } else {
-                        stamp_stroke(layer_buffer, &brush, &geometry);
-                    }
+                    let coverage = clip.as_ref().map(|clip| {
+                        let clip = clip.clone();
+                        move |x: f64, y: f64| clip.coverage(x, y)
+                    });
+                    let coverage_ref = coverage
+                        .as_ref()
+                        .map(|closure| closure as &dyn Fn(f64, f64) -> f32);
+                    crate::brush::stamp_stroke_configured(
+                        layer_buffer,
+                        &brush,
+                        &geometry,
+                        Some(&appearance),
+                        coverage_ref,
+                    );
                 }
                 Primitive::Shape {
                     kind,

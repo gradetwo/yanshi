@@ -15,6 +15,7 @@
 字形集（按需要可调）：
   * ASCII 0x20–0x7E
   * GB2312 一级字库（3755 个常用汉字，最常用的一批）
+  * GB2312 二级字库（3008 个次常用汉字，多为人名/地名用字）
   * GB2312 符号区 0xA1–0xA3 行（中文标点、日文假名、希腊/西里尔等基础符号）
 
 文件格式（小端）：
@@ -43,8 +44,11 @@ def glyph_set() -> list[int]:
     # ASCII 可打印区
     codes.update(range(0x20, 0x7F))
 
-    # GB2312 一级字库：0xB0A1–0xD7F9（3755 个常用汉字）
-    for high in range(0xB0, 0xD8):
+    # GB2312 一级字库（0xB0A1–0xD7F9，3755 个常用汉字）
+    # + 二级字库（0xD8A1–0xF7FE，3008 个次常用汉字，多为人名/地名用字）
+    # 说明：这里只是用 GB2312 的**分区**作为"常用度分档"的现成清单 ✓，
+    # 与编码无关 ✓ —— 图集按 **Unicode 码位**索引 ✓，项目全程 UTF-8 ✓。
+    for high in range(0xB0, 0xF8):
         for low in range(0xA1, 0xFF):
             try:
                 text = bytes([high, low]).decode("gb2312")

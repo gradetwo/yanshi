@@ -161,7 +161,62 @@ impl BrushSpec {
 /// 把一笔笔迹 stamp 到缓冲区（文档坐标）。
 ///
 /// 返回值是实际产生的 stamp 数，便于可观测性与测试。
-pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeometry) -> usize {
+/// 笔触的**外观参数**（设计 808 行 `advanced.appearance` 的子集）✓。
+///
+/// 由已交付的三个模块组成 ✓（曲线 / 动力学 / 纹理 ✓），并在这里接进盖章路径 ✓。
+/// **没有任何 appearance 时**整条路径与接线前**逐字节一致** ✓ —— 由回归测试守住 ✓
+/// （`no_appearance_is_byte_identical_to_the_previous_path`）。
+#[derive(Debug, Clone, Default)]
+pub struct StrokeAppearance {
+    /// 大小 / 不透明度 / 压力曲线 ✓。
+    pub curves: crate::curve::StrokeCurves,
+    /// 抖动 / 散布 / 尺寸与角度变化 / 程序化纹理 ✓。
+    pub dynamics: crate::dynamics::Dynamics,
+    /// 是否存在**有效**外观（全默认 ⇒ 视为无外观 ⇒ 走原路径 ✓）。
+    pub active: bool,
+}
+
+impl StrokeAppearance {
+    /// 由 `data.appearance`（或 `data.advanced.appearance`）解析 ✓。
+    pub fn from_data(data: &Value) -> StrokeAppearance {
+        let appearance = data
+            .get("appearance")
+            .or_else(|| data.get("advanced").and_then(|v| v.get("appearance")));
+        let Some(appearance) = appearance else {
+            return StrokeAppearance::default();
+        };
+        let curves = crate::curve::StrokeCurves::from_appearance(appearance);
+        let dynamics = crate::dynamics::Dynamics::from_appearance(appearance);
+        // **注意**：曲线模块的 `is_identity_or_constant` 含义是"**不是变化曲线**" ✗，
+        // 而不是"没有效果" ✓ —— 常量 0.4 的曲线会实打实地改变笔触粗细 ✓。
+        // 第一版据此判断 `active`，结果"常量曲线"被当成无外观、纹理也被漏掉 ✓（两个测试当场抓到 ✗）。
+        // 因此这里只把**恰好等于恒等曲线**（常量 1.0）视为无效果 ✓。
+        let identity = crate::curve::Curve::constant(1.0);
+        let active = !dynamics.is_noop()
+            || dynamics.texture.kind != crate::dynamics::TextureKind::None
+            || curves.size != identity
+            || curves.opacity != identity
+            || curves.pressure != identity;
+        StrokeAppearance {
+            curves,
+            dynamics,
+            active,
+        }
+    }
+}
+
+/// **统一**的笔触盖章路径 ✓：可选外观参数（曲线/动力学/纹理）+ 可选选区覆盖度 ✓。
+///
+/// 之所以只保留一条路径：此前"整段盖章"与"增量盖章"存在语义差异 ✓，
+/// 加上选区裁剪需要另一条分支 ✓，三条路径很容易漂移 ✓（本会话已因此栽过一次 ✓）。
+/// 现在渲染侧统一走这里 ✓，`appearance = None` 且 `coverage = None` 时行为与旧路径**逐字节一致** ✓。
+pub fn stamp_stroke_configured(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stroke: &StrokeGeometry,
+    appearance: Option<&StrokeAppearance>,
+    coverage: Option<&dyn Fn(f64, f64) -> f32>,
+) -> usize {
     let spacing = brush.spacing_pixels();
     let samples: Vec<(f64, f64, f64)> = stroke
         .points
@@ -169,7 +224,80 @@ pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeome
         .map(|point| (point.x, point.y, point.pressure))
         .collect();
     let stamps = dashed_line(&samples, spacing, brush.dash);
-    stamp_samples(buffer, brush, &stamps)
+    let Some(appearance) = appearance.filter(|appearance| appearance.active) else {
+        // 无外观：保持旧路径（含选区裁剪分支 ✓）。
+        return match coverage {
+            Some(coverage) => stamp_samples_clipped(buffer, brush, &stamps, coverage),
+            None => stamp_samples(buffer, brush, &stamps),
+        };
+    };
+    stamp_samples_with_appearance(buffer, brush, &stamps, appearance, coverage)
+}
+
+/// 带外观参数的盖章：曲线 → 动力学 → 纹理 → 绘制 ✓（顺序固定 ⇒ 结果确定 ✓）。
+fn stamp_samples_with_appearance(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stamps: &[(f64, f64, f64)],
+    appearance: &StrokeAppearance,
+    coverage: Option<&dyn Fn(f64, f64) -> f32>,
+) -> usize {
+    let base_radius = brush.size / 2.0;
+    let base_alpha = brush.color[3] * brush.flow as f32 * brush.opacity as f32;
+    let mut drawn = 0usize;
+    for (index, (x, y, pressure)) in stamps.iter().enumerate() {
+        // ① 曲线：压力先映射一次，再作用到半径与 alpha ✓。
+        let (radius, alpha) = appearance
+            .curves
+            .modulate(base_radius, base_alpha, *pressure);
+        if radius <= 0.0 || alpha <= 0.0 {
+            continue;
+        }
+        // ② 动力学：逐印章、由 (seed, index) 派生 ⇒ 可复现 ✓。
+        let params = appearance
+            .dynamics
+            .stamp_params(index as u64, *x, *y, radius, alpha);
+        if params.radius <= 0.0 || params.alpha <= 0.0 {
+            continue;
+        }
+        // ③ 纹理：按**文档坐标**调制 alpha ⇒ 跨块一致 ✓。
+        let alpha = appearance
+            .dynamics
+            .texture
+            .modulate(params.x, params.y, params.alpha);
+        if alpha <= 0.0 {
+            continue;
+        }
+        let color = [brush.color[0], brush.color[1], brush.color[2], alpha];
+        match coverage {
+            Some(coverage) => crate::brush::draw_stamp_clipped(
+                buffer,
+                params.x,
+                params.y,
+                params.radius,
+                brush.hardness,
+                color,
+                brush.blend_mode,
+                coverage,
+            ),
+            None => draw_stamp(
+                buffer,
+                params.x,
+                params.y,
+                params.radius,
+                brush.hardness,
+                color,
+                brush.blend_mode,
+            ),
+        };
+        drawn += 1;
+    }
+    drawn
+}
+
+/// 把笔迹整段盖章（无外观参数、无选区裁剪）✓ —— 等价于 [`stamp_stroke_configured`] 的两个 `None` ✓。
+pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeometry) -> usize {
+    stamp_stroke_configured(buffer, brush, stroke, None, None)
 }
 
 /// 笔迹的**增量**盖章：只画上一帧之后新增的采样，并推进游标。

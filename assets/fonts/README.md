@@ -15,11 +15,16 @@ platform font differences), which is what the design asks for in its font and cr
 
 ## Coverage
 
-4108 glyphs, sorted by code point so the kernel can binary-search:
+7116 glyphs in 250.2KB, sorted by code point so the kernel can binary-search:
 
 * ASCII `U+0020`–`U+007E`
 * **GB2312 level-1: 3755 common hanzi** (`0xB0A1`–`0xD7F9`)
+* **GB2312 level-2: 3008 less common hanzi** (`0xD8A1`–`0xF7FE`), typically personal and place names
 * GB2312 symbol rows (`0xA1`–`0xA3`): CJK punctuation, kana, Greek and Cyrillic basics
+
+GB2312's tiers are used only as a ready-made way to say which hanzi count as common. The project is
+UTF-8 throughout and the atlas is indexed by Unicode code point; no GB2312 or GB18030 encoding support
+is involved.
 
 Glyphs the source font does not provide are omitted; the kernel falls back to its built-in 5×7 ASCII
 font and finally to `?`.

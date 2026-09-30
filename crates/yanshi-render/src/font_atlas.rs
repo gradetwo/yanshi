@@ -5,6 +5,8 @@
 //! 复杂度留在**生成期**（`scripts/build-bitmap-font.py` ✓，开发工具 ✓），
 //! 运行期零依赖、零文件 IO（`include_bytes!` ✓）、零平台差异 ✓ —— wasm 同样可用 ✓。
 //!
+//! 覆盖：ASCII + **GB2312 一级与二级字库**（3755 + 3008 个汉字 ✓）+ GB2312 符号区 ✓。
+//!
 //! 字体来源：**Noto Sans CJK SC Regular**（`noto-fonts-cjk 20240730-1` ✓），
 //! **SIL OFL 1.1** ✓（授权全文随仓库：`assets/fonts/LICENSE-OFL-NotoSansCJK.txt` ✓）。
 //!
@@ -109,7 +111,11 @@ mod tests {
     fn the_embedded_atlas_parses_and_covers_latin_and_cjk() {
         let atlas = Atlas::builtin();
         assert!(!atlas.is_empty(), "内嵌图集应可用（头部或路径有问题？）");
-        assert_eq!(atlas.len(), 4108, "字形数量应与生成结果一致");
+        assert_eq!(
+            atlas.len(),
+            7116,
+            "字形数量应与生成结果一致（GB2312 一级 + 二级）"
+        );
         for (ch, code) in [
             ('A', 0x41u32),
             ('中', 0x4E2D),
