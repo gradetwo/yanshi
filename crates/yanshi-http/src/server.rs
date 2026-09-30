@@ -691,7 +691,25 @@ fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Respo
         return internal("工作区锁中毒");
     };
     let closed = workspace.close_document(doc_id);
-    Response::json(200, &json!({"ok": true, "closed": closed}))
+    // **关闭 ≠ 删除** ✓ —— 这里只把文档从**内存**里放下 ✓，磁盘上的工作区**仍然保留** ✓，
+    // 因此它依旧出现在 `GET /api/documents` 里 ✓（子 agent 把这当成 bug 报上来 ✓：
+    // "DELETE 返回 closed:true，但文档还在列表里" ✓）。
+    // 这是**设计内的持久化行为** ✓（重新打开展示作品正是需求 ✓），所以不改语义 ✗，
+    // 而是让**响应说实话** ✓：明确给出 `persisted` ✓。
+    // 真删文件是**不可逆**动作 ✗ ⇒ 按纪律不擅自实现 ✓（需要时再单独立项 ✓）。
+    let persisted = workspace
+        .list_documents()
+        .map(|documents| documents.iter().any(|summary| summary.doc_id == doc_id))
+        .unwrap_or(false);
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "closed": closed,
+            "persisted": persisted,
+            "note": if persisted { "已关闭内存中的文档；磁盘上的工作区仍然保留" } else { "已关闭" },
+        }),
+    )
 }
 
 /// 上传 blob（`POST /api/blob?doc=..&token=..`，请求体即字节）。
