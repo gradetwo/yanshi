@@ -66,6 +66,22 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
                background: #171a1f; border-top: 1px solid var(--line); }
   .statusbar .spacer { flex: 1 1 auto; }
+  /* 光标处快捷面板 ✓（`position: fixed` ✓ ⇒ 坐标即光标位置 ✓，不受画布滚动影响 ✓）。 */
+  #quickPanel { position: fixed; z-index: 40; min-width: 196px; max-width: 260px; padding: 8px 10px;
+                background: #1b1f26; border: 1px solid var(--line); border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
+  #quickPanel[hidden] { display: none; }
+  #quickPanel .qp-title { display: flex; justify-content: space-between; align-items: baseline;
+                          margin-bottom: 6px; opacity: .9; }
+  #quickPanel .qp-hint { opacity: .55; font-size: 11px; }
+  #quickPanel .qp-section { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+  #quickPanel .qp-section:empty { display: none; }
+  #quickPanel button { min-width: 30px; padding: 4px 7px; font-size: 11px; }
+  #quickPanel button[aria-pressed="true"] { background: #2b4a7d; border-color: #3d6bb3; }
+  #quickPanel .qp-swatch { width: 22px; height: 22px; min-width: 0; padding: 0; border-radius: 4px;
+                           border: 1px solid var(--line); }
+  #quickPanel .qp-swatch[aria-pressed="true"] { outline: 2px solid #6ea8fe; outline-offset: 1px; }
+  #quickPanel .qp-actions { border-top: 1px solid var(--line); padding-top: 6px; }
   /* 可折叠 Dockers ✓（借鉴成熟绘画软件的面板折叠 ✓）：点标题折叠/展开 ✓，状态持久化 ✓。 */
   aside .card > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
   aside .card > h2::before { content: "▾"; font-size: 10px; opacity: .7; transition: transform .1s; }
@@ -180,6 +196,20 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <div class="stage">
     <canvas id="board"></canvas>
     <canvas id="overlay"></canvas>
+    <!-- 光标处快捷面板 ✓（借鉴 Krita 的 Pop-up Palette ✓）：介质 / 颜色 / 笔尖 + 我们的快捷动作 ✓。
+         内容由脚本按同一份定义生成 ✓（与工具条、工作区一致：一份定义、多个入口 ✓）。 -->
+    <div id="quickPanel" hidden>
+      <div class="qp-title">快捷面板 <span class="qp-hint">Esc 关闭</span></div>
+      <div class="qp-section" id="qpMediums"></div>
+      <div class="qp-section" id="qpColors"></div>
+      <div class="qp-section" id="qpSizes"></div>
+      <div class="qp-section qp-actions">
+        <button id="qpUndo" type="button">撤销</button>
+        <button id="qpRedo" type="button">重做</button>
+        <button id="qpClearSelection" type="button">清除选区</button>
+        <button id="qpExport" type="button">导出 PNG</button>
+      </div>
+    </div>
   </div>
   <aside>
     <div class="card">
@@ -2730,7 +2760,110 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
   });
 }
 
+// 光标处快捷面板 ✓（借鉴 Krita Pop-up Palette ✓）：右键在光标处弹出 ✓，
+// 内含**介质 / 常用颜色 / 笔尖大小** ✓ 与**我们的快捷动作** ✓（撤销/重做/清除选区/导出 ✓）。
+//
+// 设计要点 ✓：
+// * 面板**只驱动既有控件** ✓（`#medium`/`#color`/`#size` ✓）⇒ 单一真源 ✓，不另存一份状态 ✓；
+// * 位置用 `position: fixed` + 光标坐标 ✓，并**夹在视口内** ✓（贴边右键也不会跑出去 ✓）；
+// * Esc / 点击别处 / 选中即关 ✓（弹出面板不该留在屏幕上 ✓）。
+const QUICK_COLORS = [
+  "#111111", "#ffffff", "#c81e3c", "#e08600",
+  "#2f9e44", "#2f5fbf", "#7048e8", "#8a5a2b",
+];
+const QUICK_SIZES = [4, 12, 30, 60];
+
+function quickPanelVisible() {
+  const panel = $("quickPanel");
+  return panel && !panel.hidden;
+}
+
+function closeQuickPanel() {
+  const panel = $("quickPanel");
+  if (panel) panel.hidden = true;
+}
+
+function openQuickPanel(clientX, clientY) {
+  const panel = $("quickPanel");
+  if (!panel) return;
+  const mediums = $("qpMediums");
+  const colors = $("qpColors");
+  const sizes = $("qpSizes");
+  // 介质：直接读 `MEDIUMS` ✓（同一份定义 ✓）。
+  mediums.innerHTML = Object.keys(MEDIUMS).map((key) => {
+    const spec = MEDIUMS[key];
+    const active = $("medium") && $("medium").value === key;
+    return `<button type="button" data-qp-medium="${key}" aria-pressed="${active}">${spec.id}</button>`;
+  }).join("");
+  colors.innerHTML = QUICK_COLORS.map((value) =>
+    `<button type="button" class="qp-swatch" data-qp-color="${value}" title="${value}" aria-pressed="${$("color") && $("color").value === value}" style="background:${value}"></button>`,
+  ).join("");
+  sizes.innerHTML = QUICK_SIZES.map((value) =>
+    `<button type="button" data-qp-size="${value}" aria-pressed="${Number($("size") && $("size").value) === value}">${value}</button>`,
+  ).join("");
+  panel.hidden = false;
+  // 夹在视口内 ✓（先显示再量尺寸 ✓）。
+  const rect = panel.getBoundingClientRect();
+  const left = Math.max(6, Math.min(clientX, window.innerWidth - rect.width - 6));
+  const top = Math.max(6, Math.min(clientY, window.innerHeight - rect.height - 6));
+  panel.style.left = left + "px";
+  panel.style.top = top + "px";
+}
+
+function initQuickPanel() {
+  const panel = $("quickPanel");
+  if (!panel) return;
+  board.addEventListener("contextmenu", (event) => {
+    // 画布右键是**我们的**快捷面板 ✓ ⇒ 屏蔽浏览器菜单 ✓。
+    event.preventDefault();
+    openQuickPanel(event.clientX, event.clientY);
+  });
+  panel.addEventListener("click", (event) => {
+    const target = event.target.closest("button");
+    if (!target) return;
+    const medium = target.getAttribute("data-qp-medium");
+    const color = target.getAttribute("data-qp-color");
+    const size = target.getAttribute("data-qp-size");
+    if (medium) {
+      $("medium").value = medium;
+      $("medium").dispatchEvent(new Event("change", { bubbles: true }));
+      log("快捷面板：介质 " + MEDIUMS[medium].id + " v" + MEDIUMS[medium].version);
+    } else if (color) {
+      $("color").value = color;
+      $("color").dispatchEvent(new Event("change", { bubbles: true }));
+      log("快捷面板：颜色 " + color);
+    } else if (size) {
+      $("size").value = size;
+      $("size").dispatchEvent(new Event("input", { bubbles: true }));
+      log("快捷面板：笔尖 " + size);
+    } else {
+      return; // 动作按钮自己处理 ✓
+    }
+    closeQuickPanel();
+  });
+  $("qpUndo").addEventListener("click", () => { closeQuickPanel(); void undoOnce(); });
+  $("qpRedo").addEventListener("click", () => { closeQuickPanel(); void redoOnce(); });
+  $("qpClearSelection").addEventListener("click", () => {
+    closeQuickPanel();
+    const button = $("clearSelection");
+    if (button) button.click();
+  });
+  $("qpExport").addEventListener("click", () => {
+    closeQuickPanel();
+    const button = $("exportPng");
+    if (button) button.click();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && quickPanelVisible()) closeQuickPanel();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!quickPanelVisible()) return;
+    if (!panel.contains(event.target)) closeQuickPanel();
+  });
+}
+
 initDockers();
+initQuickPanel();
 
 $("addLayer").addEventListener("click", async () => {
   const layerId = "layer_" + ulid();

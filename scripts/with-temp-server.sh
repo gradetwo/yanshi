@@ -23,6 +23,29 @@ fi
 # WASM 产物守卫：浏览器里的内核是**编译产物**，改了内核源码却用旧产物，
 # 会得到与原生测试相反的结论（今天因此误判"橡皮没生效"两次）。
 # 只要 pkg 比内核/渲染/核心的源码旧，就自动重建。
+# **CDP 调试浏览器守卫** ✓ —— 浏览器检查通过 `CDP_PORT`（缺省 9333）连接一个**长期运行的
+# 调试浏览器** ✓；它一旦退出 ✓，检查就以 `ECONNREFUSED` 失败 ✗ —— 这条错误离"功能坏了"很远 ✓
+#（本会话为此白跑过一轮 ✓）。缺失时**自动拉起** ✓，profile 放 `$HOME` ✓（不占 /tmp 那个 tmpfs ✓）。
+CDP_PORT="${CDP_PORT:-9333}"
+if ! curl -s -m 1 "http://127.0.0.1:${CDP_PORT}/json/version" >/dev/null 2>&1; then
+  if command -v chromium >/dev/null 2>&1; then
+    echo "== 调试浏览器未在 ${CDP_PORT} 上运行 ⇒ 自动拉起（profile: $HOME/.cache/yanshi-cdp）"
+    mkdir -p "$HOME/.cache/yanshi-cdp"
+    nohup chromium --headless=new --disable-gpu --no-sandbox --hide-scrollbars \
+      --user-data-dir="$HOME/.cache/yanshi-cdp" --remote-debugging-port="${CDP_PORT}" \
+      --window-size=1500,900 about:blank >/dev/null 2>&1 &
+    for _ in $(seq 1 20); do
+      curl -s -m 1 "http://127.0.0.1:${CDP_PORT}/json/version" >/dev/null 2>&1 && break
+      sleep 1
+    done
+    if ! curl -s -m 1 "http://127.0.0.1:${CDP_PORT}/json/version" >/dev/null 2>&1; then
+      echo "   ⚠️ 调试浏览器未能就绪；浏览器检查会失败" >&2
+    fi
+  else
+    echo "   ⚠️ 未找到 chromium；浏览器检查无法运行" >&2
+  fi
+fi
+
 # **服务端二进制过期守卫** ✓ —— 加这一条的直接原因：
 # 检查跑的是临时服务端 ✓，而它用的是 `target/release/` 里的**既有二进制** ✓；
 # 我在 **worktree** 里构建、合并回主线后**忘了重建** ✗，
