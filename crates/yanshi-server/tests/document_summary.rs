@@ -198,6 +198,6 @@ fn closed_documents_report_their_real_counts() {
         (1, 2),
         "关闭后计数应与打开时**一致** ✓（修复前恒为 0 ✗）"
     );
-    assert_eq!(while_closed.persisted, true, "磁盘上仍然保留 ✓");
+    assert!(while_closed.persisted, "磁盘上仍然保留 ✓");
     let _ = std::fs::remove_dir_all(&root);
 }
