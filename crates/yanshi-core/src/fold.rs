@@ -272,7 +272,12 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateLayer => {
             let layer_id = required(atom, "layer_id")?;
-            if state.layers.contains_key(layer_id) {
+            // **只与"存活"的图层冲突** ✓ —— 折叠层保留**墓碑** ✓（`deleted_by` ✓，删除可撤销的基础 ✓），
+            // 但墓碑**不该占用 id** ✗：子 agent 实测 删掉 `L_sky` 后再 `create_layer L_sky` 会报
+            // "图层 L_sky 已存在" ✗，而对同一个 id 落笔又报"图层 L_sky 已删除" ✗ ——
+            // 同一个 id 同时"存在"又"已删除" ✓，两句提示自相矛盾 ✓。
+            // 紧邻的 `parent_id` 检查用的就是 `layer_alive` ✓ —— 正确谓词本来就在旁边 ✓。
+            if state.layer_alive(layer_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("图层 {layer_id} 已存在"),

@@ -335,7 +335,9 @@ impl AtomLog {
                     check_layer_exists(state, &atom.id, layer_id, atom.kind)?;
                 }
                 RefMode::MustNotExist => {
-                    if state.layers.contains_key(layer_id) {
+                    // 与 `fold.rs` 的 CreateLayer 保持**同一条规则** ✓：墓碑 id 可复用 ✓
+                    //（否则这里先拒 ✓、那里后拒 ✓，两条路径又会长出不一致的提示 ✓）。
+                    if state.layer_alive(layer_id) {
                         return Err(YanshiError::new(
                             ErrorCode::PreconditionFailed,
                             ErrorContext::detail(format!("图层 {layer_id} 已存在")),
