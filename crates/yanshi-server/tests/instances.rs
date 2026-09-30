@@ -238,3 +238,232 @@ fn an_instance_whose_master_was_deleted_draws_nothing_and_does_not_fail() {
         "实例本身应仍在（引用被保留 ✓）：{listed}"
     );
 }
+
+/// **脱离实例：位置不变、此后不再跟随** ✓（设计 9.4 `detach_instance` ✓）。
+///
+/// 两条都要验 ✓：脱离**当刻**画面必须不变 ✓（否则用户点一下就跳一下 ✓），
+/// 而脱离**之后** master 再动就不该带走它 ✓（否则"脱离"没有意义 ✓）。
+#[test]
+fn detaching_an_instance_keeps_it_put_and_stops_it_following() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(20.0, 20.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 80, 0], "pivot": [0, 0]}}),
+        );
+    }
+    let before = ink(&mut workspace, 96.0, 16.0);
+    assert!(before > 0, "脱离之前实例处应有墨（实测 {before}）");
+
+    let detached_id;
+    {
+        let mut ctx = context(&mut workspace);
+        let detached = registry.call(
+            &mut ctx,
+            "detach_instance",
+            &json!({"instance_id": "mirror", "object_id": "detached"}),
+        );
+        assert_eq!(detached["ok"], json!(true), "{detached}");
+        detached_id = detached["detached_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+    }
+    assert_eq!(detached_id, "detached");
+    // ① **画面不变** ✓。
+    assert_eq!(
+        ink(&mut workspace, 96.0, 16.0),
+        before,
+        "脱离当刻画面必须完全不变"
+    );
+
+    // ② **此后不再跟随** ✓：把 master 移开 ✓ ⇒ 脱离出来的对象留在原处 ✓。
+    {
+        let mut ctx = context(&mut workspace);
+        let moved = registry.call(
+            &mut ctx,
+            "move_object",
+            &json!({"object_id": "master", "delta": {"dx": 0.0, "dy": 100.0}}),
+        );
+        assert_eq!(moved["ok"], json!(true), "{moved}");
+    }
+    assert!(
+        ink(&mut workspace, 96.0, 16.0) > 0,
+        "脱离出来的对象不该跟着 master 走（原处应仍有墨）"
+    );
+}
+
+/// **改写实例指向的 master** ✓（设计 9.4 `link_to_master` ✓），
+/// 以及**通过改写制造环必须被拒** ✓ —— 这是本轮新增的那道折叠层防线 ✓。
+#[test]
+fn linking_an_instance_to_another_master_works_and_cycles_are_refused() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "red", "data": shape(20.0, 20.0)}),
+        );
+        // 第二个 master 放在别处 ✓（这样"换了指向"在像素上看得出来 ✓）。
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "blue", "data": {
+                "geometry": {"kind": "rect", "bbox": {"x": 20.0, "y": 120.0, "w": 24.0, "h": 24.0}},
+                "color": {"r": 30, "g": 30, "b": 200, "a": 255}}}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "red",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 120, 0], "pivot": [0, 0]}}),
+        );
+    }
+    // 指向 red（y≈20）时，实例的墨在 y≈20 一带 ✓；指向 blue 之后应移到 y≈120 一带 ✓。
+    assert!(ink(&mut workspace, 136.0, 16.0) > 0, "开始时实例应跟着 red");
+    {
+        let mut ctx = context(&mut workspace);
+        let linked = registry.call(
+            &mut ctx,
+            "link_to_master",
+            &json!({"instance_id": "mirror", "master_id": "blue"}),
+        );
+        assert_eq!(linked["ok"], json!(true), "{linked}");
+    }
+    assert_eq!(ink(&mut workspace, 136.0, 16.0), 0, "换指向后原处应为空");
+    assert!(
+        ink(&mut workspace, 136.0, 116.0) > 0,
+        "换指向后实例应出现在 blue 的位置"
+    );
+
+    // **通过改写制造环 ⇒ 必须被拒** ✓：让 red 变成一个指向 mirror 的实例 ✓，
+    // 而 mirror 已经指向 red ⇒ red → mirror → red ✓。
+    {
+        let mut ctx = context(&mut workspace);
+        let cyclic = registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "red_wrapper", "layer_id": "L", "master_id": "mirror"}),
+        );
+        assert_eq!(cyclic["ok"], json!(true), "先建一层是合法的：{cyclic}");
+        // 把 mirror 改指向 red_wrapper ✓ ⇒ red_wrapper → mirror → red_wrapper ✓。
+        let refused = registry.call(
+            &mut ctx,
+            "link_to_master",
+            &json!({"instance_id": "mirror", "master_id": "red_wrapper"}),
+        );
+        assert_eq!(
+            refused["ok"],
+            json!(false),
+            "**通过改写制造环必须被拒**：{refused}"
+        );
+        assert_eq!(
+            refused["error_code"].as_str().unwrap_or_default(),
+            "invalid_argument",
+            "应给出 invalid_argument：{refused}"
+        );
+    }
+}
+
+/// **`get_resolved_state` 让解析可观测** ✓（设计 9.2 ✓），
+/// 而且它报的包围盒必须**来自与渲染同一个函数** ✓ ⇒ 读到的就是画出来的 ✓。
+#[test]
+fn the_resolved_state_reports_the_master_and_the_rendered_bbox() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(20.0, 20.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 100, 40], "pivot": [0, 0]}}),
+        );
+    }
+    let reported = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "get_resolved_state",
+            &json!({"object_id": "mirror"}),
+        )
+    };
+    assert_eq!(reported["ok"], json!(true), "{reported}");
+    assert_eq!(
+        reported["is_instance"],
+        json!(true),
+        "应报告这是实例：{reported}"
+    );
+    assert_eq!(reported["master_id"], json!("master"), "{reported}");
+    let bbox: Vec<f64> = reported["bbox"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_f64)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(bbox.len(), 4, "应给出包围盒：{reported}");
+    // master 在 (20,20,24,24) ✓，local_transform 平移 (100,40) ⇒ 实例包围盒约 (120,60) ✓。
+    assert!(
+        (bbox[0] - 120.0).abs() < 2.0 && (bbox[1] - 60.0).abs() < 2.0,
+        "解析出的包围盒应反映 local_transform（实际 {bbox:?}）"
+    );
+    // **包围盒处确实有墨** ✓ —— 这条把"读到的"和"画出来的"绑在一起 ✓。
+    assert!(
+        ink(&mut workspace, bbox[0] as f64 - 4.0, bbox[1] as f64 - 4.0) > 0,
+        "包围盒位置应当就是画出来的位置"
+    );
+    // 非实例对象也要能查 ✓（此时没有 master ✓）。
+    let plain = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "get_resolved_state",
+            &json!({"object_id": "master"}),
+        )
+    };
+    assert_eq!(plain["is_instance"], json!(false), "{plain}");
+    assert!(plain["master_id"].is_null(), "{plain}");
+}
