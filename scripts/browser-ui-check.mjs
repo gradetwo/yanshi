@@ -24,10 +24,19 @@ if (!url) {
 }
 
 const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
-const target = list.find((t) => t.type === "page");
+// **按 URL 匹配目标** ✓ —— 此前取的是"第一个 page" ✗：长期运行的调试浏览器里
+// 往往还开着别的页面（我自己实验留下的 ✓），于是检查跑在**旧页面**上 ✓，
+// 现象是"点击完全没反应、断言全错" ✗（但页面本身是好的 ✓），排查代价极高 ✓。
+const viewerBase = url.split("?")[0];
+const target =
+  list.find((t) => t.type === "page" && t.url.startsWith(viewerBase)) ||
+  list.find((t) => t.type === "page");
 if (!target) {
   console.error(`未找到调试目标（Chromium 是否以 --remote-debugging-port=${debugPort} 启动？）`);
   process.exit(2);
+}
+if (!target.url.startsWith(viewerBase)) {
+  console.error(`注意：调试浏览器里没有正在打开 ${viewerBase} 的页面，将复用 ${target.url}`);
 }
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 let id = 1;
@@ -115,7 +124,28 @@ const evaluate = async (expression) =>
 
 await send("Runtime.enable");
 await send("Page.enable");
+// **禁用浏览器缓存** ✓ —— 加这一条的直接原因：调试浏览器缓存了**旧版 HTML** ✗，
+// 于是页面里没有我刚加的折叠代码（点击无反应 ✓）、介质工具还是旧的**单点**逻辑 ✓
+//（"包围盒宽 48" ✓）—— 而服务端与代码都是新的 ✓，症状极难归因 ✓。
+await send("Network.enable", {});
+await send("Network.setCacheDisabled", { cacheDisabled: true });
 await send("Page.navigate", { url });
+// **等页面脚本真正就绪再开始断言** ✓ —— 加这一段的直接原因：查看器的初始化在脚本后段
+//（`initDockers()` 等 ✓），而检查导航后立刻开始交互 ✓，于是"点击折叠没反应" ✗、
+// "介质工具还是旧的单点行为" ✗ 这类**竞态**会伪装成功能 bug ✓，极难归因 ✓。
+// 判据取"工具条已渲染 + 关键初始化已完成" ✓，而不是固定 sleep ✓。
+for (let i = 0; i < 80; i++) {
+  const ready = await evaluate(`(() => {
+    try {
+      return document.readyState === "complete" &&
+        document.querySelectorAll("#tools button").length > 0 &&
+        Boolean(document.getElementById("workspace")) &&
+        [...document.querySelectorAll("aside .card h2")].length > 0;
+    } catch (_) { return false; }
+  })()`);
+  if (ready) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
 for (let attempt = 0; attempt < 150; attempt++) {
   checkDeadline();
   const stats = await evaluate("window.yanshiStats");

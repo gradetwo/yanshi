@@ -23,6 +23,25 @@ fi
 # WASM 产物守卫：浏览器里的内核是**编译产物**，改了内核源码却用旧产物，
 # 会得到与原生测试相反的结论（今天因此误判"橡皮没生效"两次）。
 # 只要 pkg 比内核/渲染/核心的源码旧，就自动重建。
+# **服务端二进制过期守卫** ✓ —— 加这一条的直接原因：
+# 检查跑的是临时服务端 ✓，而它用的是 `target/release/` 里的**既有二进制** ✓；
+# 我在 **worktree** 里构建、合并回主线后**忘了重建** ✗，
+# 于是检查跑在**旧查看器**上 ✓（新加的折叠无反应 ✓、介质工具退回旧的单点逻辑 ✓），
+# 现象全像"功能坏了" ✗ 而不是"跑错二进制" ✓ —— 本会话为此浪费了四次排查 ✗。
+# 与 wasm 的守卫同思路 ✓：源码比二进制新就自动重建 ✓。
+SERVER_BIN="target/release/yanshi-serve"
+SERVER_STALE=0
+if [ ! -x "$SERVER_BIN" ]; then
+  SERVER_STALE=1
+elif [ -n "$(find crates/yanshi-http/src crates/yanshi-server/src crates/yanshi-render/src \
+    crates/yanshi-core/src Cargo.toml -newer "$SERVER_BIN" 2>/dev/null | head -1)" ]; then
+  SERVER_STALE=1
+fi
+if [ "$SERVER_STALE" = "1" ]; then
+  echo "== 服务端源码比二进制新 ⇒ 重建（避免检查跑在旧查看器上 ✓）"
+  cargo build -q --release -p yanshi-http || { echo "   ✗ 服务端重建失败" >&2; exit 1; }
+fi
+
 PKG="crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm"
 stale=0
 if [ ! -f "$PKG" ]; then

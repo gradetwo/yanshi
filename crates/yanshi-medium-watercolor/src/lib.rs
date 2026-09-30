@@ -68,9 +68,11 @@ fn edge_wobble(seed: u64, angle: f32) -> f32 {
     // 三个不同频率的正弦叠加 ⇒ 形状自然又不规则 ✓，且完全确定 ✓。
     let mut state = seed ^ ((angle * 1000.0) as u64).wrapping_mul(0x9E37_79B9);
     let base = splitmix64(&mut state) as f32 / u32::MAX as f32;
-    let a = (angle * 3.0 + base * 6.283).sin();
-    let b = (angle * 7.0 + base * 3.141).sin();
-    let c = (angle * 13.0 + base * 1.570).sin();
+    // 用 `core::f32::consts` 的常量而不是手写近似值 ✓ —— clippy 的 `approx_constant` 抓到过
+    // 我写的 6.283 / 3.141 / 1.570 ✓（字面量近似常量既易错也不表意 ✓）。
+    let a = (angle * 3.0 + base * core::f32::consts::TAU).sin();
+    let b = (angle * 7.0 + base * core::f32::consts::PI).sin();
+    let c = (angle * 13.0 + base * core::f32::consts::FRAC_PI_2).sin();
     (a * 0.5 + b * 0.3 + c * 0.2) * 0.5 + 0.5
 }
 
