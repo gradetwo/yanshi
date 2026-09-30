@@ -1427,7 +1427,15 @@ for (let i = 0; i < 40 && !mediumObject; i++) {
   mediumRawListing = listed;
   mediumObject = (listed.objects || []).find((o) => o.medium && o.medium.id) || null;
 }
-const mediumAfter = await evaluate(MEDIUM_INK) || 0;
+// **对"画布有墨"本身轮询** ✓ —— 此前是"轮询对象存在 ✓ 然后**只量一次**" ✗：
+// 服务端补画可能晚于那一次测量 ✓ ⇒ 偶发读到 0 ✗（本会话反复出现的家族 ✓）。
+// 这里量的是**用户最终看到的画面** ✓，而不是某个瞬间 ✓。
+let mediumAfter = 0;
+for (let i = 0; i < 40; i++) {
+  mediumAfter = (await evaluate(MEDIUM_INK)) || 0;
+  if (mediumAfter > 0) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
 if (!mediumObject) {
   const mediumLog = await evaluate(`document.getElementById("log").innerText.slice(0, 400)`);
   problems.push(
@@ -1508,7 +1516,13 @@ for (let i = 0; i < 40 && !wcObject; i++) {
   ).then((response) => response.json()).catch(() => ({}));
   wcObject = (listed.objects || []).find((o) => o.medium && o.medium.id === "watercolor") || null;
 }
-const wcAfter = await evaluate(MEDIUM_INK) || 0;
+// 与示例介质同理 ✓：对"有墨"轮询 ✓（补画可能晚于一次测量 ✓ ⇒ 否则偶发读到 0 ✗）。
+let wcAfter = 0;
+for (let i = 0; i < 40; i++) {
+  wcAfter = (await evaluate(MEDIUM_INK)) || 0;
+  if (wcAfter > 0) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
 if (!wcObject) {
   problems.push("水彩介质用例失败：未出现带 watercolor 的对象");
 } else if (wcObject.medium.version !== 2) {
@@ -2050,6 +2064,72 @@ console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → 
 console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON.stringify(wcResult.medium) + "｜画布 " + wcResult.before + " → " + wcResult.after : "失败 " + JSON.stringify(wcResult)}`);
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
+
+// **介质工效** ✓ —— 子 agent 报的 F1/F2：
+//   F1：此前**每一笔介质都新建一个图层** ✗（37 笔 ⇒ 37 层 ✓，还顺手改走 `state.layerId` ✓，
+//       于是"在一层里画完"根本做不到 ✓）；
+//   F2：笔尖尺寸写死 `min(48, maxDab)` ✗ ⇒ **"粗细"滑杆对介质完全无效** ✓
+//       （实测 #size 12/24/32/40/48 画出的色带宽度都是 54~56px ✓）。
+{
+  const docInfo = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+  const tool = async (name, body) => fetch(`${origin}/api/tools/${name}?doc=${docInfo.docId}&token=${docInfo.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}),
+  }).then((r) => r.json()).catch(() => ({}));
+  const layersBefore = ((await tool("list_layers")).layers || []).length;
+  const objectsBefore = ((await tool("list_objects")).objects || []).filter((o) => o.type === "raster_patch").length;
+  // 用查看器自己的绘制路径 ✓（这里直接驱动页面里的 `mediumStroke` ✓，与用户落笔同一条路径 ✓）。
+  const strokeAt = async (tipSize, y) => {
+    return await evaluate(`(async () => {
+      document.getElementById("size").value = ${tipSize};
+      const points = [];
+      for (let i = 0; i <= 8; i++) points.push({ x: 40 + i * 20, y: ${y} });
+      await mediumStroke("example", points);
+      return true;
+    })()`);
+  };
+  await strokeAt(12, 260);
+  await new Promise((r) => setTimeout(r, 2500));
+  await strokeAt(48, 380);
+  await new Promise((r) => setTimeout(r, 2500));
+  const layersAfter = ((await tool("list_layers")).layers || []).length;
+  const patches = ((await tool("list_objects")).objects || []).filter((o) => o.type === "raster_patch");
+  const fresh = patches.slice(-2);
+  if (layersAfter > layersBefore + 1) {
+    problems.push(`两笔介质新增了 ${layersAfter - layersBefore} 个图层（应当落在选中的图层里，最多兜底新建 1 个）`);
+  }
+  if (fresh.length < 2) {
+    problems.push(`介质工效用例：两笔之后只找到 ${fresh.length} 个新斑点`);
+  } else {
+    const thin = Number(fresh[0].bbox && fresh[0].bbox[3]) || 0;
+    const thick = Number(fresh[1].bbox && fresh[1].bbox[3]) || 0;
+    if (!(thick > thin * 1.5)) {
+      problems.push(`"粗细"滑杆对介质无效：笔尖 12 → 高 ${thin}px，笔尖 48 → 高 ${thick}px`);
+    } else {
+      console.log(`  介质工效：两笔新增图层 ${layersAfter - layersBefore} 个（须 ≤1）｜笔尖 12 → ${thin}px，48 → ${thick}px（须显著变宽）`);
+    }
+  }
+  void objectsBefore;
+  // **"强度 / 湿度"标签必须随介质说真话** ✓ —— 子 agent 报的 F3：
+  // 该滑杆在插件介质下喂的是 `wetness` ✓ ⇒ 越大越湿、颜色越淡 ✓
+  //（实测 alpha：85 → 0.238 ✓、55 → 0.482 ✓），继续叫"强度"会让人以为越大越浓 ✗。
+  const labelFor = async (mediumValue) => {
+    await evaluate(`(() => { const s = document.getElementById("medium"); s.value = ${JSON.stringify(mediumValue)}; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await new Promise((r) => setTimeout(r, 200));
+    return await evaluate(`document.getElementById("strengthLabel").textContent`);
+  };
+  const pluginLabel = await labelFor("watercolor");
+  const brushLabel = await labelFor("example");
+  await labelFor("example");
+  if (pluginLabel !== "湿度") {
+    problems.push(`插件介质下"强度"滑杆的标签应为「湿度」（实际「${pluginLabel}」）`);
+  }
+  if (brushLabel !== "强度") {
+    problems.push(`内置介质下该滑杆的标签应为「强度」（实际「${brushLabel}」）`);
+  }
+  if (pluginLabel === "湿度" && brushLabel === "强度") {
+    console.log(`  强度/湿度标签：插件介质「${pluginLabel}」｜内置介质「${brushLabel}」（须随介质改名）`);
+  }
+}
 // 光标处快捷面板 ✓（借鉴 Krita 的 Pop-up Palette ✓）。
 // 断言四件事 ✓：右键弹出且**靠近光标** ✓、内容来自**同一份定义** ✓、选色会驱动既有控件 ✓、Esc 能关 ✓。
 const quickAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
