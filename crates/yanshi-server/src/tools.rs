@@ -1602,6 +1602,61 @@ fn read_get_state(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(value)
 }
 
+/// 校验并规范化 `data.medium` ✓（设计 11.1 的插件介质描述符）。
+///
+/// 设计对插件有两条硬约束 ✓：
+/// 1. **「插件 `id + version` 随原子记录」** ✓ —— 描述符就存在对象的 `data.medium` 里，
+///    随原子进入日志 ✓，因此**可审计** ✓；
+/// 2. **「升级不自动改变旧文档渲染」** ✓ —— 旧对象身上钉着当时那个 `version` ✓，
+///    安装新版本插件**不会**改写历史对象的渲染 ✓（有测试守住这条不变量 ✓）。
+///
+/// 设计未规定描述符的确切字段名与校验规则 ✗，这里取最小形态 `{id, version}` ✓：
+/// `id` 非空、只允许字母数字点下划线连字符 ✓（它会进入日志与插件查找 ✓），`version` 为 ≥1 的整数 ✓。
+fn validate_medium(data: &Value) -> Result<()> {
+    let Some(medium) = data.get("medium") else {
+        return Ok(());
+    };
+    let object = medium.as_object().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("medium 必须是对象，形如 {\"id\": \"oil\", \"version\": 1}"),
+        )
+    })?;
+    let id = object.get("id").and_then(Value::as_str).unwrap_or_default();
+    if id.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("medium.id 不能为空"),
+        ));
+    }
+    if !id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
+    {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "medium.id 只允许字母、数字、点、下划线与连字符，得到 {id}"
+            )),
+        ));
+    }
+    match object.get("version").and_then(Value::as_u64) {
+        Some(version) if version >= 1 => {}
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("medium.version 必须是 ≥1 的整数"),
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// 从对象 `data` 里取出介质描述符（供 `list_objects`/`get_object` 与查看器显示 ✓）。
+fn medium_of(object: &yanshi_core::Object) -> Option<Value> {
+    object.data.get("medium").cloned()
+}
+
 fn summary_object(object: &yanshi_core::Object) -> Value {
     json!({
         "object_id": object.id,
@@ -1613,6 +1668,8 @@ fn summary_object(object: &yanshi_core::Object) -> Value {
         "current_version": object.current_version,
         "versions": object.versions.len(),
         "bbox": yanshi_render::object_bbox(object).map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+        // 介质描述符随原子记录 ✓（设计 11.1），在对象列表里可见 ✓。
+        "medium": medium_of(object),
     })
 }
 
@@ -2062,6 +2119,8 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     require_non_empty_points(args)?;
     let mut data = require_object(args, "data")?.clone();
     validate_colors(&data)?;
+    // 插件介质描述符（设计 11.1）：合法则随原子记录 ✓，非法直接拒绝 ✓。
+    validate_medium(&data)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
 
