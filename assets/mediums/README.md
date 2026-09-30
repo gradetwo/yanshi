@@ -44,6 +44,7 @@ host, take their randomness only from the injected seed, and report their own `m
 | `oil.wasm` | `oil` | 2 | bristle channels with a seed-fixed direction, paint load running out along a stroke, wet-on-wet mixing against the colour already under the tip, a slightly heavier rim where paint piles up |
 | `watercolor.wasm` | `watercolor` | 2 | an irregular angle-dependent boundary, a deposition band near the edge, translucent washes and paper grain |
 | `marker.wasm` | `marker` | 2 | a flat chisel nib whose angle is fixed per stroke, so its width changes as the stroke turns, ink that darkens where it overlaps ink already on the canvas, and a faint bleed past the nib edge |
+| `pixel.wasm` | `pixel` | 2 | a hard-edged square nib with **no anti-aliasing at all**: coverage is binary, the alpha takes exactly one value and the colour is exactly the tip colour, with no grain and no mixing. It is deliberately independent of the seed, since a square nib has nothing random about it, and the ABI check asserts that rather than the opposite |
 | `pencil.wasm` | `pencil` | 2 | a soft round tip whose darkness follows `pressure^1.5`, graphite grain that makes light pressure read as broken grit rather than even translucency, and almost no mixing, because a dry medium does not pull the colour underneath up into the tip |
 
 `marker` and `pencil` are registered in the viewer and in `scripts/medium-abi-check.mjs`, so they go

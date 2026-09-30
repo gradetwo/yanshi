@@ -23,6 +23,7 @@ if (paths.length === 0) {
     // 零 imports ✓、ABI 版本 ✓、同 seed 一致 / 不同 seed 有别 ✓、配额 ✓、v2 上下文 ✓。
     "assets/mediums/marker.wasm",
     "assets/mediums/pencil.wasm",
+    "assets/mediums/pixel.wasm",
   );
 }
 
@@ -75,7 +76,19 @@ async function checkOne(path) {
   api.yanshi_dab(4321, size, 1000);
   const third = view();
   stats.crossSeed = first.reduce((n, byte, i) => n + (byte === third[i] ? 0 : 1), 0);
-  if (stats.crossSeed === 0) problems.push("不同 seed 应产生不同结果（随机性必须由 seed 驱动）");
+  // **"不同 seed 必须不同"不是所有介质的通则** ✗ —— 像素笔刷**本就与 seed 无关** ✓：
+  // 方形笔尖就是它的全部行为 ✓，没有任何需要随机的成分 ✓。
+  // 设计的要求是"随机性**只能**来自 seed" ✓（不许有别的随机源 ✓），而不是"每个介质都必须用随机" ✗。
+  // 因此按介质判定 ✓，并且对像素笔刷**反过来断言**：不同 seed 必须**逐字节相同** ✓
+  //（这条同样要断言 ✓，否则"它到底依不依赖 seed"无从验证 ✓）。
+  const seedIndependent = path.includes("pixel");
+  if (seedIndependent) {
+    if (stats.crossSeed !== 0) {
+      problems.push(`像素笔刷不该依赖 seed（不同 seed 差异 ${stats.crossSeed} 字节，须为 0）`);
+    }
+  } else if (stats.crossSeed === 0) {
+    problems.push("不同 seed 应产生不同结果（随机性必须由 seed 驱动）");
+  }
 
   // ③ 配额：请求超过 max_dab 时写入量必须被插件自己收紧 ✓。
   stats.capped = api.yanshi_dab(1, maxDab + 32, 1000);
@@ -118,6 +131,12 @@ async function checkOne(path) {
       stats.v2.mixedGreen = greenish;
       stats.v2.mixedRed = reddish;
       if (inked === 0) problems.push("载墨充足时应落墨（实测没有）");
+      // **"不同 seed 必须不同"也不是所有介质的通则** ✗ —— 像素笔刷**本就与 seed 无关** ✓：
+      // 它没有鬃毛/颗粒这类需要随机的东西 ✓，一个方形笔尖就是它全部的行为 ✓。
+      // 设计的要求是"随机性**只能**来自 seed" ✓（即不许有别的随机源 ✓），
+      // 而不是"每个介质都必须用随机" ✗。因此这里按介质判定 ✓，
+      // 并且对像素笔刷**反过来断言**：不同 seed 的输出必须**逐字节相同** ✓。
+      // 像素笔刷的"与 seed 无关"在下面 ④ 的位置按同一判据断言 ✓（见那里的说明 ✓）。
       // **湿混是"湿介质"的特性，不是 ABI 的通则** ✗ —— 加入铅笔时这里报了不合格 ✓，
       // 而铅笔**本来就该**忽略湿度 ✓（干介质不会把下面的颜色拉上来 ✓，见插件文档 ✓）。
       // 干介质不但**允许**不混色 ✓，还必须**断言它确实不混** ✓，否则"有没有实现"无从验证 ✓。
@@ -205,6 +224,37 @@ async function checkOne(path) {
     }
   }
 
+      // --- pixel specific -------------------------------------------------------
+      // 像素笔刷的定义性特征是**没有抗锯齿** ✓ ⇒ 可量、可断言 ✓：
+      //   * alpha **只有一种取值** ✓（要么全满、要么完全透明 ✓，中间没有过渡 ✓）；
+      //   * 颜色**精确等于笔尖色** ✓（不做混色 ✓、不做噪声 ✓）；
+      //   * 与 **seed 无关** ✓（见 ④ ✓）。
+      if (path.includes("pixel")) {
+        input.set([0.2, 0.6, 0.9, 1, 1, 0, 0, 1, 1, 1]);
+        api.yanshi_dab(3, size, 1000);
+        const dab = Uint8Array.from(view());
+        const levels = new Set();
+        let exact = true;
+        let inked = 0;
+        for (let i = 0; i < dab.length; i += 4) {
+          levels.add(dab[i + 3]);
+          if (dab[i + 3] === 0) continue;
+          inked += 1;
+          // 笔尖色 (0.2, 0.6, 0.9) ⇒ 四舍五入应为 (51, 153, 230) ✓。
+          if (dab[i] !== 51 || dab[i + 1] !== 153 || dab[i + 2] !== 230) exact = false;
+        }
+        stats.pixel = { levels: levels.size, exact, inked, seedIndependent };
+        if (inked === 0) {
+          problems.push("像素笔刷在载墨充足时没有落墨");
+        }
+        if (levels.size !== 1) {
+          problems.push(`像素笔刷的 alpha 只应有一种取值（实测 ${levels.size} 种 ⇒ 有抗锯齿 ✗）`);
+        }
+        if (!exact) {
+          problems.push("像素笔刷的颜色必须精确等于笔尖色（实测被混色或加噪 ✗）");
+        }
+      }
+
       // --- watercolour specific -------------------------------------------------
       // 水彩与油画的差别不在参数而在**行为** ✓（见插件文档 ✓）。这里量三条标志性特征 ✓：
       //   ① 半透明（留白 ✓）；② 边缘沉积（外沿比中心深 ✓）；③ 边界不规则（水痕 ✓）。
@@ -278,6 +328,9 @@ function report(path, bytes, imports, abi, maxDab, stats, problems) {
   if (stats.pencil) {
     console.log(`  铅笔特征：压力 120/500/1000 的墨量 ${stats.pencil.light}/${stats.pencil.medium}/${stats.pencil.heavy}（须单调递增）`);
   }
+  if (stats.pixel) {
+    console.log(`  像素特征：alpha 取值 ${stats.pixel.levels} 种（须 1 种 = 完全不抗锯齿）｜颜色精确 ${stats.pixel.exact ? "✓" : "✗"}｜与 seed 无关 ${stats.pixel.seedIndependent ? "✓" : "✗"}`);
+  }
   if (stats.watercolor) {
     console.log(`  水彩特征：整体 alpha ${stats.watercolor.meanAll}｜中心 ${stats.watercolor.meanInner} / 外沿 ${stats.watercolor.meanOuter}（须外沿更深）｜同半径起伏 ${stats.watercolor.ringSpread}（须 ≥20）`);
   }
@@ -286,6 +339,6 @@ function report(path, bytes, imports, abi, maxDab, stats, problems) {
     for (const problem of problems) console.log(`     - ${problem}`);
     return 1;
   }
-  console.log(`  ✅ ${path} ABI 契约通过（无 imports、按 seed 确定、有配额${stats.v2 ? "、v2 上下文正确" : ""}）`);
+  console.log(`  ✅ ${path} ABI 契约通过（无 imports、${path.includes("pixel") ? "不依赖 seed（方形笔尖没有随机成分）" : "按 seed 确定"}、有配额${stats.v2 ? "、v2 上下文正确" : ""}）`);
   return 0;
 }

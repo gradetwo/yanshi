@@ -238,6 +238,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <option value="watercolor">水彩（v2）</option>
       <option value="marker">马克笔（v2）</option>
       <option value="pencil">铅笔（v2）</option>
+      <option value="pixel">像素（v2）</option>
     </select></label>
   </div>
 
@@ -1303,6 +1304,8 @@ const MEDIUMS = {
   marker: { id: "marker", version: 2, url: "/mediums/marker.wasm" },
   // 铅笔（ABI v2）：软圆尖 + 压力驱动深浅 + 石墨颗粒、几乎不混色 ✓。
   pencil: { id: "pencil", version: 2, url: "/mediums/pencil.wasm" },
+  // 像素（ABI v2）：硬边方形笔尖、**完全不抗锯齿**、颜色精确 ✓。
+  pixel: { id: "pixel", version: 2, url: "/mediums/pixel.wasm" },
 };
 
 async function loadMedium(name) {
