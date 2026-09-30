@@ -171,6 +171,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <label>介质 <select id="medium">
       <option value="example">示范点（v1）</option>
       <option value="oil">油画（v2）</option>
+      <option value="watercolor">水彩（v2）</option>
     </select></label>
   </div>
 
@@ -1029,8 +1030,10 @@ const MEDIUMS = {
   // `version` 与插件自报的 ABI 版本核对 ✓ —— 两个版本并存正是设计
   // "插件 id + version 随原子记录、升级不改写历史"要支持的 ✓。
   example: { id: "example-dab", version: 1, url: "/mediums/example-dab.wasm" },
-  // 油画/水彩（ABI v2）：宿主注入笔尖色、目标色、载墨与湿度 ✓。
+  // 油画（ABI v2）：宿主注入笔尖色、目标色、载墨与湿度 ✓。
   oil: { id: "oil", version: 2, url: "/mediums/oil.wasm" },
+  // 水彩（ABI v2）：渗开的不规则边界 + 边缘沉积 + 半透明纸感 ✓。
+  watercolor: { id: "watercolor", version: 2, url: "/mediums/watercolor.wasm" },
 };
 
 async function loadMedium(name) {
