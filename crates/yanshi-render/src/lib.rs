@@ -88,6 +88,7 @@ pub mod object;
 pub mod png;
 pub mod prng;
 pub mod render;
+pub mod selection;
 pub mod thumb;
 pub mod tile;
 
