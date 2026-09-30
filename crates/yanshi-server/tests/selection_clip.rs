@@ -343,3 +343,85 @@ fn a_selection_clips_text() {
         "删除选区后整行文字都应出现（选区外仍空白 ⇒ 裁剪被错误地烘焙进像素）"
     );
 }
+
+/// 液化同样受选区约束 ✓（按**增量**衰减 ⇒ 选区外逐字节不变 ✓、可逆 ✓）。
+#[test]
+fn a_selection_clips_liquify() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        // 有结构的内容：竖条纹，便于看出位移。
+        for index in 0..8 {
+            let x = 8.0 + index as f64 * 16.0;
+            registry.call(
+                &mut ctx,
+                "draw_stroke",
+                &json!({"layer_id": "L", "object_id": format!("a_{index:02}"),
+                        "data": {"points": [[x, 0.0], [x, 128.0]], "size": 6.0, "hardness": 1.0,
+                                 "color": {"r": 30, "g": 30, "b": 200, "a": 255}}}),
+            );
+        }
+    }
+    let before = render(&mut workspace);
+
+    // 选区：左半 0..64。
+    {
+        let mut ctx = context(&mut workspace);
+        let created = registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_liquify",
+                    "shape": {"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 64.0, "h": 128.0}},
+                    "feather": 0.0, "invert": false, "mode": "new"}),
+        );
+        assert_eq!(created["ok"], json!(true), "{created}");
+    }
+    // 液化：在选区边界附近推一把，作用圈横跨选区内外。
+    {
+        let mut ctx = context(&mut workspace);
+        let pushed = registry.call(
+            &mut ctx,
+            "liquify_push",
+            &json!({"layer_id": "L", "object_id": "z_push",
+                    "points": [[30.0, 64.0], [90.0, 64.0]], "size": 60.0,
+                    "strength": 1.5, "direction": [0.0, -1.0]}),
+        );
+        assert_eq!(pushed["ok"], json!(true), "{pushed}");
+    }
+    let after = render(&mut workspace);
+    let changes = changed(&before, &after);
+    assert!(!changes.is_empty(), "选区内应被液化（前置条件）");
+    let outside: Vec<(usize, usize)> = changes.iter().copied().filter(|(x, _)| *x >= 64).collect();
+    assert!(
+        outside.is_empty(),
+        "选区外不应被液化（越界 {} 个像素，例如 {:?}）",
+        outside.len(),
+        outside.iter().take(5).collect::<Vec<_>>()
+    );
+
+    // 删除选区 ⇒ 同一次液化恢复为不受约束 ✓（可逆 ✓）。
+    {
+        let mut ctx = context(&mut workspace);
+        let deleted = registry.call(
+            &mut ctx,
+            "delete_selection",
+            &json!({"selection_id": "sel_liquify"}),
+        );
+        assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    }
+    let unclipped = render(&mut workspace);
+    let after_delete = changed(&before, &unclipped);
+    assert!(
+        after_delete.iter().any(|(x, _)| *x >= 64),
+        "删除选区后液化应恢复为不受约束（选区外仍无变化 ⇒ 裁剪被错误地烘焙进像素）"
+    );
+}

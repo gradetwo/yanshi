@@ -1062,6 +1062,8 @@ impl Renderer {
                     direction,
                 } => {
                     let radius = (size.max(2.0)) / 2.0;
+                    // 选区约束：按**增量**衰减（见写入点注释 ✓）。
+                    let liquify_clip = object_clip(state, &layer.id, object);
                     let length = (direction.0 * direction.0 + direction.1 * direction.1)
                         .sqrt()
                         .max(1e-9);
@@ -1122,6 +1124,19 @@ impl Renderer {
                         ((affected_max_x - origin.0 as f64).ceil().max(0.0) as u32 + 1).min(width);
                     let end_y =
                         ((affected_max_y - origin.1 as f64).ceil().max(0.0) as u32 + 1).min(height);
+                    // 有选区时快照**目标区域**的操作前像素 ✓（直接按下标取 ✓，
+                    // 不做坐标换算与夹取 —— 之前用影响圈快照做换算，边界处会取到错值 ✗）。
+                    let pre_targets: Option<Vec<LinearRgba>> = liquify_clip.as_ref().map(|_| {
+                        let mut values =
+                            Vec::with_capacity(((end_x - start_x) * (end_y - start_y)) as usize);
+                        for y in start_y..end_y {
+                            for x in start_x..end_x {
+                                values.push(layer_buffer.pixel(x, y));
+                            }
+                        }
+                        values
+                    });
+                    let row = (end_x - start_x) as usize;
                     for y in start_y..end_y {
                         for x in start_x..end_x {
                             // 目标像素的文档坐标。
@@ -1196,7 +1211,29 @@ impl Renderer {
                                 let bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
                                 out[channel] = top + (bottom - top) * fy;
                             }
-                            layer_buffer.set_pixel(x, y, out);
+                            // 选区「约束落笔」（路线 A）✓：按**增量**衰减 ✓ ——
+                            // `结果 = 操作前 + (操作后 − 操作前) × 覆盖度`。
+                            // 只在该对象真正改动过的像素上生效 ✓（零位移在上方已 `continue` ✓），
+                            // 因此**不会**把操作前的值写回未改动的像素 ✓ ——
+                            // 这正是之前"事后还原"写法在分次渲染下会抹掉已有内容的原因 ✓。
+                            match (&liquify_clip, &pre_targets) {
+                                (Some(clip), Some(pre_targets)) => {
+                                    let coverage = clip
+                                        .coverage(document_x + 0.5, document_y + 0.5)
+                                        .clamp(0.0, 1.0);
+                                    let index =
+                                        (y - start_y) as usize * row + (x - start_x) as usize;
+                                    let previous = pre_targets[index];
+                                    if coverage < 1.0 {
+                                        for channel in 0..4 {
+                                            out[channel] = previous[channel]
+                                                + (out[channel] - previous[channel]) * coverage;
+                                        }
+                                    }
+                                    layer_buffer.set_pixel(x, y, out);
+                                }
+                                _ => layer_buffer.set_pixel(x, y, out),
+                            }
                         }
                     }
                     continue;
