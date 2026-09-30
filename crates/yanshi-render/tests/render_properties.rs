@@ -358,3 +358,94 @@ proptest! {
         prop_assert!(state.is_consistent());
     }
 }
+
+/// **移动**同样要满足"失效 tile 覆盖所有变化像素" ✓ —— 用户实测的残影就是这么来的 ✗：
+/// 脏区规划只用**新**包围盒 ✓，于是**旧位置**的像素被改回背景却没被失效 ✗，
+/// 画布留着残影 ✓（缩略图整幅重绘所以正常 ✓）。
+///
+/// 这条守卫此前不存在 ✗ —— 原有的 `dirty_set_covers_every_changed_pixel` 只随机做 `DrawStroke` ✓，
+/// 从没覆盖过 `Move` ✓，所以这个 bug 从属性测试里溜了过去 ✓。
+///
+/// 写成确定性的循环（而不是 proptest 宏）✓：覆盖几个 seed × 几个位移即可稳定复现 ✓，
+/// 且不必纠结宏的语法位置 ✓（第一版就因为把宏测试追加到 `proptest!` 块外而编译失败 ✗）。
+#[test]
+fn dirty_set_covers_both_ends_of_a_move() {
+    let mut checked = 0usize;
+    for seed in [1u64, 7, 42, 99, 1234, 20240930] {
+        for (dx, dy) in [
+            (24.0f64, 0.0f64),
+            (-24.0, 12.0),
+            (8.0, -18.0),
+            (-40.0, -40.0),
+        ] {
+            let before = random_document(seed, 96, 4);
+            let store = MemoryBlobStore::new();
+            let mut renderer = Renderer::new(TileGrid::new(32, 96, 96).unwrap());
+            let old = renderer.render_document(&before, &store).unwrap().rgba8;
+
+            let Some(target) = before
+                .objects
+                .values()
+                .find(|object| yanshi_render::object_bbox(object).is_some())
+                .map(|object| object.id.clone())
+            else {
+                continue;
+            };
+
+            let mut after = before.clone();
+            after.objects.get_mut(&target).unwrap().transform = yanshi_core::Transform {
+                matrix: [1.0, 0.0, 0.0, 1.0, dx, dy],
+                pivot: [0.0, 0.0],
+            };
+            let atom = yanshi_core::Atom::new(
+                yanshi_core::AtomKind::Move,
+                "human:1",
+                "s",
+                json!({"object_id": target, "delta": {"dx": dx, "dy": dy}}),
+            );
+            let dirty = plan_dirty(&after, Some(&before), &atom);
+            assert!(!dirty.is_none(), "移动必须产生 dirty");
+
+            let grid = TileGrid::new(32, 96, 96).unwrap();
+            let keys = yanshi_render::dirty::invalidated_tiles(&grid, &after, &dirty);
+            let mut covered = vec![false; (96 * 96) as usize];
+            for key in &keys {
+                let bounds = grid.bounds(*key);
+                for y in (bounds.y as u32)..((bounds.y + bounds.h) as u32) {
+                    for x in (bounds.x as u32)..((bounds.x + bounds.w) as u32) {
+                        covered[(y * 96 + x) as usize] = true;
+                    }
+                }
+            }
+
+            let mut fresh = Renderer::new(grid.clone());
+            let new = fresh.render_document(&after, &store).unwrap().rgba8;
+            let (mut changed, mut uncovered) = (0usize, 0usize);
+            for y in 0..96u32 {
+                for x in 0..96u32 {
+                    let index = ((y * 96 + x) * 4) as usize;
+                    if old[index..index + 4] != new[index..index + 4] {
+                        changed += 1;
+                        if !covered[(y * 96 + x) as usize] {
+                            uncovered += 1;
+                        }
+                    }
+                }
+            }
+            // 有些随机对象移到画布外 ⇒ 像素本就不变 ✓（这不代表有问题 ✓）。
+            // 因此只统计"确实变了"的组合 ✓，但对它们的要求是硬的 ✓：
+            // **每一个变化像素都必须落在失效 tile 里** ✓。
+            assert_eq!(
+                uncovered, 0,
+                "有 {uncovered} 个变化像素未被失效覆盖（共变化 {changed}，seed {seed}，delta {dx},{dy}）"
+            );
+            if changed > 0 {
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 4,
+        "有效组合过少（{checked}）—— 测试可能没真正覆盖到移动 ✓"
+    );
+}

@@ -106,3 +106,69 @@ fn move_object_shifts_rendered_pixels_and_bbox() {
         "bbox 应为变换后的位置（命中测试依赖它）"
     );
 }
+
+/// **移动后旧位置必须被失效并重绘** ✓ —— 用户实测：移动对象后画布**旧位置不刷新** ✗
+/// （留下残影 ✓），而缩略图（整幅重绘 ✓）正常 ✓。
+///
+/// 根因：脏区规划只用**新状态**的包围盒 ✗（`dirty_for_object` ✓），
+/// 移动时旧位置从未进入失效集合 ✓。本用例直接断言**旧位置的像素变回背景** ✓，
+/// 这类"只看对象属性、不看旧像素"的断言缺口 ✓ 正是 bug 溜过去的原因 ✓。
+#[test]
+fn moving_an_object_clears_the_pixels_it_left_behind() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_move", 128, 64),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        let drawn = registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "a_square",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 8.0, "y": 8.0, "w": 24.0, "h": 24.0}},
+                             "color": {"r": 255, "g": 0, "b": 0, "a": 255}}}),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+
+    let red_at = |workspace: &mut Workspace, x: f64, y: f64| -> [u8; 4] {
+        let raw = workspace
+            .render_region_raw("doc_move", Bbox::new(x, y, 1.0, 1.0))
+            .expect("渲染应成功")
+            .2;
+        [raw[0], raw[1], raw[2], raw[3]]
+    };
+
+    let before_old = red_at(&mut workspace, 20.0, 20.0);
+    assert!(
+        before_old[0] > 200 && before_old[1] < 60,
+        "移动前旧位置应是红色 ✓，实际 {before_old:?}"
+    );
+
+    {
+        let mut ctx = context(&mut workspace);
+        let moved = registry.call(
+            &mut ctx,
+            "move_object",
+            &json!({"object_id": "a_square", "delta": {"dx": 72.0, "dy": 0.0}}),
+        );
+        assert_eq!(moved["ok"], json!(true), "{moved}");
+    }
+
+    let after_old = red_at(&mut workspace, 20.0, 20.0);
+    let after_new = red_at(&mut workspace, 92.0, 20.0);
+    assert!(
+        after_old[0] < 60 || after_old[1] > 200,
+        "**移动后旧位置必须变回背景** ✓（否则画布会留残影 ✗），实际 {after_old:?}"
+    );
+    assert!(
+        after_new[0] > 200 && after_new[1] < 60,
+        "移动后新位置应是红色 ✓，实际 {after_new:?}"
+    );
+}

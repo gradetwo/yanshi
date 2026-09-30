@@ -1739,6 +1739,9 @@ async function fillCurrentLayer() {
 /// 移动工具（设计 13.3 基础工具「移动」）：点击选中光标下最上层的对象，拖动后提交
 /// `move_object{object_id, delta:{dx,dy}}`（注意参数名是 **dx/dy**，不是 x/y ✓）。
 const MOVE_TOOL = "move_object";
+const MOVE_LAYER_TOOL = "move_layer";
+// 整层拖动状态（起点 + 目标图层 ✓）。
+let layerMoveState = null;
 let moveState = null;
 
 /// 命中测试：`list_objects` 的 bbox 是 `[x,y,w,h]`（文档坐标）✓。
@@ -2061,6 +2064,16 @@ board.addEventListener("pointerdown", (event) => {
     });
     return;
   }
+  if (state.tool === MOVE_LAYER_TOOL) {
+    // 拖动整层 ✓：起点记下即可 ✓，落点时对**该层所有对象**下同一批 move ✓。
+    const start = localPoint(event);
+    layerMoveState = { start, layerId: state.layerId };
+    state.dragging = event.pointerId;
+    state.points = [start];
+    log("移动图层 " + state.layerId + "（拖动即可整体移动）");
+    event.preventDefault();
+    return;
+  }
   if (state.tool === MOVE_TOOL) {
     const start = localPoint(event);
     void pickObjectAt(start).then((object) => {
@@ -2096,6 +2109,11 @@ board.addEventListener("pointerdown", (event) => {
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
   const point = localPoint(event);
+  if (state.tool === MOVE_LAYER_TOOL) {
+    state.points = layerMoveState ? [layerMoveState.start, point] : [point];
+    redraw();
+    return;
+  }
   if (state.tool === MOVE_TOOL) {
     state.points = moveState ? [moveState.start, point] : [point];
     if (moveState && state.selectedObject) {
@@ -2126,6 +2144,51 @@ board.addEventListener("pointermove", (event) => {
 board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
+  if (state.tool === MOVE_LAYER_TOOL) {
+    const end = localPoint(event);
+    const pending = layerMoveState;
+    layerMoveState = null;
+    state.points = [];
+    if (!pending) {
+      redraw();
+      return;
+    }
+    const dx = Math.round(end.x - pending.start.x);
+    const dy = Math.round(end.y - pending.start.y);
+    if (dx === 0 && dy === 0) {
+      redraw();
+      return;
+    }
+    const listed = await callTool("list_objects", {}, { refresh: false });
+    const objects = (listed.objects || []).filter((o) => o.layer_id === pending.layerId);
+    if (objects.length === 0) {
+      log("移动图层：" + pending.layerId + " 里没有对象");
+      redraw();
+      return;
+    }
+    // **同一变更集** ✓ ⇒ 一次撤销 ✓（批量调用 ✓）。
+    const batched = await callTool(
+      "batch",
+      {
+        message: "move layer " + pending.layerId,
+        calls: objects.map((o) => ({
+          tool: "move_object",
+          arguments: { object_id: o.object_id, delta: { dx, dy } },
+        })),
+      },
+      { refresh: false },
+    );
+    if (!batched.ok) {
+      log("移动图层失败：" + (batched.error_code || "unknown") + " " +
+          ((batched.context && batched.context.detail) || ""), "#c33");
+      redraw();
+      return;
+    }
+    log("已移动图层 " + pending.layerId + " 的 " + objects.length + " 个对象（dx=" + dx + ", dy=" + dy + "）");
+    await refreshPreview();
+    redraw();
+    return;
+  }
   if (state.tool === MOVE_TOOL) {
     const end = localPoint(event);
     const pending = moveState;
@@ -2287,6 +2350,7 @@ const TOOL_ICONS = {
   liquify_pinch: '<path d="M4 12h5"/><path d="M20 12h-5"/><circle cx="12" cy="12" r="2"/>',
   eyedropper: '<path d="M4 20l2-6 8-8 4 4-8 8z"/>',
   move_object: '<path d="M12 4v16"/><path d="M4 12h16"/><path d="M12 4l-2 3h4z"/><path d="M12 20l-2-3h4z"/>',
+  move_layer: '<rect x="4" y="8" width="10" height="10" rx="1"/><path d="M8 5h10a1 1 0 0 1 1 1v10"/><path d="M17 4l3 3-3 3"/>',
   select_rect: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/>',
   clearSelection: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/><path d="M7 17L17 7"/>',
   text: '<path d="M5 5h14"/><path d="M12 5v14"/><path d="M9 19h6"/>',
@@ -2309,7 +2373,10 @@ const TOOL_DEFS = [
   { tool: "liquify_twirl", label: "液化旋", key: "" },
   { tool: "liquify_pinch", label: "液化缩", key: "" },
   { tool: "eyedropper", label: "吸管", key: "i" },
-  { tool: "move_object", label: "移动", key: "v" },
+  { tool: "move_object", label: "移动对象", key: "v" },
+  // 移动**整层** ✓ —— 用户诉求：画在一起的东西应该一起走 ✓（设计里"成组"是独立特性 ✓，
+  // 图层级移动是它的实用等价 ✓，且实现上是**同一变更集里的 N 个 move 原子** ⇒ 一次撤销 ✓）。
+  { tool: "move_layer", label: "移动图层", key: "y" },
   { tool: "select_rect", label: "选区", key: "m" },
   { id: "clearSelection", label: "清除选区", key: "d", icon: "clearSelection" },
   { tool: "text", label: "文本", key: "t" },

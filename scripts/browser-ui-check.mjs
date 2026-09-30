@@ -471,8 +471,36 @@ const moveResult = await evaluate(`(async () => {
   const after = await window.yanshiCallTool("list_objects", {});
   const beforeBbox = (before.objects || []).map((o) => o.bbox).filter(Boolean)[0];
   const afterBbox = (after.objects || []).map((o) => o.bbox).filter(Boolean)[0];
+  // 旧位置的像素断言放到 Node 侧（用 render_region 直接量 ✓）——
+  // 第一版我在页面里猜视图变量名（viewState 等 ✗）去换算画布坐标，既脆弱又不可靠 ✓。
   return { beforeBbox, afterBbox, log: document.getElementById("log").innerText.slice(0, 200) };
 })()`);
+
+// **移动后旧位置必须被清掉** ✓ —— 用户实测：移动后画布旧位置不刷新、留下残影 ✗
+//（缩略图整幅重绘所以正常 ✓）。根因是脏区规划只用**新**包围盒 ✗（`dirty_for_object` ✓），
+// 本用例因此直接量"旧包围盒里还有没有非背景像素" ✓，而不是只看对象属性 ✓。
+if (moveResult && moveResult.beforeBbox) {
+  const [bx, by, bw, bh] = moveResult.beforeBbox;
+  const region = { x: bx, y: by, w: Math.max(1, bw), h: Math.max(1, bh) };
+  const rendered = await fetch(
+    `${origin}/api/tools/render_region?doc=${docId}&token=${token}`,
+    { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region, raw: true }) },
+  ).then((r) => r.json()).catch(() => ({}));
+  let leftover = -1;
+  if (rendered.raw_url) {
+    const bytes = new Uint8Array(await fetch(`${origin}${rendered.raw_url}`).then((r) => r.arrayBuffer()));
+    let n = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      if (bytes[i + 3] > 8 && (bytes[i] < 245 || bytes[i + 1] < 245 || bytes[i + 2] < 245)) n += 1;
+    }
+    leftover = n;
+  }
+  console.log(`  移动旧位置：${leftover} 个非背景像素（须 0）｜旧包围盒 ${bx},${by},${bw},${bh}`);
+  if (leftover > 0) {
+    problems.push(`移动后旧位置仍有 ${leftover} 个非背景像素（画布残影 ✗）`);
+  }
+}
 
 // 新建（用户要求：**给用户输入名字的机会**）与另存为副本。
 const namedNew = "uicheck-named-" + Date.now().toString(36);

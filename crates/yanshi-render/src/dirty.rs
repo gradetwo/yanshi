@@ -281,6 +281,15 @@ pub fn plan_dirty_with_log(
     }
 }
 
+/// 两个包围盒的并集 ✓（旧位置 + 新位置 ⇒ 移动后不会留残影 ✓）。
+fn union_bbox(a: yanshi_core::Bbox, b: yanshi_core::Bbox) -> yanshi_core::Bbox {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = (a.x + a.w).max(b.x + b.w);
+    let bottom = (a.y + a.h).max(b.y + b.h);
+    yanshi_core::Bbox::new(x, y, right - x, bottom - y)
+}
+
 fn dirty_for_object(
     state: &DocumentState,
     previous: Option<&DocumentState>,
@@ -294,7 +303,25 @@ fn dirty_for_object(
     if let Some(object) = state.objects.get(object_id) {
         if let Some(bbox) = object_bbox(object) {
             if bbox.w > 0.0 && bbox.h > 0.0 {
-                return DirtySet::geometry(bbox, format!("{reason}: {object_id}"));
+                // **几何变化必须同时失效"旧位置"** ✓ —— 否则移动后原处会留下残影 ✗。
+                // 用户实测：移动对象后画布旧位置不刷新 ✓（缩略图是整幅重绘所以正常 ✓）。
+                // 这里取**旧包围盒与新包围盒的并集** ✓：多失效一点是安全的 ✓，少失效则会留下脏像素 ✗。
+                let union = previous
+                    .and_then(|previous| previous.objects.get(object_id))
+                    .and_then(object_bbox)
+                    .map(|old| union_bbox(old, bbox))
+                    .unwrap_or(bbox);
+                return DirtySet::geometry(
+                    union,
+                    format!(
+                        "{reason}: {object_id}{}",
+                        if union != bbox {
+                            "（含旧位置）"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
             }
         }
         // 对象存在但包围盒未知（文本/实例等）：整层失效。
