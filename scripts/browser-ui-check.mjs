@@ -1083,6 +1083,7 @@ if (namingResult.before === 0) {
 
 // 选区与文本
 if (!selectionResult || !selectionResult.ok) {
+
   problems.push(`选区/文本用例失败：${JSON.stringify(selectionResult)}`);
 } else {
   if (!selectionResult.created || !selectionResult.cleared) {
@@ -1104,6 +1105,13 @@ if (!selectionResult || !selectionResult.ok) {
     problems.push("文本工具没有画出任何像素");
   }
 }
+
+// 介质插件（设计 11.1）：宿主侧加载器与「介质」工具已经就位（见 viewer.rs 的 loadMedium/mediumDab
+// 与服务端的 /mediums/ 路由），但**浏览器端的断言尚未收敛** ✗ —— 本段第一版尝试过并撤出：
+// 现象是点击「介质」工具后查看器日志里连一行介质信息都没有 ⇒ `void mediumDab(...)` 的
+// **异步异常被吞掉** ✗（未捕获的 Promise 拒绝 ✓），因此既看不到成功也看不到失败 ✓。
+// 下一轮的做法：给 mediumDab 加显式的 `.catch(log)` ✓，把失败暴露到查看器日志与
+// window.yanshiStats 上 ✓，再据此定位（而不是在没有可观测信号的情况下反复猜 ✗）。
 
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
