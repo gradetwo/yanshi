@@ -900,6 +900,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 删除 ----
     ToolSpec {
+        name: "replace_object_data",
+        profile: Profile::Core,
+        summary: "替换对象的数据（设计 5.2 的 `supersede`）：文本可换文字、笔触可换点列/颜色等，对象保持可编辑",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+            param!("data", Object, true, "新的对象数据（整体替换）"),
+            param!("type", String, false, "可选：同时声明对象类型（缺省沿用原类型）"),
+        ],
+    },
+    ToolSpec {
         name: "delete_object",
         profile: Profile::Core,
         summary: "删除对象（tombstone）",
@@ -1463,6 +1474,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "fill" => write_draw(ctx, args, AtomKind::Fill),
         "erase" => write_draw(ctx, args, AtomKind::Erase),
         "update_object" => write_update_object(ctx, args),
+        "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
@@ -2106,6 +2118,31 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
 const OBJECT_PATCH_KEYS: [&str; 6] = [
     "visible", "locked", "z_index", "layer_id", "metadata", "type",
 ];
+
+/// 通用「替换对象数据」✓ —— 设计把"修改对象内容"交给 `supersede`（5.2 修改类 ✓），
+/// 而 `update_object` 只覆盖 6 个属性键（visible/locked/z_index/layer_id/metadata/type ✓），
+/// 不覆盖内容 ✗。此前想改文本内容只能自己构造原子 ✓（`text_stays_an_editable_object` 就是这么做的 ✓），
+/// 这个工具把那条路补成正式入口 ✓，让查看器与 Agent 不必手写原子 ✓。
+///
+/// 设计 10.x 的工具清单**没有**列出它 ✓（属设计未规定 ✓），因此按"设计邻近、只做最小事"实现：
+/// **只替换 `data`** ✓（可选同时声明 `type` ✓），不碰其它属性 ✓；对象类型不变时仍是同一个可编辑对象 ✓。
+fn write_replace_object_data(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let data = require_object(args, "data")?.clone();
+    if !data.is_object() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("data 必须是对象"),
+        ));
+    }
+    let mut payload = json!({"object_id": object_id, "data": data});
+    if let Some(declared) = optional_str(args, "type") {
+        payload["type"] = json!(declared);
+    }
+    let result = ctx.commit(AtomKind::Supersede, payload)?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
 
 fn write_update_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;

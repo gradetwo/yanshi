@@ -264,3 +264,103 @@ fn text_stays_an_editable_object() {
         "文本对象必须保持 `text` 类型（可编辑 ✓），而不是被烘焙成位图 ✗"
     );
 }
+
+/// `replace_object_data` 工具：把"改内容"从"自己构造原子"变成**正式入口** ✓。
+#[test]
+fn replace_object_data_edits_text_through_the_tool() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_text", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_text",
+            &json!({"layer_id": "L", "object_id": "t_tool",
+                    // 用**红色**：本文件的 `ink` 助手数的是红色像素 ✓
+                    //（第一版写成蓝色 ⇒ 前置条件直接为 0 ✗，又一次度量口径不一致 ✓）。
+                    "data": {"text": "AB", "font": "builtin", "size": 21.0,
+                             "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                             "position": [8.0, 8.0], "align": "left"}}),
+        );
+    }
+    let (before_count, _) = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert!(before_count > 0, "先画出文本（前置条件）");
+
+    let replaced = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "replace_object_data",
+            &json!({"object_id": "t_tool",
+                    "data": {"text": "二级字库", "font": "builtin", "size": 21.0,
+                             "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                             "position": [8.0, 8.0], "align": "left"}}),
+        )
+    };
+    assert_eq!(replaced["ok"], json!(true), "{replaced}");
+
+    let (after_count, _) = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert!(
+        after_count != before_count && after_count > 0,
+        "工具替换文本数据后渲染应改变（此前 {before_count}，之后 {after_count}）"
+    );
+
+    // 对象仍是 `text` ✓（可编辑 ✓），且对象 id 未变 ✓（是"替换数据"而不是新建对象）。
+    let listed = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_objects", &json!({}))
+    };
+    let object = listed["objects"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["object_id"] == json!("t_tool"))
+        })
+        .cloned()
+        .expect("对象应仍在列表中");
+    assert_eq!(
+        object["type"],
+        json!("text"),
+        "替换数据后对象类型应保持 text"
+    );
+    assert_eq!(listed["count"], json!(1), "不应新建对象：{listed}");
+}
+
+/// 参数校验：`data` 缺失或不是对象时必须报错 ✓（不留"静默接受"）。
+#[test]
+fn replace_object_data_validates_its_arguments() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_text", 64, 64),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    let mut ctx = context(&mut workspace);
+    let missing = registry.call(&mut ctx, "replace_object_data", &json!({"object_id": "x"}));
+    assert_eq!(missing["ok"], json!(false), "{missing}");
+    let wrong_type = registry.call(
+        &mut ctx,
+        "replace_object_data",
+        &json!({"object_id": "x", "data": 3}),
+    );
+    assert_eq!(wrong_type["ok"], json!(false), "{wrong_type}");
+    // 不存在的对象：由折叠层按"无孤儿引用"拒绝 ✓。
+    let missing_object = registry.call(
+        &mut ctx,
+        "replace_object_data",
+        &json!({"object_id": "nope", "data": {"text": "x"}}),
+    );
+    assert_eq!(missing_object["ok"], json!(false), "{missing_object}");
+}

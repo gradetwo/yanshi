@@ -1,7 +1,7 @@
 # Tools and effects
 
-The tool layer registers **27 core tools**. With every implemented group enabled there are
-**69 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+The tool layer registers **28 core tools**. With every implemented group enabled there are
+**70 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every adjustment and
@@ -65,3 +65,13 @@ abort on a single failure), `reject_suggestion` (records the reason) and `list_s
 
 设计只给了选区的**数据模型**与类型清单 ✓、未规定它对落笔的作用 ✗；用户确认采用
 **路线 A「约束落笔」**（只影响新落笔、不改写已有内容、可撤销 ✓），已记入 implementation-notes。
+
+## 修改对象内容（设计邻近，设计未规定工具名）
+
+| 工具 | 说明 |
+|---|---|
+| `replace_object_data` | 替换对象的 `data`（走设计 5.2 的 **`supersede`** ✓）：文本换文字、笔触换点列/颜色等，**对象保持可编辑** ✓ |
+
+设计把"修改对象内容"交给 `supersede` ✓，但 **10.x 的工具清单没有列出对应入口** ✗；
+`update_object` 只覆盖 6 个属性键（`visible/locked/z_index/layer_id/metadata/type` ✓）。
+此前只能自行构造原子 ✓，本工具把那条路补成正式入口 ✓。设计未规定处 → 已记入 implementation-notes ✓。
