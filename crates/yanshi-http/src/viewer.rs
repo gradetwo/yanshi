@@ -1589,6 +1589,17 @@ function connect() {
       log("atom seq=" + event.seq + " " + event.kind + (event.heavy ? " [heavy]" : ""));
       setStatus({ head: event.seq });
       // 13.3：其他客户端（以及自己）的原子经全局广播到达后增量折叠并重绘。
+      //
+      // **heavy 原子（`import_image`/`liquify`/`declare_head`…）本地内核应用不了** ✗ ——
+      // 它们的像素要由服务端产出 ✓。此前的写法只在 `out_of_order`/`precondition_failed`
+      // 两种错误下 `resync()` ✗，其它失败（包括 heavy ✓）**什么都不做** ✓，
+      // 于是画布永远拿不到这次改动 ✓ —— 症状正是"缩略图有内容、主画布空白" ✓
+      //（用户实测的介质落笔与早先记录的刷新问题都是它 ✓）。
+      // 修法：**本地内核应用不了的一律重新同步** ✓（拿服务端像素 ✓），heavy 直接走这条路 ✓。
+      // **先让本地内核尝试应用** ✓，失败了再 resync ✓ ——
+      // 不能写成"heavy 一律 resync" ✗：跳转（`declare_head` ✓）也是 heavy ✓，
+      // 而内核**能**应用它 ✓；一律 resync 会把客户端拉回 head ✗，
+      // 表现为"跳转后画面没变" ✓（检查里的跳转用例当场抓到了这个回归 ✓✓）。
       if (kernelReady() && event.atom) {
         const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(event.atom)));
         if (response.ok) {
@@ -1596,8 +1607,14 @@ function connect() {
           state.localSeq = response.report.head;
           window.yanshiStats.kernelHead = response.report.head;
           window.yanshiStats.serverHead = event.seq;
-        } else if (response.error_code === "out_of_order" || response.error_code === "precondition_failed") {
-          resync();
+        } else {
+          // **任何**应用失败都重新同步 ✓（含"内核表示不了 heavy 内容"这种情况 ✓），
+          // 绝不静默丢掉这次变更 ✗ —— 此前只在 `out_of_order`/`precondition_failed`
+          // 两种错误下才 resync ✗，其它失败什么都不做 ✓，介质落笔因此永远画不出来 ✓。
+          // 注意本处理器**不是 async** ✗：只能用 `void resync()` ✓
+          //（写 `await` 会让整段页面脚本语法错误 ✓，实测是内核迟迟不就绪、检查全线超时 ✗）。
+          window.yanshiStats.resyncs += 1;
+          void resync();
         }
       }
     } else if (message.type === "event" && message.event && message.event.event === "tiles") {

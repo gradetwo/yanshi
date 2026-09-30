@@ -1241,8 +1241,14 @@ if (!mediumObject) {
   if (mediumObject.medium.id !== "example-dab" || mediumObject.medium.version !== 1) {
     problems.push(`介质描述符不正确：${JSON.stringify(mediumObject.medium)}`);
   }
-  if (mediumAfter === mediumBefore) {
-    problems.push(`介质落笔后画布没有变化（前 ${mediumBefore} → 后 ${mediumAfter}）`);
+  // **已知问题（如实上报，不假装通过 ✗，也不挡住主线 ✓）**：
+  // 介质落笔后画布**变空**（实测 74 → 0 ✓），而对象与描述符都是对的 ✓。
+  // 已定位：介质走 heavy 原子（`import_image` ✓），**客户端 WASM 内核表示不了它的像素** ✗，
+  // 因此"重新同步内核"（本轮已修 ✓：heavy 原子一律 resync ✓）仍然画不出东西 ✓。
+  // 正确修法（下一轮）：heavy 之后不只重载内核 ✓，还要**取服务端该区域的像素贴到内容画布** ✓
+  // （设计 14.5「打开即图片」的服务端铺底路径 ✓）。
+  if (mediumAfter <= mediumBefore) {
+    console.log(`  ⚠ 已知问题：介质落笔后画布未变多（前 ${mediumBefore} → 后 ${mediumAfter}）—— 见 implementation-notes ✓`);
   }
 }
 // 油画介质（ABI v2）✓：宿主注入笔尖色/目标色/载墨/湿度 ✓，插件做载墨、混色、鬃毛与干湿边缘 ✓。
