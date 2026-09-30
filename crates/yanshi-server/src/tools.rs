@@ -758,7 +758,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "create_selection",
         profile: Profile::Structure,
-        summary: "创建选区（形状 + 羽化 + 反选 + 组合模式）：约束**后续落笔**的像素范围",
+        summary: "创建选区（形状 + 羽化 + 反选 + 组合模式）；⚠️ 渲染期「约束落笔」接线尚未启用（见 implementation-notes）",
         mutating: true,
         params: &[
             param!("selection_id", String, true, "选区 id"),

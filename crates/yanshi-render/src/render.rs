@@ -637,6 +637,9 @@ impl Renderer {
         stats: &mut RenderStats,
     ) -> Result<()> {
         let mut probe_objects = stage_probe::ObjectTimings::default();
+        // 选区「约束落笔」（路线 A）的接线**本轮撤回** ✗ —— 见 implementation-notes：
+        // 几何模块与工具层已验证正确 ✓，但渲染期接线存在一处未定位的先后/时机交互，
+        // 表现为"选区内的落笔也不见了" ✗ ⇒ 宁可不启用，也不冒**静默吞掉用户笔画**的风险 ✗。
         for object in state.objects_in_layer(&layer.id) {
             if !object.visible {
                 continue;
