@@ -84,6 +84,7 @@ pub mod curve;
 pub mod dirty;
 pub mod dynamics;
 pub mod filter;
+pub mod font;
 pub mod geometry;
 pub mod half;
 pub mod object;
