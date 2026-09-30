@@ -837,6 +837,8 @@ if (paintPreset.kernel !== false || paintPreset.history !== true || paintPreset.
   problems.push(`"绘画"工作区的开合不对（内核应展开、历史与调整应折叠）：${JSON.stringify(paintPreset)}`);
 }
 console.log(`  "绘画"工作区：内核 ${paintPreset.kernel === false ? "展开 ✓" : "折叠 ✗"}｜历史 ${paintPreset.history ? "折叠 ✓" : "展开 ✗"}｜调整 ${paintPreset.effects ? "折叠 ✓" : "展开 ✗"}`);
+
+
 console.log(`  Dockers：${dockerAudit.cards} 个面板｜折叠切换高度 ${dockerAudit.before.effectsHeight} → ${dockerAudit.afterCollapse.effectsHeight}` +
   `｜"校对"折叠 ${dockerAudit.afterWorkspace.collapsed.length} 个｜持久化 ${dockerAudit.afterWorkspace.stored}`);
 
@@ -1606,6 +1608,55 @@ console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → 
 console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON.stringify(wcResult.medium) + "｜画布 " + wcResult.before + " → " + wcResult.after : "失败 " + JSON.stringify(wcResult)}`);
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
+// 光标处快捷面板 ✓（借鉴 Krita 的 Pop-up Palette ✓）。
+// 断言四件事 ✓：右键弹出且**靠近光标** ✓、内容来自**同一份定义** ✓、选色会驱动既有控件 ✓、Esc 能关 ✓。
+const quickAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const x = rect.left + rect.width * 0.5;
+  const y = rect.top + rect.height * 0.5;
+  const open = () => board.dispatchEvent(new MouseEvent("contextmenu", {
+    bubbles: true, cancelable: true, clientX: x, clientY: y,
+  }));
+  open();
+  const panel = document.getElementById("quickPanel");
+  const box = panel.getBoundingClientRect();
+  const near = Math.hypot(box.left - x, box.top - y) < 40;
+  const withinViewport = box.left >= 0 && box.top >= 0 &&
+    box.right <= window.innerWidth + 1 && box.bottom <= window.innerHeight + 1;
+  const counts = {
+    mediums: panel.querySelectorAll("[data-qp-medium]").length,
+    colors: panel.querySelectorAll("[data-qp-color]").length,
+    sizes: panel.querySelectorAll("[data-qp-size]").length,
+  };
+  const swatch = panel.querySelector('[data-qp-color="#2f9e44"]');
+  if (swatch) swatch.click();
+  const colorAfter = document.getElementById("color").value;
+  const closedAfterPick = panel.hidden;
+  open();
+  const reopened = !panel.hidden;
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const closedByEscape = panel.hidden;
+  return { near, withinViewport, counts, colorAfter, closedAfterPick, reopened, closedByEscape };
+})())`));
+if (!quickAudit.near) {
+  problems.push("快捷面板没有出现在光标附近");
+}
+if (!quickAudit.withinViewport) {
+  problems.push("快捷面板超出了视口（贴边右键时应被夹住）");
+}
+if (quickAudit.counts.mediums < 3 || quickAudit.counts.colors < 6 || quickAudit.counts.sizes < 3) {
+  problems.push(`快捷面板内容不完整：${JSON.stringify(quickAudit.counts)}`);
+}
+if (quickAudit.colorAfter !== "#2f9e44") {
+  problems.push(`快捷面板选色没有驱动 #color（实际 ${quickAudit.colorAfter}）`);
+}
+if (!quickAudit.closedAfterPick || !quickAudit.reopened || !quickAudit.closedByEscape) {
+  problems.push(`快捷面板开合不对：${JSON.stringify(quickAudit)}`);
+}
+console.log(`  快捷面板：介质 ${quickAudit.counts.mediums}｜颜色 ${quickAudit.counts.colors}｜笔尖 ${quickAudit.counts.sizes}` +
+  `｜贴光标 ${quickAudit.near ? "✓" : "✗"}｜视口内 ${quickAudit.withinViewport ? "✓" : "✗"}｜Esc 关 ${quickAudit.closedByEscape ? "✓" : "✗"}`);
+
 console.log(`  选区/文本：${selectionResult && selectionResult.ok
   ? `选区内笔画色 ${selectionResult.inside}｜选区外 ${selectionResult.outside}（须 0）｜清除后选区外 ${selectionResult.clearedOutside}（须 >0）｜文本改变 ${selectionResult.textChanged}`
   : `失败于阶段「${selectionResult && selectionResult.stage}」：${JSON.stringify(selectionResult)}`}`);
