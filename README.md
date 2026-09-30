@@ -79,9 +79,11 @@ pixel, `导出 PNG` downloads the full-resolution render, the 打开 dialog list
 by the browser and uploaded as raw pixels),
 the history panel lists the atom log with kind and actor
 filters plus a jump-back action, and the effects panel applies any adjustment or filter to the
-current layer (names come from the kernel, parameters default to the kernel's own values), and the
-toolbar drives retouch and liquify: clone stamp and heal (Alt+click sets the source), smudge, and
-the three liquify modes. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
+current layer (names come from the kernel, parameters default to the kernel's own values).
+
+The toolbar also drives the pixel tools: brush and eraser, fill layer, eyedropper, clone stamp and
+heal (Alt+click sets the source), smudge, the three liquify modes, and rect or ellipse masks with a
+feather setting (drag a shape to create the mask and attach it to the current layer). `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)
 
