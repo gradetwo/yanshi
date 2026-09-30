@@ -745,18 +745,52 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
                     "context": {"detail": format!("上传 {} 字节超过上限 {limit}", request.body.len())}}),
         );
     }
-    let mime_type = request
+    let declared_mime = request
         .header("content-type")
         .unwrap_or("application/octet-stream")
         .to_owned();
+    // **PNG 在这里解码成原始 RGBA** ✓（设计 791 行：「`import_image`（JPEG/PNG/WebP →
+    // 像素图层对象…）」✓）。
+    //
+    // 为什么放在**上传端点**而不是工具里 ✓：工具接收的是 **blob 描述符** ✓（`{blob_hash, size,
+    // mime_type}` ✓），像素已经入库 ✓ ⇒ 在这里归一化 ⇒ **下游一行都不用改** ✓
+    //（工具 ✓、介质路径 ✓、缩略图 ✓ 全都照旧吃 raw ✓）。
+    //
+    // **边界写清楚 ✓**：只认 **PNG** ✓。JPEG/WebP 的解码器不在本仓库自研范围内 ✓
+    //（零外部依赖 ✓）⇒ **显式拒绝并说明** ✓。界面不受影响 ✓：它用浏览器的
+    // `createImageBitmap` 解码任意格式 ✓ 后上传 raw ✓（见 `importLocalImage` ✓）。
+    let mut mime_type = declared_mime.clone();
+    let mut body = request.body.clone();
+    let mut decoded_from = Value::Null;
+    if declared_mime.eq_ignore_ascii_case("image/png") {
+        match yanshi_render::png::decode_png(&request.body) {
+            Some((width, height, rgba)) => {
+                decoded_from = json!({"format": "png", "width": width, "height": height});
+                body = rgba;
+                mime_type = "image/x-yanshi-raw".to_owned();
+            }
+            None => {
+                return crate::http::bad_request(
+                    "PNG 解码失败（本仓库只支持 8 位、非隔行的 RGB/RGBA PNG）",
+                );
+            }
+        }
+    } else if declared_mime.eq_ignore_ascii_case("image/jpeg")
+        || declared_mime.eq_ignore_ascii_case("image/webp")
+    {
+        return crate::http::bad_request(
+            "本仓库自带的解码器只支持 PNG；JPEG/WebP 请在界面里导入（浏览器会先解码），\
+             或先转成 PNG（零外部依赖，见设计 791 行）",
+        );
+    }
     let Ok(workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
-    match workspace.store().put(&request.body) {
+    match workspace.store().put(&body) {
         Ok(hash) => Response::json(
             200,
-            &json!({"ok": true, "blob_hash": hash.to_string(), "size": request.body.len(),
-                    "mime_type": mime_type}),
+            &json!({"ok": true, "blob_hash": hash.to_string(), "size": body.len(),
+                    "mime_type": mime_type, "decoded_from": decoded_from}),
         ),
         Err(error) => Response::from_error(&error),
     }
@@ -1525,6 +1559,64 @@ mod tests {
         let mut request = request("POST", &format!("/api/blob?doc={doc_id}&token={token}"));
         request.body = bytes;
         body_json(&route(state, &request))
+    }
+
+    /// **上传 PNG 会自动归一化成原始 RGBA** ✓（设计 791 行 ✓）—— 这是**工具/API**那条路 ✓；
+    /// 界面上传走的是浏览器解码 ✓（`importLocalImage` ✓），所以这个缺口此前被遮住了 ✓。
+    #[test]
+    fn uploading_a_png_stores_normalised_raw_pixels() {
+        let state = state();
+        let token = editor_token(&state, "doc_png");
+        // 用**真实编码器**产出的夹具 ✓（PIL/zlib ✓，含 dynamic Huffman ✓）。
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../yanshi-render/tests/fixtures/large_rgb.png");
+        let png = std::fs::read(&path).unwrap_or_else(|error| panic!("读取夹具 {path:?}：{error}"));
+        let mut png_request = request("POST", &format!("/api/blob?doc=doc_png&token={token}"));
+        png_request
+            .headers
+            .insert("content-type".to_owned(), "image/png".to_owned());
+        png_request.body = png.clone();
+        let uploaded = body_json(&route(&state, &png_request));
+        assert_eq!(uploaded["ok"], json!(true), "{uploaded}");
+        // **归一化必须可见** ✓：报告来源格式 ✓、尺寸 ✓，并且入库的是 raw ✓。
+        assert_eq!(
+            uploaded["decoded_from"]["format"],
+            json!("png"),
+            "{uploaded}"
+        );
+        assert_eq!(uploaded["decoded_from"]["width"], json!(64), "{uploaded}");
+        assert_eq!(uploaded["decoded_from"]["height"], json!(64), "{uploaded}");
+        assert_eq!(
+            uploaded["mime_type"],
+            json!("image/x-yanshi-raw"),
+            "{uploaded}"
+        );
+        assert_eq!(
+            uploaded["size"],
+            json!(64 * 64 * 4),
+            "入库的应是解好的 RGBA：{uploaded}"
+        );
+
+        // ② **坏 PNG 必须明确报错** ✓，而不是入库一堆垃圾 ✓。
+        let mut broken_request = request("POST", &format!("/api/blob?doc=doc_png&token={token}"));
+        broken_request
+            .headers
+            .insert("content-type".to_owned(), "image/png".to_owned());
+        broken_request.body = png[..64].to_vec();
+        let broken = route(&state, &broken_request);
+        assert_eq!(broken.status, 400, "坏 PNG 应当是 400：{broken:?}");
+
+        // ③ **JPEG/WebP 显式拒绝** ✓（本仓库只自研了 PNG 解码器 ✓，零外部依赖 ✓）。
+        let mut jpeg_request = request("POST", &format!("/api/blob?doc=doc_png&token={token}"));
+        jpeg_request
+            .headers
+            .insert("content-type".to_owned(), "image/jpeg".to_owned());
+        jpeg_request.body = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0];
+        assert_eq!(
+            route(&state, &jpeg_request).status,
+            400,
+            "JPEG 应当被明确拒绝而不是静默入库"
+        );
     }
 
     #[test]
