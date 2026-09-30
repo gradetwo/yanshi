@@ -41,6 +41,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
   #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   aside { display: grid; gap: 12px; }
+  #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
+  #history .row { display: flex; gap: 6px; align-items: center; padding: 1px 0; }
+  #history .row button { padding: 0 5px; font-size: 11px; }
+  #history .seq { opacity: .6; min-width: 34px; }
+  #history .kind { min-width: 86px; }
+  #history .actor { opacity: .75; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
   .card h2 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
   button { font: inherit; padding: 4px 9px; border-radius: 5px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
@@ -106,6 +112,15 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <span>内核预热 <b id="kernelWarm">—</b></span>
         <span>bit-exact <b id="bitExact">—</b></span>
       </div>
+    </div>
+    <div class="card">
+      <h2>历史（原子日志）</h2>
+      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
+        <select id="historyKind"><option value="">全部类型</option></select>
+        <select id="historyActor"><option value="">全部操作者</option></select>
+        <button id="historyReload">重新载入</button>
+      </div>
+      <div id="history"></div>
     </div>
     <div class="card">
       <h2>缩略图</h2>
@@ -307,8 +322,11 @@ async function callTool(name, args, options = {}) {
       state.redoStack.length = 0;
       updateUndoStatus();
     }
-    // 提交后自动刷新缩略图（此前必须手动点「刷新」才更新）。
-    if (options.refresh !== false) scheduleThumbRefresh();
+    // 提交后自动刷新缩略图与历史列表（此前必须手动刷新）。
+    if (options.refresh !== false) {
+      scheduleThumbRefresh();
+      void refreshHistory();
+    }
   } else {
     log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
   }
@@ -631,11 +649,13 @@ async function submitAtom(atom) {
     // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
     await resync();
   }
-  // 笔迹走的是 `/api/atoms`，不经 callTool：这里补入撤销栈。
+  // 笔迹走的是 `/api/atoms`，不经 callTool：这里补入撤销栈，并刷新历史列表
+  //（否则历史里只能看到 create_document / create_layer 这类经 callTool 的原子）。
   if (response.atom_id) {
     state.undoStack.push(response.atom_id);
     state.redoStack.length = 0;
     updateUndoStatus();
+    void refreshHistory();
   }
   scheduleThumbRefresh();
   return response;
@@ -859,6 +879,73 @@ function updateUndoStatus() {
   const redo = document.querySelector('button[data-tool="redo"]');
   if (undo) undo.disabled = state.undoStack.length === 0;
   if (redo) redo.disabled = state.redoStack.length === 0;
+}
+
+/// 历史浏览（设计 13.2）：数据源是原子日志，支持按原子步进、按 actor / 类型筛选。
+/// 工具层已有 `get_log`（`since_seq` / `limit` / `kind` / `actor`），这里只做界面。
+async function refreshHistory() {
+  const kind = $("historyKind").value;
+  const actor = $("historyActor").value;
+  const args = { limit: 200 };
+  if (kind) args.kind = kind;
+  if (actor) args.actor = actor;
+  const value = await callTool("get_log", args, { refresh: false });
+  const list = $("history");
+  if (!value.ok) {
+    list.textContent = "读取失败：" + (value.error_code || "unknown");
+    return;
+  }
+  const atoms = value.atoms || [];
+  historyAtoms = atoms;
+  list.innerHTML = "";
+  for (const atom of atoms) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const seq = document.createElement("span");
+    seq.className = "seq";
+    seq.textContent = "#" + atom.seq;
+    const kindLabel = document.createElement("span");
+    kindLabel.className = "kind";
+    kindLabel.textContent = atom.kind;
+    const actorLabel = document.createElement("span");
+    actorLabel.className = "actor";
+    actorLabel.textContent = atom.actor;
+    const jump = document.createElement("button");
+    jump.textContent = "回到此处";
+    jump.addEventListener("click", async () => {
+      // `revert_to` 通过 declare_head 回到该时刻；它本身也是一个原子，所以可被撤销。
+      const result = await callTool("revert_to", { atom_id: atom.atom_id }, { refresh: false });
+      if (!result.ok) {
+        log("回到此处失败：" + (result.error_code || "unknown"), "#c33");
+        return;
+      }
+      log("已回到 #" + atom.seq + "（可用撤销恢复）");
+      await refreshPreview();
+      await refreshHistory();
+    });
+    row.append(seq, kindLabel, actorLabel, jump);
+    list.appendChild(row);
+  }
+  if (atoms.length === 0) list.textContent = "（没有匹配的原子）";
+  fillHistoryFilters(atoms);
+}
+
+/// 用当前列表填充筛选下拉（保留已有选项，避免每次重建导致选择丢失）。
+let historyAtoms = [];
+function fillHistoryFilters(atoms) {
+  for (const [id, key] of [["historyKind", "kind"], ["historyActor", "actor"]]) {
+    const select = $(id);
+    const current = select.value;
+    const values = new Set(Array.from(select.options).map((option) => option.value).filter(Boolean));
+    for (const atom of atoms) values.add(String(atom[key]));
+    const wanted = Array.from(values).sort();
+    if (wanted.length + 1 !== select.options.length) {
+      select.innerHTML = "";
+      select.appendChild(new Option("全部" + (key === "kind" ? "类型" : "操作者"), ""));
+      for (const value of wanted) select.appendChild(new Option(value, value));
+      select.value = current;
+    }
+  }
 }
 
 async function refreshLayers() {
@@ -1283,6 +1370,10 @@ $("zoomActual").addEventListener("click", () => {
   renderViewport();
 });
 
+$("historyReload").addEventListener("click", refreshHistory);
+$("historyKind").addEventListener("change", refreshHistory);
+$("historyActor").addEventListener("change", refreshHistory);
+
 $("newDoc").addEventListener("click", newDocument);
 $("openDoc").addEventListener("click", promptDocument);
 
@@ -1303,6 +1394,7 @@ $("openDoc").addEventListener("click", promptDocument);
     $("identity").textContent = state.docId;
     await refreshLayers();
     await refreshThumb();
+    await refreshHistory();
     window.yanshiStats.bootAt = performance.now();
     await refreshPreview();
     connect();

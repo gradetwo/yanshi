@@ -3182,3 +3182,52 @@ fn multi_step_undo_and_redo_restore_pixels_in_order() {
     assert!(ink(&mut ctx, 60.0, 60.0) > 0, "重做后第一笔恢复");
     assert_eq!(ink(&mut ctx, 260.0, 260.0), 0, "未重做的第二笔仍为空");
 }
+
+/// `revert_to`（设计 10.2 历史组，13.2 历史浏览用）：回到某原子时刻的像素状态。
+#[test]
+fn revert_to_restores_the_state_at_that_atom() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_flow", 512, 512),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_flow", "human:1", "session:test")
+        .with_owner(true)
+        .with_wait_for_render(true, 2_000);
+    let call = |ctx: &mut ToolContext<'_>, tool: &str, args: serde_json::Value| {
+        registry.call(ctx, tool, &args)
+    };
+
+    let create_layer = call(&mut ctx, "create_layer", json!({"layer_id": "L"}));
+    let layer_atom = create_layer["atom_id"].as_str().unwrap().to_owned();
+    call(
+        &mut ctx,
+        "draw_stroke",
+        json!({"layer_id": "L", "object_id": "o1",
+               "data": {"points": [[100.0, 100.0], [140.0, 100.0]], "size": 20.0,
+                        "color": {"r": 20, "g": 20, "b": 20, "a": 255}}}),
+    );
+
+    let ink = |ctx: &mut ToolContext<'_>| -> usize {
+        let (_, _, pixels) = ctx
+            .workspace
+            .render_region_raw("doc_flow", Bbox::new(60.0, 60.0, 120.0, 120.0))
+            .expect("区域渲染应成功");
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 8 && (pixel[0] < 200 || pixel[1] < 200 || pixel[2] < 200))
+            .count()
+    };
+    assert!(ink(&mut ctx) > 0, "笔画应可见");
+
+    // 回到「刚创建图层」那一刻：笔画还未提交，画布应为空。
+    assert_eq!(
+        call(&mut ctx, "revert_to", json!({"atom_id": layer_atom}))["ok"],
+        json!(true)
+    );
+    assert_eq!(ink(&mut ctx), 0, "回到该时刻后笔画应消失");
+}

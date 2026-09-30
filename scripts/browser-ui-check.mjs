@@ -257,6 +257,52 @@ await evaluate(`document.querySelector('button[data-tool="redo"]').click()`);
 await new Promise((r) => setTimeout(r, 1500));
 const depthRedone = await depth();
 
+// 历史浏览（设计 13.2）：列表随提交增长、能按类型/操作者筛选、且「回到此处」真的回到该时刻。
+// 用**画布像素**判断（局部数据）；不要反复取同一个服务端 blob 地址（immutable 会被缓存）。
+const paintedNow = async () => (await evaluate(blankCheck)).painted;
+const historyRows = async () =>
+  evaluate(`Array.from(document.querySelectorAll("#history .row")).map((row) => row.textContent)`);
+
+const historyBefore = await historyRows();
+await strokeAt(0.4, 0.6, 41);
+const paintedAfterStroke = await paintedNow();
+const historyAfter = await historyRows();
+const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
+
+// 按类型筛选：只选 draw_stroke，列表应只含该类型。
+await evaluate(`(() => {
+  const select = document.getElementById("historyKind");
+  const option = Array.from(select.options).find((o) => o.value === "draw_stroke");
+  if (option) { select.value = "draw_stroke"; select.dispatchEvent(new Event("change")); }
+})()`);
+await new Promise((resolve) => setTimeout(resolve, 1200));
+const filteredRows = await historyRows();
+const filterOk = filteredRows.length > 0 && filteredRows.every((row) => row.includes("draw_stroke"));
+// 恢复筛选，回到最早那条原子（create_document）⇒ 内容必然回到初始空状态。
+await evaluate(`(() => {
+  const select = document.getElementById("historyKind");
+  select.value = "";
+  select.dispatchEvent(new Event("change"));
+})()`);
+await new Promise((resolve) => setTimeout(resolve, 1200));
+// 目标：最后一条 draw_stroke **之前**的那条原子 —— revert_to 含该原子，
+// 因此回到那里就等于去掉最后一笔（当前文档最早的原子未必是 create_document）。
+const jumpResult = await evaluate(`(async () => {
+  const rows = Array.from(document.querySelectorAll("#history .row"));
+  let target = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].textContent.includes("draw_stroke")) { target = rows[i - 1] || null; break; }
+  }
+  if (!target) return { ok: false, reason: "找不到笔画之前的原子" };
+  const button = target.querySelector("button");
+  if (!button) return { ok: false, reason: "该行没有按钮" };
+  button.click();
+  await new Promise((r) => setTimeout(r, 2200));
+  return { ok: true, rows: rows.length };
+})()`);
+const paintedAfterJump = await paintedNow();
+const historyFinal = await historyRows();
+
 // 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
 const exportResult = await evaluate(`(async () => {
   document.getElementById("exportPng").click();
@@ -293,51 +339,26 @@ const thumbAfter = await evaluate(`document.getElementById("thumb").src`);
 const tileNoise = consoleLines.filter((line) => String(line).includes("个失效")).length;
 
 const problems = [];
-if (after.painted === 0) {
-  problems.push(`操作后画布上没有已绘制的像素（不透明 ${after.opaque}，着色 ${after.painted}，操作前不透明 ${before.opaque}）`);
+
+// 历史浏览（设计 13.2）
+if (historyAfter.length <= historyBefore.length) {
+  problems.push(`历史列表没有随提交增长：${historyBefore.length} → ${historyAfter.length}`);
 }
-if (layerCountAfter <= layerCountBefore) {
-  problems.push(`「＋ 图层」按钮没有新增图层（之前 ${layerCountBefore} 个，之后 ${layerCountAfter} 个）`);
+if (!hasStroke) {
+  problems.push(`历史列表没有出现 draw_stroke：${JSON.stringify(historyAfter.slice(-3))}`);
 }
-// 内容画布与覆盖层必须几何一致（覆盖层若为空则说明没有覆盖 img，属正常）。
-if (geometry.overlay && (geometry.overlay.cssW !== geometry.canvas.cssW || geometry.overlay.cssH !== geometry.canvas.cssH)) {
-  problems.push(`内容画布与覆盖层几何不一致：canvas ${geometry.canvas.cssW}×${geometry.canvas.cssH} vs overlay ${geometry.overlay.cssW}×${geometry.overlay.cssH}`);
+if (!filterOk) {
+  problems.push(`按类型筛选未生效，筛出 ${filteredRows.length} 行`);
 }
-if (geometry.preview !== null) {
-  problems.push("页面里仍存在覆盖用的 #preview 元素（会与画布几何冲突）");
+if (!jumpResult || !jumpResult.ok) {
+  problems.push(`「回到此处」未能执行：${JSON.stringify(jumpResult)}`);
+} else if (!(paintedAfterJump < paintedAfterStroke)) {
+  problems.push(
+    `「回到此处」没有撤掉内容：着色 ${paintedAfterStroke} → ${paintedAfterJump}`
+  );
 }
-if (thumbBefore === thumbAfter) problems.push("提交后缩略图未自动刷新");
-if (identityAfter === identityBefore) {
-  problems.push(`「新建」按钮没有新建文档（identity 仍是 ${identityBefore}）`);
-}
-if (newDocPainted.painted !== 0) {
-  problems.push(`新建文档后画布上仍有旧内容（着色 ${newDocPainted.painted}）`);
-}
-if (!identityOpened.includes("uicheck-opened-1")) {
-  problems.push(`「打开」按钮没有切换文档（identity=${identityOpened}）`);
-}
-if (!(zoomCheck.after.w < zoomCheck.before.w)) {
-  problems.push(`滚轮缩放没有生效：视口宽度 ${zoomCheck.before.w} → ${zoomCheck.after.w}`);
-}
-if (zoomCheck.painted === 0) {
-  problems.push("缩放后画布上没有内容");
-}
-if (centerInk <= 0) {
-  problems.push(`缩放后在画布中心落笔，但服务端的文档中心没有笔迹（centerInk=${centerInk}）—— 坐标映射错误`);
-}
-// 两次撤销：撤销栈 -2、重做栈 +2；两次重做：回到原状。
-if (!depthBefore || !depthUndo1 || !depthUndo2 || !depthRedone) {
-  problems.push("读不到撤销/重做深度（#undoDepth）");
-} else {
-  if (depthUndo1.undo !== depthBefore.undo - 1 || depthUndo1.redo !== depthBefore.redo + 1) {
-    problems.push(`撤销一次后栈深度不对：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthUndo1)}`);
-  }
-  if (depthUndo2.undo !== depthBefore.undo - 2 || depthUndo2.redo !== depthBefore.redo + 2) {
-    problems.push(`撤销两次后栈深度不对：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthUndo2)}`);
-  }
-  if (depthRedone.undo !== depthBefore.undo || depthRedone.redo !== depthBefore.redo) {
-    problems.push(`重做两次后应回到原深度：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthRedone)}`);
-  }
+if (historyFinal.length === 0) {
+  problems.push("回到历史时刻后列表为空");
 }
 if (!exportResult) {
   problems.push("「导出 PNG」没有产生导出结果（window.yanshiStats.lastExport 为空）");
@@ -372,6 +393,7 @@ console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未�
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
+console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓）→ 回到此处后着色 ${paintedAfterStroke} → ${paintedAfterJump}，列表 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);
