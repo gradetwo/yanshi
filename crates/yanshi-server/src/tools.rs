@@ -888,6 +888,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_dependency_graph",
+        profile: Profile::Core,
+        summary: "查看对象依赖图（设计 9.4；544 的传播闭包）",
+        mutating: false,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
         name: "update_sync_policy",
         profile: Profile::Core,
         summary: "设置实例的同步策略（设计 9.4）",
@@ -1579,6 +1588,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "get_dependency_graph" => read_get_dependency_graph(ctx, args),
         "update_sync_policy" => write_update_sync_policy(ctx, args),
         "update_override" => write_update_override(ctx, args),
         "detach_instance" => write_detach_instance(ctx, args),
@@ -2443,6 +2453,50 @@ fn check_group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Result<()> 
 ///
 /// **循环引用在折叠层被挡住** ✓（`fold.rs` 的 `CreateObject` ✓）：
 /// 手工写入日志的环、自引用、过深的链都会在**提交时**被拒 ✓，而不是等到渲染时无限递归 ✓。
+/// **查看对象依赖图** ✓（设计 9.4 `get_dependency_graph` ✓；传播闭包见 544 ✓）。
+///
+/// 目前依赖边只有一种 ✓：**实例 → master** ✓（`master_ref` ✓）。
+/// 因此这里回答两件事 ✓：**谁依赖我**（`dependents` ✓，即需要一起失效的对象 ✓）
+/// 与**我依赖谁**（`references` ✓）。两者都是**传递闭包** ✓（设计 544 说的是"传播闭包"✓），
+/// 带深度上限 ✓ 做纵深防御 ✓（成环已在折叠层被挡 ✓）。
+fn read_get_dependency_graph(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let state = document_state(ctx)?;
+    if !state.objects.contains_key(object_id.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("对象 {object_id} 不存在")),
+        ));
+    }
+    // **谁依赖我** ✓（反向传递闭包 ✓）—— 改动我时，这些对象的区域也要失效 ✓。
+    let dependents = yanshi_render::dirty::dependents_of(&state, &object_id);
+    // **我依赖谁** ✓（正向 ✓）：顺着 `master_ref` 走 ✓。
+    let mut references: Vec<String> = Vec::new();
+    let mut cursor = object_id.clone();
+    for _ in 0..64 {
+        let next = state
+            .objects
+            .get(&cursor)
+            .and_then(|object| object.data.get("master_ref"))
+            .and_then(|master_ref| master_ref.get("object_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        match next {
+            Some(master) => {
+                references.push(master.clone());
+                cursor = master;
+            }
+            None => break,
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "dependents": dependents,
+        "references": references,
+    }))
+}
+
 /// **设置实例的同步策略** ✓（设计 9.4 `update_sync_policy` ✓）。
 ///
 /// 本片支持 `all`（跟随 ✓，缺省 ✓）与 `none`（不同步 ✓）——

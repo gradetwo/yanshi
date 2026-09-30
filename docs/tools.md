@@ -1,12 +1,12 @@
 # Tools and effects
 
-The tool layer registers **38 core tools**. With every implemented group enabled there are
-**80 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+The tool layer registers **39 core tools**. With every implemented group enabled there are
+**81 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 The most recent core tools come from design section 9: the object-group operations `create_group`,
 `add_to_group`, `remove_from_group` and `set_group_transform`, `create_instance`, which resolves its
-master's geometry at render time, `detach_instance`, `link_to_master`, `get_resolved_state`, `update_sync_policy` and `update_override` (`override` and sync policies other than `all` are not implemented yet and
+master's geometry at render time, `detach_instance`, `link_to_master`, `get_resolved_state`, `update_sync_policy`, `update_override` and `get_dependency_graph` (`override` and sync policies other than `all` are not implemented yet and
 are rejected rather than ignored).
 
 This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every adjustment and
