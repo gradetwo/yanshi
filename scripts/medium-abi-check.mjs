@@ -15,7 +15,15 @@ import { readFile } from "node:fs/promises";
 
 const paths = process.argv.slice(2).filter((name) => name.endsWith(".wasm"));
 if (paths.length === 0) {
-  paths.push("assets/mediums/example-dab.wasm", "assets/mediums/oil.wasm", "assets/mediums/watercolor.wasm");
+  paths.push(
+    "assets/mediums/example-dab.wasm",
+    "assets/mediums/oil.wasm",
+    "assets/mediums/watercolor.wasm",
+    // 设计 11.1 的其余介质 ✓（马克笔 / 铅笔 ✓）—— 与前三者走**同一套**边界检查 ✓：
+    // 零 imports ✓、ABI 版本 ✓、同 seed 一致 / 不同 seed 有别 ✓、配额 ✓、v2 上下文 ✓。
+    "assets/mediums/marker.wasm",
+    "assets/mediums/pencil.wasm",
+  );
 }
 
 let failed = 0;
@@ -110,9 +118,92 @@ async function checkOne(path) {
       stats.v2.mixedGreen = greenish;
       stats.v2.mixedRed = reddish;
       if (inked === 0) problems.push("载墨充足时应落墨（实测没有）");
-      if (greenish <= reddish) {
-        problems.push(`湿度 1 时应被目标色（绿）主导（绿 ${greenish} vs 红 ${reddish}）`);
+      // **湿混是"湿介质"的特性，不是 ABI 的通则** ✗ —— 加入铅笔时这里报了不合格 ✓，
+      // 而铅笔**本来就该**忽略湿度 ✓（干介质不会把下面的颜色拉上来 ✓，见插件文档 ✓）。
+      // 干介质不但**允许**不混色 ✓，还必须**断言它确实不混** ✓，否则"有没有实现"无从验证 ✓。
+      const wetMedium = path.includes("oil") || path.includes("watercolor");
+      if (wetMedium && greenish <= reddish) {
+        problems.push(`湿介质在湿度 1 时应被目标色（绿）主导（绿 ${greenish} vs 红 ${reddish}）`);
       }
+      if (!wetMedium && reddish <= greenish) {
+        problems.push(`干介质不该把目标色拉上来（红 ${reddish} 应多于绿 ${greenish}）`);
+      }
+
+  // --- marker specific --------------------------------------------------------
+  // 马克笔的标志性行为有两条 ✓，都能量 ✓：
+  //   ① **平头笔尖是各向异性的** ✓（沿长轴比沿短轴宽得多 ✓）；
+  //   ② **叠色会变深** ✓ —— 但注意**插件是无状态的** ✓：同一输入永远同一输出 ✓
+  //      （上面已断言 ✓）。所以这里比较"目标处**已有墨**"与"目标处**干净**"两种输入的输出 ✓，
+  //      前者的颜色应更暗 ✓。（我第一版写成"同一输入调用两次再比" ✗ ⇒ 两次必然相同 ✓，
+  //      因为叠色发生在**宿主的合成**里 ✓ 而不是插件的内部状态 ✓。）
+  if (path.includes("marker")) {
+    const size = 48;
+    input.set([1, 0, 0, 1, 1, 1, 1, 1, 1, 0], 0);
+    api.yanshi_dab(11, size, 1000);
+    const nib = Uint8Array.from(view());
+    let minX = size, maxX = -1, minY = size, maxY = -1;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (nib[(y * size + x) * 4 + 3] > 8) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    const spanX = maxX - minX + 1;
+    const spanY = maxY - minY + 1;
+    const anisotropy = Math.max(spanX, spanY) / Math.max(1, Math.min(spanX, spanY));
+    const dabWith = (dstAlpha) => {
+      input.set([1, 0, 0, 1, 0.5, 0.5, 0.5, dstAlpha, 1, 0], 0);
+      api.yanshi_dab(11, size, 1000);
+      const dab = Uint8Array.from(view());
+      let colour = 0;
+      let count = 0;
+      for (let i = 0; i < dab.length; i += 4) {
+        if (dab[i + 3] === 0) continue;
+        colour += dab[i] + dab[i + 1] + dab[i + 2];
+        count += 1;
+      }
+      return { colour, count };
+    };
+    const onClean = dabWith(0);
+    const onInked = dabWith(1);
+    stats.marker = { anisotropy, spanX, spanY, onClean: onClean.colour, onInked: onInked.colour };
+    if (anisotropy < 1.35) {
+      problems.push(`平头笔尖应各向异性（实测 ${spanX}×${spanY}，比值 ${anisotropy.toFixed(2)}，须 ≥1.35）`);
+    }
+    if (onClean.count === 0) {
+      problems.push("马克笔在载墨充足时没有落墨");
+    } else if (!(onInked.colour < onClean.colour)) {
+      problems.push(`马克笔在已有墨的目标上应更深（干净 ${onClean.colour} vs 已有墨 ${onInked.colour}）`);
+    }
+  }
+
+  // --- pencil specific --------------------------------------------------------
+  // 铅笔的标志性行为 ✓：**压力决定深浅** ✓（轻压只有稀疏石墨 ✓、重压才实 ✓）。
+  if (path.includes("pencil")) {
+    const size = 48;
+    const coverageAt = (pressure) => {
+      input.set([0, 0, 0, 1, 1, 1, 1, 1, 1, 0], 0);
+      api.yanshi_dab(5, size, pressure);
+      const dab = Uint8Array.from(view());
+      let sum = 0;
+      for (let i = 3; i < dab.length; i += 4) sum += dab[i];
+      return sum;
+    };
+    const light = coverageAt(120);
+    const medium = coverageAt(500);
+    const heavy = coverageAt(1000);
+    stats.pencil = { light, medium, heavy };
+    if (!(heavy > medium && medium > light)) {
+      problems.push(`铅笔的深浅必须随压力单调增加（轻 ${light} / 中 ${medium} / 重 ${heavy}）`);
+    }
+    if (light >= heavy * 0.75) {
+      problems.push(`轻压应明显比重压淡（轻 ${light} vs 重 ${heavy}）`);
+    }
+  }
 
       // --- watercolour specific -------------------------------------------------
       // 水彩与油画的差别不在参数而在**行为** ✓（见插件文档 ✓）。这里量三条标志性特征 ✓：
@@ -180,6 +271,12 @@ function report(path, bytes, imports, abi, maxDab, stats, problems) {
   }
   if (stats.v2) {
     console.log(`  v2 上下文：载墨 0 时写入 ${stats.v2.emptyLoadWritten} 字节（须 0）｜湿度 1 时绿 ${stats.v2.mixedGreen} / 红 ${stats.v2.mixedRed}（须绿多）`);
+  }
+  if (stats.marker) {
+    console.log(`  马克笔特征：各向异性 ${stats.marker.anisotropy.toFixed(2)}（${stats.marker.spanX}×${stats.marker.spanY}）｜已有墨处更深 ${stats.marker.onInked < stats.marker.onClean ? "✓" : "✗"}（干净 ${stats.marker.onClean} vs 已有墨 ${stats.marker.onInked}）`);
+  }
+  if (stats.pencil) {
+    console.log(`  铅笔特征：压力 120/500/1000 的墨量 ${stats.pencil.light}/${stats.pencil.medium}/${stats.pencil.heavy}（须单调递增）`);
   }
   if (stats.watercolor) {
     console.log(`  水彩特征：整体 alpha ${stats.watercolor.meanAll}｜中心 ${stats.watercolor.meanInner} / 外沿 ${stats.watercolor.meanOuter}（须外沿更深）｜同半径起伏 ${stats.watercolor.ringSpread}（须 ≥20）`);

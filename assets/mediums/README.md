@@ -32,3 +32,20 @@ bit-identical across platforms, but they must be deterministic for a given seed 
 cargo build -p yanshi-medium-example --target wasm32-unknown-unknown --release
 cp target/wasm32-unknown-unknown/release/yanshi_medium_example.wasm assets/mediums/example-dab.wasm
 ```
+
+## Plugins in this repository
+
+All of them are dependency-free `cdylib`s built for `wasm32-unknown-unknown`, import nothing from the
+host, take their randomness only from the injected seed, and report their own `max_dab`.
+
+| file | id | ABI | what makes it that medium |
+|---|---|---|---|
+| `example-dab.wasm` | `example-dab` | 1 | minimal reference: a soft round tip, used to pin the ABI itself |
+| `oil.wasm` | `oil` | 2 | bristle channels with a seed-fixed direction, paint load running out along a stroke, wet-on-wet mixing against the colour already under the tip, a slightly heavier rim where paint piles up |
+| `watercolor.wasm` | `watercolor` | 2 | an irregular angle-dependent boundary, a deposition band near the edge, translucent washes and paper grain |
+| `marker.wasm` | `marker` | 2 | a flat chisel nib whose angle is fixed per stroke, so its width changes as the stroke turns, ink that darkens where it overlaps ink already on the canvas, and a faint bleed past the nib edge |
+| `pencil.wasm` | `pencil` | 2 | a soft round tip whose darkness follows `pressure^1.5`, graphite grain that makes light pressure read as broken grit rather than even translucency, and almost no mixing, because a dry medium does not pull the colour underneath up into the tip |
+
+`marker` and `pencil` are registered in the viewer and in `scripts/medium-abi-check.mjs`, so they go
+through the same boundary checks as the others: zero imports, ABI version, identical output for the same
+seed and different output for a different one, quota enforcement, and the v2 context inputs.
