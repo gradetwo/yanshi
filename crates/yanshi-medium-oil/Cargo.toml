@@ -1,0 +1,12 @@
+[package]
+name = "yanshi-medium-oil"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "油画/水彩介质插件：ABI v2（宿主注入笔尖色、目标色、载墨与湿度；确定性 PRNG；无 imports）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
