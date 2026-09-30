@@ -1247,8 +1247,17 @@ if (!mediumObject) {
   // 因此"重新同步内核"（本轮已修 ✓：heavy 原子一律 resync ✓）仍然画不出东西 ✓。
   // 正确修法（下一轮）：heavy 之后不只重载内核 ✓，还要**取服务端该区域的像素贴到内容画布** ✓
   // （设计 14.5「打开即图片」的服务端铺底路径 ✓）。
+  // 上一轮这里是"已知问题上报" ⚠（画布空白 ✓）。本轮实现了服务端像素补画 ✓，
+  // 因此恢复**严格断言** ✓：介质落笔后画布有墨像素必须增加 ✓。
   if (mediumAfter <= mediumBefore) {
-    console.log(`  ⚠ 已知问题：介质落笔后画布未变多（前 ${mediumBefore} → 后 ${mediumAfter}）—— 见 implementation-notes ✓`);
+    const diag = await evaluate(`JSON.stringify({
+      resyncs: window.yanshiStats.resyncs, serverBlits: window.yanshiStats.serverBlits,
+      kernelHead: window.yanshiStats.kernelHead, serverHead: window.yanshiStats.serverHead,
+      board: [board.width, board.height], viewport: state.viewport,
+      docSize: state.docSize, lastServerBlitArea: window.yanshiStats.lastServerBlitArea,
+      medium: window.yanshiStats.medium,
+    })`);
+    problems.push(`介质落笔后画布有墨像素应增加（前 ${mediumBefore} → 后 ${mediumAfter}）｜诊断 ${diag}`);
   }
 }
 // 油画介质（ABI v2）✓：宿主注入笔尖色/目标色/载墨/湿度 ✓，插件做载墨、混色、鬃毛与干湿边缘 ✓。

@@ -661,6 +661,46 @@ function drawKernelBoxDirect(bbox) {
   return elapsed;
 }
 
+/// **用服务端像素补画** ✓ —— heavy 原子（`import_image`/液化…）的像素在服务端 ✓，
+/// 客户端 WASM 内核**表示不了**它们 ✗（它只折叠轻量原子 ✓）。
+/// 因此"重载内核"救不了空白画布 ✗：必须按设计 14.5「打开即图片」的服务端铺底路径 ✓，
+/// 把该区域的**服务端像素**直接贴到内容画布上 ✓。
+///
+/// 坐标系与 `drawKernelBoxDirect` 完全一致 ✓（文档坐标 − 视口 = 画布坐标 ✓），
+/// 这样内核与服务端两条路径画出来的东西不会错位 ✓。
+async function blitServerBox(bbox) {
+  if (!bbox) return 0;
+  const vx = state.viewport.x;
+  const vy = state.viewport.y;
+  const x0 = Math.max(Math.floor(bbox[0]), vx);
+  const y0 = Math.max(Math.floor(bbox[1]), vy);
+  const x1 = Math.min(Math.ceil(bbox[0] + bbox[2]), vx + board.width);
+  const y1 = Math.min(Math.ceil(bbox[1] + bbox[3]), vy + board.height);
+  const w = Math.round(x1 - x0);
+  const h = Math.round(y1 - y0);
+  if (w <= 0 || h <= 0) return 0;
+  const value = await callTool(
+    "render_region",
+    { region: { x: x0, y: y0, w, h }, raw: true },
+    { refresh: false },
+  );
+  const url = value.raw_url || value.thumb_url;
+  if (!url) return 0;
+  // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
+  const bytes = new Uint8ClampedArray(await fetch(api(url)).then((r) => r.arrayBuffer()));
+  if (bytes.length < w * h * 4) return 0;
+  ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
+  window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
+  window.yanshiStats.lastServerBlitArea = w * h;
+  return w * h;
+}
+
+/// 补画**当前视口** ✓（不知道原子的脏区时用它 ✓，一次请求即可 ✓）。
+async function blitServerViewport() {
+  const { x, y, w, h } = state.viewport;
+  return blitServerBox([x, y, w, h]);
+}
+
 function drawKernelBox(bbox) {
   if (!bbox) return;
   const x = Math.max(0, Math.floor(bbox[0]));
@@ -1607,6 +1647,17 @@ function connect() {
           state.localSeq = response.report.head;
           window.yanshiStats.kernelHead = response.report.head;
           window.yanshiStats.serverHead = event.seq;
+          // **heavy 原子应用"成功"不等于像素正确** ✗ —— 实测：内核能折叠 `import_image` ✓，
+          // 但它拿不到 blob 的像素 ⇒ 得到一个**空白**的补丁 ✓ 且返回 ok ✓
+          //（诊断：`resyncs: 0`、`kernelHead = serverHead` ✓，而画布 0 个有墨像素 ✗）。
+          // 所以 heavy（且非跳转 ✓）之后必须用**服务端像素**补画 ✓。
+          // 跳转（`declare_head` ✓）不能补画 ✗ —— 服务端此刻的像素是 **head** 的 ✓，
+          // 会把客户端从"跳转后的历史时刻"拉回最新 ✓（上一轮就是这么把跳转用例弄红的 ✓）。
+          if (event.heavy && event.kind !== "declare_head") {
+            // 先重载内核（它会触发一次 renderViewport ✓），**再**补画 ✓ ——
+            // 顺序很关键：只补画会被随后的内核重绘覆盖 ✓（实测 serverBlits=2 却仍 0 个有墨像素 ✗）。
+            void resync().then(() => blitServerViewport());
+          }
         } else {
           // **任何**应用失败都重新同步 ✓（含"内核表示不了 heavy 内容"这种情况 ✓），
           // 绝不静默丢掉这次变更 ✗ —— 此前只在 `out_of_order`/`precondition_failed`
@@ -1614,7 +1665,9 @@ function connect() {
           // 注意本处理器**不是 async** ✗：只能用 `void resync()` ✓
           //（写 `await` 会让整段页面脚本语法错误 ✓，实测是内核迟迟不就绪、检查全线超时 ✗）。
           window.yanshiStats.resyncs += 1;
-          void resync();
+          // 重载内核 **之后**再补画服务端像素 ✓ —— 内核表示不了 heavy 内容 ✗，
+          // 少了这一步画布就是空白 ✓（实测介质落笔 10 秒内 0 有墨像素 ✗）。
+          void resync().then(() => blitServerViewport());
         }
       }
     } else if (message.type === "event" && message.event && message.event.event === "tiles") {
