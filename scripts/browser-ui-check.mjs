@@ -122,6 +122,43 @@ const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
     ?.result?.value;
 
+// **截图** ✓：用户反复要求"用截图验收界面" ✓，而本脚本此前只能打文本断言 ✓
+// ⇒ 排版类改动（两列、隐藏、全屏）**看得到才敢说做对了** ✓。
+// 写到仓库外的临时目录 ✓（截图是**验证产物** ✓，不该进版本库 ✓）。
+const shotsDir = "/tmp/yanshi-ui";
+await (async () => { try { await import("node:fs/promises").then((fs) => fs.mkdir(shotsDir, { recursive: true })); } catch (_) {} })();
+const capture = async (name) => {
+  try {
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    // **`send` 返回的是原始 CDP 消息** ✓ ⇒ 数据在 `.result.data` ✓
+    //（我第一版读 `.data` ✗ ⇒ 拿到 undefined ⇒ 打印"本机不支持截图" ✓ ——
+    //  脚本自己的错被当成了浏览器能力不足 ✗，这类"把 bug 说成环境限制"最误导 ✓）。
+    const data = shot?.result?.data ?? shot?.data;
+    if (!data) return null;
+    const fs = await import("node:fs/promises");
+    const path = `${shotsDir}/${name}.png`;
+    await fs.writeFile(path, Buffer.from(data, "base64"));
+    return path;
+  } catch (_) {
+    return null;
+  }
+};
+
+// **面板状态的干净基线** ✓ —— 加这一段的直接原因：面板可见性**持久化**在 localStorage 里 ✓，
+// 而上一轮检查**失败退出**时把 `hide-rail` / `hide-dockers` 留在了那里 ✗
+// ⇒ 下一轮点"隐藏"其实是在"显示" ✓ ⇒ 断言集体反向 ✓，还连累了**别段**的排版断言
+//（"右侧面板应≥240px，实际 0px" ✗）—— 典型的**跨轮次状态泄漏假失败** ✓。
+// 做法 ✓：导航后清掉该键 ✓ 并重载一次 ✓（在断言开始之前 ✓），保证每轮都从默认布局出发 ✓。
+const resetPanelState = async () => {
+  await evaluate(`(() => { try { localStorage.removeItem("yanshi.panels"); } catch (_) {} return true; })()`);
+  await send("Page.reload", { ignoreCache: true });
+  for (let i = 0; i < 80; i++) {
+    if (await evaluate(`!!document.querySelector("#tools button")`)) return true;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return false;
+};
+
 await send("Runtime.enable");
 await send("Page.enable");
 // **禁用浏览器缓存** ✓ —— 加这一条的直接原因：调试浏览器缓存了**旧版 HTML** ✗，
@@ -142,6 +179,9 @@ try {
 //（`initDockers()` 等 ✓），而检查导航后立刻开始交互 ✓，于是"点击折叠没反应" ✗、
 // "介质工具还是旧的单点行为" ✗ 这类**竞态**会伪装成功能 bug ✓，极难归因 ✓。
 // 判据取"工具条已渲染 + 关键初始化已完成" ✓，而不是固定 sleep ✓。
+// **先复位持久化的面板状态** ✓（见 `resetPanelState` 的说明 ✓）——
+// 必须在**开始断言之前**做 ✓，否则上一轮留下的 `hide-rail` 会让这一轮全线反向 ✓。
+let panelBaselineReady = false;
 for (let i = 0; i < 80; i++) {
   const ready = await evaluate(`(() => {
     try {
@@ -151,8 +191,11 @@ for (let i = 0; i < 80; i++) {
         [...document.querySelectorAll("aside .card h2")].length > 0;
     } catch (_) { return false; }
   })()`);
-  if (ready) break;
+  if (ready) { panelBaselineReady = true; break; }
   await new Promise((r) => setTimeout(r, 250));
+}
+if (panelBaselineReady) {
+  await resetPanelState();
 }
 for (let attempt = 0; attempt < 150; attempt++) {
   checkDeadline();
@@ -2406,6 +2449,120 @@ console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);
 console.log(`  缩略图：${thumbBefore === thumbAfter ? "未变化" : "已自动刷新"}`);
 console.log(`  'tiles 个失效' 噪声行：${tileNoise}`);
+// **面板可见性与全屏画布** ✓（用户要求：左侧工具栏两列 + 可隐藏 ✓、右侧各窗口可隐藏 ✓、全屏画布 ✓）。
+//
+// 断言刻意读**计算样式与几何** ✓（`getComputedStyle` / `getBoundingClientRect` ✓），
+// 而不是读我们自己加的类名 ✓ —— 读类名只能证明"JS 跑过了" ✗，
+// 读样式才能证明"用户看到的确实变了" ✓（本项目吃过"类加上了但样式没生效"的亏 ✓）。
+const panelsResult = await evaluate(`(async () => {
+  const styles = (el) => (el ? getComputedStyle(el) : null);
+  const visible = (el) => !!el && styles(el).display !== "none" && el.getBoundingClientRect().width > 0;
+  const rail = document.getElementById("tools");
+  const aside = document.querySelector("aside");
+  const header = document.querySelector("header");
+  const main = document.querySelector("main");
+  const out = {};
+  // ① **两列** ✓：栅格轨道数应为 2 ✓（读计算样式里的 grid-template-columns ✓）。
+  const before = { railVisible: visible(rail), asideVisible: visible(aside) };
+  out.railColumns = rail ? styles(rail).gridTemplateColumns.split(" ").filter(Boolean).length : 0;
+  out.railButtons = rail ? rail.querySelectorAll("button").length : 0;
+  // ② **隐藏左侧** ✓（用按钮而不是快捷键 ✓ ⇒ 顺带验证按钮接线 ✓）。
+  document.getElementById("toggleRail").click();
+  await new Promise((r) => setTimeout(r, 120));
+  out.railHidden = !visible(rail);
+  out.mainColumnsAfterRailHidden = styles(main).gridTemplateColumns.split(" ").filter(Boolean).length;
+  out.asideStillVisible = visible(aside);
+  document.getElementById("toggleRail").click();
+  await new Promise((r) => setTimeout(r, 120));
+  out.railBack = visible(rail);
+  // ③ **隐藏右侧** ✓。
+  document.getElementById("toggleDockers").click();
+  await new Promise((r) => setTimeout(r, 120));
+  out.asideHidden = !visible(aside);
+  out.mainColumnsAfterDockersHidden = styles(main).gridTemplateColumns.split(" ").filter(Boolean).length;
+  out.railStillVisible = visible(rail);
+  document.getElementById("toggleDockers").click();
+  await new Promise((r) => setTimeout(r, 120));
+  out.asideBack = visible(aside);
+  // ④ **全屏画布** ✓：两侧 + 头部都藏起来 ✓，画布仍在且**变大了** ✓。
+  // **量"可用区"而不是画布本身** ✓：画布的 CSS 尺寸由**缩放**决定 ✓，
+  // 全屏不会自动改变它 ✓（我第一版量 board ✗ ⇒ 断言"应更宽"失败 ✓，而全屏其实是对的 ✓）。
+  // 真正应当变宽的是 **stage（可用区）** ✓。
+  const area = () => document.querySelector(".stage")?.getBoundingClientRect().width || 0;
+  const widthBefore = area();
+  document.getElementById("toggleZen").click();
+  await new Promise((r) => setTimeout(r, 200));
+  out.zenRailHidden = !visible(rail);
+  out.zenAsideHidden = !visible(aside);
+  out.zenHeaderHidden = !visible(header);
+  out.zenExitVisible = visible(document.getElementById("zenExit"));
+  out.boardWidthBefore = Math.round(widthBefore);
+  out.boardWidthZen = Math.round(area());
+  out.zenPressed = document.getElementById("toggleZen")?.getAttribute("aria-pressed");
+  out.before = before;
+  return out;
+})()`);
+
+const panelProblems = [];
+if (panelsResult?.railColumns !== 2) {
+  panelProblems.push(`左侧工具栏应为**两列**（计算样式里读到 ${panelsResult?.railColumns} 条轨道）`);
+}
+if (panelsResult?.railButtons < 4) {
+  panelProblems.push(`左侧工具栏按钮太少（${panelsResult?.railButtons} 个），看不出两列效果`);
+}
+if (!panelsResult?.railHidden) panelProblems.push("点击「◧ 工具栏」应隐藏左侧工具栏");
+if (panelsResult?.mainColumnsAfterRailHidden !== 2) {
+  panelProblems.push(`隐藏左栏后 main 应剩两列（实得 ${panelsResult?.mainColumnsAfterRailHidden}）`);
+}
+if (!panelsResult?.asideStillVisible) panelProblems.push("隐藏左栏**不该**连带隐藏右侧面板");
+if (!panelsResult?.railBack) panelProblems.push("再点一次「◧ 工具栏」应恢复显示");
+if (!panelsResult?.asideHidden) panelProblems.push("点击「◨ 面板」应隐藏右侧面板");
+if (panelsResult?.mainColumnsAfterDockersHidden !== 2) {
+  panelProblems.push(`隐藏右栏后 main 应剩两列（实得 ${panelsResult?.mainColumnsAfterDockersHidden}）`);
+}
+if (!panelsResult?.railStillVisible) panelProblems.push("隐藏右栏**不该**连带隐藏左侧工具栏");
+if (!panelsResult?.asideBack) panelProblems.push("再点一次「◨ 面板」应恢复显示");
+if (!panelsResult?.zenRailHidden || !panelsResult?.zenAsideHidden) {
+  panelProblems.push("全屏画布应同时隐藏左右两侧");
+}
+if (!panelsResult?.zenHeaderHidden) panelProblems.push("全屏画布应隐藏头部");
+if (!panelsResult?.zenExitVisible) {
+  panelProblems.push("全屏时应有**退出把手**（否则用户不知道怎么出来）");
+}
+if ((panelsResult?.boardWidthZen || 0) <= (panelsResult?.boardWidthBefore || 0)) {
+  panelProblems.push(
+    `全屏后可用区应变宽（${panelsResult?.boardWidthBefore} ⇒ ${panelsResult?.boardWidthZen}）`,
+  );
+}
+if (panelsResult?.zenPressed !== "true") {
+  panelProblems.push("全屏时「⛶ 全屏」按钮应显示为已按下（aria-pressed）");
+}
+
+// **截图** ✓：正常布局 / 隐藏左 / 隐藏右 / 全屏 四张 ✓。
+//
+// **必须先退出全屏** ✗ —— 上面的断言结束时页面**还停在 zen 里** ✓，我第一版直接接着拍 ✓
+// ⇒ `01-normal.png` 其实拍的是**全屏态** ✓（看截图才发现：头部没了、右上角是"退出全屏" ✓），
+// 而且它与 `04-zen.png` **字节数完全相同** ✓ —— 这个"两张图一样大"其实早就提示了我 ✗。
+// **教训** ✓：截图脚本的**状态前提**要和图名一致 ✓，否则图会骗人 ✓（比没有截图更糟 ✗）。
+await evaluate(`document.getElementById("zenExit")?.click(); true`);
+await new Promise((r) => setTimeout(r, 250));
+const shotNormal = await capture("01-normal");
+const shotRail = await evaluate(`document.getElementById("toggleRail").click(); true`) && (await new Promise((r) => setTimeout(r, 150)), await capture("02-rail-hidden"));
+await evaluate(`document.getElementById("toggleRail").click(); true`);
+await new Promise((r) => setTimeout(r, 120));
+const shotDockers = await evaluate(`document.getElementById("toggleDockers").click(); true`) && (await new Promise((r) => setTimeout(r, 150)), await capture("03-dockers-hidden"));
+await evaluate(`document.getElementById("toggleDockers").click(); true`);
+await new Promise((r) => setTimeout(r, 120));
+const shotZen = await evaluate(`document.getElementById("toggleZen").click(); true`) && (await new Promise((r) => setTimeout(r, 250)), await capture("04-zen"));
+// **退出全屏** ✓ 并把状态复位 ✓（检查不能把用户的界面留在全屏里 ✓）。
+await evaluate(`document.getElementById("zenExit").click(); true`);
+await new Promise((r) => setTimeout(r, 200));
+const zenExited = await evaluate(`getComputedStyle(document.querySelector("header")).display !== "none"`);
+if (!zenExited) panelProblems.push("点击退出把手之后应回到普通布局");
+console.log(`  面板：左侧工具栏 ${panelsResult?.railColumns} 列（原始：${panelsResult?.railColumnsRaw}｜display=${panelsResult?.railDisplay}）/ ${panelsResult?.railButtons} 个按钮｜隐藏左 ${panelsResult?.railHidden ? "✓" : "✗"}｜隐藏右 ${panelsResult?.asideHidden ? "✓" : "✗"}｜全屏 ${panelsResult?.zenHeaderHidden ? "✓" : "✗"}（可用区 ${panelsResult?.boardWidthBefore} → ${panelsResult?.boardWidthZen}）｜存储=${panelsResult?.persisted}`);
+console.log(`  截图：${[shotNormal, shotRail, shotDockers, shotZen].filter(Boolean).join("、") || "（本机不支持截图）"}`);
+for (const problem of panelProblems) problems.push(problem);
+
 if (problems.length) {
   // 失败时把页面日志一并打出来：工具层的错误提示都在那里，靠猜字段/猜坐标很费时间。
   console.log("  --- 页面日志（失败诊断）---");
