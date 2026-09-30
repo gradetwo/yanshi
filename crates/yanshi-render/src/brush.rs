@@ -172,6 +172,8 @@ pub struct StrokeAppearance {
     pub curves: crate::curve::StrokeCurves,
     /// 抖动 / 散布 / 尺寸与角度变化 / 程序化纹理 ✓。
     pub dynamics: crate::dynamics::Dynamics,
+    /// 载体墨量 / 湿度耗墨 / 混色 ✓（设计 11.1「MVP 要支持纹理、湿度和载墨量」✓）。
+    pub paint: crate::paint::PaintSettings,
     /// 是否存在**有效**外观（全默认 ⇒ 视为无外观 ⇒ 走原路径 ✓）。
     pub active: bool,
 }
@@ -187,12 +189,16 @@ impl StrokeAppearance {
         };
         let curves = crate::curve::StrokeCurves::from_appearance(appearance);
         let dynamics = crate::dynamics::Dynamics::from_appearance(appearance);
+        let paint = crate::paint::PaintSettings::from_appearance(appearance);
         // **注意**：曲线模块的 `is_identity_or_constant` 含义是"**不是变化曲线**" ✗，
         // 而不是"没有效果" ✓ —— 常量 0.4 的曲线会实打实地改变笔触粗细 ✓。
         // 第一版据此判断 `active`，结果"常量曲线"被当成无外观、纹理也被漏掉 ✓（两个测试当场抓到 ✗）。
         // 因此这里只把**恰好等于恒等曲线**（常量 1.0）视为无效果 ✓。
         let identity = crate::curve::Curve::constant(1.0);
-        let active = !dynamics.is_noop()
+        // 湿笔参数只要有一项非 0 就算"有外观" ✓（`paint_load = 0` 表示无限墨 ⇒ 无效果 ✓）。
+        let paint_active = paint.paint_load > 0.0 || paint.wetness > 0.0 || paint.mixing > 0.0;
+        let active = paint_active
+            || !dynamics.is_noop()
             || dynamics.texture.kind != crate::dynamics::TextureKind::None
             || curves.size != identity
             || curves.opacity != identity
@@ -200,6 +206,7 @@ impl StrokeAppearance {
         StrokeAppearance {
             curves,
             dynamics,
+            paint,
             active,
         }
     }
@@ -245,7 +252,15 @@ fn stamp_samples_with_appearance(
     let base_radius = brush.size / 2.0;
     let base_alpha = brush.color[3] * brush.flow as f32 * brush.opacity as f32;
     let mut drawn = 0usize;
+    // 载体墨量 / 湿度 / 混色的状态（整笔一份 ⇒ 沿笔迹耗尽 ✓，且完全确定 ✓）。
+    let mut reservoir = crate::paint::PaintReservoir::new(appearance.paint);
+    let mut previous: Option<(f64, f64)> = None;
     for (index, (x, y, pressure)) in stamps.iter().enumerate() {
+        // 湿度耗墨：与上一枚印章之间的**距离**成正比 ✓（点按不耗墨 ✓、连续拖动更耗墨 ✓）。
+        if let Some((px, py)) = previous {
+            reservoir.advance(((x - px).powi(2) + (y - py).powi(2)).sqrt());
+        }
+        previous = Some((*x, *y));
         // ① 曲线：压力先映射一次，再作用到半径与 alpha ✓。
         let (radius, alpha) = appearance
             .curves
@@ -253,14 +268,20 @@ fn stamp_samples_with_appearance(
         if radius <= 0.0 || alpha <= 0.0 {
             continue;
         }
-        // ② 动力学：逐印章、由 (seed, index) 派生 ⇒ 可复现 ✓。
+        // ② 载墨量与湿度：逐印章耗墨 ⇒ 沿笔迹衰减 ✓（`paint_load = 0` 时恒为 1 ✓）。
+        let load = reservoir.consume();
+        let alpha = alpha * load;
+        if alpha <= 0.0 {
+            continue;
+        }
+        // ③ 动力学：逐印章、由 (seed, index) 派生 ⇒ 可复现 ✓。
         let params = appearance
             .dynamics
             .stamp_params(index as u64, *x, *y, radius, alpha);
         if params.radius <= 0.0 || params.alpha <= 0.0 {
             continue;
         }
-        // ③ 纹理：按**文档坐标**调制 alpha ⇒ 跨块一致 ✓。
+        // ④ 纹理：按**文档坐标**调制 alpha ⇒ 跨块一致 ✓。
         let alpha = appearance
             .dynamics
             .texture
@@ -268,7 +289,21 @@ fn stamp_samples_with_appearance(
         if alpha <= 0.0 {
             continue;
         }
-        let color = [brush.color[0], brush.color[1], brush.color[2], alpha];
+        // ⑤ 混色：把**目标处已有颜色**按 `mixing × 当前湿度` 混进笔尖 ✓（只读一次 ⇒ 确定 ✓）。
+        let brush_color = [brush.color[0], brush.color[1], brush.color[2], alpha];
+        let color = if appearance.paint.mixing > 0.0 {
+            let origin = buffer.origin();
+            let local_x = (params.x - origin.0 as f64).max(0.0) as u32;
+            let local_y = (params.y - origin.1 as f64).max(0.0) as u32;
+            let dest = if local_x < buffer.width() && local_y < buffer.height() {
+                buffer.pixel(local_x, local_y)
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            };
+            reservoir.mix(brush_color, dest)
+        } else {
+            brush_color
+        };
         match coverage {
             Some(coverage) => crate::brush::draw_stamp_clipped(
                 buffer,

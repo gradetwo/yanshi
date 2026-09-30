@@ -83,7 +83,9 @@ current layer (names come from the kernel, parameters default to the kernel's ow
 
 Strokes accept an `appearance` block (the design's `advanced.appearance`): `size_curve`, `opacity_curve`
 and `pressure_curve` shape the stroke, `dynamics` with `seed` adds deterministic jitter, scatter, size
-and angle variation, and a procedural `noise` or `grain` `texture` modulates the ink. Without an
+and angle variation, a procedural `noise` or `grain` `texture` modulates the ink, and `paint_load`, `wetness` and `mixing`
+give a wet brush: ink runs out along the stroke, dragging drains faster than dabbing, and mixing pulls
+the colour already under the brush into the tip. Without an
 appearance block a stroke renders exactly as before, byte for byte.
 
 The toolbar also drives the pixel tools: brush and eraser, fill layer, eyedropper, clone stamp and
