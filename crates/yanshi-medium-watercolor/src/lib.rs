@@ -122,9 +122,12 @@ pub extern "C" fn yanshi_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
                     continue;
                 }
                 let t = distance / edge_radius.max(0.001);
-                // 内部淡、外沿深 ✓（边缘沉积 ✓）：用一条"到边缘距离"的钟形曲线 ✓。
-                let ring = 1.0 - ((t - 0.82) / 0.18).abs();
-                let deposit = 0.55 + 0.75 * smooth(ring.clamp(0.0, 1.0));
+                // 内部淡、外沿深 ✓（边缘沉积 ✓）。
+                // **沉积带要足够宽** ✓ —— 第一版半宽只有 0.18 ✗，于是每个点都成"一圈环" ✓，
+                // 相邻点叠起来像"一串环"而不是一片水痕 ✗（截图核验发现 ✓）。
+                // 现在半宽 0.32 ✓、峰值略降 ✓ ⇒ 相邻点的沉积互相融开 ✓，仍保持"外沿更深"的判据 ✓。
+                let ring = 1.0 - ((t - 0.78) / 0.32).abs();
+                let deposit = 0.62 + 0.62 * smooth(ring.clamp(0.0, 1.0));
                 // 纸纹颗粒 ✓（确定性 ✓）+ 轻微的水痕流动 ✓。
                 let grain = 1.0 - 0.22 * ((splitmix64(&mut state) >> 40) as f32 / 16_777_215.0);
                 let flow = 0.9 + 0.1 * (angle * 5.0 + seed as f32).sin();

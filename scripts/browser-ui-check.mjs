@@ -819,6 +819,24 @@ if (dockerAudit.afterWorkspace.stored !== "review") {
 if (dockerAudit.afterWorkspace.historyCollapsed || !dockerAudit.afterWorkspace.effectsCollapsed) {
   problems.push(`"校对"工作区的折叠集合不对：${JSON.stringify(dockerAudit.afterWorkspace.collapsed)}`);
 }
+// **"绘画"预设** ✓ —— 加这条断言的直接原因：截图核验时发现"绘画"工作区里
+// 「WASM 计算内核」卡片竟然**折叠**着 ✗，而预设明确把它列为 open ✓，
+// 根因是**标题逐字匹配**（全角括号/空格差异 ⇒ 匹配静默失败 ✓）。
+const paintPreset = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const select = document.getElementById("workspace");
+  select.value = "paint";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  const cards = [...document.querySelectorAll("aside .card")];
+  const isCollapsed = (title) => {
+    const card = cards.find((c) => (c.querySelector("h2") || {}).textContent.includes(title));
+    return card ? card.classList.contains("collapsed") : null;
+  };
+  return { kernel: isCollapsed("计算内核"), history: isCollapsed("历史"), effects: isCollapsed("调整") };
+})())`));
+if (paintPreset.kernel !== false || paintPreset.history !== true || paintPreset.effects !== true) {
+  problems.push(`"绘画"工作区的开合不对（内核应展开、历史与调整应折叠）：${JSON.stringify(paintPreset)}`);
+}
+console.log(`  "绘画"工作区：内核 ${paintPreset.kernel === false ? "展开 ✓" : "折叠 ✗"}｜历史 ${paintPreset.history ? "折叠 ✓" : "展开 ✗"}｜调整 ${paintPreset.effects ? "折叠 ✓" : "展开 ✗"}`);
 console.log(`  Dockers：${dockerAudit.cards} 个面板｜折叠切换高度 ${dockerAudit.before.effectsHeight} → ${dockerAudit.afterCollapse.effectsHeight}` +
   `｜"校对"折叠 ${dockerAudit.afterWorkspace.collapsed.length} 个｜持久化 ${dockerAudit.afterWorkspace.stored}`);
 
