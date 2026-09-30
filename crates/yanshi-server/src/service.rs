@@ -680,6 +680,25 @@ impl Workspace {
             )
         })?;
         let state = document.state();
+        // **只数"存活"的图层/对象/选区** ✓ —— 折叠层**保留墓碑** ✓（`deleted_by` ✓，
+        // 这正是"删除可撤销、日志可重放"的基础 ✓），但**摘要必须反映当前状态** ✓。
+        // 子 agent 实测：删掉 6 个图层后 `get_document` 仍报 501 个对象 / 14 个图层 ✗，
+        // 而 `list_objects`/`list_layers` 报 259 / 6 ✓ —— 同一个瞬间两个数，用户看到会以为数据坏了 ✓。
+        let live_layers = state
+            .layers
+            .values()
+            .filter(|layer| !layer.is_deleted())
+            .count();
+        let live_objects = state
+            .objects
+            .values()
+            .filter(|object| !object.is_deleted())
+            .count();
+        let live_selections = state
+            .selections
+            .values()
+            .filter(|selection| !selection.is_deleted())
+            .count();
         Ok(json!({
             "doc_id": doc_id,
             "width": state.width,
@@ -689,8 +708,12 @@ impl Workspace {
             "head_seq": document.head_seq(),
             "head_atom": state.head_atom,
             "eval_origin_seq": state.eval_origin_seq(),
-            "layers": state.layers.len(),
-            "objects": state.objects.len(),
+            "layers": live_layers,
+            "objects": live_objects,
+            "selections": live_selections,
+            // 墓碑数单独给出 ✓：想审计"删了多少"的人仍然看得到 ✓，而不会误读成当前内容 ✓。
+            "tombstoned_layers": state.layers.len() - live_layers,
+            "tombstoned_objects": state.objects.len() - live_objects,
             "atoms": document.atom_count(),
             "rendered_seq": document.render_watermark(),
             "medium": state.medium,
