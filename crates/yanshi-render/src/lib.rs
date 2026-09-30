@@ -80,6 +80,7 @@ pub mod blend;
 pub mod brush;
 pub mod buffer;
 pub mod color;
+pub mod curve;
 pub mod dirty;
 pub mod filter;
 pub mod geometry;
