@@ -13,7 +13,7 @@
 //! 无法精确判定依赖关系时（实例/组引用尚未解析、调整对象影响范围未知、目标实体已从状态中消失），
 //! 本模块**宁可放大**失效范围（整层或整文档），因为这只会多渲染，不会留下陈旧 tile。
 
-use crate::object::{layer_bbox, object_bbox};
+use crate::object::{layer_bbox, object_bbox, object_bbox_in};
 use crate::tile::{TileGrid, TileKey};
 use serde_json::Value;
 use std::collections::{BTreeSet, VecDeque};
@@ -301,16 +301,49 @@ fn dirty_for_object(
         return dirty_for_layer(state, atom.layer_id(), reason);
     };
     if let Some(object) = state.objects.get(object_id) {
-        if let Some(bbox) = object_bbox(object) {
+        // **实例要按 master 解析** ✓（`object_bbox_in` ✓，与渲染同一口径 ✓）。
+        // 此前这里用只吃 `&Object` 的 `object_bbox` ✗ ⇒ 实例的包围盒**未知** ✓
+        // ⇒ 落进下面的"整层失效"兜底 ✓：**正确但很粗** ✓（一个实例动一下，整层都要重渲染 ✓）。
+        if let Some(bbox) = object_bbox_in(state, object) {
             if bbox.w > 0.0 && bbox.h > 0.0 {
                 // **几何变化必须同时失效"旧位置"** ✓ —— 否则移动后原处会留下残影 ✗。
                 // 用户实测：移动对象后画布旧位置不刷新 ✓（缩略图是整幅重绘所以正常 ✓）。
                 // 这里取**旧包围盒与新包围盒的并集** ✓：多失效一点是安全的 ✓，少失效则会留下脏像素 ✗。
-                let union = previous
-                    .and_then(|previous| previous.objects.get(object_id))
-                    .and_then(object_bbox)
-                    .map(|old| union_bbox(old, bbox))
-                    .unwrap_or(bbox);
+                // 旧位置也要用**带状态**口径 ✓（实例按 master 解析 ✓）——
+                // 注意闭包里 `previous` 是 `Option` ✓，要显式解一层 ✓。
+                let old_bbox = previous.and_then(|previous_state| {
+                    previous_state
+                        .objects
+                        .get(object_id)
+                        .and_then(|old| object_bbox_in(previous_state, old))
+                });
+                let union = old_bbox.map(|old| union_bbox(old, bbox)).unwrap_or(bbox);
+                // **master 改动要传播到引用它的实例** ✓（设计 544：
+                // "结构 dirty 的传播闭包包括实例引用 master 的传播" ✓）。
+                // 现在实例有了精确包围盒 ✓ ⇒ 必须**主动**把它们并进来 ✓，
+                // 否则下面的兜底不再触发 ✓ 而实例的旧像素会留在屏幕上 ✗
+                //（"兜底"与"精度"是**一对**改动 ✓：只做精度、不做传播 = 引入残影 ✗）。
+                let mut union = union;
+                for dependent in dependents_of(state, object_id) {
+                    if let Some(bbox) = state
+                        .objects
+                        .get(&dependent)
+                        .and_then(|object| object_bbox_in(state, object))
+                    {
+                        union = union_bbox(union, bbox);
+                    }
+                }
+                if let Some(previous) = previous {
+                    for dependent in dependents_of(previous, object_id) {
+                        if let Some(bbox) = previous
+                            .objects
+                            .get(&dependent)
+                            .and_then(|object| object_bbox_in(previous, object))
+                        {
+                            union = union_bbox(union, bbox);
+                        }
+                    }
+                }
                 return DirtySet::geometry(
                     union,
                     format!(
@@ -340,6 +373,44 @@ fn dirty_for_object(
         }
     }
     DirtySet::whole_document(state, format!("{reason}: {object_id} 状态中不存在"))
+}
+
+/// **反向依赖** ✓：哪些对象在（传递地）引用 `object_id` 作为 master ✓（设计 544 的传播闭包 ✓）。
+///
+/// 带深度上限 ✓（纵深防御 ✓）：折叠层已经挡住成环 ✓，但这里宁可不查也不递归 ✓。
+pub fn dependents_of(state: &DocumentState, object_id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut frontier: Vec<String> = vec![object_id.to_owned()];
+    let mut visited: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    visited.insert(object_id.to_owned());
+    for _ in 0..64 {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next: Vec<String> = Vec::new();
+        for candidate in state.objects.values() {
+            if candidate.object_type != yanshi_core::ObjectType::Instance {
+                continue;
+            }
+            let Some(master) = candidate
+                .data
+                .get("master_ref")
+                .and_then(|master_ref| master_ref.get("object_id"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if !frontier.iter().any(|id| id == master) {
+                continue;
+            }
+            if visited.insert(candidate.id.clone()) {
+                out.push(candidate.id.clone());
+                next.push(candidate.id.clone());
+            }
+        }
+        frontier = next;
+    }
+    out
 }
 
 fn dirty_for_layer(

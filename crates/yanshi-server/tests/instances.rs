@@ -621,3 +621,112 @@ fn an_override_moves_only_that_instance() {
         "清除覆盖后原覆盖处应为空"
     );
 }
+
+/// **`get_dependency_graph`** ✓（设计 9.4 ✓）：回答"谁依赖我"（传播闭包 ✓）与"我依赖谁" ✓。
+#[test]
+fn the_dependency_graph_reports_both_directions() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(10.0, 10.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master"}),
+        );
+        // 再套一层 ✓（实例的实例 ✓）⇒ 传递闭包应当把两层都列出来 ✓。
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror2", "layer_id": "L", "master_id": "mirror"}),
+        );
+    }
+    let graph = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "get_dependency_graph",
+            &json!({"object_id": "master"}),
+        )
+    };
+    assert_eq!(graph["ok"], json!(true), "{graph}");
+    // **谁依赖 master** ✓：传递闭包 ⇒ 两层实例都在 ✓（顺序按 id ✓，只断言集合 ✓）。
+    let dependents: Vec<String> = graph["dependents"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut sorted = dependents.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec!["mirror".to_owned(), "mirror2".to_owned()],
+        "{graph}"
+    );
+    assert!(
+        graph["references"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false),
+        "master 不依赖谁：{graph}"
+    );
+
+    let inner = {
+        let mut ctx = context(&mut workspace);
+        registry
+            .call(
+                &mut ctx,
+                "get_dependency_graph",
+                &json!({"object_id": "mirror"}),
+            )
+            .clone()
+    };
+    let references: Vec<String> = inner["references"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        references,
+        vec!["master".to_owned()],
+        "mirror 依赖 master：{inner}"
+    );
+    let inner_dependents: Vec<String> = inner["dependents"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        inner_dependents,
+        vec!["mirror2".to_owned()],
+        "mirror2 依赖 mirror：{inner}"
+    );
+}
