@@ -4361,8 +4361,10 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let updated = updated?;
     let removed = removed.expect("接上成功后才 tombstone 第二条")?;
     Ok(
-        json!({"ok": true, "op": "join", "object_id": object_id, "joined_from": other_id,
-              "points": joined, "changeset_id": changeset,
+        // **`op` 如实回报** ✓（`join` 还是 `merge` ✓）+ **是否去过重** ✓
+        //（端点重合时丢掉第二个的首节点 ✓ —— 调用方需要知道自己拿到的是几点 ✓）。
+        json!({"ok": true, "op": op, "object_id": object_id, "joined_from": other_id,
+              "points": joined, "seam_deduplicated": deduped, "changeset_id": changeset,
               "head": updated.head_seq.max(removed.head_seq)}),
     )
 }

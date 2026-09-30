@@ -21,6 +21,22 @@ names without semantics, so the split is recorded: an object's own atom chain be
 `get_object_history`, while the two graph walks answer "what do I depend on" and "what depends on me",
 which keeps them from overlapping.
 
+Path objects exist as `ObjectType::Path`, with `data.nodes` holding `{x, y, in, out}` points and cubic Bezier
+segments between them plus a `closed` flag, sharing the stroke's style fields. Rendering flattens the nodes
+into a polyline and reuses the stroke primitive, so brush parameters, appearance, selection clipping, dirty
+planning and hit testing are inherited rather than reimplemented, while resolution independence comes from
+geometry living in the log being re-rasterised per view. A segment with zero handles emits only its start
+point, which is what makes `convert_to_path` keep the picture identical pixel for pixel; subdividing straight
+segments looked harmless but shifted the sampling phase and changed 3042 bytes. `path_edit` accepts both
+kinds and their operations differ: reversing a path swaps each node's handles, since reversing only the nodes
+would silently deform the curve, and closing a path sets the flag rather than appending a node. `split` cuts
+an open path at a node index into two, each half keeping the handle that belongs to it so the halves together
+reproduce the original curve, and it refuses a closed path because a loop needs two cuts and the design does
+not say how the second is given. `merge` joins two paths and aligns the tangents at the seam along the
+neighbouring segments, which `join` deliberately does not do, and it refuses strokes rather than silently
+behaving like `join`. Both drop a duplicated node when the endpoints coincide and report it as
+`seam_deduplicated`, so the seam leaves no zero-length segment.
+
 `get_changesets` and `revert_changeset` live in the `changeset` group, which is not part of the default
 profiles, so the counts above are unchanged. `get_changesets` lists the changesets in the log and
 `revert_changeset` withdraws one by committing a `Revert` for each of its atoms, with those reverts
