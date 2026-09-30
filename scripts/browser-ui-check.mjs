@@ -216,6 +216,47 @@ if (renderCenter.raw_url) {
   }
 }
 
+// 多级撤销/重做的 **UI 状态**：断言撤销/重做栈深度的相对变化。
+// 逐像素的正确性由服务端测试 `service_flow::multi_step_undo_and_redo_restore_pixels_in_order`
+// 覆盖（确定性）；这里只验证按钮确实在驱动栈，且深度按预期转移。
+// 注意：不要在这里反复取同一个 `/api/blob/...` 地址来比对像素 —— 服务端对 blob 响应带
+// `Cache-Control: immutable`，重复取同一地址会命中缓存，断言会读到陈旧内容。
+const depth = async () => {
+  const text = await evaluate(`document.getElementById("undoDepth").textContent`);
+  const match = String(text).match(/(\d+)\D+(\d+)/);
+  return match ? { undo: Number(match[1]), redo: Number(match[2]) } : null;
+};
+const strokeAt = async (fx, fy, pointerId) => {
+  await evaluate(`(async () => {
+    const board = document.getElementById("board");
+    const rect = board.getBoundingClientRect();
+    const point = { clientX: rect.left + rect.width * ${fx}, clientY: rect.top + rect.height * ${fy} };
+    const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
+      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+    }));
+    fire("pointerdown");
+    await new Promise(r => setTimeout(r, 120));
+    fire("pointerup");
+    await new Promise(r => setTimeout(r, 1200));
+  })()`);
+};
+
+await strokeAt(0.25, 0.25, 31);
+await strokeAt(0.75, 0.75, 32);
+const depthBefore = await depth();
+await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
+await new Promise((r) => setTimeout(r, 1500));
+const depthUndo1 = await depth();
+await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
+await new Promise((r) => setTimeout(r, 1500));
+const depthUndo2 = await depth();
+await evaluate(`document.querySelector('button[data-tool="redo"]').click()`);
+await new Promise((r) => setTimeout(r, 1500));
+await evaluate(`document.querySelector('button[data-tool="redo"]').click()`);
+await new Promise((r) => setTimeout(r, 1500));
+const depthRedone = await depth();
+
 // 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
 const exportResult = await evaluate(`(async () => {
   document.getElementById("exportPng").click();
@@ -284,6 +325,20 @@ if (zoomCheck.painted === 0) {
 if (centerInk <= 0) {
   problems.push(`缩放后在画布中心落笔，但服务端的文档中心没有笔迹（centerInk=${centerInk}）—— 坐标映射错误`);
 }
+// 两次撤销：撤销栈 -2、重做栈 +2；两次重做：回到原状。
+if (!depthBefore || !depthUndo1 || !depthUndo2 || !depthRedone) {
+  problems.push("读不到撤销/重做深度（#undoDepth）");
+} else {
+  if (depthUndo1.undo !== depthBefore.undo - 1 || depthUndo1.redo !== depthBefore.redo + 1) {
+    problems.push(`撤销一次后栈深度不对：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthUndo1)}`);
+  }
+  if (depthUndo2.undo !== depthBefore.undo - 2 || depthUndo2.redo !== depthBefore.redo + 2) {
+    problems.push(`撤销两次后栈深度不对：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthUndo2)}`);
+  }
+  if (depthRedone.undo !== depthBefore.undo || depthRedone.redo !== depthBefore.redo) {
+    problems.push(`重做两次后应回到原深度：${JSON.stringify(depthBefore)} → ${JSON.stringify(depthRedone)}`);
+  }
+}
 if (!exportResult) {
   problems.push("「导出 PNG」没有产生导出结果（window.yanshiStats.lastExport 为空）");
 } else if (!exportPng || !exportPng.isPng) {
@@ -316,6 +371,7 @@ console.log(`  图层数：${layerCountBefore} → ${layerCountAfter}`);
 console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未生效" : "已生效"}｜打开 ${identityOpened.includes("uicheck-opened-1") ? "已生效" : "未生效"}`);
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
+console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);

@@ -66,6 +66,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span>rendered <b id="rendered">0</b></span>
     <span>dirty <b id="dirty">0</b></span>
     <span>缩放 <b id="zoom">100%</b></span>
+    <span id="undoDepth">撤销 0 / 重做 0</span>
   </span>
 </header>
 <main>
@@ -147,8 +148,11 @@ const state = {
   token: params.get("token") || "",
   tool: "brush",
   layerId: null,
-  lastAtom: null,
-  reverted: [],
+  // 撤销/重做双栈：存的是**原始原子 id**。
+  // 语义（fold.rs：`revert(revert(x)) ≡ reapply(x)`）⇒ 撤销 = revert(原始)，
+  // 重做 = reapply(原始)；因此重做栈里必须放原始 id，而不是 revert 原子自身的 id。
+  undoStack: [],
+  redoStack: [],
   socket: null,
   docSize: { w: 1024, h: 1024 },
   viewport: { x: 0, y: 0, w: 1024, h: 1024 },
@@ -297,9 +301,11 @@ async function callTool(name, args, options = {}) {
   $("last").textContent = JSON.stringify(value).slice(0, 600);
   if (value.ok) {
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
-    if (value.atom_id) {
-      state.lastAtom = value.atom_id;
-      if (name === "revert") state.reverted.push(value.atom_id);
+    if (value.atom_id && name !== "revert" && name !== "reapply") {
+      // 普通变更：入撤销栈，并清空重做栈（标准编辑器行为）。
+      state.undoStack.push(value.atom_id);
+      state.redoStack.length = 0;
+      updateUndoStatus();
     }
     // 提交后自动刷新缩略图（此前必须手动点「刷新」才更新）。
     if (options.refresh !== false) scheduleThumbRefresh();
@@ -625,6 +631,12 @@ async function submitAtom(atom) {
     // 服务端把原子排在了本地预测之后（有并发原子），补齐缺口。
     await resync();
   }
+  // 笔迹走的是 `/api/atoms`，不经 callTool：这里补入撤销栈。
+  if (response.atom_id) {
+    state.undoStack.push(response.atom_id);
+    state.redoStack.length = 0;
+    updateUndoStatus();
+  }
   scheduleThumbRefresh();
   return response;
 }
@@ -739,8 +751,9 @@ async function switchDocument(docId) {
   state.docId = docId;
   state.token = "";
   state.localSeq = 0;
-  state.lastAtom = null;
-  state.reverted = [];
+  state.undoStack = [];
+  state.redoStack = [];
+  updateUndoStatus();
   state.dragging = null;
   state.points = [];
   $("log").innerHTML = "";
@@ -795,6 +808,57 @@ async function warmKernel() {
     // 注意：`refreshPreview(true)` 表示「从服务端取像素」，这里要的是内核路径。
     await refreshPreview();
   }
+}
+
+/// 撤销一次（可连续）。栈空时给出明确提示，而不是静默无反应。
+async function undoOnce() {
+  const atomId = state.undoStack.pop();
+  if (!atomId) {
+    log("没有可撤销的操作");
+    updateUndoStatus();
+    return;
+  }
+  const value = await callTool("revert", { atom_id: atomId }, { refresh: false });
+  if (!value.ok) {
+    // 撤销失败：把 id 放回去，保持栈与实际状态一致。
+    state.undoStack.push(atomId);
+    log("撤销失败：" + (value.error_code || "unknown"), "#c33");
+  } else {
+    state.redoStack.push(atomId);
+  }
+  updateUndoStatus();
+  await refreshPreview();
+}
+
+/// 重做一次（按原始顺序：最近一次被撤销的最先重做）。
+async function redoOnce() {
+  const atomId = state.redoStack.pop();
+  if (!atomId) {
+    log("没有可重做的操作");
+    updateUndoStatus();
+    return;
+  }
+  const value = await callTool("reapply", { atom_id: atomId }, { refresh: false });
+  if (!value.ok) {
+    state.redoStack.push(atomId);
+    log("重做失败：" + (value.error_code || "unknown"), "#c33");
+  } else {
+    state.undoStack.push(atomId);
+  }
+  updateUndoStatus();
+  await refreshPreview();
+}
+
+/// 在状态栏显示撤销/重做深度，并同步按钮可用性。
+function updateUndoStatus() {
+  const label = $("undoDepth");
+  if (label) {
+    label.textContent = "撤销 " + state.undoStack.length + " / 重做 " + state.redoStack.length;
+  }
+  const undo = document.querySelector('button[data-tool="undo"]');
+  const redo = document.querySelector('button[data-tool="redo"]');
+  if (undo) undo.disabled = state.undoStack.length === 0;
+  if (redo) redo.disabled = state.redoStack.length === 0;
 }
 
 async function refreshLayers() {
@@ -1149,14 +1213,11 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
   button.addEventListener("click", async () => {
     const tool = button.dataset.tool;
     if (tool === "undo") {
-      if (state.lastAtom) await callTool("revert", { atom_id: state.lastAtom });
-      await refreshPreview();
+      await undoOnce();
       return;
     }
     if (tool === "redo") {
-      const atom = state.reverted.pop();
-      if (atom) await callTool("reapply", { atom_id: atom });
-      await refreshPreview();
+      await redoOnce();
       return;
     }
     if (tool === "refresh") { await refreshPreview(); refreshThumb(); return; }

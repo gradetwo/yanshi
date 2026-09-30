@@ -3099,3 +3099,86 @@ fn batch_reject_is_symmetric_with_batch_accept() {
         "{listed}"
     );
 }
+
+/// 多级撤销/重做：连续 revert 两笔 → 两笔都消失；再 reapply → 按原序恢复。
+///
+/// 语义依据 `fold.rs`：`revert(revert(x)) ≡ reapply(x)`，因此**重做的目标是原始原子**。
+/// 这是查看器「撤销/重做」按钮背后的完整行为，逐像素在服务端验证（不依赖浏览器）。
+#[test]
+fn multi_step_undo_and_redo_restore_pixels_in_order() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_flow", 512, 512),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_flow", "human:1", "session:test")
+        .with_owner(true)
+        .with_wait_for_render(true, 2_000);
+    let call = |ctx: &mut ToolContext<'_>, tool: &str, args: serde_json::Value| {
+        registry.call(ctx, tool, &args)
+    };
+
+    call(&mut ctx, "create_layer", json!({"layer_id": "L"}));
+    let atom_a = call(
+        &mut ctx,
+        "draw_stroke",
+        json!({"layer_id": "L", "object_id": "oa",
+               "data": {"points": [[100.0, 100.0], [140.0, 100.0]], "size": 20.0,
+                        "color": {"r": 20, "g": 20, "b": 20, "a": 255}}}),
+    )["atom_id"]
+        .as_str()
+        .expect("draw_stroke 应返回 atom_id")
+        .to_owned();
+    let atom_b = call(
+        &mut ctx,
+        "draw_stroke",
+        json!({"layer_id": "L", "object_id": "ob",
+               "data": {"points": [[300.0, 300.0], [340.0, 300.0]], "size": 20.0,
+                        "color": {"r": 20, "g": 20, "b": 20, "a": 255}}}),
+    )["atom_id"]
+        .as_str()
+        .expect("draw_stroke 应返回 atom_id")
+        .to_owned();
+
+    let ink = |ctx: &mut ToolContext<'_>, x: f64, y: f64| -> usize {
+        let (_, _, pixels) = ctx
+            .workspace
+            .render_region_raw("doc_flow", Bbox::new(x, y, 120.0, 120.0))
+            .expect("区域渲染应成功");
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 8 && (pixel[0] < 200 || pixel[1] < 200 || pixel[2] < 200))
+            .count()
+    };
+
+    assert!(ink(&mut ctx, 60.0, 60.0) > 0, "第一笔应可见");
+    assert!(ink(&mut ctx, 260.0, 260.0) > 0, "第二笔应可见");
+
+    // 撤销第二笔 → 只剩第一笔。
+    assert_eq!(
+        call(&mut ctx, "revert", json!({"atom_id": atom_b}))["ok"],
+        json!(true)
+    );
+    assert!(ink(&mut ctx, 60.0, 60.0) > 0, "撤销第二笔后第一笔仍在");
+    assert_eq!(ink(&mut ctx, 260.0, 260.0), 0, "撤销第二笔后第二笔消失");
+
+    // 再撤销第一笔 → 两笔都消失（多级撤销）。
+    assert_eq!(
+        call(&mut ctx, "revert", json!({"atom_id": atom_a}))["ok"],
+        json!(true)
+    );
+    assert_eq!(ink(&mut ctx, 60.0, 60.0), 0, "多级撤销后第一笔也消失");
+    assert_eq!(ink(&mut ctx, 260.0, 260.0), 0);
+
+    // 重做第一笔（reapply 目标是**原始原子**）→ 只有第一笔回来。
+    assert_eq!(
+        call(&mut ctx, "reapply", json!({"atom_id": atom_a}))["ok"],
+        json!(true)
+    );
+    assert!(ink(&mut ctx, 60.0, 60.0) > 0, "重做后第一笔恢复");
+    assert_eq!(ink(&mut ctx, 260.0, 260.0), 0, "未重做的第二笔仍为空");
+}
