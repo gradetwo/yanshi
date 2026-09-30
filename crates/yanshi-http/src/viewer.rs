@@ -170,6 +170,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <button data-tool="select_rect">选区</button>
   <button id="clearSelection">清除选区</button>
   <button data-tool="text">文本</button>
+      <button data-tool="medium_dab">介质</button>
   <button data-tool="mask_rect">矩形蒙版</button>
   <button data-tool="mask_ellipse">椭圆蒙版</button>
   <button id="fillLayer">填充图层</button>
@@ -963,6 +964,114 @@ function closeOpenDialog() {
   const dialog = $("openDialog");
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
+}
+
+/// 介质插件的宿主侧加载器 ✓（设计 11.1 的 **WASM 插件**；宿主 = 浏览器 ✓）。
+///
+/// 加载时**强制三条边界** ✓：
+/// ① `imports` 必须为空 ✓ —— 插件拿不到任何宿主能力，因此**无网络、无时钟** ✓（比声明更硬 ✓）；
+/// ② ABI 版本必须匹配 ✓；③ `id + version` 随对象记录 ✓（由调用方写进 `data.medium` ✓）。
+const MEDIUMS = {
+  // 示范介质：仓库里的零依赖插件，产物提交在 assets/mediums/ ✓。
+  example: { id: "example-dab", version: 1, url: "/mediums/example-dab.wasm" },
+};
+
+async function loadMedium(name) {
+  const spec = MEDIUMS[name];
+  if (!spec) throw new Error("未知介质 " + name);
+  if (spec.instance) return spec;
+  const bytes = await fetch(spec.url).then((response) => response.arrayBuffer());
+  const module = await WebAssembly.compile(bytes);
+  const imports = WebAssembly.Module.imports(module);
+  if (imports.length !== 0) {
+    throw new Error("插件 import 了宿主函数，违反插件边界：" + imports.map((i) => i.name).join(", "));
+  }
+  const instance = await WebAssembly.instantiate(module, {});
+  const abi = instance.exports.yanshi_abi_version();
+  if (abi !== spec.version) {
+    throw new Error("插件 ABI 版本 " + abi + " 与登记版本 " + spec.version + " 不一致");
+  }
+  spec.instance = instance;
+  spec.maxDab = instance.exports.yanshi_max_dab();
+  return spec;
+}
+
+/// 用**插件介质**在点击处落一个点 ✓：插件产出 RGBA → 上传 CAS → `import_image` →
+/// 再用 `replace_object_data` 把介质描述符钉到对象上 ✓。
+///
+/// 为什么把插件输出**存成位图**（而不是让内核去调用插件）：内核自己就是 wasm 模块 ✓，
+/// 无法实例化别的 wasm 模块 ✗；插件只能在宿主侧跑 ✓。而把输出写进 CAS ⇒
+/// 像素**随日志固化** ✓ ⇒ "升级插件不改写旧文档渲染"这条不变量自然成立 ✓（历史可复现 ✓）。
+async function mediumDab(name, point) {
+  let spec;
+  try {
+    spec = await loadMedium(name);
+  } catch (error) {
+    log("介质加载失败：" + (error && error.message ? error.message : error), "#c33");
+    return;
+  }
+  const size = Math.min(48, spec.maxDab);
+  const api = spec.instance.exports;
+  const written = api.yanshi_dab(Number($("strength").value) || 40, size, 1000);
+  const pixels = new Uint8ClampedArray(api.memory.buffer, api.yanshi_dab_ptr(), written);
+  const image = new ImageData(new Uint8ClampedArray(pixels), size, size);
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  canvas.getContext("2d").putImageData(image, 0, 0);
+  const rgba = new Uint8Array(canvas.getContext("2d").getImageData(0, 0, size, size).data.buffer);
+
+  const upload = await fetch(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: rgba,
+  }).then((response) => response.json()).catch(() => ({ ok: false, error_code: "network" }));
+  if (!upload.ok) {
+    log("介质上传失败：" + (upload.error_code || "unknown"), "#c33");
+    return;
+  }
+
+  const layerId = "medium_" + ulid();
+  const created = await callTool("create_layer", { layer_id: layerId, name: spec.id }, { refresh: false });
+  if (!created.ok) {
+    log("介质落笔失败（新建图层）：" + (created.error_code || "unknown"), "#c33");
+    return;
+  }
+  const objectId = "dab_" + ulid();
+  const x = Math.round(point.x - size / 2);
+  const y = Math.round(point.y - size / 2);
+  const imported = await callTool("import_image", {
+    layer_id: layerId,
+    object_id: objectId,
+    bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
+    region: { x, y, w: size, h: size },
+  }, { refresh: false });
+  if (!imported.ok) {
+    log("介质落笔失败：" + (imported.error_code || "unknown") + " " +
+        ((imported.context && imported.context.detail) || ""), "#c33");
+    return;
+  }
+  // 介质描述符（id + version）钉在对象数据上 ⇒ 随原子记录、随日志固化 ✓。
+  const replaced = await callTool("replace_object_data", {
+    object_id: objectId,
+    data: {
+      bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
+      region: { x, y, w: size, h: size },
+      width: size,
+      height: size,
+      medium: { id: spec.id, version: spec.version },
+    },
+  }, { refresh: false });
+  if (!replaced.ok) {
+    log("介质描述符记录失败：" + (replaced.error_code || "unknown"), "#c33");
+    return;
+  }
+  log("已用介质「" + spec.id + " v" + spec.version + "」落笔（" + size + "×" + size + "）");
+  await refreshLayers();
+  $("layer").value = layerId;
+  state.layerId = layerId;
+  await refreshEffects();
+  await refreshPreview();
 }
 
 /// 导入本地图片：浏览器解码 → 原始 RGBA → 上传（`POST /api/blob`）→ `import_image`。
@@ -1884,6 +1993,13 @@ board.addEventListener("pointerdown", (event) => {
   if (state.tool === "text") {
     event.preventDefault();
     void commitText(localPoint(event));
+    return;
+  }
+  if (state.tool === "medium_dab") {
+    // 介质插件（设计 11.1）：宿主实例化插件 → 产出 RGBA → 入 CAS 与日志 ✓。
+    event.preventDefault();
+    const point = localPoint(event);
+    void mediumDab("example", { x: point.x, y: point.y });
     return;
   }
   if (state.tool === MOVE_TOOL) {

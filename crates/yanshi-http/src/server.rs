@@ -62,6 +62,8 @@ pub struct HttpOptions {
     pub wasm_dir: Option<PathBuf>,
     /// 品牌资源目录（`/brand/*` 与 `/favicon.*` 从这里取；`None` 表示不提供）。
     pub brand_dir: Option<PathBuf>,
+    /// 介质插件目录（设计 11.1）：`GET /mediums/{file}` ✓。
+    pub medium_dir: Option<PathBuf>,
 }
 
 impl Default for HttpOptions {
@@ -87,6 +89,7 @@ impl Default for HttpOptions {
             // 默认指向仓库内 `wasm-bindgen --target web` 的输出目录（相对当前工作目录）。
             wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
             brand_dir: Some(PathBuf::from("assets/brand")),
+            medium_dir: Some(PathBuf::from("assets/mediums")),
         }
     }
 }
@@ -112,6 +115,8 @@ impl HttpOptions {
                 "--wasm-dir" => options.wasm_dir = Some(value_of("--wasm-dir")?.into()),
                 "--no-wasm" => options.wasm_dir = None,
                 "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
+                "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
+                "--no-mediums" => options.medium_dir = None,
                 "--no-brand" => options.brand_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
                 "--doc" => options.doc_id = value_of("--doc")?,
@@ -425,6 +430,13 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     if let Some(file) = path.strip_prefix("/wasm/") {
         return match method {
             "GET" => wasm_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if let Some(file) = path.strip_prefix("/mediums/") {
+        // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
+        return match method {
+            "GET" => medium_asset(state, file),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -932,6 +944,32 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
             .with_header("Cache-Control", "no-cache"),
         Err(_) => crate::http::not_found(format!(
             "WASM 产物缺失：{}（先运行 cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release 与 wasm-bindgen）",
+            path.display()
+        )),
+    }
+}
+
+/// `GET /mediums/{file}`：提供 `assets/mediums/` 下的介质插件 ✓。
+///
+/// 只接受 **直接位于该目录、以 `.wasm` 结尾** 的文件名 ✓（拒绝 `..`、`/` 与其它扩展名 ✓），
+/// 因此不会把仓库里任意文件暴露出去 ✓（与 `/brand/` 的白名单同思路 ✓，
+/// 但这里允许"加一个插件就多一个文件" ✓ —— 正是设计里"介质可扩展"的诉求 ✓）。
+fn medium_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..") || file.contains('/') || !file.ends_with(".wasm") {
+        return crate::http::bad_request("非法介质资源名（只接受 assets/mediums 下的 *.wasm）");
+    }
+    let dir = state
+        .options
+        .medium_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("assets/mediums"));
+    let path = dir.join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::bytes(200, "application/wasm", bytes)
+            // 插件产物不可变（按 id + version 引用）⇒ 可长期缓存 ✓。
+            .with_header("Cache-Control", "public, max-age=31536000, immutable"),
+        Err(_) => crate::http::not_found(format!(
+            "介质插件缺失：{}（先运行 make build-medium）",
             path.display()
         )),
     }
