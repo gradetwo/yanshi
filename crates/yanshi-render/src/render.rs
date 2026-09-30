@@ -838,17 +838,32 @@ impl Renderer {
                     ..
                 } => {
                     // 路线 A 的最小切片：内置 5×7 ASCII 位图字体 ✓（CJK 子集为后续项 ✓）。
+                    // 文本同样受选区约束 ✓（逐像素 ✓）。
                     let scale = crate::object::text_scale_for_size(size);
-                    let drawn = crate::font::draw_text(
-                        layer_buffer,
-                        text.as_str(),
-                        position.0,
-                        position.1,
-                        scale,
-                        color,
-                        align.as_str(),
-                        0.0,
-                    );
+                    let text_clip = object_clip(state, &layer.id, object);
+                    let drawn = match &text_clip {
+                        Some(clip) => crate::font::draw_text_clipped(
+                            layer_buffer,
+                            text.as_str(),
+                            position.0,
+                            position.1,
+                            scale,
+                            color,
+                            align.as_str(),
+                            0.0,
+                            &|x, y| clip.coverage(x, y),
+                        ),
+                        None => crate::font::draw_text(
+                            layer_buffer,
+                            text.as_str(),
+                            position.0,
+                            position.1,
+                            scale,
+                            color,
+                            align.as_str(),
+                            0.0,
+                        ),
+                    };
                     if drawn == 0 {
                         stats.unsupported.push(format!(
                             "文本未绘制出像素（对象 {}，文本 {:?}）",

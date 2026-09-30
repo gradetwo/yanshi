@@ -144,6 +144,35 @@ pub fn draw_text(
     align: &str,
     box_width: f64,
 ) -> u32 {
+    draw_text_clipped(
+        buffer,
+        text,
+        x,
+        y,
+        scale,
+        color,
+        align,
+        box_width,
+        &|_, _| 1.0,
+    )
+}
+
+/// 与 [`draw_text`] 相同，但**逐像素**乘以选区覆盖度 ✓（选区外一个像素都不写 ✓）。
+///
+/// 与笔触/擦除/形状一致：覆盖度在**像素中心**取样 ✓
+/// （用左边界取样会让选区边界那一列被多算进去 ✗ —— 形状那边实测多出一整列 ✓）。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_clipped(
+    buffer: &mut Buffer,
+    text: &str,
+    x: f64,
+    y: f64,
+    scale: u32,
+    color: [f32; 4],
+    align: &str,
+    box_width: f64,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) -> u32 {
     let font = BitmapFont::builtin();
     let scale = scale.max(1);
     // 直通线性 → 预乘：blend_at 要求预乘颜色。
@@ -195,6 +224,18 @@ pub fn draw_text(
                             if local_x >= buffer_width || local_y >= buffer_height {
                                 continue;
                             }
+                            // 覆盖度在**像素中心**取样 ✓（与其它图元一致 ✓）。
+                            let selection =
+                                coverage(document_x as f64 + 0.5, document_y as f64 + 0.5)
+                                    .clamp(0.0, 1.0);
+                            if selection <= 0.0 {
+                                continue;
+                            }
+                            let source = if selection >= 1.0 {
+                                source
+                            } else {
+                                premultiply([color[0], color[1], color[2], color[3] * selection])
+                            };
                             buffer.blend_at(local_x, local_y, source);
                             drawn += 1;
                         }

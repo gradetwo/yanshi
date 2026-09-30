@@ -272,3 +272,74 @@ fn a_selection_clips_a_fill_and_is_reversible() {
         "删除选区后填充应恢复为整幅（选区外仍无改动 ⇒ 裁剪被错误地烘焙进像素）"
     );
 }
+
+/// 文本对象同样受选区约束 ✓（与笔触/擦除/形状同一"逐像素覆盖度"模式 ✓）。
+#[test]
+fn a_selection_clips_text() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    }
+    let blank = render(&mut workspace);
+
+    // 选区：左半 0..40（文本放在 10.. 处，会跨过选区边界）。
+    {
+        let mut ctx = context(&mut workspace);
+        let created = registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_text",
+                    "shape": {"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 40.0, "h": 128.0}},
+                    "feather": 0.0, "invert": false, "mode": "new"}),
+        );
+        assert_eq!(created["ok"], json!(true), "{created}");
+    }
+    {
+        let mut ctx = context(&mut workspace);
+        let drawn = registry.call(
+            &mut ctx,
+            "draw_text",
+            &json!({"layer_id": "L", "object_id": "z_text",
+                    "data": {"text": "ABCDEFGH", "font": "builtin", "size": 14.0,
+                             "color": {"r": 250, "g": 250, "b": 250, "a": 255},
+                             "position": [4.0, 40.0], "align": "left"}}),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+    let clipped = render(&mut workspace);
+    let changes = changed(&blank, &clipped);
+    assert!(!changes.is_empty(), "选区内应当有文本（前置条件）");
+    let outside: Vec<(usize, usize)> = changes.iter().copied().filter(|(x, _)| *x >= 40).collect();
+    assert!(
+        outside.is_empty(),
+        "选区外不应有文本像素（越界 {} 个，例如 {:?}）",
+        outside.len(),
+        outside.iter().take(5).collect::<Vec<_>>()
+    );
+
+    // 删除选区 ⇒ 整行文字都应出现 ✓（可逆 ✓）。
+    {
+        let mut ctx = context(&mut workspace);
+        let deleted = registry.call(
+            &mut ctx,
+            "delete_selection",
+            &json!({"selection_id": "sel_text"}),
+        );
+        assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    }
+    let unclipped = render(&mut workspace);
+    let after = changed(&blank, &unclipped);
+    assert!(
+        after.iter().any(|(x, _)| *x >= 40),
+        "删除选区后整行文字都应出现（选区外仍空白 ⇒ 裁剪被错误地烘焙进像素）"
+    );
+}
