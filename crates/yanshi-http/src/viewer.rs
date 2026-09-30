@@ -88,6 +88,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="rect">矩形</button>
         <button data-tool="ellipse">椭圆</button>
         <button data-tool="erase">橡皮</button>
+        <button data-tool="clone_stamp">仿制</button>
+        <button data-tool="heal_stamp">修复</button>
+        <button data-tool="smudge">涂抹</button>
+        <button data-tool="liquify_push">液化推</button>
+        <button data-tool="liquify_twirl">液化旋</button>
+        <button data-tool="liquify_pinch">液化缩</button>
         <button data-tool="undo">撤销</button>
         <button data-tool="redo">重做</button>
         <button data-tool="refresh">刷新</button>
@@ -100,6 +106,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
         <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
         <input id="color" type="color" value="#222222" />
+        <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
         <label>图层 <select id="layer"></select></label>
       </div>
     </div>
@@ -189,6 +196,8 @@ const state = {
   // 显示缩放（1 = 整幅适配容器）。视口是**文档坐标**子矩形，内核按 1:1 渲染它，
   // CSS 把它放大到容器尺寸 —— 与设计的 viewport/tile 数据流一致（6.6/6.7）。
   zoom: 1,
+  // 仿制图章 / 修复画笔的源点（文档坐标）：Alt+点击设置（与常见图像编辑器一致）。
+  sourcePoint: null,
   dragging: null,
   points: [],
   wasm: null,
@@ -1197,6 +1206,7 @@ function redraw() {
   // 每次重绘前同步几何：窗口缩放、滚动或布局变化都会让覆盖层偏离内容层。
   syncOverlayGeometry();
   octx.clearRect(0, 0, overlay.width, overlay.height);
+  redrawSourceMark();
   if (!state.dragging) return;
   octx.strokeStyle = $("color").value;
   octx.lineWidth = Number($("size").value);
@@ -1233,6 +1243,83 @@ function localPoint(event) {
 
 let pendingStroke = null;
 let panState = null;
+
+/// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
+/// 拖动中仍用覆盖层显示笔迹（不给本地乐观像素 —— 内核目前只为 `draw_stroke` 提供增量预览）。
+const RETOUCH_TOOLS = new Set([
+  "clone_stamp", "heal_stamp", "smudge",
+  "liquify_push", "liquify_twirl", "liquify_pinch",
+]);
+
+/// Alt+点击设置仿制/修复的源点。
+board.addEventListener("pointerdown", (event) => {
+  if (!event.altKey || !RETOUCH_TOOLS.has(state.tool)) return;
+  const point = localPoint(event);
+  state.sourcePoint = { x: Math.round(point.x), y: Math.round(point.y) };
+  log("已设置源点 (" + state.sourcePoint.x + ", " + state.sourcePoint.y + ")");
+  redrawSourceMark();
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
+/// 在覆盖层上标出源点（只是提示，不写入任何原子）。
+function redrawSourceMark() {
+  const point = state.sourcePoint;
+  if (!point || !RETOUCH_TOOLS.has(state.tool)) return;
+  const canvasPoint = toCanvas(point);
+  if (canvasPoint.x < 0 || canvasPoint.y < 0) return;
+  octx.save();
+  octx.strokeStyle = "#4a7dff";
+  octx.lineWidth = 1;
+  octx.beginPath();
+  octx.arc(canvasPoint.x, canvasPoint.y, 5, 0, Math.PI * 2);
+  octx.moveTo(canvasPoint.x - 8, canvasPoint.y);
+  octx.lineTo(canvasPoint.x + 8, canvasPoint.y);
+  octx.moveTo(canvasPoint.x, canvasPoint.y - 8);
+  octx.lineTo(canvasPoint.x, canvasPoint.y + 8);
+  octx.stroke();
+  octx.restore();
+}
+
+/// 提交一次修图/液化操作：把拖动点列交给对应工具（服务端构造原子）。
+async function commitRetouch() {
+  const points = state.points.map((point) => [Math.round(point.x), Math.round(point.y)]);
+  if (points.length === 0) return;
+  const size = Number($("size").value);
+  const strength = Number($("strength").value) / 100;
+  const tool = state.tool;
+  let args = { layer_id: state.layerId, points, size };
+  if (tool === "clone_stamp" || tool === "heal_stamp") {
+    if (!state.sourcePoint) {
+      log("请先按住 Alt 点击设置源点（仿制/修复需要源点）", "#c33");
+      return;
+    }
+    args.source_offset = [
+      state.sourcePoint.x - points[0][0],
+      state.sourcePoint.y - points[0][1],
+    ];
+  } else if (tool === "liquify_push") {
+    // 方向取整条笔迹的首末向量；点数不足时用最后一点相对前一点的走向。
+    const first = points[0];
+    const last = points[points.length - 1];
+    let direction = [last[0] - first[0], last[1] - first[1]];
+    if (direction[0] === 0 && direction[1] === 0) direction = [1, 0];
+    args.direction = direction;
+    args.strength = strength;
+  } else if (tool === "smudge") {
+    args.smudge_length = Math.max(1, Math.round(size));
+  } else {
+    args.strength = strength;
+  }
+  const value = await callTool(tool, args, { refresh: false });
+  if (!value.ok) {
+    log("操作失败：" + (value.error_code || "unknown") + " " +
+        ((value.context && value.context.detail) || ""), "#c33");
+    return;
+  }
+  await refreshPreview();
+  redraw();
+}
 
 // 滚轮缩放：以光标下的文档点为锚点（图像编辑器的常规行为）。
 board.addEventListener("wheel", (event) => {
@@ -1295,7 +1382,7 @@ board.addEventListener("pointermove", (event) => {
   const point = localPoint(event);
   if (state.tool === "rect" || state.tool === "ellipse") state.points = [state.points[0], point];
   else state.points.push(point);
-  if (pendingStroke && state.points.length >= 2) {
+  if (pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
     // 乐观渲染：拖动中只更新**本地覆盖层**（不进原子日志），落笔才提交最终原子。
     updatePreviewOverlay(pendingStroke);
   }
@@ -1305,6 +1392,13 @@ board.addEventListener("pointermove", (event) => {
 board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
+  if (RETOUCH_TOOLS.has(state.tool)) {
+    state.points.push(localPoint(event));
+    await commitRetouch();
+    state.points = [];
+    redraw();
+    return;
+  }
   if (state.tool === "rect" || state.tool === "ellipse") state.points.push(localPoint(event));
   if (pendingStroke && kernelReady()) {
     // 落笔：内核合并本地日志并失效重算受影响 tile，这里**按返回的脏区重绘**。

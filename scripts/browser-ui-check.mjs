@@ -305,6 +305,50 @@ const fingerprintAfterEffect = effectResult.fingerprint;
 await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
 await new Promise((r) => setTimeout(r, 1800));
 
+// 基础修图 / 基础液化（设计 13.3）：工具已存在，这里验证查看器真的能驱动它们。
+// 先画一笔有结构的内容（液化作用在纯白上不会有可见变化 —— 这一点本身值得记住）。
+await strokeAt(0.3, 0.5, 50);
+await strokeAt(0.45, 0.48, 52);
+const retouchBefore = await evaluate(canvasFingerprint);
+const retouchResult = await evaluate(`(async () => {
+  const select = (name) => {
+    const button = document.querySelector('button[data-tool="' + name + '"]');
+    button.click();
+    return button;
+  };
+  // 液化推：沿笔迹方向推挤。
+  select("liquify_push");
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (type, point) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 51, pointerType: "mouse",
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+  }));
+  fire("pointerdown", at(0.3, 0.5));
+  await new Promise((r) => setTimeout(r, 80));
+  fire("pointermove", at(0.4, 0.5));
+  await new Promise((r) => setTimeout(r, 80));
+  fire("pointermove", at(0.5, 0.52));
+  await new Promise((r) => setTimeout(r, 80));
+  fire("pointerup", at(0.5, 0.52));
+  await new Promise((r) => setTimeout(r, 2500));
+  const after = ${canvasFingerprint};
+
+  // 仿制图章：未设置源点时必须给出明确提示，而不是静默无事发生。
+  select("clone_stamp");
+  fire("pointerdown", at(0.4, 0.6));
+  fire("pointerup", at(0.4, 0.6));
+  await new Promise((r) => setTimeout(r, 800));
+  // 恢复画笔：否则后面的用例画出的笔迹会被路由到仿制（缺源点 ⇒ 不产生原子）。
+  select("brush");
+  return {
+    after,
+    log: document.getElementById("log").innerText.slice(0, 400),
+  };
+})()`);
+const retouchAfter = retouchResult.after;
+
 // 历史浏览（设计 13.2）：列表随提交增长、能按类型/操作者筛选、且「回到此处」真的回到该时刻。
 // 用**画布像素**判断（局部数据）；不要反复取同一个服务端 blob 地址（immutable 会被缓存）。
 const historyBefore = await historyRows();
@@ -401,6 +445,20 @@ if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEf
   problems.push("应用 invert 后画布像素没有任何变化");
 }
 
+// 基础修图 / 液化
+if (retouchResult.log.includes("操作失败") || retouchResult.log.includes("错误 ")) {
+  problems.push(`修图/液化出现工具错误：${JSON.stringify(retouchResult.log.slice(0, 200))}`);
+}
+if (!retouchResult.log.includes("请先按住 Alt")) {
+  problems.push(`仿制图章未设置源点时没有提示：${JSON.stringify(retouchResult.log.slice(0, 120))}`);
+}
+if (retouchAfter.opaque !== retouchAfter.total) {
+  problems.push(`修图后画布停在透明态：${retouchAfter.opaque}/${retouchAfter.total}`);
+}
+if (retouchAfter.sum === retouchBefore.sum) {
+  problems.push("液化推没有改变画布像素");
+}
+
 // 历史浏览（设计 13.2）
 if (historyAfter.length <= historyBefore.length) {
   problems.push(`历史列表没有随提交增长：${historyBefore.length} → ${historyAfter.length}`);
@@ -455,6 +513,7 @@ console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometr
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
+console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${retouchResult.log.includes("请先按住 Alt") ? "✓" : "✗"}`);
 console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
