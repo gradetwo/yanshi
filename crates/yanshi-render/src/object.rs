@@ -386,7 +386,7 @@ const PATH_SUBDIVISIONS: usize = 16;
 /// 相邻节点之间是三次贝塞尔 ✓：`P(t) = (1-t)³·A + 3(1-t)²t·(A+out_A) + 3(1-t)t²·(B+in_B) + t³·B` ✓，
 /// 其中 `in`/`out` 是**相对节点的偏移** ✓（与常见钢笔工具一致 ✓）。
 /// **零柄 ⇒ 退化成直线** ✓ ⇒ 与同点列的笔迹**逐点一致** ✓（`convert_to_path` 的往返测试就靠这条 ✓）。
-fn flatten_path(nodes: &[Value], closed: bool) -> Vec<(f64, f64)> {
+pub fn flatten_path(nodes: &[Value], closed: bool) -> Vec<(f64, f64)> {
     let parsed: Vec<(f64, f64, f64, f64, f64, f64)> = nodes
         .iter()
         .filter_map(|node| {

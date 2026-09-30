@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**90 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+**91 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -27,8 +27,12 @@ into a polyline and reuses the stroke primitive, so brush parameters, appearance
 planning and hit testing are inherited rather than reimplemented, while resolution independence comes from
 geometry living in the log being re-rasterised per view. A segment with zero handles emits only its start
 point, which is what makes `convert_to_path` keep the picture identical pixel for pixel; subdividing straight
-segments looked harmless but shifted the sampling phase and changed 3042 bytes. `path_edit` accepts both
-kinds and their operations differ: reversing a path swaps each node's handles, since reversing only the nodes
+segments looked harmless but shifted the sampling phase and changed 3042 bytes. `convert_to_shape` turns a path, or a stroke, into a polygon shape, taking its vertices from the same
+flattening the renderer uses so that the shape's outline and what the renderer draws cannot drift apart, and
+keeping the style fields while replacing `nodes` or `points` with `geometry`. The polygon closes implicitly,
+which is what makes the outline a filled region, and the two atoms share one changeset so the conversion is
+withdrawable in one action. The `path_edit` operator of the same name delegates to this implementation rather
+than growing a second one. `path_edit` accepts both kinds and their operations differ: reversing a path swaps each node's handles, since reversing only the nodes
 would silently deform the curve, and closing a path sets the flag rather than appending a node. `split` cuts
 an open path at a node index into two, each half keeping the handle that belongs to it so the halves together
 reproduce the original curve, and it refuses a closed path because a loop needs two cuts and the design does
