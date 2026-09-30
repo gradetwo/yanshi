@@ -1,7 +1,11 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**89 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+**89 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+(`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
+`apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
+seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
+registration or network path exists yet;
 select them with `--profile` (HTTP and MCP).
 
 The most recent core tools come from design section 9: the object-group operations `create_group`,

@@ -3698,17 +3698,16 @@ fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
         // 这属于**设计决策** ✓（放开校验 ✓ 还是删掉折叠层那个分支 ✗），
         // 本片**不擅自决定** ✓：**跳过并如实报告** ✓，让调用方知道"这几条没能撤销" ✓。
         let mut targets: Vec<(String, bool)> = Vec::new();
-        let mut skipped_history = 0usize;
-        let mut found = 0usize;
+        let mut found: usize = 0;
+        let skipped_history = 0usize;
         for atom in document.log().atoms() {
             if atom.changeset_id.as_deref() != Some(changeset_id.as_str()) {
                 continue;
             }
             found += 1;
-            if atom.kind == AtomKind::Revert || atom.kind == AtomKind::Reapply {
-                skipped_history += 1;
-                continue;
-            }
+            // **历史原子也要撤销** ✓（用户已拍板放开校验 ✓，见 `log.rs` 里那段说明 ✓）：
+            // 撤销一条 `Revert` ⇔ `Reapply` ✓（设计 793 的恒等式 ✓，折叠层的动作表实现的正是它 ✓）
+            // ⇒ 变更集里的一切都能被撤 ✓，**"撤销本身也能被一次撤销"** 于是成立 ✓。
             targets.push((atom.id.clone(), false));
         }
         // **"不存在"与"只含历史原子"是两件事** ✓：前者要报错 ✓；
