@@ -377,6 +377,43 @@ const overflow = await evaluate(`(() => {
   };
 })()`);
 
+// 蒙版编辑（设计 13.3 高级工具）：填充整幅 → 拖一个矩形蒙版 → 蒙版外的内容应被裁掉。
+// 自给自足：用独立文档，避免继承前序状态（这条规则本文件已强调多次）。
+const maskDoc = "uicheck-mask-" + Date.now().toString(36);
+const maskToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: maskDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const maskResult = await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+  const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
+  document.getElementById("zoomFit").click();
+  await new Promise((r) => setTimeout(r, 800));
+  // 铺满底色
+  document.getElementById("color").value = "#1f6feb";
+  document.getElementById("fillLayer").click();
+  await new Promise((r) => setTimeout(r, 2000));
+  const filled = ink();
+  // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
+  document.getElementById("feather").value = "0";
+  document.querySelector('button[data-tool="mask_rect"]').click();
+  fire("pointerdown", at(0.25, 0.25), 301);
+  fire("pointermove", at(0.75, 0.75), 301);
+  await new Promise((r) => setTimeout(r, 100));
+  fire("pointerup", at(0.75, 0.75), 301);
+  await new Promise((r) => setTimeout(r, 2500));
+  document.querySelector('button[data-tool="brush"]').click();
+  return { filled, masked: ink(), log: document.getElementById("log").innerText.slice(0, 200) };
+})()`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));
@@ -732,6 +769,18 @@ if (overflow.scrollWidth > overflow.clientWidth + 1) {
   );
 }
 
+// 蒙版编辑
+if (maskResult.filled === 0) {
+  problems.push("蒙版用例前置条件不成立：填充没有产生内容");
+} else if (!(maskResult.masked < maskResult.filled)) {
+  problems.push(
+    `蒙版没有裁掉区域外的内容：着色 ${maskResult.filled} → ${maskResult.masked}｜日志 ${JSON.stringify(maskResult.log.slice(0, 120))}`
+  );
+}
+if (!maskResult.log.includes("添加") || maskResult.log.includes("失败")) {
+  problems.push(`蒙版日志未报告成功：${JSON.stringify(maskResult.log.slice(0, 120))}`);
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -849,6 +898,7 @@ console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
 console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);
 console.log(`  dialog.open=${overflow.dialogOpen}｜自身超宽的：${overflow.scrollWide.join(", ")}`);

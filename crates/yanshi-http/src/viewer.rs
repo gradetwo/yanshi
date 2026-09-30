@@ -131,6 +131,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="liquify_twirl">液化旋</button>
         <button data-tool="liquify_pinch">液化缩</button>
         <button data-tool="eyedropper">吸管</button>
+        <button data-tool="mask_rect">矩形蒙版</button>
+        <button data-tool="mask_ellipse">椭圆蒙版</button>
         <button id="fillLayer">填充图层</button>
         <button data-tool="undo">撤销</button>
         <button data-tool="redo">重做</button>
@@ -145,6 +147,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
         <input id="color" type="color" value="#222222" />
         <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
+        <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
         <label>图层 <select id="layer"></select></label>
       </div>
     </div>
@@ -1372,12 +1375,12 @@ function redraw() {
   if (!state.dragging) return;
   octx.strokeStyle = $("color").value;
   octx.lineWidth = Number($("size").value);
-  if (state.tool === "rect" && state.points.length === 2) {
+  if (state.points.length === 2 && (state.tool === "rect" || MASK_TOOLS.has(state.tool))) {
     const [a, b] = state.points;
     const pa = toCanvas(a);
     const pb = toCanvas(b);
     octx.strokeRect(pa.x, pa.y, pb.x - pa.x, pb.y - pa.y);
-  } else if (state.tool === "ellipse" && state.points.length === 2) {
+  } else if (state.points.length === 2 && (state.tool === "ellipse" || state.tool === "mask_ellipse")) {
     const [a, b] = state.points;
     const pa = toCanvas(a);
     const pb = toCanvas(b);
@@ -1447,6 +1450,51 @@ async function fillCurrentLayer() {
     return;
   }
   log("已填充图层 " + state.layerId);
+  await refreshPreview();
+}
+
+/// 蒙版工具（设计 13.3「蒙版编辑」）：拖动出一个形状 → `create_mask` → 用 `set_property`
+/// 把 `mask_id` 挂到**当前图层**（工具摘要里写的正是这个工作流 ✓）。
+const MASK_TOOLS = new Set(["mask_rect", "mask_ellipse"]);
+
+async function commitMask() {
+  const points = state.points;
+  if (points.length < 2) {
+    log("蒙版需要拖出一个区域", "#c33");
+    return;
+  }
+  const [a, b] = points;
+  const bbox = {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    w: Math.max(1, Math.abs(b.x - a.x)),
+    h: Math.max(1, Math.abs(b.y - a.y)),
+  };
+  const kind = state.tool === "mask_ellipse" ? "ellipse" : "rect";
+  const maskId = "mask_" + ulid();
+  const feather = Number($("feather").value) || 0;
+  const created = await callTool(
+    "create_mask",
+    { mask_id: maskId, shape: { kind, bbox }, feather, invert: false, linked_layer: state.layerId },
+    { refresh: false }
+  );
+  if (!created.ok) {
+    log("创建蒙版失败：" + (created.error_code || "unknown") + " " +
+        ((created.context && created.context.detail) || ""), "#c33");
+    return;
+  }
+  const attached = await callTool(
+    "set_property",
+    { layer_id: state.layerId, key: "mask_id", value: maskId },
+    { refresh: false }
+  );
+  if (!attached.ok) {
+    log("挂载蒙版失败：" + (attached.error_code || "unknown") + " " +
+        ((attached.context && attached.context.detail) || ""), "#c33");
+    return;
+  }
+  log("已为图层 " + state.layerId + " 添加" + (kind === "ellipse" ? "椭圆" : "矩形") +
+      "蒙版（羽化 " + feather + "）");
   await refreshPreview();
 }
 
@@ -1603,6 +1651,13 @@ board.addEventListener("pointermove", (event) => {
 board.addEventListener("pointerup", async (event) => {
   if (state.dragging !== event.pointerId) return;
   state.dragging = null;
+  if (MASK_TOOLS.has(state.tool)) {
+    state.points.push(localPoint(event));
+    await commitMask();
+    state.points = [];
+    redraw();
+    return;
+  }
   if (RETOUCH_TOOLS.has(state.tool)) {
     state.points.push(localPoint(event));
     await commitRetouch();
