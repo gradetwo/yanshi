@@ -183,10 +183,13 @@ const zoomCheck = await evaluate(`(async () => {
 })()`);
 
 // 向服务端核对：文档中心附近应当出现刚画的笔迹。
-const token = new URL(url).searchParams.get("token");
-const docId = new URL(url).searchParams.get("doc") || "default";
+const parsedUrl = new URL(url);
+// 服务端地址从传入的查看器地址推导：隔离运行时临时实例在别的端口上，不能写死端口。
+const origin = parsedUrl.origin;
+const token = parsedUrl.searchParams.get("token");
+const docId = parsedUrl.searchParams.get("doc") || "default";
 const renderCenter = await fetch(
-  `http://127.0.0.1:8110/api/tools/render_region?doc=${docId}&token=${token}`,
+  `${origin}/api/tools/render_region?doc=${docId}&token=${token}`,
   {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -195,11 +198,33 @@ const renderCenter = await fetch(
 ).then((r) => r.json());
 let centerInk = -1;
 if (renderCenter.raw_url) {
-  const bytes = new Uint8Array(await fetch(`http://127.0.0.1:8110${renderCenter.raw_url}`).then((r) => r.arrayBuffer()));
+  const bytes = new Uint8Array(await fetch(`${origin}${renderCenter.raw_url}`).then((r) => r.arrayBuffer()));
   centerInk = 0;
   for (let i = 0; i < bytes.length; i += 4) {
     if (bytes[i + 3] > 8 && (bytes[i] < 200 || bytes[i + 1] < 200 || bytes[i + 2] < 200)) centerInk++;
   }
+}
+
+// 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
+const exportResult = await evaluate(`(async () => {
+  document.getElementById("exportPng").click();
+  for (let i = 0; i < 40; i++) {
+    if (window.yanshiStats.lastExport) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return window.yanshiStats.lastExport || null;
+})()`);
+let exportPng = null;
+if (exportResult && exportResult.url) {
+  const bytes = new Uint8Array(await fetch(`${origin}${exportResult.url}`).then((r) => r.arrayBuffer()));
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  exportPng = {
+    isPng,
+    width: view.getUint32(16),
+    height: view.getUint32(20),
+    bytes: bytes.length,
+  };
 }
 
 const thumbBefore = await evaluate(`document.getElementById("thumb").src`);
@@ -248,6 +273,13 @@ if (zoomCheck.painted === 0) {
 if (centerInk <= 0) {
   problems.push(`缩放后在画布中心落笔，但服务端的文档中心没有笔迹（centerInk=${centerInk}）—— 坐标映射错误`);
 }
+if (!exportResult) {
+  problems.push("「导出 PNG」没有产生导出结果（window.yanshiStats.lastExport 为空）");
+} else if (!exportPng || !exportPng.isPng) {
+  problems.push(`导出结果不是可取的 PNG：${JSON.stringify(exportResult)}`);
+} else if (exportPng.width !== 1024 || exportPng.height !== 1024) {
+  problems.push(`导出应为整幅分辨率 1024²，实际 ${exportPng.width}×${exportPng.height}`);
+}
 if (atomLines > 1) {
   problems.push(`一笔产生了 ${atomLines} 条 atom 日志（应只有 1 条）`);
 }
@@ -273,6 +305,7 @@ console.log(`  图层数：${layerCountBefore} → ${layerCountAfter}`);
 console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未生效" : "已生效"}｜打开 ${identityOpened.includes("uicheck-opened-1") ? "已生效" : "未生效"}`);
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
+console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);
@@ -284,3 +317,7 @@ if (problems.length) {
   process.exit(1);
 }
 console.log("  ✅ UI 检查通过（画布非空、几何一致、缩略图自动刷新）");
+
+// 显式退出：CDP 的 WebSocket 仍打开时 node 不会自己结束（曾导致脚本挂到超时、退出码 124）。
+ws.close();
+process.exit(0);

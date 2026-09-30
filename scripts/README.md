@@ -33,6 +33,20 @@ UI_DEBUG=1 UI_TRACE=1 node scripts/browser-ui-check.mjs "<url>"   # 额外打印
 
 环境变量：`UI_TIMEOUT_MS`（总体超时，缺省 180s；调试目标无响应时脚本会以退出码 3 结束）。
 
+## 用 `make` 隔离运行（推荐）
+
+浏览器检查会对服务端做真实渲染，这些渲染产物会写进工作区的 CAS（见下节）。用
+`make ui-check` / `make pixel-check` 可以在**独立临时工作区**（`mktemp` 目录 + 另一个端口）里跑，
+日常实例的文件一个字节都不会变：
+
+```bash
+make ui-check       # 真实浏览器 UI 回归（临时工作区）
+make pixel-check    # 真实浏览器逐像素自检（临时工作区）
+```
+
+实测：运行前后日常工作区的 blob 数量完全不变 ✓；辅助脚本是
+`scripts/with-temp-server.sh`（起临时实例 → 把查看器地址作为最后一个参数传给被测命令 → 清理）。
+
 ## 验证脚本会写入渲染 blob
 
 这些脚本对**正在运行的服务端**做真实的整幅/区域渲染，因此会在工作区的 CAS 里留下

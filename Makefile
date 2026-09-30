@@ -4,6 +4,8 @@
 #   make test    本地快速测试（秒级到两分钟）
 #   make check   格式化 + lint
 #   make smoke   WASM 运行时冒烟（抓"原生全绿、浏览器全崩"类回归）
+#   make ui-check     真实浏览器 UI 回归（独立临时工作区，不污染日常数据）
+#   make pixel-check  真实浏览器逐像素自检（同上）
 #   make ci      本地能跑的全部检查（= check + test + smoke）
 #   make mcp     启动 MCP stdio 服务（供 AI Agent 接入）
 #
@@ -13,7 +15,7 @@
 PORT ?= 8110
 ROOT ?= $(HOME)/.local/share/yanshi/workspace
 
-.PHONY: help run build build-wasm test check smoke ci mcp clean
+.PHONY: help run build build-wasm test check smoke ui-check pixel-check ci mcp clean
 
 help:
 	@sed -n '2,14p' Makefile
@@ -38,6 +40,13 @@ check:
 
 smoke:
 	scripts/wasm-smoke.sh
+
+# 真实浏览器检查：在**独立临时工作区**里起服务端，避免把渲染孤儿写进日常工作区。
+ui-check:
+	scripts/with-temp-server.sh node scripts/browser-ui-check.mjs
+
+pixel-check:
+	scripts/with-temp-server.sh node scripts/browser-pixel-check.mjs
 
 ci: check test smoke
 

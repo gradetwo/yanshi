@@ -86,6 +86,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="refresh">刷新</button>
         <button data-tool="check">一致性自检</button>
         <button id="addLayer">＋ 图层</button>
+        <button id="exportPng">导出 PNG</button>
         <button id="zoomFit">适配</button>
         <button id="zoomActual">1:1</button>
       </div>
@@ -1163,6 +1164,32 @@ $("addLayer").addEventListener("click", async () => {
   select.value = layerId;
   state.layerId = layerId;
   log("已新建图层 " + layerId);
+});
+
+/// 导出整幅 PNG：显式请求整幅区域渲染（设计 A 下整幅 PNG 只在**显式导出**时生成），
+/// 再把服务端改写过的可直接 GET 的地址交给浏览器下载。
+$("exportPng").addEventListener("click", async () => {
+  const { w, h } = state.docSize;
+  if (!w || !h) {
+    log("导出失败：文档尺寸未知", "#c33");
+    return;
+  }
+  const value = await callTool("render_region", { region: { x: 0, y: 0, w, h } }, { refresh: false });
+  if (!value.ok || !value.thumb_url) {
+    log("导出失败：" + (value.error_code || "no url"), "#c33");
+    return;
+  }
+  if (value.width !== w || value.height !== h) {
+    log("导出警告：返回 " + value.width + "×" + value.height + "，期望 " + w + "×" + h, "#c33");
+  }
+  const link = document.createElement("a");
+  link.href = value.thumb_url;
+  link.download = (state.docId || "yanshi") + ".png";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.yanshiStats.lastExport = { url: value.thumb_url, width: value.width, height: value.height, bytes: value.bytes };
+  log("已导出 PNG：" + value.width + "×" + value.height + "（" + (value.bytes || 0) + " 字节）");
 });
 
 $("zoomFit").addEventListener("click", () => {

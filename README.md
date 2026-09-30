@@ -75,7 +75,7 @@ The tool and effect inventory is in [docs/tools.md](docs/tools.md).
 
 Drag to paint; `＋ 图层` adds a layer; `撤销` / `重做` undo and redo. Wheel zooms around the cursor,
 middle-drag pans, `+` / `-` / `0` zoom in, out and fit, and `1:1` shows one document pixel per CSS
-pixel. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
+pixel, and `导出 PNG` downloads the full-resolution render. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)
 
