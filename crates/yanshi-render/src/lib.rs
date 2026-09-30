@@ -85,6 +85,7 @@ pub mod filter;
 pub mod geometry;
 pub mod half;
 pub mod object;
+pub mod paint;
 pub mod png;
 pub mod prng;
 pub mod render;
