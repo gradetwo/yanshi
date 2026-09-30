@@ -729,6 +729,10 @@ async function loadKernel(since = 0) {
   state.kernel.set_viewport(0, 0, w, h);
   // 内核就绪 ⇒ 判断这份文档内核表示得了吗 ✓（否则首屏是白板 ✓）。
   void detectHeavyContent();
+  // **打开文档时核对已有选区** ✓ —— 子 agent 实测：文档里遗留一个选区时，
+  // 之后画的**一切**都被裁掉（画布看似全白 ✗），而状态栏还写着"无选区" ✗。
+  // 选区是设计内的能力 ✓（约束之后的绘制 ✓），不该禁止 ✗，但**必须让人看见** ✓。
+  void refreshSelectionHint();
   return true;
 }
 
@@ -2167,6 +2171,31 @@ function drawSelectionOutline() {
 ///
 /// 语义细节（已记录）：选区**不绑定图层**（作用于全文档 ✓），且只约束
 /// **在其创建之后创建的对象** ✓ —— 与"选区影响后续编辑"一致 ✓。
+/// 把当前选区状态写进状态栏 ✓ —— 子 agent 报："拖出选区后 `#selectionHint` 仍显示**无选区**" ✗，
+/// 更要命的是**遗留选区会静默裁掉一切** ✓（画布看似全白 ✓，而界面上没有任何提示 ✓）。
+/// 因此这里由**服务端事实**驱动 ✓（`list_selections` ✓），而不是本地猜测 ✓。
+async function refreshSelectionHint() {
+  const hint = $("selectionHint");
+  if (!hint) return;
+  try {
+    const listed = await callTool("list_selections", {}, { refresh: false });
+    const selections = (listed && listed.selections) || [];
+    if (selections.length === 0) {
+      hint.textContent = "无选区";
+      return;
+    }
+    const first = selections[0];
+    const bbox = first.bbox || first.shape && first.shape.bbox;
+    if (Array.isArray(bbox)) {
+      hint.textContent = `选区 ${selections.length} 个（${Math.round(bbox[2])}×${Math.round(bbox[3])} @ ${Math.round(bbox[0])},${Math.round(bbox[1])}）｜约束之后的绘制`;
+    } else {
+      hint.textContent = `选区 ${selections.length} 个｜约束之后的绘制`;
+    }
+  } catch (error) {
+    hint.textContent = "选区状态未知";
+  }
+}
+
 async function commitSelection() {
   const points = state.points;
   if (points.length < 2) {
@@ -2601,7 +2630,12 @@ board.addEventListener("pointermove", (event) => {
     }
     return;
   }
-  if (state.tool === "rect" || state.tool === "ellipse") state.points = [state.points[0], point];
+  // **"用两个角点定义的"工具都要替换第二个点，而不是一直追加** ✓ ——
+  // 它们提交时都取 `points[0], points[1]` ✓：形状 ✓、**选区** ✓、**蒙版** ✓。
+  // 此前只有形状这样做 ✗，选区/蒙版一路 `push` ✗ ⇒ 提交拿到的是**前两次移动事件** ✓
+  //（子 agent 实测：拖 (64,372)→(432,500) 十步，得到 `{w:36.8,h:12.8}` 而不是 368×128 ✓）。
+  const TWO_CORNER_TOOLS = new Set(["rect", "ellipse", "select_rect", "mask_rect", "mask_ellipse"]);
+  if (TWO_CORNER_TOOLS.has(state.tool)) state.points = [state.points[0], point];
   else state.points.push(point);
   if (pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
     // 乐观渲染：拖动中只更新**本地覆盖层**（不进原子日志），落笔才提交最终原子。
@@ -2715,6 +2749,7 @@ board.addEventListener("pointerup", async (event) => {
     state.points.push(localPoint(event));
     await commitSelection();
     state.points = [];
+    await refreshSelectionHint();
     redraw();
     return;
   }
@@ -3196,7 +3231,12 @@ $("newName").addEventListener("keydown", (event) => {
   if (event.key === "Enter") void createNamedDocument();
 });
 $("openDoc").addEventListener("click", showOpenDialog);
-$("clearSelection").addEventListener("click", () => { void clearSelection(); });
+$("clearSelection").addEventListener("click", async () => {
+  await clearSelection();
+  // **清除之后同样刷新状态栏** ✓ —— 我第一版只在创建时刷新 ✗，
+  // 于是"清除选区"后状态栏仍写着有选区 ✓（检查当场抓到 ✓）。
+  await refreshSelectionHint();
+});
 $("openClose").addEventListener("click", closeOpenDialog);
 $("copyDoc").addEventListener("click", async () => {
   const name = ($("copyName").value || "").trim();
