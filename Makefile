@@ -15,7 +15,7 @@
 PORT ?= 8110
 ROOT ?= $(HOME)/.local/share/yanshi/workspace
 
-.PHONY: help run build build-wasm test check smoke ui-check pixel-check ci mcp clean
+.PHONY: help run build build-wasm build-medium test check smoke ui-check pixel-check medium-check ci mcp clean
 
 help:
 	@sed -n '2,14p' Makefile
@@ -44,6 +44,14 @@ smoke:
 # 真实浏览器检查：在**独立临时工作区**里起服务端，避免把渲染孤儿写进日常工作区。
 ui-check:
 	scripts/with-temp-server.sh node scripts/browser-ui-check.mjs
+
+build-medium:
+	@cargo build -p yanshi-medium-example --target wasm32-unknown-unknown --release
+	@cp target/wasm32-unknown-unknown/release/yanshi_medium_example.wasm assets/mediums/example-dab.wasm
+	@echo "  ✓ 示范介质插件已构建到 assets/mediums/example-dab.wasm"
+
+medium-check:
+	@node scripts/medium-abi-check.mjs
 
 pixel-check:
 	scripts/with-temp-server.sh node scripts/browser-pixel-check.mjs

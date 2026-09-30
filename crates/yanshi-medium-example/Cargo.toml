@@ -1,0 +1,12 @@
+[package]
+name = "yanshi-medium-example"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "示范笔刷介质插件：导出 yanshi 的原始 wasm ABI（零依赖、无网络、确定性 PRNG）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]

@@ -563,6 +563,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "yanshi-medium-example"
+version = "0.1.0"
+
+[[package]]
 name = "yanshi-render"
 version = "0.1.0"
 dependencies = [
