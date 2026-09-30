@@ -1512,6 +1512,18 @@ async function commitMediumBitmap(rgba, region, spec, stamps) {
   window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
     status: "dabbed", size: region.w, objectId, layerId, stamps,
   });
+  // **立刻只补"这一笔"的区域** ✓ —— 子 agent 报的 F4：每次介质落笔后约 **1 秒白闪** ✗
+  //（60ms 采样 40 帧里有 15 帧纯白 ✓）。白闪的成因是"内核把这一块重绘成空白 ✓，
+  // 然后要等一次**全视口**补画（`blitServerViewport` ✓，走 WS 的 heavy 分支 ✓）才恢复" ✓。
+  // 这里在**提交成功后立刻**按 `region`（正是这个补丁的范围 ✓）补一次 ✓
+  // ⇒ 内容**马上出现** ✓，而且只传这一块的字节 ✓（全量补画仍会随后发生 ✓，作为兜底 ✓）。
+  // 这是**加法** ✓：不改变任何既有路径 ✓，只是让画面更早正确 ✓。
+  if (region && region.w > 0 && region.h > 0) {
+    void blitServerBox([region.x, region.y, region.w, region.h]).then(() => {
+      window.yanshiStats.mediumEarlyBlits = (window.yanshiStats.mediumEarlyBlits || 0) + 1;
+      window.yanshiStats.lastEarlyBlitArea = region.w * region.h;
+    });
+  }
   log("已用介质「" + spec.id + " v" + spec.version + "」落笔（" + region.w + "×" + region.h + "，" + stamps + " 个点）");
   await refreshLayers();
   $("layer").value = layerId;

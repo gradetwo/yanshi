@@ -2126,6 +2126,20 @@ console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 
   if (brushLabel !== "强度") {
     problems.push(`内置介质下该滑杆的标签应为「强度」（实际「${brushLabel}」）`);
   }
+  // **介质落笔后应当立刻按这一笔的区域补画** ✓ —— 子 agent 报的 F4（约 1 秒白闪 ✗）。
+  // 判据 ✓：早期补画确实发生 ✓，且它传的字节**远小于全视口** ✓（即真的是增量 ✓）。
+  const early = JSON.parse(await evaluate(`JSON.stringify({
+    count: window.yanshiStats.mediumEarlyBlits || 0,
+    area: window.yanshiStats.lastEarlyBlitArea || 0,
+    lastFull: window.yanshiStats.lastServerBlitArea || 0,
+  })`));
+  if (!early || early.count < 1) {
+    problems.push(`介质落笔后没有"立刻局部补画"（计数 ${early ? early.count : "?"}，应 ≥1）`);
+  } else if (!(early.area > 0 && early.area < early.lastFull)) {
+    problems.push(`早期补画不是增量的（早期 ${early.area}px²，全量 ${early.lastFull}px²）`);
+  } else {
+    console.log(`  介质早期补画：${early.count} 次｜本次 ${early.area}px² vs 全量 ${early.lastFull}px²（须更小）`);
+  }
   if (pluginLabel === "湿度" && brushLabel === "强度") {
     console.log(`  强度/湿度标签：插件介质「${pluginLabel}」｜内置介质「${brushLabel}」（须随介质改名）`);
   }
