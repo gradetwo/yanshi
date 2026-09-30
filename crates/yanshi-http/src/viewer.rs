@@ -236,6 +236,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <option value="example">示范点（v1）</option>
       <option value="oil">油画（v2）</option>
       <option value="watercolor">水彩（v2）</option>
+      <option value="marker">马克笔（v2）</option>
+      <option value="pencil">铅笔（v2）</option>
     </select></label>
   </div>
 
@@ -1297,6 +1299,10 @@ const MEDIUMS = {
   oil: { id: "oil", version: 2, url: "/mediums/oil.wasm" },
   // 水彩（ABI v2）：渗开的不规则边界 + 边缘沉积 + 半透明纸感 ✓。
   watercolor: { id: "watercolor", version: 2, url: "/mediums/watercolor.wasm" },
+  // 马克笔（ABI v2）：平头笔尖 + 叠色变深 + 轻微洇边 ✓。
+  marker: { id: "marker", version: 2, url: "/mediums/marker.wasm" },
+  // 铅笔（ABI v2）：软圆尖 + 压力驱动深浅 + 石墨颗粒、几乎不混色 ✓。
+  pencil: { id: "pencil", version: 2, url: "/mediums/pencil.wasm" },
 };
 
 async function loadMedium(name) {
@@ -1352,11 +1358,16 @@ function syncStrengthLabel() {
   const label = $("strengthLabel");
   const select = $("medium");
   if (!label || !select) return;
-  const isPluginMedium = select.value && select.value !== "example";
-  label.textContent = isPluginMedium ? "湿度" : "强度";
-  label.title = isPluginMedium
-    ? "插件介质按湿度调色：数值越大越湿、颜色越淡"
-    : "内置笔刷的落笔强度";
+  // **按介质决定标签，而不是"插件即湿度"** ✗ —— 加入铅笔后这一点变得明显起来 ✓：
+  // 铅笔是**干**介质 ✓，它忽略湿度 ✓、用的是**压力** ✓ ⇒ 在它上面写"湿度"同样是误导 ✓。
+  const wet = new Set(["oil", "watercolor", "marker"]);
+  const isWetMedium = wet.has(select.value);
+  label.textContent = isWetMedium ? "湿度" : "强度";
+  label.title = isWetMedium
+    ? "湿介质按湿度调色：数值越大越湿、颜色越淡"
+    : select.value === "pencil"
+      ? "铅笔按压力上墨：数值越大越深、石墨越实"
+      : "落笔强度";
 }
 
 async function mediumStroke(name, points) {

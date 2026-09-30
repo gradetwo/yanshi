@@ -567,7 +567,15 @@ name = "yanshi-medium-example"
 version = "0.1.0"
 
 [[package]]
+name = "yanshi-medium-marker"
+version = "0.1.0"
+
+[[package]]
 name = "yanshi-medium-oil"
+version = "0.1.0"
+
+[[package]]
+name = "yanshi-medium-pencil"
 version = "0.1.0"
 
 [[package]]

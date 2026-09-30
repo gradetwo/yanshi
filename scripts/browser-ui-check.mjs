@@ -2153,6 +2153,71 @@ console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → 
   }
 }
 console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON.stringify(wcResult.medium) + "｜画布 " + wcResult.before + " → " + wcResult.after : "失败 " + JSON.stringify(wcResult)}`);
+
+// **设计 11.1 的其余介质** ✓：马克笔与铅笔走**同一条**用户路径 ✓
+//（选中介质 ⇒ 用"介质"工具落笔 ✓ ⇒ 服务端记录 `medium {id, version}` ✓ ⇒ 画布有墨 ✓）。
+// 断言刻意与已有介质用例一致 ✓：**只有"能画出来且描述符正确"才算通过** ✓。
+for (const [key, id, label] of [["marker", "marker", "马克笔"], ["pencil", "pencil", "铅笔"]]) {
+  const docId = `${mediumDoc}-${key}`;
+  const created = await fetch(`${origin}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docId, width: 420, height: 320 }),
+  }).then((r) => r.json()).catch(() => ({}));
+  if (!created.token) {
+    problems.push(`${label}用例：新建文档失败`);
+    continue;
+  }
+  await send("Page.navigate", { url: `${origin}/?doc=${docId}&token=${created.token}` });
+  await send("Page.bringToFront", {});
+  for (let i = 0; i < 80; i++) {
+    const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0 && window.yanshiStats.wasm`);
+    if (ready) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const before = (await evaluate(MEDIUM_INK)) || 0;
+  const drawn = JSON.parse(await evaluate(`(async () => {
+    const select = document.getElementById("medium");
+    if (![...select.options].some((o) => o.value === ${JSON.stringify(key)})) {
+      return JSON.stringify({ error: "选择器里没有这个介质" });
+    }
+    select.value = ${JSON.stringify(key)};
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    if (typeof syncStrengthLabel === "function") syncStrengthLabel();
+    document.querySelector('button[data-tool="medium_dab"]').click();
+    document.getElementById("size").value = 26;
+    const points = [];
+    for (let i = 0; i <= 10; i++) points.push({ x: 40 + i * 24, y: 120 + Math.sin(i / 2) * 26 });
+    try {
+      await mediumStroke(${JSON.stringify(key)}, points);
+    } catch (error) {
+      return JSON.stringify({ error: String(error && error.message || error) });
+    }
+    return JSON.stringify({ ok: true, label: document.getElementById("strengthLabel").textContent });
+  })()`));
+  if (drawn.error) {
+    problems.push(`${label}用例落笔失败：${drawn.error}`);
+    continue;
+  }
+  let after = before;
+  for (let i = 0; i < 40; i++) {
+    after = (await evaluate(MEDIUM_INK)) || 0;
+    if (after > before) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const listed = await fetch(`${origin}/api/tools/list_objects?doc=${docId}&token=${created.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }).then((r) => r.json()).catch(() => ({}));
+  const recorded = (listed.objects || []).filter((o) => o.medium && o.medium.id === id);
+  const version = recorded.length ? recorded[recorded.length - 1].medium.version : null;
+  if (recorded.length === 0) {
+    problems.push(`${label}：对象里没有记录 medium {id: ${id}}`);
+  } else if (after <= before) {
+    problems.push(`${label}：落笔后画布没有新增墨迹（${before} → ${after}）`);
+  } else {
+    console.log(`  ${label}介质：${recorded.length} 个对象记录 ${id} v${version}｜画布 ${before} → ${after}｜湿度标签「${drawn.label}」`);
+  }
+}
+
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
 
@@ -2224,6 +2289,23 @@ console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 
     area: window.yanshiStats.lastEarlyBlitArea || 0,
     lastFull: window.yanshiStats.lastServerBlitArea || 0,
   })`));
+  // **干介质（铅笔）的标签必须是"强度"** ✓ —— 它忽略湿度 ✓、按压力上墨 ✓。
+  // 我第一版把标签写成"插件即湿度" ✗ ⇒ 铅笔（干介质）也被标成"湿度" ✓，同样是误导 ✓。
+  const pencilLabel = await (async () => {
+    const setMedium = async (value) => {
+      await evaluate(`(() => { const s = document.getElementById("medium"); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+      await new Promise((r) => setTimeout(r, 200));
+      return await evaluate(`document.getElementById("strengthLabel").textContent`);
+    };
+    const label = await setMedium("pencil");
+    await setMedium("example");
+    return label;
+  })();
+  if (pencilLabel !== "强度") {
+    problems.push(`干介质（铅笔）下该滑杆的标签应为「强度」（实际「${pencilLabel}」）`);
+  } else {
+    console.log(`  干介质标签：铅笔「${pencilLabel}」（须为强度，因为它按压力上墨）`);
+  }
   if (!early || early.count < 1) {
     problems.push(`介质落笔后没有"立刻局部补画"（计数 ${early ? early.count : "?"}，应 ≥1）`);
   } else if (!(early.area > 0 && early.area < early.lastFull)) {

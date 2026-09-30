@@ -10,6 +10,8 @@ members = [
     "crates/yanshi-medium-example",
     "crates/yanshi-medium-oil",
     "crates/yanshi-medium-watercolor",
+    "crates/yanshi-medium-marker",
+    "crates/yanshi-medium-pencil",
 ]
 
 [workspace.package]

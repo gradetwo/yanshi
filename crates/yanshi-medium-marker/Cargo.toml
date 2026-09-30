@@ -1,0 +1,12 @@
+[package]
+name = "yanshi-medium-marker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "马克笔介质插件：ABI v2（平头笔尖、叠色变深、轻微洇边；确定性 PRNG；无 imports）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
