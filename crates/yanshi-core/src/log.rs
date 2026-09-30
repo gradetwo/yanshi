@@ -238,6 +238,7 @@ impl AtomLog {
         // `fold::precondition` 的那一份**保留** ✓ 作为重放期的纵深防御 ✓
         //（手工写进日志的环在折叠时也会被跳过并留下警告 ✓），但**判定提交与否的是这里** ✓。
         self.validate_instance_cycles(atom, commit.state)?;
+        self.validate_object_type(atom)?;
         self.validate_history_refs(atom, commit)?;
         self.validate_conflict(atom)?;
         Ok(())
@@ -484,6 +485,49 @@ impl AtomLog {
             }
         }
         Ok(())
+    }
+
+    /// **未知的对象类型必须被拒绝** ✓ —— 否则会被静默兜底成笔迹 ✗。
+    ///
+    /// 这条规则来自第 44 轮的实测 ✓：`parse_object_type` 的兜底是 `Stroke` ✓
+    ///（对**没写 `type`** 的旧调用是合理的 ✓），但 `"path"` 这样**写了却没人认识**的类型
+    /// 也会掉进去 ✓ ⇒ 对象建出来了、命令返回 ok ✓、渲染却是空的 ✗ ——
+    /// 两个看起来无关的失败（"逐像素差了 3042 字节" ✓ 与"没有 points" ✓）其实是同一个兜底造成的 ✓。
+    ///
+    /// **为什么放在这一层** ✓：本项目反复吃过"守卫写错层"的亏 ✓ ——
+    /// `fold::precondition` 返回 `Err` 只会**警告并跳过** ✓，只有这里的 `Err` 才**拒绝提交** ✓。
+    fn validate_object_type(&self, atom: &Atom) -> Result<()> {
+        if !matches!(atom.kind, AtomKind::CreateObject | AtomKind::ImportImage) {
+            return Ok(());
+        }
+        let Some(declared) = atom.payload.get("type").and_then(serde_json::Value::as_str) else {
+            // 没写 `type` ⇒ 交给兜底 ✓（旧调用与 `DrawStroke` 一类不写类型的路径 ✓）。
+            return Ok(());
+        };
+        let known = [
+            "stroke",
+            "shape",
+            "text",
+            "adjustment",
+            "filter",
+            "raster_patch",
+            "retouch",
+            "liquify",
+            "instance",
+            "group",
+            "path",
+        ];
+        if known.contains(&declared) {
+            return Ok(());
+        }
+        Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知的对象类型 {declared}（已知：{}）—— 写错类型会被静默当成笔迹，所以这里直接拒绝",
+                known.join(", ")
+            )),
+        )
+        .with_atom(atom.id.clone()))
     }
 
     fn validate_history_refs(&self, atom: &Atom, commit: &CommitContext<'_>) -> Result<()> {

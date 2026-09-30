@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**89 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+**90 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -31,6 +31,19 @@ a revert atom while the fold had already implemented the semantic, and the gap w
 reported limitation. The project owner decided to relax the validation, so it now accepts a state effect or a
 revert or reapply, and still refuses collaboration atoms, which produce no state effect and are not history
 actions either. `skipped_history_atoms` is therefore always zero and remains only for compatibility.
+
+**Path objects** now exist as `ObjectType::Path`: `data.nodes` is a list of `{x, y, in, out}` points with
+cubic Bezier segments between them, plus a `closed` flag, sharing the stroke's style fields. The design
+specifies neither the model nor how a path rasterises, so both choices are recorded. Rendering flattens the
+nodes into a polyline and reuses the stroke primitive, so brush parameters, appearance, selection clipping,
+dirty planning and hit testing are inherited rather than reimplemented, while resolution independence comes
+from geometry living in the log and being re-rasterised per view. A segment with zero handles emits only its
+start point, which is what makes `convert_to_path` keep the picture identical pixel for pixel; subdividing
+straight segments looked harmless but shifted the sampling phase and changed 3042 bytes. `convert_to_path`
+turns a stroke into a path by taking its sample points as nodes with empty handles and grouping the new path
+and the retired stroke into one changeset. `path_edit` now accepts both kinds, and their operations differ:
+reversing a path also swaps each node's `in` and `out` handles, since reversing only the nodes would silently
+deform the curve, and closing a path sets the flag rather than appending a node.
 
 `transform_object` and `restore_object` join the `structure` group. `transform_object` is the
 human-readable counterpart to `move_object`: it takes exactly one of a rotation in degrees, a scale, or a
