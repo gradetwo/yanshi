@@ -14,7 +14,9 @@
 import { readFile } from "node:fs/promises";
 
 const paths = process.argv.slice(2).filter((name) => name.endsWith(".wasm"));
-if (paths.length === 0) paths.push("assets/mediums/example-dab.wasm", "assets/mediums/oil.wasm");
+if (paths.length === 0) {
+  paths.push("assets/mediums/example-dab.wasm", "assets/mediums/oil.wasm", "assets/mediums/watercolor.wasm");
+}
 
 let failed = 0;
 for (const path of paths) {
@@ -111,6 +113,60 @@ async function checkOne(path) {
       if (greenish <= reddish) {
         problems.push(`湿度 1 时应被目标色（绿）主导（绿 ${greenish} vs 红 ${reddish}）`);
       }
+
+      // --- watercolour specific -------------------------------------------------
+      // 水彩与油画的差别不在参数而在**行为** ✓（见插件文档 ✓）。这里量三条标志性特征 ✓：
+      //   ① 半透明（留白 ✓）；② 边缘沉积（外沿比中心深 ✓）；③ 边界不规则（水痕 ✓）。
+      if (path.includes("watercolor")) {
+        const centre = Uint8Array.from(view());
+        const n = size;
+        let sumAll = 0;
+        let sumInner = 0;
+        let innerCount = 0;
+        let sumOuter = 0;
+        let outerCount = 0;
+        for (let y = 0; y < n; y++) {
+          for (let x = 0; x < n; x++) {
+            const a = centre[(y * n + x) * 4 + 3];
+            sumAll += a;
+            const dx = x + 0.5 - n / 2;
+            const dy = y + 0.5 - n / 2;
+            const r = Math.hypot(dx, dy) / (n / 2);
+            if (r < 0.45) { sumInner += a; innerCount += 1; }
+            else if (r > 0.6 && r < 0.95) { sumOuter += a; outerCount += 1; }
+          }
+        }
+        const meanAll = sumAll / (n * n);
+        const meanInner = innerCount ? sumInner / innerCount : 0;
+        const meanOuter = outerCount ? sumOuter / outerCount : 0;
+        stats.watercolor = {
+          meanAll: meanAll.toFixed(1),
+          meanInner: meanInner.toFixed(1),
+          meanOuter: meanOuter.toFixed(1),
+        };
+        if (meanAll > 180) {
+          problems.push(`水彩应半透明（整体 alpha 均值 ${meanAll.toFixed(1)} 过高）`);
+        }
+        if (meanOuter <= meanInner) {
+          problems.push(`水彩应有边缘沉积（外沿 ${meanOuter.toFixed(1)} 应深于中心 ${meanInner.toFixed(1)}）`);
+        }
+        // 边界不规则：同一半径上不同角度的 alpha 应有明显起伏 ✓（圆形笔尖则几乎为 0 ✗）。
+        let minRing = 255;
+        let maxRing = 0;
+        for (let k = 0; k < 72; k++) {
+          const angle = (k / 72) * Math.PI * 2;
+          const x = Math.round(n / 2 + Math.cos(angle) * n * 0.45);
+          const y = Math.round(n / 2 + Math.sin(angle) * n * 0.45);
+          if (x < 0 || y < 0 || x >= n || y >= n) continue;
+          const a = centre[(y * n + x) * 4 + 3];
+          minRing = Math.min(minRing, a);
+          maxRing = Math.max(maxRing, a);
+        }
+        stats.watercolor.ringSpread = maxRing - minRing;
+        if (maxRing - minRing < 20) {
+          problems.push(`水彩边界应不规则（同半径上 alpha 起伏仅 ${maxRing - minRing}）`);
+        }
+      }
     }
   }
 
@@ -124,6 +180,9 @@ function report(path, bytes, imports, abi, maxDab, stats, problems) {
   }
   if (stats.v2) {
     console.log(`  v2 上下文：载墨 0 时写入 ${stats.v2.emptyLoadWritten} 字节（须 0）｜湿度 1 时绿 ${stats.v2.mixedGreen} / 红 ${stats.v2.mixedRed}（须绿多）`);
+  }
+  if (stats.watercolor) {
+    console.log(`  水彩特征：整体 alpha ${stats.watercolor.meanAll}｜中心 ${stats.watercolor.meanInner} / 外沿 ${stats.watercolor.meanOuter}（须外沿更深）｜同半径起伏 ${stats.watercolor.ringSpread}（须 ≥20）`);
   }
   if (problems.length > 0) {
     console.log(`  ❌ ${path} 有 ${problems.length} 项不合格：`);

@@ -1394,6 +1394,36 @@ if (!oilObject) {
 const oilResult = { ok: Boolean(oilObject), medium: oilObject ? oilObject.medium : null,
                     before: oilBefore, after: oilAfter };
 
+
+// 水彩介质（ABI v2 ✓）：与油画走**同一条宿主链路** ✓，差别全在插件内部 ✓
+//（渗开的边界 / 边缘沉积 / 半透明 ✓ —— 三条特征由 `make medium-check` 逐项量过 ✓）。
+// 这里只验证**接线** ✓：选择器能选中它 ✓、对象上记录的是水彩的 id 与版本 ✓、画布确实增加 ✓。
+const wcBefore = await evaluate(MEDIUM_INK) || 0;
+await evaluate(`(() => {
+  const select = document.getElementById("medium");
+  if (select) { select.value = "watercolor"; }
+})()`);
+await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
+await dragPath([[0.25, 0.85], [0.45, 0.78], [0.65, 0.86], [0.85, 0.8]], 503);
+let wcObject = null;
+for (let i = 0; i < 40 && !wcObject; i++) {
+  await new Promise((r) => setTimeout(r, 250));
+  const listed = await fetch(
+    `${origin}/api/tools/list_objects?doc=${mediumDoc}&token=${mediumToken}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  ).then((response) => response.json()).catch(() => ({}));
+  wcObject = (listed.objects || []).find((o) => o.medium && o.medium.id === "watercolor") || null;
+}
+const wcAfter = await evaluate(MEDIUM_INK) || 0;
+if (!wcObject) {
+  problems.push("水彩介质用例失败：未出现带 watercolor 的对象");
+} else if (wcObject.medium.version !== 2) {
+  problems.push(`水彩介质版本应为 2，实际 ${JSON.stringify(wcObject.medium)}`);
+} else if (wcAfter <= wcBefore) {
+  problems.push(`水彩落笔后画布有墨像素应增加（前 ${wcBefore} → 后 ${wcAfter}）`);
+}
+const wcResult = { ok: Boolean(wcObject), medium: wcObject ? wcObject.medium : null, before: wcBefore, after: wcAfter };
+
 const mediumResult = { ok: Boolean(mediumObject), medium: mediumObject ? mediumObject.medium : null,
                        status: mediumStatus, before: mediumBefore, after: mediumAfter };
 // 恢复本段之前的当前图层 ✓。
@@ -1525,6 +1555,7 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${(importResult.log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON.stringify(wcResult.medium) + "｜画布 " + wcResult.before + " → " + wcResult.after : "失败 " + JSON.stringify(wcResult)}`);
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
 console.log(`  选区/文本：${selectionResult && selectionResult.ok
