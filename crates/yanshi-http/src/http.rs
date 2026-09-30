@@ -311,6 +311,20 @@ impl Response {
 
     /// 写入响应（始终 `Connection: close`，一个连接一个请求循环）。
     pub fn write<W: Write>(&self, writer: &mut W, keep_alive: bool) -> io::Result<()> {
+        self.write_inner(writer, keep_alive, true)
+    }
+
+    /// 响应 `HEAD` 请求：头部（含 `Content-Length`）与 `GET` 完全一致，但**不写响应体**。
+    pub fn write_head<W: Write>(&self, writer: &mut W, keep_alive: bool) -> io::Result<()> {
+        self.write_inner(writer, keep_alive, false)
+    }
+
+    fn write_inner<W: Write>(
+        &self,
+        writer: &mut W,
+        keep_alive: bool,
+        body: bool,
+    ) -> io::Result<()> {
         let mut head = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n",
             self.status,
@@ -324,7 +338,9 @@ impl Response {
         }
         head.push_str("\r\n");
         writer.write_all(head.as_bytes())?;
-        writer.write_all(&self.body)?;
+        if body {
+            writer.write_all(&self.body)?;
+        }
         writer.flush()
     }
 

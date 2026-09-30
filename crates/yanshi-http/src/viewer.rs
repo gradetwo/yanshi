@@ -29,7 +29,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
      右侧露出一块灰色死区，点击落在 .stage 上而不是 canvas 上（用户报告的「右边一块没法用」）。 */
-  main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; justify-items: start; }
+  main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
+  /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
+     不能一起收缩，否则工具按钮会溢出窗口。 */
+  .stage { justify-self: start; max-width: 100%; }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
   /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
      #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。

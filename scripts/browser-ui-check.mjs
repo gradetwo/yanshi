@@ -105,6 +105,11 @@ await new Promise((resolve) => setTimeout(resolve, 1200));
 const layerCountAfter = await evaluate(`document.getElementById("layer").options.length`);
 await evaluate(drawStroke);
 const after = await evaluate(blankCheck);
+// 一笔只应产生**一条** atom 日志（此前出现过同一个 seq 被重复打印）。
+// 只数 `draw_stroke` 的 atom 行（日志里还有创建图层那条）；用遍历子元素避免正则转义。
+const atomLines = await evaluate(
+  `Array.from(document.getElementById("log").children).filter((el) => el.textContent.includes("draw_stroke")).length`
+);
 // 画完之后随时间采样：若着色像素先出现再消失，说明有「后到的整幅绘制」把内容覆盖了。
 const timeline = [];
 for (let step = 0; step < 6; step++) {
@@ -137,6 +142,17 @@ const geometry = await evaluate(`(() => {
     stage: { cssW: Math.round(board.parentElement.getBoundingClientRect().width) },
     overlay: overlayRect ? { cssW: Math.round(overlayRect.width), cssH: Math.round(overlayRect.height) } : null,
     preview: preview ? {} : null,
+  };
+})()`);
+
+const layout = await evaluate(`(() => {
+  const aside = document.querySelector("aside");
+  const rect = aside.getBoundingClientRect();
+  return {
+    asideRight: Math.round(rect.right),
+    viewport: window.innerWidth,
+    stageWidth: Math.round(document.querySelector(".stage").getBoundingClientRect().width),
+    canvasWidth: Math.round(document.getElementById("board").getBoundingClientRect().width),
   };
 })()`);
 
@@ -177,6 +193,12 @@ if (newDocPainted.painted !== 0) {
 if (!identityOpened.includes("uicheck-opened-1")) {
   problems.push(`「打开」按钮没有切换文档（identity=${identityOpened}）`);
 }
+if (atomLines > 1) {
+  problems.push(`一笔产生了 ${atomLines} 条 atom 日志（应只有 1 条）`);
+}
+if (layout.asideRight > layout.viewport + 1) {
+  problems.push(`右侧面板溢出窗口：right=${layout.asideRight} > viewport=${layout.viewport}`);
+}
 // 舞台必须收缩到画布尺寸：否则右侧出现灰色死区，点击落在 stage 上而不是 canvas 上。
 if (geometry.stage.cssW - geometry.canvas.cssW > 4) {
   problems.push(
@@ -195,6 +217,7 @@ console.log(`  画布：操作前不透明 ${before.opaque}/着色 ${before.pain
 console.log(`  图层数：${layerCountBefore} → ${layerCountAfter}`);
 console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未生效" : "已生效"}｜打开 ${identityOpened.includes("uicheck-opened-1") ? "已生效" : "未生效"}`);
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
+console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);
 console.log(`  缩略图：${thumbBefore === thumbAfter ? "未变化" : "已自动刷新"}`);

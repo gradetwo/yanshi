@@ -323,12 +323,34 @@ fn handle_connection(state: Arc<ServerState>, stream: TcpStream) -> std::io::Res
             .header("connection")
             .map(|value| value.eq_ignore_ascii_case("close"))
             .unwrap_or(false);
-        let response = route(&state, &request);
-        response.write(&mut writer, keep_alive)?;
+        // HEAD 按 GET 路由，但只回头部：此前直接返回 405，连自己的诊断脚本都被误导过。
+        let is_head = request.method == yanshi_http_method_head();
+        let response = if is_head {
+            let mut get_like = request.clone();
+            get_like.method = yanshi_http_method_get();
+            route(&state, &get_like)
+        } else {
+            route(&state, &request)
+        };
+        if is_head {
+            response.write_head(&mut writer, keep_alive)?;
+        } else {
+            response.write(&mut writer, keep_alive)?;
+        }
         if !keep_alive {
             return Ok(());
         }
     }
+}
+
+/// `Method::Head`（避免在文件顶部再引入一次 `Method` 名称）。
+fn yanshi_http_method_head() -> crate::http::Method {
+    crate::http::Method::Head
+}
+
+/// `Method::Get`。
+fn yanshi_http_method_get() -> crate::http::Method {
+    crate::http::Method::Get
 }
 
 /// 路由（`Request` → `Response`）。
@@ -1245,6 +1267,40 @@ mod tests {
             connections: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
         }
+    }
+
+    /// `HEAD` 必须与 `GET` 同状态码、同 `Content-Length`，但**不含响应体**。
+    /// 此前 HEAD 直接返回 405（本仓库自己的诊断脚本就被误导过一次）。
+    #[test]
+    fn head_matches_get_headers_without_a_body() {
+        let state = state();
+        let mut get = request("GET", "/");
+        get.path = "/".to_owned();
+        let get_response = route(&state, &get);
+        assert_eq!(get_response.status, 200);
+
+        // 走与连接循环相同的分支：HEAD 按 GET 路由，只写头部。
+        let mut head = request("HEAD", "/");
+        head.path = "/".to_owned();
+        let mut get_like = head.clone();
+        get_like.method = crate::http::Method::Get;
+        let head_response = route(&state, &get_like);
+        assert_eq!(head_response.status, get_response.status);
+        assert_eq!(
+            head_response.body.len(),
+            get_response.body.len(),
+            "Content-Length 必须与 GET 一致"
+        );
+
+        let mut written = Vec::new();
+        head_response.write_head(&mut written, false).unwrap();
+        let text = String::from_utf8_lossy(&written);
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        assert!(text.contains("Content-Length: "), "{text}");
+        assert!(
+            text.ends_with("\r\n\r\n"),
+            "HEAD 响应不应包含响应体：{text}"
+        );
     }
 
     fn request(method: &str, target: &str) -> Request {
