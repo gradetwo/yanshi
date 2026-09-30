@@ -8,6 +8,15 @@ The most recent core tools come from design section 9: the object-group operatio
 `add_to_group`, `remove_from_group` and `set_group_transform`, `create_instance`, which resolves its
 master's geometry at render time, `detach_instance`, `link_to_master`, `get_resolved_state`, `update_sync_policy`, `update_override` and `get_dependency_graph`
 
+`get_changesets` and `revert_changeset` live in the `changeset` group, which is not part of the default
+profiles, so the counts above are unchanged. `get_changesets` lists the changesets in the log and
+`revert_changeset` withdraws one by committing a `Revert` for each of its content atoms, with those reverts
+themselves grouped into one changeset. One design gap surfaced while building them and is reported rather
+than papered over: design section 793 states `revert(revert(x)) ≡ reapply(x)`, and the fold reserves that
+semantic, but commit validation refuses both `revert` and `reapply` on a revert atom, so a changeset made
+of reverts cannot be withdrawn again. The tool therefore skips history atoms and reports how many it
+skipped in `skipped_history_atoms`, instead of deciding on its own which layer to relax.
+
 `path_edit` lives in the `structure` group and implements the three of design 792's operations that fit
 the existing stroke geometry without inventing a path object model: `reverse`, `close` and `join`. The
 other five - `split`, `merge`, `boolean`, `convert_to_shape`, `convert_to_path` - need a path model the
