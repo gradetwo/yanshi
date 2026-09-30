@@ -89,6 +89,26 @@ const strokeAt = async (fx, fy, pointerId) => {
 
 
 
+// 沿路径拖一整笔 ✓（介质整笔验收用 ✓）：页面内派发 pointerdown → 多次 pointermove → pointerup ✓。
+const dragPath = async (points, pointerId) => {
+  await evaluate(`(async () => {
+    const board = document.getElementById("board");
+    const rect = board.getBoundingClientRect();
+    const at = (p) => ({ clientX: rect.left + rect.width * p[0], clientY: rect.top + rect.height * p[1] });
+    const fire = (type, p) => board.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
+      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...at(p),
+    }));
+    const path = ${JSON.stringify(points)};
+    fire("pointerdown", path[0]);
+    for (let i = 1; i < path.length; i++) {
+      fire("pointermove", path[i]);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    fire("pointerup", path[path.length - 1]);
+  })()`);
+};
+
 const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
     ?.result?.value;
@@ -221,11 +241,33 @@ const zoomCheck = await evaluate(`(async () => {
 })()`);
 
 // 向服务端核对：文档中心附近应当出现刚画的笔迹。
+// **`problems` 必须在最前面声明** ✓ —— 后面多处断言（布局结构、工具条、介质…）都引用它 ✓；
+// 曾经它声明在很后面 ✗，于是一旦那些断言真的触发就会抛 "Cannot access 'problems' before initialization" ✓，
+// 把"断言失败"变成"脚本崩溃" ✗ —— 排查代价远高于失败本身 ✓。
+const problems = [];
 const parsedUrl = new URL(url);
 // 服务端地址从传入的查看器地址推导：隔离运行时临时实例在别的端口上，不能写死端口。
 const origin = parsedUrl.origin;
 const token = parsedUrl.searchParams.get("token");
 const docId = parsedUrl.searchParams.get("doc") || "default";
+// **页面内联脚本的语法检查** ✓ —— 加这一段的直接原因：我拼接代码时在顶层留了一段
+// `await ...` ✗ ⇒ 整页脚本 SyntaxError ⇒ **整个界面白掉** ✓（工具条 0 个按钮 ✓），
+// 而当时的检查只报"等待超时" ✗，症状离病因很远 ✓。
+// 这里用 `new Function` 只做**语法**校验（不执行 ✓）⇒ 这类问题立刻可见 ✓。
+const pageHtml = await fetch(url).then((r) => r.text());
+const inlineScript = pageHtml.split("<script>")[1] ? pageHtml.split("<script>")[1].split("</script>")[0] : "";
+let inlineScriptSyntax = "ok";
+try {
+  // eslint-disable-next-line no-new-func
+  new Function(inlineScript);
+} catch (error) {
+  inlineScriptSyntax = String(error && error.message ? error.message : error);
+}
+if (inlineScriptSyntax !== "ok") {
+  problems.push(`页面内联脚本存在语法错误（界面会整页失效）：${inlineScriptSyntax}`);
+}
+console.log(`  页面脚本：${inlineScript.length} 字节｜语法 ${inlineScriptSyntax === "ok" ? "ok ✓" : "错误 ✗ " + inlineScriptSyntax}`);
+
 const renderCenter = await fetch(
   `${origin}/api/tools/render_region?doc=${docId}&token=${token}`,
   {
@@ -1083,7 +1125,6 @@ await evaluate(`(async () => {
 const thumbAfter = await evaluate(`document.getElementById("thumb").src`);
 const tileNoise = consoleLines.filter((line) => String(line).includes("个失效")).length;
 
-const problems = [];
 
 // 调整/滤镜面板
 if (effectNames.length < 10) {
@@ -1111,10 +1152,10 @@ if (importResult.layersAfter <= importResult.layersBefore) {
 // 像素层次的正确性由确定性测试覆盖（crates/yanshi-http 的
 // `uploaded_blob_can_be_imported_and_renders_pixels`：上传 → import_image → 渲染出红色 ✓）。
 // 这里只断言 UI 事实：图层增加、日志报告成功、且没有失败信息。
-if (!importResult.log.includes("已导入")) {
+if (!(importResult.log || "").includes("已导入")) {
   problems.push(`本地导入没有报告成功：${JSON.stringify(importResult.log)}`);
 }
-if (importResult.log.includes("导入失败")) {
+if ((importResult.log || "").includes("导入失败")) {
   problems.push(`本地导入报告失败：${JSON.stringify(importResult.log)}`);
 }
 
@@ -1130,11 +1171,11 @@ if (maskResult.filled === 0) {
   problems.push("蒙版用例前置条件不成立：填充没有产生内容");
 } else if (!(maskResult.masked < maskResult.filled)) {
   problems.push(
-    `蒙版没有裁掉区域外的内容：着色 ${maskResult.filled} → ${maskResult.masked}｜日志 ${JSON.stringify(maskResult.log.slice(0, 120))}`
+    `蒙版没有裁掉区域外的内容：着色 ${maskResult.filled} → ${maskResult.masked}｜日志 ${JSON.stringify((maskResult.log || "").slice(0, 120))}`
   );
 }
-if (!maskResult.log.includes("添加") || maskResult.log.includes("失败")) {
-  problems.push(`蒙版日志未报告成功：${JSON.stringify(maskResult.log.slice(0, 120))}`);
+if (!(maskResult.log || "").includes("添加") || (maskResult.log || "").includes("失败")) {
+  problems.push(`蒙版日志未报告成功：${JSON.stringify((maskResult.log || "").slice(0, 120))}`);
 }
 
 // 移动工具
@@ -1151,8 +1192,8 @@ if (!moveResult.beforeBbox || !moveResult.afterBbox) {
       `移动位移不对：期望 ≈(${wantX}, ${wantY})，实际 (${dx}, ${dy})｜bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`
     );
   }
-  if (!moveResult.log.includes("已移动")) {
-    problems.push(`移动日志未报告成功：${JSON.stringify(moveResult.log.slice(0, 120))}`);
+  if (!(moveResult.log || "").includes("已移动")) {
+    problems.push(`移动日志未报告成功：${JSON.stringify((moveResult.log || "").slice(0, 120))}`);
   }
 }
 
@@ -1167,7 +1208,7 @@ if (namingResult.before === 0) {
   problems.push("新建文档里画不出内容（前置条件不成立）");
 } else if (namingResult.after !== namingResult.before) {
   problems.push(
-    `另存为副本内容不一致：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify(namingResult.log.slice(0, 120))}`
+    `另存为副本内容不一致：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
   );
 }
 
@@ -1207,9 +1248,14 @@ const MEDIUM_INK = `(() => {
   for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++;
   return n;
 })()`;
+// **记住当前图层并在本段结束后恢复** ✓ —— 介质落笔会新建图层并切过去 ✓，
+// 后面（蒙版等）段落默认"当前图层"是自己的 ✓，不恢复就会互相干扰 ✓
+//（本会话真实踩过：整笔落墨变多后，蒙版段当场失败 ✗）。
+const mediumLayerBefore = await evaluate(`state.layerId`);
 const mediumBefore = await evaluate(MEDIUM_INK) || 0;
 await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
-await strokeAt(0.6, 0.7, 501);
+// **拖一整笔** ✓（此前只点一下 ✓）：断言"真的是笔触"而不只是"落了一个点" ✓。
+await dragPath([[0.2, 0.7], [0.35, 0.62], [0.5, 0.72], [0.65, 0.62], [0.8, 0.7]], 501);
 // 先取查看器当前文档（它可能已经是某个副本 ✓）。
 const mediumPage = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
 const mediumDoc = mediumPage.docId || reloadDoc;
@@ -1249,6 +1295,10 @@ if (!mediumObject) {
   // （设计 14.5「打开即图片」的服务端铺底路径 ✓）。
   // 上一轮这里是"已知问题上报" ⚠（画布空白 ✓）。本轮实现了服务端像素补画 ✓，
   // 因此恢复**严格断言** ✓：介质落笔后画布有墨像素必须增加 ✓。
+  // **整笔**的判据 ✓：对象包围盒应明显宽于单个笔尖（48px）✓。
+  if (mediumObject && mediumObject.bbox && mediumObject.bbox[2] < 100) {
+    problems.push(`介质拖动应产生一整笔（包围盒宽 ${mediumObject.bbox[2]}，期望 >100）`);
+  }
   if (mediumAfter <= mediumBefore) {
     const diag = await evaluate(`JSON.stringify({
       resyncs: window.yanshiStats.resyncs, serverBlits: window.yanshiStats.serverBlits,
@@ -1290,6 +1340,16 @@ const oilResult = { ok: Boolean(oilObject), medium: oilObject ? oilObject.medium
 
 const mediumResult = { ok: Boolean(mediumObject), medium: mediumObject ? mediumObject.medium : null,
                        status: mediumStatus, before: mediumBefore, after: mediumAfter };
+// 恢复本段之前的当前图层 ✓。
+if (mediumLayerBefore) {
+  await evaluate(`(() => {
+    const select = document.getElementById("layer");
+    if (select && [...select.options].some((o) => o.value === ${JSON.stringify(mediumLayerBefore)})) {
+      select.value = ${JSON.stringify(mediumLayerBefore)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+}
 
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
@@ -1301,7 +1361,7 @@ if (eraserResult.beforeErase === 0) {
   problems.push("橡皮用例的前置条件不成立：画笔画不出内容");
 } else if (!(eraserResult.afterErase < eraserResult.beforeErase)) {
   problems.push(
-    `橡皮没有擦掉内容：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}｜日志 ${JSON.stringify(eraserResult.log.slice(0, 120))}`
+    `橡皮没有擦掉内容：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}｜日志 ${JSON.stringify((eraserResult.log || "").slice(0, 120))}`
   );
 }
 
@@ -1325,11 +1385,11 @@ if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum !== beforeFill.sum)
 }
 
 // 基础修图 / 液化
-if (retouchResult.log.includes("操作失败") || retouchResult.log.includes("错误 ")) {
-  problems.push(`修图/液化出现工具错误：${JSON.stringify(retouchResult.log.slice(0, 200))}`);
+if ((retouchResult.log || "").includes("操作失败") || (retouchResult.log || "").includes("错误 ")) {
+  problems.push(`修图/液化出现工具错误：${JSON.stringify((retouchResult.log || "").slice(0, 200))}`);
 }
-if (!retouchResult.log.includes("请先按住 Alt")) {
-  problems.push(`仿制图章未设置源点时没有提示：${JSON.stringify(retouchResult.log.slice(0, 120))}`);
+if (!(retouchResult.log || "").includes("请先按住 Alt")) {
+  problems.push(`仿制图章未设置源点时没有提示：${JSON.stringify((retouchResult.log || "").slice(0, 120))}`);
 }
 if (retouchAfter.opaque !== retouchAfter.total) {
   problems.push(`修图后画布停在透明态：${retouchAfter.opaque}/${retouchAfter.total}`);
@@ -1407,7 +1467,7 @@ console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → 
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
-console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${(importResult.log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
@@ -1424,7 +1484,7 @@ console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.af
 console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);
 console.log(`  回到此处可撤销：跳转前后指纹 ${jumpUndoResult?.ok ? `${fingerprintBeforeJump.sum} → ${jumpUndoResult.jumped.sum} → 撤销后 ${jumpUndoResult.undone.sum}` : "未执行"}`);
 console.log(`  吸管/填充：吸管取到 ${pickResult.picked}（期望 #c81e3c）｜填充指纹 ${beforeFill.sum} → ${afterFill.sum} → 刷新 ${afterFillRefresh.sum}（撤销填充由确定性测试覆盖）`);
-console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${retouchResult.log.includes("请先按住 Alt") ? "✓" : "✗"}`);
+console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${(retouchResult.log || "").includes("请先按住 Alt") ? "✓" : "✗"}`);
 console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
