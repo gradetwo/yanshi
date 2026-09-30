@@ -197,6 +197,58 @@ pub fn stamp_samples(buffer: &mut Buffer, brush: &BrushSpec, stamps: &[(f64, f64
     stamp_samples_from(buffer, brush, stamps, 0)
 }
 
+/// 与 [`stamp_samples_from`] 相同，但按**选区覆盖度**衰减每个印章的强度 ✓。
+///
+/// 这是"选区约束落笔"（路线 A）的落地方式：**把覆盖度折进印章本身** ✓，
+/// 因此**从不触碰选区外的像素** ✓ —— 既不改写已有内容 ✓，也与渲染是整幅还是分次（脏区）无关 ✓✓
+/// （上一轮用"事后还原绘制前像素"的写法在分次渲染下会把已有内容抹掉 ✗，原因见
+/// `docs/design/implementation-notes.md`）。
+///
+/// `coverage(x, y)` 按**文档坐标**给出 0..1；覆盖度 ≤ 0 的印章**直接跳过** ✓。
+pub fn stamp_samples_clipped(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stamps: &[(f64, f64, f64)],
+    coverage: &dyn Fn(f64, f64) -> f32,
+) -> usize {
+    let radius = brush.size / 2.0;
+    let mut drawn = 0usize;
+    for (offset, (x, y, pressure)) in stamps.iter().enumerate() {
+        let (mut cx, mut cy) = (*x, *y);
+        if brush.jitter > 0.0 {
+            let mut stamp_rng = Prng::derive(brush.seed, offset as u64);
+            cx += stamp_rng.signed() as f64 * brush.jitter;
+            cy += stamp_rng.signed() as f64 * brush.jitter;
+        }
+        let size_scale = if brush.pressure_size {
+            let p = pressure.clamp(0.0, 1.0);
+            brush.min_size_ratio + (1.0 - brush.min_size_ratio) * p
+        } else {
+            1.0
+        };
+        let stamp_radius = radius * size_scale;
+        if stamp_radius <= 0.0 {
+            continue;
+        }
+        let alpha = (brush.color[3] * brush.flow as f32 * brush.opacity as f32)
+            * coverage(cx, cy).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            continue;
+        }
+        draw_stamp(
+            buffer,
+            cx,
+            cy,
+            stamp_radius,
+            brush.hardness,
+            [brush.color[0], brush.color[1], brush.color[2], alpha],
+            brush.blend_mode,
+        );
+        drawn += 1;
+    }
+    drawn
+}
+
 /// 把预先生成的采样盖章到缓冲，抖动序号从 `base_index` 起。
 pub fn stamp_samples_from(
     buffer: &mut Buffer,
@@ -392,6 +444,65 @@ pub fn draw_stamp(
 
 #[cfg(test)]
 mod tests {
+    /// 选区覆盖度折进印章：覆盖度 1 与不裁剪一致；0 完全不画；0.5 更弱但仍有墨 ✓。
+    #[test]
+    fn clipped_stamping_respects_coverage() {
+        use crate::buffer::Buffer;
+        let brush = BrushSpec {
+            size: 6.0,
+            hardness: 1.0,
+            color: [1.0, 0.1, 0.1, 1.0],
+            opacity: 1.0,
+            flow: 1.0,
+            ..Default::default()
+        };
+        let stamps = [(6.0, 6.0, 1.0), (14.0, 6.0, 1.0)];
+        let ink = |buffer: &Buffer| -> usize {
+            let mut count = 0;
+            for y in 0..16 {
+                for x in 0..20 {
+                    if buffer.pixel(x, y)[3] > 0.01 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+
+        let mut plain = Buffer::new(0, 0, 20, 16);
+        let plain_drawn = stamp_samples(&mut plain, &brush, &stamps);
+        let plain_ink = ink(&plain);
+        assert!(plain_ink > 0, "不裁剪时应画出墨");
+
+        let mut full = Buffer::new(0, 0, 20, 16);
+        let full_drawn = stamp_samples_clipped(&mut full, &brush, &stamps, &|_, _| 1.0);
+        assert_eq!(
+            full_drawn, plain_drawn,
+            "覆盖度 1 应与不裁剪画出同样多的印章"
+        );
+        assert_eq!(ink(&full), plain_ink, "覆盖度 1 的像素应与不裁剪完全一致");
+
+        let mut none = Buffer::new(0, 0, 20, 16);
+        let none_drawn = stamp_samples_clipped(&mut none, &brush, &stamps, &|_, _| 0.0);
+        assert_eq!(none_drawn, 0, "覆盖度 0 不应画任何印章");
+        assert_eq!(ink(&none), 0, "覆盖度 0 不应留下任何墨");
+
+        // 只覆盖第一个印章所在区域 ⇒ 只画那一个。
+        let mut half = Buffer::new(0, 0, 20, 16);
+        let half_drawn = stamp_samples_clipped(&mut half, &brush, &stamps, &|x, _| {
+            if x < 10.0 {
+                1.0
+            } else {
+                0.0
+            }
+        });
+        assert_eq!(half_drawn, 1, "只有落在选区内的印章才应被绘制");
+        assert!(
+            ink(&half) > 0 && ink(&half) < plain_ink,
+            "只应画出左侧那一部分墨"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

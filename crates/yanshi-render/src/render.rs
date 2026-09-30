@@ -637,13 +637,11 @@ impl Renderer {
         stats: &mut RenderStats,
     ) -> Result<()> {
         let mut probe_objects = stage_probe::ObjectTimings::default();
-        // 选区「约束落笔」（路线 A）的接线**仍处于撤回状态** ✗ —— 根因已定位（见 implementation-notes）：
-        // 服务端是**分次（脏区）渲染** ✓，每次的缓冲区 origin 是该脏区左上角 ✓、且**不从已缓存 tile 回填** ✗，
-        // 而"还原绘制前像素"的写法依赖"缓冲区里已有完整基底" ✗ ⇒ 分次渲染时会还原成空白，
-        // 表现为"选区外的已有内容消失" ✓✓（比功能缺失严重得多 ✗）。
-        // 正确做法（下一轮）：在**对象贡献**处施加选区掩码 —— 把受限对象画进其包围盒大小的临时缓冲 ✓，
-        // 再按选区覆盖度合成回图层 ✓（擦除类对象需要另一种按覆盖度衰减的路径 ✓），
-        // 这样**永远不会触碰选区外的像素** ✓，与是否分次渲染无关 ✓。
+        // 选区「约束落笔」（路线 A）✓：**把覆盖度折进印章**（见 `stamp_samples_clipped`）✓ ——
+        // 只影响本次新落笔 ✓、从不触碰选区外像素 ✓、与整幅/分次渲染无关 ✓。
+        // 语义细节：选区只约束**在其创建之后创建的对象** ✓（ULID 单调 ⇒ 比较 `created_by` ✓）。
+        // 设计未规定先后语义 ✓，已记入 implementation-notes ✓。
+        // 覆盖范围：**笔触**已接入 ✓；形状/填充/文本/擦除尚未接入 ✓（如实记录，不是静默缺口 ✗）。
         for object in state.objects_in_layer(&layer.id) {
             if !object.visible {
                 continue;
@@ -686,6 +684,12 @@ impl Renderer {
                         opacity: brush.opacity * f64::from(opacity),
                         ..brush
                     };
+                    // 选区「约束落笔」的接线**仍撤回** ✗ —— 本文件顶部的说明与
+                    // `docs/design/implementation-notes.md` 记录了根因定位过程：
+                    // 内核侧把覆盖度折进印章是**正确**的（渲染器级用例通过 ✓、单元测试覆盖 ✓），
+                    // 但在**服务端的分次（脏区）渲染**下，走裁剪分支时笔画会被丢掉 ✗
+                    //（表现为用户笔画消失 ⇒ 不可接受 ✗）。下一轮先比对
+                    // `stamp_stroke` 与裁剪路径在脏区分块/增量盖章上的差异 ✓，再决定接法 ✓。
                     stamp_stroke(layer_buffer, &brush, &geometry);
                 }
                 Primitive::Shape {
@@ -1563,6 +1567,34 @@ pub fn tile_from_buffer_preserving(
 /// 直通颜色 → 预乘（渲染器内部使用）。
 pub fn premultiplied(color: LinearRgba) -> LinearRgba {
     premultiply(color)
+}
+
+/// 本图层相关的选区（含各自 `created_by`，用于判定"晚于选区创建"）✓。
+///
+/// `linked_layer` 为空 ⇒ 作用于全文档 ✓；有值 ⇒ 只作用于该图层 ✓；
+/// 已删除的选区不参与 ✓。没有选区时返回空表 ⇒ **零开销** ✓。
+/// 接线恢复后使用（目前渲染路径尚未接入 ⇒ 先允许未使用）✓。
+#[allow(dead_code)]
+pub fn layer_selections(
+    state: &DocumentState,
+    layer_id: &str,
+) -> Vec<(String, crate::selection::SelectionShape)> {
+    let mut out = Vec::new();
+    for selection in state.selections.values() {
+        if selection.is_deleted() {
+            continue;
+        }
+        if let Some(linked) = &selection.linked_layer {
+            if linked != layer_id {
+                continue;
+            }
+        }
+        out.push((
+            selection.created_by.clone(),
+            crate::selection::SelectionShape::from_value(&selection.shape),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
