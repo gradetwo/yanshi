@@ -773,6 +773,33 @@ impl Renderer {
                         opacity,
                     );
                 }
+                Primitive::Text {
+                    text,
+                    size,
+                    color,
+                    align,
+                    position,
+                    ..
+                } => {
+                    // 路线 A 的最小切片：内置 5×7 ASCII 位图字体 ✓（CJK 子集为后续项 ✓）。
+                    let scale = crate::object::text_scale_for_size(size);
+                    let drawn = crate::font::draw_text(
+                        layer_buffer,
+                        text.as_str(),
+                        position.0,
+                        position.1,
+                        scale,
+                        color,
+                        align.as_str(),
+                        0.0,
+                    );
+                    if drawn == 0 {
+                        stats.unsupported.push(format!(
+                            "文本未绘制出像素（对象 {}，文本 {:?}）",
+                            object.id, text
+                        ));
+                    }
+                }
                 Primitive::Retouch {
                     kind,
                     points,

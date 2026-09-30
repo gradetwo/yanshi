@@ -45,6 +45,25 @@ pub enum Primitive {
         /// 描边颜色。
         stroke_color: Option<LinearRgba>,
     },
+    /// 文本（设计 4.2：`text` / `font` / `size` / `color` / `align`）。
+    ///
+    /// 内核目前只有**内置 5×7 ASCII 位图字体**（路线 A 的最小切片 ✓）：
+    /// `font` 字段被接受但暂时只有内置字体一种实现 ✓；CJK 字体子集是后续项 ✓
+    /// （设计 1175/1287 行要求"内嵌开源字体子集"，属多轮工程，已记录）。
+    Text {
+        /// 文本内容（`\n` 换行）。
+        text: String,
+        /// 字体名（暂只用内置字体）。
+        font: String,
+        /// 字号（像素高度）。
+        size: f64,
+        /// 颜色（直通线性）。
+        color: LinearRgba,
+        /// 对齐：`left` / `center` / `right`。
+        align: String,
+        /// 左上角位置（文档坐标）。
+        position: (f64, f64),
+    },
     /// 调整对象：作用于同图层中位于其下方的内容。
     Adjustment {
         /// `adjustment_type`。
@@ -155,9 +174,64 @@ pub fn parse_object(object: &Object) -> Primitive {
             }
         }
         ObjectType::RasterPatch => parse_raster_patch(&object.data),
-        ObjectType::Text => Primitive::Unsupported {
-            reason: "text 光栅化需要内嵌字体子集（18 章，尚未实现）".to_owned(),
-        },
+        ObjectType::Text => {
+            let position = object
+                .data
+                .get("position")
+                .map(|value| {
+                    if let Some(pair) = value.as_array() {
+                        (
+                            pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+                            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                        )
+                    } else {
+                        (
+                            value.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+                            value.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+                        )
+                    }
+                })
+                .or_else(|| {
+                    object
+                        .data
+                        .get("bbox")
+                        .and_then(Bbox::from_value)
+                        .map(|b| (b.x, b.y))
+                })
+                .unwrap_or((0.0, 0.0));
+            Primitive::Text {
+                text: object
+                    .data
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                font: object
+                    .data
+                    .get("font")
+                    .and_then(Value::as_str)
+                    .unwrap_or("builtin")
+                    .to_owned(),
+                size: object
+                    .data
+                    .get("size")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(24.0)
+                    .max(1.0),
+                color: object
+                    .data
+                    .get("color")
+                    .map(parse_color)
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                align: object
+                    .data
+                    .get("align")
+                    .and_then(Value::as_str)
+                    .unwrap_or("left")
+                    .to_owned(),
+                position,
+            }
+        }
         ObjectType::Retouch => {
             let kind = object
                 .data
@@ -457,6 +531,11 @@ pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> P
                 *point = (x, y);
             }
         }
+        Primitive::Text { position, .. } => {
+            // 文本目前只支持平移（旋转/缩放需要重排与重新栅格化，记为后续项 ✓）。
+            let (x, y) = map_point(position.0, position.1);
+            *position = (x, y);
+        }
         Primitive::RasterPatch { offset, .. } => {
             let (x, y) = map_point(offset.0, offset.1);
             *offset = (x, y);
@@ -473,12 +552,35 @@ pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> P
 }
 
 /// 对象的文档坐标包围盒（**已施加对象变换**）。
+/// 文本栅格化后的整数缩放倍率（内置字形高 7px）。
+pub fn text_scale_for_size(size: f64) -> u32 {
+    let scale = (size.max(1.0) / crate::font::GLYPH_HEIGHT as f64).round() as i64;
+    scale.clamp(1, 64) as u32
+}
+
+/// 对象的文档坐标包围盒（**已施加对象变换**）。
 pub fn object_bbox(object: &Object) -> Option<Bbox> {
     // 对象的仿射 `transform` 尚未进入内核（Phase 3 起按对象应用），
     // 因此这里返回的是对象**本地**包围盒。
     // 先施加对象变换，再按**变换后**的图元算包围盒 ⇒ 剔除与命中测试都跟着走 ✓
     //（查看器的「移动」工具正是用 list_objects 的 bbox 做命中测试 ✓）。
     let local = match transform_primitive(parse_object(object), &object.transform) {
+        Primitive::Text {
+            text,
+            size,
+            position,
+            ..
+        } => {
+            let scale = text_scale_for_size(size);
+            let (width, height) =
+                crate::font::BitmapFont::builtin().measure(text.as_str(), scale, 0);
+            return Some(Bbox::new(
+                position.0,
+                position.1,
+                width as f64,
+                height as f64,
+            ));
+        }
         Primitive::Liquify {
             points,
             size,

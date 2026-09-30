@@ -819,7 +819,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_text",
         profile: Profile::Core,
-        summary: "绘制文本对象（内核文本光栅化待字体子集，属路线图）",
+        summary: "绘制文本对象（内核用内置 5×7 ASCII 位图字体光栅化；CJK 字体子集属后续项）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
