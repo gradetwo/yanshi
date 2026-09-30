@@ -39,7 +39,17 @@ reproduce the original curve, and it refuses a closed path because a loop needs 
 not say how the second is given. `merge` joins two paths and aligns the tangents at the seam along the
 neighbouring segments, which `join` deliberately does not do, and it refuses strokes rather than silently
 behaving like `join`. Both drop a duplicated node when the endpoints coincide and report it as
-`seam_deduplicated`, so the seam leaves no zero-length segment.
+`seam_deduplicated`, so the seam leaves no zero-length segment. `boolean` completes the operator list with
+`union`, `intersect`, `subtract` and `xor`, taking its geometry from `yanshi_render::polygon`: a
+Greiner-Hormann implementation chosen for predictable size and behaviour, with one traversal shared by all
+four modes. Degenerate inputs are refused rather than guessed, because that algorithm is known to fail on
+them - intersections landing on a vertex, collinear overlapping edges, and zero-area polygons all return an
+explicit error naming the reason, and the module records that a sweep-line algorithm is the deliberate
+upgrade path if such inputs ever need to work. Curves are discretised at the same subdivision the renderer
+uses, so the result contains straight segments only and no longer carries Bezier handles. A result with
+several rings, which xor of two overlapping shapes naturally produces, becomes one shape object per ring,
+and the new shapes plus the two retired inputs share a single changeset so one withdrawal restores
+everything.
 
 `get_changesets` and `revert_changeset` live in the `changeset` group, which is not part of the default
 profiles, so the counts above are unchanged. `get_changesets` lists the changesets in the log and

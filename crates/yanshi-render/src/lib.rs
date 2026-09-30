@@ -97,6 +97,7 @@ pub mod half;
 pub mod object;
 pub mod paint;
 pub mod png;
+pub mod polygon;
 pub mod prng;
 pub mod render;
 pub mod selection;

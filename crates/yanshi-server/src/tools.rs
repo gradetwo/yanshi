@@ -1014,6 +1014,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // `convert_to_shape` 经 `path_edit` 调用时也用这两个参数 ✓
             //（上一轮踩过同一坑：加了算子却忘了登记参数 ✓ ⇒ 框架的参数校验直接拒绝 ✓）。
             param!("shape_id", String, false, "convert_to_shape 产生的形状 id；缺省自动生成"),
+            param!("mode", String, false, "boolean 的模式：union | intersect | subtract | xor"),
+            param!("result_id", String, false, "boolean 结果 id 前缀；缺省自动生成"),
         ],
     },
     ToolSpec {
@@ -3298,6 +3300,208 @@ fn write_path_split(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }))
 }
 
+/// **多边形布尔** ✓（设计 792 的 `boolean` ✓）。
+///
+/// **设计只给了名字 ⇒ 记录选择** ✓（几何部分见 `yanshi_render::polygon` 的模块说明 ✓）：
+/// * **模式由参数给出** ✓（`union`/`intersect`/`subtract`/`xor` ✓）—— 设计只写了一个 `boolean` ✓，
+///   而四种运算显然都需要 ✓ ⇒ 与其发明四个工具名 ✓，不如一个工具加一个模式 ✓；
+/// * **来源可以是路径、笔迹或既有多边形形状** ✓（都先取成顶点列 ✓；路径用**渲染端同一套铺平** ✓）；
+/// * **结果落成形状对象** ✓（多边形 ✓）；若结果是**多个环** ✓（相离的两块 ✓、异或的两块 ✓）
+///   就各建一个 ✓（id 依次加后缀 ✓）；
+/// * **非破坏 + 一步撤销** ✓：新建结果 ✓ 并 tombstone 两个输入 ✓，全部归**一个变更集** ✓
+///   ⇒ 不满意可以一次撤回 ✓。
+/// * **退化输入明确报错** ✓（交点在顶点上 ✓、共线重叠 ✓、零面积 ✓）——
+///   几何层**拒绝**而不是给一个看起来对的多边形 ✓，错误原文直接回给调用方 ✓。
+fn write_path_boolean(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    use yanshi_render::polygon::{boolean, BooleanMode};
+    let object_id = require_str(args, "object_id")?;
+    let other_id = require_str(args, "other_id")?;
+    let mode_name = require_str(args, "mode")?;
+    let Some(mode) = BooleanMode::parse(&mode_name) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知的布尔模式 {mode_name}（可用：union / intersect / subtract / xor）"
+            )),
+        ));
+    };
+    let result_prefix = args
+        .get("result_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("bool_{}", yanshi_core::Ulid::new().encode()));
+    // 取两条来源的顶点列 ✓（路径/笔迹/多边形形状 ✓）。
+    let (layer_id, first, second) = {
+        let state = document_state(ctx)?;
+        let read = |id: &str| -> Result<Vec<(f64, f64)>> {
+            let Some(object) = state.objects.get(id) else {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("对象 {id} 不存在")),
+                ));
+            };
+            match object.object_type {
+                yanshi_core::ObjectType::Path => {
+                    let nodes = object
+                        .data
+                        .get("nodes")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let closed = object
+                        .data
+                        .get("closed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    Ok(yanshi_render::object::flatten_path(&nodes, closed))
+                }
+                yanshi_core::ObjectType::Stroke => Ok(object
+                    .data
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .map(|points| points.iter().map(point_xy).collect())
+                    .unwrap_or_default()),
+                yanshi_core::ObjectType::Shape => {
+                    let kind = object
+                        .data
+                        .get("geometry")
+                        .and_then(|geometry| geometry.get("kind"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("rect");
+                    if kind != "polygon" {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "{id} 是 {kind} 形状 —— 布尔只支持多边形（请先 convert_to_shape）"
+                            )),
+                        ));
+                    }
+                    Ok(object
+                        .data
+                        .get("geometry")
+                        .and_then(|geometry| geometry.get("points"))
+                        .and_then(Value::as_array)
+                        .map(|points| points.iter().map(point_xy).collect())
+                        .unwrap_or_default())
+                }
+                other => Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{id} 是 {other:?} —— 布尔只作用于路径、笔迹或多边形形状"
+                    )),
+                )),
+            }
+        };
+        let first = read(&object_id)?;
+        let second = read(&other_id)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            unreachable!("上面已确认存在")
+        };
+        (object.layer_id.clone(), first, second)
+    };
+    let rings = boolean(&first, &second, mode).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("布尔运算无法进行：{}", error.detail())),
+        )
+    })?;
+    if rings.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "布尔结果为空集（{} 与 {} 的 {}）—— 空集没有可以落成对象的多边形",
+                object_id,
+                other_id,
+                mode.as_str()
+            )),
+        ));
+    }
+    // 结果落成形状 ✓（多环 ⇒ 多个对象 ✓），并 tombstone 两个输入 ✓ —— 全部一个变更集 ✓。
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let style = {
+        let state = document_state(ctx)?;
+        state
+            .objects
+            .get(object_id.as_str())
+            .map(|object| object.data.clone())
+            .unwrap_or(Value::Null)
+    };
+    let mut created_ids: Vec<String> = Vec::new();
+    let mut head = 0u64;
+    let mut failure: Option<YanshiError> = None;
+    for (index, ring) in rings.iter().enumerate() {
+        let id = if index == 0 {
+            result_prefix.clone()
+        } else {
+            format!("{result_prefix}_{}", index + 1)
+        };
+        let (min_x, min_y, max_x, max_y) = ring.iter().fold(
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(min_x, min_y, max_x, max_y), (x, y)| {
+                (min_x.min(*x), min_y.min(*y), max_x.max(*x), max_y.max(*y))
+            },
+        );
+        let mut data = style.clone();
+        if let Some(map) = data.as_object_mut() {
+            map.remove("nodes");
+            map.remove("points");
+            map.remove("closed");
+        }
+        data["geometry"] = json!({
+            "kind": "polygon",
+            "points": ring.iter().map(|(x, y)| json!([x, y])).collect::<Vec<_>>(),
+            "bbox": {"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y},
+        });
+        data["bbox"] = json!({"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y});
+        match ctx.commit(
+            AtomKind::CreateObject,
+            json!({"object_id": id, "layer_id": layer_id, "type": "shape", "data": data}),
+        ) {
+            Ok(result) => {
+                head = head.max(result.head_seq);
+                created_ids.push(id);
+            }
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    if failure.is_none() {
+        for source in [object_id.clone(), other_id.clone()] {
+            match ctx.commit(AtomKind::Tombstone, json!({"object_id": source})) {
+                Ok(result) => head = head.max(result.head_seq),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+    ctx.changeset = previous;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(json!({
+        "ok": true,
+        "op": "boolean",
+        "mode": mode.as_str(),
+        "object_id": object_id,
+        "other_id": other_id,
+        "results": created_ids,
+        "rings": rings.len(),
+        "area": rings.iter().map(|ring| yanshi_render::polygon::area(ring)).sum::<f64>(),
+        "changeset_id": changeset,
+        "head": head,
+    }))
+}
+
 /// **把路径（或笔迹）转换成多边形形状** ✓（设计 792 的 `convert_to_shape` ✓）。
 ///
 /// **设计未规定语义 ⇒ 记录选择** ✓：
@@ -4166,17 +4370,24 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "convert_to_shape" => {
             return write_convert_to_shape(ctx, args);
         }
-        // **`boolean` 仍然拒绝** ✓（需要真正的布尔几何 ✓）；
+        // **`boolean`** ✓（设计 792 的最后一个算子 ✓）：几何在 `yanshi_render::polygon` ✓，
+        // 这里只负责"取几何 ⇒ 算 ⇒ 落成对象" ✓。
+        "boolean" => {
+            return write_path_boolean(ctx, args);
+        }
         // **`convert_to_path` 也拒绝** ✓ —— 它是**笔迹 ⇒ 路径** ✓（已是独立工具 ✓），
         // 而"路径 ⇒ 路径"没有意义 ✓ ⇒ 明确说明 ✓，不静默成功 ✗。
-        "boolean" | "convert_to_path" => {
+        //（`boolean` 已在上面的分支处理 ✓ —— 我一度把两处都留着 ✓ ⇒ clippy 报"不可达模式" ✓，
+        //  这是"补了新分支却忘了删旧分支"的典型 ✓，模式匹配的穷尽性能帮我们看出来 ✓。）
+        "convert_to_path" => {
             return Err(unsupported(&op));
         }
         other => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "未知的 path_edit 算子 {other}（已实现：reverse / close / join / merge / split）"
+                    "未知的 path_edit 算子 {other}\
+                     （已实现：reverse / close / join / merge / split / convert_to_shape / boolean）"
                 )),
             ));
         }
