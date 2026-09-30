@@ -634,9 +634,26 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
         AtomKind::Move | AtomKind::Transform => {
             let object_id = required(atom, "object_id")?.to_owned();
             supersede_object(state, atom, &object_id, None)?;
+            // **`delta` 与 `transform` 语义不同** ✓（子 agent 报的 #6/#7 ✓）：
+            //   * `delta`（增移 ✓）⇒ 在对象**当前**变换上**复合** ✓；
+            //   * `transform`（绝对 ✓）⇒ **直接赋值** ✓ —— 包括**单位矩阵** ✓：
+            //     此前用 `if !transform.is_identity()` 把单位变换**丢掉** ✗
+            //     ⇒ 对象**永远回不到原点** ✓（子 agent 实测：`delta:{0,0}` 返回 ok 却不改包围盒 ✓）。
+            let delta = atom.payload.get("delta").map(|value| {
+                (
+                    value.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
+                    value.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
+                )
+            });
+            let has_transform = atom.payload.get("transform").is_some();
             let transform = transform_from_payload(&atom.payload);
             if let Some(object) = state.objects.get_mut(&object_id) {
-                if !transform.is_identity() {
+                if let Some((dx, dy)) = delta {
+                    // 文档坐标的平移 ✓：在矩阵的平移分量上叠加 ✓
+                    //（`p' = pivot + M·(p − pivot)` ✓ ⇒ `e,f` 加上 (dx,dy) 即整体平移 ✓）。
+                    object.transform.matrix[4] += dx;
+                    object.transform.matrix[5] += dy;
+                } else if has_transform {
                     object.transform = transform;
                 }
             }

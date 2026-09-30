@@ -172,3 +172,147 @@ fn moving_an_object_clears_the_pixels_it_left_behind() {
         "移动后新位置应是红色 ✓，实际 {after_new:?}"
     );
 }
+
+/// **`delta` 是增量、`transform` 是绝对值** ✓ —— 子 agent 报的 #6：
+/// `delta{dx:30}` → 130 ✓，再 `delta{dx:10}` → **110** ✗（期望 **140** ✓，前面那一步被丢掉了 ✓）。
+///
+/// 两者的名字本就说明语义 ✓：`delta` = 增移 ✓ ⇒ 与对象**当前**变换复合 ✓（这只能在折叠层做 ✓，
+/// 因为只有它知道当前状态 ✓）；`transform` = 绝对 ✓ ⇒ 直接赋值 ✓。
+#[test]
+fn successive_deltas_compose_instead_of_replacing() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_move", 256, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "a_box",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 20.0, "y": 20.0, "w": 30.0, "h": 30.0}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}),
+        );
+    }
+    let bbox_of = |workspace: &mut Workspace| -> Vec<f64> {
+        let listed = {
+            let mut ctx = context(workspace);
+            registry.call(&mut ctx, "list_objects", &json!({}))
+        };
+        listed["objects"]
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["object_id"] == json!("a_box"))
+            })
+            .and_then(|object| object["bbox"].as_array())
+            .map(|bbox| bbox.iter().filter_map(serde_json::Value::as_f64).collect())
+            .expect("对象应有包围盒")
+    };
+
+    let before = bbox_of(&mut workspace);
+    for _ in 0..2 {
+        let mut ctx = context(&mut workspace);
+        let moved = registry.call(
+            &mut ctx,
+            "move_object",
+            &json!({"object_id": "a_box", "delta": {"dx": 30.0, "dy": 0.0}}),
+        );
+        assert_eq!(moved["ok"], json!(true), "{moved}");
+    }
+    let after = bbox_of(&mut workspace);
+    assert_eq!(
+        (after[0] - before[0]).round(),
+        60.0,
+        "连续两次 dx=30 应累积 60（而不是只生效最后一次 ✓）：{before:?} → {after:?}"
+    );
+
+    // **绝对值入口仍然可用** ✓：`transform` 直接赋值 ✓。
+    let mut ctx = context(&mut workspace);
+    let placed = registry.call(
+        &mut ctx,
+        "move_object",
+        &json!({"object_id": "a_box", "transform": {"matrix": [1, 0, 0, 1, 5, 5], "pivot": [0, 0]}}),
+    );
+    assert_eq!(placed["ok"], json!(true), "{placed}");
+    let absolute = bbox_of(&mut workspace);
+    // **注意语义** ✓：`transform` 是**施加在对象自身几何上**的变换 ✓，不是"把包围盒设成某个坐标" ✗。
+    // 对象的基准几何是 (20,20) ✓ ⇒ 平移 (5,5) 之后落在 **(25,25)** ✓
+    //（我第一版期望 (5,5) ✗ —— 那是我把两种语义搞混了 ✓，实现本身是对的 ✓）。
+    assert_eq!(
+        (absolute[0].round(), absolute[1].round()),
+        (25.0, 25.0),
+        "`transform` 应把对象的基准几何 (20,20) 平移到 (25,25)：{absolute:?}"
+    );
+}
+
+/// **对象必须能回到原点** ✓ —— 子 agent 报的 #7：
+/// `move_object {delta:{0,0}}` / 单位矩阵都返回 ok 却**不改包围盒** ✗
+/// （折叠层用 `if !transform.is_identity()` 把单位变换丢掉了 ✓）。
+#[test]
+fn an_identity_transform_returns_the_object_to_the_origin() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_move", 256, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "b_box",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 40.0, "y": 40.0, "w": 20.0, "h": 20.0}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}),
+        );
+        registry.call(
+            &mut ctx,
+            "move_object",
+            &json!({"object_id": "b_box", "delta": {"dx": 70.0, "dy": 30.0}}),
+        );
+    }
+    let bbox_now = |workspace: &mut Workspace| -> Vec<f64> {
+        let listed = {
+            let mut ctx = context(workspace);
+            registry.call(&mut ctx, "list_objects", &json!({}))
+        };
+        listed["objects"]
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["object_id"] == json!("b_box"))
+            })
+            .and_then(|object| object["bbox"].as_array())
+            .map(|bbox| bbox.iter().filter_map(serde_json::Value::as_f64).collect())
+            .expect("对象应有包围盒")
+    };
+    let moved = bbox_now(&mut workspace);
+    assert!((moved[0] - 110.0).abs() < 1.0, "先移开：{moved:?}");
+
+    // 单位矩阵 ⇒ 回到文档原点 ✓（这里"原点"指**未施加变换**的位置 ✓）。
+    let mut ctx = context(&mut workspace);
+    let reset = registry.call(
+        &mut ctx,
+        "move_object",
+        &json!({"object_id": "b_box", "transform": {"matrix": [1, 0, 0, 1, 0, 0], "pivot": [0, 0]}}),
+    );
+    assert_eq!(reset["ok"], json!(true), "{reset}");
+    let home = bbox_now(&mut workspace);
+    assert!(
+        (home[0] - 40.0).abs() < 1.0 && (home[1] - 40.0).abs() < 1.0,
+        "单位变换必须真的把对象放回原位（40,40），实际 {home:?}"
+    );
+}
