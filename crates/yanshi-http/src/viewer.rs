@@ -220,7 +220,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span class="tool-name" id="toolName">画笔</span>
   <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
   <label>颜色 <input id="color" type="color" value="#c81e3c" /></label>
-  <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
+  <!-- "强度"这个名字在**插件介质**下是**误导**的 ✗：该值直接喂给插件的 `wetness` ✓，
+       于是"越强"= **越湿** = **越淡** ✓（子 agent 实测：85 → alpha 0.238 ✓、55 → 0.482 ✓）。
+       这里让标签**随介质改名** ✓（插件介质 ⇒ "湿度" ✓；内置笔刷 ⇒ "强度" ✓），
+       这是最小且诚实的修法 ✓（改语义会牵动插件 ABI ✓，改名不动任何渲染 ✓）。 -->
+  <label><span id="strengthLabel">强度</span> <input id="strength" type="range" min="1" max="100" value="40" /></label>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
     <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
@@ -1287,10 +1291,35 @@ async function loadMedium(name) {
 ///
 /// 载墨耗尽 ✓：每点的 `load` 随**累计路径长度**下降 ✓（点按几乎不耗 ✓、长拖会枯笔 ✓）。
 /// 混色 ✓：每个点取**此刻画布上笔尖处**的颜色作为目标色 ✓（与油画湿画法的直觉一致 ✓）。
+/// 介质笔尖尺寸（文档像素）✓：读**粗细滑杆** ✓，并夹到插件的 `maxDab` ✓。
+///
+/// `maxDab` 是插件**自报**的上限 ✓（设计 11.1 的配额之一 ✓）⇒ 宿主只做**上界**约束 ✓，
+/// 不该像此前那样把它当**固定值**用 ✗（那是"滑杆无效"的根因 ✓）。
+function mediumTipSize(spec) {
+  const requested = Number($("size").value);
+  const wanted = Number.isFinite(requested) && requested > 0 ? requested : spec.maxDab;
+  return Math.max(1, Math.min(wanted, spec.maxDab));
+}
+
+/// 让"强度/湿度"标签**随介质说真话** ✓（见 HTML 里的说明 ✓）。
+function syncStrengthLabel() {
+  const label = $("strengthLabel");
+  const select = $("medium");
+  if (!label || !select) return;
+  const isPluginMedium = select.value && select.value !== "example";
+  label.textContent = isPluginMedium ? "湿度" : "强度";
+  label.title = isPluginMedium
+    ? "插件介质按湿度调色：数值越大越湿、颜色越淡"
+    : "内置笔刷的落笔强度";
+}
+
 async function mediumStroke(name, points) {
   if (!points || points.length === 0) return;
   const spec = await loadMedium(name);
-  const size = Math.min(48, spec.maxDab);
+  // **笔尖尺寸来自"粗细"滑杆** ✓，只受插件**自报**的 `maxDab` 上限约束 ✓ ——
+  // 此前写死 `Math.min(48, spec.maxDab)` ✗ ⇒ 滑杆只影响拖动抽稀 ✓，笔尖宽度恒为 48px ✓
+  //（子 agent 实测：#size 12/24/32/40/48 画出的色带宽度都是 54~56px ✓）。
+  const size = mediumTipSize(spec);
   const plugin = spec.instance.exports;
   // 同上：整笔重采样也用 1/8 ✓（与拖动抽稀保持一致 ✓）。
   const spacing = Math.max(1, size / 8);
@@ -1400,7 +1429,7 @@ async function mediumDabInner(name, point) {
     log("介质加载失败：" + (error && error.message ? error.message : error), "#c33");
     return;
   }
-  const size = Math.min(48, spec.maxDab);
+  const size = mediumTipSize(spec);
   // 注意命名 ✓：**不要**叫 `api` ✗ —— 查看器自己有一个 `api(path)` 的 URL 助手 ✓，
   // 同名局部变量会把它遮蔽 ✓，于是后面 `fetch(api("/api/blob"))` 会调到一个对象上 ✗
   //（实测报 "api is not a function" ✓ —— 这一条是靠 yanshiStats.medium 的可观测信号才立刻定位的 ✓）。
@@ -1444,11 +1473,22 @@ async function commitMediumBitmap(rgba, region, spec, stamps) {
     log("介质上传失败：" + (upload.error_code || "unknown"), "#c33");
     return;
   }
-  const layerId = "medium_" + ulid();
-  const created = await callTool("create_layer", { layer_id: layerId, name: spec.id }, { refresh: false });
-  if (!created.ok) {
-    log("介质落笔失败（新建图层）：" + (created.error_code || "unknown"), "#c33");
-    return;
+  // **画进"当前选中的图层"** ✓ —— 此前每落一笔都新建 `medium_<ulid>` ✗
+  // ⇒ 子 agent 画 37/49 笔就得到 37/49 个图层 ✓，`state.layerId` 还被悄悄改走 ✓，
+  // 于是"2–6 个图层"这种正常用法**根本做不到** ✓，而且笔迹散落在几十个层里 ✓。
+  // 只在**选中的图层不存在**时兜底新建一个 ✓（例如它已被删除 ✓）。
+  let layerId = state.layerId || "layer_paint";
+  const existing = await callTool("list_layers", {}, { refresh: false }).catch(() => ({}));
+  const known = (existing.layers || []).some((layer) => layer.layer_id === layerId);
+  if (!known) {
+    const fallback = "medium_" + ulid();
+    const created = await callTool("create_layer", { layer_id: fallback, name: spec.id }, { refresh: false });
+    if (!created.ok) {
+      log("介质落笔失败（新建图层）：" + (created.error_code || "unknown"), "#c33");
+      return;
+    }
+    layerId = fallback;
+    state.layerId = fallback;
   }
   const objectId = "dab_" + ulid();
   const bitmap = { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" };
@@ -3157,6 +3197,16 @@ function initQuickPanel() {
 }
 
 initDockers();
+// 让"强度 / 湿度"标签**随介质说真话** ✓（见 HTML 里的说明 ✓）：
+// 该滑杆在插件介质下喂的是 `wetness` ✓ ⇒ 越大越湿、颜色越淡 ✓，
+// 继续叫"强度"会让人以为越大越浓 ✗。
+{
+  const strengthSelect = $("medium");
+  if (strengthSelect) {
+    strengthSelect.addEventListener("change", syncStrengthLabel);
+    syncStrengthLabel();
+  }
+}
 initQuickPanel();
 
 $("addLayer").addEventListener("click", async () => {
