@@ -2010,6 +2010,43 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${(importResult.log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+
+// **连续两次移动必须累积** ✓ —— 子 agent 报的 #6：`delta` 此前被编成**绝对矩阵** ✗
+// ⇒ 第二次移动会**丢掉**第一次 ✓（实测 `dx:30` → 130 ✓，再 `dx:10` → **110** ✗，期望 140 ✓）。
+// 单次移动区分不出这个 bug ✓（绝对值与增量在第一步结果相同 ✓），必须连做两次 ✓。
+{
+  const docNow = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+  const boxOf = async (objectId) => {
+    const listed = await fetch(`${origin}/api/tools/list_objects?doc=${docNow.docId}&token=${docNow.token}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }).then((r) => r.json()).catch(() => ({}));
+    const found = (listed.objects || []).find((o) => o.object_id === objectId);
+    return found && found.bbox ? found.bbox : null;
+  };
+  const target = (await fetch(`${origin}/api/tools/list_objects?doc=${docNow.docId}&token=${docNow.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }).then((r) => r.json()).then((d) => (d.objects || []).find((o) => o.type === "shape" || o.type === "stroke")).catch(() => null));
+  if (!target) {
+    problems.push("连续移动用例：当前文档里找不到可移动对象");
+  } else {
+    const start = await boxOf(target.object_id);
+    for (let i = 0; i < 2; i++) {
+      await fetch(`${origin}/api/tools/move_object?doc=${docNow.docId}&token=${docNow.token}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ object_id: target.object_id, delta: { dx: 25, dy: 0 } }),
+      }).catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+    const moved = await boxOf(target.object_id);
+    if (!start || !moved) {
+      problems.push(`连续移动用例未能读到包围盒：${JSON.stringify({ start, moved })}`);
+    } else if (Math.abs((moved[0] - start[0]) - 50) > 2) {
+      problems.push(`连续两次 delta{dx:25} 只累积了 ${(moved[0] - start[0]).toFixed(0)}px（应为 50，说明 delta 被当成绝对值）`);
+    } else {
+      console.log(`  连续移动：两次 delta{dx:25} 累积 ${(moved[0] - start[0]).toFixed(0)}px（须 50）`);
+    }
+  }
+}
 console.log(`  水彩介质：${wcResult && wcResult.ok ? "对象介质 " + JSON.stringify(wcResult.medium) + "｜画布 " + wcResult.before + " → " + wcResult.after : "失败 " + JSON.stringify(wcResult)}`);
 console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);

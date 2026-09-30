@@ -2287,7 +2287,12 @@ fn write_move_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;
     let mut payload = json!({"object_id": object_id});
     if let Some(delta) = args.get("delta") {
-        payload["delta"] = delta.clone();
+        // **`delta` 是增量** ✓ —— 原样交给折叠层 **复合** ✓（只有它知道对象当前的变换 ✓）。
+        // 此前这里把 dx/dy 编成**绝对矩阵** ✗ ⇒ 连续移动会**丢掉前面几步** ✓
+        //（子 agent 实测：`dx:30` → 130 ✓，再 `dx:10` → **110** ✗，期望 140 ✓）。
+        let dx = delta.get("dx").and_then(Value::as_f64).unwrap_or(0.0);
+        let dy = delta.get("dy").and_then(Value::as_f64).unwrap_or(0.0);
+        payload["delta"] = json!({"dx": dx, "dy": dy});
         let (dx, dy) = (
             delta.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
             delta.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
