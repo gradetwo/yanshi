@@ -239,6 +239,7 @@ impl AtomLog {
         //（手工写进日志的环在折叠时也会被跳过并留下警告 ✓），但**判定提交与否的是这里** ✓。
         self.validate_instance_cycles(atom, commit.state)?;
         self.validate_object_type(atom)?;
+        self.validate_lock(atom, commit.state)?;
         self.validate_history_refs(atom, commit)?;
         self.validate_conflict(atom)?;
         Ok(())
@@ -528,6 +529,94 @@ impl AtomLog {
             )),
         )
         .with_atom(atom.id.clone()))
+    }
+
+    /// **锁定必须被强制** ✓ —— 否则"锁定图层"只是个**点了没用的标签** ✗。
+    ///
+    /// 开工前我查过：`locked` 只被**记录与回报** ✓（`state`、`list_layers`、`set_property` ✓），
+    /// 内核对它**没有任何检查** ✗ —— 也就是说锁了照样能画、能删 ✗。
+    /// 这正是本项目一路在消灭的那类"**静默失效**" ✓（看起来做完了、其实什么都没发生 ✗）。
+    ///
+    /// **放在这一层** ✓：本项目反复吃过"守卫写错层"的亏 ✓ ——
+    /// `fold::precondition` 返回 `Err` 只**警告并跳过** ✓，只有 `validate_commit` 的 `Err` 才**拒绝提交** ✓。
+    ///
+    /// **规则（尽量少而清楚 ✓）**：
+    /// * 原子若指向一个**已存在的对象** ✓，而该对象**自己**或**它所在图层**被锁定 ✓ ⇒ 拒绝 ✓；
+    /// * `CreateObject` 若指向一个**被锁定的图层** ✓ ⇒ 拒绝 ✓（锁住的图层不该长出新东西 ✓）；
+    /// * **例外：管理性属性** ✓ —— `set_property` 改 `locked` / `visible` 仍然允许 ✓，
+    ///   否则"解锁"永远做不到 ✓（这是**必须**留的出口 ✓）；
+    /// * **图层自身**的原子（改名 / 可见性 / 不透明度 / 顺序 ✓）不受图层锁影响 ✓
+    ///   —— 与常见图像软件一致 ✓（锁的是**内容** ✓，不是这个图层对象的管理属性 ✓）。
+    ///
+    /// **边界如实说明** ✓：`alpha_lock` / `clipping_mask` / `mask_id` 目前**只存不生效** ✓
+    ///（它们需要像素级的语义 ✓，不是一条校验能覆盖的 ✓）—— 这是**已知缺口** ✓，
+    /// 需要时单独讨论并记录 ✓，本片不擅自发明 ✗。
+    fn validate_lock(&self, atom: &Atom, state: &DocumentState) -> Result<()> {
+        // **管理性属性**：允许在被锁对象上改"锁"与"可见性" ✓（解锁的唯一出路 ✓）。
+        if atom.kind == AtomKind::SetProperty {
+            let key = atom.payload.get("key").and_then(serde_json::Value::as_str);
+            if matches!(key, Some("locked") | Some("visible")) {
+                return Ok(());
+            }
+        }
+        let targets_object = atom
+            .payload
+            .get("object_id")
+            .and_then(serde_json::Value::as_str);
+        if let Some(object_id) = targets_object {
+            // `Tombstone` 的对象可能仍在态里（墓碑 ✓）⇒ 只对**活着的**对象判锁 ✓。
+            if let Some(object) = state.objects.get(object_id) {
+                let layer_locked = state
+                    .layers
+                    .get(object.layer_id.as_str())
+                    .map(|layer| layer.locked)
+                    .unwrap_or(false);
+                let blocked_by = if object.locked {
+                    "对象自身已锁定"
+                } else if layer_locked {
+                    "所在图层已锁定"
+                } else {
+                    return Ok(());
+                };
+                // `CreateObject` 用同一个 `object_id` 字段 ✓，但那时对象还不在态里 ✓ ⇒ 走下面的图层判定 ✓。
+                return Err(YanshiError::new(
+                    ErrorCode::PermissionDenied,
+                    ErrorContext::detail(format!(
+                        "不能修改 {object_id}：{blocked_by}（先解锁再操作；改 locked/visible 不受限制）"
+                    )),
+                )
+                .with_atom(atom.id.clone()));
+            }
+            // 对象**还不存在** ⇒ 说明这条原子要**新建**对象 ✓ ⇒ 检查它的目标图层是否被锁 ✓。
+            //
+            // **这里我第一版写错了** ✗：我限定 `atom.kind == CreateObject` ✓，
+            // 而实际上 `draw_stroke` / `draw_shape` / `fill` 等**隐式新建**对象的原子
+            // 种类**都不是** `CreateObject` ✗ ⇒ 测试立刻显示"落笔 ok:true" ✗
+            //（锁着的图层照样能画 ✓ —— 校验形同虚设 ✓）。
+            // **教训** ✓：判据要取**载荷的形状**（有 `object_id` + `layer_id` ✓），
+            // 而不是去枚举"我猜会是哪些原子种类" ✗ —— 后者永远会漏 ✓。
+            if let Some(layer_id) = atom
+                .payload
+                .get("layer_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                let locked = state
+                    .layers
+                    .get(layer_id)
+                    .map(|layer| layer.locked)
+                    .unwrap_or(false);
+                if locked {
+                    return Err(YanshiError::new(
+                        ErrorCode::PermissionDenied,
+                        ErrorContext::detail(format!(
+                            "不能在锁定的图层 {layer_id} 上新建对象（先解锁）"
+                        )),
+                    )
+                    .with_atom(atom.id.clone()));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_history_refs(&self, atom: &Atom, commit: &CommitContext<'_>) -> Result<()> {

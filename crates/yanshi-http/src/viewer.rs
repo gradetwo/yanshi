@@ -120,6 +120,24 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
              border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer;
              backdrop-filter: blur(4px); }
   body.zen #zenExit { display: inline-flex; align-items: center; gap: 6px; }
+  /* **图层面板** ✓：顶部条 + 行列表 ✓。行里三个可点区域（眼睛 / 锁 / 名字 ✓），
+     名字区最大以便点选 ✓；按钮用最小尺寸以免抢走注意力 ✓。 */
+  .layers { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .layers-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px;
+                 opacity: .85; }
+  .layers-actions { display: inline-flex; gap: 2px; }
+  .layers-actions button { padding: 1px 6px; font-size: 12px; line-height: 1.4; }
+  .layer-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto;
+                border: 1px solid var(--line); border-radius: 6px; padding: 3px; background: var(--bg, #fff); }
+  .layer-row { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 4px;
+               font-size: 12px; cursor: pointer; }
+  .layer-row:hover { background: rgba(128, 128, 128, .12); }
+  .layer-row.selected { background: var(--accent, #2b6cb0); color: #fff; }
+  .layer-row .layer-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .layer-row .layer-flag { padding: 0 4px; font-size: 12px; line-height: 1.5; background: transparent;
+                           border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
+  .layer-row .layer-flag:hover { border-color: currentColor; }
+  .layer-row .layer-flag.off { opacity: .35; }
   .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
   .panel-toggles button { padding: 4px 8px; font-size: 12px; }
   .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
@@ -314,7 +332,24 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <button id="zoomFit">适配</button>
   <button id="zoomActual">1:1</button>
       </div>
-        <label>图层 <select id="layer"></select></label>
+        <!-- **图层面板** ✓（用户点名：图层列表、上下移动、锁定、显示/隐藏、复制 等常见功能 ✓）。
+             结构上刻意让 `#layer` 这个 `<select>` **继续存在但隐藏** ✓ ——
+             它是 `state.layerId` 的既有真相来源 ✓，全查看器还有很多地方在读它 ✓
+             ⇒ 面板只是它的**可视化** ✓，两边永远同步 ✓（两处各自维护选择 = 一定会漂移 ✗）。 -->
+        <div class="layers">
+          <div class="layers-head">
+            <span>图层</span>
+            <span class="layers-actions">
+              <button id="layerAdd" type="button" title="新建图层">＋</button>
+              <button id="layerDuplicate" type="button" title="复制图层（含对象）">⧉</button>
+              <button id="layerDelete" type="button" title="删除图层（可撤销）">🗑</button>
+              <button id="layerUp" type="button" title="上移一层">↑</button>
+              <button id="layerDown" type="button" title="下移一层">↓</button>
+            </span>
+          </div>
+          <div id="layerList" class="layer-list" role="listbox" aria-label="图层列表"></div>
+          <label style="display:none">图层 <select id="layer"></select></label>
+        </div>
     </div>
     <div class="card">
       <h2>WASM 计算内核</h2>
@@ -2021,8 +2056,142 @@ async function refreshLayers() {
     const created = await callTool("create_layer", { name: "paint", layer_id: "layer_paint" }, { refresh: false });
     if (created.ok) await refreshLayers();
   }
+  // **刷新时保持选中项** ✓ —— 这是检查脚本当场逼出来的 bug ✗：
+  // 重建 `<option>` 之后 `select.value` 会落到**第一项** ✓，而下面又把
+  // `state.layerId` 赋成 `select.value` ✗ ⇒ 每次刷新（改名、隐藏、排序、复制…）
+  // **选中图层都被悄悄换掉** ✓，表现为"点一下眼睛，正在编辑的图层就跳走了" ✗。
+  // 做法 ✓：先记住 `state.layerId` ✓，重建后若它仍存在就选回它 ✓（不存在才退回第一项 ✓）。
+  const wanted = state.layerId;
+  if (wanted && [...select.options].some((option) => option.value === wanted)) {
+    select.value = wanted;
+  }
   state.layerId = select.value || "layer_paint";
-  select.onchange = () => { state.layerId = select.value; };
+  select.onchange = () => { state.layerId = select.value; renderLayerPanel(value.layers || []); };
+  renderLayerPanel(value.layers || []);
+  return value.layers || [];
+}
+
+// **图层面板渲染** ✓（用户点名的功能 ✓）。
+//
+// 三条取舍 ✓：
+// ① **数据源只有一个** ✓：面板渲染的是 `list_layers` 的结果 ✓，选择写回隐藏的 `#layer` ✓
+//    与 `state.layerId` ✓ —— 别处读的仍是同一份 ✓（各维护一份选择必然漂移 ✗）。
+// ② **显示顺序与图层序相反** ✓：`list_layers` 是**自下而上** ✓（与渲染顺序一致 ✓），
+//    而面板按惯例**最上层在最上面** ✓ ⇒ 渲染时 `slice().reverse()` ✓。
+//    上下移动按钮因此也要按"屏幕方向"换算回 z 序 ✓（这里是**最容易搞反**的地方 ✗）。
+// ③ **按钮只接线一次** ✓（在 `setupLayerPanel` 里 ✓）：`refreshLayers()` 每次都会重画列表 ✓，
+//    若把监听器写在重画里 ✓ ⇒ 点一次会触发多次 ✗（本项目的检查脚本抓到过同类问题 ✓）。
+function renderLayerPanel(layers) {
+  const list = $("layerList");
+  if (!list) return;
+  list.innerHTML = "";
+  for (const layer of layers.slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "layer-row" + (layer.layer_id === state.layerId ? " selected" : "");
+    row.dataset.layerId = layer.layer_id;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(layer.layer_id === state.layerId));
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "layer-flag" + (layer.visible ? "" : " off");
+    eye.textContent = layer.visible ? "👁" : "🚫";
+    eye.title = layer.visible ? "隐藏图层" : "显示图层";
+    eye.dataset.action = "visible";
+    const lock = document.createElement("button");
+    lock.type = "button";
+    lock.className = "layer-flag" + (layer.locked ? "" : " off");
+    lock.textContent = layer.locked ? "🔒" : "🔓";
+    lock.title = layer.locked ? "解锁图层" : "锁定图层（锁定后不能改内容）";
+    lock.dataset.action = "locked";
+    const name = document.createElement("span");
+    name.className = "layer-name";
+    name.textContent = layer.name + (layer.medium ? " · " + layer.medium : "");
+    name.title = layer.layer_id;
+    row.append(eye, lock, name);
+    list.appendChild(row);
+  }
+}
+
+// 面板按钮**只接一次线** ✓（见上面第 ③ 条 ✓）。
+async function setupLayerPanel() {
+  const list = $("layerList");
+  if (!list) return;
+  list.addEventListener("click", async (event) => {
+    const row = event.target.closest(".layer-row");
+    if (!row) return;
+    const layerId = row.dataset.layerId;
+    const action = event.target.dataset ? event.target.dataset.action : null;
+    if (action === "visible" || action === "locked") {
+      // **显示/隐藏与锁定走 `update_layer`** ✓（服务端已有该工具 ✓，本轮给它补了**强制** ✓）。
+      const layers = await listLayers();
+      const layer = layers.find((item) => item.layer_id === layerId);
+      if (!layer) return;
+      const patch = action === "visible" ? { visible: !layer.visible } : { locked: !layer.locked };
+      await callTool("update_layer", { layer_id: layerId, patch });
+      await refreshLayers();
+      // **画布要走服务端权威路径** ✓：`afterMutation` 只刷缩略图与历史 ✓，不重画画布 ✗，
+      // 而"图层可见性"这类属性在 WASM 内核里不一定被实现 ✓ ⇒ 只刷内核会出现
+      // "隐藏了但画面还在 / 显示回来画面仍然是空的" ✗（检查脚本实测：10717 → 0 → **0** ✗）。
+      await resync();
+      return;
+    }
+    // 点名字/行 = **选中** ✓（写回 `#layer` 与 `state.layerId` ✓ ⇒ 全查看器跟着切换 ✓）。
+    const select = $("layer");
+    if (select) { select.value = layerId; select.onchange(); }
+  });
+  // **上下移动** ✓：屏幕向上 = z 序 +1 ✓（`list_layers` 是自下而上 ✓）。
+  const move = async (delta) => {
+    const layers = await listLayers();
+    const order = layers.map((layer) => layer.layer_id); // 自下而上 ✓
+    const index = order.indexOf(state.layerId);
+    if (index < 0) return;
+    const target = index + delta;
+    if (target < 0 || target >= order.length) return;
+    [order[index], order[target]] = [order[target], order[index]];
+    await callTool("reorder_layers", { order });
+    await refreshLayers();
+    await resync();
+  };
+  const add = $("layerAdd");
+  if (add) add.onclick = async () => {
+    const layers = await listLayers();
+    await callTool("create_layer", { name: "图层 " + (layers.length + 1) });
+    await refreshLayers();
+    await resync();
+  };
+  const duplicate = $("layerDuplicate");
+  if (duplicate) duplicate.onclick = async () => {
+    const result = await callTool("duplicate_layer", { layer_id: state.layerId });
+    await resync();
+    if (result && result.ok && result.layer_id) {
+      // **复制之后选中副本** ✓ —— 用户复制图层的下一步几乎总是要动它 ✓。
+      const select = $("layer");
+      await refreshLayers();
+      if (select) { select.value = result.layer_id; select.onchange(); }
+    } else {
+      await refreshLayers();
+    }
+  };
+  const remove = $("layerDelete");
+  if (remove) remove.onclick = async () => {
+    await callTool("delete_layer", { layer_id: state.layerId });
+    await refreshLayers();
+    await resync();
+  };
+  const up = $("layerUp");
+  if (up) up.onclick = () => move(1);
+  const down = $("layerDown");
+  if (down) down.onclick = () => move(-1);
+}
+
+/// 读一次图层列表 ✓（面板与移动都用它 ✓，避免各自解析响应 ✗）。
+async function listLayers() {
+  const value = await fetch(api("/api/tools/list_layers"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }).then((r) => r.json()).catch(() => ({}));
+  return value.layers || [];
 }
 
 async function refreshPreview(fromKernel = false) {
@@ -3403,6 +3572,9 @@ function initQuickPanel() {
 }
 
 initDockers();
+// **图层面板接线** ✓（面板本身由 `refreshLayers()` 渲染 ✓；这里只接**一次**监听器 ✓ ——
+// 写在重画里会让点一次触发多次 ✗，本项目抓到过同类问题 ✓）。
+void setupLayerPanel();
 // 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
 // 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
 updateUndoStatus();
