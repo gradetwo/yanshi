@@ -1842,3 +1842,29 @@ curl -s -X POST ".../api/tools/collect_garbage?doc=<id>&token=<t>" -d '{"confirm
 | 颜色约定与字节数组事故回归 | `crates/yanshi-render/src/color.rs` 单测、`render.rs::byte_array_colors_paint_the_same_as_srgb_objects`、`service_flow.rs::invalid_colors_are_rejected_and_byte_arrays_paint_correctly` |
 | 缩略图与 HEAD 一致性 | `service_flow.rs::document_thumbnail_is_cover_whole_canvas_not_the_last_region` |
 | 查看器脚本可解析性 | `crates/yanshi-http/src/viewer.rs::viewer_script_has_no_duplicate_top_level_declarations` |
+
+### 目标②的最终验收：真实 Chromium 的 D1 逐像素比对（本轮实测）
+
+液化三模式（`push` / `twirl` / `pinch`，强度为负即**膨胀** ✓）在内核与工具层均已实现 ✓，
+查看器也放行了三种液化工具 ✓。D1 验收不是宿主侧近似，而是**真实浏览器里的逐像素比对** ✓：
+
+* 查看器内置判据（`viewer.rs`）：「**最大通道差 ≤1 LSB** 且 **差异像素占比极少**」✓
+  （上限 `max(64, 画布 0.05%)` ✓），对应界面上的「一致性自检」按钮与 `bit-exact` 指标 ✓；
+* `make pixel-check` → `scripts/browser-pixel-check.mjs` ✓（临时实例 + 真实 Chromium ✓，零污染 ✓）。
+
+**本轮实测**：
+
+```
+文档 check: HEAD 2/2 | 差异像素 0 | 最大通道差 0 | 判定 通过
+```
+
+即内核与**服务端**渲染在该文档上**逐字节一致** ✓✓。Phase 3 全效果预算（`--ignored`）本轮次
+也在 heavy CI 上跑过（**10m24s 绿** ✓），本会话早前记录的性能数字（clear 4/16/64 →
+19.0/18.7/19.4ms 等 ✓）保持在预算内 ✓。
+
+### README 约束复核（本轮）
+
+用户反复强调：**README 里不要 Brand assets 之类的东西，要简洁、让人知道怎么安装与编译** ✓。
+复核结果：两份 README **无** brand/logo/badge/screenshot 相关内容 ✓，
+篇幅 **126 行（EN）/ 114 行（ZH）** ✓，结构为 Install → Build and run → Test → Use →
+Viewer controls → 桌面入口 → Documentation → Status → License ✓。
