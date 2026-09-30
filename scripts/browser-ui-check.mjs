@@ -1106,12 +1106,57 @@ if (!selectionResult || !selectionResult.ok) {
   }
 }
 
-// 介质插件（设计 11.1）：宿主侧加载器与「介质」工具已经就位（见 viewer.rs 的 loadMedium/mediumDab
-// 与服务端的 /mediums/ 路由），但**浏览器端的断言尚未收敛** ✗ —— 本段第一版尝试过并撤出：
-// 现象是点击「介质」工具后查看器日志里连一行介质信息都没有 ⇒ `void mediumDab(...)` 的
-// **异步异常被吞掉** ✗（未捕获的 Promise 拒绝 ✓），因此既看不到成功也看不到失败 ✓。
-// 下一轮的做法：给 mediumDab 加显式的 `.catch(log)` ✓，把失败暴露到查看器日志与
-// window.yanshiStats 上 ✓，再据此定位（而不是在没有可观测信号的情况下反复猜 ✗）。
+// 介质插件（设计 11.1）：宿主加载 wasm 插件 → 产出像素 → 入 CAS 与日志 ✓。
+//
+// 分工照本脚本的惯例 ✓：Node 侧派发输入并轮询 API 与状态，页面只回报像素。
+// 失败时把 **window.yanshiStats.medium** 与查看器日志一起打出来 ✓ ——
+// 上一轮卡住的原因就是"没有可观测信号" ✗，这次先要信号再定位 ✓。
+const MEDIUM_INK = `(() => {
+  const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++;
+  return n;
+})()`;
+const mediumBefore = await evaluate(MEDIUM_INK) || 0;
+await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
+await strokeAt(0.6, 0.7, 501);
+// 先取查看器当前文档（它可能已经是某个副本 ✓）。
+const mediumPage = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+const mediumDoc = mediumPage.docId || reloadDoc;
+const mediumToken = mediumPage.token || reloadToken;
+let mediumObject = null;
+let mediumStatus = null;
+let mediumRawListing = null;
+for (let i = 0; i < 40 && !mediumObject; i++) {
+  await new Promise((r) => setTimeout(r, 250));
+  mediumStatus = await evaluate(`window.yanshiStats && window.yanshiStats.medium || null`);
+  if (mediumStatus && (mediumStatus.status === "error" || mediumStatus.status === "rejected")) break;
+  // 用**查看器此刻真正打开的文档** ✓ —— 页面把它暴露在 yanshiStats.docId/token 上 ✓。
+  // 本段前两版分别用了重载前的 docId ✗ 与 reloadDoc ✗，都因后面的"新建/另存为"段
+  // 已经把页面切到别的文档而查错对象 ✓（实测对象列表里只剩 o1 ✓）。
+  const listed = await fetch(
+    `${origin}/api/tools/list_objects?doc=${mediumDoc}&token=${mediumToken}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  ).then((response) => response.json()).catch(() => ({}));
+  mediumRawListing = listed;
+  mediumObject = (listed.objects || []).find((o) => o.medium && o.medium.id) || null;
+}
+const mediumAfter = await evaluate(MEDIUM_INK) || 0;
+if (!mediumObject) {
+  const mediumLog = await evaluate(`document.getElementById("log").innerText.slice(0, 400)`);
+  problems.push(
+    `介质插件用例失败：status=${JSON.stringify(mediumStatus)}｜对象列表=${JSON.stringify(mediumRawListing).slice(0, 400)}｜日志=${JSON.stringify(mediumLog)}`,
+  );
+} else {
+  if (mediumObject.medium.id !== "example-dab" || mediumObject.medium.version !== 1) {
+    problems.push(`介质描述符不正确：${JSON.stringify(mediumObject.medium)}`);
+  }
+  if (mediumAfter === mediumBefore) {
+    problems.push(`介质落笔后画布没有变化（前 ${mediumBefore} → 后 ${mediumAfter}）`);
+  }
+}
+const mediumResult = { ok: Boolean(mediumObject), medium: mediumObject ? mediumObject.medium : null,
+                       status: mediumStatus, before: mediumBefore, after: mediumAfter };
 
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
@@ -1231,6 +1276,7 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
 console.log(`  选区/文本：${selectionResult && selectionResult.ok
   ? `选区内笔画色 ${selectionResult.inside}｜选区外 ${selectionResult.outside}（须 0）｜清除后选区外 ${selectionResult.clearedOutside}（须 >0）｜文本改变 ${selectionResult.textChanged}`
   : `失败于阶段「${selectionResult && selectionResult.stage}」：${JSON.stringify(selectionResult)}`}`);
