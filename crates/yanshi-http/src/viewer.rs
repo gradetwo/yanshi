@@ -664,6 +664,22 @@ async function initWasm() {
   }
 }
 
+/// **打开文档时判断"内核表示得了吗"** ✓ —— 四位子 agent 独立复现的**阻断性 bug** ✓：
+/// 文档里只要有 heavy 内容（介质笔画 = `import_image`/`raster_patch` ✓、液化 ✓），
+/// 客户端内核折叠它只会得到 **空白补丁** ✗ ⇒ **首屏画布全白** ✗，
+/// 而服务端渲染、缩略图、导出**全都正确** ✓（"重新打开示例是白板" ✓，违反设计 14.5 ✓）。
+async function detectHeavyContent() {
+  try {
+    const listed = await callTool("list_objects", {}, { refresh: false });
+    const objects = (listed && listed.objects) || [];
+    if (objects.some((object) => object.medium || object.type === "raster_patch" ||
+                                 object.type === "retouch")) {
+      needsServerPixels = true;
+      queueServerBlit();
+    }
+  } catch (error) { /* 扫描失败不阻塞加载 ✓ */ }
+}
+
 async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
@@ -703,11 +719,16 @@ async function loadKernel(since = 0) {
   window.yanshiStats.serverHead = atoms.head_seq;
   if (typeof refreshContactLink === "function") refreshContactLink();
   state.kernel.set_viewport(0, 0, w, h);
+  // 内核就绪 ⇒ 判断这份文档内核表示得了吗 ✓（否则首屏是白板 ✓）。
+  void detectHeavyContent();
   return true;
 }
 
 /// 渲染文档坐标区域 `(x,y,w,h)` 并画进画布（画布坐标 = 文档坐标 − 视口原点）。
 function drawKernelRegion(x, y, w, h) {
+  // 含 heavy 内容的文档里 ✓，内核那份像素是**空白**的 ✓ ⇒ 内核落笔之后用**服务端像素**补画 ✓
+  //（整块绘制、脏区绘制、缩放重绘都走这里 ✓，WS 的 tiles 事件也不例外 ✓）。
+  if (needsServerPixels) queueServerBlit();
   // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
   const vx = state.viewport.x;
   const vy = state.viewport.y;
@@ -720,7 +741,18 @@ function drawKernelRegion(x, y, w, h) {
   const ch = Math.round(y1 - y0);
   const started = performance.now();
   const rgba = state.kernel.render_region_rgba(x0, y0, cw, ch);
-  if (!rgba || rgba.length < cw * ch * 4) return;
+  if (!rgba || rgba.length < cw * ch * 4) {
+    // **内核给不出这一块像素 ⇒ 用服务端像素补画** ✓ —— 这就是"重新打开含介质的文档是白板"的根因 ✓：
+    // heavy 原子（`import_image` = 每一笔介质 ✓、液化…）客户端内核折叠不出来 ✓，
+    // 实测 `kernel.render_region_rgba(300,400,60,60)` 返回 **len 0** ✓（三位子 agent 独立复现 ✓），
+    // 而这里原先**直接 return** ✗ ⇒ 画布留白 ✓，而服务端渲染/缩略图/导出**全都正确** ✓。
+    //
+    // 判据刻意选得**精确且廉价** ✓：不是"这份文档曾经有过重内容" ✗（我上一轮那样做，
+    // 标记太黏 ⇒ 之后的本地乐观笔迹会被服务端像素覆盖 ✗），而是"
+    // **此刻这一块内核确实给不出像素**" ✓ —— 轻量文档永远给得出 ✓ ⇒ 不会误伤乐观渲染 ✓。
+    queueServerBlit();
+    return;
+  }
   const renderedAt = performance.now();
   // putImageData 不做 CSS 缩放：画布内部分辨率与视口文档像素一一对应。
   ctx.putImageData(
@@ -813,6 +845,20 @@ async function blitServerBox(bbox) {
   return w * h;
 }
 
+/// 补画排队 ✓：**忙的时候记账，而不是丢弃** ✗ ——
+/// 若写成"有请求在飞就 return" ✓，期间发生的重绘（WS 的 tiles 事件很频繁 ✓）就永远不会再补 ✗
+/// ⇒ 画布停在内核那张空白图上 ✓（实测 `serverBlits` 有值而画面全白 ✓）。
+let serverBlitBusy = false;
+let serverBlitPending = false;
+function queueServerBlit() {
+  if (serverBlitBusy) { serverBlitPending = true; return; }
+  serverBlitBusy = true;
+  void blitServerViewport().finally(() => {
+    serverBlitBusy = false;
+    if (serverBlitPending) { serverBlitPending = false; queueServerBlit(); }
+  });
+}
+
 /// 补画**当前视口** ✓（不知道原子的脏区时用它 ✓，一次请求即可 ✓）。
 async function blitServerViewport() {
   // **等下一帧再画** ✓ —— 本会话实测：补画确实执行了 ✓（`serverBlits` 计数增加 ✓、面积 262144 ✓），
@@ -821,8 +867,16 @@ async function blitServerViewport() {
   // 因此让补画落在**下一帧**（布局稳定之后 ✓）—— 这是"最后画的人赢"那条经验的延续 ✓。
   // **等两帧** ✓ —— 一帧只覆盖"本轮布局" ✓；居中之后布局可能再变一次 ✓
   //（`sizeBoards` 会按新尺寸清空画布 ✓），于是补画又被清掉 ✗。两帧覆盖连续两次布局收敛 ✓。
-  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  // **与超时赛跑** ✓：后台标签页里 `requestAnimationFrame` 不回调 ✓（连 `setTimeout` 也被节流 ✓）
+  // ⇒ 只靠 rAF 会让补画挂住 ✓（四位子 agent 独立遇到 ✓，他们手工用 `Page.bringToFront` 绕过 ✓）。
+  const settle = () => new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    try { requestAnimationFrame(finish); } catch (_) { /* 无 rAF 时靠超时 ✓ */ }
+    setTimeout(finish, 50);
+  });
+  await settle();
+  await settle();
   const { x, y, w, h } = state.viewport;
   return blitServerBox([x, y, w, h]);
 }
@@ -2009,6 +2063,10 @@ function localPoint(event) {
 
 let pendingStroke = null;
 let panState = null;
+// **"当前该由服务端像素说话吗"** ✓ —— 只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓；
+// 用户一旦开始画（轻量乐观路径 ✓）立刻清掉 ✓：服务端补画只含**已提交**内容 ✓，
+// 若一直为真就会把未提交的乐观笔迹覆盖掉 ✗（我上一轮"标记太黏"的失败正是这个 ✓，
+// 当时检查立刻报"移动处没有对象""invert 无变化" ✓）。
 
 /// 吸管（设计 13.3 基础工具）：点击画布 → 向内核要该**文档坐标**的 1×1 像素 → 设为当前颜色。
 /// 不读画布位图的原因：画布会被 CSS 缩放，而内核渲染是文档坐标 1:1 ✓。
@@ -2250,6 +2308,12 @@ const RETOUCH_TOOLS = new Set([
 
 /// Alt+点击设置仿制/修复的源点。
 board.addEventListener("pointerdown", (event) => {
+  // **用户开始画 ⇒ 内核重新成为权威** ✓（见 needsServerPixels 的说明 ✓）：
+  // 只有 pan/eyedropper 这类"不动内容"的工具才不清 ✓。
+  if (state.tool && state.tool !== "pan" && state.tool !== "eyedropper" &&
+      state.tool !== MOVE_TOOL && state.tool !== MOVE_LAYER_TOOL) {
+    needsServerPixels = false;
+  }
   if (!event.altKey || !RETOUCH_TOOLS.has(state.tool)) return;
   const point = localPoint(event);
   state.sourcePoint = { x: Math.round(point.x), y: Math.round(point.y) };
@@ -2361,6 +2425,7 @@ board.addEventListener("pointerup", (event) => {
                    event.button === 1)) {
     panState = null;
     updatePanCursor();
+    // 切换工具不改变内容 ✓，这里不动 needsServerPixels ✓。
   }
 });
 

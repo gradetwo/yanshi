@@ -1834,6 +1834,46 @@ if (themeAudit.error) {
     `｜控件 ${themeAudit.controls} 个，最小高度 ${themeAudit.minHeight}px（须 ≥24）` +
     `｜焦点环 ${themeAudit.focusRule ? "✓" : "✗"}｜令牌 ${themeAudit.tokens}/8`);
 
+// **重新打开一份含介质的文档，画布不能是白板** ✓ —— 这是四位子 agent 独立复现的**阻断性 bug** ✗：
+// 文档里只要有 heavy 内容（介质笔画 = `import_image`/`raster_patch` ✓），客户端内核
+// `render_region_rgba` 就返回 **len 0** ✓，而查看器原先**直接 return** ✗ ⇒ 首屏全白 ✓，
+// 尽管服务端渲染、缩略图、导出**全都正确** ✓（违反设计 14.5「打开即图片」✓）。
+// 本段**自包含**：用前面介质段已经画好的文档 ✓，整页重载后直接量画布 ✓。
+// 放在检查**最后** ✓ ⇒ 重载不会干扰其它段落 ✓。
+const reopenBefore = await evaluate(`(() => {
+  const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 8 && (d[i-3] < 245 || d[i-2] < 245 || d[i-1] < 245)) n++;
+  return n;
+})()`) || 0;
+await send("Page.navigate", { url });
+await send("Page.bringToFront", {});
+for (let i = 0; i < 80; i++) {
+  const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0`);
+  if (ready) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+let reopenAfter = 0;
+for (let i = 0; i < 80; i++) {
+  reopenAfter = await evaluate(`(() => {
+    const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8 && (d[i-3] < 245 || d[i-2] < 245 || d[i-1] < 245)) n++;
+    return n;
+  })()`) || 0;
+  if (reopenAfter > 0) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const reopenStats = await evaluate(`JSON.stringify({
+  serverBlits: window.yanshiStats.serverBlits, resyncs: window.yanshiStats.resyncs,
+  kernelHead: window.yanshiStats.kernelHead, serverHead: window.yanshiStats.serverHead,
+})`) || "{}";
+if (reopenAfter <= 0) {
+  problems.push(`重新打开含介质的文档后画布是白板（重载前 ${reopenBefore} 个有墨像素，重载后 0）｜诊断 ${reopenStats}`);
+} else {
+  console.log(`  重新打开：画布有墨 ${reopenBefore} → ${reopenAfter}（不得为 0）｜${reopenStats}`);
+}
+
 console.log("  stats:", JSON.stringify(await evaluate("window.yanshiStats")));
   console.log("  日志:", JSON.stringify(await evaluate(`document.getElementById("log").innerText.slice(-800)`)));
   console.log("  最近响应:", JSON.stringify(await evaluate(`document.getElementById("last").innerText.slice(0, 400)`)));
