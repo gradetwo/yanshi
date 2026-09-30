@@ -1868,3 +1868,37 @@ curl -s -X POST ".../api/tools/collect_garbage?doc=<id>&token=<t>" -d '{"confirm
 复核结果：两份 README **无** brand/logo/badge/screenshot 相关内容 ✓，
 篇幅 **126 行（EN）/ 114 行（ZH）** ✓，结构为 Install → Build and run → Test → Use →
 Viewer controls → 桌面入口 → Documentation → Status → License ✓。
+
+## 并行开发方式（用户确认常态化）
+
+用户要求"等待/阻塞时都异步推进、多用 worktree、CI/CD 走 GitHub 远程"。本会话把它落成可复用的流程：
+
+1. **切分原则：按文件所有权切分，而不是按功能感觉切分** ✓。并行任务必须**互不修改同一文件**，
+   否则合并冲突会吃掉并行收益 ✓。本轮的切法是「每个任务只新增**一个**模块文件 + 在 `lib.rs`
+   里加**一行** `pub mod`」✓ —— 唯一的冲突面就是那一行，主线合并时按**磁盘实际文件重新生成**
+   模块声明块即可，完全不需要手工解冲突 ✓。
+2. **共享文件由主线独占**：`brush.rs` / `buffer.rs` / `render.rs` / `object.rs` / `tools.rs` /
+   `viewer.rs` 一律不下发给并行任务 ✓，接线由主线串行完成 ✓（本轮 5 个模块交付后，
+   接线是主线的工作 ✓）。
+3. **每个任务自带验证**：任务提示里写死"必须自己跑 `cargo fmt` / `cargo clippy -D warnings` /
+   `cargo test`，并做一次突变检验"✓。实测有效：曲线任务把插值改坏 ⇒ 5 个测试失败 ✓；
+   动力学任务把 `+` 改 `-` ⇒ pinned 测试失败 ✓ —— 说明它们的断言不是同义反复 ✓。
+4. **主线的等待期不空转**：并行任务跑的时候，主线继续做能做的（本轮主线在等待期修掉了
+   tombstone 校验层与应用层不一致的真 bug ✓、补了选区工具 ✓）。
+5. **CI 走远程**：本地只跑快检查 ✓，`--ignored` 长任务用 `gh workflow run heavy.yml` 在 GitHub 跑 ✓。
+6. **合并后必须整体复验**：并行模块各自绿 ≠ 合起来绿 ✓。本轮合并后跑全量
+   （**464 passed / 0 failed** ✓）与 clippy ✓，并统一更新了 `lib.rs` 的模块文档表 ✓。
+
+本轮并行交付（各自 worktree + 分支 + 英文提交 ✓，均**零新依赖**、确定性、含写死数值的断言）：
+
+| 模块 | 分支 | 内容 |
+|---|---|---|
+| `curve.rs` | `feat/stroke-curves` | `size_curve` / `opacity_curve` / `pressure_curve` 的分段线性求值与 `modulate` |
+| `dynamics.rs` | `feat/brush-dynamics` | 抖动/散布/旋转/间距抖动 + 程序化 `noise`/`grain` 纹理（`Prng::derive(seed, index)` ⇒ 逐印章可复现）|
+| `paint.rs` | `feat/paint-reservoir` | 载墨量衰减、湿度耗墨、混色权重 |
+| `font.rs` | `feat/bitmap-font` | 内置 **5×7 ASCII 位图字体**（`0x20..=0x7E` 共 95 个**真实手工字形**，非回退）与文本栅格化 |
+| `selection.rs` | `feat/selection-coverage` | 选区覆盖度几何：矩形/椭圆/多边形 + 羽化 + 反选 + `new/add/subtract/intersect` |
+
+**接线仍是主线的活**（这些模块目前"已导出但未被调用"✓）：把它们接进 `brush.rs` 的 stamping
+与 `render.rs` 的文本图元 ✓，并保证**没有 `appearance` 时行为与现在完全一致** ✓（向后兼容是本轮
+接线的硬性验收条件 ✓）。
