@@ -1229,10 +1229,15 @@ fn suggestions_are_recorded_listed_and_rejected() {
     );
     assert_eq!(rejected["ok"], json!(true), "{rejected}");
     assert_eq!(rejected["reason"], json!("方向不对"));
+    // 两个：
+    //  * 用例里显式带 `suggestion_id` 创建的那条 ✓；
+    //  * 以及 `suggest{annotation_id}` 关联的那条 ✓ —— 本轮补上了「标注 → 建议」的**回写**
+    //    （设计 4.6 的 `Annotation.suggestion_id` 字段此前永远是 None ✗），
+    //    于是这条标注现在也真正引用了该建议，按设计同样应被置为 rejected ✓。
     assert_eq!(
         rejected["rejected_annotations"].as_array().unwrap().len(),
-        1,
-        "引用该建议的标注应被置为 rejected：{rejected}"
+        2,
+        "引用该建议的标注（显式关联 + suggest 回写）都应被置为 rejected：{rejected}"
     );
     let still_pending = registry.call(
         &mut context,
@@ -1755,10 +1760,12 @@ fn accept_suggestion_replays_the_patch_and_resolves_annotations() {
         2,
         "{accepted}"
     );
+    // 同上：`suggest{annotation_id}` 现在会回写标注的 `suggestion_id` ✓，
+    // 因此引用该建议的标注有两条，都应被置为 resolved ✓。
     assert_eq!(
         accepted["resolved_annotations"].as_array().unwrap().len(),
-        1,
-        "引用该建议的标注应被置为 resolved：{accepted}"
+        2,
+        "引用该建议的标注（显式关联 + suggest 回写）都应被置为 resolved：{accepted}"
     );
     let after = sample(&mut context, 32, 32);
     assert!(

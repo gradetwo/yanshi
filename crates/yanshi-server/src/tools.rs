@@ -3121,20 +3121,34 @@ fn write_suggest(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ))
         }
     };
+    let annotation_id = optional_str(args, "annotation_id");
     let result = ctx.commit(
         AtomKind::Suggest,
         json!({
             "patch": patch,
-            "annotation_id": optional_str(args, "annotation_id"),
+            "annotation_id": annotation_id,
             "summary": optional_str(args, "summary"),
             "priority": priority,
         }),
     )?;
+    // 回写标注的 `suggestion_id`，让"标注 → 建议"成为**双向**可查的链接 ✓。
+    // 关联的标注必须存在：否则会留下一条悬空引用（`list_annotations{suggestion_id}` 查不到任何东西 ✓）。
+    let mut annotation_linked = false;
+    if let Some(annotation_id) = annotation_id.as_deref() {
+        let now = ctx.now;
+        let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        document
+            .annotations_mut()
+            .link_suggestion(annotation_id, &result.atom_id, now)?;
+        annotation_linked = true;
+    }
     Ok(json!({
         "suggestion_id": result.atom_id,
         "seq": result.seq,
         "steps": patch.len(),
         "priority": priority,
+        "annotation_id": annotation_id,
+        "annotation_linked": annotation_linked,
     }))
 }
 

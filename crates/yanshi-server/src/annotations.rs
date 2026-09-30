@@ -366,6 +366,37 @@ impl AnnotationStore {
         Ok(next)
     }
 
+    /// 记录"这条标注派生出的建议 id"（设计 4.6 的 `Annotation.suggestion_id`）。
+    ///
+    /// 设计 13.4 的工作流是「人类标注 → **AI 解析** → AI 建议 → 人类预览 → …」✓，
+    /// 而"人类预览"必须知道**建议是从哪条标注来的** ✓ —— 此前 `suggest{annotation_id}`
+    /// 只把关联写进**建议**一侧 ✓，标注的 `suggestion_id` 永远是 `None` ✗（端到端验收发现 ✓）。
+    /// 这里补上回写，使链接成为**双向**且可查询 ✓（`list_annotations{suggestion_id}`
+    /// 也才有意义 ✓）。
+    ///
+    /// 幂等：已链到同一建议时直接返回当前版本（不新增版本、不动 revision）。
+    pub fn link_suggestion(
+        &mut self,
+        id: &str,
+        suggestion_id: &str,
+        now: i64,
+    ) -> Result<Annotation> {
+        let versions = self.versions.get_mut(id).ok_or_else(|| not_found(id))?;
+        let Some(latest) = versions.last().cloned() else {
+            return Err(not_found(id));
+        };
+        if latest.suggestion_id.as_deref() == Some(suggestion_id) {
+            return Ok(latest);
+        }
+        let mut next = latest;
+        next.suggestion_id = Some(suggestion_id.to_owned());
+        next.updated_at = now;
+        next.revision += 1;
+        versions.push(next.clone());
+        self.appended += 1;
+        Ok(next)
+    }
+
     /// 标记解决（可由某个原子触发，见 12.6 `accept_suggestion → reapply`）。
     ///
     /// 状态机（设计 4.6 只列了三态，未规定转换规则，此处记录决定）：
