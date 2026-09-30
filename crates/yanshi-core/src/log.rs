@@ -503,11 +503,23 @@ impl AtomLog {
                     )
                     .with_atom(atom.id.clone()));
                 };
-                if !target.kind.is_state_effect() {
+                // **可以撤销"撤销"本身** ✓（设计 793：`revert(revert(x)) ≡ reapply(x)` ✓）。
+                //
+                // 原先这里只允许"有状态效果的原子" ✓ ⇒ `Revert`/`Reapply` 不是 ✓ ⇒ **被拒** ✗，
+                // 于是设计那条恒等式**在提交层根本走不通** ✗（实测两句错误：
+                // `不能 revert 协作/历史原子 …（revert）` ✓ 与 `不能 reapply …（revert）` ✓），
+                // 而**折叠层却已经实现了**它 ✓（动作表按 target 取最新动作 ✓）—— 两层不一致 ✓。
+                //
+                // **用户已拍板：放开校验** ✓（2026-* 的裁决 ④ ✓）。放开范围刻意**只到历史原子** ✓：
+                // `Revert`/`Reapply` 允许 ✓；**协作原子**（评论/建议/标注 …）**仍然拒绝** ✗ ——
+                // 它们既不产生状态效果 ✓、也不是历史动作 ✓，撤销它们没有语义 ✓。
+                let revertible = target.kind.is_state_effect()
+                    || matches!(target.kind, AtomKind::Revert | AtomKind::Reapply);
+                if !revertible {
                     return Err(YanshiError::new(
                         ErrorCode::InvalidArgument,
                         ErrorContext::detail(format!(
-                            "不能 {} 协作/历史原子 {}（{}）",
+                            "不能 {} 协作原子 {}（{}）—— 只有产生状态效果的原子与 revert/reapply 本身可以撤销",
                             atom.kind, target.id, target.kind
                         )),
                     )

@@ -258,10 +258,10 @@ fn restoring_a_deleted_object_brings_back_its_pixels() {
     assert_eq!(again["ok"], json!(true), "{again}");
     assert_eq!(again["restored"], json!(false), "{again}");
 
-    // **"撤销这次恢复"目前走不通，而且必须如实报告** ✓ —— 这是**决策④那个缺口**的第二次现形 ✓：
-    // 恢复=撤销 tombstone ✓ ⇒ 撤销恢复=撤销一条 revert ✓ ⇒ 而**提交校验拒绝 revert 一个 revert 原子** ✗
-    //（与第 40 轮 `revert_changeset` 的实测一致 ✓）⇒ 工具**跳过并报告条数** ✓，状态不变 ✓。
-    // **这条断言把这处缺口钉在测试里** ✓：等你拍板放开校验之后 ✓，它就应当改成"对象再次消失" ✓。
+    // **"撤销这次恢复"现在成立** ✓（你已拍板放开校验 ✓ —— 决策④）：
+    // 恢复 = 撤销 tombstone ✓ ⇒ 撤销恢复 = 撤销一条 revert ✓ ⇒ 而这条现在**允许**了 ✓
+    //（设计 793 的恒等式 ✓，折叠层早就实现了它 ✓）。
+    // 上一轮这里断言的是"被跳过、状态不变" ✗ —— 注释里写着"等你拍板后应改成对象再次消失" ✓，就是这里 ✓。
     let changeset = restored["changeset_id"]
         .as_str()
         .unwrap_or_default()
@@ -276,14 +276,39 @@ fn restoring_a_deleted_object_brings_back_its_pixels() {
     };
     assert_eq!(undone["ok"], json!(true), "{undone}");
     assert_eq!(
-        undone["skipped_history_atoms"],
+        undone["reverted"],
         json!(1),
-        "恢复的那条 revert 应被**跳过并计数**（决策④未拍板前的诚实行为）：{undone}"
+        "那条 revert 应被撤销：{undone}"
+    );
+    assert_eq!(
+        undone["skipped_history_atoms"],
+        json!(0),
+        "不再跳过历史原子：{undone}"
     );
     assert_eq!(
         ink(&mut workspace, 16.0, 16.0),
+        0,
+        "撤销恢复 ⇒ 对象再次消失"
+    );
+
+    // 再撤销一次 ⇒ **重新生效** ✓（`revert(revert(x)) ≡ reapply(x)` ✓，设计 793 ✓）。
+    let revert_changeset = undone["revert_changeset_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let again = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "revert_changeset",
+            &json!({"changeset_id": revert_changeset}),
+        )
+    };
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        ink(&mut workspace, 16.0, 16.0),
         before,
-        "既然跳过了，状态就不该变"
+        "撤销撤销 ⇒ 对象回来"
     );
 
     // **从未存在过的对象 ⇒ 明确报错** ✓。

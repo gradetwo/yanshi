@@ -148,10 +148,12 @@ fn reverting_the_detach_changeset_restores_the_instance() {
         "画面应当与脱离前完全一致（这才是「整体撤销」的意义）"
     );
 
-    // ③ **"撤销一次撤销"目前走不通，而且必须如实报告** ✓ —— 这是本轮实测出来的**设计缺口** ✓：
-    // 设计 793 写着 `revert(revert(x)) ≡ reapply(x)` ✓，折叠层**也预留了**这条语义 ✓，
-    // 但**提交校验**拒绝"revert/reapply 一个 revert 原子" ✗（两句错误都实测到了 ✓）。
-    // ⇒ 本工具**跳过历史原子并报告条数** ✓，不擅自决定放开哪一层 ✓。
+    // ③ **"撤销一次撤销"现在成立** ✓ —— 设计 793 的 `revert(revert(x)) ≡ reapply(x)` ✓。
+    //
+    // **这一段的来历** ✓：第 40 轮我在这里断言的是"走不通、被跳过、状态不变" ✗ ——
+    // 当时**提交校验**拒绝 revert 一个 revert 原子 ✓，而**折叠层早已实现了那条恒等式** ✓
+    // ⇒ 两层不一致 ✓。我把缺口如实钉在测试里 ✓ 并请你裁决 ✓；
+    // **你已拍板放开校验** ✓ ⇒ 现在把断言改成**正确行为** ✓（正是注释里预告的那样 ✓）。
     let revert_changeset = reverted["revert_changeset_id"]
         .as_str()
         .unwrap_or_default()
@@ -165,18 +167,26 @@ fn reverting_the_detach_changeset_restores_the_instance() {
             &json!({"changeset_id": revert_changeset}),
         )
     };
-    assert_eq!(again["ok"], json!(true), "应当成功返回并如实报告：{again}");
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        again["reverted"],
+        json!(2),
+        "两条 revert 都应被撤销：{again}"
+    );
     assert_eq!(
         again["skipped_history_atoms"],
-        json!(2),
-        "两条 revert 原子都应被**跳过并计数**（而不是假装撤销成功）：{again}"
+        json!(0),
+        "不再跳过历史原子：{again}"
     );
-    assert_eq!(again["reverted"], json!(0), "没有内容原子可撤：{again}");
-    // 结果：实例**保持已恢复** ✓（没有把那次撤销悄悄回滚 ✗）。
-    let ids_still = object_ids(&mut workspace, &registry);
+    // 撤销那一次撤销 ⇒ **脱离重新生效** ✓（实例再次消失 ✓，副本再次出现 ✓）。
+    let ids_reapplied = object_ids(&mut workspace, &registry);
     assert!(
-        ids_still.contains(&"mirror".to_owned()),
-        "跳过历史原子之后，状态不该被改变：{ids_still:?}"
+        !ids_reapplied.contains(&"mirror".to_owned()),
+        "撤销撤销 ⇒ 脱离重新生效（实例再次消失）：{ids_reapplied:?}"
+    );
+    assert!(
+        ids_reapplied.iter().any(|id| id.starts_with("detached_")),
+        "副本应当再次出现：{ids_reapplied:?}"
     );
 }
 
