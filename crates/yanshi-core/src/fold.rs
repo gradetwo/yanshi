@@ -562,7 +562,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                 current_version: Some(atom.id.clone()),
                 created_by: atom.id.clone(),
                 deleted_by: None,
-                data: object_data(&atom.payload),
+                data: object_data(atom.kind, &atom.payload),
                 blobs,
             };
             state.objects.insert(object_id, object);
@@ -597,7 +597,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                     current_version: Some(atom.id.clone()),
                     created_by: atom.id.clone(),
                     deleted_by: None,
-                    data: object_data(&atom.payload),
+                    data: object_data(atom.kind, &atom.payload),
                     blobs,
                 };
                 state.objects.insert(object_id, object);
@@ -796,16 +796,32 @@ fn object_type_for(kind: AtomKind, declared: Option<&str>) -> ObjectType {
         AtomKind::DrawShape => ObjectType::Shape,
         AtomKind::DrawText => ObjectType::Text,
         AtomKind::Retouch => ObjectType::Retouch,
+        // 擦除也是一种"改像素"的对象：`ObjectType` 里没有 Erase 变体，按 `Retouch` 归类，
+        // 并用 `retouch_type = "erase"` 指定具体行为（否则会落到默认的 **Stroke** ✗，
+        // 被当成没有颜色的笔触 ⇒ 一点像素都不擦，这正是用户报告的现象）。
+        AtomKind::Erase => ObjectType::Retouch,
         AtomKind::Liquify => ObjectType::Liquify,
         _ => parse_object_type(declared),
     }
 }
 
-fn object_data(payload: &Value) -> Value {
-    payload
+fn object_data(kind: AtomKind, payload: &Value) -> Value {
+    let mut data = payload
         .get("data")
         .cloned()
-        .unwrap_or_else(|| payload.clone())
+        .unwrap_or_else(|| payload.clone());
+    // `erase` 原子由工具或客户端直接提交，通常不带 `retouch_type`；渲染层按
+    // `data.retouch_type` 分派具体行为，所以这里**在折叠时**补上默认值 ✓。
+    // 放在折叠层而不是工具层，是因为客户端可以经 `/api/atoms` 直提原子（查看器就是这么做的），
+    // 只改工具层会漏掉那条路径 ✓。
+    if kind == AtomKind::Erase {
+        if let Some(object) = data.as_object_mut() {
+            object
+                .entry("retouch_type".to_owned())
+                .or_insert_with(|| Value::String("erase".to_owned()));
+        }
+    }
+    data
 }
 
 fn transform_from_payload(payload: &Value) -> Transform {
@@ -862,7 +878,7 @@ fn supersede_object(
     object.versions.push(atom.id.clone());
     object.current_version = Some(atom.id.clone());
     if atom.payload.get("data").is_some() {
-        object.data = object_data(&atom.payload);
+        object.data = object_data(atom.kind, &atom.payload);
     }
     if let Some(layer_id) = payload_str(&atom.payload, "layer_id") {
         object.layer_id = layer_id.to_owned();

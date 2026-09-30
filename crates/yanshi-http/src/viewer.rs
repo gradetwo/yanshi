@@ -1517,13 +1517,6 @@ async function commitRetouch() {
   } else {
     args.strength = strength;
   }
-  if (tool === "erase") {
-    // 如实告知：内核目前**没有擦除图元**（`Erase` 只参与 dirty 规划，渲染层没有对应实现），
-    // 因此 `erase` 原子会被当作默认的笔触解析、不产生任何像素变化。
-    // 与其让用户以为是自己操作错了，不如明确说明。
-    log("橡皮暂不可用：内核尚未实现擦除图元（该操作不会改变画面）", "#c33");
-    return;
-  }
   const value = await callTool(tool, args, { refresh: false });
   if (!value.ok) {
     log("操作失败：" + (value.error_code || "unknown") + " " +

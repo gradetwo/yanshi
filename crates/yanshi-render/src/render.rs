@@ -780,10 +780,34 @@ impl Renderer {
                     jitter,
                     smudge_length,
                 } => {
-                    if kind != "clone_stamp" && kind != "heal" && kind != "smudge" {
+                    if kind != "clone_stamp"
+                        && kind != "heal"
+                        && kind != "smudge"
+                        && kind != "erase"
+                    {
                         stats
                             .unsupported
                             .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
+                        continue;
+                    }
+                    // 擦除：按覆盖度扣除 alpha（destination-out 语义），不需要采样源像素。
+                    if kind == "erase" {
+                        let brush_radius = size.max(1.0) / 2.0;
+                        let erase_hardness = hardness.clamp(0.0, 1.0);
+                        let strength = opacity.clamp(0.0, 1.0);
+                        let spacing = (size.max(1.0) * 0.15).max(1.0);
+                        let samples: Vec<(f64, f64, f64)> =
+                            points.iter().map(|(x, y)| (*x, *y, 1.0)).collect();
+                        for stamp in crate::geometry::dashed_line(&samples, spacing, None) {
+                            crate::brush::erase_stamp(
+                                layer_buffer,
+                                stamp.0,
+                                stamp.1,
+                                brush_radius,
+                                erase_hardness,
+                                strength,
+                            );
+                        }
                         continue;
                     }
                     let healing = kind == "heal";

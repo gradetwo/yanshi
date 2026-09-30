@@ -250,14 +250,17 @@ pub fn stamp_samples_from(
 ///
 /// 内层循环先把 stamp 的包围盒裁剪到缓冲区范围，再走 [`Buffer::blend_at`] 的
 /// 直接索引路径，避免逐像素的边界判断与坐标换算（渲染热路径）。
-pub fn draw_stamp(
-    buffer: &mut Buffer,
+/// 遍历一个圆形笔刷印章覆盖到的像素，回调 `(local_x, local_y, coverage)`。
+///
+/// `draw_stamp`（画）与 `erase_stamp`（擦）必须**共用同一套衰减数学** ——
+/// 否则橡皮与画笔的形状会不一致，而且两份实现会各自漂移 ✓。
+fn for_each_covered_pixel(
+    buffer: &Buffer,
     center_x: f64,
     center_y: f64,
     radius: f64,
     hardness: f64,
-    color: LinearRgba,
-    mode: BlendMode,
+    mut visit: impl FnMut(u32, u32, f64),
 ) {
     let (origin_x, origin_y) = buffer.origin();
     let document_x0 = (center_x - radius).floor() as i64;
@@ -283,7 +286,6 @@ pub fn draw_stamp(
     let hard_edge = radius * hardness.clamp(0.0, 1.0);
     let soft_span = (radius - hard_edge).max(1e-6);
     let radius_squared = radius * radius;
-    let use_fast_path = mode == BlendMode::Normal;
 
     for local_y in start_y..=end_y {
         let document_y = origin_y + local_y as i64;
@@ -302,16 +304,88 @@ pub fn draw_stamp(
                 let t = 1.0 - (distance - hard_edge) / soft_span;
                 (t * t * (3.0 - 2.0 * t)).clamp(0.0, 1.0)
             };
+            visit(local_x, local_y, coverage);
+        }
+    }
+}
+
+/// 擦除印章：按覆盖度**扣除 alpha**（预乘语义下的 destination-out）。
+///
+/// 预乘 RGBA 下「擦除」= 四通道同乘 `(1 - coverage × strength)` ✓ ——
+/// 颜色随之等比缩小，因此不会留下颜色残留 ✓。
+pub fn erase_stamp(
+    buffer: &mut Buffer,
+    center_x: f64,
+    center_y: f64,
+    radius: f64,
+    hardness: f64,
+    strength: f64,
+) {
+    let strength = strength.clamp(0.0, 1.0);
+    if strength <= 0.0 {
+        return;
+    }
+    let mut updates: Vec<(u32, u32, [f32; 4])> = Vec::new();
+    for_each_covered_pixel(
+        buffer,
+        center_x,
+        center_y,
+        radius,
+        hardness,
+        |x, y, coverage| {
+            let keep = (1.0 - coverage * strength) as f32;
+            if keep >= 1.0 {
+                return;
+            }
+            let pixel = buffer.pixel(x, y);
+            updates.push((
+                x,
+                y,
+                [
+                    pixel[0] * keep,
+                    pixel[1] * keep,
+                    pixel[2] * keep,
+                    pixel[3] * keep,
+                ],
+            ));
+        },
+    );
+    for (x, y, pixel) in updates {
+        buffer.set_pixel(x, y, pixel);
+    }
+}
+
+/// 画一个圆形笔刷印章（按覆盖度合成颜色）。
+pub fn draw_stamp(
+    buffer: &mut Buffer,
+    center_x: f64,
+    center_y: f64,
+    radius: f64,
+    hardness: f64,
+    color: LinearRgba,
+    mode: BlendMode,
+) {
+    let use_fast_path = mode == BlendMode::Normal;
+    let mut updates: Vec<(u32, u32, LinearRgba)> = Vec::new();
+    for_each_covered_pixel(
+        buffer,
+        center_x,
+        center_y,
+        radius,
+        hardness,
+        |x, y, coverage| {
             let alpha = color[3] * coverage as f32;
             if alpha <= 0.0 {
-                continue;
+                return;
             }
-            let source = premultiply([color[0], color[1], color[2], alpha]);
-            if use_fast_path {
-                buffer.blend_at(local_x, local_y, source);
-            } else {
-                buffer.blend_mode(local_x, local_y, source, mode);
-            }
+            updates.push((x, y, premultiply([color[0], color[1], color[2], alpha])));
+        },
+    );
+    for (x, y, source) in updates {
+        if use_fast_path {
+            buffer.blend_at(x, y, source);
+        } else {
+            buffer.blend_mode(x, y, source, mode);
         }
     }
 }
