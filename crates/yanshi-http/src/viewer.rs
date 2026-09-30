@@ -91,11 +91,39 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
   .options input[type="range"] { width: 120px; }
   /* 工具条：可纵向滚动 ✓ —— 截图里"填充图层"曾被窗口底部截断 ✗（窄条 + 20 个工具必然超出）。 */
-  #tools { display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0;
-           background: var(--surface); border-right: 1px solid var(--line); align-content: start;
-           overflow-y: auto; max-height: calc(100vh - 150px); }
+  /* **左列工具两列排布** ✓（用户要求 ✓）：工具多了之后单列会把 rail 拉得很长，
+     两列更接近常见图像软件的工具栏 ✓；用栅格而不是 flex-wrap ✓ —— 栅格保证**列对齐** ✓，
+     换行时不会出现"某一行只有一个按钮、宽度还不同"的参差 ✓。 */
+  #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 6px;
+           min-width: 0; background: var(--surface); border-right: 1px solid var(--line);
+           align-content: start; overflow-y: auto; max-height: calc(100vh - 150px); }
   #tools button { padding: 7px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
                   align-items: center; }
+  /* **面板开关** ✓（用户要求：左右都要能隐藏，并能进全屏画布 ✓）。
+     用 `body` 上的三个类表达状态 ✓（`hide-rail` / `hide-dockers` / `zen` ✓）——
+     三列的栅格由这四个选择器穷尽覆盖 ✓（都不隐藏 / 只藏左 / 只藏右 / 都藏 ✓），
+     比在 JS 里拼 grid-template-columns 更可控 ✓（也不会与样式表两处打架 ✓）。 */
+  body { --rail-w: 108px; }
+  body.hide-rail main { grid-template-columns: minmax(0, 1fr) 320px; }
+  body.hide-dockers main { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+  body.hide-rail.hide-dockers main { grid-template-columns: minmax(0, 1fr); }
+  body.hide-rail #tools, body.hide-dockers aside { display: none; }
+  /* **全屏画布模式** ✓：藏掉头部与选项条 ✓，画布占满窗口 ✓（不留内边距 ✓）。 */
+  body.zen header, body.zen .options { display: none; }
+  body.zen main { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
+  body.zen #tools, body.zen aside { display: none; }
+  body.zen .stage { border: 0; border-radius: 0; }
+  /* 全屏模式下的**退出把手** ✓ —— 没有它就只能靠快捷键 ✓，
+     而"进了全屏不知道怎么出来"是最典型的抱怨 ✓。默认隐藏 ✓，只在 zen 下出现 ✓。 */
+  #zenExit { position: fixed; top: 10px; right: 10px; z-index: 40; display: none;
+             background: rgba(20, 20, 22, .62); color: #fff; border: 1px solid rgba(255, 255, 255, .28);
+             border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+             backdrop-filter: blur(4px); }
+  body.zen #zenExit { display: inline-flex; align-items: center; gap: 6px; }
+  .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
+  .panel-toggles button { padding: 4px 8px; font-size: 12px; }
+  .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
+                                               border-color: transparent; }
   #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
                stroke-linecap: round; stroke-linejoin: round; }
   #tools button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
@@ -170,7 +198,16 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span>rendered <b id="rendered">0</b></span>
     <span>dirty <b id="dirty">0</b></span>
   </span>
+  <!-- **面板开关** ✓（用户要求：左侧工具栏与右侧各窗口都要能隐藏 ✓，并能进全屏画布 ✓）。
+       三个开关都用 `aria-pressed` 表达状态 ✓ ⇒ 屏幕阅读器与检查脚本都能读到"现在是开还是关" ✓，
+       不必去猜 CSS 类 ✓。 -->
+  <span class="panel-toggles">
+    <button id="toggleRail" type="button" aria-pressed="false" title="隐藏 / 显示左侧工具栏（快捷键 [ ）">◧ 工具栏</button>
+    <button id="toggleDockers" type="button" aria-pressed="false" title="隐藏 / 显示右侧面板（快捷键 ] ）">◨ 面板</button>
+    <button id="toggleZen" type="button" aria-pressed="false" title="全屏画布（快捷键 Tab，Esc 退出）">⛶ 全屏</button>
+  </span>
 </header>
+<button id="zenExit" type="button" title="退出全屏画布（Esc）">⛶ 退出全屏（Esc）</button>
 <dialog id="newDialog">
   <h2 style="margin-top:0">新建文档</h2>
   <p style="opacity:.75;font-size:12px;margin:4px 0">
@@ -3057,6 +3094,83 @@ function renderToolStrip() {
   }).join("");
 }
 renderToolStrip();
+
+// **面板可见性与全屏画布** ✓（用户要求：左侧工具栏与右侧各窗口都能隐藏 ✓，并能进全屏画布 ✓）。
+//
+// 三条设计取舍 ✓：
+// ① **状态放在 `body` 的类上** ✓（`hide-rail` / `hide-dockers` / `zen` ✓）——
+//    CSS 里四个选择器穷尽三种组合 ✓ ⇒ JS 只负责"加类 / 去类" ✓，不拼样式 ✓（两处打架是排版 bug 的常见来源 ✓）。
+// ② **持久化到 localStorage** ✓（与本文件既有的焦点 / dockers 记忆一致 ✓）——
+//    用户把面板收起来是个**意图** ✓，刷新后弹回来会很烦 ✓。
+// ③ **全屏是"页内全屏"** ✗ 不调用浏览器 Fullscreen API ✓：页内模式不打断用户的全屏状态 ✓、
+//    不需要用户手势 ✓、也不会在检查脚本里造成"到底谁在控制"的歧义 ✓
+//    （真需要浏览器全屏时用 F11 ✓，两者互不冲突 ✓）。
+const PANEL_STORE = "yanshi.panels";
+const panels = { rail: false, dockers: false, zen: false };
+function loadPanels() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANEL_STORE) || "{}");
+    panels.rail = saved.rail === true;
+    panels.dockers = saved.dockers === true;
+    panels.zen = saved.zen === true;
+  } catch (_) { /* 存储损坏时用默认值 ✓，不影响使用 ✓ */ }
+}
+function applyPanels() {
+  document.body.classList.toggle("hide-rail", panels.rail);
+  document.body.classList.toggle("hide-dockers", panels.dockers);
+  document.body.classList.toggle("zen", panels.zen);
+  const rail = document.getElementById("toggleRail");
+  const dockers = document.getElementById("toggleDockers");
+  const zen = document.getElementById("toggleZen");
+  // **全屏时左右都被藏起来** ✓ ⇒ 两个开关如实显示为"已按下" ✓（而不是显示未按下却看不见面板 ✗）。
+  if (rail) rail.setAttribute("aria-pressed", String(panels.zen || panels.rail));
+  if (dockers) dockers.setAttribute("aria-pressed", String(panels.zen || panels.dockers));
+  if (zen) zen.setAttribute("aria-pressed", String(panels.zen));
+  try { localStorage.setItem(PANEL_STORE, JSON.stringify(panels)); } catch (_) {}
+  // 画布尺寸变了 ✓ ⇒ 重新适配视口 ✓（否则全屏后画布还按旧宽度居中 ✓，看起来"没生效" ✗）。
+  if (typeof clampViewport === "function") clampViewport();
+}
+function setupPanels() {
+  loadPanels();
+  const wire = (id, apply) => {
+    const button = document.getElementById(id);
+    if (button) button.addEventListener("click", () => { apply(); applyPanels(); });
+  };
+  wire("toggleRail", () => {
+    // 在全屏里点"工具栏" ⇒ **退出全屏并只显示工具栏** ✓（比"按了没反应"直观 ✓）。
+    if (panels.zen) { panels.zen = false; panels.rail = false; panels.dockers = true; }
+    else panels.rail = !panels.rail;
+  });
+  wire("toggleDockers", () => {
+    if (panels.zen) { panels.zen = false; panels.dockers = false; panels.rail = true; }
+    else panels.dockers = !panels.dockers;
+  });
+  wire("toggleZen", () => { panels.zen = !panels.zen; });
+  const exit = document.getElementById("zenExit");
+  if (exit) exit.addEventListener("click", () => { panels.zen = false; applyPanels(); });
+  window.addEventListener("keydown", (event) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "Tab") {
+      // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 必须 `preventDefault` ✓，
+      // 否则浏览器会去移动焦点 ✓（那会让"按了 Tab 界面乱跳" ✗）。
+      event.preventDefault();
+      panels.zen = !panels.zen;
+      applyPanels();
+      return;
+    }
+    if (event.key === "[") { event.preventDefault(); panels.rail = !panels.rail; applyPanels(); return; }
+    if (event.key === "]") { event.preventDefault(); panels.dockers = !panels.dockers; applyPanels(); return; }
+    if (event.key === "Escape" && panels.zen) {
+      // **Esc 退出全屏** ✓ —— 但**不吞掉**其他 Esc 语义 ✓（快捷面板的关闭在自己的处理器里 ✓）。
+      panels.zen = false;
+      applyPanels();
+    }
+  });
+  applyPanels();
+}
+setupPanels();
+
 // 快捷键 ✓：与工具提示一致 ✓ —— 输入框里打字时不受影响 ✓。
 const TOOL_BY_KEY = new Map(TOOL_DEFS.filter((d) => d.key).map((d) => [d.key, d]));
 window.addEventListener("keydown", (event) => {
