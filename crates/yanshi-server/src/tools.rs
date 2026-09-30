@@ -888,6 +888,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "convert_to_shape",
+        profile: Profile::Structure,
+        summary: "把路径（或笔迹）转换成多边形形状（设计 792）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "要转换的路径或笔迹 id"),
+            param!("shape_id", String, false, "转换后形状的 id；缺省自动生成"),
+        ],
+    },
+    ToolSpec {
         name: "convert_to_path",
         profile: Profile::Structure,
         summary: "把笔迹转换成路径对象（设计 792）",
@@ -1001,6 +1011,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("other_id", String, false, "join / merge 的第二个对象"),
             param!("at", Integer, false, "split 的切口节点下标（仅开放路径）"),
             param!("right_id", String, false, "split 产生的右半 id；缺省自动生成"),
+            // `convert_to_shape` 经 `path_edit` 调用时也用这两个参数 ✓
+            //（上一轮踩过同一坑：加了算子却忘了登记参数 ✓ ⇒ 框架的参数校验直接拒绝 ✓）。
+            param!("shape_id", String, false, "convert_to_shape 产生的形状 id；缺省自动生成"),
         ],
     },
     ToolSpec {
@@ -1704,6 +1717,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "convert_to_shape" => write_convert_to_shape(ctx, args),
         "convert_to_path" => write_convert_to_path(ctx, args),
         "transform_object" => write_transform_object(ctx, args),
         "restore_object" => write_restore_object(ctx, args),
@@ -3284,6 +3298,111 @@ fn write_path_split(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }))
 }
 
+/// **把路径（或笔迹）转换成多边形形状** ✓（设计 792 的 `convert_to_shape` ✓）。
+///
+/// **设计未规定语义 ⇒ 记录选择** ✓：
+/// * **形状取多边形** ✓（`geometry.kind = "polygon"` ✓）—— 形状本来就有 `Polygon` 这一种 ✓，
+///   而多边形**天然闭合** ✓（渲染时补回首点 ✓）⇒ 这是"路径 ⇒ 形状"最直白的读法 ✓；
+/// * **铺平复用渲染端的同一函数** ✓（`yanshi_render::object::flatten_path` ✓）——
+///   本项目吃过"包围盒一处一套、渲染一处一套"的亏 ✓ ⇒ 形状的顶点与渲染所见**必然一致** ✓；
+/// * 同时接受**路径**与**笔迹** ✓（笔迹的点列本身就是折线 ✓）；
+/// * 样式字段原样保留 ✓（多边形的填充色取 `color` ✓），`nodes`/`points` 换成了 `geometry` ✓；
+/// * 两步原子 ✓（建形状 ✓ + tombstone 原对象 ✓）归**一个变更集** ✓ ⇒ 一次可整体撤销 ✓。
+fn write_convert_to_shape(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let shape_id = args
+        .get("shape_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("shape_{}", yanshi_core::Ulid::new().encode()));
+    let (layer_id, data, object_type) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        (
+            object.layer_id.clone(),
+            object.data.clone(),
+            object.object_type,
+        )
+    };
+    let points: Vec<(f64, f64)> = match object_type {
+        yanshi_core::ObjectType::Path => {
+            let nodes = data
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let closed = data.get("closed").and_then(Value::as_bool).unwrap_or(false);
+            yanshi_render::object::flatten_path(&nodes, closed)
+        }
+        yanshi_core::ObjectType::Stroke => data
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|points| points.iter().map(point_xy).collect())
+            .unwrap_or_default(),
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{object_id} 是 {other:?}（convert_to_shape 只接受路径或笔迹；形状无需再转）"
+                )),
+            ))
+        }
+    };
+    if points.len() < 3 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "多边形至少需要三个顶点（当前 {} 个）—— 少于三个点转成形状没有面积可言",
+                points.len()
+            )),
+        ));
+    }
+    let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let mut shape_data = data;
+    if let Some(map) = shape_data.as_object_mut() {
+        map.remove("nodes");
+        map.remove("points");
+        map.remove("closed");
+    }
+    shape_data["geometry"] = json!({
+        "kind": "polygon",
+        "points": points.iter().map(|(x, y)| json!([x, y])).collect::<Vec<_>>(),
+        "bbox": {"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y},
+    });
+    // 形状的包围盒也写一份顶层 `bbox` ✓（渲染与命中测试都认它 ✓，与 `draw_shape` 的载荷一致 ✓）。
+    shape_data["bbox"] = json!({"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y});
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let created = ctx.commit(
+        AtomKind::CreateObject,
+        json!({"object_id": shape_id, "layer_id": layer_id, "type": "shape", "data": shape_data}),
+    );
+    let removed = created
+        .as_ref()
+        .ok()
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})));
+    ctx.changeset = previous;
+    let created = created?;
+    let removed = removed.expect("建好形状后才 tombstone 原对象")?;
+    Ok(json!({
+        "ok": true,
+        "shape_id": shape_id,
+        "from": object_id,
+        "vertices": points.len(),
+        "bbox": [min_x, min_y, max_x - min_x, max_y - min_y],
+        "changeset_id": changeset,
+        "head": created.head_seq.max(removed.head_seq),
+    }))
+}
+
 /// **把笔迹转换成路径** ✓（设计 792 的 `convert_to_path` ✓）。
 ///
 /// **设计未规定转换语义 ⇒ 记录选择** ✓：节点取笔迹的**原始采样点** ✓、控制柄**留空**
@@ -4042,10 +4161,15 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **`split` 在下一段单独处理** ✓（它要读 `at` ✓ 且**不修改**原对象 ✓
         // —— 它是唯一一个"一个对象变两个"的算子 ✓，走另一条路更清楚 ✓）。
         "split" => {}
-        // **`boolean` / `convert_to_shape` / `convert_to_path` 仍然拒绝** ✓ ——
-        // 前者需要真正的布尔几何 ✓，后者需要"路径 ⇒ 形状"的语义 ✓
-        //（`convert_to_path` 是**笔迹 ⇒ 路径** ✓，已作为独立工具实现 ✓；路径再"转路径"没有意义 ✓）。
-        "boolean" | "convert_to_shape" | "convert_to_path" => {
+        // **`convert_to_shape` 委托给同一个实现** ✓ —— 设计把它列在 `path_edit` 的算子表里 ✓，
+        // 同时它也是独立工具 ✓ ⇒ 两个入口**必须不分叉** ✓（各自实现一遍是本项目反复吃亏的地方 ✓）。
+        "convert_to_shape" => {
+            return write_convert_to_shape(ctx, args);
+        }
+        // **`boolean` 仍然拒绝** ✓（需要真正的布尔几何 ✓）；
+        // **`convert_to_path` 也拒绝** ✓ —— 它是**笔迹 ⇒ 路径** ✓（已是独立工具 ✓），
+        // 而"路径 ⇒ 路径"没有意义 ✓ ⇒ 明确说明 ✓，不静默成功 ✗。
+        "boolean" | "convert_to_path" => {
             return Err(unsupported(&op));
         }
         other => {
