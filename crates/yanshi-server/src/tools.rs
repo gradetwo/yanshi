@@ -888,6 +888,47 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "create_group",
+        profile: Profile::Core,
+        summary: "创建对象组（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("group_id", String, true, "组对象 id"),
+            param!("layer_id", String, true, "所属图层"),
+            param!("members", Array, false, "成员对象 id 列表"),
+        ],
+    },
+    ToolSpec {
+        name: "add_to_group",
+        profile: Profile::Core,
+        summary: "把对象加入组（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("group_id", String, true, "组对象 id"),
+            param!("object_id", String, true, "要加入的对象 id"),
+        ],
+    },
+    ToolSpec {
+        name: "remove_from_group",
+        profile: Profile::Core,
+        summary: "把对象移出组（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("group_id", String, true, "组对象 id"),
+            param!("object_id", String, true, "要移出的对象 id"),
+        ],
+    },
+    ToolSpec {
+        name: "set_group_transform",
+        profile: Profile::Core,
+        summary: "平移整组（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("group_id", String, true, "组对象 id"),
+            param!("delta", Object, true, "{dx,dy} 平移增量"),
+        ],
+    },
+    ToolSpec {
         name: "move_object",
         profile: Profile::Core,
         summary: "移动/变换对象",
@@ -1476,6 +1517,10 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_object" => write_update_object(ctx, args),
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
+        "create_group" => write_create_group(ctx, args),
+        "add_to_group" => write_add_to_group(ctx, args),
+        "remove_from_group" => write_remove_from_group(ctx, args),
+        "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
@@ -2281,6 +2326,169 @@ fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let result = ctx.commit(AtomKind::Supersede, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// 组对象的成员列表 ✓（不存在的组返回 `None` ✓，让调用方给出准确错误 ✓）。
+fn group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Option<Vec<String>> {
+    let state = document_state(ctx).ok()?;
+    let object = state.objects.get(group_id)?;
+    if object.object_type != yanshi_core::ObjectType::Group {
+        return None;
+    }
+    Some(
+        object
+            .data
+            .get("members")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// 校验组与成员 ✓（**本片边界**：成员必须存在 ✓、且**不能是组** ✗）。
+///
+/// 组嵌套需要设计 9.2 的派生解析（`resolve_object` ✓）与 9.3 的循环检测 ✓，
+/// 属于下一步 ✓ —— 这里**显式拒绝** ✓ 而不是静默接受一个不会生效的嵌套 ✓。
+fn check_group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Result<()> {
+    let state = document_state(ctx)?;
+    if state.objects.get(group_id).map(|object| object.object_type)
+        != Some(yanshi_core::ObjectType::Group)
+    {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("组 {group_id} 不存在（或不是对象组）")),
+        ));
+    }
+    Ok(())
+}
+
+fn write_create_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let group_id = require_str(args, "group_id")?;
+    let layer_id = require_str(args, "layer_id")?;
+    let members: Vec<String> = args
+        .get("members")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    {
+        let state = document_state(ctx)?;
+        for member in &members {
+            let Some(object) = state.objects.get(member) else {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("组成员 {member} 不存在")),
+                ));
+            };
+            if object.object_type == yanshi_core::ObjectType::Group {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "本片不支持组嵌套（{member} 也是组）—— 需要设计 9.2 的派生解析"
+                    )),
+                ));
+            }
+        }
+    }
+    let result = ctx.commit(
+        AtomKind::CreateObject,
+        json!({
+            "object_id": group_id,
+            "layer_id": layer_id,
+            "type": "group",
+            "data": {
+                "members": members,
+                "group_transform": {"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "pivot": [0.0, 0.0]},
+            },
+        }),
+    )?;
+    Ok(json!({"ok": true, "group_id": group_id, "members": members, "head": result.head_seq}))
+}
+
+fn write_add_to_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let group_id = require_str(args, "group_id")?;
+    let object_id = require_str(args, "object_id")?;
+    check_group_members(ctx, group_id.as_str())?;
+    let mut members = group_members(ctx, group_id.as_str()).unwrap_or_default();
+    {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        if object.object_type == yanshi_core::ObjectType::Group {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("本片不支持组嵌套（需要设计 9.2 的派生解析）".to_owned()),
+            ));
+        }
+    }
+    if !members.iter().any(|member| member == &object_id) {
+        members.push(object_id.to_owned());
+    }
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({"object_id": group_id, "key": "members", "value": members}),
+    )?;
+    Ok(json!({"ok": true, "group_id": group_id, "members": members, "head": result.head_seq}))
+}
+
+fn write_remove_from_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let group_id = require_str(args, "group_id")?;
+    let object_id = require_str(args, "object_id")?;
+    check_group_members(ctx, group_id.as_str())?;
+    let mut members = group_members(ctx, group_id.as_str()).unwrap_or_default();
+    members.retain(|member| member != &object_id);
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({"object_id": group_id, "key": "members", "value": members}),
+    )?;
+    Ok(json!({"ok": true, "group_id": group_id, "members": members, "head": result.head_seq}))
+}
+
+fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let group_id = require_str(args, "group_id")?;
+    check_group_members(ctx, group_id.as_str())?;
+    let delta = args.get("delta").cloned().unwrap_or(Value::Null);
+    // **缺参必须报错，绝不用 0 兜底** ✓ —— 实测过一次代价 ✓：
+    // 我第一版用 `unwrap_or(0.0)` ✗ ⇒ `{"matrix": [...]}` 被悄悄变成 `{dx: 0, dy: 0}` ✓
+    // ⇒ 折叠层看到的是**合法平移** ✓ ⇒ 界面返回 `ok: true` 而**什么都没动** ✓
+    //（测试当场抓到 ✓："非平移的组变换应被拒绝：… ok: true" ✓）。
+    // "静默接受一个不会生效的姿势"比"明确不支持"糟得多 ✗。
+    let (Some(dx), Some(dy)) = (
+        delta.get("dx").and_then(Value::as_f64),
+        delta.get("dy").and_then(Value::as_f64),
+    ) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "set_group_transform 需要 {delta: {dx, dy}}（本片只支持平移；一般仿射与嵌套组尚未实现）"
+                    .to_owned(),
+            ),
+        ));
+    };
+    // 组自身的 `group_transform` 也**累积**同一个增量 ✓（便于读取与将来迁移到派生解析 ✓）：
+    // 折叠层会把它作用到每个成员的 `transform` 上 ✓（见 `fold.rs` 的说明 ✓）。
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({"object_id": group_id, "key": "group_transform", "value": {"dx": dx, "dy": dy}}),
+    )?;
+    Ok(
+        json!({"ok": true, "group_id": group_id, "delta": {"dx": dx, "dy": dy}, "head": result.head_seq}),
+    )
 }
 
 fn write_move_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
