@@ -982,6 +982,14 @@ fn parse_object_type(value: Option<&str>) -> ObjectType {
         Some("liquify") => ObjectType::Liquify,
         Some("instance") => ObjectType::Instance,
         Some("group") => ObjectType::Group,
+        // **`path`** ✓（设计 792 的路径对象 ✓，用户已裁决新增该类型 ✓）。
+        Some("path") => ObjectType::Path,
+        // **兜底是 `Stroke`** ✗ —— 这曾经让 `"path"` 被**静默当成笔迹** ✓：
+        // 对象建出来了 ✓、命令返回 ok ✓、渲染却是空的 ✗
+        //（第 44 轮实测：`convert_to_path` 之后"逐像素对比差 3042 字节" ✓、`path_edit` 报"没有 points" ✓
+        //  两个看起来无关的失败其实是**同一个**静默兜底造成的 ✓）。
+        // 现在未知的**非空**类型会在提交层被**拒绝** ✓（见 `log.rs` 的 `validate_object_type` ✓），
+        // 兜底只用于**没写 `type`** 的旧调用 ✓。
         _ => ObjectType::Stroke,
     }
 }

@@ -175,11 +175,20 @@ pub enum ObjectType {
     Instance,
     /// 对象组。
     Group,
+    /// **路径**（设计 792 的 `path_edit` 与 11.1 的「矢量」所依赖的对象类型 ✓）。
+    ///
+    /// **设计未规定路径对象的形状 ⇒ 记录选择** ✓（用户已裁决走"新增 `ObjectType::Path`"这条 ✓）：
+    /// `data.nodes` 为 `[{x, y, in: [dx, dy], out: [dx, dy]}]` ✓（每个节点带一进一出两个控制柄 ✓，
+    /// 与常见钢笔工具一致 ✓），`data.closed` 为布尔 ✓；相邻节点之间是**三次贝塞尔** ✓。
+    /// 笔触样式（`size`/`color`/`hardness`/`appearance` ✓）与笔迹**共用同一套字段** ✓ ——
+    /// 因为渲染时它会**铺平成折线并复用笔迹路径** ✓（见 `yanshi-render` 的 `parse_path` ✓），
+    /// 于是笔刷参数、appearance、选区约束**全部自动继承** ✓，不需要第二套光栅器 ✓。
+    Path,
 }
 
 impl ObjectType {
     /// 全部对象类型。
-    pub const ALL: [ObjectType; 10] = [
+    pub const ALL: [ObjectType; 11] = [
         Self::Stroke,
         Self::Shape,
         Self::Text,
@@ -190,6 +199,7 @@ impl ObjectType {
         Self::Liquify,
         Self::Instance,
         Self::Group,
+        Self::Path,
     ];
 }
 

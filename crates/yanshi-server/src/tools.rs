@@ -888,6 +888,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "convert_to_path",
+        profile: Profile::Structure,
+        summary: "把笔迹转换成路径对象（设计 792）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "要转换的笔迹对象 id"),
+            param!("path_id", String, false, "转换后路径的 id；缺省自动生成"),
+        ],
+    },
+    ToolSpec {
         name: "transform_object",
         profile: Profile::Structure,
         summary: "旋转/缩放/平移一个对象（设计 783）",
@@ -1692,6 +1702,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "convert_to_path" => write_convert_to_path(ctx, args),
         "transform_object" => write_transform_object(ctx, args),
         "restore_object" => write_restore_object(ctx, args),
         "get_object_history" => read_get_object_history(ctx, args),
@@ -3128,6 +3139,94 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     )
 }
 
+/// **把笔迹转换成路径** ✓（设计 792 的 `convert_to_path` ✓）。
+///
+/// **设计未规定转换语义 ⇒ 记录选择** ✓：节点取笔迹的**原始采样点** ✓、控制柄**留空**
+///（零柄 ⇒ 贝塞尔退化成直线 ✓）⇒ **画面逐像素不变** ✓ —— 这条由测试守住 ✓，
+/// 它是"转换"最该有的性质 ✓（换个对象类型不该改变看到的东西 ✓）。
+/// 笔触样式（`size`/`color`/`hardness`/`appearance` ✓）**原样搬到路径上** ✓，
+/// 因为渲染端路径与笔迹**共用同一套字段** ✓（见 `parse_path` 的说明 ✓）。
+///
+/// 两步原子 ✓（建路径 ✓ + tombstone 原笔迹 ✓）归**一个变更集** ✓ ⇒ 一次可整体撤销 ✓
+///（与 `detach_instance`、`restore_object` 同一处理 ✓）。
+fn write_convert_to_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let path_id = args
+        .get("path_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("path_{}", yanshi_core::Ulid::new().encode()));
+    let (layer_id, data) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Stroke {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{object_id} 不是笔迹（本片的 convert_to_path 只从笔迹转换；路径转路径无需转换）"
+                )),
+            ));
+        }
+        (object.layer_id.clone(), object.data.clone())
+    };
+    let Some(points) = data.get("points").and_then(Value::as_array).cloned() else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{object_id} 没有 points")),
+        ));
+    };
+    if points.len() < 2 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("路径至少需要两个节点".to_owned()),
+        ));
+    }
+    let nodes: Vec<Value> = points
+        .iter()
+        .filter_map(|point| {
+            let (x, y) = if let Some(pair) = point.as_array() {
+                (pair.first()?.as_f64()?, pair.get(1)?.as_f64()?)
+            } else {
+                (point.get("x")?.as_f64()?, point.get("y")?.as_f64()?)
+            };
+            Some(json!({"x": x, "y": y, "in": [0.0, 0.0], "out": [0.0, 0.0]}))
+        })
+        .collect();
+    let mut path_data = data;
+    // 样式字段原样保留 ✓；把 `points` 换成 `nodes` + `closed` ✓（渲染端两者共用一套样式 ✓）。
+    if let Some(map) = path_data.as_object_mut() {
+        map.remove("points");
+    }
+    path_data["nodes"] = json!(nodes);
+    path_data["closed"] = json!(false);
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let created = ctx.commit(
+        AtomKind::CreateObject,
+        json!({"object_id": path_id, "layer_id": layer_id, "type": "path", "data": path_data}),
+    );
+    let removed = created
+        .as_ref()
+        .ok()
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})));
+    ctx.changeset = previous;
+    let created = created?;
+    let removed = removed.expect("建好路径后才 tombstone 原笔迹")?;
+    Ok(json!({
+        "ok": true,
+        "path_id": path_id,
+        "from": object_id,
+        "nodes": nodes.len(),
+        "changeset_id": changeset,
+        "head": created.head_seq.max(removed.head_seq),
+    }))
+}
+
 /// **旋转 / 缩放 / 平移一个对象** ✓（设计 783 的 `transform_object` ✓）。
 ///
 /// 与 `move_object` 的分工 ✓（设计把两者并列 ✓，这里记录本仓库的取舍 ✓）：
@@ -3809,7 +3908,7 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }
 
     // 读目标笔迹的点 ✓（对象类型必须是笔迹 ✓ —— 形状/文本没有"点序"可言 ✓）。
-    let (mut points, data) = {
+    let (object_type, mut points, data) = {
         let state = document_state(ctx)?;
         let Some(object) = state.objects.get(object_id.as_str()) else {
             return Err(YanshiError::new(
@@ -3817,48 +3916,108 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 ErrorContext::detail(format!("对象 {object_id} 不存在")),
             ));
         };
-        if object.object_type != yanshi_core::ObjectType::Stroke {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "{object_id} 不是笔迹（path_edit 只作用于笔迹的 points）"
-                )),
-            ));
+        // **路径与笔迹都支持** ✓（设计 792 的 `path_edit` 本就该作用于路径 ✓；
+        // 笔迹是它的前身 ✓，两者的样式字段相同 ✓ ⇒ 两条分支共用算子语义 ✓）。
+        match object.object_type {
+            yanshi_core::ObjectType::Stroke => {
+                let points: Vec<Value> = object
+                    .data
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                (object.object_type, points, object.data.clone())
+            }
+            yanshi_core::ObjectType::Path => {
+                let nodes: Vec<Value> = object
+                    .data
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                (object.object_type, nodes, object.data.clone())
+            }
+            _ => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{object_id} 既不是笔迹也不是路径（path_edit 作用于它们的点/节点）"
+                    )),
+                ))
+            }
         }
-        let points: Vec<Value> = object
-            .data
-            .get("points")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        (points, object.data.clone())
     };
+    // **路径还是笔迹** ✓ —— 两条分支的算子语义不同 ✓，此处提前定义，后面的算子与报错都要用 ✓。
+    let is_path = object_type == yanshi_core::ObjectType::Path;
     if points.is_empty() {
+        // 报错要说**这个对象该有什么** ✓（路径没有 nodes 与笔迹没有 points 是两件事 ✓）。
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("{object_id} 没有 points")),
+            ErrorContext::detail(if is_path {
+                format!("{object_id} 没有 nodes")
+            } else {
+                format!("{object_id} 没有 points")
+            }),
         ));
     }
 
+    // **路径与笔迹的算子语义不同** ✓ —— 这一点很容易做错 ✓：
+    // * 笔迹只有点 ✓：reverse 就是反转点序 ✓、close 是**把首点接到末尾** ✓；
+    // * 路径有节点 + 控制柄 ✓：reverse **必须同时交换每个节点的 in/out** ✓
+    //   —— 只反转节点会让曲线**悄悄变形** ✗（形状还在、但弯的方向变了 ✓，最难发现的那类 bug ✓）；
+    //   close 是**置 `closed` 标志** ✓（不是追加节点 ✓，否则会多出一段零长度曲线 ✗）。
     match op.as_str() {
         "reverse" => {
-            points.reverse();
+            if is_path {
+                points.reverse();
+                for node in points.iter_mut() {
+                    // **交换 in/out** ✓：反向走同一条贝塞尔曲线 ⇒ 每个节点的进出控制柄互换 ✓。
+                    if let Some(map) = node.as_object_mut() {
+                        let (incoming, outgoing) = (
+                            map.get("in").cloned().unwrap_or(json!([0.0, 0.0])),
+                            map.get("out").cloned().unwrap_or(json!([0.0, 0.0])),
+                        );
+                        map.insert("in".to_owned(), outgoing);
+                        map.insert("out".to_owned(), incoming);
+                    }
+                }
+            } else {
+                points.reverse();
+            }
             let mut data = data;
-            data["points"] = json!(points);
+            let key = if is_path { "nodes" } else { "points" };
+            data[key] = json!(points);
             let result = ctx.commit(
                 AtomKind::Supersede,
                 json!({"object_id": object_id, "data": data}),
             )?;
             let head = result.head_seq;
             return Ok(json!({"ok": true, "op": "reverse", "object_id": object_id,
-                             "points": points.len(), "head": head}));
+                             "kind": if is_path { "path" } else { "stroke" },
+                             "count": points.len(), "head": head}));
         }
         "close" => {
-            // **幂等** ✓：已经闭合（末点等于首点 ✓）就什么都不做 ✓，但仍返回 `ok` 与 `closed: true` ✓。
+            if is_path {
+                let already = data.get("closed").and_then(Value::as_bool).unwrap_or(false);
+                if already {
+                    return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
+                                     "kind": "path", "closed": true, "changed": false}));
+                }
+                let mut data = data;
+                data["closed"] = json!(true);
+                let result = ctx.commit(
+                    AtomKind::Supersede,
+                    json!({"object_id": object_id, "data": data}),
+                )?;
+                let head = result.head_seq;
+                return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
+                                 "kind": "path", "closed": true, "changed": true, "head": head}));
+            }
+            // 笔迹：**幂等** ✓（末点等于首点 ⇒ 什么都不做 ✓，但仍如实报告 `closed: true` ✓）。
             let already = points.len() >= 2 && points.first() == points.last();
             if already {
                 return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
-                                 "closed": true, "changed": false}));
+                                 "kind": "stroke", "closed": true, "changed": false}));
             }
             let first = points[0].clone();
             points.push(first);
@@ -3870,7 +4029,8 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             )?;
             let head = result.head_seq;
             return Ok(json!({"ok": true, "op": "close", "object_id": object_id,
-                             "closed": true, "changed": true, "points": points.len(), "head": head}));
+                             "kind": "stroke", "closed": true, "changed": true,
+                             "count": points.len(), "head": head}));
         }
         _ => {}
     }
@@ -3891,15 +4051,33 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 ErrorContext::detail(format!("对象 {other_id} 不存在")),
             ));
         };
-        if other.object_type != yanshi_core::ObjectType::Stroke {
+        // **join 的第二个对象必须与第一个同类** ✓ —— 路径接笔迹（或反之）没有明确语义 ✓，
+        // 报错比"悄悄接上、样式来自第一个"诚实得多 ✓。
+        if other.object_type != object_type {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("{other_id} 不是笔迹")),
+                ErrorContext::detail(format!(
+                    "{other_id} 与 {object_id} 不是同一类对象（join 要求同类：笔迹接笔迹、路径接路径）"
+                )),
             ));
         }
+        if !matches!(
+            other.object_type,
+            yanshi_core::ObjectType::Stroke | yanshi_core::ObjectType::Path
+        ) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{other_id} 既不是笔迹也不是路径")),
+            ));
+        }
+        let key = if other.object_type == yanshi_core::ObjectType::Path {
+            "nodes"
+        } else {
+            "points"
+        };
         other
             .data
-            .get("points")
+            .get(key)
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
@@ -3913,7 +4091,10 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let joined = points.len() + other_points.len();
     points.extend(other_points);
     let mut data = data;
-    data["points"] = json!(points);
+    // **按类型写回正确的键** ✓（路径是 `nodes` ✓、笔迹是 `points` ✓）——
+    // 写错键的表现是"命令返回 ok 但什么都没变" ✗，正是本项目最忌的静默失效 ✓。
+    let key = if is_path { "nodes" } else { "points" };
+    data[key] = json!(points);
     // 两步归一个变更集 ✓（与 `detach_instance` 同一处理 ✓）。
     let changeset = yanshi_core::Changeset::new_id();
     let previous_changeset = ctx.changeset.replace(changeset.clone());
@@ -6494,5 +6675,6 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
         ObjectType::Liquify => "liquify",
         ObjectType::Instance => "instance",
         ObjectType::Group => "group",
+        ObjectType::Path => "path",
     }
 }

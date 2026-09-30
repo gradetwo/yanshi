@@ -4,7 +4,7 @@
 //! 不修改状态。无法渲染的对象（尚未实现的类型、缺少字体、未实现的位图编解码）
 //! 返回 [`Primitive::Unsupported`]，由调用方计入告警而不是让整次渲染失败。
 
-use crate::brush::{BrushSpec, StrokeGeometry};
+use crate::brush::{BrushSpec, StrokeGeometry, StrokePoint};
 use crate::color::LinearRgba;
 use serde_json::Value;
 use yanshi_core::{Bbox, BlobHash, Object, ObjectType, Transform};
@@ -140,6 +140,7 @@ pub enum Primitive {
 pub fn parse_object(object: &Object) -> Primitive {
     match object.object_type {
         ObjectType::Stroke => parse_stroke(&object.data),
+        ObjectType::Path => parse_path(&object.data),
         ObjectType::Shape => parse_shape(&object.data),
         ObjectType::Adjustment => {
             let kind = object
@@ -368,6 +369,135 @@ pub fn parse_object(object: &Object) -> Primitive {
         ObjectType::Instance | ObjectType::Group => Primitive::Unsupported {
             reason: "实例/组引用解析属 Phase 5（9 章）".to_owned(),
         },
+    }
+}
+
+/// 每段三次贝塞尔的**固定细分数** ✓。
+///
+/// **记录选择** ✓：设计没有规定路径如何栅格化 ✓。这里取固定细分（而不是自适应容差 ✓），
+/// 因为它的**成本可预测**且**完全确定** ✓（与全项目的确定性要求一致 ✓）；
+/// 代价是极长的曲线段会用较多采样点 ✓（固定 16 段足够平滑，见测试 ✓）。
+/// 若将来需要更省或更精确，可以换成按弦长自适应 ✓ —— 那会改变渲染结果 ✓，
+/// 因此必须与"插件/路径版本"一类机制一起考虑 ✓（就像第 28 轮 `oil.wasm` 的取舍 ✓）。
+const PATH_SUBDIVISIONS: usize = 16;
+
+/// **把路径铺平成折线** ✓（`nodes[{x,y,in,out}]` + `closed` ⇒ 点序列 ✓）。
+///
+/// 相邻节点之间是三次贝塞尔 ✓：`P(t) = (1-t)³·A + 3(1-t)²t·(A+out_A) + 3(1-t)t²·(B+in_B) + t³·B` ✓，
+/// 其中 `in`/`out` 是**相对节点的偏移** ✓（与常见钢笔工具一致 ✓）。
+/// **零柄 ⇒ 退化成直线** ✓ ⇒ 与同点列的笔迹**逐点一致** ✓（`convert_to_path` 的往返测试就靠这条 ✓）。
+fn flatten_path(nodes: &[Value], closed: bool) -> Vec<(f64, f64)> {
+    let parsed: Vec<(f64, f64, f64, f64, f64, f64)> = nodes
+        .iter()
+        .filter_map(|node| {
+            let x = node.get("x").and_then(Value::as_f64)?;
+            let y = node.get("y").and_then(Value::as_f64)?;
+            let handle = |key: &str, index: usize| -> f64 {
+                node.get(key)
+                    .and_then(Value::as_array)
+                    .and_then(|pair| pair.get(index))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+            };
+            Some((
+                x,
+                y,
+                handle("in", 0),
+                handle("in", 1),
+                handle("out", 0),
+                handle("out", 1),
+            ))
+        })
+        .collect();
+    if parsed.len() < 2 {
+        return parsed
+            .into_iter()
+            .map(|(x, y, _, _, _, _)| (x, y))
+            .collect();
+    }
+    let segments = if closed {
+        parsed.len()
+    } else {
+        parsed.len() - 1
+    };
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(segments * PATH_SUBDIVISIONS + 1);
+    for index in 0..segments {
+        let (ax, ay, _aix, _aiy, aox, aoy) = parsed[index];
+        let (bx, by, bix, biy, _box, _boy) = parsed[(index + 1) % parsed.len()];
+        let (c1x, c1y) = (ax + aox, ay + aoy);
+        let (c2x, c2y) = (bx + bix, by + biy);
+        // **零柄段就是直线 ⇒ 只发端点** ✓，不细分 ✓。
+        //
+        // 这不是省事的小聪明 ✓，而是**正确性**要求 ✓：我第一版对每段都固定细分 ✗
+        // ⇒ `convert_to_path`（节点取原采样点、控制柄留空 ✓）之后，折线比原来**更密** ✓
+        // ⇒ 按间距重采样的落点随之偏移 ✓ ⇒ 测试实测到**画面差 3042 字节** ✗。
+        // 直线上多插点**不改变几何** ✓，却改变了**采样相位** ✗ —— 这正是"看起来等价、结果不等价"的典型 ✓。
+        if aox == 0.0 && aoy == 0.0 && bix == 0.0 && biy == 0.0 {
+            // **发这一段的起点** ✓（不是 `continue` ✗）。
+            //
+            // 我第一版写 `continue` ✗ ⇒ 整段被跳过 ✓，只有循环末尾补的那个终点 ✓
+            // ⇒ 折线只剩**一个点** ⇒ `parse_path` 判"至少两个节点" ⇒ 返回 `Unsupported` ⇒
+            // **路径一个像素都不画** ✗（探针实测：`转换后墨=0` ✓、换成两点直线仍是 0 ✓）。
+            // 这就是"看起来只是省几个采样点"的改动如何变成"完全不渲染"的 ✓ ——
+            // 所以**每一段都必须贡献起点** ✓，末点由循环外的统一收尾补上 ✓。
+            out.push((ax, ay));
+            continue;
+        }
+        // 段内采样 ✓：只发 0..N-1 ✓（末点由下一段负责 ✓），最后一段补上终点 ✓。
+        for step in 0..PATH_SUBDIVISIONS {
+            let t = step as f64 / PATH_SUBDIVISIONS as f64;
+            let (mt, t2, t3) = (1.0 - t, t * t, t * t * t);
+            let (mt2, mt3) = (mt * mt, mt * mt * mt);
+            out.push((
+                mt3 * ax + 3.0 * mt2 * t * c1x + 3.0 * mt * t2 * c2x + t3 * bx,
+                mt3 * ay + 3.0 * mt2 * t * c1y + 3.0 * mt * t2 * c2y + t3 * by,
+            ));
+        }
+    }
+    if closed {
+        // 闭合路径：末尾回到起点 ✓（让描边首尾相接 ✓）。
+        let (ax, ay, _, _, _, _) = parsed[0];
+        out.push((ax, ay));
+    } else {
+        let (bx, by, _, _, _, _) = parsed[parsed.len() - 1];
+        out.push((bx, by));
+    }
+    out
+}
+
+/// **路径对象** ✓（设计 792 与 11.1「矢量」所依赖的类型 ✓）。
+///
+/// **渲染策略（记录选择 ✓）**：把节点铺平成折线 ✓，然后**复用笔迹图元** ✓ ——
+/// 于是笔刷参数、`appearance`、选区约束、脏区与命中测试**全部自动继承** ✓，
+/// 而"分辨率无关"这件事本来就由"**几何存日志、按视图重新栅格化**"提供 ✓
+///（这正是第 30 轮把矢量与光栅介质区分开时写下的结论 ✓）。
+fn parse_path(data: &Value) -> Primitive {
+    let Some(nodes) = data.get("nodes").and_then(Value::as_array) else {
+        return Primitive::Unsupported {
+            reason: "path 缺少 nodes".to_owned(),
+        };
+    };
+    let closed = data.get("closed").and_then(Value::as_bool).unwrap_or(false);
+    let points = flatten_path(nodes, closed);
+    if points.len() < 2 {
+        return Primitive::Unsupported {
+            reason: "path 至少需要两个节点".to_owned(),
+        };
+    }
+    Primitive::Stroke {
+        geometry: StrokeGeometry {
+            points: points
+                .into_iter()
+                .map(|(x, y)| StrokePoint {
+                    x,
+                    y,
+                    pressure: 1.0,
+                })
+                .collect(),
+            // 铺平本身已经是曲线采样 ✓ ⇒ 不再叠加笔迹平滑 ✓（否则会二次平滑 ✓）。
+            smooth: false,
+        },
+        brush: BrushSpec::from_value(data),
     }
 }
 
