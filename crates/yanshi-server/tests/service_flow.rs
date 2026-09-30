@@ -1547,22 +1547,111 @@ fn decode_png(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
     (width, height, pixels)
 }
 
-/// zlib 展开：本仓库的 PNG 固定使用 **stored** deflate 块（见 `yanshi_render::png`），
-/// 因此这里只需跳过 2 字节 zlib 头并逐块拷贝即可，无需 huffman 解码。
+/// zlib 展开 ✓ —— **固定 Huffman + LZ77**（`yanshi_render::png` 现在的编码方式 ✓）。
+///
+/// **有意改写** ✓：这里原先只认 deflate 的 **stored（未压缩）块** ✓，
+/// 因为编码器当时就是那样写的 ✓；而子 agent 报的 G4（960×640 导出 **2,458,493 字节** ✓
+/// ≈ 原始 RGBA ✓）促使把它换成固定 Huffman + LZ77 ✓，于是这条辅助函数也必须跟着能解压 ✓。
+///
+/// **为什么不去给库加一个公开的 inflate** ✗：那是**只为测试**存在的 API 面 ✓；
+/// 而 `#[cfg(test)]` 的东西跨不了 crate ✓。测试要的独立性更重要 ✓：
+/// 这里照着 RFC 1951 §3.2.6 重新实现一遍 ✓，若压缩侧写错，**往返就会对不上** ✓。
 fn inflate(data: &[u8]) -> Vec<u8> {
+    const LENGTH_BASE: [u16; 29] = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
+        131, 163, 195, 227, 258,
+    ];
+    const LENGTH_EXTRA: [u8; 29] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    ];
+    const DIST_BASE: [u16; 30] = [
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    ];
+    const DIST_EXTRA: [u8; 30] = [
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13,
+    ];
+    /// 固定 Huffman 字面/长度码（RFC 1951 §3.2.6）✓。
+    fn code_of(symbol: u16) -> (u16, u8) {
+        match symbol {
+            0..=143 => (0x30 + symbol, 8),
+            144..=255 => (0x190 + (symbol - 144), 9),
+            256..=279 => (symbol - 256, 7),
+            _ => (0xC0 + (symbol - 280), 8),
+        }
+    }
+    fn symbol_of(code: u16, width: u8) -> Option<u16> {
+        (0..288u16).find(|symbol| {
+            let (expected, bits) = code_of(*symbol);
+            bits == width && expected == code
+        })
+    }
+
     assert_eq!((data[0], data[1]), (0x78, 0x01), "zlib 头");
-    let mut out = Vec::new();
     let mut position = 2usize;
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    let read = |count: u8, position: &mut usize, buffer: &mut u32, bits: &mut u32| -> u32 {
+        while *bits < u32::from(count) {
+            *buffer |= u32::from(data[*position]) << *bits;
+            *position += 1;
+            *bits += 8;
+        }
+        let mask = if count == 0 { 0 } else { (1u32 << count) - 1 };
+        let value = *buffer & mask;
+        *buffer >>= count;
+        *bits -= u32::from(count);
+        value
+    };
+    assert_eq!(
+        read(1, &mut position, &mut buffer, &mut bits),
+        1,
+        "应为最后一块"
+    );
+    assert_eq!(
+        read(2, &mut position, &mut buffer, &mut bits),
+        1,
+        "应为固定 Huffman 块"
+    );
+    let mut out: Vec<u8> = Vec::new();
     loop {
-        let header = data[position];
-        position += 1;
-        assert_eq!((header >> 1) & 0b11, 0, "只支持 stored deflate 块");
-        let length = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
-        position += 4;
-        out.extend_from_slice(&data[position..position + length]);
-        position += length;
-        if header & 1 == 1 {
-            break;
+        let mut code = 0u16;
+        let mut symbol = None;
+        for width in 1..=9u8 {
+            code = (code << 1) | read(1, &mut position, &mut buffer, &mut bits) as u16;
+            if let Some(found) = symbol_of(code, width) {
+                symbol = Some(found);
+                break;
+            }
+        }
+        match symbol.expect("合法码字") {
+            0..=255 => out.push(symbol.unwrap() as u8),
+            256 => break,
+            other => {
+                let slot = (other - 257) as usize;
+                let length = LENGTH_BASE[slot] as usize
+                    + read(LENGTH_EXTRA[slot], &mut position, &mut buffer, &mut bits) as usize;
+                let mut distance_code = 0u16;
+                for _ in 0..5 {
+                    distance_code = (distance_code << 1)
+                        | read(1, &mut position, &mut buffer, &mut bits) as u16;
+                }
+                let distance_slot = distance_code as usize;
+                let distance = DIST_BASE[distance_slot] as usize
+                    + read(
+                        DIST_EXTRA[distance_slot],
+                        &mut position,
+                        &mut buffer,
+                        &mut bits,
+                    ) as usize;
+                assert!(distance > 0 && distance <= out.len(), "距离越界");
+                let start = out.len() - distance;
+                for offset in 0..length {
+                    let byte = out[start + offset];
+                    out.push(byte);
+                }
+            }
         }
     }
     out
