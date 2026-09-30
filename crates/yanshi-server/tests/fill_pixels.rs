@@ -132,3 +132,48 @@ fn fill_region_accepts_array_form() {
         "数组写法的区域也应被填充"
     );
 }
+
+/// 撤销填充：`revert` 之后区域应重新变空（浏览器检查里这条断言不可靠，因此在这里定死）。
+#[test]
+fn reverting_a_fill_restores_the_previous_pixels() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_fill", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    }
+    let fill = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "fill",
+            &json!({"layer_id": "L",
+                    "data": {"color": {"r": 10, "g": 200, "b": 120, "a": 255},
+                             "region": {"x": 0, "y": 0, "w": 128, "h": 128}}}),
+        )
+    };
+    assert_eq!(fill["ok"], json!(true), "{fill}");
+    let atom_id = fill["atom_id"]
+        .as_str()
+        .expect("fill 应返回 atom_id")
+        .to_owned();
+    assert!(ink(&mut workspace, 10.0, 10.0) > 0, "填充后区域应有颜色");
+
+    let reverted = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "revert", &json!({"atom_id": atom_id}))
+    };
+    assert_eq!(reverted["ok"], json!(true), "{reverted}");
+    assert_eq!(
+        ink(&mut workspace, 10.0, 10.0),
+        0,
+        "撤销填充后区域应重新变空（API 实测如此；浏览器断言不可靠，故在此定死）"
+    );
+}

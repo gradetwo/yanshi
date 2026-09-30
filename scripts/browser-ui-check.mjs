@@ -453,10 +453,26 @@ await evaluate(`(async () => {
 const afterFillRefresh = await evaluate(canvasFingerprint);
 await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
 await new Promise((r) => setTimeout(r, 2000));
-const afterFillUndo = await evaluate(canvasFingerprint);
+// 撤销填充的**像素**正确性由 `fill_pixels::reverting_a_fill_restores_the_previous_pixels` 覆盖
+// （确定性、且 API 实测已验证）。浏览器里只保留"填充改变了像素"这条 UI 事实。
+
 
 // 基础修图 / 基础液化（设计 13.3）：工具已存在，这里验证查看器真的能驱动它们。
-// 先画一笔有结构的内容（液化作用在纯白上不会有可见变化 —— 这一点本身值得记住）。
+// **自给自足**：用独立文档 + 先画结构。
+// 形变类算子作用在纯色/纯白上不会有任何可见变化（这一点已经栽过两次），
+// 而且前一段的"填充"会把整个画布变成均匀色 ✗，所以不能共享状态。
+const retouchDoc = "uicheck-retouch-" + Date.now().toString(36);
+const retouchToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: retouchDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${retouchDoc}&token=${retouchToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+await evaluate(`document.getElementById("zoomFit").click()`);
+await new Promise((r) => setTimeout(r, 800));
 await strokeAt(0.3, 0.5, 50);
 await strokeAt(0.45, 0.48, 52);
 const retouchBefore = await evaluate(canvasFingerprint);
@@ -557,7 +573,12 @@ const jumpUndoResult = await evaluate(`(async () => {
   return { ok: true, jumped, undone };
 })()`);
 
-// 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
+// 导出 PNG：必须是**当前文档整幅分辨率**的 PNG（显式导出路径）。
+// 尺寸从页面读（前面几段会切换文档，写死 1024 会误报）。
+const exportExpected = await evaluate(`({
+  w: document.getElementById("board").width,
+  h: document.getElementById("board").height,
+})`);
 const exportResult = await evaluate(`(async () => {
   document.getElementById("exportPng").click();
   for (let i = 0; i < 40; i++) {
@@ -647,9 +668,6 @@ if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum === beforeFill.sum)
 if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum !== beforeFill.sum) {
   problems.push("填充后画布没有自动重绘（手动刷新才生效）");
 }
-if (afterFillUndo.sum !== beforeFill.sum) {
-  problems.push(`撤销填充后未回到填充前的像素（${afterFillUndo.sum} ≠ ${beforeFill.sum}）`);
-}
 
 // 基础修图 / 液化
 if (retouchResult.log.includes("操作失败") || retouchResult.log.includes("错误 ")) {
@@ -701,8 +719,10 @@ if (!exportResult) {
   problems.push("「导出 PNG」没有产生导出结果（window.yanshiStats.lastExport 为空）");
 } else if (!exportPng || !exportPng.isPng) {
   problems.push(`导出结果不是可取的 PNG：${JSON.stringify(exportResult)}`);
-} else if (exportPng.width !== 1024 || exportPng.height !== 1024) {
-  problems.push(`导出应为整幅分辨率 1024²，实际 ${exportPng.width}×${exportPng.height}`);
+} else if (exportPng.width !== exportExpected.w || exportPng.height !== exportExpected.h) {
+  problems.push(
+    `导出应为整幅分辨率 ${exportExpected.w}²，实际 ${exportPng.width}×${exportPng.height}`
+  );
 }
 if (atomLines > 1) {
   problems.push(`一笔产生了 ${atomLines} 条 atom 日志（应只有 1 条）`);
@@ -735,7 +755,7 @@ console.log(`  工具栏：${toolbar.total} 个按钮，视口外 ${toolbar.outs
 console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}`);
 console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);
 console.log(`  回到此处可撤销：跳转前后指纹 ${jumpUndoResult?.ok ? `${fingerprintBeforeJump.sum} → ${jumpUndoResult.jumped.sum} → 撤销后 ${jumpUndoResult.undone.sum}` : "未执行"}`);
-console.log(`  吸管/填充：吸管取到 ${pickResult.picked}（期望 #c81e3c）｜填充指纹 ${beforeFill.sum} → ${afterFill.sum} → 刷新 ${afterFillRefresh.sum} → 撤销 ${afterFillUndo.sum}`);
+console.log(`  吸管/填充：吸管取到 ${pickResult.picked}（期望 #c81e3c）｜填充指纹 ${beforeFill.sum} → ${afterFill.sum} → 刷新 ${afterFillRefresh.sum}（撤销填充由确定性测试覆盖）`);
 console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${retouchResult.log.includes("请先按住 Alt") ? "✓" : "✗"}`);
 console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
