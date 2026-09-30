@@ -425,3 +425,74 @@ fn a_selection_clips_liquify() {
         "删除选区后液化应恢复为不受约束（选区外仍无变化 ⇒ 裁剪被错误地烘焙进像素）"
     );
 }
+
+/// 修图（仿制/修复/涂抹）同样受选区约束 ✓ —— 最后一个图元 ✓。
+#[test]
+fn a_selection_clips_retouch() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        // 内容：左半蓝、右半红，便于看出"仿制"是否跨过选区。
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "a_left",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 64.0, "h": 128.0}},
+                             "color": {"r": 20, "g": 40, "b": 220, "a": 255}}}),
+        );
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "a_right",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 64.0, "y": 0.0, "w": 64.0, "h": 128.0}},
+                             "color": {"r": 230, "g": 30, "b": 30, "a": 255}}}),
+        );
+    }
+    let before = render(&mut workspace);
+
+    // 选区：右半 64..128（仿制目标落在右半）。
+    {
+        let mut ctx = context(&mut workspace);
+        let created = registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_retouch",
+                    "shape": {"kind": "rect", "bbox": {"x": 64.0, "y": 0.0, "w": 64.0, "h": 128.0}},
+                    "feather": 0.0, "invert": false, "mode": "new"}),
+        );
+        assert_eq!(created["ok"], json!(true), "{created}");
+    }
+    // 仿制：从右半采样、涂到右半（选区之外也有落点）。
+    {
+        let mut ctx = context(&mut workspace);
+        let cloned = registry.call(
+            &mut ctx,
+            "clone_stamp",
+            &json!({"layer_id": "L", "points": [[72.0, 40.0], [120.0, 40.0]],
+                    "source_offset": [-56.0, 0.0], "size": 24.0, "hardness": 1.0, "opacity": 1.0}),
+        );
+        if cloned["ok"] != json!(true) {
+            // 工具名/参数以注册表为准：打印真实错误，便于按实际接口修正（不猜）。
+            panic!("clone_stamp 调用失败：{cloned}");
+        }
+    }
+    let after = render(&mut workspace);
+    let changes = changed(&before, &after);
+    assert!(!changes.is_empty(), "选区内应被仿制（前置条件）");
+    let outside: Vec<(usize, usize)> = changes.iter().copied().filter(|(x, _)| *x < 64).collect();
+    assert!(
+        outside.is_empty(),
+        "选区外不应被修图改动（越界 {} 个像素，例如 {:?}）",
+        outside.len(),
+        outside.iter().take(5).collect::<Vec<_>>()
+    );
+}

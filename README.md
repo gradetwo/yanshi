@@ -85,9 +85,10 @@ The toolbar also drives the pixel tools: brush and eraser, fill layer, eyedroppe
 heal (Alt+click sets the source), smudge, the three liquify modes, and rect or ellipse masks with a
 feather setting (drag a shape to create the mask and attach it to the current layer).
 
-`选区` drags a rectangular selection that constrains where later strokes, erasing, shapes and fills
-may paint - per pixel, so nothing outside it is touched - and `清除选区` removes it, after which the
-same objects render unconstrained again because the constraint is recomputed from the log. `文本`
+`选区` drags a rectangular selection that constrains everything painted afterwards - strokes, erasing,
+shapes, fills, text, liquify and retouch - per pixel, so nothing outside it is touched, and `清除选区`
+removes it, after which the same objects render unconstrained again because the constraint is
+recomputed from the log. `文本`
 places a text object at the clicked point using the builtin ASCII bitmap font (CJK needs a font
 subset and is still to come). `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
 

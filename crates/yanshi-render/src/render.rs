@@ -926,6 +926,9 @@ impl Renderer {
                         }
                         continue;
                     }
+                    // 选区约束（路线 A）✓：修图的写入只有下方这一处 `draw_stamp`，
+                    // 直接把覆盖度折进印章即可 ✓（与笔触同法 ✓）。
+                    let retouch_clip = object_clip(state, &layer.id, object);
                     let healing = kind == "heal";
                     // 涂抹：偏移随笔迹方向变化（把后方像素拖到前方），
                     // 仍然只从**应用本对象之前**的副本采样，因此确定且无自反馈。
@@ -1037,20 +1040,36 @@ impl Renderer {
                                 }
                             }
                         }
-                        crate::brush::draw_stamp(
-                            layer_buffer,
-                            cx,
-                            cy,
-                            radius,
-                            brush.hardness,
-                            [
-                                straight[0],
-                                straight[1],
-                                straight[2],
-                                (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
-                            ],
-                            BlendMode::Normal,
-                        );
+                        let color = [
+                            straight[0],
+                            straight[1],
+                            straight[2],
+                            (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
+                        ];
+                        // 选区「约束落笔」✓：印章的 alpha 本身就是"增量权重" ✓ ——
+                        // 逐像素乘以覆盖度即等价于"按覆盖度衰减该笔的改动" ✓，
+                        // 且**从不触碰选区外像素** ✓（无需 delta 记账 ✓）。
+                        match &retouch_clip {
+                            Some(clip) => crate::brush::draw_stamp_clipped(
+                                layer_buffer,
+                                cx,
+                                cy,
+                                radius,
+                                brush.hardness,
+                                color,
+                                BlendMode::Normal,
+                                &|x, y| clip.coverage(x, y),
+                            ),
+                            None => crate::brush::draw_stamp(
+                                layer_buffer,
+                                cx,
+                                cy,
+                                radius,
+                                brush.hardness,
+                                color,
+                                BlendMode::Normal,
+                            ),
+                        }
                     }
                     continue;
                 }
