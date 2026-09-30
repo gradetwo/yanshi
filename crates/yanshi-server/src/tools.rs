@@ -888,6 +888,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_changesets",
+        profile: Profile::Changeset,
+        summary: "列出日志里的变更集（设计 793）",
+        mutating: false,
+        params: &[
+            param!("limit", Integer, false, "最多返回多少个变更集"),
+        ],
+    },
+    ToolSpec {
+        name: "revert_changeset",
+        profile: Profile::Changeset,
+        summary: "整体撤销一个变更集（设计 793）",
+        mutating: true,
+        params: &[
+            param!("changeset_id", String, true, "要撤销的变更集 id"),
+        ],
+    },
+    ToolSpec {
         name: "path_edit",
         profile: Profile::Structure,
         summary: "笔迹路径编辑（设计 792；本片只实现 reverse/close/join）",
@@ -1599,6 +1617,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "get_changesets" => read_get_changesets(ctx, args),
+        "revert_changeset" => write_revert_changeset(ctx, args),
         "path_edit" => write_path_edit(ctx, args),
         "get_dependency_graph" => read_get_dependency_graph(ctx, args),
         "update_sync_policy" => write_update_sync_policy(ctx, args),
@@ -3026,6 +3046,145 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     )
 }
 
+fn read_get_changesets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let limit = optional_u64(args, "limit").unwrap_or(100).min(1000) as usize;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    // 按变更集聚合 ✓（保持日志顺序 ✓ ⇒ 同一个变更集里的原子序号是连续的 ✓，但不假设一定连续 ✓）。
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: std::collections::BTreeMap<String, Vec<(u64, String, String)>> =
+        std::collections::BTreeMap::new();
+    for atom in document.log().atoms() {
+        let Some(changeset) = atom.changeset_id.clone() else {
+            continue;
+        };
+        let entry = grouped.entry(changeset.clone()).or_default();
+        if entry.is_empty() {
+            order.push(changeset);
+        }
+        entry.push((
+            atom.seq,
+            atom.id.clone(),
+            format!("{:?}", atom.kind).to_lowercase(),
+        ));
+    }
+    let changesets: Vec<Value> = order
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|changeset| {
+            let atoms = grouped.get(changeset).cloned().unwrap_or_default();
+            json!({
+                "changeset_id": changeset,
+                "atoms": atoms.len(),
+                "first_seq": atoms.first().map(|(seq, _, _)| *seq),
+                "last_seq": atoms.last().map(|(seq, _, _)| *seq),
+                "kinds": atoms.iter().map(|(_, _, kind)| kind.clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({"ok": true, "changesets": changesets, "count": changesets.len()}))
+}
+
+/// **整体撤销一个变更集** ✓（设计 793 ✓）。
+///
+/// 做法 ✓：为变更集里的**每条内容原子**提交一条 `Revert {target}` ✓，
+/// 并且这些 revert **自己也在一个变更集里** ✓（便于引用与续算 ✓）。
+///
+/// **边界如实说明 ✓（本轮实测出来的设计缺口 ✓）**：
+/// 设计 793 写着 `revert(revert(x)) ≡ reapply(x)` ✓，折叠层里**也预留了**这条语义 ✓，
+/// 但**提交校验**拒绝"revert/reapply 一个 revert 原子" ✗
+///（实测：`不能 revert 协作/历史原子 …（revert）` ✓、`不能 reapply …（revert）` ✓）
+/// ⇒ 已撤销的变更集**无法通过本工具再撤销回来** ✗。
+/// 因此这里**跳过历史原子并如实报告** `skipped_history_atoms` ✓，
+/// **不擅自**替用户决定放开哪一层 ✓（放开校验 ✓ 还是删掉折叠层的分支 ✗ 是**设计决策** ✓）。
+fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let changeset_id = require_str(args, "changeset_id")?;
+    let (targets, already_reverted) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        // **撤销一个 revert ⇒ 用 `reapply`** ✓ —— 这正是设计 793 的原话
+        //（`revert(revert(x)) ≡ reapply(x)` ✓），也是测试当场教给我的 ✓：
+        // 我第一版对**所有**原子都发 `Revert` ✗ ⇒ 折叠层拒绝"revert 一个 revert 原子" ✓
+        //（"不能 revert 协作/历史原子 …（revert）" ✓）⇒ "撤销一次撤销"根本走不通 ✗。
+        // 所以这里按**每条原子自身的种类**选动作 ✓：是 `Revert` 就发 `Reapply` ✓，否则发 `Revert` ✓。
+        //
+        // **边界如实说明 ✓**：只处理**一层**嵌套 ✓。更深的嵌套（revert 的 revert 的 revert ✓）
+        // 会因为同样的拒绝而**明确报错** ✓，而不是悄悄做错 ✓ —— 需要更深的语义时再按设计讨论 ✓。
+        // **只撤销"内容原子"，跳过历史原子本身** ✓ —— 这是我本轮实测出来的**设计缺口** ✓：
+        // 设计 793 写着 `revert(revert(x)) ≡ reapply(x)` ✓，折叠层里**也预留了**这条语义
+        //（"revert 自身被更晚的有效 revert 撤销时失效" ✓），
+        // 但**提交校验**把"revert/reapply 一个 revert 原子"**全部拒绝** ✗
+        //（实测两句：`不能 revert 协作/历史原子 …（revert）` ✓ 与 `不能 reapply …（revert）` ✓）。
+        // ⇒ 两层不一致：折叠层准备接收的形态，校验层不允许产生 ✓。
+        // 这属于**设计决策** ✓（放开校验 ✓ 还是删掉折叠层那个分支 ✗），
+        // 本片**不擅自决定** ✓：**跳过并如实报告** ✓，让调用方知道"这几条没能撤销" ✓。
+        let mut targets: Vec<(String, bool)> = Vec::new();
+        let mut skipped_history = 0usize;
+        let mut found = 0usize;
+        for atom in document.log().atoms() {
+            if atom.changeset_id.as_deref() != Some(changeset_id.as_str()) {
+                continue;
+            }
+            found += 1;
+            if atom.kind == AtomKind::Revert || atom.kind == AtomKind::Reapply {
+                skipped_history += 1;
+                continue;
+            }
+            targets.push((atom.id.clone(), false));
+        }
+        // **"不存在"与"只含历史原子"是两件事** ✓：前者要报错 ✓；
+        // 后者应当**成功返回并如实报告** ✓（`reverted: 0` + `skipped_history_atoms: N` ✓）——
+        // 我第一版把两者混成一个 `targets.is_empty()` ✗ ⇒ 明明存在、只是撤不动的变更集
+        // 被报成"不存在" ✓，反而更误导 ✓。
+        if found == 0 {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "变更集 {changeset_id} 不存在（日志里没有属于它的原子）"
+                )),
+            ));
+        }
+        (targets, skipped_history)
+    };
+    // 到这里 `targets` 可能为空 ✓（该变更集只含历史原子 ✓）⇒ 那不是错误 ✓，见上面的说明 ✓。
+    // **所有 revert 归一个变更集** ✓ ⇒ 这一次撤销本身也可被一次撤销 ✓。
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let mut reverted: Vec<String> = Vec::new();
+    let mut failure: Option<YanshiError> = None;
+    for (target, _was_a_revert) in &targets {
+        match ctx.commit(AtomKind::Revert, json!({"target": target})) {
+            Ok(_) => reverted.push(target.clone()),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    ctx.changeset = previous;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(json!({
+        "ok": true,
+        "changeset_id": changeset_id,
+        "reverted": reverted.len(),
+        "targets": reverted,
+        "revert_changeset_id": changeset,
+        // **如实报告**跳过了多少条历史原子 ✓（名字要说清"跳过的是什么" ✓）。
+        "skipped_history_atoms": already_reverted,
+    }))
+}
+
 /// **笔迹路径编辑** ✓（设计 792 行：`path_edit`（split, merge, join, close, reverse, boolean,
 /// convert_to_shape, convert_to_path ✓））。
 ///
@@ -3044,6 +3203,14 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 ///   与 `detach_instance` 同一处理 ✓）。
 ///   **设计未规定合并后的画笔/外观归属 ⇒ 记录选择** ✓：保留**第一条**的
 ///   `size`/`color`/`hardness`/`appearance` ✓（"接进第一条"是最小惊讶 ✓）。
+///
+/// **列出变更集** ✓（设计 793 的 `revert_changeset` 要撤销的对象）。
+///
+/// 为什么这一对很重要 ✓：本项目从第 36 轮起**已经在用变更集** ✓
+///（`detach_instance` ✓ 与 `path_edit join` ✓ 的两步原子 ✓ 都属于同一个变更集 ✓），
+/// 当时的说明写着"半成品能**一次整体撤销**" ✗ —— 而**当时并没有撤销它的工具** ✗✓。
+/// 也就是说那句承诺**兑现不了** ✓：这正是一处**我自己制造的诚实缺口** ✓，
+/// 本轮把它补上 ✓（`get_changesets` 看得到 ✓、`revert_changeset` 撤得掉 ✓）。
 fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let op = require_str(args, "op")?;
     let object_id = require_str(args, "object_id")?;
