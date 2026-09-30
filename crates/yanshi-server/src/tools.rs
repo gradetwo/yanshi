@@ -2017,15 +2017,56 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     let layer_id = require_str(args, "layer_id")?;
     // 空点列会提交一个无意义的原子（审计发现的静默接受）。
     require_non_empty_points(args)?;
-    let data = require_object(args, "data")?.clone();
+    let mut data = require_object(args, "data")?.clone();
     validate_colors(&data)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
-    let payload = json!({
+
+    // 填充：`data` 是 `{color, region}`，但渲染层的形状图元读的是 `bbox`
+    // （`parse_shape` 的 `geometry.bbox` 或顶层 `bbox`）✓。而且 `ObjectType` 里**没有** Fill ✓，
+    // fold 会按 `payload.type` 决定对象类型、缺省落到 **Stroke** ✗ —— 于是填充对象被当作没有
+    // `points` 的笔触解析，**一点像素都不画**（用户报告 + API 实测：`ok: true` 但着色 0 ✗）。
+    // 因此在工具层把它**规范化成一个矩形形状**并显式声明类型 ✓，内核语义保持不变 ✓。
+    let mut declared_type: Option<&'static str> = None;
+    if kind == AtomKind::Fill {
+        let region = data
+            .get("region")
+            .cloned()
+            .or_else(|| data.get("bbox").cloned());
+        let region = match region {
+            Some(value) => value,
+            None => {
+                // 缺省填充整幅画布（用户直觉："填充图层"）。
+                let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+                let (width, height) = (document.state().width, document.state().height);
+                json!({"x": 0, "y": 0, "w": width, "h": height})
+            }
+        };
+        // 复用既有的 `parse_bbox`：它同时接受 `{x,y,w,h}` 与 `[x,y,w,h]`
+        //（`Bbox::from_value` 只认前者）。
+        let bbox = parse_bbox(&region).map_err(|_| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("fill 的 region 必须是 {x,y,w,h} 或 [x,y,w,h]"),
+            )
+        })?;
+        let object = data.as_object_mut().expect("data 已是对象");
+        object.remove("region");
+        object.insert(
+            "bbox".to_owned(),
+            serde_json::to_value(bbox).unwrap_or(Value::Null),
+        );
+        declared_type = Some("shape");
+    }
+
+    let mut payload = json!({
         "object_id": object_id,
         "layer_id": layer_id,
         "data": data,
     });
+    if let Some(declared) = declared_type {
+        payload["type"] = json!(declared);
+    }
     let result = ctx.commit(kind, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
