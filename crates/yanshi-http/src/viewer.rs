@@ -67,7 +67,15 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
           overflow-x: clip; }
   /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
      不能一起收缩，否则工具按钮会溢出窗口。 */
-  .stage { justify-self: start; max-width: 100%; }
+  /* **舞台铺满可用区、画布在其中居中** ✓ —— 用户反馈："画布固定在左上角很难受，尤其缩放时" ✓。
+     此前的 `justify-self: start` 是为了消除"右侧灰色死区" ✗（点击落在 stage 上而不是画布上 ✓）；
+     但代价是画布贴左上角 ✓。现在的做法两头兼顾 ✓：
+       * 舞台铺满 ✓（视觉上画布周围就是**工作区** ✓，与成熟绘画软件一致 ✓）；
+       * 画布**居中** ✓（缩放时视觉重心稳定 ✓）；
+       * 画布外的区域**不响应绘制** ✓ —— 事件监听挂在 `#board` 上 ✓，
+         所以点在空白区根本不会进入绘制分支 ✓（检查里有专门的断言 ✓）。 */
+  .stage { justify-self: stretch; display: flex; align-items: center; justify-content: center;
+           min-height: 240px; background: var(--surface); }
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
   /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
      #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
@@ -459,6 +467,38 @@ function clampViewport(center) {
   state.viewport = { x, y, w: viewW, h: viewH };
 }
 
+/// 把某个**文档点**钉在指定的**画布像素位置**上 ✓（缩放锚点用 ✓）。
+///
+/// 为什么不能只用 `clampViewport(focus)` ✗：它把 `focus` 放到**视口中心** ✓，
+/// 而从光标缩放要求"**光标下的内容不动**" ✓ —— 两者只有在光标恰好位于视口中心时才一致 ✗。
+/// 实测差异 45.9px ✓（检查里量到的漂移 ✓）。这里先按常规算出缩放与视口尺寸 ✓，
+/// 再把视口平移，使该文档点落在指定画布像素处 ✓。
+function clampViewportAt(docPoint, pixel) {
+  clampViewport(docPoint);
+  if (!pixel) return;
+  const { w: docW, h: docH } = state.docSize;
+  const maxX = Math.max(0, docW - state.viewport.w);
+  const maxY = Math.max(0, docH - state.viewport.h);
+  // **单位换算** ✓：`pixel` 是**客户端像素** ✓，而视口是**文档像素** ✗ ——
+  // 第一版忘了除以 `displayScale` ✓，于是锚点漂移 43px ✗（正是这个量级 ✓）。
+  // **直接按锚点解方程** ✓，而不是"先居中再平移" ✗ ——
+  // 后者要经过两次取整与两次夹取 ✓，实测漂移 21.75→27.56px ✗（越修越偏 ✓，说明推理链太长 ✓）。
+  //
+  // 目标只有一个 ✓：**文档点 `docPoint` 恰好落在客户端像素 `pixel` 处** ✓，即
+  //   docPoint = viewport + pixel × perPixel  ⇒  viewport = docPoint − pixel × perPixel ✓
+  // 其中 `perPixel` 是**实测**比例（`viewport.w / rect.width` ✓）—— 不能用 `displayScale` ✗，
+  // 因为画布的 CSS 尺寸会被取整并受可用区上限约束 ✓（实测 4.402 vs 4.147 ✓）。
+  // **先刷新画布显示尺寸，再读矩形** ✓ —— `clampViewport` 只算视口与 `displayScale` ✓，
+  // 真正改画布 CSS 尺寸的是 `applyDisplaySize()` ✓（它由 `sizeBoards` 在 `renderViewport` 里调 ✓，
+  // 也就是**在我读矩形之后** ✗）⇒ 直接读会拿到旧尺寸 ✓，比例随之算错 ✓（残余 26px ✓ 正是这里 ✓）。
+  applyDisplaySize();
+  const rect = board.getBoundingClientRect();
+  const perPixelX = state.viewport.w / Math.max(1, rect.width);
+  const perPixelY = state.viewport.h / Math.max(1, rect.height);
+  state.viewport.x = Math.max(0, Math.min(maxX, Math.round(docPoint.x - pixel.x * perPixelX)));
+  state.viewport.y = Math.max(0, Math.min(maxY, Math.round(docPoint.y - pixel.y * perPixelY)));
+}
+
 /// 文档坐标 → 画布坐标。
 function toCanvas(point) {
   return { x: point.x - state.viewport.x, y: point.y - state.viewport.y };
@@ -771,6 +811,9 @@ async function blitServerViewport() {
   // 但最终画布仍是空白 ✗。原因是**布局变化会重设画布尺寸** ✓（`sizeBoards` 改 `board.width` ⇒ 清空 ✓），
   // 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓。
   // 因此让补画落在**下一帧**（布局稳定之后 ✓）—— 这是"最后画的人赢"那条经验的延续 ✓。
+  // **等两帧** ✓ —— 一帧只覆盖"本轮布局" ✓；居中之后布局可能再变一次 ✓
+  //（`sizeBoards` 会按新尺寸清空画布 ✓），于是补画又被清掉 ✗。两帧覆盖连续两次布局收敛 ✓。
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise((resolve) => requestAnimationFrame(() => resolve()));
   const { x, y, w, h } = state.viewport;
   return blitServerBox([x, y, w, h]);
@@ -2247,10 +2290,16 @@ board.addEventListener("wheel", (event) => {
 
 // 中键拖动平移。
 board.addEventListener("pointerdown", (event) => {
-  if (event.button !== 1) return;
+  // **平移的三种入口统一在这里** ✓：中键 / 手形工具 / 按住空格 ✓。
+  // 只保留一条路径的原因：本会话已多次教训"两条相似路径会漂移" ✗
+  //（整段/增量盖章、两条介质链路都栽过 ✓）。
+  const wantsPan = event.button === 1 || state.tool === "pan" || spaceHeld;
+  if (!wantsPan) return;
   event.preventDefault();
-  panState = { startX: event.clientX, startY: event.clientY, originX: state.viewport.x, originY: state.viewport.y };
+  panState = { startX: event.clientX, startY: event.clientY,
+               originX: state.viewport.x, originY: state.viewport.y, pointerId: event.pointerId };
   try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
+  updatePanCursor();
 });
 board.addEventListener("pointermove", (event) => {
   if (!panState) return;
@@ -2266,7 +2315,63 @@ board.addEventListener("pointermove", (event) => {
   renderViewport();
 });
 board.addEventListener("pointerup", (event) => {
-  if (panState && event.button === 1) panState = null;
+  // 不再判断 `button === 1` ✗：手形工具与空格拖动都是**左键** ✓（判错会让平移"卡住" ✓）。
+  if (panState && (event.pointerId === undefined || panState.pointerId === event.pointerId ||
+                   event.button === 1)) {
+    panState = null;
+    updatePanCursor();
+  }
+});
+
+/// 手形光标 ✓：手形工具或按住空格时显示抓手 ✓。
+function updatePanCursor() {
+  if (panState) {
+    board.style.cursor = "grabbing";
+  } else if (state.tool === "pan" || spaceHeld) {
+    board.style.cursor = "grab";
+  } else if (state.tool === "eyedropper") {
+    board.style.cursor = "copy";
+  } else if (state.tool === "text") {
+    board.style.cursor = "text";
+  } else if (state.tool === MOVE_TOOL || state.tool === MOVE_LAYER_TOOL) {
+    board.style.cursor = "move";
+  } else {
+    board.style.cursor = "crosshair";
+  }
+}
+
+/// **滚轮缩放** ✓：以**光标处**的文档坐标为中心重算视口 ✓ ⇒ 光标下的内容保持不动 ✓
+///（这是缩放最自然的手感 ✓；此前的 +/- 按钮只能以视口中心缩放 ✓）。
+board.addEventListener("wheel", (event) => {
+  if (!kernelReady()) return;
+  event.preventDefault();
+  const focus = localPoint(event);
+  const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+  state.zoom = Math.max(0.1, Math.min(16, (state.zoom || 1) * factor));
+  // **先定下缩放，再重读画布矩形** ✓ —— 画布是**居中**的 ✓，缩放会改变它的尺寸 ✓
+  // ⇒ 左边缘也移动 ✓ ⇒ 锚点像素必须按**新**矩形算 ✓
+  //（第一版用旧矩形 ⇒ 漂移 21.75px ✗，正是"半个尺寸差"的量级 ✓）。
+  clampViewport(focus);
+  const rect = board.getBoundingClientRect();
+  // 把光标处的文档点**钉在光标所在的画布像素**上 ✓ ⇒ 该点视觉上不动 ✓。
+  clampViewportAt(focus, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+  renderViewport();
+}, { passive: false });
+
+// **空格临时手形** ✓（成熟软件的通用肌肉记忆 ✓）：按住空格拖动即平移 ✓，松开恢复 ✓。
+let spaceHeld = false;
+window.addEventListener("keydown", (event) => {
+  if (event.code !== "Space") return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (spaceHeld) return;
+  spaceHeld = true;
+  event.preventDefault();
+  updatePanCursor();
+});
+window.addEventListener("keyup", (event) => {
+  if (event.code !== "Space") return;
+  spaceHeld = false;
+  updatePanCursor();
 });
 
 // 键盘：+ / - 缩放，0 复位到整幅。
@@ -2621,6 +2726,8 @@ const TOOL_ICONS = {
   eyedropper: '<path d="M4 20l2-6 8-8 4 4-8 8z"/>',
   move_object: '<path d="M12 4v16"/><path d="M4 12h16"/><path d="M12 4l-2 3h4z"/><path d="M12 20l-2-3h4z"/>',
   move_layer: '<rect x="4" y="8" width="10" height="10" rx="1"/><path d="M8 5h10a1 1 0 0 1 1 1v10"/><path d="M17 4l3 3-3 3"/>',
+  // 手形（平移）✓：画布比窗口大时用它拖动 ✓（也可按住空格临时切换 ✓，与成熟软件一致 ✓）。
+  pan: '<path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11"/><path d="M11 11V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M14 11V7a1.5 1.5 0 0 1 3 0v7"/><path d="M17 12v-1a1.5 1.5 0 0 1 3 0v4a5 5 0 0 1-5 5h-3a5 5 0 0 1-5-5v-3l-2 2"/>',
   select_rect: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/>',
   clearSelection: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/><path d="M7 17L17 7"/>',
   text: '<path d="M5 5h14"/><path d="M12 5v14"/><path d="M9 19h6"/>',
@@ -2647,6 +2754,8 @@ const TOOL_DEFS = [
   // 移动**整层** ✓ —— 用户诉求：画在一起的东西应该一起走 ✓（设计里"成组"是独立特性 ✓，
   // 图层级移动是它的实用等价 ✓，且实现上是**同一变更集里的 N 个 move 原子** ⇒ 一次撤销 ✓）。
   { tool: "move_layer", label: "移动图层", key: "y" },
+  // 平移画布 ✓（H 键 ✓；空格按住时为**临时**手形 ✓）。
+  { tool: "pan", label: "平移画布", key: "h" },
   { tool: "select_rect", label: "选区", key: "m" },
   { id: "clearSelection", label: "清除选区", key: "d", icon: "clearSelection" },
   { tool: "text", label: "文本", key: "t" },
@@ -2790,6 +2899,9 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
     for (const other of document.querySelectorAll("button[data-tool]")) {
       other.setAttribute("aria-pressed", String(other === button));
     }
+    // 工具切换后刷新光标 ✓（否则抓手会留在画笔上 ✓），并收起手形拖动状态 ✓。
+    panState = null;
+    updatePanCursor();
   });
 }
 
