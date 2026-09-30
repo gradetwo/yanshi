@@ -1430,10 +1430,12 @@ for (let i = 0; i < 40 && !mediumObject; i++) {
 // **对"画布有墨"本身轮询** ✓ —— 此前是"轮询对象存在 ✓ 然后**只量一次**" ✗：
 // 服务端补画可能晚于那一次测量 ✓ ⇒ 偶发读到 0 ✗（本会话反复出现的家族 ✓）。
 // 这里量的是**用户最终看到的画面** ✓，而不是某个瞬间 ✓。
-let mediumAfter = 0;
+let mediumAfter = mediumBefore;
 for (let i = 0; i < 40; i++) {
   mediumAfter = (await evaluate(MEDIUM_INK)) || 0;
-  if (mediumAfter > 0) break;
+  // **要等到"比落笔前更多"** ✓ —— 第一版只等 `> 0` ✗，而画布上本来就有前面段落留下的墨 ✓
+  // ⇒ 在笔迹出现**之前**就读了数 ✓（实测 74 → 74 的假失败 ✓）。
+  if (mediumAfter > mediumBefore) break;
   await new Promise((r) => setTimeout(r, 250));
 }
 if (!mediumObject) {
@@ -1517,10 +1519,10 @@ for (let i = 0; i < 40 && !wcObject; i++) {
   wcObject = (listed.objects || []).find((o) => o.medium && o.medium.id === "watercolor") || null;
 }
 // 与示例介质同理 ✓：对"有墨"轮询 ✓（补画可能晚于一次测量 ✓ ⇒ 否则偶发读到 0 ✗）。
-let wcAfter = 0;
+let wcAfter = wcBefore;
 for (let i = 0; i < 40; i++) {
   wcAfter = (await evaluate(MEDIUM_INK)) || 0;
-  if (wcAfter > 0) break;
+  if (wcAfter > wcBefore) break;
   await new Promise((r) => setTimeout(r, 250));
 }
 if (!wcObject) {
@@ -2139,6 +2141,25 @@ console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 
     problems.push(`早期补画不是增量的（早期 ${early.area}px²，全量 ${early.lastFull}px²）`);
   } else {
     console.log(`  介质早期补画：${early.count} 次｜本次 ${early.area}px² vs 全量 ${early.lastFull}px²（须更小）`);
+  }
+  // **重同步必须走增量** ✓ —— 子 agent 报的 F5：每笔介质都整条重放日志 ✗
+  // ⇒ 提交耗时随文档增长（~1.1s → ~4–5s ✓）。
+  // 判据 ✓：续传确实发生 ✓，且**一次续传应用的原子数远少于整份文档** ✓（即真的没重放 ✓）。
+  const resyncAudit = JSON.parse(await evaluate(`JSON.stringify({
+    incremental: window.yanshiStats.incrementalResyncs || 0,
+    fallbacks: window.yanshiStats.resyncFallbacks || 0,
+    lastAtoms: window.yanshiStats.lastResyncAtoms || 0,
+    resyncs: window.yanshiStats.resyncs || 0,
+    head: window.yanshiStats.serverHead || 0,
+  })`));
+  if (!resyncAudit || resyncAudit.incremental < 1) {
+    problems.push(`介质落笔后没有发生过增量续传（增量 ${resyncAudit ? resyncAudit.incremental : "?"} 次，应 ≥1）`);
+  } else if (!(resyncAudit.lastAtoms < Math.max(1, resyncAudit.head))) {
+    // **应用 0 个原子是合法的** ✓（内核已经同步 ✓，这恰恰说明没有重放 ✓）——
+    // 判据只要求"**少于整份文档**" ✓，不要求"大于 0" ✗（我第一版写错 ✓）。
+    problems.push(`续传并非增量：上次应用 ${resyncAudit.lastAtoms} 个原子，而文档共有 ${resyncAudit.head} 个`);
+  } else {
+    console.log(`  增量续传：${resyncAudit.incremental} 次（其中退回全量 ${resyncAudit.fallbacks} 次）｜上次应用 ${resyncAudit.lastAtoms} 个原子 vs 文档 ${resyncAudit.head} 个`);
   }
   if (pluginLabel === "湿度" && brushLabel === "强度") {
     console.log(`  强度/湿度标签：插件介质「${pluginLabel}」｜内置介质「${brushLabel}」（须随介质改名）`);
