@@ -92,6 +92,11 @@ The toolbar also drives the pixel tools: brush and eraser, fill layer, eyedroppe
 heal (Alt+click sets the source), smudge, the three liquify modes, and rect or ellipse masks with a
 feather setting (drag a shape to create the mask and attach it to the current layer).
 
+Object groups follow design section 9.4: `create_group`, `add_to_group`, `remove_from_group` and
+`set_group_transform` move a set of objects together, and a group transform is recorded on the group while
+the members carry the resulting geometry, so rendering, bounding boxes, hit testing and dirty planning all
+stay consistent without special cases.
+
 `选区` drags a rectangular selection that constrains everything painted afterwards - strokes, erasing,
 shapes, fills, text, liquify and retouch - per pixel, so nothing outside it is touched, and `清除选区`
 removes it, after which the same objects render unconstrained again because the constraint is

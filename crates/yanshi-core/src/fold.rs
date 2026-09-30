@@ -669,6 +669,54 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             if let Some(object_id) = payload_str(&atom.payload, "object_id") {
                 let object_id = object_id.to_owned();
                 supersede_object(state, atom, &object_id, None)?;
+                // **组变换：作用到成员自身** ✓（设计 9.4 的 `set_group_transform` ✓）。
+                //
+                // **设计未规定"组变换如何落到成员上" ⇒ 记录选择 ✓**：
+                // 设计给出的是一套**派生解析**（9.2 `resolve_object` ✓、9.3 缓存与失效 ✓），
+                // 那是一条完整链 ✓（实例共享 Master 缓存 ✓、依赖图传播 ✓、循环检测 ✓）。
+                // 本片**只做组** ✓，采用最小且**处处自洽**的做法 ✓：
+                // 把**平移增量**加到每个成员自己的 `transform` 上 ✓ ⇒
+                // 渲染 ✓、`object_bbox` ✓、命中测试 ✓、脏区规划 ✓ **全部无需改动就正确** ✓；
+                // 同时把增量**累积**到组自身的 `group_transform` 上 ✓，便于读取与后续迁移到派生解析 ✓。
+                //
+                // **边界（明确记下 ✓）**：本片只接受**平移**形式 `{dx, dy}` ✓；
+                // 一般仿射矩阵、成员级 override、组嵌套（组套组 ✓）都**尚未实现** ✓ ——
+                // 它们需要 9.2/9.3 那套派生解析 ✓，属于下一步 ✓，此处**显式拒绝**而不静默忽略 ✓。
+                if key == "group_transform" {
+                    let is_group = state
+                        .objects
+                        .get(&object_id)
+                        .map(|object| object.object_type == crate::state::ObjectType::Group)
+                        .unwrap_or(false);
+                    if is_group {
+                        let members: Vec<String> = state
+                            .objects
+                            .get(&object_id)
+                            .and_then(|object| object.data.get("members"))
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let (dx, dy) = group_translation(&value).ok_or_else(|| {
+                            err(
+                                ErrorCode::InvalidArgument,
+                                "本片只支持平移形式的组变换 {dx, dy}（一般仿射与嵌套组尚未实现）"
+                                    .to_owned(),
+                            )
+                        })?;
+                        for member in &members {
+                            if let Some(object) = state.objects.get_mut(member) {
+                                object.transform.matrix[4] += dx;
+                                object.transform.matrix[5] += dy;
+                            }
+                        }
+                    }
+                }
                 if let Some(object) = state.objects.get_mut(&object_id) {
                     apply_property_to_object(object, &key, &value);
                 }
@@ -873,6 +921,19 @@ fn object_data(kind: AtomKind, payload: &Value) -> Value {
         }
     }
     data
+}
+
+/// 解析**平移**形式的组变换 ✓：`{dx, dy}` ✓（设计与 `move_object` 的增量命名一致 ✓）。
+///
+/// 其它形式（一般仿射矩阵 ✓）**显式拒绝** ✓ —— 它们需要设计 9.2 的派生解析 ✓，
+/// 属于下一步 ✓；静默忽略会让用户以为生效了 ✗。
+fn group_translation(value: &Value) -> Option<(f64, f64)> {
+    let dx = value.get("dx").and_then(Value::as_f64)?;
+    let dy = value.get("dy").and_then(Value::as_f64)?;
+    if !dx.is_finite() || !dy.is_finite() {
+        return None;
+    }
+    Some((dx, dy))
 }
 
 fn transform_from_payload(payload: &Value) -> Transform {

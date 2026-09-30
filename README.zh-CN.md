@@ -68,6 +68,9 @@ curl -s -X POST http://127.0.0.1:8110/api/documents -d '{"doc_id":"demo","width"
 curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TOKEN" -d '{"layer_id":"layer_1"}'
 ```
 
+对象组按设计 9.4 提供：`create_group`、`add_to_group`、`remove_from_group`、`set_group_transform`
+可以让一组对象**一起移动**；组变换记录在组上，而成员自身携带合成后的几何，因此渲染、包围盒、命中测试与脏区规划都无需特例即可保持一致。
+
 工具与效果清单见 [docs/tools.md](docs/tools.md)。
 
 ## 查看器操作
