@@ -263,8 +263,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <div class="card">
       <h2>操作</h2>
       <div class="toolbar">
-  <button data-tool="undo">撤销</button>
-  <button data-tool="redo">重做</button>
+  <!-- 初始即禁用 ✓：子 agent 报"没有撤销栈时按钮仍可点" ✗（点了只会打印一句提示 ✓，
+       看起来像坏了 ✓）。真实状态由 `updateUndoStatus()` 同步 ✓。 -->
+  <button data-tool="undo" disabled>撤销</button>
+  <button data-tool="redo" disabled>重做</button>
   <button data-tool="refresh">刷新</button>
   <button data-tool="check">一致性自检</button>
   <button id="addLayer">＋ 图层</button>
@@ -684,6 +686,19 @@ async function detectHeavyContent() {
   try {
     const listed = await callTool("list_objects", {}, { refresh: false });
     const objects = (listed && listed.objects) || [];
+    // **让"介质"选择器反映文档** ✓ —— 子 agent 报：重载之后它总是回落到 `example` ✗，
+    // 于是界面上显示的不是"这份画是用什么画的" ✓，而是"上一次点了什么" ✓。
+    // 取**最后一个**带介质的对象 ✓（即最近一笔 ✓）；按插件 **id** 反查选择器的 key ✓。
+    const withMedium = objects.filter((object) => object.medium && object.medium.id);
+    const latest = withMedium[withMedium.length - 1];
+    if (latest) {
+      const key = Object.keys(MEDIUMS).find((name) => MEDIUMS[name].id === latest.medium.id);
+      if (key && $("medium") && $("medium").value !== key) {
+        $("medium").value = key;
+        $("medium").dispatchEvent(new Event("change", { bubbles: true }));
+        log("这份文档使用介质「" + latest.medium.id + " v" + latest.medium.version + "」");
+      }
+    }
     if (objects.some((object) => object.medium || object.type === "raster_patch" ||
                                  object.type === "retouch")) {
       needsServerPixels = true;
@@ -1182,10 +1197,11 @@ async function createNamedDocument() {
   await switchDocument(name);
 }
 
-if (DEBUG) {
-  // 已定义在最上层的工具入口（`callTool` 是模块作用域函数）。
-  window.yanshiCallTool = (tool, args) => callTool(tool, args || {}, { refresh: false });
-}
+// **无条件**提供工具入口 ✓ —— 此前它挂在 `if (DEBUG)` 下 ✗，于是四份不同的自动化脚本
+// 都撞上过 `window.yanshiCallTool is not a function` ✓（子 agent 直接把它列为"与环境说明不符" ✗，
+// 我自己的检查脚本里也踩过一次 ✓）。它只是 HTTP 工具 API 的一层薄包装 ✓，
+// 而应用本来就把同一套工具暴露成 API ✓ ⇒ 没有理由只在 `?debug=1` 时存在 ✓。
+window.yanshiCallTool = (tool, args) => callTool(tool, args || {}, { refresh: false });
 
 /// 打开对话框：列出**服务器上的文档**（`GET /api/documents`，设计第 611 行提到文档列表用
 /// `doc_thumb` 缩略图），点击即切换；下方提供**本地图片导入**。
@@ -2345,7 +2361,10 @@ async function clearSelection() {
 
 /// 文本工具：点击位置 + 输入文字 ⇒ `draw_text`（内核用内置 5×7 ASCII 位图字体 ✓）。
 async function commitText(point) {
-  const text = window.prompt("要输入的文本（内置字体支持 ASCII；CJK 为后续项）", "");
+  // **文案要与实现一致** ✓ —— 此前写着"CJK 为后续项" ✗，而 CJK 早已由内嵌 OFL 图集渲染 ✓
+  //（子 agent 用中文标题作画时正是靠它 ✓）。现在如实说明**边界** ✓：图集之外的字形显示为 `?` ✓。
+  const text = window.prompt(
+    "要输入的文本（内置 ASCII 点阵 + 内嵌中日韩图集；图集之外的字形显示为 ?）", "");
   if (text === null || text === "") return;
   const size = Number($("textSize").value) || 21;
   const drawn = await callTool("draw_text", {
@@ -3248,6 +3267,9 @@ function initQuickPanel() {
 }
 
 initDockers();
+// 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
+// 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
+updateUndoStatus();
 // 让"强度 / 湿度"标签**随介质说真话** ✓（见 HTML 里的说明 ✓）：
 // 该滑杆在插件介质下喂的是 `wetness` ✓ ⇒ 越大越湿、颜色越淡 ✓，
 // 继续叫"强度"会让人以为越大越浓 ✗。
