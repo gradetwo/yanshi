@@ -467,3 +467,157 @@ fn the_resolved_state_reports_the_master_and_the_rendered_bbox() {
     assert_eq!(plain["is_instance"], json!(false), "{plain}");
     assert!(plain["master_id"].is_null(), "{plain}");
 }
+
+/// **`sync_policy: none` 冻结、`all` 恢复跟随** ✓（设计 9.1/9.4 ✓）。
+///
+/// 三条都要验 ✓：
+/// ① 改成 `none` 的**那一刻画面必须不变** ✓（快照口径若与渲染口径不一致 ✓，用户一改策略画面就跳 ✗）；
+/// ② master 之后移动，**冻结的实例不动** ✓；
+/// ③ 改回 `all`，实例**立刻跟上** master 的当前位置 ✓。
+#[test]
+fn a_none_sync_policy_freezes_an_instance_and_all_resumes_it() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(20.0, 20.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 100, 0], "pivot": [0, 0]}}),
+        );
+    }
+    // 冻结前：实例在 (120,20) 一带 ✓。
+    assert!(
+        ink(&mut workspace, 116.0, 16.0) > 0,
+        "冻结前实例应在 (120,20)"
+    );
+    let before_freeze = ink(&mut workspace, 116.0, 16.0);
+    {
+        let mut ctx = context(&mut workspace);
+        let frozen = registry.call(
+            &mut ctx,
+            "update_sync_policy",
+            &json!({"instance_id": "mirror", "policy": "none"}),
+        );
+        assert_eq!(frozen["ok"], json!(true), "{frozen}");
+    }
+    // ① **当刻画面不变** ✓。
+    assert_eq!(
+        ink(&mut workspace, 116.0, 16.0),
+        before_freeze,
+        "改成 none 的当刻画面必须完全不变（快照口径要与渲染一致）"
+    );
+    // ② master 移开 ⇒ 冻结的实例**不动** ✓。
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "move_object",
+            &json!({"object_id": "master", "delta": {"dx": 0.0, "dy": 120.0}}),
+        );
+    }
+    assert!(
+        ink(&mut workspace, 116.0, 16.0) > 0,
+        "冻结之后实例不该跟着 master 走（原处应仍有墨）"
+    );
+    // ③ 改回 all ⇒ **立刻跟上** master 的当前位置（master 已下移 120 ✓）。
+    {
+        let mut ctx = context(&mut workspace);
+        let resumed = registry.call(
+            &mut ctx,
+            "update_sync_policy",
+            &json!({"instance_id": "mirror", "policy": "all"}),
+        );
+        assert_eq!(resumed["ok"], json!(true), "{resumed}");
+    }
+    assert_eq!(ink(&mut workspace, 116.0, 16.0), 0, "恢复跟随后原处应为空");
+    assert!(
+        ink(&mut workspace, 116.0, 136.0) > 0,
+        "恢复跟随后实例应出现在 master 的新位置"
+    );
+}
+
+/// **`update_override` 只动这一个实例** ✓（设计 9.3/9.4 ✓）：
+/// 覆盖变换加在最外 ✓ ⇒ 实例移开 ✓、**master 留在原地** ✓、链接本身不变 ✓（`link_to_master` 之后仍有效 ✓）。
+#[test]
+fn an_override_moves_only_that_instance() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(20.0, 20.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 100, 0], "pivot": [0, 0]}}),
+        );
+    }
+    assert!(
+        ink(&mut workspace, 116.0, 16.0) > 0,
+        "覆盖前实例在 (120,20)"
+    );
+    {
+        let mut ctx = context(&mut workspace);
+        let overridden = registry.call(
+            &mut ctx,
+            "update_override",
+            &json!({"instance_id": "mirror",
+                    "transform": {"matrix": [1, 0, 0, 1, 0, 60], "pivot": [0, 0]}}),
+        );
+        assert_eq!(overridden["ok"], json!(true), "{overridden}");
+    }
+    // 实例移到了下方 ✓，原处空了 ✓；**master 一动不动** ✓。
+    assert_eq!(ink(&mut workspace, 116.0, 16.0), 0, "覆盖后实例原处应为空");
+    assert!(
+        ink(&mut workspace, 116.0, 76.0) > 0,
+        "覆盖后实例应落在覆盖变换处"
+    );
+    assert!(ink(&mut workspace, 16.0, 16.0) > 0, "master 必须一动不动");
+
+    // 清除覆盖（不带 transform ✓）⇒ 回到 `local_transform` 的位置 ✓。
+    {
+        let mut ctx = context(&mut workspace);
+        let cleared = registry.call(
+            &mut ctx,
+            "update_override",
+            &json!({"instance_id": "mirror"}),
+        );
+        assert_eq!(cleared["ok"], json!(true), "{cleared}");
+    }
+    assert!(
+        ink(&mut workspace, 116.0, 16.0) > 0,
+        "清除覆盖后应回到 local_transform 处"
+    );
+    assert_eq!(
+        ink(&mut workspace, 116.0, 76.0),
+        0,
+        "清除覆盖后原覆盖处应为空"
+    );
+}

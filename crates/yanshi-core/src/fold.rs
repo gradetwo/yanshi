@@ -763,7 +763,57 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                         }
                     }
                 }
-                if let Some(object) = state.objects.get_mut(&object_id) {
+                // **改 `sync_policy` 时同步维护快照** ✓（设计 9.1 的"不同步"✓）。
+                //
+                // **设计未规定"不同步"怎么落地 ⇒ 记录选择** ✓：改成 `none` 的那一刻，
+                // 把**当前解析结果**（master 的 `data` ✓ 与合成变换 ✓）快照进实例自身 ✓
+                // ⇒ 渲染优先用它 ✓（见 `resolve_instance` ✓）；改回 `all` 就**清掉**快照 ✓
+                // ⇒ 立刻恢复跟随 ✓（可来回切换 ✓、可验证 ✓）。
+                //
+                // **必须放在折叠层** ✓：快照要**由日志决定** ✓ ——
+                // 它是"那一刻的状态"✓，重放时必须在**同一个 seq** 得到同一份快照 ✓，
+                // 否则同一份日志在不同时候会渲染出不同结果 ✗。
+                if key == "sync_policy" {
+                    let policy = value.as_str().unwrap_or("all").to_owned();
+                    if policy != "all" && policy != "none" {
+                        return Err(err(
+                            ErrorCode::InvalidArgument,
+                            format!(
+                                "本片只支持 sync_policy: all 或 none（收到 {policy}）——                                  partial 需要设计 9.3 的依赖图传播"
+                            ),
+                        ));
+                    }
+                    let snapshot = if policy == "none" {
+                        resolve_master_snapshot(state, &object_id)
+                    } else {
+                        None
+                    };
+                    if policy == "none" && snapshot.is_none() {
+                        return Err(err(
+                            ErrorCode::PreconditionFailed,
+                            format!("实例 {object_id} 的 master 当前不可解析，无法快照"),
+                        ));
+                    }
+                    if let Some(object) = state.objects.get_mut(&object_id) {
+                        apply_property_to_object(object, &key, &value);
+                        match snapshot {
+                            Some((data, transform)) => {
+                                object.data["snapshot"] = data;
+                                object.data["snapshot_transform"] = serde_json::json!({
+                                    "matrix": transform.matrix,
+                                    "pivot": transform.pivot,
+                                });
+                            }
+                            None => {
+                                // **必须真正删掉** ✓（置 `Null` 会让渲染走进快照分支 ✗ ⇒ 解不出图元 ✓）。
+                                if let Some(map) = object.data.as_object_mut() {
+                                    map.remove("snapshot");
+                                    map.remove("snapshot_transform");
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(object) = state.objects.get_mut(&object_id) {
                     apply_property_to_object(object, &key, &value);
                 }
             } else if let Some(layer_id) = payload_str(&atom.payload, "layer_id") {
@@ -967,6 +1017,69 @@ fn object_data(kind: AtomKind, payload: &Value) -> Value {
         }
     }
     data
+}
+
+/// 解析实例**最终** master 的 `data` 与**合成变换** ✓，供 `sync_policy: none` 做快照 ✓。
+///
+/// **必须与渲染口径一致** ✓（`yanshi-render` 的 `resolve_instance` ✓）：
+/// 变换次序是 master 自身 → 每层 `local_transform` → 实例自身 ✓，`pivot` 先折进矩阵再相乘 ✓。
+/// 两处若各算一套 ✓，快照出来的画面就会与"跟随"时**不一样** ✗（用户一改策略画面就跳 ✓）。
+fn resolve_master_snapshot(
+    state: &DocumentState,
+    instance_id: &str,
+) -> Option<(Value, crate::state::Transform)> {
+    fn flatten(transform: &crate::state::Transform) -> [f64; 6] {
+        let m = transform.matrix;
+        let (px, py) = (transform.pivot[0], transform.pivot[1]);
+        [
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            m[4] + px - (m[0] * px + m[2] * py),
+            m[5] + py - (m[1] * px + m[3] * py),
+        ]
+    }
+    fn compose(
+        outer: &crate::state::Transform,
+        inner: &crate::state::Transform,
+    ) -> crate::state::Transform {
+        let a = flatten(outer);
+        let b = flatten(inner);
+        let mut matrix = [0.0f64; 6];
+        matrix[0] = a[0] * b[0] + a[2] * b[1];
+        matrix[1] = a[1] * b[0] + a[3] * b[1];
+        matrix[2] = a[0] * b[2] + a[2] * b[3];
+        matrix[3] = a[1] * b[2] + a[3] * b[3];
+        matrix[4] = a[0] * b[4] + a[2] * b[5] + a[4];
+        matrix[5] = a[1] * b[4] + a[3] * b[5] + a[5];
+        crate::state::Transform {
+            matrix,
+            pivot: [0.0, 0.0],
+        }
+    }
+    let instance = state.objects.get(instance_id)?;
+    let mut composed = instance.transform;
+    let mut cursor = instance.clone();
+    for _ in 0..64 {
+        let master_ref = cursor.data.get("master_ref")?;
+        let master_id = master_ref.get("object_id").and_then(Value::as_str)?;
+        if let Some(local) = master_ref.get("local_transform") {
+            let local = transform_from_payload(&serde_json::json!({"transform": local}));
+            composed = compose(&local, &composed);
+        }
+        let master = state.objects.get(master_id)?;
+        if master.is_deleted() {
+            return None;
+        }
+        if master.object_type == crate::state::ObjectType::Instance {
+            composed = compose(&master.transform, &composed);
+            cursor = master.clone();
+            continue;
+        }
+        return Some((master.data.clone(), compose(&master.transform, &composed)));
+    }
+    None
 }
 
 /// **实例的成环检查** ✓（设计 9.3「循环引用检测：拒绝创建并返回错误」✓）。

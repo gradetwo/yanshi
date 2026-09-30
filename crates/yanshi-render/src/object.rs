@@ -510,6 +510,37 @@ pub fn resolve_instance(
     object: &Object,
 ) -> Option<(Primitive, Transform)> {
     let mut composed = object.transform;
+    // **`override.transform` 是最外层的额外变换** ✓（设计 9.3：「override 只含 transform 时，
+    // 直接变换 Master 位图」✓）。设计未规定它与 `local_transform` 的相对次序 ⇒ **记录选择** ✓：
+    // `local_transform` 属于**引用**（"取 master 的哪一部分" ✓），`override` 属于**这次引用上的修正** ✓
+    // ⇒ override 放在最外 ✓（改它只动这一个实例 ✓，不碰 master、也不碰链接本身 ✓）。
+    let override_transform = object
+        .data
+        .get("override")
+        .and_then(|override_value| override_value.get("transform"))
+        .map(transform_from_value);
+    if let Some(override_transform) = &override_transform {
+        composed = compose_transform(override_transform, &composed);
+    }
+    // **`sync_policy: none` ⇒ 用快照** ✓（设计 9.1 的"不同步"✓）。
+    // 设计未规定"不同步"怎么落地 ⇒ **记录选择** ✓：改策略的那一刻由**折叠层**把解析结果
+    // 快照进实例自身（`data.snapshot` + `data.snapshot_transform` ✓）⇒ 渲染优先用它 ✓；
+    // 改回 `all` 时折叠层**清掉**快照 ✓ ⇒ 立刻恢复跟随 ✓（可来回切换 ✓、可验证 ✓）。
+    if object.data.get("sync_policy").and_then(Value::as_str) == Some("none") {
+        let snapshot = object.data.get("snapshot")?;
+        let snapshot_transform = object
+            .data
+            .get("snapshot_transform")
+            .map(transform_from_value)
+            .unwrap_or(Transform::IDENTITY);
+        let mut synthetic = object.clone();
+        synthetic.object_type = yanshi_core::ObjectType::Shape;
+        synthetic.data = snapshot.clone();
+        return Some((
+            parse_object(&synthetic),
+            compose_transform(&composed, &snapshot_transform),
+        ));
+    }
     let mut cursor = object.clone();
     for _ in 0..64 {
         let master_ref = cursor.data.get("master_ref")?;

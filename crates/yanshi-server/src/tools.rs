@@ -888,6 +888,26 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "update_sync_policy",
+        profile: Profile::Core,
+        summary: "设置实例的同步策略（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("instance_id", String, true, "实例对象 id"),
+            param!("policy", String, true, "all 或 none"),
+        ],
+    },
+    ToolSpec {
+        name: "update_override",
+        profile: Profile::Core,
+        summary: "设置实例的覆盖变换（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("instance_id", String, true, "实例对象 id"),
+            param!("transform", Object, false, "{matrix,pivot} 覆盖变换；缺省清除覆盖"),
+        ],
+    },
+    ToolSpec {
         name: "detach_instance",
         profile: Profile::Core,
         summary: "把实例脱离为独立对象（设计 9.4）",
@@ -1559,6 +1579,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "update_sync_policy" => write_update_sync_policy(ctx, args),
+        "update_override" => write_update_override(ctx, args),
         "detach_instance" => write_detach_instance(ctx, args),
         "link_to_master" => write_link_to_master(ctx, args),
         "get_resolved_state" => read_get_resolved_state(ctx, args),
@@ -2421,6 +2443,80 @@ fn check_group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Result<()> 
 ///
 /// **循环引用在折叠层被挡住** ✓（`fold.rs` 的 `CreateObject` ✓）：
 /// 手工写入日志的环、自引用、过深的链都会在**提交时**被拒 ✓，而不是等到渲染时无限递归 ✓。
+/// **设置实例的同步策略** ✓（设计 9.4 `update_sync_policy` ✓）。
+///
+/// 本片支持 `all`（跟随 ✓，缺省 ✓）与 `none`（不同步 ✓）——
+/// **"不同步"的落地方式设计未规定 ⇒ 记录选择** ✓：由**折叠层**在改策略的那一刻把解析结果
+/// 快照进实例自身 ✓（见 `fold.rs` ✓；放那里是因为快照必须**由日志决定** ✓，
+/// 重放时要在同一个 seq 得到同一份快照 ✓）。
+fn write_update_sync_policy(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let instance_id = require_str(args, "instance_id")?;
+    let policy = require_str(args, "policy")?;
+    if policy != "all" && policy != "none" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "本片只支持 policy: all 或 none（收到 {policy}）—— partial 需要设计 9.3 的依赖图传播"
+            )),
+        ));
+    }
+    {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(instance_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("实例 {instance_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Instance {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{instance_id} 不是实例")),
+            ));
+        }
+    }
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({"object_id": instance_id, "key": "sync_policy", "value": policy}),
+    )?;
+    Ok(json!({"ok": true, "instance_id": instance_id, "policy": policy, "head": result.head_seq}))
+}
+
+/// **设置实例的覆盖变换** ✓（设计 9.4 `update_override` ✓）。
+///
+/// **设计未规定 `override.transform` 与 `local_transform` 的相对次序 ⇒ 记录选择** ✓：
+/// `local_transform` 属于**引用**（"取 master 的哪一部分" ✓），`override` 属于**这次引用上的修正** ✓
+/// ⇒ override 放在**最外** ✓（改它只动这一个实例 ✓，不碰 master、也不碰链接本身 ✓）。
+/// 缺省（不带 `transform` ✓）表示**清除覆盖** ✓。
+fn write_update_override(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let instance_id = require_str(args, "instance_id")?;
+    {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(instance_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("实例 {instance_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Instance {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{instance_id} 不是实例")),
+            ));
+        }
+    }
+    let value = match args.get("transform") {
+        Some(transform) if !transform.is_null() => json!({"transform": transform}),
+        // 清除覆盖 ✓：置空对象即可 ✓（渲染端取不到 `override.transform` ⇒ 不施加 ✓）。
+        _ => json!(null),
+    };
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({"object_id": instance_id, "key": "override", "value": value}),
+    )?;
+    Ok(json!({"ok": true, "instance_id": instance_id, "override": value, "head": result.head_seq}))
+}
+
 /// **脱离实例** ✓（设计 9.4 `detach_instance` ✓）：把它变成**独立对象** ✓ ——
 /// 位置与外观保持不变 ✓，但此后**不再跟随 master** ✓。
 ///
