@@ -196,8 +196,21 @@ pub fn plan_dirty(
         AtomKind::CreateLayer | AtomKind::ReorderLayers => {
             DirtySet::whole_document(state, format!("{} 改变图层结构", atom.kind))
         }
-        AtomKind::CreateSelection | AtomKind::CreateMask | AtomKind::CreateStyle => {
-            DirtySet::none()
+        // 选区改变"其后的对象如何渲染"（路线 A：约束落笔）⇒ **必须整文档失效** ✓。
+        // 此前它与 mask/style 一起落到 `none()` ✗ ⇒ 建立选区后画面不更新 ✓，
+        // 删除选区后画面也**永远停在裁剪后的版本** ✓✓（真实浏览器验收发现的缺口 ✓）。
+        AtomKind::CreateSelection => {
+            DirtySet::whole_document(state, "create_selection 改变后续对象的渲染范围")
+        }
+        // 单独创建蒙版/风格不改变渲染（要等 `set_property` 挂上去 ✓，那条已按结构属性处理 ✓）。
+        AtomKind::CreateMask | AtomKind::CreateStyle => DirtySet::none(),
+        // 删除选区/蒙版/风格会改变其作用范围 ⇒ 整文档失效 ✓（保守但正确 ✓）。
+        AtomKind::Tombstone
+            if atom.payload.get("selection_id").is_some()
+                || atom.payload.get("mask_id").is_some()
+                || atom.payload.get("style_id").is_some() =>
+        {
+            DirtySet::whole_document(state, "tombstone 删除选区/蒙版/风格")
         }
         // 通用对象创建：按**对象类型**判定失效范围。
         // 调整/滤镜作用于同层下方全部内容（6.6），必须有整层结构 dirty，
@@ -552,6 +565,44 @@ pub fn invalidated_tiles(grid: &TileGrid, state: &DocumentState, dirty: &DirtySe
 
 #[cfg(test)]
 mod tests {
+    /// 选区是"结构性"的：建立与删除都必须**整文档失效** ✓。
+    ///
+    /// 曾经的缺口（真实浏览器验收发现）：两者都落到 `DirtySet::none()` ✗ ⇒
+    /// 建立选区后画面不更新 ✓、删除选区后画面**永远停在裁剪后的版本** ✓✓。
+    #[test]
+    fn selection_atoms_invalidate_the_whole_document() {
+        let mut state = DocumentState::empty();
+        state.doc_id = Some("doc_1".to_owned());
+        state.width = 64;
+        state.height = 64;
+        let atom = |kind: AtomKind, id: &str, payload: serde_json::Value| {
+            yanshi_core::Atom::new(kind, "human:1", "session:test", payload).with_id(id)
+        };
+
+        let create = atom(
+            AtomKind::CreateSelection,
+            "a_sel",
+            json!({"selection_id": "sel_1",
+                   "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}}),
+        );
+        let plan = plan_dirty(&state, Some(&state), &create);
+        assert!(
+            !matches!(plan.kind, DirtyKind::None),
+            "create_selection 必须触发失效（否则画面不更新），实际 {plan:?}"
+        );
+
+        let remove = atom(
+            AtomKind::Tombstone,
+            "a_del",
+            json!({"selection_id": "sel_1"}),
+        );
+        let plan = plan_dirty(&state, Some(&state), &remove);
+        assert!(
+            !matches!(plan.kind, DirtyKind::None),
+            "删除选区必须触发失效（否则画面停在裁剪后的版本），实际 {plan:?}"
+        );
+    }
+
     use super::*;
     use serde_json::json;
     use yanshi_core::{Layer, LayerType, Object, ObjectType, Transform};

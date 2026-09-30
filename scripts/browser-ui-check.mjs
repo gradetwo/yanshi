@@ -517,6 +517,144 @@ const namingResult = await evaluate(`(async () => {
   };
 })()`);
 
+// 选区（路线 A：约束落笔）与文本工具。
+// 规范写法（前两轮失败后重写）：单次求值 + **阶段标记** ⇒ 出错时能精确指认在哪一步 ✗；
+// 页面侧一律 `try/catch` 返回 `{error, stage}` ⇒ 不会退化成 undefined 让 Node 报谜语错误 ✓。
+// 判据按**笔画颜色**数 ✓（乐观预览与内核渲染有 LSB 差异 ✗）；结论前**等画布稳定** ✓。
+const selDoc = "uicheck-sel-" + Date.now().toString(36);
+const selToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: selDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${selDoc}&token=${selToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const selectionResult = await evaluate(`(async () => {
+  let stage = "init";
+  try {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const board = document.getElementById("board");
+    const snapshot = () => Array.from(board.getContext("2d").getImageData(0, 0, board.width, board.height).data);
+    const stable = async () => {
+      let previous = snapshot();
+      for (let i = 0; i < 40; i++) {
+        await wait(250);
+        const current = snapshot();
+        let same = true;
+        for (let index = 0; index < current.length; index += 97 * 4) {
+          if (current[index] !== previous[index]) { same = false; break; }
+        }
+        previous = current;
+        if (same && i >= 2) return current;
+      }
+      return previous;
+    };
+
+    stage = "几何";
+    const rect = board.getBoundingClientRect();
+    const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, {
+      bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
+      isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p,
+    }));
+    document.getElementById("zoomFit").click();
+    await wait(800);
+
+    stage = "铺底";
+    document.getElementById("color").value = "#1f6feb";
+    document.querySelector('button[data-tool="brush"]').click();
+    document.getElementById("size").value = "200";
+    for (let row = 0; row < 5; row++) {
+      const y = 0.1 + row * 0.2;
+      fire("pointerdown", at(0.02, y), 610 + row);
+      fire("pointermove", at(0.5, y), 610 + row);
+      fire("pointermove", at(0.98, y), 610 + row);
+      await wait(60);
+      fire("pointerup", at(0.98, y), 610 + row);
+      await wait(300);
+    }
+    await stable();
+
+    stage = "建选区";
+    const selectButton = document.querySelector('button[data-tool="select_rect"]');
+    if (!selectButton) throw new Error("工具栏里没有选区按钮");
+    document.getElementById("feather").value = "0";
+    selectButton.click();
+    fire("pointerdown", at(0.25, 0.25), 620);
+    fire("pointermove", at(0.75, 0.75), 620);
+    await wait(120);
+    fire("pointerup", at(0.75, 0.75), 620);
+    await wait(1200);
+
+    stage = "画笔触";
+    document.getElementById("color").value = "#ffd166";
+    document.querySelector('button[data-tool="brush"]').click();
+    document.getElementById("size").value = "40";
+    fire("pointerdown", at(0.05, 0.5), 621);
+    fire("pointermove", at(0.5, 0.5), 621);
+    fire("pointermove", at(0.95, 0.5), 621);
+    await wait(120);
+    fire("pointerup", at(0.95, 0.5), 621);
+    const after = await stable();
+
+    stage = "量选区";
+    const width = board.width;
+    const height = board.height;
+    const strokeColor = (data, index) => data[index] > 200 && data[index + 1] > 170 && data[index + 2] < 140;
+    const inSelection = (x, y) =>
+      x >= width * 0.25 - 2 && x <= width * 0.75 + 2 && y >= height * 0.25 - 2 && y <= height * 0.75 + 2;
+    let inside = 0;
+    let outside = 0;
+    for (let index = 0; index < after.length; index += 4) {
+      if (!strokeColor(after, index)) continue;
+      const x = (index / 4) % width;
+      const y = Math.floor((index / 4) / width);
+      if (inSelection(x, y)) inside += 1; else outside += 1;
+    }
+
+    stage = "清选区";
+    const clearButton = document.getElementById("clearSelection");
+    if (!clearButton) throw new Error("工具栏里没有清除选区按钮");
+    clearButton.click();
+    const cleared = await stable();
+    let clearedOutside = 0;
+    for (let index = 0; index < cleared.length; index += 4) {
+      if (!strokeColor(cleared, index)) continue;
+      const x = (index / 4) % width;
+      const y = Math.floor((index / 4) / width);
+      if (!inSelection(x, y)) clearedOutside += 1;
+    }
+
+    stage = "文本";
+    const textButton = document.querySelector('button[data-tool="text"]');
+    if (!textButton) throw new Error("工具栏里没有文本按钮");
+    window.prompt = () => "AB";
+    const beforeText = await stable();
+    textButton.click();
+    fire("pointerdown", at(0.3, 0.12), 622);
+    const afterText = await stable();
+    let textChanged = 0;
+    for (let index = 0; index < afterText.length; index += 4) {
+      if (afterText[index] !== beforeText[index] || afterText[index + 1] !== beforeText[index + 1]) {
+        textChanged += 1;
+      }
+    }
+    document.querySelector('button[data-tool="brush"]').click();
+
+    const log = document.getElementById("log").innerText;
+    return {
+      ok: true, inside, outside, clearedOutside, textChanged,
+      created: log.includes("已创建选区"),
+      cleared: log.includes("已清除选区"),
+      textLogged: log.includes("已输入文本"),
+    };
+  } catch (error) {
+    return { error: String((error && error.message) || error), stage };
+  }
+})()`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));
@@ -932,6 +1070,30 @@ if (namingResult.before === 0) {
   );
 }
 
+// 选区与文本
+if (!selectionResult || !selectionResult.ok) {
+  problems.push(`选区/文本用例失败：${JSON.stringify(selectionResult)}`);
+} else {
+  if (!selectionResult.created || !selectionResult.cleared) {
+    problems.push(`选区创建/清除日志缺失：${JSON.stringify(selectionResult)}`);
+  }
+  if (selectionResult.inside === 0) {
+    problems.push("选区用例前置条件不成立：选区内没有笔画色");
+  }
+  if (selectionResult.outside > 0) {
+    problems.push(`选区外出现了笔画色：越界 ${selectionResult.outside} 个像素`);
+  }
+  if (selectionResult.clearedOutside === 0) {
+    problems.push("清除选区后选区外仍看不到笔画色（应恢复为不受约束）");
+  }
+  if (!selectionResult.textLogged) {
+    problems.push(`文本工具日志缺失：${JSON.stringify(selectionResult)}`);
+  }
+  if (selectionResult.textChanged === 0) {
+    problems.push("文本工具没有画出任何像素");
+  }
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -1050,6 +1212,9 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+console.log(`  选区/文本：${selectionResult && selectionResult.ok
+  ? `选区内笔画色 ${selectionResult.inside}｜选区外 ${selectionResult.outside}（须 0）｜清除后选区外 ${selectionResult.clearedOutside}（须 >0）｜文本改变 ${selectionResult.textChanged}`
+  : `失败于阶段「${selectionResult && selectionResult.stage}」：${JSON.stringify(selectionResult)}`}`);
 console.log(`  新建/另存为：预填 ${JSON.stringify(namingResult.prefilled)}｜identity ${JSON.stringify(namingResult.identity)}｜副本内容 ${namingResult.before} → ${namingResult.after}`);
 console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
