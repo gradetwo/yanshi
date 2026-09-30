@@ -51,6 +51,17 @@ const send = (method, params = {}) =>
     pending.set(current, resolve);
     ws.send(JSON.stringify({ id: current, method, params }));
   });
+// 等待页面条件成立（比固定 sleep 稳：临时实例冷启动可能明显更慢）。
+const waitFor = async (expression, label, timeoutMs = 20000) => {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if (await evaluate(expression)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  console.error(`  ⏱ 等待超时：${label}`);
+  return false;
+};
+
 const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
     ?.result?.value;
@@ -101,7 +112,7 @@ if (process.env.UI_TRACE === "1") await evaluate("window.yanshiStats.tracePaints
 const before = await evaluate(blankCheck);
 const layerCountBefore = await evaluate(`document.getElementById("layer").options.length`);
 await evaluate(`document.getElementById("addLayer").click()`);
-await new Promise((resolve) => setTimeout(resolve, 1200));
+await waitFor(`document.getElementById("layer").options.length >= 2`, "新建图层出现在下拉里");
 const layerCountAfter = await evaluate(`document.getElementById("layer").options.length`);
 await evaluate(drawStroke);
 const after = await evaluate(blankCheck);
@@ -121,14 +132,14 @@ for (let step = 0; step < 6; step++) {
 // 新建文档按钮：必须真的切换到新文档（此前它用当前 doc_id 再打开一次，点了等于没点）。
 const identityBefore = await evaluate(`document.getElementById("identity").textContent`);
 await evaluate(`document.getElementById("newDoc").click()`);
-await new Promise((resolve) => setTimeout(resolve, 2000));
+await waitFor("window.yanshiStats && window.yanshiStats.kernelHead > 0 && !!window.yanshiKernelReady", "新建文档后内核就绪");
 const identityAfter = await evaluate(`document.getElementById("identity").textContent`);
 const newDocPainted = await evaluate(blankCheck);
 
 // 打开文档按钮：用覆盖 window.prompt 指定一个文档 id，断言真的切过去。
 await evaluate(`window.prompt = () => "uicheck-opened-1"`);
 await evaluate(`document.getElementById("openDoc").click()`);
-await new Promise((resolve) => setTimeout(resolve, 2000));
+await waitFor("window.yanshiStats && window.yanshiStats.kernelHead > 0 && !!window.yanshiKernelReady", "打开文档后内核就绪");
 const identityOpened = await evaluate(`document.getElementById("identity").textContent`);
 
 const geometry = await evaluate(`(() => {

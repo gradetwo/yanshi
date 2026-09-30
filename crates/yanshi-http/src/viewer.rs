@@ -193,7 +193,11 @@ function sizeBoards(width, height) {
   board.height = height;
   overlay.width = width;
   overlay.height = height;
-  ctx.clearRect(0, 0, width, height);
+  // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
+  // （此前表现为「操作后画布空白」，且在冷启动的临时实例上间歇复现）。
+  const background = state.backgroundCss || "#ffffff";
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, width, height);
   octx.clearRect(0, 0, width, height);
   state.viewport.w = width;
   state.viewport.h = height;
@@ -262,6 +266,13 @@ function renderViewport() {
   redraw();
 }
 
+/// 文档背景（原子里的 `{r,g,b,a}`）转 CSS 颜色；缺省白色。
+function backgroundToCss(background) {
+  if (!background || typeof background !== "object") return "#ffffff";
+  const channel = (value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+  return "rgb(" + channel(background.r) + "," + channel(background.g) + "," + channel(background.b) + ")";
+}
+
 function log(line, cls) {
   const el = document.createElement("div");
   el.textContent = line;
@@ -321,6 +332,7 @@ async function refreshThumb() {
   if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
   if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
   if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
+  if (value.background) state.backgroundCss = backgroundToCss(value.background);
   } finally { thumbInFlight = false; }
 }
 
@@ -410,6 +422,7 @@ async function loadKernel(since = 0) {
     // 直接测量内核区域渲染成本（默认不暴露，避免把内部对象变成事实上的公开 API）。
     if (new URLSearchParams(location.search).has("debug")) window.yanshiKernel = state.kernel;
     verifyKernelSurface(state.kernel);
+    window.yanshiKernelReady = true;
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
     if (!loaded.ok) {
       log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");
@@ -718,9 +731,11 @@ async function promptDocument() {
 /// 因此点了等于没点（用户报告「点击后没有打开或者创建新的功能」）。
 async function switchDocument(docId) {
   if (state.socket) {
-    try { state.socket.close(); } catch (_) { /* 已关闭 */ }
-    state.socket = null;
+    const previous = state.socket;
+    state.socket = null; // 先置空，onclose 便不会重连
+    try { previous.close(); } catch (_) { /* 已关闭 */ }
   }
+  window.yanshiKernelReady = false;
   state.docId = docId;
   state.token = "";
   state.localSeq = 0;
@@ -827,15 +842,12 @@ async function refreshPreview(fromKernel = false) {
         const firstPaint = $("firstPaint");
         if (firstPaint) firstPaint.textContent = window.yanshiStats.firstPaintMs.toFixed(0) + "ms";
       }
+      // 统一走 sizeBoards：它会按文档背景铺底。直接改 board.width 会把画布清成**透明**
+      // （配合图片加载失败/竞态就表现为「画布空白」）。
       state.docSize = { w: preview.naturalWidth, h: preview.naturalHeight };
       state.zoom = 1;
       clampViewport();
       sizeBoards(state.viewport.w, state.viewport.h);
-      board.width = preview.naturalWidth;
-      board.height = preview.naturalHeight;
-      overlay.width = preview.naturalWidth;
-      overlay.height = preview.naturalHeight;
-      state.viewport = { x: 0, y: 0, w: preview.naturalWidth, h: preview.naturalHeight };
       setStatus({});
       if (state.socket && state.socket.readyState === 1) subscribeViewport();
       redraw();
@@ -867,9 +879,13 @@ function connect() {
     subscribeViewport();
   };
   socket.onclose = () => {
+    // 只允许**当前**这条连接触发重连：切换文档时我们主动关闭旧连接，
+    // 若它的 onclose 也去重连，就会同时存在多条订阅（表现为同一 atom 被处理多次）。
+    if (state.socket !== socket) return;
+    state.socket = null;
     $("conn").className = "dot";
     $("connText").textContent = "已断开";
-    setTimeout(() => { if (state.token) connect(); }, 1500);
+    setTimeout(() => { if (state.token && !state.socket) connect(); }, 1500);
   };
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
