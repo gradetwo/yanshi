@@ -230,6 +230,14 @@ impl AtomLog {
         self.validate_blobs(atom, commit)?;
         self.validate_primary_refs(atom, commit.state)?;
         self.validate_secondary_refs(atom, commit.state)?;
+        // **实例的成环检查必须在这里** ✓ —— 这里返回 `Err` 才是**拒绝提交** ✓。
+        //
+        // 我第一版只把它放进 `fold::precondition` ✗ ⇒ 那一条**返回 Err 时只推一条警告并跳过** ✓
+        //（见 `fold.rs` 的折叠循环 ✓）⇒ 原子被**静默丢弃** ✓、工具却返回 `ok: true` ✓，
+        // 表现为"链接没生效但也没报错" ✓（测试输出：`通过改写制造环必须被拒：… ok:true` ✓）。
+        // `fold::precondition` 的那一份**保留** ✓ 作为重放期的纵深防御 ✓
+        //（手工写进日志的环在折叠时也会被跳过并留下警告 ✓），但**判定提交与否的是这里** ✓。
+        self.validate_instance_cycles(atom, commit.state)?;
         self.validate_history_refs(atom, commit)?;
         self.validate_conflict(atom)?;
         Ok(())
@@ -350,6 +358,39 @@ impl AtomLog {
             }
         }
         Ok(())
+    }
+
+    /// 实例成环（设计 9.3 ✓）：创建实例 ✓ 与改写 `master_ref` ✓ 两条入口都查 ✓。
+    fn validate_instance_cycles(&self, atom: &Atom, state: &DocumentState) -> Result<()> {
+        let master = if atom.kind == AtomKind::CreateObject
+            && atom.payload.get("type").and_then(serde_json::Value::as_str) == Some("instance")
+        {
+            atom.payload
+                .get("data")
+                .and_then(|data| data.get("master_ref"))
+                .and_then(|master_ref| master_ref.get("object_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        } else if atom.kind == AtomKind::SetProperty
+            && atom.payload.get("key").and_then(serde_json::Value::as_str) == Some("master_ref")
+        {
+            atom.payload
+                .get("value")
+                .and_then(|value| value.get("object_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        } else {
+            None
+        };
+        let (Some(master), Some(object_id)) = (
+            master,
+            atom.payload
+                .get("object_id")
+                .and_then(serde_json::Value::as_str),
+        ) else {
+            return Ok(());
+        };
+        crate::fold::check_instance_cycle(state, object_id, &master)
     }
 
     fn validate_secondary_refs(&self, atom: &Atom, state: &DocumentState) -> Result<()> {

@@ -888,6 +888,35 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "detach_instance",
+        profile: Profile::Core,
+        summary: "把实例脱离为独立对象（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("instance_id", String, true, "实例对象 id"),
+            param!("object_id", String, false, "脱离后新对象的 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "link_to_master",
+        profile: Profile::Core,
+        summary: "改写实例指向的 master（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("instance_id", String, true, "实例对象 id"),
+            param!("master_id", String, true, "新的 master 对象 id"),
+        ],
+    },
+    ToolSpec {
+        name: "get_resolved_state",
+        profile: Profile::Core,
+        summary: "查看实例解析到的 master 与包围盒（设计 9.2）",
+        mutating: false,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
         name: "create_instance",
         profile: Profile::Core,
         summary: "创建实例（设计 9.4）",
@@ -1530,6 +1559,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "detach_instance" => write_detach_instance(ctx, args),
+        "link_to_master" => write_link_to_master(ctx, args),
+        "get_resolved_state" => read_get_resolved_state(ctx, args),
         "create_group" => write_create_group(ctx, args),
         "add_to_group" => write_add_to_group(ctx, args),
         "remove_from_group" => write_remove_from_group(ctx, args),
@@ -2389,6 +2421,249 @@ fn check_group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Result<()> 
 ///
 /// **循环引用在折叠层被挡住** ✓（`fold.rs` 的 `CreateObject` ✓）：
 /// 手工写入日志的环、自引用、过深的链都会在**提交时**被拒 ✓，而不是等到渲染时无限递归 ✓。
+/// **脱离实例** ✓（设计 9.4 `detach_instance` ✓）：把它变成**独立对象** ✓ ——
+/// 位置与外观保持不变 ✓，但此后**不再跟随 master** ✓。
+///
+/// 做法 ✓（设计未规定原子序列 ⇒ 记录选择 ✓）：**两步** ——
+/// ① 用 master 的 `data` + 合成后的变换**新建一个普通对象** ✓；
+/// ② 把原实例 **tombstone** ✓。
+/// 这样"脱离"在日志里是**可追溯的两条原子** ✓，且渲染结果与脱离前**逐像素一致** ✓
+///（同一份几何 ✓、同一个变换 ✓）；用 `revert` 撤掉第 ② 步即可回到实例状态 ✓。
+fn write_detach_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let instance_id = require_str(args, "instance_id")?;
+    let new_id = args
+        .get("object_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("detached_{}", ctx.doc_id));
+    let (layer_id, master_data, transform) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(instance_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("实例 {instance_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Instance {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{instance_id} 不是实例")),
+            ));
+        }
+        let layer_id = object.layer_id.clone();
+        // 解析到 master 的**数据**与**合成变换** ✓（与渲染同一函数 ✓ ⇒ 口径一致 ✓）。
+        let master_id = object
+            .data
+            .get("master_ref")
+            .and_then(|master_ref| master_ref.get("object_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("实例缺少 master_ref.object_id".to_owned()),
+                )
+            })?;
+        let Some(master) = state.objects.get(master_id) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("master {master_id} 不存在，无法脱离")),
+            ));
+        };
+        if master.is_deleted() {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("master {master_id} 已被删除，无法脱离")),
+            ));
+        }
+        // 合成变换 = 实例自身 ∘ local_transform ∘ master 自身 ✓（与 `resolve_instance` 同序 ✓）。
+        let local = object
+            .data
+            .get("master_ref")
+            .and_then(|master_ref| master_ref.get("local_transform"))
+            .map(transform_from_json)
+            .unwrap_or(yanshi_core::Transform::IDENTITY);
+        let composed = compose_transforms(
+            &object.transform,
+            &compose_transforms(&local, &master.transform),
+        );
+        (layer_id, master.data.clone(), composed)
+    };
+    let created = ctx.commit(
+        AtomKind::CreateObject,
+        json!({
+            "object_id": new_id,
+            "layer_id": layer_id,
+            "type": master_data.get("type").cloned().unwrap_or(json!("shape")),
+            "data": master_data,
+            "transform": {"matrix": transform.matrix, "pivot": transform.pivot},
+        }),
+    )?;
+    let removed = ctx.commit(AtomKind::Tombstone, json!({"object_id": instance_id}))?;
+    Ok(json!({
+        "ok": true,
+        "detached_id": new_id,
+        "removed_instance": instance_id,
+        "head": removed.head_seq,
+        "created_head": created.head_seq,
+    }))
+}
+
+/// **改写实例指向的 master** ✓（设计 9.4 `link_to_master` ✓）。
+///
+/// **成环由折叠层挡住** ✓（见 `fold.rs` 的两条入口 ✓）—— 这里只做存在性与类型检查 ✓，
+/// 让"是不是环"只有一个判定处 ✓（不会两处各判一套 ✓）。
+fn write_link_to_master(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let instance_id = require_str(args, "instance_id")?;
+    let master_id = require_str(args, "master_id")?;
+    {
+        let state = document_state(ctx)?;
+        let Some(instance) = state.objects.get(instance_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("实例 {instance_id} 不存在")),
+            ));
+        };
+        if instance.object_type != yanshi_core::ObjectType::Instance {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{instance_id} 不是实例")),
+            ));
+        }
+        if !state.objects.contains_key(master_id.as_str()) {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("master {master_id} 不存在")),
+            ));
+        }
+    }
+    // 保留原有的 `local_transform` ✓（只换指向 ✓）。
+    let local_transform = {
+        let state = document_state(ctx)?;
+        state
+            .objects
+            .get(instance_id.as_str())
+            .and_then(|object| object.data.get("master_ref"))
+            .and_then(|master_ref| master_ref.get("local_transform"))
+            .cloned()
+            .unwrap_or_else(
+                || json!({"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "pivot": [0.0, 0.0]}),
+            )
+    };
+    let result = ctx.commit(
+        AtomKind::SetProperty,
+        json!({
+            "object_id": instance_id,
+            "key": "master_ref",
+            "value": {"object_id": master_id, "local_transform": local_transform},
+        }),
+    )?;
+    Ok(
+        json!({"ok": true, "instance_id": instance_id, "master_id": master_id, "head": result.head_seq}),
+    )
+}
+
+/// **查看实例解析结果** ✓（设计 9.2 ✓）—— 让"解析"这件事**可观测** ✓，
+/// 否则验证只能靠像素反推 ✓（能用但笨 ✓）。
+fn read_get_resolved_state(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let (object_type, master_id, local_transform) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        (
+            object.object_type,
+            object
+                .data
+                .get("master_ref")
+                .and_then(|master_ref| master_ref.get("object_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            object
+                .data
+                .get("master_ref")
+                .and_then(|master_ref| master_ref.get("local_transform"))
+                .cloned(),
+        )
+    };
+    let bbox = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        yanshi_render::object::object_bbox_in(&state, object)
+    };
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "type": format!("{object_type:?}").to_lowercase(),
+        "is_instance": object_type == yanshi_core::ObjectType::Instance,
+        "master_id": master_id,
+        "local_transform": local_transform,
+        // **包围盒来自与渲染同一个函数** ✓ ⇒ 读到的就是画出来的 ✓。
+        "bbox": bbox.map(|bbox| json!([bbox.x, bbox.y, bbox.w, bbox.h])),
+    }))
+}
+
+/// `{matrix, pivot}` → [`Transform`] ✓（与 `yanshi-render` 的同名逻辑一致 ✓）。
+fn transform_from_json(value: &Value) -> yanshi_core::Transform {
+    let mut transform = yanshi_core::Transform::IDENTITY;
+    if let Some(matrix) = value.get("matrix").and_then(Value::as_array) {
+        if matrix.len() == 6 {
+            for (slot, item) in transform.matrix.iter_mut().zip(matrix) {
+                *slot = item.as_f64().unwrap_or(0.0);
+            }
+        }
+    }
+    if let Some(pivot) = value.get("pivot").and_then(Value::as_array) {
+        if pivot.len() == 2 {
+            transform.pivot = [
+                pivot[0].as_f64().unwrap_or(0.0),
+                pivot[1].as_f64().unwrap_or(0.0),
+            ];
+        }
+    }
+    transform
+}
+
+/// 仿射合成 ✓：`outer ∘ inner`（先用 inner 再用 outer ✓），`pivot` 先折进矩阵 ✓。
+fn compose_transforms(
+    outer: &yanshi_core::Transform,
+    inner: &yanshi_core::Transform,
+) -> yanshi_core::Transform {
+    let flatten = |transform: &yanshi_core::Transform| -> [f64; 6] {
+        let m = transform.matrix;
+        let (px, py) = (transform.pivot[0], transform.pivot[1]);
+        [
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            m[4] + px - (m[0] * px + m[2] * py),
+            m[5] + py - (m[1] * px + m[3] * py),
+        ]
+    };
+    let a = flatten(outer);
+    let b = flatten(inner);
+    let mut matrix = [0.0f64; 6];
+    matrix[0] = a[0] * b[0] + a[2] * b[1];
+    matrix[1] = a[1] * b[0] + a[3] * b[1];
+    matrix[2] = a[0] * b[2] + a[2] * b[3];
+    matrix[3] = a[1] * b[2] + a[3] * b[3];
+    matrix[4] = a[0] * b[4] + a[2] * b[5] + a[4];
+    matrix[5] = a[1] * b[4] + a[3] * b[5] + a[5];
+    yanshi_core::Transform {
+        matrix,
+        pivot: [0.0, 0.0],
+    }
+}
+
 fn write_create_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let instance_id = require_str(args, "instance_id")?;
     let layer_id = require_str(args, "layer_id")?;

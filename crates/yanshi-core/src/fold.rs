@@ -294,63 +294,33 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
             // **实例必须在折叠层就能挡住循环引用** ✓（设计 9.3「循环引用检测：拒绝创建并返回错误」✓）——
             // 只在工具层检查是不够的 ✗：原子可以直接写进日志 ✓，
             // 而重放时遇到环会**无限递归** ✓（渲染时解析 master 会一直往下走 ✓）。
-            if atom.kind == AtomKind::CreateObject
+            // **两条入口都要挡环** ✓：创建实例 ✓，以及**后续改 `master_ref`** ✓
+            //（设计 9.4 的 `link_to_master` ✓）—— 只在创建时检查是不够的 ✗：
+            // 先建 a→b ✓ 再把 c 指到 a ✓ 再把 b 改指到 c ✓ 就成环了 ✓（每一步都"看起来"合法 ✓）。
+            let link_target = if atom.kind == AtomKind::CreateObject
                 && atom.payload.get("type").and_then(Value::as_str) == Some("instance")
             {
-                let master = atom
-                    .payload
+                atom.payload
                     .get("data")
                     .and_then(|data| data.get("master_ref"))
                     .and_then(|master_ref| master_ref.get("object_id"))
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        err(
-                            ErrorCode::InvalidArgument,
-                            "instance 缺少 data.master_ref.object_id".to_owned(),
-                        )
-                    })?;
-                // 顺着 master 链走一遍 ✓：走到自己 ⇒ 成环 ✓（含**自引用** ✓）。
-                let mut cursor = master.to_owned();
-                let mut visited = std::collections::BTreeSet::new();
-                loop {
-                    if cursor == object_id {
-                        return Err(err(
-                            ErrorCode::InvalidArgument,
-                            format!("循环引用：实例 {object_id} 通过 {master} 回到了自己"),
-                        ));
-                    }
-                    if !visited.insert(cursor.clone()) {
-                        return Err(err(
-                            ErrorCode::InvalidArgument,
-                            format!("循环引用：{master} 所在的 master 链已经成环"),
-                        ));
-                    }
-                    if visited.len() > 64 {
-                        return Err(err(
-                            ErrorCode::InvalidArgument,
-                            "master 链过深（超过 64 层）—— 疑似循环引用".to_owned(),
-                        ));
-                    }
-                    match state.objects.get(&cursor) {
-                        Some(object)
-                            if object.object_type == crate::state::ObjectType::Instance =>
-                        {
-                            let Some(next) = object
-                                .data
-                                .get("master_ref")
-                                .and_then(|master_ref| master_ref.get("object_id"))
-                                .and_then(Value::as_str)
-                            else {
-                                break;
-                            };
-                            cursor = next.to_owned();
-                        }
-                        // 非实例（或尚不存在 ✓）：链到此为止 ✓。
-                        // **master 暂时不存在不算错** ✓ —— 日志顺序允许先建实例后建 master ✓，
-                        // 渲染时解析不到就什么都不画 ✓（见 `render.rs` ✓），master 补齐后自动恢复 ✓。
-                        _ => break,
-                    }
-                }
+                    .map(str::to_owned)
+            } else if atom.kind == AtomKind::SetProperty
+                && atom.payload.get("key").and_then(Value::as_str) == Some("master_ref")
+            {
+                atom.payload
+                    .get("value")
+                    .and_then(|value| value.get("object_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            } else {
+                None
+            };
+            if let Some(master) = link_target {
+                // 走链判定抽在 `check_instance_cycle` 里 ✓（`SetProperty` 改 `master_ref` 时也调它 ✓，
+                // 保证"是不是环"**只有一处判定** ✓，不会两处各判一套 ✓）。
+                check_instance_cycle(state, object_id, &master)?;
             }
             if state.objects.contains_key(object_id) {
                 return Err(err(
@@ -389,6 +359,21 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         | AtomKind::Transform
         | AtomKind::Tombstone
         | AtomKind::SetProperty => {
+            // **改 `master_ref` 时的成环检查挂在这里** ✓ —— 我第一版把它写进了
+            // `CreateObject` 的校验分支 ✗，而 `SetProperty` 原子**根本不走那里** ✓
+            // ⇒ 测试当场抓到"通过改写制造环必须被拒：… ok:true" ✓。
+            // 教训 ✓：**校验要挂在"能收到这类原子的分支"上** ✓，而不是"我恰好正在改的那个分支"上 ✓。
+            if atom.payload.get("key").and_then(Value::as_str) == Some("master_ref") {
+                if let (Some(object_id), Some(master)) = (
+                    payload_str(&atom.payload, "object_id"),
+                    atom.payload
+                        .get("value")
+                        .and_then(|value| value.get("object_id"))
+                        .and_then(Value::as_str),
+                ) {
+                    check_instance_cycle(state, object_id, master)?;
+                }
+            }
             if let Some(object_id) = payload_str(&atom.payload, "object_id") {
                 match state.objects.get(object_id) {
                     Some(object) if object.is_deleted() => {
@@ -982,6 +967,58 @@ fn object_data(kind: AtomKind, payload: &Value) -> Value {
         }
     }
     data
+}
+
+/// **实例的成环检查** ✓（设计 9.3「循环引用检测：拒绝创建并返回错误」✓）。
+///
+/// 顺着 `master` 的链往上走 ✓：走到 `object_id` 自己 ⇒ 成环 ✓（含**自引用** ✓）；
+/// 走过已经访问过的节点 ⇒ 链本身成环 ✓；超过 64 层 ⇒ 也按环处理 ✓（纵深防御 ✓）。
+/// **只在这里判定** ✓ ⇒ 创建实例 ✓ 与改写 `master_ref` ✓ 两条入口行为必然一致 ✓。
+pub(crate) fn check_instance_cycle(
+    state: &DocumentState,
+    object_id: &str,
+    master: &str,
+) -> Result<()> {
+    let mut cursor = master.to_owned();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if cursor == object_id {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                format!("循环引用：实例 {object_id} 通过 {master} 回到了自己"),
+            ));
+        }
+        if !visited.insert(cursor.clone()) {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                format!("循环引用：{master} 所在的 master 链已经成环"),
+            ));
+        }
+        if visited.len() > 64 {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "master 链过深（超过 64 层）—— 疑似循环引用".to_owned(),
+            ));
+        }
+        match state.objects.get(&cursor) {
+            Some(object) if object.object_type == crate::state::ObjectType::Instance => {
+                let Some(next) = object
+                    .data
+                    .get("master_ref")
+                    .and_then(|master_ref| master_ref.get("object_id"))
+                    .and_then(Value::as_str)
+                else {
+                    break;
+                };
+                cursor = next.to_owned();
+            }
+            // 非实例（或尚不存在 ✓）：链到此为止 ✓。
+            // **master 暂时不存在不算错** ✓ —— 引用在写入时必须存在 ✓（12.2 ✓），
+            // 但**删除**它之后引用仍在 ✓，渲染时解析不到就什么都不画 ✓（见 `render.rs` ✓）。
+            _ => break,
+        }
+    }
+    Ok(())
 }
 
 /// 解析**平移**形式的组变换 ✓：`{dx, dy}` ✓（设计与 `move_object` 的增量命名一致 ✓）。
