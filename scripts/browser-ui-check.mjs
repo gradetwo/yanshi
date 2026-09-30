@@ -156,6 +156,52 @@ const layout = await evaluate(`(() => {
   };
 })()`);
 
+// 缩放与坐标映射：以画布中心为锚点放大后，在画布中心画一笔，它必须落在**文档中心**。
+// 这是绝对断言（向服务端核对像素），能抓住「画布坐标与文档坐标差一个视口原点」这类错误。
+const zoomCheck = await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const center = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+  const before = { w: board.width, h: board.height };
+  board.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -600, ...center }));
+  await new Promise(r => setTimeout(r, 1200));
+  const after = { w: board.width, h: board.height };
+  const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 21, pointerType: "mouse", isPrimary: true,
+    buttons: type === "pointerup" ? 0 : 1, ...center,
+  }));
+  fire("pointerdown");
+  await new Promise(r => setTimeout(r, 120));
+  fire("pointerup");
+  await new Promise(r => setTimeout(r, 1200));
+  return { before, after, painted: (() => {
+    const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let dark = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i+3] > 8 && (data[i] < 245 || data[i+1] < 245 || data[i+2] < 245)) dark++;
+    return dark;
+  })() };
+})()`);
+
+// 向服务端核对：文档中心附近应当出现刚画的笔迹。
+const token = new URL(url).searchParams.get("token");
+const docId = new URL(url).searchParams.get("doc") || "default";
+const renderCenter = await fetch(
+  `http://127.0.0.1:8110/api/tools/render_region?doc=${docId}&token=${token}`,
+  {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ region: { x: 432, y: 432, w: 160, h: 160 }, raw: true }),
+  }
+).then((r) => r.json());
+let centerInk = -1;
+if (renderCenter.raw_url) {
+  const bytes = new Uint8Array(await fetch(`http://127.0.0.1:8110${renderCenter.raw_url}`).then((r) => r.arrayBuffer()));
+  centerInk = 0;
+  for (let i = 0; i < bytes.length; i += 4) {
+    if (bytes[i + 3] > 8 && (bytes[i] < 200 || bytes[i + 1] < 200 || bytes[i + 2] < 200)) centerInk++;
+  }
+}
+
 const thumbBefore = await evaluate(`document.getElementById("thumb").src`);
 await evaluate(`(async () => {
   const board = document.getElementById("board");
@@ -193,6 +239,15 @@ if (newDocPainted.painted !== 0) {
 if (!identityOpened.includes("uicheck-opened-1")) {
   problems.push(`「打开」按钮没有切换文档（identity=${identityOpened}）`);
 }
+if (!(zoomCheck.after.w < zoomCheck.before.w)) {
+  problems.push(`滚轮缩放没有生效：视口宽度 ${zoomCheck.before.w} → ${zoomCheck.after.w}`);
+}
+if (zoomCheck.painted === 0) {
+  problems.push("缩放后画布上没有内容");
+}
+if (centerInk <= 0) {
+  problems.push(`缩放后在画布中心落笔，但服务端的文档中心没有笔迹（centerInk=${centerInk}）—— 坐标映射错误`);
+}
 if (atomLines > 1) {
   problems.push(`一笔产生了 ${atomLines} 条 atom 日志（应只有 1 条）`);
 }
@@ -217,6 +272,7 @@ console.log(`  画布：操作前不透明 ${before.opaque}/着色 ${before.pain
 console.log(`  图层数：${layerCountBefore} → ${layerCountAfter}`);
 console.log(`  文档切换：新建 ${identityBefore === identityAfter ? "未生效" : "已生效"}｜打开 ${identityOpened.includes("uicheck-opened-1") ? "已生效" : "未生效"}`);
 console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometry.canvas.cssW}（差值应 ≤4px）`);
+console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
 console.log(`  着色像素时间线（每 250ms）：${timeline.join(" → ")}`);
 console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS ${geometry.canvas.cssW}×${geometry.canvas.cssH}）｜preview ${JSON.stringify(geometry.preview)}`);

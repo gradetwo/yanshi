@@ -70,6 +70,12 @@ curl -s -X POST "http://127.0.0.1:8110/api/tools/create_layer?doc=demo&token=$TO
 
 工具与效果清单见 [docs/tools.md](docs/tools.md)。
 
+## 查看器操作
+
+拖动即画笔；`＋ 图层` 新建图层；`撤销` / `重做`。**滚轮以光标为中心缩放**，
+**中键拖动平移**，`+` / `-` / `0` 放大、缩小、适配，`1:1` 一文档像素对一 CSS 像素；
+`刷新` 从服务端重渲染，`一致性自检` 做内核与服务端的逐像素比对。
+
 ## 桌面入口（Linux：Omarchy / Hyprland）
 
 ```bash

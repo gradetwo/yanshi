@@ -65,6 +65,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span>head <b id="head">0</b></span>
     <span>rendered <b id="rendered">0</b></span>
     <span>dirty <b id="dirty">0</b></span>
+    <span>缩放 <b id="zoom">100%</b></span>
   </span>
 </header>
 <main>
@@ -85,6 +86,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="refresh">刷新</button>
         <button data-tool="check">一致性自检</button>
         <button id="addLayer">＋ 图层</button>
+        <button id="zoomFit">适配</button>
+        <button id="zoomActual">1:1</button>
       </div>
       <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
         <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
@@ -148,6 +151,9 @@ const state = {
   socket: null,
   docSize: { w: 1024, h: 1024 },
   viewport: { x: 0, y: 0, w: 1024, h: 1024 },
+  // 显示缩放（1 = 整幅适配容器）。视口是**文档坐标**子矩形，内核按 1:1 渲染它，
+  // CSS 把它放大到容器尺寸 —— 与设计的 viewport/tile 数据流一致（6.6/6.7）。
+  zoom: 1,
   dragging: null,
   points: [],
   wasm: null,
@@ -177,7 +183,10 @@ function syncOverlayGeometry() {
   overlay.style.height = Math.round(rect.height) + "px";
 }
 
-/// 设定文档分辨率（内容画布与覆盖层同尺寸、同坐标系），并清空两层。
+/// 设定**视口**尺寸（内容画布与覆盖层同尺寸、同坐标系），并清空两层。
+///
+/// 画布内部分辨率 = 视口的文档像素数（内核 1:1 渲染），CSS 显示尺寸由 `applyDisplaySize` 决定：
+/// 缩放后画布像素变少、显示尺寸不变，于是看得更细（`image-rendering: pixelated` 保持清晰）。
 function sizeBoards(width, height) {
   board.width = width;
   board.height = height;
@@ -185,8 +194,71 @@ function sizeBoards(width, height) {
   overlay.height = height;
   ctx.clearRect(0, 0, width, height);
   octx.clearRect(0, 0, width, height);
-  state.viewport = { x: 0, y: 0, w: width, h: height };
+  state.viewport.w = width;
+  state.viewport.h = height;
+  applyDisplaySize();
   syncOverlayGeometry();
+}
+
+/// 画布/覆盖层的 CSS 尺寸 = 视口 × 显示缩放（上限为可用区域，避免溢出）。
+function applyDisplaySize() {
+  const available = availableArea();
+  const scale = state.displayScale || 1;
+  const width = Math.max(32, Math.min(Math.round(state.viewport.w * scale), available.w));
+  const height = Math.max(32, Math.min(Math.round(state.viewport.h * scale), available.h));
+  board.style.width = width + "px";
+  board.style.height = height + "px";
+  overlay.style.width = width + "px";
+  overlay.style.height = height + "px";
+}
+
+/// 舞台可用区域（主栅格第一列减去右侧面板、间隙与内边距）。
+function availableArea() {
+  const main = document.querySelector("main");
+  const aside = document.querySelector("aside");
+  const styles = main ? getComputedStyle(main) : null;
+  const gap = styles ? parseFloat(styles.columnGap || "12") : 12;
+  const padding = styles ? parseFloat(styles.paddingLeft || "12") * 2 : 24;
+  const asideWidth = aside ? aside.getBoundingClientRect().width : 320;
+  const width = (main ? main.clientWidth : window.innerWidth) - asideWidth - gap - padding;
+  const height = Math.max(240, window.innerHeight - 96);
+  return { w: Math.max(160, Math.floor(width)), h: Math.floor(height) };
+}
+
+/// 按当前缩放与文档尺寸重新计算视口（以 `center` 为中心，缺省用视口中心）。
+function clampViewport(center) {
+  const { w: docW, h: docH } = state.docSize;
+  const available = availableArea();
+  // 显示缩放：整幅适配容器的比例 × 用户缩放。
+  const fit = Math.min(available.w / docW, available.h / docH);
+  state.displayScale = fit * state.zoom;
+  const viewW = Math.min(docW, Math.max(32, Math.floor(available.w / state.displayScale)));
+  const viewH = Math.min(docH, Math.max(32, Math.floor(available.h / state.displayScale)));
+  const focus = center || {
+    x: state.viewport.x + state.viewport.w / 2,
+    y: state.viewport.y + state.viewport.h / 2,
+  };
+  const x = Math.max(0, Math.min(docW - viewW, Math.round(focus.x - viewW / 2)));
+  const y = Math.max(0, Math.min(docH - viewH, Math.round(focus.y - viewH / 2)));
+  state.viewport = { x, y, w: viewW, h: viewH };
+}
+
+/// 文档坐标 → 画布坐标。
+function toCanvas(point) {
+  return { x: point.x - state.viewport.x, y: point.y - state.viewport.y };
+}
+
+/// 重新渲染当前视口（缩放/平移后调用）。
+function renderViewport() {
+  if (!kernelReady()) return;
+  const zoomLabel = $("zoom");
+  if (zoomLabel) zoomLabel.textContent = Math.round((state.displayScale || 1) * 100) + "%";
+  const { x, y, w, h } = state.viewport;
+  sizeBoards(w, h);
+  state.kernel.set_viewport(x, y, w, h);
+  drawKernelRegion(x, y, w, h);
+  subscribeViewport();
+  redraw();
 }
 
 function log(line, cls) {
@@ -357,13 +429,28 @@ async function loadKernel(since = 0) {
   return true;
 }
 
+/// 渲染文档坐标区域 `(x,y,w,h)` 并画进画布（画布坐标 = 文档坐标 − 视口原点）。
 function drawKernelRegion(x, y, w, h) {
+  // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
+  const vx = state.viewport.x;
+  const vy = state.viewport.y;
+  const x0 = Math.max(x, vx);
+  const y0 = Math.max(y, vy);
+  const x1 = Math.min(x + w, vx + board.width);
+  const y1 = Math.min(y + h, vy + board.height);
+  if (x1 <= x0 || y1 <= y0) return;
+  const cw = Math.round(x1 - x0);
+  const ch = Math.round(y1 - y0);
   const started = performance.now();
-  const rgba = state.kernel.render_region_rgba(x, y, w, h);
-  if (!rgba || rgba.length < w * h * 4) return;
+  const rgba = state.kernel.render_region_rgba(x0, y0, cw, ch);
+  if (!rgba || rgba.length < cw * ch * 4) return;
   const renderedAt = performance.now();
-  // putImageData 不做 CSS 缩放：画布与文档同分辨率，坐标一一对应。
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
+  // putImageData 不做 CSS 缩放：画布内部分辨率与视口文档像素一一对应。
+  ctx.putImageData(
+    new ImageData(new Uint8ClampedArray(rgba), cw, ch),
+    Math.round(x0 - vx),
+    Math.round(y0 - vy)
+  );
   const elapsed = performance.now() - started;
   window.yanshiStats.lastRenderMs = renderedAt - started;
   window.yanshiStats.lastPutMs = performance.now() - renderedAt;
@@ -391,16 +478,24 @@ function drawKernelBoxDirect(bbox) {
   if (window.yanshiStats.tracePaints) log("direct bbox=" + JSON.stringify(bbox) + " board=" + board.width + "x" + board.height);
   if (!bbox) return;
   const started = performance.now();
-  const x = Math.max(0, Math.floor(bbox[0]));
-  const y = Math.max(0, Math.floor(bbox[1]));
-  const w = Math.min(Math.max(1, Math.ceil(bbox[2])), board.width - x);
-  const h = Math.min(Math.max(1, Math.ceil(bbox[3])), board.height - y);
-  if (w <= 0 || h <= 0) return;
-  const rgba = state.kernel.render_region_direct_rgba(x, y, w, h);
-  if (window.yanshiStats.tracePaints) log("direct 渲染 " + x + "," + y + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
+  const vx = state.viewport.x;
+  const vy = state.viewport.y;
+  const x0 = Math.max(Math.floor(bbox[0]), vx);
+  const y0 = Math.max(Math.floor(bbox[1]), vy);
+  const x1 = Math.min(Math.ceil(bbox[0] + bbox[2]), vx + board.width);
+  const y1 = Math.min(Math.ceil(bbox[1] + bbox[3]), vy + board.height);
+  const w = Math.round(x1 - x0);
+  const h = Math.round(y1 - y0);
+  if (x1 <= x0 || y1 <= y0 || w <= 0 || h <= 0) return;
+  const rgba = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+  if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), x, y);
+  ctx.putImageData(
+    new ImageData(new Uint8ClampedArray(rgba), w, h),
+    Math.round(x0 - vx),
+    Math.round(y0 - vy)
+  );
   const elapsed = performance.now() - started;
   window.yanshiStats.lastDirectMs = renderedAt - started;
   window.yanshiStats.lastDirectArea = w * h;
@@ -413,7 +508,8 @@ function drawKernelBox(bbox) {
   const y = Math.max(0, Math.floor(bbox[1]));
   const w = Math.max(1, Math.ceil(bbox[2]));
   const h = Math.max(1, Math.ceil(bbox[3]));
-  drawKernelRegion(x, y, Math.min(w, board.width - x), Math.min(h, board.height - y));
+  // 裁剪交给 drawKernelRegion（按视口裁剪，而不是按画布像素数）。
+  drawKernelRegion(x, y, w, h);
 }
 
 function drawKernelDirty(report) {
@@ -634,6 +730,9 @@ async function switchDocument(docId) {
   $("log").innerHTML = "";
   $("last").textContent = "";
   // 画布立刻清空，避免切换期间仍显示上一个文档的内容。
+  state.zoom = 1;
+  state.displayScale = null;
+  state.viewport = { x: 0, y: 0, w: 1024, h: 1024 };
   sizeBoards(1024, 1024);
   await ensureDocument();
 }
@@ -709,10 +808,9 @@ async function refreshPreview(fromKernel = false) {
   const { w, h } = state.docSize;
   if (!fromKernel && kernelReady()) {
     // 本地乐观路径：直接由 WASM 内核出像素，不等服务端。
-    sizeBoards(w, h);
-    state.kernel.set_viewport(0, 0, w, h);
-    drawKernelRegion(0, 0, w, h);
-    subscribeViewport();
+    state.docSize = { w, h };
+    clampViewport();
+    renderViewport();
     return;
   }
   // 只有在**没有内核**时才用服务端像素兜底（有内核时内核是主画布的唯一权威来源）。
@@ -728,8 +826,14 @@ async function refreshPreview(fromKernel = false) {
         const firstPaint = $("firstPaint");
         if (firstPaint) firstPaint.textContent = window.yanshiStats.firstPaintMs.toFixed(0) + "ms";
       }
+      state.docSize = { w: preview.naturalWidth, h: preview.naturalHeight };
+      state.zoom = 1;
+      clampViewport();
+      sizeBoards(state.viewport.w, state.viewport.h);
       board.width = preview.naturalWidth;
       board.height = preview.naturalHeight;
+      overlay.width = preview.naturalWidth;
+      overlay.height = preview.naturalHeight;
       state.viewport = { x: 0, y: 0, w: preview.naturalWidth, h: preview.naturalHeight };
       setStatus({});
       if (state.socket && state.socket.readyState === 1) subscribeViewport();
@@ -812,7 +916,7 @@ function subscribeViewport() {
     type: "subscribe",
     doc_id: state.docId,
     viewport: state.viewport,
-    zoom: 1,
+    zoom: state.displayScale || 1,
   }));
 }
 
@@ -832,28 +936,84 @@ function redraw() {
   octx.lineWidth = Number($("size").value);
   if (state.tool === "rect" && state.points.length === 2) {
     const [a, b] = state.points;
-    octx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    const pa = toCanvas(a);
+    const pb = toCanvas(b);
+    octx.strokeRect(pa.x, pa.y, pb.x - pa.x, pb.y - pa.y);
   } else if (state.tool === "ellipse" && state.points.length === 2) {
     const [a, b] = state.points;
+    const pa = toCanvas(a);
+    const pb = toCanvas(b);
     octx.beginPath();
-    octx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
+    octx.ellipse((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, Math.abs(pb.x - pa.x) / 2, Math.abs(pb.y - pa.y) / 2, 0, 0, Math.PI * 2);
     octx.stroke();
   } else {
     octx.beginPath();
-    state.points.forEach((point, index) => index ? octx.lineTo(point.x, point.y) : octx.moveTo(point.x, point.y));
+    state.points.forEach((point, index) => {
+      const canvasPoint = toCanvas(point);
+      return index ? octx.lineTo(canvasPoint.x, canvasPoint.y) : octx.moveTo(canvasPoint.x, canvasPoint.y);
+    });
     octx.stroke();
   }
 }
 
 function localPoint(event) {
   const rect = board.getBoundingClientRect();
+  // 画布内部像素 = 视口文档像素；再加视口原点得到文档坐标。
   return {
-    x: (event.clientX - rect.left) * board.width / rect.width,
-    y: (event.clientY - rect.top) * board.height / rect.height,
+    x: state.viewport.x + (event.clientX - rect.left) * board.width / rect.width,
+    y: state.viewport.y + (event.clientY - rect.top) * board.height / rect.height,
   };
 }
 
 let pendingStroke = null;
+let panState = null;
+
+// 滚轮缩放：以光标下的文档点为锚点（图像编辑器的常规行为）。
+board.addEventListener("wheel", (event) => {
+  if (!kernelReady()) return;
+  event.preventDefault();
+  const before = localPoint(event);
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  state.zoom = Math.max(0.1, Math.min(16, state.zoom * factor));
+  clampViewport(before);
+  renderViewport();
+}, { passive: false });
+
+// 中键拖动平移。
+board.addEventListener("pointerdown", (event) => {
+  if (event.button !== 1) return;
+  event.preventDefault();
+  panState = { startX: event.clientX, startY: event.clientY, originX: state.viewport.x, originY: state.viewport.y };
+  try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
+});
+board.addEventListener("pointermove", (event) => {
+  if (!panState) return;
+  const scale = (state.displayScale || 1);
+  const rect = board.getBoundingClientRect();
+  const perPixel = state.viewport.w / Math.max(1, rect.width);
+  const center = {
+    x: panState.originX - (event.clientX - panState.startX) * perPixel + state.viewport.w / 2,
+    y: panState.originY - (event.clientY - panState.startY) * perPixel + state.viewport.h / 2,
+  };
+  void scale;
+  clampViewport(center);
+  renderViewport();
+});
+board.addEventListener("pointerup", (event) => {
+  if (panState && event.button === 1) panState = null;
+});
+
+// 键盘：+ / - 缩放，0 复位到整幅。
+window.addEventListener("keydown", (event) => {
+  if (!kernelReady() || event.target instanceof HTMLInputElement) return;
+  if (event.key === "+" || event.key === "=") state.zoom = Math.min(16, state.zoom * 1.25);
+  else if (event.key === "-") state.zoom = Math.max(0.1, state.zoom / 1.25);
+  else if (event.key === "0") state.zoom = 1;
+  else return;
+  event.preventDefault();
+  clampViewport();
+  renderViewport();
+});
 
 board.addEventListener("pointerdown", (event) => {
   try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
@@ -1005,12 +1165,31 @@ $("addLayer").addEventListener("click", async () => {
   log("已新建图层 " + layerId);
 });
 
+$("zoomFit").addEventListener("click", () => {
+  state.zoom = 1;
+  clampViewport();
+  renderViewport();
+});
+
+$("zoomActual").addEventListener("click", () => {
+  // 1:1：显示比例 1 像素文档 = 1 CSS 像素。
+  if (!state.docSize) return;
+  state.zoom = 1 / Math.max(0.0001, state.displayScale || 1);
+  clampViewport();
+  renderViewport();
+});
+
 $("newDoc").addEventListener("click", newDocument);
 $("openDoc").addEventListener("click", promptDocument);
 
 (async () => {
   window.addEventListener("resize", () => {
-    syncOverlayGeometry();
+    if (kernelReady() && state.docSize) {
+      clampViewport();
+      renderViewport();
+    } else {
+      syncOverlayGeometry();
+    }
     if (state.socket) subscribeViewport();
   });
   window.addEventListener("scroll", syncOverlayGeometry, { passive: true });
