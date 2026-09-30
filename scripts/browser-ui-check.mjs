@@ -2015,6 +2015,54 @@ const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
 // 尽管服务端渲染、缩略图、导出**全都正确** ✓（违反设计 14.5「打开即图片」✓）。
 // 本段**自包含**：用前面介质段已经画好的文档 ✓，整页重载后直接量画布 ✓。
 // 放在检查**最后** ✓ ⇒ 重载不会干扰其它段落 ✓。
+// **界面必须如实反映文档状态** ✓（子 agent 报的两条外观项 ✓，都在"重载"这个动作上暴露 ✓）：
+//   ① "介质"选择器此前总是回落到 `example` ✗ ⇒ 显示的不是"这份画是用什么画的" ✓
+//      而是"上一次点了什么" ✓；
+//   ② 没有撤销栈时"撤销"按钮仍**可点** ✗ ⇒ 点了只打印一句提示 ✓，看起来像坏了 ✓。
+{
+  const docInfo = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+  const tool = async (name, body) => fetch(`${origin}/api/tools/${name}?doc=${docInfo.docId}&token=${docInfo.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}),
+  }).then((r) => r.json()).catch(() => ({}));
+  // 用**水彩**画一笔 ✓（与默认的 `example` 不同 ✓，这样才能区分"反映了文档"与"只是默认值" ✓）。
+  await evaluate(`(async () => {
+    document.getElementById("medium").value = "watercolor";
+    document.getElementById("medium").dispatchEvent(new Event("change", { bubbles: true }));
+    const points = [];
+    for (let i = 0; i <= 6; i++) points.push({ x: 60 + i * 18, y: 60 });
+    await mediumStroke("watercolor", points);
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 2500));
+  // 把选择器**手动改回** `example` ✓（模拟"界面状态陈旧" ✓），然后整页重载 ✓。
+  await evaluate(`(() => { const s = document.getElementById("medium"); s.value = "example"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await send("Page.navigate", { url });
+  await send("Page.bringToFront", {});
+  for (let i = 0; i < 80; i++) {
+    const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0`);
+    if (ready) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // 等文档的对象读回来（`detectHeavyContent` 是异步的 ✓）。
+  let mediumValue = "";
+  for (let i = 0; i < 40; i++) {
+    mediumValue = await evaluate(`document.getElementById("medium").value`);
+    if (mediumValue === "watercolor") break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const undoDisabled = await evaluate(`document.querySelector('button[data-tool="undo"]').disabled`);
+  const undoLabel = await evaluate(`document.getElementById("undoDepth").textContent`);
+  if (mediumValue !== "watercolor") {
+    problems.push(`重载后"介质"选择器没有反映文档：得到「${mediumValue}」，而这份文档最近一笔是 watercolor`);
+  } else {
+    console.log(`  界面还原：介质选择器 ← ${mediumValue}（须反映文档）｜撤销按钮 disabled=${undoDisabled}｜${undoLabel}`);
+  }
+  if (undoDisabled !== true) {
+    problems.push(`空撤销栈时"撤销"按钮仍可点（disabled=${undoDisabled}｜${undoLabel}）`);
+  }
+  void tool;
+}
+
 const reopenBefore = await evaluate(`(() => {
   const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
   let n = 0;
