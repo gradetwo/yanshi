@@ -153,10 +153,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <div class="options" id="options">
     <span class="tool-name" id="toolName">画笔</span>
   <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
-  <input id="color" type="color" value="#222222" />
+  <label>颜色 <input id="color" type="color" value="#c81e3c" /></label>
   <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
+    <label>介质 <select id="medium">
+      <option value="example">示范点（v1）</option>
+      <option value="oil">油画（v2）</option>
+    </select></label>
   </div>
 
 <main>
@@ -957,6 +961,13 @@ function closeOpenDialog() {
   else dialog.removeAttribute("open");
 }
 
+/// `#rrggbb` → `[r, g, b]`（0..1）✓。
+function hexToUnit(hex) {
+  const value = String(hex || "#000000").replace("#", "");
+  const int = Number.parseInt(value.length === 3 ? value.replace(/(.)/g, "$1$1") : value, 16);
+  return [((int >> 16) & 255) / 255, ((int >> 8) & 255) / 255, (int & 255) / 255];
+}
+
 /// 介质插件的宿主侧加载器 ✓（设计 11.1 的 **WASM 插件**；宿主 = 浏览器 ✓）。
 ///
 /// 加载时**强制三条边界** ✓：
@@ -964,7 +975,11 @@ function closeOpenDialog() {
 /// ② ABI 版本必须匹配 ✓；③ `id + version` 随对象记录 ✓（由调用方写进 `data.medium` ✓）。
 const MEDIUMS = {
   // 示范介质：仓库里的零依赖插件，产物提交在 assets/mediums/ ✓。
+  // `version` 与插件自报的 ABI 版本核对 ✓ —— 两个版本并存正是设计
+  // "插件 id + version 随原子记录、升级不改写历史"要支持的 ✓。
   example: { id: "example-dab", version: 1, url: "/mediums/example-dab.wasm" },
+  // 油画/水彩（ABI v2）：宿主注入笔尖色、目标色、载墨与湿度 ✓。
+  oil: { id: "oil", version: 2, url: "/mediums/oil.wasm" },
 };
 
 async function loadMedium(name) {
@@ -1031,6 +1046,22 @@ async function mediumDabInner(name, point) {
   // 同名局部变量会把它遮蔽 ✓，于是后面 `fetch(api("/api/blob"))` 会调到一个对象上 ✗
   //（实测报 "api is not a function" ✓ —— 这一条是靠 yanshiStats.medium 的可观测信号才立刻定位的 ✓）。
   const plugin = spec.instance.exports;
+  // v2：把上下文写进插件的输入缓冲 ✓ —— 笔尖色、目标处已有色、载墨、湿度 ✓。
+  // 目标色取**笔尖处画面的当前颜色** ✓（宿主能读画布 ✓，插件读不到 ✗）。
+  if (typeof plugin.yanshi_input_ptr === "function") {
+    const floats = plugin.yanshi_input_len() / 4;
+    const input = new Float32Array(plugin.memory.buffer, plugin.yanshi_input_ptr(), Math.max(floats, 10));
+    const tip = hexToUnit($("color").value);
+    const board = document.getElementById("board");
+    const rect = board.getBoundingClientRect();
+    const scale = board.width / Math.max(1, rect.width);
+    const px = Math.min(board.width - 1, Math.max(0, Math.round(point.x * scale)));
+    const py = Math.min(board.height - 1, Math.max(0, Math.round(point.y * scale)));
+    const dest = board.getContext("2d").getImageData(px, py, 1, 1).data;
+    const wetness = (Number($("strength").value) || 40) / 100;
+    input.set([tip[0], tip[1], tip[2], 1, dest[0] / 255, dest[1] / 255, dest[2] / 255, dest[3] / 255,
+               1.0, wetness], 0);
+  }
   const written = plugin.yanshi_dab(Number($("strength").value) || 40, size, 1000);
   const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
   const image = new ImageData(new Uint8ClampedArray(pixels), size, size);
@@ -2021,7 +2052,7 @@ board.addEventListener("pointerdown", (event) => {
     // 介质插件（设计 11.1）：宿主实例化插件 → 产出 RGBA → 入 CAS 与日志 ✓。
     event.preventDefault();
     const point = localPoint(event);
-    void mediumDab("example", { x: point.x, y: point.y }).catch((error) => {
+    void mediumDab($("medium").value, { x: point.x, y: point.y }).catch((error) => {
       const message = error && error.message ? error.message : String(error);
       window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
         status: "rejected", error: message,

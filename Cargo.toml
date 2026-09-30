@@ -8,6 +8,7 @@ members = [
     "crates/yanshi-http",
     "crates/yanshi-wasm",
     "crates/yanshi-medium-example",
+    "crates/yanshi-medium-oil",
 ]
 
 [workspace.package]

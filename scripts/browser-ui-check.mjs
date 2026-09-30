@@ -1217,6 +1217,34 @@ if (!mediumObject) {
     problems.push(`介质落笔后画布没有变化（前 ${mediumBefore} → 后 ${mediumAfter}）`);
   }
 }
+// 油画介质（ABI v2）✓：宿主注入笔尖色/目标色/载墨/湿度 ✓，插件做载墨、混色、鬃毛与干湿边缘 ✓。
+// 单点落笔已能看出效果 ✓；整笔沿路径铺开是下一步 ✓（记录在 implementation-notes ✓）。
+const oilBefore = await evaluate(MEDIUM_INK) || 0;
+await evaluate(`(() => {
+  const select = document.getElementById("medium");
+  if (select) { select.value = "oil"; }
+})()`);
+await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
+await strokeAt(0.35, 0.3, 502);
+let oilObject = null;
+for (let i = 0; i < 40 && !oilObject; i++) {
+  await new Promise((r) => setTimeout(r, 250));
+  const listed = await fetch(
+    `${origin}/api/tools/list_objects?doc=${mediumDoc}&token=${mediumToken}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  ).then((response) => response.json()).catch(() => ({}));
+  oilObject = (listed.objects || []).find((o) => o.medium && o.medium.id === "oil") || null;
+}
+const oilAfter = await evaluate(MEDIUM_INK) || 0;
+if (!oilObject) {
+  const oilLog = await evaluate(`document.getElementById("log").innerText.slice(0, 300)`);
+  problems.push(`油画介质用例失败：日志=${JSON.stringify(oilLog)}`);
+} else if (oilObject.medium.version !== 2) {
+  problems.push(`油画介质版本应记录为 2，实际 ${JSON.stringify(oilObject.medium)}`);
+}
+const oilResult = { ok: Boolean(oilObject), medium: oilObject ? oilObject.medium : null,
+                    before: oilBefore, after: oilAfter };
+
 const mediumResult = { ok: Boolean(mediumObject), medium: mediumObject ? mediumObject.medium : null,
                        status: mediumStatus, before: mediumBefore, after: mediumAfter };
 
@@ -1338,6 +1366,7 @@ console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指�
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
+console.log(`  油画介质：${oilResult && oilResult.ok ? "对象介质 " + JSON.stringify(oilResult.medium) + "｜画布 " + oilResult.before + " → " + oilResult.after : "失败 " + JSON.stringify(oilResult)}`);
 console.log(`  介质插件：${mediumResult && mediumResult.ok ? "对象介质 " + JSON.stringify(mediumResult.medium) + "｜画布 " + mediumResult.before + " → " + mediumResult.after : "失败 " + JSON.stringify(mediumResult)}`);
 console.log(`  选区/文本：${selectionResult && selectionResult.ok
   ? `选区内笔画色 ${selectionResult.inside}｜选区外 ${selectionResult.outside}（须 0）｜清除后选区外 ${selectionResult.clearedOutside}（须 >0）｜文本改变 ${selectionResult.textChanged}`
