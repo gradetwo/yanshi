@@ -66,6 +66,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
                background: #171a1f; border-top: 1px solid var(--line); }
   .statusbar .spacer { flex: 1 1 auto; }
+  /* 可折叠 Dockers ✓（借鉴成熟绘画软件的面板折叠 ✓）：点标题折叠/展开 ✓，状态持久化 ✓。 */
+  aside .card > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+  aside .card > h2::before { content: "▾"; font-size: 10px; opacity: .7; transition: transform .1s; }
+  aside .card.collapsed > h2::before { transform: rotate(-90deg); }
+  aside .card.collapsed > *:not(h2) { display: none !important; }
+  aside .card.collapsed { padding-bottom: 8px; }
   aside { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
   aside .card { min-width: 0; }
   /* 面板内的可伸缩元素：下拉的选项名可能很长（图层 id）。光限制 select 不够 ——
@@ -157,6 +163,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <label>强度 <input id="strength" type="range" min="1" max="100" value="40" /></label>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
+    <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
+      <option value="paint">绘画</option>
+      <option value="retouch">修图</option>
+      <option value="review">校对</option>
+    </select></label>
     <label>介质 <select id="medium">
       <option value="example">示范点（v1）</option>
       <option value="oil">油画（v2）</option>
@@ -2600,6 +2611,85 @@ window.addEventListener("keydown", (event) => {
   button.click();
 });
 
+// 可折叠 Dockers + 工作区预设 ✓（界面上借鉴 Krita/Photoshop 的 Workspaces ✓）。
+//
+// 状态放在 `localStorage` ✓：刷新后布局保持 ✓（这是"工作区"的意义 ✓）。
+// 折叠靠 CSS class ✓，不改 DOM 结构 ✓ ⇒ 既有选取器与检查都不受影响 ✓。
+const DOCKER_PRESETS = {
+  // 绘画：图层与内核常看 ✓，历史/调整/日志收起 ✓。
+  paint: { open: ["图层", "WASM 计算内核"], closed: ["历史（原子日志）", "调整 / 滤镜", "缩略图", "原子日志（控制流）", "最近一次响应", "反馈"] },
+  // 修图：图层 + 调整展开 ✓。
+  retouch: { open: ["图层", "调整 / 滤镜", "缩略图"], closed: ["WASM 计算内核", "历史（原子日志）", "原子日志（控制流）", "最近一次响应", "反馈"] },
+  // 校对：历史 + 日志 + 反馈展开 ✓（核对与反馈用 ✓）。
+  review: { open: ["历史（原子日志）", "原子日志（控制流）", "反馈", "最近一次响应"], closed: ["调整 / 滤镜", "WASM 计算内核", "缩略图"] },
+};
+const DOCKER_STORE = "yanshi.dockers";
+const WORKSPACE_STORE = "yanshi.workspace";
+
+function dockerCards() {
+  return [...document.querySelectorAll("aside .card")];
+}
+
+function cardTitle(card) {
+  const h2 = card.querySelector("h2");
+  return h2 ? h2.textContent.trim() : "";
+}
+
+function saveDockers() {
+  try {
+    localStorage.setItem(DOCKER_STORE, JSON.stringify(
+      dockerCards().filter((card) => card.classList.contains("collapsed")).map(cardTitle),
+    ));
+  } catch (_) { /* 隐私模式下忽略 ✓ */ }
+}
+
+function applyCollapsed(titles) {
+  for (const card of dockerCards()) {
+    card.classList.toggle("collapsed", titles.includes(cardTitle(card)));
+  }
+}
+
+function applyWorkspace(name) {
+  const preset = DOCKER_PRESETS[name];
+  if (!preset) return;
+  for (const card of dockerCards()) {
+    card.classList.remove("collapsed");
+  }
+  applyCollapsed(preset.closed);
+  try { localStorage.setItem(WORKSPACE_STORE, name); } catch (_) { /* 忽略 ✓ */ }
+  const select = $("workspace");
+  if (select) select.value = name;
+  saveDockers();
+}
+
+function initDockers() {
+  for (const card of dockerCards()) {
+    const h2 = card.querySelector("h2");
+    if (!h2) continue;
+    h2.addEventListener("click", () => {
+      card.classList.toggle("collapsed");
+      saveDockers();
+      // 手动折叠后视为"自定义" ✓：工作区选择器不再声称某个预设 ✓。
+      try { localStorage.removeItem(WORKSPACE_STORE); } catch (_) { /* 忽略 ✓ */ }
+    });
+  }
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(DOCKER_STORE) || "null"); } catch (_) { saved = null; }
+  let workspace = null;
+  try { workspace = localStorage.getItem(WORKSPACE_STORE); } catch (_) { workspace = null; }
+  if (workspace && DOCKER_PRESETS[workspace]) {
+    applyWorkspace(workspace);
+  } else if (Array.isArray(saved)) {
+    applyCollapsed(saved);
+  } else {
+    applyWorkspace("paint");
+  }
+  const select = $("workspace");
+  if (select) {
+    select.addEventListener("change", () => applyWorkspace(select.value));
+  }
+}
+
 for (const button of document.querySelectorAll("button[data-tool]")) {
   button.addEventListener("click", async () => {
     const tool = button.dataset.tool;
@@ -2619,6 +2709,8 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
     }
   });
 }
+
+initDockers();
 
 $("addLayer").addEventListener("click", async () => {
   const layerId = "layer_" + ulid();

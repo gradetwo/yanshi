@@ -736,6 +736,62 @@ const selectionResult = await evaluate(`(async () => {
   }
 })()`);
 
+// 可折叠 Dockers + 工作区预设 ✓（借鉴成熟绘画软件的面板/工作区 ✓）。
+// 断言三件事 ✓：折叠真的改变了可见高度 ✓、工作区预设真的切换折叠集合 ✓、状态被持久化 ✓。
+const dockerAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const cards = [...document.querySelectorAll("aside .card")];
+  const byTitle = (t) => cards.find((c) => (c.querySelector("h2") || {}).textContent.trim() === t);
+  const height = (card) => (card ? Math.round(card.getBoundingClientRect().height) : -1);
+  const collapsed = (card) => Boolean(card && card.classList.contains("collapsed"));
+  const effects = byTitle("调整 / 滤镜");
+  const stateBefore = collapsed(effects);
+  const before = {
+    cards: cards.length,
+    collapsed: cards.filter(collapsed).map((c) => c.querySelector("h2").textContent.trim()),
+    effectsHeight: height(effects),
+    effectsCollapsed: stateBefore,
+  };
+  // 点标题 ⇒ 状态应**翻转** ✓（默认"绘画"工作区里它本来是折叠的 ✓，
+  // 所以这一下是**展开** ✓ —— 第一版我写死了"应当折叠" ✗，方向反了 ✓）。
+  if (effects) effects.querySelector("h2").click();
+  const afterCollapse = {
+    collapsed: collapsed(effects),
+    effectsHeight: height(effects),
+    flipped: collapsed(effects) !== stateBefore,
+    grew: height(effects) > before.effectsHeight,
+  };
+  // 切到"校对"工作区 ✓。
+  const select = document.getElementById("workspace");
+  if (select) { select.value = "review"; select.dispatchEvent(new Event("change", { bubbles: true })); }
+  const afterWorkspace = {
+    collapsed: cards.filter(collapsed).map((c) => c.querySelector("h2").textContent.trim()),
+    effectsCollapsed: collapsed(byTitle("调整 / 滤镜")),
+    historyCollapsed: collapsed(byTitle("历史（原子日志）")),
+    stored: localStorage.getItem("yanshi.workspace"),
+    storedDockers: localStorage.getItem("yanshi.dockers"),
+  };
+  return { before, afterCollapse, afterWorkspace, cards: cards.length };
+})())`));
+if (dockerAudit.cards < 6) {
+  problems.push(`Dockers 数量异常：${dockerAudit.cards}（应 ≥6）`);
+}
+if (!dockerAudit.afterCollapse.flipped) {
+  problems.push("点击 Dockers 标题没有切换折叠状态");
+}
+if (!dockerAudit.afterCollapse.grew === dockerAudit.before.effectsCollapsed) {
+  // 折叠 → 展开 应**变高** ✓；展开 → 折叠 应**变矮** ✓。
+  problems.push(`折叠切换后的可见高度变化方向不对（${dockerAudit.before.effectsHeight} → ${dockerAudit.afterCollapse.effectsHeight}）`);
+}
+if (dockerAudit.afterWorkspace.stored !== "review") {
+  problems.push(`工作区选择没有持久化（localStorage=${dockerAudit.afterWorkspace.stored}）`);
+}
+// "校对"预设：历史与日志**展开** ✓、调整/内核/缩略图**折叠** ✓。
+if (dockerAudit.afterWorkspace.historyCollapsed || !dockerAudit.afterWorkspace.effectsCollapsed) {
+  problems.push(`"校对"工作区的折叠集合不对：${JSON.stringify(dockerAudit.afterWorkspace.collapsed)}`);
+}
+console.log(`  Dockers：${dockerAudit.cards} 个面板｜折叠切换高度 ${dockerAudit.before.effectsHeight} → ${dockerAudit.afterCollapse.effectsHeight}` +
+  `｜"校对"折叠 ${dockerAudit.afterWorkspace.collapsed.length} 个｜持久化 ${dockerAudit.afterWorkspace.stored}`);
+
 // 布局结构断言 ✓ —— 加这一段的直接原因：我在"移动选项栏"时把 <nav id="tools"> 的
 // 开闭标签一起删掉了 ✗，20 个按钮于是变成 main 的网格子元素、三列铺满整页 ✓，
 // 而当时的检查只测"按钮是否在视口内" ✓ 竟然全部通过 ✗（布局错了却全绿 ✓）。
