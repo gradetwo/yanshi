@@ -346,6 +346,37 @@ const importResult = await evaluate(`(async () => {
            log: document.getElementById("log").innerText.slice(0, 160) };
 })()`);
 
+// 页面不得横向溢出（用户截图里的「排版都出去了」）：侧栏内部一旦撑破网格列，
+// 画布就会被挤出屏幕。这条断言比"按钮是否可见"更根本。
+const overflow = await evaluate(`(() => {
+  const doc = document.documentElement;
+  // 直接列出右边界最靠前的元素（不要按父元素过滤：上一版因此什么都没报出来）。
+  const widest = Array.from(document.querySelectorAll("body *"))
+    .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+    .filter((item) => item.rect.width > 0)
+    .sort((a, b) => b.rect.right - a.rect.right)
+    .slice(0, 5)
+    .map((item) => (item.el.id ? "#" + item.el.id : item.el.tagName.toLowerCase()) +
+      "[" + Math.round(item.rect.left) + ".." + Math.round(item.rect.right) + "]");
+  const byScroll = Array.from(document.querySelectorAll("body *"))
+    .map((el) => ({ el, sw: el.scrollWidth, rect: el.getBoundingClientRect() }))
+    .filter((item) => item.sw > doc.clientWidth)
+    .sort((a, b) => b.sw - a.sw)
+    .slice(0, 5)
+    .map((item) => (item.el.id ? "#" + item.el.id : item.el.tagName.toLowerCase()) +
+      " sw=" + item.sw + " right=" + Math.round(item.rect.right));
+  return {
+    scrollWidth: doc.scrollWidth,
+    clientWidth: doc.clientWidth,
+    dialogOpen: !!document.querySelector("dialog") && document.querySelector("dialog").open,
+    scrollWide: byScroll,
+    bodyWidth: Math.round(document.body.getBoundingClientRect().width),
+    mainWidth: Math.round(document.querySelector("main").getBoundingClientRect().width),
+    asideWidth: Math.round(document.querySelector("aside").getBoundingClientRect().width),
+    widest,
+  };
+})()`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));
@@ -694,6 +725,13 @@ if (importResult.log.includes("导入失败")) {
   problems.push(`本地导入报告失败：${JSON.stringify(importResult.log)}`);
 }
 
+// 页面不得横向溢出
+if (overflow.scrollWidth > overflow.clientWidth + 1) {
+  problems.push(
+    `页面横向溢出 ${overflow.scrollWidth - overflow.clientWidth}px（body ${overflow.bodyWidth} / main ${overflow.mainWidth} / 侧栏 ${overflow.asideWidth}）—— 最靠右：${overflow.widest.join(", ")}`
+  );
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -811,6 +849,9 @@ console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
 console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
+console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);
+console.log(`  dialog.open=${overflow.dialogOpen}｜自身超宽的：${overflow.scrollWide.join(", ")}`);
 console.log(`  工具栏：${toolbar.total} 个按钮，视口外 ${toolbar.outside.length} 个`);
 console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}`);
 console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);

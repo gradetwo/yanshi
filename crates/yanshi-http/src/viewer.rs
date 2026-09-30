@@ -29,7 +29,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
      右侧露出一块灰色死区，点击落在 .stage 上而不是 canvas 上（用户报告的「右边一块没法用」）。 */
-  main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; padding: 12px; align-items: start; }
+  /* 第一列用 minmax(0,1fr)：`1fr` 的最小尺寸是 auto ⇒ 左列被内容撑开后整个页面横向溢出，
+     画布被挤到屏幕外（用户截图里的「排版都出去了」）。
+     `body { overflow-x: hidden }` 只是掩盖症状，真正要允许列收缩。 */
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
+          /* 兜底：实测 main 自身的 scrollWidth 会达到 2007（其子元素的 rect 都在 1265 内，
+             溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
+             所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
+          overflow-x: clip; }
   /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
      不能一起收缩，否则工具按钮会溢出窗口。 */
   .stage { justify-self: start; max-width: 100%; }
@@ -44,6 +51,19 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
   aside { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
   aside .card { min-width: 0; }
+  /* 面板内的可伸缩元素：下拉的选项名可能很长（图层 id）。光限制 select 不够 ——
+     包裹它的 <label> 的 min-content 仍然等于最长选项 ⇒ label 会撑破 320px 列。
+     因此 label 必须是可收缩的 flex 容器（本轮实测：超宽元素就是 label[1270..1675] ✓）。 */
+  aside label { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+  aside select, aside input, aside button { max-width: 100%; min-width: 0; }
+  aside label select, aside label input { flex: 1 1 auto; min-width: 0; }
+  #history .row { min-width: 0; }
+  /* 原生 <dialog> 在 top layer，宽度按内容撑开 ⇒ 会撑大 documentElement.scrollWidth
+     （实测：body/main/aside 都在视口内，scrollWidth 却多出 742px ✗）。必须显式限宽。 */
+  dialog { max-width: min(760px, 92vw); border: 1px solid var(--line); border-radius: 8px; }
+  dialog #docList { max-width: 100%; }
+  #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #log { overflow-x: hidden; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
   #history .row { display: flex; gap: 6px; align-items: center; padding: 1px 0; }
   #history .row button { padding: 0 5px; font-size: 11px; }
