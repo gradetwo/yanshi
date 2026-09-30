@@ -265,12 +265,17 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 供 CDP / 自动化验收读取的统计（Phase 2 出口条件：bit-exact 与首笔 < 16ms）。
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
+  // 当前打开的文档与令牌 ✓ —— 自动化验收需要知道"查看器此刻在编辑哪一个文档" ✓
+  //（本会话就栽过：检查脚本凭早先的 doc/token 去查对象 ✓，而页面早已切到另一个文档 ✗）。
+  docId: null, token: null,
   firstStrokeMs: null, firstPaintMs: null, kernelWarmMs: null,
   lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
   bitExact: null, resyncs: 0,
 };
 
 const params = new URLSearchParams(location.search);
+window.yanshiStats.docId = params.get("doc");
+window.yanshiStats.token = params.get("token");
 // `?debug=1` 时暴露工具调用入口：自动化验收需要**读服务端的真实响应**（例如 list_objects 的 bbox），
 // 而不是靠画布像素反推。此前我在检查脚本里写了一个并不存在的 `window.yanshiCallTool` ✗，
 // 于是整段用例静默返回空对象 ✓ —— 现在把它真正接上。
@@ -987,12 +992,22 @@ async function loadMedium(name) {
     throw new Error("插件 import 了宿主函数，违反插件边界：" + imports.map((i) => i.name).join(", "));
   }
   const instance = await WebAssembly.instantiate(module, {});
+  // 预检：插件必须导出线性内存 ✓（否则宿主无法读取它产出的像素 ✗ ——
+  // 这正是上一轮"点击后毫无日志"的可疑点之一 ✓，现在把它变成**可观测**的检查 ✓）。
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error(
+      "插件没有导出 memory，宿主无法读取像素（导出：" +
+        Object.keys(instance.exports).join(", ") + "）");
+  }
   const abi = instance.exports.yanshi_abi_version();
   if (abi !== spec.version) {
     throw new Error("插件 ABI 版本 " + abi + " 与登记版本 " + spec.version + " 不一致");
   }
   spec.instance = instance;
   spec.maxDab = instance.exports.yanshi_max_dab();
+  window.yanshiStats.medium = {
+    id: spec.id, version: spec.version, abi, maxDab: spec.maxDab, status: "ready",
+  };
   return spec;
 }
 
@@ -1003,6 +1018,21 @@ async function loadMedium(name) {
 /// 无法实例化别的 wasm 模块 ✗；插件只能在宿主侧跑 ✓。而把输出写进 CAS ⇒
 /// 像素**随日志固化** ✓ ⇒ "升级插件不改写旧文档渲染"这条不变量自然成立 ✓（历史可复现 ✓）。
 async function mediumDab(name, point) {
+  // **整段包住** ✓：此前的写法只把加载放进 try ✓，其余步骤一旦抛错，
+  // `void mediumDab(...)` 会把异常变成**未捕获的 Promise 拒绝** ✗ ——
+  // 既不进日志也不报错 ✓，于是"点击后毫无信号" ✗（上一轮就卡在这里 ✓）。
+  try {
+    await mediumDabInner(name, point);
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
+      status: "error", error: message,
+    });
+    log("介质落笔失败：" + message, "#c33");
+  }
+}
+
+async function mediumDabInner(name, point) {
   let spec;
   try {
     spec = await loadMedium(name);
@@ -1011,9 +1041,12 @@ async function mediumDab(name, point) {
     return;
   }
   const size = Math.min(48, spec.maxDab);
-  const api = spec.instance.exports;
-  const written = api.yanshi_dab(Number($("strength").value) || 40, size, 1000);
-  const pixels = new Uint8ClampedArray(api.memory.buffer, api.yanshi_dab_ptr(), written);
+  // 注意命名 ✓：**不要**叫 `api` ✗ —— 查看器自己有一个 `api(path)` 的 URL 助手 ✓，
+  // 同名局部变量会把它遮蔽 ✓，于是后面 `fetch(api("/api/blob"))` 会调到一个对象上 ✗
+  //（实测报 "api is not a function" ✓ —— 这一条是靠 yanshiStats.medium 的可观测信号才立刻定位的 ✓）。
+  const plugin = spec.instance.exports;
+  const written = plugin.yanshi_dab(Number($("strength").value) || 40, size, 1000);
+  const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
   const image = new ImageData(new Uint8ClampedArray(pixels), size, size);
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -1066,6 +1099,9 @@ async function mediumDab(name, point) {
     log("介质描述符记录失败：" + (replaced.error_code || "unknown"), "#c33");
     return;
   }
+  window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
+    status: "dabbed", size, objectId, layerId,
+  });
   log("已用介质「" + spec.id + " v" + spec.version + "」落笔（" + size + "×" + size + "）");
   await refreshLayers();
   $("layer").value = layerId;
@@ -1999,7 +2035,13 @@ board.addEventListener("pointerdown", (event) => {
     // 介质插件（设计 11.1）：宿主实例化插件 → 产出 RGBA → 入 CAS 与日志 ✓。
     event.preventDefault();
     const point = localPoint(event);
-    void mediumDab("example", { x: point.x, y: point.y });
+    void mediumDab("example", { x: point.x, y: point.y }).catch((error) => {
+      const message = error && error.message ? error.message : String(error);
+      window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
+        status: "rejected", error: message,
+      });
+      log("介质落笔失败（未捕获）：" + message, "#c33");
+    });
     return;
   }
   if (state.tool === MOVE_TOOL) {
