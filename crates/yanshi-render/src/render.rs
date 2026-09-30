@@ -650,8 +650,24 @@ impl Renderer {
             // 调整/滤镜对象作用于整层、无法用几何裁剪；未实现类型必须保留以便产生告警。
             // 对象变换在此统一施加（此前内核完全不读 `object.transform` ✗，
             // 导致 `move_object` 返回 ok 但画面不变）。
-            let primitive =
-                crate::object::transform_primitive(parse_object(object), &object.transform);
+            // **实例：渲染 master 的图元** ✓（设计 9.2 `resolve_object` ✓ 的第一步 ✓）。
+            // 变换次序 ✓：master 自身的 `transform` → `master_ref.local_transform` → 实例自己的 `transform` ✓
+            //（与 `transform_primitive` 逐层施加等价 ✓，见 `compose_transform` 的说明 ✓）。
+            // **裁剪必须用带状态口径** ✓：实例的几何要靠 master 解析 ✓（见 `object_bbox_in` ✓）。
+            let primitive = if object.object_type == yanshi_core::ObjectType::Instance {
+                match crate::object::resolve_instance(state, object) {
+                    Some((master_primitive, transform)) => {
+                        crate::object::transform_primitive(master_primitive, &transform)
+                    }
+                    // **master 不可用（不存在/已删/成环）⇒ 什么都不画** ✓，
+                    // 但**不报错** ✓：日志顺序允许先建实例后建 master ✓，补齐后自动恢复 ✓。
+                    None => Primitive::Unsupported {
+                        reason: "实例的 master 当前不可用".to_owned(),
+                    },
+                }
+            } else {
+                crate::object::transform_primitive(parse_object(object), &object.transform)
+            };
             let affects_whole_layer = matches!(
                 primitive,
                 Primitive::Adjustment { .. }
@@ -659,7 +675,9 @@ impl Renderer {
                     | Primitive::Unsupported { .. }
             );
             if !affects_whole_layer {
-                let intersects = crate::object::object_bbox(object)
+                // **实例的包围盒必须解析 master** ✓（否则实例会被当成空盒子裁掉 ✗，
+                // 实测："实例应在 local_transform 指定的位置画出 master（实测 0）" ✓）。
+                let intersects = crate::object::object_bbox_in(state, object)
                     .map(|bbox| {
                         bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
                     })

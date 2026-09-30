@@ -291,6 +291,67 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateObject | AtomKind::ImportImage => {
             let object_id = required(atom, "object_id")?;
+            // **实例必须在折叠层就能挡住循环引用** ✓（设计 9.3「循环引用检测：拒绝创建并返回错误」✓）——
+            // 只在工具层检查是不够的 ✗：原子可以直接写进日志 ✓，
+            // 而重放时遇到环会**无限递归** ✓（渲染时解析 master 会一直往下走 ✓）。
+            if atom.kind == AtomKind::CreateObject
+                && atom.payload.get("type").and_then(Value::as_str) == Some("instance")
+            {
+                let master = atom
+                    .payload
+                    .get("data")
+                    .and_then(|data| data.get("master_ref"))
+                    .and_then(|master_ref| master_ref.get("object_id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        err(
+                            ErrorCode::InvalidArgument,
+                            "instance 缺少 data.master_ref.object_id".to_owned(),
+                        )
+                    })?;
+                // 顺着 master 链走一遍 ✓：走到自己 ⇒ 成环 ✓（含**自引用** ✓）。
+                let mut cursor = master.to_owned();
+                let mut visited = std::collections::BTreeSet::new();
+                loop {
+                    if cursor == object_id {
+                        return Err(err(
+                            ErrorCode::InvalidArgument,
+                            format!("循环引用：实例 {object_id} 通过 {master} 回到了自己"),
+                        ));
+                    }
+                    if !visited.insert(cursor.clone()) {
+                        return Err(err(
+                            ErrorCode::InvalidArgument,
+                            format!("循环引用：{master} 所在的 master 链已经成环"),
+                        ));
+                    }
+                    if visited.len() > 64 {
+                        return Err(err(
+                            ErrorCode::InvalidArgument,
+                            "master 链过深（超过 64 层）—— 疑似循环引用".to_owned(),
+                        ));
+                    }
+                    match state.objects.get(&cursor) {
+                        Some(object)
+                            if object.object_type == crate::state::ObjectType::Instance =>
+                        {
+                            let Some(next) = object
+                                .data
+                                .get("master_ref")
+                                .and_then(|master_ref| master_ref.get("object_id"))
+                                .and_then(Value::as_str)
+                            else {
+                                break;
+                            };
+                            cursor = next.to_owned();
+                        }
+                        // 非实例（或尚不存在 ✓）：链到此为止 ✓。
+                        // **master 暂时不存在不算错** ✓ —— 日志顺序允许先建实例后建 master ✓，
+                        // 渲染时解析不到就什么都不画 ✓（见 `render.rs` ✓），master 补齐后自动恢复 ✓。
+                        _ => break,
+                    }
+                }
+            }
             if state.objects.contains_key(object_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,

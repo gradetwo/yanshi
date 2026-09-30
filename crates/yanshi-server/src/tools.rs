@@ -888,6 +888,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "create_instance",
+        profile: Profile::Core,
+        summary: "创建实例（设计 9.4）",
+        mutating: true,
+        params: &[
+            param!("instance_id", String, true, "实例对象 id"),
+            param!("layer_id", String, true, "所属图层"),
+            param!("master_id", String, true, "master 对象 id"),
+            param!("local_transform", Object, false, "{dx,dy} 或 {matrix,pivot}"),
+        ],
+    },
+    ToolSpec {
         name: "create_group",
         profile: Profile::Core,
         summary: "创建对象组（设计 9.4）",
@@ -1517,6 +1529,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_object" => write_update_object(ctx, args),
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
+        "create_instance" => write_create_instance(ctx, args),
         "create_group" => write_create_group(ctx, args),
         "add_to_group" => write_add_to_group(ctx, args),
         "remove_from_group" => write_remove_from_group(ctx, args),
@@ -2366,6 +2379,70 @@ fn check_group_members(ctx: &mut ToolContext<'_>, group_id: &str) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+/// 创建实例 ✓（设计 9.4 ✓；`resolve_object` 见 `fold.rs` 与 `render.rs` ✓）。
+///
+/// **本片边界（明确拒绝 ✓）**：`override` 与 `sync_policy`（除缺省 `all` 外）需要设计 9.3 的
+/// 缓存共享与依赖图传播 ✓，尚未实现 ✓ ⇒ 这里**报错**而不是默默忽略 ✓ ——
+/// 静默接受一个不生效的姿势比明确不支持糟得多 ✓（上一轮组工具已经吃过一次这个教训 ✓）。
+///
+/// **循环引用在折叠层被挡住** ✓（`fold.rs` 的 `CreateObject` ✓）：
+/// 手工写入日志的环、自引用、过深的链都会在**提交时**被拒 ✓，而不是等到渲染时无限递归 ✓。
+fn write_create_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let instance_id = require_str(args, "instance_id")?;
+    let layer_id = require_str(args, "layer_id")?;
+    let master_id = require_str(args, "master_id")?;
+    if let Some(override_value) = args.get("override") {
+        if !override_value.is_null() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "本片不支持 instance.override（需要设计 9.3 的缓存与依赖图传播）".to_owned(),
+                ),
+            ));
+        }
+    }
+    if let Some(policy) = args.get("sync_policy").and_then(Value::as_str) {
+        if policy != "all" {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "本片只支持 sync_policy: all（收到 {policy}）—— 需要设计 9.3 的依赖图传播"
+                )),
+            ));
+        }
+    }
+    // master 必须**已存在且不是实例之外的东西都行** ✓ —— 实例套实例是允许的 ✓（设计 9.2 会逐层解析 ✓），
+    // 但**成环会被折叠层拒绝** ✓。这里只检查存在性 ✓，给出比"成环"更直白的错误 ✓。
+    {
+        let state = document_state(ctx)?;
+        if !state.objects.contains_key(master_id.as_str()) {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("master {master_id} 不存在")),
+            ));
+        }
+    }
+    let local_transform = args
+        .get("local_transform")
+        .cloned()
+        .unwrap_or_else(|| json!({"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "pivot": [0.0, 0.0]}));
+    let result = ctx.commit(
+        AtomKind::CreateObject,
+        json!({
+            "object_id": instance_id,
+            "layer_id": layer_id,
+            "type": "instance",
+            "data": {
+                "master_ref": {"object_id": master_id, "local_transform": local_transform},
+                "sync_policy": "all",
+            },
+        }),
+    )?;
+    Ok(
+        json!({"ok": true, "instance_id": instance_id, "master_id": master_id, "head": result.head_seq}),
+    )
 }
 
 fn write_create_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

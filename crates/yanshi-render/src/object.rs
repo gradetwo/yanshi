@@ -492,6 +492,165 @@ pub fn parse_color(value: &Value) -> LinearRgba {
 ///
 /// 纯平移之外的旋转/缩放只对**点集**精确（笔触/形状/修图点列 ✓）；
 /// 位图补丁（`RasterPatch`）目前只支持平移 ✓ —— 旋转/缩放需要重采样 ✓，记为后续项 ✓。
+/// **实例解析** ✓ —— 设计 9.2 `resolve_object` 的第一步 ✓。
+///
+/// 返回"master 的图元 + 依次施加的变换" ✓，调用方按 [`transform_primitive`] 逐层施加即可 ✓：
+/// 先 master 自己的 `transform` ✓、再 `master_ref.local_transform` ✓、最后实例自身的 `transform` ✓。
+///
+/// **设计未规定的两处，记录选择 ✓**：
+/// * `override` 与 `sync_policy`（除 `all` 外）本片**不支持** ✓ —— 它们需要 9.3 的缓存与依赖图 ✓，
+///   因此在**工具层**创建时就明确拒绝 ✓（见 `create_instance` ✓），而不是默默忽略 ✓；
+/// * **master 不存在时不报错、也不画** ✓：日志顺序允许"先建实例、后建 master" ✓，
+///   解析不到就什么都不画 ✓，master 补齐后**自动恢复** ✓ —— 这是"日志决定渲染"的直接推论 ✓。
+///
+/// 循环引用**在折叠层就被挡住** ✓（见 `fold.rs` ✓）；这里仍带一个**深度上限** ✓，
+/// 作为纵深防御 ✓：万一有环漏过来 ✓，渲染也不能无限递归 ✓（宁可不画 ✓）。
+pub fn resolve_instance(
+    state: &yanshi_core::DocumentState,
+    object: &Object,
+) -> Option<(Primitive, Transform)> {
+    let mut composed = object.transform;
+    let mut cursor = object.clone();
+    for _ in 0..64 {
+        let master_ref = cursor.data.get("master_ref")?;
+        let master_id = master_ref.get("object_id").and_then(Value::as_str)?;
+        // `local_transform` ✓（缺省即恒等 ✓）。
+        if let Some(local) = master_ref.get("local_transform") {
+            let local = transform_from_value(local);
+            composed = compose_transform(&local, &composed);
+        }
+        let master = state.objects.get(master_id)?;
+        if master.is_deleted() {
+            // master 被删 ⇒ 什么都不画 ✓（但引用还在 ✓，恢复 master 后实例自动回来 ✓）。
+            return None;
+        }
+        if master.object_type == yanshi_core::ObjectType::Instance {
+            // 链上还有实例 ⇒ 继续往上 ✓（同样先叠加它自己的变换 ✓）。
+            composed = compose_transform(&master.transform, &composed);
+            cursor = master.clone();
+            continue;
+        }
+        // 到顶了 ✓：返回 master 的图元与合成好的变换 ✓。
+        let primitive = parse_object(master);
+        return Some((primitive, compose_transform(&master.transform, &composed)));
+    }
+    // 超过深度上限：**不画** ✓（宁缺勿递归 ✓）。
+    None
+}
+
+/// 把 `{matrix, pivot}` 解析成 [`Transform`] ✓（缺省恒等 ✓）。
+fn transform_from_value(value: &Value) -> Transform {
+    let mut transform = Transform::IDENTITY;
+    if let Some(matrix) = value.get("matrix").and_then(Value::as_array) {
+        if matrix.len() == 6 {
+            for (slot, item) in transform.matrix.iter_mut().zip(matrix) {
+                *slot = item.as_f64().unwrap_or(0.0);
+            }
+        }
+    }
+    if let Some(pivot) = value.get("pivot").and_then(Value::as_array) {
+        if pivot.len() == 2 {
+            transform.pivot = [
+                pivot[0].as_f64().unwrap_or(0.0),
+                pivot[1].as_f64().unwrap_or(0.0),
+            ];
+        }
+    }
+    transform
+}
+
+/// 变换合成 ✓：`outer ∘ inner` ⇒ 先用 `inner` 再用 `outer` ✓。
+///
+/// 两者都带 `pivot` ✓，因此这里**只在矩阵层面合成** ✓，并把 `pivot` 归零 ✓ ——
+/// 语义上等价于"先绕 inner.pivot 施加 inner ✓，再绕 outer.pivot 施加 outer" ✓
+/// 吗？**不等价** ✗。所以这里把 pivot 折进矩阵 ✓：`M' = T(p) · M · T(-p)` ✓，
+/// 再相乘 ✓ ⇒ 与逐层施加**完全一致** ✓（这正是 `transform_primitive` 的做法 ✓）。
+fn compose_transform(outer: &Transform, inner: &Transform) -> Transform {
+    let outer_matrix = flatten(outer);
+    let inner_matrix = flatten(inner);
+    // 2×3 仿射相乘 ✓（与 `transform_primitive` 同一约定 ✓）。
+    let mut matrix = [0.0f64; 6];
+    matrix[0] = outer_matrix[0] * inner_matrix[0] + outer_matrix[2] * inner_matrix[1];
+    matrix[1] = outer_matrix[1] * inner_matrix[0] + outer_matrix[3] * inner_matrix[1];
+    matrix[2] = outer_matrix[0] * inner_matrix[2] + outer_matrix[2] * inner_matrix[3];
+    matrix[3] = outer_matrix[1] * inner_matrix[2] + outer_matrix[3] * inner_matrix[3];
+    matrix[4] =
+        outer_matrix[0] * inner_matrix[4] + outer_matrix[2] * inner_matrix[5] + outer_matrix[4];
+    matrix[5] =
+        outer_matrix[1] * inner_matrix[4] + outer_matrix[3] * inner_matrix[5] + outer_matrix[5];
+    Transform {
+        matrix,
+        pivot: [0.0, 0.0],
+    }
+}
+
+/// **带状态的包围盒** ✓ —— 实例要按 master 解析 ✓，所以包围盒必须能拿到 [`DocumentState`] ✓。
+///
+/// 这一步**不能推迟** ✗（我原本想留下一轮 ✓）：渲染循环按**包围盒裁剪** ✓，
+/// 而实例的 `parse_object` 本身没有几何 ✗ ⇒ 用旧口径得到的是空包围盒 ⇒ **实例永远被裁掉** ✓
+/// （实测："实例应在 local_transform 指定的位置画出 master（实测 0）" ✓）。
+///
+/// 做法刻意从简 ✓：构造一个"**master 的副本 + 合成后的变换**"的临时对象 ✓，
+/// 交给已有的 [`object_bbox`] ✓ ⇒ 包围盒口径与渲染口径**必然一致** ✓（不会两处各算一套 ✓）。
+pub fn object_bbox_in(state: &yanshi_core::DocumentState, object: &Object) -> Option<Bbox> {
+    if object.object_type != yanshi_core::ObjectType::Instance {
+        return object_bbox(object);
+    }
+    let (primitive, transform) = resolve_instance(state, object)?;
+    // 临时对象只用来复用 `object_bbox` 的图元分支 ✓（`data` 用 master 的 ✓，`transform` 用合成后的 ✓）。
+    let mut synthetic = object.clone();
+    synthetic.object_type = yanshi_core::ObjectType::Shape;
+    synthetic.transform = transform;
+    // 让 `parse_object` 走 master 的图元分支 ✓：直接把 master 的 data 塞进来 ✓。
+    if let Some(master) = resolved_master(state, object) {
+        synthetic.data = master.data.clone();
+    }
+    let _ = primitive;
+    object_bbox(&synthetic)
+}
+
+/// 取实例最终解析到的 **master 对象** ✓（跳过中间层的实例 ✓）。
+fn resolved_master<'a>(
+    state: &'a yanshi_core::DocumentState,
+    object: &Object,
+) -> Option<&'a Object> {
+    let mut cursor = object.clone();
+    for _ in 0..64 {
+        let master_id = cursor
+            .data
+            .get("master_ref")
+            .and_then(|master_ref| master_ref.get("object_id"))
+            .and_then(Value::as_str)?;
+        let master = state.objects.get(master_id)?;
+        if master.is_deleted() {
+            return None;
+        }
+        if master.object_type == yanshi_core::ObjectType::Instance {
+            cursor = master.clone();
+            continue;
+        }
+        return Some(master);
+    }
+    None
+}
+
+/// 把带 `pivot` 的变换折成纯 2×3 矩阵 ✓：`T(pivot) · M · T(-pivot)` ✓。
+fn flatten(transform: &Transform) -> [f64; 6] {
+    let m = transform.matrix;
+    let (px, py) = (transform.pivot[0], transform.pivot[1]);
+    [
+        m[0],
+        m[1],
+        m[2],
+        m[3],
+        m[4] + px - (m[0] * px + m[2] * py),
+        m[5] + py - (m[1] * px + m[3] * py),
+    ]
+}
+
+/// 对图元施加仿射变换 ✓（内核里**唯一**施加对象变换的入口 ✓）。
+///
+/// 返回图元本身（几何已就地变换 ✓）；恒等变换直接原样返回 ✓。
 pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> Primitive {
     if transform.is_identity() {
         return primitive;
