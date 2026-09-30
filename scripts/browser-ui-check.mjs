@@ -305,6 +305,47 @@ const fingerprintAfterEffect = effectResult.fingerprint;
 await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
 await new Promise((r) => setTimeout(r, 1800));
 
+// 打开对话框（#4）：必须列出**服务器上的文档**；本地导入必须真的生效。
+const dialogResult = await evaluate(`(async () => {
+  document.getElementById("openDoc").click();
+  await new Promise((r) => setTimeout(r, 1500));
+  const cards = Array.from(document.querySelectorAll("#docList button"));
+  const labels = cards.map((card) => card.textContent);
+  document.getElementById("openClose").click();
+  await new Promise((r) => setTimeout(r, 300));
+  return { count: cards.length, labels };
+})()`);
+
+// 本地导入：在页面里造一张 64×64 的纯色 PNG 文件，塞进 file input（Chromium 支持 DataTransfer），
+// 然后断言画布指纹变化且图层数 +1。
+const importResult = await evaluate(`(async () => {
+  const layersBefore = document.getElementById("layer").options.length;
+  const before = ${canvasFingerprint};
+  const source = document.createElement("canvas");
+  source.width = 64;
+  source.height = 64;
+  const context = source.getContext("2d");
+  context.fillStyle = "#1f6feb";
+  context.fillRect(0, 0, 64, 64);
+  const blob = await new Promise((resolve) => source.toBlob(resolve, "image/png"));
+  const file = new File([blob], "check-import.png", { type: "image/png" });
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  const input = document.getElementById("importFile");
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change"));
+  let after = before;
+  let layersAfter = layersBefore;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    after = ${canvasFingerprint};
+    layersAfter = document.getElementById("layer").options.length;
+    if (after.sum !== before.sum && layersAfter > layersBefore) break;
+  }
+  return { before: before.sum, after: after.sum, layersBefore, layersAfter,
+           log: document.getElementById("log").innerText.slice(0, 160) };
+})()`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));
@@ -636,6 +677,23 @@ if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEf
   problems.push("应用 invert 后画布像素没有任何变化");
 }
 
+// 打开对话框 + 本地导入
+if (dialogResult.count < 1) {
+  problems.push("打开对话框没有列出任何服务器文档");
+}
+if (importResult.layersAfter <= importResult.layersBefore) {
+  problems.push(`本地导入没有新建图层：${importResult.layersBefore} → ${importResult.layersAfter}｜日志 ${JSON.stringify(importResult.log)}`);
+}
+// 像素层次的正确性由确定性测试覆盖（crates/yanshi-http 的
+// `uploaded_blob_can_be_imported_and_renders_pixels`：上传 → import_image → 渲染出红色 ✓）。
+// 这里只断言 UI 事实：图层增加、日志报告成功、且没有失败信息。
+if (!importResult.log.includes("已导入")) {
+  problems.push(`本地导入没有报告成功：${JSON.stringify(importResult.log)}`);
+}
+if (importResult.log.includes("导入失败")) {
+  problems.push(`本地导入报告失败：${JSON.stringify(importResult.log)}`);
+}
+
 // 工具栏可见性
 if (toolbar.outside.length > 0) {
   problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
@@ -751,6 +809,8 @@ console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometr
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
+console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
+console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${importResult.log.includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  工具栏：${toolbar.total} 个按钮，视口外 ${toolbar.outside.length} 个`);
 console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}`);
 console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);

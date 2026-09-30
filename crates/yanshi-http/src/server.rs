@@ -407,7 +407,10 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     if path == "/api/blob" {
         return match method {
             "GET" => blob_route(state, request),
-            _ => method_not_allowed(request, "GET"),
+            // 上传（设计 6.3「blob 先行」）：客户端先传字节，再提交引用它的原子。
+            // `import_image` 这类工具要求 blob 已存在（悬空引用会被 12.2 的校验拒绝）。
+            "POST" => blob_upload(state, request),
+            _ => method_not_allowed(request, "GET, POST"),
         };
     }
     if path == "/api/atoms" {
@@ -622,6 +625,56 @@ fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Respo
     };
     let closed = workspace.close_document(doc_id);
     Response::json(200, &json!({"ok": true, "closed": closed}))
+}
+
+/// 上传 blob（`POST /api/blob?doc=..&token=..`，请求体即字节）。
+///
+/// 返回 `{ok, blob_hash, size, mime_type}`，供 `import_image` 等工具引用。
+/// 大小上限与设计的画布规模相称（默认 64MiB，可用 `YANSHI_MAX_UPLOAD_BYTES` 覆盖）。
+fn blob_upload(state: &ServerState, request: &Request) -> Response {
+    let doc_id = match doc_param(request) {
+        Ok(doc_id) => doc_id,
+        Err(response) => return response,
+    };
+    let principal = match authorize(state, request, &doc_id) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    if !principal.role.can_edit() {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PermissionDenied,
+            ErrorContext::detail("该 token 不允许上传 blob"),
+        ));
+    }
+    let limit = std::env::var("YANSHI_MAX_UPLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(64 * 1024 * 1024);
+    if request.body.is_empty() {
+        return crate::http::bad_request("上传内容为空");
+    }
+    if request.body.len() > limit {
+        return Response::json(
+            413,
+            &json!({"ok": false, "error_code": "resource_exhausted", "retryable": false,
+                    "context": {"detail": format!("上传 {} 字节超过上限 {limit}", request.body.len())}}),
+        );
+    }
+    let mime_type = request
+        .header("content-type")
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let Ok(workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    match workspace.store().put(&request.body) {
+        Ok(hash) => Response::json(
+            200,
+            &json!({"ok": true, "blob_hash": hash.to_string(), "size": request.body.len(),
+                    "mime_type": mime_type}),
+        ),
+        Err(error) => Response::from_error(&error),
+    }
 }
 
 fn blob_route(state: &ServerState, request: &Request) -> Response {
@@ -1325,6 +1378,128 @@ mod tests {
         Request::read(&mut std::io::Cursor::new(raw.into_bytes()))
             .unwrap()
             .unwrap()
+    }
+
+    /// 建一个文档并返回 Editor token（本模块多个测试需要）。
+    fn editor_token(state: &ServerState, doc_id: &str) -> String {
+        let mut workspace = state.workspace.lock().unwrap();
+        workspace
+            .create_document(NewDocument::new(doc_id, 32, 32), "human:1", "session:test")
+            .unwrap();
+        workspace
+            .issue_token(doc_id, "human:1", Role::Editor)
+            .unwrap()
+            .as_str()
+            .to_owned()
+    }
+
+    /// 调一次工具并返回响应体。
+    fn call_tool(
+        state: &ServerState,
+        doc_id: &str,
+        token: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Value {
+        let mut request = request(
+            "POST",
+            &format!("/api/tools/{tool}?doc={doc_id}&token={token}"),
+        );
+        request.body = serde_json::to_vec(args).unwrap();
+        body_json(&route(state, &request))
+    }
+
+    /// 上传字节到 `POST /api/blob`。
+    fn upload_blob(state: &ServerState, doc_id: &str, token: &str, bytes: Vec<u8>) -> Value {
+        let mut request = request("POST", &format!("/api/blob?doc={doc_id}&token={token}"));
+        request.body = bytes;
+        body_json(&route(state, &request))
+    }
+
+    #[test]
+    fn uploaded_blob_can_be_imported_and_renders_pixels() {
+        let state = state();
+        let token = editor_token(&state, "doc_import");
+
+        // 4×4 不透明红色 RGBA8 —— 查看器从本地文件解出的就是这种格式（`image/x-yanshi-raw`）。
+        let mut pixels = Vec::new();
+        for _ in 0..16 {
+            pixels.extend_from_slice(&[220, 30, 40, 255]);
+        }
+        let uploaded = upload_blob(&state, "doc_import", &token, pixels.clone());
+        assert_eq!(uploaded["ok"], json!(true), "{uploaded}");
+        assert_eq!(uploaded["size"], json!(pixels.len()), "{uploaded}");
+        let hash = uploaded["blob_hash"]
+            .as_str()
+            .expect("应返回 blob_hash")
+            .to_owned();
+
+        assert_eq!(
+            call_tool(
+                &state,
+                "doc_import",
+                &token,
+                "create_layer",
+                &json!({"layer_id": "L"})
+            )["ok"],
+            json!(true)
+        );
+        let imported = call_tool(
+            &state,
+            "doc_import",
+            &token,
+            "import_image",
+            &json!({
+                "layer_id": "L",
+                "bitmap": {"blob_hash": hash, "size": pixels.len(), "mime_type": "image/x-yanshi-raw"},
+                "region": {"x": 0, "y": 0, "w": 4, "h": 4}
+            }),
+        );
+        assert_eq!(imported["ok"], json!(true), "导入应成功：{imported}");
+
+        // 直接问内核/服务端要该区域像素：必须看到导入的红色。
+        let rendered = call_tool(
+            &state,
+            "doc_import",
+            &token,
+            "render_region",
+            &json!({"region": {"x": 0, "y": 0, "w": 4, "h": 4}, "raw": true}),
+        );
+        assert_eq!(rendered["ok"], json!(true), "{rendered}");
+        // 注意：响应里的地址已被改写成可直接 GET 的 `/api/blob/<hash>?doc=..` 形式，
+        // 不再是 `yanshi://blob/<hash>`（我第一次就按后者解析，结果拿到非法 hash）。
+        let raw_url = rendered["raw_url"]
+            .as_str()
+            .expect("应返回 raw_url")
+            .to_owned();
+        let hash = raw_url
+            .trim_start_matches("/api/blob/")
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let bytes = state
+            .workspace
+            .lock()
+            .unwrap()
+            .store()
+            .get(&hash.parse().unwrap())
+            .expect("应能取回原始像素");
+        assert_eq!(bytes.len(), pixels.len(), "渲染字节数应与区域匹配");
+        assert!(
+            bytes[0] > 150 && bytes[1] < 120,
+            "导入后的像素应偏红（实际 r={} g={}）—— 导入路径没有生效",
+            bytes[0],
+            bytes[1]
+        );
+    }
+
+    #[test]
+    fn blob_upload_rejects_an_empty_body() {
+        let state = state();
+        let token = editor_token(&state, "doc_import");
+        let empty = upload_blob(&state, "doc_import", &token, Vec::new());
+        assert_eq!(empty["ok"], json!(false), "空上传应被拒绝：{empty}");
     }
 
     #[test]

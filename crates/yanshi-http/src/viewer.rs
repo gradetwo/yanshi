@@ -68,7 +68,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <h1><img class="brand-mark" src="/brand/svg/icon-light.svg" alt="" />偃师 Yanshi</h1>
   <span id="identity"></span>
   <button id="newDoc">新建</button>
-  <button id="openDoc">打开</button>
+  <button id="openDoc">打开…</button>
   <span class="status">
     <span><span class="dot" id="conn"></span> <span id="connText">未连接</span></span>
     <span>head <b id="head">0</b></span>
@@ -78,6 +78,19 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span id="undoDepth">撤销 0 / 重做 0</span>
   </span>
 </header>
+<dialog id="openDialog">
+  <h2 style="margin-top:0">打开文档</h2>
+  <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
+  <hr />
+  <h2>导入本地图片</h2>
+  <p style="opacity:.75;font-size:12px;margin:4px 0">
+    支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。
+  </p>
+  <input id="importFile" type="file" accept="image/*" />
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+    <button id="openClose">关闭</button>
+  </div>
+</dialog>
 <main>
   <div class="stage">
     <canvas id="board"></canvas>
@@ -786,6 +799,95 @@ async function checkBitExact() {
 async function newDocument() {
   const suffix = Date.now().toString(36);
   await switchDocument("yanshi-" + suffix);
+}
+
+/// 打开对话框：列出**服务器上的文档**（`GET /api/documents`，设计第 611 行提到文档列表用
+/// `doc_thumb` 缩略图），点击即切换；下方提供**本地图片导入**。
+async function showOpenDialog() {
+  const dialog = $("openDialog");
+  const list = $("docList");
+  list.textContent = "载入中…";
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  try {
+    const value = await fetch("/api/documents").then((response) => response.json());
+    const documents = value.documents || [];
+    list.innerHTML = "";
+    if (documents.length === 0) list.textContent = "（服务器上还没有文档）";
+    for (const info of documents) {
+      const card = document.createElement("button");
+      card.style.cssText = "display:flex;flex-direction:column;gap:4px;padding:6px;text-align:left";
+      const thumb = document.createElement("img");
+      thumb.style.cssText = "width:100%;height:72px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:4px";
+      if (info.thumb_url) thumb.src = info.thumb_url;
+      const label = document.createElement("span");
+      label.style.fontSize = "12px";
+      label.textContent = info.doc_id + (info.head_seq !== undefined ? " · head " + info.head_seq : "");
+      card.append(thumb, label);
+      card.addEventListener("click", async () => {
+        closeOpenDialog();
+        await switchDocument(info.doc_id);
+      });
+      list.appendChild(card);
+    }
+  } catch (error) {
+    list.textContent = "读取文档列表失败：" + error.message;
+  }
+}
+
+function closeOpenDialog() {
+  const dialog = $("openDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+/// 导入本地图片：浏览器解码 → 原始 RGBA → 上传（`POST /api/blob`）→ `import_image`。
+///
+/// 走**设计规定的** `import_image`（10.2 导入组）+ 6.3 的「blob 先行」✓。
+/// 用原始像素（`image/x-yanshi-raw`）而不是原文件格式：内核的 RasterPatch 读的就是原始像素，
+/// 浏览器负责解码（PNG/JPEG/WebP 都能解），服务端因此不需要图像解码器 ✓。
+async function importLocalImage(file) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(bitmap, 0, 0);
+  const imageData = context.getImageData(0, 0, bitmap.width, bitmap.height);
+  const bytes = new Uint8Array(imageData.data.buffer);
+
+  const upload = await fetch(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: bytes,
+  }).then((response) => response.json());
+  if (!upload.ok) {
+    log("导入失败（上传）：" + (upload.error_code || upload.context?.detail || "unknown"), "#c33");
+    return;
+  }
+
+  const layerId = "import_" + ulid();
+  const created = await callTool("create_layer", { layer_id: layerId, name: file.name || "import" }, { refresh: false });
+  if (!created.ok) {
+    log("导入失败（新建图层）：" + (created.error_code || "unknown"), "#c33");
+    return;
+  }
+  const imported = await callTool("import_image", {
+    layer_id: layerId,
+    bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
+    region: { x: 0, y: 0, w: bitmap.width, h: bitmap.height },
+  }, { refresh: false });
+  if (!imported.ok) {
+    log("导入失败：" + (imported.error_code || "unknown") + " " +
+        ((imported.context && imported.context.detail) || ""), "#c33");
+    return;
+  }
+  log("已导入 " + file.name + "（" + bitmap.width + "×" + bitmap.height + "）到图层 " + layerId);
+  await refreshLayers();
+  $("layer").value = layerId;
+  state.layerId = layerId;
+  await refreshEffects();
+  await refreshPreview();
 }
 
 /// 打开文档：提示输入文档 id（本地工具，缺省空即用当前）。
@@ -1657,7 +1759,15 @@ $("historyKind").addEventListener("change", refreshHistory);
 $("historyActor").addEventListener("change", refreshHistory);
 
 $("newDoc").addEventListener("click", newDocument);
-$("openDoc").addEventListener("click", promptDocument);
+$("openDoc").addEventListener("click", showOpenDialog);
+$("openClose").addEventListener("click", closeOpenDialog);
+$("importFile").addEventListener("change", async (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  closeOpenDialog();
+  await importLocalImage(file);
+  event.target.value = "";
+});
 
 (async () => {
   window.addEventListener("resize", () => {
