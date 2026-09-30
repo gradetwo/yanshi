@@ -975,6 +975,8 @@ function previewObject(pending) {
   const color = colorCss();
   const size = Number($("size").value);
   const points = state.points.map((p) => [p.x, p.y]);
+  // **新笔迹启用渲染时平滑** ✓（设计 11.1 的"矢量"路径 ✓）：日志里存的仍是**原始采样点** ✓，
+  // 平滑只发生在渲染时 ✓ ⇒ 放大时线条不再是折线 ✓、无损 ✓、以后想换插值也不用改历史 ✓。
   if (pending.tool === "rect" || pending.tool === "ellipse") {
     const [a, b] = state.points;
     return {
@@ -995,7 +997,13 @@ function previewObject(pending) {
   if (pending.tool === "erase") {
     return { layer_id: pending.layerId, type: "stroke", data: { points, size: size * 1.5, color: { r: 255, g: 255, b: 255, a: 255 } } };
   }
-  return { layer_id: pending.layerId, type: "stroke", data: { points, size, color, hardness: 0.7 } };
+  return {
+    layer_id: pending.layerId,
+    type: "stroke",
+    // `smooth: true` ✓ ⇒ **渲染时**做 Catmull-Rom 平滑 ✓（日志里仍是原始采样点 ✓）——
+    // 这就是设计 11.1 里"矢量"那一类介质的落点 ✓：几何存日志 ✓、按视图重栅格化 ✓。
+    data: { points, size, color, hardness: 0.7, smooth: true },
+  };
 }
 
 // 把客户端构造的原子立刻应用到本地内核（乐观渲染），返回是否成功。
@@ -2927,7 +2935,7 @@ function strokeAtom(pending, final) {
   const size = Number($("size").value);
   const points = state.points.map((p) => [Math.round(p.x), Math.round(p.y)]);
   let kind = "draw_stroke";
-  let data = { points, size, color, hardness: 0.7 };
+  let data = { points, size, color, hardness: 0.7, smooth: true };
   if (pending.tool === "rect" || pending.tool === "ellipse") {
     const [a, b] = state.points;
     const bbox = {

@@ -739,6 +739,10 @@ impl Renderer {
                                         pressure: 1.0,
                                     })
                                     .collect(),
+                                // **图形轮廓必须保持尖角** ✗ —— 这里描的是矩形/椭圆的边 ✓，
+                                // 平滑会把直角削圆 ✓（那是**错的** ✓）。平滑只为**手绘笔迹**准备 ✓，
+                                // 因此这里显式关闭 ✓，而不是"跟着默认值走" ✓。
+                                smooth: false,
                             };
                             match &shape_clip {
                                 Some(clip) => {
@@ -1979,14 +1983,17 @@ mod tests {
                     pressure: 1.0,
                 },
             ],
+            smooth: false, // 既有测试：不平滑（默认行为）
         };
         // 分三段增量盖章（模拟拖动）。
         let segments = [
             StrokeGeometry {
                 points: whole.points[0..2].to_vec(),
+                smooth: false, // 既有测试：不平滑（默认行为）
             },
             StrokeGeometry {
                 points: whole.points[1..].to_vec(),
+                smooth: false, // 既有测试：不平滑（默认行为）
             },
         ];
         for segment in &segments {
