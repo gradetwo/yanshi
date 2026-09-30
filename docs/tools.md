@@ -1,12 +1,21 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**82 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+**87 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 The most recent core tools come from design section 9: the object-group operations `create_group`,
 `add_to_group`, `remove_from_group` and `set_group_transform`, `create_instance`, which resolves its
 master's geometry at render time, `detach_instance`, `link_to_master`, `get_resolved_state`, `update_sync_policy`, `update_override` and `get_dependency_graph`
+
+Five `history` group read tools join the existing ones: `get_object_history` reports an object's currently
+effective atom version chain, `find_atom` searches the log with `object_id` and `layer_id` filters and
+reports the total match count rather than only the page it returns, `get_diff` reports the atom-level diff
+between two sequence numbers along with a by-kind tally and the objects and layers touched, and
+`get_ancestors` and `get_descendants` walk the reference graph in the two directions. The design lists these
+names without semantics, so the split is recorded: an object's own atom chain belongs to
+`get_object_history`, while the two graph walks answer "what do I depend on" and "what depends on me",
+which keeps them from overlapping.
 
 `get_changesets` and `revert_changeset` live in the `changeset` group, which is not part of the default
 profiles, so the counts above are unchanged. `get_changesets` lists the changesets in the log and
