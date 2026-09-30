@@ -721,10 +721,23 @@ async function loadKernel(since = 0) {
       return false;
     }
   } else {
+    let applied = 0;
     for (const atom of atoms.atoms) {
       const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(atom)));
-      if (!response.ok) { log("内核增量折叠失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return false; }
+      if (!response.ok) {
+        // **失败必须回收内核** ✓ —— 否则它停在"应用了一半"的状态 ✓，
+        // 而 `state.localSeq` 没更新 ✓ ⇒ 下一次续传会把已应用的原子**再应用一遍** ✗
+        //（设计上原子是幂等的吗？**不是所有都幂等** ✗，例如 `draw_stroke` ✓）。
+        // 规则 ✓：**失败的续传绝不能把客户端留在半途** ✓ —— 回收 ⇒ 下次从 0 重建 ✓。
+        log("内核增量折叠失败：" + JSON.stringify(response).slice(0, 160), "#c33");
+        state.kernel = null;
+        window.yanshiStats.resyncFallbacks = (window.yanshiStats.resyncFallbacks || 0) + 1;
+        return false;
+      }
+      applied += 1;
     }
+    window.yanshiStats.incrementalResyncs = (window.yanshiStats.incrementalResyncs || 0) + 1;
+    window.yanshiStats.lastResyncAtoms = applied;
   }
   state.localSeq = atoms.head_seq;
   window.yanshiStats.kernelHead = atoms.head_seq;
@@ -983,9 +996,26 @@ function applyLocal(atom) {
 }
 
 // 服务端校正：seq 预测错了（别人插了原子）或提交被拒时，全量重建本地状态。
+/// 与内核重新对齐 ✓。**优先增量续传** ✓，失败才退回**整条重放** ✓。
+///
+/// 子 agent 报的 F5 ✓：每笔介质都触发一次全量重同步 ✗ ⇒ 提交耗时随文档增长
+/// （~1.1s → ~4–5s ✓）。根因是这里**写死 `loadKernel(0)`** ✗ —— 而 `loadKernel`
+/// 本来就支持 `since > 0` 的增量应用 ✓（只是没人这样调它 ✓）。
+///
+/// **规则（上一轮已写进文档 ✓，这里落实）** ✓：续传失败**必须**退回全量 ✓，
+/// 绝不能静默停在半途 ✓ —— 半途的内核状态既缺原子 ✓ 又可能被下一次续传重复应用 ✗。
 async function resync() {
   window.yanshiStats.resyncs += 1;
-  if (await loadKernel(0)) await refreshPreview(true);
+  const resumeFrom = state.localSeq || 0;
+  // 先试增量 ✓（`localSeq` 是**最后一个成功应用**的序号 ✓ ⇒ 不重复、不遗漏 ✓）。
+  if (resumeFrom > 0 && (await loadKernel(resumeFrom))) {
+    await refreshPreview(true);
+    return;
+  }
+  // 增量不可用（或从 0 开始 ✓）⇒ 整条重放 ✓（内核已被上次失败回收 ✓ 或被重建 ✓）。
+  if (await loadKernel(0)) {
+    await refreshPreview(true);
+  }
 }
 
 /// **提交后的收尾动作，集中在这里**（缩略图、历史列表、撤销/重做栈）。
