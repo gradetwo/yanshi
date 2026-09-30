@@ -2585,7 +2585,11 @@ fn write_detach_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         .get("object_id")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("detached_{}", ctx.doc_id));
+        // **默认 id 必须唯一** ✓ —— 上一版写成 `detached_<doc_id>` ✗ ⇒
+        // 同一文档里**第二次脱离必然撞 id** ✗（"对象已存在"✓，且**脱离前那一步已经提交** ✓ ⇒
+        // 用户看到的是"报错了但实例已经被删掉" ✓ —— 是我上一轮自己标出的缺陷 ✓）。
+        // 这里改用与仓库其它处一致的 ULID ✓（`obj_<ulid>` 的写法见本文件多处 ✓）。
+        .unwrap_or_else(|| format!("detached_{}", yanshi_core::Ulid::new().encode()));
     let (layer_id, master_data, transform) = {
         let state = document_state(ctx)?;
         let Some(object) = state.objects.get(instance_id.as_str()) else {
@@ -2638,6 +2642,16 @@ fn write_detach_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         );
         (layer_id, master.data.clone(), composed)
     };
+    // **两步归到一个变更集** ✓（设计 5.6：「一个 batch 通常对应一个变更集」✓；
+    // §793：「`revert_changeset` 整体撤销一个变更集」✓）。
+    //
+    // 为什么需要 ✓：脱离天生是两步（建副本 ✓ + tombstone 原实例 ✓）⇒
+    // 若只成功一半 ✓，用户会看到"副本已建、实例还在"的半成品 ✓。
+    // 变更集本身**不提供自动回滚** ✗（设计没这么说 ✓，实现也是逐条提交 ✓），
+    // 但它让这个半成品**一次就能整体撤销** ✓（`revert_changeset` ✓），
+    // 而不是让用户去日志里找两条原子分别 undo ✓ —— 这是**可恢复性**的提升 ✓，如实说明其边界 ✓。
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous_changeset = ctx.changeset.replace(changeset.clone());
     let created = ctx.commit(
         AtomKind::CreateObject,
         json!({
@@ -2647,12 +2661,19 @@ fn write_detach_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             "data": master_data,
             "transform": {"matrix": transform.matrix, "pivot": transform.pivot},
         }),
-    )?;
-    let removed = ctx.commit(AtomKind::Tombstone, json!({"object_id": instance_id}))?;
+    );
+    let removed = created
+        .as_ref()
+        .ok()
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": instance_id})));
+    ctx.changeset = previous_changeset;
+    let created = created?;
+    let removed = removed.expect("创建成功后才提交 tombstone")?;
     Ok(json!({
         "ok": true,
         "detached_id": new_id,
         "removed_instance": instance_id,
+        "changeset_id": changeset,
         "head": removed.head_seq,
         "created_head": created.head_seq,
     }))
