@@ -700,6 +700,34 @@ if (!layoutStructure) {
     layoutStructure.stageWidth + "px｜面板 " + layoutStructure.asideWidth + "px");
 }
 
+// 工具条图标与提示 ✓（界面第②步）：每个工具按钮都必须有**图标**与**可读提示** ✓，
+// 且快捷键提示要有意义 ✓ —— 只断言"按钮存在"是不够的 ✗（本次截图化改造就是证据：按钮一直在 ✓，
+// 但之前挤成中文折行 ✓）。另外顺带确认 `data-tool` 仍保留 ✓ ⇒ 其余用例的选取器不受影响 ✓。
+const iconAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const buttons = [...document.querySelectorAll("#tools button")];
+  return {
+    total: buttons.length,
+    withIcon: buttons.filter((b) => b.querySelector("svg")).length,
+    withHint: buttons.filter((b) => (b.getAttribute("title") || "").length >= 2).length,
+    withToolAttr: buttons.filter((b) => b.dataset.tool).length,
+    withId: buttons.filter((b) => b.id).length,
+    named: buttons.filter((b) => (b.getAttribute("aria-label") || "").length >= 2).length,
+  };
+})())`));
+if (iconAudit.withIcon !== iconAudit.total) {
+  problems.push(`工具条有 ${iconAudit.total - iconAudit.withIcon} 个按钮没有图标`);
+}
+if (iconAudit.withHint !== iconAudit.total) {
+  problems.push(`工具条有 ${iconAudit.total - iconAudit.withHint} 个按钮缺少悬停提示`);
+}
+if (iconAudit.named !== iconAudit.total) {
+  problems.push(`工具条有 ${iconAudit.total - iconAudit.named} 个按钮缺少无障碍名称`);
+}
+if (iconAudit.withToolAttr + iconAudit.withId !== iconAudit.total) {
+  problems.push("工具条按钮既没有 data-tool 也没有 id（选取器会失效）");
+}
+console.log(`  工具条：${iconAudit.total} 个按钮｜图标 ${iconAudit.withIcon}｜提示 ${iconAudit.withHint}｜无障碍名称 ${iconAudit.named}`);
+
 // 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
 const toolbar = await evaluate(`(() => {
   const buttons = Array.from(document.querySelectorAll("button"));

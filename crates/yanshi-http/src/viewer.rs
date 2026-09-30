@@ -58,8 +58,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   #tools { display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0;
            background: #171a1f; border-right: 1px solid var(--line); align-content: start;
            overflow-y: auto; max-height: calc(100vh - 150px); }
-  #tools button { padding: 6px 2px; font-size: 11px; line-height: 1.15; width: 100%; min-width: 0;
-                  white-space: normal; }
+  #tools button { padding: 7px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
+                  align-items: center; }
+  #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
+               stroke-linecap: round; stroke-linejoin: round; }
+  #tools button[aria-pressed="true"] { background: #2b4a7d; border-color: #3d6bb3; }
   .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
                background: #171a1f; border-top: 1px solid var(--line); }
   .statusbar .spacer { flex: 1 1 auto; }
@@ -157,28 +160,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   </div>
 
 <main>
-  <nav id="tools" aria-label="工具">
-  <button data-tool="brush" aria-pressed="true">画笔</button>
-  <button data-tool="rect">矩形</button>
-  <button data-tool="ellipse">椭圆</button>
-  <button data-tool="erase">橡皮</button>
-  <button data-tool="clone_stamp">仿制</button>
-  <button data-tool="heal_stamp">修复</button>
-  <button data-tool="smudge">涂抹</button>
-  <button data-tool="liquify_push">液化推</button>
-  <button data-tool="liquify_twirl">液化旋</button>
-  <button data-tool="liquify_pinch">液化缩</button>
-  <button data-tool="eyedropper">吸管</button>
-  <button data-tool="move_object">移动</button>
-  <button data-tool="select_rect">选区</button>
-  <button id="clearSelection">清除选区</button>
-  <button data-tool="text">文本</button>
-      <button data-tool="medium_dab">介质</button>
-  <button data-tool="mask_rect">矩形蒙版</button>
-  <button data-tool="mask_ellipse">椭圆蒙版</button>
-  <button id="fillLayer">填充图层</button>
-  </nav>
-  </nav>
+  <nav id="tools" aria-label="工具"><!-- 由 TOOL_DEFS 在加载时填充 ✓ --></nav>
   <div class="stage">
     <canvas id="board"></canvas>
     <canvas id="overlay"></canvas>
@@ -2255,6 +2237,81 @@ async function commitShape() {
   }
   await refreshPreview();
 }
+
+// 工具条：**数据表驱动** ✓ —— 借鉴成熟绘画软件的做法 ✓（图标 + 快捷键 + 悬停提示 ✓）。
+//
+// 为什么改成生成而不是写死 HTML ✓：图标、快捷键、工具提示、以后的工作区与右键快捷面板
+// 都要读同一份定义 ✓；写死 20 个按钮会让每加一个能力就要改四处 ✓（本会话已经吃过
+// "改了结构忘了同步"的亏 ✗）。
+const TOOL_ICONS = {
+  brush: '<path d="M4 20l3-1 9-9-2-2-9 9z"/><path d="M15 8l3-3 2 2-3 3z"/>',
+  rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
+  ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
+  erase: '<path d="M8 17l-3-3 8-8 5 5-4 4z"/><path d="M4 20h16"/>',
+  clone_stamp: '<path d="M12 3l7 6-3 1-4 9-4-9-3-1z"/>',
+  heal_stamp: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  smudge: '<path d="M5 18c6 0 11-4 11-11"/><circle cx="7" cy="18" r="2"/>',
+  liquify_push: '<path d="M4 12h11"/><path d="M12 8l4 4-4 4"/>',
+  liquify_twirl: '<path d="M12 5a7 7 0 1 1-6 10"/><path d="M6 17l-2-4 4-1"/>',
+  liquify_pinch: '<path d="M4 12h5"/><path d="M20 12h-5"/><circle cx="12" cy="12" r="2"/>',
+  eyedropper: '<path d="M4 20l2-6 8-8 4 4-8 8z"/>',
+  move_object: '<path d="M12 4v16"/><path d="M4 12h16"/><path d="M12 4l-2 3h4z"/><path d="M12 20l-2-3h4z"/>',
+  select_rect: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/>',
+  clearSelection: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/><path d="M7 17L17 7"/>',
+  text: '<path d="M5 5h14"/><path d="M12 5v14"/><path d="M9 19h6"/>',
+  medium_dab: '<path d="M12 3c4 5 6 7.5 6 10a6 6 0 0 1-12 0c0-2.5 2-5 6-10z"/>',
+  mask_rect: '<rect x="4" y="6" width="16" height="12"/><path d="M4 12h16"/>',
+  mask_ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/><path d="M12 6v12"/>',
+  fillLayer: '<path d="M5 12l7-7 7 7-7 7z"/><path d="M20 15c1 2 1 3 0 4"/>',
+};
+// 顺序按用途分组 ✓：绘制 → 修图 → 液化 → 取色/移动 → 选区/蒙版 → 文本/介质 → 填充。
+// `keys` 是行业惯例的快捷键 ✓（B 画笔、E 橡皮、M 选区、T 文本、V 移动、I 吸管、G 填充… ✓）。
+const TOOL_DEFS = [
+  { tool: "brush", label: "画笔", key: "b" },
+  { tool: "rect", label: "矩形", key: "u" },
+  { tool: "ellipse", label: "椭圆", key: "o" },
+  { tool: "erase", label: "橡皮", key: "e" },
+  { tool: "clone_stamp", label: "仿制", key: "s" },
+  { tool: "heal_stamp", label: "修复", key: "j" },
+  { tool: "smudge", label: "涂抹", key: "r" },
+  { tool: "liquify_push", label: "液化推", key: "" },
+  { tool: "liquify_twirl", label: "液化旋", key: "" },
+  { tool: "liquify_pinch", label: "液化缩", key: "" },
+  { tool: "eyedropper", label: "吸管", key: "i" },
+  { tool: "move_object", label: "移动", key: "v" },
+  { tool: "select_rect", label: "选区", key: "m" },
+  { id: "clearSelection", label: "清除选区", key: "d", icon: "clearSelection" },
+  { tool: "text", label: "文本", key: "t" },
+  { tool: "medium_dab", label: "介质", key: "" },
+  { tool: "mask_rect", label: "矩形蒙版", key: "" },
+  { tool: "mask_ellipse", label: "椭圆蒙版", key: "" },
+  { id: "fillLayer", label: "填充图层", key: "g", icon: "fillLayer" },
+];
+function renderToolStrip() {
+  const nav = document.getElementById("tools");
+  if (!nav) return;
+  nav.innerHTML = TOOL_DEFS.map((def) => {
+    const key = def.icon || def.tool || def.id;
+    const hint = def.key ? def.label + " (" + def.key.toUpperCase() + ")" : def.label;
+    const attrs = def.tool ? ` data-tool="${def.tool}"` : ` id="${def.id}"`;
+    return `<button${attrs} title="${hint}" aria-label="${hint}" aria-pressed="false">` +
+      `<svg viewBox="0 0 24 24" aria-hidden="true">${TOOL_ICONS[key] || ""}</svg></button>`;
+  }).join("");
+}
+renderToolStrip();
+// 快捷键 ✓：与工具提示一致 ✓ —— 输入框里打字时不受影响 ✓。
+const TOOL_BY_KEY = new Map(TOOL_DEFS.filter((d) => d.key).map((d) => [d.key, d]));
+window.addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const def = TOOL_BY_KEY.get(event.key.toLowerCase());
+  if (!def) return;
+  const selector = def.tool ? `button[data-tool="${def.tool}"]` : `#${def.id}`;
+  const button = document.querySelector(selector);
+  if (!button) return;
+  event.preventDefault();
+  button.click();
+});
 
 for (const button of document.querySelectorAll("button[data-tool]")) {
   button.addEventListener("click", async () => {
