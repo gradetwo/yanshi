@@ -305,6 +305,156 @@ const fingerprintAfterEffect = effectResult.fingerprint;
 await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
 await new Promise((r) => setTimeout(r, 1800));
 
+// 工具栏可见性：所有工具按钮与动作按钮都必须在视口内（否则用户会以为"功能没有"）。
+const toolbar = await evaluate(`(() => {
+  const buttons = Array.from(document.querySelectorAll("button"));
+  const outside = buttons
+    .map((button) => ({ text: button.textContent.trim(), rect: button.getBoundingClientRect() }))
+    .filter((item) => item.rect.width > 0 && (item.rect.right > window.innerWidth + 1 || item.rect.left < -1))
+    .map((item) => item.text + "@" + Math.round(item.rect.left) + ".." + Math.round(item.rect.right));
+  return { total: buttons.length, outside, width: window.innerWidth };
+})()`);
+
+// 橡皮：必须真的擦掉已画内容。**自给自足**：用独立文档，避免前面 revert_to 把文档倒回去
+// 导致"前置条件不成立"（这一课已经栽过几次：分段测试不要共享状态）。
+const eraserDoc = "uicheck-eraser-" + Date.now().toString(36);
+const eraserToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: eraserDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${eraserDoc}&token=${eraserToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const eraserResult = await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (type, point, id) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+  }));
+  const painted = () => {
+    const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i+3] > 8 && (data[i] < 245 || data[i+1] < 245 || data[i+2] < 245)) count++;
+    }
+    return count;
+  };
+  document.getElementById("size").value = "48";
+  document.getElementById("color").value = "#101010";
+  document.querySelector('button[data-tool="brush"]').click();
+  fire("pointerdown", at(0.35, 0.35), 71);
+  fire("pointermove", at(0.55, 0.35), 71);
+  await new Promise((r) => setTimeout(r, 100));
+  fire("pointerup", at(0.55, 0.35), 71);
+  let beforeErase = painted();
+  for (let i = 0; i < 24 && beforeErase === 0; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    beforeErase = painted();
+  }
+  document.querySelector('button[data-tool="erase"]').click();
+  fire("pointerdown", at(0.35, 0.35), 72);
+  fire("pointermove", at(0.55, 0.35), 72);
+  await new Promise((r) => setTimeout(r, 100));
+  fire("pointerup", at(0.55, 0.35), 72);
+  let afterErase = painted();
+  for (let i = 0; i < 24 && afterErase >= beforeErase; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    afterErase = painted();
+  }
+  document.querySelector('button[data-tool="brush"]').click();
+  return { beforeErase, afterErase, log: document.getElementById("log").innerText.slice(0, 200) };
+})()`);
+
+// 打开已有作品：**重新加载页面**后应立刻显示已有内容（而不是白布）。
+// 用独立文档 + 一笔，避免前面各段（revert_to 会把文档倒回去）干扰本断言。
+const reloadDoc = "uicheck-reload-" + Date.now().toString(36);
+const reloadToken = await fetch(`${origin}/api/documents`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: reloadDoc, width: 512, height: 512 }),
+}).then((r) => r.json()).then((v) => v.token);
+await fetch(`${origin}/api/tools/create_layer?doc=${reloadDoc}&token=${reloadToken}`, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ layer_id: "L" }),
+});
+await fetch(`${origin}/api/tools/draw_stroke?doc=${reloadDoc}&token=${reloadToken}`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ layer_id: "L", object_id: "o1",
+    data: { points: [[80, 80], [400, 380]], size: 48, color: { r: 200, g: 30, b: 60, a: 255 } } }),
+});
+await send("Page.navigate", { url: `${origin}/?doc=${reloadDoc}&token=${reloadToken}` });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 1")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+// 首帧是异步的：轮询到有内容为止（而不是取一次就断言）。
+let paintedAfterReload = 0;
+for (let i = 0; i < 40; i++) {
+  paintedAfterReload = await paintedNow();
+  if (paintedAfterReload > 0) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+// 回到本来的文档继续后面的用例。
+await send("Page.navigate", { url: url });
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+await evaluate(`document.getElementById("zoomFit").click()`);
+await new Promise((r) => setTimeout(r, 1000));
+
+// 吸管 + 填充图层（设计 13.3 基础工具）。
+// 吸管：先画一笔已知颜色，再用吸管点它 → `#color` 应变成该颜色（精确、局部、无缓存问题）。
+const pickResult = await evaluate(`(async () => {
+  // 本段按「画布比例坐标 == 文档坐标」计算，先复位到适配（1:1）。
+  document.getElementById("zoomFit").click();
+  await new Promise((r) => setTimeout(r, 1200));
+  const color = document.getElementById("color");
+  color.value = "#c81e3c";
+  const brush = document.querySelector('button[data-tool="brush"]');
+  brush.click();
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (type, point, id) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+  }));
+  // 画一个点（落笔即提交），再在同处用吸管取色。
+  fire("pointerdown", at(0.2, 0.2), 61);
+  await new Promise((r) => setTimeout(r, 120));
+  fire("pointerup", at(0.2, 0.2), 61);
+  await new Promise((r) => setTimeout(r, 1500));
+  color.value = "#000000";
+  document.querySelector('button[data-tool="eyedropper"]').click();
+  fire("pointerdown", at(0.2, 0.2), 62);
+  fire("pointerup", at(0.2, 0.2), 62);
+  await new Promise((r) => setTimeout(r, 600));
+  document.querySelector('button[data-tool="brush"]').click();
+  return { picked: color.value, log: document.getElementById("log").innerText.slice(0, 200) };
+})()`);
+
+// 填充图层：指纹必须变化，画布保持不透明；随后撤销应回到填充前的指纹。
+const beforeFill = await evaluate(canvasFingerprint);
+await evaluate(`(async () => {
+  document.getElementById("color").value = "#1f6feb";
+  document.getElementById("fillLayer").click();
+  await new Promise((r) => setTimeout(r, 2500));
+})()`);
+const afterFill = await evaluate(canvasFingerprint);
+// 实验：再点一次「刷新」（显式从服务端/内核重渲染），看填充是否只是"没自动重绘"。
+await evaluate(`(async () => {
+  document.querySelector('button[data-tool="refresh"]').click();
+  await new Promise((r) => setTimeout(r, 2500));
+})()`);
+const afterFillRefresh = await evaluate(canvasFingerprint);
+await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
+await new Promise((r) => setTimeout(r, 2000));
+const afterFillUndo = await evaluate(canvasFingerprint);
+
 // 基础修图 / 基础液化（设计 13.3）：工具已存在，这里验证查看器真的能驱动它们。
 // 先画一笔有结构的内容（液化作用在纯白上不会有可见变化 —— 这一点本身值得记住）。
 await strokeAt(0.3, 0.5, 50);
@@ -391,6 +541,21 @@ const jumpResult = await evaluate(`(async () => {
   return { ok: true, rows: rows.length };
 })()`);
 const historyFinal = await historyRows();
+// 「回到此处」本身也是一个原子，应当可被撤销：跳转 → 一次撤销 → 画布指纹回到跳转前。
+const fingerprintBeforeJump = await evaluate(canvasFingerprint);
+const jumpUndoResult = await evaluate(`(async () => {
+  const rows = Array.from(document.querySelectorAll("#history .row"));
+  // 跳到**最早**那条原子：这一定改变画面（此前挑"笔画前一条"，若那一步本身无效果就断言不出东西）。
+  const target = rows[0];
+  if (!target) return { ok: false, reason: "历史为空" };
+  target.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 2200));
+  const jumped = ${canvasFingerprint};
+  document.querySelector('button[data-tool="undo"]').click();
+  await new Promise((r) => setTimeout(r, 2200));
+  const undone = ${canvasFingerprint};
+  return { ok: true, jumped, undone };
+})()`);
 
 // 导出 PNG：必须是**整幅分辨率**的 PNG（显式导出路径）。
 const exportResult = await evaluate(`(async () => {
@@ -413,6 +578,11 @@ if (exportResult && exportResult.url) {
     bytes: bytes.length,
   };
 }
+
+// 缩放段结束：复位到「适配」（整幅、1:1）。后续各段都假定画布比例坐标 == 文档坐标，
+// 否则吸管/跳转这类按坐标算的用例会静默失效（本轮的教训）。
+await evaluate(`document.getElementById("zoomFit").click()`);
+await new Promise((resolve) => setTimeout(resolve, 1200));
 
 const thumbBefore = await evaluate(`document.getElementById("thumb").src`);
 await evaluate(`(async () => {
@@ -443,6 +613,42 @@ if (!fingerprintAfterEffect || fingerprintAfterEffect.opaque !== fingerprintAfte
 }
 if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEffect.sum) {
   problems.push("应用 invert 后画布像素没有任何变化");
+}
+
+// 工具栏可见性
+if (toolbar.outside.length > 0) {
+  problems.push(`有 ${toolbar.outside.length} 个按钮在视口外：${toolbar.outside.join(", ")}`);
+}
+
+// 橡皮
+if (eraserResult.beforeErase === 0) {
+  problems.push("橡皮用例的前置条件不成立：画笔画不出内容");
+} else if (!(eraserResult.afterErase < eraserResult.beforeErase)) {
+  problems.push(
+    `橡皮没有擦掉内容：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}｜日志 ${JSON.stringify(eraserResult.log.slice(0, 120))}`
+  );
+}
+
+// 重新加载后应立刻显示已有内容
+if (paintedAfterReload === 0) {
+  problems.push("重新加载页面后画布是空白（已有作品没有立即显示）");
+}
+
+// 吸管 + 填充图层
+if (pickResult.picked !== "#c81e3c") {
+  problems.push(`吸管取色不对：期望 #c81e3c，实际 ${pickResult.picked}`);
+}
+if (afterFill.opaque !== afterFill.total) {
+  problems.push(`填充后画布停在透明态：${afterFill.opaque}/${afterFill.total}`);
+}
+if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum === beforeFill.sum) {
+  problems.push("填充图层没有改变画布像素（刷新后也没变）");
+}
+if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum !== beforeFill.sum) {
+  problems.push("填充后画布没有自动重绘（手动刷新才生效）");
+}
+if (afterFillUndo.sum !== beforeFill.sum) {
+  problems.push(`撤销填充后未回到填充前的像素（${afterFillUndo.sum} ≠ ${beforeFill.sum}）`);
 }
 
 // 基础修图 / 液化
@@ -479,6 +685,18 @@ if (!jumpResult || !jumpResult.ok) {
 if (historyFinal.length === 0) {
   problems.push("回到历史时刻后列表为空");
 }
+// 「回到此处」可撤销：撤销一次后应回到跳转前的像素（而不是停在跳转后的状态）。
+if (!jumpUndoResult || !jumpUndoResult.ok) {
+  problems.push(`「回到此处」的可撤销用例未执行：${JSON.stringify(jumpUndoResult)}`);
+} else if (jumpUndoResult.jumped.sum === fingerprintBeforeJump.sum) {
+  problems.push("「回到此处」本身没有改变画面（用例无效：目标原子选得不对）");
+} else if (jumpUndoResult.undone.sum === jumpUndoResult.jumped.sum) {
+  problems.push("撤销「回到此处」没有生效（画布与跳转后完全一致）");
+} else if (jumpUndoResult.undone.sum !== fingerprintBeforeJump.sum) {
+  problems.push(
+    `撤销「回到此处」未回到跳转前的像素：${jumpUndoResult.undone.sum} ≠ ${fingerprintBeforeJump.sum}`
+  );
+}
 if (!exportResult) {
   problems.push("「导出 PNG」没有产生导出结果（window.yanshiStats.lastExport 为空）");
 } else if (!exportPng || !exportPng.isPng) {
@@ -513,6 +731,11 @@ console.log(`  舞台宽度 ${geometry.stage.cssW}｜画布 CSS 宽度 ${geometr
 console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → ${zoomCheck.after.w}×${zoomCheck.after.h}｜缩放后着色 ${zoomCheck.painted}｜文档中心笔迹 ${centerInk}`);
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
+console.log(`  工具栏：${toolbar.total} 个按钮，视口外 ${toolbar.outside.length} 个`);
+console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}`);
+console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);
+console.log(`  回到此处可撤销：跳转前后指纹 ${jumpUndoResult?.ok ? `${fingerprintBeforeJump.sum} → ${jumpUndoResult.jumped.sum} → 撤销后 ${jumpUndoResult.undone.sum}` : "未执行"}`);
+console.log(`  吸管/填充：吸管取到 ${pickResult.picked}（期望 #c81e3c）｜填充指纹 ${beforeFill.sum} → ${afterFill.sum} → 刷新 ${afterFillRefresh.sum} → 撤销 ${afterFillUndo.sum}`);
 console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${retouchResult.log.includes("请先按住 Alt") ? "✓" : "✗"}`);
 console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
@@ -522,6 +745,11 @@ console.log(`  几何：canvas ${geometry.canvas.w}×${geometry.canvas.h}（CSS 
 console.log(`  缩略图：${thumbBefore === thumbAfter ? "未变化" : "已自动刷新"}`);
 console.log(`  'tiles 个失效' 噪声行：${tileNoise}`);
 if (problems.length) {
+  // 失败时把页面日志一并打出来：工具层的错误提示都在那里，靠猜字段/猜坐标很费时间。
+  console.log("  --- 页面日志（失败诊断）---");
+  for (const line of String(await evaluate(`document.getElementById("log").innerText`)).split("\n").slice(0, 25)) {
+    console.log("    " + line);
+  }
   console.log(`  ❌ ${problems.length} 项不合格：`);
   for (const problem of problems) console.log(`     - ${problem}`);
   process.exit(1);

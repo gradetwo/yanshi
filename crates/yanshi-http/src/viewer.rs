@@ -40,7 +40,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      提交后画布变空白（刷新才恢复）。 */
   #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
   #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
-  aside { display: grid; gap: 12px; }
+  /* minmax(0,1fr)：否则网格列按 max-content 撑开，卡片里的按钮行会溢出到视口外
+     （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
+  aside { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+  aside .card { min-width: 0; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
   #history .row { display: flex; gap: 6px; align-items: center; padding: 1px 0; }
   #history .row button { padding: 0 5px; font-size: 11px; }
@@ -94,6 +97,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button data-tool="liquify_push">液化推</button>
         <button data-tool="liquify_twirl">液化旋</button>
         <button data-tool="liquify_pinch">液化缩</button>
+        <button data-tool="eyedropper">吸管</button>
+        <button id="fillLayer">填充图层</button>
         <button data-tool="undo">撤销</button>
         <button data-tool="redo">重做</button>
         <button data-tool="refresh">刷新</button>
@@ -188,6 +193,9 @@ const state = {
   // 撤销/重做双栈：存的是**原始原子 id**。
   // 语义（fold.rs：`revert(revert(x)) ≡ reapply(x)`）⇒ 撤销 = revert(原始)，
   // 重做 = reapply(原始)；因此重做栈里必须放原始 id，而不是 revert 原子自身的 id。
+  // 撤销栈条目：{kind:"atom", id} → `revert(id)`；{kind:"head", id} → `revert_to(id)`。
+  // 后者用于「回到此处」：撤销一次跳转 = 再跳回跳转前的那个原子
+  //（`revert(declare_head)` 恢复不了，实测撤销后画面不变）。
   undoStack: [],
   redoStack: [],
   socket: null,
@@ -466,6 +474,13 @@ async function loadKernel(since = 0) {
     verifyKernelSurface(state.kernel);
     window.yanshiKernelReady = true;
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
+    // 装载完成后立刻重绘：此前只有"内核就绪"的状态变化，没有触发重绘 ✗ ——
+    // 打开已有作品时画面会是白布，直到用户落笔（用户报告的现象）。
+    if (loaded.ok) {
+      state.docSize = { w, h };
+      clampViewport();
+      renderViewport();
+    }
     if (!loaded.ok) {
       log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");
       state.kernel = null;
@@ -655,7 +670,7 @@ async function resync() {
 /// 这类疏漏出现了两次 ✓。现在两条路径都只调这一个函数 ✓；将来再加收尾动作也只改这里。
 function afterMutation(atomId) {
   if (atomId) {
-    state.undoStack.push(atomId);
+    state.undoStack.push({ kind: "atom", id: atomId });
     state.redoStack.length = 0;
     updateUndoStatus();
   }
@@ -857,19 +872,22 @@ async function warmKernel() {
 
 /// 撤销一次（可连续）。栈空时给出明确提示，而不是静默无反应。
 async function undoOnce() {
-  const atomId = state.undoStack.pop();
-  if (!atomId) {
+  const entry = state.undoStack.pop();
+  if (!entry) {
     log("没有可撤销的操作");
     updateUndoStatus();
     return;
   }
-  const value = await callTool("revert", { atom_id: atomId }, { refresh: false });
+  const id = typeof entry === "string" ? entry : entry.id;
+  const tool = typeof entry === "string" || entry.kind === "atom" ? "revert" : "revert_to";
+  const value = await callTool(tool, { atom_id: id }, { refresh: false });
   if (!value.ok) {
-    // 撤销失败：把 id 放回去，保持栈与实际状态一致。
-    state.undoStack.push(atomId);
-    log("撤销失败：" + (value.error_code || "unknown"), "#c33");
+    // 撤销失败：把条目放回去，保持栈与实际状态一致。
+    state.undoStack.push(entry);
+    log("撤销失败：" + (value.error_code || "unknown") + " " +
+        ((value.context && value.context.detail) || ""), "#c33");
   } else {
-    state.redoStack.push(atomId);
+    state.redoStack.push(entry);
   }
   updateUndoStatus();
   await refreshPreview();
@@ -877,18 +895,21 @@ async function undoOnce() {
 
 /// 重做一次（按原始顺序：最近一次被撤销的最先重做）。
 async function redoOnce() {
-  const atomId = state.redoStack.pop();
-  if (!atomId) {
+  const entry = state.redoStack.pop();
+  if (!entry) {
     log("没有可重做的操作");
     updateUndoStatus();
     return;
   }
-  const value = await callTool("reapply", { atom_id: atomId }, { refresh: false });
+  const id = typeof entry === "string" ? entry : entry.id;
+  // 跳转类条目用 revert_to 重做（再跳回那个头部），普通原子用 reapply。
+  const tool = typeof entry === "string" || entry.kind === "atom" ? "reapply" : "revert_to";
+  const value = await callTool(tool, { atom_id: id }, { refresh: false });
   if (!value.ok) {
-    state.redoStack.push(atomId);
+    state.redoStack.push(entry);
     log("重做失败：" + (value.error_code || "unknown"), "#c33");
   } else {
-    state.undoStack.push(atomId);
+    state.undoStack.push(entry);
   }
   updateUndoStatus();
   await refreshPreview();
@@ -1026,7 +1047,15 @@ async function refreshHistory() {
         log("回到此处失败：" + (result.error_code || "unknown"), "#c33");
         return;
       }
-      log("已回到 #" + atom.seq + "（可用撤销恢复）");
+      // 「回到此处」= 一条 declare_head 原子。rewind 之前的原子已不可撤销
+      // （服务端会正确地拒绝：目标原子位于当前求值起点之前 ✓）。
+      // 因此「撤销这次跳转」的实现是**再跳回跳转前的那个原子** ✓：
+      // 记住跳转前的头部 id，把它作为撤销条目（kind=head）。
+      const headBefore = currentHeadAtomId();
+      state.undoStack = headBefore ? [{ kind: "head", id: headBefore }] : [];
+      state.redoStack = [];
+      updateUndoStatus();
+      log("已回到 #" + atom.seq + "（可点撤销回到跳转前）");
       await refreshPreview();
       await refreshHistory();
     });
@@ -1035,6 +1064,15 @@ async function refreshHistory() {
   }
   if (atoms.length === 0) list.textContent = "（没有匹配的原子）";
   fillHistoryFilters(atoms);
+}
+
+/// 当前头部原子 id（历史列表里 seq 最大的那条）。用于「撤销一次跳转 = 跳回跳转前的头部」。
+function currentHeadAtomId() {
+  let best = null;
+  for (const atom of historyAtoms) {
+    if (!best || (atom.seq || 0) > (best.seq || 0)) best = atom;
+  }
+  return best ? best.atom_id : null;
 }
 
 /// 用当前列表填充筛选下拉（保留已有选项，避免每次重建导致选择丢失）。
@@ -1244,6 +1282,50 @@ function localPoint(event) {
 let pendingStroke = null;
 let panState = null;
 
+/// 吸管（设计 13.3 基础工具）：点击画布 → 向内核要该**文档坐标**的 1×1 像素 → 设为当前颜色。
+/// 不读画布位图的原因：画布会被 CSS 缩放，而内核渲染是文档坐标 1:1 ✓。
+function pickColorAt(event) {
+  const point = localPoint(event);
+  const x = Math.floor(point.x);
+  const y = Math.floor(point.y);
+  if (x < 0 || y < 0 || x >= state.docSize.w || y >= state.docSize.h) return;
+  // 取 3×3 的中心像素：单点取色容易被抗锯齿边缘影响，也让 1×1 区域渲染的边界情况暴露出来。
+  const side = 3;
+  const x0 = Math.max(0, Math.min(state.docSize.w - side, x - 1));
+  const y0 = Math.max(0, Math.min(state.docSize.h - side, y - 1));
+  const rgba = state.kernel.render_region_rgba(x0, y0, side, side);
+  if (!rgba || rgba.length < side * side * 4) {
+    log("吸管失败：内核没有返回像素（len=" + (rgba ? rgba.length : "null") + "）", "#c33");
+    return;
+  }
+  const center = (1 * side + 1) * 4;
+  const hex = "#" + [rgba[center], rgba[center + 1], rgba[center + 2]]
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("");
+  $("color").value = hex;
+  log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）");
+}
+
+/// 填充图层：用当前颜色填充整幅区域（`fill` 的语义是**按区域**填充，不是洪水填充）。
+async function fillCurrentLayer() {
+  const color = colorCss();
+  const value = await callTool(
+    "fill",
+    {
+      layer_id: state.layerId,
+      data: { color, region: { x: 0, y: 0, w: state.docSize.w, h: state.docSize.h } },
+    },
+    { refresh: false }
+  );
+  if (!value.ok) {
+    log("填充失败：" + (value.error_code || "unknown") + " " +
+        ((value.context && value.context.detail) || ""), "#c33");
+    return;
+  }
+  log("已填充图层 " + state.layerId);
+  await refreshPreview();
+}
+
 /// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
 /// 拖动中仍用覆盖层显示笔迹（不给本地乐观像素 —— 内核目前只为 `draw_stroke` 提供增量预览）。
 const RETOUCH_TOOLS = new Set([
@@ -1369,6 +1451,11 @@ window.addEventListener("keydown", (event) => {
 });
 
 board.addEventListener("pointerdown", (event) => {
+  if (state.tool === "eyedropper" && kernelReady()) {
+    pickColorAt(event);
+    event.preventDefault();
+    return;
+  }
   try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
   state.dragging = event.pointerId;
   state.points = [localPoint(event)];
@@ -1562,6 +1649,7 @@ $("zoomActual").addEventListener("click", () => {
   renderViewport();
 });
 
+$("fillLayer").addEventListener("click", fillCurrentLayer);
 $("effectKind").addEventListener("change", fillEffectNames);
 $("effectApply").addEventListener("click", applyEffect);
 $("historyReload").addEventListener("click", refreshHistory);
