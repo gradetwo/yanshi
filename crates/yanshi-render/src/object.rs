@@ -828,10 +828,44 @@ mod tests {
         assert!(object_bbox(&missing).is_none());
     }
 
+    /// 文本**已经实现**（路线 A 最小切片：内置 5×7 ASCII 位图字体 ✓），
+    /// 因此把它从"未实现类型"里移出，并**正向断言**它解析成 `Primitive::Text` ✓
+    /// —— 这里不是为了让测试变绿而放宽，而是因为断言描述的是旧状态 ✗，必须显式改写 ✓。
+    #[test]
+    fn text_parses_into_the_text_primitive() {
+        let parsed = parse_object(&object(
+            ObjectType::Text,
+            json!({"text": "AB", "font": "builtin", "size": 14.0, "align": "center",
+                   "position": [3.0, 4.0], "color": {"r": 255, "g": 255, "b": 255, "a": 255}}),
+        ));
+        match parsed {
+            Primitive::Text {
+                text,
+                size,
+                align,
+                position,
+                ..
+            } => {
+                assert_eq!(text, "AB");
+                assert_eq!(size, 14.0);
+                assert_eq!(align, "center");
+                assert_eq!(position, (3.0, 4.0));
+            }
+            other => panic!("Text 应解析为 Primitive::Text，实际 {other:?}"),
+        }
+        // 包围盒按栅格化尺寸给出（scale = round(14 / 7) = 2 ⇒ "AB" 宽 2×2×5 = 20）。
+        let bbox = object_bbox(&object(
+            ObjectType::Text,
+            json!({"text": "AB", "size": 14.0, "position": [3.0, 4.0]}),
+        ))
+        .expect("文本应有包围盒");
+        assert_eq!((bbox.x, bbox.y), (3.0, 4.0));
+        assert_eq!(bbox.w, 20.0);
+    }
+
     #[test]
     fn unimplemented_types_report_unsupported() {
         for object_type in [
-            ObjectType::Text,
             ObjectType::Retouch,
             ObjectType::Liquify,
             ObjectType::Instance,
