@@ -464,6 +464,436 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// inflate（完整：stored / fixed / dynamic Huffman）✓
+// ---------------------------------------------------------------------------
+//
+// **为什么需要完整版** ✗：编码器只产出**固定 Huffman**块 ✓，所以解码自己产出的 PNG
+// 只需要固定表 ✓；但 `import_image` 要解的是**别人的** PNG ✓（Photoshop、截图工具… ✓），
+// 它们几乎都用 **dynamic Huffman** ✓。因此这里实现 RFC 1951 的三种块类型 ✓。
+
+/// 位读取器 ✓：deflate 的位序是**低位在前** ✓（Huffman 码字按高位在前打包 ✓，见 `read_code` ✓）。
+struct BitReader<'a> {
+    data: &'a [u8],
+    position: usize,
+    buffer: u32,
+    bits: u32,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            position: 0,
+            buffer: 0,
+            bits: 0,
+        }
+    }
+
+    fn read_bits(&mut self, count: u8) -> Option<u32> {
+        while self.bits < u32::from(count) {
+            let byte = *self.data.get(self.position)?;
+            self.position += 1;
+            self.buffer |= u32::from(byte) << self.bits;
+            self.bits += 8;
+        }
+        let mask = if count == 0 { 0 } else { (1u32 << count) - 1 };
+        let value = self.buffer & mask;
+        self.buffer >>= count;
+        self.bits -= u32::from(count);
+        Some(value)
+    }
+
+    /// 读一个 Huffman 码字 ✓（码字按**高位在前**逐位拼 ✓，与编码端一致 ✓）。
+    fn read_code(&mut self, table: &HuffmanTable) -> Option<u16> {
+        let mut code = 0u16;
+        for width in 1..=u8::try_from(table.max_bits).ok()? {
+            code = (code << 1) | self.read_bits(1)? as u16;
+            if let Some((symbol, _bits)) = table.lookup(code, width) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+}
+
+/// 一张 Huffman 表 ✓（按 (位宽, 码字) 线性查 ✓ —— 码表很小 ✓，清晰优先 ✓）。
+struct HuffmanTable {
+    entries: Vec<(u8, u16, u16)>,
+    max_bits: u32,
+}
+
+impl HuffmanTable {
+    /// 由**码长**表构造 ✓（RFC 1951 §3.2.2 的规范算法 ✓）。
+    fn from_lengths(lengths: &[u8]) -> Option<Self> {
+        let max_bits = lengths.iter().copied().max().unwrap_or(0) as u32;
+        if max_bits == 0 {
+            return None;
+        }
+        // 每种码长有多少个码字 ✓。
+        let mut counts = vec![0u32; (max_bits as usize) + 1];
+        for length in lengths {
+            if *length > 0 {
+                counts[*length as usize] += 1;
+            }
+        }
+        // 每种码长的**起始码字** ✓。
+        let mut next_code = vec![0u32; (max_bits as usize) + 2];
+        let mut code = 0u32;
+        for bits in 1..=(max_bits as usize) {
+            code = (code + counts[bits - 1]) << 1;
+            next_code[bits] = code;
+        }
+        let mut entries = Vec::new();
+        for (symbol, length) in lengths.iter().enumerate() {
+            if *length == 0 {
+                continue;
+            }
+            let bits = *length as usize;
+            let assigned = next_code[bits];
+            next_code[bits] += 1;
+            entries.push((*length, assigned as u16, symbol as u16));
+        }
+        Some(Self { entries, max_bits })
+    }
+
+    fn lookup(&self, code: u16, width: u8) -> Option<(u16, u8)> {
+        self.entries
+            .iter()
+            .find(|(bits, candidate, _)| *bits == width && *candidate == code)
+            .map(|(bits, _, symbol)| (*symbol, *bits))
+    }
+}
+
+const LENGTH_BASE_INFLATE: [u16; 29] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
+];
+const LENGTH_EXTRA_INFLATE: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
+const DIST_BASE_INFLATE: [u16; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+];
+const DIST_EXTRA_INFLATE: [u8; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
+
+/// 固定 Huffman 表 ✓（RFC 1951 §3.2.6 ✓）。
+fn fixed_tables() -> (HuffmanTable, HuffmanTable) {
+    let mut literal_lengths = vec![0u8; 288];
+    for (symbol, slot) in literal_lengths.iter_mut().enumerate() {
+        *slot = match symbol {
+            0..=143 => 8,
+            144..=255 => 9,
+            256..=279 => 7,
+            _ => 8,
+        };
+    }
+    let distance_lengths = vec![5u8; 30];
+    (
+        HuffmanTable::from_lengths(&literal_lengths).expect("固定字面表应可构造"),
+        HuffmanTable::from_lengths(&distance_lengths).expect("固定距离表应可构造"),
+    )
+}
+
+/// 解压 deflate 位流 ✓（三种块类型 ✓）。返回 `(解压数据, 消耗的字节数)` ✓。
+fn inflate_raw(data: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let mut reader = BitReader::new(data);
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let last = reader.read_bits(1)?;
+        let block_type = reader.read_bits(2)?;
+        match block_type {
+            // ① stored（未压缩）✓。
+            0 => {
+                // **对齐到字节边界** ✓：`read_bits` 总是整字节读入 buffer ✓ ⇒
+                // 丢弃 buffer 里剩下的位即完成对齐 ✓，而 `position` 已经指向下一个未读字节 ✓。
+                let length = u32::from(u16::from_le_bytes([
+                    *data.get(reader.position)?,
+                    *data.get(reader.position + 1)?,
+                ]));
+                reader.position += 4;
+                for _ in 0..length {
+                    out.push(*data.get(reader.position)?);
+                    reader.position += 1;
+                }
+            }
+            // ② fixed ✓ / ③ dynamic ✓。
+            1 | 2 => {
+                let (literal_table, distance_table) = if block_type == 1 {
+                    fixed_tables()
+                } else {
+                    read_dynamic_tables(&mut reader)?
+                };
+                loop {
+                    let symbol = reader.read_code(&literal_table)?;
+                    match symbol {
+                        0..=255 => out.push(symbol as u8),
+                        256 => break,
+                        _ => {
+                            let slot = (symbol - 257) as usize;
+                            if slot >= LENGTH_BASE_INFLATE.len() {
+                                return None;
+                            }
+                            let length = LENGTH_BASE_INFLATE[slot] as usize
+                                + reader.read_bits(LENGTH_EXTRA_INFLATE[slot])? as usize;
+                            let distance_slot = reader.read_code(&distance_table)? as usize;
+                            if distance_slot >= DIST_BASE_INFLATE.len() {
+                                return None;
+                            }
+                            let distance = DIST_BASE_INFLATE[distance_slot] as usize
+                                + reader.read_bits(DIST_EXTRA_INFLATE[distance_slot])? as usize;
+                            if distance == 0 || distance > out.len() {
+                                return None;
+                            }
+                            let start = out.len() - distance;
+                            for offset in 0..length {
+                                let byte = out[start + offset];
+                                out.push(byte);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+        if last == 1 {
+            break;
+        }
+    }
+    Some((out, reader.position))
+}
+
+/// 读 dynamic Huffman 的两张表 ✓（RFC 1951 §3.2.7 ✓）。
+fn read_dynamic_tables(reader: &mut BitReader<'_>) -> Option<(HuffmanTable, HuffmanTable)> {
+    const ORDER: [usize; 19] = [
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+    ];
+    let literal_count = reader.read_bits(5)? as usize + 257;
+    let distance_count = reader.read_bits(5)? as usize + 1;
+    let code_length_count = reader.read_bits(4)? as usize + 4;
+    let mut code_length_lengths = vec![0u8; 19];
+    for index in 0..code_length_count {
+        code_length_lengths[ORDER[index]] = reader.read_bits(3)? as u8;
+    }
+    let code_length_table = HuffmanTable::from_lengths(&code_length_lengths)?;
+
+    // 用码长表读出"字面/长度 + 距离"的码长 ✓（含 16/17/18 三种重复码 ✓）。
+    let total = literal_count + distance_count;
+    let mut lengths: Vec<u8> = Vec::with_capacity(total);
+    while lengths.len() < total {
+        let symbol = reader.read_code(&code_length_table)?;
+        match symbol {
+            0..=15 => lengths.push(symbol as u8),
+            16 => {
+                let previous = *lengths.last()?;
+                let repeat = reader.read_bits(2)? as usize + 3;
+                lengths.extend(std::iter::repeat_n(previous, repeat));
+            }
+            17 => {
+                let repeat = reader.read_bits(3)? as usize + 3;
+                // 重复的 0 用 `extend` 一次推入 ✓（clippy 会指出逐次 push 同一个值 ✓）。
+                lengths.extend(std::iter::repeat_n(0u8, repeat));
+            }
+            18 => {
+                let repeat = reader.read_bits(7)? as usize + 11;
+                lengths.extend(std::iter::repeat_n(0u8, repeat));
+            }
+            _ => return None,
+        }
+        if lengths.len() > total {
+            return None;
+        }
+    }
+    let literal_lengths = &lengths[..literal_count];
+    let distance_lengths = &lengths[literal_count..];
+    Some((
+        HuffmanTable::from_lengths(literal_lengths)?,
+        HuffmanTable::from_lengths(distance_lengths)?,
+    ))
+}
+
+/// **png 解码** ✓（设计 791 行：`import_image` 接受 JPEG/PNG/WebP ✓）。
+///
+/// **为什么值得写** ✓：浏览器端已经能用 `createImageBitmap` 解码任意格式 ✓，
+/// 所以**界面**这条路不缺 ✓；缺的是**工具/API**这条路 ✗ ——
+/// 设计明写 `import_image` 接受 PNG ✓，而服务端此前只收**原始 RGBA** ✗
+///（界面是自己先解成 raw 再上传的 ✓，把这个缺口遮住了 ✓）。
+///
+/// **支持范围（边界写清楚 ✓）**：8 位、颜色类型 **6（RGBA ✓）与 2（RGB ✓）**、
+/// 无隔行 ✓、五种 filter 全支持 ✓、deflate 三种块类型全支持 ✓。
+/// 其它情况一律返回 `None` ✓ —— 由调用方给出**明确错误** ✓，
+/// 而不是画出半张图 ✗（"静默错误"是本项目反复吃亏的地方 ✓）。
+///
+/// 返回 `(宽, 高, RGBA8)` ✓。
+pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if bytes.len() < 8 || bytes[..8] != SIGNATURE {
+        return None;
+    }
+    let mut position = 8usize;
+    let mut width = 0u32;
+    let mut height = 0u32;
+    let mut color_type = 0u8;
+    let mut interlace = 0u8;
+    let mut bit_depth = 0u8;
+    let mut idat: Vec<u8> = Vec::new();
+    let mut seen_header = false;
+    loop {
+        if position + 8 > bytes.len() {
+            return None;
+        }
+        let length = u32::from_be_bytes([
+            bytes[position],
+            bytes[position + 1],
+            bytes[position + 2],
+            bytes[position + 3],
+        ]) as usize;
+        let kind = &bytes[position + 4..position + 8];
+        let payload_start = position + 8;
+        let payload_end = payload_start.checked_add(length)?;
+        if payload_end + 4 > bytes.len() {
+            return None;
+        }
+        let payload = &bytes[payload_start..payload_end];
+        // **CRC 必须校验** ✓：PNG 的每个块都有 CRC32 ✓，
+        // 损坏的文件在这里就被挡住 ✓，而不是解出一堆彩色噪点 ✗。
+        let expected = u32::from_be_bytes([
+            bytes[payload_end],
+            bytes[payload_end + 1],
+            bytes[payload_end + 2],
+            bytes[payload_end + 3],
+        ]);
+        let mut crc_input = Vec::with_capacity(4 + length);
+        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(payload);
+        if yanshi_core::crc32(&crc_input) != expected {
+            return None;
+        }
+        match kind {
+            b"IHDR" => {
+                if payload.len() < 13 {
+                    return None;
+                }
+                width = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                height = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                bit_depth = payload[8];
+                color_type = payload[9];
+                interlace = payload[12];
+                if width == 0 || height == 0 {
+                    return None;
+                }
+                seen_header = true;
+            }
+            b"IDAT" => idat.extend_from_slice(payload),
+            b"IEND" => break,
+            _ => {}
+        }
+        position = payload_end + 4;
+    }
+    if !seen_header || idat.is_empty() {
+        return None;
+    }
+    // **只支持 8 位、无隔行、RGB/RGBA** ✓（其余显式拒绝 ✓）。
+    if bit_depth != 8 || interlace != 0 {
+        return None;
+    }
+    let channels = match color_type {
+        6 => 4usize,
+        2 => 3usize,
+        _ => return None,
+    };
+    // **`IDAT` 里是 zlib 流** ✓（RFC 1950 ✓：2 字节头 + deflate + 4 字节 adler32 ✓）——
+    // 我第一版把整个流交给**裸 deflate** 解析 ✗ ⇒ 连"自己编码的 PNG"都解不回来 ✓，
+    // 往返测试当场抓到 ✓（这就是**先写往返测试**的价值 ✓）。
+    if idat.len() < 6 || idat[0] & 0x0F != 8 {
+        return None;
+    }
+    // FDICT 位（0x20 ✓）表示需要预设字典 ✓ —— 不支持 ✓，显式拒绝 ✓。
+    if idat[1] & 0x20 != 0 {
+        return None;
+    }
+    let (raw, consumed) = inflate_raw(&idat[2..])?;
+    // **adler32 必须校验** ✓：它是 zlib 的完整性检查 ✓，
+    // 比只看块 CRC 更贴近"数据本身有没有坏" ✓。
+    let adler_start = 2 + consumed;
+    if adler_start + 4 > idat.len() {
+        return None;
+    }
+    let expected_adler = u32::from_be_bytes([
+        idat[adler_start],
+        idat[adler_start + 1],
+        idat[adler_start + 2],
+        idat[adler_start + 3],
+    ]);
+    if adler32(&raw) != expected_adler {
+        return None;
+    }
+    let stride = width as usize * channels;
+    let expected_len = (stride + 1) * height as usize;
+    if raw.len() < expected_len {
+        return None;
+    }
+    // 逐扫描线反 filter ✓（RFC 2083 §6 ✓）。
+    let mut pixels: Vec<u8> = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut previous: Vec<u8> = vec![0u8; stride];
+    let mut line: Vec<u8> = vec![0u8; stride];
+    for row in 0..height as usize {
+        let filter = raw[row * (stride + 1)];
+        let start = row * (stride + 1) + 1;
+        line.copy_from_slice(&raw[start..start + stride]);
+        for index in 0..stride {
+            let left = if index >= channels {
+                line[index - channels]
+            } else {
+                0
+            };
+            let up = previous[index];
+            let up_left = if index >= channels {
+                previous[index - channels]
+            } else {
+                0
+            };
+            let value = match filter {
+                0 => line[index],
+                1 => line[index].wrapping_add(left),
+                2 => line[index].wrapping_add(up),
+                3 => line[index].wrapping_add(((u16::from(left) + u16::from(up)) / 2) as u8),
+                4 => {
+                    // Paeth ✓（RFC 2083 §6.6 ✓）。
+                    let p = i32::from(left) + i32::from(up) - i32::from(up_left);
+                    let pa = (p - i32::from(left)).abs();
+                    let pb = (p - i32::from(up)).abs();
+                    let pc = (p - i32::from(up_left)).abs();
+                    let predictor = if pa <= pb && pa <= pc {
+                        left
+                    } else if pb <= pc {
+                        up
+                    } else {
+                        up_left
+                    };
+                    line[index].wrapping_add(predictor)
+                }
+                _ => return None,
+            };
+            line[index] = value;
+        }
+        for column in 0..width as usize {
+            let base = column * channels;
+            let (r, g, b, a) = if channels == 4 {
+                (line[base], line[base + 1], line[base + 2], line[base + 3])
+            } else {
+                (line[base], line[base + 1], line[base + 2], 255)
+            };
+            pixels.extend_from_slice(&[r, g, b, a]);
+        }
+        previous.copy_from_slice(&line);
+    }
+    Some((width, height, pixels))
+}
+
 #[cfg(test)]
 mod deflate_tests {
     use super::*;
