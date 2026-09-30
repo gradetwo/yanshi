@@ -130,6 +130,14 @@ await send("Page.enable");
 await send("Network.enable", {});
 await send("Network.setCacheDisabled", { cacheDisabled: true });
 await send("Page.navigate", { url });
+// **把页面带到前台并启用焦点模拟** ✓ —— 加这一段的直接原因：**后台标签页**里
+// `requestAnimationFrame` 不会回调 ✓（连 `setTimeout` 也被节流 ✓），
+// 而查看器的服务端像素补画依赖它 ✓ ⇒ 检查会看到"画布全白"✗ 这类**环境性假失败** ✓
+//（四位子 agent 独立撞到同一现象 ✓，他们都用 `Page.bringToFront` 绕开 ✓）。
+await send("Page.bringToFront", {});
+try {
+  await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+} catch (_) { /* 老版本 Chromium 可能不支持 ✓ */ }
 // **等页面脚本真正就绪再开始断言** ✓ —— 加这一段的直接原因：查看器的初始化在脚本后段
 //（`initDockers()` 等 ✓），而检查导航后立刻开始交互 ✓，于是"点击折叠没反应" ✗、
 // "介质工具还是旧的单点行为" ✗ 这类**竞态**会伪装成功能 bug ✓，极难归因 ✓。
@@ -288,6 +296,34 @@ const parsedUrl = new URL(url);
 const origin = parsedUrl.origin;
 const token = parsedUrl.searchParams.get("token");
 const docId = parsedUrl.searchParams.get("doc") || "default";
+// **示例作品入口** ✓ —— 用户应当能直接打开示例查看 ✓（见 docs/samples.md ✓）。
+// 只断言**入口存在且可读** ✓，**不点击** ✗：点击会走"打开或创建" ✓，
+// 若示例尚未画出来就会被**建成空文档** ✗（污染工作区 ✓，本会话已避免这一坑 ✓）。
+// **不打开对话框** ✗ —— 第一版打开/关闭了 `#openDialog` ✓，而对话框是 `showModal` ✓
+// ⇒ 布局变化 ⇒ `sizeBoards` **清空画布** ✓ ⇒ 紧随其后的介质用例量到的是**白板** ✗
+//（三位子 agent 报的"打开/刷新后画布全白"与这条同源 ✓ —— 本会话第二次栽在
+// "断言本身改变了被测状态"上 ✓）。改为**读定义**验证入口 ✓，不碰布局 ✓。
+const sampleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const box = document.getElementById("sampleList");
+  const table = (typeof SAMPLES !== "undefined" && SAMPLES) || [];
+  return {
+    tableCount: table.length,
+    entries: table.map((s) => s.id),
+    labels: table.map((s) => s.label),
+    hasContainer: Boolean(box),
+    renderer: typeof renderSamples === "function",
+  };
+})())`));
+if (!sampleAudit || sampleAudit.tableCount < 4) {
+  problems.push(`示例作品定义不足（${sampleAudit ? sampleAudit.tableCount : "?"} 个，应 ≥4）`);
+} else if (!sampleAudit.hasContainer || !sampleAudit.renderer) {
+  problems.push(`示例入口未接线：容器 ${sampleAudit.hasContainer}｜渲染函数 ${sampleAudit.renderer}`);
+} else if (sampleAudit.labels.some((label) => !label || label.length < 2)) {
+  problems.push(`示例入口缺少可读名称：${JSON.stringify(sampleAudit.labels)}`);
+} else {
+  console.log(`  示例作品：${sampleAudit.tableCount} 个定义｜${sampleAudit.entries.join(" / ")}`);
+}
+
 // **页面内联脚本的语法检查** ✓ —— 加这一段的直接原因：我拼接代码时在顶层留了一段
 // `await ...` ✗ ⇒ 整页脚本 SyntaxError ⇒ **整个界面白掉** ✓（工具条 0 个按钮 ✓），
 // 而当时的检查只报"等待超时" ✗，症状离病因很远 ✓。
