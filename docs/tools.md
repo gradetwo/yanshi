@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **27 core tools**. With every implemented group enabled there are
-**66 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+**69 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every adjustment and
@@ -54,3 +54,14 @@ plus the AI suggestion loop: `suggest` (a patch plus a `priority`), `preview_sug
 through the tool dispatch table), `accept_suggestions` / `reject_suggestions` (batches that do not
 abort on a single failure), `reject_suggestion` (records the reason) and `list_suggestions`
 (status, conflicts, `since_seq` polling).
+
+## 选区（设计 4.4；语义由用户确认为「约束落笔」）
+
+| 工具 | 说明 |
+|---|---|
+| `create_selection` | 创建选区（`shape` + `feather` + `invert` + `mode`：`new`/`add`/`subtract`/`intersect`），**约束之后新落笔的像素范围**；`linked_layer` 可只约束某图层 |
+| `delete_selection` | 删除选区（tombstone）：删除后落笔不再受约束，**已画内容保持不变** |
+| `list_selections` | 列出选区（设计 4.4 的 `shape/feather/mode/invert/linked_layer/refined_edges`）|
+
+设计只给了选区的**数据模型**与类型清单 ✓、未规定它对落笔的作用 ✗；用户确认采用
+**路线 A「约束落笔」**（只影响新落笔、不改写已有内容、可撤销 ✓），已记入 implementation-notes。

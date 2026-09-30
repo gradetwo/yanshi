@@ -339,6 +339,34 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                     Some(_) => {}
                     None => return Err(missing_error("图层", layer_id)),
                 }
+            } else if let Some(selection_id) = payload_str(&atom.payload, "selection_id") {
+                // **校验层曾与实际能力不一致**：`apply` 的 Tombstone 分支早就支持
+                // selection_id / mask_id / style_id ✓，但这里硬性要求 object_id 或 layer_id ✗，
+                // 于是"删除选区/蒙版/风格"的原子会被判为 PreconditionFailed 并**静默跳过** ✓ ——
+                // 这正是"工具返回 ok、日志里有原子、但状态没变"的根因 ✓。
+                match state.selections.get(selection_id) {
+                    Some(selection) if selection.is_deleted() => {
+                        return Err(tombstone_error("选区", selection_id))
+                    }
+                    Some(_) => {}
+                    None => return Err(missing_error("选区", selection_id)),
+                }
+            } else if let Some(mask_id) = payload_str(&atom.payload, "mask_id") {
+                match state.masks.get(mask_id) {
+                    Some(mask) if mask.is_deleted() => {
+                        return Err(tombstone_error("蒙版", mask_id))
+                    }
+                    Some(_) => {}
+                    None => return Err(missing_error("蒙版", mask_id)),
+                }
+            } else if let Some(style_id) = payload_str(&atom.payload, "style_id") {
+                match state.styles.get(style_id) {
+                    Some(style) if style.is_deleted() => {
+                        return Err(tombstone_error("风格", style_id))
+                    }
+                    Some(_) => {}
+                    None => return Err(missing_error("风格", style_id)),
+                }
             } else if atom.kind != AtomKind::SetProperty {
                 return Err(err(
                     ErrorCode::InvalidArgument,
@@ -665,6 +693,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             let selection = parse_selection(atom, selection_id.clone(), blobs);
             state.selections.insert(selection_id, selection);
         }
+
         AtomKind::CreateMask => {
             let mask_id = required(atom, "mask_id")?.to_owned();
             let mask = parse_selection(atom, mask_id.clone(), blobs);
@@ -1025,6 +1054,44 @@ mod tests {
 
     fn fold(atoms: &[Atom]) -> FoldResult {
         fold_atoms(DocumentState::empty(), atoms)
+    }
+
+    /// 选区也能被 tombstone 删除（`apply` 的 Tombstone 分支支持 selection_id ✓）。
+    /// 这条测试是为了定位一个真实症状：工具层提交了 `{"selection_id": ...}` 的 tombstone，
+    /// 日志里也确实有该原子，但选区的 `deleted_by` 仍是 None ✗。
+    #[test]
+    fn tombstone_marks_a_selection_deleted() {
+        let mut atoms = Vec::new();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({"selection_id": "sel_1",
+                       "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_sel_del",
+                json!({"selection_id": "sel_1"}),
+            ),
+        );
+        let result = fold(&atoms);
+        for warning in &result.warnings {
+            eprintln!("调试：折叠警告 {:?}", warning);
+        }
+        let selection = result
+            .state
+            .selections
+            .get("sel_1")
+            .expect("选区应存在于状态中");
+        assert!(
+            selection.deleted_by.is_some(),
+            "tombstone 必须把选区标记为已删除（deleted_by）"
+        );
     }
 
     /// create_document → create_layer → create_object

@@ -755,6 +755,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
+    ToolSpec {
+        name: "create_selection",
+        profile: Profile::Structure,
+        summary: "创建选区（形状 + 羽化 + 反选 + 组合模式）：约束**后续落笔**的像素范围",
+        mutating: true,
+        params: &[
+            param!("selection_id", String, true, "选区 id"),
+            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}"),
+            param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
+            param!("invert", Boolean, false, "反选（缺省 false）"),
+            param!("mode", String, false, "组合模式 new/add/subtract/intersect（缺省 new）"),
+            param!("linked_layer", String, false, "仅约束该图层的落笔（缺省约束全文档）"),
+        ],
+    },
+    ToolSpec {
+        name: "delete_selection",
+        profile: Profile::Structure,
+        summary: "删除选区（tombstone）：删除后落笔不再受其约束，且**已画内容不变**",
+        mutating: true,
+        params: &[param!("selection_id", String, true, "选区 id")],
+    },
+    ToolSpec {
+        name: "list_selections",
+        profile: Profile::Structure,
+        summary: "列出选区（设计 4.4 的 Selection 模型：shape/feather/mode/invert/linked_layer）",
+        mutating: false,
+        params: &[],
+    },
     // ---- 绘制 ----
     ToolSpec {
         name: "draw_stroke",
@@ -1463,6 +1491,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
         "create_mask" => write_create_mask(ctx, args),
+        "create_selection" => write_create_selection(ctx, args),
+        "delete_selection" => write_delete_selection(ctx, args),
+        "list_selections" => read_list_selections(ctx),
         "clone_stamp" => write_retouch(ctx, args, "clone_stamp"),
         "heal_stamp" => write_retouch(ctx, args, "heal"),
         "smudge" => write_retouch(ctx, args, "smudge"),
@@ -2636,6 +2667,78 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
 }
 
 /// 创建蒙版：内核按形状覆盖率调制图层 alpha（支持羽化与反选）。
+/// 选区语义（设计 4.4）：用户确认采用**路线 A「约束落笔」** ✓ ——
+/// 选区只约束**之后新落笔**的像素 ✓，不改写已有内容 ✓，删掉选区后已画内容**保持不变** ✓
+/// （因为约束是在渲染期按日志重新计算的 ✓）。设计只给了数据模型与类型清单、
+/// 未规定其对落笔的作用，这一语义是用户拍板的，已记入 implementation-notes ✓。
+fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let selection_id = require_str(args, "selection_id")?;
+    let shape = require_object(args, "shape")?.clone();
+    if shape.get("kind").and_then(Value::as_str).is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("shape 必须带 kind（rect/ellipse/polygon）"),
+        ));
+    }
+    let feather = args.get("feather").and_then(Value::as_f64).unwrap_or(0.0);
+    if !(0.0..=512.0).contains(&feather) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("feather 必须在 [0, 512] 内，得到 {feather}")),
+        ));
+    }
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "new".to_owned());
+    if !["new", "add", "subtract", "intersect"].contains(&mode.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "mode 必须是 new/add/subtract/intersect，得到 {mode}"
+            )),
+        ));
+    }
+    let mut payload = json!({
+        "selection_id": selection_id,
+        "shape": shape,
+        "feather": feather,
+        "mode": mode,
+        "invert": args.get("invert").and_then(Value::as_bool).unwrap_or(false),
+    });
+    if let Some(linked) = optional_str(args, "linked_layer") {
+        payload["linked_layer"] = json!(linked);
+    }
+    let result = ctx.commit(AtomKind::CreateSelection, payload)?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+fn write_delete_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let selection_id = require_str(args, "selection_id")?;
+    let result = ctx.commit(AtomKind::Tombstone, json!({"selection_id": selection_id}))?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
+fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let state = document_state(ctx)?;
+    let selections: Vec<Value> = state
+        .selections
+        .values()
+        .filter(|selection| !selection.is_deleted())
+        .map(|selection| {
+            json!({
+                "selection_id": selection.id,
+                "shape": selection.shape,
+                "feather": selection.feather,
+                "mode": selection.mode,
+                "invert": selection.invert,
+                "linked_layer": selection.linked_layer,
+                "refined_edges": selection.refined_edges,
+            })
+        })
+        .collect();
+    Ok(json!({"selections": selections, "count": selections.len()}))
+}
+
 fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
     let shape = require_object(args, "shape")?.clone();
