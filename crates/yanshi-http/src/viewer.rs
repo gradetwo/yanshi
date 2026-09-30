@@ -1079,7 +1079,8 @@ async function mediumStroke(name, points) {
   const spec = await loadMedium(name);
   const size = Math.min(48, spec.maxDab);
   const plugin = spec.instance.exports;
-  const spacing = Math.max(1, size / 4);
+  // 同上：整笔重采样也用 1/8 ✓（与拖动抽稀保持一致 ✓）。
+  const spacing = Math.max(1, size / 8);
   const tip = hexToUnit($("color").value);
   const wetness = (Number($("strength").value) || 40) / 100;
 
@@ -2289,7 +2290,10 @@ board.addEventListener("pointermove", (event) => {
     // 抽稀：两点间距小于 1/4 笔尖直径就不记 ✓（否则同一位置会叠很多次 ✓，既慢又浓 ✗）。
     const last = mediumStrokeState.points[mediumStrokeState.points.length - 1];
     const gap = Math.hypot(point.x - last.x, point.y - last.y);
-    const spacing = Math.max(1, (Number($("size").value) || 6) / 4);
+    // 抽稀间距取笔尖直径的 **1/8** ✓ —— 原先 1/4 太疏 ✗：
+    // 水彩每个点都有自己的边缘沉积 ✓，点距太大就叠成"一串环"而不是一片水痕 ✗
+    //（截图核验发现 ✓）。1/8 让相邻点的沉积充分重叠 ✓。
+    const spacing = Math.max(1, (Number($("size").value) || 6) / 8);
     if (gap >= spacing) {
       mediumStrokeState.points.push(point);
       state.points = mediumStrokeState.points.slice();
@@ -2633,9 +2637,21 @@ function dockerCards() {
   return [...document.querySelectorAll("aside .card")];
 }
 
+// Docker 标题的**归一化** ✓ —— 预设字符串与 DOM 文本必须逐字一致才能匹配 ✓，
+// 而"全角/半角括号、空格、不可见空白"的差异会让匹配**静默失败** ✗：
+// 现象正是"工作区切了、但面板没折叠" ✓（截图核验发现"绘画"预设内核卡片仍折叠 ✓）。
+// 归一化：去掉所有空白 ✓，并把全角括号与全角斜杠折算成半角 ✓。
+function normalizeTitle(text) {
+  return String(text || "")
+    .replace(/\s+/g, "")
+    .replace(/（/g, "(")
+    .replace(/）/g, ")")
+    .replace(/／/g, "/");
+}
+
 function cardTitle(card) {
   const h2 = card.querySelector("h2");
-  return h2 ? h2.textContent.trim() : "";
+  return normalizeTitle(h2 ? h2.textContent : "");
 }
 
 function saveDockers() {
@@ -2647,8 +2663,9 @@ function saveDockers() {
 }
 
 function applyCollapsed(titles) {
+  const wanted = titles.map(normalizeTitle);
   for (const card of dockerCards()) {
-    card.classList.toggle("collapsed", titles.includes(cardTitle(card)));
+    card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));
   }
 }
 
