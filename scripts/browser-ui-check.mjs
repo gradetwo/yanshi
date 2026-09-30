@@ -1850,6 +1850,44 @@ if (themeAudit.error) {
     `｜控件 ${themeAudit.controls} 个，最小高度 ${themeAudit.minHeight}px（须 ≥24）` +
     `｜焦点环 ${themeAudit.focusRule ? "✓" : "✗"}｜令牌 ${themeAudit.tokens}/8`);
 
+// **命中测试优先当前图层** ✓ —— 子 agent 报的 G5：
+// 选中某一层用"移动"拖动时，命中测试会命中**所有图层** ✗ ⇒ 拖到了别的层上的全幅背景 ✓
+// 并把背景拖出画布 ✓（用户根本没打算动它 ✓）。
+// 复现 agent 的场景 ✓：A 层放一个**全幅填充** ✓，B 层放一个小块 ✓，**选中 B** ✓，
+// 在两者都覆盖的位置拾取 ✓ ⇒ 必须拾到 B 上的那个对象 ✓。
+{
+  const docInfo = (await evaluate(`({ docId: window.yanshiStats.docId, token: window.yanshiStats.token })`)) || {};
+  const tool = async (name, body) => fetch(`${origin}/api/tools/${name}?doc=${docInfo.docId}&token=${docInfo.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}),
+  }).then((r) => r.json()).catch(() => ({}));
+  await tool("create_layer", { layer_id: "pick_under", name: "under" });
+  await tool("create_layer", { layer_id: "pick_over", name: "over" });
+  const filled = await tool("fill", { layer_id: "pick_under", object_id: "pick_bg",
+    data: { color: { r: 240, g: 240, b: 240, a: 255 } } });
+  const small = await tool("draw_shape", { layer_id: "pick_over", object_id: "pick_small",
+    data: { geometry: { kind: "rect", bbox: { x: 40, y: 40, w: 30, h: 30 } },
+            color: { r: 20, g: 120, b: 200, a: 255 } } });
+  await new Promise((r) => setTimeout(r, 1500));
+  const picked = JSON.parse(await evaluate(`(async () => {
+    const previous = state.layerId;
+    // **选中上面的那个小图层** ✓（正是用户"我正在这一层工作"的状态 ✓）。
+    const select = document.getElementById("layer");
+    const option = [...select.options].find((o) => o.value === "pick_over");
+    if (option) { select.value = "pick_over"; select.dispatchEvent(new Event("change", { bubbles: true })); }
+    state.layerId = "pick_over";
+    const hit = await pickObjectAt({ x: 55, y: 55 });
+    return JSON.stringify({ pickedId: hit ? hit.object_id : null, pickedLayer: hit ? hit.layer_id : null, previous,
+                            fillOk: ${filled.ok === true}, smallOk: ${small.ok === true} });
+  })()`));
+  if (!picked.fillOk || !picked.smallOk) {
+    problems.push(`命中测试用例的准备工作失败：${JSON.stringify(picked)}`);
+  } else if (picked.pickedLayer !== "pick_over") {
+    problems.push(`命中测试没有优先当前图层：拾到 ${picked.pickedId}（图层 ${picked.pickedLayer}），期望 pick_over 上的对象`);
+  } else {
+    console.log(`  命中测试：拾到 ${picked.pickedId}（图层 ${picked.pickedLayer}，须优先当前图层）`);
+  }
+}
+
 // **多步拖拽的选区必须提交完整矩形** ✓ —— 子 agent 报的 #4：
 // 拖 (64,372)→(432,500) 十步，却提交了 `{w:36.8,h:12.8}` ✗（只取了前两次移动事件 ✓）。
 // 同时核对状态栏说真话 ✓（#5：创建选区后仍显示"无选区" ✗，遗留选区会静默裁掉一切 ✓）。

@@ -2227,9 +2227,18 @@ async function pickObjectAt(point) {
            point.x <= bbox[0] + bbox[2] && point.y <= bbox[1] + bbox[3];
   });
   if (candidates.length === 0) return null;
+  // **优先命中"当前选中的图层"** ✓ —— 子 agent 实测的抱怨（G5 ✓）：
+  // 在图层面板选中某一层、用"移动"拖动时，命中测试会**命中所有图层** ✗，
+  // 于是拖到了另一个图层上的**全幅背景** ✓ 并把背景拖出了画布 ✓（用户完全没打算动它 ✓）。
+  //
+  // **设计未规定此处 ⇒ 记录选择 ✓**：先只看当前图层 ✓；该图层上没东西时**回退**到其它图层 ✓
+  //（而不是干脆不选 ✗ —— 那会让"点一下就选中画面上的东西"这种直觉失效 ✓）。
+  // 这与成熟绘画软件一致 ✓，也是**最小惊讶** ✓：用户选中的图层就是他正在处理的那一层 ✓。
+  const preferred = candidates.filter((object) => object.layer_id === state.layerId);
+  const pool = preferred.length > 0 ? preferred : candidates;
   // 取 z_index 最大者（同 z 取列表中较晚者，即较新对象）。
-  candidates.sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
-  return candidates[candidates.length - 1];
+  pool.sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
+  return pool[pool.length - 1];
 }
 
 /// 在覆盖层画出当前选区轮廓 ✓（让用户看得见"落笔会被限制在哪里" ✓）。
