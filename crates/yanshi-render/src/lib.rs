@@ -18,7 +18,8 @@
 //! | [`curve`] | 808 行 `appearance` | 笔触曲线：size / opacity / pressure（分段线性求值） |
 //! | [`dynamics`] | 808 行 `appearance` | 笔触动力学（抖动/散布/旋转）与程序化纹理（确定性 seed） |
 //! | [`paint`] | 11.1 | 湿笔：载墨量衰减、湿度耗墨、混色 |
-//! | [`font`] | 4.2 / 1175 | 内置 ASCII 位图字体与文本栅格化（CJK 子集为后续项） |
+//! | [`font`] | 4.2 / 1175 | 内置 ASCII 位图字体与文本栅格化 |
+//! | [`font_atlas`] | 1175 / 1287 | 内嵌 OFL 位图图集（ASCII + GB2312 一级字库），零依赖零 IO |
 //! | [`filter`] | 4.2 | 调整与滤镜内核（模糊、亮度对比、饱和度、色阶、反相） |
 //! | [`dirty`] | 6.6 | 几何 / 结构双 dirty 传播 → tile 失效集 |
 //! | [`render`] | 6.2 / 8.3 | 文档渲染：图层隔离、区域渲染、位图补丁 |
@@ -90,6 +91,7 @@ pub mod dirty;
 pub mod dynamics;
 pub mod filter;
 pub mod font;
+pub mod font_atlas;
 pub mod geometry;
 pub mod half;
 pub mod object;

@@ -9,6 +9,7 @@ platform font differences), which is what the design asks for in its font and cr
 | | |
 |---|---|
 | Source font | **Noto Sans CJK SC, Regular** (`/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc`) |
+| Package | `noto-fonts-cjk 20240730-1` (verified with `pacman -Qo`) |
 | Licence | **SIL Open Font License 1.1** — see [`LICENSE-OFL-NotoSansCJK.txt`](LICENSE-OFL-NotoSansCJK.txt) |
 | Derived data | rasterised bitmaps of a glyph subset; redistribution of derived data is permitted by the OFL with attribution (this file) |
 

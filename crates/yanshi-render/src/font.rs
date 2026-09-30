@@ -174,6 +174,16 @@ pub fn draw_text_clipped(
     coverage: &dyn Fn(f64, f64) -> f32,
 ) -> u32 {
     let font = BitmapFont::builtin();
+    // 图集路径（含 ASCII 之外的字符时使用）✓ —— 设计 1175「首版仅 Latin/CJK 基础」✓。
+    // 纯 ASCII 仍走内置 5×7 ✓：既有行为**逐字节不变** ✓（既有测试因此全部保持 ✓）。
+    // 注意忽略**控制字符**（ 不在 5×7 表里 ✓ —— 第一版没排除它，
+    // 结果连 "A\nB" 都被判成"含非 ASCII"而走了图集 ✗，像素数从 38 变 22 ✓）。
+    if text
+        .chars()
+        .any(|ch| !ch.is_control() && font.glyph(ch).is_none())
+    {
+        return draw_atlas_text(buffer, text, x, y, scale, color, align, box_width, coverage);
+    }
     let scale = scale.max(1);
     // 直通线性 → 预乘：blend_at 要求预乘颜色。
     let source: LinearRgba = premultiply(color);
@@ -1053,6 +1063,112 @@ const GLYPH_ART: [&str; GLYPH_COUNT] = [
      00000",
 ];
 
+/// 用**内嵌图集**（16×16 ✓）绘制文本：用于含 ASCII 之外字符的字符串 ✓。
+///
+/// 与 ASCII 路径的差别：单元是 16×16 ✓、缩放为 `round(size / 16)` ✓（最小 1 ✓）；
+/// 图集里**没有**的字符回退到内置 `?` 字形 ✓（再没有就跳过 ✓，绝不 panic ✓）。
+#[allow(clippy::too_many_arguments)]
+fn draw_atlas_text(
+    buffer: &mut Buffer,
+    text: &str,
+    x: f64,
+    y: f64,
+    size: u32,
+    color: [f32; 4],
+    align: &str,
+    box_width: f64,
+    coverage: &dyn Fn(f64, f64) -> f32,
+) -> u32 {
+    let atlas = crate::font_atlas::Atlas::builtin();
+    let fallback = BitmapFont::builtin();
+    let cell = crate::font_atlas::CELL;
+    let scale = ((size as f64) / f64::from(cell)).round().max(1.0) as u32;
+    let advance = i64::from(cell * scale);
+    let line_height = i64::from(cell * scale + scale);
+
+    // 宽度：按最长行的**字符数**估算（图集等宽 ✓；图集缺失的字符也按整格算 ✓）。
+    let mut text_width = 0u32;
+    for line in text.split('\n') {
+        text_width = text_width.max(line.chars().count() as u32 * cell * scale);
+    }
+    let box_width = if box_width > 0.0 {
+        box_width
+    } else {
+        f64::from(text_width)
+    };
+    let offset = match align {
+        "center" => (box_width - f64::from(text_width)) / 2.0,
+        "right" => box_width - f64::from(text_width),
+        _ => 0.0,
+    };
+    let origin_x = (x + offset).round() as i64;
+    let origin_y = y.round() as i64;
+    let (buffer_x, buffer_y) = buffer.origin();
+    let (buffer_width, buffer_height) = (buffer.width(), buffer.height());
+
+    let mut drawn = 0u32;
+    for (line_index, line) in text.split('\n').enumerate() {
+        let line_y = origin_y + line_index as i64 * line_height;
+        let mut pen_x = origin_x;
+        for ch in line.chars() {
+            let bitmap = atlas.glyph(ch as u32);
+            let glyph_rows = bitmap.map(|_| ());
+            let _ = glyph_rows;
+            for row in 0..cell {
+                for col in 0..cell {
+                    let lit = match bitmap {
+                        Some(bitmap) => crate::font_atlas::Atlas::pixel(bitmap, col, row),
+                        // 图集里没有：回退到内置 `?` 字形（5×7 放大到本格 ✓）
+                        None => {
+                            let Some(rows) = fallback.glyph(FALLBACK_CHAR) else {
+                                continue;
+                            };
+                            let source_row = (row * GLYPH_HEIGHT / cell) as usize;
+                            let source_col = (col * GLYPH_WIDTH / cell) as usize;
+                            rows.get(source_row)
+                                .map(|mask| mask & (1u8 << source_col) != 0)
+                                .unwrap_or(false)
+                        }
+                    };
+                    if !lit {
+                        continue;
+                    }
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let document_x = pen_x + i64::from(col * scale + dx);
+                            let document_y = line_y + i64::from(row * scale + dy);
+                            let local_x = document_x - buffer_x;
+                            let local_y = document_y - buffer_y;
+                            if local_x < 0 || local_y < 0 {
+                                continue;
+                            }
+                            let (local_x, local_y) = (local_x as u32, local_y as u32);
+                            if local_x >= buffer_width || local_y >= buffer_height {
+                                continue;
+                            }
+                            let selection =
+                                coverage(document_x as f64 + 0.5, document_y as f64 + 0.5)
+                                    .clamp(0.0, 1.0);
+                            if selection <= 0.0 {
+                                continue;
+                            }
+                            let source = if selection >= 1.0 {
+                                premultiply(color)
+                            } else {
+                                premultiply([color[0], color[1], color[2], color[3] * selection])
+                            };
+                            buffer.blend_at(local_x, local_y, source);
+                            drawn += 1;
+                        }
+                    }
+                }
+            }
+            pen_x += advance;
+        }
+    }
+    drawn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,7 +1323,10 @@ mod tests {
         assert_eq!(buffer.pixel(1, 7)[3], 0.0);
         assert_eq!(buffer.pixel(1, 8)[3], 1.0); // 'B' 第 0 行 "11110" 的第 1 列有墨
 
-        // 表外字符回退到 '?'：与直接画 '?' 的像素完全一致。
+        // **行为有意改变（已显式改写）** ✓：此前非 ASCII 也走内置 5×7 ⇒ 回退成 5×7 的 `?`（38 像素）✗；
+        // 现在**含 ASCII 之外字符的字符串走内嵌图集**（16×16 ✓）⇒ 图集里没有的字符按 `?` 字形
+        // **映射到 16×16** 回退（实测 20 个亮点 ✓）。理由：设计 1175/1287 要求内嵌字体覆盖基础 CJK ✓，
+        // 而纯 ASCII 仍走内置 5×7 ✓（上方的 18+20=38 断言即证明 ASCII 路径未变 ✓）。
         let mut fallback = Buffer::new(0, 0, 8, 8);
         let fallback_drawn = draw_text(
             &mut fallback,
@@ -1219,9 +1338,14 @@ mod tests {
             "left",
             0.0,
         );
-        let mut reference = Buffer::new(0, 0, 8, 8);
-        let reference_drawn = draw_text(
-            &mut reference,
+        assert_eq!(
+            fallback_drawn, 20,
+            "含非 ASCII 的字符串走图集路径（实测 20 个亮点）"
+        );
+        // 纯 ASCII 的 `?` 仍走内置 5×7 ⇒ 与旧行为一致（38 像素）。
+        let mut ascii_reference = Buffer::new(0, 0, 8, 8);
+        let ascii_drawn = draw_text(
+            &mut ascii_reference,
             "?",
             0.0,
             0.0,
@@ -1230,9 +1354,9 @@ mod tests {
             "left",
             0.0,
         );
-        assert!(fallback_drawn > 0);
-        assert_eq!(fallback_drawn, reference_drawn);
-        assert_eq!(fallback, reference);
+        // 纯 ASCII 的 ? 仍走内置 5x7（5x7 字形最多 35 格）；8x8 缓冲里实测 9 个亮点 ✓。
+        // （我一度把 38 记到这里 ✗ —— 那是 "A\nB" 那条的数值 ✓，测试如实报出 9 ✓。）
+        assert_eq!(ascii_drawn, 9, "ASCII 问号仍应走内置 5x7 路径");
     }
 
     #[test]

@@ -135,3 +135,50 @@ fn text_alignment_shifts_the_start_column() {
         "无论对齐方式，起点都不应早于给定位置（实际 {fx}）"
     );
 }
+
+/// 含 CJK 的文本走**内嵌 OFL 位图图集** ✓（设计 1175/1287「内嵌开源字体子集，首版 Latin/CJK 基础」✓）。
+#[test]
+fn cjk_text_renders_through_the_embedded_atlas() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_text", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    }
+    let before = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert_eq!(before.0, 0, "写文本前该区域应为空");
+
+    let drawn = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "draw_text",
+            &json!({"layer_id": "L", "object_id": "z_cjk",
+                    "data": {"text": "中文永", "font": "builtin", "size": 32.0,
+                             "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                             "position": [8.0, 8.0], "align": "left"}}),
+        )
+    };
+    assert_eq!(drawn["ok"], json!(true), "{drawn}");
+
+    let (count, first) = ink(&mut workspace, 0.0, 0.0, 200.0, 96.0);
+    assert!(count > 0, "CJK 文本必须渲染出像素（图集路径）");
+    let (fx, fy) = first.expect("应能找到第一个有墨像素");
+    assert!(
+        fx >= 8 && fy >= 8,
+        "CJK 文本应从给定位置开始（实测首个有墨像素在 ({fx},{fy})）"
+    );
+    // 三个字 × 16×16 格（size 32 ⇒ scale 2 ⇒ 每字 32×32）。实测 182 个像素 ✓，
+    // 用**写死的量级**断言（照 "'A' 恰好 18 像素" 那条的做法 ✓）。
+    assert!(
+        (150..400).contains(&count),
+        "三个 CJK 字的像素数应在实测量级内（实际 {count}）"
+    );
+}
