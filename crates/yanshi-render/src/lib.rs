@@ -82,6 +82,7 @@ pub mod buffer;
 pub mod color;
 pub mod curve;
 pub mod dirty;
+pub mod dynamics;
 pub mod filter;
 pub mod geometry;
 pub mod half;
