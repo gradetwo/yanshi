@@ -381,11 +381,9 @@ async function callTool(name, args, options = {}) {
   $("last").textContent = JSON.stringify(value).slice(0, 600);
   if (value.ok) {
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
-    if (options.refresh !== false) {
-      // `revert` / `reapply` 自身不入撤销栈：它们由撤销/重做逻辑显式管理栈。
-      const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
-      afterMutation(trackable);
-    }
+    // 入栈与"是否刷新"无关：`revert` / `reapply` 自身不入栈（它们由撤销/重做逻辑显式管理栈）。
+    const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+    afterMutation(trackable, { skipRefresh: options.refresh === false });
   } else {
     log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
   }
@@ -701,12 +699,16 @@ async function resync() {
 ///
 /// 曾经这些动作散落在 `callTool` 与 `submitAtom` 两条路径里 ✗，结果是"笔迹路径漏刷历史/漏入栈"
 /// 这类疏漏出现了两次 ✓。现在两条路径都只调这一个函数 ✓；将来再加收尾动作也只改这里。
-function afterMutation(atomId) {
+function afterMutation(atomId, options = {}) {
+  // **撤销栈必须无条件维护**：此前这段被放在 `if (options.refresh !== false)` 里 ✗，
+  // 于是所有传 `refresh: false` 的调用（填充、效果面板、修图、液化…）都不入栈 ✓ ——
+  // 表现为「填充后点撤销没用」（撤销撤掉的是上一笔，填充仍覆盖整幅）。
   if (atomId) {
     state.undoStack.push({ kind: "atom", id: atomId });
     state.redoStack.length = 0;
     updateUndoStatus();
   }
+  if (options.skipRefresh) return;
   scheduleThumbRefresh();
   void refreshHistory();
 }
@@ -1514,6 +1516,13 @@ async function commitRetouch() {
     args.smudge_length = Math.max(1, Math.round(size));
   } else {
     args.strength = strength;
+  }
+  if (tool === "erase") {
+    // 如实告知：内核目前**没有擦除图元**（`Erase` 只参与 dirty 规划，渲染层没有对应实现），
+    // 因此 `erase` 原子会被当作默认的笔触解析、不产生任何像素变化。
+    // 与其让用户以为是自己操作错了，不如明确说明。
+    log("橡皮暂不可用：内核尚未实现擦除图元（该操作不会改变画面）", "#c33");
+    return;
   }
   const value = await callTool(tool, args, { refresh: false });
   if (!value.ok) {
