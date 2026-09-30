@@ -20,6 +20,29 @@ if [ ! -x "$BIN" ]; then
   cargo build --release -p yanshi-http
 fi
 
+# WASM 产物守卫：浏览器里的内核是**编译产物**，改了内核源码却用旧产物，
+# 会得到与原生测试相反的结论（今天因此误判"橡皮没生效"两次）。
+# 只要 pkg 比内核/渲染/核心的源码旧，就自动重建。
+PKG="crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm"
+stale=0
+if [ ! -f "$PKG" ]; then
+  stale=1
+elif [ -n "$(find crates/yanshi-wasm/src crates/yanshi-render/src crates/yanshi-core/src \
+        -newer "$PKG" -name '*.rs' -print -quit 2>/dev/null)" ]; then
+  stale=1
+fi
+if [ "$stale" = "1" ]; then
+  echo "== WASM 产物已过期或缺失 ⇒ 自动重建（避免用旧内核得出错误结论）"
+  if cargo build -q -p yanshi-wasm --target wasm32-unknown-unknown --release 2>/dev/null \
+     && command -v wasm-bindgen >/dev/null 2>&1; then
+    wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript \
+      target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+    echo "   ✓ WASM 内核已重建"
+  else
+    echo "   ⚠️ 无法重建 WASM（缺 wasm32 目标或 wasm-bindgen-cli）；浏览器检查结果可能失真" >&2
+  fi
+fi
+
 cleanup() {
   if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null || true
