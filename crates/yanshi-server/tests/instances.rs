@@ -730,3 +730,150 @@ fn the_dependency_graph_reports_both_directions() {
         "mirror2 依赖 mirror：{inner}"
     );
 }
+
+/// **同一文档里连续脱离两次必须都能成功** ✓ —— 这是上一轮我自己标出的缺陷 ✓：
+/// 默认 id 写成 `detached_<doc_id>` ✗ ⇒ 第二次撞 id ✓，
+/// 而**撞 id 的失败发生在"新建"那一步** ✓ ⇒ 用户看到"报错"，但**实例其实已经被 tombstone** ✗
+///（因为脱离是两步原子 ✓）⇒ 数据状态与提示不符 ✓。这里把两件事都钉住 ✓：
+/// 两次都成功 ✓、且各自的 id 不同 ✓。
+#[test]
+fn detaching_twice_in_one_document_works() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(20.0, 20.0)}),
+        );
+        for index in 0..2 {
+            registry.call(
+                &mut ctx,
+                "create_instance",
+                &json!({"instance_id": format!("mirror{index}"), "layer_id": "L",
+                        "master_id": "master",
+                        "local_transform": {"matrix": [1, 0, 0, 1, 40.0 * (index as f64 + 1.0), 0], "pivot": [0, 0]}}),
+            );
+        }
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for index in 0..2 {
+        let mut ctx = context(&mut workspace);
+        let detached = registry.call(
+            &mut ctx,
+            "detach_instance",
+            &json!({"instance_id": format!("mirror{index}")}),
+        );
+        assert_eq!(
+            detached["ok"],
+            json!(true),
+            "第 {index} 次脱离应当成功：{detached}"
+        );
+        ids.push(
+            detached["detached_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        );
+    }
+    assert_ne!(ids[0], ids[1], "两次脱离必须得到不同的 id：{ids:?}");
+    assert!(
+        ids.iter().all(|id| id.starts_with("detached_")),
+        "id 前缀应可读：{ids:?}"
+    );
+    // 两次脱离之后两个实例都应当已消失 ✓、两个独立对象都在 ✓。
+    let listed = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_objects", &json!({}))
+    };
+    let object_ids: Vec<String> = listed["objects"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["object_id"].as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in &ids {
+        assert!(
+            object_ids.contains(id),
+            "脱离出来的对象应在列表里（{id}）：{listed}"
+        );
+    }
+    assert!(
+        !object_ids.iter().any(|id| id.starts_with("mirror")),
+        "两个实例都应已消失：{listed}"
+    );
+}
+
+/// **脱离的两步必须共用一个变更集** ✓（设计 5.6/§793 ✓）—— 这样"半成品"能**一次整体撤销** ✓。
+///
+/// 如实说明边界 ✓：变更集**不提供自动回滚** ✗（设计没这么说、实现也是逐条提交 ✓），
+/// 它提供的是**可恢复性** ✓（一条 `revert_changeset` 就能把两步一起撤回 ✓）。
+#[test]
+fn detaching_puts_both_atoms_in_one_changeset() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_inst", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "master", "data": shape(10.0, 10.0)}),
+        );
+        registry.call(
+            &mut ctx,
+            "create_instance",
+            &json!({"instance_id": "mirror", "layer_id": "L", "master_id": "master",
+                    "local_transform": {"matrix": [1, 0, 0, 1, 50, 0], "pivot": [0, 0]}}),
+        );
+    }
+    let changeset_id = {
+        let mut ctx = context(&mut workspace);
+        let detached = registry.call(
+            &mut ctx,
+            "detach_instance",
+            &json!({"instance_id": "mirror"}),
+        );
+        assert_eq!(detached["ok"], json!(true), "{detached}");
+        detached["changeset_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(!changeset_id.is_empty(), "响应应给出 changeset_id");
+    // 日志里**最后两条**原子应当属于同一个变更集 ✓（一条建副本 ✓、一条删实例 ✓）。
+    let log = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "get_log", &json!({"limit": 8}))
+    };
+    let atoms = log["atoms"].as_array().cloned().unwrap_or_default();
+    let tail: Vec<&serde_json::Value> = atoms.iter().rev().take(2).collect();
+    assert_eq!(tail.len(), 2, "日志里应至少有两条原子：{log}");
+    for atom in &tail {
+        assert_eq!(
+            atom["changeset_id"].as_str().unwrap_or(""),
+            changeset_id,
+            "两条原子都应属于脱离的变更集：{atom}"
+        );
+    }
+}
