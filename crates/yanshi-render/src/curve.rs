@@ -189,6 +189,42 @@ impl StrokeCurves {
         }
     }
 
+    /// 把**尺寸与不透明度曲线**作用到基础半径/alpha 上，采样参数是**笔迹进度** ✓。
+    ///
+    /// **为什么需要这个入口（设计未规定，此处记录选择 ✓）**：
+    /// README 说这些曲线用于"塑造笔触" ✓，而子 agent 实测：用文档推荐的
+    /// `points: [[x, y], …]` 形式时（每点压力默认 1.0 ✓），[`Self::modulate`] 会把曲线一律
+    /// 采样在 `curve(1)` ✗ ⇒ 一条写了 `size_curve: [[0,1],[0.5,0.5],[1,0.1]]` 的"锥形"笔迹
+    /// 画出来是**等宽**的 ✓（实测 40px 笔刷得到均匀 4px 色带 ✓）。
+    ///
+    /// 因此明确区分两个输入 ✓：
+    /// * **进度 `progress ∈ [0,1]`** ⇒ 驱动 `size_curve` / `opacity_curve` ✓（"沿笔迹塑形" ✓）；
+    /// * **压力 `pressure ∈ [0,1]`** ⇒ 驱动 `pressure_curve` ✓，并作为 `pressure_size` /
+    ///   `min_size_ratio` 的输入（由调用方施加 ✓，两条盖章路径**必须一致** ✓）。
+    pub fn modulate_shape(&self, base_radius: f64, base_alpha: f32, progress: f64) -> (f64, f32) {
+        let t = if progress.is_finite() {
+            progress.clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let size_scale = self.size.eval(t) as f64;
+        let opacity_scale = self.opacity.eval(t);
+
+        let radius = base_radius * size_scale;
+        let radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
+        let alpha = base_alpha * opacity_scale;
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (radius, alpha)
+    }
+
     /// 把笔触曲线作用到基础半径与基础 alpha 上（内核接线入口）。
     ///
     /// 语义：`p = pressure.clamp(0, 1)`；`p' = pressure_curve.eval(p)`；

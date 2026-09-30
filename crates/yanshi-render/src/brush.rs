@@ -261,10 +261,33 @@ fn stamp_samples_with_appearance(
             reservoir.advance(((x - px).powi(2) + (y - py).powi(2)).sqrt());
         }
         previous = Some((*x, *y));
-        // ① 曲线：压力先映射一次，再作用到半径与 alpha ✓。
-        let (radius, alpha) = appearance
-            .curves
-            .modulate(base_radius, base_alpha, *pressure);
+        // ① 曲线：**尺寸/不透明度按笔迹进度**采样 ✓（`size_curve` 是"沿笔迹塑形" ✓，
+        // 详见 `modulate_shape` 的说明 ✓）；**压力**另有其道 ✓（下面 ①b ✓）。
+        let progress = if stamps.len() > 1 {
+            index as f64 / (stamps.len() - 1) as f64
+        } else {
+            0.0
+        };
+        let (mut radius, alpha) =
+            appearance
+                .curves
+                .modulate_shape(base_radius, base_alpha, progress);
+        // ①b **压力 → 粗细**：与不带 appearance 的路径用**同一条规则** ✓ ——
+        // 此前这里完全没施加 ✗ ⇒ 只要给一个 `appearance`（哪怕只加了纹理 ✓）
+        // 就会**静默关掉**压力响应 ✓（子 agent 实测：同一组点列，无 appearance 时 38→14px ✓，
+        // 仅加一个纹理后变成 38→38px ✓）。"加纹理改变了几何"是最难察觉的一类 bug ✓。
+        let p = if pressure.is_finite() {
+            pressure.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mapped = appearance.curves.pressure.eval(p as f32) as f64;
+        let size_scale = if brush.pressure_size {
+            brush.min_size_ratio + (1.0 - brush.min_size_ratio) * mapped
+        } else {
+            1.0
+        };
+        radius *= size_scale;
         if radius <= 0.0 || alpha <= 0.0 {
             continue;
         }
@@ -916,4 +939,106 @@ mod tests {
         let center = buffer.pixel(8, 8)[3];
         assert!((center - 0.5).abs() < 0.05, "center alpha={center}");
     }
+}
+
+/// **`size_curve` 必须沿笔迹塑形，而不是被压力塌缩** ✓ —— 子 agent 报的 #8：
+/// 用文档推荐的 `points: [[x, y], …]` 形式（每点压力默认 1.0 ✓）时，
+/// 曲线被采样在 `curve(1)` ✗ ⇒ 写了锥形曲线却画出**等宽**色带 ✓
+/// （实测：40px 笔刷 + `size_curve: [[0,1],[0.5,0.5],[1,0.1]]` 得到均匀 4px ✗）。
+#[test]
+fn size_curve_shapes_the_stroke_along_its_progress() {
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    let brush = BrushSpec {
+        size: 40.0,
+        hardness: 1.0,
+        color: [0.9, 0.1, 0.1, 1.0],
+        opacity: 1.0,
+        flow: 1.0,
+        ..Default::default()
+    };
+    // **用文档推荐的 `points: [[x, y], …]` 形式** ✓ —— 每点压力默认 **1.0** ✓，
+    // 正是曲线被塌缩成 `curve(1)` 的那条路径 ✓（子 agent 的探针就是这个形状 ✓）。
+    let geometry = StrokeGeometry::from_value(&json!({
+        "points": (0..=40).map(|i| json!([10.0 + i as f64 * 4.0, 60.0])).collect::<Vec<_>>()
+    }))
+    .expect("点列应可解析");
+    let appearance = StrokeAppearance::from_data(&json!({
+        "appearance": { "size_curve": [[0.0, 1.0], [0.5, 0.5], [1.0, 0.1]] }
+    }));
+
+    let mut buffer = Buffer::new(0, 0, 200, 120);
+    let drawn = stamp_stroke_configured(&mut buffer, &brush, &geometry, Some(&appearance), None);
+    assert!(drawn > 0, "应画出印章");
+
+    // 量**每一列的墨迹高度** ✓：起点应远高于终点 ✓（锥形 ✓）。
+    let column_height =
+        |x: u32| -> usize { (0..120).filter(|y| buffer.pixel(x, *y)[3] > 0.01).count() };
+    let start = (12..14).map(column_height).max().unwrap_or(0);
+    let end = (185..190).map(column_height).max().unwrap_or(0);
+    assert!(start > 0, "起点应有墨（实际 {start}）");
+    assert!(
+        start >= end * 3,
+        "锥形曲线应让起点明显宽于终点（起点 {start}px，终点 {end}px）"
+    );
+}
+
+/// **加上 `appearance` 不能静默改变几何** ✓ —— 子 agent 报的 #9：
+/// 同一组带压力斜坡的点 ✓，不带 appearance 时 38→14px 会收细 ✓，
+/// 而**只加一个纹理**之后就变成 38→38px ✗（压力响应被静默关掉 ✓）。
+#[test]
+fn an_appearance_does_not_disable_the_pressure_response() {
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    let brush = BrushSpec {
+        size: 40.0,
+        hardness: 1.0,
+        color: [0.1, 0.1, 0.9, 1.0],
+        opacity: 1.0,
+        flow: 1.0,
+        ..Default::default()
+    };
+    // 压力 1.0 → 0.2 的斜坡 ✓（`{x, y, pressure}` 形式 ✓）。
+    let geometry = StrokeGeometry::from_value(&json!({
+        "points": (0..=40)
+            .map(|i| {
+                let t = i as f64 / 40.0;
+                json!([10.0 + i as f64 * 4.0, 60.0, 1.0 - 0.8 * t])
+            })
+            .collect::<Vec<_>>()
+    }))
+    .expect("点列应可解析");
+
+    let measure = |appearance: Option<&StrokeAppearance>| -> (usize, usize) {
+        let mut buffer = Buffer::new(0, 0, 200, 120);
+        stamp_stroke_configured(&mut buffer, &brush, &geometry, appearance, None);
+        let column =
+            |x: u32| -> usize { (0..120).filter(|y| buffer.pixel(x, *y)[3] > 0.01).count() };
+        let start = (12..14).map(column).max().unwrap_or(0);
+        let end = (185..190).map(column).max().unwrap_or(0);
+        (start, end)
+    };
+
+    let plain = measure(None);
+    assert!(
+        (plain.1 as f64) <= plain.0 as f64 * 0.8,
+        "不带 appearance 时应随压力收细（{plain:?}）"
+    );
+
+    // **只加一个纹理** ✓（`dynamics` 的纹理调制 alpha ✓，不该影响几何 ✓）。
+    let textured_appearance = StrokeAppearance::from_data(&json!({
+        "appearance": { "texture": { "kind": "grain", "scale": 3.0, "strength": 0.5, "seed": 1 } }
+    }));
+    let textured = measure(Some(&textured_appearance));
+    assert!(textured.0 > 0, "带纹理时仍应画出墨");
+    // **判据用"终点明显窄于起点"** ✓（而不是某个固定倍数 ✓）：
+    // 纹理本身会调制 alpha ✓ ⇒ 用透明度阈值量出的"高度"会被它影响 ✓
+    //（实测：不带 appearance 40→0 ✓、只加纹理 40→26 ✓，**都**在收细 ✓）。
+    // 而 bug 的形态是 **40→40** ✗（压力响应被静默关掉 ✓）⇒ 这条判据能抓住它 ✓。
+    assert!(
+        (textured.1 as f64) <= textured.0 as f64 * 0.8,
+        "只加纹理不应关掉压力响应（{textured:?}，不带 appearance 时是 {plain:?}）"
+    );
 }
