@@ -996,9 +996,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "笔迹路径编辑（设计 792；本片只实现 reverse/close/join）",
         mutating: true,
         params: &[
-            param!("op", String, true, "reverse | close | join"),
-            param!("object_id", String, true, "目标笔迹对象 id"),
-            param!("other_id", String, false, "join 的第二个笔迹"),
+            param!("op", String, true, "reverse | close | join | merge | split"),
+            param!("object_id", String, true, "目标对象 id（笔迹或路径）"),
+            param!("other_id", String, false, "join / merge 的第二个对象"),
+            param!("at", Integer, false, "split 的切口节点下标（仅开放路径）"),
+            param!("right_id", String, false, "split 产生的右半 id；缺省自动生成"),
         ],
     },
     ToolSpec {
@@ -3139,6 +3141,149 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     )
 }
 
+/// 取路径节点的坐标 ✓（`nodes` 的每一项是 `{x, y, in, out}` ✓）。
+/// 把方向向量归一化 ✓（零向量 ⇒ 返回零 ✓，调用方据此退化为直线 ✓）。
+fn normalize_dir(dx: f64, dy: f64) -> (f64, f64) {
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= 1e-12 {
+        (0.0, 0.0)
+    } else {
+        (dx / length, dy / length)
+    }
+}
+
+fn point_xy(point: &Value) -> (f64, f64) {
+    if let Some(pair) = point.as_array() {
+        return (
+            pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+        );
+    }
+    (
+        point.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+        point.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+    )
+}
+
+fn node_xy(node: &Value) -> (f64, f64) {
+    (
+        node.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+        node.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+    )
+}
+
+/// **在节点下标处切开一条路径** ✓（设计 792 的 `split` ✓）。
+///
+/// **设计只给了名字 ⇒ 记录选择** ✓：
+/// * 只在**开放路径**上工作 ✓ —— 闭合环在**一个**节点处切不开 ✓（需要两刀 ✓），
+///   而设计没说第二刀怎么给 ✓ ⇒ **明确报错** ✓，不擅自发明 ✗；
+/// * 切口节点的控制柄**按归属分** ✓：左半末节点保留 `in`、`out` 归零 ✓；
+///   右半首节点保留 `out`、`in` 归零 ✓ ⇒ **两半合起来与原曲线完全一致** ✓
+///   （测试用"墨量之和不变"守住 ✓）；
+/// * 原对象**保留左半** ✓（沿用原 id 与样式 ✓）、右半是**新对象** ✓；
+///   两步归一个变更集 ✓ ⇒ 一次可整体撤销 ✓。
+fn write_path_split(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let at = args.get("at").and_then(Value::as_u64).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("split 需要 at（切开处的节点下标）".to_owned()),
+        )
+    })? as usize;
+    let right_id = args
+        .get("right_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("path_{}", yanshi_core::Ulid::new().encode()));
+    let (layer_id, data, nodes, closed) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        if object.object_type != yanshi_core::ObjectType::Path {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{object_id} 不是路径（split 作用于路径的节点）")),
+            ));
+        }
+        let nodes: Vec<Value> = object
+            .data
+            .get("nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let closed = object
+            .data
+            .get("closed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        (object.layer_id.clone(), object.data.clone(), nodes, closed)
+    };
+    if closed {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "split 不支持闭合路径：闭合环在一个节点处切不开（需要两个切口），\
+                 而设计未规定第二个切口如何给出 ⇒ 这里明确拒绝，不擅自发明"
+                    .to_owned(),
+            ),
+        ));
+    }
+    if at == 0 || at + 1 >= nodes.len() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "at 必须是内部的节点下标（1..{}），两侧都要留节点",
+                nodes.len().saturating_sub(2)
+            )),
+        ));
+    }
+    let mut left = nodes[..=at].to_vec();
+    let mut right = nodes[at..].to_vec();
+    // **控制柄按归属分** ✓（合起来仍是同一条曲线 ✓）。
+    if let Some(map) = left[at].as_object_mut() {
+        map.insert("out".to_owned(), json!([0.0, 0.0]));
+    }
+    if let Some(map) = right[0].as_object_mut() {
+        map.insert("in".to_owned(), json!([0.0, 0.0]));
+    }
+    let mut left_data = data;
+    left_data["nodes"] = json!(left);
+    left_data["closed"] = json!(false);
+    let mut right_data = left_data.clone();
+    right_data["nodes"] = json!(right);
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let committed_left = ctx.commit(
+        AtomKind::Supersede,
+        json!({"object_id": object_id, "data": left_data}),
+    );
+    let committed_right = committed_left.as_ref().ok().map(|_| {
+        ctx.commit(
+            AtomKind::CreateObject,
+            json!({"object_id": right_id, "layer_id": layer_id,
+                   "type": "path", "data": right_data}),
+        )
+    });
+    ctx.changeset = previous;
+    let committed_left = committed_left?;
+    let committed_right = committed_right.expect("左半成功后才建右半")?;
+    Ok(json!({
+        "ok": true,
+        "op": "split",
+        "object_id": object_id,
+        "right_id": right_id,
+        "at": at,
+        "left_nodes": at + 1,
+        "right_nodes": nodes.len() - at,
+        "changeset_id": changeset,
+        "head": committed_left.head_seq.max(committed_right.head_seq),
+    }))
+}
+
 /// **把笔迹转换成路径** ✓（设计 792 的 `convert_to_path` ✓）。
 ///
 /// **设计未规定转换语义 ⇒ 记录选择** ✓：节点取笔迹的**原始采样点** ✓、控制柄**留空**
@@ -3893,18 +4038,35 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     };
     match op.as_str() {
         "reverse" | "close" => {}
-        "join" => {}
-        "split" | "merge" | "boolean" | "convert_to_shape" | "convert_to_path" => {
+        "join" | "merge" => {}
+        // **`split` 在下一段单独处理** ✓（它要读 `at` ✓ 且**不修改**原对象 ✓
+        // —— 它是唯一一个"一个对象变两个"的算子 ✓，走另一条路更清楚 ✓）。
+        "split" => {}
+        // **`boolean` / `convert_to_shape` / `convert_to_path` 仍然拒绝** ✓ ——
+        // 前者需要真正的布尔几何 ✓，后者需要"路径 ⇒ 形状"的语义 ✓
+        //（`convert_to_path` 是**笔迹 ⇒ 路径** ✓，已作为独立工具实现 ✓；路径再"转路径"没有意义 ✓）。
+        "boolean" | "convert_to_shape" | "convert_to_path" => {
             return Err(unsupported(&op));
         }
         other => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "未知的 path_edit 算子 {other}（本片支持 reverse / close / join）"
+                    "未知的 path_edit 算子 {other}（已实现：reverse / close / join / merge / split）"
                 )),
             ));
         }
+    }
+
+    // **`split` 单独走一条路** ✓（设计 792 只给了名字 ⇒ 记录选择 ✓）：
+    // 在**节点下标** `at` 处把一条**开放**路径切成两条 ✓，两半各自复制切口节点 ✓。
+    // * **切口节点的控制柄按"归属"分** ✓：左半的末节点保留 `in`、`out` 归零 ✓；
+    //   右半的首节点保留 `out`、`in` 归零 ✓ —— 这样**两半合起来与原曲线完全一致** ✓
+    //   （测试用"两半的墨量之和 = 原来的墨量"守住 ✓）；
+    // * **闭合路径拒绝** ✓：闭合环在**一个**节点处是切不开的 ✓（数学上需要两刀 ✓），
+    //   而设计没说第二刀怎么给 ✓ ⇒ 明确报错 ✓，不擅自发明 ✗。
+    if op == "split" {
+        return write_path_split(ctx, args);
     }
 
     // 读目标笔迹的点 ✓（对象类型必须是笔迹 ✓ —— 形状/文本没有"点序"可言 ✓）。
@@ -4035,7 +4197,16 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         _ => {}
     }
 
-    // `join` ✓：接上第二条笔迹 ✓，然后把第二条 tombstone ✓（一个变更集 ✓）。
+    // `join` / `merge` ✓：接上第二条对象 ✓，然后把第二条 tombstone ✓（一个变更集 ✓）。
+    //
+    // **两者的差别（设计只给了两个名字 ⇒ 记录选择 ✓）**：
+    // `join` 只是**接起来** ✓（拼接节点 ✓，两端的控制柄**原样保留** ✓）；
+    // `merge` 额外把**接缝处的切线对齐** ✓ —— 以接缝弦长为尺度 ✓，给左半末节点设 `out` ✓、
+    // 给右半首节点设 `in` ✓（各取弦长的 1/3 ✓，即三次贝塞尔表达直线的常用长度 ✓），
+    // 使接缝处**平滑过渡** ✓ 而不是留下一个折角 ✓。
+    // **为什么不做成同义词** ✗：设计把两个名字并列 ✓，若语义相同就应当合并成一个 ✓；
+    // 这里给出"平滑接缝"这一条**可验证**的差别 ✓（测试比较两者的渲染确实不同 ✓）。
+    let is_merge = op == "merge";
     let other_id = require_str(args, "other_id")?;
     if other_id == object_id {
         return Err(YanshiError::new(
@@ -4088,8 +4259,88 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("{other_id} 没有 points")),
         ));
     }
-    let joined = points.len() + other_points.len();
-    points.extend(other_points);
+    // **接缝处重合的节点要去重** ✓ —— 两条路径"对接着画"时端点常常**重合** ✓，
+    // 直接拼接会留下一个**零长度段** ✓（节点重复 ✓、渲染无害但数据脏 ✓，
+    // 而且会让"接缝在哪"变得含糊 ✗）。规则：端点几乎重合（≤1e-6 ✓）时**丢掉第二个的首节点** ✓，
+    // 也就是"在它们相接的地方连起来" ✓ —— 这是最符合直觉的读法 ✓。
+    // **记录选择** ✓：设计没有规定 join/merge 如何处理重合端点 ✓；这里选择去重 ✓。
+    let mut other_nodes = other_points;
+    let deduped = {
+        let same_point = match (points.last(), other_nodes.first()) {
+            (Some(last), Some(first)) => {
+                let (ax, ay) = if is_path {
+                    node_xy(last)
+                } else {
+                    point_xy(last)
+                };
+                let (bx, by) = if is_path {
+                    node_xy(first)
+                } else {
+                    point_xy(first)
+                };
+                (ax - bx).abs() <= 1e-6 && (ay - by).abs() <= 1e-6
+            }
+            _ => false,
+        };
+        if same_point && other_nodes.len() > 1 {
+            other_nodes.remove(0);
+            true
+        } else {
+            false
+        }
+    };
+    let joined = points.len() + other_nodes.len();
+    let seam = points.len();
+    points.extend(other_nodes);
+    if is_merge {
+        // **`merge` 只对路径有意义** ✓：笔迹没有控制柄 ✓ ⇒ 若在这里静默等同于 `join`，
+        // 调用方会以为"接缝平滑过了" ✗ —— 明确报错比静默降级诚实 ✓。
+        if !is_path {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "merge 只作用于路径（笔迹没有控制柄，接缝无从平滑；请用 join）".to_owned(),
+                ),
+            ));
+        }
+        // **切线对齐（G1 连续）** ✓ —— 让接缝两侧的手柄各自**沿着相邻段的方向** ✓，
+        // 而不是把手柄放在接缝弦上 ✗。
+        //
+        // 我第一版把手柄取成"弦长的 1/3" ✗ ⇒ 两个控制点都落在弦上 ⇒
+        // 那条三次贝塞尔**恰好就是直线** ✓ ⇒ 与 `join` 的渲染**逐像素相同** ✓
+        //（测试当场指出"两个名字应当有差别" ✗）。这是"看起来在做平滑、其实什么都没变"的典型 ✓：
+        // 弦上的控制点只能表达直线 ✓，真正决定弯曲的是**切线方向** ✓。
+        let (sx, sy) = node_xy(&points[seam - 1]);
+        let (nx, ny) = node_xy(&points[seam]);
+        let chord = ((nx - sx).powi(2) + (ny - sy).powi(2)).sqrt();
+        let scale = chord / 3.0;
+        // 进入接缝的方向：若 A 有前一个节点，取它指向接缝的方向 ✓（否则退化为弦方向 ✓）。
+        let (px, py) = if seam >= 2 {
+            node_xy(&points[seam - 2])
+        } else {
+            (sx - (nx - sx), sy - (ny - sy))
+        };
+        // 离开接缝的方向：若 B 有后续节点，取接缝指向它的方向 ✓。
+        let (qx, qy) = if seam + 1 < points.len() {
+            node_xy(&points[seam + 1])
+        } else {
+            (nx + (nx - sx), ny + (ny - sy))
+        };
+        let incoming = normalize_dir(sx - px, sy - py);
+        let outgoing = normalize_dir(qx - nx, qy - ny);
+        if let Some(map) = points[seam - 1].as_object_mut() {
+            map.insert(
+                "out".to_owned(),
+                json!([incoming.0 * scale, incoming.1 * scale]),
+            );
+        }
+        if let Some(map) = points[seam].as_object_mut() {
+            map.insert(
+                "in".to_owned(),
+                json!([-outgoing.0 * scale, -outgoing.1 * scale]),
+            );
+        }
+    }
     let mut data = data;
     // **按类型写回正确的键** ✓（路径是 `nodes` ✓、笔迹是 `points` ✓）——
     // 写错键的表现是"命令返回 ok 但什么都没变" ✗，正是本项目最忌的静默失效 ✓。
