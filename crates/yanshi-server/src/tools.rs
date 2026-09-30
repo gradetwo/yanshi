@@ -888,6 +888,29 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "transform_object",
+        profile: Profile::Structure,
+        summary: "旋转/缩放/平移一个对象（设计 783）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+            param!("rotate", Object, false, "{degrees} 旋转"),
+            param!("scale", Object, false, "{x, y} 缩放"),
+            param!("translate", Object, false, "{dx, dy} 平移"),
+            param!("anchor", Object, false, "{x, y} 变换中心；缺省为对象包围盒中心"),
+            param!("compose", Boolean, false, "是否叠加到现有变换上（缺省 true）"),
+        ],
+    },
+    ToolSpec {
+        name: "restore_object",
+        profile: Profile::Structure,
+        summary: "恢复已删除的对象（设计 783）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "对象 id"),
+        ],
+    },
+    ToolSpec {
         name: "get_object_history",
         profile: Profile::History,
         summary: "一个对象的原子版本链（设计 776）",
@@ -1669,6 +1692,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "replace_object_data" => write_replace_object_data(ctx, args),
         "update_stroke" => write_update_stroke(ctx, args),
         "create_instance" => write_create_instance(ctx, args),
+        "transform_object" => write_transform_object(ctx, args),
+        "restore_object" => write_restore_object(ctx, args),
         "get_object_history" => read_get_object_history(ctx, args),
         "find_atom" => read_find_atom(ctx, args),
         "get_diff" => read_get_diff(ctx, args),
@@ -3101,6 +3126,236 @@ fn write_set_group_transform(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     Ok(
         json!({"ok": true, "group_id": group_id, "delta": {"dx": dx, "dy": dy}, "head": result.head_seq}),
     )
+}
+
+/// **旋转 / 缩放 / 平移一个对象** ✓（设计 783 的 `transform_object` ✓）。
+///
+/// 与 `move_object` 的分工 ✓（设计把两者并列 ✓，这里记录本仓库的取舍 ✓）：
+/// `move_object` 是**移动**（平移 ✓，或直接给一个绝对矩阵 ✓）；
+/// `transform_object` 面向**人类可读的几何操作** ✓ —— 旋转角度 ✓、缩放比例 ✓、平移量 ✓，
+/// 并可指定**变换中心** `anchor` ✓（缺省取对象包围盒中心 ✓，这也是"转它自己"的直觉 ✓）。
+///
+/// 实现刻意复用既有机制 ✓：算出一个 2×3 矩阵 ✓，再以 **`Move {transform}`** 提交 ✓
+///（折叠层在载荷带 `transform` 时**赋值** ✓ ⇒ 绝对变换 ✓）；`compose: true`（缺省 ✓）
+/// 时先把新矩阵**叠加**到对象当前变换上 ✓ ⇒ 可以"再转 30°" ✓。
+///
+/// **为什么不做成新原子种类** ✓：`Move`/`Transform` 已经承载了绝对矩阵 ✓，
+/// 渲染、包围盒、脏区、命中测试全都跟着它走 ✓ ⇒ 加新种类只会多一条要维护的路径 ✗。
+fn write_transform_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let compose = optional_bool(args, "compose").unwrap_or(true);
+    // 读当前包围盒（用于缺省锚点 ✓）与当前变换（用于叠加 ✓）。
+    let (current, bbox) = {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id.as_str()) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            ));
+        };
+        (
+            object.transform,
+            yanshi_render::object::object_bbox_in(&state, object),
+        )
+    };
+    let anchor = match args.get("anchor") {
+        Some(anchor) if !anchor.is_null() => {
+            let x = anchor.get("x").and_then(Value::as_f64);
+            let y = anchor.get("y").and_then(Value::as_f64);
+            match (x, y) {
+                (Some(x), Some(y)) => (x, y),
+                _ => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("anchor 需要 {x, y}".to_owned()),
+                    ))
+                }
+            }
+        }
+        // **缺省锚点 = 对象包围盒中心** ✓ —— "转它自己"是最小惊讶 ✓；
+        // 解析不出包围盒（例如实例的 master 暂不可用 ✓）⇒ 明确报错 ✓，不悄悄用 (0,0) ✗。
+        _ => match bbox {
+            Some(bbox) => (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0),
+            None => {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(
+                        "对象当前没有可用的包围盒，无法推出缺省 anchor；请显式给出 anchor"
+                            .to_owned(),
+                    ),
+                ))
+            }
+        },
+    };
+    // 三个操作里**恰好一个** ✓（同时给多个会让"叠加顺序"变成没说清的事 ✓）。
+    //
+    // **先数、再算** ✓ —— 我第一版把计数写进 `if let ... else if ...` 链里 ✗
+    // ⇒ 只有第一个分支能进 ⇒ 计数**永远 ≤1** ⇒ 这条校验是**死代码** ✓
+    //（测试当场抓到："给了两个 应被拒绝：… ok:true" ✓）。计数必须在**分支之前**完成 ✓。
+    let requested = ["rotate", "scale", "translate"]
+        .iter()
+        .filter(|key| {
+            args.get(**key)
+                .map(|value| !value.is_null())
+                .unwrap_or(false)
+        })
+        .count();
+    let mut local = [1.0f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+    if let Some(rotate) = args.get("rotate").filter(|value| !value.is_null()) {
+        let degrees = rotate
+            .get("degrees")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("rotate 需要 {degrees}".to_owned()),
+                )
+            })?;
+        let radians = degrees.to_radians();
+        let (sin, cos) = (radians.sin(), radians.cos());
+        local = [cos, sin, -sin, cos, 0.0, 0.0];
+    } else if let Some(scale) = args.get("scale").filter(|value| !value.is_null()) {
+        let sx = scale.get("x").and_then(Value::as_f64).unwrap_or(1.0);
+        let sy = scale.get("y").and_then(Value::as_f64).unwrap_or(sx);
+        if sx.abs() < 1e-6 && sy.abs() < 1e-6 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("scale 不能两个方向都为 0（会把对象压成空）".to_owned()),
+            ));
+        }
+        local = [sx, 0.0, 0.0, sy, 0.0, 0.0];
+    } else if let Some(translate) = args.get("translate").filter(|value| !value.is_null()) {
+        local = [
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            translate.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
+            translate.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
+        ];
+    }
+    if requested != 1 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "请给出 rotate / scale / translate **其中之一**（同时给多个会让叠加顺序变成没说清的事）"
+                    .to_owned(),
+            ),
+        ));
+    }
+    // 绕 anchor：`T(anchor) · op · T(-anchor)` ✓。
+    let about_anchor = yanshi_core::Transform {
+        matrix: [
+            local[0],
+            local[1],
+            local[2],
+            local[3],
+            local[4] + anchor.0 - (local[0] * anchor.0 + local[2] * anchor.1),
+            local[5] + anchor.1 - (local[1] * anchor.0 + local[3] * anchor.1),
+        ],
+        pivot: [0.0, 0.0],
+    };
+    let final_transform = if compose {
+        compose_transforms(&about_anchor, &current)
+    } else {
+        about_anchor
+    };
+    let result = ctx.commit(
+        AtomKind::Move,
+        json!({"object_id": object_id,
+               "transform": {"matrix": final_transform.matrix, "pivot": final_transform.pivot}}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "anchor": [anchor.0, anchor.1],
+        "composed": compose,
+        "matrix": final_transform.matrix,
+        "head": result.head_seq,
+    }))
+}
+
+/// **恢复已删除的对象** ✓（设计 783 的 `restore_object` ✓）。
+///
+/// 做法 ✓：找到删掉它的那些 `tombstone` 原子 ✓，**逐条 `Revert`** ✓，并把这些 revert
+/// 归入**一个变更集** ✓（与 `revert_changeset` 同一处理 ✓ ⇒ 这次恢复本身也能被一次撤销 ✓）。
+///
+/// **设计未规定"恢复"的语义 ⇒ 记录选择** ✓：走**历史**这条路 ✓（撤销删除 ✓），
+/// 而不是"新建一个同 id 的对象" ✗ —— 后者会丢掉它的原子血脉 ✓，
+/// 而本项目的一切都建立在"日志即真相"上 ✓。若对象**本来就没被删** ✓ 则明确报错 ✓。
+///
+/// **边界 ✓**：本片只恢复**对象** ✓（`layer` 的删除恢复尚未提供 ✓，需要时单独讨论 ✓）。
+fn write_restore_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let (tombstones, state_present, alive) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let mut tombstones: Vec<String> = Vec::new();
+        for atom in document.log().iter() {
+            if atom.kind != AtomKind::Tombstone {
+                continue;
+            }
+            if atom.payload.get("object_id").and_then(Value::as_str) == Some(object_id.as_str()) {
+                tombstones.push(atom.id.clone());
+            }
+        }
+        let state = document.state();
+        let present = state.objects.contains_key(object_id.as_str());
+        let alive = state
+            .objects
+            .get(object_id.as_str())
+            .map(|object| !object.is_deleted())
+            .unwrap_or(false);
+        (tombstones, present, alive)
+    };
+    if !state_present {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 从未存在过（日志里没有它的删除记录，也不在状态里）"
+            )),
+        ));
+    }
+    if tombstones.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("对象 {object_id} 没有被删除过，无需恢复")),
+        ));
+    }
+    if alive {
+        return Ok(
+            json!({"ok": true, "object_id": object_id, "restored": false,
+                         "note": "对象当前是活的（删除已被撤销过），无需恢复"}),
+        );
+    }
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let mut reverted: Vec<String> = Vec::new();
+    let mut failure: Option<YanshiError> = None;
+    for tombstone in &tombstones {
+        match ctx.commit(AtomKind::Revert, json!({"target": tombstone})) {
+            Ok(_) => reverted.push(tombstone.clone()),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    ctx.changeset = previous;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(json!({
+        "ok": true,
+        "object_id": object_id,
+        "restored": true,
+        "reverted_tombstones": reverted,
+        "changeset_id": changeset,
+    }))
 }
 
 /// 原子涉及的 `object_id` / `layer_id` ✓（工具与历史检索都按这两个字段过滤 ✓）。

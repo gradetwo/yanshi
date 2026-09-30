@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**87 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
+**89 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`;
 select them with `--profile` (HTTP and MCP).
 
 The most recent core tools come from design section 9: the object-group operations `create_group`,
@@ -25,6 +25,17 @@ than papered over: design section 793 states `revert(revert(x)) ≡ reapply(x)`,
 semantic, but commit validation refuses both `revert` and `reapply` on a revert atom, so a changeset made
 of reverts cannot be withdrawn again. The tool therefore skips history atoms and reports how many it
 skipped in `skipped_history_atoms`, instead of deciding on its own which layer to relax.
+
+`transform_object` and `restore_object` join the `structure` group. `transform_object` is the
+human-readable counterpart to `move_object`: it takes exactly one of a rotation in degrees, a scale, or a
+translation, plus an optional anchor defaulting to the object's bounding box centre, and composes onto the
+existing transform unless `compose: false` asks for a replacement; it commits through the existing `Move`
+atom with an absolute matrix, so rendering, bounding boxes, dirty planning and hit testing need no new path.
+`restore_object` brings a deleted object back through history, reverting the tombstones that removed it and
+grouping those reverts into one changeset, rather than creating a fresh object with the same id, which would
+throw away its atom lineage. One caveat is recorded in the tests: withdrawing that restore is the second
+place where the validator refusing to revert a revert bites, so the tool reports the atoms it skipped instead
+of pretending.
 
 `path_edit` lives in the `structure` group and implements the three of design 792's operations that fit
 the existing stroke geometry without inventing a path object model: `reverse`, `close` and `join`. The
