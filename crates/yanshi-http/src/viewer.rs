@@ -2144,6 +2144,10 @@ async function switchDocument(docId, token) {
     await refreshPreview();
     await refreshLayers();
   }
+  // **打开就保证有图层可画** ✓（见 `ensurePaintLayer` 的说明 ✓）：
+  // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
+  await ensurePaintLayer();
+  await refreshLayers();
 }
 
 async function ensureDocument() {
@@ -2416,6 +2420,38 @@ function fillHistoryFilters(atoms) {
       select.value = current;
     }
   }
+}
+
+/// **保证"有图层可画"** ✓ —— 落笔兜底 ✓。
+///
+/// **为什么要有它** ✓（真机验收换来的 ✓）：普通笔刷落到"还没有图层的文档"上时，
+/// `draw_stroke`/`erase` 会因为 `layer_id` 指向不存在的图层而被**拒绝** ✗，
+/// 而客户端**只看日志、画布上毫无反馈** ✗ ⇒ 用户的表现就是"**点了没反应**" ✗ ——
+/// 这正是本项目自己定的"**不许静默吞掉用户操作**" ✗ 那一类。
+///
+/// **做法沿用项目里已有的约定** ✓（不是新发明 ✓）：介质提交路径 `commitMediumBitmap` 早就在做
+/// "选中的图层不存在就兜底建一个" ✓（`state.layerId || "layer_paint"` ✓ 并在需要时新建 ✓）。
+/// 这里把它**提到打开文档时** ✓ ⇒ 所有工具都受益 ✓，而且不用在**同步的**落笔处理器里 await ✗。
+async function ensurePaintLayer() {
+  const listed = await callTool("list_layers", {}, { refresh: false }).catch(() => null);
+  const layers = (listed && listed.layers) || [];
+  const known = layers.some((layer) => layer.layer_id === state.layerId);
+  if (known) return state.layerId;
+  // 有别的图层就选第一个 ✓；一个都没有就建一个 ✓（与介质路径同名同义 ✓）。
+  if (layers.length > 0) {
+    state.layerId = layers[0].layer_id;
+    return state.layerId;
+  }
+  const fallback = state.layerId || "layer_paint";
+  const created = await callTool("create_layer", { layer_id: fallback, name: "图层 1" }, { refresh: false });
+  if (!created.ok) {
+    // **建不出来也要说话** ✗ —— 静默是最坏的结果 ✓。
+    log("无法新建图层：" + (created.error_code || "unknown") + "，落笔会失败", "#c33");
+    return null;
+  }
+  state.layerId = fallback;
+  log("文档里还没有图层 ⇒ 已自动新建「图层 1」✓");
+  return state.layerId;
 }
 
 async function refreshLayers() {
@@ -3556,16 +3592,26 @@ async function commitShape() {
   const size = Number($("size").value);
   if (state.tool === "brush") {
     if (state.points.length < 2) return;
-    await callTool("draw_stroke", {
+    // **不再无视结果** ✗ —— 此前这里连返回都不看 ✓ ⇒ 被拒时画布上毫无反馈 ✗
+    //（正是"静默吞掉用户操作" ✓）。现在失败必留痕 ✓，并提示怎么恢复 ✓。
+    const drawn = await callTool("draw_stroke", {
       layer_id: state.layerId,
       data: { points: state.points.map((p) => [p.x, p.y]), size, color, hardness: 0.7 },
     });
+    if (!drawn.ok) {
+      log("落笔失败：" + (drawn.error_code || "unknown") + " " +
+          ((drawn.context && drawn.context.detail) || "") + "（试试先新建图层？）", "#c33");
+    }
   } else if (state.tool === "erase") {
     if (state.points.length < 2) return;
-    await callTool("erase", {
+    const erased = await callTool("erase", {
       layer_id: state.layerId,
       data: { points: state.points.map((p) => [p.x, p.y]), size: size * 1.5, color: { r: 0, g: 0, b: 0, a: 0 } },
     });
+    if (!erased.ok) {
+      log("擦除失败：" + (erased.error_code || "unknown") + " " +
+          ((erased.context && erased.context.detail) || ""), "#c33");
+    }
   } else {
     const [a, b] = state.points;
     if (!a || !b) return;
