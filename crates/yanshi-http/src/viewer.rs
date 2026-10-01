@@ -1538,6 +1538,18 @@ function syncStrengthLabel() {
 // **这一条我漏过一次** ✗：我只把画谱播放器搬到了干净工作树 ✓，忘了这半 ✗
 // ⇒ 生成出来的画**全用界面上的红色、笔尖还是细的** ✓（服务端渲染一看就露馅 ✓）。
 // **教训** ✓：跨工作树搬改动时，要按"这次一共改了几处"逐条核对 ✓，不能凭印象 ✓。
+/// **逐 dab 的确定性种子** ✓ —— 这条是照 **libmypaint（brushlib）** 的动力学抄的 ✓：
+/// 它的 `Random` 输入 + `RADIUS_BY_RANDOM` / `OFFSET_BY_RANDOM` / `OPAQUE` 都在讲同一件事 ✓ ——
+/// **每一枚 dab 必须不一样** ✓，笔触才不是机械的 ✗。
+///
+/// 而本项目的介质插件**本来就按 seed 生成鬃毛与颗粒** ✓（`yanshi_dab(seed, size, pressure)` ✓），
+/// 只是**宿主每一枚都传同一个 seed** ✗（写死 1000 ✓）⇒ 每枚印章的纹理**完全相同** ✓
+/// ⇒ 再怎么加笔也只是"同一块印章盖很多次" ✗（这就是画面"机械、像矢量"的根因之一 ✓）。
+/// 现在：**每枚 dab 递增取种** ✓、并把**载墨当作压力**传进去 ✓（`pressure` 影响笔痕的浓淡 ✓）。
+/// 计数器在每次画谱开始时归零 ✓ ⇒ 同一份画谱仍然画出**同一幅画** ✓（确定性不破 ✓）。
+let mediumDabCounter = 0;
+const nextDabSeed = () => ((mediumDabCounter++ * 0x9E3779B1) ^ 0x5BF03635) >>> 0;
+
 /// **批处理会话** ✓ —— 非空时 `mediumStroke` 不再逐笔提交 ✓。
 ///
 /// **为什么** ✓（实测驱动 ✓）：一次 `import_image` 提交固定约 **280 ms** ✗（**与区域面积无关** ✓，
@@ -1657,7 +1669,10 @@ async function mediumStroke(name, points, options = {}) {
       const input = new Float32Array(plugin.memory.buffer, plugin.yanshi_input_ptr(), Math.max(floats, 10));
       input.set([tip[0], tip[1], tip[2], 1, dest[0] / 255, dest[1] / 255, dest[2] / 255, dest[3] / 255, load, wetness], 0);
     }
-    const written = plugin.yanshi_dab(Number($("strength").value) || 40, size, 1000);
+    // **逐 dab 取种 + 以载墨为压力** ✓（见 `nextDabSeed` 的说明 ✓）——
+    // 此前这里把"强度"当 seed 传 ✗：强度**每一枚都一样** ✓ ⇒ 纹理重复 ✗；
+    // 而它本该影响的是**湿度** ✓（已经由上面的输入数组承担 ✓）。
+    const written = plugin.yanshi_dab(nextDabSeed(), size, Math.max(1, Math.round(load * 1000)));
     if (written === 0) break;
     const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
     dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), size, size), 0, 0);
@@ -1779,6 +1794,8 @@ async function applyScore(score) {
   const started = Date.now();
   // 总笔数 ✓（进度公布用 ✓）—— 让"进度"这个概念在批量与逐笔两条路上都成立 ✓。
   const scoreTotal = (score.layers || []).reduce((sum, layer) => sum + (layer.strokes || []).length, 0);
+  // **归零** ✓：逐 dab 的种子序列从同一处开始 ✓ ⇒ 同一份画谱重放得到同一幅画 ✓。
+  mediumDabCounter = 0;
   window.yanshiStats.score = { strokesDone: 0, layersDone: 0, total: scoreTotal, done: false };
   let layersDone = 0;
   let strokesDone = 0;
@@ -1892,7 +1909,7 @@ async function mediumDabInner(name, point) {
     input.set([tip[0], tip[1], tip[2], 1, dest[0] / 255, dest[1] / 255, dest[2] / 255, dest[3] / 255,
                1.0, wetness], 0);
   }
-  const written = plugin.yanshi_dab(Number($("strength").value) || 40, size, 1000);
+  const written = plugin.yanshi_dab(nextDabSeed(), size, 1000);
   const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
   const image = new ImageData(new Uint8ClampedArray(pixels), size, size);
   const canvas = document.createElement("canvas");

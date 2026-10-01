@@ -149,6 +149,68 @@ function wash(box, color, size, angle, gap, wetness, wobble = 0) {
   return strokes;
 }
 
+
+/// **变笔触** ✓ —— 这一条是照着 **libmypaint 的动力学** 抄的 ✓
+///（Krita 文档里的 MyPaint 引擎说明 ✓：`Random` 输入、`Radius by Random`、
+/// `Offset By Random [Jitter]`、`Change color Lightness`、`Opaque` ✓）。
+///
+/// **为什么必须抄它** ✓：`fillPolygon` 铺出来的是**等距、等长、等色**的平行笔 ✓
+/// ⇒ 渲染出来是**平坦的色块** ✗ —— 这就是我自己看图得出的"像矢量插画、不像油画" ✓。
+/// 真画笔触的"活"全在**每一笔都不一样**：长短不一 ✓、粗细不一 ✓、色有冷暖深浅 ✓、
+/// 方向略有出入 ✓、一笔之内还会断 ✓。`hatch` 把这些都加上 ✓，而且**全部走确定性 PRNG** ✓
+///（`rng` ✓）⇒ 同一份代码仍然画出同一幅画 ✓。
+function hatch(points, options = {}) {
+  const size = options.size ?? 42;
+  const gap = options.gap ?? size / 3;
+  if (!(size > 0) || !(gap > 0) || gap > size * MAX_GAP_RATIO) {
+    throw new Error("hatch 的笔距/笔尖不合规（size=" + size + " gap=" + gap + "）");
+  }
+  const angle = options.angle ?? 0;
+  // `color` 可以是**一支颜色** ✓，也可以是 `(t) => 颜色` ✓（`t` = 沿扫描方向的归一位置 ✓）——
+  // 后者用于墙面那种**渐变** ✓：底色函数照旧 ✓，但每一笔仍然各带一点深浅差 ✓。
+  const color = options.color ?? "#8a6a44";
+  const colorOf = (t) => (typeof color === "function" ? color(t) : color);
+  const sizeJitter = options.sizeJitter ?? 0.34;
+  const colorJitter = options.colorJitter ?? 0.16;
+  const lengthJitter = options.lengthJitter ?? 0.24;
+  const angleJitter = options.angleJitter ?? 0.1;
+  const breakUp = options.breakUp ?? 0.35;
+  const cos = Math.cos(-angle);
+  const sin = Math.sin(-angle);
+  const rotated = points.map(([x, y]) => [x * cos - y * sin, x * sin + y * cos]);
+  let minY = Infinity, maxY = -Infinity, minX = Infinity, maxX = -Infinity;
+  for (const [x, y] of rotated) {
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+  }
+  const back = (x, y) => [x * Math.cos(angle) - y * Math.sin(angle), x * Math.sin(angle) + y * Math.cos(angle)];
+  const strokes = [];
+  for (let y = minY + gap * 0.5; y < maxY; y += gap * (0.72 + rng() * 0.62)) {
+    let x = minX + jitter(gap);
+    // **一笔不一定从这一头画到那一头** ✓：分成 1~3 段 ✓，段与段之间**留缝** ✓ —— 这就是"笔断意连" ✓。
+    const segments = 1 + Math.floor(rng() * 3);
+    for (let segment = 0; segment < segments; segment++) {
+      const from = x + gap * rng() * 2;
+      const to = from + (maxX - minX) * (0.28 + rng() * 0.72) * (1 - breakUp * rng());
+      if (from >= maxX) break;
+      const clampedTo = Math.min(to, maxX - jitter(gap));
+      if (clampedTo - from < gap * 1.2) { x = clampedTo + gap * rng(); continue; }
+      const bend = jitter(angleJitter) * 6;
+      const [x0, y0] = back(from, y + jitter(gap * 0.5));
+      const [x1, y1] = back(clampedTo, y + jitter(gap * 0.5));
+      const [xm, ym] = back((from + clampedTo) / 2, y + bend + jitter(gap * 0.4));
+      const t = (y - minY) / Math.max(1, maxY - minY);
+      strokes.push({
+        points: [[x0, y0], [xm, ym], [x1, y1]],
+        size: Math.max(1, size * (1 + jitter(sizeJitter))),
+        color: shade(colorOf(t), jitter(colorJitter)),
+      });
+      x = clampedTo + gap * (0.4 + rng() * 1.1);
+    }
+  }
+  return strokes;
+}
+
 /// 一簇东西 ✓（树叶 / 草 / 花 ✓）：每笔短、方向散、位置带抖动 ✓。
 function cluster(cx, cy, radius, count, color, size, angle, spread) {
   const strokes = [];
@@ -485,84 +547,102 @@ function yanshiAutomaton(width, height) {
   const cool = (base, amount) => mix(base, "#2a2f45", amount);
 
   // ==== ① 底色（薄涂 ✓ 留出笔痕 ✓）====
-  const ground = fillPolygon(
+  // **底色仍是"薄涂打底"** ✓（油画第一步 ✓），但笔法换成**变笔触** ✓：
+  // 中号笔 + 逐笔抖动 ✓ ⇒ 底子本身就有色彩与厚薄的呼吸 ✓，而不是一块死色 ✗。
+  const ground = hatch(
     [[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]],
-    (t) => mix("#2a2119", "#4a3a28", Math.pow(t, 1.3)),
-    150, 48, 0.3, Math.PI / 2,
+    { size: 62, gap: 20, angle: Math.PI / 2, color: (t) => mix("#2a2119", "#4a3a28", Math.pow(t, 1.3)),
+      colorJitter: 0.2, sizeJitter: 0.4 },
   );
-  ground.push(...fillPolygon(
+  ground.push(...hatch(
     [[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]],
-    (t) => mix("#241d16", "#43331f", Math.pow(t, 1.3)),
-    130, 46, 0.26, 0.35,
+    { size: 54, gap: 19, angle: 0.35, color: (t) => mix("#241d16", "#43331f", Math.pow(t, 1.3)),
+      colorJitter: 0.22, sizeJitter: 0.42 },
   ));
 
   // ==== ② 大暗块（房间与地面 ✓ 先压住 ✓）====
   const darkMass = [];
-  darkMass.push(...fillPolygon(
+  darkMass.push(...hatch(
     [[-40, -40], [W * 0.62, -40], [W * 0.58, H + 40], [-40, H + 40]],
-    () => cool("#191922", 0.3), 142, 46, 0.28, Math.PI / 2,
+    { size: 58, gap: 19, angle: Math.PI / 2, color: () => cool("#191922", 0.3),
+      colorJitter: 0.22, sizeJitter: 0.45 },
   ));
-  darkMass.push(...fillPolygon(
+  darkMass.push(...hatch(
     [[W * 0.60, -40], [W + 40, -40], [W + 40, H + 40], [W * 0.56, H + 40]],
-    (t) => mix("#241a14", "#2b2118", 1 - Math.min(1, t)), 132, 44, 0.26, Math.PI / 2,
+    { size: 56, gap: 18, angle: Math.PI / 2, color: (t) => mix("#241a14", "#2b2118", 1 - Math.min(1, t)),
+      colorJitter: 0.2, sizeJitter: 0.4 },
   ));
-  darkMass.push(...fillPolygon(
+  darkMass.push(...hatch(
     [[-40, Y(0.86)], [W + 40, Y(0.845)], [W + 40, H + 40], [-40, H + 40]],
-    (t) => mix("#3a2c1e", "#16110c", Math.pow(t, 1.1)), 112, 38, 0.3, Math.PI / 2,
+    { size: 50, gap: 16, angle: 0.12, color: (t) => mix("#3a2c1e", "#16110c", Math.pow(t, 1.1)),
+      colorJitter: 0.24, sizeJitter: 0.45 },
   ));
 
   // ==== ③ 大块（只看平均色 ✓ 不看细节 ✓ —— "先大块"的核心 ✓）====
+  //
+  // **笔法换成变笔触** ✓（见 `hatch` 的说明 ✓）：同样是"大块" ✓，但每一笔的长短、粗细、
+  // 深浅都不同 ✓ ⇒ 大关系不变 ✓、画面不再是死色块 ✓。
   const blockIn = [];
-  // 造人：**暖** ✓（朱漆在暖光下 ✓）。
-  blockIn.push(...fillPolygon(
+  // 造人：**暖** ✓（朱漆在暖光下 ✓）。笔触顺着身体走 ✓（略斜 ✓）。
+  blockIn.push(...hatch(
     [[X(0.300), Y(0.372)], [X(0.492), Y(0.360)], [X(0.512), Y(0.560)],
      [X(0.486), Y(0.700)], [X(0.318), Y(0.706)], [X(0.288), Y(0.556)]],
-    (t, span) => (span === 0 ? cool("#6b2c22", 0.4) : lit("#9c4630", X(0.40), Y(0.38) + t * (Y(0.70) - Y(0.38)), 1.0)),
-    98, 32, 0.4, 0,
+    { size: 46, gap: 15, angle: 0.2,
+      color: (t) => lit("#9c4630", X(0.40), Y(0.38) + t * (Y(0.70) - Y(0.38)), 1.0),
+      colorJitter: 0.22, sizeJitter: 0.42, breakUp: 0.3 },
   ));
-  // 下裳 + 腿：一块更暗的中间调 ✓。
-  blockIn.push(...fillPolygon(
+  // 下裳 + 腿：一块更暗的中间调 ✓（笔触基本竖直 ✓）。
+  blockIn.push(...hatch(
     [[X(0.306), Y(0.698)], [X(0.492), Y(0.694)], [X(0.536), Y(0.888)], [X(0.272), Y(0.892)]],
-    (t) => lit("#7a3628", X(0.40), Y(0.70) + t * (Y(0.89) - Y(0.70)), 1.05),
-    106, 35, 0.38, 0,
+    { size: 44, gap: 14, angle: 1.42,
+      color: (t) => lit("#7a3628", X(0.40), Y(0.70) + t * (Y(0.89) - Y(0.70)), 1.05),
+      colorJitter: 0.24, sizeJitter: 0.4 },
   ));
-  // 头：**一整块**平均色 ✓（先在下面画一个大椭圆 ✓，五官最后再说 ✓）。
-  blockIn.push(...fillPolygon(
-    ellipse(X(0.395), Y(0.302), W * 0.076, H * 0.058, 26),
-    (t, span) => (span === 0 ? cool("#8a6a4a", 0.35) : lit("#b98f63", X(0.395), Y(0.302), 0.8)),
-    76, 26, 0.42, 0,
+  // 头：**一整块**平均色 ✓（五官最后再说 ✓）；小笔、密一点 ✓ ⇒ 皮肤才有"画"的质感 ✓。
+  blockIn.push(...hatch(
+    ellipse(X(0.393), Y(0.306), W * 0.066, H * 0.050, 26),
+    { size: 26, gap: 8, angle: 0.7,
+      color: (t) => lit("#a87f58", X(0.393), Y(0.306), 0.8),
+      colorJitter: 0.18, sizeJitter: 0.36 },
   ));
   // 偃师：**冷**的大块 ✓（深蓝灰 ✓）—— 与造人的暖形成全画的冷暖对撞 ✓。
-  blockIn.push(...fillPolygon(
+  blockIn.push(...hatch(
     [[X(0.628), Y(0.318)], [X(0.772), Y(0.300)], [X(0.936), Y(0.520)],
      [X(0.992), Y(0.985)], [X(0.660), Y(0.998)], [X(0.606), Y(0.632)]],
-    (t) => cool(lit("#2a2c3a", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.25), 0.42),
-    134, 44, 0.3, 0,
+    { size: 52, gap: 17, angle: 1.3,
+      // **提亮** ✓：上一版他在暗里**整个消失** ✗ ⇒ 中间调抬高半档 ✓，让"人"从墙里分出来 ✓。
+      color: (t) => cool(lit("#3a3d50", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.25), 0.36),
+      colorJitter: 0.2, sizeJitter: 0.45, breakUp: 0.4 },
   ));
-  blockIn.push(...fillPolygon(profileish(X, Y, W, H),
-    () => cool("#2b2b38", 0.5), 64, 22, 0.4, 0,
+  blockIn.push(...hatch(profileish(X, Y, W, H),
+    { size: 30, gap: 10, angle: 1.5, color: () => cool("#2b2b38", 0.5),
+      colorJitter: 0.2, sizeJitter: 0.35 },
   ));
 
   // ==== ④ 受光面（**亮而干净** ✓ —— 靠"面"而不是渐变 ✓）====
+  //
+  // **受光面用"厚笔"** ✓：笔尖小、笔距密、抖动大一点 ✓ ⇒ 出来的是一块**堆起来的亮面** ✓，
+  // 而不是一片平涂的亮色 ✗（这正是油画里"提亮"的手感 ✓）。
   const lightSide = [];
-  const face = (points, color) => lightSide.push(...fillPolygon(
-    points, () => color, 54, 18, 0.42, 0,
+  const face = (points, color, angle = 0.3) => lightSide.push(...hatch(
+    points, { size: 30, gap: 10, angle, color: () => color,
+              colorJitter: 0.16, sizeJitter: 0.4, breakUp: 0.25 },
   ));
   // 造人的肩、胸缘、下裳的受光面 ✓。
   face([[X(0.452), Y(0.362)], [X(0.492), Y(0.360)], [X(0.512), Y(0.560)],
-        [X(0.470), Y(0.586)], [X(0.452), Y(0.470)]], warm("#c06a3e", 0.35));
+        [X(0.470), Y(0.586)], [X(0.452), Y(0.470)]], warm("#c06a3e", 0.35), 1.5);
   face([[X(0.318), Y(0.372)], [X(0.352), Y(0.368)], [X(0.344), Y(0.470)],
-        [X(0.302), Y(0.470)]], warm("#b25c34", 0.22));
+        [X(0.302), Y(0.470)]], warm("#b25c34", 0.22), 1.45);
   face([[X(0.360), Y(0.700)], [X(0.470), Y(0.696)], [X(0.492), Y(0.792)],
-        [X(0.352), Y(0.798)]], warm("#a8542f", 0.18));
-  // 头：**朝灯的那半张脸** ✓（右半 ✓）+ 额与颧各一小块 ✓ —— 三块面就够 ✓。
+        [X(0.352), Y(0.798)]], warm("#a8542f", 0.18), 1.4);
+  // 头：**朝灯的那半张脸** ✓ + 额与颧各一小块 ✓ —— 三块面就够 ✓。
   face([[X(0.398), Y(0.256)], [X(0.436), Y(0.268)], [X(0.444), Y(0.316)],
-        [X(0.412), Y(0.344)], [X(0.396), Y(0.330)]], warm("#e2bb8c", 0.4));
-  face(ellipse(X(0.424), Y(0.284), W * 0.026, H * 0.018, 12), warm("#f0d0a4", 0.3));
-  face(ellipse(X(0.428), Y(0.312), W * 0.020, H * 0.014, 12), warm("#e8c091", 0.3));
+        [X(0.412), Y(0.344)], [X(0.396), Y(0.330)]], warm("#e2bb8c", 0.4), 0.9);
+  face(ellipse(X(0.424), Y(0.284), W * 0.026, H * 0.018, 12), warm("#f0d0a4", 0.3), 0.4);
+  face(ellipse(X(0.428), Y(0.312), W * 0.020, H * 0.014, 12), warm("#e8c091", 0.3), 0.4);
   // 偃师侧脸的受光边 ✓（窄窄一道 ✓ —— 剪影靠这一道才立得住 ✓）。
   face([[X(0.716), Y(0.222)], [X(0.734), Y(0.244)], [X(0.740), Y(0.286)],
-        [X(0.726), Y(0.300)], [X(0.712), Y(0.270)]], warm("#7d6a6e", 0.35));
+        [X(0.726), Y(0.300)], [X(0.712), Y(0.270)]], warm("#7d6a6e", 0.35), 1.5);
 
   // ==== ⑤ 中间调过渡（**少画** ✓ 画多了就糊 ✗）====
   const halftone = [];
@@ -632,12 +712,20 @@ function yanshiAutomaton(width, height) {
      [lamp[0] + 15, lamp[1] + 46], [lamp[0] - 15, lamp[1] + 46]],
     (t) => lit("#8a6a34", lamp[0], lamp[1] + 20 + t * 26, 0.7), 16, 7, 0.45, 0,
   ));
-  // 偃师的轮廓光 ✓（从暗背景里"抠"出来 ✓）+ 面部几笔 ✓。
-  accents.push(...rimLight(
-    [[X(0.646), Y(0.286)], [X(0.628), Y(0.330)], [X(0.610), Y(0.470)],
-     [X(0.606), Y(0.632)], [X(0.648), Y(0.800)], [X(0.688), Y(0.930)], [X(0.700), Y(0.980)]],
-    warm("#c98a4a", 0.5), 9, 0.45,
-  ));
+  // **轮廓光要分段、有虚实** ✓ —— 上一版是一条**贯通的长笔** ✗ ⇒ 渲染出来像**一根杆子** ✗
+  //（我自己上一轮就是这么描述的 ✓）。真实的边缘是"忽隐忽现"的 ✓：
+  // 肩、上臂、肘、膝各亮一段 ✓，中间**故意断开** ✓ —— 断处让暗部把形收进去 ✓。
+  const edges = [
+    [[0.646, 0.286], [0.632, 0.322], [0.618, 0.382]],
+    [[0.612, 0.470], [0.606, 0.520]],
+    [[0.612, 0.610], [0.624, 0.668]],
+    [[0.648, 0.792], [0.664, 0.848]],
+    [[0.686, 0.918], [0.696, 0.968]],
+  ];
+  for (const [index, edge] of edges.entries()) {
+    accents.push(...rimLight(edge.map(([fx, fy]) => [X(fx), Y(fy)]),
+      warm(index % 2 ? "#b87c42" : "#d99a52", 0.45), index % 2 ? 7 : 9, 0.45));
+  }
   accents.push(...handLine([[X(0.686), Y(0.262)], [X(0.712), Y(0.268)]], "#12121a", 6, 0.4, 0.8));
 
   // ==== ⑧ 罩染（靠灯的暖罩 ✓ + 四边压暗 ✓ —— 统一画面 ✓）====
@@ -645,19 +733,21 @@ function yanshiAutomaton(width, height) {
   // **大范围的暖雾：大量短笔，而不是大半径的 glow** ✗ —— 见 `GLOW_SAFE_RADIUS` 的说明 ✓。
   // 画法照搬真画家"扫"的动作 ✓：从灯心向外一圈圈扫 ✓，每笔都短 ✓、越远越淡越冷 ✓，
   // 笔触之间**故意留缝** ✓ ⇒ 出来是雾 ✓ 不是环 ✓。
-  for (let ring = 1; ring <= 7; ring++) {
-    const radius = W * 0.045 * ring;
-    const t = ring / 7;
-    const color = mix(mix("#ffdc9e", "#8a6a44", t), "#241d16", Math.pow(t, 1.5));
-    const rays = 22 + ring * 6;
+  // **上一版这里是一圈珠子** ✗：笔尖 34px、射线只有 22~64 根 ✓ ⇒ 笔与笔之间**够不着** ✓，
+  // 渲染出来是一串**点** ✗。雾的要害是**互相压住** ✓ ⇒ 笔尖减小、射线加密（每圈 90 根起 ✓）。
+  for (let ring = 1; ring <= 9; ring++) {
+    const radius = W * 0.032 * ring;
+    const t = ring / 9;
+    const color = mix(mix("#ffdc9e", "#8a6a44", t), "#241d16", Math.pow(t, 1.4));
+    const rays = 90 + ring * 26;
     for (let ray = 0; ray < rays; ray++) {
-      const angle = (ray / rays) * Math.PI * 2 + ring * 0.21;
-      const r0 = radius - W * 0.03;
+      const angle = (ray / rays) * Math.PI * 2 + ring * 0.31;
+      const r0 = radius - W * 0.026;
       const cx = lamp[0] + Math.cos(angle) * r0;
       const cy = lamp[1] + Math.sin(angle) * r0 * 0.95;
       const cx1 = lamp[0] + Math.cos(angle) * radius;
       const cy1 = lamp[1] + Math.sin(angle) * radius * 0.95;
-      glaze.push(...handLine([[cx, cy], [cx1, cy1]], color, 34 - ring * 2, 0.22, 1.0));
+      glaze.push(...handLine([[cx, cy], [cx1, cy1]], color, 26, 0.2, 0.7));
     }
   }
   for (let ring = 0; ring < 2; ring++) {
