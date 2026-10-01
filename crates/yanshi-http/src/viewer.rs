@@ -514,6 +514,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="suggestionReload" type="button">刷新</button>
       </div>
       <div id="suggestionList" class="annotation-list"></div>
+      <div class="hint" id="suggestionPreviewHint">点「预览」先看清补丁会被怎么执行 ✓（预览**不应用** ✓）</div>
+      <pre id="suggestionPreview" style="font-size:11px;white-space:pre-wrap;max-height:140px;overflow:auto;margin:4px 0 0"></pre>
     </div>
     <!-- **评论** ✓（设计 §12.6 的协作通道 ✓）—— `comment` 此前在查看器里**零引用** ✗。
          注意：**没有** `list_comments` 工具 ✓ —— 评论就是**原子** ✓ ⇒ 用现成的
@@ -2930,7 +2932,17 @@ function renderAnnotationList() {
       await callToolChecked("delete_annotation", { annotation_id: item.id }, "删除标注");
       await refreshAnnotations();
     });
-    actions.append(resolve, remove);
+    // **拒绝** ✓（`reject_annotation` ✓）—— 与「解决」并列 ✓：
+    // 解决表示"认可并处理了" ✓、拒绝表示"这条不成立" ✓，两者都会从待处理里消失 ✓。
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.textContent = "拒绝";
+    reject.disabled = annotationResolved(item);
+    reject.addEventListener("click", async () => {
+      await callToolChecked("reject_annotation", { annotation_id: item.id }, "拒绝标注");
+      await refreshAnnotations();
+    });
+    actions.append(resolve, reject, remove);
     row.append(head, text, actions);
     list.appendChild(row);
   }
@@ -3238,6 +3250,27 @@ function renderSuggestionList() {
     text.textContent = item.summary || "（没有说明 ✓）";
     const actions = document.createElement("div");
     actions.className = "toolbar";
+    // **预览** ✓（`preview_suggestion` ✓）—— 它**只校验、不应用** ✓：
+    // 逐步检查工具名与参数 ✓、报告目标与变更类别 ✓ ⇒ 审阅代理建议时先看这一眼 ✓，
+    // 比"点了接受才知道对不对"安全得多 ✓（接受会**按序重放**补丁 ✓）。
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.textContent = "预览";
+    preview.addEventListener("click", async () => {
+      const value = await callToolChecked("preview_suggestion",
+        { suggestion_id: item.suggestion_id || item.id }, "预览建议");
+      const box = $("suggestionPreview");
+      if (!box || !value || !value.ok) return;
+      // **原样把校验结果摆出来** ✓（哪些步骤合法 ✓、哪些不合法 ✗，让它自己说话 ✓）。
+      const steps = value.steps || value.results || [];
+      const lines = steps.map((step, index) => {
+        const name = step.tool || step.name || "?";
+        const ok = step.ok === undefined ? true : step.ok;
+        const why = step.error || step.detail || (step.target ? "目标 " + step.target : "");
+        return (ok ? "✓ " : "✗ ") + (index + 1) + ". " + name + (why ? " — " + why : "");
+      });
+      box.textContent = lines.length ? lines.join("\n") : JSON.stringify(value, null, 2);
+    });
     const accept = document.createElement("button");
     accept.type = "button";
     accept.textContent = "接受";
@@ -3263,7 +3296,7 @@ function renderSuggestionList() {
       if (done && done.ok) log("已拒绝建议 ✓：原因「" + reason + "」✓");
       await refreshSuggestions();
     });
-    actions.append(accept, reject);
+    actions.append(preview, accept, reject);
     row.append(head, text, actions);
     list.appendChild(row);
   }

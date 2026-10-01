@@ -71,6 +71,11 @@ changeset, parents and full payload, with a clear refusal when the id is unknown
 kernel already had the by-id lookup, so this only exposes it to the tool layer, and the history panel can now show
 what a selected atom did.
 
+The annotation panel can also reject an annotation, which moves its status to rejected rather than merely
+removing it from view, and the suggestion panel can preview a suggestion. Preview validates each patch step,
+reporting tool names, targets and change classes without applying anything, which the browser check confirms by
+showing the validation and leaving the effect count at zero until accept is pressed, at which point it becomes one.
+
 Every toolbar button is checked to have a non-empty icon by a guard test that reads the viewer source, because
 the renderer falls back to an empty svg and produces a button that is both invisible and unclickable. That had
 already happened: the annotation tool I added two rounds ago shipped without an icon, which I found by
