@@ -4533,15 +4533,10 @@ fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
 fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let op = require_str(args, "op")?;
     let object_id = require_str(args, "object_id")?;
-    let unsupported = |name: &str| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!(
-                "path_edit 的 {name} 需要设计尚未规定的「路径对象」模型（内核 ObjectType 里没有 Path）\
-                 ⇒ 这是一个设计决策，本片不擅自发明；已实现的是 reverse / close / join"
-            )),
-        )
-    };
+    // **这里原本有一个 `unsupported` 闭包** ✓ —— 它专门回答"该算子需要设计尚未规定的路径对象模型" ✓。
+    // **里程碑** ✓：设计 792 的**八个算子现在全部实现了** ✓
+    //（`reverse`/`close`/`join`/`merge`/`split`/`convert_to_shape`/`convert_to_path`/`boolean` ✓）
+    // ⇒ 这个闭包**再也不会被调用** ✓ ⇒ 删掉 ✓（clippy 的"未使用"提示正好点出这一点 ✓）。
     match op.as_str() {
         "reverse" | "close" => {}
         "join" | "merge" => {}
