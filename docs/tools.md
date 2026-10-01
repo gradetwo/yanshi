@@ -71,6 +71,13 @@ changeset, parents and full payload, with a clear refusal when the id is unknown
 kernel already had the by-id lookup, so this only exposes it to the tool layer, and the history panel can now show
 what a selected atom did.
 
+The plugin medium mechanism was verified end to end this round rather than assumed. The viewer offers six
+mediums, example, oil, watercolour, marker, pencil and pixel, each a dependency-free cdylib compiled to
+wasm32-unknown-unknown and committed under assets/mediums, and choosing oil with the medium tool paints through the
+plugin and records the medium as id oil at version two on the object. Recording the plugin id and version with the
+object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
+render.
+
 The object panel can also restyle a stroke, changing its colour, size and opacity through update_stroke, which
 had no test coverage at all until this round added two: one checks that the object data and the rendered pixels
 both change, and the other that a partial core block merges rather than replacing the fields it does not mention.
