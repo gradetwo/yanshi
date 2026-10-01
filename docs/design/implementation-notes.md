@@ -5521,3 +5521,31 @@ accept = "image/*,.psd" ✓
 ```
 （探针里一处 `resolvedOnServer: 0` 是**我读了 `item.resolved`** ✗ —— 服务端用的是 `status` ✓，
 **又是我的假设** ✗ ✓；产品侧正确 ✓。）
+
+### **"工具就绪、用户够不到"当成一类来扫** ✓ —— 本轮补上**实例与组** ✓（目标③点名 ✓）
+
+**扫法** ✓：把注册表里 **107 个工具**逐一在查看器里找引用 ✓ ⇒ **66 个零引用** ✗。
+其中绝大多数**本就该是代理/API 专用** ✓（`get_state` ✓、`find_atom` ✓、`begin_transaction` ✓…… ✓），
+但有几类**用户明确会要** ✓ —— 而且**目标③直接点了名** ✓：**实例与组** ✓
+（`create_instance` ✓、`create_group` ✓、`add_to_group` ✓ 在查看器里**一个引用都没有** ✗）。
+
+**补法** ✓（与"标注"同一套思路 ✓）：右栏加一个**「对象」面板** ✓
+—— 列出**当前图层**的对象 ✓（`list_objects {layer_id}` ✓，服务端支持按图层过滤 ✓），
+每行可勾选 ✓、可删除 ✓（`delete_object {object_id}` ✓），
+两个动作 ✓：**「实例化」** ✓（拿勾选的第一个当 master ✓ ⇒ `create_instance {instance_id, layer_id, master_id, local_transform:{dx,dy}}` ✓，
+**故意偏移 24px** ✓ ⇒ 新实例不会正落在 master 上导致"看起来没反应" ✗）与**「编组」** ✓
+（`create_group {group_id, layer_id, members}` ✓ —— **一次就能带成员** ✓，不必逐个 `add_to_group` ✓）。
+
+**这一轮先读规格再写调用** ✓（上一轮猜错参数名的教训 ✓）：四处签名都是**先查后写** ✓
+（`create_instance` 要 `instance_id`/`master_id` ✓、`create_group` 的 `members` 是**数组** ✓、
+`delete_object` 用共享的 `ID_ARGS` = `object_id` ✓、`list_objects` 能按 `layer_id` 过滤 ✓）✓。
+
+**真机验收** ✓（`scripts/acceptance/objects-instance-group.js` ✓，全程走界面 ✓）：
+```
+面板存在 ✓
+画一笔 ⇒ 面板 1 行 ✓
+点「实例化」 ⇒ 2 行 ✓   服务端：["group", "instance", "stroke"] ✓
+勾两个 → 「编组」 ⇒ 服务端 group 1 个 ✓
+日志：已实例化：master 9M4JZHDM ⇒ 实例 7RNSNFYZ（联动 ✓）／已编组 2 个对象 ⇒ VD42JZ77 ✓
+```
+⇒ **实例（设计 9.1 的 linked 复制 ✓）与组引用（设计 9.4 ✓）现在用户能真的用到了** ✓。

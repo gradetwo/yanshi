@@ -428,6 +428,20 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
       <div id="annotationList" class="annotation-list"></div>
     </div>
+
+    <!-- **对象** ✓（设计 §9：复制/实例化/组引用 ✓）—— 目标③点名的"实例/组" ✓。
+         此前 `create_instance` / `create_group` / `add_to_group` 在查看器里**零引用** ✗
+         ⇒ 和"标注"一样，是"**工具就绪、用户够不到**" ✓。这一块补上入口 ✓。 -->
+    <div class="card">
+      <h2>对象</h2>
+      <div class="hint">勾选对象后可「实例化」或「编组」✓；实例与 master 联动 ✓（设计 9.1 ✓）。</div>
+      <div class="toolbar">
+        <button id="objectRefresh" type="button">刷新</button>
+        <button id="objectInstance" type="button">实例化</button>
+        <button id="objectGroup" type="button">编组</button>
+      </div>
+      <div id="objectList" class="annotation-list"></div>
+    </div>
   </aside>
 </main>
 <footer class="statusbar">
@@ -2259,8 +2273,9 @@ async function switchDocument(docId, token) {
   // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
   await ensurePaintLayer();
   await refreshLayers();
-  // **打开文档就拉一次标注** ✓（图钉与面板立刻正确 ✓）。
+  // **打开文档就拉一次标注与对象** ✓（面板立刻正确 ✓）。
   await refreshAnnotations();
+  await refreshObjects();
 }
 
 async function ensureDocument() {
@@ -2302,6 +2317,7 @@ async function warmKernel() {
   const started = performance.now();
   await initWasm();
   setupAnnotationPanel();
+  setupObjectPanel();
   if (!state.wasm) return;
   const ok = await loadKernel(0);
   window.yanshiStats.kernelWarmMs = performance.now() - started;
@@ -2675,6 +2691,113 @@ function renderAnnotationList() {
     list.appendChild(row);
   }
   positionAnnotationPins();
+}
+
+/// **对象面板** ✓（设计 §9：复制 / 实例化 / 组引用 ✓）—— 目标③点名的"实例/组" ✓。
+///
+/// **为什么值得补** ✓：`create_instance` / `create_group` / `add_to_group` 此前在查看器里**零引用** ✗
+/// ⇒ 用户**根本用不到** ✓ —— 与"标注"完全同一类缺口 ✓（工具就绪 ✓、界面没有入口 ✗）。
+///
+/// **真实签名** ✓（这一轮**先读规格再写调用** ✓，不是猜 ✗）：
+/// `create_instance {instance_id, layer_id, master_id, local_transform?}` ✓、
+/// `create_group {group_id, layer_id, members?}` ✓（**一次就能带成员** ✓）、
+/// `delete_object {object_id}` ✓、`list_objects {layer_id?}` ✓（可按图层过滤 ✓）。
+let objectCache = [];
+let objectChecked = new Set();
+
+function renderObjectList() {
+  const list = $("objectList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (objectCache.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "当前图层还没有对象 ✓";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of objectCache) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = objectChecked.has(item.object_id);
+    check.addEventListener("change", () => {
+      if (check.checked) objectChecked.add(item.object_id);
+      else objectChecked.delete(item.object_id);
+    });
+    const label = document.createElement("span");
+    label.textContent = " " + (item.type || "object") + " · " + String(item.object_id).slice(-8);
+    head.append(check, label);
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      await callToolChecked("delete_object", { object_id: item.object_id }, "删除对象");
+      await refreshObjects();
+    });
+    actions.appendChild(remove);
+    row.append(head, actions);
+    list.appendChild(row);
+  }
+}
+
+/// 拉一次当前图层的对象列表 ✓。
+async function refreshObjects() {
+  if (!state.layerId) { objectCache = []; renderObjectList(); return; }
+  const listed = await callTool("list_objects", { layer_id: state.layerId }, { refresh: false }).catch(() => null);
+  objectCache = (listed && (listed.objects || listed.items)) || [];
+  renderObjectList();
+}
+
+/// 勾选的对象 id ✓（保持顺序 ✓）。
+function checkedObjects() {
+  return objectCache.map((item) => item.object_id).filter((id) => objectChecked.has(id));
+}
+
+/// **实例化** ✓：拿勾选的**第一个**做 master ✓，在同一个图层建一个**实例** ✓（设计 9.1 的 linked 复制 ✓）。
+async function instanceCheckedObject() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选一个对象 ✓（实例化要以它为 master ✓）", "#c33"); return; }
+  const master = ids[0];
+  if (!state.layerId) return;
+  const instanceId = "inst_" + ulid();
+  // 偏移一点 ✓ ⇒ 新实例不会**正落在 master 上面**（否则看起来"没反应" ✗）。
+  const created = await callToolChecked("create_instance", {
+    instance_id: instanceId, layer_id: state.layerId, master_id: master,
+    local_transform: { dx: 24, dy: 24 },
+  }, "实例化对象");
+  if (created && created.ok) {
+    log("已实例化：master " + String(master).slice(-8) + " ⇒ 实例 " + instanceId.slice(-8) + "（联动 ✓）");
+  }
+  await refreshObjects();
+}
+
+/// **编组** ✓：把勾选的对象一次性建成一个组 ✓（`create_group` 支持带 `members` ✓）。
+async function groupCheckedObjects() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要编组的对象 ✓", "#c33"); return; }
+  if (!state.layerId) return;
+  const groupId = "group_" + ulid();
+  const created = await callToolChecked("create_group", {
+    group_id: groupId, layer_id: state.layerId, members: ids,
+  }, "编组");
+  if (created && created.ok) log("已编组 " + ids.length + " 个对象 ⇒ " + groupId.slice(-8));
+  await refreshObjects();
+}
+
+/// 对象面板的三个按钮 ✓。
+function setupObjectPanel() {
+  const refresh = $("objectRefresh");
+  if (refresh) refresh.addEventListener("click", () => { void refreshObjects(); });
+  const instance = $("objectInstance");
+  if (instance) instance.addEventListener("click", () => { void instanceCheckedObject(); });
+  const group = $("objectGroup");
+  if (group) group.addEventListener("click", () => { void groupCheckedObjects(); });
 }
 
 /// 面板上的两个开关 ✓（刷新 ✓ / 显示已解决 ✓）。
