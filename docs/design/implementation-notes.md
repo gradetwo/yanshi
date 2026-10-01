@@ -5644,3 +5644,14 @@ accept = "image/*,.psd" ✓
   **不是截断** ✓）—— 并且**章节数仍是 9** ✓、`##` 目录完整 ✓。
 
 **并把扫描再跑一遍** ✓（上一轮记下的下一步 ✓）：结论见下方 ✓ —— 这给下一轮备好了候选清单 ✓。
+
+**扫描复跑的结果** ✓（本轮 ✓）：零引用工具从 **66 个降到 56 个** ✓ ——
+即这五轮（标注 ✓ / 实例与组 ✓ / 检查点 ✓ / 矢量互转 ✓ / 效果改参数 ✓）**补掉了 10 个** ✓。
+剩下的候选里，**用户可能真会要**的 ✓：
+* **草稿箱** ✓：`apply_stash` / `list_stashes` / `discard_stash` ✓（"先放一边、回头再捡" ✓）；
+* **变更集** ✓：`begin_changeset` / `commit_changeset` / `abort_changeset` / `revert_changeset` / `get_changesets` ✓；
+* **对象的常见操作** ✓：`transform_object`（旋转/缩放/平移 ✓）、`update_object`、`restore_object`、`update_stroke`；
+* **重采样** ✓：`resample`；
+* **评论与建议** ✓：`comment` / `suggest` / `list_suggestions` / `preview_suggestion`（协作向 ✓）；
+* **维护** ✓：`collect_garbage`（可在界面上做成"清理无引用数据" ✓，但要**先 dry-run** ✓ —— 与本项目"不做不可逆动作"一致 ✓）。
+⇒ **下一轮**从这几类里挑**用户价值最高**的 ✓（我倾向**对象的变换** ✓ —— 旋转/缩放是画家最常用的动作之一 ✓）。
