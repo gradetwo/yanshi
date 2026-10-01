@@ -113,8 +113,6 @@ pub struct Stash {
     pub blob_refs: Vec<String>,
 }
 
-/// 多文档工作区。
-
 /// **Blob 三级生命周期** ✓（设计 §6.3 ✓）。
 ///
 /// **设计原话** ✓：GC 根集 = **全日志原子引用闭包** ✓ —— **永不删除被任何日志原子引用的 blob** ✓
@@ -133,23 +131,34 @@ pub struct Stash {
 ///    （正确性最关键的那半 ✓），压缩留给专门一轮 ✓。
 #[derive(Clone, Debug, Default)]
 pub struct BlobLifecycle {
-    /// 各级的 blob 数与字节数 ✓（设计要求"可观测" ✓）。
+    /// 活跃级的 blob 数 ✓（当前 HEAD 折叠状态引用的 ✓）。
     pub active_count: usize,
+    /// 活跃级的字节数 ✓。
     pub active_bytes: u64,
+    /// 历史级的 blob 数 ✓（被日志引用但不在当前状态 ✓ —— **保留** ✓）。
     pub history_count: usize,
+    /// 历史级的字节数 ✓。
     pub history_bytes: u64,
+    /// 孤儿级的 blob 数 ✓（上传后从未被任何原子引用 ✓）。
     pub orphan_count: usize,
+    /// 孤儿级的字节数 ✓。
     pub orphan_bytes: u64,
     /// 已过 TTL 的孤儿 ✓ —— **只有这些**可以被回收 ✓。
     pub collectible: Vec<String>,
+    /// 可回收孤儿的字节数 ✓。
     pub collectible_bytes: u64,
     /// 各级的**哈希清单** ✓ —— 审计需要 ✓，测试也靠它做"针对具体 blob"的断言 ✓
     ///（只看计数的话 ✓，提交时产生的**预览 blob** 会把计数搅乱 ✗ —— 本轮实测如此 ✓）。
+    ///
+    /// 活跃级的哈希清单 ✓。
     pub active_hashes: Vec<String>,
+    /// 历史级的哈希清单 ✓。
     pub history_hashes: Vec<String>,
+    /// 孤儿级的哈希清单 ✓。
     pub orphan_hashes: Vec<String>,
 }
 
+/// 多文档工作区。
 pub struct Workspace {
     store: Arc<dyn BlobStore>,
     documents: BTreeMap<String, Document>,
