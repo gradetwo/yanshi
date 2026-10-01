@@ -63,6 +63,16 @@ goes to a stash with the validator's reason, and stashes are persisted under the
 survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
 blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
 
+`blob_gc` implements the blob lifecycle of design 6.3 in the history group. It classifies every blob in the
+store into the design's three levels - active, referenced by the current folded state; history, referenced by
+some atom in a log but not in the current state; and orphan, uploaded but never referenced - and reports counts,
+bytes and the hash lists for each. The root set is the closure of every atom reference in every log plus every
+stashed atom's references, because the design says GC never deletes a blob any log atom refers to, and stashed
+atoms are roots so that offline edits survive until reconnection. Deletion is off by default and requires both
+dry_run false and confirm true, since it is irreversible, and it only ever touches orphans past the seven-day
+TTL. Cold archival with zstd is not implemented, because that is a dependency decision this project has so far
+avoided and it is recorded rather than taken silently.
+
 `resolve_conflict` completes the `conflict` group and follows design 12.3 literally, which is the clearest
 section of the design: it is a composition macro rather than a new atom type, so the folder is untouched and
 the macro expands into atoms that already exist. `keep_ours` withdraws the opponent's atom and puts our
