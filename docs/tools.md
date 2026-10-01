@@ -1,7 +1,7 @@
 # Tools and effects
 
-The tool layer registers **39 core tools**. With every implemented group enabled there are
-**94 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+The tool layer registers **40 core tools**. With every implemented group enabled there are
+**95 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -62,6 +62,15 @@ committing one at a time would leave the earlier ones in the log when a later on
 goes to a stash with the validator's reason, and stashes are persisted under the workspace so an offline window
 survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
 blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
+
+`import_psd` implements the read-only PSD import that design chapter 17 lists as a later item. The contract is
+read-only and composite-only: it takes the already-flattened image the file carries, does not import the layer
+structure, masks or blend modes, and never writes a PSD back. The result goes out as a single raster patch, so it
+travels the same downstream path as importing a PNG and is revertible and replayable like anything else. It is
+blob-first like every other import: the PSD bytes are already uploaded, the decoded RGBA is written to the store,
+and only then is the atom committed. Unsupported files are refused with specific reasons rather than being
+half-drawn, covering version two, sixteen and thirty-two bit depths, non-RGB colour modes including CMYK and
+grayscale, ZIP compression, and truncated data, because half a picture is worse than a clear error.
 
 `resample` completes the retouch group. The design lists the name without semantics, so the choice is
 recorded: it resamples a raster object's pixels to a new size, accepting only raw RGBA bitmaps, and produces a

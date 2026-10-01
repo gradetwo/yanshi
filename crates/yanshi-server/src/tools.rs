@@ -1073,6 +1073,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("stash_id", String, true, "悬空变更集 id")],
     },
     ToolSpec {
+        name: "import_psd",
+        profile: Profile::Core,
+        summary: "只读导入 PSD 的合成图（不做图层结构，不写回 PSD）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "落到哪个图层"),
+            param!("blob_hash", String, true, "已上传的 PSD 字节（blob 先行）"),
+            param!("object_id", String, false, "新对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
         name: "resample",
         profile: Profile::Retouch,
         summary: "重采样光栅对象的像素到新尺寸（非破坏：产出新 blob + supersede）",
@@ -1889,6 +1900,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_stashes" => read_list_stashes(ctx, args),
         "apply_stash" => write_apply_stash(ctx, args),
         "discard_stash" => write_discard_stash(ctx, args),
+        "import_psd" => write_import_psd(ctx, args),
         "resample" => write_resample(ctx, args),
         "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
@@ -4978,6 +4990,54 @@ fn write_discard_stash(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value
             ErrorContext::detail(format!("悬空变更集 {stash_id} 不存在")),
         )),
     }
+}
+
+/// **只读导入 PSD 的合成图** ✓（设计第 17 章把它列为后续项 ✓ —— 这一轮实现 ✓）。
+///
+/// **契约** ✓（与模块文档一致 ✓）：只取文件里那张**已经合成好的整幅图** ✓，
+/// **不导入图层结构** ✗（PSD 的图层、蒙版、混合模式、智能对象都不搬 ✓）、**不写回 PSD** ✗。
+/// 结果作为**一个** `raster_patch` 交出去 ✓ ⇒ 与"导入一张 PNG"走**同一条**下游路径 ✓
+///（可撤销 ✓、可回放 ✓、介质描述符照记 ✓）。
+///
+/// **三步都不可省** ✓：把 PSD 字节解成 RGBA ✓ ⇒ **先把 RGBA 落成新 blob** ✓（blob 先行 ✓，
+/// 否则原子会引用一个还不存在的 hash ✗）⇒ **复用 `import_image`** ✓（不复制它的逻辑 ✓）。
+///
+/// **不支持的一律明确报错** ✗（版本 2 ✓、16/32 位 ✓、CMYK/灰度 ✓、ZIP 压缩 ✓、截断 ✓）
+/// —— **绝不"尽力而为地画一半"** ✗：半个画面比一句明确的错误更糟 ✓。
+fn write_import_psd(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let blob_hash = require_str(args, "blob_hash")?;
+    let parsed: yanshi_core::BlobHash = blob_hash.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("blob_hash 不是合法哈希"),
+        )
+    })?;
+    let bytes = ctx.workspace.store().get(&parsed)?;
+    let (width, height, rgba) = yanshi_render::psd::decode_psd(&bytes).map_err(|error| {
+        // **原样回报解析器的原因** ✓ —— 它已经写得足够具体 ✓（"位深 16 不支持" 之类 ✓）。
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("PSD 解析失败：{}", error.message)),
+        )
+    })?;
+    // **blob 先行** ✓：先把合成图写进存储 ✓，再提交引用它的原子 ✓。
+    let composite = ctx.workspace.store().put(&rgba)?;
+    let mut import_args = json!({
+        "layer_id": args.get("layer_id").cloned().unwrap_or(Value::Null),
+        "bitmap": {
+            "blob_hash": composite.to_string(),
+            "size": rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {"x": 0.0, "y": 0.0, "w": width as f64, "h": height as f64},
+    });
+    if let Some(object_id) = args.get("object_id") {
+        import_args["object_id"] = object_id.clone();
+    }
+    let mut value = write_import_image(ctx, &import_args)?;
+    value["source"] = json!({"format": "psd", "width": width, "height": height,
+                             "note": "只导入了合成图；图层结构与蒙版没有导入（只读）"});
+    Ok(value)
 }
 
 /// **重采样一个光栅对象** ✓（设计 777 的 `resample` ✓）。
