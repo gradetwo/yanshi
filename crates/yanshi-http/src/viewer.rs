@@ -603,7 +603,16 @@ function toCanvas(point) {
 
 /// 重新渲染当前视口（缩放/平移后调用）。
 function renderViewport() {
-  if (!kernelReady()) return;
+  if (!kernelReady()) {
+    // **没有内核 ⇒ 画布只能来自服务端** ✓ —— 这里原来**直接 return** ✗
+    // ⇒ 每一次落笔之后画布都不更新 ✓（用户实测：普通笔刷"画了却看不见" ✓，
+    //  而笔画**其实已经提交**了 ✓ —— 历史里有 ✓、服务端渲染也有 ✓，只是画布不动 ✗）。
+    // 介质笔之所以看起来正常 ✓，是因为介质那条路会**自己**触发服务端补画 ✓
+    //（提交后立刻按 region 补一次 ✓）⇒ 于是"介质能画、普通笔不能" ✓ 这个奇怪现象由此而来 ✓。
+    needsServerPixels = true;
+    queueServerBlit();
+    return;
+  }
   const zoomLabel = $("zoom");
   if (zoomLabel) zoomLabel.textContent = Math.round((state.displayScale || 1) * 100) + "%";
   const { x, y, w, h } = state.viewport;
@@ -1137,6 +1146,13 @@ function afterMutation(atomId, options = {}) {
     updateUndoStatus();
   }
   if (options.skipRefresh) return;
+  // **无内核时，任何提交之后都要从服务端补画** ✓ —— 这是"一笔一画"能在新机器上看见的关键 ✓。
+  // 放在这里而不是各条落笔路径里 ✓：它是**所有提交的收口** ✓（普通笔 / 形状 / 填充 / 效果 / 图层… ✓），
+  // 一处修好，全部受益 ✓（本项目反复吃过"只修一条路径"的亏 ✓）。
+  if (!state.wasm) {
+    needsServerPixels = true;
+    queueServerBlit();
+  }
   scheduleThumbRefresh();
   void refreshHistory();
 }
