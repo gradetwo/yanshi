@@ -1587,6 +1587,24 @@ function newLayerCanvas(layerId) {
   return canvas;
 }
 
+/// **一点上的压感** ✓：`undefined`/`null` 表示"没有压感信息" ✓（鼠标 ✓、旧画谱 ✓）。
+function pressureOf(point) {
+  if (!point) return null;
+  const value = point.pressure;
+  if (value === undefined || value === null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.min(1, number));
+}
+
+/// 两点之间插值 ✓（任一端没有压感就返回 `null` ✓ —— 不猜 ✗）。
+function pressureAlong(from, to, t) {
+  const a = pressureOf({ pressure: from });
+  const b = pressureOf({ pressure: to });
+  if (a === null || b === null) return null;
+  return a + (b - a) * t;
+}
+
 async function mediumStroke(name, points, options = {}) {
   if (!points || points.length === 0) return;
   const spec = await loadMedium(name);
@@ -1606,16 +1624,19 @@ async function mediumStroke(name, points, options = {}) {
     : (Number($("strength").value) || 40) / 100;
 
   // 把路径按间距重采样 ✓（拖动事件本身不均匀 ✓）。
-  const stamps = [points[0]];
+  const stamps = [Object.assign({}, points[0], { pressure: pressureOf(points[0]) })];
   for (let i = 1; i < points.length; i++) {
     const from = points[i - 1];
     const to = points[i];
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     const steps = Math.max(1, Math.ceil(distance / spacing));
     for (let step = 1; step <= steps; step++) {
+      const t = step / steps;
       stamps.push({
-        x: from.x + ((to.x - from.x) * step) / steps,
-        y: from.y + ((to.y - from.y) * step) / steps,
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+        // **压感沿笔迹插值** ✓（拖动事件稀疏 ✓ ⇒ 不插值会一跳一跳 ✗）。
+        pressure: pressureAlong(from.pressure, to.pressure, t),
       });
     }
   }
@@ -1672,7 +1693,19 @@ async function mediumStroke(name, points, options = {}) {
     // **逐 dab 取种 + 以载墨为压力** ✓（见 `nextDabSeed` 的说明 ✓）——
     // 此前这里把"强度"当 seed 传 ✗：强度**每一枚都一样** ✓ ⇒ 纹理重复 ✗；
     // 而它本该影响的是**湿度** ✓（已经由上面的输入数组承担 ✓）。
-    const written = plugin.yanshi_dab(nextDabSeed(), size, Math.max(1, Math.round(load * 1000)));
+    // **第三参数就是 ABI 里的 `pressure`** ✓ —— 此前宿主传的是"载墨" ✗（按行进距离衰减 ✓）。
+    // 有压感时用压感 ✓（量程 1..1000 ✓）；没有时沿用载墨 ✓ ⇒ **旧行为逐位一致** ✓。
+    // **这一版故意不动 `size`** ✗：我上一版让"逐笔尖尺寸"随压感变 ✓，结果整幅墨量成了 0 ✗
+    //（`ImageData` 与画布尺寸不匹配 ⇒ 抛错被 catch ⇒ 上传了空白补丁 ✓）⇒ 先回退 ✓，
+    // "压感改粗细"留到下一轮**单独**做 ✓（它要动画布分配与外扩 ✓，必须单独验证 ✓）。
+    const pressure = pressureOf(stamps[i]);
+    const dabPressure = pressure === null
+      ? Math.max(1, Math.round(load * 1000))
+      : Math.max(1, Math.round(pressure * 1000));
+    if (pressure !== null) {
+      window.yanshiStats.pressureUsed = (window.yanshiStats.pressureUsed || 0) + 1;
+    }
+    const written = plugin.yanshi_dab(nextDabSeed(), size, dabPressure);
     if (written === 0) break;
     const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
     dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), size, size), 0, 0);
@@ -1833,8 +1866,12 @@ async function applyScore(score) {
       }
     };
     for (const stroke of layer.strokes || []) {
+      // **画谱的点可以带压感** ✓：`[x, y, pressure]` ✓ 或 `{x, y, pressure}` ✓；不给就 `null` ✓
+      // ⇒ 下游退回原行为 ⇒ **旧画谱逐位一致** ✓。
       const points = (stroke.points || []).map((point) =>
-        Array.isArray(point) ? { x: point[0], y: point[1] } : { x: point.x, y: point.y });
+        Array.isArray(point)
+          ? { x: point[0], y: point[1], pressure: point.length > 2 ? point[2] : null }
+          : { x: point.x, y: point.y, pressure: point.pressure !== undefined ? point.pressure : null });
       if (points.length === 0) continue;
       if (stroke.medium) {
         pendingMedium.push({
@@ -2836,9 +2873,17 @@ function redraw() {
 function localPoint(event) {
   const rect = board.getBoundingClientRect();
   // 画布内部像素 = 视口文档像素；再加视口原点得到文档坐标。
+  // **压感** ✓（用户要求"创作时要把笔触压感用起来" ✓）：
+  // 数位笔（`pointerType === "pen"`）给的是**随力度变化的 0..1** ✓ ⇒ 采用 ✓；
+  // 鼠标/触摸给的是恒定 0.5 ✓ ⇒ 那是"没有压感信息" ✓ ⇒ 记 `null` ✓，下游退回原行为 ✓
+  //（**鼠标用户不会因此变差** ✓，这一点很重要 ✓）。
+  const pressure = event.pointerType === "pen" && typeof event.pressure === "number"
+    ? Math.max(0, Math.min(1, event.pressure))
+    : null;
   return {
     x: state.viewport.x + (event.clientX - rect.left) * board.width / rect.width,
     y: state.viewport.y + (event.clientY - rect.top) * board.height / rect.height,
+    pressure: pressure,
   };
 }
 
