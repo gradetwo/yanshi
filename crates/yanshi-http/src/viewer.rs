@@ -1728,6 +1728,9 @@ async function mediumDab(name, point) {
 /// 但这是**示例生成**不是交互路径 ✓ ⇒ 选**简单可控** ✓。回放期间会写进度日志 ✓。
 async function applyScore(score) {
   const started = Date.now();
+  // 总笔数 ✓（进度公布用 ✓）—— 让"进度"这个概念在批量与逐笔两条路上都成立 ✓。
+  const scoreTotal = (score.layers || []).reduce((sum, layer) => sum + (layer.strokes || []).length, 0);
+  window.yanshiStats.score = { strokesDone: 0, layersDone: 0, total: scoreTotal, done: false };
   let layersDone = 0;
   let strokesDone = 0;
   for (const layer of score.layers || []) {
@@ -1786,6 +1789,10 @@ async function applyScore(score) {
         if (!drawn.ok) log("画谱：落笔失败 " + (drawn.error_code || ""), "#c33");
       }
       strokesDone += 1;
+      // **把进度公布出来** ✓ —— 外部脚本不该再靠"原子数"猜进度 ✗：
+      // 批量提交之后"一次提交 = 一批笔" ✓ ⇒ 原子数 ≪ 笔数 ✓ ⇒ 我第一版按原子数判断"画完" ✓
+      // ⇒ **提前收工** ✗（只画了约 690 笔就截图 ✓，日志还写着"约 23 笔" ✗）。
+      window.yanshiStats.score = { strokesDone, layersDone, total: scoreTotal, done: false };
       if (strokesDone % 10 === 0) {
         log("画谱进度：" + strokesDone + " 笔");
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1798,6 +1805,7 @@ async function applyScore(score) {
   // 回放完让服务端权威状态接管画布 ✓（介质是 heavy 内容 ✓ ⇒ 必须走这条路 ✓）。
   await resync();
   await refreshPreview();
+  window.yanshiStats.score = { strokesDone, layersDone, total: scoreTotal, done: true };
   const summary = { layers: layersDone, strokes: strokesDone, ms: Date.now() - started };
   log("画谱完成：图层 " + summary.layers + " 个、落笔 " + summary.strokes + " 笔、用时 " +
       Math.round(summary.ms / 1000) + " 秒");

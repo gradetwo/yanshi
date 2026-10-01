@@ -798,17 +798,25 @@ for (const [workId, work] of Object.entries(WORKS)) {
     const found = (listed.documents || []).find((doc) => doc.doc_id === docId);
     return found ? found.atoms : 0;
   };
-  let last = 0;
-  let stable = 0;
-  for (let tick = 0; tick < 900; tick++) {
+  // **改读页面自己公布的进度** ✓ —— 不再用"服务端原子数"推笔数 ✗：
+  // 批量提交之后"一次提交 = 一批笔" ✓ ⇒ 原子数远小于笔数 ✓ ⇒ 按原子数判断会**提前收工** ✗
+  //（本轮实测：只画了约 690 笔就截图 ✓，日志还写着"约 23 笔" ✗ —— 记账口径错了 ✓）。
+  const progress = () => evaluate("(window.yanshiStats && window.yanshiStats.score) || null");
+  let last = { strokesDone: 0, total: strokes, done: false, layersDone: 0 };
+  let quiet = 0;
+  for (let tick = 0; tick < 1800; tick++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const now = await atomCount();
-    if (now > last) { last = now; stable = 0; } else { stable += 1; }
-    if (tick % 15 === 0) console.log(`    进度：${Math.round(now / 2)} 笔`);
-    // 连续 6 次（12 秒）没有新增 ⇒ 视为画完 ✓；同时兜住"卡住不动"的情况 ✓。
-    if (stable >= 6 && now > 0) break;
+    const now = (await progress()) || last;
+    if (now.strokesDone > last.strokesDone) quiet = 0; else quiet += 1;
+    last = now;
+    if (tick % 10 === 0) console.log(`    进度：${now.strokesDone}/${now.total} 笔`);
+    if (now.done) break;
+    // 兜底：页面真卡住了（120 秒毫无进展 ✓）就停，别无限等 ✗。
+    if (quiet >= 60 && now.strokesDone > 0) break;
   }
-  console.log(`    完成：原子 ${last}（约 ${Math.round(last / 2)} 笔，脚本侧 ${Math.round((Date.now() - started) / 1000)} 秒）`);
+  const atomCountNow = await atomCount();
+  console.log(`    完成：${last.strokesDone}/${last.total} 笔（原子 ${atomCountNow}，脚本侧 ${Math.round((Date.now() - started) / 1000)} 秒）`);
+  if (!last.done) console.log("    ✗ 注意：画谱**没有报告完成** ⇒ 下面这张截图可能是半成品 ✗");
   const path = await shot(docOverride ? docId : workId);
   console.log(`    截图：${path || "（失败）"}`);
 }
