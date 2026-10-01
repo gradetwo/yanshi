@@ -800,6 +800,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
             param!("region", Object, true, "放置区域 {x,y,w,h}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            // **加参数就必须同时登记** ✓ —— 这个错我犯过三次 ✗（`at`、`right_id`、`shape_id`、
+            // `path_id` ✓），每次都是框架先报错、测试后失败 ✓。这次先写参数表 ✓。
+            param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
         ],
     },
     ToolSpec {
@@ -2649,16 +2652,40 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let region = parse_bbox(require_object(args, "region")?)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
-    // 提交顺序协议：blob 必须已存在（12.2 校验会拒绝悬空引用）。
-    let payload = json!({
-        "object_id": object_id,
-        "layer_id": layer_id,
-        "type": "raster_patch",
-        "bitmap": bitmap,
-        "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
-        "width": region.w as u64,
-        "height": region.h as u64,
-    });
+    // **介质描述符可以随这一条原子一起记下** ✓（设计 11.1 的硬要求："插件 id + version 随原子记录，
+    // 升级不自动改变旧文档渲染" ✓）。
+    //
+    // **为什么加这个参数** ✓：此前查看器要提交**两条**原子 ✗ —— `import_image` 建对象 ✓、
+    // 再用 `replace_object_data` 把 `{bitmap, region, width, height, medium}` 整体钉上去 ✓。
+    // 实测（无内核实例、端到端）**每次原子提交都不是免费的** ✓ ⇒ 一条能表达清楚的事分成两条 ✗
+    // 就是白花一笔钱 ✓。现在描述符随导入一起提交 ✓ ⇒ **一笔介质只产生一条原子** ✓。
+    //
+    // **为什么放在净荷顶层** ✓（而不是塞进一个 `data` 子对象 ✗）：折叠器 `object_data` 的规则是
+    // "有 `data` 就用 `data` ✓，否则用整个净荷" ✓ ⇒ 顶层放 ✓ 则对象数据 = 净荷（含 `medium` ✓），
+    // 与原来"导入 + 替换"之后的**渲染相关字段逐字一致** ✓（只多一个描述符键 ✓ ——
+    // 那正是设计要求记下的东西 ✓）；而 `data.blob_hash` 若被挪进子对象 ✓ 会让
+    // `all_blob_refs` 的净荷扫描**找不到 blob** ✗ ⇒ 校验与保留都会出错 ✗。
+    let payload = match args.get("medium") {
+        Some(medium) if !medium.is_null() => json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "type": "raster_patch",
+            "bitmap": bitmap,
+            "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+            "width": region.w as u64,
+            "height": region.h as u64,
+            "medium": medium,
+        }),
+        _ => json!({
+            "object_id": object_id,
+            "layer_id": layer_id,
+            "type": "raster_patch",
+            "bitmap": bitmap,
+            "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+            "width": region.w as u64,
+            "height": region.h as u64,
+        }),
+    };
     let result = ctx.commit(AtomKind::ImportImage, payload)?;
     let bbox = region_of(&result).or(Some(region));
     finish_mutation(ctx, &result, bbox)

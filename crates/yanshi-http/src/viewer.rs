@@ -1792,21 +1792,18 @@ async function commitMediumBitmap(rgba, region, spec, stamps) {
   }
   const objectId = "dab_" + ulid();
   const bitmap = { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" };
+  // **一条原子说清一件事** ✓：介质描述符 `{id, version}` 随导入一起记下 ✓（设计 11.1 ✓）。
+  //
+  // 此前这里是**两次**提交 ✗（导入 ✓ + `replace_object_data` 把描述符钉上去 ✓）✓。
+  // 实测每次原子提交都有实打实的成本（无内核实例、端到端 ✓）⇒ 合并成一次 ✓ 直接省下一笔 ✓，
+  // 而"描述符随原子记录"这个设计要求**一字不动**地满足 ✓（甚至更直白：就在这条原子上 ✓）。
   const imported = await callTool("import_image", {
     layer_id: layerId, object_id: objectId, bitmap, region,
+    medium: { id: spec.id, version: spec.version },
   }, { refresh: false });
   if (!imported.ok) {
     log("介质落笔失败：" + (imported.error_code || "unknown") + " " +
         ((imported.context && imported.context.detail) || ""), "#c33");
-    return;
-  }
-  const replaced = await callTool("replace_object_data", {
-    object_id: objectId,
-    data: { bitmap, region, width: region.w, height: region.h,
-            medium: { id: spec.id, version: spec.version } },
-  }, { refresh: false });
-  if (!replaced.ok) {
-    log("介质描述符记录失败：" + (replaced.error_code || "unknown"), "#c33");
     return;
   }
   window.yanshiStats.medium = Object.assign({}, window.yanshiStats.medium, {
