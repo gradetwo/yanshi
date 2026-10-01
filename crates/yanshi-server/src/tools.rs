@@ -8004,7 +8004,10 @@ fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             }
         }
         let payload = &atom.payload;
-        let target_object = payload.get("object_id").and_then(Value::as_str).map(str::to_owned);
+        let target_object = payload
+            .get("object_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         if let Some(wanted) = &object_id {
             if target_object.as_deref() != Some(wanted.as_str()) {
                 continue;
@@ -8023,7 +8026,11 @@ fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let count = comments.len();
     // **最新的在前** ✓（评论是"读最近发生了什么" ✓），并保持 `since_seq` 的语义用**最大 seq** ✓。
-    let next_since = comments.last().and_then(|item| item.get("seq")).and_then(Value::as_u64).unwrap_or(since);
+    let next_since = comments
+        .last()
+        .and_then(|item| item.get("seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or(since);
     comments.reverse();
     comments.truncate(limit);
     Ok(json!({

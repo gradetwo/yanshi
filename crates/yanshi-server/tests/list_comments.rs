@@ -23,7 +23,11 @@ fn context<'a>(workspace: &'a mut Workspace) -> ToolContext<'a> {
 
 fn setup(workspace: &mut Workspace) {
     workspace
-        .create_document(NewDocument::new("doc_cm", 32, 32), "human:1", "session:test")
+        .create_document(
+            NewDocument::new("doc_cm", 32, 32),
+            "human:1",
+            "session:test",
+        )
         .unwrap();
 }
 
@@ -55,7 +59,11 @@ fn comments_can_be_read_back_with_their_text() {
         let mut ctx = context(&mut workspace);
         registry().call(&mut ctx, "list_comments", &json!({ "since_seq": next }))
     };
-    assert_eq!(incremental["comments"].as_array().map(Vec::len), Some(0), "{incremental}");
+    assert_eq!(
+        incremental["comments"].as_array().map(Vec::len),
+        Some(0),
+        "{incremental}"
+    );
 }
 
 /// **按被评论对象过滤** ✓（评论可以挂在某个对象上 ✓）。
@@ -69,7 +77,11 @@ fn comments_can_be_filtered_by_target_object() {
     }
     for (text, object) in [("挂在 A 上", "obj_a"), ("挂在 B 上", "obj_b")] {
         let mut ctx = context(&mut workspace);
-        let posted = registry().call(&mut ctx, "comment", &json!({ "text": text, "object_id": object }));
+        let posted = registry().call(
+            &mut ctx,
+            "comment",
+            &json!({ "text": text, "object_id": object }),
+        );
         assert_eq!(posted["ok"], json!(true), "{posted}");
     }
     let filtered = {
