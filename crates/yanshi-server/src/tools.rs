@@ -1025,6 +1025,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // `convert_to_shape` 经 `path_edit` 调用时也用这两个参数 ✓
             //（上一轮踩过同一坑：加了算子却忘了登记参数 ✓ ⇒ 框架的参数校验直接拒绝 ✓）。
             param!("shape_id", String, false, "convert_to_shape 产生的形状 id；缺省自动生成"),
+            // `convert_to_path` 经 `path_edit` 调用时用它 ✓。
+            // **这是第三次犯同一个错** ✗（前两次是 `at`/`right_id` 与 `shape_id` ✓）：
+            // 加算子/委托时**必须同时登记参数** ✓ —— 框架会在第一次调用时报出来 ✓，
+            // 但那时已经是测试失败 ✓。以后加算子时**先写参数表** ✓。
+            param!("path_id", String, false, "convert_to_path 产生的路径 id；缺省自动生成"),
             param!("mode", String, false, "boolean 的模式：union | intersect | subtract | xor"),
             param!("result_id", String, false, "boolean 结果 id 前缀；缺省自动生成"),
         ],
@@ -4553,12 +4558,15 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "boolean" => {
             return write_path_boolean(ctx, args);
         }
-        // **`convert_to_path` 也拒绝** ✓ —— 它是**笔迹 ⇒ 路径** ✓（已是独立工具 ✓），
-        // 而"路径 ⇒ 路径"没有意义 ✓ ⇒ 明确说明 ✓，不静默成功 ✗。
-        //（`boolean` 已在上面的分支处理 ✓ —— 我一度把两处都留着 ✓ ⇒ clippy 报"不可达模式" ✓，
-        //  这是"补了新分支却忘了删旧分支"的典型 ✓，模式匹配的穷尽性能帮我们看出来 ✓。）
+        // **`convert_to_path` 委托给独立工具** ✓ —— 设计把它列在 `path_edit` 的算子表里 ✓，
+        // 同时它也是独立工具 ✓ ⇒ 两个入口**不应分叉** ✓（与 `convert_to_shape` 同一处理 ✓）。
+        //
+        // **此前它是拒绝的** ✗，理由写的是"路径 ⇒ 路径没有意义" ✓ —— 那句话本身没错 ✓，
+        // 但**笔迹 ⇒ 路径**恰恰是这个算子的用处 ✓（用户会把一条笔迹当"路径"来转 ✓），
+        // 所以拒绝是**过度限制**了 ✓。现在：笔迹 ⇒ 转换 ✓；路径 ⇒ 工具自己给出明确报错 ✓
+        //（"路径转路径无需转换" ✓），两处语义一致 ✓。
         "convert_to_path" => {
-            return Err(unsupported(&op));
+            return write_convert_to_path(ctx, args);
         }
         other => {
             return Err(YanshiError::new(

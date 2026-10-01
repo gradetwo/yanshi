@@ -301,27 +301,28 @@ fn operations_that_need_an_unspecified_path_model_are_refused() {
     // **教训** ✓：选测试的判据应当是"**这个工具/模块的测试文件有哪些**" ✓，
     // 而不是"这轮新建的测试文件叫什么" ✗ —— 否则最容易漏掉最老的回归测试 ✓。
     {
-        // **只剩一个算子在拒绝** ✓ ⇒ 不再写单元素 `for` ✓（clippy 当场指出 ✓）。
-        let op = "convert_to_path";
+        // **这里原本列着"s 因缺少路径对象模型而被拒"的算子清单** ✗ ——
+        // 第 45~47 轮把它们**全部实现**了 ✓（`split`/`merge`/`convert_to_shape`/`boolean` ✓），
+        // 第 52 轮又把 `convert_to_path` 作为算子**委托**给了独立工具 ✓。
+        // ⇒ 那句"缺路径对象模型"的断言已经没有对象了 ✓ ⇒ 改成断言**当前契约** ✓：
+        // 未知算子仍被拒 ✓、**非路径非笔迹**的对象仍被拒 ✓。
         let mut ctx = context(&mut workspace);
-        let refused = registry.call(
+        let unknown = registry.call(
             &mut ctx,
             "path_edit",
-            &json!({"op": op, "object_id": "s1", "other_id": "s1"}),
+            &json!({"op": "wat", "object_id": "s1"}),
         );
+        assert_eq!(unknown["ok"], json!(false), "未知算子应被拒绝：{unknown}");
         assert_eq!(
-            refused["ok"],
-            json!(false),
-            "{op} 作为算子应被拒绝：{refused}"
+            unknown["error_code"].as_str().unwrap_or_default(),
+            "invalid_argument",
+            "{unknown}"
         );
-        let detail = refused["context"]["detail"]
+        let detail = unknown["context"]["detail"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        assert!(
-            detail.contains("路径对象") || detail.contains("convert_to_path"),
-            "{op} 的错误应说清它是独立工具、不是算子：{detail}"
-        );
+        assert!(detail.contains("未知"), "错误应说明是未知算子：{detail}");
     }
     // **已实现的算子不该再被当成"不支持"** ✓（一条正例 ✓，防止将来把实现改回去 ✗）。
     {
@@ -361,4 +362,56 @@ fn operations_that_need_an_unspecified_path_model_are_refused() {
             "形状没有点序可言：{not_a_stroke}"
         );
     }
+}
+
+/// **`convert_to_path` 作为算子时，与独立工具同一条路** ✓（用户会把笔迹当"路径"转 ✓）。
+///
+/// 此前这个算子是**拒绝**的 ✗，理由写的是"路径 ⇒ 路径没有意义" ✓ —— 理由本身没错 ✓，
+/// 但**笔迹 ⇒ 路径**恰恰是它该做的事 ✓ ⇒ 拒绝是过度限制 ✗。现在委托给独立工具 ✓。
+#[test]
+fn the_convert_to_path_operator_delegates_to_the_tool() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_path", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    // 用本文件自己的助手 ✓ —— 我追加用例时误用了别的测试文件里的 `draw_stroke` ✗，
+    // 编译当场报错 ✓（又一次"先编译、别靠肉眼" ✓）。
+    draw_long_stroke(&mut workspace, &registry);
+    // ① **算子**入口：笔迹 ⇒ 路径 ✓。
+    let by_operator = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "path_edit",
+            &json!({"op": "convert_to_path", "object_id": "s1", "path_id": "p_op"}),
+        )
+    };
+    assert_eq!(
+        by_operator["ok"],
+        json!(true),
+        "算子入口应能转换笔迹：{by_operator}"
+    );
+    assert_eq!(by_operator["path_id"], json!("p_op"), "{by_operator}");
+    // ② 已经是路径 ⇒ **明确报错** ✓（而不是假装转换 ✓）。
+    let again = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "path_edit",
+            &json!({"op": "convert_to_path", "object_id": "p_op"}),
+        )
+    };
+    assert_eq!(again["ok"], json!(false), "路径再转应被拒绝：{again}");
+    assert!(
+        again["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("路径"),
+        "错误应说清原因：{again}"
+    );
 }
