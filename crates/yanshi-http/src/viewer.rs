@@ -656,7 +656,12 @@ async function callTool(name, args, options = {}) {
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
     // 入栈与"是否刷新"无关：`revert` / `reapply` 自身不入栈（它们由撤销/重做逻辑显式管理栈）。
     const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
-    afterMutation(trackable, { skipRefresh: options.refresh === false });
+    afterMutation(trackable, {
+      skipRefresh: options.refresh === false,
+      // **把服务端给的脏区带下去** ✓ —— 设计的两层渲染就是按脏区推进的 ✓，
+      // 而此前这里把它丢掉了 ✗ ⇒ 无内核的机器每笔都要整视口补画 ✓。
+      dirtyBox: value.dirty_bbox || null,
+    });
   } else {
     log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
   }
@@ -863,7 +868,9 @@ async function loadKernel(since = 0) {
 function drawKernelRegion(x, y, w, h) {
   // 含 heavy 内容的文档里 ✓，内核那份像素是**空白**的 ✓ ⇒ 内核落笔之后用**服务端像素**补画 ✓
   //（整块绘制、脏区绘制、缩放重绘都走这里 ✓，WS 的 tiles 事件也不例外 ✓）。
-  if (needsServerPixels) queueServerBlit();
+  // **按"内核刚刚画成空白的那块区域"补画** ✓ —— 用函数自己的 `(x,y,w,h)` ✓：
+  // 这就是脏区协议最直接的用法 ✓（此前一律整视口 ✗）。
+  if (needsServerPixels) queueServerBlit([x, y, w, h]);
   // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
   const vx = state.viewport.x;
   const vy = state.viewport.y;
@@ -885,7 +892,8 @@ function drawKernelRegion(x, y, w, h) {
     // 判据刻意选得**精确且廉价** ✓：不是"这份文档曾经有过重内容" ✗（我上一轮那样做，
     // 标记太黏 ⇒ 之后的本地乐观笔迹会被服务端像素覆盖 ✗），而是"
     // **此刻这一块内核确实给不出像素**" ✓ —— 轻量文档永远给得出 ✓ ⇒ 不会误伤乐观渲染 ✓。
-    queueServerBlit();
+    // 补画的范围就是**这一块** ✓（`(x0,y0,cw,ch)` 是裁剪后的 ✓）；此前一律整视口 ✗。
+    queueServerBlit([x0, y0, cw, ch]);
     return;
   }
   const renderedAt = performance.now();
@@ -985,7 +993,29 @@ async function blitServerBox(bbox) {
 /// ⇒ 画布停在内核那张空白图上 ✓（实测 `serverBlits` 有值而画面全白 ✓）。
 let serverBlitBusy = false;
 let serverBlitPending = false;
-function queueServerBlit() {
+/// **待补画的脏区**（文档坐标 `[x,y,w,h]` ✓）。
+///
+/// **为什么要有它** ✓：提交响应里**本来就返回** `dirty_bbox` / `dirty_tiles` ✓（设计的两层渲染正是
+/// 按脏区推进 ✓），内核那条路也**已经**在用 `drawKernelBoxDirect(response.dirty_bbox)` ✓ ——
+/// 只有"服务端补画"这条路一直在**整视口**重画 ✗（实测全幅渲染 251ms ✓）。
+/// 无内核的机器每落一笔都要补画 ✓ ⇒ 那是实打实的一笔开销 ✗。
+/// 现在：有脏区就只补脏区 ✓，多次排队则**取并集** ✓（少发请求、也少画 ✓）。
+let serverBlitBox = null;
+/// 需要**整视口**补画 ✓（不知道脏区时用它 ✓ —— 例如"打开文档后第一次铺底" ✓）。
+let serverBlitWhole = false;
+const unionBox = (left, right) => {
+  if (!left) return right.slice();
+  if (!right) return left.slice();
+  const x0 = Math.min(left[0], right[0]);
+  const y0 = Math.min(left[1], right[1]);
+  const x1 = Math.max(left[0] + left[2], right[0] + right[2]);
+  const y1 = Math.max(left[1] + left[3], right[1] + right[3]);
+  return [x0, y0, x1 - x0, y1 - y0];
+};
+function queueServerBlit(bbox = null) {
+  // **整视口请求会"顶掉"脏区** ✓：宁可多画一点 ✓，也不能因为只画了脏区而留下空白 ✗。
+  if (bbox) serverBlitBox = unionBox(serverBlitBox, bbox);
+  else serverBlitWhole = true;
   if (serverBlitBusy) { serverBlitPending = true; return; }
   serverBlitBusy = true;
   void blitServerViewport().finally(() => {
@@ -996,6 +1026,15 @@ function queueServerBlit() {
 
 /// 补画**当前视口** ✓（不知道原子的脏区时用它 ✓，一次请求即可 ✓）。
 async function blitServerViewport() {
+  // **有脏区就只补脏区** ✓（取并集之后一次画完 ✓）；否则整视口 ✓。
+  if (!serverBlitWhole && serverBlitBox) {
+    const box = serverBlitBox;
+    serverBlitBox = null;
+    // 等布局稳定那套逻辑对脏区同样需要 ✓ ⇒ 直接复用 `blitServerBox`（它自己会裁剪到视口 ✓）。
+    return blitServerBox(box);
+  }
+  serverBlitBox = null;
+  serverBlitWhole = false;
   // **等下一帧再画** ✓ —— 本会话实测：补画确实执行了 ✓（`serverBlits` 计数增加 ✓、面积 262144 ✓），
   // 但最终画布仍是空白 ✗。原因是**布局变化会重设画布尺寸** ✓（`sizeBoards` 改 `board.width` ⇒ 清空 ✓），
   // 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓。
@@ -1151,7 +1190,8 @@ function afterMutation(atomId, options = {}) {
   // 一处修好，全部受益 ✓（本项目反复吃过"只修一条路径"的亏 ✓）。
   if (!state.wasm) {
     needsServerPixels = true;
-    queueServerBlit();
+    // **有脏区就只补脏区** ✓（提交响应本来就给了 ✓，此前丢掉不用 ✗、一律整视口 ✓）。
+    queueServerBlit(options.dirtyBox || null);
   }
   scheduleThumbRefresh();
   void refreshHistory();
@@ -1176,7 +1216,7 @@ async function submitAtom(atom) {
     await resync();
   }
   // 笔迹走 `/api/atoms`（不经 callTool），但收尾动作与其它提交**完全一致** ✓。
-  afterMutation(response.atom_id);
+  afterMutation(response.atom_id, { dirtyBox: response.dirty_bbox || null });
   return response;
 }
 
