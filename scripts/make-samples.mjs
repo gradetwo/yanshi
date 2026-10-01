@@ -83,6 +83,13 @@ const draft = Number(argOf("--draft", "1"));
 // **目标文档 id 可覆盖** ✓（`--doc sample-lake` ✓）：同一件作品可以落到不同文档 ✓
 // —— 生成新示例时**不必覆盖**用户已有的画 ✓（不降级、不破坏 ✓）。
 const docOverride = argOf("--doc", null);
+// **只画前 N 层** ✓（`--upto 3` ✓）—— 这是**给创作用的接口** ✓，不是绕路 ✓：
+//
+// 我上一轮把"某层改了却看不出变化"归因错了 ✗（改了头部受光面的笔宽 ✓，画面一点没变 ✗）。
+// 教训是我自己早写下的 ✓：**改一层没变化时，先确认它有没有被后面的层盖住** ✗。
+// 有了 `--upto` ✓，"哪一层画出了某个东西"就能**按层累加、逐步定位** ✓，
+// 而不必靠读代码猜 ✗。配合 `--draft` ✓（画面不动、只拉开笔距 ✓）⇒ 每步只要**十几秒** ✓。
+const upto = Number(argOf("--upto", "0"));
 
 // ---- 确定性随机 ✓（不用 Math.random ✗）----
 let seed = 0x9e3779b9;
@@ -734,8 +741,14 @@ function yanshiAutomaton(width, height) {
   // **笔宽按形体给** ✓（本轮定位到的真凶 ✓）：原来一律 `size: 30` ✗，而**头只有 39px 宽** ✓
   // ⇒ 一个头只有 **1.3 个笔宽** ✗ ⇒ 额/颧/颊的转折全糊成一团 ✓ —— "菜花"就是这么来的 ✓。
   // ⇒ 改成可传尺寸 ✓，并一律按"**6–8 个笔宽**"这条规则调用 ✓。
+  // **`color` 可以是常量，也可以是 `(t) => 颜色`** ✓（`t` = 沿扫描方向的归一位置 ✓）。
+  //
+  // 这一条是本轮**分层扫描**换来的关键认识 ✓：`hatch` 是**填满多边形** ✓ ⇒ 笔宽只改**纹理** ✓、
+  // **不改浅色面积** ✗（实测：把头部笔宽 30 → 6 ✓，头部亮像素仍是 7168 ✓ 一个不差 ✓）。
+  // 而它读成"一坨"的真因是 ⇒ 此前这里强制 `color: () => color` ✗ ⇒ **一整块没有内部结构的平色** ✓。
+  // **形体感来自"同一块面内部的明暗过渡"** ✓ ⇒ 必须允许传渐变函数 ✓。
   const face = (points, color, angle = 0.3, size = 18) => lightSide.push(...hatch(
-    points, { size, gap: size / 3, angle, color: () => color,
+    points, { size, gap: size / 3, angle, color,
               colorJitter: 0.16, sizeJitter: 0.4, breakUp: 0.25 },
   ));
   // 造人的肩、胸缘、下裳的受光面 ✓。
@@ -747,13 +760,19 @@ function yanshiAutomaton(width, height) {
         [X(0.352), Y(0.798)]], warm("#a8542f", 0.18), 1.4);
   // 头：**朝灯的那半张脸** ✓ + 额与颧各一小块 ✓ —— 三块面就够 ✓。
   // **头只有 39px 宽 ⇒ 笔宽 6–7px** ✓（约 5–6 个笔宽 ✓）⇒ 额、颧、颊的转折才留得住 ✓。
+  // **头部受光面：内部必须有过渡** ✓（`t` 沿扫描方向 ✓ ⇒ 靠灯那侧亮 ✓、往背灯那侧沉下去 ✓）。
+  // 平色 ⇒ 一坨 ✓；渐变 ⇒ 一个**转过去的面** ✓ —— 这是本轮最重要的一条画法认识 ✓。
   face([[X(0.398), Y(0.256)], [X(0.436), Y(0.268)], [X(0.444), Y(0.316)],
-        [X(0.412), Y(0.344)], [X(0.396), Y(0.330)]], warm("#e2bb8c", 0.4), 0.9, 7);
-  face(ellipse(X(0.424), Y(0.284), W * 0.026, H * 0.018, 12), warm("#f0d0a4", 0.3), 0.4, 6);
-  face(ellipse(X(0.428), Y(0.312), W * 0.020, H * 0.014, 12), warm("#e8c091", 0.3), 0.4, 6);
+        [X(0.412), Y(0.344)], [X(0.396), Y(0.330)]],
+       (t) => warm(mix("#f2d3a6", "#b98a63", t), 0.4), 0.9, 7);
+  face(ellipse(X(0.424), Y(0.284), W * 0.026, H * 0.018, 12),
+       (t) => warm(mix("#f6ddb4", "#c69a6e", t), 0.3), 0.4, 6);
+  face(ellipse(X(0.428), Y(0.312), W * 0.020, H * 0.014, 12),
+       (t) => warm(mix("#eec79c", "#a97c58", t), 0.3), 0.4, 6);
   // 侧脸受光边那道**窄边** ✓（只有 0.024W ≈ 20px ✓）⇒ 同样要细笔 ✓，否则又糊掉 ✓。
   face([[X(0.716), Y(0.222)], [X(0.734), Y(0.244)], [X(0.740), Y(0.286)],
-        [X(0.726), Y(0.300)], [X(0.712), Y(0.270)]], warm("#7d6a6e", 0.35), 1.5, 6);
+        [X(0.726), Y(0.300)], [X(0.712), Y(0.270)]],
+       (t) => warm(mix("#9a8a8e", "#5d4f55", t), 0.35), 1.5, 6);
 
   // ==== ⑤ 中间调过渡（**少画** ✓ 画多了就糊 ✗）====
   const halftone = [];
@@ -1036,9 +1055,14 @@ for (const [workId, work] of Object.entries(WORKS)) {
   const docId = docOverride || workId;
   // **重置种子** ✓：同一份作品每次都画出**同一幅画** ✓。
   seed = 0x9e3779b9;
-  const layers = study
+  const allLayers = study
     ? yanshiStudy(Math.round(work.width * scale), Math.round(work.height * scale), variant)
     : work.build(Math.round(work.width * scale), Math.round(work.height * scale));
+  // `--upto N` ✓：只画前 N 层（`0` 表示全部 ✓）⇒ 用于**按层定位** ✓（见 `--upto` 的说明 ✓）。
+  const layers = upto > 0 ? allLayers.slice(0, upto) : allLayers;
+  if (upto > 0) {
+    console.log(`  --upto ${upto}：本次只画前 ${layers.length} 层（共 ${allLayers.length} 层）⇒ 用于定位哪一层画出了什么 ✓`);
+  }
   const strokes = layers.reduce((sum, layer) => sum + layer.strokes.length, 0);
   console.log(`  ${docId}：${layers.length} 层、${strokes} 笔 ⇒ 开始画…`);
   const started = Date.now();
