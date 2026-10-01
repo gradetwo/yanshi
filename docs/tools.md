@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **39 core tools**. With every implemented group enabled there are
-**93 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+**94 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -62,6 +62,14 @@ committing one at a time would leave the earlier ones in the log when a later on
 goes to a stash with the validator's reason, and stashes are persisted under the workspace so an offline window
 survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
 blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
+
+`resample` completes the retouch group. The design lists the name without semantics, so the choice is
+recorded: it resamples a raster object's pixels to a new size, accepting only raw RGBA bitmaps, and produces a
+new blob plus a supersede, which keeps it non-destructive since the old atom stays in the log and remains
+revertible. The default filter is bilinear because medium brushwork is continuous tone, and pixel art should ask
+for nearest explicitly. The object's medium descriptor is preserved, because design 11.1 wants the plugin id and
+version recorded with the atoms, and a `resampled_from` record is added alongside it so that nobody later
+mistakes these pixels for what the plugin originally painted.
 
 `blob_gc` implements the blob lifecycle of design 6.3 in the history group. It classifies every blob in the
 store into the design's three levels - active, referenced by the current folded state; history, referenced by

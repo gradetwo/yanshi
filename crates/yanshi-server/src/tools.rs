@@ -1072,6 +1072,19 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("stash_id", String, true, "悬空变更集 id")],
     },
     ToolSpec {
+        name: "resample",
+        profile: Profile::Retouch,
+        summary: "重采样光栅对象的像素到新尺寸（非破坏：产出新 blob + supersede）",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "要重采样的光栅对象"),
+            param!("width", Integer, false, "目标宽；与 height 一起给，或用 scale"),
+            param!("height", Integer, false, "目标高"),
+            param!("scale", Number, false, "缩放倍数（与 width/height 二选一）"),
+            param!("filter", String, false, "nearest | bilinear（缺省 bilinear：介质是连续调）"),
+        ],
+    },
+    ToolSpec {
         name: "resolve_conflict",
         profile: Profile::Conflict,
         summary: "解决采样性替换冲突（设计 12.3：组合宏，折叠器零改动）",
@@ -1875,6 +1888,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_stashes" => read_list_stashes(ctx, args),
         "apply_stash" => write_apply_stash(ctx, args),
         "discard_stash" => write_discard_stash(ctx, args),
+        "resample" => write_resample(ctx, args),
         "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
         "commit_transaction" => write_commit_transaction(ctx, args),
@@ -4941,6 +4955,198 @@ fn write_discard_stash(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value
             ErrorContext::detail(format!("悬空变更集 {stash_id} 不存在")),
         )),
     }
+}
+
+/// **重采样一个光栅对象** ✓（设计 777 的 `resample` ✓）。
+///
+/// **设计只给了名字 ⇒ 记录选择** ✓（详见 `yanshi_core::resample` 的模块说明 ✓）：
+/// 对象 = `raster_patch` ✓；输入只接受**原始 RGBA** ✓（其它 mime 明确拒绝 ✓）；
+/// 产出**新 blob + `supersede`** ✓ ⇒ **非破坏** ✓（旧原子留在日志 ✓、可撤销 ✓、可回放 ✓）。
+/// **缺省 `bilinear`** ✓ —— 介质笔触是连续调 ✓；像素画调用方请显式选 `nearest` ✓。
+///
+/// **两条不变量** ✓：
+/// * **blob 先行** ✓（先把新位图写进存储 ✓，再提交引用它的原子 ✓ —— 否则校验会拒 ✓）；
+/// * **介质描述符原样保留** ✓，并补上 `resampled_from` 记录来源与滤镜 ✓ ——
+///   设计 11.1 要求"插件 id + version 随原子记录 ✓、升级不自动改变旧文档渲染" ✓，
+///   而重采样**改了像素** ✓ ⇒ 必须让后来人能看出"这不是插件当初画的那份" ✓。
+fn write_resample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let object_id = require_str(args, "object_id")?;
+    let filter_name = optional_str(args, "filter").unwrap_or_else(|| "bilinear".to_owned());
+    let filter = yanshi_core::resample::ResampleFilter::parse(&filter_name).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("未知滤镜 {filter_name}（可用 nearest / bilinear）")),
+        )
+    })?;
+    // ① 读对象 ✓：类型、位图、尺寸 ✓。
+    let (data, source_width, source_height, source_hash) = {
+        let state = document_state(ctx)?;
+        let object = state.objects.get(object_id.as_str()).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 不存在")),
+            )
+        })?;
+        if object.is_deleted() {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("对象 {object_id} 已删除")),
+            ));
+        }
+        if object.object_type != ObjectType::RasterPatch {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "resample 只作用于光栅对象（raster_patch）；{object_id} 的类型是 {:?}",
+                    object.object_type
+                )),
+            ));
+        }
+        let bitmap = object.data.get("bitmap").cloned().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("对象 {object_id} 没有 bitmap")),
+            )
+        })?;
+        let mime = bitmap
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if mime != "image/x-yanshi-raw" {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "resample 只接受原始 RGBA 位图（image/x-yanshi-raw）；{object_id} 的是 {mime} \
+                     —— 转码是另一件事，本工具不猜"
+                )),
+            ));
+        }
+        let hash = bitmap
+            .get("blob_hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("对象 {object_id} 的 bitmap 缺少 blob_hash")),
+                )
+            })?
+            .to_owned();
+        let width = object
+            .data
+            .get("width")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let height = object
+            .data
+            .get("height")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        if width == 0 || height == 0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("对象 {object_id} 的 width/height 缺失或为 0")),
+            ));
+        }
+        (object.data.clone(), width, height, hash)
+    };
+    // ② 目标尺寸 ✓：显式宽高优先 ✓，其次 scale ✓ —— 两个都不给就明确报错 ✗（不猜 ✗）。
+    let scale = args.get("scale").and_then(Value::as_f64);
+    let explicit_w = args.get("width").and_then(Value::as_u64).map(|v| v as u32);
+    let explicit_h = args.get("height").and_then(Value::as_u64).map(|v| v as u32);
+    let (target_w, target_h) = match (explicit_w, explicit_h, scale) {
+        (Some(w), Some(h), _) => (w, h),
+        (None, None, Some(factor)) if factor > 0.0 => (
+            ((source_width as f64 * factor).round() as u32).max(1),
+            ((source_height as f64 * factor).round() as u32).max(1),
+        ),
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "resample 需要 width 与 height，或 scale（二者之一，明确给 ✓）".to_owned(),
+                ),
+            ))
+        }
+    };
+    if target_w == 0 || target_h == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("目标尺寸不能为 0".to_owned()),
+        ));
+    }
+    if target_w == source_width
+        && target_h == source_height
+        && filter == yanshi_core::resample::ResampleFilter::Nearest
+    {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("同尺寸 + nearest 是恒等变换 ⇒ 不提交无意义的原子".to_owned()),
+        ));
+    }
+    // ③ 取像素、重采样、**先把新 blob 写进存储** ✓（blob 先行 ✓）。
+    let source_hash: yanshi_core::BlobHash = source_hash.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("对象位图的 blob_hash 不是合法哈希".to_owned()),
+        )
+    })?;
+    let source = ctx.workspace.store().get(&source_hash)?;
+    let resampled = yanshi_core::resample::resample_rgba(
+        &source,
+        source_width,
+        source_height,
+        target_w,
+        target_h,
+        filter,
+    )
+    .ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "位图与尺寸不符：像素 {} 字节，声明 {source_width}×{source_height}（应为 {} 字节）",
+                source.len(),
+                source_width as usize * source_height as usize * 4
+            )),
+        )
+    })?;
+    let new_hash = ctx.workspace.store().put(&resampled)?;
+    // ④ 提交 `supersede` ✓：保留介质描述符 ✓，并记下"这份像素是重采样来的" ✓。
+    let mut new_data = data.clone();
+    let region = data.get("region").cloned().unwrap_or_else(
+        || json!({"x": 0.0, "y": 0.0, "w": source_width as f64, "h": source_height as f64}),
+    );
+    new_data["bitmap"] = json!({
+        "blob_hash": new_hash.to_string(),
+        "size": resampled.len(),
+        "mime_type": "image/x-yanshi-raw",
+    });
+    new_data["width"] = json!(target_w);
+    new_data["height"] = json!(target_h);
+    new_data["region"] = json!({
+        "x": region.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+        "y": region.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+        "w": target_w as f64,
+        "h": target_h as f64,
+    });
+    new_data["resampled_from"] = json!({
+        "blob_hash": source_hash.to_string(),
+        "width": source_width,
+        "height": source_height,
+        "filter": filter.name(),
+    });
+    let result = ctx.commit(
+        AtomKind::Supersede,
+        json!({"object_id": object_id, "data": new_data, "type": "raster_patch"}),
+    )?;
+    let bbox = Bbox::new(0.0, 0.0, target_w as f64, target_h as f64);
+    let mut value = finish_mutation(ctx, &result, Some(bbox))?;
+    value["object_id"] = json!(object_id);
+    value["blob_hash"] = json!(new_hash.to_string());
+    value["source"] = json!({"width": source_width, "height": source_height, "blob_hash": source_hash.to_string()});
+    value["target"] = json!({"width": target_w, "height": target_h});
+    value["filter"] = json!(filter.name());
+    Ok(value)
 }
 
 /// **解决采样性替换冲突** ✓（设计 12.3 ✓ —— 设计把它写得非常明确 ✓，这一节是全篇最清楚的之一 ✓）。
