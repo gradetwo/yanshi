@@ -349,7 +349,33 @@ impl ToolRegistry {
         }
         match dispatch(spec, ctx, args) {
             Ok(value) => ok_response(value),
-            Err(error) => error_response(&error),
+            Err(error) => {
+                // **事务：写操作失败 ⇒ 自动回滚已落的原子** ✓（这是"事务"与"变更集"的**唯一**区别 ✓，
+                // 设计对两者都没写语义 ✓ ⇒ 取舍记在 `Workspace::transactions` 的说明里 ✓）。
+                //
+                // **只对 `mutating` 回滚** ✓：读操作失败也回滚的话 ✓，查一次东西就把人家的编辑撤了 ✗。
+                // 放在这个收口 ✓ 是因为它同时知道 **spec（是否 mutating ✓）** 与 **结果（成功与否 ✓）** ✓，
+                // 而且是**所有工具调用的必经之路** ✓ ⇒ 一处生效、全部受益 ✓。
+                let mut response = error_response(&error);
+                if spec.mutating {
+                    if let Some(changeset) = ctx.workspace.transaction(&ctx.doc_id, &ctx.session) {
+                        let outcome = revert_changeset_atoms(ctx, &changeset);
+                        ctx.workspace.close_transaction(&ctx.doc_id, &ctx.session);
+                        // **如实报告回滚结果** ✓（调用方必须知道"已经落下的部分被撤了" ✓，
+                        // 否则它会以为只有这一步失败 ✗）。
+                        let (reverted, ok) = match outcome {
+                            Ok((count, _)) => (count, true),
+                            Err(_) => (0, false),
+                        };
+                        response["rolled_back"] = json!({
+                            "changeset_id": changeset,
+                            "reverted": reverted,
+                            "ok": ok,
+                        });
+                    }
+                }
+                response
+            }
         }
     }
 }
@@ -1002,6 +1028,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("object_id", String, true, "对象 id"),
         ],
+    },
+    ToolSpec {
+        name: "begin_transaction",
+        profile: Profile::Changeset,
+        summary: "开始一个事务：写操作失败时自动回滚已落的原子（设计 777）",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
+        name: "commit_transaction",
+        profile: Profile::Changeset,
+        summary: "收尾当前事务（原子保留，且可作为一组撤销）",
+        mutating: false,
+        params: &[],
     },
     ToolSpec {
         name: "begin_changeset",
@@ -1776,6 +1816,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_diff" => read_get_diff(ctx, args),
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
+        "begin_transaction" => write_begin_transaction(ctx, args),
+        "commit_transaction" => write_commit_transaction(ctx, args),
         "begin_changeset" => write_begin_changeset(ctx, args),
         "commit_changeset" => write_commit_changeset(ctx, args),
         "abort_changeset" => write_abort_changeset(ctx, args),
@@ -4560,6 +4602,32 @@ fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Val
             ),
         )),
     }
+}
+
+/// **开始一个事务** ✓（设计 777 ✓；设计只给了名字 ⇒ 语义见 `Workspace::transactions` 的说明 ✓）。
+fn write_begin_transaction(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    match ctx.workspace.begin_transaction(&ctx.doc_id, &ctx.session) {
+        Some(changeset) => Ok(json!({"ok": true, "changeset_id": changeset, "transaction": true})),
+        None => Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(
+                "本会话已经有一个打开的变更集或事务：先 commit/abort 收尾".to_owned(),
+            ),
+        )),
+    }
+}
+
+/// **收尾当前事务** ✓：原子保留 ✓，且它们同属一个变更集 ⇒ 可作为一组撤销 ✓。
+fn write_commit_transaction(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let Some(changeset) = ctx.workspace.transaction(&ctx.doc_id, &ctx.session) else {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("本会话没有打开的事务（先 begin_transaction）".to_owned()),
+        ));
+    };
+    let atoms = changeset_atom_count(ctx, &changeset)?;
+    ctx.workspace.close_transaction(&ctx.doc_id, &ctx.session);
+    Ok(json!({"ok": true, "changeset_id": changeset, "atoms": atoms, "transaction": false}))
 }
 
 /// **收尾当前变更集** ✓：原子**保留** ✓，只是此后不再并入 ✓。
