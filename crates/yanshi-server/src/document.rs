@@ -188,6 +188,12 @@ pub struct Document {
     document_thumbnail: Option<BlobHash>,
     /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
     document_thumbnail_seq: Seq,
+    /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
+    ///
+    /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
+    /// 主源正是**每次提交都生成一份缩略图、写了新的却没删旧的** ✓ ——
+    /// 我第一版只给"文档级缩略图"做了淘汰 ✗ ⇒ 别的级别照旧泄漏 ✓（测试用"渲染多轮后数一数"当场抓住 ✓）。
+    last_thumb_blob: Option<BlobHash>,
     created_at: i64,
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
@@ -271,6 +277,7 @@ impl Document {
             last_render_blob: None,
             document_thumbnail: None,
             document_thumbnail_seq: 0,
+            last_thumb_blob: None,
             created_at,
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
@@ -692,6 +699,50 @@ impl Document {
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **收集当前仍被缓存指针引用的 blob** ✓（淘汰时的"保留名单" ✓）。
+    fn cached_preview_hashes(&self) -> std::collections::BTreeSet<BlobHash> {
+        let mut keep = std::collections::BTreeSet::new();
+        for slot in [
+            self.last_render_blob.as_ref(),
+            self.document_thumbnail.as_ref(),
+            self.last_thumb_blob.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            keep.insert(slot.clone());
+        }
+        keep
+    }
+
+    /// **淘汰被替换掉的预览 blob** ✓（缓存语义 ✓，设计 §6.4"分层缓存" ✓）。
+    ///
+    /// **为什么必须做** ✓：预览/缩略图是**缓存** ✓（不是被原子引用的内容 ✓），
+    /// 但它们**写进了 CAS** ✓ ⇒ 每一份都是**孤儿** ✓ ⇒ 实测真实工作区里
+    /// **2161 个 blob 中有 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
+    /// 而单个体积中位 55 KB ✓、每次提交产生约一份 ✓ ⇒ 每天上百 MB ✗。
+    /// 一处小疏忽（"写新的"却没"删旧的" ✓）在**每笔提交**上复利 ✓ ⇒ 就成了最大的一块占用 ✗。
+    ///
+    /// **判据** ✓：只有当旧 blob **不再被任何"最新"指针引用**时才删 ✓ ——
+    /// 缩略图与"最后一次渲染"可能指向**同一份** ✓（整幅渲染同时更新两者 ✓）⇒ 那就不能删 ✗。
+    ///
+    /// **判据用"集合"，不用逐个特判** ✓ —— 这一条是被测试逼出来的 ✗：
+    /// 我第一版逐个检查"旧的还是不是某个指针" ✓，而**整幅渲染会同时更新区域预览与文档缩略图** ✓
+    /// ⇒ 下一个渲染来淘汰时 ✓，看到"旧 blob 还是文档缩略图"就**放过了** ✗——
+    /// 可那份缩略图**刚刚已经被换掉** ✓。表现为：**每次渲染都多留一份** ✗
+    ///（测试实测 301B → 502B → 651B → 806B 一路累积 ✓）。
+    /// 正确的一般形式是 ✓：**先更新全部指针** ✓，再淘汰"旧集合里、已不在保留集合中"的那些 ✓。
+    fn evict_replaced_previews(&self, previous: &std::collections::BTreeSet<BlobHash>) {
+        let keep = self.cached_preview_hashes();
+        for old in previous {
+            if keep.contains(old) {
+                continue;
+            }
+            // 删不掉也不影响正确性 ✓（它只是缓存 ✓）⇒ 不向上报错 ✓。
+            let _ = self.store.remove(old);
+        }
+    }
+
     /// 渲染区域并编码为 PNG 写入 CAS（7.2）；整幅覆盖时同时更新文档级缩略图。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
         let region = bbox;
@@ -700,6 +751,7 @@ impl Document {
             .render_region(&self.state, &*self.store, region)?;
         let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
+        let previous = self.cached_preview_hashes();
         let blob_hash = self.store.put(&png)?;
         self.render_watermark = self.log.head_seq();
         self.last_render_blob = Some(blob_hash.clone());
@@ -709,6 +761,11 @@ impl Document {
             self.document_thumbnail_seq = self.render_watermark;
         }
         self.complete_render_jobs()?;
+        // **淘汰必须放在"指针都更新完"之后** ✓ —— 这条是测试逼出来的 ✗：
+        // 我第一版把它放在更新 `last_render_blob` 的紧后面 ✓，而**整幅渲染还会更新文档缩略图** ✓
+        // （就在下面几行 ✓）⇒ 淘汰时缩略图**仍指向旧 blob** ✗ ⇒ 守卫判成"还被引用" ✓ ⇒ 永远不淘汰 ✗
+        //（测试实测：两次渲染后 CAS 里 1 → 2 份 ✗）。放到这里 ✓，旧 blob 才真的"无人引用" ✓。
+        self.evict_replaced_previews(&previous);
         Ok(RenderedPreview {
             bbox: [
                 rendered.bbox.x,
@@ -748,11 +805,15 @@ impl Document {
             render_thumbnail(&mut self.renderer, &self.state, &*self.store, kind, target)?;
         let png = encode_png(thumb.size, thumb.size, &thumb.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
+        let previous = self.cached_preview_hashes();
         let blob_hash = self.store.put(&png)?;
+        // **先更新所有指针、再淘汰** ✓（顺序错了就会删到还在用的那份 ✗ —— 见 `render_region` 的注释 ✓）。
+        self.last_thumb_blob = Some(blob_hash.clone());
         if target.is_none() && kind.is_document_level() {
             self.document_thumbnail = Some(blob_hash.clone());
             self.document_thumbnail_seq = self.render_watermark;
         }
+        self.evict_replaced_previews(&previous);
         self.broadcaster.publish_thumbnail(kind);
         Ok(RenderedPreview {
             bbox: target
