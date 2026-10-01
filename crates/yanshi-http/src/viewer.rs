@@ -1453,18 +1453,29 @@ function syncStrengthLabel() {
       : "落笔强度";
 }
 
-async function mediumStroke(name, points) {
+// **逐笔选项** ✓（`options` ✓）：画谱回放需要"每一笔各有颜色/湿度/粗细" ✓，
+// 而拖动只有**一套**界面控件 ✓。**默认值仍取自界面** ✓ ⇒ 所有既有调用行为**逐字节不变** ✓。
+//
+// **这一条我漏过一次** ✗：我只把画谱播放器搬到了干净工作树 ✓，忘了这半 ✗
+// ⇒ 生成出来的画**全用界面上的红色、笔尖还是细的** ✓（服务端渲染一看就露馅 ✓）。
+// **教训** ✓：跨工作树搬改动时，要按"这次一共改了几处"逐条核对 ✓，不能凭印象 ✓。
+async function mediumStroke(name, points, options = {}) {
   if (!points || points.length === 0) return;
   const spec = await loadMedium(name);
   // **笔尖尺寸来自"粗细"滑杆** ✓，只受插件**自报**的 `maxDab` 上限约束 ✓ ——
   // 此前写死 `Math.min(48, spec.maxDab)` ✗ ⇒ 滑杆只影响拖动抽稀 ✓，笔尖宽度恒为 48px ✓
   //（子 agent 实测：#size 12/24/32/40/48 画出的色带宽度都是 54~56px ✓）。
-  const size = mediumTipSize(spec);
+  // 粗细 ✓：画谱可逐笔指定 ✓，仍受插件自报 `maxDab` 约束 ✓。
+  const size = options.size
+    ? Math.max(1, Math.min(spec.maxDab, Number(options.size)))
+    : mediumTipSize(spec);
   const plugin = spec.instance.exports;
   // 同上：整笔重采样也用 1/8 ✓（与拖动抽稀保持一致 ✓）。
   const spacing = Math.max(1, size / 8);
-  const tip = hexToUnit($("color").value);
-  const wetness = (Number($("strength").value) || 40) / 100;
+  const tip = options.color ? hexToUnit(options.color) : hexToUnit($("color").value);
+  const wetness = options.wetness !== undefined
+    ? Math.max(0, Math.min(1, Number(options.wetness)))
+    : (Number($("strength").value) || 40) / 100;
 
   // 把路径按间距重采样 ✓（拖动事件本身不均匀 ✓）。
   const stamps = [points[0]];
@@ -1560,6 +1571,81 @@ async function mediumDab(name, point) {
     log("介质落笔失败：" + message, "#c33");
   }
 }
+
+/// **画谱回放** ✓ —— 用**真实介质**把一份"画谱"画出来 ✓。
+///
+/// **为什么要有它** ✓（这一条是用户要求"示例里能看到真实创作"之后补的 ✗）：
+/// 介质插件是**浏览器里的 WASM** ✓，产物再作为 `import_image` 上传 ✓ ⇒
+/// **服务端脚本根本画不出介质作品** ✗。而示例此前是当年临时造、**没进版本库**的 ✗
+/// ⇒ 既不可复现 ✗、也没法评审改动 ✓。所以：把"怎么画"写成**画谱** ✓（进仓库 ✓、可 diff ✓），
+/// 由查看器**走既有介质路径**回放 ✓ —— 这就是示例的生成方式 ✓，也是任何人都能复现的 ✓。
+///
+/// **画谱结构** ✓：
+/// ```json
+/// { "layers": [ { "id": "sky", "name": "天空", "strokes": [
+///     { "medium": "oil", "color": "#8fb6d9", "size": 64, "wetness": 0.7,
+///       "points": [[80, 120], [300, 110]] } ] } ] }
+/// ```
+/// `medium` 缺省时走**内置光栅笔刷** ✓（`appearance` 也能用 ✓）。
+///
+/// **取舍** ✓：逐笔**串行等待** ✓（介质一笔要跑 WASM + 上传 ✓）⇒ 画谱越大越慢 ✓，
+/// 但这是**示例生成**不是交互路径 ✓ ⇒ 选**简单可控** ✓。回放期间会写进度日志 ✓。
+async function applyScore(score) {
+  const started = Date.now();
+  let layersDone = 0;
+  let strokesDone = 0;
+  for (const layer of score.layers || []) {
+    // 图层不存在就建 ✓（画谱可以只声明要用的图层 ✓）。
+    const existing = await listLayers();
+    if (!existing.some((item) => item.layer_id === layer.id)) {
+      const created = await callTool("create_layer", { layer_id: layer.id, name: layer.name || layer.id },
+        { refresh: false });
+      if (!created.ok) {
+        log("画谱：" + (layer.id || "?") + " 建层失败 " + (created.error_code || ""), "#c33");
+        continue;
+      }
+    }
+    const select = $("layer");
+    if (select) { select.value = layer.id; select.onchange(); }
+    state.layerId = layer.id;
+    await refreshLayers();
+    for (const stroke of layer.strokes || []) {
+      const points = (stroke.points || []).map((point) =>
+        Array.isArray(point) ? { x: point[0], y: point[1] } : { x: point.x, y: point.y });
+      if (points.length === 0) continue;
+      if (stroke.medium) {
+        await mediumStroke(stroke.medium, points, {
+          color: stroke.color, size: stroke.size, wetness: stroke.wetness,
+        });
+      } else {
+        const drawn = await callTool("draw_stroke", {
+          layer_id: layer.id,
+          data: Object.assign(
+            { points: points.map((point) => [point.x, point.y]) },
+            stroke.data || {},
+            stroke.color ? { color: hexToUnit(stroke.color) } : {},
+          ),
+        }, { refresh: false });
+        if (!drawn.ok) log("画谱：落笔失败 " + (drawn.error_code || ""), "#c33");
+      }
+      strokesDone += 1;
+      if (strokesDone % 10 === 0) {
+        log("画谱进度：" + strokesDone + " 笔");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    layersDone += 1;
+  }
+  // 回放完让服务端权威状态接管画布 ✓（介质是 heavy 内容 ✓ ⇒ 必须走这条路 ✓）。
+  await resync();
+  await refreshPreview();
+  const summary = { layers: layersDone, strokes: strokesDone, ms: Date.now() - started };
+  log("画谱完成：图层 " + summary.layers + " 个、落笔 " + summary.strokes + " 笔、用时 " +
+      Math.round(summary.ms / 1000) + " 秒");
+  return summary;
+}
+window.yanshiApplyScore = applyScore;
+window.yanshiListLayers = listLayers;
 
 async function mediumDabInner(name, point) {
   let spec;
