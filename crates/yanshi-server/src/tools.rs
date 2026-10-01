@@ -1048,6 +1048,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("dry_run", Boolean, false, "默认 true：只统计不删除"),
             param!("confirm", Boolean, false, "真删必须显式 true（删除不可逆）"),
             param!("ttl_days", Number, false, "孤儿 TTL，默认 7 天（设计 6.3）"),
+            param!("demote", Boolean, false, "同时把「历史级」降冷到归档（设计 6.3 的后台迁移）"),
         ],
     },
     ToolSpec {
@@ -4711,6 +4712,8 @@ fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Val
 fn write_blob_gc(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let dry_run = optional_bool(args, "dry_run").unwrap_or(true);
     let confirm = optional_bool(args, "confirm").unwrap_or(false);
+    // **降冷**也是显式动作 ✓（它虽然不删数据 ✓，但会改变数据的存放位置 ✓ ⇒ 同样默认不做 ✓）。
+    let demote = optional_bool(args, "demote").unwrap_or(false);
     let ttl_days = optional_u64(args, "ttl_days").unwrap_or(7) as i64;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4744,11 +4747,31 @@ fn write_blob_gc(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "collectible": report.collectible,
         },
     });
+    // **冷层统计** ✓（设计要求可观测 ✓）。
+    let (cold_count, cold_bytes) = ctx.workspace.store().cold_stats();
+    response["cold"] = json!({"blobs": cold_count, "bytes": cold_bytes});
     if !dry_run {
         let (removed, freed) = ctx.workspace.collect_orphan_blobs(&report.collectible)?;
         response["removed"] = json!(removed);
         response["freed_bytes"] = json!(freed);
-        response["note"] = json!("只删了已过 TTL 的孤儿；活跃与历史一律保留（设计 6.3）");
+        if demote {
+            // **降冷的对象是"历史级"** ✓ —— 按设计 ✓：被日志引用、但不在当前折叠状态 ✓
+            //（revert 目标、被 declare_head 甩出、Stash 里、旧分支 ✓）⇒ 正是 `history_hashes` ✓。
+            let (moved, moved_bytes) = ctx.workspace.store().demote(
+                &report
+                    .history_hashes
+                    .iter()
+                    .filter_map(|text| text.parse::<yanshi_core::BlobHash>().ok())
+                    .collect::<Vec<_>>(),
+            )?;
+            response["demoted"] = json!(moved);
+            response["demoted_bytes"] = json!(moved_bytes);
+            let (cold_count, cold_bytes) = ctx.workspace.store().cold_stats();
+            response["cold"] = json!({"blobs": cold_count, "bytes": cold_bytes});
+        }
+        response["note"] = json!(
+            "只删了已过 TTL 的孤儿 ✓；活跃与历史一律保留 ✓（设计 6.3 ✓）；降冷只移动历史级 ✓，读路径会自动回退到归档 ✓"
+        );
     }
     Ok(response)
 }

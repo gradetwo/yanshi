@@ -81,6 +81,23 @@ pub trait BlobStore: Send + Sync {
 
     /// 删除（GC 使用；返回是否真的删除了文件）。
     fn remove(&self, hash: &BlobHash) -> Result<bool>;
+
+    /// **降冷：把热区的 blob 移入冷归档** ✓（设计 §6.3 的后台迁移 ✓）。
+    ///
+    /// **默认实现是"不做"** ✓ —— 不是所有存储都有冷热之分 ✓（内存存储就没有 ✓）；
+    /// 默认空实现让"没有冷层"这件事**显式** ✓，而不是让调用方去猜 ✗。
+    /// 返回 `(迁移条数, 迁移字节数)` ✓（设计要求可观测 ✓）。
+    ///
+    /// **zstd 压缩暂缓** ✗：设计写的是"冷归档 **+ zstd**" ✓ —— 引入压缩库是一次**依赖决策** ✓
+    ///（本项目迄今只依赖 `wasm-bindgen` ✓）⇒ 这一轮只做**目录分层** ✓，压缩留给专门一轮 ✓。
+    fn demote(&self, _hashes: &[BlobHash]) -> Result<(usize, u64)> {
+        Ok((0, 0))
+    }
+
+    /// **冷层统计** ✓（条数与字节数 ✓，用于可观测性 ✓）。
+    fn cold_stats(&self) -> (usize, u64) {
+        (0, 0)
+    }
 }
 
 /// 按设计文档 6.3 的提交顺序协议把内容写入 CAS，并返回可放进原子 payload 的引用。
@@ -348,6 +365,9 @@ impl BlobStore for MemoryBlobStore {
 #[derive(Debug, Clone)]
 pub struct FsBlobStore {
     root: PathBuf,
+    /// **冷归档目录** ✓：与热区**同构** ✓（`<root>/cold/sha256/xx/yy/<hex>` ✓）⇒ 迁移就是"改名" ✓。
+    /// 设计里它还有一层 zstd 压缩 ✓ —— **暂缓** ✓（依赖决策 ✓，见 trait 说明 ✓）。
+    cold: PathBuf,
 }
 
 impl FsBlobStore {
@@ -355,7 +375,10 @@ impl FsBlobStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(root.join("sha256")).map_err(|error| io_error(&root, error))?;
-        Ok(Self { root })
+        fs::create_dir_all(root.join("cold").join("sha256"))
+            .map_err(|error| io_error(&root, error))?;
+        let cold = root.join("cold");
+        Ok(Self { root, cold })
     }
 
     /// 根目录。
@@ -364,6 +387,56 @@ impl FsBlobStore {
     }
 
     /// blob 的最终路径：`<root>/sha256/<ab>/<cd>/<hex>`。
+    /// **冷归档里的路径** ✓（与热区同构 ✓）。
+    pub fn cold_path_of(&self, hash: &BlobHash) -> PathBuf {
+        let hex = hash.hex();
+        self.cold
+            .join("sha256")
+            .join(&hex[0..2])
+            .join(&hex[2..4])
+            .join(hex)
+    }
+
+    /// 走一层（热区或冷层 ✓），按哈希去重 ✓。
+    fn collect_tier(
+        &self,
+        shard_root: &Path,
+        entries: &mut Vec<BlobEntry>,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) {
+        let Ok(shards) = fs::read_dir(shard_root) else {
+            return;
+        };
+        for shard in shards.flatten() {
+            let Ok(sub_shards) = fs::read_dir(shard.path()) else {
+                continue;
+            };
+            for sub in sub_shards.flatten() {
+                let Ok(files) = fs::read_dir(sub.path()) else {
+                    continue;
+                };
+                for file in files.flatten() {
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    if !is_hex_name(&name) || !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let Ok(metadata) = file.metadata() else {
+                        continue;
+                    };
+                    let Ok(hash) = format!("sha256:{name}").parse::<BlobHash>() else {
+                        continue;
+                    };
+                    entries.push(BlobEntry {
+                        blob_hash: hash,
+                        size: metadata.len(),
+                        created_at: mtime_ms(&metadata),
+                    });
+                }
+            }
+        }
+    }
+
+    /// 热区里的路径 ✓（分片目录 ✓，避免单目录几十万文件 ✗）。
     pub fn path_of(&self, hash: &BlobHash) -> PathBuf {
         let hex = hash.hex();
         self.root
@@ -423,62 +496,78 @@ impl BlobStore for FsBlobStore {
     }
 
     fn get(&self, hash: &BlobHash) -> Result<Vec<u8>> {
-        let path = self.path_of(hash);
-        fs::read(&path).map_err(|_| missing_blob(hash))
+        // **热区优先、冷归档兜底** ✓ —— 这就是设计说的"历史 blob 按需从归档取回（慢路径）" ✓。
+        match fs::read(self.path_of(hash)) {
+            Ok(bytes) => Ok(bytes),
+            Err(_) => fs::read(self.cold_path_of(hash)).map_err(|_| missing_blob(hash)),
+        }
     }
 
     fn exists(&self, hash: &BlobHash) -> bool {
-        self.path_of(hash).is_file()
+        self.path_of(hash).is_file() || self.cold_path_of(hash).is_file()
     }
 
     fn size(&self, hash: &BlobHash) -> Option<u64> {
-        fs::metadata(self.path_of(hash)).ok().map(|meta| meta.len())
+        fs::metadata(self.path_of(hash))
+            .or_else(|_| fs::metadata(self.cold_path_of(hash)))
+            .ok()
+            .map(|meta| meta.len())
     }
 
     fn list(&self) -> Result<Vec<BlobEntry>> {
+        // **两层都要列** ✓（冷归档里的 blob 依然存在 ✓，GC 与体积统计必须看得见 ✓）；
+        // **按哈希去重** ✓ —— 迁移是"改名" ✓，但中断可能留下两边都有同一份的瞬间 ✓，
+        // 那时列两遍会让统计虚高 ✗、也会让 GC 重复处理同一份 ✗。
         let mut entries = Vec::new();
-        let shard_root = self.root.join("sha256");
-        let Ok(shards) = fs::read_dir(&shard_root) else {
-            return Ok(entries);
-        };
-        for shard in shards.flatten() {
-            let Ok(sub_shards) = fs::read_dir(shard.path()) else {
-                continue;
-            };
-            for sub in sub_shards.flatten() {
-                let Ok(files) = fs::read_dir(sub.path()) else {
-                    continue;
-                };
-                for file in files.flatten() {
-                    let name = file.file_name().to_string_lossy().into_owned();
-                    if !is_hex_name(&name) {
-                        continue;
-                    }
-                    let Ok(metadata) = file.metadata() else {
-                        continue;
-                    };
-                    let Ok(hash) = format!("sha256:{name}").parse::<BlobHash>() else {
-                        continue;
-                    };
-                    entries.push(BlobEntry {
-                        blob_hash: hash,
-                        size: metadata.len(),
-                        created_at: mtime_ms(&metadata),
-                    });
-                }
-            }
-        }
-        entries.sort_by(|a, b| a.blob_hash.cmp(&b.blob_hash));
+        let mut seen = std::collections::BTreeSet::new();
+        self.collect_tier(&self.root.join("sha256"), &mut entries, &mut seen);
+        self.collect_tier(&self.cold.join("sha256"), &mut entries, &mut seen);
+        entries.sort_by(|left, right| left.blob_hash.cmp(&right.blob_hash));
         Ok(entries)
     }
-
     fn remove(&self, hash: &BlobHash) -> Result<bool> {
-        let path = self.path_of(hash);
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(io_error(&path, error)),
+        // **热区与冷层都要能删** ✓ —— 否则"已被降冷的历史 blob"永远删不掉 ✗
+        //（`remove` 是全项目统一的删除入口 ✓，它必须覆盖两层 ✓）。
+        for path in [self.path_of(hash), self.cold_path_of(hash)] {
+            match fs::remove_file(&path) {
+                Ok(()) => return Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_error(&path, error)),
+            }
         }
+        Ok(false)
+    }
+
+    /// **降冷：热区 ⇒ 冷归档** ✓（设计 §6.3 的后台迁移 ✓）。
+    ///
+    /// **为什么是"改名"而不是"复制 + 删"** ✓：同一文件系统内改名是原子的 ✓
+    /// ⇒ 不会出现"复制了一半、两端都不完整"的窗口 ✗。
+    fn demote(&self, hashes: &[BlobHash]) -> Result<(usize, u64)> {
+        let mut moved = 0usize;
+        let mut bytes = 0u64;
+        for hash in hashes {
+            let from = self.path_of(hash);
+            if !from.is_file() {
+                continue;
+            }
+            let to = self.cold_path_of(hash);
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
+            }
+            let size = fs::metadata(&from).map(|meta| meta.len()).unwrap_or(0);
+            fs::rename(&from, &to).map_err(|error| io_error(&from, error))?;
+            moved += 1;
+            bytes += size;
+        }
+        Ok((moved, bytes))
+    }
+
+    /// **冷层统计** ✓（条数与字节数 ✓）。
+    fn cold_stats(&self) -> (usize, u64) {
+        let mut entries = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        self.collect_tier(&self.cold.join("sha256"), &mut entries, &mut seen);
+        (entries.len(), entries.iter().map(|entry| entry.size).sum())
     }
 }
 
@@ -700,5 +789,57 @@ mod tests {
             BlobHash::from_bytes(b"payload-bytes"),
             "先 PUT blob，再提交引用该 hash 的原子"
         );
+    }
+
+    /// **降冷之后仍能按需取回** ✓（设计 §6.3：历史 blob "保留，可按需取回" ✓）。
+    ///
+    /// 这条是冷热分层最要紧的不变量 ✓：**分层不许让任何数据变得读不到** ✗ ——
+    /// 时间旅行、reapply、Stash 重放都要从归档里把像素取回来 ✓（慢路径 ✓，但必须成功 ✓）。
+    #[test]
+    fn demoted_blobs_are_still_readable_and_counted_once() {
+        let dir = std::env::temp_dir().join(format!("yanshi-cold-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = FsBlobStore::open(&dir).expect("应能打开存储");
+        let first = store.put(b"hot-one").expect("入库应成功");
+        let second = store.put(b"hot-two").expect("入库应成功");
+        assert_eq!(store.list().expect("应能列出").len(), 2, "两份都在热区 ✓");
+        // 降冷一份 ✓。
+        let (moved, bytes) = store
+            .demote(std::slice::from_ref(&first))
+            .expect("降冷应成功");
+        assert_eq!((moved, bytes), (1, 7), "应迁移 1 份、7 字节 ✓");
+        // ① **仍能取回** ✓（读路径回退到冷层 ✓）。
+        assert_eq!(
+            store.get(&first).expect("降冷后仍应能取回 ✓"),
+            b"hot-one".to_vec()
+        );
+        assert!(store.exists(&first), "exists 也要覆盖冷层 ✓");
+        assert_eq!(store.size(&first), Some(7), "size 也要覆盖冷层 ✓");
+        // ② **清单里只见一次** ✓（去重 ✓）。
+        assert_eq!(
+            store.list().expect("应能列出").len(),
+            2,
+            "两层合起来还是两份 ✓"
+        );
+        // ③ **冷层统计** ✓（设计要求可观测 ✓）。
+        let (count, bytes) = store.cold_stats();
+        assert_eq!((count, bytes), (1, 7), "冷层应有 1 份、7 字节 ✓");
+        // ④ **重复降冷是 no-op** ✓（热区已经没有它了 ✓）。
+        assert_eq!(
+            store.demote(std::slice::from_ref(&first)).expect("应成功"),
+            (0, 0),
+            "重复降冷不该重复计数 ✓"
+        );
+        // ⑤ **冷层的 blob 也能删** ✓（`remove` 覆盖两层 ✓）。
+        assert!(
+            store.remove(&first).expect("删除应成功"),
+            "冷层的也要能删 ✓"
+        );
+        assert!(!store.exists(&first), "删掉之后不该还在 ✓");
+        let (count, _) = store.cold_stats();
+        assert_eq!(count, 0, "冷层应已空 ✓");
+        // 另一份没被牵连 ✓。
+        assert_eq!(store.get(&second).expect("取回应成功"), b"hot-two".to_vec());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
