@@ -378,7 +378,10 @@ fn the_path_edit_operator_delegates_to_the_same_implementation() {
         "shape",
         "算子入口也应产出形状"
     );
-    // `convert_to_path` 作为**算子**仍然拒绝 ✓（它是笔迹⇒路径 ✓，已是独立工具 ✓）。
+    // **这一段是 CI 抓出来的** ✓（本地我只跑了"涉及包"的测试 ✗ ⇒ 漏了这个文件 ✓）：
+    // 它原本断言 `path_edit {op:"convert_to_path"}` **因设计缺口被拒** ✗ ——
+    // 而第 52 轮我已把该算子**委托**给独立工具 ✓ ⇒ 契约变了 ✓。
+    // 现在的正确契约 ✓：**形状**（既非笔迹也非路径 ✓）被拒 ✓，且错误要说明它只从笔迹转换 ✓。
     let refused = {
         let mut ctx = context(&mut workspace);
         registry.call(
@@ -392,7 +395,7 @@ fn the_path_edit_operator_delegates_to_the_same_implementation() {
         refused["context"]["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("路径对象"),
+            .contains("不是笔迹"),
         "拒绝理由应指向设计缺口：{refused}"
     );
 }
