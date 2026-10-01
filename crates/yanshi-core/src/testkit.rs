@@ -225,13 +225,27 @@ struct Model {
     styles: Vec<String>,
     masks: Vec<String>,
     selections: Vec<String>,
+    /// **未锁定**的图层的 id ✓ —— 定向操作只挑这些 ✓（见 `AliveView` 的说明 ✓）。
+    unlocked_layers: Vec<String>,
+    /// **未锁定**的对象（含归属图层 ✓）。
+    unlocked_objects: Vec<(String, String)>,
     /// 可作为 revert/reapply 目标的状态原子（seq 升序，窗口内）。
     revertable: Vec<(String, Seq)>,
     /// 当前处于撤销状态的原子。
     suppressed: Vec<String>,
 }
 
-/// 存活实体视图：图层、对象（含归属图层）、风格、蒙版、选区。
+/// 存活实体视图：图层、对象（含归属图层）、风格、蒙版、选区 ✓。
+///
+/// **另外维护一份"未锁定"视图** ✓ —— 这是长任务 fuzz 里一条失败的修法 ✓：
+/// fuzz 会随机 `set_property {"locked": …}` ✓（约一半概率锁上 ✓），
+/// 而**图层锁定强制是后来才加上的** ✓ ⇒ 此后针对锁定实体的原子会被**合法拒绝** ✓
+/// ⇒ 接受率掉到 **0.685** ✗（拒绝分布里 `permission_denied` 占 30978 条 ✓），
+/// 而阈值 0.9 是**加锁之前**定的 ✗。
+///
+/// **修法不是放宽阈值** ✗（那会削弱这条不变量 ✓），而是让生成器**知道锁** ✓：
+/// 定向操作只挑**未锁定**的目标 ✓，锁/解锁那个操作本身仍可作用于**任意**存活实体 ✓
+/// —— 这正合本文件的原意 ✓："只保留当前存活的实体，避免生成注定被拒绝的原子" ✓。
 #[derive(Debug, Default, Clone)]
 struct AliveView {
     layers: Vec<String>,
@@ -239,6 +253,10 @@ struct AliveView {
     styles: Vec<String>,
     masks: Vec<String>,
     selections: Vec<String>,
+    /// 未锁定的图层 ✓。
+    unlocked_layers: Vec<String>,
+    /// 未锁定的对象 ✓（**其所属图层也未锁定** ✓ —— 锁定校验两层都看 ✓）。
+    unlocked_objects: Vec<(String, String)>,
 }
 
 fn alive_view(state: &DocumentState) -> AliveView {
@@ -264,6 +282,27 @@ fn alive_view(state: &DocumentState) -> AliveView {
             .values()
             .filter(|mask| !mask.is_deleted())
             .map(|mask| mask.id.clone())
+            .collect(),
+        unlocked_layers: state
+            .alive_layers()
+            .iter()
+            .filter(|layer| !layer.locked)
+            .map(|layer| layer.id.clone())
+            .collect(),
+        unlocked_objects: state
+            .alive_objects()
+            .iter()
+            .filter(|object| {
+                // **两层都要放行** ✓：对象自己没锁 ✓、且它所在的图层也没锁 ✓
+                //（锁定校验正是这么判的 ✓ ⇒ 生成器必须与它一致 ✓，否则又会生成注定被拒的原子 ✗）。
+                !object.locked
+                    && state
+                        .layers
+                        .get(&object.layer_id)
+                        .map(|layer| !layer.locked && !layer.is_deleted())
+                        .unwrap_or(false)
+            })
+            .map(|object| (object.id.clone(), object.layer_id.clone()))
             .collect(),
         selections: state
             .selections
@@ -411,6 +450,8 @@ fn update_model(
     model.styles = alive.styles;
     model.masks = alive.masks;
     model.selections = alive.selections;
+    model.unlocked_layers = alive.unlocked_layers;
+    model.unlocked_objects = alive.unlocked_objects;
 
     if kind.is_state_effect() {
         model.revertable.push((atom_id.to_owned(), seq));
@@ -502,7 +543,9 @@ fn build_atom(
             )
         }
         Op::DrawStroke => {
-            let layer_id = rng.pick(&model.layers).unwrap_or_default();
+            // **只往未锁定的图层里落笔** ✓（锁定强制会合法拒绝写到锁层的原子 ✓，
+            // 而生成器不该制造注定被拒的原子 ✓ —— 见 `AliveView` 的说明 ✓）。
+            let layer_id = rng.pick(&model.unlocked_layers).unwrap_or_default();
             Atom::new(
                 AtomKind::DrawStroke,
                 actor,
@@ -517,7 +560,7 @@ fn build_atom(
             )
         }
         Op::Supersede => {
-            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
+            let (object_id, _) = rng.pick(&model.unlocked_objects).unwrap_or_default();
             Atom::new(
                 AtomKind::Supersede,
                 actor,
@@ -526,12 +569,19 @@ fn build_atom(
             )
         }
         Op::SetPropertyObject => {
-            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
+            // **先选 key、再选目标** ✓ —— 顺序很关键 ✓：`locked` 这个 key **必须**能作用于
+            // 已经锁上的对象 ✓，否则永远解不开锁 ✓（而其它属性只能改未锁定的 ✓）。
             let (key, value) = match rng.below(3) {
                 0 => ("visible", json!(rng.permille(500))),
                 1 => ("locked", json!(rng.permille(500))),
                 _ => ("z_index", json!(rng.below(8))),
             };
+            let targets = if key == "locked" {
+                &model.objects
+            } else {
+                &model.unlocked_objects
+            };
+            let (object_id, _) = rng.pick(targets).unwrap_or_default();
             Atom::new(
                 AtomKind::SetProperty,
                 actor,
@@ -540,7 +590,9 @@ fn build_atom(
             )
         }
         Op::SetPropertyLayer => {
-            let layer_id = rng.pick(&model.layers).unwrap_or_default();
+            // 图层的这三个属性都**不涉及锁** ✓ ⇒ 一律只改未锁定的图层 ✓
+            //（图层锁也有 `lock_layer`/`unlock_layer` 两个专门工具 ✓，fuzz 由它们覆盖 ✓）。
+            let layer_id = rng.pick(&model.unlocked_layers).unwrap_or_default();
             let (key, value) = match rng.below(3) {
                 0 => ("visible", json!(rng.permille(500))),
                 1 => ("opacity", json!(rng.below(100) as f64 / 100.0)),
@@ -611,7 +663,7 @@ fn build_atom(
             json!({"selection_id": new_selection, "shape": {"kind": "ellipse"}}),
         ),
         Op::TombstoneObject => {
-            let (object_id, _) = rng.pick(&model.objects).unwrap_or_default();
+            let (object_id, _) = rng.pick(&model.unlocked_objects).unwrap_or_default();
             Atom::new(
                 AtomKind::Tombstone,
                 actor,
@@ -620,7 +672,7 @@ fn build_atom(
             )
         }
         Op::TombstoneLayer => {
-            let layer_id = rng.pick(&model.layers).unwrap_or_default();
+            let layer_id = rng.pick(&model.unlocked_layers).unwrap_or_default();
             Atom::new(
                 AtomKind::Tombstone,
                 actor,
