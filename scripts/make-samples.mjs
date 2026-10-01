@@ -706,17 +706,23 @@ function yanshiAutomaton(width, height) {
   const artisanBody = [[X(0.628), Y(0.318)], [X(0.772), Y(0.300)], [X(0.936), Y(0.520)],
                        [X(0.992), Y(0.985)], [X(0.660), Y(0.998)], [X(0.606), Y(0.632)]];
   blockIn.push(...hatch(artisanBody,
-    { size: 50, gap: 17, angle: 1.32,
+    // **笔相对形体太大** ✗（本轮看图得出的统一病根 ✓）：身体约 200px 宽 ✓，却用 50px 的笔 ✓
+    // ⇒ 横过去只有 4 笔 ✗ ⇒ 无论怎么抖动都读成"平板条" ✗（我此前一直以为是"缺少变化" ✗，
+    // 而 `hatch` 的变化早就拉满了 ✓）。**规则** ✓：每个形体约 **6–8 个笔宽** ✓ ⇒ 50 → 24 ✓。
+    { size: 24, gap: 8, angle: 1.32,
       // **提亮** ✓：上一版他在暗里**整个消失** ✗ ⇒ 中间调抬高半档 ✓，让"人"从墙里分出来 ✓。
       color: (t) => cool(lit("#3a3d50", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.25), 0.36),
       colorJitter: 0.2, sizeJitter: 0.45, breakUp: 0.4 },
   ));
   blockIn.push(...hatch(artisanBody,
-    { size: 44, gap: 16, angle: 0.42, breakUp: 0.6, sizeJitter: 0.55, colorJitter: 0.28,
+    // 交叉方向的第二层 ✓ 同样降到约 22 ✓（两层交叉才有塑形 ✓，一层永远只是"条" ✗）。
+    { size: 22, gap: 8, angle: 0.42, breakUp: 0.6, sizeJitter: 0.55, colorJitter: 0.28,
       color: (t) => cool(lit("#333648", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.2), 0.4) },
   ));
   blockIn.push(...hatch(profileish(X, Y, W, H),
-    { size: 30, gap: 10, angle: 1.5, color: () => cool("#2b2b38", 0.5),
+    // 头只横跨 74px ✓，却用 30px 的笔 ✗ ⇒ 眉/鼻/唇/颏的转折**全被抹平** ✗（"菜花"的真因 ✓）
+    // ⇒ 30 → **9** ✓（约 8 个笔宽 ✓）⇒ 侧脸轮廓才读得出来 ✓。
+    { size: 9, gap: 4, angle: 1.5, color: () => cool("#2b2b38", 0.5),
       colorJitter: 0.2, sizeJitter: 0.35 },
   ));
 
