@@ -92,7 +92,7 @@ moves them, and converts any object into a shape or a path so it can be kept as 
 back to them; the log is append-only, so nothing is lost and the canvas can move forward again. Effects can be
 edited after they are added, by clicking one in the list, which loads its parameters and updates that same
 object instead of stacking another. A `存储 / 维护` panel reports the blob store's three
-lifecycle levels from design 6.3 - active, history and orphan - and can reclaim orphans past the TTL or demote
+lifecycle tiers from design 6.3 - active, history and orphan - and can reclaim orphans past the TTL or demote
 history to cold storage, both only after an explicit confirmation, since deletion is irreversible; the report
 alone is always safe and never deletes anything.
 
