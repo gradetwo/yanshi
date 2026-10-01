@@ -240,67 +240,69 @@ impl Workspace {
                 let _ = self.open_document(doc_id);
             }
         }
-        use std::collections::{BTreeMap, BTreeSet};
-        // ② **根集** ✓：全日志原子引用闭包 ✓ + **Stash 里的原子** ✓（见结构体说明 ✓）。
-        let mut roots: BTreeSet<String> = BTreeSet::new();
-        let mut active: BTreeSet<String> = BTreeSet::new();
+        // **改成薄封装内核的 `plan_gc`** ✓ —— 我上一轮**自己重写了一份** ✗，
+        // 而 `crates/yanshi-core/src/blob.rs` 里**早就有**完整实现 ✓（`plan_gc` / `run_gc` ✓）：
+        // 根集 = `log.blob_roots() ∪ extra_roots ∪ active_manifest` ✓、
+        // **`extra_roots` 正是给"快照 Manifest 与 Stash"留的口子** ✓，
+        // 而且它有一条**我做漏的防御** ✓："根集里的 blob 一律不许进入 `expiring`" ✓。
+        // 教训照旧 ✓：**先搜内核，再写实现** ✗（这已经是同一类错误的第 N 次 ✓）。
+        use std::collections::BTreeSet;
+        // ② 聚合成内核要的三个输入 ✓：
+        //  * 一份**合并所有文档**的日志 ✓（内核只收一份 `AtomLog` ✓；按文档分别调用是**错的** ✗ ——
+        //    那样"被 A 文档引用、B 文档没引用"的 blob 会在 B 的计划里被当成孤儿 ✗）；
+        //  * **所有文档**的活跃 Manifest ✓（`active_blob_manifest` **连图层 blob 一起算** ✓ ——
+        //    我上一轮只算了对象的 ✗）；
+        //  * `extra_roots` ✓：Stash 的引用 ✓ + **快照 Manifest**（服务端尚无快照 ✗ ⇒ 暂时为空 ✓，
+        //    将来有快照时按设计塞进这里 ✓）。
+        let mut log = yanshi_core::AtomLog::new();
+        let mut active_manifest: BTreeSet<yanshi_core::BlobHash> = BTreeSet::new();
         for document in self.documents.values() {
             for atom in document.log().iter() {
-                for hash in atom.all_blob_refs() {
-                    roots.insert(hash.to_string());
-                }
+                // 合并只为算"引用闭包" ✓ ⇒ 追加失败（重复 id 等）不影响根集 ✓，忽略即可 ✓。
+                let _ = log.append(atom.clone());
             }
-            for object in document.state().objects.values() {
-                if object.is_deleted() {
-                    continue;
-                }
-                for hash in &object.blobs {
-                    active.insert(hash.to_string());
-                }
-            }
+            active_manifest.extend(document.state().active_blob_manifest());
         }
         for stash in self.stashes.values() {
             for atom in &stash.atoms {
-                for hash in atom.all_blob_refs() {
-                    roots.insert(hash.to_string());
-                }
+                let _ = log.append(atom.clone());
             }
         }
-        // ② 遍历 CAS ✓，按"是否是根 / 是否活跃 / 活了多久"分级 ✓。
-        let mut sizes: BTreeMap<String, (u64, i64)> = BTreeMap::new();
-        for entry in self.store.list()? {
-            sizes.insert(entry.blob_hash.to_string(), (entry.size, entry.created_at));
-        }
-        // 直接构造 ✓（clippy 提示：用 `Default::default()` 之后再逐字段赋值不是好写法 ✓）。
+        let extra_roots: BTreeSet<yanshi_core::BlobHash> = BTreeSet::new();
+        let plan = yanshi_core::plan_gc(
+            &*self.store,
+            &log,
+            &active_manifest,
+            &extra_roots,
+            now_ms,
+            ttl_days.max(0) * 24 * 60 * 60,
+        )?;
         let mut report = BlobLifecycle {
             documents_considered: self.documents.len(),
             ..BlobLifecycle::default()
         };
-        let ttl_ms = ttl_days.max(0) * 24 * 60 * 60 * 1000;
-        for (hash, (bytes, created_at)) in &sizes {
-            let is_active = active.contains(hash);
-            let is_root = roots.contains(hash);
-            if is_active {
-                report.active_count += 1;
-                report.active_bytes += bytes;
-                report.active_hashes.push(hash.clone());
-            } else if is_root {
-                // **被日志引用但不在当前状态** ⇒ 历史级 ✓（**保留** ✓，永远不删 ✓）。
-                report.history_count += 1;
-                report.history_bytes += bytes;
-                report.history_hashes.push(hash.clone());
-            } else {
-                report.orphan_count += 1;
-                report.orphan_bytes += bytes;
-                report.orphan_hashes.push(hash.clone());
-                // **TTL 只看"活得够久"** ✓ —— 刚上传、还没来得及被引用的不算孤儿可回收 ✓
-                //（提交进行中的 blob 正是这种 ✓，删了会毁掉正在进行的提交 ✗）。
-                if now_ms.saturating_sub(*created_at) >= ttl_ms {
-                    report.collectible.push(hash.clone());
-                    report.collectible_bytes += bytes;
-                }
-            }
-        }
+        report.active_count = plan.active.len();
+        report.active_bytes = plan.active_bytes;
+        report.history_count = plan.historical.len();
+        report.history_bytes = plan.historical_bytes;
+        report.orphan_count = plan.orphans.len();
+        report.orphan_bytes = plan.orphan_bytes;
+        report.active_hashes = plan.active.iter().map(|hash| hash.to_string()).collect();
+        report.history_hashes = plan.historical.iter().map(|entry| entry.blob_hash.to_string()).collect();
+        report.orphan_hashes = plan.orphans.iter().map(|entry| entry.blob_hash.to_string()).collect();
+        report.collectible = plan.expiring.iter().map(|entry| entry.blob_hash.to_string()).collect();
+        report.collectible_bytes = report
+            .collectible
+            .iter()
+            .filter_map(|text| {
+                plan.expiring
+                    .iter()
+                    .find(|entry| &entry.blob_hash.to_string() == text)
+                    .map(|entry| entry.size)
+            })
+            .sum();
+        // 各级排序只为报告稳定 ✓（内核已按哈希排过 ✓）。
+        report.active_hashes.sort();
         Ok(report)
     }
 
