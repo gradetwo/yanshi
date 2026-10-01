@@ -7971,8 +7971,6 @@ fn reject_one(ctx: &mut ToolContext<'_>, suggestion_id: &str, reason: &str) -> R
     }))
 }
 
-/// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
-
 /// **原子类型的统一拼法** ✓ —— 返回 **snake_case** ✓（`create_layer` ✓、`comment` ✓），
 /// **与 `get_log` 的序列化结果一致** ✓。
 ///
@@ -8101,6 +8099,7 @@ fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }))
 }
 
+/// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
 fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let filter = optional_str(args, "status");
     // AI 侧轮询：`since_seq` 取增量，`limit`/`offset` 用于分页。
