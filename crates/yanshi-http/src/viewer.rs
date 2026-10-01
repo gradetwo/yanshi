@@ -447,6 +447,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectRefresh" type="button">刷新</button>
         <button id="objectInstance" type="button">实例化</button>
         <button id="objectGroup" type="button">编组</button>
+        <button id="objectToShape" type="button">转为形状</button>
+        <button id="objectToPath" type="button">转为路径</button>
       </div>
       <div id="objectList" class="annotation-list"></div>
     </div>
@@ -2873,7 +2875,32 @@ async function groupCheckedObjects() {
   await refreshObjects();
 }
 
-/// 对象面板的三个按钮 ✓。
+/// **矢量互转** ✓（设计 §792 / 目标①把"矢量"列为介质之一 ✓）——
+/// `convert_to_shape` 与 `convert_to_path` 此前在查看器里**零引用** ✗ ⇒ 用户够不到 ✓。
+///
+/// **真实签名** ✓（先读规格 ✓）：两者都只收 `object_id` ✓（+ 可选的目标 id ✓）。
+/// 把画好的笔迹转成**形状**或**路径**之后 ✓，它就能被当作矢量对象继续编辑 ✓，
+/// 而原始笔迹仍留在日志里 ✓（可撤销 ✓、可回放 ✓）。
+async function convertCheckedObjects(tool, what, idField, prefix) {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要" + what + "的对象 ✓", "#c33"); return; }
+  let done = 0;
+  const failed = [];
+  for (const objectId of ids) {
+    const args = { object_id: objectId };
+    // 目标 id 可选 ✓；显式给一个**可读的前缀** ✓，便于在对象列表里认出来 ✓。
+    args[idField] = prefix + ulid();
+    const result = await callToolChecked(tool, args, what);
+    if (result && result.ok) done += 1;
+    else failed.push(objectId);
+  }
+  if (done > 0) log("已" + what + " " + done + " 个对象 ✓" + (failed.length ? "（" + failed.length + " 个失败 ✗）" : ""));
+  // **转换会改变对象的呈现** ✓ ⇒ 走一次 resync ✓（服务端权威像素 ✓）。
+  if (done > 0) await resync();
+  await refreshObjects();
+}
+
+/// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   const refresh = $("objectRefresh");
   if (refresh) refresh.addEventListener("click", () => { void refreshObjects(); });
@@ -2881,6 +2908,14 @@ function setupObjectPanel() {
   if (instance) instance.addEventListener("click", () => { void instanceCheckedObject(); });
   const group = $("objectGroup");
   if (group) group.addEventListener("click", () => { void groupCheckedObjects(); });
+  const toShape = $("objectToShape");
+  if (toShape) toShape.addEventListener("click", () => {
+    void convertCheckedObjects("convert_to_shape", "转为形状", "shape_id", "shape_");
+  });
+  const toPath = $("objectToPath");
+  if (toPath) toPath.addEventListener("click", () => {
+    void convertCheckedObjects("convert_to_path", "转为路径", "path_id", "path_");
+  });
 }
 
 /// 面板上的两个开关 ✓（刷新 ✓ / 显示已解决 ✓）。
