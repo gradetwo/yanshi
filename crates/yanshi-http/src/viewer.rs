@@ -1533,6 +1533,18 @@ function syncStrengthLabel() {
 // **这一条我漏过一次** ✗：我只把画谱播放器搬到了干净工作树 ✓，忘了这半 ✗
 // ⇒ 生成出来的画**全用界面上的红色、笔尖还是细的** ✓（服务端渲染一看就露馅 ✓）。
 // **教训** ✓：跨工作树搬改动时，要按"这次一共改了几处"逐条核对 ✓，不能凭印象 ✓。
+/// **批处理会话** ✓ —— 非空时 `mediumStroke` 不再逐笔提交 ✓。
+///
+/// **为什么** ✓（实测驱动 ✓）：一次 `import_image` 提交固定约 **280 ms** ✗（**与区域面积无关** ✓，
+/// 40×40 与 400×200 一样贵 ✓），因为提交要**等渲染 job** 跑完 ✓。
+/// 一笔一付 ⇒ 全尺寸 5000 笔 ≈ 23 分钟 ✗。而**一批只付一次** ⇒ 5000 笔约 170 批 ≈ 48 秒 ✓✓。
+///
+/// **为什么不只是"少提交"** ✓：介质是**湿画法** ✓ —— 每一笔取色时读的是**画布当前像素** ✓，
+/// 所以批处理必须让"上一笔的颜料"**立刻出现在画布上** ✓（本地画回 ✓，不等服务端 ✓），
+/// 否则同一批里后面的笔会照着**旧画面**调色 ⇒ **画出来的东西就变了** ✗。
+/// 盖章循环本身**一字未改** ✓ ⇒ 像素与逐笔提交**逐字一致** ✓（这条有专门的对照测试 ✓）。
+let mediumBatchSession = null;
+
 async function mediumStroke(name, points, options = {}) {
   if (!points || points.length === 0) return;
   const spec = await loadMedium(name);
@@ -1622,8 +1634,58 @@ async function mediumStroke(name, points, options = {}) {
     return;
   }
   const rgba = new Uint8Array(paint.getImageData(0, 0, width, height).data.buffer);
+  if (mediumBatchSession && mediumBatchSession.layerId === state.layerId) {
+    // **批处理：把这一笔立刻画回画布** ✓（同一批里下一笔的取色就靠它 ✓），**先不提交** ✓。
+    const context = board.getContext("2d");
+    context.drawImage(canvas, Math.round(minX - state.viewport.x), Math.round(minY - state.viewport.y));
+    const box = { x: minX, y: minY, w: width, h: height };
+    const current = mediumBatchSession.box;
+    mediumBatchSession.box = current
+      ? { x: Math.min(current.x, box.x), y: Math.min(current.y, box.y),
+          w: Math.max(current.x + current.w, box.x + box.w) - Math.min(current.x, box.x),
+          h: Math.max(current.y + current.h, box.y + box.h) - Math.min(current.y, box.y) }
+      : box;
+    mediumBatchSession.stamps += total;
+    mediumBatchSession.strokes += 1;
+    return { batched: true, stamps: total };
+  }
   return commitMediumBitmap(rgba, { x: minX, y: minY, w: width, h: height }, spec, total);
 }
+
+/// **把一批笔画成一次提交** ✓（见 `mediumBatchSession` 的说明 ✓）。
+///
+/// 整批画完之后 ✓：从画布上取**并集区域**的像素 ✓、**一次**上传 ✓、**一次** `import_image` ✓
+/// ⇒ 提交次数从"每笔一次"降到"每批一次" ✓。
+async function runMediumBatch(layerId, batch, options = {}) {
+  if (!Array.isArray(batch) || batch.length === 0) return null;
+  const session = { layerId, box: null, stamps: 0, strokes: 0 };
+  const previous = mediumBatchSession;
+  mediumBatchSession = session;
+  try {
+    for (const stroke of batch) {
+      const points = (stroke.points || []).map((point) => ({ x: point.x, y: point.y }));
+      if (points.length === 0) continue;
+      await mediumStroke(stroke.medium || "oil", points, stroke.options || {});
+    }
+  } finally {
+    mediumBatchSession = previous;
+  }
+  if (!session.box || session.stamps === 0) return null;
+  // **一整块取出来** ✓（本批的每一笔都已经画在画布上了 ✓ ⇒ 这块像素就是最终画面 ✓）。
+  const context = board.getContext("2d");
+  const x = Math.max(0, Math.round(session.box.x - state.viewport.x));
+  const y = Math.max(0, Math.round(session.box.y - state.viewport.y));
+  const w = Math.max(1, Math.min(board.width - x, Math.round(session.box.w)));
+  const h = Math.max(1, Math.min(board.height - y, Math.round(session.box.h)));
+  const rgba = new Uint8Array(context.getImageData(x, y, w, h).data.buffer);
+  const spec = options.spec || MEDIUMS[options.medium || "oil"];
+  const result = await commitMediumBitmap(rgba, { x, y, w, h }, spec, session.stamps);
+  window.yanshiStats.mediumBatch = {
+    strokes: session.strokes, stamps: session.stamps, area: w * h,
+  };
+  return result;
+}
+window.yanshiMediumBatch = (layerId, batch, options) => runMediumBatch(layerId, batch, options);
 
 /// 用**插件介质**在点击处落一个点 ✓：插件产出 RGBA → 上传 CAS → `import_image` →
 /// 再用 `replace_object_data` 把介质描述符钉到对象上 ✓。
@@ -1683,15 +1745,36 @@ async function applyScore(score) {
     if (select) { select.value = layer.id; select.onchange(); }
     state.layerId = layer.id;
     await refreshLayers();
+    // **把介质笔画积攒成批** ✓（见 `mediumBatchSession` 的说明 ✓）：
+    // 一次提交固定约 280 ms ✓ ⇒ 每 30 笔提交一次 ✓ 而不是每笔一次 ✓（全尺寸约省 20 分钟 ✓）。
+    // **顺序必须保住** ✗：遇到普通笔迹（`draw_stroke` ✓）之前**先把积攒的介质冲刷掉** ✓，
+    // 否则"先介质后普通"会被改成"先普通后介质" ✓ ⇒ 叠放次序变了、画也就变了 ✗。
+    let pendingMedium = [];
+    const flushMedium = async () => {
+      if (pendingMedium.length === 0) return;
+      const batch = pendingMedium;
+      pendingMedium = [];
+      if (typeof window.yanshiMediumBatch === "function") {
+        await window.yanshiMediumBatch(layer.id, batch, {});
+        return;
+      }
+      // 没有批量能力（旧页面 ✓）就逐笔来 ✓ —— 退回原路 ✓，不静默丢笔 ✗。
+      for (const item of batch) {
+        await mediumStroke(item.medium, item.points, item.options);
+      }
+    };
     for (const stroke of layer.strokes || []) {
       const points = (stroke.points || []).map((point) =>
         Array.isArray(point) ? { x: point[0], y: point[1] } : { x: point.x, y: point.y });
       if (points.length === 0) continue;
       if (stroke.medium) {
-        await mediumStroke(stroke.medium, points, {
-          color: stroke.color, size: stroke.size, wetness: stroke.wetness,
+        pendingMedium.push({
+          medium: stroke.medium, points,
+          options: { color: stroke.color, size: stroke.size, wetness: stroke.wetness },
         });
+        if (pendingMedium.length >= 30) await flushMedium();
       } else {
+        await flushMedium();
         const drawn = await callTool("draw_stroke", {
           layer_id: layer.id,
           data: Object.assign(
@@ -1708,6 +1791,8 @@ async function applyScore(score) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
+    // 这一层画完 ⇒ 冲刷剩余 ✓（顺序上它就是"最后几笔" ✓）。
+    await flushMedium();
     layersDone += 1;
   }
   // 回放完让服务端权威状态接管画布 ✓（介质是 heavy 内容 ✓ ⇒ 必须走这条路 ✓）。
