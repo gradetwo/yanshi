@@ -288,9 +288,21 @@ impl Workspace {
         report.orphan_count = plan.orphans.len();
         report.orphan_bytes = plan.orphan_bytes;
         report.active_hashes = plan.active.iter().map(|hash| hash.to_string()).collect();
-        report.history_hashes = plan.historical.iter().map(|entry| entry.blob_hash.to_string()).collect();
-        report.orphan_hashes = plan.orphans.iter().map(|entry| entry.blob_hash.to_string()).collect();
-        report.collectible = plan.expiring.iter().map(|entry| entry.blob_hash.to_string()).collect();
+        report.history_hashes = plan
+            .historical
+            .iter()
+            .map(|entry| entry.blob_hash.to_string())
+            .collect();
+        report.orphan_hashes = plan
+            .orphans
+            .iter()
+            .map(|entry| entry.blob_hash.to_string())
+            .collect();
+        report.collectible = plan
+            .expiring
+            .iter()
+            .map(|entry| entry.blob_hash.to_string())
+            .collect();
         report.collectible_bytes = report
             .collectible
             .iter()
