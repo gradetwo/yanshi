@@ -179,7 +179,22 @@ function cluster(cx, cy, radius, count, color, size, angle, spread) {
 /// **为什么要它** ✓：方框铺色画不出**人体轮廓** ✗（此前那些"画"都是方块拼的 ✓）。
 /// 扫描线填充让每一笔都落在轮廓里 ✓ ⇒ 远看是形体、近看是笔触 ✓ —— 这正是油画该有的样子 ✓。
 /// `colorAt(t, edge)` 给出**沿填充方向的渐变** ✓（受光←→背光 ✓，是"有体积"的关键 ✓）。
+/// **笔距必须小于笔尖** ✓ —— 这条同样是实拍换来的 ✗：
+/// 铺色层的笔距若接近或超过笔尖 ✓ ⇒ 覆盖率只剩一两成 ✓ ⇒ **底子整片露白** ✓（第三版实拍就是"白底划痕" ✓）。
+/// 而且我犯这个错的方式很隐蔽 ✓：**把两个参数写反了** ✓（`fillPolygon` 的第 3、4 位是"笔尖、笔距" ✓），
+/// 于是"150px 的大笔"变成了"150px 的笔距" ✗ ⇒ 一眼看不出，只有渲染出来才知道 ✗。
+/// 所以：**比例不对就当场报错** ✓，连"参数写反"这种错也一并拦住 ✓。
+const MAX_GAP_RATIO = 0.5;
 function fillPolygon(points, colorAt, size, gap, wetness, angle = 0) {
+  if (!(size > 0) || !(gap > 0)) {
+    throw new Error("fillPolygon 的笔尖/笔距必须是正数（收到 size=" + size + " gap=" + gap + "）");
+  }
+  if (gap > size * MAX_GAP_RATIO) {
+    throw new Error(
+      "fillPolygon 的笔距 " + gap + "px 超过笔尖 " + size + "px 的 " +
+      Math.round(MAX_GAP_RATIO * 100) + "%：覆盖率会低到露出底子（第三版实拍如此）。" +
+      "铺色请把笔距压到笔尖的三分之一左右；另外别忘了参数顺序是 (…, size, gap, …)。");
+  }
   const cos = Math.cos(-angle);
   const sin = Math.sin(-angle);
   const rotated = points.map(([x, y]) => [x * cos - y * sin, x * sin + y * cos]);
@@ -220,7 +235,19 @@ function fillPolygon(points, colorAt, size, gap, wetness, angle = 0) {
 }
 
 /// **径向光晕** ✓：一圈圈由内向外变淡的同心笔触 ✓（油灯的暖光靠它 ✓）。
+/// **安全半径** ✓ —— 这条不是口味问题，是**两次实拍**换来的规矩 ✗：
+/// `glow` 是用**一圈一圈的几何环**假装柔光的 ✓，而**不透明的鬃毛笔会把环本身画出来** ✓。
+/// 半径小的时候（几十像素 ✓）环与环叠在一起 ✓ 看不出 ✓；半径一大（几百像素 ✓）就成**靶心** ✗ ——
+/// 第二版与这一版各中一次 ✓（我诊断过一次还再犯 ✓ ⇒ 所以规则必须**落在代码里** ✓，不能靠记性 ✗）。
+/// **要画大范围的光，正确做法是"大量短笔 + 逐笔湿度"** ✓（见罩染层的写法 ✓），不是加大半径 ✗。
+const GLOW_SAFE_RADIUS = 90;
 function glow(cx, cy, radius, inner, outer, steps, size) {
+  if (radius > GLOW_SAFE_RADIUS) {
+    throw new Error(
+      "glow 半径 " + Math.round(radius) + "px 超过安全上限 " + GLOW_SAFE_RADIUS + "px：" +
+      "大半径的几何环会被不透明介质画成靶心（已实测两次）。要画大范围的光，" +
+      "请改用大量短笔 + 逐笔湿度（罩染层的做法）。");
+  }
   const strokes = [];
   for (let step = steps; step >= 1; step--) {
     const t = step / steps;
@@ -412,311 +439,262 @@ function oilLandscape(width, height) {
   ];
 }
 
-// ---- 作品：《偃师造人》 ✓（真作画法：统一光源 + 明暗交界 + 轮廓塑形 ✓）----
+// ---- 作品：《偃师造人》 ✓（按真实油画工序重画 ✓）----
 //
-// **立意** ✓（《列子·汤问》）：周穆王西巡，匠人偃师献"倡者"——能歌善舞的**造人**；
-// 王怒其挑逗侍妾，偃师剖之，竟是皮革木胶漆所制 ✓。
+// **立意** ✓（《列子·汤问》）：匠人偃师献"倡者"——能歌善舞的**造人**；
+// 王怒其挑逗侍妾，偃师剖之，竟**皮革木胶漆**所制 ✓。
 //
-// **三条画法纪律** ✓（上一版的失败之处 ✗ ⇒ 这三条是"专业感"的来源 ✓）：
-// ① **一切明暗服从同一盏灯** ✓：画面右侧一盏小油灯 ✓ ⇒ 每个形体的受光/背光/轮廓光
-//    都由"离灯多远、面朝哪边"决定 ✓（`lit()` ✓）。上一版每块各自为政 ✗ ⇒ 像贴纸 ✓。
-// ② **笔尖用绝对尺寸** ✓（820×1080 的画上，铺色 60~110px ✓、塑形 18~40px ✓、细节 5~9px ✓）——
-//    上一版按画幅等比缩放 ✗ ⇒ 小图上笔尖占画面 1/10 ✓ ⇒ 全体糊成一团 ✓。
-// ③ **形体靠"面"而不是"线"** ✓：每个部分都由若干**带明暗的面**拼出来 ✓，
-//    轮廓只用来收边（`rimLight` ✓）—— 这是油画与贴纸的分界 ✓。
+// ## 这一版为什么重写 ✓
+//
+// 之前几版是"**一笔一形状**"堆出来的 ✓：每个部件各自填色、各自加高光 ✓ ⇒
+// 渲染出来是**一堆贴纸** ✗（我自己看图能指出的毛病 ✓：明暗没有设计 ✓、人物没有内部塑形 ✓、
+// 构图静止 ✓、冷暖不分 ✓、边缘一样虚 ✗）。
+// 现在按**真实油画的工序**来 ✓，这也是用户点出的办法 ✓：**先大块** ✓，再逐步收 ✓。
+//
+// ## 工序（每步一个图层 ✓ —— 图层多不是浪费 ✓，是能分别改 ✓）
+//
+// | 层 | 干什么 | 笔 |
+// |---|---|---|
+// | `ground` 底色 | 暖灰褐**薄涂**打底 ✓（不是白布 ✗：白底上直接画暗部会"浮" ✓） | 特大笔、稀 |
+// | `dark_mass` 暗块 | **先压大暗部** ✓：房间、地面、两人身后的暗 ✓ | 大笔、薄 |
+// | `block_in` 大块 | **两大块中间调** ✓：造人（暖）与偃师（冷）**只铺平均色** ✓，不看细节 ✓ | 大笔 |
+// | `light_side` 受光 | 灯光**照到的那些面** ✓：肩、胸缘、额、颧、偃师的侧脸边 ✓ | 中大笔、**亮而干净** ✓ |
+// | `halftone` 过渡 | 亮面与暗面之间的**中间调** ✓（少画 ✓，画多了就糊 ✗） | 中笔 |
+// | `darks` 压深 | 最深的那几处 ✓：胸腔内、颌下、衣褶、脚下 ✓ | 中笔、少 |
+// | `accents` 点睛 | **只有这几笔是硬的** ✓：两枚铜枢、灯芯、眉眼、偃师的轮廓光 ✓ | 小笔、厚 |
+// | `glaze` 罩染 | 靠灯的暖罩 + 四边压暗 ✓（统一画面 ✓） | 大笔、极薄 |
+//
+// **画法纪律** ✓（都写进参数里 ✓）：
+// * **笔尖先大后小** ✓（大块用 110~150px ✓、点睛用 6~12px ✓）—— 这是"先大块"在代码里的样子 ✓；
+// * **不铺满** ✗：大块之间留底色透出来 ✓（画满就死 ✗）；
+// * **硬边只留给焦点** ✓（胸腔与铜枢 ✓，其余一律柔 ✓）；
+// * **冷暖分开** ✓：灯侧一律 `warm` ✓、影侧一律 `cool` ✓ —— 夜室内景的命门 ✓。
 function yanshiAutomaton(width, height) {
   const W = width;
   const H = height;
   const X = (f) => W * f;
   const Y = (f) => H * f;
-  // **灯** ✓（右侧偏上 ✓）：后面所有 `lit()` 都以它为准 ✓。
   const lamp = [X(0.845), Y(0.40)];
   const distToLamp = (x, y) => Math.hypot(x - lamp[0], y - lamp[1]) / (W * 0.95);
-  // **统一光照** ✓：`base` 是固有色 ✓、`t` 是"离灯的归一距离" ✓ ⇒ 越远越暗越冷 ✓。
+  // **统一光照** ✓：一切明暗由"离灯多远"推出 ✓（受光暖 ✓、背光冷 ✓）。
   const lit = (base, x, y, strength = 1) => {
     const t = Math.min(1, distToLamp(x, y) * strength);
     return mix(shade(base, -0.55 - 0.25 * t), base, Math.pow(1 - t, 1.4));
   };
-  // 受光的一侧更暖 ✓（暖光照明 ✓）；背光的一侧偏冷紫 ✓（环境色 ✓）—— 冷暖对撞才"活" ✓。
   const warm = (base, amount) => mix(base, "#ffcf8a", amount);
   const cool = (base, amount) => mix(base, "#2a2f45", amount);
 
-  // ---- 暗室 ✓（横向渐变：越靠灯越暖 ✓；再补一层地面 ✓）----
-  const room = fillPolygon(
+  // ==== ① 底色（薄涂 ✓ 留出笔痕 ✓）====
+  const ground = fillPolygon(
     [[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]],
-    (t) => mix("#0f1118", "#332718", Math.pow(t, 1.7)),
-    150, 44, 0.35, Math.PI / 2,
+    (t) => mix("#2a2119", "#4a3a28", Math.pow(t, 1.3)),
+    150, 48, 0.3, Math.PI / 2,
   );
-  room.push(...fillPolygon(
-    [[-40, Y(0.885)], [W + 40, Y(0.87)], [W + 40, H + 40], [-40, H + 40]],
-    (t) => mix("#3b2f22", "#1d1712", Math.pow(t, 1.1)),
-    140, 40, 0.4, Math.PI / 2,
+  ground.push(...fillPolygon(
+    [[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]],
+    (t) => mix("#241d16", "#43331f", Math.pow(t, 1.3)),
+    130, 46, 0.26, 0.35,
   ));
 
-  // ---- 灯与光 ✓ ----
-  // **这里原本是 `glow(lamp, W*0.70, ...)`** ✗ —— 它用**大半径闭合环**假装柔光 ✓，
-  // 而不透明的鬃毛笔**会把环本身画出来** ✓ ⇒ 上一版整幅成了**同心灰环** ✗（第二版实拍 ✓）。
-  // 结论照旧 ✓：软光晕要靠"大量短笔 + 逐笔湿度"或"介质自身的湿混" ✓，**不能靠几何环** ✗。
-  // 现在**直接去掉它** ✓：房间本来就有朝灯方向的横向渐变 ✓、灯芯也有小半径的柔光 ✓，
-  // 氛围由这两样承担 ✓ —— 少一层可能出错的几何 ✓ 比多一层假光晕好 ✓。
-  const lampLight = [];
-  lampLight.push(...fillPolygon(   // 灯盏（青铜 ✓，受光在下缘 ✓）
-    [[lamp[0] - 24, lamp[1] + 20], [lamp[0] + 24, lamp[1] + 20],
-     [lamp[0] + 15, lamp[1] + 46], [lamp[0] - 15, lamp[1] + 46]],
-    (t) => mix("#8a6a34", "#3a2c18", t), 18, 7, 0.45, 0,
+  // ==== ② 大暗块（房间与地面 ✓ 先压住 ✓）====
+  const darkMass = [];
+  darkMass.push(...fillPolygon(
+    [[-40, -40], [W * 0.62, -40], [W * 0.58, H + 40], [-40, H + 40]],
+    () => cool("#191922", 0.3), 142, 46, 0.28, Math.PI / 2,
   ));
-  lampLight.push(...glow(lamp[0], lamp[1] - 4, 40, "#fffaf0", "#ffc46a", 4, 24));
+  darkMass.push(...fillPolygon(
+    [[W * 0.60, -40], [W + 40, -40], [W + 40, H + 40], [W * 0.56, H + 40]],
+    (t) => mix("#241a14", "#2b2118", 1 - Math.min(1, t)), 132, 44, 0.26, Math.PI / 2,
+  ));
+  darkMass.push(...fillPolygon(
+    [[-40, Y(0.86)], [W + 40, Y(0.845)], [W + 40, H + 40], [-40, H + 40]],
+    (t) => mix("#3a2c1e", "#16110c", Math.pow(t, 1.1)), 112, 38, 0.3, Math.PI / 2,
+  ));
 
-  // ---- 造人 ✓（先骨架、再受光面、再背光面 ✓）----
-  const figure = [];
-  const headC = [X(0.395), Y(0.300)];
-  const headRX = W * 0.070;
-  const headRY = H * 0.055;
-  const chest = [X(0.408), Y(0.545)];
-  // 躯干（朱漆袍 ✓）：肩宽腰收 ✓ ⇒ 人不是柱子 ✓。
-  const torso = [
-    [X(0.330), Y(0.400)], [X(0.475), Y(0.392)], [X(0.500), Y(0.560)],
-    [X(0.470), Y(0.700)], [X(0.325), Y(0.706)], [X(0.300), Y(0.560)],
-  ];
-  figure.push(...fillPolygon(torso, (t) => {
-    const y = Y(0.40) + t * (Y(0.706) - Y(0.40));
-    return lit("#96412f", X(0.42), y, 1.0);
-  }, 84, 20, 0.5, 0));
-  // **受光面** ✓：靠灯的一侧（右侧 ✓）一层更暖更亮 ✓ —— 明暗交界由此产生 ✓。
-  figure.push(...fillPolygon(
-    [[X(0.452), Y(0.394)], [X(0.476), Y(0.392)], [X(0.500), Y(0.560)],
-     [X(0.470), Y(0.700)], [X(0.428), Y(0.703)], [X(0.432), Y(0.560)]],
-    (t) => warm(lit("#b8613c", X(0.47), Y(0.40) + t * (Y(0.70) - Y(0.40)), 0.9), 0.35),
-    64, 15, 0.42, 0,
+  // ==== ③ 大块（只看平均色 ✓ 不看细节 ✓ —— "先大块"的核心 ✓）====
+  const blockIn = [];
+  // 造人：**暖** ✓（朱漆在暖光下 ✓）。
+  blockIn.push(...fillPolygon(
+    [[X(0.300), Y(0.372)], [X(0.492), Y(0.360)], [X(0.512), Y(0.560)],
+     [X(0.486), Y(0.700)], [X(0.318), Y(0.706)], [X(0.288), Y(0.556)]],
+    (t, span) => (span === 0 ? cool("#6b2c22", 0.4) : lit("#9c4630", X(0.40), Y(0.38) + t * (Y(0.70) - Y(0.38)), 1.0)),
+    98, 32, 0.4, 0,
   ));
-  // 背光面 ✓（左侧偏冷紫 ✓）。
-  figure.push(...fillPolygon(
-    [[X(0.330), Y(0.401)], [X(0.372), Y(0.398)], [X(0.360), Y(0.700)],
-     [X(0.325), Y(0.706)], [X(0.300), Y(0.560)]],
-    (t) => cool(lit("#5e2a22", X(0.32), Y(0.40) + t * (Y(0.70) - Y(0.40)), 1.15), 0.4),
-    70, 17, 0.45, 0,
+  // 下裳 + 腿：一块更暗的中间调 ✓。
+  blockIn.push(...fillPolygon(
+    [[X(0.306), Y(0.698)], [X(0.492), Y(0.694)], [X(0.536), Y(0.888)], [X(0.272), Y(0.892)]],
+    (t) => lit("#7a3628", X(0.40), Y(0.70) + t * (Y(0.89) - Y(0.70)), 1.05),
+    106, 35, 0.38, 0,
   ));
-  // 下裳 ✓（朱漆 + 暗褶 ✓）。
-  figure.push(...fillPolygon(
-    [[X(0.318), Y(0.700)], [X(0.478), Y(0.696)], [X(0.520), Y(0.885)],
-     [X(0.285), Y(0.888)],
-    ],
-    (t) => lit("#7d3527", X(0.40), Y(0.70) + t * (Y(0.888) - Y(0.70)), 1.05),
-    96, 22, 0.5, 0,
+  // 头：**一整块**平均色 ✓（先在下面画一个大椭圆 ✓，五官最后再说 ✓）。
+  blockIn.push(...fillPolygon(
+    ellipse(X(0.395), Y(0.302), W * 0.076, H * 0.058, 26),
+    (t, span) => (span === 0 ? cool("#8a6a4a", 0.35) : lit("#b98f63", X(0.395), Y(0.302), 0.8)),
+    76, 26, 0.42, 0,
   ));
-  for (let fold = 0; fold < 5; fold++) {   // 衣褶 ✓（一笔一笔的暗线 ✓）
-    const fx = 0.33 + fold * 0.042;
-    figure.push(...handLine(
-      [[X(fx), Y(0.712)], [X(fx + 0.012), Y(0.80)], [X(fx - 0.004), Y(0.878)]],
-      cool("#4a1f16", 0.25), 12, 0.35, 3,
-    ));
-  }
-  // **腰带** ✓：把上下身分开 ✓，也让腰"收"进去 ✓。
-  figure.push(...fillPolygon(
-    [[X(0.303), Y(0.663)], [X(0.487), Y(0.657)], [X(0.492), Y(0.703)], [X(0.300), Y(0.709)]],
-    (t) => lit("#2f2018", X(0.40), Y(0.68) + t * 8, 1.0), 34, 9, 0.4, 0,
+  // 偃师：**冷**的大块 ✓（深蓝灰 ✓）—— 与造人的暖形成全画的冷暖对撞 ✓。
+  blockIn.push(...fillPolygon(
+    [[X(0.628), Y(0.318)], [X(0.772), Y(0.300)], [X(0.936), Y(0.520)],
+     [X(0.992), Y(0.985)], [X(0.660), Y(0.998)], [X(0.606), Y(0.632)]],
+    (t) => cool(lit("#2a2c3a", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.25), 0.42),
+    134, 44, 0.3, 0,
   ));
-  figure.push(...rimLight([[X(0.487), Y(0.658)], [X(0.492), Y(0.702)]], warm("#8a5a2c", 0.4), 7, 0.4));
-  // 颈 ✓ + 面部底面 ✓（下颌的暗面 ✓）。
-  figure.push(...fillPolygon(
-    [[X(0.375), Y(0.336)], [X(0.418), Y(0.334)], [X(0.428), Y(0.400)], [X(0.366), Y(0.402)]],
-    (t) => cool(lit("#a97a52", X(0.40), Y(0.336) + t * (Y(0.40) - Y(0.336)), 0.7), 0.35),
-    32, 8, 0.4, 0,
+  blockIn.push(...fillPolygon(profileish(X, Y, W, H),
+    () => cool("#2b2b38", 0.5), 64, 22, 0.4, 0,
   ));
-  // **头** ✓：颅 + 面 + 颌三块面 ✓（漆面平滑 ✓ ⇒ 面与面之间的过渡要柔 ✓）。
-  figure.push(...fillPolygon(   // 颅（背光 ✓）
-    ellipse(headC[0] - 6, headC[1] - 6, headRX * 1.02, headRY * 1.05, 28),
-    (t, span) => (span === 0 ? cool(lit("#c9a077", headC[0] - headRX, headC[1], 0.8), 0.25)
-                             : lit("#d8b183", headC[0], headC[1], 0.75)),
-    34, 9, 0.42, 0,
-  ));
-  figure.push(...fillPolygon(   // 面（朝右下 ✓ = 朝灯 ✓）
-    [[X(0.352), Y(0.276)], [X(0.424), Y(0.272)], [X(0.436), Y(0.318)],
-     [X(0.412), Y(0.348)], [X(0.362), Y(0.344)], [X(0.344), Y(0.308)]],
-    (t, span) => (span === 0 ? lit("#e6c193", X(0.40), Y(0.30), 0.8)
-                             : warm(lit("#f0d2a6", X(0.42), Y(0.30), 0.6), 0.25)),
-    28, 7, 0.4, 0,
-  ));
-  figure.push(...fillPolygon(   // 颌与颧的暗面 ✓
-    [[X(0.344), Y(0.308)], [X(0.362), Y(0.344)], [X(0.398), Y(0.352)],
-     [X(0.372), Y(0.362)], [X(0.344), Y(0.340)]],
-    () => cool("#b5875c", 0.45), 24, 6, 0.4, 0,
-  ));
-  // 发髻 ✓（暗金铜色 ✓，受光在右 ✓）。
-  figure.push(...fillPolygon(
-    [[X(0.330), Y(0.258)], [X(0.398), Y(0.244)], [X(0.432), Y(0.264)],
-     [X(0.410), Y(0.288)], [X(0.336), Y(0.296)]],
-    (t) => lit("#241a14", X(0.36), Y(0.26) + t * 12, 0.9), 26, 8, 0.35, 0,
-  ));
-  figure.push(...rimLight([[X(0.400), Y(0.245)], [X(0.432), Y(0.263)]], warm("#8a6a3a", 0.5), 6, 0.4));
-  // 手臂 ✓（前臂搭在膝上 ✓）；手是"木"的 ✓ ⇒ 偏赭、少光泽 ✓。
-  for (const side of [-1, 1]) {
-    const sx = X(0.40) + side * 72;
-    figure.push(...fillPolygon(
-      [[sx - 26, Y(0.420)], [sx + 26, Y(0.424)], [sx + 34, Y(0.630)], [sx - 30, Y(0.636)]],
-      (t) => lit(side > 0 ? "#a95f3c" : "#6d3a28", sx, Y(0.42) + t * (Y(0.63) - Y(0.42)), 1.0),
-      52, 13, 0.45, 0,
-    ));
-    figure.push(...fillPolygon(
-      ellipse(sx, Y(0.672), 40, 22, 16),
-      (t, span) => (span === 0 && side > 0 ? warm("#c08b5c", 0.3) : lit("#a97b52", sx, Y(0.672), 0.95)),
-      34, 9, 0.4, 0,
-    ));
-  }
-  // 膝 ✓（下裳上的两个受光块 ✓ ⇒ 坐姿读得出来 ✓）。
-  for (const side of [-1, 1]) {
-    figure.push(...fillPolygon(
-      ellipse(X(0.40) + side * 78, Y(0.760), 74, 34, 18),
-      (t, span) => (span === 0 && side > 0 ? warm(lit("#b06a42", X(0.40) + side * 78, Y(0.76), 0.8), 0.25)
-                                           : lit("#8a4530", X(0.40) + side * 78, Y(0.76), 1.05)),
-      60, 15, 0.45, 0,
-    ));
-  }
 
-  // ---- 机枢 ✓（故事的核心 ✓：胸腔开启、木骨铜枢 ✓）----
-  const mechanism = [];
-  // 腔体（很暗 ✓，但**不是纯黑** ✓ —— 暗部要留一点温度 ✓）。
-  mechanism.push(...fillPolygon(
-    [[X(0.330), Y(0.482)], [X(0.478), Y(0.478)], [X(0.472), Y(0.628)], [X(0.336), Y(0.632)]],
-    (t) => mix("#2b1a12", "#150d09", t), 64, 14, 0.35, 0,
+  // ==== ④ 受光面（**亮而干净** ✓ —— 靠"面"而不是渐变 ✓）====
+  const lightSide = [];
+  const face = (points, color) => lightSide.push(...fillPolygon(
+    points, () => color, 54, 18, 0.42, 0,
   ));
-  // **被打开的漆面盖板** ✓（叙事关键 ✓：它不是"一个洞" ✓，是"能开合的盖" ✓）。
-  mechanism.push(...fillPolygon(
-    [[X(0.470), Y(0.470)], [X(0.560), Y(0.452)], [X(0.596), Y(0.596)], [X(0.500), Y(0.618)]],
-    (t) => lit("#8f3a2a", X(0.53), Y(0.47) + t * (Y(0.60) - Y(0.47)), 1.0),
-    44, 11, 0.45, 0,
+  // 造人的肩、胸缘、下裳的受光面 ✓。
+  face([[X(0.452), Y(0.362)], [X(0.492), Y(0.360)], [X(0.512), Y(0.560)],
+        [X(0.470), Y(0.586)], [X(0.452), Y(0.470)]], warm("#c06a3e", 0.35));
+  face([[X(0.318), Y(0.372)], [X(0.352), Y(0.368)], [X(0.344), Y(0.470)],
+        [X(0.302), Y(0.470)]], warm("#b25c34", 0.22));
+  face([[X(0.360), Y(0.700)], [X(0.470), Y(0.696)], [X(0.492), Y(0.792)],
+        [X(0.352), Y(0.798)]], warm("#a8542f", 0.18));
+  // 头：**朝灯的那半张脸** ✓（右半 ✓）+ 额与颧各一小块 ✓ —— 三块面就够 ✓。
+  face([[X(0.398), Y(0.256)], [X(0.436), Y(0.268)], [X(0.444), Y(0.316)],
+        [X(0.412), Y(0.344)], [X(0.396), Y(0.330)]], warm("#e2bb8c", 0.4));
+  face(ellipse(X(0.424), Y(0.284), W * 0.026, H * 0.018, 12), warm("#f0d0a4", 0.3));
+  face(ellipse(X(0.428), Y(0.312), W * 0.020, H * 0.014, 12), warm("#e8c091", 0.3));
+  // 偃师侧脸的受光边 ✓（窄窄一道 ✓ —— 剪影靠这一道才立得住 ✓）。
+  face([[X(0.716), Y(0.222)], [X(0.734), Y(0.244)], [X(0.740), Y(0.286)],
+        [X(0.726), Y(0.300)], [X(0.712), Y(0.270)]], warm("#7d6a6e", 0.35));
+
+  // ==== ⑤ 中间调过渡（**少画** ✓ 画多了就糊 ✗）====
+  const halftone = [];
+  halftone.push(...fillPolygon(
+    [[X(0.352), Y(0.560)], [X(0.452), Y(0.556)], [X(0.446), Y(0.700)], [X(0.346), Y(0.702)]],
+    (t) => mix("#6a3226", "#8f4430", t), 60, 20, 0.35, 0,
   ));
-  mechanism.push(...rimLight([[X(0.562), Y(0.452)], [X(0.598), Y(0.594)]], warm("#d08a4a", 0.5), 7, 0.4));
-  // 肋骨 ✓（一列细木条 ✓，越靠灯越亮 ✓）。
+  halftone.push(...fillPolygon(
+    [[X(0.646), Y(0.400)], [X(0.760), Y(0.372)], [X(0.836), Y(0.560)],
+     [X(0.742), Y(0.660)], [X(0.640), Y(0.600)]],
+    (t) => cool(mix("#22242e", "#33364a", t), 0.35), 78, 26, 0.3, 0,
+  ));
+
+  // ==== ⑥ 压深（只在最深的几处 ✓）====
+  const darks = [];
+  darks.push(...fillPolygon(
+    [[X(0.336), Y(0.478)], [X(0.478), Y(0.472)], [X(0.472), Y(0.628)], [X(0.342), Y(0.634)]],
+    (t) => mix("#241610", "#100b08", t), 58, 19, 0.4, 0,
+  ));
+  darks.push(...fillPolygon(
+    [[X(0.352), Y(0.344)], [X(0.404), Y(0.352)], [X(0.386), Y(0.372)], [X(0.344), Y(0.362)]],
+    () => "#3d2a1c", 36, 12, 0.4, 0,
+  ));
+  for (let fold = 0; fold < 4; fold++) {
+    const fx = 0.322 + fold * 0.042;
+    darks.push(...handLine(
+      [[X(fx), Y(0.712)], [X(fx + 0.012), Y(0.800)], [X(fx - 0.004), Y(0.878)]],
+      cool("#4a1f16", 0.2), 16, 0.32, 2.4,
+    ));
+  }
+  darks.push(...fillPolygon(
+    [[-40, Y(0.945)], [W + 40, Y(0.930)], [W + 40, H + 40], [-40, H + 40]],
+    () => "#0e0b09", 84, 28, 0.35, 0,
+  ));
+
+  // ==== ⑦ 点睛（**全画只有这几笔是硬的** ✓）====
+  const accents = [];
+  // 胸腔的木肋 ✓（细 ✓ 直 ✓）+ **两枚铜枢** ✓（最高对比 ✓ = 焦点 ✓）。
   for (let rib = 0; rib < 6; rib++) {
-    const y = Y(0.494) + rib * 22;
-    mechanism.push(...handLine(
-      [[X(0.344), y], [X(0.466), y - 4]],
-      lit(rib % 2 ? "#8a6136" : "#6d4a2a", X(0.42), y, 0.85), 7, 0.35, 1.6,
-    ));
+    const y = Y(0.492) + rib * 22;
+    accents.push(...handLine([[X(0.348), y], [X(0.466), y - 4]],
+      lit(rib % 2 ? "#9a6d3c" : "#7a5530", X(0.42), y, 0.85), 6, 0.35, 1.4));
   }
-  // 脊柱与吊索 ✓（几根竖直与斜向的细线 ✓ ⇒ "机构"读得出来 ✓）。
-  mechanism.push(...handLine([[X(0.400), Y(0.486)], [X(0.404), Y(0.626)]], lit("#9a7040", X(0.40), Y(0.55), 0.9), 9, 0.35, 1.2));
-  for (const [x0, y0, x1, y1] of [[0.352, 0.500, 0.396, 0.540], [0.396, 0.540, 0.452, 0.506], [0.360, 0.560, 0.400, 0.596], [0.400, 0.596, 0.446, 0.566]]) {
-    mechanism.push(...handLine([[X(x0), Y(y0)], [X(x1), Y(y1)]], "#6a4a2c", 5, 0.35, 1.0));
-  }
-  // 铜枢 ✓（两枚 ✓，亮黄铜在暗腔里 = 画面的"眼" ✓）。
-  for (const [gx, gy, r] of [[0.372, 0.592, 15], [0.436, 0.612, 11]]) {
-    mechanism.push(...fillPolygon(ellipse(X(gx), Y(gy), r, r * 0.9, 14),
-      () => lit("#c9a24a", X(gx), Y(gy), 0.6), 12, 3.4, 0.4, 0));
-    mechanism.push(...rimLight(ellipse(X(gx), Y(gy), r * 0.72, r * 0.62, 10), "#ffe6a8", 4, 0.4));
+  accents.push(...handLine([[X(0.402), Y(0.482)], [X(0.406), Y(0.630)]], lit("#a87c46", X(0.40), Y(0.55), 0.9), 8, 0.35, 1.0));
+  for (const spec of [[0.374, 0.590, 16], [0.438, 0.610, 12]]) {
+    accents.push(...fillPolygon(ellipse(X(spec[0]), Y(spec[1]), spec[2], spec[2] * 0.9, 14),
+      () => warm("#e0b45c", 0.35), 10, 3.0, 0.4, 0));
+    accents.push(...rimLight(ellipse(X(spec[0]), Y(spec[1]), spec[2] * 0.72, spec[2] * 0.62, 10), "#fff0c0", 4, 0.4));
     for (let tooth = 0; tooth < 6; tooth++) {
       const angle = (tooth / 6) * Math.PI * 2;
-      mechanism.push(...handLine(
-        [[X(gx) + Math.cos(angle) * r * 0.85, Y(gy) + Math.sin(angle) * r * 0.75],
-         [X(gx) + Math.cos(angle) * r * 1.15, Y(gy) + Math.sin(angle) * r * 1.0]],
+      accents.push(...handLine(
+        [[X(spec[0]) + Math.cos(angle) * spec[2] * 0.85, Y(spec[1]) + Math.sin(angle) * spec[2] * 0.75],
+         [X(spec[0]) + Math.cos(angle) * spec[2] * 1.18, Y(spec[1]) + Math.sin(angle) * spec[2] * 1.0]],
         "#8a6a2c", 4, 0.4, 0.6,
       ));
     }
   }
-  // **面部细节** ✓（走铅笔 ✓：闭目、眉、鼻、唇 ✓ —— 细线是"造人"的非人感来源 ✓）。
-  mechanism.push(...handLine([[X(0.362), Y(0.296)], [X(0.390), Y(0.302)]], "#5c3f2b", 5, 0.4, 0.7));
-  mechanism.push(...handLine([[X(0.404), Y(0.292)], [X(0.430), Y(0.300)]], "#5c3f2b", 5, 0.4, 0.7));
-  mechanism.push(...handLine([[X(0.396), Y(0.300)], [X(0.390), Y(0.322)]], "#6d4a33", 4, 0.4, 0.6));
-  mechanism.push(...handLine([[X(0.380), Y(0.328)], [X(0.404), Y(0.330)]], "#7a4a3a", 4, 0.45, 0.6));
-  mechanism.push(...handLine([[X(0.372), Y(0.283)], [X(0.400), Y(0.278)]], "#4a3222", 4, 0.4, 0.6));
-  // 额上一点高光 ✓（漆器的反光 ✓）。
-  mechanism.push(...glow(X(0.418), Y(0.278), 16, "#fff0cc", "#c79a68", 2, 12));
+  // 眉眼与唇 ✓（**几笔** ✓，不是"画五官" ✗）。
+  accents.push(...handLine([[X(0.372), Y(0.286)], [X(0.398), Y(0.290)]], "#40291c", 5, 0.45, 0.7));
+  accents.push(...handLine([[X(0.408), Y(0.288)], [X(0.432), Y(0.294)]], "#40291c", 5, 0.45, 0.7));
+  accents.push(...handLine([[X(0.386), Y(0.306)], [X(0.400), Y(0.310)]], "#5c3a24", 4, 0.45, 0.6));
+  accents.push(...handLine([[X(0.376), Y(0.326)], [X(0.404), Y(0.328)]], "#7a4436", 4, 0.45, 0.6));
+  // 灯芯与外圈 ✓（第二焦点 ✓）。
+  accents.push(...glow(lamp[0], lamp[1] - 4, 34, "#fffaf0", "#ffc46a", 4, 22));
+  accents.push(...fillPolygon(
+    [[lamp[0] - 24, lamp[1] + 20], [lamp[0] + 24, lamp[1] + 20],
+     [lamp[0] + 15, lamp[1] + 46], [lamp[0] - 15, lamp[1] + 46]],
+    (t) => lit("#8a6a34", lamp[0], lamp[1] + 20 + t * 26, 0.7), 16, 7, 0.45, 0,
+  ));
+  // 偃师的轮廓光 ✓（从暗背景里"抠"出来 ✓）+ 面部几笔 ✓。
+  accents.push(...rimLight(
+    [[X(0.646), Y(0.286)], [X(0.628), Y(0.330)], [X(0.610), Y(0.470)],
+     [X(0.606), Y(0.632)], [X(0.648), Y(0.800)], [X(0.688), Y(0.930)], [X(0.700), Y(0.980)]],
+    warm("#c98a4a", 0.5), 9, 0.45,
+  ));
+  accents.push(...handLine([[X(0.686), Y(0.262)], [X(0.712), Y(0.268)]], "#12121a", 6, 0.4, 0.8));
 
-  // ---- 偃师 ✓（侧脸剪影 + 轮廓光 ✓ —— 侧面轮廓是"人"读得出来的关键 ✓）----
-  const artisan = [];
-  const aFace = [X(0.680), Y(0.215)];
-  // **侧脸轮廓** ✓：额 → 眉 → 鼻 → 唇 → 颏 → 颈 ✓（这一步比什么都重要 ✓）。
-  const profile = [
+  // ==== ⑧ 罩染（靠灯的暖罩 ✓ + 四边压暗 ✓ —— 统一画面 ✓）====
+  const glaze = [];
+  // **大范围的暖雾：大量短笔，而不是大半径的 glow** ✗ —— 见 `GLOW_SAFE_RADIUS` 的说明 ✓。
+  // 画法照搬真画家"扫"的动作 ✓：从灯心向外一圈圈扫 ✓，每笔都短 ✓、越远越淡越冷 ✓，
+  // 笔触之间**故意留缝** ✓ ⇒ 出来是雾 ✓ 不是环 ✓。
+  for (let ring = 1; ring <= 7; ring++) {
+    const radius = W * 0.045 * ring;
+    const t = ring / 7;
+    const color = mix(mix("#ffdc9e", "#8a6a44", t), "#241d16", Math.pow(t, 1.5));
+    const rays = 22 + ring * 6;
+    for (let ray = 0; ray < rays; ray++) {
+      const angle = (ray / rays) * Math.PI * 2 + ring * 0.21;
+      const r0 = radius - W * 0.03;
+      const cx = lamp[0] + Math.cos(angle) * r0;
+      const cy = lamp[1] + Math.sin(angle) * r0 * 0.95;
+      const cx1 = lamp[0] + Math.cos(angle) * radius;
+      const cy1 = lamp[1] + Math.sin(angle) * radius * 0.95;
+      glaze.push(...handLine([[cx, cy], [cx1, cy1]], color, 34 - ring * 2, 0.22, 1.0));
+    }
+  }
+  for (let ring = 0; ring < 2; ring++) {
+    const inset = ring * 20;
+    const color = mix("#0a0b10", "#141620", ring);
+    glaze.push(...fillPolygon([[-40, -40], [W + 40, -40], [W + 40, inset + 20], [-40, inset + 20]],
+      () => color, 130, 44, 0.7, 0));
+    glaze.push(...fillPolygon([[-40, H - inset - 20], [W + 40, H - inset - 20], [W + 40, H + 40], [-40, H + 40]],
+      () => color, 130, 44, 0.7, 0));
+    glaze.push(...fillPolygon([[-40, -40], [inset + 20, -40], [inset + 20, H + 40], [-40, H + 40]],
+      () => color, 130, 44, 0.7, 0));
+    glaze.push(...fillPolygon([[W - inset - 20, -40], [W + 40, -40], [W + 40, H + 40], [W - inset - 20, H + 40]],
+      () => color, 130, 44, 0.7, 0));
+  }
+
+  return [
+    { id: "ground", name: "① 底色（薄涂）", strokes: asMedium("oil", 0.5, ground) },
+    { id: "dark_mass", name: "② 大暗块", strokes: asMedium("oil", 0.55, darkMass) },
+    { id: "block_in", name: "③ 大块（先大块）", strokes: asMedium("oil", 0.5, blockIn) },
+    { id: "light_side", name: "④ 受光面", strokes: asMedium("oil", 0.45, lightSide) },
+    { id: "halftone", name: "⑤ 中间调", strokes: asMedium("oil", 0.5, halftone) },
+    { id: "darks", name: "⑥ 压深", strokes: asMedium("oil", 0.45, darks) },
+    { id: "accents", name: "⑦ 点睛", strokes: asMedium("pencil", 0.4, accents) },
+    { id: "glaze", name: "⑧ 罩染", strokes: asMedium("oil", 0.6, glaze) },
+  ];
+}
+
+/// 偃师的**侧脸轮廓** ✓（额→眉→鼻→唇→颏→颈 ✓）—— 抽成函数是因为"大块"与"受光面"两层都要用它 ✓。
+function profileish(X, Y, W, H) {
+  void W;
+  void H;
+  return [
     [X(0.690), Y(0.196)], [X(0.716), Y(0.206)], [X(0.726), Y(0.238)],
     [X(0.734), Y(0.262)], [X(0.722), Y(0.268)], [X(0.736), Y(0.292)],
     [X(0.724), Y(0.302)], [X(0.732), Y(0.318)], [X(0.712), Y(0.330)],
     [X(0.700), Y(0.348)], [X(0.676), Y(0.352)], [X(0.652), Y(0.330)],
     [X(0.646), Y(0.280)],
-  ];
-  artisan.push(...fillPolygon(profile,
-    (t, span) => (span === 0 ? cool("#2c2c38", 0.35) : lit("#3a3540", X(0.69), Y(0.20) + t * (Y(0.35) - Y(0.20)), 1.15)),
-    34, 9, 0.35, 0,
-  ));
-  // 身躯 ✓（深衣 ✓，几乎全在暗部 ✓ ⇒ 只给边缘一道光 ✓）。
-  artisan.push(...fillPolygon(
-    [[X(0.628), Y(0.330)], [X(0.760), Y(0.300)], [X(0.930), Y(0.520)],
-     [X(0.985), Y(0.985)], [X(0.660), Y(0.995)], [X(0.612), Y(0.640)]],
-    (t) => cool(lit("#22242f", X(0.80), Y(0.33) + t * (Y(0.99) - Y(0.33)), 1.25), 0.3),
-    120, 26, 0.3, 0,
-  ));
-  // 前臂 ✓（伸向造人的胸口 ✓）。
-  artisan.push(...fillPolygon(
-    [[X(0.640), Y(0.470)], [X(0.700), Y(0.452)], [X(0.610), Y(0.548)], [X(0.556), Y(0.532)]],
-    (t) => lit("#6d4a38", X(0.63), Y(0.47) + t * (Y(0.55) - Y(0.47)), 0.9),
-    44, 11, 0.4, 0,
-  ));
-  // **手** ✓（受光最亮的一小块 ✓ = 画面的"第二眼" ✓）：掌 + 三根指 ✓。
-  artisan.push(...fillPolygon(
-    ellipse(X(0.560), Y(0.556), 40, 26, 16),
-    (t, span) => (span === 0 ? warm("#d8a976", 0.35) : lit("#c08f60", X(0.56), Y(0.556), 0.7)),
-    30, 8, 0.38, 0,
-  ));
-  for (let finger = 0; finger < 3; finger++) {
-    artisan.push(...handLine(
-      [[X(0.520), Y(0.540) + finger * 13], [X(0.470), Y(0.548) + finger * 14]],
-      warm(lit("#c99a6c", X(0.50), Y(0.545), 0.7), 0.2), 9, 0.4, 1.0,
-    ));
-  }
-  // 轮廓光 ✓（沿左侧全程 ✓ ⇒ 从暗背景里"抠"出来 ✓）。
-  artisan.push(...rimLight(
-    [[X(0.646), Y(0.282)], [X(0.630), Y(0.330)], [X(0.614), Y(0.470)],
-     [X(0.610), Y(0.640)], [X(0.648), Y(0.800)], [X(0.690), Y(0.930)],
-     [X(0.700), Y(0.980)]],
-    warm("#c98a4a", 0.55), 10, 0.45,
-  ));
-  artisan.push(...rimLight([[X(0.690), Y(0.196)], [X(0.716), Y(0.206)], [X(0.726), Y(0.240)]],
-    warm("#e0a86a", 0.5), 8, 0.45));
-
-  // ---- 台与器 ✓ ----
-  const bench = [];
-  bench.push(...fillPolygon(
-    [[-40, Y(0.885)], [W + 40, Y(0.870)], [W + 40, Y(0.925)], [-40, Y(0.940)]],
-    (t) => lit("#4a3a2a", X(0.5), Y(0.88) + t * (Y(0.94) - Y(0.88)), 1.1),
-    80, 20, 0.4, 0,
-  ));
-  bench.push(...rimLight([[-40, Y(0.885)], [W + 40, Y(0.870)]], warm("#a8763c", 0.45), 9, 0.45));
-  bench.push(...handLine([[X(0.16), Y(0.975)], [X(0.30), Y(0.930)]], lit("#9a8a70", X(0.22), Y(0.95), 0.9), 11, 0.35, 2.0));
-  bench.push(...handLine([[X(0.30), Y(0.930)], [X(0.345), Y(0.950)]], "#6d5a44", 8, 0.35, 1.2));
-  for (let loop = 0; loop < 4; loop++) {
-    bench.push(...handLine(ellipse(X(0.115), Y(0.958), 44 + loop * 7, 15, 16), "#7a6648", 5, 0.35, 1.2));
-  }
-
-  // ---- 提点与暗角 ✓ ----
-  const light = [];
-  light.push(...glow(lamp[0], lamp[1] - 30, 44, "#fffdf2", "#ffd18a", 3, 18));
-  // 受光边缘的几处**小提亮** ✓（视线落点 ✓）。
-  for (const [fx, fy, r] of [[0.474, 0.480, 20], [0.560, 0.556, 18], [0.418, 0.278, 14], [0.492, 0.676, 16]]) {
-    light.push(...glow(X(fx), Y(fy), r, "#fff0cc", "#c98a5a", 2, 11));
-  }
-  // **暗角** ✓：沿四条边压暗 ✓ —— **不是四个大方块** ✗（上一版就是那样把画面糊掉的 ✓）。
-  // 做法是"贴着边、由外向内几道半透明深色笔触" ✓ —— 与真画家收边同一个意思 ✓。
-  // **暗角收窄变淡** ✓：上一版是 4 圈 × 26px ⇒ 每边压进画面 104px ✓，
-  // 渲染出来就是**四道灰色板子** ✗（第一版实拍 ✓，把人物整个压住了 ✓）。
-  // 现在只留两圈 × 18px、并且更透明 ✓ —— 收边该是"几乎看不出、但去掉就散" ✓。
-  for (let ring = 0; ring < 2; ring++) {
-    const inset = ring * 18;
-    const color = mix("#0c0e15", "#171a22", ring);
-    const band = (points) => light.push(...fillPolygon(points, () => color, 120, 46, 0.85, 0));
-    band([[-40, -40], [W + 40, -40], [W + 40, inset + 18], [-40, inset + 18]]);
-    band([[-40, H - inset - 18], [W + 40, H - inset - 18], [W + 40, H + 40], [-40, H + 40]]);
-    band([[-40, -40], [inset + 18, -40], [inset + 18, H + 40], [-40, H + 40]]);
-    band([[W - inset - 18, -40], [W + 40, -40], [W + 40, H + 40], [W - inset - 18, H + 40]]);
-  }
-
-  return [
-    { id: "room", name: "暗室", strokes: asMedium("oil", 0.5, room) },
-    { id: "lamp", name: "油灯与光", strokes: asMedium("oil", 0.7, lampLight) },
-    { id: "artisan", name: "偃师", strokes: asMedium("oil", 0.5, artisan) },
-    { id: "figure", name: "造人", strokes: asMedium("oil", 0.5, figure) },
-    { id: "mechanism", name: "机枢", strokes: asMedium("pencil", 0.35, mechanism) },
-    { id: "bench", name: "台与器", strokes: asMedium("oil", 0.45, bench) },
-    { id: "light", name: "提点与暗角", strokes: asMedium("oil", 0.7, light) },
   ];
 }
 
@@ -742,12 +720,37 @@ const send = (method, params = {}) =>
   new Promise((resolve) => { const current = id++; pending.set(current, resolve); ws.send(JSON.stringify({ id: current, method, params })); });
 const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+/// **导出的是"文档渲染"，不是"页面截图"** ✓ —— 这条是真实的翻车换来的 ✗：
+/// 这里原本用 `Page.captureScreenshot` ✓ ⇒ 存下来的是**整个查看器界面** ✓（工具栏、面板全在画里 ✓）。
+/// 我又把它当成示例图 `cp` 进了 `assets/samples/` ✗ ⇒ **两个后果一起发生** ✓：
+/// ① 仓库里的示例图带着工具栏 ✗；② 查看器把它**种入文档** ✓ ⇒ 连文档的像素里都有工具栏 ✗（渲染实拍 ✓）。
+/// 一个"导出错了对象"的小错 ✓ 同时污染了资源与文档 ✓ —— 所以这里改成取**文档渲染** ✓，
+/// PNG 交给浏览器自己编码 ✓（`toDataURL` ✓，不必在 Node 里手写编码器 ✓）。
 const shot = async (name) => {
-  const message = await send("Page.captureScreenshot", { format: "png" });
-  const data = message?.result?.data;
-  if (!data) return null;
+  const message = await send("Runtime.evaluate", {
+    expression: `(async () => {
+      const size = state.docSize;
+      const value = await callTool("render_region",
+        { region: { x: 0, y: 0, w: size.w, h: size.h }, raw: true }, { refresh: false });
+      const url = value.raw_url || value.url;
+      if (!url) return null;
+      const absolute = url.indexOf("http") === 0 ? url
+        : url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + state.token;
+      const bytes = new Uint8ClampedArray(await fetch(absolute).then((r) => r.arrayBuffer()));
+      if (bytes.length !== size.w * size.h * 4) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = size.w;
+      canvas.height = size.h;
+      canvas.getContext("2d").putImageData(new ImageData(bytes, size.w, size.h), 0, 0);
+      return canvas.toDataURL("image/png");
+    })()`,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  const data = message?.result?.result?.value;
+  if (!data || String(data).indexOf("data:image/png") !== 0) return null;
   const path = `${shots}/${name}.png`;
-  await writeFile(path, Buffer.from(data, "base64"));
+  await writeFile(path, Buffer.from(String(data).split(",")[1], "base64"));
   return path;
 };
 
