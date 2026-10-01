@@ -1705,16 +1705,31 @@ async function mediumStroke(name, points, options = {}) {
     if (pressure !== null) {
       window.yanshiStats.pressureUsed = (window.yanshiStats.pressureUsed || 0) + 1;
     }
-    const written = plugin.yanshi_dab(nextDabSeed(), size, dabPressure);
+    // **压感决定这一枚的直径** ✓（用户要求"创作时把笔触压感用起来" ✓）。
+    // 曲线 0.45..1.0 × 满笔尖 ✓：收笔细、行笔粗 ✓ —— 这是压感在画面上**看得见**的关键 ✓
+    //（只改浓淡几乎看不出来 ✗）。没有压感信息时（鼠标 ✓ / 旧画谱 ✓）⇒ 用满笔尖 ✓ ⇒ **旧行为一致** ✓。
+    const dabSize = pressure === null
+      ? size
+      : Math.max(2, Math.round(size * (0.45 + 0.55 * pressure)));
+    const written = plugin.yanshi_dab(nextDabSeed(), dabSize, dabPressure);
     if (written === 0) break;
     const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
-    dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), size, size), 0, 0);
+    // **写之前必须清画布** ✗ —— 我上一轮漏了这一步 ⇒ `dabCanvas` 是 `size×size` 的**复用**画布 ✓
+    // ⇒ 换成细笔尖时，左上角之外**留着上一枚满笔尖的像素** ✗ ⇒ 补丁被污染 ✗
+    //（那就是上一轮"整幅墨 0 / 画面错乱"的成因 ✓ —— 这次先清 ✓，并且**只合成这一枚的区域** ✓）。
+    dabContext.clearRect(0, 0, dabCanvas.width, dabCanvas.height);
+    // `pixels` 的长度**正好**是 `dabSize²×4` ✓（插件 ABI 保证 ✓）⇒ 与 `ImageData` 尺寸一致 ✓。
+    dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), dabSize, dabSize), 0, 0);
+    // 细笔尖要**居中**于原落点 ✓，否则细的那一段会整体偏左上 ✗（同一条线会走歪 ✓）。
+    const inset = (size - dabSize) / 2;
+    // **只合成 `dabSize` 那一块** ✓（`drawImage` 的九参形式 ✓）⇒ 不会把画布其余部分一起贴上去 ✗。
     // 以 source-over 叠加 ✓ ⇒ 同一条笔触内的颜料会累积 ✓（油画堆料 ✓）。
-    // 批处理 ⇒ 画在**本层画布**上、用**文档坐标** ✓；否则 ⇒ 画在这一笔的小画布上 ✓（原样 ✓）。
     if (mediumBatchSession) {
-      mediumBatchSession.context.drawImage(dabCanvas, point.x - half, point.y - half);
+      mediumBatchSession.context.drawImage(dabCanvas, 0, 0, dabSize, dabSize,
+        point.x - half + inset, point.y - half + inset, dabSize, dabSize);
     } else {
-      paint.drawImage(dabCanvas, point.x - half - minX, point.y - half - minY);
+      paint.drawImage(dabCanvas, 0, 0, dabSize, dabSize,
+        point.x - half + inset - minX, point.y - half + inset - minY, dabSize, dabSize);
     }
     total += 1;
   }
