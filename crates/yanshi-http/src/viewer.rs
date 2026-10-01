@@ -1544,6 +1544,31 @@ function syncStrengthLabel() {
 /// 否则同一批里后面的笔会照着**旧画面**调色 ⇒ **画出来的东西就变了** ✗。
 /// 盖章循环本身**一字未改** ✓ ⇒ 像素与逐笔提交**逐字一致** ✓（这条有专门的对照测试 ✓）。
 let mediumBatchSession = null;
+/// **批处理画在哪张画布上** ✓ —— 这是一个**必须讲清的选择** ✓：
+///
+/// 逐笔提交时，盖章是画在一块"这一笔的包围盒"小画布上 ✓，取色则读**内容画布**（= 文档合成 ✓）。
+/// 批量之后如果照旧读合成 ✓ ⇒ 提交的补丁会把**别的图层的内容连同背景一起压进本层** ✗ ——
+/// 上一版实拍就是**三个白色矩形硬边** ✓（人物、胸腔、灯各一个 ✓），因为那些地方合成是白的 ✓。
+/// **这不只是显示问题** ✓：它意味着"每一层都存了一份合成" ✗，图层显隐、体积、语义全都错 ✓。
+///
+/// 所以批处理**自己开一张透明画布** ✓，只在上面画本层的颜料 ✓：
+/// * 取色读**本层** ✓（这才是画家真正在混的颜色 ✓ —— 湿画法混的是自己的颜料 ✓）；
+/// * 提交只提交**本层**的像素 ✓ ⇒ 白框消失 ✓，"每层存合成"的老毛病一并修掉 ✓。
+/// 坐标是**文档坐标** ✓（没有视口偏移 ✓）⇒ 与 `state.docSize` 同尺寸 ✓。
+// **同一图层共用一张画布** ✓ —— 一个图层可能分好几批画 ✓（1039 笔 ÷ 30 ⇒ 35 批 ✓），
+// 若每批都新开一张空白画布 ✗ ⇒ 后续批次取色看不到本层**先前**的颜料 ✓ ⇒ 湿画法被削弱 ✗、
+// 画出来的东西也就随之改变 ✗。所以按图层 id 缓存 ✓（换文档时清掉 ✓，尺寸可能不同 ✓）。
+const layerCanvases = new Map();
+function newLayerCanvas(layerId) {
+  const key = String(layerId) + "@" + Math.round(state.docSize.w) + "x" + Math.round(state.docSize.h);
+  const cached = layerCanvases.get(key);
+  if (cached) return cached;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(state.docSize.w));
+  canvas.height = Math.max(1, Math.round(state.docSize.h));
+  layerCanvases.set(key, canvas);
+  return canvas;
+}
 
 async function mediumStroke(name, points, options = {}) {
   if (!points || points.length === 0) return;
@@ -1612,9 +1637,16 @@ async function mediumStroke(name, points, options = {}) {
     const load = Math.max(0, 1 - travelled / (size * 40));
     if (load <= 0) break;
     // 目标色：从**内容画布**上取笔尖处的颜色 ✓（含已铺下的湿颜料 ✓）。
-    const docX = Math.max(0, Math.min(board.width - 1, Math.round(point.x - state.viewport.x)));
-    const docY = Math.max(0, Math.min(board.height - 1, Math.round(point.y - state.viewport.y)));
-    const dest = board.getContext("2d").getImageData(docX, docY, 1, 1).data;
+    // **取色来源分两种** ✓（见 `newLayerCanvas` 的说明 ✓）：
+    // 批处理 ⇒ 读**本层画布**的文档坐标 ✓（混自己的颜料 ✓）；否则 ⇒ 读内容画布的视口坐标 ✓（原样 ✓）。
+    const sourceCanvas = mediumBatchSession ? mediumBatchSession.canvas : board;
+    const destX = mediumBatchSession
+      ? Math.max(0, Math.min(sourceCanvas.width - 1, Math.round(point.x)))
+      : Math.max(0, Math.min(sourceCanvas.width - 1, Math.round(point.x - state.viewport.x)));
+    const destY = mediumBatchSession
+      ? Math.max(0, Math.min(sourceCanvas.height - 1, Math.round(point.y)))
+      : Math.max(0, Math.min(sourceCanvas.height - 1, Math.round(point.y - state.viewport.y)));
+    const dest = sourceCanvas.getContext("2d").getImageData(destX, destY, 1, 1).data;
     if (typeof plugin.yanshi_input_ptr === "function") {
       const floats = plugin.yanshi_input_len() / 4;
       const input = new Float32Array(plugin.memory.buffer, plugin.yanshi_input_ptr(), Math.max(floats, 10));
@@ -1625,7 +1657,12 @@ async function mediumStroke(name, points, options = {}) {
     const pixels = new Uint8ClampedArray(plugin.memory.buffer, plugin.yanshi_dab_ptr(), written);
     dabContext.putImageData(new ImageData(new Uint8ClampedArray(pixels), size, size), 0, 0);
     // 以 source-over 叠加 ✓ ⇒ 同一条笔触内的颜料会累积 ✓（油画堆料 ✓）。
-    paint.drawImage(dabCanvas, point.x - half - minX, point.y - half - minY);
+    // 批处理 ⇒ 画在**本层画布**上、用**文档坐标** ✓；否则 ⇒ 画在这一笔的小画布上 ✓（原样 ✓）。
+    if (mediumBatchSession) {
+      mediumBatchSession.context.drawImage(dabCanvas, point.x - half, point.y - half);
+    } else {
+      paint.drawImage(dabCanvas, point.x - half - minX, point.y - half - minY);
+    }
     total += 1;
   }
   void source;
@@ -1635,9 +1672,13 @@ async function mediumStroke(name, points, options = {}) {
   }
   const rgba = new Uint8Array(paint.getImageData(0, 0, width, height).data.buffer);
   if (mediumBatchSession && mediumBatchSession.layerId === state.layerId) {
-    // **批处理：把这一笔立刻画回画布** ✓（同一批里下一笔的取色就靠它 ✓），**先不提交** ✓。
+    // **批处理：把这一笔的颜料显示到内容画布上** ✓ —— 用户要看得见进度 ✓；
+    // 而**取色**读的是本层画布 ✓（见 `newLayerCanvas` 的说明 ✓）⇒ 本层只装本层的东西 ✓。
     const context = board.getContext("2d");
-    context.drawImage(canvas, Math.round(minX - state.viewport.x), Math.round(minY - state.viewport.y));
+    const viewX = Math.round(minX - state.viewport.x);
+    const viewY = Math.round(minY - state.viewport.y);
+    context.drawImage(mediumBatchSession.canvas, Math.round(minX), Math.round(minY), width, height,
+                      viewX, viewY, width, height);
     const box = { x: minX, y: minY, w: width, h: height };
     const current = mediumBatchSession.box;
     mediumBatchSession.box = current
@@ -1658,7 +1699,11 @@ async function mediumStroke(name, points, options = {}) {
 /// ⇒ 提交次数从"每笔一次"降到"每批一次" ✓。
 async function runMediumBatch(layerId, batch, options = {}) {
   if (!Array.isArray(batch) || batch.length === 0) return null;
-  const session = { layerId, box: null, stamps: 0, strokes: 0 };
+  const layerCanvas = newLayerCanvas(layerId);
+  const session = {
+    layerId, box: null, stamps: 0, strokes: 0,
+    canvas: layerCanvas, context: layerCanvas.getContext("2d"),
+  };
   const previous = mediumBatchSession;
   mediumBatchSession = session;
   try {
@@ -1671,13 +1716,12 @@ async function runMediumBatch(layerId, batch, options = {}) {
     mediumBatchSession = previous;
   }
   if (!session.box || session.stamps === 0) return null;
-  // **一整块取出来** ✓（本批的每一笔都已经画在画布上了 ✓ ⇒ 这块像素就是最终画面 ✓）。
-  const context = board.getContext("2d");
-  const x = Math.max(0, Math.round(session.box.x - state.viewport.x));
-  const y = Math.max(0, Math.round(session.box.y - state.viewport.y));
-  const w = Math.max(1, Math.min(board.width - x, Math.round(session.box.w)));
-  const h = Math.max(1, Math.min(board.height - y, Math.round(session.box.h)));
-  const rgba = new Uint8Array(context.getImageData(x, y, w, h).data.buffer);
+  // **从本层画布取这一块** ✓（文档坐标 ✓）—— 这正是"本层只装本层的东西"的落点 ✓。
+  const x = Math.max(0, Math.round(session.box.x));
+  const y = Math.max(0, Math.round(session.box.y));
+  const w = Math.max(1, Math.min(session.canvas.width - x, Math.round(session.box.w)));
+  const h = Math.max(1, Math.min(session.canvas.height - y, Math.round(session.box.h)));
+  const rgba = new Uint8Array(session.context.getImageData(x, y, w, h).data.buffer);
   const spec = options.spec || MEDIUMS[options.medium || "oil"];
   const result = await commitMediumBitmap(rgba, { x, y, w, h }, spec, session.stamps);
   window.yanshiStats.mediumBatch = {
