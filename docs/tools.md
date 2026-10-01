@@ -1,7 +1,7 @@
 # Tools and effects
 
-The tool layer registers **40 core tools**. With every implemented group enabled there are
-**96 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+The tool layer registers **41 core tools**. With every implemented group enabled there are
+**97 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -62,6 +62,14 @@ committing one at a time would leave the earlier ones in the log when a later on
 goes to a stash with the validator's reason, and stashes are persisted under the workspace so an offline window
 survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
 blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
+
+`get_atom` closes the general form of the gap the comment panel exposed. Only four read-only tools in the whole
+project returned payloads, while the log and atom-search tools return metadata only by design, being the polling
+channel and a search respectively, so the interface could list what happened but could not answer what any single
+atom actually changed. The new tool takes an atom id and returns its kind, actor, session, timestamp, message,
+changeset, parents and full payload, with a clear refusal when the id is unknown rather than an empty record. The
+kernel already had the by-id lookup, so this only exposes it to the tool layer, and the history panel can now show
+what a selected atom did.
 
 `list_comments` closes an asymmetry in the collaboration channel that a browser check exposed. Comments could
 always be written, but no tool could read them back: the log and atom-search tools return metadata only, by

@@ -1800,6 +1800,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_atom",
+        profile: Profile::Core,
+        summary: "读取一条原子的完整记录（含净荷）",
+        mutating: false,
+        params: &[param!("atom_id", String, true, "原子 id")],
+    },
+    ToolSpec {
         name: "list_comments",
         profile: Profile::Collab,
         summary: "列出评论（协作通道的可读一侧）",
@@ -1978,6 +1985,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "reject_suggestions" => write_reject_suggestions(ctx, args),
+        "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
@@ -7968,6 +7976,46 @@ fn reject_one(ctx: &mut ToolContext<'_>, suggestion_id: &str, reason: &str) -> R
 }
 
 /// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
+/// **读取一条原子的完整记录（含净荷）** ✓ —— 补的是"**日志看得到、却不知道改了什么**"这个缺口 ✓。
+///
+/// **为什么需要它** ✓（本轮扫出来的 ✓）：全项目**只有 4 个只读工具会读净荷** ✓
+///（`get_object_history` ✓、`list_comments` ✓、`list_suggestions` ✓、`preview_suggestion` ✓），
+/// 而 `get_log` ✓ 与 `find_atom` ✓ **按设计只给元数据** ✗（前者是"MCP 轮询通道" ✓、后者是"检索" ✓）。
+/// ⇒ 结果是：**界面上能列出"发生了什么" ✓，却问不出"这一条到底改了什么"** ✗ ——
+/// 这正是我在评论面板上撞到过的那个缺口的**一般形式** ✓。
+///
+/// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
+/// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
+/// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+fn read_get_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let atom_id = require_str(args, "atom_id")?;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let atom = document.log().get(&atom_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("原子 {atom_id} 不在日志里")),
+        )
+    })?;
+    Ok(json!({
+        "atom_id": atom.id.to_string(),
+        "seq": atom.seq,
+        "kind": format!("{:?}", atom.kind),
+        "actor": atom.actor.to_string(),
+        "session": atom.session.to_string(),
+        "timestamp": atom.timestamp,
+        "message": atom.message,
+        "changeset_id": atom.changeset_id.as_ref().map(|id| id.to_string()),
+        "parents": atom.parents.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+        // **净荷就是这一条的全部意义所在** ✓（界面拿它显示"改了什么" ✓）。
+        "payload": atom.payload,
+    }))
+}
+
 /// **列出评论** ✓（协作通道的可读一侧 ✓）。
 ///
 /// **为什么必须补这个工具** ✓（本轮实测出来的 ✓）：`comment` **能写** ✓，但**没有任何读工具** ✗ ——

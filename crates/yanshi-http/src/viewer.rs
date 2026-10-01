@@ -404,6 +404,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
       <div id="checkpointList" class="annotation-list"></div>
       <div id="history"></div>
+      <!-- **原子详情** ✓（设计 §13.2 的历史浏览 ✓）：点历史里任意一条 ✓ ⇒ 显示它**到底改了什么** ✓。
+           这需要 `get_atom` ✓（本轮新补 ✓）—— 此前 `get_log`/`find_atom` **按设计只给元数据** ✗
+           ⇒ 界面能列出"发生了什么" ✓、却问不出"这一条改了什么" ✗。 -->
+      <div class="hint" id="atomDetailHint">点上面任意一条，看它改了什么 ✓</div>
+      <pre id="atomDetail" style="font-size:11px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:4px 0 0"></pre>
     </div>
     <div class="card">
       <h2>缩略图</h2>
@@ -2578,6 +2583,26 @@ function renderEffectsRowHighlight() {
   void refreshEffects();
 }
 
+/// **显示一条原子的净荷** ✓（用本轮新补的 `get_atom` ✓）。
+///
+/// **为什么值得** ✓：`get_log` 给的是"**元数据**" ✓（谁、什么时候、什么类型 ✓），
+/// 而用户真正想知道的是"**这一条到底改了什么**" ✓ —— 那在**净荷**里 ✓，此前**没有任何工具能给** ✗。
+async function showAtomDetail(atomId) {
+  const box = $("atomDetail");
+  const hint = $("atomDetailHint");
+  if (!box || !atomId) return;
+  const value = await callTool("get_atom", { atom_id: atomId }, { refresh: false }).catch(() => null);
+  if (!value || !value.ok) {
+    const reason = (value && value.context && value.context.detail) || "读取失败";
+    box.textContent = "✗ " + reason;
+    if (hint) hint.textContent = "读取失败 ✓";
+    return;
+  }
+  if (hint) hint.textContent = "#" + value.seq + " " + value.kind + " · " + value.actor +
+    " · " + new Date(value.timestamp).toLocaleTimeString();
+  box.textContent = JSON.stringify(value.payload, null, 2);
+}
+
 /// 历史浏览（设计 13.2）：数据源是原子日志，支持按原子步进、按 actor / 类型筛选。
 /// 工具层已有 `get_log`（`since_seq` / `limit` / `kind` / `actor`），这里只做界面。
 async function refreshHistory() {
@@ -2607,6 +2632,11 @@ async function refreshHistory() {
     const actorLabel = document.createElement("span");
     actorLabel.className = "actor";
     actorLabel.textContent = atom.actor;
+    // **详情** ✓（本轮补 ✓）：`get_atom` 把这一条的**净荷**取回来 ✓ ⇒ 才知道它改了什么 ✓。
+    const detail = document.createElement("button");
+    detail.type = "button";
+    detail.textContent = "详情";
+    detail.addEventListener("click", () => { void showAtomDetail(atom.atom_id || atom.id); });
     const jump = document.createElement("button");
     jump.textContent = "回到此处";
     jump.addEventListener("click", async () => {
