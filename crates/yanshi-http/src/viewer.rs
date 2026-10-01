@@ -394,6 +394,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <select id="historyActor"><option value="">全部操作者</option></select>
         <button id="historyReload">重新载入</button>
       </div>
+      <!-- **检查点** ✓（设计 §4.5 ✓）—— `checkpoint` / `restore_checkpoint` / `get_checkpoints`
+           此前在查看器里**零引用** ✗ ⇒ 与"标注""实例/组"同一类缺口 ✓（工具就绪、用户够不到 ✓）。
+           画家最直观的用法就是"**打一个存档点 ✓、以后回到这里** ✓"。 -->
+      <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap">
+        <button id="checkpointCreate" type="button">打一个存档点</button>
+        <button id="checkpointReload" type="button">刷新存档点</button>
+      </div>
+      <div id="checkpointList" class="annotation-list"></div>
       <div id="history"></div>
     </div>
     <div class="card">
@@ -2318,6 +2326,7 @@ async function warmKernel() {
   await initWasm();
   setupAnnotationPanel();
   setupObjectPanel();
+  setupCheckpointPanel();
   if (!state.wasm) return;
   const ok = await loadKernel(0);
   window.yanshiStats.kernelWarmMs = performance.now() - started;
@@ -2691,6 +2700,80 @@ function renderAnnotationList() {
     list.appendChild(row);
   }
   positionAnnotationPins();
+}
+
+/// **检查点** ✓（设计 §4.5 ✓）—— `checkpoint` / `restore_checkpoint` / `get_checkpoints` 此前**零引用** ✗。
+///
+/// **取舍说明** ✓：`restore_checkpoint` 的服务端实现是 **`declare_head`** ✓ ⇒ 它只**移动 HEAD** ✓，
+/// **原子一条都不会删** ✓（日志 append-only ✓）⇒ 所以它**不是不可逆动作** ✓，不需要二次确认 ✓；
+/// 但它**大幅改变画面** ✓ ⇒ 恢复之后必须 `resync()` ✓（让服务端权威像素重新铺满 ✓）。
+let checkpointCache = [];
+
+function renderCheckpointList() {
+  const list = $("checkpointList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (checkpointCache.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有存档点 ✓（上面那个按钮可以打一个 ✓）";
+    list.appendChild(empty);
+    return;
+  }
+  // **新的在上面** ✓（越靠后打的越靠前 ✓，符合"最近用过的"直觉 ✓）。
+  for (const item of checkpointCache.slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    head.textContent = (item.name || item.checkpoint_id || "").slice(0, 28) +
+      (item.anchor_seq !== undefined ? "  ·  seq " + item.anchor_seq : "");
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "回到这里";
+    back.addEventListener("click", async () => {
+      const id = item.checkpoint_id || item.id;
+      const done = await callToolChecked("restore_checkpoint", { checkpoint_id: id }, "回到存档点");
+      if (done && done.ok) {
+        log("已回到存档点「" + (item.name || id) + "」—— 原子都还在日志里 ✓，随时可以再前进 ✓");
+        // **必须 resync** ✓：HEAD 跳变之后，画布要由服务端权威像素重新铺 ✓。
+        await resync();
+        await refreshCheckpoints();
+      }
+    });
+    actions.appendChild(back);
+    row.append(head, actions);
+    list.appendChild(row);
+  }
+}
+
+/// 拉一次存档点列表 ✓（工具名是 **`get_checkpoints`** ✓ —— 不是 `list_checkpoints` ✗）。
+async function refreshCheckpoints() {
+  const listed = await callTool("get_checkpoints", {}, { refresh: false }).catch(() => null);
+  checkpointCache = (listed && (listed.checkpoints || listed.items)) || [];
+  renderCheckpointList();
+}
+
+/// 打一个存档点 ✓。
+async function createCheckpoint() {
+  const now = new Date();
+  const name = "存档 " + String(now.getHours()).padStart(2, "0") + ":" +
+    String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+  const created = await callToolChecked("checkpoint", { name, message: "来自编辑器的存档点" }, "打存档点");
+  if (created && created.ok) {
+    log("已打存档点「" + name + "」✓");
+    await refreshCheckpoints();
+  }
+}
+
+/// 存档点面板的两个按钮 ✓。
+function setupCheckpointPanel() {
+  const create = $("checkpointCreate");
+  if (create) create.addEventListener("click", () => { void createCheckpoint(); });
+  const reload = $("checkpointReload");
+  if (reload) reload.addEventListener("click", () => { void refreshCheckpoints(); });
 }
 
 /// **对象面板** ✓（设计 §9：复制 / 实例化 / 组引用 ✓）—— 目标③点名的"实例/组" ✓。
