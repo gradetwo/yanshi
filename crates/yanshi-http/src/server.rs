@@ -75,13 +75,25 @@ impl Default for HttpOptions {
             width: 1024,
             height: 1024,
             // Web 查看器/人类客户端默认启用全部已实现的工具组（10.2：Web 编辑器启用全量）。
+            //
+            // **这一份列表原本少了两个组** ✗（本轮真机验收抓到的 ✓）：查看器已经有「变更集」面板 ✓，
+            // 而 `changeset` 组**不在列表里** ✗ ⇒ 界面上点「开始变更集」只会得到
+            // 「**未知工具 begin_changeset（当前 profile 未启用或不存在）**」✗ ——
+            // **界面做了、工具没放行** ✓，这正是本项目"内核/工具先行"那条纪律要防的事 ✓
+            //（这次是**反着**撞上的 ✓：工具早就实现了 ✓、也放行了测试 ✓，只是**服务端没启用** ✗）。
+            // `conflict` 同理 ✓。
+            //
+            // **`Semantic` 故意不在其中** ✓：语义工具需要外部模型服务 ✓，
+            // 按既定裁定"**先预留设计、先不开发**" ✓ ⇒ 这里**不启用** ✓（不是漏了 ✓）。
             profiles: vec![
                 Profile::Core,
                 Profile::History,
+                Profile::Changeset,
                 Profile::Annotation,
                 Profile::Collab,
                 Profile::Structure,
                 Profile::Retouch,
+                Profile::Conflict,
             ],
             max_connections: 64,
             push_interval_ms: 25,

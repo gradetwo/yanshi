@@ -4594,11 +4594,7 @@ fn read_get_changesets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         if entry.is_empty() {
             order.push(changeset);
         }
-        entry.push((
-            atom.seq,
-            atom.id.clone(),
-            format!("{:?}", atom.kind).to_lowercase(),
-        ));
+        entry.push((atom.seq, atom.id.clone(), kind_label(&atom.kind)));
     }
     let changesets: Vec<Value> = order
         .iter()
@@ -7976,6 +7972,23 @@ fn reject_one(ctx: &mut ToolContext<'_>, suggestion_id: &str, reason: &str) -> R
 }
 
 /// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
+
+/// **原子类型的统一拼法** ✓ —— 返回 **snake_case** ✓（`create_layer` ✓、`comment` ✓），
+/// **与 `get_log` 的序列化结果一致** ✓。
+///
+/// **为什么要有它** ✓（本轮修的真问题 ✓）：同一个概念此前有**两种拼法** ✗ ——
+/// `get_log` 直接序列化枚举 ✓ ⇒ `create_layer` ✓；而 `get_changesets` 用
+/// `format!("{:?}", kind).to_lowercase()` ✗ ⇒ `createlayer` ✗（**下划线没了** ✗）；
+/// 我上一轮加的 `get_atom` 也用了后者 ✗ ⇒ `Comment` ✗。
+/// ⇒ **同一个值在不同工具里拼法不同** ✓ 会让调用方**没法可靠地比较** ✓ —— 这是**产品缺陷** ✓，
+/// 不是测试写错 ✓（测试只是把它照出来了 ✓）。
+fn kind_label(kind: &AtomKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{kind:?}"))
+}
+
 /// **读取一条原子的完整记录（含净荷）** ✓ —— 补的是"**日志看得到、却不知道改了什么**"这个缺口 ✓。
 ///
 /// **为什么需要它** ✓（本轮扫出来的 ✓）：全项目**只有 4 个只读工具会读净荷** ✓
@@ -8004,7 +8017,7 @@ fn read_get_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(json!({
         "atom_id": atom.id.to_string(),
         "seq": atom.seq,
-        "kind": format!("{:?}", atom.kind),
+        "kind": kind_label(&atom.kind),
         "actor": atom.actor.to_string(),
         "session": atom.session.to_string(),
         "timestamp": atom.timestamp,

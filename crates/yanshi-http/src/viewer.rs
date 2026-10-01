@@ -407,6 +407,16 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <!-- **原子详情** ✓（设计 §13.2 的历史浏览 ✓）：点历史里任意一条 ✓ ⇒ 显示它**到底改了什么** ✓。
            这需要 `get_atom` ✓（本轮新补 ✓）—— 此前 `get_log`/`find_atom` **按设计只给元数据** ✗
            ⇒ 界面能列出"发生了什么" ✓、却问不出"这一条改了什么" ✗。 -->
+      <!-- **变更集** ✓（设计 793 ✓）—— `begin/commit/abort/get_changesets/revert_changeset`
+           此前在查看器里**零引用** ✗ ⇒ 用户拿不到"**成组撤销**" ✓（把接下来这一串动作打包 ✓，
+           不满意就**整体撤销** ✓）。 -->
+      <div class="toolbar" style="margin-top:6px">
+        <button id="changesetBegin" type="button">开始变更集</button>
+        <button id="changesetCommit" type="button">提交</button>
+        <button id="changesetAbort" type="button">放弃（整体撤销）</button>
+        <button id="changesetReload" type="button">刷新</button>
+      </div>
+      <div id="changesetList" class="annotation-list"></div>
       <div class="hint" id="atomDetailHint">点上面任意一条，看它改了什么 ✓</div>
       <pre id="atomDetail" style="font-size:11px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:4px 0 0"></pre>
     </div>
@@ -2583,6 +2593,93 @@ function renderEffectsRowHighlight() {
   void refreshEffects();
 }
 
+/// **变更集** ✓（设计 793 ✓）—— "**把接下来这一串动作打包 ✓、不满意就整体撤销**" ✓。
+///
+/// **真实签名** ✓（先读规格 ✓）：`begin_changeset {}` ✓（**无参数** ✓；此后**本会话**的提交都并入它 ✓）、
+/// `commit_changeset {}` ✓（收尾 ✓，**原子保留** ✓）、`abort_changeset {}` ✓（**整体撤销** ✓）、
+/// `get_changesets {limit?}` ✓（返回 `{changesets:[{changeset_id, atoms, first_seq, last_seq, kinds}], count}` ✓）、
+/// `revert_changeset {changeset_id}` ✓。
+///
+/// **为什么是用户会要的** ✓：这就是画家说的"**这一串动作打包，一起撤**" ✓ ——
+/// 比一次一次点撤销实际得多 ✓（而且**原子都还在日志里** ✓ ⇒ 撤销本身也可撤销 ✓）。
+let changesetCache = [];
+
+function renderChangesetList() {
+  const list = $("changesetList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (changesetCache.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有变更集 ✓（点「开始变更集」再画 ✓）";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of changesetCache) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    head.textContent = "#" + String(item.changeset_id || "").slice(-8) +
+      " · " + (item.atoms === undefined ? '?' : item.atoms) + " 条原子" +
+      (item.first_seq !== undefined ? " · seq " + item.first_seq + "–" + item.last_seq : "");
+    const kinds = document.createElement("div");
+    kinds.className = "hint";
+    kinds.textContent = (item.kinds || []).slice(0, 5).join(" ") || "（无类型信息 ✓）";
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.textContent = "整体撤销";
+    undo.addEventListener("click", async () => {
+      const done = await callToolChecked("revert_changeset",
+        { changeset_id: item.changeset_id }, "整体撤销变更集");
+      if (done && done.ok) {
+        log("已整体撤销变更集 ✓（撤销本身也在日志里 ✓ ⇒ 还能再前进 ✓）");
+        await resync();
+      }
+      await refreshChangesets();
+    });
+    actions.appendChild(undo);
+    row.append(head, kinds, actions);
+    list.appendChild(row);
+  }
+}
+
+/// 拉一次变更集列表 ✓。
+async function refreshChangesets() {
+  const listed = await callTool("get_changesets", { limit: 20 }, { refresh: false }).catch(() => null);
+  changesetCache = (listed && (listed.changesets)) || [];
+  renderChangesetList();
+}
+
+/// 变更集面板的按钮 ✓。
+function setupChangesetPanel() {
+  const begin = $("changesetBegin");
+  if (begin) begin.addEventListener("click", async () => {
+    const done = await callToolChecked("begin_changeset", {}, "开始变更集");
+    if (done && done.ok) log("已开始变更集 ✓ —— 此后这一串动作可以**一起撤销** ✓");
+    await refreshChangesets();
+  });
+  const commit = $("changesetCommit");
+  if (commit) commit.addEventListener("click", async () => {
+    const done = await callToolChecked("commit_changeset", {}, "提交变更集");
+    if (done && done.ok) log("已提交变更集 ✓（原子保留 ✓）");
+    await refreshChangesets();
+  });
+  const abort = $("changesetAbort");
+  if (abort) abort.addEventListener("click", async () => {
+    const done = await callToolChecked("abort_changeset", {}, "放弃变更集");
+    if (done && done.ok) {
+      log("已放弃变更集 ✓ —— 里面的原子被**整体撤销** ✓");
+      await resync();
+    }
+    await refreshChangesets();
+  });
+  const reload = $("changesetReload");
+  if (reload) reload.addEventListener("click", () => { void refreshChangesets(); });
+}
+
 /// **显示一条原子的净荷** ✓（用本轮新补的 `get_atom` ✓）。
 ///
 /// **为什么值得** ✓：`get_log` 给的是"**元数据**" ✓（谁、什么时候、什么类型 ✓），
@@ -2877,6 +2974,7 @@ function renderCheckpointList() {
         await refreshCheckpoints();
   await refreshSuggestions();
   await refreshComments();
+  await refreshChangesets();
       }
     });
     actions.appendChild(back);
@@ -3323,6 +3421,7 @@ function setupObjectPanel() {
   setupStoragePanel();
   setupSuggestionPanel();
   setupCommentPanel();
+  setupChangesetPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();

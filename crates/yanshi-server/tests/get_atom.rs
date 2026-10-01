@@ -63,7 +63,8 @@ fn an_atoms_payload_can_be_read_by_id() {
         registry().call(&mut ctx, "get_atom", &json!({ "atom_id": atom_id }))
     };
     assert_eq!(detail["ok"], json!(true), "{detail}");
-    assert_eq!(detail["kind"], json!("Comment"), "{detail}");
+    // **统一的拼法** ✓：与 `get_log` 一致 ✓（`comment` ✓，不是 `Comment` ✗）。
+    assert_eq!(detail["kind"], json!("comment"), "{detail}");
     assert_eq!(detail["payload"]["text"], json!(text), "{detail}");
     // 其余身份信息也要在 ✓（界面要用来显示"谁、什么时候" ✓）。
     assert!(detail["actor"].as_str().is_some(), "{detail}");
