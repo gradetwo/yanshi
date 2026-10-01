@@ -232,6 +232,16 @@ impl<'a> ToolContext<'a> {
 
     fn commit(&mut self, kind: AtomKind, payload: Value) -> Result<CommitResult> {
         let atom = Atom::new(kind, self.actor.clone(), self.session.clone(), payload);
+        // **`begin_changeset` 打开的那个变更集，在这里自动生效** ✓ ——
+        // 这是"调用方自己把多步操作归成一个变更集"的**唯一**收口点 ✓：
+        // 普通笔 ✓、形状 ✓、填充 ✓、效果 ✓、图层 ✓……**所有**提交都经过这里 ✓
+        // ⇒ 一处生效，全部并入 ✓（本项目反复吃过"只改一条路径"的亏 ✓）。
+        // 显式的 `ctx.changeset`（内部批量用 ✓）优先 ✓ —— 那些调用自己知道该归到哪 ✓。
+        if self.changeset.is_none() {
+            if let Some(open) = self.workspace.open_changeset(&self.doc_id, &self.session) {
+                self.changeset = Some(open);
+            }
+        }
         match self.changeset.clone() {
             // batch 内部：所有原子归属同一个变更集（5.6）。
             Some(changeset) => {
@@ -994,6 +1004,27 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "begin_changeset",
+        profile: Profile::Changeset,
+        summary: "开始一个变更集：此后本会话的提交都并入它（设计 793）",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
+        name: "commit_changeset",
+        profile: Profile::Changeset,
+        summary: "收尾当前变更集（原子保留）",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
+        name: "abort_changeset",
+        profile: Profile::Changeset,
+        summary: "放弃当前变更集：把它里面的原子整体撤销",
+        mutating: true,
+        params: &[],
+    },
+    ToolSpec {
         name: "get_changesets",
         profile: Profile::Changeset,
         summary: "列出日志里的变更集（设计 793）",
@@ -1745,6 +1776,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_diff" => read_get_diff(ctx, args),
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
+        "begin_changeset" => write_begin_changeset(ctx, args),
+        "commit_changeset" => write_commit_changeset(ctx, args),
+        "abort_changeset" => write_abort_changeset(ctx, args),
         "get_changesets" => read_get_changesets(ctx, args),
         "revert_changeset" => write_revert_changeset(ctx, args),
         "path_edit" => write_path_edit(ctx, args),
@@ -4475,30 +4509,16 @@ fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
         (targets, skipped_history)
     };
     // 到这里 `targets` 可能为空 ✓（该变更集只含历史原子 ✓）⇒ 那不是错误 ✓，见上面的说明 ✓。
-    // **所有 revert 归一个变更集** ✓ ⇒ 这一次撤销本身也可被一次撤销 ✓。
-    let changeset = yanshi_core::Changeset::new_id();
-    let previous = ctx.changeset.replace(changeset.clone());
-    let mut reverted: Vec<String> = Vec::new();
-    let mut failure: Option<YanshiError> = None;
-    for (target, _was_a_revert) in &targets {
-        match ctx.commit(AtomKind::Revert, json!({"target": target})) {
-            Ok(_) => reverted.push(target.clone()),
-            Err(error) => {
-                failure = Some(error);
-                break;
-            }
-        }
-    }
-    ctx.changeset = previous;
-    if let Some(error) = failure {
-        return Err(error);
-    }
+    // **撤销逻辑与 `abort_changeset` 共用一份** ✓ —— 两个工具只差"changeset_id 从哪来" ✓；
+    // "同一事实两处各写一遍"迟早分叉 ✗（本项目吃过这个亏 ✓）。
+    let (reverted_count, revert_changeset_id) = revert_changeset_atoms(ctx, &changeset_id)?;
     Ok(json!({
         "ok": true,
         "changeset_id": changeset_id,
-        "reverted": reverted.len(),
-        "targets": reverted,
-        "revert_changeset_id": changeset,
+        "reverted": reverted_count,
+        // **保持原响应形状** ✓：这里一直是"被撤销的 id 列表" ✓（别因为换了实现就改形状 ✗）。
+        "targets": targets.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        "revert_changeset_id": revert_changeset_id,
         // **如实报告**跳过了多少条历史原子 ✓（名字要说清"跳过的是什么" ✓）。
         "skipped_history_atoms": already_reverted,
     }))
@@ -4523,6 +4543,115 @@ fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
 ///   **设计未规定合并后的画笔/外观归属 ⇒ 记录选择** ✓：保留**第一条**的
 ///   `size`/`color`/`hardness`/`appearance` ✓（"接进第一条"是最小惊讶 ✓）。
 ///
+/// **开始一个变更集** ✓（设计 793 ✓）。
+///
+/// **设计未规定 id 从哪来 ⇒ 记录选择** ✓：**由服务端生成并返回** ✓。
+/// 让调用方指定 id 需要一套校验与冲突规则 ✓，而设计没说 ✗ ⇒ 不擅自发明 ✗。
+///
+/// **设计未规定重复 begin 怎么办 ⇒ 记录选择** ✓：**报错** ✓ —— 静默复用会让调用方以为
+/// "新开了一个" ✓、静默新建会让前一个永远挂在打开状态 ✗，报错最诚实 ✓。
+fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    match ctx.workspace.begin_changeset(&ctx.doc_id, &ctx.session) {
+        Some(changeset) => Ok(json!({"ok": true, "changeset_id": changeset, "open": true})),
+        None => Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(
+                "本会话已经有一个打开的变更集：先 commit_changeset 或 abort_changeset".to_owned(),
+            ),
+        )),
+    }
+}
+
+/// **收尾当前变更集** ✓：原子**保留** ✓，只是此后不再并入 ✓。
+fn write_commit_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let Some(changeset) = ctx.workspace.close_changeset(&ctx.doc_id, &ctx.session) else {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("本会话没有打开的变更集（先 begin_changeset）".to_owned()),
+        ));
+    };
+    let atoms = changeset_atom_count(ctx, &changeset)?;
+    Ok(json!({"ok": true, "changeset_id": changeset, "atoms": atoms, "open": false}))
+}
+
+/// **放弃当前变更集** ✓：把它里面的原子**整体撤销** ✓，然后关闭 ✓。
+///
+/// **设计未规定"放弃"是删除还是撤销 ⇒ 记录选择** ✓：**撤销** ✓ ——
+/// 本项目的日志是**追加式**的 ✓（删除不是一种操作 ✓），撤销既保留历史 ✓、
+/// 又能让"放弃"这件事本身**可再撤销** ✓（撤销归入一个新的变更集 ✓）。
+fn write_abort_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let Some(changeset) = ctx.workspace.close_changeset(&ctx.doc_id, &ctx.session) else {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("本会话没有打开的变更集（先 begin_changeset）".to_owned()),
+        ));
+    };
+    // 先关闭再撤销 ✓：撤销自己也要归入**新的**变更集 ✓，绝不能并进正在被撤销的那个 ✗。
+    let (reverted, revert_changeset_id) = revert_changeset_atoms(ctx, &changeset)?;
+    Ok(
+        json!({"ok": true, "changeset_id": changeset, "reverted": reverted,
+              "revert_changeset_id": revert_changeset_id, "open": false}),
+    )
+}
+
+/// 数一个变更集里有多少条原子 ✓（只读 ✓）。
+fn changeset_atom_count(ctx: &ToolContext<'_>, changeset_id: &str) -> Result<usize> {
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    Ok(document
+        .log()
+        .iter()
+        .filter(|atom| atom.changeset_id.as_deref() == Some(changeset_id))
+        .count())
+}
+
+/// **撤销一个变更集里的全部原子** ✓ —— `revert_changeset` 与 `abort_changeset` 共用这一份 ✓。
+///
+/// **为什么抽出来** ✓：这两个工具的语义只差"从哪拿到 changeset_id" ✓（一个来自调用方参数 ✓、
+/// 一个来自打开的会话 ✓）⇒ 撤销逻辑**只应有一份** ✓（"同一事实两处各写一遍"迟早分叉 ✗）。
+fn revert_changeset_atoms(
+    ctx: &mut ToolContext<'_>,
+    changeset_id: &str,
+) -> Result<(usize, yanshi_core::ChangesetId)> {
+    let targets: Vec<String> = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        document
+            .log()
+            .iter()
+            .filter(|atom| atom.changeset_id.as_deref() == Some(changeset_id))
+            .map(|atom| atom.id.clone())
+            .collect()
+    };
+    // **所有 revert 归一个变更集** ✓ ⇒ 这一次撤销本身也可被一次撤销 ✓（调用方还会拿到它的 id ✓）。
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let mut reverted = 0usize;
+    let mut failure: Option<YanshiError> = None;
+    for target in &targets {
+        match ctx.commit(AtomKind::Revert, json!({"target": target})) {
+            Ok(_) => reverted += 1,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    ctx.changeset = previous;
+    match failure {
+        Some(error) => Err(error),
+        None => Ok((reverted, changeset)),
+    }
+}
+
 /// **列出变更集** ✓（设计 793 的 `revert_changeset` 要撤销的对象）。
 ///
 /// 为什么这一对很重要 ✓：本项目从第 36 轮起**已经在用变更集** ✓

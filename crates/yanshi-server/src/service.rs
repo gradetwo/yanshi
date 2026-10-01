@@ -91,6 +91,13 @@ pub struct Workspace {
     persist: Option<FileStore>,
     settings: DocumentSettings,
     created: u64,
+    /// **已 `begin` 但尚未 `commit`/`abort` 的变更集** ✓（键 = 文档 + 会话 ✓）。
+    ///
+    /// **设计未规定"打开的变更集"存在哪里 ⇒ 记录选择** ✓：放在**工作区**（而不是 HTTP 层 ✓），
+    /// 因为工具层只能经由 `ctx.workspace` 拿到共享状态 ✓ —— 放别处就得把状态一路穿进上下文 ✗。
+    /// **键里带上会话** ✓ 是有意的：眼下 HTTP 层把会话写死成 `"session:http"` ✓（等于按文档 ✓），
+    /// 但将来真做到"按连接区分会话"时 ✓，这里**不用改** ✓。
+    open_changesets: BTreeMap<(String, String), ChangesetId>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -103,12 +110,41 @@ impl std::fmt::Debug for Workspace {
 }
 
 impl Workspace {
+    /// **开始一个变更集** ✓（设计 793 的 `begin_changeset` ✓）。
+    ///
+    /// **设计未规定重复 begin 怎么办 ⇒ 记录选择** ✓：**报错** ✓。
+    /// 理由：静默复用会让调用方以为"新开了一个" ✓，而实际上前一个还没收尾 ✗；
+    /// 静默新建又会把前一个变更集**永远留在打开状态** ✗。报错最诚实 ✓。
+    pub fn begin_changeset(&mut self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        let key = (doc_id.to_owned(), session.to_owned());
+        if self.open_changesets.contains_key(&key) {
+            return None;
+        }
+        let changeset = ChangesetId::from(yanshi_core::Changeset::new_id());
+        self.open_changesets.insert(key, changeset.clone());
+        Some(changeset)
+    }
+
+    /// 读当前打开的变更集 ✓（`ctx.commit` 用它决定"这一笔该不该并进去" ✓）。
+    pub fn open_changeset(&self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        self.open_changesets
+            .get(&(doc_id.to_owned(), session.to_owned()))
+            .cloned()
+    }
+
+    /// 关闭（收尾或放弃）打开的变更集 ✓。
+    pub fn close_changeset(&mut self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        self.open_changesets
+            .remove(&(doc_id.to_owned(), session.to_owned()))
+    }
+
     /// 内存工作区（测试与嵌入式使用）。
     pub fn in_memory(settings: DocumentSettings) -> Self {
         Self {
             store: Arc::new(MemoryBlobStore::new()),
             documents: BTreeMap::new(),
             persist: None,
+            open_changesets: BTreeMap::new(),
             settings,
             created: 0,
         }
@@ -127,6 +163,7 @@ impl Workspace {
             persist: Some(persist),
             settings,
             created: 0,
+            open_changesets: BTreeMap::new(),
         })
     }
 
