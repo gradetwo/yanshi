@@ -1030,6 +1030,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "resolve_conflict",
+        profile: Profile::Conflict,
+        summary: "解决采样性替换冲突（设计 12.3：组合宏，折叠器零改动）",
+        mutating: true,
+        params: &[
+            param!("resolution", String, true, "keep_ours | keep_theirs | discard | merge"),
+            param!("conflict_layer_id", String, false, "冲突图层 id；缺省自动找唯一的冲突图层"),
+            param!("formal_layer_id", String, false, "keep_ours 时把我们的对象移回的正式图层"),
+            param!("opponent_atom_id", String, false, "对方原子 id（keep_ours/discard 需要）"),
+        ],
+    },
+    ToolSpec {
         name: "begin_transaction",
         profile: Profile::Changeset,
         summary: "开始一个事务：写操作失败时自动回滚已落的原子（设计 777）",
@@ -1816,6 +1828,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_diff" => read_get_diff(ctx, args),
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
+        "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
         "commit_transaction" => write_commit_transaction(ctx, args),
         "begin_changeset" => write_begin_changeset(ctx, args),
@@ -4602,6 +4615,253 @@ fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Val
             ),
         )),
     }
+}
+
+/// **解决采样性替换冲突** ✓（设计 12.3 ✓ —— 设计把它写得非常明确 ✓，这一节是全篇最清楚的之一 ✓）。
+///
+/// **设计原话** ✓：`resolve_conflict` 是**组合宏、不是新原子类型** ✓ —— **折叠器零改动** ✓。
+/// 因此这里**只用既有原子种类** ✓ 展开出四种手段 ✓：
+///
+/// | resolution | 展开为 |
+/// |---|---|
+/// | `keep_ours` | 撤销对方原子 ✓ + 把我们的对象移回正式图层 ✓ |
+/// | `keep_theirs` | 撤销我们的对象 ✓ |
+/// | `discard` | 撤销双方 ✓ |
+/// | `merge` | **内容不动** ✓，只关闭冲突（上层自己编辑后再提交 ✓） |
+///
+/// **两处"照着设计做、但要把话说清"的地方** ✓：
+/// * 设计写的是 `tombstone(对方原子)` ✓ —— 但**原子不可墓碑化**（日志追加式 ✓，`tombstone` 的对象是
+///   对象/图层/选区 ✓）⇒ 这里用**既有机制 `Revert {target: 对方原子}`** 实现同一个意思
+///   "让对方的原子失效" ✓（这正是设计"组合宏、折叠器零改动"的本意 ✓）；
+/// * 设计写的是 `move(我方原子 → 正式图层)` ✓ —— 同样地，原子的归属不可改 ✓，
+///   改的是它**建出来的对象** ✓ ⇒ 用 `set_property {key: "layer_id"}` ✓（既有工具 ✓）。
+///
+/// **冲突图层在解决后 tombstone** ✓，而 `metadata.conflict` 标记**保留供审计** ✓（设计原话 ✓）——
+/// 因为 `Tombstone` 只标记"不再使用" ✓，不改元数据 ✓。
+///
+/// **整个宏归一个变更集** ✓ ⇒ 一次解决动作可整体撤销 ✓。
+fn write_resolve_conflict(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let resolution = require_str(args, "resolution")?;
+    const RESOLUTIONS: [&str; 4] = ["keep_ours", "keep_theirs", "discard", "merge"];
+    if !RESOLUTIONS.contains(&resolution.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知的 resolution {resolution}（可用：{}）",
+                RESOLUTIONS.join(" / ")
+            )),
+        ));
+    }
+    // **找到冲突图层** ✓：优先用调用方给的 ✓；否则找**唯一**的那个（多个就报错 ✓，不猜 ✗）。
+    let conflict_layer_id = match optional_str(args, "conflict_layer_id") {
+        Some(id) => id,
+        None => {
+            let state = document_state(ctx)?;
+            let found: Vec<String> = state
+                .alive_layers()
+                .iter()
+                .filter(|layer| {
+                    layer
+                        .metadata
+                        .get("conflict")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .map(|layer| layer.id.clone())
+                .collect();
+            match found.len() {
+                1 => found[0].clone(),
+                0 => {
+                    return Err(YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(
+                            "找不到冲突图层（metadata.conflict = true 的图层）".to_owned(),
+                        ),
+                    ))
+                }
+                _ => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "有 {} 个冲突图层，请用 conflict_layer_id 指明（不猜 ✗）",
+                            found.len()
+                        )),
+                    ))
+                }
+            }
+        }
+    };
+    // **我方提交 = 冲突图层上的原子** ✓（§876：客户端把重提交的原子改投冲突图层 ✓）。
+    //
+    // **这里有一处设计与本仓库模型的落差，如实记下** ✓：设计表写的是 `tombstone(我方原子)` 与
+    // `move(我方原子 → 正式图层)` ✓ —— 但在本仓库里 **原子既不能墓碑化、归属也不可改** ✓
+    //（日志追加式 ✓）。而且 `liquify`/`retouch` 的提交是**图层上的像素原子**（没有对象 ✗），
+    // 设计表里那两行的字面实现**不存在** ✗。所以按**本仓库真正有的机制**做同一件事 ✓，
+    // 并且对**两种形态都成立** ✓：
+    // * 让一个原子失效 ⇒ `Revert {target}` ✓；
+    // * 把提交"搬"到正式图层 ⇒ 若它建了**对象** 就改对象的 `layer_id` ✓；
+    //   若它是**原子型**（像素补丁 ✓）就把**同样的种类与载荷**改投正式图层重提交 ✓ ——
+    //   这才是"move"在这个模型里的对应物 ✓。
+    let (ours, our_objects) = {
+        let state = document_state(ctx)?;
+        if !state.layers.contains_key(conflict_layer_id.as_str()) {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("冲突图层 {conflict_layer_id} 不存在")),
+            ));
+        }
+        let objects: Vec<String> = state
+            .objects
+            .values()
+            .filter(|object| !object.is_deleted() && object.layer_id == conflict_layer_id)
+            .map(|object| object.id.clone())
+            .collect();
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        // **排除系统原子** ✓：冲突图层本身是 `system:conflict` 建的 ✓ ⇒ 它不是"我方提交" ✗。
+        let atoms: Vec<(String, AtomKind, Value)> = document
+            .log()
+            .iter()
+            .filter(|atom| atom.actor != yanshi_core::conflict::CONFLICT_ACTOR)
+            .filter(|atom| {
+                atom.payload.get("layer_id").and_then(Value::as_str)
+                    == Some(conflict_layer_id.as_str())
+            })
+            .map(|atom| (atom.id.clone(), atom.kind, atom.payload.clone()))
+            .collect();
+        (atoms, objects)
+    };
+    let opponent = optional_str(args, "opponent_atom_id");
+    let formal = optional_str(args, "formal_layer_id");
+    if matches!(resolution.as_str(), "keep_ours" | "discard") && opponent.is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "{resolution} 需要 opponent_atom_id（冲突错误里带的是哪个原子 ✓）"
+            )),
+        ));
+    }
+    if resolution == "keep_ours" && formal.is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "keep_ours 需要 formal_layer_id：我们的对象要移回哪个正式图层".to_owned(),
+            ),
+        ));
+    }
+    let changeset = yanshi_core::Changeset::new_id();
+    let previous = ctx.changeset.replace(changeset.clone());
+    let mut moved = 0usize;
+    let mut tombstoned = 0usize;
+    let mut reverted_opponent = false;
+    let mut failure: Option<YanshiError> = None;
+    // ① 我们这一侧 ✓。
+    if resolution == "keep_theirs" || resolution == "discard" {
+        // 让**我方的每一步提交**失效 ✓（对象型的先墓碑化它的对象 ✓，再对所有我方原子发 `Revert` ✓）。
+        for object_id in &our_objects {
+            if let Err(error) = ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})) {
+                failure = Some(error);
+                break;
+            }
+        }
+        if failure.is_none() {
+            for (atom_id, _, _) in &ours {
+                match ctx.commit(AtomKind::Revert, json!({"target": atom_id})) {
+                    Ok(_) => tombstoned += 1,
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+    } else if resolution == "keep_ours" {
+        let formal = formal.clone().unwrap_or_default();
+        // 对象型提交 ⇒ 移对象 ✓（设计表的 `move` ✓）。
+        for object_id in &our_objects {
+            match ctx.commit(
+                AtomKind::SetProperty,
+                json!({"object_id": object_id, "key": "layer_id", "value": formal}),
+            ) {
+                Ok(_) => moved += 1,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        // 原子型提交（像素补丁 ✓）⇒ **改投正式图层重提交** ✓ —— 见上面那段说明 ✓。
+        //
+        // **建对象的那些原子必须排除** ✗：它们的"搬移"已经由上面改对象 `layer_id` 完成了 ✓
+        //（我第一版没排除 ⇒ 又重提交了一次 `create_object` ✓ ⇒ 报"对象已存在" ✗，
+        //  测试当场抓到 ✓）。判据取**载荷里的 object_id 是否就是我方对象之一** ✓ ——
+        // 这仍是从载荷形状判断 ✓，不是枚举原子种类 ✗（后者迟早漏 ✓）。
+        if failure.is_none() {
+            let object_ids: std::collections::BTreeSet<&String> = our_objects.iter().collect();
+            for (atom_id, kind, payload) in &ours {
+                let created_object = payload
+                    .get("object_id")
+                    .and_then(Value::as_str)
+                    .map(|id| object_ids.contains(&id.to_owned()))
+                    .unwrap_or(false);
+                if created_object {
+                    continue;
+                }
+                let mut moved_payload = payload.clone();
+                moved_payload["layer_id"] = json!(formal);
+                match ctx.commit(*kind, moved_payload) {
+                    Ok(_) => {
+                        moved += 1;
+                        // 原地的那一份要失效 ✓，否则同一笔会在两个图层上各生效一次 ✗。
+                        if let Err(error) = ctx.commit(AtomKind::Revert, json!({"target": atom_id}))
+                        {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // ② 对方那一侧 ✓（`keep_ours`/`discard` ⇒ 让对方的原子失效 ✓；`tombstone(对方原子)` 的实现见上面的说明 ✓）。
+    if failure.is_none() && matches!(resolution.as_str(), "keep_ours" | "discard") {
+        if let Some(target) = opponent.clone() {
+            match ctx.commit(AtomKind::Revert, json!({"target": target})) {
+                Ok(_) => reverted_opponent = true,
+                Err(error) => failure = Some(error),
+            }
+        }
+    }
+    // ③ **关闭冲突：墓碑化冲突图层** ✓（元数据保留供审计 ✓，设计原话 ✓）。
+    if failure.is_none() {
+        match ctx.commit(AtomKind::Tombstone, json!({"layer_id": conflict_layer_id})) {
+            Ok(_) => {}
+            Err(error) => failure = Some(error),
+        }
+    }
+    ctx.changeset = previous;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(json!({
+        "ok": true,
+        "resolution": resolution,
+        "conflict_layer_id": conflict_layer_id,
+        "our_submissions": ours.len(),
+        "our_objects": our_objects.len(),
+        "moved_to_formal": moved,
+        "tombstoned_ours": tombstoned,
+        "reverted_opponent": reverted_opponent,
+        "changeset_id": changeset,
+    }))
 }
 
 /// **开始一个事务** ✓（设计 777 ✓；设计只给了名字 ⇒ 语义见 `Workspace::transactions` 的说明 ✓）。

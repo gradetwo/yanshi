@@ -51,6 +51,17 @@ several rings, which xor of two overlapping shapes naturally produces, becomes o
 and the new shapes plus the two retired inputs share a single changeset so one withdrawal restores
 everything.
 
+`resolve_conflict` completes the `conflict` group and follows design 12.3 literally, which is the clearest
+section of the design: it is a composition macro rather than a new atom type, so the folder is untouched and
+the macro expands into atoms that already exist. `keep_ours` withdraws the opponent's atom and puts our
+submission back on the formal layer, `keep_theirs` withdraws ours, `discard` withdraws both, and `merge`
+changes no content at all because by then the caller has already submitted its own edit, so the tool only
+closes the conflict. The conflict layer is tombstoned afterwards while its `metadata.conflict` mark stays for
+audit. Two translations are recorded, because the design's table names operations this codebase does not have:
+atoms cannot be tombstoned or have their layer changed, since the log is append-only, so "make their atom
+ineffective" is a `Revert`, and "move our atom to the formal layer" is moving the object when the submission
+created one and re-committing the same kind and payload onto the formal layer when it is a pixel patch.
+
 `begin_transaction` and `commit_transaction` also live in that group. The design lists them beside the
 changeset tools and says nothing else at all, not even how the two differ, so the difference is recorded here:
 a transaction is a changeset that also rolls back. If a mutating tool call fails while a transaction is open,
