@@ -211,6 +211,66 @@ function hatch(points, options = {}) {
   return strokes;
 }
 
+
+/// **散布** ✓ —— 雾、光晕、尘土、毛边都用它 ✓。
+///
+/// **为什么不许再用"同心环/等距射线"** ✗：那是**规则排列** ✓，而规则排列在画面上**就是几何** ✗
+///（本项目为此错了三次 ✓：大半径几何环 → 靶心 ✗；等距射线 → 又是靶心 ✗；等距平行笔 → 条纹 ✗）。
+/// `scatter` 的做法相反 ✓：在形状内**随机取点** ✓、每笔**短** ✓、方向**随机** ✓、粗细与深浅**随机** ✓，
+/// 由**密度**与**每笔的浓淡**累积出雾 ✓ —— 这正是油画里"扫"和"揉"的手感 ✓。
+/// 随机全部走确定性 PRNG ✓ ⇒ 同一份画谱仍然画出同一幅画 ✓。
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function scatter(polygon, options = {}) {
+  const count = options.count ?? 400;
+  const size = options.size ?? 24;
+  const length = options.length ?? size * 1.6;
+  const sizeJitter = options.sizeJitter ?? 0.45;
+  const colorJitter = options.colorJitter ?? 0.2;
+  const color = options.color ?? "#8a6a44";
+  // `center` 与 `falloff` 一起用 ✓：离中心越远越淡/越细 ✓（光晕就是靠它自然衰减 ✓，不是同心环 ✗）。
+  const center = options.center ?? null;
+  const falloff = options.falloff ?? 0;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of polygon) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const strokes = [];
+  let guard = 0;
+  while (strokes.length < count && guard < count * 40) {
+    guard += 1;
+    const x = minX + rng() * (maxX - minX);
+    const y = minY + rng() * (maxY - minY);
+    if (!pointInPolygon(x, y, polygon)) continue;
+    let weight = 1;
+    if (center && falloff > 0) {
+      const distance = Math.hypot(x - center[0], y - center[1]);
+      weight = Math.max(0, 1 - distance / falloff);
+      if (rng() > weight) continue;   // **按权重稀** ✓ ⇒ 越远越稀 ✓，而且**没有环** ✓
+    }
+    const angle = rng() * Math.PI * 2;             // 方向随机 ✓（不是等距排列 ✗）
+    const half = (length * (0.35 + rng() * 0.9)) / 2;
+    strokes.push({
+      points: [[x - Math.cos(angle) * half, y - Math.sin(angle) * half],
+               [x + Math.cos(angle) * half, y + Math.sin(angle) * half]],
+      size: Math.max(1, size * (1 + jitter(sizeJitter)) * (0.55 + weight * 0.65)),
+      color: shade(typeof color === "function" ? color(weight) : color, jitter(colorJitter)),
+    });
+  }
+  return strokes;
+}
+
 /// 一簇东西 ✓（树叶 / 草 / 花 ✓）：每笔短、方向散、位置带抖动 ✓。
 function cluster(cx, cy, radius, count, color, size, angle, spread) {
   const strokes = [];
@@ -574,8 +634,9 @@ function yanshiAutomaton(width, height) {
   ));
   darkMass.push(...hatch(
     [[-40, Y(0.86)], [W + 40, Y(0.845)], [W + 40, H + 40], [-40, H + 40]],
-    { size: 50, gap: 16, angle: 0.12, color: (t) => mix("#3a2c1e", "#16110c", Math.pow(t, 1.1)),
-      colorJitter: 0.24, sizeJitter: 0.45 },
+    // **地面**：横向长笔 ✓（木地板/土面 ✓）、抖动大 ✓ ⇒ 不再像**条纹毯** ✗。
+    { size: 44, gap: 15, angle: 0.03, breakUp: 0.5, sizeJitter: 0.62, colorJitter: 0.3,
+      color: (t) => mix("#3a2c1e", "#16110c", Math.pow(t, 1.1)) },
   ));
 
   // ==== ③ 大块（只看平均色 ✓ 不看细节 ✓ —— "先大块"的核心 ✓）====
@@ -594,25 +655,33 @@ function yanshiAutomaton(width, height) {
   // 下裳 + 腿：一块更暗的中间调 ✓（笔触基本竖直 ✓）。
   blockIn.push(...hatch(
     [[X(0.306), Y(0.698)], [X(0.492), Y(0.694)], [X(0.536), Y(0.888)], [X(0.272), Y(0.892)]],
-    { size: 44, gap: 14, angle: 1.42,
-      color: (t) => lit("#7a3628", X(0.40), Y(0.70) + t * (Y(0.89) - Y(0.70)), 1.05),
-      colorJitter: 0.24, sizeJitter: 0.4 },
+    // **下裳不许出现"大条"** ✗：贯通的长笔在小图上必然读成条子 ✓
+    // ⇒ 笔短（断得多 ✓）、抖动大一点 ✓。
+    { size: 40, gap: 13, angle: 1.42, breakUp: 0.62, sizeJitter: 0.5, colorJitter: 0.26,
+      color: (t) => lit("#7a3628", X(0.40), Y(0.70) + t * (Y(0.89) - Y(0.70)), 1.05) },
   ));
   // 头：**一整块**平均色 ✓（五官最后再说 ✓）；小笔、密一点 ✓ ⇒ 皮肤才有"画"的质感 ✓。
   blockIn.push(...hatch(
     ellipse(X(0.393), Y(0.306), W * 0.066, H * 0.050, 26),
-    { size: 26, gap: 8, angle: 0.7,
-      color: (t) => lit("#a87f58", X(0.393), Y(0.306), 0.8),
-      colorJitter: 0.18, sizeJitter: 0.36 },
+    // **头要"平"** ✓：上一版用 26px 笔 + 0.36 抖动 ⇒ 出来一颗**白花菜** ✗。
+    // 皮肤的笔痕该**细而密、抖动很小** ✓ —— 抖动是给衣料与背景的 ✓，不是给脸的 ✗。
+    { size: 16, gap: 6, angle: 0.7, sizeJitter: 0.14, colorJitter: 0.1, breakUp: 0.15,
+      color: (t) => lit("#a87f58", X(0.393), Y(0.306), 0.8) },
   ));
   // 偃师：**冷**的大块 ✓（深蓝灰 ✓）—— 与造人的暖形成全画的冷暖对撞 ✓。
-  blockIn.push(...hatch(
-    [[X(0.628), Y(0.318)], [X(0.772), Y(0.300)], [X(0.936), Y(0.520)],
-     [X(0.992), Y(0.985)], [X(0.660), Y(0.998)], [X(0.606), Y(0.632)]],
-    { size: 52, gap: 17, angle: 1.3,
+  // **偃师不许成"条纹帘"** ✗：上一版只用了一个方向的竖笔 ✓ ⇒ 读成垂帘 ✗。
+  // 改法照旧是"交叉两遍 + 大抖动" ✓：先竖 ✓、再斜 ✓ ⇒ 面料感 ✓。
+  const artisanBody = [[X(0.628), Y(0.318)], [X(0.772), Y(0.300)], [X(0.936), Y(0.520)],
+                       [X(0.992), Y(0.985)], [X(0.660), Y(0.998)], [X(0.606), Y(0.632)]];
+  blockIn.push(...hatch(artisanBody,
+    { size: 50, gap: 17, angle: 1.32,
       // **提亮** ✓：上一版他在暗里**整个消失** ✗ ⇒ 中间调抬高半档 ✓，让"人"从墙里分出来 ✓。
       color: (t) => cool(lit("#3a3d50", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.25), 0.36),
       colorJitter: 0.2, sizeJitter: 0.45, breakUp: 0.4 },
+  ));
+  blockIn.push(...hatch(artisanBody,
+    { size: 44, gap: 16, angle: 0.42, breakUp: 0.6, sizeJitter: 0.55, colorJitter: 0.28,
+      color: (t) => cool(lit("#333648", X(0.80), Y(0.32) + t * (Y(0.99) - Y(0.32)), 1.2), 0.4) },
   ));
   blockIn.push(...hatch(profileish(X, Y, W, H),
     { size: 30, gap: 10, angle: 1.5, color: () => cool("#2b2b38", 0.5),
@@ -733,23 +802,18 @@ function yanshiAutomaton(width, height) {
   // **大范围的暖雾：大量短笔，而不是大半径的 glow** ✗ —— 见 `GLOW_SAFE_RADIUS` 的说明 ✓。
   // 画法照搬真画家"扫"的动作 ✓：从灯心向外一圈圈扫 ✓，每笔都短 ✓、越远越淡越冷 ✓，
   // 笔触之间**故意留缝** ✓ ⇒ 出来是雾 ✓ 不是环 ✓。
-  // **上一版这里是一圈珠子** ✗：笔尖 34px、射线只有 22~64 根 ✓ ⇒ 笔与笔之间**够不着** ✓，
-  // 渲染出来是一串**点** ✗。雾的要害是**互相压住** ✓ ⇒ 笔尖减小、射线加密（每圈 90 根起 ✓）。
-  for (let ring = 1; ring <= 9; ring++) {
-    const radius = W * 0.032 * ring;
-    const t = ring / 9;
-    const color = mix(mix("#ffdc9e", "#8a6a44", t), "#241d16", Math.pow(t, 1.4));
-    const rays = 90 + ring * 26;
-    for (let ray = 0; ray < rays; ray++) {
-      const angle = (ray / rays) * Math.PI * 2 + ring * 0.31;
-      const r0 = radius - W * 0.026;
-      const cx = lamp[0] + Math.cos(angle) * r0;
-      const cy = lamp[1] + Math.sin(angle) * r0 * 0.95;
-      const cx1 = lamp[0] + Math.cos(angle) * radius;
-      const cy1 = lamp[1] + Math.sin(angle) * radius * 0.95;
-      glaze.push(...handLine([[cx, cy], [cx1, cy1]], color, 26, 0.2, 0.7));
-    }
+  // **光晕改用"随机散布"** ✓ —— 同心射线**又**做成了靶心 ✗（"加密"救不了"规则" ✗，第三次同类错误 ✓）。
+  // 做法：在一个圆盘里随机散布短笔 ✓，**按离灯的距离加权变稀** ✓ ⇒ 自然衰减 ✓ 且**没有任何环** ✓。
+  const haloDisc = [];
+  for (let step = 0; step < 48; step++) {
+    const angle = (step / 48) * Math.PI * 2;
+    haloDisc.push([lamp[0] + Math.cos(angle) * W * 0.30, lamp[1] + Math.sin(angle) * W * 0.30 * 0.95]);
   }
+  glaze.push(...scatter(haloDisc, {
+    count: 900, size: 26, length: 46, center: lamp, falloff: W * 0.31,
+    color: (weight) => mix(mix("#ffdc9e", "#8a6a44", 1 - weight), "#241d16", Math.pow(1 - weight, 1.2)),
+    colorJitter: 0.22, sizeJitter: 0.5,
+  }));
   for (let ring = 0; ring < 2; ring++) {
     const inset = ring * 20;
     const color = mix("#0a0b10", "#141620", ring);
