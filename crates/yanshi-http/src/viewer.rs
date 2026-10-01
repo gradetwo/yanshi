@@ -478,6 +478,24 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <label class="hint"><input id="storageConfirm" type="checkbox" /> 我确认（删除不可逆）</label>
       <div id="storageReport0" style="font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap"></div>
     </div>
+    <!-- **建议** ✓（设计 §12.6 ✓）—— `suggest` / `list_suggestions` / `accept_suggestion` /
+         `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
+         也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
+         （`accept_suggestion` 会**按序重放 patch** ✓，并把关联标注置为 resolved ✓）。 -->
+    <div class="card">
+      <h2>建议</h2>
+      <div class="hint">建议来自 `suggest`（含**可执行补丁**）✓；接受会**按序重放**补丁 ✓。</div>
+      <div class="toolbar">
+        <select id="suggestionStatus">
+          <option value="pending">待处理</option>
+          <option value="accepted">已接受</option>
+          <option value="rejected">已拒绝</option>
+          <option value="">全部</option>
+        </select>
+        <button id="suggestionReload" type="button">刷新</button>
+      </div>
+      <div id="suggestionList" class="annotation-list"></div>
+    </div>
   </aside>
 </main>
 <footer class="statusbar">
@@ -2812,6 +2830,7 @@ function renderCheckpointList() {
         // **必须 resync** ✓：HEAD 跳变之后，画布要由服务端权威像素重新铺 ✓。
         await resync();
         await refreshCheckpoints();
+  await refreshSuggestions();
       }
     });
     actions.appendChild(back);
@@ -2969,6 +2988,92 @@ async function convertCheckedObjects(tool, what, idField, prefix) {
   await refreshObjects();
 }
 
+/// **建议** ✓（设计 §12.6 ✓）—— `suggest`/`list_suggestions`/`accept_suggestion`/`reject_suggestion`
+/// 此前在查看器里**零引用** ✗ ⇒ AI 提出的**可执行补丁**用户看不到、也接受不了 ✓。
+///
+/// **真实签名** ✓（先读规格 ✓）：
+/// `list_suggestions {status?, since_seq?, limit?, offset?}` ✓（`status` 由 accept/reject 原子**推导** ✓）；
+/// `accept_suggestion {suggestion_id}` ✓ —— **按序重放 patch** ✓（只允许会产生状态效果的步骤 ✓）
+/// 并把**关联标注**置为 resolved ✓；`reject_suggestion {suggestion_id, reason?}` ✓。
+///
+/// **它是"标注"的另一半** ✓：标注负责"哪里不对" ✓，建议负责"**怎么改，而且是可执行的**" ✓
+/// ⇒ 两者合起来才是设计 §12.6 的评审闭环 ✓。
+let suggestionCache = [];
+
+function renderSuggestionList() {
+  const list = $("suggestionList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (suggestionCache.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有建议 ✓（AI 或代理可以用 suggest 提出 ✓）";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of suggestionCache) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    const steps = Array.isArray(item.patch) ? item.patch.length : 0;
+    head.textContent = "#" + String(item.suggestion_id || item.id || "").slice(-8) +
+      " · 优先级 " + (item.priority === undefined ? "?" : item.priority) +
+      " · " + steps + " 步" + (item.status ? " · " + item.status : "");
+    const text = document.createElement("div");
+    text.className = "hint";
+    text.textContent = item.summary || "（没有说明 ✓）";
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.textContent = "接受";
+    accept.disabled = item.status === "accepted";
+    accept.addEventListener("click", async () => {
+      const done = await callToolChecked("accept_suggestion",
+        { suggestion_id: item.suggestion_id || item.id }, "接受建议");
+      if (done && done.ok) {
+        log("已接受建议 ✓（补丁已按序重放 ✓，关联标注置为 resolved ✓）");
+        // **补丁会改动文档** ✓ ⇒ 重新对一次服务端 ✓。
+        await resync();
+      }
+      await refreshSuggestions();
+    });
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.textContent = "拒绝";
+    reject.disabled = item.status === "rejected";
+    reject.addEventListener("click", async () => {
+      const reason = (($("suggestionReason") || {}).value || "").trim() || "编辑器里拒绝";
+      const done = await callToolChecked("reject_suggestion",
+        { suggestion_id: item.suggestion_id || item.id, reason }, "拒绝建议");
+      if (done && done.ok) log("已拒绝建议 ✓：原因「" + reason + "」✓");
+      await refreshSuggestions();
+    });
+    actions.append(accept, reject);
+    row.append(head, text, actions);
+    list.appendChild(row);
+  }
+}
+
+/// 拉一次建议列表 ✓。
+async function refreshSuggestions() {
+  const box = $("suggestionStatus");
+  const args = {};
+  if (box && box.value) args.status = box.value;
+  const listed = await callTool("list_suggestions", args, { refresh: false }).catch(() => null);
+  suggestionCache = (listed && (listed.suggestions || listed.items)) || [];
+  renderSuggestionList();
+}
+
+/// 建议面板的两个控件 ✓。
+function setupSuggestionPanel() {
+  const reload = $("suggestionReload");
+  if (reload) reload.addEventListener("click", () => { void refreshSuggestions(); });
+  const box = $("suggestionStatus");
+  if (box) box.addEventListener("change", () => { void refreshSuggestions(); });
+}
+
 /// **存储 / 维护** ✓（设计 §6.3 的 Blob 三级生命周期 ✓）—— `blob_gc` 此前**零引用** ✗。
 ///
 /// **为什么值得放到界面上** ✓：工作区里"上传过、但没有任何原子引用"的孤儿是最容易被忽视的一类占用 ✓
@@ -3105,6 +3210,7 @@ async function resampleCheckedObjects() {
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   setupStoragePanel();
+  setupSuggestionPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
