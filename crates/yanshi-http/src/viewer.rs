@@ -2432,6 +2432,24 @@ function fillHistoryFilters(atoms) {
 /// **做法沿用项目里已有的约定** ✓（不是新发明 ✓）：介质提交路径 `commitMediumBitmap` 早就在做
 /// "选中的图层不存在就兜底建一个" ✓（`state.layerId || "layer_paint"` ✓ 并在需要时新建 ✓）。
 /// 这里把它**提到打开文档时** ✓ ⇒ 所有工具都受益 ✓，而且不用在**同步的**落笔处理器里 await ✗。
+/// **调用工具并保证"失败必留痕"** ✓。
+///
+/// **为什么要有它** ✓（本轮把一类问题当一类来扫的结果 ✓）：查看器里有 **47 处** `callTool` ✓，
+/// 其中**四处**（图层显示/锁定 ✓、图层排序 ✓、删除图层 ✓、画形状 ✓）**完全不看返回值** ✗
+/// ⇒ 失败时画布与日志都**没有任何信号** ✗ ⇒ 用户看到的是"点了没反应" ✗。
+/// 这正是本项目自己禁止的**静默吞掉用户操作** ✗ —— 上一轮修的是同一类的落笔 ✓，这一轮补齐其余 ✓。
+///
+/// **`what` 是给用户看的动作名** ✓（"删除图层" ✓ 比 `delete_layer` 有用得多 ✓）。
+async function callToolChecked(name, args, what) {
+  const result = await callTool(name, args);
+  if (!result || !result.ok) {
+    const code = (result && result.error_code) || "unknown";
+    const detail = (result && result.context && result.context.detail) || "";
+    log(what + "失败：" + code + (detail ? " " + detail : ""), "#c33");
+  }
+  return result;
+}
+
 async function ensurePaintLayer() {
   const listed = await callTool("list_layers", {}, { refresh: false }).catch(() => null);
   const layers = (listed && listed.layers) || [];
@@ -2543,7 +2561,7 @@ async function setupLayerPanel() {
       const layer = layers.find((item) => item.layer_id === layerId);
       if (!layer) return;
       const patch = action === "visible" ? { visible: !layer.visible } : { locked: !layer.locked };
-      await callTool("update_layer", { layer_id: layerId, patch });
+      await callToolChecked("update_layer", { layer_id: layerId, patch }, "切换图层显示/锁定");
       await refreshLayers();
       // **画布要走服务端权威路径** ✓：`afterMutation` 只刷缩略图与历史 ✓，不重画画布 ✗，
       // 而"图层可见性"这类属性在 WASM 内核里不一定被实现 ✓ ⇒ 只刷内核会出现
@@ -2564,7 +2582,7 @@ async function setupLayerPanel() {
     const target = index + delta;
     if (target < 0 || target >= order.length) return;
     [order[index], order[target]] = [order[target], order[index]];
-    await callTool("reorder_layers", { order });
+    await callToolChecked("reorder_layers", { order }, "调整图层顺序");
     await refreshLayers();
     await resync();
   };
@@ -2590,7 +2608,9 @@ async function setupLayerPanel() {
   };
   const remove = $("layerDelete");
   if (remove) remove.onclick = async () => {
-    await callTool("delete_layer", { layer_id: state.layerId });
+    // **删除图层尤其不能静默** ✗：失败时用户会以为图层没了 ✓，而它其实还在 ✗
+    // ⇒ "我以为的"与"实际状态"不一致 ✓ 是界面里最坏的一类错 ✗。
+    await callToolChecked("delete_layer", { layer_id: state.layerId }, "删除图层");
     await refreshLayers();
     await resync();
   };
@@ -3594,24 +3614,16 @@ async function commitShape() {
     if (state.points.length < 2) return;
     // **不再无视结果** ✗ —— 此前这里连返回都不看 ✓ ⇒ 被拒时画布上毫无反馈 ✗
     //（正是"静默吞掉用户操作" ✓）。现在失败必留痕 ✓，并提示怎么恢复 ✓。
-    const drawn = await callTool("draw_stroke", {
+    await callToolChecked("draw_stroke", {
       layer_id: state.layerId,
       data: { points: state.points.map((p) => [p.x, p.y]), size, color, hardness: 0.7 },
-    });
-    if (!drawn.ok) {
-      log("落笔失败：" + (drawn.error_code || "unknown") + " " +
-          ((drawn.context && drawn.context.detail) || "") + "（试试先新建图层？）", "#c33");
-    }
+    }, "落笔");
   } else if (state.tool === "erase") {
     if (state.points.length < 2) return;
-    const erased = await callTool("erase", {
+    await callToolChecked("erase", {
       layer_id: state.layerId,
       data: { points: state.points.map((p) => [p.x, p.y]), size: size * 1.5, color: { r: 0, g: 0, b: 0, a: 0 } },
-    });
-    if (!erased.ok) {
-      log("擦除失败：" + (erased.error_code || "unknown") + " " +
-          ((erased.context && erased.context.detail) || ""), "#c33");
-    }
+    }, "擦除");
   } else {
     const [a, b] = state.points;
     if (!a || !b) return;
@@ -3619,10 +3631,11 @@ async function commitShape() {
       x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
       w: Math.abs(b.x - a.x) || 1, h: Math.abs(b.y - a.y) || 1,
     };
-    await callTool("draw_shape", {
+    // **形状这条分支上一轮漏了** ✗：只补了 brush/erase ✓ ⇒ 矩形/椭圆仍是静默的 ✗（同类问题 ✓）。
+    await callToolChecked("draw_shape", {
       layer_id: state.layerId,
       data: { geometry: { kind: state.tool, bbox }, color },
-    });
+    }, "画形状");
   }
   await refreshPreview();
 }
