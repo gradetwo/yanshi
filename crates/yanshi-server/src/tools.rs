@@ -1040,6 +1040,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("atoms", Array, true, "[{kind, payload, actor?, session?}] 离线期间追加的原子")],
     },
     ToolSpec {
+        name: "blob_gc",
+        profile: Profile::History,
+        summary: "Blob 三级生命周期：统计活跃/历史/孤儿；默认只报告，回收需 confirm",
+        mutating: true,
+        params: &[
+            param!("dry_run", Boolean, false, "默认 true：只统计不删除"),
+            param!("confirm", Boolean, false, "真删必须显式 true（删除不可逆）"),
+            param!("ttl_days", Number, false, "孤儿 TTL，默认 7 天（设计 6.3）"),
+        ],
+    },
+    ToolSpec {
         name: "list_stashes",
         profile: Profile::Changeset,
         summary: "列出悬空变更集（UI 的“分支对比”用，设计 12.4）",
@@ -1860,6 +1871,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
         "submit_offline" => write_submit_offline(ctx, args),
+        "blob_gc" => write_blob_gc(ctx, args),
         "list_stashes" => read_list_stashes(ctx, args),
         "apply_stash" => write_apply_stash(ctx, args),
         "discard_stash" => write_discard_stash(ctx, args),
@@ -4674,6 +4686,55 @@ fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Val
             ),
         )),
     }
+}
+
+/// **Blob 三级生命周期与孤儿回收** ✓（设计 §6.3 ✓）。
+///
+/// **安全默认** ✓：`dry_run` 缺省为 **true** ✓ ⇒ 只报告 ✓。
+/// 真删要求**两个**条件同时成立 ✓（`dry_run: false` **且** `confirm: true` ✓）——
+/// 删除是**不可逆**的 ✓，本项目"不做不可逆动作"的纪律在这里落成一对明确的开关 ✓。
+/// 而且**只会删"已过 TTL 的孤儿"** ✓：活跃与历史一律不动 ✓（设计原话：GC 根集 = 全日志原子引用闭包 ✓）。
+fn write_blob_gc(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let dry_run = optional_bool(args, "dry_run").unwrap_or(true);
+    let confirm = optional_bool(args, "confirm").unwrap_or(false);
+    let ttl_days = optional_u64(args, "ttl_days").unwrap_or(7) as i64;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let report = ctx.workspace.blob_lifecycle(ttl_days, now_ms)?;
+    // **拒绝"想删但没确认"** ✓：明确告诉调用方少了什么 ✓，而不是静默什么都不做 ✗。
+    if !dry_run && !confirm {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "回收是不可逆的：需要 dry_run: false **与** confirm: true 同时给".to_owned(),
+            ),
+        ));
+    }
+    let mut response = json!({
+        "ok": true,
+        "dry_run": dry_run,
+        "ttl_days": ttl_days,
+        "active": {"blobs": report.active_count, "bytes": report.active_bytes},
+        "history": {"blobs": report.history_count, "bytes": report.history_bytes},
+        "orphan": {"blobs": report.orphan_count, "bytes": report.orphan_bytes},
+        "collectible": {"blobs": report.collectible.len(), "bytes": report.collectible_bytes},
+        // **清单** ✓：哪些 blob 在哪一级 ✓（审计用 ✓；测试靠它做"针对具体 blob"的断言 ✓）。
+        "hashes": {
+            "active": report.active_hashes,
+            "history": report.history_hashes,
+            "orphan": report.orphan_hashes,
+            "collectible": report.collectible,
+        },
+    });
+    if !dry_run {
+        let (removed, freed) = ctx.workspace.collect_orphan_blobs(&report.collectible)?;
+        response["removed"] = json!(removed);
+        response["freed_bytes"] = json!(freed);
+        response["note"] = json!("只删了已过 TTL 的孤儿；活跃与历史一律保留（设计 6.3）");
+    }
+    Ok(response)
 }
 
 /// **把工具参数解析成原子** ✓（`submit_offline` 用 ✓）。

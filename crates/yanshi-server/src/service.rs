@@ -114,6 +114,42 @@ pub struct Stash {
 }
 
 /// 多文档工作区。
+
+/// **Blob 三级生命周期** ✓（设计 §6.3 ✓）。
+///
+/// **设计原话** ✓：GC 根集 = **全日志原子引用闭包** ✓ —— **永不删除被任何日志原子引用的 blob** ✓
+///（"删 blob 等于部分删除原子" ✓，违反原则 2/21 ✓）。三级是：
+/// * **活跃** ✓：当前 HEAD 折叠状态引用的 ✓；
+/// * **历史** ✓：被日志里任何原子引用、但不在当前状态 ✓（revert 目标、被 `declare_head` 甩出、
+///   **Stash 里的**、旧分支 ✓）⇒ 设计要求**保留**（冷归档 + 按需取回 ✓）；
+/// * **孤儿** ✓：上传成功但从未被任何原子引用 ✓ ⇒ 临时区 ✓、**TTL 7 天**后清理 ✓。
+///
+/// **两条必须写下来的取舍** ✓：
+/// 1. **Stash 里的原子算根** ✓ —— 我上一轮给 Stash 写代码时就写下了这条约束 ✓，
+///    这里落实它 ✓：否则"离线期间的编辑"会在重连前被清掉 ✗；
+/// 2. **不做 zstd 冷归档（暂缓 ✓）** ✓：设计里"历史级 = 冷归档 + zstd" ✓，
+///    而本项目迄今**只依赖 `wasm-bindgen`** ✓（传输层还是手写的 ✓）⇒
+///    引入压缩库是一次**依赖决策** ✓，我不擅自做 ✗ ⇒ 这一版只做**分级与孤儿回收** ✓
+///    （正确性最关键的那半 ✓），压缩留给专门一轮 ✓。
+#[derive(Clone, Debug, Default)]
+pub struct BlobLifecycle {
+    /// 各级的 blob 数与字节数 ✓（设计要求"可观测" ✓）。
+    pub active_count: usize,
+    pub active_bytes: u64,
+    pub history_count: usize,
+    pub history_bytes: u64,
+    pub orphan_count: usize,
+    pub orphan_bytes: u64,
+    /// 已过 TTL 的孤儿 ✓ —— **只有这些**可以被回收 ✓。
+    pub collectible: Vec<String>,
+    pub collectible_bytes: u64,
+    /// 各级的**哈希清单** ✓ —— 审计需要 ✓，测试也靠它做"针对具体 blob"的断言 ✓
+    ///（只看计数的话 ✓，提交时产生的**预览 blob** 会把计数搅乱 ✗ —— 本轮实测如此 ✓）。
+    pub active_hashes: Vec<String>,
+    pub history_hashes: Vec<String>,
+    pub orphan_hashes: Vec<String>,
+}
+
 pub struct Workspace {
     store: Arc<dyn BlobStore>,
     documents: BTreeMap<String, Document>,
@@ -171,6 +207,89 @@ impl Workspace {
         self.open_changesets
             .get(&(doc_id.to_owned(), session.to_owned()))
             .cloned()
+    }
+
+    /// **统计 blob 的三级生命周期** ✓（设计 §6.3 ✓，只读 ✓）。
+    pub fn blob_lifecycle(&self, ttl_days: i64, now_ms: i64) -> Result<BlobLifecycle> {
+        use std::collections::{BTreeMap, BTreeSet};
+        // ① **根集** ✓：全日志原子引用闭包 ✓ + **Stash 里的原子** ✓（见结构体说明 ✓）。
+        let mut roots: BTreeSet<String> = BTreeSet::new();
+        let mut active: BTreeSet<String> = BTreeSet::new();
+        for document in self.documents.values() {
+            for atom in document.log().iter() {
+                for hash in atom.all_blob_refs() {
+                    roots.insert(hash.to_string());
+                }
+            }
+            for object in document.state().objects.values() {
+                if object.is_deleted() {
+                    continue;
+                }
+                for hash in &object.blobs {
+                    active.insert(hash.to_string());
+                }
+            }
+        }
+        for stash in self.stashes.values() {
+            for atom in &stash.atoms {
+                for hash in atom.all_blob_refs() {
+                    roots.insert(hash.to_string());
+                }
+            }
+        }
+        // ② 遍历 CAS ✓，按"是否是根 / 是否活跃 / 活了多久"分级 ✓。
+        let mut sizes: BTreeMap<String, (u64, i64)> = BTreeMap::new();
+        for entry in self.store.list()? {
+            sizes.insert(entry.blob_hash.to_string(), (entry.size, entry.created_at));
+        }
+        let mut report = BlobLifecycle::default();
+        let ttl_ms = ttl_days.max(0) * 24 * 60 * 60 * 1000;
+        for (hash, (bytes, created_at)) in &sizes {
+            let is_active = active.contains(hash);
+            let is_root = roots.contains(hash);
+            if is_active {
+                report.active_count += 1;
+                report.active_bytes += bytes;
+                report.active_hashes.push(hash.clone());
+            } else if is_root {
+                // **被日志引用但不在当前状态** ⇒ 历史级 ✓（**保留** ✓，永远不删 ✓）。
+                report.history_count += 1;
+                report.history_bytes += bytes;
+                report.history_hashes.push(hash.clone());
+            } else {
+                report.orphan_count += 1;
+                report.orphan_bytes += bytes;
+                report.orphan_hashes.push(hash.clone());
+                // **TTL 只看"活得够久"** ✓ —— 刚上传、还没来得及被引用的不算孤儿可回收 ✓
+                //（提交进行中的 blob 正是这种 ✓，删了会毁掉正在进行的提交 ✗）。
+                if now_ms.saturating_sub(*created_at) >= ttl_ms {
+                    report.collectible.push(hash.clone());
+                    report.collectible_bytes += bytes;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// **回收已过 TTL 的孤儿 blob** ✓（设计 §6.3 ✓）。
+    ///
+    /// **它永远不碰活跃与历史** ✓（调用方只传 `collectible` ✓）；
+    /// 而且**先算分级再删** ✓ ⇒ 两次之间若有新原子引用 ✓ 也不会误删 ✗（哈希是内容寻址 ✓，
+    /// 引用一旦写进日志 ✓ 该 blob 就已进根集 ✓）。返回真正删掉的条数与字节 ✓。
+    pub fn collect_orphan_blobs(&mut self, hashes: &[String]) -> Result<(usize, u64)> {
+        let mut removed = 0usize;
+        let mut freed = 0u64;
+        for text in hashes {
+            let Ok(hash) = text.parse::<yanshi_core::BlobHash>() else {
+                continue;
+            };
+            let bytes = self.store.size(&hash).unwrap_or(0);
+            if self.store.remove(&hash)? {
+                removed += 1;
+                freed += bytes;
+            }
+        }
+        Ok((removed, freed))
     }
 
     /// **搁置一批原子** ✓（设计 §12.4 的"悬空变更集" ✓）。
