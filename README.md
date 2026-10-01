@@ -91,7 +91,10 @@ current layer's objects, turns one into a live-linked instance, groups several t
 moves them, and converts any object into a shape or a path so it can be kept as vector work. The history panel marks checkpoints and jumps
 back to them; the log is append-only, so nothing is lost and the canvas can move forward again. Effects can be
 edited after they are added, by clicking one in the list, which loads its parameters and updates that same
-object instead of stacking another.
+object instead of stacking another. A `存储 / 维护` panel reports the blob store's three
+lifecycle levels from design 6.3 - active, history and orphan - and can reclaim orphans past the TTL or demote
+history to cold storage, both only after an explicit confirmation, since deletion is irreversible; the report
+alone is always safe and never deletes anything.
 
 Strokes accept an `appearance` block (the design's `advanced.appearance`): `size_curve`, `opacity_curve`
 and `pressure_curve` shape the stroke, `dynamics` with `seed` adds deterministic jitter, scatter, size

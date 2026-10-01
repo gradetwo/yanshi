@@ -460,6 +460,21 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
       <div id="objectList" class="annotation-list"></div>
     </div>
+    <!-- **存储 / 维护** ✓（设计 §6.3 的 Blob 三级生命周期 ✓）——
+         `blob_gc` 此前在查看器里**零引用** ✗ ⇒ 用户看不到工作区里有多少**孤儿 blob** ✓，也无从回收 ✓。
+         这一块把"统计"与"回收"分开 ✓：**统计永远安全** ✓（`dry_run` 默认就是 true ✓）；
+         回收**必须先勾确认** ✓（删除不可逆 ✓，与本项目"不做不可逆动作"一致 ✓）。 -->
+    <div class="card">
+      <h2>存储 / 维护</h2>
+      <div class="hint">孤儿是"上传过、但没有任何原子引用"的数据 ✓（设计 §6.3）；回收按 TTL 走 ✓。</div>
+      <div class="toolbar">
+        <button id="storageReport" type="button">统计</button>
+        <button id="storageCollect" type="button">回收孤儿</button>
+        <button id="storageDemote" type="button">降冷历史</button>
+      </div>
+      <label class="hint"><input id="storageConfirm" type="checkbox" /> 我确认（删除不可逆）</label>
+      <div id="storageReport0" style="font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap"></div>
+    </div>
   </aside>
 </main>
 <footer class="statusbar">
@@ -2951,6 +2966,77 @@ async function convertCheckedObjects(tool, what, idField, prefix) {
   await refreshObjects();
 }
 
+/// **存储 / 维护** ✓（设计 §6.3 的 Blob 三级生命周期 ✓）—— `blob_gc` 此前**零引用** ✗。
+///
+/// **为什么值得放到界面上** ✓：工作区里"上传过、但没有任何原子引用"的孤儿是最容易被忽视的一类占用 ✓
+/// （本项目实测过一次：**2161 个 blob 里 1912 个是孤儿、约 1.07 GB** ✗）⇒ 让人**看得见**、并且能
+/// **自己决定**什么时候回收 ✓，比在日志里说一句有用得多 ✓。
+///
+/// **安全设计** ✓（与工具侧一致 ✓）：`dry_run` 服务端**默认就是 true** ✓ ⇒ "统计"永远安全 ✓；
+/// 回收必须**勾上确认框** ✓（删除不可逆 ✓）⇒ 不勾就只提示、不发请求 ✓。
+function humanBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+function renderStorageReport(value) {
+  const box = $("storageReport0");
+  if (!box) return;
+  const line = (label, level) => label + "：" + (level && level.blobs !== undefined ? level.blobs : "?") +
+    " 个｜" + humanBytes(level ? level.bytes : 0);
+  box.textContent = [
+    "文档数：" + (value.documents_considered !== undefined ? value.documents_considered : "?"),
+    line("活跃", value.active),
+    line("历史（保留，永不回收）", value.history),
+    line("孤儿", value.orphan),
+    line("已过 TTL 可回收", value.collectible),
+  ].join("\n") + (value.removed !== undefined ? "\n本次已回收：" + value.removed + " 个｜" + humanBytes(value.freed_bytes) : "");
+}
+
+/// 统计 ✓（`dry_run` 保持默认 true ✓ ⇒ 只读 ✓）。
+async function storageReport() {
+  const value = await callToolChecked("blob_gc", {}, "统计存储");
+  if (value && value.ok) {
+    renderStorageReport(value);
+    log("存储统计 ✓：活跃 " + (value.active ? value.active.blobs : "?") + " 个｜孤儿 " +
+        (value.orphan ? value.orphan.blobs : "?") + " 个（" + humanBytes(value.orphan ? value.orphan.bytes : 0) + "）" +
+        "｜已过 TTL 可回收 " + (value.collectible ? value.collectible.blobs : "?") + " 个 ✓");
+  }
+}
+
+/// 回收 / 降冷 ✓（都要**显式勾确认** ✓）。
+async function storageMutate(demote) {
+  const box = $("storageConfirm");
+  if (!box || !box.checked) {
+    log("回收不可逆 ✓ —— 请先勾上「我确认」再点 ✓", "#c33");
+    return;
+  }
+  const args = { dry_run: false, confirm: true };
+  if (demote) args.demote = true;
+  const value = await callToolChecked("blob_gc", args, demote ? "降冷历史级" : "回收孤儿");
+  if (value && value.ok) {
+    renderStorageReport(value);
+    log((demote ? "已降冷历史级" : "已回收孤儿") + " ✓：回收 " + (value.removed || 0) + " 个｜释放 " +
+        humanBytes(value.freed_bytes || 0) +
+        (demote ? "｜降冷 " + (value.demoted || 0) + " 个" : "") + " ✓");
+    // **回收会动存储** ✓ ⇒ 让画布重新对一次服务端 ✓（保守但正确 ✓）。
+    await resync();
+  }
+}
+
+/// 存储面板的三个按钮 ✓。
+function setupStoragePanel() {
+  const report = $("storageReport");
+  if (report) report.addEventListener("click", () => { void storageReport(); });
+  const collect = $("storageCollect");
+  if (collect) collect.addEventListener("click", () => { void storageMutate(false); });
+  const demote = $("storageDemote");
+  if (demote) demote.addEventListener("click", () => { void storageMutate(true); });
+}
+
 /// **对象变换** ✓（设计 §783）—— `transform_object` 此前在查看器里**零引用** ✗ ⇒
 /// "**旋转 / 缩放 / 平移一个对象**"完全够不到 ✓，而这是画家最常用的动作之一 ✓。
 ///
@@ -2988,6 +3074,7 @@ async function transformCheckedObjects() {
 
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
+  setupStoragePanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
