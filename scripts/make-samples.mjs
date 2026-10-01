@@ -19,6 +19,9 @@ const argOf = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
 const only = argOf("--only", null);
+// **明暗小稿模式** ✓（见 `yanshiStudy` 的说明 ✓）：`--study` 时只画三档明暗 ✓，`--variant` 选构图方案 ✓。
+const study = args.includes("--study");
+const variant = Number(argOf("--variant", "0"));
 const port = Number(argOf("--port", "8110"));
 const cdp = Number(argOf("--cdp", "9333"));
 const shots = argOf("--shots", "/tmp/yanshi-samples");
@@ -852,6 +855,58 @@ function profileish(X, Y, W, H) {
   ];
 }
 
+
+/// **明暗小稿** ✓ —— 油画工序里"上色之前"该做的那一步 ✓，也是我上一轮得出的方法结论 ✓。
+///
+/// **为什么必须单开一个** ✓：前四轮我把"构图/明暗"的问题当成"笔法"问题 ✗ ⇒
+/// 每次都要跑五分钟的全尺寸上色版 ✓ 才看得出构图对不对 ✓ ⇒ 迭代慢到无法比较 ✗。
+/// 小稿相反 ✓：**只用三档明暗** ✓（暗 / 中间调 / 亮 ✓）、**大笔平涂** ✓、**不含任何细节** ✓ ⇒
+/// 四分之一尺寸下**几十秒**一版 ✓ ⇒ 才谈得上"画三版挑一版" ✓。
+///
+/// **尺寸一律按画面宽度的比例给** ✓（不是绝对像素 ✓）⇒ 小稿与全尺寸**构图完全一致** ✓。
+/// `variant` 用来比较**构图方案** ✓：0 = 人在中（当前 ✓）、1 = 人偏左（三分法 ✓）、2 = 拉近（人更大、灯出画 ✓）。
+function yanshiStudy(width, height, variant = 0) {
+  const W = width;
+  const H = height;
+  const X = (f) => W * f;
+  const Y = (f) => H * f;
+  const DARK = "#171820";
+  const MID = "#6f4a30";
+  const LIGHT = "#e6d3ae";
+  // 三档的"层次"用同一支色相推 ✓：小稿看的是**明暗关系** ✓，不是颜色 ✓。
+  const fills = [];
+  const big = (points, color, angle = Math.PI / 2) => fills.push(
+    ...fillPolygon(points, () => color, W * 0.11, W * 0.035, 0.35, angle),
+  );
+  if (variant === 2) {
+    // **拉近**：人更大、灯被裁掉一半 ✓ ⇒ 画面只有一个主体 + 一处高光 ✓（构图最干净 ✓）。
+    big([[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]], DARK, 0.4);
+    big([[X(-0.10), Y(0.30)], [X(0.62), Y(0.26)], [X(0.70), Y(0.78)], [X(-0.10), Y(0.84)]], MID, 1.4);
+    big([[X(0.30), Y(0.10)], [X(0.60), Y(0.09)], [X(0.62), Y(0.24)], [X(0.30), Y(0.25)]], LIGHT, 0.6);
+    big([[X(0.30), Y(0.44)], [X(0.56), Y(0.43)], [X(0.54), Y(0.60)], [X(0.31), Y(0.61)]], DARK, 0);
+    big([[X(0.86), Y(0.24)], [X(1.10), Y(0.22)], [X(1.10), Y(0.62)], [X(0.86), Y(0.60)]], LIGHT, Math.PI / 2);
+  } else if (variant === 1) {
+    // **三分法**：人偏左 ✓、灯在右上 ✓ ⇒ 视线从左下走到右上 ✓。
+    big([[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]], DARK, 0.4);
+    big([[X(0.06), Y(0.34)], [X(0.40), Y(0.30)], [X(0.44), Y(0.80)], [X(0.02), Y(0.84)]], MID, 1.4);
+    big([[X(0.14), Y(0.12)], [X(0.34), Y(0.10)], [X(0.36), Y(0.30)], [X(0.14), Y(0.32)]], LIGHT, 0.6);
+    big([[X(0.14), Y(0.48)], [X(0.34), Y(0.47)], [X(0.33), Y(0.64)], [X(0.15), Y(0.65)]], DARK, 0);
+    big([[X(0.62), Y(0.30)], [X(0.90), Y(0.28)], [X(0.92), Y(0.52)], [X(0.64), Y(0.54)]], LIGHT, Math.PI / 2);
+    big([[X(0.52), Y(0.40)], [X(0.62), Y(0.36)], [X(0.66), Y(0.90)], [X(0.56), Y(0.94)]], MID, 1.3);
+  } else {
+    // **在当前构图上把大关系画清楚** ✓（人略大一点 ✓、灯的光域收小 ✓）。
+    big([[-40, -40], [W + 40, -40], [W + 40, H + 40], [-40, H + 40]], DARK, 0.4);
+    big([[X(0.24), Y(0.32)], [X(0.56), Y(0.30)], [X(0.60), Y(0.80)], [X(0.20), Y(0.84)]], MID, 1.4);
+    big([[X(0.31), Y(0.14)], [X(0.48), Y(0.12)], [X(0.50), Y(0.32)], [X(0.31), Y(0.34)]], LIGHT, 0.6);
+    big([[X(0.30), Y(0.46)], [X(0.50), Y(0.45)], [X(0.49), Y(0.62)], [X(0.31), Y(0.63)]], DARK, 0);
+    big([[X(0.78), Y(0.30)], [X(1.02), Y(0.27)], [X(1.06), Y(0.56)], [X(0.80), Y(0.58)]], LIGHT, Math.PI / 2);
+    big([[X(0.66), Y(0.36)], [X(0.80), Y(0.32)], [X(0.86), Y(0.94)], [X(0.70), Y(0.98)]], MID, 1.3);
+  }
+  return [
+    { id: "study", name: "明暗小稿", strokes: asMedium("oil", 0.5, fills) },
+  ];
+}
+
 const WORKS = {
   "sample-oil": { width: 900, height: 640, build: oilLandscape },
   // **《偃师造人》** ✓（用户点题 ✓）：竖幅 ✓ ⇒ 两个人物的高度与"俯视"的关系才立得住 ✓。
@@ -926,7 +981,9 @@ for (const [workId, work] of Object.entries(WORKS)) {
   const docId = docOverride || workId;
   // **重置种子** ✓：同一份作品每次都画出**同一幅画** ✓。
   seed = 0x9e3779b9;
-  const layers = work.build(Math.round(work.width * scale), Math.round(work.height * scale));
+  const layers = study
+    ? yanshiStudy(Math.round(work.width * scale), Math.round(work.height * scale), variant)
+    : work.build(Math.round(work.width * scale), Math.round(work.height * scale));
   const strokes = layers.reduce((sum, layer) => sum + layer.strokes.length, 0);
   console.log(`  ${docId}：${layers.length} 层、${strokes} 笔 ⇒ 开始画…`);
   const started = Date.now();
