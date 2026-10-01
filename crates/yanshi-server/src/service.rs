@@ -98,6 +98,15 @@ pub struct Workspace {
     /// **键里带上会话** ✓ 是有意的：眼下 HTTP 层把会话写死成 `"session:http"` ✓（等于按文档 ✓），
     /// 但将来真做到"按连接区分会话"时 ✓，这里**不用改** ✓。
     open_changesets: BTreeMap<(String, String), ChangesetId>,
+    /// **处于事务中的那些"打开的变更集"** ✓（键同上一张表 ✓）。
+    ///
+    /// **设计对事务一个字都没写 ⇒ 记录选择** ✓：**事务 = 带失败回滚的变更集** ✓。
+    /// 依据只有工具表里的并列命名 ✓（`begin_changeset/…` 与 `begin_transaction/commit_transaction` ✓）——
+    /// 既然设计把它们分开列 ✓，就必须**有区别** ✓，否则就该合成一个名字 ✓。
+    /// 我取的区别是：**事务在"事务内的某次写操作失败"时，自动把已经落下的原子整体撤销** ✓
+    /// （变更集只分组 ✓、不回滚 ✓）。判定"写操作"用的是 `ToolSpec` 现成的 `mutating` ✓ ——
+    /// **读操作失败绝不回滚** ✗（否则查一次东西就把人家的编辑撤了 ✗）。
+    transactions: BTreeMap<(String, String), ChangesetId>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -132,6 +141,31 @@ impl Workspace {
             .cloned()
     }
 
+    /// **开始一个事务** ✓（设计 777 只给了名字 ⇒ 语义见 `transactions` 字段的说明 ✓）。
+    ///
+    /// 事务**同时**是一个变更集 ✓ ⇒ 事务里的原子能作为一组被撤销 ✓（复用既有能力 ✓，不另起一套 ✗）。
+    /// 已经有打开的变更集/事务 ⇒ `None` ✓（与 `begin_changeset` 同一考虑：报错比静默更诚实 ✓）。
+    pub fn begin_transaction(&mut self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        let changeset = self.begin_changeset(doc_id, session)?;
+        self.transactions
+            .insert((doc_id.to_owned(), session.to_owned()), changeset.clone());
+        Some(changeset)
+    }
+
+    /// 当前事务 ✓（`ToolRegistry::call` 用它决定"失败时要不要回滚" ✓）。
+    pub fn transaction(&self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        self.transactions
+            .get(&(doc_id.to_owned(), session.to_owned()))
+            .cloned()
+    }
+
+    /// 结束当前事务 ✓（收尾或回滚之后都要调它 ✓）。
+    pub fn close_transaction(&mut self, doc_id: &str, session: &str) -> Option<ChangesetId> {
+        let key = (doc_id.to_owned(), session.to_owned());
+        self.transactions.remove(&key);
+        self.open_changesets.remove(&key)
+    }
+
     /// 关闭（收尾或放弃）打开的变更集 ✓。
     pub fn close_changeset(&mut self, doc_id: &str, session: &str) -> Option<ChangesetId> {
         self.open_changesets
@@ -145,6 +179,7 @@ impl Workspace {
             documents: BTreeMap::new(),
             persist: None,
             open_changesets: BTreeMap::new(),
+            transactions: BTreeMap::new(),
             settings,
             created: 0,
         }
@@ -164,6 +199,7 @@ impl Workspace {
             settings,
             created: 0,
             open_changesets: BTreeMap::new(),
+            transactions: BTreeMap::new(),
         })
     }
 

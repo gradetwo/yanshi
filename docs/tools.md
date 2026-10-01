@@ -51,6 +51,15 @@ several rings, which xor of two overlapping shapes naturally produces, becomes o
 and the new shapes plus the two retired inputs share a single changeset so one withdrawal restores
 everything.
 
+`begin_transaction` and `commit_transaction` also live in that group. The design lists them beside the
+changeset tools and says nothing else at all, not even how the two differ, so the difference is recorded here:
+a transaction is a changeset that also rolls back. If a mutating tool call fails while a transaction is open,
+the atoms already committed inside it are withdrawn and the transaction closes, and the error response reports
+what was rolled back so the caller does not mistake it for a single failed step. Whether a call is mutating
+comes from the tool's own spec rather than a second list, so a failed read never rolls anything back - that
+would discard a caller's work because a lookup failed. Because a transaction is also a changeset, its atoms
+stay revertible as a group, and the check sits at the single point every tool call passes through.
+
 `begin_changeset`, `commit_changeset` and `abort_changeset` complete that group. `begin_changeset` opens a
 changeset for the document and session, and every commit from then on joins it automatically, because the
 auto-join lives at the single point all commits pass through rather than in each tool; `commit_changeset`
