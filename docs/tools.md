@@ -51,6 +51,16 @@ several rings, which xor of two overlapping shapes naturally produces, becomes o
 and the new shapes plus the two retired inputs share a single changeset so one withdrawal restores
 everything.
 
+`begin_changeset`, `commit_changeset` and `abort_changeset` complete that group. `begin_changeset` opens a
+changeset for the document and session, and every commit from then on joins it automatically, because the
+auto-join lives at the single point all commits pass through rather than in each tool; `commit_changeset`
+closes it while keeping the atoms, and `abort_changeset` withdraws them, reusing the same implementation as
+`revert_changeset` so the two cannot drift. The design names these tools without saying where an open
+changeset lives or what happens on repeated `begin`, so both choices are recorded: the state lives in the
+workspace keyed by document and session, and a second `begin` is an error rather than silently reusing or
+replacing the open one. Aborting withdraws rather than deletes, since the log is append-only, which also means
+that the abandonment itself can be withdrawn.
+
 `get_changesets` and `revert_changeset` live in the `changeset` group, which is not part of the default
 profiles, so the counts above are unchanged. `get_changesets` lists the changesets in the log and
 `revert_changeset` withdraws one by committing a `Revert` for each of its atoms, with those reverts
