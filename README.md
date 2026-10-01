@@ -83,6 +83,16 @@ the history panel lists the atom log with kind and actor
 filters plus a jump-back action, and the effects panel applies any adjustment or filter to the
 current layer (names come from the kernel, parameters default to the kernel's own values).
 
+Recent panels close the same kind of gap - a tool that existed with unit tests but no way to reach it. A PSD
+chosen in the import dialog is routed to the server, which reads the flattened composite and says so in the
+log; layer structure and masks are not imported, and the contract is read-only. The `标注` panel creates,
+edits, resolves and deletes annotations and draws clickable pins on the canvas. The `对象` panel lists the
+current layer's objects, turns one into a live-linked instance or groups several together, and converts any
+object into a shape or a path so it can be kept as vector work. The history panel marks checkpoints and jumps
+back to them; the log is append-only, so nothing is lost and the canvas can move forward again. Effects can be
+edited after they are added, by clicking one in the list, which loads its parameters and updates that same
+object instead of stacking another.
+
 Strokes accept an `appearance` block (the design's `advanced.appearance`): `size_curve`, `opacity_curve`
 and `pressure_curve` shape the stroke, `dynamics` with `seed` adds deterministic jitter, scatter, size
 and angle variation, a procedural `noise` or `grain` `texture` modulates the ink, and `paint_load`, `wetness` and `mixing`
