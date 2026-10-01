@@ -11,6 +11,7 @@
 //! 用法 ✓：`node scripts/make-samples.mjs [--only sample-oil] [--port 8110] [--cdp 9333]`
 
 import { writeFile } from "node:fs/promises";
+import { statfsSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const argOf = (name, fallback) => {
@@ -21,6 +22,52 @@ const only = argOf("--only", null);
 const port = Number(argOf("--port", "8110"));
 const cdp = Number(argOf("--cdp", "9333"));
 const shots = argOf("--shots", "/tmp/yanshi-samples");
+
+/// **开画前先看剩余空间** ✓ —— 这条来自一次真实的翻车 ✓：
+/// 一幅全尺寸作品要往 CAS 里写**成百上千张印章位图** ✓（`--draft` 只是拉开笔距 ✓，
+/// 不改画面尺寸 ✓ ⇒ 单张位图并不变小 ✓），写到一半 `ENOSPC` ✓ ⇒
+/// 不但这幅画废了 ✓，**整台机器上的工具全部失效** ✓（连"删除"都执行不了 ✓ ——
+/// 因为工具要先建输出文件才运行命令 ✗）。**宁可开画前拒绝，也不要画到一半把磁盘写满** ✓。
+/// **每一个"要写东西"的文件系统都要看** ✓ —— 只看其中一个是不够的 ✗：
+/// 2026-10-01 那次翻车正是这样 ✓ —— 根分区还有 **68 GB** ✓，而 **`/tmp` 只剩 1.81 GB** ✗
+///（`/tmp` 在本机是**另一个、小得多的**文件系统 ✓），我却把渲染的整个工作区放在 `/tmp` ✗
+/// ⇒ 撑爆 `/tmp` ✓；而**工具自己的输出文件也走 `/tmp`** ✗ ⇒ 连"删除"都执行不了 ✓，
+/// 整个开发流程一起趴下 ✓。教训：**先看清数据落在哪个挂载点** ✓，再谈"磁盘够不够" ✓。
+/// **判据要分清"谁需要多大"** ✓：真正吃空间的是**工作区**（几百张印章位图 ✓）⇒ 它所在的
+/// 文件系统要留足 ✓；而 `/tmp` 只需要装得下**小文件**（工具的输出捕获 ✓、node 编译缓存 ✓）
+/// ⇒ 对它要求 3 GB 会**误伤**本来没问题的渲染 ✗（本机 `/tmp` 是个约 2 GB 的小挂载点 ✓）。
+const REQUIRED_FOR_WORKSPACE = 3 * 1024 * 1024 * 1024;   // 3 GB ✓
+const REQUIRED_FOR_TMP = 256 * 1024 * 1024;              // 256 MB ✓
+const seen = new Set();
+const mounts = [];
+for (const path of [".", "/tmp"]) {
+  try {
+    const stats = statfsSync(path);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    mounts.push({
+      path,
+      bytes: stats.bavail * stats.bsize,
+      required: path === "/tmp" ? REQUIRED_FOR_TMP : REQUIRED_FOR_WORKSPACE,
+    });
+  } catch (_) { /* 这个路径读不到就跳过 ✓ */ }
+}
+const starved = mounts.filter((mount) => mount.bytes < mount.required);
+for (const mount of mounts) {
+  const needed = mount.required / 1024 ** 3;
+  console.log(
+    `开画前检查：${mount.path} 剩余 ${(mount.bytes / 1024 ** 3).toFixed(2)} GB` +
+    `（需要 ${needed < 1 ? Math.round(mount.required / 1024 ** 2) + " MB" : needed.toFixed(0) + " GB"}）` +
+    `${mount.bytes < mount.required ? " ✗" : " ✓"}`);
+}
+if (starved.length > 0) {
+  console.error(
+    `剩余空间不足：${starved.map((m) => `${m.path} 只剩 ${(m.bytes / 1024 ** 3).toFixed(2)} GB`).join("；")}。` +
+    `注意：渲染的工作区与 `+"`--shots`"+` 输出都**必须放在空间充足的那个文件系统上** ✓ ——` +
+    `把它们放进一个小挂载点（例如本机的 /tmp）会把那个挂载点写满，` +
+    `连带让所有依赖 /tmp 的工具一起失效。`);
+  process.exit(2);
+}
 // **迭代用的缩放** ✓：小图 ⇒ 笔数随之下降 ✓ ⇒ 秒级出图 ✓。
 // 画法里的所有尺寸/间距都乘了 `k = width / 900` ✓ ⇒ 缩小画布**自动**减少笔数 ✓。
 const scale = Number(argOf("--scale", "1"));
