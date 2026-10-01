@@ -257,7 +257,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <p style="opacity:.75;font-size:12px;margin:4px 0">
     支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。
   </p>
-  <input id="importFile" type="file" accept="image/*" />
+  <!-- `accept` 要**接受 PSD** ✓：否则用户在选择器里根本看不到自己的 `.psd` ✗。 -->
+  <input id="importFile" type="file" accept="image/*,.psd" />
   <hr />
   <h2>另存为副本</h2>
   <p style="opacity:.75;font-size:12px;margin:4px 0">
@@ -2101,7 +2102,44 @@ async function seedSampleIfEmpty(docId) {
 /// 走**设计规定的** `import_image`（10.2 导入组）+ 6.3 的「blob 先行」✓。
 /// 用原始像素（`image/x-yanshi-raw`）而不是原文件格式：内核的 RasterPatch 读的就是原始像素，
 /// 浏览器负责解码（PNG/JPEG/WebP 都能解），服务端因此不需要图像解码器 ✓。
+/// **导入 PSD** ✓（设计第 17 章的"只读导入" ✓）—— **走服务端** ✓，浏览器解不了 PSD ✗。
+///
+/// **为什么要分流** ✓：本函数上面那条路用 `createImageBitmap(file)` ✓（浏览器解码 ✓）——
+/// 它只认 PNG/JPEG/WebP ✓；用户选一个 `.psd` 会**直接抛错** ✗ ⇒ 在界面上表现为"**点了没反应**" ✗
+/// —— 正是我第 95 轮扫过的那一类**静默失败** ✗。所以这里**按签名**（`8BPS` ✓）认出来 ✓，
+/// 把**原始字节**交给服务端的 `import_psd` ✓（它只取**合成图** ✓、并会给**具体原因** ✓）。
+async function importPsdFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const upload = await fetch(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: bytes,
+  }).then((response) => response.json());
+  if (!upload.ok) {
+    log("导入 PSD 失败（上传）：" + (upload.error_code || (upload.context && upload.context.detail) || "unknown"), "#c33");
+    return;
+  }
+  const layerId = "psd_" + ulid();
+  const created = await callToolChecked("create_layer",
+    { layer_id: layerId, name: file.name || "PSD" }, "导入 PSD（新建图层）");
+  if (!created || !created.ok) return;
+  const imported = await callToolChecked("import_psd",
+    { layer_id: layerId, blob_hash: upload.blob_hash }, "导入 PSD");
+  if (imported && imported.ok) {
+    // **把"只导入了什么"讲清楚** ✓（只读契约 ✓）：用户该知道图层结构没有进来 ✓。
+    const source = imported.source || {};
+    log("已导入 PSD 的**合成图**（" + (source.width || "?") + "×" + (source.height || "?") +
+        "）—— 图层结构与蒙版没有导入（只读）");
+  }
+}
+
 async function importLocalImage(file) {
+  // **先按签名认 PSD** ✓（不靠扩展名 ✓ —— 扩展名不可靠 ✓）。
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (head.length === 4 && head[0] === 0x38 && head[1] === 0x42 && head[2] === 0x50 && head[3] === 0x53) {
+    await importPsdFile(file);
+    return;
+  }
   const bitmap = await createImageBitmap(file);
   const canvas = document.createElement("canvas");
   canvas.width = bitmap.width;
