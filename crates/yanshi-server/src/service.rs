@@ -427,8 +427,26 @@ impl Workspace {
                     height: document.state().height,
                     atoms: document.atom_count(),
                     head_seq: document.head_seq(),
-                    layers: document.state().layers.len(),
-                    objects: document.state().objects.len(),
+                    // **存活实体** ✓ —— 这里原来直接数 `state.*.len()` ✗，
+                    // 而那里面**包含墓碑** ✓（删除可撤销、日志可重放的基础 ✓）
+                    // ⇒ 同一个文档、同一瞬间会出现两个数 ✓：
+                    // 列表说"241 个对象" ✗、而 `list_objects` 说"0 个" ✓（实测 ✓）。
+                    // 本项目早就为 `get_document` 修过同一件事 ✓
+                    //（`document_summary.rs` 的用例 ✓），但我上一轮只修了**未打开文档**那一路 ✗
+                    // ⇒ 两条路**又不一致** ✓ —— 这正是"同一事实两处各算一遍"的必然结果 ✓。
+                    // 现在三处（`get_document` / 未打开 / 已打开）用**同一条谓词** ✓。
+                    layers: document
+                        .state()
+                        .layers
+                        .values()
+                        .filter(|layer| !layer.is_deleted())
+                        .count(),
+                    objects: document
+                        .state()
+                        .objects
+                        .values()
+                        .filter(|object| !object.is_deleted())
+                        .count(),
                     created_at: document.created_at(),
                     persisted: self.persist.is_some(),
                 },

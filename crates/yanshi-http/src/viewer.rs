@@ -750,6 +750,13 @@ async function initWasm() {
   } catch (error) {
     setWasmState("不可用", "#c33");
     log("WASM 内核不可用，退化为服务端渲染：" + error.message, "#c33");
+    // **没有内核 ⇒ 画布的唯一来源就是服务端** ✓ —— 这一条是用户实测逼出来的 ✓：
+    // 此前只有 `drawKernelRegion()` 会触发服务端补画 ✓，而它**只在有内核时才被调用** ✗
+    // ⇒ 没装 wasm-bindgen 的机器（`make run` 的常见情形 ✓）打开任何**含 heavy 内容**的文档
+    // （示例的画都是 `import_image` ✓）**一律空白** ✗ —— 用户看到的正是这个 ✓。
+    // 现在：一旦内核不可用 ✓ ⇒ 永久标记 `needsServerPixels` ✓（缩放、重绘、脏区都跟着补画 ✓）。
+    needsServerPixels = true;
+    queueServerBlit();
   }
 }
 
@@ -1292,6 +1299,9 @@ window.yanshiCallTool = (tool, args) => callTool(tool, args || {}, { refresh: fa
 /// 这不只是好看 ✓：画的过程会**暴露真实问题** ✓（本会话就是用这种方式发现了若干 bug ✓）。
 const SAMPLES = [
   { id: "sample-oil", label: "油画 · 风景", hint: "油画介质：鬃毛、载墨、湿画法混色" },
+  // **由仓库里的生成器画出来的** ✓（`scripts/make-samples.mjs` ✓，真介质、确定性、可复现 ✓）
+  // —— 这是"示例里能看到真实创作"的第一步 ✓，也是任何人 `node scripts/make-samples.mjs` 都能重画的 ✓。
+  { id: "sample-lake", label: "油画 · 湖畔写生", hint: "生成器作品：分层铺色、低阳、远岸与倒影" },
   { id: "sample-watercolor", label: "水彩 · 山与湖", hint: "水彩介质：渗开边界、边缘沉积、留白" },
   { id: "sample-brush", label: "笔刷 · 草木", hint: "曲线/动力学/纹理/湿笔（appearance）" },
   { id: "sample-reference", label: "功能清单 · 海报", hint: "文本（含中文）、图形、选区、蒙版、移动、导出" },
@@ -1315,6 +1325,14 @@ function renderSamples() {
     card.addEventListener("click", async () => {
       closeOpenDialog();
       await switchDocument(sample.id);
+      // **打开示例后按需把画面搬进来** ✓（空文档才做 ✓；已有内容则什么都不动 ✓）——
+      // 换一台机器时，示例文档原本**不存在** ✓ ⇒ `switchDocument` 只建了个空文档 ✓
+      // ⇒ 这里补上画面 ✓（否则用户看到的就是空白 ✓，用户实测过 ✓）。
+      if (await seedSampleIfEmpty(sample.id)) {
+        await resync();
+        await refreshPreview();
+        await refreshLayers();
+      }
     });
     box.appendChild(card);
   }
@@ -1761,6 +1779,61 @@ async function commitMediumBitmap(rgba, region, spec, stamps) {
 
 /// 导入本地图片：浏览器解码 → 原始 RGBA → 上传（`POST /api/blob`）→ `import_image`。
 ///
+/// **示例随应用发布** ✓ —— 任何机器第一次打开示例时，把仓库里带的**画面**导入 ✓。
+///
+/// **为什么需要它** ✓（用户实测 ✓）：此前示例只存在于**开发机的工作区**里 ✗
+/// ⇒ 换一台机器点"示例" ⇒ `switchDocument` 只是**新建了一个空文档** ✗
+/// ⇒ 用户看到的是**空白画布** ✓（"示例都是空白的" ✓）。
+/// 介质像素是浏览器里跑 WASM 得来的 ✓，没法随仓库以"笔"的形式瞬间重现 ✓
+/// ⇒ 因此把**画面**随仓库发（`assets/samples/*.png` ✓），
+/// 由查看器用**既有的导入路径**（`import_image` + blob 先行 ✓）搬进来 ✓。
+///
+/// **绝不覆盖** ✓：文档里已有对象就什么都不做 ✓（用户改过的示例永远是他的 ✓）。
+async function seedSampleIfEmpty(docId) {
+  if (!SAMPLES.some((sample) => sample.id === docId)) return false;
+  const listed = await callTool("list_objects", {}, { refresh: false }).catch(() => ({}));
+  if ((listed.objects || []).length > 0) return false;
+  let response;
+  try {
+    response = await fetch("/samples/" + encodeURIComponent(docId) + ".png");
+  } catch (_) {
+    return false;
+  }
+  if (!response.ok) return false;
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  const bytes = new Uint8Array(canvas.getContext("2d").getImageData(0, 0, bitmap.width, bitmap.height).data.buffer);
+  const upload = await fetch(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: bytes,
+  }).then((value) => value.json()).catch(() => ({}));
+  if (!upload.ok) {
+    log("示例画面上传失败：" + (upload.error_code || "unknown"), "#c33");
+    return false;
+  }
+  const layerId = "artwork";
+  const created = await callTool("create_layer", { layer_id: layerId, name: "作品" }, { refresh: false });
+  if (!created.ok && created.error_code !== "already_exists") {
+    log("示例画面建层失败：" + (created.error_code || "unknown"), "#c33");
+    return false;
+  }
+  const imported = await callTool("import_image", {
+    layer_id: layerId,
+    bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
+    region: { x: 0, y: 0, w: bitmap.width, h: bitmap.height },
+  }, { refresh: false });
+  if (!imported.ok) {
+    log("示例画面导入失败：" + (imported.error_code || "unknown"), "#c33");
+    return false;
+  }
+  log("示例画面已随应用导入（" + bitmap.width + "×" + bitmap.height + "）");
+  return true;
+}
+
 /// 走**设计规定的** `import_image`（10.2 导入组）+ 6.3 的「blob 先行」✓。
 /// 用原始像素（`image/x-yanshi-raw`）而不是原文件格式：内核的 RasterPatch 读的就是原始像素，
 /// 浏览器负责解码（PNG/JPEG/WebP 都能解），服务端因此不需要图像解码器 ✓。
@@ -2312,6 +2385,13 @@ async function refreshPreview(fromKernel = false) {
       setStatus({});
       if (state.socket && state.socket.readyState === 1) subscribeViewport();
       redraw();
+      // **无内核时把服务端整幅渲染真正画到画布上** ✓ —— `redraw()` 走的是"内核补丁"那条路 ✓，
+      // 没有内核时它什么也画不出来 ✗（实测：`preview` 加载成功、画布仍是 0 墨 ✓）。
+      // `blitServerViewport()` 是**自洽**的（自己取服务端像素并画进画布 ✓）⇒ 直接用它 ✓。
+      if (!state.wasm) {
+        needsServerPixels = true;
+        queueServerBlit();
+      }
     };
     preview.src = value.thumb_url + "&t=" + Date.now();
     setStatus({ rendered: value.head_seq !== undefined ? value.head_seq : undefined, dirty: 0 });

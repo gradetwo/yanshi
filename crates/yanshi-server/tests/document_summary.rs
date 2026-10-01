@@ -201,3 +201,90 @@ fn closed_documents_report_their_real_counts() {
     assert!(while_closed.persisted, "磁盘上仍然保留 ✓");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **三条路的计数必须是同一个数** ✓（打开中 / 关闭后 / `get_document` ✓）。
+///
+/// **这条用例的来历** ✓：用户报告"示例打开都是空白" ✓，我去量 `default` 文档 ✓，
+/// 发现**同一瞬间**列表说"241 个对象" ✗、而 `list_objects` 说"0 个" ✓ ——
+/// 根因是列表对**已打开**的文档直接数 `state.objects.len()` ✓（**含墓碑** ✗），
+/// 而我上一轮只修了**未打开**那一路 ✓ ⇒ 两条路又不一致 ✓。
+/// **教训** ✓：同一个事实只应有一处算法 ✓；"两处各算一遍"迟早会分叉 ✓。
+#[test]
+fn list_and_summary_agree_on_live_counts_for_open_and_closed_documents() {
+    let mut root = std::env::temp_dir();
+    root.push(format!(
+        "yanshi-live-counts-{}-{}",
+        std::process::id(),
+        yanshi_core::now_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            NewDocument::new("counts", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "counts", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        for slot in 0..3 {
+            registry.call(
+                &mut ctx,
+                "draw_shape",
+                &json!({"layer_id": "L", "object_id": format!("b{slot}"), "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 4.0, "y": 4.0, "w": 6.0, "h": 6.0}},
+                    "color": {"r": 30, "g": 30, "b": 30, "a": 255}}}),
+            );
+        }
+        // **删掉两个** ✓ ⇒ 存活 1 个 ✓、墓碑 2 个 ✓（这就是分叉的土壤 ✓）。
+        for slot in 0..2 {
+            registry.call(
+                &mut ctx,
+                "delete_object",
+                &json!({"object_id": format!("b{slot}")}),
+            );
+        }
+    }
+    let listed = |workspace: &mut Workspace| -> (usize, usize) {
+        let summary = workspace
+            .list_documents()
+            .expect("列表应成功")
+            .into_iter()
+            .find(|item| item.doc_id == "counts")
+            .expect("应能找到该文档");
+        (summary.layers, summary.objects)
+    };
+    let live_objects = |workspace: &mut Workspace| -> usize {
+        let listed = {
+            let mut ctx =
+                ToolContext::new(workspace, "counts", "human:1", "session:test").with_owner(true);
+            registry.call(&mut ctx, "list_objects", &json!({}))
+        };
+        listed["objects"].as_array().map(Vec::len).unwrap_or(0)
+    };
+    // **打开中** ✓：列表与 `list_objects` 必须一致 ✓（修复前是 (1, 3) vs 1 ✗）。
+    let open_side = listed(&mut workspace);
+    assert_eq!(
+        open_side.1,
+        live_objects(&mut workspace),
+        "打开中：列表对象数应等于 list_objects"
+    );
+    assert_eq!(open_side, (1, 1), "打开中：1 层 1 个存活对象（墓碑不算 ✓）");
+    // **`get_document` 那一侧由本文件第一条用例覆盖** ✓（它比较 `get_document` 与 `list_*` ✓）；
+    // 这里只钉"列表（打开中）↔列表（关闭后）↔list_objects"三者 ✓。
+    // 注：我第一版在这里写了 `workspace.get_document_summary(...)` ✗ —— 那个方法不存在 ✓，
+    // 编译当场报错 ✓（幸好不是靠肉眼发现 ✓）。
+    // **关闭后** ✓：同一个数 ✓（走的是磁盘折叠那一路 ✓）。
+    workspace.close_document("counts");
+    assert_eq!(
+        listed(&mut workspace),
+        open_side,
+        "关闭后与打开中必须一致 ✓"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
