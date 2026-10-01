@@ -2658,7 +2658,10 @@ async function refreshHistory() {
       await refreshPreview();
       await refreshHistory();
     });
-    row.append(seq, kindLabel, actorLabel, jump);
+    // **别忘了把它挂上去** ✓ —— 我第一版只**创建**了「详情」按钮 ✗、没加进 `append` ✓
+    // ⇒ 真机验收里按钮文字只有「回到此处」✗ ⇒ **创建了不等于挂上了** ✓
+    //（本会话第二次同类 ✓：另一处是「写了补丁但写后校验失败」✓ ⇒ 两次都是**看执行结果才发现** ✓）。
+    row.append(seq, kindLabel, actorLabel, detail, jump);
     list.appendChild(row);
   }
   if (atoms.length === 0) list.textContent = "（没有匹配的原子）";
