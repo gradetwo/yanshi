@@ -443,7 +443,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          ⇒ 和"标注"一样，是"**工具就绪、用户够不到**" ✓。这一块补上入口 ✓。 -->
     <div class="card">
       <h2>对象</h2>
-      <div class="hint">勾选对象后可「实例化」或「编组」✓；实例与 master 联动 ✓（设计 9.1 ✓）。</div>
+      <div class="hint">勾选对象后可「实例化」「编组」「变换」✓（实例与 master 联动 ✓，设计 9.1 ✓）。<br />
+        <b>「重采样」只作用于光栅对象</b> ✓（导入的图片、PSD 合成图 ✓）—— 手画的笔迹是 `stroke` ✗，
+        服务端会明确拒绝并告知类型 ✓（先用「转为形状」或改为导入图片 ✓）。</div>
       <div class="toolbar">
         <button id="objectRefresh" type="button">刷新</button>
         <button id="objectInstance" type="button">实例化</button>
@@ -451,6 +453,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectToShape" type="button">转为形状</button>
         <button id="objectToPath" type="button">转为路径</button>
         <button id="objectTransform" type="button">变换</button>
+        <button id="objectResample" type="button">重采样</button>
       </div>
       <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center">
         <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
@@ -3072,6 +3075,33 @@ async function transformCheckedObjects() {
   await refreshObjects();
 }
 
+/// **重采样** ✓（设计 §792 的 retouch 组 ✓）—— `resample` 此前在查看器里**零引用** ✗
+/// ⇒ 用户够不到 ✓（"把这一笔的像素换个分辨率" ✓ 是修图里很常见的一步 ✓）。
+///
+/// **真实签名** ✓（先读规格 ✓）：`{object_id, width?, height?, scale?, filter?}` ✓
+/// —— `width/height` 与 `scale` **二选一** ✓；`filter` 缺省 bilinear ✓（介质是连续调 ✓）。
+/// **非破坏** ✓：产出**新 blob** ✓ + `supersede` ✓ ⇒ 原像素仍在日志里 ✓（可撤销 ✓）。
+///
+/// **取舍** ✓：界面只给**缩放百分比** ✓（用 `scale` ✓）—— 直接填目标宽高在编辑器里无法预知结果尺寸 ✓，
+/// 而"放大到 150%"是画家能预期的东西 ✓。
+async function resampleCheckedObjects() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要重采样的对象 ✓", "#c33"); return; }
+  const percent = Number(($("transformScale") || {}).value || 100);
+  if (!(percent > 0)) { log("缩放百分比要大于 0 ✓", "#c33"); return; }
+  if (percent === 100) { log("缩放 100% ⇒ 没有可重采样的量 ✓（改一个数再点 ✓）", "#c33"); return; }
+  let done = 0;
+  for (const objectId of ids) {
+    const result = await callToolChecked("resample", { object_id: objectId, scale: percent / 100 }, "重采样对象");
+    if (result && result.ok) done += 1;
+  }
+  if (done > 0) {
+    log("已重采样 " + done + " 个对象 ✓（" + percent + "% ✓，非破坏：原像素仍在日志里 ✓）");
+    await resync();
+  }
+  await refreshObjects();
+}
+
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   setupStoragePanel();
@@ -3093,6 +3123,8 @@ function setupObjectPanel() {
   if (toShape) toShape.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_shape", "转为形状", "shape_id", "shape_");
   });
+  const resample = $("objectResample");
+  if (resample) resample.addEventListener("click", () => { void resampleCheckedObjects(); });
   const transform = $("objectTransform");
   if (transform) transform.addEventListener("click", () => { void transformCheckedObjects(); });
   const toPath = $("objectToPath");
