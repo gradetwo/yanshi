@@ -131,6 +131,9 @@ pub struct Stash {
 ///    （正确性最关键的那半 ✓），压缩留给专门一轮 ✓。
 #[derive(Clone, Debug, Default)]
 pub struct BlobLifecycle {
+    /// **本次分级考虑了几份文档** ✓ —— 分类是否可信，看这个数一眼就知道 ✓
+    ///（它少于磁盘上的文档数 ⇒ 结论不可信 ✓，这是那次险些误删换来的可观测项 ✓）。
+    pub documents_considered: usize,
     /// 活跃级的 blob 数 ✓（当前 HEAD 折叠状态引用的 ✓）。
     pub active_count: usize,
     /// 活跃级的字节数 ✓。
@@ -219,9 +222,26 @@ impl Workspace {
     }
 
     /// **统计 blob 的三级生命周期** ✓（设计 §6.3 ✓，只读 ✓）。
-    pub fn blob_lifecycle(&self, ttl_days: i64, now_ms: i64) -> Result<BlobLifecycle> {
+    ///
+    /// **先把所有文档读进来** ✓ —— 这条是**一次险些删掉 1.09 GB 活数据**换来的 ✗：
+    /// 服务端**惰性打开**文档 ✓ ⇒ 只打开一份空文档时 ✓，别的文档的日志**根本不在内存里** ✗
+    /// ⇒ 它们引用的 blob 会被判成"无人引用"的孤儿 ✗ ⇒ 一旦带 `confirm` 跑 ✓ **活数据就没了** ✗✗。
+    /// 所以这里先按磁盘上的文档清单逐份打开 ✓，**再**做分级 ✓；
+    /// 并把"考虑了几份文档"一并报出来 ✓（分类是否可信，看一眼就知道 ✓）。
+    pub fn blob_lifecycle(&mut self, ttl_days: i64, now_ms: i64) -> Result<BlobLifecycle> {
+        // ① 磁盘上的文档全部载入 ✓（`list_documents` 只列**已加载**的 ✗ ⇒ 用持久层那份清单 ✓）。
+        let known: Vec<String> = match &self.persist {
+            Some(persist) => persist.list_documents()?,
+            None => self.documents.keys().cloned().collect(),
+        };
+        for doc_id in &known {
+            if !self.documents.contains_key(doc_id) {
+                // 打不开就当它不存在 ✓（分级会因此偏保守：宁可把 blob 当孤儿也不误判为活跃 ✗）。
+                let _ = self.open_document(doc_id);
+            }
+        }
         use std::collections::{BTreeMap, BTreeSet};
-        // ① **根集** ✓：全日志原子引用闭包 ✓ + **Stash 里的原子** ✓（见结构体说明 ✓）。
+        // ② **根集** ✓：全日志原子引用闭包 ✓ + **Stash 里的原子** ✓（见结构体说明 ✓）。
         let mut roots: BTreeSet<String> = BTreeSet::new();
         let mut active: BTreeSet<String> = BTreeSet::new();
         for document in self.documents.values() {
@@ -251,7 +271,11 @@ impl Workspace {
         for entry in self.store.list()? {
             sizes.insert(entry.blob_hash.to_string(), (entry.size, entry.created_at));
         }
-        let mut report = BlobLifecycle::default();
+        // 直接构造 ✓（clippy 提示：用 `Default::default()` 之后再逐字段赋值不是好写法 ✓）。
+        let mut report = BlobLifecycle {
+            documents_considered: self.documents.len(),
+            ..BlobLifecycle::default()
+        };
         let ttl_ms = ttl_days.max(0) * 24 * 60 * 60 * 1000;
         for (hash, (bytes, created_at)) in &sizes {
             let is_active = active.contains(hash);

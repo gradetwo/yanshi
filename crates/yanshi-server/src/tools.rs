@@ -4716,6 +4716,8 @@ fn write_blob_gc(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "ok": true,
         "dry_run": dry_run,
         "ttl_days": ttl_days,
+        // **考虑了几份文档** ✓：这个数若小于磁盘上的文档数 ⇒ 分级不可信 ✓（勿信勿删 ✓）。
+        "documents_considered": report.documents_considered,
         "active": {"blobs": report.active_count, "bytes": report.active_bytes},
         "history": {"blobs": report.history_count, "bytes": report.history_bytes},
         "orphan": {"blobs": report.orphan_count, "bytes": report.orphan_bytes},
