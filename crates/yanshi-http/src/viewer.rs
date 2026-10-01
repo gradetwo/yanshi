@@ -469,12 +469,16 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectToPath" type="button">转为路径</button>
         <button id="objectTransform" type="button">变换</button>
         <button id="objectResample" type="button">重采样</button>
+        <button id="objectRestyle" type="button">改笔触</button>
       </div>
       <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center">
         <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
         <label>缩放% <input id="transformScale" type="number" value="100" step="10" style="width:64px" /></label>
         <label>dx <input id="transformDx" type="number" value="0" step="10" style="width:56px" /></label>
         <label>dy <input id="transformDy" type="number" value="0" step="10" style="width:56px" /></label>
+        <label>笔触色 <input id="strokeColor" type="color" value="#c81e3c" /></label>
+        <label>粗细 <input id="strokeSize" type="number" value="8" step="2" style="width:56px" /></label>
+        <label>不透明 <input id="strokeOpacity" type="number" value="1" min="0" max="1" step="0.1" style="width:56px" /></label>
       </div>
       <div id="objectList" class="annotation-list"></div>
     </div>
@@ -3389,6 +3393,37 @@ async function transformCheckedObjects() {
   await refreshObjects();
 }
 
+/// **修改笔触** ✓（`update_stroke`，设计 10.3 的**三层参数** ✓）——
+/// 它此前在查看器里**零引用** ✗ ⇒ 画完之后**改不了这一笔** ✓（颜色、粗细、不透明度都定死了 ✗）。
+///
+/// **真实签名** ✓（先读规格 ✓）：
+/// `{object_id, core?: {points|points_patch, brush, color, size, opacity, blend_mode}, preset?, advanced?}` ✓
+/// —— 界面只动 **core** 里的三样 ✓（**颜色 / 粗细 / 不透明度** ✓），这是画完最常想调的三样 ✓；
+/// `points`/`advanced` 留给工具与代理 ✓（界面里手改多边形没必要 ✗）。
+///
+/// **只作用于笔迹** ✓（`stroke` ✓）：与「重采样」同一条约束 ✓ —— 光栅对象走那条路 ✓，
+/// 服务端对类型不符会**明确拒绝并告知类型** ✓（那条信息本身就是产品的一部分 ✓）。
+async function restyleCheckedObjects() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log('先勾选要改的笔迹 ✓', '#c33'); return; }
+  const core = {
+    color: ($('strokeColor') || {}).value || '#c81e3c',
+    size: Number(($('strokeSize') || {}).value || 8),
+    opacity: Number(($('strokeOpacity') || {}).value || 1),
+  };
+  if (!(core.size > 0)) { log('粗细要大于 0 ✓', '#c33'); return; }
+  let done = 0;
+  for (const objectId of ids) {
+    const result = await callToolChecked('update_stroke', { object_id: objectId, core }, '修改笔触');
+    if (result && result.ok) done += 1;
+  }
+  if (done > 0) {
+    log('已改 ' + done + ' 条笔触 ✓（色 ' + core.color + '、粗 ' + core.size + '、不透明 ' + core.opacity + '）');
+    await resync();
+  }
+  await refreshObjects();
+}
+
 /// **重采样** ✓（设计 §792 的 retouch 组 ✓）—— `resample` 此前在查看器里**零引用** ✗
 /// ⇒ 用户够不到 ✓（"把这一笔的像素换个分辨率" ✓ 是修图里很常见的一步 ✓）。
 ///
@@ -3440,6 +3475,8 @@ function setupObjectPanel() {
   if (toShape) toShape.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_shape", "转为形状", "shape_id", "shape_");
   });
+  const restyle = $("objectRestyle");
+  if (restyle) restyle.addEventListener("click", () => { void restyleCheckedObjects(); });
   const resample = $("objectResample");
   if (resample) resample.addEventListener("click", () => { void resampleCheckedObjects(); });
   const transform = $("objectTransform");

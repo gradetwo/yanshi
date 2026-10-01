@@ -71,6 +71,10 @@ changeset, parents and full payload, with a clear refusal when the id is unknown
 kernel already had the by-id lookup, so this only exposes it to the tool layer, and the history panel can now show
 what a selected atom did.
 
+The object panel can also restyle a stroke, changing its colour, size and opacity through update_stroke, which
+had no test coverage at all until this round added two: one checks that the object data and the rendered pixels
+both change, and the other that a partial core block merges rather than replacing the fields it does not mention.
+
 `list_comments` closes an asymmetry in the collaboration channel that a browser check exposed. Comments could
 always be written, but no tool could read them back: the log and atom-search tools return metadata only, by
 design, since they are the polling channel and a search respectively, so the comment text was stored in the
