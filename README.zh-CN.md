@@ -49,7 +49,7 @@ make ci           # fmt、clippy、测试、WASM 运行时冒烟检查
 性能预算、10 万原子折叠 fuzz、4K 剖面等长任务带 `#[ignore]`，在 GitHub 上执行：
 
 ```bash
-gh workflow run heavy.yml && gh run list            # 每夜与手动触发；日志上传为 artifact
+gh workflow run heavy.yml && gh run list            # 仅手动触发；日志上传为 artifact
 cargo test --release --workspace -- --ignored --nocapture   # 或本地执行
 ```
 

@@ -50,7 +50,7 @@ make ci           # fmt, clippy, tests, WASM runtime smoke check
 Long jobs (perf budgets, 100k-atom fold fuzz, 4K profile) are `#[ignore]`d and run on GitHub:
 
 ```bash
-gh workflow run heavy.yml && gh run list            # nightly + on demand; logs are artifacts
+gh workflow run heavy.yml && gh run list            # manual only; logs are artifacts
 cargo test --release --workspace -- --ignored --nocapture   # or run them locally
 ```
 
