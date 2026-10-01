@@ -381,6 +381,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         </select>
         <select id="effectName"></select>
         <button id="effectApply">应用</button>
+        <button id="effectNew" type="button">＋新建</button>
       </div>
       <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
         <input id="effectParams" value="{}" style="flex:1; font-family:ui-monospace,monospace" />
@@ -2438,20 +2439,42 @@ async function applyEffect() {
       return;
     }
   }
-  const tool = kind === "adjustment" ? "add_adjustment" : "add_filter";
-  const args =
-    kind === "adjustment"
-      ? { layer_id: state.layerId, adjustment_type: name, params }
-      : { layer_id: state.layerId, filter_name: name, params };
-  const value = await callTool(tool, args, { refresh: false });
-  if (!value.ok) {
-    log("应用失败：" + (value.error_code || "unknown") + " " +
-        ((value.context && value.context.detail) || ""), "#c33");
-    return;
+  // **"应用"与"更新"分流** ✓：正在编辑某个效果时就**改它** ✓，否则**新建** ✓。
+  //
+  // `update_adjustment` / `update_filter`（设计 §792 一带的调整与滤镜 ✓）此前在查看器里**零引用** ✗
+  // ⇒ 用户"加完想再调一调"做不到 ✓ —— 与"标注/实例组/检查点/矢量互转"是**同一类缺口** ✓。
+  // 两条工具的真实签名 ✓：`{object_id, params（覆盖）, opacity?}` ✓。
+  let value;
+  if (editingEffectId) {
+    const update = kind === "adjustment" ? "update_adjustment" : "update_filter";
+    value = await callToolChecked(update, { object_id: editingEffectId, params }, "更新" + (kind === "adjustment" ? "调整" : "滤镜"));
+    if (value && value.ok) log("已更新「" + name + "」的参数 ✓");
+  } else {
+    const tool = kind === "adjustment" ? "add_adjustment" : "add_filter";
+    const args =
+      kind === "adjustment"
+        ? { layer_id: state.layerId, adjustment_type: name, params }
+        : { layer_id: state.layerId, filter_name: name, params };
+    value = await callTool(tool, args, { refresh: false });
+    if (!value.ok) {
+      log("应用失败：" + (value.error_code || "unknown") + " " +
+          ((value.context && value.context.detail) || ""), "#c33");
+      return;
+    }
+    log("已应用" + (kind === "adjustment" ? "调整" : "滤镜") + " " + name);
   }
-  log("已应用" + (kind === "adjustment" ? "调整" : "滤镜") + " " + name);
   await refreshEffects();
   await refreshPreview();
+}
+
+/// **当前正在编辑的效果** ✓（`null` = 新建模式 ✓）。
+let editingEffectId = null;
+
+/// 退出编辑态 ✓（回到"新建" ✓）。
+function clearEffectEditing() {
+  editingEffectId = null;
+  const button = $("effectApply");
+  if (button) button.textContent = "应用";
 }
 
 /// 列出当前文档的调整/滤镜对象（含**实际生效的参数**与顺序）。
@@ -2475,8 +2498,29 @@ async function refreshEffects() {
     row.textContent =
       name + " " + JSON.stringify(effect.params || {}) +
       " @" + (effect.layer_id || "-");
+    // **点一行就进入"编辑它"** ✓（这也是"更新"与"新建"的分界 ✓）。
+    row.style.cursor = "pointer";
+    row.title = "点一下：编辑这个" + (effect.type === "adjustment" ? "调整" : "滤镜") + " ✓";
+    if (effect.object_id === editingEffectId) row.style.outline = "1px solid #ffd166";
+    row.addEventListener("click", () => {
+      editingEffectId = effect.object_id || null;
+      // 把**它现在的参数**装进输入框 ✓ —— 用户改一个数就能更新 ✓，不必从头敲 JSON ✓。
+      const box = $("effectParams");
+      if (box) box.value = JSON.stringify(effect.params || {});
+      const kindBox = $("effectKind");
+      if (kindBox) kindBox.value = (effect.adjustment_type || effect.type === "adjustment") ? "adjustment" : "filter";
+      const button = $("effectApply");
+      if (button) button.textContent = "更新这个";
+      log("正在编辑「" + name + "」✓ —— 改好参数后点「更新这个」✓");
+      renderEffectsRowHighlight();
+    });
     list.appendChild(row);
   }
+}
+
+/// 重画效果行的选中描边 ✓（点选之后把高亮挪到那一行 ✓）。
+function renderEffectsRowHighlight() {
+  void refreshEffects();
 }
 
 /// 历史浏览（设计 13.2）：数据源是原子日志，支持按原子步进、按 actor / 类型筛选。
@@ -2902,6 +2946,14 @@ async function convertCheckedObjects(tool, what, idField, prefix) {
 
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
+  const fresh = $("effectNew");
+  if (fresh) fresh.addEventListener("click", () => {
+    clearEffectEditing();
+    const box = $("effectParams");
+    if (box) box.value = "{}";
+    log("已切回新建模式 ✓");
+    void refreshEffects();
+  });
   const refresh = $("objectRefresh");
   if (refresh) refresh.addEventListener("click", () => { void refreshObjects(); });
   const instance = $("objectInstance");
