@@ -87,8 +87,8 @@ Recent panels close the same kind of gap - a tool that existed with unit tests b
 chosen in the import dialog is routed to the server, which reads the flattened composite and says so in the
 log; layer structure and masks are not imported, and the contract is read-only. The `标注` panel creates,
 edits, resolves and deletes annotations and draws clickable pins on the canvas. The `对象` panel lists the
-current layer's objects, turns one into a live-linked instance or groups several together, and converts any
-object into a shape or a path so it can be kept as vector work. The history panel marks checkpoints and jumps
+current layer's objects, turns one into a live-linked instance, groups several together, rotates, scales or
+moves them, and converts any object into a shape or a path so it can be kept as vector work. The history panel marks checkpoints and jumps
 back to them; the log is append-only, so nothing is lost and the canvas can move forward again. Effects can be
 edited after they are added, by clicking one in the list, which loads its parameters and updates that same
 object instead of stacking another.

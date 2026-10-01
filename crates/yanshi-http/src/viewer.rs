@@ -450,6 +450,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectGroup" type="button">编组</button>
         <button id="objectToShape" type="button">转为形状</button>
         <button id="objectToPath" type="button">转为路径</button>
+        <button id="objectTransform" type="button">变换</button>
+      </div>
+      <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center">
+        <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
+        <label>缩放% <input id="transformScale" type="number" value="100" step="10" style="width:64px" /></label>
+        <label>dx <input id="transformDx" type="number" value="0" step="10" style="width:56px" /></label>
+        <label>dy <input id="transformDy" type="number" value="0" step="10" style="width:56px" /></label>
       </div>
       <div id="objectList" class="annotation-list"></div>
     </div>
@@ -2944,6 +2951,41 @@ async function convertCheckedObjects(tool, what, idField, prefix) {
   await refreshObjects();
 }
 
+/// **对象变换** ✓（设计 §783）—— `transform_object` 此前在查看器里**零引用** ✗ ⇒
+/// "**旋转 / 缩放 / 平移一个对象**"完全够不到 ✓，而这是画家最常用的动作之一 ✓。
+///
+/// **真实签名** ✓（先读规格 ✓）：`{object_id, rotate:{degrees}, scale:{x,y}, translate:{dx,dy}, anchor?, compose?}` ✓
+/// —— **可以一次给多项** ✓；`anchor` 缺省是**对象包围盒的中心** ✓（符合直觉 ✓），`compose` 缺省 true ✓（叠加 ✓）。
+///
+/// **取舍** ✓：缩放按**百分比**输入 ✓（画家想的是"放大到 150%" ✓，不是 ×1.5 的小数 ✓）；
+/// 四个输入都为"中性值"（0°/100%/0/0）时**不发请求** ✓（避免提交一条什么都没变的原子 ✗）。
+async function transformCheckedObjects() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要变换的对象 ✓", "#c33"); return; }
+  const degrees = Number(($("transformRotate") || {}).value || 0);
+  const percent = Number(($("transformScale") || {}).value || 100);
+  const dx = Number(($("transformDx") || {}).value || 0);
+  const dy = Number(($("transformDy") || {}).value || 0);
+  const scale = percent / 100;
+  const neutral = degrees === 0 && percent === 100 && dx === 0 && dy === 0;
+  if (neutral) { log("角度 0°、缩放 100%、位移 0 ⇒ 没有可变换的量 ✓（改一个数再点 ✓）", "#c33"); return; }
+  let done = 0;
+  for (const objectId of ids) {
+    const args = { object_id: objectId, compose: true };
+    if (degrees !== 0) args.rotate = { degrees };
+    if (percent !== 100) args.scale = { x: scale, y: scale };
+    if (dx !== 0 || dy !== 0) args.translate = { dx, dy };
+    const result = await callToolChecked("transform_object", args, "变换对象");
+    if (result && result.ok) done += 1;
+  }
+  if (done > 0) {
+    log("已变换 " + done + " 个对象 ✓（角度 " + degrees + "°、缩放 " + percent + "%、位移 " + dx + "," + dy + "）");
+    // **变换会改变呈现** ✓ ⇒ 走一次 resync ✓（服务端权威像素 ✓）。
+    await resync();
+  }
+  await refreshObjects();
+}
+
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   const fresh = $("effectNew");
@@ -2964,6 +3006,8 @@ function setupObjectPanel() {
   if (toShape) toShape.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_shape", "转为形状", "shape_id", "shape_");
   });
+  const transform = $("objectTransform");
+  if (transform) transform.addEventListener("click", () => { void transformCheckedObjects(); });
   const toPath = $("objectToPath");
   if (toPath) toPath.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_path", "转为路径", "path_id", "path_");
