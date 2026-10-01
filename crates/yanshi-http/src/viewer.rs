@@ -1358,6 +1358,11 @@ const SAMPLES = [
   // **由仓库里的生成器画出来的** ✓（`scripts/make-samples.mjs` ✓，真介质、确定性、可复现 ✓）
   // —— 这是"示例里能看到真实创作"的第一步 ✓，也是任何人 `node scripts/make-samples.mjs` 都能重画的 ✓。
   { id: "sample-lake", label: "油画 · 湖畔写生", hint: "生成器作品：分层铺色、低阳、远岸与倒影" },
+  // **《偃师造人》以"草稿"登记** ✓ —— 标签说实话 ✓：两处致命伤（同心环 ✗、白框 ✗）已修 ✓，
+  // 故事也读得出来 ✓（油灯、朱衣造人、敞开的胸腔与铜枢、右侧偃师的侧影 ✓），
+  // 但它仍是**粗放的油画速写** ✗ ⇒ 不冒充成完成品 ✓。
+  { id: "sample-yanshi", label: "油画 · 偃师造人（草稿）",
+    hint: "生成器作品 1039 笔：统一光源、绝对笔尖、逐层私有画布" },
   { id: "sample-watercolor", label: "水彩 · 山与湖", hint: "水彩介质：渗开边界、边缘沉积、留白" },
   { id: "sample-brush", label: "笔刷 · 草木", hint: "曲线/动力学/纹理/湿笔（appearance）" },
   { id: "sample-reference", label: "功能清单 · 海报", hint: "文本（含中文）、图形、选区、蒙版、移动、导出" },
@@ -2112,6 +2117,15 @@ async function switchDocument(docId, token) {
     await loadDocumentData();
   } else {
     await ensureDocument();
+  }
+  // **按 id 打开示例也要种入画面** ✓ —— 此前种入只挂在"点示例卡片"上 ✗
+  // ⇒ 收藏的链接、程序化打开（子 agent 的脚本 ✓）都只会得到一个**空文档** ✓，
+  // 而那看起来就像"示例是坏的" ✗（我自己的探针就这样误判过一次 ✓：按 id 切过去 ⇒ 墨 0 ✗）。
+  // `seedSampleIfEmpty` 只在"是已知示例 **且** 文档为空"时才动作 ✓ ⇒ 用户改过的示例绝不被覆盖 ✓。
+  if (await seedSampleIfEmpty(state.docId)) {
+    await resync();
+    await refreshPreview();
+    await refreshLayers();
   }
 }
 

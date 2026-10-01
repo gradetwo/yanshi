@@ -1018,12 +1018,13 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
 ///
 /// **白名单** ✓（与品牌资源同一考虑 ✓）：只发 `assets/samples` 下、名字在清单里的 PNG ✓，
 /// 不做路径拼接 ✗ ⇒ 不可能借它读到仓库里的别的文件 ✓。
-const SAMPLE_FILES: [&str; 5] = [
+const SAMPLE_FILES: [&str; 6] = [
     "sample-oil.png",
     "sample-watercolor.png",
     "sample-brush.png",
     "sample-reference.png",
     "sample-lake.png",
+    "sample-yanshi.png",
 ];
 
 fn sample_asset(file: &str) -> Response {
