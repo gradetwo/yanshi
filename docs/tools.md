@@ -71,6 +71,12 @@ changeset, parents and full payload, with a clear refusal when the id is unknown
 kernel already had the by-id lookup, so this only exposes it to the tool layer, and the history panel can now show
 what a selected atom did.
 
+Every toolbar button is checked to have a non-empty icon by a guard test that reads the viewer source, because
+the renderer falls back to an empty svg and produces a button that is both invisible and unclickable. That had
+already happened: the annotation tool I added two rounds ago shipped without an icon, which I found by
+cross-checking the tool table against the icon table rather than by looking at the page, and the guard was then
+proven non-vacuous by removing the icon again and watching it fail with the tool named.
+
 The plugin medium mechanism was verified end to end this round rather than assumed. The viewer offers six
 mediums, example, oil, watercolour, marker, pencil and pixel, each a dependency-free cdylib compiled to
 wasm32-unknown-unknown and committed under assets/mediums, and choosing oil with the medium tool paints through the

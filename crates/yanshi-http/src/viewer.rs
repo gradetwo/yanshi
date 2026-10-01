@@ -4769,6 +4769,10 @@ async function commitShape() {
 // "改了结构忘了同步"的亏 ✗）。
 const TOOL_ICONS = {
   brush: '<path d="M4 20l3-1 9-9-2-2-9 9z"/><path d="M15 8l3-3 2 2-3 3z"/>',
+  // **标注** ✓（两轮前我自己加的工具 ✓）—— 它的图标**当时漏了** ✗ ⇒
+  // `TOOL_ICONS[key] || ""` 会让按钮渲染成**空 svg** ✓ ⇒ **工具栏里有一个看不见的按钮** ✗。
+  // 本轮的**结构性守卫**（`tool_icons.rs` ✓）会把这一类**在测试里挡住** ✓。
+  annotate: '<path d="M12 3l5 5-6 6-2-2z"/><path d="M9 14l-4 7 7-4"/><circle cx="18" cy="6" r="2"/>',
   rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
   ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
   erase: '<path d="M8 17l-3-3 8-8 5 5-4 4z"/><path d="M4 20h16"/>',
