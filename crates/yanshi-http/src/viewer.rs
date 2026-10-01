@@ -83,6 +83,15 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      提交后画布变空白（刷新才恢复）。 */
   #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
   #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
+  /* **标注图钉层** ✓（设计 4.6 / 13.4 ✓）：用**独立的 DOM 层** ✓，不跟 `#overlay` 的笔迹预览抢画布 ✓，
+     而且图钉**可点** ✓（点它跳到该标注 ✓）。 */
+  #annotationPins { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #annotationPins button {
+    position: absolute; transform: translate(-50%, -50%); pointer-events: auto;
+    width: 20px; height: 20px; border-radius: 50%; padding: 0; font-size: 11px;
+    border: 1px solid #10131a; background: #ffd166; color: #1a1206; cursor: pointer; line-height: 1;
+  }
+  #annotationPins button.resolved { background: #6b7280; color: #e5e7eb; }
   /* minmax(0,1fr)：否则网格列按 max-content 撑开，卡片里的按钮行会溢出到视口外
      （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
   .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
@@ -303,6 +312,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <div class="stage">
     <canvas id="board"></canvas>
     <canvas id="overlay"></canvas>
+    <div id="annotationPins"></div>
     <!-- 光标处快捷面板 ✓（借鉴 Krita 的 Pop-up Palette ✓）：介质 / 颜色 / 笔尖 + 我们的快捷动作 ✓。
          内容由脚本按同一份定义生成 ✓（与工具条、工作区一致：一份定义、多个入口 ✓）。 -->
     <div id="quickPanel" hidden>
@@ -406,6 +416,17 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
            style="color:#3f7fd4; font-family:ui-monospace,monospace; font-size:12px">yanshi@wangda.today</a>
         <span style="opacity:.7">安全漏洞请勿开公开 issue，直接发邮件。</span>
       </div>
+    </div>
+    <!-- **标注** ✓（设计 4.6 / 13.4 ✓）：七个标注工具**早就有** ✓，但编辑器里此前**没有任何入口** ✗
+         ⇒ 这一块就是补那个入口 ✓。新建走工具栏的「标注」✓，列表里可以改文字 ✓、解决 ✓、删除 ✓。 -->
+    <div class="card">
+      <h2>标注</h2>
+      <div class="hint">用工具栏的「标注」在画布上点一下就新建 ✓；点图钉可选中 ✓。</div>
+      <div class="toolbar">
+        <button id="annotationRefresh" type="button">刷新</button>
+        <button id="annotationShowResolved" type="button">显示已解决</button>
+      </div>
+      <div id="annotationList" class="annotation-list"></div>
     </div>
   </aside>
 </main>
@@ -2238,6 +2259,8 @@ async function switchDocument(docId, token) {
   // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
   await ensurePaintLayer();
   await refreshLayers();
+  // **打开文档就拉一次标注** ✓（图钉与面板立刻正确 ✓）。
+  await refreshAnnotations();
 }
 
 async function ensureDocument() {
@@ -2278,6 +2301,7 @@ async function loadDocumentData() {
 async function warmKernel() {
   const started = performance.now();
   await initWasm();
+  setupAnnotationPanel();
   if (!state.wasm) return;
   const ok = await loadKernel(0);
   window.yanshiStats.kernelWarmMs = performance.now() - started;
@@ -2510,6 +2534,187 @@ function fillHistoryFilters(atoms) {
       select.value = current;
     }
   }
+}
+
+/// **标注** ✓（设计 4.6 / 13.4 ✓）—— 七个标注工具**早就有** ✓，此前**编辑器里没有入口** ✗。
+///
+/// **为什么用独立的图钉层** ✓（而不是画在 `#overlay` 上 ✗）：`#overlay` 是**笔迹预览**的画布 ✓
+/// ⇒ 两者共用会互相擦掉 ✗；而且图钉**要能点** ✓（点它选中该标注 ✓），画在画布上就点不了 ✗。
+///
+/// **交互取舍** ✓：点画布**直接新建**（不弹输入框 ✗）——
+/// 弹窗在真机验收里无法自动化 ✓，而且打断作画 ✓；文字就在面板里改 ✓（`<input>` ✓，可自动化 ✓）。
+let annotationCache = [];
+let annotationShowResolved = false;
+let annotationSelected = null;
+
+/// 一条标注的**文档坐标** ✓。
+///
+/// **真实的存储形状** ✓（我第一版猜成了 `payload.point` ✗ ⇒ 服务端当场回了一句
+/// "**不接受参数 `point`；可用参数：type, intent, target, content…**" ✓ —— 框架把我该用的名字报了出来 ✓）：
+/// 目标存在 `target` 里 ✓，形如 `{target:'region', bbox:{x,y,w,h}}` ✓ ⇒ 取 bbox 的中心 ✓。
+function annotationPointOf(item) {
+  const target = item.target || item.payload || {};
+  const bbox = target.bbox;
+  if (bbox && typeof bbox.x === "number") {
+    return { x: bbox.x + (bbox.w || 0) / 2, y: bbox.y + (bbox.h || 0) / 2 };
+  }
+  if (typeof target.x === "number" && typeof target.y === "number") {
+    return { x: target.x, y: target.y };
+  }
+  return null;
+}
+
+/// 一条标注的**文字** ✓（字段名是 `content` ✓，不是 `text` ✗）。
+function annotationTextOf(item) {
+  return typeof item.content === "string" ? item.content : "";
+}
+
+/// 是否已解决 ✓（服务端把状态放在 `status` 里 ✓；读不到就当待处理 ✓）。
+function annotationResolved(item) {
+  return item.status === "resolved" || item.status === "rejected";
+}
+
+/// **把文档坐标换算成屏幕坐标** ✓（与落笔用的是同一套换算 ✓，方向相反 ✓）。
+function annotationScreenOf(point) {
+  const rect = board.getBoundingClientRect();
+  const scaleX = rect.width / Math.max(1, board.width);
+  const scaleY = rect.height / Math.max(1, board.height);
+  return {
+    x: rect.left + (point.x - state.viewport.x) * scaleX,
+    y: rect.top + (point.y - state.viewport.y) * scaleY,
+  };
+}
+
+/// 重画图钉 ✓（每次视图变化都调 ✓ —— 由 `redraw()` 挂钩 ✓）。
+function positionAnnotationPins() {
+  const layer = $("annotationPins");
+  if (!layer) return;
+  layer.innerHTML = "";
+  for (const item of annotationCache) {
+    if (annotationResolved(item) && !annotationShowResolved) continue;
+    const point = annotationPointOf(item);
+    if (!point) continue;
+    const at = annotationScreenOf(point);
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.textContent = String(item.number || "");
+    pin.title = annotationTextOf(item).slice(0, 60);
+    if (annotationResolved(item)) pin.classList.add("resolved");
+    pin.style.left = Math.round(at.x) + "px";
+    pin.style.top = Math.round(at.y) + "px";
+    pin.addEventListener("click", () => {
+      annotationSelected = item.id;
+      renderAnnotationList();
+    });
+    layer.appendChild(pin);
+  }
+  // 图钉层与画布对齐 ✓（画布可能因为面板折叠而移动 ✓）。
+  const rect = board.getBoundingClientRect();
+  const stage = board.parentElement.getBoundingClientRect();
+  layer.style.left = Math.round(rect.left - stage.left) + "px";
+  layer.style.top = Math.round(rect.top - stage.top) + "px";
+  layer.style.width = Math.round(rect.width) + "px";
+  layer.style.height = Math.round(rect.height) + "px";
+}
+
+/// 面板列表 ✓：文字可改 ✓、可解决 ✓、可删除 ✓（对应 `update_annotation` / `resolve_annotation` / `delete_annotation` ✓）。
+function renderAnnotationList() {
+  const list = $("annotationList");
+  if (!list) return;
+  list.innerHTML = "";
+  const shown = annotationCache.filter((item) => !annotationResolved(item) || annotationShowResolved);
+  if (shown.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有标注 ✓";
+    list.appendChild(empty);
+    positionAnnotationPins();
+    return;
+  }
+  for (const item of shown) {
+    const row = document.createElement("div");
+    row.className = "annotation-row" + (item.id === annotationSelected ? " selected" : "");
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    head.textContent = "#" + (item.number || "?") + " " + (item.actor || "");
+    const text = document.createElement("input");
+    text.type = "text";
+    text.value = annotationTextOf(item);
+    text.placeholder = "写点什么…";
+    text.addEventListener("change", async () => {
+      // **真实参数** ✓：`content` 是**字符串** ✓（我第一版写成 `patch: {text}` ✗ —— 猜的 ✗）。
+      await callToolChecked("update_annotation",
+        { annotation_id: item.id, content: text.value }, "改标注");
+      await refreshAnnotations();
+    });
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const resolve = document.createElement("button");
+    resolve.type = "button";
+    resolve.textContent = annotationResolved(item) ? "重新打开" : "解决";
+    resolve.addEventListener("click", async () => {
+      // 未解决 ⇒ `resolve_annotation` ✓；已解决 ⇒ 用 `update_annotation {status:"pending"}` 重开 ✓
+      //（服务端只允许这一个方向 ✓："仅支持 pending：把已解决/已拒绝的标注重开为待处理" ✓）。
+      if (annotationResolved(item)) {
+        await callToolChecked("update_annotation",
+          { annotation_id: item.id, status: "pending" }, "重开标注");
+      } else {
+        await callToolChecked("resolve_annotation", { annotation_id: item.id }, "解决标注");
+      }
+      await refreshAnnotations();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      await callToolChecked("delete_annotation", { annotation_id: item.id }, "删除标注");
+      await refreshAnnotations();
+    });
+    actions.append(resolve, remove);
+    row.append(head, text, actions);
+    list.appendChild(row);
+  }
+  positionAnnotationPins();
+}
+
+/// 面板上的两个开关 ✓（刷新 ✓ / 显示已解决 ✓）。
+function setupAnnotationPanel() {
+  const refresh = $("annotationRefresh");
+  if (refresh) refresh.addEventListener("click", () => { void refreshAnnotations(); });
+  const toggle = $("annotationShowResolved");
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      annotationShowResolved = !annotationShowResolved;
+      toggle.textContent = annotationShowResolved ? "隐藏已解决" : "显示已解决";
+      renderAnnotationList();
+    });
+  }
+}
+
+/// 拉一次标注列表 ✓。
+async function refreshAnnotations() {
+  const listed = await callTool("list_annotations", {}, { refresh: false }).catch(() => null);
+  const items = (listed && (listed.annotations || listed.items)) || [];
+  annotationCache = items.map((item, index) => Object.assign({}, item, {
+    number: item.number || index + 1,
+  }));
+  renderAnnotationList();
+}
+
+/// 在文档坐标处**新建**标注 ✓。
+async function createAnnotationAt(x, y) {
+  // **真实参数** ✓（我第一版猜成 `point`/`text` ✗，服务端把可用参数直接报了出来 ✓）：
+  // `type` ✓（region|object|arrow|text|doodle|highlight ✓）、`intent` ✓（必填 ✓）、
+  // `target` ✓（`{target:'region', bbox}` ✓）、`content` ✓（字符串 ✓）。
+  // 点一下就建成一个**很小的矩形区域** ✓（图钉就落在点上 ✓）。
+  const size = 16;
+  const created = await callToolChecked("create_annotation", {
+    type: "region",
+    intent: "modify",
+    target: { target: "region", bbox: { x: Math.round(x - size / 2), y: Math.round(y - size / 2), w: size, h: size } },
+    content: "",
+  }, "新建标注");
+  if (created && created.ok) await refreshAnnotations();
 }
 
 /// **保证"有图层可画"** ✓ —— 落笔兜底 ✓。
@@ -2883,6 +3088,7 @@ function colorCss() {
 // 只重绘**覆盖层**（拖动中的笔迹/选区）。内容层绝不能被清空 —— 此前两者共用一个画布，
 // 拖动结束的最后一次重绘会把已提交的内容一起擦掉，表现为「操作后画布空白，刷新才恢复」。
 function redraw() {
+  // **视图一变，图钉要跟着走** ✓（挂在 `redraw()` 尾部 ✓ —— 它是所有视图变化的必经之路 ✓）。
   // 每次重绘前同步几何：窗口缩放、滚动或布局变化都会让覆盖层偏离内容层。
   syncOverlayGeometry();
   octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -2921,6 +3127,7 @@ function redraw() {
     });
     octx.stroke();
   }
+  positionAnnotationPins();
 }
 
 function localPoint(event) {
@@ -3460,6 +3667,13 @@ board.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     return;
   }
+  // **标注** ✓（设计 4.6 / 13.4 ✓）：点一下就**在该处**新建一条 ✓，不落笔 ✗。
+  if (state.tool === "annotate" && kernelReady()) {
+    const point = localPoint(event);
+    void createAnnotationAt(point.x, point.y);
+    event.preventDefault();
+    return;
+  }
   try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
   state.dragging = event.pointerId;
   state.points = [localPoint(event)];
@@ -3791,6 +4005,8 @@ const TOOL_DEFS = [
   { id: "clearSelection", label: "清除选区", key: "d", icon: "clearSelection" },
   { tool: "text", label: "文本", key: "t" },
   { tool: "medium_dab", label: "介质", key: "" },
+  // **标注** ✓（设计 4.6 ✓）：点画布即在该处新建一条标注 ✓。
+  { tool: "annotate", label: "标注", key: "n" },
   { tool: "mask_rect", label: "矩形蒙版", key: "" },
   { tool: "mask_ellipse", label: "椭圆蒙版", key: "" },
   { id: "fillLayer", label: "填充图层", key: "g", icon: "fillLayer" },
@@ -3904,11 +4120,11 @@ window.addEventListener("keydown", (event) => {
 // 折叠靠 CSS class ✓，不改 DOM 结构 ✓ ⇒ 既有选取器与检查都不受影响 ✓。
 const DOCKER_PRESETS = {
   // 绘画：图层与内核常看 ✓，历史/调整/日志收起 ✓。
-  paint: { open: ["图层", "WASM 计算内核"], closed: ["历史（原子日志）", "调整 / 滤镜", "缩略图", "原子日志（控制流）", "最近一次响应", "反馈"] },
+  paint: { open: ["图层", "WASM 计算内核"], closed: ["标注", "历史（原子日志）", "调整 / 滤镜", "缩略图", "原子日志（控制流）", "最近一次响应", "反馈"] },
   // 修图：图层 + 调整展开 ✓。
   retouch: { open: ["图层", "调整 / 滤镜", "缩略图"], closed: ["WASM 计算内核", "历史（原子日志）", "原子日志（控制流）", "最近一次响应", "反馈"] },
   // 校对：历史 + 日志 + 反馈展开 ✓（核对与反馈用 ✓）。
-  review: { open: ["历史（原子日志）", "原子日志（控制流）", "反馈", "最近一次响应"], closed: ["调整 / 滤镜", "WASM 计算内核", "缩略图"] },
+  review: { open: ["标注", "历史（原子日志）", "原子日志（控制流）", "反馈", "最近一次响应"], closed: ["调整 / 滤镜", "WASM 计算内核", "缩略图"] },
 };
 const DOCKER_STORE = "yanshi.dockers";
 const WORKSPACE_STORE = "yanshi.workspace";
