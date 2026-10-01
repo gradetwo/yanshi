@@ -58,7 +58,38 @@ impl FileStore {
         let root = root.into();
         fs::create_dir_all(root.join("docs")).map_err(|error| io_error(&root, error))?;
         fs::create_dir_all(root.join("blobs")).map_err(|error| io_error(&root, error))?;
+        // **悬空变更集**（设计 §12.4 ✓）：离线窗口可能跨服务重启 ✓ ⇒ 它必须落盘 ✓，
+        // 否则"用户离线期间的编辑"会在重启时凭空消失 ✗。
+        fs::create_dir_all(root.join("stash")).map_err(|error| io_error(&root, error))?;
         Ok(Self { root })
+    }
+
+    /// 落盘一个悬空变更集 ✓（`<root>/stash/<id>.json` ✓）。
+    pub fn write_stash(&self, stash: &crate::service::Stash) -> Result<()> {
+        let path = self.root.join("stash").join(format!("{}.json", stash.id));
+        let encoded = serde_json::to_vec_pretty(stash).map_err(|error| {
+            io_error(
+                &path,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            )
+        })?;
+        // **先写临时文件再改名** ✓（与本项目其它落盘一致 ✓）：中途失败不会留下半个文件 ✗。
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, &encoded).map_err(|error| io_error(&temporary, error))?;
+        fs::rename(&temporary, &path).map_err(|error| io_error(&path, error))
+    }
+
+    /// 删除一个悬空变更集的文件 ✓（重放成功或用户丢弃 ✓）。
+    ///
+    /// **注意它不删 blob** ✓：§899 说 Stash 里的 blob 归**历史级保留、不被 GC** ✓ ——
+    /// 而"丢弃这个 Stash"只是不再重放它 ✓，不是"把历史抹掉" ✗（本项目也没有 GC ✓）。
+    pub fn remove_stash(&self, stash_id: &str) -> Result<()> {
+        let path = self.root.join("stash").join(format!("{stash_id}.json"));
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error(&path, error)),
+        }
     }
 
     /// 根目录。

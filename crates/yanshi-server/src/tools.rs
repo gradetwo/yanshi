@@ -1030,6 +1030,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "submit_offline",
+        profile: Profile::Changeset,
+        summary: "重连时提交离线期间的原子；任一条不过校验则整批进悬空变更集（设计 12.4）",
+        mutating: true,
+        params: &[param!("atoms", Array, true, "[{kind, payload, actor?, session?}] 离线期间追加的原子")],
+    },
+    ToolSpec {
+        name: "list_stashes",
+        profile: Profile::Changeset,
+        summary: "列出悬空变更集（UI 的“分支对比”用，设计 12.4）",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
+        name: "apply_stash",
+        profile: Profile::Changeset,
+        summary: "把悬空变更集强制应用到当前 HEAD（可能产生视觉错误，设计 12.4）",
+        mutating: true,
+        params: &[param!("stash_id", String, true, "悬空变更集 id")],
+    },
+    ToolSpec {
+        name: "discard_stash",
+        profile: Profile::Changeset,
+        summary: "丢弃悬空变更集（不删 blob：Stash 的 blob 归历史级保留）",
+        mutating: true,
+        params: &[param!("stash_id", String, true, "悬空变更集 id")],
+    },
+    ToolSpec {
         name: "resolve_conflict",
         profile: Profile::Conflict,
         summary: "解决采样性替换冲突（设计 12.3：组合宏，折叠器零改动）",
@@ -1828,6 +1856,10 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_diff" => read_get_diff(ctx, args),
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
+        "submit_offline" => write_submit_offline(ctx, args),
+        "list_stashes" => read_list_stashes(ctx, args),
+        "apply_stash" => write_apply_stash(ctx, args),
+        "discard_stash" => write_discard_stash(ctx, args),
         "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
         "commit_transaction" => write_commit_transaction(ctx, args),
@@ -4613,6 +4645,210 @@ fn write_begin_changeset(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Val
             ErrorContext::detail(
                 "本会话已经有一个打开的变更集：先 commit_changeset 或 abort_changeset".to_owned(),
             ),
+        )),
+    }
+}
+
+/// **把工具参数解析成原子** ✓（`submit_offline` 用 ✓）。
+///
+/// **设计没规定离线原子在工具层怎么表达 ⇒ 记录选择** ✓：`{kind, payload, actor?, session?}` ✓ ——
+/// `kind` 用与日志一致的序列化名 ✓（`"draw_stroke"` 之类 ✓），缺省 actor/session 取调用方 ✓。
+fn parse_offline_atoms(ctx: &ToolContext<'_>, args: &Value) -> Result<Vec<Atom>> {
+    let entries = require_array(args, "atoms")?;
+    if entries.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("atoms 不能为空".to_owned()),
+        ));
+    }
+    let mut atoms = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let kind_value = entry.get("kind").cloned().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("atoms[{index}] 缺少 kind")),
+            )
+        })?;
+        let kind: AtomKind = serde_json::from_value(kind_value).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("atoms[{index}] 的 kind 无法识别：{error}")),
+            )
+        })?;
+        let payload = entry.get("payload").cloned().unwrap_or_else(|| json!({}));
+        let actor = entry
+            .get("actor")
+            .and_then(Value::as_str)
+            .unwrap_or(&ctx.actor)
+            .to_owned();
+        let session = entry
+            .get("session")
+            .and_then(Value::as_str)
+            .unwrap_or(&ctx.session)
+            .to_owned();
+        atoms.push(Atom::new(kind, actor, session, payload));
+    }
+    Ok(atoms)
+}
+
+/// 把校验错误写成一句人看得懂的话 ✓（"分支对比"里要显示它 ✓）。
+fn stash_reason(error: &YanshiError) -> String {
+    match error.context.detail.as_deref() {
+        Some(detail) => format!("{:?}：{detail}", error.code),
+        None => format!("{:?}", error.code),
+    }
+}
+
+/// **重连时提交离线期间的原子** ✓（设计 §12.4 ✓）。
+///
+/// **整批要么全进日志、要么一条都不进** ✓（先 `validate_batch` 在状态副本上增量校验 ✓）——
+/// 逐条提交的话 ✓，第三条失败时前两条**已经进日志** ✗，那就不是"打包"而是"半途而废" ✗。
+///
+/// **校验失败 ⇒ 搁置（不自动 Rebase）** ✓（§897 ✓），并**如实返回** `stashed: true` ✓ +
+/// 原因 ✓ —— 调用方必须知道"这批原子没进日志 ✓、去哪找它们 ✓"，而不是只看到一句错误 ✗。
+fn write_submit_offline(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let atoms = parse_offline_atoms(ctx, args)?;
+    let count = atoms.len();
+    let validation = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        document.validate_batch(&atoms, &ctx.actor, ctx.owner)
+    };
+    match validation {
+        Ok(()) => {
+            // 全部通过 ⇒ 一个变更集整批追加 ✓（"这一次重连"于是可整体撤销 ✓）。
+            let changeset = yanshi_core::Changeset::new_id();
+            let results = ctx.workspace.commit_changeset(
+                &ctx.doc_id,
+                atoms,
+                &ctx.actor,
+                ctx.owner,
+                changeset.clone(),
+            )?;
+            let seqs: Vec<u64> = results.iter().map(|result| result.seq).collect();
+            Ok(json!({
+                "ok": true,
+                "stashed": false,
+                "applied": results.len(),
+                "changeset_id": changeset,
+                "seqs": seqs,
+            }))
+        }
+        Err(error) => {
+            let reason = stash_reason(&error);
+            let stash_id =
+                ctx.workspace
+                    .stash(&ctx.doc_id, &ctx.actor, &ctx.session, &reason, atoms)?;
+            Ok(json!({
+                "ok": true,
+                "stashed": true,
+                "applied": 0,
+                "atoms": count,
+                "stash_id": stash_id,
+                "reason": reason,
+            }))
+        }
+    }
+}
+
+/// **列出悬空变更集** ✓（§898 的"分支对比"要的素材 ✓）。
+fn read_list_stashes(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let entries: Vec<Value> = ctx
+        .workspace
+        .stashes()
+        .into_iter()
+        .map(|stash| {
+            json!({
+                "stash_id": stash.id,
+                "doc_id": stash.doc_id,
+                "actor": stash.actor,
+                "created_at": stash.created_at,
+                "reason": stash.reason,
+                "atoms": stash.atoms.len(),
+                "blob_refs": stash.blob_refs.len(),
+            })
+        })
+        .collect();
+    Ok(json!({"ok": true, "stashes": entries, "count": entries.len()}))
+}
+
+/// **强制应用到当前 HEAD** ✓（§898 的第二种上层选择 ✓ —— 设计自己注明"**可能产生视觉错误**" ✓，
+/// 所以它**必须**是显式动作 ✓、绝不能自动发生 ✓）。
+///
+/// 失败时**原样留着** ✓（不取走 ✓）：重放失败说明它现在仍然应用不上 ✓ ⇒
+/// 丢掉它会**毁掉用户离线期间的工作** ✗（那是本项目最不能接受的失败方式 ✓）。
+fn write_apply_stash(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let stash_id = require_str(args, "stash_id")?;
+    let entry = ctx
+        .workspace
+        .stashes()
+        .into_iter()
+        .find(|stash| stash.id == stash_id)
+        .cloned()
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("悬空变更集 {stash_id} 不存在")),
+            )
+        })?;
+    {
+        let document = ctx.workspace.document(&entry.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", entry.doc_id)),
+            )
+        })?;
+        if let Err(error) = document.validate_batch(&entry.atoms, &ctx.actor, ctx.owner) {
+            return Ok(json!({
+                "ok": false,
+                "applied": 0,
+                "stash_id": stash_id,
+                "reason": stash_reason(&error),
+                "kept": true,
+                "note": "重放仍然过不了校验 ⇒ 悬空变更集原样保留（不毁掉离线期间的工作）",
+            }));
+        }
+    }
+    let changeset = yanshi_core::Changeset::new_id();
+    let results = ctx.workspace.commit_changeset(
+        &entry.doc_id,
+        entry.atoms.clone(),
+        &ctx.actor,
+        ctx.owner,
+        changeset.clone(),
+    )?;
+    ctx.workspace.take_stash(&stash_id)?;
+    Ok(json!({
+        "ok": true,
+        "applied": results.len(),
+        "stash_id": stash_id,
+        "changeset_id": changeset,
+        "note": "按设计 12.4：强制应用可能产生视觉错误",
+    }))
+}
+
+/// **丢弃悬空变更集** ✓（§898 的第一种上层选择 ✓）。
+///
+/// **只丢"待重放"这件事** ✓，**不删 blob** ✗：§899 说 Stash 里的 blob 归历史级保留、不被 GC ✓ ——
+/// 抹掉历史不是"丢弃"的意思 ✓（本项目也没有 GC ✓）。
+fn write_discard_stash(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let stash_id = require_str(_args, "stash_id")?;
+    let taken = ctx.workspace.take_stash(&stash_id)?;
+    match taken {
+        Some(entry) => Ok(json!({
+            "ok": true,
+            "discarded": true,
+            "stash_id": stash_id,
+            "atoms": entry.atoms.len(),
+            "blobs_kept": entry.blob_refs.len(),
+        })),
+        None => Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("悬空变更集 {stash_id} 不存在")),
         )),
     }
 }
