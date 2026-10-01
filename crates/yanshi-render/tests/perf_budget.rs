@@ -573,3 +573,76 @@ fn perf_phase3_effects_on_a_large_canvas() {
         "Phase 3 全效果单块 tile 渲染 {tile_elapsed:?} 超预算"
     );
 }
+
+/// **诊断：512² 区域渲染 ~170ns/像素 到底花在哪** ✓（承接上一条诊断 ✓）。
+///
+/// 上一轮我以为是"每像素 4 次 `powf` 解码背景" ✗ ⇒ 把解码提到循环外之后 ✓
+/// **实测毫无改善** ✓（30.5ms → 31.3ms ✗）⇒ 假设被数据否掉 ✓（搬移本身仍是对的 ✓）。
+/// **所以这次直接量管线里的每一段** ✓，不再靠推理 ✓。
+#[test]
+#[ignore = "诊断：把 512² 区域渲染的成本拆到每一段"]
+fn diagnose_quantise_cost() {
+    use std::time::Instant;
+    use yanshi_render::{Buffer, LinearRgba};
+
+    fn best_of<F: FnMut()>(rounds: u32, mut body: F) -> Duration {
+        body();
+        let mut best = Duration::MAX;
+        for _ in 0..rounds {
+            let started = Instant::now();
+            body();
+            best = best.min(started.elapsed());
+        }
+        best
+    }
+    let side = 512usize;
+    let pixels = side * side;
+
+    // ① 纯量化：把 f32 像素写成 u8（含 sRGB 编码查表 ✓）。
+    let mut buffer = Buffer::new(0, 0, side as u32, side as u32);
+    for y in 0..side {
+        for x in 0..side {
+            buffer.set_pixel(x as u32, y as u32, [0.2, 0.4, 0.6, 1.0]);
+        }
+    }
+    let quantise = best_of(5, || {
+        let bytes = buffer.to_rgba8(Some([255, 255, 255, 255]));
+        assert_eq!(bytes.len(), pixels * 4);
+    });
+    println!(
+        "  ① 512² 纯量化（to_rgba8 + 背景合成）: {quantise:?}｜每像素 {:.1}ns",
+        quantise.as_nanos() as f64 / pixels as f64
+    );
+
+    // ② 含 allocate：新建缓冲 + 填 + 量化 ✓。
+    let allocate = best_of(5, || {
+        let mut fresh = Buffer::new(0, 0, side as u32, side as u32);
+        for y in 0..side {
+            for x in 0..side {
+                fresh.set_pixel(x as u32, y as u32, [0.2, 0.4, 0.6, 1.0]);
+            }
+        }
+        let bytes = fresh.to_rgba8(Some([255, 255, 255, 255]));
+        assert_eq!(bytes.len(), pixels * 4);
+    });
+    println!(
+        "  ② 512² 新建缓冲 + 填 + 量化: {allocate:?}｜每像素 {:.1}ns",
+        allocate.as_nanos() as f64 / pixels as f64
+    );
+
+    // ③ 单个像素访问器：`pixel(x, y)` 每次都要做边界检查与下标算术 ✓。
+    let access = best_of(5, || {
+        let mut sum = 0.0f32;
+        for y in 0..side as u32 {
+            for x in 0..side as u32 {
+                let p: LinearRgba = buffer.pixel(x, y);
+                sum += p[0];
+            }
+        }
+        assert!(sum > 0.0);
+    });
+    println!(
+        "  ③ 512² 逐像素 pixel(x,y) 访问: {access:?}｜每像素 {:.1}ns",
+        access.as_nanos() as f64 / pixels as f64
+    );
+}

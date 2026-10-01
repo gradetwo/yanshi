@@ -108,9 +108,10 @@ pub use blend::{blend_pixel, over, scale_alpha, BlendMode};
 pub use brush::{draw_stamp, stamp_stroke, BrushSpec, StrokeGeometry, StrokePoint};
 pub use buffer::Buffer;
 pub use color::{
-    byte_to_linear, composite_over_background, linear_premul_to_u8x4, linear_to_byte,
-    linear_to_byte_exact, linear_to_srgb, linear_to_srgb_fast, premultiply, srgb_to_linear,
-    u8x4_to_linear_premul, unpremultiply, LinearRgba,
+    background_linear_premul, byte_to_linear, composite_over_background, composite_over_linear,
+    composite_over_linear_with, linear_premul_to_u8x4, linear_premul_to_u8x4_with, linear_to_byte,
+    linear_to_byte_exact, linear_to_srgb, linear_to_srgb_fast, premultiply, srgb_encode_table,
+    srgb_to_linear, u8x4_to_linear_premul, unpremultiply, LinearRgba,
 };
 pub use dirty::{invalidated_tiles, plan_dirty, plan_dirty_with_log, DirtyKind, DirtySet};
 pub use filter::{

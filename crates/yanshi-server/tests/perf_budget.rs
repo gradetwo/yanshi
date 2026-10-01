@@ -908,3 +908,90 @@ fn time_travel_budget_near_history() {
         "checkpoint 路径重建 {checkpoint_best:?} 超出 300ms 预算（14.10）"
     );
 }
+
+/// **诊断：512² 缓存命中的那 ~60ms 到底花在哪** ✓（设计 14.10 的未达标项 ✓）。
+///
+/// 我上一轮把"52% 是 sRGB `powf`"当成了现状 ✗ —— 那是**查表版之前**的诊断 ✓（笔记第 1570 行 ✓），
+/// 而显示编码**早就在用查表**了 ✓（`linear_to_byte` ✓）。**所以根因必须重新测** ✓，不许照抄旧结论 ✗。
+///
+/// 本诊断不给结论、只给数据 ✓：同一区域在**不同层数**与**不同尺寸**下分别计时 ✓，
+/// 用"层数无关 / 尺寸线性"这两个特征把成本**钉在管线上还是内容上** ✓。
+#[test]
+#[ignore = "诊断：定位 512² 缓存命中的成本构成"]
+fn diagnose_region_hit_cost() {
+    fn best_of<F: FnMut()>(rounds: u32, mut body: F) -> Duration {
+        body();
+        let mut best = Duration::MAX;
+        for _ in 0..rounds {
+            let started = Instant::now();
+            body();
+            best = best.min(started.elapsed());
+        }
+        best
+    }
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(
+            NewDocument::new("doc_diag", 2048, 2048),
+            "human:1",
+            "session:a",
+        )
+        .unwrap();
+    let region = Bbox::new(0.0, 0.0, 512.0, 512.0);
+    // ① 零层：纯管线（背景合成 + 量化）✓。
+    let empty = best_of(5, || {
+        let _ = workspace.render_region_raw("doc_diag", region).unwrap();
+    });
+    println!("  ① 512² 零层（纯管线）: {empty:?}");
+    // ② 逐层加内容 ✓：每层一个中等矩形 ✓。
+    for count in 1..=10u32 {
+        workspace
+            .commit(
+                "doc_diag",
+                Atom::new(
+                    AtomKind::CreateLayer,
+                    "human:1",
+                    "session:a",
+                    json!({"layer_id": format!("layer_{count}"), "name": format!("L{count}")}),
+                ),
+                "human:1",
+                true,
+            )
+            .unwrap();
+        workspace
+            .commit(
+                "doc_diag",
+                Atom::new(
+                    AtomKind::CreateObject,
+                    "human:1",
+                    "session:a",
+                    json!({
+                        "object_id": format!("shape_{count}"),
+                        "layer_id": format!("layer_{count}"),
+                        "type": "raster_patch",
+                        "data": {"shape": "rect", "rect": [64.0, 64.0, 256.0, 256.0],
+                                 "color": {"r": 200, "g": 120, "b": 60, "a": 255}},
+                    }),
+                ),
+                "human:1",
+                true,
+            )
+            .unwrap();
+        let elapsed = best_of(5, || {
+            let _ = workspace.render_region_raw("doc_diag", region).unwrap();
+        });
+        println!("  ② 512² {count} 层: {elapsed:?}");
+    }
+    // ③ 尺寸线性 ✓：同一份内容拉到 1024² 与 256² ✓。
+    for size in [256.0f64, 512.0, 1024.0] {
+        let target = Bbox::new(0.0, 0.0, size, size);
+        let elapsed = best_of(5, || {
+            let _ = workspace.render_region_raw("doc_diag", target).unwrap();
+        });
+        let pixels = size * size;
+        println!(
+            "  ③ {size:.0}²（{pixels:.0} 像素，10 层）: {elapsed:?}｜每像素 {:.1}ns",
+            elapsed.as_nanos() as f64 / pixels
+        );
+    }
+}

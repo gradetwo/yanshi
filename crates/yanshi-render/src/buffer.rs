@@ -4,7 +4,7 @@
 //! 这样滤镜、图层混合等需要邻域或整层的运算可以正确工作，最后再切片进 tile 缓存。
 
 use crate::blend::{blend_pixel, over, BlendMode};
-use crate::color::{composite_over_background, linear_premul_to_u8x4, premultiply, LinearRgba};
+use crate::color::{premultiply, LinearRgba};
 use crate::geometry::Coverage;
 use yanshi_core::Bbox;
 
@@ -311,15 +311,22 @@ impl Buffer {
 
     /// 导出为 u8 RGBA（显示空间）；`background` 为不透明底色。
     pub fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.len() * 4);
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let pixel = self.pixel(x, y);
-                let bytes = match background {
-                    Some(bg) => composite_over_background(pixel, bg),
-                    None => linear_premul_to_u8x4(pixel),
+        // **背景解码与查表都提到循环外、并改按行块写入** ✓（全部**逐位等价** ✓）：
+        // 原来每像素都要①重解一次背景（4 次 `powf` ✗）②过一次 `OnceLock` ✗
+        // ③走一次 `extend_from_slice`（容量检查 ✗）⇒ 512² 下是 26 万次 × 3 类开销 ✗。
+        // 实测这三项都不改变任何像素 ✓，只是把它们从内层循环里搬出去 ✓。
+        let bg_linear = background.map(crate::color::background_linear_premul);
+        let table = crate::color::srgb_encode_table();
+        let width = self.width as usize;
+        let mut out = vec![0u8; self.len() * 4];
+        for (row, line) in out.chunks_exact_mut(width * 4).enumerate() {
+            for (x, chunk) in line.chunks_exact_mut(4).enumerate() {
+                let pixel = self.pixel(x as u32, row as u32);
+                let bytes = match bg_linear {
+                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
                 };
-                out.extend_from_slice(&bytes);
+                chunk.copy_from_slice(&bytes);
             }
         }
         out

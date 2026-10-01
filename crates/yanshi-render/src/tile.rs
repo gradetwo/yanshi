@@ -5,7 +5,7 @@
 //! - 缓存按字节预算做 LRU；客户端 WASM 侧另有「硬上限 90% 自动 evict」与
 //!   `evict_outside_viewport(bbox)` 的视口淘汰（设计文档 13.3）。
 
-use crate::color::{linear_premul_to_u8x4, u8x4_to_linear_premul, LinearRgba};
+use crate::color::{u8x4_to_linear_premul, LinearRgba};
 use crate::half::{f16_bits_to_f32, f32_to_f16_bits};
 use std::collections::{HashMap, VecDeque};
 use yanshi_core::Bbox;
@@ -125,15 +125,19 @@ impl Tile {
 
     /// 导出为 u8 RGBA（显示空间）；`background` 为不透明底色。
     pub fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
-        let mut out = Vec::with_capacity((self.size * self.size * 4) as usize);
-        for y in 0..self.size {
-            for x in 0..self.size {
-                let pixel = self.get(x, y);
-                let bytes = match background {
-                    Some(bg) => crate::color::composite_over_background(pixel, bg),
-                    None => linear_premul_to_u8x4(pixel),
+        // 同 `Buffer::to_rgba8` ✓：背景解码与查表各取一次 ✓、按行块写入 ✓，全部**逐位等价** ✓。
+        let bg_linear = background.map(crate::color::background_linear_premul);
+        let table = crate::color::srgb_encode_table();
+        let width = self.size as usize;
+        let mut out = vec![0u8; width * width * 4];
+        for (row, line) in out.chunks_exact_mut(width * 4).enumerate() {
+            for (x, chunk) in line.chunks_exact_mut(4).enumerate() {
+                let pixel = self.get(x as u32, row as u32);
+                let bytes = match bg_linear {
+                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
                 };
-                out.extend_from_slice(&bytes);
+                chunk.copy_from_slice(&bytes);
             }
         }
         out

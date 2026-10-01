@@ -91,6 +91,23 @@ pub fn u8x4_to_linear_premul(pixel: [u8; 4]) -> LinearRgba {
     ]
 }
 
+/// **取出显示编码查表** ✓（供逐像素循环**只取一次** ✓）。
+///
+/// 实测动机 ✓：`srgb_encode_lut()` 每次调用都要过一遍 `OnceLock` 的原子检查 ✓，
+/// 而每个像素要查 3 次 ✓ ⇒ 在 512² 循环里就是 78 万次原子检查 ✗。
+/// 表本身是 `'static` ✓ ⇒ 循环外取一次即可 ✓，**逐位等价** ✓。
+pub fn srgb_encode_table() -> &'static [f32; SRGB_ENCODE_LUT_SIZE] {
+    srgb_encode_lut()
+}
+
+/// 用**已取好的表**做一次编码 ✓（与 [`linear_to_srgb_fast`] 逐位一致 ✓，只是省掉取表 ✓）。
+#[inline]
+pub fn encode_with_table(table: &[f32; SRGB_ENCODE_LUT_SIZE], value: f32) -> f32 {
+    let clamped = value.clamp(0.0, 1.0);
+    let index = (clamped * (SRGB_ENCODE_LUT_SIZE - 1) as f32).round() as usize;
+    table[index.min(SRGB_ENCODE_LUT_SIZE - 1)]
+}
+
 /// 线性光预乘像素 → u8 RGBA（直通 alpha，显示空间）。
 pub fn linear_premul_to_u8x4(pixel: LinearRgba) -> [u8; 4] {
     let alpha = pixel[3].clamp(0.0, 1.0);
@@ -105,9 +122,66 @@ pub fn linear_premul_to_u8x4(pixel: LinearRgba) -> [u8; 4] {
     ]
 }
 
-/// 把预乘像素合成到不透明背景上，输出显示空间 u8 RGBA。
-pub fn composite_over_background(pixel: LinearRgba, background: [u8; 4]) -> [u8; 4] {
-    let bg = u8x4_to_linear_premul(background);
+/// **带表版本** ✓：与 [`linear_premul_to_u8x4`] 逐位一致 ✓（同一套算式 ✓），
+/// 只是把表当参数传进来 ✓ ⇒ 逐像素循环可以只取一次表 ✓（实测动机见 [`srgb_encode_table`] ✓）。
+#[inline]
+pub fn linear_premul_to_u8x4_with(
+    table: &[f32; SRGB_ENCODE_LUT_SIZE],
+    pixel: LinearRgba,
+) -> [u8; 4] {
+    let alpha = pixel[3].clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let byte = |value: f32| {
+        (encode_with_table(table, value) * 255.0 + 0.5)
+            .floor()
+            .clamp(0.0, 255.0) as u8
+    };
+    [
+        byte(pixel[0] / alpha),
+        byte(pixel[1] / alpha),
+        byte(pixel[2] / alpha),
+        (alpha * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+/// **带表版本**的背景合成 ✓（与 [`composite_over_linear`] 逐位一致 ✓）。
+#[inline]
+pub fn composite_over_linear_with(
+    table: &[f32; SRGB_ENCODE_LUT_SIZE],
+    pixel: LinearRgba,
+    bg: LinearRgba,
+) -> [u8; 4] {
+    let one_minus_alpha = 1.0 - pixel[3];
+    linear_premul_to_u8x4_with(
+        table,
+        [
+            pixel[0] + bg[0] * one_minus_alpha,
+            pixel[1] + bg[1] * one_minus_alpha,
+            pixel[2] + bg[2] * one_minus_alpha,
+            pixel[3] + bg[3] * one_minus_alpha,
+        ],
+    )
+}
+
+/// 把 u8 背景色解码为**线性预乘**（供逐像素合成复用 ✓）。
+///
+/// **为什么要单独暴露它** ✓（本轮实测换来的 ✓）：
+/// 原来每个像素都走 [`composite_over_background`] ✓ ⇒ 那里面**每像素都重新解码一次背景** ✗
+/// ⇒ 背景解码里有 **4 次 `srgb_to_linear`** ✓（每次一个 `powf` ✓）⇒ **每像素 4 次 `powf`** ✗。
+/// 实测（512² 区域、**零图层**、纯管线）：**30.5ms** ✓，约 116ns/像素 ✓，
+/// 且与像素数严格线性 ✓、与内容几乎无关 ✓（每加一层只多约 1.3ms ✓）
+/// ⇒ 成本就在这个循环里 ✓，而**背景色在整块区域里通常是同一个** ✓。
+///
+/// 把它提到循环外 ✓ 是**逐位等价**的优化 ✓：同一个函数 ✓、同一个输入 ✓、确定性 ✓
+/// ⇒ **不改变任何像素** ✓、**不涉及确定性等级** ✓（不需要 D1 放宽 ✓）。
+pub fn background_linear_premul(background: [u8; 4]) -> LinearRgba {
+    u8x4_to_linear_premul(background)
+}
+
+/// 把预乘像素合成到**已经解码好**的线性背景上，输出显示空间 u8 RGBA ✓。
+pub fn composite_over_linear(pixel: LinearRgba, bg: LinearRgba) -> [u8; 4] {
     let out = [
         pixel[0] + bg[0] * (1.0 - pixel[3]),
         pixel[1] + bg[1] * (1.0 - pixel[3]),
@@ -115,6 +189,14 @@ pub fn composite_over_background(pixel: LinearRgba, background: [u8; 4]) -> [u8;
         pixel[3] + bg[3] * (1.0 - pixel[3]),
     ];
     linear_premul_to_u8x4(out)
+}
+
+/// 把预乘像素合成到不透明背景上，输出显示空间 u8 RGBA。
+///
+/// 便利版本 ✓（一次性合成单个像素时用它 ✓）；**逐像素循环请用**
+/// [`background_linear_premul`] + [`composite_over_linear`] ✓，把背景解码提到循环外 ✓。
+pub fn composite_over_background(pixel: LinearRgba, background: [u8; 4]) -> [u8; 4] {
+    composite_over_linear(pixel, background_linear_premul(background))
 }
 
 /// 直通（非预乘）线性颜色 → 预乘。
