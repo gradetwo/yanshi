@@ -425,6 +425,39 @@ impl Document {
     }
 
     /// 提交一个原子（可指定 changeset 归属与跨 actor 权限）。
+    /// **整批预校验** ✓（设计中 §12.4 的"离线编辑重连"要用它 ✓）。
+    ///
+    /// **为什么需要它** ✓：§897 要求"校验失败 ⇒ 原子及其 blob **一起**打包进 Stash" ✓ ——
+    /// 也就是**整批要么全进日志、要么一条都不进** ✓。而 `commit_as` 是**逐条**的 ✓
+    /// ⇒ 直接循环提交的话 ✓，第三条失败时前两条**已经进日志了** ✗ ⇒ 那就不是"打包"而是"半途而废" ✗。
+    ///
+    /// **做法** ✓：在**状态的副本**上增量折叠并逐条校验 ✓ ——
+    /// 注意必须**增量** ✗：离线批次里的原子会互相引用 ✓（后一条引用前一条建的对象 ✓），
+    /// 若把每条都对着"批次之前的状态"校验 ✓ 就会**误判**成引用不存在 ✗。
+    /// 用状态副本而不是日志副本 ✓ 是因为折叠结果才是校验的输入 ✓（便宜得多 ✓）。
+    pub fn validate_batch(&self, atoms: &[Atom], actor: &str, owner: bool) -> Result<()> {
+        let mut state = self.state.clone();
+        for atom in atoms {
+            let validation = {
+                let exists = |hash: &BlobHash| self.store.exists(hash);
+                let mut context = CommitContext::new(&state, &exists, actor, &atom.session);
+                if owner {
+                    context = context.allow_cross_actor_revert(true);
+                }
+                self.log.validate_commit(atom, &context)
+            };
+            validation?;
+            // 校验通过 ⇒ 把它折进副本 ✓，供下一条校验 ✓。
+            let folded = yanshi_core::fold::fold_atoms(state, std::slice::from_ref(atom));
+            state = folded.state;
+        }
+        Ok(())
+    }
+
+    /// 以指定 actor 提交一条原子 ✓（`commit` 是它的简写 ✓）。
+    ///
+    /// **`needs_previous_state` 那一支** ✓：有些原子的校验要"提交前的状态" ✓（`previous` ✓），
+    /// 折叠器据此做前后对比 ✓ —— 不需要的原子就不克隆状态 ✓（省一次大拷贝 ✓）。
     pub fn commit_as(
         &mut self,
         mut atom: Atom,

@@ -84,6 +84,35 @@ pub struct DocumentSummary {
     pub persisted: bool,
 }
 
+/// **悬空变更集（Stash）** ✓ —— 设计 §12.4 ✓。
+///
+/// **设计给了行为、没给工具名 ⇒ 记录选择** ✓：
+/// * 打包内容 = 原子 ✓ + **原子引用到的全部 blob** ✓（`Atom::all_blob_refs()` ✓，§897 原话 ✓）；
+/// * **原子无 seq** ✓（从未进日志 ✓）、**重新提交时获得新 seq** ✓（§900 ✓）——
+///   这里就是把 `Atom` 原样留着 ✓（它的 `seq` 只在进日志时才产生 ✓）；
+/// * blob 归**历史级保留、不被 GC** ✓（§899 ✓）：眼下本项目**还没有 GC** ✓
+///   ⇒ 今天无需做任何事 ✓，但**这条约束要写下来** ✓：将来做 GC 时 ✓，Stash 引用的 blob
+///   必须算作根 ✓（否则"离线期间的编辑"会在重连前就被清掉 ✗）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Stash {
+    /// 悬空变更集 id ✓（`stash_<ULID>` ✓）——`list/apply/discard` 都用它 ✓。
+    pub id: String,
+    /// 它属于哪份文档 ✓（离线编辑是**针对某一份文档**的 ✓，不是全局的 ✓）。
+    pub doc_id: String,
+    /// 谁在离线期间做的这些改动 ✓（"分支对比"要显示 ✓）。
+    pub actor: String,
+    /// 当时那个会话 ✓（原子的 `session` 字段要保留 ✓，否则重放后来源就丢了 ✗）。
+    pub session: String,
+    /// 搁置时刻（毫秒 ✓），用来排序与展示 ✓。
+    pub created_at: i64,
+    /// 为什么被搁置 ✓（校验器给的原文 ✓）—— "分支对比"要让人看懂发生了什么 ✓。
+    pub reason: String,
+    /// **搁置的原子** ✓ —— §900：它们**没有 seq**（从未进日志 ✓），重放时才获得新 seq ✓。
+    pub atoms: Vec<yanshi_core::Atom>,
+    /// 原子引用到的 blob ✓（随原子一起保存 ✓，§897 ✓）。
+    pub blob_refs: Vec<String>,
+}
+
 /// 多文档工作区。
 pub struct Workspace {
     store: Arc<dyn BlobStore>,
@@ -107,6 +136,9 @@ pub struct Workspace {
     /// （变更集只分组 ✓、不回滚 ✓）。判定"写操作"用的是 `ToolSpec` 现成的 `mutating` ✓ ——
     /// **读操作失败绝不回滚** ✗（否则查一次东西就把人家的编辑撤了 ✗）。
     transactions: BTreeMap<(String, String), ChangesetId>,
+    /// **悬空变更集** ✓（设计 §12.4 ✓）。带 `FileStore` 时会落到 `<root>/stash/<id>.json` ✓ ——
+    /// 离线窗口可能跨服务重启 ✓ ⇒ 只在内存里会**丢掉用户离线期间的工作** ✗。
+    stashes: BTreeMap<String, Stash>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -139,6 +171,69 @@ impl Workspace {
         self.open_changesets
             .get(&(doc_id.to_owned(), session.to_owned()))
             .cloned()
+    }
+
+    /// **搁置一批原子** ✓（设计 §12.4 的"悬空变更集" ✓）。
+    pub fn stash(
+        &mut self,
+        doc_id: &str,
+        actor: &str,
+        session: &str,
+        reason: &str,
+        atoms: Vec<yanshi_core::Atom>,
+    ) -> Result<String> {
+        let mut blob_refs: Vec<String> = Vec::new();
+        for atom in &atoms {
+            for hash in atom.all_blob_refs() {
+                let text = hash.to_string();
+                if !blob_refs.contains(&text) {
+                    blob_refs.push(text);
+                }
+            }
+        }
+        let id = format!("stash_{}", yanshi_core::Ulid::new().encode());
+        let entry = Stash {
+            id: id.clone(),
+            doc_id: doc_id.to_owned(),
+            actor: actor.to_owned(),
+            session: session.to_owned(),
+            created_at: self.now_millis(),
+            reason: reason.to_owned(),
+            atoms,
+            blob_refs,
+        };
+        // 先落盘再记账 ✓：写失败就当作没搁置 ✓（否则重启后内存里那份**凭空消失** ✗）。
+        if let Some(persist) = &self.persist {
+            persist.write_stash(&entry)?;
+        }
+        self.stashes.insert(id.clone(), entry);
+        Ok(id)
+    }
+
+    /// 列出悬空变更集 ✓（UI 的"分支对比" ✓，§898 ✓）。
+    pub fn stashes(&self) -> Vec<&Stash> {
+        let mut all: Vec<&Stash> = self.stashes.values().collect();
+        all.sort_by_key(|stash| stash.created_at);
+        all
+    }
+
+    /// 取走一个悬空变更集 ✓（重新提交成功、或用户选择"丢弃" ✓）。
+    pub fn take_stash(&mut self, stash_id: &str) -> Result<Option<Stash>> {
+        let Some(entry) = self.stashes.remove(stash_id) else {
+            return Ok(None);
+        };
+        if let Some(persist) = &self.persist {
+            persist.remove_stash(stash_id)?;
+        }
+        Ok(Some(entry))
+    }
+
+    /// 毫秒时间戳 ✓（Stash 的排序与展示用 ✓）。
+    fn now_millis(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0)
     }
 
     /// **开始一个事务** ✓（设计 777 只给了名字 ⇒ 语义见 `transactions` 字段的说明 ✓）。
@@ -180,6 +275,7 @@ impl Workspace {
             persist: None,
             open_changesets: BTreeMap::new(),
             transactions: BTreeMap::new(),
+            stashes: BTreeMap::new(),
             settings,
             created: 0,
         }
@@ -200,6 +296,7 @@ impl Workspace {
             created: 0,
             open_changesets: BTreeMap::new(),
             transactions: BTreeMap::new(),
+            stashes: BTreeMap::new(),
         })
     }
 

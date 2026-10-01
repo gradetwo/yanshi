@@ -51,6 +51,18 @@ several rings, which xor of two overlapping shapes naturally produces, becomes o
 and the new shapes plus the two retired inputs share a single changeset so one withdrawal restores
 everything.
 
+The dangling-changeset tools of design 12.4 sit in the changeset group, which is where the design's own name
+for them, an independent dangling changeset, points. The design describes the behaviour without naming tools,
+so the surface is recorded: `submit_offline` submits the atoms appended during an offline window, `list_stashes`
+supplies the branch comparison the design says the editor shows, `apply_stash` is the force-apply choice and
+`discard_stash` the discard choice. The third choice, regenerating against head, is the caller's own work, so
+no tool pretends to do it. The whole batch is validated against a copy of the state, folded atom by atom, before
+anything is appended, because the design requires the atoms and their blobs to be packed together and
+committing one at a time would leave the earlier ones in the log when a later one fails. On failure the batch
+goes to a stash with the validator's reason, and stashes are persisted under the workspace so an offline window
+survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
+blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
+
 `resolve_conflict` completes the `conflict` group and follows design 12.3 literally, which is the clearest
 section of the design: it is a composition macro rather than a new atom type, so the folder is untouched and
 the macro expands into atoms that already exist. `keep_ours` withdraws the opponent's atom and puts our
