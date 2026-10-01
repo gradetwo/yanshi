@@ -446,8 +446,37 @@ function ellipse(cx, cy, rx, ry, steps = 24) {
 const gapOf = (value) => Math.max(1, value * draft);
 
 /// 把若干"笔"变成介质笔 ✓。
+/// **给一条路径加"渐隐压感"** ✓（用户要求"创作时把笔触压感用起来" ✓）。
+///
+/// **为什么这一步的画面收益最大** ✓：此前画谱里所有笔画都是**等宽**的 ✗
+/// ⇒ 在画面上就是"**纸板条**" ✓ —— 我前几轮反复把它读成"造型问题" ✗，其实一半是**笔法**问题 ✓：
+/// 真画家一笔下去是**起笔轻、行笔重、收笔轻** ✓（还有抬笔的渐隐 ✓）⇒ 轮廓自然不生硬 ✓。
+///
+/// **做法** ✓：按**累计路程**给出 0..1 的进度 ✓ ⇒ 压感走 `轻 → 重 → 轻` ✓
+/// （两端 0.32 ✓、中段 1.0 ✓，用平滑曲线 ✓ 而不是线性折线 ✗ —— 折线会在中段看出拐点 ✗）。
+/// 返回 `[x, y, pressure]` 三元组 ✓（查看器已支持这种写法 ✓）。
+function taper(points, from = 0.32, peak = 1.0, shoulder = 0.22) {
+  if (!Array.isArray(points) || points.length < 2) return points;
+  const lengths = [0];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    lengths.push(total);
+  }
+  if (total <= 0) return points;
+  return points.map((point, index) => {
+    const t = lengths[index] / total;
+    // 两端轻、中段重 ✓：`shoulder` 之前抬起来 ✓、之后落下去 ✓，中段保持峰值 ✓。
+    const rise = Math.min(1, t / shoulder);
+    const fall = Math.min(1, (1 - t) / shoulder);
+    const shape = Math.min(rise, fall);
+    const smooth = shape * shape * (3 - 2 * shape);   // smoothstep ✓ 没有拐点 ✓
+    return [point[0], point[1], from + (peak - from) * smooth];
+  });
+}
+
 const asMedium = (medium, wetness, strokes) =>
-  strokes.map((item) => ({ medium, wetness, color: item.color, size: item.size, points: item.points }));
+  strokes.map((item) => ({ medium, wetness, color: item.color, size: item.size, points: taper(item.points) }));
 
 // ---- 作品：油画 · 湖光山色 ✓（分层 ✓，让图层面板也有用武之地 ✓）----
 //
@@ -807,15 +836,21 @@ function yanshiAutomaton(width, height) {
   // 笔触之间**故意留缝** ✓ ⇒ 出来是雾 ✓ 不是环 ✓。
   // **光晕改用"随机散布"** ✓ —— 同心射线**又**做成了靶心 ✗（"加密"救不了"规则" ✗，第三次同类错误 ✓）。
   // 做法：在一个圆盘里随机散布短笔 ✓，**按离灯的距离加权变稀** ✓ ⇒ 自然衰减 ✓ 且**没有任何环** ✓。
+  // **光晕第三次修** ✓（上一版半径 0.40W 右边**超出画布** ✗ ⇒ 被画框裁掉 ✓
+  // ⇒ 那道"直边"是**画框**不是光 ✗ —— 我当时把它读成"光的硬边" ✗，看错了 ✓）。
+  // 这次两条一起改 ✓：
+  //  ① **收到框内** ✓：灯在 x=0.845W ✓ ⇒ 半径 0.30W → **0.15W** ✓ ⇒ 最右 0.995W ✓ 正好收在画边内 ✓；
+  //  ② **边缘色取"当地的背景色"** ✓（原来是暗棕 `#221b14` ✗ ⇒ 在蓝底上会浮出一圈棕点 ✗）
+  //     ⇒ 改成那里的暗蓝灰 `#2b3446` ✓，并在 `weight` 很小时**直接等于它** ✓ ⇒ 边界自然消失 ✓。
   const haloDisc = [];
-  for (let step = 0; step < 48; step++) {
-    const angle = (step / 48) * Math.PI * 2;
-    haloDisc.push([lamp[0] + Math.cos(angle) * W * 0.30, lamp[1] + Math.sin(angle) * W * 0.30 * 0.95]);
+  for (let step = 0; step < 56; step++) {
+    const angle = (step / 56) * Math.PI * 2;
+    haloDisc.push([lamp[0] + Math.cos(angle) * W * 0.15, lamp[1] + Math.sin(angle) * W * 0.15 * 0.95]);
   }
   glaze.push(...scatter(haloDisc, {
-    count: 900, size: 26, length: 46, center: lamp, falloff: W * 0.31,
-    color: (weight) => mix(mix("#ffdc9e", "#8a6a44", 1 - weight), "#241d16", Math.pow(1 - weight, 1.2)),
-    colorJitter: 0.22, sizeJitter: 0.5,
+    count: 1100, size: 15, length: 32, center: lamp, falloff: W * 0.15,
+    color: (weight) => mix(mix("#fff6dd", "#b98f56", 1 - weight), "#2b3446", Math.pow(1 - weight, 1.35)),
+    colorJitter: 0.18, sizeJitter: 0.5,
   }));
   for (let ring = 0; ring < 2; ring++) {
     const inset = ring * 20;
