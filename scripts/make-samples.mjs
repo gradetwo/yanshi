@@ -454,7 +454,12 @@ function yanshiAutomaton(width, height) {
   ));
 
   // ---- 灯与光 ✓ ----
-  const lampLight = glow(lamp[0], lamp[1], W * 0.70, "#ffe9bd", "#2b2218", 8, 54);
+  // **这里原本是 `glow(lamp, W*0.70, ...)`** ✗ —— 它用**大半径闭合环**假装柔光 ✓，
+  // 而不透明的鬃毛笔**会把环本身画出来** ✓ ⇒ 上一版整幅成了**同心灰环** ✗（第二版实拍 ✓）。
+  // 结论照旧 ✓：软光晕要靠"大量短笔 + 逐笔湿度"或"介质自身的湿混" ✓，**不能靠几何环** ✗。
+  // 现在**直接去掉它** ✓：房间本来就有朝灯方向的横向渐变 ✓、灯芯也有小半径的柔光 ✓，
+  // 氛围由这两样承担 ✓ —— 少一层可能出错的几何 ✓ 比多一层假光晕好 ✓。
+  const lampLight = [];
   lampLight.push(...fillPolygon(   // 灯盏（青铜 ✓，受光在下缘 ✓）
     [[lamp[0] - 24, lamp[1] + 20], [lamp[0] + 24, lamp[1] + 20],
      [lamp[0] + 15, lamp[1] + 46], [lamp[0] - 15, lamp[1] + 46]],
@@ -691,14 +696,17 @@ function yanshiAutomaton(width, height) {
   }
   // **暗角** ✓：沿四条边压暗 ✓ —— **不是四个大方块** ✗（上一版就是那样把画面糊掉的 ✓）。
   // 做法是"贴着边、由外向内几道半透明深色笔触" ✓ —— 与真画家收边同一个意思 ✓。
-  for (let ring = 0; ring < 4; ring++) {
-    const inset = ring * 26;
-    const color = mix("#0c0e15", "#1a1a24", ring / 3);
+  // **暗角收窄变淡** ✓：上一版是 4 圈 × 26px ⇒ 每边压进画面 104px ✓，
+  // 渲染出来就是**四道灰色板子** ✗（第一版实拍 ✓，把人物整个压住了 ✓）。
+  // 现在只留两圈 × 18px、并且更透明 ✓ —— 收边该是"几乎看不出、但去掉就散" ✓。
+  for (let ring = 0; ring < 2; ring++) {
+    const inset = ring * 18;
+    const color = mix("#0c0e15", "#171a22", ring);
     const band = (points) => light.push(...fillPolygon(points, () => color, 120, 46, 0.85, 0));
-    band([[-40, -40], [W + 40, -40], [W + 40, inset + 26], [-40, inset + 26]]);
-    band([[-40, H - inset - 26], [W + 40, H - inset - 26], [W + 40, H + 40], [-40, H + 40]]);
-    band([[-40, -40], [inset + 26, -40], [inset + 26, H + 40], [-40, H + 40]]);
-    band([[W - inset - 26, -40], [W + 40, -40], [W + 40, H + 40], [W - inset - 26, H + 40]]);
+    band([[-40, -40], [W + 40, -40], [W + 40, inset + 18], [-40, inset + 18]]);
+    band([[-40, H - inset - 18], [W + 40, H - inset - 18], [W + 40, H + 40], [-40, H + 40]]);
+    band([[-40, -40], [inset + 18, -40], [inset + 18, H + 40], [-40, H + 40]]);
+    band([[W - inset - 18, -40], [W + 40, -40], [W + 40, H + 40], [W - inset - 18, H + 40]]);
   }
 
   return [
