@@ -6,11 +6,12 @@
 #     内核原生计时），改为**每夜定时 + 手动触发**，不再阻塞每次 push。
 name: CI
 
+# **只手动触发** ✓（用户决定 ✓）：`push` 不再跑 CI ✓。
+#
+# 原因 ✓：① 开发机上每轮都会本地跑**全量** `cargo test` + `clippy` + 真实浏览器检查 ✓，
+# 这些已经覆盖了 CI 的判据 ✓；② 而 push 触发会**按次计费** ✓（用户明确要求"不要 push 就 CI" ✓）。
+# 需要跑时：`gh workflow run ci.yml`（或网页上的 Run workflow ✓）。
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:

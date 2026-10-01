@@ -9,10 +9,10 @@
 # 触发：每夜定时 + 手动（`gh workflow run heavy.yml`）。
 name: Heavy verification
 
+# **只手动触发** ✓（用户决定 ✓）：连每日定时也去掉 ✓ —— 定时同样按次计费 ✓。
+# 长任务（`--ignored` 的性能守卫 ✓）本地随时可跑：
+#   `cargo test --workspace --release -- --ignored --nocapture`
 on:
-  schedule:
-    # 每日 18:10 UTC（北京时间次日 02:10）。
-    - cron: "10 18 * * *"
   workflow_dispatch:
 
 env:
