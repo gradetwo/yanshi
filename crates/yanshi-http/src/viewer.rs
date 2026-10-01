@@ -496,6 +496,18 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
       <div id="suggestionList" class="annotation-list"></div>
     </div>
+    <!-- **评论** ✓（设计 §12.6 的协作通道 ✓）—— `comment` 此前在查看器里**零引用** ✗。
+         注意：**没有** `list_comments` 工具 ✓ —— 评论就是**原子** ✓ ⇒ 用现成的
+         `get_log {kind:"comment"}` 读回来 ✓（历史面板本来就在这么做 ✓）。 -->
+    <div class="card">
+      <h2>评论</h2>
+      <div class="toolbar">
+        <input id="commentText" type="text" placeholder="写一条评论…" style="flex:1 1 auto" />
+        <button id="commentPost" type="button">发表</button>
+        <button id="commentReload" type="button">刷新</button>
+      </div>
+      <div id="commentList" class="annotation-list"></div>
+    </div>
   </aside>
 </main>
 <footer class="statusbar">
@@ -2831,6 +2843,7 @@ function renderCheckpointList() {
         await resync();
         await refreshCheckpoints();
   await refreshSuggestions();
+  await refreshComments();
       }
     });
     actions.appendChild(back);
@@ -2986,6 +2999,71 @@ async function convertCheckedObjects(tool, what, idField, prefix) {
   // **转换会改变对象的呈现** ✓ ⇒ 走一次 resync ✓（服务端权威像素 ✓）。
   if (done > 0) await resync();
   await refreshObjects();
+}
+
+/// **评论** ✓（设计 §12.6 的协作通道 ✓）—— `comment` 此前在查看器里**零引用** ✗。
+///
+/// **真实签名** ✓（先读规格 ✓）：`comment {text, target_atom?, object_id?}` ✓
+/// —— 它是一个**协作原子** ✓，"**不产生状态效果**" ✓（即：它不会改变画面 ✓）。
+/// **读取用 `list_comments`** ✓ —— 它**是本轮新补的** ✓：
+/// 此前**没有**这个工具 ✗，而 `get_log` / `find_atom` 都**只返回元数据** ✗（不含净荷 ✓，设计如此 ✓）
+/// ⇒ 评论**写得进、读不回** ✗ ⇒ 先补工具 ✓、再让界面用它 ✓。
+async function refreshComments() {
+  const list = $("commentList");
+  if (!list) return;
+  // **用 `list_comments`** ✓（本轮新补的读工具 ✓）——
+  // 原来用 `get_log {kind:"comment"}` ✗，而它**只返回元数据** ✓（设计如此 ✓：它是"MCP 轮询通道" ✓）
+  // ⇒ 界面上读回来是"**（读取正文失败）**" ✗。这一条是我在真机验收里**看到**的 ✓，
+  // 顺着它查出**评论根本没有读工具** ✗ ⇒ 于是先补工具 ✓、再改界面 ✓（内核/工具先行 ✓）。
+  const value = await callTool("list_comments", { limit: 50 }, { refresh: false }).catch(() => null);
+  const atoms = (value && value.comments) || [];
+  list.innerHTML = "";
+  if (atoms.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有评论 ✓";
+    list.appendChild(empty);
+    return;
+  }
+  for (const atom of atoms.slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    head.textContent = (atom.actor || "?") + " · seq " + (atom.seq === undefined ? "?" : atom.seq) +
+      (atom.object_id ? " · @" + String(atom.object_id).slice(-6) : "");
+    const text = document.createElement("div");
+    text.className = "hint";
+    // **字段以 `list_comments` 的真实返回为准** ✓（`text` 是顶层的 ✓ —— 它就在我的 Rust 测试里 ✓）。
+    text.textContent = atom.text || "（空评论 ✓）";
+    row.append(head, text);
+    list.appendChild(row);
+  }
+}
+
+/// 发表一条评论 ✓。
+async function postComment() {
+  const box = $("commentText");
+  const text = ((box && box.value) || "").trim();
+  if (!text) { log("先写点什么再发表 ✓", "#c33"); return; }
+  const done = await callToolChecked("comment", { text }, "发表评论");
+  if (done && done.ok) {
+    if (box) box.value = "";
+    log("已发表评论 ✓（它是协作原子 ✓，不会改变画面 ✓）");
+    await refreshComments();
+  }
+}
+
+/// 评论面板的两个按钮 ✓。
+function setupCommentPanel() {
+  const post = $("commentPost");
+  if (post) post.addEventListener("click", () => { void postComment(); });
+  const reload = $("commentReload");
+  if (reload) reload.addEventListener("click", () => { void refreshComments(); });
+  const box = $("commentText");
+  if (box) box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); void postComment(); }
+  });
 }
 
 /// **建议** ✓（设计 §12.6 ✓）—— `suggest`/`list_suggestions`/`accept_suggestion`/`reject_suggestion`
@@ -3211,6 +3289,7 @@ async function resampleCheckedObjects() {
 function setupObjectPanel() {
   setupStoragePanel();
   setupSuggestionPanel();
+  setupCommentPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();

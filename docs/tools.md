@@ -1,7 +1,7 @@
 # Tools and effects
 
 The tool layer registers **40 core tools**. With every implemented group enabled there are
-**95 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+**96 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -62,6 +62,14 @@ committing one at a time would leave the earlier ones in the log when a later on
 goes to a stash with the validator's reason, and stashes are persisted under the workspace so an offline window
 survives a restart. Discarding drops only the pending replay and never the blobs, since design 6.3 keeps stash
 blobs at the history level; there is no collector yet, and when one arrives stashes must count as roots.
+
+`list_comments` closes an asymmetry in the collaboration channel that a browser check exposed. Comments could
+always be written, but no tool could read them back: the log and atom-search tools return metadata only, by
+design, since they are the polling channel and a search respectively, so the comment text was stored in the
+payload and unreachable. The sibling channels both had their readable half already, in `list_annotations` and
+`list_suggestions`, so comments were the one that was missing it. The new tool lists comments newest first with
+their text, author, session, timestamp and target object, supports `since_seq` for incremental polling and
+filtering by author or by the object commented on, and mirrors the response shape of its siblings.
 
 `import_psd` implements the read-only PSD import that design chapter 17 lists as a later item. The contract is
 read-only and composite-only: it takes the already-flattened image the file carries, does not import the layer

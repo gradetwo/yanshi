@@ -1800,6 +1800,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_comments",
+        profile: Profile::Collab,
+        summary: "列出评论（协作通道的可读一侧）",
+        mutating: false,
+        params: &[
+            param!("limit", Integer, false, "最多返回条数（缺省 50，上限 500）"),
+            param!("since_seq", Integer, false, "只返回 seq 大于该值的评论（增量轮询用）"),
+            param!("actor", String, false, "按作者过滤"),
+            param!("object_id", String, false, "按被评论的对象过滤"),
+        ],
+    },
+    ToolSpec {
         name: "list_suggestions",
         profile: Profile::Collab,
         summary: "列出建议及其状态（pending / accepted / rejected，由 accept/reject 原子推导）",
@@ -1966,6 +1978,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "reject_suggestions" => write_reject_suggestions(ctx, args),
+        "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
@@ -7955,6 +7968,71 @@ fn reject_one(ctx: &mut ToolContext<'_>, suggestion_id: &str, reason: &str) -> R
 }
 
 /// 列出建议及其状态：状态由后续的 accept/reject 原子推导。
+/// **列出评论** ✓（协作通道的可读一侧 ✓）。
+///
+/// **为什么必须补这个工具** ✓（本轮实测出来的 ✓）：`comment` **能写** ✓，但**没有任何读工具** ✗ ——
+/// `get_log` 与 `find_atom` 都只返回**元数据** ✓（设计如此 ✓：它们分别是"MCP 轮询通道"与"检索" ✓，
+/// 返回 `actor/atom_id/kind/seq/timestamp` ✓，**不含净荷** ✗）⇒ 结果就是
+/// **评论写进去、却读不回来** ✗。而同族的 `list_annotations` ✓ 与 `list_suggestions` ✓ **都是有的** ✓
+/// ⇒ 评论缺了对称的那一半 ✓ —— 这是**产品缺口** ✓，不只是"界面少一块" ✓。
+///
+/// **净荷在日志里** ✓（`document.log()` 的原子带 `payload` ✓）⇒ 这里按通道过滤后把它取出来 ✓。
+fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let since = optional_u64(args, "since_seq").unwrap_or(0);
+    let limit = optional_u64(args, "limit").unwrap_or(50).clamp(1, 500) as usize;
+    let actor = optional_str(args, "actor");
+    let object_id = optional_str(args, "object_id");
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let mut comments = Vec::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Comment {
+            continue;
+        }
+        let seq = atom.seq;
+        if seq <= since {
+            continue;
+        }
+        let actor_id = atom.actor.to_string();
+        if let Some(wanted) = &actor {
+            if &actor_id != wanted {
+                continue;
+            }
+        }
+        let payload = &atom.payload;
+        let target_object = payload.get("object_id").and_then(Value::as_str).map(str::to_owned);
+        if let Some(wanted) = &object_id {
+            if target_object.as_deref() != Some(wanted.as_str()) {
+                continue;
+            }
+        }
+        comments.push(json!({
+            "atom_id": atom.id.to_string(),
+            "seq": seq,
+            "actor": actor_id,
+            "session": atom.session.to_string(),
+            "text": payload.get("text").and_then(Value::as_str).unwrap_or_default(),
+            "target_atom": payload.get("target_atom").and_then(Value::as_str),
+            "object_id": target_object,
+            "timestamp": atom.timestamp,
+        }));
+    }
+    let count = comments.len();
+    // **最新的在前** ✓（评论是"读最近发生了什么" ✓），并保持 `since_seq` 的语义用**最大 seq** ✓。
+    let next_since = comments.last().and_then(|item| item.get("seq")).and_then(Value::as_u64).unwrap_or(since);
+    comments.reverse();
+    comments.truncate(limit);
+    Ok(json!({
+        "comments": comments,
+        "count": count,
+        "next_since": next_since,
+    }))
+}
+
 fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let filter = optional_str(args, "status");
     // AI 侧轮询：`since_seq` 取增量，`limit`/`offset` 用于分页。
