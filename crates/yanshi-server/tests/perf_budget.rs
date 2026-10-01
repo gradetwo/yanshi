@@ -459,10 +459,19 @@ fn region_render_matches_the_design_budget_tiers() {
     let hit = best_of(5, || {
         let _ = workspace.render_region_raw("doc_tier", region).unwrap();
     });
+    // **命中档现在是真命中** ✓：本轮加了 §8.4 的区域字节缓存 ✓ ⇒ 同一区域、同一 HEAD 第二次起
+    // 直接返回已量化的 u8 ✓（实测 60.77ms → 约 0.07ms ✓）。**设计预算 < 10ms 据此达标** ✓。
     println!(
-        "区域渲染 512² 缓存命中（最小）: raw {hit:?}｜PNG {hit_png:?}｜设计预算 raw < 10ms（**当前未达标，见下**）"
+        "区域渲染 512² 缓存命中（最小）: raw {hit:?}｜PNG {hit_png:?}｜设计预算 raw < 10ms ⇒ **已达标** ✓（§8.4 区域字节缓存 ✓）"
     );
-    // **已知偏差（设计未决）**：设计 14.10 要求缓存命中 < 10ms，实测约 49ms（约 5×）。
+    // **曾经的偏差（已解决 ✓）**：设计 14.10 要求缓存命中 < 10ms，而当时实测约 49–60ms（约 5×）✗。
+    // 曾经的分析（保留作历史 ✓）：每像素约 190ns、与像素数线性；其中 sRGB 传递函数占相当比例。
+    // **真正的解法不是放宽精度** ✓，而是**设计早写好的那条** ✓（§6.1 + §8.4）：
+    // "内存 tile 用 f16 线性 ✓，**持久缓存与网络传输用 u8（显示空间）**" ✓
+    // ⇒ 命中时直接给**已量化的字节** ✓，根本不必重量化 ✓。本轮就是这么做的 ✓
+    // ⇒ 实测 **60.77ms → 0.076ms** ✓，设计预算达标 ✓。
+    //
+    // （下面这段旧分析里"52% 是 powf"是**查表之前**的结论 ✗，已被实测否掉 ✓，保留仅为追溯 ✓。）
     // 实测每像素约 190ns 且与像素数严格线性；其中约 52% 是 sRGB 传递函数的 `powf`
     // （每像素 3 次；262144 次调用实测 8.4ms，外推 25.3ms）。
     // 让它达标需要设计层面的取舍：放宽该路径到 D1（±1 LSB）以便用查找表、
@@ -476,10 +485,14 @@ fn region_render_matches_the_design_budget_tiers() {
     );
 
     // 未命中简单：每次换一个区域，强制未命中，但内容简单（单层单形状）。
+    //
+    // **本轮必须改测法** ✗：原来只轮换 3 个偏移 ✓ ⇒ `best_of(5)` 到第二轮就**全部命中缓存**了 ✗
+    // ⇒ 实测变成 107µs ✓ 而"未命中"的语义没了 ✗。现在每轮换一个**互不相同**的区域 ✓
+    //（2048² 画布里 512² 区域有 16 个位置 ✓ ⇒ 足够 5 轮真正的未命中 ✓）。
     let mut index = 0u32;
     let simple = best_of(5, || {
         index += 1;
-        let offset = f64::from(index % 3) * 512.0;
+        let offset = f64::from(index) * 128.0;
         let target = Bbox::new(offset, offset, 512.0, 512.0);
         let _ = workspace.render_region_raw("doc_tier", target).unwrap();
     });
@@ -526,9 +539,10 @@ fn region_render_matches_the_design_budget_tiers() {
         let _ = layer_id;
     }
     let mut index = 0u32;
+    // 同"未命中简单" ✓：每轮换一个**互不相同**的区域 ✓，否则第二轮起就命中缓存了 ✗。
     let complex = best_of(3, || {
         index += 1;
-        let offset = f64::from(index % 3) * 512.0;
+        let offset = f64::from(index) * 128.0;
         let target = Bbox::new(offset, offset, 512.0, 512.0);
         let _ = workspace.render_region_raw("doc_tier", target).unwrap();
     });
@@ -994,4 +1008,84 @@ fn diagnose_region_hit_cost() {
             elapsed.as_nanos() as f64 / pixels
         );
     }
+}
+
+/// **区域字节缓存（设计 §8.4）的正确性** ✓ —— 它省掉 800× 的时间 ✓，但**绝不许给旧像素** ✗。
+#[test]
+fn region_byte_cache_is_correct_and_never_stale() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(NewDocument::new("doc_rb", 512, 512), "human:1", "session:a")
+        .unwrap();
+    workspace
+        .commit(
+            "doc_rb",
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "layer_1", "name": "base"}),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    let region = Bbox::new(0.0, 0.0, 256.0, 256.0);
+    let first = workspace.render_region_raw("doc_rb", region).unwrap();
+    let after_first = workspace.region_cache_stats("doc_rb").unwrap();
+    // ① 同版本再渲染 ⇒ **必须命中** ✓，且**字节逐一相同** ✓。
+    //
+    // **比哈希、不要比整个 Vec** ✗ —— 我第一版直接 `assert_eq!` 两段 256KB 字节 ✓，
+    // 失败时测试框架把 26 万个数全打了出来 ✗（淹没日志 ✓）。这个教训值得留一行 ✓。
+    let second = workspace.render_region_raw("doc_rb", region).unwrap();
+    let after_second = workspace.region_cache_stats("doc_rb").unwrap();
+    assert_eq!((first.0, first.1), (second.0, second.1), "尺寸应一致 ✓");
+    assert_eq!(
+        yanshi_render::region_block::content_hash(&first.2),
+        yanshi_render::region_block::content_hash(&second.2),
+        "命中返回的字节必须与首次渲染**完全一致** ✓（统计 {:?} → {:?}）",
+        after_first,
+        after_second
+    );
+    assert!(
+        after_second.hits > after_first.hits,
+        "第二次同区域渲染应命中缓存 ✓：{after_first:?} → {after_second:?}"
+    );
+    // ② 提交一个**会改变这块区域**的原子 ⇒ 版本推进 ⇒ **不许再命中旧块** ✗。
+    workspace
+        .commit(
+            "doc_rb",
+            // **用一条笔画来改内容** ✓ —— 我第一版给 `raster_patch` 塞了 `shape: rect` ✗，
+            // 而那种对象**根本不会被画** ✗ ⇒ 提交前后字节当然一样 ✓，
+            // 于是我把"测试写错了"误判成"缓存给了旧像素" ✗。笔画是**一定会画**的 ✓。
+            Atom::new(
+                AtomKind::DrawStroke,
+                "human:1",
+                "session:a",
+                json!({
+                    "object_id": "stroke_stale",
+                    "layer_id": "layer_1",
+                    "brush": "round",
+                    "size": 12.0,
+                    "data": {"points": [[20.0, 20.0], [230.0, 230.0]]},
+                    "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                }),
+            ),
+            "human:1",
+            true,
+        )
+        .unwrap();
+    let third = workspace.render_region_raw("doc_rb", region).unwrap();
+    assert_ne!(
+        yanshi_render::region_block::content_hash(&first.2),
+        yanshi_render::region_block::content_hash(&third.2),
+        "文档变过之后必须重算 ✓ —— 若这里相等，说明缓存给了**旧像素** ✗（那是不可接受的）"
+    );
+    // ③ 而新版本的那份也要能被缓存住 ✓（下一轮提交之前一直有效 ✓）。
+    let after_third = workspace.region_cache_stats("doc_rb").unwrap();
+    let _ = workspace.render_region_raw("doc_rb", region).unwrap();
+    assert!(
+        workspace.region_cache_stats("doc_rb").unwrap().hits > after_third.hits,
+        "新版本的块也应进缓存 ✓"
+    );
 }

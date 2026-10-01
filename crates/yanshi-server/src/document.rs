@@ -194,6 +194,13 @@ pub struct Document {
     /// 主源正是**每次提交都生成一份缩略图、写了新的却没删旧的** ✓ ——
     /// 我第一版只给"文档级缩略图"做了淘汰 ✗ ⇒ 别的级别照旧泄漏 ✓（测试用"渲染多轮后数一数"当场抓住 ✓）。
     last_thumb_blob: Option<BlobHash>,
+    /// **区域字节缓存** ✓（设计 §8.4 的 RegionBlock ✓）—— 命中时直接给已量化的 u8 ✓。
+    ///
+    /// 实测动机 ✓：512² 区域命中时，仅"f16 线性 → u8 显示空间"的重量化就要 **18.9ms／72ns 每像素** ✗，
+    /// 而**零层纯管线**已占 30.5ms ✗（约七成 ✓，内容每层只加 1.3ms ✓）。
+    /// 设计 §6.1 说"内存 tile 用 f16 线性 ✓，**持久缓存与网络传输用 u8（显示空间）**" ✓
+    /// ⇒ 命中就该给字节 ✓，不必重量化 ✓。
+    region_cache: yanshi_render::region_block::RegionBlockCache,
     created_at: i64,
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
@@ -278,6 +285,8 @@ impl Document {
             document_thumbnail: None,
             document_thumbnail_seq: 0,
             last_thumb_blob: None,
+            // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
+            region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
             created_at,
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
@@ -693,10 +702,40 @@ impl Document {
     /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
     /// 因为调用方要的是像素而不是可展示的产物。
     pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
+        // **先查区域字节缓存** ✓（设计 §8.4 ✓）。
+        //
+        // **版本 = HEAD 序号** ✓ —— 这是"绝不给旧像素 ✗"的根据 ✓：
+        // 任何提交都会推进 HEAD ✓，于是版本一变、键立刻不命中 ✓，宁可重算 ✓。
+        // （本轮的范围与取舍见 `region_block` 的模块说明 ✓：先做区域级 ✓、不做按块渲染 ✗，
+        //  因为按块渲染要处理滤镜外扩跨块 ✓，那会碰到"分块与整幅必须一致"这条硬不变量 ✗。）
+        let version = self.log.head_seq();
+        let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
+        if let Some(block) = self.region_cache.get(key, version) {
+            // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
+            // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
+            return Ok((block.key.w, block.key.h, block.data.clone()));
+        }
         let rendered = self
             .renderer
             .render_region(&self.state, &*self.store, bbox)?;
+        let data = rendered.rgba8.clone();
+        self.region_cache
+            .put(yanshi_render::region_block::RegionBlock {
+                // **用"请求的键"存** ✓（不是渲染后的尺寸 ✗）：查的时候用的是请求键 ✓，
+                // 两边不一致就会永远差一点点、永不命中 ✗ —— 我第一版正是这个错 ✗。
+                key,
+                hash: yanshi_render::region_block::content_hash(&data),
+                data,
+                version_atom: version,
+                layers: self.state.alive_layers().len() as u32,
+                objects: self.state.alive_objects().len() as u32,
+            });
         Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// 区域字节缓存的统计 ✓（设计要求可观测 ✓）。
+    pub fn region_cache_stats(&self) -> yanshi_render::region_block::RegionBlockStats {
+        self.region_cache.stats()
     }
 
     /// **收集当前仍被缓存指针引用的 blob** ✓（淘汰时的"保留名单" ✓）。

@@ -99,6 +99,7 @@ pub mod paint;
 pub mod png;
 pub mod polygon;
 pub mod prng;
+pub mod region_block;
 pub mod render;
 pub mod selection;
 pub mod thumb;

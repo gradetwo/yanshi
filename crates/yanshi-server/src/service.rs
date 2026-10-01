@@ -883,6 +883,20 @@ impl Workspace {
         self.document_mut(doc_id)?.render_region_raw(bbox)
     }
 
+    /// **区域字节缓存的统计** ✓（设计 §8.4 ✓；用于观测与测试 ✓）。
+    pub fn region_cache_stats(
+        &self,
+        doc_id: &str,
+    ) -> Result<yanshi_render::region_block::RegionBlockStats> {
+        let document = self.document(doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {doc_id} 未打开")),
+            )
+        })?;
+        Ok(document.region_cache_stats())
+    }
+
     /// 渲染区域、写入渲染缓存并返回可展示的预览（含 PNG blob 与取回地址）。
     pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
         let (preview, head, png, full_frame) = {
