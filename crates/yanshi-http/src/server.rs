@@ -433,6 +433,14 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    if let Some(file) = path.strip_prefix("/samples/") {
+        // **示例画面** ✓（随仓库发布 ✓）：换一台机器也能打开示例看到内容 ✓。
+        // 用**白名单**而不是拼路径 ✓（与品牌资源同一考虑 ✓）。
+        return match method {
+            "GET" => sample_asset(file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(file) = path.strip_prefix("/mediums/") {
         // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
         return match method {
@@ -1006,6 +1014,32 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
 /// 只接受 **直接位于该目录、以 `.wasm` 结尾** 的文件名 ✓（拒绝 `..`、`/` 与其它扩展名 ✓），
 /// 因此不会把仓库里任意文件暴露出去 ✓（与 `/brand/` 的白名单同思路 ✓，
 /// 但这里允许"加一个插件就多一个文件" ✓ —— 正是设计里"介质可扩展"的诉求 ✓）。
+/// `GET /samples/{file}`：**随仓库发布的示例画面** ✓。
+///
+/// **白名单** ✓（与品牌资源同一考虑 ✓）：只发 `assets/samples` 下、名字在清单里的 PNG ✓，
+/// 不做路径拼接 ✗ ⇒ 不可能借它读到仓库里的别的文件 ✓。
+const SAMPLE_FILES: [&str; 5] = [
+    "sample-oil.png",
+    "sample-watercolor.png",
+    "sample-brush.png",
+    "sample-reference.png",
+    "sample-lake.png",
+];
+
+fn sample_asset(file: &str) -> Response {
+    if !SAMPLE_FILES.contains(&file) {
+        return crate::http::not_found(format!("没有这个示例画面：{file}"));
+    }
+    let dir = std::env::var("YANSHI_SAMPLE_DIR").unwrap_or_else(|_| "assets/samples".to_owned());
+    let path = std::path::PathBuf::from(dir).join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::bytes(200, "image/png", bytes)
+            // 画面随版本走 ✓ ⇒ 可以长缓存 ✓。
+            .with_header("Cache-Control", "public, max-age=31536000, immutable"),
+        Err(_) => crate::http::not_found(format!("示例画面缺失：{}", path.display())),
+    }
+}
+
 fn medium_asset(state: &ServerState, file: &str) -> Response {
     if file.contains("..") || file.contains('/') || !file.ends_with(".wasm") {
         return crate::http::bad_request("非法介质资源名（只接受 assets/mediums 下的 *.wasm）");
