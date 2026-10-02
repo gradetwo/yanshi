@@ -1574,6 +1574,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("atom_id", String, true, "目标原子 id")],
     },
     ToolSpec {
+        name: "redo_last",
+        profile: Profile::Core,
+        // **与 `undo_last` 对称** ✓（设计 793：`revert(revert(x)) ≡ reapply(x)` ✓）。
+        summary: "重做最后 N 笔被撤销的笔迹（发给 `reapply`；同样不动结构原子）",
+        mutating: true,
+        params: &[param!("count", Integer, false, "重做几笔（缺省 1）")],
+    },
+    ToolSpec {
+        name: "undo_last",
+        profile: Profile::Core,
+        // **给人用的粒度** ✓（目标 ⑦ ✓）：调用方只想说"撤销最后一笔" ✓，
+        // 而不该被迫先自己找出原子 id ✓（那是 `revert` 的粒度 ✓，对人不合适 ✓）。
+        summary: "撤销最后 N 笔**笔迹**（一笔 = 同一个 object_id 的全部原子）；**不动结构**（图层等）与历史原子",
+        mutating: true,
+        params: &[param!("count", Integer, false, "撤销几笔（缺省 1）")],
+    },
+    ToolSpec {
         name: "reapply",
         profile: Profile::Core,
         summary: "恢复被撤销的原子（不恢复级联链）",
@@ -2359,6 +2376,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
+        "undo_last" => write_undo_last(ctx, args),
+        "redo_last" => write_redo_last(ctx, args),
         "reapply" => write_history_atom(ctx, args, AtomKind::Reapply, "atom_id"),
         "get_log" => read_get_log(ctx, args),
         "get_job" => read_get_job(ctx, args),
@@ -5129,6 +5148,235 @@ fn read_get_changesets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// ⇒ 已撤销的变更集**无法通过本工具再撤销回来** ✗。
 /// 因此这里**跳过历史原子并如实报告** `skipped_history_atoms` ✓，
 /// **不擅自**替用户决定放开哪一层 ✓（放开校验 ✓ 还是删掉折叠层的分支 ✗ 是**设计决策** ✓）。
+/// **一笔** ✓：`(object_id, [(seq, atom_id, kind)])` ✓。
+///
+/// **为什么抽别名** ✓：clippy 的 `type_complexity` 说它太复杂 ✓ —— 而这条 lint 其实在提示
+/// **"这个类型值得有个名字"** ✓：`undo_last` 与 `redo_last` 用的是**同一个概念** ✓
+/// ⇒ 有了名字，两处就**读得出是同一件事** ✓（否则每次都要重新解析一遍尖括号 ✗）。
+type Gesture = (Option<String>, Vec<(u64, String, String)>);
+
+/// **撤销最后 N 笔** ✓（目标 ⑦ ✓）—— **一笔 = 同一个 `object_id` 的全部原子** ✓。
+///
+/// **为什么需要它** ✓：`revert` 是**原子级**的 ✓（要调用方自己知道 atom id ✗）；
+/// 而人说的是"**撤销我刚画的那一笔**" ✓ ⇒ 这个工具就是那句话 ✓。
+///
+/// **判定"一笔"的依据** ✓：`Atom::object_id()` ✓ —— 一次落笔的对象就是那一笔 ✓
+///（笔迹 / 形状 / 渐变 / 纹理各是一个对象 ✓）⇒ 同一个 `object_id` 的原子**整组一起撤** ✓，
+/// 于是"一笔产生的多条原子"不会只撤掉一半 ✗（那会留下**半截笔迹** ✗ —— 比不撤更糟 ✓）。
+///
+/// **⚠️ 只撤"有对象的笔迹"，不碰结构原子** ✗ —— 这是**测试当场教我的** ✓：
+/// 我第一版把没有 `object_id` 的原子（例如 **`CreateLayer`** ✓）也各自算"一笔" ✓
+/// ⇒ 于是调用方说"撤 10 笔" ✓ 会**顺手把整个图层撤掉** ✗（连它里面的内容一起 ✓）。
+/// **那超出了他要的动作** ✗：他说的是"**撤销最后一笔**" ✓，而不是"删一层" ✓。
+/// ⇒ 于是这里只认**有 `object_id`** 的原子 ✓，并把**被跳过的非内容原子数**如实报出来 ✓
+///（否则调用方会以为"该撤的都撤了" ✓ —— 那又是一种"说做了其实没做" ✗）。
+/// **结构改动仍然能撤** ✓：用 `revert` / `revert_changeset` ✓（它们本来就在 ✓，粒度也合适 ✓）。
+///
+/// **两条沿用的既成规矩** ✓（从 `write_revert_changeset` 抄来的 ✓，不另发明 ✓）：
+/// 1. **历史原子本身不撤** ✗（`Revert` / `Reapply` ✓ —— 折叠层与校验层对它们的处理有分歧 ✓，
+///    本片**不擅自决定** ✓，只跳过并在结果里**如实报告** ✓）；
+/// 2. **撤销走 `write_history_atom`** ✓ —— 与 `revert` 工具**同一条路径** ✓
+///    ⇒ "界面撤销一笔"与"MCP 撤销一个原子"**共用同一套语义** ✓（两条路漂移是这个项目反复吃的亏 ✓）。
+fn write_undo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let requested = args
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    // ① **从新到旧把原子归成"笔"** ✓：连续的同一个 `object_id` 算一笔 ✓；
+    //    没有 object_id 的原子（例如文档级设定 ✓）各自成一笔 ✓。
+    let mut gestures: Vec<Gesture> = Vec::new();
+    // **被跳过的非内容原子数** ✓（如实报告 ✓ —— 让调用方知道"不是所有东西都被撤了" ✓）。
+    let mut ignored: usize = 0;
+    {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        // **只认"当前还活着"的对象** ✗ —— 这是**实测逼出来的** ✓：
+        // 我第一版把"已经撤过的笔迹"也当成候选 ✓ ⇒ **再撤一次**时会对同一个原子**再发一个 revert** ✓，
+        // 折叠层**接受了它**（幂等 ✓）⇒ 工具就报 `undone_count: 1` ✓，**而画面一个像素都没变** ✗ ✓。
+        // 那是本项目最忌讳的一类："**声称做了、其实没做**" ✓
+        //（日志实测：三条 revert 之后又多了**第四条** revert ✓，它没有改变任何东西 ✓）。
+        // ⇒ 判据用**状态事实** ✓：对象已经不在 `alive_objects()` 里 ⇒ 这一笔早就被撤了 ✓。
+        let alive: std::collections::HashSet<String> = document
+            .state()
+            .alive_objects()
+            .iter()
+            .map(|object| object.id.clone())
+            .collect();
+        let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
+        // **`Seq` 就是 `u64`** ✗（不是新类型 ✓ —— 我又假设了一次 ✓，编译器当场纠正 ✓）。
+        atoms.sort_by_key(|atom| atom.seq);
+        for atom in atoms.iter().rev() {
+            // **文档创建本身不算一笔** ✗（撤掉它等于把文档删了 ✓ —— 那是另一个工具的事 ✓）。
+            if atom.kind == yanshi_core::AtomKind::CreateDocument {
+                continue;
+            }
+            // **结构原子不碰** ✗（见上面的说明 ✓）⇒ 数一数、报出去 ✓，但不进候选 ✓。
+            let Some(object) = atom.object_id().map(str::to_owned) else {
+                ignored += 1;
+                continue;
+            };
+            // **早已被撤掉的那一笔不算候选** ✗（否则"再撤一次"会报成功却没变化 ✓）。
+            if !alive.contains(&object) {
+                ignored += 1;
+                continue;
+            }
+            let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
+            match gestures.last_mut() {
+                // **同一笔** ✓：同一个非空 object_id 且紧挨着 ✓。
+                Some((last_object, items)) if *last_object == Some(object.clone()) => {
+                    items.push(entry);
+                }
+                _ => gestures.push((Some(object), vec![entry])),
+            }
+        }
+    }
+    if gestures.is_empty() {
+        return Ok(json!({
+            "undone": [],
+            "undone_count": 0,
+            "remaining_gestures": 0,
+            "message": "**没有可撤销的笔迹** ✗ ⇒ 这个文档里除了创建本身，还没有内容原子 ✓",
+            "note": "**结构改动不在这里撤** ✓（例如建层/删层/重排 ✓）⇒ 用 `revert` 或 `revert_changeset` ✓",
+        }));
+    }
+    let take = requested.min(gestures.len());
+    let mut undone: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    for (object, items) in gestures.iter().take(take) {
+        for (seq, atom_id, kind) in items {
+            // **历史原子不撤** ✗（见上面第 1 条；跳过并报告 ✓）。
+            if kind == "Revert" || kind == "Reapply" {
+                skipped.push(json!({ "seq": seq, "atom_id": atom_id, "kind": kind, "reason": "历史原子本身不撤（折叠层与校验层对嵌套撤销有分歧 ⇒ 不擅自决定）" }));
+                continue;
+            }
+            // **走与 `revert` 完全相同的那条路** ✓。
+            match write_history_atom(
+                ctx,
+                &json!({ "atom_id": atom_id }),
+                yanshi_core::AtomKind::Revert,
+                "atom_id",
+            ) {
+                Ok(_) => undone.push(
+                    json!({ "seq": seq, "atom_id": atom_id, "kind": kind, "object_id": object }),
+                ),
+                // **已经撤过的** ✓ 不算错误 ✓ —— 但**必须报出来** ✗，不能假装成功 ✓。
+                Err(error) => skipped.push(json!({
+                    "seq": seq, "atom_id": atom_id, "kind": kind,
+                    "reason": format!("{error}"),
+                })),
+            }
+        }
+    }
+    let undone_count = undone.len();
+    Ok(json!({
+        "undone": undone,
+        "skipped": skipped,
+        "undone_count": undone_count,
+        "gestures_undone": take,
+        "gestures_total": gestures.len(),
+        "remaining_gestures": gestures.len().saturating_sub(take),
+        // **跳过的非内容原子** ✓：调用方要能看出"撤的不是全部" ✓。
+        "ignored_non_content_atoms": ignored,
+        // **出路要写清楚** ✓（"错误要能照着改" ✓）：要恢复就说 `reapply` ✓。
+        "hint": "要恢复就对这些 atom_id 用 `reapply`；`count` 可以一次撤多笔 ✓",
+    }))
+}
+
+/// **重做最后 N 笔被撤销的笔迹** ✓（`undo_last` 的对称面 ✓）。
+///
+/// **判定** ✓：与 `undo_last` **同一套分组** ✓（同一个 `object_id` = 一笔 ✓），
+/// 只是候选换成"**对象已经不在状态里**"的那些 ✓（= 被撤掉的 ✓），动作换成 **`Reapply`** ✓
+///（设计 793：`revert(revert(x)) ≡ reapply(x)` ✓）。
+fn write_redo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let requested = args
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let mut gestures: Vec<Gesture> = Vec::new();
+    let mut ignored: usize = 0;
+    {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let alive: std::collections::HashSet<String> = document
+            .state()
+            .alive_objects()
+            .iter()
+            .map(|object| object.id.clone())
+            .collect();
+        let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
+        atoms.sort_by_key(|atom| atom.seq);
+        for atom in atoms.iter().rev() {
+            let Some(object) = atom.object_id().map(str::to_owned) else {
+                ignored += 1;
+                continue;
+            };
+            // **只认已经被撤掉的** ✓（还活着的那些是 `undo_last` 的事 ✓）。
+            if alive.contains(&object) {
+                ignored += 1;
+                continue;
+            }
+            let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
+            match gestures.last_mut() {
+                Some((last_object, items)) if *last_object == Some(object.clone()) => {
+                    items.push(entry)
+                }
+                _ => gestures.push((Some(object), vec![entry])),
+            }
+        }
+    }
+    if gestures.is_empty() {
+        return Ok(json!({
+            "redone": [],
+            "redone_count": 0,
+            "remaining_gestures": 0,
+            "message": "**没有可重做的笔迹** ✗ ⇒ 没有哪一笔处于「被撤销」状态 ✓",
+        }));
+    }
+    let take = requested.min(gestures.len());
+    let mut redone: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    for (object, items) in gestures.iter().take(take) {
+        for (seq, atom_id, kind) in items {
+            if kind == "Revert" || kind == "Reapply" {
+                skipped.push(json!({ "seq": seq, "atom_id": atom_id, "kind": kind, "reason": "历史原子本身不重做" }));
+                continue;
+            }
+            match write_history_atom(
+                ctx,
+                &json!({ "atom_id": atom_id }),
+                yanshi_core::AtomKind::Reapply,
+                "atom_id",
+            ) {
+                Ok(_) => redone.push(json!({ "seq": seq, "atom_id": atom_id, "kind": kind, "object_id": object })),
+                Err(error) => skipped.push(json!({ "seq": seq, "atom_id": atom_id, "kind": kind, "reason": format!("{error}") })),
+            }
+        }
+    }
+    let redone_count = redone.len();
+    Ok(json!({
+        "redone": redone,
+        "skipped": skipped,
+        // **与 `undo_last` 同名同义** ✓（两边都叫 `undone_count` / `redone_count` ✓，
+        // 而各自的数组都叫 `undone` / `redone` ✓ —— 调用方不必记两套 ✓）。
+        "redone_count": redone_count,
+        "gestures_redone": take,
+        "gestures_total": gestures.len(),
+        "remaining_gestures": gestures.len().saturating_sub(take),
+        "ignored_non_content_atoms": ignored,
+        "hint": "再撤掉它们用 `undo_last` ✓",
+    }))
+}
+
 fn write_revert_changeset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let changeset_id = require_str(args, "changeset_id")?;
     let (targets, already_reverted) = {

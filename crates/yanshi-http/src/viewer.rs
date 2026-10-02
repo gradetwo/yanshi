@@ -706,6 +706,9 @@ const state = {
   // 移动工具选中的对象（含 bbox，用于命中测试与显示选中框）。
   selectedObject: null,
   // 当前选区（用于"清除选区"与覆盖层显示）。
+  // **可撤销 / 可重做的笔数** ✓ —— 来自服务端工具 ✓；`null` = 还不知道 ✓（界面显示 — ✓，不猜 ✓）。
+  remainingUndo: null,
+  remainingRedo: null,
   selectionId: null,
   selectionShape: null,
   dragging: null,
@@ -2578,61 +2581,71 @@ async function warmKernel() {
   }
 }
 
-/// 撤销一次（可连续）。栈空时给出明确提示，而不是静默无反应。
+/// **撤销一笔**（整笔粒度 ✓，目标 ⑦ ✓）。
+///
+/// **为什么换成服务端工具** ✗：原来这里是"本地 `undoStack` + 原子级 `revert`" ✓
+/// ⇒ 两个毛病 ✓：**(1)** 粒度是**一个原子** ✓（一笔若由多条原子组成 ⇒ 只撤掉一半 ✗）；
+/// **(2)** 本地栈**会与事实漂移** ✓（刷新页面、或另一个客户端改了文档 ⇒ 栈里还记着旧东西 ✗
+/// ⇒ 界面上"可撤销 3 步" ✓、实际一步都没有 ✗）。
+/// ⇒ 现在只问服务端 ✓：`undo_last` 是**整笔**的 ✓，并**回报还剩几笔** ✓ ⇒ 界面照它显示 ✓。
 async function undoOnce() {
-  const entry = state.undoStack.pop();
-  if (!entry) {
-    log("没有可撤销的操作");
-    updateUndoStatus();
+  const value = await callTool("undo_last", {}, { refresh: false });
+  if (!value || value.ok === false) {
+    log("撤销失败：" + ((value && value.error_code) || "unknown") + " " +
+        ((value && value.context && value.context.detail) || ""), "#c33");
     return;
   }
-  const id = typeof entry === "string" ? entry : entry.id;
-  const tool = typeof entry === "string" || entry.kind === "atom" ? "revert" : "revert_to";
-  const value = await callTool(tool, { atom_id: id }, { refresh: false });
-  if (!value.ok) {
-    // 撤销失败：把条目放回去，保持栈与实际状态一致。
-    state.undoStack.push(entry);
-    log("撤销失败：" + (value.error_code || "unknown") + " " +
-        ((value.context && value.context.detail) || ""), "#c33");
+  if (!value.undone_count) {
+    // **把服务端的话原样说出来** ✓（"没有可撤销的"是**事实** ✓，不是静默无反应 ✗）。
+    log(value.message || "没有可撤销的笔迹", "#c93");
   } else {
-    state.redoStack.push(entry);
+    log("已撤销 " + value.gestures_undone + " 笔（" + value.undone_count + " 条原子）✓｜还剩 " +
+        value.remaining_gestures + " 笔", "#2a2");
   }
+  // **数字以服务端为准** ✓。
+  state.remainingUndo = value.remaining_gestures;
   updateUndoStatus();
   await refreshPreview();
+  await resync();
 }
 
-/// 重做一次（按原始顺序：最近一次被撤销的最先重做）。
+/// **重做一笔** ✓（`undo_last` 的对称面 ✓，同样以服务端为准 ✓）。
 async function redoOnce() {
-  const entry = state.redoStack.pop();
-  if (!entry) {
-    log("没有可重做的操作");
-    updateUndoStatus();
+  const value = await callTool("redo_last", {}, { refresh: false });
+  if (!value || value.ok === false) {
+    log("重做失败：" + ((value && value.error_code) || "unknown") + " " +
+        ((value && value.context && value.context.detail) || ""), "#c33");
     return;
   }
-  const id = typeof entry === "string" ? entry : entry.id;
-  // 跳转类条目用 revert_to 重做（再跳回那个头部），普通原子用 reapply。
-  const tool = typeof entry === "string" || entry.kind === "atom" ? "reapply" : "revert_to";
-  const value = await callTool(tool, { atom_id: id }, { refresh: false });
-  if (!value.ok) {
-    state.redoStack.push(entry);
-    log("重做失败：" + (value.error_code || "unknown"), "#c33");
+  if (!value.redone_count) {
+    log(value.message || "没有可重做的笔迹", "#c93");
   } else {
-    state.undoStack.push(entry);
+    log("已重做 " + value.gestures_redone + " 笔（" + value.redone_count + " 条原子）✓", "#2a2");
   }
+  state.remainingRedo = value.remaining_gestures;
   updateUndoStatus();
   await refreshPreview();
+  await resync();
 }
 
-/// 在状态栏显示撤销/重做深度，并同步按钮可用性。
+/// **显示"还剩几笔"** ✓ —— **数字来自服务端** ✓，不是本地栈 ✗。
+///
+/// **为什么必须换** ✗：本地栈在"刷新页面 / 另一个客户端改了文档"之后**会与事实不符** ✓
+/// ⇒ 界面写"可撤销 3 步" ✓、实际一步都撤不了 ✗ —— 正是"界面与事实不一致" ✓。
+/// 没拿到服务端数字之前显示 `—` ✓（**不猜** ✓）。
 function updateUndoStatus() {
   const label = $("undoDepth");
+  const undoCount = typeof state.remainingUndo === "number" ? state.remainingUndo : null;
+  const redoCount = typeof state.remainingRedo === "number" ? state.remainingRedo : null;
   if (label) {
-    label.textContent = "撤销 " + state.undoStack.length + " / 重做 " + state.redoStack.length;
+    label.textContent =
+      "可撤销 " + (undoCount === null ? "—" : undoCount) +
+      " 笔 / 可重做 " + (redoCount === null ? "—" : redoCount) + " 笔";
   }
   const undo = document.querySelector('button[data-tool="undo"]');
   const redo = document.querySelector('button[data-tool="redo"]');
-  if (undo) undo.disabled = state.undoStack.length === 0;
-  if (redo) redo.disabled = state.redoStack.length === 0;
+  if (undo) undo.disabled = undoCount === 0;
+  if (redo) redo.disabled = redoCount === 0;
 }
 
 /// 效果目录来自服务端 `/api/effects`（内容就是内核的 `ADJUSTMENT_NAMES` / `FILTER_NAMES`），

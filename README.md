@@ -215,6 +215,19 @@ trigger now lives in its own small script next to the markup, because the page's
 and the functions defined there are not reachable by name from anywhere else, which is what made three earlier attempts
 fail silently.
 
+### Undo in gestures, not atoms
+
+`undo_last` and `redo_last` undo and redo the last few gestures. A gesture is every atom sharing one object id, so a
+stroke that produced several atoms is undone whole rather than leaving half of it behind. Structural atoms, such as
+creating or deleting a layer, are not touched: naming a layer is not a mark, and a request to undo the last stroke must
+not quietly delete a layer and its contents, so they stay with `revert` and `revert_changeset`. Atoms that are no
+longer alive are skipped and counted, which makes the pair idempotent and keeps it from reporting success for a revert
+that changed nothing.
+
+The viewer's undo and redo buttons call these tools and display the counts the server reports, not counts kept locally.
+A local stack drifts as soon as the page is reloaded or another client edits the document, and then the interface
+claims three steps are available while nothing can be undone.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at
