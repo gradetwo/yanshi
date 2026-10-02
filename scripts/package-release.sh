@@ -312,6 +312,14 @@ if [ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]; then
   if [ -n "${wasm_linker}" ] && [ -x "${wasm_linker}" ]; then
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="${wasm_linker}"
     echo "    wasm 链接器：${wasm_linker}（绕开 macOS 上缺 libLLVM.dylib 的 rust-lld ✓）"
+  elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+    # **macOS 上提前把话说出来** ✓（用户实测已确认这条路能修好 ✓）：否则等的是一屏 dyld 路径 ✓
+    # ——那时人只会觉得"这个仓库的构建坏了"✗，而真正缺的是一条 `brew install lld` ✓。
+    echo "    提示：macOS 上 rustup 的 `rust-lld` 常缺 `libLLVM.dylib` ⇒ 这一步（以及 wasm 内核）可能失败；"
+    echo "          装 Homebrew 的 **`lld`** 即可 —— 它是**单独的 formula** ✓，`brew install llvm` 里**没有**它 ✗："
+    echo "            brew install lld"
+    echo "          装完重跑 `make release` ✓（脚本会自动用它 ✓）；也可显式指定："
+    echo "            YANSHI_WASM_LINKER=/opt/homebrew/opt/lld/bin/lld make release"
   fi
 fi
 

@@ -176,6 +176,22 @@ The browser-side kernel is a build artefact, so a fresh clone does not have it. 
 warns and produces a package anyway, because the viewer falls back to server-side rendering; run `scripts/dev.sh`
 (building the kernel additionally needs `wasm-bindgen-cli`) to include it.
 
+On macOS there is one prerequisite for the WASM half of the build. rustup's `rust-lld` is linked against
+`@rpath/libLLVM.dylib`, which the toolchain does not ship, so every `wasm32-unknown-unknown` build stops with a screen
+of dyld search paths; that is a packaging problem in the toolchain and not in this repository. Homebrew's `lld` fixes
+it, and it is **its own formula**: the `llvm` formula contains clang and the llvm tools but no linker at all, so
+`brew install llvm` is not enough. The packaging script finds it and uses it, so two commands are all it takes:
+
+    brew install lld
+    make release
+
+To confirm the linker landed where the script looks, `ls -l /opt/homebrew/opt/lld/bin/` should list `lld` and
+`wasm-ld` (they are the same binary under two names). `YANSHI_WASM_LINKER=/path/to/lld make release` names one
+explicitly, and `rustup update` often clears the failure as well, because toolchain builds ship the library
+differently. Without a usable linker the release still completes using the plugin assets committed in
+`assets/mediums`, which may lag the sources, and the script says exactly that instead of leaving you to read dyld
+paths.
+
     make release                          # build and pack into dist/
     tar -xzf dist/yanshi-*-x86_64-unknown-linux-gnu.tar.gz
     cd yanshi-*-x86_64-unknown-linux-gnu
