@@ -35,6 +35,9 @@ static_build=1   # **静态是默认** ✓（见文件头的说明 ✓）
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
+    # **`--skip-build` 只跳过"大件编译"（两个二进制）** ✓；
+    # **wasm 内核与介质插件仍会刷新** ✓ —— 它们是**打包的一部分** ✓、且各自只要十几秒/一秒 ✓
+    # ⇒ 为省这点时间而往包里装旧内核 ✗，是**明显不划算**的 ✓。
     --skip-build) skip_build=1; shift ;;
     --static) static_build=1; shift ;;   # 已是默认 ✓，保留是为了让脚本可读 ✓
     --dynamic) static_build=0; shift ;;  # **退出开关** ✓：确实需要动态链接时才用 ✓
@@ -91,39 +94,75 @@ done
 # **看起来像三个 bug ✓，其实是同一件事** ✓。
 # **上一轮我只做了"警告后继续"** ✗ ⇒ 包能用了 ✓ 但**少一半功能** ✗ ⇒ **那不够** ✓：
 # 能建就该**当场建** ✓（`make release` 的语义就是"给我一个能用的包" ✓）。
-if [ ! -e "$repo/crates/yanshi-wasm/pkg" ]; then
-  echo "--> 缺少 wasm 计算内核 ⇒ 尝试现场构建 ✓"
-  # **工具链**：本机实测 wasm32 目标装在 rustup 工具链里 ✓ ⇒ 挑一个带它的 ✓
-  #（`rustup` 命令本身可能不在 PATH 上 ✓ —— 这个坑我在 `wasm-smoke.sh` 里踩过 ✓）。
-  kernel_toolchain=""
-  for candidate in "$HOME"/.rustup/toolchains/*/; do
-    if [ -d "${candidate}lib/rustlib/wasm32-unknown-unknown" ] && [ -x "${candidate}bin/cargo" ]; then
-      kernel_toolchain="$candidate"
-      break
-    fi
-  done
-  # **`wasm-bindgen`**：它常装在 `~/.cargo/bin` ✓ 而**不在 PATH** 上 ✗
-  #（实测：`command -v wasm-bindgen` 说没有 ✓，其实装着 ✓ —— 又是同一个坑 ✓）。
-  bindgen_bin="$(command -v wasm-bindgen 2>/dev/null || true)"
-  if [ -z "$bindgen_bin" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
-    bindgen_bin="$HOME/.cargo/bin/wasm-bindgen"
+# **每次打包都重建内核** ✓（原来是"**缺了才建**"✗）。
+#
+# **为什么改** ✓：上一版只在 `pkg/` **不存在**时才建 ✓ ⇒ 若它存在但**过期** ✗
+# （比如它是上一个提交编的 ✓），就会把一个**旧内核**装进**新名字**的包 ✓
+# —— 与"二进制里的 commit 冻住"是**完全同一类缺陷** ✗（"我提交了" ≠ "产物是我提交的那版" ✓）。
+# **代价只有十几秒** ✓（实测 14s ✓）⇒ **没有理由为省这点时间冒错包的风险** ✗。
+#
+# **这个步骤不受 `--skip-build` 影响** ✓（那是"跳过大件编译"的开关 ✓，
+# 而内核与介质是**打包的一部分** ✓，且很便宜 ✓ ⇒ 它们总是保持最新 ✓）。
+echo "--> 构建 / 刷新 wasm 计算内核（每次 ✓）"
+# **工具链**：本机实测 wasm32 目标装在 rustup 工具链里 ✓ ⇒ 挑一个带它的 ✓
+#（`rustup` 命令本身可能不在 PATH 上 ✓ —— 这个坑我在 `wasm-smoke.sh` 里踩过 ✓）。
+kernel_toolchain=""
+for candidate in "$HOME"/.rustup/toolchains/*/; do
+  if [ -d "${candidate}lib/rustlib/wasm32-unknown-unknown" ] && [ -x "${candidate}bin/cargo" ]; then
+    kernel_toolchain="$candidate"
+    break
   fi
-  if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
-    echo "    用 ${kernel_toolchain} 编译 ✓，再用 ${bindgen_bin} 生成绑定 ✓"
-    if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
-         --manifest-path "$repo/Cargo.toml" --release \
-         --target wasm32-unknown-unknown -p yanshi-wasm >/dev/null 2>&1 \
-       && "$bindgen_bin" --target web \
-         --out-dir "$repo/crates/yanshi-wasm/pkg" \
-         "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >/dev/null 2>&1; then
-      echo "    ✓ 内核已生成：$(du -h "$repo/crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm" | cut -f1)"
-    else
-      echo "    ✗ 构建失败 ⇒ 按下面缺产物处理" >&2
-    fi
+done
+# **`wasm-bindgen`**：它常装在 `~/.cargo/bin` ✓ 而**不在 PATH** 上 ✗
+#（实测：`command -v wasm-bindgen` 说没有 ✓，其实装着 ✓ —— 又是同一个坑 ✓）。
+bindgen_bin="$(command -v wasm-bindgen 2>/dev/null || true)"
+if [ -z "$bindgen_bin" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
+  bindgen_bin="$HOME/.cargo/bin/wasm-bindgen"
+fi
+if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
+  echo "    用 ${kernel_toolchain} 编译 ✓，再用 ${bindgen_bin} 生成绑定 ✓"
+  if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
+       --manifest-path "$repo/Cargo.toml" --release \
+       --target wasm32-unknown-unknown -p yanshi-wasm >/dev/null 2>&1 \
+     && "$bindgen_bin" --target web \
+       --out-dir "$repo/crates/yanshi-wasm/pkg" \
+       "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >/dev/null 2>&1; then
+    echo "    ✓ 内核已生成：$(du -h "$repo/crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm" | cut -f1)"
   else
-    echo "    ⚠️ 缺工具 ⇒ 无法现场构建："
-    [ -n "$kernel_toolchain" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
-    [ -n "$bindgen_bin" ] || echo "       · cargo install wasm-bindgen-cli"
+    echo "    ✗ 内核构建失败 ⇒ 按下面缺产物处理" >&2
+  fi
+else
+  echo "    ⚠️ 缺工具 ⇒ 无法现场构建："
+  [ -n "$kernel_toolchain" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
+  [ -n "$bindgen_bin" ] || echo "       · cargo install wasm-bindgen-cli"
+fi
+
+
+# **介质插件也要重建** ✓ —— 它们**提交在 `assets/mediums/`** ✓，
+# 而此前的打包**完全不碰它们** ✗ ⇒ 改了插件源码却只重编二进制 ✓
+# ⇒ 浏览器端会拿到**旧插件** ✗（我上次是**手工**重建 `oil.wasm` 的 ✗ ⇒ 那不可靠 ✓）。
+# **代价** ✓：6 个小 crate ✓ 每个约 1 秒 ✓。
+if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
+  echo "--> 重建六个介质插件（wasm ✓）"
+  if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
+       --manifest-path "$repo/Cargo.toml" --release --target wasm32-unknown-unknown \
+       -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
+       -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example >/dev/null 2>&1; then
+    wasm_release="$repo/target/wasm32-unknown-unknown/release"
+    copied=0
+    # **名字要照资产表** ✓（`example` 在资产里叫 `example-dab` ✓ —— 这是历史命名 ✓）。
+    cp_if_newer() {
+      if [ -f "$1" ]; then cp "$1" "$2" && copied=$((copied + 1)); fi
+    }
+    cp_if_newer "$wasm_release/yanshi_medium_oil.wasm" "$repo/assets/mediums/oil.wasm"
+    cp_if_newer "$wasm_release/yanshi_medium_watercolor.wasm" "$repo/assets/mediums/watercolor.wasm"
+    cp_if_newer "$wasm_release/yanshi_medium_marker.wasm" "$repo/assets/mediums/marker.wasm"
+    cp_if_newer "$wasm_release/yanshi_medium_pencil.wasm" "$repo/assets/mediums/pencil.wasm"
+    cp_if_newer "$wasm_release/yanshi_medium_pixel.wasm" "$repo/assets/mediums/pixel.wasm"
+    cp_if_newer "$wasm_release/yanshi_medium_example.wasm" "$repo/assets/mediums/example-dab.wasm"
+    echo "    已刷新 ${copied} 个介质插件 ✓（它们是提交进仓库的资产 ✓ ⇒ 内容若有变请一并提交 ✓）"
+  else
+    echo "    ⚠️ 介质插件重建失败 ⇒ 继续用仓库里现有的资产（可能落后于源码 ✗）" >&2
   fi
 fi
 

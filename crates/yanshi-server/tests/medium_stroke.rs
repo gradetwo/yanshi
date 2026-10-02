@@ -466,8 +466,8 @@ fn the_users_three_point_watercolour_stroke_is_interpolated() {
         .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 200.0, 200.0))
         .expect("区域渲染应成功");
     // 画布是 200×200 ✓ ⇒ 只取 x 在 50..150 那段逐列检查 ✓（其余点在外面 ✓）。
-    let mut inked = vec![false; 200];
-    for x in 0..200usize {
+    let mut inked = [false; 200];
+    for (x, slot) in inked.iter_mut().enumerate() {
         for y in 0..200usize {
             let at = (y * 200 + x) * 4;
             let pixel = &pixels[at..at + 4];
@@ -475,7 +475,7 @@ fn the_users_three_point_watercolour_stroke_is_interpolated() {
                 (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
                     / 1000;
             if lum < 220 {
-                inked[x] = true;
+                *slot = true;
                 break;
             }
         }
