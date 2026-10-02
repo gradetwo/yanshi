@@ -10,6 +10,15 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Path operators
+
+The object panel drives the path operators from design 792: reverse, close, join, merge, split and boolean, the
+last with union, intersect, subtract and xor modes. The unary operators act on the first checked object, while join,
+merge and boolean need two, taking the first as the target and the second as the other. Choosing a binary operator
+with fewer than two objects is refused in the interface with a message saying how many are needed, rather than
+sending a request that cannot succeed. A boolean replaces its inputs with the merged result, so the object count
+goes down rather than up.
+
 ## Roles
 
 Opening a document takes an optional role: `POST /api/documents?role=viewer` issues a read-only capability token,

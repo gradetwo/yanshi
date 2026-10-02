@@ -9,6 +9,14 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 路径算子
+
+对象面板可执行设计 §792 的路径算子 ✓：**reverse 反向 / close 闭合 / join 连接 / merge 合并 / split 切开 / boolean 布尔** ✓，
+布尔另有 **union / intersect / subtract / xor** 四种模式 ✓。
+**一元算子作用于勾选的第一个对象** ✓；**join / merge / boolean 需要两个** ✓（第一个当目标 ✓、第二个当 `other_id` ✓）；
+**不足两个时界面直接拒绝并说明需要几个** ✓（而不是发一个必然失败的请求 ✗）。
+**布尔会用合并结果替换掉两个输入** ✓ ⇒ 所以对象数是**变少**而不是变多 ✓。
+
 ## 角色
 
 打开文档时可以指定角色 ✓：`POST /api/documents?role=viewer` 发**只读**令牌 ✓，

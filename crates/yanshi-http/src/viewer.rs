@@ -469,6 +469,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectToPath" type="button">转为路径</button>
         <button id="objectTransform" type="button">变换</button>
         <button id="objectResample" type="button">重采样</button>
+        <button id="objectPath" type="button">执行路径算子</button>
         <button id="objectRestyle" type="button">改笔触</button>
       </div>
       <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center">
@@ -479,6 +480,25 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <label>笔触色 <input id="strokeColor" type="color" value="#c81e3c" /></label>
         <label>粗细 <input id="strokeSize" type="number" value="8" step="2" style="width:56px" /></label>
         <label>不透明 <input id="strokeOpacity" type="number" value="1" min="0" max="1" step="0.1" style="width:56px" /></label>
+        <label>路径算子
+          <select id="pathOp">
+            <option value="reverse">reverse 反向</option>
+            <option value="close">close 闭合</option>
+            <option value="join">join 连接</option>
+            <option value="merge">merge 合并</option>
+            <option value="split">split 切开</option>
+            <option value="boolean">boolean 布尔</option>
+          </select>
+        </label>
+        <label>布尔模式
+          <select id="pathMode">
+            <option value="union">union 并</option>
+            <option value="intersect">intersect 交</option>
+            <option value="subtract">subtract 差</option>
+            <option value="xor">xor 异或</option>
+          </select>
+        </label>
+        <label>切口节点 <input id="pathAt" type="number" value="0" step="1" style="width:56px" /></label>
       </div>
       <div id="objectList" class="annotation-list"></div>
     </div>
@@ -3426,6 +3446,42 @@ async function transformCheckedObjects() {
   await refreshObjects();
 }
 
+/// **路径算子** ✓（`path_edit`，设计 §792 的最后一个算子表 ✓）——
+/// 它此前在查看器里**零引用** ✗ ⇒ 服务端的 reverse/close/join/merge/split/boolean **用户都碰不到** ✗
+///（这正是 Phase 5"高级路径编辑"缺的那一半 ✓）。
+///
+/// **真实签名** ✓（先读规格 ✓）：`{op, object_id, other_id?, at?, mode?}` ✓，
+/// 其中 `op` ∈ reverse / close / join / merge / split / boolean ✓，
+/// **布尔模式** ∈ union / intersect / subtract / xor ✓（名字照服务端 ✓，不自己发明 ✓）。
+///
+/// **参数的"元数"按算子分** ✓（这是界面必须讲清楚的事 ✓）：
+/// * **一元**（reverse / close / split ✓）：取**勾选的第一个** ✓；
+/// * **二元**（join / merge / boolean ✓）：取**勾选的前两个** ✓（第一个当 object_id ✓、第二个当 other_id ✓）
+///   ⇒ 不够两个就**明确拒绝** ✓，并且**说清需要两个** ✓（而不是发一个必然失败的请求 ✗）。
+async function runPathOp() {
+  const ids = checkedObjects();
+  const op = ($("pathOp") || {}).value || "reverse";
+  const binary = op === "join" || op === "merge" || op === "boolean";
+  const need = binary ? 2 : 1;
+  if (ids.length < need) {
+    log("「" + op + "」需要" + (binary ? "两个" : "一个") + "对象 ✓ —— 请在对象列表里勾选" +
+        (binary ? "两个" : "一个") + " ✓", "#c33");
+    return;
+  }
+  const args = { op, object_id: ids[0] };
+  if (binary) args.other_id = ids[1];
+  if (op === "split") args.at = Number(($("pathAt") || {}).value || 0);
+  if (op === "boolean") args.mode = ($("pathMode") || {}).value || "union";
+  const done = await callToolChecked("path_edit", args, "路径算子「" + op + "」");
+  if (done && done.ok) {
+    log("已执行路径算子「" + op + "」✓" + (binary ? "（两个对象 ✓）" : "") +
+        (op === "boolean" ? "，模式 " + args.mode + " ✓" : ""));
+    // **算子会改动几何** ✓ ⇒ 重新对一次服务端 ✓。
+    await resync();
+  }
+  await refreshObjects();
+}
+
 /// **修改笔触** ✓（`update_stroke`，设计 10.3 的**三层参数** ✓）——
 /// 它此前在查看器里**零引用** ✗ ⇒ 画完之后**改不了这一笔** ✓（颜色、粗细、不透明度都定死了 ✗）。
 ///
@@ -3508,6 +3564,8 @@ function setupObjectPanel() {
   if (toShape) toShape.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_shape", "转为形状", "shape_id", "shape_");
   });
+  const pathOp = $("objectPath");
+  if (pathOp) pathOp.addEventListener("click", () => { void runPathOp(); });
   const restyle = $("objectRestyle");
   if (restyle) restyle.addEventListener("click", () => { void restyleCheckedObjects(); });
   const resample = $("objectResample");
