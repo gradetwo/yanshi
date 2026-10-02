@@ -540,7 +540,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <label>dx <input id="transformDx" type="number" value="0" step="10" style="width:56px" /></label>
         <label>dy <input id="transformDy" type="number" value="0" step="10" style="width:56px" /></label>
         <label>笔触色 <input id="strokeColor" type="color" value="#c81e3c" /></label>
-        <label>粗细 <input id="strokeSize" type="number" value="8" step="2" style="width:56px" /></label>
+        <label>选中笔迹的粗细 <input id="strokeSize" type="number" value="8" step="2" style="width:56px" /></label>
         <label>不透明 <input id="strokeOpacity" type="number" value="1" min="0" max="1" step="0.1" style="width:56px" /></label>
         <label>路径算子
           <select id="pathOp">
@@ -5883,7 +5883,12 @@ window.yanshi = {
         tool: state.tool,
         // 与 setColor 同一个来源 ✓（笔刷色 ✓）—— 别让"读"与"写"指向不同控件 ✗。
         color: ($("color") || {}).value || null,
-        size: Number(($("strokeSize") || {}).value || 0),
+        // **这里曾经读 `#strokeSize`，那是错的** ✗ —— 那个控件属于"**重设选中笔迹**"面板
+        //（`restyleCheckedObjects` 里给已选对象用 ✓），**不是画笔粗细** ✗。
+        // 结果就是：调用方（测试 / 脚本 / 我自己的探针 ✓）以为读到的是"笔尖大小" ✓，
+        // 实际拿到的是另一个面板的数字 ✗ —— **API 与事实不符** ✓，与"界面说一套、事实另一套"同类 ✓。
+        // 画笔粗细一直是 **`#size`** ✓（滑块 ✓，8 处绘画与覆盖层都在读它 ✓）。
+        size: Number(($("size") || {}).value || 0),
         opacity: Number(($("strokeOpacity") || {}).value || 0),
         medium: ($("medium") || {}).value || null,
         // **笔刷也要能读** ✓（测试要断言"选了哪支" ✓）。
@@ -5913,9 +5918,12 @@ window.yanshi = {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       return true;
     },
-    /// 设笔尖大小 ✓（像素 ✓）。
+    /// 设**画笔粗细** ✓（像素 ✓）—— 与 `state().size` 指向**同一个控件** ✓（`#size` 滑块 ✓）。
+    ///
+    /// **原来指向 `#strokeSize`** ✗ ⇒ 调它**改不到笔尖** ✓（只改了"重设选中笔迹"面板的数字 ✗）
+    /// ⇒ 调用方会以为设置生效了 ✓ —— 这正是"说改了其实没改" ✓。
     setSize(pixels) {
-      const input = $("strokeSize");
+      const input = $("size");
       if (!input) return false;
       input.value = String(pixels);
       input.dispatchEvent(new Event("input", { bubbles: true }));
