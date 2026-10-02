@@ -225,6 +225,23 @@ with either a bbox of x, y, w and h or points, an array bbox is normalised to th
 passes validation also draws, and a rejected shape leaves no object behind. create_layer returns the layer id it
 created, which previously took a second listing call to discover.
 
+A brush stroke can now really be recoloured. Brushes commit a raster patch whose colour is baked into the blob, so
+merging a new colour into the object data could only ever report success while leaving every pixel alone; the fix is
+to have the stroke record where it came from. brush_stroke now commits its source alongside the pixels, the brush
+name, the original control points, and the size, colour, opacity and smoothing it was called with, and update_stroke
+on such an object replays that same stroke with the new colour, size or opacity into a fresh blob and supersedes it,
+so one stroke stays one object and one undo step. The test paints red, recolours to blue, and requires the red pixels
+to be gone and blue ones present, with the object count unchanged and the recorded source updated so it can be
+recoloured again; it fails when the replay is disabled. Brushes that read the canvas, smudges and colorize types, are
+refused with the reason, because their result depends on what was underneath and the stroke itself is underneath now.
+Only colour, size and opacity are accepted; any other key is refused by name rather than ignored, and a raster patch
+without a recorded source, such as an imported image or a gradient, is still refused.
+
+The three drawing paths now say what they are and what they cannot do, in the tool descriptions and in the editor:
+brush_stroke drives MyPaint .myb brushes through Hokusai, medium_stroke runs our own wasm medium plugins, and
+draw_stroke is plain geometry with no physics. Each stroke acts on its own layer only, so crossing layers is ordinary
+stacking and a medium's wet mixing does not reach across layers.
+
 The object panel can also restyle a stroke, changing its colour, size and opacity through update_stroke, which
 had no test coverage at all until this round added two: one checks that the object data and the rendered pixels
 both change, and the other that a partial core block merges rather than replacing the fields it does not mention.

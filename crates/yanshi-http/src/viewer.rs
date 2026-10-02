@@ -313,6 +313,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <option value="pencil">铅笔（v2）</option>
       <option value="pixel">像素（v2）</option>
     </select></label>
+    <!-- **三条落笔路径写清楚** ✓（用户："三套笔触系统机制不清晰 / Web 端同样无说明" ✗）：
+         画笔（`.myb`，Hokusai ✓）· 介质（插件 ✓）· 内置画笔（纯几何 ✓）——
+         以及**能力边界** ✓：每条只作用于**当前图层** ✓，跨图层只是普通叠加 ✓、介质的湿搅**不跨层** ✓。 -->
+    <span class="hint" id="strokeSystemHint"
+          title="画笔 = MyPaint .myb（Hokusai 引擎）；介质 = 我们自己的插件（油画/水彩/…）；内置画笔 = 纯几何无物理。每条笔触只作用于当前图层：跨图层只是普通叠加，介质的湿搅/混色不跨层。">三条落笔路径 · 只作用于当前图层</span>
     <label>笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
       <option value="">（内置画笔）</option>
     </select></label>

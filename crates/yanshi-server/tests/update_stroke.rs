@@ -205,66 +205,139 @@ fn updating_one_core_field_leaves_the_others_alone() {
     assert_eq!(got["data"]["opacity"], json!(0.25), "{got}");
 }
 
-/// **烘进 blob 的光栅对象必须被拒绝** ✓ —— 不是"返回 ok、像素不动" ✗（用户报的 P0 ✓）。
+/// **画笔落下的笔触必须能真换色** ✓ —— 用户报的 P0 的**正面判据** ✓。
 ///
-/// **真实形状** ✓：`brush_stroke`（以及 `medium_stroke` / `import_image` ✓）落笔的产物是
-/// **`raster_patch`** ✓：颜色在落笔那一刻就**烘进了 blob** ✓，渲染只读 `bitmap` / `region` ✓
-/// ⇒ `data.color` **永远不参与渲染** ✗ ⇒ 此前 `update_stroke` 返回 `ok:true` 却**一个像素都不动** ✓。
+/// **修的是什么** ✗：光栅补丁的颜色**烘进像素** ✓ ⇒ 以前只改 `data.color` ⇒ 返回 `ok` 而**像素一点没变** ✗
+///（我上一轮把这种"假成功"改成**明确拒绝** ✓ —— 那只是不再骗人 ✗，颜色还是改不了 ✗）。
+/// 现在落笔时**把来源（笔刷 / 原始控制点 / size / color / smooth）留在对象上** ✓
+/// ⇒ `update_stroke` 用新颜色**重放同一条笔迹** ✓ ⇒ 新 blob ✓、一条 `Supersede` 换掉 ✓。
+///
+/// **判据（三条 ✓）**：① 返回 ok ✓；② **像素真的变成新颜色** ✓（方向检查：红笔 R 主导 ⇒ 换成蓝笔后 B 主导 ✓）；
+/// ③ **仍然只有一个对象 / 只多一条原子** ✓（不是"再画一笔叠上去" ✗ —— 那会让撤销变成两步 ✗）。
 #[test]
-fn a_baked_raster_is_refused_instead_of_reporting_success() {
-    let mut workspace = asset_workspace("baked");
+fn update_stroke_recolours_a_brush_stroke() {
+    let mut workspace = asset_workspace("recolour");
     call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
     let made = call(
         &mut workspace,
         "brush_stroke",
         json!({
-            "layer_id": "L", "object_id": "B1", "brush": "2B_pencil", "size": 24,
+            "layer_id": "L", "object_id": "B1", "brush": "100%_Opaque", "size": 24,
             "color": {"r": 255, "g": 0, "b": 0, "a": 255},
-            "points": [[40.0, 60.0, 0.8], [160.0, 60.0, 0.8]],
+            "points": [[40.0, 60.0, 0.8], [180.0, 60.0, 0.8]]
         }),
     );
     assert_eq!(made["ok"], json!(true), "{made}");
+    let before = pixels(&mut workspace, 200.0, 120.0);
+    let (red_before, _, _) = dominant(&before);
+    assert!(
+        red_before > 0,
+        "先画的那一笔应当是红的 ✓（实测 {red_before}）"
+    );
+
+    let updated = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B1", "core": { "color": {"r": 0, "g": 0, "b": 255, "a": 255} } }),
+    );
+    assert_eq!(
+        updated["ok"],
+        json!(true),
+        "画笔笔触换色必须成功：{updated}"
+    );
+    let after = pixels(&mut workspace, 200.0, 120.0);
+    let (red, _, blue) = dominant(&after);
+    assert!(
+        blue > 0 && red == 0,
+        "换色之后必须**真的**变蓝、且不留红 ✗（实测 红 {red} / 蓝 {blue}）"
+    );
+    // ③ **只多一条原子、对象仍然只有一个** ✓（不是又画了一笔 ✓）。
+    let objects = call(&mut workspace, "list_objects", json!({}));
+    assert_eq!(
+        objects["count"],
+        json!(1),
+        "换色不该多出一个对象 ✗：{objects}"
+    );
+    // 对象上记的来源也跟着更新 ✓（下一次还能再改 ✓）。
     let got = call(&mut workspace, "get_object", json!({ "object_id": "B1" }));
     assert_eq!(
-        got["type"],
-        json!("raster_patch"),
-        "落笔产物是光栅补丁：{got}"
+        got["data"]["source"]["color"],
+        json!({"r": 0, "g": 0, "b": 255, "a": 255}),
+        "来源参数应当同步更新（下次还能再改 ✓）：{got}"
     );
-    assert!(
-        got["data"].get("color").is_none(),
-        "光栅对象的数据里**没有**颜色语义（只有 bitmap/region）：{got}"
-    );
-    let before = pixels(&mut workspace, 200.0, 120.0);
+}
 
-    // **换色必须被明确拒绝** ✓ —— 不许回 `ok` ✗（这正是用户报的病 ✓）。
-    let refused = recolor(&mut workspace, "B1", json!([0.0, 1.0, 0.0, 1.0]));
+/// **没留下来源的光栅对象仍然明确拒绝** ✓（导入图 / 介质笔触 / 渐变 ✓ —— 它们反推不出画法 ✓）。
+///
+/// **判据** ✓：返回 `ok:false` ✓、错误里点名"没有留下来源参数" ✓、数据与像素**一个字节都不动** ✓。
+#[test]
+fn update_stroke_refuses_a_raster_without_a_source() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_us", 32, 32),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
+    // **渐变**会落成一个光栅补丁 ✓，而它**没有**"画笔来源" ✓。
+    let filled = call(
+        &mut workspace,
+        "gradient_fill",
+        json!({
+            "layer_id": "L", "object_id": "G1",
+            // **起点/终点色都是 `{r,g,b,a}` 对象** ✓（0..255 ✓）—— 参数名照工具 schema ✓，不猜 ✓。
+            "from": {"r": 255, "g": 0, "b": 0, "a": 255},
+            "to": {"r": 0, "g": 0, "b": 255, "a": 255}
+        }),
+    );
+    assert_eq!(filled["ok"], json!(true), "{filled}");
+    let before = pixels(&mut workspace, 32.0, 32.0);
+    let refused = recolor(&mut workspace, "G1", json!([0.0, 1.0, 0.0, 1.0]));
     assert_eq!(
         refused["ok"],
         json!(false),
-        "光栅对象换色不许报成功：{refused}"
-    );
-    assert_eq!(
-        refused["error_code"],
-        json!("invalid_argument"),
-        "{refused}"
+        "没有来源的光栅不许报成功：{refused}"
     );
     let detail = refused["context"]["detail"].as_str().unwrap_or_default();
     assert!(
-        detail.contains("raster_patch"),
-        "错误必须点名真实类型，调用方才能自我纠正：{detail}"
+        detail.contains("来源"),
+        "错误必须说清「没有来源」这件事：{detail}"
     );
-    assert!(
-        detail.contains("stroke"),
-        "错误必须说清它作用于什么类型：{detail}"
-    );
+    let after = pixels(&mut workspace, 32.0, 32.0);
+    assert_eq!(before, after, "被拒绝的调用绝不许动画布 ✓");
+    let got = call(&mut workspace, "get_object", json!({ "object_id": "G1" }));
+    assert_eq!(got["versions"], json!(1), "拒绝之后版本链不该涨：{got}");
+}
 
-    // **被拒绝的调用一个字节都不许动** ✓（没有原子被提交 ✓）。
-    let after = pixels(&mut workspace, 200.0, 120.0);
-    assert_eq!(before, after, "被拒绝的调用绝不许动画面 ✓");
-    let got = call(&mut workspace, "get_object", json!({ "object_id": "B1" }));
-    assert_eq!(got["versions"], json!(1), "拒绝之后版本链不该增长：{got}");
+/// **画笔笔触只认 color / size / opacity** ✓ —— 别的键**明确拒绝** ✗（不许静默忽略 ✓）。
+#[test]
+fn update_stroke_refuses_unsupported_keys_on_a_brush_stroke() {
+    let mut workspace = asset_workspace("unsupported_key");
+    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "B2", "brush": "100%_Opaque", "size": 20,
+            "points": [[30.0, 40.0, 0.8], [150.0, 40.0, 0.8]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    let refused = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B2", "core": { "blend_mode": "multiply" } }),
+    );
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "不支持的键必须拒绝而非静默：{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
     assert!(
-        got["data"].get("color").is_none(),
-        "拒绝之后数据里不该冒出 color：{got}"
+        detail.contains("blend_mode") && detail.contains("color"),
+        "错误要点名是哪个键、以及只认哪些键：{detail}"
     );
 }

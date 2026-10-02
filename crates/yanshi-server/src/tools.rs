@@ -1075,7 +1075,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_stroke",
         profile: Profile::Core,
-        summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。",
+        summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2102,7 +2102,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "medium_stroke",
         profile: Profile::Core,
-        summary: "**要介质插件（油画 / 水彩 / 马克笔 / 铅笔 / 像素）的模拟就用这个** ✓：服务端原生调用插件，产出带 medium 描述符的补丁。                  与邻居的分工：要 **201 支 .myb 笔刷**（MyPaint 物理）用 brush_stroke；要**纯几何矢量**笔迹用 draw_stroke。",
+        summary: "**要介质插件（油画 / 水彩 / 马克笔 / 铅笔 / 像素）的模拟就用这个** ✓：服务端原生调用插件，产出带 medium 描述符的补丁。                  与邻居的分工：要 **201 支 .myb 笔刷**（MyPaint 物理）用 brush_stroke；要**纯几何矢量**笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2198,7 +2198,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
         // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
         //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
-        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。",
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -3277,27 +3277,29 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // 与原来"导入 + 替换"之后的**渲染相关字段逐字一致** ✓（只多一个描述符键 ✓ ——
     // 那正是设计要求记下的东西 ✓）；而 `data.blob_hash` 若被挪进子对象 ✓ 会让
     // `all_blob_refs` 的净荷扫描**找不到 blob** ✗ ⇒ 校验与保留都会出错 ✗。
-    let payload = match args.get("medium") {
-        Some(medium) if !medium.is_null() => json!({
-            "object_id": object_id,
-            "layer_id": layer_id,
-            "type": "raster_patch",
-            "bitmap": bitmap,
-            "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
-            "width": region.w as u64,
-            "height": region.h as u64,
-            "medium": medium,
-        }),
-        _ => json!({
-            "object_id": object_id,
-            "layer_id": layer_id,
-            "type": "raster_patch",
-            "bitmap": bitmap,
-            "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
-            "width": region.w as u64,
-            "height": region.h as u64,
-        }),
-    };
+    let mut payload = json!({
+        "object_id": object_id,
+        "layer_id": layer_id,
+        "type": "raster_patch",
+        "bitmap": bitmap,
+        "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+        "width": region.w as u64,
+        "height": region.h as u64,
+    });
+    if let Some(medium) = args.get("medium") {
+        if !medium.is_null() {
+            payload["medium"] = medium.clone();
+        }
+    }
+    // **"这一笔是用什么画出来的"也随原子记下** ✓（本轮 ✓）——
+    // 光栅补丁的颜色是**烘进像素**的 ✓ ⇒ 想改色只能**按来源重跑一遍** ✓
+    // ⇒ 那就必须把来源（笔刷名 ✓、控制点 ✓、当时的 size / color / smooth ✓）留在对象上 ✓，
+    // 而不是只留在**已经关掉的那个调用方**心里 ✗（这正是 `update_stroke` 一直改不动色的根 ✓）。
+    if let Some(source) = args.get("source") {
+        if !source.is_null() {
+            payload["source"] = source.clone();
+        }
+    }
     let result = ctx.commit(AtomKind::ImportImage, payload)?;
     let bbox = region_of(&result).or(Some(region));
     finish_mutation(ctx, &result, bbox)
@@ -3490,9 +3492,8 @@ fn ensure_stroke_restylable(kind: ObjectType, object_id: &str) -> Result<()> {
         // 这两种都由 `BrushSpec::from_value(data)` 画 ✓ ⇒ `color/size/opacity/blend_mode` 真的生效 ✓。
         ObjectType::Stroke | ObjectType::Path => return Ok(()),
         ObjectType::RasterPatch => {
-            "是 raster_patch：颜色在落笔时已经烘进 blob ⇒ 渲染只读 bitmap/region、不读 data.color \
-             ⇒ 改数据不会改画面。要换色请**撤销后用想要的颜色重画一笔**\
-             （brush_stroke / medium_stroke 的 color）"
+            "是 raster_patch，而且**它没有留下来源参数**（不是用画笔画的 ⇒ 例如导入的图 / 介质笔触 / 渐变）\
+             ⇒ 颜色已经烘进像素，无法反推它是怎么画出来的。要换色请**撤销后用想要的颜色重画一笔**"
         }
         ObjectType::Shape => "是 shape：颜色请用 replace_object_data 改 data.color",
         ObjectType::Text => "是 text：内容与颜色请用 replace_object_data 改 data",
@@ -3515,6 +3516,139 @@ fn ensure_stroke_restylable(kind: ObjectType, object_id: &str) -> Result<()> {
     .with_object(object_id.to_owned()))
 }
 
+/// **把一条"烘好的"画笔笔触按来源重跑一遍** ✓ —— `update_stroke` 换色**真能生效**的地方 ✓。
+///
+/// **为什么必须重跑** ✓：光栅补丁的颜色**已经烘进像素** ✓ ⇒ 只改 `data.color` 不会改画面 ✗ ——
+/// 这正是用户报的 P0（`update_stroke` 返回 ok、导出验证颜色没变 ✓）。
+/// 而落笔时我们**把来源留在了对象上** ✓（`brush` / **原始控制点** / `size` / `color` / `smooth` ✓）
+/// ⇒ 用新颜色**重放同一条笔迹** ✓ ⇒ 新 blob ✓、一条 `Supersede` 换掉 ✓
+/// ⇒ **非破坏 ✓、可撤销 ✓、还是一步 ✓**（不产生第二个对象 ✗）。
+///
+/// **只认"改颜色 / 改粗细"** ✓：`core` 里出现别的键 ⇒ **明确拒绝** ✗
+/// （"静默忽略"正是本项目反复清除的那类缺陷 ✓）。
+///
+/// **读画布的笔刷（涂抹 / colorize）拒绝重跑** ✗：它们的结果**取决于底下当时是什么** ✓，
+/// 而现在底下**已经有这一笔**了 ✓ ⇒ 重跑会把它自己再抹一遍（画面会变脏 ✗）。
+/// ⇒ 明确拒绝 + 说清"撤销后用新颜色重画" ✓。
+fn restyle_baked_brush_stroke(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    object_id: &str,
+    layer_id: &str,
+    data: &Value,
+) -> Result<Value> {
+    let refuse = |why: String| {
+        Err(
+            YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(why))
+                .with_object(object_id.to_owned()),
+        )
+    };
+    let Some(source) = data.get("source") else {
+        return refuse(format!(
+            "对象 {object_id} 是光栅补丁，且**没有留下来源参数** ⇒ 颜色已经烘进像素、无法反推画法 ✓；             要换色请**撤销后用想要的颜色重画一笔** ✓"
+        ));
+    };
+    let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
+    if kind != "brush" {
+        let what = if kind.is_empty() { "未知" } else { kind };
+        return refuse(format!(
+            "对象 {object_id} 的来源是「{what}」⇒ 这一步只支持**画笔（brush）**画的笔触 ✓；             它的颜色请用它自己的工具重画 ✓（例如 medium_stroke 的 color ✓）"
+        ));
+    }
+    let core = args.get("core").and_then(Value::as_object);
+    if let Some(core) = core {
+        for key in core.keys() {
+            if key != "color" && key != "size" && key != "opacity" {
+                return refuse(format!(
+                    "画笔笔触的重跑只认 color / size / opacity ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
+                ));
+            }
+        }
+    }
+    let brush = source
+        .get("brush")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("对象 {object_id} 的来源里没有 brush")),
+            )
+        })?
+        .to_owned();
+    let points = brush_points_from_json(source.get("points")).map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("对象 {object_id} 的来源里没有可用的控制点")),
+        )
+    })?;
+    let size = core
+        .and_then(|core| core.get("size"))
+        .and_then(Value::as_f64)
+        .or_else(|| source.get("size").and_then(Value::as_f64));
+    let opacity = core
+        .and_then(|core| core.get("opacity"))
+        .and_then(Value::as_f64)
+        .or_else(|| source.get("opacity").and_then(Value::as_f64));
+    let color = core
+        .and_then(|core| core.get("color"))
+        .cloned()
+        .or_else(|| source.get("color").cloned())
+        .filter(|value| !value.is_null());
+    let smooth = source
+        .get("smooth")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // **读画布的笔刷不许这样改** ✗（见函数头 ✓）—— 先解析出来问一句 ✓。
+    let (_, probe) = load_brush(ctx, &brush)?;
+    if brush_reads_the_canvas(&probe) {
+        return refuse(format!(
+            "笔刷「{brush}」会**读画布**（涂抹 / colorize 一类 ✓）⇒ 它的结果取决于**底下当时是什么** ✓；             而现在底下已经有这一笔了 ✗ ⇒ 重跑会把它自己再抹一遍 ✓。             要换色请**撤销后用新颜色重画一笔** ✓"
+        ));
+    }
+    let points = if smooth {
+        smooth_stroke_points(&points)
+    } else {
+        points
+    };
+    let paint = paint_brush(ctx, &brush, &points, size, color.as_ref(), opacity, false)?;
+    let hash = ctx.workspace.store().put(&paint.rgba)?;
+    let mut new_data = data.clone();
+    new_data["bitmap"] = json!({
+        "blob_hash": hash.to_string(),
+        "size": paint.rgba.len(),
+        "mime_type": "image/x-yanshi-raw",
+    });
+    new_data["region"] = json!({"x": paint.x0, "y": paint.y0, "w": paint.width, "h": paint.height});
+    new_data["width"] = json!(paint.width);
+    new_data["height"] = json!(paint.height);
+    if let Some(value) = color.as_ref() {
+        new_data["color"] = value.clone();
+    }
+    if let Some(value) = size {
+        new_data["size"] = json!(value);
+    }
+    new_data["source"] = json!({
+        "kind": "brush",
+        "brush": brush,
+        "points": source.get("points").cloned().unwrap_or(Value::Null),
+        "size": size.map(|value| json!(value)).unwrap_or(Value::Null),
+        "color": color.clone().unwrap_or(Value::Null),
+        "smooth": smooth,
+        "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
+    });
+    if let Some(value) = opacity {
+        new_data["opacity"] = json!(value);
+    }
+    let payload = json!({
+        "object_id": object_id,
+        "layer_id": layer_id,
+        "data": new_data,
+    });
+    let result = ctx.commit(AtomKind::Supersede, payload)?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
 fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;
     let state = document_state(ctx)?;
@@ -3526,6 +3660,15 @@ fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         .with_object(object_id.clone())
     })?;
     // **先查类型** ✓ —— 否则下面会「写进 data、返回 ok、画面不动」✗（用户报的 P0 ✓）。
+    //
+    // **光栅补丁先走"按来源重跑"** ✓（本轮 ✓）：画笔落下的那一笔**带着来源参数** ✓
+    // ⇒ 改色/改粗细可以**重放** ✓（产出新 blob ✓、一条 Supersede 换掉 ✓）；
+    // 没有来源的（导入图 / 介质 / 渐变 ✓）才落回"明确拒绝" ✓。
+    if object.object_type == ObjectType::RasterPatch {
+        let layer_id = object.layer_id.clone();
+        let data = object.data.clone();
+        return restyle_baked_brush_stroke(ctx, args, &object_id, &layer_id, &data);
+    }
     ensure_stroke_restylable(object.object_type, &object_id)?;
     let mut data = object.data.clone();
     if !data.is_object() {
@@ -9738,8 +9881,13 @@ struct BrushPaint {
 
 /// **采样点解析** ✓：`[[x,y], [x,y,pressure?], ...]` ✓（`brush_stroke` / `brush_preview` 共用 ✓）。
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
-    let raw_points = args
-        .get("points")
+    brush_points_from_json(args.get("points"))
+}
+
+/// **从 JSON 解析控制点** ✓ —— 落笔（`points` ✓）与"改色重跑"（对象上的 `source.points` ✓）
+/// 走的是**同一份**解析 ✗（各写一份必然漂移 ✓）。
+fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>> {
+    let raw_points = value
         .and_then(Value::as_array)
         .ok_or_else(|| missing("points"))?;
     if raw_points.is_empty() {
@@ -10040,21 +10188,11 @@ fn brush_deposit_mask(
     read_surface_region(&surface, region).0
 }
 
-/// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
+/// **解析一支 `.myb` 笔刷** ✓（工作区缓存优先 ✓，与落笔时同一套规则 ✓）。
 ///
-/// `feed_base`：是否把**目标区域现有的像素**喂进引擎 ✓ ——
-/// 涂抹类笔刷（`smudge > 0`）靠"抹开画布上已有的颜色"工作 ✓ ⇒ **文档里必须喂** ✓；
-/// **预览不喂** ✓（预览回答的是"这支笔刷长什么样"✓，不是"落在你这幅画上什么样"✗）——
-/// 于是涂抹类笔刷的预览**必然为空** ✓，由下面那段报错**说清原因** ✓（不静默 ✓）。
-fn paint_brush(
-    ctx: &mut ToolContext<'_>,
-    brush_name: &str,
-    points: &[(f64, f64, f64)],
-    size: Option<f64>,
-    color: Option<&Value>,
-    feed_base: bool,
-) -> Result<BrushPaint> {
-    // **笔刷从缓存优先解析** ✓（用户导入的能覆盖内置的 ✓）。
+/// **为什么抽出来** ✓：`paint_brush`（落笔 ✓）与"改色重跑"（`restyle_baked_brush_stroke` ✓）
+/// 都必须**解析出同一支笔刷** ✓ ⇒ 也要能问它"这支笔刷读不读画布" ✓（`brush_reads_the_canvas` ✓）。
+fn load_brush(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, hokusai::Brush)> {
     let name = if brush_name.ends_with(".myb") {
         brush_name.to_owned()
     } else {
@@ -10067,12 +10205,38 @@ fn paint_brush(
             ErrorContext::detail(format!("读不到笔刷 {}：{error}", path.display())),
         )
     })?;
-    let mut brush: hokusai::Brush = hokusai::myb::from_str(&json_text).map_err(|error| {
+    let brush: hokusai::Brush = hokusai::myb::from_str(&json_text).map_err(|error| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!("{} 不是能解析的 .myb：{error}", path.display())),
         )
     })?;
+    Ok((name, brush))
+}
+
+/// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
+///
+/// `feed_base`：是否把**目标区域现有的像素**喂进引擎 ✓ ——
+/// 涂抹类笔刷（`smudge > 0`）靠"抹开画布上已有的颜色"工作 ✓ ⇒ **文档里必须喂** ✓；
+/// **预览不喂** ✓（预览回答的是"这支笔刷长什么样"✓，不是"落在你这幅画上什么样"✗）——
+/// 于是涂抹类笔刷的预览**必然为空** ✓，由下面那段报错**说清原因** ✓（不静默 ✓）。
+fn paint_brush(
+    ctx: &mut ToolContext<'_>,
+    brush_name: &str,
+    points: &[(f64, f64, f64)],
+    size: Option<f64>,
+    color: Option<&Value>,
+    // **这一笔的不透明度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `opaque` ✓。
+    opacity: Option<f64>,
+    feed_base: bool,
+) -> Result<BrushPaint> {
+    let (name, mut brush) = load_brush(ctx, brush_name)?;
+    if let Some(opacity) = opacity {
+        brush.set(
+            hokusai::BrushSetting::Opaque,
+            hokusai::SettingValue::constant(opacity.clamp(0.0, 1.0) as f32),
+        );
+    }
     // **`size` 是"直径像素"** ✓，而 MyPaint 的设置叫 `radius_logarithmic` ✓（存的是 ln(半径) ✓）。
     // **颜色与 `size` 相互独立** ✓（本轮修的「ok 却没有效果」✗ 之一：
     // 颜色覆盖此前**嵌在 `if let Some(diameter)` 里面** ✓ ⇒ 只给 `color` 不给 `size` 时
@@ -10310,6 +10474,15 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
+    // **调用方给的原话** ✓（重跑时要用它 ✓，而不是"平滑之后的中间量" ✗）。
+    let points_source = json!(points
+        .iter()
+        .map(|(x, y, pressure)| json!([x, y, pressure]))
+        .collect::<Vec<_>>());
+    let size_source = args.get("size").cloned().unwrap_or(Value::Null);
+    let color_source = args.get("color").cloned().unwrap_or(Value::Null);
+    let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
+    let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
     // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
     // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
     let points = if optional_bool(args, "smooth").unwrap_or(false) {
@@ -10324,6 +10497,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         &points,
         args.get("size").and_then(Value::as_f64),
         args.get("color"),
+        None,
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
     )?;
@@ -10340,6 +10514,17 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     let composite = ctx.workspace.store().put(&rgba)?;
     let import_args = json!({
+        // **来源参数** ✓（`update_stroke` 靠它重跑 ✓）：**原始控制点** ✓（不是加密后的 ✓）、
+        // 当时给的 size / color / smooth ✓ —— 都是**调用方给的原话** ✓，不是我们的中间量 ✓。
+        "source": {
+            "kind": "brush",
+            "brush": name,
+            "points": points_source,
+            "size": size_source,
+            "color": color_source,
+            "smooth": smooth_source,
+            "opacity": opacity_source,
+        },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),
         "bitmap": {
@@ -10406,6 +10591,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         &points,
         Some(size),
         args.get("color"),
+        None,
         false,
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
