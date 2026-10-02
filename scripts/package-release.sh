@@ -109,6 +109,10 @@ resolve_is_linux() {
   esac
 }
 is_linux="$(resolve_is_linux "${target_triple}")"
+# **给消息用的"目标平台"名字** ✓ —— 我上一轮把 `host_os` 改名成 `target_triple` 时
+# **漏改了一处引用** ✗ ⇒ 在 macOS 上以 `set -u` 直接死在 "host_os: unbound variable" ✗ ✓
+#（**"改名要一次改全"** 这条我刚写进笔记 ✓，这次是自己撞上 ✓）。
+target_os="$(printf '%s' "${target_triple}" | cut -d- -f3-)"
 if [ "${is_linux}" = 1 ]; then
   static_build=1
 else
@@ -344,10 +348,36 @@ fi
 # **为什么平铺在 share/yanshi/ 下** ✓：服务端把"资产根目录 + 种类子目录"拼在一起 ✓
 #（`assets_dir` + `textures|brushes|palettes` ✓）⇒ 包内只要让 `--assets-dir` 指到 `share/yanshi` ✓
 # ⇒ `scripts/fetch-textures.sh` 那条路（工作区缓存 ✓）与这条（随包内置 ✓）**并存** ✓。
+# **逐文件拷，并且拷完核对数量** ✓（真实用户报告 ✓：macOS 上 `cp -R` 撞上
+# `assets/brushes/P._Shade.myb` ✓ —— 名字里含 `._` ✓，而 **macOS 把 `._` 当
+# AppleDouble（资源叉）的标记** ✗ ⇒ BSD `cp` 把它当成 `PShade.myb` 的旁文件 ✓，报
+# `cp: found P._Shade.myb, looking for PShade.myb` ✗。
+# **为什么改成"逐文件 + 核对"** ✓：
+#   1. 递归拷贝的怪癖**不该能让我们少文件** ✗ —— 逐文件是最简单、最没歧义的操作 ✓；
+#   2. **跳过 macOS 的元数据垃圾** ✓（`._*` 与 `.DS_Store` ✓）—— 它们本来就**不该进包** ✗；
+#   3. **拷完比对数量** ✓ ⇒ 少了就**当场失败** ✗，而不是打出一个"能跑但缺资产"的包 ✓
+#（"产物里少东西却没人知道"正是本项目反复抓的一类病 ✓）。
 for asset_kind in textures brushes palettes; do
-  if [ -d "$repo/assets/${asset_kind}" ]; then
-    cp -R "$repo/assets/${asset_kind}" "$stage/share/yanshi/${asset_kind}"
+  source_dir="$repo/assets/${asset_kind}"
+  target_dir="$stage/share/yanshi/${asset_kind}"
+  [ -d "${source_dir}" ] || continue
+  mkdir -p "${target_dir}"
+  copied=0
+  skipped=0
+  while IFS= read -r asset_file; do
+    asset_base="$(basename "${asset_file}")"
+    case "${asset_base}" in
+      ._*|.DS_Store) skipped=$((skipped + 1)); continue ;;
+    esac
+    cp "${asset_file}" "${target_dir}/${asset_base}"
+    copied=$((copied + 1))
+  done < <(find "${source_dir}" -type f | sort)
+  expected="$(find "${source_dir}" -type f ! -name '._*' ! -name '.DS_Store' | wc -l | tr -d ' ')"
+  if [ "${copied}" != "${expected}" ]; then
+    echo "    ✗ ${asset_kind}：应当拷 ${expected} 个，实际拷了 ${copied} 个 ⇒ 打包失败" >&2
+    exit 1
   fi
+  echo "    ${asset_kind}：${copied} 个文件 ✓"
 done
 [ -f "$repo/LICENSE" ] && cp "$repo/LICENSE" "$stage/"
 cp "$repo/README.md" "$stage/README.md"
@@ -444,7 +474,7 @@ if [ "${is_linux}" = 1 ]; then
   fi
 else
   # **非 Linux：glibc 这一整套都不适用** ✓（真实用户报告 ✓）。
-  echo "--> 跳过 glibc 检查（宿主不是 Linux：${host_os}）"
+  echo "--> 跳过 glibc 检查（宿主不是 Linux：${target_os}）"
   echo "    glibc 是 Linux 的 C 库 ✓；本平台用自己的系统库（如 macOS 的 libSystem ✓）"
   echo "    ⇒ **不引用 GLIBC 符号不等于「哪儿都能跑」** ✗：包的可移植性由目标系统决定 ✓"
   echo "    ⇒ 换发行版 / 换系统时请**在实际目标上自测** ✓（后端渲染与写盘的路径都值得跑一遍 ✓）"
