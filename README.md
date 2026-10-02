@@ -196,6 +196,12 @@ hidden, because naming a layer to export is an explicit request, and it delibera
 that cache is keyed by region and version but not by layer, so reusing it could return another layer's pixels, which
 is the classic cache-key-missing-a-dimension bug and one that only shows up on a cache hit.
 
+Both texture and gradient can be limited to the current selection with a checkbox; the region comes from the
+selection the server reports rather than from anything guessed locally, and the viewer syncs the selection's shape and
+not just its description, so a selection made through MCP or another client is drawn and honoured here too. If the
+checkbox is set and there is no selection, the tool call is refused with a message saying so, because quietly filling
+the whole canvas instead would be the kind of silent substitution this project keeps having to remove.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

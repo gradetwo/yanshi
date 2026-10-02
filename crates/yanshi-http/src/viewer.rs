@@ -542,6 +542,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <option value="stretch">拉伸</option>
         <option value="cover">等比铺满</option>
       </select></label>
+      <!-- **只作用于选区** ✓（目标 ④ ✓）：工具层早就收 `region` ✓ ⇒ 这里只补入口 ✓，
+           不新增"只有 Web 有"的能力 ✓。 -->
+      <label class="hint"><input id="textureUseSelection" type="checkbox" /> 只作用于选区</label>
       <div class="toolbar"><button id="textureApply" type="button">设为背景</button></div>
       <div id="textureInfo" class="hint"></div>
     </div>
@@ -557,6 +560,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <option value="radial">径向（从中心散开）</option>
       </select></label>
       <label>角度 <input id="gradAngle" type="number" value="90" step="15" style="width:64px" /></label>
+      <label class="hint"><input id="gradUseSelection" type="checkbox" /> 只作用于选区</label>
       <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
       <div id="gradInfo" class="hint"></div>
     </div>
@@ -3837,6 +3841,33 @@ function renderLayerPanel(layers) {
 /// **为什么必须有** ✓：能力先放在**工具层** ✓（MCP 与 Web 都能用 ✓），
 /// 但**界面里没有入口**就等于"只有 MCP 能用" ✗ —— 用户那条硬要求正是**两边都要有** ✓。
 /// **素材都很少** ✓（调色板 43 个 ✓、纹理 11 张 ✓）⇒ **加载时一次装满** ✓，不做懒加载 ✓。
+/// **从界面取"要作用的区域"** ✓（目标 ④ ✓）—— **纹理与渐变共用这一个** ✓。
+///
+/// **一条硬规矩** ✓：勾了"只作用于选区"却**没有选区** ⇒ **拒绝** ✗，
+/// **绝不静默铺满整幅** ✗ —— 那正是本项目反复提防的"接受了却没用 / 没说清就做了别的事" ✓
+///（子 agent 报过的"遗留选区静默裁掉一切 ✓ 而界面还写着无选区" ✗ 就是这一类 ✓）。
+///
+/// **区域取自服务端事实** ✓（`state.selectionShape` 由 `list_selections` 写入 ✓），不是本地猜测 ✓。
+function regionFromSelection(checkboxId) {
+  const box = $(checkboxId);
+  if (!box || !box.checked) return { region: null, error: null };
+  const shape = state.selectionShape;
+  if (!shape || !shape.bbox) {
+    return {
+      region: null,
+      error: "勾了「只作用于选区」，但**当前没有选区** ✗ ⇒ 先用选区工具拖一个矩形（或在快捷面板里建一个 ✓）",
+    };
+  }
+  const bbox = shape.bbox;
+  if (!(bbox.w > 0) || !(bbox.h > 0)) {
+    return { region: null, error: "选区是空的（宽或高为 0）✗ ⇒ 重新拖一个 ✓" };
+  }
+  return {
+    region: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+    error: null,
+  };
+}
+
 async function setupAssetPanels() {
   const palettePick = $("palettePick");
   const swatches = $("paletteSwatches");
@@ -3977,20 +4008,24 @@ async function setupAssetPanels() {
       const toHex = ($("gradTo") || {}).value || "#000000";
       const kind = ($("gradKind") || {}).value || "linear";
       const angle = Number(($("gradAngle") || {}).value || 0);
-      const result = await callToolChecked(
-        "gradient_fill",
-        {
-          layer_id: state.layerId,
-          kind: kind,
-          angle: angle,
-          from: toRgb(fromHex),
-          to: toRgb(toHex),
-        },
-        "填充渐变",
-      );
+      const picked = regionFromSelection("gradUseSelection");
+      if (picked.error) {
+        if ($("gradInfo")) $("gradInfo").textContent = picked.error;
+        return; // **不静默填满整层** ✗
+      }
+      const gradArgs = {
+        layer_id: state.layerId,
+        kind: kind,
+        angle: angle,
+        from: toRgb(fromHex),
+        to: toRgb(toHex),
+      };
+      if (picked.region) gradArgs.region = picked.region;
+      const result = await callToolChecked("gradient_fill", gradArgs, "填充渐变");
       if ($("gradInfo")) {
         $("gradInfo").textContent =
-          "已填 " + kind + (kind === "linear" ? "（" + angle + "°）" : "") + "：" + fromHex + " → " + toHex + " ✓";
+          "已填 " + kind + (kind === "linear" ? "（" + angle + "°）" : "") + "：" + fromHex + " → " + toHex +
+          (picked.region ? "，**只在选区**（" + picked.region.w + "×" + picked.region.h + "）✓" : "，整层 ✓");
       }
       void result;
       await refreshPreview();
@@ -4007,14 +4042,22 @@ async function setupAssetPanels() {
         return;
       }
       const mode = textureMode ? textureMode.value : "tile";
-      const result = await callToolChecked(
-        "texture_background",
-        { texture: texture, mode: mode },
-        "设为背景",
-      );
+      const picked = regionFromSelection("textureUseSelection");
+      if (picked.error) {
+        if (textureInfo) textureInfo.textContent = picked.error;
+        return; // **不静默铺满整幅** ✗
+      }
+      const textureArgs = { texture: texture, mode: mode };
+      if (picked.region) textureArgs.region = picked.region;
+      const result = await callToolChecked("texture_background", textureArgs, "设为背景");
       // **警告要显示出来** ✗（工具会在"指定了非空图层"时给警告 ✓
       // ⇒ 界面若把它吞掉 ✓，用户就只剩困惑 ✓）。
-      let text = "已铺 " + texture + "（" + mode + "）✓";
+      let text =
+        "已铺 " + texture + "（" + mode + "）" +
+        (picked.region
+          ? "，**只在那块选区**（" + picked.region.w + "×" + picked.region.h + " @ " +
+            picked.region.x + "," + picked.region.y + "）✓"
+          : "，铺满整幅 ✓");
       if (result && result.warning) text += "　⚠️ " + result.warning;
       if (textureInfo) textureInfo.textContent = text;
       await refreshPreview();
@@ -4461,10 +4504,31 @@ async function refreshSelectionHint() {
     const selections = (listed && listed.selections) || [];
     if (selections.length === 0) {
       hint.textContent = "无选区";
+      // **服务端说没有选区 ⇒ 本地也必须清掉** ✗（否则轮廓会继续画着 ✓、而"只作用于选区"会
+      // 拿一个**已经不存在**的框去裁 ✓ —— 那正是"界面与事实不一致"的经典后果 ✓）。
+      state.selectionShape = null;
+      state.selectionId = null;
+      void drawSelectionOutline();
       return;
     }
     const first = selections[0];
     const bbox = first.bbox || first.shape && first.shape.bbox;
+    // **把服务端事实同步进本地状态** ✓ —— 真实发现 ✓：这里原本**只写状态栏文字** ✗，
+    // 于是"在查看器之外建的选区"（工具层 / MCP / 另一个客户端 ✓）**界面完全不知道** ✓：
+    // 轮廓不画 ✓、而"只作用于选区"会以为没有选区 ✓（实测：`selectionShape` 是 null ✗）。
+    // 本函数的注释一直写着"由**服务端事实**驱动 ✓，而不是本地猜测" ✓ ⇒ 那就**连形状一起同步** ✓。
+    state.selectionId = first.selection_id || first.id || state.selectionId;
+    if (Array.isArray(bbox) && bbox.length >= 4) {
+      state.selectionShape = {
+        kind: "rect",
+        bbox: { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] },
+      };
+    } else if (bbox && typeof bbox === "object") {
+      state.selectionShape = { kind: first.shape && first.shape.kind ? first.shape.kind : "rect", bbox: bbox };
+    } else {
+      state.selectionShape = null;
+    }
+    void drawSelectionOutline();
     if (Array.isArray(bbox)) {
       hint.textContent = `选区 ${selections.length} 个（${Math.round(bbox[2])}×${Math.round(bbox[3])} @ ${Math.round(bbox[0])},${Math.round(bbox[1])}）｜约束之后的绘制`;
     } else {
