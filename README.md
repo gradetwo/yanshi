@@ -10,6 +10,13 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Medium texture and mixing
+
+`medium_stroke` takes `texture` from 0 to 1, which flattens the oil plugin's bristle and grain so a large area can be
+covered smoothly; 0 is the default and is byte-identical to before, so nothing you already painted changes. The
+server now samples the canvas under the brush before painting, so the plugin mixes the tip colour with what is
+already there, as the browser does.
+
 ## Static builds and storage portability
 
 `scripts/package-release.sh --static` produces a fully static binary that references no GLIBC version, which matters

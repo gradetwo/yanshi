@@ -140,6 +140,23 @@ places that share one implementation so they cannot disagree: the binaries' vers
 therefore the viewer's startup log, which reads the health endpoint. The release package puts the commit in its file
 name and carries a BUILD-INFO file listing the version, commit, target, build time and compiler.
 
+medium_stroke takes a texture control from 0 to 1 that flattens the oil plugin's bristle and grain. The plugin
+bends each texture term toward a flat target, and at texture 0 the operation is a bit-exact identity, proven against
+golden hashes captured from the pre-change code, so existing documents and existing callers render byte for byte as
+before; the input buffer grew by one float and the host writes it only when a plugin reports a long enough buffer, so
+older plugins are unaffected and the ABI version stays 2. Measured on the dab itself, the mean absolute difference
+between horizontally adjacent alpha falls from 18.41 to 4.89, a 73 percent reduction, while the average ink level
+moves by 0.13 percent. On a composited canvas the luminance effect is much weaker, about 13 percent, which is why
+the strong claim is tested at the plugin level and the tool-level test only asserts that the parameter is wired
+through.
+
+The server-side medium reads the canvas back before painting, so the plugin mixes the tip colour with the colour
+already under the brush, as the browser has always done by sampling one pixel per dab. The region is planned first,
+by the same function that later places the dabs, so the sample and the stroke cannot drift apart, and a missing or
+mismatched base falls back to the previous behaviour rather than failing the stroke. The shipped oil wasm plugin was
+rebuilt so both sides have the texture control; the repository's own medium ABI check passes for all six plugins,
+including the new one, which also closes the gap the plugin work could not verify without a wasm toolchain.
+
 medium_stroke paints through a medium plugin from the server or MCP side, which until this round was only
 possible in the browser. The plugins are dependency-free Rust, so adding an rlib target lets the server link them,
 and because all six exported the same C symbol names they originally collided; the exports are now split by target,

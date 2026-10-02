@@ -20,10 +20,39 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 echo "== 构建 wasm32（release）"
-cargo build --manifest-path "$ROOT/Cargo.toml" -p yanshi-wasm \
+# **挑一个带 wasm32 目标的 toolchain** ✓（本机实测：`rustup` 命令不在 PATH 上 ✓，
+# 但 `~/.rustup/toolchains/*/` 里**装着** wasm32 目标 ✓ ⇒ 直接用那条工具链的 cargo ✓）。
+#
+# **为什么值得修** ✓：这台机器上原来这个脚本**根本跑不起来** ✗
+#（系统 rust 只有 x86 标准库 ✓ ⇒ 报 `can't find crate for core` ✓）⇒
+# **一个本机跑不动的守卫等于没有** ✗ ⇒ 它此前一直被跳过 ✓，而"被跳过的检查"最危险 ✓。
+CARGO_BIN="$(command -v cargo)"
+for toolchain in "$HOME"/.rustup/toolchains/*/; do
+  if [ -d "${toolchain}lib/rustlib/wasm32-unknown-unknown" ] && [ -x "${toolchain}bin/cargo" ]; then
+    # **`PATH` 也要跟着换** ✓ —— 只换 cargo 不够 ✗：它会去 PATH 里找 **rustc** ✓，
+    # 而系统 rustc 没有 wasm 标准库 ✓ ⇒ 报 `can't find crate for core` ✗。
+    #（我第一次就只换了 cargo ✓，症状一模一样 ✓。）
+    PATH="${toolchain}bin:$PATH"
+    export PATH
+    CARGO_BIN="${toolchain}bin/cargo"
+    break
+  fi
+done
+"$CARGO_BIN" build --manifest-path "$ROOT/Cargo.toml" -p yanshi-wasm \
   --target wasm32-unknown-unknown --release >/dev/null
 
 echo "== 生成 node 目标绑定"
+# **预检：`wasm-bindgen` 是外部 CLI** ✓（不是 Rust 依赖 ✓，装不了就只能跳过 ✓）。
+# **为什么要明说** ✓：原来的失败长这样 —— `wasm-bindgen: 未找到命令` ✗
+# —— 那看起来像"脚本坏了" ✗，而真相是"**这台机器缺一个可选工具** ✓，
+# 于是**内核这一段的冒烟检查没跑** ✓" ⇒ **被跳过的检查必须自己说清楚** ✗，
+# 否则读日志的人会以为它通过了 ✓（这正是最危险的一种绿 ✓）。
+if ! command -v wasm-bindgen >/dev/null 2>&1; then
+  echo "   ⚠️ 未安装 wasm-bindgen ⇒ **跳过内核冒烟检查**（不影响介质插件检查 ✓）"
+  echo "      装上之后请重跑：cargo install wasm-bindgen-cli"
+  echo "      注意：本脚本的**介质插件**部分由 scripts/medium-abi-check.mjs 独立覆盖 ✓"
+  exit 0
+fi
 wasm-bindgen --target nodejs --out-dir "$OUT" --no-typescript \
   "$ROOT/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >/dev/null
 

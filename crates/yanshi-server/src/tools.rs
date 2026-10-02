@@ -1965,6 +1965,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("color", Object, false, "笔尖色 {r,g,b,a}（0..255；缺省不透明黑）"),
             param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),
             param!("wetness", Number, false, "湿度 0..1（缺省 0.4）"),
+            param!(
+                "texture",
+                Number,
+                false,
+                "纹理强度 0..1（缺省 0 = 插件原本的笔痕；越大越平滑，油画大面积铺色时用得上）"
+            ),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -8343,6 +8349,9 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
     let load = args.get("load").and_then(Value::as_f64).unwrap_or(1.0);
     let wetness = args.get("wetness").and_then(Value::as_f64).unwrap_or(0.4);
+    // **纹理强度** ✓（真实用户报告"油画纹理过重"✓）：缺省 **0.0** ✓
+    // ⇒ 与"这个参数根本不存在时"**逐字节相同** ✓ ⇒ **旧调用方的输出一个像素都不变** ✓。
+    let texture = args.get("texture").and_then(Value::as_f64).unwrap_or(0.0);
     // 色按 0..255 收 ✓ ⇒ 转成插件要的 0..1 ✓（缺省不透明黑 ✓）。
     let color = match args.get("color") {
         Some(value) if !value.is_null() => {
@@ -8362,8 +8371,40 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         }
         _ => [0.0, 0.0, 0.0, 1.0],
     };
-    let (region, rgba) =
-        yanshi_medium_host::paint_stroke(&medium, &points, size, color, load, wetness)?;
+    // **先按同一块区域把画布渲染出来** ✓ ⇒ 交给插件当"笔下的颜色" ✓
+    //（用户报告第 2 条 ✓：此前是"静态透明度叠加" ✗，没有掠过底色的取样与拖曳混色 ✓）。
+    //
+    // **为什么先 `plan_region`** ✓：区域必须**先于绘制可知** ✓，且必须与真正落笔用的是
+    // **同一份实现** ✗（各算一次必然漂移 ⇒ 采样点与落笔点错位 ✓）。
+    // **拿不到底色也不阻断** ✓：照旧画 ✓（退化为旧语义 ✓）——
+    // 介质本来就是 D2 ✓，不该因为"读不到底色"就整笔失败 ✗。
+    let (planned, _, _) = yanshi_medium_host::plan_region(&points, size)?;
+    let base = ctx
+        .workspace
+        .render_region_raw(&ctx.doc_id, planned)
+        .ok()
+        .map(|(width, height, pixels)| {
+            // 尺寸理应与规划一致 ✓；不一致就**不用**它 ✓（宁可退化 ✓，不越界 ✗）。
+            if width as usize == planned.w as usize && height as usize == planned.h as usize {
+                pixels
+            } else {
+                Vec::new()
+            }
+        })
+        .filter(|pixels| !pixels.is_empty());
+
+    let (region, rgba) = yanshi_medium_host::paint_stroke_over(
+        &medium,
+        &points,
+        yanshi_medium_host::StrokeSettings {
+            size,
+            color,
+            load,
+            wetness,
+            texture,
+        },
+        base.as_deref(),
+    )?;
     // **blob 先行** ✓：先把像素写进存储 ✓，再提交引用它的原子 ✓（与 `import_psd` 同一套路 ✓）。
     let composite = ctx.workspace.store().put(&rgba)?;
     let spec = yanshi_medium_host::spec(&medium).expect("paint_stroke 已经校验过介质名");
