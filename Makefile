@@ -48,6 +48,9 @@ clippy:  ## 严格 lint
 
 check: fmt clippy test  ## 推送前的三项判据
 
+serve:  ## 起一个"肯定是新的"服务端（先重编 -p yanshi-http ⇒ 用 curl 验工具前必跑）
+	scripts/serve.sh --port $(PORT)
+
 dev:  ## 开发用：构建 wasm 内核并起本地服务
 	scripts/dev.sh
 
