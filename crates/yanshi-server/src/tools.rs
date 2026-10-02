@@ -9178,11 +9178,25 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
     }
     if painted == 0 {
+        // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。
+        //
+        // **实测过的事** ✓：`ramon-Knife.myb` **无论给不给 `size` 都不出墨** ✗ ——
+        // 它的 `dabs_per_basic_radius` 是 **0** ✓ ⇒ 按基本半径算间距时**间距趋于无穷** ✓
+        // ⇒ **一枚印章都不落** ✗（`dabs_per_actual_radius` 那一套没被用上 ✓）。
+        // ⇒ 这类笔刷**在当前引擎下画不出来** ✓ ⇒ 与其只报"没有墨" ✗，不如**指出来** ✓
+        //（否则调用方会以为是自己参数给错 ✓ —— 我第一版的消息正是这样误导的 ✗）。
+        let dabs_basic = brush
+            .get(hokusai::BrushSetting::DabsPerBasicRadius)
+            .base_value;
+        let hint = if dabs_basic <= 0.0 {
+            "这支笔刷的 `dabs_per_basic_radius` 是 0（间距按基本半径算 ⇒ 趋于无穷 ⇒ 一枚印章都不落）\
+             ⇒ 它在当前引擎下画不出来，**换一支**；`assets/brushes` 里绝大多数都能画 ✓"
+        } else {
+            "试试给 size，或换一支笔刷 ✓"
+        };
         return Err(YanshiError::new(
             ErrorCode::PreconditionFailed,
-            ErrorContext::detail(format!(
-                "这一笔没落下任何像素 ⇒ 笔刷「{name}」在当前参数下没产生墨（试试给 size，或换一支笔刷）"
-            )),
+            ErrorContext::detail(format!("这一笔没落下任何像素 ⇒ 笔刷「{name}」{hint}")),
         ));
     }
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。

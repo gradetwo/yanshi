@@ -232,6 +232,16 @@ disclaims any licensing. Only the `.gpl` variant is kept: the collection's `.skp
 and `.soc` files have no parser here, and shipping files nothing can read is the same defect as advertising a
 greyscale PNG as usable.
 
+## File names must differ by more than case
+
+No two paths in the repository may differ only in case, because macOS and Windows filesystems are case insensitive
+and the pair would silently overwrite each other on checkout, leaving a clone quietly missing files that are present
+in the repository. The brush pack shipped two such pairs upstream, `Pen.myb` with `pen.myb` and `Knife.myb` with
+`knife.myb`, four genuinely different brushes; they are renamed from the `parent_brush_name` recorded inside each
+`.myb`, and the mapping is written down in `assets/brushes/CASE-NOTES.md`. A test walks the whole repository and
+fails on any directory holding two names that differ only by case, since this class of defect is invisible on Linux
+and would otherwise surface only for the people it breaks.
+
 ## Painting with MyPaint brushes
 
 Hokusai gives the project the libmypaint brush format, and `brush_stroke` drives a `.myb` brush from the tool layer,

@@ -149,3 +149,41 @@ fn a_brush_imported_into_the_cache_shadows_the_bundled_one() {
     assert_eq!(made["ok"], json!(true), "导入的笔刷应当能直接落笔：{made}");
     assert_eq!(made["brush"], json!("mine.myb"), "{made}");
 }
+
+/// **画不出来的笔刷，报错要说清原因** ✓（而**不是**只报"没有墨" ✗）。
+///
+/// **实测事实** ✓（记录在 `assets/brushes/CASE-NOTES.md` ✓）：
+/// `ramon-Knife.myb` 无论给不给 `size` 都不出墨 ✗ ——
+/// 它的 `dabs_per_basic_radius` 是 **0** ⇒ 间距按基本半径算 ⇒ 趋于无穷 ⇒ 一枚印章都不落 ✓。
+/// **为什么值得一条测试** ✓：我第一版的报错是"试试给 size，或换一支笔刷" ✗ ——
+/// 而**给 size 根本没用** ✓ ⇒ 那条消息会把人**引向错误的方向** ✗
+///（"错误要能照着改" 是本项目的既定规矩 ✓）。
+#[test]
+fn a_brush_that_cannot_paint_says_why_instead_of_just_failing() {
+    let root = temp_dir("cant_paint");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // **带上 size 也一样** ✓ —— 这正是第一版消息误导人的地方 ✓。
+    let got = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "ramon-Knife", "size": 40,
+            "points": [[30.0, 40.0, 0.6], [200.0, 100.0, 0.8]]
+        }),
+    );
+    assert_eq!(got["ok"], json!(false), "这支笔刷本来就画不出来：{got}");
+    assert_eq!(got["error_code"], json!("precondition_failed"), "{got}");
+    let detail = got["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("dabs_per_basic_radius"),
+        "要说清是**哪个设置**导致的，不能只说没墨：{detail}"
+    );
+    assert!(
+        detail.contains("换一支"),
+        "要给一条**真的有用**的出路：{detail}"
+    );
+}
