@@ -82,13 +82,61 @@ done
 # **为什么不报错** ✓：查看器**本来就会退化为服务端渲染** ✓（`--no-wasm` 就是这条路 ✓）
 # ⇒ **打出一个"能跑、但没有浏览器端内核"的包** ✓ 比**什么都不给**有用得多 ✓。
 # **但必须说清楚** ✗：缺了什么、怎么补 ✓ ⇒ 下面打印 ✓，并写进包里的 `BUILD-INFO` ✓。
+# **先尝试把 wasm 内核建出来** ✓ —— 这才是治本 ✓。
+#
+# **为什么需要这一步** ✓（真实用户报告 ✓）：用户从**新克隆**打包 ✓ ⇒
+# `crates/yanshi-wasm/pkg` 是**构建产物** ✗ ⇒ 克隆里没有 ✓ ⇒ 于是他拿到一个
+# **没有浏览器内核**的包 ✗ ⇒ 查看器退化为服务端渲染 ✓ ⇒
+# 症状是"**点眼睛/锁画布变白**"✗、"**找不到笔触与介质切换**"✗ ——
+# **看起来像三个 bug ✓，其实是同一件事** ✓。
+# **上一轮我只做了"警告后继续"** ✗ ⇒ 包能用了 ✓ 但**少一半功能** ✗ ⇒ **那不够** ✓：
+# 能建就该**当场建** ✓（`make release` 的语义就是"给我一个能用的包" ✓）。
+if [ ! -e "$repo/crates/yanshi-wasm/pkg" ]; then
+  echo "--> 缺少 wasm 计算内核 ⇒ 尝试现场构建 ✓"
+  # **工具链**：本机实测 wasm32 目标装在 rustup 工具链里 ✓ ⇒ 挑一个带它的 ✓
+  #（`rustup` 命令本身可能不在 PATH 上 ✓ —— 这个坑我在 `wasm-smoke.sh` 里踩过 ✓）。
+  kernel_toolchain=""
+  for candidate in "$HOME"/.rustup/toolchains/*/; do
+    if [ -d "${candidate}lib/rustlib/wasm32-unknown-unknown" ] && [ -x "${candidate}bin/cargo" ]; then
+      kernel_toolchain="$candidate"
+      break
+    fi
+  done
+  # **`wasm-bindgen`**：它常装在 `~/.cargo/bin` ✓ 而**不在 PATH** 上 ✗
+  #（实测：`command -v wasm-bindgen` 说没有 ✓，其实装着 ✓ —— 又是同一个坑 ✓）。
+  bindgen_bin="$(command -v wasm-bindgen 2>/dev/null || true)"
+  if [ -z "$bindgen_bin" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
+    bindgen_bin="$HOME/.cargo/bin/wasm-bindgen"
+  fi
+  if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
+    echo "    用 ${kernel_toolchain} 编译 ✓，再用 ${bindgen_bin} 生成绑定 ✓"
+    if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
+         --manifest-path "$repo/Cargo.toml" --release \
+         --target wasm32-unknown-unknown -p yanshi-wasm >/dev/null 2>&1 \
+       && "$bindgen_bin" --target web \
+         --out-dir "$repo/crates/yanshi-wasm/pkg" \
+         "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >/dev/null 2>&1; then
+      echo "    ✓ 内核已生成：$(du -h "$repo/crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm" | cut -f1)"
+    else
+      echo "    ✗ 构建失败 ⇒ 按下面缺产物处理" >&2
+    fi
+  else
+    echo "    ⚠️ 缺工具 ⇒ 无法现场构建："
+    [ -n "$kernel_toolchain" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
+    [ -n "$bindgen_bin" ] || echo "       · cargo install wasm-bindgen-cli"
+  fi
+fi
+
 missing_soft=""
 [ -e "$repo/crates/yanshi-wasm/pkg" ] || missing_soft="${missing_soft} wasm-kernel"
 [ -e "$repo/assets/mediums" ] || missing_soft="${missing_soft} mediums"
 if [ -n "$missing_soft" ]; then
-  echo "⚠️  包内缺少：${missing_soft}（包仍可用 ✓ 但查看器会退化为服务端渲染）"
-  echo "    补齐办法：先跑 scripts/dev.sh（它会在有 wasm32 目标时构建内核）"
-  echo "    注意：构建 wasm 内核还需要 wasm-bindgen-cli（cargo install wasm-bindgen-cli）"
+  echo "⚠️  包内缺少：${missing_soft}"
+  echo "    **后果** ✓：查看器会**退化为服务端渲染** ✗ —— 浏览器端会少掉"
+  echo "    WASM 内核支撑的那些功能（例如介质笔触的即时反馈 ✓，图层可见性切换后的即时重绘 ✓）。"
+  echo "    **怎么补** ✓：装好 wasm-bindgen-cli（cargo install wasm-bindgen-cli ✓，"
+  echo "    它常落在 ~/.cargo/bin ✓ 而不在 PATH 上 ✗）＋ 一个装了 wasm32-unknown-unknown 的工具链 ✓，"
+  echo "    然后**重新跑** make release ✓（脚本会现场构建内核 ✓）。"
 fi
 
 rm -rf "$stage"
