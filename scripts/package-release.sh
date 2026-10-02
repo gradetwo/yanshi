@@ -9,7 +9,12 @@
 # ⇒ 所以包里**带上这两棵树** ✓，并附一个**包装脚本**用绝对路径把它们指回去 ✓ ——
 # 这样"解包到哪都能跑" ✓，不依赖用户先 cd 到某个目录 ✓。
 #
-# 用法：`scripts/package-release.sh [--out dist] [--skip-build] [--static]`
+# 用法：`scripts/package-release.sh [--out dist] [--skip-build] [--dynamic]`
+#       或直接 `make release`（推荐 ✓：它就是这条命令 ✓）
+#
+# **静态是默认** ✓（真实用户报告 ✓）：动态版会继承构建机的 glibc ✗
+#（实测要求 **2.43** ✓，只因 `atan2f` 一个符号 ✓），到 Debian 12（2.36 ✓）**一运行就崩** ✗
+# ⇒ 默认静态 ✓，让包**在任何发行版上都能跑** ✓；确实需要动态链接时才用 `--dynamic` ✓。
 #
 # **`--static`：打成完全静态的二进制** ✓（真实用户报告的第 1 条严重缺陷 ✓）。
 # **它解决什么** ✓：动态版链接到的是**构建机的 glibc** ✗ ⇒ 实测二进制要求 `GLIBC_2.43` ✗
@@ -26,12 +31,13 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$repo/dist"
 skip_build=0
-static_build=0
+static_build=1   # **静态是默认** ✓（见文件头的说明 ✓）
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --skip-build) skip_build=1; shift ;;
-    --static) static_build=1; shift ;;
+    --static) static_build=1; shift ;;   # 已是默认 ✓，保留是为了让脚本可读 ✓
+    --dynamic) static_build=0; shift ;;  # **退出开关** ✓：确实需要动态链接时才用 ✓
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
@@ -67,14 +73,23 @@ if [ "$skip_build" = 0 ]; then
   fi
 fi
 
-# 需要的产物必须先存在 ✓（缺了就地报错 ✓，不要打出一个跑不起来的包 ✗）。
-for required in \
-  "$bin_dir/yanshi-serve" \
-  "$bin_dir/yanshi-mcp" \
-  "$repo/crates/yanshi-wasm/pkg" \
-  "$repo/assets/mediums"; do
+# **硬要求：只有那两个二进制** ✓ —— 少了它们包**真的跑不起来** ✗，必须就地报错 ✓。
+for required in "$bin_dir/yanshi-serve" "$bin_dir/yanshi-mcp"; do
   [ -e "$required" ] || { echo "缺少必需产物：$required" >&2; exit 1; }
 done
+# **软要求：wasm 计算内核与介质插件** ✓（真实用户报告 ✓：**新克隆里直接跑打包会失败** ✗ ——
+# `crates/yanshi-wasm/pkg` 是**构建产物** ✓，克隆里根本没有 ✓）。
+# **为什么不报错** ✓：查看器**本来就会退化为服务端渲染** ✓（`--no-wasm` 就是这条路 ✓）
+# ⇒ **打出一个"能跑、但没有浏览器端内核"的包** ✓ 比**什么都不给**有用得多 ✓。
+# **但必须说清楚** ✗：缺了什么、怎么补 ✓ ⇒ 下面打印 ✓，并写进包里的 `BUILD-INFO` ✓。
+missing_soft=""
+[ -e "$repo/crates/yanshi-wasm/pkg" ] || missing_soft="${missing_soft} wasm-kernel"
+[ -e "$repo/assets/mediums" ] || missing_soft="${missing_soft} mediums"
+if [ -n "$missing_soft" ]; then
+  echo "⚠️  包内缺少：${missing_soft}（包仍可用 ✓ 但查看器会退化为服务端渲染）"
+  echo "    补齐办法：先跑 scripts/dev.sh（它会在有 wasm32 目标时构建内核）"
+  echo "    注意：构建 wasm 内核还需要 wasm-bindgen-cli（cargo install wasm-bindgen-cli）"
+fi
 
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/yanshi"
@@ -83,9 +98,14 @@ echo "--> 组装目录树"
 install -m 0755 "$bin_dir/yanshi-serve" "$stage/bin/yanshi-serve"
 install -m 0755 "$bin_dir/yanshi-mcp" "$stage/bin/yanshi-mcp"
 # **资产树** ✓：用 `cp -R` 保留目录结构 ✓；介质只带 `*.wasm` ✓（源码不属于运行期 ✓）。
-cp -R "$repo/crates/yanshi-wasm/pkg" "$stage/share/yanshi/wasm"
+# **存在才拷** ✓（缺失时上面已经警告过 ✓ ⇒ 这里不能因为"没有"就整个失败 ✗）。
+if [ -e "$repo/crates/yanshi-wasm/pkg" ]; then
+  cp -R "$repo/crates/yanshi-wasm/pkg" "$stage/share/yanshi/wasm"
+fi
 mkdir -p "$stage/share/yanshi/mediums"
-find "$repo/assets/mediums" -maxdepth 1 -name '*.wasm' -exec cp {} "$stage/share/yanshi/mediums/" \;
+if [ -d "$repo/assets/mediums" ]; then
+  find "$repo/assets/mediums" -maxdepth 1 -name '*.wasm' -exec cp {} "$stage/share/yanshi/mediums/" \;
+fi
 if [ -d "$repo/assets/brand" ]; then
   cp -R "$repo/assets/brand" "$stage/share/yanshi/brand"
 fi
@@ -98,8 +118,18 @@ cat > "$stage/yanshi.sh" <<'WRAP'
 # 薄包装 ✓：把资产路径**按脚本自身位置**算出来 ✓，于是不依赖当前工作目录 ✓。
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# **缺 wasm 内核就明说** ✓（真实用户报告 ✓：新克隆里那个目录**根本不存在** ✗）。
+# 指向一个不存在的目录 ✗ 会让服务端困惑 ✓；而 `--no-wasm` 是**设计里正路** ✓
+# ⇒ "查看器退化为服务端渲染" ✓ —— 功能少一块 ✓，但**能正常跑** ✓。
+wasm_args=()
+if [ -d "$here/share/yanshi/wasm" ]; then
+  wasm_args+=(--wasm-dir "$here/share/yanshi/wasm")
+else
+  wasm_args+=(--no-wasm)
+  echo "提示：本包未含 WASM 计算内核 ⇒ 查看器将走服务端渲染（功能正常，浏览器端少一份内核）" >&2
+fi
 exec "$here/bin/yanshi-serve" \
-  --wasm-dir "$here/share/yanshi/wasm" \
+  "${wasm_args[@]}" \
   --medium-dir "$here/share/yanshi/mediums" \
   --brand-dir "$here/share/yanshi/brand" \
   "$@"
