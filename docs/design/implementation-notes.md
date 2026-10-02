@@ -7131,3 +7131,27 @@ angle_variance / spacing_variance / count / opacity_jitter / color_jitter / text
 并把上游 **`COPYING`（CC0 1.0 全文 ✓）** 一并放在 `assets/brushes/LICENSE-CC0.txt` ✓
 ⇒ **许可链条在仓库内自证** ✓（CC0 ✓ ⇒ 无需署名 ✓、可商用 ✓）。
 **还没有做** ✗（等引擎决定 ✓）：解析 `.myb` 并**画出来** ✓、以及在界面里**列出这 196 支** ✓。
+
+### 🧱🎨 用户追加的资源清单 ✓ —— **许可证矩阵**（先查证再入库 ✓，未核实的**一律不 vendor** ✗）
+
+**用户要求** ✓：纹理/纸张素材 ✓（mypaint-data-extras ✓、Krita 纹理包如 memileo_impasto ✓、
+免费纹理站如 Speckyboy ✓）、调色板 ✓（和洋伝統色 400 色 ✓、Ohuhu 马克笔 350 色 ✓、
+razcore-rad/krita-resources ✓）、汇总清单 ✓（Krita Artists 论坛 ✓、awesome-krita ✓、awesome-gimp ✓）。
+**他的整合建议与我一致** ✓：**优先 `.myb`**（与 Hokusai 兼容性最好、成本最低 ✓）⇒ **那一步已完成** ✓
+（采纳 Hokusai ✓ + vendor 196 支 CC0 笔刷 ✓ + 两条测试证明能加载能落笔 ✓）；
+**`.bundle` 先解压筛 `.myb`** ✓ —— 这条会照做 ✓。
+
+**⚠️ 许可证矩阵** ✓（**这是能否入 MIT 仓库的硬门槛** ✗）：
+| 来源 | 许可证状态 | 处置 |
+|---|---|---|
+| `mypaint-brushes` v2.0.2 ✓ | **已核实：CC0 1.0** ✓（Debian `COPYING` 全文 ✓）| ✅ **已 vendor**（196 支 ✓）|
+| `mypaint-data-extras`（纸张纹理 ✓）| ⚠️ **本次未能核实** ✗ —— `packages.debian.org` 返回 **406** ✗、`sources.debian.org/src/mypaint-data-extras/` **404** ✗（包名可能与源站索引不一致 ✓）| ⛔ **暂不入库** ✓，先按包内 `copyright` 核实 ✓ |
+| Krita 纹理包（memileo_impasto ✓、water_color_brushes_for_mice ✓）| ⚠️ 未核实 ✗（Krita 资源**多为 CC-BY** ✓ ⇒ **需署名** ✓；`memileo_impasto` 是**第三方作者作品** ✗）| ⛔ 暂不入库 ✓，逐个查作者声明 ✓ |
+| **和洋伝統色**（400 色 ✓）| 🚫 **发布页是 BOOTH / pixiv** ✓ ⇒ **个人作品的发布页** ✓ ⇒ **不能默认可再分发** ✗ | ⛔ **不入库** ✓（若要用，需取得作者许可 ✓ 或让用户**自行导入** ✓）|
+| **Ohuhu 350 色** | 🚫 派生自**商业产品官方色卡** ✓ ⇒ **商标 / 权属风险** ✗ | ⛔ **不入库** ✓（同上 ✓）|
+| `razcore-rad/krita-resources` ✓ | ⚠️ 未核实 ✗（仓库自有 LICENSE ✓ 需逐个看 ✓）| ⛔ 暂不入库 ✓ |
+| `awesome-krita` / `awesome-gimp` / Krita Artists 论坛 ✓ | ✅ 它们是**清单/链接** ✓（`awesome-*` 通常 MIT ✓）| ✅ **只作为文档里的参考链接** ✓，**不 vendor 资源本身** ✓ |
+| Speckyboy 等免费纹理站 ✓ | 🚫 各站条款不一 ✓、多为"免费使用但**不可再分发**" ✗ | ⛔ **不入库** ✓ |
+**通用纪律（写在这里免得下次又踩 ✓）** ✓：**"免费可用" ≠ "可再分发"** ✗ ——
+一个 MIT 仓库**必须能说清每个二进制的来源与许可** ✓ ⇒ **凡是查不到明确许可的素材，一律不入库** ✗ ✓；
+宁可在**文档里给出链接** ✓ 让用户**自行导入** ✓（本项目已有导入能力 ✓），也不要把权属不明的字节签进仓库 ✗。
