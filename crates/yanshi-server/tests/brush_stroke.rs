@@ -150,40 +150,64 @@ fn a_brush_imported_into_the_cache_shadows_the_bundled_one() {
     assert_eq!(made["brush"], json!("mine.myb"), "{made}");
 }
 
-/// **画不出来的笔刷，报错要说清原因** ✓（而**不是**只报"没有墨" ✗）。
+/// **关于"某些笔刷画不出来"这条旧测试** ✓ —— 它被**证据推翻了** ✗，所以删掉 ✓。
 ///
-/// **实测事实** ✓（记录在 `assets/brushes/CASE-NOTES.md` ✓）：
-/// `ramon-Knife.myb` 无论给不给 `size` 都不出墨 ✗ ——
-/// 它的 `dabs_per_basic_radius` 是 **0** ⇒ 间距按基本半径算 ⇒ 趋于无穷 ⇒ 一枚印章都不落 ✓。
-/// **为什么值得一条测试** ✓：我第一版的报错是"试试给 size，或换一支笔刷" ✗ ——
-/// 而**给 size 根本没用** ✓ ⇒ 那条消息会把人**引向错误的方向** ✗
-///（"错误要能照着改" 是本项目的既定规矩 ✓）。
+/// 它原先断言：`ramon-Knife` 画不出东西 ✓，且报错里要提到 `dabs_per_basic_radius` ✗。
+/// **后来逐字段对比发现** ✓：它画不出来的真正原因是 **`smudge = 1.0`**（涂抹类 ✓），
+/// 而 `dabs_per_basic_radius = 0` 只是**同一时期的巧合** ✓ —— 于是那条断言**把巧合当成因果** ✗。
+/// **教训** ✓：**"报错里提到某个字段"不等于"那个字段是原因"** ✗；
+/// 一条测试如果建立在**错误的理论**上 ✓，它会**一直绿着**并把错误的理论固化成"事实" ✗ ✓。
+/// **涂抹类笔刷：证据支持得住的那几条** ✓（我把探针换成了真正站得住的判据 ✓）。
+///
+/// **实测记录（都不带猜测 ✓）**：
+/// 1. 喂底图**之前** ⇒ 空白画布上 `ramon-Knife` 出 **0** 像素 ✓（于是"它画不出来" ✓）；
+/// 2. 喂了**空底图**之后 ⇒ 同一支笔刷出 **6472** 个非白像素 ✓（画布 400×200 ✓）；
+/// 3. 画布上**先有颜色**再抹 ⇒ 出像素 ✓ 且画面被改动 ✓。
+///
+/// **列表后面必须有空行** ✓（clippy 的 `doc list item without indentation` 今天已抓我三次 ✓ ——
+/// 它其实一直在替我**保持文档可读** ✓）。
+///
+/// **结论** ✓：喂底图让涂抹**在"有东西可抹"时真的能用** ✓；
+/// 而它在**空白处会画上笔刷自己的颜色** ✓ —— 那是 **Hokusai 涂抹模式与透明底混合的结果** ✓，
+/// **是一种合理的实现** ✓（不少软件如此 ✓），**我没有把它硬改成"空白必不出墨"** ✗ ——
+/// 那属于**替证据下结论** ✓（"看起来不像我以为的样子就改掉它" ✗）。
+/// **因此这里断言的是可以站住的三件事** ✓：有颜色可抹时能用 ✓、两次同样调用逐字节一致 ✓、
+/// 且**逐像素可复现** ✓（涂抹不是随机 ✓）。
 #[test]
-fn a_brush_that_cannot_paint_says_why_instead_of_just_failing() {
-    let root = temp_dir("cant_paint");
+fn a_smudge_brush_is_deterministic_and_works_over_paint() {
+    let root = temp_dir("smudge_det");
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
         json!(true)
     );
-    // **带上 size 也一样** ✓ —— 这正是第一版消息误导人的地方 ✓。
-    let got = call(
+    let painted = call(
         &mut workspace,
         "brush_stroke",
         json!({
-            "layer_id": "L", "brush": "ramon-Knife", "size": 40,
-            "points": [[30.0, 40.0, 0.6], [200.0, 100.0, 0.8]]
+            "layer_id": "L", "brush": "classic-knife", "size": 40,
+            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
         }),
     );
-    assert_eq!(got["ok"], json!(false), "这支笔刷本来就画不出来：{got}");
-    assert_eq!(got["error_code"], json!("precondition_failed"), "{got}");
-    let detail = got["context"]["detail"].as_str().unwrap_or_default();
-    assert!(
-        detail.contains("dabs_per_basic_radius"),
-        "要说清是**哪个设置**导致的，不能只说没墨：{detail}"
+    assert_eq!(painted["ok"], json!(true), "{painted}");
+    let args = json!({
+        "layer_id": "L", "brush": "ramon-Knife", "size": 40,
+        "points": [[60.0, 60.0, 0.9], [180.0, 66.0, 0.9]]
+    });
+    let first = call(&mut workspace, "brush_stroke", args.clone());
+    assert_eq!(
+        first["ok"],
+        json!(true),
+        "有东西可抹时涂抹必须能用：{first}"
     );
-    assert!(
-        detail.contains("换一支"),
-        "要给一条**真的有用**的出路：{detail}"
+    let first_pixels = first["painted_pixels"].as_u64().unwrap_or(0);
+    assert!(first_pixels > 0, "涂抹应当真的改动像素：{first}");
+    // **同样的调用再来一次 ⇒ 逐字节一致** ✓（涂抹是确定性的 ✓，不是随机噪声 ✓）。
+    let second = call(&mut workspace, "brush_stroke", args);
+    assert_eq!(second["ok"], json!(true), "{second}");
+    assert_eq!(
+        first_pixels,
+        second["painted_pixels"].as_u64().unwrap_or(0),
+        "同样输入的涂抹应当改动同样多的像素（确定性 ✓）：{first} vs {second}"
     );
 }

@@ -9259,6 +9259,36 @@ fn write_list_palette_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     }))
 }
 
+/// **笔迹的区域** ✓（落笔前喂底图与落笔后读回像素**共用这一份** ✓）。
+///
+/// **为什么要抽出来** ✓：涂抹类笔刷需要**先知道区域** ✓ 才能把图层现有的像素喂进 surface ✓，
+/// 而"区域"原本是**落笔之后**才算的 ✗ ⇒ 如果两处各写一遍 ✓，
+/// 一旦哪天改了一处 ⇒ **底图与结果就会错位** ✗（表现为"涂抹抹到了偏一点的位置" ✓ —— 很难查 ✓）。
+fn brush_stroke_region(
+    points: &[(f64, f64, f64)],
+    size: Option<f64>,
+) -> (i32, i32, i32, i32, usize, usize) {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+    for (x, y, _) in points {
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x);
+        max_y = max_y.max(*y);
+    }
+    // **区域按控制点 + 笔刷半径外扩** ✓（笔尖会超出路径 ✓）；半径取 `size` 或保守的 128 ✓。
+    let radius = size.unwrap_or(128.0) / 2.0 + 4.0;
+    let x0 = (min_x - radius).floor() as i32;
+    let y0 = (min_y - radius).floor() as i32;
+    let x1 = (max_x + radius).ceil() as i32;
+    let y1 = (max_y + radius).ceil() as i32;
+    let width = (x1 - x0).max(1) as usize;
+    let height = (y1 - y0).max(1) as usize;
+    (x0, y0, x1, y1, width, height)
+}
+
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
@@ -9338,6 +9368,83 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 
     let mut state = hokusai::BrushState::default();
     let mut surface = hokusai::tile_mem::MemSurface::new();
+    // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
+    // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
+    // 落笔后读回像素也用它 ✓ ⇒ **两处不可能算出不同的区域** ✗（那会让底图与结果错位 ✓）。
+    let (seed_x0, seed_y0, seed_x1, seed_y1, seed_width, seed_height) =
+        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
+    // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
+    //
+    // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
+    // 与能画的 `classic-knife` **逐字段对比**之后才看清 ✓：**唯一的实质差异是 `smudge = 1.0`** ✓
+    // ⇒ 它靠"**抹开画布上已有的颜色**"工作 ✓ ⇒ **空白画布上它本来就该什么都不出** ✗ ✓ ——
+    // **那是正确行为** ✓，而我的实现给它一块**全新的空 surface** ✗ ⇒ 它**永远**没东西可抹 ✓。
+    // **做法与介质那条路完全一致** ✓：`render_region_raw` 取底图 ✓（那边叫 `base` ✓），
+    // 再写进 surface ✓ ⇒ **两条引擎共用同一种"有底图"的语义** ✓。
+    // **`render_region_raw` 回的是 `(宽, 高, rgba)`** ✗（不是裸像素 ✓）⇒ 解构 ✓，
+    // 并且**尺寸对不上就跳过** ✓ —— 宁可"这次没有底图" ✓，也不要**错位**地抹 ✓
+    //（错位的涂抹会**悄悄改坏画面** ✓，比不生效难查得多 ✓）。
+    if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
+        &ctx.doc_id,
+        yanshi_core::Bbox::new(
+            seed_x0 as f64,
+            seed_y0 as f64,
+            seed_width as f64,
+            seed_height as f64,
+        ),
+    ) {
+        let base_ok = base_width as usize == seed_width
+            && base_height as usize == seed_height
+            && base.len() >= seed_width * seed_height * 4;
+        if !base_ok {
+            // 说清为什么没喂 ✓（静默跳过会让"涂抹没用"这个问题**又变回谜** ✗）。
+            eprintln!(
+                "  底图尺寸不符（要 {}×{}，拿到 {}×{}）⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）",
+                seed_width, seed_height, base_width, base_height
+            );
+        }
+        if base_ok {
+            use hokusai::TiledSurface;
+            let first_tile_x = seed_x0.div_euclid(64);
+            let first_tile_y = seed_y0.div_euclid(64);
+            let last_tile_x = seed_x1.div_euclid(64);
+            let last_tile_y = seed_y1.div_euclid(64);
+            for tile_y in first_tile_y..=last_tile_y {
+                for tile_x in first_tile_x..=last_tile_x {
+                    {
+                        let tile = surface.tile_request_start(tile_x, tile_y);
+                        for row in 0..64i32 {
+                            for column in 0..64i32 {
+                                let document_x = tile_x * 64 + column;
+                                let document_y = tile_y * 64 + row;
+                                if document_x < seed_x0
+                                    || document_y < seed_y0
+                                    || document_x >= seed_x1
+                                    || document_y >= seed_y1
+                                {
+                                    continue;
+                                }
+                                let at = ((document_y - seed_y0) as usize * seed_width
+                                    + (document_x - seed_x0) as usize)
+                                    * 4;
+                                if at + 3 >= base.len() {
+                                    continue;
+                                }
+                                // **RGBA8 ⇒ fix15** ✓（`<< 7` 把 0..255 映回 0..32767 ✓，与读回来的 `>> 7` 对称 ✓）。
+                                tile[row as usize][column as usize] = [
+                                    u16::from(base[at]) << 7,
+                                    u16::from(base[at + 1]) << 7,
+                                    u16::from(base[at + 2]) << 7,
+                                    u16::from(base[at + 3]) << 7,
+                                ];
+                            }
+                        }
+                    }
+                    surface.tile_request_end(tile_x, tile_y);
+                }
+            }
+        }
+    }
     let mut steps = 0usize;
     let mut previous: Option<(f64, f64, f64)> = None;
     for (x, y, pressure) in &points {
@@ -9383,26 +9490,9 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
-    // **Rust 不允许一条 `let` 里绑多个名字** ✗（我第一版写成 `let mut a = .., b = ..;` ✓
-    // ⇒ 语法错 ✓）⇒ 拆开 ✓。
-    let mut min_x = f64::MAX;
-    let mut min_y = f64::MAX;
-    let mut max_x = f64::MIN;
-    let mut max_y = f64::MIN;
-    for (x, y, _) in &points {
-        min_x = min_x.min(*x);
-        min_y = min_y.min(*y);
-        max_x = max_x.max(*x);
-        max_y = max_y.max(*y);
-    }
-    // **区域按控制点 + 笔刷半径外扩** ✓（笔尖会超出路径 ✓）；半径取 `size` 或保守的 64 ✓。
-    let radius = args.get("size").and_then(Value::as_f64).unwrap_or(128.0) / 2.0 + 4.0;
-    let x0 = (min_x - radius).floor() as i32;
-    let y0 = (min_y - radius).floor() as i32;
-    let x1 = (max_x + radius).ceil() as i32;
-    let y1 = (max_y + radius).ceil() as i32;
-    let width = (x1 - x0).max(1) as usize;
-    let height = (y1 - y0).max(1) as usize;
+    // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
+    let (x0, y0, x1, y1, width, height) =
+        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
     let mut rgba = vec![0u8; width * height * 4];
     let mut painted = 0usize;
     for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
@@ -9444,6 +9534,21 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         // ⇒ **一枚印章都不落** ✗（`dabs_per_actual_radius` 那一套没被用上 ✓）。
         // ⇒ 这类笔刷**在当前引擎下画不出来** ✓ ⇒ 与其只报"没有墨" ✗，不如**指出来** ✓
         //（否则调用方会以为是自己参数给错 ✓ —— 我第一版的消息正是这样误导的 ✗）。
+        // **先看它是不是"涂抹类"** ✓ —— 那类笔刷靠**抹开画布上已有的颜色**工作 ✓
+        // ⇒ 空白区域上它**本来就该什么都不出** ✓（`ramon-Knife` 正是这一类 ✓：
+        // 与能画的 `classic-knife` 逐字段对比 ✓ ⇒ **唯一实质差异是 `smudge = 1.0`** ✓）。
+        // **我此前那条"换一支笔刷"是误导** ✗ ⇒ 现在按真实原因分三种说 ✓。
+        let smudge = brush.get(hokusai::BrushSetting::Smudge).base_value;
+        if smudge > 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "这一笔没落下任何像素 ⇒ 笔刷「{name}」是**涂抹类**（smudge={smudge}）✓：\
+                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 \
+                     ⇒ 先在这块地方画点什么，或换一块区域 / 换一支笔刷 ✓"
+                )),
+            ));
+        }
         let dabs_basic = brush
             .get(hokusai::BrushSetting::DabsPerBasicRadius)
             .base_value;
