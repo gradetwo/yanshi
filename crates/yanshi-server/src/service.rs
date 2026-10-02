@@ -1227,6 +1227,48 @@ impl Workspace {
         Ok(target)
     }
 
+    /// **把资产名解析成实际文件路径** ✓（**缓存优先、内置其次** ✓ —— 与列举时的优先级一致 ✓）。
+    ///
+    /// **为什么要它** ✓：用户导入的笔刷放在缓存 ✓、随包发布的内置笔刷在 `assets/` ✓
+    /// ⇒ 调用方只给一个**名字** ✓，由这里决定用哪一个 ✓ ⇒ **覆盖语义在"读"和"列"两处一致** ✓
+    ///（各判一次必然漂移 ✗）。找不到时报错并**列出可用的名字** ✓（调用方靠错误文本自我纠正 ✓）。
+    pub fn resolve_asset(&self, kind: &str, name: &str) -> Result<std::path::PathBuf> {
+        let (sub, _) = asset_layout(kind)?;
+        let clean = asset_file_name(name)?;
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(dir) = self.asset_dir(kind) {
+            candidates.push(dir.join(&clean));
+        }
+        if let Some(root) = self.assets_dir.as_ref() {
+            candidates.push(root.join(sub).join(&clean));
+        }
+        for candidate in &candidates {
+            if candidate.is_file() {
+                return Ok(candidate.clone());
+            }
+        }
+        // **把可用的名字报出来** ✓（只说"找不到"会让调用方猜 ✓）。
+        let available: Vec<String> = self
+            .list_assets(kind)?
+            .into_iter()
+            .filter(|entry| entry.usable)
+            .map(|entry| entry.name)
+            .collect();
+        let shown = if available.is_empty() {
+            "（当前一个都没有）".to_string()
+        } else {
+            let mut head: Vec<String> = available.iter().take(8).cloned().collect();
+            if available.len() > 8 {
+                head.push(format!("…（共 {} 个）", available.len()));
+            }
+            head.join(" / ")
+        };
+        Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("找不到 {kind} 「{clean}」⇒ 可用的有：{shown}")),
+        ))
+    }
+
     /// **某类资产的缓存目录** ✓（`<root>/<子目录>` ✓ —— 内置资产**不在这里** ✓）。
     pub fn asset_dir(&self, kind: &str) -> Result<std::path::PathBuf> {
         let (sub, _) = asset_layout(kind)?;

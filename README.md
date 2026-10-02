@@ -232,6 +232,18 @@ disclaims any licensing. Only the `.gpl` variant is kept: the collection's `.skp
 and `.soc` files have no parser here, and shipping files nothing can read is the same defect as advertising a
 greyscale PNG as usable.
 
+## Painting with MyPaint brushes
+
+Hokusai gives the project the libmypaint brush format, and `brush_stroke` drives a `.myb` brush from the tool layer,
+so MCP and the viewer both reach every one of the hundred and ninety six CC0 brushes vendored under `assets/brushes`.
+A brush is named, not pathed, and resolves through the same precedence as listing: something imported into the
+workspace cache wins over the shipped copy, which is how a user replaces a brush without touching the repository.
+`size` overrides the brush's own radius if given. Control points are interpolated at two pixels because Hokusai
+expects a stream of pointer positions, and feeding it only sparse points produces detached stamps, the same failure
+that was reported for the medium path. The stroke is rendered into a Hokusai surface, converted from its fix15 tiles
+to RGBA, stored as a blob and committed through the same `import_image` path the medium strokes use, so both engines
+share one commit implementation. The same stroke twice produces identical pixels, which is asserted.
+
 ## Install
 
 ```bash

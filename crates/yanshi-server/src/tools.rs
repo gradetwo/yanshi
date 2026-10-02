@@ -2094,6 +2094,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "brush_stroke",
+        profile: Profile::Core,
+        // **Hokusai 引擎驱动的笔触** ✓（用户裁定：采纳 Hokusai ✓）。
+        // **它和 `medium_stroke` 的关系** ✓：两条独立引擎 ✓ ——
+        // 介质插件是我们自己的 wasm ABI ✓，Hokusai 读的是 libmypaint 的 `.myb` ✓
+        // ⇒ 前者给"我们自己的介质" ✓，后者给"**196 支现成的 MyPaint 笔刷**" ✓。
+        summary: "用 .myb 笔刷（Hokusai 引擎）画一笔：brush 给名字，points 给 [[x,y,pressure],…]",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
+            param!("points", Array, true, "[[x,y,pressure],…]，压力 0..1（可省，缺省 0.5）"),
+            param!("size", Number, false, "覆盖笔刷自带半径（直径像素；不给就用 .myb 里的设置）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
         name: "list_assets",
         profile: Profile::Core,
         summary: "列出某类资产：brush（.myb 笔刷）/ texture（PNG 纹理）/ palette（调色板）",
@@ -2332,6 +2349,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "export_project" => write_export_project(ctx, args),
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
+        "brush_stroke" => write_brush_stroke(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -8690,6 +8708,220 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// **为什么在工具层** ✓（用户新加的硬要求 ✓）：**MCP 与 Web 都要能用** ✓ ——
 /// 能力放在工具层 ✓ ⇒ 两边**自动同时获得** ✓；若只做在查看器里 ✗，MCP 就用不上 ✗ ✓。
 /// **列出某类资产** ✓（只读 ✓）—— **MCP 与 Web 共用同一个入口** ✓（用户那条硬要求 ✓）。
+/// **用 `.myb` 笔刷画一笔** ✓（Hokusai 引擎 ✓）。
+///
+/// **为什么照 `medium_stroke` 的样子写** ✓：那条路已经跑通并被用户用过 ✓ ——
+/// **先 `store().put(rgba)` 得到 blob ✓，再复用 `import_image` 提交引用它的原子** ✓。
+/// 两条引擎**共用同一个提交路径** ✓ ⇒ 提交语义（区域、blob 先行、对象 id ✓）**只有一份** ✓。
+///
+/// **补间必须自己做** ✗：Hokusai 的 `stroke_to` 要的是**连续的指针流** ✓
+/// ⇒ 只喂稀疏控制点会得到**离散盖章** ✗ —— 用户正是在介质那边报过这个 ✓
+/// ⇒ 这里按 **2px** 步长细分 ✓（比笔尖细得多 ✓），压力沿段线性插值 ✓。
+fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = require_str(args, "brush")?;
+    let raw_points = args
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing("points"))?;
+    if raw_points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("points 不能为空 ⇒ 至少给一个 [x, y, pressure]"),
+        ));
+    }
+    // **点的解析复用既有惯例** ✓（`[x,y]` 或 `[x,y,pressure]` 都收 ✓）。
+    let mut points: Vec<(f64, f64, f64)> = Vec::new();
+    for (index, raw) in raw_points.iter().enumerate() {
+        let pair = raw.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}] 不是数组 ⇒ 应为 [x, y, pressure]")),
+            )
+        })?;
+        let x = pair.first().and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}][0] 不是数字")),
+            )
+        })?;
+        let y = pair.get(1).and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}][1] 不是数字")),
+            )
+        })?;
+        let pressure = pair
+            .get(2)
+            .and_then(Value::as_f64)
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        points.push((x, y, pressure));
+    }
+
+    // **笔刷从缓存优先解析** ✓（用户导入的能覆盖内置的 ✓）。
+    let name = if brush_name.ends_with(".myb") {
+        brush_name.clone()
+    } else {
+        format!("{brush_name}.myb")
+    };
+    let path = ctx.workspace.resolve_asset("brush", &name)?;
+    let json_text = std::fs::read_to_string(&path).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到笔刷 {}：{error}", path.display())),
+        )
+    })?;
+    let mut brush: hokusai::Brush = hokusai::myb::from_str(&json_text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{} 不是能解析的 .myb：{error}", path.display())),
+        )
+    })?;
+    // **`size` 是"直径像素"** ✓，而 MyPaint 的设置叫 `radius_logarithmic` ✓（存的是 ln(半径) ✓）。
+    if let Some(diameter) = args.get("size").and_then(Value::as_f64) {
+        if diameter <= 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("size 必须大于 0"),
+            ));
+        }
+        // **`SettingValue` 是个结构体，不是枚举** ✗ —— 构造器是 `constant(f32)` ✓
+        //（我第一版猜了 `Float(..)` ✓ ⇒ 编译器当场指出 ✓）。
+        brush.set(
+            hokusai::BrushSetting::Radius,
+            hokusai::SettingValue::constant((diameter / 2.0).ln() as f32),
+        );
+    }
+
+    let mut state = hokusai::BrushState::default();
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    let mut steps = 0usize;
+    let mut previous: Option<(f64, f64, f64)> = None;
+    for (x, y, pressure) in &points {
+        match previous {
+            None => {
+                // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
+                brush.stroke_to(
+                    &mut state,
+                    &mut surface,
+                    *x as f32,
+                    *y as f32,
+                    *pressure as f32,
+                    0.0,
+                    0.0,
+                    0.01,
+                );
+                steps += 1;
+            }
+            Some((px, py, pp)) => {
+                let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+                // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
+                let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
+                for step in 1..=divisions {
+                    let t = step as f64 / divisions as f64;
+                    let ix = px + (x - px) * t;
+                    let iy = py + (y - py) * t;
+                    let ip = pp + (pressure - pp) * t;
+                    brush.stroke_to(
+                        &mut state,
+                        &mut surface,
+                        ix as f32,
+                        iy as f32,
+                        ip as f32,
+                        0.0,
+                        0.0,
+                        0.01,
+                    );
+                    steps += 1;
+                }
+            }
+        }
+        previous = Some((*x, *y, *pressure));
+    }
+
+    // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
+    // **Rust 不允许一条 `let` 里绑多个名字** ✗（我第一版写成 `let mut a = .., b = ..;` ✓
+    // ⇒ 语法错 ✓）⇒ 拆开 ✓。
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+    for (x, y, _) in &points {
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x);
+        max_y = max_y.max(*y);
+    }
+    // **区域按控制点 + 笔刷半径外扩** ✓（笔尖会超出路径 ✓）；半径取 `size` 或保守的 64 ✓。
+    let radius = args.get("size").and_then(Value::as_f64).unwrap_or(128.0) / 2.0 + 4.0;
+    let x0 = (min_x - radius).floor() as i32;
+    let y0 = (min_y - radius).floor() as i32;
+    let x1 = (max_x + radius).ceil() as i32;
+    let y1 = (max_y + radius).ceil() as i32;
+    let width = (x1 - x0).max(1) as usize;
+    let height = (y1 - y0).max(1) as usize;
+    let mut rgba = vec![0u8; width * height * 4];
+    let mut painted = 0usize;
+    for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
+        for tile_x in (x0.div_euclid(64))..=(x1.div_euclid(64)) {
+            let Some(tile) = surface.tile(tile_x, tile_y) else {
+                continue;
+            };
+            for row in 0..64i32 {
+                for column in 0..64i32 {
+                    // **fix15 → u8** ✓：`>> 7` 把 0..32767 映到 0..255 ✓。
+                    let pixel = tile[row as usize][column as usize];
+                    let r = (pixel[0] >> 7) as u8;
+                    let g = (pixel[1] >> 7) as u8;
+                    let b = (pixel[2] >> 7) as u8;
+                    let a = (pixel[3] >> 7) as u8;
+                    if a == 0 && r == 0 && g == 0 && b == 0 {
+                        continue;
+                    }
+                    let doc_x = tile_x * 64 + column;
+                    let doc_y = tile_y * 64 + row;
+                    if doc_x < x0 || doc_y < y0 || doc_x >= x1 || doc_y >= y1 {
+                        continue;
+                    }
+                    let at = ((doc_y - y0) as usize * width + (doc_x - x0) as usize) * 4;
+                    rgba[at] = r;
+                    rgba[at + 1] = g;
+                    rgba[at + 2] = b;
+                    rgba[at + 3] = a;
+                    painted += 1;
+                }
+            }
+        }
+    }
+    if painted == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "这一笔没落下任何像素 ⇒ 笔刷「{name}」在当前参数下没产生墨（试试给 size，或换一支笔刷）"
+            )),
+        ));
+    }
+    // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
+    let composite = ctx.workspace.store().put(&rgba)?;
+    let import_args = json!({
+        "layer_id": layer_id,
+        "object_id": optional_str(args, "object_id"),
+        "bitmap": {
+            "blob_hash": composite.to_string(),
+            "size": rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {"x": x0, "y": y0, "w": width, "h": height},
+    });
+    let mut value = write_import_image(ctx, &import_args)?;
+    value["brush"] = json!(name);
+    value["steps"] = json!(steps);
+    value["painted_pixels"] = json!(painted);
+    value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
+    Ok(value)
+}
+
 fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let kind = require_str(args, "kind")?;
     let entries = ctx.workspace.list_assets(&kind)?;
