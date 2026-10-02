@@ -255,8 +255,21 @@ fn tombstone_error(kind: &str, id: &str) -> YanshiError {
     )
 }
 
-fn missing_error(kind: &str, id: &str) -> YanshiError {
-    err(ErrorCode::ReferenceNotFound, format!("{kind} {id} 不存在"))
+/// **"不存在"必须说清"有哪些"** ✓（真实用户 §五-18 的原话：
+/// "图层不存在时返回 reference_not_found 但不说可用图层有哪些" ✓）。
+///
+/// **为什么值得** ✓：调用方（尤其 agent ✓）拿到 `{kind} {id} 不存在` 只能**猜** ✓
+/// ⇒ 要么再调一次列表接口 ✓、要么乱试几个 id ✗。把可用值直接放进报错 ✓ ⇒ **一次就能自纠** ✓。
+///
+/// **上限 8 个** ✓：长文档可能有几百个图层 ✓ ⇒ 报错**不能变成一屏** ✗
+///（那会让真正的错因被淹没 ✓ —— 本轮刚在一条打印整幅像素的测试上吃过这个亏 ✓）；
+/// 超出就省略号收尾 ✓。**空集合单独说** ✓：`（当前没有任何图层）` 比列一串空值有用得多 ✓。
+fn missing_error<'a, I>(kind: &str, id: &str, available: I) -> YanshiError
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    // **一处实现、两处调用** ✓（折叠期与 HEAD 检查 ✓）⇒ 规则不会漂移 ✓。
+    crate::error::missing_reference(kind, id, available)
 }
 
 /// 折叠期 precondition 检查：只依赖当前状态（设计文档 5.3）。
@@ -285,7 +298,11 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
             }
             if let Some(parent) = payload_str(&atom.payload, "parent_id") {
                 if !state.layer_alive(parent) {
-                    return Err(missing_error("父图层", parent));
+                    return Err(missing_error(
+                        "父图层",
+                        parent,
+                        state.layers.keys().filter(|id| state.layer_alive(id)),
+                    ));
                 }
             }
         }
@@ -330,7 +347,11 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
             }
             let layer_id = required(atom, "layer_id")?;
             if !state.layer_alive(layer_id) {
-                return Err(missing_error("图层", layer_id));
+                return Err(missing_error(
+                    "图层",
+                    layer_id,
+                    state.layers.keys().filter(|id| state.layer_alive(id)),
+                ));
             }
         }
         AtomKind::DrawStroke
@@ -349,7 +370,11 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 None => {
                     let layer_id = required(atom, "layer_id")?;
                     if !state.layer_alive(layer_id) {
-                        return Err(missing_error("图层", layer_id));
+                        return Err(missing_error(
+                            "图层",
+                            layer_id,
+                            state.layers.keys().filter(|id| state.layer_alive(id)),
+                        ));
                     }
                 }
             }
@@ -380,7 +405,7 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("对象", object_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("对象", object_id)),
+                    None => return Err(missing_error("对象", object_id, state.objects.keys())),
                 }
             } else if let Some(layer_id) = payload_str(&atom.payload, "layer_id") {
                 match state.layers.get(layer_id) {
@@ -388,7 +413,13 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("图层", layer_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("图层", layer_id)),
+                    None => {
+                        return Err(missing_error(
+                            "图层",
+                            layer_id,
+                            state.layers.keys().filter(|id| state.layer_alive(id)),
+                        ))
+                    }
                 }
             } else if let Some(selection_id) = payload_str(&atom.payload, "selection_id") {
                 // **校验层曾与实际能力不一致**：`apply` 的 Tombstone 分支早就支持
@@ -400,7 +431,9 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("选区", selection_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("选区", selection_id)),
+                    None => {
+                        return Err(missing_error("选区", selection_id, state.selections.keys()))
+                    }
                 }
             } else if let Some(mask_id) = payload_str(&atom.payload, "mask_id") {
                 match state.masks.get(mask_id) {
@@ -408,7 +441,7 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("蒙版", mask_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("蒙版", mask_id)),
+                    None => return Err(missing_error("蒙版", mask_id, state.masks.keys())),
                 }
             } else if let Some(style_id) = payload_str(&atom.payload, "style_id") {
                 match state.styles.get(style_id) {
@@ -416,7 +449,7 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("风格", style_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("风格", style_id)),
+                    None => return Err(missing_error("风格", style_id, state.styles.keys())),
                 }
             } else if atom.kind != AtomKind::SetProperty {
                 return Err(err(
@@ -436,7 +469,13 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         return Err(tombstone_error("图层", layer_id))
                     }
                     Some(_) => {}
-                    None => return Err(missing_error("图层", layer_id)),
+                    None => {
+                        return Err(missing_error(
+                            "图层",
+                            layer_id,
+                            state.layers.keys().filter(|id| state.layer_alive(id)),
+                        ))
+                    }
                 }
             }
             // 携带完整目标 z 序（设计文档 5.3）：绝对序快照必须覆盖全部存活图层。
@@ -554,7 +593,18 @@ fn check_auxiliary_refs(state: &DocumentState, atom: &Atom) -> Result<()> {
             _ => true,
         };
         if !alive {
-            return Err(missing_error(key, id));
+            // **按字段名给出对应的可用值** ✓（这里的 `key` 是字段名 ✓，所以报错会写成
+            // `layer_id x 不存在（现有图层：…）` ✓ —— 比原来那句光秃秃的"不存在"有用得多 ✓）。
+            let available: Vec<&String> = match key {
+                "style_id" => state.styles.keys().collect(),
+                "mask_id" => state.masks.keys().collect(),
+                _ => state
+                    .layers
+                    .keys()
+                    .filter(|id| state.layer_alive(id))
+                    .collect(),
+            };
+            return Err(missing_error(key, id, available));
         }
     }
     Ok(())
@@ -1201,7 +1251,7 @@ fn supersede_object(
     blobs: Option<Vec<crate::atom::BlobHash>>,
 ) -> Result<()> {
     let Some(object) = state.objects.get_mut(object_id) else {
-        return Err(missing_error("对象", object_id));
+        return Err(missing_error("对象", object_id, state.objects.keys()));
     };
     if object.is_deleted() {
         return Err(tombstone_error("对象", object_id));

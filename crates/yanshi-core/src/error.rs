@@ -129,6 +129,45 @@ pub struct YanshiError {
     pub context: Box<ErrorContext>,
 }
 
+/// **"不存在"必须说清"有哪些"** ✓（真实用户 §五-18 ✓）。
+///
+/// **为什么放在这里** ✓：这条规则有**两处**要遵守 ✓ —— 折叠期（`fold.rs` ✓）与
+/// 引用 HEAD 的检查（`log.rs` ✓）✗ ⇒ 各写一份必然漂移 ✗ ⇒ **一份实现，两处调用** ✓。
+///
+/// **上限 8 个** ✓：长文档可能有几百个图层 ✓ ⇒ 报错**不能变成一屏** ✗
+///（真正的错因会被淹没 ✓）；超出以省略号收尾 ✓。**空集合单独说** ✓：
+/// `（当前没有任何图层）` 比"现有：（空）"有用得多 ✓ —— 它直接告诉调用方下一步该做什么 ✓。
+pub fn missing_reference<'a, I>(kind: &str, id: &str, available: I) -> YanshiError
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    const LIMIT: usize = 8;
+    let ids: Vec<&str> = available
+        .into_iter()
+        .map(String::as_str)
+        .take(LIMIT + 1)
+        .collect();
+    let hint = if ids.is_empty() {
+        format!("（当前没有任何{kind}）")
+    } else {
+        let shown = ids
+            .iter()
+            .take(LIMIT)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if ids.len() > LIMIT {
+            format!("（现有{kind}：{shown} …）")
+        } else {
+            format!("（现有{kind}：{shown}）")
+        }
+    };
+    YanshiError::new(
+        ErrorCode::ReferenceNotFound,
+        ErrorContext::detail(format!("{kind} {id} 不存在{hint}")),
+    )
+}
+
 impl YanshiError {
     /// 用错误码与上下文构造，`retryable` 取该错误码的默认值。
     pub fn new(code: ErrorCode, context: ErrorContext) -> Self {

@@ -88,6 +88,13 @@ plugin and records the medium as id oil at version two on the object. Recording 
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
 
+A refusal that names a missing layer, object, selection, mask or style also lists what does exist, capped at eight
+entries with an ellipsis, and says plainly when there are none at all. Previously the message only named the id that
+was not found, so a caller, especially an agent, had to guess or make another listing call to recover. The rule lives
+in one constructor in the error module and is used from both the fold-time preconditions and the head-reference
+checks, since two copies would drift. Note that a missing parent layer is a warning rather than a refusal, a
+pre-existing choice the warning list carries the same available-options text.
+
 Undo and redo can be reached by keyboard: Ctrl or Cmd with Z undoes, adding Shift redoes, and keys pressed while
 typing in an input or select are ignored. The viewer previously ignored every modified key press, so Ctrl+Z did
 nothing and the buttons in the right dock were the only route, which a user reported as unreachable while painting.

@@ -10,6 +10,11 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Error messages you can act on
+
+A refusal for a missing layer, object, selection, mask or style also lists the ids that do exist, capped at eight with
+an ellipsis, and says plainly when there are none, so a caller can correct itself without another listing call.
+
 ## Undo and redo
 
 Ctrl or Cmd with Z undoes, and adding Shift redoes, alongside the buttons in the activity panel.

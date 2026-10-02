@@ -923,12 +923,12 @@ fn check_object_exists(
     kind: AtomKind,
 ) -> Result<()> {
     match state.objects.get(object_id) {
-        None => Err(YanshiError::new(
-            ErrorCode::ReferenceNotFound,
-            ErrorContext::detail(format!("对象 {object_id} 在当前 HEAD 中不存在")),
-        )
-        .with_atom(atom_id.to_owned())
-        .with_object(object_id.to_owned())),
+        // **列出可用对象** ✓（用户 §五-18 ✓）—— 否则调用方只能再调一次列表接口 ✓ 或乱试 ✗。
+        None => Err(
+            crate::error::missing_reference("对象", object_id, state.objects.keys())
+                .with_atom(atom_id.to_owned())
+                .with_object(object_id.to_owned()),
+        ),
         Some(object) if object.is_deleted() => Err(YanshiError::new(
             ErrorCode::PreconditionFailed,
             ErrorContext::detail(format!("对象 {object_id} 已被 tombstone，{kind} 被拒绝")),
@@ -946,9 +946,11 @@ fn check_layer_exists(
     kind: AtomKind,
 ) -> Result<()> {
     match state.layers.get(layer_id) {
-        None => Err(YanshiError::new(
-            ErrorCode::ReferenceNotFound,
-            ErrorContext::detail(format!("图层 {layer_id} 在当前 HEAD 中不存在")),
+        // **列出可用图层** ✓（用户举的例子正是图层 ✓）。
+        None => Err(crate::error::missing_reference(
+            "图层",
+            layer_id,
+            state.layers.keys().filter(|id| state.layer_alive(id)),
         )
         .with_atom(atom_id.to_owned())
         .with_layer(layer_id.to_owned())),
