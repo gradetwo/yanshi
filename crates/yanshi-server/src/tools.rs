@@ -1599,6 +1599,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 历史 ----
     ToolSpec {
+        name: "get_preferences",
+        profile: Profile::Core,
+        // **工作区级偏好** ✓（目标 ⑧-1 ✓：收藏的笔刷、最近使用 ✓）。
+        // **为什么做成工具** ✓：界面要存"我收藏了哪几支" ✓ —— 那也得**两边都能用** ✓
+        //（MCP 端同样能读到"这个人常用什么" ✓），所以它属于工具层 ✓，不是界面本地存储 ✗。
+        summary: "读工作区偏好（收藏的笔刷等）；可只取指定的几个键",
+        mutating: false,
+        params: &[param!("keys", Array, false, "只要这几个键（缺省全部）")],
+    },
+    ToolSpec {
+        name: "set_preferences",
+        profile: Profile::Core,
+        summary: "合并写入工作区偏好（值为 null 表示删除该键）",
+        mutating: true,
+        params: &[param!("values", Object, true, "要合并进来的键值对")],
+    },
+    ToolSpec {
         name: "get_log",
         profile: Profile::Core,
         summary: "读取原子日志元数据（MCP 轮询通道）",
@@ -2380,6 +2397,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "redo_last" => write_redo_last(ctx, args),
         "reapply" => write_history_atom(ctx, args, AtomKind::Reapply, "atom_id"),
         "get_log" => read_get_log(ctx, args),
+        "get_preferences" => read_get_preferences(ctx, args),
+        "set_preferences" => write_set_preferences(ctx, args),
         "get_job" => read_get_job(ctx, args),
         "get_render_status" => read_get_render_status(ctx, args),
         "cancel_job" => write_cancel_job(ctx, args),
@@ -5374,6 +5393,48 @@ fn write_redo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "remaining_gestures": gestures.len().saturating_sub(take),
         "ignored_non_content_atoms": ignored,
         "hint": "再撤掉它们用 `undo_last` ✓",
+    }))
+}
+
+/// **读工作区偏好** ✓（目标 ⑧-1 ✓）。
+fn read_get_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let keys: Option<Vec<String>> = args.get("keys").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect()
+    });
+    let preferences = ctx.workspace.preferences(keys.as_deref());
+    let count = preferences.as_object().map(|map| map.len()).unwrap_or(0);
+    Ok(json!({
+        "preferences": preferences,
+        "count": count,
+        // **"存不存得下来"必须报出来** ✗（纯内存模式改得动内存 ✓ ⇒ 不说明就是"以为留下了" ✗）。
+        "persisted": ctx.workspace.is_file_backed(),
+        "where": if ctx.workspace.is_file_backed() {
+            "<工作区根>/preferences.json"
+        } else {
+            "（纯内存工作区 ⇒ 只在本次进程内有效 ✗）"
+        },
+    }))
+}
+
+/// **合并写入工作区偏好** ✓（目标 ⑧-1 ✓）。
+fn write_set_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **`require_object` 回的是 `&Value`** ✗（不是 `&Map` ✓）⇒ 取一次 `as_object` ✓
+    //（编译器当场纠正 ✓ —— 这类"我以为的返回类型"这个项目已经栽过好几次 ✓）。
+    let raw = require_object(args, "values")?;
+    let values = raw.as_object().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("values 必须是一个对象 {键: 值}"),
+        )
+    })?;
+    let preferences = ctx.workspace.set_preferences(values)?;
+    Ok(json!({
+        "preferences": preferences,
+        "persisted": ctx.workspace.is_file_backed(),
+        "hint": "值为 null 表示**删除该键** ✓；这里是**合并** ✓，没提到的键不动 ✓",
     }))
 }
 

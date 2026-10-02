@@ -311,7 +311,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **搜索** ✓（目标 ⑥ ✓）：库里 199 支 ✓ ⇒ 一个长下拉里"翻着找"是**没有界面设计** ✗ ——
          下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
     <label>搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
+    <button id="brushFavorite" type="button" title="把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）">★ 收藏</button>
     <span id="brushSearchHint" class="hint"></span>
+    <span id="brushFavoriteHint" class="hint"></span>
     <!-- **懒加载与搜索的触发，必须写在这里** ✓ —— 不能写在页面主脚本里 ✗。
          实测（真实教训 ✓）：主脚本里那些函数**不是全局** ✓（`typeof refreshBrushOptions === "undefined"` ✗），
          而"点开下拉才装载"这条线`title` 里承诺了很久 ✓、却**从未真正接上** ✗
@@ -333,6 +335,23 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
           select.addEventListener("pointerdown", loadOnce, { once: true });
           select.addEventListener("focus", loadOnce, { once: true });
           select.addEventListener("keydown", loadOnce, { once: true });
+        }
+        var favorite = document.getElementById("brushFavorite");
+        if (favorite) {
+          // **收藏当前笔刷** ✓（走 `window.yanshi` ✓ —— 该对象是**唯一被证明可靠**的入口 ✓）。
+          favorite.addEventListener("click", function () {
+            if (window.yanshi && window.yanshi.toggleFavoriteBrush) {
+              window.yanshi.toggleFavoriteBrush();
+            }
+          });
+        }
+        if (select) {
+          // **换笔刷就记一次"最近使用"** ✓（只记名字 ✓，不改任何绘制行为 ✓）。
+          select.addEventListener("change", function () {
+            if (select.value && window.yanshi && window.yanshi.recordBrushUse) {
+              window.yanshi.recordBrushUse();
+            }
+          });
         }
         if (box) {
           // **输入即过滤** ✓；还没装载 ⇒ 先装载再过滤 ✓（否则是在空下拉上过滤 ⇒ 用户看到"搜不到" ✗）。
@@ -5702,8 +5721,48 @@ async function refreshBrushOptions() {
       option.textContent = name + (asset.source === "cache" ? "（导入的）" : "");
       groups.get(group).appendChild(option);
     }
+    // **别忘了我上一版把这段循环删掉了** ✗ —— 那次替换的锚点**就是**这个循环 ✓，
+    // 而我的新文本里**没有把它写回去** ✓ ⇒ 分组永远挂不上下拉 ✓ ⇒ 界面上只剩"（内置画笔）" ✓、
+    // **一个 optgroup 都没有** ✓（实测：`list_assets` 回 201 ✓，而下拉里 1 个选项 ✗）。
+    // **教训** ✓：`replace(锚点, 新文本)` 里**必须把锚点本身写回去** ✗，除非就是要删它 ✓。
     for (const group of order) {
       if (groups.has(group)) select.appendChild(groups.get(group));
+    }
+    // **★ 收藏 / 最近使用** ✓（目标 ⑧-1 ✓）—— **来自工作区偏好** ✓（工具层 ✓ ⇒ MCP 也读得到 ✓）。
+    // 顺序：**收藏 → 最近 → 按来源分组** ✓（常用的在最上面 ✓，这与"199 支一个长下拉"是同一个痛点 ✓）。
+    try {
+      const prefs = await callTool(
+        "get_preferences",
+        { keys: ["brush_favorites", "brush_recent"] },
+        { refresh: false },
+      );
+      const favorites = ((prefs && prefs.preferences && prefs.preferences.brush_favorites) || []).map(String);
+      const recents = ((prefs && prefs.preferences && prefs.preferences.brush_recent) || []).map(String);
+      const known = new Set(Array.from(select.querySelectorAll("option")).map((option) => option.value));
+      const addGroup = (label, names) => {
+        // **只放真实存在的笔刷** ✓（收藏里可能有已经被删掉的导入笔刷 ✓ ⇒ 忽略而不是画一个空条目 ✗）。
+        const usable = names.filter((name) => name && known.has(name));
+        if (usable.length === 0) return;
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = label;
+        optgroup.dataset.preference = "1";
+        for (const name of usable) {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          optgroup.appendChild(option);
+        }
+        select.insertBefore(optgroup, select.children[0] || null);
+      };
+      // **先插最近、再插收藏** ✓ ⇒ 收藏最终在最上面 ✓（insertBefore 是头插 ✓）。
+      addGroup("最近使用", recents);
+      addGroup("★ 收藏", favorites);
+      const hint = $("brushFavoriteHint");
+      if (hint) {
+        hint.textContent = "★ " + favorites.filter((name) => known.has(name)).length + " 支";
+      }
+    } catch (_) {
+      // **偏好读不到不影响选择笔刷** ✓（这是"方便" ✓，不是"必需" ✗ —— 与偏好文件坏掉时的取舍一致 ✓）。
     }
     select.value = keep;
     // **装完就套用一次过滤** ✓（搜索框里可能已经有字 ✓ —— 重装后忘了过滤会**静默变回全量** ✗）。
@@ -5775,6 +5834,48 @@ window.yanshi = {
       if (select.options.length <= 1) void refreshBrushOptions();
       select.value = name || "";
       select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    },
+    /// **切换"收藏当前笔刷"** ✓（目标 ⑧-1 ✓）—— 供标记旁那段小脚本调用 ✓
+    ///（它处在全局作用域 ✓，只能碰 `window.yanshi` ✓ —— 这是上一轮三次静默失败换来的规矩 ✓）。
+    async toggleFavoriteBrush() {
+      const select = $("brush");
+      const name = select ? select.value : "";
+      if (!name) {
+        log("先选一支笔刷再收藏 ✓", "#c93");
+        return false;
+      }
+      const prefs = await callTool(
+        "get_preferences",
+        { keys: ["brush_favorites"] },
+        { refresh: false },
+      );
+      const current = ((prefs && prefs.preferences && prefs.preferences.brush_favorites) || []).map(String);
+      const next = current.includes(name)
+        ? current.filter((item) => item !== name)
+        : [name, ...current];
+      const written = await callTool("set_preferences", { values: { brush_favorites: next } }, { refresh: false });
+      log(
+        (current.includes(name) ? "已取消收藏：" : "已收藏：") + name +
+          (written && written.persisted === false ? "（⚠️ 纯内存工作区 ⇒ 重启后不会留下 ✗）" : ""),
+        "#2a2",
+      );
+      await refreshBrushOptions();
+      return true;
+    },
+    /// **记一次"最近使用"** ✓（目标 ⑧-1 ✓）—— 最多 8 支 ✓、去重 ✓、最新在前 ✓。
+    async recordBrushUse() {
+      const select = $("brush");
+      const name = select ? select.value : "";
+      if (!name) return false;
+      const prefs = await callTool(
+        "get_preferences",
+        { keys: ["brush_recent"] },
+        { refresh: false },
+      );
+      const current = ((prefs && prefs.preferences && prefs.preferences.brush_recent) || []).map(String);
+      const next = [name, ...current.filter((item) => item !== name)].slice(0, 8);
+      await callTool("set_preferences", { values: { brush_recent: next } }, { refresh: false });
       return true;
     },
     /// **暴露过滤器** ✓（目标 ⑥ ✓）：页面里的分组/搜索逻辑在这个对象**之外的作用域**里 ✓

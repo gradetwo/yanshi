@@ -240,6 +240,19 @@ A first version of the export line printed question marks for the atom and blob 
 from memory and the tool does not return those; a line reading "? atoms, ? blobs" is worse than no line at all, so the
 card now reports only the fields the tool actually returns.
 
+### Favourite and recent brushes
+
+Workspace preferences are a small key and value store, reachable through get_preferences and set_preferences, so that
+what a person prefers lives in the tool layer and can be read from MCP as well as from the interface; a browser's local
+storage would be invisible to everything else. Writing merges, so naming one key leaves the others alone, and a null
+value deletes a key rather than leaving an empty shell behind. File backed workspaces write them to preferences.json
+and reopening the workspace brings them back, which is the whole point of a favourite; an in-memory workspace says that
+it will not persist, since a write that quietly evaporates is the same defect as one that never happened.
+
+The brush picker puts a starred group and a recently used group above the groups by source, with the selected brush
+recorded on every change and a button that toggles the current brush into or out of the favourites. Groups that end up
+empty are hidden, and the search filter still hides the groups that no longer match.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

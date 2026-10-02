@@ -496,6 +496,13 @@ pub struct Workspace {
     store: Arc<dyn BlobStore>,
     documents: BTreeMap<String, Document>,
     persist: Option<FileStore>,
+    /// **工作区级偏好** ✓（收藏的笔刷、最近使用…… ✓）。
+    ///
+    /// **为什么在工作区、而不是文档里** ✓：这些是**用的人**的偏好 ✓，不是这张画的一部分 ✓
+    /// ⇒ 放进文档会把"谁在用"混进"画了什么" ✗（导出工程包时更不该把它一起带走 ✗）。
+    /// **持久化位置** ✓：`<root>/preferences.json` ✓（有落盘工作区就存 ✓；纯内存模式只存在内存里 ✓，
+    /// 并在工具返回里**说清这一点** ✓ —— 不让人以为重启后还在 ✓）。
+    preferences: BTreeMap<String, Value>,
     /// **随发行包一起发布的资产根目录** ✓（仓库里是 `assets/` ✓）。
     ///
     /// **为什么是"根"而不是"纹理目录"** ✓：用户要的是**三类资产都能导入** ✓
@@ -770,6 +777,61 @@ impl Workspace {
             .remove(&(doc_id.to_owned(), session.to_owned()))
     }
 
+    /// **这个工作区会不会把偏好落盘** ✓（纯内存模式 ⇒ 否 ✓）。
+    ///
+    /// **为什么要有它** ✓：`set_preferences` 在内存模式下**也能成功** ✓（改内存 ✓）
+    /// ⇒ 不把这件事报出来 ✓，用户会以为"重启后还在" ✗ —— 又是"看起来成功、其实没留下" ✓。
+    pub fn is_file_backed(&self) -> bool {
+        self.persist.is_some()
+    }
+
+    /// **读偏好** ✓（给了 `keys` 就只回这几个 ✓ —— 调用方不必把整份偏好都拿走 ✓）。
+    pub fn preferences(&self, keys: Option<&[String]>) -> Value {
+        let picked: serde_json::Map<String, Value> = match keys {
+            Some(keys) => keys
+                .iter()
+                .filter_map(|key| {
+                    self.preferences
+                        .get(key)
+                        .map(|value| (key.clone(), value.clone()))
+                })
+                .collect(),
+            None => self
+                .preferences
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        };
+        Value::Object(picked)
+    }
+
+    /// **合并写入偏好** ✓（`null` 表示**删掉这个键** ✓ —— 否则"清空收藏"只能靠写空数组 ✓，
+    /// 而那会留下一堆空壳 ✓）。
+    ///
+    /// **落盘** ✓：有工作区根目录就写到 `<root>/preferences.json` ✓；
+    /// 纯内存模式**只改内存** ✓，但调用方能从返回里看出这一点 ✓（见工具层的 `persisted` ✓）。
+    pub fn set_preferences(&mut self, values: &serde_json::Map<String, Value>) -> Result<Value> {
+        for (key, value) in values {
+            if value.is_null() {
+                self.preferences.remove(key);
+            } else {
+                self.preferences.insert(key.clone(), value.clone());
+            }
+        }
+        if let Some(persist) = &self.persist {
+            let path = persist.root().join("preferences.json");
+            let text = serde_json::to_string_pretty(&self.preferences(None))
+                .unwrap_or_else(|_| "{}".to_owned());
+            std::fs::write(&path, text).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!("写不进偏好文件 {}：{error}", path.display())),
+                )
+            })?;
+        }
+        Ok(self.preferences(None))
+    }
+
     /// 内存工作区（测试与嵌入式使用）。
     pub fn in_memory(settings: DocumentSettings) -> Self {
         Self {
@@ -777,6 +839,7 @@ impl Workspace {
             documents: BTreeMap::new(),
             persist: None,
             assets_dir: None,
+            preferences: BTreeMap::new(),
             open_changesets: BTreeMap::new(),
             transactions: BTreeMap::new(),
             stashes: BTreeMap::new(),
@@ -795,6 +858,7 @@ impl Workspace {
         Ok(Self {
             store,
             documents: BTreeMap::new(),
+            preferences: read_preferences(&persist),
             persist: Some(persist),
             assets_dir: None,
             settings,
@@ -2027,6 +2091,21 @@ fn void_seq(slot: &mut Option<(u64, Vec<u8>)>, seq: u64, png: Vec<u8>) {
             *slot = Some((use_seq, use_png));
         }
         None => *slot = Some((seq, png)),
+    }
+}
+
+/// **读工作区的偏好文件** ✓（不存在 / 坏了 ⇒ **空表** ✓，并且**不报错** ✓）。
+///
+/// **为什么不报错** ✓：偏好**不是文档** ✗ —— 它坏了只该"回到默认" ✓，
+/// 不该让整个工作区打不开 ✗（那是把"方便"当成"必需" ✓，代价太大 ✓）。
+fn read_preferences(persist: &FileStore) -> BTreeMap<String, Value> {
+    let path = persist.root().join("preferences.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return BTreeMap::new();
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(map)) => map.into_iter().collect(),
+        _ => BTreeMap::new(),
     }
 }
 
