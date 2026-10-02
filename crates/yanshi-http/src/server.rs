@@ -261,6 +261,30 @@ impl Drop for ServerHandle {
     }
 }
 
+/// **构建标识** ✓ —— 版本 + commit + 构建时间 ✓（由 `build.rs` 编进来 ✓，取不到就是 `unknown` ✓）。
+///
+/// **放在这里** ✓：`--version` 与健康接口**共用同一个字符串** ✓ ⇒ 两边永远一致 ✓（否则又会出现
+/// "`--version` 说的和接口说的不一样"✗ 这种最让人怀疑自己眼睛的问题 ✓）。
+pub fn build_identity() -> String {
+    // **报产品名而不是 crate 名** ✓：crate 叫 `yanshi-http` ✓，而用户认的是 **Yanshi** ✓
+    //（第一版打出来是 `yanshi-http 0.1.0` ✓ —— 那会让人以为装错了东西 ✗）。
+    format!(
+        "yanshi {} (commit {}, built {})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+        option_env!("YANSHI_BUILD_TIME").unwrap_or("unknown"),
+    )
+}
+
+/// **简短标识** ✓（界面/日志里用 ✓）：`0.1.0+abc1234` ✓。
+pub fn build_short() -> String {
+    format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+    )
+}
+
 /// 启动服务（`bind` 支持端口 0，便于测试）。
 pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
     let settings = DocumentSettings::default();
@@ -518,6 +542,11 @@ fn health(state: &ServerState) -> Response {
         200,
         &json!({
             "ok": true,
+            // **"跑的是哪一版"** ✓：版本 + commit + 构建时间 ✓ —— 排查时最先需要的那一行 ✓。
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+            "built": option_env!("YANSHI_BUILD_TIME").unwrap_or("unknown"),
+            "build": build_identity(),
             "documents": documents,
             "requests": state.requests.load(Ordering::Relaxed),
             "connections": state.connections.load(Ordering::Relaxed),

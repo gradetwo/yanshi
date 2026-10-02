@@ -26,7 +26,14 @@ done
 
 version="$(grep -m1 '^version' "$repo/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 target="$(rustc -vV | sed -n 's/^host: //p')"
-name="yanshi-${version}-${target}"
+# **commit 也进包名** ✓（用户提的排查建议 ✓）：测试者拿到包就能一眼知道是哪一版 ✓；
+# 工作区有未提交改动时加 `-dirty` ✓ —— "跑的不是那版代码" 这种事要**摆在明面上** ✓。
+commit="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ "$commit" != "unknown" ] && [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+  commit="${commit}-dirty"
+fi
+built="$(date -u '+%Y-%m-%d %H:%M UTC')"
+name="yanshi-${version}-${commit}-${target}"
 stage="$out/$name"
 
 echo "==> 打包 $name"
@@ -105,6 +112,17 @@ cat > "$stage/USAGE.md" <<'USAGE'
 
     sha256sum -c SHA256SUMS
 USAGE
+
+# **包内 BUILD-INFO** ✓：版本 / commit / 目标平台 / 构建时间 / rustc 版本 ✓。
+# 排查时先看这个文件 ✓，不必再问"这是哪个 commit 的构建" ✓。
+cat > "$stage/BUILD-INFO" <<INFO
+name: yanshi
+version: ${version}
+commit: ${commit}
+target: ${target}
+built: ${built}
+rustc: $(rustc -V)
+INFO
 
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")

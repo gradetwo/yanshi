@@ -222,14 +222,18 @@ proptest! {
         // 施加一次编辑：新增一条笔触。
         let mut rng = Prng::new(edit);
         let mut after = before.clone();
+        // **两个点必须不同** ✗ —— 原来两次独立取随机点 ✓，proptest 会**收缩到"两点重合"** ✓
+        // ⇒ 零长度笔触**不产生任何像素** ✗ ⇒ 下面那句"编辑必须改变像素"必然失败 ✓。
+        // **这是生成器的漏洞，不是渲染的错** ✓ ⇒ 从生成器上修 ✓（而不是放宽断言 ✗）：
+        // 第二点由**第一点 + 一个非零偏移**得到 ✓ ⇒ 这一笔**必然有长度** ✓。
+        let (x0, y0) = (rng.range(0.0, 80.0) as f64, rng.range(0.0, 80.0) as f64);
+        let dx = rng.range(4.0, 16.0) as f64;
+        let dy = rng.range(-16.0, 16.0) as f64;
         let new_object = stroke(
             "obj_edit",
             "layer_1",
             99,
-            vec![
-                (rng.range(0.0, 96.0) as f64, rng.range(0.0, 96.0) as f64),
-                (rng.range(0.0, 96.0) as f64, rng.range(0.0, 96.0) as f64),
-            ],
+            vec![(x0, y0), (x0 + dx, y0 + dy)],
             rng.range(2.0, 10.0) as f64,
         );
         after.objects.insert("obj_edit".to_owned(), new_object);
@@ -260,7 +264,20 @@ proptest! {
 
         let mut fresh = Renderer::new(grid.clone());
         let new = fresh.render_document(&after, &store).unwrap().rgba8;
-        prop_assert_ne!(old.clone(), new.clone(), "编辑必须改变像素");
+        // **失败信息里不要塞整幅像素** ✗（40KB 会把断言本身淹掉 ✓ —— 我就是这么找了两轮 ✓）：
+        // 只报"改了几个像素" ✓ 与两个小样本 ✓，够定位就行 ✓。
+        let changed_count = old
+            .chunks_exact(4)
+            .zip(new.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        prop_assert!(
+            changed_count > 0,
+            "编辑必须改变像素（实测改了 {} 个）\n  旧样本={:?}\n  新样本={:?}",
+            changed_count,
+            &old[..old.len().min(16)],
+            &new[..new.len().min(16)]
+        );
 
         let mut changed = 0usize;
         for y in 0..96u32 {

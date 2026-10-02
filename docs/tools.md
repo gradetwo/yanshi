@@ -88,6 +88,13 @@ plugin and records the medium as id oil at version two on the object. Recording 
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
 
+Build identity is recorded where it is needed for troubleshooting. Each binary crate has a small build script
+that embeds the short commit, with a dirty suffix when the tree has uncommitted changes, and the UTC build time, all
+falling back to unknown rather than failing when git or date is unavailable. The version and commit appear in three
+places that share one implementation so they cannot disagree: the binaries' version flags, the health endpoint, and
+therefore the viewer's startup log, which reads the health endpoint. The release package puts the commit in its file
+name and carries a BUILD-INFO file listing the version, commit, target, build time and compiler.
+
 medium_stroke paints through a medium plugin from the server or MCP side, which until this round was only
 possible in the browser. The plugins are dependency-free Rust, so adding an rlib target lets the server link them,
 and because all six exported the same C symbol names they originally collided; the exports are now split by target,

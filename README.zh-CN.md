@@ -9,6 +9,13 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 我跑的是哪一版
+
+`yanshi-serve --version` 与 `yanshi-mcp --version` 会打印**版本 / 短 commit / 构建时间** ✓，
+`GET /health` 报**同样的值** ✓ ⇒ 拿到一个正在跑的服务**不用问人就知道是哪一版** ✓。
+commit 带 **`-dirty`** 后缀表示构建时工作区**有未提交改动** ✓。
+发布包的**文件名里就带 commit** ✓，包内还有 **`BUILD-INFO`**（版本 / commit / 目标平台 / 构建时间 / 编译器 ✓）。
+
 ## 导出 PNG
 
 `export_png` 把**整幅或指定区域**渲染并**写成 PNG 文件** ✓（可先缩放 ✓）——

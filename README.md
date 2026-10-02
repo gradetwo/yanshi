@@ -10,6 +10,13 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Which build am I running
+
+`yanshi-serve --version` and `yanshi-mcp --version` print the version, the short commit and the build time, and
+`GET /health` reports the same values, so a running server can be identified without asking anyone. A commit with a
+`-dirty` suffix means the tree had uncommitted changes when it was built. Release tarballs carry the commit in their
+file name and include a `BUILD-INFO` file with the version, commit, target, build time and compiler.
+
 ## Exporting a PNG
 
 `export_png` renders the whole document or a region and writes a PNG to a path, optionally rescaling first, so an

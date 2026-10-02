@@ -904,6 +904,11 @@ async function initWasm() {
     window.yanshiStats.wasm = true;
     setWasmState("已加载", "#2a2");
     log("WASM 计算内核已加载：" + module.WasmKernel.name);
+  // **把"这一版是哪一版"写进日志** ✓（用户提的排查建议 ✓）：出问题时先看这一行 ✓。
+  try {
+    const health = await fetch("/api/health").then((response) => response.json());
+    if (health && health.build) log("服务端构建：" + health.build);
+  } catch (_) { /* 拿不到就算了 ✓，不影响使用 ✓ */ }
   } catch (error) {
     setWasmState("不可用", "#c33");
     log("WASM 内核不可用，退化为服务端渲染：" + error.message, "#c33");

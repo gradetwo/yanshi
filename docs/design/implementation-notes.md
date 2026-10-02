@@ -6446,3 +6446,30 @@ let pressure = pair.get(2).and_then(Value::as_f64).unwrap_or(1.0);
 **测试** ✓：宿主 crate 6 条 ✓（含 `all_six_plugins_link_and_paint` ✓ —— **这就是可达性证明** ✓）；
 服务端 4 条 ✓（六个介质经工具都能画 ✓ + 对象记着 id/version ✓、按点压力真的改变墨量 ✓、
 未知介质列出可用值 ✓、dab 计数如实 ✓）。
+
+### **构建标识编进二进制与发布包** ✓（用户提的排查建议 ✓）
+
+**需求原话** ✓：**"打包发布时候在需要的地方记录 build 的 commit 号和版本信息，测试排查问题方便一些"** ✓。
+**落在四处** ✓，并**共用同一个实现** ✓（`build_identity()` / `build_short()` ✓）——
+否则最容易出的事就是"`--version` 说的和 `/health` 说的不一样" ✗ ✓，那会让人**怀疑自己的眼睛** ✓：
+1. **`yanshi-serve --version`** ✓（此前**根本没有这个参数** ✗）⇒ `yanshi 0.1.0 (commit 3593c1f-dirty, built …)` ✓；
+2. **`yanshi-mcp --version`** ✓（此前只打印 `yanshi-mcp 0.1.0` ✗，没有 commit ✓）；
+3. **`GET /health`** ✓ ⇒ `version` / `commit` / `built` / `build` 四个字段 ✓
+   ⇒ **拿到一个正在跑的服务就能认出它是哪一版** ✓（排查时最先要的那一句 ✓）；
+4. **发布包** ✓ ⇒ **commit 进文件名** ✓（`yanshi-0.1.0-3593c1f-dirty-x86_64-…tar.gz` ✓）
+   ＋ 包内 **`BUILD-INFO`** ✓（version / commit / target / built / **rustc 版本** ✓）。
+另外 ✓：**查看器启动时把这一行写进日志** ✓（它读 `/health` ✓ ⇒ 有界面的人也能一眼看到 ✓）。
+
+**实现（零依赖 ✓）** ✓：每个二进制 crate 一个**小 `build.rs`** ✓ ——
+`Command::new("git")` 取短 hash ✓、`date -u` 取 UTC ✓，**取不到就写 `unknown`** ✓（**不失败** ✗）；
+`rerun-if-changed=../../.git/HEAD` ✓ ⇒ commit 变了会重编 ✓（否则会报旧 hash ✗）。
+**`-dirty` 后缀** ✓：工作区有未提交改动时标出来 ✓ —— **测试时最怕"跑的不是那版代码"** ✗，
+这个后缀把它**摆在明面上** ✓（本轮它**当场自证**：我边改边验 ✓，打出来的正是 `3593c1f-dirty` ✓）。
+
+**测试** ✓：`the_health_endpoint_reports_which_build_is_running` ✓ —— 断言 `/health` 的四个字段 ✓
+且 **`build` 与 `commit` 字段互相一致** ✓ ⇒ 这件事**不可能被悄悄改掉** ✓。
+
+**过程里我自己的一处静默失败** ✓（记下来 ✓）：我给 `yanshi-serve` 加 `--version` 时 ✓，
+**只断言了健康接口那个锚点** ✓ ⇒ `--version` 那句**没命中、也没报错** ✗ ⇒ 第一次验证时
+它仍报"未知参数" ✓。**教训** ✓：**一个脚本里改了 N 处，就要断言 N 处** ✓ ——
+只断言其中一处 ✗ 等于默许其余各处**静默失效** ✓。

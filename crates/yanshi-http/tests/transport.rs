@@ -1058,3 +1058,40 @@ fn an_unknown_role_is_refused_rather_than_defaulted() {
         "原因应当点名那个角色，实测：{detail}"
     );
 }
+
+/// **`/health` 必须报出"这是哪个构建"** ✓（用户提的排查建议 ✓ —— 拿到一个服务时最先要问的 ✓）。
+///
+/// **为什么用测试钉住** ✓：这件事一旦被改掉 ✓，排查的人就只剩"问构建者"一条路 ✗ ✓；
+/// 而且 `--version` 与 `/health` **必须说同一句话** ✓（两处不一致最让人怀疑自己的眼睛 ✗）。
+#[test]
+fn the_health_endpoint_reports_which_build_is_running() {
+    let server = start_server();
+    let addr = server.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json("GET", "/health", None, None);
+    assert_eq!(status, 200, "{body}");
+    // ① 版本 ✓
+    assert_eq!(body["version"], json!(env!("CARGO_PKG_VERSION")), "{body}");
+    // ② commit ✓（没有 git 的构建环境里是 `unknown` ✓ —— 但**字段必须在** ✓）
+    let commit = body["commit"].as_str().unwrap_or_default();
+    assert!(!commit.is_empty(), "commit 字段必须存在：{body}");
+    // ③ 一句话版本串 ✓，且与 `--version` 用的是**同一个**实现 ✓
+    let build = body["build"].as_str().unwrap_or_default();
+    assert!(
+        build.starts_with("yanshi "),
+        "build 应当以产品名开头：{build}"
+    );
+    assert!(
+        build.contains(env!("CARGO_PKG_VERSION")),
+        "build 应当含版本号：{build}"
+    );
+    assert!(
+        build.contains(commit),
+        "build 与 commit 字段应当一致：{build} vs {commit}"
+    );
+    // ④ 构建时间 ✓
+    assert!(
+        !body["built"].as_str().unwrap_or_default().is_empty(),
+        "{body}"
+    );
+}

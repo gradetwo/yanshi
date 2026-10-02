@@ -10,7 +10,12 @@ fn main() {
         return;
     }
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
-        println!("{SERVER_NAME} {SERVER_VERSION}");
+        // **带上 commit 与构建时间** ✓（用户提的排查建议 ✓）：与 `yanshi-serve` 同一套信息 ✓。
+        println!(
+            "{SERVER_NAME} {SERVER_VERSION} (commit {}, built {})",
+            option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+            option_env!("YANSHI_BUILD_TIME").unwrap_or("unknown")
+        );
         return;
     }
     if args.iter().any(|arg| arg == "--list-tools") {
