@@ -4508,6 +4508,27 @@ board.addEventListener("pointerup", (event) => {
   // 不再判断 `button === 1` ✗：手形工具与空格拖动都是**左键** ✓（判错会让平移"卡住" ✓）。
   if (panState && (event.pointerId === undefined || panState.pointerId === event.pointerId ||
                    event.button === 1)) {
+    // **"拖了但没动"必须说出来** ✗（真实用户报告 ✓："抓手工具没有效果" ✓）。
+    //
+    // **实机量出的真相** ✓（CDP + 我为此给 `state()` 加的 `viewport` ✓）：
+    // `viewport = {x:0, y:0, w:400, h:300}` ✓ —— **视口正好等于整个文档** ✓
+    // ⇒ `clampViewport` **正确地拒绝移动** ✗ ⇒ **抓手没坏** ✓，
+    // 而是"整幅已经全在视口里，无处可移" ✓。**零反馈** ⇒ 用户只能得出"没效果" ✓ ✓。
+    // **与"点眼睛画布变白"是同一类** ✓：**行为正确 + 没有反馈 = 看起来像坏了** ✗。
+    // **为什么用提示、不放开钳制** ✓：让视口能移到文档之外 ✓ 会改变既定的取景语义 ✗
+    //（缩放到整幅时画面应当居中 ✓）⇒ 这里只补**它本来就该说的话** ✓。
+    const movedBy = Math.hypot(event.clientX - panState.startX, event.clientY - panState.startY);
+    const viewportUnchanged =
+      state.viewport.x === panState.originX && state.viewport.y === panState.originY;
+    if (viewportUnchanged && movedBy > 20) {
+      // **一句话覆盖两种情形** ✓（不为这句去引一个"文档尺寸"的状态 ✗ ——
+      // 我上一版就是这么写的 ✓，而 `viewport` 里并没有 `docW` ✗）。
+      log(
+        "拖了但画布没动 ⇒ 多半已经缩放到整幅（无处可移），或已到边界；" +
+        "先用滚轮 / ＋键放大，或点「适配」再拖 ✓",
+        "#c93",
+      );
+    }
     panState = null;
     updatePanCursor();
     // 切换工具不改变内容 ✓，这里不动 needsServerPixels ✓。
