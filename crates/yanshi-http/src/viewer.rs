@@ -1307,6 +1307,22 @@ function applyLocal(atom) {
 /// 绝不能静默停在半途 ✓ —— 半途的内核状态既缺原子 ✓ 又可能被下一次续传重复应用 ✗。
 async function resync() {
   window.yanshiStats.resyncs += 1;
+  // **⚠️ 无内核时必须走服务端像素** ✓ —— 这里此前**什么都不做** ✗（真实用户报告 ✓）。
+  //
+  // **症状** ✓："点图层的小眼睛和锁 ⇒ 画布变白 ⇒ **手工刷新可以恢复**" ✓。
+  // **为什么是这里** ✓：`resync()` 只会用**内核**重放 ✗（下面两句都要 `loadKernel` ✓）
+  // ⇒ **没有内核时它静默返回** ✓ ⇒ 而眼睛/锁的处理器最后一句正是 `await resync()` ✓
+  // ⇒ **画布永不重绘** ✓。而"刷新能恢复"恰好证明**服务端是对的** ✓、坏的只是这一处 ✓。
+  //
+  // **修法与 `afterMutation` 同一套路** ✓：置 `needsServerPixels` ✓ + 整视口排队补画 ✓
+  // ⇒ **一处修好、所有调用 `resync()` 的地方一起受益** ✓
+  //（图层可见性 ✓、锁定 ✓、新建 ✓、复制 ✓、删除 ✓、重排 ✓、上下移动 ✓）。
+  if (!state.wasm) {
+    needsServerPixels = true;
+    // **整视口而不是脏区** ✓：可见性/顺序会改变**整幅**外观 ✓ ⇒ 宁可多补 ✓，不能漏 ✗。
+    queueServerBlit(null);
+    return;
+  }
   const resumeFrom = state.localSeq || 0;
   // 先试增量 ✓（`localSeq` 是**最后一个成功应用**的序号 ✓ ⇒ 不重复、不遗漏 ✓）。
   if (resumeFrom > 0 && (await loadKernel(resumeFrom))) {
@@ -3790,8 +3806,22 @@ async function setupLayerPanel() {
   const add = $("layerAdd");
   if (add) add.onclick = async () => {
     const layers = await listLayers();
-    await callTool("create_layer", { name: "图层 " + (layers.length + 1) });
-    await refreshLayers();
+    const made = await callTool("create_layer", { name: "图层 " + (layers.length + 1) });
+    // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
+    //
+    // **为什么这是真 bug** ✓：新图层建在**最上面** ✓ 而**选中仍停在旧图层** ✗
+    // ⇒ 用户以为"我在新图层上画" ✓ **实际画到了下面那层** ✗
+    // ⇒ 于是"上面那些图层应该盖住我画的" ✗ **却不发生** ✓ —— **因为上层一直是空的** ✓。
+    // 用户的叙述（"我最下层创建一个图层，在上面操作 …… 可是测试不是如此"）与此**逐字吻合** ✓。
+    // **同一个道理此前只落在复制上** ✗（`duplicate` 里有 ✓、`add` 里没有 ✗）——
+    // 这正是本项目反复吃亏的"**只修一条路径**" ✗ ⇒ 现在两条都在 ✓。
+    if (made && made.ok && made.layer_id) {
+      const select = $("layer");
+      await refreshLayers();
+      if (select) { select.value = made.layer_id; select.onchange(); }
+    } else {
+      await refreshLayers();
+    }
     await resync();
   };
   const duplicate = $("layerDuplicate");
