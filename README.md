@@ -232,6 +232,11 @@ disclaims any licensing. Only the `.gpl` variant is kept: the collection's `.skp
 and `.soc` files have no parser here, and shipping files nothing can read is the same defect as advertising a
 greyscale PNG as usable.
 
+The texture panel shows a thumbnail for each texture, served by a `/textures/<file>` route that resolves names
+in the same order as the tools do, cache before bundled, so the picture shown and the pixels applied cannot disagree.
+The route accepts only a plain `.png` name, refusing path separators and other extensions, and returns a specific
+status for a bad name and a missing file rather than a generic failure.
+
 ## File names must differ by more than case
 
 No two paths in the repository may differ only in case, because macOS and Windows filesystems are case insensitive
@@ -265,7 +270,12 @@ the file held against how many were returned, because a palette truncated to fiv
 a palette that small. A file that cannot be parsed at all is refused rather than reported as empty.
 
 Both have panels in the viewer: the palette panel lists the palettes, draws their colours as swatches and sets the
-brush colour when one is clicked, and the texture panel picks a texture and a mode and applies it, showing any
+brush colour when one is clicked, and that one colour is what the stroke, shape and fill tools all read, so picking a
+swatch changes what every drawing tool paints with rather than only the brush. A texture can be laid over the whole
+canvas as a background or into a named region as a patch; a patch is not pushed to the bottom of the stack, because a
+patch that moved itself underneath everything would be wrong far more often than right, and the response says which of
+the two happened. Tiling is anchored to the document origin, so a patch and a full background line up rather than
+showing a seam. and the texture panel picks a texture and a mode and applies it, showing any
 warning the tool returned. Capabilities live in the tool layer so that MCP and the viewer share them, and the panels
 exist so that the viewer is not the poor relation.
 

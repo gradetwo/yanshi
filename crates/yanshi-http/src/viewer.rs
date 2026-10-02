@@ -534,6 +534,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <h2>纹理</h2>
       <div class="hint">把 CC0 纸张 / 画布纹理铺成背景 ✓（会**新建一层并沉到最底** ✓）。</div>
       <label>纹理 <select id="texturePick"></select></label>
+      <!-- **缩略图** ✓（目标 (b) ✓）：由 `/textures/<file>` 发图 ✓ ——
+           浏览器读不到服务器上的文件 ✓ ⇒ 必须走服务端路由 ✓（与介质插件同一条路 ✓）。 -->
+      <div id="textureThumbs" class="toolbar" style="flex-wrap:wrap;gap:4px"></div>
       <label>铺法 <select id="textureMode">
         <option value="tile">平铺（缺省）</option>
         <option value="stretch">拉伸</option>
@@ -3843,12 +3846,42 @@ async function setupAssetPanels() {
   }
   try {
     const textures = await callTool("list_assets", { kind: "texture" }, { refresh: false });
+    const thumbs = $("textureThumbs");
     for (const asset of (textures && textures.assets) || []) {
       if (!asset.usable) continue;
       const option = document.createElement("option");
       option.value = asset.name;
       option.textContent = asset.name + (asset.source === "cache" ? "（导入的）" : "");
       if (texturePick) texturePick.appendChild(option);
+      // **缩略图** ✓：48×48 裁切显示 ✓ ⇒ 十张一眼看完 ✓，不必逐张试 ✓。
+      if (thumbs) {
+        const image = document.createElement("img");
+        image.src = "/textures/" + encodeURIComponent(asset.name);
+        image.alt = asset.name;
+        image.title = asset.name + "（点击选中 ✓）";
+        image.dataset.name = asset.name;
+        image.width = 48;
+        image.height = 48;
+        image.style.cssText =
+          "object-fit:cover;border:2px solid transparent;border-radius:4px;cursor:pointer;background:#0002";
+        // **图没发出来要说出来** ✗（一个空白框最让人困惑 ✓）。
+        image.addEventListener("error", () => {
+          image.style.borderColor = "#c33";
+          image.title = asset.name + " ⇒ 缩略图没发出来（`/textures/` 路由或资产目录有问题 ✓）";
+        });
+        image.addEventListener("click", () => {
+          if (texturePick) texturePick.value = asset.name;
+          for (const other of thumbs.children) other.style.borderColor = "transparent";
+          image.style.borderColor = "#4c6ef5";
+          if (textureInfo) textureInfo.textContent = "已选中 " + asset.name + " ✓";
+        });
+        thumbs.appendChild(image);
+      }
+    }
+    // **默认选中第一张并点亮它** ✓（否则"当前选的是哪张"看不出来 ✓）。
+    if (texturePick && texturePick.options.length > 0 && $("textureThumbs")) {
+      const first = $("textureThumbs").children[0];
+      if (first) first.style.borderColor = "#4c6ef5";
     }
   } catch (error) {
     if (textureInfo) textureInfo.textContent = "纹理列表没拉到：" + String(error).slice(0, 90);

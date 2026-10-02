@@ -64,11 +64,14 @@ pub struct HttpOptions {
     pub brand_dir: Option<PathBuf>,
     /// 介质插件目录（设计 11.1）：`GET /mediums/{file}` ✓。
     pub medium_dir: Option<PathBuf>,
-    /// **内置纹理目录** ✓（`assets/textures` ✓ —— 用户裁定：**纹理要入库、要随包发布** ✓）。
+    /// **随发行包发布的资产根目录** ✓（仓库里是 `assets/` ✓；包内是 `share/yanshi` ✓）。
     ///
     /// **为什么与介质同类** ✓：它们都是**发行物的一部分** ✓ ⇒ 由命令行指定 ✓、
     /// 由 `yanshi.sh` 按包内位置传进来 ✓（解包到哪都能跑 ✓）。
-    /// 与"工作区缓存"（`<root>/textures/` ✓）**并存** ✓：内置的是开箱就有 ✓，缓存是用户后抓的 ✓。
+    /// 与"工作区缓存"（`<root>/<种类>/` ✓）**并存** ✓：内置的开箱就有 ✓，缓存是用户后导入或抓的 ✓。
+    ///
+    /// **⚠️ 这段注释原先写的是"内置纹理目录"** ✗ —— 字段改名成"资产根目录"之后注释没跟着改 ✓
+    /// ⇒ 后来的人会以为这里**只**管纹理 ✓（实际它同时管 `brushes` / `palettes` ✓）。
     pub assets_dir: Option<PathBuf>,
 }
 
@@ -490,6 +493,14 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         // 用**白名单**而不是拼路径 ✓（与品牌资源同一考虑 ✓）。
         return match method {
             "GET" => sample_asset(file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if let Some(file) = path.strip_prefix("/textures/") {
+        // **纹理缩略图** ✓（目标 (b) ✓）：界面里要显示预览 ✓，
+        // 而浏览器不能直接读服务器上的文件 ✓ ⇒ 得像介质那样**由服务端发** ✓。
+        return match method {
+            "GET" => texture_asset(state, file),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -1133,6 +1144,37 @@ fn sample_asset(file: &str) -> Response {
             .with_header("Cache-Control", "public, max-age=31536000, immutable"),
         Err(_) => crate::http::not_found(format!("示例画面缺失：{}", path.display())),
     }
+}
+
+/// **`GET /textures/{file}`：发一张纹理（用于界面预览缩略图 ✓）** ✓。
+///
+/// **查找顺序与工具层一致** ✓（真实用户要求 ✓）：**工作区缓存优先 ✓、内置其次 ✓** ——
+/// 与 `list_assets` / `resolve_asset` 的优先级**必须相同** ✗
+///（各判一次必然漂移 ✓：界面显示的是 A ✓、真铺上去的是 B ✗ —— 正是"两边不一样"的那类 bug ✓）。
+fn texture_asset(state: &ServerState, file: &str) -> Response {
+    // **只接受直接位于目录下的 `.png`** ✓（挡 `..`、`/`、其它扩展名 ✓ ⇒ 不会把仓库任意文件暴露出去 ✓）。
+    if file.contains("..") || file.contains('/') || file.contains('\\') || !file.ends_with(".png") {
+        return crate::http::bad_request("非法纹理名（只接受纹理目录下的 *.png）");
+    }
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // **缓存优先** ✓。
+    if let Some(root) = state.options.root.as_ref() {
+        candidates.push(root.join("textures").join(file));
+    }
+    // **内置其次** ✓。
+    if let Some(assets) = state.options.assets_dir.as_ref() {
+        candidates.push(assets.join("textures").join(file));
+    }
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Response::bytes(200, "image/png", bytes)
+                // **纹理是随版本走的资产** ✓ ⇒ 可以长缓存 ✓。
+                .with_header("Cache-Control", "public, max-age=31536000, immutable");
+        }
+    }
+    crate::http::not_found(format!(
+        "没有这张纹理：{file} ⇒ 先跑 list_assets 看有哪些（或 scripts/fetch-textures.sh 抓一批 ✓）"
+    ))
 }
 
 fn medium_asset(state: &ServerState, file: &str) -> Response {
