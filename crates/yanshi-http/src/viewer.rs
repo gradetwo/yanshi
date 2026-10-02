@@ -5019,6 +5019,77 @@ function setupPanels() {
       applyPanels();
     }
   });
+
+  // **`window.yanshi`：给自动化用的稳定接口** ✓（真实用户 §六-5 ✓）。
+  //
+  // **用户原话** ✓："Playwright 自动化时，改颜色要 `document.querySelector('#color')` 注入 ✓，
+  // 改粗细要找 `input[type="range"]` ✓，**无稳定 API** ⇒ UI 一改就崩" ✓。
+  // **做法** ✓：只做**薄薄一层** ✓ —— 设**既有的控件**、再**触发既有事件** ✓
+  //（`#medium` 一直是靠 `change` 事件驱动的 ✓，见上面那段 ✓）⇒ **不复制任何逻辑** ✗
+  // ⇒ 以后改 UI 时，这层只需跟着改**选择器** ✓，而不是两套行为各自漂移 ✗。
+  //
+  // **同时提供"读"** ✓：自动化最需要的是**断言当前设置** ✓（"我设的颜色真的生效了吗" ✓）。
+  window.yanshi = {
+    /// 当前设置 ✓（可断言 ✓）。
+    state() {
+      return {
+        docId: state.docId,
+        layerId: state.layerId,
+        tool: state.tool,
+        // 与 setColor 同一个来源 ✓（笔刷色 ✓）—— 别让"读"与"写"指向不同控件 ✗。
+        color: ($("color") || {}).value || null,
+        size: Number(($("strokeSize") || {}).value || 0),
+        opacity: Number(($("strokeOpacity") || {}).value || 0),
+        medium: ($("medium") || {}).value || null,
+      };
+    },
+    /// 设**笔刷颜色** ✓（任意 CSS 颜色串 ✓）。
+    ///
+    /// **这里必须读 `#color`（工具栏那个 ✓），不是 `#strokeColor`（对象面板那个 ✓）** ✗ ——
+    /// 两者**用途不同** ✓：`#color` 是**笔刷色** ✓（介质路径 1769 行、普通笔触 2101 行、
+    /// 快速面板色板、吸管都用它 ✓，共 8 处 ✓）；`#strokeColor` 只是**"重设选中对象颜色"** ✓。
+    /// **我第一版设的是后者** ✗ ⇒ 像素画出来**仍是默认红** ✓ ⇒ 是"设错了对象" ✓，
+    /// 而**用户报告里写的 `#color` 本来就是对的** ✓。这类"名字像同一个东西"的坑 ✓，
+    /// **只有把真实像素打出来才看得见** ✓。
+    setColor(css) {
+      const input = $("color");
+      if (!input) return false;
+      input.value = css;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    },
+    /// 设笔尖大小 ✓（像素 ✓）。
+    setSize(pixels) {
+      const input = $("strokeSize");
+      if (!input) return false;
+      input.value = String(pixels);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    },
+    /// 设不透明度 ✓（0..1 ✓）。
+    setOpacity(value) {
+      const input = $("strokeOpacity");
+      if (!input) return false;
+      input.value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    },
+    /// 换介质 ✓（与界面同一条路径：设值 + `change` ✓）。
+    setMedium(id) {
+      const select = $("medium");
+      if (!select) return false;
+      select.value = id;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    },
+    /// 换工具 ✓（点那个按钮 ✓ —— 与手工点完全同一条路径 ✓）。
+    setTool(key) {
+      const button = document.querySelector('button[data-tool="' + key + '"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    },
+  };
   applyPanels();
 }
 setupPanels();

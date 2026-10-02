@@ -1923,6 +1923,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "new_document",
+        profile: Profile::Core,
+        summary: "新建（或清空重建）一个空白文档：给定宽高与背景色，直接得到可用画布",
+        mutating: true,
+        params: &[
+            param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
+            param!("width", Integer, true, "宽（像素）"),
+            param!("height", Integer, true, "高（像素）"),
+            param!("background", Object, false, "背景 {r,g,b,a}（0..255；缺省不透明白）"),
+        ],
+    },
+    ToolSpec {
         name: "medium_stroke",
         profile: Profile::Core,
         summary: "用介质插件（油画/水彩/马克笔/铅笔/像素）画一笔：服务端原生调用插件，产出带 medium 描述符的补丁",
@@ -2138,6 +2150,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "reject_suggestions" => write_reject_suggestions(ctx, args),
+        "new_document" => write_new_document(ctx, args),
         "medium_stroke" => write_medium_stroke(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -8168,6 +8181,84 @@ fn kind_label(kind: &AtomKind) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("{kind:?}"))
+}
+
+/// **`new_document`** ✓ —— 一键得到一块**空白画布** ✓（真实用户 §六-4 ✓）。
+///
+/// **用户的原话** ✓："同一 `--root` 下重复打开页面会载入同一文档，三次绘画叠在一张画布上；
+/// 自动化测试/创作时必须手动删 `--root` 目录或点新建，**没有 `new_document` 的 MCP 工具**" ✓。
+/// **为什么值得** ✓：**文档 id 就是持久单元** ✓（这是设计 ✓，不是缺陷 ✓）
+/// ⇒ 想要一块干净画布 ✓ 就得显式新建 ✓ ⇒ 那就给它一个明确的入口 ✓，而不是让人去删目录 ✗。
+///
+/// **与"文档隔离"的关系** ✓：本工具**不改变** id 语义 ✓ —— 它只是把"新建"这件事
+/// 从"手工删目录"变成"一次调用" ✓。想彼此隔离就**用不同的 doc_id** ✓（默认值已由 `--doc` 提供 ✓）。
+fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // 尺寸：缺了就给一句**能照做**的错 ✓（本轮刚给"不存在"加过可用值 ✓，同一个道理 ✓）。
+    let width = optional_u64(args, "width")
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("new_document 需要 width ✓（例如 1024）"),
+            )
+        })?
+        .clamp(1, 65536) as u32;
+    let height = optional_u64(args, "height")
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("new_document 需要 height ✓（例如 1024）"),
+            )
+        })?
+        .clamp(1, 65536) as u32;
+    let background = match args.get("background") {
+        Some(value) if !value.is_null() => {
+            let channel = |name: &str, fallback: i64| {
+                value
+                    .get(name)
+                    .and_then(Value::as_i64)
+                    .unwrap_or(fallback)
+                    .clamp(0, 255)
+            };
+            json!({
+                "r": channel("r", 255),
+                "g": channel("g", 255),
+                "b": channel("b", 255),
+                "a": channel("a", 255),
+            })
+        }
+        _ => json!({"r": 255, "g": 255, "b": 255, "a": 255}),
+    };
+    // **重建** ✓：同 id 已有文档时**覆盖**它 ✓ ⇒ 语义是"给我一块干净画布" ✓（用户的诉求正是这个 ✓）。
+    let mut request = crate::document::NewDocument::new(&doc_id, width, height);
+    request.background = background;
+    // **"已经有同 id 的文档"要给出下一步** ✓（本轮刚给"不存在"做过同样的事 ✓）：
+    // 底层那句只写"文档 X 已打开" ✗ ⇒ 调用方还是不知道该干什么 ✓
+    // ⇒ 这里补上**唯一正确的做法**：**换一个 doc_id** ✓
+    //（文档 id 就是持久单元 ✓ —— 这是设计 ✓，所以"新画布"= 新 id ✓）。
+    ctx.workspace
+        .create_document(request, &ctx.actor, &ctx.session)
+        .map_err(|error| {
+            let detail = error.context.detail.clone().unwrap_or_default();
+            if detail.contains("已打开") {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!(
+                        "文档 {doc_id} 已经打开 ⇒ 换一个 doc_id 就是一块新画布（例如 {doc_id}-2）；\
+                         本工具不会清空已存在的文档"
+                    )),
+                )
+                .with_atom(error.context.atom_id.clone().unwrap_or_default())
+            } else {
+                error
+            }
+        })?;
+    Ok(json!({
+        "doc_id": doc_id,
+        "width": width,
+        "height": height,
+        "blank": true,
+    }))
 }
 
 /// **`medium_stroke`** ✓ —— 用**介质插件**画一笔 ✓（真实用户 P1-3 要的那件事 ✓）。

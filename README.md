@@ -10,6 +10,17 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Automation and a blank canvas
+
+`window.yanshi` exposes a stable hook for scripts: `state()` reports the current tool, colour, size, opacity, medium,
+layer and document, and `setColor`, `setSize`, `setOpacity`, `setMedium` and `setTool` change them through the same
+controls and events the interface uses. `new_document` creates a blank canvas, and because a document id is the unit
+of persistence, a new canvas means a new id; asking to recreate an id that is already open is refused with that
+advice rather than quietly clearing it.
+
+`--profile` accepts core, history, changeset, retouch, semantic, conflict, annotation, collab and structure, all
+listed in `--help`; semantic is reserved and not developed by decision.
+
 ## Error messages you can act on
 
 A refusal for a missing layer, object, selection, mask or style also lists the ids that do exist, capped at eight with

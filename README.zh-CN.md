@@ -9,6 +9,20 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 自动化与空白画布
+
+`window.yanshi` 给脚本一个**稳定入口** ✓：`state()` 报出当前工具 / 颜色 / 粗细 / 不透明度 / 介质 / 图层 / 文档 ✓；
+`setColor` / `setSize` / `setOpacity` / `setMedium` / `setTool` 走**界面同一条**控件与事件 ✓
+⇒ **不复制逻辑** ✓，UI 改了只需跟着改选择器 ✓。
+**注意** ✓：`setColor` 设的是**工具栏那个颜色** ✓（笔刷真正用的那个 ✓），不是对象面板的"重设颜色" ✓ ——
+两者**用途不同** ✓，我第一版设错了对象 ✓ ⇒ 表现成"设了没反应" ✓，**只有打印像素才看得出来** ✓。
+
+`new_document` 一键给出**空白画布** ✓。**文档 id 就是持久单元** ✓ ⇒ **新画布 = 新 id** ✓；
+对**已打开**的 id 再建会**明确拒绝并告诉你换个 id** ✓，**不会**悄悄清空 ✓。
+
+`--profile` 可用值：core / history / changeset / retouch / semantic / conflict / annotation / collab / structure ✓
+（`--help` 里**列全** ✓；semantic 按既定裁定**只预留不开发** ✓）。
+
 ## 能照着改的错误信息
 
 图层 / 对象 / 选区 / 蒙版 / 风格**不存在**时 ✓，报错会**列出已有的 id** ✓（**上限 8 个 + 省略号** ✓）；

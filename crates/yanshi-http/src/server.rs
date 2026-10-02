@@ -174,7 +174,8 @@ impl HttpOptions {
            --doc <id>         默认文档 id（缺省 default）\n\
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
-           --profile <list>   启用工具组，逗号分隔\n\
+           --profile <list>   启用工具组，逗号分隔，可选：core,history,changeset,retouch,semantic,conflict,annotation,collab,structure\n\
+                              （缺省启用除 semantic 外的全部；semantic 组按既定裁定只预留不开发）\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）
 --medium-dir <dir> 介质插件目录（缺省 assets/mediums；发布包里在 share/yanshi/mediums）\n\
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\

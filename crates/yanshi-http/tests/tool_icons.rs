@@ -14,7 +14,20 @@ fn block<'a>(source: &'a str, name: &str) -> &'a str {
         .find(&format!("const {name} "))
         .unwrap_or_else(|| panic!("找不到 {name} 的定义"));
     let rest = &source[start..];
-    let end = rest.find("\n};").expect("块应当以 `};` 结束");
+    // **结束符可能是 `};` 也可能是 `];`** ✓ —— 数组与对象都合法 ✓。
+    //
+    // **这里踩过一个真坑** ✓：原来的实现只找 `\n};` ✗ ⇒ `TOOL_DEFS`（一个**数组** ✓，以 `];` 结束 ✓）
+    // 会被一路读到**下一个 `\n};`** ✗ ⇒ 把后面**毫不相干的一大段**（含别的块、甚至注释里的中文串 ✓）
+    // 也当成"工具表"来解析 ✓ ⇒ 于是从一句注释里捡出 `"读"` 当成工具名 ✓ ⇒ 报"工具没有图标" ✗，
+    // 而真正的原因是**提取器圈错了范围** ✗。**它此前只是碰巧没出错** ✓。
+    let end_object = rest.find("\n};");
+    let end_array = rest.find("\n];");
+    let end = match (end_object, end_array) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => panic!("块应当以 `}};` 或 `];` 结束"),
+    };
     &rest[..end]
 }
 

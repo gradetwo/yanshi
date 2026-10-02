@@ -1,6 +1,6 @@
 # Tools and effects
 
-The tool layer registers **43 core tools**, and with every implemented group enabled there are **99 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **44 core tools**, and with every implemented group enabled there are **100 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -87,6 +87,17 @@ wasm32-unknown-unknown and committed under assets/mediums, and choosing oil with
 plugin and records the medium as id oil at version two on the object. Recording the plugin id and version with the
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
+
+new_document gives a blank canvas in one call, which the report asked for because a document id is the unit of
+persistence, so a second session under the same root loads the same document and drawings stack up; the tool is
+explicit that a new canvas means a new doc id, and asking for an id that is already open is refused with that advice
+rather than silently clearing anything.
+
+The viewer exposes a window.yanshi object for automation, with a state reader and setters for colour, size, opacity,
+medium and tool. Each setter writes the existing control and dispatches the existing event, so no behaviour is
+duplicated and a UI change only needs the selector updated here. Note that setColor writes the toolbar colour, the
+one the brush actually reads, rather than the object panel's restyle colour; those are different controls with
+different jobs, and setting the wrong one looks like a silent failure until the pixels are inspected.
 
 A refusal that names a missing layer, object, selection, mask or style also lists what does exist, capped at eight
 entries with an ellipsis, and says plainly when there are none at all. Previously the message only named the id that
