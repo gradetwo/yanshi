@@ -7,6 +7,6 @@ publish = false
 description = "像素介质插件：ABI v2（硬边方形笔尖、完全不抗锯齿、颜色精确；确定性；无 imports）"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]

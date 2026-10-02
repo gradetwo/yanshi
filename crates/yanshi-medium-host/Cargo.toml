@@ -1,0 +1,19 @@
+[package]
+name = "yanshi-medium-host"
+description = "介质插件宿主：把六个零依赖介质插件当原生库调用，对外只暴露安全接口（unsafe 只在本 crate 内）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+yanshi-medium-oil = { path = "../yanshi-medium-oil" }
+yanshi-medium-watercolor = { path = "../yanshi-medium-watercolor" }
+yanshi-medium-marker = { path = "../yanshi-medium-marker" }
+yanshi-medium-pencil = { path = "../yanshi-medium-pencil" }
+yanshi-medium-pixel = { path = "../yanshi-medium-pixel" }
+yanshi-medium-example = { path = "../yanshi-medium-example" }
+yanshi-core = { path = "../yanshi-core", version = "0.1.0" }

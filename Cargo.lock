@@ -567,6 +567,19 @@ name = "yanshi-medium-example"
 version = "0.1.0"
 
 [[package]]
+name = "yanshi-medium-host"
+version = "0.1.0"
+dependencies = [
+ "yanshi-core",
+ "yanshi-medium-example",
+ "yanshi-medium-marker",
+ "yanshi-medium-oil",
+ "yanshi-medium-pencil",
+ "yanshi-medium-pixel",
+ "yanshi-medium-watercolor",
+]
+
+[[package]]
 name = "yanshi-medium-marker"
 version = "0.1.0"
 
@@ -604,6 +617,7 @@ dependencies = [
  "serde",
  "serde_json",
  "yanshi-core",
+ "yanshi-medium-host",
  "yanshi-render",
  "yanshi-wasm",
 ]

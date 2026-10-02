@@ -1923,6 +1923,22 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "medium_stroke",
+        profile: Profile::Core,
+        summary: "用介质插件（油画/水彩/马克笔/铅笔/像素）画一笔：服务端原生调用插件，产出带 medium 描述符的补丁",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("medium", String, true, "介质 id：oil | watercolor | marker | pencil | pixel | example"),
+            param!("points", Array, true, "笔迹采样点 [[x,y,pressure?], ...]（pressure 0..1）"),
+            param!("size", Number, false, "笔尖大小（缺省 24）"),
+            param!("color", Object, false, "笔尖色 {r,g,b,a}（0..255；缺省不透明黑）"),
+            param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),
+            param!("wetness", Number, false, "湿度 0..1（缺省 0.4）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
         name: "export_png",
         profile: Profile::Core,
         summary: "把整幅（或指定区域）渲染成 PNG 落盘：任意尺寸、不经 base64、不受 512px 限制",
@@ -2122,6 +2138,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "reject_suggestions" => write_reject_suggestions(ctx, args),
+        "medium_stroke" => write_medium_stroke(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -8151,6 +8168,107 @@ fn kind_label(kind: &AtomKind) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("{kind:?}"))
+}
+
+/// **`medium_stroke`** ✓ —— 用**介质插件**画一笔 ✓（真实用户 P1-3 要的那件事 ✓）。
+///
+/// **它解决什么** ✓：油画/水彩这些质感原本**只有浏览器端能画** ✗
+///（插件是 wasm ✓，由浏览器各自实例化 ✓）⇒ MCP/agent 侧**完全用不上** ✓，
+/// 只能画出"均匀的面条线" ✗ —— 用户报告里"不够真实、艺术感不够"的根因之一 ✓。
+///
+/// **为什么服务端现在能画** ✓（两步 ✓）：
+/// 1. 插件是**纯 Rust 零依赖** ✓ ⇒ 加 `rlib` 就能当库链进来 ✓（工作区内部依赖 ✓，不引外部依赖 ✓）；
+/// 2. 它们原本**导出同名 C 符号** ✗ ⇒ 六个一起链会重复符号 ✗
+///    ⇒ 给导出名做了**平台分叉** ✓：wasm 照旧 `yanshi_dab` ✓（**已发布 ABI 不变** ✓），
+///    原生用 `yanshi_oil_dab` 等**唯一名** ✓ ⇒ **六个能同时链进同一个二进制** ✓。
+///
+/// **产出与浏览器端同形** ✓：`paint_stroke` 给出一块**直通 RGBA8** ✓ ⇒ 走 blob 先行 ✓
+/// 再用**同一个** `import_image` 提交 ✓（`bitmap` + `medium` 描述符 ✓）
+/// ⇒ 渲染路径、回放、撤销、以及"**插件 id + version 随对象记录**"全都自动一致 ✓
+///（升级插件不会悄悄改变旧文档 ✓ —— 设计 11.1 的硬要求 ✓）。
+fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let medium = require_str(args, "medium")?;
+    let raw_points = args
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("points 必须是数组：[[x,y], [x,y,pressure?], ...]"),
+            )
+        })?;
+    let mut points = Vec::with_capacity(raw_points.len());
+    for (index, item) in raw_points.iter().enumerate() {
+        let pair = item.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "第 {index} 个点不是数组 ⇒ 应形如 [x, y] 或 [x, y, pressure]"
+                )),
+            )
+        })?;
+        let x = pair.first().and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("第 {index} 个点缺 x")),
+            )
+        })?;
+        let y = pair.get(1).and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("第 {index} 个点缺 y")),
+            )
+        })?;
+        let pressure = pair.get(2).and_then(Value::as_f64).unwrap_or(1.0);
+        points.push((x, y, pressure));
+    }
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    let load = args.get("load").and_then(Value::as_f64).unwrap_or(1.0);
+    let wetness = args.get("wetness").and_then(Value::as_f64).unwrap_or(0.4);
+    // 色按 0..255 收 ✓ ⇒ 转成插件要的 0..1 ✓（缺省不透明黑 ✓）。
+    let color = match args.get("color") {
+        Some(value) if !value.is_null() => {
+            let channel = |name: &str, fallback: f32| {
+                value
+                    .get(name)
+                    .and_then(Value::as_f64)
+                    .map(|v| (v / 255.0) as f32)
+                    .unwrap_or(fallback)
+            };
+            [
+                channel("r", 0.0),
+                channel("g", 0.0),
+                channel("b", 0.0),
+                channel("a", 1.0),
+            ]
+        }
+        _ => [0.0, 0.0, 0.0, 1.0],
+    };
+    let (region, rgba) =
+        yanshi_medium_host::paint_stroke(&medium, &points, size, color, load, wetness)?;
+    // **blob 先行** ✓：先把像素写进存储 ✓，再提交引用它的原子 ✓（与 `import_psd` 同一套路 ✓）。
+    let composite = ctx.workspace.store().put(&rgba)?;
+    let spec = yanshi_medium_host::spec(&medium).expect("paint_stroke 已经校验过介质名");
+    let object_id = optional_str(args, "object_id");
+    let mut import_args = json!({
+        "layer_id": layer_id,
+        "bitmap": {
+            "blob_hash": composite.to_string(),
+            "size": rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+        // **插件 id + version 随对象记录** ✓（设计 11.1 ✓）。
+        "medium": {"id": spec.id, "version": spec.version},
+    });
+    if let Some(object_id) = object_id {
+        import_args["object_id"] = json!(object_id);
+    }
+    let mut value = write_import_image(ctx, &import_args)?;
+    value["medium"] = json!({"id": spec.id, "version": spec.version});
+    value["dabs"] = json!(points.len());
+    Ok(value)
 }
 
 /// **`export_png`** ✓ —— 把整幅（或指定区域）渲染成 PNG **落盘** ✓。

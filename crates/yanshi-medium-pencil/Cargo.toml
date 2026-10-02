@@ -7,6 +7,6 @@ publish = false
 description = "铅笔介质插件：ABI v2（软圆尖、压力驱动深浅、石墨颗粒、几乎不混色；确定性 PRNG；无 imports）"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]

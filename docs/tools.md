@@ -1,6 +1,6 @@
 # Tools and effects
 
-The tool layer registers **42 core tools**, and with every implemented group enabled there are **98 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **43 core tools**, and with every implemented group enabled there are **99 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -87,6 +87,15 @@ wasm32-unknown-unknown and committed under assets/mediums, and choosing oil with
 plugin and records the medium as id oil at version two on the object. Recording the plugin id and version with the
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
+
+medium_stroke paints through a medium plugin from the server or MCP side, which until this round was only
+possible in the browser. The plugins are dependency-free Rust, so adding an rlib target lets the server link them,
+and because all six exported the same C symbol names they originally collided; the exports are now split by target,
+so the wasm build keeps the published ABI names while the native build gets unique ones and all six can live in one
+binary. The stroke renders into a straight RGBA patch through the same import path the browser uses, so replay,
+undo and the record of the plugin id and version on the object all come for free, and an upgrade still cannot change
+how an older document renders. Points accept an optional pressure, and the server-side medium does not read the
+canvas back for mixing, which is stated rather than glossed over.
 
 export_png renders the whole document or a region, optionally rescaling it, encodes it with the repository's own
 PNG encoder and writes it to a path, returning the path, the size and the byte count. It exists because the inline

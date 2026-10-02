@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+yanshi-medium-host = { path = "../yanshi-medium-host" }
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
 yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
 serde.workspace = true

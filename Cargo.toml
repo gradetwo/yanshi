@@ -8,6 +8,7 @@ members = [
     "crates/yanshi-http",
     "crates/yanshi-wasm",
     "crates/yanshi-medium-example",
+    "crates/yanshi-medium-host",
     "crates/yanshi-medium-oil",
     "crates/yanshi-medium-watercolor",
     "crates/yanshi-medium-marker",

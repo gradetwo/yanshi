@@ -23,29 +23,24 @@ pub const INPUT_FLOATS: u32 = 10;
 static mut DAB: [u8; (MAX_DAB * MAX_DAB * 4) as usize] = [0; (MAX_DAB * MAX_DAB * 4) as usize];
 static mut INPUT: [f32; INPUT_FLOATS as usize] = [0.0; INPUT_FLOATS as usize];
 
-#[no_mangle]
-pub extern "C" fn yanshi_abi_version() -> u32 {
+fn pencil_abi_version_body() -> u32 {
     ABI_VERSION
 }
 
-#[no_mangle]
-pub extern "C" fn yanshi_max_dab() -> u32 {
+fn pencil_max_dab_body() -> u32 {
     MAX_DAB
 }
 
-#[no_mangle]
-pub extern "C" fn yanshi_input_ptr() -> u32 {
-    core::ptr::addr_of!(INPUT) as u32
+fn pencil_input_ptr_body() -> usize {
+    core::ptr::addr_of!(INPUT) as usize
 }
 
-#[no_mangle]
-pub extern "C" fn yanshi_input_len() -> u32 {
+fn pencil_input_len_body() -> u32 {
     INPUT_FLOATS * 4
 }
 
-#[no_mangle]
-pub extern "C" fn yanshi_dab_ptr() -> u32 {
-    core::ptr::addr_of!(DAB) as u32
+fn pencil_dab_ptr_body() -> usize {
+    core::ptr::addr_of!(DAB) as usize
 }
 
 /// splitmix64：确定、无外部状态 ✓。
@@ -58,8 +53,7 @@ fn splitmix64(state: &mut u64) -> u64 {
 }
 
 /// 落一个点 ✓。返回写入字节数（`size * size * 4` ✓）。
-#[no_mangle]
-pub extern "C" fn yanshi_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
+fn pencil_dab_body(seed: u32, size: u32, pressure_milli: u32) -> u32 {
     let size = if size == 0 {
         1
     } else if size > MAX_DAB {
@@ -129,4 +123,84 @@ pub extern "C" fn yanshi_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
         }
     }
     size * size * 4
+}
+
+// **导出名的平台分叉** ✓（这是让"六个插件能链进同一个二进制"的关键 ✓）：
+//
+// * **wasm 构建照旧导出 ABI 名** ✓（`yanshi_dab` 等 ✓）—— **已发布的契约一个字节不改** ✓；
+// * **原生构建导出唯一名** ✓（`yanshi_pencil_dab` 等 ✓）—— 六个插件的符号因此不再冲突 ✓，
+//   服务端于是能把它们**全部链进来** ✓（真实用户 P1-3 要的正是这件事 ✓）。
+//
+// 之所以不直接把旧名改掉 ✗：那会**破坏浏览器端的官方 ABI** ✓ —— 没必要 ✓。
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_abi_version() -> u32 {
+    pencil_abi_version_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_abi_version() -> u32 {
+    pencil_abi_version_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_max_dab() -> u32 {
+    pencil_max_dab_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_max_dab() -> u32 {
+    pencil_max_dab_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_input_ptr() -> usize {
+    pencil_input_ptr_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_input_ptr() -> usize {
+    pencil_input_ptr_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_input_len() -> u32 {
+    pencil_input_len_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_input_len() -> u32 {
+    pencil_input_len_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_dab_ptr() -> usize {
+    pencil_dab_ptr_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_dab_ptr() -> usize {
+    pencil_dab_ptr_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
+    pencil_dab_body(seed, size, pressure_milli)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_pencil_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
+    pencil_dab_body(seed, size, pressure_milli)
 }

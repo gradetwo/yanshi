@@ -28,20 +28,17 @@ pub const MAX_DAB: u32 = 64;
 static mut DAB: [u8; (MAX_DAB * MAX_DAB * 4) as usize] = [0; (MAX_DAB * MAX_DAB * 4) as usize];
 
 /// 插件 ABI 版本 ✓。
-#[no_mangle]
-pub extern "C" fn yanshi_abi_version() -> u32 {
+fn example_abi_version_body() -> u32 {
     ABI_VERSION
 }
 
 /// 输出缓冲地址（宿主用 `memory.buffer` 读取 ✓）。
-#[no_mangle]
-pub extern "C" fn yanshi_dab_ptr() -> u32 {
-    core::ptr::addr_of!(DAB) as u32
+fn example_dab_ptr_body() -> usize {
+    core::ptr::addr_of!(DAB) as usize
 }
 
 /// 单个点允许的最大边长 ✓（宿主配额依据 ✓）。
-#[no_mangle]
-pub extern "C" fn yanshi_max_dab() -> u32 {
+fn example_max_dab_body() -> u32 {
     MAX_DAB
 }
 
@@ -58,8 +55,7 @@ fn splitmix64(state: &mut u64) -> u64 {
 ///
 /// 返回写入的字节数（`size * size * 4` ✓）；宿主据此读取缓冲 ✓。
 /// **不使用任何导入函数** ⇒ 无法触网、无法读时钟 ✓。
-#[no_mangle]
-pub extern "C" fn yanshi_dab(seed: u32, size: u32, hardness_milli: u32) -> u32 {
+fn example_dab_body(seed: u32, size: u32, hardness_milli: u32) -> u32 {
     let size = if size == 0 {
         1
     } else if size > MAX_DAB {
@@ -106,4 +102,60 @@ pub extern "C" fn yanshi_dab(seed: u32, size: u32, hardness_milli: u32) -> u32 {
         }
     }
     bytes
+}
+
+// **导出名的平台分叉** ✓（这是让"六个插件能链进同一个二进制"的关键 ✓）：
+//
+// * **wasm 构建照旧导出 ABI 名** ✓（`yanshi_dab` 等 ✓）—— **已发布的契约一个字节不改** ✓；
+// * **原生构建导出唯一名** ✓（`yanshi_example_dab` 等 ✓）—— 六个插件的符号因此不再冲突 ✓，
+//   服务端于是能把它们**全部链进来** ✓（真实用户 P1-3 要的正是这件事 ✓）。
+//
+// 之所以不直接把旧名改掉 ✗：那会**破坏浏览器端的官方 ABI** ✓ —— 没必要 ✓。
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_abi_version() -> u32 {
+    example_abi_version_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_example_abi_version() -> u32 {
+    example_abi_version_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_dab_ptr() -> usize {
+    example_dab_ptr_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_example_dab_ptr() -> usize {
+    example_dab_ptr_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_max_dab() -> u32 {
+    example_max_dab_body()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_example_max_dab() -> u32 {
+    example_max_dab_body()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn yanshi_dab(seed: u32, size: u32, hardness_milli: u32) -> u32 {
+    example_dab_body(seed, size, hardness_milli)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn yanshi_example_dab(seed: u32, size: u32, hardness_milli: u32) -> u32 {
+    example_dab_body(seed, size, hardness_milli)
 }

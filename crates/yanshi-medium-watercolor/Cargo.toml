@@ -7,6 +7,6 @@ publish = false
 description = "水彩介质插件（ABI v2）：渗开的不规则边界、边缘沉积、半透明纸感；确定性 PRNG、无 imports"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
