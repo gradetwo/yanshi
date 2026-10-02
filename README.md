@@ -10,6 +10,12 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Broken colour
+
+`appearance.dynamics.color_jitter` from 0 to 1 lets the tip colour wander slightly around the given colour, stamp by
+stamp, which is what oil painters call broken colour. It is off by default and the perturbation is skipped entirely
+at zero, so existing documents render exactly as before.
+
 ## Project packages
 
 `export_project` writes a `.yanshi` package: an uncompressed tar containing the append-only atom log, the document

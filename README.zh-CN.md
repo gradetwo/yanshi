@@ -9,6 +9,11 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 破色（颜色抖动）
+
+`appearance.dynamics.color_jitter`（0..1）让**笔尖色在给定色附近逐印章轻微游走** ✓ —— 这就是油画说的**破色** ✓。
+**缺省关闭** ✓，且 `0` 时**整段扰动不执行** ✓ ⇒ **既有文档逐字节不变** ✓。
+
 ## 工程包
 
 `export_project` 打出 **`.yanshi` 工程包** ✓：一个**未压缩 tar** ✓，内含**不可变原子日志** ✓、文档元数据 ✓、

@@ -68,6 +68,27 @@ impl StrokeGeometry {
     }
 }
 
+/// **按"给定色相邻范围"抖动一枚印章的颜色** ✓（真实用户 §六-13 的"破色" ✓）。
+///
+/// **语义逐字照用户的话** ✓：**在给定色相邻范围内随机取色** ✓ ——
+/// 三通道各自独立地加上一个**有界的**偏移 ✓（幅度 = `jitter × 0.5` ✓），
+/// 偏移**有正有负** ✓ ⇒ 颜色在目标色周围**游走** ✓，而**均值仍落在目标色上** ✗（不会整体偏色 ✓）。
+///
+/// **为什么三通道独立、不做 HSV** ✓：破色的直觉是"同一管颜料里掺了一点旁边的色" ✓，
+/// 三通道小幅独立游走**就是这个效果** ✓；而 HSV 转来转去**多一堆代码** ✓、
+/// 还要处理色相环绕的边界 ✗ ⇒ **收益不值这个复杂度** ✓（记在这里，方便以后要改时知道取舍 ✓）。
+///
+/// **确定性** ✓：种子由 `(seed, index)` 派生 ✓ ⇒ 同输入同输出 ✓（D0 的要求 ✓）。
+fn jitter_color(color: [f32; 3], jitter: f32, seed: u64, index: u64) -> [f32; 3] {
+    let mut rng = crate::Prng::new(seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let amount = jitter * 0.5;
+    [
+        (color[0] + rng.signed() * amount).clamp(0.0, 1.0),
+        (color[1] + rng.signed() * amount).clamp(0.0, 1.0),
+        (color[2] + rng.signed() * amount).clamp(0.0, 1.0),
+    ]
+}
+
 /// **可选的笔迹平滑（Catmull-Rom 重采样）** ✓ —— 默认**关闭** ✓。
 ///
 /// 为什么做成可选而不是默认 ✓：本项目的不变量是"**日志里的原子决定渲染**" ✓
@@ -393,7 +414,24 @@ fn stamp_samples_with_appearance(
             continue;
         }
         // ⑤ 混色：把**目标处已有颜色**按 `mixing × 当前湿度` 混进笔尖 ✓（只读一次 ⇒ 确定 ✓）。
-        let brush_color = [brush.color[0], brush.color[1], brush.color[2], alpha];
+        // **颜色抖动（破色）** ✓ —— 真实用户 §六-13 的原话：
+        // "笔触支持 `color_jitter`（**在给定色相邻范围内随机取色** ✓，模拟手调色的不均匀 ✓）" ✓。
+        //
+        // **位置** ✓：施加在**每枚印章的笔尖色**上 ✓（不是整笔一次 ✓）——
+        // 油画的"破色"正是**同一笔里颜色轻微游走** ✓，整笔一次就只是换了个颜色 ✗。
+        // **确定性** ✓：由 `(seed, index)` 派生 ✓ ⇒ 同一份文档重放**逐像素一致** ✓。
+        // **缺省 0 时整段不执行** ✓（不是"乘 0" ✓）⇒ 老文档**一个像素都不变** ✓。
+        let jittered = if appearance.dynamics.color_jitter > 0.0 {
+            jitter_color(
+                [brush.color[0], brush.color[1], brush.color[2]],
+                appearance.dynamics.color_jitter,
+                appearance.dynamics.seed,
+                index as u64,
+            )
+        } else {
+            [brush.color[0], brush.color[1], brush.color[2]]
+        };
+        let brush_color = [jittered[0], jittered[1], jittered[2], alpha];
         let color = if appearance.paint.mixing > 0.0 {
             let origin = buffer.origin();
             let local_x = (params.x - origin.0 as f64).max(0.0) as u32;

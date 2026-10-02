@@ -104,6 +104,15 @@ Layers already support the multiply, screen, overlay, darken, lighten, add, subt
 alongside normal, settable through the layer patch, so the missing piece there was documentation rather than
 capability.
 
+appearance.dynamics gained color_jitter, which makes the tip colour wander within a small range around the given
+colour, one stamp at a time and deterministically from the seed and stamp index, which is what a painter means by
+broken colour and what a user asked for after pointing out that every stroke otherwise needs a full colour spelled
+out and a palette of dozens has to be precomputed by hand. The per-channel offset is bounded and signed, so the
+colour moves around the target rather than shifting away from it, and at zero the whole perturbation is skipped
+rather than multiplied by zero, so an existing document renders byte for byte as before. The tests measure that an
+unset control is byte identical, that the same stroke yields sixteen colour levels without jitter against two hundred
+and ninety seven with it, and that the mean colour moves by less than twelve levels.
+
 export_project writes a .yanshi package: an uncompressed tar holding the append-only atom log, the document
 metadata, every content-addressed blob the log references, a build info file, and a render of the current head made
 at export time. The format is tar rather than zip because zip needs deflate, and the zero-dependency rule rules out

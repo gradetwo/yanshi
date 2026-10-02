@@ -55,6 +55,17 @@ pub struct Dynamics {
     pub count: u32,
     /// 不透明度抖动比例（`0..=1`，见 [`Dynamics::from_appearance`] 的 `opacity_jitter`）。
     pub opacity_jitter: f32,
+    /// **颜色抖动**（`0..=1` ✓）—— 真实用户提的"**破色**" ✓。
+    ///
+    /// **用户原话** ✓："每次 `draw_stroke` 都要传完整 hex 颜色 ✓，没有'在画布上混色'的机制 ✗
+    /// ⇒ 专业油画的'**破色**'（broken color）与'并置'技巧难以实现 ✓，
+    /// agent 只能预先算好几十个 hex 值硬编码" ✗。
+    /// **他要的是** ✓："笔触支持 `color_jitter`（**在给定色相邻范围内随机取色** ✓，模拟手调色的不均匀 ✓）" ✓
+    /// —— 本字段就是它 ✓，语义**逐字照他的话** ✓。
+    ///
+    /// **为什么缺省 0 必须逐字节等同** ✓：这是本项目的铁律 ✓ ——
+    /// 老文档的观感**一个像素都不能变** ✗ ⇒ `0.0` 时**整段扰动代码都不执行** ✓（不是"乘 0" ✓）。
+    pub color_jitter: f32,
     /// 原子种子；所有随机量由它与印章序号派生。
     pub seed: u64,
     /// 程序化纹理。
@@ -72,6 +83,7 @@ impl Default for Dynamics {
             spacing_variance: 0.0,
             count: 1,
             opacity_jitter: 0.0,
+            color_jitter: 0.0,
             seed: 0,
             texture: Texture::none(),
         }
@@ -117,6 +129,8 @@ impl Dynamics {
             spacing_variance: clamp_unit(read_f32(dynamics, "spacing_variance")),
             count: read_count(dynamics),
             opacity_jitter: clamp_unit(read_f32(dynamics, "opacity_jitter")),
+            // **扩展键** ✓ `color_jitter`：0 = 关 ✓（缺省 ✓，与既有一致 ✓）。
+            color_jitter: clamp_unit(read_f32(dynamics, "color_jitter")),
             seed,
             texture,
         }
@@ -135,6 +149,7 @@ impl Dynamics {
             && !self.rotation
             && self.angle_variance == 0.0
             && self.opacity_jitter == 0.0
+            && self.color_jitter == 0.0
     }
 
     /// 计算第 `index` 个印章的抖动参数。
