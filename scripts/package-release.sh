@@ -275,11 +275,38 @@ done
 if [ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]; then
   wasm_linker="${YANSHI_WASM_LINKER:-}"
   if [ -z "${wasm_linker}" ]; then
-    for candidate in /opt/homebrew/opt/llvm/bin/lld /usr/local/opt/llvm/bin/lld; do
+    # **`brew install llvm` 里没有 `lld`** ✗（用户实测 ✓：`/opt/homebrew/Cellar/llvm/23.1.2/bin`
+    # 里全是 clang / llvm-* ✓，**没有** `lld`、也没有 `wasm-ld` ✗）——
+    # Homebrew 里 **`lld` 是单独的 formula** ✓（大约从 LLVM 13 起拆出去 ✓）
+    # ⇒ 要装 `brew install lld` ✓，产物在 `/opt/homebrew/opt/lld/bin/` ✓（`lld` 与 `wasm-ld` 都在 ✓）。
+    # **顺序** ✓：先找 `lld`（多 flavor 驱动 ✓，一定认 rustc 传的 `-flavor wasm` ✓），
+    # 再退到 `wasm-ld`（同一个二进制的符号链接 ✓，一般也认 ✓，但排在后面 ✓）。
+    for candidate in \
+      /opt/homebrew/opt/lld/bin/lld \
+      /usr/local/opt/lld/bin/lld \
+      /opt/homebrew/opt/llvm/bin/lld \
+      /usr/local/opt/llvm/bin/lld \
+      /opt/homebrew/opt/lld/bin/wasm-ld \
+      /usr/local/opt/lld/bin/wasm-ld \
+      /opt/homebrew/opt/llvm/bin/wasm-ld \
+      /usr/local/opt/llvm/bin/wasm-ld; do
       if [ -x "${candidate}" ]; then
         wasm_linker="${candidate}"
         break
       fi
+    done
+  fi
+  # **再问一次 Homebrew 自己** ✓（装在非默认前缀 / 版本目录变了也找得到 ✓）。
+  if [ -z "${wasm_linker}" ] && command -v brew >/dev/null 2>&1; then
+    for formula in lld llvm; do
+      prefix="$(brew --prefix "${formula}" 2>/dev/null || true)"
+      for name in lld wasm-ld; do
+        if [ -n "${prefix}" ] && [ -x "${prefix}/bin/${name}" ]; then
+          wasm_linker="${prefix}/bin/${name}"
+          break
+        fi
+      done
+      [ -n "${wasm_linker}" ] && break
     done
   fi
   if [ -n "${wasm_linker}" ] && [ -x "${wasm_linker}" ]; then
@@ -374,10 +401,12 @@ if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
        rustup 的 `rust-lld` 动态链到 `@rpath/libLLVM.dylib` ✓，而工具链包里没有它 ✗
        ⇒ 所有 `wasm32-unknown-unknown` 的构建都会失败 ✓。
     ⇒ **怎么修（任选一条）** ✓：
-       ① 装 Homebrew 的 LLVM，然后原样重跑 `make release` ✓（本脚本会自动用它当 wasm 链接器 ✓）：
-            brew install llvm
+       ① 装 Homebrew 的 **`lld`**（注意：**`brew install llvm` 里没有 `lld`** ✗ ——
+          `lld` 是单独的 formula ✓），然后原样重跑 `make release` ✓（本脚本会自动用它当链接器 ✓）：
+            brew install lld
+          装完可先确认一眼：`ls -l /opt/homebrew/opt/lld/bin/` ⇒ 应当看到 `lld` 与 `wasm-ld` ✓
           （如果第 ① 条没生效，就显式指定：）
-            YANSHI_WASM_LINKER=/opt/homebrew/opt/llvm/bin/lld make release
+            YANSHI_WASM_LINKER=/opt/homebrew/opt/lld/bin/lld make release
        ② 或者换/更新工具链：`rustup update`（这个缺库是打包问题 ✓，换个版本常常就好了 ✓）。
     ⇒ **注意** ✓：别把 `wasm-ld` 当链接器 ✗ —— rustc 会传 `-flavor wasm`，只有 `lld` 认它 ✓。
     ⇒ 本次发布**继续** ✓，用的是仓库里已提交的插件资产 ✓（内容可能与当前源码不符 ✗）。

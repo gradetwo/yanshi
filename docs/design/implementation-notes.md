@@ -9003,3 +9003,13 @@ brush_appearance ✓ / brush_paint ✓ / medium_stroke ✓）**一条都没改�
 **验证到什么程度** ✓（如实 ✓）：Linux 上**实测**插件重建照旧正常（六支一把过 ✓ 1.01s ✓）；
 macOS 这条分支**我在这台机器上跑不了** ✗ ⇒ 用**合成日志**验证了"认得出 ✓ / 不误认 ✓"两条分支 ✓。
 ⇒ **需要用户在 Mac 上用 `brew install llvm` 复跑一次** ✓（见回帖里的三条命令 ✓）。
+
+**第 42 轮补充（用户实测 ✓）**：`brew install llvm` **里没有 `lld`** ✗ ——
+它的 `/opt/homebrew/Cellar/llvm/23.1.2/bin` 全是 clang / llvm-* ✓，**既没有 `lld` 也没有 `wasm-ld`** ✗
+（Homebrew 从 LLVM 13 前后把 `lld` **拆成单独 formula** ✓）⇒ 我上一条给的建议**不完整** ✗。
+**已改** ✓：查找顺序先 `/opt/homebrew/opt/lld/bin/{lld,wasm-ld}`、`/usr/local/opt/lld/...` ✓，
+再退到旧的 `llvm/bin/*` ✓，最后问 `brew --prefix lld|llvm` ✓；
+失败提示里的命令也改成 `brew install lld` ✓，并加一句"装完先 `ls -l /opt/homebrew/opt/lld/bin/` 确认" ✓。
+**验证** ✓：把同一段查找逻辑抽出来用本机路径逐条试 ✓ —— 有 `lld` ⇒ 选中 ✓；
+只有 `wasm-ld` ⇒ 选中 ✓；**复刻用户那种"llvm/bin 里没有 lld"** ⇒ 一个都不选（保持原样 ✓，等 `lld` formula 装上 ✓）；
+显式路径不存在 ⇒ 不选 ✓。（macOS 本身仍然只能由用户复跑确认 ✓。）

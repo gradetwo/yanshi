@@ -447,11 +447,13 @@ Rust will report if it is missing.
 
 On macOS, rustup's `rust-lld` can fail with `Library not loaded: @rpath/libLLVM.dylib`, which stops every
 `wasm32-unknown-unknown` build, the kernel and the six medium plugins alike. That is a packaging problem in the
-toolchain, not in this repository, and `brew install llvm` is enough to work around it: the packaging script looks
-for `lld` under `/opt/homebrew/opt/llvm/bin` and `/usr/local/opt/llvm/bin` and uses it as the wasm linker, so
-`make release` then just works. You can also name one yourself with `YANSHI_WASM_LINKER=/path/to/lld make release`.
-Point it at `lld` rather than `wasm-ld`, because rustc passes `-flavor wasm` and only the multi flavour driver
-accepts that flag. `rustup update` often clears the failure as well, since different toolchain builds ship the
+toolchain, not in this repository. The workaround is Homebrew's `lld`, installed as its own formula, because the
+`llvm` formula does not ship a linker: `brew install lld` puts `lld` and `wasm-ld` in `/opt/homebrew/opt/lld/bin`
+(or under `/usr/local` on Intel), and the packaging script looks there, then at the `llvm` paths, then asks
+`brew --prefix` for both formulae, so `make release` then just works. You can also name a linker yourself with
+`YANSHI_WASM_LINKER=/path/to/lld make release`. `lld` is preferred over `wasm-ld` only because rustc passes
+`-flavor wasm` and the multi flavour driver is the one that certainly accepts it, though the two are the same
+binary behind different names. `rustup update` often clears the failure as well, since toolchain builds ship the
 library differently. If the plugins cannot be rebuilt for any reason, the release still completes and packages the
 plugin assets committed in `assets/mediums`, which may lag the sources, and the script says so when it does.
 
