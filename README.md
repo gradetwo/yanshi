@@ -190,11 +190,9 @@ The project is MIT (see `LICENSE`), with two notable exceptions and additions.
 `assets/brushes` holds 196 brushes from **mypaint-brushes 2.0.2**, which is **CC0 1.0**; the upstream `COPYING` is kept
 there as `LICENSE-CC0.txt`.
 
-`assets/backgrounds` holds 69 paper and canvas textures from the **MyPaint 2.0.1** assets package, which is
-**GPL-2.0-or-later**. That directory is therefore **not** covered by the repository's MIT licence, and the details are
-in `assets/backgrounds/NOTICE.md`. The project owner's ruling is to use them now with credit, and to decide later
-whether the whole project should move to a GPL compatible licence. Downstream users should read that notice before
-redistributing.
+Paper and canvas textures are being sourced from CC0 providers rather than from MyPaint's own assets, whose
+GPL-2.0-or-later licence would have put a second licence in the tree; the earlier copy was removed for that reason,
+so everything shipped today is MIT or CC0.
 
 `assets/palettes` holds **Open Colors** (15 families, 132 colours), which is MIT, and is the palette set the
 project owner chose to replace MyPaint's own. sK1's public domain palettes are still to be located, since they are

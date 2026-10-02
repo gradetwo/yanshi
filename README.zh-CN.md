@@ -192,10 +192,9 @@ tar.gz 与一份校验和 ✓。
 `assets/brushes` ✓：**196 支**来自 **mypaint-brushes 2.0.2** 的笔刷 ✓，该包是 **CC0 1.0** ✓；
 上游 `COPYING` 一并保留为 `LICENSE-CC0.txt` ✓。
 
-`assets/backgrounds` ✓：**69 张**纸张/画布纹理 ✓，来自 **MyPaint 2.0.1** 资源包 ✓ ⇒ 该部分是 **GPL-2.0-or-later** ✗
-⇒ **不受本仓库 MIT 许可覆盖** ✗，细节见 `assets/backgrounds/NOTICE.md` ✓。
-**项目所有者裁定** ✓：**先用起来并在 README 署名** ✓，**是否整体转成 GPL 兼容许可留待后续考虑** ✓。
-下游再分发前请先读那份说明 ✓。
+纸张/画布纹理改从 **CC0** 来源取材 ✓，不再用 MyPaint 自带那份 ✗ ——
+后者是 **GPL-2.0-or-later** ✓，会把**第二个许可证**带进仓库 ✗ ⇒ 已撤掉 ✓
+⇒ 如今仓库里**只有 MIT 与 CC0** ✓。
 
 `assets/palettes` ✓：**Open Colors** ✓（15 个色系 / **132 色** ✓，**MIT** ✓）⇒
 这是项目所有者选定用来**替换 MyPaint 自带调色板**的那一套 ✓；
