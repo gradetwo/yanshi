@@ -263,6 +263,31 @@ for candidate in "$HOME"/.rustup/toolchains/*/; do
 done
 # **`wasm-bindgen`**：它常装在 `~/.cargo/bin` ✓ 而**不在 PATH** 上 ✗
 #（实测：`command -v wasm-bindgen` 说没有 ✓，其实装着 ✓ —— 又是同一个坑 ✓）。
+# **macOS 上 rustup 的 `rust-lld` 会缺 `libLLVM.dylib`** ✗（真实报告 ✓，2026-10-03 ✓）：
+# 它动态链到 `@rpath/libLLVM.dylib` ✓，而 `stable-aarch64-apple-darwin` 的工具链包里**没有这个库** ✗
+# ⇒ **任何** `--target wasm32-unknown-unknown` 的构建都会失败 ✓（内核与六个介质插件都会 ✓），
+# 而报错是一屏 dyld 的路径列表 ✓ ⇒ 看起来像我们的源码坏了 ✗（其实与源码无关 ✓）。
+#
+# **出路** ✓：用 **Homebrew LLVM 里的 `lld`** ✓（它是多 flavor 驱动 ✓，认 rustc 传的 `-flavor wasm` ✓；
+# 注意**不能**用 `wasm-ld` ✗ —— 那个二进制不认 `-flavor` ✓）。这里**自动找** ✓：
+# 找到就替上 ✓ ⇒ 用户只要 `brew install llvm` ✓，`make release` 就能直接过 ✓，不必记环境变量 ✓。
+# **也可以用环境变量强制指定** ✓：`YANSHI_WASM_LINKER=/path/to/lld make release` ✓。
+if [ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]; then
+  wasm_linker="${YANSHI_WASM_LINKER:-}"
+  if [ -z "${wasm_linker}" ]; then
+    for candidate in /opt/homebrew/opt/llvm/bin/lld /usr/local/opt/llvm/bin/lld; do
+      if [ -x "${candidate}" ]; then
+        wasm_linker="${candidate}"
+        break
+      fi
+    done
+  fi
+  if [ -n "${wasm_linker}" ] && [ -x "${wasm_linker}" ]; then
+    export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="${wasm_linker}"
+    echo "    wasm 链接器：${wasm_linker}（绕开 macOS 上缺 libLLVM.dylib 的 rust-lld ✓）"
+  fi
+fi
+
 bindgen_bin="$(command -v wasm-bindgen 2>/dev/null || true)"
 if [ -z "$bindgen_bin" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
   bindgen_bin="$HOME/.cargo/bin/wasm-bindgen"
@@ -342,8 +367,27 @@ if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
     echo "    已刷新 ${copied} 个介质插件 ✓（它们是提交进仓库的资产 ✓ ⇒ 内容若有变请一并提交 ✓）"
   else
     echo "    ⚠️ 介质插件重建失败 ⇒ 继续用仓库里现有的资产（可能落后于源码 ✗）" >&2
-    echo "    ⇒ 下面是**真正的报错**（最后 15 行 ✓）：" >&2
-    tail -15 "${medium_log}" | sed 's/^/      /' >&2
+    if grep -q "libLLVM.dylib" "${medium_log}" 2>/dev/null; then
+      # **认出来就说人话** ✓（一屏 dyld 路径不会告诉用户"这不怪你的代码"✗）。
+      cat >&2 <<'MACOS_LLD'
+    ⇒ **这是 macOS 工具链的已知坑，与仓库源码无关** ✓：
+       rustup 的 `rust-lld` 动态链到 `@rpath/libLLVM.dylib` ✓，而工具链包里没有它 ✗
+       ⇒ 所有 `wasm32-unknown-unknown` 的构建都会失败 ✓。
+    ⇒ **怎么修（任选一条）** ✓：
+       ① 装 Homebrew 的 LLVM，然后原样重跑 `make release` ✓（本脚本会自动用它当 wasm 链接器 ✓）：
+            brew install llvm
+          （如果第 ① 条没生效，就显式指定：）
+            YANSHI_WASM_LINKER=/opt/homebrew/opt/llvm/bin/lld make release
+       ② 或者换/更新工具链：`rustup update`（这个缺库是打包问题 ✓，换个版本常常就好了 ✓）。
+    ⇒ **注意** ✓：别把 `wasm-ld` 当链接器 ✗ —— rustc 会传 `-flavor wasm`，只有 `lld` 认它 ✓。
+    ⇒ 本次发布**继续** ✓，用的是仓库里已提交的插件资产 ✓（内容可能与当前源码不符 ✗）。
+MACOS_LLD
+      echo "    ⇒ 下面是**真正的报错**（最后 15 行 ✓）：" >&2
+      tail -15 "${medium_log}" | sed 's/^/      /' >&2
+    else
+      echo "    ⇒ 下面是**真正的报错**（最后 15 行 ✓）：" >&2
+      tail -15 "${medium_log}" | sed 's/^/      /' >&2
+    fi
     rm -f "${medium_log}"
   fi
 fi

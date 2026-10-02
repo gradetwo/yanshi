@@ -8979,3 +8979,27 @@ brush_appearance ✓ / brush_paint ✓ / medium_stroke ✓）**一条都没改�
 ⇒ 试着喂**真实位移** ✓，然后对**六支笔刷**（`Round`/`airbrush`/`2B_pencil`/`spray`/`watercolor_glazing`/`100%_Opaque`）
 在两种构建下逐一比墨量、最深处、均值 ✓ ⇒ **逐字节相同** ✗ ⇒ 按纪律**撤回** ✓，
 把实验条件与"将来要有能红的笔刷再动它"写进代码注释 ✓（`stamp_stroke_from` ✓）。
+
+### 🍎 第 42 轮：macOS `make release` 的 `libLLVM.dylib` 报错 —— 工具链坑 + 脚本要说人话 ✓
+
+**现象** ✓（用户实测 ✓）：macOS 上 `make release` 在"重建六个介质插件"那一步全线失败 ✓，
+报错是一屏 dyld 路径 ✓：`rust-lld` 动态链到 `@rpath/libLLVM.dylib` ✓ 而工具链包里没有它 ✗。
+
+**定性** ✓：**与仓库源码无关** ✗ —— `rust-lld` 是 rustup 提供的 ✓，这个缺库是打包问题 ✓；
+后果是**所有** `wasm32-unknown-unknown` 构建都失败 ✓（内核 + 六个介质插件 ✓）。
+**但是**：脚本此前只会把最后 15 行 dyld 噪音原样甩出来 ✓ ⇒ 用户看到的是"我们的构建坏了"✗，
+而不是"装个 LLVM 就好"✓ —— 这是**描述问题**，属于本项目一直在清的那一类 ✓。
+
+**本轮改动** ✓（`scripts/package-release.sh` ✓）：
+1. **自动找替代链接器** ✓：若环境里没有 `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER` ✓，
+   就按序找 `/opt/homebrew/opt/llvm/bin/lld`、`/usr/local/opt/llvm/bin/lld` ✓，找到就**替上** ✓
+   ⇒ 用户 `brew install llvm` 之后 `make release` **原样能过** ✓（不必记环境变量 ✓）。
+   也支持显式指定：`YANSHI_WASM_LINKER=/path/to/lld make release` ✓。
+   **必须用 `lld` 而不是 `wasm-ld`** ✓：rustc 会传 `-flavor wasm` ✓，只有多 flavor 驱动认它 ✓。
+2. **认出这个签名就说人话** ✓：日志里出现 `libLLVM.dylib` ⇒ 打印一段可照着做的说明 ✓
+   （不怪源码 ✓、三条出路 ✓、并说明本次发布**继续用仓库里已提交的插件** ✓）；
+   别的失败仍然只打最后 15 行 ✓（不误认 ✓）。
+
+**验证到什么程度** ✓（如实 ✓）：Linux 上**实测**插件重建照旧正常（六支一把过 ✓ 1.01s ✓）；
+macOS 这条分支**我在这台机器上跑不了** ✗ ⇒ 用**合成日志**验证了"认得出 ✓ / 不误认 ✓"两条分支 ✓。
+⇒ **需要用户在 Mac 上用 `brew install llvm` 复跑一次** ✓（见回帖里的三条命令 ✓）。
