@@ -4263,9 +4263,17 @@ async function setupAssetPanels() {
           : "，铺满整幅 ✓");
       if (result && result.warning) text += "　⚠️ " + result.warning;
       if (textureInfo) textureInfo.textContent = text;
+      // **铺完纹理之后，必须让画布整体改用"服务端像素"** ✗ —— 用户实测（macOS ✓）：
+      // 铺完纹理后**画第一笔**时画面被纹理盖住 ✗，而**按刷新按钮就正常** ✓。
+      // **机理** ✓：`texture_background` 在服务端把纹理层**沉到最底** ✓（那是它的契约 ✓），
+      // 而**客户端本地的图层顺序没有跟着变** ✗ ⇒ 本地重绘时纹理仍压在笔迹之上 ✓
+      // ⇒ 症状正是"第一笔被纹理覆盖" ✓，而刷新 = **重新同步** ⇒ 顺序对了 ✓ ✓。
+      // ⇒ 修法不是"再重绘一次" ✗，而是**强制这一帧由服务端产出** ✓（顺序只有服务端说得准 ✓）。
+      needsServerPixels = true;
       await refreshPreview();
-      // **服务端改了文档 ⇒ 画布必须重绘** ✓（这条与 `resync()` 那次的教训同一个 ✓）。
       await resync();
+      // **再排一次服务端补画** ✓（顺序改动之后，本地那份像素已经不可信 ✓）。
+      queueServerBlit(null);
     });
   }
 }
