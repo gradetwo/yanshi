@@ -236,6 +236,14 @@ The tool and effect inventory is in [docs/tools.md](docs/tools.md).
 
 ## Viewer controls
 
+Where the controls are, since a few are easy to miss: the tool rail down the left holds the brush, shapes, text and
+the rest, each with its icon and shortcut; the option row above the canvas holds the tool's parameters, including the
+**medium** picker (example, oil, watercolour, marker, pencil, pixel), which is the control for painting with a plugin
+rather than the built-in brush; the layer list on the right carries a per-layer eye and lock; and the buttons above
+the canvas include `导出 PNG`. Hiding the last visible layer blanks the canvas, which is what hiding means rather
+than a fault; the eye toggles visibility and the lock only prevents editing. Exporting a project, as opposed to a
+PNG, is available over the tool API as `export_project` and does not yet have a button in the viewer.
+
 Drag to paint; `＋ 图层` adds a layer; `撤销` / `重做` undo and redo repeatedly (multi-level). Wheel zooms around the cursor,
 middle-drag pans, `+` / `-` / `0` zoom in, out and fit, and `1:1` shows one document pixel per CSS
 pixel, `导出 PNG` downloads the full-resolution render, the 打开 dialog lists the server's documents and imports local images (PNG/JPEG/WebP are decoded
