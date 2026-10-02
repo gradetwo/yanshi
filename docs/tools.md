@@ -104,6 +104,14 @@ Layers already support the multiply, screen, overlay, darken, lighten, add, subt
 alongside normal, settable through the layer patch, so the missing piece there was documentation rather than
 capability.
 
+batch takes a silent flag which suppresses the preview that every write call would otherwise render. Batches
+share one tool context, so setting the flag once covers every nested call, and previews are produced in a single place
+in the tool layer, which is what makes this a small change rather than a cross-cutting one. It defaults to false, so
+no existing caller changes behaviour, and the flag is restored when the batch ends because the context is shared and
+a leak would silently affect later calls. The tests assert that without the flag every nested result carries a
+preview, that with it none do, and that silence only suppresses previews: atoms still land and the drawing still
+renders.
+
 appearance.dynamics gained color_jitter, which makes the tip colour wander within a small range around the given
 colour, one stamp at a time and deterministically from the seed and stamp index, which is what a painter means by
 broken colour and what a user asked for after pointing out that every stroke otherwise needs a full colour spelled

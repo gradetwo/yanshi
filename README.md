@@ -10,6 +10,12 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Batching without previews
+
+`batch` accepts `silent: true` to skip the preview that each nested write call would render, which matters when a
+large area is hatched with hundreds of strokes and none of the intermediate previews will ever be looked at. It
+defaults to false and only affects previews; the atoms and the drawing are unchanged.
+
 ## Broken colour
 
 `appearance.dynamics.color_jitter` from 0 to 1 lets the tip colour wander slightly around the given colour, stamp by

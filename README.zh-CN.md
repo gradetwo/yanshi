@@ -9,6 +9,12 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 批量静默提交
+
+`batch` 支持 **`silent: true`** ✓：不再为**每个子调用**生成预览 ✓ ——
+大面积排线几百笔时 ✓，那些**中间预览没人会看** ✓。
+**缺省 false** ✓，且**只影响预览** ✓：原子照落 ✓、画照画 ✓。
+
 ## 破色（颜色抖动）
 
 `appearance.dynamics.color_jitter`（0..1）让**笔尖色在给定色附近逐印章轻微游走** ✓ —— 这就是油画说的**破色** ✓。

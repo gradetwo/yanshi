@@ -188,6 +188,13 @@ pub struct ToolContext<'a> {
     pub owner: bool,
     /// 是否等待渲染完成（6.7 `wait_for_render`，默认 true）。
     pub wait_for_render: bool,
+    /// **静默：不生成每次调用的预览** ✓（真实用户 §五-5 的"批量静默提交" ✓）。
+    ///
+    /// **为什么值得** ✓：用户原话 —— "批处理提交时为每个细分笔触**实时生成预览**与原子快照 ✓，
+    /// 在大画布大规模排线时产生**额外的 CAS 临时 IO**" ✗。
+    /// 一屏 500 笔 ⇒ **500 张预览** ✗ —— 而那些中间预览**没有人会看** ✗（批处理结束后画布就是最终状态 ✓）。
+    /// **缺省 false** ✓：**不改变既有行为** ✓ —— 新开关一律缺省关闭 ✓，绝不偷偷改老调用方的观感与开销 ✗。
+    pub silent: bool,
     /// 等待预算（毫秒）。
     pub wait_budget_ms: u64,
     /// 当前时间。
@@ -211,6 +218,7 @@ impl<'a> ToolContext<'a> {
             session: session.into(),
             owner: false,
             wait_for_render: true,
+            silent: false,
             wait_budget_ms: 500,
             now: yanshi_core::now_ms(),
             changeset: None,
@@ -751,7 +759,9 @@ fn finish_mutation(
     }
 
     let mut preview = None;
-    if ctx.wait_for_render {
+    // **静默时连"取缓存地址"都跳过** ✓ —— 不只是省一次渲染 ✓：
+    // 500 次调用各带一份预览 JSON ✓ 本身就是可观的响应体积与 IO ✓（用户报的正是这份额外开销 ✓）。
+    if ctx.wait_for_render && !ctx.silent {
         // 区域预览（8.2/8.3）：只渲染 dirty 区域，避免每次修改都全图重算。
         match preview_region {
             Some(bbox) => {
@@ -1545,6 +1555,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]"),
             param!("message", String, false, "变更集说明"),
+            param!(
+                "silent",
+                Boolean,
+                false,
+                "true = 不生成每次调用的预览（大批量排线时省下大量临时 IO；缺省 false，行为不变）"
+            ),
         ],
     },
     // ---- 扩展：history ----
@@ -9013,6 +9029,12 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }
     let registry = ToolRegistry::full();
     let changeset = Changeset::new_id();
+    // **静默批处理** ✓（用户 §五-5 ✓）：`batch` 里的子调用**共用这个 `ctx`** ✓
+    // ⇒ 在这里置一次 ✓ ⇒ **所有子调用都不再生成预览** ✓（一处生效、全部受益 ✓）。
+    let previous_silent = ctx.silent;
+    if optional_bool(args, "silent").unwrap_or(false) {
+        ctx.silent = true;
+    }
     // batch 内的原子共用一个变更集（5.6：一个 batch 通常对应一个变更集）。
     let previous = ctx.changeset.replace(changeset.clone());
     let mut results = Vec::new();
@@ -9052,6 +9074,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         results.push(json!({"tool": name, "result": value}));
     }
     ctx.changeset = previous;
+    // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
+    //（那些调用本该照常带预览 ✓）。**共享上下文里"改了就要还原"** ✓ —— 与 `changeset` 同一规矩 ✓。
+    ctx.silent = previous_silent;
     let head = ctx
         .workspace
         .document(&ctx.doc_id)
