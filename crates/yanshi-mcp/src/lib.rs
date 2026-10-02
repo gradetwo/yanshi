@@ -231,21 +231,11 @@ impl Server {
     }
 
     /// 工具清单（`tools/list`）。
+    ///
+    /// **与 HTTP 的 `GET /api/tools` 是同一份** ✓ —— 两边都调注册表那一个函数 ✗
+    ///（各写一份必然漂移 ✓；外部 agent 实测就是靠 MCP 这份才发现 HTTP 侧缺清单 ✓）。
     pub fn tools_list(&self) -> Value {
-        let tools: Vec<Value> = self
-            .registry
-            .tools()
-            .iter()
-            .map(|tool| {
-                self.registry
-                    .input_schema(tool.name)
-                    .unwrap_or_else(|| json!({"name": tool.name}))
-            })
-            .collect();
-        json!({
-            "tools": tools,
-            "profiles": self.registry.profiles().iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
-        })
+        self.registry.tools_list_json()
     }
 
     /// 处理一条 JSON-RPC 消息；通知返回 `None`。

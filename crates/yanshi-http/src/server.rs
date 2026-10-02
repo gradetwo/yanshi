@@ -467,8 +467,17 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     }
     if path == "/api/tools" {
         return match method {
+            // **`GET /api/tools` = 工具清单** ✓（本轮补 ✓）。
+            //
+            // **为什么必须有** ✗：外部绘画 agent 实测——HTTP 侧**没有**任何工具清单 ✓、
+            // `docs/tools.md` 是设计散文（没有参数表 ✗）⇒ 它只能去读 **11,834 行** `tools.rs` 拿参数名 ✗；
+            // 而同一个引擎的 MCP `tools/list` **明明有** 58 个工具 + 完整 `inputSchema` ✓
+            // ⇒ 这是"Web 与 MCP 不一致"里最贵的一条 ✓。
+            // **清单与 MCP 逐字相同** ✓：都调 `ToolRegistry::tools_list_json` ✓（在 yanshi-server 里 ✓）
+            // ⇒ **一处定义、两处使用** ✗（各写一份必然漂移 ✓）。
+            "GET" => Response::json(200, &state.registry.tools_list_json()),
             "POST" => tool_route(state, request),
-            _ => method_not_allowed(request, "POST"),
+            _ => method_not_allowed(request, "GET, POST"),
         };
     }
     if path == "/api/blob" {
@@ -946,7 +955,14 @@ fn tool_route(state: &ServerState, request: &Request) -> Response {
         return crate::http::bad_request("请求体不是合法 JSON");
     };
     let Some(name) = body.get("tool").and_then(Value::as_str) else {
-        return crate::http::bad_request("缺少 tool 字段");
+        // **说清两种写法** ✗（外部 agent 实测：它把平铺参数发到 `/api/tools` ✓ ⇒ 只拿到
+        // "缺少 tool 字段" ✓ ⇒ 完全猜不到这个服务有两条路 ✓，以为是自己参数写错 ✓）。
+        return crate::http::bad_request(
+            "缺少 tool 字段。本服务有**两种**调用写法：\
+             ① POST /api/tools 的请求体是 {\"tool\": \"<工具名>\", \"arguments\": {…参数…}}；\
+             ② POST /api/tools/<工具名> 的请求体**就是参数本身**（平铺）。\
+             想知道有哪些工具与参数 ⇒ GET /api/tools（返回与 MCP tools/list 逐字相同的清单）",
+        );
     };
     let name = name.to_owned();
     let arguments = body
@@ -1710,6 +1726,55 @@ mod tests {
         Request::read(&mut std::io::Cursor::new(raw.into_bytes()))
             .unwrap()
             .unwrap()
+    }
+
+    /// **`GET /api/tools` 必须与 MCP `tools/list` 是同一份** ✓（外部绘画 agent 实测的第一大摩擦 ✗）。
+    ///
+    /// **判据** ✓：① 这个路由回 200 且不是 `method_not_allowed`（修复前正是它 ✗ —— 只能 POST ✓）；
+    /// ② 清单里的工具名**与注册表逐个相同** ✓（两边现在都调 `tools_list_json` ✓ ⇒ "逐字相同"是**结构性**的 ✓，
+    /// 这里把它钉住 ✓）；③ 每一条都带 `inputSchema` 与 `description` ✓（否则 agent 还是得读源码 ✗）。
+    #[test]
+    fn the_tool_catalogue_is_served_over_http_and_matches_the_registry() {
+        let state = state();
+        let response = route(&state, &request("GET", "/api/tools"));
+        assert_eq!(
+            response.status, 200,
+            "GET /api/tools 必须可用（修复前是 405 ✗）"
+        );
+        let value = body_json(&response);
+        let listed: Vec<String> = value["tools"]
+            .as_array()
+            .expect("tools 应当是数组")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or("").to_owned())
+            .collect();
+        let expected: Vec<String> = state
+            .registry
+            .tools()
+            .iter()
+            .map(|tool| tool.name.to_owned())
+            .collect();
+        assert_eq!(listed, expected, "HTTP 清单必须与注册表逐个相同 ✓");
+        assert!(
+            !listed.is_empty(),
+            "清单不能是空的（空清单比没有清单更糟 ✗）"
+        );
+        for tool in value["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap_or("");
+            assert!(
+                tool["inputSchema"].is_object(),
+                "{name} 必须带 inputSchema（否则 agent 只能去读源码 ✗）"
+            );
+            assert!(
+                tool["description"].as_str().unwrap_or("").len() > 4,
+                "{name} 必须有可读的 description ✓"
+            );
+        }
+        // **profiles 也一起报** ✓（调用方才知道"哪些组开着" ✓ —— 与未知工具那条错误同源 ✓）。
+        assert!(
+            value["profiles"].is_array(),
+            "清单里应当带 profiles：{value}"
+        );
     }
 
     /// 建一个文档并返回 Editor token（本模块多个测试需要）。

@@ -406,7 +406,28 @@ impl ToolRegistry {
         self.tools.iter().find(|tool| tool.name == name)
     }
 
-    /// MCP `tools/list` 用的 JSON Schema。
+    /// **工具清单 JSON** ✓ —— HTTP 的 `GET /api/tools` 与 MCP 的 `tools/list` **必须逐字相同** ✗。
+    ///
+    /// **为什么放在这里** ✓：外部绘画 agent 实测报"HTTP 没有工具清单 ⇒ 只能去读 11,834 行 Rust"✗，
+    /// 而 MCP 那边明明有 ✓ —— 两边**各写一份**必然漂移 ✗（本项目的老毛病 ✓）
+    /// ⇒ 清单只由**注册表**生成一次 ✓，HTTP 与 MCP 都调它 ✓。
+    /// **判据**（外部 agent 自己提的 ✓）：两边的工具名集合**逐字相同** ✓（有测试 ✓）。
+    pub fn tools_list_json(&self) -> Value {
+        let tools: Vec<Value> = self
+            .tools()
+            .iter()
+            .map(|tool| {
+                self.input_schema(tool.name)
+                    .unwrap_or_else(|| json!({"name": tool.name}))
+            })
+            .collect();
+        json!({
+            "tools": tools,
+            "profiles": self.profiles().iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
+        })
+    }
+
+    /// MCP `tools/list` 用的 JSON Schema（**HTTP 的 `GET /api/tools` 也用它** ✓ —— 见上 ✓）。
     pub fn input_schema(&self, name: &str) -> Option<Value> {
         let tool = self.get(name)?;
         Some(input_schema(tool))
@@ -417,7 +438,21 @@ impl ToolRegistry {
         let Some(spec) = self.get(name) else {
             return error_response(&YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("未知工具 {name}（当前 profile 未启用或不存在）")),
+                // **"拼错名字"与"被 profile 禁用"是两件事，以前给同一句话** ✗
+                // （外部 agent 实测 ✓：它调 `analyze_image`（semantic 未实现 ✓）与 `frobnicate_canvas`
+                //  （不存在 ✓）拿到**逐字相同**的错误 ✓ ⇒ 既不知道是不是自己拼错 ✓，
+                //   也不知道服务端开着哪些组 ✓）。⇒ 把**已启用的 profile 列出来** ✓ + 给全开的开关 ✓。
+                ErrorContext::detail(format!(
+                    "未知工具 {name} —— 可能是拼错，也可能是它所属的组**没有启用** ✓。\
+                     当前启用的组：{}。\
+                     要看**完整清单与参数** ⇒ HTTP `GET /api/tools`，或 MCP `tools/list` ✓；\
+                     要用上全部已实现的组 ⇒ 启动时给 `--profile all` ✓",
+                    self.profiles()
+                        .iter()
+                        .map(|profile| profile.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
             ));
         };
         // **Phase 5：角色权限的落点就是这里** ✓（目标原文："**内核/工具层强制**" ✓）。
@@ -1111,7 +1146,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_text",
         profile: Profile::Core,
-        summary: "绘制文本对象（内核用内置 5×7 ASCII 位图字体光栅化；CJK 字体子集属后续项）",
+        // **实测纠正** ✓（外部绘画 agent 报 ✓）：它用 `draw_text{"text":"YANSHI 黄昏 ab"}` 一次就
+        // **完整画出两个汉字** ✓，而描述里还写着"CJK 字体子集属后续项" ✗
+        // ⇒ **过时的描述会让 agent 主动放弃可用的能力** ✗（与"参数被静默忽略"是同一类损失 ✓）。
+        summary: "绘制文本对象（内核用内置位图字体光栅化；ASCII 与常用 CJK 都能画）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2217,6 +2255,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
             param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节）/ \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
             param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（Loaded Brush ✓）：花瓣 / 叶尖那种渐变**一笔就能画** ✓，不必分两笔（交界不会有硬边 ✓）；给了它就必须同时给 color ✓"),
+            // **与 `draw_stroke` 对齐** ✓（外部绘画 agent 实测痛点 ✓："要 MyPaint 物理"和"要能控透明度"
+            // 以前**无法同时满足** ✗ ⇒ 它只能放弃画笔/介质引擎、改用 `draw_stroke` 画云 ✓）。
+            param!("opacity", Number, false, "整笔不透明度 0..1（映射到 MyPaint 的 `opaque` = **每枚 dab 的不透明度** ✓）；缺省用 `.myb` 自带的 ✓"),
+            param!("hardness", Number, false, "笔尖硬度 0..1（映射到 MyPaint 的 `hardness` ✓：0=软边、1=硬边）；缺省用 `.myb` 自带的 ✓"),
             param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
@@ -2786,13 +2828,42 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
         let raw_hash = ctx.workspace.store().put(&pixels)?;
         let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        // **越界区域是"被裁掉的"，不许静默** ✗（外部 agent 实测 ✓：900 宽画布上要 `{x:790,w:130}` ✓
+        // ⇒ 实际只回 110 宽 ✓、**不报错** ✓ —— 它靠 `raw size != 期望字节数` 才发现 ✗，
+        //   而别人很可能把"少了的那块"当成"那里本来就是空的" ✗）。
+        // ⇒ **把请求的区域与实际的区域都报出来** ✓，并给一个 `clipped` 布尔 ✓（调用方一眼能判 ✓）。
+        let (doc_w, doc_h) = (
+            document.state().width as f64,
+            document.state().height as f64,
+        );
+        let actual_x = region.x.max(0.0).min(doc_w);
+        let actual_y = region.y.max(0.0).min(doc_h);
+        let actual_w = (region.x + region.w).min(doc_w).max(actual_x) - actual_x;
+        let actual_h = (region.y + region.h).min(doc_h).max(actual_y) - actual_y;
+        let clipped = actual_w != region.w
+            || actual_h != region.h
+            || actual_x != region.x
+            || actual_y != region.y;
         return Ok(json!({
             "ok": true,
             "head_seq": document.head_seq(),
             "width": width,
             "height": height,
+            // **请求的** ✓ 与**实际给的** ✓ —— 两个都写 ✓。
+            "requested": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+            "region": {"x": actual_x, "y": actual_y, "w": actual_w, "h": actual_h},
+            "canvas": {"w": doc_w, "h": doc_h},
+            "clipped": clipped,
             "raw_url": format!("yanshi://blob/{raw_hash}"),
             "mime_type": yanshi_render::RAW_RGBA_MIME,
+            "warnings": if clipped {
+                vec![format!(
+                    "区域越界 ⇒ 已裁到画布内：请求 {}×{} @({},{})，实际 {}×{} @({},{}) ✓",
+                    region.w, region.h, region.x, region.y, actual_w, actual_h, actual_x, actual_y
+                )]
+            } else {
+                Vec::new()
+            },
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
@@ -3562,9 +3633,14 @@ fn restyle_baked_brush_stroke(
     let core = args.get("core").and_then(Value::as_object);
     if let Some(core) = core {
         for key in core.keys() {
-            if key != "color" && key != "color_to" && key != "size" && key != "opacity" {
+            if key != "color"
+                && key != "color_to"
+                && key != "size"
+                && key != "opacity"
+                && key != "hardness"
+            {
                 return refuse(format!(
-                    "画笔笔触的重跑只认 color / color_to / size / opacity ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
+                    "画笔笔触的重跑只认 color / color_to / size / opacity / hardness ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
                 ));
             }
         }
@@ -3598,6 +3674,10 @@ fn restyle_baked_brush_stroke(
         .and_then(|core| core.get("opacity"))
         .and_then(Value::as_f64)
         .or_else(|| source.get("opacity").and_then(Value::as_f64));
+    let hardness = core
+        .and_then(|core| core.get("hardness"))
+        .and_then(Value::as_f64)
+        .or_else(|| source.get("hardness").and_then(Value::as_f64));
     let color = core
         .and_then(|core| core.get("color"))
         .cloned()
@@ -3627,6 +3707,7 @@ fn restyle_baked_brush_stroke(
         color.as_ref(),
         color_to.as_ref(),
         opacity,
+        hardness,
         false,
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
@@ -3654,9 +3735,13 @@ fn restyle_baked_brush_stroke(
         "color_to": color_to.clone().unwrap_or(Value::Null),
         "smooth": smooth,
         "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
+        "hardness": hardness.map(|value| json!(value)).unwrap_or(Value::Null),
     });
     if let Some(value) = opacity {
         new_data["opacity"] = json!(value);
+    }
+    if let Some(value) = hardness {
+        new_data["hardness"] = json!(value);
     }
     let payload = json!({
         "object_id": object_id,
@@ -10373,6 +10458,8 @@ fn paint_brush(
     color_to: Option<&Value>,
     // **这一笔的不透明度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `opaque` ✓。
     opacity: Option<f64>,
+    // **笔尖硬度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `hardness` ✓。
+    hardness: Option<f64>,
     feed_base: bool,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx, brush_name)?;
@@ -10380,6 +10467,12 @@ fn paint_brush(
         brush.set(
             hokusai::BrushSetting::Opaque,
             hokusai::SettingValue::constant(opacity.clamp(0.0, 1.0) as f32),
+        );
+    }
+    if let Some(hardness) = hardness {
+        brush.set(
+            hokusai::BrushSetting::Hardness,
+            hokusai::SettingValue::constant(hardness.clamp(0.0, 1.0) as f32),
         );
     }
     // **`size` 是"直径像素"** ✓，而 MyPaint 的设置叫 `radius_logarithmic` ✓（存的是 ln(半径) ✓）。
@@ -10686,6 +10779,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
     let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
     let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
+    let hardness_source = args.get("hardness").cloned().unwrap_or(Value::Null);
     // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
     // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
     let points = if optional_bool(args, "smooth").unwrap_or(false) {
@@ -10701,7 +10795,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         args.get("size").and_then(Value::as_f64),
         args.get("color"),
         args.get("color_to"),
-        None,
+        args.get("opacity").and_then(Value::as_f64),
+        args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
     )?;
@@ -10729,6 +10824,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "color_to": color_to_source,
             "smooth": smooth_source,
             "opacity": opacity_source,
+            "hardness": hardness_source,
         },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),
@@ -10797,7 +10893,8 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         Some(size),
         args.get("color"),
         args.get("color_to"),
-        None,
+        args.get("opacity").and_then(Value::as_f64),
+        args.get("hardness").and_then(Value::as_f64),
         false,
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);

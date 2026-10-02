@@ -767,3 +767,69 @@ fn a_semi_transparent_stroke_stores_the_pure_colour_not_a_premultiplied_one() {
         "两条笔触都应当有墨 ✓（实测 alpha {a1} / {a2}）"
     );
 }
+
+/// **`brush_stroke` 的 `opacity` / `hardness` 真的进到引擎** ✓ ——
+/// 外部绘画 agent 实测痛点（原文 ✓）："`draw_stroke` 有 hardness + opacity，**`brush_stroke` 没有**
+/// ⇒ 要 MyPaint 物理和要可控透明度**无法同时满足**"✗ —— 它只能放弃笔刷引擎、改用 `draw_stroke` 画云 ✓。
+///
+/// **判据（两条都能红 ✓，都不看"返回 ok"✗）**：
+/// ① `opacity` 0.25 与 1.0 ⇒ 对象 blob 的**平均 alpha** 必须显著下降 ✓（笔触变淡 ✓）；
+/// ② `hardness` 0.3 与 1.0 ⇒ 软边的**平均 alpha 更低** ✓（同样的墨摊在更宽的过渡上 ✓）；
+///    （`hardness: 0.0` 在本引擎上**一枚 dab 都不落** ✓ ⇒ 那档不用来当判据 ✓，如实写在这里 ✓）。
+/// 把落笔时那两处 `brush.set` 去掉 ⇒ 两者**逐字节相同** ⇒ 两条都当场红 ✓（实测过 ✓）。
+#[test]
+fn brush_stroke_opacity_and_hardness_reach_the_engine() {
+    let root = temp_dir("opacity_hardness");
+    let mut workspace = workspace(&root);
+    let probe = |workspace: &mut Workspace, object: &str, extra: serde_json::Value| -> f64 {
+        assert_eq!(
+            call(workspace, "create_layer", json!({ "layer_id": object }))["ok"],
+            json!(true)
+        );
+        let mut args = json!({
+            "layer_id": object, "object_id": object, "brush": "100%_Opaque", "size": 40,
+            "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+            "points": [[40.0, 60.0, 1.0], [160.0, 60.0, 1.0]]
+        });
+        for (key, value) in extra.as_object().cloned().unwrap_or_default() {
+            args[key] = value;
+        }
+        let made = call(workspace, "brush_stroke", args);
+        assert_eq!(made["ok"], json!(true), "{made}");
+        let got = call(workspace, "get_object", json!({ "object_id": object }));
+        let hash: yanshi_core::BlobHash = got["data"]["bitmap"]["blob_hash"]
+            .as_str()
+            .expect("画笔笔触应当带 bitmap.blob_hash")
+            .parse()
+            .expect("blob 地址应当能解析");
+        let pixels = workspace.store().get(&hash).expect("对象 blob 应当取得到");
+        let mut total = 0f64;
+        let mut count = 0f64;
+        for pixel in pixels.chunks_exact(4) {
+            if pixel[3] > 0 {
+                total += f64::from(pixel[3]);
+                count += 1.0;
+            }
+        }
+        total / count.max(1.0)
+    };
+    let opaque = probe(&mut workspace, "full", json!({"opacity": 1.0}));
+    let faint = probe(&mut workspace, "quarter", json!({"opacity": 0.25}));
+    eprintln!("  opacity：1.0 ⇒ 平均 alpha {opaque:.1} ／ 0.25 ⇒ {faint:.1}");
+    // **阈值不能按"每 dab 的 opaque"去要求 1/4** ✗（实测 252.5 ⇒ 184.1 = 0.73 ✓）：
+    // 一条笔触上有**几十枚 dab 叠加** ✓ ⇒ 单枚 0.25 的不透明度会被**累积**回一大截 ✓（这是引擎的正确行为 ✓）。
+    // 判据取"**明显更淡**"（< 0.9×）✓ —— 参数被忽略时两者**逐字节相同** ⇒ 照样红 ✓。
+    assert!(
+        faint < opaque * 0.9,
+        "opacity 0.25 必须明显淡于 1.0 ✗（实测 {opaque:.1} ⇒ {faint:.1}）"
+    );
+    // **`hardness: 0.0` 会一枚 dab 都不落** ✓（实测：`precondition_failed`"没落下任何像素"✗）——
+    // 那是引擎对"完全软边"的真实行为 ✓，不是本测试要测的东西 ✗ ⇒ 取 0.3 与 1.0（两头都能落墨 ✓）。
+    let hard = probe(&mut workspace, "hard", json!({"hardness": 1.0}));
+    let soft = probe(&mut workspace, "soft", json!({"hardness": 0.3}));
+    eprintln!("  hardness：1.0 ⇒ 平均 alpha {hard:.1} ／ 0.3 ⇒ {soft:.1}");
+    assert!(
+        soft < hard,
+        "软边（hardness 0）的平均 alpha 应当低于硬边 ✗（实测 {hard:.1} ⇒ {soft:.1}）"
+    );
+}
