@@ -300,6 +300,11 @@ named it creates one and moves it to the bottom, since a background belongs unde
 that already has content was named instead, because measurement showed that within a single layer an imported bitmap
 ends up above the objects already there.
 
+Assets are found by resolving a list of candidates, not by trusting a relative default, and the chosen directory
+is printed at startup. The default was the relative path `assets`, so starting the server from anywhere other than the
+repository root silently produced empty lists for brushes, palettes and textures, which reads as a feature that was
+never built rather than as files that were not found. If nothing is found the message names every path that was tried.
+
 ## If the interface looks older than the checkout
 
 The viewer page is compiled into the binary, so a server process started before a change will keep serving the old
