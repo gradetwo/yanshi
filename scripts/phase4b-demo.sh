@@ -25,7 +25,8 @@ tool() { curl -s -X POST "$BASE/api/tools/$1?doc=$DOC&token=$TOKEN" -d "$2"; }
 fingerprint() {
   local url
   url="$(tool render_region '{"region":{"x":0,"y":0,"w":256,"h":256}}' | pick "['thumb_url']")"
-  curl -s "$BASE${url#yanshi://blob}" | sha256sum | cut -c1-16
+  # **macOS 没有 `sha256sum`** ✗（那边是 `shasum -a 256` ✓）⇒ 选一个存在的 ✓。
+  curl -s "$BASE${url#yanshi://blob}" | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } | cut -c1-16
 }
 
 step "铺一层中灰底"

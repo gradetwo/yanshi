@@ -305,6 +305,17 @@ is printed at startup. The default was the relative path `assets`, so starting t
 repository root silently produced empty lists for brushes, palettes and textures, which reads as a feature that was
 never built rather than as files that were not found. If nothing is found the message names every path that was tried.
 
+## Packaging on macOS and other non-Linux systems
+
+The glibc machinery is Linux only, and it used to run unconditionally: on macOS `ldd` and `objdump` do not exist, and
+static linking is not the right answer there in the first place, since `-C target-feature=+crt-static` is a workaround
+for a glibc problem that macOS does not have. The packaging now detects the host and, off Linux, defaults to a dynamic
+build, skips the glibc check, and says why rather than failing. It also says plainly that a package with no GLIBC
+symbols is not thereby portable, since portability is decided by the target system. Two other GNU-only assumptions
+were removed while checking: `find -printf` in the texture fetch script and a hard dependency on `sha256sum`, which on
+macOS is spelled `shasum -a 256`; the checksum helper picks whichever exists, and the command printed for the user
+matches the platform.
+
 ## If the interface looks older than the checkout
 
 The viewer page is compiled into the binary, so a server process started before a change will keep serving the old

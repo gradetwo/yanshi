@@ -31,7 +31,43 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$repo/dist"
 skip_build=0
-static_build=1   # **静态是默认** ✓（见文件头的说明 ✓）
+# **宿主平台** ✓（真实用户报告 ✓：在 macOS 上跑 `make release` 报 glibc 检查错误 ✗）。
+#
+# **为什么必须分流** ✓：glibc 是 **Linux 的 C 库** ✓ —— macOS 用 libSystem ✓
+# ⇒ `ldd` / `objdump` **在 macOS 上根本不存在** ✗，而"静态链接"这条**权宜之计也不适用** ✗
+#（`-C target-feature=+crt-static` 在 macOS 上没有意义 ✓）⇒ 不分流就必然误报 ✓。
+# **哪边都能算 sha256** ✓（真实用户报告 ✓：macOS 上 `sha256sum` 不存在 ✗，
+# 那边叫 `shasum -a 256` ✓）⇒ 选一个存在的 ✓，而不是假定自己在 Linux 上 ✗。
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_of() { sha256sum "$1"; }
+  sha256_check() { sha256sum -c "$1"; }
+  sha_tool="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_of() { shasum -a 256 "$1"; }
+  sha256_check() { shasum -a 256 -c "$1"; }
+  sha_tool="shasum -a 256"
+else
+  sha256_of() { echo "没有 sha256 工具 ✗" >&2; return 1; }
+  sha256_check() { echo "没有 sha256 工具 ✗" >&2; return 1; }
+  sha_tool="（缺）"
+fi
+
+host_os="$(rustc -vV | sed -n 's/^host: //p' | cut -d- -f3-)"
+# **允许环境变量覆盖** ✓：这样"macOS 那条分支"能在 Linux 上被验收 ✓
+#（否则只能等真的有一台 macOS ✗ —— 那等于**不测** ✓）。
+host_os="${YANSHI_HOST_OS:-${host_os}}"
+case "${host_os}" in
+  *linux*) is_linux=1 ;;
+  *) is_linux=0 ;;
+esac
+
+# **"静态是默认"只是 Linux 的规矩** ✓（为的是不把构建机的 glibc 带进包里 ✓）；
+# 别的平台**默认动态** ✓ —— 在那里"静态"既没必要也可能直接构建失败 ✗。
+if [ "${is_linux}" = 1 ]; then
+  static_build=1
+else
+  static_build=0
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
@@ -262,7 +298,7 @@ cat > "$stage/USAGE.md" <<'USAGE'
 
 ## 校验
 
-    sha256sum -c SHA256SUMS
+    ${sha_tool} -c SHA256SUMS   # 说给用户听的命令要**按平台说对** ✓
 USAGE
 
 # **包内 BUILD-INFO** ✓：版本 / commit / 目标平台 / 构建时间 / rustc 版本 ✓。
@@ -279,20 +315,31 @@ INFO
 # **打包守卫：报出这个包要求多新的 glibc** ✓ —— 用户正是在这里踩的坑 ✗：
 # 动态包会**静默继承构建机的 glibc** ✓（实测 2.43 ✓），到 Debian 12（2.36 ✓）就直接崩 ✗。
 # 所以这里**每次都打印** ✓；静态包则明确说"完全不依赖" ✓。
-echo "--> 检查运行期依赖（glibc 要求）"
-if ldd "$stage/bin/yanshi-serve" 2>&1 | grep -q "statically linked"; then
-  echo "    静态链接 ✓ 不依赖任何 glibc 版本 ✓"
-else
-  newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
-  echo "    动态链接 ⇒ 要求 ${newest}（构建机是 $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')）"
-  echo "    ⚠️  比目标发行版新就会一运行就崩 ✗ ⇒ 建议加 --static 重新打包 ✓"
-fi
-if [ "$static_build" = 1 ]; then
-  if objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
-    echo "    ✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败" >&2
-    exit 1
+if [ "${is_linux}" = 1 ]; then
+  echo "--> 检查运行期依赖（glibc 要求）"
+  if ! command -v ldd >/dev/null 2>&1 || ! command -v objdump >/dev/null 2>&1; then
+    # **工具缺失就明说** ✗（不能拿"没有输出"当"没有问题" ✓ —— 那正是这次误报的成因 ✓）。
+    echo "    ⚠️  这台机器上没有 ldd / objdump ⇒ **跳过** glibc 检查（不等于没有问题 ✗）" >&2
+  elif ldd "$stage/bin/yanshi-serve" 2>&1 | grep -q "statically linked"; then
+    echo "    静态链接 ✓ 不依赖任何 glibc 版本 ✓"
+  else
+    newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+    echo "    动态链接 ⇒ 要求 ${newest}（构建机是 $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')）"
+    echo "    ⚠️  比目标发行版新就会一运行就崩 ✗ ⇒ 建议加 --static 重新打包 ✓"
   fi
-  echo "    已断言：静态包**不引用**任何 GLIBC 符号 ✓"
+  if [ "$static_build" = 1 ]; then
+    if objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
+      echo "    ✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败" >&2
+      exit 1
+    fi
+    echo "    已断言：静态包**不引用**任何 GLIBC 符号 ✓"
+  fi
+else
+  # **非 Linux：glibc 这一整套都不适用** ✓（真实用户报告 ✓）。
+  echo "--> 跳过 glibc 检查（宿主不是 Linux：${host_os}）"
+  echo "    glibc 是 Linux 的 C 库 ✓；本平台用自己的系统库（如 macOS 的 libSystem ✓）"
+  echo "    ⇒ **不引用 GLIBC 符号不等于「哪儿都能跑」** ✗：包的可移植性由目标系统决定 ✓"
+  echo "    ⇒ 换发行版 / 换系统时请**在实际目标上自测** ✓（后端渲染与写盘的路径都值得跑一遍 ✓）"
 fi
 
 # **断言：二进制里报的 commit 必须与包名里的一致** ✓（真实用户报告 ✓）。
@@ -326,7 +373,7 @@ echo "    已断言：二进制内 commit（${seen}）与包名一致 ✓"
 
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")
-(cd "$out" && sha256sum "$name.tar.gz" > SHA256SUMS)
+(cd "$out" && sha256_of "$name.tar.gz" > SHA256SUMS)
 echo
 echo "完成：$out/$name.tar.gz"
 echo "      $out/SHA256SUMS"

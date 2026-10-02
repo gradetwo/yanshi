@@ -45,7 +45,11 @@ if [ "$list_only" = 1 ]; then
     exit 0
   fi
   echo "缓存 ${cache} 里现有："
-  find "$cache" -maxdepth 1 -type f -name '*.png' -printf '  %f  %s 字节\n' | sort
+  # **不要用 `find -printf`** ✗（GNU 专属 ✓；macOS 的 BSD find 没有它 ✓ ⇒ 会直接报错 ✓）。
+  # 换成"逐行 + `wc -c`" ✓ —— 两边都能跑 ✓（真实用户报告：他在 macOS 上跑 ✓）。
+  find "$cache" -maxdepth 1 -type f -name '*.png' | sort | while IFS= read -r file; do
+    printf '  %s  %s 字节\n' "$(basename "${file}")" "$(wc -c < "${file}")"
+  done
   exit 0
 fi
 
