@@ -10,6 +10,15 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Exporting a PNG
+
+`export_png` renders the whole document or a region and writes a PNG to a path, optionally rescaling first, so an
+agent gets a file rather than base64 and is not limited by the inline image cap of 512 pixels.
+
+    {"path": "/tmp/canvas.png", "max_edge": 2048}
+
+`width` and `height` may be given together instead of `max_edge`, and `filter` chooses nearest or bilinear scaling.
+
 ## Stroke pressure
 
 A stroke's `points` accept an optional third element, the pressure from 0 to 1, so `[[x, y, 0.2], [x, y, 0.9]]`

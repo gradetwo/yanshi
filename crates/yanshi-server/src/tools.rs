@@ -1923,6 +1923,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "export_png",
+        profile: Profile::Core,
+        summary: "把整幅（或指定区域）渲染成 PNG 落盘：任意尺寸、不经 base64、不受 512px 限制",
+        mutating: false,
+        params: &[
+            param!("path", String, true, "输出文件路径（含 .png）"),
+            param!("region", Object, false, "只导出该区域 {x,y,w,h}；缺省整幅"),
+            param!("width", Integer, false, "输出宽（与 height 一起给；不给就按原尺寸）"),
+            param!("height", Integer, false, "输出高"),
+            param!("max_edge", Integer, false, "限制最长边（按比例缩放；与 width/height 二选一）"),
+            param!("filter", String, false, "nearest | bilinear（缺省 bilinear）"),
+        ],
+    },
+    ToolSpec {
         name: "get_atom",
         profile: Profile::Core,
         summary: "读取一条原子的完整记录（含净荷）",
@@ -2108,6 +2122,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "accept_suggestions" => write_accept_suggestions(ctx, args),
         "reject_suggestion" => write_reject_suggestion(ctx, args),
         "reject_suggestions" => write_reject_suggestions(ctx, args),
+        "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
@@ -2546,7 +2561,13 @@ fn read_list_brushes() -> Result<Value> {
             {"id": "jitter", "name": "抖动笔刷", "params": {"size": 6.0, "hardness": 0.6, "jitter": 2.0, "seed": 0}},
             {"id": "dashed", "name": "虚线笔刷", "params": {"size": 3.0, "dash": 6.0}},
         ],
-        "note": "其他介质（油画/水彩/马克笔/铅笔/像素/矢量）通过 WASM 插件扩展，属路线图",
+        // **这一句此前是过时的** ✗（真实用户据它以为介质还没做 ✓）：六个介质**早已实现并发行** ✓
+        //（`crates/yanshi-medium-*` ✓ + `assets/mediums/*.wasm` ✓ + 对象里记着 id+version ✓）。
+        // **它为什么仍不在这个列表里** ✓：这里是**笔刷**（内核自带的通用光栅笔刷 ✓），
+        // 而油画/水彩是**插件介质** ✓ —— 插件由**宿主**加载 ✓：浏览器端各自实例化 ✓，
+        // 服务端/MCP 侧因六个插件**导出同名 C 符号** ✗ 而**无法链进同一个二进制** ✗
+        //（详见 implementation-notes 的架构结论 ✓）。
+        "note": "列出的是内核自带的光栅笔刷；油画/水彩/马克笔/铅笔/像素是**插件介质**（已发行，在 assets/mediums）——浏览器端可直接选用；MCP/服务端侧因六个插件导出同名 C 符号而无法链入同一二进制，另见实现笔记",
     }))
 }
 
@@ -8130,6 +8151,120 @@ fn kind_label(kind: &AtomKind) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("{kind:?}"))
+}
+
+/// **`export_png`** ✓ —— 把整幅（或指定区域）渲染成 PNG **落盘** ✓。
+///
+/// **为什么需要它** ✓（真实用户报的 §P2-6 ✓）：`render_region` 的 `include_image` **上限 512px** ✗
+///（`preview.width <= 512 && preview.height <= 512` ✓），超了只回一个 `yanshi://blob/...` ✗
+/// —— 那是**伪协议** ✓，进程外**取不到** ✗（用户原话 ✓）。
+/// ⇒ agent 既不能抠 base64 ✓、也拿不到文件 ✓ —— 导出这一步**实际上没有出口** ✗。
+///
+/// **零件其实都齐** ✓，缺的只是把它们接起来 ✓：
+/// `render_region_raw` ✓（取像素 ✓）＋ `yanshi_core::resample::resample_rgba` ✓（缩放 ✓）
+/// ＋ `yanshi_render::png::encode_png` ✓（零依赖手写编码器 ✓）。
+///
+/// **语义** ✓：`mutating: false` ✓ —— 它**不改文档** ✓；但**它会写文件** ✓
+/// ⇒ 这一点写进了 tools.md ✓，不假装它"只是读" ✗。
+fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let path = require_str(args, "path")?;
+    // 缺省整幅 ✓：区域没给就用文档尺寸 ✓。
+    let region = match args.get("region") {
+        Some(value) if !value.is_null() => parse_bbox(value)?,
+        _ => {
+            let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+                )
+            })?;
+            let state = document.state();
+            yanshi_core::Bbox::new(0.0, 0.0, state.width as f64, state.height as f64)
+        }
+    };
+    let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    if width == 0 || height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("区域为空 ⇒ 没有可导出的像素"),
+        ));
+    }
+    // **目标尺寸** ✓：显式宽高 ⇒ 用它；`max_edge` ⇒ 等比缩到最长边；都没给 ⇒ 原尺寸 ✓。
+    let asked_width = optional_u64(args, "width").map(|value| value as u32);
+    let asked_height = optional_u64(args, "height").map(|value| value as u32);
+    let max_edge = optional_u64(args, "max_edge").map(|value| value as u32);
+    if max_edge.is_some() && (asked_width.is_some() || asked_height.is_some()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("max_edge 与 width/height 二选一 ✓，不要同时给"),
+        ));
+    }
+    let (target_w, target_h) = match (asked_width, asked_height, max_edge) {
+        (Some(w), Some(h), _) => (w, h),
+        (None, None, Some(edge)) if edge > 0 => {
+            let longest = width.max(height) as f64;
+            let scale = (edge as f64 / longest).min(1.0);
+            (
+                ((width as f64 * scale).round() as u32).max(1),
+                ((height as f64 * scale).round() as u32).max(1),
+            )
+        }
+        (None, None, None) => (width, height),
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("width 与 height 要一起给 ✓（或改用 max_edge）"),
+            ))
+        }
+    };
+    let filter = match optional_str(args, "filter").as_deref() {
+        None | Some("bilinear") => yanshi_core::resample::ResampleFilter::Bilinear,
+        Some("nearest") => yanshi_core::resample::ResampleFilter::Nearest,
+        Some(other) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("未知缩放算法 {other} ✓（可用 nearest / bilinear）")),
+            ))
+        }
+    };
+    let scaled = if target_w == width && target_h == height {
+        pixels
+    } else {
+        yanshi_core::resample::resample_rgba(&pixels, width, height, target_w, target_h, filter)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "缩放失败 ✓（{width}×{height} ⇒ {target_w}×{target_h}）"
+                    )),
+                )
+            })?
+    };
+    // `encode_png` 对**不可用的尺寸**返回 `None` ✓ ⇒ 按"参数不合法"报 ✓（`ErrorCode` 里没有 Internal ✓）。
+    let png = yanshi_render::png::encode_png(target_w, target_h, &scaled).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "PNG 编码失败 ✓（{target_w}×{target_h} 不可用 ⇒ 请给一个合理尺寸）"
+            )),
+        )
+    })?;
+    // **真的落盘** ✓：这是这个工具存在的理由 ✓（不是再给一个拿不到的 URL ✗）。
+    std::fs::write(&path, &png).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("写文件失败：{path} ⇒ {error}")),
+        )
+    })?;
+    Ok(json!({
+        "path": path,
+        "width": target_w,
+        "height": target_h,
+        "bytes": png.len(),
+        "source_width": width,
+        "source_height": height,
+        "scaled": target_w != width || target_h != height,
+    }))
 }
 
 /// **读取一条原子的完整记录（含净荷）** ✓ —— 补的是"**日志看得到、却不知道改了什么**"这个缺口 ✓。

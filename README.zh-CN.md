@@ -9,6 +9,15 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 导出 PNG
+
+`export_png` 把**整幅或指定区域**渲染并**写成 PNG 文件** ✓（可先缩放 ✓）——
+agent 拿到的是**文件** ✓，不是 base64 ✓，也不再受 `include_image` 那个 **512px** 上限的限制 ✓。
+
+    {"path": "/tmp/canvas.png", "max_edge": 2048}
+
+也可以改用 `width`+`height` 一起给 ✓；`filter` 选 `nearest` / `bilinear` ✓。
+
 ## 笔触压力
 
 `draw_stroke` 的 `points` 支持**可选的第三个分量**：压力（0..1 ✓）——

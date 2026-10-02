@@ -1,7 +1,6 @@
 # Tools and effects
 
-The tool layer registers **41 core tools**. With every implemented group enabled there are
-**97 tools in total**. Groups: `core`, `history`, `retouch`, `annotation`, `collab`, `structure`; the design's `semantic` group
+The tool layer registers **42 core tools**, and with every implemented group enabled there are **98 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -88,6 +87,13 @@ wasm32-unknown-unknown and committed under assets/mediums, and choosing oil with
 plugin and records the medium as id oil at version two on the object. Recording the plugin id and version with the
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
+
+export_png renders the whole document or a region, optionally rescaling it, encodes it with the repository's own
+PNG encoder and writes it to a path, returning the path, the size and the byte count. It exists because the inline
+image option on the render tool caps at 512 pixels and otherwise returns a yanshi blob URL, which is a pseudo
+protocol that nothing outside the process can fetch, leaving no practical way to obtain a file. It does not change
+the document, so it is not a mutating tool, but it does write to the filesystem, which is stated here rather than
+implied.
 
 Shape geometry is validated in the shared draw path, alongside the existing colour and medium validation, so a
 shape whose geometry cannot be parsed is refused with a message naming the accepted forms instead of returning
