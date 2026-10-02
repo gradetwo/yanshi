@@ -10177,11 +10177,30 @@ fn read_surface_region(
             };
             for row in 0..64i32 {
                 for column in 0..64i32 {
-                    // **fix15 → u8** ✓：`>> 7` 把 0..32767 映到 0..255 ✓。
+                    // **fix15 → u8，而且必须反预乘** ✗（本轮抓到的真 bug ✓）。
+                    //
+                    // **依据** ✓：Hokusai 自己的 crate 文档（`hokusai-core/src/brushmodes.rs` 第 4-7 行）写着
+                    // "Tile pixels are RGBA fix15, **premultiplied**" ✓、"Dab color is **straight-alpha**" ✓。
+                    // 而我们存进对象/blob 的是**直通** RGBA8 ✓ ⇒ 把预乘值当直通存 ✗
+                    // ⇒ 每个半透明 dab 的颜色被自己的覆盖度**乘了第二次** ✓ ⇒ 叠到白底就"颜色被洗掉、发灰" ✗。
+                    // **实测**（`Round` 笔刷、纯红 ✓）：修前对象里最饱和像素是 `(70,0,0) alpha=70` ✗
+                    //（名义上该是纯红 ✓）；修后是 `(255,0,0) alpha=70` ✓。
+                    // **为什么以前没暴露** ✗：旧代码**无条件**喂画布底图 ✓ ⇒ 读回 alpha 恒为 255 ✓
+                    // ⇒ 预乘与直通**恰好相等** ✓ ⇒ 这个口径错被**掩盖**了 ✓；
+                    // 第 33 轮改成"只给会读画布的笔刷喂底图" ✓ 才把它**露出来** ✓ ——
+                    // 外部报告说的"颜色回归"因此**是真的** ✓，但真因是**这个口径** ✓，不是喂底图那件事 ✗。
                     let pixel = tile[row as usize][column as usize];
-                    let r = (pixel[0] >> 7) as u8;
-                    let g = (pixel[1] >> 7) as u8;
-                    let b = (pixel[2] >> 7) as u8;
+                    let alpha15 = u32::from(pixel[3]);
+                    let straight_byte = |channel: u16| -> u8 {
+                        if alpha15 == 0 {
+                            return 0;
+                        }
+                        // **在 fix15 里反预乘** ✓（比先降到 u8 再除精度高得多 ✓），再 `>> 7` 降到字节 ✓。
+                        ((u32::from(channel) * 32767 / alpha15).min(32767) >> 7) as u8
+                    };
+                    let r = straight_byte(pixel[0]);
+                    let g = straight_byte(pixel[1]);
+                    let b = straight_byte(pixel[2]);
                     let a = (pixel[3] >> 7) as u8;
                     if a == 0 && r == 0 && g == 0 && b == 0 {
                         continue;

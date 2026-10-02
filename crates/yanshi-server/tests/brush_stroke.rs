@@ -703,3 +703,67 @@ fn brush_stroke_refuses_colour_to_without_colour() {
         "错误要说清「必须同时给 color」：{detail}"
     );
 }
+
+/// **半透明笔触必须存"纯色 + 低 alpha"** ✓ —— 不许把颜色按覆盖度**预乘**进 RGB ✗。
+///
+/// **真 bug（外部 MCP 报告指出 ✓，本轮定位到根因 ✓）**：Hokusai 的 tile 是
+/// **预乘** RGBA（其 crate 文档 `brushmodes.rs` 第 4-7 行明说 ✓），而我们存对象/blob 用的是
+/// **直通** RGBA8 ✓ ⇒ 直接把预乘值当直通 ✗ ⇒ 每个半透明 dab 的颜色被自己的覆盖度**乘了第二次** ✓
+/// ⇒ 叠到白底就"颜色被洗掉、发灰" ✗（`Round` 笔刷纯红实测：最饱和像素是 `(70,0,0) alpha=70` ✗）。
+///
+/// **判据（能红 ✓，且与"多深"无关 ✓）**：同一支笔刷、同一个颜色、**两种深浅**（大小或压力不同 ✓）
+/// ⇒ 对象里**最饱和的像素**必须是**同一个纯色** ✓（红 ⇒ `(255,0,0)` ✓），
+/// 而 alpha 允许不同 ✓ —— 预乘错会把两者一起拉低 ✓ ⇒ 一红就抓住 ✓。
+#[test]
+fn a_semi_transparent_stroke_stores_the_pure_colour_not_a_premultiplied_one() {
+    let root = temp_dir("premultiply");
+    let mut workspace = workspace(&root);
+    let probe = |workspace: &mut Workspace, object: &str, size: f64| -> (u8, u8, u8, u8) {
+        assert_eq!(
+            call(workspace, "create_layer", json!({ "layer_id": object }))["ok"],
+            json!(true)
+        );
+        let made = call(
+            workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": object, "object_id": object, "brush": "Round", "size": size,
+                "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+                "points": [[40.0, 60.0, 1.0], [120.0, 60.0, 1.0]]
+            }),
+        );
+        assert_eq!(made["ok"], json!(true), "{made}");
+        let got = call(workspace, "get_object", json!({ "object_id": object }));
+        let blob = got["data"]["bitmap"]["blob_hash"]
+            .as_str()
+            .expect("画笔笔触应当带 bitmap.blob_hash")
+            .to_owned();
+        let hash: yanshi_core::BlobHash = blob.parse().expect("blob 地址应当能解析");
+        let pixels = workspace.store().get(&hash).expect("对象 blob 应当取得到");
+        // **最"有颜色"的那个像素** ✓：预乘错会让它的 RGB 跟着覆盖度一起变小 ✓。
+        let mut best = (0i32, 0u8, [0u8; 3]);
+        for pixel in pixels.chunks_exact(4) {
+            let (r, g, b, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+            let saturation = i32::from(r.max(g).max(b)) - i32::from(r.min(g).min(b));
+            if a > 0 && saturation >= best.0 {
+                best = (saturation, a, [r, g, b]);
+            }
+        }
+        (best.2[0], best.2[1], best.2[2], best.1)
+    };
+    let (r1, g1, b1, a1) = probe(&mut workspace, "thin", 24.0);
+    let (r2, g2, b2, a2) = probe(&mut workspace, "thick", 60.0);
+    eprintln!("  半透明笔触最饱和像素：细 {r1},{g1},{b1} a={a1} ／ 粗 {r2},{g2},{b2} a={a2}");
+    // ① **颜色是纯红** ✓（不是被覆盖度乘过的暗红 ✗）。
+    for (r, g, b, a, label) in [(r1, g1, b1, a1, "细"), (r2, g2, b2, a2, "粗")] {
+        assert!(
+            r > 240 && g < 16 && b < 16,
+            "{label}笔最饱和的像素应当是**纯红** ✗（实测 rgb=({r},{g},{b}) alpha={a} ⇒ 颜色被预乘进 RGB 了 ✓）"
+        );
+    }
+    // ② **两种深浅都要有自己的 alpha** ✓（否则这条判据本身就没在测"半透明" ✓）。
+    assert!(
+        a1 > 0 && a2 > 0,
+        "两条笔触都应当有墨 ✓（实测 alpha {a1} / {a2}）"
+    );
+}
