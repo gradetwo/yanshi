@@ -5183,7 +5183,16 @@ board.addEventListener("pointerdown", (event) => {
   try { board.setPointerCapture(event.pointerId); } catch (_) { /* 合成事件无 pointerId */ }
   state.dragging = event.pointerId;
   state.points = [localPoint(event)];
-  pendingStroke = kernelReady()
+  // **🚨 画笔不能走这条"本地内核"路** ✗ —— 这是用户报的"**换什么笔都一样**"的**真正原因** ✓：
+  // 只要**内核就绪**（macOS 上内核是好的 ✓ 我这边 headless 也是 ✓），这里就会建 `pendingStroke` ✓，
+  // 而抬手时**第一条分支**（`if (pendingStroke && kernelReady())` ✓）会把它提交成
+  // **通用几何笔迹** ⇒ 日志里是 **`draw_stroke`** ✗ ⇒ **`commitShape` 里那条画笔分支永远轮不到** ✗
+  // ⇒ 201 支笔刷全被当成同一支几何笔 ✓ ✓（实测日志：`atom seq=3 draw_stroke` ✓，且 `brush_stroke` 一次都没发 ✗）。
+  // ⇒ 所以：**当工具是画笔、且确实选了 .myb 笔刷时，不建 pendingStroke** ✓ ⇒ 让抬手落到 `commitShape` ✓
+  // ⇒ 由**服务端的 Hokusai 引擎**落笔 ✓（这才是那 201 支笔该走的路 ✓）。
+  const selectedBrushName = ($("brush") || {}).value || "";
+  const brushOwnsTheStroke = state.tool === "brush" && selectedBrushName !== "";
+  pendingStroke = (kernelReady() && !brushOwnsTheStroke)
     ? { atomId: ulid(), objectId: "obj_" + ulid(), layerId: state.layerId, tool: state.tool, base: 0 }
     : null;
 });
