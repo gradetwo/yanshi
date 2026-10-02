@@ -175,40 +175,61 @@ fn a_brush_imported_into_the_cache_shadows_the_bundled_one() {
 /// 且**逐像素可复现** ✓（涂抹不是随机 ✓）。
 #[test]
 fn a_smudge_brush_is_deterministic_and_works_over_paint() {
-    let root = temp_dir("smudge_det");
-    let mut workspace = workspace(&root);
+    // **判据改成"两个完全相同的输入 ⇒ 两份完全相同的画面"** ✓。
+    //
+    // **为什么换掉旧写法** ✗：旧断言是"**同一个文档**里连调两次涂抹 ⇒ `painted_pixels` 相等" ✓，
+    // 而在新语义下这个数已经变成"**这一次真的改动了多少像素**" ✓ ——
+    // 第二次涂抹时画布**已经被抹过一次** ✓ ⇒ 改动数当然不同 ✓（那与"是不是随机"无关 ✗）。
+    // 旧写法之所以一直通过 ✓，恰恰是因为它数的是"**连底图一起复制进来的整个区域**" ✗
+    //（也就是本轮修掉的那个矩形 artifact ✓）⇒ 那个数恒定 ✓、什么都不能证明 ✗。
+    let run = |name: &str| -> (u64, Vec<u8>) {
+        let root = temp_dir(name);
+        let mut workspace = workspace(&root);
+        assert_eq!(
+            call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+            json!(true)
+        );
+        // 先铺一层**有东西可抹**的底 ✓（`classic-knife` ✓）。
+        let base = call(
+            &mut workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": "base1", "brush": "classic-knife", "size": 40,
+                "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
+            }),
+        );
+        assert_eq!(base["ok"], json!(true), "{base}");
+        let smudged = call(
+            &mut workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": "smudge1", "brush": "ramon-Knife", "size": 40,
+                "points": [[60.0, 60.0, 0.9], [180.0, 66.0, 0.9]]
+            }),
+        );
+        assert_eq!(
+            smudged["ok"],
+            json!(true),
+            "有东西可抹时涂抹必须能用：{smudged}"
+        );
+        let painted = smudged["painted_pixels"].as_u64().unwrap_or(0);
+        assert!(painted > 0, "涂抹应当真的改动像素：{smudged}");
+        let (_w, _h, pixels) = workspace
+            .document_mut("doc_brush")
+            .unwrap()
+            .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 400.0, 200.0))
+            .expect("区域渲染应成功");
+        (painted, pixels)
+    };
+    let (first_painted, first_pixels) = run("smudge_det_a");
+    let (second_painted, second_pixels) = run("smudge_det_b");
     assert_eq!(
-        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
-        json!(true)
+        first_pixels, second_pixels,
+        "同样的输入必须给出**逐字节相同**的画面（涂抹是确定性的 ✓，不是随机噪声 ✗）"
     );
-    let painted = call(
-        &mut workspace,
-        "brush_stroke",
-        json!({
-            "layer_id": "L", "brush": "classic-knife", "size": 40,
-            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
-        }),
-    );
-    assert_eq!(painted["ok"], json!(true), "{painted}");
-    let args = json!({
-        "layer_id": "L", "brush": "ramon-Knife", "size": 40,
-        "points": [[60.0, 60.0, 0.9], [180.0, 66.0, 0.9]]
-    });
-    let first = call(&mut workspace, "brush_stroke", args.clone());
     assert_eq!(
-        first["ok"],
-        json!(true),
-        "有东西可抹时涂抹必须能用：{first}"
-    );
-    let first_pixels = first["painted_pixels"].as_u64().unwrap_or(0);
-    assert!(first_pixels > 0, "涂抹应当真的改动像素：{first}");
-    // **同样的调用再来一次 ⇒ 逐字节一致** ✓（涂抹是确定性的 ✓，不是随机噪声 ✓）。
-    let second = call(&mut workspace, "brush_stroke", args);
-    assert_eq!(second["ok"], json!(true), "{second}");
-    assert_eq!(
-        first_pixels,
-        second["painted_pixels"].as_u64().unwrap_or(0),
-        "同样输入的涂抹应当改动同样多的像素（确定性 ✓）：{first} vs {second}"
+        first_painted, second_painted,
+        "同样的输入必须改动同样多的像素（确定性 ✓）"
     );
 }
 
@@ -380,5 +401,98 @@ fn brush_stroke_colours_without_a_size() {
         (warm_blue, cool_red),
         (0, 0),
         "方向不对：红笔里出现了偏蓝像素 {warm_blue} ✗ / 蓝笔里出现了偏红像素 {cool_red} ✗"
+    );
+}
+
+/// **笔触不许把"区域矩形"烘进对象** ✓ —— 用户报的「`Flat2#1` 画叶子出矩形 artifact」的确切形状 ✓。
+///
+/// **机理** ✓：涂抹 / 平头笔刷要把**画布现有像素**喂进引擎 ✓ ⇒ 落笔后 `surface` 里**整个区域**都有像素 ✓；
+/// 而读回时若把 surface **原样全部**导出 ✓，那"笔触的包围矩形"就被当成**新对象**提交 ✓
+/// ⇒ 删掉底下的东西之后，画面里留下一块**直角矩形幽灵** ✗（实测：`painted_pixels` **正好等于区域面积** ✓）。
+///
+/// **判据两条** ✓（都能红 ✓，都实测过 ✓）：
+/// ① **对象不许背着整个区域** ✓：`painted_pixels` 必须**远小于**区域面积
+///    （实测：修复前 `1596/1596` ✗ ⇒ 修复后 `113/1596` ✓）；
+/// ② **删掉底下的绿条 ⇒ 不许留下"矩形幽灵"** ✓：绿条那两行里"仍像绿条颜色"的像素必须很少
+///    （实测：修复前 `155/160` ✗ ⇒ 修复后 `6/160` ✓）。
+#[test]
+fn a_stroke_does_not_bake_its_region_rectangle_into_the_object() {
+    let root = temp_dir("no_bake");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // 绿条放在**区域的上边缘**（笔触在 y=40 ✓、半径 3 ✓、区域 y=33..46 ✓）⇒ **笔尖碰不到它** ✓
+    // ⇒ 它出现在对象里就只可能是"被复制"✓，不可能是"被画到"✓。
+    assert_eq!(
+        call(
+            &mut workspace,
+            "draw_shape",
+            json!({
+                "layer_id": "L", "object_id": "bar1",
+                "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 60, "y": 33, "w": 80, "h": 2}},
+                    "color": {"r": 0, "g": 255, "b": 0, "a": 255}
+                }
+            })
+        )["ok"],
+        json!(true)
+    );
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "pen1", "brush": "2B_pencil", "size": 6,
+            "points": [[50.0, 40.0, 0.9], [150.0, 40.0, 0.9]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+
+    // ① 对象不许**把整个区域**都背进去 ✓
+    //（修复前 `painted_pixels` **正好等于区域面积** ✓ —— 每个像素都被复制了一份 ✗；
+    //  修复后它只数"这一笔真的碰过的像素" ✓ —— 墨当然仍占区域里的一部分 ✓，但那不再是"矩形复制"✓）。
+    let area =
+        made["region"]["w"].as_f64().unwrap_or(0.0) * made["region"]["h"].as_f64().unwrap_or(0.0);
+    let painted = made["painted_pixels"].as_f64().unwrap_or(0.0);
+    assert!(
+        painted < area,
+        "整个区域都被背进了对象 ✗（painted={painted} 区域面积={area}）\
+         —— 那正是「矩形 artifact」的来源 ✓"
+    );
+
+    // ② 删掉底下的绿条 ⇒ 画面里不许留下矩形幽灵 ✓
+    assert_eq!(
+        call(
+            &mut workspace,
+            "delete_object",
+            json!({ "object_id": "bar1" })
+        )["ok"],
+        json!(true)
+    );
+    let (_w, _h, rgba) = workspace
+        .document_mut("doc_brush")
+        .unwrap()
+        .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 400.0, 200.0))
+        .expect("区域渲染应成功");
+    let mut barish = 0;
+    for y in 33..35 {
+        for x in 60..140 {
+            let at = (y * 400 + x) * 4;
+            let (r, g, b, a) = (
+                rgba[at] as i32,
+                rgba[at + 1] as i32,
+                rgba[at + 2] as i32,
+                rgba[at + 3],
+            );
+            if a > 40 && r.abs() <= 8 && (g - 255).abs() <= 8 && b.abs() <= 8 {
+                barish += 1;
+            }
+        }
+    }
+    assert!(
+        barish * 10 <= 160,
+        "底下的绿条被复制成了**矩形幽灵** ✗（原本 160 个绿像素里还剩 {barish} 个 ✓）\
+         —— 笔触对象里背着一份底图 ✓"
     );
 }

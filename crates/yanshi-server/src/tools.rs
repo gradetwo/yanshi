@@ -9816,6 +9816,182 @@ fn default_preview_points(size: f64) -> Vec<(f64, f64, f64)> {
     ]
 }
 
+/// 一次落笔的**区域** ✓（整数像素边界 ✓）—— 底图 / 读回 / 掩膜三处**必须用同一个** ✗
+/// （各算一份必然漂移 ✓）。
+#[derive(Clone, Copy)]
+struct PaintRegion {
+    /// 左 ✓。
+    x0: i32,
+    /// 上 ✓。
+    y0: i32,
+    /// 右（不含 ✓）。
+    x1: i32,
+    /// 下（不含 ✓）。
+    y1: i32,
+    /// 宽 ✓。
+    width: usize,
+    /// 高 ✓。
+    height: usize,
+}
+
+impl PaintRegion {
+    /// 由 `brush_stroke_region` 的元组构造 ✓（那份公式只写一份 ✓）。
+    fn from_bounds(bounds: (i32, i32, i32, i32, usize, usize)) -> Self {
+        Self {
+            x0: bounds.0,
+            y0: bounds.1,
+            x1: bounds.2,
+            y1: bounds.3,
+            width: bounds.4,
+            height: bounds.5,
+        }
+    }
+}
+
+/// 把 surface 里某个区域读成 **RGBA8** ✓（`>> 7` 把 fix15 映回 0..255 ✓），并数出非空像素 ✓。
+///
+/// **为什么抽出来** ✓：`paint_brush` 要读**两次** —— 喂完底图读一次（落笔前的快照 ✓）、
+/// 落笔后读一次 ✓ —— 两次必须是**同一套读法** ✗（各写一遍必然漂移 ✓）。
+fn read_surface_region(
+    surface: &hokusai::tile_mem::MemSurface,
+    region: PaintRegion,
+) -> (Vec<u8>, usize) {
+    let PaintRegion {
+        x0,
+        y0,
+        x1,
+        y1,
+        width,
+        height,
+    } = region;
+    let mut rgba = vec![0u8; width * height * 4];
+    let mut painted = 0usize;
+    for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
+        for tile_x in (x0.div_euclid(64))..=(x1.div_euclid(64)) {
+            let Some(tile) = surface.tile(tile_x, tile_y) else {
+                continue;
+            };
+            for row in 0..64i32 {
+                for column in 0..64i32 {
+                    // **fix15 → u8** ✓：`>> 7` 把 0..32767 映到 0..255 ✓。
+                    let pixel = tile[row as usize][column as usize];
+                    let r = (pixel[0] >> 7) as u8;
+                    let g = (pixel[1] >> 7) as u8;
+                    let b = (pixel[2] >> 7) as u8;
+                    let a = (pixel[3] >> 7) as u8;
+                    if a == 0 && r == 0 && g == 0 && b == 0 {
+                        continue;
+                    }
+                    let doc_x = tile_x * 64 + column;
+                    let doc_y = tile_y * 64 + row;
+                    if doc_x < x0 || doc_y < y0 || doc_x >= x1 || doc_y >= y1 {
+                        continue;
+                    }
+                    let at = ((doc_y - y0) as usize * width + (doc_x - x0) as usize) * 4;
+                    rgba[at] = r;
+                    rgba[at + 1] = g;
+                    rgba[at + 2] = b;
+                    rgba[at + 3] = a;
+                    painted += 1;
+                }
+            }
+        }
+    }
+    (rgba, painted)
+}
+
+/// **把一条路径走成 dab** ✓（`brush.stroke_to` 的调用序列）—— 返回步数 ✓。
+///
+/// **为什么抽出来** ✓：需要**走两遍** —— 一遍真正落墨 ✓、一遍只取**覆盖掩膜** ✓；
+/// 两遍的 **dab 位置 / 半径 / 压力必须完全一致** ✗（各写一份必然漂移 ✓）。
+fn stamp_stroke(
+    brush: &hokusai::Brush,
+    state: &mut hokusai::BrushState,
+    surface: &mut hokusai::tile_mem::MemSurface,
+    points: &[(f64, f64, f64)],
+) -> usize {
+    let mut steps = 0usize;
+    let mut previous: Option<(f64, f64, f64)> = None;
+    for (x, y, pressure) in points {
+        match previous {
+            None => {
+                // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
+                brush.stroke_to(
+                    state,
+                    surface,
+                    *x as f32,
+                    *y as f32,
+                    *pressure as f32,
+                    0.0,
+                    0.0,
+                    0.01,
+                );
+                steps += 1;
+            }
+            Some((px, py, pp)) => {
+                let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+                // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
+                let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
+                for step in 1..=divisions {
+                    let t = step as f64 / divisions as f64;
+                    let ix = px + (x - px) * t;
+                    let iy = py + (y - py) * t;
+                    let ip = pp + (pressure - pp) * t;
+                    brush.stroke_to(
+                        state, surface, ix as f32, iy as f32, ip as f32, 0.0, 0.0, 0.01,
+                    );
+                    steps += 1;
+                }
+            }
+        }
+        previous = Some((*x, *y, *pressure));
+    }
+    steps
+}
+
+/// 这支笔刷**会不会读画布** ✓ —— 只有会读的才需要把底图喂进引擎 ✓（其余不喂 ✓，读回里自然只有这笔画下的墨 ✓）。
+///
+/// * `smudge > 0`：涂抹（靠"抹开画布上已有的颜色"✓）；
+/// * `colorize` / `posterize` / `lock_alpha`：按已有像素着色 / 只改 alpha ✓（dab 的混合读了底 ✓）。
+///
+/// 这条判断**不是省事** ✗，而是**正确性** ✓：喂了底图 ⇒ 落笔后 surface 里**整个区域**都有像素 ✓
+/// ⇒ 必须用掩膜把"没碰过的底图"剔掉 ✓（见 [`brush_coverage_mask`] ✓）。
+/// 绝大多数 `.myb` 笔刷不读画布 ✓ ⇒ 它们那条路连这个风险都没有 ✓。
+fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
+    let value = |setting: hokusai::BrushSetting| brush.get(setting).base_value;
+    value(hokusai::BrushSetting::Smudge) > 0.0
+        || value(hokusai::BrushSetting::Colorize) > 0.0
+        || value(hokusai::BrushSetting::Posterize) > 0.0
+        || value(hokusai::BrushSetting::LockAlpha) > 0.0
+}
+
+/// **落墨掩膜** ✓ —— 用**同一支笔刷、同一条路径**在一块**空 surface** 上再走一遍 ✓，
+/// 得到"**这支笔自己把颜料放在了哪些像素上**" ✓（alpha > 0 即算 ✓，与颜色深浅无关 ✓）。
+///
+/// **为什么需要它** ✗：会读画布的笔刷（涂抹 / colorize 类 ✓）必须先把底图喂进引擎 ✓ ⇒
+/// 落笔后 surface 里**整个区域**都有像素 ✓；若原样导出 ✓，"**笔触的包围矩形**"就被当成新对象提交 ✓
+/// ⇒ 删掉底下的东西之后，画面里留下一块**直角矩形幽灵** ✗
+/// —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓（实测复现 ✓）。
+///
+/// **为什么不强改笔刷（opaque=1 / smudge=0）** ✗（我上一版就是这么写的 ✓，被实测否掉 ✗）：
+/// `Flat2#1` 的 `offset_by_random = 1.07` ✓ ⇒ 每一枚 dab 都会**随机偏移整整一个半径** ✓
+/// ⇒ "全部改成不透明"之后，所有 dab 的并集**盖满整个区域** ✗ ⇒ 掩膜等于没掩 ✓
+///（实测：`Flat2#1` / `ramon-Knife` 的对象里那 3 行绿条**一个不少** ✗）。
+/// **用真实笔刷** ✓ 就绕开了这个陷阱：它只标记"这支笔真的落过颜料"的地方 ✓。
+///
+/// **纯涂抹笔刷（opaque = 0 ✓）在这里是空的** ✓ —— 那没关系 ✓：
+/// 它的成果是"**把已有的颜色抹开**" ✓ ⇒ 由"落笔前后有可见差异"那条判据接住 ✓（见调用处 ✓）。
+fn brush_deposit_mask(
+    brush: &hokusai::Brush,
+    points: &[(f64, f64, f64)],
+    region: PaintRegion,
+) -> Vec<u8> {
+    let mut state = hokusai::BrushState::default();
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    let _ = stamp_stroke(brush, &mut state, &mut surface, points);
+    read_surface_region(&surface, region).0
+}
+
 /// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
 ///
 /// `feed_base`：是否把**目标区域现有的像素**喂进引擎 ✓ ——
@@ -9894,8 +10070,7 @@ fn paint_brush(
     // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
     // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
     // 落笔后读回像素也用它 ✓ ⇒ **两处不可能算出不同的区域** ✗（那会让底图与结果错位 ✓）。
-    let (seed_x0, seed_y0, seed_x1, seed_y1, seed_width, seed_height) =
-        brush_stroke_region(points, size);
+    let seed_region = PaintRegion::from_bounds(brush_stroke_region(points, size));
     // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
     //
     // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
@@ -9907,32 +10082,37 @@ fn paint_brush(
     // **`render_region_raw` 回的是 `(宽, 高, rgba)`** ✗（不是裸像素 ✓）⇒ 解构 ✓，
     // 并且**尺寸对不上就跳过** ✓ —— 宁可"这次没有底图" ✓，也不要**错位**地抹 ✓
     //（错位的涂抹会**悄悄改坏画面** ✓，比不生效难查得多 ✓）。
-    if feed_base {
+    // **喂进去的底图要留着** ✓ —— 读回时用它把"笔刷没碰过的像素"剔掉 ✓
+    //（否则会把**笔触的包围矩形**原样复制成一个新对象 ✗，见下面读回那一段的说明 ✓）。
+    // **只有会读画布的笔刷才喂底图** ✓ —— 其余笔刷喂了反而要额外剔掉"没碰过的底图" ✓
+    //（见 `brush_reads_the_canvas` 与 `brush_coverage_mask` ✓）。
+    let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+    if reads_canvas {
         if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
             &ctx.doc_id,
             yanshi_core::Bbox::new(
-                seed_x0 as f64,
-                seed_y0 as f64,
-                seed_width as f64,
-                seed_height as f64,
+                seed_region.x0 as f64,
+                seed_region.y0 as f64,
+                seed_region.width as f64,
+                seed_region.height as f64,
             ),
         ) {
-            let base_ok = base_width as usize == seed_width
-                && base_height as usize == seed_height
-                && base.len() >= seed_width * seed_height * 4;
+            let base_ok = base_width as usize == seed_region.width
+                && base_height as usize == seed_region.height
+                && base.len() >= seed_region.width * seed_region.height * 4;
             if !base_ok {
                 // 说清为什么没喂 ✓（静默跳过会让"涂抹没用"这个问题**又变回谜** ✗）。
                 eprintln!(
                     "  底图尺寸不符（要 {}×{}，拿到 {}×{}）⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）",
-                    seed_width, seed_height, base_width, base_height
+                    seed_region.width, seed_region.height, base_width, base_height
                 );
             }
             if base_ok {
                 use hokusai::TiledSurface;
-                let first_tile_x = seed_x0.div_euclid(64);
-                let first_tile_y = seed_y0.div_euclid(64);
-                let last_tile_x = seed_x1.div_euclid(64);
-                let last_tile_y = seed_y1.div_euclid(64);
+                let first_tile_x = seed_region.x0.div_euclid(64);
+                let first_tile_y = seed_region.y0.div_euclid(64);
+                let last_tile_x = seed_region.x1.div_euclid(64);
+                let last_tile_y = seed_region.y1.div_euclid(64);
                 for tile_y in first_tile_y..=last_tile_y {
                     for tile_x in first_tile_x..=last_tile_x {
                         {
@@ -9941,15 +10121,16 @@ fn paint_brush(
                                 for column in 0..64i32 {
                                     let document_x = tile_x * 64 + column;
                                     let document_y = tile_y * 64 + row;
-                                    if document_x < seed_x0
-                                        || document_y < seed_y0
-                                        || document_x >= seed_x1
-                                        || document_y >= seed_y1
+                                    if document_x < seed_region.x0
+                                        || document_y < seed_region.y0
+                                        || document_x >= seed_region.x1
+                                        || document_y >= seed_region.y1
                                     {
                                         continue;
                                     }
-                                    let at = ((document_y - seed_y0) as usize * seed_width
-                                        + (document_x - seed_x0) as usize)
+                                    let at = ((document_y - seed_region.y0) as usize
+                                        * seed_region.width
+                                        + (document_x - seed_region.x0) as usize)
                                         * 4;
                                     if at + 3 >= base.len() {
                                         continue;
@@ -9970,83 +10151,52 @@ fn paint_brush(
             }
         }
     }
-    let mut steps = 0usize;
-    let mut previous: Option<(f64, f64, f64)> = None;
-    for (x, y, pressure) in points {
-        match previous {
-            None => {
-                // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
-                brush.stroke_to(
-                    &mut state,
-                    &mut surface,
-                    *x as f32,
-                    *y as f32,
-                    *pressure as f32,
-                    0.0,
-                    0.0,
-                    0.01,
-                );
-                steps += 1;
-            }
-            Some((px, py, pp)) => {
-                let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
-                // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
-                let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
-                for step in 1..=divisions {
-                    let t = step as f64 / divisions as f64;
-                    let ix = px + (x - px) * t;
-                    let iy = py + (y - py) * t;
-                    let ip = pp + (pressure - pp) * t;
-                    brush.stroke_to(
-                        &mut state,
-                        &mut surface,
-                        ix as f32,
-                        iy as f32,
-                        ip as f32,
-                        0.0,
-                        0.0,
-                        0.01,
-                    );
-                    steps += 1;
-                }
-            }
-        }
-        previous = Some((*x, *y, *pressure));
-    }
+    // **落笔前的快照** ✓（只在喂了底图时需要 ✓）：用来判断"引擎有没有把这一像素**挪动**过" ✓。
+    // **为什么不能只看"和底图逐字节相等"** ✗：引擎盖 dab 时会把同一 tile 里**没碰过的像素**
+    // 重新量化 ±1..3 个台阶 ✓（喂进去的纯白 255 读回来是 254 ✓）⇒ 必须留一个小容差 ✓；
+    // 而**很淡的笔刷**（`2B_pencil` 在白底上）本来就只差几个台阶 ✓
+    // ⇒ 单靠容差会把**真的落下的墨**剔掉 ✗（实测：5467 个改动像素只剩 47 ✓）
+    // ⇒ 所以**落墨掩膜与"挪动过"是"或"的关系** ✓：这支笔放了颜料的像素**一律保留** ✓。
+    let before_pixels = if reads_canvas {
+        Some(read_surface_region(&surface, seed_region).0)
+    } else {
+        None
+    };
+    let steps = stamp_stroke(&brush, &mut state, &mut surface, points);
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
-    let (x0, y0, x1, y1, width, height) = brush_stroke_region(points, size);
-    let mut rgba = vec![0u8; width * height * 4];
-    let mut painted = 0usize;
-    for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
-        for tile_x in (x0.div_euclid(64))..=(x1.div_euclid(64)) {
-            let Some(tile) = surface.tile(tile_x, tile_y) else {
-                continue;
-            };
-            for row in 0..64i32 {
-                for column in 0..64i32 {
-                    // **fix15 → u8** ✓：`>> 7` 把 0..32767 映到 0..255 ✓。
-                    let pixel = tile[row as usize][column as usize];
-                    let r = (pixel[0] >> 7) as u8;
-                    let g = (pixel[1] >> 7) as u8;
-                    let b = (pixel[2] >> 7) as u8;
-                    let a = (pixel[3] >> 7) as u8;
-                    if a == 0 && r == 0 && g == 0 && b == 0 {
-                        continue;
-                    }
-                    let doc_x = tile_x * 64 + column;
-                    let doc_y = tile_y * 64 + row;
-                    if doc_x < x0 || doc_y < y0 || doc_x >= x1 || doc_y >= y1 {
-                        continue;
-                    }
-                    let at = ((doc_y - y0) as usize * width + (doc_x - x0) as usize) * 4;
-                    rgba[at] = r;
-                    rgba[at + 1] = g;
-                    rgba[at + 2] = b;
-                    rgba[at + 3] = a;
-                    painted += 1;
+    let region = PaintRegion::from_bounds(brush_stroke_region(points, size));
+    let (mut rgba, mut painted) = read_surface_region(&surface, region);
+    // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
+    // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
+    // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
+    //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
+    if reads_canvas {
+        let deposit = brush_deposit_mask(&brush, points, region);
+        let before = before_pixels.unwrap_or_default();
+        // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
+        const CANVAS_DRIFT_TOLERANCE: i32 = 3;
+        for index in (0..rgba.len()).step_by(4) {
+            // **留着它** ⟺ 这支笔在这里**落过颜料** ✓，或者这一像素被**明显挪动/覆盖**过 ✓。
+            let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
+            let moved = before.len() >= index + 4
+                && (0..4).any(|channel| {
+                    (i32::from(rgba[index + channel]) - i32::from(before[index + channel])).abs()
+                        > CANVAS_DRIFT_TOLERANCE
+                });
+            if !(deposited || moved) {
+                if rgba[index] != 0
+                    || rgba[index + 1] != 0
+                    || rgba[index + 2] != 0
+                    || rgba[index + 3] != 0
+                {
+                    painted -= 1;
                 }
+                rgba[index] = 0;
+                rgba[index + 1] = 0;
+                rgba[index + 2] = 0;
+                rgba[index + 3] = 0;
             }
         }
     }
@@ -10089,10 +10239,10 @@ fn paint_brush(
     }
     Ok(BrushPaint {
         name,
-        x0,
-        y0,
-        width,
-        height,
+        x0: region.x0,
+        y0: region.y0,
+        width: region.width,
+        height: region.height,
         rgba,
         steps,
         painted,

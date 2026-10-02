@@ -237,6 +237,19 @@ the pixels, with a direction check so that a colour written out as a constant ca
 fail before the fix. The colour of an already painted brush stroke therefore still cannot be changed in place, and
 the refusal says so and says to undo and paint again, rather than implying a capability that is not there.
 
+A stroke no longer carries a copy of the canvas underneath it. Brushes that read the canvas, such as the
+smudge and colorize kinds, need the existing pixels fed into the engine, and the tool then exported the whole
+surface, so the stroke's bounding rectangle was committed as a new object: the painted result looked right until
+the thing underneath changed, at which point a hard edged rectangle of the old content stayed behind, which is the
+artifact reported when painting leaves with Flat2#1. The object now keeps only the pixels the brush deposited
+(measured by stamping the same stroke with the same brush on an empty surface) or visibly moved (more than three
+byte steps different from the before image), which covers both brushes that lay down their own pigment, however
+faintly, and pure smudges that only move what is already there. Two dead ends are recorded rather than hidden: a
+tolerance on the difference from the base drops genuinely faint paint, since a soft pencil on white differs by
+only a few steps, and forcing opacity up before computing the mask fails because a jittered dab spreads over the
+whole region. Brushes that never read the canvas are simply not fed a base at all now, so they cannot bake it in
+the first place, and a smudge over nothing but white is now refused with the reason instead of reporting success,
+which it previously did because the base copy counted as painted pixels.
 `brush_preview` answers the complaint that the brush list is 201 names and nothing else, so choosing one is a
 guess. It takes a brush name, an optional size, an optional colour and an optional sample stroke, paints a short
 stroke with that brush and returns a small PNG as a blob URL, with the image inline in base64 when include_image
