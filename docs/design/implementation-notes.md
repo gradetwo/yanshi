@@ -8002,3 +8002,29 @@ Uncaught (in promise) TypeError: Failed to fetch at submitAtom / ensureDocument 
 ⇒ 变成**会红的测试** ✓：从查看器源码取绝对路径字面量 ✓，逐个到服务端源码里找 ✓，缺一条就红 ✓。
 **刻意保守** ✓：只在**字面量**上判 ✓（拼出来的 URL 带文档 id/token ✓）⇒ 宁可漏报、不要误报 ✓
 （**误报的守卫会被关掉** ✗）。
+
+### 🔍 「换什么笔都一样」第四轮：**范围缩到"画笔落笔那条 pointerdown"** ✓（下一步只读一段代码 ✓）
+
+**已有的确定事实** ✓（前几轮 ✓）：
+* **工具层没问题** ✓ —— 三支差别极大的笔刷产出**互不相同**的像素哈希 ✓（`85b9…/8231…/73ef…` ✓）；
+* **颜色已经修好** ✓（色相是 0..1 圆周分数 ✓）；
+* 我此前"一个 `brush_stroke` 都没发"的抓包，**大概率是合成事件无效** ✗（因为 `pointermove`
+  只在 `state.dragging === event.pointerId` 时才累积点 ✓ ⇒ 合成事件若没被 pointerdown 接受 ✓ 就什么都测不到 ✗）。
+**本轮读到的关键一行** ✓（在 `board.addEventListener("pointerdown", …)` 的收尾 ✓ 约 5124 行处 ✓）：
+```js
+pendingStroke = kernelReady()
+  ? { atomId: ulid(), objectId: "obj_" + ulid(), layerId: state.layerId, tool: state.tool, base: 0 }
+  : null;
+```
+**由此得到下一步唯一要读的那一段** ✓（**不再猜 ✓**）：
+**`pointerdown` 里到底在哪里、以及是否**（无条件地 ✓）设了 `state.dragging = event.pointerId`** ✓ ——
+* 若它被放在 `if (kernelReady())` 之类**分支里面** ✗ ⇒ 没有内核（`make dev` 未生成 wasm ✓ 或 `--no-wasm` ✓）
+  时**根本不会进入拖拽态** ✓ ⇒ `pointermove` 永远不累积点 ✓ ⇒ `commitShape` 看到 `points.length < 2` ✓
+  ⇒ **一个 `brush_stroke` 都不发** ✓ ⇒ 与用户的症状吻合 ✓；
+* 若它是无条件的 ✓ ⇒ 那就得改用 **CDP 真实鼠标输入**（`Input.dispatchMouseEvent` ✓）重做抓包 ✓，
+  因为合成事件在这条路上**测不准** ✗。
+**为什么先读、不先改** ✗：这一处**牵动所有工具**（矩形 / 介质 / 选区 / 变换都挂在这三个 `pointerdown` 上 ✓）
+⇒ 猜着改会**同时弄坏别的工具** ✗ ⇒ 先读清 `dragging` 的赋值位置 ✓（一次读完 ✓），再动手 ✓。
+**诚实说明** ✓：这是**第四次**围绕同一条 bug 的一轮 ✓，**仍未修好** ✗ ——
+但每一轮都在把范围缩小 ✓（工具层 ✓ → 出请求与否 ✓ → 合成事件是否有效 ✓ → 现在到 `dragging` ✓），
+而不是在原地重试 ✓。
