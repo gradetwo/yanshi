@@ -2208,8 +2208,26 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // ⇒ **没有任何一个工具同时具备两者** ✓。
             // **做法照 MyPaint** ✓（不自己发明 ✓）：颜色就是 `.myb` 的 `color_h/s/v` ✓ ⇒ 给了就**覆盖** ✓
             // —— 与"在 MyPaint 里选了笔刷之后照常选颜色"完全一致 ✓。
-            param!("color", Object, false, "笔尖颜色 {r,g,b,a}（0..255）⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
+            // **写法与其它绘制工具统一** ✓（本轮 ✓）：`parse_spec_color` ✓ 收 `{r,g,b,a}` /
+            // `[r,g,b,(a)]`（0..1 线性或 0..255 字节）/ `"#RRGGBB"` ✓ ——
+            // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
+            param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节）/ \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "brush_preview",
+        profile: Profile::Core,
+        // **不改文档 ⇒ mutating: false** ✓（它只画一张小图并存进 blob CAS ✓）；
+        // 但**要读笔刷资产** ✓ ⇒ 需要工作区能解析 `assets/brushes` ✓。
+        summary: "**选笔刷之前先看它长什么样** ✓：用同一支 .myb 笔刷真画一小笔，回一张小 PNG（thumb_url）；                 与 brush_stroke 共用同一条落笔实现，所以预览就是真实笔触，不是示意图。                  两支不同的笔刷 ⇒ 两张预览不同 ✓；同一支两次 ⇒ 逐字节相同 ✓。",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
+            param!("size", Number, false, "笔尖直径像素（缺省 24，上限 512）"),
+            param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（不给则用 .myb 自带色）"),
+            param!("points", Array, false, "自定义采样笔迹 [[x,y,pressure],…]；不给则用一条固定的缓 S 形 ✓（同一支笔刷 ⇒ 可复现 ✓）"),
+            param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓；≤512px ✓）"),
         ],
     },
     ToolSpec {
@@ -2457,6 +2475,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
+        "brush_preview" => write_brush_preview(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
@@ -9690,9 +9709,31 @@ fn brush_stroke_region(
     (x0, y0, x1, y1, width, height)
 }
 
-fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let layer_id = require_str(args, "layer_id")?;
-    let brush_name = require_str(args, "brush")?;
+/// **一次 `.myb` 落笔的纯计算结果** ✓（不碰文档 ✓、不提交原子 ✓）。
+///
+/// `brush_stroke`（画进文档 ✓）与 `brush_preview`（只出一张预览图 ✓）**共用**它 ✓ ——
+/// 两条路必须是**同一条落笔实现** ✗（各写一份迟早漂移 ✓，本项目对这种"两份实现"已有多次前科 ✓）。
+struct BrushPaint {
+    /// 解析后的资产名 ✓（形如 `2B_pencil.myb` ✓）。
+    name: String,
+    /// 区域左上角 x（文档坐标；预览时即画布坐标 ✓）。
+    x0: i32,
+    /// 区域左上角 y ✓。
+    y0: i32,
+    /// 区域宽 ✓。
+    width: usize,
+    /// 区域高 ✓。
+    height: usize,
+    /// 区域内的 RGBA8 ✓。
+    rgba: Vec<u8>,
+    /// 实际调用引擎的步数 ✓。
+    steps: usize,
+    /// 真正落下的像素数 ✓（0 ⇒ 由 `paint_brush` 统一报错 ✓，不静默 ✓）。
+    painted: usize,
+}
+
+/// **采样点解析** ✓：`[[x,y], [x,y,pressure?], ...]` ✓（`brush_stroke` / `brush_preview` 共用 ✓）。
+fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
     let raw_points = args
         .get("points")
         .and_then(Value::as_array)
@@ -9731,10 +9772,67 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             .clamp(0.0, 1.0);
         points.push((x, y, pressure));
     }
+    Ok(points)
+}
 
+/// **色彩写法与其它绘制工具统一** ✓：`{r,g,b,a}`（0..255 ✓）、`[r,g,b,(a)]`（0..1 线性或 0..255 字节 ✓）、
+/// `"#RRGGBB"` / `"#RGB"` / `"#RRGGBBAA"` ✓ —— 全部交给渲染层的**同一个**解析器 ✓
+/// （`yanshi_render::color::parse_spec_color` ✓；各写一套必然漂移 ✓）。
+///
+/// 返回 `(hue, sat, value)` ✓（引擎要的 0..1 圆周分数 ✓，见 [`rgb_to_hsv`] ✓）。
+fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
+    let rgba = yanshi_render::color::parse_spec_color(value).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                yanshi_render::color::color_error(value)
+                    .unwrap_or_else(|| "颜色格式非法".to_owned()),
+            ),
+        )
+    })?;
+    // 引擎的画布是 **sRGB 显示空间** ✓ ⇒ 先把解析结果编码回 sRGB 字节 ✓，再取 HSV ✓
+    //（`linear_to_byte_exact`：精确版 ✓，不让查表误差进到色相里 ✓）。
+    let bytes = [
+        yanshi_render::color::linear_to_byte_exact(rgba[0]),
+        yanshi_render::color::linear_to_byte_exact(rgba[1]),
+        yanshi_render::color::linear_to_byte_exact(rgba[2]),
+    ];
+    Ok(rgb_to_hsv(bytes[0], bytes[1], bytes[2]))
+}
+
+/// **预览用的固定采样笔迹** ✓ —— 同一支笔刷 ⇒ **逐字节相同**的预览 ✓（判据要用它 ✓）。
+///
+/// 一条**缓 S 形** ✓（不是直线 ✗）：笔尖的圆头 / 纹理 / 干湿只有在**转弯**处才看得出来 ✓。
+fn default_preview_points(size: f64) -> Vec<(f64, f64, f64)> {
+    let length = (size * 5.0).clamp(64.0, 160.0);
+    let margin = size + 8.0;
+    let amplitude = (size * 0.6).clamp(4.0, 24.0);
+    let y = margin + amplitude;
+    vec![
+        (margin, y, 0.35),
+        (margin + length * 0.34, y - amplitude * 2.0, 0.9),
+        (margin + length * 0.67, y + amplitude * 2.0, 0.5),
+        (margin + length, y, 0.35),
+    ]
+}
+
+/// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
+///
+/// `feed_base`：是否把**目标区域现有的像素**喂进引擎 ✓ ——
+/// 涂抹类笔刷（`smudge > 0`）靠"抹开画布上已有的颜色"工作 ✓ ⇒ **文档里必须喂** ✓；
+/// **预览不喂** ✓（预览回答的是"这支笔刷长什么样"✓，不是"落在你这幅画上什么样"✗）——
+/// 于是涂抹类笔刷的预览**必然为空** ✓，由下面那段报错**说清原因** ✓（不静默 ✓）。
+fn paint_brush(
+    ctx: &mut ToolContext<'_>,
+    brush_name: &str,
+    points: &[(f64, f64, f64)],
+    size: Option<f64>,
+    color: Option<&Value>,
+    feed_base: bool,
+) -> Result<BrushPaint> {
     // **笔刷从缓存优先解析** ✓（用户导入的能覆盖内置的 ✓）。
     let name = if brush_name.ends_with(".myb") {
-        brush_name.clone()
+        brush_name.to_owned()
     } else {
         format!("{brush_name}.myb")
     };
@@ -9752,23 +9850,16 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         )
     })?;
     // **`size` 是"直径像素"** ✓，而 MyPaint 的设置叫 `radius_logarithmic` ✓（存的是 ln(半径) ✓）。
-    if let Some(diameter) = args.get("size").and_then(Value::as_f64) {
-        if diameter <= 0.0 {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail("size 必须大于 0"),
-            ));
-        }
-        // **颜色覆盖** ✓（AI 实测的 P0 ✓；照 MyPaint 的 `color_h/s/v` ✓）。
-        //
-        // **为什么这里用 `constant` 是对的** ✓（与半径那处不同 ✗）：调用方给的是"**这一笔用什么颜色**" ✓
-        // ⇒ 它就是**恒定色** ✓ ⇒ 覆盖 `.myb` 里可能有的"颜色随压力变化"曲线 ✓ **正是本意** ✓
-        //（而半径那处不该清曲线 ✓ —— 两者语义不同 ✓）。
-        // **`parse_color_arg` 回的是值、不是 `Option`** ✗（我写成 `if let Some(..)` ✓ ⇒ 编译器当场纠正 ✓）
-        // ⇒ 先看参数在不在 ✓，再解析 ✓。
-        if args.get("color").is_some() {
-            let color = parse_color_arg(args.get("color"), "color")?;
-            let (hue, sat, value) = rgb_to_hsv(color[0], color[1], color[2]);
+    // **颜色与 `size` 相互独立** ✓（本轮修的「ok 却没有效果」✗ 之一：
+    // 颜色覆盖此前**嵌在 `if let Some(diameter)` 里面** ✓ ⇒ 只给 `color` 不给 `size` 时
+    // **颜色被静默丢掉** ✗，而描述明明写着"可带 color 画彩色" ✓ ⇒ 现在两者独立 ✓，
+    // 判据 `brush_stroke_colours_without_a_size` ✓）。
+    // **为什么颜色用 `constant` 是对的** ✓（与半径那处不同 ✗）：调用方给的是"**这一笔用什么颜色**" ✓
+    // ⇒ 它就是**恒定色** ✓ ⇒ 覆盖 `.myb` 里可能有的"颜色随压力变化"曲线 ✓ **正是本意** ✓
+    //（而半径那处不该清曲线 ✓ —— 两者语义不同 ✓）。
+    if let Some(value) = color {
+        if !value.is_null() {
+            let (hue, sat, value) = brush_color_to_hsv(value)?;
             brush.set(
                 hokusai::BrushSetting::ColorH,
                 hokusai::SettingValue::constant(hue),
@@ -9781,6 +9872,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 hokusai::BrushSetting::ColorV,
                 hokusai::SettingValue::constant(value),
             );
+        }
+    }
+    if let Some(diameter) = size {
+        if diameter <= 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("size 必须大于 0"),
+            ));
         }
         // **`SettingValue` 是个结构体，不是枚举** ✗ —— 构造器是 `constant(f32)` ✓
         //（我第一版猜了 `Float(..)` ✓ ⇒ 编译器当场指出 ✓）。
@@ -9796,7 +9895,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
     // 落笔后读回像素也用它 ✓ ⇒ **两处不可能算出不同的区域** ✗（那会让底图与结果错位 ✓）。
     let (seed_x0, seed_y0, seed_x1, seed_y1, seed_width, seed_height) =
-        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
+        brush_stroke_region(points, size);
     // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
     //
     // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
@@ -9808,70 +9907,72 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **`render_region_raw` 回的是 `(宽, 高, rgba)`** ✗（不是裸像素 ✓）⇒ 解构 ✓，
     // 并且**尺寸对不上就跳过** ✓ —— 宁可"这次没有底图" ✓，也不要**错位**地抹 ✓
     //（错位的涂抹会**悄悄改坏画面** ✓，比不生效难查得多 ✓）。
-    if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
-        &ctx.doc_id,
-        yanshi_core::Bbox::new(
-            seed_x0 as f64,
-            seed_y0 as f64,
-            seed_width as f64,
-            seed_height as f64,
-        ),
-    ) {
-        let base_ok = base_width as usize == seed_width
-            && base_height as usize == seed_height
-            && base.len() >= seed_width * seed_height * 4;
-        if !base_ok {
-            // 说清为什么没喂 ✓（静默跳过会让"涂抹没用"这个问题**又变回谜** ✗）。
-            eprintln!(
-                "  底图尺寸不符（要 {}×{}，拿到 {}×{}）⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）",
-                seed_width, seed_height, base_width, base_height
-            );
-        }
-        if base_ok {
-            use hokusai::TiledSurface;
-            let first_tile_x = seed_x0.div_euclid(64);
-            let first_tile_y = seed_y0.div_euclid(64);
-            let last_tile_x = seed_x1.div_euclid(64);
-            let last_tile_y = seed_y1.div_euclid(64);
-            for tile_y in first_tile_y..=last_tile_y {
-                for tile_x in first_tile_x..=last_tile_x {
-                    {
-                        let tile = surface.tile_request_start(tile_x, tile_y);
-                        for row in 0..64i32 {
-                            for column in 0..64i32 {
-                                let document_x = tile_x * 64 + column;
-                                let document_y = tile_y * 64 + row;
-                                if document_x < seed_x0
-                                    || document_y < seed_y0
-                                    || document_x >= seed_x1
-                                    || document_y >= seed_y1
-                                {
-                                    continue;
+    if feed_base {
+        if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
+            &ctx.doc_id,
+            yanshi_core::Bbox::new(
+                seed_x0 as f64,
+                seed_y0 as f64,
+                seed_width as f64,
+                seed_height as f64,
+            ),
+        ) {
+            let base_ok = base_width as usize == seed_width
+                && base_height as usize == seed_height
+                && base.len() >= seed_width * seed_height * 4;
+            if !base_ok {
+                // 说清为什么没喂 ✓（静默跳过会让"涂抹没用"这个问题**又变回谜** ✗）。
+                eprintln!(
+                    "  底图尺寸不符（要 {}×{}，拿到 {}×{}）⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）",
+                    seed_width, seed_height, base_width, base_height
+                );
+            }
+            if base_ok {
+                use hokusai::TiledSurface;
+                let first_tile_x = seed_x0.div_euclid(64);
+                let first_tile_y = seed_y0.div_euclid(64);
+                let last_tile_x = seed_x1.div_euclid(64);
+                let last_tile_y = seed_y1.div_euclid(64);
+                for tile_y in first_tile_y..=last_tile_y {
+                    for tile_x in first_tile_x..=last_tile_x {
+                        {
+                            let tile = surface.tile_request_start(tile_x, tile_y);
+                            for row in 0..64i32 {
+                                for column in 0..64i32 {
+                                    let document_x = tile_x * 64 + column;
+                                    let document_y = tile_y * 64 + row;
+                                    if document_x < seed_x0
+                                        || document_y < seed_y0
+                                        || document_x >= seed_x1
+                                        || document_y >= seed_y1
+                                    {
+                                        continue;
+                                    }
+                                    let at = ((document_y - seed_y0) as usize * seed_width
+                                        + (document_x - seed_x0) as usize)
+                                        * 4;
+                                    if at + 3 >= base.len() {
+                                        continue;
+                                    }
+                                    // **RGBA8 ⇒ fix15** ✓（`<< 7` 把 0..255 映回 0..32767 ✓，与读回来的 `>> 7` 对称 ✓）。
+                                    tile[row as usize][column as usize] = [
+                                        u16::from(base[at]) << 7,
+                                        u16::from(base[at + 1]) << 7,
+                                        u16::from(base[at + 2]) << 7,
+                                        u16::from(base[at + 3]) << 7,
+                                    ];
                                 }
-                                let at = ((document_y - seed_y0) as usize * seed_width
-                                    + (document_x - seed_x0) as usize)
-                                    * 4;
-                                if at + 3 >= base.len() {
-                                    continue;
-                                }
-                                // **RGBA8 ⇒ fix15** ✓（`<< 7` 把 0..255 映回 0..32767 ✓，与读回来的 `>> 7` 对称 ✓）。
-                                tile[row as usize][column as usize] = [
-                                    u16::from(base[at]) << 7,
-                                    u16::from(base[at + 1]) << 7,
-                                    u16::from(base[at + 2]) << 7,
-                                    u16::from(base[at + 3]) << 7,
-                                ];
                             }
                         }
+                        surface.tile_request_end(tile_x, tile_y);
                     }
-                    surface.tile_request_end(tile_x, tile_y);
                 }
             }
         }
     }
     let mut steps = 0usize;
     let mut previous: Option<(f64, f64, f64)> = None;
-    for (x, y, pressure) in &points {
+    for (x, y, pressure) in points {
         match previous {
             None => {
                 // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
@@ -9915,8 +10016,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
-    let (x0, y0, x1, y1, width, height) =
-        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
+    let (x0, y0, x1, y1, width, height) = brush_stroke_region(points, size);
     let mut rgba = vec![0u8; width * height * 4];
     let mut painted = 0usize;
     for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
@@ -9987,6 +10087,42 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             ErrorContext::detail(format!("这一笔没落下任何像素 ⇒ 笔刷「{name}」{hint}")),
         ));
     }
+    Ok(BrushPaint {
+        name,
+        x0,
+        y0,
+        width,
+        height,
+        rgba,
+        steps,
+        painted,
+    })
+}
+
+fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = require_str(args, "brush")?;
+    let points = parse_brush_points(args)?;
+    // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
+    let paint = paint_brush(
+        ctx,
+        &brush_name,
+        &points,
+        args.get("size").and_then(Value::as_f64),
+        args.get("color"),
+        // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
+        true,
+    )?;
+    let BrushPaint {
+        name,
+        x0,
+        y0,
+        width,
+        height,
+        rgba,
+        steps,
+        painted,
+    } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     let composite = ctx.workspace.store().put(&rgba)?;
     let import_args = json!({
@@ -10007,6 +10143,83 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     Ok(value)
 }
 
+/// **笔刷预览** ✓ —— 用**同一支笔刷真画一小笔** ✓，回一张小 PNG ✓。
+///
+/// **为什么需要它** ✓（用户：「201 支笔刷只有一个名字 ⇒ 选笔全凭猜，很不友好，web 上也是」✗）：
+/// 预览必须**就是那条落笔路径** ✓（与 `brush_stroke` 共用 `paint_brush` ✓）——
+/// 另画一份"示意图" ✗ 迟早与真笔触漂移 ✓（本项目对这种"两份实现"已有多次前科 ✓）。
+///
+/// **两个消费端同一份实现** ✓：MCP 拿 `image`（内嵌 base64 ✓，`include_image: true` ✓）
+/// 或 `thumb_url` ✓；Web 直接 `<img src=thumb_url>` ✓（`yanshi://blob/<hash>` 由 HTTP 层
+/// 改写成可 GET 的 URL ✓，见 `server.rs` 的 12.7 改写 ✓）。
+///
+/// **判据（能红 ✓）**：两支不同的笔刷 ⇒ 两张预览**必须不同** ✓（`blob_hash` 不同 ✓）；
+/// 同一支两次 ⇒ **逐字节相同** ✓（确定性 ✓）；**它不碰文档** ✓（head 不变 ✓）。
+fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    // 缺省 24 ✓：与 `brush_stroke` / `medium_stroke` 的缺省一致 ✓（不在这里另立一套 ✗）。
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    // 缺省 24 ✓；`JSON` 里不会有 NaN ✓ ⇒ 直接比即可 ✓。
+    if size <= 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("size 必须大于 0"),
+        ));
+    }
+    if size > 512.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "预览的 size 上限是 512 ✓（要给的是 {size}）—— 预览是「看这支笔长什么样」✓，\
+                 出图请用 brush_stroke + export_png ✓"
+            )),
+        ));
+    }
+    let points = match args.get("points") {
+        Some(value) if !value.is_null() => parse_brush_points(args)?,
+        _ => default_preview_points(size),
+    };
+    // **预览不喂底图** ✓（"这支笔刷长什么样" ≠ "落在你这幅画上什么样" ✓）。
+    let paint = paint_brush(
+        ctx,
+        &brush_name,
+        &points,
+        Some(size),
+        args.get("color"),
+        false,
+    )?;
+    let (width, height) = (paint.width as u32, paint.height as u32);
+    let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ResourceExhausted,
+            ErrorContext::detail(format!("预览尺寸 {width}×{height} 超出 PNG 编码能力")),
+        )
+    })?;
+    let bytes = png.len();
+    let hash = ctx.workspace.store().put(&png)?.to_string();
+    let mut value = json!({
+        "ok": true,
+        "brush": paint.name,
+        "width": width,
+        "height": height,
+        "painted_pixels": paint.painted,
+        "steps": paint.steps,
+        "blob_hash": hash,
+        "thumb_url": format!("yanshi://blob/{hash}"),
+        "mime_type": "image/png",
+        "bytes": bytes,
+    });
+    // 7.5 的同一条规矩 ✓：≤512px 才内嵌 ✓（MCP 那边要的是一张图 ✓，不是一串地址 ✗）。
+    if optional_bool(args, "include_image").unwrap_or(false) {
+        value["image"] = json!({
+            "mime_type": "image/png",
+            "data": base64::encode(&png),
+            "width": width,
+            "height": height,
+        });
+    }
+    Ok(value)
+}
 fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let kind = require_str(args, "kind")?;
     let entries = ctx.workspace.list_assets(&kind)?;

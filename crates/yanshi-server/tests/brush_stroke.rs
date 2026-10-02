@@ -301,3 +301,84 @@ fn brush_stroke_accepts_a_colour_and_two_colours_differ() {
         cool
     );
 }
+
+/// **`color` 与 `size` 相互独立** ✓ —— **只给颜色、不给 `size`** 时颜色也必须生效 ✓。
+///
+/// **修的是什么** ✗（同类病症又一例 ✓）：颜色覆盖此前**嵌在 `if let Some(diameter)` 里面** ✓
+/// ⇒ 只给 `color` 不给 `size` 时颜色被**静默丢掉** ✗：返回 `ok` ✓、画面用的是 `.myb` 自带色 ✗
+/// —— 正是"返回 ok 却没有效果" ✓。判据与上一条同形 ✓：
+/// **同一支笔刷、都不给 `size`、两种颜色 ⇒ 两张图必须一张是红、一张是蓝** ✓ + **方向检查** ✓。
+///
+/// **为什么按"主色像素数"量、而不按均值** ✗：`100%_Opaque` 不给 `size` 时缺省半径很小 ✓
+/// ⇒ 墨只占几个像素 ✓，均值被白底拉平（实测差只有 26.5 ✗）⇒ 那是**不能红**的判据 ✗（老坑 ✓）。
+#[test]
+fn brush_stroke_colours_without_a_size() {
+    let root = temp_dir("colour_no_size");
+    let mut workspace = workspace(&root);
+    // 两笔各画一层 ✓（同层会互相稀释 ✗ —— 这个坑上面那条已经踩过 ✓）。
+    let paint =
+        |workspace: &mut Workspace, object: &str, colour: serde_json::Value| -> (usize, usize) {
+            let layer = format!("L_{object}");
+            assert_eq!(
+                call(workspace, "create_layer", json!({ "layer_id": layer }))["ok"],
+                json!(true)
+            );
+            let made = call(
+                workspace,
+                "brush_stroke",
+                json!({
+                    "layer_id": layer, "object_id": object, "brush": "100%_Opaque",
+                    // **刻意不给 `size`** ✓ —— 缺省半径由 `.myb` 自己说了算 ✓。
+                    "color": colour,
+                    "points": [[30.0, 40.0, 0.9], [150.0, 40.0, 0.9]]
+                }),
+            );
+            assert_eq!(
+                made["ok"],
+                json!(true),
+                "只给颜色不给 size 也应当成功：{made}"
+            );
+            let (_w, _h, rgba) = workspace
+                .render_region_raw_layer(
+                    "doc_brush",
+                    yanshi_core::Bbox::new(0.0, 0.0, 400.0, 200.0),
+                    &layer,
+                )
+                .expect("区域渲染应成功");
+            // **数"明确偏红 / 明确偏蓝"的像素** ✓（比另外两个通道高 40 ✓）——
+            // 白底（三个通道都高 ✓）与灰墨（都不高 ✓）都不会被算进去 ✓。
+            let (mut red_ink, mut blue_ink) = (0usize, 0usize);
+            for pixel in rgba.chunks_exact(4) {
+                let (r, g, b) = (
+                    i32::from(pixel[0]),
+                    i32::from(pixel[1]),
+                    i32::from(pixel[2]),
+                );
+                if r > g + 40 && r > b + 40 {
+                    red_ink += 1;
+                }
+                if b > r + 40 && b > g + 40 {
+                    blue_ink += 1;
+                }
+            }
+            (red_ink, blue_ink)
+        };
+    // **用十六进制写法** ✓ —— 同时钉住"Web 颜色选择器那种写法也要认" ✓。
+    let (warm_red, warm_blue) = paint(&mut workspace, "nosize_warm", json!("#dc1e1e"));
+    let (cool_red, cool_blue) = paint(&mut workspace, "nosize_cool", json!("#1e1edc"));
+    eprintln!(
+        "  不给 size 的颜色口径：红笔 偏红像素={warm_red} 偏蓝像素={warm_blue} ／ \
+         蓝笔 偏红像素={cool_red} 偏蓝像素={cool_blue}"
+    );
+    // ① **两个不同的输入 ⇒ 两个不同的输出** ✓（这条才是能红的判据 ✓）。
+    assert!(
+        warm_red > 0 && cool_blue > 0,
+        "两种颜色都应当真的落到画面上 ✗（红笔偏红 {warm_red} ✓、蓝笔偏蓝 {cool_blue} ✓）"
+    );
+    // ② **方向也要对** ✓：红笔不许有偏蓝像素 ✓、蓝笔不许有偏红像素 ✓。
+    assert_eq!(
+        (warm_blue, cool_red),
+        (0, 0),
+        "方向不对：红笔里出现了偏蓝像素 {warm_blue} ✗ / 蓝笔里出现了偏红像素 {cool_red} ✗"
+    );
+}

@@ -308,6 +308,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <label>笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
       <option value="">（内置画笔）</option>
     </select></label>
+    <!-- **预览** ✓（用户："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**web 上也是**"✗）：
+         用同一支笔刷**真画一小笔** ✓（服务端 `brush_preview` ✓，与 `brush_stroke` **同一条落笔实现** ✓）
+         ⇒ 这里显示的是它**真实落笔**的样子 ✓，不是示意图 ✗（示意图迟早与真笔触漂移 ✓）。 -->
+    <span id="brushPreviewWrap" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
+      <img id="brushPreview" alt="" style="display:none;vertical-align:middle;border:1px solid #ccc;background:#fff;max-width:160px;max-height:64px" />
+      <span id="brushPreviewHint" class="hint"></span>
+    </span>
     <!-- **搜索** ✓（目标 ⑥ ✓）：库里 199 支 ✓ ⇒ 一个长下拉里"翻着找"是**没有界面设计** ✗ ——
          下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
     <label>搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
@@ -350,6 +357,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
           select.addEventListener("change", function () {
             if (select.value && window.yanshi && window.yanshi.recordBrushUse) {
               window.yanshi.recordBrushUse();
+            }
+            // **换笔刷就换预览** ✓（用户："选笔全凭猜" ✗ —— 现在选之前/选中都能看到它长什么样 ✓）。
+            if (window.yanshi && window.yanshi.previewBrush) {
+              window.yanshi.previewBrush();
             }
           });
         }
@@ -5461,7 +5472,11 @@ async function commitShape() {
           points: controlPoints,
           // **大小以工具条上的"粗细"为准** ✓（与内置画笔同一处 ✓ ⇒ 用户不用记两套 ✓）。
           size: size,
-          color: undefined,
+          // **颜色也必须带上** ✗ —— 此前写的是 `color: undefined` ✓ ⇒
+          // 用户在工具条上**选了颜色也画不上** ✗（笔触只用 `.myb` 自带色 ✓），
+          // 这正是"界面里有的东西实际不生效" ✓（本轮连同工具层的颜色缺陷一起修 ✓）。
+          // `colorCss()` 回的就是 `{r,g,b,a}`（0..255 ✓）⇒ 工具层照收 ✓。
+          color: color,
         },
         "落笔（" + brushName + "）",
       );
@@ -5833,9 +5848,56 @@ async function refreshBrushOptions() {
     select.value = keep;
     // **装完就套用一次过滤** ✓（搜索框里可能已经有字 ✓ —— 重装后忘了过滤会**静默变回全量** ✗）。
     applyBrushFilter();
+    // **装完就刷一次预览** ✓ —— 否则"选中的那支还没有预览"✗，用户以为它没预览 ✓。
+    await refreshBrushPreview();
   } catch (error) {
     log("笔刷列表没拉到：" + String(error).slice(0, 120), "#c93");
   }
+}
+
+/// **笔刷预览** ✓（用户："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**web 上也是**" ✗）。
+///
+/// 走服务端的 `brush_preview` ✓ —— 它**与 `brush_stroke` 共用同一条落笔实现** ✓
+/// ⇒ 这里显示的就是这支笔**真实落笔**的样子 ✓，不是示意图 ✗
+/// （示意图迟早与真笔触漂移 ✓ —— 这个项目在"两份实现"上栽过多次 ✓）。
+///
+/// **失败必须说话** ✗：预览取不到时**不能**留一个空白框 ✓（用户会以为"这支笔就是没墨"✗）；
+/// 涂抹类笔刷在空画布上本来就画不出东西 ✓ ⇒ 服务端会**说清原因** ✓，这里照原样显示 ✓。
+async function refreshBrushPreview() {
+  const select = $("brush");
+  const img = $("brushPreview");
+  const hint = $("brushPreviewHint");
+  if (!img) return;
+  const name = select ? select.value : "";
+  if (!name) {
+    img.style.display = "none";
+    if (hint) hint.textContent = "";
+    return;
+  }
+  const size = Number(($("size") || {}).value || 24);
+  const colour = colorCss();
+  // **去重的键要含"颜色 / 粗细"** ✗ —— 只看笔刷名会让"换了颜色再预览"被**静默跳过** ✓
+  //（那又会变成"界面里改了、实际没变" ✗ —— 本项目头号病症 ✓）。
+  const key = name + "|" + size + "|" + JSON.stringify(colour);
+  if (img.dataset && img.dataset.key === key) return; // 完全相同的输入不重复画 ✓（省一次真实落笔 ✓）。
+  const result = await callTool(
+    "brush_preview",
+    { brush: name, size, color: colour },
+    { refresh: false },
+  );
+  if (!result || !result.ok) {
+    img.style.display = "none";
+    if (img.dataset) img.dataset.key = key;
+    const detail = (result && result.context && result.context.detail) || "预览不可用";
+    if (hint) hint.textContent = String(detail).slice(0, 60);
+    return;
+  }
+  img.dataset.key = key;
+  // **`thumb_url` 已经被服务端改写成可 GET 的地址** ✓（`/api/blob/<hash>?doc=..&token=..` ✓）
+  // ⇒ 加个时间戳即可 ✓（与页面里其它预览图同一条做法 ✓）。
+  img.src = result.thumb_url + "&t=" + Date.now();
+  img.style.display = "";
+  if (hint) hint.textContent = result.width + "×" + result.height;
 }
 /// **服务端连不上时，界面必须说人话** ✗（用户实测连续报了三处 ✓）。
 ///
@@ -5999,6 +6061,10 @@ window.yanshi = {
     /// **暴露装载函数** ✓：第一次点开下拉时要能主动拉一次 ✓（也让验收脚本能预热 ✓）。
     loadBrushes() {
       return refreshBrushOptions();
+    },
+    /// **暴露预览** ✓：验收探针要能直接断言"预览真的换了"✓（与换笔刷走同一条实现 ✓）。
+    previewBrush() {
+      return refreshBrushPreview();
     },
     setMedium(id) {
       const select = $("medium");

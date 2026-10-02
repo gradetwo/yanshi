@@ -1,6 +1,6 @@
 # Tools and effects
 
-The tool layer registers **57 core tools**, and with every implemented group enabled there are **113 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **58 core tools**, and with every implemented group enabled there are **114 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -236,6 +236,26 @@ pixel moved. The criterion for the strokes it does handle is two calls with two 
 the pixels, with a direction check so that a colour written out as a constant cannot pass; both were confirmed to
 fail before the fix. The colour of an already painted brush stroke therefore still cannot be changed in place, and
 the refusal says so and says to undo and paint again, rather than implying a capability that is not there.
+
+`brush_preview` answers the complaint that the brush list is 201 names and nothing else, so choosing one is a
+guess. It takes a brush name, an optional size, an optional colour and an optional sample stroke, paints a short
+stroke with that brush and returns a small PNG as a blob URL, with the image inline in base64 when include_image
+is set, so MCP clients get a picture and the browser gets something an img tag can fetch. It shares paint_brush
+with brush_stroke rather than drawing a diagram of its own, so the preview is the real stroke and cannot drift
+from what the brush actually lays down; the sample stroke is a gentle S curve because tips, bristles and dry-out
+only show up when the brush turns, and it is fixed so the same brush previews to the same bytes twice. Six tests
+hold it: two brushes must differ, the same brush twice must not, the document head and object count must not move,
+a hex colour must reach the preview with red and blue in the right channels, include_image must return a decodable
+PNG, and a smudge brush on an empty canvas must be refused with the reason rather than a blank picture.
+
+Two colour defects surfaced while making the preview accept what the browser sends. The colour override in the
+brush path was nested inside the block that applies size, so a caller who passed a colour without a size had it
+dropped silently and got the brush's own colour back with ok; colour and size are now independent, with a test
+that paints two colours at the default radius and counts clearly red and clearly blue pixels rather than averaging
+over a white page, which is what made the first version of that test unable to fail. The colour spelling is now
+the same parser the other drawing tools use, so an object, an array or a hex string all work, and the viewer, which
+previously sent no colour at all for a brush stroke, now sends the one chosen in the toolbar. The preview appears
+next to the brush picker and refreshes when the brush changes, and says why when it cannot be shown.
 
 `list_comments` closes an asymmetry in the collaboration channel that a browser check exposed. Comments could
 always be written, but no tool could read them back: the log and atom-search tools return metadata only, by

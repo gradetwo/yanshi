@@ -14,6 +14,27 @@ chromium --remote-debugging-port=9333 --headless=new about:blank
 依赖仅 `curl`、`python3`、`node`（≥18，用到内置 `fetch`/`WebSocket`）。浏览器类脚本通过 CDP 驱动，
 驱动的是**编辑器自身的真实路径**，而不是另写一套比对逻辑。
 
+## `browser-brush-preview.mjs` — 笔刷预览的浏览器验收（真实 Chromium）
+
+用户原话："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**很不友好，web 上也是**"。这个脚本走编辑器自己的
+真实路径（装载笔刷 → 选笔 → 看图 → 真拖两笔），判据四条：
+
+1. 选中一支笔刷后 `#brushPreview` **真的加载出一张图**（`naturalWidth > 0`）——"src 设了但图是坏的 / 留个空框"会被抓住；
+2. **换一支笔刷 ⇒ 图必须换**，且新图也真的加载成功；
+3. **换颜色 ⇒ 图也必须换** —— 证明工具条上的颜色真的进了同一个工具（此前查看器传的是 `color: undefined`）；
+4. **真拖两笔（红在 y=0.35、蓝在 y=0.65）⇒ 红带里只许有红、蓝带里只许有蓝**，且无控制台错误。
+
+> 第 4 条刻意**不用**"画完有没有红像素"（上一轮的笔迹会骗过它），也**不用**"红像素有没有变多"
+> （同一笔重画在同一处 ⇒ 像素逐字节相同）—— 它量的是"两个不同的输入 ⇒ 两个不同的输出"。
+> 验证时请**用新文档**跑：老文档里已有上一轮的红蓝笔迹，判据就失去了区分力。
+
+```bash
+chromium --remote-debugging-port=9333 --headless=new about:blank
+node scripts/browser-brush-preview.mjs "http://127.0.0.1:8110/?doc=ui&token=<token>"
+```
+
+环境变量：`CDP_PORT`（缺省 9333）、`SHOT_DIR`（截图目录，缺省 `/tmp/yanshi-brush-preview`）。
+
 ## `browser-ui-check.mjs` — 查看器 UI 回归检查（真实 Chromium）
 
 走用户同一条路径：新建图层 → 画一笔 → 断言**画布确有已绘制像素**、内容画布与覆盖层几何一致、
