@@ -2094,6 +2094,40 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_assets",
+        profile: Profile::Core,
+        summary: "列出某类资产：brush（.myb 笔刷）/ texture（PNG 纹理）/ palette（调色板）",
+        mutating: false,
+        params: &[
+            param!("kind", String, true, "brush / texture / palette"),
+        ],
+    },
+    ToolSpec {
+        name: "import_asset",
+        profile: Profile::Core,
+        // **不改文档 ⇒ mutating: false** ✓（它只往工作区缓存里写文件 ✓）。
+        // 但**仍需落盘工作区** ✓ —— 纯内存模式会**明确拒绝** ✓（而不是假装成功 ✗）。
+        summary: "导入资产到工作区缓存：笔刷 .myb / 纹理 .png / 调色板 .json .kpl .gpl .txt",
+        mutating: false,
+        params: &[
+            param!("kind", String, true, "brush / texture / palette"),
+            param!("name", String, true, "保存的文件名（扩展名必须与种类相符）"),
+            param!("path", String, false, "服务器本地文件路径（MCP 常用）"),
+            param!("blob", Object, false, "{blob_hash,size,mime_type}（Web 先把文件上传成 blob 再用）"),
+            param!("overwrite", Boolean, false, "已存在时是否替换（缺省 false ⇒ 报冲突，不静默覆盖）"),
+        ],
+    },
+    ToolSpec {
+        name: "list_textures",
+        profile: Profile::Core,
+        summary: "列出可用纹理（内置 assets/textures + 工作区缓存 <root>/textures）",
+        mutating: false,
+        // **参数表就是契约** ✗：此前这里挂着一个 `dir` ✓，而实现**忽略**它 ✗
+        // ⇒ 调用方传了也不会变 ✓ ⇒ 正是"**接受了却没用**" ✓ ⇒ 去掉它 ✓
+        //（要按种类看资产用 `list_assets` ✓）。
+        params: &[],
+    },
+    ToolSpec {
         name: "export_png",
         profile: Profile::Core,
         summary: "把整幅（或指定区域）渲染成 PNG 落盘：任意尺寸、不经 base64、不受 512px 限制",
@@ -2296,6 +2330,9 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "new_document" => write_new_document(ctx, args),
         "medium_stroke" => write_medium_stroke(ctx, args),
         "export_project" => write_export_project(ctx, args),
+        "list_textures" => write_list_textures(ctx, args),
+        "list_assets" => write_list_assets(ctx, args),
+        "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -8648,6 +8685,149 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 ///
 /// **格式** ✓：未压缩 **tar** ✓（零依赖手写 ✓，`tar -tf/-xOf` 就能看 ✓）。
 /// 不压缩的取舍写在 `archive.rs` 里 ✓（工程包主体是 PNG 与原始像素 ✓，本来也压不动 ✓）。
+/// **列出纹理缓存** ✓（只读 ✓）。
+///
+/// **为什么在工具层** ✓（用户新加的硬要求 ✓）：**MCP 与 Web 都要能用** ✓ ——
+/// 能力放在工具层 ✓ ⇒ 两边**自动同时获得** ✓；若只做在查看器里 ✗，MCP 就用不上 ✗ ✓。
+/// **列出某类资产** ✓（只读 ✓）—— **MCP 与 Web 共用同一个入口** ✓（用户那条硬要求 ✓）。
+fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let kind = require_str(args, "kind")?;
+    let entries = ctx.workspace.list_assets(&kind)?;
+    let items = asset_entries_to_json(&kind, &entries);
+    // **"能不能导入"必须报出来** ✗（上一版把"没有工作区根目录"的错误**吞掉** ✓
+    // ⇒ 纯内存模式返回空表 ✓ ⇒ 用户会以为"就是没有资产" ✗ ⇒ 那是在**骗人** ✓）。
+    let can_import = ctx.workspace.asset_dir(&kind).is_ok();
+    Ok(json!({
+        "kind": kind,
+        "count": items.len(),
+        // **内置资产在任何模式下都能列出** ✓（它们在磁盘上 ✓）；
+        // 但**缓存**需要工作区根目录 ✓ ⇒ 用 `can_import` 说清 ✓。
+        "can_import": can_import,
+        "hint": if !can_import {
+            "纯内存模式 ⇒ 只能看到内置资产；要导入或抓取，请给服务器 --root（工作区目录）"
+        } else if items.is_empty() {
+            "这一类还没有资产 ⇒ 用 import_asset 导入，或跑 scripts/fetch-textures.sh 抓 CC0 纹理"
+        } else {
+            "source=bundled 随发行包发布；source=cache 是本地导入/抓取的（同名时后者生效）"
+        },
+        "assets": items,
+    }))
+}
+
+/// **导入一件资产** ✓ —— 用户明确要求"**Web 与 MCP 都要能导入**" ✓。
+///
+/// **两个来源** ✓，因为两个调用方的能力不同 ✓：
+/// * **`path`** ✓：服务器本地文件 ✓ —— MCP 与命令行最顺手 ✓；
+/// * **`blob`** ✓：先走**已有的一次性上传**（`POST /api/blob` ✓）再把句柄给它 ✓ ——
+///   **浏览器只能这么走** ✓（它拿不到服务器路径 ✓）。
+///
+/// **只做一条路会有一边用不了** ✗ ⇒ 两条都要 ✓，且**都汇进同一个内核方法** ✓（`import_asset` ✓）
+/// ⇒ 校验、目录、覆盖语义**只有一份** ✓。
+fn write_import_asset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let kind = require_str(args, "kind")?;
+    let name = require_str(args, "name")?;
+    let overwrite = args
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let bytes = if let Some(path) = optional_str(args, "path") {
+        std::fs::read(&path).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("读不到 {path}：{error}")),
+            )
+        })?
+    } else if let Some(blob) = args.get("blob") {
+        let hash_text = blob
+            .get("blob_hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("blob 里缺少 blob_hash ⇒ 形如 {blob_hash,size,mime_type}"),
+                )
+            })?;
+        let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("blob_hash 不合法：{hash_text}")),
+            )
+        })?;
+        ctx.workspace.store().get(&hash)?
+    } else {
+        return Err(missing("path 或 blob"));
+    };
+    let written = ctx
+        .workspace
+        .import_asset(&kind, &name, &bytes, overwrite)?;
+    Ok(json!({
+        "ok": true,
+        "kind": kind,
+        "name": name,
+        "bytes": bytes.len(),
+        "path": written.display().to_string(),
+        "hint": "已进工作区缓存 ⇒ list_assets 立刻能看到；它不进 git ✓，也不会随发行包发布 ✓",
+    }))
+}
+
+/// **某种资产里，这个扩展名能不能直接用** ✓。
+///
+/// **必须按种类判** ✗（我第一版写成"只要不是 txt 就算可用" ✓ ⇒ `.jpg` 被误判为可用 ✗，
+/// 而**像素解码器只解 PNG** ✗ ⇒ 那会引导调用方去导一个**必然失败**的文件 ✓
+/// ⇒ 与"接受了却没用"同类 ✓）。测试当场抓住了它 ✓。
+fn asset_usable(kind: &str, extension: &str) -> bool {
+    match kind {
+        // 纹理：**只解 PNG** ✗（JPEG/WebP 会被明确拒绝 ✓）。
+        "texture" => extension == "png",
+        // 笔刷：Hokusai 读的是 `.myb` ✓。
+        "brush" => extension == "myb",
+        // 调色板：json / kpl / gpl 都能解析 ✓；`.txt` 只是兼容位 ✗。
+        "palette" => matches!(extension, "json" | "kpl" | "gpl"),
+        _ => false,
+    }
+}
+
+/// **资产列表转 JSON** ✓（三类共用 ✓ ⇒ 三处不会各变一样 ✗）。
+fn asset_entries_to_json(kind: &str, entries: &[crate::service::TextureEntry]) -> Vec<Value> {
+    entries
+        .iter()
+        .map(|entry| {
+            let extension = entry
+                .name
+                .rsplit_once('.')
+                .map(|(_, ext)| ext.to_ascii_lowercase())
+                .unwrap_or_default();
+            json!({
+                "name": entry.name,
+                "bytes": entry.bytes,
+                "source": entry.source,
+                "format": extension,
+                // **能不能直接用** ✓：按种类判 ✓（见 `asset_usable` ✓）。
+                "usable": asset_usable(kind, &extension),
+            })
+        })
+        .collect()
+}
+
+fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let dir = optional_str(args, "dir");
+    let entries = ctx.workspace.list_textures(dir.as_deref())?;
+    // **把"能不能直接用"一并报出来** ✓：内核**只解 PNG** ✗（JPEG/WebP 会被**明确拒绝** ✓）
+    // ⇒ 与其让调用方试一次才知道 ✓，不如这里就说清 ✓ —— 与"错误里带可用选项"同一规矩 ✓。
+    let items = asset_entries_to_json("texture", &entries);
+    Ok(json!({
+        "dir": dir.unwrap_or_else(|| "textures".to_string()),
+        "count": items.len(),
+        // **空表是有意义的答案** ✓："还没下载过" ✓ ⇒ 提示去哪儿补 ✓（下一步写着脚本名 ✓）。
+        "hint": if items.is_empty() {
+            "没有可用纹理 ⇒ 跑 scripts/fetch-textures.sh --root <工作区> 抓取 CC0 纹理（默认来自 ambientCG ✓）"
+        } else {
+            "usable=true 的才能直接导入（内核只解 PNG ✓）；source=bundled 随发行包发布，source=cache 是本地抓的"
+        },
+        "textures": items,
+    }))
+}
+
 fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = require_str(args, "path")?;
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());

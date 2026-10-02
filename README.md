@@ -12,7 +12,7 @@ specification (Chinese); the code must not diverge from it silently.
 
 ## Enabling all tool groups
 
-`--profile all` enables every implemented group in one word, which is 113 tools against the 45 that core alone gives;
+`--profile all` enables every implemented group in one word, which is 114 tools against the 46 that core alone gives;
 it deliberately excludes semantic, which is reserved by decision. Both `yanshi-serve` and `yanshi-mcp` list the
 values in `--help`. Layer blend modes are validated against the renderer's own list, so an unknown mode is refused
 with the available names instead of being written to the log and silently ignored.
@@ -199,6 +199,27 @@ project owner chose to replace MyPaint's own. sK1's public domain palettes are s
 not in the repository that was checked.
 
 Brush engine came from **Hokusai** (Apache-2.0 or MIT) as described above.
+
+## Paper and canvas textures
+
+Textures are CC0 and live in a per workspace cache rather than in the repository, because the smallest useful variant
+from ambientCG is thirteen megabytes and committing a set would bloat the tree. `scripts/fetch-textures.sh --root
+<workspace>` downloads the colour map of a few paper and cardboard assets into `<workspace>/textures/` and writes a
+`NOTICE.md` recording the source and the CC0 licence. The `list_textures` tool then reports what is cached, with each
+entry marked usable or not, since the pixel decoder handles PNG only. Because that tool is in the tool layer, MCP and
+the viewer both reach it, which is the rule for every capability here.
+
+## Importing brushes, textures and palettes
+
+`import_asset` copies a file into the workspace's asset cache and is the single entry point for both MCP and the
+viewer, which is why it accepts two sources: `path` for a file already on the server, which suits MCP, and `blob` for
+a file the browser has uploaded first, since a browser cannot name a server path. Both funnel into one kernel method,
+so validation, directory layout and overwrite semantics exist once. `list_assets` reports what is available for a
+kind, with `source` distinguishing assets shipped with the release from ones imported or fetched locally, and
+`usable` saying whether the format can actually be used, since the pixel decoder handles PNG and the brush engine
+reads `.myb`. Importing over an existing name is refused unless `overwrite` is set, and names may not contain path
+separators. The release package carries `textures`, `brushes` and `palettes` under `share/yanshi`, which the wrapper
+points at with `--assets-dir`.
 
 ## Install
 

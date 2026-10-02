@@ -189,7 +189,10 @@ impl Server {
             Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
                 .unwrap_or_else(|_| Workspace::in_memory(settings)),
             None => Workspace::in_memory(settings),
-        };
+        }
+        // **与 HTTP 用同一个默认** ✓：内置纹理随仓库与发行包走 ✓。
+        // **这条正是"MCP 与 Web 都要能用"的落法** ✓ —— 两边都经**工具层** ✓ ⇒ 结果一致 ✓。
+        .with_assets_dir(Some(std::path::PathBuf::from("assets")));
         let registry = ToolRegistry::with_profiles(&options.profiles);
         Self {
             options,

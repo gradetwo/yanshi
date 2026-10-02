@@ -196,6 +196,15 @@ fi
 if [ -d "$repo/assets/brand" ]; then
   cp -R "$repo/assets/brand" "$stage/share/yanshi/brand"
 fi
+# **三类资产也要随包发布** ✓（用户裁定：纹理要入库、要打包 ✓）。
+# **为什么平铺在 share/yanshi/ 下** ✓：服务端把"资产根目录 + 种类子目录"拼在一起 ✓
+#（`assets_dir` + `textures|brushes|palettes` ✓）⇒ 包内只要让 `--assets-dir` 指到 `share/yanshi` ✓
+# ⇒ `scripts/fetch-textures.sh` 那条路（工作区缓存 ✓）与这条（随包内置 ✓）**并存** ✓。
+for asset_kind in textures brushes palettes; do
+  if [ -d "$repo/assets/${asset_kind}" ]; then
+    cp -R "$repo/assets/${asset_kind}" "$stage/share/yanshi/${asset_kind}"
+  fi
+done
 [ -f "$repo/LICENSE" ] && cp "$repo/LICENSE" "$stage/"
 cp "$repo/README.md" "$stage/README.md"
 
@@ -218,6 +227,7 @@ fi
 exec "$here/bin/yanshi-serve" \
   "${wasm_args[@]}" \
   --medium-dir "$here/share/yanshi/mediums" \
+  --assets-dir "$here/share/yanshi" \
   --brand-dir "$here/share/yanshi/brand" \
   "$@"
 WRAP

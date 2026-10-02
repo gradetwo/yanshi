@@ -64,6 +64,12 @@ pub struct HttpOptions {
     pub brand_dir: Option<PathBuf>,
     /// 介质插件目录（设计 11.1）：`GET /mediums/{file}` ✓。
     pub medium_dir: Option<PathBuf>,
+    /// **内置纹理目录** ✓（`assets/textures` ✓ —— 用户裁定：**纹理要入库、要随包发布** ✓）。
+    ///
+    /// **为什么与介质同类** ✓：它们都是**发行物的一部分** ✓ ⇒ 由命令行指定 ✓、
+    /// 由 `yanshi.sh` 按包内位置传进来 ✓（解包到哪都能跑 ✓）。
+    /// 与"工作区缓存"（`<root>/textures/` ✓）**并存** ✓：内置的是开箱就有 ✓，缓存是用户后抓的 ✓。
+    pub assets_dir: Option<PathBuf>,
 }
 
 impl Default for HttpOptions {
@@ -102,6 +108,7 @@ impl Default for HttpOptions {
             wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
             brand_dir: Some(PathBuf::from("assets/brand")),
             medium_dir: Some(PathBuf::from("assets/mediums")),
+            assets_dir: Some(PathBuf::from("assets")),
         }
     }
 }
@@ -128,6 +135,8 @@ impl HttpOptions {
                 "--no-wasm" => options.wasm_dir = None,
                 "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
                 "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
+                "--assets-dir" => options.assets_dir = Some(value_of("--assets-dir")?.into()),
+                "--no-assets" => options.assets_dir = None,
                 "--no-mediums" => options.medium_dir = None,
                 "--no-brand" => options.brand_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
@@ -295,7 +304,10 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
         Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
             .unwrap_or_else(|_| Workspace::in_memory(settings)),
         None => Workspace::in_memory(settings),
-    };
+    }
+    // **内置纹理目录接进工具层** ✓ ⇒ `list_textures` 会同时报内置与缓存 ✓，
+    // 而 MCP 与查看器**都**经工具层 ✓ ⇒ 两边一致 ✓（用户那条硬要求 ✓）。
+    .with_assets_dir(options.assets_dir.clone());
     let registry = ToolRegistry::with_profiles(&options.profiles);
     let state = Arc::new(ServerState {
         workspace: Mutex::new(workspace),

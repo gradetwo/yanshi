@@ -161,11 +161,101 @@ pub struct BlobLifecycle {
     pub orphan_hashes: Vec<String>,
 }
 
+/// **一条可用纹理** ✓（内置的或缓存的 ✓）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureEntry {
+    /// 文件名 ✓（含扩展名 ✓）。
+    pub name: String,
+    /// 字节数 ✓。
+    pub bytes: u64,
+    /// **来源** ✓：`bundled` = 随发行包发布 ✓；`cache` = 抓到工作区里的 ✓。
+    pub source: &'static str,
+}
+
+/// **读一个目录里的纹理文件** ✓（不存在 ⇒ 空表 ✓ —— "还没下载过"是**正常状态** ✗，不是错误 ✓）。
+///
+/// **抽成函数** ✓：内置目录与缓存目录**走同一段逻辑** ✓ ⇒ 不会出现
+/// "缓存那条会过滤隐藏文件、内置那条忘了" 这种漂移 ✗（本项目吃过太多次 ✓）。
+/// **资产种类 ⇒ 子目录 + 允许的扩展名** ✓（三类共用 ✓）。
+///
+/// **为什么把这张表放在内核** ✓：工具层、缓存目录、内置目录、扩展名校验**都读它** ✓
+/// ⇒ 加一种资产只改这一处 ✓（各写一份清单必然漂移 ✗）。
+fn asset_layout(kind: &str) -> Result<(&'static str, &'static [&'static str])> {
+    Ok(match kind {
+        "brush" => ("brushes", &["myb"] as &[&str]),
+        // **纹理只收 PNG** ✓：像素解码器是自己写的 ✓、只解 PNG ✗
+        //（JPEG/WebP 会被明确拒绝 ✓）⇒ 收进来用不了的东西是**骗人** ✗。
+        "texture" => ("textures", &["png"] as &[&str]),
+        "palette" => ("palettes", &["json", "kpl", "gpl", "txt"] as &[&str]),
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知资产种类 {other} ⇒ 可用：brush / texture / palette"
+                )),
+            ))
+        }
+    })
+}
+
+/// **资产文件名必须干净** ✗（挡 `..`、路径分隔符、隐藏文件 ✓）。
+fn asset_file_name(name: &str) -> Result<String> {
+    let clean = name.trim();
+    if clean.is_empty()
+        || clean.starts_with('.')
+        || clean.contains('/')
+        || clean.contains('\\')
+        || clean.contains("..")
+    {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("资产文件名不合法：{name}")),
+        ));
+    }
+    Ok(clean.to_string())
+}
+
+fn read_texture_dir(path: &std::path::Path) -> Result<Vec<(String, u64)>> {
+    let mut found: Vec<(String, u64)> = Vec::new();
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+        Err(error) => {
+            // **`ErrorCode` 里没有 Io** ✗ ⇒ 读不到用 ReferenceNotFound ✓，
+            // 与 `export_project` 读原子日志失败时保持一致 ✓。
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("读不到纹理目录 {}：{error}", path.display())),
+            ));
+        }
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        found.push((file_name, meta.len()));
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// 多文档工作区。
 pub struct Workspace {
     store: Arc<dyn BlobStore>,
     documents: BTreeMap<String, Document>,
     persist: Option<FileStore>,
+    /// **随发行包一起发布的资产根目录** ✓（仓库里是 `assets/` ✓）。
+    ///
+    /// **为什么是"根"而不是"纹理目录"** ✓：用户要的是**三类资产都能导入** ✓
+    ///（笔刷 ✓、纹理 ✓、调色板 ✓）⇒ 若各配一个字段 ✗，就会有**三份几乎一样的代码** ✓
+    /// ⇒ 必然漂移 ✗（本项目吃过太多次 ✓）。**统一成"根 + 种类子目录"** ✓：
+    /// `assets/<brushes|textures|palettes>/` ✓ —— 一份实现 ✓，三种资产 ✓。
+    assets_dir: Option<std::path::PathBuf>,
     settings: DocumentSettings,
     created: u64,
     /// **已 `begin` 但尚未 `commit`/`abort` 的变更集** ✓（键 = 文档 + 会话 ✓）。
@@ -439,6 +529,7 @@ impl Workspace {
             store: Arc::new(MemoryBlobStore::new()),
             documents: BTreeMap::new(),
             persist: None,
+            assets_dir: None,
             open_changesets: BTreeMap::new(),
             transactions: BTreeMap::new(),
             stashes: BTreeMap::new(),
@@ -458,6 +549,7 @@ impl Workspace {
             store,
             documents: BTreeMap::new(),
             persist: Some(persist),
+            assets_dir: None,
             settings,
             created: 0,
             open_changesets: BTreeMap::new(),
@@ -916,6 +1008,153 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **纹理缓存目录** ✓（`<root>/textures` ✓ —— **不入 git** ✗）。
+    ///
+    /// **为什么放缓存而不是签进仓库** ✓（用户裁定 ✓）：CC0 纹理最小的 `1K-PNG` 就有 **13.6MB** ✗
+    ///（实测自 ambientCG 的 API ✓）⇒ 几十张就是几百 MB ✗ ⇒ 签进 git 会把仓库撑爆 ✓。
+    /// 用户的选择是"**下载到本地缓存**" ✓ ⇒ 于是权威副本在**工作区**里 ✓、由**脚本**填充 ✓、
+    /// 而**工具**负责把它**列出来**给 MCP 与 Web 用 ✓（能力在工具层 ⇒ 两边同时可用 ✓）。
+    pub fn texture_cache_dir(&self, dir: Option<&str>) -> Result<std::path::PathBuf> {
+        let Some(persist) = self.persist.as_ref() else {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(
+                    "纹理缓存需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有地方放它们",
+                ),
+            ));
+        };
+        // **子目录名要挡住路径穿越** ✗（`..` 或绝对路径都不该能指到工作区之外 ✓）。
+        let name = dir.unwrap_or("textures");
+        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("纹理缓存目录名不合法：{name}")),
+            ));
+        }
+        Ok(persist.root().join(name))
+    }
+
+    /// **指定随发行包发布的资产根目录** ✓（仓库里是 `assets/` ✓；包内是 `share/yanshi` ✓）。
+    ///
+    /// **一个根、三种子目录** ✓（`textures` / `brushes` / `palettes` ✓）⇒
+    /// 加一类资产**不用再加开关** ✓（开关会越加越多 ✗，而这份代码只有一段 ✓）。
+    pub fn with_assets_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.assets_dir = dir;
+        self
+    }
+
+    /// **列出某类资产** ✓（`kind` ∈ `brush` / `texture` / `palette` ✓）。
+    ///
+    /// **两类来源** ✓：**内置**（`<assets_dir>/<子目录>` ✓，随发行包发布 ✓）与
+    /// **缓存**（`<root>/<子目录>` ✓，用户自己导入或抓取的 ✓）；**同名时缓存覆盖内置** ✓
+    ///（用户导入的同名文件应当生效 ✓，不必改仓库 ✓）。
+    /// **一份实现服务三种资产** ✓ —— 各写一份必然漂移 ✗。
+    pub fn list_assets(&self, kind: &str) -> Result<Vec<TextureEntry>> {
+        let (sub, _) = asset_layout(kind)?;
+        let mut found: Vec<TextureEntry> = Vec::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // **缓存先扫** ✓（优先级高 ✓ ⇒ 先占名字 ✓，内置里同名的随后被跳过 ✓）。
+        let cache = self.asset_dir(kind).ok();
+        let bundled = self.assets_dir.as_ref().map(|root| root.join(sub));
+        for (path, source) in [(cache, "cache"), (bundled, "bundled")] {
+            let Some(path) = path else { continue };
+            for (name, bytes) in read_texture_dir(&path)?.into_iter() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                found.push(TextureEntry {
+                    name,
+                    bytes,
+                    source,
+                });
+            }
+        }
+        found.sort_by(|a, b| (a.source, &a.name).cmp(&(b.source, &b.name)));
+        Ok(found)
+    }
+
+    /// **纹理** ✓ = `list_assets("texture")` 的薄包装 ✓。
+    ///
+    /// **为什么保留它** ✓：`list_textures` 是**已经交付并测过**的工具 ✓，
+    /// 去掉会破坏调用方 ✓ ⇒ 留着 ✓，但**共用同一份实现** ✓ ⇒ 两者**不可能漂移** ✓。
+    pub fn list_textures(&self, _dir: Option<&str>) -> Result<Vec<TextureEntry>> {
+        self.list_assets("texture")
+    }
+
+    /// **导入一件资产** ✓（笔刷 / 纹理 / 调色板 ✓）—— **MCP 与 Web 共用这一个入口** ✓。
+    ///
+    /// **校验** ✓：种类必须认识 ✓、文件名必须干净 ✓（挡路径穿越 ✗）、
+    /// 扩展名必须与种类相符 ✓（否则就是"**导入了用不了的东西**" ✗ —— 与"接受了却没用"同类 ✓）。
+    pub fn import_asset(
+        &self,
+        kind: &str,
+        name: &str,
+        bytes: &[u8],
+        overwrite: bool,
+    ) -> Result<std::path::PathBuf> {
+        let (sub, extensions) = asset_layout(kind)?;
+        let clean = asset_file_name(name)?;
+        let extension = clean
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !extensions.contains(&extension.as_str()) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{kind} 不接受 .{extension} ⇒ 可用扩展名：{}",
+                    extensions.join(" / ")
+                )),
+            ));
+        }
+        if bytes.is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{name} 是空文件 ⇒ 没有可导入的内容")),
+            ));
+        }
+        let dir = self.asset_dir(kind)?;
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("建不了资产目录 {}：{error}", dir.display())),
+            )
+        })?;
+        let target = dir.join(&clean);
+        // **默认不许覆盖** ✗：静默覆盖会毁掉用户已有的资产 ✓ ⇒ 要覆盖必须**明说** ✓。
+        if target.exists() && !overwrite {
+            return Err(YanshiError::new(
+                ErrorCode::Conflict,
+                ErrorContext::detail(format!(
+                    "{} 已存在 ⇒ 想替换请传 overwrite: true（不会静默覆盖 ✓）",
+                    target.display()
+                )),
+            ));
+        }
+        std::fs::write(&target, bytes).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不进 {}：{error}", target.display())),
+            )
+        })?;
+        let _ = sub;
+        Ok(target)
+    }
+
+    /// **某类资产的缓存目录** ✓（`<root>/<子目录>` ✓ —— 内置资产**不在这里** ✓）。
+    pub fn asset_dir(&self, kind: &str) -> Result<std::path::PathBuf> {
+        let (sub, _) = asset_layout(kind)?;
+        let Some(persist) = self.persist.as_ref() else {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "{kind} 的导入需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有地方放它"
+                )),
+            ));
+        };
+        Ok(persist.root().join(sub))
+    }
+
     /// **把一份文档打成 `.yanshi` 工程包** ✓（真实用户提的缺口 ✓）。
     ///
     /// **包里装什么** ✓：
@@ -929,6 +1168,11 @@ impl Workspace {
     ///
     /// **为什么要求落盘工作区** ✓：原子日志与元数据是**在磁盘上**的权威副本 ✓；
     /// 纯内存工作区没有它们 ✓ ⇒ 那里应当**明确拒绝** ✓（而不是导出一个**不完整**的包 ✗）。
+    /// **随发行包一起发布的内置纹理目录** ✓（用户裁定：纹理**要入库、要打包** ✓）。
+    ///
+    /// **与缓存的关系** ✓：内置的是"**开箱就有**"的那几款 ✓（`assets/textures/` ✓，随 `make release` 进包 ✓）；
+    /// 缓存（`<root>/textures/` ✓）是用户用 `scripts/fetch-textures.sh` 另外抓的 ✓。
+    /// **重名时缓存优先** ✓ —— 用户放进去的同名文件**覆盖**内置的 ✓（想换就换 ✓，不必改仓库 ✓）。
     pub fn export_project(&mut self, doc_id: &str, render_png: &[u8]) -> Result<Vec<u8>> {
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
