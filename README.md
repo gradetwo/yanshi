@@ -254,6 +254,11 @@ palette text format used by the sK1 collection and the JSON shape Open Colors us
 the file held against how many were returned, because a palette truncated to five hundred without saying so reads as
 a palette that small. A file that cannot be parsed at all is refused rather than reported as empty.
 
+Both have panels in the viewer: the palette panel lists the palettes, draws their colours as swatches and sets the
+brush colour when one is clicked, and the texture panel picks a texture and a mode and applies it, showing any
+warning the tool returned. Capabilities live in the tool layer so that MCP and the viewer share them, and the panels
+exist so that the viewer is not the poor relation.
+
 `texture_background` lays a texture over the canvas in one of three ways: tiled, which is the default because the
 CC0 paper and cardboard textures are seamless and tiling avoids any resampling, stretched to the full canvas, or
 scaled to cover and centre-cropped, the last two reusing the project's own bilinear resampler. When no layer is

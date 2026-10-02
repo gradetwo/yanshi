@@ -520,6 +520,28 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <label class="hint"><input id="storageConfirm" type="checkbox" /> 我确认（删除不可逆）</label>
       <div id="storageReport0" style="font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap"></div>
     </div>
+    <!-- **调色板** ✓（目标第 ① 件 ✓）—— `list_palette_colors` 此前**只有工具层入口** ✗
+         ⇒ MCP 能用 ✓，而界面里**点不到颜色** ✗ ⇒ 这正是"只在一边有"的缺陷 ✓。 -->
+    <div class="card">
+      <h2>调色板</h2>
+      <div class="hint">点色块即取色（写回**笔刷颜色** ✓）；来源是随包发布的，或你自己导入的 ✓。</div>
+      <label>调色板 <select id="palettePick"></select></label>
+      <div id="paletteSwatches" class="toolbar" style="flex-wrap:wrap;gap:4px"></div>
+      <div id="paletteInfo" class="hint"></div>
+    </div>
+    <!-- **纹理** ✓（目标第 ② 件 ✓）—— `texture_background` 同样此前只有工具层入口 ✗。 -->
+    <div class="card">
+      <h2>纹理</h2>
+      <div class="hint">把 CC0 纸张 / 画布纹理铺成背景 ✓（会**新建一层并沉到最底** ✓）。</div>
+      <label>纹理 <select id="texturePick"></select></label>
+      <label>铺法 <select id="textureMode">
+        <option value="tile">平铺（缺省）</option>
+        <option value="stretch">拉伸</option>
+        <option value="cover">等比铺满</option>
+      </select></label>
+      <div class="toolbar"><button id="textureApply" type="button">设为背景</button></div>
+      <div id="textureInfo" class="hint"></div>
+    </div>
     <!-- **建议** ✓（设计 §12.6 ✓）—— `suggest` / `list_suggestions` / `accept_suggestion` /
          `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
          也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
@@ -3590,6 +3612,8 @@ async function resampleCheckedObjects() {
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   setupStoragePanel();
+  // **素材面板** ✓（调色板取色 + 纹理背景 ✓）—— 与其它面板一样，**只在这儿挂一次** ✓。
+  void setupAssetPanels();
   setupSuggestionPanel();
   setupCommentPanel();
   setupChangesetPanel();
@@ -3790,6 +3814,116 @@ function renderLayerPanel(layers) {
 }
 
 // 面板按钮**只接一次线** ✓（见上面第 ③ 条 ✓）。
+/// **调色板与纹理两个面板** ✓（目标第 ③ 件 ✓）。
+///
+/// **为什么必须有** ✓：能力先放在**工具层** ✓（MCP 与 Web 都能用 ✓），
+/// 但**界面里没有入口**就等于"只有 MCP 能用" ✗ —— 用户那条硬要求正是**两边都要有** ✓。
+/// **素材都很少** ✓（调色板 43 个 ✓、纹理 11 张 ✓）⇒ **加载时一次装满** ✓，不做懒加载 ✓。
+async function setupAssetPanels() {
+  const palettePick = $("palettePick");
+  const swatches = $("paletteSwatches");
+  const paletteInfo = $("paletteInfo");
+  const texturePick = $("texturePick");
+  const textureMode = $("textureMode");
+  const textureApply = $("textureApply");
+  const textureInfo = $("textureInfo");
+
+  // **一次装载两类素材** ✓；失败要说出来 ✓（静默的界面最让人困惑 ✗）。
+  try {
+    const palettes = await callTool("list_assets", { kind: "palette" }, { refresh: false });
+    for (const asset of (palettes && palettes.assets) || []) {
+      if (!asset.usable) continue;
+      const option = document.createElement("option");
+      option.value = asset.name;
+      option.textContent = asset.name + (asset.source === "cache" ? "（导入的）" : "");
+      if (palettePick) palettePick.appendChild(option);
+    }
+  } catch (error) {
+    if (paletteInfo) paletteInfo.textContent = "调色板列表没拉到：" + String(error).slice(0, 90);
+  }
+  try {
+    const textures = await callTool("list_assets", { kind: "texture" }, { refresh: false });
+    for (const asset of (textures && textures.assets) || []) {
+      if (!asset.usable) continue;
+      const option = document.createElement("option");
+      option.value = asset.name;
+      option.textContent = asset.name + (asset.source === "cache" ? "（导入的）" : "");
+      if (texturePick) texturePick.appendChild(option);
+    }
+  } catch (error) {
+    if (textureInfo) textureInfo.textContent = "纹理列表没拉到：" + String(error).slice(0, 90);
+  }
+
+  // **读一个调色板并铺成色块** ✓。截断也照实说 ✓（"给了 500 却不说"会让人以为板就那么大 ✗）。
+  async function loadPalette() {
+    if (!palettePick || !swatches) return;
+    swatches.innerHTML = "";
+    const name = palettePick.value;
+    if (!name) return;
+    const listed = await callTool(
+      "list_palette_colors",
+      { palette: name, limit: 256 },
+      { refresh: false },
+    );
+    if (!listed || listed.ok === false) {
+      if (paletteInfo) paletteInfo.textContent = "读不了这个调色板：" + JSON.stringify(listed).slice(0, 120);
+      return;
+    }
+    for (const color of listed.colors || []) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.title = (color.name ? color.name + " " : "") + color.hex + "（点击取色 ✓）";
+      chip.dataset.hex = color.hex;
+      chip.style.cssText =
+        "width:20px;height:20px;padding:0;border:1px solid rgba(0,0,0,.25);border-radius:3px;" +
+        "background:" + color.hex + ";cursor:pointer";
+      chip.addEventListener("click", () => {
+        // **写回笔刷颜色** ✓：与调色板里已有的那个控件是**同一个来源** ✓
+        //（`setColor` 写的就是 `#color` ✓ ⇒ 不会出现"两套颜色" ✗）。
+        if (window.yanshi && window.yanshi.setColor) window.yanshi.setColor(color.hex);
+        if (paletteInfo) {
+          paletteInfo.textContent =
+            "已取 " + color.hex + (color.name ? "（" + color.name + "）" : "") + " ✓";
+        }
+      });
+      swatches.appendChild(chip);
+    }
+    if (paletteInfo) {
+      const total = listed.total === undefined ? listed.count : listed.total;
+      paletteInfo.textContent =
+        "共 " + total + " 色" + (listed.truncated ? "（只显示了前 " + listed.count + " 个 ✓）" : " ✓");
+    }
+  }
+  if (palettePick) {
+    palettePick.addEventListener("change", () => { void loadPalette(); });
+    if (palettePick.options.length > 0) void loadPalette();
+  }
+
+  if (textureApply) {
+    textureApply.addEventListener("click", async () => {
+      const texture = texturePick ? texturePick.value : "";
+      if (!texture) {
+        if (textureInfo) textureInfo.textContent = "先选一张纹理 ✓";
+        return;
+      }
+      const mode = textureMode ? textureMode.value : "tile";
+      const result = await callToolChecked(
+        "texture_background",
+        { texture: texture, mode: mode },
+        "设为背景",
+      );
+      // **警告要显示出来** ✗（工具会在"指定了非空图层"时给警告 ✓
+      // ⇒ 界面若把它吞掉 ✓，用户就只剩困惑 ✓）。
+      let text = "已铺 " + texture + "（" + mode + "）✓";
+      if (result && result.warning) text += "　⚠️ " + result.warning;
+      if (textureInfo) textureInfo.textContent = text;
+      await refreshPreview();
+      // **服务端改了文档 ⇒ 画布必须重绘** ✓（这条与 `resync()` 那次的教训同一个 ✓）。
+      await resync();
+    });
+  }
+}
+
 async function setupLayerPanel() {
   const list = $("layerList");
   if (!list) return;
