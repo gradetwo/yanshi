@@ -545,6 +545,21 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div class="toolbar"><button id="textureApply" type="button">设为背景</button></div>
       <div id="textureInfo" class="hint"></div>
     </div>
+    <!-- **渐变** ✓（目标 (d) ✓）—— 针对"大面积背景难处理" ✓：
+         笔刷铺底会留下笔触边缘与噪声 ✗，而渐变是纯函数 ✓（无边、无噪、可复现 ✓）。 -->
+    <div class="card">
+      <h2>渐变</h2>
+      <div class="hint">给当前图层填一层渐变 ✓（天空 / 底色 / 光照过渡 ✓）—— 确定性：同样的输入永远同样的像素 ✓。</div>
+      <label>起点 <input id="gradFrom" type="color" value="#fad6a5" /></label>
+      <label>终点 <input id="gradTo" type="color" value="#3b5bdb" /></label>
+      <label>类型 <select id="gradKind">
+        <option value="linear">线性（角度 ↓）</option>
+        <option value="radial">径向（从中心散开）</option>
+      </select></label>
+      <label>角度 <input id="gradAngle" type="number" value="90" step="15" style="width:64px" /></label>
+      <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
+      <div id="gradInfo" class="hint"></div>
+    </div>
     <!-- **建议** ✓（设计 §12.6 ✓）—— `suggest` / `list_suggestions` / `accept_suggestion` /
          `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
          也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
@@ -3930,6 +3945,43 @@ async function setupAssetPanels() {
   if (palettePick) {
     palettePick.addEventListener("change", () => { void loadPalette(); });
     if (palettePick.options.length > 0) void loadPalette();
+  }
+
+  const gradApply = $("gradApply");
+  if (gradApply) {
+    gradApply.addEventListener("click", async () => {
+      // **十六进制 ⇒ 分量** ✓（工具收 `{r,g,b,a}` ✓ —— 与界面里的取色控件格式不同 ✓
+      // ⇒ 转换只在这一处 ✓，不让调用方各转一遍 ✓）。
+      const toRgb = (hex) => ({
+        r: parseInt(hex.slice(1, 3), 16),
+        g: parseInt(hex.slice(3, 5), 16),
+        b: parseInt(hex.slice(5, 7), 16),
+        a: 255,
+      });
+      const fromHex = ($("gradFrom") || {}).value || "#ffffff";
+      const toHex = ($("gradTo") || {}).value || "#000000";
+      const kind = ($("gradKind") || {}).value || "linear";
+      const angle = Number(($("gradAngle") || {}).value || 0);
+      const result = await callToolChecked(
+        "gradient_fill",
+        {
+          layer_id: state.layerId,
+          kind: kind,
+          angle: angle,
+          from: toRgb(fromHex),
+          to: toRgb(toHex),
+        },
+        "填充渐变",
+      );
+      if ($("gradInfo")) {
+        $("gradInfo").textContent =
+          "已填 " + kind + (kind === "linear" ? "（" + angle + "°）" : "") + "：" + fromHex + " → " + toHex + " ✓";
+      }
+      void result;
+      await refreshPreview();
+      // **服务端改了文档 ⇒ 画布必须重绘** ✓（与前面几次同一个教训 ✓）。
+      await resync();
+    });
   }
 
   if (textureApply) {

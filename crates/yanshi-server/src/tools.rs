@@ -2094,6 +2094,25 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "gradient_fill",
+        profile: Profile::Core,
+        // **针对用户报过的"大面积背景难处理"** ✓：平铺纹理是一条路 ✓，**渐变**是另一条 ✓ ——
+        // 而且渐变**不带纹理噪声** ✓，做天空、底色、光照过渡比笔刷铺要稳得多 ✓。
+        summary: "在图层或指定区域填渐变（linear 线性 / radial 径向）；双色、可给角度与中心",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("from", Object, true, "起点色 {r,g,b,a}（0..255）"),
+            param!("to", Object, true, "终点色 {r,g,b,a}"),
+            param!("kind", String, false, "linear（缺省）/ radial"),
+            param!("angle", Number, false, "linear 的方向角（度；0 = 从左到右，90 = 从上到下）"),
+            param!("center", Object, false, "radial 的中心 {x,y}（缺省取区域中心）"),
+            param!("radius", Number, false, "radial 的半径（缺省取区域对角线的一半）"),
+            param!("region", Object, false, "只填这块 {x,y,w,h}；不给就整层（按画布尺寸）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
         name: "texture_background",
         profile: Profile::Core,
         // **它改文档** ✓ ⇒ `mutating: true`（新建图层 + 落一层底图 ✓；`update_layer` 的强制检查会认它 ✓）。
@@ -2378,6 +2397,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "brush_stroke" => write_brush_stroke(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
+        "gradient_fill" => write_gradient_fill(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -8761,6 +8781,174 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 ///
 /// **落到底部** ✓：背景就该在最下面 ✓ ⇒ 新建图层后用 `reorder_layers` 把它放到**最底层** ✓
 ///（`create_layer` 会把新层放在最上面 ✗ —— 这一点与用户报过的"顺序"问题同源 ✓）。
+/// **渐变填充** ✓（目标 (d) ✓）—— 大面积底色的正路 ✓。
+///
+/// **为什么它比"用大笔刷铺"稳** ✓（用户报过"大面积背景难处理" ✓）：
+/// 笔刷铺底会留下**笔触边缘**与**采样噪声** ✗（他实测到的"横向条带"与"盖章圆点" ✓）；
+/// 而渐变是**纯函数** ✓：给定两端色与方向 ✓ ⇒ 逐像素可复现 ✓、没有随机、没有重叠 ✗ ✓。
+///
+/// **插值空间的选择** ✓（记录选择 ✓）：在 **sRGB 分量上直接线性插值** ✓ ——
+/// 这与多数图形软件的"默认渐变"一致 ✓、也与本项目的像素语义一致 ✓；
+/// **物理上更"对"的是线性光空间** ✗ ⇒ 那会明显改变中间的亮度 ✓
+/// ⇒ 留作**将来的可选参数** ✓，不在这里偷偷做掉 ✓（"悄悄改了效果"比"没做"更糟 ✗）。
+fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let from = parse_color_arg(args.get("from"), "from")?;
+    let to = parse_color_arg(args.get("to"), "to")?;
+    let kind = optional_str(args, "kind").unwrap_or_else(|| "linear".to_string());
+    if !matches!(kind.as_str(), "linear" | "radial") {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("未知渐变类型 {kind} ⇒ 可用：linear / radial")),
+        ));
+    }
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("找不到文档 {}", ctx.doc_id)),
+            )
+        })?;
+    // **区域** ✓：不给就整幅 ✓（画布尺寸 ✓）。
+    let (target_x, target_y, width, height) = match args.get("region") {
+        Some(value) => {
+            let parsed = parse_bbox(value)?;
+            let x = (parsed.x.max(0.0) as i32).min(canvas_width as i32);
+            let y = (parsed.y.max(0.0) as i32).min(canvas_height as i32);
+            let w = (parsed.w.max(1.0) as i32)
+                .min(canvas_width as i32 - x)
+                .max(1) as usize;
+            let h = (parsed.h.max(1.0) as i32)
+                .min(canvas_height as i32 - y)
+                .max(1) as usize;
+            (x, y, w, h)
+        }
+        None => (0, 0, canvas_width as usize, canvas_height as usize),
+    };
+    if width == 0 || height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("文档尺寸是 0 ⇒ 填不了渐变"),
+        ));
+    }
+
+    let angle_degrees = args.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
+    let angle_radians = angle_degrees.to_radians();
+    // **方向向量** ✓：角度按屏幕坐标量 ✓（x 向右 ✓、y 向下 ✓）⇒ 90° 就是"从上到下" ✓。
+    let direction = (angle_radians.cos(), angle_radians.sin());
+    // **线性渐变的投影范围** ✓：把矩形四角投到方向上 ✓ 取最小与最大 ✓
+    // ⇒ 这样**任意角度**下渐变都能正好铺满该区域 ✓（而不是只铺一半 ✗）。
+    let corners = [
+        (0.0, 0.0),
+        (width as f64, 0.0),
+        (0.0, height as f64),
+        (width as f64, height as f64),
+    ];
+    let projections: Vec<f64> = corners
+        .iter()
+        .map(|(x, y)| x * direction.0 + y * direction.1)
+        .collect();
+    let min_projection = projections.iter().cloned().fold(f64::MAX, f64::min);
+    let max_projection = projections.iter().cloned().fold(f64::MIN, f64::max);
+    let span = (max_projection - min_projection).max(1e-6);
+
+    let center = match args.get("center") {
+        Some(value) => {
+            // **与 `parse_bbox` 同样宽容** ✓：`{x,y}` 与 `[x,y]` 都收 ✓ ——
+            // 同一个工具里两种点/框写法**要么都收、要么都不收** ✗（只收一种 ⇒ 调用方要记两套 ✓）。
+            let x = value.get("x").and_then(Value::as_f64).or_else(|| {
+                value
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(Value::as_f64)
+            });
+            let y = value.get("y").and_then(Value::as_f64).or_else(|| {
+                value
+                    .as_array()
+                    .and_then(|items| items.get(1))
+                    .and_then(Value::as_f64)
+            });
+            match (x, y) {
+                // **转成区域内的相对坐标** ✓（渐变按区域算 ✓）。
+                (Some(x), Some(y)) => (x - target_x as f64, y - target_y as f64),
+                _ => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("center 必须是 {x,y} 或 [x,y]"),
+                    ))
+                }
+            }
+        }
+        None => (width as f64 / 2.0, height as f64 / 2.0),
+    };
+    let radius = args
+        .get("radius")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| ((width as f64).powi(2) + (height as f64).powi(2)).sqrt() / 2.0)
+        .max(1e-6);
+
+    let mut rgba = vec![0u8; width * height * 4];
+    for row in 0..height {
+        for column in 0..width {
+            // **线性**：沿方向投影 ⇒ 归一化到 0..1 ✓
+            // **径向**：到中心的距离 ⇒ 除以半径 ✓（超出就夹到 1 ✓）。
+            let t = if kind == "radial" {
+                let dx = column as f64 - center.0;
+                let dy = row as f64 - center.1;
+                ((dx * dx + dy * dy).sqrt() / radius).clamp(0.0, 1.0)
+            } else {
+                let projection = column as f64 * direction.0 + row as f64 * direction.1;
+                ((projection - min_projection) / span).clamp(0.0, 1.0)
+            };
+            let at = (row * width + column) * 4;
+            for channel in 0..4 {
+                let a = from[channel] as f64;
+                let b = to[channel] as f64;
+                rgba[at + channel] = (a + (b - a) * t).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    // **blob 先行** ✓，与介质 / 笔刷 / 纹理三条路完全同源 ✓。
+    let composite = ctx.workspace.store().put(&rgba)?;
+    let import_args = json!({
+        "layer_id": layer_id,
+        "object_id": optional_str(args, "object_id"),
+        "bitmap": {
+            "blob_hash": composite.to_string(),
+            "size": rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {"x": target_x, "y": target_y, "w": width, "h": height},
+    });
+    let mut value = write_import_image(ctx, &import_args)?;
+    value["kind"] = json!(kind);
+    value["angle"] = json!(angle_degrees);
+    value["region"] = json!({"x": target_x, "y": target_y, "w": width, "h": height});
+    Ok(value)
+}
+
+/// **解析 `{r,g,b,a}` 颜色参数** ✓（0..255 ✓；`a` 缺省 255 ✓）。
+fn parse_color_arg(value: Option<&Value>, name: &str) -> Result<[u8; 4]> {
+    let object = value.and_then(Value::as_object).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 必须是对象 {{r,g,b,a}}（0..255）")),
+        )
+    })?;
+    let mut out = [0u8; 4];
+    for (index, key) in ["r", "g", "b", "a"].iter().enumerate() {
+        let raw = object.get(*key).and_then(Value::as_u64);
+        let fallback = if *key == "a" { 255 } else { 0 };
+        let channel = raw.unwrap_or(fallback).min(255) as u8;
+        out[index] = channel;
+    }
+    Ok(out)
+}
+
 fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let texture = require_str(args, "texture")?;
     let mode = optional_str(args, "mode").unwrap_or_else(|| "tile".to_string());

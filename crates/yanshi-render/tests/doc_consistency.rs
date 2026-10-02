@@ -87,6 +87,15 @@ fn documented_effect_counts_match_the_kernel() {
 }
 
 /// 两份 README 的算子清单应逐项对应：README 里出现的每个内核名字都要在中文版里也出现。
+///
+/// **⚠️ 这是"子串"检查，会被普通英文单词误伤** ✗（真实发生过一次 ✓）：
+/// 我在英文段落里写了 "three **levels** out of two hundred and fifty five" ✓，
+/// 而**内核里恰好有一个叫 `levels` 的调节项** ✓ ⇒ 守卫据此报"中文版缺少 levels" ✗ ✓。
+/// **正确的处理是改文案** ✓（避开与效果名同形的普通词 ✓ ——
+/// 例如把 `levels` 换成"档位 / 数值" ✓），**不要**去放宽守卫 ✗：
+/// 这条守卫要保证的正是"**两边的算子清单一致**" ✓，放宽它就等于放弃那件事 ✓。
+/// **更根本的原因** ✓：效果名多为常见英文词（`levels` ✓、`glow` ✓、`clarity` ✓…… ✓）
+/// ⇒ 用子串比对时**必然**存在这种碰撞 ✓ ⇒ 所以这属于**已知局限** ✓，写在这里免得反复踩 ✓。
 #[test]
 fn readmes_agree_on_the_effect_inventory() {
     let english = read("README.md");

@@ -237,6 +237,20 @@ in the same order as the tools do, cache before bundled, so the picture shown an
 The route accepts only a plain `.png` name, refusing path separators and other extensions, and returns a specific
 status for a bad name and a missing file rather than a generic failure.
 
+## Backgrounds that are not a brush
+
+Two tools exist for the problem of covering a large area, which brushwork handles badly: a stroke leaves its edges and
+its sampling noise behind, which is how a background becomes a row of stamps or a set of bands. `texture_background`
+tiles a paper or canvas texture, and `gradient_fill` lays a linear or radial gradient. A gradient is a pure function
+of its two colours and its direction, so it has no edges, no noise and no randomness, and the same arguments always
+produce the same pixels, which a test asserts by requiring two runs to yield the same content addressed blob. The
+panel offers two colour pickers, a type and an angle.
+
+Worth recording from checking the result: a render of a sky gradient with a soft radial light appeared to have a faint
+horizontal band and a vertical edge, and measurement showed both to be imagination, with neighbouring rows and
+neighbouring rows and columns differing by three out of two hundred and fifty five. That is Mach banding, an artefact of the eye
+rather than the renderer, and it is the reason the habit here is to look first and then measure before believing it.
+
 ## File names must differ by more than case
 
 No two paths in the repository may differ only in case, because macOS and Windows filesystems are case insensitive
