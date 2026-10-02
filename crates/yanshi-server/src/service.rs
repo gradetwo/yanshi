@@ -216,9 +216,45 @@ fn asset_file_usable(kind: &str, path: &std::path::Path, extension: &str) -> boo
     match kind {
         "texture" => extension == "png" && png_is_decodable(path),
         "brush" => extension == "myb",
-        "palette" => matches!(extension, "json" | "kpl" | "gpl"),
+        // **调色板同样要真读文件头** ✗（只看扩展名就会重犯灰度 PNG 那个错 ✓）：
+        // `.gpl` 与 `.kpl` 都以 `GIMP Palette` 开头 ✓；`.json` 应当是对象或数组 ✓。
+        "palette" => match extension {
+            "gpl" | "kpl" => file_starts_with(path, b"GIMP Palette"),
+            "json" => {
+                let head = read_head(path, 8);
+                let trimmed = head
+                    .iter()
+                    .copied()
+                    .skip_while(|byte| byte.is_ascii_whitespace())
+                    .collect::<Vec<u8>>();
+                matches!(trimmed.first(), Some(b'{') | Some(b'['))
+            }
+            _ => false,
+        },
         _ => false,
     }
+}
+
+/// **读文件开头若干字节** ✓（读不到就返回空 ✓ ⇒ 上层自然判为不可用 ✓）。
+fn read_head(path: &std::path::Path, limit: usize) -> Vec<u8> {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut buffer = vec![0u8; limit];
+    match file.read(&mut buffer) {
+        Ok(read) => {
+            buffer.truncate(read);
+            buffer
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// **文件是否以某串字节开头** ✓（大小写敏感 ✓ —— 这几个格式头都是固定写法 ✓）。
+fn file_starts_with(path: &std::path::Path, prefix: &[u8]) -> bool {
+    let head = read_head(path, prefix.len().max(16));
+    head.starts_with(prefix)
 }
 
 /// **读 PNG 头判断解码器能不能吃** ✓（只读前 33 字节 ✓，不解整幅 ✓ ⇒ 列表也很快 ✓）。

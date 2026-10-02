@@ -221,6 +221,17 @@ reads `.myb`. Importing over an existing name is refused unless `overwrite` is s
 separators. The release package carries `textures`, `brushes` and `palettes` under `share/yanshi`, which the wrapper
 points at with `--assets-dir`.
 
+## Palettes
+
+Two sets ship under `assets/palettes`. **Open Colors** is MIT and is the one the project owner chose to replace
+MyPaint's own: fifteen families and a hundred and thirty two colours. The **sK1 Project multiformat palette
+collection** contributes forty one palettes as `.gpl`, which the sK1 author released into the public domain with the
+plain statement that the files may be used for any purposes; the notice in that directory records the canonical
+address, the mailing list post it comes from, and the mirror the files were fetched through, whose own readme
+disclaims any licensing. Only the `.gpl` variant is kept: the collection's `.skp`, `.xml`, `.ase`, `.jcw`, `.cpl`
+and `.soc` files have no parser here, and shipping files nothing can read is the same defect as advertising a
+greyscale PNG as usable.
+
 ## Install
 
 ```bash

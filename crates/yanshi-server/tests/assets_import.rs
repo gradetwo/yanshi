@@ -178,3 +178,51 @@ fn an_unknown_kind_lists_the_supported_ones() {
         );
     }
 }
+
+/// **随发行包发布的资产必须真的可用** ✓ —— 这条守卫如果早存在 ✓，
+/// `Paper003.png`（灰度 PNG ✓ 被报成可用 ✗，导入时被解码器拒绝 ✗）**当时就会红** ✓。
+///
+/// **它读的是仓库里的 `assets/`** ✓（不是临时目录 ✓）⇒ 测的是**我们真正会发出去的东西** ✓。
+/// 判据只针对**该类的主扩展名** ✓（`.png` / `.myb` / `.gpl` / `.json` ✓）——
+/// 同目录的 `NOTICE.md`、`LICENSE-CC0.txt` 是**说明文件** ✓，不该被当成资产 ✗。
+#[test]
+fn every_bundled_asset_is_actually_usable() {
+    let root = temp_dir("bundled_usable");
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let mut workspace = workspace(&root).with_assets_dir(Some(assets));
+
+    for (kind, primary) in [("texture", ".png"), ("brush", ".myb"), ("palette", ".gpl")] {
+        let got = call(&mut workspace, "list_assets", json!({ "kind": kind }));
+        assert_eq!(got["ok"], json!(true), "{got}");
+        let entries = got["assets"].as_array().cloned().unwrap_or_default();
+        let primary_entries: Vec<(String, bool)> = entries
+            .iter()
+            .filter(|entry| {
+                entry["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .ends_with(primary)
+            })
+            .map(|entry| {
+                (
+                    entry["name"].as_str().unwrap_or_default().to_owned(),
+                    entry["usable"] == json!(true),
+                )
+            })
+            .collect();
+        assert!(
+            !primary_entries.is_empty(),
+            "{kind} 一个 {primary} 都没有 ⇒ 守卫没测到东西 ✗"
+        );
+        let unusable: Vec<&String> = primary_entries
+            .iter()
+            .filter(|(_, usable)| !*usable)
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            unusable.is_empty(),
+            "{kind} 里有报成不可用的 {primary}：{unusable:?} ⇒ 会引导调用方去导一个必然失败的文件 ✗"
+        );
+    }
+}
