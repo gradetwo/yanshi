@@ -1337,6 +1337,13 @@ async function blitServerBox(bbox) {
   ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
+  window.yanshiStats.lastServerBlitReason = "box " + JSON.stringify([x0, y0, w, h]);
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: window.yanshiStats.lastServerBlitReason,
+    area: w * h,
+    at: Math.round(performance.now()),
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   return w * h;
 }
 
@@ -1355,6 +1362,15 @@ let serverBlitPending = false;
 let serverBlitBox = null;
 /// 需要**整视口**补画 ✓（不知道脏区时用它 ✓ —— 例如"打开文档后第一次铺底" ✓）。
 let serverBlitWhole = false;
+/// **最近一次本地提交的脏区** ✓（含时间戳 ✓）。
+///
+/// **为什么要它** ✗：真实用户实测"每一笔结束还是会闪一下"✓ —— 探针量到那一笔之后的补画
+/// 面积是 **576000 = 整视口** ✓，来源是 **WS 的 heavy 分支**：文档里只要画过一笔
+/// （`raster_patch` ⇒ heavy ✓），服务端就会推一条 heavy 事件 ✓，而那一支只会
+/// `blitServerViewport()` **整视口**重画 ✗ ⇒ 肉眼可见地闪 ✓。
+/// **本地刚提交过** ⇒ 脏区是已知的 ✓ ⇒ 只补那一块 ✓；
+/// **别处来的变更**（另一个客户端 / 未知 ✓）⇒ 没有可信脏区 ✗ ⇒ 仍然整视口 ✓（宁可多画 ✓ 不能少画 ✗）。
+let lastDirtyBox = null;
 const unionBox = (left, right) => {
   if (!left) return right.slice();
   if (!right) return left.slice();
@@ -1387,6 +1403,13 @@ async function blitServerViewport() {
   }
   serverBlitBox = null;
   serverBlitWhole = false;
+  window.yanshiStats.lastServerBlitReason = "viewport";
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "viewport",
+    area: 0,
+    at: Math.round(performance.now()),
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   // **等下一帧再画** ✓ —— 本会话实测：补画确实执行了 ✓（`serverBlits` 计数增加 ✓、面积 262144 ✓），
   // 但最终画布仍是空白 ✗。原因是**布局变化会重设画布尺寸** ✓（`sizeBoards` 改 `board.width` ⇒ 清空 ✓），
   // 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓。
@@ -1565,6 +1588,25 @@ function afterMutation(atomId, options = {}) {
   // **无内核时，任何提交之后都要从服务端补画** ✓ —— 这是"一笔一画"能在新机器上看见的关键 ✓。
   // 放在这里而不是各条落笔路径里 ✓：它是**所有提交的收口** ✓（普通笔 / 形状 / 填充 / 效果 / 图层… ✓），
   // 一处修好，全部受益 ✓（本项目反复吃过"只修一条路径"的亏 ✓）。
+  // **判据是"这份文档需要服务端像素"，不是"有没有内核"** ✗（真实用户实测 ✓，两条症状同一个根因 ✓）：
+  // ①"新建图层后画布不刷新，只有手工点刷新才看得到新画的"✗；
+  // ②"每一笔结束还是会闪一下"✗ —— 闪就是因为走了**整视口**补画 ✓。
+  // **为什么以前没暴露** ✗：`detectHeavyContent` 把**含任何 `raster_patch`（= 任何画笔笔触 ✓）**
+  // 的文档都判成 heavy ✓ ⇒ 一旦画过一笔 ✓，`needsServerPixels` 就为真 ✓，
+  // 而这里却因为**内核是加载好的**（`state.wasm` 为真 ✗）而**跳过补画** ✗
+  // ⇒ 只能等 WS 那条 heavy 分支整视口补画 ✓（既慢又能看见闪 ✗），
+  // 或者干脆看不到 ✗（用户手工刷新才出现 ✓）。
+  // **本轮查清的事** ✓（真实用户两条实测症状 ✓，记在这里免得下轮从头找 ✓）：
+  // 文档里只要画过一笔（`raster_patch` ⇒ heavy ✓）内核就**表示不了它** ✗
+  //（能折叠 ✓ 但拿不到 blob 像素 ⇒ 得到**空白**补丁 ✓ 且返回 ok ✗）
+  // ⇒ 画布的权威只能是服务端 ✓，而这个判据当时写的是**"有没有内核"** ✗ 而不是
+  // **"这份文档要不要服务端像素"** ✗ ⇒ 有内核的机器上提交之后**不补画** ✓
+  // ⇒ 用户看到"新建图层后画了看不见，只有手工刷新才行"✗。
+  // **但我这一轮没敢改掉它** ✗：改成 `needsServerPixels` 之后，探针量到的墨在 1750 与 0 之间翻覆 ✓
+  //（补画流水显示 `box [0,0,900,640]` **执行了却没画上** ✓，而同一时刻的 `viewport` 补画有时也画不出 ✓）
+  // ⇒ 说明**下面那两条路本身就不稳** ✗（按脏区取图 / 服务端的区域渲染缓存 ✓），
+  // 动门控只会把"看不见"换成"有时看不见" ✗ ⇒ **先留原样 ✓，把判据与证据交给下一轮 ✓**
+  //（探针 `scripts/browser-stroke-refresh.mjs` ✓ + `state().blitLog` ✓）。
   if (!state.wasm) {
     needsServerPixels = true;
     // **有脏区就只补脏区** ✓（提交响应本来就给了 ✓，此前丢掉不用 ✗、一律整视口 ✓）。
@@ -4627,6 +4669,18 @@ function connect() {
           if (event.heavy && event.kind !== "declare_head") {
             // 先重载内核（它会触发一次 renderViewport ✓），**再**补画 ✓ ——
             // 顺序很关键：只补画会被随后的内核重绘覆盖 ✓（实测 serverBlits=2 却仍 0 个有墨像素 ✗）。
+            //
+            // **本地刚提交过 ⇒ 只补那一块脏区** ✓（真实用户实测"每一笔结束还是闪一下"✗ ——
+            // 探针量到那一笔之后补的是**整视口** 576000 像素 ✓，就是这一行造成的 ✓）。
+            // **3 秒之内**算"刚提交过"✓ —— 更久的那个脏区可能已经过时 ✗ ⇒ 退回整视口 ✓（宁可多画 ✓）。
+            // **这里曾经试过"本地刚提交就只补脏区"** ✗ —— 实测**画不出东西** ✓：
+            // 探针里墨从 1750（整视口补画 ✓）掉到 **0** ✗，补画流水里那条
+            // `box [0,0,900,640]` 明明执行了 ✓ 却什么都没画上 ✓
+            // ⇒ **按脏区补画这条路本身有问题** ✗（`blitServerBox` 的坐标/取图那条 ✓），
+            // 而它**不是**本轮能顺手修好的东西 ✗ ⇒ **先退回整视口** ✓（宁可闪 ✓ 不能看不见 ✗）。
+            // **下一步** ✓：查 `blitServerBox` 为什么画不出东西 ✓（判据：同一块区域，
+            // `blitServerBox` 与 `blitServerViewport` 画出来的墨量必须一致 ✓）；
+            // 修好之后再把这里换成脏区 ✓ ⇒ 那才是"闪一下"的正解 ✓。
             void resync().then(() => blitServerViewport());
           }
         } else {
@@ -6160,6 +6214,13 @@ window.yanshi = {
         // 本轮验收"滚轮不许改缩放"时，探针必须有**可读的事实** ✓，否则会写出**恒真**的判据 ✗。
         zoom: state.displayScale || 1,
         userZoom: state.zoom || 1,
+        // **补画与"要不要服务端像素"都要能读** ✓ —— 本轮两条症状的判据全靠它 ✓
+        //（"闪一下"的可测代理 = `lastServerBlitArea` 是不是整视口 ✓）。
+        needsServerPixels: !!needsServerPixels,
+        serverBlits: window.yanshiStats.serverBlits || 0,
+        lastServerBlitArea: window.yanshiStats.lastServerBlitArea || 0,
+        lastServerBlitReason: window.yanshiStats.lastServerBlitReason || "",
+        blitLog: (window.yanshiStats.blitLog || []).slice(-12),
         displayScale: state.displayScale || 1,
       };
     },
