@@ -175,7 +175,8 @@ impl HttpOptions {
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
            --profile <list>   启用工具组，逗号分隔\n\
-           --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）\n\
+           --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）
+--medium-dir <dir> 介质插件目录（缺省 assets/mediums；发布包里在 share/yanshi/mediums）\n\
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
            --brand-dir <dir>  品牌资源目录（缺省 assets/brand）\n\
            --no-brand         不提供品牌资源（favicon/logo）\n\

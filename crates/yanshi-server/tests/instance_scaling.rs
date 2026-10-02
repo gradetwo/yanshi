@@ -70,17 +70,38 @@ fn build(master_size: f64, instances: usize) -> (Workspace, ToolRegistry) {
 }
 
 /// 量 `rounds` 次整幅渲染的**中位数** ✓（中位数比平均更抗噪 ✓，CI 机器上尤其重要 ✓）。
+///
+/// **每轮故意差一个像素** ✓（`512 + round` ✓）：工作量**完全相同** ✓，
+/// 但**不会命中上一轮的区域缓存** ✓。
+///
+/// **为什么必须这样** ✓（本轮修的真问题 ✓）：原版每轮请求**同一个** bbox ✓ ⇒
+/// `render_region_raw` 的区域缓存直接命中 ✓ ⇒ 第 2、3 轮只要 **0 ms** ✓ ⇒ 中位数就是 **0** ✗
+/// ⇒ 于是那条"渲染应当真的花了时间"的断言必然失败 ✗（它不是产品回归 ✓，是**测量方法**不对 ✓）。
 fn median_full_render_ms(workspace: &mut Workspace, rounds: usize) -> f64 {
     let mut timings: Vec<f64> = Vec::new();
-    for _ in 0..rounds {
+    for round in 0..rounds {
         let started = std::time::Instant::now();
         let _ = workspace
-            .render_region_raw("doc_scaling", Bbox::new(0.0, 0.0, 512.0, 512.0))
+            .render_region_raw(
+                "doc_scaling",
+                Bbox::new(0.0, 0.0, 512.0 + round as f64, 512.0),
+            )
             .expect("区域渲染应成功");
         timings.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     timings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     timings[timings.len() / 2]
+}
+
+/// **渲染真的产出了像素** ✓ —— 用**内容**而不是"花没花时间"做健全性判据 ✓。
+///
+/// **为什么换掉计时断言** ✓：渲染被缓存后**完全可能 0 ms** ✓ ⇒
+/// "花了时间"**不是正确性属性** ✗；而"**画面上真的有东西**" ✓ 才是 ✓。
+fn rendered_pixels(workspace: &mut Workspace) -> usize {
+    let (_, _, rgba) = workspace
+        .render_region_raw("doc_scaling", Bbox::new(0.0, 0.0, 512.0, 512.0))
+        .expect("区域渲染应成功");
+    rgba.chunks_exact(4).filter(|pixel| pixel[3] > 0).count()
 }
 
 /// 小 master 下，32 个实例不该让整幅渲染明显变慢 ✓（宽松上界 1.6× ✓，只为守退化 ✓）。
@@ -114,8 +135,10 @@ fn a_large_master_makes_instances_measurably_expensive() {
          （每个实例约 {:.0} ms）—— 这是 9.3 master 缓存的触发场景",
         (loaded_ms - plain_ms) / 8.0
     );
-    // 只做**极宽松**的健全性断言 ✓：渲染必须真的完成并且时间合理 ✓（不能是 0 或荒谬的大 ✓）。
-    assert!(plain_ms > 1.0 && loaded_ms > 1.0, "渲染应当真的花了时间");
+    // **健全性判据用内容** ✓（不是"花没花时间" ✗ —— 缓存命中时 0 ms 是合理的 ✓）。
+    let painted = rendered_pixels(&mut plain);
+    assert!(painted > 0, "渲染应当真的产出像素 ✓（实测 {painted}）");
+    assert!(rendered_pixels(&mut loaded) > 0, "带实例时也应当产出像素 ✓");
     assert!(
         loaded_ms < plain_ms * 4.0,
         "即便大 master 也不该退化到 4 倍以上"

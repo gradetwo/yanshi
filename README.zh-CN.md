@@ -9,6 +9,25 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 发布包
+
+`scripts/package-release.sh` 会构建 release 二进制 ✓，并把它们**运行期真正需要的资产**一起打包 ✓：
+两个可执行文件 ✓、浏览器端 WASM 计算内核 ✓、以及各**介质插件** ✓。产物是 `dist/` 下一个带版本号的
+tar.gz 与一份校验和 ✓。
+
+    scripts/package-release.sh            # 构建并打包到 dist/
+    tar -xzf dist/yanshi-*-x86_64-unknown-linux-gnu.tar.gz
+    cd yanshi-*-x86_64-unknown-linux-gnu
+    ./yanshi.sh --root ./workspace --bind 127.0.0.1:8110
+
+然后打开 <http://127.0.0.1:8110/> ✓。**不给 `--root` 就是纯内存** ✓：不落地、重启即空 ✓。
+
+包内布局是 `bin/`（可执行文件 ✓）＋ `share/yanshi/`（WASM 内核 ✓、介质插件 ✓、品牌资源 ✓），
+外加一个薄包装 `yanshi.sh` ✓。**包装脚本不是多余的** ✓：服务端对这些资产目录的缺省值是**相对当前目录**的 ✓
+⇒ 直接跑 `bin/yanshi-serve` 而当前目录不对时 ✓，**内核与插件都取不到** ✗ ——
+服务**照样能起来** ✗，但查看器会退化 ✓、`/mediums/*.wasm` 会 **404** ✓（**没有人会替你报错** ✗）。
+包装脚本改为**按自身位置**推算这些路径 ✓ ⇒ 整棵树**放到哪都能跑** ✓。
+
 ## 安装
 
 ```bash

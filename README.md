@@ -10,6 +10,26 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Release package
+
+`scripts/package-release.sh` builds the release binaries and packs them with the runtime assets they need:
+the two executables, the browser-side WASM kernel and the medium plugins. It writes a versioned tarball and a
+checksum file under `dist/`.
+
+    scripts/package-release.sh            # build and pack into dist/
+    tar -xzf dist/yanshi-*-x86_64-unknown-linux-gnu.tar.gz
+    cd yanshi-*-x86_64-unknown-linux-gnu
+    ./yanshi.sh --root ./workspace --bind 127.0.0.1:8110
+
+Then open <http://127.0.0.1:8110/>. Without `--root` the server is purely in memory, so nothing persists and a
+restart starts empty.
+
+The package is laid out as `bin/` for the executables and `share/yanshi/` for the WASM kernel, the medium plugins
+and the brand assets, with `yanshi.sh` as a thin wrapper. The wrapper matters: the server's defaults for those asset
+directories are relative to the current directory, so running `bin/yanshi-serve` directly from elsewhere would find
+neither the kernel nor the plugins, leaving the viewer degraded and `/mediums/*.wasm` returning 404 while the server
+itself still starts. The wrapper derives the paths from its own location instead, so the tree works from anywhere.
+
 ## Install
 
 ```bash
