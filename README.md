@@ -140,9 +140,11 @@ goes down rather than up.
 
 Opening a document takes an optional role: `POST /api/documents?role=viewer` issues a read-only capability token,
 `editor` (the default) may change the document, and `owner` additionally may revert other actors' atoms. The role is
-enforced at the tool endpoint using each tool's own `mutating` flag, so a read-only token can call read tools but
-any tool that changes the document is refused with a permission error naming the role and the tool. An unknown role
-is refused rather than quietly treated as an editor, since that would turn a read-only link into a writable one.
+enforced in the tool layer using each tool's own `mutating` flag, so a read-only token can call read tools but any
+tool that changes the document is refused with a permission error naming the role and the tool. It sits in the layer
+every entry point passes through rather than at one endpoint, because the check was once made at the HTTP endpoint
+only and the WebSocket path, which sets its own context, bypassed it entirely. An unknown role is refused rather than
+quietly treated as an editor, since that would turn a read-only link into a writable one.
 
 ## Release package
 

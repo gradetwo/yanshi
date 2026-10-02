@@ -230,6 +230,22 @@ pub struct ToolContext<'a> {
     pub session: String,
     /// 是否拥有 owner 权限（跨 actor revert，12.5）。
     pub owner: bool,
+    /// **调用者的角色** ✓（Phase 5 ✓）—— **工具层强制**要用的就是它 ✓。
+    ///
+    /// **为什么必须带进上下文** ✓（本轮抓到的**第二个**授权漏洞 ✗）：
+    /// 上一轮我把角色检查做在 **HTTP 入口**（`tool_call_with` ✓）⇒ 堵住了 `/api/tools/*` ✓，
+    /// **却漏掉了 WebSocket** ✗ —— 那条路径直接调 `registry.call` ✓，
+    /// 而且**无条件** `with_owner(true)` ✗ ⇒ **viewer 令牌可以经 WS 改文档** ✗。
+    /// **实测复现** ✓（同一台服务器、同一个 viewer 令牌、同一个工具 ✓）：
+    /// ```text
+    /// HTTP      ⇒ {"ok":false,"error_code":"permission_denied"}   ✓ 正确拒绝 ✓
+    /// WebSocket ⇒ {"ok":true,"layer_id":"L_viewer"}               ✗ 竟然成功 ✗
+    /// ```
+    /// **结论** ✓：权限检查**不能挂在某一个入口上** ✗ —— 入口会越加越多 ✓（HTTP / WS / MCP / batch 嵌套 ✓）
+    /// ⇒ **必须在所有入口的必经之路**：`ToolRegistry::call` ✓。
+    /// **缺省 `Owner`** ✓：本地进程（MCP ✓、测试 ✓、嵌入式 ✓）**本来就是 owner** ✓；
+    /// 而**任何网络入口都必须显式设置它** ✗（HTTP/WS 现在都设了 ✓）—— 这条写在字段上 ✓，免得下次忘 ✓。
+    pub role: crate::token::Role,
     /// 是否等待渲染完成（6.7 `wait_for_render`，默认 true）。
     pub wait_for_render: bool,
     /// **静默：不生成每次调用的预览** ✓（真实用户 §五-5 的"批量静默提交" ✓）。
@@ -261,12 +277,20 @@ impl<'a> ToolContext<'a> {
             actor: actor.into(),
             session: session.into(),
             owner: false,
+            // **缺省 owner** ✓：本地进程/测试就是 owner ✓；网络入口必须显式改 ✓（见字段说明 ✓）。
+            role: crate::token::Role::Owner,
             wait_for_render: true,
             silent: false,
             wait_budget_ms: 500,
             now: yanshi_core::now_ms(),
             changeset: None,
         }
+    }
+
+    /// **设置调用者角色** ✓（网络入口必须调用 ✓，否则会以 owner 身份运行 ✗）。
+    pub fn with_role(mut self, role: crate::token::Role) -> Self {
+        self.role = role;
+        self
     }
 
     /// 授予 owner 权限。
@@ -396,6 +420,27 @@ impl ToolRegistry {
                 ErrorContext::detail(format!("未知工具 {name}（当前 profile 未启用或不存在）")),
             ));
         };
+        // **Phase 5：角色权限的落点就是这里** ✓（目标原文："**内核/工具层强制**" ✓）。
+        //
+        // **为什么从 HTTP 入口搬到这里** ✓（本轮抓到的**第二个**授权漏洞 ✗）：
+        // 上一轮我把检查做在 `tool_call_with` ✓ ⇒ 只堵住了 `/api/tools/*` ✗，
+        // 而 **WebSocket** 那条路径直接调本函数 ✓、还**无条件** `with_owner(true)` ✗
+        // ⇒ **viewer 令牌可以经 WS 改文档** ✗。**实测复现** ✓（同一服务器/同一令牌/同一工具 ✓）：
+        // `HTTP ⇒ permission_denied` ✓ 而 `WebSocket ⇒ ok:true, layer_id:L_viewer` ✗。
+        // **结论** ✓：**权限检查不能挂在"某一个入口"上** ✗ —— 入口只会越加越多 ✓
+        //（HTTP / WS / MCP / batch 嵌套 ✓）⇒ 必须挂在**所有入口的必经之路** ✓，也就是这里 ✓。
+        //
+        // **判据用工具自己声明的 `mutating`** ✓：哪些工具会改状态**只有一处定义** ✓
+        // ⇒ 权限跟着它走 ✓，**不会漏** ✓、也**不会误伤只读工具** ✓。
+        if spec.mutating && !ctx.role.can_edit() {
+            return error_response(&YanshiError::new(
+                ErrorCode::PermissionDenied,
+                ErrorContext::detail(format!(
+                    "该 token 的角色是 {}，不允许调用会改动文档的工具 {name}（读类工具不受限）",
+                    ctx.role.as_str()
+                )),
+            ));
+        }
         if let Err(error) = validate_args(spec, args) {
             return error_response(&error);
         }

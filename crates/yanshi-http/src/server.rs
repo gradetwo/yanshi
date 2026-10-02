@@ -957,24 +957,12 @@ fn tool_call_with(
         Ok(principal) => principal,
         Err(response) => return response,
     };
-    // **Phase 5：角色权限的真正落点** ✓ —— **只读令牌不得改动文档** ✓。
+    // **角色检查已经下沉到工具层** ✓（`ToolRegistry::call` ✓）⇒ 这里**不再重复** ✗。
     //
-    // **为什么必须在这里** ✓（这是本轮抓到的一个**真授权漏洞** ✗）：此前 `can_edit` **只挡住了 blob 上传** ✓
-    //（`blob_upload` 里那一处 ✓），而**工具入口没有检查** ✗ ⇒ 一个 viewer 令牌
-    // **照样能经 `/api/tools/*` 改文档** ✗ ✓。设计的 Phase 5 要堵的正是这个 ✓。
-    // **做法** ✓：用工具自己**已经声明**的 `mutating` 标记 ✓（`ToolSpec` 里本来就有 ✓）——
-    // 于是"哪些工具会改状态"这件事**只有一处定义** ✓，权限检查跟着它走 ✓，不会漏 ✓、也不会误伤读工具 ✓。
-    if let Some(spec) = state.registry.get(name) {
-        if spec.mutating && !principal.role.can_edit() {
-            return Response::from_error(&YanshiError::new(
-                ErrorCode::PermissionDenied,
-                ErrorContext::detail(format!(
-                    "该 token 的角色是 {}，不允许调用会改动文档的工具 {name}（读类工具不受限）",
-                    principal.role.as_str()
-                )),
-            ));
-        }
-    }
+    // **为什么删掉** ✓：这段原来只堵住 `/api/tools/*` ✓，而 **WebSocket** 是**另一个入口** ✗
+    // ⇒ 两处各写一份 ⇒ **必然漏一个** ✓ —— 实测漏的正是 WS ✓：
+    // 同一个 viewer 令牌、同一个工具 ✓：`HTTP ⇒ permission_denied` ✓ 而 `WebSocket ⇒ ok:true` ✗。
+    // **一处生效、全部受益** ✓ —— 这是本项目一贯的做法 ✓。
     if arguments.get("doc_id").is_none() {
         arguments["doc_id"] = json!(doc_id);
     }
@@ -997,6 +985,8 @@ fn tool_call_with(
         "session:http",
     )
     .with_owner(owner)
+    // **真实角色必须带进上下文** ✓：工具层的强制检查读的就是它 ✓（见 `ToolRegistry::call` ✓）。
+    .with_role(principal.role)
     .with_wait_for_render(true, 500);
     let value = state.registry.call(&mut context, name, &arguments);
     let value = if state.options.rewrite_blob_urls {
@@ -1434,6 +1424,9 @@ fn handle_websocket(
             &write_stream,
             &doc_id,
             &principal.actor,
+            // **角色必须传下去** ✗ —— 这里此前只传了 actor ✓，
+            // 于是 WS 分支**无从知道**调用者是谁 ✓ ⇒ 只好**无条件**当 owner ✗（那就是漏洞 ✓）。
+            principal.role,
             subscriber,
             &request_value,
         );
@@ -1454,6 +1447,8 @@ fn handle_ws_message(
     write_stream: &Arc<Mutex<TcpStream>>,
     doc_id: &str,
     actor: &str,
+    // **调用者角色** ✓：工具层的权限检查要用 ✓（此前这条路径没有它 ✗ ⇒ 那就是漏洞所在 ✓）。
+    role: Role,
     subscriber: u64,
     message: &Value,
 ) {
@@ -1505,7 +1500,11 @@ fn handle_ws_message(
                     return;
                 };
                 let mut context = ToolContext::new(&mut workspace, doc_id, actor, "session:ws")
-                    .with_owner(true)
+                    // **别再无条件 owner** ✗（**这就是那个漏洞** ✓）：
+                    // `owner` 的语义是"**可跨 actor 撤销**" ✓ ⇒ 它只应对 `Owner` 为真 ✓；
+                    // 而"**能不能改文档**"由工具层按 `role.can_edit()` 判 ✓ ⇒ 两者**各司其职** ✓。
+                    .with_owner(matches!(role, Role::Owner))
+                    .with_role(role)
                     .with_wait_for_render(true, 500);
                 state.registry.call(&mut context, name, &arguments)
             };
