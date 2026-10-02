@@ -236,7 +236,9 @@ greyscale PNG as usable.
 
 Hokusai gives the project the libmypaint brush format, and `brush_stroke` drives a `.myb` brush from the tool layer,
 so MCP and the viewer both reach every one of the hundred and ninety six CC0 brushes vendored under `assets/brushes`.
-A brush is named, not pathed, and resolves through the same precedence as listing: something imported into the
+The viewer has a brush picker beside the medium picker; choosing a brush routes the brush tool's strokes to that
+tool, so the same set is reachable from the interface and from MCP. A brush is named, not pathed, and resolves through
+the same precedence as listing: something imported into the
 workspace cache wins over the shipped copy, which is how a user replaces a brush without touching the repository.
 `size` overrides the brush's own radius if given. Control points are interpolated at two pixels because Hokusai
 expects a stream of pointer positions, and feeding it only sparse points produces detached stamps, the same failure

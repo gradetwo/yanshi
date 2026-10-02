@@ -305,6 +305,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <option value="pencil">铅笔（v2）</option>
       <option value="pixel">像素（v2）</option>
     </select></label>
+    <label>笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
+      <option value="">（内置画笔）</option>
+    </select></label>
   </div>
 
 <main>
@@ -4883,6 +4886,37 @@ async function commitShape() {
   const size = Number($("size").value);
   if (state.tool === "brush") {
     if (state.points.length < 2) return;
+    // **选了 `.myb` 笔刷 ⇒ 交给服务端的 Hokusai 引擎** ✓
+    //（用户硬要求：**Web 与 MCP 都要能用** ✓ —— 工具层已有 `brush_stroke` ✓，
+    //  这里只是给它一个**界面入口** ✓）。
+    // **为什么不在浏览器里逐 dab** ✗：介质那条路走的是 **wasm 内核** ✓，
+    // 而 Hokusai 是 **Rust crate** ✓、**没有 wasm 化** ✗ ⇒ 浏览器端画不了 ✓
+    // ⇒ 这一条走**服务端权威**：**抬手时一次**提交整条笔触 ✓
+    //（与"没有内核时"的做法一致 ✓，也是本项目一贯的"能力在工具层" ✓）。
+    const brushName = ($("brush") || {}).value || "";
+    if (brushName) {
+      const controlPoints = state.points.map((point) => [
+        point.x,
+        point.y,
+        point.pressure === undefined ? 0.5 : point.pressure,
+      ]);
+      await callToolChecked(
+        "brush_stroke",
+        {
+          layer_id: state.layerId,
+          brush: brushName,
+          points: controlPoints,
+          // **大小以工具条上的"粗细"为准** ✓（与内置画笔同一处 ✓ ⇒ 用户不用记两套 ✓）。
+          size: size,
+          color: undefined,
+        },
+        "落笔（" + brushName + "）",
+      );
+      await refreshPreview();
+      // **服务端画完 ⇒ 必须重绘** ✓（这一条与 `resync()` 那次的教训同一个 ✓）。
+      await resync();
+      return;
+    }
     // **不再无视结果** ✗ —— 此前这里连返回都不看 ✓ ⇒ 被拒时画布上毫无反馈 ✗
     //（正是"静默吞掉用户操作" ✓）。现在失败必留痕 ✓，并提示怎么恢复 ✓。
     await callToolChecked("draw_stroke", {
@@ -5082,7 +5116,36 @@ function setupPanels() {
   // ⇒ 以后改 UI 时，这层只需跟着改**选择器** ✓，而不是两套行为各自漂移 ✗。
   //
   // **同时提供"读"** ✓：自动化最需要的是**断言当前设置** ✓（"我设的颜色真的生效了吗" ✓）。
-  window.yanshi = {
+  /// **把 `.myb` 笔刷装进下拉** ✓（用户硬要求：**Web 与 MCP 都要能用** ✓）。
+///
+/// **为什么懒加载** ✓：196 支笔刷的下拉在**首次点开时**才拉 ✓（免得每次开页面都多一次请求 ✓
+/// 也免得 196 个 `<option>` 拖慢首屏 ✓）；`title` 里已经写明这一点 ✓。
+///
+/// **为什么按名字、而不是按路径** ✓：工具层按"缓存优先、内置其次"解析 ✓
+/// ⇒ 用户导入的同名笔刷**自动生效** ✓（与 `list_assets` 的优先级一致 ✓）。
+async function refreshBrushOptions() {
+  const select = $("brush");
+  if (!select) return;
+  try {
+    const listed = await callTool("list_assets", { kind: "brush" }, { refresh: false });
+    const assets = (listed && listed.assets) || [];
+    const keep = select.value;
+    // **只留第一个"内置画笔"选项** ✓，其余重建 ✓（重复装载不会越堆越多 ✓）。
+    while (select.options.length > 1) select.remove(1);
+    for (const asset of assets) {
+      if (!asset.usable) continue;
+      const option = document.createElement("option");
+      // **值不带扩展名** ✓（工具层会自己补 `.myb` ✓）。
+      option.value = String(asset.name).replace(/\.myb$/i, "");
+      option.textContent = option.value + (asset.source === "cache" ? "（导入的）" : "");
+      select.appendChild(option);
+    }
+    select.value = keep;
+  } catch (error) {
+    log("笔刷列表没拉到：" + String(error).slice(0, 120), "#c93");
+  }
+}
+window.yanshi = {
     /// 当前设置 ✓（可断言 ✓）。
     state() {
       return {
@@ -5094,6 +5157,8 @@ function setupPanels() {
         size: Number(($("strokeSize") || {}).value || 0),
         opacity: Number(($("strokeOpacity") || {}).value || 0),
         medium: ($("medium") || {}).value || null,
+        // **笔刷也要能读** ✓（测试要断言"选了哪支" ✓）。
+        brush: ($("brush") || {}).value || null,
         // **视口与缩放也必须能读** ✗（真实用户报告 + 我自己的探针教训 ✓）：
         // 我上一轮想量"抓手工具有没有平移画布" ✓，而 `state()` 只返回
         // `docId/layerId/tool/color/size/opacity/medium` ✗ ⇒ **探针看不见被测对象** ✗
@@ -5136,6 +5201,19 @@ function setupPanels() {
       return true;
     },
     /// 换介质 ✓（与界面同一条路径：设值 + `change` ✓）。
+    /// **选一支 `.myb` 笔刷** ✓（空串 = 回到内置画笔 ✓）。
+    setBrush(name) {
+      const select = $("brush");
+      if (!select) return false;
+      if (select.options.length <= 1) void refreshBrushOptions();
+      select.value = name || "";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    },
+    /// **暴露装载函数** ✓：第一次点开下拉时要能主动拉一次 ✓（也让验收脚本能预热 ✓）。
+    loadBrushes() {
+      return refreshBrushOptions();
+    },
     setMedium(id) {
       const select = $("medium");
       if (!select) return false;
