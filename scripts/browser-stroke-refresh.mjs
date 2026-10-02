@@ -161,19 +161,30 @@ if (after.ink <= Math.max(before.ink, inkAfterLayer.ink) + 50) {
   await capture("stroke-refresh-failed");
   process.exit(1);
 }
-const shot = await capture("stroke-appears-without-refresh");
-// **② 补画级别：本轮如实报为"已知未修"** ✗ —— 整视口补画就是用户说的"闪一下"✗。
-//    **为什么不在这里判红** ✓：本轮实测把补画改成"按脏区"之后画布**一个墨都没有** ✗
-//    （1750 ⇒ 0 ✓，补画流水里 `box [0,0,900,640]` 执行了却没画上 ✓）
-//    ⇒ 那条路**本身是坏的** ✗ ⇒ 修好它之前，"整视口"是**能看见**的那个版本 ✓。
-//    ⇒ 所以这里只**如实报告** ✓（红了会逼着人回退到"看不见"✗ —— 那更糟 ✓）。
-if (state.lastServerBlitArea >= after.w * after.h) {
-  console.log(
-    `  ⚠ 已知未修：落笔之后补的是整视口（${state.lastServerBlitArea} = ${after.w}×${after.h}）` +
-      " ⇒ 那就是肉眼可见的那一下闪 ✗；而按脏区补画那条路现在画不出东西 ✗（见笔记第 43 轮 ✓）。",
-  );
-  await capture("stroke-whole-viewport-blit-known-issue");
+// **② 落笔之后画布不许"抖/闪"** ✓ —— 判据是**连续采样**：墨量在随后一秒内
+//    每一次都必须 ≥ 落笔后的 90% ✓（中间掉到 0 = 那一下闪 ✗ ⇒ 当场红 ✓）。
+//    **为什么用这个判据** ✓：用户说的"闪一下"就是这个 ✓；而"补画面积多大"只是**代理** ✗
+//    （本轮实测：面积是整视口 ✓ 但那不是闪的原因 ✗ —— 真因是**服务端回空白却盖在有墨的画布上** ✓，
+//     加了一条"服务端空白且画布有墨 ⇒ 跳过" ✓）。
+const samples = [];
+for (let i = 0; i < 9; i += 1) {
+  samples.push((await inkOnCanvas()).ink);
+  await sleep(120);
 }
+const low = Math.min(...samples);
+console.log(
+  `  ② 落笔后墨量采样：${samples.join(" → ")}（最低 ${low}，落笔时 ${after.ink}）` +
+    `｜跳过空白覆盖 ${state.blankBlitsSkipped} 次｜服务端最后一次给的墨 ${state.lastBlitServerInk}`,
+);
+if (low < after.ink * 0.9) {
+  console.error(
+    `❌ 落笔之后画布墨量掉过（最低 ${low} < 落笔时 ${after.ink} 的 90%）` +
+      " ⇒ 那就是人眼能察觉的那一下闪/抖 ✗",
+  );
+  await capture("stroke-flash-failed");
+  process.exit(1);
+}
+const shot = await capture("stroke-stable-after-commit");
 const errors = consoleLines.filter(
   (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
 );
@@ -190,6 +201,8 @@ console.log(
       ink: { before: before.ink, afterLayer: inkAfterLayer.ink, after: after.ink },
       blits: { before: blitsBefore, after: state.serverBlits, lastArea: state.lastServerBlitArea },
       canvas: { w: after.w, h: after.h },
+      inkSamples: samples,
+      blankBlitsSkipped: state.blankBlitsSkipped,
       screenshot: shot,
     },
     null,

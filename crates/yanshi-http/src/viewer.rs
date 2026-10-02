@@ -831,16 +831,29 @@ function syncOverlayGeometry() {
 /// 画布内部分辨率 = 视口的文档像素数（内核 1:1 渲染），CSS 显示尺寸由 `applyDisplaySize` 决定：
 /// 缩放后画布像素变少、显示尺寸不变，于是看得更细（`image-rendering: pixelated` 保持清晰）。
 function sizeBoards(width, height) {
-  board.width = width;
-  board.height = height;
-  overlay.width = width;
-  overlay.height = height;
-  // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
-  // （此前表现为「操作后画布空白」，且在冷启动的临时实例上间歇复现）。
-  const background = state.backgroundCss || "#ffffff";
-  ctx.fillStyle = background;
-  ctx.fillRect(0, 0, width, height);
-  octx.clearRect(0, 0, width, height);
+  // **只有尺寸真的变了才碰 backing store** ✗ —— 这是"每一笔结束抖一下"的**真凶** ✓（第 43 轮 ✓）。
+  //
+  // **为什么** ✗：给 `board.width`/`height` 赋值会**重建 backing store ⇒ 清空画布** ✓（浏览器规范 ✓，
+  // 与"赋相同值也会清"这条老坑一致 ✓）。而 `sizeBoards` 会被**很多**路径调用 ✓
+  //（提交之后的状态栏/历史/图层面板刷新都可能改布局 ✓ ⇒ 又走一遍 ✓）
+  // ⇒ 画布被擦成背景色 ✓、随后只补回一部分 ✓ ⇒ 用户看到"每一笔结束闪/抖一下"✗，
+  // 严重时干脆"画了看不见，要手工刷新"✗。
+  // **实测证据** ✓（探针 `scripts/browser-stroke-refresh.mjs` ✓）：落笔后连续采样画布墨量 ✓
+  // 前 1752、后 **0** ✓ —— 而那一刻**没有任何一次补画**（`blankBlitsSkipped` = 0 ✓）
+  // ⇒ 只能是**本地清屏** ✓ ✓。
+  const changed = board.width !== width || board.height !== height;
+  if (changed) {
+    board.width = width;
+    board.height = height;
+    overlay.width = width;
+    overlay.height = height;
+    // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
+    // （此前表现为「操作后画布空白」，且在冷启动的临时实例上间歇复现）。
+    const background = state.backgroundCss || "#ffffff";
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, width, height);
+    octx.clearRect(0, 0, width, height);
+  }
   state.viewport.w = width;
   state.viewport.h = height;
   applyDisplaySize();
@@ -1013,15 +1026,21 @@ async function refreshThumb() {
   if (thumbInFlight) return;
   thumbInFlight = true;
   try {
-  const value = await fetch(api("/api/tools/get_document"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }).then((r) => r.json());
-  if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
-  if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
-  if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
-  if (value.background) state.backgroundCss = backgroundToCss(value.background);
+    const value = await fetch(api("/api/tools/get_document"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then((r) => r.json());
+    if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
+    if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
+    if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
+    if (value.background) state.backgroundCss = backgroundToCss(value.background);
+  } catch (error) {
+    // **缩略图取不到不许变成未处理的拒绝** ✗（探针实测：翻页/重载时冒
+    // `TypeError: Failed to fetch` ✓ —— 那是控制台红字 ✓，而用户只看到"缩略图不动了"✗）。
+    // 缩略图是**附属信息** ✓ ⇒ 失败记一行即可 ✓，不打断主流程 ✓、也不刷红字 ✓。
+    window.yanshiStats.thumbErrors = (window.yanshiStats.thumbErrors || 0) + 1;
+    log("缩略图刷新失败（不影响画布）：" + String(error).slice(0, 60), "#c93");
   } finally { thumbInFlight = false; }
 }
 
@@ -1313,6 +1332,26 @@ function drawKernelBoxDirect(bbox) {
 ///
 /// 坐标系与 `drawKernelBoxDirect` 完全一致 ✓（文档坐标 − 视口 = 画布坐标 ✓），
 /// 这样内核与服务端两条路径画出来的东西不会错位 ✓。
+/// **取服务端像素之前必须等布局稳定** ✓ —— 本轮查明的真因 ✓。
+///
+/// **为什么** ✗：`sizeBoards()` 会在布局变化时重设 `board.width`（⇒ **清空画布** ✓），
+/// 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓（本会话早有这条注释 ✓）。
+/// 但还有更隐蔽的一半 ✓：**提交刚发生时**，服务端的 `render_region` 可能还返回
+/// **旧/空白**的图 ✓ ⇒ 把它 `putImageData` 上去 = 画一块空白 ✓。
+/// **实测证据** ✓（探针 `scripts/browser-stroke-refresh.mjs` ✓）：整视口那条**先等两帧** ⇒ 墨 1750 ✓；
+/// 脏区那条**立刻取图** ⇒ 墨 **0** ✗（补画流水里 `box [0,0,900,640]` 执行了却没画上 ✓）。
+/// ⇒ 现在**所有**取图都先等 ✓（`blitServerBox` 是唯一入口 ✓ ⇒ 一处修好、两条路都对 ✓）。
+async function settleFrames() {
+  const settle = () => new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    try { requestAnimationFrame(finish); } catch (_) { /* 无 rAF 时靠超时 ✓ */ }
+    setTimeout(finish, 50);
+  });
+  await settle();
+  await settle();
+}
+
 async function blitServerBox(bbox) {
   if (!bbox) return 0;
   const vx = state.viewport.x;
@@ -1324,6 +1363,8 @@ async function blitServerBox(bbox) {
   const w = Math.round(x1 - x0);
   const h = Math.round(y1 - y0);
   if (w <= 0 || h <= 0) return 0;
+  // **等布局稳定再取图** ✓（见 `settleFrames` 的说明 ✓ —— 少了这一步，脏区补画会画上一块空白 ✗）。
+  await settleFrames();
   const value = await callTool(
     "render_region",
     { region: { x: x0, y: y0, w, h }, raw: true },
@@ -1334,6 +1375,42 @@ async function blitServerBox(bbox) {
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
   const bytes = new Uint8ClampedArray(await fetch(api(url)).then((r) => r.arrayBuffer()));
   if (bytes.length < w * h * 4) return 0;
+  // **数一下服务端这批字节里有多少墨** ✓ —— 决定性的那一问 ✓：
+  // "画布上没有墨"到底是**服务端给的就是空白** ✗，还是**客户端随后把它擦了** ✗（内核重绘 ✓）。
+  // 不数它就只能在两个假设之间反复猜 ✓（本轮已经猜错一次 ✗）。
+  let serverInk = 0;
+  for (let i = 0; i < w * h * 4; i += 4) {
+    if (bytes[i + 3] > 32 && !(bytes[i] > 245 && bytes[i + 1] > 245 && bytes[i + 2] > 245)) serverInk += 1;
+  }
+  window.yanshiStats.lastBlitServerInk = serverInk;
+  // **服务端给的是空白、而画布这块已经有墨 ⇒ 不许盖** ✗ —— 真实用户说的"落笔结束还是会闪一下"✓
+  // 就是这个：提交之后**立刻**取图会拿到**空白** ✓（实测 `serverInk: 0` ✓，
+  // 而同一时刻画布上有墨 1752 ✓），`putImageData` 一盖 ⇒ 肉眼看到闪一下 ✓（甚至整块变白 ✓）。
+  // **判据** ✓（探针 `scripts/browser-stroke-refresh.mjs` ✓）：落笔之后**连续采样**画布墨量 ✓，
+  // 每一次都必须 ≥ 落笔后的 90% ✓ —— 中间掉到 0 就是那一下闪 ✗ ⇒ 当场红 ✓。
+  // **为什么不干脆不补画** ✗：别处传来的变更（另一个客户端 ✓）确实需要服务端像素 ✓
+  // ⇒ 只在"服务端空白 **且** 画布已有墨"时跳过 ✓（两侧都不亏 ✓）。
+  if (serverInk === 0) {
+    const destX = Math.round(x0 - vx);
+    const destY = Math.round(y0 - vy);
+    const before = ctx.getImageData(destX, destY, w, h).data;
+    let canvasInk = 0;
+    for (let i = 0; i < before.length; i += 4) {
+      if (before[i + 3] > 32 && !(before[i] > 245 && before[i + 1] > 245 && before[i + 2] > 245)) canvasInk += 1;
+    }
+    if (canvasInk > 0) {
+      window.yanshiStats.blankBlitsSkipped = (window.yanshiStats.blankBlitsSkipped || 0) + 1;
+      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+        reason: "skipped-blank-over-ink " + JSON.stringify([x0, y0, w, h]),
+        area: w * h,
+        at: Math.round(performance.now()),
+        serverInk,
+        canvasInk,
+      });
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+      return 0;
+    }
+  }
   ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
@@ -1342,6 +1419,7 @@ async function blitServerBox(bbox) {
     reason: window.yanshiStats.lastServerBlitReason,
     area: w * h,
     at: Math.round(performance.now()),
+    serverInk,
   });
   window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   return w * h;
@@ -1410,22 +1488,11 @@ async function blitServerViewport() {
     at: Math.round(performance.now()),
   });
   window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
-  // **等下一帧再画** ✓ —— 本会话实测：补画确实执行了 ✓（`serverBlits` 计数增加 ✓、面积 262144 ✓），
-  // 但最终画布仍是空白 ✗。原因是**布局变化会重设画布尺寸** ✓（`sizeBoards` 改 `board.width` ⇒ 清空 ✓），
-  // 而它可能发生在补画**之后** ✓ ⇒ 补画被清掉 ✓。
-  // 因此让补画落在**下一帧**（布局稳定之后 ✓）—— 这是"最后画的人赢"那条经验的延续 ✓。
-  // **等两帧** ✓ —— 一帧只覆盖"本轮布局" ✓；居中之后布局可能再变一次 ✓
-  //（`sizeBoards` 会按新尺寸清空画布 ✓），于是补画又被清掉 ✗。两帧覆盖连续两次布局收敛 ✓。
+  // **等布局稳定** ✓ —— 这段原先是**内联**的 ✓；现在挪进 `settleFrames` ✓，
+  // 因为"立刻取图会拿到空白"这件事对**脏区那条**同样成立 ✓（本轮实测 ✓），
+  // 而两条路本来就都走 `blitServerBox` ✓（一处修好、两条都对 ✓，不是两份实现 ✓）。
   // **与超时赛跑** ✓：后台标签页里 `requestAnimationFrame` 不回调 ✓（连 `setTimeout` 也被节流 ✓）
-  // ⇒ 只靠 rAF 会让补画挂住 ✓（四位子 agent 独立遇到 ✓，他们手工用 `Page.bringToFront` 绕过 ✓）。
-  const settle = () => new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-    try { requestAnimationFrame(finish); } catch (_) { /* 无 rAF 时靠超时 ✓ */ }
-    setTimeout(finish, 50);
-  });
-  await settle();
-  await settle();
+  // ⇒ 只靠 rAF 会让补画挂住 ✓（四位子 agent 独立遇到 ✓）⇒ helper 里 rAF 与 50ms 超时赛跑 ✓。
   const { x, y, w, h } = state.viewport;
   return blitServerBox([x, y, w, h]);
 }
@@ -1607,8 +1674,11 @@ function afterMutation(atomId, options = {}) {
   // ⇒ 说明**下面那两条路本身就不稳** ✗（按脏区取图 / 服务端的区域渲染缓存 ✓），
   // 动门控只会把"看不见"换成"有时看不见" ✗ ⇒ **先留原样 ✓，把判据与证据交给下一轮 ✓**
   //（探针 `scripts/browser-stroke-refresh.mjs` ✓ + `state().blitLog` ✓）。
-  if (!state.wasm) {
-    needsServerPixels = true;
+  // **判据是"这份文档要不要服务端像素"，不是"有没有内核"** ✗ —— 上一轮我从代码上就认定它写错了 ✓，
+  // 但当时改了之后画布反而没墨 ✗ ⇒ 撤回 ✓。**现在有 `settleFrames` 兜底** ✓（脏区补画不再画空白 ✓）
+  // ⇒ 这条改动才站得住 ✓：文档里只要画过一笔（`raster_patch` ⇒ heavy ✓），
+  // 内核就表示不了它 ✗（折叠"成功"但得到空白补丁 ✓）⇒ 必须靠服务端像素 ✓。
+  if (needsServerPixels) {
     // **有脏区就只补脏区** ✓（提交响应本来就给了 ✓，此前丢掉不用 ✗、一律整视口 ✓）。
     queueServerBlit(options.dirtyBox || null);
   }
@@ -6221,6 +6291,8 @@ window.yanshi = {
         lastServerBlitArea: window.yanshiStats.lastServerBlitArea || 0,
         lastServerBlitReason: window.yanshiStats.lastServerBlitReason || "",
         blitLog: (window.yanshiStats.blitLog || []).slice(-12),
+        lastBlitServerInk: window.yanshiStats.lastBlitServerInk || 0,
+        blankBlitsSkipped: window.yanshiStats.blankBlitsSkipped || 0,
         displayScale: state.displayScale || 1,
       };
     },
