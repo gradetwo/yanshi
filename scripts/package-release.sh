@@ -267,22 +267,51 @@ bindgen_bin="$(command -v wasm-bindgen 2>/dev/null || true)"
 if [ -z "$bindgen_bin" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
   bindgen_bin="$HOME/.cargo/bin/wasm-bindgen"
 fi
-if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
-  echo "    用 ${kernel_toolchain} 编译 ✓，再用 ${bindgen_bin} 生成绑定 ✓"
+if [ -n "${kernel_toolchain}" ] && [ -n "${bindgen_bin}" ]; then
+  # **别在干活之前先打 ✓** ✗（真实报告 ✓：脚本先打"编译 ✓…生成绑定 ✓" ✓，紧接着又说失败 ✗
+  # ⇒ 那是"还没做就先报成功" ✓，与本项目一直在清除的"说能用其实不能用"同类 ✓）。
+  echo "    工具链：${kernel_toolchain}"
+  echo "    wasm-bindgen：${bindgen_bin}"
+  # **先核对 wasm-bindgen 的版本** ✓（真实报告 ✓：macOS 上只看到"内核构建失败" ✗，
+  # 而**原因被 `>/dev/null 2>&1` 吞掉了** ✗ ⇒ 用户无从下手 ✓）。版本不一致是这类失败最常见的原因 ✓
+  # ⇒ **先查** ✓，并**直接给出修复命令** ✓。
+  bindgen_lock="$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;q;}' "$repo/Cargo.lock" 2>/dev/null || true)"
+  bindgen_cli="$("${bindgen_bin}" --version 2>/dev/null | awk '{print $2}' || true)"
+  if [ -n "${bindgen_lock}" ] && [ -n "${bindgen_cli}" ] && [ "${bindgen_lock}" != "${bindgen_cli}" ]; then
+    echo "    ⚠️ 版本不一致：Cargo.lock 要 wasm-bindgen ${bindgen_lock} ✓，而 CLI 是 ${bindgen_cli} ✗"
+    echo "       ⇒ 绑定生成会失败 ✓ ⇒ 修：cargo install wasm-bindgen-cli --version ${bindgen_lock} --locked"
+  fi
+  kernel_log="$(mktemp)"
   if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
        --manifest-path "$repo/Cargo.toml" --release \
-       --target wasm32-unknown-unknown -p yanshi-wasm >/dev/null 2>&1 \
-     && "$bindgen_bin" --target web \
+       --target wasm32-unknown-unknown -p yanshi-wasm >"${kernel_log}" 2>&1 \
+     && "${bindgen_bin}" --target web \
        --out-dir "$repo/crates/yanshi-wasm/pkg" \
-       "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >/dev/null 2>&1; then
+       "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >>"${kernel_log}" 2>&1; then
     echo "    ✓ 内核已生成：$(du -h "$repo/crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm" | cut -f1)"
   else
-    echo "    ✗ 内核构建失败 ⇒ 按下面缺产物处理" >&2
+    # **把真正的报错打出来** ✗ —— 否则用户只看到"失败"两个字 ✓，**无从下手** ✓。
+    echo "    ✗ 内核构建失败 ⇒ 下面是**真正的报错**（最后 25 行 ✓）："
+    tail -25 "${kernel_log}" | sed 's/^/      /'
+    echo "      复现：cargo build --release --target wasm32-unknown-unknown -p yanshi-wasm"
+    echo "      常见原因：① 该工具链缺 wasm32 目标 ⇒ rustup target add wasm32-unknown-unknown"
+    echo "                ② wasm-bindgen CLI 与 Cargo.lock 版本不一致 ⇒ 见上面的修复命令"
+    echo "      **失败不阻塞打包** ✓：查看器退化为服务端渲染 ✓（少一块功能 ✓，但能跑 ✓）。"
+    # **但如果旧产物还在，包里就会装着"与源码不符的内核"** ✗ ——
+    # 这与"二进制报的 commit 必须与包名一致"是同一种病 ✓ ⇒ 必须**明说** ✓。
+    if [ -d "$repo/crates/yanshi-wasm/pkg" ]; then
+      echo "      ⚠️ 注意：${repo}/crates/yanshi-wasm/pkg **已经存在** ⇒ 这次打出的包里装的是"
+      echo "          **上一次构建的内核**（可能落后于源码 ✗）；需要一致就先修好上面的报错再重打 ✓。"
+    else
+      echo "      ⚠️ 注意：包里**不会有** wasm 内核（这个目录还不存在 ✓）。"
+    fi
   fi
+  rm -f "${kernel_log}"
 else
+  # **缺工具就说清缺哪个** ✓（"没有产物"与"工具没装"是两件事 ✓）。
   echo "    ⚠️ 缺工具 ⇒ 无法现场构建："
-  [ -n "$kernel_toolchain" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
-  [ -n "$bindgen_bin" ] || echo "       · cargo install wasm-bindgen-cli"
+  [ -n "${kernel_toolchain}" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
+  [ -n "${bindgen_bin}" ] || echo "       · cargo install wasm-bindgen-cli（版本见 Cargo.lock 里的 wasm-bindgen）"
 fi
 
 
@@ -291,11 +320,13 @@ fi
 # ⇒ 浏览器端会拿到**旧插件** ✗（我上次是**手工**重建 `oil.wasm` 的 ✗ ⇒ 那不可靠 ✓）。
 # **代价** ✓：6 个小 crate ✓ 每个约 1 秒 ✓。
 if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
-  echo "--> 重建六个介质插件（wasm ✓）"
+  echo "--> 重建六个介质插件（wasm）"
+  # **报错不再被吞** ✗（真实报告 ✓：macOS 上只看到"重建失败" ✓，看不到原因 ✓）。
+  medium_log="$(mktemp)"
   if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
        --manifest-path "$repo/Cargo.toml" --release --target wasm32-unknown-unknown \
        -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
-       -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example >/dev/null 2>&1; then
+       -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example >"${medium_log}" 2>&1; then
     wasm_release="$repo/target/wasm32-unknown-unknown/release"
     copied=0
     # **名字要照资产表** ✓（`example` 在资产里叫 `example-dab` ✓ —— 这是历史命名 ✓）。
@@ -311,6 +342,9 @@ if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
     echo "    已刷新 ${copied} 个介质插件 ✓（它们是提交进仓库的资产 ✓ ⇒ 内容若有变请一并提交 ✓）"
   else
     echo "    ⚠️ 介质插件重建失败 ⇒ 继续用仓库里现有的资产（可能落后于源码 ✗）" >&2
+    echo "    ⇒ 下面是**真正的报错**（最后 15 行 ✓）：" >&2
+    tail -15 "${medium_log}" | sed 's/^/      /' >&2
+    rm -f "${medium_log}"
   fi
 fi
 
