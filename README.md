@@ -10,6 +10,15 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Rendering and determinism
+
+The compute kernel is CPU code shared by the client and the server and is bit-exact, which the design calls the D0
+baseline and treats as the only authority; the compositing tier, previews and thumbnails are D1 and are allowed a
+one least-significant-bit difference. There is no GPU backend: the design makes GPU acceleration optional and scoped
+to the compositing tier alone, and adding one would mean taking on a dependency, which this project does not do. The
+CPU path currently serves both tiers within budget, and a GPU backend could be added behind the compositing tier
+later without changing the architecture.
+
 ## Path operators
 
 The object panel drives the path operators from design 792: reverse, close, join, merge, split and boolean, the
