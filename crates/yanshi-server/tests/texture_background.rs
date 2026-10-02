@@ -238,3 +238,99 @@ fn the_warning_about_a_non_empty_layer_actually_fires() {
         "自建图层这条路不该出现「图层非空」的警告：{quiet}"
     );
 }
+
+/// **给了 `region` ⇒ 只铺那一块，而且当"补丁"而不是"背景"** ✓。
+///
+/// **两种用法的区别必须明确** ✓：整幅铺底会**自建一层并沉到最底** ✓；
+/// 而一块补丁**不能**沉底 ✗ —— 否则它一定会盖错东西 ✓。
+#[test]
+fn a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom() {
+    let root = temp_dir("patch");
+    let mut workspace = workspace(&root);
+    // 先有一层"作品" ✓，补丁应当**留在它上面** ✓，不该跑到它下面 ✗。
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "art" }))["ok"],
+        json!(true)
+    );
+    let made = call(
+        &mut workspace,
+        "texture_background",
+        json!({ "texture": "Paper001.png", "region": { "x": 20, "y": 10, "w": 60, "h": 40 } }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    assert_eq!(
+        made["is_patch"],
+        json!(true),
+        "给了 region 就是补丁：{made}"
+    );
+    assert_eq!(
+        made["region"],
+        json!({ "x": 20, "y": 10, "w": 60, "h": 40 }),
+        "区域要照给的来：{made}"
+    );
+    let order = layer_order(&mut workspace);
+    // **补丁层不能在最底** ✓ —— 那说明它被错误地沉底了 ✓。
+    let created = made["created_layer"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!created.is_empty(), "{made}");
+    assert_ne!(
+        order.first().map(String::as_str),
+        Some(created.as_str()),
+        "补丁不该被沉到最底：{order:?}"
+    );
+    assert_eq!(
+        order.first().map(String::as_str),
+        Some("art"),
+        "原来的作品层还该在最底：{order:?}"
+    );
+}
+
+/// **区域超出画布要夹住** ✓（否则会白白生成一堆画布外的像素 ✗）。
+#[test]
+fn a_region_larger_than_the_canvas_is_clipped() {
+    let root = temp_dir("clip");
+    let mut workspace = workspace(&root);
+    let made = call(
+        &mut workspace,
+        "texture_background",
+        json!({ "texture": "Paper001.png", "region": { "x": 100, "y": 60, "w": 500, "h": 500 } }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    // 画布是 120×80 ✓ ⇒ 从 (100,60) 起只剩 20×20 ✓。
+    assert_eq!(
+        made["region"],
+        json!({ "x": 100, "y": 60, "w": 20, "h": 20 }),
+        "超出画布的部分要夹掉：{made}"
+    );
+    assert_eq!(made["is_patch"], json!(true), "{made}");
+}
+
+/// **整幅（不给 region）仍然是"背景"** ✓ —— 语义不能被这次改动搅混 ✓。
+#[test]
+fn without_a_region_it_is_still_a_background() {
+    let root = temp_dir("still_bg");
+    let mut workspace = workspace(&root);
+    let made = call(
+        &mut workspace,
+        "texture_background",
+        json!({ "texture": "Paper001.png" }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    assert_eq!(
+        made["is_patch"],
+        json!(false),
+        "不给 region 就是背景：{made}"
+    );
+    let created = made["created_layer"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let order = layer_order(&mut workspace);
+    assert_eq!(
+        order.first().map(String::as_str),
+        Some(created.as_str()),
+        "背景该在最底：{order:?}"
+    );
+}

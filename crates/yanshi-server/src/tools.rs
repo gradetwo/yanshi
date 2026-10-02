@@ -2097,11 +2097,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         name: "texture_background",
         profile: Profile::Core,
         // **它改文档** ✓ ⇒ `mutating: true`（新建图层 + 落一层底图 ✓；`update_layer` 的强制检查会认它 ✓）。
-        summary: "把一张 CC0 纹理铺成背景（tile 平铺 / stretch 拉伸 / cover 等比铺满），可指定图层",
+        // **两种用法** ✓：不给 `region` ⇒ **整幅背景** ✓（自建一层并**沉到最底** ✓）；
+        // 给了 `region` ⇒ **纹理补丁** ✓（只在那一块铺 ✓、**不重排图层** ✗、没给 layer_id 时新建一层放在**原位** ✓）。
+        summary: "把 CC0 纹理铺成背景或补丁（tile/stretch/cover；给 region 就只铺那一块）",
         mutating: true,
         params: &[
             param!("texture", String, true, "纹理名（assets/textures 或工作区缓存里的 .png）"),
             param!("mode", String, false, "tile（缺省）/ stretch / cover"),
+            param!("region", Object, false, "只铺这块区域 {x,y,w,h}；不给就铺满整幅（并沉到底当背景）"),
             param!("layer_id", String, false, "铺到哪个图层（缺省新建一个并沉到最底）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
@@ -8767,6 +8770,20 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
             ErrorContext::detail(format!("未知铺法 {mode} ⇒ 可用：tile / stretch / cover")),
         ));
     }
+    // **可选区域** ✓：给了就只铺那一块 ✓（这是"纹理补丁"与"整幅背景"的**唯一区别** ✓）。
+    // **裁剪到画布内** ✓ —— 区域超出画布没有任何意义 ✓，而且会白白生成一堆像素 ✗。
+    let region = match args.get("region") {
+        Some(value) => {
+            let parsed = parse_bbox(value)?;
+            Some((
+                parsed.x.max(0.0) as i32,
+                parsed.y.max(0.0) as i32,
+                parsed.w.max(1.0) as i32,
+                parsed.h.max(1.0) as i32,
+            ))
+        }
+        None => None,
+    };
     let (canvas_width, canvas_height) = ctx
         .workspace
         .document(&ctx.doc_id)
@@ -8777,9 +8794,19 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
                 ErrorContext::detail(format!("找不到文档 {}", ctx.doc_id)),
             )
         })?;
-    let width = canvas_width as usize;
-    let height = canvas_height as usize;
-    if width == 0 || height == 0 {
+    // **目标尺寸** ✓：给了区域就是区域大小 ✓，否则整幅 ✓；
+    // 还要**夹在画布内** ✓（区域可以超出去 ✓，但我们只铺真正落在画布上的部分 ✓）。
+    let (target_x, target_y, width, height) = match region {
+        Some((rx, ry, rw, rh)) => {
+            let x = rx.min(canvas_width as i32).max(0);
+            let y = ry.min(canvas_height as i32).max(0);
+            let w = rw.min(canvas_width as i32 - x).max(1) as usize;
+            let h = rh.min(canvas_height as i32 - y).max(1) as usize;
+            (x, y, w, h)
+        }
+        None => (0, 0, canvas_width as usize, canvas_height as usize),
+    };
+    if width == 0 || height == 0 || canvas_width == 0 || canvas_height == 0 {
         return Err(YanshiError::new(
             ErrorCode::PreconditionFailed,
             ErrorContext::detail("文档尺寸是 0 ⇒ 铺不了背景"),
@@ -8863,10 +8890,14 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         }
         _ => {
             // **tile**：逐像素取模 ✓ —— 纹理是无缝的 ✓ ⇒ 不重采样 ⇒ 最保真 ✓。
+            // **按文档坐标取模** ✓（而不是按区域内的相对坐标 ✓）⇒
+            // 先铺一块补丁、再铺整幅背景 ⇒ 花纹是**对齐的** ✓（否则会看出接缝 ✗）。
             for row in 0..height {
                 for column in 0..width {
-                    let source_x = column % tile_width;
-                    let source_y = row % tile_height;
+                    let document_x = target_x as usize + column;
+                    let document_y = target_y as usize + row;
+                    let source_x = document_x % tile_width;
+                    let source_y = document_y % tile_height;
                     let from = (source_y * tile_width + source_x) * 4;
                     let to = (row * width + column) * 4;
                     rgba[to..to + 4].copy_from_slice(&tile_rgba[from..from + 4]);
@@ -8905,7 +8936,11 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
                     }
                 }
             }
-            write_reorder_layers(ctx, &json!({ "order": order }))?;
+            // **只有整幅背景才沉到底** ✓；给了 `region` 是**补丁** ✓ ⇒ 不重排 ✓
+            //（把一块补丁强行沉到最底 ⇒ 一定会盖错东西 ✗）。
+            if region.is_none() {
+                write_reorder_layers(ctx, &json!({ "order": order }))?;
+            }
             new_id
         }
     };
@@ -8920,7 +8955,9 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
             "size": rgba.len(),
             "mime_type": "image/x-yanshi-raw",
         },
-        "region": {"x": 0, "y": 0, "w": width, "h": height},
+        // **请求里只放 `import_image` 认的键** ✗（`is_patch` 是我们自己的语义 ✓
+        // ⇒ 它属于**响应** ✓；塞进请求只会让人以为下游会用它 ✓）。
+        "region": {"x": target_x, "y": target_y, "w": width, "h": height},
     });
     // **指定了非空图层时要提醒一句** ✗（真实观察 ✓）：实测发现
     // **同一个图层里，后导入的位图会排在已有对象之上** ✗
@@ -8959,7 +8996,12 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
     // **`region` 要显式回** ✓ —— `import_image` 回的是 `dirty_bbox` ✓，
     // 而本项目其它落笔工具（`medium_stroke` / `brush_stroke` ✓）都回 `region` ✓
     // ⇒ **同一种语义在三个工具里要用同一个名字** ✗（各叫各的 ⇒ 调用方要记三套 ✓）。
-    value["region"] = json!({"x": 0, "y": 0, "w": width, "h": height});
+    // **起点要用真实的** ✗ —— 我第一版写死了 `0,0` ✓ ⇒ 补丁的响应会显示"从原点开始" ✗
+    //（而 `dirty_bbox` 明明是对的 ✓ ⇒ 两个字段互相矛盾 ✓，调用方只能猜 ✓）。
+    value["region"] = json!({"x": target_x, "y": target_y, "w": width, "h": height});
+    // **说清这次是"背景"还是"补丁"** ✓ —— 两种用法**副作用不同** ✓
+    //（补丁**不会**被沉到最底 ✗）⇒ 不说清的话调用方会误判图层顺序 ✓。
+    value["is_patch"] = json!(region.is_some());
     value["tile_size"] = json!({"width": tile_width, "height": tile_height});
     if let Some(layer) = created_layer {
         value["created_layer"] = json!(layer);
