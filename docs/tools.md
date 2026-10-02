@@ -104,6 +104,12 @@ Layers already support the multiply, screen, overlay, darken, lighten, add, subt
 alongside normal, settable through the layer patch, so the missing piece there was documentation rather than
 capability.
 
+appearance.texture gives a stroke a paper-like grain: a string of none, noise or grain, or an object with kind,
+scale, strength and seed. A painter asked for watercolour paper and canvas textures; grain and noise approximate them
+and can be tuned with scale and strength, but there is deliberately no dedicated rough-paper or canvas-weave preset,
+and saying so is better than implying one exists. Shapes take stroke_width and stroke_color alongside the filled
+colour, so an outlined rectangle is a geometry plus those two keys at the top level of the object data.
+
 batch takes a silent flag which suppresses the preview that every write call would otherwise render. Batches
 share one tool context, so setting the flag once covers every nested call, and previews are produced in a single place
 in the tool layer, which is what makes this a small change rather than a cross-cutting one. It defaults to false, so

@@ -10,6 +10,17 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Grain, stroke outlines, and a note on honesty
+
+`appearance.texture` adds a paper-like grain: `"noise"` or `"grain"`, or an object with `kind`, `scale`, `strength`
+and `seed`. These approximate watercolour paper and canvas, and can be tuned, but there is no dedicated rough-paper
+or canvas-weave preset. Shapes take `stroke_width` and `stroke_color`:
+
+    {"layer_id": "L", "data": {
+      "geometry": {"kind": "rect", "x": 20, "y": 20, "w": 120, "h": 90},
+      "color": {"r": 200, "g": 180, "b": 140, "a": 255},
+      "stroke_width": 4, "stroke_color": {"r": 40, "g": 40, "b": 40, "a": 255}}}
+
 ## Batching without previews
 
 `batch` accepts `silent: true` to skip the preview that each nested write call would render, which matters when a

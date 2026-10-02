@@ -9,6 +9,19 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 纸纹、描边，以及一句实话
+
+`appearance.texture` 给笔触加**纸纹般的颗粒** ✓：字符串 `"noise"` / `"grain"` ✓，
+或对象 `{"kind", "scale", "strength", "seed"}` ✓。它们**近似**水彩纸与画布 ✓ 且可调 ✓；
+但**没有**专门的"粗纹水彩纸 / 帆布纹理"预设 ✗ —— **如实说明** ✓，好过让人以为有 ✓。
+
+形状支持 **`stroke_width` + `stroke_color`**（与填充色并列 ✓，都写在对象数据顶层 ✓）：
+
+    {"layer_id": "L", "data": {
+      "geometry": {"kind": "rect", "x": 20, "y": 20, "w": 120, "h": 90},
+      "color": {"r": 200, "g": 180, "b": 140, "a": 255},
+      "stroke_width": 4, "stroke_color": {"r": 40, "g": 40, "b": 40, "a": 255}}}
+
 ## 批量静默提交
 
 `batch` 支持 **`silent: true`** ✓：不再为**每个子调用**生成预览 ✓ ——

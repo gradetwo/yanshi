@@ -49,19 +49,46 @@ impl BlendMode {
         Self::Difference,
     ];
 
-    /// 由文档中的 `blend_mode` 字符串解析（未知值退化为 [`BlendMode::Normal`]）。
-    pub fn from_name(name: &str) -> Self {
+    /// **受支持的全部混合模式名** ✓（真实用户报告里"非法值被静默写入" ✓ ⇒ 校验需要一份权威清单 ✓）。
+    ///
+    /// **为什么集中在这里** ✓：渲染层与工具层**必须用同一份** ✗ ——
+    /// 各写一份必然漂移 ✓ ⇒ 于是"工具说合法、渲染不认"或反过来 ✗。
+    pub const NAMES: [&'static str; 9] = [
+        "normal",
+        "multiply",
+        "screen",
+        "overlay",
+        "darken",
+        "lighten",
+        "add",
+        "linear_dodge",
+        "subtract",
+    ];
+
+    /// **严格解析** ✓：不认识就返回 `None` ✓（供**入口**做校验 ✓）。
+    ///
+    /// **为什么要与 `from_name` 分开** ✓：两者面向**不同的人** ✗ ——
+    /// **渲染层**面对的是**已有的文档** ✓ ⇒ 必须**宽容** ✓（老文档里万一有怪值 ✓ 也要能画出来 ✓）；
+    /// **工具层**面对的是**正要写进去的值** ✓ ⇒ 必须**严格** ✓（拒绝并说明可用值 ✓）。
+    /// 混成一个函数就必然牺牲一边 ✗。
+    pub fn parse(name: &str) -> Option<Self> {
         match name {
-            "multiply" => Self::Multiply,
-            "screen" => Self::Screen,
-            "overlay" => Self::Overlay,
-            "darken" => Self::Darken,
-            "lighten" => Self::Lighten,
-            "add" | "linear_dodge" => Self::Add,
-            "subtract" => Self::Subtract,
-            "difference" => Self::Difference,
-            _ => Self::Normal,
+            "normal" => Some(Self::Normal),
+            "multiply" => Some(Self::Multiply),
+            "screen" => Some(Self::Screen),
+            "overlay" => Some(Self::Overlay),
+            "darken" => Some(Self::Darken),
+            "lighten" => Some(Self::Lighten),
+            "add" | "linear_dodge" => Some(Self::Add),
+            "subtract" => Some(Self::Subtract),
+            "difference" => Some(Self::Difference),
+            _ => None,
         }
+    }
+
+    /// 由文档中的 `blend_mode` 字符串解析（未知值退化为 [`BlendMode::Normal`] ✓ —— **渲染层的宽容** ✓）。
+    pub fn from_name(name: &str) -> Self {
+        Self::parse(name).unwrap_or(Self::Normal)
     }
 
     /// 文档中使用的字符串。
@@ -269,5 +296,49 @@ mod tests {
         let half = scale_alpha(pixel, 0.5);
         assert!((half[3] - 0.4).abs() < 1e-6);
         assert!((half[0] - 0.2).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod mode_name_tests {
+    use super::*;
+
+    /// **`from_name` 的清单必须与枚举一样全** ✓ —— 真实用户报告引出的**真 bug** ✓。
+    ///
+    /// **症状** ✓：`from_name` 的匹配里**漏了 `"difference"`** ✗
+    /// ⇒ 设 `blend_mode: "difference"` 会**静默退化成 `normal`** ✗
+    /// ⇒ 调用方看到写成功了 ✓、画面却**毫无变化** ✗ —— 正是"**接受了却没用**" ✓。
+    /// **本测试覆盖全部 `as_str()` 出来的名字** ✓ ⇒ 以后再加模式而忘了加匹配 ✓ 这里会红 ✓。
+    #[test]
+    fn every_mode_name_round_trips_through_from_name() {
+        for name in BlendMode::NAMES {
+            let parsed = BlendMode::parse(name);
+            assert!(parsed.is_some(), "{name} 应当是受支持的模式名");
+            let mode = parsed.unwrap();
+            assert_eq!(
+                mode.as_str(),
+                // `linear_dodge` 是 `add` 的别名 ✓ ⇒ 归一到规范名 ✓
+                if name == "linear_dodge" { "add" } else { name },
+                "{name} 解析后应当归一化正确"
+            );
+            assert_eq!(
+                BlendMode::from_name(name),
+                mode,
+                "{name} 经 from_name 不该退化（这正是 difference 当初栽的地方 ✗）"
+            );
+        }
+    }
+
+    /// **`difference` 曾经被静默降级** ✓ —— 单独钉一条 ✓（回归测试 ✓）。
+    #[test]
+    fn difference_is_not_silently_downgraded() {
+        assert_eq!(BlendMode::from_name("difference"), BlendMode::Difference);
+        assert_ne!(BlendMode::from_name("difference"), BlendMode::Normal);
+        // **未知值仍然宽容** ✓（渲染层面对老文档 ✓ 必须能画出来 ✓）⇒ 这条是**有意**的行为 ✓。
+        assert_eq!(BlendMode::from_name("not_a_mode"), BlendMode::Normal);
+        assert!(
+            BlendMode::parse("not_a_mode").is_none(),
+            "严格解析应当拒绝未知值 ✓（入口用它校验 ✓）"
+        );
     }
 }
