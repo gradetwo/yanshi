@@ -293,6 +293,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <span class="tool-name" id="toolName">画笔</span>
   <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
   <label>颜色 <input id="color" type="color" value="#c81e3c" /></label>
+  <!-- **一笔多色（Loaded Brush）** ✓（用户："花瓣渐变只能分两笔，交界硬" ✗）：
+       起点 = 上面的「颜色」✓、末端 = 这里 ✓；勾上之后**同一条笔迹**上渐变 ✓（不是一个对象两笔 ✗）。 -->
+  <label>末端色 <input id="colorTo" type="color" value="#2b6cb0" /></label>
+  <label title="一笔多色：同一条笔迹上从「颜色」渐变到「末端色」（Loaded Brush；与 MCP 的 brush_stroke.color_to 同一条实现）">
+    <input id="duoTone" type="checkbox" /> 一笔多色
+  </label>
   <!-- "强度"这个名字在**插件介质**下是**误导**的 ✗：该值直接喂给插件的 `wetness` ✓，
        于是"越强"= **越湿** = **越淡** ✓（子 agent 实测：85 → alpha 0.238 ✓、55 → 0.482 ✓）。
        这里让标签**随介质改名** ✓（插件介质 ⇒ "湿度" ✓；内置笔刷 ⇒ "强度" ✓），
@@ -4631,6 +4637,17 @@ function subscribeViewport() {
   }));
 }
 
+/// **末端色** ✓（与 `colorCss` 同一套写法 ✓ ⇒ 两个色控件不可能各写一套 ✓）。
+function colorToCss() {
+  const hex = ($("colorTo") || {}).value || "#000000";
+  return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16), a: 255 };
+}
+
+/// **一笔多色开关** ✓（勾上才传 ✓ —— 不勾就是原来的单色画法 ✓）。
+function duoToneEnabled() {
+  return !!($("duoTone") || {}).checked;
+}
+
 function colorCss() {
   const hex = $("color").value;
   return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16), a: 255 };
@@ -5544,6 +5561,11 @@ async function commitShape() {
     // ⇒ 这一条走**服务端权威**：**抬手时一次**提交整条笔触 ✓
     //（与"没有内核时"的做法一致 ✓，也是本项目一贯的"能力在工具层" ✓）。
     const brushName = ($("brush") || {}).value || "";
+    // **勾了"一笔多色"但没选 `.myb` 笔刷** ⇒ 说清楚 ✗：内置几何那条路**没有多色** ✓
+    //（要滑杆式的渐变得靠介质插件或分段对象 ✗）—— 不静默忽略 ✓（本项目头号病症 ✓）。
+    if (duoToneEnabled() && !brushName) {
+      log("「一笔多色」目前只支持 .myb 笔刷（内置画笔是纯几何、单色）⇒ 请在「笔刷」里选一支", "#c93");
+    }
     if (brushName) {
       const controlPoints = state.points.map((point) => [
         point.x,
@@ -5560,6 +5582,9 @@ async function commitShape() {
           size: size,
           // **平滑** ✓：与 MCP 同名同义（`brush_stroke.smooth` ✓）。
           smooth: smooth,
+          // **一笔多色** ✓：与 MCP 同名同义（`brush_stroke.color_to` ✓）—— 不勾就**不传** ✓
+          //（缺省逐字节不变 ✓）。
+          color_to: duoToneEnabled() ? colorToCss() : undefined,
           // **颜色也必须带上** ✗ —— 此前写的是 `color: undefined` ✓ ⇒
           // 用户在工具条上**选了颜色也画不上** ✗（笔触只用 `.myb` 自带色 ✓），
           // 这正是"界面里有的东西实际不生效" ✓（本轮连同工具层的颜色缺陷一起修 ✓）。
@@ -5883,9 +5908,9 @@ async function refreshBrushOptions() {
     for (const asset of assets) {
       if (!asset.usable) continue;
       const name = String(asset.name).replace(/\.myb$/i, "");
-      const dash = name.indexOf("-");
-      const prefix = dash > 0 ? name.slice(0, dash) : "";
-      const group = order.includes(prefix) ? prefix : "其他";
+      // **分类读工具层给的那一份** ✓（`list_assets` 的 `category` ✓）——
+      // 本地再算一套前缀分类 ✗ 迟早与 MCP 那边不一致 ✓（这正是"两边各一套"的老病 ✓）。
+      const group = order.includes(asset.category) ? asset.category : "其他";
       if (!groups.has(group)) {
         const optgroup = document.createElement("optgroup");
         optgroup.label = group;
@@ -6052,6 +6077,9 @@ window.yanshi = {
         brush: ($("brush") || {}).value || null,
         // **平滑开关也要能读** ✓（"界面里有的东西必须能被断言" ✓ —— 与 size 那次同类 ✓）。
         smooth: !!($("smooth") || {}).checked,
+        // **一笔多色开关也要能读** ✓（探针要断言界面状态 ✓）。
+        duoTone: !!($("duoTone") || {}).checked,
+        colorTo: ($("colorTo") || {}).value || null,
         // **视口与缩放也必须能读** ✗（真实用户报告 + 我自己的探针教训 ✓）：
         // 我上一轮想量"抓手工具有没有平移画布" ✓，而 `state()` 只返回
         // `docId/layerId/tool/color/size/opacity/medium` ✗ ⇒ **探针看不见被测对象** ✗
@@ -6162,6 +6190,21 @@ window.yanshi = {
     /// **暴露预览** ✓：验收探针要能直接断言"预览真的换了"✓（与换笔刷走同一条实现 ✓）。
     previewBrush() {
       return refreshBrushPreview();
+    },
+    /// **一笔多色开关** ✓（真实路径：改的就是界面上那个勾 ✓ 与那个色控件 ✓）。
+    setDuoTone(on, hex) {
+      const box = $("duoTone");
+      if (!box) return false;
+      box.checked = !!on;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+      if (hex) {
+        const slot = $("colorTo");
+        if (slot) {
+          slot.value = hex;
+          slot.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      return true;
     },
     /// **平滑开关** ✓（真实路径：改的就是界面上那个勾 ✓）。
     setSmooth(on) {

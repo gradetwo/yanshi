@@ -2109,7 +2109,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("medium", String, true, "介质 id：oil | watercolor | marker | pencil | pixel | example"),
             param!("points", Array, true, "笔迹采样点 [[x,y,pressure?], ...]（pressure 0..1）"),
             param!("size", Number, false, "笔尖大小（缺省 24）"),
-            param!("color", Object, false, "笔尖色 {r,g,b,a}（0..255；缺省不透明黑）"),
+            // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
+            param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节）/ \"#RRGGBB\"（缺省不透明黑）"),
+            param!("smooth", Boolean, false, "true ⇒ 控制点按 **Catmull-Rom** 重采样（与 brush_stroke / draw_stroke 同一条实现 ✓）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),
             param!("wetness", Number, false, "湿度 0..1（缺省 0.4）"),
             param!(
@@ -2198,7 +2200,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
         // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
         //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
-        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2214,6 +2216,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // `[r,g,b,(a)]`（0..1 线性或 0..255 字节）/ `"#RRGGBB"` ✓ ——
             // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
             param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节）/ \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
+            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（Loaded Brush ✓）：花瓣 / 叶尖那种渐变**一笔就能画** ✓，不必分两笔（交界不会有硬边 ✓）；给了它就必须同时给 color ✓"),
             param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
@@ -2230,6 +2233,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size", Number, false, "笔尖直径像素（缺省 24，上限 512）"),
             param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（不给则用 .myb 自带色）"),
             param!("points", Array, false, "自定义采样笔迹 [[x,y,pressure],…]；不给则用一条固定的缓 S 形 ✓（同一支笔刷 ⇒ 可复现 ✓）"),
+            param!("color_to", Any, false, "末端颜色 ⇒ 预览里也能看到**一笔多色** ✓（与落笔同一条实现 ✓）"),
             param!("smooth", Boolean, false, "true ⇒ 与 brush_stroke 的 smooth 同一条平滑 ✓（预览所见 = 落笔所得）"),
             param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓；≤512px ✓）"),
         ],
@@ -3558,9 +3562,9 @@ fn restyle_baked_brush_stroke(
     let core = args.get("core").and_then(Value::as_object);
     if let Some(core) = core {
         for key in core.keys() {
-            if key != "color" && key != "size" && key != "opacity" {
+            if key != "color" && key != "color_to" && key != "size" && key != "opacity" {
                 return refuse(format!(
-                    "画笔笔触的重跑只认 color / size / opacity ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
+                    "画笔笔触的重跑只认 color / color_to / size / opacity ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
                 ));
             }
         }
@@ -3585,6 +3589,11 @@ fn restyle_baked_brush_stroke(
         .and_then(|core| core.get("size"))
         .and_then(Value::as_f64)
         .or_else(|| source.get("size").and_then(Value::as_f64));
+    let color_to = core
+        .and_then(|core| core.get("color_to"))
+        .cloned()
+        .or_else(|| source.get("color_to").cloned())
+        .filter(|value| !value.is_null());
     let opacity = core
         .and_then(|core| core.get("opacity"))
         .and_then(Value::as_f64)
@@ -3610,7 +3619,16 @@ fn restyle_baked_brush_stroke(
     } else {
         points
     };
-    let paint = paint_brush(ctx, &brush, &points, size, color.as_ref(), opacity, false)?;
+    let paint = paint_brush(
+        ctx,
+        &brush,
+        &points,
+        size,
+        color.as_ref(),
+        color_to.as_ref(),
+        opacity,
+        false,
+    )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
     new_data["bitmap"] = json!({
@@ -3633,6 +3651,7 @@ fn restyle_baked_brush_stroke(
         "points": source.get("points").cloned().unwrap_or(Value::Null),
         "size": size.map(|value| json!(value)).unwrap_or(Value::Null),
         "color": color.clone().unwrap_or(Value::Null),
+        "color_to": color_to.clone().unwrap_or(Value::Null),
         "smooth": smooth,
         "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
     });
@@ -9161,21 +9180,33 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **纹理强度** ✓（真实用户报告"油画纹理过重"✓）：缺省 **0.0** ✓
     // ⇒ 与"这个参数根本不存在时"**逐字节相同** ✓ ⇒ **旧调用方的输出一个像素都不变** ✓。
     let texture = args.get("texture").and_then(Value::as_f64).unwrap_or(0.0);
-    // 色按 0..255 收 ✓ ⇒ 转成插件要的 0..1 ✓（缺省不透明黑 ✓）。
+    // **可选平滑** ✓（`smooth: true` ⇒ 控制点按 Catmull-Rom 重采样 ✓）：与画笔 / `draw_stroke`
+    // **同一个实现** ✓ ⇒ 三条落笔路径的"平滑"是同一个东西 ✓（不是三套 ✓）。
+    let points = if optional_bool(args, "smooth").unwrap_or(false) {
+        smooth_stroke_points(&points)
+    } else {
+        points
+    };
+    // **色收三种写法** ✓（`{r,g,b,a}` 0..255 / `[r,g,b,(a)]` / `"#RRGGBB"` ✓）——
+    // 与画笔、形状、笔迹**走同一个解析器** ✗（三条路各写一套，用户就得多记三套 ✓，
+    // 而"三套系统机制不清晰"正是用户报过的那条 ✓）。
+    //
+    // **路径与以前逐字节等价** ✓：老写法（对象 0..255）经 `parse_spec_color` 变线性 ✓、
+    // 再 `linear_to_byte_exact` 变回**同一个字节** ✓ ⇒ `/255` 之后与旧代码**同一个浮点** ✓
+    //（这一点有测试钉住：两种写法必须给出**逐字节相同**的画面 ✓）。
     let color = match args.get("color") {
         Some(value) if !value.is_null() => {
-            let channel = |name: &str, fallback: f32| {
+            let bytes = brush_color_to_srgb_bytes(value)?;
+            [
+                f32::from(bytes[0]) / 255.0,
+                f32::from(bytes[1]) / 255.0,
+                f32::from(bytes[2]) / 255.0,
+                // **alpha 仍按老口径** ✓：只认对象写法里的 `a` ✓（0..255 ⇒ 0..1 ✓），缺省 1 ✓。
                 value
-                    .get(name)
+                    .get("a")
                     .and_then(Value::as_f64)
                     .map(|v| (v / 255.0) as f32)
-                    .unwrap_or(fallback)
-            };
-            [
-                channel("r", 0.0),
-                channel("g", 0.0),
-                channel("b", 0.0),
-                channel("a", 1.0),
+                    .unwrap_or(1.0),
             ]
         }
         _ => [0.0, 0.0, 0.0, 1.0],
@@ -9933,6 +9964,13 @@ fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>>
 ///
 /// 返回 `(hue, sat, value)` ✓（引擎要的 0..1 圆周分数 ✓，见 [`rgb_to_hsv`] ✓）。
 fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
+    let bytes = brush_color_to_srgb_bytes(value)?;
+    Ok(rgb_to_hsv(bytes[0], bytes[1], bytes[2]))
+}
+
+/// **颜色 → sRGB 字节** ✓（三种写法都收 ✓）—— 一笔多色的**插值必须在显示空间**做 ✓：
+/// 在 HSV 里插值会让"红 → 蓝"**绕道绿** ✗（色相 0° → 240° 的直线穿过 120° ✓）。
+fn brush_color_to_srgb_bytes(value: &Value) -> Result<[u8; 3]> {
     let rgba = yanshi_render::color::parse_spec_color(value).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -9942,14 +9980,84 @@ fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
             ),
         )
     })?;
-    // 引擎的画布是 **sRGB 显示空间** ✓ ⇒ 先把解析结果编码回 sRGB 字节 ✓，再取 HSV ✓
-    //（`linear_to_byte_exact`：精确版 ✓，不让查表误差进到色相里 ✓）。
-    let bytes = [
+    Ok([
         yanshi_render::color::linear_to_byte_exact(rgba[0]),
         yanshi_render::color::linear_to_byte_exact(rgba[1]),
         yanshi_render::color::linear_to_byte_exact(rgba[2]),
-    ];
-    Ok(rgb_to_hsv(bytes[0], bytes[1], bytes[2]))
+    ])
+}
+
+/// **按弧长把路径加密到"够多段"** ✓ —— 一笔多色要沿长度均匀换色 ✓。
+///
+/// * `step`：目标段长（像素 ✓）；
+/// * `max_points`：上限 ✓（防病态输入 ✓，与补间那个 4096 上限同一个考虑 ✓）。
+fn densify_for_ramp(
+    points: &[(f64, f64, f64)],
+    step: f64,
+    max_points: usize,
+) -> Vec<(f64, f64, f64)> {
+    if points.len() < 2 {
+        return points.to_vec();
+    }
+    let distance =
+        |a: (f64, f64, f64), b: (f64, f64, f64)| ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+    let total: f64 = points
+        .windows(2)
+        .map(|pair| distance(pair[0], pair[1]))
+        .sum();
+    let count = ((total / step).ceil() as usize).clamp(2, max_points.max(2));
+    let mut out = Vec::with_capacity(count);
+    out.push(points[0]);
+    let mut travelled = 0.0f64;
+    let mut target = total / (count - 1) as f64;
+    let mut cursor = 1usize;
+    let mut segment_start = points[0];
+    let mut segment_length = distance(points[0], points[1]);
+    while out.len() < count {
+        while cursor < points.len() && travelled + segment_length < target {
+            travelled += segment_length;
+            segment_start = points[cursor];
+            cursor += 1;
+            if cursor >= points.len() {
+                break;
+            }
+            segment_length = distance(points[cursor - 1], points[cursor]);
+        }
+        if cursor >= points.len() {
+            break;
+        }
+        let remaining = (target - travelled).max(0.0);
+        let t = if segment_length <= f64::EPSILON {
+            0.0
+        } else {
+            (remaining / segment_length).clamp(0.0, 1.0)
+        };
+        let next = points[cursor];
+        out.push((
+            segment_start.0 + (next.0 - segment_start.0) * t,
+            segment_start.1 + (next.1 - segment_start.1) * t,
+            segment_start.2 + (next.2 - segment_start.2) * t,
+        ));
+        target += total / (count - 1) as f64;
+    }
+    if out.len() < 2 {
+        out.push(points[points.len() - 1]);
+    }
+    out
+}
+
+/// 两个 sRGB 颜色按 `t` 线性插值 ✓（显示空间 ✓，见 [`brush_color_to_srgb_bytes`] ✓）。
+fn lerp_srgb(from: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
+    let mix = |a: u8, b: u8| {
+        (f64::from(a) + (f64::from(b) - f64::from(a)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    [
+        mix(from[0], to[0]),
+        mix(from[1], to[1]),
+        mix(from[2], to[2]),
+    ]
 }
 
 /// **把控制点按 Catmull-Rom 重采样** ✓ —— 复用**渲染层那一份**插值 ✗（不自己写第二份 ✓）。
@@ -10106,10 +10214,22 @@ fn stamp_stroke(
     surface: &mut hokusai::tile_mem::MemSurface,
     points: &[(f64, f64, f64)],
 ) -> usize {
-    let mut steps = 0usize;
     let mut previous: Option<(f64, f64, f64)> = None;
+    stamp_stroke_from(brush, state, surface, points, &mut previous)
+}
+
+/// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
+/// （那会在每个换色点多盖一枚 dab ✓ ⇒ 一串深色小点 ✗）。`previous` 由调用方跨段持有 ✓。
+fn stamp_stroke_from(
+    brush: &hokusai::Brush,
+    state: &mut hokusai::BrushState,
+    surface: &mut hokusai::tile_mem::MemSurface,
+    points: &[(f64, f64, f64)],
+    previous: &mut Option<(f64, f64, f64)>,
+) -> usize {
+    let mut steps = 0usize;
     for (x, y, pressure) in points {
-        match previous {
+        match *previous {
             None => {
                 // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
                 brush.stroke_to(
@@ -10140,7 +10260,7 @@ fn stamp_stroke(
                 }
             }
         }
-        previous = Some((*x, *y, *pressure));
+        *previous = Some((*x, *y, *pressure));
     }
     steps
 }
@@ -10220,12 +10340,18 @@ fn load_brush(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, hokusa
 /// 涂抹类笔刷（`smudge > 0`）靠"抹开画布上已有的颜色"工作 ✓ ⇒ **文档里必须喂** ✓；
 /// **预览不喂** ✓（预览回答的是"这支笔刷长什么样"✓，不是"落在你这幅画上什么样"✗）——
 /// 于是涂抹类笔刷的预览**必然为空** ✓，由下面那段报错**说清原因** ✓（不静默 ✓）。
+// 8 个参数：ctx / 笔刷 / 点列 / size / color / **color_to** / opacity / 是否喂底图 ——
+// 它们**都是"这一次落笔"的输入** ✓，不是"碰巧凑在一起的东西" ✓ ⇒ 显式放行这条 lint ✓
+//（拆成结构体只是把它们换个地方摆 ✓，可读性并没有变好 ✗）。
+#[allow(clippy::too_many_arguments)]
 fn paint_brush(
     ctx: &mut ToolContext<'_>,
     brush_name: &str,
     points: &[(f64, f64, f64)],
     size: Option<f64>,
     color: Option<&Value>,
+    // **末端颜色** ✓（给了 ⇒ 沿笔迹从 `color` 渐变到它 ✓ = Loaded Brush ✓）。
+    color_to: Option<&Value>,
     // **这一笔的不透明度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `opaque` ✓。
     opacity: Option<f64>,
     feed_base: bool,
@@ -10382,7 +10508,64 @@ fn paint_brush(
     } else {
         None
     };
-    let steps = stamp_stroke(&brush, &mut state, &mut surface, points);
+    let steps = match color_to {
+        // **一笔多色（Loaded Brush）** ✓：把路径按弧长切段 ✓、**每段换一次笔刷颜色** ✓，
+        // 但 `surface` 与 `BrushState` **一路共用** ✓ ⇒ 落下来的还是**一条笔迹** ✓
+        //（dab 间距连续 ✓、不会在换色点重复播种 ✓ —— 那正是 `stamp_stroke_from` 存在的理由 ✓）。
+        //
+        // **为什么要求两个颜色都给** ✓：只给末端色的话，"起点色"只能猜 `.myb` 自带色 ✓
+        // ⇒ 猜错就是"界面里看到的和画出来的不一样" ✗ ⇒ 明确要求 ✓（错误里说清 ✓）。
+        Some(color_to) => {
+            let Some(from) = color else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "要给 color_to（一笔多色）就必须同时给 color ✓：起点色不猜 —— \
+                         不给的话只能拿 .myb 自带色当起点 ✗，画面会与调用方以为的不一样 ✓",
+                    ),
+                ));
+            };
+            let from_bytes = brush_color_to_srgb_bytes(from)?;
+            let to_bytes = brush_color_to_srgb_bytes(color_to)?;
+            // 每段约 4px ✓、最多 128 段 ✓（再多也看不出来 ✓，却白花时间 ✗）。
+            let dense = densify_for_ramp(points, 4.0, 128);
+            let seats = dense.len().saturating_sub(1);
+            let mut previous: Option<(f64, f64, f64)> = None;
+            let mut steps = 0usize;
+            let mut cursor = 0usize;
+            while cursor < seats {
+                let t = if seats == 0 {
+                    0.0
+                } else {
+                    cursor as f64 / seats as f64
+                };
+                let bytes = lerp_srgb(from_bytes, to_bytes, t);
+                let (hue, saturation, value) = rgb_to_hsv(bytes[0], bytes[1], bytes[2]);
+                brush.set(
+                    hokusai::BrushSetting::ColorH,
+                    hokusai::SettingValue::constant(hue),
+                );
+                brush.set(
+                    hokusai::BrushSetting::ColorS,
+                    hokusai::SettingValue::constant(saturation),
+                );
+                brush.set(
+                    hokusai::BrushSetting::ColorV,
+                    hokusai::SettingValue::constant(value),
+                );
+                steps += stamp_stroke_from(
+                    &brush,
+                    &mut state,
+                    &mut surface,
+                    &dense[cursor..=cursor + 1],
+                    &mut previous,
+                );
+                cursor += 1;
+            }
+            steps
+        }
+        None => stamp_stroke(&brush, &mut state, &mut surface, points),
+    };
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
@@ -10481,6 +10664,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .collect::<Vec<_>>());
     let size_source = args.get("size").cloned().unwrap_or(Value::Null);
     let color_source = args.get("color").cloned().unwrap_or(Value::Null);
+    let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
     let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
     let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
     // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
@@ -10497,6 +10681,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         &points,
         args.get("size").and_then(Value::as_f64),
         args.get("color"),
+        args.get("color_to"),
         None,
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
@@ -10522,6 +10707,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "points": points_source,
             "size": size_source,
             "color": color_source,
+            "color_to": color_to_source,
             "smooth": smooth_source,
             "opacity": opacity_source,
         },
@@ -10591,6 +10777,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         &points,
         Some(size),
         args.get("color"),
+        args.get("color_to"),
         None,
         false,
     )?;
@@ -10723,6 +10910,12 @@ fn asset_entries_to_json(entries: &[crate::service::TextureEntry]) -> Vec<Value>
                 "bytes": entry.bytes,
                 "source": entry.source,
                 "format": extension,
+                // **分类** ✓（用户："`list_assets` 只返回名字，无缩略图/分类" ✗）——
+                // 口径就是 `.myb` 的**名字前缀** ✓（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）：
+                // 与查看器下拉里的分组**同一份** ✗（各算一套必然漂移 ✓，所以那条分组逻辑改成读这里 ✓）。
+                // **缩略图不在这里发** ✓：201 支一次全画是肉眼可见的浪费 ✗ ⇒ 按需用 `brush_preview` ✓
+                //（一次一支 ✓、同一支两次逐字节相同 ✓）。
+                "category": asset_category(&entry.name),
                 // **能不能直接用** ✓：**由内核判定** ✓（纹理要真读 PNG 头 ✗ ——
                 // 我第一版在这里看扩展名猜 ✓ ⇒ 把一张灰度 PNG 报成可用 ✗，
                 // 导入时被解码器拒绝 ✓ ⇒ 那是"说能用其实不能用" ✗）。
@@ -10730,6 +10923,22 @@ fn asset_entries_to_json(entries: &[crate::service::TextureEntry]) -> Vec<Value>
             })
         })
         .collect()
+}
+
+/// **资产分类** ✓ —— 就是文件名前缀 ✓（不另造一套分类 ✗）：`classic-` / `deevad-` / `ramon-` /
+/// `brushkit-` ⇒ 那四个词 ✓；其余 ⇒ `其他` ✓。**名字里没有 `-` 的**也归 `其他` ✓。
+fn asset_category(name: &str) -> &'static str {
+    for category in ["classic", "deevad", "ramon", "brushkit"] {
+        if name.starts_with(category) {
+            return match category {
+                "classic" => "classic",
+                "deevad" => "deevad",
+                "ramon" => "ramon",
+                _ => "brushkit",
+            };
+        }
+    }
+    "其他"
 }
 
 fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

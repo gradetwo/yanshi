@@ -231,3 +231,62 @@ fn a_smudge_brush_explains_why_its_preview_is_empty() {
         "必须说清原因（涂抹类 / 空画布）✓：{detail}"
     );
 }
+
+/// **`list_assets` 的笔刷必须带分类** ✓（用户："只返回名字，无缩略图/分类" ✗）。
+///
+/// **为什么分类放在工具层** ✓：查看器下拉里的分组与 MCP 拿到的是**同一份** ✗
+/// （两边各算一套前缀必然漂移 ✓ —— 本项目在"两份实现"上栽过多次 ✓）。
+/// **缩略图不在这里发** ✓：201 支一次全画是肉眼可见的浪费 ✗ ⇒ 按需 `brush_preview` ✓。
+///
+/// **判据（三条 ✓）**：① 每一支都有非空 `category` ✓；② **已知前缀落对应分类** ✓；
+/// ③ **没有前缀的落「其他」** ✓（不许静默变成空串 ✗）。
+#[test]
+fn list_assets_labels_every_brush_with_a_category() {
+    let mut workspace = workspace();
+    let listed = call(&mut workspace, "list_assets", json!({ "kind": "brush" }));
+    assert_eq!(listed["ok"], json!(true), "{listed}");
+    let assets = listed["assets"].as_array().cloned().unwrap_or_default();
+    assert!(assets.len() > 100, "应当列出上百支笔刷：{}", assets.len());
+    let mut missing = 0;
+    for asset in &assets {
+        match asset["category"].as_str() {
+            Some(text) if !text.is_empty() => {}
+            _ => missing += 1,
+        }
+    }
+    assert_eq!(missing, 0, "每一支笔刷都必须带分类（实测缺 {missing} 支）");
+    let category_of = |prefix: &str| -> Option<String> {
+        assets
+            .iter()
+            .find(|asset| asset["name"].as_str().unwrap_or("").starts_with(prefix))
+            .and_then(|asset| asset["category"].as_str().map(str::to_owned))
+    };
+    // **已知前缀** ✓（`assets/brushes` 里这四类都在 ✓）。
+    for (prefix, expected) in [
+        ("classic-", "classic"),
+        ("deevad-", "deevad"),
+        ("ramon-", "ramon"),
+        ("brushkit-", "brushkit"),
+    ] {
+        assert_eq!(
+            category_of(prefix).as_deref(),
+            Some(expected),
+            "{prefix} 应当落在分类 {expected}"
+        );
+    }
+    // **没有前缀的** ✓（例如 `Flat2#1` / `2B_pencil` ✓）⇒ 「其他」✓。
+    let without_prefix = assets
+        .iter()
+        .find(|asset| {
+            let name = asset["name"].as_str().unwrap_or("");
+            !["classic", "deevad", "ramon", "brushkit"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
+        .expect("应当有没前缀的笔刷");
+    assert_eq!(
+        without_prefix["category"],
+        json!("其他"),
+        "没前缀的笔刷应当落「其他」：{without_prefix}"
+    );
+}

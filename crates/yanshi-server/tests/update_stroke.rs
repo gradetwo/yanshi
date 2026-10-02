@@ -251,6 +251,21 @@ fn update_stroke_recolours_a_brush_stroke() {
         blue > 0 && red == 0,
         "换色之后必须**真的**变蓝、且不留红 ✗（实测 红 {red} / 蓝 {blue}）"
     );
+    // ②b **也能改成一笔多色** ✓（重跑认 `color_to` ✓）：起点蓝、末端绿 ⇒ 画面必须再变 ✓。
+    let ramped = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B1", "core": { "color_to": {"r": 0, "g": 255, "b": 0, "a": 255} } }),
+    );
+    assert_eq!(ramped["ok"], json!(true), "重跑也要能加/改末端色：{ramped}");
+    let ramped_pixels = pixels(&mut workspace, 200.0, 120.0);
+    assert_ne!(ramped_pixels, after, "加了末端色之后画面必须变 ✗");
+    let (_, green_after, _) = dominant(&ramped_pixels);
+    assert!(
+        green_after > 0,
+        "末端色是绿 ⇒ 应当出现偏绿像素 ✓（实测 {green_after}）"
+    );
+
     // ③ **只多一条原子、对象仍然只有一个** ✓（不是又画了一笔 ✓）。
     let objects = call(&mut workspace, "list_objects", json!({}));
     assert_eq!(

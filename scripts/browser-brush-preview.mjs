@@ -314,6 +314,69 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
+// ⑦ **一笔多色（Loaded Brush）真的走通了** ✓（用户："花瓣渐变只能分两笔，交界硬" ✗）。
+//    走的正是用户那条路：选 `.myb` 画笔 → 勾「一笔多色」→ 选末端色 → 拖一笔 ✓。
+//    判据两条：① 对象上的 `source.color_to` **必须存在** ✓（参数真的传下去了 ✓）；
+//    ② **同一条笔迹的两端颜色必须不同** ✓（左半偏起点色、右半偏末端色 ✓）——
+//    这条能挡住"参数收了但没落进画面" ✗（正是本项目头号病症 ✓）。
+await evaluate("window.yanshi.setTool('brush')");
+await evaluate(`window.yanshi.setBrush(${JSON.stringify(brushB)})`);
+await evaluate("window.yanshi.setColor('#0000ff')");
+await evaluate("window.yanshi.setDuoTone(true, '#ff0000')");
+await sleep(300);
+await dragStroke(0.9, 31);
+await sleep(2500);
+const objectsDuo = await callTool("list_objects", {});
+const newestDuo = Array.isArray(objectsDuo && objectsDuo.objects) ? objectsDuo.objects.slice(-1)[0] : null;
+let duoSource = null;
+if (newestDuo && newestDuo.object_id) {
+  const got = await callTool("get_object", { object_id: newestDuo.object_id });
+  duoSource = got && got.data ? got.data.source || null : null;
+}
+const band = await callTool("render_region", {
+  // **量在被画的那一带上** ✓：这一拖在 y≈0.9×300≈270 ✓、x 从 ≈100 到 ≈220 ✓。
+  region: { x: 0, y: 250, w: 400, h: 40 },
+  raw: true,
+});
+const counts = { leftBlue: 0, leftRed: 0, rightBlue: 0, rightRed: 0 };
+if (band && band.ok && band.raw_url) {
+  const bytes = new Uint8Array(
+    await fetch(`http://127.0.0.1:${new URL(url).port}${band.raw_url}`).then((r) => r.arrayBuffer()),
+  );
+  for (let index = 0; index + 3 < bytes.length; index += 4) {
+    const [r, g, b, a] = [bytes[index], bytes[index + 1], bytes[index + 2], bytes[index + 3]];
+    if (a < 40) continue;
+    const column = (index / 4) % 400;
+    // **起点侧 / 末端侧** ✓（对着这一笔实际覆盖的 x 范围 ✓）。
+    const left = column >= 95 && column < 150;
+    const right = column >= 175 && column < 230;
+    if (!left && !right) continue;
+    if (b > 150 && b > r + 60 && b > g + 60) {
+      if (left) counts.leftBlue += 1;
+      else counts.rightBlue += 1;
+    }
+    if (r > 150 && r > g + 60 && r > b + 60) {
+      if (left) counts.leftRed += 1;
+      else counts.rightRed += 1;
+    }
+  }
+}
+console.log(
+  `  ⑦ 一笔多色：对象 source.color_to=${duoSource && JSON.stringify(duoSource.color_to)}` +
+    `  左半(蓝 ${counts.leftBlue}/红 ${counts.leftRed}) 右半(蓝 ${counts.rightBlue}/红 ${counts.rightRed})`,
+);
+if (!duoSource || duoSource.color_to === null || duoSource.color_to === undefined) {
+  console.error("❌ 勾了「一笔多色」，对象上却没有 color_to ⇒ 参数没传下去");
+  await capture("duotone-source-failed");
+  process.exit(1);
+}
+if (!(counts.leftBlue > 0) || !(counts.rightRed > 0)) {
+  console.error("❌ 一笔多色没有落到画面：左半应当偏起点色（蓝）、右半应当偏末端色（红）");
+  await capture("duotone-pixels-failed");
+  process.exit(1);
+}
+const shotDuo = await capture("brush-duotone");
+
 console.log(
   JSON.stringify(
     {
@@ -326,6 +389,7 @@ console.log(
       paintedTwoColours: { redBand, blueBand, screenshot: shotPaint },
       smoothFlag: { object: newest && newest.object_id, dataSmooth: smoothFlag, screenshot: shotSmooth },
       smoothOff: { object: newestOff && newestOff.object_id, dataSmooth: smoothOff },
+      duoTone: { object: newestDuo && newestDuo.object_id, source: duoSource, counts, screenshot: shotDuo },
       consoleErrors: errors.length,
     },
     null,

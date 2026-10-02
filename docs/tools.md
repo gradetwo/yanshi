@@ -225,6 +225,33 @@ with either a bbox of x, y, w and h or points, an array bbox is normalised to th
 passes validation also draws, and a rejected shape leaves no object behind. create_layer returns the layer id it
 created, which previously took a second listing call to discover.
 
+The three drawing paths now accept colours the same way. medium_stroke took only an {r,g,b,a} object while the brush
+and geometry paths also accepted arrays and hex strings, so a colour that worked in one tool was rejected by another;
+all three now go through the same parser, and the medium path converts back to the same bytes it used before, so
+existing calls render identically, which a test pins by painting the same colour as an object and as hex and requiring
+zero differing bytes. medium_stroke also takes the smooth flag now, through the same Catmull-Rom as the other two, and
+its test requires both that the plugin receives more points (5 control points become 33) and that the pixels change,
+which is the shape this project asks for. One measurement on the way was wrong and is recorded as such: an early run
+reported that smoothing made no pixel difference, which would have been a false conclusion, because the temporary
+patch that was supposed to disable it had never applied; the assertion that checks an edit applied is what caught it,
+and the rule kept is to suspect the judge when the judge reports no difference.
+
+A stroke can carry two colours. brush_stroke takes a color_to as well as a color and ramps between them along
+the stroke: the path is split by arc length, the brush colour is changed for each segment, and the surface and brush
+state are carried across the segments, so the result is still one stroke, one object and one undo step rather than two
+strokes with a hard join. The interpolation happens in display space, because interpolating hue from red to blue would
+detour through green, and colour_to without colour is refused rather than guessing the brush's own colour as the
+start. A test paints one stroke from red to blue, splits it into eight bands and requires the red component to fall
+and the blue to rise monotonically, with the object count still one, and it fails when the ramp is disabled, which
+measures red 233 to 13 and blue 22 to 244 across the stroke. Brush strokes were already restyleable through
+update_stroke, and that replay now accepts color_to as well, so an existing stroke can be given a ramp or have its
+end colour changed.
+
+Brush listings now carry a category, derived from the .myb name prefix, and the editor's grouping reads that field
+instead of computing its own, so MCP and the browser cannot disagree about which group a brush belongs to. The
+thumbnails stay on demand through brush_preview: painting 201 previews to fill a list is a visible waste, and one
+brush previews to the same bytes twice.
+
 A brush stroke can now really be recoloured. Brushes commit a raster patch whose colour is baked into the blob, so
 merging a new colour into the object data could only ever report success while leaving every pixel alone; the fix is
 to have the stroke record where it came from. brush_stroke now commits its source alongside the pixels, the brush

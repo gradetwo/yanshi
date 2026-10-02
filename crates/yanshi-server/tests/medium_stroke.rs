@@ -521,3 +521,136 @@ fn the_users_three_point_watercolour_stroke_is_interpolated() {
         );
     }
 }
+
+/// **介质也收三种颜色写法** ✓（`{r,g,b,a}` / `[r,g,b,(a)]` / `"#RRGGBB"` ✓）——
+/// 与画笔、形状、笔迹**同一个解析器** ✗（三条路各写一套，用户就得多记三套 ✓，
+/// 而"三套系统机制不清晰"正是用户报过的 ✓）。
+///
+/// **判据** ✓：**同一个颜色、两种写法 ⇒ 画面必须逐字节相同** ✓
+///（这比"两种都能跑通"强得多 ✗ —— 它同时钉住"hex 解析对不对" ✓ 与"老写法没被改坏" ✓）。
+///
+/// **量法** ✓：每种写法各用**一个全新的文档**（`object_id` / 图层都干净 ✓）——
+/// 若把两笔放进同一个文档 ✓，插件可能按对象 id 播种 ✗ ⇒ 两笔本就不同 ✓，那会**冤判**成"hex 解析错" ✓。
+#[test]
+fn three_colour_spellings_paint_the_same_pixels() {
+    let paint = |colour: serde_json::Value| -> Vec<u8> {
+        let mut workspace = workspace();
+        setup(&mut workspace);
+        let made = {
+            let mut ctx = context(&mut workspace);
+            registry().call(
+                &mut ctx,
+                "medium_stroke",
+                &json!({"layer_id": "L", "object_id": "obj_colour", "medium": "marker",
+                        "points": [[40.0, 60.0, 1.0], [120.0, 60.0, 1.0]],
+                        "size": 24, "color": colour}),
+            )
+        };
+        assert_eq!(made["ok"], json!(true), "两种写法都该能画：{made}");
+        workspace
+            .document_mut("doc_medium")
+            .unwrap()
+            .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 200.0, 200.0))
+            .expect("区域渲染应成功")
+            .2
+    };
+    // 220 = 0xdc ✓、60 = 0x3c ✓、40 = 0x28 ✓。
+    let object_form = paint(json!({"r": 220, "g": 60, "b": 40, "a": 255}));
+    let hex_form = paint(json!("#dc3c28"));
+    let inked = object_form.iter().filter(|byte| **byte != 255).count();
+    assert!(
+        inked > 0,
+        "对象写法应当真的画上东西 ✓（实测非白字节 {inked}）"
+    );
+    // **不打印整个缓冲区** ✗（上一次失败把 16 万字节倒进日志里 ✓，读不成 ✓）：
+    // 只报"多少字节不同" ✓ + 第一个不同的位置 ✓。
+    let differing = object_form
+        .iter()
+        .zip(hex_form.iter())
+        .filter(|(left, right)| left != right)
+        .count();
+    let first = object_form
+        .iter()
+        .zip(hex_form.iter())
+        .position(|(left, right)| left != right);
+    assert_eq!(
+        differing, 0,
+        "同一颜色的两种写法必须逐字节相同 ✓（实测不同 {differing} 字节 ✓，第一处在 {first:?}）"
+    );
+}
+
+/// **介质也认 `smooth`** ✓（与画笔 / `draw_stroke` **同一个实现** ✓）。
+///
+/// **判据** ✓：`smooth: true` ⇒ **交给插件的点数必须显著变多** ✓
+///（插件那条路的结果里直接带 `dabs` = 收到的点数 ✓）——
+/// 没接上时它等于控制点数 ✓ ⇒ **能红** ✓。
+///
+/// **判据两条** ✓（都能红 ✓）：① 交给插件的点数**显著变多** ✓；② **画面必须变** ✓
+///（"两个不同的输入 ⇒ 两个不同的输出" ✓ —— 这条才是本项目认的形状 ✓）。
+/// 实测：`dabs 5 ⇒ 33` ✓、像素**不同 29775 字节** ✓；把插件的 smooth 关掉 ⇒ ① **当场红** ✓。
+///
+/// **记一条我自己踩的坑** ✗：我第一次测这条判据时得到"像素 0 字节不同" ✗，
+/// 差点写下"介质这条路上平滑看不见"这种**错的结论** ✗ ——
+/// 真因是**我的临时关闭补丁根本没打上** ✗（锚点在三个工具里都一样 ✓ ⇒ `assert count == 1` 拦住了 ✓，
+/// 而我把"没打上"当成了"打了也没差别" ✓）。**判据报"没差别"时，先怀疑判据本身** ✓。
+#[test]
+fn a_smoothed_medium_stroke_hands_more_points_to_the_plugin() {
+    let paint = |points: serde_json::Value, smooth: bool| -> (u64, Vec<u8>) {
+        let mut workspace = workspace();
+        setup(&mut workspace);
+        let made = {
+            let mut ctx = context(&mut workspace);
+            registry().call(
+                &mut ctx,
+                "medium_stroke",
+                &json!({"layer_id": "L", "object_id": "obj_smooth", "medium": "oil", "size": 20,
+                        "points": points, "smooth": smooth}),
+            )
+        };
+        assert_eq!(made["ok"], json!(true), "{made}");
+        let pixels = workspace
+            .document_mut("doc_medium")
+            .unwrap()
+            .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 200.0, 200.0))
+            .expect("区域渲染应成功")
+            .2;
+        (made["dabs"].as_u64().unwrap_or(0), pixels)
+    };
+    let control = json!([
+        [30.0, 40.0, 1.0],
+        [70.0, 150.0, 1.0],
+        [110.0, 40.0, 1.0],
+        [150.0, 150.0, 1.0],
+        [180.0, 40.0, 1.0]
+    ]);
+    let (plain_dabs, plain_pixels) = paint(control.clone(), false);
+    let (smoothed_dabs, smoothed_pixels) = paint(control, true);
+    eprintln!(
+        "  介质 smooth：不平滑 dabs={plain_dabs} ⇒ 平滑 dabs={smoothed_dabs}（像素不同 {} 字节）",
+        smoothed_pixels
+            .iter()
+            .zip(plain_pixels.iter())
+            .filter(|(left, right)| left != right)
+            .count()
+    );
+    assert_eq!(plain_dabs, 5, "不平滑时交给插件的就是 5 个控制点 ✓");
+    assert!(
+        smoothed_dabs > plain_dabs * 3,
+        "`smooth: true` 必须把手里的点**加密**再交给插件 ✗（实测 {plain_dabs} ⇒ {smoothed_dabs}）"
+    );
+    let inked = smoothed_pixels.iter().filter(|byte| **byte != 255).count();
+    assert!(
+        inked > 0,
+        "平滑那一笔应当真的画上东西 ✓（实测非白字节 {inked}）"
+    );
+    // ② **画面必须变** ✓（不只是"参数送到了" ✗）。
+    let differing = smoothed_pixels
+        .iter()
+        .zip(plain_pixels.iter())
+        .filter(|(left, right)| left != right)
+        .count();
+    assert!(
+        differing > 0,
+        "`smooth: true` 必须改到画面 ✗（实测两条路径逐字节相同 ✓ ⇒ 平滑没生效 ✓）"
+    );
+}

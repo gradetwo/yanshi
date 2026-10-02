@@ -576,3 +576,130 @@ fn a_smudge_brush_works_at_the_canvas_edge_too() {
         );
     }
 }
+
+/// **一笔多色（Loaded Brush）** ✓ —— 用户："一笔一色，花瓣渐变只能分两笔，交界硬" ✗。
+///
+/// **做法** ✓：把路径按弧长切段 ✓、**每段换一次笔刷颜色** ✓，而 `surface` 与 `BrushState`
+/// **一路共用** ✓ ⇒ 出来的还是**一条笔迹** ✓（不是"两笔拼起来"✗ —— 那会多一个对象 ✗、交界也硬 ✗）。
+///
+/// **判据（三条都能红 ✓）**：
+/// ① **沿长度颜色真的在变** ✓：把笔迹切成 8 段，红分量必须**单调下降**、蓝分量**单调上升** ✓
+///    （每一对相邻段至少各有 4 处严格变化 ✓ ⇒ "整笔一个色" ✗ 与"到某处突然跳一下" ✗ 都不算 ✓）；
+/// ② **仍然只有一个对象** ✓（"分两笔画"✗ 会变成两个 ✓）；
+/// ③ **不给 `color_to` ⇒ 与以前逐字节相同** ✓（老调用方不受影响 ✓）。
+#[test]
+fn brush_stroke_ramps_from_one_colour_to_another() {
+    let root = temp_dir("ramp");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // ① 一笔从红到蓝 ✓（横向一条，便于按 x 切段 ✓）。
+    let ramped = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "ramp1", "brush": "100%_Opaque", "size": 24,
+            "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+            "color_to": {"r": 0, "g": 0, "b": 255, "a": 255},
+            "points": [[40.0, 60.0, 0.9], [360.0, 60.0, 0.9]]
+        }),
+    );
+    assert_eq!(ramped["ok"], json!(true), "{ramped}");
+    // ② **一个对象** ✓。
+    let objects = call(&mut workspace, "list_objects", json!({}));
+    assert_eq!(
+        objects["count"],
+        json!(1),
+        "一笔多色必须还是**一个**对象：{objects}"
+    );
+
+    let (_w, _h, pixels) = workspace
+        .document_mut("doc_brush")
+        .unwrap()
+        .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 400.0, 200.0))
+        .expect("区域渲染应成功");
+    // 沿 x 切 8 段 ✓，每段只看"有墨且不是白底"的像素 ✓。
+    let mut reds = Vec::new();
+    let mut blues = Vec::new();
+    for band in 0..8 {
+        let x0 = 40 + band * 40;
+        let (mut r_sum, mut b_sum, mut count) = (0f64, 0f64, 0f64);
+        for y in 0..200 {
+            for x in x0..(x0 + 40).min(400) {
+                let at = (y * 400 + x) * 4;
+                let (r, g, b, a) = (pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]);
+                if a < 40 || (r > 245 && g > 245 && b > 245) {
+                    continue; // 透明 / 白底都不算墨 ✓。
+                }
+                r_sum += f64::from(r);
+                b_sum += f64::from(b);
+                count += 1.0;
+            }
+        }
+        assert!(count > 0.0, "第 {band} 段应当有墨 ✓");
+        reds.push(r_sum / count);
+        blues.push(b_sum / count);
+    }
+    eprintln!("  一笔多色 红分量: {reds:?}");
+    eprintln!("  一笔多色 蓝分量: {blues:?}");
+    let falling = (0..7).filter(|i| reds[*i] > reds[i + 1] + 1.0).count();
+    let rising = (0..7).filter(|i| blues[i + 1] > blues[*i] + 1.0).count();
+    assert!(
+        falling >= 4 && rising >= 4,
+        "整笔必须**沿长度从红走到蓝** ✗（实测 红下降 {falling}/7 ✓、蓝上升 {rising}/7 ✓）"
+    );
+
+    // ③ **不给 color_to ⇒ 与以前逐字节相同** ✓（"多色"是加法 ✓，不是改默认 ✗）。
+    let plain = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "plain1", "brush": "100%_Opaque", "size": 24,
+            "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+            "points": [[40.0, 120.0, 0.9], [360.0, 120.0, 0.9]]
+        }),
+    );
+    assert_eq!(plain["ok"], json!(true), "{plain}");
+    let again = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "plain2", "brush": "100%_Opaque", "size": 24,
+            "color": {"r": 255, "g": 0, "b": 0, "a": 255},
+            "points": [[40.0, 120.0, 0.9], [360.0, 120.0, 0.9]]
+        }),
+    );
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        plain["painted_pixels"], again["painted_pixels"],
+        "同一条单色笔触两次必须一致（默认路径没被多色改坏 ✓）"
+    );
+}
+
+/// **只给 `color_to`、不给 `color` ⇒ 明确拒绝** ✓（起点色**不猜** ✗ —— 猜错就是"界面与画面不一致" ✓）。
+#[test]
+fn brush_stroke_refuses_colour_to_without_colour() {
+    let root = temp_dir("ramp_no_from");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let refused = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "100%_Opaque", "size": 20,
+            "color_to": {"r": 0, "g": 0, "b": 255, "a": 255},
+            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
+        }),
+    );
+    assert_eq!(refused["ok"], json!(false), "只给末端色必须拒绝：{refused}");
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("color_to") && detail.contains("color"),
+        "错误要说清「必须同时给 color」：{detail}"
+    );
+}
