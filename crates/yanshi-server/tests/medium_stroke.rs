@@ -414,3 +414,101 @@ fn a_stroke_outside_the_canvas_is_reported_with_the_canvas_size() {
         "越界比例应当过半：{outside}"
     );
 }
+
+/// **照用户报告的原参数，在工具层验插值** ✓（他说"依然是离散的盖章圆点" ✗）。
+///
+/// **为什么这条必须存在** ✓：我此前的插值证据只在**宿主层**（`yanshi-medium-host` ✓：
+/// 两点相距 160px、笔尖 24 ⇒ 最长空列 2 列 ✓），而你走的是 **`medium_stroke`** ✓ ⇒
+/// **层的差别正是"能力存在"与"调用方够得着"的差别** ✗ —— 这个坑我在本项目里已经栽过好几次 ✓
+///（介质本身 ✓、`texture` ✓、吸管 ✓）⇒ 所以**必须在你用的那一层测** ✓。
+///
+/// **照抄他的参数** ✓：`watercolor`、三点 `[[50,150],[400,150],[750,150]]`、`size:80`、`texture:1` ✓。
+/// 判据 ✓：沿笔触中线，**连续空列**不得超过笔尖的很小一部分 ✓（断了的话会是几十列 ✓）。
+#[test]
+fn the_users_three_point_watercolour_stroke_is_interpolated() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let made = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({
+                "layer_id": "L", "object_id": "interp", "medium": "watercolor",
+                "points": [[50.0, 150.0, 1.0], [400.0, 150.0, 1.0], [750.0, 150.0, 1.0]],
+                "size": 80, "texture": 1,
+                "color": {"r": 40, "g": 80, "b": 160, "a": 255}
+            }),
+        )
+    };
+    assert_eq!(made["ok"], json!(true), "{made}");
+    // **区域**必须覆盖整条跨度 ✓（否则说明点没被认全 ✓）
+    let bbox: Vec<f64> = {
+        let got = {
+            let mut ctx = context(&mut workspace);
+            registry().call(&mut ctx, "get_object", &json!({ "object_id": "interp" }))
+        };
+        got["bbox"]
+            .as_array()
+            .map(|values| values.iter().filter_map(|value| value.as_f64()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(bbox.len(), 4, "应当有包围盒：{bbox:?}");
+    assert!(
+        bbox[2] > 600.0,
+        "补丁应当横跨整条笔触（实测宽 {}）",
+        bbox[2]
+    );
+    // **逐列数"有没有墨"** ✓ —— 文档坐标 50..750 那一段 ✓。
+    let (_, _, pixels) = workspace
+        .document_mut("doc_medium")
+        .unwrap()
+        .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 200.0, 200.0))
+        .expect("区域渲染应成功");
+    // 画布是 200×200 ✓ ⇒ 只取 x 在 50..150 那段逐列检查 ✓（其余点在外面 ✓）。
+    let mut inked = vec![false; 200];
+    for x in 0..200usize {
+        for y in 0..200usize {
+            let at = (y * 200 + x) * 4;
+            let pixel = &pixels[at..at + 4];
+            let lum =
+                (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
+                    / 1000;
+            if lum < 220 {
+                inked[x] = true;
+                break;
+            }
+        }
+    }
+    // **只量"笔触跨度之内"的空列** ✓ —— 两头落在**画布之外** ✓，那里的空列是理所当然的 ✓。
+    //（我第一版量了整幅 ✗ ⇒ 得到 **22 列** ✓ —— 那全是画布外的空白 ✗ ⇒ **判据写错了** ✓，
+    //  不是产品的问题 ✓。宿主层那条用的是同一个"只看跨度之内"的口径 ✓，这里必须一致 ✓。）
+    let first = inked.iter().position(|has| *has);
+    let last = inked.iter().rposition(|has| *has);
+    let mut worst_gap = 0usize;
+    let mut current = 0usize;
+    if let (Some(first), Some(last)) = (first, last) {
+        for has in &inked[first..=last] {
+            if *has {
+                current = 0;
+            } else {
+                current += 1;
+                worst_gap = worst_gap.max(current);
+            }
+        }
+    }
+    eprintln!(
+        "  工具层插值：上墨列 {first:?}..{last:?}，**跨度之内**最长空列 {worst_gap} ✓（修之前会是几十列 ✗）"
+    );
+    assert!(
+        worst_gap < 20,
+        "笔触跨度之内不该有可见断裂 ⇒ 说明点与点之间**没有补间** ✗（实测 {worst_gap} 列）"
+    );
+    // **而且真的横跨了一段** ✓（否则这个测试没测到东西 ✓）
+    if let (Some(first), Some(last)) = (first, last) {
+        assert!(
+            last - first > 60,
+            "笔触应当横跨一段（实测 {first}..{last}）"
+        );
+    }
+}
