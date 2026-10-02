@@ -211,3 +211,69 @@ fn a_smudge_brush_is_deterministic_and_works_over_paint() {
         "同样输入的涂抹应当改动同样多的像素（确定性 ✓）：{first} vs {second}"
     );
 }
+
+/// **`brush_stroke` 能设颜色** ✓（AI 实测报的 P0 缺口 ✓）。
+///
+/// **为什么这条最要紧** ✓：在此之前**没有任何一个工具同时具备"myPaint 物理 + 自定义颜色"** ✗ ——
+/// `brush_stroke` 有物理但不能设色 ✗，而能设色的 `medium_stroke` / `draw_stroke` 没有 myPaint 物理 ✗
+/// ⇒ 模型只能画几何色块 ✓、画不出油画 ✓。
+/// **做法照 MyPaint** ✓：颜色就是 `.myb` 的 `color_h/s/v` ✓ ⇒ 给了就覆盖 ✓。
+/// **判据只做一件说得清的事** ✓：**只画一笔红的** ✓ ⇒ 它落下的像素里 **R 必须明显高于 B** ✓
+///（若颜色没接上 ⇒ 画出来的是 `.myb` 自带的黑/白 ✓ ⇒ R 与 B 会接近 ✓ ⇒ 当场红 ✓）。
+/// **我为什么把"红蓝两笔"缩成一笔** ✗：两笔同层导出时均值会互相稀释 ✓ ⇒ 量出"两笔完全一样" ✗
+/// ⇒ **判据要一次只说一件事** ✓，别让测量口径自己变成变量 ✓。
+#[test]
+fn brush_stroke_accepts_a_colour_and_it_reaches_the_pixels() {
+    let root = temp_dir("colour");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "warm", "brush": "100%_Opaque", "size": 30,
+            "color": { "r": 220, "g": 30, "b": 30, "a": 255 },
+            "points": [[30.0, 40.0, 0.9], [150.0, 40.0, 0.9]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "带 color 的一笔应当成功：{made}");
+    let path = root.join("warm.png");
+    assert_eq!(
+        call(
+            &mut workspace,
+            "export_png",
+            json!({ "path": path.display().to_string() })
+        )["ok"],
+        json!(true)
+    );
+    let (_width, _height, rgba) =
+        yanshi_render::png::decode_png(&std::fs::read(&path).unwrap()).unwrap();
+    // **只统计"上过墨"的像素** ✓（白底会把均值拉平 ✗ —— 这个坑我踩过不止一次 ✓）。
+    let mut red_sum = 0f64;
+    let mut blue_sum = 0f64;
+    let mut green_sum = 0f64;
+    let mut count = 0f64;
+    for pixel in rgba.chunks(4) {
+        if pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255 {
+            continue;
+        }
+        red_sum += f64::from(pixel[0]);
+        green_sum += f64::from(pixel[1]);
+        blue_sum += f64::from(pixel[2]);
+        count += 1.0;
+    }
+    assert!(count > 0.0, "这一笔应当留下像素（{made}）");
+    let (r, g, b) = (red_sum / count, green_sum / count, blue_sum / count);
+    eprintln!("  颜色口径：指定 (220,30,30) ⇒ 落笔均值 R={r:.1} G={g:.1} B={b:.1}");
+    assert!(
+        r > b + 60.0,
+        "红色应当明显压过蓝色（实测 R={r:.1} B={b:.1}）⇒ 否则颜色没接上 ✗"
+    );
+    assert!(
+        r > g + 60.0,
+        "红色也应当明显压过绿色（实测 R={r:.1} G={g:.1}）"
+    );
+}

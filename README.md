@@ -263,6 +263,20 @@ after the click and only filled about six seconds later, once the server had ren
 come back. A control that appears to do nothing for six seconds reads as broken, so the panel now says what it is doing
 straight away and then reports the result.
 
+### Solve it like the leaders do
+
+When something is hard, look at how the leading tools in the field solve it before inventing an approach. MyPaint,
+Krita, Photoshop and Procreate have each spent years on brushes, palettes, selection and undo, and their answers are
+usually both simpler and better informed than a guess made here. This is written down as a rule because the opposite
+happened: the brush colour problem was solved by copying MyPaint's own model, where the colour is the `color_h`, `color_s`
+and `color_v` settings, rather than by inventing a mechanism.
+
+`brush_stroke` takes an optional colour and overrides those three settings, so a MyPaint brush can finally be painted in
+any colour, which is what MyPaint itself does when you pick a brush and then pick a colour. Before this there was no
+single tool with both MyPaint physics and a caller-chosen colour: one had the physics without the colour and the others
+had the colour without the physics. Verified by measuring the pixels a red stroke leaves: the values come out at two
+hundred and twenty, thirty one, thirty one, against the two hundred and twenty, thirty, thirty that were asked for.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

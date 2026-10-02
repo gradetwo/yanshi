@@ -2197,6 +2197,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!("points", Array, true, "[[x,y,pressure],…]，压力 0..1（可省，缺省 0.5）"),
             param!("size", Number, false, "覆盖笔刷自带半径（直径像素；不给就用 .myb 里的设置）"),
+            // **AI 实测报的 P0 缺口** ✓：本工具**以前不能设颜色** ✗ ⇒
+            // "有 myPaint 物理但不能画彩色" ✓，而能设色的 `medium_stroke` / `draw_stroke` **没有 myPaint 物理** ✗
+            // ⇒ **没有任何一个工具同时具备两者** ✓。
+            // **做法照 MyPaint** ✓（不自己发明 ✓）：颜色就是 `.myb` 的 `color_h/s/v` ✓ ⇒ 给了就**覆盖** ✓
+            // —— 与"在 MyPaint 里选了笔刷之后照常选颜色"完全一致 ✓。
+            param!("color", Object, false, "笔尖颜色 {r,g,b,a}（0..255）⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -9270,6 +9276,33 @@ fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     Ok(value)
 }
 
+/// **RGB ⇒ HSV** ✓（MyPaint 的口径 ✓：**H 用度**（0..360 ✓）、S 与 V 用 0..1 ✓）。
+///
+/// **为什么必须照它的口径** ✓：`.myb` 里的 `color_h/s/v` 就是 MyPaint 的字段 ✓
+/// ⇒ 转换不一致就会"把红色画成别的颜色" ✗ —— 而这类偏色**很难一眼看出来** ✗。
+fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if max == rf {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if max == gf {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    let sat = if max <= f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
+    (hue, sat, max)
+}
+
 /// **解析 `{r,g,b,a}` 颜色参数** ✓（0..255 ✓；`a` 缺省 255 ✓）。
 fn parse_color_arg(value: Option<&Value>, name: &str) -> Result<[u8; 4]> {
     let object = value.and_then(Value::as_object).ok_or_else(|| {
@@ -9667,6 +9700,29 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail("size 必须大于 0"),
             ));
+        }
+        // **颜色覆盖** ✓（AI 实测的 P0 ✓；照 MyPaint 的 `color_h/s/v` ✓）。
+        //
+        // **为什么这里用 `constant` 是对的** ✓（与半径那处不同 ✗）：调用方给的是"**这一笔用什么颜色**" ✓
+        // ⇒ 它就是**恒定色** ✓ ⇒ 覆盖 `.myb` 里可能有的"颜色随压力变化"曲线 ✓ **正是本意** ✓
+        //（而半径那处不该清曲线 ✓ —— 两者语义不同 ✓）。
+        // **`parse_color_arg` 回的是值、不是 `Option`** ✗（我写成 `if let Some(..)` ✓ ⇒ 编译器当场纠正 ✓）
+        // ⇒ 先看参数在不在 ✓，再解析 ✓。
+        if args.get("color").is_some() {
+            let color = parse_color_arg(args.get("color"), "color")?;
+            let (hue, sat, value) = rgb_to_hsv(color[0], color[1], color[2]);
+            brush.set(
+                hokusai::BrushSetting::ColorH,
+                hokusai::SettingValue::constant(hue),
+            );
+            brush.set(
+                hokusai::BrushSetting::ColorS,
+                hokusai::SettingValue::constant(sat),
+            );
+            brush.set(
+                hokusai::BrushSetting::ColorV,
+                hokusai::SettingValue::constant(value),
+            );
         }
         // **`SettingValue` 是个结构体，不是枚举** ✗ —— 构造器是 `constant(f32)` ✓
         //（我第一版猜了 `Float(..)` ✓ ⇒ 编译器当场指出 ✓）。
