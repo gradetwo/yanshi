@@ -160,3 +160,61 @@ fn the_documented_geometry_forms_still_work() {
         assert!(w > 0.0 && h > 0.0, "「{label}」的 bbox 不应为零面积：{got}");
     }
 }
+
+/// **扁平写法真的能画** ✓（真实用户第二次报告 ✓）。
+///
+/// **用户原话** ✓："矩形需要 `{kind:"rect", bbox:{x,y,w,h}}` 而非扁平的 `{kind:"rect", x,y,w,h}`，
+/// 虽有错误提示引导，但初始学习成本较高" ✓。
+/// **本测试证的是"能画"而不只是"不报错"** ✓ —— 这正是最初 P0 的教训 ✓：
+/// **"接受却画不出来"比"直接拒绝"更坏** ✗。
+#[test]
+fn the_flat_bbox_spelling_really_draws() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let made = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "flat",
+                    // **扁平写法** ✓：四个字段直接写在 geometry 上 ✓
+                    "data": {"geometry": {"kind": "rect", "x": 8, "y": 10, "w": 40, "h": 30},
+                             "color": {"r": 10, "g": 10, "b": 10, "a": 255}}}),
+        )
+    };
+    assert_eq!(made["ok"], json!(true), "{made}");
+    // ① 包围盒非零 ✓
+    let got = {
+        let mut ctx = context(&mut workspace);
+        registry().call(&mut ctx, "get_object", &json!({ "object_id": "flat" }))
+    };
+    let bbox: Vec<f64> = got["bbox"]
+        .as_array()
+        .map(|values| values.iter().filter_map(|value| value.as_f64()).collect())
+        .unwrap_or_default();
+    assert_eq!(bbox.len(), 4, "应当有包围盒：{got}");
+    assert!(
+        bbox[2] > 30.0 && bbox[3] > 20.0,
+        "包围盒应当是画上去的尺寸：{bbox:?}"
+    );
+    // ② **真的落了墨** ✓（这条才排除了"接受但空白" ✗）
+    let inked = {
+        let (_, _, pixels) = workspace
+            .document_mut("doc_shape")
+            .unwrap()
+            .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 64.0, 64.0))
+            .expect("区域渲染应成功");
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| {
+                (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
+                    / 1000
+                    < 200
+            })
+            .count()
+    };
+    assert!(
+        inked > 300,
+        "扁平写法必须真的画出东西（实测 {inked} 个暗像素；40×30 = 1200 ⇒ 远多于 300 ✓）"
+    );
+}

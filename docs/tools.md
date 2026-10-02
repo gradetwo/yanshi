@@ -156,6 +156,13 @@ protocol that nothing outside the process can fetch, leaving no practical way to
 the document, so it is not a mutating tool, but it does write to the filesystem, which is stated here rather than
 implied.
 
+Shape geometry accepts three spellings, and all three draw: a kind with a bbox object, a bbox as a four number
+array, and the flat form with x, y, w and h written directly on the geometry. Normalisation now runs before
+validation, because validation previously accepted only the canonical form and the flat and array spellings were
+rejected before reaching the normaliser, so the rules and the implementation disagreed. The kernel accepts the flat
+form as well, not only the tool layer, since a document authored by any other route must render rather than parse
+into nothing.
+
 Shape geometry is validated in the shared draw path, alongside the existing colour and medium validation, so a
 shape whose geometry cannot be parsed is refused with a message naming the accepted forms instead of returning
 success and committing an object that renders nothing. The accepted geometry is a kind of rect, ellipse or polygon

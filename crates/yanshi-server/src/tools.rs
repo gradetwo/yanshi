@@ -549,6 +549,24 @@ fn optional_bool(args: &Value, key: &str) -> Option<bool> {
 /// 就会得到一个**零面积形状** ✗（存了、渲染空白 ✓）—— 与用户报的 P0 是同一类病 ✓。
 /// 这里**在校验通过之后、提交之前**统一改写 ✓ ⇒ 下游只有一种形态 ✓，不必各自兼容 ✗。
 fn normalize_shape_bbox(data: &mut Value) {
+    // **扁平写法也要能画** ✓（真实用户第二次报告的原话 ✓）：
+    // "矩形需要 `{kind:"rect", bbox:{x,y,w,h}}` 而非扁平的 `{kind:"rect", x,y,w,h}`，
+    //  虽有错误提示引导，但初始学习成本较高" ✓。
+    // **原则与本函数既有的"数组 bbox"一致** ✓：**既然一种自然写法通过了校验 ✓ 就必须真的能画** ✓ ——
+    // 要么归一化它 ✓、要么明确拒绝它 ✗；**绝不能"接受但画不出来"** ✗（那正是当初 P0 的病根 ✓）。
+    // 这里选择**归一化** ✓：`{x,y,w,h}` 写在 geometry 上是最顺手的写法 ✓，没有理由逼人多套一层 ✗。
+    if let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) {
+        let flat = ["x", "y", "w", "h"]
+            .iter()
+            .all(|key| geometry.get(*key).and_then(Value::as_f64).is_some());
+        if flat && geometry.get("bbox").is_none() {
+            let number = |key: &str| geometry.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+            geometry.insert(
+                "bbox".to_owned(),
+                json!({"x": number("x"), "y": number("y"), "w": number("w"), "h": number("h")}),
+            );
+        }
+    }
     let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) else {
         return;
     };
@@ -2963,15 +2981,23 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     // **位置** ✓：与 `validate_colors` / `validate_medium` 并列 ✓ ⇒ **一处生效、所有绘制入口都受管** ✓
     //（本项目一贯的"从结构上根除 ✓，不靠记性"✗）。
     if kind == AtomKind::DrawShape {
+        // **顺序要紧：先归一化、再校验** ✓（真实用户第二次报告让我发现了这个顺序 bug ✗）。
+        //
+        // 原来校验在前 ✓ ⇒ 它**只认规范形式** ✗ ⇒ 我虽然在归一化里加了"扁平写法 ⇒ bbox" ✓，
+        // 但**根本走不到那里** ✗ ⇒ 用户报的 `{kind:"rect", x,y,w,h}` 照样被拒 ✓
+        //（报错还理直气壮地说"需要 geometry.bbox" ✓ —— **规则与实现对不上** ✗）。
+        // **现在的规则只有一条** ✓：**校验的是"归一化之后"的形式** ✓ ⇒
+        // 无论调用方用对象 ✓、数组 ✓ 还是扁平写法 ✓，**能通过的都一定能画** ✓。
+        normalize_shape_bbox(&mut data);
         validate_shape_geometry(&data)?;
         // **归一化：`bbox` 数组 ⇒ `{x,y,w,h}` 对象** ✓。
         //
         // **为什么必须做** ✓（这是我自己刚写的测试抓到的**第二个静默空** ✗）：
         // 我原来的校验**接受**了 `bbox: [10,10,40,30]` ✓，而**渲染层只读对象形式** ✗
         // ⇒ 于是它又会**静默落一个零面积形状** ✗ —— 与用户报的 P0 **完全同一类病** ✓。
-        // **选择"归一化"而不是"拒绝"** ✓：数组写法是**自然的** ✓，
-        // 既然在校验里接受了它 ✓，就应当让它**真的能画** ✓；拒掉只是在惩罚调用方 ✗。
-        normalize_shape_bbox(&mut data);
+        // **选择"归一化"而不是"拒绝"** ✓：数组写法与扁平写法都是**自然的** ✓，
+        // 既然它们能通过校验 ✓，就应当**真的能画** ✓；拒掉只是在惩罚调用方 ✗。
+        //（归一化已经在上面、**校验之前**做完了 ✓ —— 顺序见那段注释 ✓。）
     }
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));

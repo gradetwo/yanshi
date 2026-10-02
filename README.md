@@ -69,7 +69,8 @@ description did not mention it, which is why generated artwork tended to come ou
 ## Shape geometry
 
 A shape's geometry is `{"kind": "rect" | "ellipse" | "polygon", ...}` with either a `bbox` of `x`, `y`, `w` and `h`
-or `points`. Anything else is refused with a message naming the accepted forms, rather than returning success and
+or `points`. The `bbox` may be an object, a four number array, or omitted in favour of `x`, `y`, `w` and `h` written
+directly on the geometry; all three spellings draw, because normalisation happens before validation. Anything else is refused with a message naming the accepted forms, rather than returning success and
 committing an object that renders nothing. A `bbox` may be an object or an array of four numbers, the array being
 normalised internally. `create_layer` returns the `layer_id` it created.
 

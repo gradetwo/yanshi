@@ -523,9 +523,22 @@ fn parse_shape(data: &Value) -> Primitive {
         Some("polygon") | Some("path") => ShapeKind::Polygon,
         _ => ShapeKind::Rect,
     };
+    // **扁平写法 `{kind:"rect", x, y, w, h}` 也认** ✓（真实用户第二次报告 ✓）。
+    // 工具层会把它归一化成 `bbox` ✓，但**渲染层自己也该认** ✓ ——
+    // 否则任何绕过工具层写出来的文档（页面上直接改 ✓、手工编辑原子日志 ✓）
+    // 都会**画不出来** ✗，而日志里看起来又完全正常 ✓ ⇒ 那正是 P0 的病根 ✓。
+    // **两处都认** ✓ ⇒ "校验通过的写法一定能画" 才是全局成立的 ✓。
     let bbox = geometry
         .get("bbox")
         .and_then(Bbox::from_value)
+        // 扁平写法 ✓：四个字段直接写在 geometry（或对象根）上 ✓。
+        .or_else(|| {
+            let x = geometry.get("x").and_then(Value::as_f64)?;
+            let y = geometry.get("y").and_then(Value::as_f64)?;
+            let w = geometry.get("w").and_then(Value::as_f64)?;
+            let h = geometry.get("h").and_then(Value::as_f64)?;
+            Some(Bbox::new(x, y, w, h))
+        })
         .or_else(|| data.get("bbox").and_then(Bbox::from_value))
         .unwrap_or_else(|| Bbox::new(0.0, 0.0, 0.0, 0.0));
     let mut points = Vec::new();
