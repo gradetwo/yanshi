@@ -44,5 +44,43 @@ fn main() {
     println!("cargo:rustc-env=YANSHI_COMMIT={commit}");
     println!("cargo:rustc-env=YANSHI_BUILD_TIME={built}");
     // **commit 变了要重编** ✓（否则改了代码却还报旧 hash ✗）。
+    //
+    // **⚠️ 这里原来只 watch 了 `.git/HEAD`，那是错的** ✗（真实用户报告 ✓）：
+    // 在**普通分支检出**下 ✓ `.git/HEAD` 的内容是 `ref: refs/heads/main` ✓
+    // —— **只是分支名，不含 commit 哈希** ✗ ⇒ **每次提交都不会改动这个文件** ✗
+    // ⇒ cargo **永远认为本脚本是新鲜的** ✗ ⇒ 编出来的二进制里
+    // `YANSHI_COMMIT` **冻在**"最后一次因别的原因重建"时的哈希 ✓。
+    // **用户实测到的现象** ✓：包名是 `f8075f3` ✓ 而 `--version` 报 `dd2171d` ✓，
+    // 两者差了几十个提交 ✗ ⇒ **他根本不知道自己在测哪一版** ✗——
+    // 而这会**让每一次验收都可能验错对象** ✗，是最贵的一类缺陷 ✓。
+    //
+    // **修法** ✓：同时 watch **真正会变**的文件 ✓：
+    // * `.git/refs/heads/<branch>` ✓ —— **提交时会被重写** ✓ ⇒ mtime 变 ✓；
+    // * `.git/packed-refs` ✓ —— ref 被打包（`git gc`）后哈希写在这里 ✓；
+    // * `.git/HEAD` ✓ —— 切分支 / 进 detached 状态时会变 ✓（worktree 常是这种 ✓）。
+    // **worktree 的 `.git` 是一个文件** ✗（内容是 `gitdir: …` ✓）⇒ 上面的路径不存在 ✓
+    // ⇒ cargo 对不存在的 watch 路径**不会报错** ✓，只是不起作用 ✓
+    // ⇒ 所以**打包那层还要有自己的断言** ✓（见 `package-release.sh` ✓）。
     println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/packed-refs");
+    if let Ok(head) = std::fs::read_to_string("../../.git/HEAD") {
+        if let Some(reference) = head.trim().strip_prefix("ref: ") {
+            // **分支引用文件才是提交时真正变的东西** ✓。
+            println!("cargo:rerun-if-changed=../../.git/{reference}");
+        }
+        // 若 `.git/HEAD` 里直接是哈希 ✓（detached ✓）⇒ 上面那句 watch `.git/HEAD` 已经够了 ✓。
+    }
+    // **worktree / submodule 的情形** ✓：`.git` 是文件 ⇒ 顺着 `gitdir:` 再 watch 一次 ✓。
+    if let Ok(gitfile) = std::fs::read_to_string("../../.git") {
+        if let Some(dir) = gitfile.trim().strip_prefix("gitdir: ") {
+            println!("cargo:rerun-if-changed=../../.git");
+            println!("cargo:rerun-if-changed={dir}/HEAD");
+            if let Ok(head) = std::fs::read_to_string(format!("{dir}/HEAD")) {
+                if let Some(reference) = head.trim().strip_prefix("ref: ") {
+                    println!("cargo:rerun-if-changed={dir}/{reference}");
+                    println!("cargo:rerun-if-changed={dir}/packed-refs");
+                }
+            }
+        }
+    }
 }

@@ -246,6 +246,35 @@ if [ "$static_build" = 1 ]; then
   echo "    已断言：静态包**不引用**任何 GLIBC 符号 ✓"
 fi
 
+# **断言：二进制里报的 commit 必须与包名里的一致** ✓（真实用户报告 ✓）。
+#
+# **为什么必须有这道断言** ✓：`build.rs` 曾经只 watch `.git/HEAD` ✗，
+# 而普通分支检出下那文件只写 `ref: refs/heads/main` ✓（**分支名，不含哈希** ✗）
+# ⇒ 每次提交都不改动它 ✗ ⇒ cargo 认为构建脚本仍新鲜 ✗ ⇒
+# **二进制里的 `YANSHI_COMMIT` 冻在很久以前** ✗。
+# 用户实测到的就是这个 ✓：包名是 `f8075f3` ✓ 而 `--version` 报 `dd2171d` ✓
+# ⇒ **他根本不知道自己在测哪一版** ✗ —— 而这会让**每一次验收都可能验错对象** ✗，
+# 是**最贵的一类缺陷** ✓（比功能缺失严重得多 ✓）。
+# **两层防护** ✓：`build.rs` 已修好✓（watch 真正会变的 ref 文件 ✓）；
+# 这里再加一道**断言** ✓ ⇒ 万一将来又出现"名字与内容不符" ✓，**包发不出去** ✗ ✓。
+if ! reported="$(timeout 10 "$stage/bin/yanshi-serve" --version 2>/dev/null)"; then
+  echo "    ✗ 无法运行包内二进制取版本 ⇒ 打包失败" >&2
+  exit 1
+fi
+reported_commit="$(printf '%s' "$reported" | grep -oE 'commit [^,)]+' | sed 's/commit //')"
+# 包名里的 commit 可能带 `-dirty` ✓（构建时工作区有未提交改动 ✓）⇒ 比较时去掉它 ✓。
+baked="$(printf '%s' "$commit" | sed 's/-dirty$//')"
+seen="$(printf '%s' "$reported_commit" | sed 's/-dirty$//')"
+if [ "$seen" != "$baked" ]; then
+  echo "    ✗ **包名与二进制内的 commit 不一致** ⇒ 打包失败" >&2
+  echo "      包名:     ${baked} ✓" >&2
+  echo "      二进制:   ${seen} ✗" >&2
+  echo "      多半是二进制**没有重新编译** ✗（改了源码却复用了旧产物 ✓）。" >&2
+  echo "      处理：先跑 cargo build --release -p yanshi-http -p yanshi-mcp（或删掉 target/release 里的对应产物 ✓），再重打 ✓。" >&2
+  exit 1
+fi
+echo "    已断言：二进制内 commit（${seen}）与包名一致 ✓"
+
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")
 (cd "$out" && sha256sum "$name.tar.gz" > SHA256SUMS)
