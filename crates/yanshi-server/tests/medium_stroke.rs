@@ -354,3 +354,63 @@ fn the_texture_parameter_reaches_the_plugin() {
         "texture=1 应当至少平滑 5% ⇒ 否则说明参数没被接上 ✗（0 ⇒ {rough:.2}，1 ⇒ {smooth:.2}）"
     );
 }
+
+/// **画布尺寸每次都回；越界过半就明确警告** ✓（真实用户画作的**头号原因** ✓）。
+///
+/// **他的实测** ✓：一条笔触的范围是 `x=-45, y=-45, w=1114, h=100` ✓，而画布只有 **1024×1024** ✓
+/// ⇒ 四处越界 ✓、画面四边被裁 ✓、中间大片空白 ✓ ⇒ 他形容"一塌糊涂" ✓。
+/// **工具此前从不告诉他画布多大** ✗ ⇒ 调用方只能猜 ✓ ⇒ 猜错就整幅错位 ✓。
+#[test]
+fn a_stroke_outside_the_canvas_is_reported_with_the_canvas_size() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    // ① **正常的一笔** ✓：必须回画布尺寸 ✓，而且**不许**警告 ✓。
+    let normal = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({"layer_id": "L", "object_id": "normal", "medium": "oil",
+                    "points": [[20.0, 20.0, 1.0], [60.0, 40.0, 1.0]], "size": 20}),
+        )
+    };
+    assert_eq!(normal["ok"], json!(true), "{normal}");
+    assert_eq!(
+        normal["canvas"]["width"],
+        json!(200.0),
+        "必须回画布宽：{normal}"
+    );
+    assert_eq!(
+        normal["canvas"]["height"],
+        json!(200.0),
+        "必须回画布高：{normal}"
+    );
+    assert!(
+        normal["outside_fraction"].as_f64().unwrap_or(1.0) < 0.5,
+        "画布内的笔触不该被判越界：{normal}"
+    );
+    assert!(
+        normal["coordinate_warning"].is_null() || normal.get("coordinate_warning").is_none(),
+        "画布内的笔触不该警告：{normal}"
+    );
+
+    // ② **整条落在画布外的一笔** ✓（照他当时的坐标形态 ✓）：必须**明确说出来** ✓。
+    let outside = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({"layer_id": "L", "object_id": "outside", "medium": "oil",
+                    "points": [[-45.0, -45.0, 1.0], [1069.0, -45.0, 1.0]], "size": 40}),
+        )
+    };
+    assert_eq!(outside["ok"], json!(true), "仍然画（不是拒绝）：{outside}");
+    assert_eq!(outside["canvas"]["width"], json!(200.0), "{outside}");
+    let warning = outside["coordinate_warning"].as_str().unwrap_or_default();
+    assert!(!warning.is_empty(), "越界过半必须给出警告：{outside}");
+    assert!(warning.contains("200"), "警告里要带画布尺寸：{warning}");
+    assert!(
+        outside["outside_fraction"].as_f64().unwrap_or(0.0) > 0.5,
+        "越界比例应当过半：{outside}"
+    );
+}

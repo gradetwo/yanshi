@@ -916,6 +916,22 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **把一张"整幅"PNG 存成渲染缓存** ✓（`render.png` + `render.seq` ✓，"打开即图片" 14.5 ✓）。
+    ///
+    /// **为什么需要它** ✓（真实用户的工程包暴露的 ✓）：缓存原来**只在"整幅渲染"或"文档级缩略图"时刷新** ✓，
+    /// 而 `export_png` 走的是 `render_region_raw` ✓ ⇒ **绕过缓存** ✗
+    /// ⇒ 用户拿 `export_png` 画完整幅画 ✓，磁盘上的 `render.png` **仍停在刚建文档时的空白** ✗ ✓
+    ///（我量了他四个工程包 ✓：缓存 `render.seq` 是 **5–6** ✓，而原子最高 **97–217** ✓ ⇒
+    ///  四个包里的 `render.png` 才会是**同一张空图** ✗）。
+    /// **这里复用调用方刚编好的 PNG** ✓ ⇒ **不多渲染一次** ✓。
+    pub fn cache_full_frame_png(&mut self, doc_id: &str, png: &[u8]) -> Result<()> {
+        let head = self.document_mut(doc_id)?.head_seq();
+        if let Some(persist) = &self.persist {
+            persist.save_render(doc_id, head, png)?;
+        }
+        Ok(())
+    }
+
     /// 生成缩略图；文档级缩略图会落盘为渲染缓存（14.5）。
     pub fn thumbnail(
         &mut self,

@@ -181,3 +181,87 @@ fn bad_arguments_are_refused_with_a_reason() {
         );
     }
 }
+
+/// **整幅导出要顺手刷新"打开即图片"缓存** ✓（真实用户工程包里那张**空 `render.png`** 的根因 ✓）。
+///
+/// **他四个包实测** ✓：缓存 `render.seq` 是 **5–6** ✓，而原子最高 **97–217** ✓
+/// ⇒ 缓存停在**刚建文档时的空白** ✗ ⇒ 包里那份预览是空的 ✓。
+/// **根因** ✓：缓存只在"整幅渲染 / 文档级缩略图"时更新 ✓，而导出走 `render_region_raw` ✓ **绕过缓存** ✗。
+///
+/// **本测试** ✓：画完之后整幅导出 ⇒ 缓存必须**追上 head** ✓、而且**不是空白** ✓。
+#[test]
+fn a_full_frame_export_refreshes_the_render_cache() {
+    let root = std::env::temp_dir().join(format!("yanshi_cache_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace = Workspace::with_file_store(root.clone(), DocumentSettings::default())
+        .expect("落盘工作区应当能建");
+    workspace
+        .create_document(
+            NewDocument::new("doc_cache", 240, 180),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_cache", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry().call(&mut ctx, "create_layer", &json!({ "layer_id": "L" }));
+        let drawn = registry().call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "s1",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 20, "y": 20, "w": 120, "h": 90}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+    let path = std::env::temp_dir().join(format!("yanshi_cache_export_{}.png", std::process::id()));
+    let exported = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_cache", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy() }),
+        )
+    };
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    // ① **缓存文件存在** ✓，② **它的 seq 追上了 head** ✓
+    let cache_png = root.join("docs").join("doc_cache").join("render.png");
+    let cache_seq = root.join("docs").join("doc_cache").join("render.seq");
+    assert!(
+        cache_png.exists(),
+        "整幅导出之后应当写出渲染缓存：{}",
+        cache_png.display()
+    );
+    let head = workspace.document("doc_cache").unwrap().head_seq();
+    let cached: u64 = std::fs::read_to_string(&cache_seq)
+        .expect("缓存应当有 seq")
+        .trim()
+        .parse()
+        .expect("seq 应当是数字");
+    assert_eq!(
+        cached, head,
+        "缓存的 seq 必须追上 head ⇒ 否则它还是过期的 ✗"
+    );
+    // ③ **缓存里不是空白** ✓（这正是用户看到的那张空图 ✓）
+    let bytes = std::fs::read(&cache_png).expect("缓存应当可读");
+    let (width, height, rgba) = yanshi_render::png::decode_png(&bytes).expect("应当是合法 PNG");
+    assert_eq!((width, height), (240, 180));
+    let inked = rgba
+        .chunks_exact(4)
+        .filter(|pixel| {
+            (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
+                / 1000
+                < 200
+        })
+        .count();
+    assert!(
+        inked > 1000,
+        "缓存里应当有画的东西（实测 {inked} 个暗像素）"
+    );
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&root);
+}

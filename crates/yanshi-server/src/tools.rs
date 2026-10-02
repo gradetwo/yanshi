@@ -8379,6 +8379,38 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **拿不到底色也不阻断** ✓：照旧画 ✓（退化为旧语义 ✓）——
     // 介质本来就是 D2 ✓，不该因为"读不到底色"就整笔失败 ✗。
     let (planned, _, _) = yanshi_medium_host::plan_region(&points, size)?;
+    // **画布尺寸要随结果一起回去** ✓（真实用户画作的**头号原因** ✓）。
+    //
+    // **他的原子实测** ✓：`region {x: -45, y: -45, w: 1114, h: 100}` ✓ —— 而画布是 **1024×1024** ✓
+    // ⇒ 笔触**跑到画布外面** ✓、画面**四边被裁** ✓、中间大片空白 ✓ ⇒ 他说"一塌糊涂" ✓。
+    // **工具此前从不告诉他画布多大** ✗ ⇒ 调用方只能**猜** ✓（猜错就整幅画错位 ✓）。
+    // ⇒ 从这里开始 ✓：**每次介质笔触的结果都带上画布尺寸** ✓，
+    // 并且**大部分落在画布外时明确警告** ✓ —— 与"错误里带可用选项"同一套思路 ✓：
+    // **别让人画完才发现画错地方** ✗。
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            (
+                document.state().width as f64,
+                document.state().height as f64,
+            )
+        })
+        .unwrap_or((0.0, 0.0));
+    let inside = |span: (f64, f64), limit: f64| -> f64 {
+        let (start, length) = span;
+        (start + length).min(limit).max(start).min(limit) - start.max(0.0)
+    };
+    let inside_area = if canvas_width > 0.0 && canvas_height > 0.0 {
+        inside((planned.x, planned.w), canvas_width) * inside((planned.y, planned.h), canvas_height)
+    } else {
+        planned.w * planned.h
+    };
+    let outside_fraction = if planned.w * planned.h > 0.0 {
+        (1.0 - inside_area / (planned.w * planned.h)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let base = ctx
         .workspace
         .render_region_raw(&ctx.doc_id, planned)
@@ -8426,6 +8458,23 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let mut value = write_import_image(ctx, &import_args)?;
     value["medium"] = json!({"id": spec.id, "version": spec.version});
     value["dabs"] = json!(points.len());
+    // **画布尺寸每次都回** ✓（调用方据此对齐坐标 ✓）。
+    value["canvas"] = json!({"width": canvas_width, "height": canvas_height});
+    value["outside_fraction"] = json!((outside_fraction * 1000.0).round() / 1000.0);
+    if outside_fraction > 0.5 {
+        // **过半落在画布外 ⇒ 明确说出来** ✓（这正是那四幅画的病根 ✓）。
+        value["coordinate_warning"] = json!(format!(
+            "这一笔有 {:.0}% 落在画布之外（画布 {}×{}，这笔的范围 x={} y={} w={} h={}）\
+             ⇒ 多半是**坐标空间不一致**：请按画布尺寸给坐标，或先取一次 get_document 确认尺寸",
+            outside_fraction * 100.0,
+            canvas_width,
+            canvas_height,
+            planned.x,
+            planned.y,
+            planned.w,
+            planned.h,
+        ));
+    }
     Ok(value)
 }
 
@@ -8525,6 +8574,25 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             )),
         )
     })?;
+    // **整幅导出时顺手刷新渲染缓存** ✓（真实用户工程包里那张**空 `render.png`** 的根因 ✓）：
+    // 缓存原本只在"整幅渲染 / 文档级缩略图"时更新 ✓，而导出走的是 `render_region_raw` ✓
+    // ⇒ **绕过缓存** ✗ ⇒ 画完整幅画之后 ✓，磁盘上的预览**仍停在空白** ✗（他四个包实测 seq 5–6 vs 原子 97–217 ✓）。
+    // **只在整幅时做** ✓：局部导出刷新缓存会把"打开即图片"变成一张**局部图** ✗。
+    // **拿不到 head 也不阻断导出** ✓（缓存只是加速 ✓，不是产品 ✓）。
+    let covers_frame = region.x <= 0.0
+        && region.y <= 0.0
+        && region.w
+            >= ctx
+                .workspace
+                .document(&ctx.doc_id)
+                .map(|document| document.state().width as f64)
+                .unwrap_or(f64::MAX)
+        && region.h
+            >= ctx
+                .workspace
+                .document(&ctx.doc_id)
+                .map(|document| document.state().height as f64)
+                .unwrap_or(f64::MAX);
     // **真的落盘** ✓：这是这个工具存在的理由 ✓（不是再给一个拿不到的 URL ✗）。
     std::fs::write(&path, &png).map_err(|error| {
         YanshiError::new(
@@ -8532,6 +8600,10 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("写文件失败：{path} ⇒ {error}")),
         )
     })?;
+    if covers_frame && target_w == width && target_h == height {
+        // 只在**原尺寸整幅**时写缓存 ✓（缩放过的图不该当成"打开即图片" ✗）。
+        let _ = ctx.workspace.cache_full_frame_png(&ctx.doc_id, &png);
+    }
     Ok(json!({
         "path": path,
         "width": target_w,
