@@ -212,68 +212,92 @@ fn a_smudge_brush_is_deterministic_and_works_over_paint() {
     );
 }
 
-/// **`brush_stroke` 能设颜色** ✓（AI 实测报的 P0 缺口 ✓）。
+/// **`brush_stroke` 能设颜色** ✓（AI 实测报的 P0 缺口 ✓）—— **判据必须是"两色不同"** ✗。
 ///
-/// **为什么这条最要紧** ✓：在此之前**没有任何一个工具同时具备"myPaint 物理 + 自定义颜色"** ✗ ——
-/// `brush_stroke` 有物理但不能设色 ✗，而能设色的 `medium_stroke` / `draw_stroke` 没有 myPaint 物理 ✗
-/// ⇒ 模型只能画几何色块 ✓、画不出油画 ✓。
-/// **做法照 MyPaint** ✓：颜色就是 `.myb` 的 `color_h/s/v` ✓ ⇒ 给了就覆盖 ✓。
-/// **判据只做一件说得清的事** ✓：**只画一笔红的** ✓ ⇒ 它落下的像素里 **R 必须明显高于 B** ✓
-///（若颜色没接上 ⇒ 画出来的是 `.myb` 自带的黑/白 ✓ ⇒ R 与 B 会接近 ✓ ⇒ 当场红 ✓）。
-/// **我为什么把"红蓝两笔"缩成一笔** ✗：两笔同层导出时均值会互相稀释 ✓ ⇒ 量出"两笔完全一样" ✗
-/// ⇒ **判据要一次只说一件事** ✓，别让测量口径自己变成变量 ✓。
+/// **我上一版为什么不算数** ✗：只画了**一笔红的** ✓ ⇒ 它**无法区分**"用了我的颜色" ✓
+/// 与"**无论给什么都画红色**" ✗ ✓ —— 而事实恰恰是后者 ✓（实测黄/蓝都成了红 ✗）。
+/// **根因（查引擎源码得到的 ✓）**：`hsv_to_rgb` 里 `h` 是 **0..1 的圆周分数** ✗，
+/// 而我传的是**度数** ⇒ `rem_euclid(1.0)` 把 60 与 240 都变成 0 ✗ ⇒ **全红** ✓。
+/// ⇒ 本判据的形状改成"**两个不同的输入 ⇒ 两个不同的输出**" ✓，**它才可能红** ✓。
 #[test]
-fn brush_stroke_accepts_a_colour_and_it_reaches_the_pixels() {
+fn brush_stroke_accepts_a_colour_and_two_colours_differ() {
     let root = temp_dir("colour");
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
         json!(true)
     );
-    let made = call(
+    // **两笔各画在一层上** ✓ —— 同层导出会互相稀释 ✗（这个坑我也踩过 ✓）。
+    let paint =
+        |workspace: &mut Workspace, object: &str, colour: serde_json::Value| -> (f64, f64, f64) {
+            let layer = format!("L_{object}");
+            assert_eq!(
+                call(workspace, "create_layer", json!({ "layer_id": layer }))["ok"],
+                json!(true)
+            );
+            let made = call(
+                workspace,
+                "brush_stroke",
+                json!({
+                    "layer_id": layer, "object_id": object, "brush": "100%_Opaque", "size": 30,
+                    "color": colour,
+                    "points": [[30.0, 40.0, 0.9], [150.0, 40.0, 0.9]]
+                }),
+            );
+            assert_eq!(made["ok"], json!(true), "带 color 的一笔应当成功：{made}");
+            let path = root.join(format!("{object}.png"));
+            assert_eq!(
+                call(
+                    workspace,
+                    "export_png",
+                    json!({ "path": path.display().to_string(), "layer_id": layer })
+                )["ok"],
+                json!(true)
+            );
+            let (_w, _h, rgba) =
+                yanshi_render::png::decode_png(&std::fs::read(&path).unwrap()).unwrap();
+            let (mut r, mut g, mut b, mut count) = (0f64, 0f64, 0f64, 0f64);
+            for pixel in rgba.chunks(4) {
+                if pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255 {
+                    continue; // **白底会把均值拉平** ✗（老坑 ✓）
+                }
+                r += f64::from(pixel[0]);
+                g += f64::from(pixel[1]);
+                b += f64::from(pixel[2]);
+                count += 1.0;
+            }
+            assert!(count > 0.0, "这一笔应当留下像素（{object}）");
+            (r / count, g / count, b / count)
+        };
+    let warm = paint(
         &mut workspace,
-        "brush_stroke",
-        json!({
-            "layer_id": "L", "object_id": "warm", "brush": "100%_Opaque", "size": 30,
-            "color": { "r": 220, "g": 30, "b": 30, "a": 255 },
-            "points": [[30.0, 40.0, 0.9], [150.0, 40.0, 0.9]]
-        }),
+        "warm",
+        json!({"r": 220, "g": 30, "b": 30, "a": 255}),
     );
-    assert_eq!(made["ok"], json!(true), "带 color 的一笔应当成功：{made}");
-    let path = root.join("warm.png");
-    assert_eq!(
-        call(
-            &mut workspace,
-            "export_png",
-            json!({ "path": path.display().to_string() })
-        )["ok"],
-        json!(true)
+    let cool = paint(
+        &mut workspace,
+        "cool",
+        json!({"r": 30, "g": 30, "b": 220, "a": 255}),
     );
-    let (_width, _height, rgba) =
-        yanshi_render::png::decode_png(&std::fs::read(&path).unwrap()).unwrap();
-    // **只统计"上过墨"的像素** ✓（白底会把均值拉平 ✗ —— 这个坑我踩过不止一次 ✓）。
-    let mut red_sum = 0f64;
-    let mut blue_sum = 0f64;
-    let mut green_sum = 0f64;
-    let mut count = 0f64;
-    for pixel in rgba.chunks(4) {
-        if pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255 {
-            continue;
-        }
-        red_sum += f64::from(pixel[0]);
-        green_sum += f64::from(pixel[1]);
-        blue_sum += f64::from(pixel[2]);
-        count += 1.0;
-    }
-    assert!(count > 0.0, "这一笔应当留下像素（{made}）");
-    let (r, g, b) = (red_sum / count, green_sum / count, blue_sum / count);
-    eprintln!("  颜色口径：指定 (220,30,30) ⇒ 落笔均值 R={r:.1} G={g:.1} B={b:.1}");
+    eprintln!(
+        "  颜色口径：红笔 R={:.1} G={:.1} B={:.1} ／ 蓝笔 R={:.1} G={:.1} B={:.1}",
+        warm.0, warm.1, warm.2, cool.0, cool.1, cool.2
+    );
+    // ① **两个不同的输入必须给出不同的输出** ✓（这条才是能红的判据 ✓）。
+    let difference = (warm.0 - cool.0).abs() + (warm.2 - cool.2).abs();
     assert!(
-        r > b + 60.0,
-        "红色应当明显压过蓝色（实测 R={r:.1} B={b:.1}）⇒ 否则颜色没接上 ✗"
+        difference > 60.0,
+        "红笔与蓝笔必须明显不同 ✗（实测差 {difference:.1} ⇒ 颜色没被采纳 ✗）"
+    );
+    // ② **方向也要对** ✓（红笔 R 最大 ✓、蓝笔 B 最大 ✓）。
+    assert!(
+        warm.0 > warm.2 + 60.0,
+        "红笔的 R 应当最大 ✓（实测 {:?}）",
+        warm
     );
     assert!(
-        r > g + 60.0,
-        "红色也应当明显压过绿色（实测 R={r:.1} G={g:.1}）"
+        cool.2 > cool.0 + 60.0,
+        "蓝笔的 B 应当最大 ✓（实测 {:?}）",
+        cool
     );
 }
