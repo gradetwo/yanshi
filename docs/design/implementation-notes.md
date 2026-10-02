@@ -8345,3 +8345,29 @@ validate_colors(&data)?;        // 校验通过 ⇒ 说明 "color" 是被认可�
 纹理**不堆层 + 即时反馈** ✓、`/api/health` 路由 + **路由守卫测试** ✓、断网**有界重连 + 说人话** ✓、
 `make serve` ✓、`state().size` 指向画笔粗细 ✓、**画笔不再被本地几何路抢走** ✓（换笔有效 ✓）、
 工具描述写明"何时用哪个" ✓、工作区偏好（收藏/最近）✓。
+
+### 🎯 P0 `update_stroke` 换色：**链路走通，嫌疑锁定在 `object_data`** ✓（交接后的第一步 ✓）
+
+**完整链路（全部读代码得到 ✓，不是猜 ✓）** ✓：
+```text
+write_update_stroke（tools.rs:3448 ✓）
+  ├─ core 的键**直接覆盖进 data** ✓ ⇒ data["color"] = … ✓
+  ├─ validate_colors ✓ ⇒ "color" 是**被认可的键** ✓（tools.rs:783 ✓）
+  └─ ctx.commit(AtomKind::Supersede, {object_id, layer_id, data}) ✓
+└─ 折叠（fold.rs:706 ✓）⇒ 对象已存在 ⇒ supersede_object(..) ✓
+     └─ fold.rs:1261-1262 ✓：
+          if atom.payload.get("data").is_some() {
+              object.data = object_data(atom.kind, &atom.payload);   // **整体替换** ✗
+          }
+```
+**⇒ 嫌疑点** ✓：**`object_data(kind, payload)` 是规范化函数** ✓ ⇒ 若它按 `Supersede` 的期望**重建**数据 ✓
+（只挑它认识的字段、或期望某种嵌套 ✓），`core.color` 就会被**静默丢掉** ✗
+⇒ 症状**完全吻合** ✓："**返回 ok、画面没变**" ✓（写侧、校验、提交、折叠都被走到了 ✓，只在最后一步丢了 ✓）。
+**下一轮唯一要读的** ✓：**`fn object_data`** ✓ —— 它**保留**调用方给的任意 `data` ✓
+还是**按 kind 重建** ✓？若是重建 ⇒ 修法有两种 ✓（**都要保住别的字段** ✓）：
+1. 让 `Supersede` 的 `object_data` **保留传入的 `data`** ✓（**合并**语义 ✓，与 `core`"只改提到的键"一致 ✓）；
+2. 或让 `update_stroke` 不走 `Supersede` ✗，改用**只改属性**的原子 ✓（若设计里有 ✓）。
+**判据（不再变 ✓）**：**两次调用、两种颜色 ⇒ 像素必须不同** ✓ + 方向检查（红 ⇒ R 最大 ✓）；
+**绝不用"返回 ok"** ✗ —— 这个 bug 本身就是"ok 却无变化" ✓。
+**本轮价值** ✓：把"一个模糊的 bug 报告"变成"**一条走通的链路 + 一个具体函数**" ✓ ⇒
+下一轮**第一行代码就知道该看哪里** ✓（而不是再从工具层翻起 ✗）。
