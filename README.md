@@ -300,6 +300,14 @@ named it creates one and moves it to the bottom, since a background belongs unde
 that already has content was named instead, because measurement showed that within a single layer an imported bitmap
 ends up above the objects already there.
 
+## If the interface looks older than the checkout
+
+The viewer page is compiled into the binary, so a server process started before a change will keep serving the old
+interface no matter what the repository contains. `make dev` compares the running instance's reported commit with the
+checkout and refuses to stand aside quietly when they differ, explaining that the page is compiled in and how to
+either stop the old process or run on another port. A systemd user service on the same port makes this recur, so its
+unit file is worth checking if the identity keeps going stale.
+
 ## Install
 
 ```bash

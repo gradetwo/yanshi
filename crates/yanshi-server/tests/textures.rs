@@ -209,3 +209,47 @@ fn a_directory_name_cannot_escape_the_workspace() {
         assert_eq!(got["error_code"], json!("invalid_argument"), "{bad}: {got}");
     }
 }
+
+/// **资产目录要能被解析成一个"真的存在"的目录** ✓（真实用户报告 ✓）。
+///
+/// **为什么值得一条测试** ✓：用户换了一台机器跑 `make dev` ⇒ 笔刷下拉里只有"内置画笔" ✓、
+/// 调色板与纹理一片空白 ✗。我**原样复现**了原因 ✓：
+/// `--assets-dir` 缺省是**相对路径** `assets` ✓ ⇒ 换个工作目录启动就找不到 ✓ ⇒
+/// 三类内置资产的 `count` **全是 0** ✗（不是"功能没做" ✓，而是"没找到文件" ✗）。
+/// **判据** ✓：调用方给的路径存在 ⇒ **原样用它** ✓；不存在 ⇒
+/// **要么换成一个真的存在的** ✓、**要么在说明里写清找过哪些** ✓（不能悄悄返回一个空目录 ✗）。
+#[test]
+fn the_assets_directory_resolves_to_something_real_or_says_what_it_tried() {
+    use yanshi_server::service::resolve_assets_dir;
+
+    let repo_assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let (resolved, note) = resolve_assets_dir(Some(repo_assets.clone()));
+    assert_eq!(
+        resolved.as_ref(),
+        Some(&repo_assets),
+        "给了真实存在的目录就该原样用：{note}"
+    );
+    assert!(note.contains("资产目录"), "要把用的是哪个说出来：{note}");
+
+    // **给一个不存在的** ✓：要么解析到别的真实目录 ✓，要么说明"找过哪些" ✓ —— 两者都不算失败 ✓，
+    // **但"悄悄返回一个不存在又不说"就算失败** ✗。
+    // **给一个不存在的** ✓ —— 契约是三条里的一条 ✓（我第一版把第三条当成失败 ✗，其实它是**有意**的 ✓）：
+    // 1. 解析到另一个**真的存在**的目录 ✓（开发/发行布局 ✓）；
+    // 2. 返回**原值**并注明「未找到（找过：…）」✓ —— **保留调用方的意图** ✓，同时**不让他猜** ✓；
+    // 3. 返回 `None` ✓。
+    // **唯一不许发生的** ✓ 是"说找到了、其实不存在" ✗。
+    let bogus = std::path::PathBuf::from("/nonexistent/yanshi-assets-does-not-exist");
+    let (fallback, note) = resolve_assets_dir(Some(bogus.clone()));
+    match fallback {
+        Some(dir) => assert!(
+            dir.is_dir() || note.contains("未找到"),
+            "说找到了就得真存在；否则必须说明没找到并列出找过哪些：{}（{note}）",
+            dir.display()
+        ),
+        None => assert!(note.contains("未找到"), "没找到时必须写清找过哪些：{note}"),
+    }
+    assert!(
+        note.contains("找过") || note.contains("资产目录"),
+        "说明要能读懂：{note}"
+    );
+}

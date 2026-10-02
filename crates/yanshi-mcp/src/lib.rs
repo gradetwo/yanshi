@@ -192,7 +192,14 @@ impl Server {
         }
         // **与 HTTP 用同一个默认** ✓：内置纹理随仓库与发行包走 ✓。
         // **这条正是"MCP 与 Web 都要能用"的落法** ✓ —— 两边都经**工具层** ✓ ⇒ 结果一致 ✓。
-        .with_assets_dir(Some(std::path::PathBuf::from("assets")));
+        // **与 HTTP 用同一个解析器** ✓（真实用户报告 ✓：相对路径 `assets` 换个工作目录就找不到 ✓）。
+        .with_assets_dir({
+            let (resolved, note) = yanshi_server::service::resolve_assets_dir(Some(
+                std::path::PathBuf::from("assets"),
+            ));
+            eprintln!("{note}");
+            resolved
+        });
         let registry = ToolRegistry::with_profiles(&options.profiles);
         Self {
             options,

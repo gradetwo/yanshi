@@ -3861,6 +3861,12 @@ async function setupAssetPanels() {
   }
   try {
     const textures = await callTool("list_assets", { kind: "texture" }, { refresh: false });
+    // 同上一句：纹理为空时也要说清"是没资产还是没找到目录" ✗。
+    if (textureInfo && textures && (textures.count === 0 || (textures.assets || []).length === 0)) {
+      textureInfo.textContent =
+        "一张纹理都没找到 ⇒ 多半是服务端没找到资产目录（看启动日志的「资产目录：」一行 ✓，" +
+        "或用 --assets-dir 指定 ✓）";
+    }
     const thumbs = $("textureThumbs");
     for (const asset of (textures && textures.assets) || []) {
       if (!asset.usable) continue;
@@ -3938,8 +3944,17 @@ async function setupAssetPanels() {
     }
     if (paletteInfo) {
       const total = listed.total === undefined ? listed.count : listed.total;
-      paletteInfo.textContent =
-        "共 " + total + " 色" + (listed.truncated ? "（只显示了前 " + listed.count + " 个 ✓）" : " ✓");
+      // **"空"必须说清是"没有资产"还是"没找到资产"** ✗（真实用户报告 ✓）：
+      // 他换机器跑 ⇒ 这里显示"共 0 色" ✗ ⇒ 看起来像**功能没做** ✓，
+      // 而真因是**服务端没找到资产目录** ✗（`--assets-dir` 缺省是相对路径 ✓，换工作目录就丢 ✓）。
+      if (total === 0) {
+        paletteInfo.textContent =
+          "一个调色板都没找到 ⇒ 多半是服务端没找到资产目录（启动日志里有「资产目录：…」一行 ✓；" +
+          "可用 --assets-dir 指定，或确认在仓库根目录启动 ✓）";
+      } else {
+        paletteInfo.textContent =
+          "共 " + total + " 色" + (listed.truncated ? "（只显示了前 " + listed.count + " 个 ✓）" : " ✓");
+      }
     }
   }
   if (palettePick) {

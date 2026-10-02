@@ -161,6 +161,54 @@ pub struct BlobLifecycle {
     pub orphan_hashes: Vec<String>,
 }
 
+/// **把资产目录解析成一个真实存在的路径** ✓（真实用户报告 ✓）。
+///
+/// **问题** ✓：`--assets-dir` 的缺省是**相对路径** `assets` ✓ ⇒ 只有**在仓库根目录**启动才找得到 ✓
+/// ⇒ 换个工作目录启动（或包装脚本没 `cd` ✓）⇒ **三类内置资产全丢** ✗，
+/// 界面表现为"笔刷下拉里只有'内置画笔' ✓、调色板与纹理一片空白" ✗ ——
+/// 用户实测到的正是这个 ✓（我在别的目录启动，**原样复现**：三类的 `count` 全是 0 ✓）。
+///
+/// **修法** ✓：按**候选顺序**取第一个**真的存在**的 ✓：
+/// 1. 调用方给的那个（命令行 / 代码里设的 ✓）；
+/// 2. **可执行文件旁边的包内布局** ✓：`<exe>/../share/yanshi` ✓ ——
+///    这正是 `make release` 打出来的包的结构 ✓（`bin/yanshi-serve` + `share/yanshi/*` ✓）；
+/// 3. `<exe>/assets` ✓ —— 覆盖"可执行文件与资产目录并列"的布局 ✓；
+/// 4. **可执行文件的祖父目录**下的 `assets` ✓：`<exe>/../../assets` ✓ ——
+///    覆盖"从 `target/release/` 直接跑"这个**开发时最常见**的情形 ✓。
+///
+/// **一个都找不到就返回原值** ✓（保持既有错误信息不变 ✓），**而且不管找到没找到都要有一段说明** ✓
+/// ⇒ 下一次这类问题**一眼就能查** ✓，而不是再花一小时 ✗。
+pub fn resolve_assets_dir(
+    configured: Option<std::path::PathBuf>,
+) -> (Option<std::path::PathBuf>, String) {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = configured.clone() {
+        candidates.push(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            // 包内布局：`bin/yanshi-serve` 与 `share/yanshi/` 并列 ✓。
+            candidates.push(bin_dir.join("../share/yanshi"));
+            candidates.push(bin_dir.join("assets"));
+            // 开发时：`target/release/yanshi-serve` ⇒ `<repo>/assets` ✓。
+            candidates.push(bin_dir.join("../../assets"));
+        }
+    }
+    for candidate in &candidates {
+        if candidate.join("textures").is_dir() || candidate.join("brushes").is_dir() {
+            let note = format!("资产目录：{}", candidate.display());
+            return (Some(candidate.clone()), note);
+        }
+    }
+    // **一个都没有** ✓ ⇒ 把找过的都写进制表里 ✓（比"什么都没有"有用得多 ✓）。
+    let tried = candidates
+        .iter()
+        .map(|candidate| candidate.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    (configured, format!("资产目录：未找到（找过：{tried}）"))
+}
+
 /// **调色板里的一个颜色** ✓。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteColor {

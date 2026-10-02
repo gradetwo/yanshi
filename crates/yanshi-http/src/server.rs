@@ -310,7 +310,14 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
     }
     // **内置纹理目录接进工具层** ✓ ⇒ `list_textures` 会同时报内置与缓存 ✓，
     // 而 MCP 与查看器**都**经工具层 ✓ ⇒ 两边一致 ✓（用户那条硬要求 ✓）。
-    .with_assets_dir(options.assets_dir.clone());
+    // **资产目录要解析成真实存在的那个** ✓（真实用户报告 ✓：换工作目录启动 ⇒ 三类资产全空 ✗）。
+    // 解析结果**打印出来** ✓ ⇒ 以后这类问题一眼可查 ✓。
+    .with_assets_dir({
+        let (resolved, note) =
+            yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
+        eprintln!("  {note}");
+        resolved
+    });
     let registry = ToolRegistry::with_profiles(&options.profiles);
     let state = Arc::new(ServerState {
         workspace: Mutex::new(workspace),
