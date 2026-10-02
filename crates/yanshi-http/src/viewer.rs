@@ -743,6 +743,8 @@ const state = {
   // 移动工具选中的对象（含 bbox，用于命中测试与显示选中框）。
   selectedObject: null,
   // 当前选区（用于"清除选区"与覆盖层显示）。
+  // **上一次"设为背景"建的那一层** ✓（用它保证同一时刻只有一张纹理底 ✓ —— 见 `textureApply` ✓）。
+  textureLayerId: null,
   // **可撤销 / 可重做的笔数** ✓ —— 来自服务端工具 ✓；`null` = 还不知道 ✓（界面显示 — ✓，不猜 ✓）。
   remainingUndo: null,
   remainingRedo: null,
@@ -4215,9 +4217,28 @@ async function setupAssetPanels() {
         if (textureInfo) textureInfo.textContent = picked.error;
         return; // **不静默铺满整幅** ✗
       }
+      // **先当场说"正在铺"** ✗（用户实测："点了选择之后画布上看不到效果" ✓）——
+      // 实测时序 ✓：点完 **1 秒**时画布仍是 0 个非白像素 ✗、**6 秒**后才变成 38400 ✓
+      // ⇒ 服务端要渲染整幅纹理再合成 ✓、再加上一次预览往返 ✓ ⇒ 界面**看起来像没反应** ✗。
+      // ⇒ **不是靠加长等待** ✗，而是**当场把状态说出来** ✓（"看起来没反应"本身就是缺陷 ✓）。
+      if (textureInfo) textureInfo.textContent = "正在铺 " + texture + "（" + mode + "）…";
       const textureArgs = { texture: texture, mode: mode };
       if (picked.region) textureArgs.region = picked.region;
+      // **先把上一次那张纹理层删掉** ✗（用户实测：点五次就多出五层"背景（纹理）" ✗ ✓）——
+      // **为什么是"删了重建"而不是"改那一层"** ✓：工具的字面语义是"**新建一层并沉到最底**" ✓
+      //（那是它存在的理由 ✓：不会盖住已有的画 ✓）⇒ 界面这边只要保证**同一时刻只有一张纹理底** ✓ 即可 ✓
+      // ⇒ 删掉旧的、再让它照原样建新的 ✓ —— **不把"复用"的逻辑塞进工具** ✗（那会改变它的契约 ✓）。
+      if (state.textureLayerId) {
+        const layers = await callTool("list_layers", {}, { refresh: false });
+        const stillThere = ((layers && layers.layers) || []).some((layer) => layer.layer_id === state.textureLayerId);
+        if (stillThere) {
+          await callTool("delete_layer", { layer_id: state.textureLayerId }, { refresh: false });
+        }
+        state.textureLayerId = null;
+      }
       const result = await callToolChecked("texture_background", textureArgs, "设为背景");
+      // **记住这次建的那一层** ✓ ⇒ 下一次替换它 ✓（于是"点几次都只有一层" ✓）。
+      if (result && result.created_layer) state.textureLayerId = result.created_layer;
       // **警告要显示出来** ✗（工具会在"指定了非空图层"时给警告 ✓
       // ⇒ 界面若把它吞掉 ✓，用户就只剩困惑 ✓）。
       let text =

@@ -253,6 +253,16 @@ The brush picker puts a starred group and a recently used group above the groups
 recorded on every change and a button that toggles the current brush into or out of the favourites. Groups that end up
 empty are hidden, and the search filter still hides the groups that no longer match.
 
+Laying a texture no longer accumulates layers: the viewer removes the texture layer it created last time before
+asking for a new one, so clicking repeatedly leaves exactly one texture background rather than one per click, which is
+what a user saw after clicking five times. The tool keeps its own contract of creating a layer and moving it to the
+bottom, and the replacement logic stays in the viewer rather than being pushed into the tool.
+
+Applying a texture also reports that it is working, because measurement showed the canvas still had no ink one second
+after the click and only filled about six seconds later, once the server had rendered the texture and the preview had
+come back. A control that appears to do nothing for six seconds reads as broken, so the panel now says what it is doing
+straight away and then reports the result.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at
