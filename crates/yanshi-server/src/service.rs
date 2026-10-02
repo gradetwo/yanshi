@@ -161,6 +161,19 @@ pub struct BlobLifecycle {
     pub orphan_hashes: Vec<String>,
 }
 
+/// **调色板里的一个颜色** ✓。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteColor {
+    /// 红 ✓。
+    pub r: u8,
+    /// 绿 ✓。
+    pub g: u8,
+    /// 蓝 ✓。
+    pub b: u8,
+    /// 名字 ✓（`.gpl` 的第四列 ✓ / `open-color.json` 的键 ✓）—— 取不到就 `None` ✓。
+    pub name: Option<String>,
+}
+
 /// **一条可用纹理** ✓（内置的或缓存的 ✓）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextureEntry {
@@ -185,6 +198,112 @@ pub struct TextureEntry {
 ///
 /// **抽成函数** ✓：内置目录与缓存目录**走同一段逻辑** ✓ ⇒ 不会出现
 /// "缓存那条会过滤隐藏文件、内置那条忘了" 这种漂移 ✗（本项目吃过太多次 ✓）。
+/// **解析 GIMP 调色板文本** ✓（`.gpl` / `.kpl` ✓）。
+///
+/// **格式** ✓：第一行 `GIMP Palette` ✓、`Name:` 元信息 ✓、`#` 注释 ✓，
+/// 其余每行 `R G B [名字]` ✓（用空格或制表符分隔 ✓）。**解析要宽容** ✗ ——
+/// 这些文件来自 20 多个不同软件 ✓，缩进与分隔符并不统一 ✓
+/// ⇒ 跳过认不出的行 ✓（但**不静默**：全都没认出来时上层会报错 ✓）。
+fn parse_gimp_palette(text: &str) -> Vec<PaletteColor> {
+    let mut colors = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("GIMP Palette") {
+            continue;
+        }
+        if trimmed.starts_with("Name:") || trimmed.starts_with("Columns:") {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let (Some(r), Some(g), Some(b)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let (Ok(r), Ok(g), Ok(b)) = (r.parse::<u16>(), g.parse::<u16>(), b.parse::<u16>()) else {
+            continue;
+        };
+        if r > 255 || g > 255 || b > 255 {
+            continue;
+        }
+        let name = parts.collect::<Vec<_>>().join(" ");
+        colors.push(PaletteColor {
+            r: r as u8,
+            g: g as u8,
+            b: b as u8,
+            name: if name.is_empty() { None } else { Some(name) },
+        });
+    }
+    colors
+}
+
+/// **解析 Open Colors 那种 JSON** ✓（键 ⇒ 十六进制串 ✓ 或**串数组** ✓）—— 与 `assets/palettes/open-color.json` 一致 ✓。
+fn parse_open_color_json(text: &str) -> Result<Vec<PaletteColor>> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("不是合法 JSON：{error}")),
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "JSON 调色板的最外层应当是对象：键是颜色名，值是十六进制色号，或是一串色号",
+            ),
+        )
+    })?;
+    let mut colors = Vec::new();
+    for (key, entry) in object {
+        match entry {
+            serde_json::Value::String(hex) => {
+                if let Some((r, g, b)) = parse_hex_color(hex) {
+                    colors.push(PaletteColor {
+                        r,
+                        g,
+                        b,
+                        name: Some(key.clone()),
+                    });
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let Some(hex) = item.as_str() else { continue };
+                    if let Some((r, g, b)) = parse_hex_color(hex) {
+                        colors.push(PaletteColor {
+                            r,
+                            g,
+                            b,
+                            // **名字带上序号** ✓：同一色系十阶 ✓ ⇒ 只给键名会十条同名 ✗。
+                            name: Some(format!("{key} {}", index + 1)),
+                        });
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+    Ok(colors)
+}
+
+/// **解析 `#rgb` / `#rrggbb`** ✓（大小写都收 ✓；“`#`”可省 ✓）。
+fn parse_hex_color(text: &str) -> Option<(u8, u8, u8)> {
+    let digits = text.trim().trim_start_matches('#');
+    let parse = |slice: &str| u8::from_str_radix(slice, 16).ok();
+    match digits.len() {
+        3 => {
+            let mut chars = digits.chars();
+            let (r, g, b) = (chars.next()?, chars.next()?, chars.next()?);
+            let expand = |c: char| u8::from_str_radix(&format!("{c}{c}"), 16).ok();
+            Some((expand(r)?, expand(g)?, expand(b)?))
+        }
+        6 => Some((
+            parse(&digits[0..2])?,
+            parse(&digits[2..4])?,
+            parse(&digits[4..6])?,
+        )),
+        _ => None,
+    }
+}
+
 /// **资产种类 ⇒ 子目录 + 允许的扩展名** ✓（三类共用 ✓）。
 ///
 /// **为什么把这张表放在内核** ✓：工具层、缓存目录、内置目录、扩展名校验**都读它** ✓
@@ -1267,6 +1386,54 @@ impl Workspace {
             ErrorCode::ReferenceNotFound,
             ErrorContext::detail(format!("找不到 {kind} 「{clean}」⇒ 可用的有：{shown}")),
         ))
+    }
+
+    /// **读一个调色板的颜色** ✓（`.gpl` / `.kpl` / `.json` ✓）—— **MCP 与 Web 共用这一个入口** ✓。
+    ///
+    /// **支持哪三种** ✓（按**真实文件**决定 ✓，不是按扩展名猜 ✓ —— 内容不对就**明确报错** ✗）：
+    /// * `.gpl` / `.kpl` ✓：GIMP 调色板文本 ✓（`R G B [名字]` 一行一色 ✓，`#` 是注释 ✓）；
+    /// * `.json` ✓：Open Colors 那种形状 ✓（键 ⇒ 十六进制串 ✓ 或**串数组** ✓）。
+    ///
+    /// **这里返回全部** ✓ —— 截断与"截断了没有"归**工具层**报 ✓
+    ///（内核只回答"这个文件里有什么" ✓；职责分开 ⇒ 不会出现"截了却没说" ✗）。
+    /// 另外**列表后面必须空一行** ✓ —— 我第一版没空 ✓ ⇒ clippy 的
+    /// "doc list item without indentation" 当场指出 ✓（这条 lint 其实是在帮我保持文档可读 ✓）。
+    pub fn palette_colors(&self, name: &str) -> Result<Vec<PaletteColor>> {
+        let path = self.resolve_asset("palette", name)?;
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("读不到调色板 {}：{error}", path.display())),
+            )
+        })?;
+        let extension = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let colors = match extension.as_str() {
+            "gpl" | "kpl" => parse_gimp_palette(&text),
+            "json" => parse_open_color_json(&text)?,
+            other => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "还不支持解析 .{other} ⇒ 目前支持 gpl / kpl / json"
+                    )),
+                ))
+            }
+        };
+        if colors.is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "{} 里没解析出任何颜色 ⇒ 多半不是这两种格式",
+                    path.display()
+                )),
+            ));
+        }
+        // **不在内核里截断** ✓：截断与"截断了没有"都归**工具层**报 ✓
+        // ⇒ 内核只负责"这个文件里有什么" ✓（职责分开 ⇒ 不会出现"截了却没说" ✗）。
+        Ok(colors)
     }
 
     /// **某类资产的缓存目录** ✓（`<root>/<子目录>` ✓ —— 内置资产**不在这里** ✓）。

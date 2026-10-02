@@ -246,6 +246,21 @@ that was reported for the medium path. The stroke is rendered into a Hokusai sur
 to RGBA, stored as a blob and committed through the same `import_image` path the medium strokes use, so both engines
 share one commit implementation. The same stroke twice produces identical pixels, which is asserted.
 
+## Palettes and texture backgrounds
+
+`list_palette_colors` reads a palette from either the shipped set or the workspace cache and returns each colour as
+components and as hex, so a caller can either paint with it or drop it into a colour input. It understands the GIMP
+palette text format used by the sK1 collection and the JSON shape Open Colors uses, and it reports how many colours
+the file held against how many were returned, because a palette truncated to five hundred without saying so reads as
+a palette that small. A file that cannot be parsed at all is refused rather than reported as empty.
+
+`texture_background` lays a texture over the canvas in one of three ways: tiled, which is the default because the
+CC0 paper and cardboard textures are seamless and tiling avoids any resampling, stretched to the full canvas, or
+scaled to cover and centre-cropped, the last two reusing the project's own bilinear resampler. When no layer is
+named it creates one and moves it to the bottom, since a background belongs underneath, and it warns when a layer
+that already has content was named instead, because measurement showed that within a single layer an imported bitmap
+ends up above the objects already there.
+
 ## Install
 
 ```bash

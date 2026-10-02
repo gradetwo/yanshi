@@ -2094,6 +2094,29 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "texture_background",
+        profile: Profile::Core,
+        // **它改文档** ✓ ⇒ `mutating: true`（新建图层 + 落一层底图 ✓；`update_layer` 的强制检查会认它 ✓）。
+        summary: "把一张 CC0 纹理铺成背景（tile 平铺 / stretch 拉伸 / cover 等比铺满），可指定图层",
+        mutating: true,
+        params: &[
+            param!("texture", String, true, "纹理名（assets/textures 或工作区缓存里的 .png）"),
+            param!("mode", String, false, "tile（缺省）/ stretch / cover"),
+            param!("layer_id", String, false, "铺到哪个图层（缺省新建一个并沉到最底）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "list_palette_colors",
+        profile: Profile::Core,
+        summary: "读一个调色板的颜色（.gpl / .kpl / open-color 那种 .json）⇒ 供界面显示与取色",
+        mutating: false,
+        params: &[
+            param!("palette", String, true, "调色板名（assets/palettes 或工作区缓存里的文件）"),
+            param!("limit", Integer, false, "最多返回多少色（缺省 512；0 = 不限）"),
+        ],
+    },
+    ToolSpec {
         name: "brush_stroke",
         profile: Profile::Core,
         // **Hokusai 引擎驱动的笔触** ✓（用户裁定：采纳 Hokusai ✓）。
@@ -2350,6 +2373,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
+        "list_palette_colors" => write_list_palette_colors(ctx, args),
+        "texture_background" => write_texture_background(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -8717,6 +8742,264 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// **补间必须自己做** ✗：Hokusai 的 `stroke_to` 要的是**连续的指针流** ✓
 /// ⇒ 只喂稀疏控制点会得到**离散盖章** ✗ —— 用户正是在介质那边报过这个 ✓
 /// ⇒ 这里按 **2px** 步长细分 ✓（比笔尖细得多 ✓），压力沿段线性插值 ✓。
+/// **读一个调色板的颜色** ✓（只读 ✓）—— **MCP 与 Web 共用** ✓（用户硬要求 ✓）。
+///
+/// **截断必须在响应里说清** ✗：用户导入的调色板可能上千色 ✓
+/// ⇒ 只给前 512 个却不说 ✓ ⇒ 调用方会以为"这个板就这么多" ✗
+///（"说了一半、不说另一半"和"接受了却没用"是同一类病 ✓）。
+/// **把一张纹理铺成背景** ✓（目标的第 ② 件 ✓）。
+///
+/// **三种铺法** ✓：`tile`（**默认** ✓ —— 纸张/画布本来就是可平铺的 ✓，而且**不插值** ⇒ 最保真 ✓）、
+/// `stretch`（拉伸到整幅 ✓）、`cover`（**等比**放大到铺满再居中裁 ✓ —— 不会把纸纹压扁 ✓）。
+///
+/// **为什么默认 tile** ✓：这批纹理是 ambientCG 的**无缝**纸张/纸板 ✓ ⇒ 平铺既省内存 ✓
+/// 又**不引入重采样** ✓（缩放会把纸纹糊掉 ✗）。`stretch`/`cover` 复用我们已有的
+/// `yanshi_core::resample` ✓（双线性 ✓）—— **不引新依赖** ✓。
+///
+/// **落到底部** ✓：背景就该在最下面 ✓ ⇒ 新建图层后用 `reorder_layers` 把它放到**最底层** ✓
+///（`create_layer` 会把新层放在最上面 ✗ —— 这一点与用户报过的"顺序"问题同源 ✓）。
+fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let texture = require_str(args, "texture")?;
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "tile".to_string());
+    if !matches!(mode.as_str(), "tile" | "stretch" | "cover") {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("未知铺法 {mode} ⇒ 可用：tile / stretch / cover")),
+        ));
+    }
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("找不到文档 {}", ctx.doc_id)),
+            )
+        })?;
+    let width = canvas_width as usize;
+    let height = canvas_height as usize;
+    if width == 0 || height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("文档尺寸是 0 ⇒ 铺不了背景"),
+        ));
+    }
+
+    // **纹理同样走"缓存优先、内置其次"** ✓（与列举一致 ✓）。
+    let path = ctx.workspace.resolve_asset("texture", &texture)?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到纹理 {}：{error}", path.display())),
+        )
+    })?;
+    let Some((tile_width, tile_height, tile_rgba)) = yanshi_render::png::decode_png(&bytes) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "{} 不是能解码的 PNG ⇒ 本项目只解 8 位、非隔行的 RGB/RGBA ✓",
+                path.display()
+            )),
+        ));
+    };
+    let (tile_width, tile_height) = (tile_width as usize, tile_height as usize);
+    if tile_width == 0 || tile_height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{} 的尺寸是 0", path.display())),
+        ));
+    }
+
+    let mut rgba = vec![0u8; width * height * 4];
+    match mode.as_str() {
+        "stretch" => {
+            // **真实签名是 u32 + 返回 Option** ✗（我第一版按 usize 写 ✓ ⇒ 编译器当场指出 ✓）。
+            rgba = yanshi_core::resample::resample_rgba(
+                &tile_rgba,
+                tile_width as u32,
+                tile_height as u32,
+                width as u32,
+                height as u32,
+                yanshi_core::resample::ResampleFilter::Bilinear,
+            )
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail("把纹理拉伸到画布尺寸时重采样失败"),
+                )
+            })?;
+        }
+        "cover" => {
+            // **等比放大到铺满，再居中裁** ✓ —— 取两个方向的较大倍率 ✓。
+            let scale = (width as f64 / tile_width as f64).max(height as f64 / tile_height as f64);
+            let scaled_width = ((tile_width as f64 * scale).round() as usize).max(1);
+            let scaled_height = ((tile_height as f64 * scale).round() as usize).max(1);
+            let scaled = yanshi_core::resample::resample_rgba(
+                &tile_rgba,
+                tile_width as u32,
+                tile_height as u32,
+                scaled_width as u32,
+                scaled_height as u32,
+                yanshi_core::resample::ResampleFilter::Bilinear,
+            )
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail("把纹理等比放大时重采样失败"),
+                )
+            })?;
+            let offset_x = (scaled_width.saturating_sub(width)) / 2;
+            let offset_y = (scaled_height.saturating_sub(height)) / 2;
+            for row in 0..height {
+                for column in 0..width {
+                    let source_x = (offset_x + column).min(scaled_width - 1);
+                    let source_y = (offset_y + row).min(scaled_height - 1);
+                    let from = (source_y * scaled_width + source_x) * 4;
+                    let to = (row * width + column) * 4;
+                    rgba[to..to + 4].copy_from_slice(&scaled[from..from + 4]);
+                }
+            }
+        }
+        _ => {
+            // **tile**：逐像素取模 ✓ —— 纹理是无缝的 ✓ ⇒ 不重采样 ⇒ 最保真 ✓。
+            for row in 0..height {
+                for column in 0..width {
+                    let source_x = column % tile_width;
+                    let source_y = row % tile_height;
+                    let from = (source_y * tile_width + source_x) * 4;
+                    let to = (row * width + column) * 4;
+                    rgba[to..to + 4].copy_from_slice(&tile_rgba[from..from + 4]);
+                }
+            }
+        }
+    }
+
+    // **图层** ✓：没指定就新建一个，并把它**沉到最底** ✓。
+    let mut created_layer: Option<String> = None;
+    let layer_id = match optional_str(args, "layer_id") {
+        Some(given) => given,
+        None => {
+            let made = write_create_layer(ctx, &json!({ "name": "背景（纹理）" }))?;
+            let new_id = made
+                .get("layer_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::PreconditionFailed,
+                        ErrorContext::detail(format!("建背景图层之后没拿到 layer_id：{made}")),
+                    )
+                })?
+                .to_string();
+            created_layer = Some(new_id.clone());
+            // **沉到底** ✓：`reorder_layers` 收的是**自下而上**的顺序 ✓
+            //（我实测过 ✓：传 [second, first] 顺序真的会变 ✓）⇒ 把新层放最前 ✓。
+            let listed = read_list_layers(ctx)?;
+            let mut order: Vec<String> = vec![new_id.clone()];
+            if let Some(items) = listed.get("layers").and_then(Value::as_array) {
+                for item in items {
+                    if let Some(id) = item.get("layer_id").and_then(Value::as_str) {
+                        if id != new_id {
+                            order.push(id.to_string());
+                        }
+                    }
+                }
+            }
+            write_reorder_layers(ctx, &json!({ "order": order }))?;
+            new_id
+        }
+    };
+
+    // **像素照样"blob 先行"** ✓，与介质/笔刷两条路完全同源 ✓。
+    let composite = ctx.workspace.store().put(&rgba)?;
+    let import_args = json!({
+        "layer_id": layer_id,
+        "object_id": optional_str(args, "object_id"),
+        "bitmap": {
+            "blob_hash": composite.to_string(),
+            "size": rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {"x": 0, "y": 0, "w": width, "h": height},
+    });
+    // **指定了非空图层时要提醒一句** ✗（真实观察 ✓）：实测发现
+    // **同一个图层里，后导入的位图会排在已有对象之上** ✗
+    //（我用"背景 + 同层画红"验过 ✓：形状对象还在 ✓ 但被背景盖住了 ✓）
+    // ⇒ "背景要沉到最底"这件事**只能靠图层** ✓ ⇒ 缺省已经自建并沉底 ✓；
+    // 若调用方**自己指定**了一个**已经有内容**的图层 ✓，得让它知道会发生什么 ✓。
+    let layer_had_content = {
+        let listed = read_list_layers(ctx)?;
+        listed
+            .get("layers")
+            .and_then(Value::as_array)
+            .and_then(|layers| {
+                layers.iter().find(|layer| {
+                    layer.get("layer_id").and_then(Value::as_str) == Some(layer_id.as_str())
+                })
+            })
+            // **字段名与类型都要照真实的来** ✗ —— 这里我错了两次 ✓，两次都是测试抓出来的 ✓：
+            // 第一次按 `object_count` 写 ✓ ⇒ **字段名不存在** ✗；
+            // 第二次按"`objects` 数组"写 ✓ ⇒ **类型不对** ✗。
+            // **实测** ✓：`list_layers` 里 `objects` 是**整数**（对象个数 ✓，如 `2`）。
+            // ⇒ 两次都会让 `unwrap_or(...)` 兜底 ⇒ **警告永远不会触发** ✗ ✓
+            //（"加了却永远不生效" 与"接受了却没用"是同一类病 ✓）。
+            .and_then(|layer| layer.get("objects").and_then(Value::as_u64))
+            .map(|count| count > 0)
+            .unwrap_or(false)
+    };
+    let mut value = write_import_image(ctx, &import_args)?;
+    value["texture"] = json!(texture);
+    value["mode"] = json!(mode);
+    if created_layer.is_none() && layer_had_content {
+        value["warning"] = json!(
+            "指定的图层里本来就有对象 ⇒ 实测**同层内后导入的位图会压在已有对象之上** \
+             ⇒ 想让纹理当背景，请**让它单独占一层**（不传 layer_id 就会自建一层并沉到最底）"
+        );
+    }
+    // **`region` 要显式回** ✓ —— `import_image` 回的是 `dirty_bbox` ✓，
+    // 而本项目其它落笔工具（`medium_stroke` / `brush_stroke` ✓）都回 `region` ✓
+    // ⇒ **同一种语义在三个工具里要用同一个名字** ✗（各叫各的 ⇒ 调用方要记三套 ✓）。
+    value["region"] = json!({"x": 0, "y": 0, "w": width, "h": height});
+    value["tile_size"] = json!({"width": tile_width, "height": tile_height});
+    if let Some(layer) = created_layer {
+        value["created_layer"] = json!(layer);
+    }
+    Ok(value)
+}
+
+fn write_list_palette_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let palette = require_str(args, "palette")?;
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(512) as usize;
+    let all = ctx.workspace.palette_colors(&palette)?;
+    let total = all.len();
+    let take = if limit == 0 { total } else { limit.min(total) };
+    let colors: Vec<Value> = all
+        .iter()
+        .take(take)
+        .map(|color| {
+            json!({
+                "r": color.r, "g": color.g, "b": color.b,
+                // **同时给十六进制** ✓：界面要直接写进 `<input type=color>` ✓，
+                // 而调用方多半不想自己格式化 ✓。
+                "hex": format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b),
+                "name": color.name,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "palette": palette,
+        "count": colors.len(),
+        "total": total,
+        "truncated": take < total,
+        "hint": if take < total {
+            "只返回了前一部分 ⇒ 传 limit: 0 或更大的数可拿到全部"
+        } else {
+            "这是这个调色板的全部颜色"
+        },
+        "colors": colors,
+    }))
+}
+
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
