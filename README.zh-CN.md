@@ -157,11 +157,11 @@ agent 拿到的是**文件** ✓，不是 base64 ✓，也不再受 `include_ima
 
 ## 发布包
 
-`scripts/package-release.sh` 会构建 release 二进制 ✓，并把它们**运行期真正需要的资产**一起打包 ✓：
+**`make release`** ✓ 会构建 release 二进制 ✓，并把它们**运行期真正需要的资产**一起打包 ✓：
 两个可执行文件 ✓、浏览器端 WASM 计算内核 ✓、以及各**介质插件** ✓。产物是 `dist/` 下一个带版本号的
 tar.gz 与一份校验和 ✓。
 
-    scripts/package-release.sh            # 构建并打包到 dist/
+    make release                          # 构建并打包到 dist/
     tar -xzf dist/yanshi-*-x86_64-unknown-linux-gnu.tar.gz
     cd yanshi-*-x86_64-unknown-linux-gnu
     ./yanshi.sh --root ./workspace --bind 127.0.0.1:8110

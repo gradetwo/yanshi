@@ -146,11 +146,18 @@ is refused rather than quietly treated as an editor, since that would turn a rea
 
 ## Release package
 
-`scripts/package-release.sh` builds the release binaries and packs them with the runtime assets they need:
-the two executables, the browser-side WASM kernel and the medium plugins. It writes a versioned tarball and a
-checksum file under `dist/`.
+`make release` builds the release binaries and packs them with the runtime assets they need: the two executables, the
+browser-side WASM kernel and the medium plugins. It writes a versioned tarball and a checksum file under `dist/`.
+`make help` lists the other entry points, and `make check` runs the format, lint and test gates.
 
-    scripts/package-release.sh            # build and pack into dist/
+The package is **static by default**, because a dynamically linked binary inherits its build machine's glibc and then
+refuses to start on older distributions. Use `make release-dynamic` only if you specifically need dynamic linking.
+
+The browser-side kernel is a build artefact, so a fresh clone does not have it. Rather than failing, the packaging
+warns and produces a package anyway, because the viewer falls back to server-side rendering; run `scripts/dev.sh`
+(building the kernel additionally needs `wasm-bindgen-cli`) to include it.
+
+    make release                          # build and pack into dist/
     tar -xzf dist/yanshi-*-x86_64-unknown-linux-gnu.tar.gz
     cd yanshi-*-x86_64-unknown-linux-gnu
     ./yanshi.sh --root ./workspace --bind 127.0.0.1:8110
