@@ -277,6 +277,14 @@ single tool with both MyPaint physics and a caller-chosen colour: one had the ph
 had the colour without the physics. Verified by measuring the pixels a red stroke leaves: the values come out at two
 hundred and twenty, thirty one, thirty one, against the two hundred and twenty, thirty, thirty that were asked for.
 
+### Descriptions say when to use a tool
+
+Tool descriptions now open with the situation they are for and name the neighbours they compete with, because a model
+chooses between tools by reading them. An external test report showed the cost of the opposite: the four stroke tools
+said how to call them but not when to use which, so a model used the simplified medium interface for four revisions
+before discovering that the MyPaint brush tool was the one it wanted. The asset listing now also names the kinds it
+takes, with counts, and says that there is no separate listing tool to look for.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

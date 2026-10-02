@@ -1075,7 +1075,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_stroke",
         profile: Profile::Core,
-        summary: "绘制笔触（data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB）",
+        summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2098,7 +2098,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "medium_stroke",
         profile: Profile::Core,
-        summary: "用介质插件（油画/水彩/马克笔/铅笔/像素）画一笔：服务端原生调用插件，产出带 medium 描述符的补丁",
+        summary: "**要介质插件（油画 / 水彩 / 马克笔 / 铅笔 / 像素）的模拟就用这个** ✓：服务端原生调用插件，产出带 medium 描述符的补丁。                  与邻居的分工：要 **201 支 .myb 笔刷**（MyPaint 物理）用 brush_stroke；要**纯几何矢量**笔迹用 draw_stroke。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2190,7 +2190,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **它和 `medium_stroke` 的关系** ✓：两条独立引擎 ✓ ——
         // 介质插件是我们自己的 wasm ABI ✓，Hokusai 读的是 libmypaint 的 `.myb` ✓
         // ⇒ 前者给"我们自己的介质" ✓，后者给"**196 支现成的 MyPaint 笔刷**" ✓。
-        summary: "用 .myb 笔刷（Hokusai 引擎）画一笔：brush 给名字，points 给 [[x,y,pressure],…]",
+        // **选用指南必须写在描述里** ✓（AI 外部实测 ✓：它**误用 `medium_stroke` 画了四版** ✗，
+        // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
+        // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
+        //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2209,7 +2213,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "list_assets",
         profile: Profile::Core,
-        summary: "列出某类资产：brush（.myb 笔刷）/ texture（PNG 纹理）/ palette（调色板）",
+        summary: "列出某类资产（**笔刷/纹理/调色板都从这里查 ✓**）：kind 取 brush ⇒ 201 支 .myb，                  texture ⇒ PNG 纹理，palette ⇒ 调色板。没有 list_brushes / list_textures 这类单独的工具 ✗。",
         mutating: false,
         params: &[
             param!("kind", String, true, "brush / texture / palette"),
