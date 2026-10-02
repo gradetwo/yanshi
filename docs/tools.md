@@ -237,6 +237,11 @@ the pixels, with a direction check so that a colour written out as a constant ca
 fail before the fix. The colour of an already painted brush stroke therefore still cannot be changed in place, and
 the refusal says so and says to undo and paint again, rather than implying a capability that is not there.
 
+The region a stroke paints into is now clamped to the canvas before it is used, in the same place the base pixels
+are read, the surface is read back and the coverage mask is computed, so a smudge that starts hard against the
+canvas edge reads the same base as one in the middle; previously a region that overhung the edge came back a
+different size, the base was skipped whole, and the smudge silently degraded to nothing to smear.
+
 A stroke no longer carries a copy of the canvas underneath it. Brushes that read the canvas, such as the
 smudge and colorize kinds, need the existing pixels fed into the engine, and the tool then exported the whole
 surface, so the stroke's bounding rectangle was committed as a new object: the painted result looked right until

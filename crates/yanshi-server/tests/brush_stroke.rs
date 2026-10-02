@@ -496,3 +496,83 @@ fn a_stroke_does_not_bake_its_region_rectangle_into_the_object() {
          —— 笔触对象里背着一份底图 ✓"
     );
 }
+
+/// **靠近画布边缘的涂抹必须照样能用** ✓ —— 区域越界时要**裁到画布内** ✓，而不是整块跳过 ✗。
+///
+/// **修的是什么** ✗（第 33 轮实测撞见 ✓）：`render_region_raw` 会把越界的区域**裁到画布内** ✓
+/// ⇒ 回来的尺寸与请求的尺寸对不上 ✓ ⇒ 旧代码**直接跳过喂底图** ✓（只打一行"底图尺寸不符"✓）
+/// ⇒ **涂抹退化成"没有东西可抹"** ✗ —— 而它在画布中间完全正常 ✓（边缘与中间**语义不一致** ✓）。
+///
+/// **判据** ✓：同一条涂抹在**画布边缘**与在**画布中间**都必须真的改动像素 ✓
+/// （修复前：边缘那次会以 `precondition_failed` 失败 ✓ ⇒ 能红 ✓）。
+#[test]
+fn a_smudge_brush_works_at_the_canvas_edge_too() {
+    let root = temp_dir("smudge_edge");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // **先把"可抹的东西"画在紧贴顶边的地方** ✓（`classic-knife` 不读画布 ⇒ 它自己画得出来 ✓）。
+    let base = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "base_edge", "brush": "classic-knife", "size": 30,
+            "points": [[60.0, 8.0, 0.9], [200.0, 8.0, 0.9]]
+        }),
+    );
+    assert_eq!(base["ok"], json!(true), "{base}");
+    // **再在顶边抹一把** ✓ —— 它的区域一定越界（半径 15 ⇒ 想要 y=-7 起 ✓）⇒ 必须裁 ✓。
+    let edge = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "smudge_edge", "brush": "ramon-Knife", "size": 30,
+            "points": [[70.0, 8.0, 0.9], [190.0, 12.0, 0.9]]
+        }),
+    );
+    assert_eq!(
+        edge["ok"],
+        json!(true),
+        "贴边的涂抹也必须能用（不许因为区域越界就跳过底图 ✗）：{edge}"
+    );
+    let edge_painted = edge["painted_pixels"].as_u64().unwrap_or(0);
+    assert!(edge_painted > 0, "贴边的涂抹应当真的改动像素：{edge}");
+
+    // **画布中间做一遍同样的对照** ✓ ⇒ 两边都必须成立 ✓
+    //（"边缘与中间不一致" ✗ 才是要修的病 ✓）。
+    // **对照组也必须先有"可抹的东西"** ✗ —— 我第一版漏了这一步 ✓，
+    // 于是中间那次当然报"没东西可抹" ✓：那是**测试自己的问题** ✗，不是代码的 ✓（当场看出来 ✓）。
+    let base_middle = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "base_middle", "brush": "classic-knife", "size": 30,
+            "points": [[60.0, 100.0, 0.9], [200.0, 100.0, 0.9]]
+        }),
+    );
+    assert_eq!(base_middle["ok"], json!(true), "{base_middle}");
+    let middle = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "smudge_middle", "brush": "ramon-Knife", "size": 30,
+            "points": [[70.0, 100.0, 0.9], [190.0, 104.0, 0.9]]
+        }),
+    );
+    assert_eq!(middle["ok"], json!(true), "{middle}");
+    assert!(
+        middle["painted_pixels"].as_u64().unwrap_or(0) > 0,
+        "画布中间的涂抹应当真的改动像素：{middle}"
+    );
+    // **同一个对象区域都不许越出画布** ✓（裁过之后才提交 ✓）。
+    for value in [&edge, &middle] {
+        let region = &value["region"];
+        assert!(
+            region["x"].as_f64().unwrap_or(-1.0) >= 0.0
+                && region["y"].as_f64().unwrap_or(-1.0) >= 0.0,
+            "对象区域不许越出画布左上角：{value}"
+        );
+    }
+}

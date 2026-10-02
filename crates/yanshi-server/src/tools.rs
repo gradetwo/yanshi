@@ -9846,6 +9846,28 @@ impl PaintRegion {
             height: bounds.5,
         }
     }
+
+    /// **裁到画布内** ✓ —— 区域与画布取**交集** ✓（画布之外没有像素 ✓）。
+    ///
+    /// **为什么必须裁** ✗（第 33 轮实测撞见 ✓）：`render_region_raw` 会把越界的区域**裁到画布内** ✓
+    /// ⇒ 回来的尺寸与请求的尺寸**对不上** ✓ ⇒ 底图被整块跳过 ✓
+    /// （只打一行"底图尺寸不符"✓）⇒ **靠近画布边缘的涂抹退化成"没有东西可抹"** ✗。
+    /// 裁一次 ✓ 之后：喂底图 ✓、读回 ✓、掩膜 ✓、对象区域 ✓ 用的是**同一份交集** ✓
+    /// ⇒ 边缘与中间的语义**完全一致** ✓。
+    fn clamped(self, canvas_width: u32, canvas_height: u32) -> Self {
+        let x0 = self.x0.clamp(0, canvas_width as i32);
+        let y0 = self.y0.clamp(0, canvas_height as i32);
+        let x1 = self.x1.clamp(0, canvas_width as i32);
+        let y1 = self.y1.clamp(0, canvas_height as i32);
+        Self {
+            x0,
+            y0,
+            x1,
+            y1,
+            width: (x1 - x0).max(1) as usize,
+            height: (y1 - y0).max(1) as usize,
+        }
+    }
 }
 
 /// 把 surface 里某个区域读成 **RGBA8** ✓（`>> 7` 把 fix15 映回 0..255 ✓），并数出非空像素 ✓。
@@ -10070,7 +10092,15 @@ fn paint_brush(
     // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
     // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
     // 落笔后读回像素也用它 ✓ ⇒ **两处不可能算出不同的区域** ✗（那会让底图与结果错位 ✓）。
-    let seed_region = PaintRegion::from_bounds(brush_stroke_region(points, size));
+    // **先裁到画布内** ✓ —— 否则底图会因为"尺寸对不上"被整块跳过 ✓
+    // ⇒ 靠近边缘的涂抹会**静默退化成没东西可抹** ✗（第 33 轮实测 ✓）。
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .unwrap_or((0, 0));
+    let seed_region = PaintRegion::from_bounds(brush_stroke_region(points, size))
+        .clamped(canvas_width, canvas_height);
     // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
     //
     // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
@@ -10166,7 +10196,8 @@ fn paint_brush(
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
-    let region = PaintRegion::from_bounds(brush_stroke_region(points, size));
+    // **同一份（已裁的）区域** ✓ —— 读回与掩膜都必须与喂底图用的那个完全一致 ✗。
+    let region = seed_region;
     let (mut rgba, mut painted) = read_surface_region(&surface, region);
     // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
     // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
