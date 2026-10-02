@@ -10,6 +10,17 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Stroke pressure
+
+A stroke's `points` accept an optional third element, the pressure from 0 to 1, so `[[x, y, 0.2], [x, y, 0.9]]`
+draws a line that thickens and thins; omitting it means full pressure and renders exactly as before. The kernel has
+always supported this, including the `{"x": .., "y": .., "pressure": ..}` object form, and the server-side tool
+description did not mention it, which is why generated artwork tended to come out as uniform noodles.
+
+    {"layer_id": "L", "data": {
+      "points": [[20, 40, 0.15], [60, 44, 0.9], [100, 48, 0.35]],
+      "size": 24, "color": [0.8, 0.2, 0.1, 1.0]}}
+
 ## Shape geometry
 
 A shape's geometry is `{"kind": "rect" | "ellipse" | "polygon", ...}` with either a `bbox` of `x`, `y`, `w` and `h`

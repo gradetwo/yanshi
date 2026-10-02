@@ -966,7 +966,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "data",
                 Object,
                 true,
-                "{points,size,color,hardness,opacity,seed...}"
+                "{points,size,color,hardness,opacity,seed...}；\
+                 points 支持 [[x,y]] 或 [[x,y,pressure]]（pressure 0..1，缺省 1.0）——\
+                 按点给压力即可画出提按顿挫（内核早就支持，此前只是没写在这里）"
             ),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
