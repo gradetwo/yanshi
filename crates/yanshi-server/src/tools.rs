@@ -99,6 +99,50 @@ impl Profile {
             }
         })
     }
+
+    /// **已实现**的工具组 ✓（**不含 `semantic`** ✓ —— 按既定裁定它只预留不开发 ✓）。
+    ///
+    /// **为什么要有这个清单** ✓：真实用户报告 ✓ —— `yanshi-mcp` 默认只开 `core` ✓
+    /// ⇒ **后期调色、滤镜、蒙版、修复类工具全都"看不见"** ✗；
+    /// 而 CLI 又没有简写 ✓ ⇒ 得手敲几十个字符的完整列表才能激活全部工具 ✗
+    /// ⇒ `--profile all` 就是他给的解法 ✓。
+    pub const IMPLEMENTED: [Profile; 8] = [
+        Profile::Core,
+        Profile::History,
+        Profile::Changeset,
+        Profile::Retouch,
+        Profile::Conflict,
+        Profile::Annotation,
+        Profile::Collab,
+        Profile::Structure,
+    ];
+
+    /// **解析逗号分隔的 profile 列表** ✓，支持 `all` 简写 ✓。
+    ///
+    /// **`all` = 全部"已实现"的组** ✓（**不含 `semantic`** ✗）——
+    /// 与"缺省启用除 semantic 外的全部"是**同一条规矩** ✓ ⇒ 两处不会矛盾 ✓。
+    /// 想单独开 semantic 就显式写 ✓（它在册 ✓，只是没有工具 ✓）。
+    pub fn parse_list(text: &str) -> Result<Vec<Profile>> {
+        let mut out = Vec::new();
+        for name in text
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            if name == "all" {
+                out.extend(Profile::IMPLEMENTED);
+            } else {
+                out.push(Profile::parse(name)?);
+            }
+        }
+        if out.is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("--profile 不能为空 ⇒ 例如 core 或 all"),
+            ));
+        }
+        Ok(out)
+    }
 }
 
 /// 参数类型（用于生成 MCP inputSchema）。
@@ -1959,7 +2003,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "new_document",
         profile: Profile::Core,
-        summary: "新建（或清空重建）一个空白文档：给定宽高与背景色，直接得到可用画布",
+        // **描述必须与实现一致** ✓（真实用户报告 ✓）：它原来写着"新建（**或清空重建**）" ✗
+        // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
+        // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
+        // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
+        summary: "新建一个空白文档（给定 doc_id / 宽高 / 背景色）；已存在的 doc_id 会被拒绝，不会清空",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -2697,6 +2745,33 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let layer_id = require_str(args, "layer_id")?;
     let patch = require_object(args, "patch")?.clone();
     let patch = patch.as_object().ok_or_else(|| missing("patch"))?;
+    // **`blend_mode` 的值必须校验** ✓（真实用户报告 ✓）：此前它只当"合法**键名**"放行 ✓
+    // ⇒ **非法字符串照样写进不可变原子日志** ✗，而渲染层遇到不认识的值会**静默退化为 `normal`** ✗
+    // ⇒ 调用方看到 `ok: true` ✓、画面却**什么也没发生** ✗ ——
+    // 正是本项目最忌讳的"**接受了却没用**" ✓（与最初 `draw_shape` 的 P0 **同一类病** ✓）。
+    //
+    // **清单取自渲染层** ✓（`BlendMode::NAMES` ✓）—— 两边各写一份必然漂移 ✗。
+    // **报错列出可用值** ✓（与"错误里带可用选项"同一规矩 ✓）。
+    if let Some(value) = patch.get("blend_mode") {
+        let name = value.as_str().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "blend_mode 必须是字符串 ⇒ 可用：{}",
+                    yanshi_render::blend::BlendMode::NAMES.join(" / ")
+                )),
+            )
+        })?;
+        if yanshi_render::blend::BlendMode::parse(name).is_none() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "不支持的混合模式 {name} ⇒ 可用：{}",
+                    yanshi_render::blend::BlendMode::NAMES.join(" / ")
+                )),
+            ));
+        }
+    }
     let mut atoms = Vec::new();
     for key in LAYER_PATCH_KEYS {
         if let Some(value) = patch.get(key) {

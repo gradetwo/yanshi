@@ -128,7 +128,8 @@ impl McpOptions {
                         .map(str::trim)
                         .filter(|name| !name.is_empty())
                     {
-                        profiles.push(Profile::parse(name).map_err(|error| error.to_string())?);
+                        profiles
+                            .extend(Profile::parse_list(name).map_err(|error| error.to_string())?);
                     }
                     if !profiles.is_empty() {
                         options.profiles = profiles;
@@ -160,7 +161,8 @@ impl McpOptions {
            --doc <id>            默认文档 id（缺省 default）\n\
            --width <n>           自动创建文档的宽（缺省 1024）\n\
            --height <n>          自动创建文档的高（缺省 1024）\n\
-           --profile <list>      启用工具组，逗号分隔：core,history,annotation,...\n\
+           --profile <list>      启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure\n\
+                                 （all = 全部已实现的组，即除 semantic 外；缺省只开 core）\n\
            --no-wait             不等待渲染（立即返回 job_pending，由 Agent 轮询）\n\
            --wait-budget <ms>    wait_for_render 的等待预算（缺省 500）\n\
            --no-inline-images    不在工具结果中内嵌 base64 图像\n\

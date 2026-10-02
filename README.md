@@ -10,6 +10,13 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Enabling all tool groups
+
+`--profile all` enables every implemented group in one word, which is 113 tools against the 45 that core alone gives;
+it deliberately excludes semantic, which is reserved by decision. Both `yanshi-serve` and `yanshi-mcp` list the
+values in `--help`. Layer blend modes are validated against the renderer's own list, so an unknown mode is refused
+with the available names instead of being written to the log and silently ignored.
+
 ## Grain, stroke outlines, and a note on honesty
 
 `appearance.texture` adds a paper-like grain: `"noise"` or `"grain"`, or an object with `kind`, `scale`, `strength`

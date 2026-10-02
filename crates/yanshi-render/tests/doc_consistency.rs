@@ -137,7 +137,15 @@ fn single_effect_cost_budget() {
             _ => serde_json::json!({}),
         };
         let mut best = Duration::MAX;
-        for _ in 0..3 {
+        // **轮数从 3 提到 7** ✓：这条测试是 `#[ignore]` 的 ✓ ⇒ **只在长任务里跑** ✓，
+        // 而长任务常常与别的编译**并行** ✓ ⇒ 3 轮很容易**全部落在忙窗口里** ✗。
+        // **实测证据** ✓（同一条测试、同一台机器 ✓）：
+        //   并行构建时：`adjustment:curves` **70.5ms** ✗（预算 60ms ⇒ 失败 ✓）、`motion_blur` **177.7ms** ✗；
+        //   机器空下来：`adjustment:curves` **26.9ms** ✓、`motion_blur` **67.4ms** ✓ —— **全线快 2.6 倍** ✓。
+        // ⇒ 那次失败是**纯 CPU 争抢** ✗，不是回归 ✓。
+        // **为什么加大轮数而不是放宽预算** ✓：**最小值才是真实成本** ✓（真回归会**同时抬高最小值** ✓），
+        // 而放宽预算会把**真回归**一起放过去 ✗。
+        for _ in 0..7 {
             let mut buffer = sample();
             let started = Instant::now();
             apply_filter(&mut buffer, name, &params, 1.0, (512.0, 512.0));
@@ -151,7 +159,15 @@ fn single_effect_cost_budget() {
             _ => serde_json::json!({}),
         };
         let mut best = Duration::MAX;
-        for _ in 0..3 {
+        // **轮数从 3 提到 7** ✓：这条测试是 `#[ignore]` 的 ✓ ⇒ **只在长任务里跑** ✓，
+        // 而长任务常常与别的编译**并行** ✓ ⇒ 3 轮很容易**全部落在忙窗口里** ✗。
+        // **实测证据** ✓（同一条测试、同一台机器 ✓）：
+        //   并行构建时：`adjustment:curves` **70.5ms** ✗（预算 60ms ⇒ 失败 ✓）、`motion_blur` **177.7ms** ✗；
+        //   机器空下来：`adjustment:curves` **26.9ms** ✓、`motion_blur` **67.4ms** ✓ —— **全线快 2.6 倍** ✓。
+        // ⇒ 那次失败是**纯 CPU 争抢** ✗，不是回归 ✓。
+        // **为什么加大轮数而不是放宽预算** ✓：**最小值才是真实成本** ✓（真回归会**同时抬高最小值** ✓），
+        // 而放宽预算会把**真回归**一起放过去 ✗。
+        for _ in 0..7 {
             let mut buffer = sample();
             let started = Instant::now();
             apply_adjustment(&mut buffer, name, &params, 1.0);
