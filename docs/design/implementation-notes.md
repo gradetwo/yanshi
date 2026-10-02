@@ -7758,3 +7758,26 @@ brush=100%_Opaque   size=10 ⇒ painted=2844  ✓   size=40 ⇒ 9024 ✓
 **下一轮第一步** ✓：在真浏览器里**用鼠标画两笔**（分别选两支差别极大的笔刷 ✓），
 **抓发送出去的请求体** ✓（或两侧文字的对比 ✓）⇒ 确认 `brush` 字段到底传了什么 ✓；
 若确实为空/恒定 ⇒ 修那条分支 ✓，并加一条"**真人路径**"的验收 ✓（而不是只验入口 ✓）。
+
+### 🚨 「换什么笔都一样」**第二个决定性证据** ✓：真人拖一笔**根本不发 `brush_stroke`** ✗
+
+**方法** ✓（按上一轮记下的计划 ✓）：在页面里**替换 `window.fetch`** ✓ 记录所有 `/api/tools/*` 的请求体 ✓，
+然后**走真人那条路**：`setTool("brush")` ✓ → `loadBrushes()` ✓ → `setBrush("wet_knife")` ✓
+→ 在画布上**真的拖一笔**（pointerdown / move ×2 / up ✓）。
+**结果** ✓：
+```text
+selectedBrush = "wet_knife" ✓      tool = "brush" ✓
+brushCalls = []                     ← **没有任何 brush_stroke** ✗
+实际发出的: list_assets / get_preferences ×2 / set_preferences / get_log / get_document ×3
+```
+⇒ **落笔没到 Hokusai** ✓ ⇒ **换哪支笔结果都一样** ✓ ✓ —— 与用户描述**逐字吻合** ✓。
+**尚未区分开的一件事** ✗（诚实标注 ✓）：这可能是
+**(a)** 应用的落笔分支没走到（`state.points.length < 2` ⇒ `commitShape` 提前 return ✓），
+也可能是 **(b)** 我的合成拖拽本身没被接受（合成 PointerEvent 走不到真实指针捕获 ✓）。
+我此前用**同一种**合成拖拽画过矩形 ✓（那次成功 ✓）⇒ 两种可能都还活着 ✓ ⇒ **不能就此断言是应用的错** ✗。
+**下一个探针（一步即可分开 ✓）** ✓：拖完之后读
+`window.yanshi.state().points`（或页面里的点数组长度 ✓）——
+* 若是 0/1 ⇒ **(b) 我的探针无效** ✓ ⇒ 要改用更靠近真人的方式（`Input.dispatchMouseEvent` ✓ 真正的 CDP 输入 ✓）；
+* 若 ≥2 而请求仍为空 ⇒ **(a) 应用的分支坏了** ✓ ⇒ 去看 `commitShape` 那条 `if (brushName)` ✓ 为何不成立 ✓。
+**既有证据仍然成立** ✓（上一轮 ✓）：三支差别极大的笔刷在**工具层**产出**互不相同**的像素哈希 ✓
+⇒ 工具层没问题 ✓ ⇒ 问题在"**界面落笔 → 工具调用**"这一段 ✓。
