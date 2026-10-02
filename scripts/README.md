@@ -43,6 +43,18 @@ node scripts/browser-brush-preview.mjs "http://127.0.0.1:8110/?doc=ui&token=<tok
 
 环境变量：`CDP_PORT`（缺省 9333）、`SHOT_DIR`（截图目录，缺省 `/tmp/yanshi-brush-preview`）。
 
+## `browser-canvas-handfeel.mjs` — 画布手感（滚轮/缩放/图层选择/每笔抖动）
+
+真实用户实测报告的四条：滚轮与触摸板**不许误触缩放**（缩放只走显式入口：适配 / 1:1 / **状态栏百分比输入框** / `+ - 0`）、
+**新建图层后必须切到它**（同时查 `state.layerId` 与面板 `.layer-row.selected` —— 只查 state 会漏）、
+以及**画一笔不许改动用户缩放**（"每笔抖一下"的真凶是 `preview.onload` 里无条件 `state.zoom = 1`）。
+判据只用 `userZoom` ✓ —— `displayScale = fit × userZoom`，而 `fit` 会随布局重排自己变，
+拿它当判据会把"布局重排"冤判成"缩放了"（实测 board 在 344×311 与 300×150 之间变过）。
+
+```bash
+node scripts/browser-canvas-handfeel.mjs "http://127.0.0.1:8110/?doc=ui&token=<token>"
+```
+
 ## `browser-asset-dock.mjs` — 素材浮层的浏览器验收（真实 Chromium）
 
 用户要求："画笔区快捷方式、点开浮出来"。判据：① 打开前两张卡（调色板 / 纹理）在**原来的父节点**里；

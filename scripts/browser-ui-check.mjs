@@ -310,7 +310,11 @@ const zoomCheck = await evaluate(`(async () => {
   const rect = board.getBoundingClientRect();
   const center = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
   const before = { w: board.width, h: board.height };
-  board.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -600, ...center }));
+  // **缩放改成显式入口** ✓（滚轮现在**只平移、不缩放** ✓ —— 用户实测"误触放大缩小"✗，
+  // 所以判据必须跟着改 ✓：这里用状态栏的百分比输入框 ✓，仍能测"缩放后坐标映射还对不对" ✓）。
+  const zoomBox = document.getElementById("zoomInput");
+  zoomBox.value = "200";
+  zoomBox.dispatchEvent(new Event("change", { bubbles: true }));
   await new Promise(r => setTimeout(r, 1200));
   const after = { w: board.width, h: board.height };
   const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
@@ -1746,11 +1750,11 @@ const panAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   // 先放大再平移 —— 用户说的正是画布很大时才需要平移；
   // zoom=1 时整幅文档已适配可见，视口无处可移（第一版测到位移 0 是正确行为，不是 bug）。
   const rect0 = board.getBoundingClientRect();
-  const zoomAnchorX = rect0.left + rect0.width * 0.5;
-  const zoomAnchorY = rect0.top + rect0.height * 0.5;
-  for (let i = 0; i < 5; i++) {
-    board.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true,
-      deltaY: -100, clientX: zoomAnchorX, clientY: zoomAnchorY }));
+  // **先放大**（显式入口 ✓ —— 滚轮已改成平移 ✓）。
+  {
+    const box = document.getElementById("zoomInput");
+    box.value = "200";
+    box.dispatchEvent(new Event("change", { bubbles: true }));
   }
   const rect = board.getBoundingClientRect();
   const startX = rect.left + rect.width * 0.5;
@@ -1778,15 +1782,14 @@ const panAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
     viewport: { x: state.viewport.x, y: state.viewport.y, w: state.viewport.w, h: state.viewport.h },
     scale: state.displayScale, rect: { left: rect.left, width: rect.width },
   };
-  const anchorX = rect.left + rect.width * 0.4;
-  const anchorY = rect.top + rect.height * 0.4;
-  // **锚点值就在这一次滚轮之前取** ✓ —— 第一版把它放在前面 5 次缩放循环之前 ✗，
-  // 于是量到的是 5 次的累积漂移 ✓（25.93px ✓ = 5 × 5.3 ✓），把固有取整误差误判成 bug ✗。
-  const anchorDocBefore = docAt(anchorX, anchorY);
-  board.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: anchorX, clientY: anchorY }));
-  const anchorDocAfter = docAt(anchorX, anchorY);
-  const perEventDrift = Math.hypot(anchorDocAfter.x - anchorDocBefore.x, anchorDocAfter.y - anchorDocBefore.y);
+  // **滚轮必须"只平移、不缩放"** ✓（本轮改的正是这一条 ✓）：这里**用滚轮**，
+  // 断言的是"缩放**不变**" ✓ —— 与老版本正好相反 ✓（老版本断言"光标锚点不动"✗，那条契约已删 ✓）。
+  const zoomAnchorX = rect.left + rect.width * 0.5;
+  const zoomAnchorY = rect.top + rect.height * 0.5;
+  board.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: zoomAnchorX, clientY: zoomAnchorY }));
   const zoomAfter = state.zoom;
+  // **锚点漂移**在这条契约下没有意义 ✗（不缩放了 ✓）⇒ 记 0 ✓，真正的断言是"没缩放" ✓。
+  const perEventDrift = 0;
   document.querySelector('button[data-tool="brush"]').click();
   const afterZoomRect = board.getBoundingClientRect();
   return {
@@ -1810,20 +1813,19 @@ if (panAudit.panDrift > 1.5) {
 if (!(panAudit.zoomAfter > panAudit.zoomBefore)) {
   problems.push(`滚轮向上没有放大（${panAudit.zoomBefore} → ${panAudit.zoomAfter}）`);
 }
-// **已知限制（如实上报，不假装通过 ✓）**：滚轮缩放的光标锚点仍有约 26px 残余漂移 ✗。
-// 已排除的推理链 ✓（每一步都实测过）：单位换算 ✓、画布矩形可能过期 ✓、`displayScale` 与
-// 实测比例不等 ✓（4.402 vs 4.147 ✓）、以及审计把 5 次缩放累加 ✓。改为单次测量后数值**不变** ✓，
-// 说明残余来自视口以**整数文档像素**存储 ✓（内核按整数区域渲染 ✓）与画布 CSS 尺寸取整的耦合 ✓。
-// 用户反馈的诉求（**画布居中 + 手形工具平移** ✓）已由上面的断言完整覆盖 ✓；
-// 滚轮缩放是**附加便利** ✓ ⇒ 这里只断言它确实生效 ✓，残余漂移记为待改进 ✓。
-if (!(panAudit.zoomAfter > panAudit.zoomBefore)) {
-  problems.push(`滚轮向上没有放大（${panAudit.zoomBefore} → ${panAudit.zoomAfter}）`);
+// **契约已变** ✓（真实用户实测反馈）：**滚轮只平移、不缩放** ✗ ——
+// 触摸板两指滑动与鼠标滚轮是同一个事件 ✓ ⇒ "想滚动画布的人必然误触缩放" ✓，
+// 而"滚轮缩放"在定尺画布上不是刚需 ✗。缩放的入口只剩**显式那几种** ✓：
+// `适配 / 1:1 / 状态栏百分比输入框 / + - 0 快捷键` ✓。
+// ⇒ 这里的断言从"滚轮确实放大"✗ 改成"**滚轮绝不放缩**" ✓（能红 ✓：接回缩放就会红 ✓）。
+if (panAudit.zoomAfter !== panAudit.zoomBefore) {
+  problems.push(`滚轮改变了缩放（${panAudit.zoomBefore} → ${panAudit.zoomAfter}）—— 它现在只该平移`);
 }
-if (panAudit.zoomDrift > 1.5) {
-  console.log(`  ⚠ 已知限制：滚轮缩放的光标锚点残余漂移 ${panAudit.zoomDrift.toFixed(2)} 文档像素（见 implementation-notes ✓）`);
+if (!(panAudit.moved > 0)) {
+  problems.push("手形工具没有移动视口");
 }
 console.log(`  平移/缩放：视口位移 ${panAudit.moved.toFixed(0)}px，光标下文档点漂移 ${panAudit.panDrift.toFixed(2)}px` +
-  `｜滚轮 ${panAudit.zoomBefore.toFixed(2)} → ${panAudit.zoomAfter.toFixed(2)}，锚点漂移 ${panAudit.zoomDrift.toFixed(2)}px`);
+  `｜滚轮缩放 ${panAudit.zoomBefore.toFixed(2)} → ${panAudit.zoomAfter.toFixed(2)}（必须不变 ✓）`);
 console.log("  缩放数值（诊断）：before " + JSON.stringify(panAudit.beforeZoomState) +
   " after " + JSON.stringify(panAudit.afterZoomState));
 

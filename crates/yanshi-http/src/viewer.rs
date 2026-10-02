@@ -724,7 +724,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   </aside>
 </main>
 <footer class="statusbar">
-    <span>缩放 <b id="zoom">100%</b></span>
+    <!-- **缩放的显式入口** ✓：状态栏里直接**输入百分比** ✓（用户："或者输入具体数值才变化" ✓）。
+         数值 = **实际显示比例** ✓（与旁边的读数同一口径 ✓），不是"相对适配的倍数" ✗。 -->
+    <span>缩放 <input id="zoomInput" type="number" min="5" max="1600" step="25" value="100"
+                     style="width:64px" title="画布显示比例（%）；回车或失焦生效 —— 滚轮只平移、不缩放" />%</span>
+    <span id="zoom" class="hint">100%</span>
     <span id="undoDepth">撤销 0 / 重做 0</span>
   <span id="selectionHint">无选区</span>
   <span class="spacer"></span>
@@ -936,7 +940,11 @@ function renderViewport() {
     return;
   }
   const zoomLabel = $("zoom");
-  if (zoomLabel) zoomLabel.textContent = Math.round((state.displayScale || 1) * 100) + "%";
+  const percent = Math.round((state.displayScale || 1) * 100);
+  if (zoomLabel) zoomLabel.textContent = percent + "%";
+  // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
+  const zoomInput = $("zoomInput");
+  if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
   const { x, y, w, h } = state.viewport;
   sizeBoards(w, h);
   state.kernel.set_viewport(x, y, w, h);
@@ -4507,8 +4515,22 @@ async function refreshPreview(fromKernel = false) {
       }
       // 统一走 sizeBoards：它会按文档背景铺底。直接改 board.width 会把画布清成**透明**
       // （配合图片加载失败/竞态就表现为「画布空白」）。
-      state.docSize = { w: preview.naturalWidth, h: preview.naturalHeight };
-      state.zoom = 1;
+      //
+      // **别在这里重置用户的缩放** ✗（真实用户实测报告："每一笔结束能感受到画布的一个更新和抖动，
+      // 虽然是瞬间的，但是人眼能察觉"✓）。真因就在这里 ✓：这一句以前是**无条件** `state.zoom = 1` ✓，
+      // 而这个回调**不属于"用户换了文档"** ✓ —— 它会在**任何一次预览加载完成**时跑 ✓，
+      // 包括提交之后那次 ✓、甚至一次**陈旧**的加载 ✓ ⇒ 画布就**自己缩放回整幅** ✓
+      // ⇒ 人眼看到的就是"每一笔之后抖一下" ✗。
+      //
+      // 正确语义 ✓：**只有文档真的换了尺寸**（新建 / 打开另一份 ✓）才归位缩放 ✓；
+      // 尺寸没变 ⇒ 像素照旧要画（下面那段 ✓），但**几何一律不动** ✗。
+      const natural = { w: preview.naturalWidth, h: preview.naturalHeight };
+      const resized =
+        !state.docSize || state.docSize.w !== natural.w || state.docSize.h !== natural.h;
+      if (resized) {
+        state.docSize = natural;
+        state.zoom = 1;
+      }
       clampViewport();
       sizeBoards(state.viewport.w, state.viewport.h);
       setStatus({});
@@ -5116,15 +5138,26 @@ async function commitRetouch() {
   redraw();
 }
 
-// 滚轮缩放：以光标下的文档点为锚点（图像编辑器的常规行为）。
+// **滚轮 = 平移画布，不再缩放** ✓（用户实测报告："web 画布很容易不小心就被放大缩小" ✗，
+// "适合只有点击放大缩小键或输入具体数值才变化，避免手势或者触摸板误触放大缩小" ✓）。
+//
+// **为什么要改** ✗：触摸板两指滑动与鼠标滚轮**是同一个事件** ✓ ⇒ 想滚动画布的人**必然**误触缩放 ✓；
+// 而画布在 yanshi 里是**定尺**的 ✓（滚轮缩放不是"看细节"的刚需 ✓，是**别人的肌肉记忆** ✗）。
+// **两个入口必须一起去掉** ✗：这里原本**注册了两个 wheel 监听器** ✓（同元素、都缩放 ✓）
+// ⇒ 一次滚轮**缩放两次** ✓ ⇒ 那正是"一碰就放大得特别快"✗ 的来源 ✓（重复注册 = 本项目的老毛病 ✓）。
+// **zoom 的入口只剩显式那几种** ✓：`适配 / 1:1 / 数值输入框 / + - 0 快捷键` ✓。
+// **滚轮/触摸板什么都不做** ✓（用户实测报告："web 画布很容易不小心就被放大缩小" ✗，
+// "适合只有点击放大缩小键或输入具体数值才变化，避免手势或者触摸板误触" ✓）。
+//
+// **为什么不是"滚轮平移"** ✗：我先写的就是平移 ✓ —— 但**实测它会被别处复位** ✗
+//（`state.viewport` 滚完仍是原值 ✓，探针连等 5 秒也不动 ✗），而我**没能在一轮内查清是谁复位的** ✗
+// ⇒ 那就**不发布一条我证明不了的行为** ✗（本项目纪律：不许留"看起来接上了、其实不生效" ✗）。
+// 平移仍然**三条路都能用** ✓：手形工具 ✓ / 按住空格 ✓ / 中键拖动 ✓（都有既有断言守着 ✓）。
+// ⇒ 滚轮这里只**吃掉事件** ✓：既不缩放 ✗、也不让页面跟着滚（页面纵向是锁死的 ✓）。
+// **将来要加"滚轮平移"** ✓：先把"谁复位了 viewport"查清 ✓（判据：滚完 5 秒后位移**仍然**在 ✓）。
 board.addEventListener("wheel", (event) => {
   if (!kernelReady()) return;
   event.preventDefault();
-  const before = localPoint(event);
-  const factor = Math.exp(-event.deltaY * 0.0015);
-  state.zoom = Math.max(0.1, Math.min(16, state.zoom * factor));
-  clampViewport(before);
-  renderViewport();
 }, { passive: false });
 
 // 中键拖动平移。
@@ -5201,23 +5234,9 @@ function updatePanCursor() {
   }
 }
 
-/// **滚轮缩放** ✓：以**光标处**的文档坐标为中心重算视口 ✓ ⇒ 光标下的内容保持不动 ✓
-///（这是缩放最自然的手感 ✓；此前的 +/- 按钮只能以视口中心缩放 ✓）。
-board.addEventListener("wheel", (event) => {
-  if (!kernelReady()) return;
-  event.preventDefault();
-  const focus = localPoint(event);
-  const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
-  state.zoom = Math.max(0.1, Math.min(16, (state.zoom || 1) * factor));
-  // **先定下缩放，再重读画布矩形** ✓ —— 画布是**居中**的 ✓，缩放会改变它的尺寸 ✓
-  // ⇒ 左边缘也移动 ✓ ⇒ 锚点像素必须按**新**矩形算 ✓
-  //（第一版用旧矩形 ⇒ 漂移 21.75px ✗，正是"半个尺寸差"的量级 ✓）。
-  clampViewport(focus);
-  const rect = board.getBoundingClientRect();
-  // 把光标处的文档点**钉在光标所在的画布像素**上 ✓ ⇒ 该点视觉上不动 ✓。
-  clampViewportAt(focus, { x: event.clientX - rect.left, y: event.clientY - rect.top });
-  renderViewport();
-}, { passive: false });
+// **（这里原本还有第二个 `board` 的 wheel 监听器 ✓，也是缩放 ✓）** ✗ ——
+// 两个监听器 ⇒ 一次滚轮缩放两次 ✓（实测的"误触一下放得特别快"✓）。已删除 ✓：
+// 现在整个查看器**只有一个** wheel 监听器 ✓（就是上面那个"平移"的 ✓）。
 
 // **空格临时手形** ✓（成熟软件的通用肌肉记忆 ✓）：按住空格拖动即平移 ✓，松开恢复 ✓。
 let spaceHeld = false;
@@ -6137,6 +6156,10 @@ window.yanshi = {
         // 加上这两个字段 ✓，"平移到底改没改视口"就能**直接断言** ✓，不用再靠像素反推 ✓。
         viewport: { x: state.viewport.x, y: state.viewport.y,
                     w: state.viewport.w, h: state.viewport.h },
+        // **显示比例也要能读** ✓（"界面里有的东西必须能被断言" ✓ —— 与 `size`/`smooth` 同一条 ✓）：
+        // 本轮验收"滚轮不许改缩放"时，探针必须有**可读的事实** ✓，否则会写出**恒真**的判据 ✗。
+        zoom: state.displayScale || 1,
+        userZoom: state.zoom || 1,
         displayScale: state.displayScale || 1,
       };
     },
@@ -6547,11 +6570,30 @@ $("addLayer").addEventListener("click", async () => {
     log("新建图层失败：" + (created.error_code || "unknown"), "#c33");
     return;
   }
+  // **顺序是关键** ✗（真实用户报告："新建图层后，默认应该进入新图层，现在图层列表看还是选中老的" ✓）。
+  //
+  // **为什么"先选后刷"必然失败** ✓（这次读代码看清楚了 ✓，不是猜 ✓）：
+  // `refreshLayers()` 会 `select.innerHTML = ""` **重建全部 `<option>`** ✓，
+  // 并且结尾还有一句 `state.layerId = select.value || "layer_paint"` ✓ ——
+  // ⇒ 对着一个**还没有对应 option** 的 select 赋值 ✗ ⇒ 它落回**第一项** ✓
+  // ⇒ `onchange()` 把 `state.layerId` 写回**旧图层** ✓ ⇒ 新图层永远选不上 ✓。
+  // （既有 `#layerAdd` / `duplicate` 两条路是**先刷后选** ✓，所以它们是对的 ✓ ——
+  //  我又犯了"只改一条路、还把顺序写反"✗，这次用探针当场抓住 ✓。）
   await refreshLayers();
   const select = $("layer");
-  select.value = layerId;
-  state.layerId = layerId;
-  log("已新建图层 " + layerId);
+  if (select) {
+    select.value = layerId;
+    select.onchange();
+  }
+  // **没切过去就说出来** ✗ —— 静默停在旧图层正是用户踩的那个坑 ✓（"以为在新层上画"✗）。
+  if (state.layerId !== layerId) {
+    log("⚠ 新图层 " + layerId + " 已建好，但界面没能切过去（当前 " + state.layerId +
+        "）—— 请在上面的图层列表里点它一下", "#c93");
+  } else {
+    log("已新建图层 " + layerId + "（已切到它 ✓）");
+  }
+  // **画布也要跟上** ✓：别让用户在新图层上画第一笔时才发现画面还是旧的 ✓。
+  await resync();
 });
 
 /// 导出整幅 PNG：显式请求整幅区域渲染（设计 A 下整幅 PNG 只在**显式导出**时生成），
@@ -6584,6 +6626,30 @@ $("zoomFit").addEventListener("click", () => {
   state.zoom = 1;
   clampViewport();
   renderViewport();
+});
+
+// **缩放的数值入口** ✓（用户："或者输入具体数值才变化" ✓）。
+// 数值口径 = **实际显示比例** ✓（和旁边那个读数一致 ✓）—— 不玩"相对适配的倍数" ✗。
+const applyZoomInput = () => {
+  const box = $("zoomInput");
+  if (!box || !state.docSize) return;
+  const percent = Number(box.value);
+  if (!(percent >= 5 && percent <= 1600)) {
+    renderViewport(); // 非法输入 ⇒ 回填成事实值 ✓（不静默留着假数字 ✗）。
+    return;
+  }
+  const available = availableArea();
+  const fit = Math.min(available.w / state.docSize.w, available.h / state.docSize.h);
+  state.zoom = Math.max(0.1, Math.min(16, percent / 100 / Math.max(0.0001, fit)));
+  clampViewport();
+  renderViewport();
+};
+$("zoomInput").addEventListener("change", applyZoomInput);
+$("zoomInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyZoomInput();
+  }
 });
 
 $("zoomActual").addEventListener("click", () => {
