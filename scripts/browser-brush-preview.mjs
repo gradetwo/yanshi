@@ -303,17 +303,6 @@ if (smoothOff !== false) {
   process.exit(1);
 }
 
-// ④ 控制台
-const errors = consoleLines.filter(
-  (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
-);
-
-console.log(`  ④ 控制台错误：${errors.length}`);
-if (errors.length > 0) {
-  errors.slice(0, 6).forEach((line) => console.error("     " + line.slice(0, 160)));
-  process.exit(1);
-}
-
 // ⑦ **一笔多色（Loaded Brush）真的走通了** ✓（用户："花瓣渐变只能分两笔，交界硬" ✗）。
 //    走的正是用户那条路：选 `.myb` 画笔 → 勾「一笔多色」→ 选末端色 → 拖一笔 ✓。
 //    判据两条：① 对象上的 `source.color_to` **必须存在** ✓（参数真的传下去了 ✓）；
@@ -377,6 +366,47 @@ if (!(counts.leftBlue > 0) || !(counts.rightRed > 0)) {
 }
 const shotDuo = await capture("brush-duotone");
 
+// ⑧ **改粗细 ⇒ 预览会自己重画** ✓（用户："改完预览不跟着变" ✗）——
+//    但要**防抖** ✓（拖滑杆时每一帧都真落一笔是肉眼可见的浪费 ✗）。
+//    判据：改粗细之后**等一会儿**，`#brushPreview` 的 src 必须变 ✓（不变 ⇒ 还是没接上 ✗）。
+await evaluate(`window.yanshi.setBrush(${JSON.stringify(brushB)})`);
+await sleep(700);
+const srcBeforeSize = await evaluate("document.getElementById('brushPreview').getAttribute('src') || ''");
+await evaluate(`(() => {
+  const size = document.getElementById('size');
+  size.value = String(Math.max(4, Number(size.value) + 17));
+  size.dispatchEvent(new Event('input', { bubbles: true }));
+})()`);
+// **在 node 这一侧轮询** ✓（比在页面里 eval 一段带占位符的字符串清楚得多 ✓）。
+let srcAfterSize = null;
+const sizeDeadline = Date.now() + 5000;
+while (Date.now() < sizeDeadline) {
+  const now = await evaluate("document.getElementById('brushPreview').getAttribute('src') || ''");
+  if (now && now !== srcBeforeSize) {
+    srcAfterSize = now;
+    break;
+  }
+  await sleep(150);
+}
+console.log(`  ⑧ 改粗细后预览：${srcBeforeSize ? "有图" : "无图"} ⇒ ${srcAfterSize ? "换了新图" : "没变"}`);
+if (!srcAfterSize || srcAfterSize === srcBeforeSize) {
+  console.error("❌ 改了粗细，预览没有跟着重画 ⇒ 防抖那条没接上");
+  await capture("preview-debounce-failed");
+  process.exit(1);
+}
+const shotDebounce = await capture("brush-preview-after-size");
+
+// ④ 控制台
+const errors = consoleLines.filter(
+  (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
+);
+
+console.log(`  ④ 控制台错误：${errors.length}`);
+if (errors.length > 0) {
+  errors.slice(0, 6).forEach((line) => console.error("     " + line.slice(0, 160)));
+  process.exit(1);
+}
+
 console.log(
   JSON.stringify(
     {
@@ -390,6 +420,7 @@ console.log(
       smoothFlag: { object: newest && newest.object_id, dataSmooth: smoothFlag, screenshot: shotSmooth },
       smoothOff: { object: newestOff && newestOff.object_id, dataSmooth: smoothOff },
       duoTone: { object: newestDuo && newestDuo.object_id, source: duoSource, counts, screenshot: shotDuo },
+      previewDebounce: { screenshot: shotDebounce },
       consoleErrors: errors.length,
     },
     null,

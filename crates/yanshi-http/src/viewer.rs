@@ -3804,6 +3804,20 @@ function setupObjectPanel() {
     log("已切回新建模式 ✓");
     void refreshEffects();
   });
+  // **改粗细 / 改颜色 / 改末端色 / 开关一笔多色 ⇒ 预览跟着重画** ✓（防抖 400ms ✓）。
+  // **必须走 `window.yanshi`** ✗ ——`setupObjectPanel` 在**另一段 `<script>`** 里 ✓，
+  // 直接调 `scheduleBrushPreview()` 会 `ReferenceError` ✓（本项目的老坑 ✓，本轮第二次撞 ✓，
+  // 所以这里只认那个**被证明可靠**的入口 ✓）。
+  const debouncePreview = () => {
+    if (window.yanshi && window.yanshi.scheduleBrushPreview) window.yanshi.scheduleBrushPreview();
+  };
+  for (const id of ["size", "color", "colorTo", "duoTone"]) {
+    const control = $(id);
+    if (control) {
+      control.addEventListener("input", debouncePreview);
+      control.addEventListener("change", debouncePreview);
+    }
+  }
   const refresh = $("objectRefresh");
   if (refresh) refresh.addEventListener("click", () => { void refreshObjects(); });
   const instance = $("objectInstance");
@@ -5975,6 +5989,22 @@ async function refreshBrushOptions() {
   }
 }
 
+/// **预览的防抖** ✓（用户：拖粗细 / 改颜色时预览**不会跟着变** ✗）——
+/// 但**不能每动一下就真画一笔** ✗（滑杆一次拖动几十个事件 ✓ ⇒ 几十次真实落笔 ✓，肉眼可见地卡 ✓）。
+/// 停手 400ms 之后再画 ✓：既不卡 ✓、也不会留下"界面改了预览没变" ✗。
+function scheduleBrushPreview() {
+  if (state.brushPreviewTimer) clearTimeout(state.brushPreviewTimer);
+  state.brushPreviewTimer = setTimeout(() => {
+    state.brushPreviewTimer = null;
+    // **失败要说话，不许变成未处理的拒绝** ✗（实测：这里会冒 `Uncaught (in promise)` ✓ ——
+    // 控制台里那是一条**红字** ✓，而用户看到的是"预览悄悄不动了" ✗）。
+    refreshBrushPreview().catch((error) => {
+      const hint = $("brushPreviewHint");
+      if (hint) hint.textContent = "预览没拉到：" + String(error).slice(0, 60);
+    });
+  }, 400);
+}
+
 /// **笔刷预览** ✓（用户："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**web 上也是**" ✗）。
 ///
 /// 走服务端的 `brush_preview` ✓ —— 它**与 `brush_stroke` 共用同一条落笔实现** ✓
@@ -5984,6 +6014,19 @@ async function refreshBrushOptions() {
 /// **失败必须说话** ✗：预览取不到时**不能**留一个空白框 ✓（用户会以为"这支笔就是没墨"✗）；
 /// 涂抹类笔刷在空画布上本来就画不出东西 ✓ ⇒ 服务端会**说清原因** ✓，这里照原样显示 ✓。
 async function refreshBrushPreview() {
+  // **整段不许抛出去** ✗：它会被 `change` 监听器直接调用 ✓（那条路没有 catch ✓）——
+  // 实测会冒 `Uncaught (in promise)` ✓（控制台红字 ✓），而用户只看到"预览悄悄不动" ✗。
+  try {
+    return await refreshBrushPreviewInner();
+  } catch (error) {
+    const hint = $("brushPreviewHint");
+    if (hint) hint.textContent = "预览没拉到：" + String(error).slice(0, 60);
+    return false;
+  }
+}
+
+/// 预览的**本体** ✓（外面那层只负责"不许把异常漏到控制台" ✓，见上 ✓）。
+async function refreshBrushPreviewInner() {
   const select = $("brush");
   const img = $("brushPreview");
   const hint = $("brushPreviewHint");
@@ -5996,6 +6039,13 @@ async function refreshBrushPreview() {
   }
   const size = Number(($("size") || {}).value || 24);
   const colour = colorCss();
+  // **超界要先拦住** ✓：`brush_preview` 的 size 上限是 512 ✓ ——
+  // 直接把它当错误抛出去会变成控制台红字 ✓（用户看不懂 ✓），这里**说人话** ✓。
+  if (!(size > 0) || size > 512) {
+    img.style.display = "none";
+    if (hint) hint.textContent = "粗细要在 1..512 之间才能预览（当前 " + size + "）";
+    return;
+  }
   // **去重的键要含"颜色 / 粗细"** ✗ —— 只看笔刷名会让"换了颜色再预览"被**静默跳过** ✓
   //（那又会变成"界面里改了、实际没变" ✗ —— 本项目头号病症 ✓）。
   const key = name + "|" + size + "|" + JSON.stringify(colour);
@@ -6190,6 +6240,11 @@ window.yanshi = {
     /// **暴露预览** ✓：验收探针要能直接断言"预览真的换了"✓（与换笔刷走同一条实现 ✓）。
     previewBrush() {
       return refreshBrushPreview();
+    },
+    /// **预览防抖入口** ✓（改粗细 / 改颜色之后 400ms 才真画一小笔 ✓）——
+    /// 给**另一段 script** 里的控件监听器用 ✓（它们够不到本段里的函数 ✗，只能走 `window.yanshi` ✓）。
+    scheduleBrushPreview() {
+      scheduleBrushPreview();
     },
     /// **一笔多色开关** ✓（真实路径：改的就是界面上那个勾 ✓ 与那个色控件 ✓）。
     setDuoTone(on, hex) {

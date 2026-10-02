@@ -225,6 +225,14 @@ with either a bbox of x, y, w and h or points, an array bbox is normalised to th
 passes validation also draws, and a rejected shape leaves no object behind. create_layer returns the layer id it
 created, which previously took a second listing call to discover.
 
+The brush preview now follows the size and colour controls, with a 400ms debounce so dragging the slider does not
+paint a preview stroke per event, and any failure to fetch a preview is reported next to the control instead of
+escaping as an unhandled rejection, which showed up as a console error with no explanation. Wiring that debounce hit
+the same trap the project has recorded before and now twice in this work: setupObjectPanel lives in a different script
+block, so calling the helper directly raised a ReferenceError; the controls go through window.yanshi, the only entry
+that is visible across blocks. The browser script covers it, requiring the preview's src to change after the size is
+changed and to be different from what it was before.
+
 The three drawing paths now accept colours the same way. medium_stroke took only an {r,g,b,a} object while the brush
 and geometry paths also accepted arrays and hex strings, so a colour that worked in one tool was rejected by another;
 all three now go through the same parser, and the medium path converts back to the same bytes it used before, so
