@@ -5094,6 +5094,14 @@ function setupPanels() {
         size: Number(($("strokeSize") || {}).value || 0),
         opacity: Number(($("strokeOpacity") || {}).value || 0),
         medium: ($("medium") || {}).value || null,
+        // **视口与缩放也必须能读** ✗（真实用户报告 + 我自己的探针教训 ✓）：
+        // 我上一轮想量"抓手工具有没有平移画布" ✓，而 `state()` 只返回
+        // `docId/layerId/tool/color/size/opacity/medium` ✗ ⇒ **探针看不见被测对象** ✗
+        // ⇒ 我拿到了 `panChanged: false` 这种**什么都不能证明**的结论 ✓。
+        // 加上这两个字段 ✓，"平移到底改没改视口"就能**直接断言** ✓，不用再靠像素反推 ✓。
+        viewport: { x: state.viewport.x, y: state.viewport.y,
+                    w: state.viewport.w, h: state.viewport.h },
+        displayScale: state.displayScale || 1,
       };
     },
     /// 设**笔刷颜色** ✓（任意 CSS 颜色串 ✓）。
