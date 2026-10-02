@@ -207,6 +207,14 @@ selector next to the palette, and the panel says which of the three it wrote to.
 and the brush colour still goes through the same setter as everywhere else, so there is one notion of the current
 brush colour rather than two that drift apart.
 
+The brush picker groups the brushes by the source recorded in their names and offers a search box, and it loads the
+list when the user first reaches for it rather than on page load. That promise was in the tooltip long before it was
+true: nothing actually loaded the list on interaction, so a person opening the picker saw only the built-in brush.
+My earlier verification of the picker had called the loader itself, which is how the gap survived being tested. The
+trigger now lives in its own small script next to the markup, because the page's main script is not the global scope
+and the functions defined there are not reachable by name from anywhere else, which is what made three earlier attempts
+fail silently.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

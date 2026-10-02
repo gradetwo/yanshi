@@ -308,6 +308,46 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <label>笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
       <option value="">（内置画笔）</option>
     </select></label>
+    <!-- **搜索** ✓（目标 ⑥ ✓）：库里 199 支 ✓ ⇒ 一个长下拉里"翻着找"是**没有界面设计** ✗ ——
+         下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
+    <label>搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
+    <span id="brushSearchHint" class="hint"></span>
+    <!-- **懒加载与搜索的触发，必须写在这里** ✓ —— 不能写在页面主脚本里 ✗。
+         实测（真实教训 ✓）：主脚本里那些函数**不是全局** ✓（`typeof refreshBrushOptions === "undefined"` ✗），
+         而"点开下拉才装载"这条线`title` 里承诺了很久 ✓、却**从未真正接上** ✗
+         ⇒ **真人**点开只看到"（内置画笔）" ✓（我此前"看到 200 支"的验收是**脚本自己调了装载** ✗
+         ⇒ 脚本替用户做了他没做的事 ✓）。
+         于是改成：**紧跟标记的一段独立脚本** ✓ —— 它处在**全局作用域** ✓，
+         且只调用**已被证明可靠**的 `window.yanshi.loadBrushes / applyBrushFilter` ✓。 -->
+    <script>
+      (function () {
+        var select = document.getElementById("brush");
+        var box = document.getElementById("brushSearch");
+        var loadOnce = function () {
+          if (select && select.options.length <= 1 && window.yanshi && window.yanshi.loadBrushes) {
+            window.yanshi.loadBrushes();
+          }
+        };
+        if (select) {
+          // **点开 / 聚焦 / 按键都算"用户要用它"** ✓（一次就够 ✓）。
+          select.addEventListener("pointerdown", loadOnce, { once: true });
+          select.addEventListener("focus", loadOnce, { once: true });
+          select.addEventListener("keydown", loadOnce, { once: true });
+        }
+        if (box) {
+          // **输入即过滤** ✓；还没装载 ⇒ 先装载再过滤 ✓（否则是在空下拉上过滤 ⇒ 用户看到"搜不到" ✗）。
+          box.addEventListener("input", function () {
+            if (select && select.options.length <= 1 && window.yanshi && window.yanshi.loadBrushes) {
+              window.yanshi.loadBrushes().then(function () {
+                if (window.yanshi.applyBrushFilter) window.yanshi.applyBrushFilter();
+              });
+            } else if (window.yanshi && window.yanshi.applyBrushFilter) {
+              window.yanshi.applyBrushFilter();
+            }
+          });
+        }
+      })();
+    </script>
   </div>
 
 <main>
@@ -960,7 +1000,10 @@ async function initWasm() {
     log("WASM 计算内核已加载：" + module.WasmKernel.name);
   // **把"这一版是哪一版"写进日志** ✓（用户提的排查建议 ✓）：出问题时先看这一行 ✓。
   try {
-    const health = await fetch("/api/health").then((response) => response.json());
+    // **服务端只有 `/health`，没有 `/api/health`** ✗（真实报告 ✓：用户在 macOS 上看到
+    // `GET /api/health 404` ✓）⇒ 这里一直 404 ✓，于是**那行"服务端构建："永远打不出来** ✗，
+    // 而它正是"这一版是哪一版"的排查入口 ✓ ⇒ 改对路径 ✓。
+    const health = await fetch("/health").then((response) => response.json());
     if (health && health.build) log("服务端构建：" + health.build);
   } catch (_) { /* 拿不到就算了 ✓，不影响使用 ✓ */ }
   } catch (error) {
@@ -5460,6 +5503,86 @@ function setupPanels() {
 ///
 /// **为什么按名字、而不是按路径** ✓：工具层按"缓存优先、内置其次"解析 ✓
 /// ⇒ 用户导入的同名笔刷**自动生效** ✓（与 `list_assets` 的优先级一致 ✓）。
+/// **按搜索词过滤笔刷下拉** ✓（目标 ⑥ ✓）。
+///
+/// **要点** ✓：过滤后**把空的分组也藏起来** ✗ —— 否则用户会看到一串**空标题** ✓，
+/// 那比"没过滤"更让人困惑 ✓（"这里有组却没有笔刷" ✓）。
+/// **另外** ✓：当前选中项若被过滤掉 ⇒ **自动选第一支可见的** ✓ ——
+/// 否则会出现"下拉里看不到它、但落笔用的还是它" ✗（界面与事实不一致 ✓）。
+function applyBrushFilter() {
+  const select = $("brush");
+  const box = $("brushSearch");
+  if (!select) return;
+  const needle = (box && box.value ? box.value : "").trim().toLowerCase();
+  let visible = 0;
+  const all = Array.from(select.options);
+  for (const option of all) {
+    // 第一个"（内置画笔）"永远留着 ✓（它是"不用 .myb"的意思 ✓）。
+    const keepAlways = option.value === "";
+    const hit = keepAlways || needle === "" || option.value.toLowerCase().includes(needle);
+    option.hidden = !hit;
+    if (hit) visible += 1;
+  }
+  for (const child of Array.from(select.children)) {
+    if (child.tagName === "OPTGROUP") {
+      const hasVisible = Array.from(child.children).some((option) => !option.hidden);
+      child.hidden = !hasVisible;
+      child.disabled = !hasVisible;
+    }
+  }
+  const current = select.selectedOptions && select.selectedOptions[0];
+  if (current && current.hidden) {
+    const first = all.find((option) => !option.hidden);
+    if (first) select.value = first.value;
+  }
+  const hint = $("brushSearchHint");
+  if (hint) {
+    hint.textContent = needle
+      ? `匹配 ${Math.max(0, visible - 1)} 支（共 ${Math.max(0, all.length - 1)} 支）`
+      : `共 ${Math.max(0, all.length - 1)} 支，分 ${select.querySelectorAll("optgroup:not([hidden])").length} 组`;
+  }
+}
+
+/// **按搜索词过滤笔刷下拉** ✓（目标 ⑥ ✓）。
+///
+/// **要点** ✓：过滤后**把空的分组也藏起来** ✗ —— 否则用户会看到一串**空标题** ✓，
+/// 那比"没过滤"更让人困惑 ✓（"这里有组却没有笔刷" ✓）。
+/// **另外** ✓：当前选中项若被过滤掉 ⇒ **自动选第一支可见的** ✓ ——
+/// 否则会出现"下拉里看不到它、但落笔用的还是它" ✗（界面与事实不一致 ✓）。
+function applyBrushFilter() {
+  const select = $("brush");
+  const box = $("brushSearch");
+  if (!select) return;
+  const needle = (box && box.value ? box.value : "").trim().toLowerCase();
+  let visible = 0;
+  const all = Array.from(select.options);
+  for (const option of all) {
+    // 第一个"（内置画笔）"永远留着 ✓（它是"不用 .myb"的意思 ✓）。
+    const keepAlways = option.value === "";
+    const hit = keepAlways || needle === "" || option.value.toLowerCase().includes(needle);
+    option.hidden = !hit;
+    if (hit) visible += 1;
+  }
+  for (const child of Array.from(select.children)) {
+    if (child.tagName === "OPTGROUP") {
+      const hasVisible = Array.from(child.children).some((option) => !option.hidden);
+      child.hidden = !hasVisible;
+      child.disabled = !hasVisible;
+    }
+  }
+  const current = select.selectedOptions && select.selectedOptions[0];
+  if (current && current.hidden) {
+    const first = all.find((option) => !option.hidden);
+    if (first) select.value = first.value;
+  }
+  const hint = $("brushSearchHint");
+  if (hint) {
+    hint.textContent = needle
+      ? `匹配 ${Math.max(0, visible - 1)} 支（共 ${Math.max(0, all.length - 1)} 支）`
+      : `共 ${Math.max(0, all.length - 1)} 支，分 ${select.querySelectorAll("optgroup:not([hidden])").length} 组`;
+  }
+}
+
 async function refreshBrushOptions() {
   const select = $("brush");
   if (!select) return;
@@ -5469,15 +5592,34 @@ async function refreshBrushOptions() {
     const keep = select.value;
     // **只留第一个"内置画笔"选项** ✓，其余重建 ✓（重复装载不会越堆越多 ✓）。
     while (select.options.length > 1) select.remove(1);
+    // **按来源分组** ✓（目标 ⑥ ✓）：扁平化时给子目录加了前缀 ✓
+    //（`classic-` / `deevad-` / `ramon-` ✓），文件里还有 `brushkit-` 与**没前缀**的 ✓。
+    // ⇒ 分组就直接用这个前缀 ✓ —— **不另造一套分类** ✗（那会与资产命名漂移 ✓）。
+    const groups = new Map();
+    const order = ["classic", "deevad", "ramon", "brushkit", "其他"];
     for (const asset of assets) {
       if (!asset.usable) continue;
+      const name = String(asset.name).replace(/\.myb$/i, "");
+      const dash = name.indexOf("-");
+      const prefix = dash > 0 ? name.slice(0, dash) : "";
+      const group = order.includes(prefix) ? prefix : "其他";
+      if (!groups.has(group)) {
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = group;
+        groups.set(group, optgroup);
+      }
       const option = document.createElement("option");
       // **值不带扩展名** ✓（工具层会自己补 `.myb` ✓）。
-      option.value = String(asset.name).replace(/\.myb$/i, "");
-      option.textContent = option.value + (asset.source === "cache" ? "（导入的）" : "");
-      select.appendChild(option);
+      option.value = name;
+      option.textContent = name + (asset.source === "cache" ? "（导入的）" : "");
+      groups.get(group).appendChild(option);
+    }
+    for (const group of order) {
+      if (groups.has(group)) select.appendChild(groups.get(group));
     }
     select.value = keep;
+    // **装完就套用一次过滤** ✓（搜索框里可能已经有字 ✓ —— 重装后忘了过滤会**静默变回全量** ✗）。
+    applyBrushFilter();
   } catch (error) {
     log("笔刷列表没拉到：" + String(error).slice(0, 120), "#c93");
   }
@@ -5547,6 +5689,13 @@ window.yanshi = {
       select.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
     },
+    /// **暴露过滤器** ✓（目标 ⑥ ✓）：页面里的分组/搜索逻辑在这个对象**之外的作用域**里 ✓
+    /// ⇒ 那个作用域**不是全局** ✗（实测：`typeof refreshBrushOptions === "undefined"` ✗）
+    /// ⇒ 所以只把**这一点**挂出来 ✓，供下面那段"紧跟标记的小脚本"调用 ✓
+    ///（它只依赖 `window.yanshi` ✓ —— 那是**唯一被证明可靠**的入口 ✓）。
+    applyBrushFilter() {
+      return applyBrushFilter();
+    },
     /// **暴露装载函数** ✓：第一次点开下拉时要能主动拉一次 ✓（也让验收脚本能预热 ✓）。
     loadBrushes() {
       return refreshBrushOptions();
@@ -5596,6 +5745,8 @@ const DOCKER_PRESETS = {
   // 校对：历史 + 日志 + 反馈展开 ✓（核对与反馈用 ✓）。
   review: { open: ["标注", "历史（原子日志）", "原子日志（控制流）", "反馈", "最近一次响应"], closed: ["调整 / 滤镜", "WASM 计算内核", "缩略图"] },
 };
+
+// **接线放在这里** ✓（这段一定执行 ✓，见上面的说明 ✓）。
 const DOCKER_STORE = "yanshi.dockers";
 const WORKSPACE_STORE = "yanshi.workspace";
 
@@ -6005,11 +6156,23 @@ mod tests {
     /// 只检查**顶层**（花括号深度 0）声明：函数/块内的同名变量是合法的遮蔽。
     #[test]
     fn viewer_script_has_no_duplicate_top_level_declarations() {
-        let script = PAGE
-            .split_once("<script>")
-            .and_then(|(_, rest)| rest.split_once("</script>"))
-            .map(|(script, _)| script)
-            .expect("页面含内联脚本");
+        // **页面里可能不止一个内联脚本块** ✗（真实教训 ✓：我给笔刷下拉加了一段
+        // **紧跟标记的小脚本** ✓ —— 它处在全局作用域 ✓，因为主脚本**不是**全局的 ✗）
+        // ⇒ 原来的 `split_once("<script>")` 会**只取到第一个块** ✗（也就是那段小脚本 ✓）
+        // ⇒ 于是这个守卫开始报"找不到 `refreshPreview`" ✗ —— **守卫自己读错了对象** ✓。
+        // **修法**：把**所有**内联块拼起来再检查 ✓（守卫要保证的"整页 JS 不冲突"本来就该覆盖全部 ✓）。
+        let mut script = String::new();
+        let mut rest = PAGE;
+        while let Some((_, after_open)) = rest.split_once("<script>") {
+            let Some((block, after_close)) = after_open.split_once("</script>") else {
+                break;
+            };
+            script.push_str(block);
+            script.push('\n');
+            rest = after_close;
+        }
+        assert!(!script.is_empty(), "页面含内联脚本");
+        let script = script.as_str();
 
         let mut names: Vec<&str> = Vec::new();
         let mut depth: i32 = 0;
