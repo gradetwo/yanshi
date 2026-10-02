@@ -743,6 +743,8 @@ const state = {
   // 移动工具选中的对象（含 bbox，用于命中测试与显示选中框）。
   selectedObject: null,
   // 当前选区（用于"清除选区"与覆盖层显示）。
+  // **最近一次"连不上服务端"的提示时间** ✓（用来限流 ✓ —— 见 `reportServerUnreachable` ✓）。
+  lastOfflineReport: 0,
   // **上一次"设为背景"建的那一层** ✓（用它保证同一时刻只有一张纹理底 ✓ —— 见 `textureApply` ✓）。
   textureLayerId: null,
   // **可撤销 / 可重做的笔数** ✓ —— 来自服务端工具 ✓；`null` = 还不知道 ✓（界面显示 — ✓，不猜 ✓）。
@@ -1524,11 +1526,23 @@ function afterMutation(atomId, options = {}) {
 }
 
 async function submitAtom(atom) {
-  const response = await fetch(api("/api/atoms"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(atom),
-  }).then((r) => r.json());
+  // **服务端不在时必须被捕获并说清** ✗ —— 用户实测：控制台出现
+  // `Uncaught (in promise) TypeError: Failed to fetch` ✓（原来这里没有 try ✗），
+  // 而画面上**什么都没说** ✓ ⇒ 用户不知道这一笔到底提交了没有 ✓。
+  let response;
+  try {
+    response = await fetch(api("/api/atoms"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(atom),
+    }).then((r) => r.json());
+  } catch (error) {
+    $("conn").className = "dot";
+    $("connText").textContent = "已断开";
+    log("提交失败：连不上服务端 ✗ ⇒ **这一笔没有提交** ✓（服务端可能已退出 ✓；" +
+        "把它起回来再画，或刷新页面 ✓）", "#c33");
+    return null;
+  }
   $("last").textContent = JSON.stringify(response).slice(0, 600);
   window.yanshiStats.serverHead = response.head ?? window.yanshiStats.serverHead;
   setStatus({ head: response.head, dirty: (response.dirty_tiles || []).length });
@@ -4417,6 +4431,8 @@ function connect() {
   socket.onopen = () => {
     $("conn").className = "dot on";
     $("connText").textContent = "已连接";
+    // **连上了就把重试计数清零** ✓（否则一次短暂断开会让"上限"永久少一格 ✓）。
+    state.reconnectAttempts = 0;
     subscribeViewport();
   };
   socket.onclose = () => {
@@ -4426,7 +4442,19 @@ function connect() {
     state.socket = null;
     $("conn").className = "dot";
     $("connText").textContent = "已断开";
-    setTimeout(() => { if (state.token && !state.socket) connect(); }, 1500);
+    // **重连必须有界、且退避** ✗ —— 用户实测：服务端不在时控制台被
+    // `WebSocket connection … failed` **刷满** ✓，因为原来是"每 1.5 秒无限重连" ✗。
+    // **为什么这会变成真问题** ✓：控制台噪音会**盖住真正的报错** ✓（用户这次贴来的日志里 ✓
+    // 一半是它 ✓），而且无限重连对已经停掉的服务端**毫无意义** ✗。
+    // ⇒ 1.5s → 3s → 6s → 12s（封顶 ✓），**最多 8 次** ✓；再失败就**停下并说清** ✓。
+    state.reconnectAttempts = (state.reconnectAttempts || 0) + 1;
+    if (state.reconnectAttempts > 8) {
+      $("connText").textContent = "已断开（不再重连）";
+      log("连不上服务端（已重试 8 次）⇒ 停止重连 ✗ —— 服务端可能已经退出 ✓；把它起回来之后**刷新页面** ✓", "#c33");
+      return;
+    }
+    const delay = Math.min(1500 * Math.pow(2, state.reconnectAttempts - 1), 12000);
+    setTimeout(() => { if (state.token && !state.socket) connect(); }, delay);
   };
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -5792,6 +5820,43 @@ async function refreshBrushOptions() {
     log("笔刷列表没拉到：" + String(error).slice(0, 120), "#c93");
   }
 }
+/// **服务端连不上时，界面必须说人话** ✗（用户实测连续报了三处 ✓）。
+///
+/// **为什么做成"兜住整类"、而不是逐个补 try/catch** ✗：用户贴来的日志里已经有
+/// **三处**同一类崩溃 ✓ —— `submitAtom` ✓（已在提交处补了 try ✓）、
+/// `ensureDocument` ✓、`createNamedDocument` ✓（`GET/POST /api/documents` ✓）
+/// ⇒ 逐个补**必然漏** ✗（这个项目在"逐处补"上栽过太多次 ✓）。
+/// **做法** ✓：接住**所有**未处理的 promise 拒绝与全局错误 ✓，
+/// 只在**第一次**（以及每隔一段时间 ✓）说一遍 ✓ —— 既**不刷屏** ✗、也**不沉默** ✗。
+/// **说清三件事** ✓：连不上谁 ✓、**这一操作没有完成** ✓、以及**接下来能做什么** ✓。
+function reportServerUnreachable(detail) {
+  const now = Date.now();
+  if (now - (state.lastOfflineReport || 0) < 5000) return; // **限流** ✓（避免又变成刷屏 ✗）
+  state.lastOfflineReport = now;
+  const conn = $("conn");
+  if (conn) conn.className = "dot";
+  const text = $("connText");
+  if (text) text.textContent = "已断开";
+  log("**连不上服务端** ✗ ⇒ 你刚才那一步**没有完成** ✓（服务端可能已经退出 ✓）：" +
+      String(detail || "").slice(0, 120) +
+      " —— 把服务端起回来（`make dev` ✓）之后**刷新页面** ✓；页面里已画的内容可能需要重新画 ✓", "#c33");
+}
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event && event.reason ? event.reason : "";
+  const message = String((reason && reason.message) || reason);
+  // **只认"连不上"这一类** ✓（别的未处理拒绝照旧交给浏览器 ✓ —— 不要把它们也吞掉 ✗）。
+  if (message.indexOf("Failed to fetch") >= 0 || message.indexOf("NetworkError") >= 0 ||
+      message.indexOf("Load failed") >= 0) {
+    reportServerUnreachable(message);
+  }
+});
+window.addEventListener("error", (event) => {
+  const message = String((event && event.message) || "");
+  if (message.indexOf("Failed to fetch") >= 0 || message.indexOf("NetworkError") >= 0) {
+    reportServerUnreachable(message);
+  }
+});
+
 window.yanshi = {
     /// 当前设置 ✓（可断言 ✓）。
     state() {
