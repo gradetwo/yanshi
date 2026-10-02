@@ -43,6 +43,17 @@ node scripts/browser-brush-preview.mjs "http://127.0.0.1:8110/?doc=ui&token=<tok
 
 环境变量：`CDP_PORT`（缺省 9333）、`SHOT_DIR`（截图目录，缺省 `/tmp/yanshi-brush-preview`）。
 
+## `browser-asset-dock.mjs` — 素材浮层的浏览器验收（真实 Chromium）
+
+用户要求："画笔区快捷方式、点开浮出来"。判据：① 打开前两张卡（调色板 / 纹理）在**原来的父节点**里；
+② 点工具条上的「素材」⇒ 两张卡**搬进浮层**；③ **搬过去还能用** —— 点浮层里的色块，笔刷色真的变
+（这条正是"把面板弄空 / 交互失效"的反面：搬的是**节点本身**，不是重建）；④ 点「收起」⇒ 两张卡回到
+**原来的父节点、顺序不变**、浮层隐藏；⑤ 零控制台错误。同样**强制 `ignoreCache` 重载**。
+
+```bash
+node scripts/browser-asset-dock.mjs "http://127.0.0.1:8110/?doc=ui&token=<token>"
+```
+
 ## `browser-ui-check.mjs` — 查看器 UI 回归检查（真实 Chromium）
 
 走用户同一条路径：新建图层 → 画一笔 → 断言**画布确有已绘制像素**、内容画布与覆盖层几何一致、

@@ -149,6 +149,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .layer-row .layer-flag.off { opacity: .35; }
   .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
   .panel-toggles button { padding: 4px 8px; font-size: 12px; }
+  /* **素材浮层** ✓：浮在画布上方 ✓、可滚动 ✓、不挡工具条 ✓。 */
+  #assetDock { position: fixed; top: 96px; left: 16px; z-index: 40; width: min(420px, 92vw);
+    max-height: 70vh; overflow: auto; background: Canvas; color: CanvasText;
+    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+  #assetDock[hidden] { display: none; }
+  #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #assetDock .asset-dock-head .hint { flex: 1; }
   .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
                                                border-color: transparent; }
   #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
@@ -317,6 +325,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <label title="把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角">
       <input id="smooth" type="checkbox" checked /> 平滑
     </label>
+    <!-- **素材浮层** ✓（用户："画笔区快捷方式、点开浮出来" ✓）：把**调色板 / 纹理**两张卡
+         浮到画布上方 ✓ —— 点一下开 ✓、再点一下收 ✓；卡本身是**搬过去再搬回来**，
+         不是重建 ✗（上一版把面板弄空 ✓ 就是栽在"重建/丢了原来的位置"上 ✓）。 -->
+    <button id="assetFloat" type="button" aria-pressed="false"
+            title="把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）">素材</button>
     <span id="brushPreviewWrap" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
       <img id="brushPreview" alt="" style="display:none;vertical-align:middle;border:1px solid #ccc;background:#fff;max-width:160px;max-height:64px" />
       <span id="brushPreviewHint" class="hint"></span>
@@ -598,7 +611,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <!-- **调色板** ✓（目标第 ① 件 ✓）—— `list_palette_colors` 此前**只有工具层入口** ✗
          ⇒ MCP 能用 ✓，而界面里**点不到颜色** ✗ ⇒ 这正是"只在一边有"的缺陷 ✓。 -->
-    <div class="card">
+    <div class="card" id="cardPalette">
       <h2>调色板</h2>
       <div class="hint">点色块即取色（写回**笔刷颜色** ✓）；来源是随包发布的，或你自己导入的 ✓。</div>
       <label>调色板 <select id="palettePick"></select></label>
@@ -613,7 +626,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div id="paletteInfo" class="hint"></div>
     </div>
     <!-- **纹理** ✓（目标第 ② 件 ✓）—— `texture_background` 同样此前只有工具层入口 ✗。 -->
-    <div class="card">
+    <div class="card" id="cardTexture">
       <h2>纹理</h2>
       <div class="hint">把 CC0 纸张 / 画布纹理铺成背景 ✓（会**新建一层并沉到最底** ✓）。</div>
       <label>纹理 <select id="texturePick"></select></label>
@@ -4001,7 +4014,59 @@ function regionFromSelection(checkboxId) {
   };
 }
 
+/// **素材浮层** ✓（用户："画笔区快捷方式、点开浮出来" ✓）。
+///
+/// **做法：搬，不重建** ✓ —— `appendChild` 是**移动节点** ✓ ⇒ 卡里的监听器、下拉框选中项、
+/// 已装载的色块**全都不变** ✓；关掉时按**开之前记下的原位**（`parent` + `nextSibling`）
+/// 搬回去 ✓ ⇒ 右侧面板**不可能被搬空** ✗（上一版就是栽在这里 ✓，所以这次每一步都验 ✓）。
+function setupAssetDock() {
+  const dock = $("assetDock");
+  const body = $("assetDockBody");
+  const button = $("assetFloat");
+  const close = $("assetDockClose");
+  if (!dock || !body || !button) return;
+  // **原位** ✓：只记一次 ✓（我们自己搬动之前的位置 ✓；用户没别的手段移动这两张卡 ✓）。
+  const homes = ["cardPalette", "cardTexture"]
+    .map((id) => $(id))
+    .filter(Boolean)
+    .map((node) => ({ node, parent: node.parentNode, next: node.nextSibling }));
+  const setOpen = (open) => {
+    if (open) {
+      for (const home of homes) body.appendChild(home.node);
+    } else {
+      for (const home of homes) {
+        // **按原位插回** ✓；原位已经不在了（理论上不会 ✗）⇒ 退化成"追加回原父节点" ✓，绝不丢卡 ✗。
+        if (home.parent) {
+          if (home.next && home.next.parentNode === home.parent) {
+            home.parent.insertBefore(home.node, home.next);
+          } else {
+            home.parent.appendChild(home.node);
+          }
+        }
+      }
+    }
+    dock.hidden = !open;
+    button.setAttribute("aria-pressed", String(open));
+    button.textContent = open ? "素材（已浮出）" : "素材";
+  };
+  button.addEventListener("click", () => setOpen(dock.hidden));
+  if (close) close.addEventListener("click", () => setOpen(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dock.hidden) setOpen(false);
+  });
+  // **给探针一个确定的入口** ✓（与 `window.yanshi` 上其它入口同一条纪律 ✓）。
+  window.yanshiDock = {
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+    isOpen: () => !dock.hidden,
+    homes: () => homes.map((home) => ({ id: home.node.id, parent: home.parent && home.parent.id })),
+    where: () => homes.map((home) => home.node.parentNode && home.node.parentNode.id),
+  };
+}
+
 async function setupAssetPanels() {
+  // **先把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
+  setupAssetDock();
   const palettePick = $("palettePick");
   const swatches = $("paletteSwatches");
   const paletteInfo = $("paletteInfo");
@@ -6511,6 +6576,16 @@ $("importFile").addEventListener("change", async (event) => {
   }
 })();
 </script>
+<!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
+     关掉时按**记下来的原位**搬回去 ✓ ⇒ 右侧面板永远不会被搬空 ✗。 -->
+<div id="assetDock" hidden>
+  <div class="asset-dock-head">
+    <strong>素材</strong>
+    <span class="hint">调色板 / 纹理 · 点画布上方「素材」或这里收起</span>
+    <button id="assetDockClose" type="button">收起</button>
+  </div>
+  <div id="assetDockBody"></div>
+</div>
 </body>
 </html>
 "##;
