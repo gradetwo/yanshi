@@ -228,6 +228,14 @@ created, which previously took a second listing call to discover.
 The object panel can also restyle a stroke, changing its colour, size and opacity through update_stroke, which
 had no test coverage at all until this round added two: one checks that the object data and the rendered pixels
 both change, and the other that a partial core block merges rather than replacing the fields it does not mention.
+It now also refuses the objects it cannot restyle instead of reporting success. A stroke painted by brush_stroke
+or medium_stroke is a raster patch whose colour was baked into the blob as it was laid down, so writing a new
+colour into the object data returned ok while leaving every pixel identical, which a third test now pins down: it
+paints with brush_stroke, asserts that the refusal names the type, and asserts that no atom was committed and no
+pixel moved. The criterion for the strokes it does handle is two calls with two colours, each of which must change
+the pixels, with a direction check so that a colour written out as a constant cannot pass; both were confirmed to
+fail before the fix. The colour of an already painted brush stroke therefore still cannot be changed in place, and
+the refusal says so and says to undo and paint again, rather than implying a capability that is not there.
 
 `list_comments` closes an asymmetry in the collaboration channel that a browser check exposed. Comments could
 always be written, but no tool could read them back: the log and atom-search tools return metadata only, by

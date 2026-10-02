@@ -1158,7 +1158,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "update_stroke",
         profile: Profile::Core,
-        summary: "修改笔触（10.3 三层参数：核心 / preset / advanced）",
+        summary: "修改笔触（10.3 三层参数：核心 / preset / advanced）——\
+                  只作用于笔迹（stroke）与路径（path）；光栅对象（raster_patch）的颜色已烘进 blob，\
+                  会明确拒绝并说明如何重画",
         mutating: true,
         params: &[
             param!("object_id", String, true, "对象 id"),
@@ -3445,6 +3447,51 @@ fn write_update_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }))
 }
 
+/// **`update_stroke` 的类型闸门** ✓ —— 只放行**由笔刷渲染**的对象 ✓（`stroke` / `path` ✓）。
+///
+/// **为什么必须有这道闸门** ✓（用户报的 P0 ✓，第 31 轮复现并修 ✓）：
+/// `brush_stroke` / `medium_stroke` 落笔的产物是 **`raster_patch`** ✓ ——
+/// 颜色在**落笔那一刻就烘进了 blob** ✓，对象数据里只有 `bitmap` / `region` ✓，
+/// 渲染时**根本不读 `data.color`** ✗。而 `update_stroke` 此前**不查类型** ✗：
+/// 它把 `color` **合并进 `data`** ✓、返回 **`ok:true`** ✓、**像素一个都不变** ✗。
+///
+/// **实测（复现 100% ✓）**：`brush_stroke` 画一笔 ✓ +
+/// `update_stroke{core:{color}}` ✓ ⇒ 200×120 区域的原始 RGBA **96000 字节逐字节相同** ✗
+/// —— 正是用户报的「**返回 ok、画面没变**」✓。
+///
+/// **为什么是「拒绝」而不是「想办法改」** ✗：像素已经烘进 blob ✓ ⇒ 要换色只能**重新落笔** ✓；
+/// 若做成「把这一块的像素整体染成新色」✗，多彩的一笔会被压成**单色** ✓ ⇒ 那是**发明语义** ✗。
+/// 本项目对此的既定纪律是**明确拒绝 + 告诉调用方下一步怎么办** ✓，而不是**静默成功** ✗。
+fn ensure_stroke_restylable(kind: ObjectType, object_id: &str) -> Result<()> {
+    let otherwise = match kind {
+        // 这两种都由 `BrushSpec::from_value(data)` 画 ✓ ⇒ `color/size/opacity/blend_mode` 真的生效 ✓。
+        ObjectType::Stroke | ObjectType::Path => return Ok(()),
+        ObjectType::RasterPatch => {
+            "是 raster_patch：颜色在落笔时已经烘进 blob ⇒ 渲染只读 bitmap/region、不读 data.color \
+             ⇒ 改数据不会改画面。要换色请**撤销后用想要的颜色重画一笔**\
+             （brush_stroke / medium_stroke 的 color）"
+        }
+        ObjectType::Shape => "是 shape：颜色请用 replace_object_data 改 data.color",
+        ObjectType::Text => "是 text：内容与颜色请用 replace_object_data 改 data",
+        ObjectType::Group => "是 group：组自己不出像素 ⇒ 请改**成员对象**",
+        ObjectType::Instance => {
+            "是 instance：画面来自 master ⇒ 请改 **master**，或先 detach_instance"
+        }
+        ObjectType::Adjustment => "是 adjustment：参数在 data.params ⇒ 请用 update_adjustment",
+        ObjectType::Filter => "是 filter：参数在 data.params ⇒ 请用 update_filter",
+        ObjectType::Retouch | ObjectType::Liquify => {
+            "是修图对象（retouch / liquify）：没有可改的笔迹数据 ⇒ 请用对应工具重做"
+        }
+    };
+    Err(YanshiError::new(
+        ErrorCode::InvalidArgument,
+        ErrorContext::detail(format!(
+            "update_stroke 只作用于笔迹（stroke）与路径（path）；对象 {object_id} {otherwise}"
+        )),
+    )
+    .with_object(object_id.to_owned()))
+}
+
 fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;
     let state = document_state(ctx)?;
@@ -3455,6 +3502,8 @@ fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         )
         .with_object(object_id.clone())
     })?;
+    // **先查类型** ✓ —— 否则下面会「写进 data、返回 ok、画面不动」✗（用户报的 P0 ✓）。
+    ensure_stroke_restylable(object.object_type, &object_id)?;
     let mut data = object.data.clone();
     if !data.is_object() {
         data = json!({});
