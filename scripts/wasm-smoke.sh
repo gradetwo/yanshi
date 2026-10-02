@@ -47,7 +47,15 @@ echo "== 生成 node 目标绑定"
 # —— 那看起来像"脚本坏了" ✗，而真相是"**这台机器缺一个可选工具** ✓，
 # 于是**内核这一段的冒烟检查没跑** ✓" ⇒ **被跳过的检查必须自己说清楚** ✗，
 # 否则读日志的人会以为它通过了 ✓（这正是最危险的一种绿 ✓）。
-if ! command -v wasm-bindgen >/dev/null 2>&1; then
+# **`wasm-bindgen` 常装在 `~/.cargo/bin` 而不在 PATH 上** ✗ ——
+# 实测：`command -v wasm-bindgen` 说"没有" ✓，其实**装着** ✓（同一个坑我在打包脚本里也踩过 ✓）。
+bindgen="$(command -v wasm-bindgen 2>/dev/null || true)"
+if [ -z "$bindgen" ] && [ -x "$HOME/.cargo/bin/wasm-bindgen" ]; then
+  bindgen="$HOME/.cargo/bin/wasm-bindgen"
+  PATH="$HOME/.cargo/bin:$PATH"
+  export PATH
+fi
+if [ -z "$bindgen" ]; then
   echo "   ⚠️ 未安装 wasm-bindgen ⇒ **跳过内核冒烟检查**（不影响介质插件检查 ✓）"
   echo "      装上之后请重跑：cargo install wasm-bindgen-cli"
   echo "      注意：本脚本的**介质插件**部分由 scripts/medium-abi-check.mjs 独立覆盖 ✓"
