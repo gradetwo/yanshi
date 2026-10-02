@@ -611,6 +611,24 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
       <div id="gradInfo" class="hint"></div>
     </div>
+    <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓，
+         而界面里**一次都没提到过它们** ✗（实测：查看器里出现次数 = 0 ✓）
+         ⇒ "真人备份不了自己的画" ✓ —— 这正是"两边都要有"的**反面缺口** ✓。
+         **路径是服务端的路径** ✓（不是浏览器的文件选择器 ✓）⇒ 这一点必须写在界面上 ✗，
+         否则用户会以为点一下就从自己电脑上选文件 ✓。 -->
+    <div class="card">
+      <h2>工程包</h2>
+      <div class="hint">
+        整份文档（原子日志 + 元数据 + 全部 blob）打成一个 <code>.yanshi</code>（未压缩 tar ✓，任何 <code>tar</code> 都能看 ✓）。
+        <strong>路径是服务器上的路径</strong> ✓ —— 不是从你电脑上选文件 ✗。
+      </div>
+      <label>路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <div class="toolbar">
+        <button id="projectExport" type="button">导出工程</button>
+        <button id="projectImport" type="button">导入为新文档</button>
+      </div>
+      <div id="projectInfo" class="hint"></div>
+    </div>
     <!-- **建议** ✓（设计 §12.6 ✓）—— `suggest` / `list_suggestions` / `accept_suggestion` /
          `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
          也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
@@ -4065,6 +4083,63 @@ async function setupAssetPanels() {
   if (palettePick) {
     palettePick.addEventListener("change", () => { void loadPalette(); });
     if (palettePick.options.length > 0) void loadPalette();
+  }
+
+  // **工程包：导出 / 导入** ✓（目标 ⑧ ✓）。
+  {
+    const exportButton = $("projectExport");
+    const importButton = $("projectImport");
+    const info = $("projectInfo");
+    const pathOf = () => (($("projectPath") || {}).value || "").trim();
+    if (exportButton) {
+      exportButton.addEventListener("click", async () => {
+        const path = pathOf();
+        if (!path) {
+          if (info) info.textContent = "先写一个路径 ✓";
+          return;
+        }
+        const value = await callToolChecked("export_project", { path: path }, "导出工程");
+        // **如实报出服务端算出来的东西** ✓（字节数 / 原子数 ✓）—— 只说"成功"没用 ✗。
+        if (info) {
+          // **只说自己知道的字段** ✗ —— 我第一版凭印象写了 `atoms` / `blobs` ✓，
+          // 而 `export_project` **根本不回**这两个 ✓ ⇒ 界面上出现「? 条原子，? 个 blob」✗
+          // ⇒ 那比不写更糟 ✓（看起来像坏了 ✓）。**字段名要照工具实际的回来** ✓。
+          const parts = [];
+          if (typeof value.bytes === "number") parts.push(value.bytes + " 字节");
+          if (value.format) parts.push(String(value.format));
+          if (value.render && value.render.width) {
+            parts.push("内嵌预览 " + value.render.width + "×" + value.render.height);
+          }
+          info.textContent = "已导出到 " + path + (parts.length ? "（" + parts.join("，") + "）" : "") + " ✓";
+        }
+      });
+    }
+    if (importButton) {
+      importButton.addEventListener("click", async () => {
+        const path = pathOf();
+        if (!path) {
+          if (info) info.textContent = "先写一个路径 ✓";
+          return;
+        }
+        // **新文档 id** ✓：默认从未导入过的一个 ✓；已存在会被工具**拒绝**（绝不覆盖 ✓）。
+        const docId = (window.prompt("导入成哪个文档 id？（已存在的会被拒绝，绝不覆盖）", "imported") || "").trim();
+        if (!docId) return;
+        const value = await callToolChecked("import_project", { path: path, doc_id: docId }, "导入工程");
+        // **令牌是按文档签发的** ✗ ⇒ 导入的新文档**用当前令牌打不开** ✓
+        // ⇒ 必须把这条**和可照做的命令**一起说出来 ✓（否则用户会以为导入失败了 ✓）。
+        if (info) {
+          info.innerHTML =
+            "已导入为 <code>" + docId + "</code>（" +
+            (typeof value.atoms === "number" ? value.atoms + " 条原子" : "已还原") +
+            (typeof value.blobs === "number" ? "，" + value.blobs + " 个 blob" : "") +
+            "）✓ —— **令牌按文档签发** ✗ ⇒ 打开它要先为它签一个：<br>" +
+            "<code>curl -X POST 'http://127.0.0.1:" + (location.port || "80") +
+            "/api/documents' -H 'content-type: application/json' -d '{\"doc_id\":\"" + docId + "\"}'</code><br>" +
+            "然后把地址栏里的 <code>doc=</code> 与 <code>token=</code> 换成返回的那两个 ✓";
+        }
+        log("已导入工程包：" + docId + " ✓（新文档需要新令牌 ✓）", "#2a2");
+      });
+    }
   }
 
   const gradApply = $("gradApply");

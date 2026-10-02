@@ -228,6 +228,18 @@ The viewer's undo and redo buttons call these tools and display the counts the s
 A local stack drifts as soon as the page is reloaded or another client edits the document, and then the interface
 claims three steps are available while nothing can be undone.
 
+### Project packages in the viewer
+
+The export and import tools existed with no way for a person to reach them, so the viewer now has a card for both. The
+path is a path on the server, not a file chooser in the browser, and the card says so, because the opposite assumption
+would be the natural one. Importing a package creates a new document and refuses to overwrite an existing one, so the
+card reports the new document id and the exact command to mint a token for it, since tokens are issued per document and
+the one the viewer already holds will not open it.
+
+A first version of the export line printed question marks for the atom and blob counts because I wrote the field names
+from memory and the tool does not return those; a line reading "? atoms, ? blobs" is worse than no line at all, so the
+card now reports only the fields the tool actually returns.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at
