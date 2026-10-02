@@ -10,6 +10,15 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Static builds and storage portability
+
+`scripts/package-release.sh --static` produces a fully static binary that references no GLIBC version, which matters
+because the dynamic build inherited GLIBC 2.43 from its build machine and failed to start on Debian 12. The script
+prints the glibc requirement of whatever it packages and refuses a static package that still references one.
+
+Where a filesystem cannot fsync, such as 9p or some network mounts, content-addressed writes now degrade rather than
+fail, and `/health` reports `blob_fsync: unsupported` so the weaker durability guarantee is visible.
+
 ## Automation and a blank canvas
 
 `window.yanshi` exposes a stable hook for scripts: `state()` reports the current tool, colour, size, opacity, medium,

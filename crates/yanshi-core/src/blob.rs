@@ -64,6 +64,15 @@ impl BlobEntry {
 
 /// 内容寻址存储接口。
 pub trait BlobStore: Send + Sync {
+    /// **本存储是否遇到过"文件系统不支持 fsync"** ✓（真实用户报的第 2 条 ✓）。
+    ///
+    /// 缺省 `false` ✓；文件系统 CAS 在遇到 `ENOTSUP` 时会置位 ✓。
+    /// **它存在的意义是"让降级可见"** ✓ —— 数据仍然可靠地写得进去 ✓，
+    /// 但**掉电安全没有保证** ✓ ⇒ 使用者有权知道 ✓（由 `/health` 的 `blob_fsync` 报出 ✓）。
+    fn unsupported_sync(&self) -> bool {
+        false
+    }
+
     /// 写入内容并返回哈希（同哈希幂等去重）。
     fn put(&self, bytes: &[u8]) -> Result<BlobHash>;
 
@@ -365,6 +374,12 @@ impl BlobStore for MemoryBlobStore {
 #[derive(Debug, Clone)]
 pub struct FsBlobStore {
     root: PathBuf,
+    /// **这台机器上 fsync 是否不被支持** ✓（真实用户报的第 2 条 ✓：9p/NFS 上 `ENOTSUP` ✗）。
+    ///
+    /// **为什么要记下来** ✓：降级是**必要的**（否则任何写操作都失败 ✗），
+    /// 但**不能静默** ✗ ⇒ 这个标记由 `/health` 报出来 ✓ ⇒ 使用者能知道
+    /// "我的数据落在了一个不保证掉电安全的文件系统上" ✓。
+    unsupported_sync: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// **冷归档目录** ✓：与热区**同构** ✓（`<root>/cold/sha256/xx/yy/<hex>` ✓）⇒ 迁移就是"改名" ✓。
     /// 设计里它还有一层 zstd 压缩 ✓ —— **暂缓** ✓（依赖决策 ✓，见 trait 说明 ✓）。
     cold: PathBuf,
@@ -378,12 +393,26 @@ impl FsBlobStore {
         fs::create_dir_all(root.join("cold").join("sha256"))
             .map_err(|error| io_error(&root, error))?;
         let cold = root.join("cold");
-        Ok(Self { root, cold })
+        let unsupported_sync = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Ok(Self {
+            root,
+            cold,
+            unsupported_sync,
+        })
     }
 
     /// 根目录。
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// **本存储是否遇到过"文件系统不支持 fsync"** ✓（真实用户报的第 2 条 ✓）。
+    ///
+    /// 一旦为真 ✓，说明**掉电安全没有保证** ✓（数据仍然写得进去 ✓，只是没有 fsync 兜底 ✓）。
+    /// 由 `/health` 暴露 ✓ —— **降级可以接受，静默降级不可以** ✗。
+    pub fn unsupported_sync(&self) -> bool {
+        self.unsupported_sync
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// blob 的最终路径：`<root>/sha256/<ab>/<cd>/<hex>`。
@@ -447,6 +476,27 @@ impl FsBlobStore {
     }
 }
 
+/// **判断一个 fsync 错误是否属于"文件系统不支持"** ✓（真实用户报的第 2 条 ✓）。
+///
+/// **为什么单独一个函数** ✓：这是**策略** ✓（哪些错误可以降级 ✓、哪些必须失败 ✗）⇒
+/// **必须能单独测** ✓ —— 否则本地没有 9p 挂载就永远测不到这条路径 ✗。
+///
+/// **判据** ✓：`ErrorKind::Unsupported` ✓（Rust 对 ENOTSUP/EOPNOTSUPP 的映射 ✓）
+/// 或**原始 errno 95** ✓（各版本映射不一定一致 ⇒ 两条都认 ✓）。
+fn is_unsupported_sync(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Unsupported || error.raw_os_error() == Some(95)
+}
+
+/// 尽力同步 ✓：`Ok(true)` = 同步成功 ✓；`Ok(false)` = **文件系统不支持 ⇒ 降级** ✓；
+/// `Err` = **其它错误照旧失败** ✗（磁盘满 / 权限 / IO 错都不能放过 ✓）。
+fn sync_or_degrade(file: &fs::File) -> std::io::Result<bool> {
+    match file.sync_all() {
+        Ok(()) => Ok(true),
+        Err(error) if is_unsupported_sync(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn io_error(path: &Path, error: std::io::Error) -> YanshiError {
     YanshiError::new(
         ErrorCode::ResourceExhausted,
@@ -489,7 +539,16 @@ impl BlobStore for FsBlobStore {
             let mut file = fs::File::create(&tmp).map_err(|error| io_error(&tmp, error))?;
             file.write_all(bytes)
                 .map_err(|error| io_error(&tmp, error))?;
-            file.sync_all().map_err(|error| io_error(&tmp, error))?;
+            // **`sync_all` 在部分文件系统上不被支持** ✓（真实用户报的第 2 条 ✓）：
+            // 9p / 某些网络挂载上 fsync 返回 `ENOTSUP`（os error 95 ✓）✗
+            // ⇒ 原来这一句让**任何写操作都失败** ✗（"CAS IO 失败 … Operation not supported" ✓）。
+            // **原则** ✓：**只在"文件系统明确不支持"时降级** ✓ ——
+            // 磁盘满 / 权限 / IO 错**照旧失败** ✗，绝不笼统放过 ✓；
+            // 并且**降级要被看见** ✓（见 `unsupported_sync` ✓，由 `/health` 报出 ✓）。
+            if !sync_or_degrade(&file).map_err(|error| io_error(&tmp, error))? {
+                self.unsupported_sync
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         fs::rename(&tmp, &target).map_err(|error| io_error(&target, error))?;
         Ok(hash)
@@ -840,6 +899,51 @@ mod tests {
         assert_eq!(count, 0, "冷层应已空 ✓");
         // 另一份没被牵连 ✓。
         assert_eq!(store.get(&second).expect("取回应成功"), b"hot-two".to_vec());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod sync_policy_tests {
+    use super::*;
+
+    /// **降级策略：只放过"不支持"，其余照旧失败** ✓（真实用户报的第 2 条 ✓）。
+    ///
+    /// 这条**不需要 9p 挂载也能测** ✓ —— 因为它测的是**策略** ✓，不是文件系统 ✓。
+    #[test]
+    fn unsupported_sync_is_degraded_but_other_errors_are_not() {
+        // ① ENOTSUP（errno 95 ✓）：**可以降级** ✓ —— 这正是 9p / 网络挂载上报的错 ✓。
+        let unsupported = std::io::Error::from_raw_os_error(95);
+        assert!(
+            is_unsupported_sync(&unsupported),
+            "ENOTSUP 应当被识别为可降级"
+        );
+        // ② `ErrorKind::Unsupported` ✓：也要认 ✓（不同平台映射不同 ✓）。
+        let kind = std::io::Error::new(std::io::ErrorKind::Unsupported, "no fsync here");
+        assert!(is_unsupported_sync(&kind), "Unsupported 应当被识别为可降级");
+        // ③ **其它错误一律不能放过** ✗：磁盘满 ✓、权限 ✓、IO 错 ✓。
+        for fatal in [
+            std::io::Error::from_raw_os_error(28), // ENOSPC
+            std::io::Error::from_raw_os_error(13), // EACCES
+            std::io::Error::from_raw_os_error(5),  // EIO
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope"),
+        ] {
+            assert!(
+                !is_unsupported_sync(&fatal),
+                "不该把 {fatal:?} 当成可降级（那会把真实故障吞掉）"
+            );
+        }
+    }
+
+    /// **正常文件系统上不发生降级** ✓（大多数环境的实际路径 ✓）。
+    #[test]
+    fn a_normal_write_reports_sync_supported() {
+        let dir = std::env::temp_dir().join(format!("yanshi_sync_{}", std::process::id()));
+        let path = dir.join("probe.bin");
+        fs::create_dir_all(&dir).expect("临时目录应可建");
+        let file = fs::File::create(&path).expect("临时文件应可建");
+        let outcome = sync_or_degrade(&file).expect("正常文件系统上 fsync 应当成功");
+        assert!(outcome, "正常文件系统上应当报告同步成功");
         let _ = fs::remove_dir_all(&dir);
     }
 }

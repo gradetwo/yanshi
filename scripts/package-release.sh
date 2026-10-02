@@ -9,16 +9,29 @@
 # ⇒ 所以包里**带上这两棵树** ✓，并附一个**包装脚本**用绝对路径把它们指回去 ✓ ——
 # 这样"解包到哪都能跑" ✓，不依赖用户先 cd 到某个目录 ✓。
 #
-# 用法：`scripts/package-release.sh [--out dist] [--skip-build]`
+# 用法：`scripts/package-release.sh [--out dist] [--skip-build] [--static]`
+#
+# **`--static`：打成完全静态的二进制** ✓（真实用户报告的第 1 条严重缺陷 ✓）。
+# **它解决什么** ✓：动态版链接到的是**构建机的 glibc** ✗ ⇒ 实测二进制要求 `GLIBC_2.43` ✗
+#（只因为 `atan2f` 一个符号 ✓），而 Debian 12 只有 2.36 ✓ ⇒ **一运行就崩** ✗
+#（用户只能手改 ELF 的 `.gnu.version` ✓ —— 那不该是使用者要做的事 ✓）。
+# **静态版实测** ✓：`ldd` 报 **statically linked** ✓、**不再引用任何 GLIBC 版本** ✓、
+# 体积 4.3MB ⇒ 5.6MB ✓（只大 1.3MB ✓）⇒ **在任何发行版上都能跑** ✓。
+#
+# **注意姿势** ✓：必须**带上 `--target`** ✓ —— 否则 `+crt-static` 会一并作用到
+# proc-macro 与构建脚本 ✓ ⇒ 报 `cannot produce proc-macro …` ✗（我第一次就栽在这 ✓）。
+# 带上 `--target` 后，产物落在 `target/<target>/release/` ✓（与动态构建**互不覆盖** ✓）。
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$repo/dist"
 skip_build=0
+static_build=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --skip-build) skip_build=1; shift ;;
+    --static) static_build=1; shift ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
@@ -37,15 +50,27 @@ name="yanshi-${version}-${commit}-${target}"
 stage="$out/$name"
 
 echo "==> 打包 $name"
+bin_dir="$repo/target/release"
+if [ "$static_build" = 1 ]; then
+  bin_dir="$repo/target/$target/release"
+  name="${name}-static"
+  stage="$out/$name"
+fi
 if [ "$skip_build" = 0 ]; then
-  echo "--> 构建 release 二进制（yanshi-serve / yanshi-mcp）"
-  (cd "$repo" && cargo build --release -p yanshi-http -p yanshi-mcp)
+  if [ "$static_build" = 1 ]; then
+    echo "--> 构建**静态** release 二进制（带 --target ✓，否则 proc-macro 会一起被静态化 ✗）"
+    (cd "$repo" && RUSTFLAGS="-C target-feature=+crt-static" \
+      cargo build --release --target "$target" -p yanshi-http -p yanshi-mcp)
+  else
+    echo "--> 构建 release 二进制（yanshi-serve / yanshi-mcp）"
+    (cd "$repo" && cargo build --release -p yanshi-http -p yanshi-mcp)
+  fi
 fi
 
 # 需要的产物必须先存在 ✓（缺了就地报错 ✓，不要打出一个跑不起来的包 ✗）。
 for required in \
-  "$repo/target/release/yanshi-serve" \
-  "$repo/target/release/yanshi-mcp" \
+  "$bin_dir/yanshi-serve" \
+  "$bin_dir/yanshi-mcp" \
   "$repo/crates/yanshi-wasm/pkg" \
   "$repo/assets/mediums"; do
   [ -e "$required" ] || { echo "缺少必需产物：$required" >&2; exit 1; }
@@ -55,8 +80,8 @@ rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/yanshi"
 
 echo "--> 组装目录树"
-install -m 0755 "$repo/target/release/yanshi-serve" "$stage/bin/yanshi-serve"
-install -m 0755 "$repo/target/release/yanshi-mcp" "$stage/bin/yanshi-mcp"
+install -m 0755 "$bin_dir/yanshi-serve" "$stage/bin/yanshi-serve"
+install -m 0755 "$bin_dir/yanshi-mcp" "$stage/bin/yanshi-mcp"
 # **资产树** ✓：用 `cp -R` 保留目录结构 ✓；介质只带 `*.wasm` ✓（源码不属于运行期 ✓）。
 cp -R "$repo/crates/yanshi-wasm/pkg" "$stage/share/yanshi/wasm"
 mkdir -p "$stage/share/yanshi/mediums"
@@ -123,6 +148,25 @@ target: ${target}
 built: ${built}
 rustc: $(rustc -V)
 INFO
+
+# **打包守卫：报出这个包要求多新的 glibc** ✓ —— 用户正是在这里踩的坑 ✗：
+# 动态包会**静默继承构建机的 glibc** ✓（实测 2.43 ✓），到 Debian 12（2.36 ✓）就直接崩 ✗。
+# 所以这里**每次都打印** ✓；静态包则明确说"完全不依赖" ✓。
+echo "--> 检查运行期依赖（glibc 要求）"
+if ldd "$stage/bin/yanshi-serve" 2>&1 | grep -q "statically linked"; then
+  echo "    静态链接 ✓ 不依赖任何 glibc 版本 ✓"
+else
+  newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+  echo "    动态链接 ⇒ 要求 ${newest}（构建机是 $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')）"
+  echo "    ⚠️  比目标发行版新就会一运行就崩 ✗ ⇒ 建议加 --static 重新打包 ✓"
+fi
+if [ "$static_build" = 1 ]; then
+  if objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
+    echo "    ✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败" >&2
+    exit 1
+  fi
+  echo "    已断言：静态包**不引用**任何 GLIBC 符号 ✓"
+fi
 
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")

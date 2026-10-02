@@ -88,6 +88,22 @@ plugin and records the medium as id oil at version two on the object. Recording 
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
 
+Release packages can be built fully static with --static, which removes the dynamic dependency on the build
+machine's glibc. The dynamic binary required GLIBC_2.43, for the single symbol atan2f, while distributions such as
+Debian 12 ship 2.36, so it crashed on start; the static build is 1.3 MB larger, reports as statically linked, and
+references no GLIBC version at all. The recipe must pass --target, otherwise the static flag reaches proc-macro
+crates and the build fails. The packaging script prints the required glibc for every package and fails if a static
+package still references one, so this can never regress silently.
+
+Content-addressed writes degrade instead of failing when the filesystem does not support fsync, which is the case on
+9p and some network mounts where it returns ENOTSUP and previously made every write fail. Only that specific error is
+degraded; disk-full, permission and I/O errors still fail as before, and the degradation raises a flag that the health
+endpoint reports as blob_fsync unsupported, because degrading is acceptable while hiding it is not.
+
+Layers already support the multiply, screen, overlay, darken, lighten, add, subtract and difference blend modes
+alongside normal, settable through the layer patch, so the missing piece there was documentation rather than
+capability.
+
 new_document gives a blank canvas in one call, which the report asked for because a document id is the unit of
 persistence, so a second session under the same root loads the same document and drawings stack up; the tool is
 explicit that a new canvas means a new doc id, and asking for an id that is already open is refused with that advice

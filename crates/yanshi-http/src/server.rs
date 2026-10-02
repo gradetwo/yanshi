@@ -556,6 +556,18 @@ fn health(state: &ServerState) -> Response {
             "tools": state.registry.len(),
             "wasm": wasm_available(state),
             "cache": cache_stats(state),
+            // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
+            // ⇒ blob 仍写得进去 ✓，但**掉电安全没有保证** ✓ ⇒ 这一项就让使用者看得见 ✓。
+            "blob_fsync": if state
+                .workspace
+                .lock()
+                .map(|workspace| workspace.store().unsupported_sync())
+                .unwrap_or(false)
+            {
+                "unsupported"
+            } else {
+                "ok"
+            },
             "rss_bytes": rss_bytes(),
         }),
     )

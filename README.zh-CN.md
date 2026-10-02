@@ -9,6 +9,22 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 静态构建与存储兼容性
+
+`scripts/package-release.sh --static` 打出**完全静态**的二进制 ✓ —— **不引用任何 GLIBC 版本** ✓。
+这件事很重要 ✓：动态版会**继承构建机的 glibc** ✗（实测要求 **2.43** ✓，只因 `atan2f` 一个符号 ✓），
+而 Debian 12 只有 2.36 ✓ ⇒ **一运行就崩** ✗。打包脚本现在**每次都打印这个包要求多新的 glibc** ✓，
+并且**拒绝**一个"声明了静态却仍引用 GLIBC"的包 ✓ ⇒ 不会再**静默**回归 ✓。
+
+**文件系统不支持 `fsync` 时**（例如 9p / 部分网络挂载 ✓，会返回 `ENOTSUP` ✓），
+CAS 写入改为**降级继续** ✓（原来会让**任何写操作都失败** ✗）；
+**只有**这一种错误被降级 ✓，磁盘满 / 权限 / IO 错**照旧失败** ✗，
+且降级会在 `/health` 的 **`blob_fsync: unsupported`** 里**报出来** ✓ ——
+**降级可以接受，静默降级不可以** ✗。
+
+**混合模式本来就齐** ✓：`normal / multiply / screen / overlay / darken / lighten / add / subtract / difference` ✓
+（在图层 patch 里设置 ✓）⇒ 这里缺的是**文档** ✗，不是能力 ✓。
+
 ## 自动化与空白画布
 
 `window.yanshi` 给脚本一个**稳定入口** ✓：`state()` 报出当前工具 / 颜色 / 粗细 / 不透明度 / 介质 / 图层 / 文档 ✓；
