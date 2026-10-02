@@ -175,6 +175,16 @@ tar.gz 与一份校验和 ✓。
 服务**照样能起来** ✗，但查看器会退化 ✓、`/mediums/*.wasm` 会 **404** ✓（**没有人会替你报错** ✗）。
 包装脚本改为**按自身位置**推算这些路径 ✓ ⇒ 整棵树**放到哪都能跑** ✓。
 
+## 依赖
+
+本项目此前**只有一个依赖 `wasm-bindgen`** ✓。**按决定** ✓，现在多了 **Hokusai** ✓ ——
+一个受 libmypaint 启发的**纯 Rust 笔刷引擎** ✓（`hokusai` ✓，用缺省 feature `myb-json` 与 `tile-mem` ✓，
+连带两个 `thiserror` crate ✓）。**理由很具体** ✓：Hokusai 能读 libmypaint 的 **`.myb` 笔刷** ✓
+⇒ 仓库里 vendor 的那包 **CC0 笔刷**（`assets/brushes/` ✓）可**照原样使用** ✓ 而不必做近似 ✓；
+它与 libmypaint 在 **196 支 stock 笔刷里 188 支像素对齐** ✓。许可证 **Apache-2.0 或 MIT** ✓、
+**无 `unsafe`** ✓、**可为 wasm32 构建** ✓；**有意不开** `tiny-skia` ✓。
+**其余部分依然零依赖** ✓：HTTP 栈 ✓、渲染 ✓、存储 ✓、介质插件 ✓ 都是手写的 ✓。
+
 ## 安装
 
 ```bash

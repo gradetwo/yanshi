@@ -135,6 +135,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "hokusai"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2a43c466522f5a05c6a09ac6466c4ea6e1f1e3921e62d6add9e29a026ef0357"
+dependencies = [
+ "hokusai-brush",
+ "hokusai-core",
+ "hokusai-tile-mem",
+]
+
+[[package]]
+name = "hokusai-brush"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553185ffcdcf55251cd02a2d0be297cd2ac0bf9f8fae50cffb70ddbadc70fee4"
+dependencies = [
+ "hokusai-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "hokusai-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d0fdc01003e0256eb9bed701ce25b12f9af19bb33bf2340b77babc56960dce9"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "hokusai-tile-mem"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaeddb70dce44dad67dccd058b30c5eac889a5a36e5c19f5ac76c7711bf45d0"
+dependencies = [
+ "hokusai-core",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -613,6 +654,7 @@ dependencies = [
 name = "yanshi-server"
 version = "0.1.0"
 dependencies = [
+ "hokusai",
  "proptest",
  "serde",
  "serde_json",

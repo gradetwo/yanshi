@@ -173,6 +173,16 @@ directories are relative to the current directory, so running `bin/yanshi-serve`
 neither the kernel nor the plugins, leaving the viewer degraded and `/mediums/*.wasm` returning 404 while the server
 itself still starts. The wrapper derives the paths from its own location instead, so the tree works from anywhere.
 
+## Dependencies
+
+The project used to take exactly one dependency, `wasm-bindgen`, and no others. By decision it now also depends on
+**Hokusai**, a pure Rust brush engine inspired by libmypaint (`hokusai` with its default `myb-json` and `tile-mem`
+features, plus `thiserror` pulled in by those crates). The reason is concrete: Hokusai reads libmypaint `.myb`
+brushes, so the CC0 brush pack vendored under `assets/brushes` can be used as authored rather than approximated, and
+it is pixel aligned with libmypaint on 188 of 196 stock brushes. It is Apache-2.0 or MIT, unsafe free, and builds for
+wasm32. The `tiny-skia` feature is deliberately not enabled. Everything else stays dependency free: the HTTP stack,
+the renderers, the storage layer and the medium plugins are still written by hand.
+
 ## Install
 
 ```bash
