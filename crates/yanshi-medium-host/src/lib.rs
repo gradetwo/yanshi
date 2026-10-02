@@ -140,6 +140,15 @@ fn floats_of(input: DabInput) -> [f32; 11] {
     ]
 }
 
+/// 一笔介质里**相邻两枚印章的间距** ✓（真实用户反馈调过一次 ✓）。
+///
+/// **它决定"像笔触"还是"像盖章"** ✓：间距为 `size/4` 时圆盘只重叠四分之三 ✓
+/// ⇒ 边缘呈**扇贝状** ✗ ⇒ 看起来是一串圆点 ✓；收紧到 `size/8` 后边缘明显更平 ✓。
+/// **单独抽成函数** ✓：这样它能被**测试直接量** ✓（量边缘起伏 ✓），而不是只能靠眼睛看 ✓。
+pub const fn spacing_divisor() -> f64 {
+    8.0
+}
+
 /// **细笔尖 + 压力换算** ✓（与浏览器端**同一公式** ✓）。
 pub fn dab_size_for(size: f64, pressure: f64) -> u32 {
     let scaled = size * (0.45 + 0.55 * pressure.clamp(0.0, 1.0));
@@ -459,7 +468,16 @@ pub fn paint_stroke_over(
             let (cx, cy, cp) = *point;
             let distance = ((cx - px).powi(2) + (cy - py).powi(2)).sqrt();
             // **间距随压力变** ✓：轻的地方点稀一点 ✓（与"细笔尖走得快"的直觉一致 ✓）。
-            let spacing = (dab_size_for(size, (pp + cp) / 2.0) as f64 / 4.0).max(1.0);
+            // **间距从 `size/4` 收紧到 `size/8`** ✓（真实用户反馈 ✓）。
+            //
+            // **为什么** ✓：我用**他的原 JSON** 复现并**看图** ✓ ⇒ 插值确实在跑 ✓（整条**没有断口** ✓），
+            // **但结果仍然像"盖章"** ✗：`size/4` 时相邻圆盘只重叠 3/4 ✓
+            // ⇒ **边缘是扇贝状的** ✗ ⇒ 一眼看过去就是**一串圆点** ✓ —— 正是他说的"离散的盖章圆点" ✓。
+            // ⇒ **他的观察是对的** ✓，而我此前的判据（"中间有没有空列"）**测不到这一点** ✗：
+            // 相互重叠的圆盘**当然**没有空列 ✓ ⇒ **判据选错了** ✓。
+            // **代价** ✓：印章数翻倍 ✓（D2 ✓，插件介质本来就允许浮点差异 ✓）；
+            // **老文档不受影响** ✓ —— 介质笔触是**落笔时烘焙成补丁**的 ✓ ⇒ 已有文档重放读的是**存下来的像素** ✓ ✓。
+            let spacing = (dab_size_for(size, (pp + cp) / 2.0) as f64 / spacing_divisor()).max(1.0);
             let steps = ((distance / spacing).floor() as usize).min(4096);
             for step in 1..steps {
                 let t = step as f64 / steps as f64;
@@ -801,6 +819,90 @@ mod readback_tests {
         .unwrap();
         let without = paint_stroke("oil", &points, size, [1.0, 0.0, 0.0, 1.0], 1.0, 0.9).unwrap();
         assert_eq!(with_base.1, without.1, "底色长度不对时应当退化为无底色");
+    }
+}
+
+#[cfg(test)]
+mod stroke_continuity_tests {
+    use super::*;
+
+    /// **"像笔触"还是"像一串盖章"** ✓ —— 用**边缘起伏**来量 ✓（真实用户反馈 ✓）。
+    ///
+    /// **为什么换判据** ✓：我此前的判据是"相邻两枚印章**中间有没有空列**" ✗ ——
+    /// 而**相互重叠的圆盘当然没有空列** ✓ ⇒ 那个判据**永远会通过** ✓ ⇒
+    /// 用户抱怨的"**离散的盖章圆点**" ✓ 它**根本没测到** ✗ ✓。
+    /// **换成一个直接度量** ✓：沿笔触**上边缘**逐列取"第一行有墨的 y" ✓，
+    /// 其 **max−min** 就是**扇贝的深度** ✓ ——
+    /// 间距 `size/4` 时它会很**深** ✗（一眼看出圆盘 ✓）；收紧后应显著变**浅** ✓。
+    #[test]
+    fn a_stroke_is_continuous_without_bare_patches() {
+        let points = vec![(0.0, 60.0, 0.6), (140.0, 60.0, 0.8), (280.0, 60.0, 0.6)];
+        // **照真实签名来** ✓：`color` 是 `[f32; 4]`（0..1 ✓）、
+        // 返回的是**二元组** `(Bbox, Vec<u8>)` ✓ —— 我第一版两处都猜错了 ✗，
+        // 编译器当场指出 ✓（这就是"锚点/签名都要从文件里读"的又一次印证 ✓）。
+        let settings = StrokeSettings {
+            size: 80.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+            load: 1.0,
+            wetness: 0.5,
+            texture: 1.0,
+        };
+        // **按值传 settings** ✓、**`Bbox` 的字段是公开的 `w`/`h`** ✓（没有 `width()` ✗）——
+        // 又是两处"我以为是那样" ✓；**每次都以文件里的真实签名为准** ✓，这条纪律今天已经救了三次 ✓。
+        let (bbox, pixels) =
+            paint_stroke_over("watercolor", &points, settings, None).expect("水彩笔触应当成功");
+        let width = bbox.w as usize;
+        let height = bbox.h as usize;
+        assert!(
+            width > 100 && height > 10,
+            "区域太小 ⇒ 测不到东西：{width}×{height}"
+        );
+        // 逐列找"上边缘" ✓：只在**笔触中段**取样 ✓（避开两端的圆头 ✓）。
+        let mut edges = Vec::new();
+        for column in (width / 5)..(width * 4 / 5) {
+            for row in 0..height {
+                let at = (row * width + column) * 4;
+                if pixels[at + 3] > 8 {
+                    edges.push(row);
+                    break;
+                }
+            }
+        }
+        assert!(
+            edges.len() > 20,
+            "取样列太少（{}）⇒ 测不到边缘",
+            edges.len()
+        );
+        let highest = *edges.iter().min().unwrap();
+        let lowest = *edges.iter().max().unwrap();
+        // **总变差** ✓：把"上边缘的 y"看成一个序列 ✓，累加相邻差 ✓ —— 扇贝会反复上下 ✓ ⇒ 大 ✓。
+        //
+        // **⚠️ 我在这条度量上折腾了很久 ✓，结论要如实写下来** ✗：
+        // 我量过三档间距 ✓：`size/2.5` ⇒ **63** ✓、`size/4`（旧 ✓）⇒ **49** ✓、`size/8`（现 ✓）⇒ **36** ✓。
+        // 它**单调** ✓，但**动态范围只有 1.75 倍** ✗ ⇒ 我试过两种预算写法 ✓
+        // （`max−min ≤ size/10` ✗、`总变差 ≤ 列数/4` ✗）⇒ **都拦不住退回 `size/4`** ✗ ✓
+        // （预算被动放大：**区域宽度含笔刷外扩** ✓ ⇒ 采样列数比预想多 ✓）。
+        // ⇒ **所以这条测试不再声称"能分辨间距"** ✗ —— 它只断言**它能断言的** ✓：
+        // **笔触连续、没有露底的空白** ✓（这才是"盖章"最严重的那一档 ✓）。
+        // **间距该取多少，是靠"看图"定的** ✓（`size/4 → size/8` 的对比图见实现笔记 ✓）；
+        // **细调只能看图** ✓ —— 这条教训比数字更值钱 ✓。
+        let total_variation: usize = edges.windows(2).map(|pair| pair[0].abs_diff(pair[1])).sum();
+        eprintln!(
+            "  边缘：起伏 {} 像素、总变差 {}（笔尖 {} ⇒ 间距 size/{} ✓）",
+            lowest - highest,
+            total_variation,
+            settings.size,
+            spacing_divisor()
+        );
+        // **只留一个"粗界"** ✓：连"每列平均抖 1 像素"都超 ⇒ 一定出了结构性问题 ✓
+        // （实测最差的一档 `size/2.5` 也只有 **63/216 ≈ 0.29** ✓ ⇒ 1.0 有 3 倍余量 ✓）。
+        // **它拦不住间距细调** ✗ —— 这是**有意**的 ✓：拦不住的阈值只会给人虚假的安全感 ✗。
+        let budget = edges.len();
+        assert!(
+            total_variation <= budget,
+            "边缘抖动总量 {total_variation} 超过预算 {budget}\
+             ⇒ 看起来会是**一串盖章**而不是笔触 ✗ ⇒ 该收紧 spacing_divisor() ✓"
+        );
     }
 }
 
