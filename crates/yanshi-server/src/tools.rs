@@ -543,6 +543,127 @@ fn optional_bool(args: &Value, key: &str) -> Option<bool> {
 ///
 /// 非法颜色必须在工具层就被拒绝：历史事故里 `[40,120,60,255]` 被渲染层当作线性浮点，
 /// alpha=255 饱和成白色，用户「画了一笔却什么都没看见」。
+/// **把形状的 `geometry.bbox` 从数组归一化成 `{x,y,w,h}` 对象** ✓。
+///
+/// 渲染层（`yanshi-render/src/object.rs`）只读**对象**形式 ✗ ⇒ 数组形式若原样落库 ✓
+/// 就会得到一个**零面积形状** ✗（存了、渲染空白 ✓）—— 与用户报的 P0 是同一类病 ✓。
+/// 这里**在校验通过之后、提交之前**统一改写 ✓ ⇒ 下游只有一种形态 ✓，不必各自兼容 ✗。
+fn normalize_shape_bbox(data: &mut Value) {
+    let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(values) = geometry.get("bbox").and_then(Value::as_array).cloned() else {
+        return;
+    };
+    if values.len() < 4 {
+        return;
+    }
+    let number = |index: usize| values.get(index).and_then(Value::as_f64).unwrap_or(0.0);
+    geometry.insert(
+        "bbox".to_owned(),
+        json!({"x": number(0), "y": number(1), "w": number(2), "h": number(3)}),
+    );
+}
+
+/// **校验形状几何** ✓ —— 拒绝解析不了的写法 ✓，而不是静默落一个空对象 ✗。
+///
+/// **依据是渲染层实际支持的三种** ✓（`yanshi-render/src/object.rs` ✓）：
+/// `rect` / `ellipse` / `polygon`（`path` 也归多边形 ✓）。
+/// 数据形态 ✓：`{kind:"rect"|"ellipse", bbox:{x,y,w,h}}` ✓ 或 `{kind:"polygon", points:[[x,y],…]}` ✓。
+///
+/// **为什么报错要写得具体** ✓：调用方（尤其 agent ✓）第一次猜错写法很正常 ✓，
+/// 而"**从错误里学到正确写法**" ✓ 比"返回 ok 然后画出一片空白" ✓ 有用得多 ✓ ——
+/// 后者会让人以为是自己画错了 ✗，前者一句话就解决了 ✓。
+fn validate_shape_geometry(data: &Value) -> Result<()> {
+    let geometry = data.get("geometry").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "形状缺少 geometry ✓：应形如 {\"kind\":\"rect\",\"bbox\":{\"x\":0,\"y\":0,\"w\":40,\"h\":30}}",
+            ),
+        )
+    })?;
+    let geometry = geometry.as_object().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("geometry 必须是对象 ✓（含 kind 与其尺寸字段）"),
+        )
+    })?;
+    let kind = geometry
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "geometry 缺少 kind ✓：可用 rect / ellipse / polygon（path 按多边形处理）",
+                ),
+            )
+        })?;
+    match kind {
+        "rect" | "ellipse" => {
+            let bbox = geometry.get("bbox").and_then(|bbox| {
+                if let Some(values) = bbox.as_array() {
+                    Some((
+                        values.first()?.as_f64()?,
+                        values.get(1)?.as_f64()?,
+                        values.get(2)?.as_f64()?,
+                        values.get(3)?.as_f64()?,
+                    ))
+                } else {
+                    let object = bbox.as_object()?;
+                    Some((
+                        object.get("x")?.as_f64()?,
+                        object.get("y")?.as_f64()?,
+                        object.get("w")?.as_f64()?,
+                        object.get("h")?.as_f64()?,
+                    ))
+                }
+            });
+            let Some((_, _, w, h)) = bbox else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{kind} 形状需要 geometry.bbox ✓，形如 {{\"x\":0,\"y\":0,\"w\":40,\"h\":30}} 或 [0,0,40,30]"
+                    )),
+                ));
+            };
+            if !(w > 0.0 && h > 0.0) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{kind} 形状的 bbox 宽高必须大于 0 ✓（实测 w={w}、h={h}）"
+                    )),
+                ));
+            }
+        }
+        "polygon" | "path" => {
+            let count = geometry
+                .get("points")
+                .and_then(Value::as_array)
+                .map(|points| points.len())
+                .unwrap_or(0);
+            if count < 3 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{kind} 形状需要 geometry.points ✓（至少 3 个 [x,y] 点，实测 {count} 个）"
+                    )),
+                ));
+            }
+        }
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知的形状 kind：{other} ✓（可用 rect / ellipse / polygon；path 按多边形处理）"
+                )),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_colors(data: &Value) -> Result<()> {
     for key in ["color", "stroke_color", "fill_color", "background_color"] {
         if let Some(value) = data.get(key) {
@@ -2448,7 +2569,13 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let result = ctx.commit(AtomKind::CreateLayer, payload)?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut value = finish_mutation(ctx, &result, region)?;
+    // **把 `layer_id` 直接回给调用方** ✓（真实用户报的 P1 ✓）：
+    // 此前返回里**只有 `atom_id`** ✗ ⇒ 调用方必须**再调一次 `list_layers`** 才能翻出真实 id ✓
+    //（形如 `layer_01M3…` ✓）⇒ **多一次往返** ✓，而且**写脚本的 agent 必踩** ✓。
+    // 现在它随结果一起回来 ✓ ⇒ 一次往返就够 ✓。
+    value["layer_id"] = json!(layer_id);
+    Ok(value)
 }
 
 const LAYER_PATCH_KEYS: [&str; 8] = [
@@ -2777,6 +2904,22 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     validate_colors(&data)?;
     // 插件介质描述符（设计 11.1）：合法则随原子记录 ✓，非法直接拒绝 ✓。
     validate_medium(&data)?;
+    // **形状几何必须校验** ✓（P0 修复 ✓）：此前 `draw_shape` **静默接受**任何 `geometry` ✓
+    // ⇒ 解析不了的写法也会 `ok: true` ✓、落一个**空几何对象** ✓ ⇒ 存了、渲染一片空白 ✓
+    //（真实用户报的原话：「**画了个寂寞**」✓，四种常见写法全都这样 ✓）。
+    // **位置** ✓：与 `validate_colors` / `validate_medium` 并列 ✓ ⇒ **一处生效、所有绘制入口都受管** ✓
+    //（本项目一贯的"从结构上根除 ✓，不靠记性"✗）。
+    if kind == AtomKind::DrawShape {
+        validate_shape_geometry(&data)?;
+        // **归一化：`bbox` 数组 ⇒ `{x,y,w,h}` 对象** ✓。
+        //
+        // **为什么必须做** ✓（这是我自己刚写的测试抓到的**第二个静默空** ✗）：
+        // 我原来的校验**接受**了 `bbox: [10,10,40,30]` ✓，而**渲染层只读对象形式** ✗
+        // ⇒ 于是它又会**静默落一个零面积形状** ✗ —— 与用户报的 P0 **完全同一类病** ✓。
+        // **选择"归一化"而不是"拒绝"** ✓：数组写法是**自然的** ✓，
+        // 既然在校验里接受了它 ✓，就应当让它**真的能画** ✓；拒掉只是在惩罚调用方 ✗。
+        normalize_shape_bbox(&mut data);
+    }
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
 

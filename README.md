@@ -10,6 +10,13 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Shape geometry
+
+A shape's geometry is `{"kind": "rect" | "ellipse" | "polygon", ...}` with either a `bbox` of `x`, `y`, `w` and `h`
+or `points`. Anything else is refused with a message naming the accepted forms, rather than returning success and
+committing an object that renders nothing. A `bbox` may be an object or an array of four numbers, the array being
+normalised internally. `create_layer` returns the `layer_id` it created.
+
 ## Rendering and determinism
 
 The compute kernel is CPU code shared by the client and the server and is bit-exact, which the design calls the D0

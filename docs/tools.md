@@ -89,6 +89,13 @@ plugin and records the medium as id oil at version two on the object. Recording 
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
 
+Shape geometry is validated in the shared draw path, alongside the existing colour and medium validation, so a
+shape whose geometry cannot be parsed is refused with a message naming the accepted forms instead of returning
+success and committing an object that renders nothing. The accepted geometry is a kind of rect, ellipse or polygon
+with either a bbox of x, y, w and h or points, an array bbox is normalised to the object form so a spelling that
+passes validation also draws, and a rejected shape leaves no object behind. create_layer returns the layer id it
+created, which previously took a second listing call to discover.
+
 The object panel can also restyle a stroke, changing its colour, size and opacity through update_stroke, which
 had no test coverage at all until this round added two: one checks that the object data and the rendered pixels
 both change, and the other that a partial core block merges rather than replacing the fields it does not mention.
