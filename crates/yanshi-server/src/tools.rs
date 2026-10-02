@@ -2754,7 +2754,19 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .unwrap_or_else(|| format!("layer_{}", yanshi_core::Ulid::new().encode()));
     let mut payload = json!({
         "layer_id": layer_id,
-        "name": optional_str(args, "name").unwrap_or_else(|| layer_id.clone()),
+        // **缺省名要"唯一且好认"** ✗（真实用户报告 ✓）：
+        // 此前缺省用 `layer_id` 本身 ✓ ⇒ 自动 id 形如 `layer_<ULID>` ✓ ⇒ 界面上要么一长串 ✓、
+        // 要么（示例工程里）**好几层都叫 `layer`** ✗ ⇒ **用户根本分不清在做哪一层** ✓
+        // ⇒ 他这次"黑色是最下面图层，可是还是显示"的困惑 ✓ 有一半就是**无法分辨图层** ✗ 造成的 ✓。
+        // **改法** ✓：用 id 的**末四位**做短名 ✓ ⇒ 既**唯一** ✓ 又**短到能读** ✓（"图层 0005" ✓）。
+        "name": optional_str(args, "name").unwrap_or_else(|| {
+            let tail = layer_id.get(layer_id.len().saturating_sub(4)..).unwrap_or("");
+            if tail.is_empty() {
+                "图层".to_string()
+            } else {
+                format!("图层 {tail}")
+            }
+        }),
     });
     for key in ["type", "parent_id"] {
         if let Some(value) = optional_str(args, key) {
