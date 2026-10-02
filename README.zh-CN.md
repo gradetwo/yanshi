@@ -185,6 +185,20 @@ tar.gz 与一份校验和 ✓。
 **无 `unsafe`** ✓、**可为 wasm32 构建** ✓；**有意不开** `tiny-skia` ✓。
 **其余部分依然零依赖** ✓：HTTP 栈 ✓、渲染 ✓、存储 ✓、介质插件 ✓ 都是手写的 ✓。
 
+## 致谢与许可
+
+本项目主体是 **MIT**（见 `LICENSE` ✓），但有两处重要的补充与例外 ✓。
+
+`assets/brushes` ✓：**196 支**来自 **mypaint-brushes 2.0.2** 的笔刷 ✓，该包是 **CC0 1.0** ✓；
+上游 `COPYING` 一并保留为 `LICENSE-CC0.txt` ✓。
+
+`assets/backgrounds` ✓：**69 张**纸张/画布纹理 ✓，来自 **MyPaint 2.0.1** 资源包 ✓ ⇒ 该部分是 **GPL-2.0-or-later** ✗
+⇒ **不受本仓库 MIT 许可覆盖** ✗，细节见 `assets/backgrounds/NOTICE.md` ✓。
+**项目所有者裁定** ✓：**先用起来并在 README 署名** ✓，**是否整体转成 GPL 兼容许可留待后续考虑** ✓。
+下游再分发前请先读那份说明 ✓。
+
+笔刷引擎来自 **Hokusai**（Apache-2.0 或 MIT ✓），见上文 ✓。
+
 ## 安装
 
 ```bash
