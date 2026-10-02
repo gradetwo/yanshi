@@ -237,6 +237,28 @@ the pixels, with a direction check so that a colour written out as a constant ca
 fail before the fix. The colour of an already painted brush stroke therefore still cannot be changed in place, and
 the refusal says so and says to undo and paint again, rather than implying a capability that is not there.
 
+The editor's brush toolbar has a smoothing switch, on by default because the two client-side stroke paths already
+hardcoded smooth true and turning that off silently would have changed how the browser paints; both of those hardcoded
+sites, and the server tool call, now read the same switch, so it can finally be turned off. The flag is read through a
+helper that had to be moved next to colorCss, because the viewer's JavaScript is split across script blocks and a
+function declared in one is not visible in another, which cost a round of debugging and is the same trap noted for
+window.yanshi. The browser acceptance script drives the switch both ways and requires the object's data.smooth to
+follow it, and it now forces a cache-ignoring reload first, since a cached page made the script report stale
+behaviour while the server was already correct.
+
+Strokes can be smoothed without inventing new geometry. The renderer already resampled a stroke's points with
+Catmull-Rom when its data carried `smooth: true`, but no tool description mentioned it, so nobody could find it, and
+the brush path did not know the flag at all. draw_stroke now documents data.smooth, and brush_stroke and
+brush_preview take a smooth flag that resamples the control points before stamping through the same
+catmull_rom_smooth the renderer uses, with the subdivision count published from the render crate so both paths share
+one value. The default is still false, so existing calls and existing documents render byte for byte as before, and
+because Catmull-Rom interpolates rather than approximates the curve still passes through the points the artist
+placed. The strongest test asserts that smooth true is byte identical to passing the same curve path explicitly,
+which pins both the interpolation and the subdivision count; it was confirmed to fail with the brush path's
+smoothing disabled and again with the renderer's smooth branch disabled. One criterion was written, measured and
+thrown away: requiring the smoothed stroke to cover fewer pixels is false for the brush engine, which lays more
+dabs along a denser path, and a criterion that misjudges a correct implementation is worse than none.
+
 The region a stroke paints into is now clamped to the canvas before it is used, in the same place the base pixels
 are read, the surface is read back and the coverage mask is computed, so a smudge that starts hard against the
 canvas edge reads the same base as one in the middle; previously a region that overhung the edge came back a

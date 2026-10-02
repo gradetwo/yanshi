@@ -311,6 +311,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **预览** ✓（用户："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**web 上也是**"✗）：
          用同一支笔刷**真画一小笔** ✓（服务端 `brush_preview` ✓，与 `brush_stroke` **同一条落笔实现** ✓）
          ⇒ 这里显示的是它**真实落笔**的样子 ✓，不是示意图 ✗（示意图迟早与真笔触漂移 ✓）。 -->
+    <!-- **平滑** ✓（用户："12 瓣花手写 60 个坐标"✗）：勾上 ⇒ 工具层把控制点当
+         **Catmull-Rom 样条**（曲线过这些点 ✓、不把它们拉走 ✓）——
+         与 MCP 那边是**同一个参数**（`brush_stroke.smooth` / `draw_stroke.data.smooth` ✓）。 -->
+    <label title="把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角">
+      <input id="smooth" type="checkbox" checked /> 平滑
+    </label>
     <span id="brushPreviewWrap" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
       <img id="brushPreview" alt="" style="display:none;vertical-align:middle;border:1px solid #ccc;background:#fff;max-width:160px;max-height:64px" />
       <span id="brushPreviewHint" class="hint"></span>
@@ -1443,7 +1449,7 @@ function previewObject(pending) {
     type: "stroke",
     // `smooth: true` ✓ ⇒ **渲染时**做 Catmull-Rom 平滑 ✓（日志里仍是原始采样点 ✓）——
     // 这就是设计 11.1 里"矢量"那一类介质的落点 ✓：几何存日志 ✓、按视图重栅格化 ✓。
-    data: { points, size, color, hardness: 0.7, smooth: true },
+    data: { points, size, color, hardness: 0.7, smooth: smoothEnabled() },
   };
 }
 
@@ -4560,6 +4566,14 @@ function colorCss() {
   return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16), a: 255 };
 }
 
+/// **平滑开关的当前状态** ✓ —— 三条落笔路径（客户端原子 ✓、服务端工具 ✓）**共用一个语义** ✗。
+///
+/// **为什么默认是"开"** ✓：Web 端**此前就把 `smooth: true` 写死在两条客户端路径里** ✓
+/// ⇒ 默认开 = **保持用户今天看到的画法** ✓；写死 ✗ 则会让"界面里关不掉" ✓（那正是本轮要修的毛病 ✓）。
+function smoothEnabled() {
+  return !!($("smooth") || {}).checked;
+}
+
 // 只重绘**覆盖层**（拖动中的笔迹/选区）。内容层绝不能被清空 —— 此前两者共用一个画布，
 // 拖动结束的最后一次重绘会把已提交的内容一起擦掉，表现为「操作后画布空白，刷新才恢复」。
 function redraw() {
@@ -5422,7 +5436,7 @@ function strokeAtom(pending, final) {
   const size = Number($("size").value);
   const points = state.points.map((p) => [Math.round(p.x), Math.round(p.y)]);
   let kind = "draw_stroke";
-  let data = { points, size, color, hardness: 0.7, smooth: true };
+  let data = { points, size, color, hardness: 0.7, smooth: smoothEnabled() };
   if (pending.tool === "rect" || pending.tool === "ellipse") {
     const [a, b] = state.points;
     const bbox = {
@@ -5448,6 +5462,8 @@ function strokeAtom(pending, final) {
 async function commitShape() {
   const color = colorCss();
   const size = Number($("size").value);
+  // **平滑开关** ✓（勾上才传 ✓ ⇒ 不勾就是原来的行为 ✓ —— 老用户与老文档一个像素都不变 ✓）。
+  const smooth = smoothEnabled();
   if (state.tool === "brush") {
     if (state.points.length < 2) return;
     // **选了 `.myb` 笔刷 ⇒ 交给服务端的 Hokusai 引擎** ✓
@@ -5472,6 +5488,8 @@ async function commitShape() {
           points: controlPoints,
           // **大小以工具条上的"粗细"为准** ✓（与内置画笔同一处 ✓ ⇒ 用户不用记两套 ✓）。
           size: size,
+          // **平滑** ✓：与 MCP 同名同义（`brush_stroke.smooth` ✓）。
+          smooth: smooth,
           // **颜色也必须带上** ✗ —— 此前写的是 `color: undefined` ✓ ⇒
           // 用户在工具条上**选了颜色也画不上** ✗（笔触只用 `.myb` 自带色 ✓），
           // 这正是"界面里有的东西实际不生效" ✓（本轮连同工具层的颜色缺陷一起修 ✓）。
@@ -5489,7 +5507,14 @@ async function commitShape() {
     //（正是"静默吞掉用户操作" ✓）。现在失败必留痕 ✓，并提示怎么恢复 ✓。
     await callToolChecked("draw_stroke", {
       layer_id: state.layerId,
-      data: { points: state.points.map((p) => [p.x, p.y]), size, color, hardness: 0.7 },
+      data: {
+        points: state.points.map((p) => [p.x, p.y]),
+        size,
+        color,
+        hardness: 0.7,
+        // **同一个开关、同一个语义** ✓（渲染层在**渲染时**插值 ✓ ⇒ 日志里存的仍是原始点 ✓）。
+        smooth: smooth,
+      },
     }, "落笔");
   } else if (state.tool === "erase") {
     if (state.points.length < 2) return;
@@ -5955,6 +5980,8 @@ window.yanshi = {
         medium: ($("medium") || {}).value || null,
         // **笔刷也要能读** ✓（测试要断言"选了哪支" ✓）。
         brush: ($("brush") || {}).value || null,
+        // **平滑开关也要能读** ✓（"界面里有的东西必须能被断言" ✓ —— 与 size 那次同类 ✓）。
+        smooth: !!($("smooth") || {}).checked,
         // **视口与缩放也必须能读** ✗（真实用户报告 + 我自己的探针教训 ✓）：
         // 我上一轮想量"抓手工具有没有平移画布" ✓，而 `state()` 只返回
         // `docId/layerId/tool/color/size/opacity/medium` ✗ ⇒ **探针看不见被测对象** ✗
@@ -6065,6 +6092,14 @@ window.yanshi = {
     /// **暴露预览** ✓：验收探针要能直接断言"预览真的换了"✓（与换笔刷走同一条实现 ✓）。
     previewBrush() {
       return refreshBrushPreview();
+    },
+    /// **平滑开关** ✓（真实路径：改的就是界面上那个勾 ✓）。
+    setSmooth(on) {
+      const box = $("smooth");
+      if (!box) return false;
+      box.checked = !!on;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
     },
     setMedium(id) {
       const select = $("medium");

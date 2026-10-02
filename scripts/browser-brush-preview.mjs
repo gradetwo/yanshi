@@ -86,7 +86,11 @@ const capture = async (name) => {
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
-await sleep(1200);
+// **必须强制重新取页面** ✗ —— 实测教训 ✓：调试浏览器里常常已经有同一个 URL 的页面 ✓，
+// 只 `navigate` 会命中**内存缓存** ✓ ⇒ 跑的是**旧界面的 JS** ✓
+//（现象：服务端明明已经改了 ✓，探针却一直看到旧行为 ✗ —— 与"我改了却没生效"同类 ✓，代价极高 ✓）。
+await send("Page.reload", { ignoreCache: true });
+await sleep(1500);
 if (!(await waitFor("typeof window.yanshi === 'object' && !!document.getElementById('brush')", "查看器就绪"))) {
   process.exit(3);
 }
@@ -171,11 +175,6 @@ if (!loadedC || stateC.src === stateB.src) {
 }
 const shotC = await capture("brush-preview-green");
 
-// ④ 控制台
-const errors = consoleLines.filter(
-  (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
-);
-
 // ⑤ **真实拖动两笔 ⇒ 画面里必须出现两种工具条颜色** ✓
 //    —— 这条走的正是用户那条路：**选色 → 画布拖动 → 服务端落笔** ✓。
 //    此前查看器落笔时写的是 `color: undefined` ✗ ⇒ **选了色也画不上** ✓（界面里有的东西不生效 ✗）。
@@ -257,11 +256,64 @@ if (
 }
 const shotPaint = await capture("brush-paint-two-colours");
 
+// ⑥ **平滑开关真的传下去了** ✓（界面里加的东西必须真的生效 ✗ —— 本项目头号病症 ✓）。
+//    走**内置画笔**那条（它落的是 `stroke` 对象 ✓ ⇒ `data.smooth` 直接可查 ✓）。
+await evaluate("window.yanshi.setBrush('')");
+await evaluate("window.yanshi.setTool('brush')");
+await evaluate("window.yanshi.setSmooth(true)");
+await sleep(300);
+await dragStroke(0.5, 21);
+await sleep(2500);
+const objects = await callTool("list_objects", {});
+const newest = Array.isArray(objects && objects.objects) ? objects.objects.slice(-1)[0] : null;
+let smoothFlag = null;
+if (newest && newest.object_id) {
+  const got = await callTool("get_object", { object_id: newest.object_id });
+  smoothFlag = got && got.data ? got.data.smooth : null;
+  console.log("  ⑥ 对象详情：points=" + JSON.stringify((got && got.data && got.data.points || []).length) +
+    " size=" + (got && got.data && got.data.size) + " smooth=" + smoothFlag);
+}
+console.log(`  ⑥ 平滑开关：界面 state.smooth=${await evaluate("window.yanshi.state().smooth")}` +
+  `  最新对象 ${newest && newest.object_id} 的 data.smooth=${smoothFlag}`);
+if (smoothFlag !== true) {
+  console.error("❌ 勾了「平滑」，对象里却没有 data.smooth=true ⇒ 开关没传下去");
+  await capture("smooth-flag-failed");
+  process.exit(1);
+}
+const shotSmooth = await capture("brush-smooth-flag");
+
+// ⑥b **关掉开关 ⇒ 对象里必须是 false** ✓ —— 这一半才是"能红"的那一半 ✓：
+// 只查"勾上 ⇒ true"挡不住"写死成 true" ✗（那正是本轮在查看器里找到的毛病 ✓：
+// 有两条客户端路径**把 `smooth: true` 写死** ✓ ⇒ 界面里根本关不掉 ✗）。
+await evaluate("window.yanshi.setSmooth(false)");
+await sleep(300);
+await dragStroke(0.75, 22);
+await sleep(2500);
+const objectsOff = await callTool("list_objects", {});
+const newestOff = Array.isArray(objectsOff && objectsOff.objects) ? objectsOff.objects.slice(-1)[0] : null;
+let smoothOff = null;
+if (newestOff && newestOff.object_id) {
+  const got = await callTool("get_object", { object_id: newestOff.object_id });
+  smoothOff = got && got.data ? got.data.smooth : null;
+}
+console.log(`  ⑥b 开关关掉：最新对象 ${newestOff && newestOff.object_id} 的 data.smooth=${smoothOff}`);
+if (smoothOff !== false) {
+  console.error("❌ 关掉「平滑」之后对象里仍然不是 false ⇒ 开关要么没传、要么被写死");
+  await capture("smooth-off-failed");
+  process.exit(1);
+}
+
+// ④ 控制台
+const errors = consoleLines.filter(
+  (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
+);
+
 console.log(`  ④ 控制台错误：${errors.length}`);
 if (errors.length > 0) {
   errors.slice(0, 6).forEach((line) => console.error("     " + line.slice(0, 160)));
   process.exit(1);
 }
+
 console.log(
   JSON.stringify(
     {
@@ -272,6 +324,8 @@ console.log(
       previewB: { width: stateB.width, height: stateB.height, screenshot: shotB },
       previewColour: { screenshot: shotC },
       paintedTwoColours: { redBand, blueBand, screenshot: shotPaint },
+      smoothFlag: { object: newest && newest.object_id, dataSmooth: smoothFlag, screenshot: shotSmooth },
+      smoothOff: { object: newestOff && newestOff.object_id, dataSmooth: smoothOff },
       consoleErrors: errors.length,
     },
     null,

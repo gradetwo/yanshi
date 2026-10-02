@@ -1083,9 +1083,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "data",
                 Object,
                 true,
-                "{points,size,color,hardness,opacity,seed...}；\
+                "{points,size,color,hardness,opacity,seed,smooth...}；\
                  points 支持 [[x,y]] 或 [[x,y,pressure]]（pressure 0..1，缺省 1.0）——\
-                 按点给压力即可画出提按顿挫（内核早就支持，此前只是没写在这里）"
+                 按点给压力即可画出提按顿挫（内核早就支持，此前只是没写在这里）；\
+                 **smooth: true** ⇒ 把这些点当 **Catmull-Rom 平滑样条的控制点**（曲线过它们、不拉走）⇒ \
+                 手写的折线不再有硬角，而日志里存的仍是**原始采样点**（平滑只在渲染时发生 ⇒ 可随时关掉）"
             ),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
@@ -2212,6 +2214,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // `[r,g,b,(a)]`（0..1 线性或 0..255 字节）/ `"#RRGGBB"` ✓ ——
             // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
             param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节）/ \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
+            param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -2227,6 +2230,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size", Number, false, "笔尖直径像素（缺省 24，上限 512）"),
             param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（不给则用 .myb 自带色）"),
             param!("points", Array, false, "自定义采样笔迹 [[x,y,pressure],…]；不给则用一条固定的缓 S 形 ✓（同一支笔刷 ⇒ 可复现 ✓）"),
+            param!("smooth", Boolean, false, "true ⇒ 与 brush_stroke 的 smooth 同一条平滑 ✓（预览所见 = 落笔所得）"),
             param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓；≤512px ✓）"),
         ],
     },
@@ -9800,6 +9804,28 @@ fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
     Ok(rgb_to_hsv(bytes[0], bytes[1], bytes[2]))
 }
 
+/// **把控制点按 Catmull-Rom 重采样** ✓ —— 复用**渲染层那一份**插值 ✗（不自己写第二份 ✓）。
+///
+/// `draw_stroke` 的 `data.smooth` 与 `brush_stroke` 的 `smooth` **走的就是同一个函数** ✓
+/// ⇒ 两条路的"平滑"是**同一个东西** ✓（这与"预览与落笔共用 `paint_brush`"是同一条纪律 ✓）。
+///
+/// **为什么是插值而不是逼近** ✓（Catmull-Rom 过控制点 ✓）：画的人给的点**就是他点的位置** ✓
+/// ⇒ 平滑**不许把线拉离**那些点 ✗（渲染层已有测试钉住这一条 ✓）。
+pub fn smooth_stroke_points(points: &[(f64, f64, f64)]) -> Vec<(f64, f64, f64)> {
+    let points: Vec<yanshi_render::brush::StrokePoint> = points
+        .iter()
+        .map(|(x, y, pressure)| yanshi_render::brush::StrokePoint {
+            x: *x,
+            y: *y,
+            pressure: *pressure,
+        })
+        .collect();
+    yanshi_render::brush::catmull_rom_smooth(&points, yanshi_render::brush::SMOOTH_SUBDIVISIONS)
+        .into_iter()
+        .map(|point| (point.x, point.y, point.pressure))
+        .collect()
+}
+
 /// **预览用的固定采样笔迹** ✓ —— 同一支笔刷 ⇒ **逐字节相同**的预览 ✓（判据要用它 ✓）。
 ///
 /// 一条**缓 S 形** ✓（不是直线 ✗）：笔尖的圆头 / 纹理 / 干湿只有在**转弯**处才看得出来 ✓。
@@ -10284,6 +10310,13 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
+    // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
+    // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
+    let points = if optional_bool(args, "smooth").unwrap_or(false) {
+        smooth_stroke_points(&points)
+    } else {
+        points
+    };
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(
         ctx,
@@ -10359,6 +10392,12 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let points = match args.get("points") {
         Some(value) if !value.is_null() => parse_brush_points(args)?,
         _ => default_preview_points(size),
+    };
+    // 预览也支持平滑 ✓（与 `brush_stroke` 同一条实现 ✓ ⇒ 预览所见即落笔所得 ✓）。
+    let points = if optional_bool(args, "smooth").unwrap_or(false) {
+        smooth_stroke_points(&points)
+    } else {
+        points
     };
     // **预览不喂底图** ✓（"这支笔刷长什么样" ≠ "落在你这幅画上什么样" ✓）。
     let paint = paint_brush(

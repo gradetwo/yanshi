@@ -89,6 +89,10 @@ fn jitter_color(color: [f32; 3], jitter: f32, seed: u64, index: u64) -> [f32; 3]
     ]
 }
 
+/// **平滑的细分数** ✓ —— 渲染层（`data.smooth` ✓）与工具层（`brush_stroke` 的 `smooth` ✓）
+/// 用**同一个值** ✗（两处各写一个数必然漂移 ✓）。每段曲线被细分成多少小段 ✓。
+pub const SMOOTH_SUBDIVISIONS: usize = 8;
+
 /// **可选的笔迹平滑（Catmull-Rom 重采样）** ✓ —— 默认**关闭** ✓。
 ///
 /// 为什么做成可选而不是默认 ✓：本项目的不变量是"**日志里的原子决定渲染**" ✓
