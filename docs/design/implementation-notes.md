@@ -7051,3 +7051,61 @@ angle_variance / spacing_variance / count / opacity_jitter / color_jitter / text
 **determinism** ✓：预设是**数据** ⇒ D0/D1 安全 ✓；新引擎属**插件** ⇒ **D2** ✓，
 且介质笔触**落笔即烘焙成补丁** ✓ ⇒ **老文档一个像素都不会变** ✓ ✓（这与"只预留不开发语义组"无关 ✓）。
 **待用户定的一件事** ✓：先补**哪几个引擎** ✓（我默认按上面的 Krita 对照表 ✓，共约 16 个 ✓）。
+
+### 🎯 眼睛/锁的真凶 ✓：`resync()` **只刷预览、从不重绘主画布** ✗（已在**真浏览器**验收 ✓）
+
+**我上一轮修错了地方** ✗，必须记下来 ✓：我先按"**无内核时 `resync()` 静默返回**"去修 ✓，
+但用 CDP 在**真 Chrome** 里一测 ✓ ⇒ `wasm: true` ✓（**内核是在的** ✓）⇒ **问题与内核无关** ✗ ✓。
+**真断言数据** ✓（真浏览器 ✓，`document.querySelector("canvas")` 的 `getImageData` 数非白像素 ✓）：
+```text
+修前： before 9600 ✓   hidden 0 ✓   **shown 0** ✗（resyncs 2 ✓ ⇒ resync() 确实被调了两次 ✓）
+修后： before 9600 ✓   hidden 0 ✓   **shown 9600** ✓
+```
+**根因** ✓：`resync()` **两条分支都只调 `refreshPreview(true)`** ✗ ——
+那刷的是**预览/缩略图** ✗，**不是画布** ✗ ⇒ 内核状态更新了 ✓、缩略图更新了 ✓、
+**而主画布没人管** ✗ ⇒ "变白 ⇒ 手工刷新才恢复" ✓（整页重载走服务端像素 ✓ ⇒ 所以能恢复 ✓）。
+**修法** ✓：抽出 **`redrawCanvasFromKernel()`** ✓（整视口重绘 ✓），`resync()` 的**两条内核分支各调它一次** ✓；
+**无内核**分支走服务端像素 ✓（上一轮那个修法对那种情形仍然需要 ✓ ⇒ 两者都要 ✓）。
+**教训** ✓：**"刷新了"不等于"刷新了你以为的那个东西"** ✗ ——
+`refreshPreview` 这个名字太容易被当成"重绘" ✓ ⇒ 修这种 bug 一定**数像素** ✓，不能看函数名 ✓。
+**顺带一条测试教训** ✓：我第一版验收脚本保存了 `eye` 按钮引用 ✗ ⇒ 而 `refreshLayers()` **会重建整个列表** ✓
+⇒ 第二次点击**打在已失效的节点上** ✗ ⇒ 得到"仍为 0"的**假结论** ✓
+⇒ 改成**每次重新 `querySelector`** ✓ 才测出真相 ✓。
+
+### 📐 研究结论：**Hokusai** vs **brushlib-wasm** vs **mypaint-brushes** ✓（用户点名 ✓，一手资料已核 ✓）
+
+**① [reearth/hokusai](https://github.com/reearth/hokusai) —— 形态最贴合 ✓**
+* **纯 Rust、无 `unsafe`** ✓、**面向 wasm32** ✓；
+* **`.myb` JSON 兼容** ✓（MyPaint / Krita 笔刷**直接读写、可往返** ✓）；
+* **与 libmypaint 像素级对齐** ✓（同 **fix15** 数学 ✓、同 **64×64 tile** 布局 ✓、同笔触数学 ✓）；
+* **实测对齐度** ✓：**188/196 支** stock 笔刷 **MAD ≤ 0.5** ✓，其余 8 支 ≤ 5 ✓、**0 支红** ✓；
+* 覆盖约 **50 个 libmypaint 设置** ✓、完整输入模型（压力/速度/随机/笔画/方向/倾斜/gridmap/attack_angle/barrel_rotation ✓）、
+  慢跟踪 ✓、速度低通 ✓、方向滤波 ✓、跟踪噪声 ✓、各类偏移 ✓、`radius_by_random` ✓、`opaque_linearize` ✓、
+  **光谱混色（10 通道 WGM）** ✓、**smudge** ✓、逐 dab HSV/HSL 漂移 ✓、**椭圆笔尖** ✓、**lock_alpha** ✓、
+  **posterize** ✓、**抗锯齿边缘** ✓、Knuth 滞后斐波那契 PRNG ✓；
+* **许可证：Apache-2.0 OR MIT** ✓ ⇒ **与本项目 MIT 兼容** ✓；MSRV **1.88** ✓（本机 1.98 ✓）；
+* 工作区含 **`hokusai-wasm`**（wasm-bindgen 绑定 ✓）与 `hokusai-tiny-skia`（**tiny-skia 依赖** ✗ ⇒ 那条**不要用** ✓，
+  我们只需要 `hokusai-core` / `hokusai-brush` / 自己的 surface ✓）。
+
+**② [eliot-akira/brushlib-wasm](https://github.com/eliot-akira/brushlib-wasm) —— 就是你说的那个 ✓，但形态更差 ✗**
+* "**WebAssembly port of MyPaint**" ✓ ⇒ 它是**把 C 的 brushlib 编译成 wasm** 的产物 ✗
+  ⇒ **预编译二进制** ✓，**不是**能在我们仓库里**从源码构建**的 Rust ✓；
+* ⇒ 与本项目"**一切从源码构建、零外部依赖**"的姿态**冲突** ✗；
+* ⇒ 但**并非不可用** ✓：我们本来就有**加载 `.wasm` 插件**的机制 ✓ ⇒ 它可以当作**一个不透明的 wasm 资产**接进来 ✓
+  ⇒ 代价是**无法审计/无法自建** ✗、跨平台矩阵不可控 ✗ ⇒ **列为备选** ✓，不推荐首选 ✓。
+
+**③ [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) v2.0.2 —— 许可证已核实 ✓**
+* Debian 源的 [COPYING](https://sources.debian.org/src/mypaint-brushes/2.0.2%2bds1-1/COPYING/) 是
+  **CC0 1.0 Universal 全文** ✓ ⇒ **无需署名 ✓、可商用 ✓、可任意改 ✓、可再分发 ✓**；
+* ⇒ **把整包 `.myb` vendor 进我们的 MIT 仓库毫无法律障碍** ✓ ✓
+  （hokusai 自己也是这么做的 ✓，其 README 写明 fixture 来自 mypaint-brushes **CC0 1.0** ✓）。
+
+**⇒ 需要用户定的一件事（这是政策决定，不是技术决定 ✓）** ✓：
+本项目至今**只有一个依赖 `wasm-bindgen`** ✓ ⇒ 引入 `hokusai-core` + `hokusai-brush` ✗
+会成为**第一个真正的 Rust 依赖** ✗。三条路 ✓：
+* **(a) 采纳 Hokusai** ✓ ⇒ 最快拿到 **196 支笔刷 + 真引擎** ✓（MIT/Apache ✓、纯 Rust ✓、无 unsafe ✓）⇒ **我推荐这条** ✓；
+* **(b) 只 vendor CC0 笔刷 + 我们自己写 `.myb` 解释器** ✓ ⇒ 保持零依赖 ✓，
+  但要重做 Hokusai 已经做完的**约 50 个设置 + 曲线 + 光谱混色** ✗ ⇒ 只能先做到**近似** ✓，不是 libmypaint 对齐 ✗；
+* **(c) 接 brushlib-wasm 的预编译 wasm** ✓ ⇒ 零 Rust 依赖 ✓，但引入**不可自建的黑盒** ✗。
+**第一步（三种选择都需要、且零风险 ✓）** ✓：先 vendor **CC0 笔刷包** ✓ + 在查看器里让 **196 支全部可见可选** ✓；
+**第二步**再按上面的决定接引擎 ✓。

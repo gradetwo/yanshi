@@ -1065,6 +1065,20 @@ function drawKernelRegion(x, y, w, h) {
 // 拖动中的笔迹重绘：区域通常只有几十像素见方，直接渲染比「按 tile 组合」便宜得多
 // （后者哪怕 1px 变化也要重算整块 256² tile）。两者数值逐位一致。
 // 把绘制异常变成可见信息（日志 + 状态栏 + window.yanshiStats），只报一次以免刷屏。
+/// **把内核的当前状态重画到整块视口** ✓ —— `resync()` 的两条分支都要它 ✓。
+///
+/// **为什么需要它** ✓：`refreshPreview()` 刷的是**预览/缩略图** ✗，**不是画布** ✗。
+/// `resync()` 此前**两条分支都只调它** ✓ ⇒ 内核状态更新了 ✓、预览更新了 ✓，
+/// 而**画布没人管** ✗ ⇒ "点眼睛/锁 ⇒ 变白 ⇒ 手工刷新才恢复" ✗（真浏览器实测 ✓）。
+/// **收成一个函数** ✓：将来 `resync()` 再加分支 ✓，也只需记得调这一个名字 ✓ ——
+/// 这比"记得同时调预览和画布"可靠 ✓（本项目反复吃过"两条路径漏一条"的亏 ✗）。
+function redrawCanvasFromKernel() {
+  if (!state.kernel || !state.wasm) return;
+  const board = $("board");
+  if (!board) return;
+  drawKernelRegion(state.viewport.x, state.viewport.y, board.width, board.height);
+}
+
 function reportPaintError(where, error) {
   const message = where + "失败：" + (error && error.message ? error.message : String(error));
   if (window.yanshiStats.lastPaintError === message) return;
@@ -1318,20 +1332,29 @@ async function resync() {
   // ⇒ **一处修好、所有调用 `resync()` 的地方一起受益** ✓
   //（图层可见性 ✓、锁定 ✓、新建 ✓、复制 ✓、删除 ✓、重排 ✓、上下移动 ✓）。
   if (!state.wasm) {
+    // **无内核 ⇒ 走服务端像素** ✓：可见性/顺序会改变**整幅**外观 ✓ ⇒ 补整个视口 ✓，宁可多补不能漏 ✗。
     needsServerPixels = true;
-    // **整视口而不是脏区** ✓：可见性/顺序会改变**整幅**外观 ✓ ⇒ 宁可多补 ✓，不能漏 ✗。
     queueServerBlit(null);
     return;
   }
   const resumeFrom = state.localSeq || 0;
   // 先试增量 ✓（`localSeq` 是**最后一个成功应用**的序号 ✓ ⇒ 不重复、不遗漏 ✓）。
   if (resumeFrom > 0 && (await loadKernel(resumeFrom))) {
+    // **⚠️ 重放完必须重绘主画布** ✗（真实用户报告 ✓，**浏览器里实测复现** ✓）：
+    // 这里此前只 `refreshPreview(true)` ✓ —— 那刷的是**预览/缩略图** ✗，**不是画布** ✗
+    // ⇒ 于是"点眼睛/锁 ⇒ 画布变白 ⇒ **手工刷新才恢复**" ✗ ✓。
+    // **实测数据** ✓（CDP，真浏览器 ✓，`wasm: true` ✓ 即内核在的 ✓）：
+    // `before: 9600` ✓ ⇒ 隐藏后 `0` ✓ ⇒ **再显示回来仍然是 `0`** ✗（`resyncs: 2` ✓ 说明它确实被调了 ✓）。
+    // ⇒ 所以这**不是**"无内核"的问题 ✓，而是**两条分支都漏了画布** ✗：
+    // 增量重放只更新了内核状态 ✓、只刷了预览 ✓ ⇒ **没人把结果画到画布上** ✗。
     await refreshPreview(true);
+    redrawCanvasFromKernel();
     return;
   }
   // 增量不可用（或从 0 开始 ✓）⇒ 整条重放 ✓（内核已被上次失败回收 ✓ 或被重建 ✓）。
   if (await loadKernel(0)) {
     await refreshPreview(true);
+    redrawCanvasFromKernel();
   }
 }
 
