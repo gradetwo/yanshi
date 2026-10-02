@@ -2212,6 +2212,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("height", Integer, false, "输出高"),
             param!("max_edge", Integer, false, "限制最长边（按比例缩放；与 width/height 二选一）"),
             param!("filter", String, false, "nearest | bilinear（缺省 bilinear）"),
+            param!("layer_id", String, false, "只导出这一层（**忽略它的可见性** ✓；缺省导出整幅合成）"),
         ],
     },
     ToolSpec {
@@ -9777,7 +9778,16 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             yanshi_core::Bbox::new(0.0, 0.0, state.width as f64, state.height as f64)
         }
     };
-    let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    // **给了 `layer_id` ⇒ 只渲染那一层** ✓（用户报过的缺口 ✓）。
+    // **"忽略可见性"是有意的** ✓ —— 导出某一层是明确要求 ✓（隐藏层也应当能导出 ✓）。
+    // **注意它会绕过区域字节缓存** ✓：那张缓存的键里**没有图层** ✗ ⇒
+    // 一旦误用就会把别的图层的像素当成这一层的 ✓（见 `render_region_raw_layer` 的说明 ✓）。
+    let (width, height, pixels) = match optional_str(args, "layer_id") {
+        Some(layer_id) => ctx
+            .workspace
+            .render_region_raw_layer(&ctx.doc_id, region, &layer_id)?,
+        None => ctx.workspace.render_region_raw(&ctx.doc_id, region)?,
+    };
     if width == 0 || height == 0 {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,

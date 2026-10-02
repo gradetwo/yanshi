@@ -112,9 +112,21 @@ pub struct Renderer {
     grid: TileGrid,
     cache: TileCache,
     options: RenderOptions,
+    /// **只渲染这一个图层** ✓（`None` ⇒ 全部 ✓）—— 单图层导出用 ✓。
+    ///
+    /// **为什么挂在渲染器上、而不是当每个方法的参数** ✓：图层过滤发生在**图层循环**里 ✓，
+    /// 而那条循环被多处共用 ✓ ⇒ 挂在这里只需改**一处** ✓，不会出现"某个入口忘了过滤" ✗
+    ///（"两条路径漂移"是这个项目反复吃过的亏 ✓）。
+    only_layer: Option<String>,
 }
 
 impl Renderer {
+    /// **设置"只渲染这一层"** ✓，并**返回原先的设置** ✓ —— 调用方负责还原 ✓：
+    /// 渲染器是**复用**的 ✓，忘了还原就会**悄悄影响下一次渲染** ✗。
+    pub fn set_only_layer(&mut self, layer: Option<String>) -> Option<String> {
+        std::mem::replace(&mut self.only_layer, layer)
+    }
+
     /// 以 tile 网格构造（默认缓存预算 64 MiB）。
     pub fn new(grid: TileGrid) -> Self {
         let budget = 64 * 1024 * 1024;
@@ -123,6 +135,7 @@ impl Renderer {
             grid,
             cache,
             options: RenderOptions::default(),
+            only_layer: None,
         }
     }
 
@@ -133,6 +146,7 @@ impl Renderer {
             grid,
             cache,
             options: RenderOptions::default(),
+            only_layer: None,
         }
     }
 
@@ -255,7 +269,13 @@ impl Renderer {
         let mut probe_composite = std::time::Duration::ZERO;
 
         for layer in state.alive_layers() {
-            if !layer.visible && !self.options.include_hidden_layers {
+            if let Some(only) = self.only_layer.as_deref() {
+                // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
+                // "把这一层导出来"是明确要求 ✓ ⇒ 隐藏的层也应当能导出 ✓（有意为之 ✓）。
+                if layer.id != only {
+                    continue;
+                }
+            } else if !layer.visible && !self.options.include_hidden_layers {
                 continue;
             }
             stats.layers += 1;

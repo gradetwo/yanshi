@@ -1213,11 +1213,27 @@ impl Workspace {
         Ok(results)
     }
 
+    /// **只渲染某一层** ✓（单图层导出 ✓）—— 缓存那条注意事项见 `Document::render_region_raw_layer` ✓。
+    pub fn render_region_raw_layer(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_region_raw_layer(bbox, layer_id)
+    }
+
     /// 渲染区域。
     ///
     /// 只有覆盖整幅画布的渲染才落盘为「HEAD 渲染缓存」（14.5 打开即图片）；
     /// 局部 dirty 渲染虽然也进 CAS，但不会覆盖文档级缓存。
     /// 渲染区域并返回原始 RGBA8（供 `patch` 抓取源像素；不触碰渲染缓存状态）。
+    ///
+    /// **⚠️ 我先前把新方法插在了这段注释与它之间** ✗ ⇒ 文档被新方法"吃掉" ✓、这个函数成了无文档 ✓
+    /// ⇒ `missing_docs` 抓到了 ✓。**这个错在本项目已经犯过好几次** ✗
+    ///（`Workspace` ✓、`export_project` 两次 ✓、`with_assets_dir` ✓ ⇒ 这次是第四次 ✓）
+    /// ⇒ **插代码前先看它上面是不是文档注释** ✓ 这条纪律要当真 ✓。
     pub fn render_region_raw(&mut self, doc_id: &str, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
         self.document_mut(doc_id)?.render_region_raw(bbox)
     }

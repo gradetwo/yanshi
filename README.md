@@ -190,6 +190,12 @@ directories are relative to the current directory, so running `bin/yanshi-serve`
 neither the kernel nor the plugins, leaving the viewer degraded and `/mediums/*.wasm` returning 404 while the server
 itself still starts. The wrapper derives the paths from its own location instead, so the tree works from anywhere.
 
+`export_png` renders the whole document, or a rectangle of it, or a single layer, and writes it to a path at any
+size without going through base64 or the size limit of an inline preview. Exporting a layer ignores whether it is
+hidden, because naming a layer to export is an explicit request, and it deliberately bypasses the region byte cache:
+that cache is keyed by region and version but not by layer, so reusing it could return another layer's pixels, which
+is the classic cache-key-missing-a-dimension bug and one that only shows up on a cache hit.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

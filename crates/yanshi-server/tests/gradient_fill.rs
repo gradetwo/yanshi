@@ -287,3 +287,87 @@ fn an_unknown_kind_lists_the_supported_ones() {
         "要列出可用类型：{detail}"
     );
 }
+
+/// **单图层导出：只导出指定那一层** ✓（用户报过的缺口 ✓）。
+///
+/// **判据不是"导出成功了"** ✗（那太弱 ✓）⇒ 而是：**另一层的颜色绝不出现在结果里** ✓。
+/// **为什么值得专门测** ✓：我为此在渲染器上加了"只画这一层"的开关 ✓，
+/// 而**区域字节缓存的键里没有图层** ✗ ⇒ 一旦误用缓存 ✓，
+/// 就会把**别的图层**的像素当成这一层的返回 ✓ —— 这类 bug **只在缓存命中时**发作 ✓（最难查 ✓）。
+#[test]
+fn exporting_one_layer_leaves_the_other_layer_out() {
+    let root = temp_dir("one_layer");
+    let mut workspace = workspace(&root, 60, 40);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "red" }))["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(
+            &mut workspace,
+            "create_layer",
+            json!({ "layer_id": "green" })
+        )["ok"],
+        json!(true)
+    );
+    // 两层各画一条**实心**矩形 ✓（颜色差别要大 ✓，好判 ✓）。
+    assert_eq!(
+        call(
+            &mut workspace,
+            "gradient_fill",
+            json!({
+                "layer_id": "red", "kind": "linear", "angle": 0,
+                "from": { "r": 255, "g": 0, "b": 0, "a": 255 },
+                "to": { "r": 255, "g": 0, "b": 0, "a": 255 }
+            }),
+        )["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(
+            &mut workspace,
+            "gradient_fill",
+            json!({
+                "layer_id": "green", "kind": "linear", "angle": 0,
+                "from": { "r": 0, "g": 255, "b": 0, "a": 255 },
+                "to": { "r": 0, "g": 255, "b": 0, "a": 255 }
+            }),
+        )["ok"],
+        json!(true)
+    );
+    // **先整幅导出一次** ✓ ⇒ 让区域缓存**先填满** ✓（不这么做就测不到"缓存串层" ✗）。
+    let both = root.join("both.png");
+    assert_eq!(
+        call(
+            &mut workspace,
+            "export_png",
+            json!({ "path": both.display().to_string() })
+        )["ok"],
+        json!(true)
+    );
+    // **再只导红色那层** ✓。
+    let only_red = root.join("red.png");
+    let got = call(
+        &mut workspace,
+        "export_png",
+        json!({ "path": only_red.display().to_string(), "layer_id": "red" }),
+    );
+    assert_eq!(got["ok"], json!(true), "{got}");
+    let (_, _, rgba) = yanshi_render::png::decode_png(&std::fs::read(&only_red).unwrap()).unwrap();
+    let mut red = 0usize;
+    let mut green = 0usize;
+    for index in (0..rgba.len()).step_by(4) {
+        let (r, g, b) = (rgba[index], rgba[index + 1], rgba[index + 2]);
+        if r > 200 && g < 60 && b < 60 {
+            red += 1;
+        }
+        if g > 200 && r < 60 && b < 60 {
+            green += 1;
+        }
+    }
+    assert!(red > 0, "导出的那层应当在里面（红色像素 {red} ✓）");
+    assert_eq!(
+        green, 0,
+        "**另一层的颜色绝不能出现** ✗（绿色像素 {green} ⇒ 说明渲染或缓存把别的图层也带进来了 ✓）"
+    );
+}

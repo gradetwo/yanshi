@@ -733,6 +733,33 @@ impl Document {
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **只渲染某一层** ✓（单图层导出 ✓）—— **刻意绕过区域字节缓存** ✗。
+    ///
+    /// **为什么必须绕过** ✗：那张缓存的键是**（区域, 版本）** ✓，**不含图层** ✗
+    /// ⇒ 一旦复用 ✓，就可能把**别的图层**的像素当成这一层的返回 ✓ ——
+    /// 这正是"**缓存键少了一个维度**"的经典 bug ✓，而且它**只在缓存命中时**发作 ✓（最难查的一类 ✓）。
+    /// **代价可以接受** ✓：逐层导出是**低频且刻意**的操作 ✓ ⇒ 直接算 ✓，不冒这个险 ✓。
+    pub fn render_region_raw_layer(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
+        // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        if rendered.rgba8.is_empty() {
+            return Err(yanshi_core::YanshiError::new(
+                yanshi_core::ErrorCode::ReferenceNotFound,
+                yanshi_core::ErrorContext::detail(format!(
+                    "图层 {layer_id} 渲染出来是空的 ⇒ 它可能不存在，或它里面什么都没有"
+                )),
+            ));
+        }
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
     /// 区域字节缓存的统计 ✓（设计要求可观测 ✓）。
     pub fn region_cache_stats(&self) -> yanshi_render::region_block::RegionBlockStats {
         self.region_cache.stats()
