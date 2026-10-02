@@ -17,8 +17,19 @@ help:  ## 显示这份清单
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-release:  ## 打出发布包（默认静态，落在 dist/）
-	scripts/package-release.sh --static --out $(OUT)
+release:  ## 打出发布包（缺省**只编当前平台**；可 TARGET=<triple> 指定）
+	@if [ -n "$(TARGET)" ]; then \
+	  echo "== 目标平台：$(TARGET)"; \
+	  scripts/package-release.sh --target "$(TARGET)" --out $(OUT); \
+	else \
+	  scripts/package-release.sh --out $(OUT); \
+	fi
+
+release-all:  ## 逐个目标打包（没装的目标跳过并说明；YANSHI_RELEASE_TARGETS 可收紧清单）
+	scripts/package-release.sh --all-targets --out $(OUT)
+
+targets:  ## 看看本机装了哪些发布目标（以及缺哪个要 rustup target add）
+	scripts/package-release.sh --list-targets
 
 release-dynamic:  ## 打出动态链接的发布包（仅在你确实需要时用）
 	scripts/package-release.sh --dynamic --out $(OUT)

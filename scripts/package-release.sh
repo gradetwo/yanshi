@@ -52,17 +52,63 @@ else
   sha_tool="（缺）"
 fi
 
-host_os="$(rustc -vV | sed -n 's/^host: //p' | cut -d- -f3-)"
+# **宿主与目标要分开** ✓（用户要求：`make release` 能**指定目标平台** ✓、也能**全平台** ✓，
+# 缺省才是**当前平台** ✓）。**分流必须按"目标"判** ✗ —— 交叉编译到 Linux 时，
+# 静态链接与 glibc 检查**依然适用** ✓（按宿主判就会漏掉 ✓）。
+host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+target_triple="${host_triple}"          # 缺省＝当前平台 ✓；`--target` 可改 ✓
+all_targets=0
+list_targets=0
 # **允许环境变量覆盖** ✓：这样"macOS 那条分支"能在 Linux 上被验收 ✓
-#（否则只能等真的有一台 macOS ✗ —— 那等于**不测** ✓）。
-host_os="${YANSHI_HOST_OS:-${host_os}}"
-case "${host_os}" in
-  *linux*) is_linux=1 ;;
-  *) is_linux=0 ;;
-esac
+#（否则只能等真的有一台 macOS ✗ —— 那等于**不测** ✓）。按目标平台覆盖 ✓。
+target_os_override="${YANSHI_TARGET_OS:-${YANSHI_HOST_OS:-}}"
+
+# **一批常见的发布目标** ✓（可用 `YANSHI_RELEASE_TARGETS` 覆盖 ✓）。
+# 缺省**只编当前平台** ✓；`--all-targets` 才逐个试 ✓，且**没装的目标会跳过并说明** ✓（不是硬失败 ✗）。
+default_all_targets() {
+  # **允许用环境变量收紧/扩展这份清单** ✓（`YANSHI_RELEASE_TARGETS="a b c"` ✓）
+  # ⇒ 也让"全平台那条路"能在只有宿主目标的机器上被**验收** ✓（否则只能真去装一堆目标 ✗）。
+  if [ -n "${YANSHI_RELEASE_TARGETS:-}" ]; then
+    printf '%s\n' ${YANSHI_RELEASE_TARGETS}
+    return 0
+  fi
+  printf '%s\n' \
+    "${host_triple}" \
+    "x86_64-unknown-linux-gnu" \
+    "aarch64-unknown-linux-gnu" \
+    "x86_64-unknown-linux-musl" \
+    "aarch64-unknown-linux-musl" \
+    "x86_64-apple-darwin" \
+    "aarch64-apple-darwin" \
+    "x86_64-pc-windows-gnu"
+}
+
+# **某个目标装没装** ✓（用文件系统判 ✓，不依赖 rustup 在 PATH 上 ✓ ——
+# 这个坑我在 wasm 与 wasm-bindgen 上踩过两次 ✓）。
+target_installed() {
+  local want="$1" candidate
+  for candidate in "$HOME"/.rustup/toolchains/*/lib/rustlib/"${want}"; do
+    [ -d "${candidate}" ] && return 0
+  done
+  # 找不到 rustup 工具链目录 ⇒ **不敢断定"没装"** ✗ ⇒ 交给构建去回答 ✓（宁可试一次 ✓）。
+  case "${HOME}" in
+    *) [ -d "${HOME}/.rustup/toolchains" ] || return 0 ;;
+  esac
+  return 1
+}
 
 # **"静态是默认"只是 Linux 的规矩** ✓（为的是不把构建机的 glibc 带进包里 ✓）；
 # 别的平台**默认动态** ✓ —— 在那里"静态"既没必要也可能直接构建失败 ✗。
+# **静态默认按"目标平台"判** ✓（交叉编译到 Linux 也一样要静态 ✓）。
+resolve_is_linux() {
+  local os
+  os="${target_os_override:-$(printf '%s' "$1" | cut -d- -f3-)}"
+  case "${os}" in
+    *linux*) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+is_linux="$(resolve_is_linux "${target_triple}")"
 if [ "${is_linux}" = 1 ]; then
   static_build=1
 else
@@ -77,13 +123,75 @@ while [ $# -gt 0 ]; do
     --skip-build) skip_build=1; shift ;;
     --static) static_build=1; shift ;;   # 已是默认 ✓，保留是为了让脚本可读 ✓
     --dynamic) static_build=0; shift ;;  # **退出开关** ✓：确实需要动态链接时才用 ✓
+    --target) target_triple="$2"; shift 2 ;;        # **指定目标平台** ✓（交叉编译 ✓）
+    --all-targets|--all) all_targets=1; shift ;;    # **全平台** ✓（逐个试 ✓，没装的跳过 ✓）
+    --list-targets) list_targets=1; shift ;;        # 看看本机装了哪些目标 ✓
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
 
+# **`--list-targets`：看看本机装了哪些目标** ✓（不编、不打，只回答"能编哪些" ✓）。
+if [ "${list_targets}" = 1 ]; then
+  echo "宿主：${host_triple}"
+  echo "本机已安装、可用于发布的 Rust 目标："
+  installed_any=0
+  default_all_targets | sort -u | while IFS= read -r candidate; do
+    if target_installed "${candidate}"; then
+      printf '  ✓ %s\n' "${candidate}"
+    else
+      printf '  · %s（未安装 ⇒ 需要 rustup target add %s）\n' "${candidate}" "${candidate}"
+    fi
+  done
+  echo ""
+  echo "用法："
+  echo "  make release                      # 只编当前平台（缺省 ✓）"
+  echo "  make release TARGET=<triple>      # 编指定的那个平台 ✓"
+  echo "  make release-all                  # 逐个试（没装的跳过并说明 ✓）"
+  installed_any=1
+  exit 0
+fi
+
+# **`--all-targets`：逐个目标各跑一遍这个脚本** ✓。
+#
+# **设计取舍** ✓：与其在一个进程里堆一堆条件分支 ✗，不如**递归调用自己** ✓ ——
+# 每个目标都走**完全相同**的那条路 ✓（静态/glibc/sha256/组装/断言 ✓），
+# 这样"单平台打包"与"全平台打包"**不可能不一致** ✗（本项目反复吃过"两条路径漂移"的亏 ✓）。
+# **没装的目标跳过并说明** ✓，最后给一张**汇总表** ✓ —— 一次失败不该把其它结果藏起来 ✗。
+if [ "${all_targets}" = 1 ]; then
+  echo "== 全平台打包：逐个目标各跑一遍 ✓（没装的会跳过并说明 ✓）"
+  ok_list=""; skip_list=""; fail_list=""
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    if ! target_installed "${candidate}"; then
+      echo "--> 跳过 ${candidate}（本机未安装该目标 ⇒ rustup target add ${candidate}）"
+      skip_list="${skip_list} ${candidate}"
+      continue
+    fi
+    echo ""
+    echo "--> 目标 ${candidate}"
+    if bash "${BASH_SOURCE[0]}" --target "${candidate}" --out "${out}" \
+         $([ "${skip_build}" = 1 ] && printf '%s' '--skip-build') \
+         $([ "${static_build}" = 1 ] && printf '%s' '--static' || printf '%s' '--dynamic'); then
+      ok_list="${ok_list} ${candidate}"
+    else
+      echo "✗ ${candidate} 打包失败 ✗" >&2
+      fail_list="${fail_list} ${candidate}"
+    fi
+  done <<EOF
+$(default_all_targets | sort -u)
+EOF
+  echo ""
+  echo "== 汇总"
+  echo "  成功：${ok_list:-（无）}"
+  echo "  跳过：${skip_list:-（无）}"
+  echo "  失败：${fail_list:-（无）}"
+  # **有失败就以非零退出** ✓（有失败还报成功 ⇒ 与"说能用其实不能用"同类 ✗）。
+  [ -z "${fail_list}" ]
+  exit $?
+fi
+
 version="$(grep -m1 '^version' "$repo/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
-target="$(rustc -vV | sed -n 's/^host: //p')"
 # **commit 也进包名** ✓（用户提的排查建议 ✓）：测试者拿到包就能一眼知道是哪一版 ✓；
 # 工作区有未提交改动时加 `-dirty` ✓ —— "跑的不是那版代码" 这种事要**摆在明面上** ✓。
 commit="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -91,13 +199,13 @@ if [ "$commit" != "unknown" ] && [ -n "$(git -C "$repo" status --porcelain 2>/de
   commit="${commit}-dirty"
 fi
 built="$(date -u '+%Y-%m-%d %H:%M UTC')"
-name="yanshi-${version}-${commit}-${target}"
+name="yanshi-${version}-${commit}-${target_triple}"
 stage="$out/$name"
 
 echo "==> 打包 $name"
 bin_dir="$repo/target/release"
 if [ "$static_build" = 1 ]; then
-  bin_dir="$repo/target/$target/release"
+  bin_dir="$repo/target/${target_triple}/release"
   name="${name}-static"
   stage="$out/$name"
 fi
@@ -105,7 +213,7 @@ if [ "$skip_build" = 0 ]; then
   if [ "$static_build" = 1 ]; then
     echo "--> 构建**静态** release 二进制（带 --target ✓，否则 proc-macro 会一起被静态化 ✗）"
     (cd "$repo" && RUSTFLAGS="-C target-feature=+crt-static" \
-      cargo build --release --target "$target" -p yanshi-http -p yanshi-mcp)
+      cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp)
   else
     echo "--> 构建 release 二进制（yanshi-serve / yanshi-mcp）"
     (cd "$repo" && cargo build --release -p yanshi-http -p yanshi-mcp)
@@ -307,7 +415,7 @@ cat > "$stage/BUILD-INFO" <<INFO
 name: yanshi
 version: ${version}
 commit: ${commit}
-target: ${target}
+target: ${target_triple}
 built: ${built}
 rustc: $(rustc -V)
 INFO

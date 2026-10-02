@@ -305,6 +305,20 @@ is printed at startup. The default was the relative path `assets`, so starting t
 repository root silently produced empty lists for brushes, palettes and textures, which reads as a feature that was
 never built rather than as files that were not found. If nothing is found the message names every path that was tried.
 
+### Choosing what to build for
+
+`make release` builds for the current platform, which is the default. `make release TARGET=<triple>` builds for a
+specific one, and `make release-all` walks a list of common release targets, skipping any that is not installed with
+a message saying how to add it and printing a summary of what succeeded, what was skipped and what failed; any
+failure makes the run exit non-zero, because reporting success after a failure is the same defect as accepting input
+and doing nothing. `make targets` lists which targets this machine can build, and `YANSHI_RELEASE_TARGETS` narrows or
+extends the list for the all-targets mode.
+
+Each target is packaged by re-running the same script with `--target`, so a cross build goes through exactly the same
+checks as a native one, and the static and glibc logic keys off the target rather than the host, which matters because
+cross compiling to Linux still wants the static build. Cross compilation also needs a linker for the target, which
+Rust will report if it is missing.
+
 ## Packaging on macOS and other non-Linux systems
 
 The glibc machinery is Linux only, and it used to run unconditionally: on macOS `ldd` and `objdump` do not exist, and
