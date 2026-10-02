@@ -8693,7 +8693,7 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let kind = require_str(args, "kind")?;
     let entries = ctx.workspace.list_assets(&kind)?;
-    let items = asset_entries_to_json(&kind, &entries);
+    let items = asset_entries_to_json(&entries);
     // **"能不能导入"必须报出来** ✗（上一版把"没有工作区根目录"的错误**吞掉** ✓
     // ⇒ 纯内存模式返回空表 ✓ ⇒ 用户会以为"就是没有资产" ✗ ⇒ 那是在**骗人** ✓）。
     let can_import = ctx.workspace.asset_dir(&kind).is_ok();
@@ -8770,25 +8770,10 @@ fn write_import_asset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }))
 }
 
-/// **某种资产里，这个扩展名能不能直接用** ✓。
-///
-/// **必须按种类判** ✗（我第一版写成"只要不是 txt 就算可用" ✓ ⇒ `.jpg` 被误判为可用 ✗，
-/// 而**像素解码器只解 PNG** ✗ ⇒ 那会引导调用方去导一个**必然失败**的文件 ✓
-/// ⇒ 与"接受了却没用"同类 ✓）。测试当场抓住了它 ✓。
-fn asset_usable(kind: &str, extension: &str) -> bool {
-    match kind {
-        // 纹理：**只解 PNG** ✗（JPEG/WebP 会被明确拒绝 ✓）。
-        "texture" => extension == "png",
-        // 笔刷：Hokusai 读的是 `.myb` ✓。
-        "brush" => extension == "myb",
-        // 调色板：json / kpl / gpl 都能解析 ✓；`.txt` 只是兼容位 ✗。
-        "palette" => matches!(extension, "json" | "kpl" | "gpl"),
-        _ => false,
-    }
-}
-
 /// **资产列表转 JSON** ✓（三类共用 ✓ ⇒ 三处不会各变一样 ✗）。
-fn asset_entries_to_json(kind: &str, entries: &[crate::service::TextureEntry]) -> Vec<Value> {
+/// **`usable` 直接取自内核** ✓ —— 工具层**不再自己判断** ✗（它曾经按扩展名猜 ✓，
+/// 把一张灰度 PNG 报成可用 ✗ ⇒ 导入时被解码器拒绝 ✓）。
+fn asset_entries_to_json(entries: &[crate::service::TextureEntry]) -> Vec<Value> {
     entries
         .iter()
         .map(|entry| {
@@ -8802,8 +8787,10 @@ fn asset_entries_to_json(kind: &str, entries: &[crate::service::TextureEntry]) -
                 "bytes": entry.bytes,
                 "source": entry.source,
                 "format": extension,
-                // **能不能直接用** ✓：按种类判 ✓（见 `asset_usable` ✓）。
-                "usable": asset_usable(kind, &extension),
+                // **能不能直接用** ✓：**由内核判定** ✓（纹理要真读 PNG 头 ✗ ——
+                // 我第一版在这里看扩展名猜 ✓ ⇒ 把一张灰度 PNG 报成可用 ✗，
+                // 导入时被解码器拒绝 ✓ ⇒ 那是"说能用其实不能用" ✗）。
+                "usable": entry.usable,
             })
         })
         .collect()
@@ -8814,7 +8801,7 @@ fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let entries = ctx.workspace.list_textures(dir.as_deref())?;
     // **把"能不能直接用"一并报出来** ✓：内核**只解 PNG** ✗（JPEG/WebP 会被**明确拒绝** ✓）
     // ⇒ 与其让调用方试一次才知道 ✓，不如这里就说清 ✓ —— 与"错误里带可用选项"同一规矩 ✓。
-    let items = asset_entries_to_json("texture", &entries);
+    let items = asset_entries_to_json(&entries);
     Ok(json!({
         "dir": dir.unwrap_or_else(|| "textures".to_string()),
         "count": items.len(),

@@ -36,6 +36,26 @@ fn workspace(root: &std::path::Path) -> Workspace {
     workspace
 }
 
+/// **造一个头部合法的 PNG** ✓（33 字节就够 ✓ —— 可用性探测只读头 ✓）。
+///
+/// **为什么必须有它** ✓：我第一版往 fixture 里写 `vec![0u8; 1234]` ✗
+/// ⇒ 新加的"**真读 PNG 头**"判定说它不能用 ✓ ⇒ 测试红了 ✓ —— **红得对** ✓：
+/// 产品说的是实话 ✓，是**测试的 fixture 在说谎** ✗。
+fn png_header(depth: u8, color: u8, interlace: u8) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&8u32.to_be_bytes());
+    bytes.extend_from_slice(&8u32.to_be_bytes());
+    bytes.push(depth);
+    bytes.push(color);
+    bytes.push(0);
+    bytes.push(0);
+    bytes.push(interlace);
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes
+}
+
 fn call(workspace: &mut Workspace, args: serde_json::Value) -> serde_json::Value {
     let mut ctx = ToolContext::new(workspace, "doc_tex", "human:1", "session:test");
     registry().call(&mut ctx, "list_textures", &args)
@@ -66,7 +86,12 @@ fn the_list_reports_name_size_and_usability() {
     let root = temp_dir("list");
     let cache = root.join("textures");
     std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join("paper.png"), vec![0u8; 1234]).unwrap();
+    // 8 位、非隔行、RGB ⇒ **真的能用** ✓（与解码器判据一致 ✓）。
+    std::fs::write(cache.join("paper.png"), png_header(8, 2, 0)).unwrap();
+    // **灰度 PNG ⇒ 不能用** ✓ —— 钉住刚修的那个**真事故** ✗：
+    // `assets/textures/Paper003.png` 原本是灰度 ✓，却被按扩展名报成 `usable: true` ✗，
+    // 导入时被解码器拒绝 ✓（"只支持 8 位、非隔行的 RGB/RGBA PNG" ✓）。
+    std::fs::write(cache.join("grey.png"), png_header(8, 0, 0)).unwrap();
     std::fs::write(cache.join("canvas.jpg"), vec![0u8; 99]).unwrap();
     std::fs::write(cache.join("NOTICE.md"), b"source: ambientCG, CC0").unwrap();
     std::fs::write(cache.join(".hidden.png"), vec![0u8; 5]).unwrap();
@@ -84,7 +109,7 @@ fn the_list_reports_name_size_and_usability() {
     // **隐藏文件与子目录不算纹理** ✓（`NOTICE.md` 要留下 ✓ —— 它是许可凭据 ✓）。
     assert_eq!(
         names,
-        vec!["NOTICE.md", "canvas.jpg", "paper.png"],
+        vec!["NOTICE.md", "canvas.jpg", "grey.png", "paper.png"],
         "排序或过滤不对：{names:?}"
     );
     let by_name = |name: &str| {
@@ -96,11 +121,17 @@ fn the_list_reports_name_size_and_usability() {
             .cloned()
             .unwrap_or(json!(null))
     };
-    assert_eq!(by_name("paper.png")["bytes"], json!(1234), "{got}");
+    assert_eq!(by_name("paper.png")["bytes"], json!(33), "{got}");
     assert_eq!(
         by_name("paper.png")["usable"],
         json!(true),
-        "PNG 应当可用：{got}"
+        "RGB PNG 应当可用：{got}"
+    );
+    // **灰度 PNG 必须报不可用** ✓ —— 只看扩展名就会漏掉它 ✗。
+    assert_eq!(
+        by_name("grey.png")["usable"],
+        json!(false),
+        "灰度 PNG 解码器吃不了，必须说清：{got}"
     );
     assert_eq!(
         by_name("canvas.jpg")["usable"],

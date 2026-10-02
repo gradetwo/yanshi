@@ -170,6 +170,15 @@ pub struct TextureEntry {
     pub bytes: u64,
     /// **来源** ✓：`bundled` = 随发行包发布 ✓；`cache` = 抓到工作区里的 ✓。
     pub source: &'static str,
+    /// **这个文件到底能不能用** ✓ —— **由内核判定** ✗，不是调用方看扩展名猜的 ✓。
+    ///
+    /// **为什么放进内核** ✓（真实事故 ✓）：我第一版让工具层"看扩展名"算可用性 ✗
+    /// ⇒ `assets/textures/Paper003.png` 被报成 `usable: true` ✓，
+    /// 而它其实是**灰度 PNG** ✗ ⇒ 上传时被解码器拒绝 ✓：
+    /// "PNG 解码失败（本仓库只支持 8 位、非隔行的 RGB/RGBA PNG）" ✗ ✗
+    /// ⇒ **"说能用、其实不能用"** ✓ —— 与"接受了却没用"是同一类病 ✓。
+    /// ⇒ 现在**真读 PNG 头**（位深 / 颜色类型 / 隔行 ✓）✓ ⇒ 报出来的就是事实 ✓。
+    pub usable: bool,
 }
 
 /// **读一个目录里的纹理文件** ✓（不存在 ⇒ 空表 ✓ —— "还没下载过"是**正常状态** ✗，不是错误 ✓）。
@@ -196,6 +205,41 @@ fn asset_layout(kind: &str) -> Result<(&'static str, &'static [&'static str])> {
             ))
         }
     })
+}
+
+/// **这个资产文件能不能真的被我们用** ✓。
+///
+/// **纹理要真读 PNG 头** ✗（不是看扩展名 ✓）：我们的解码器是自己写的 ✓、只吃
+/// **8 位、非隔行、RGB 或 RGBA** ✓ ⇒ 灰度 / 16 位 / 隔行 都会被拒 ✓。
+/// **判据来自解码器本身** ✓ ⇒ 列表里说"能用"的，导入时**真的能用** ✓。
+fn asset_file_usable(kind: &str, path: &std::path::Path, extension: &str) -> bool {
+    match kind {
+        "texture" => extension == "png" && png_is_decodable(path),
+        "brush" => extension == "myb",
+        "palette" => matches!(extension, "json" | "kpl" | "gpl"),
+        _ => false,
+    }
+}
+
+/// **读 PNG 头判断解码器能不能吃** ✓（只读前 33 字节 ✓，不解整幅 ✓ ⇒ 列表也很快 ✓）。
+///
+/// 判据与解码器一致 ✓：**位深 8** ✓、**非隔行** ✓、**颜色类型 2（RGB）或 6（RGBA）** ✓。
+fn png_is_decodable(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 33];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    if &header[0..8] != b"\x89PNG\r\n\x1a\n" || &header[12..16] != b"IHDR" {
+        return false;
+    }
+    let depth = header[24];
+    let color = header[25];
+    let interlace = header[28];
+    depth == 8 && interlace == 0 && (color == 2 || color == 6)
 }
 
 /// **资产文件名必须干净** ✗（挡 `..`、路径分隔符、隐藏文件 ✓）。
@@ -1062,10 +1106,16 @@ impl Workspace {
                 if !seen.insert(name.clone()) {
                     continue;
                 }
+                let extension = name
+                    .rsplit_once('.')
+                    .map(|(_, ext)| ext.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let usable = asset_file_usable(kind, &path.join(&name), &extension);
                 found.push(TextureEntry {
                     name,
                     bytes,
                     source,
+                    usable,
                 });
             }
         }

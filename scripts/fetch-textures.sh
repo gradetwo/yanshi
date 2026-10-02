@@ -84,6 +84,25 @@ for id in "${ids[@]}"; do
     rm -rf "$tmp"
     continue
   fi
+  # **入库前自检 PNG 头** ✗（真实事故 ✓）：本项目解码器只吃 **8 位、非隔行、RGB/RGBA** ✓
+  # ⇒ 几张素材是**灰度** ✓（`Paper003` 就是 ✓）⇒ 抓回来也**用不了** ✗
+  # ⇒ "抓到了却不能用" 与 "说能用其实不能用" 是同一类病 ✓ ⇒ 这里**当场判定并说清** ✓。
+  if command -v python3 >/dev/null 2>&1; then
+    verdict="$(python3 - "$color" <<'PYEOF'
+import struct, sys
+data = open(sys.argv[1], 'rb').read(29)
+if data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
+    print('not-png'); raise SystemExit
+_, _, depth, color, _, _, interlace = struct.unpack('>IIBBBBB', data[16:29])
+print('ok' if (depth == 8 and interlace == 0 and color in (2, 6)) else 'unusable')
+PYEOF
+)"
+    if [ "$verdict" != "ok" ]; then
+      echo "⚠️  ${id} 的 PNG 本项目解码器吃不了（$verdict ⇒ 需 8 位非隔行 RGB/RGBA）⇒ 跳过 ✓" >&2
+      rm -rf "$tmp"
+      continue
+    fi
+  fi
   cp "$color" "$target"
   rm -rf "$tmp"
   echo "已取 ${id} ⇒ ${target}（$(du -h "$target" | cut -f1)）"
