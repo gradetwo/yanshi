@@ -633,7 +633,24 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
         return Response::from_error(&error);
     }
     // 12.7：打开文档返回内嵌 token 的 URL。
-    let token = match workspace.issue_token(&doc_id, &actor, Role::Editor) {
+    //
+    // **Phase 5：角色权限** ✓ —— 打开时可指定角色，缺省 `editor` ✓。
+    // 设计只写了「Phase 5 扩展为 owner/editor/viewer」✓、**没有规定发放策略** ✗
+    // ⇒ 这里做一个**最小且可预期**的选择 ✓ 并记档 ✓：**调用方显式声明角色** ✓、缺省 editor ✓。
+    // **不擅自发明"谁是 owner"** ✗（那是权限管理策略 ✓，留给后续 ✓）；
+    // 但 `owner` 必须**可选** ✓，否则 `can_revert_others` 那条能力**永远用不上** ✗。
+    let requested_role = match request.param("role").unwrap_or("editor") {
+        "viewer" => Role::Viewer,
+        "editor" => Role::Editor,
+        "owner" => Role::Owner,
+        other => {
+            return Response::from_error(&YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("未知角色 {other}（可用：viewer / editor / owner）")),
+            ))
+        }
+    };
+    let token = match workspace.issue_token(&doc_id, &actor, requested_role) {
         Ok(token) => token,
         Err(error) => return Response::from_error(&error),
     };
@@ -896,6 +913,24 @@ fn tool_call_with(
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    // **Phase 5：角色权限的真正落点** ✓ —— **只读令牌不得改动文档** ✓。
+    //
+    // **为什么必须在这里** ✓（这是本轮抓到的一个**真授权漏洞** ✗）：此前 `can_edit` **只挡住了 blob 上传** ✓
+    //（`blob_upload` 里那一处 ✓），而**工具入口没有检查** ✗ ⇒ 一个 viewer 令牌
+    // **照样能经 `/api/tools/*` 改文档** ✗ ✓。设计的 Phase 5 要堵的正是这个 ✓。
+    // **做法** ✓：用工具自己**已经声明**的 `mutating` 标记 ✓（`ToolSpec` 里本来就有 ✓）——
+    // 于是"哪些工具会改状态"这件事**只有一处定义** ✓，权限检查跟着它走 ✓，不会漏 ✓、也不会误伤读工具 ✓。
+    if let Some(spec) = state.registry.get(name) {
+        if spec.mutating && !principal.role.can_edit() {
+            return Response::from_error(&YanshiError::new(
+                ErrorCode::PermissionDenied,
+                ErrorContext::detail(format!(
+                    "该 token 的角色是 {}，不允许调用会改动文档的工具 {name}（读类工具不受限）",
+                    principal.role.as_str()
+                )),
+            ));
+        }
+    }
     if arguments.get("doc_id").is_none() {
         arguments["doc_id"] = json!(doc_id);
     }

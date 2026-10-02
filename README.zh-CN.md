@@ -9,6 +9,14 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 角色
+
+打开文档时可以指定角色 ✓：`POST /api/documents?role=viewer` 发**只读**令牌 ✓，
+`editor`（缺省 ✓）可改文档 ✓，`owner` 另可**跨 actor 撤销** ✓。
+**强制点在工具入口** ✓，判据直接用每个工具**自己声明的 `mutating` 标记** ✓
+⇒ 只读令牌**能调读类工具** ✓、而**任何会改文档的工具都会被拒** ✓，并明确告知**角色与工具名** ✓。
+未知角色**明确报错** ✗（不悄悄按 editor 处理 ✗ —— 那会把"只读链接"变成"可写链接" ✗）。
+
 ## 发布包
 
 `scripts/package-release.sh` 会构建 release 二进制 ✓，并把它们**运行期真正需要的资产**一起打包 ✓：

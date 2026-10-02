@@ -971,3 +971,90 @@ fn brand_assets_are_served_from_the_configured_directory() {
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **Phase 5：viewer 令牌不得改动文档** ✓ —— 这一条此前是**真的漏洞** ✗。
+///
+/// **漏洞是什么** ✓：`can_edit` 原来**只挡住 blob 上传** ✓，而**工具入口没有检查** ✗
+/// ⇒ 一个 viewer 令牌**照样能经 `/api/tools/*` 改文档** ✗。本轮把检查放到工具入口 ✓，
+/// 并且**跟着工具自己声明的 `mutating` 标记走** ✓（"哪些工具会改状态"只有一处定义 ✓）。
+///
+/// **三条事实** ✓：① 改状态的被拒 ✓；② **读类照常可用** ✓（只读角色不是"什么都干不了" ✓）；
+/// ③ **同一个工具换个 editor 令牌就成功** ✓ —— 证明被拒的原因是**角色** ✓，不是工具 ✓。
+#[test]
+fn a_viewer_token_can_read_but_not_mutate() {
+    let server = start_server();
+    let addr = server.addr;
+    // 用 `role=viewer` 打开 ✓（12.7 的三种角色之一 ✓）。
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents?role=viewer",
+        None,
+        Some(&json!({"doc_id": "doc_viewer", "width": 64, "height": 64})),
+    );
+    assert_eq!(status, 200, "{body}");
+    let viewer = body["token"].as_str().expect("capability token").to_owned();
+
+    // ① **会改状态的工具 ⇒ 拒绝** ✓
+    let (status, refused) = tool(
+        addr,
+        "doc_viewer",
+        &viewer,
+        "create_layer",
+        json!({"layer_id": "L"}),
+    );
+    assert!(
+        (400..500).contains(&status),
+        "viewer 调用改状态的工具应当被拒，实测 {status}：{refused}"
+    );
+    assert_eq!(
+        refused["error_code"],
+        json!("permission_denied"),
+        "{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("viewer"),
+        "拒绝原因应当说明角色，实测：{detail}"
+    );
+
+    // ② **读类工具 ⇒ 允许** ✓
+    let (status, read) = tool(addr, "doc_viewer", &viewer, "get_state", json!({}));
+    assert_eq!(status, 200, "只读角色应当能读：{read}");
+    assert_eq!(read["ok"], json!(true), "{read}");
+
+    // ③ **同一个工具、editor 令牌 ⇒ 成功** ✓
+    let editor = create_document(addr, "doc_editor");
+    let (status, made) = tool(
+        addr,
+        "doc_editor",
+        &editor,
+        "create_layer",
+        json!({"layer_id": "L"}),
+    );
+    assert_eq!(status, 200, "editor 应当能改：{made}");
+    assert_eq!(made["ok"], json!(true), "{made}");
+}
+
+/// **未知角色要明确报错** ✗ —— 不悄悄按 editor 处理 ✗（那会让"只读链接"变成"可写链接" ✗）。
+#[test]
+fn an_unknown_role_is_refused_rather_than_defaulted() {
+    let server = start_server();
+    let addr = server.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents?role=spectator",
+        None,
+        Some(&json!({"doc_id": "doc_bad_role", "width": 64, "height": 64})),
+    );
+    assert!(
+        (400..500).contains(&status),
+        "未知角色应当被拒，实测 {status}：{body}"
+    );
+    let detail = body["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("spectator"),
+        "原因应当点名那个角色，实测：{detail}"
+    );
+}
