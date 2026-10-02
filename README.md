@@ -224,7 +224,14 @@ and the brush colour still goes through the same setter as everywhere else, so t
 brush colour rather than two that drift apart.
 
 The brush picker groups the brushes by the source recorded in their names and offers a search box, and it loads the
-list when the user first reaches for it rather than on page load. That promise was in the tooltip long before it was
+list when the user first reaches for it rather than on page load. Beside it, a brush library shows the brushes as a
+browsable list where every row carries a preview painted by that brush through the same server call the stroke path
+uses, so what the list shows is what the brush does rather than an illustration that can drift from it. Previews are
+lazy and cached: only rows scrolled into view are painted, three at a time, which came to nine server strokes for a
+list of one hundred and ninety nine brushes. Clicking a row goes through the same setter as the picker and as MCP, so
+there is still one notion of the current brush, and the panel reads the same filter as the picker instead of keeping
+a second one. Rows are deduplicated by name, because favourites and recents are a second entry point to a brush
+rather than a second brush, which reads as a duplicate in a browsable list even though it is right in a select. That promise was in the tooltip long before it was
 true: nothing actually loaded the list on interaction, so a person opening the picker saw only the built-in brush.
 My earlier verification of the picker had called the loader itself, which is how the gap survived being tested. The
 trigger now lives in its own small script next to the markup, because the page's main script is not the global scope

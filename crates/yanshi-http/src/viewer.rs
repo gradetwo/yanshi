@@ -155,6 +155,25 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 10px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28); }
   #assetDock[hidden] { display: none; }
+  /* **笔刷库** ✓（用户："笔刷这个列表里头都带个笔刷的效果图是不是更好，直接列表中就能找到想要的"✓）。
+     每行 = **真实落笔**的效果图 ✓（服务端 `brush_preview` ✓，与 `brush_stroke` 同一条实现 ✓）+ 名字 + 分组 ✓；
+     图是**懒加载**的 ✓（滚到哪画到哪 ✓ —— 201 支一次全画既慢又是可见的浪费 ✗）。 */
+  #brushLibrary { position: fixed; top: 96px; right: 16px; z-index: 41; width: min(380px, 92vw);
+    max-height: 76vh; overflow: auto; background: Canvas; color: CanvasText;
+    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+  #brushLibrary[hidden] { display: none; }
+  #brushLibrary .brush-lib-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #brushLibrary .brush-lib-head .hint { flex: 1; }
+  .brush-lib-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px;
+    cursor: pointer; }
+  .brush-lib-row:hover { background: rgba(128,128,128,.14); }
+  .brush-lib-row.selected { background: var(--accent-soft, rgba(43,108,176,.22)); }
+  .brush-lib-row img { width: 84px; height: 32px; object-fit: contain; background: #fff;
+    border: 1px solid #ccc; flex: none; }
+  .brush-lib-row .name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .brush-lib-row .group { font-size: 11px; opacity: .65; flex: none; }
   #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   #assetDock .asset-dock-head .hint { flex: 1; }
   .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
@@ -339,6 +358,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **素材浮层** ✓（用户："画笔区快捷方式、点开浮出来" ✓）：把**调色板 / 纹理**两张卡
          浮到画布上方 ✓ —— 点一下开 ✓、再点一下收 ✓；卡本身是**搬过去再搬回来**，
          不是重建 ✗（上一版把面板弄空 ✓ 就是栽在"重建/丢了原来的位置"上 ✓）。 -->
+    <button id="brushLibraryOpen" type="button" aria-pressed="false"
+            title="笔刷库：每支笔刷都带**真实落笔**的效果图（滚到哪画到哪）；点一行就换那支笔">笔刷库</button>
     <button id="assetFloat" type="button" aria-pressed="false"
             title="把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）">素材</button>
     <span id="brushPreviewWrap" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
@@ -4212,6 +4233,10 @@ function setupAssetDock() {
 async function setupAssetPanels() {
   // **先把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
+  // **`setupBrushLibrary` 不在这儿调** ✗ —— 它的定义在**另一段 `<script>`** 里 ✓，
+  // 从这里调只会 `ReferenceError` ✓（本轮实测：面板永远打不开 ✓、`open=false` ✗）。
+  // 它改成在**定义那一侧**自初始化 ✓（见那个函数上面 ✓）——这是同一个坑的第 N 次 ✓，
+  // 所以这次把"为什么不在别处调"也写在现场 ✓。
   const palettePick = $("palettePick");
   const swatches = $("paletteSwatches");
   const paletteInfo = $("paletteInfo");
@@ -6132,6 +6157,170 @@ async function refreshBrushOptions() {
   }
 }
 
+/// **笔刷库** ✓（用户："列表里头都带个笔刷的效果图是不是更好，直接列表中就能找到想要的"✓）。
+///
+/// **三条取舍** ✓：
+/// ① **图是真的** ✓：每张都调服务端的 `brush_preview`（与 `brush_stroke` **同一条落笔实现** ✓）
+///    ⇒ 列表里看到的就是落笔的样子 ✓，不是示意图 ✗（示意图迟早与真笔触漂移 ✓）。
+/// ② **懒加载 + 缓存** ✓：只有**滚进视口**的行才去画 ✓（201 支一次全画 = 201 次服务端落笔 ✗），
+///    画过的存进 `brushPreviewCache` ✓ ⇒ 滚回去不重画 ✓。并发上限 3 ✓（别把服务端排满 ✓）。
+/// ③ **选择只有一条路** ✓：点一行 ⇒ 走 `window.yanshi.setBrush()` ✓ —— 与下拉、与 MCP 是**同一个入口** ✓
+///    （自己再写一遍"设值 + change"✗ 迟早与那条漂移 ✓）。
+const brushPreviewCache = new Map();
+const brushPreviewQueue = [];
+let brushPreviewActive = 0;
+let brushLibraryObserver = null;
+
+/// **列表里的条目** ✓ —— 直接读**那个 `<select>`** ✓（过滤的真相在那里 ✓：`option.hidden` ✓）。
+/// 不另建一份列表 ✗（两份必然漂移 ✓）。
+function brushLibraryEntries() {
+  const select = $("brush");
+  if (!select) return [];
+  const entries = [];
+  const seen = new Set();
+  for (const option of Array.from(select.options)) {
+    if (option.value === "" || option.hidden) continue;
+    // **同名只留一条** ✓ —— 下拉里"最近使用 / ★ 收藏"与"按来源分组"本就是**同一支笔的两处入口** ✓
+    //（在下拉里那是分组 ✓），但在**可浏览的库面板**里它读起来就是"重复了一次" ✗
+    //（探针实测：200 行对 199 支 ✓，而那多出来的一条正好撞上我的判据 ✓）。
+    // 留**第一条** ✓ = 偏好组优先 ✓（常用的在最上面 ✓，与下拉的顺序一致 ✓）。
+    if (seen.has(option.value)) continue;
+    seen.add(option.value);
+    const parent = option.parentElement;
+    const group = parent && parent.tagName === "OPTGROUP" ? parent.label : "";
+    entries.push({ name: option.value, group, preview: brushPreviewCache.get(option.value) || "" });
+  }
+  return entries;
+}
+
+function renderBrushLibrary() {
+  const list = $("brushLibraryList");
+  if (!list) return;
+  const select = $("brush");
+  const current = select ? select.value : "";
+  const entries = brushLibraryEntries();
+  list.innerHTML = "";
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "brush-lib-row" + (entry.name === current ? " selected" : "");
+    row.dataset.brush = entry.name;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-selected", String(entry.name === current));
+    const img = document.createElement("img");
+    img.alt = "";
+    img.dataset.brush = entry.name;
+    if (entry.preview) img.src = entry.preview;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = entry.name;
+    const group = document.createElement("span");
+    group.className = "group";
+    group.textContent = entry.group;
+    row.append(img, name, group);
+    row.addEventListener("click", () => {
+      // **走既有那条唯一入口** ✓（它自己会设值 + 派发 change ✓）。
+      void window.yanshi.setBrush(entry.name);
+      renderBrushLibrary();
+    });
+    list.appendChild(row);
+  }
+  const hint = $("brushLibraryHint");
+  if (hint) hint.textContent = entries.length + " 支 · 滚到哪画到哪 ✓";
+  observeBrushLibraryRows();
+}
+
+/// **只有滚进视口的行才去画** ✓（`IntersectionObserver` ✓；没有它就退化成"全画" ✗ —— 但那是老浏览器 ✓）。
+function observeBrushLibraryRows() {
+  const list = $("brushLibraryList");
+  if (!list) return;
+  const images = Array.from(list.querySelectorAll("img[data-brush]"));
+  if (typeof IntersectionObserver !== "function") {
+    images.forEach((img) => queueBrushPreview(img.dataset.brush));
+    return;
+  }
+  if (brushLibraryObserver) brushLibraryObserver.disconnect();
+  brushLibraryObserver = new IntersectionObserver(
+    (observed) => {
+      for (const entry of observed) {
+        if (!entry.isIntersecting) continue;
+        queueBrushPreview(entry.target.dataset.brush);
+        brushLibraryObserver.unobserve(entry.target);
+      }
+    },
+    { root: list, rootMargin: "64px" },
+  );
+  images.forEach((img) => brushLibraryObserver.observe(img));
+}
+
+function queueBrushPreview(name) {
+  if (!name || brushPreviewCache.has(name) || brushPreviewQueue.includes(name)) return;
+  brushPreviewQueue.push(name);
+  void pumpBrushPreview();
+}
+
+async function pumpBrushPreview() {
+  if (brushPreviewActive >= 3) return;
+  const name = brushPreviewQueue.shift();
+  if (!name) return;
+  brushPreviewActive += 1;
+  try {
+    const value = await callTool("brush_preview", { brush: name, size: 24 }, { refresh: false });
+    const url = value && (value.thumb_url || value.raw_url);
+    if (url) {
+      brushPreviewCache.set(name, url);
+      const selector = '#brushLibraryList img[data-brush="' + name.replace(/"/g, '\\"') + '"]';
+      for (const img of document.querySelectorAll(selector)) img.src = url;
+      window.yanshiStats.brushPreviews = (window.yanshiStats.brushPreviews || 0) + 1;
+    } else {
+      window.yanshiStats.brushPreviewErrors = (window.yanshiStats.brushPreviewErrors || 0) + 1;
+    }
+  } catch (error) {
+    // **失败要说出来** ✓ 但不打断列表 ✓（一支笔刷预览不出来，不该让整个面板不可用 ✓）。
+    window.yanshiStats.brushPreviewErrors = (window.yanshiStats.brushPreviewErrors || 0) + 1;
+    log("笔刷预览失败：" + name + "（" + String(error).slice(0, 40) + "）", "#c93");
+  } finally {
+    brushPreviewActive -= 1;
+    void pumpBrushPreview();
+  }
+}
+
+function setupBrushLibrary() {
+  const open = $("brushLibraryOpen");
+  const panel = $("brushLibrary");
+  const close = $("brushLibraryClose");
+  if (!open || !panel) return;
+  const setOpen = (next) => {
+    panel.hidden = !next;
+    open.setAttribute("aria-pressed", String(next));
+    if (next) {
+      // **打开时才去拉列表** ✓（与"首次点开才载入笔刷"同一个取舍 ✓：别在启动时做没人要的事 ✓）。
+      const select = $("brush");
+      if (select && select.options.length <= 1) {
+        void refreshBrushOptions().then(() => renderBrushLibrary());
+      }
+      renderBrushLibrary();
+    }
+  };
+  open.addEventListener("click", () => setOpen(panel.hidden));
+  if (close) close.addEventListener("click", () => setOpen(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !panel.hidden) setOpen(false);
+  });
+  const select = $("brush");
+  if (select) select.addEventListener("change", () => { if (!panel.hidden) renderBrushLibrary(); });
+  const search = $("brushSearch");
+  if (search) search.addEventListener("input", () => { if (!panel.hidden) renderBrushLibrary(); });
+  window.yanshiBrushLibrary = { render: renderBrushLibrary, setOpen };
+}
+
+// **在定义这一侧自初始化** ✓ —— 跨 `<script>` 段够不到函数名 ✗（见上面那条注释 ✓）；
+// 而 DOM 在这段脚本执行时已经解析完 ✓ ⇒ 直接接上即可 ✓（`loading` 时等 `DOMContentLoaded` ✓）。
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => setupBrushLibrary());
+} else {
+  setupBrushLibrary();
+}
+
 /// **预览的防抖** ✓（用户：拖粗细 / 改颜色时预览**不会跟着变** ✗）——
 /// 但**不能每动一下就真画一笔** ✗（滑杆一次拖动几十个事件 ✓ ⇒ 几十次真实落笔 ✓，肉眼可见地卡 ✓）。
 /// 停手 400ms 之后再画 ✓：既不卡 ✓、也不会留下"界面改了预览没变" ✗。
@@ -6396,6 +6585,39 @@ window.yanshi = {
     /// **暴露预览** ✓：验收探针要能直接断言"预览真的换了"✓（与换笔刷走同一条实现 ✓）。
     previewBrush() {
       return refreshBrushPreview();
+    },
+    /// **笔刷库** ✓（列表带效果图 ✓）：开 / 关 / 当前状态 ✓ —— 判据全靠它 ✓。
+    openBrushLibrary() {
+      if (window.yanshiBrushLibrary) window.yanshiBrushLibrary.setOpen(true);
+      return true;
+    },
+    closeBrushLibrary() {
+      if (window.yanshiBrushLibrary) window.yanshiBrushLibrary.setOpen(false);
+      return true;
+    },
+    brushLibraryState() {
+      const panel = $("brushLibrary");
+      const rows = Array.from(document.querySelectorAll("#brushLibraryList .brush-lib-row"));
+      const loaded = rows.filter((row) => {
+        const img = row.querySelector("img");
+        return !!(img && img.getAttribute("src"));
+      }).length;
+      const sources = rows
+        .map((row) => {
+          const img = row.querySelector("img");
+          return img ? img.getAttribute("src") || "" : "";
+        })
+        .filter(Boolean);
+      return {
+        open: !!(panel && !panel.hidden),
+        rows: rows.length,
+        loaded,
+        distinctPreviews: new Set(sources).size,
+        selected: rows.some((row) => row.classList.contains("selected")),
+        previews: window.yanshiStats.brushPreviews || 0,
+        errors: window.yanshiStats.brushPreviewErrors || 0,
+        hint: ($("brushLibraryHint") || {}).textContent || "",
+      };
     },
     /// **预览防抖入口** ✓（改粗细 / 改颜色之后 400ms 才真画一小笔 ✓）——
     /// 给**另一段 script** 里的控件监听器用 ✓（它们够不到本段里的函数 ✗，只能走 `window.yanshi` ✓）。
@@ -6880,6 +7102,14 @@ $("importFile").addEventListener("change", async (event) => {
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
      关掉时按**记下来的原位**搬回去 ✓ ⇒ 右侧面板永远不会被搬空 ✗。 -->
+<div id="brushLibrary" hidden>
+  <div class="brush-lib-head">
+    <b>笔刷库</b>
+    <span class="hint" id="brushLibraryHint">滚到哪、画到哪 ✓</span>
+    <button id="brushLibraryClose" type="button">收起</button>
+  </div>
+  <div id="brushLibraryList"></div>
+</div>
 <div id="assetDock" hidden>
   <div class="asset-dock-head">
     <strong>素材</strong>
