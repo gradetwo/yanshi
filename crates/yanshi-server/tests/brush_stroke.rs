@@ -833,3 +833,111 @@ fn brush_stroke_opacity_and_hardness_reach_the_engine() {
         "软边（hardness 0）的平均 alpha 应当低于硬边 ✗（实测 {hard:.1} ⇒ {soft:.1}）"
     );
 }
+
+/// **落笔位置就是调用方要的位置** ✓ —— 外部 MCP 报告连着两轮说"坐标非线性偏移"✗，
+/// 而我这边量到的质心与请求**逐点吻合** ✓（见 `docs/design/implementation-notes.md` 第 41 轮 ✓）。
+///
+/// **这条判据的意义** ✓：把"坐标映射"这件事**钉死** ⇒ 将来真出现偏移（差一个视口原点、
+/// DPI 缩放、区域裁剪……✓）会**当场红** ✓，而不用再靠外部报告的两次互相矛盾的数字来猜 ✓。
+///
+/// **判据** ✓（都是绝对断言 ✓，不看 `ok` ✗）：
+/// ① 三点笔迹 (150,100)→(170,100)→(190,100)、size 24（测试文档是 400×200 ✓）
+///    ⇒ 墨的**质心必须落在 (170,100) ± 3px** ✓；
+/// ② 墨的**包围盒**必须落在 `x ∈ [130,215]`、`y ∈ [80,122]` ✓（= 笔迹 ± 半个笔尖 ✓）。
+#[test]
+fn a_stroke_lands_exactly_where_the_caller_asked() {
+    let root = temp_dir("lands_where_asked");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "placed", "brush": "Round", "size": 40,
+            "color": {"r": 0, "g": 0, "b": 0},
+            "points": [[150.0, 100.0, 1.0], [170.0, 100.0, 1.0], [190.0, 100.0, 1.0]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    let document = workspace.document_mut("doc_brush").unwrap();
+    let (width, height, pixels) = document
+        .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 400.0, 200.0))
+        .expect("区域渲染应成功");
+    assert_eq!((width, height), (400, 200));
+    let mut count = 0f64;
+    let mut sum_x = 0f64;
+    let mut sum_y = 0f64;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+        let (r, g, b, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+        if a <= 32 || (r > 245 && g > 245 && b > 245) {
+            continue;
+        }
+        let (x, y) = ((index % 400) as f64, (index / 400) as f64);
+        count += 1.0;
+        sum_x += x;
+        sum_y += y;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    assert!(count > 0.0, "这一笔应当真的落下墨 ✓");
+    let (cx, cy) = (sum_x / count, sum_y / count);
+    eprintln!(
+        "  落笔位置：质心 ({cx:.1}, {cy:.1})，包围盒 [{min_x:.0},{min_y:.0}]–[{max_x:.0},{max_y:.0}]，墨 {count:.0} 像素"
+    );
+    assert!(
+        (cx - 170.0).abs() <= 3.0 && (cy - 100.0).abs() <= 3.0,
+        "墨的质心必须落在 (170,100) ± 3px ✗（实测 ({cx:.1}, {cy:.1})）"
+    );
+    assert!(
+        min_x >= 130.0 && max_x <= 215.0 && min_y >= 80.0 && max_y <= 122.0,
+        "墨的包围盒必须落在笔迹 ± 半个笔尖之内 ✗（实测 [{min_x:.0},{min_y:.0}]–[{max_x:.0},{max_y:.0}]）"
+    );
+}
+
+/// **整条笔迹在画布外 ⇒ 必须报"坐标在画布外"，不许报"换一支笔刷"** ✗。
+///
+/// **为什么专门测这个** ✓：外部 MCP 报告**连着两轮**把"坐标非线性偏移"当 bug 报 ✓，
+/// 而它量到的很可能是**被画布裁掉一半的墨** ✗ —— 因为当时这种情况会一路走到
+/// "这一笔没落下任何像素" ✓，再被那句"换一支笔刷"✗ 引到**坐标以外**的方向 ✓。
+/// **判据** ✓（措辞级 ✓，能红 ✓）：错误里必须出现**画布尺寸**与**笔迹范围** ✓，
+/// 且**不许**出现"换一支笔刷"✗（把修复前的消息接回去 ⇒ 当场红 ✓）。
+#[test]
+fn a_stroke_entirely_outside_the_canvas_says_so_instead_of_blaming_the_brush() {
+    let root = temp_dir("outside_canvas");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // 测试文档是 **400×200** ✓ ⇒ 这条笔迹（600..700, 400）整条都在画布外 ✓。
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "outside", "brush": "Round", "size": 24,
+            "color": {"r": 0, "g": 0, "b": 0},
+            "points": [[600.0, 400.0, 1.0], [700.0, 400.0, 1.0]]
+        }),
+    );
+    let detail = made["context"]["detail"].as_str().unwrap_or("").to_owned();
+    eprintln!("  画布外落笔的错误：{detail}");
+    assert_eq!(made["ok"], json!(false), "整条在画布外不该静默成功：{made}");
+    assert!(
+        detail.contains("400") && detail.contains("200"),
+        "错误里必须写出**画布尺寸**（400×200）✗：{detail}"
+    );
+    assert!(
+        detail.contains("范围") && detail.contains("坐标"),
+        "错误里必须写出**笔迹范围**并点明这是坐标问题（让调用方一眼能改 ✓）：{detail}"
+    );
+    assert!(
+        !detail.contains("换一支笔刷"),
+        "不许把「坐标在画布外」说成「这支笔刷画不出来」✗ —— 那正是把外部 agent 引偏的那句话 ✓：{detail}"
+    );
+}

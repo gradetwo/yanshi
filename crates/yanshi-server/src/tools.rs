@@ -1165,7 +1165,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "fill",
         profile: Profile::Core,
-        summary: "填充区域或对象",
+        // **描述必须说出参数藏在哪** ✗：外部绘画 agent 实测把它当 Photoshop 的"填充"用 ✓
+        //（`fill {x:0,y:0,w:900,h:700}` 或 `fill {color:…, region:…}` ✓）⇒ 一律被拒 ✓，
+        // 而它把"没填上"归因成**坐标偏移** ✗ —— 一句话的描述要负一半责任 ✓。
+        summary: "用纯色填充：颜色与区域**都放在 `data` 里** ⇒ `data:{color, region:{x,y,w,h}}`，或 `data:{color, object_id}` 只填某个对象；要画纯色矩形也可以用 `draw_shape`（kind=rect）✓",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -10331,11 +10334,14 @@ fn stamp_stroke_from(
     points: &[(f64, f64, f64)],
     previous: &mut Option<(f64, f64, f64)>,
 ) -> usize {
+    // **每一枚 dab 的时间步长** ✓（见下面关于"速度"的约定 ✓）。
+    // **`dt` 是 `f64`** ✓（`stroke_to` 的签名：x/y/pressure/dx/dy 是 `f32`、`dt` 是 `f64` ✓）。
+    const STEP_SECONDS: f64 = 0.01;
     let mut steps = 0usize;
     for (x, y, pressure) in points {
         match *previous {
             None => {
-                // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）。
+                // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）；**没有上一枚 dab ⇒ 位移是 0** ✓。
                 brush.stroke_to(
                     state,
                     surface,
@@ -10344,7 +10350,7 @@ fn stamp_stroke_from(
                     *pressure as f32,
                     0.0,
                     0.0,
-                    0.01,
+                    STEP_SECONDS,
                 );
                 steps += 1;
             }
@@ -10352,14 +10358,46 @@ fn stamp_stroke_from(
                 let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
                 // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
                 let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
+                // **上一枚 dab 的位置** ✓ —— 位移必须相对**上一枚 dab** ✓，不是相对控制点 ✗。
+                let mut last_x = px;
+                let mut last_y = py;
                 for step in 1..=divisions {
                     let t = step as f64 / divisions as f64;
                     let ix = px + (x - px) * t;
                     let iy = py + (y - py) * t;
                     let ip = pp + (pressure - pp) * t;
+                    // **这里曾经试过"喂真实位移"** ✓（即把相邻两枚 dab 的 `(dx, dy)` 传下去 ✓，
+                    // 而不是恒给 `0.0` ✗）—— 动机很正当 ✓：MyPaint 的 `speed1` / `speed2` 由
+                    // `(dx, dy, dt)` 算出 ✓，恒给 0 就等于把"速度"钉死在 0 ✓
+                    //（`Round.myb` 的 `opaque` 与半径都挂了 `speed2` ✓）。
+                    //
+                    // **但实测它证明不了任何效果** ✗：六支笔刷（`Round` / `airbrush` / `2B_pencil` /
+                    // `spray` / `watercolor_glazing` / `100%_Opaque`）在"喂真实位移"与"恒给 0"两种
+                    // 构建下，墨量、最深处、均值**逐字节相同** ✓ ⇒ 按本项目纪律**不发布证明不了的行为** ✗
+                    // ⇒ 撤回 ✓（代码与之前一致 ✓）。实验条件记在这里 ✓：
+                    // 黑笔、size 40、三点水平笔迹 ✓，`/tmp/speed_probe.py` 那种量法 ✓。
+                    // **顺带确定的两件事** ✓（都实测 ✓）：① `100%_Opaque` 纯黑**就是 (0,0,0)** ✓
+                    // ⇒ **颜色参数是精确生效的** ✓（外部报告"纯黑渲染成浅灰"✗ 的成因是**它用了整幅均值** ✓
+                    // ＋ 它选的那几支笔刷本身流量低 ✓）；② 低流量笔刷（`Round` 最深 221 ✗、
+                    // `airbrush` 233 ✗、`2B_pencil` 192 ✗、`spray` 129 ✗、`watercolor_glazing` 197 ✗）
+                    // 的"淡"来自**它们自己的动力学曲线** ✓，不是速度被钉死 ✓。
+                    // **将来若要让速度真正参与** ✓：先找到一支**能红**的笔刷（判据：两种位移下像素必须不同 ✓），
+                    // 再动这里 ✓ —— 别又变成"改了、看不出来"✗。
+                    let dx = 0.0 * (ix - last_x);
+                    let dy = 0.0 * (iy - last_y);
+                    let _ = (last_x, last_y);
                     brush.stroke_to(
-                        state, surface, ix as f32, iy as f32, ip as f32, 0.0, 0.0, 0.01,
+                        state,
+                        surface,
+                        ix as f32,
+                        iy as f32,
+                        ip as f32,
+                        dx as f32,
+                        dy as f32,
+                        STEP_SECONDS,
                     );
+                    last_x = ix;
+                    last_y = iy;
                     steps += 1;
                 }
             }
@@ -10780,6 +10818,40 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
     let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
     let hardness_source = args.get("hardness").cloned().unwrap_or(Value::Null);
+    // **落笔之前先问"这条笔迹在画布上吗"** ✗（本轮新增 ✓）。
+    //
+    // **为什么必须有** ✓：外部 MCP 报告**连着两轮**把"坐标非线性偏移"当 bug 报 ✓，
+    // 而它量到的很可能正是**被画布裁掉一半的墨** ✗ —— 因为当时这种情况会一路走到
+    // "这一笔没落下任何像素" ✓，再被那句"**换一支笔刷**"✗ 引到错误方向 ✓
+    //（agent 于是去查坐标映射 ✓，量到的包围盒当然是**残缺的** ✓）。
+    // ⇒ 现在：**完全在画布外** ⇒ 明确拒绝 ✓ 并写出**画布尺寸与笔迹范围** ✓；
+    //   **部分越界** ⇒ 照画 ✓，但在响应里带 `clipped` 与 `warnings` ✓（不静默 ✓）。
+    // `brush_stroke_region` 回的是 **(x0, y0, x1, y1, 宽, 高)** ✓（`i32` ✓，已含笔尖半径 ✓）。
+    let (doc_width, doc_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            (
+                document.state().width as i32,
+                document.state().height as i32,
+            )
+        })
+        .unwrap_or((0, 0));
+    let (x0, y0, x1, y1, _, _) =
+        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
+    let entirely_outside = x1 <= 0 || y1 <= 0 || x0 >= doc_width || y0 >= doc_height;
+    let clipped = x0 < 0 || y0 < 0 || x1 > doc_width || y1 > doc_height;
+    if entirely_outside {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+            "整条笔迹都在画布**外面** ⇒ 一枚 dab 都不会落上 ✓。画布是 {doc_width}×{doc_height} \
+             （原点在**左上角** ✓，坐标就是**文档像素** ✓），而这条笔迹的范围是 \
+             x {x0}..{x1}、y {y0}..{y1}（含笔尖半径）⇒ 把坐标挪进画布内即可 ✓ \
+             —— 这不是笔刷的问题 ✗，**别去换笔刷** ✓"
+            )),
+        ));
+    }
     // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
     // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
     let points = if optional_bool(args, "smooth").unwrap_or(false) {
@@ -10840,6 +10912,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
     value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
+    // **部分越界要说出来** ✗（不静默 ✓）：否则调用方会以为"我要的那一片都画到了" ✓。
+    value["clipped"] = json!(clipped);
+    if clipped {
+        value["warnings"] = json!([format!(
+            "笔迹有一部分在画布外 ⇒ 已被裁掉 ✓（画布 {doc_width}×{doc_height}，笔迹范围 \
+             x {x0}..{x1}、y {y0}..{y1}）—— 画布外的墨不会落上，这不是坐标偏移 ✗"
+        )]);
+    }
     Ok(value)
 }
 
