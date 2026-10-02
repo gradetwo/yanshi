@@ -12,6 +12,10 @@
 //! 数字用**八进制 ASCII**、以 `NUL` 结尾 ✓；校验和 = 把 `chksum` 字段当**空格**时整头的字节和 ✓；
 //! 数据后面补到 512 的整数倍 ✓；结尾是**两个全零块** ✓。
 
+// **错误类型与 `Result` 别名都来自 `yanshi_core`** ✓（与 `persist.rs` / `service.rs` 同一行 ✓
+// —— 本模块原本只写不读 ✓，所以从没引过它们 ✓；加读取器就得引 ✓）。
+use yanshi_core::{ErrorCode, ErrorContext, Result, YanshiError};
+
 /// 一个待写入的文件 ✓（路径 + 内容 ✓）。
 pub struct TarEntry {
     /// 包内路径 ✓（用 `/` 分隔 ✓，不含前导 `/` ✓）。
@@ -93,6 +97,128 @@ fn split_path(path: &str) -> (Option<String>, String) {
         // 实在切不开 ✓（单段超长 ✓）：截断到 100 ✓ —— **宁可截断也不写坏包** ✓。
         None => (None, path.chars().take(100).collect()),
     }
+}
+
+/// **读一个 tar** ✓（与 `write_tar` 配对的 ustar 读取器 ✓，**零依赖** ✓）。
+///
+/// **为什么必须校验校验和** ✗：工程包是用户**手上来回拷**的东西 ✓
+///（用户当初正是**手工 zip** 过一版 ✓）⇒ 损坏是**现实情况** ✓ ⇒
+/// 校验和不对就**明确拒绝** ✓，而不是"读出一堆乱码再往下走" ✗
+///（"看起来成功了、其实内容坏了" 比"读不了"糟糕得多 ✓）。
+///
+/// **只认自己写得出的东西** ✓：普通文件（`typeflag` 为 `0` 或 `\0` ✓）与目录（`5` ✓，跳过 ✓）；
+/// 遇到 **GNU 的长名 / PAX 扩展**（`L` / `x` / `g` ✓）⇒ **明确报错** ✗ ——
+/// 我们从不写它们 ✓，装作看得懂只会**静默解析错** ✗。
+pub fn read_tar(bytes: &[u8]) -> Result<Vec<TarEntry>> {
+    let mut entries = Vec::new();
+    let mut offset = 0usize;
+    let mut zero_blocks = 0usize;
+    while offset + 512 <= bytes.len() {
+        let header = &bytes[offset..offset + 512];
+        // **两个全零块 ⇒ 结束** ✓（POSIX ✓）；**一个也当结束** ✓（宽容一点 ✓，有些工具只写一个 ✓）。
+        if header.iter().all(|byte| *byte == 0) {
+            zero_blocks += 1;
+            offset += 512;
+            if zero_blocks >= 2 {
+                break;
+            }
+            continue;
+        }
+        // ① 校验和 ✓：把 chksum 字段当空格再求和 ✓
+        let recorded = parse_octal(&header[148..156])?;
+        let mut copy = header.to_vec();
+        for slot in copy[148..156].iter_mut() {
+            *slot = b' ';
+        }
+        let computed: u64 = copy.iter().map(|byte| u64::from(*byte)).sum();
+        if recorded != computed {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "工程包损坏：第 {} 个文件的校验和不符（记录 {recorded}，实算 {computed}）",
+                    entries.len() + 1
+                )),
+            ));
+        }
+        // ② 名字（可能拆成 prefix + name ✓）
+        let typeflag = header[156];
+        if matches!(typeflag, b'L' | b'x' | b'g') {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "工程包里用了 GNU 长名 / PAX 扩展 ⇒ 本项目不写也不用它们，拒绝解析（宁可拒绝，也不静默读错）",
+                ),
+            ));
+        }
+        let size = parse_octal(&header[124..136])? as usize;
+        let name = trim_nul(&header[..100]);
+        let prefix = trim_nul(&header[345..500]);
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        offset += 512;
+        if offset + size > bytes.len() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "工程包被截断：{path} 声明 {size} 字节，但后面只剩 {}",
+                    bytes.len() - offset
+                )),
+            ));
+        }
+        let data = &bytes[offset..offset + size];
+        let padding = (512 - size % 512) % 512;
+        offset += size + padding;
+        // ③ 目录跳过 ✓（我们不需要显式建目录 ✓ —— 落盘时按路径自己建 ✓）
+        if typeflag == b'5' {
+            continue;
+        }
+        if !matches!(typeflag, 0 | b'0') {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "工程包里有一个不支持的条目类型（typeflag={typeflag}）⇒ 只支持普通文件与目录"
+                )),
+            ));
+        }
+        entries.push(TarEntry {
+            path,
+            bytes: data.to_vec(),
+        });
+    }
+    if entries.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("这不是一个工程包（里面一个文件都没有）"),
+        ));
+    }
+    Ok(entries)
+}
+
+/// **读一个八进制字段** ✓（`write_tar` 的逆运算 ✓；允许前后是 `NUL` / 空格 ✓）。
+fn parse_octal(field: &[u8]) -> Result<u64> {
+    let text = trim_nul(field);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(text, 8).map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("工程包头部里有一个不是八进制的字段：{text:?}")),
+        )
+    })
+}
+
+/// **去掉尾部 `NUL` 并转成字符串** ✓。
+fn trim_nul(field: &[u8]) -> String {
+    let end = field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).trim().to_string()
 }
 
 #[cfg(test)]

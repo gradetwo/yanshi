@@ -40,6 +40,23 @@ defaults to false and only affects previews; the atoms and the drawing are uncha
 stamp, which is what oil painters call broken colour. It is off by default and the perturbation is skipped entirely
 at zero, so existing documents render exactly as before.
 
+### Importing a project package
+
+`import_project` is the other half of the export added earlier, so backing up a document, moving it to another
+machine or reproducing someone else's problem all close the loop. It reads the same uncompressed tar the exporter
+writes, with a reader written by hand for the same reason the writer was: tar is a header and the bytes, no
+compression library needed, and any system's tar can inspect it.
+
+Three rules come from earlier lessons. It never overwrites: an existing document id is refused, because losing a
+document is irreversible. Every blob is verified against the hash in its path after being written to the content
+addressed store, so a package whose bytes are damaged is refused rather than half imported. And when something is
+missing the error says what the package does contain, so the reader can see whether they were handed the wrong file.
+A checksum failure is reported as a checksum failure, and a rejected import leaves no document directory behind.
+
+The test that matters exports a document containing a shape and a medium stroke, imports it into a separate workspace,
+renders both and compares them byte for byte. An import that reports success while having lost content is the same
+class of defect as a tool that accepts input and does nothing with it.
+
 ## Project packages
 
 `export_project` writes a `.yanshi` package: an uncompressed tar containing the append-only atom log, the document
@@ -172,6 +189,18 @@ and the brand assets, with `yanshi.sh` as a thin wrapper. The wrapper matters: t
 directories are relative to the current directory, so running `bin/yanshi-serve` directly from elsewhere would find
 neither the kernel nor the plugins, leaving the viewer degraded and `/mediums/*.wasm` returning 404 while the server
 itself still starts. The wrapper derives the paths from its own location instead, so the tree works from anywhere.
+
+## Compatibility
+
+By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at
+this stage. Old documents, old logs and old packages may be discarded by default, and supporting them must not shape
+current decisions; the question will be reopened only if the owner asks. This supersedes a working assumption used
+until now, in which new switches defaulted off and were skipped entirely so that existing documents stayed
+byte-identical: that constraint is lifted, so how existing documents render may change, and on-disk formats, atom
+kinds and package layouts may change freely.
+
+Determinism is not affected. The same input producing the same output within a given build is a property of the code,
+not a promise about data written by earlier versions, and the tests that assert it stay.
 
 ## Dependencies
 

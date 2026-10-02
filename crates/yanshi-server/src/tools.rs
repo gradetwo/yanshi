@@ -2094,6 +2094,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "import_project",
+        profile: Profile::Core,
+        // **与 `export_project` 配对** ✓（用户当初报的正是"没有导入导出工程" ✓；导出早就有了 ✓，导入一直没有 ✗）。
+        summary: "导入 .yanshi 工程包（未压缩 tar）；**不会覆盖**已存在的 doc_id，blob 会按内容哈希核对",
+        mutating: true,
+        params: &[
+            param!("path", String, true, "工程包路径（.yanshi）"),
+            param!("doc_id", String, false, "导入成哪个文档（缺省用包内 meta.json 记的那个）"),
+        ],
+    },
+    ToolSpec {
         name: "gradient_fill",
         profile: Profile::Core,
         // **针对用户报过的"大面积背景难处理"** ✓：平铺纹理是一条路 ✓，**渐变**是另一条 ✓ ——
@@ -2398,6 +2409,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
+        "import_project" => write_import_project(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -8791,6 +8803,23 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// 这与多数图形软件的"默认渐变"一致 ✓、也与本项目的像素语义一致 ✓；
 /// **物理上更"对"的是线性光空间** ✗ ⇒ 那会明显改变中间的亮度 ✓
 /// ⇒ 留作**将来的可选参数** ✓，不在这里偷偷做掉 ✓（"悄悄改了效果"比"没做"更糟 ✗）。
+/// **导入 `.yanshi` 工程包** ✓（与 `export_project` 配对 ✓）。
+///
+/// **放在工具层** ✓ ⇒ **MCP 与 Web 都能用** ✓（用户那条硬要求 ✓）——
+/// 导出那边一直是这样 ✓，导入这边现在就补上 ✓。
+fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let path = require_str(args, "path")?;
+    let doc_id = optional_str(args, "doc_id");
+    let bytes = std::fs::read(&path).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到工程包 {path}：{error}")),
+        )
+    })?;
+    let value = ctx.workspace.import_project(&bytes, doc_id.as_deref())?;
+    Ok(value)
+}
+
 fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let from = parse_color_arg(args.get("from"), "from")?;

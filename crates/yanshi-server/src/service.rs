@@ -1255,6 +1255,157 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **导入一个 `.yanshi` 工程包** ✓（真实用户报过的另一半 ✓：导出有了 ✓，导入一直没有 ✗）。
+    ///
+    /// **和 `export_project` 是配对的两个方向** ✓ —— 于是"备份 / 搬到另一台机器 / 给人复现问题"
+    /// 这几种事**都能闭环** ✓（用户当初报这个缺口时正是为了这些 ✓）。
+    ///
+    /// **三条硬规矩** ✓（都来自既有教训 ✓）：
+    /// 1. **只导入、绝不覆盖** ✗：目标 `doc_id` 已存在就**拒绝** ✓
+    ///    （"导入把现有文档冲掉"是**不可逆**的 ✓ —— 与"不做不可逆动作"一致 ✓）；
+    /// 2. **blob 按内容寻址核对** ✓：包里的路径写着 sha256 ✓ ⇒ 写进存储后再比对算出来的哈希 ✓
+    ///    ⇒ 不符就**拒绝** ✗（"看起来导进去了、其实字节是坏的"最糟糕 ✓）；
+    /// 3. **缺东西要说清缺什么** ✓（包里只有 `BUILD-INFO` 之类的说明文件时 ✓，报错会**列出包里有什么** ✓）。
+    ///
+    /// **列表后面必须空一行** ✓（clippy 的 `doc list item without indentation` 又抓了我一次 ✓ ——
+    /// 这条 lint 其实一直在帮我保持文档可读 ✓）。
+    pub fn import_project(&mut self, bytes: &[u8], requested: Option<&str>) -> Result<Value> {
+        let Some(persist) = self.persist.clone() else {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(
+                    "工程包导入需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有地方放它",
+                ),
+            ));
+        };
+        let entries = crate::archive::read_tar(bytes)?;
+        let mut atoms_text: Option<String> = None;
+        let mut meta_text: Option<String> = None;
+        let mut render: Option<(u64, Vec<u8>)> = None;
+        let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        for entry in &entries {
+            names.push(entry.path.clone());
+            let path = entry.path.as_str();
+            if path == "atoms.jsonl" {
+                atoms_text = Some(String::from_utf8_lossy(&entry.bytes).into_owned());
+            } else if path == "meta.json" {
+                meta_text = Some(String::from_utf8_lossy(&entry.bytes).into_owned());
+            } else if path == "render.png" {
+                // **seq 缺省 0** ✓，随后若包里有 `render.seq` 就覆盖它 ✓
+                //（我第一版这里去"探测"了一个根本不存在的文档 ✓ —— 那是**写歪了的胡话** ✗，
+                //  编译器没拦住它，是我自己回读时发现的 ✓ ⇒ 回读代码这一步不能省 ✓）。
+                void_seq(&mut render, 0, entry.bytes.clone());
+            } else if path == "render.seq" {
+                let text = String::from_utf8_lossy(&entry.bytes);
+                if let Ok(seq) = text.trim().parse::<u64>() {
+                    if let Some((_, png)) = render.take() {
+                        render = Some((seq, png));
+                    } else {
+                        render = Some((seq, Vec::new()));
+                    }
+                }
+            } else if let Some(rest) = path.strip_prefix("blobs/sha256/") {
+                // 形如 `<ab>/<cd>/<64 位十六进制>` ✓
+                if let Some(hex) = rest.rsplit('/').next() {
+                    blobs.push((hex.to_ascii_lowercase(), entry.bytes.clone()));
+                }
+            }
+            // **其余（`BUILD-INFO` / `README.txt`）忽略** ✓ —— 它们是给人看的 ✓，不影响还原 ✓。
+        }
+        let Some(atoms_text) = atoms_text else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "这不是一个工程包：里面没有 atoms.jsonl ⇒ 实际内容：{}",
+                    names.join(" / ")
+                )),
+            ));
+        };
+        // **目标 id** ✓：调用方给的优先 ✓，否则用 meta.json 里记的 ✓。
+        let meta: Option<DocumentMeta> = match &meta_text {
+            Some(text) => Some(serde_json::from_str(text).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("包里的 meta.json 解析不了：{error}")),
+                )
+            })?),
+            None => None,
+        };
+        let doc_id = requested
+            .map(str::to_owned)
+            .or_else(|| meta.as_ref().map(|m| m.doc_id.clone()))
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "既没给 doc_id，包里也没有 meta.json ⇒ 无法确定要导入成哪个文档",
+                    ),
+                )
+            })?;
+        // **只导入、绝不覆盖** ✗（不可逆的事不做 ✓）。
+        if persist.doc_dir(&doc_id).exists() || self.documents.contains_key(&doc_id) {
+            return Err(YanshiError::new(
+                ErrorCode::Conflict,
+                ErrorContext::detail(format!(
+                    "文档 {doc_id} 已经存在 ⇒ **不会覆盖** ✗ ⇒ 请换一个 doc_id（或先把它删掉 / 移走 ✓）"
+                )),
+            ));
+        }
+        // **先把 blob 落进内容寻址存储并逐个核对** ✓（不符就整体拒绝 ✓，不留半成品 ✓）。
+        let mut restored = 0usize;
+        for (hex, blob_bytes) in &blobs {
+            let hash = self.store.put(blob_bytes)?;
+            if hash.hex().to_ascii_lowercase() != *hex {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "工程包里的 blob 坏了：路径写着 {hex}，但内容的哈希是 {} ⇒ 拒绝导入",
+                        hash.hex()
+                    )),
+                ));
+            }
+            restored += 1;
+        }
+        // **落盘** ✓：原子日志 + 元数据（+ 渲染缓存 ✓）。
+        let dir = persist.doc_dir(&doc_id);
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("建不了文档目录 {}：{error}", dir.display())),
+            )
+        })?;
+        std::fs::write(dir.join("atoms.jsonl"), atoms_text.as_bytes()).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不进原子日志：{error}")),
+            )
+        })?;
+        if let Some(meta) = &meta {
+            persist.save_meta(meta)?;
+        }
+        if let Some((seq, png)) = &render {
+            if !png.is_empty() {
+                // **`Seq` 是 `u64` 的别名** ✗（不是新类型 ✓）⇒ 直接传值 ✓。
+                let _ = persist.save_render(&doc_id, *seq, png);
+            }
+        }
+        // **载进工作区** ✓ —— 到这一步文档才算真的可用 ✓（能画、能导、能被 MCP 看到 ✓）。
+        self.open_document(&doc_id)?;
+        let atom_count = atoms_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        Ok(json!({
+            "doc_id": doc_id,
+            "atoms": atom_count,
+            "blobs": restored,
+            "entries": entries.len(),
+            "had_render": render.is_some(),
+            "hint": "已导入并打开 ⇒ 可用 get_document / render_region 核对；原文档未被触碰 ✓",
+        }))
+    }
+
     /// **纹理缓存目录** ✓（`<root>/textures` ✓ —— **不入 git** ✗）。
     ///
     /// **为什么放缓存而不是签进仓库** ✓（用户裁定 ✓）：CC0 纹理最小的 `1K-PNG` 就有 **13.6MB** ✗
@@ -1844,6 +1995,22 @@ Restore by extracting under <root>/ of a yanshi-serve instance.\n"
             persist.append_atom(doc_id, atom)?;
         }
         Ok(())
+    }
+}
+
+/// **把 `render.png` 与 `render.seq` 拼到一起** ✓（tar 里两者顺序不保证 ✓ ⇒ 两种顺序都要能对 ✓）。
+fn void_seq(slot: &mut Option<(u64, Vec<u8>)>, seq: u64, png: Vec<u8>) {
+    match slot.take() {
+        Some((existing_seq, existing_png)) => {
+            let use_seq = if existing_seq != 0 { existing_seq } else { seq };
+            let use_png = if existing_png.is_empty() {
+                png
+            } else {
+                existing_png
+            };
+            *slot = Some((use_seq, use_png));
+        }
+        None => *slot = Some((seq, png)),
     }
 }
 
