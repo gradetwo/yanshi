@@ -1975,6 +1975,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "export_project",
+        profile: Profile::Core,
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob + 当场渲染的预览）",
+        mutating: false,
+        params: &[
+            param!("path", String, true, "输出文件路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）"),
+            param!("doc_id", String, false, "要导出的文档（缺省当前会话的文档）"),
+        ],
+    },
+    ToolSpec {
         name: "export_png",
         profile: Profile::Core,
         summary: "把整幅（或指定区域）渲染成 PNG 落盘：任意尺寸、不经 base64、不受 512px 限制",
@@ -2176,6 +2186,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "reject_suggestions" => write_reject_suggestions(ctx, args),
         "new_document" => write_new_document(ctx, args),
         "medium_stroke" => write_medium_stroke(ctx, args),
+        "export_project" => write_export_project(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -8476,6 +8487,57 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         ));
     }
     Ok(value)
+}
+
+/// **`export_project`** ✓ —— 一键打成 `.yanshi` 工程包 ✓（真实用户提的缺口 ✓）。
+///
+/// **用户原话** ✓："目前仅支持 `export_png` ✓，缺少一键将 `atoms.jsonl`、`meta.json`
+/// 与 CAS blobs 归档为 `.yanshi` 工程文件的内置命令" ✓。
+///
+/// **它顺手解决了另一件事** ✓：用户此前**手工 zip** 文档目录 ✓ ⇒ 把磁盘上那份**过期的 `render.png` 缓存**
+/// 一起装了进去 ✓ ⇒ 四个工程包的预览**全是空白** ✗（实测缓存 `render.seq` 5–6 ✓ vs 原子 97–217 ✓）。
+/// ⇒ 本工具**当场渲染一张最新的** ✓ 写进包 ✓ ⇒ **从源头**不再有这个问题 ✓。
+///
+/// **格式** ✓：未压缩 **tar** ✓（零依赖手写 ✓，`tar -tf/-xOf` 就能看 ✓）。
+/// 不压缩的取舍写在 `archive.rs` 里 ✓（工程包主体是 PNG 与原始像素 ✓，本来也压不动 ✓）。
+fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let path = require_str(args, "path")?;
+    let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    let (width, height) = ctx
+        .workspace
+        .document(&doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {doc_id} 未打开 ⇒ 无法导出")),
+            )
+        })?;
+    // **当场渲染一张整幅图** ✓（不是为了保存缓存 ✓，而是为了**包里那张预览必须是当前的** ✓）。
+    let (_, _, pixels) = ctx.workspace.render_region_raw(
+        &doc_id,
+        yanshi_core::Bbox::new(0.0, 0.0, width as f64, height as f64),
+    )?;
+    let png = yanshi_render::png::encode_png(width, height, &pixels).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("PNG 编码失败（{width}×{height}）")),
+        )
+    })?;
+    let tar = ctx.workspace.export_project(&doc_id, &png)?;
+    std::fs::write(&path, &tar).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("写文件失败：{path} ⇒ {error}")),
+        )
+    })?;
+    Ok(json!({
+        "path": path,
+        "doc_id": doc_id,
+        "bytes": tar.len(),
+        "render": {"width": width, "height": height, "bytes": png.len()},
+        "format": "tar (uncompressed)",
+    }))
 }
 
 /// **`export_png`** ✓ —— 把整幅（或指定区域）渲染成 PNG **落盘** ✓。

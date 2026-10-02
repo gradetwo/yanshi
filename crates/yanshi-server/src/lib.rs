@@ -18,6 +18,7 @@
 #![warn(missing_docs)]
 
 pub mod annotations;
+pub mod archive;
 pub mod base64;
 pub mod broadcast;
 pub mod document;

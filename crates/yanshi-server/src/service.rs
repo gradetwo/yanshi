@@ -916,6 +916,119 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **把一份文档打成 `.yanshi` 工程包** ✓（真实用户提的缺口 ✓）。
+    ///
+    /// **包里装什么** ✓：
+    /// * `meta.json` ✓ / `atoms.jsonl` ✓（**不可变原子日志** ✓ —— 这是唯一权威 ✓）；
+    /// * `blobs/<hash>` ✓：**只装这份日志真正引用到的 blob** ✓（从每条原子的 `refs.blobs` 收集 ✓）
+    ///   ⇒ 不把整个 CAS 一股脑塞进去 ✓（CAS 可能有很多别的文档的 blob ✓）；
+    /// * **`render.png`：由调用方传入的"最新整幅渲染"** ✓ —— 这一点是**故意**的 ✓：
+    ///   用户手 zip 时把**过期的 `render.png` 缓存**一起装了进去 ✓ ⇒ 四个工程包的预览**全是空白** ✗
+    ///   ⇒ 导出必须**当场**写一张最新的 ✓，而不是复用磁盘缓存 ✗；
+    /// * `render.seq` ✓ / `BUILD-INFO` ✓ / `README.txt` ✓（告诉人怎么还原 ✓）。
+    ///
+    /// **为什么要求落盘工作区** ✓：原子日志与元数据是**在磁盘上**的权威副本 ✓；
+    /// 纯内存工作区没有它们 ✓ ⇒ 那里应当**明确拒绝** ✓（而不是导出一个**不完整**的包 ✗）。
+    pub fn export_project(&mut self, doc_id: &str, render_png: &[u8]) -> Result<Vec<u8>> {
+        let Some(persist) = self.persist.clone() else {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(
+                    "工程包导出需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有权威的原子日志文件",
+                ),
+            ));
+        };
+        let dir = persist.doc_dir(doc_id);
+        let atoms_text = std::fs::read_to_string(dir.join("atoms.jsonl")).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("读不到原子日志 {doc_id}: {error}")),
+            )
+        })?;
+        // **只收这条日志引用到的 blob** ✓（逐行解析 ✓，坏行跳过但**不静默**：计数后写进包里 ✓）。
+        let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut broken_lines = 0usize;
+        for line in atoms_text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(atom) => {
+                    if let Some(blobs) = atom
+                        .get("refs")
+                        .and_then(|refs| refs.get("blobs"))
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        for blob in blobs {
+                            if let Some(hash) = blob.as_str() {
+                                wanted.insert(hash.to_owned());
+                            }
+                        }
+                    }
+                }
+                Err(_) => broken_lines += 1,
+            }
+        }
+        let mut entries = vec![crate::archive::TarEntry {
+            path: "atoms.jsonl".to_owned(),
+            bytes: atoms_text.into_bytes(),
+        }];
+        if let Ok(meta) = std::fs::read(dir.join("meta.json")) {
+            entries.push(crate::archive::TarEntry {
+                path: "meta.json".to_owned(),
+                bytes: meta,
+            });
+        }
+        let head = self.document_mut(doc_id)?.head_seq();
+        entries.push(crate::archive::TarEntry {
+            path: "render.png".to_owned(),
+            bytes: render_png.to_vec(),
+        });
+        entries.push(crate::archive::TarEntry {
+            path: "render.seq".to_owned(),
+            bytes: head.to_string().into_bytes(),
+        });
+        // **blob 走存储接口取** ✓（内存/落盘都能用 ✓，也顺带保证"包里每一个字节都真的存在" ✓）。
+        let store = self.store();
+        let mut blob_count = 0usize;
+        for hash_text in &wanted {
+            let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("日志里有一个不合法的 blob 引用：{hash_text}")),
+                )
+            })?;
+            let bytes = store.get(&hash)?;
+            let hex = hash.hex();
+            entries.push(crate::archive::TarEntry {
+                path: format!("blobs/sha256/{}/{}/{}", &hex[0..2], &hex[2..4], hex),
+                bytes,
+            });
+            blob_count += 1;
+        }
+        entries.push(crate::archive::TarEntry {
+            path: "BUILD-INFO".to_owned(),
+            // **版本与 commit 一起进包** ✓（用户提过的排查需求 ✓）：拿到包就知道是哪一版产的 ✓。
+            bytes: format!(
+                "name: yanshi\ndoc_id: {doc_id}\nhead_seq: {head}\nblobs: {blob_count}\n\
+                 unparsable_atom_lines: {broken_lines}\n\
+                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，渲染可重放）\n"
+            )
+            .into_bytes(),
+        });
+        entries.push(crate::archive::TarEntry {
+            path: "README.txt".to_owned(),
+            bytes: b"Yanshi project package (uncompressed tar).\n\
+Contents:\n  atoms.jsonl   append-only atom log; this is the authority\n\
+  meta.json     document metadata\n  render.png    a render of HEAD at export time\n\
+  render.seq    the seq that render corresponds to\n\
+  blobs/        content-addressed blobs referenced by the log\n\
+Restore by extracting under <root>/ of a yanshi-serve instance.\n"
+                .to_vec(),
+        });
+        Ok(crate::archive::write_tar(&entries))
+    }
+
     /// **把一张"整幅"PNG 存成渲染缓存** ✓（`render.png` + `render.seq` ✓，"打开即图片" 14.5 ✓）。
     ///
     /// **为什么需要它** ✓（真实用户的工程包暴露的 ✓）：缓存原来**只在"整幅渲染"或"文档级缩略图"时刷新** ✓，

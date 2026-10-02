@@ -1,6 +1,6 @@
 # Tools and effects
 
-The tool layer registers **44 core tools**, and with every implemented group enabled there are **100 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **45 core tools**, and with every implemented group enabled there are **101 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -103,6 +103,21 @@ endpoint reports as blob_fsync unsupported, because degrading is acceptable whil
 Layers already support the multiply, screen, overlay, darken, lighten, add, subtract and difference blend modes
 alongside normal, settable through the layer patch, so the missing piece there was documentation rather than
 capability.
+
+export_project writes a .yanshi package: an uncompressed tar holding the append-only atom log, the document
+metadata, every content-addressed blob the log references, a build info file, and a render of the current head made
+at export time. The format is tar rather than zip because zip needs deflate, and the zero-dependency rule rules out
+both a compression library and a hand-written one; tar is a header plus the bytes, any system can list and extract
+it, and the payload is mostly PNGs and raw pixels which would not compress much anyway. Packs are byte-identical for
+the same content because timestamps are written as zero.
+
+The preview inside the pack is rendered fresh rather than copied from the cached render on disk, which is the
+difference that matters: a tester hand-zipped a document directory and shipped the stale cache, whose sequence was
+five or six while the log had reached ninety-seven to two hundred and seventeen atoms, so all four of their packages
+contained the same blank image. Export refuses on an in-memory workspace with a message naming the flag that would
+make it work, and it refuses if a referenced blob is missing rather than emitting a package that cannot be replayed.
+The tests unpack what they produce with the system tar instead of a parser of my own, since reading a format back
+with the same understanding that wrote it proves nothing.
 
 new_document gives a blank canvas in one call, which the report asked for because a document id is the unit of
 persistence, so a second session under the same root loads the same document and drawings stack up; the tool is

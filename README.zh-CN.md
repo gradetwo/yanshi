@@ -9,6 +9,12 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 工程包
+
+`export_project` 打出 **`.yanshi` 工程包** ✓：一个**未压缩 tar** ✓，内含**不可变原子日志** ✓、文档元数据 ✓、
+日志引用到的**全部 CAS blob** ✓、以及**导出时当场渲染的 HEAD 预览** ✓。任何系统的 `tar` 都能列出与解开 ✓。
+**请用它，不要手工拷贝文档目录** ✗ —— 磁盘上那份 `render.png` 缓存**可能是过期的** ✓。
+
 ## 介质纹理与混色
 
 `medium_stroke` 新增 **`texture`（0..1）** ✓：把油画插件的**鬃毛与颗粒**压平 ✓
