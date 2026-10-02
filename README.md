@@ -196,6 +196,10 @@ in `assets/backgrounds/NOTICE.md`. The project owner's ruling is to use them now
 whether the whole project should move to a GPL compatible licence. Downstream users should read that notice before
 redistributing.
 
+`assets/palettes` holds **Open Colors** (15 families, 132 colours), which is MIT, and is the palette set the
+project owner chose to replace MyPaint's own. sK1's public domain palettes are still to be located, since they are
+not in the repository that was checked.
+
 Brush engine came from **Hokusai** (Apache-2.0 or MIT) as described above.
 
 ## Install
