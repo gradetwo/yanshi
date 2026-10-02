@@ -202,6 +202,11 @@ not just its description, so a selection made through MCP or another client is d
 checkbox is set and there is no selection, the tool call is refused with a message saying so, because quietly filling
 the whole canvas instead would be the kind of silent substitution this project keeps having to remove.
 
+Picking a colour from a palette can be sent to the brush colour, the gradient start or the gradient end, chosen with a
+selector next to the palette, and the panel says which of the three it wrote to. The default remains the brush colour,
+and the brush colour still goes through the same setter as everywhere else, so there is one notion of the current
+brush colour rather than two that drift apart.
+
 ## Compatibility
 
 By the owner's ruling on 2026-10-02, backward compatibility with older versions and older data is not a concern at

@@ -526,6 +526,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <h2>调色板</h2>
       <div class="hint">点色块即取色（写回**笔刷颜色** ✓）；来源是随包发布的，或你自己导入的 ✓。</div>
       <label>调色板 <select id="palettePick"></select></label>
+      <!-- **取色写到哪里** ✓（目标 ⑤ ✓）—— 一个调色板、多个去向 ✓：
+           否则"调色板的颜色"与"渐变卡片里的颜色"就是**两套各自为政的颜色** ✗。 -->
+      <label>取色写入 <select id="paletteTarget">
+        <option value="brush">笔刷色（缺省）</option>
+        <option value="gradFrom">渐变起点</option>
+        <option value="gradTo">渐变终点</option>
+      </select></label>
       <div id="paletteSwatches" class="toolbar" style="flex-wrap:wrap;gap:4px"></div>
       <div id="paletteInfo" class="hint"></div>
     </div>
@@ -3963,12 +3970,23 @@ async function setupAssetPanels() {
         "width:20px;height:20px;padding:0;border:1px solid rgba(0,0,0,.25);border-radius:3px;" +
         "background:" + color.hex + ";cursor:pointer";
       chip.addEventListener("click", () => {
-        // **写回笔刷颜色** ✓：与调色板里已有的那个控件是**同一个来源** ✓
-        //（`setColor` 写的就是 `#color` ✓ ⇒ 不会出现"两套颜色" ✗）。
-        if (window.yanshi && window.yanshi.setColor) window.yanshi.setColor(color.hex);
+        // **写进"当前目标"** ✓（目标 ⑤ ✓）。**默认仍是笔刷色** ✓ ⇒ 老习惯不变 ✓；
+        // 但选了渐变那一端时 ⇒ **只改那一端** ✗（不动笔刷色 ✓）⇒ 并在提示里**说清写到了哪里** ✓，
+        // 否则用户会以为"点了色块但笔刷颜色没变"而困惑 ✓。
+        const target = ($("paletteTarget") || {}).value || "brush";
+        let where = "";
+        if (target === "gradFrom" || target === "gradTo") {
+          const slot = $(target);
+          if (slot) slot.value = color.hex;
+          where = target === "gradFrom" ? "渐变起点" : "渐变终点";
+        } else {
+          // **笔刷色走与别处同一个入口** ✓（`setColor` 写的就是 `#color` ✓）。
+          if (window.yanshi && window.yanshi.setColor) window.yanshi.setColor(color.hex);
+          where = "笔刷色";
+        }
         if (paletteInfo) {
           paletteInfo.textContent =
-            "已取 " + color.hex + (color.name ? "（" + color.name + "）" : "") + " ✓";
+            "已取 " + color.hex + (color.name ? "（" + color.name + "）" : "") + " ⇒ " + where + " ✓";
         }
       });
       swatches.appendChild(chip);
