@@ -6473,3 +6473,44 @@ let pressure = pair.get(2).and_then(Value::as_f64).unwrap_or(1.0);
 **只断言了健康接口那个锚点** ✓ ⇒ `--version` 那句**没命中、也没报错** ✗ ⇒ 第一次验证时
 它仍报"未知参数" ✓。**教训** ✓：**一个脚本里改了 N 处，就要断言 N 处** ✓ ——
 只断言其中一处 ✗ 等于默许其余各处**静默失效** ✓。
+
+### 用户 §六-15 **`Ctrl+Z` 确实没有** ✓ —— 已补 ✓（真机三条事实 ✓）
+
+**取证** ✓：查看器的键盘处理里**只有一句"忽略带修饰键的按键"** ✗ ⇒ `Ctrl+Z` **什么都不做** ✓
+⇒ 用户说得对 ✓（"撤销按钮在右栏，绘画时右手在画布上，够不着" ✓）。
+**实现** ✓：`Ctrl/Cmd+Z` 撤销 ✓、`Ctrl/Cmd+Shift+Z` 重做 ✓（macOS 用 `Cmd` ✓ 所以 `metaKey`/`ctrlKey` 都收 ✓）；
+在输入框/下拉里按键盘**不拦** ✓（既有的守卫照旧 ✓）。
+**真机验收** ✓（`scripts/acceptance/undo-redo-shortcuts.js` ✓）：
+```
+空画布 0 ✓ ⇒ 画一笔 1456 ✓ ⇒ **Ctrl+Z ⇒ 0** ✓（原子 revert ✓）⇒ **Ctrl+Shift+Z ⇒ 1456** ✓（原子 reapply ✓）
+```
+**顺带核实 §六-16「没有吸管」** ✓：**其实有** ✓ —— `{tool:"eyedropper", label:"吸管", key:"i"}` ✓
+⇒ 那是**可发现性**问题 ✓，不是缺失 ✓（我会把它写进文档 ✓，而不是重复实现 ✗）。
+
+### ⚠️ 一个**真正严重的发现** ✓：`[profile.release] panic = "abort"` **让 release 档根本跑不了测试** ✗
+
+**现象** ✓：本轮跑长任务（`cargo test --workspace --release -- --ignored` ✓）时**直接编译失败** ✗：
+```
+error: the crate `yanshi_medium_marker` requires panic strategy `abort`
+       which is incompatible with this crate's strategy of `unwind`
+error: could not compile `yanshi-medium-host` (lib test)
+```
+**根因** ✓：workspace 的 `[profile.release]` 里设了 `panic = "abort"` ✓（很可能是为 **wasm 体积** ✓）
+⇒ 介质插件按 `abort` 编 ✓，而**测试目标**要 `unwind` ✓ ⇒ **策略冲突** ✗
+⇒ **release 下所有测试都编不过** ✗ —— 而那是本项目"长任务全绿"的**唯一闸门** ✓（Actions 已按用户要求改为手动 ✓）。
+**它此前没暴露** ✓ 是因为在**引入介质插件入库**之前 ✓ release 测试还能跑 ✓ ⇒ 属于**新引入的回归** ✓。
+**修法** ✓：**移除 `panic = "abort"`** ✓ —— 并为将来留下明确指引 ✓（若确实要为 wasm 体积恢复 ✓，
+**只对 wasm 目标生效** ✓，不要挂回全局 profile ✗）。**附带好处** ✓：服务端用 `unwind` **更合适** ✓
+（一个线程 panic 不该带崩整个进程 ✓）。
+**修后** ✓：`cargo test --workspace --release -- --ignored` ⇒ **EXIT=0** ✓、**失败组 0 / ok 组 95** ✓
+（含 10 万原子 fuzz 104.69s ✓、渲染与服务端性能预算 ✓、实例缩放 ✓）。
+**记一条** ✓：**"为体积做的优化"可能悄悄掐断"能测"** ✗ ——
+**每引入一个全局构建设置 ✓，都要问一句"它会不会让某种测试跑不起来"** ✓。
+
+### 用户 §五-18「错误里带可用选项」✓ —— **已定位，留下轮** ✓
+
+**现状** ✓：`crates/yanshi-core/src/fold.rs:258` 的 `missing_error(kind, id)` ✓ 只说
+`"{kind} {id} 不存在"` ✓ ⇒ **没列出可用值** ✗（用户原话："图层不存在时不说可用图层有哪些" ✓）。
+**计划** ✓：把 `state` 传进 `missing_error` ✓（**11 个调用点** ✓，全都在 `precondition(state, …)` 内 ✓、
+机械可改 ✓），消息改成 `"图层 {id} 不存在（现有图层：L1, L2, …）"` ✓（**上限 8 个 + 省略号** ✓，
+避免长文档里报错变成一屏 ✗）✓；对象/蒙版/选区同理 ✓ ⇒ **一次改完一类** ✓。

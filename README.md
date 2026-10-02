@@ -10,6 +10,10 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Undo and redo
+
+Ctrl or Cmd with Z undoes, and adding Shift redoes, alongside the buttons in the activity panel.
+
 ## Which build am I running
 
 `yanshi-serve --version` and `yanshi-mcp --version` print the version, the short commit and the build time, and

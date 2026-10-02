@@ -88,6 +88,17 @@ plugin and records the medium as id oil at version two on the object. Recording 
 object is exactly what the design requires so that upgrading a plugin cannot silently change how older documents
 render.
 
+Undo and redo can be reached by keyboard: Ctrl or Cmd with Z undoes, adding Shift redoes, and keys pressed while
+typing in an input or select are ignored. The viewer previously ignored every modified key press, so Ctrl+Z did
+nothing and the buttons in the right dock were the only route, which a user reported as unreachable while painting.
+
+The release profile no longer sets panic to abort. That setting applied to the whole workspace and made the medium
+plugins' abort-built libraries incompatible with the unwind strategy that test targets need, so the ignored long-run
+suite could not even compile in release, which is the project's only quality gate for long tasks now that continuous
+integration is manual. The benefit was a slightly smaller wasm artifact against the cost of not being able to test
+the release build at all, and unwind is also the better fit for a server, where one panicking thread should not take
+the process down.
+
 Build identity is recorded where it is needed for troubleshooting. Each binary crate has a small build script
 that embeds the short commit, with a dirty suffix when the tree has uncommitted changes, and the UTC build time, all
 falling back to unknown rather than failing when git or date is unavailable. The version and commit appear in three

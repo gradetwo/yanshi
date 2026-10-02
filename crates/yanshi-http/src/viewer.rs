@@ -4989,6 +4989,19 @@ function setupPanels() {
   if (exit) exit.addEventListener("click", () => { panels.zen = false; applyPanels(); });
   window.addEventListener("keydown", (event) => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+    // **撤销 / 重做快捷键** ✓（真实用户 §六-15 报的原话：撤销按钮在右栏，绘画时右手在画布上，够不着 ✓）。
+    // 此前这里**只忽略带修饰键的按键** ✗ ⇒ Ctrl+Z **什么都不做** ✓ —— 用户以为没有撤销 ✓。
+    // **约定与主流一致** ✓：`Ctrl/Cmd+Z` 撤销 ✓、`Ctrl/Cmd+Shift+Z` 重做 ✓
+    //（macOS 用 `Cmd` ✓ 所以 `metaKey` 与 `ctrlKey` 都收 ✓）。
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        void redoOnce();
+      } else {
+        void undoOnce();
+      }
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Tab") {
       // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 必须 `preventDefault` ✓，

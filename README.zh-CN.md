@@ -9,6 +9,10 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 撤销与重做
+
+`Ctrl/Cmd + Z` 撤销 ✓、`Ctrl/Cmd + Shift + Z` 重做 ✓（右栏的按钮同样可用 ✓）。
+
 ## 我跑的是哪一版
 
 `yanshi-serve --version` 与 `yanshi-mcp --version` 会打印**版本 / 短 commit / 构建时间** ✓，

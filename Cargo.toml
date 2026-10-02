@@ -37,7 +37,15 @@ proptest = "1.6"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# **不要在这里设 `panic = "abort"`** ✗（本行曾是它 ✓，本轮移除 ✓）。
+#
+# **代价是什么** ✓：`panic = "abort"` 是**整 workspace** 的 ✓ ⇒ 它让 release 下的测试目标
+# （要 `unwind` ✓）与按 `abort` 编的介质插件**策略冲突** ✗ ⇒ `cargo test --release -- --ignored`
+# **直接编不过** ✗ —— 而那是本项目"长任务全绿"的唯一闸门 ✓（Actions 已按用户要求改成手动 ✓）。
+# 也就是说：为了**一点 wasm 体积** ✓ 换来"**发布档根本跑不了测试**" ✗，得不偿失 ✓。
+# **而且**：服务端用 `unwind` **更合适** ✓ —— 一个线程 panic 不会带崩整个进程 ✓。
+# 若将来确实要为 wasm 体积恢复 abort ✓，应当**只对 wasm 目标**生效 ✓（例如改用
+# 目标专属构建配置或单独的 workspace ✓），**不要再挂回这个全局 profile** ✗。
 
 [profile.bench]
 lto = "thin"
