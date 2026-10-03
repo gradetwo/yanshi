@@ -2944,6 +2944,41 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。
     let max_px = optional_u64(args, "max_px").unwrap_or(512).clamp(1, 8192) as f64;
     if include_image && (f64::from(preview.width) > max_px || f64::from(preview.height) > max_px) {
+        // **方案 A：超限时默认就给一张缩小的图** ✓（报告 P0-1 ✓："画 50 笔之前看不到任何效果" ✗）。
+        // 复用**既有**重采样与编码 ✓（`yanshi_core::resample::resample_rgba` ✓ +
+        // `yanshi_render::png::encode_png` ✓）⇒ **不新增第二套缩放实现** ✗（本项目的老规矩 ✓）。
+        let ratio = max_px / f64::from(preview.width.max(preview.height));
+        let scaled_w = ((f64::from(preview.width) * ratio).round().max(1.0)) as u32;
+        let scaled_h = ((f64::from(preview.height) * ratio).round().max(1.0)) as u32;
+        let scaled = ctx
+            .workspace
+            .render_region_raw(&ctx.doc_id, region)
+            .ok()
+            .and_then(|(source_w, source_h, rgba)| {
+                yanshi_core::resample::resample_rgba(
+                    &rgba,
+                    source_w,
+                    source_h,
+                    scaled_w,
+                    scaled_h,
+                    yanshi_core::resample::ResampleFilter::Bilinear,
+                )
+            })
+            .and_then(|small| yanshi_render::png::encode_png(scaled_w, scaled_h, &small));
+        if let Some(png) = scaled {
+            value["image"] = json!({
+                "mime_type": "image/png",
+                "data": base64::encode(&png),
+                "width": scaled_w,
+                "height": scaled_h,
+            });
+            value["scaled_from"] = json!([preview.width, preview.height]);
+            value["scaled_note"] = json!(format!(
+                "原区域 {}×{} 超过 max_px={} ⇒ 已**自动缩小**到 {}×{} 内嵌 ✓；要看原尺寸请传 max_px={}",
+                preview.width, preview.height, max_px as u64, scaled_w, scaled_h, preview.width.max(preview.height)
+            ));
+            return Ok(value);
+        }
         value["image_omitted"] = json!(true);
         value["image_omitted_reason"] = json!(format!(
             "区域 {}×{} 超过 max_px={} ⇒ 未内嵌 base64（避免超大响应）；\n             出路：① 传更小的 region（例如只取刚画过的那块）✓；② 传 max_px={} 提高上限 ✓；\n             ③ 先用 export_png 落盘再自己看 ✓；④ 只按 thumb_url 走 HTTP 取图 ✓",

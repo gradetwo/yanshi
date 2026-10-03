@@ -25,11 +25,17 @@ const check = (ok, label, detail) => {
   console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` ⇒ ${detail}` : ""}`);
   if (!ok) failures.push(label);
 };
+// ① 方案 A 之后：**大区域默认也必须给图**（自动缩小 ✓），而不是只给个原因 ✗。
 const big = await call("render_region", { region: [0, 0, 900, 640], include_image: true });
-check(big.image_omitted === true, "大区域明确标记 image_omitted", `image_omitted=${big.image_omitted}`);
-check(typeof big.image_omitted_reason === "string" && big.image_omitted_reason.length > 10,
-  "大区域给出**可读的原因**", String(big.image_omitted_reason || "").slice(0, 60));
-check(big.image === undefined, "大区域**不**塞超大数据", `image=${big.image ? "有" : "无"}`);
+const bigImage = big.image || {};
+check(typeof bigImage.data === "string" && bigImage.data.length > 0,
+  "大区域**默认就给缩略图**（自动缩小 ✓）", `image ${bigImage.width}×${bigImage.height} / base64 ${bigImage.data?.length || 0} 字符`);
+check(Math.max(bigImage.width || 0, bigImage.height || 0) <= 512,
+  "缩略图确实缩到了上限内", `${bigImage.width}×${bigImage.height}`);
+check(Array.isArray(big.scaled_from) && big.scaled_from[0] === 900,
+  "标注了**原始尺寸**，并说明怎么拿原图", `scaled_from=${JSON.stringify(big.scaled_from)}`);
+check(big.image_omitted !== true || typeof big.image_omitted_reason === "string",
+  "万一连缩小都失败 ⇒ 必须仍给可读原因", `image_omitted=${big.image_omitted}`);
 const small = await call("render_region", { region: [0, 0, 64, 64], include_image: true });
 check(typeof small.image?.data === "string" && small.image.data.length > 0,
   "小区域正常内嵌 base64", `base64 ${small.image?.data?.length || 0} 字符`);
