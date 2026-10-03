@@ -12453,3 +12453,24 @@ set_viewport / evict_outside_viewport / set_memory_limit / memory_usage / stats_
 **这一步为什么现在不做** ✗（如实 ✓）：它要动**查看器的落笔主路径** ✓（today 已经因为"动主路径"制造过
 三次回归 ✗：素材入口四次尝试 ✗、手形那次也差点 ✗）⇒ 我先把**配方**写死 ✓，
 下一轮**单独一轮、只做这一件事** ✓，并配**双向判据** ✓（预览笔画出现 ✓ + 收尾后与服务端一致 ✓）。
+
+### ✅ 第 199 轮：**共享内核今天就已经在页面上跑着** ✓✓ —— 第 2 步比预想的小 ✓（且有守卫 ✓）
+
+**取到的事实** ✓（本轮 grep 的输出 ✓）：
+| 事实 | 位置 |
+|---|---|
+| 查看器**动态导入**内核 ✓：`await import("/wasm/yanshi_wasm.js")` ✓ | `viewer.rs:1205` ✓ |
+| 导入成功会打日志 ✓："WASM 计算内核已加载：…" ✓ | `viewer.rs:1210` ✓ |
+| **实例化** ✓：`state.kernel = new state.wasm.WasmKernel(docId, 256, w, h, 64MB)` ✓ | `viewer.rs:1270` ✓ |
+| 服务端发 `/wasm/*` ✓（`yanshi_wasm.js` + `_bg.wasm` ✓，MIME 正确 ✓） | `server.rs:116 / 1181-1190` ✓ |
+| **已有守卫** ✓：一条测试要求"页面的内核方法清单与 `yanshi-wasm` 的导出**逐一对应**" ✓ | `viewer.rs:7863` ✓ |
+**结论** ✓：**"客户端渲染"不是从零开始** ✓ —— 内核**已经在页面上**（`state.kernel` ✓），
+所以第 2 步的实质是"**把拖动预览与落笔接到 `state.kernel`**" ✓，而不是"引入/构建内核" ✗。
+**因此第 2 步的确切形状** ✓（下一轮单点做 ✓）：
+1. 拖动预览：`loadLocalBrushModule()` + `api.yanshi_brush_paint(...)` ✓
+   ⇒ 改调 `state.kernel.extend_preview_stroke({layer_id, type:"stroke", data:{…}})` ✓（形状已对齐 ✓，见第 198 轮 ✓）；
+2. 收尾：`state.kernel.commit_preview(atom_json)` ✓ 或沿用"提交给服务端" ✓（二选一，**必须只用一条** ✗ ——
+   本项目自己的教训：两条相似路径必然漂移 ✓）；
+3. 随后退休 `crates/yanshi-brush-wasm` ✓ + `GET /brush-module.wasm` ✓ + 打包那一步 ✓；
+4. **判据**（双向 ✓）：拖动中途**画布出现预览** ✓ + 抬手后 **与服务端权威像素一致** ✓
+   （后者已有现成判据 ✓：`scripts/browser-live-brush.mjs` 的 ④d 重载校验 ✓）。
