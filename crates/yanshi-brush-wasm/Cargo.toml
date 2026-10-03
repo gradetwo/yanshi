@@ -1,0 +1,15 @@
+[package]
+name = "yanshi-brush-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+# **`cdylib` 给 wasm ✓、`rlib` 让宿主机也能编 ✓**（`cargo test --workspace` 会编它 ✓）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# **与服务端同一个依赖** ✓ ⇒ 版本天然锁步 ✗（两边各写一个引擎必然漂移 ✓，这正是本项目的头号病 ✓）。
+hokusai = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
