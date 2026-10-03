@@ -805,8 +805,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <footer class="statusbar">
     <!-- **缩放的显式入口** ✓：状态栏里直接**输入百分比** ✓（用户："或者输入具体数值才变化" ✓）。
          数值 = **实际显示比例** ✓（与旁边的读数同一口径 ✓），不是"相对适配的倍数" ✗。 -->
+    <!-- **提示必须与行为一致** ✗（第三方代码审计 #6：提示教用户用滚轮，而滚轮被有意吞掉 ✓）。
+         实测现状：滚轮/触摸板**什么都不做** ✓ —— 这是**有意**的 ✓（用户实测"一碰就误缩放" ✗，
+         注释见 `viewer.rs:5592` 一带 ✓）。所以这里不再说"滚轮只平移" ✗（那是更早一版的写法 ✓）。 -->
     <span>缩放 <input id="zoomInput" type="number" min="5" max="1600" step="25" value="100"
-                     style="width:64px" title="画布显示比例（%）；回车或失焦生效 —— 滚轮只平移、不缩放" />%</span>
+                     style="width:64px" title="画布显示比例（%）；回车或失焦生效 —— 滚轮**不缩放也不平移**（防误触）" />%</span>
     <span id="zoom" class="hint">100%</span>
     <span id="undoDepth">撤销 0 / 重做 0</span>
   <span id="selectionHint">无选区</span>
