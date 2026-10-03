@@ -12428,3 +12428,28 @@ function wantsPanEvent(event) { return event.button === 1 || state.tool === "pan
 ```
 ⇒ 用户报的 **②"小手会像画笔一样画上去"** 到此**闭环** ✓：修好 ✓ + 双向判据 ✓ + 判据入库 ✓。
 **（顺带 ✓：脚本里也写明了"为什么必须先放大" ✓ ⇒ 后来者不会把它当成多余的步骤 ✗。）**
+
+### 🎯 第 198 轮：退休"第二份实现"的**配方查清了** ✓✓ —— 同一内核里**本来就有**预览笔画 API ✓
+
+**取到的事实** ✓（`crates/yanshi-wasm/src/lib.rs` ✓，`WasmKernel` 的公开面 ✓）：
+```
+load_atoms_json / apply_atom_json                                  ← 文档与原子（同一内核 ✓）
+render_region_rgba / render_region_png / render_region_info        ← 渲染区域（同一内核 ✓）
+set_preview_object / extend_preview_stroke / commit_preview / clear_preview / has_preview
+                                                                   ← **预览笔画**（正是"拖动期乐观渲染"要的 ✓）
+set_viewport / evict_outside_viewport / set_memory_limit / memory_usage / stats_json
+```
+**它意味着什么** ✓：**"拖动期本地预览"不需要我那份门面** ✗ ——
+`yanshi-wasm` 早就提供了**同一内核**实现的预览笔画入口 ✓ ⇒ 我造的 `yanshi-brush-wasm` 是**重复实现** ✗
+（虽然它逐字节一致 ✓，但那是"两份实现碰巧一致" ✗，而不是"同一份代码必然一致" ✓ -- 这两者的**维护成本完全不同** ✗）。
+**退休的配方（精确到"换哪个调用" ✓）** ✓：
+1. 查看器里 `loadLocalBrushModule()` + `api.yanshi_brush_paint(...)` ✓（`viewer.rs` 5846/5954 一带 ✓）
+   ⇒ 换成 `WasmKernel.extend_preview_stroke(json)` ✓；
+2. payload 形状**已经对得上** ✓：内核的预览也是 `{layer_id, type:"stroke", data:{points,size,…}}` ✓
+   （证据：`lib.rs` 的测试里就是这个形状 ✓，第 313 行 ✓）；
+3. 收尾时用 `commit_preview(atom_json)` ✓（现在那条是"交给服务端提交" ✓）；
+4. 于是 `crates/yanshi-brush-wasm` ✓ 与 `GET /brush-module.wasm` 路由 ✓ 可以**一并退休** ✓
+   （`scripts/wasm-brush-parity.mjs` 也随之降级为"边界守卫" ✓，见第 63 轮定下的定位 ✓）。
+**这一步为什么现在不做** ✗（如实 ✓）：它要动**查看器的落笔主路径** ✓（today 已经因为"动主路径"制造过
+三次回归 ✗：素材入口四次尝试 ✗、手形那次也差点 ✗）⇒ 我先把**配方**写死 ✓，
+下一轮**单独一轮、只做这一件事** ✓，并配**双向判据** ✓（预览笔画出现 ✓ + 收尾后与服务端一致 ✓）。
