@@ -16258,3 +16258,32 @@ let all = ctx.workspace.palette_colors(&palette)?;
 **方法记（本会话反复生效 ✓）** ✓：**先读现状再写代码** ✓ ——
 这一步让我发现"**读有写缺**"✗ 与"**写其实已有、只是没有那个名字**"✓ 两件事 ✓
 ⇒ 于是 `save_palette` 从"要造一套存储"✗ 缩成"**薄包装**"✓（风险与工作量都小一个量级 ✓）。
+
+### 🎯 第 117 轮：`save_palette` 的**存储格式与命名规则都定死了** ✓（照 `.gpl` ✓，不猜 ✗）
+
+**解析器原文（`service.rs:1687` ✓）** ✓：
+```rust
+let colors = match extension.as_str() {
+    "gpl" | "kpl" => parse_gimp_palette(&text),
+    "json"        => parse_open_color_json(&text)?,
+    other => return Err(… "还不支持解析 .{other} ⇒ 目前支持 gpl / kpl / json" …),
+};
+```
+⇒ **只认三种扩展名** ✓：`.gpl` / `.kpl`（GIMP 调色板 ✓）与 `.json`（open-color 那种**命名字典** ✓）。
+**既有样例（读过 ✓）** ✓：`assets/palettes/open-color.json` 是
+`{"white": "#ffffff", "gray": ["#f8f9fa", …], …}` ✓ —— **命名字典 + 十六进制** ✓，
+而我存的是**扁平数组** ✗ ⇒ 与其把数组硬塞进字典键 ✗，不如**走 `.gpl`** ✓：
+**GIMP 调色板本来就是扁平列表** ✓（`GIMP Palette` 头 + 每行 `R G B 名字` ✓）⇒ 与 `colors: [...]` **同形** ✓。
+**另一条硬约束（本轮同时查到 ✓）** ✓：`import_asset` 的规格写明"**扩展名必须与种类相符**" ✓
+⇒ 所以 **`name` 必须带 `.gpl`** ✓；这也意味着**我的判据要改** ✗ ——
+它现在用的是 `judge_roundtrip`（**无扩展名** ✗）⇒ `list_palette_colors` 会解析不出扩展名而报错 ✓。
+**下一轮（写死 ✓，一次做完 ✓）** ✓：
+① 判据把名字改成 **`judge_roundtrip.gpl`** ✓（并在注释里写明"**必须带扩展名** ✓"这条约束来自哪 ✓）；
+② 实现 `save_palette{name, colors}` ✓：把 `{r,g,b,a}` / `#rrggbb` 规范成 `R G B` 三元组 ✓ ⇒
+   写一个**临时 `.gpl` 文件** ✓ ⇒ 调 `write_import_asset{kind:"palette", name, path, overwrite:true}` ✓
+   （同名覆盖 ✓，正对判据第②条 ✓）；
+③ 落地 5 处 ✓（规格 ✓ / 派发 ✓ / 实现 ✓ / 示例 ✓ / 计数 **61→62 core / 117→118 total** ✓）；
+④ 跑**那条判据** ✓ ⇒ 转绿 ⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+**方法记 ✓**（本会话反复生效 ✓）：**"存储格式"这种事必须问解析器，不能凭样例文件猜** ✗ ——
+样例是 `.json` 的命名字典 ✓，若照着它写就会把扁平数组塞成字典 ✗；
+而**读一眼解析器**就发现 `.gpl` 天生扁平 ✓、且**扩展名有硬约束** ✓。
