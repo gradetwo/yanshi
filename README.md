@@ -91,6 +91,13 @@ advice rather than quietly clearing it.
 `--profile` accepts core, history, changeset, retouch, semantic, conflict, annotation, collab and structure, all
 listed in `--help`; semantic is reserved and not developed by decision.
 
+## Copyable call examples
+
+Every tool that carries one has a verified argument object in
+[docs/design/tool-examples.md](docs/design/tool-examples.md), generated from the running server's own
+catalogue so it cannot drift from what the tools accept. All of them are exercised against a live
+server before they are kept, and a check mode fails when the document is stale.
+
 ## Error messages you can act on
 
 A refusal for a missing layer, object, selection, mask or style also lists the ids that do exist, capped at eight with

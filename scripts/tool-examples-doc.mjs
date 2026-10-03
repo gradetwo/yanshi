@@ -44,7 +44,13 @@ if (check) {
     console.error("❌ docs/design/tool-examples.md 与运行中的目录不一致（文档过期）⇒ 重新生成它");
     process.exit(1);
   }
-  console.log(`  ✓ 文档与目录一致（${withExample.length} 个工具带示例）`);
+  // **README 必须链到它** —— 否则文档生成了却没人找得到（那是另一种"静默"）。
+  const readme = (() => { try { return readFileSync("README.md", "utf8"); } catch { return ""; } })();
+  if (!readme.includes("docs/design/tool-examples.md")) {
+    console.error("❌ README.md 没有链到 docs/design/tool-examples.md ⇒ 文档没人找得到");
+    process.exit(1);
+  }
+  console.log(`  ✓ 文档与目录一致（${withExample.length} 个工具带示例）✓ 且 README 已链到它`);
   process.exit(0);
 }
 writeFileSync(path, text);
