@@ -32,8 +32,17 @@ check(typeof bigImage.data === "string" && bigImage.data.length > 0,
   "大区域**默认就给缩略图**（自动缩小 ✓）", `image ${bigImage.width}×${bigImage.height} / base64 ${bigImage.data?.length || 0} 字符`);
 check(Math.max(bigImage.width || 0, bigImage.height || 0) <= 512,
   "缩略图确实缩到了上限内", `${bigImage.width}×${bigImage.height}`);
-check(Array.isArray(big.scaled_from) && big.scaled_from[0] === 900,
-  "标注了**原始尺寸**，并说明怎么拿原图", `scaled_from=${JSON.stringify(big.scaled_from)}`);
+// **契约必须与场景无关** ✗（第 218 轮两次误报的教训 ✓）：
+//   请求的区域可能比文档还大 ⇒ 服务端会把它**夹到文档尺寸** ✓ ⇒ 夹完可能**已经 ≤ 上限** ✓
+//   ⇒ 那就**不需要缩放**、自然没有 `scaled_from` ✓。所以只钉这三条 ✓：
+//   ① 有图 ✓；② 图在限内 ✓；③ **要么**有缩放标注（且原始不小于结果 ✓）、**要么**本就没超限 ✓。
+const from = big.scaled_from;
+const maxScaled = Math.max(bigImage.width || 0, bigImage.height || 0);
+check(Array.isArray(from)
+  ? from.length === 2 && from[0] >= bigImage.width && from[1] >= bigImage.height
+  : maxScaled <= 512,
+  "要么标注了原始尺寸（不小于缩放结果），要么本来就没超限",
+  `scaled_from=${JSON.stringify(from)} ⇒ image ${bigImage.width}×${bigImage.height}`);
 check(big.image_omitted !== true || typeof big.image_omitted_reason === "string",
   "万一连缩小都失败 ⇒ 必须仍给可读原因", `image_omitted=${big.image_omitted}`);
 const small = await call("render_region", { region: [0, 0, 64, 64], include_image: true });
