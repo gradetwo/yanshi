@@ -6957,6 +6957,11 @@ function setupBrushLibrary() {
 // 注册 Service Worker（离线优先 PWA 第一步）：失败不致命（file:// 或旧浏览器）。
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(() => undefined);
+
+// **预热门面** ✓（第 52 轮定 ✓）：现在它只在 `pointerdown` 才异步加载 ✗ ⇒
+// **离线**时即使走缓存也有延迟 ⇒ 那一笔的前几帧会白丢 ✓（实测：同一脚本两跑 +1060 ✓ / +8 ✗）。
+// 页面初始化后就加载 ⇒ 落笔时**已在内存** ✓，顺带也让它进 SW 缓存 ✓（离线可用 ✓）。
+void loadLocalBrushModule().catch(() => undefined);
 }
 }
 
