@@ -37,6 +37,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     --accent-soft: #2b4a7d; /* 选中态的柔化底色 */
   }
   * { box-sizing: border-box; }
+  /* **整页垂直锁死** ✓（用户："保持整个软件的垂直方向是锁死（但是画布例外，
+     画布是内部一个可以独立上下和左右滚动的）"✓）——
+     页面本身不滚 ✗；要滚的是**各自的面板**（右栏 `.aside` 自己滚 ✓）与**画布舞台**（`.stage` ✓）。 */
+  html, body { height: 100%; overflow: hidden; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
   /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
@@ -76,7 +80,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          所以点在空白区根本不会进入绘制分支 ✓（检查里有专门的断言 ✓）。 */
   .stage { justify-self: stretch; display: flex; align-items: center; justify-content: center;
            min-height: 240px; background: var(--surface); }
-  .stage { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f5f5f5; }
+  /* **画布舞台自己滚** ✓：放大到超出可视区时，它内部上下左右滚 ✓（而不是把整页顶开 ✗）。 */
+  .stage { position: relative; border: 1px solid var(--line); border-radius: 6px;
+           overflow: auto; background: #f5f5f5; }
+  /* **右栏 tab** ✓（用户："面板内部有小 tab 切换不同信息"✓）—— 一行 CSS 决定显隐 ✓。 */
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+  .tabs button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
+                                      border-color: transparent; }
+  .tab-pane > .card, .tab-pane > details { margin-bottom: 10px; }
   /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
      #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
      两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
@@ -463,7 +474,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
   </div>
   <aside>
-    <div class="card">
+    <div class="card" data-panel="paint">
       <h2>操作</h2>
       <div class="toolbar">
   <!-- 初始即禁用 ✓：子 agent 报"没有撤销栈时按钮仍可点" ✗（点了只会打印一句提示 ✓，
@@ -496,7 +507,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
           <label style="display:none">图层 <select id="layer"></select></label>
         </div>
     </div>
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>WASM 计算内核</h2>
       <div class="status">
         <span>本地乐观渲染 <b id="wasmState">检测中…</b></span>
@@ -506,7 +517,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <span>bit-exact <b id="bitExact">—</b></span>
       </div>
     </div>
-    <div class="card">
+    <div class="card" data-panel="paint">
       <h2>调整 / 滤镜</h2>
       <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
         <select id="effectKind">
@@ -522,7 +533,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       </div>
       <div id="effectsList" style="font-family:ui-monospace,monospace;font-size:11px;max-height:120px;overflow:auto"></div>
     </div>
-    <div class="card">
+    <div class="card" data-panel="history">
       <h2>历史（原子日志）</h2>
       <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
         <select id="historyKind"><option value="">全部类型</option></select>
@@ -554,19 +565,19 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div class="hint" id="atomDetailHint">点上面任意一条，看它改了什么 ✓</div>
       <pre id="atomDetail" style="font-size:11px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:4px 0 0"></pre>
     </div>
-    <div class="card">
+    <div class="card" data-panel="history">
       <h2>缩略图</h2>
       <img id="thumb" alt="缩略图" />
     </div>
-    <div class="card">
+    <div class="card" data-panel="history">
       <h2>原子日志（控制流）</h2>
       <div id="log"></div>
     </div>
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>最近一次响应</h2>
       <div id="last" style="font-family:ui-monospace,monospace;font-size:11px"></div>
     </div>
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>反馈</h2>
       <div class="status" style="flex-direction:column; align-items:flex-start; gap:6px">
         <span>问题反馈、协作沟通、缺陷上报：</span>
@@ -577,7 +588,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <!-- **标注** ✓（设计 4.6 / 13.4 ✓）：七个标注工具**早就有** ✓，但编辑器里此前**没有任何入口** ✗
          ⇒ 这一块就是补那个入口 ✓。新建走工具栏的「标注」✓，列表里可以改文字 ✓、解决 ✓、删除 ✓。 -->
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>标注</h2>
       <div class="hint">用工具栏的「标注」在画布上点一下就新建 ✓；点图钉可选中 ✓。</div>
       <div class="toolbar">
@@ -590,7 +601,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **对象** ✓（设计 §9：复制/实例化/组引用 ✓）—— 目标③点名的"实例/组" ✓。
          此前 `create_instance` / `create_group` / `add_to_group` 在查看器里**零引用** ✗
          ⇒ 和"标注"一样，是"**工具就绪、用户够不到**" ✓。这一块补上入口 ✓。 -->
-    <div class="card">
+    <div class="card" data-panel="paint">
       <h2>对象</h2>
       <div class="hint">勾选对象后可「实例化」「编组」「变换」✓（实例与 master 联动 ✓，设计 9.1 ✓）。<br />
         <b>「重采样」只作用于光栅对象</b> ✓（导入的图片、PSD 合成图 ✓）—— 手画的笔迹是 `stroke` ✗，
@@ -640,7 +651,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          `blob_gc` 此前在查看器里**零引用** ✗ ⇒ 用户看不到工作区里有多少**孤儿 blob** ✓，也无从回收 ✓。
          这一块把"统计"与"回收"分开 ✓：**统计永远安全** ✓（`dry_run` 默认就是 true ✓）；
          回收**必须先勾确认** ✓（删除不可逆 ✓，与本项目"不做不可逆动作"一致 ✓）。 -->
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>存储 / 维护</h2>
       <div class="hint">孤儿是"上传过、但没有任何原子引用"的数据 ✓（设计 §6.3）；回收按 TTL 走 ✓。</div>
       <div class="toolbar">
@@ -653,7 +664,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <!-- **调色板** ✓（目标第 ① 件 ✓）—— `list_palette_colors` 此前**只有工具层入口** ✗
          ⇒ MCP 能用 ✓，而界面里**点不到颜色** ✗ ⇒ 这正是"只在一边有"的缺陷 ✓。 -->
-    <div class="card" id="cardPalette">
+    <div class="card" data-panel="assets" id="cardPalette">
       <h2>调色板</h2>
       <div class="hint">点色块即取色（写回**笔刷颜色** ✓）；来源是随包发布的，或你自己导入的 ✓。</div>
       <label>调色板 <select id="palettePick"></select></label>
@@ -668,7 +679,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <div id="paletteInfo" class="hint"></div>
     </div>
     <!-- **纹理** ✓（目标第 ② 件 ✓）—— `texture_background` 同样此前只有工具层入口 ✗。 -->
-    <div class="card" id="cardTexture">
+    <div class="card" data-panel="assets" id="cardTexture">
       <h2>纹理</h2>
       <div class="hint">把 CC0 纸张 / 画布纹理铺成背景 ✓（会**新建一层并沉到最底** ✓）。</div>
       <label>纹理 <select id="texturePick"></select></label>
@@ -688,7 +699,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <!-- **渐变** ✓（目标 (d) ✓）—— 针对"大面积背景难处理" ✓：
          笔刷铺底会留下笔触边缘与噪声 ✗，而渐变是纯函数 ✓（无边、无噪、可复现 ✓）。 -->
-    <div class="card">
+    <div class="card" data-panel="paint">
       <h2>渐变</h2>
       <div class="hint">给当前图层填一层渐变 ✓（天空 / 底色 / 光照过渡 ✓）—— 确定性：同样的输入永远同样的像素 ✓。</div>
       <label>起点 <input id="gradFrom" type="color" value="#fad6a5" /></label>
@@ -707,7 +718,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          ⇒ "真人备份不了自己的画" ✓ —— 这正是"两边都要有"的**反面缺口** ✓。
          **路径是服务端的路径** ✓（不是浏览器的文件选择器 ✓）⇒ 这一点必须写在界面上 ✗，
          否则用户会以为点一下就从自己电脑上选文件 ✓。 -->
-    <div class="card">
+    <div class="card" data-panel="file">
       <h2>工程包</h2>
       <div class="hint">
         整份文档（原子日志 + 元数据 + 全部 blob）打成一个 <code>.yanshi</code>（未压缩 tar ✓，任何 <code>tar</code> 都能看 ✓）。
@@ -724,7 +735,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
          也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
          （`accept_suggestion` 会**按序重放 patch** ✓，并把关联标注置为 resolved ✓）。 -->
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>建议</h2>
       <div class="hint">建议来自 `suggest`（含**可执行补丁**）✓；接受会**按序重放**补丁 ✓。</div>
       <div class="toolbar">
@@ -743,7 +754,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **评论** ✓（设计 §12.6 的协作通道 ✓）—— `comment` 此前在查看器里**零引用** ✗。
          注意：**没有** `list_comments` 工具 ✓ —— 评论就是**原子** ✓ ⇒ 用现成的
          `get_log {kind:"comment"}` 读回来 ✓（历史面板本来就在这么做 ✓）。 -->
-    <div class="card">
+    <div class="card" data-panel="diag">
       <h2>评论</h2>
       <div class="toolbar">
         <input id="commentText" type="text" placeholder="写一条评论…" style="flex:1 1 auto" />
@@ -895,6 +906,18 @@ function sizeBoards(width, height) {
 function applyDisplaySize() {
   const available = availableArea();
   const scale = state.displayScale || 1;
+  // **画布的内部滚动：本轮**查了一半，先不发布** ✗（如实 ✓）。
+  //
+  // **想做的** ✓：`fit` 时正好塞满 ✓、**放大后让 `.stage` 自己滚** ✓（用户："画布是内部一个可以独立
+  // 上下和左右滚动的"✓）——所以我把这里的"按可用区封顶"改成了"只有 `zoom <= 1` 才封顶" ✓。
+  // **但实测对不上** ✗（探针 + 直接读数 ✓）：`canvas` 的 `style.width` **是空的** ✓、
+  // `getBoundingClientRect().width` 恒为 **300** ✓（= `<canvas>` 的**默认** 300×150 ✓），
+  // 而 `state.displayScale` 确实在 0.55 / 4 / 1 之间正常变化 ✓ ⇒ **这里算出来的尺寸没有落到元素上** ✗。
+  // 这与本项目既有的"`sizeBoards` 设 `board.width` + `applyDisplaySize` 设 CSS 宽"那条路径**不符** ✗，
+  // 背后大概是另一段代码在管尺寸（或那段没被走到 ✓）—— **没查清就不发布** ✗（本项目纪律 ✓），
+  // 所以这段**恢复原样** ✓（仍然封顶 ✓ = 零回归风险 ✓），把"内部滚动"留给下一轮的**窄问题** ✓：
+  // **判据** ✓：放大到 400% ⇒ `.stage` 的 `scrollWidth > clientWidth + 10` ✓ 且 `scrollLeft` 能变 ✓、
+  // 而整页 `scrollY` 必须仍是 0 ✓；回到 100% ⇒ 溢出 ≤ 2px ✓。
   const width = Math.max(32, Math.min(Math.round(state.viewport.w * scale), available.w));
   const height = Math.max(32, Math.min(Math.round(state.viewport.h * scale), available.h));
   board.style.width = width + "px";
@@ -4293,8 +4316,79 @@ function setupAssetDock() {
   };
 }
 
+/// **右栏分 tab** ✓（用户："右边信息面板超级长，适合面板内部有小 tab 切换不同信息"✓）。
+///
+/// **三条取舍** ✓：
+/// ① **搬，不重建** ✓（与素材浮层同一条手法 ✓）：卡片连同里面的监听器、下拉框选中项、
+///    已画的缩略图一起搬进窗格 ✓ ⇒ 切 tab 不可能丢状态 ✗；
+/// ② **必须在 `setupAssetDock()` 之前跑** ✗：浮层记的"原位"就是**这里** ✓
+///    ⇒ 顺序反了，浮层收起时会把调色板/纹理搬回**旧的父节点** ✗（那个父节点已经空了 ✓）；
+/// ③ **分组按标题反查** ✓（在标记里写 `data-panel` ✓）——不靠 JS 猜顺序 ✓。
+function setupRightTabs() {
+  const aside = document.querySelector("aside");
+  if (!aside || aside.dataset.tabsReady === "1") return;
+  const tabs = [
+    ["paint", "绘制"],
+    ["history", "历史"],
+    ["assets", "素材"],
+    ["file", "文件"],
+    ["diag", "诊断"],
+  ];
+  const bar = document.createElement("div");
+  bar.className = "tabs";
+  bar.id = "rightTabs";
+  const panes = new Map();
+  for (const [key, label] of tabs) {
+    const pane = document.createElement("div");
+    pane.className = "tab-pane";
+    pane.dataset.pane = key;
+    pane.hidden = key !== "paint";
+    panes.set(key, pane);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.tab = key;
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(key === "paint"));
+    button.addEventListener("click", () => showTab(key));
+    bar.appendChild(button);
+  }
+  // **搬卡** ✓（`data-panel` 由标记给出 ✓；没标的进"诊断" ✓ —— 宁可多一张可见的卡 ✗，
+  // 也不要让某张卡**从界面上消失** ✗，那是"创建了不等于挂上了"的老病 ✓）。
+  for (const node of Array.from(aside.children)) {
+    if (node === bar) continue;
+    if (!(node.classList && node.classList.contains("card")) && node.tagName !== "DETAILS") continue;
+    const key = panes.has(node.dataset.panel) ? node.dataset.panel : "diag";
+    panes.get(key).appendChild(node);
+  }
+  aside.insertBefore(bar, aside.firstChild);
+  for (const pane of panes.values()) aside.appendChild(pane);
+  const showTab = (key) => {
+    for (const [name, pane] of panes) pane.hidden = name !== key;
+    for (const button of bar.querySelectorAll("button")) {
+      button.setAttribute("aria-pressed", String(button.dataset.tab === key));
+    }
+    return key;
+  };
+  aside.dataset.tabsReady = "1";
+  window.yanshiRightTabs = {
+    show: showTab,
+    state: () => ({
+      active: (Array.from(panes).find(([, pane]) => !pane.hidden) || ["paint"])[0],
+      counts: Array.from(panes).map(([key, pane]) => ({
+        key,
+        cards: pane.querySelectorAll(":scope > .card, :scope > details").length,
+      })),
+      visibleCards: Array.from(
+        document.querySelectorAll(".tab-pane:not([hidden]) > .card, .tab-pane:not([hidden]) > details"),
+      ).length,
+    }),
+  };
+}
+
 async function setupAssetPanels() {
-  // **先把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
+  // **先把右栏分好 tab** ✓，**再**把浮层挂上 ✓ —— 顺序不能反 ✗（浮层记的"原位"就是窗格 ✓）。
+  setupRightTabs();
+  // **然后把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
   // **`setupBrushLibrary` 不在这儿调** ✗ —— 它的定义在**另一段 `<script>`** 里 ✓，
   // 从这里调只会 `ReferenceError` ✓（本轮实测：面板永远打不开 ✓、`open=false` ✗）。

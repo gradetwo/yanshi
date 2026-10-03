@@ -212,6 +212,16 @@ hidden, because naming a layer to export is an explicit request, and it delibera
 that cache is keyed by region and version but not by layer, so reusing it could return another layer's pixels, which
 is the classic cache-key-missing-a-dimension bug and one that only shows up on a cache hit.
 
+The right column is split into five tabs, drawing, history, assets, file and diagnostics, which holds the same
+seventeen cards as before and shows only the ones belonging to the active tab. The cards are moved rather than
+rebuilt, so their listeners, selected options and drawn thumbnails survive a switch, and the grouping lives in the
+markup as a data-panel attribute rather than being guessed from order. The page itself no longer scrolls at all;
+each panel scrolls inside itself, and the canvas stage is the scroll container for a canvas too large to fit, which
+is the intent even though the display size still caps at the available area, a half finished piece recorded in the
+notes with the measurement that blocked it. The tab panes also have to be built before the asset dock records where
+the palette and texture cards live, otherwise closing the dock returns them to a node that no longer holds them,
+which the layout script checks.
+
 The brush area can be collapsed to a single toggle, which only hides the controls and leaves the chosen brush,
 colour and smoothing untouched, so folding it away is never a way to lose a setting. The palette and texture cards
 float above the canvas from the same row, by button or by key: P brings the palette up, T the texture, Escape puts
