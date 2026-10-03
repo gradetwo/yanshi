@@ -73,16 +73,29 @@ const script = `(async () => {
     const facade = outLen ? new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), outLen).slice() : null;
     const sameSize = made.width === region.w && made.height === region.h;
     let differing = -1, maxDelta = 0, firstDiff = -1;
+    // **差在哪也要带出来** ✓（第 38 轮只给了字节偏移 ✓，这次给**坐标 + 两侧 RGBA + 差值分布** ✓
+    // ⇒ "1 LSB 的边缘"与"系统性偏差"一眼可分 ✓，这正是本项目反复吃过的亏 ✓）。
+    const samples = [];
+    const oneBit = { one: 0, small: 0, big: 0 };
     if (facade && facade.length === server.length) {
       differing = 0;
       for (let i = 0; i < server.length; i += 1) {
         const d = Math.abs(server[i] - facade[i]);
-        if (d) { differing += 1; if (firstDiff < 0) firstDiff = i; if (d > maxDelta) maxDelta = d; }
+        if (!d) continue;
+        differing += 1;
+        if (d === 1) oneBit.one += 1; else if (d <= 8) oneBit.small += 1; else oneBit.big += 1;
+        if (firstDiff < 0) firstDiff = i;
+        if (d > maxDelta) maxDelta = d;
+        const pixel = Math.floor(i / 4);
+        if (samples.length < 3 && (samples.length === 0 || samples[samples.length - 1].pixel !== pixel)) {
+          samples.push({ pixel, x: pixel % region.w, y: Math.floor(pixel / region.w), channel: i % 4,
+                         server: server[i], facade: facade[i] });
+        }
       }
     }
     out.push({ brush, serverW: made.width, serverH: made.height, region,
                sameSize, serverBytes: server.length, facadeBytes: facade ? facade.length : 0,
-               differing, firstDiff, maxDelta, painted: made.painted_pixels });
+               differing, firstDiff, maxDelta, samples, oneBit, painted: made.painted_pixels });
   }
   return out;
 })()`;
@@ -95,6 +108,12 @@ for (const row of results) {
   console.log(`  ${row.brush.padEnd(14)} 服务端 ${row.serverW}×${row.serverH} vs 算出的区域 ${row.region.w}×${row.region.h}` +
     `｜字节 ${row.serverBytes} vs ${row.facadeBytes}｜不同 ${row.differing}` +
     (row.firstDiff >= 0 ? `（首个 @${row.firstDiff}，最大差 ${row.maxDelta}）` : "") + `｜${ok ? "**逐字节相同** ✓" : "有差异 ✗"}`);
+  if (!ok && row.oneBit) {
+    console.log(`      差值分布：差 1 的通道 ${row.oneBit.one} ✓、≤8 的 ${row.oneBit.small}、>8 的 ${row.oneBit.big}`);
+    for (const sample of row.samples || []) {
+      console.log(`      首个不同像素 (${sample.x}, ${sample.y}) 通道 ${sample.channel}：服务端 ${sample.server} vs 门面 ${sample.facade}`);
+    }
+  }
 }
 console.log(allGood ? "结论：预览逐字节相同 ✓" : "结论：存在差异 ✗");
 ws.close();
