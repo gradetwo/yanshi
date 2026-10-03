@@ -6675,10 +6675,25 @@ async function refreshBrushOptions() {
 const brushPreviewCache = new Map();
 /// **预生成入库的画笔预览图**（构建期生成、随包发布）—— 面板**直接用图片**，不再逐支实时渲染。
 let brushPreviewIndex = null;
-void fetch("/brush-previews/index.json")
+// **存的是 promise**（不是"点火即忘"）—— 实测过：只预取不等待时，面板开得比索引快 ⇒ 头几行会退回
+// **实时调工具**那条路（探针里 `previewCalls: 10` 就是这么来的）⇒ 用到时先 `await` 它。
+const brushPreviewIndexPromise = fetch("/brush-previews/index.json")
   .then((response) => (response.ok ? response.json() : null))
-  .then((index) => { brushPreviewIndex = index; })
-  .catch(() => { /* 没有索引就退回实时那条路 */ });
+  .then((index) => {
+    // **统一键名** ✗：生成器从 `list_assets` 拿到的是**带 `.myb`** 的名字（`2B_pencil.myb`），
+    // 而面板里的名字来自 `#brush` 选项 = **不带扩展名**（`2B_pencil`）⇒ 不统一就一条都命中不了，
+    // 整个面板会退回"逐支实时渲染"（实测：探针里 `previewCalls: 10` 就是这么来的 ✗）。
+    if (index && index.files) {
+      const normalized = {};
+      for (const [key, value] of Object.entries(index.files)) {
+        normalized[key.replace(/\.myb$/, "")] = value;
+      }
+      index.files = normalized;
+    }
+    brushPreviewIndex = index;
+    return index;
+  })
+  .catch(() => null);
 const brushPreviewQueue = [];
 let brushPreviewActive = 0;
 let brushLibraryObserver = null;
@@ -6776,7 +6791,8 @@ async function pumpBrushPreview() {
   if (!name) return;
   brushPreviewActive += 1;
   // **入库的图优先**：有就贴它，**不**逐支实时渲染（用户裁定：静态资源预生成入库）。
-  const shipped = brushPreviewIndex && brushPreviewIndex.files && brushPreviewIndex.files[name];
+  const index = brushPreviewIndex || (await brushPreviewIndexPromise);
+  const shipped = index && index.files && index.files[name];
   if (shipped) {
     const url = "/brush-previews/" + shipped;
     brushPreviewCache.set(name, url);
