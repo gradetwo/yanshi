@@ -10400,3 +10400,30 @@ export_png ✓      get_object ✓     list_assets ✓    new_document ✓
 **下一轮** ✓：先查这条矛盾（合并解析到底把哪些名字丢了 ✓；
 以及探针取目录的顺序 ✓ —— 别在没弄清前再动表 ✗），弄清后再把 4 条新示例落地 ✓
 （并按上面的经验：**破坏性候选放最后** ✓、`draw_stroke` 用 `data` ✓、调色板给真名 ✓）。
+
+### ✅ 第 99 轮：矛盾**解开了** ✓ —— 是我自己的两个工具在骗我 ✗，状态其实是好的 ✓
+
+**并排打出来之后** ✓：
+```
+源码里的示例名(5): new_document, brush_stroke, brush_preview, export_png, get_object
+目录里的示例名(8): brush_preview, brush_stroke, create_layer, delete_object,
+                   export_png, get_object, list_assets, new_document
+```
+⇒ 我据此判断"回退把三条示例弄丢了"✗ —— **而这个判断本身是错的** ✗：
+紧接着的补写脚本**按字符串逐个查** ✓，三个名字**全都在**文件里 ✓
+（"已有: create_layer ✓ / delete_object ✓ / list_assets ✓" ✓）。
+⇒ 真正不可靠的是**我列名字用的那条正则** ✗（`\n        "name",\n` ✓ —— 它匹配不到
+我自己用 Python 写回时那种排布 ✓）⇒ **"源码只有 5 条"是正则的假象** ✗。
+**当前状态（实测 ✓）**：
+```
+前置（create_layer 示例本身）：成功 ✓      建对象 o1：成功 ✓
+目录里带示例的工具：8 个
+brush_preview ✓  brush_stroke ✓  create_layer ✓  delete_object ✓
+export_png ✓     get_object ✓    list_assets ✓   new_document ✓
+结论：8 个示例**跑通** ✓、0 个没跑通 ✗
+```
+**第 98 轮那条"探针说没有 create_layer 示例"** ✓ —— 那是在**被回退掉的合并状态**里发生的 ✓
+（那个状态下合并**确实**把 `create_layer` 弄丢了 ✓，与正则无关 ✓）；回退之后**不再复现** ✓。
+**教训（今天第三次同类 ✗，写进笔记 ✓）**：**别用正则去"看"表格内容** ✗ ——
+要看**服务端真正吐出来的目录** ✓（本轮并排那两行就是这么做的 ✓，而其中一半反而骗了我 ✗）。
+⇒ 规矩：**判据读产物 ✓、不读源码的文本 ✗**（与第 93 轮"产物 vs 源码"是同一条 ✓）。
