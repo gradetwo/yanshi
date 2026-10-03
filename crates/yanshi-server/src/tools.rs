@@ -12043,6 +12043,10 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 
 /// **每个工具一句"能直接抄走"的调用示例**（目标第 6 条）。
 ///
+/// **生成方式**：参数名取自工具**自己声明的参数面**（`inputSchema.properties`，必填取 `required`），
+/// 所以**不可能**写出一个参数面里没有的名字（仍由本文件末尾的测试逐个把关）。
+/// **取值**：必填项给有意义的样例值；部分可选项是**占位值**（`x`/`1`）⇒ 抄走前按自己的场景改一下。
+///
 /// **为什么要有它**：实测踩到过 —— `brush_preview` 的实现读 `opacity`/`hardness`，而参数面里没有，
 /// 调用方收到的是「不接受参数 hardness（拼写错误？）」，**只能靠猜**。示例把"该怎么写"直接摆出来，
 /// 并由下面的测试保证**示例里的每个参数名都在该工具的参数面里**（示例与参数面不许漂移）。
@@ -12052,16 +12056,30 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
         "new_document",
-        r#"{"doc_id":"demo","width":900,"height":640}"#,
+        r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
+    ),
+    (
+        "create_layer",
+        r#"{"layer_id": "L1", "name": "x", "parent_id": "x", "type": "x"}"#,
     ),
     (
         "brush_stroke",
-        r#"{"layer_id":"L1","brush":"100%_Opaque","size":40,"color":{"r":255,"g":0,"b":0,"a":255},"points":[[100,100,1],[180,140,1],[260,100,1]]}"#,
+        r#"{"brush": "100%_Opaque", "layer_id": "L1", "points": [[100, 100, 1], [180, 140, 1], [260, 100, 1]], "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40}"#,
     ),
     (
         "brush_preview",
-        r#"{"brush":"spray","size":24,"color":{"r":0,"g":64,"b":255,"a":255},"hardness":0.6,"opacity":0.8}"#,
+        r#"{"brush": "100%_Opaque", "color": "x", "color_to": "x", "hardness": 0.6, "size": 24, "opacity": 0.8}"#,
     ),
+    (
+        "export_png",
+        r#"{"path": "x", "filter": "x", "height": 640, "layer_id": "L1"}"#,
+    ),
+    (
+        "get_object",
+        r#"{"object_id": "o1", "include_history": true}"#,
+    ),
+    ("list_assets", r#"{"kind": "x"}"#),
+    ("delete_object", r#"{"object_id": "o1"}"#),
 ];
 
 #[cfg(test)]
