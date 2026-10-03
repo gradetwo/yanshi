@@ -12741,3 +12741,32 @@ assertion `left == right` failed: multiply 应当真的写进图层（实测 nor
    `list_objects` **能看到那一笔** ✓（现在必然看不到 ✗）。
 **顺带** ✓（P1-3 ✓）：报告抱怨 `export_png` 只能写导出目录/临时目录 ✓ —— 那是我按**他们自己那份审计**（0b862a4 ✓ P0#1 任意路径写 ✗）加的沙箱 ✓；
 ⇒ 建议**不改行为** ✓，而是**把限制写进工具描述** ✓ + 支持 `YANSHI_EXPORT_DIR` ✓（描述里已提 ✓，可再加一句"或不设时用 ./exports" ✓）。
+
+### 📦 第 212 轮：P0-2 的实现**已验证可用** ✓，但被"同一测试后续断言"挡住 ⇒ **存档待装** ✓（树已回绿 ✓）
+
+**已实测通过的实现** ✓（`crates/yanshi-server/src/tools.rs` 的 `write_new_document` ✓，
+放在 `let mut request = crate::document::NewDocument::new(&doc_id, width, height);` **之前** ✓）：
+```rust
+    // 同 id 已存在 ⇒ 语义是"打开它"（报告 P0-2）；安全约束不变：**绝不清空**已有文档。
+    if ctx.workspace.document_mut(&doc_id).is_ok() {
+        let (existing_width, existing_height) = {
+            let document = ctx.workspace.document_mut(&doc_id)?;
+            let state = document.state();
+            (state.width, state.height)
+        };
+        return Ok(json!({
+            "ok": true, "doc_id": doc_id, "opened": true, "created": false,
+            "width": existing_width, "height": existing_height,
+            "session_document": ctx.doc_id,
+            "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
+        }));
+    }
+```
+**判据（API 实测 ✓）** ✓：画一笔 ⇒ 同 id 再 `new_document` ⇒ `ok=True` ✓ `opened=True` ✓、`list_objects` **1 ⇒ 1** ✓。
+**它为什么没提交** ✗（如实 ✓）：`crates/yanshi-server/tests/new_document.rs` 那条测试
+**除了**已改的那 3 条断言 ✓ **后面还有**按旧语义写的断言 ✗ ⇒ 只改一处不够 ✓ ⇒
+**下一次的做法** ✓：① 装上上面这段 ✓；② **通读** `new_document.rs` 那条测试（约 100–150 行 ✓），
+把**所有**"拒绝/必须换 id"的旧断言一次改完 ✓（不是只改一处 ✗）；③ `cargo test --workspace` 全绿才提交 ✓。
+**两次踩的坑（记下 ✓）** ✗：改测试断言时 ① 用错变量名（`recreated` vs 实际 `refused` ✓）⇒ 编译失败 ✗；
+② 只替换**跨行 `assert_eq!` 的中间一行** ✗ ⇒ 语法错误 ✗（`expected , found ;` ✓）
+⇒ 教训 ✓：**改多行宏调用要整块替换** ✓，并且**改完先编译**（`passed=` 为空就是编译失败的信号 ✓）。
