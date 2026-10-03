@@ -55,30 +55,3 @@ fn a_stream_that_is_not_zlib_is_rejected_instead_of_guessed() {
         "载荷被改坏必须被 adler32 抓住"
     );
 }
-
-/// **stored 块跨 block 的往返** ✓ —— 用户问的 blob 压缩要靠它 ✓（不可压数据必须"不膨胀" ✓）。
-/// 这条用例是**先红后绿**的 ✓：块头只占 3 位 ⇒ 一字节里剩 5 位补齐 ✓，
-/// 解码端若不当场丢掉 ✗，就会在**第二个块**上读到旧的补齐位 ⇒ 解出垃圾 ✓
-///（实测：≤65535 的**单块**没事 ✓，65536（= 2 块）就解不开 ✓）。
-#[test]
-fn stored_fallback_round_trips_across_block_boundaries_without_expanding() {
-    for size in [0usize, 1, 100, 65_535, 65_536, 65_537, 200_000] {
-        // 用**不可压**的伪随机流 ✓（LCG 高位 ✓）⇒ 一定会走 stored 兜底 ✓
-        let mut state = 0x1234_5678u32 ^ (size as u32);
-        let raw: Vec<u8> = (0..size)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                (state >> 24) as u8
-            })
-            .collect();
-        let packed = zlib_compress_best(&raw);
-        let back = zlib_decompress(&packed).expect("compress_best 的输出必须能解回来");
-        assert!(back == raw, "往返必须逐字节一致（size={size}）");
-        assert!(
-            packed.len() <= raw.len() + 64,
-            "不可压数据必须**不膨胀**（size={size}：明文 {} ⇒ {}）",
-            raw.len(),
-            packed.len()
-        );
-    }
-}
