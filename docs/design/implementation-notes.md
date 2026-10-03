@@ -12953,3 +12953,28 @@ ui-control-heights      exit=1 ✗   （Node 侧直接报错 ✗，待看用法/
 （它自己已有 `tool(...)` 助手 ✓，例如 `await tool("create_layer", { layer_id: "layer_paint", name: "paint" })` ✓，
 或照它已有的 `fetch(.../api/tools/create_layer?doc=…&token=…)` 写法 ✓，见 `1070` 行 ✓）
 ⇒ 之后它对 `layer_paint` 的所有断言就都成立 ✓；**不改产品代码** ✗（避免为迁就判据而回退业界惯例 ✓）。
+
+### 🧭 第 222 轮：修 `browser-ui-check` 的**精确插法**已定 ✓（本轮两次踩坑 ⇒ 回退留档 ✓）
+
+**目标修法（不变 ✓）** ✓：在该判据里**显式创建 `layer_paint`** ✓，让后半段（`2520-2567` ✓）按 id 找到那一行 ✓，
+**不再依赖**"文档原来没有图层"这个已被第 (3) 项打破的前提 ✗。
+**本轮两次失败（都记下来 ✓）** ✗：
+1. **插在了 242 行** ✗ —— 而 `token` 是 **`const token = parsedUrl.searchParams.get("token")` 在第 357 行**才定义 ✓
+   ⇒ 我那段 fetch 引用过早 ⇒ 运行时会 `ReferenceError` ✓；
+2. 我插入的 `console.log("…可能报"找不到图层行"…")` 里用了 **ASCII 双引号** ✓ ⇒ **把 JS 字符串截断** ✗
+   ⇒ 模块语法错误、判据**根本加载不起来** ✗（`node --check` 一测就露 ✓）。
+**正确的插法（下一轮照此 ✓）** ✓：
+* **位置** ✓：**在 357 行之后**（`token` 已定义 ✓）、**在 2520 行那一段图层面板检查之前** ✓；
+* **写法** ✓（引号全用「」✓，别用 ASCII 引号 ✗）：
+```js
+// 显式建出 layer_paint，判据不再依赖「文档原来没有图层」这个前提。
+const created = await fetch(`${origin}/api/tools/create_layer?doc=${doc}&token=${token}`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ layer_id: "layer_paint", name: "paint" }),
+}).then((r) => r.json()).catch(() => ({}));
+if (created && created.ok === false) console.log("  建 layer_paint 失败：", JSON.stringify(created).slice(0, 120));
+```
+* **注意** ✓：该文件里 `doc` 这个变量**已被 `evaluate` 回调里的局部 `const doc` 占用** ✓（`528` 行 ✓）
+  ⇒ 顶层应该用**它自己的文档 id 变量** ✗（先 `grep` 顶层到底叫什么 ✓，别想当然 ✗）。
+**处置** ✓：已**回退** ✓（`node --check` 通过 ✓、工作树干净 ✓）—— 不留语法坏掉的判据 ✓。
+**教训（第 3 次同类 ✗）** ✓：**插 JS 之前先 `node --check`** ✓；**引号一律「」** ✓；**变量先 grep 再用** ✓。
