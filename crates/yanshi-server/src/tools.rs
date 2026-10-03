@@ -972,6 +972,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_documents",
+        profile: Profile::Core,
+        summary: "列出工作区里的文档（doc_id、宽高、层数、存活对象数）—— 续画时「先列再开」",
+        mutating: false,
+        params: NO_PARAMS,
+    },
+    ToolSpec {
         name: "list_layers",
         profile: Profile::Core,
         summary: "列出图层（z 序、可见性、不透明度、混合模式、蒙版）",
@@ -2436,6 +2443,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     match spec.name {
         "get_document" => read_get_document(ctx, args),
         "get_state" => read_get_state(ctx, args),
+        "list_documents" => read_list_documents(ctx),
         "list_layers" => read_list_layers(ctx),
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
@@ -2705,6 +2713,29 @@ fn summary_object(object: &yanshi_core::Object) -> Value {
         // 介质描述符随原子记录 ✓（设计 11.1），在对象列表里可见 ✓。
         "medium": medium_of(object),
     })
+}
+
+/// **列出工作区里的文档** ✓（第三方 MCP 实测报告 P0-2 ✓）。
+///
+/// 为什么必须有它 ✗：会话可以「打开已有文档」了 ✓（同 id 再 `new_document` ✓），
+/// 但**不知道该打开哪个** ✗ —— 没有列举入口时，调用方只能靠外部记着 doc_id ✓（报告里就是这个困境 ✓）。
+/// 与 `list_layers` 一样是**只读** ✓（`mutating: false` ✓）。
+fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let documents: Vec<Value> = ctx
+        .workspace
+        .list_documents()?
+        .into_iter()
+        .map(|summary| {
+            json!({
+                "doc_id": summary.doc_id,
+                "width": summary.width,
+                "height": summary.height,
+                "layers": summary.layers,
+                "objects": summary.objects,
+            })
+        })
+        .collect();
+    Ok(json!({ "documents": documents, "count": documents.len() }))
 }
 
 fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
@@ -12229,6 +12260,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("delete_layer", r#"{"layer_id": "L1"}"#),
     ("list_textures", r#"{}"#),
+    ("list_documents", r#"{}"#),
     ("list_layers", r#"{}"#),
     ("get_document", r#"{}"#),
     (
