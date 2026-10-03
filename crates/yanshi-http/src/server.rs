@@ -765,6 +765,43 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             ))
         }
     };
+    // **对外绑定时不许匿名发写权限令牌** ✓（第三方代码审计 P0 第 2 条：
+    // `/api/documents` 原先任何人无需凭据即可拿到 **Editor** 令牌 ✓，
+    // 与已修的"任意路径写"合起来就是"未授权 + 任意写"完整链 ✗）。
+    // 策略（最小且可预期 ✓）：**绑回环** ⇒ 维持现状 ✓（本机开发/探针都靠它 ✓）；
+    // **绑对外** ⇒ Editor/Owner 必须带密钥 `YANSHI_API_KEY` ✓；没配密钥就**明确拒绝**并给出两条出路 ✓。
+    let write_role = matches!(requested_role, Role::Editor | Role::Owner);
+    let loopback = bind_is_loopback(&state.options.bind);
+    if write_role && !loopback {
+        let expected = std::env::var("YANSHI_API_KEY")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let provided = request
+            .param("key")
+            .map(str::to_owned)
+            .or_else(|| request.header("x-yanshi-key").map(str::to_owned));
+        match expected {
+            None => {
+                return Response::from_error(&YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(
+                        "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                         两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                         ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
+                            .to_owned(),
+                    ),
+                ));
+            }
+            Some(key) => {
+                if provided.as_deref() != Some(key.as_str()) {
+                    return Response::from_error(&YanshiError::new(
+                        ErrorCode::PermissionDenied,
+                        ErrorContext::detail(
+                            "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>".to_owned(),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
     let token = match workspace.issue_token(&doc_id, &actor, requested_role) {
         Ok(token) => token,
         Err(error) => return Response::from_error(&error),
@@ -1234,6 +1271,14 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
         }
         Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", path.display())),
     }
+}
+
+/// **监听地址是不是只在本机** ✓ —— 用来决定"能不能匿名发写权限令牌"（见 `create_document`）。
+/// 判据从宽到严 ✓：`127.` / `::1` / `localhost` 都算回环 ✓；`0.0.0.0`、`[::]`、具体外网地址都**不算** ✗。
+fn bind_is_loopback(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(host, _)| host).unwrap_or(bind);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
 /// `GET /brush-previews/{file}`：**预生成入库的画笔预览图 / 索引**。
