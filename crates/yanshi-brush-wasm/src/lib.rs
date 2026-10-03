@@ -259,8 +259,13 @@ pub unsafe extern "C" fn yanshi_brush_free(ptr: *mut u8, len: usize) {
     unsafe { dealloc(ptr, Layout::from_size_align_unchecked(len, 1)) }
 }
 
-/// 输出缓冲区的位置与长度 ✓（**保留住**，直到下一次调用 ✓）。
-static mut OUTPUT: Vec<u8> = Vec::new();
+/// 输出缓冲区 ✓（**保留住**，直到下一次调用 ✓）。
+///
+/// **为什么不是 `static mut`** ✗：那会给出去一个可变静态的**共享引用** ✓，
+/// clippy 的 `static_mut_refs` 直接报错 ✓（我刚因此让主分支红了 ✓，记在这里当教训 ✓）。
+/// wasm 这边是单线程 ✓ ⇒ 用 `Mutex` 只是为了让**别名规则说得清** ✓，
+/// 顺便保证 `yanshi_brush_out_ptr` 返回的指针指向的分配**一直活着** ✓（Vec 就在这把锁里 ✓）。
+static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
 /// 画一条笔触 ✓ ⇒ 返回**输出字节数** ✓（0 = 失败 ✓）。
 #[no_mangle]
@@ -274,17 +279,29 @@ pub unsafe extern "C" fn yanshi_brush_paint(ptr: *const u8, len: usize) -> usize
         Err(_) => return 0,
     };
     match paint(request) {
-        Ok(rgba) => unsafe {
-            OUTPUT = rgba;
-            OUTPUT.len()
-        },
+        Ok(rgba) => {
+            let mut guard = match OUTPUT.lock() {
+                Ok(guard) => guard,
+                Err(_) => return 0,
+            };
+            let len = rgba.len();
+            *guard = rgba;
+            len
+        }
         Err(_) => 0,
     }
 }
 
+/// 上一次 `yanshi_brush_paint` 的输出起始地址 ✓。
+///
+/// **指针在锁释放后仍然有效** ✓：数据在 `Mutex` 里的那个 `Vec` 上 ✓，
+/// 只有**下一次** `paint` 才会替换它 ✓（约定写在上面那段的文档里 ✓）。
 #[no_mangle]
 pub extern "C" fn yanshi_brush_out_ptr() -> *const u8 {
-    unsafe { OUTPUT.as_ptr() }
+    match OUTPUT.lock() {
+        Ok(guard) => guard.as_ptr(),
+        Err(_) => std::ptr::null(),
+    }
 }
 
 #[cfg(test)]
