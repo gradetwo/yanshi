@@ -5618,13 +5618,22 @@ board.addEventListener("wheel", (event) => {
   event.preventDefault();
 }, { passive: false });
 
+/// **要不要平移** —— **一处判定，两处使用** ✗（本项目自己的教训：两条相似路径必然漂移 ✓）。
+///
+/// 背景（用户实测 ✓）："平移画布功能异常，小手会像画笔一样画上去" ✓。
+/// 根因是**两个独立的 `pointerdown` 监听器** ✓：平移那个在 `wantsPan` 为假时 `return` ✓，
+/// 但那**只从它自己返回** ✗ ⇒ 落笔那条照样跑 ✓ ⇒ 选"手形"时**一边平移一边落笔** ✗。
+/// 所以：**平移与落笔都调这一个函数** ✓，落笔那条在它为真时直接返回 ✓。
+function wantsPanEvent(event) {
+  return event.button === 1 || state.tool === "pan" || spaceHeld;
+}
+
 // 中键拖动平移。
 board.addEventListener("pointerdown", (event) => {
   // **平移的三种入口统一在这里** ✓：中键 / 手形工具 / 按住空格 ✓。
   // 只保留一条路径的原因：本会话已多次教训"两条相似路径会漂移" ✗
   //（整段/增量盖章、两条介质链路都栽过 ✓）。
-  const wantsPan = event.button === 1 || state.tool === "pan" || spaceHeld;
-  if (!wantsPan) return;
+  if (!wantsPanEvent(event)) return;
   event.preventDefault();
   panState = { startX: event.clientX, startY: event.clientY,
                originX: state.viewport.x, originY: state.viewport.y, pointerId: event.pointerId };
@@ -5725,6 +5734,9 @@ window.addEventListener("keydown", (event) => {
 });
 
 board.addEventListener("pointerdown", (event) => {
+  // **手形（或中键、空格）时不许落笔** ✗ —— 用户实测："小手会像画笔一样画上去" ✓；
+  // 与平移那条**共用同一个判定** ✓（详见 `wantsPanEvent` 的说明 ✓）。
+  if (wantsPanEvent(event)) return;
   if (state.tool === "text") {
     event.preventDefault();
     void commitText(localPoint(event));
