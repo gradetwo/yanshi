@@ -271,13 +271,10 @@ proptest! {
             .zip(new.chunks_exact(4))
             .filter(|(a, b)| a != b)
             .count();
-        prop_assert!(
-            changed_count > 0,
-            "编辑必须改变像素（实测改了 {} 个）\n  旧样本={:?}\n  新样本={:?}",
-            changed_count,
-            &old[..old.len().min(16)],
-            &new[..new.len().min(16)]
-        );
+        // **前置条件必须显式写出来** ✗：这条性质要问的是"**脏区是否覆盖了所有变化的像素**" ✓，
+        // 而 proptest 会生成"**这次编辑合法地什么都没改**"的输入 ✓（实测反例：新旧样本都是全白 ✓）
+        // ⇒ 在那样的输入上，断言"必须变化"是**自相矛盾** ✗ ⇒ 用 `prop_assume!` **跳过**该例 ✓。
+        prop_assume!(changed_count > 0);
 
         let mut changed = 0usize;
         for y in 0..96u32 {
