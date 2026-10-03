@@ -10987,3 +10987,31 @@ ctx.workspace.commit(&doc_id, atom, &ctx.actor, ctx.owner)?;   // 带 doc_id ⇒
 ```
 **下一轮** ✓：把同一条默认图层**照搬到 HTTP 的 `create_document`** ✓（锚点是它 `NewDocument::new(...)` /
 `create_document(...)` 之后 ✓）⇒ 那两条红应转绿 ✓，报告的"旧脚本"那条也就真正解决 ✓。
+
+### ↩️ 第 128 轮：默认图层**做出来了、但测试面没跟上 ⇒ 整体回退** ✓（保留判据 ✓）+ 下一轮的确切清单 ✓
+
+**这一轮真正做成的** ✓（都已验证过、但为保住全绿而回退 ✗）：
+1. `new_document` 建完文档后**用带 `doc_id` 的 `Workspace::commit`** 追加 `CreateLayer` ✓ ⇒
+   判据里"回执给出 `default_layer`"**转绿** ✓；
+2. HTTP 建文档那条路**也调同一个 helper** ✓（`ensure_default_layer` ✓，写进 `impl Workspace` ✓）⇒
+   "HTTP 新建文档自带默认图层（count=1 ✓）"与"默认图层上直接能落墨 ✓"**双双转绿** ✓
+   ⇒ **会话语义判据 7/7 全绿** ✓✓；
+3. helper **幂等** ✓（同一文档被重建时"图层已存在"当成功 ✓，否则会把建文档整条路弄失败 ✗）。
+**为什么还是回退了** ✗：`cargo test` 有两条**旧测试**写的是"那个年代"的假设 ✓ —
+`document_creation_returns_token_and_url` ✓ 与 `tools_require_valid_tokens_and_reject_unknown_ones` ✓
+（后者自己用 `layer_1` 建图层 ⇒ 与默认图层**撞名** ⇒ 409 ✗）。我第一版**把 409 透出去** ⇒ 两条红 ✗；
+改成幂等后剩 1 条 ✗；然后我**只改了测试的请求体、没改它们的断言** ✗ ⇒ 反倒变 7 红 ✗
+（又一次"改一半"✓ —— 与今天的"锚点不匹配""正则漏排版"同一族 ✓）。
+⇒ **按纪律整体回退** ✓（`git checkout` 两个文件 ✓），`main` 回到**全绿** ✓：
+```
+FMT=0 CLIPPY=0 TEST=0｜passed=786｜FAILED=0 ✓
+```
+**因此本轮提交的只有判据** ✓（`scripts/tool-session-semantics.mjs` 里那条**真调用** ✓ ——
+上一轮它是写死的 `false` 占位 ✗，那种"判据"既不会红也不会绿 ✓ 等于没有 ✓）。
+**下一轮的确切清单** ✓（已读/已验证过 ✓，只差把测试面一起改对 ✓）：
+1. 在 `service.rs` 加 `ensure_default_layer(&mut self, doc_id, actor, session, owner)` ✓
+   （用 `Atom::new(yanshi_core::AtomKind::CreateLayer, actor, session, payload)` ✓ —— 路径是**编译器**给的 ✓），
+   并让它**幂等** ✓；
+2. `write_new_document` 与 HTTP `create_document` **都调它** ✓（两处锚点已确认 ✓）；
+3. **同时**更新那两条旧测试 ✓：它们要能接受"新文档自带 `layer_1`" ✓
+   （`layer_1` 撞名那条改用别的 id ✓ —— **请求体与断言一起改** ✗ 不许只改一半 ✓）。

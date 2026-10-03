@@ -56,9 +56,15 @@ check("new_document 回执给出默认图层", typeof made.default_layer === "st
 const layers = await tool("list_layers", {});
 const count = layers.count !== undefined ? layers.count : (layers.layers || []).length;
 const firstId = ((layers.layers || [])[0] || {}).layer_id;
-check("HTTP 新建文档自带默认图层（本轮只做了 new_document，这条路仍红）", count >= 1,
-  "会话文档 count=" + count);
-check("默认图层上直接能落墨（旧脚本的核心假设）", false,
-  firstId ? "会话文档有图层" : "会话文档没有图层可落笔（旧脚本就死在这里）");
+check("HTTP 新建文档自带默认图层", count >= 1, "count=" + count + " first=" + JSON.stringify(firstId));
+// **真调用**（上一轮这里是写死的 false 占位 ✗ —— 那种"判据"不会红也不会绿 ✓，等于没有 ✓）。
+if (firstId) {
+  const stroke = await tool("brush_stroke", { layer_id: firstId, brush: "100%_Opaque", size: 40,
+    points: [[20, 20, 1], [60, 20, 1]] });
+  check("默认图层上直接能落墨（旧脚本的核心假设）", stroke.ok === true,
+    "detail=" + String((stroke.context || {}).detail || "").slice(0, 60));
+} else {
+  check("默认图层上直接能落墨（旧脚本的核心假设）", false, "没有图层可落笔");
+}
 console.log(bad ? "  结论：" + bad + " 条不成立 ✗" : "  结论：会话语义全部成立 ✓");
 process.exit(bad ? 1 : 0);
