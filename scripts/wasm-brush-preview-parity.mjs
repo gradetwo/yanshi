@@ -72,6 +72,17 @@ const script = `(async () => {
     api.yanshi_brush_free(pointer, payload.length);
     const facade = outLen ? new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), outLen).slice() : null;
     const sameSize = made.width === region.w && made.height === region.h;
+    // **枚数对照** ✓（第 40 轮）：门面那份「stamp」的规则是"首点播种 1 枚 + 每段 ceil(距离/2) 枚
+    // （夹在 1..4096）" ✓ ⇒ 用同一条规则算一遍 ✓，与服务端回的 steps 比 ✓。
+    // 若枚数不同 ⇒ "抽取顺序/枚数不同"成立 ✓（offset_by_random 会让后续 dab 整体偏移 ✓）；
+    // 若枚数相同 ⇒ 差在每一枚 dab 的位置抖动上 ✓。**两种结果指向完全不同的修法** ✓。
+    let expectedSteps = 0;
+    for (let i = 0; i < points.length; i += 1) {
+      if (i === 0) { expectedSteps += 1; continue; }
+      const [px, py] = points[i - 1]; const [x, y] = points[i];
+      const distance = Math.hypot(x - px, y - py);
+      expectedSteps += Math.min(Math.max(Math.ceil(distance / 2.0), 1), 4096);
+    }
     let differing = -1, maxDelta = 0, firstDiff = -1;
     // **差在哪也要带出来** ✓（第 38 轮只给了字节偏移 ✓，这次给**坐标 + 两侧 RGBA + 差值分布** ✓
     // ⇒ "1 LSB 的边缘"与"系统性偏差"一眼可分 ✓，这正是本项目反复吃过的亏 ✓）。
@@ -95,7 +106,8 @@ const script = `(async () => {
     }
     out.push({ brush, serverW: made.width, serverH: made.height, region,
                sameSize, serverBytes: server.length, facadeBytes: facade ? facade.length : 0,
-               differing, firstDiff, maxDelta, samples, oneBit, painted: made.painted_pixels });
+               differing, firstDiff, maxDelta, samples, oneBit, painted: made.painted_pixels,
+               serverSteps: made.steps, expectedSteps });
   }
   return out;
 })()`;
@@ -108,6 +120,8 @@ for (const row of results) {
   console.log(`  ${row.brush.padEnd(14)} 服务端 ${row.serverW}×${row.serverH} vs 算出的区域 ${row.region.w}×${row.region.h}` +
     `｜字节 ${row.serverBytes} vs ${row.facadeBytes}｜不同 ${row.differing}` +
     (row.firstDiff >= 0 ? `（首个 @${row.firstDiff}，最大差 ${row.maxDelta}）` : "") + `｜${ok ? "**逐字节相同** ✓" : "有差异 ✗"}`);
+  console.log(`      枚数：服务端 steps=${row.serverSteps} vs 门面规则算得 ${row.expectedSteps}` +
+    `｜${row.serverSteps === row.expectedSteps ? "相同 ✓" : "**不同** ✗ ⇒ 抽取顺序/枚数就是差异来源 ✓"}`);
   if (!ok && row.oneBit) {
     console.log(`      差值分布：差 1 的通道 ${row.oneBit.one} ✓、≤8 的 ${row.oneBit.small}、>8 的 ${row.oneBit.big}`);
     for (const sample of row.samples || []) {
