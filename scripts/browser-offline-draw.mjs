@@ -78,7 +78,12 @@ console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.i
 const failures = [];
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
-if (!(deltaOffline > 0)) failures.push("离线这一笔**自己的增量**不是正的（" + deltaOffline + "）⇒ 离线还画不了");
+// **不能只看" > 0"** ✗ —— 实测出现过离线只加 57 像素（噪声级 ✓，而在线是 1666+ ✓）就"通过"的情况 ✓
+// ⇒ 这里要求离线那一笔**与在线同一笔的量级相当** ✓（至少 1/4 ✓）：真画出笔触才可能达到 ✓。
+const floor = Math.max(200, Math.floor(Math.abs(deltaOnline) / 4));
+if (!(deltaOffline >= floor)) {
+  failures.push("离线这一笔的增量 " + deltaOffline + " 达不到同一笔的量级门槛 " + floor + " ⇒ 不像真的画上了一笔");
+}
 socket.close();
 if (failures.length) { console.log(`  ✗ 离线还画不了：${failures.join("；")}`); process.exit(1); }
 console.log("  ✓ 离线也能画：断网后一笔仍然上墨");

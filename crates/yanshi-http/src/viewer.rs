@@ -5880,6 +5880,16 @@ async function loadLocalBrushModule() {
     localBrushLoading = fetch("/brush-module.wasm")
       .then((response) => {
         if (!response.ok) throw new Error("模块 HTTP " + response.status);
+        // **顺手把它写进 SW 用的那个缓存**（离线时 SW 的回落会 caches.match 到它）。
+        // 为什么不由 SW 的 fetch 拦截来缓存：上一轮那样改**把在线也弄坏了**（回归，已回退）
+        // ⇒ 这里用**页面主动写缓存**，不动拦截逻辑，风险小得多。缓存名必须与 SW 里的 CACHE 一致。
+        try {
+          if (window.caches) {
+            caches.open("yanshi-shell-v1")
+              .then((cache) => cache.put("/brush-module.wasm", response.clone()))
+              .catch(() => undefined);
+          }
+        } catch (error) { /* 缓存失败不影响本帧 */ }
         return response.arrayBuffer();
       })
       .then((bytes) => WebAssembly.instantiate(bytes, {}))
@@ -5899,6 +5909,16 @@ async function loadLocalBrushText(name) {
   const response = await fetch("/brushes/" + name + ".myb");
   if (!response.ok) throw new Error("笔刷文本 HTTP " + response.status);
   const text = await response.text();
+  // **笔刷文本也写进同一个缓存**（**按需**：只有真正用到的笔刷才进缓存，199 支不会全下）。
+  try {
+    if (window.caches) {
+      caches.open("yanshi-shell-v1")
+        .then((cache) => cache.put("/brushes/" + name + ".myb",
+          new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
+        .catch(() => undefined);
+    }
+  } catch (error) { /* 缓存失败不影响这次预览 */ }
+
   // **服务端顺带告诉我们的那件事** ✓（第 68 轮定的头 ✓）：会读画布的笔刷**不能**本地预览 ✓
   //（门面没有 base 输入 ⇒ 两边起点不同 ⇒ 预览会漂 ✗）。判定是**服务端那一处**算的 ✓，这里只读 ✓。
   const readsCanvas = response.headers.get("X-Yanshi-Brush-Reads-Canvas") === "1";
