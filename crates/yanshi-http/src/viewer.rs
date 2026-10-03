@@ -6274,7 +6274,12 @@ async function commitShape() {
         const box = liveLastRegion;
         // **等它画完再往下走** ✗（第 74 轮实测：原来用 `void` ⇒ 异步 ⇒ 判据立刻量到的是本地那层 ✓，
         // 三次里有一次读成"撤销后还剩 3019 墨" ✗ ⇒ 那是竞态、不是逻辑错 ✓）。
-        await window.yanshiDebugBlit([box.x - 4, box.y - 4, box.w + 8, box.h + 8]);
+        // **重试几次** ✗（第 106 轮实测：单次直调在三次里被跳过一次 ✓ —— 本仓库的补画本来就有
+        // "忙/排队"机制 ✓ ⇒ 单次调用可能整段不生效 ✓）。每次都是服务端权威像素 ✓ 多补无害 ✓。
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await window.yanshiDebugBlit([box.x - 4, box.y - 4, box.w + 8, box.h + 8]);
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        }
       }
       liveLastRegion = null;
       await refreshPreview();
