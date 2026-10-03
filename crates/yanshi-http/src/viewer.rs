@@ -57,7 +57,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  header h1 { font-size: 15px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 6px; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 8px; }
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
      右侧露出一块灰色死区，点击落在 .stage 上而不是 canvas 上（用户报告的「右边一块没法用」）。 */
@@ -87,18 +87,18 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      —— 行业习惯就是**顶栏一个「文件」** ✓，而不是散在右侧信息面板里 ✓。 */
   #fileMenu { position: fixed; top: 52px; left: 118px; z-index: 42; width: min(340px, 92vw);
     background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.5);
-    border-radius: 8px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+    border-radius: 8px; padding: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
   #fileMenu[hidden] { display: none; }
-  #fileMenu .file-menu-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #fileMenu .file-menu-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   #fileMenu .file-menu-head .hint { flex: 1; }
-  #fileMenu .file-menu-group { margin: 6px 0 2px; font-size: 11px; opacity: .7; }
+  #fileMenu .file-menu-group { margin: 8px 0 4px; font-size: 11px; opacity: .7; }
   #fileMenu .card { border: 0; padding: 0; margin: 0; background: transparent; }
   #fileMenu .card h2 { font-size: 12px; margin: 4px 0; }
   /* **右栏 tab** ✓（用户："面板内部有小 tab 切换不同信息"✓）—— 一行 CSS 决定显隐 ✓。 */
   .tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
   .tabs button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
                                       border-color: transparent; }
-  .tab-pane > .card, .tab-pane > details { margin-bottom: 10px; }
+  .tab-pane > .card, .tab-pane > details { margin-bottom: 8px; }
   /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
      #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
      两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
@@ -130,10 +130,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* **左列工具两列排布** ✓（用户要求 ✓）：工具多了之后单列会把 rail 拉得很长，
      两列更接近常见图像软件的工具栏 ✓；用栅格而不是 flex-wrap ✓ —— 栅格保证**列对齐** ✓，
      换行时不会出现"某一行只有一个按钮、宽度还不同"的参差 ✓。 */
-  #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 6px;
+  #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 8px;
            min-width: 0; background: var(--surface); border-right: 1px solid var(--line);
            align-content: start; overflow-y: auto; max-height: calc(100vh - 150px); }
-  #tools button { padding: 7px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
+  #tools button { padding: 8px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
                   align-items: center; }
   /* **面板开关** ✓（用户要求：左右都要能隐藏，并能进全屏画布 ✓）。
      用 `body` 上的三个类表达状态 ✓（`hide-rail` / `hide-dockers` / `zen` ✓）——
@@ -153,19 +153,19 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      而"进了全屏不知道怎么出来"是最典型的抱怨 ✓。默认隐藏 ✓，只在 zen 下出现 ✓。 */
   #zenExit { position: fixed; top: 10px; right: 10px; z-index: 40; display: none;
              background: rgba(20, 20, 22, .62); color: #fff; border: 1px solid rgba(255, 255, 255, .28);
-             border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+             border-radius: 999px; padding: 8px 12px; font-size: 12px; cursor: pointer;
              backdrop-filter: blur(4px); }
-  body.zen #zenExit { display: inline-flex; align-items: center; gap: 6px; }
+  body.zen #zenExit { display: inline-flex; align-items: center; gap: 8px; }
   /* **图层面板** ✓：顶部条 + 行列表 ✓。行里三个可点区域（眼睛 / 锁 / 名字 ✓），
      名字区最大以便点选 ✓；按钮用最小尺寸以免抢走注意力 ✓。 */
-  .layers { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .layers { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
   .layers-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px;
                  opacity: .85; }
-  .layers-actions { display: inline-flex; gap: 2px; }
-  .layers-actions button { padding: 1px 6px; font-size: 12px; line-height: 1.4; }
-  .layer-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto;
-                border: 1px solid var(--line); border-radius: 6px; padding: 3px; background: var(--bg, #fff); }
-  .layer-row { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 4px;
+  .layers-actions { display: inline-flex; gap: 4px; }
+  .layers-actions button { padding: 4px 8px; font-size: 12px; line-height: 1.4; }
+  .layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto;
+                border: 1px solid var(--line); border-radius: 6px; padding: 4px; background: var(--bg, #fff); }
+  .layer-row { display: flex; align-items: center; gap: 4px; padding: 4px 4px; border-radius: 4px;
                font-size: 12px; cursor: pointer; }
   .layer-row:hover { background: rgba(128, 128, 128, .12); }
   .layer-row.selected { background: var(--accent, #2b6cb0); color: #fff; }
@@ -179,7 +179,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* **素材浮层** ✓：浮在画布上方 ✓、可滚动 ✓、不挡工具条 ✓。 */
   #assetDock { position: fixed; top: 96px; left: 16px; z-index: 40; width: min(420px, 92vw);
     max-height: 70vh; overflow: auto; background: Canvas; color: CanvasText;
-    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 10px;
+    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 8px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28); }
   #assetDock[hidden] { display: none; }
   /* **笔刷库** ✓（用户："笔刷这个列表里头都带个笔刷的效果图是不是更好，直接列表中就能找到想要的"✓）。
@@ -187,12 +187,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      图是**懒加载**的 ✓（滚到哪画到哪 ✓ —— 201 支一次全画既慢又是可见的浪费 ✗）。 */
   #brushLibrary { position: fixed; top: 96px; right: 16px; z-index: 41; width: min(380px, 92vw);
     max-height: 76vh; overflow: auto; background: Canvas; color: CanvasText;
-    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 10px;
+    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 8px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28); }
   #brushLibrary[hidden] { display: none; }
-  #brushLibrary .brush-lib-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #brushLibrary .brush-lib-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   #brushLibrary .brush-lib-head .hint { flex: 1; }
-  .brush-lib-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px;
+  .brush-lib-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; border-radius: 6px;
     cursor: pointer; }
   .brush-lib-row:hover { background: rgba(128,128,128,.14); }
   .brush-lib-row.selected { background: var(--accent-soft, rgba(43,108,176,.22)); }
@@ -207,35 +207,35 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* **快捷键按到哪一张卡** ✓（`P` / `T`）：给个看得见的落点 ✓，不然"按了没反应"✗。 */
   #assetDock .asset-dock-target { outline: 2px solid var(--accent, #2b6cb0); outline-offset: 3px;
     border-radius: 6px; }
-  #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   #assetDock .asset-dock-head .hint { flex: 1; }
   .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
                                                border-color: transparent; }
   #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
                stroke-linecap: round; stroke-linejoin: round; }
   #tools button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-  .statusbar { display: flex; gap: 16px; align-items: center; padding: 6px 12px; font-size: 12px;
+  .statusbar { display: flex; gap: 16px; align-items: center; padding: 8px 12px; font-size: 12px;
                background: var(--surface); border-top: 1px solid var(--line); }
   .statusbar .spacer { flex: 1 1 auto; }
   /* 光标处快捷面板 ✓（`position: fixed` ✓ ⇒ 坐标即光标位置 ✓，不受画布滚动影响 ✓）。 */
-  #quickPanel { position: fixed; z-index: 40; min-width: 196px; max-width: 260px; padding: 8px 10px;
+  #quickPanel { position: fixed; z-index: 40; min-width: 196px; max-width: 260px; padding: 8px 8px;
                 background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
                 box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
   #quickPanel[hidden] { display: none; }
   #quickPanel .qp-title { display: flex; justify-content: space-between; align-items: baseline;
-                          margin-bottom: 6px; opacity: .9; }
+                          margin-bottom: 8px; opacity: .9; }
   #quickPanel .qp-hint { opacity: .55; font-size: 11px; }
   #quickPanel .qp-section { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
   #quickPanel .qp-section:empty { display: none; }
-  #quickPanel button { min-width: 30px; padding: 4px 7px; font-size: 11px; }
+  #quickPanel button { min-width: 30px; padding: 4px 8px; font-size: 11px; }
   #quickPanel button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   #quickPanel .qp-swatch { width: 22px; height: 22px; min-width: 0; padding: 0; border-radius: 4px;
                            border: 1px solid var(--line); }
   #quickPanel .qp-swatch[aria-pressed="true"] { outline: 2px solid #6ea8fe; outline-offset: 1px; }
-  #quickPanel .qp-actions { border-top: 1px solid var(--line); padding-top: 6px; }
+  #quickPanel .qp-actions { border-top: 1px solid var(--line); padding-top: 8px; }
   /* 可折叠 Dockers ✓（借鉴成熟绘画软件的面板折叠 ✓）：点标题折叠/展开 ✓，状态持久化 ✓。 */
-  aside .card > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
-  aside .card > h2::before { content: "▾"; font-size: 10px; opacity: .7; transition: transform .1s; }
+  aside .card > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
+  aside .card > h2::before { content: "▾"; font-size: 11px; opacity: .7; transition: transform .1s; }
   aside .card.collapsed > h2::before { transform: rotate(-90deg); }
   aside .card.collapsed > *:not(h2) { display: none !important; }
   aside .card.collapsed { padding-bottom: 8px; }
@@ -255,20 +255,20 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #log { overflow-x: hidden; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
-  #history .row { display: flex; gap: 6px; align-items: center; padding: 1px 0; }
-  #history .row button { padding: 0 5px; font-size: 11px; }
+  #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+  #history .row button { padding: 0 8px; font-size: 11px; }
   #history .seq { opacity: .6; min-width: 34px; }
   #history .kind { min-width: 86px; }
   #history .actor { opacity: .75; }
-  .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
-  .card h2 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
-  button { font: inherit; padding: 4px 9px; border-radius: 5px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px; }
+  .card h2 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  button { font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
   button[aria-pressed="true"] { background: #4a7dff22; border-color: #4a7dff; }
-  input, select { font: inherit; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); background: transparent; }
+  input, select { font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: transparent; }
   #thumb { display: block; border: 1px solid var(--line); border-radius: 5px; background: #fff; width: 128px; height: 128px; object-fit: contain; }
   #log { max-height: 240px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
   #log div { white-space: nowrap; }
-  .status { display: flex; gap: 10px; flex-wrap: wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .85; }
+  .status { display: flex; gap: 8px; flex-wrap: wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .85; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #c33; vertical-align: middle; }
   .dot.on { background: #2a2; }
 </style>
@@ -310,7 +310,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     名称
     <input id="newName" type="text" placeholder="例如 我的第一幅画" style="flex:1 1 auto" />
   </label>
-  <div id="newHint" style="font-size:12px;opacity:.75;min-height:16px;margin:6px 0"></div>
+  <div id="newHint" style="font-size:12px;opacity:.75;min-height:16px;margin:8px 0"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button id="newCancel">取消</button>
     <button id="newCreate">创建</button>
@@ -321,7 +321,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。
        入口放在文档列表**之前** ✓ —— 这样"打开示例看看"是第一步 ✓，而不是在一堆自己的文档里翻 ✗。 -->
   <h3 style="margin:12px 0 4px">示例作品</h3>
-  <p style="opacity:.75;font-size:12px;margin:0 0 6px">
+  <p style="opacity:.75;font-size:12px;margin:0 0 8px">
     用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。
   </p>
   <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
@@ -543,7 +543,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <div class="card" data-panel="paint">
       <h2>调整 / 滤镜</h2>
-      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
+      <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap">
         <select id="effectKind">
           <option value="adjustment">调整</option>
           <option value="filter">滤镜</option>
@@ -552,14 +552,14 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="effectApply">应用</button>
         <button id="effectNew" type="button">＋新建</button>
       </div>
-      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
         <input id="effectParams" value="{}" style="flex:1; font-family:ui-monospace,monospace" />
       </div>
       <div id="effectsList" style="font-family:ui-monospace,monospace;font-size:11px;max-height:120px;overflow:auto"></div>
     </div>
     <div class="card" data-panel="history">
       <h2>历史（原子日志）</h2>
-      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap">
+      <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap">
         <select id="historyKind"><option value="">全部类型</option></select>
         <select id="historyActor"><option value="">全部操作者</option></select>
         <button id="historyReload">重新载入</button>
@@ -567,7 +567,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <!-- **检查点** ✓（设计 §4.5 ✓）—— `checkpoint` / `restore_checkpoint` / `get_checkpoints`
            此前在查看器里**零引用** ✗ ⇒ 与"标注""实例/组"同一类缺口 ✓（工具就绪、用户够不到 ✓）。
            画家最直观的用法就是"**打一个存档点 ✓、以后回到这里** ✓"。 -->
-      <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap">
+      <div style="display:flex; gap:8px; margin:8px 0; flex-wrap:wrap">
         <button id="checkpointCreate" type="button">打一个存档点</button>
         <button id="checkpointReload" type="button">刷新存档点</button>
       </div>
@@ -579,7 +579,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
       <!-- **变更集** ✓（设计 793 ✓）—— `begin/commit/abort/get_changesets/revert_changeset`
            此前在查看器里**零引用** ✗ ⇒ 用户拿不到"**成组撤销**" ✓（把接下来这一串动作打包 ✓，
            不满意就**整体撤销** ✓）。 -->
-      <div class="toolbar" style="margin-top:6px">
+      <div class="toolbar" style="margin-top:8px">
         <button id="changesetBegin" type="button">开始变更集</button>
         <button id="changesetCommit" type="button">提交</button>
         <button id="changesetAbort" type="button">放弃（整体撤销）</button>
@@ -603,7 +603,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     </div>
     <div class="card" data-panel="diag">
       <h2>反馈</h2>
-      <div class="status" style="flex-direction:column; align-items:flex-start; gap:6px">
+      <div class="status" style="flex-direction:column; align-items:flex-start; gap:8px">
         <span>问题反馈、协作沟通、缺陷上报：</span>
         <a id="contact" href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20"
            style="color:#3f7fd4; font-family:ui-monospace,monospace; font-size:12px">yanshi@wangda.today</a>
@@ -642,7 +642,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
         <button id="objectPath" type="button">执行路径算子</button>
         <button id="objectRestyle" type="button">改笔触</button>
       </div>
-      <div style="display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center">
+      <div style="display:flex; gap:8px; margin:8px 0; flex-wrap:wrap; align-items:center">
         <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
         <label>缩放% <input id="transformScale" type="number" value="100" step="10" style="width:64px" /></label>
         <label>dx <input id="transformDx" type="number" value="0" step="10" style="width:56px" /></label>
