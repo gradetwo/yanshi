@@ -1744,6 +1744,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]"),
+            param!(
+                "preview",
+                Boolean,
+                false,
+                "true = 批处理完直接带回一张预览图（省掉手动再调 render_region 的往返；缺省 false，行为不变）"
+            ),
             param!("message", String, false, "变更集说明"),
             param!(
                 "silent",
@@ -12212,7 +12218,31 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .document(&ctx.doc_id)
         .map(|document| document.head_seq())
         .unwrap_or(0);
+    // **`preview: true`：批处理完直接带回一张图** ✓（需求文档 P0-2「实时预览流」✓；
+    // 画师报告："batch → 手动 render_region → 存文件 → 看，4 步 30 秒"✗）。
+    // **复用既有的 `read_render_region`** ✓（不另写渲染 ✓，含它已有的内嵌语义 ✓）。
+    let preview_value = if args
+        .get("preview")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let (width, height) = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| (document.state().width, document.state().height))
+            .unwrap_or((256, 256));
+        let request = json!({
+            "region": {"x": 0.0, "y": 0.0, "width": width as f64, "height": height as f64},
+            "include_image": true,
+            // **上限给足** ✓：这是"整幅预览" ✓，缺省 512 会把图省略掉 ✗（判据实测过这一点 ✓）。
+            "max_px": 4_000_000,
+        });
+        read_render_region(ctx, &request)?
+    } else {
+        Value::Null
+    };
     Ok(json!({
+        "preview": preview_value,
         "changeset_id": changeset,
         "calls": results,
         "count": results.len(),
