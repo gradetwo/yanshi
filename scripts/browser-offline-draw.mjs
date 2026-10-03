@@ -98,13 +98,13 @@ const STROKE = `(async () => {
   board.dispatchEvent(new PointerEvent("pointerdown", at(0.3, 0.4)));
   // **每步之间真的等一会儿** —— 本地预览有 35ms 节流,同一个 tick 里连发会被丢掉大半
   // (实测:那样只画出 2 帧、增量 6 像素,看起来像"离线画不了",其实是判据的笔画不真实)。
-  for (let step = 1; step <= 8; step += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 60));
+  for (let step = 1; step <= 5; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
     board.dispatchEvent(new PointerEvent("pointermove", at(0.3 + 0.04 * step, 0.4 + 0.025 * step)));
   }
   await new Promise((resolve) => setTimeout(resolve, 60));
   board.dispatchEvent(new PointerEvent("pointerup", at(0.62, 0.6, { buttons: 0 })));
-  return { ok: true, steps: 8, brushAtPointerDown: brushAtPointerDown };
+  return { ok: true, steps: 5, brushAtPointerDown: brushAtPointerDown };
 })()`;
 // **统计计数**：能区分"预览被跳过"（有 skip 计数）与"根本没走到"（一个计数都没有）
 const STATS = `(() => {
