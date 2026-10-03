@@ -12600,3 +12600,34 @@ assertion `left == right` failed: multiply 应当真的写进图层（实测 nor
 * 这一条**建议先做** ✓：它决定了默认图层的 `id`/`z_index` 选法是否还需要调整 ✓
   （例如把默认图层的 id 就叫 `layer_1` ✗ —— 那样多数既有路径**天然不受影响** ✓，
   代价是要处理"已有名为 layer_1 的层"的冲突 ✓）。
+
+### 🗂️ 第 206 轮：**(3) 的完整清单 = 14 条失败，一次列全** ✓✓（方法：`cargo test --workspace --no-fail-fast` ✓）
+
+**为什么这次能一次看全** ✓：前几轮用默认的"遇错即停" ✗ ⇒ 每跑一次只暴露一处 ✓；
+换成 **`--no-fail-fast`** ✓ ⇒ **一轮列出全部** ✓（这是本轮真正的工具改进 ✓，以后凡是"改一处期望类改动"都该这样跑 ✓）。
+**完整清单（实测 ✓，含断言原话 ✓）** ✓：
+| # | 测试 | 位置 / 断言 |
+|---|---|---|
+| 1 | `fold::tests::reorder_layers_is_absolute_and_last_writer_wins` ✓ | `fold.rs:1800`｜`left: ["layer_default","layer_1","layer_2"]` vs `right: ["layer_1","layer_2"]` ✓ |
+| 2 | `seq::tests::state_at_is_stable_and_cached` ✓ | `seq.rs:548`｜`left: 2` vs `right: 1` ✓ |
+| 3 | `atom_metadata_stays_small_and_references_existing_blobs` ✓ | `fold_properties.rs:43`（覆盖断言 ✓，处置已定 ✓） |
+| 4 | `document_persistence_over_http_survives_restart` ✓ | `transport.rs:580`｜`layers` `Number(2)` ✓ |
+| 5 | `every_supported_blend_mode_can_actually_be_set` ✓ | `blend_mode_validation.rs:121`｜"multiply 应当真的写进图层（实测 normal）" ✗ ← **行为性** ✓ |
+| 6 | `closed_documents_report_their_real_counts` ✓ | `document_summary.rs:186`｜"打开着：图层数" `2` vs `1` ✓ |
+| 7 | `list_and_summary_agree_on_live_counts_for_open_and_closed_documents` ✓ | `document_summary.rs:277`｜`(2,1)` vs `(1,1)` ✓ |
+| 8 | `the_document_summary_counts_live_entities_only` ✓ | 同一族（计数 ✓） |
+| 9 | `a_missing_layer_with_no_layers_says_so_plainly` ✓ | **测试名就是为旧行为写的** ✗（"没有图层" ✓） |
+| 10 | `a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom` ✓ | 区域/图层顺序族 ✓ |
+| 11 | `duplicating_a_layer_copies_its_objects_and_sits_directly_above` ✓ | 图层顺序族 ✓（"直接在上面" ✓） |
+| 12 | `tool_layer_covers_core_workflow` ✓ | 工具层工作流 ✓ |
+| 13 | `kernel::tests::applies_atoms_incrementally_and_matches_full_fold` ✓ | **wasm 内核** ✓（增量=全量折叠 ✓） |
+| 14 | `kernel::tests::state_json_exposes_the_summary_used_by_the_editor` ✓ | **wasm 内核** ✓（编辑器用的摘要 ✓） |
+**这告诉我们什么** ✓（重要 ✓）：失败**不是"14 个数字"** ✗ —— 至少 **#5 #9 #10 #11 #12 #13 #14** 属于
+**"默认只有一层 / 第一层 / 直接在上面 / 没有图层"** 这类**语义假设** ✓ ⇒ 与第 205 轮的判断一致 ✓：
+**要么给默认图层换一个"不参与默认解析"的身份** ✓、**要么把各处默认解析钉死到原来的层** ✓。
+**因此下一轮的最优路径（已很明确 ✓）** ✓：
+1. **先试"默认图层 id 定成 `layer_1`"** ✗ —— 让"第一层/唯一层"的既有语义**天然不变** ✓，
+   多数失败（尤其 #5 #9 #10 #11 #13 #14）**很可能自己就绿** ✓；
+2. 剩下真属于"计数变了"的（#1 #2 #4 #6 #7 #8 ✓）按数字改 ✓（已全部有原话 ✓）；
+3. #3 按已定选项处理 ✓；
+4. 每一步都 `cargo test --workspace --no-fail-fast` ✓ ⇒ **全绿才提交** ✓。
