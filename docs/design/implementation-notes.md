@@ -13261,3 +13261,18 @@ EXIT=0 ✓｜包名 triple: x86_64-unknown-linux-gnu ✓
 ```
 结论：37 个示例**跑通** ✓、0 个没跑通 ✗   ✓
 ```
+
+### ✅ 第 238 轮：示例 **37 ⇒ 45** ✓（这批用**机器普查**挑 ✓，不再一条条猜 ✓）
+
+**做法（可复用的 ✓）** ✓：从**运行中的服务**读全部工具的 `inputSchema` ✓ ⇒ 挑
+"**没有任何必填参数**（`required` 为空 ✓）**且还没有示例**"的 ✓ ⇒ 本轮这类有 **17 个** ✓。
+**这批只取纯读型 8 个** ✓：`get_log` ✓ / `get_preferences` ✓ / `get_checkpoints` ✓ / `get_changesets` ✓ /
+`list_stashes` ✓ / `list_effects` ✓ / `list_annotations` ✓ / `list_comments` ✓ ⇒ 示例 `{}` ✓。
+**同一批里故意不选的** ✗（有副作用或需要前置状态 ✓，单条示例结构上不适用 ✓，见第 237 轮）✓：
+`redo_last` ✗ / `undo_last` ✗ / `begin_transaction` ✗ / `commit_transaction` ✗ / `commit_changeset` ✗ / `abort_changeset` ✗。
+**判据实测** ✓：
+```
+结论：45 个示例**跑通** ✓、0 个没跑通 ✗   EXIT=0 ✓
+判据算出的示例数：45   ⇒ 文档里的数目**按它同步**为 45 ✓（不再手数 ✗，见第 229 轮教训 ✓）
+```
+⇒ 覆盖面 ✓：**28 ⇒ 32 ⇒ 35 ⇒ 37 ⇒ 45** ✓（缺示例的工具 **99 ⇒ 82** ✓）。

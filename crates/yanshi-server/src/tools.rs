@@ -12418,6 +12418,19 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // `find_atom` / `get_object_history` 见各自测试里的 `{"object_id": "s1"}` ✓。
     ("get_diff", r#"{"from_seq": 0}"#),
     ("find_atom", r#"{"object_id": "s1"}"#),
+    // 第 (5) 条继续扩 ✓：这一批用**机器普查**挑 ✓（第 238 轮 ✓）——
+    // 条件：**没有任何必填参数** ✓（`inputSchema.required` 为空 ✓）且**还没有示例** ✓。
+    // 这类是纯读型 ✓ ⇒ 在全新文档上跑 `{}` 不会因"前置状态缺失"而红 ✓。
+    // （同一批里的 `redo_last`/`undo_last`/事务类**故意不选** ✗ —— 它们**有副作用或需要前置状态** ✓，
+    //  单条示例结构上不适用 ✓，见第 237 轮记下的机制性限制 ✓。）
+    ("get_log", r#"{}"#),
+    ("get_preferences", r#"{}"#),
+    ("get_checkpoints", r#"{}"#),
+    ("get_changesets", r#"{}"#),
+    ("list_stashes", r#"{}"#),
+    ("list_effects", r#"{}"#),
+    ("list_annotations", r#"{}"#),
+    ("list_comments", r#"{}"#),
     // **`get_object_history` 不能作为单条示例** ✗ —— 判据实测报"对象 s1 不存在" ✓：
     // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
     //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。

@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 28 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+当前共 45 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
 
 ## `begin_changeset`
 
@@ -121,6 +121,26 @@
 }
 ```
 
+## `draw_shape`
+
+```json
+{
+  "data": {
+    "geometry": {
+      "bbox": {
+        "h": 30,
+        "w": 30,
+        "x": 40,
+        "y": 40
+      },
+      "kind": "rect"
+    }
+  },
+  "layer_id": "layer_default",
+  "object_id": "box"
+}
+```
+
 ## `draw_stroke`
 
 ```json
@@ -172,7 +192,58 @@
 }
 ```
 
+## `fill`
+
+```json
+{
+  "data": {
+    "color": {
+      "a": 255,
+      "b": 240,
+      "g": 240,
+      "r": 240
+    }
+  },
+  "layer_id": "layer_default",
+  "object_id": "bg"
+}
+```
+
+## `find_atom`
+
+```json
+{
+  "object_id": "s1"
+}
+```
+
+## `get_changesets`
+
+```json
+{}
+```
+
+## `get_checkpoints`
+
+```json
+{}
+```
+
+## `get_diff`
+
+```json
+{
+  "from_seq": 0
+}
+```
+
 ## `get_document`
+
+```json
+{}
+```
+
+## `get_log`
 
 ```json
 {}
@@ -184,6 +255,20 @@
 {
   "include_history": true,
   "object_id": "o1"
+}
+```
+
+## `get_preferences`
+
+```json
+{}
+```
+
+## `get_state`
+
+```json
+{
+  "include_objects": true
 }
 ```
 
@@ -224,15 +309,46 @@
 }
 ```
 
+## `list_annotations`
+
+```json
+{}
+```
+
 ## `list_assets`
 
 ```json
 {
-  "kind": "brush"
+  "kind": "brush",
+  "tag": "fur"
 }
 ```
 
+## `list_comments`
+
+```json
+{}
+```
+
+## `list_documents`
+
+```json
+{}
+```
+
+## `list_effects`
+
+```json
+{}
+```
+
 ## `list_layers`
+
+```json
+{}
+```
+
+## `list_objects`
 
 ```json
 {}
@@ -244,6 +360,18 @@
 {
   "palette": "open-color.json"
 }
+```
+
+## `list_selections`
+
+```json
+{}
+```
+
+## `list_stashes`
+
+```json
+{}
 ```
 
 ## `list_textures`
@@ -281,5 +409,30 @@
   "doc_id": "demo",
   "height": 640,
   "width": 900
+}
+```
+
+## `render_region`
+
+```json
+{
+  "include_image": true,
+  "region": [
+    0,
+    0,
+    64,
+    64
+  ]
+}
+```
+
+## `update_layer`
+
+```json
+{
+  "layer_id": "layer_default",
+  "patch": {
+    "blend_mode": "multiply"
+  }
 }
 ```
