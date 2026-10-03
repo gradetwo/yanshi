@@ -13786,3 +13786,33 @@ TOOL_EXAMPLES 条目数：54 ✓（52 在 core profile ✓、另 2 条属别的 
 ⇒ 若不核对"变异是否真的生效"（这次靠 `HTTP 200` / `注册语句计数 0` ✓）就会**误以为"判据不会红"** ✗。
 **规矩（重申 ✓）** ✓：变异之后**必须先证明确实改了被判条件** ✓（输出里要有对应变化 ✓），再看判据颜色 ✓。
 **顺带** ✓：这也说明本项目的 `cargo fmt` 会重排长链式调用 ✓ ⇒ **锚点别依赖 fmt 后的排版** ✗。
+
+### 🧭 第 3 轮：**把本地预览切到共享内核**的精确方案（读代码得出 ✓，下一轮一次落地 ✓）
+
+**现状（读到的 ✓）** ✓：
+* `loadLocalBrushModule()`（`viewer.rs:5877` ✓）⇒ `fetch("/brush-module.wasm")` ✓ ⇒ 实例化**门面** ✓；
+* `paintLiveFrame()`（`~5954` ✓）⇒ `api.yanshi_brush_alloc/paint` ✓（`5985/5988` ✓）⇒ 拿 RGBA ⇒ 贴到画布 ✓；
+* `brush.readsCanvas` 的笔刷（涂抹 / colorize ✓）⇒ **跳过**本地预览 ✓（`stats.localBrushReadsCanvasSkips` ✓）——
+  理由当时写的是"**门面没有 base 输入**"✓。
+**切换方案（要改的就这几处 ✓）** ✓：
+1. **取数** ✓：`paintLiveFrame()` 里把
+   `const api = await loadLocalBrushModule(); const brush = await loadLocalBrushText(...)` ✓
+   **换成** ✓：`const payload = { layer_id: state.layerId, type: "stroke", data: { points, size, color, … } }` ✓
+   ⇒ `const answer = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(payload)))` ✓；
+2. **取像素** ✓：拿 `answer.dirty_bbox` ✓ ⇒ `state.kernel.render_region_rgba(x,y,w,h)` ✓ ⇒ 贴到画布 ✓
+   （**不再需要**自己算区域 ✓ —— 内核已经回报"变化的区域" ✓）；
+3. **`readsCanvas` 那类** ✓：**在内核路径下不必跳过** ✓ —— 内核**本来就持有文档状态** ✓
+   ⇒ 涂抹/colorize 能本地渲染 ✓ ⇒ 这是**顺带的功能改善** ✓（但要**判据证明**它与服务端一致 ✓ 才敢开 ✓）；
+4. **退休清单** ✓：`GET /brush-module.wasm` 路由 ✓ + `crates/yanshi-brush-wasm` ✓ + 打包脚本里那一步 ✓
+   + 查看器里的 `loadLocalBrushModule/-Text` ✓（`/brushes/*.myb` 的取文本若只为门面 ⇒ 也可退 ✓）；
+   **注意** ✓：内核的 `extend_preview_stroke` **收的是 payload 里的笔刷数据** ✓
+   （`StrokeGeometry`/`BrushSpec::from_value` ✓，`kernel.rs:406-407` ✓）⇒ 所以 `.myb` 文本**仍要**能到内核 ✓
+   ⇒ 要么内核侧已有加载入口 ✗、要么 payload 里带笔刷定义 ✓ —— **这一步要再读一次 `kernel.rs` 的入口** ✓
+   （`set_preview_object` 收什么 ✓ / 有没有 `load_brush` ✓）⇒ **下次先读它 ✓，别猜** ✗。
+**判据（(A)⑥ ✓，能红 ✓）** ✓：真浏览器里**同一条笔触**——
+* 模式①（切换后 ✓）：拖动期本地内核渲染 ⇒ 抬手 ⇒ 服务端提交；
+* 模式②（对照 ✓）：同一笔在服务端渲染（`brush_stroke` ✓）；
+* 断言 ✓：**两次最终像素逐字节一致** ✓（扩 `wasm-brush-parity` 的"同源"思路到"客户端 vs 服务端" ✓）；
+* 另有 ✓：**离线**（CDP 断网 ✓）画一笔 ⇒ 画布**必须有墨** ✓（今天必然红 ✗ ⇒ 能红 ✓）。
+**为什么本轮不落地** ✗（如实 ✓）：第 4 点里"笔刷定义怎么进内核"**还没读** ✓ ——
+按本项目的历史 ✗，猜它一次就会多花两轮 ✓（而且这次碰的是**主路径** ✗）。
