@@ -126,6 +126,26 @@ const deltaOffline = after2.ink - before2.ink;
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.ink + "（增量 " + deltaOnline + "）｜分画布 " + JSON.stringify(after1.parts));
 console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
+// **缓存快照**（证据 ✓）：有哪些缓存、各自哪些条目、多大
+const CACHES = `(async () => {
+  if (!window.caches) return { supported: false };
+  const names = await caches.keys();
+  const out = [];
+  for (const name of names) {
+    const cache = await caches.open(name);
+    const requests = await cache.keys();
+    const entries = [];
+    for (const request of requests.slice(0, 12)) {
+      const response = await cache.match(request);
+      let size = 0;
+      try { size = (await response.clone().arrayBuffer()).byteLength; } catch (error) { size = -1; }
+      entries.push(request.url.replace(location.origin, "") + " (" + size + "B)");
+    }
+    out.push({ name: name, count: requests.length, entries: entries });
+  }
+  return { supported: true, caches: out };
+})()`;
+
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
