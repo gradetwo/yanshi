@@ -35,6 +35,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     --muted: #a3adbb;       /* 次要文字（对 --bg 约 7.8:1 ✓） */
     --accent: #3d6bb3;      /* 强调 / 选中 / 焦点环 */
     --accent-soft: #2b4a7d; /* 选中态的柔化底色 */
+    /* **控件统一高度** ✓（真浏览器实测过：同一排按钮曾出现 26 / 27 / 28 三档并存 ✗ ⇒
+       差 1–2px，看着就不规整 ✓ —— 这正是"没有专业软件设计感"的机制之一 ✓）。
+       做法与专业软件一致 ✓：**一个高度令牌** ✓ + 显式高度 ✓；紧凑档按需再定 24px ✓。 */
+    --control-h: 28px;
   }
   * { box-sizing: border-box; }
   /* **整页垂直锁死** ✓（用户："保持整个软件的垂直方向是锁死（但是画布例外，
@@ -45,6 +49,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
   /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  /* **所有控件一个高度** ✓（令牌见 `:root` ✓）：同一排按钮不再各差 1–2px ✓。
+     复选框**排除在外** ✓（它本来就是小方格 ✓）；色块若被压到 28px 会与调色板栅格不符 ⇒ 下一轮实测后再定 ✓。 */
+  button, input:not([type="checkbox"]), select { height: var(--control-h); }
   /* 可点区域下限 ✓：界面控件不低于 26px 高 ✓（密集的深色界面里最影响手感 ✓）。
      **收窄到具体控件** ✓ —— 第一版写成裸 `button, select, input` ✗，实测两个介质用例的画布
      同时变空 ✗（可见它影响了画布/舞台的重绘路径 ✓）；现在只作用于界面控件 ✓，
