@@ -681,12 +681,19 @@ if [ "${is_linux}" = 1 ]; then
   elif ldd "$stage/bin/yanshi-serve" 2>&1 | grep -q "statically linked"; then
     echo "    静态链接 ✓ 不依赖任何 glibc 版本 ✓"
   else
-    newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
-    echo "    动态链接 ⇒ 要求 ${newest}（构建机是 $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')）"
+    # **真实用户报告（macOS 交叉打包 ✓）** ✗：宿主没有 `objdump`/`ldd` ✓ ⇒ 在 `set -euo pipefail` 下，
+# 下面这种"命令替换里带管道"的赋值会**因为整条管道非 0 而直接终止脚本** ✗，而错误又被 `2>/dev/null` 吞掉 ✓
+# ⇒ 用户只看到 `make: *** [release] Error 1` ✓（编译成功、产物是 ELF、却"莫名"失败 ✓）。
+# ⇒ 一律**容忍失败** ✓（`|| true`）⇒ 拿不到信息就**跳过这类统计** ✓，绝不因此判打包失败 ✗。
+newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1 || true)"
+    echo "    动态链接 ⇒ 要求 ${newest}（构建机是 $(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || echo 未知)）"
     echo "    ⚠️  比目标发行版新就会一运行就崩 ✗ ⇒ 建议加 --static 重新打包 ✓"
   fi
   if [ "$static_build" = 1 ]; then
-    if objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
+    if ! command -v objdump >/dev/null 2>&1; then
+      echo "    （宿主 ${host_triple} 上没有 objdump ⇒ **跳过**「静态包是否引用 GLIBC」这项检查 ✓）"
+      echo "      ⇒ 请在**实际目标机**上跑一次：ldd ./yanshi-serve（应显示 not a dynamic executable ✓）"
+    elif objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
       echo "    ✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败" >&2
       # **把"为什么"和"两条出路"一起说清** ✓ —— 真实用户在 macOS 跨编 Linux 时正是撞在这里 ✓
       #（他贴出的日志只到"跳过 commit 断言"✓ ⇒ 后一道就是这个 ✓）。宁可**失败并说清** ✓，也不静默降级 ✗。

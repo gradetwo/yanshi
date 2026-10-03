@@ -13377,3 +13377,30 @@ Linux 上 `--static` 是缺省 ✓，它会断言"**声明 static 就不得引�
    ① 换 musl ⇒ 真静态 ✓：rustup target add x86_64-unknown-linux-musl
    ② 明确要动态包 ⇒ make release-dynamic TARGET=aarch64-apple-darwin ✓
 ```
+
+### 🎯 第 244 轮：用户在 macOS 上"莫名 `make: Error 1`"的**真凶找到并修好** ✓✓（**静默失败** ✗）
+
+**用户的证据链** ✓：日志**到我的跳过提示就没了** ✓、`make` 却报 `Error 1` ✓、
+而且他确认"**编译成功、产物是 ELF**" ✓ ⇒ 指向**静默失败** ✗。
+**真凶** ✓（`scripts/package-release.sh` ✓）：
+```bash
+newest="$(objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+```
+* macOS **没有 `objdump`** ✗（`ldd` 也没有 ✗）；
+* 在 `set -euo pipefail` 下 ✓，**命令替换里的整条管道非 0** ⇒ **赋值语句失败 ⇒ 脚本直接退出** ✗；
+* 而错误被 `2>/dev/null` **吞掉** ✓ ⇒ 用户只看到 `make: *** [release] Error 1` ✓✓ —— 与他看到的一模一样 ✓。
+**修法（三处 ✓，原则：拿不到信息就"明说跳过"，绝不因此判失败 ✗）** ✓：
+1. 该赋值加 `|| true` ✓；
+2. `ldd --version …` 也容忍缺失 ✓（退化为"未知" ✓）；
+3. `--static` 那道断言：**先看有没有 `objdump`** ✓ ⇒ 没有就**明说跳过**并给出"到目标机上用 `ldd` 自测"的建议 ✓。
+**实测（正反两面对照 ✓）** ✓：
+```
+① 用假 objdump（exit 127 ✓）模拟 macOS ⇒ **EXIT=0** ✓ 打包走完 ✓
+   ✓ 名实相符：x86_64-unknown-linux-gnu 与包内二进制一致 ✓
+   完成：…/yanshi-0.1.0-0e458b2-dirty-x86_64-unknown-linux-gnu-static.tar.gz ✓
+② 真 objdump + 动态产物却声明 -static ⇒ EXIT=1 ✓（**正确拒绝** ✓，并打印原因与两条出路 ✓）
+```
+⇒ **用户那条路径现在是"能走通"的** ✓（不再静默死掉 ✗）。
+**顺带又一次"旧二进制"教训** ✓：我重建时**漏了 `--target`** ✗ ⇒ 写进 `target/release` ✓，
+而 `--skip-build` 读的是 **`target/<triple>/release`** ✓ ⇒ 仍报 commit 不一致 ✓（**它的拒绝是对的** ✓）⇒
+**带上 `--target` 重建** ✓ 才验到真结果 ✓ —— 再次印证"**改完先 build（且带对目标）✓，再起服务/打包，再判据**" ✓。
