@@ -54,6 +54,13 @@ await call("brush_stroke", { layer_id: "L1", object_id: "o1", brush: "100%_Opaqu
   points: [[60, 60, 1], [120, 60, 1]] });
 
 const DESTRUCTIVE = ["delete", "remove", "clear", "reset", "drop"];
+// **互斥/一次性工具，预先排除** ✗ —— 别"加完再删"（第 6 轮实测：`begin_transaction` 与
+// `begin_changeset` **互斥**，同一个文档里跑验收必然红一条，害得整批连同 5 条好的被回退）。
+const EXCLUDE = new Map([
+  ["begin_transaction", "与 begin_changeset 互斥：同一会话只能开一个变更集/事务"],
+  ["commit_transaction", "同上：没有 begin_transaction 时它无从谈起"],
+  ["abort_transaction", "同上"],
+]);
 const valueFor = (name, kind) => {
   const k = String(kind || "").toLowerCase();
   if (["layer_id", "layer"].includes(name)) return "L1";
@@ -66,7 +73,10 @@ const valueFor = (name, kind) => {
   return "x";
 };
 const candidates = [...tools.keys()].filter((n) => !have.has(n) && !have.has(n + ".myb")
-  && !DESTRUCTIVE.some((d) => n.includes(d))).sort();
+  && !DESTRUCTIVE.some((d) => n.includes(d)) && !EXCLUDE.has(n)).sort();
+for (const [name, why] of EXCLUDE) {
+  if (!have.has(name) && tools.has(name)) console.log(`  （预先排除）${name}：${why}`);
+}
 let added = 0;
 for (const name of candidates) {
   if (added >= max) break;
