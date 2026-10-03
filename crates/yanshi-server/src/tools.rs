@@ -12054,6 +12054,15 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    (
+        "medium_stroke",
+        r#"{"layer_id": "L1", "medium": "oil", "points": [[60, 220, 1], [140, 220, 1]]}"#,
+    ),
+    ("list_palette_colors", r#"{"palette": "open-color.json"}"#),
+    (
+        "draw_stroke",
+        r#"{"layer_id": "L1", "data": {"points": [[60, 180, 1], [140, 180, 1]]}}"#,
+    ),
     ("delete_layer", r#"{"layer_id": "L1"}"#),
     ("list_textures", r#"{}"#),
     ("list_layers", r#"{}"#),
