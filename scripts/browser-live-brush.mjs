@@ -303,13 +303,28 @@ const diff = await evaluate(`(() => {
     if (p < minX) minX = p; if (p > maxX) maxX = p;
     if (q < minY) minY = q; if (q > maxY) maxY = q;
   }
+  // **墨点的平均颜色/不透明度** ✓（中途 vs 最终 ✓）—— 用来区分"整体偏淡/偏浓" ✓ 与"某通道偏移" ✓。
+  const meanOf = (data) => {
+    let n = 0, r = 0, g = 0, b = 0, a = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      // **"墨"的判据要和 inkOnCanvas 一致** ✗ —— 画布是不透明白底（alpha 255），
+      // 只按 alpha 过滤会把 900×640=576000 个像素全算进来 ✓（实测就是这样，均值全被白底拉平 ✗）。
+      if (data[i + 3] <= 32) continue;
+      if (data[i] > 245 && data[i + 1] > 245 && data[i + 2] > 245) continue;
+      n += 1; r += data[i]; g += data[i + 1]; b += data[i + 2]; a += data[i + 3];
+    }
+    if (!n) return null;
+    return { n, r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1), a: +(a / n).toFixed(1) };
+  };
   return { count, maxDelta, box: count ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null,
+           meanMid: meanOf(before), meanFinal: meanOf(now),
            canvas: { w: width, h: board.height } };
 })()`);
 if (diff) {
   console.log(`  ④b 差异：${diff.count} 个像素不同｜最大通道差 ${diff.maxDelta}｜包围盒 ` +
     (diff.box ? `${diff.box.w}×${diff.box.h} @(${diff.box.x},${diff.box.y})` : "无") +
     `｜画布 ${diff.canvas.w}×${diff.canvas.h}`);
+  console.log(`  ④c 墨点均值：中途 ${JSON.stringify(diff.meanMid)} vs 最终 ${JSON.stringify(diff.meanFinal)}`);
 }
 console.log(`  ④ WYSIWYG：中途(指纹 ${wysiwygMidDigest}, 墨 ${wysiwygMidInk}) vs 最终(指纹 ${wysiwygFinalDigest}, 墨 ${wysiwygFinalInk}) ⇒ ` +
   (wysiwygSame ? "**完全相同** ✓" : `**不同** ✗（墨差 ${wysiwygFinalInk - wysiwygMidInk}）`));
