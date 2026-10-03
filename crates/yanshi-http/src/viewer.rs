@@ -6326,7 +6326,11 @@ async function commitShape() {
     if (state.points.length < 2) return;
     await callToolChecked("erase", {
       layer_id: state.layerId,
-      data: { points: state.points.map((p) => [p.x, p.y]), size: size * 1.5, color: { r: 0, g: 0, b: 0, a: 0 } },
+      // **压力必须发出去** ✗ —— 用户实测报告："用绘画板测试，橡皮没有压力支持，不同压力下表现都一样" ✓。
+      // 上一版这一行只映射 `x, y` ✗ ⇒ 压力在**这里**被丢掉 ✓（我先前改的 `1657` 是**另一条路** ✗，
+      // 与橡皮无关 ✓ —— 已在笔记里更正 ✓）。兜底 0.5 ✓，与 `.myb` 那条（`controlPoints` ✓）和门面那条一致 ✓。
+      data: { points: state.points.map((p) => [p.x, p.y, Number.isFinite(p.pressure) ? p.pressure : 0.5]),
+              size: size * 1.5, color: { r: 0, g: 0, b: 0, a: 0 } },
     }, "擦除");
   } else {
     const [a, b] = state.points;
