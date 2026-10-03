@@ -2316,6 +2316,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[
             param!("kind", String, true, "brush / texture / palette"),
+            param!(
+                "tag",
+                String,
+                false,
+                "只保留带该用途标签的资产（仅 brush 有标签）。标签**由名字派生**（启发式，粗）\
+                 ⇒ 返回值带 `tags` 与 `tag_source`，最终仍建议用 `brush_preview` 确认。\n\
+                 常用标签：fur / feather / ink / pencil / paint / marker / texture / airbrush / pattern / eraser"
+            ),
         ],
     },
     ToolSpec {
@@ -11196,13 +11204,45 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let kind = require_str(args, "kind")?;
     let entries = ctx.workspace.list_assets(&kind)?;
-    let items = asset_entries_to_json(&entries);
+    let mut items = asset_entries_to_json(&entries);
+    // **按用途筛选** ✓（第三方 MCP 报告第 5 条 ✓："199 支笔刷靠文件名猜用途" ✗，筛选成本高 ✗）。
+    // 标签**由名字派生** ✓ ⇒ 不需要人工维护一张标定表 ✗（也就不会与资产漂移 ✓）；
+    // 局限也明说 ✓：它是**启发式**的 ✓ ⇒ `tag_source: "name"` ✓ 会一起返回 ✓。
+    if kind == "brush" {
+        for item in items.iter_mut() {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_lowercase();
+            let mut tags: Vec<&str> = Vec::new();
+            for (tag, needles) in BRUSH_TAG_HINTS {
+                if needles.iter().any(|needle| name.contains(needle)) {
+                    tags.push(tag);
+                }
+            }
+            if let Some(object) = item.as_object_mut() {
+                object.insert("tags".to_owned(), json!(tags));
+            }
+        }
+    }
+    if let Some(wanted) = optional_str(args, "tag") {
+        let wanted = wanted.to_lowercase();
+        items.retain(|item| {
+            item.get("tags")
+                .and_then(Value::as_array)
+                .map(|tags| tags.iter().any(|tag| tag.as_str() == Some(wanted.as_str())))
+                .unwrap_or(false)
+        });
+    }
     // **"能不能导入"必须报出来** ✗（上一版把"没有工作区根目录"的错误**吞掉** ✓
     // ⇒ 纯内存模式返回空表 ✓ ⇒ 用户会以为"就是没有资产" ✗ ⇒ 那是在**骗人** ✓）。
     let can_import = ctx.workspace.asset_dir(&kind).is_ok();
     Ok(json!({
         "kind": kind,
         "count": items.len(),
+        // 标签是**名字派生**的启发式 ⇒ 明说来源与局限，别让调用方以为是人工标定 ✓。
+        "tag_source": if kind == "brush" { json!("name") } else { Value::Null },
         // **内置资产在任何模式下都能列出** ✓（它们在磁盘上 ✓）；
         // 但**缓存**需要工作区根目录 ✓ ⇒ 用 `can_import` 说清 ✓。
         "can_import": can_import,
@@ -11216,6 +11256,42 @@ fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "assets": items,
     }))
 }
+
+/// **名字 → 用途标签**的启发式表 ✓（报告第 5 条 ✓：让"199 支笔刷"可按用途筛 ✓）。
+///
+/// **为什么是启发式而非人工标定** ✓：人工表要维护 200 条 ✓、且资产一变就漂移 ✗
+/// （本项目对"两份会漂移的清单"有多次前科 ✓）；名字派生**永远不会缺项** ✓，代价是**粗** ✓
+/// ⇒ 所以返回值里带 `tag_source` ✓，调用方知道它只是"帮你缩小范围" ✓（真伪仍以 `brush_preview` 为准 ✓）。
+const BRUSH_TAG_HINTS: &[(&str, &[&str])] = &[
+    ("fur", &["fur", "hair", "bristle", "pelt"]),
+    ("feather", &["feather", "plume", "wing"]),
+    ("ink", &["ink", "sumi", "pen", "caligraph"]),
+    ("pencil", &["pencil", "graphite", "charcoal", "crayon"]),
+    (
+        "paint",
+        &[
+            "paint",
+            "oil",
+            "acrylic",
+            "gouache",
+            "watercolor",
+            "watercolour",
+        ],
+    ),
+    ("marker", &["marker", "felt", "chisel", "brushpen"]),
+    (
+        "texture",
+        &[
+            "texture", "grain", "noise", "paper", "canvas", "sponge", "splatter",
+        ],
+    ),
+    ("airbrush", &["airbrush", "spray", "soft", "blur", "smoke"]),
+    (
+        "pattern",
+        &["pattern", "stamp", "star", "dot", "hatch", "line"],
+    ),
+    ("eraser", &["eras", "wipe", "clean"]),
+];
 
 /// **导入一件资产** ✓ —— 用户明确要求"**Web 与 MCP 都要能导入**" ✓。
 ///
