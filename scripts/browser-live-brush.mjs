@@ -265,6 +265,12 @@ console.log(
   `  （拖动中服务端对象 ${objectsBefore} ⇒ ${midObjects}：本地渲染方案下**预期为 0** ✓，抬手才提交 ✓）`,
 );
 // ② 抬手 ⇒ 提交最终一笔；对象必须仍然只有一个 ✓
+// **把中途的像素留在页内** ✓（只留指纹不够 ✗ —— 定位根因要知道"哪些像素不同、差多少" ✓）。
+await evaluate(`(() => {
+  const board = document.getElementById("board");
+  window.__midPixels = board.getContext("2d").getImageData(0, 0, board.width, board.height).data.slice();
+  return true;
+})()`);
 const wysiwygMidDigest = await canvasDigest();
 const wysiwygMidInk = await inkOnCanvas();
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
@@ -279,6 +285,32 @@ await sleep(600);
 const wysiwygFinalDigest = await canvasDigest();
 const finalInk = await inkOnCanvas();
 const wysiwygSame = wysiwygMidDigest === wysiwygFinalDigest && wysiwygMidInk === wysiwygFinalInk;
+const diff = await evaluate(`(() => {
+  const board = document.getElementById("board");
+  const now = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+  const before = window.__midPixels;
+  if (!before || before.length !== now.length) return null;
+  let count = 0, maxDelta = 0;
+  let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1;
+  const width = board.width;
+  for (let i = 0; i < now.length; i += 4) {
+    let delta = 0;
+    for (let c = 0; c < 4; c += 1) delta = Math.max(delta, Math.abs(now[i + c] - before[i + c]));
+    if (!delta) continue;
+    count += 1;
+    maxDelta = Math.max(maxDelta, delta);
+    const p = (i / 4) % width, q = Math.floor(i / 4 / width);
+    if (p < minX) minX = p; if (p > maxX) maxX = p;
+    if (q < minY) minY = q; if (q > maxY) maxY = q;
+  }
+  return { count, maxDelta, box: count ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null,
+           canvas: { w: width, h: board.height } };
+})()`);
+if (diff) {
+  console.log(`  ④b 差异：${diff.count} 个像素不同｜最大通道差 ${diff.maxDelta}｜包围盒 ` +
+    (diff.box ? `${diff.box.w}×${diff.box.h} @(${diff.box.x},${diff.box.y})` : "无") +
+    `｜画布 ${diff.canvas.w}×${diff.canvas.h}`);
+}
 console.log(`  ④ WYSIWYG：中途(指纹 ${wysiwygMidDigest}, 墨 ${wysiwygMidInk}) vs 最终(指纹 ${wysiwygFinalDigest}, 墨 ${wysiwygFinalInk}) ⇒ ` +
   (wysiwygSame ? "**完全相同** ✓" : `**不同** ✗（墨差 ${wysiwygFinalInk - wysiwygMidInk}）`));
 if (process.env.EXPECT_EXACT === "1" && !wysiwygSame) {
