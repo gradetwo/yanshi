@@ -1504,6 +1504,19 @@ async function blitServerBox(bbox) {
   return w * h;
 }
 
+// **把"按区域补画"单独暴露出来** ✓（第 54 轮的窄实验 ✓）：拖动中那个卡点到底是
+// **补画路径本身画不上** ✗，还是**拖动期的时序/排队把它挤掉了** ✗ —— 单独调一次就知道 ✓。
+// **必须在本段里挂** ✗（`window.yanshi` 那个对象在**另一段**脚本里 ✓，够不到这个名字 ✓ ——
+// 这个坑本项目踩过很多次 ✓）。返回实际画上去的面积 ✓（0 = 没画上 ✓，判据就看它 ✓）。
+window.yanshiDebugBlit = async (box) => {
+  const area = await blitServerBox(box);
+  return {
+    area,
+    serverInk: window.yanshiStats.lastBlitServerInk || 0,
+    blits: window.yanshiStats.serverBlits || 0,
+  };
+};
+
 /// 补画排队 ✓：**忙的时候记账，而不是丢弃** ✗ ——
 /// 若写成"有请求在飞就 return" ✓，期间发生的重绘（WS 的 tiles 事件很频繁 ✓）就永远不会再补 ✗
 /// ⇒ 画布停在内核那张空白图上 ✓（实测 `serverBlits` 有值而画面全白 ✓）。
