@@ -87,29 +87,7 @@ const STROKE = `(async () => {
   board.dispatchEvent(new PointerEvent("pointerup", at(0.62, 0.6, { buttons: 0 })));
   return { ok: true, steps: 8 };
 })()`;
-// ① 在线：画一笔，记录**这一笔自己的增量**
-const before1 = await evaluate(INK);
-const online = await evaluate(STROKE);
-await sleep(1500);
-const after1 = await evaluate(INK);
-const deltaOnline = after1.ink - before1.ink;
-// ② 断网 ⇒ 再画一笔 ⇒ 记录**它自己的增量**（这才是"离线能不能画"的直接量）
-await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-evidence.length = 0;   // **只看离线这一段** ✓（否则在线阶段的噪声会淹没关键行 ✗）
-const before2 = await evaluate(INK);
-const offlineStroke = await evaluate(STROKE);
-await sleep(1800);
-const after2 = await evaluate(INK);
-const deltaOffline = after2.ink - before2.ink;
-await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.ink + "（增量 " + deltaOnline + "）｜分画布 " + JSON.stringify(after1.parts));
-console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
-const cachesAfter = await evaluate(CACHES);
-console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
-// **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
-console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
-for (const line of evidence) console.log("    · " + line);
-// **统计计数** ✓：能区分"预览被跳过"（统计里有 skip ✓）与"根本没走到"（一个计数都没有 ✓）
+// **统计计数**：能区分"预览被跳过"（有 skip 计数）与"根本没走到"（一个计数都没有）
 const STATS = `(() => {
   const found = {};
   for (const key of Object.keys(window)) {
@@ -123,7 +101,37 @@ const STATS = `(() => {
   }
   return found;
 })()`;
-console.log("  统计计数：" + JSON.stringify(await evaluate(STATS)));
+// **在线阶段也要取证**（第 15 轮定 ✓）：首访/复访的差异**在在线那一笔**上 ✓，
+// 而我一直只看离线阶段 ⇒ 等于没看关键处 ✗。
+const report = async (label) => {
+  console.log("  " + label + "阶段取证（共 " + evidence.length + " 条）：");
+  for (const line of evidence) console.log("    · " + line);
+  console.log("  " + label + "阶段统计：" + JSON.stringify(await evaluate(STATS)));
+  evidence.length = 0;
+};
+// ① 在线：画一笔，记录**这一笔自己的增量**
+const before1 = await evaluate(INK);
+const online = await evaluate(STROKE);
+await sleep(1500);
+const after1 = await evaluate(INK);
+const deltaOnline = after1.ink - before1.ink;
+await report("在线");
+// ② 断网 ⇒ 再画一笔 ⇒ 记录**它自己的增量**（这才是"离线能不能画"的直接量）
+await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+const before2 = await evaluate(INK);
+const offlineStroke = await evaluate(STROKE);
+await sleep(1800);
+const after2 = await evaluate(INK);
+const deltaOffline = after2.ink - before2.ink;
+await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.ink + "（增量 " + deltaOnline + "）｜分画布 " + JSON.stringify(after1.parts));
+console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
+const cachesAfter = await evaluate(CACHES);
+console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
+// **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
+console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
+for (const line of evidence) console.log("    · " + line);
+await report("离线");
 const failures = [];
 if (!brushState || !brushState.value) {
   // **判据无效**：没选上真 `.myb` ⇒ 这一跑测的还是内置画笔 ⇒ 结论没有意义 ✗
