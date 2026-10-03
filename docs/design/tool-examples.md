@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 26 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+当前共 27 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
 
 ## `begin_changeset`
 
@@ -184,6 +184,28 @@
 {
   "include_history": true,
   "object_id": "o1"
+}
+```
+
+## `gradient_fill`
+
+```json
+{
+  "angle": 0,
+  "from": {
+    "a": 255,
+    "b": 0,
+    "g": 0,
+    "r": 255
+  },
+  "kind": "linear",
+  "layer_id": "L1",
+  "to": {
+    "a": 255,
+    "b": 255,
+    "g": 0,
+    "r": 0
+  }
 }
 ```
 
