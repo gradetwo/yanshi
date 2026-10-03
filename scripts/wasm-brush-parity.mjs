@@ -24,7 +24,15 @@ const tool = async (name, args) => {
 };
 const pointList = [[40, 40, 1], [80, 40, 1]];
 const size = 40;
-const colour = { r: 255, g: 0, b: 0, a: 255 };
+/// **多种颜色** ✓（第 70 轮：此前只试过红色 ✗ ⇒ 颜色数学若真有分歧，这一步就会抓出来 ✓）：
+/// 纯红 / 半灰 / 饱和蓝 / 白 / 黑 —— 覆盖色相 ✓、低饱和 ✓、极值 ✓。
+const colours = [
+  ["red", { r: 255, g: 0, b: 0, a: 255 }],
+  ["grey", { r: 128, g: 128, b: 128, a: 255 }],
+  ["blue", { r: 0, g: 64, b: 255, a: 255 }],
+  ["white", { r: 255, g: 255, b: 255, a: 255 }],
+  ["black", { r: 0, g: 0, b: 0, a: 255 }],
+];
 
 const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
 const api = instance.exports;
@@ -42,8 +50,10 @@ const facade = (request) => {
 await tool("create_layer", { layer_id: "L" });
 let allEqual = true;
 for (const brush of names) {
+ for (const [colourName, colour] of colours) {
+  const slug = `${brush.replace(/[^a-z0-9]/gi, "_")}_${colourName}`;
   const made = await tool("brush_stroke", {
-    layer_id: "L", object_id: `o_${brush.replace(/[^a-z0-9]/gi, "_")}`, brush,
+    layer_id: "L", object_id: `o_${slug}`, brush,
     size, color: colour, points: pointList,
   });
   if (!made.ok) {
@@ -52,7 +62,7 @@ for (const brush of names) {
     continue;
   }
   const region = made.region;
-  const got = await tool("get_object", { object_id: `o_${brush.replace(/[^a-z0-9]/gi, "_")}` });
+  const got = await tool("get_object", { object_id: `o_${slug}` });
   const blobHash = got?.data?.bitmap?.blob_hash;
   const serverBytes = new Uint8Array(
     await fetch(`${base}/api/blob/${blobHash}?doc=${doc}&token=${token}`).then((r) => r.arrayBuffer()),
@@ -78,11 +88,12 @@ for (const brush of names) {
   const same = serverBytes.length === facadeBytes.length && differing === 0;
   if (!same) allEqual = false;
   console.log(
-    `  ${brush.padEnd(14)} 区域 ${region.w}×${region.h}（期望 ${expected} 字节）｜` +
+    `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（期望 ${expected} 字节）｜` +
       `服务端 ${serverBytes.length} vs 门面 ${facadeBytes.length}｜不同字节 ${differing}` +
       (firstDiff >= 0 ? `｜首个 @${firstDiff}（通道 ${firstDiff % 4}）｜最大通道差 ${maxDelta}` : "") +
       `｜${same ? "**逐字节相同** ✓" : "有差异 ✗"}`,
   );
+ }
 }
 console.log(allEqual ? "结论：全部逐字节相同 ✓" : "结论：存在差异 ✗（见上，按目标第 4 条决定取舍 ✓）");
 process.exit(allEqual ? 0 : 1);
