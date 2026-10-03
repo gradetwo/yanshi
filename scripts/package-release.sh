@@ -674,6 +674,15 @@ echo "    已断言：二进制内 commit（${seen}）与包名一致 ✓"
 
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")
+# **名实一致核验** ✓（用户实测报告的 BUG ✓："macOS 上包名寫著 x86_64-unknown-linux-gnu，
+# 但裝的是蘋果芯片的版本 ⇒ Exec format error" ✗）。
+# 根因是"**名字来自变量 `$name`、内容来自现有文件，二者从不校验**" ✗ ⇒ 这里补上校验 ✓：
+# **不一致就中止** ✓ —— 宁可失败，也不要发出一个名实不符、装上去跑不起来的包 ✗。
+if ! bash "$repo/scripts/release-verify-archive.sh" "$out/$name.tar.gz" "$target_triple"; then
+  echo "✗ 包名与包内二进制不一致 ⇒ 已中止，**未发布**（$out/$name.tar.gz）" >&2
+  echo "  多半是构建没真正成功、却打到了别的架构的产物 ⇒ 先看构建日志 ✗" >&2
+  exit 1
+fi
 (cd "$out" && sha256_of "$name.tar.gz" > SHA256SUMS)
 echo
 echo "完成：$out/$name.tar.gz"

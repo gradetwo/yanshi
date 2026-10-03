@@ -13127,3 +13127,32 @@ TARGET="${YANSHI_STATIC_TARGET:-${HOST_TRIPLE}}"      # **名字必须来自真�
 如需更严可要求显式传第二个参数 ✓。
 **仍差一步（下一步 ✓）** ✓：把它**接进 `scripts/package-release.sh`** ✓ ——
 **生成包之后、对外发布之前**调用 ✓ ⇒ 名实不符时**宁可失败也不要发出** ✗（那才是根治 ✓）。
+
+### ✅ 第 232 轮：核验**接进发布脚本** ✓ + 找到那条"名实不符"的**真实机制** ✓✓
+
+**接线** ✓（`scripts/package-release.sh` ✓）：在 **`tar -czf` 之后、写 `SHA256SUMS` 之前**调用核验 ✓：
+```bash
+if ! bash "$repo/scripts/release-verify-archive.sh" "$out/$name.tar.gz" "$target_triple"; then
+  echo "✗ 包名与包内二进制不一致 ⇒ 已中止，**未发布**" >&2
+  exit 1
+fi
+```
+⇒ 以后"名字 linux / 内容苹果"的包**发不出去** ✓（而不是等用户装完 `Exec format error` ✗）。
+**顺带发现：发布脚本本来就有一条更严的检查** ✓ —— 它核对**二进制内嵌的 commit** 与包名是否一致 ✓：
+第一次跑（`--skip-build`）时它**正确地拒绝**了 ✓（`包名 8cc781e` vs `二进制 9ac8d48` ✗），
+并给出处理办法 ✓（重新 build 或删掉旧产物 ✓）⇒ 这说明该脚本在"**复用旧产物**"这件事上**已有防线** ✓。
+**"名实不符"的真实机制（本轮查清 ✓）** ✓：`target_installed()` ✓（`package-release.sh:90-99` ✓）：
+```bash
+for candidate in "$HOME"/.rustup/toolchains/*/lib/rustlib/"${want}"; do … done
+case "${HOME}" in
+  *) [ -d "${HOME}/.rustup/toolchains" ] || return 0 ;;   # 没有 rustup 目录 ⇒ **认为"装了"** ✗
+esac
+```
+⇒ 在**非 rustup 安装**的机器上（macOS 常见 ✓）它**误判"该目标已安装"** ✗ ⇒ 于是去**试一次交叉编译** ✓；
+**旧版本**（用户报告里的 `2798628` ✓）在**试失败之后仍把宿主产物按 linux 名字打包** ✗ ⇒ 就是用户的 `Exec format error` ✓。
+⇒ **因此给用户的答复** ✓：① **先 `git pull`** ✓（`2798628` 之后的版本已加了 commit 一致性检查 ✓，
+本轮又加了**名实一致**核验 ✓）；② 在 macOS 上想打 **Linux** 包，**必须**先 `rustup target add x86_64-unknown-linux-gnu` ✓，
+否则**应当失败**（而不是产出错包 ✗）✓。
+**下一步（可选加固 ✓）** ✓：`target_installed` 那句 `|| return 0` ✗ 的语义可以更诚实 ✓
+（"**无法判断**"应当与"**已安装**"区分开 ✓ —— 现在靠"构建失败会不会被拦住"兜底 ✓，
+而本轮的名实核验正是最后一道兜底 ✓）。
