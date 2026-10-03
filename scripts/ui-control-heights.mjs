@@ -54,12 +54,14 @@ for (const item of measured) byHeight.set(item.h, (byHeight.get(item.h) || 0) + 
 const heights = [...byHeight.keys()].sort((a, b) => a - b);
 console.log(`  量到 ${measured.length} 个控件，高度分 ${heights.length} 档：` +
   heights.map((h) => h + "px(" + byHeight.get(h) + ")").join(" "));
+// **通过时也打印每一档** ✓（原来只在失败时打印 ✗ ⇒ 剩下 1–2 个离群控件看不见是谁 ✓，
+// 而"看不见的离群项"下次就会悄悄变成 4 档 ✗）。
+for (const h of heights) {
+  const sample = measured.filter((item) => item.h === h).slice(0, 3)
+    .map((item) => (item.text || item.id)).join(" / ");
+  console.log(`     - ${h}px：${byHeight.get(h)} 个，例如 ${sample}`);
+}
 if (heights.length > 3) {
-  for (const h of heights) {
-    const sample = measured.filter((item) => item.h === h).slice(0, 3)
-      .map((item) => (item.text || item.id)).join(" / ");
-    console.log(`     - ${h}px：${byHeight.get(h)} 个，例如 ${sample}`);
-  }
   console.log("  结论：控件高度不统一 ✗（应当收敛到 ≤3 档）");
   process.exit(1);
 }
