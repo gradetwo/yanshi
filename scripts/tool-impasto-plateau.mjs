@@ -73,7 +73,7 @@ const countDips = (line) => {
 const failures = [];
 // ---------- ① 对照层（在**下** ✓）+ 平坦块 ----------
 const flatLayer = await call("create_layer", { layer_id: "flat_layer", name: "对照" });
-const flatFill = await call("fill", { layer_id: "flat_layer", data: { color: { r: 128, g: 128, b: 128, a: 255 }, region: { x: 0, y: 0, w: 400, h: 160 } } });
+const flatFill = await call("fill", { layer_id: "flat_layer", data: { color: { r: 255, g: 255, b: 255, a: 255 }, region: { x: 0, y: 0, w: 400, h: 160 } } });
 if (!flatLayer.ok || !flatFill.ok) { console.log("  ✗ 平坦对照建不起来 ⇒ 无法自证 ⇒ 判据无效"); process.exit(1); }
 // ---------- ② 笔触层（在**上** ✓）+ 一条密集 oil 笔触 ----------
 const strokeLayer = await call("create_layer", { layer_id: "stroke_layer", name: "厚涂" });
