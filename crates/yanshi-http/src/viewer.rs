@@ -5887,7 +5887,7 @@ async function loadLocalBrushModule() {
           if (window.caches) {
             caches.open("yanshi-shell-v1")
               .then((cache) => cache.put("/brush-module.wasm", response.clone()))
-              .catch(() => undefined);
+              .catch((error) => console.warn("写缓存失败 /brush-module.wasm（离线将没有本地预览）：" + error));
           }
         } catch (error) { /* 缓存失败不影响本帧 */ }
         return response.arrayBuffer();
@@ -5915,7 +5915,7 @@ async function loadLocalBrushText(name) {
       caches.open("yanshi-shell-v1")
         .then((cache) => cache.put("/brushes/" + name + ".myb",
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
-        .catch(() => undefined);
+        .catch((error) => console.warn("写缓存失败 /brushes/" + name + ".myb（离线将没有本地预览）：" + error));
     }
   } catch (error) { /* 缓存失败不影响这次预览 */ }
 

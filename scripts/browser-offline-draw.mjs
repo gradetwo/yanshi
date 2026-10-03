@@ -79,6 +79,26 @@ const STROKE = `(() => {
   board.dispatchEvent(new PointerEvent("pointerup", at(0.6, 0.58, { buttons: 0 })));
   return { ok: true, brush: (document.getElementById("brush") || {}).value || "" };
 })()`;
+// **显式选定一支真笔刷**（消除"首访用默认笔、复访恢复上次笔刷"这个混淆变量 ✓）：
+// 从 select 里挑**第一个非空值**（= 一支真 `.myb`）✓，并派发 change ✓ —— 不写死任何具体笔名 ✗。
+const PICK = `(() => {
+  const select = document.getElementById("brush");
+  if (!select) return { picked: null, why: "没有 #brush" };
+  const option = Array.from(select.options).find((item) => item.value);
+  if (!option) return { picked: null, why: "没有非空笔刷选项", count: select.options.length };
+  select.value = option.value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return { picked: select.value, count: select.options.length };
+})()`;
+const picked = await evaluate(PICK);
+console.log("  选定笔刷：" + JSON.stringify(picked));
+// **界面状态快照**（证据 ✓）：localStorage 里存了什么（首访/复访的差别最可能在这里）
+const STATE = `(() => {
+  const out = {};
+  try { for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); out[k] = String(localStorage.getItem(k)).slice(0, 60); } } catch (error) { out.error = String(error); }
+  return { tool: (document.getElementById("tool") || {}).value || null, stored: out };
+})()`;
+console.log("  界面状态：" + JSON.stringify(await evaluate(STATE)));
 // **缓存快照**（证据 ✓）：有哪些缓存、各自哪些条目、多大
 const CACHES = `(async () => {
   if (!window.caches) return { supported: false };
