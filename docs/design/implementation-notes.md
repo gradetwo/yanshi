@@ -9418,3 +9418,32 @@ function drawKernelRegion(x, y, w, h) {
 "拖动中显示真笔刷"在当前架构 + 每帧 300–500ms 往返下**做不到不卡** ✗。
 **又一次踩到同一条纪律** ✓：撤回时多留了一对 `let liveStroke/liveBlitBox` 顶层声明 ✗ ⇒
 **重复声明测试当场红** ✓（查看器会 SyntaxError ✓）⇒ 修掉后门禁才绿 ✓ —— 这条测试值得留着 ✓。
+
+### 🧱 第 57 轮：Hokusai wasm 化**起步** ✓ —— 可行性已实测 ✓，并抄下了**逐行对齐配方** ✓
+
+**用户拍板** ✓：把 Hokusai 做成 wasm ✓，做成后继续其它事、不停 ✓（目标已改写并重新激活 ✓）。
+
+**可行性实测** ✓（不是估 ✓）：拿本仓库的**真实依赖** `hokusai = "0.3"` 建了个一次性 crate 编 wasm32 ✓：
+```
+Compiling hokusai-core v0.3.0
+Compiling hokusai-tile-mem v0.3.0
+Compiling hokusai-brush v0.3.0
+Compiling hokusai v0.3.0          ← 四个 crate 全部通过 ✓
+error[E0608]: cannot index into a value of type Option<&[[[u16;4];64];64]>   ← 只剩探针自己读回写错 ✗
+```
+**引擎本体零改动编过 wasm32** ✓；grep 全 crate **零** `std::thread/Instant/SystemTime/std::fs/getrandom/rand/std::simd/rayon/libc` ✓；
+`hokusai-tile-mem` 给的是**纯内存** surface ✓（无文件、无 GPU ✓）；core 仅 **4565 行** ✓。
+
+**逐行对齐配方** ✓（下一轮照它写门面，别再找一遍 ✓）：
+| 步骤 | 服务端现在怎么做（文件/行） | 门面要照抄什么 |
+|---|---|---|
+| 载入笔刷 | `hokusai::myb::from_str(&json_text)`（`tools.rs` ≈10477 ✓） | **字符串**载入 ✓ ⇒ 浏览器只要拿到 `.myb` 文本 ✓（201 个文件 ✓ 或按需 ✓） |
+| 不透明度 | `BrushSetting::Opaque` = `constant(opacity)`（≈10513 ✓） | 同 ✓ |
+| 硬度 | `BrushSetting::Hardness` = `constant(hardness)`（≈10519 ✓） | 同 ✓ |
+| 颜色 | `ColorH/ColorS/ColorV` = `constant(hue/sat/value)`（≈10535 ✓，来自 `brush_color_to_hsv` ✓） | **必须用同一个** `brush_color_to_hsv` ✓ ⇒ 建议把它挪进 `yanshi-render` ✓ 两边共用 ✗（否则又是一份会漂移的实现 ✓） |
+| 大小 | `BrushSetting::Radius` = `constant((diameter/2.0).ln())`（≈10558 ✓，**`ln`** ✓） | 同 ✓（注意不是 log2 ✓） |
+| 走笔 | 2px 细分 + `stroke_to(state, surface, x, y, pressure, dx, dy, dt)`（≈10339/10360 ✓） | 同 ✓（**`dx/dy` 相对上一枚 dab** ✓、`dt=0.01` ✓） |
+| 读回 | fix15 → **反预乘** → RGBA8（≈10180 ✓，第 44 轮修的 ✓） | 同 ✓（预乘当直通 ⇒ 半透明笔触发灰 ✗，这个坑已经踩过 ✓） |
+| 参数面 | `layer_id/brush/points/size/color/color_to/opacity/hardness/smooth` ✓ | 门面按同样语义收 ✓ |
+**下一轮** ✓：在仓库里新增 wasm 门面 crate（**纯 C ABI** ✓，不依赖 wasm-bindgen ✓ ⇒ Node 可直接实例化 ✓，
+判据"同一笔、两边逐字节一致"✓ 不需要浏览器 ✓），再决定接查看器的方式 ✓。
