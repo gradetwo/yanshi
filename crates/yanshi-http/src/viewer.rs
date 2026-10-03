@@ -1654,7 +1654,11 @@ async function updatePreviewOverlayInner(pending, started) {
 function previewObject(pending) {
   const color = colorCss();
   const size = Number($("size").value);
-  const points = state.points.map((p) => [p.x, p.y]);
+  // **压力必须发出去** ✗ —— 用户实测报告："用绘画板测试，橡皮没有压力支持，不同压力下表现都一样" ✓。
+  // 真相：这一行**只映射了 `x, y`** ✗ ⇒ 压力被丢掉 ⇒ 橡皮只能按**固定强度**擦 ✓
+  //（`.myb` 笔刷那条另有 `controlPoints` ✓（6264 一带）带压力 ✓ ⇒ 所以过去只有橡皮受影响 ✓）。
+  // 兜底用 0.5 ✓，与门面那条（`paintLiveFrame`）以及 `.myb` 那条保持一致 ✓（同输入 ⇒ 同结果 ✓）。
+  const points = state.points.map((p) => [p.x, p.y, Number.isFinite(p.pressure) ? p.pressure : 0.5]);
   // **新笔迹启用渲染时平滑** ✓（设计 11.1 的"矢量"路径 ✓）：日志里存的仍是**原始采样点** ✓，
   // 平滑只发生在渲染时 ✓ ⇒ 放大时线条不再是折线 ✓、无损 ✓、以后想换插值也不用改历史 ✓。
   if (pending.tool === "rect" || pending.tool === "ellipse") {
