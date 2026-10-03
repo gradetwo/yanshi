@@ -44,6 +44,8 @@ const measured = await evaluate(`(() => {
     const style = getComputedStyle(node);
     if (style.visibility === "hidden" || style.display === "none") continue;
     out.push({ tag: node.tagName.toLowerCase(), id: node.id || "(无 id)",
+               cls: node.className && typeof node.className === "string" ? node.className.slice(0, 18) : "",
+               type: node.getAttribute("type") || "",
                text: (node.textContent || node.value || "").trim().slice(0, 10), h: Math.round(rect.height) });
   }
   return out;
@@ -57,8 +59,12 @@ console.log(`  量到 ${measured.length} 个控件，高度分 ${heights.length}
 // **通过时也打印每一档** ✓（原来只在失败时打印 ✗ ⇒ 剩下 1–2 个离群控件看不见是谁 ✓，
 // 而"看不见的离群项"下次就会悄悄变成 4 档 ✗）。
 for (const h of heights) {
+  // **文本没信息时改印 id/class/type** ✓（上一轮只印文本 ⇒ "on" 认不出是谁 ✗）。
   const sample = measured.filter((item) => item.h === h).slice(0, 3)
-    .map((item) => (item.text || item.id)).join(" / ");
+    .map((item) => `${item.tag}${item.type ? "[" + item.type + "]" : ""}#${item.id}` +
+                   (item.cls ? "." + item.cls.split(/\s+/)[0] : "") +
+                   (item.text ? "「" + item.text + "」" : ""))
+    .join(" / ");
   console.log(`     - ${h}px：${byHeight.get(h)} 个，例如 ${sample}`);
 }
 if (heights.length > 3) {

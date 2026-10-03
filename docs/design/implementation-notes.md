@@ -11374,3 +11374,22 @@ button, input:not([type="checkbox"]), select { height: var(--control-h); }
 （内联优先级更高 ✓）。**下一轮** ✓：让判据在文字为空/为 "on" 时**改印 `id`/`class`** ✓
 （现在只印文本 ⇒ 认不出是哪两个 ✗），找到后把内联高度去掉 ✓ 或改成令牌 ✓。
 **顺带记一条纪律** ✓：判据**通过时也要打印分布** ✓ —— 否则"看不见的离群项"下次就会悄悄变成第 4 档 ✗。
+
+### 🔎 第 145 轮：判据会印 `id`/`class` 了 ✓ —— 那 2 个 26px 认出来了，但**原因未定，如实留档** ✓
+
+**判据改进** ✓：采样信息从"只印文本" ✗ 改成 `tag[type]#id.class「文本」` ✓ ⇒ 立刻认出 ✓：
+```
+16px：input[checkbox]#storageConfirm / #textureUseSelection / #gradUseSelection
+26px：input[checkbox]#duoTone / #smooth        ← 同样是复选框，却没被我的 16px 规则命中
+28px：96 个（button#fileMenuButton「文件 ▾」/ #newDoc / #openDoc …）
+```
+**查了两处、都不是真因** ✗（如实记录，不猜 ✓）：
+* 两个控件的 HTML **很干净** ✓（`<input id="duoTone" type="checkbox" />` ✓，**没有内联高度** ✓，
+  见 `viewer.rs:370 / 411` ✓）；
+* 样式表里唯一相关的 2x px 规则是 `#quickPanel button, .statusbar button { min-height: 26px; }` ✓
+  （`viewer.rs:63` ✓）—— 但它**只匹配 button** ✗，解释不了**复选框** ✗。
+⇒ 结论 ✓：**99 / 101 个控件已统一**（96×28px ✓ + 3×16px ✓），剩 **2 个差 2px** ✓，
+**原因未定位** ✓ —— 我**不编一个理由** ✗，把它作为低优先级余项留档 ✓
+（真要收尾时的下一步：用 CDP 直接读这两个元素命中的**全部** CSS 规则 ✓（`getMatchedCSSRules` 那条路 ✓），
+不靠 grep 猜 ✓）。
+**这一轮的净收益** ✓：判据从此能**自己报出离群控件是谁** ✓ —— 任何未来的"第 4 档"都会带着 `id` 出现 ✓。
