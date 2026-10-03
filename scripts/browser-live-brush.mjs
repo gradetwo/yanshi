@@ -165,6 +165,23 @@ await sleep(1200);
 const midInk = await inkOnCanvas();
 const midObjects = (await api("list_objects", {})).count;
 const midState = await evaluate("window.yanshi.state()");
+// **失败原因也必须带出来** ✗（第 61 轮的教训 ✓：只有"实时帧 0"这一个数还不够 ✓，分不清
+// "根本没被调用" 与 "调用了但抛了" ✓ —— 而这两者的排查方向完全不同 ✓）。
+const midDiag = await evaluate(`(() => {
+  const stats = window.yanshiStats || {};
+  const logText = (document.getElementById("log") || {}).textContent || "";
+  return {
+    frames: stats.localBrushFrames || 0,
+    calls: stats.localBrushCalls || 0,
+    errors: stats.localBrushErrors || 0,
+    loadFailures: /笔刷本地渲染模块没加载上/.test(logText),
+    logTail: logText.slice(-160),
+  };
+})()`);
+console.log(
+  `  诊断：本地渲染 调用 ${midDiag.calls} / 出帧 ${midDiag.frames} / 报错 ${midDiag.errors}` +
+    `｜模块加载失败过=${midDiag.loadFailures}｜日志尾：${midDiag.logTail}`,
+);
 console.log(
   `  ① 拖动中（未抬手）：画布墨 ${before} ⇒ ${midInk}｜服务端对象 ${objectsBefore} ⇒ ${midObjects}｜` +
     `实时帧 ${midState.liveStroke ? midState.liveStroke.frames : "—"}`,
