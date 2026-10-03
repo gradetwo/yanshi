@@ -12519,6 +12519,12 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    // **两点之间生成过渡笔触**（AI 画家需求 P0-1.2）：左暗蓝 ⇒ 右暖白，10 笔。
+    // 它逐笔走 `brush_stroke` 的落笔实现 ⇒ 与手画一致；`steps` 含首末两点。
+    (
+        "gradient_blend",
+        r##"{"layer_id": "layer_default", "from": {"x": 40, "y": 100, "color": "#2040a0"}, "to": {"x": 260, "y": 100, "color": "#f0e0c0"}, "brush": "classic-brush", "size": 24, "steps": 10}"##,
+    ),
     // **渐变填充**（回归报告踩过：它和我们一开始都猜了个不存在的参数名 ✗）——
     // 真参数是 `kind`（不是 `geometry`）；颜色用**对象写法**而不是 `"#rrggbb"`，
     // 因为 Rust 的 `r#"…"#` 裸字符串不能包含 `"#`（会提前结束、把源码弄坏）。
