@@ -545,6 +545,13 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    if let Some(file) = path.strip_prefix("/brush-previews/") {
+        // **预生成入库的画笔库预览图**（构建期生成、随包发布）—— 面板直接用图片，不再逐支实时渲染。
+        return match method {
+            "GET" => brush_preview_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(file) = path.strip_prefix("/brushes/") {
         // **`.myb` 文本** ✓（浏览器拿它喂门面 ✓）—— 与 `/mediums/` **同一条白名单规矩** ✓。
         return match method {
@@ -1221,6 +1228,36 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
             )
         }
         Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", path.display())),
+    }
+}
+
+/// `GET /brush-previews/{file}`：**预生成入库的画笔预览图 / 索引**。
+///
+/// 白名单（与 `/mediums/`、`/brushes/` 同一条规矩）：只接受该目录下、以 `.png` 或 `.json` 结尾的文件名，
+/// 拒 `..`、`/`、`\\` ⇒ 不可能借它读到仓库里别的文件。
+fn brush_preview_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..")
+        || file.contains('/')
+        || file.contains('\\')
+        || !(file.ends_with(".png") || file.ends_with(".json"))
+    {
+        return crate::http::bad_request("非法预览文件名（只接受该目录下的 *.png / *.json）");
+    }
+    let Some(root) = state.options.assets_dir.as_ref() else {
+        return crate::http::not_found("这一份服务端没有配置资产目录（--assets-dir）");
+    };
+    let path = root.join("brush-previews").join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::bytes(
+            200,
+            if file.ends_with(".json") {
+                "application/json; charset=utf-8"
+            } else {
+                "image/png"
+            },
+            bytes,
+        ),
+        Err(_) => crate::http::not_found(format!("没有这张笔刷预览：{}", path.display())),
     }
 }
 

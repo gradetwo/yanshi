@@ -6673,6 +6673,12 @@ async function refreshBrushOptions() {
 /// ③ **选择只有一条路** ✓：点一行 ⇒ 走 `window.yanshi.setBrush()` ✓ —— 与下拉、与 MCP 是**同一个入口** ✓
 ///    （自己再写一遍"设值 + change"✗ 迟早与那条漂移 ✓）。
 const brushPreviewCache = new Map();
+/// **预生成入库的画笔预览图**（构建期生成、随包发布）—— 面板**直接用图片**，不再逐支实时渲染。
+let brushPreviewIndex = null;
+void fetch("/brush-previews/index.json")
+  .then((response) => (response.ok ? response.json() : null))
+  .then((index) => { brushPreviewIndex = index; })
+  .catch(() => { /* 没有索引就退回实时那条路 */ });
 const brushPreviewQueue = [];
 let brushPreviewActive = 0;
 let brushLibraryObserver = null;
@@ -6769,6 +6775,18 @@ async function pumpBrushPreview() {
   const name = brushPreviewQueue.shift();
   if (!name) return;
   brushPreviewActive += 1;
+  // **入库的图优先**：有就贴它，**不**逐支实时渲染（用户裁定：静态资源预生成入库）。
+  const shipped = brushPreviewIndex && brushPreviewIndex.files && brushPreviewIndex.files[name];
+  if (shipped) {
+    const url = "/brush-previews/" + shipped;
+    brushPreviewCache.set(name, url);
+    const selector = '#brushLibraryList img[data-brush="' + name.replace(/"/g, '\\"') + '"]';
+    for (const img of document.querySelectorAll(selector)) img.src = url;
+    window.yanshiStats.brushPreviewsFromFiles = (window.yanshiStats.brushPreviewsFromFiles || 0) + 1;
+    brushPreviewActive -= 1;
+    void pumpBrushPreview();
+    return;
+  }
   try {
     const value = await callTool("brush_preview", { brush: name, size: 24 }, { refresh: false });
     const url = value && (value.thumb_url || value.raw_url);

@@ -486,6 +486,10 @@ if [ -d "$repo/assets/brand" ]; then
   cp -R "$repo/assets/brand" "$stage/share/yanshi/brand"
   # **门面必须显式拷**：`assets/` **不是整棵**进包的（上面挑的是 mediums/*.wasm 与 brand），
   # 所以第 32 轮那份 `assets/brush-module.wasm` **到不了包里** —— 这里补上。
+  if [ -d "$repo/assets/brush-previews" ]; then
+    cp -R "$repo/assets/brush-previews" "$stage/share/yanshi/brush-previews"
+    echo "    ✓ 画笔库预览已装包：$(ls "$stage/share/yanshi/brush-previews" | wc -l) 个文件"
+  fi
   if [ -f "$repo/assets/brush-module.wasm" ]; then
     cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
     echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"

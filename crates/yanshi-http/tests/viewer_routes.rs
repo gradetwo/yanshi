@@ -65,8 +65,15 @@ fn every_url_the_viewer_requests_is_a_route_the_server_serves() {
             Some((_, _)) => "/api/tools".to_owned(),
             None => url.clone(),
         };
-        if !server.contains(&probe) {
-            missing.push(format!("{url}（按 {probe} 找 ✓）"));
+        // **回退到目录前缀** ✓：像 `/brush-previews/index.json` 这种"目录路由 + 固定文件名"的写法 ✓，
+        // 服务端是用 `strip_prefix("/brush-previews/")` + 拼文件名实现的 ✓ ⇒ 源码里只有**目录那一段** ✓。
+        // 这与本测试自己的哲学一致 ✓（"宁可漏报也不要误报" ✓）：目录这段在 ✓ 就算这条路由在 ✓。
+        let directory = match url.rsplit_once('/') {
+            Some((head, _)) if !head.is_empty() => format!("{head}/"),
+            _ => probe.clone(),
+        };
+        if !server.contains(&probe) && !server.contains(&directory) {
+            missing.push(format!("{url}（按 {probe} 或目录 {directory} 找 ✓）"));
         }
     }
     assert!(

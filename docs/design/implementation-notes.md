@@ -10683,3 +10683,62 @@ assets/brush-previews：156 个文件（含 index.json）｜1.5M ✓
 **下一步** ✓：加路由 `/brush-previews/{file}`（白名单：只发该目录下的 `.png`/`.json` ✓）、
 面板直接用这些图 ✓（缺图或 `skipped` 里的笔刷**回退**到工具调用 ✓）、
 并把 `assets/brush-previews` 一起**装进包** ✓（与 brushes/textures/palettes 同等对待 ✓）。
+
+### 🧠 第 113 轮：**立一条最高优先级的规矩：遇到棘手问题，第一步先看业界怎么做** ✓（用户裁定 ✓）
+
+**用户原话** ✓："遇到棘手问题，应该第一时间去看看行业主流和其它优秀开源产品怎么解决，记住" ✓。
+**这次会话的教训（我自己的反例 ✓）**：画笔库预览图这一项 ✓，我一路在"**本地 wasm 实时渲染**"上折腾 ✓
+（近似 ✗ + 标注 ✗ + 竞态 ✗ + 修不稳定跑了 4 轮 ✗），而正确答案业界早有定论 ✓：
+**预设的效果图是"随预设走的数据"** —— **生成一次、存下来、直接用图** ✓
+（主流软件如此 ✓、用户一句话就点出 ✓）。我**直到用户指出才去搜** ✗ —— 而这一项**本该先搜** ✓。
+**因此立规矩（本仓库后续一律照办 ✓）**：
+> **动手前先问：业界主流 / 优秀开源项目怎么做？** ✓
+> 尤其是这几类问题 ✓：**静态资源的生成与缓存** ✓、**缩略图/预览** ✓、**笔刷/预设的数据模型** ✓、
+> **画布合成与实时性边界** ✓、**文件格式与元数据** ✓、**性能与缓存策略** ✓。
+> 做法：**先搜 2–4 条查询** ✓（含具体项目名：MyPaint / Krita / GIMP / Photoshop / libmypaint / Blender … ✓），
+> **读一两篇一手来源** ✓（官方文档 / 源码 / FAQ ✓），**把结论写进笔记并标注来源 URL** ✓，
+> **再决定实现** ✓；**不许**先闷头自研一个复杂方案 ✗。
+**顺带记下本次搜到的方向性结论（含未验证的部分，如实标注 ✓）**：
+* MyPaint 的笔刷缩略图**尺寸写死在代码里**（`gui/brushselectionwindow.py` 里那个 48 ✓）—— 来源：
+  [MyPaint FAQ：笔刷缩略图](https://www.mypaint.app/en/docs/manuals/faq/bigger-brush-thumbnails/) ✓（**读过** ✓）；
+* MyPaint 的刷子管理在 [`gui/brushmanager.py`](https://github.com/mypaint/mypaint/blob/fe2a569446b4abffce80ea91a0ce6e779b4087cd/gui/brushmanager.py#1) ✓、
+  绘制工具在 [`gui/drawutils.py`](https://github.com/mypaint/mypaint/blob/b43db7457cec7d8512df285ad9fe8e4069d36d33/gui/drawutils.py#1) ✓
+  （**只搜到链接、没读内容** ✗ ⇒ 不当结论用 ✓）；
+* Photoshop 把预设元数据（含缩略图）**存在文件里** ✓ —— 来源：[Photoshop 文件格式](http://ia803202.us.archive.org/view_archive.php?archive=/14/items/file-format-encyclopedia/fileformat.zip&file=fileformat%2Fgraphics%2Fadobe%2FPhotoshop%20File%20Formats.pdf#7#4) ✓（**只搜到、没读** ✗）；
+* Krita 预设分组讨论：[Krita Artists](https://krita-artists.org/t/preset-groups-drag-and-drop-brush-management/154670/20?page=2#post_21) ✓（**只搜到** ✗）。
+⇒ **方向一致** ✓（预设效果图是**数据**、不是每次现算 ✓）；**细节待查** ✗（缓存文件放哪、命名、失效策略 ✓ —— 下次按这条规矩先读源码再定 ✓）。
+
+### ✅ 第 114 轮：预览图**接线完成** ✓（路由 + 面板 + 打包 ✓）—— 面板从此**直接用入库图片** ✓
+
+**三处改动** ✓：
+1. **路由** ✓ `/brush-previews/{file}`：白名单（只收该目录下 `.png`/`.json` ✓、拒 `..`/`/`/`\\` ✓），
+   与 `/mediums/`、`/brushes/` **同一条规矩** ✓；
+2. **面板** ✓：预览**入库图优先** ✓ —— 命中 `index.json` 就直接贴 `/brush-previews/<file>` ✓、
+   **不再逐支实时调工具** ✓（并计入 `brushPreviewsFromFiles` ✓ 便于观测 ✓）；没有入库图的才回退实时那条路 ✓；
+3. **打包** ✓：`assets/brush-previews` 随包拷到 `share/yanshi/brush-previews` ✓（与 brand 等资产同等对待 ✓）。
+**实测（同一命令里 ✓）**：
+```
+index.json            ⇒ HTTP 200｜14061 字节｜application/json ✓
+2B_pencil.myb.png     ⇒ HTTP 200｜13757 字节｜image/png ✓  且与入库文件**逐字节相同** ✓
+越权 ..%2fCargo.toml  ⇒ HTTP 400 ✓（判据能红 ✓）
+不存在的图            ⇒ HTTP 404 ✓
+```
+**还剩的** ✗（下一轮 ✓）：
+* 剩下 **16 支**笔刷仍无入库图 ✓（橡皮/零步长一类，"这一笔没落下任何像素" ✓）⇒ 按用户裁定
+  **不许留空** ✗：给它们一张**看得懂的图**（例如在色带上擦一条 ✓）或**带名字的占位图** ✓；
+* 浏览器判据（面板每行都有图、来源是 `/brush-previews/…` ✓）还没跑 ✓。
+
+### 🧠 第 115 轮：规矩**扩展到界面布局** ✓（用户补充："各种软件布局也是类似方法" ✓）
+
+**用户原话** ✓："各种软件布局也是类似方法" ✓ ⇒ 第 113 轮那条规矩**不只适用于静态资源** ✓，
+**界面布局与交互定式同样先看业界** ✓。具体要对照的现成答案（都有多年沉淀 ✓）：
+* **面板/停靠** ✓：Photoshop 的 dock + 折叠成图标条 ✓、Krita 的 docker ✓、GIMP 的 dockable dialogs ✓、
+  Blender 的 editor + 区域拆分 ✓ —— "面板可折叠/可隐藏/可拖出"是**既有模式** ✓，不该自创 ✗；
+* **预设/笔刷浏览** ✓：Photoshop 的预设面板（网格 + 缩略图 + 分组 ✓）、Krita 的 preset docker（标签 + 搜索 ✓）、
+  MyPaint 的 brush chooser（分组 + 固定尺寸缩略图 ✓）—— **缩略图网格 + 搜索 + 分组**是定式 ✓；
+* **工具选项条** ✓：Photoshop/Krita 把"当前工具的选项"放**顶部一条** ✓（对应我们的"画笔区紧凑" ✓）；
+* **浮层/弹出** ✓：Krita 的 pop-up palette（快捷键唤出、用完即收 ✓）—— 正是用户第 ④ 条要的"用完即收" ✓；
+* **右栏信息架构** ✓：Krita/Photoshop 都是**分页/分组** ✓（对应第 ⑤ 条 tab 化 ✓）。
+＞ **因此补一条操作规矩** ✓：遇到**布局/交互**问题 ⇒ **先搜 2–4 条**（含具体软件名 ✓）、
+＞ **看官方文档或截图级资料** ✓、**把"它们这么做"的具体点写进笔记** ✓、**再动手** ✓。
+＞ 本轮实测（gate 全绿 ✓、786 项 ✓）之后提交 ✓：路由 + 面板入库图优先 + 打包拷贝 + 那条路由守卫的目录回退 ✓。
