@@ -353,10 +353,16 @@ await waitFor("document.getElementById('board').width > 400 && window.yanshi.sta
 await sleep(600);
 const reloadDigest = await canvasDigest();
 const reloadInk = await inkOnCanvas();
+// **从"打印"改成"断言"** ✓ —— 这是值得长期守着的不变量：
+// "抬手并等服务端回填后，画面上的像素 = 页面重载后（只可能来自服务端）的像素" ✓。
+// 它一旦红了，就说明**画布上残留了不是服务端的东西** ✗（比"本地预览与服务端略有差异"严重得多 ✓）。
+const reloadMatchesFinal = reloadDigest === wysiwygFinalDigest && reloadInk === wysiwygFinalInk;
 console.log(`  ④d 重载后（只可能来自服务端）：指纹 ${reloadDigest}, 墨 ${reloadInk} ⇒ ` +
-  (reloadDigest === wysiwygFinalDigest && reloadInk === wysiwygFinalInk
-    ? "与「最终」**相同** ✓（说明最终=服务端 ✓）"
-    : "与「最终」**不同** ✗（说明我量到的最终不是服务端像素 ✗）"));
+  (reloadMatchesFinal ? "与「最终」**相同** ✓" : "与「最终」**不同** ✗"));
+if (!reloadMatchesFinal) {
+  console.log("  ✗ 抬手后的画面与服务端不一致 ⇒ 画布上残留了非服务端像素 ✗");
+  process.exitCode = 1;
+}
 
 if (diff) {
   console.log(`  ④b 差异：${diff.count} 个像素不同｜最大通道差 ${diff.maxDelta}｜包围盒 ` +
