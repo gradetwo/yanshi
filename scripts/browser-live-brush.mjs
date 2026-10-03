@@ -139,7 +139,44 @@ await sleep(400);
 await waitFor("document.querySelectorAll('#brush option').length > 5", "笔刷列表", 20000);
 // **选一支 .myb 笔刷** ✓（spray 最能体现"实心线 vs 真笔刷"的差别 ✓）。
 const requestedBrush = process.env.BRUSH || "spray";
-await evaluate(`window.yanshi.setBrush(${JSON.stringify(requestedBrush)})`);
+// **画笔库的笔刷要走"点行"那条路** ✗ —— 实测：`.myb` 名字在 `#brush` 下拉框里**根本不存在**
+// （值始终为空 ✓，只有 `spray` 这类**工具名**在里面 ✓）；而**已验证**的那条探针
+//（`scripts/browser-brush-list.mjs` ✓）是用 `#brushLibraryList .brush-lib-row` 点行来选 ✓
+// 并用 `highlighted` 校验 ✓。所以这里先试画笔库 ✓，找不到再退回 `setBrush`（覆盖工具名 ✓）。
+let pickedFromLibrary = null;
+try {
+  await waitFor(`window.yanshi.brushLibraryState().rows > 20`, "画笔库列表渲染", 20000);
+  pickedFromLibrary = await evaluate(`(() => {
+    const wanted = ${JSON.stringify(requestedBrush)};
+    const strip = (v) => (v || "").toLowerCase().replace(/\.myb$/, "");
+    const rows = Array.from(document.querySelectorAll("#brushLibraryList .brush-lib-row"));
+    const row = rows.find((r) => r.dataset.brush === wanted)
+      || rows.find((r) => strip(r.dataset.brush) === strip(wanted));
+    if (!row) return null;
+    row.click();
+    return row.dataset.brush;
+  })()`);
+} catch (error) {
+  // **不许默默吞掉** ✗（上一版就是这样 ⇒ 我根本不知道是"行找不到"还是"下拉框没更新" ✗）：
+  // 把实际看到的东西打出来 ✓ —— 有几行、`dataset.brush` 长什么样 ✓。
+  pickedFromLibrary = null;
+  const seen = await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll("#brushLibraryList .brush-lib-row"));
+    return { count: rows.length, sample: rows.slice(0, 4).map((r) => r.dataset.brush || "(无 dataset.brush)") };
+  })()`).catch(() => null);
+  console.log("  （画笔库入口没走通：" + JSON.stringify(seen) + " ⇒ 退回 setBrush）");
+}
+if (pickedFromLibrary) {
+  await sleep(400);
+} else {
+  // **没匹配到也要说清** ✗（只在异常分支打印是不够的 ✓ —— 上一版就是这样又盲了一次 ✗）。
+  const seen = await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll("#brushLibraryList .brush-lib-row"));
+    return { count: rows.length, sample: rows.slice(0, 5).map((r) => r.dataset.brush || "(无)") };
+  })()`).catch(() => null);
+  console.log("  （画笔库没匹配到 " + JSON.stringify(requestedBrush) + "：" + JSON.stringify(seen) + "）");
+  await evaluate(`window.yanshi.setBrush(${JSON.stringify(requestedBrush)})`);
+}
 await sleep(600);
 const brushName = await evaluate(`document.getElementById("brush").value`);
 const toolName = await evaluate(`(window.yanshi.state() || {}).tool || "?"`);
