@@ -484,6 +484,14 @@ if [ -d "$repo/assets/mediums" ]; then
 fi
 if [ -d "$repo/assets/brand" ]; then
   cp -R "$repo/assets/brand" "$stage/share/yanshi/brand"
+  # **门面必须显式拷**：`assets/` **不是整棵**进包的（上面挑的是 mediums/*.wasm 与 brand），
+  # 所以第 32 轮那份 `assets/brush-module.wasm` **到不了包里** —— 这里补上。
+  if [ -f "$repo/assets/brush-module.wasm" ]; then
+    cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
+    echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"
+  else
+    echo "    ⚠️ 没有笔刷门面可装（先构建 yanshi-brush-wasm）⇒ 拖动期不显示真笔刷（功能正常）"
+  fi
 fi
 # **三类资产也要随包发布** ✓（用户裁定：纹理要入库、要打包 ✓）。
 # **为什么平铺在 share/yanshi/ 下** ✓：服务端把"资产根目录 + 种类子目录"拼在一起 ✓
@@ -539,8 +547,18 @@ else
   wasm_args+=(--no-wasm)
   echo "提示：本包未含 WASM 计算内核 ⇒ 查看器将走服务端渲染（功能正常，浏览器端少一份内核）" >&2
 fi
+# **`.myb` 笔刷的 wasm 门面**：包里那份在 `share/yanshi/brush-module.wasm`。
+# 没有它 ⇒ 查看器不会本地渲染真笔刷（拖动期就没有真笔刷效果），但**功能仍正常**（抬手由服务端落笔）。
+brush_args=()
+if [ -f "$here/share/yanshi/brush-module.wasm" ]; then
+  brush_args+=(--brush-wasm "$here/share/yanshi/brush-module.wasm")
+else
+  brush_args+=(--no-brush-wasm)
+  echo "提示：本包未含笔刷门面 ⇒ 拖动期不显示真笔刷（功能正常，抬手由服务端落笔）" >&2
+fi
 exec "$here/bin/yanshi-serve" \
   "${wasm_args[@]}" \
+  "${brush_args[@]}" \
   --medium-dir "$here/share/yanshi/mediums" \
   --assets-dir "$here/share/yanshi" \
   --brand-dir "$here/share/yanshi/brand" \
