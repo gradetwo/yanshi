@@ -12058,10 +12058,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "new_document",
         r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
     ),
-    (
-        "create_layer",
-        r#"{"layer_id": "L1", "name": "x", "parent_id": "x", "type": "x"}"#,
-    ),
+    ("create_layer", r#"{"layer_id": "L1", "name": "Layer 1"}"#),
     (
         "brush_stroke",
         r#"{"brush": "100%_Opaque", "layer_id": "L1", "points": [[100, 100, 1], [180, 140, 1], [260, 100, 1]], "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40}"#,
