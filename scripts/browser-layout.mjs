@@ -131,9 +131,30 @@ for (const key of ["history", "assets", "file", "diag", "paint"]) {
     await capture("layout-tab-mismatch");
     process.exit(1);
   }
-  if (total !== 17) {
-    console.error(`❌ 卡片总数变成 ${total} ⇒ 搬卡时丢了卡 ✗（原来 17 张 ✓）`);
+  // **16 张** ✓ = 原来的 17 张减去**工程包那张** —— 它按用户第 6 条的要求被搬进了**顶栏「文件」菜单** ✓
+  //（"导入导出不适合放在信息面板" ✓）。少的那张必须**在菜单里找得到** ✓，所以这里同时点名 ✓。
+  if (total !== 16) {
+    console.error(`❌ 面板里的卡片总数变成 ${total} ⇒ 搬卡时丢了卡 ✗（应当是 16 张 ✓）`);
     await capture("layout-lost-card");
+    process.exit(1);
+  }
+  const movedOut = await evaluate(`(() => {
+    const ids = ["newDoc", "openDoc", "exportPng", "projectExport", "projectImport"];
+    const menu = document.getElementById("fileMenuBody");
+    return {
+      inMenu: ids.filter((id) => menu && menu.contains(document.getElementById(id))),
+      inAside: ids.filter((id) => document.querySelector("aside") && document.querySelector("aside").contains(document.getElementById(id))),
+      fileTabHidden: (() => { const tab = document.querySelector('#rightTabs button[data-tab="file"]');
+        return tab ? tab.hidden : null; })(),
+    };
+  })()`);
+  if (movedOut.inAside.length > 0) {
+    console.error(`❌ 信息面板里还留着 ${movedOut.inAside.join(", ")} ⇒ 没搬出去 ✗`);
+    process.exit(1);
+  }
+  if (movedOut.inMenu.length !== 5) {
+    console.error(`❌ 只搬进菜单 ${movedOut.inMenu.length}/5 个控件 ⇒ 有控件在搬运中丢了 ✗`);
+    await capture("layout-move-lost-control");
     process.exit(1);
   }
 }
@@ -238,6 +259,7 @@ console.log(
       ok: true,
       scroll,
       tabs: Object.fromEntries(Object.entries(tabStates).map(([key, value]) => [key, value.visibleCards])),
+      movedToFileMenu: movedOut,
       stageScroll: { zoomed: zoomed.overflowX, fitted: fitted.overflowX, pageStillLocked: zoomed.pageStillLocked },
       dockHomes: dockFlow,
       screenshots: [shotTabs, shotZoom, shotDock],

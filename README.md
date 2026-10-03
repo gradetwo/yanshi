@@ -212,6 +212,14 @@ hidden, because naming a layer to export is an explicit request, and it delibera
 that cache is keyed by region and version but not by layer, so reusing it could return another layer's pixels, which
 is the classic cache-key-missing-a-dimension bug and one that only shows up on a cache hit.
 
+New, open, import and export live in a single File menu in the header rather than scattered through the information
+panel, which is where a person expects them and which keeps the panel for information. The controls are the same
+nodes moved into the menu, so their ids, listeners and behaviour are unchanged, and the project packaging card that
+used to occupy a tab of its own now sits there too; a tab that ends up with no cards is hidden rather than left
+empty. The script requires all five controls to be inside the menu, none of them to remain in the panel, the export
+inside the menu to actually write an image rather than merely be clickable, and Escape or a click outside to close
+it.
+
 The right column is split into five tabs, drawing, history, assets, file and diagnostics, which holds the same
 seventeen cards as before and shows only the ones belonging to the active tab. The cards are moved rather than
 rebuilt, so their listeners, selected options and drawn thumbnails survive a switch, and the grouping lives in the

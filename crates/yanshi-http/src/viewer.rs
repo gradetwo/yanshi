@@ -83,6 +83,17 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   /* **画布舞台自己滚** ✓：放大到超出可视区时，它内部上下左右滚 ✓（而不是把整页顶开 ✗）。 */
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px;
            overflow: auto; background: #f5f5f5; }
+  /* **「文件」菜单** ✓（用户："导入导出之类功能也不适合放在信息面板，按照行业主流软件的习惯来设置分类"✓）
+     —— 行业习惯就是**顶栏一个「文件」** ✓，而不是散在右侧信息面板里 ✓。 */
+  #fileMenu { position: fixed; top: 52px; left: 118px; z-index: 42; width: min(340px, 92vw);
+    background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.5);
+    border-radius: 8px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+  #fileMenu[hidden] { display: none; }
+  #fileMenu .file-menu-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #fileMenu .file-menu-head .hint { flex: 1; }
+  #fileMenu .file-menu-group { margin: 6px 0 2px; font-size: 11px; opacity: .7; }
+  #fileMenu .card { border: 0; padding: 0; margin: 0; background: transparent; }
+  #fileMenu .card h2 { font-size: 12px; margin: 4px 0; }
   /* **右栏 tab** ✓（用户："面板内部有小 tab 切换不同信息"✓）—— 一行 CSS 决定显隐 ✓。 */
   .tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
   .tabs button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
@@ -261,6 +272,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <header>
   <h1><img class="brand-mark" src="/brand/svg/icon-light.svg" alt="" />偃师 Yanshi</h1>
   <span id="identity"></span>
+  <!-- **「文件」菜单** ✓：新建 / 打开 / 导入 / 导出**都归到这里** ✓（原来是散在右侧信息面板里 ✗）。
+       里面的控件是**搬进来的原节点** ✓（`#newDoc` / `#exportPng` / 工程包那张卡… ✓）
+       ⇒ 行为、监听器、id 全都不变 ✓，只是**换了地方** ✓（搬，不重建 ✓）。 -->
+  <button id="fileMenuButton" type="button" aria-pressed="false"
+          title="文件：新建 / 打开 / 导入 / 导出（顶栏这一个入口，信息面板里不再重复）">文件 ▾</button>
   <button id="newDoc">新建</button>
   <button id="openDoc">打开…</button>
   <span class="status">
@@ -4362,6 +4378,14 @@ function setupRightTabs() {
   }
   aside.insertBefore(bar, aside.firstChild);
   for (const pane of panes.values()) aside.appendChild(pane);
+  // **空的 tab 不留** ✓（本轮把工程包那张卡搬去「文件」菜单之后 ✓，「文件」tab 就没内容了 ✓
+  // ⇒ 留着它就是一个"点进去什么都没有"的空格子 ✗ —— 那比没有这个 tab 更让人困惑 ✓）。
+  for (const [key, pane] of panes) {
+    if (pane.querySelector(":scope > .card, :scope > details")) continue;
+    const tab = bar.querySelector('button[data-tab="' + key + '"]');
+    if (tab) tab.hidden = true;
+    pane.hidden = true;
+  }
   const showTab = (key) => {
     for (const [name, pane] of panes) pane.hidden = name !== key;
     for (const button of bar.querySelectorAll("button")) {
@@ -4385,8 +4409,87 @@ function setupRightTabs() {
   };
 }
 
+/// **「文件」菜单** ✓（用户第 6 条 ✓）：把"新建 / 打开 / 导出 PNG / 工程包"从信息面板**搬到顶栏菜单** ✓。
+///
+/// **为什么是"搬"** ✓：这些控件各自带着监听器、id 与既有检查（`#exportPng` 等 ✓）——
+/// 复制一份 ✗ 必然与原来那份漂移 ✓（本项目的老病 ✓）。搬完之后：
+/// **id 不变 ✓、行为不变 ✓、只是位置变了 ✓**，而且"信息面板里不再有它"这件事可以直接判 ✓。
+function setupFileMenu() {
+  const menu = $("fileMenu");
+  const body = $("fileMenuBody");
+  const button = $("fileMenuButton");
+  const close = $("fileMenuClose");
+  if (!menu || !body || !button) return;
+  const addGroup = (label) => {
+    const row = document.createElement("div");
+    row.className = "file-menu-group";
+    row.textContent = label;
+    body.appendChild(row);
+  };
+  const move = (id, group) => {
+    const node = $(id);
+    if (!node) return false;
+    if (group && body.dataset.lastGroup !== group) {
+      addGroup(group);
+      body.dataset.lastGroup = group;
+    }
+    body.appendChild(node);
+    return true;
+  };
+  // 顺序按行业习惯 ✓：新建 / 打开 ⇒ 导入 ⇒ 导出 ⇒ 工程包 ✓。
+  body.dataset.lastGroup = "";
+  const single = (node) => {
+    const wrap = document.createElement("div");
+    wrap.className = "toolbar";
+    wrap.appendChild(node);
+    return wrap;
+  };
+  for (const [id, group] of [["newDoc", "新建 / 打开"], ["openDoc", null]]) {
+    const node = $(id);
+    if (node) {
+      const wrap = $(id + "Wrap") || single(node);
+      wrap.id = id + "Wrap";
+      if (body.dataset.lastGroup !== group && group) { addGroup(group); body.dataset.lastGroup = group; }
+      body.appendChild(wrap);
+    }
+  }
+  // **导出** ✓（`#exportPng` 原来在「操作」卡里 ✓ —— 那是信息面板 ✓，搬走 ✓）。
+  const exportWrap = document.createElement("div");
+  exportWrap.className = "toolbar";
+  const exportPng = $("exportPng");
+  addGroup("导出");
+  if (exportPng) exportWrap.appendChild(exportPng);
+  // **工程包整张卡搬进来** ✓（打包 / 打开 *.yanshi ✓）—— 原来占着「文件」tab 一整格 ✓。
+  const card = document.querySelector('aside .card[data-panel="file"]');
+  if (card) body.appendChild(card);
+  body.appendChild(exportWrap);
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    button.setAttribute("aria-pressed", String(open));
+  };
+  button.addEventListener("click", () => setOpen(menu.hidden));
+  if (close) close.addEventListener("click", () => setOpen(false));
+  document.addEventListener("click", (event) => {
+    if (menu.hidden) return;
+    if (menu.contains(event.target) || button.contains(event.target)) return;
+    setOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) setOpen(false);
+  });
+  window.yanshiFileMenu = {
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+    isOpen: () => !menu.hidden,
+    ids: () => Array.from(body.querySelectorAll("[id]")).map((node) => node.id),
+  };
+}
+
 async function setupAssetPanels() {
-  // **先把右栏分好 tab** ✓，**再**把浮层挂上 ✓ —— 顺序不能反 ✗（浮层记的"原位"就是窗格 ✓）。
+  // **先把"文件"那几样搬进顶栏菜单** ✓（要在分 tab 之前 ✓ —— 搬走之后「文件」这个 tab 就空了 ✓，
+  // 分 tab 时它会因为**没有卡**而自动隐藏 ✓，不会留一个点进去什么都没有的空 tab ✗）。
+  setupFileMenu();
+  // **再把右栏分好 tab** ✓，**然后**把浮层挂上 ✓ —— 顺序不能反 ✗（浮层记的"原位"就是窗格 ✓）。
   setupRightTabs();
   // **然后把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
@@ -7263,6 +7366,14 @@ $("importFile").addEventListener("change", async (event) => {
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
      关掉时按**记下来的原位**搬回去 ✓ ⇒ 右侧面板永远不会被搬空 ✗。 -->
+<div id="fileMenu" hidden>
+  <div class="file-menu-head">
+    <strong>文件</strong>
+    <span class="hint">`Esc` 收起</span>
+    <button id="fileMenuClose" type="button">收起</button>
+  </div>
+  <div id="fileMenuBody"></div>
+</div>
 <div id="brushLibrary" hidden>
   <div class="brush-lib-head">
     <b>笔刷库</b>
