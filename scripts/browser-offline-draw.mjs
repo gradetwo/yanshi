@@ -17,6 +17,12 @@ await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
+// **单因素实验开关**（目标 (A)③ 的诊断用）：`BYPASS_SW=1` ⇒ 让页面**绕过 Service Worker** ✓
+// ⇒ 用于回答"是不是 SW 的取数把在线预览弄坏了" ✓（第 10 轮定的隔离实验 ✓）。
+if (process.env.BYPASS_SW === "1") {
+  await send("Network.setBypassServiceWorker", { bypass: true });
+  console.log("  （实验模式：已让页面绕过 Service Worker）");
+}
 await send("Page.navigate", { url });
 await sleep(3000);
 // **墨量**：把画布上偏暗的像素数出来（与判据无关的具体画法无关 ✓）
