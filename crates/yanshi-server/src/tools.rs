@@ -12055,6 +12055,10 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
+        "import_image",
+        r#"{"layer_id": "L1", "bitmap": {}, "region": {"x": 0, "y": 0, "w": 32, "h": 32}}"#,
+    ),
+    (
         "medium_stroke",
         r#"{"layer_id": "L1", "medium": "oil", "points": [[60, 220, 1], [140, 220, 1]]}"#,
     ),
