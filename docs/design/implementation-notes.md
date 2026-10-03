@@ -14822,3 +14822,27 @@ async function callToolChecked(name, args, what) {
 `refreshPreview()` + `resync()` ✓（即把"刷新"从 `callTool` 内**挪到成功分支** ✓）
 ⇒ 离线失败时**不刷新** ✓ ⇒ 本地预览**留住** ✓。判据验收 ✓：**离线增量 ≥ 在线一半** ✓ + **SW 缓存有门面** ✓（后者已绿 ✓）。
 **这条修法正好符合"离线优先"** ✓：**失败 ⇒ 不要用服务端状态覆盖本地** ✓（因为服务端此刻**并不权威** ✗）。
+
+### 🎯 第 47 轮：**真凶确认** ✓✓ —— `callTool` 的 `refresh:false` **只在成功时被尊重** ✗（失败那条路照样刷新 ✓）
+
+**读到的** ✓（`viewer.rs:1088` 起 ✓）：
+```js
+async function callTool(name, args, options = {}) {
+  const response = await fetch(api("/api/tools/" + name), { … });
+  const value = await response.json();
+  if (value.ok) {
+    if (value.head !== undefined) setStatus({ … });
+    … skipRefresh: options.refresh === false …        // ← **只在 ok 分支里** ✗
+  }
+  return value;
+}
+```
+⇒ **`refresh: false` 只在"成功"时生效** ✗ ⇒ **失败时（离线 ✓）它照旧刷新/重绘** ✓
+⇒ 于是**服务端状态（此刻并不权威 ✗）盖掉了本地那一层** ✓ ⇒ **离线抬手后笔迹消失** ✓ 的**完整闭环**到齐了 ✓。
+**修法（下一轮 ✓，一处、通用 ✓）** ✓：把 `options.refresh === false` 的判断**提到分支之外** ✓
+⇒ **失败时也尊重 `refresh:false`** ✓；然后在 `.myb` 提交处传 `refresh:false` ✓，
+并**只在成功时**自己调 `refreshPreview()` + `resync()` ✓
+⇒ 离线失败 ⇒ **不刷新** ⇒ 本地预览**留住** ✓（这正是"**离线优先**"：服务端此刻不权威 ✗）。
+**判据验收** ✓：**离线增量 ≥ 在线一半** ✓ + **SW 缓存有门面** ✓（后者已绿 ✓）。
+**为什么这条值得单独记** ✓：它不是"某个分支写错了" ✗，而是**一个选项的作用域**比它的语义窄 ✗
+⇒ 于是"我传了 `refresh:false`"✓ 与"它真的不刷新"✓ **不是一回事** ✗ —— 又一次"**设过了 ≠ 生效了**" ✓。
