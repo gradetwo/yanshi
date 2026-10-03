@@ -16030,3 +16030,34 @@ let body = bristle * (0.75 + 0.45 * rim);
 ① 建**对照层** ✓ ⇒ ② `fill` 平坦块 ✓ ⇒ ③ 采样 ⇒ 正对照 `|acf(4)-acf(2)| ≤ 0.15` ✓（**自证** ✓）
 ⇒ ④ 建**笔触层**（在上 ✓）⇒ ⑤ 画 oil 笔触 ✓ ⇒ ⑥ 采样 ⇒ 被测：`acf(4)-acf(2) ≤ 0.15` **且** 暗环/dab ≤ **0.10** ✓
 ⇒ ⑦ 再回头**把它拿到"修前"跑一遍** ✓（必须红 ✓）⇒ **判据站住之后**，才去改 `yanshi-medium-oil` ✓。
+
+### 🎯 第 101 轮：2.3 的**合成站点**读准了 ✓ —— 但**不能全局改** ✗（作用域设计已定 ✓）
+
+**站点（照抄原文 ✓）** ✓：`crates/yanshi-medium-host/src/lib.rs:300-328` ✓ 的 `paste_dab`（名字待核 ✓）
+是一段**标准 source-over** ✓：
+```rust
+let sa = f32::from(src[s + 3]) / 255.0;
+if sa <= 0.0 { continue; }
+for channel in 0..3 {
+    let sd = f32::from(src[s + channel]);
+    let dd = f32::from(dst[d + channel]);
+    dst[d + channel] = (sd * sa + dd * (1.0 - sa)).round().clamp(0.0, 255.0) as u8;
+}
+let da = f32::from(dst[d + 3]) / 255.0;
+dst[d + 3] = ((sa + da * (1.0 - sa)) * 255.0).round().clamp(0.0, 255.0) as u8;
+```
+⇒ 于是**后一枚 dab 盖住前一枚** ✗ ⇒ 每枚 dab 的**颗粒相位**都被保留下来 ✓
+⇒ 叠加后沿轴线形成 **≈4px 的周期** ✓ —— 正是判据测到的 `acf(4)-acf(2)=0.140` ✓。
+**结构决定（本轮最值的结论 ✓）** ✓：这张合成是**所有介质共用**的 ✗（oil ✓ / watercolor ✓ / pencil ✓ …）
+⇒ **不能**把 source-over 全局换成 max ✗ —— 水彩/铅笔依赖 source-over 的**覆盖语义** ✓
+（换掉会破坏它们 ✓，而它们**没有**"泡泡"问题 ✓）。**正确做法 ✓**：给介质一个**显式的融合方式** ✓
+（例如 `Blend::SourceOver` / `Blend::MaxHeight` ✓，缺省 SourceOver ✓ ⇒ **逐字节不变** ✓），
+**只有 `oil`** 声明 `MaxHeight` ✓ ⇒ 同一像素取**覆盖率更大**的那一枚 dab ✓ ⇒ 平台 ✓、边缘脊保留 ✓
+（报告的"**极大值融合**" ✓）。
+**下一轮（写死 ✓，一步到位 ✓）** ✓：① 读 `paste_dab` 的**调用点**与介质描述符的结构 ✓
+（`Dab`/`Medium` 那种类型 ✓）⇒ ② 加一个**缺省为 SourceOver** 的字段 ✓ ⇒ ③ 让 `oil` 声明 max ✓
+⇒ ④ **跑那条已自证的判据** ✓（期望 `acf` 0.140 ⇒ <0.05 ✓、正对照仍 0 ✓、笔触仍可见 ✓）
+⇒ ⑤ 门禁全绿（`fmt`/`clippy`/`test` ✓）⇒ 英文提交 + 推送 ✓。
+**注意 ✓**：oil 自己的单元测试里有 **golden**（`texture_zero_matches_prechange_golden` ✓）
+⇒ 改合成**很可能让它红** ✗ —— 那**正是**它该做的事 ✓（golden 就是为了钉住"我故意改了什么" ✓）：
+届时按规矩**先看清它报什么** ✓，再决定是更新 golden ✓（若改动是有意的 ✓）还是我的改动跑偏了 ✗。
