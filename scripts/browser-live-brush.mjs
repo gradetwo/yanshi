@@ -271,6 +271,16 @@ await evaluate(`(() => {
   window.__midPixels = board.getContext("2d").getImageData(0, 0, board.width, board.height).data.slice();
   return true;
 })()`);
+const overlayInk = () =>
+  evaluate(`(() => {
+    const node = document.getElementById("overlay");
+    if (!node) return -1;
+    const data = node.getContext("2d").getImageData(0, 0, node.width, node.height).data;
+    let ink = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 32) ink += 1;
+    return ink;
+  })()`);
+const overlayMidInk = await overlayInk();
 const wysiwygMidDigest = await canvasDigest();
 const wysiwygMidInk = await inkOnCanvas();
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
@@ -283,6 +293,11 @@ const finalState = await evaluate("window.yanshi.state()");
 // 非读画布笔刷应当**完全相同**（EXPECT_EXACT=1 时判红）；读画布笔刷预期不同 ⇒ 先把差异**量出来**记档。
 await sleep(600);
 const wysiwygFinalDigest = await canvasDigest();
+const overlayEndInk = await overlayInk();
+const overlayCleared = overlayEndInk === 0;
+console.log(`  ④g 本地覆盖层：中途有墨 ${overlayMidInk} ⇒ 抬手后 ${overlayEndInk}` +
+  (overlayCleared ? "（**已清空** ✓ 乐观渲染被正确丢弃 ✓）" : "（**没清空** ✗ 乐观渲染残留 ✗）"));
+if (!overlayCleared) process.exitCode = 1;
 const finalInk = await inkOnCanvas();
 const wysiwygSame = wysiwygMidDigest === wysiwygFinalDigest && wysiwygMidInk === wysiwygFinalInk;
 const diff = await evaluate(`(() => {
