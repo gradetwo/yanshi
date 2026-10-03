@@ -11,7 +11,6 @@ use std::path::Path;
 
 /// PNG 魔数。
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-#[cfg(test)]
 /// deflate stored 块的最大负载 ✓（**只在测试里作为对照基线** ✓，见 `deflate_tests` ✓）。
 const STORED_BLOCK_MAX: usize = 65_535;
 
@@ -303,6 +302,20 @@ pub fn zlib_compress(raw: &[u8]) -> Vec<u8> {
     zlib_fixed(raw)
 }
 
+/// **压一遍，不划算就用 stored 块** ✓（stored 本身也是合法 zlib ✓）⇒ 对**不可压数据不膨胀** ✓
+///（最多多约 11 字节 ✓：2 字节 zlib 头 + 每 65535 字节 5 字节块头 + 4 字节 adler ✓）。
+///
+/// 为什么需要它 ✓：固定 Huffman 对**已压过的 PNG/JPEG、随机噪声**会**膨胀**（实测 64 KiB 约 +4% ✓）
+/// ⇒ 存储层必须走这个入口 ✓，而不是 [`zlib_compress`] ✓。
+pub fn zlib_compress_best(raw: &[u8]) -> Vec<u8> {
+    let packed = zlib_fixed(raw);
+    if packed.len() < raw.len() {
+        packed
+    } else {
+        zlib_stored(raw)
+    }
+}
+
 /// **解压** [`zlib_compress`] 的输出 ✓；不是 zlib 流就回 `None` ✓（调用方据此按原样处理 ✓）。
 /// 会顺带校验 adler32 ✓ —— 存储层最怕"解出来是垃圾却没人发现" ✗。
 pub fn zlib_decompress(stream: &[u8]) -> Option<Vec<u8>> {
@@ -324,7 +337,6 @@ pub fn zlib_decompress(stream: &[u8]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-#[cfg(test)]
 /// zlib 容器 + **stored（未压缩）deflate 块** ✓。
 ///
 /// **压不动时的兜底** ✓（用户实测的存储压缩用它 ✓）：stored 块**本身也是合法 zlib** ✓
@@ -641,7 +653,14 @@ fn inflate_raw(data: &[u8]) -> Option<(Vec<u8>, usize)> {
             // ① stored（未压缩）✓。
             0 => {
                 // **对齐到字节边界** ✓：`read_bits` 总是整字节读入 buffer ✓ ⇒
-                // 丢弃 buffer 里剩下的位即完成对齐 ✓，而 `position` 已经指向下一个未读字节 ✓。
+                // `position` 已经指向 LEN ✓；**但缓冲里还留着补齐位** ✗ ——
+                // 块头只占 **3 位**（BFINAL 1 + BTYPE 2 ✓）⇒ 一个字节里还剩 **5 位补齐** ✓，
+                // 必须**当场丢掉** ✓。**这就是 stored 跨 block 解不开的根因** ✓：
+                // ≤65535 字节的**单块**看不出来 ✓，而 **65536（= 两块）** 时
+                // 下一轮的 `read_bits(1)` 会读到**旧的补齐位** ⇒ 解成垃圾 ✓
+                //（判据 `tests/stored_block_round_trip.rs` 就是在 65536 上先红的 ✓）。
+                reader.buffer = 0;
+                reader.bits = 0;
                 let length = u32::from(u16::from_le_bytes([
                     *data.get(reader.position)?,
                     *data.get(reader.position + 1)?,

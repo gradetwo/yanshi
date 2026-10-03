@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use yanshi_core::blob::{BlobEntry, BlobStore};
 use yanshi_core::{BlobHash, ErrorCode, ErrorContext, Result, YanshiError};
-use yanshi_render::png::{zlib_compress, zlib_decompress};
+use yanshi_render::png::{zlib_compress_best, zlib_decompress};
 
 /// 包一层：`put` 时压缩、`get` 时解压。
 pub struct CompressedBlobStore {
@@ -33,12 +33,9 @@ impl BlobStore for CompressedBlobStore {
     }
 
     fn put(&self, bytes: &[u8]) -> Result<BlobHash> {
-        // **只用"固定 Huffman"这条** ✓ —— 因为它是**已验证"压了能解回来"**的那条 ✓
-        //（`blob_compression` 的判据 + `blob_compression.rs` 的往返判据都对着它 ✓）。
-        // **stored 块那条暂不启用** ✗：实测**解不回来**（下面判据如实记着这个边界 ✓）——
-        // 也就是说 `zlib_stored` 与 `inflate_raw` 的 stored 分支之间**有 bug** ✓，
-        // 那是独立的一项（要么是 3 位块头的字节对齐 ✓，要么是 LEN/NLEN 的写法 ✓），修好再启用 ✓。
-        self.inner.put(&zlib_compress(bytes))
+        // **压不划算就 stored 兜底** ✓（`zlib_compress_best` ✓）—— 它的**跨 block** 往返
+        // 由 `yanshi-render/tests/stored_block_round_trip.rs` 守着 ✓（那个 bug 正是被它抓出来的 ✓）。
+        self.inner.put(&zlib_compress_best(bytes))
     }
 
     fn get(&self, hash: &BlobHash) -> Result<Vec<u8>> {
@@ -131,12 +128,10 @@ mod tests {
             .collect();
         let hash = store.put(&noise).expect("写入应当成功");
         let stored = inner.size(&hash).expect("应当有落盘大小");
-        // **如实的边界** ✓：目前只有固定 Huffman 一条路 ⇒ 压不动的数据会**膨胀**（约 1.04× ✓）。
-        // 想让它"永不膨胀"就得启用 stored 块 ✓ —— 但那条路**实测解不回来** ✗（见上面的注释 ✓），
-        // 所以这里先钉住"膨胀有界"✓，等 stored 块修好再把它收紧到 `+64` ✓。
+        // **收紧到"不膨胀"** ✓ —— stored 兜底修好后 ✓，不可压数据最多只多 zlib 容器的固定开销 ✓。
         assert!(
-            stored <= noise.len() as u64 + noise.len() as u64 / 16 + 64,
-            "压不动的数据膨胀必须**有界**（≤ 1.0625× + 64）：明文 {} ⇒ 落盘 {}",
+            stored <= noise.len() as u64 + 64,
+            "不可压数据必须**不膨胀**（≤ 明文 + 64）：明文 {} ⇒ 落盘 {}",
             noise.len(),
             stored
         );
