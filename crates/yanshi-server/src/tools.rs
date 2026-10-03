@@ -11587,6 +11587,10 @@ fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// **只给"写盘"用** ✗ —— 实测教训：一开始我把它也加到了 `import_asset`（那是**从路径读** ✓）上，
 /// 结果把**合法导入**一起拒了 ⇒ `assets_import.rs` 四条测试当场红 ✓（判据/测试抓住了 ✓）。
 ///
+/// **幂等剥离 `exports/` 前缀** ✓（用户报告 2.1 ✓）：调用方写 `path: "exports/x.png"` 时 ✗，
+/// 老代码会再拼一次 `exports/` ⇒ 变成 `exports/exports/x.png` ✗，然后报 "No such file or directory" ✗
+/// （实测错误原文就是它 ✓）⇒ 调用方只能反直觉地**只传文件名** ✓。现在**两种写法等价** ✓。
+///
 /// 规则：只接受**相对**路径 ✓；拒绝任何 `..` 组件 ✓；相对**导出目录**解析
 ///（缺省 `./exports`，可用 `YANSHI_EXPORT_DIR` 改 ✓，目录不存在就自己建 ✓）；错误信息可照做 ✓。
 fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
@@ -11630,7 +11634,7 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
             )),
         ));
     }
-    Ok(root.join(candidate))
+    Ok(root.join(candidate.strip_prefix("exports").unwrap_or(candidate)))
 }
 
 fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
