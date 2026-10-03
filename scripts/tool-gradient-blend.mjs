@@ -44,11 +44,13 @@ if (result.ok !== true) {
   if (first && String(first).toLowerCase() !== "#2040a0") failures.push("首笔颜色不是 from");
   if (last && String(last).toLowerCase() !== "#f0e0c0") failures.push("末笔颜色不是 to");
   // ③ **画面真的出现过渡** ✓：在左/中/右三点取样，亮度必须单调（暗 ⇒ 亮 ✓）
-  const region = await call("render_region", { region: { x: 0, y: 0, width: 300, height: 200 }, include_image: true }, token);
-  const blocks = (region.content || []).filter((item) => item.type === "image");
-  if (!blocks.length) failures.push("拿不到渲染图 ⇒ 无法判断过渡");
+  const region = await call("render_region", { region: { x: 0, y: 0, width: 300, height: 200 }, include_image: true, max_px: 200000 }, token);
+  // **形状以实测为准** ✓：HTTP 的 `callTool` 回的是**工具原始 JSON** ⇒ 图在 `image.data`
+  //（`content[]` 那一层是 **MCP** 的封装 ✓ —— 我先前按 MCP 的形状写，于是永远"拿不到图" ✗）。
+  const image = region.image || {};
+  if (!image.data) failures.push("拿不到渲染图 ⇒ 无法判断过渡（响应键：" + Object.keys(region).join(",") + "）");
   else {
-    const buffer = Buffer.from(blocks[0].data, "base64");
+    const buffer = Buffer.from(image.data, "base64");
     // 只做**粗判**：比较 PNG 字节流的长度与是否存在（不解码 ✓ —— 解码交给服务端已测过的能力 ✓）
     if (buffer.length < 200) failures.push("渲染图小得可疑（" + buffer.length + " 字节）");
   }

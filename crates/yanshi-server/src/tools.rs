@@ -2208,6 +2208,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "gradient_blend",
+        profile: Profile::Core,
+        // **AI 画家需求 P0-1.2**：用户实测"左暗右亮要手动拼 20 笔" ⇒ 这里把"拼笔"交给服务端。
+        // 它**逐笔调用 `write_brush_stroke`** ⇒ 与手画**同一条落笔实现**（不是另一套笔触）。
+        summary: "两点之间自动生成过渡笔触（位置与颜色同时插值）；笔数 = steps ⇒ 替代手动拼笔",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("from", Object, true, "起点 {x, y, color}"),
+            param!("to", Object, true, "终点 {x, y, color}"),
+            param!("brush", String, true, "笔刷名（同 brush_stroke）"),
+            param!("size", Number, true, "笔尖直径（像素）"),
+            param!("steps", Number, false, "生成几笔（缺省 10，含首末两点）"),
+            param!("smooth", Boolean, false, "同 brush_stroke.smooth（缺省关）"),
+        ],
+    },
+    ToolSpec {
         name: "gradient_fill",
         profile: Profile::Core,
         // **针对用户报过的"大面积背景难处理"** ✓：平铺纹理是一条路 ✓，**渐变**是另一条 ✓ ——
@@ -2580,6 +2597,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
+        "gradient_blend" => write_gradient_blend(ctx, args),
         "import_project" => write_import_project(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
@@ -9646,6 +9664,142 @@ fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     })?;
     let value = ctx.workspace.import_project(&bytes, doc_id.as_deref())?;
     Ok(value)
+}
+
+/// **`gradient_blend`**（AI 画家需求 P0-1.2）：两点之间**位置与颜色同时插值**，逐笔交给
+fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush = require_str(args, "brush")?;
+    let size = args.get("size").and_then(Value::as_f64).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("size 必须是数字（像素）".to_string()),
+        )
+    })?;
+    let steps = args
+        .get("steps")
+        .and_then(Value::as_f64)
+        .unwrap_or(10.0)
+        .clamp(2.0, 200.0) as usize;
+    let smooth = args.get("smooth").and_then(Value::as_bool).unwrap_or(false);
+
+    let point_of = |key: &str| -> Result<(f64, f64, Value)> {
+        let value = args.get(key).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("缺少 {key}（应为 {{x, y, color}}）")),
+            )
+        })?;
+        let x = value.get("x").and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key}.x 不是数字")),
+            )
+        })?;
+        let y = value.get("y").and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key}.y 不是数字")),
+            )
+        })?;
+        let color = value.get("color").cloned().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key}.color 缺失")),
+            )
+        })?;
+        Ok((x, y, color))
+    };
+    let (from_x, from_y, from_color) = point_of("from")?;
+    let (to_x, to_y, to_color) = point_of("to")?;
+
+    let rgb_of = |value: &Value, key: &str| -> Result<[f64; 3]> {
+        if let (Some(r), Some(g), Some(b)) = (
+            value.get("r").and_then(Value::as_f64),
+            value.get("g").and_then(Value::as_f64),
+            value.get("b").and_then(Value::as_f64),
+        ) {
+            return Ok([r, g, b]);
+        }
+        if let Some(text) = value.as_str() {
+            let hex = text.trim_start_matches('#');
+            if hex.len() == 6 {
+                let parse = |range: std::ops::Range<usize>| {
+                    u8::from_str_radix(&hex[range], 16).ok().map(f64::from)
+                };
+                if let (Some(r), Some(g), Some(b)) = (parse(0..2), parse(2..4), parse(4..6)) {
+                    return Ok([r, g, b]);
+                }
+            }
+        }
+        Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{key} 既不是 {{r,g,b,a}} 也不是 #rrggbb")),
+        ))
+    };
+    let from_rgb = rgb_of(&from_color, "from")?;
+    let to_rgb = rgb_of(&to_color, "to")?;
+    let alpha_of = |value: &Value| value.get("a").and_then(Value::as_f64).unwrap_or(255.0);
+
+    // 单位方向（用于给两点足够间距；两点重合时取 (1,0)）。
+    let span = ((to_x - from_x).powi(2) + (to_y - from_y).powi(2)).sqrt();
+    let (unit_x, unit_y) = if span > 1e-9 {
+        ((to_x - from_x) / span, (to_y - from_y) / span)
+    } else {
+        (1.0, 0.0)
+    };
+    // **间距给足**：实测 1px 的两点会被判"没落下任何像素"，而 [[40,100,0.5],[140,100,0.5]] 成功。
+    let gap = (size * 1.5).max(4.0);
+
+    let mut object_ids: Vec<Value> = Vec::new();
+    let mut first_stroke = Value::Null;
+    let (mut first_color, mut last_color) = (String::new(), String::new());
+    for index in 0..steps {
+        let t = index as f64 / (steps - 1) as f64;
+        let x = from_x + (to_x - from_x) * t;
+        let y = from_y + (to_y - from_y) * t;
+        let mix = |a: f64, b: f64| (a + (b - a) * t).round().clamp(0.0, 255.0);
+        let (r, g, b) = (
+            mix(from_rgb[0], to_rgb[0]),
+            mix(from_rgb[1], to_rgb[1]),
+            mix(from_rgb[2], to_rgb[2]),
+        );
+        let a = mix(alpha_of(&from_color), alpha_of(&to_color));
+        let hex = format!("#{:02x}{:02x}{:02x}", r as u8, g as u8, b as u8);
+        if index == 0 {
+            first_color = hex.clone();
+        }
+        if index + 1 == steps {
+            last_color = hex.clone();
+        }
+        // **两个点、间距给足、坐标取整、pressure 0.5** —— 照抄实测成功的那次调用。
+        let stroke = json!({
+            "layer_id": layer_id,
+            "brush": brush,
+            "points": [
+                [x.round(), y.round(), 0.5],
+                [(x + unit_x * gap).round(), (y + unit_y * gap).round(), 0.5],
+            ],
+            "size": size.round() as i64,
+            "color": {"r": r, "g": g, "b": b, "a": a},
+            "smooth": smooth,
+        });
+        if first_stroke.is_null() {
+            first_stroke = stroke.clone();
+        }
+        let result = write_brush_stroke(ctx, &stroke)?;
+        if let Some(id) = result.get("object_id") {
+            object_ids.push(id.clone());
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "strokes": steps,
+        "first_stroke": first_stroke,
+        "first_color": first_color,
+        "last_color": last_color,
+        "object_ids": object_ids,
+    }))
 }
 
 fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
