@@ -202,6 +202,15 @@ const CACHES = `(async () => {
   return { supported: true, caches: out };
 })()`;
 
+// **同跑多笔** ✓（第 57 轮定 ✓）：断网状态**保持不变**再画一笔 ⇒ 若同跑内有成有败 ✓，
+// 就说明与"首访/复访"无关 ✓，而是**每一笔各自的时序** ✓。
+const before3 = await evaluate(INK);
+const stroke3 = await evaluate(STROKE);
+await sleep(1800);
+const after3 = await evaluate(INK);
+const delta3 = after3.ink - before3.ink;
+console.log("  离线第二笔：画前 " + before3.ink + " ⇒ 画后 " + after3.ink + "（增量 " + delta3 + "）｜分画布 " + JSON.stringify(after3.parts));
+
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // **PWA 的实质断言** ✓：离线能用，必须靠**我们自己的 SW 缓存** ✓，
