@@ -2285,6 +2285,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "save_palette",
+        profile: Profile::Core,
+        // **AI 画家需求 P1-5（写的一侧）**：读的一侧早有 `list_palette_colors`，缺的是"把一份调色板存下来"。
+        // **格式走 `.gpl`**（GIMP 调色板）—— 见 `service.rs:1687` 的解析器：它只认 `.gpl`/`.kpl`/`.json`，
+        // 而 `.gpl` 天生是**扁平列表**，与 `colors: [...]` 同形（`.json` 那种是**命名字典**，塞不进扁平数组）。
+        // **名字必须带扩展名**（`import_asset` 的硬约束：扩展名要与种类相符）。
+        // 内部复用既有的资产导入路径 ⇒ 存进去就**读得出来**（与 `list_palette_colors` 同源）。
+        summary: "把一份调色板按名字存进工作区（.gpl；同名覆盖）；存完直接回读返回",
+        mutating: false,
+        params: &[
+            param!("name", String, true, "调色板名（**要带扩展名**，如 my.gpl；见 import_asset 的约束）"),
+            param!("colors", Array, true, "颜色数组 [{r,g,b,a} 或 #rrggbb]"),
+        ],
+    },
+    ToolSpec {
         name: "list_palette_colors",
         profile: Profile::Core,
         summary: "读一个调色板的颜色（.gpl / .kpl / open-color 那种 .json）⇒ 供界面显示与取色",
@@ -2619,6 +2634,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
         "brush_preview" => write_brush_preview(ctx, args),
+        "save_palette" => write_save_palette(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
@@ -10351,6 +10367,96 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         value["created_layer"] = json!(layer);
     }
     Ok(value)
+}
+
+/// **`save_palette`**（AI 画家需求 P1-5 的写侧）：把 `colors` 规范成 `R G B` ⇒ 写一份临时 `.gpl` ⇒
+/// 交给**既有的资产导入**（`kind: palette` + `overwrite`）⇒ 再**回读**一次返回 ✓
+/// ⇒ 存进去就一定能读出来（与 `list_palette_colors` 同一条路 ✓，不另造存储 ✗）。
+fn write_save_palette(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let name = require_str(args, "name")?;
+    let colors = require_array(args, "colors")?;
+    if colors.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("colors 不能为空".to_string()),
+        ));
+    }
+    let channel = |value: &Value, key: &str| value.get(key).and_then(Value::as_f64);
+    let mut lines = String::from("GIMP Palette\nName: yanshi\nColumns: 0\n#\n");
+    for (index, color) in colors.iter().enumerate() {
+        let (r, g, b) = if let (Some(r), Some(g), Some(b)) = (
+            channel(color, "r"),
+            channel(color, "g"),
+            channel(color, "b"),
+        ) {
+            (r, g, b)
+        } else if let Some(text) = color.as_str() {
+            let hex = text.trim_start_matches('#');
+            if hex.len() != 6 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "第 {index} 项既不是 {{r,g,b}} 也不是 #rrggbb：{text}"
+                    )),
+                ));
+            }
+            let parse = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16);
+            match (parse(0..2), parse(2..4), parse(4..6)) {
+                (Ok(r), Ok(g), Ok(b)) => (f64::from(r), f64::from(g), f64::from(b)),
+                _ => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("第 {index} 项的十六进制读不出来：{text}")),
+                    ))
+                }
+            }
+        } else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("第 {index} 项既不是 {{r,g,b}} 也不是 #rrggbb")),
+            ));
+        };
+        lines.push_str(&format!(
+            "{:3} {:3} {:3}\tcolor{}\n",
+            r.round().clamp(0.0, 255.0) as u8,
+            g.round().clamp(0.0, 255.0) as u8,
+            b.round().clamp(0.0, 255.0) as u8,
+            index + 1
+        ));
+    }
+    // **临时文件**：唯一名（进程 id + 纳秒）⇒ 不覆盖别人 ✓ 也不被别人覆盖 ✓。
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "yanshi-palette-{}-{}.gpl",
+        std::process::id(),
+        stamp
+    ));
+    std::fs::write(&path, lines).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("写不了临时调色板 {}：{error}", path.display())),
+        )
+    })?;
+    let imported = write_import_asset(
+        ctx,
+        &json!({
+            "kind": "palette",
+            "name": name,
+            "path": path.to_string_lossy(),
+            "overwrite": true,
+        }),
+    )?;
+    let listed = write_list_palette_colors(ctx, &json!({"palette": name, "limit": 0}))?;
+    Ok(json!({
+        "ok": true,
+        "name": name,
+        "saved": colors.len(),
+        "imported": imported,
+        "colors": listed.get("colors").cloned().unwrap_or(Value::Null),
+    }))
 }
 
 fn write_list_palette_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {

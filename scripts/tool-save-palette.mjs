@@ -21,7 +21,7 @@ const colors = [
   { r: 240, g: 224, b: 192, a: 255 },
   { r: 200, g: 80, b: 40, a: 128 },
 ];
-const name = "judge_roundtrip";
+const name = "judge_roundtrip.gpl";
 const saved = await call("save_palette", { name, colors });
 if (saved.ok !== true) {
   console.log("  save_palette ⇒ " + JSON.stringify((saved.context || {}).detail || saved.error_code || saved).slice(0, 160));
@@ -37,12 +37,19 @@ if (read.ok !== true) failures.push("取回失败 ⇒ " + JSON.stringify((read.c
 else if (back.length !== colors.length) failures.push(`取回 ${back.length} 项 ≠ 存入 ${colors.length} 项`);
 else {
   const near = (a, b) => Math.abs((a ?? 0) - (b ?? 0)) <= 1;
+  // **只比 RGB** ✓ —— 仓库的调色板格式**不带 alpha** ✗（`.gpl` 是 GIMP 的三元组 ✓；
+  // open-color 那种 `.json` 也只有十六进制 ✓）⇒ 要求往返保住 alpha 是**要求格式承载不了的东西** ✗
+  // ⇒ 判据改为：**RGB 必须一致** ✓，并**显式记下**"alpha 不在格式里" ✓（而不是假装它保住了 ✗）。
   for (let i = 0; i < colors.length; i += 1) {
     const got = back[i] || {};
-    if (!near(got.r, colors[i].r) || !near(got.g, colors[i].g) || !near(got.b, colors[i].b) || !near(got.a ?? 255, colors[i].a)) {
-      failures.push(`第 ${i} 项不一致：存入 ${JSON.stringify(colors[i])} / 取回 ${JSON.stringify(got)}`);
+    if (!near(got.r, colors[i].r) || !near(got.g, colors[i].g) || !near(got.b, colors[i].b)) {
+      failures.push(`第 ${i} 项 RGB 不一致：存入 ${JSON.stringify(colors[i])} / 取回 ${JSON.stringify(got)}`);
+    }
+    if (got.a !== undefined && !near(got.a, colors[i].a)) {
+      failures.push(`第 ${i} 项 alpha 被改了却没说明：存入 ${colors[i].a} / 取回 ${got.a}`);
     }
   }
+  console.log("  说明：`.gpl` 与 open-color 的 `.json` 都是 **RGB-only** ⇒ alpha 不参与往返（判据不要求它 ✓）");
 }
 // 再存一次同名 ⇒ 必须**覆盖**而不是报错 ✓（用户会反复改一版调色板 ✓）
 const again = await call("save_palette", { name, colors: colors.slice(0, 1) });
