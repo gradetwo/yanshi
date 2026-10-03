@@ -10350,3 +10350,24 @@ export_png ✓      get_object ✓     list_assets ✓    new_document ✓
 3. 两处都写在**同一条命令的输出里** ✓（`diff -u` ✓ + `bash -n` ✓）⇒ 信息可以照实写 ✓（按今天的规矩 ✓）。
 **这条的意义** ✓：`assets/` 那个"看起来拷了、其实没进包"的错觉 ✗ 正是打包类问题的常见形状 ✓
 （与第 8 轮"包里资产落后于源码"同族 ✓）⇒ 判据是**diff 里那三行** ✓，而不是"我以为拷了"✗。
+
+### 🧾 第 97 轮：扩大示例覆盖 —— 生成器规则升级为**只收跑得通的** ✓，但脚本崩在一次 400 上 ✗
+
+**升级的规则** ✓（比上一轮更硬 ✓）：生成候选示例 ⇒ **实调一次** ⇒ **只把 ok 的写进表** ✓
+⇒ 表**天然恒绿** ✓（第 95 轮那三层判据里的第三层由构造保证 ✓）。
+**跑出来的有用数据** ✓（虽然脚本崩了 ✓）：
+```
+清单里共 126 个工具
+真实存在的候选项: delete_layer, draw_stroke, get_document, import_image,
+                  list_layers, list_palette_colors, list_textures, medium_stroke   ← 只有这 8 个
+  ✓ delete_layer 可跑通 ⇒ 收录
+```
+⇒ **我猜的名字里，`create_texture` / `set_palette_color` / `export_svg` / `flatten_layer` /
+`get_layer` / `save_document` / `load_document` / `list_documents` 一个都不存在** ✗
+（今天第三次因"猜工具名"付代价 ✓ ⇒ 一律**从清单里取** ✓）。
+**崩的原因（我自己的脚本 ✗）**：`draw_stroke` 回了 **HTTP 400** ✓，而我的 `call`
+**只处理 200** ✗ ⇒ `urllib` 抛 `HTTPError` ⇒ 脚本中止 ✓。**处置** ✓：
+写回在脚本**最后一步** ✓ ⇒ **文件没被改** ✓（`diff -q` 确认：`tools.rs 未被改动 ✓`）✓
+⇒ 树干净 ✓、没有留下半成品 ✓。
+**下一轮** ✓：把 `call` 改成**收到任何状态码都解析 body** ✓（400 也是一种"没跑通"✓，不是异常 ✗），
+然后重跑 ✓ —— 预期把 `delete_layer` 等**能跑通的**逐个收进来 ✓，跑不通的**明确不收录** ✓ 并打印原因 ✓。
