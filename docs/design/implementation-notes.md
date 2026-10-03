@@ -9890,3 +9890,23 @@ fn colour_to_hsv(colour: &Colour) -> (f32, f32, f32) {
 * **乙**：**只共享算法骨架** ✓（`max/min/delta` 与四个分支 ✓），约定由各自包一层 ✓
   —— 承认"两种约定各自服务不同调用方" ✓。
 **无论走哪条 ✓，判据都是现成的 15 组** ✓（它已经证明能抓到真差异 ✓）。
+
+### 🖼️ 第 76 轮：`brush_preview` 本地化的**全部约定**都读出来了 ✓（下一轮照抄即可 ✓）
+
+上一轮的经验（先把约定读清楚 ✗ 再动手 ✓）继续用 ✓ —— 服务端那份预览的每一步都读到了 ✓
+（`write_brush_preview` ✓，`tools.rs:10932` ✓）：
+1. **参数面** ✓：`brush` ✓、`size`（缺省 **24** ✓，与 `brush_stroke`/`medium_stroke` 一致 ✓，上限 512 ✓）、
+   `color` / `color_to` ✓、`smooth` ✓、`points`（默认用**固定的缓 S 形** ✓）、`opacity` / `hardness` ✓；
+2. **笔迹** ✓：不给 `points` 就用 `default_preview_points(size)` ✓（**固定** ⇒ 同一支笔刷可复现 ✓）；
+3. **落笔** ✓：走 `paint_brush(..., feed_base = false)` ✓ —— **与 `brush_stroke` 同一条实现** ✓
+   ⇒ "预览所见 = 落笔所得" ✓；**不喂底图** ✓（这片区域**从空 surface 起** ✓，正是门面的默认行为 ✓✓）；
+4. **区域** ✓：由 `paint_brush` 按"笔迹 bbox + `size/2 + 4`"算出 ✓ —— 门面**收区域做输入** ✓，
+   而查看器那条拖动路径**已经**用同一套算式 ✓（第 67 轮对齐过 ✓）；
+5. **输出** ✓：`paint.rgba` 经 `png::encode_png` ✓（`width`/`height`/`painted_pixels`/`steps`/`blob_hash` ✓）。
+**下一轮的做法（判据也定了 ✓）**：
+* 门面加一个"预览"入口 ✓（或直接复用现有 `paint` ✓ —— 它本来就从**空 surface** 起步 ✓，
+  与预览的 `feed_base = false` **完全一致** ✓）；
+* **判据（逐字节同一条路 ✓）** ✓：在**页面里**取服务端那张 PNG ✓ ⇒ `drawImage` 到离屏 ✓ ⇒ 读回 RGBA ✓，
+  与门面同一支笔、同一 `size`、同一条 `default_preview_points` 的输出**逐字节比** ✓
+  （在浏览器里解码 PNG 最省事 ✓ —— Node 没有内置 PNG 解码 ✗，页面有 ✓）；
+* **边界照旧** ✓：会读画布的笔刷**不做本地预览** ✓（第 68/69 轮已定 ✓，服务端对它们也会拒绝 ✓）。
