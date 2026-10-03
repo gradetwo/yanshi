@@ -12413,6 +12413,14 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "layer_default", "object_id": "box", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}"#,
     ),
     ("list_selections", r#"{}"#),
+    // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**抄 ✓（第 236 轮普查 ✓）——
+    // `get_diff` 见 `registry.call(&mut ctx, "get_diff", &json!({"from_seq": 0}))` ✓；
+    // `find_atom` / `get_object_history` 见各自测试里的 `{"object_id": "s1"}` ✓。
+    ("get_diff", r#"{"from_seq": 0}"#),
+    ("find_atom", r#"{"object_id": "s1"}"#),
+    // **`get_object_history` 不能作为单条示例** ✗ —— 判据实测报"对象 s1 不存在" ✓：
+    // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
+    //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。
     ("list_layers", r#"{}"#),
     ("get_document", r#"{}"#),
     (
