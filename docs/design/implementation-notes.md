@@ -10464,3 +10464,25 @@ list_assets ✓  list_layers ✓  list_textures ✓ new_document ✓ delete_obje
 **这一轮的闭环很干净** ✓：上一轮"被拒 + 打印原因" ✓ ⇒ 这一轮**拿原因当输入**改形状 ✓ ⇒ 直接跑通 ✓
 —— 这正是"判据要能把失败原因带出来"那条纪律的收益 ✓（第 62 轮定的 ✓）。
 **仍缺一条** ✓：`import_image` ✗（要 `layer_id` + 真的 `region`/像素 ✓）⇒ 下一轮补 ✓。
+
+### 🧹 第 102 轮：**判据不再弄脏工作树** ✓（并因此多了一条元判据 ✓）
+
+**问题** ✗（第 101 轮自己招的 ✓）：`export_png` 示例往**仓库根目录**写 `out.png` ✓ ⇒
+跑一次判据就**弄脏工作树** ✗，而我还用 `git add -A` 把它**提交进了历史** ✗。
+**处置** ✓：① 示例改写到 `example-export.png`（根目录 ✓，被忽略 ✓）；
+② `.gitignore` 加 `out.png` / `exports/` / `example-export.png` ✓；③ `git rm --cached out.png` ✓（移出版本控制 ✓）。
+**中途一次失败也记下** ✓：我第一次把示例改成 `exports/example.png` ✓ ⇒ **目录不存在 ⇒ 示例失败** ✗
+（判据从 15/15 掉到 **14/15** ✓ —— 它当场把这次改动抓了出来 ✓）⇒ 换成根目录的被忽略文件 ✓ ⇒ 15/15 ✓。
+**新的元判据** ✓（本轮的价值 ✓）：**跑完判据之后，`git status --porcelain` 只应有我本人要提交的改动** ✓ ——
+实测：
+```
+=== 跑完判据后的工作树 ===
+ M .gitignore
+ M crates/yanshi-server/src/tools.rs
+D  out.png
+```
+⇒ 没有多余产物 ✓（`example-export.png` 被忽略 ✓）。
+**判据** ✓（同一命令里 ✓）：
+```
+结论：15 个示例**跑通** ✓、0 个没跑通 ✗
+```

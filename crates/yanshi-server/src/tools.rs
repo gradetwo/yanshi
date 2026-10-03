@@ -12082,7 +12082,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     (
         "export_png",
-        r#"{"path": "out.png", "layer_id": "L1", "max_edge": 512}"#,
+        r#"{"path": "example-export.png", "layer_id": "L1", "max_edge": 512}"#,
     ),
     (
         "get_object",

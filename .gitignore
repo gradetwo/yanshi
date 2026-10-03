@@ -27,3 +27,6 @@ crates/yanshi-wasm/pkg/
 __pycache__/
 *.pyc
 dist/
+out.png
+exports/
+example-export.png
