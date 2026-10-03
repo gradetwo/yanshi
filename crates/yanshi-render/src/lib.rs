@@ -127,7 +127,7 @@ pub use geometry::{
 };
 pub use half::{f16_bits_to_f32, f32_to_f16_bits, quantize_f16};
 pub use object::{layer_bbox, object_bbox, parse_color, parse_object, Primitive, ShapeKind};
-pub use png::{adler32, encode_png, write_png_file};
+pub use png::{adler32, encode_png, write_png_file, zlib_compress, zlib_decompress};
 pub use prng::Prng;
 pub use render::{
     coverage_from_shape, parse_background, shape_coverage, shape_outline, tile_from_buffer,

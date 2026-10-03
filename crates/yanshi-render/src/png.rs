@@ -295,6 +295,35 @@ fn zlib_fixed(raw: &[u8]) -> Vec<u8> {
     out
 }
 
+/// **压缩一段字节**（zlib 容器 + 固定 Huffman + LZ77 ✓）—— 给 blob 存储复用 ✓。
+///
+/// 复用而不是引 zlib/miniz ✓：本项目"**只允许 `wasm-bindgen` 一个依赖**" ✓（见文件头 ✓），
+/// 而且这份实现**输出确定、可逐字节复现** ✓ —— 三方库给不了这个保证 ✓。
+pub fn zlib_compress(raw: &[u8]) -> Vec<u8> {
+    zlib_fixed(raw)
+}
+
+/// **解压** [`zlib_compress`] 的输出 ✓；不是 zlib 流就回 `None` ✓（调用方据此按原样处理 ✓）。
+/// 会顺带校验 adler32 ✓ —— 存储层最怕"解出来是垃圾却没人发现" ✗。
+pub fn zlib_decompress(stream: &[u8]) -> Option<Vec<u8>> {
+    if stream.len() < 6 || stream[0] != 0x78 {
+        return None;
+    }
+    let (bytes, _) = inflate_raw(&stream[2..])?;
+    // 尾部 4 字节是 adler32 ✓（上面已保证长度 ≥ 6 ✓ ⇒ 下标安全 ✓）
+    let tail = stream.len() - 4;
+    let expected = u32::from_be_bytes([
+        stream[tail],
+        stream[tail + 1],
+        stream[tail + 2],
+        stream[tail + 3],
+    ]);
+    if adler32(&bytes) != expected {
+        return None;
+    }
+    Some(bytes)
+}
+
 /// zlib 容器 + **stored（未压缩）deflate 块** ✓。
 ///
 /// **仅供测试** ✓：它是"未压缩基线" ✓，用来对比固定 Huffman 的收益 ✓
