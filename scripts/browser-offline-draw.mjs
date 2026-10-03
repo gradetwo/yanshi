@@ -59,23 +59,26 @@ const STROKE = `(() => {
   board.dispatchEvent(new PointerEvent("pointerup", at(0.6, 0.58, { buttons: 0 })));
   return { ok: true, brush: (document.getElementById("brush") || {}).value || "" };
 })()`;
-// ① 在线：先画一笔（让资产/门面有机会被加载与缓存 ✓）
+// ① 在线：画一笔，记录**这一笔自己的增量**
+const before1 = await evaluate(INK);
 const online = await evaluate(STROKE);
 await sleep(1500);
-const inkOnline = await evaluate(INK);
-// ② 断网 ⇒ 再画一笔 ⇒ **必须有墨**
+const after1 = await evaluate(INK);
+const deltaOnline = after1.ink - before1.ink;
+// ② 断网 ⇒ 再画一笔 ⇒ 记录**它自己的增量**（这才是"离线能不能画"的直接量）
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE);
 await sleep(1800);
-const inkOffline = await evaluate(INK);
+const after2 = await evaluate(INK);
+const deltaOffline = after2.ink - before2.ink;
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-console.log(`  在线画一笔：${JSON.stringify(online)}｜墨 ${inkOnline.ink}（分画布 ${JSON.stringify(inkOnline.parts)}）`);
-console.log(`  离线画一笔：${JSON.stringify(offlineStroke)}｜墨 ${inkOffline.ink}（分画布 ${JSON.stringify(inkOffline.parts)}）`);
-const grew = inkOffline.ink > inkOnline.ink;
+console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.ink + "（增量 " + deltaOnline + "）｜分画布 " + JSON.stringify(after1.parts));
+console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
 const failures = [];
-if (!online.ok) failures.push(`在线都没画上：${online.why}`);
-if (inkOffline.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
-if (!grew) failures.push(`离线这一笔没让墨量增加（${inkOnline.ink} ⇒ ${inkOffline.ink}）`);
+if (!online.ok) failures.push("在线都没画上：" + online.why);
+if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
+if (!(deltaOffline > 0)) failures.push("离线这一笔**自己的增量**不是正的（" + deltaOffline + "）⇒ 离线还画不了");
 socket.close();
 if (failures.length) { console.log(`  ✗ 离线还画不了：${failures.join("；")}`); process.exit(1); }
 console.log("  ✓ 离线也能画：断网后一笔仍然上墨");
