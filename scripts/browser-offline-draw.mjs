@@ -115,6 +115,7 @@ const report = async (label) => {
   console.log("  " + label + "阶段统计：" + JSON.stringify(await evaluate(STATS)));
   evidence.length = 0;
 };
+
 // **恢复两步前置** ✓（第 13 轮实测过：打开笔刷库后 `#brush` 才有 199 个非空选项 ✓；
 // 我后续重构把它们弄丢了 ✗ ⇒ 前置不成立 ⇒ `.myb` 路径永不进入 ✓ ⇒ 连续几轮误判成产品问题 ✗）。
 const OPEN_LIBRARY = `(() => {
