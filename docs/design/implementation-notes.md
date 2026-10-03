@@ -14139,3 +14139,28 @@ console.warning: 写缓存失败 /brush-module.wasm：TypeError: Failed to execu
 * 若离线阶段 `localBrushFrames` 只有 0～2 ✓ ⇒ 是**加载/节流竞态** ✓ ⇒ 修法是"**落笔前确保门面已就绪**" ✓（预热 ✓）
   或"**首帧就画**"（不要等节流 ✓）；
 * 若 `localBrushCalls` 为 0 ✓ ⇒ 是**路径没进去** ✓（另有分支 ✓，要与 `readsCanvas` 那条一起查 ✓）。
+
+### 🎯 第 18 轮：**推翻竞态假设** ✓✗ —— 本地预览那条路**根本没被进入** ✓
+
+**读数（三次完全一致 ✓）** ✓：
+```
+A/B/C 三次的**在线阶段统计都只有** {"firstStrokeMs": …} ✗
+⇒ **一个 `localBrush*` 计数都没有** ✓（第 14 轮曾出现 `localBrushCalls: 12 / localBrushFrames: 2` ✓）
+在线一笔：三次都是 board 1794 / overlay **0** ✗    离线：三次都是 +22 ✗
+```
+**结论** ✓：**不是"加载竞态"** ✗（竞态会让计数出现、只是帧少 ✓）—— 而是**那条路径压根没被走到** ✓
+（`localBrush*` 计数为 0 ⇒ `loadLocalBrushModule()` 没被调用 ✓）。
+**回到最早的读码（`viewer.rs:5830` 附近 ✓）** ✓：本地预览的**唯一入口条件**是
+```js
+if (brushOwnsTheStroke) { … loadLocalBrushModule() … }
+```
+⇒ 所以问题在于 **`brushOwnsTheStroke` 为假** ✓ ⇒ 即"**这次落笔被认为不属于 `.myb` 笔刷**" ✓。
+**可能的解释（待验 ✓，不猜结论 ✗）** ✓：
+* 我是在**库的卡片**上 `click()`（`[data-brush]` ✓）并给 `#brush` 设了值 ✓、派发了 `change` ✓ ——
+  但查看器**可能不监听** `#brush` 的 `change` ✓、而是只认它**自己的**库点击处理器 ✓
+  ⇒ 于是"选中的笔刷"在**它眼里**仍然是内置画笔 ✓ ⇒ `brushOwnsTheStroke` 为假 ✓；
+* 也可能 `brushOwnsTheStroke` 还要求别的状态 ✓（例如某个开关 ✓ / 笔刷库加载完成的标记 ✓）。
+**下一步（把"选笔成功"这件事**真的**证明出来 ✓）** ✓：在判据里**直接问页面** ✓ ——
+读出它的"当前笔刷/工具/是否属于 `.myb`"这几个状态 ✓（以及那个 `change` 处理器是否真的被调用过 ✓：
+可以**先派发一次 `change` 并在 console 里看**有没有反应 ✓，或读页面公开的 `window.yanshi*` 状态 ✓）。
+**规矩（又一次适用 ✓）** ✓：**"我点了它"≠"它被选中了"** ✗ —— 我这两轮一直在用前者当后者 ✓。
