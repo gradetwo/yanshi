@@ -13108,3 +13108,22 @@ TARGET="${YANSHI_STATIC_TARGET:-${HOST_TRIPLE}}"      # **名字必须来自真�
 **包名里的 triple 必须与包内二进制的真实格式/架构一致** ✓
 （`file` 看 `ELF` vs `Mach-O` ✓ + `uname -m`/triple 的 arch 段 ✓），**任何不一致就判红** ✗；
 并把同一条判据接进 `package-release.sh` ✓（**先校验再打包** ✓，不许"名字来自变量、内容来自现有文件" ✗）。
+
+### ✅ 第 231 轮：**"包名必须与包内二进制一致"**判据落地 ✓✓（并当场证明能红 ✓）
+
+**新增** ✓：`scripts/release-verify-archive.sh` ✓ —— 只做一件事 ✓：**拿包名里的 triple 去核对包里那个二进制** ✓
+（`file` 说话 ✓），不一致 ⇒ **退出 1** ✓。平台族 ✓：`*-linux-*` ⇒ 必须 **ELF** ✓；`*-apple-*` ⇒ 必须 **Mach-O** ✓；
+`*-windows-*` ⇒ 必须 **PE32** ✓；架构 ✓：`x86_64-*` ⇒ x86-64 ✓、`aarch64-*`/`arm64-*` ⇒ aarch64 ✓。
+**实测（正反两面 ✓，这就是"能红的判据" ✓）** ✓：
+```
+① 名字 x86_64-unknown-linux-gnu、内容是 Linux ELF
+   ⇒ ✓ 名实相符：… 与包内二进制一致        EXIT=0 ✓
+② 名字 …-aarch64-apple-darwin、内容是 Linux ELF（合成"坏包" ✓）
+   ⇒ ✗ 声明是 macOS(Mach-O) ⇒ 实际不是 ✗   **EXIT=1** ✓
+```
+⇒ 它**正好咬住**用户报的那类 BUG ✓（名实不符 ⇒ 装上去 `Exec format error` ✗）。
+**已知小弱点（如实 ✓）**：从**畸形文件名**里解析 triple 时，架构那段可能匹配不上 ✓
+（我合成包的 basename 是 `bad-aarch64-apple-darwin` ✓ ⇒ 架构检查被跳过 ✓）；真实包名以架构开头 ✓ ⇒ 不受影响 ✓，
+如需更严可要求显式传第二个参数 ✓。
+**仍差一步（下一步 ✓）** ✓：把它**接进 `scripts/package-release.sh`** ✓ ——
+**生成包之后、对外发布之前**调用 ✓ ⇒ 名实不符时**宁可失败也不要发出** ✗（那才是根治 ✓）。
