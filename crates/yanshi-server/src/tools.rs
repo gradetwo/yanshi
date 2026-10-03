@@ -2214,6 +2214,25 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "scatter_strokes",
+        profile: Profile::Core,
+        // **AI 画家需求 P0-1.3**：区域内随机撒笔触 —— 画头发、胡须、背景纹理、破碎色彩的核心工具。
+        // **必带 `seed`**：本仓库的底线是"同输入 ⇒ 逐字节同输出"，随机撒点若不可复现就没法评审与回归。
+        summary: "在区域内随机撒一批笔触（必带 seed ⇒ 同 seed 逐字节可复现）；画毛发/背景纹理/破碎色彩",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("seed", Number, true, "随机种子（必填；同 seed ⇒ 同结果）"),
+            param!("area", Object, true, "撒点区域 {x, y, w, h}"),
+            param!("palette", Array, true, "颜色数组 [{r,g,b,a} 或 #rrggbb]（随机取用）"),
+            param!("count", Number, false, "撒几笔（缺省 24，上限 2000）"),
+            param!("brush", String, true, "笔刷名（同 brush_stroke）"),
+            param!("size_range", Array, false, "笔尖直径范围 [min, max]（缺省 [6, 18]）"),
+            param!("opacity_range", Array, false, "不透明度范围 [min, max]（缺省 [0.4, 1.0]）"),
+            param!("direction", String, false, "random（缺省）/ horizontal / vertical / 角度数字"),
+        ],
+    },
+    ToolSpec {
         name: "gradient_blend",
         profile: Profile::Core,
         // **AI 画家需求 P0-1.2**：用户实测"左暗右亮要手动拼 20 笔" ⇒ 这里把"拼笔"交给服务端。
@@ -2604,6 +2623,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
+        "scatter_strokes" => write_scatter_strokes(ctx, args),
         "import_project" => write_import_project(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
@@ -9673,6 +9693,120 @@ fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 }
 
 /// **`gradient_blend`**（AI 画家需求 P0-1.2）：两点之间**位置与颜色同时插值**，逐笔交给
+/// **确定性 PRNG**（splitmix64 ✓）—— 同 seed ⇒ 同序列 ⇒ **同结果** ✓（本次改造的底线）。
+fn scatter_next(state: &mut u64) -> f64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // 取高 53 位映射到 [0,1) ✓（与 f64 的尾数精度对齐 ✓）。
+    ((z >> 11) as f64) / ((1u64 << 53) as f64)
+}
+
+/// **`scatter_strokes`**（AI 画家需求 P0-1.3）：区域里随机撒点 ✓，逐笔交给 `write_brush_stroke` ✓
+/// ⇒ 与手画**同一条落笔实现** ✓；**同 `seed` ⇒ 逐字节同结果** ✓（判据断言的正是这一条 ✓）。
+fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush = require_str(args, "brush")?;
+    let seed = args.get("seed").and_then(Value::as_u64).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "scatter_strokes 必须给 seed（同 seed ⇒ 同结果；不给就没法复现）".to_string(),
+            ),
+        )
+    })?;
+    let count = args
+        .get("count")
+        .and_then(Value::as_f64)
+        .unwrap_or(24.0)
+        .clamp(1.0, 2000.0) as usize;
+    let area = args.get("area").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("缺少 area（应为 {x, y, w, h}）".to_string()),
+        )
+    })?;
+    let number = |key: &str, default: f64| area.get(key).and_then(Value::as_f64).unwrap_or(default);
+    let (ax, ay, aw, ah) = (
+        number("x", 0.0),
+        number("y", 0.0),
+        number("w", 100.0).max(1.0),
+        number("h", 100.0).max(1.0),
+    );
+    let palette = args
+        .get("palette")
+        .and_then(Value::as_array)
+        .cloned()
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("palette 不能为空（给 [{r,g,b,a} 或 #rrggbb]）".to_string()),
+            )
+        })?;
+    let range = |key: &str, low: f64, high: f64| -> (f64, f64) {
+        match args.get(key).and_then(Value::as_array) {
+            Some(items) if items.len() >= 2 => (
+                items[0].as_f64().unwrap_or(low),
+                items[1].as_f64().unwrap_or(high),
+            ),
+            _ => (low, high),
+        }
+    };
+    let (size_low, size_high) = range("size_range", 6.0, 18.0);
+    let (opacity_low, opacity_high) = range("opacity_range", 0.4, 1.0);
+    let direction = optional_str(args, "direction").unwrap_or_else(|| "random".to_string());
+    let fixed_angle = match direction.as_str() {
+        "horizontal" => Some(0.0_f64),
+        "vertical" => Some(std::f64::consts::FRAC_PI_2),
+        "random" => None,
+        other => other
+            .parse::<f64>()
+            .ok()
+            .map(|degrees| degrees.to_radians()),
+    };
+
+    let mut state = seed;
+    for _ in 0..count {
+        let x = ax + scatter_next(&mut state) * aw;
+        let y = ay + scatter_next(&mut state) * ah;
+        let size = size_low + scatter_next(&mut state) * (size_high - size_low).max(0.0);
+        let alpha = opacity_low + scatter_next(&mut state) * (opacity_high - opacity_low).max(0.0);
+        let angle = fixed_angle.unwrap_or_else(|| scatter_next(&mut state) * std::f64::consts::TAU);
+        let pick = palette
+            [(scatter_next(&mut state) * palette.len() as f64) as usize % palette.len()]
+        .clone();
+        // **颜色**：调色板里的那一项 ✓，不透明度用这次抽到的 ✓（`a` 若调色板没给就按 255 ✓）。
+        let color = json!({
+            "r": pick.get("r").and_then(Value::as_f64).unwrap_or(0.0),
+            "g": pick.get("g").and_then(Value::as_f64).unwrap_or(0.0),
+            "b": pick.get("b").and_then(Value::as_f64).unwrap_or(0.0),
+            "a": (pick.get("a").and_then(Value::as_f64).unwrap_or(255.0) * alpha).clamp(0.0, 255.0),
+        });
+        // **一小段**（长度 ≈ 笔尖 ✓）：与 `gradient_blend` 同样的两点式 ✓（一个点会被判"没落下任何像素"✗）。
+        let length = (size * 1.2).max(4.0);
+        let stroke = json!({
+            "layer_id": layer_id,
+            "brush": brush,
+            "points": [
+                [x.round(), y.round(), 0.5],
+                [(x + angle.cos() * length).round(), (y + angle.sin() * length).round(), 0.5],
+            ],
+            "size": size.round() as i64,
+            "color": color,
+        });
+        write_brush_stroke(ctx, &stroke)?;
+    }
+    Ok(json!({
+        "ok": true,
+        "strokes": count,
+        "seed": seed,
+        "direction": direction,
+    }))
+}
+
 fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let brush = require_str(args, "brush")?;
