@@ -148,6 +148,13 @@ const CACHES = `(async () => {
 
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
+// **PWA 的实质断言** ✓：离线能用，必须靠**我们自己的 SW 缓存** ✓，
+// 而不是靠浏览器 HTTP 缓存的"侥幸" ✗（实测：CDP 离线模拟下 HTTP 缓存仍供得上 ✓）。
+// 这条**今天是红的** ✗ ⇒ 它就是"离线优先"还差的那一块 ✓。
+const cacheNames = (cachesAfter && cachesAfter.caches) || [];
+const cachedUrls = cacheNames.flatMap((entry) => entry.entries || []);
+const hasModuleInWorkerCache = cachedUrls.some((url) => url.startsWith("/brush-module.wasm"));
+console.log("  SW 缓存里有门面吗：" + hasModuleInWorkerCache + "（条目 " + cachedUrls.length + " 条）");
 // **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
 console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
 for (const line of evidence) console.log("    · " + line);
@@ -162,6 +169,9 @@ if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效
 // **不能只看" > 0"** ✗ —— 实测出现过离线只加 57 像素（噪声级 ✓，而在线是 1666+ ✓）就"通过"的情况 ✓
 // ⇒ 这里要求离线那一笔**与在线同一笔的量级相当** ✓（至少 1/4 ✓）：真画出笔触才可能达到 ✓。
 const floor = Math.max(200, Math.floor(Math.abs(deltaOnline) / 4));
+if (!hasModuleInWorkerCache) {
+  failures.push("SW 缓存里没有 /brush-module.wasm ⇒ 离线能力其实依赖浏览器 HTTP 缓存");
+}
 if (!(deltaOffline >= floor)) {
   failures.push("离线这一笔的增量 " + deltaOffline + " 达不到同一笔的量级门槛 " + floor + " ⇒ 不像真的画上了一笔");
 }
