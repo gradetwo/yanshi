@@ -273,6 +273,10 @@ pub unsafe extern "C" fn yanshi_brush_free(ptr: *mut u8, len: usize) {
 /// 顺便保证 `yanshi_brush_out_ptr` 返回的指针指向的分配**一直活着** ✓（Vec 就在这把锁里 ✓）。
 static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
+/// **失败原因** ✓ —— 第 64 轮实测发现：ABI 只回一个 0 ✗，浏览器侧**根本看不到为什么** ✗
+/// （"请求不是合法 JSON" 与 "不是能解析的 .myb" 都是 0 ✓）⇒ 加一条**错误通道** ✓。
+static ERROR: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
 /// 画一条笔触 ✓ ⇒ 返回**输出字节数** ✓（0 = 失败 ✓）。
 #[no_mangle]
 pub unsafe extern "C" fn yanshi_brush_paint(ptr: *const u8, len: usize) -> usize {
@@ -292,9 +296,18 @@ pub unsafe extern "C" fn yanshi_brush_paint(ptr: *const u8, len: usize) -> usize
             };
             let len = rgba.len();
             *guard = rgba;
+            if let Ok(mut error) = ERROR.lock() {
+                error.clear();
+            }
             len
         }
-        Err(_) => 0,
+        Err(reason) => {
+            // **把原因留下来** ✓（长度也能读 ✓）⇒ 浏览器把它打进日志 ✓。
+            if let Ok(mut error) = ERROR.lock() {
+                *error = reason.into_bytes();
+            }
+            0
+        }
     }
 }
 
@@ -307,6 +320,23 @@ pub extern "C" fn yanshi_brush_out_ptr() -> *const u8 {
     match OUTPUT.lock() {
         Ok(guard) => guard.as_ptr(),
         Err(_) => std::ptr::null(),
+    }
+}
+
+/// 上一次失败的原因起始地址 ✓（成功时长度为 0 ✓）。
+#[no_mangle]
+pub extern "C" fn yanshi_brush_error_ptr() -> *const u8 {
+    match ERROR.lock() {
+        Ok(guard) => guard.as_ptr(),
+        Err(_) => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn yanshi_brush_error_len() -> usize {
+    match ERROR.lock() {
+        Ok(guard) => guard.len(),
+        Err(_) => 0,
     }
 }
 

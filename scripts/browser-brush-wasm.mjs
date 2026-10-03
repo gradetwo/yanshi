@@ -31,10 +31,36 @@ const result = await evaluate(`(async () => {
   const api = instance.exports;
   const myb = await fetch("/brushes/" + "spray.myb").then((r) => r.ok ? r.text() : null);
   if (!myb) return { error: "/brushes/spray.myb 取不到" };
-  const request = JSON.stringify({
+  const errorText = () => {
+    const length = api.yanshi_brush_error_len();
+    if (!length) return "";
+    return new TextDecoder().decode(new Uint8Array(api.memory.buffer, api.yanshi_brush_error_ptr(), length));
+  };
+  // **先跑一支小请求**（已知可行 ✓），**再跑查看器那种请求** ✓（真实坐标 + 多点 + 6KB 文本 ✓）——
+  // 第 64 轮实测：查看器那条路上门面回 0 ✗ 而当时 ABI **没有错误通道** ✗ ⇒ 现在能直接看到原因 ✓。
+  const small = JSON.stringify({
     myb, points: [[40, 40, 1], [80, 40, 1]], size: 40,
     color: { r: 255, g: 0, b: 0, a: 255 }, region: { x: 0, y: 0, w: 128, h: 96 },
   });
+  const draw = (text) => {
+    const payload2 = new TextEncoder().encode(text);
+    const p2 = api.yanshi_brush_alloc(payload2.length);
+    if (!p2) return { outLen: 0, error: "alloc 失败" };
+    new Uint8Array(api.memory.buffer, p2, payload2.length).set(payload2);
+    const len2 = api.yanshi_brush_paint(p2, payload2.length);
+    api.yanshi_brush_free(p2, payload2.length);
+    return { outLen: len2, error: len2 ? "" : errorText(), requested: payload2.length };
+  };
+  const smallResult = draw(small);
+  // **查看器那种请求** ✓：真实坐标（不是 0,0 起 ✓）、40 个点 ✓、真实大小的区域 ✓。
+  const many = [];
+  for (let i = 0; i < 40; i += 1) many.push([300 + i * 4, 350 + Math.sin(i / 3) * 20, 1]);
+  const viewerLike = JSON.stringify({
+    myb, points: many, size: 40,
+    color: { r: 255, g: 0, b: 0, a: 255 }, region: { x: 280, y: 320, w: 200, h: 80 },
+  });
+  const viewerResult = draw(viewerLike);
+  const request = small;
   const payload = new TextEncoder().encode(request);
   const pointer = api.yanshi_brush_alloc(payload.length);
   new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
@@ -48,6 +74,7 @@ const result = await evaluate(`(async () => {
   return {
     moduleBytes: moduleBytes.byteLength, outLen, expected: 128 * 96 * 4, ink, reddest,
     badDotDot, badExtension, mybLength: myb.length,
+    smallResult, viewerResult,
   };
 })()`);
 console.log("  " + JSON.stringify(result));
