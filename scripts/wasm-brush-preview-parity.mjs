@@ -45,8 +45,11 @@ const script = `(async () => {
   const margin = size + 8.0;
   const amplitude = Math.min(Math.max(size * 0.6, 4.0), 24.0);
   const y = margin + amplitude;
-  const points = [[margin, y, 0.35], [margin + length*0.34, y - amplitude*2.0, 0.9],
-                  [margin + length*0.67, y + amplitude*2.0, 0.5], [margin + length, y, 0.35]];
+  // **整幕平移**（第 44 轮）：把笔迹挪到**远离边界**处再做一次同样的比对 ——
+  // 区域是由点算出来的，所以挪点即挪区域（两边都挪，变量只有一个：离边界的远近）。
+  const shift = ${process.env.SHIFT ? Number(process.env.SHIFT) : 0};
+  const points = [[margin + shift, y + shift, 0.35], [margin + length*0.34 + shift, y - amplitude*2.0 + shift, 0.9],
+                  [margin + length*0.67 + shift, y + amplitude*2.0 + shift, 0.5], [margin + length + shift, y + shift, 0.35]];
   const half = size / 2 + 4;
   const xs = points.map((p) => p[0]); const ys = points.map((p) => p[1]);
   const region = { x: Math.floor(Math.min(...xs) - half), y: Math.floor(Math.min(...ys) - half),
@@ -127,7 +130,7 @@ for (const row of results) {
   console.log(`  ${row.brush.padEnd(14)} 服务端 ${row.serverW}×${row.serverH} vs 算出的区域 ${row.region.w}×${row.region.h}` +
     `｜字节 ${row.serverBytes} vs ${row.facadeBytes}｜不同 ${row.differing}` +
     (row.firstDiff >= 0 ? `（首个 @${row.firstDiff}，最大差 ${row.maxDelta}）` : "") + `｜${ok ? "**逐字节相同** ✓" : "有差异 ✗"}`);
-  console.log(`      覆盖：hardness=${JSON.stringify(process.env.HARDNESS || null)} opacity=${JSON.stringify(process.env.OPACITY || null)}`);
+  console.log(`      覆盖：hardness=${JSON.stringify(process.env.HARDNESS || null)} opacity=${JSON.stringify(process.env.OPACITY || null)} shift=${JSON.stringify(process.env.SHIFT || 0)}`);
   console.log(`      枚数：服务端 steps=${row.serverSteps} vs 门面规则算得 ${row.expectedSteps}` +
     `｜${row.serverSteps === row.expectedSteps ? "相同 ✓" : "**不同** ✗ ⇒ 抽取顺序/枚数就是差异来源 ✓"}`);
   if (!ok && row.oneBit) {
