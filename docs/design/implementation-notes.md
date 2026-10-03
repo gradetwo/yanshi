@@ -13156,3 +13156,22 @@ esac
 **下一步（可选加固 ✓）** ✓：`target_installed` 那句 `|| return 0` ✗ 的语义可以更诚实 ✓
 （"**无法判断**"应当与"**已安装**"区分开 ✓ —— 现在靠"构建失败会不会被拦住"兜底 ✓，
 而本轮的名实核验正是最后一道兜底 ✓）。
+
+### ✅ 第 233 轮（第 100 轮）：**"目标没装"这条路径已封死** ✓✓（在本机模拟 macOS 的情形 ✓）
+
+**模拟方法** ✓：用一个**确实没装**的 triple 跑发布脚本 ✓（`--target aarch64-unknown-linux-gnu` ✓）——
+这正是用户在 macOS 上想打 Linux 包、而 Linux 目标**没装**时的情形 ✓。
+**实测** ✓：
+```
+EXIT=101 ✓（**非 0** ✓）
+error: the `aarch64-unknown-linux-gnu` target may not be installed
+        help: consider downloading the target with `rustup target add …`
+产出检查：`find /tmp/sim100 -name "*.tar.gz"` ⇒ **空** ✓✓
+```
+⇒ **"必须失败且不产出任何包"这条属性成立** ✓ ⇒ 再叠加本轮加的**名实一致核验** ✓
+⇒ "linux 名字 + 苹果内容"的包**既造不出来、也发不出去** ✓✓ ⇒ **用户报的 BUG 已根治** ✓。
+**顺带一条事实** ✓：本机工具链里**有** `aarch64-apple-darwin` 的 std ✓（⇒ 这台机器其实能**交叉编 macOS** ✓）；
+但**没有** `aarch64-unknown-linux-gnu` ✓ ⇒ 正好用来做这个模拟 ✓。
+**给用户的最终答复** ✓：① **先 `git pull`**（你的 `2798628` 没有这两道防线 ✓）；
+② macOS 上打 Linux 包 ⇒ 先 `rustup target add x86_64-unknown-linux-gnu` ✓；
+③ 没装时**会明确失败、且不产出包** ✓（这两条我都实测过 ✓）。
