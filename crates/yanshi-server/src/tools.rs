@@ -12029,6 +12029,29 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
     }
 }
 
+/// **每个工具一句"能直接抄走"的调用示例**（目标第 6 条）。
+///
+/// **为什么要有它**：实测踩到过 —— `brush_preview` 的实现读 `opacity`/`hardness`，而参数面里没有，
+/// 调用方收到的是「不接受参数 hardness（拼写错误？）」，**只能靠猜**。示例把"该怎么写"直接摆出来，
+/// 并由下面的测试保证**示例里的每个参数名都在该工具的参数面里**（示例与参数面不许漂移）。
+///
+/// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
+/// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
+pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    (
+        "new_document",
+        r#"{"doc_id":"demo","width":900,"height":640}"#,
+    ),
+    (
+        "brush_stroke",
+        r#"{"layer_id":"L1","brush":"100%_Opaque","size":40,"color":{"r":255,"g":0,"b":0,"a":255},"points":[[100,100,1],[180,140,1],[260,100,1]]}"#,
+    ),
+    (
+        "brush_preview",
+        r#"{"brush":"spray","size":24,"color":{"r":0,"g":64,"b":255,"a":255},"hardness":0.6,"opacity":0.8}"#,
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     // 裸名 `ALL_TOOLS` 在本模块里解析不到 ⇒ 必须显式引进来（第 52 轮实测）。
@@ -12053,6 +12076,29 @@ mod tests {
                 declared.contains(&needed),
                 "brush_preview 的实现会读 {needed}，而参数面里没有 ⇒ 调用方会收到「不接受参数 {needed}」并且无从知道它可以覆盖它；declared = {declared:?}"
             );
+        }
+    }
+
+    /// **示例里的参数名必须都在该工具的参数面里**（两边不许漂移）。
+    ///
+    /// 天生能红：示例里写错一个字（或参数面里删掉一个名字），这个测试立刻失败 ——
+    /// 这正是"可复制调用示例"存在的意义：**能直接抄走**，而不是抄走之后被拒。
+    #[test]
+    fn every_documented_example_only_uses_declared_parameters() {
+        for (name, example) in super::TOOL_EXAMPLES {
+            let spec = super::ALL_TOOLS
+                .iter()
+                .find(|tool| tool.name == *name)
+                .unwrap_or_else(|| panic!("示例引用了不存在的工具：{name}"));
+            let declared: Vec<&str> = spec.params.iter().map(|parameter| parameter.name).collect();
+            let parsed: serde_json::Value = serde_json::from_str(example)
+                .unwrap_or_else(|error| panic!("{name} 的示例不是合法 JSON：{error}"));
+            for key in parsed.as_object().expect("示例应当是一个 JSON 对象").keys() {
+                assert!(
+                    declared.contains(&key.as_str()),
+                    "{name} 的示例用了 `{key}`，但该工具的参数面里没有它 ⇒ 抄走会被拒；declared = {declared:?}"
+                );
+            }
         }
     }
 }
