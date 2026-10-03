@@ -6868,7 +6868,15 @@ function setupBrushLibrary() {
   const select = $("brush");
   if (select) select.addEventListener("change", () => { if (!panel.hidden) renderBrushLibrary(); });
   const search = $("brushSearch");
-  if (search) search.addEventListener("input", () => { if (!panel.hidden) renderBrushLibrary(); });
+  // **输入后自动打开画笔库** ✗ —— 用户报告："搜索笔刷输入后应该自动打开笔刷库" ✓。
+  // 原来这一行是 `if (!panel.hidden) renderBrushLibrary();` ✗ ⇒ **面板关着时输入什么都不发生** ✓
+  // （只有右边那个"匹配 N 支"在变 ✓）⇒ 用户看到的就是"除了显示数字，没有真正功能" ✓。
+  if (search) {
+    search.addEventListener("input", () => {
+      setOpen(true);            // 打开面板（`setOpen` 自己会去拉列表并渲染 ✓）
+      renderBrushLibrary();     // 再渲染一次，确保过滤后的列表立刻可见 ✓
+    });
+  }
   window.yanshiBrushLibrary = { render: renderBrushLibrary, setOpen };
 }
 
