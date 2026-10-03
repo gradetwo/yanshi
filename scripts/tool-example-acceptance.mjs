@@ -38,7 +38,14 @@ const painted = await call("brush_stroke", {
 });
 console.log(`  建对象 o1：${painted.ok ? "成功" : "失败 ⇒ " + ((painted.context || {}).detail || "").slice(0, 60)}`);
 
-const withExample = (catalogue.tools || []).filter((tool) => tool.example);
+// **破坏性的排到最后** —— 上一轮实测：`delete_layer` 先把图层删了，
+// 后面 `brush_stroke` / `get_object` 就全都没得用了（判据被自己的顺序搞红 ✗）。
+// **破坏性的排到最后，而且删对象的要排在删图层之前** —— 实测：
+// `delete_layer` 会把它上面的对象一起清掉（对象被 tombstone ⇒ 再删就被拒 ✗）。
+const rank = (name) => (/delete_layer/.test(name) ? 2 : /delete/.test(name) ? 1 : 0);
+const withExample = (catalogue.tools || [])
+  .filter((tool) => tool.example)
+  .sort((a, b) => rank(a.name) - rank(b.name));
 console.log(`  目录里带示例的工具：${withExample.length} 个`);
 let rejected = 0, accepted = 0;
 for (const tool of withExample) {

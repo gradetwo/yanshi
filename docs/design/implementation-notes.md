@@ -10427,3 +10427,23 @@ export_png ✓     get_object ✓    list_assets ✓   new_document ✓
 **教训（今天第三次同类 ✗，写进笔记 ✓）**：**别用正则去"看"表格内容** ✗ ——
 要看**服务端真正吐出来的目录** ✓（本轮并排那两行就是这么做的 ✓，而其中一半反而骗了我 ✗）。
 ⇒ 规矩：**判据读产物 ✓、不读源码的文本 ✗**（与第 93 轮"产物 vs 源码"是同一条 ✓）。
+
+### ✅ 第 100 轮：示例扩到 **12 条、12/12 全部跑通** ✓（含两条自己的假象 ✗）
+
+**落地的 4 条** ✓：`get_document` ✓、`list_layers` ✓、`list_textures` ✓、`delete_layer` ✓。
+**实测** ✓：
+```
+目录里带示例的工具：12 个
+brush_preview ✓ brush_stroke ✓ create_layer ✓ export_png ✓ get_document ✓ get_object ✓
+list_assets ✓  list_layers ✓  list_textures ✓ new_document ✓ delete_object ✓ delete_layer ✓
+结论：12 个示例**跑通** ✓、0 个没跑通 ✗
+```
+**本轮两次被自己的检查骗 ✗**（都记下来 ✓）：
+1. **"已有"假阳性** ✗：我在**整个 `tools.rs`** 里查 `"get_document",` ✓ —— 命中的是
+   `ALL_TOOLS` 里的**工具名** ✗，不是示例表里的条目 ✓ ⇒ 判断"已有" ⇒ **一条都没加上** ✗
+   ⇒ 改成**只在 `TOOL_EXAMPLES` 这一段里**查 ✓ 才加进去 ✓；
+2. **破坏性调用的次序** ✗：先按"`delete` 排最后" ✓ ⇒ 但 `delete_layer` 与 `delete_object` 都在最后 ✓，
+   `delete_layer` 先跑就把对象一起清掉 ✓ ⇒ `delete_object` 报「对象已被 tombstone」✗
+   ⇒ 细排：**`delete_layer` 排在 `delete_object` 之后** ✓ ⇒ 12/12 ✓。
+**这两条与前面三次同族** ✓：判据/工具**读错了地方** ✗（整文件 vs 表内 ✓、次序 vs 依赖 ✓）
+⇒ 规矩再明确一遍 ✓：**只看产物（服务端吐出来的目录）✓，并且在有依赖的地方显式排出次序 ✓**。

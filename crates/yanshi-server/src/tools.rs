@@ -12054,6 +12054,10 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("delete_layer", r#"{"layer_id": "L1"}"#),
+    ("list_textures", r#"{}"#),
+    ("list_layers", r#"{}"#),
+    ("get_document", r#"{}"#),
     (
         "new_document",
         r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
