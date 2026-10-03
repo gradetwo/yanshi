@@ -165,6 +165,10 @@ const deltaOnline = after1.ink - before1.ink;
 await report("在线");
 // ② 断网 ⇒ 再画一笔 ⇒ 记录**它自己的增量**（这才是"离线能不能画"的直接量）
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+
+// **等离线状态真正生效再落笔** ✓（第 60 轮定 ✓：此前**零等待** ✗ ⇒ 那一笔可能落在"切换中"的窗口里 ✓
+// ⇒ 行为随机器负载而异 ✓ ⇒ 与观测到的"非确定性"完全吻合 ✓）。
+await sleep(800);
 const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE);
 // **抬手之后按 100ms 取样** ✓（第 41 轮定 ✓）：判定墨是"**从未出现**"✗ 还是"**出现后被抹掉**"✗。
