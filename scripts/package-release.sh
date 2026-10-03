@@ -4,6 +4,8 @@
 # **为什么不能只发二进制** ✗：服务端启动时要读**两棵资产树** ✓：
 #   * WASM 计算内核 → 缺省 `crates/yanshi-wasm/pkg` ✓（`--wasm-dir` 可改 ✓）
 #   * 介质插件     → 缺省 `assets/mediums` ✓（`--medium-dir` 可改 ✓）
+#   * 笔刷门面     → `assets/brush-module.wasm` ✓（`--brush-wasm` 可改 ✓；服务端若不指它，
+#                    缺省会去 `target/` 找 ✓ ⇒ 包里必须显式指到 assets 这一份 ✓）
 # 两者都是**相对当前工作目录**的默认值 ✓ ⇒ 只发二进制、又在别的目录里跑 ⇒
 # 浏览器端内核与油画/水彩等插件**全都取不到** ✗（查看器会退化 ✓、`/mediums/*.wasm` 会 404 ✓）。
 # ⇒ 所以包里**带上这两棵树** ✓，并附一个**包装脚本**用绝对路径把它们指回去 ✓ ——
@@ -372,6 +374,30 @@ else
   echo "    ⚠️ 缺工具 ⇒ 无法现场构建："
   [ -n "${kernel_toolchain}" ] || echo "       · 找一个装了 wasm32-unknown-unknown 的 rustup 工具链"
   [ -n "${bindgen_bin}" ] || echo "       · cargo install wasm-bindgen-cli（版本见 Cargo.lock 里的 wasm-bindgen）"
+fi
+
+
+# **`.myb` 笔刷的 wasm 门面也要重建** ✓（第 58 轮起：浏览器本地渲染真笔刷 ✓ ——
+# 正是这一块让"拖动期就用真笔刷"成立 ✓，此前六次走服务端往返都失败 ✗）。
+# 它**不需要 wasm-bindgen** ✓（纯 C ABI ✓）⇒ 只要一个带 `wasm32-unknown-unknown` 的工具链 ✓。
+# 与内核那一段同样的纪律 ✓：**报错不许被吞** ✗、失败**不阻塞打包** ✓、但必须**说清后果** ✓。
+if [ -n "$kernel_toolchain" ]; then
+  echo "--> 构建 .myb 笔刷门面（wasm）"
+  facade_log="$(mktemp)"
+  if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
+       --manifest-path "$repo/Cargo.toml" --release \
+       --target wasm32-unknown-unknown -p yanshi-brush-wasm >"${facade_log}" 2>&1; then
+    if cp "$repo/target/wasm32-unknown-unknown/release/yanshi_brush_wasm.wasm" \
+          "$repo/assets/brush-module.wasm"; then
+      echo "    ✓ 门面已生成：$(du -h "$repo/assets/brush-module.wasm" | cut -f1)（assets/brush-module.wasm ✓）"
+    fi
+  else
+    echo "    ✗ 门面构建失败 ⇒ 下面是**真正的报错**（最后 20 行 ✓）："
+    tail -20 "${facade_log}" | sed 's/^/      /'
+    echo "      复现：cargo build --release --target wasm32-unknown-unknown -p yanshi-brush-wasm"
+    echo "      **失败不阻塞打包** ✓：拖动期不显示真笔刷 ✓（抬手仍由服务端落笔 ✓，画出来的东西一样 ✓）。"
+  fi
+  rm -f "${facade_log}"
 fi
 
 
