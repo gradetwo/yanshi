@@ -31,7 +31,10 @@ for (const tool of withExample) {
     console.error(`  ✗ ${tool.name}：**token 无效 ⇒ 判据无效**（不是通过）⇒ ${detail.slice(0, 60)}`);
     process.exit(1);
   }
-  const badParameter = /不接受参数|不是合法 JSON|invalid type|缺少必填|应当/.test(detail);
+  // **值/格式/白名单类错误也算红** ✓ —— 上一轮它们只被记成"另有原因"✗，
+  // 而"另有原因"里混着"颜色写成字符串""资产种类不存在"这类**抄走就会失败**的问题 ✓。
+  const badParameter =
+    /不接受参数|不是合法 JSON|invalid type|缺少必填|应当|格式非法|未知资产种类|要一起给|必须|不在允许/.test(detail);
   if (badParameter) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   else { accepted += 1; console.log(`  ✓ ${tool.name}：参数被接受${response.ok ? "（并且成功）" : "（另有原因：" + detail.slice(0, 46) + "）"}`); }
 }

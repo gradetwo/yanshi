@@ -12068,17 +12068,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     (
         "brush_preview",
-        r#"{"brush": "100%_Opaque", "color": "x", "color_to": "x", "hardness": 0.6, "size": 24, "opacity": 0.8}"#,
+        r#"{"brush": "spray", "size": 24, "hardness": 0.6, "opacity": 0.8, "color": {"r": 0, "g": 64, "b": 255, "a": 255}}"#,
     ),
     (
         "export_png",
-        r#"{"path": "x", "filter": "x", "height": 640, "layer_id": "L1"}"#,
+        r#"{"path": "out.png", "layer_id": "L1", "max_edge": 512}"#,
     ),
     (
         "get_object",
         r#"{"object_id": "o1", "include_history": true}"#,
     ),
-    ("list_assets", r#"{"kind": "x"}"#),
+    ("list_assets", r#"{"kind": "brush"}"#),
     ("delete_object", r#"{"object_id": "o1"}"#),
 ];
 
