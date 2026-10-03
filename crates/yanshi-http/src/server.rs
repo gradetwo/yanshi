@@ -1239,7 +1239,7 @@ fn brush_preview_asset(state: &ServerState, file: &str) -> Response {
     if file.contains("..")
         || file.contains('/')
         || file.contains('\\')
-        || !(file.ends_with(".png") || file.ends_with(".json"))
+        || !(file.ends_with(".png") || file.ends_with(".json") || file.ends_with(".svg"))
     {
         return crate::http::bad_request("非法预览文件名（只接受该目录下的 *.png / *.json）");
     }
@@ -1252,6 +1252,8 @@ fn brush_preview_asset(state: &ServerState, file: &str) -> Response {
             200,
             if file.ends_with(".json") {
                 "application/json; charset=utf-8"
+            } else if file.ends_with(".svg") {
+                "image/svg+xml; charset=utf-8"
             } else {
                 "image/png"
             },

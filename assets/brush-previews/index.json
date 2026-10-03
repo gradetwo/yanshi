@@ -186,7 +186,21 @@
     "watercolor_expressive.myb": "watercolor_expressive.myb.png",
     "watercolor_glazing.myb": "watercolor_glazing.myb.png",
     "wet_paint_sm.myb": "wet_paint_sm.myb.png",
-    "wet_round.myb": "wet_round.myb.png"
+    "wet_round.myb": "wet_round.myb.png",
+    "1pixel.myb": "1pixel.myb.svg",
+    "Blur_Fast.myb": "Blur_Fast.myb.svg",
+    "Hard_Eraser.myb": "Hard_Eraser.myb.svg",
+    "Soft_Eraser.myb": "Soft_Eraser.myb.svg",
+    "acrylic-04-paint.myb": "acrylic-04-paint.myb.svg",
+    "ink_eraser.myb": "ink_eraser.myb.svg",
+    "kneaded_eraser.myb": "kneaded_eraser.myb.svg",
+    "kneaded_eraser_large.myb": "kneaded_eraser_large.myb.svg",
+    "large_hard_eraser.myb": "large_hard_eraser.myb.svg",
+    "pixel_hardink.myb": "pixel_hardink.myb.svg",
+    "pixelblocking.myb": "pixelblocking.myb.svg",
+    "thin_hard_eraser.myb": "thin_hard_eraser.myb.svg",
+    "water-02.myb": "water-02.myb.svg",
+    "wet_knife.myb": "wet_knife.myb.svg"
   },
   "skipped": {
     "1pixel.myb": "这一笔没落下任何像素 ⇒ 笔刷「1pixel.myb」这支笔刷的 `dabs_per_basic_radius` 是 0（间距按基本半径算 ⇒ 趋于无穷 ⇒ 一枚印章都不落）⇒ 它在当前引擎下画不出来，**换一支**；`assets/brushes` 里绝大多数都能画 ✓",
@@ -237,5 +251,21 @@
     "water-05.myb": "on_base",
     "water-06.myb": "on_base",
     "watercolor-02-water.myb": "on_base"
+  },
+  "placeholder": {
+    "1pixel.myb": "空白底上看不出笔触",
+    "Blur_Fast.myb": "涂抹类",
+    "Hard_Eraser.myb": "擦除类",
+    "Soft_Eraser.myb": "擦除类",
+    "acrylic-04-paint.myb": "空白底上看不出笔触",
+    "ink_eraser.myb": "擦除类",
+    "kneaded_eraser.myb": "擦除类",
+    "kneaded_eraser_large.myb": "擦除类",
+    "large_hard_eraser.myb": "擦除类",
+    "pixel_hardink.myb": "空白底上看不出笔触",
+    "pixelblocking.myb": "空白底上看不出笔触",
+    "thin_hard_eraser.myb": "擦除类",
+    "water-02.myb": "涂抹类",
+    "wet_knife.myb": "涂抹类"
   }
 }
