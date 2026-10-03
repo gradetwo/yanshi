@@ -5774,6 +5774,14 @@ board.addEventListener("pointerdown", (event) => {
   const brushOwnsTheStroke = state.tool === "brush" && selectedBrushName !== "";
   liveStroke = null;
   liveBlitBox = null;
+  if (brushOwnsTheStroke) {
+    liveStroke = { name: selectedBrushName, size: Number(($("size") || {}).value) || undefined, lastAt: 0 };
+    liveLastRegion = null;
+    void loadLocalBrushModule().catch(() => {});
+  } else {
+    liveStroke = null;
+    liveLastRegion = null;
+  }
   pendingStroke = (kernelReady() && !brushOwnsTheStroke)
     ? { atomId: ulid(), objectId: "obj_" + ulid(), layerId: state.layerId, tool: state.tool, base: 0 }
     : null;
@@ -5805,6 +5813,133 @@ let liveBlitBox = null;
 // 对象数为 1 ✓、撤销一步回到画之前 ✓）。
 // **而且要如实告诉用户** ✓：他抱怨的"实心线 → 真笔刷"的**突变**，成因是**内置画笔**那条覆盖层 ✓
 // —— 选 `.myb` 笔刷（spray 等）时它**不会**出现 ✓ ⇒ **今天的可用答案就是"选 .myb 笔刷"** ✓。
+
+// **`.myb` 拖动期本地渲染**（门面与服务端逐字节相同；笔记第 58/66/67 轮）。
+let localBrushApi = null;
+let localBrushLoading = null;
+let liveLastRegion = null;
+const localBrushText = new Map();
+
+async function loadLocalBrushModule() {
+  if (localBrushApi) return localBrushApi;
+  if (!localBrushLoading) {
+    localBrushLoading = fetch("/brush-module.wasm")
+      .then((response) => {
+        if (!response.ok) throw new Error("模块 HTTP " + response.status);
+        return response.arrayBuffer();
+      })
+      .then((bytes) => WebAssembly.instantiate(bytes, {}))
+      .then(({ instance }) => { localBrushApi = instance.exports; return localBrushApi; })
+      .catch((error) => {
+        localBrushLoading = null;
+        window.yanshiStats.localBrushErrors = (window.yanshiStats.localBrushErrors || 0) + 1;
+        log("笔刷本地渲染模块没加载上：" + String(error).slice(0, 80), "#c93");
+        throw error;
+      });
+  }
+  return localBrushLoading;
+}
+
+async function loadLocalBrushText(name) {
+  if (localBrushText.has(name)) return localBrushText.get(name);
+  const response = await fetch("/brushes/" + name + ".myb");
+  if (!response.ok) throw new Error("笔刷文本 HTTP " + response.status);
+  const text = await response.text();
+  localBrushText.set(name, text);
+  return text;
+}
+
+function liveColour() {
+  const hex = ($("color") || {}).value || "#000000";
+  const digits = hex.replace("#", "");
+  const value = (start, fallback) => {
+    const pair = digits.slice(start, start + 2);
+    return pair.length === 2 ? Number.parseInt(pair, 16) : fallback;
+  };
+  return { r: value(0, 0), g: value(2, 0), b: value(4, 0), a: 255 };
+}
+
+/// 区域与**服务端算法对齐**（半径 `size/2 + 4`、`floor`/`ceil`）—— 第 67 轮实测：`+8` 会多画一圈。
+function liveRegion(size) {
+  const half = (Number(size) || 128) / 2 + 4;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const point of state.points) {
+    x0 = Math.min(x0, point.x); y0 = Math.min(y0, point.y);
+    x1 = Math.max(x1, point.x); y1 = Math.max(y1, point.y);
+  }
+  if (!Number.isFinite(x0)) return null;
+  const canvasWidth = state.docSize ? state.docSize.w : 1024;
+  const canvasHeight = state.docSize ? state.docSize.h : 1024;
+  const left = Math.max(0, Math.floor(x0 - half));
+  const top = Math.max(0, Math.floor(y0 - half));
+  const right = Math.min(canvasWidth, Math.ceil(x1 + half));
+  const bottom = Math.min(canvasHeight, Math.ceil(y1 + half));
+  if (right - left <= 0 || bottom - top <= 0) return null;
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+let livePaintBusy = false;
+async function paintLiveFrame() {
+  const stats = window.yanshiStats;
+  stats.localBrushCalls = (stats.localBrushCalls || 0) + 1;
+  if (!liveStroke) return;
+  if (livePaintBusy) return;
+  const now = performance.now();
+  if (now - liveStroke.lastAt < 35) return;
+  liveStroke.lastAt = now;
+  livePaintBusy = true;
+  try {
+    const api = await loadLocalBrushModule();
+    const myb = await loadLocalBrushText(liveStroke.name);
+    const region = liveRegion(liveStroke.size);
+    if (!region) return;
+    const request = JSON.stringify({
+      myb,
+      points: state.points.map((point) => [
+        point.x, point.y, Number.isFinite(point.pressure) ? point.pressure : 0.5,
+      ]),
+      size: liveStroke.size,
+      color: liveColour(),
+      opacity: null,
+      hardness: null,
+      region,
+    });
+    const payload = new TextEncoder().encode(request);
+    const pointer = api.yanshi_brush_alloc(payload.length);
+    if (!pointer) return;
+    new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
+    const length = api.yanshi_brush_paint(pointer, payload.length);
+    api.yanshi_brush_free(pointer, payload.length);
+    if (!length) {
+      stats.localBrushEmptyPaint = (stats.localBrushEmptyPaint || 0) + 1;
+      let reason = "";
+      try {
+        const errorLength = api.yanshi_brush_error_len();
+        if (errorLength) {
+          reason = new TextDecoder().decode(
+            new Uint8Array(api.memory.buffer, api.yanshi_brush_error_ptr(), errorLength),
+          );
+        }
+      } catch (_) { /* 读不到原因也不许静默 */ }
+      log("本地笔刷这一帧没画出来：" + (reason || "门面没给出原因"), "#c93");
+      return;
+    }
+    const bytes = new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), length).slice();
+    const offscreen = document.createElement("canvas");
+    offscreen.width = region.w;
+    offscreen.height = region.h;
+    offscreen.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer), region.w, region.h), 0, 0);
+    ctx.drawImage(offscreen, Math.round(region.x - state.viewport.x), Math.round(region.y - state.viewport.y));
+    // **记住本地覆盖过的那块**（第 67 轮定：《提交之后按它从服务端补画一次》）。
+    liveLastRegion = { x: region.x, y: region.y, w: region.w, h: region.h };
+    stats.localBrushFrames = (stats.localBrushFrames || 0) + 1;
+  } catch (error) {
+    stats.localBrushErrors = (stats.localBrushErrors || 0) + 1;
+    log("本地笔刷这一帧失败：" + String(error).slice(0, 90), "#c93");
+  } finally {
+    livePaintBusy = false;
+  }
+}
 
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
@@ -5854,10 +5989,12 @@ board.addEventListener("pointermove", (event) => {
   const TWO_CORNER_TOOLS = new Set(["rect", "ellipse", "select_rect", "mask_rect", "mask_ellipse"]);
   if (TWO_CORNER_TOOLS.has(state.tool)) state.points = [state.points[0], point];
   else state.points.push(point);
-  if (pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
+  if (liveStroke) octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!liveStroke && pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
     // 乐观渲染：拖动中只更新**本地覆盖层**（不进原子日志），落笔才提交最终原子。
     updatePreviewOverlay(pendingStroke);
   }
+  if (liveStroke && state.points.length >= 2) void paintLiveFrame();
   redraw();
 });
 
@@ -6090,6 +6227,14 @@ async function commitShape() {
         },
         "落笔（" + brushName + "）",
       );
+      liveStroke = null;
+      // **提交之后按"本地覆盖过的那块"从服务端补画一次**（第 67 轮定：否则画布上留的是本地那层，
+      // 撤销只清对象脏区 ⇒ 外面那圈永远清不掉 ✗）。多留 4px 余量覆盖取整误差 ✓。
+      if (liveLastRegion && window.yanshiDebugBlit) {
+        const box = liveLastRegion;
+        void window.yanshiDebugBlit([box.x - 4, box.y - 4, box.w + 8, box.h + 8]);
+      }
+      liveLastRegion = null;
       await refreshPreview();
       await resync();
       return;
