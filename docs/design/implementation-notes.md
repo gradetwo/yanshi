@@ -13305,3 +13305,24 @@ cargo build --target x86_64-unknown-linux-gnu --release
 （"声明 `--static` 却仍引用 GLIBC" ✓ —— 那是模拟本身不自洽 ✓，不是代码错 ✗）⇒
 **真正验证它需要在 macOS 上打 Linux 包** ✓（或等用户反馈 ✓）；逻辑本身已按"同平台才运行 ✓、
 交叉从文件读 ✓、读不到则跳过并说明 ✓"改好 ✓。
+
+### ✅ 第 240 轮：跨平台编译的链接器**已按用户要求"加进脚本"** ✓✓（装了工具链就自动生效 ✓）
+
+**用户要求** ✓："`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc` 如果 macOS 跨平台编译，
+你**加到脚本里头**" ✓。
+**实现** ✓（`scripts/package-release.sh` ✓）：跨到 `*-linux-gnu*` 目标时 ✓，若对应的
+`CARGO_TARGET_<TRIPLE 大写、`-`→`_`>_LINKER` **未设置** ✓ ⇒ 检查 PATH 上是否有
+`<arch>-linux-gnu-gcc` ✓ ⇒ **有就自动 `export`** ✓ 并打印一行 ✓；**没有**才给 brew 解法 ✓。
+**实测（正反两面 ✓）** ✓：
+```
+① 无交叉链接器（跨到 aarch64-unknown-linux-gnu）
+   ⇒ 打出解法（① 的日志里 `brew tap` 出现 2 次 ✓）
+② PATH 上放假链接器 aarch64-linux-gnu-gcc（stub ✓）
+   ⇒ --> 自动配好交叉链接器 ✓：CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc ✓
+✓ 判据：没链接器给解法、有链接器自动配
+```
+⇒ **macOS 上的完整流程** ✓：`brew tap messense/macos-cross-toolchains` ✓ +
+`brew install x86_64-unknown-linux-gnu` ✓ + `rustup target add x86_64-unknown-linux-gnu` ✓
+⇒ 然后**直接** `make release TARGET=x86_64-unknown-linux-gnu` ✓ —— **不必再手动 export** ✓。
+**仍未在本机实测的部分** ✗（如实 ✓）：真正的"**跨平台出包**"必须在 macOS 上跑 ✓；
+本机只能验到"**检测与自动配置**"这一步 ✓（已验 ✓），以及"目标未装 ⇒ 干净拒绝" ✓。

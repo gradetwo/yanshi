@@ -242,6 +242,18 @@ if [ "${target_triple}" != "${host_triple}" ]; then
       # 变量名规则：`CARGO_TARGET_<TRIPLE 大写、`-`→`_`>_LINKER` ✓。
       linker_var="CARGO_TARGET_$(printf '%s' "${target_triple}" | tr 'a-z-' 'A-Z_')_LINKER"
       linker_set="$(printenv "${linker_var}" 2>/dev/null || true)"
+      # **自动配上交叉链接器** ✓（用户要求："如果 macOS 跨平台编译，你加到脚本里头" ✓）——
+      # 只要那支链接器**在 PATH 上**（Homebrew 装完就有 ✓），就**直接 export** ✓ ⇒ 用户不必记那条环境变量 ✓。
+      # gnu 目标的命名惯例 ✓：`<arch>-linux-gnu-gcc`（例如 `x86_64-linux-gnu-gcc` ✓）。
+      case "${target_triple}" in
+        *-linux-gnu*)
+          linker_name="$(printf '%s' "${target_triple%%-*}")-linux-gnu-gcc"
+          if [ -z "${linker_set}" ] && command -v "${linker_name}" >/dev/null 2>&1; then
+            export "${linker_var}=${linker_name}"
+            linker_set="${linker_name}"
+            echo "--> 自动配好交叉链接器 ✓：${linker_var}=${linker_name}（来自 PATH ✓）"
+          fi ;;
+      esac
       if [ -z "${linker_set}" ]; then
         echo "⚠ 跨到 ${target_triple}：**没有**设置 ${linker_var} ✗"
         echo "   多数情况下会以 "linker … not found" 之类失败 ✓（macOS 上尤其常见 ✓）"
@@ -249,7 +261,7 @@ if [ "${target_triple}" != "${host_triple}" ]; then
         echo "     brew tap messense/macos-cross-toolchains"
         echo "     brew install x86_64-unknown-linux-gnu"
         echo "     export ${linker_var}=x86_64-linux-gnu-gcc"
-        echo "   然后重跑本命令 ✓（或把上面那行 export 写进你的 shell 配置 ✓）"
+        echo "   装好后**不用手动 export** ✓ —— 本脚本检测到 ${linker_name:-对应链接器} 在 PATH 上就会自动用它 ✓"
       else
         echo "--> 交叉链接器 ${linker_var}=${linker_set} ✓"
       fi ;;
