@@ -5759,6 +5759,9 @@ board.addEventListener("pointerdown", (event) => {
   // ⇒ 由**服务端的 Hokusai 引擎**落笔 ✓（这才是那 201 支笔该走的路 ✓）。
   const selectedBrushName = ($("brush") || {}).value || "";
   const brushOwnsTheStroke = state.tool === "brush" && selectedBrushName !== "";
+  // **（第 50/51 轮在这里启动过"拖动期真笔刷" ✓，两次都撤回 ✗ —— 见 `liveStroke` 那段说明 ✓。）**
+  liveStroke = null;
+  liveBlitBox = null;
   // **③b（拖动期就用真笔刷）本轮试过 ⇒ 回退** ✗（如实 ✓）：
   // **服务端那半边是通的** ✓（实测：拖动中提交了 **2 帧** ✓、抬手后对象**仍只有 1 个** ✓），
   // **但画布拿不到新像素** ✗ —— 刚提交后服务端那一次 `render_region` 仍返回**旧的/空白**图 ✓
@@ -5773,8 +5776,20 @@ board.addEventListener("pointerdown", (event) => {
     : null;
 });
 
-/// **（这里原本是"拖动期就用真笔刷"的实现 ✓，本轮**试过并撤回** ✗ —— 见 `pointerdown` 里那段说明 ✓。）**
+/// **（拖动期真笔刷：第 50、51 轮两次试过、两次撤回 ✗ —— 卡点已缩小到客户端，见下 ✓）**
+///
+/// **第 51 轮新查明的事实** ✓（纯 HTTP 实测 ✓）：**服务端已被排除** ✗ ——
+/// "提交后**立刻**取图"与"500ms 后再取图"，同一块区域**逐字节相同** ✓、墨量也对 ✓
+///（所以第 50 轮我写的"服务端返回旧图"那条**假设是错的** ✗，判据本身把我纠正了 ✓）。
+/// ⇒ 擦掉实时帧的是**客户端** ✓；而 `redraw()` **不碰主画布** ✓（只画覆盖层 ✓，读了代码 ✓）
+/// ⇒ 嫌疑人只剩 **WS 的内核重绘**（heavy 内容内核折出来是**空补丁** ✓，会把服务端像素**盖掉** ✓ ——
+/// 与第 44 轮那条"内核重绘覆盖补画"同一个机制 ✓）。
+/// **下一轮的窄判据** ✓（观测already有：`state().serverBlits / lastBlitServerInk / blitLog` ✓）：
+/// 拖动中**同时**打点"画布墨"与"每次补画的原因/面积/服务端墨量" ✓ ⇒ 一眼看出是**哪一次**把它擦掉的 ✓，
+/// 再对症下药（很可能就是"内核重绘之后必须再补一次"那条既有经验的又一次出场 ✓）。
 let liveStroke = null;
+let liveBlitBox = null;
+void liveBlitBox;
 
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
