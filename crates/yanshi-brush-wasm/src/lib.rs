@@ -20,7 +20,7 @@
 // * `clippy::missing_safety_doc`：两个 `extern "C"` 函数确实**解引用裸指针** ✓，
 //   安全契约由**宿主**（我们自己的那几行胶水 ✓）保证 ✓。**收掉时机** ✓：接查看器、
 //   胶水定稿时补齐 `# Safety` 段 ✓。
-#![allow(dead_code, clippy::missing_safety_doc)]
+#![allow(dead_code)]
 
 use serde::Deserialize;
 use std::alloc::{alloc, dealloc, Layout};
@@ -257,6 +257,11 @@ pub extern "C" fn yanshi_brush_alloc(len: usize) -> *mut u8 {
     unsafe { alloc(Layout::from_size_align_unchecked(len, 1)) }
 }
 
+/// 释放 `yanshi_brush_alloc` 拿到的那块内存 ✓。
+///
+/// # Safety
+/// `ptr` 必须是 `yanshi_brush_alloc(len)` 的返回值 ✓，且**只释放一次** ✓。
+/// 这两条由宿主保证 ✓ —— 宿主机只有我们自己写的那几行胶水（Node / 浏览器 ✓）。
 #[no_mangle]
 pub unsafe extern "C" fn yanshi_brush_free(ptr: *mut u8, len: usize) {
     if ptr.is_null() || len == 0 {
@@ -278,6 +283,15 @@ static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 static ERROR: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
 /// 画一条笔触 ✓ ⇒ 返回**输出字节数** ✓（0 = 失败 ✓）。
+/// 画一条笔触 ✓ ⇒ 返回**输出字节数** ✓（0 = 失败 ✓，原因见 `yanshi_brush_error_*` ✓）。
+///
+/// # Safety
+/// `ptr`/`len` 必须指向宿主写进来的一段**合法 UTF-8 JSON** ✓（长度正好 `len` 字节 ✓），
+/// 写法是先用 `yanshi_brush_alloc` 取内存、写入、再调这里 ✓。输出缓冲由本模块**保留** ✓
+/// （`yanshi_brush_out_ptr` ✓），**下一次**调用即被替换 ✓。
+///
+/// # Safety
+/// 见上 ✓。
 #[no_mangle]
 pub unsafe extern "C" fn yanshi_brush_paint(ptr: *const u8, len: usize) -> usize {
     if ptr.is_null() || len == 0 {
