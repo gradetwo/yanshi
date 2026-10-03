@@ -10213,3 +10213,27 @@ export_png: {}     get_object: {}     list_assets: {}
 （这一条纪律今天已经用过三次、每次都省下一轮 ✓：颜色约定 ✓、预乘 ✓、这次是目录结构 ✓）。
 **顺带** ✓：本轮**没有**产出任何提交内容 ✓（只删了一个自己生成的空文件 ✓）——
 **不为了"每轮必有提交"去提交没用的东西** ✗，这也算对"如实"的一种执行 ✓。
+
+### 🔍 第 91 轮：**结构看清了** ✓ —— 参数在 `inputSchema.properties` 里 ✓（这就是上一轮读空的原因 ✗）
+
+按上一轮定的顺序（**先看结构、再写代码** ✓）打印了真实目录 ✓：
+```
+工具总数: 126
+第一个工具的键: ['description', 'inputSchema', 'name']
+brush_preview 的键: description / example / inputSchema    ← **example 在！** ✓
+  inputSchema.properties.brush / color / color_to / hardness / include_image …
+```
+**三条确定的事实** ✓：
+1. **参数在 `inputSchema.properties` 里** ✓（JSON Schema 形状 ✓），**不是**扁平的 `parameters` ✗
+   ⇒ 上一轮生成器读出 7 个空对象，原因就是它 ✓；
+2. **`example` 确实出现在 `GET /api/tools` 的响应里** ✓（第 89 轮那次接线的**直接证据** ✓，
+   而且这次是**在同一条命令的输出里看到的** ✓ —— 符合今天立的那条规矩 ✓）；
+3. 工具条目**没有 `parameters` 键** ✗ ⇒ 任何按旧形状写的读取都会静默拿到空 ✓
+   （这正是"静默"最典型的害处 ✓：生成器"成功"了、文件也写出来了、内容全是空的 ✗）。
+**下一轮（照这份结构写 ✓，机械 ✓）**：
+* 生成器读 `inputSchema.properties` ✓（名字集合 ✓ + 类型 ✓ + 描述 ✓），
+  必填项看 `inputSchema.required` ✓（若存在 ✓ —— 本轮输出被 `head` 截断，**没看到这一项** ✗，
+  下一步先确认它有没有 ✓，别又猜 ✗）；
+* 工具名也不再猜 ✗：直接从目录里取 ✓（上一轮 `undo`/`redo`/`set_palette_color` 猜错了名字 ✓）；
+* **判据现成** ✓：`every_documented_example_only_uses_declared_parameters`（能红 ✓，已变异验证 ✓）
+  ⇒ 每加一个示例它自动把关 ✓。
