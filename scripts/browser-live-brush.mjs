@@ -301,7 +301,19 @@ const finalState = await evaluate("window.yanshi.state()");
 // **WYSIWYG**：抬手前 vs 服务端回填后，是不是**同一批像素**？
 // 非读画布笔刷应当**完全相同**（EXPECT_EXACT=1 时判红）；读画布笔刷预期不同 ⇒ 先把差异**量出来**记档。
 await sleep(600);
-const wysiwygFinalDigest = await canvasDigest();
+// **等稳定再采** ✗ —— 实测：抬手后画布会先**清空**再重绘 ✓ ⇒ 固定 sleep 会采到瞬时状态 ✗
+//（第 176 轮：那正是"时好时坏"的根源 ✓）。规则：**连续两次指纹一致**才算稳定 ✓。
+const stableDigest = async () => {
+  let last = null;
+  for (let i = 0; i < 16; i += 1) {
+    const now = await canvasDigest();
+    if (last === now) return now;
+    last = now;
+    await sleep(250);
+  }
+  return last;
+};
+const wysiwygFinalDigest = await stableDigest();
 const overlayEndInk = await overlayInk();
 const overlayCleared = overlayEndInk === 0;
 console.log(`  ④g 本地覆盖层：中途有墨 ${overlayMidInk} ⇒ 抬手后 ${overlayEndInk}` +
@@ -351,7 +363,7 @@ await sleep(1600);
 await waitFor("document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
   "重载后首帧", 20000);
 await sleep(600);
-const reloadDigest = await canvasDigest();
+const reloadDigest = await stableDigest();
 const reloadInk = await inkOnCanvas();
 // **从"打印"改成"断言"** ✓ —— 这是值得长期守着的不变量：
 // "抬手并等服务端回填后，画面上的像素 = 页面重载后（只可能来自服务端）的像素" ✓。
