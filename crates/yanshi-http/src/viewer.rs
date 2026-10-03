@@ -5802,8 +5802,6 @@ let liveBlitBox = null;
 //   用户看到的那根实心线来自**内置画笔**的覆盖层 ✓（读代码确认：选了 `.myb` 笔刷时它**不会**出现 ✓）。
 // **将来要再试** ✓：判据留在 `scripts/browser-live-brush.mjs` ✓（指针还按着时就有该笔刷的纹理 ✓、
 // 对象数为 1 ✓、撤销一步回到画之前 ✓）——先解决"每帧 300–500ms"这个前提 ✓，否则别重复劳动 ✓。
-let liveStroke = null;
-let liveBlitBox = null;
 
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
