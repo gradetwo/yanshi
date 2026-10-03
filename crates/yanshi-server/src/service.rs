@@ -854,7 +854,11 @@ impl Workspace {
         settings: DocumentSettings,
     ) -> Result<Self> {
         let persist = FileStore::open(root)?;
-        let store: Arc<dyn BlobStore> = Arc::new(persist.blob_store()?);
+        // **存储即压缩** ✓（用户实测：包里 91% 是未压缩 RGBA ✓）—— 只有这一处构造持久化存储 ✓，
+        // 所以包一层就够了，core 与所有调用方都不用改 ✓。
+        let store: Arc<dyn BlobStore> = Arc::new(
+            crate::blob_compression::CompressedBlobStore::new(Arc::new(persist.blob_store()?)),
+        );
         Ok(Self {
             store,
             documents: BTreeMap::new(),

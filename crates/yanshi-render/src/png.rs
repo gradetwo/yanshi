@@ -11,8 +11,8 @@ use std::path::Path;
 
 /// PNG 魔数。
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-/// deflate stored 块的最大负载 ✓（**只在测试里作为对照基线** ✓，见 `deflate_tests` ✓）。
 #[cfg(test)]
+/// deflate stored 块的最大负载 ✓（**只在测试里作为对照基线** ✓，见 `deflate_tests` ✓）。
 const STORED_BLOCK_MAX: usize = 65_535;
 
 /// 把 8 位 RGBA 像素编码为 PNG。
@@ -324,11 +324,13 @@ pub fn zlib_decompress(stream: &[u8]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+#[cfg(test)]
 /// zlib 容器 + **stored（未压缩）deflate 块** ✓。
 ///
-/// **仅供测试** ✓：它是"未压缩基线" ✓，用来对比固定 Huffman 的收益 ✓
+/// **压不动时的兜底** ✓（用户实测的存储压缩用它 ✓）：stored 块**本身也是合法 zlib** ✓
+/// ⇒ 对已压过的 PNG/JPEG、随机噪声**永不膨胀** ✓（最多多约 11 字节 ✓）。
+/// 它同时也是"未压缩基线" ✓，用来对比固定 Huffman 的收益 ✓
 ///（子 agent 报的 G4：960×640 导出 2,458,493 字节 ≈ 原始 RGBA ✓，约 20× 膨胀 ✓）。
-#[cfg(test)]
 fn zlib_stored(raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len() + raw.len() / STORED_BLOCK_MAX * 5 + 16);
     out.push(0x78); // CMF: deflate, 32K window
