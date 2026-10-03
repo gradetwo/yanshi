@@ -12389,6 +12389,19 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("delete_layer", r#"{"layer_id": "L1"}"#),
     ("list_textures", r#"{}"#),
     ("list_documents", r#"{}"#),
+    // **补的示例都要"本会话亲手调通过"** ✓（目标第 (5) 条：继续扩大覆盖面 ✓）。
+    // 新文档现在**自带 `layer_default`** ✓（第 (3) 项）⇒ 示例可以放心引用它 ✓（不必先建层 ✓）。
+    ("get_state", r#"{"include_objects": true}"#),
+    ("list_objects", r#"{}"#),
+    (
+        "render_region",
+        r#"{"region": [0, 0, 64, 64], "include_image": true}"#,
+    ),
+    (
+        "update_layer",
+        r#"{"layer_id": "layer_default", "patch": {"blend_mode": "multiply"}}"#,
+    ),
+    ("list_assets", r#"{"kind": "brush", "tag": "fur"}"#),
     ("list_layers", r#"{}"#),
     ("get_document", r#"{}"#),
     (

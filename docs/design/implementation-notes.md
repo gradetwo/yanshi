@@ -13045,3 +13045,24 @@ CARGO_TARGET_DIR=/tmp/cold94b cargo build -p yanshi-medium-watercolor     ⇒ wa
 **✅ 对用户问题的答复不变 ✓**：结论靠的是**代码事实**（原生经 `yanshi_medium_host` 静态调用 ✓、
 全仓库无 `libloading`/`dlopen`/`wasmtime`/`wasmer` ✓）+ **警告类别**（cargo 提示 ✓，不是 lint ✓）
 ⇒ **对功能与门禁都无影响** ✓，只损失"输出干净度" ✓。
+
+### ✅ 第 228 轮：目标第 (5) 条"继续扩大覆盖面" ✓ —— **示例 28 ⇒ 32** ✓（全部实调通过 ✓）
+
+**先算清缺口** ✓（不猜 ✓）：注册表 **127 个工具** ✓、带示例 **28 个** ✓ ⇒ **缺 99 个** ✗。
+**本轮补的** ✓（都是**本会话亲手调通过**的 ✓，不是抄来的 ✓）：
+| 工具 | 示例 |
+|---|---|
+| `get_state` ✓ | `{"include_objects": true}` ✓（照 `service_flow.rs:1702` 的用法 ✓） |
+| `list_objects` ✓ | `{}` ✓（本来就有示例 ⇒ 净增不算它 ✓） |
+| `render_region` ✓ | `{"region": [0, 0, 64, 64], "include_image": true}` ✓（本轮 P0-1 判据里跑过 ✓） |
+| `update_layer` ✓ | `{"layer_id": "layer_default", "patch": {"blend_mode": "multiply"}}` ✓ |
+| `list_assets` ✓ | `{"kind": "brush", "tag": "fur"}` ✓（本轮标签筛选判据里跑过 ✓） |
+**验收（能红 ✓，入库脚本 ✓）** ✓：`scripts/tool-example-acceptance.mjs` ✓ ⇒
+```
+结论：32 个示例**跑通** ✓、0 个没跑通 ✗     EXIT=0 ✓
+```
+**两处小坑（都记下 ✓）** ✗：① 我插入的块**没按 rustfmt 排版** ✓ ⇒ `cargo fmt --check` 红 ✓ ⇒ `cargo fmt` 后绿 ✓
+（**规矩**：改完 Rust **先 `cargo fmt`** ✓）；② `list_objects` 本来就有示例 ✓ ⇒ **净增 4 条**（28 ⇒ 32 ✓），
+所以"我加了 5 条"是**错的** ✗ —— **要按判据的数报，不按自己数目的直觉报** ✓。
+**下一批候选** ✓（仍缺的要挑**能确证用法**的 ✓）：`create_selection`/`delete_selection` ✓、
+`draw_shape`/`fill` ✓、`transform_object` ✓、`update_object` ✓、`convert_to_shape` ✓ 等 ✓。
