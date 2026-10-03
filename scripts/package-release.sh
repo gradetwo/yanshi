@@ -539,20 +539,36 @@ mkdir -p "$stage/share/yanshi/mediums"
 if [ -d "$repo/assets/mediums" ]; then
   find "$repo/assets/mediums" -maxdepth 1 -name '*.wasm' -exec cp {} "$stage/share/yanshi/mediums/" \;
 fi
+# **三者必须各自独立判断** ✗ —— 原来 `brush-previews` 与 `brush-module.wasm` 的复制被**嵌在
+# `if [ -d "$repo/assets/brand" ]` 里面** ✗ ⇒ **只要品牌目录缺失，预览与门面会一起被跳过** ✗
+#（哪怕它们本来存在 ✓）⇒ 这就是"包缺资产"的一条**结构性原因** ✓（第 253 轮查清 ✓）。
+# 另外：**缺 brand / brush-previews 与缺 wasm 的性质不同** ✗ ——
+# 缺 wasm ⇒ 查看器降级 ✓（可接受 ✓）；缺这两个 ⇒ 直接 **404** ✗ ⇒ 必须**醒目**说出来 ✓ 并列出用户会看到哪些 404 ✓。
+missing_hard=""
 if [ -d "$repo/assets/brand" ]; then
   cp -R "$repo/assets/brand" "$stage/share/yanshi/brand"
-  # **门面必须显式拷**：`assets/` **不是整棵**进包的（上面挑的是 mediums/*.wasm 与 brand），
-  # 所以第 32 轮那份 `assets/brush-module.wasm` **到不了包里** —— 这里补上。
-  if [ -d "$repo/assets/brush-previews" ]; then
-    cp -R "$repo/assets/brush-previews" "$stage/share/yanshi/brush-previews"
-    echo "    ✓ 画笔库预览已装包：$(ls "$stage/share/yanshi/brush-previews" | wc -l) 个文件"
-  fi
-  if [ -f "$repo/assets/brush-module.wasm" ]; then
-    cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
-    echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"
-  else
-    echo "    ⚠️ 没有笔刷门面可装（先构建 yanshi-brush-wasm）⇒ 拖动期不显示真笔刷（功能正常）"
-  fi
+  echo "    ✓ 品牌资源已装包：$(find "$stage/share/yanshi/brand" -type f | wc -l) 个文件"
+else
+  missing_hard="${missing_hard} brand"
+fi
+if [ -d "$repo/assets/brush-previews" ]; then
+  cp -R "$repo/assets/brush-previews" "$stage/share/yanshi/brush-previews"
+  echo "    ✓ 画笔库预览已装包：$(ls "$stage/share/yanshi/brush-previews" | wc -l) 个文件"
+else
+  missing_hard="${missing_hard} brush-previews"
+fi
+if [ -f "$repo/assets/brush-module.wasm" ]; then
+  cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
+  echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"
+else
+  echo "    ⚠️ 没有笔刷门面可装（先构建 yanshi-brush-wasm）⇒ 拖动期不显示真笔刷（功能正常 ✓，可接受 ✓）"
+fi
+if [ -n "${missing_hard}" ]; then
+  echo "" >&2
+  echo "    ⚠️⚠️ **这个包会直接 404** ✗：缺${missing_hard}（它们在仓库里是资产，不是构建产物 ✓）" >&2
+  case "${missing_hard}" in *brand*) echo "         /brand/svg/icon-light.svg   ⇒ 404（标题里的图标变成空白 ✗）" >&2 ;; esac
+  case "${missing_hard}" in *brush-previews*) echo "         /brush-previews/index.json  ⇒ 404（笔刷库退回逐支实时渲染 ✓、慢但可用 ✓）" >&2 ;; esac
+  echo "        原因多半是"**在别的地方跑打包**"✗（脚本按仓库路径找 assets/ ✓）⇒ 请在**仓库根**执行 ✓" >&2
 fi
 # **三类资产也要随包发布** ✓（用户裁定：纹理要入库、要打包 ✓）。
 # **为什么平铺在 share/yanshi/ 下** ✓：服务端把"资产根目录 + 种类子目录"拼在一起 ✓
