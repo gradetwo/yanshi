@@ -15844,3 +15844,36 @@ fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
    —— 这是本会话第 N 次验证的那条规矩 ✓：**先打印、再改** ✗；
 ② 照抄它的 `size` 写法（整数 ✓）与 `points` 形状 ✓ ⇒ 重做三处接线 ✓ ⇒ 跑判据（期望绿 ✓）；
 ③ 再补 `TOOL_EXAMPLES` 与 `docs/tools.md` 计数 ✓ ⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+
+### 🧭 第 90 轮：`gradient_blend` 又试了两个假设 ✗ ⇒ 再撤回 ✓（下一条验证已写死 ✓）
+
+**本轮试过的（都是"看起来该修好它"的 ✓）** ✓：
+| 假设 | 处置 | 结果 |
+|---|---|---|
+| ① `size` 类型（`f64` ⇒ `24.0` ✗） | 改成 `size.round() as i64` ✓（**按唯一上下文**改 ✓ —— 上轮因"出现 3 次"被断言拦住 ✗） | **仍失败** ✗ |
+| ② 一个点画不出笔触 ✗ | 每笔给**两个点**（插值点 + 沿方向 1px ✓，并算好单位方向 ✓） | **仍失败** ✗ |
+| ③ （未试 ✓）落笔路径本身画不了这支笔 | —— | —— |
+**读到的原文（有用 ✓）** ✓：查看器**真正**的调用在 `viewer.rs:6341` ✓：
+```js
+await callToolChecked("brush_stroke", {
+  layer_id: state.layerId, brush: brushName,
+  points: controlPoints,          // [[x, y, pressure ?? 0.5], …]
+  size: size, smooth: smooth,
+  color_to: duoToneEnabled() ? colorToCss() : undefined,
+  color: color,                   // colorCss() ⇒ {r,g,b,a}（0..255）
+}, "落笔（" + brushName + "）");
+```
+⇒ 我的合成参数与它**逐项一致** ✓ ⇒ 所以差别**不在我这边** ✗。
+**关键观察（本轮最值钱 ✓）** ✓：错误信息里的笔刷名是 **`classic-brush.myb`** ✓ ——
+⇒ 服务端**解析到了**这支 `.myb` ✓ ⇒ 但"**没落下任何像素**" ✗ ⇒
+很可能是"**服务端这条落笔路对 `.myb` 笔刷只能走到这里**"✗（`.myb` 由 **hokusai 门面**渲染 ✓，
+而门面**在浏览器里**✗ ⇒ 服务端本来就没有那条渲染路 ✓）。
+**下一轮（写死 ✓，一条命令就能分清 ✓）** ✓：**用同一组参数直接调 `brush_stroke`** ✓
+（就在判据里 ✓，不经过 `gradient_blend` ✓）：
+* 若它也报"**没落下任何像素**"✗ ⇒ 结论 ✓：**服务端落笔路对这支 `.myb` 就是这样** ✓
+  ⇒ 那 `gradient_blend`（以及一切"服务端拼笔"✓）**必须改用"服务端真能画"的笔刷** ✓
+  （例如内置光栅笔刷 ✓，或走 `draw_stroke` ✓ / `fill` ✓ 那条路 ✓）；
+* 若它**成功**✓ ⇒ 那是**我的合成**有问题 ✗（例如 `pressure` 用了 `1.0` 而查看器用 `0.5` ✓）⇒ 逐项对齐 ✓。
+**顺带发现（对用户需求有用 ✓）** ✓：已经存在 `fill` 工具 ✓（`{layer_id, data:{color, region}}` ✓）
+⇒ 需求文档的 **P0-1.1 `fill_region`** 已经**有基础** ✓（缺的是 `texture`/`opacity` ✓）；
+以及 `color_to` ✓（一笔多色 ✓）已就绪 ✓。
