@@ -10907,3 +10907,25 @@ EXIT=1 ✓
 ```
 **下一轮** ✓：① HTTP 建文档回显尺寸 ✓（读 `create_document` 的响应构造再改 ✓，不猜 ✗）；
 ② 默认图层 ✓（在新文档自己的文档 API 里建 ✓，不走会话作用域的那个 helper ✓）。
+
+### ✅ 第 124 轮：HTTP 建文档**回显尺寸** ✓（判据 4 绿 / 2 红 ✓）
+
+**改动** ✓（`crates/yanshi-http/src/server.rs` ✓，锚点是 `"token": token.as_str(),` ✓，`width`/`height` 本就在作用域里 ✓）：
+```rust
+"width": width,
+"height": height,
+```
+**效果** ✓（判据实测 ✓）：
+```
+✓ HTTP 建文档回显 width/height ⇒ width=800 height=600      ← 本轮转绿 ✓
+✓ new_document 回显尺寸 ⇒ 640/480
+✓ 回执指明会话仍在哪个文档 ⇒ session_document="sem0"
+✓ 回执给出切换办法 ⇒ next="…把 ?doc=sem0 换成 ?doc=sem1…"
+✗ 新文档自带默认图层 ⇒ count=0
+✗ 默认图层上直接能落墨 ⇒ 没有图层可落笔
+结论：2 条不成立 ✗
+```
+⇒ 报告 P0"尺寸被静默忽略"从**回执层面**就不可能再发生 ✓（它当天量的是别的文档 ✓，而现在的回执**自证尺寸** ✓）。
+**下一轮** ✓：**默认图层** ✓ —— 已读清的约束：**不能用 `write_create_layer`** ✗（它作用于**会话文档** ✓，
+此刻还是老文档 ✓ ⇒ 会把图层建到老文档上 ✗）；要走 `ctx.workspace.create_document` 那条路里
+**新文档自己的** API ✓（下一轮先读 `NewDocument` / 文档创建路径里"图层"是怎么进去的 ✓，不猜 ✗）。

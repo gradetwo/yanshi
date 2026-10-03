@@ -778,6 +778,11 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             "ok": true,
             "doc_id": doc_id,
             "token": token.as_str(),
+            // **回显尺寸**（真实回归报告）：它请求 800×600、读到的是 1024×1024 ⇒ 报"尺寸被静默忽略" ✗。
+            // 真相是：它**量的是别的文档**（会话/命令行那个 1024×1024）✓ —— 但响应不回显尺寸，
+            // 就没人能从回执里自证 ✓ ⇒ 补上这两项，让"我建的是多大"**一眼可验** ✓。
+            "width": width,
+            "height": height,
             "url": format!("/?doc={doc_id}&token={token}"),
             "document": summary,
         }),
