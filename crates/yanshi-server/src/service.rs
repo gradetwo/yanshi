@@ -854,7 +854,14 @@ impl Workspace {
         settings: DocumentSettings,
     ) -> Result<Self> {
         let persist = FileStore::open(root)?;
-        let store: Arc<dyn BlobStore> = Arc::new(persist.blob_store()?);
+        // **注入存储编码** ✓（用户实测：包里 91% 是未压缩 RGBA ⇒ 写入即压 ✓）。
+        // **哈希仍对明文算** ✓（core 的 `put` 做的 ✓）⇒ 内容寻址/去重/导入对账都不受影响 ✓
+        // —— 这条不变量由 `crates/yanshi-core/tests/blob_codec.rs` 守着 ✓。
+        let store: Arc<dyn BlobStore> = Arc::new(
+            persist
+                .blob_store()?
+                .with_codec(Arc::new(crate::blob_codec::RenderCodec)),
+        );
         Ok(Self {
             store,
             documents: BTreeMap::new(),
