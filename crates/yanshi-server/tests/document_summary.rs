@@ -36,7 +36,8 @@ fn the_document_summary_counts_live_entities_only() {
         )
         .unwrap();
     let registry = registry();
-    let mut expected_layers = 0usize;
+    // 1 起：新建文档**自带一个默认图层**（第 207 轮实现）。
+    let mut expected_layers = 1usize;
     let mut expected_objects = 0usize;
     {
         let mut ctx = context(&mut workspace);
@@ -183,7 +184,7 @@ fn closed_documents_report_their_real_counts() {
         .into_iter()
         .find(|summary| summary.doc_id == "closed_doc")
         .expect("应能找到该文档");
-    assert_eq!(while_open.layers, 1, "打开着：图层数");
+    assert_eq!(while_open.layers, 2, "打开着：图层数（含默认层）");
     assert_eq!(while_open.objects, 2, "打开着：对象数");
     // **关掉它** ✓ —— 修复前这里会变成 0 ✗（而磁盘上的原子一条没少 ✓）。
     workspace.close_document("closed_doc");
@@ -195,7 +196,7 @@ fn closed_documents_report_their_real_counts() {
         .expect("关闭后**仍然**应该列出来 ✓（文档没被删 ✓）");
     assert_eq!(
         (while_closed.layers, while_closed.objects),
-        (1, 2),
+        (2, 2),
         "关闭后计数应与打开时**一致** ✓（修复前恒为 0 ✗）"
     );
     assert!(while_closed.persisted, "磁盘上仍然保留 ✓");
@@ -274,7 +275,11 @@ fn list_and_summary_agree_on_live_counts_for_open_and_closed_documents() {
         live_objects(&mut workspace),
         "打开中：列表对象数应等于 list_objects"
     );
-    assert_eq!(open_side, (1, 1), "打开中：1 层 1 个存活对象（墓碑不算 ✓）");
+    assert_eq!(
+        open_side,
+        (2, 1),
+        "打开中：2 层 1 个存活对象（含默认层；墓碑不算 ✓）"
+    );
     // **`get_document` 那一侧由本文件第一条用例覆盖** ✓（它比较 `get_document` 与 `list_*` ✓）；
     // 这里只钉"列表（打开中）↔列表（关闭后）↔list_objects"三者 ✓。
     // 注：我第一版在这里写了 `workspace.get_document_summary(...)` ✗ —— 那个方法不存在 ✓，

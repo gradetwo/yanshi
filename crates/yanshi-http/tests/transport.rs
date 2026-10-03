@@ -577,7 +577,7 @@ fn document_persistence_over_http_survives_restart() {
     assert_eq!(status, 200, "{body}");
     // 打开时加载日志并标记渲染缓存（打开即图片），head_seq = 2。
     assert_eq!(body["document"]["head_seq"], json!(2));
-    assert_eq!(body["document"]["layers"], json!(1));
+    assert_eq!(body["document"]["layers"], json!(2));
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }

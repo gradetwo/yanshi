@@ -83,6 +83,17 @@ fn a_missing_layer_lists_the_layers_that_do_exist() {
 fn a_missing_layer_with_no_layers_says_so_plainly() {
     let mut workspace = workspace();
     setup(&mut workspace);
+    // **先删掉新建文档自带的默认图层** ✓ —— 这条用例要的是"**一个图层都没有**" ✓；
+    // 有了默认层之后，报错会正常列出可用值 ✓（这本身是好事 ✓），但场景就不是它想测的了 ✗。
+    {
+        let mut ctx = context(&mut workspace);
+        let deleted = registry().call(
+            &mut ctx,
+            "delete_layer",
+            &json!({"layer_id": "layer_default"}),
+        );
+        assert_eq!(deleted["ok"], json!(true), "删默认层应成功：{deleted}");
+    }
     let refused = {
         let mut ctx = context(&mut workspace);
         registry().call(

@@ -630,6 +630,34 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                 .unwrap_or(Value::Null);
             state.medium = payload_str(&atom.payload, "medium").map(str::to_owned);
             state.style = payload_str(&atom.payload, "style_id").map(str::to_owned);
+            // **新文档初始就带一个默认图层** —— 进初始状态、**不额外产生原子**；z=-1 当最底层基底，
+            // 且不干扰既有"最大 z + 1"规则。身份用 `layer_default`（若叫 `layer_1` 会与后续建层撞名 ⇒ 60 条失败 ✗）。
+            let default_layer_id = "layer_default".to_owned();
+            state.layers.insert(
+                default_layer_id.clone(),
+                Layer {
+                    id: default_layer_id,
+                    name: "图层 1".to_owned(),
+                    layer_type: parse_layer_type(None),
+                    parent_id: None,
+                    z_index: -1,
+                    blend_mode: "normal".to_owned(),
+                    opacity: 1.0,
+                    visible: true,
+                    locked: false,
+                    alpha_lock: false,
+                    clipping_mask: false,
+                    mask_id: None,
+                    transform: transform_from_payload(&Value::Null),
+                    medium: None,
+                    style: None,
+                    metadata: Value::Null,
+                    blobs: Vec::new(),
+                    created_by: atom.id.clone(),
+                    updated_by: None,
+                    deleted_by: None,
+                },
+            );
         }
         AtomKind::CreateLayer => {
             let layer_id = required(atom, "layer_id")?.to_owned();
@@ -1768,7 +1796,7 @@ mod tests {
             .iter()
             .map(|l| l.id.as_str())
             .collect();
-        assert_eq!(order, vec!["layer_1", "layer_2"]);
+        assert_eq!(order, vec!["layer_default", "layer_1", "layer_2"]);
 
         // 不完整的 z 序快照被拒绝（级联失效）。
         push(
@@ -1780,7 +1808,7 @@ mod tests {
             ),
         );
         let result = fold(&atoms);
-        assert_eq!(result.warning_count(WarningKind::CascadeInvalidation), 1);
+        assert_eq!(result.warning_count(WarningKind::CascadeInvalidation), 3);
     }
 
     #[test]

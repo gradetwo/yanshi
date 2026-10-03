@@ -112,9 +112,15 @@ fn every_supported_blend_mode_can_actually_be_set() {
                 .with_wait_for_render(true, 4_000);
             registry().call(&mut ctx, "list_layers", &json!({}))
         };
+        // **读的必须是写的那一层** ✗ —— 新建文档现在自带 `layer_default` ✓，
+        // 而 `set_blend` 写的是 `layer_id: "L"` ✓ ⇒ 取 `first()` 会读到**默认层** ⇒ 断言必然失败 ✗。
         let stored = got["layers"]
             .as_array()
-            .and_then(|layers| layers.first())
+            .and_then(|layers| {
+                layers
+                    .iter()
+                    .find(|layer| layer["id"] == json!("L") || layer["layer_id"] == json!("L"))
+            })
             .and_then(|layer| layer["blend_mode"].as_str())
             .unwrap_or("?")
             .to_owned();

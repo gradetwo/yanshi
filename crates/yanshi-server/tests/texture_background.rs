@@ -282,8 +282,8 @@ fn a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom() {
     );
     assert_eq!(
         order.first().map(String::as_str),
-        Some("art"),
-        "原来的作品层还该在最底：{order:?}"
+        Some("layer_default"),
+        "最底现在是新建文档的默认层，art 在它之上：{order:?}"
     );
 }
 

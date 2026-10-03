@@ -1700,7 +1700,7 @@ fn tool_layer_covers_core_workflow() {
     );
 
     let state = registry.call(&mut context, "get_state", &json!({"include_objects": true}));
-    assert_eq!(state["layers"].as_array().unwrap().len(), 1);
+    assert_eq!(state["layers"].as_array().unwrap().len(), 2);
     assert_eq!(state["objects"].as_array().unwrap().len(), 1);
 
     let rendered = registry.call(

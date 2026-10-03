@@ -77,7 +77,7 @@ fn duplicating_a_layer_copies_its_objects_and_sits_directly_above() {
     let before = layer_order(&mut workspace, &registry);
     assert_eq!(
         before,
-        vec!["L1".to_owned(), "L2".to_owned()],
+        vec!["layer_default".to_owned(), "L1".to_owned(), "L2".to_owned()],
         "初始自下而上：L1, L2"
     );
 
@@ -125,7 +125,12 @@ fn duplicating_a_layer_copies_its_objects_and_sits_directly_above() {
     let after = layer_order(&mut workspace, &registry);
     assert_eq!(
         after,
-        vec!["L1".to_owned(), "L1copy".to_owned(), "L2".to_owned()],
+        vec![
+            "layer_default".to_owned(),
+            "L1".to_owned(),
+            "L1copy".to_owned(),
+            "L2".to_owned()
+        ],
         "副本应插在原图层**正上方**（而不是最顶或最底，也不该与 L2 撞号）"
     );
 

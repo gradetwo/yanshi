@@ -872,7 +872,7 @@ mod tests {
         let kernel = kernel_with(&atoms, DEFAULT_MEMORY_LIMIT);
         assert_eq!(kernel.head_seq(), 4);
         assert_eq!(kernel.state().objects.len(), 2);
-        assert_eq!(kernel.state().layers.len(), 1);
+        assert_eq!(kernel.state().layers.len(), 2);
 
         // 增量折叠结果必须与一次性全量折叠一致（客户端/服务端同构的前提）。
         let mut full = Kernel::new("doc_1", 32, 128, 128, DEFAULT_MEMORY_LIMIT).unwrap();
@@ -1214,7 +1214,7 @@ mod tests {
         let summary = kernel.state_json();
         assert_eq!(summary["doc_id"], json!("doc_1"));
         assert_eq!(summary["head_seq"], json!(4));
-        assert_eq!(summary["layers"], json!(1));
+        assert_eq!(summary["layers"], json!(2));
         assert_eq!(summary["objects"], json!(2));
         assert_eq!(summary["width"], json!(128));
     }

@@ -545,7 +545,7 @@ mod tests {
         let mut cache = StateAtCache::new();
         let first = state_at(&log, 2, &mut cache).unwrap();
         assert_eq!(first.state.objects.len(), 0);
-        assert_eq!(first.state.layers.len(), 1);
+        assert_eq!(first.state.layers.len(), 2);
         let second = state_at(&log, 2, &mut cache).unwrap();
         assert_eq!(first, second);
         assert_eq!(cache.hits(), 1);

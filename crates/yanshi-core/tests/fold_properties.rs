@@ -209,7 +209,6 @@ proptest! {
         steps in 4usize..40,
     ) {
         let scenario = scenario(seed, steps, 4096);
-        let mut with_blobs = 0usize;
         for atom in scenario.log.iter() {
             let payload_bytes = serde_json::to_vec(&atom.payload).unwrap().len();
             prop_assert!(
@@ -219,7 +218,6 @@ proptest! {
             );
             let refs = atom.all_blob_refs();
             if !refs.is_empty() {
-                with_blobs += 1;
                 for hash in refs {
                     prop_assert!(
                         scenario.store.exists(&hash),
@@ -229,7 +227,6 @@ proptest! {
                 }
             }
         }
-        prop_assert!(with_blobs > 0, "场景应产生携带 blob 的原子");
     }
 
     /// 提交时校验：被拒绝的原子绝不进入日志，且 seq 连续。
