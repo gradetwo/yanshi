@@ -17,6 +17,7 @@ await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 // **取证**（第 11 轮定 ✓）：把 console、日志、失败请求都收起来 ⇒ 判据**自带诊断** ✓
 const evidence = [];
+const requestUrls = new Map();   // **requestId → url** ✓（供 loadingFailed 回查 ✓）
 socket.addEventListener("message", (event) => {
   let m = null;
   try { m = JSON.parse(event.data); } catch (error) { return; }
@@ -25,6 +26,10 @@ socket.addEventListener("message", (event) => {
     evidence.push("console." + m.params.type + ": " + text.slice(0, 200));
   } else if (m.method === "Log.entryAdded") {
     evidence.push("log." + m.params.entry.level + ": " + String(m.params.entry.text).slice(0, 200));
+  } else if (m.method === "Network.requestWillBeSent") {
+    // **记 requestId → url** ✓（`loadingFailed` 不带 URL ✗ ⇒ 只能这样回查 ✓）。
+    const request = (m.params && m.params.request) || {};
+    if (m.params && m.params.requestId) requestUrls.set(m.params.requestId, String(request.url || ""));
   } else if (m.method === "Network.loadingFailed") {
   } else if (m.method === "Network.responseReceived") {
     // **不扰动的观测** ✓（第 55 轮定 ✓）：只记网络流水，不替页面发请求 ✓。
@@ -34,7 +39,7 @@ socket.addEventListener("message", (event) => {
         " fromSW=" + !!response.fromDiskCache + " encoded=" + (m.params.response && m.params.response.encodedDataLength) +
         " mime=" + response.mimeType);
     }
-    evidence.push("request-failed: " + String(m.params.errorText) + " (type " + m.params.type + ")");
+    evidence.push("request-failed: " + String(m.params.errorText) + " url=" + (requestUrls.get(m.params.requestId) || "?").replace(/^https?:\/\/[^/]+/, "") + " (type " + m.params.type + ")");
   }
 });
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
