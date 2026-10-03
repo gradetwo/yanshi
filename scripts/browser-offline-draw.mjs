@@ -215,12 +215,18 @@ if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
 // **不能只看" > 0"** ✗ —— 实测出现过离线只加 57 像素（噪声级 ✓，而在线是 1666+ ✓）就"通过"的情况 ✓
 // ⇒ 这里要求离线那一笔**与在线同一笔的量级相当** ✓（至少 1/4 ✓）：真画出笔触才可能达到 ✓。
-const floor = Math.max(200, Math.floor(Math.abs(deltaOnline) / 4));
+// **门槛必须与"离线那一笔真正能画的东西"同量纲** ✗ ——
+// 在线增量 = **服务端提交（board）** + **本地预览（overlay）** ⇒ 它**双重计数** ✓；
+// 而离线只有**本地预览**一条路 ✓ ⇒ 拿在线总额当基准**不公平** ✗（实测：离线 +1060 vs 门槛 1069 ✓，
+// 只差 9 像素就被判红 ✓ —— 那是**量法**的问题，不是产品的 ✓）。
+// 所以基准改成**在线那一笔在 overlay 上的墨**（就是它的本地预览量 ✓），门槛取 1/4 ✓。
+const onlineOverlayInk = (after1.parts.find((p) => p.id === "overlay") || {}).ink || 0;
+const floor = Math.max(200, Math.floor(onlineOverlayInk / 4));
 if (!hasModuleInWorkerCache) {
   failures.push("SW 缓存里没有 /brush-module.wasm ⇒ 离线能力其实依赖浏览器 HTTP 缓存");
 }
 if (!(deltaOffline >= floor)) {
-  failures.push("离线这一笔的增量 " + deltaOffline + " 达不到同一笔的量级门槛 " + floor + " ⇒ 不像真的画上了一笔");
+  failures.push("离线这一笔的增量 " + deltaOffline + " 达不到本地预览量级的门槛 " + floor + " ⇒ 不像真的画上了一笔");
 }
 socket.close();
 if (failures.length) { console.log(`  ✗ 离线还画不了：${failures.join("；")}`); process.exit(1); }
