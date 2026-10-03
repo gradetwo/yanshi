@@ -281,6 +281,15 @@ const overlayInk = () =>
     return ink;
   })()`);
 const overlayMidInk = await overlayInk();
+// **直接观测**：拖动中途，落笔判定看到的到底是什么（`liveStroke` 只在真时才是对象 ✓）。
+const liveProbe = await evaluate(`(() => {
+  const state = (window.yanshi.state() || {});
+  const select = document.getElementById("brush");
+  return { tool: state.tool, stateBrush: state.brush, requestedBrush: state.requestedBrush,
+           selectValue: select ? select.value : null,
+           liveStroke: state.liveStroke === undefined ? "(未暴露)" : !!state.liveStroke };
+})()`);
+console.log("  ④h 落笔判定输入：" + JSON.stringify(liveProbe));
 const wysiwygMidDigest = await canvasDigest();
 const wysiwygMidInk = await inkOnCanvas();
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
