@@ -320,6 +320,20 @@ const diff = await evaluate(`(() => {
            meanMid: meanOf(before), meanFinal: meanOf(now),
            canvas: { w: width, h: board.height } };
 })()`);
+// **④d：重载页面再取一次** ✓ —— 重载后的画面**只可能来自服务端** ✓（本地预览的临时帧不会活过重载 ✓）。
+// 用它判定："我量到的最终"到底是**服务端像素** ✓ 还是**本地预览的残留** ✗（这一条决定前面结论的方向 ✓）。
+await send("Page.reload", { ignoreCache: true });
+await sleep(1600);
+await waitFor("document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
+  "重载后首帧", 20000);
+await sleep(600);
+const reloadDigest = await canvasDigest();
+const reloadInk = await inkOnCanvas();
+console.log(`  ④d 重载后（只可能来自服务端）：指纹 ${reloadDigest}, 墨 ${reloadInk} ⇒ ` +
+  (reloadDigest === wysiwygFinalDigest && reloadInk === wysiwygFinalInk
+    ? "与「最终」**相同** ✓（说明最终=服务端 ✓）"
+    : "与「最终」**不同** ✗（说明我量到的最终不是服务端像素 ✗）"));
+
 if (diff) {
   console.log(`  ④b 差异：${diff.count} 个像素不同｜最大通道差 ${diff.maxDelta}｜包围盒 ` +
     (diff.box ? `${diff.box.w}×${diff.box.h} @(${diff.box.x},${diff.box.y})` : "无") +
