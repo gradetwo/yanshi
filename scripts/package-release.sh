@@ -209,11 +209,24 @@ name="yanshi-${version}-${commit}-${target_triple}"
 stage="$out/$name"
 
 echo "==> 打包 $name"
-bin_dir="$repo/target/release"
+# **产物目录必须与"真正构建的目标"一致** ✗ —— 用户实测报告的 BUG ✓：
+# macOS 上 `static_build=0`（`+crt-static` 在那里没意义 ✓）⇒ 走**动态**分支 ✓，
+# 而动态分支**原来忽略了 `--target`** ✗ ⇒ **构建的是宿主（苹果芯片）** ✗，
+# 包名却用 `$target_triple`（例如 `x86_64-unknown-linux-gnu` ✓）✗ ⇒ "**linux 名字 + 苹果内容**" ✓
+# ⇒ 装上去 `Exec format error` ✓（`make clean` 后 `make release TARGET=…` 就能复现 ✓）。
+# 现在**两个分支都带 `--target`** ✓（带 `--target` 时 cargo 的产物**必然**落在 `target/<triple>/release` ✓）。
+bin_dir="$repo/target/${target_triple}/release"
 if [ "$static_build" = 1 ]; then
-  bin_dir="$repo/target/${target_triple}/release"
   name="${name}-static"
   stage="$out/$name"
+fi
+
+# **交叉编译前先说清前置条件** ✓：目标与宿主不同 ⇒ 必须已 `rustup target add` ✓，
+# 否则**现在就说** ✓（比让它构建到一半失败更好读 ✓；无论如何都**不会**产出名实不符的包 ✓）。
+if [ "${target_triple}" != "${host_triple}" ] && ! target_installed "${target_triple}"; then
+  echo "✗ 目标是 ${target_triple}，但本机未安装它 ⇒ 请先：rustup target add ${target_triple}" >&2
+  echo "  （宿主是 ${host_triple} ✓；**不会**给你打一个"名字是 ${target_triple}、内容是宿主"的包 ✗）" >&2
+  exit 1
 fi
 if [ "$skip_build" = 0 ]; then
   if [ "$static_build" = 1 ]; then
@@ -222,7 +235,7 @@ if [ "$skip_build" = 0 ]; then
       cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp)
   else
     echo "--> 构建 release 二进制（yanshi-serve / yanshi-mcp）"
-    (cd "$repo" && cargo build --release -p yanshi-http -p yanshi-mcp)
+    (cd "$repo" && cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp)
   fi
 fi
 

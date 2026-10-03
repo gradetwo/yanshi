@@ -13175,3 +13175,33 @@ error: the `aarch64-unknown-linux-gnu` target may not be installed
 **给用户的最终答复** ✓：① **先 `git pull`**（你的 `2798628` 没有这两道防线 ✓）；
 ② macOS 上打 Linux 包 ⇒ 先 `rustup target add x86_64-unknown-linux-gnu` ✓；
 ③ 没装时**会明确失败、且不产出包** ✓（这两条我都实测过 ✓）。
+
+### 🎯 第 234 轮：跨平台打包 BUG 的**真凶找到并修好** ✓✓（用户给的复现路径就是钥匙 ✓）
+
+**用户的复现** ✓：`make clean` 后 `make release TARGET=x86_64-unknown-linux-gnu`（在 macOS 上 ✓）
+⇒ 仍然产出"linux 名字 + 苹果内容" ✗。**这条路径直接把真凶指了出来** ✓：
+```bash
+bin_dir="$repo/target/release"                    # ← 动态路径**固定**用宿主目录 ✗
+if [ "$static_build" = 1 ]; then
+  (… cargo build --release --target "${target_triple}" …)     # 静态：交叉 ✓
+else
+  (… cargo build --release -p yanshi-http -p yanshi-mcp)      # **忽略 --target** ✗ 宿主构建 ✗
+fi
+```
+**机制** ✓：macOS 上 `static_build=0`（`+crt-static` 在那里没意义 ✓）⇒ 走**动态**分支 ✓ ⇒ **构建宿主（苹果）** ✗，
+而包名用 `$target_triple`（用户显式给的 linux ✓）✗ ⇒ **名实不符** ✓ ⇒ `Exec format error` ✓。
+**修法（三处 ✓）** ✓：
+1. **产物目录取真实目标** ✓：`bin_dir="$repo/target/${target_triple}/release"`（**两个分支统一** ✓；
+   带 `--target` 时 cargo 的产物**必然**落在那里 ✓）；
+2. **动态分支也带 `--target`** ✓（原来漏了 ✗）；
+3. **交叉前先查前置条件** ✓：目标 ≠ 宿主且未安装 ⇒ **立刻明确拒绝**并给出 `rustup target add …` ✓
+   （"**不会**给你打一个名字是 X、内容是宿主的包" ✓）。
+**实测（端到端 ✓）** ✓：`--dynamic --target x86_64-unknown-linux-gnu` ⇒
+```
+EXIT=0 ✓｜包名 triple: x86_64-unknown-linux-gnu ✓
+包内二进制 file: ELF 64-bit … x86-64 ✓（真 Linux ✓）
+✓ 名实相符：… 与包内二进制一致 ✓   ← 第 231 轮那条核验**在流程里真的执行了** ✓
+完成：…/yanshi-0.1.0-…-x86_64-unknown-linux-gnu.tar.gz ✓
+```
+**给用户的答复** ✓：① **先 `git pull` 到最新** ✓；② macOS 上打 Linux 包 ⇒ 先 `rustup target add x86_64-unknown-linux-gnu` ✓；
+③ 现在**要么**打出名实相符的包 ✓、**要么明确失败** ✓（绝不会再给你一个"名字 linux、内容苹果"的包 ✗）✓。
