@@ -10947,3 +10947,18 @@ EXIT=1 ✓
 ⇒ 会把图层建到**老文档**上 ✗）；要在 `create_document` 之后，用**指定 doc_id** 的原子追加路径 ✓
 （下一步先读 `ctx.workspace` 那条 append/新文档作用域的入口 ✓，再改 ✓）。
 **判据已经写好并红着** ✓（`scripts/tool-session-semantics.mjs` 那两条 ✓）⇒ 改完就能自证 ✓。
+
+### 🔧 第 126 轮：默认图层的**落点找到了** ✓ —— 用 `Workspace::commit(doc_id, …)` ✓
+
+**关键区别** ✓（读代码得到 ✓）：
+* `write_create_layer` 走的是 `ctx.commit(AtomKind::CreateLayer, payload)` ✓ —— `ctx` 绑的是**会话文档** ✓
+  ⇒ 在新文档上照抄它 ⇒ **图层会建到老文档** ✗✗（比不建更糟 ✓）；
+* `Workspace::commit(doc_id, …)` ✓（`crates/yanshi-server/src/service.rs:1244` ✓）**第一个参数就是 doc_id** ✓
+  ⇒ 明确建在**新文档**里 ✓ —— 这正是需要的那条路 ✓。
+**下一轮** ✓：照 `Workspace::commit` 的**完整参数表**（本轮打印了它开头两行 ✓）在 `write_new_document` 里
+`create_document` **之后**追加一条 `CreateLayer` ✓（名字用"图层 1" ✓，id 用固定可读的 ✓），
+失败**必须说出原因** ✗（不许静默 ✓）；判据 `scripts/tool-session-semantics.mjs` 那两条随后应转绿 ✓
+（"新文档自带默认图层" ✓ + "默认图层上直接能落墨" ✓）。
+**顺带确认** ✓：目标第 (4) 条里"哪些组要 `--profile`"那件事，**未知工具的错误信息其实已经说了**
+（"可能是拼错，也可能它所属的组没有启用 ✓；当前启用的组…" ✓）⇒ 缺的只是**在概览/清单里也写明** ✓
+（下一轮一并做 ✓）。
