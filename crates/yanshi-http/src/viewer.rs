@@ -4279,6 +4279,22 @@ function regionFromSelection(checkboxId) {
 /// **做法：搬，不重建** ✓ —— `appendChild` 是**移动节点** ✓ ⇒ 卡里的监听器、下拉框选中项、
 /// 已装载的色块**全都不变** ✓；关掉时按**开之前记下的原位**（`parent` + `nextSibling`）
 /// 搬回去 ✓ ⇒ 右侧面板**不可能被搬空** ✗（上一版就是栽在这里 ✓，所以这次每一步都验 ✓）。
+/// **只切"素材浮层"的可见性** ✓ —— 与 `setupAssetDock()` **拆开**的理由（第 208/209 轮实测 ✓）：
+/// 浮层的 DOM（`#assetDock` 等）在**脚本段之后**（`viewer.rs:7721` 一带 ✓）⇒
+/// `setupAssetDock()` 在脚本执行时**取不到它们** ✗ ⇒ 它开头 `if (!dock || !body || !button) return;` 提前返回 ✓；
+/// 而**按钮**（`viewer.rs:418` ✓）在脚本**之前**就存在 ✓ ⇒ 绑定它**根本不需要等 DOM** ✓。
+/// 所以把"开关"这一半**单独**拿出来 ✓：它**不搬卡片** ✓（搬卡片要卡片元素 ✓，那仍然归 `setupAssetDock()` ✓），
+/// 调用它**没有副作用** ✓ —— 这正是不再让"早绑"把事情弄坏的关键 ✓（前四次尝试都是**整个** `setupAssetDock()` 早调 ✗）。
+function toggleAssetDock() {
+  const dock = $("assetDock");
+  const button = $("assetFloat");
+  if (!dock || !button) return;
+  const open = dock.hidden;
+  dock.hidden = !open;
+  button.setAttribute("aria-pressed", String(open));
+  button.textContent = open ? "素材（已浮出）" : "素材";
+}
+
 function setupAssetDock() {
   const dock = $("assetDock");
   const body = $("assetDockBody");
@@ -4309,6 +4325,8 @@ function setupAssetDock() {
     button.setAttribute("aria-pressed", String(open));
     button.textContent = open ? "素材（已浮出）" : "素材";
   };
+  // 面板就绪后**接管**按钮 ✓ —— 先摘掉早绑的"纯开关" ✓（两者都绑着会一次点击切两次 ⇒ 看起来"没反应" ✗）。
+  button.removeEventListener("click", toggleAssetDock);
   button.addEventListener("click", () => setOpen(dock.hidden));
   // **折叠 / 展开画笔区** ✓（类加在 `body` 上 ✓ ⇒ 一行 CSS 管全部 ✓）。
   const areaToggle = $("brushAreaToggle");
@@ -7698,6 +7716,14 @@ $("importFile").addEventListener("change", async (event) => {
     refreshContactLink();
     void warmKernel();
   }
+})();
+
+// **素材浮层的"开关"这一半，在脚本段末尾就绑上** ✓ —— 只切可见性、不搬卡片 ✓（无副作用 ✓）。
+// 根因与取舍见 `toggleAssetDock` 的注释 ✓：浮层 DOM 在本段之后出现 ✓，
+// 而**按钮**在本段之前就有了 ✓ ⇒ 早绑是安全的 ✓；搬卡片仍由 `setupAssetPanels()` 在面板就绪后接管 ✓。
+(() => {
+  const button = $("assetFloat");
+  if (button) button.addEventListener("click", toggleAssetDock);
 })();
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
