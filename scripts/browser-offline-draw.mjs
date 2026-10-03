@@ -33,6 +33,10 @@ const evaluate = async (expression) => (await send("Runtime.evaluate", { express
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
 // **单因素实验开关**（目标 (A)③ 的诊断用）：`BYPASS_SW=1` ⇒ 让页面**绕过 Service Worker** ✓
 // ⇒ 用于回答"是不是 SW 的取数把在线预览弄坏了" ✓（第 10 轮定的隔离实验 ✓）。
+if (process.env.NO_HTTP_CACHE === "1") {
+  await send("Network.setCacheDisabled", { cacheDisabled: true });
+  console.log("  （实验模式：已关闭浏览器的 HTTP 缓存）");
+}
 if (process.env.BYPASS_SW === "1") {
   await send("Network.setBypassServiceWorker", { bypass: true });
   console.log("  （实验模式：已让页面绕过 Service Worker）");
@@ -79,6 +83,50 @@ const STROKE = `(() => {
   board.dispatchEvent(new PointerEvent("pointerup", at(0.6, 0.58, { buttons: 0 })));
   return { ok: true, brush: (document.getElementById("brush") || {}).value || "" };
 })()`;
+// **真的选上一支 `.myb`**（第 13 轮的结论：合成笔画此前一直用内置画笔 ✓ ⇒ 门面根本没被需要 ✗）。
+// 两步走：① 打开笔刷库并**探测它的 DOM**（把结构打印出来 ✓ ⇒ 结论不靠猜 ✓）；
+// ② 点第一支笔刷 ✓，然后**硬断言** #brush 的值非空 ✓ —— 拿不到就判据失败 ✗（不许静默继续）。
+const OPEN_LIBRARY = `(() => {
+  const search = document.getElementById("brushSearch");
+  if (search) {
+    search.value = "a";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    return { via: "brushSearch", found: true };
+  }
+  const dock = document.querySelector("[data-dock='assets'], #assetDock, #brushLibrary");
+  if (dock) { dock.click(); return { via: "dock", found: true }; }
+  return { via: null, found: false };
+})()`;
+const opened = await evaluate(OPEN_LIBRARY);
+await sleep(1500);
+const DISCOVER = `(() => {
+  const probes = ["[data-brush-name]", "[data-brush]", ".brush-card", ".brush-item", "#brushList > *", "[data-asset-kind='brush']"];
+  const out = {};
+  for (const selector of probes) { try { out[selector] = document.querySelectorAll(selector).length; } catch (error) { out[selector] = -1; } }
+  const select = document.getElementById("brush");
+  out.selectOptions = select ? select.options.length : -1;
+  out.selectNonEmpty = select ? Array.from(select.options).filter((o) => o.value).length : -1;
+  return out;
+})()`;
+console.log("  打开笔刷库：" + JSON.stringify(opened) + "｜DOM 探测：" + JSON.stringify(await evaluate(DISCOVER)));
+const PICK_BRUSH = `(() => {
+  const probes = ["[data-brush-name]", "[data-brush]", ".brush-card", ".brush-item", "#brushList > *", "[data-asset-kind='brush']"];
+  for (const selector of probes) {
+    const node = document.querySelector(selector);
+    if (!node) continue;
+    const name = node.getAttribute("data-brush-name") || node.getAttribute("data-brush") || (node.textContent || "").trim().slice(0, 40);
+    node.click();
+    return { selector: selector, name: name };
+  }
+  return { selector: null, name: null };
+})()`;
+console.log("  点击第一支笔刷：" + JSON.stringify(await evaluate(PICK_BRUSH)));
+await sleep(1200);
+const brushState = await evaluate(`(() => {
+  const select = document.getElementById("brush");
+  return { value: select ? select.value : null, nonEmpty: select ? Array.from(select.options).filter((o) => o.value).length : -1 };
+})()`);
+console.log("  选定后的 #brush：" + JSON.stringify(brushState));
 // **显式选定一支真笔刷**（消除"首访用默认笔、复访恢复上次笔刷"这个混淆变量 ✓）：
 // 从 select 里挑**第一个非空值**（= 一支真 `.myb`）✓，并派发 change ✓ —— 不写死任何具体笔名 ✗。
 const PICK = `(() => {
@@ -141,6 +189,10 @@ const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 if (evidence.length) { console.log("  取证（console/日志/失败请求）："); for (const line of evidence.slice(-14)) console.log("    · " + line); }
 const failures = [];
+if (!brushState || !brushState.value) {
+  // **判据无效**：没选上真 `.myb` ⇒ 这一跑测的还是内置画笔 ⇒ 结论没有意义 ✗
+  failures.push("没能选定一支 .myb 笔刷（#brush = " + JSON.stringify(brushState) + "）⇒ 判据无效");
+}
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
 // **不能只看" > 0"** ✗ —— 实测出现过离线只加 57 像素（噪声级 ✓，而在线是 1666+ ✓）就"通过"的情况 ✓

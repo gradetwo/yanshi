@@ -5881,15 +5881,20 @@ async function loadLocalBrushModule() {
       .then((response) => {
         if (!response.ok) throw new Error("模块 HTTP " + response.status);
         // **顺手把它写进 SW 用的那个缓存**（离线时 SW 的回落会 caches.match 到它）。
-        // 为什么不由 SW 的 fetch 拦截来缓存：上一轮那样改**把在线也弄坏了**（回归，已回退）
-        // ⇒ 这里用**页面主动写缓存**，不动拦截逻辑，风险小得多。缓存名必须与 SW 里的 CACHE 一致。
+        // 缓存名必须与 SW 里的 CACHE 一致。
+        // **必须在读 body 之前就 clone** ✗ —— 我上一版把 `response.clone()` 写在下面的 `.then()` 里 ✗，
+        // 那时代码已经调用过 `arrayBuffer()` ⇒ 同一个 body 被读了两次 ⇒ 实测报
+        // `TypeError: Failed to execute 'clone' on 'Response': Response body is already used` ✓
+        // ⇒ 门面**从未进过缓存** ⇒ 离线就没有本地预览 ✗（这就是"离线画不了"的直接原因 ✓）。
+        let forCache = null;
         try {
-          if (window.caches) {
-            caches.open("yanshi-shell-v1")
-              .then((cache) => cache.put("/brush-module.wasm", response.clone()))
-              .catch((error) => console.warn("写缓存失败 /brush-module.wasm（离线将没有本地预览）：" + error));
-          }
-        } catch (error) { /* 缓存失败不影响本帧 */ }
+          if (window.caches) forCache = response.clone();
+        } catch (error) { forCache = null; }
+        if (forCache) {
+          caches.open("yanshi-shell-v1")
+            .then((cache) => cache.put("/brush-module.wasm", forCache))
+            .catch((error) => console.warn("写缓存失败 /brush-module.wasm（离线将没有本地预览）：" + error));
+        }
         return response.arrayBuffer();
       })
       .then((bytes) => WebAssembly.instantiate(bytes, {}))

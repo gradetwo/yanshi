@@ -14044,3 +14044,32 @@ crates/yanshi-wasm（共享内核）：**无** .myb 入口 ✓（grep 为空 ✓
    ⇒ 然后**断言** `#brush` 的值**确实非空** ✓（否则判据无效 ✓，不许静默继续 ✗）；
 2. 再加一个隔离开关 ✓：`Network.setCacheDisabled(true)` ✓ ⇒ 排除**浏览器 HTTP 缓存**这个变量 ✓；
 3. 两条都齐了再跑 ✓ ⇒ 那时"离线能不能画 `.myb`"才是**有效测量** ✓。
+
+### 🎯 第 14 轮：**找到并修掉"门面从未进缓存"的真 bug** ✓✓（`clone` 时序 ✗）
+
+**先补齐判据的覆盖缺口** ✓（上一轮的结论 ✓）：让它**真的用 `.myb`** ——
+打开笔刷库（用我修过的 `#brushSearch` 路径 ✓）⇒ **探测 DOM** ✓ ⇒ 点第一支 ✓ ⇒ **硬断言** `#brush` 非空 ✓。
+**探测结果（一次就拿到了结构 ✓）** ✓：
+```
+打开笔刷库：{"via":"brushSearch","found":true} ✓
+DOM 探测：{"[data-brush]":262, "selectOptions":200, "selectNonEmpty":199} ✓
+点击第一支：[data-brush] ⇒ classic-brush ✓   ⇒ #brush = classic-brush ✓
+```
+**随即暴露真 bug（console 直接说了 ✓）** ✓：
+```
+console.warning: 写缓存失败 /brush-module.wasm：TypeError: Failed to execute 'clone' on 'Response':
+                 Response body is already used
+```
+⇒ **根因** ✓：我把 `response.clone()` 写在 `caches.open(...).then(...)` 里 ✗ ⇒ 那个回调**异步**执行 ✓，
+此时 `arrayBuffer()` **已经读过同一个 body** ✗ ⇒ 克隆失败 ⇒ **门面从未进过缓存** ✗
+⇒ 离线时 `loadLocalBrushModule()` 取不到它 ⇒ **没有本地预览** ✓（这正是"离线画不了"的直接原因之一 ✓）。
+**修复** ✓：**在任何读取之前同步 clone** ✓（`let forCache = response.clone();` ✓）⇒ 再跑 ✓：
+```
+缓存（离线后）：6 条 ⇒ **/brush-module.wasm (268897B)** ✓ + **/brushes/classic-brush.myb (6039B)** ✓
+在线：0 ⇒ 3965（board 1919 + **overlay 2046** ✓）   离线：3965 ⇒ 3971（**+6** ✗）
+```
+⇒ **门面与笔刷文本都进缓存了** ✓（两个资产都在 ✓），但**离线那一笔仍只加 6** ✗ ⇒ **还有下一层原因** ✓
+（缓存齐了 ≠ 离线路径能用 ✓）。
+**下一步（继续"先取证" ✓）** ✓：把判据里**离线阶段**的取证**完整打印** ✓（本次我 grep 掉了 ✗）——
+重点看三件事 ✓：① 离线时 `/brush-module.wasm` 是否**从缓存取到**（`fromServiceWorker` ✓ / 是否 `loadingFailed` ✓）；
+② `loadLocalBrushModule()` 是否抛错 ✓；③ `paintLiveFrame` 是否被调用 ✓（`stats` 里有 `localBrush*` 计数 ✓）。
