@@ -15,6 +15,20 @@ let nextId = 1; const pending = new Map();
 socket.onmessage = (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
 await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
+// **取证**（第 11 轮定 ✓）：把 console、日志、失败请求都收起来 ⇒ 判据**自带诊断** ✓
+const evidence = [];
+socket.addEventListener("message", (event) => {
+  let m = null;
+  try { m = JSON.parse(event.data); } catch (error) { return; }
+  if (m.method === "Runtime.consoleAPICalled") {
+    const text = (m.params.args || []).map((a) => a.value === undefined ? (a.description || a.type) : String(a.value)).join(" ");
+    evidence.push("console." + m.params.type + ": " + text.slice(0, 200));
+  } else if (m.method === "Log.entryAdded") {
+    evidence.push("log." + m.params.entry.level + ": " + String(m.params.entry.text).slice(0, 200));
+  } else if (m.method === "Network.loadingFailed") {
+    evidence.push("request-failed: " + String(m.params.errorText) + " (type " + m.params.type + ")");
+  }
+});
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
 // **单因素实验开关**（目标 (A)③ 的诊断用）：`BYPASS_SW=1` ⇒ 让页面**绕过 Service Worker** ✓
@@ -65,6 +79,28 @@ const STROKE = `(() => {
   board.dispatchEvent(new PointerEvent("pointerup", at(0.6, 0.58, { buttons: 0 })));
   return { ok: true, brush: (document.getElementById("brush") || {}).value || "" };
 })()`;
+// **缓存快照**（证据 ✓）：有哪些缓存、各自哪些条目、多大
+const CACHES = `(async () => {
+  if (!window.caches) return { supported: false };
+  const names = await caches.keys();
+  const out = [];
+  for (const name of names) {
+    const cache = await caches.open(name);
+    const requests = await cache.keys();
+    const entries = [];
+    for (const request of requests.slice(0, 12)) {
+      const response = await cache.match(request);
+      let size = 0;
+      try { size = (await response.clone().arrayBuffer()).byteLength; } catch (error) { size = -1; }
+      entries.push(request.url.replace(location.origin, "") + " (" + size + "B)");
+    }
+    out.push({ name: name, count: requests.length, entries: entries });
+  }
+  return { supported: true, caches: out };
+})()`;
+await send("Runtime.enable"); await send("Log.enable");
+const cachesBefore = await evaluate(CACHES);
+console.log("  缓存（画前）：" + JSON.stringify(cachesBefore));
 // ① 在线：画一笔，记录**这一笔自己的增量**
 const before1 = await evaluate(INK);
 const online = await evaluate(STROKE);
@@ -81,6 +117,9 @@ const deltaOffline = after2.ink - before2.ink;
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.ink + "（增量 " + deltaOnline + "）｜分画布 " + JSON.stringify(after1.parts));
 console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
+const cachesAfter = await evaluate(CACHES);
+console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
+if (evidence.length) { console.log("  取证（console/日志/失败请求）："); for (const line of evidence.slice(-14)) console.log("    · " + line); }
 const failures = [];
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
