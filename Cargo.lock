@@ -577,6 +577,7 @@ dependencies = [
  "hokusai",
  "serde",
  "serde_json",
+ "yanshi-render",
 ]
 
 [[package]]

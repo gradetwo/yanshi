@@ -9621,37 +9621,10 @@ fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     Ok(value)
 }
 
-/// **RGB ⇒ HSV** ✓（MyPaint 的口径 ✓：**H 用度**（0..360 ✓）、S 与 V 用 0..1 ✓）。
-///
-/// **为什么必须照它的口径** ✓：`.myb` 里的 `color_h/s/v` 就是 MyPaint 的字段 ✓
-/// ⇒ 转换不一致就会"把红色画成别的颜色" ✗ —— 而这类偏色**很难一眼看出来** ✗。
-fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
-    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let delta = max - min;
-    let hue = if delta <= f32::EPSILON {
-        0.0
-    } else if max == rf {
-        60.0 * (((gf - bf) / delta) % 6.0)
-    } else if max == gf {
-        60.0 * (((bf - rf) / delta) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / delta) + 4.0)
-    };
-    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
-    let sat = if max <= f32::EPSILON {
-        0.0
-    } else {
-        delta / max
-    };
-    // **⚠️ 引擎要的是 0..1 的"圆周分数"，不是度数** ✗ —— 这是**查到源码才定下的** ✓：
-    // `hokusai-core-0.3.0/src/color.rs` 里 `hsv_to_rgb` 第一行就是 `let h = (hsv.h.rem_euclid(1.0)) * 6.0;`
-    // ⇒ 传**度数**（0..360 ✓）会被 `rem_euclid(1.0)` 整除 ✓
-    // ⇒ **除不尽的小数部分才是色相** ✓ ⇒ 我传 60（黄 ✓）与 240（蓝 ✓）都得到 **0.0 = 红色** ✗ ✓
-    // —— 这正是实测"黄和蓝都画成红"的**确切原因** ✓（不是随机 ✓，是**整除余数** ✓）。
-    (hue / 360.0, sat, max)
-}
+// **口径说明** ✓（原来挂在本文件那个 `rgb_to_hsv` 上 ✓ —— 函数已搬进
+// `yanshi_render::color::rgb_to_hsv` ✓，说明也一并搬过去 ✓，这里留一句指路 ✓）：
+// MyPaint 的口径是 **H 用度、S/V 用 0..1** ✓，而 **Hokusai 的 `ColorH` 要 0–1 的圆周分数** ✗
+// ⇒ 共用函数**最后除以 360** ✓、**调用方不要再除** ✗（第 73 轮多除一次 ⇒ 蓝画成红 ✓）。
 
 /// **解析 `{r,g,b,a}` 颜色参数** ✓（0..255 ✓；`a` 缺省 255 ✓）。
 fn parse_color_arg(value: Option<&Value>, name: &str) -> Result<[u8; 4]> {
@@ -10060,7 +10033,9 @@ fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>>
 /// 返回 `(hue, sat, value)` ✓（引擎要的 0..1 圆周分数 ✓，见 [`rgb_to_hsv`] ✓）。
 fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
     let bytes = brush_color_to_srgb_bytes(value)?;
-    Ok(rgb_to_hsv(bytes[0], bytes[1], bytes[2]))
+    Ok(yanshi_render::color::rgb_to_hsv(
+        bytes[0], bytes[1], bytes[2],
+    ))
 }
 
 /// **颜色 → sRGB 字节** ✓（三种写法都收 ✓）—— 一笔多色的**插值必须在显示空间**做 ✓：
@@ -10708,7 +10683,8 @@ fn paint_brush(
                     cursor as f64 / seats as f64
                 };
                 let bytes = lerp_srgb(from_bytes, to_bytes, t);
-                let (hue, saturation, value) = rgb_to_hsv(bytes[0], bytes[1], bytes[2]);
+                let (hue, saturation, value) =
+                    yanshi_render::color::rgb_to_hsv(bytes[0], bytes[1], bytes[2]);
                 brush.set(
                     hokusai::BrushSetting::ColorH,
                     hokusai::SettingValue::constant(hue),

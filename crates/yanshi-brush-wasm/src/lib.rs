@@ -72,23 +72,10 @@ struct PaintRequest {
 ///（配方里已经写明 ✓）—— 等门面接进查看器时一并做 ✓，本轮先让它跑起来 ✓，
 /// 并把这件事**记在案** ✓（两份实现必然漂移是本项目的头号病 ✓）。
 fn colour_to_hsv(colour: &Colour) -> (f32, f32, f32) {
-    let r = f64::from(colour.r) / 255.0;
-    let g = f64::from(colour.g) / 255.0;
-    let b = f64::from(colour.b) / 255.0;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let value = max;
-    let sat = if max <= 0.0 { 0.0 } else { (max - min) / max };
-    let hue = if max == min {
-        0.0
-    } else if max == r {
-        ((g - b) / (max - min)).rem_euclid(6.0) / 6.0
-    } else if max == g {
-        (((b - r) / (max - min)) + 2.0) / 6.0
-    } else {
-        (((r - g) / (max - min)) + 4.0) / 6.0
-    };
-    (hue as f32, sat as f32, value as f32)
+    // **只留一处实现** —— 与服务端**同一个函数**（第 36 轮收拢 ✓）。
+    // **不要再除以 360** ✗：那一处回的**已经是 0–1 的圆周分数** ✓（它自己除了 360 ✓）。
+    // 第 73 轮就是在这里多除了一次 ✗ ⇒ 蓝被画成红 ✓ ⇒ 15 组判据里只有 blue 三组红 ✓。
+    yanshi_render::color::rgb_to_hsv(colour.r, colour.g, colour.b)
 }
 
 /// 用**请求里的设置**把笔刷调好 ✓（顺序与服务端一致 ✓：不透明度 → 硬度 → 颜色 → 大小 ✓）。

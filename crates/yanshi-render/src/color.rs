@@ -523,3 +523,40 @@ mod lut_tests {
         }
     }
 }
+
+/// **RGB 字节 → HSV（色相是 0–1 的圆周分数）** ✓ —— 从 `yanshi-server` 搬来的**唯一一处**实现 ✓。
+///
+/// **为什么必须只有一处** ✓：服务端与浏览器门面各算过一遍 ✓，两份实现必然漂移 ✓（本项目最吃过的亏 ✓）。
+/// **约定** ✓（容易踩的坑 ✓，服务端源码里已写明 ✓）：Hokusai 的 `hsv_to_rgb` 第一行是
+/// `hsv.h.rem_euclid(1.0) * 6.0` ✓ ⇒ **色相必须是 0–1 的分数** ✗ **不是度数** ✓；
+/// 传 60（黄）或 240（蓝）都会被 `rem_euclid(1.0)` 整除成 0 ✓ = **红色** ✗。
+/// **口径** ✓：MyPaint / `.myb` 的字段是 **H 用度（0..360）、S/V 用 0..1** ✓；
+/// 所以本函数**最后除以 360** ✓ —— **调用方不要再除一次** ✗（第 73 轮就是这么错的 ✓：
+/// 门面多除了一次 ✓ ⇒ 蓝被画成红 ✓ ⇒ 15 组判据里恰好只有 blue 三组红 ✗）。
+pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if max == rf {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if max == gf {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    let sat = if max <= f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
+    // **⚠️ 引擎要的是 0..1 的"圆周分数"，不是度数** ✗ —— 这是**查到源码才定下的** ✓：
+    // `hokusai-core-0.3.0/src/color.rs` 里 `hsv_to_rgb` 第一行就是 `let h = (hsv.h.rem_euclid(1.0)) * 6.0;`
+    // ⇒ 传**度数**（0..360 ✓）会被 `rem_euclid(1.0)` 整除 ✓
+    // ⇒ **除不尽的小数部分才是色相** ✓ ⇒ 我传 60（黄 ✓）与 240（蓝 ✓）都得到 **0.0 = 红色** ✗ ✓
+    // —— 这正是实测"黄和蓝都画成红"的**确切原因** ✓（不是随机 ✓，是**整除余数** ✓）。
+    (hue / 360.0, sat, max)
+}
