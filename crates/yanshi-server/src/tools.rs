@@ -12402,6 +12402,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "layer_default", "patch": {"blend_mode": "multiply"}}"#,
     ),
     ("list_assets", r#"{"kind": "brush", "tag": "fur"}"#),
+    // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**写 ✓（`browser-ui-check.mjs` 的 fill/draw_shape ✓），
+    // 不凭记忆编参数 ✗（示例会被 `tool-example-acceptance.mjs` **真的执行** ✓，编错就红 ✓）。
+    (
+        "fill",
+        r#"{"layer_id": "layer_default", "object_id": "bg", "data": {"color": {"r": 240, "g": 240, "b": 240, "a": 255}}}"#,
+    ),
+    (
+        "draw_shape",
+        r#"{"layer_id": "layer_default", "object_id": "box", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}"#,
+    ),
+    ("list_selections", r#"{}"#),
     ("list_layers", r#"{}"#),
     ("get_document", r#"{}"#),
     (

@@ -13066,3 +13066,21 @@ CARGO_TARGET_DIR=/tmp/cold94b cargo build -p yanshi-medium-watercolor     ⇒ wa
 所以"我加了 5 条"是**错的** ✗ —— **要按判据的数报，不按自己数目的直觉报** ✓。
 **下一批候选** ✓（仍缺的要挑**能确证用法**的 ✓）：`create_selection`/`delete_selection` ✓、
 `draw_shape`/`fill` ✓、`transform_object` ✓、`update_object` ✓、`convert_to_shape` ✓ 等 ✓。
+
+### ✅ 第 229 轮：示例覆盖面**再扩一批** ✓ —— 判据报 **32 ⇒ 35** ✓（0 失败 ✓）
+
+**本轮加的 3 条** ✓（原则不变 ✓：**只用有确证用法的** ✓，参数照仓库里**现成的调用**抄 ✓，不凭记忆编 ✗）：
+| 工具 | 示例 | 依据 |
+|---|---|---|
+| `fill` ✓ | `{"layer_id":"layer_default","object_id":"bg","data":{"color":{…240,240,240,255}}}` ✓ | `browser-ui-check.mjs` 里的 fill 调用 ✓ |
+| `draw_shape` ✓ | `{"layer_id":"layer_default","object_id":"box","data":{"geometry":{"kind":"rect","bbox":{…}}}}` ✓ | 同一处的 draw_shape 调用 ✓ |
+| `list_selections` ✓ | `{}` ✓（无参列表 ✓） | 工具形状 ✓ |
+**验收（入库脚本 ✓，能红 ✓）** ✓：`fill` ✓ / `draw_shape` ✓ / `list_selections` ✓ 全绿 ✓ ⇒
+```
+结论：35 个示例**跑通** ✓、0 个没跑通 ✗
+```
+⇒ 覆盖面 ✓：**28 ⇒ 32 ⇒ 35** ✓（缺示例的工具 99 ⇒ 95 ⇒ 92 ✓）。
+**照上一轮的教训执行** ✓：这一次**没有凭我自己数**报数 ✓ —— 直接报判据的 **35** ✓。
+**下一批候选** ✓（仍要挑能确证用法的 ✓）：`create_selection`/`delete_selection` ✓、
+`transform_object` ✓、`convert_to_shape` ✓、`get_object_history` ✓、`find_atom` ✓ ——
+它们的参数形状**需要先在仓库里找到现成调用** ✓（或先读 schema ✓），**不许猜** ✗。
