@@ -87,6 +87,27 @@ for (const brush of names) {
   }
   const same = serverBytes.length === facadeBytes.length && differing === 0;
   if (!same) allEqual = false;
+  // **本地框必须是服务端区域的超集**（第 121 轮定的规矩）：查看器拖动时用的是**本地算的框**，
+  // 而服务端算的是**权威区域**；业界做法是"本地只给包得住它的提示区、以服务端为准"。
+  // 所以这里不要求两份算式相同，而要**关系成立**：服务端的区域必须被本地框包住。
+  // （本地框算式 = 点的 bbox ± (size/2+4)，再 floor/ceil —— 与查看器 `liveRegion` 一致。）
+  const half = size / 2 + 4;
+  const clientBox = (() => {
+    const xs = pointList.map((p) => p[0]);
+    const ys = pointList.map((p) => p[1]);
+    const left = Math.max(0, Math.floor(Math.min(...xs) - half));
+    const top = Math.max(0, Math.floor(Math.min(...ys) - half));
+    const right = Math.ceil(Math.max(...xs) + half);
+    const bottom = Math.ceil(Math.max(...ys) + half);
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  })();
+  const covers = clientBox.x <= region.x && clientBox.y <= region.y
+    && clientBox.x + clientBox.w >= region.x + region.w
+    && clientBox.y + clientBox.h >= region.y + region.h;
+  if (!covers) {
+    allEqual = false;
+    console.log(`      ✗ 本地框没包住服务端区域：本地 ${JSON.stringify(clientBox)} vs 服务端 ${JSON.stringify(region)}`);
+  }
   console.log(
     `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（期望 ${expected} 字节）｜` +
       `服务端 ${serverBytes.length} vs 门面 ${facadeBytes.length}｜不同字节 ${differing}` +
