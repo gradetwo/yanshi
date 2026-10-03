@@ -14290,3 +14290,32 @@ blob 尺寸：1 个 3 MB ✓、1 个 1.5 MB ✓、1 个 ~400KB ✓、11 个 320�
 4. **判据（能红 ✓）** ✓：① raw RGBA blob 的**落盘字节 ≤ 明文的 25%** ✓；
    ② **往返逐字节一致** ✓；③ **已压过的 blob 不被压第二次**（标志为 0 ✓）；
    ④ 用户那种包的等价比它**缩小 ≥4 倍** ✓。
+
+### 🧭 第 25 轮：**blob 存储压缩**的落点定了 ✓（用户指示：**不考虑老版本兼容** ✓）
+
+**用户指示** ✓："**不用考虑老版本兼容问题，我们还在开发，没有历史包袱**" ✓
+⇒ 设计因此**大幅简化** ✓：**容器不需要标志位** ✓ —— 存储里**永远就是一个 zlib 流** ✓。
+**为什么可以"永远是 zlib"** ✓：仓库自己的 `deflate_fixed` 之外还有 **`zlib_stored`**（stored 未压缩块 ✓），
+它**同样是合法的 zlib 流** ✓ ⇒ 于是 ✓：`put` 时
+* 用 `deflate_fixed` 压 ✓；**压不动（≥ 明文）就用 `zlib_stored`** ✓（已压过的 PNG/JPEG 属于这种 ✓，最多 +11 字节 ✓）；
+⇒ `get` 时**无条件** `zlib_decompress` ✓ —— **不需要任何判别** ✓（这正是"没有历史包袱"直接换来的简化 ✓）。
+**依赖方向查清（决定改哪儿 ✓）** ✓：
+```
+yanshi-core 依赖：serde / serde_json / sha2 / thiserror ✓（**没有** yanshi-render ✓）
+yanshi-render 依赖：yanshi-core ✓（**单向** ✓）
+```
+⇒ 存储层在 `yanshi-core` ✓，而 deflate 现在在 `yanshi-render/src/png.rs` ✓ ⇒ **存储层调不到它** ✗
+⇒ **必须把 deflate/inflate 搬到 `yanshi-core`** ✓ —— 而且这**符合既有结构** ✓：
+`crc32` 这样的通用算法本来就放在 `core/src/snapshot.rs` ✓。
+**另外三条已定的结论** ✓：
+1. `FsBlobStore::put` **本来就是对明文算哈希** ✓（`BlobHash::from_bytes(bytes)` ✓）⇒ 内容寻址/去重语义**不用改** ✓；
+2. **`MemoryBlobStore` 不压缩** ✓（那是内存 ✓，压它只赔 CPU ✗）；压缩是**文件存储**这一层的事 ✓；
+3. `size()` 目前报**文件字节** ✓ ⇒ 换压缩后会变成"**落盘占用**" ✓ —— 我**有意保留这个语义** ✓（"存储占用"本来就该是它 ✓），
+   并在注释里写明 ✓，免得以后被当成"明文大小"误用 ✗。
+**下一步（写死 ✓，一次做完 ✓）** ✓：
+① 新建 `crates/yanshi-core/src/deflate.rs` ✓，把 `deflate_fixed` / `inflate_raw` / zlib 包装搬过去 ✓
+  （连它们自己的测试一并搬 ✓，`png.rs` 改为**引用** core ✓，`png.rs` 的公开 API 保持不变 ✓ ⇒ 上层无感 ✓）；
+② `FsBlobStore::put` ⇒ 写 `zlib` 流 ✓（先 `deflate_fixed` ✓，不划算就 `zlib_stored` ✓）；
+③ `FsBlobStore::get` ⇒ 读文件后 `zlib_decompress` ✓；**解不开就报错** ✗（绝不把垃圾当数据返回 ✗）；
+④ 判据（能红 ✓）：**同一份 1 MiB 重复像素** 落盘 ≤ 25% ✓、`get` 往返**逐字节一致** ✓、
+  **已压过的数据不膨胀**（≤ 明文 + 16 字节 ✓）、以及**旧包/新包体积对比**（用用户那个 32 MB 的包同构数据 ✓ ⇒ ≥4 倍 ✓）。
