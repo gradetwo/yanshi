@@ -15733,3 +15733,42 @@ if (undo) undo.disabled = undoCount === 0;
 2. **`fill_region(texture: impasto)` 是重活** ✗ —— 厚涂肌理需要**独立的笔触合成/高度图** ✓，
    不是"调用现有落笔几次"能得到 ✓ ⇒ 建议**先做 `gradient_blend` / `scatter_strokes`**（当天可用 ✓），
    `impasto` 单独排期 ✓。
+
+### 🧱 第 86 轮：`gradient_blend` 的**实现形状已读准** ✓（本轮未落地 ✗ —— python 字符串被生命周期单引号截断 ✓）
+
+**读到的原文（照抄即可 ✓）** ✓：
+```rust
+    ToolSpec {
+        name: "gradient_fill",
+        profile: Profile::Core,
+        summary: "…",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("from", Object, true, "起点色 {r,g,b,a}（0..255）"),
+            …
+        ],
+    },
+
+fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let from = parse_color_arg(args.get("from"), "from")?;
+    let kind = optional_str(args, "kind").unwrap_or_else(|| "linear".to_string());
+    let (canvas_width, canvas_height) = ctx.workspace.document(&ctx.doc_id)…
+```
+**实现决定（关键 ✓，避免碰渲染内部 ✓）** ✓：`gradient_blend` **直接调用同模块的 `write_brush_stroke(ctx, &stroke_args)`** ✓
+（逐笔 ✓）⇒ 于是它拿到的是**与手画完全相同**的落笔实现 ✓（不是"另一套笔触"✗），
+而且**不需要**读 `yanshi-render`/门面那一层 ✓ ⇒ 风险最小 ✓。
+**形状** ✓：`{layer_id, brush, points: [[x,y,pressure]], size, color: {r,g,b,a}, smooth}` ✓
+（与查看器发给 MCP 的同参 ✓：`colorCss()` 回 `{r,g,b,a}`（0..255）✓）。
+**接线 5 处** ✓：① `ALL_TOOLS` 规格（`Profile::Core` ✓，参数 `layer_id/from/to/brush/size/steps/smooth` ✓）；
+② `dispatch` 加分支 ✓；③ `write_gradient_blend` ✓（位置+颜色双插值 ⇒ 逐笔 `write_brush_stroke` ⇒
+返回 `{ok, strokes, first_color, last_color, object_ids}` ✓ —— **判据要断言的三样正是它们** ✓）；
+④ `TOOL_EXAMPLES` 一条 ✓；⑤ `docs/tools.md` 计数（**core 59 → 60、全部 115 → 116** ✓，以判据算出的数为准 ✓）。
+**本轮的两个操作教训（都已入档 ✓）** ✓：
+1. **python heredoc 里写 Rust 生命周期会炸** ✗ —— `&mut ToolContext<'_)` 里的**单引号**把 python 字符串截断 ✓
+   ⇒ 从此**含 `'_'` 的 Rust 片段一律用 python 的双引号字符串** ✓（或先写 `'` ✓）；
+2. 我那次尝试里还**误写了两遍 `color` 构造** ✗（第一遍残留成"半成品"✓）⇒ 落地时要**只留一遍** ✓：
+   `{r,g,b,a}` 四通道分别插值 ✓，并用它同时算出 `first_color`/`last_color` 供判据断言 ✓。
+**下一轮（写死 ✓，一次做完 ✓）** ✓：按上面 5 处落地 ⇒ 跑 `scripts/tool-gradient-blend.mjs`（应**绿** ✓）
+⇒ `fmt`/`clippy`/`test` 全绿（**792 + 1 条判据脚本不进套件 ✗**，故 cargo 数不变 ✓，但 `docs/tools.md` 计数要同步 ✓）⇒ 英文提交 + 推送 ✓。
