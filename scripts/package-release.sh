@@ -92,11 +92,13 @@ target_installed() {
   for candidate in "$HOME"/.rustup/toolchains/*/lib/rustlib/"${want}"; do
     [ -d "${candidate}" ] && return 0
   done
-  # 找不到 rustup 工具链目录 ⇒ **不敢断定"没装"** ✗ ⇒ 交给构建去回答 ✓（宁可试一次 ✓）。
-  case "${HOME}" in
-    *) [ -d "${HOME}/.rustup/toolchains" ] || return 0 ;;
-  esac
-  return 1
+  # 有 rustup 目录、却没有这个目标 ⇒ 明确没装（调用方可以拒绝并给出安装命令）。
+  [ -d "${HOME}/.rustup/toolchains" ] && return 1
+  # 没有 rustup（系统 cargo / Homebrew rust 等）⇒ 无法判断。
+  # 老版本这里回 0（当成已装），调用方于是放心去构建，结果是后面才炸，
+  # 而且报的是误导性错误（看着像工具链坏，其实是根本没装）。
+  # 现在回 2：调用方一律按没装处理，宁可早拒绝并给安装建议，也不要晚炸。
+  return 2
 }
 
 # **"静态是默认"只是 Linux 的规矩** ✓（为的是不把构建机的 glibc 带进包里 ✓）；
