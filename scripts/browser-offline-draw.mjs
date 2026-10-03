@@ -158,6 +158,14 @@ await report("在线");
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE);
+// **抬手之后按 100ms 取样** ✓（第 41 轮定 ✓）：判定墨是"**从未出现**"✗ 还是"**出现后被抹掉**"✗。
+const inkSamples = [];
+for (let step = 0; step < 6; step += 1) {
+  const sample = await evaluate(INK);
+  inkSamples.push({ ink: sample.ink, board: (sample.parts.find((p) => p.id === "board") || {}).ink, overlay: (sample.parts.find((p) => p.id === "overlay") || {}).ink });
+  await sleep(100);
+}
+console.log("  离线抬手后取样（每 100ms）：" + JSON.stringify(inkSamples));
 await sleep(1800);
 const after2 = await evaluate(INK);
 const deltaOffline = after2.ink - before2.ink;
