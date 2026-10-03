@@ -12474,3 +12474,26 @@ set_viewport / evict_outside_viewport / set_memory_limit / memory_usage / stats_
 3. 随后退休 `crates/yanshi-brush-wasm` ✓ + `GET /brush-module.wasm` ✓ + 打包那一步 ✓；
 4. **判据**（双向 ✓）：拖动中途**画布出现预览** ✓ + 抬手后 **与服务端权威像素一致** ✓
    （后者已有现成判据 ✓：`scripts/browser-live-brush.mjs` 的 ④d 重载校验 ✓）。
+
+### ✅ 第 200 轮：迁移**契约齐了** ✓✓ —— 而且是"同一内核 + 权威重渲染" ✓（我追的那类 bug 在这条路上天然没有 ✓）
+
+**读到的契约** ✓（`crates/yanshi-wasm/src/lib.rs:138-190` ✓ + `kernel.rs:401-419` ✓）：
+| 调用 | 返回 | 用途 |
+|---|---|---|
+| `extend_preview_stroke(json)` ✓ | `{ok, dirty_bbox, has_preview}` ✓ | **每帧**：只失效"新增笔段"的 tile ✓ |
+| `commit_preview(atom_json)` ✓ | `{ok, report:{seq, dirty_bbox, dirty_tiles, head}}` ✓ | 落笔提交 ✓ |
+| `clear_preview()` ✓ | `{ok, dirty_bbox, has_preview:false}` ✓ | 收笔/取消 ✓ |
+| `render_region_rgba(x,y,w,h)` ✓ | `Vec<u8>` ✓ | 把 `dirty_bbox` 画上去 ✓ |
+**两条决定性事实** ✓：
+1. `kernel.rs:406-407` 用的是 **`yanshi_render::brush::{StrokeGeometry, BrushSpec}`** ✓ ⇒ **与服务端同一套笔刷类型** ✓（不是我又写一遍的 ✗）；
+2. `kernel.rs:411-414` 的注释指明了设计口径 ✓：预览是**追加式** ✓、只失效**新增笔段**的 tile ✓、
+   **像素仍由权威状态重渲染** ✓ ⇒ **不依赖任何"增量盖章"** ✓ ⇒
+   我前面追了几十轮的"本地增量与服务端不一致" ✗ **在这条路上天然不存在** ✓✓。
+**因此"退休第二份实现"变成了一件**机械**的事** ✓（算法 ✓）：
+* 拖动每一帧 ✓：`payload`（查看器**已经在构造** ✓，就是 6264 那处给 `brush_stroke` 的那份 ✓）
+  ⇒ 交给 `state.kernel.extend_preview_stroke(JSON.stringify(payload))` ✓
+  ⇒ 取 `dirty_bbox` ✓ ⇒ `render_region_rgba` ✓ ⇒ 画到 `#board` ✓；
+* 抬手 ✓：`commit_preview(atom)` ✓ **或**提交服务端 ✓ —— **只能留一条** ✗；
+* 随后退休 `yanshi-brush-wasm` ✓ + `GET /brush-module.wasm` ✓ + 打包那一步 ✓。
+**仍未做** ✗（如实 ✓）：这次改动**碰主路径** ✓，而我的上下文已不足以安全落地它 ✓ ⇒
+下一轮**只做它** ✓，判据**双向** ✓（拖动中画布出现预览 ✓ + 抬手后与服务端一致 ✓，后者已有现成校验 ✓）。
