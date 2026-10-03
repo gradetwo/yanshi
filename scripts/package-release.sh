@@ -754,35 +754,35 @@ fi
 #     **明说"跳过这道断言"** ✓ 并给出自测建议 ✓（**而不是判打包失败** ✗）。
 reported=""
 if [ "${target_triple}" = "${host_triple}" ]; then
+  # **同平台** ⇒ 运行一次取版本 ✓（最可靠 ✓）。
   reported="$(timeout 10 "$stage/bin/yanshi-serve" --version 2>/dev/null || true)"
+else
+  # **交叉：既不运行、也不去二进制里读** ✗ —— 用户明确要求 ✓：
+  # "**直接从代码库中去就好了，不要从 binary 中取**" ✓。
+  # 理由 ✓：commit 的**权威来源是代码库** ✓（上面 `$commit` 就是 `git rev-parse --short HEAD` ✓）；
+  # 从二进制里 grep ✗ 既不可靠（实测交叉包里取到**空值** ✓）又会因为"空 != 包名"而**误判失败** ✗
+  #（用户实测症状：日志说"跳过…" ✗，`make` 却仍 `Error 1` ✓）。
+  reported=""
 fi
 if [ -z "${reported}" ]; then
-  reported="$(grep -aoE 'commit [0-9a-f]{7,40}(-dirty)?' "$stage/bin/yanshi-serve" 2>/dev/null | head -1 || true)"
-  if [ -z "${reported}" ]; then
-    echo "--> 目标是 ${target_triple}、宿主是 ${host_triple} ⇒ **不在宿主上运行它取版本** ✓（交叉运行本来就做不到 ✓）"
-    echo "    并且从文件里也没读到内嵌 commit ⇒ **跳过**「包名 vs 二进制 commit」这道断言 ✓"
-    echo "    ⇒ 请在**实际目标机**上跑一次验证 ✓：./yanshi-serve --version ✓（名字里已带 commit ✓）"
-  else
-    echo "--> 交叉包：从**文件**里读到内嵌 commit（未执行 ✓）：${reported}"
+  echo "    ⓘ 交叉包（${target_triple}）⇒ **跳过**「包名 vs 二进制 commit」断言 ✓"
+  echo "      包名里的 commit 来自**代码库** ✓：${commit}（git rev-parse --short HEAD ✓）"
+  echo "      请在**实际目标机**上跑一次自测 ✓：./yanshi-serve --version"
+else
+  reported_commit="$(printf '%s' "$reported" | grep -oE 'commit [^,)]+' | sed 's/commit //')"
+  # 包名里的 commit 可能带 `-dirty` ✓（构建时工作区有未提交改动 ✓）⇒ 比较时去掉它 ✓。
+  baked="$(printf '%s' "$commit" | sed 's/-dirty$//')"
+  seen="$(printf '%s' "$reported_commit" | sed 's/-dirty$//')"
+  if [ "$seen" != "$baked" ]; then
+    echo "    ✗ **包名与二进制内的 commit 不一致** ⇒ 打包失败" >&2
+    echo "      包名:     ${baked} ✓" >&2
+    echo "      二进制:   ${seen} ✗" >&2
+    echo "      多半是二进制**没有重新编译** ✗（改了源码却复用了旧产物 ✓）。" >&2
+    echo "      处理：先跑 cargo build --release -p yanshi-http -p yanshi-mcp（或删掉 target/release 里的对应产物 ✓），再重打 ✓。" >&2
+    exit 1
   fi
+  echo "    已断言：二进制内 commit（${seen}）与包名一致 ✓"
 fi
-reported_commit="$(printf '%s' "$reported" | grep -oE 'commit [^,)]+' | sed 's/commit //')"
-# **读不到就跳过比较** ✓（交叉包里这是正常情形 ✓）—— 只在**读到了**的时候才断言 ✓。
-if [ -z "${reported_commit}" ]; then
-  echo "    （本次无法取得二进制内嵌 commit ⇒ 跳过一致性断言 ✓）"
-fi
-# 包名里的 commit 可能带 `-dirty` ✓（构建时工作区有未提交改动 ✓）⇒ 比较时去掉它 ✓。
-baked="$(printf '%s' "$commit" | sed 's/-dirty$//')"
-seen="$(printf '%s' "$reported_commit" | sed 's/-dirty$//')"
-if [ "$seen" != "$baked" ]; then
-  echo "    ✗ **包名与二进制内的 commit 不一致** ⇒ 打包失败" >&2
-  echo "      包名:     ${baked} ✓" >&2
-  echo "      二进制:   ${seen} ✗" >&2
-  echo "      多半是二进制**没有重新编译** ✗（改了源码却复用了旧产物 ✓）。" >&2
-  echo "      处理：先跑 cargo build --release -p yanshi-http -p yanshi-mcp（或删掉 target/release 里的对应产物 ✓），再重打 ✓。" >&2
-  exit 1
-fi
-echo "    已断言：二进制内 commit（${seen}）与包名一致 ✓"
 
 echo "--> 打包 tar.gz 与校验和"
 (cd "$out" && tar -czf "$name.tar.gz" "$name")
