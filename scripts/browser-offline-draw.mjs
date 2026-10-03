@@ -26,6 +26,14 @@ socket.addEventListener("message", (event) => {
   } else if (m.method === "Log.entryAdded") {
     evidence.push("log." + m.params.entry.level + ": " + String(m.params.entry.text).slice(0, 200));
   } else if (m.method === "Network.loadingFailed") {
+  } else if (m.method === "Network.responseReceived") {
+    // **不扰动的观测** ✓（第 55 轮定 ✓）：只记网络流水，不替页面发请求 ✓。
+    const response = (m.params && m.params.response) || {};
+    if (String(response.url || "").includes("brush-module.wasm")) {
+      evidence.push("module-response: status=" + response.status + " fromDisk=" + !!response.fromDiskCache +
+        " fromSW=" + !!response.fromDiskCache + " encoded=" + (m.params.response && m.params.response.encodedDataLength) +
+        " mime=" + response.mimeType);
+    }
     evidence.push("request-failed: " + String(m.params.errorText) + " (type " + m.params.type + ")");
   }
 });

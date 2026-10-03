@@ -15019,3 +15019,25 @@ if (navigator.onLine !== false && !liveLastRegion) { … void resync()… }
 **下一轮（写死 ✓，换成"不扰动"的观测 ✓）** ✓：用 **CDP 网络事件**看 `/brush-module.wasm` 的那次请求 ✓
 （`responseReceived` 的 `fromDiskCache/fromServiceWorker` 与 `encodedDataLength` ✓）——
 它**在网络层记流水** ✓、不替页面发请求 ✓ ⇒ 不扰动 ✓ ⇒ 再对比**首访/复访**那一笔的成败 ✓。
+
+### 🎯 第 56 轮：**不扰动观测一次命中** ✓✓ —— "能画的那一跑"用的是**缓存那条路** ✓
+
+**做法** ✓：改用 **CDP `Network.responseReceived`** 记流水 ✓（**不替页面发请求** ✓ ⇒ 不扰动 ✓），
+只筛 `/brush-module.wasm` ✓ ⇒ 首访/复访各跑一次 ✓：
+```
+首访：module-response status=200 **encoded=99**      mime=application/wasm ⇒ 离线增量 **+1845** ✓
+复访：module-response status=200 **encoded=268897**  mime=application/wasm ⇒ 离线增量 **+8** ✗
+```
+**结论（关键 ✓）** ✓：**能画的那一跑，门面只"送达"了 99 字节** ✓
+⇒ 即**没有真的把 268 KB 的 body 传一遍** ✓ ⇒ 说明那次是**从缓存里取到的** ✓
+（`encodedDataLength` 极小的典型形态 ✓）；而**不能画的那一跑是 268897 字节的完整网络响应** ✗。
+⇒ 换句话说 ✓：**"缓存那条路能画 ✓，网络那条路在离线时不行 ✗"** ——
+这与我此前把门面塞进 SW 缓存 / 页面 Cache API 的努力**方向一致** ✓，
+但**加载函数本身仍可能先走网络** ✗（`fetch("/brush-module.wasm")` ✓ ⇒ 离线时它失败 ✗ ⇒ 拿不到 ✓）。
+**下一轮（写死 ✓，小改动 ✓）** ✓：让 `loadLocalBrushModule()` **先读缓存** ✓
+（`caches.match("/brush-module.wasm")` ✓ 命中就直接实例化 ✓；未命中再退回网络 ✓）
+⇒ 离线时**必然命中**（缓存里已经有它 ✓ —— 那条断言已绿 ✓）⇒ 本地预览可稳定工作 ✓。
+**顺带纠一处我自己的探针小错** ✓：打印里我把 `fromSW` 误写成了 `fromDiskCache`（同一个字段打了两次 ✗）
+⇒ 不影响本轮结论（结论基于 `encodedDataLength` 的量级差异 ✓），但记下来 ✓（下次别再抄错 ✓）。
+**规矩再次见效 ✓**：**观测必须不扰动** ✓ —— 上一轮用页面自己 `fetch` 去"看"✗ ⇒ 把结论看没了 ✗；
+这一轮只记流水 ✓ ⇒ 一次就看出"哪条路是好的" ✓。
