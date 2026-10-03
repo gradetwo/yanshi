@@ -115,6 +115,38 @@ const report = async (label) => {
   console.log("  " + label + "阶段统计：" + JSON.stringify(await evaluate(STATS)));
   evidence.length = 0;
 };
+// **恢复两步前置** ✓（第 13 轮实测过：打开笔刷库后 `#brush` 才有 199 个非空选项 ✓；
+// 我后续重构把它们弄丢了 ✗ ⇒ 前置不成立 ⇒ `.myb` 路径永不进入 ✓ ⇒ 连续几轮误判成产品问题 ✗）。
+const OPEN_LIBRARY = `(() => {
+  const search = document.getElementById("brushSearch");
+  if (!search) return { via: null, why: "没有 #brushSearch" };
+  search.value = "a";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  return { via: "brushSearch" };
+})()`;
+console.log("  打开笔刷库：" + JSON.stringify(await evaluate(OPEN_LIBRARY)));
+await sleep(1500);
+const PICK_FIRST = `(() => {
+  const node = document.querySelector("[data-brush]");
+  if (!node) return { clicked: false };
+  node.click();
+  return { clicked: true, name: node.getAttribute("data-brush") };
+})()`;
+console.log("  点第一支笔：" + JSON.stringify(await evaluate(PICK_FIRST)));
+await sleep(800);
+// **前置硬断言** ✓：没有可选笔 ⇒ 判据**无效** ✗（不许静默继续 ✗ —— 这正是之前的病根 ✓）。
+const BRUSH_OPTIONS = `(() => {
+  const select = document.getElementById("brush");
+  if (!select) return { total: -1, nonEmpty: -1 };
+  return { total: select.options.length, nonEmpty: Array.from(select.options).filter((o) => o.value).length };
+})()`;
+const brushOptions = await evaluate(BRUSH_OPTIONS);
+console.log("  #brush 选项：" + JSON.stringify(brushOptions));
+if (!(brushOptions.nonEmpty >= 1)) {
+  console.log("  ✗ 判据无效：#brush 里没有非空选项 ⇒ 本跑测不到 .myb 路径（先修判据，别怪产品）");
+  process.exit(1);
+}
+
 // ① 在线：画一笔，记录**这一笔自己的增量**
 const before1 = await evaluate(INK);
 const online = await evaluate(STROKE);
