@@ -12028,3 +12028,31 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
         ObjectType::Path => "path",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // 裸名 `ALL_TOOLS` 在本模块里解析不到 ⇒ 必须显式引进来（第 52 轮实测）。
+    use super::ALL_TOOLS;
+
+    /// **`brush_preview` 的参数面必须覆盖它实现里真正会读的名字**。
+    ///
+    /// 实测报错原话：`brush_preview 不接受参数 hardness（拼写错误？）；可用参数：brush, si…`
+    /// ⇒ 实现里读 `opacity`/`hardness`，而参数面里没有 ⇒ 调用方只能猜。
+    /// 天生能红：从 `params` 里删掉任何一个名字，这个测试立刻失败。
+    #[test]
+    fn brush_preview_surface_covers_the_settings_its_implementation_reads() {
+        let spec = ALL_TOOLS
+            .iter()
+            .find(|tool| tool.name == "brush_preview")
+            .expect("笔刷预览这个工具应当在清单里");
+        let declared: Vec<&str> = spec.params.iter().map(|parameter| parameter.name).collect();
+        for needed in [
+            "brush", "size", "color", "points", "color_to", "smooth", "opacity", "hardness",
+        ] {
+            assert!(
+                declared.contains(&needed),
+                "brush_preview 的实现会读 {needed}，而参数面里没有 ⇒ 调用方会收到「不接受参数 {needed}」并且无从知道它可以覆盖它；declared = {declared:?}"
+            );
+        }
+    }
+}
