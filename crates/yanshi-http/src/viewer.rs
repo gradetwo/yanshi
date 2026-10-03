@@ -5759,10 +5759,22 @@ board.addEventListener("pointerdown", (event) => {
   // ⇒ 由**服务端的 Hokusai 引擎**落笔 ✓（这才是那 201 支笔该走的路 ✓）。
   const selectedBrushName = ($("brush") || {}).value || "";
   const brushOwnsTheStroke = state.tool === "brush" && selectedBrushName !== "";
+  // **③b（拖动期就用真笔刷）本轮试过 ⇒ 回退** ✗（如实 ✓）：
+  // **服务端那半边是通的** ✓（实测：拖动中提交了 **2 帧** ✓、抬手后对象**仍只有 1 个** ✓），
+  // **但画布拿不到新像素** ✗ —— 刚提交后服务端那一次 `render_region` 仍返回**旧的/空白**图 ✓
+  //（与第 44 轮"服务端空白却盖在有墨的画布上"同一个缺陷 ✓），
+  // 加了"隔 250ms 再补、最多 4 次"也没能让画布出现墨 ✓（实测拖动中画布墨 **0** ✗）。
+  // ⇒ 按纪律**不发布看不见效果的行为** ✗（多提交却不显示 = 白花服务端力气 ✓），
+  // 把这条**整段撤回** ✓，只留下面这条**已被探针验证过**的修复 ✓；
+  // **下一轮的入口** ✓：先把"提交后短时间取图返回旧图"那个缺陷修掉 ✓
+  //（判据：提交后立刻取图与 500ms 后取图**必须逐字节相同** ✓ —— 一量就知道是谁的锅 ✓）。
   pendingStroke = (kernelReady() && !brushOwnsTheStroke)
     ? { atomId: ulid(), objectId: "obj_" + ulid(), layerId: state.layerId, tool: state.tool, base: 0 }
     : null;
 });
+
+/// **（这里原本是"拖动期就用真笔刷"的实现 ✓，本轮**试过并撤回** ✗ —— 见 `pointerdown` 里那段说明 ✓。）**
+let liveStroke = null;
 
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
@@ -6746,6 +6758,11 @@ window.yanshi = {
         // 本轮验收"滚轮不许改缩放"时，探针必须有**可读的事实** ✓，否则会写出**恒真**的判据 ✗。
         zoom: state.displayScale || 1,
         userZoom: state.zoom || 1,
+        liveStroke: liveStroke
+          ? { objectId: liveStroke.objectId, frames: window.yanshiStats.liveStrokeFrames || 0,
+              errors: window.yanshiStats.liveStrokeErrors || 0,
+              started: window.yanshiStats.liveStrokeStarted || 0 }
+          : null,
         // **补画与"要不要服务端像素"都要能读** ✓ —— 本轮两条症状的判据全靠它 ✓
         //（"闪一下"的可测代理 = `lastServerBlitArea` 是不是整视口 ✓）。
         needsServerPixels: !!needsServerPixels,
@@ -6797,10 +6814,18 @@ window.yanshi = {
     setBrush(name) {
       const select = $("brush");
       if (!select) return false;
-      if (select.options.length <= 1) void refreshBrushOptions();
-      select.value = name || "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
+      // **先等列表载入再设值** ✗（本轮实测 ✓）：列表还没载入时 `select.value = "spray"` 会**静默失败** ✓
+      //（那一项还不存在 ⇒ 值停在 "" ✓），而调用方以为换好了 ✓ —— 与图层下拉那条**同一个坑** ✓
+      //（那里也是"先设值、后重建选项 ⇒ 被覆盖回旧值"✗）。回调返回 Promise ✓ 让调用方可以等 ✓。
+      const apply = () => {
+        select.value = name || "";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      };
+      if (select.options.length <= 1 && (name || "")) {
+        return refreshBrushOptions().then(apply).catch(() => apply());
+      }
+      return apply();
     },
     /// **切换"收藏当前笔刷"** ✓（目标 ⑧-1 ✓）—— 供标记旁那段小脚本调用 ✓
     ///（它处在全局作用域 ✓，只能碰 `window.yanshi` ✓ —— 这是上一轮三次静默失败换来的规矩 ✓）。
