@@ -13470,3 +13470,25 @@ tool-param-parity     <base> <token>                ⇒ exit=1 ✗
 
 **打包** ✓：他们测的 `222e245`/`9ac8d48` **早于** 我的修复 ✓ ⇒ 真凶（动态分支忽略 `--target` ✗）
 在 **`41bea7c`** 修好 ✓、静默失败在 **`b27efac`** 修好 ✓ ⇒ **pull 到最新**即可 ✓。
+
+### 🎯 第 247 轮：**按 MCP 路径实测** ✓✓ —— P0-1 **被推翻** ✓、P0-2 **确认可用** ✓（报告的 ❌/⚠️ 是**看错了响应形状** ✗）
+
+**P0-1（预览）⇒ 推翻** ✓（用 stdio 直接驱动 `target/debug/yanshi-mcp` ✓）：
+```
+brush_preview + include_image ⇒ content 类型: ['text', 'image'] ✓✓
+  是否有 image content block: True ✓✓
+render_region + include_image ⇒ content 类型: ['text', 'image']
+```
+⇒ **base64 在 `content[].type == "image"` 这个独立块里** ✓ —— 那是 **MCP 规范的正确形态** ✓；
+报告说"不返回 base64、只给 `yanshi://blob/...`" ✗ ⇒ 是因为**只读了 text 块** ✗（text 里当然只有地址 ✓）。
+⇒ **结论** ✓：不是实现缺失 ✗，也不是 bug ✗ ⇒ 是**调用方/客户端没有消费 image 块** ✓
+（可用 `--no-inline-images` 关掉 ✓ —— 报告自己在 `--help` 里看到了这个开关 ✓）。
+**P0-2（多轮续画）⇒ 确认可用** ✓（跨会话实测 ✓：会话 A 画一笔 ⇒ 结束 ⇒ **新会话**同 id 再 `new_document` ✓）：
+```
+new_document 回复: {"created":false,"doc_id":"p2","height":240,"note":"该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_
+list_objects 回复: {"count":1,"objects":[{"bbox":[2.0,2.0,66.0,46.0],"current_version":"01M40YSS9JRP6FZYK7R2X84001","la
+判据：同 id 可打开 ✓｜
+      之前那笔**还在** ✓ ✓
+```
+**报告里两条 404** ✓（上一轮已核 ✓）：`/brand/svg/icon-light.svg` 与 `/brush-previews/index.json` **实测都是 200** ✓
+⇒ 他们那次应是**服务端没找到 `assets/`** ✓；而我另找到**真 404**：`/brush-previews/2B_pencil.png` ✗（真名带 `.myb` ✓）。
