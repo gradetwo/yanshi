@@ -627,9 +627,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          ⇒ 和"标注"一样，是"**工具就绪、用户够不到**" ✓。这一块补上入口 ✓。 -->
     <div class="card" data-panel="paint">
       <h2>对象</h2>
-      <div class="hint">勾选对象后可「实例化」「编组」「变换」✓（实例与 master 联动 ✓，设计 9.1 ✓）。<br />
-        <b>「重采样」只作用于光栅对象</b> ✓（导入的图片、PSD 合成图 ✓）—— 手画的笔迹是 `stroke` ✗，
-        服务端会明确拒绝并告知类型 ✓（先用「转为形状」或改为导入图片 ✓）。</div>
+      <div class="hint"
+        title="勾选对象后可「实例化」「编组」「变换」（实例与 master 联动，设计 9.1）。「重采样」只作用于光栅对象（导入的图片、PSD 合成图）——手画的笔迹是 stroke，服务端会明确拒绝并告知类型（先用「转为形状」或改为导入图片）。">
+        勾选对象后可实例化 / 编组 / 变换
+      </div>
       <div class="toolbar">
         <button id="objectRefresh" type="button">刷新</button>
         <button id="objectInstance" type="button">实例化</button>
@@ -677,7 +678,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          回收**必须先勾确认** ✓（删除不可逆 ✓，与本项目"不做不可逆动作"一致 ✓）。 -->
     <div class="card" data-panel="diag">
       <h2>存储 / 维护</h2>
-      <div class="hint">孤儿是"上传过、但没有任何原子引用"的数据 ✓（设计 §6.3）；回收按 TTL 走 ✓。</div>
+      <div class="hint"
+        title="孤儿是「上传过、但没有任何原子引用」的数据（设计 §6.3）；回收按 TTL 走。">孤儿数据</div>
       <div class="toolbar">
         <button id="storageReport" type="button">统计</button>
         <button id="storageCollect" type="button">回收孤儿</button>
@@ -725,7 +727,8 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          笔刷铺底会留下笔触边缘与噪声 ✗，而渐变是纯函数 ✓（无边、无噪、可复现 ✓）。 -->
     <div class="card" data-panel="paint">
       <h2>渐变</h2>
-      <div class="hint">给当前图层填一层渐变 ✓（天空 / 底色 / 光照过渡 ✓）—— 确定性：同样的输入永远同样的像素 ✓。</div>
+      <div class="hint"
+        title="给当前图层填一层渐变（天空 / 底色 / 光照过渡）——确定性：同样的输入永远同样的像素。">填充当前图层</div>
       <label>起点 <input id="gradFrom" type="color" value="#fad6a5" /></label>
       <label>终点 <input id="gradTo" type="color" value="#3b5bdb" /></label>
       <label>类型 <select id="gradKind">
