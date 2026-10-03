@@ -15,10 +15,16 @@ const catalogue = await fetch(`${base}/api/tools`).then((r) => r.json());
 const tools = catalogue.tools || catalogue.data?.tools || [];
 if (!tools.length) { console.error("没取到工具清单 ✗"); process.exit(2); }
 const doc = "tp1";
-await fetch(`${base}/api/documents`, {
+// **必须用它自己创建文档时返回的 token** ✗ —— 旧版建了 `tp1` ✓ 却仍用**调用方传进来的 token**（属于别的文档 ✗）
+// ⇒ 服务端先报"token/文档不匹配" ✗ ⇒ "可用参数：…"提示永不出现 ⇒ **127 个全对不了账** ✓
+//（第 245/246 轮观察到的现象 ✓，真因就在这里 ✓）。
+const created = await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
-}).then((r) => r.json());
+}).then((r) => r.json()).catch(() => ({}));
+const probeToken = created.token || token;                 // 建不出来就退回调用方给的 ✓
+if (created.token) console.log("  已为对账文档 " + doc + " 取到专用 token ✓");
+else console.log("  ⚠ 未能为 " + doc + " 取到 token ⇒ 退回调用方那个（可能不匹配 ⇒ 会全判无效 ✗）");
 let checked = 0, mismatched = 0, unchecked = 0;
 const rows = [];
 for (const tool of tools) {
@@ -45,14 +51,24 @@ for (const tool of tools) {
   // 旧版会**同时**塞一份"像样的参数" ✗ ⇒ 那些参数先撞上别的校验（例如 `layer_id: "x"` 不存在 ✗）
   // ⇒ 未知参数提示不出现 ⇒ **127 个全被判"未能对账"** ✓（第 245 轮观察到的现象 ✓）。
   // ⇒ 这里保持"**只发未知参数**" ✓（这也是它注释里写的初衷 ✓）。
-  const response = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {
+  const response = await fetch(`${base}/api/tools?doc=${doc}&token=${probeToken}`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ tool: name, arguments: argumentsForProbe }),
   }).then((r) => r.json());
   const detail = (response.context || {}).detail || "";
   const match = detail.match(/可用参数：(.+)$/);
   if (!match) { unchecked += 1; continue; }
-  const accepted = new Set(match[1].split(/[,，、]/).map((s) => s.trim()).filter(Boolean));
+  // **先把尾注切掉** ✗ —— 服务端那句是
+  // `…；可用参数：a, b, c；框架级参数：doc_id, actor, session` ✓，
+  // 旧版只按 `[,，、]` 分隔 ✗ ⇒ **最后一个参数名会粘上 `；框架级参数：…`** ✗
+  // ⇒ 于是 127 个工具全被误报成"实现收了但没声明" ✓（见第 247 轮 ✓）。
+  const acceptedText = match[1].split(/[；;]\s*框架级参数/)[0];
+  // **"无"不是一个参数名** ✗ —— 工具不收任何参数时服务端会说 `可用参数：无` ✓，
+  // 旧版把它当名字 ⇒ 13 个工具被误报成不一致 ✓（见第 247 轮 ✓）。
+  const accepted = new Set(
+    acceptedText.split(/[,，、]/).map((s) => s.trim())
+      .filter((name) => name && name !== "无" && name !== "none"),
+  );
   declared.delete("__probe_unknown__");
   const missing = [...accepted].filter((p) => !declared.has(p));       // 实现收、声明没有
   const extra = [...declared].filter((p) => !accepted.has(p));         // 声明有、实现不收
