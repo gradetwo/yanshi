@@ -1536,12 +1536,62 @@ fn internal(detail: &str) -> Response {
 // WebSocket
 // ---------------------------------------------------------------------------
 
+/// **这个 `Origin` 能不能接受** ✓（用于 WebSocket 升级的跨站防护 ✓，见 `handle_websocket`）。
+///
+/// 放行条件（任一 ✓）：① `Origin` 的 host 是**本机**（`localhost` / `127.x` / `::1` ✓）；
+/// ② 与本请求 `Host` 头的 host **一致**（同源页面 ✓）。其余一律拒 ✗。
+fn origin_is_acceptable(origin: &str, request: &Request) -> bool {
+    let host_of = |value: &str| -> Option<String> {
+        let after_scheme = value.split("://").nth(1).unwrap_or(value);
+        let authority = after_scheme.split('/').next().unwrap_or("");
+        let host = authority
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(authority);
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        if host.is_empty() {
+            None
+        } else {
+            Some(host.to_owned())
+        }
+    };
+    let Some(origin_host) = host_of(origin) else {
+        return false;
+    };
+    let loopback =
+        origin_host == "localhost" || origin_host == "::1" || origin_host.starts_with("127.");
+    if loopback {
+        return true;
+    }
+    match request.header("host").and_then(host_of) {
+        Some(request_host) => request_host == origin_host,
+        None => false,
+    }
+}
+
 fn handle_websocket(
     state: Arc<ServerState>,
     request: Request,
     mut writer: TcpStream,
     mut reader: BufReader<TcpStream>,
 ) -> std::io::Result<()> {
+    // **跨站 WebSocket 必须拒绝** ✓（第三方代码审计 #9：升级处理从不看 `Origin` ⇒ CSWSH）。
+    // 严重度如实说明 ✓：下面**已有 token 鉴权**（`authorize` ✓）⇒ 攻击者拿不到令牌仍进不来 ✓
+    //（所以审计"静默窃取画布"的说法偏重 ✗）；但令牌是放在 **URL** 里的 capability ✓
+    //（会进浏览历史 / 日志 / Referer ✓）⇒ **再加一道 Origin 白名单是划算的** ✓。
+    // 规则（够用且可解释 ✓）：**没有 `Origin` ⇒ 放行** ✓（非浏览器客户端：探针 / curl / MCP ✓ 本就没有 ✓）；
+    // **有 `Origin` ⇒ 其 host 必须是本机或与本服务自己的 `Host` 一致** ✓，否则 403 并说明原因 ✓。
+    if let Some(origin) = request.header("origin") {
+        if !origin_is_acceptable(origin, &request) {
+            return Response::from_error(&YanshiError::new(
+                ErrorCode::PermissionDenied,
+                ErrorContext::detail(format!(
+                    "拒绝来自 {origin} 的 WebSocket 升级：跨站连接会把画布暴露给别的网页。                     同源（或本机）页面可正常连接；非浏览器客户端不带 Origin 也会放行"
+                )),
+            ))
+            .write(&mut writer, false);
+        }
+    }
     let key = request
         .header("sec-websocket-key")
         .unwrap_or_default()

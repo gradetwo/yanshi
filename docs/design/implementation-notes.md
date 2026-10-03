@@ -11640,3 +11640,21 @@ Marker.myb    最大通道差 160 ⇒ **188** ✗，中途更浓（g 58 ⇒ 33.8
 并**在注释里写明这是一次"提示与行为脱节"的修复** ✓（审计 #6 的实质 ✓）。
 **如实备注** ✓：更硬的判据应当是**真浏览器**里滚一下 ⇒ 视口比例**必须不变** ✓
 （我有 CDP 配方 ✓，但这一轮预算不足 ⇒ 记为待办 ✓，不假装已经判过 ✓）。
+
+### 🔒 第 160 轮：审计 #9（WebSocket 缺 Origin 校验）**核实属实并修好** ✓（3/3 判据绿 ✓）
+
+**核实** ✓：`handle_websocket`（`server.rs:1539` ✓）只读 `sec-websocket-key` ✓，**从不看 `Origin`** ✓ ⇒ 属实 ✓。
+**但严重度要如实下调** ✗：升级处理里**已有 token 鉴权**（`authorize` ✓，`1560` 处 ✓）⇒
+攻击者拿不到令牌仍进不来 ✓ ⇒ 审计"静默窃取画布"的说法**偏重** ✓；真正的理由 ✓ 是
+**令牌放在 URL 里** ✓（会进浏览器历史 / 日志 / Referer ✓）⇒ 再加一道 Origin 白名单**划算** ✓。
+**改动** ✓：升级前加 `origin_is_acceptable(origin, request)` ✓：
+* **没有 `Origin` ⇒ 放行** ✓（探针 / curl / MCP 这类非浏览器客户端本就没有 ✓）；
+* **有 `Origin` ⇒ host 必须是本机（`localhost` / `127.x` / `::1`）或与本请求 `Host` 一致** ✓；
+* 否则 **403** ✓，并说明"跨站连接会把画布暴露给别的网页" ✓。
+**判据** ✓（新增 `scripts/server-ws-origin.mjs` ✓，裸 TCP 握手 ✓）实测：
+```
+✓ 跨站 Origin「http://evil.example」必须被拒 ⇒ HTTP/1.1 403 Forbidden ✓
+✓ 本机 Origin「http://127.0.0.1:<port>」必须放行 ⇒ HTTP/1.1 101 Switching Protocols ✓
+✓ 不带 Origin 必须放行 ⇒ HTTP/1.1 101 Switching Protocols ✓
+结论：WebSocket 跨站防护成立 ✓
+```
