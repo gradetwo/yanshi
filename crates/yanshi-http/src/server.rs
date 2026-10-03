@@ -1206,9 +1206,20 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
         return crate::http::not_found("这一份服务端没有配置资产目录（--assets-dir）");
     };
     let path = root.join("brushes").join(file);
+
     match std::fs::read(&path) {
         // `.myb` 就是 JSON ✓ ⇒ 报 `application/json` ✓（浏览器按文本读 ✓）。
-        Ok(bytes) => Response::bytes(200, "application/json; charset=utf-8", bytes),
+        Ok(bytes) => {
+            // **顺带告诉浏览器"这支笔会不会读画布"** ✓（第 68 轮定 ✓）：会读的**不能**本地预览 ✓
+            //（门面没有 base 输入 ⇒ 起点不同 ⇒ 预览会漂 ✗）。判定用**工具层那一个函数** ✓。
+            let reads_canvas = std::str::from_utf8(&bytes)
+                .map(yanshi_server::tools::myb_text_reads_the_canvas)
+                .unwrap_or(false);
+            Response::bytes(200, "application/json; charset=utf-8", bytes).with_header(
+                "X-Yanshi-Brush-Reads-Canvas",
+                if reads_canvas { "1" } else { "0" },
+            )
+        }
         Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", path.display())),
     }
 }

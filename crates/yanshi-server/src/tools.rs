@@ -10422,7 +10422,18 @@ fn stamp_stroke_from(
 /// 这条判断**不是省事** ✗，而是**正确性** ✓：喂了底图 ⇒ 落笔后 surface 里**整个区域**都有像素 ✓
 /// ⇒ 必须用掩膜把"没碰过的底图"剔掉 ✓（见 [`brush_coverage_mask`] ✓）。
 /// 绝大多数 `.myb` 笔刷不读画布 ✓ ⇒ 它们那条路连这个风险都没有 ✓。
-fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
+/// **`.myb` 文本会不会读画布** ✓ —— 给**没有 hokusai 依赖**的调用方（HTTP 层 ✓）用 ✓；
+/// 解析失败按 `false` 处理 ✓（那种笔刷反正也画不出来 ✓，由落笔路径自己报错 ✓）。
+pub fn myb_text_reads_the_canvas(text: &str) -> bool {
+    hokusai::myb::from_str(text)
+        .map(|brush| brush_reads_the_canvas(&brush))
+        .unwrap_or(false)
+}
+
+/// **这支笔刷会不会读画布** ✓（涂抹 / colorize / posterize / lock_alpha ✓）—— 公开出来，
+/// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
+/// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
+pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
     let value = |setting: hokusai::BrushSetting| brush.get(setting).base_value;
     value(hokusai::BrushSetting::Smudge) > 0.0
         || value(hokusai::BrushSetting::Colorize) > 0.0
