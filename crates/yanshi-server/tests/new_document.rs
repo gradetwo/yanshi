@@ -109,7 +109,8 @@ fn a_new_document_is_blank_and_recreating_replaces_it() {
         fresh_ink, 0,
         "新 id 的文档应当是干净画布（实测 {fresh_ink} 个墨点）"
     );
-    // ④ **同 id 再建 ⇒ 明确拒绝，并告诉调用方下一步** ✓（不会假装成功 ✗、也不会默默清空 ✗）。
+    // ④ **同 id 再建 ⇒ 语义是"打开它"** ✓（第三方 MCP 报告 P0-2 ✓：否则多轮续画走不通 ✗）；
+    //    **安全约束不变** ✓：打开**绝不清空**已有内容 ✓（见 ⑤）。
     let refused = {
         let mut ctx = context(&mut workspace);
         registry().call(
@@ -118,21 +119,23 @@ fn a_new_document_is_blank_and_recreating_replaces_it() {
             &json!({ "doc_id": "doc_new", "width": 320, "height": 240 }),
         )
     };
+    assert_eq!(refused["ok"], json!(true), "同 id 应当可打开：{refused}");
+    assert_eq!(refused["opened"], json!(true), "应当标记为打开：{refused}");
     assert_eq!(
-        refused["ok"],
+        refused["created"],
         json!(false),
-        "已打开的文档不该被悄悄清空：{refused}"
+        "不该被当成新建：{refused}"
     );
-    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    let note = refused["note"].as_str().unwrap_or_default();
     assert!(
-        detail.contains("doc_id"),
-        "应当告诉调用方换一个 doc_id：{detail}"
+        note.contains("打开") && note.contains("doc_id"),
+        "应当说明这是打开、以及要新画布就换 doc_id：{note}"
     );
     // ⑤ 原来那份文档**没被动过** ✓（"不会清空已存在的文档"这句必须是真的 ✓）。
     let still = inked(&mut workspace);
     assert_eq!(
         still, before,
-        "拒绝之后原文档必须原样（原来 {before}，现在 {still}）"
+        "打开之后原文档必须原样（原来 {before}，现在 {still}）"
     );
 }
 

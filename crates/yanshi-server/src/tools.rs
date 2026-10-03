@@ -9196,6 +9196,26 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         _ => json!({"r": 255, "g": 255, "b": 255, "a": 255}),
     };
     // **重建** ✓：同 id 已有文档时**覆盖**它 ✓ ⇒ 语义是"给我一块干净画布" ✓（用户的诉求正是这个 ✓）。
+    // **同 id 已存在 ⇒ 语义是"打开它"** ✓（第三方 MCP 实测报告 P0-2 ✓：
+    // "每次 MCP 新连接都是全新的 default 文档，之前的画接不回来" ✗ ⇒「今天画底色、明天接着细化」走不通 ✗）。
+    // 安全约束**不变** ✓：本工具**绝不清空**已有文档 ✓ —— "打开"就是不碰它的内容 ✓。
+    if ctx.workspace.document_mut(&doc_id).is_ok() {
+        let (existing_width, existing_height) = {
+            let document = ctx.workspace.document_mut(&doc_id)?;
+            let state = document.state();
+            (state.width, state.height)
+        };
+        return Ok(json!({
+            "ok": true,
+            "doc_id": doc_id,
+            "opened": true,
+            "created": false,
+            "width": existing_width,
+            "height": existing_height,
+            "session_document": ctx.doc_id,
+            "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
+        }));
+    }
     let mut request = crate::document::NewDocument::new(&doc_id, width, height);
     request.background = background;
     // **"已经有同 id 的文档"要给出下一步** ✓（本轮刚给"不存在"做过同样的事 ✓）：
