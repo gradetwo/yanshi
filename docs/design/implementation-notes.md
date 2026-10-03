@@ -12655,3 +12655,25 @@ assertion `left == right` failed: multiply 应当真的写进图层（实测 nor
    * **语义族**（#5 #9 #10 #11 #13 #14 ✓）：**改默认解析/让测试指名图层** ✗（不是改数字 ✓）；
    * **#3**：按已定选项去掉那条覆盖断言 ✓；
 2. 每改一批就 `--no-fail-fast` 跑一次 ✓ ⇒ **全绿才提交** ✓。
+
+### 🏁 第 208 轮：(3) 的**收官表** ✓✓ —— 剩余 10 条，每条都有文件:行 + 断言原话，且**无需改生产逻辑** ✓
+
+**做法** ✓：落**基线变体**（`layer_default` / `z -1` ✓）+ 我已有原话的计数族（`fold.rs` 顺序与级联 ✓、`seq.rs` ✓、`transport.rs:580` ✓、`fold_properties.rs` 覆盖断言 ✓）
+⇒ `--no-fail-fast` 跑一次 ✓ ⇒ 下面这张表**就是全部剩余** ✓（实测 ✓）：
+| # | 测试 | 文件:行 | 断言原话 / 要怎么改 |
+|---|---|---|---|
+| 1 | `every_supported_blend_mode_can_actually_be_set` ✓ | `blend_mode_validation.rs:121` ✓ | `left "normal"` vs `right "multiply"` ✗ ⇒ 该测试写的是"它自己解析出的那层" ✓ ⇒ **给它显式 `layer_id`** ✓（或让它先建层再用那一层的 id ✓） |
+| 2 | `closed_documents_report_their_real_counts` ✓ | `document_summary.rs:186` ✓ | "打开着：图层数" `2` vs `1` ✓ ⇒ 期望 `1 ⇒ 2` ✓ |
+| 3 | `list_and_summary_agree_on_live_counts…` ✓ | `document_summary.rs:277` ✓ | `(2,1)` vs `(1,1)` ✓ ⇒ 期望 `1 ⇒ 2` ✓ |
+| 4 | `the_document_summary_counts_live_entities_only` ✓ | `document_summary.rs:76` ✓ | `(Some(5), Some(12))` vs `(Some(4), Some(12))` ✓ ⇒ 图层 `4 ⇒ 5` ✓ |
+| 5 | `duplicating_a_layer_copies_its_objects_and_sits_directly_above` ✓ | `duplicate_layer.rs:78` ✓ | "初始自下而上：L1, L2" `["layer_default","L1","L2"]` vs `["L1","L2"]` ✓ ⇒ 期望里加上默认层 ✓ |
+| 6 | `a_missing_layer_with_no_layers_says_so_plainly` ✓ | `missing_reference.rs:98` ✓ | **测试前提"没有图层"已不成立** ✗ ⇒ 改成"**指向不存在的层**" ✓（名字也要改 ✓） |
+| 7 | `tool_layer_covers_core_workflow` ✓ | `service_flow.rs:1703` ✓ | `2` vs `1` ✓ ⇒ 图层计数 `1 ⇒ 2` ✓ |
+| 8 | `a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom` ✓ | `texture_background.rs:283` ✓ | "原来的作品层还该在最底" `Some("layer_default")` vs `Some("art")` ✓ ⇒ 现在**默认层才是最底** ✓ ⇒ 期望改成 `layer_default` ✓（或断言"art 在默认层之上" ✓） |
+| 9 | `kernel::tests::applies_atoms_incrementally_and_matches_full_fold` ✓ | `yanshi-wasm/src/kernel.rs:875` ✓ | `2` vs `1` ✓ ⇒ 图层计数 ✓ |
+| 10 | `kernel::tests::state_json_exposes_the_summary_used_by_the_editor` ✓ | `yanshi-wasm/src/kernel.rs:1217` ✓ | `Number(2)` vs `Number(1)` ✓ ⇒ 图层计数 ✓ |
+**结论（重要 ✓）** ✓：**10 条全部是"期望/测试前提"要更新** ✓ ——
+**没有一条**需要改生产代码的"默认取哪一层"逻辑 ✗（我先前的担心过重了 ✓）；
+唯一需要**设计判断**的是 #6（测试名与前提 ✗）与 #1（让测试**显式指名图层** ✓）⇒ 两者都是**局部改动** ✓。
+**下一轮（纯机械收官 ✓，不需要探索 ✓）** ✓：按上表 10 条一次改完（连同基线 ✓）⇒
+`cargo test --workspace --no-fail-fast` 跑到全绿 ✓ ⇒ 然后 `fmt` + `clippy` ✓ ⇒ **提交** ✓。
