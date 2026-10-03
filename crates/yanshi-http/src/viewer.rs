@@ -5067,7 +5067,10 @@ function connect() {
       //
       // **heavy 原子（`import_image`/`liquify`/`declare_head`…）本地内核应用不了** ✗ ——
       // 它们的像素要由服务端产出 ✓。此前的写法只在 `out_of_order`/`precondition_failed`
-      // 两种错误下 `resync()` ✗，其它失败（包括 heavy ✓）**什么都不做** ✓，
+      // **离线优先守卫** ✓：离线、或有未提交的本地预览 ⇒ **不重放** ✗（服务端此刻不权威 ✓）。
+      if (navigator.onLine !== false && !liveLastRegion) {
+        // 两种错误下 `resync()` ✗，其它失败（包括 heavy ✓）**什么都不做** ✓，
+      }
       // 于是画布永远拿不到这次改动 ✓ —— 症状正是"缩略图有内容、主画布空白" ✓
       //（用户实测的介质落笔与早先记录的刷新问题都是它 ✓）。
       // 修法：**本地内核应用不了的一律重新同步** ✓（拿服务端像素 ✓），heavy 直接走这条路 ✓。
@@ -5103,18 +5106,27 @@ function connect() {
             // **下一步** ✓：查 `blitServerBox` 为什么画不出东西 ✓（判据：同一块区域，
             // `blitServerBox` 与 `blitServerViewport` 画出来的墨量必须一致 ✓）；
             // 修好之后再把这里换成脏区 ✓ ⇒ 那才是"闪一下"的正解 ✓。
-            void resync().then(() => blitServerViewport());
+            // **离线优先守卫** ✓：离线、或有未提交的本地预览 ⇒ **不重放** ✗（服务端此刻不权威 ✓）。
+            if (navigator.onLine !== false && !liveLastRegion) {
+              void resync().then(() => blitServerViewport());
+            }
           }
         } else {
           // **任何**应用失败都重新同步 ✓（含"内核表示不了 heavy 内容"这种情况 ✓），
           // 绝不静默丢掉这次变更 ✗ —— 此前只在 `out_of_order`/`precondition_failed`
           // 两种错误下才 resync ✗，其它失败什么都不做 ✓，介质落笔因此永远画不出来 ✓。
-          // 注意本处理器**不是 async** ✗：只能用 `void resync()` ✓
+          // **离线优先守卫** ✓：离线、或有未提交的本地预览 ⇒ **不重放** ✗（服务端此刻不权威 ✓）。
+          if (navigator.onLine !== false && !liveLastRegion) {
+            // 注意本处理器**不是 async** ✗：只能用 `void resync()` ✓
+          }
           //（写 `await` 会让整段页面脚本语法错误 ✓，实测是内核迟迟不就绪、检查全线超时 ✗）。
           window.yanshiStats.resyncs += 1;
           // 重载内核 **之后**再补画服务端像素 ✓ —— 内核表示不了 heavy 内容 ✗，
           // 少了这一步画布就是空白 ✓（实测介质落笔 10 秒内 0 有墨像素 ✗）。
-          void resync().then(() => blitServerViewport());
+          // **离线优先守卫** ✓：离线、或有未提交的本地预览 ⇒ **不重放** ✗（服务端此刻不权威 ✓）。
+          if (navigator.onLine !== false && !liveLastRegion) {
+            void resync().then(() => blitServerViewport());
+          }
         }
       }
     } else if (message.type === "event" && message.event && message.event.event === "tiles") {
