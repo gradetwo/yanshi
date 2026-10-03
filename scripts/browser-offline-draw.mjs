@@ -31,9 +31,10 @@ const INK = `(() => {
     let data = null;
     try { data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data; } catch (error) { parts.push({ id: canvas.id || "?", ink: 0, note: "读不到像素" }); continue; }
     let mine = 0;
-    // **只看"非白且不透明"的像素** ✗ —— `board` 是整块不透明白底 ✓ ⇒ 单看 alpha 会恒等于画布面积 ✗
-    // （第一版就是这样：离线/在线都 576000 ✓ ⇒ 信号被淹没 ✗）。真正说明"上了墨"的是
-    // **overlay 上那些非白像素** ✓（实测：在线 2046 ✓、离线 0 ✗）。
+    // 只看「非白且不透明」的像素 —— board 是整块不透明白底，单看 alpha 会恒等于画布面积，
+    // 第一版就是这样：离线/在线都 576000，信号被淹没。真正说明「上了墨」的是
+    // overlay 上那些非白像素（实测：在线 2046、离线 0）。
+    // 注意：这段代码在**模板字符串里** ⇒ 注释中**不许出现反引号**（我上一版就栽在这，见第 6 轮更正）。
     for (let i = 0; i < data.length; i += 4) {
       if (data[i + 3] > 8 && (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245)) mine += 1;
     }
