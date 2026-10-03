@@ -687,7 +687,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
          ⇒ MCP 能用 ✓，而界面里**点不到颜色** ✗ ⇒ 这正是"只在一边有"的缺陷 ✓。 -->
     <div class="card" data-panel="assets" id="cardPalette">
       <h2>调色板</h2>
-      <div class="hint">点色块即取色（写回**笔刷颜色** ✓）；来源是随包发布的，或你自己导入的 ✓。</div>
+      <div class="hint" title="点色块即取色（写回笔刷颜色）；来源是随包发布的，或你自己导入的。">点色块取色</div>
       <label>调色板 <select id="palettePick"></select></label>
       <!-- **取色写到哪里** ✓（目标 ⑤ ✓）—— 一个调色板、多个去向 ✓：
            否则"调色板的颜色"与"渐变卡片里的颜色"就是**两套各自为政的颜色** ✗。 -->
@@ -702,7 +702,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **纹理** ✓（目标第 ② 件 ✓）—— `texture_background` 同样此前只有工具层入口 ✗。 -->
     <div class="card" data-panel="assets" id="cardTexture">
       <h2>纹理</h2>
-      <div class="hint">把 CC0 纸张 / 画布纹理铺成背景 ✓（会**新建一层并沉到最底** ✓）。</div>
+      <div class="hint" title="把 CC0 纸张 / 画布纹理铺成背景（会新建一层并沉到最底）。">铺成背景</div>
       <label>纹理 <select id="texturePick"></select></label>
       <!-- **缩略图** ✓（目标 (b) ✓）：由 `/textures/<file>` 发图 ✓ ——
            浏览器读不到服务器上的文件 ✓ ⇒ 必须走服务端路由 ✓（与介质插件同一条路 ✓）。 -->
@@ -742,7 +742,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <div class="card" data-panel="file">
       <h2>工程包</h2>
       <div class="hint">
-        整份文档（原子日志 + 元数据 + 全部 blob）打成一个 <code>.yanshi</code>（未压缩 tar ✓，任何 <code>tar</code> 都能看 ✓）。
+        <span title="整份文档（原子日志 + 元数据 + 全部 blob）打成一个 .yanshi：未压缩 tar，任何 tar 都能看。">打包整个文档为 <code>.yanshi</code></span>
         <strong>路径是服务器上的路径</strong> ✓ —— 不是从你电脑上选文件 ✗。
       </div>
       <label>路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
