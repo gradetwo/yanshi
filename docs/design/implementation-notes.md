@@ -11067,3 +11067,30 @@ seq::tests::state_at_is_stable_and_cached
 **另一种更保守的选项** ✓（留给决策 ✓）：若不想动 core 的既有单测 ✓，可以让默认图层**只在"文档被新建"的
 那两条入口**（HTTP 建文档 ✓ / `new_document` ✓）触发 ✓ —— 但那就回到"加原子"的老问题 ✗
 （正是让 6 条集成测试红的那个做法 ✓）⇒ **仍推荐 fold 这条路** ✓。
+
+### ✅❌ 第 131 轮：fold 方案**功能验证全绿**，但测试面横跨 ≥3 个 crate ⇒ 仍先回退 ✓（不半落地 ✗）
+
+**这一轮把 fold 方案做完整了** ✓，并拿到**决定性证据** ✓：
+```
+判据 scripts/tool-session-semantics.mjs ⇒ **7/7 全绿** ✓
+  ✓ HTTP 新建文档自带默认图层｜count=1 first="layer_default"
+  ✓ 默认图层上直接能落墨（旧脚本的核心假设）
+```
+⇒ **设计是对的** ✓（`CreateDocument` 的 fold 分支里 inserт 一层 ✓ + `z_index: -1` 作基底 ✓ + 不加原子 ✓）。
+**但测试期望的波及面** ✓（逐轮才显现 ✓，这正是问题所在 ✓）：
+| 轮次 | 红点 | 处置 |
+|---|---|---|
+| 第 130 轮 | `fold::reorder_layers…` ✓ `seq::state_at_is_stable_and_cached` ✓ | 2 条 core 单测 |
+| 第 131 轮 | 同上 ✓（已按实测改：顺序表加 `layer_default` ✓、`layers.len()` 1⇒2 ✓、级联失效 1⇒3 ✓） | — |
+| 第 131 轮（再跑） | **第三个 crate**：`atom_metadata_stays_small_and_references_existing_blobs` ✗ | 又冒一条 |
+⇒ 判断 ✓：这个改动的**测试面横跨 ≥3 个 crate** ✓，要**一次改全**才该提交 ✓（"改一半"今天已经害我四次 ✗）。
+⇒ **按纪律整体回退** ✓：`main` 全绿 ✓（786 / 0 FAILED ✓），把**结论与清单**留档 ✓。
+**给下一轮/下一会话的结论** ✓（不必再试错 ✓）：
+1. **方案已定** ✓：默认图层进 `fold.rs` 的 `AtomKind::CreateDocument` 分支 ✓，`z_index: -1` ✓，**不加原子** ✓；
+2. **判据已就绪** ✓（`scripts/tool-session-semantics.mjs` ✓，该方案下 7/7 ✓）；
+3. **要同批更新的期望**（已知的 ✓）：`fold::tests::reorder_layers_is_absolute_and_last_writer_wins` ✓
+   （顺序表 + 级联失效 1⇒3 ✓）、`seq::tests::state_at_is_stable_and_cached` ✓（`layers.len()` 1⇒2 ✓）、
+   `atom_metadata_stays_small_and_references_existing_blobs` ✓（待读 ✓，八成也是"多一层"✓）；
+4. **落地纪律** ✓：这一次要**一次改全**（读齐所有相关期望 ✓ 再改 ✓），绿了再提交 ✓。
+**另外发现一处不一致** ✗：`new_document` 回执里的 `default_layer` 报的是 `layer_1` ✗，
+而 fold 里实际建的是 `layer_default` ✗ ⇒ 落地时必须对齐 ✓（同一件事只能有一个名字 ✓）。
