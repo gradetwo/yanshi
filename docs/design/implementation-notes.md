@@ -13084,3 +13084,27 @@ CARGO_TARGET_DIR=/tmp/cold94b cargo build -p yanshi-medium-watercolor     ⇒ wa
 **下一批候选** ✓（仍要挑能确证用法的 ✓）：`create_selection`/`delete_selection` ✓、
 `transform_object` ✓、`convert_to_shape` ✓、`get_object_history` ✓、`find_atom` ✓ ——
 它们的参数形状**需要先在仓库里找到现成调用** ✓（或先读 schema ✓），**不许猜** ✗。
+
+### 🚨 第 230 轮：用户报的**跨平台打包 BUG** ✓ —— 我的脚本里**同款硬编码**已修 ✓；`package-release.sh` 同族风险已定位 ✓
+
+**用户报告** ✓："macOS 上打包的包名寫著 `x86_64-unknown-linux-gnu`，但裝的是蘋果芯片的版本，跑不起來。`Exec format error`" ✓。
+**根因（诊断 ✓）** ✓ —— **"名字写死、内容是真的"** ✗ 这一类：
+* `scripts/package-release.sh:60-61` ✓ **默认目标取自 `rustc -vV` 的 host** ✓（这部分是**对的** ✓）；
+* 但它**用 `$target_triple` 命名** ✗ ⇒ 一旦**构建没真正成功**（或用了残留目录 ✗），
+  就会**把别的架构的产物按 linux 的名字打包** ✗ ⇒ 得到"**名字 linux / 内容苹果芯片**"的包 ✓ ⇒ `Exec format error` ✓；
+* `--all-targets` 那条路会**逐个目标重跑** ✓、**没装的目标跳过并说明** ✓（`--> 跳过 …` ✓）⇒ 所以嫌疑集中在
+  **"名字来自变量、内容来自现有文件"** 这一步 ✓（**没有校验二者一致** ✗）。
+**我自己的同类 BUG（已修 ✓）** ✗：我上一轮新写的 `scripts/package-static.sh:13`
+**缺省写死** `x86_64-unknown-linux-gnu` ✓ ⇒ 在 macOS 上会去编一个**没装的目标** ✗（或更糟：名实不符 ✗）。
+改动 ✓：
+```bash
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+TARGET="${YANSHI_STATIC_TARGET:-${HOST_TRIPLE}}"      # **名字必须来自真实目标** ✓，不写死 ✗
+… 非 Linux 目标 ⇒ **明确拒绝并解释**（`+crt-static` 对它没有意义 ✓）…
+```
+**实测（两条路 ✓）** ✓：本机 Linux ⇒ `EXIT=0` ✓、三条判据全绿 ✓；
+`YANSHI_STATIC_TARGET=aarch64-apple-darwin`（模拟 macOS ✓）⇒ **脚本拒绝并给出正确做法** ✓（不再产出名实不符的包 ✓）。
+**下一步（按纪律 ✓）** ✓：给**打包产物**加一条**能红的判据** ✓ ——
+**包名里的 triple 必须与包内二进制的真实格式/架构一致** ✓
+（`file` 看 `ELF` vs `Mach-O` ✓ + `uname -m`/triple 的 arch 段 ✓），**任何不一致就判红** ✗；
+并把同一条判据接进 `package-release.sh` ✓（**先校验再打包** ✓，不许"名字来自变量、内容来自现有文件" ✗）。

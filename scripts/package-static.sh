@@ -10,7 +10,20 @@
 # 判据（本脚本**自带** ✓，能红 ✓）：① 构建成功 ✓；② `ldd` 必须说"statically linked" ✓（否则退出 1 ✗）；
 # ③ 必须能**起进程并回答一个请求** ✓（"能编译"不等于"能用" ✓）。
 set -euo pipefail
-TARGET="${YANSHI_STATIC_TARGET:-x86_64-unknown-linux-gnu}"
+# **缺省取"本机宿主"** ✗ —— 原来这里**写死** `x86_64-unknown-linux-gnu` ✓，
+# 于是 macOS 上会去编一个**没装的目标** ✗（或更糟：名字与产物不符 ✗ ⇒ 跑起来 `Exec format error` ✗，
+# 用户实测报告过这个 BUG ✓）。**名字必须来自真实目标** ✓，不许写死 ✗。
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+TARGET="${YANSHI_STATIC_TARGET:-${HOST_TRIPLE}}"
+echo "  宿主 triple：${HOST_TRIPLE}｜本次目标：${TARGET}"
+# **交叉编译必须显式说** ✓：目标与宿主不同、又不是 Linux 时，`+crt-static` 没有意义 ✓。
+case "${TARGET}" in
+  *-linux-*) ;;
+  *) echo "  ⚠ 目标 ${TARGET} 不是 Linux ⇒ 本脚本的 crt-static 静态链接对它没有意义"
+     echo "     （真实用户报告：macOS 上打出来的包名写 linux、内容却是苹果芯片 ⇒ 跑不起来 ✗）"
+     echo "     请显式指定 Linux 目标：YANSHI_STATIC_TARGET=x86_64-unknown-linux-gnu $0"
+     exit 2 ;;
+esac
 BIN="target/$TARGET/release/yanshi-serve"
 echo "== 静态构建（crt-static，目标 ${TARGET}）=="
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p yanshi-http --bin yanshi-serve --target "$TARGET"
