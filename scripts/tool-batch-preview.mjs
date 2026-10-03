@@ -28,7 +28,8 @@ console.log("  batch(preview:true) ⇒ ok=" + batch.ok + "｜顶层键=" + keys.
 const failures = [];
 if (batch.ok !== true) failures.push("batch 没成功 ⇒ " + JSON.stringify((batch.context || {}).detail || batch.error_code || "?"));
 else {
-  const image = batch.image || batch.preview || null;
+  const fromResults = (batch.results || []).map((entry) => entry && entry.result).find((value) => value && value.image) || null;
+  const image = batch.image || batch.preview || fromResults || null;
   const hasData = !!(image && (image.data || image.thumb_url || image.url));
   if (!hasData) {
     failures.push("batch 带了 preview:true，却没返回任何图（顶层键：" + keys.join(",") + "）⇒ 画师仍要手动再调 render_region（一轮 30 秒 ✗）");
