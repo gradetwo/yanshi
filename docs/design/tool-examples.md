@@ -1,0 +1,203 @@
+# 每个工具的可复制调用示例
+
+**这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
+所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
+
+当前共 16 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+
+## `brush_preview`
+
+```json
+{
+  "brush": "spray",
+  "color": {
+    "a": 255,
+    "b": 255,
+    "g": 64,
+    "r": 0
+  },
+  "hardness": 0.6,
+  "opacity": 0.8,
+  "size": 24
+}
+```
+
+## `brush_stroke`
+
+```json
+{
+  "brush": "100%_Opaque",
+  "color": {
+    "a": 255,
+    "b": 0,
+    "g": 0,
+    "r": 255
+  },
+  "layer_id": "L1",
+  "points": [
+    [
+      100,
+      100,
+      1
+    ],
+    [
+      180,
+      140,
+      1
+    ],
+    [
+      260,
+      100,
+      1
+    ]
+  ],
+  "size": 40
+}
+```
+
+## `create_layer`
+
+```json
+{
+  "layer_id": "L1",
+  "name": "Layer 1"
+}
+```
+
+## `delete_layer`
+
+```json
+{
+  "layer_id": "L1"
+}
+```
+
+## `delete_object`
+
+```json
+{
+  "object_id": "o1"
+}
+```
+
+## `draw_stroke`
+
+```json
+{
+  "data": {
+    "points": [
+      [
+        60,
+        180,
+        1
+      ],
+      [
+        140,
+        180,
+        1
+      ]
+    ]
+  },
+  "layer_id": "L1"
+}
+```
+
+## `export_png`
+
+```json
+{
+  "layer_id": "L1",
+  "max_edge": 512,
+  "path": "example-export.png"
+}
+```
+
+## `get_document`
+
+```json
+{}
+```
+
+## `get_object`
+
+```json
+{
+  "include_history": true,
+  "object_id": "o1"
+}
+```
+
+## `import_image`
+
+```json
+{
+  "bitmap": {},
+  "layer_id": "L1",
+  "region": {
+    "h": 32,
+    "w": 32,
+    "x": 0,
+    "y": 0
+  }
+}
+```
+
+## `list_assets`
+
+```json
+{
+  "kind": "brush"
+}
+```
+
+## `list_layers`
+
+```json
+{}
+```
+
+## `list_palette_colors`
+
+```json
+{
+  "palette": "open-color.json"
+}
+```
+
+## `list_textures`
+
+```json
+{}
+```
+
+## `medium_stroke`
+
+```json
+{
+  "layer_id": "L1",
+  "medium": "oil",
+  "points": [
+    [
+      60,
+      220,
+      1
+    ],
+    [
+      140,
+      220,
+      1
+    ]
+  ]
+}
+```
+
+## `new_document`
+
+```json
+{
+  "background": {},
+  "doc_id": "demo",
+  "height": 640,
+  "width": 900
+}
+```

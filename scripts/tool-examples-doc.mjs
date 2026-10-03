@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// 把每个工具的可复制示例**落成文档**，并提供防陈旧检查。
+//
+//   node scripts/tool-examples-doc.mjs <server-base>            # 生成/刷新 docs/design/tool-examples.md
+//   node scripts/tool-examples-doc.mjs <server-base> --check    # 文档过期就 exit 1（判据）
+//
+// 内容全部来自**运行中的服务端目录**（`GET /api/tools`），所以它不可能与实现漂移 ——
+// 这也是本仓库反复吃过的亏（源码文本 vs 产物）。
+import { readFileSync, writeFileSync } from "node:fs";
+
+const base = process.argv[2];
+const check = process.argv.includes("--check");
+if (!base) { console.error("用法: node scripts/tool-examples-doc.mjs <server-base> [--check]"); process.exit(2); }
+const path = "docs/design/tool-examples.md";
+const doc = "doc1";
+const created = await fetch(`${base}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
+}).then((r) => r.json());
+if (!created.token) { console.error("建文档没拿到 token ⇒ 判据无法运行（不是通过）"); process.exit(1); }
+const catalogue = await fetch(`${base}/api/tools?doc=${doc}&token=${created.token}`).then((r) => r.json());
+const withExample = (catalogue.tools || []).filter((tool) => tool.example).sort((a, b) => a.name.localeCompare(b.name));
+const lines = [
+  "# 每个工具的可复制调用示例",
+  "",
+  "**这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，",
+  "所以它不会与实现漂移；`--check` 模式会在文档过期时失败。",
+  "",
+  `当前共 ${withExample.length} 个工具带示例，**全部经过实调验证**（见 \`scripts/tool-example-acceptance.mjs\`）。`,
+  "",
+];
+for (const tool of withExample) {
+  lines.push(`## \`${tool.name}\``);
+  lines.push("");
+  lines.push("```json");
+  lines.push(JSON.stringify(tool.example, null, 2));
+  lines.push("```");
+  lines.push("");
+}
+const text = lines.join("\n");
+if (check) {
+  const current = (() => { try { return readFileSync(path, "utf8"); } catch { return ""; } })();
+  if (current !== text) {
+    console.error("❌ docs/design/tool-examples.md 与运行中的目录不一致（文档过期）⇒ 重新生成它");
+    process.exit(1);
+  }
+  console.log(`  ✓ 文档与目录一致（${withExample.length} 个工具带示例）`);
+  process.exit(0);
+}
+writeFileSync(path, text);
+console.log(`  ✓ 已写出 ${path}：${withExample.length} 个工具、${text.length} 字节`);
