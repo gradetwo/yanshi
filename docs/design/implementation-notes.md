@@ -9817,3 +9817,76 @@ AssertionError: yanshi-render 里没有 pub fn rgb_to_hsv ⇒ 中止，不改任
 要么把共用函数改成**规范化到 0–1** ✓ 并同步服务端两处调用点的用法 ✓，
 要么承认"两份公式各自服务不同约定" ✓ 并**只共享能共享的那部分** ✓（例如共享 `max/min/delta` 的算法 ✓）。
 **这一轮的价值** ✓：判据把"看起来一样"证伪了 ✓ —— 12/15 相同 ✓ 正好说明**为什么必须逐字节比** ✓。
+
+### 🔬 第 74 轮：**两边的实现原样并排** ✓（收拢前必须先看清"约定差在哪" ✓，不再盲改 ✗）
+
+第 73 轮的判据（15 组里 blue 三组不同 ✗）说明两套公式**不是同一件事** ✓ ⇒ 本轮**不改代码** ✓，
+先把两边实现**逐字抄下来**比对 ✓（以下是**原文**，不是我复述的 ✓）：
+
+**服务端**（`crates/yanshi-server/src/tools.rs` ✓）：
+```rust
+fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if max == rf {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if max == gf {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    let sat = if max <= f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
+    // **⚠️ 引擎要的是 0..1 的"圆周分数"，不是度数** ✗ —— 这是**查到源码才定下的** ✓：
+    // `hokusai-core-0.3.0/src/color.rs` 里 `hsv_to_rgb` 第一行就是 `let h = (hsv.h.rem_euclid(1.0)) * 6.0;`
+    // ⇒ 传**度数**（0..360 ✓）会被 `rem_euclid(1.0)` 整除 ✓
+    // ⇒ **除不尽的小数部分才是色相** ✓ ⇒ 我传 60（黄 ✓）与 240（蓝 ✓）都得到 **0.0 = 红色** ✗ ✓
+    // —— 这正是实测"黄和蓝都画成红"的**确切原因** ✓（不是随机 ✓，是**整除余数** ✓）。
+    (hue / 360.0, sat, max)
+}
+```
+
+**门面**（`crates/yanshi-brush-wasm/src/lib.rs` ✓）：
+```rust
+fn colour_to_hsv(colour: &Colour) -> (f32, f32, f32) {
+    let r = f64::from(colour.r) / 255.0;
+    let g = f64::from(colour.g) / 255.0;
+    let b = f64::from(colour.b) / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let value = max;
+    let sat = if max <= 0.0 { 0.0 } else { (max - min) / max };
+    let hue = if max == min {
+        0.0
+    } else if max == r {
+        ((g - b) / (max - min)).rem_euclid(6.0) / 6.0
+    } else if max == g {
+        (((b - r) / (max - min)) + 2.0) / 6.0
+    } else {
+        (((r - g) / (max - min)) + 4.0) / 6.0
+    };
+    (hue as f32, sat as f32, value as f32)
+}
+```
+**下一轮的比对要点** ✓（读上面两段就能定 ✓）：
+1. **色相的量纲/范围**：一边可能是**度**（0–360 ✓，且带 `if hue < 0 { hue + 360 }` 的归一化 ✓），
+   另一边是 **0–1**（`rem_euclid(6.0) / 6.0` ✓）⇒ 门面补 `/360` **不足以**抹平 ✓（第 73 轮实测 ✓）；
+2. **饱和度/明度的量纲**：两边是否都回 0–1 ✓ —— 若不是 ✓，那 blue 的差异**可能根本不在色相上** ✗
+   （红/灰/白/黑里这三项恰好重合或不吃 ✓ ⇒ 只有 blue 暴露 ✓）；
+3. **`ColorH` 到底收哪一种** ✓：服务端把**度**直接传给它 ✓（10546 / 10713 ✓），
+   门面把 **0–1** 传给它 ✓ —— **两者不可能都对** ✗ ⇒ 这决定了收拢方向 ✓；
+4. 分支配色：`% 6.0`（**可负** ✗）对 `rem_euclid(6.0)`（**恒非负** ✓）✓。
+**收拢路线（据此二选一 ✓）**：
+* **甲**：把共用函数**规范化**成一种约定（例如度、[0,360) ✓），服务端两处调用点与门面各做**一次明确的换算** ✓
+  —— 换算写在**调用点** ✓、不藏在实现里 ✓（否则又是"看着一样"✗）；
+* **乙**：**只共享算法骨架** ✓（`max/min/delta` 与四个分支 ✓），约定由各自包一层 ✓
+  —— 承认"两种约定各自服务不同调用方" ✓。
+**无论走哪条 ✓，判据都是现成的 15 组** ✓（它已经证明能抓到真差异 ✓）。
