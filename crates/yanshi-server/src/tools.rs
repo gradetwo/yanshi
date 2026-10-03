@@ -12054,6 +12054,11 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("comment", r#"{"text": "x"}"#),
+    ("collect_garbage", r#"{}"#),
+    ("checkpoint", r#"{}"#),
+    ("blob_gc", r#"{}"#),
+    ("begin_changeset", r#"{}"#),
     (
         "import_image",
         r#"{"layer_id": "L1", "bitmap": {}, "region": {"x": 0, "y": 0, "w": 32, "h": 32}}"#,

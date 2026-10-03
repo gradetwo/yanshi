@@ -3,7 +3,19 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 16 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+当前共 21 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+
+## `begin_changeset`
+
+```json
+{}
+```
+
+## `blob_gc`
+
+```json
+{}
+```
 
 ## `brush_preview`
 
@@ -52,6 +64,26 @@
     ]
   ],
   "size": 40
+}
+```
+
+## `checkpoint`
+
+```json
+{}
+```
+
+## `collect_garbage`
+
+```json
+{}
+```
+
+## `comment`
+
+```json
+{
+  "text": "x"
 }
 ```
 
