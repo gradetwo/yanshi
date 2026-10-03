@@ -14073,3 +14073,28 @@ console.warning: 写缓存失败 /brush-module.wasm：TypeError: Failed to execu
 **下一步（继续"先取证" ✓）** ✓：把判据里**离线阶段**的取证**完整打印** ✓（本次我 grep 掉了 ✗）——
 重点看三件事 ✓：① 离线时 `/brush-module.wasm` 是否**从缓存取到**（`fromServiceWorker` ✓ / 是否 `loadingFailed` ✓）；
 ② `loadLocalBrushModule()` 是否抛错 ✓；③ `paintLiveFrame` 是否被调用 ✓（`stats` 里有 `localBrush*` 计数 ✓）。
+
+### 🔍 第 15 轮：**离线的本地预览其实跑起来了** ✓ —— 但只画了 2 帧 ✗（判据的笔画不真实 ✓）
+
+**先做取证** ✓（上一轮定 ✓）：把离线阶段的 console/失败请求**完整打印** ✓（不再 grep 掉 ✗）+ **探测统计计数** ✓。
+**证据（决定性 ✓）** ✓：
+```
+离线阶段：6 组 ERR_INTERNET_DISCONNECTED（type Fetch×4 / Image×1 …）
+统计计数：{"localBrushCalls":12, "localBrushFrames":**2**, "brushPreviewsFromFiles":131, "thumbErrors":1}
+```
+⇒ **`localBrushCalls: 12`** ✓ ⇒ **离线时本地预览那条路被调用了** ✓（不是我先前猜的"根本没走到" ✗）；
+但 **`localBrushFrames: 2`** ✗ ⇒ 只画了 **2 帧** ✓ ⇒ 所以墨量只有 6 像素 ✓。
+**为什么只有 2 帧** ✓：我的合成"笔画"把 8 个 `pointermove` **在同一个 tick 里全发出去** ✗，
+而本地预览有 **35ms 节流** ✓ ⇒ 绝大多数被丢掉 ✓ ⇒ 那一笔退化成"两个点" ✓
+⇒ **不是产品画不了** ✗，是**判据的笔画不像真的一次拖动** ✓。
+**改法** ✓：笔画改成**带 60ms 间隔的 8 步** ✓（`await setTimeout` ✓）⇒ 再测 ✓：
+```
+在线：0 ⇒ 1794（board 1794 / overlay 0）    离线：1794 ⇒ 1816（增量 **22** ✗）
+```
+⇒ 更真实 ✓（但离线仍只 +22 ✓），而且这一跑是**复访态** ✓（overlay 0 ✓ = 复访时在线预览也不显示 ✓）。
+**当前最未解的谜** ✓：**首访有 overlay（2046 ✓）、复访没有（0 ✗）** ✓ —— 已排除
+**SW** ✓、**缓存内容** ✓（两次一字不差 ✓）、**localStorage** ✓（两次相同 ✓）；
+剩下**浏览器 HTTP 缓存**（判据已有 `NO_HTTP_CACHE=1` 开关 ✓，**还没用** ✗）与 **IndexedDB**（未查 ✓）。
+**下一步（写死 ✓）** ✓：**打印"在线阶段"的完整取证** ✓（我一直只看离线阶段 ✗，而差异恰恰在**在线**这一笔 ✓）：
+看复访时在线那一笔到底发生了什么（`localBrushCalls`/`localBrushFrames` 的变化 ✓、
+是否有 `/brush-module.wasm` 的 `loadingFailed` ✓、是否走了服务端 ✓）⇒ 再决定改什么 ✓。

@@ -68,7 +68,7 @@ const INK = `(() => {
   return { canvases: canvases.length, parts, ink };
 })()`;
 // **画一笔**：合成指针事件（本地渲染路径看得见它们 ✓；服务端提交在离线时必然失败 ✓，正是要测的点 ✓）
-const STROKE = `(() => {
+const STROKE = `(async () => {
   const board = document.getElementById("board");
   if (!board) return { ok: false, why: "没有 #board" };
   const rect = board.getBoundingClientRect();
@@ -77,98 +77,16 @@ const STROKE = `(() => {
     bubbles: true, pointerId: 1, isPrimary: true, button: 0, buttons: 1, pressure: 0.7, pointerType: "pen",
   }, extra || {});
   board.dispatchEvent(new PointerEvent("pointerdown", at(0.3, 0.4)));
-  for (let step = 1; step <= 6; step += 1) {
-    board.dispatchEvent(new PointerEvent("pointermove", at(0.3 + 0.05 * step, 0.4 + 0.03 * step)));
+  // **每步之间真的等一会儿** —— 本地预览有 35ms 节流,同一个 tick 里连发会被丢掉大半
+  // (实测:那样只画出 2 帧、增量 6 像素,看起来像"离线画不了",其实是判据的笔画不真实)。
+  for (let step = 1; step <= 8; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    board.dispatchEvent(new PointerEvent("pointermove", at(0.3 + 0.04 * step, 0.4 + 0.025 * step)));
   }
-  board.dispatchEvent(new PointerEvent("pointerup", at(0.6, 0.58, { buttons: 0 })));
-  return { ok: true, brush: (document.getElementById("brush") || {}).value || "" };
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  board.dispatchEvent(new PointerEvent("pointerup", at(0.62, 0.6, { buttons: 0 })));
+  return { ok: true, steps: 8 };
 })()`;
-// **真的选上一支 `.myb`**（第 13 轮的结论：合成笔画此前一直用内置画笔 ✓ ⇒ 门面根本没被需要 ✗）。
-// 两步走：① 打开笔刷库并**探测它的 DOM**（把结构打印出来 ✓ ⇒ 结论不靠猜 ✓）；
-// ② 点第一支笔刷 ✓，然后**硬断言** #brush 的值非空 ✓ —— 拿不到就判据失败 ✗（不许静默继续）。
-const OPEN_LIBRARY = `(() => {
-  const search = document.getElementById("brushSearch");
-  if (search) {
-    search.value = "a";
-    search.dispatchEvent(new Event("input", { bubbles: true }));
-    return { via: "brushSearch", found: true };
-  }
-  const dock = document.querySelector("[data-dock='assets'], #assetDock, #brushLibrary");
-  if (dock) { dock.click(); return { via: "dock", found: true }; }
-  return { via: null, found: false };
-})()`;
-const opened = await evaluate(OPEN_LIBRARY);
-await sleep(1500);
-const DISCOVER = `(() => {
-  const probes = ["[data-brush-name]", "[data-brush]", ".brush-card", ".brush-item", "#brushList > *", "[data-asset-kind='brush']"];
-  const out = {};
-  for (const selector of probes) { try { out[selector] = document.querySelectorAll(selector).length; } catch (error) { out[selector] = -1; } }
-  const select = document.getElementById("brush");
-  out.selectOptions = select ? select.options.length : -1;
-  out.selectNonEmpty = select ? Array.from(select.options).filter((o) => o.value).length : -1;
-  return out;
-})()`;
-console.log("  打开笔刷库：" + JSON.stringify(opened) + "｜DOM 探测：" + JSON.stringify(await evaluate(DISCOVER)));
-const PICK_BRUSH = `(() => {
-  const probes = ["[data-brush-name]", "[data-brush]", ".brush-card", ".brush-item", "#brushList > *", "[data-asset-kind='brush']"];
-  for (const selector of probes) {
-    const node = document.querySelector(selector);
-    if (!node) continue;
-    const name = node.getAttribute("data-brush-name") || node.getAttribute("data-brush") || (node.textContent || "").trim().slice(0, 40);
-    node.click();
-    return { selector: selector, name: name };
-  }
-  return { selector: null, name: null };
-})()`;
-console.log("  点击第一支笔刷：" + JSON.stringify(await evaluate(PICK_BRUSH)));
-await sleep(1200);
-const brushState = await evaluate(`(() => {
-  const select = document.getElementById("brush");
-  return { value: select ? select.value : null, nonEmpty: select ? Array.from(select.options).filter((o) => o.value).length : -1 };
-})()`);
-console.log("  选定后的 #brush：" + JSON.stringify(brushState));
-// **显式选定一支真笔刷**（消除"首访用默认笔、复访恢复上次笔刷"这个混淆变量 ✓）：
-// 从 select 里挑**第一个非空值**（= 一支真 `.myb`）✓，并派发 change ✓ —— 不写死任何具体笔名 ✗。
-const PICK = `(() => {
-  const select = document.getElementById("brush");
-  if (!select) return { picked: null, why: "没有 #brush" };
-  const option = Array.from(select.options).find((item) => item.value);
-  if (!option) return { picked: null, why: "没有非空笔刷选项", count: select.options.length };
-  select.value = option.value;
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-  return { picked: select.value, count: select.options.length };
-})()`;
-const picked = await evaluate(PICK);
-console.log("  选定笔刷：" + JSON.stringify(picked));
-// **界面状态快照**（证据 ✓）：localStorage 里存了什么（首访/复访的差别最可能在这里）
-const STATE = `(() => {
-  const out = {};
-  try { for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); out[k] = String(localStorage.getItem(k)).slice(0, 60); } } catch (error) { out.error = String(error); }
-  return { tool: (document.getElementById("tool") || {}).value || null, stored: out };
-})()`;
-console.log("  界面状态：" + JSON.stringify(await evaluate(STATE)));
-// **缓存快照**（证据 ✓）：有哪些缓存、各自哪些条目、多大
-const CACHES = `(async () => {
-  if (!window.caches) return { supported: false };
-  const names = await caches.keys();
-  const out = [];
-  for (const name of names) {
-    const cache = await caches.open(name);
-    const requests = await cache.keys();
-    const entries = [];
-    for (const request of requests.slice(0, 12)) {
-      const response = await cache.match(request);
-      let size = 0;
-      try { size = (await response.clone().arrayBuffer()).byteLength; } catch (error) { size = -1; }
-      entries.push(request.url.replace(location.origin, "") + " (" + size + "B)");
-    }
-    out.push({ name: name, count: requests.length, entries: entries });
-  }
-  return { supported: true, caches: out };
-})()`;
-await send("Runtime.enable"); await send("Log.enable");
-const cachesBefore = await evaluate(CACHES);
-console.log("  缓存（画前）：" + JSON.stringify(cachesBefore));
 // ① 在线：画一笔，记录**这一笔自己的增量**
 const before1 = await evaluate(INK);
 const online = await evaluate(STROKE);
@@ -177,6 +95,7 @@ const after1 = await evaluate(INK);
 const deltaOnline = after1.ink - before1.ink;
 // ② 断网 ⇒ 再画一笔 ⇒ 记录**它自己的增量**（这才是"离线能不能画"的直接量）
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+evidence.length = 0;   // **只看离线这一段** ✓（否则在线阶段的噪声会淹没关键行 ✗）
 const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE);
 await sleep(1800);
@@ -187,7 +106,24 @@ console.log("  在线一笔：画前 " + before1.ink + " ⇒ 画后 " + after1.i
 console.log("  离线一笔：画前 " + before2.ink + " ⇒ 画后 " + after2.ink + "（增量 " + deltaOffline + "）｜分画布 " + JSON.stringify(after2.parts));
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
-if (evidence.length) { console.log("  取证（console/日志/失败请求）："); for (const line of evidence.slice(-14)) console.log("    · " + line); }
+// **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
+console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
+for (const line of evidence) console.log("    · " + line);
+// **统计计数** ✓：能区分"预览被跳过"（统计里有 skip ✓）与"根本没走到"（一个计数都没有 ✓）
+const STATS = `(() => {
+  const found = {};
+  for (const key of Object.keys(window)) {
+    if (!/stat/i.test(key)) continue;
+    const value = window[key];
+    if (value && typeof value === "object") {
+      const picked = {};
+      for (const name of Object.keys(value)) if (/brush|live|stroke|error/i.test(name)) picked[name] = value[name];
+      if (Object.keys(picked).length) found[key] = picked;
+    }
+  }
+  return found;
+})()`;
+console.log("  统计计数：" + JSON.stringify(await evaluate(STATS)));
 const failures = [];
 if (!brushState || !brushState.value) {
   // **判据无效**：没选上真 `.myb` ⇒ 这一跑测的还是内置画笔 ⇒ 结论没有意义 ✗
