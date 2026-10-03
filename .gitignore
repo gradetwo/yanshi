@@ -32,3 +32,7 @@ exports/
 example-export.png
 # 打包时构建出来的门面（与 target/ 同类，是产物不是源码）
 assets/brush-module.wasm
+# 示例跑出来的产物（export_project / export_png 之类会真写文件）
+/x
+/demo
+/exports/
