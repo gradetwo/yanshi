@@ -46,18 +46,19 @@ check("new_document 回执给出切换办法（可操作）",
   typeof made.next === "string" && made.next.includes("sem1"),
   "next=" + JSON.stringify(made.next));
 
-// ③ 新文档要有默认图层，而且默认图层上直接能落墨
+// ③ 新文档自带默认图层 —— **要在"那个文档"上量** ✗（我先前把判据写成量会话文档了 ——
+// 与报告同一种错：`new_document` 建的是**另一个**文档，`list_layers` 读的却是会话文档）。
+// 服务端因此把默认图层 id 直接写进回执（可自证 ✓）；而"新文档上真有那个图层"要用
+// **它自己的文档**来验 —— 也就是 HTTP 建文档那条路（它的 token 直接可用 ✓）。
+check("new_document 回执给出默认图层", typeof made.default_layer === "string" && made.default_layer.length > 0,
+  "default_layer=" + JSON.stringify(made.default_layer));
+
 const layers = await tool("list_layers", {});
 const count = layers.count !== undefined ? layers.count : (layers.layers || []).length;
 const firstId = ((layers.layers || [])[0] || {}).layer_id;
-check("新文档自带默认图层", count >= 1, "count=" + count + " first=" + JSON.stringify(firstId));
-if (firstId) {
-  const stroke = await tool("brush_stroke", { layer_id: firstId, brush: "100%_Opaque", size: 40,
-    points: [[20, 20, 1], [60, 20, 1]] });
-  check("默认图层上直接能落墨（旧脚本的核心假设）", stroke.ok === true,
-    "detail=" + String((stroke.context || {}).detail || "").slice(0, 60));
-} else {
-  check("默认图层上直接能落墨（旧脚本的核心假设）", false, "没有图层可落笔");
-}
+check("HTTP 新建文档自带默认图层（本轮只做了 new_document，这条路仍红）", count >= 1,
+  "会话文档 count=" + count);
+check("默认图层上直接能落墨（旧脚本的核心假设）", false,
+  firstId ? "会话文档有图层" : "会话文档没有图层可落笔（旧脚本就死在这里）");
 console.log(bad ? "  结论：" + bad + " 条不成立 ✗" : "  结论：会话语义全部成立 ✓");
 process.exit(bad ? 1 : 0);

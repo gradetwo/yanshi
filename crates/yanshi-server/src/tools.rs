@@ -9219,11 +9219,33 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 error
             }
         })?;
+    // **新文档自带一个默认图层**（业界惯例：新建图像都有一层）——
+    // 注意**不能**走 `write_create_layer` ✗：它经 `ctx.commit` 作用于**会话文档**（此刻还是老文档），
+    // 会把图层建到老文档上。这里用**带 doc_id** 的 `Workspace::commit`，明确建在**新文档**里。
+    let default_layer = "layer_1";
+    // 真 API（编译器纠正的 ✓）：`Atom::new(kind, actor, session, payload)`（4 参 ✓）。
+    let atom = Atom::new(
+        AtomKind::CreateLayer,
+        ctx.actor.clone(),
+        ctx.session.clone(),
+        json!({"layer_id": default_layer, "name": "图层 1"}),
+    );
+    ctx.workspace
+        .commit(&doc_id, atom, &ctx.actor, ctx.owner)
+        .map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "文档 {doc_id} 建好了，但默认图层没建成 ⇒ {error}（可以显式调 create_layer 补上）"
+                )),
+            )
+        })?;
     Ok(json!({
         "doc_id": doc_id,
         "width": width,
         "height": height,
         "blank": true,
+        "default_layer": default_layer,
         // **说清"会话还在哪个文档上"** ✗（真实报告 ✓ 2026-10-03 ✓）：它用
         // `new_document{width:800,height:600}` 建好了新文档 ✓（返回值里尺寸也对 ✓），
         // 但**后续调用量的还是原文档** ✓（会话的 doc 没变 ✓）⇒ 它看到 1024×1024 ✓、

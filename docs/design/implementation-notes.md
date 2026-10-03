@@ -10962,3 +10962,28 @@ EXIT=1 ✓
 **顺带确认** ✓：目标第 (4) 条里"哪些组要 `--profile`"那件事，**未知工具的错误信息其实已经说了**
 （"可能是拼错，也可能它所属的组没有启用 ✓；当前启用的组…" ✓）⇒ 缺的只是**在概览/清单里也写明** ✓
 （下一轮一并做 ✓）。
+
+### ✅ 第 127 轮：`new_document` **自带默认图层** ✓（判据 5 绿 / 2 红 ✓）—— 而且抓出**我判据自己的错** ✗
+
+**改动** ✓（`write_new_document` 里 `create_document` 之后 ✓）：
+```rust
+let atom = Atom::new(AtomKind::CreateLayer, ctx.actor.clone(), ctx.session.clone(),
+                     json!({"layer_id": "layer_1", "name": "图层 1"}));
+ctx.workspace.commit(&doc_id, atom, &ctx.actor, ctx.owner)?;   // 带 doc_id ⇒ 建在**新文档**里 ✓
+```
+真 API 是**编译器纠正的** ✓：我先写成 `Atom::new(kind, payload)` ✗ ⇒ 报错"takes 4 arguments" ✓
+⇒ 从 `ToolContext::commit` 的实体里看到 `Atom::new(kind, actor, session, payload)` ✓ ⇒ 改对 ✓；
+失败也**说出了原因** ✓（"文档建好了但默认图层没建成 ⇒ … 可以显式调 create_layer 补上" ✓）。
+**判据暴露的错（又一次"量错了文档"✗）**：我原来的判据是"`new_document` 之后 `list_layers` 应有图层" ✗ ——
+而 `list_layers` 读的是**会话文档**（老文档 ✓）⇒ **必然为空** ✓ ⇒ **与报告同一种错** ✓
+（这就是它被我批评的那个错法 ✓ ⇒ 说明这个坑**极易踩** ✓，所以更要把"自证信息"放进回执 ✓）。
+**判据已改对** ✓：`new_document` 那条改为**看回执里的 `default_layer`** ✓（可自证 ✓）；
+而"新文档上真有那个图层"要在**它自己的文档**上量 ✓ ⇒ 由 **HTTP 建文档**那条路来证 ✓。
+**现状** ✓：
+```
+✓ 尺寸回显（HTTP + new_document）✓ 会话如实+可操作 ✓ 默认图层 id 回执 ✓
+✗ HTTP 建文档自带默认图层（本轮只做了 new_document）⇒ 旧脚本就死在这里 ✓
+✗ 默认图层上直接能落墨（同上）
+```
+**下一轮** ✓：把同一条默认图层**照搬到 HTTP 的 `create_document`** ✓（锚点是它 `NewDocument::new(...)` /
+`create_document(...)` 之后 ✓）⇒ 那两条红应转绿 ✓，报告的"旧脚本"那条也就真正解决 ✓。
