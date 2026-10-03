@@ -16061,3 +16061,23 @@ dst[d + 3] = ((sa + da * (1.0 - sa)) * 255.0).round().clamp(0.0, 255.0) as u8;
 **注意 ✓**：oil 自己的单元测试里有 **golden**（`texture_zero_matches_prechange_golden` ✓）
 ⇒ 改合成**很可能让它红** ✗ —— 那**正是**它该做的事 ✓（golden 就是为了钉住"我故意改了什么" ✓）：
 届时按规矩**先看清它报什么** ✓，再决定是更新 golden ✓（若改动是有意的 ✓）还是我的改动跑偏了 ✗。
+
+### 🔧 第 102 轮：**更正站点** ✓ —— 真正的"一整笔合成"是 `paint_stroke` / `paint_stroke_over` ✓
+
+**上一轮的说法要更正 ✓**：我说合成在 `crates/yanshi-medium-host/src/lib.rs:300` 的 `composite_over` ✓
+—— 但**全 `crates/` 搜 `composite_over` 只有 `yanshi-render` 里同名的另一族**（`composite_over_linear*` ✓），
+**没有任何人调用宿主这个 `composite_over`** ✗ ⇒ 它很可能是**死代码** ✓（这值得单独查 ✓）。
+**真正的站点（本轮查清 ✓）** ✓：同一个文件里
+```rust
+pub fn paint_stroke(…)        // 396 行：一整笔 → 区域 RGBA
+pub fn paint_stroke_over(…)   // 414 行：在已知底色之上画一笔
+```
+⇒ "折线走一遍、每个采样点盖一枚 dab" ✓ 就发生在这两个函数里 ✓（上一轮引用的 `paste/composite` 只是**其中一层** ✓）；
+**要改的是它们** ✓ —— 与上一轮定的设计**不冲突** ✓（加一个缺省 `SourceOver` 的融合方式 ✓，只有 oil 声明 max ✓）。
+**这轮的教训（本会话第 N 次同族 ✓）** ✓：**"名字像"不等于"就是它"** ✗ ——
+我看到 `composite_over` 的源码就直接认作站点 ✓ 却没验**谁调用它** ✗ ⇒ 幸好这一轮搜调用点时发现 ✓
+（**"站点"这类结论必须靠"谁调用 / 谁被调用"的链路证据 ✓，不能靠名字 ✓**）。
+**下一轮（写死 ✓）** ✓：① 读 `paint_stroke`/`paint_stroke_over` 的**签名与调用点** ✓（谁传 `medium` ✓）
+⇒ ② 加**缺省 SourceOver** 的融合方式 ✓ ⇒ ③ 让 `oil` 声明 max ✓ ⇒ ④ 跑**已自证的判据** ✓
+（期望 `acf` 0.140 ⇒ <0.05 ✓、正对照仍 0 ✓）⇒ ⑤ 处理 oil 的 **golden 测试**（`texture_zero_matches_prechange_golden` ✓
+—— 先读它报什么 ✓ 再决定 ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
