@@ -99,7 +99,7 @@ const STROKE = `(async () => {
   // **每步之间真的等一会儿** —— 本地预览有 35ms 节流,同一个 tick 里连发会被丢掉大半
   // (实测:那样只画出 2 帧、增量 6 像素,看起来像"离线画不了",其实是判据的笔画不真实)。
   for (let step = 1; step <= 5; step += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 250));
     board.dispatchEvent(new PointerEvent("pointermove", at(0.3 + 0.04 * step, 0.4 + 0.025 * step)));
   }
   await new Promise((resolve) => setTimeout(resolve, 60));
