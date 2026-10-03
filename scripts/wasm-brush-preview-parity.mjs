@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// **本地预览（`default_preview_points`）与服务端 `brush_preview` 必须逐字节相同** ✓。
+//
+// **为什么放在页面里** ✓：服务端回的是 **PNG** ✓，而 Node 没有内置 PNG 解码 ✗、浏览器有 ✓
+// ⇒ 在页面里 `fetch` 那张 PNG ✓ ⇒ `drawImage` 到离屏 ✓ ⇒ 读回 RGBA ✓ ⇒ 与门面比 ✓。
+//
+// **两条判据（都能红 ✓）**：
+//   ① 服务端 PNG 的尺寸必须等于**按同一套算式算出的区域** ✓（`default_preview_points` + `size/2+4` ✓）；
+//   ② 同一支笔、同一 `size`、同一个区域 ⇒ 两边 RGBA **逐字节相同** ✓。
+//
+// 用法：CDP_PORT=8534 node scripts/wasm-brush-preview-parity.mjs "<viewer-url>" <wasm 路径> [笔刷...]
+import { readFileSync } from "node:fs";
+const [url, wasmPath, ...brushes] = process.argv.slice(2);
+const debugPort = process.env.CDP_PORT || "9334";
+if (!url || !wasmPath) { console.error("用法: CDP_PORT=.. node scripts/wasm-brush-preview-parity.mjs <url> <wasm> [brush...]"); process.exit(2); }
+const names = brushes.length ? brushes : ["100%_Opaque", "2B_pencil", "spray"];
+const wasmBase64 = readFileSync(wasmPath).toString("base64");
+const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+const target = list.find((t) => t.type === "page");
+if (!target) { console.error("未找到调试目标"); process.exit(2); }
+const ws = new WebSocket(target.webSocketDebuggerUrl);
+let id = 1; const pending = new Map();
+ws.addEventListener("message", (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
+await new Promise((resolve) => ws.addEventListener("open", resolve));
+const send = (method, params = {}) => new Promise((resolve) => { const i = id++; pending.set(i, resolve); ws.send(JSON.stringify({ id: i, method, params })); });
+const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+await send("Runtime.enable"); await send("Page.enable");
+await send("Page.navigate", { url }); await send("Page.reload", { ignoreCache: true }); await sleep(1800);
+
+const script = `(async () => {
+  const mybCache = new Map();
+  const bytes = Uint8Array.from(atob(${JSON.stringify(wasmBase64)}), (c) => c.charCodeAt(0));
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const api = instance.exports;
+  const size = 24;
+  // **服务端那份固定笔迹**（tools.rs:10158 的「default_preview_points」✓，一字不差 ✓）。
+  const length = Math.min(Math.max(size * 5.0, 64.0), 160.0);
+  const margin = size + 8.0;
+  const amplitude = Math.min(Math.max(size * 0.6, 4.0), 24.0);
+  const y = margin + amplitude;
+  const points = [[margin, y, 0.35], [margin + length*0.34, y - amplitude*2.0, 0.9],
+                  [margin + length*0.67, y + amplitude*2.0, 0.5], [margin + length, y, 0.35]];
+  const half = size / 2 + 4;
+  const xs = points.map((p) => p[0]); const ys = points.map((p) => p[1]);
+  const region = { x: Math.floor(Math.min(...xs) - half), y: Math.floor(Math.min(...ys) - half),
+                   w: Math.ceil(Math.max(...xs) + half) - Math.floor(Math.min(...xs) - half),
+                   h: Math.ceil(Math.max(...ys) + half) - Math.floor(Math.min(...ys) - half) };
+  const token = new URLSearchParams(location.search).get("token");
+  const doc = new URLSearchParams(location.search).get("doc");
+  const out = [];
+  for (const brush of ${JSON.stringify(names)}) {
+    const made = await fetch("/api/tools?doc=" + doc + "&token=" + token, { method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "brush_preview", arguments: { brush, size } }) }).then((r) => r.json());
+    if (!made.ok) { out.push({ brush, error: (made.context || {}).detail || "被拒" }); continue; }
+    const bitmap = await fetch("/api/blob/" + made.blob_hash + "?doc=" + doc + "&token=" + token).then((r) => r.arrayBuffer());
+    const bitmapBlob = new Blob([bitmap], { type: "image/png" });
+    const image = await createImageBitmap(bitmapBlob);
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const server = context.getImageData(0, 0, image.width, image.height).data;
+    const myb = mybCache.get(brush) || await fetch("/brushes/" + brush + ".myb").then((r) => r.text());
+    mybCache.set(brush, myb);
+    const request = JSON.stringify({ myb, points, size, color: null, opacity: null, hardness: null, region });
+    const payload = new TextEncoder().encode(request);
+    const pointer = api.yanshi_brush_alloc(payload.length);
+    new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
+    const outLen = api.yanshi_brush_paint(pointer, payload.length);
+    api.yanshi_brush_free(pointer, payload.length);
+    const facade = outLen ? new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), outLen).slice() : null;
+    const sameSize = made.width === region.w && made.height === region.h;
+    let differing = -1, maxDelta = 0, firstDiff = -1;
+    if (facade && facade.length === server.length) {
+      differing = 0;
+      for (let i = 0; i < server.length; i += 1) {
+        const d = Math.abs(server[i] - facade[i]);
+        if (d) { differing += 1; if (firstDiff < 0) firstDiff = i; if (d > maxDelta) maxDelta = d; }
+      }
+    }
+    out.push({ brush, serverW: made.width, serverH: made.height, region,
+               sameSize, serverBytes: server.length, facadeBytes: facade ? facade.length : 0,
+               differing, firstDiff, maxDelta, painted: made.painted_pixels });
+  }
+  return out;
+})()`;
+const results = await evaluate(script);
+let allGood = true;
+for (const row of results) {
+  if (row.error) { console.log(`  ${row.brush.padEnd(14)} 服务端拒绝：${String(row.error).slice(0, 50)}`); allGood = false; continue; }
+  const ok = row.sameSize && row.differing === 0 && row.facadeBytes === row.serverBytes;
+  if (!ok) allGood = false;
+  console.log(`  ${row.brush.padEnd(14)} 服务端 ${row.serverW}×${row.serverH} vs 算出的区域 ${row.region.w}×${row.region.h}` +
+    `｜字节 ${row.serverBytes} vs ${row.facadeBytes}｜不同 ${row.differing}` +
+    (row.firstDiff >= 0 ? `（首个 @${row.firstDiff}，最大差 ${row.maxDelta}）` : "") + `｜${ok ? "**逐字节相同** ✓" : "有差异 ✗"}`);
+}
+console.log(allGood ? "结论：预览逐字节相同 ✓" : "结论：存在差异 ✗");
+ws.close();
+process.exit(allGood ? 0 : 1);
