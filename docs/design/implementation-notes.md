@@ -13276,3 +13276,32 @@ EXIT=0 ✓｜包名 triple: x86_64-unknown-linux-gnu ✓
 判据算出的示例数：45   ⇒ 文档里的数目**按它同步**为 45 ✓（不再手数 ✗，见第 229 轮教训 ✓）
 ```
 ⇒ 覆盖面 ✓：**28 ⇒ 32 ⇒ 35 ⇒ 37 ⇒ 45** ✓（缺示例的工具 **99 ⇒ 82** ✓）。
+
+### ✅ 第 239 轮：**用户给了 macOS→Linux 交叉编译的正确解法** ✓ —— 已写进脚本诊断 ✓✓
+
+**用户提供的解法（原话要点 ✓）** ✓：
+```bash
+brew tap messense/macos-cross-toolchains
+brew install x86_64-unknown-linux-gnu                       # 得到 x86_64-linux-gnu-gcc 等 ✓
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+cargo build --target x86_64-unknown-linux-gnu --release
+```
+⇒ 关键点 ✓：macOS 自带的 `cc` **不是** Linux 链接器 ✗ ⇒ **必须显式告诉 Cargo 用交叉链接器** ✓
+（`CARGO_TARGET_<TRIPLE 大写、`-`→`_`>_LINKER` ✓）。
+**本轮改动** ✓（`scripts/package-release.sh` ✓）：跨到一个 `*-linux-*` 目标时 ✓，
+若**没有**设置对应的 `…_LINKER` ⇒ **先把这条解法印出来** ✓（变量名**按目标自动推导** ✓），
+而不是让人对着一句原始 linker 报错发愣 ✗。
+**实测** ✓（跨到 `x86_64-unknown-linux-musl`、未设变量 ✓）：
+```
+⚠ 跨到 x86_64-unknown-linux-musl：**没有**设置 CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER ✗
+     brew tap messense/macos-cross-toolchains
+     brew install x86_64-unknown-linux-gnu
+     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc
+```
+⇒ 诊断出现 ✓，随后脚本因"**该目标未安装**"而**干净拒绝** ✓（不是被这条警告弄失败 ✓）。
+**另记一条仍未实测的路径** ✗（如实 ✓）：第 238 轮加的"**交叉时不运行二进制取版本**" ✓
+（用户原话："不能探测本平台是否能运行哦" ✓）在本机**没能真正走到** ✗ ——
+我的模拟（把一个 Linux 产物放进 `aarch64-apple-darwin` 目录 ✓）先在**另一道检查**上失败了 ✓
+（"声明 `--static` 却仍引用 GLIBC" ✓ —— 那是模拟本身不自洽 ✓，不是代码错 ✗）⇒
+**真正验证它需要在 macOS 上打 Linux 包** ✓（或等用户反馈 ✓）；逻辑本身已按"同平台才运行 ✓、
+交叉从文件读 ✓、读不到则跳过并说明 ✓"改好 ✓。

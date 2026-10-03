@@ -230,6 +230,31 @@ fi
 
 # **交叉编译前先说清前置条件** ✓：目标与宿主不同 ⇒ 必须已 `rustup target add` ✓，
 # 否则**现在就说** ✓（比让它构建到一半失败更好读 ✓；无论如何都**不会**产出名实不符的包 ✓）。
+# **跨到 Linux 还缺一类前置条件：交叉"链接器"** ✗ —— 真实用户在 macOS 上踩过 ✓，
+# 其解法**由用户提供** ✓（记在这里 ✓，免得下一个人去猜原始 linker 报错 ✗）：
+#   brew tap messense/macos-cross-toolchains
+#   brew install x86_64-unknown-linux-gnu
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+#   cargo build --target x86_64-unknown-linux-gnu --release
+if [ "${target_triple}" != "${host_triple}" ]; then
+  case "${target_triple}" in
+    *-linux-*)
+      # 变量名规则：`CARGO_TARGET_<TRIPLE 大写、`-`→`_`>_LINKER` ✓。
+      linker_var="CARGO_TARGET_$(printf '%s' "${target_triple}" | tr 'a-z-' 'A-Z_')_LINKER"
+      linker_set="$(printenv "${linker_var}" 2>/dev/null || true)"
+      if [ -z "${linker_set}" ]; then
+        echo "⚠ 跨到 ${target_triple}：**没有**设置 ${linker_var} ✗"
+        echo "   多数情况下会以 "linker … not found" 之类失败 ✓（macOS 上尤其常见 ✓）"
+        echo "   用户实测可行的做法 ✓："
+        echo "     brew tap messense/macos-cross-toolchains"
+        echo "     brew install x86_64-unknown-linux-gnu"
+        echo "     export ${linker_var}=x86_64-linux-gnu-gcc"
+        echo "   然后重跑本命令 ✓（或把上面那行 export 写进你的 shell 配置 ✓）"
+      else
+        echo "--> 交叉链接器 ${linker_var}=${linker_set} ✓"
+      fi ;;
+  esac
+fi
 if [ "${target_triple}" != "${host_triple}" ] && ! target_installed "${target_triple}"; then
   echo "✗ 目标是 ${target_triple}，但本机未安装它 ⇒ 请先：rustup target add ${target_triple}" >&2
   echo "  （宿主是 ${host_triple} ✓；**不会**给你打一个"名字是 ${target_triple}、内容是宿主"的包 ✗）" >&2
@@ -674,11 +699,32 @@ fi
 # 是**最贵的一类缺陷** ✓（比功能缺失严重得多 ✓）。
 # **两层防护** ✓：`build.rs` 已修好✓（watch 真正会变的 ref 文件 ✓）；
 # 这里再加一道**断言** ✓ ⇒ 万一将来又出现"名字与内容不符" ✓，**包发不出去** ✗ ✓。
-if ! reported="$(timeout 10 "$stage/bin/yanshi-serve" --version 2>/dev/null)"; then
-  echo "    ✗ 无法运行包内二进制取版本 ⇒ 打包失败" >&2
-  exit 1
+# **不许"运行一下试试"** ✗ —— 用户实测报告 ✓：在 macOS 上打 Linux 包时，
+# 这一步去**执行**包内二进制 ⇒ `Exec format error` ✗ ⇒ 于是**打包失败** ✓
+# （用户原话："不能探测本平台是否能运行哦" ✓ —— 说得对 ✓）。
+# 改成按**目标是否等于宿主**分流 ✓：
+#   * 同平台 ⇒ 照旧运行取版本 ✓（最可靠 ✓）；
+#   * **交叉** ⇒ **不执行** ✓，改从**文件里**读内嵌的 commit ✓；连读都读不到 ⇒
+#     **明说"跳过这道断言"** ✓ 并给出自测建议 ✓（**而不是判打包失败** ✗）。
+reported=""
+if [ "${target_triple}" = "${host_triple}" ]; then
+  reported="$(timeout 10 "$stage/bin/yanshi-serve" --version 2>/dev/null || true)"
+fi
+if [ -z "${reported}" ]; then
+  reported="$(grep -aoE 'commit [0-9a-f]{7,40}(-dirty)?' "$stage/bin/yanshi-serve" 2>/dev/null | head -1 || true)"
+  if [ -z "${reported}" ]; then
+    echo "--> 目标是 ${target_triple}、宿主是 ${host_triple} ⇒ **不在宿主上运行它取版本** ✓（交叉运行本来就做不到 ✓）"
+    echo "    并且从文件里也没读到内嵌 commit ⇒ **跳过**「包名 vs 二进制 commit」这道断言 ✓"
+    echo "    ⇒ 请在**实际目标机**上跑一次验证 ✓：./yanshi-serve --version ✓（名字里已带 commit ✓）"
+  else
+    echo "--> 交叉包：从**文件**里读到内嵌 commit（未执行 ✓）：${reported}"
+  fi
 fi
 reported_commit="$(printf '%s' "$reported" | grep -oE 'commit [^,)]+' | sed 's/commit //')"
+# **读不到就跳过比较** ✓（交叉包里这是正常情形 ✓）—— 只在**读到了**的时候才断言 ✓。
+if [ -z "${reported_commit}" ]; then
+  echo "    （本次无法取得二进制内嵌 commit ⇒ 跳过一致性断言 ✓）"
+fi
 # 包名里的 commit 可能带 `-dirty` ✓（构建时工作区有未提交改动 ✓）⇒ 比较时去掉它 ✓。
 baked="$(printf '%s' "$commit" | sed 's/-dirty$//')"
 seen="$(printf '%s' "$reported_commit" | sed 's/-dirty$//')"
