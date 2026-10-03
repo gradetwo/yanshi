@@ -62,6 +62,38 @@ impl BlobEntry {
     }
 }
 
+/// **blob 的存储编码** ✓ —— 让存储层能压/解，同时**不破坏内容寻址** ✓。
+///
+/// **为什么需要它**（用户实测 + 我踩过的坑 ✓）：包里 91% 是**未压缩的原始 RGBA** ✓ ⇒ 存储时压一下能省约 5 倍 ✓。
+/// 但压缩**必须由存储层自己做** ✓：`put` **先**用**明文**算哈希 ✓、**再**决定怎么写 ✓。
+/// 曾经在 server 侧用一个装饰器"先压再交给内层" ✗ ⇒ 内层对**压缩流**算哈希 ✗
+/// ⇒ 导入端按**明文**对账时**对不上** ✗（实测：导入用户的真实包被拒 ✓）。
+/// 所以这里把它做成**存储自带的一层** ✓，而**不是**外部的包装 ✓。
+///
+/// 实现放在调用方（如 `yanshi-server` ✓）⇒ **core 不需要依赖 render** ✓，
+/// 也就不会形成依赖环 ✓。
+pub trait BlobCodec: Send + Sync + std::fmt::Debug {
+    /// 明文 ⇒ 落盘字节（**必须是** [`BlobCodec::decode`] 能还原的形式 ✓）。
+    fn encode(&self, plain: &[u8]) -> Vec<u8>;
+
+    /// 落盘字节 ⇒ 明文；**不是本编码能认的形式就回 `None`** ✓（调用方据此报错，绝不返回垃圾 ✗）。
+    fn decode(&self, stored: &[u8]) -> Option<Vec<u8>>;
+}
+
+/// **原样**（缺省）✓：内存存储与测试用它 ✓ —— 不压、也不多一次拷贝语义上的歧义 ✓。
+#[derive(Debug)]
+pub struct PlainCodec;
+
+impl BlobCodec for PlainCodec {
+    fn encode(&self, plain: &[u8]) -> Vec<u8> {
+        plain.to_vec()
+    }
+
+    fn decode(&self, stored: &[u8]) -> Option<Vec<u8>> {
+        Some(stored.to_vec())
+    }
+}
+
 /// 内容寻址存储接口。
 pub trait BlobStore: Send + Sync {
     /// **本存储是否遇到过"文件系统不支持 fsync"** ✓（真实用户报的第 2 条 ✓）。
@@ -383,9 +415,19 @@ pub struct FsBlobStore {
     /// **冷归档目录** ✓：与热区**同构** ✓（`<root>/cold/sha256/xx/yy/<hex>` ✓）⇒ 迁移就是"改名" ✓。
     /// 设计里它还有一层 zstd 压缩 ✓ —— **暂缓** ✓（依赖决策 ✓，见 trait 说明 ✓）。
     cold: PathBuf,
+    /// **存储编码** ✓：缺省原样 ✓；`yanshi-server` 会注入"仓库自带 deflate"那一版 ✓
+    /// ⇒ **哈希仍对明文算** ✓（详见 [`BlobCodec`] ✓）。
+    codec: std::sync::Arc<dyn BlobCodec>,
 }
 
 impl FsBlobStore {
+    /// **注入存储编码** ✓（builder 风格 ✓：必须在 `Arc` 包装**之前**调用 ✓）。
+    /// 传入的实现由调用方提供（如 `yanshi-server` 用仓库自带的 deflate ✓）⇒ core 不依赖 render ✓。
+    pub fn with_codec(mut self, codec: std::sync::Arc<dyn BlobCodec>) -> Self {
+        self.codec = codec;
+        self
+    }
+
     /// 打开（或创建）根目录。
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
@@ -397,6 +439,7 @@ impl FsBlobStore {
         Ok(Self {
             root,
             cold,
+            codec: std::sync::Arc::new(PlainCodec),
             unsupported_sync,
         })
     }
@@ -537,7 +580,9 @@ impl BlobStore for FsBlobStore {
         ));
         {
             let mut file = fs::File::create(&tmp).map_err(|error| io_error(&tmp, error))?;
-            file.write_all(bytes)
+            // **写入的是"编码后"的字节** ✓，而上面的哈希来自**明文** ✓ ⇒ 内容寻址语义不变 ✓。
+            let stored = self.codec.encode(bytes);
+            file.write_all(&stored)
                 .map_err(|error| io_error(&tmp, error))?;
             // **`sync_all` 在部分文件系统上不被支持** ✓（真实用户报的第 2 条 ✓）：
             // 9p / 某些网络挂载上 fsync 返回 `ENOTSUP`（os error 95 ✓）✗
@@ -556,10 +601,20 @@ impl BlobStore for FsBlobStore {
 
     fn get(&self, hash: &BlobHash) -> Result<Vec<u8>> {
         // **热区优先、冷归档兜底** ✓ —— 这就是设计说的"历史 blob 按需从归档取回（慢路径）" ✓。
-        match fs::read(self.path_of(hash)) {
-            Ok(bytes) => Ok(bytes),
-            Err(_) => fs::read(self.cold_path_of(hash)).map_err(|_| missing_blob(hash)),
-        }
+        let stored = match fs::read(self.path_of(hash)) {
+            Ok(bytes) => bytes,
+            Err(_) => fs::read(self.cold_path_of(hash)).map_err(|_| missing_blob(hash))?,
+        };
+        // **解不开就报错** ✗ —— 绝不把垃圾当数据返回 ✓（存储层最怕这个 ✓）。
+        self.codec.decode(&stored).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "blob {hash} 无法按当前存储编码解出（本仓库仍在开发期，旧格式不做兼容）"
+                )),
+            )
+            .with_blob(hash.to_string())
+        })
     }
 
     fn exists(&self, hash: &BlobHash) -> bool {

@@ -14421,3 +14421,28 @@ stored 那条**从没验过** ✗ ⇒ 正是"断言必须覆盖每条分支"的�
   `get`：读文件 ⇒ `zlib_decompress` ✓，**解不开报错** ✗；
 ③ 判据 ✓：**导入真实包仍须成功** ✓（本轮已绿 ✓，接压缩后**不许回退** ✗）、往返逐字节一致 ✓、
   落盘 ≤ 明文 1/4 ✓、不可压不膨胀 ✓、**并对同一份真实包对比 CAS 落盘与导出体积** ✓（预期各降约 5 倍 ✓）。
+
+### 🧱 第 30 轮：在 **core 里**做出"存储编码"这层 ✓✓（不搬 500 行代码 ✗，改用注入 ✓）
+
+**为什么不搬代码** ✓：deflate/inflate 在 `yanshi-render/src/png.rs` ✓（约 500 行 ✓，且测试模块里还有一份**对照实现** ✗）
+⇒ 整体搬迁风险高 ✗。**更好的做法** ✓：在 `yanshi-core` 定义一个**编码接口** ✓，由调用方**注入**实现 ✓
+⇒ **依赖方向不破** ✓（core 依然不依赖 render ✓）、**代码不搬** ✓、**内容寻址不破** ✓。
+**本轮改动（都在 core ✓）** ✓：
+1. `blob.rs` 新增 ✓：
+   * `pub trait BlobCodec: Send + Sync + Debug { fn encode(&self, plain) -> Vec<u8>; fn decode(&self, stored) -> Option<Vec<u8>>; }` ✓
+     —— 注释里**写明了那个坑** ✓（"曾经用 server 侧装饰器 ⇒ 内层对压缩流算哈希 ⇒ 导入对不上" ✓）；
+   * `PlainCodec`（原样 ✓，**缺省** ⇒ 行为不变 ✓）；
+   * `FsBlobStore` 增加 `codec` 字段 ✓ + `with_codec(…)` builder ✓（缺省 `PlainCodec` ✓）；
+   * `put`：**先** `BlobHash::from_bytes(bytes)`（**明文** ✓，保持原样 ✓）⇒ **再**写 `self.codec.encode(bytes)` ✓；
+   * `get`：读文件 ⇒ `self.codec.decode(&stored)` ✓，**`None` 就报错** ✗（绝不返回垃圾 ✓）。
+   顺带 ✓：`FsBlobStore` 的注释本来就写着冷归档"想做 zstd 压缩、**暂缓（依赖决策）**" ✓
+   ⇒ 仓库自带的 deflate 正合此意 ✓（**零新依赖** ✓）。
+2. **新判据** ✓ `crates/yanshi-core/tests/blob_codec.rs` ✓（两条，**都能红** ✓）：
+   * **哈希来自明文** ✓（`hash == BlobHash::from_bytes(plain)` ✓ —— 就是装饰器破坏的那条 ✗）+ 落盘**确实**是编码后的（标记字节 ⇒ 长度 +1 ✓）+ 读回逐字节一致 ✓；
+   * **解码器不认识的内容必须报错** ✗（先用原样写入、再用标记解码器读 ⇒ 必须 `Err` ✓）。
+   实测 ✓：`cargo test -p yanshi-core --test blob_codec` ⇒ **2 passed** ✓；全仓 `fmt`/`clippy`/`test` 全绿 ✓。
+**下一步（最后一步接线 ✓）** ✓：`yanshi-server` 里给 `FsBlobStore` 注入一个"render deflate"版 codec ✓
+（`encode = zlib_compress_best` ✓、`decode = zlib_decompress` ✓），在 `FileStore::blob_store()` 之后
+`.with_codec(Arc::new(RenderCodec))` ✓ ⇒ 然后**用用户那份真实包复测** ✓：
+判据 = **导入仍须成功** ✓（第 29 轮已绿 ✓，接压缩后**不许回退** ✗）+ **CAS 落盘与导出体积各降约 5 倍** ✓
+（基线已量 ✓：CAS 32M ✓）。
