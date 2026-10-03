@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 21 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
+当前共 26 个工具带示例，**全部经过实调验证**（见 `scripts/tool-example-acceptance.mjs`）。
 
 ## `begin_changeset`
 
@@ -87,6 +87,15 @@
 }
 ```
 
+## `create_group`
+
+```json
+{
+  "group_id": "x",
+  "layer_id": "L1"
+}
+```
+
 ## `create_layer`
 
 ```json
@@ -116,22 +125,41 @@
 
 ```json
 {
-  "data": {
-    "points": [
-      [
-        60,
-        180,
-        1
-      ],
-      [
-        140,
-        180,
-        1
-      ]
-    ]
-  },
+  "data": {},
   "layer_id": "L1"
 }
+```
+
+## `draw_text`
+
+```json
+{
+  "data": {},
+  "layer_id": "L1"
+}
+```
+
+## `duplicate_layer`
+
+```json
+{
+  "layer_id": "L1"
+}
+```
+
+## `erase`
+
+```json
+{
+  "data": {},
+  "layer_id": "L1"
+}
+```
+
+## `estimate_dehaze`
+
+```json
+{}
 ```
 
 ## `export_png`
