@@ -2288,9 +2288,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!("size", Number, false, "笔尖直径像素（缺省 24，上限 512）"),
-            param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（不给则用 .myb 自带色）"),
+            param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（**任一分量 > 1 即按 0..255 字节解释** ✓；不给则用 .myb 自带色）"),
             param!("points", Array, false, "自定义采样笔迹 [[x,y,pressure],…]；不给则用一条固定的缓 S 形 ✓（同一支笔刷 ⇒ 可复现 ✓）"),
-            param!("color_to", Any, false, "末端颜色 ⇒ 预览里也能看到**一笔多色** ✓（与落笔同一条实现 ✓）"),
+            param!("color_to", Any, false, "末端颜色（**写法同 color** ✓ ⇒ 任一分量 > 1 即按 0..255 字节解释 ✓）⇒ 预览里也能看到**一笔多色** ✓（与落笔同一条实现 ✓）"),
             param!("smooth", Boolean, false, "true ⇒ 与 brush_stroke 的 smooth 同一条平滑 ✓（预览所见 = 落笔所得）"),
             // **这两个实现里一直在读、参数面里却没有** ✗ —— 实测报错原话：
             // "brush_preview 不接受参数 hardness（拼写错误？）；可用参数：brush, si…" ✓

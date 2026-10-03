@@ -19,7 +19,11 @@ for (const tool of catalogue.tools || []) {
     if (!/colou?r/.test(name)) continue;
     checked += 1;
     const text = String(schema.description || "") + " " + String(tool.description || "");
-    if (!/>\s*1|大于 1|>1/.test(text)) offenders.push(`${tool.name}.${name}：描述没写「任一分量 > 1 即按字节」`);
+    const statesRule = />\s*1|大于 1|>1/.test(text);
+    // **"委托"也算说清** ✓：像 `color_to` / `medium_stroke.color` 写的"写法同 color" ✓，
+    // 指向的那个参数自己写着规则 ✓ ⇒ 不必每处都抄一遍 ✗（抄了反而会漂移 ✗）。
+    const delegates = /写法同|同 brush_stroke 的 color|同 color/.test(text);
+    if (!statesRule && !delegates) offenders.push(`${tool.name}.${name}：描述没写「任一分量 > 1 即按字节」也没指向写了的地方`);
   }
 }
 console.log(`  检查了 ${checked} 个颜色参数`);
