@@ -17,8 +17,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod blob_compression;
-
 pub mod annotations;
 pub mod archive;
 pub mod base64;
