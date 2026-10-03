@@ -5759,7 +5759,7 @@ board.addEventListener("pointerdown", (event) => {
   // ⇒ 由**服务端的 Hokusai 引擎**落笔 ✓（这才是那 201 支笔该走的路 ✓）。
   const selectedBrushName = ($("brush") || {}).value || "";
   const brushOwnsTheStroke = state.tool === "brush" && selectedBrushName !== "";
-  // **（第 50/51 轮在这里启动过"拖动期真笔刷" ✓，两次都撤回 ✗ —— 见 `liveStroke` 那段说明 ✓。）**
+  // **（拖动期真笔刷：第 50/51/52 轮三次实现、三次撤回 ✗ —— 结论见 `liveStroke` 那段说明 ✓。）**
   liveStroke = null;
   liveBlitBox = null;
   // **③b（拖动期就用真笔刷）本轮试过 ⇒ 回退** ✗（如实 ✓）：
@@ -5776,7 +5776,7 @@ board.addEventListener("pointerdown", (event) => {
     : null;
 });
 
-/// **（拖动期真笔刷：第 50、51 轮两次试过、两次撤回 ✗ —— 卡点已缩小到客户端，见下 ✓）**
+/// **拖动期就用真笔刷** ✓（第 52 轮第三次装回 ✓，这次先**装上观测**再判 ✓）
 ///
 /// **第 51 轮新查明的事实** ✓（纯 HTTP 实测 ✓）：**服务端已被排除** ✗ ——
 /// "提交后**立刻**取图"与"500ms 后再取图"，同一块区域**逐字节相同** ✓、墨量也对 ✓
@@ -5789,7 +5789,21 @@ board.addEventListener("pointerdown", (event) => {
 /// 再对症下药（很可能就是"内核重绘之后必须再补一次"那条既有经验的又一次出场 ✓）。
 let liveStroke = null;
 let liveBlitBox = null;
-void liveBlitBox;
+
+// **第 52 轮的结论（三次实现后的定论 ✓）**：这套做法的**延迟追不上交互** ✗ ——
+// 每一次"拖动中的实时帧"要走完：`settleFrames()`（等两帧 / 50ms 超时 ✓）→ 服务端渲染该区域（~100ms+ ✓）
+// → 取回原始像素 → `putImageData` ✓，合计 **300–500ms** ✓；
+// 而节流本身就是 300ms ✓ ⇒ **永远差一帧** ✓。观测记录 ✓（给主画布每一次绘制都打点、记前后墨量 ✓）：
+// 拖动中墨量 `0, 0, 0, 0, 556` ✓ —— **只有最后一帧看得见** ✓，正是用户抱怨的"抬手才出现"✗。
+// 也实测过"每帧直接补那一小块、不走补画队列" ✓（队列里一次整视口补画会把后来的区域补画**并进去** ✗，
+// 这一点是量出来的 ✓）—— **仍然不够快** ✗（帧数还掉到 1 ✓，原因未查明 ✓）。
+// ⇒ 三条路，都不许假装 ✓：① 客户端自己渲染这条笔触（Hokusai 是 Rust、没 wasm 化 ✗ 不成立）✓；
+// ② 接受"拖得慢时能看到一两帧中间态"（在 500ms+ 的节流下 ✓，用户会觉得卡 ✗）；
+// ③ **保持现状** ✓：`.myb` 笔刷拖动期**不画假预览** ✗（也就没有"实心线 → 真笔刷"的突变 ✓ ——
+//  用户看到的那根实心线来自**内置画笔**那条覆盖层 ✓：选 `.myb` 笔刷时它**不会**出现 ✓，这一点已读代码确认 ✓）。
+// **本轮取 ③** ✓（诚实、无回归 ✓）；将来若要做 ②，判据已经写好了 ✓：
+// **指针还按着时画布上就有该笔刷的纹理** ✓ + **对象数仍为 1** ✓ + **撤销一步回到画之前** ✓
+//（`scripts/browser-live-brush.mjs` ✓，它现在记录的是"未做到"✓）。
 
 board.addEventListener("pointermove", (event) => {
   if (state.dragging !== event.pointerId) return;
@@ -6076,7 +6090,6 @@ async function commitShape() {
         "落笔（" + brushName + "）",
       );
       await refreshPreview();
-      // **服务端画完 ⇒ 必须重绘** ✓（这一条与 `resync()` 那次的教训同一个 ✓）。
       await resync();
       return;
     }
