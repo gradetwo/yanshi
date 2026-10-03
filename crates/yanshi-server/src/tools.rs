@@ -10499,7 +10499,48 @@ fn load_brush(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, hokusa
     } else {
         format!("{brush_name}.myb")
     };
-    let path = ctx.workspace.resolve_asset("brush", &name)?;
+    // 名字放宽：精确 → 大小写不敏感 → 报错里给最接近的候选与清单指引（错误信息必须能指导下一步）。
+    let path = match ctx.workspace.resolve_asset("brush", &name) {
+        Ok(path) => path,
+        Err(original) => {
+            let all = ctx.workspace.list_assets("brush").unwrap_or_default();
+            let names: Vec<String> = all.iter().map(|entry| entry.name.clone()).collect();
+            let lowered = name.to_lowercase();
+            if let Some(exact_case) = names
+                .iter()
+                .find(|candidate| candidate.to_lowercase() == lowered)
+            {
+                let (found, brush) = load_brush(ctx, exact_case)?;
+                return Ok((found, brush));
+            }
+            let stem = name.trim_end_matches(".myb").to_lowercase();
+            let best = names
+                .iter()
+                .filter_map(|candidate| {
+                    let lower = candidate.to_lowercase();
+                    let shared = stem
+                        .chars()
+                        .zip(lower.chars())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    let hit = shared >= 3 || (stem.len() >= 3 && lower.contains(&stem));
+                    hit.then_some((shared, candidate))
+                })
+                .max_by_key(|(shared, _)| *shared);
+            let hint = match best {
+                Some((_, candidate)) => format!("你是不是要找 {candidate}？"),
+                None => "可用笔刷名见 list_assets{kind:\"brush\"}".to_owned(),
+            };
+            let _ = original;
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "找不到 brush「{name}」⇒ {hint}（名字可省 .myb、大小写不敏感 ✓；共 {} 支）",
+                    names.len()
+                )),
+            ));
+        }
+    };
     let json_text = std::fs::read_to_string(&path).map_err(|error| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,
