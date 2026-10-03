@@ -6916,6 +6916,11 @@ function setupBrushLibrary() {
     });
   }
   window.yanshiBrushLibrary = { render: renderBrushLibrary, setOpen };
+
+// 注册 Service Worker（离线优先 PWA 第一步）：失败不致命（file:// 或旧浏览器）。
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/service-worker.js").catch(() => undefined);
+}
 }
 
 // **在定义这一侧自初始化** ✓ —— 跨 `<script>` 段够不到函数名 ✗（见上面那条注释 ✓）；

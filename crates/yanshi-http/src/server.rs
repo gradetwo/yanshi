@@ -567,6 +567,30 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     }
     // 浏览器默认来取 favicon：SVG 走 icon-light（512 viewBox，缩到 16px 依然清晰），
     // PNG/ICO 走 assets/brand/png 里预先渲染好的尺寸。
+    // **离线优先 PWA 的两条路由**（目标 (A)① 第一步）：
+    //  `/service-worker.js` ⇒ 缓存外壳 ⇒ **服务端不在时页面仍能打开**；`/manifest.webmanifest` ⇒ 可安装。
+    if path == "/service-worker.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                SERVICE_WORKER_JS.as_bytes().to_vec(),
+            )
+            .with_header("Cache-Control", "no-cache"),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/manifest.webmanifest" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "application/manifest+json",
+                WEB_MANIFEST_JSON.as_bytes().to_vec(),
+            )
+            .with_header("Cache-Control", "public, max-age=3600"),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if path == "/favicon.svg" || path == "/favicon.png" || path == "/favicon.ico" {
         let file = match path {
             "/favicon.svg" => "svg/icon-light.svg",
@@ -1396,6 +1420,52 @@ const BRAND_FILES: [(&str, &str); 14] = [
     ("png/favicon.ico", "image/x-icon"),
     ("png/yanshi-icon-256.png", "image/png"),
 ];
+
+/// **Service Worker**（离线优先 PWA 第一步）：缓存外壳，服务端不在时页面仍能打开。
+const SERVICE_WORKER_JS: &str = r##""use strict";
+const SHELL = ["/", "/favicon.svg", "/brand/svg/icon-light.svg", "/brush-previews/index.json"];
+const CACHE = "yanshi-shell-v1";
+self.addEventListener("install", (event) => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await Promise.all(SHELL.map((url) => cache.add(url).catch(() => undefined)));
+    await self.skipWaiting();
+  })());
+});
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name)));
+    await self.clients.claim();
+  })());
+});
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(request);
+      if (response && response.ok && request.mode === "navigate") {
+        const cache = await caches.open(CACHE);
+        cache.put("/", response.clone()).catch(() => undefined);
+      }
+      return response;
+    } catch (error) {
+      const cached = await caches.match(request, { ignoreSearch: true });
+      if (cached) return cached;
+      const shell = await caches.match("/");
+      if (shell) return shell;
+      throw error;
+    }
+  })());
+});
+"##;
+
+/// **PWA manifest**（可安装）。
+const WEB_MANIFEST_JSON: &str = r##"{ "name": "偃师 Yanshi", "short_name": "偃师", "start_url": "/", "display": "standalone", "background_color": "#ffffff", "theme_color": "#ffffff", "icons": [ { "src": "/brand/svg/icon-light.svg", "sizes": "any", "type": "image/svg+xml" } ] }"##;
 
 /// `GET /brand/{file}` 与 favicon：只提供白名单里的品牌资源。
 fn brand_asset(state: &ServerState, file: &str) -> Response {
