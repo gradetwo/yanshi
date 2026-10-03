@@ -5845,8 +5845,12 @@ async function loadLocalBrushText(name) {
   const response = await fetch("/brushes/" + name + ".myb");
   if (!response.ok) throw new Error("笔刷文本 HTTP " + response.status);
   const text = await response.text();
-  localBrushText.set(name, text);
-  return text;
+  // **服务端顺带告诉我们的那件事** ✓（第 68 轮定的头 ✓）：会读画布的笔刷**不能**本地预览 ✓
+  //（门面没有 base 输入 ⇒ 两边起点不同 ⇒ 预览会漂 ✗）。判定是**服务端那一处**算的 ✓，这里只读 ✓。
+  const readsCanvas = response.headers.get("X-Yanshi-Brush-Reads-Canvas") === "1";
+  const entry = { text, readsCanvas };
+  localBrushText.set(name, entry);
+  return entry;
 }
 
 function liveColour() {
@@ -5890,7 +5894,22 @@ async function paintLiveFrame() {
   livePaintBusy = true;
   try {
     const api = await loadLocalBrushModule();
-    const myb = await loadLocalBrushText(liveStroke.name);
+    const brush = await loadLocalBrushText(liveStroke.name);
+    if (brush.readsCanvas) {
+      // **承认边界，而不是给一个会漂的预览** ✓（第 68 轮定 ✓）：涂抹 / colorize 一类要靠"抹开画布上
+      // 已有的颜色"工作 ✓，而门面没有 base 输入 ✗ ⇒ 本地渲染会与服务端不一致 ✗。
+      stats.localBrushReadsCanvasSkips = (stats.localBrushReadsCanvasSkips || 0) + 1;
+      if (!stats.localBrushReadsCanvasLogged) {
+        stats.localBrushReadsCanvasLogged = true;
+        log(
+          "这支笔刷会读画布（涂抹一类）⇒ 本次拖动不做本地预览 ✓（抬手仍由服务端落笔 ✓，所见即所存 ✓）",
+          "#c93",
+        );
+      }
+      liveStroke = null;      // 这一笔不再尝试 ✓（免得每帧白跑一趟 ✗）
+      return;
+    }
+    const myb = brush.text;
     const region = liveRegion(liveStroke.size);
     if (!region) return;
     const request = JSON.stringify({
