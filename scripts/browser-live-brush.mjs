@@ -145,6 +145,14 @@ const requestedBrush = process.env.BRUSH || "spray";
 // 并用 `highlighted` 校验 ✓。所以这里先试画笔库 ✓，找不到再退回 `setBrush`（覆盖工具名 ✓）。
 let pickedFromLibrary = null;
 try {
+  // **先打开画笔库面板** ✗ —— 实测：面板默认 `hidden` ✓，**行只在打开时才渲染**
+  //（`setupBrushLibrary()` 里 `setOpen(true)` 才去拉笔刷列表 ✓，见 `viewer.rs:6843` ✓）。
+  await evaluate(`(() => {
+    const panel = document.getElementById("brushLibrary");
+    const open = document.getElementById("brushLibraryOpen");
+    if (panel && panel.hidden && open) open.click();
+    return !!(panel && !panel.hidden);
+  })()`);
   await waitFor(`window.yanshi.brushLibraryState().rows > 20`, "画笔库列表渲染", 20000);
   pickedFromLibrary = await evaluate(`(() => {
     const wanted = ${JSON.stringify(requestedBrush)};
