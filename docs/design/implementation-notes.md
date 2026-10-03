@@ -11040,3 +11040,30 @@ tool_call_renders_region_and_serves_png_from_cas …（以及另外几条）
 把"初始就有一层"做进去 ✓；判据仍是 `scripts/tool-session-semantics.mjs`（现在 6/7 ✓，红的正是"新文档自带图层"那两条 ✓）。
 **今天第几次"改一半/想当然"了** ✗：锚点 ✗、正则排版 ✗、只改请求体不改断言 ✗、以及这次"以为只是撞名" ✗ ——
 共同的解药只有一条 ✓：**先读清再改，并且一次改全** ✓。
+
+### 🎯 第 130 轮：默认图层第三次尝试 —— **方向对了，代价从 6 条降到 2 条** ✓（先回退保绿 ✓）
+
+**这次的做法**（纠正后的设计 ✓）：把它放进 **`AtomKind::CreateDocument` 的 fold 分支** ✓
+（`crates/yanshi-core/src/fold.rs:619` ✓）—— 即**初始状态**里就有一层 ✓，**不额外产生原子** ✓：
+```rust
+let default_layer_id = "layer_default".to_owned();
+state.layers.insert(default_layer_id.clone(), Layer { /* 与 CreateLayer 同一套默认值 */ });
+```
+**实测** ✓：**编译通过** ✓；`cargo test` 从上次的 **6 条集成测试红** ✗ 降到 **2 条 core 单元测试红** ✗：
+```
+fold::tests::reorder_layers_is_absolute_and_last_writer_wins
+seq::tests::state_at_is_stable_and_cached
+```
+⇒ **"进初始 fold"确实是对的** ✓（不再动摇日志形状 ⇒ 那些数原子/持久化/渲染区域的集成测试**都不动了** ✓），
+剩下的 2 条只是**写死了"新文档没有图层"**的期望 ✓ —— 属于**有意的行为变更**下必须同步更新的测试 ✓。
+**为什么这一轮还是回退** ✗：按纪律**不提交红的树** ✓；而这 2 条要**读清再改** ✓（今天已经因为"猜"栽了三次 ✗：
+锚点 ✗、正则排版 ✗、只改请求体不改断言 ✗）。⇒ 回退 ✓，`main` 保持全绿 ✓（786 / 0 FAILED ✓）。
+**下一轮的确切清单** ✓（就这两条 ✓，都是 `yanshi-core` 内部单测 ✓）：
+1. 读 `fold::tests::reorder_layers_is_absolute_and_last_writer_wins` ✓ 与
+   `seq::tests::state_at_is_stable_and_cached` ✓，看清它们**在哪一步数图层 / 比状态** ✓；
+2. 同一次改动里：fold 分支加默认图层 ✓ **+** 这两条期望同步更新 ✓（**一起改** ✗ 不许再改一半 ✓）；
+3. 重跑全量 ✓ ⇒ 集成测试那 6 条应当**本来就不受影响** ✓（本轮实测支持这一点 ✓）；
+4. 判据 `scripts/tool-session-semantics.mjs` 届时最后两条应转绿 ✓（现在 6/7 ✓）。
+**另一种更保守的选项** ✓（留给决策 ✓）：若不想动 core 的既有单测 ✓，可以让默认图层**只在"文档被新建"的
+那两条入口**（HTTP 建文档 ✓ / `new_document` ✓）触发 ✓ —— 但那就回到"加原子"的老问题 ✗
+（正是让 6 条集成测试红的那个做法 ✓）⇒ **仍推荐 fold 这条路** ✓。
