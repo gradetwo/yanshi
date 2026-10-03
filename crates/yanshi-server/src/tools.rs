@@ -12445,7 +12445,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("lock_layer", r#"{"layer_id": "layer_default"}"#),
     // 第 (5) 条继续扩 ✓：必填只有 `layer_id` ✓ ⇒ 用新建文档自带的 `layer_default` ✓（机器普查选出 ✓）。
     ("unlock_layer", r#"{"layer_id": "layer_default"}"#),
-    // **`get_object_history` 不能作为单条示例** ✗ —— 判据实测报"对象 s1 不存在" ✓：
+    // **多步示例** ✓（第 258 轮机制 ✓ + 本轮的测试与脚本 ✓）：数组 ⇒ 先画一个 `s1`、再查它的历史 ✓。
+    (
+        "get_object_history",
+        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "s1", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_object_history", "arguments": {"object_id": "s1"}}]"#,
+    ),
     // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
     //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。
     ("list_layers", r#"{}"#),
@@ -12516,6 +12520,48 @@ mod tests {
             let declared: Vec<&str> = spec.params.iter().map(|parameter| parameter.name).collect();
             let parsed: serde_json::Value = serde_json::from_str(example)
                 .unwrap_or_else(|error| panic!("{name} 的示例不是合法 JSON：{error}"));
+            // **多步示例**（第 258 轮加的机制 ⇒ 这里必须一起学会 ✓）：数组 ⇒
+            // 逐条按"**那一步对应工具**的参数面"校验 ✓，并要求**最后一步是该工具本身** ✓。
+            // 只改一半的教训已记档（第 259 轮 ✓）：机制与守它的测试必须**一起改** ✗。
+            if let Some(steps) = parsed.as_array() {
+                let last = steps.last().expect("多步示例不能是空数组");
+                assert_eq!(
+                    last.get("tool").and_then(serde_json::Value::as_str),
+                    Some(*name),
+                    "{name} 的多步示例**最后一步必须是它自己**"
+                );
+                for step in steps {
+                    let step_tool = step
+                        .get("tool")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_else(|| panic!("{name} 的多步示例缺少 tool 字段"));
+                    let step_spec = super::ALL_TOOLS
+                        .iter()
+                        .find(|tool| tool.name == step_tool)
+                        .unwrap_or_else(|| {
+                            panic!("{name} 的多步示例引用了不存在的工具：{step_tool}")
+                        });
+                    let step_declared: Vec<&str> = step_spec
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.name)
+                        .collect();
+                    let arguments = step
+                        .get("arguments")
+                        .expect("多步示例的每一步都要有 arguments");
+                    for key in arguments
+                        .as_object()
+                        .expect("arguments 应当是 JSON 对象")
+                        .keys()
+                    {
+                        assert!(
+                            step_declared.contains(&key.as_str()),
+                            "{step_tool} 的这一步用了 `{key}`，但它的参数面里没有它 ⇒ 抄走会被拒；declared = {step_declared:?}"
+                        );
+                    }
+                }
+                continue;
+            }
             for key in parsed.as_object().expect("示例应当是一个 JSON 对象").keys() {
                 assert!(
                     declared.contains(&key.as_str()),

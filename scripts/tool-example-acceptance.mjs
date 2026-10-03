@@ -54,9 +54,27 @@ for (const tool of withExample) {
     console.log(`  ✓ create_layer：**成功** ✓（就是上面那次前置运行）`);
     continue;
   }
+  // **多步示例** ✓：数组 ⇒ 先按顺序跑前置 ✓、**最后一步必须是它自己** ✓；非数组仍走原路 ✓（向后兼容 ✓）。
+  let finalArguments = tool.example;
+  if (Array.isArray(tool.example)) {
+    let setupFailure = null;
+    for (const step of tool.example.slice(0, -1)) {
+      const setup = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: step.tool, arguments: step.arguments }),
+      }).then((r) => r.json());
+      if (!setup.ok) { setupFailure = `${step.tool} ⇒ ${String((setup.context || {}).detail || "").slice(0, 70)}`; break; }
+    }
+    if (setupFailure) { rejected += 1; console.log(`  ✗ ${tool.name}：**多步示例的前置失败** ⇒ ${setupFailure}`); continue; }
+    const last = tool.example[tool.example.length - 1];
+    if (last.tool !== tool.name) {
+      rejected += 1; console.log(`  ✗ ${tool.name}：多步示例的**最后一步必须是它自己**（实测 ${last.tool} ✗）`); continue;
+    }
+    finalArguments = last.arguments;
+  }
   const response = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ tool: tool.name, arguments: tool.example }),
+    body: JSON.stringify({ tool: tool.name, arguments: finalArguments }),
   }).then((r) => r.json());
   const detail = (response.context || {}).detail || "";
   // **鉴权失败 ⇒ 判据无效** ✗（不是"通过"）：工具根本没执行，谈不上"参数被接受"。
