@@ -174,6 +174,12 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   .brush-lib-row .name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   .brush-lib-row .group { font-size: 11px; opacity: .65; flex: none; }
+  /* **画笔区可折叠** ✓（用户："画笔那块区域应该可以更紧凑和可隐藏"✓）——
+     折叠只**隐藏**这些控件 ✓，不改任何状态 ✓（选中的笔、颜色、平滑都不动 ✓）。 */
+  body.brush-area-collapsed .brush-control { display: none; }
+  /* **快捷键按到哪一张卡** ✓（`P` / `T`）：给个看得见的落点 ✓，不然"按了没反应"✗。 */
+  #assetDock .asset-dock-target { outline: 2px solid var(--accent, #2b6cb0); outline-offset: 3px;
+    border-radius: 6px; }
   #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   #assetDock .asset-dock-head .hint { flex: 1; }
   .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
@@ -341,9 +347,13 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **三条落笔路径写清楚** ✓（用户："三套笔触系统机制不清晰 / Web 端同样无说明" ✗）：
          画笔（`.myb`，Hokusai ✓）· 介质（插件 ✓）· 内置画笔（纯几何 ✓）——
          以及**能力边界** ✓：每条只作用于**当前图层** ✓，跨图层只是普通叠加 ✓、介质的湿搅**不跨层** ✓。 -->
-    <span class="hint" id="strokeSystemHint"
+    <span class="hint brush-control" id="strokeSystemHint"
           title="画笔 = MyPaint .myb（Hokusai 引擎）；介质 = 我们自己的插件（油画/水彩/…）；内置画笔 = 纯几何无物理。每条笔触只作用于当前图层：跨图层只是普通叠加，介质的湿搅/混色不跨层。">三条落笔路径 · 只作用于当前图层</span>
-    <label>笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
+    <!-- **折叠 / 展开画笔区** ✓（用户："更紧凑和可隐藏"✓）—— 状态在 `body` 的类上 ✓，
+         一行 CSS 决定显隐 ✓（不给每个控件写一遍 `hidden` ✗ —— 那会漏掉后来新增的 ✓）。 -->
+    <button id="brushAreaToggle" type="button" aria-pressed="false"
+            title="折叠 / 展开画笔区（快捷键 \ 也可；折叠只隐藏控件，不改你选好的笔与颜色）">画笔 ▾</button>
+    <label class="brush-control">笔刷 <select id="brush" title="MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）">
       <option value="">（内置画笔）</option>
     </select></label>
     <!-- **预览** ✓（用户："201 支笔刷只有一个名字 ⇒ 选笔全凭猜，**web 上也是**"✗）：
@@ -352,26 +362,26 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <!-- **平滑** ✓（用户："12 瓣花手写 60 个坐标"✗）：勾上 ⇒ 工具层把控制点当
          **Catmull-Rom 样条**（曲线过这些点 ✓、不把它们拉走 ✓）——
          与 MCP 那边是**同一个参数**（`brush_stroke.smooth` / `draw_stroke.data.smooth` ✓）。 -->
-    <label title="把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角">
+    <label class="brush-control" title="把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角">
       <input id="smooth" type="checkbox" checked /> 平滑
     </label>
     <!-- **素材浮层** ✓（用户："画笔区快捷方式、点开浮出来" ✓）：把**调色板 / 纹理**两张卡
          浮到画布上方 ✓ —— 点一下开 ✓、再点一下收 ✓；卡本身是**搬过去再搬回来**，
          不是重建 ✗（上一版把面板弄空 ✓ 就是栽在"重建/丢了原来的位置"上 ✓）。 -->
-    <button id="brushLibraryOpen" type="button" aria-pressed="false"
+    <button id="brushLibraryOpen" class="brush-control" type="button" aria-pressed="false"
             title="笔刷库：每支笔刷都带**真实落笔**的效果图（滚到哪画到哪）；点一行就换那支笔">笔刷库</button>
-    <button id="assetFloat" type="button" aria-pressed="false"
+    <button id="assetFloat" class="brush-control" type="button" aria-pressed="false"
             title="把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）">素材</button>
-    <span id="brushPreviewWrap" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
+    <span id="brushPreviewWrap" class="brush-control" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
       <img id="brushPreview" alt="" style="display:none;vertical-align:middle;border:1px solid #ccc;background:#fff;max-width:160px;max-height:64px" />
       <span id="brushPreviewHint" class="hint"></span>
     </span>
     <!-- **搜索** ✓（目标 ⑥ ✓）：库里 199 支 ✓ ⇒ 一个长下拉里"翻着找"是**没有界面设计** ✗ ——
          下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
-    <label>搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
-    <button id="brushFavorite" type="button" title="把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）">★ 收藏</button>
-    <span id="brushSearchHint" class="hint"></span>
-    <span id="brushFavoriteHint" class="hint"></span>
+    <label class="brush-control">搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
+    <button id="brushFavorite" class="brush-control" type="button" title="把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）">★ 收藏</button>
+    <span id="brushSearchHint" class="hint brush-control"></span>
+    <span id="brushFavoriteHint" class="hint brush-control"></span>
     <!-- **懒加载与搜索的触发，必须写在这里** ✓ —— 不能写在页面主脚本里 ✗。
          实测（真实教训 ✓）：主脚本里那些函数**不是全局** ✓（`typeof refreshBrushOptions === "undefined"` ✗），
          而"点开下拉才装载"这条线`title` 里承诺了很久 ✓、却**从未真正接上** ✗
@@ -4216,15 +4226,68 @@ function setupAssetDock() {
     button.textContent = open ? "素材（已浮出）" : "素材";
   };
   button.addEventListener("click", () => setOpen(dock.hidden));
+  // **折叠 / 展开画笔区** ✓（类加在 `body` 上 ✓ ⇒ 一行 CSS 管全部 ✓）。
+  const areaToggle = $("brushAreaToggle");
+  const setCollapsed = (collapsed) => {
+    document.body.classList.toggle("brush-area-collapsed", !!collapsed);
+    if (areaToggle) {
+      areaToggle.setAttribute("aria-pressed", String(!!collapsed));
+      areaToggle.textContent = collapsed ? "画笔 ▸" : "画笔 ▾";
+    }
+    return !!collapsed;
+  };
+  if (areaToggle) areaToggle.addEventListener("click", () => setCollapsed(!document.body.classList.contains("brush-area-collapsed")));
+  window.yanshiBrushArea = {
+    collapsed: () => document.body.classList.contains("brush-area-collapsed"),
+    setCollapsed,
+  };
+  // **快捷键** ✓：`P` / `T` 浮出对应卡片 ✓、`\\` 折叠画笔区 ✓、`Esc` 收起浮层 ✓。
+  // **只认没有修饰键、且焦点不在输入框** ✓（否则打字会误触 ✓ —— 与既有键盘处理同一条规矩 ✓）。
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) return;
+    if (event.key === "p" || event.key === "P") {
+      setOpen(true);
+      focusCard("cardPalette");
+    } else if (event.key === "t" || event.key === "T") {
+      setOpen(true);
+      focusCard("cardTexture");
+    } else if (event.key === "\\") {
+      setCollapsed(!document.body.classList.contains("brush-area-collapsed"));
+    }
+  });
   if (close) close.addEventListener("click", () => setOpen(false));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !dock.hidden) setOpen(false);
   });
+  // **快捷键：`P` 调色板 / `T` 纹理** ✓（用户："点击或者快捷键"✓）——
+  // 落到 `window.yanshiDock` 上做 ✓，因为这段脚本与别处**跨段** ✓（够不到函数名 ✗，规矩见上 ✓）。
+  const focusCard = (id) => {
+    const card = $(id);
+    if (!card) return;
+    for (const other of ["cardPalette", "cardTexture"]) {
+      const node = $(other);
+      if (node) node.classList.toggle("asset-dock-target", other === id);
+    }
+    if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "nearest" });
+  };
+  window.yanshiDockFocus = focusCard;
   // **给探针一个确定的入口** ✓（与 `window.yanshi` 上其它入口同一条纪律 ✓）。
   window.yanshiDock = {
     open: () => setOpen(true),
     close: () => setOpen(false),
     isOpen: () => !dock.hidden,
+    focus: focusCard,
+    autoClose: () => {
+      const box = $("dockAutoClose");
+      return !!(box && box.checked);
+    },
+    setAutoClose: (on) => {
+      const box = $("dockAutoClose");
+      if (box) box.checked = !!on;
+      return !!(box && box.checked);
+    },
     homes: () => homes.map((home) => ({ id: home.node.id, parent: home.parent && home.parent.id })),
     where: () => homes.map((home) => home.node.parentNode && home.node.parentNode.id),
   };
@@ -4349,6 +4412,10 @@ async function setupAssetPanels() {
           paletteInfo.textContent =
             "已取 " + color.hex + (color.name ? "（" + color.name + "）" : "") + " ⇒ " + where + " ✓";
         }
+        // **用完即收** ✓（用户："设置完毕就关闭或者隐藏"✓）—— 取完色就把浮层收回去 ✓，
+        // 前提是那个开关还勾着 ✓（想连着试几个色就取消勾选 ✓）。
+        const autoClose = $("dockAutoClose");
+        if (autoClose && autoClose.checked && window.yanshiDock) window.yanshiDock.close();
       });
       swatches.appendChild(chip);
     }
@@ -7113,7 +7180,14 @@ $("importFile").addEventListener("change", async (event) => {
 <div id="assetDock" hidden>
   <div class="asset-dock-head">
     <strong>素材</strong>
-    <span class="hint">调色板 / 纹理 · 点画布上方「素材」或这里收起</span>
+    <!-- **快捷键** ✓（用户："点击或者快捷键，调色盘/纹理的窗口就可以浮出"✓）：
+         `P` ⇒ 调色板、`T` ⇒ 纹理、`Esc` ⇒ 收起 ✓。 -->
+    <span class="hint">`P` 调色板 · `T` 纹理 · `Esc` 收起</span>
+    <!-- **用完即收** ✓（用户："设置完毕就关闭或者隐藏"✓）—— 默认**勾上** ✓（这就是他要的手感 ✓），
+         但可关 ✓（想连点几个色块试的时候别被收走 ✗）。 -->
+    <label class="hint" title="勾上：取完色就把浮层收起（想连续试色就取消勾选）">
+      <input id="dockAutoClose" type="checkbox" checked /> 用完即收
+    </label>
     <button id="assetDockClose" type="button">收起</button>
   </div>
   <div id="assetDockBody"></div>

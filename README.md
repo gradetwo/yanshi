@@ -212,6 +212,13 @@ hidden, because naming a layer to export is an explicit request, and it delibera
 that cache is keyed by region and version but not by layer, so reusing it could return another layer's pixels, which
 is the classic cache-key-missing-a-dimension bug and one that only shows up on a cache hit.
 
+The brush area can be collapsed to a single toggle, which only hides the controls and leaves the chosen brush,
+colour and smoothing untouched, so folding it away is never a way to lose a setting. The palette and texture cards
+float above the canvas from the same row, by button or by key: P brings the palette up, T the texture, Escape puts
+it back, and a backslash folds the brush area. Whichever card a key asked for gets a visible outline, because a
+key that appears to do nothing is indistinguishable from a broken one. The dock carries an auto close box, on by
+default, so picking a colour puts it away, and turning it off is how you keep it open through several swatches.
+
 Both texture and gradient can be limited to the current selection with a checkbox; the region comes from the
 selection the server reports rather than from anything guessed locally, and the viewer syncs the selection's shape and
 not just its description, so a selection made through MCP or another client is drawn and honoured here too. If the
