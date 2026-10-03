@@ -64,6 +64,11 @@ pub struct HttpOptions {
     pub brand_dir: Option<PathBuf>,
     /// 介质插件目录（设计 11.1）：`GET /mediums/{file}` ✓。
     pub medium_dir: Option<PathBuf>,
+    /// **`.myb` 笔刷的 wasm 门面** ✓（第 58 轮起：浏览器本地渲染真笔刷 ✓）。
+    ///
+    /// 指向**一个文件** ✓（`GET /brush-module.wasm` ✓）—— 不拼接路径 ⇒ 没有穿越面 ✓。
+    /// 缺省是仓库里的构建产物路径 ✓；包里由打包脚本放到 `share/yanshi/` 下并显式指过来 ✓。
+    pub brush_wasm: Option<PathBuf>,
     /// **随发行包发布的资产根目录** ✓（仓库里是 `assets/` ✓；包内是 `share/yanshi` ✓）。
     ///
     /// **为什么与介质同类** ✓：它们都是**发行物的一部分** ✓ ⇒ 由命令行指定 ✓、
@@ -111,6 +116,10 @@ impl Default for HttpOptions {
             wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
             brand_dir: Some(PathBuf::from("assets/brand")),
             medium_dir: Some(PathBuf::from("assets/mediums")),
+            // 门面是**构建产物** ✓（与 `crates/yanshi-wasm/pkg` 同一性质 ✓）⇒ 缺省指向 target 里那份 ✓。
+            brush_wasm: Some(PathBuf::from(
+                "target/wasm32-unknown-unknown/release/yanshi_brush_wasm.wasm",
+            )),
             assets_dir: Some(PathBuf::from("assets")),
         }
     }
@@ -138,6 +147,8 @@ impl HttpOptions {
                 "--no-wasm" => options.wasm_dir = None,
                 "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
                 "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
+                "--brush-wasm" => options.brush_wasm = Some(value_of("--brush-wasm")?.into()),
+                "--no-brush-wasm" => options.brush_wasm = None,
                 "--assets-dir" => options.assets_dir = Some(value_of("--assets-dir")?.into()),
                 "--no-assets" => options.assets_dir = None,
                 "--no-mediums" => options.medium_dir = None,
@@ -524,6 +535,20 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
         return match method {
             "GET" => medium_asset(state, file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/brush-module.wasm" {
+        // **`.myb` 笔刷的 wasm 门面** ✓ —— 固定一个文件 ✓（不拼接路径 ⇒ 不可能借它读到别的东西 ✓）。
+        return match method {
+            "GET" => brush_module_asset(state),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if let Some(file) = path.strip_prefix("/brushes/") {
+        // **`.myb` 文本** ✓（浏览器拿它喂门面 ✓）—— 与 `/mediums/` **同一条白名单规矩** ✓。
+        return match method {
+            "GET" => brush_text_asset(state, file),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -1154,6 +1179,39 @@ const SAMPLE_FILES: [&str; 6] = [
     "sample-lake.png",
     "sample-yanshi.png",
 ];
+
+/// `GET /brush-module.wasm`：把**门面**发给浏览器 ✓（第 58 轮证明它与服务端**逐字节相同** ✓）。
+fn brush_module_asset(state: &ServerState) -> Response {
+    let Some(path) = state.options.brush_wasm.as_ref() else {
+        return crate::http::not_found("这一份服务端没有配置笔刷门面（--brush-wasm）");
+    };
+    match std::fs::read(path) {
+        Ok(bytes) => Response::bytes(200, "application/wasm", bytes),
+        Err(_) => crate::http::not_found(format!(
+            "笔刷门面还没构建：{}（跑 `cargo build -p yanshi-brush-wasm --target wasm32-unknown-unknown --release` ✓）",
+            path.display()
+        )),
+    }
+}
+
+/// `GET /brushes/{file}.myb`：把**笔刷文本**发给浏览器 ✓。
+///
+/// **只接受直接位于笔刷目录下、以 `.myb` 结尾的名字** ✓（与 `/mediums/` 同一条规矩 ✓：
+/// 拒 `..`、`/`、`\\`、其它扩展名 ✓ ⇒ 不可能借它读到仓库里别的文件 ✓）。
+fn brush_text_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..") || file.contains('/') || file.contains('\\') || !file.ends_with(".myb") {
+        return crate::http::bad_request("非法笔刷名（只接受笔刷目录下的 *.myb）");
+    }
+    let Some(root) = state.options.assets_dir.as_ref() else {
+        return crate::http::not_found("这一份服务端没有配置资产目录（--assets-dir）");
+    };
+    let path = root.join("brushes").join(file);
+    match std::fs::read(&path) {
+        // `.myb` 就是 JSON ✓ ⇒ 报 `application/json` ✓（浏览器按文本读 ✓）。
+        Ok(bytes) => Response::bytes(200, "application/json; charset=utf-8", bytes),
+        Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", path.display())),
+    }
+}
 
 fn sample_asset(file: &str) -> Response {
     if !SAMPLE_FILES.contains(&file) {
