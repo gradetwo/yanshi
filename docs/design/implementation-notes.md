@@ -13222,3 +13222,24 @@ EXIT=0 ✓｜包名 triple: x86_64-unknown-linux-gnu ✓
 **我第一次跑"干净树"那一侧是红的** ✗（条数 1 ✓）⇒ 原因不是代码 ✓：**我的改动自己还没提交** ✓ ⇒
 树**本来就 dirty** ✓（提示出现是**对的** ✓）⇒ 所以先**提交** ✓，再在**真干净**的树上复验 ✓ ——
 **这正是"判据的前提不成立"与"被判对象不成立"要分清** ✓（我前面也栽过一次同类 ✓）。
+
+### 🔎 第 236 轮：下一批示例的**可确证调用形状**已普查 ✓（不凭记忆编 ✓）
+
+**做法** ✓：在第 (5) 条继续扩之前 ✓，先在**仓库里**（测试与脚本 ✓）找这些工具**现成的调用** ✓——
+只有找到的才写进示例 ✓（否则宁可先读 schema ✓ 或跳过 ✓，**绝不编参数** ✗）。
+**普查结果（前若干条 ✓）** ✓：
+- `update_object` ⇒ 1725:        "update_object",
+- `transform_object` ⇒ 63:            "transform_object",
+- `convert_to_shape` ⇒ 141:            "convert_to_shape",
+- `create_selection` ⇒ 110:            "create_selection",
+- `delete_selection` ⇒ 154:            "delete_selection",
+- `reorder_layers` ⇒ 47:            "reorder_layers",
+- `get_diff` ⇒ 193:        registry.call(&mut ctx, "get_diff", &json!({"from_seq": 0}))
+- `find_atom` ⇒ 128:        registry.call(&mut ctx, "find_atom", &json!({"object_id": "s1"}))
+- `get_object_history` ⇒ 62:        registry.call(&mut ctx, "get_object_history", &json!({"object_id": "s1"}))
+- `import_psd` ⇒ 68:            "import_psd",
+
+**下一步** ✓：把上面**有现成调用**的 ✓ 按同一形状补进 `TOOL_EXAMPLES` ✓ ⇒
+跑 `scripts/tool-example-acceptance.mjs` ✓（它**真的执行**每个示例 ✓）⇒ **判据报数** ✓ ⇒ 全绿才提交 ✓。
+**没有现成调用的** ✗ ⇒ 先读它的 `inputSchema` ✓（`/api/tools` 就能拿到 ✓）再写 ✓ ⇒
+**不许猜** ✗（猜错的示例会被判据当场打红 ✓，那是设计如此 ✓）。
