@@ -12445,6 +12445,26 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("lock_layer", r#"{"layer_id": "layer_default"}"#),
     // 第 (5) 条继续扩 ✓：必填只有 `layer_id` ✓ ⇒ 用新建文档自带的 `layer_default` ✓（机器普查选出 ✓）。
     ("unlock_layer", r#"{"layer_id": "layer_default"}"#),
+    // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
+    (
+        "get_dependency_graph",
+        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p0", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_dependency_graph", "arguments": {"object_id": "p0"}}]"#,
+    ),
+    // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
+    (
+        "get_resolved_state",
+        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p1", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_resolved_state", "arguments": {"object_id": "p1"}}]"#,
+    ),
+    // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
+    (
+        "get_ancestors",
+        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p2", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_ancestors", "arguments": {"object_id": "p2"}}]"#,
+    ),
+    // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
+    (
+        "get_descendants",
+        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p3", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_descendants", "arguments": {"object_id": "p3"}}]"#,
+    ),
     // **多步示例** ✓（第 258 轮机制 ✓ + 本轮的测试与脚本 ✓）：数组 ⇒ 先画一个 `s1`、再查它的历史 ✓。
     (
         "get_object_history",
