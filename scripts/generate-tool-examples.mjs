@@ -42,10 +42,11 @@ const source = readFileSync(path, "utf8");
 const start = source.indexOf("pub const TOOL_EXAMPLES");
 const end = source.indexOf("];", start);
 let block = source.slice(start, end);
-const have = new Set();
-for (const chunk of block.split("(\n")) {
-  if (chunk.includes('r#"')) have.add(chunk.split('"')[1]);
-}
+// **解析要覆盖两种排版** ✗ —— `cargo fmt` 会把短条目压成一行（`("name", r#"…"#),`），
+// 只认多行形态会漏判 ⇒ 漏判会导致"重复收录/覆盖已有条目"（第 4 轮就是这么把表弄坏的 ✗）。
+const have = new Set(
+  [...block.matchAll(/\("([^"]+)",\s*r#"/g)].map((match) => match[1]),
+);
 console.log(`  已有示例 ${have.size} 条；清单 ${tools.size} 个工具`);
 
 await call("create_layer", { layer_id: "L1", name: "Layer 1" });
