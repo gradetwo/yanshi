@@ -14846,3 +14846,30 @@ async function callTool(name, args, options = {}) {
 **判据验收** ✓：**离线增量 ≥ 在线一半** ✓ + **SW 缓存有门面** ✓（后者已绿 ✓）。
 **为什么这条值得单独记** ✓：它不是"某个分支写错了" ✗，而是**一个选项的作用域**比它的语义窄 ✗
 ⇒ 于是"我传了 `refresh:false`"✓ 与"它真的不刷新"✓ **不是一回事** ✗ —— 又一次"**设过了 ≠ 生效了**" ✓。
+
+### ↩️ 第 48 轮：**更正第 47 轮** ✗ —— 失败路径**其实不刷新** ✓（真正会刷新的那个只在成功时被调 ✓）
+
+**读到的原文（`viewer.rs:1094-1111` ✓，这次**先打印**再动手 ✓）** ✓：
+```js
+  if (value.ok) {
+    if (value.head !== undefined) setStatus({ … });
+    const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+    afterMutation(trackable, {
+      skipRefresh: options.refresh === false,      // ← **只有成功支**才走到这里
+      dirtyBox: value.dirty_bbox || null,
+    });
+  } else {
+    log("错误 " + value.error_code + "：" + (…), "#c33");   // ← **失败支只是记日志** ✓ 不刷新 ✗
+  }
+```
+⇒ **更正** ✓：第 47 轮我写的"**失败时照样刷新** ✗"**不成立** ✓ ——
+`afterMutation(…)`（唯一会按 `skipRefresh` 决定刷不刷的地方 ✓）**只在成功时被调用** ✓
+⇒ **失败路径是干净的** ✓ ⇒ 抹掉本地预览的是**别的东西** ✓。
+**这也说明我前两轮的"最小修复"为什么都没用** ✓（改的地方本来就没有清层 ✓）。
+**下一步（写死 ✓，让"清层者"自报身份 ✓）** ✓：在 `resync()` 与 `refreshPreview()` 的**入口**各加一行
+`console.log("resync 由 … 触发：" + new Error().stack)` / 同理 `refreshPreview` ✓
+（判据已经在收集 console ✓ ⇒ **一次跑就能拿到调用栈** ✓ ⇒ 直接点名"是谁在抬手后清层" ✓）。
+⇒ 拿到栈之后 ✓ 再决定"离线时跳过哪一条" ✓（仍是最小改动 ✓）。
+**规矩（本轮又一次印证 ✓）** ✓：**结论必须来自读到的原文** ✗ ——
+我连续两轮靠"看起来像"推断（先猜 `callToolChecked` ✓、再猜 `callTool` 的 else ✓），**两次都不是** ✓
+⇒ 所以下一步**不再推断** ✓，而是**让代码自己报出调用栈** ✓。
