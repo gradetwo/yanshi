@@ -9231,6 +9231,12 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         //（与它自己撤掉的坐标误报**同一个方法论错误** ✓）。
         // 工具改不了客户端的会话归属 ✓，但可以把这件事**写在返回值里** ✓。
         "session_document": ctx.doc_id,
+        // **会话归属在客户端**（工具改不了它）⇒ 光说"你还在原文档"不够可操作 ✗：
+        // 必须**给出下一步**（把后续请求的 ?doc= 换成新 id）——这正是本项目对回执的一贯要求。
+        "next": format!(
+            "后续请求请把 ?doc={} 换成 ?doc={}（会话归属在客户端；本工具不会替你切）",
+            ctx.doc_id, doc_id
+        ),
     }))
 }
 

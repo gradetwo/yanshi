@@ -37,9 +37,14 @@ const made = await tool("new_document", { doc_id: "sem1", width: 640, height: 48
 check("new_document 回显 width/height",
   made.width === 640 && made.height === 480,
   "回的是 width=" + JSON.stringify(made.width) + " height=" + JSON.stringify(made.height));
-check("new_document 把会话切到新文档",
-  made.session_document === "sem1",
-  "session_document=" + JSON.stringify(made.session_document));
+// **会话归属在客户端**（读代码确认：工具改不了客户端的会话归属）⇒ 判据**不能**要求工具去切 ✗，
+// 而要要求它**把"接下来该怎么做"说清楚**（这正是本项目对错误/回执的一贯要求）。
+check("new_document 回执指明会话仍在哪个文档",
+  made.session_document === "sem0",
+  "session_document=" + JSON.stringify(made.session_document) + "（应当如实报客户端当前所在文档）");
+check("new_document 回执给出切换办法（可操作）",
+  typeof made.next === "string" && made.next.includes("sem1"),
+  "next=" + JSON.stringify(made.next));
 
 // ③ 新文档要有默认图层，而且默认图层上直接能落墨
 const layers = await tool("list_layers", {});
