@@ -302,8 +302,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <button id="zenExit" type="button" title="退出全屏画布（Esc）">⛶ 退出全屏（Esc）</button>
 <dialog id="newDialog">
   <h2 style="margin-top:0">新建文档</h2>
-  <p style="opacity:.75;font-size:12px;margin:4px 0">
-    文档以 id 作为名字（也是主键）。换个名字即可并存多份作品；重名会提示。
+  <p style="opacity:.75;font-size:12px;margin:4px 0"
+     title="文档以 id 作为名字（也是主键）。换个名字即可并存多份作品；重名会提示。">
+    id 即名字
   </p>
   <label style="display:flex;gap:8px;align-items:center">
     名称
@@ -328,15 +329,17 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
   <hr />
   <h2>导入本地图片</h2>
-  <p style="opacity:.75;font-size:12px;margin:4px 0">
-    支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。
+  <p style="opacity:.75;font-size:12px;margin:4px 0"
+     title="支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。">
+    PNG / JPEG / WebP
   </p>
   <!-- `accept` 要**接受 PSD** ✓：否则用户在选择器里根本看不到自己的 `.psd` ✗。 -->
   <input id="importFile" type="file" accept="image/*,.psd" />
   <hr />
   <h2>另存为副本</h2>
-  <p style="opacity:.75;font-size:12px;margin:4px 0">
-    以**新 id**保存一份完整副本（原文档保留，可逆）。文档以 id 为主键，因此这里填的是新文档的 id。
+  <p style="opacity:.75;font-size:12px;margin:4px 0"
+     title="以新 id 保存一份完整副本（原文档保留，可逆）。文档以 id 为主键，因此这里填的是新文档的 id。">
+    新 id 即新文档
   </p>
   <div style="display:flex;gap:8px;align-items:center">
     <input id="copyName" type="text" placeholder="新文档 id" style="flex:1 1 auto" />
