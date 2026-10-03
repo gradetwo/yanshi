@@ -2973,8 +2973,11 @@ function updateUndoStatus() {
   }
   const undo = document.querySelector('button[data-tool="undo"]');
   const redo = document.querySelector('button[data-tool="redo"]');
-  if (undo) undo.disabled = undoCount === 0;
-  if (redo) redo.disabled = redoCount === 0;
+  // **"计数未知"也算不可用** ✗（判据实测：空栈时 `undo.disabled === false` ✓ ⇒ 按钮可点却没反应 ✓）。
+  // `undoCount` 为 `null` 表示未知 ✓，而 `null === 0` 是假 ✗ ⇒ 老代码保持可点 ✗。
+  // ⇒ 未知时**先禁用** ✓，等计数到达再启用 ✓（不给"看着能点"的中间态 ✗）。
+  if (undo) undo.disabled = undoCount === null || undoCount === 0;
+  if (redo) redo.disabled = redoCount === null || redoCount === 0;
 }
 
 /// 效果目录来自服务端 `/api/effects`（内容就是内核的 `ADJUSTMENT_NAMES` / `FILTER_NAMES`），
