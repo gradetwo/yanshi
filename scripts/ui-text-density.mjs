@@ -8,6 +8,13 @@
 import { readFileSync } from "node:fs";
 const source = readFileSync("crates/yanshi-http/src/viewer.rs", "utf8");
 // **带行号** ✗：原来只打文本 ⇒ 还得自己回去找位置 ✓；现在直接给"第几行" ✓，剩下就是机械活 ✓。
+// **先排除 `<script>` 块** ✗：本文件是 HTML+CSS+JS 三合一 ✓，不排除就会把 JS 运算符当成文本节点
+//（实测误报：`path + (path.includes("?") ? "&" : "?")` ✓、模板字符串 ✓）⇒ 名单不可信 ✓。
+const scriptRanges = [];
+for (const match of source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
+  scriptRanges.push([match.index, match.index + match[0].length]);
+}
+const inScript = (index) => scriptRanges.some(([from, to]) => index >= from && index < to);
 const offenders = [];
 const lines = source.split("\n");
 for (const match of source.matchAll(/>([^<>{}]{24,})</g)) {
@@ -15,6 +22,7 @@ for (const match of source.matchAll(/>([^<>{}]{24,})</g)) {
   const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   if (cjk < 24) continue;
   if (!/[；（]/.test(text)) continue;
+  if (inScript(match.index)) continue;
   const line = source.slice(0, match.index).split("\n").length;
   offenders.push({ line, text });
 }
