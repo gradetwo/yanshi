@@ -417,8 +417,20 @@ impl ToolRegistry {
             .tools()
             .iter()
             .map(|tool| {
-                self.input_schema(tool.name)
-                    .unwrap_or_else(|| json!({"name": tool.name}))
+                let mut value = self
+                    .input_schema(tool.name)
+                    .unwrap_or_else(|| json!({"name": tool.name}));
+                // **每个工具的可复制调用示例**（目标第 6 条）：直接给成 JSON **对象**
+                //（客户端拿去就能当 `arguments` 用）。来源是 `TOOL_EXAMPLES`，
+                // 而它由测试保证**只使用该工具声明过的参数名**（见本文件末尾的测试）。
+                if let Some((_, example)) =
+                    TOOL_EXAMPLES.iter().find(|(name, _)| *name == tool.name)
+                {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(example) {
+                        value["example"] = parsed;
+                    }
+                }
+                value
             })
             .collect();
         json!({
