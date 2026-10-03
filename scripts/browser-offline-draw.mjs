@@ -199,9 +199,9 @@ console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
 for (const line of evidence) console.log("    · " + line);
 await report("离线");
 const failures = [];
-if (!brushState || !brushState.value) {
+if (!brushOptions || !(brushOptions.nonEmpty >= 1)) {
   // **判据无效**：没选上真 `.myb` ⇒ 这一跑测的还是内置画笔 ⇒ 结论没有意义 ✗
-  failures.push("没能选定一支 .myb 笔刷（#brush = " + JSON.stringify(brushState) + "）⇒ 判据无效");
+  failures.push("#brush 里没有非空选项（" + JSON.stringify(brushOptions) + "）⇒ 判据无效");
 }
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
