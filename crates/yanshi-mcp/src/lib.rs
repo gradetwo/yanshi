@@ -165,7 +165,7 @@ impl McpOptions {
                                  （all = 全部已实现的组，即除 semantic 外；缺省只开 core）\n\
            --no-wait             不等待渲染（立即返回 job_pending，由 Agent 轮询）\n\
            --wait-budget <ms>    wait_for_render 的等待预算（缺省 500）\n\
-           --no-inline-images    不在工具结果中内嵌 base64 图像\n\
+           --no-inline-images    关掉内嵌图像；**缺省是内嵌**（图片在 MCP 的 image 内容块里）\n\
            --list-tools          打印工具清单后退出\n\
            --help                显示帮助\n\
            --version             显示版本\n"

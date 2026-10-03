@@ -1018,7 +1018,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "include_image",
                 Boolean,
                 false,
-                "是否内嵌 base64 PNG（缺省上限 512px；超限时回 image_omitted + 原因，不许静默）"
+                "是否内嵌图像。**图片以 MCP 的 `image` 内容块返回**（base64 在那里 ✓，不在 text 里 ✗）；\\n\
+                 text 块里只有 `yanshi://blob/…` 地址或缺图原因。缺省上限 512px，超限会**自动缩小**后内嵌 ✓\\n\
+                 （并回 scaled_from 记录原尺寸 ✓）；连缩小都失败才回 image_omitted + 原因 ✓。"
             ),
             param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 可读原因；想看图就把它调大"),
         ],
@@ -2151,7 +2153,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
         // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
         // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
-        summary: "新建一个空白文档（给定 doc_id / 宽高 / 背景色）；已存在的 doc_id 会被拒绝，不会清空",
+        summary: "新建文档（doc_id / 宽高 / 背景色）；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true，内容不清空）；要一块干净画布请换新 doc_id",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -2306,7 +2308,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // 现在补上 ✓ —— 与 `brush_stroke` 的语义**完全一致** ✓（都是"这一笔用多少不透明度 / 多硬的边"✓）。
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
-            param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓）"),
+            param!(
+                "include_image",
+                Boolean,
+                false,
+                "true ⇒ 额外内嵌图像 ⇒ **图片以 MCP 的 `image` 内容块返回**（base64 在那里 ✓，不在 text 里 ✗）；\\n\
+                 text 块里只有 thumb_url（`yanshi://blob/…`）✓。批处理客户端可加 `--no-inline-images` 关掉 ✓。"
+            ),
         ],
     },
     ToolSpec {
@@ -9286,7 +9294,9 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
         _ => json!({"r": 255, "g": 255, "b": 255, "a": 255}),
     };
-    // **重建** ✓：同 id 已有文档时**覆盖**它 ✓ ⇒ 语义是"给我一块干净画布" ✓（用户的诉求正是这个 ✓）。
+    // **同 id 已存在 ⇒ 打开它** ✓（第三方报告 P0-2 ✓：报告作者读到的是"会被拒绝" ✗ ——
+    // 因为**描述与实现相反** ✗：实现早就改成"打开且不清空" ✓，而描述一直没跟 ✓）。
+    // 注意：**不覆盖、不清空** ✓（"给我一块干净画布"请换新 doc_id ✓）。
     // **同 id 已存在 ⇒ 语义是"打开它"** ✓（第三方 MCP 实测报告 P0-2 ✓：
     // "每次 MCP 新连接都是全新的 default 文档，之前的画接不回来" ✗ ⇒「今天画底色、明天接着细化」走不通 ✗）。
     // 安全约束**不变** ✓：本工具**绝不清空**已有文档 ✓ —— "打开"就是不碰它的内容 ✓。
