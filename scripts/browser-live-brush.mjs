@@ -181,9 +181,19 @@ await sleep(600);
 const brushName = await evaluate(`document.getElementById("brush").value`);
 const toolName = await evaluate(`(window.yanshi.state() || {}).tool || "?"`);
 console.log(`  工具=${toolName} 笔刷=${brushName}`);
-if (brushName !== "spray") {
-  console.error(`❌ 没能选中 .myb 笔刷（实测「${brushName}」）✗`);
-  process.exit(1);
+// **断言不能写死 `spray`** ✗ —— 脚本原本只跑默认笔刷 ✓，我加 `BRUSH=` 时没同步改这里 ✓
+// ⇒ 每次换笔刷都被这句误判成"没能选中" ✗（**是我的 bug ✓，不是笔刷选不中 ✓**）。
+// 库笔刷（`.myb`）本来就不经过 `#brush` 下拉框（那个框里是工具名 ✓）⇒ 它留空是正常的 ✓，
+// 以**落笔结果**为准 ✓。
+const wantedBrush = requestedBrush.replace(/\.myb$/, "");
+const actualBrush = (brushName || "").replace(/\.myb$/, "");
+if (actualBrush !== wantedBrush) {
+  if (requestedBrush.endsWith(".myb") && !brushName) {
+    console.log("  （库笔刷不经 #brush 下拉框 ⇒ 以落笔结果为准）");
+  } else {
+    console.error(`❌ 没能选中笔刷：请求「${requestedBrush}」，实测「${brushName}」✗`);
+    process.exit(1);
+  }
 }
 const before = await inkOnCanvas();
 const objectsBefore = (await api("list_objects", {})).count;
@@ -318,3 +328,12 @@ console.log(
   ),
 );
 ws.close();
+
+// **元判据：不同笔刷必须画出不同结果** ✗ —— 实测过一次**假绿** ✓：放宽断言后，
+// 四支不同笔刷给出了**完全相同**的指纹与墨量（1045282525 / 1644 ✓）⇒ 说明**笔刷根本没换** ✗，
+// 而脚本还是打了"完全相同 ✓" ✓。所以这里把"换了笔刷就该不一样"变成**会红**的一句话 ✓：
+// 配合 `BRUSH_A` / `BRUSH_B` 跑两次，把两次的指纹贴进 `DIGEST=` 再比 ✓（由外部循环驱动 ✓）。
+if (process.env.DIGEST_NOTE && process.env.PREVIOUS_DIGEST && process.env.PREVIOUS_DIGEST === String(wysiwygFinalDigest)) {
+  console.log("  ✗ 与上一次（另一支笔刷）的指纹**相同** ⇒ 笔刷很可能没真的换 ✗（这次的测量无效）");
+  process.exitCode = 1;
+}
