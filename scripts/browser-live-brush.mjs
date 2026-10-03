@@ -94,6 +94,16 @@ const capture = async (name) => {
   await fs.writeFile(path, Buffer.from(data, "base64"));
   return path;
 };
+// **画布指纹** ✓（WYSIWYG 判据用）：在页内对整块画布的 RGBA 做 FNV-1a ✓ ⇒ 一次往返就能比"是不是同一批像素" ✓。
+const canvasDigest = () =>
+  evaluate(`(() => {
+    const board = document.getElementById("board");
+    const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let hash = 2166136261;
+    for (let i = 0; i < data.length; i += 1) { hash ^= data[i]; hash = Math.imul(hash, 16777619) >>> 0; }
+    return hash >>> 0;
+  })()`);
+
 const inkOnCanvas = () =>
   evaluate(`(() => {
     const board = document.getElementById("board");
@@ -128,7 +138,8 @@ await sleep(400);
 // **先等笔刷列表载入，再设值** ✗ —— 列表没载入时设值是**静默失败** ✓（产品侧也一并修了 ✓）。
 await waitFor("document.querySelectorAll('#brush option').length > 5", "笔刷列表", 20000);
 // **选一支 .myb 笔刷** ✓（spray 最能体现"实心线 vs 真笔刷"的差别 ✓）。
-await evaluate(`window.yanshi.setBrush("spray")`);
+const requestedBrush = process.env.BRUSH || "spray";
+await evaluate(`window.yanshi.setBrush(${JSON.stringify(requestedBrush)})`);
 await sleep(600);
 const brushName = await evaluate(`document.getElementById("brush").value`);
 const toolName = await evaluate(`(window.yanshi.state() || {}).tool || "?"`);
@@ -199,12 +210,26 @@ console.log(
   `  （拖动中服务端对象 ${objectsBefore} ⇒ ${midObjects}：本地渲染方案下**预期为 0** ✓，抬手才提交 ✓）`,
 );
 // ② 抬手 ⇒ 提交最终一笔；对象必须仍然只有一个 ✓
+const wysiwygMidDigest = await canvasDigest();
+const wysiwygMidInk = await inkOnCanvas();
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
 await waitFor("!window.yanshi.state().liveStroke", "实时笔触收尾", 20000);
 await sleep(1500);
-const finalInk = await inkOnCanvas();
+const wysiwygFinalInk = await inkOnCanvas();
 const finalObjects = (await api("list_objects", {})).count;
 const finalState = await evaluate("window.yanshi.state()");
+// **WYSIWYG**：抬手前 vs 服务端回填后，是不是**同一批像素**？
+// 非读画布笔刷应当**完全相同**（EXPECT_EXACT=1 时判红）；读画布笔刷预期不同 ⇒ 先把差异**量出来**记档。
+await sleep(600);
+const wysiwygFinalDigest = await canvasDigest();
+const finalInk = await inkOnCanvas();
+const wysiwygSame = wysiwygMidDigest === wysiwygFinalDigest && wysiwygMidInk === wysiwygFinalInk;
+console.log(`  ④ WYSIWYG：中途(指纹 ${wysiwygMidDigest}, 墨 ${wysiwygMidInk}) vs 最终(指纹 ${wysiwygFinalDigest}, 墨 ${wysiwygFinalInk}) ⇒ ` +
+  (wysiwygSame ? "**完全相同** ✓" : `**不同** ✗（墨差 ${wysiwygFinalInk - wysiwygMidInk}）`));
+if (process.env.EXPECT_EXACT === "1" && !wysiwygSame) {
+  console.log("  ✗ 这支笔刷被判为「非读画布」⇒ 中途与最终必须相同（红了）");
+  process.exitCode = 1;
+}
 console.log(
   `  ② 抬手后：画布墨 ${finalInk}｜服务端对象 ${objectsBefore} ⇒ ${finalObjects}｜` +
     `实时帧共 ${finalState.liveStroke ? finalState.liveStroke.frames : "—"}`,
