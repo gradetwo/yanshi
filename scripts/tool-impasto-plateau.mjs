@@ -48,6 +48,19 @@ const periodicContrast = (line) => {
   };
   return acf(4) - acf(2);
 };
+const acfCurve = (line, maxLag) => {
+  const mean = line.reduce((a, b) => a + b, 0) / line.length;
+  const centered = line.map((v) => v - mean);
+  const variance = centered.reduce((a, v) => a + v * v, 0);
+  if (variance <= 0) return [];
+  const out = [];
+  for (let lag = 1; lag <= maxLag; lag += 1) {
+    let sum = 0, count = 0;
+    for (let i = 0; i + lag < centered.length; i += 1) { sum += centered[i] * centered[i + lag]; count += 1; }
+    out.push(sum / (variance * (count / centered.length)));
+  }
+  return out;
+};
 const countDips = (line) => {
   let count = 0;
   for (let i = 6; i < line.length - 6; i += 1) {
@@ -79,6 +92,9 @@ const strokeContrast = periodicContrast(strokeRow.line);
 const dips = countDips(strokeRow.line);
 const ink = strokeRow.line[160], background = bgRow.line[0];
 console.log(`  正对照（fill 平坦块）acf(4)-acf(2) = ${flatContrast.toFixed(3)}   ← **必须 ≈0**，否则量法瞎报`);
+const curveOf = (label, line) => console.log("  " + label + " acf(1..16) = [" + acfCurve(line, 16).map((v) => v.toFixed(2)).join(", ") + "]");
+curveOf("正对照", flatRow.line);
+curveOf("被测笔触", strokeRow.line);
 console.log(`  被测笔触 dabs=${stroke.dabs}｜acf(4)-acf(2) = ${strokeContrast.toFixed(3)}｜暗环数=${dips}（占 dab ${(dips / stroke.dabs).toFixed(2)}）`);
 console.log(`  笔触亮度=${ink.toFixed(0)}｜背景亮度=${background.toFixed(0)}`);
 // ---------- ④ 自证：量法对平坦块必须不报警 ----------
