@@ -207,6 +207,13 @@ fi
 built="$(date -u '+%Y-%m-%d %H:%M UTC')"
 name="yanshi-${version}-${commit}-${target_triple}"
 stage="$out/$name"
+# **把"为什么名字里有 dirty"直接说出来** ✓ —— 否则用户只能去翻脚本 ✓（他刚问过 ✓）。
+# 注意：`${VAR}` 一律带花括号 ✓ —— 紧跟非 ASCII 时 `$VAR` 会被老 bash 算进变量名 ✗
+#（本项目 `script_portability.rs` 会因此判红 ✓，我前面就栽过一次 ✓）。
+if [ "${commit}" != "${commit%-dirty}" ]; then
+  echo "⚠ 包名带 -dirty：工作区有未提交改动 ⇒ 这个包**不能**由单个 commit 精确复现 ✗" >&2
+  echo "   正式发布请先提交（或 git stash）⇒ 包名就不带 -dirty 了 ✓" >&2
+fi
 
 echo "==> 打包 $name"
 # **产物目录必须与"真正构建的目标"一致** ✗ —— 用户实测报告的 BUG ✓：
