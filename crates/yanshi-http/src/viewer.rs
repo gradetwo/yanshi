@@ -5882,63 +5882,6 @@ function liveRegion(size) {
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
-/// **画笔库的本地预览图** ✓（第 85 轮定的止损 ✓）：用同一支笔、同一 `size`、同一条
-/// `default_preview_points`（与服务端 `brush_preview` **同一套算式** ✓，第 38 轮验过尺寸 ✓）
-/// 在本地画一张 ✓ ⇒ 面板**不用等服务端** ✓。
-///
-/// **如实标注** ✗：极软边笔刷（`hardness` 很低）与服务端那张**可能有边缘差异** ✓
-/// （实测最大通道差 252 ✓ —— 五个假设都被否掉了 ✓，见笔记第 79–85 轮 ✓）
-/// ⇒ 调用方在 `title` 里说明"本地预览（近似）"✓，需要精确时再取服务端那张 ✓。
-async function localBrushPreviewUrl(name) {
-  const api = await loadLocalBrushModule();
-  const brush = await loadLocalBrushText(name);
-  if (brush.readsCanvas) return null;      // 会读画布的**不做本地预览** ✓（第 68/69 轮已定 ✓）
-  const size = 24;
-  const length = Math.min(Math.max(size * 5.0, 64.0), 160.0);
-  const margin = size + 8.0;
-  const amplitude = Math.min(Math.max(size * 0.6, 4.0), 24.0);
-  const y = margin + amplitude;
-  const points = [
-    [margin, y, 0.35],
-    [margin + length * 0.34, y - amplitude * 2.0, 0.9],
-    [margin + length * 0.67, y + amplitude * 2.0, 0.5],
-    [margin + length, y, 0.35],
-  ];
-  const half = size / 2 + 4;
-  const xs = points.map((point) => point[0]);
-  const ys = points.map((point) => point[1]);
-  const left = Math.floor(Math.min(...xs) - half);
-  const top = Math.floor(Math.min(...ys) - half);
-  const region = {
-    x: left, y: top,
-    w: Math.ceil(Math.max(...xs) + half) - left,
-    h: Math.ceil(Math.max(...ys) + half) - top,
-  };
-  const request = JSON.stringify({ myb: brush.text, points, size, color: null, opacity: null, hardness: null, region });
-  const payload = new TextEncoder().encode(request);
-  const pointer = api.yanshi_brush_alloc(payload.length);
-  if (!pointer) return null;
-  new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
-  const outLen = api.yanshi_brush_paint(pointer, payload.length);
-  api.yanshi_brush_free(pointer, payload.length);
-  if (!outLen) return null;
-  const bytes = new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), outLen).slice();
-  const canvas = document.createElement("canvas");
-  canvas.width = region.w;
-  canvas.height = region.h;
-  const context = canvas.getContext("2d");
-  context.putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer), region.w, region.h), 0, 0);
-  // **白底上合成** ✓（与面板里 `<img>` 的白底观感一致 ✓，也免得全透明看着像"没画出来"✗）。
-  const flattened = document.createElement("canvas");
-  flattened.width = region.w;
-  flattened.height = region.h;
-  const flatContext = flattened.getContext("2d");
-  flatContext.fillStyle = "#ffffff";
-  flatContext.fillRect(0, 0, region.w, region.h);
-  flatContext.drawImage(canvas, 0, 0);
-  return flattened.toDataURL("image/png");
-}
-
 let livePaintBusy = false;
 async function paintLiveFrame() {
   const stats = window.yanshiStats;
@@ -6702,8 +6645,6 @@ async function refreshBrushOptions() {
 /// ③ **选择只有一条路** ✓：点一行 ⇒ 走 `window.yanshi.setBrush()` ✓ —— 与下拉、与 MCP 是**同一个入口** ✓
 ///    （自己再写一遍"设值 + change"✗ 迟早与那条漂移 ✓）。
 const brushPreviewCache = new Map();
-/// **哪些预览是本地出的（近似 ✓）** —— 用来在 `title` 里**如实标注** ✗（不假装与服务端逐字节相同 ✓）。
-const localPreviews = new Set();
 const brushPreviewQueue = [];
 let brushPreviewActive = 0;
 let brushLibraryObserver = null;
@@ -6791,29 +6732,6 @@ function observeBrushLibraryRows() {
 
 function queueBrushPreview(name) {
   if (!name || brushPreviewCache.has(name) || brushPreviewQueue.includes(name)) return;
-  // **先本地出一张** ✓（面板不用等服务端 ✓）。失败 ⇒ **说一句**并回退到服务端那条 ✓（不许静默 ✗）。
-  try {
-    const local = await localBrushPreviewUrl(name);
-    if (local) {
-      localPreviews.add(name);
-      brushPreviewCache.set(name, local);
-      // **直接改这一行的图** ✓ —— 不依赖别的脚本段里的重绘函数 ✗（跨段调用是本仓库踩过的坑 ✓）。
-      const row = document.querySelector(`.brush-lib-row[data-brush="${CSS.escape(name)}"]`);
-      if (row) {
-        const image = row.querySelector("img");
-        if (image) {
-          image.src = local;
-          // **如实标注** ✗：这张是**本地近似**（极软边的笔刷与服务端那张可能差边缘 ✓，见笔记第 79–85 轮 ✓）。
-          image.title = "本地预览（近似）：与服务端 brush_preview 同一支笔、同一 size、同一条采样笔迹；"
-            + "极软边笔刷的边缘像素可能与服务端略有差异 ⇒ 需要精确的那张时用服务端 brush_preview";
-          row.dataset.previewSource = "local";
-        }
-      }
-      return;
-    }
-  } catch (error) {
-    log("本地预览没画出来：" + String(error).slice(0, 80) + " ⇒ 改用服务端那张", "#c93");
-  }
   brushPreviewQueue.push(name);
   void pumpBrushPreview();
 }
