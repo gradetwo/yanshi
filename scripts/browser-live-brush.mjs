@@ -191,10 +191,13 @@ if (!(midInk > before + 50)) {
   console.error("❌ 指针还按着的时候画布上没有新墨 ⇒「一开始就是画笔画的效果」没做到 ✗");
   process.exit(1);
 }
-if (!(midObjects > objectsBefore)) {
-  console.error("❌ 拖动中服务端还没有这一笔 ⇒ 拖动期提交没生效 ✗");
-  process.exit(1);
-}
+// **"拖动中服务端必须有对象"这条断言已过时** ✗（第 66 轮 ✓）：它是为旧的
+// "拖动中节流发真 `brush_stroke`"那套设计写的 ✓ —— 而那套正是被 300–500ms 往返打败的 ✓。
+// 现在拖动期由**本地 wasm** 画（门面与服务端逐字节相同 ✓）⇒ **服务端此刻本来就不该有对象** ✓；
+// 对象在**抬手提交**时才出现 ✓（判据 ② 仍然验它 ✓）。⇒ 这里改成**打印**，不再当失败条件 ✓。
+console.log(
+  `  （拖动中服务端对象 ${objectsBefore} ⇒ ${midObjects}：本地渲染方案下**预期为 0** ✓，抬手才提交 ✓）`,
+);
 // ② 抬手 ⇒ 提交最终一笔；对象必须仍然只有一个 ✓
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
 await waitFor("!window.yanshi.state().liveStroke", "实时笔触收尾", 20000);
