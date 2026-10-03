@@ -5775,6 +5775,7 @@ board.addEventListener("pointerdown", (event) => {
   liveStroke = null;
   liveBlitBox = null;
   if (brushOwnsTheStroke) {
+    liveStrokeClosed = false;
     liveStroke = { name: selectedBrushName, size: Number(($("size") || {}).value) || undefined, lastAt: 0 };
     liveLastRegion = null;
     void loadLocalBrushModule().catch(() => {});
@@ -5882,6 +5883,10 @@ function liveRegion(size) {
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
+// **这一笔是否已经结束** ✗（第 75 轮实测的竞态）：抬手时可能还有一帧本地渲染在飞 ✓，
+// 它会在**补画之后**落地 ⇒ 又把本地那层画回画布 ✓ ⇒ 三次里有一次"撤销后还剩墨" ✗。
+// ⇒ 真正 `drawImage` 之前先看这个标记 ✓，结束了就**不许再画** ✓。
+let liveStrokeClosed = false;
 let livePaintBusy = false;
 async function paintLiveFrame() {
   const stats = window.yanshiStats;
@@ -5948,6 +5953,8 @@ async function paintLiveFrame() {
     offscreen.width = region.w;
     offscreen.height = region.h;
     offscreen.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer), region.w, region.h), 0, 0);
+    // **在飞的帧若发现这一笔已结束，就不许再贴** ✗（否则它会把本地那层盖回服务端像素之上 ✓）。
+    if (liveStrokeClosed) return;
     ctx.drawImage(offscreen, Math.round(region.x - state.viewport.x), Math.round(region.y - state.viewport.y));
     // **记住本地覆盖过的那块 —— 而且是"整笔的并集"** ✗（第 74 轮修 ✓）：
     // 原来只记**最后一帧**的区域 ✓ ⇒ 若最后一帧落后于真实笔迹 ✓，露在区域外的一小截
@@ -6259,11 +6266,15 @@ async function commitShape() {
         "落笔（" + brushName + "）",
       );
       liveStroke = null;
+      // **先宣布这一笔结束** ✗（在飞的帧就此作废 ✓，见上面那个标记 ✓）。
+      liveStrokeClosed = true;
       // **提交之后按"本地覆盖过的那块"从服务端补画一次**（第 67 轮定：否则画布上留的是本地那层，
       // 撤销只清对象脏区 ⇒ 外面那圈永远清不掉 ✗）。多留 4px 余量覆盖取整误差 ✓。
       if (liveLastRegion && window.yanshiDebugBlit) {
         const box = liveLastRegion;
-        void window.yanshiDebugBlit([box.x - 4, box.y - 4, box.w + 8, box.h + 8]);
+        // **等它画完再往下走** ✗（第 74 轮实测：原来用 `void` ⇒ 异步 ⇒ 判据立刻量到的是本地那层 ✓，
+        // 三次里有一次读成"撤销后还剩 3019 墨" ✗ ⇒ 那是竞态、不是逻辑错 ✓）。
+        await window.yanshiDebugBlit([box.x - 4, box.y - 4, box.w + 8, box.h + 8]);
       }
       liveLastRegion = null;
       await refreshPreview();
