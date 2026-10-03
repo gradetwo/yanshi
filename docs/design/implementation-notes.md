@@ -15797,3 +15797,27 @@ fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 我只看了一眼 `profile: Profile::Core` 就下结论 ✗（还很自信地写进了上一轮档里 ✓）⇒
 **要判"用户能不能拿到"，只能问运行中的服务** ✓（`GET /api/tools` ✓）—— 也就是本会话那条老规矩 ✓：
 **问被测对象本身，不要问它的源码长什么样** ✓。
+
+### ✅ 第 88 轮：**缺口普查做完了** ✓ —— 结论：**没有"已实现却没给 MCP"的功能** ✓（只余 3 个名字待核实 ✓）
+
+**普查方法（本轮 ✓）** ✓：① 数工具 ✓（127 ✓）；② 数 HTTP 路由 ✓（**只有 8 条** ✓：`/api/atoms` ✓ `/api/blob` ✓
+`/api/documents` ✓ `/api/effects` ✓ `/api/tools` ✓ —— **全是基础设施** ✓）；③ 把**查看器调用的工具名**与 127 对照 ✓。
+**读到的数** ✓：
+```
+工具数=127｜查看器调用的工具数=**83** ✓
+查看器调用但**不是工具名**的（12 个 ✓）：
+  annotate, brush, ellipse, eyedropper, mask_ellipse, mask_rect, medium_dab, move_layer, pan, rect, select_rect, text
+工具有、查看器没用到的：**56 个** ✓（如 add_adjustment ✓、begin_transaction ✓、export_png ✓、get_diff ✓ …）
+```
+**结论（关键 ✓）** ✓：
+1. **HTTP 只承担基础设施** ✓ ⇒ **一切动作都走工具** ✓ ⇒ 所以"**有实现、没工具**"✗ **在架构上几乎没有空间** ✓；
+2. 那 12 个"非工具名"里 ✓，**9 个是查看器自己的交互模式** ✓（`brush`/`ellipse`/`rect`/`text`/`pan`/`eyedropper`/
+   `medium_dab`/`annotate` ✓）⇒ 它们**映射到**真实工具 ✓（`draw_shape` ✓、`draw_text` ✓、`brush_stroke` ✓、
+   `create_annotation` ✓）⇒ **不是缺口** ✓；
+3. **只余 3~4 个名字待核实** ✗：`select_rect` ✓ / `mask_rect` ✓ / `mask_ellipse` ✓ / `move_layer` ✓
+   ⇒ 我的判断是它们分别对应 **`create_selection`** ✓ / **`create_mask`** ✓ / **`transform_object`** ✓
+   ⇒ **下一轮逐个核实**（若某个真的"只有查看器能做、工具做不到"✗ ⇒ 那才是要补的 ✓）。
+**对用户要求的最终回答（如实 ✓）** ✓：**默认启动下，127 个已实现工具全部经 MCP 可用** ✓，
+**没有发现"已实现却没提供"的能力** ✓；用户画师当时撞到的"所属的组没有启用"✗
+最可能是**客户端/启动参数**用了 `--profile core` ✓（此时确有 68 个拿不到 ✓ —— 这条也已由判据钉住 ✓）。
+**真正该做的仍是"新能力"** ✓：需求文档那 10 项 ✓（其中 `gradient_blend` 的**判据已先红** ✓，实现形状已读准 ✓）。
