@@ -92,7 +92,7 @@ fn a_project_package_contains_the_log_the_blobs_and_a_current_preview() {
         String::from_utf8_lossy(&listed.stderr)
     );
     let names = String::from_utf8_lossy(&listed.stdout);
-    for expected in ["atoms.jsonl", "meta.json", "render.png", "blobs/sha256/"] {
+    for expected in ["atoms.jsonl", "meta.json", "blobs/sha256/"] {
         assert!(names.contains(expected), "包里应当有 {expected}：\n{names}");
     }
     // ② **原子日志能解出来、而且是合法 JSONL** ✓（这是包的**唯一权威** ✓）
@@ -114,25 +114,16 @@ fn a_project_package_contains_the_log_the_blobs_and_a_current_preview() {
     for line in &lines {
         serde_json::from_str::<serde_json::Value>(line).expect("每条原子都应当是合法 JSON");
     }
-    // ③ **包里的预览"不是空白"** ✓ —— 这正是用户那四个包栽的地方 ✓
-    let png = std::process::Command::new("tar")
-        .args(["-xOf", pack.to_str().unwrap(), "render.png"])
+    // **包里不该有"当场渲染的预览"** ✓ —— 它是用户实测里 96%～97% 的体积 ✓，
+    // 且**可由原子日志重建** ✓ ⇒ 这条断言一旦红，就说明预览又跑回包里了 ✗。
+    let listed = std::process::Command::new("tar")
+        .args(["-tf", pack.to_str().unwrap()])
         .output()
-        .expect("tar 应当能解出");
-    let (width, height, rgba) =
-        yanshi_render::png::decode_png(&png.stdout).expect("应当是合法 PNG");
-    assert_eq!((width, height), (200, 160));
-    let inked = rgba
-        .chunks_exact(4)
-        .filter(|pixel| {
-            (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
-                / 1000
-                < 200
-        })
-        .count();
+        .expect("列出包内容");
+    let names = String::from_utf8_lossy(&listed.stdout);
     assert!(
-        inked > 500,
-        "包里的预览必须**是画出来的图**（实测 {inked} 个暗像素）"
+        !names.lines().any(|line| line.trim() == "render.png"),
+        "包里不该再有 render.png（预览可由日志重建）⇒ 实测会占 96%+：\n{names}"
     );
     // ④ **每个被引用的 blob 都在包里** ✓（否则收包的人重放不出来 ✓）
     let mut referenced = 0usize;

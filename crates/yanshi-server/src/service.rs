@@ -1747,7 +1747,7 @@ impl Workspace {
     /// **与缓存的关系** ✓：内置的是"**开箱就有**"的那几款 ✓（`assets/textures/` ✓，随 `make release` 进包 ✓）；
     /// 缓存（`<root>/textures/` ✓）是用户用 `scripts/fetch-textures.sh` 另外抓的 ✓。
     /// **重名时缓存优先** ✓ —— 用户放进去的同名文件**覆盖**内置的 ✓（想换就换 ✓，不必改仓库 ✓）。
-    pub fn export_project(&mut self, doc_id: &str, render_png: &[u8]) -> Result<Vec<u8>> {
+    pub fn export_project(&mut self, doc_id: &str, _render_png: &[u8]) -> Result<Vec<u8>> {
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -1798,10 +1798,8 @@ impl Workspace {
             });
         }
         let head = self.document_mut(doc_id)?.head_seq();
-        entries.push(crate::archive::TarEntry {
-            path: "render.png".to_owned(),
-            bytes: render_png.to_vec(),
-        });
+        // **不带"当场渲染的预览"** ✓（用户实测：它占整包 96%～97%，而**导入后可随时由原子日志重建** ✓；
+        // 导入端本来就把 `render.png` 当**可选** ✓（`Option` ✓，缺省空 ✓）⇒ 去掉它**向后兼容** ✓。
         entries.push(crate::archive::TarEntry {
             path: "render.seq".to_owned(),
             bytes: head.to_string().into_bytes(),
@@ -1836,7 +1834,7 @@ impl Workspace {
         });
         entries.push(crate::archive::TarEntry {
             path: "README.txt".to_owned(),
-            bytes: b"Yanshi project package (uncompressed tar).\n\
+            bytes: b"Yanshi project package.\n\
 Contents:\n  atoms.jsonl   append-only atom log; this is the authority\n\
   meta.json     document metadata\n  render.png    a render of HEAD at export time\n\
   render.seq    the seq that render corresponds to\n\
