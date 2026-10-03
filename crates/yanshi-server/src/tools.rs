@@ -2349,7 +2349,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "把整幅（或指定区域）渲染成 PNG 落盘：任意尺寸、不经 base64、不受 512px 限制",
         mutating: false,
         params: &[
-            param!("path", String, true, "输出文件路径（含 .png）"),
+            param!(
+                "path",
+                String,
+                true,
+                "输出文件路径（含 .png）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\n                 或系统临时目录 ✓；也可以给相对路径 ✓；**不接受其它绝对路径** ✗（安全沙箱：见 0b862a4 审计 P0#1 \n                 —— 原先可写任意路径，等于一个文件写漏洞 ✗）。要放到别处请自己 `cp` ✓，\n                 推荐设 `YANSHI_EXPORT_DIR` 指向你的交付目录 ✓（那样就不必再 cp ✓）"
+            ),
             param!("region", Object, false, "只导出该区域 {x,y,w,h}；缺省整幅"),
             param!("width", Integer, false, "输出宽（与 height 一起给；不给就按原尺寸）"),
             param!("height", Integer, false, "输出高"),
