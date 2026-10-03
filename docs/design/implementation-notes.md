@@ -9595,3 +9595,27 @@ spray            不同字节 6243  首个 @3（通道 3）｜最大通道差 25
 （`localBrushBusySkips / localBrushNullRegion / localBrushEmptyPaint` ✓）⇒ 再对症修 ✓
 （若是 ① ⇒ 把"模块与文本的预取"挪到**按下之前**或让首帧不阻塞后续 ✓；若是 ② ⇒ 查 `state.docSize` 与点位 ✓）。
 **按纪律回退** ✓（仍未验证 ⇒ 不发布 ✓），改动整段 `git checkout` 掉 ✓、树干净 ✓。
+
+### 🎯 第 64 轮：**四个计数一次定案** ✓ —— 门面在浏览器里走了失败分支，而我的 ABI **没有错误通道** ✗
+
+按第 63 轮的计划给每处早退各加一个计数 ✓，拖动中打出来 ✓：
+```
+{"localBrushCalls":5, "localBrushNoStroke":0, "localBrushBusySkips":0, "localBrushThrottled":0,
+ "localBrushModuleOk":5, "localBrushTextOk":5, "localBrushNullRegion":0,
+ "localBrushEmptyPaint":5, "localBrushFrames":0, "localBrushErrors":0}
+```
+**读法** ✓（一条信息量顶十次猜 ✓）：
+* **5 次调用全部走完**：模块加载 ✓ 5 次、文本加载 ✓ 5 次、区域算出来 ✓ 5 次
+  ⇒ 否掉"没接上"✗、"卡在 await"✗、"区域为空"✗、"节流吃掉"✗；
+* **`emptyPaint` = 5** ✓ ⇒ 五次都在 `yanshi_brush_paint` 那里拿到 **0** ✗；
+* **`errors` = 0** ✓ ⇒ **没有抛异常** ✓ ⇒ 是门面**内部**走了失败分支 ✓，
+  而 `yanshi_brush_paint` 对"JSON 解析失败"✗ 与"`.myb` 解析失败"✗ **都只回一个 0** ✓
+  ⇒ **浏览器侧根本看不到原因** ✗ —— **这是我的 ABI 设计缺陷** ✗（本项目最反对的"说不清为什么失败"✓）。
+**下一轮（小、聚焦 ✓）**：给 ABI 加一条**错误通道** ✓ —— 例如再导出一个
+`yanshi_brush_error_ptr()/len()` ✓，失败时把原因（"请求不是合法 JSON：…" / "不是能解析的 .myb：…" ✓）
+写进去 ✓ ⇒ 浏览器把它**打进日志** ✓ ⇒ 一眼看到真因 ✓ 再修 ✓。
+**顺带记一条候选** ✓（等错误文本出来再判 ✓，不先动代码 ✗）：二进制里那两处失败都与**输入**有关 ✓，
+而输入在这条路上有一样东西与已验证的探针不同 ✗ —— 探针用固定的小请求 ✓，
+这里是"真实点列 + 6KB 笔刷文本 + 真实坐标"✓ ⇒ 怀疑方向：请求体是否被 `TextEncoder`/内存视图
+**截断或写坏** ✓（wasm 内存增长后视角失效是这一类经典坑 ✓）。
+**按纪律回退** ✓（仍未验证 ⇒ 不发布 ✓），树干净 ✓。
