@@ -69,6 +69,12 @@ const INK = `(() => {
 })()`;
 // **画一笔**：合成指针事件（本地渲染路径看得见它们 ✓；服务端提交在离线时必然失败 ✓，正是要测的点 ✓）
 const STROKE = `(async () => {
+  // **每一笔之前立刻重设笔刷** ✓ —— 实测「设过」到「落笔」之间会被覆盖 ✗（查看器读到空串 ✓）。
+  // 这里在**同一时刻**设、并**回读**，好判定"是不是产品把它抹掉了" ✗。
+  const brushSelect = document.getElementById("brush");
+  const wantedBrush = brushSelect && Array.from(brushSelect.options).find((o) => o.value) ? Array.from(brushSelect.options).find((o) => o.value).value : "";
+  if (brushSelect && wantedBrush) { brushSelect.value = wantedBrush; brushSelect.dispatchEvent(new Event("change", { bubbles: true })); }
+  const brushAtPointerDown = brushSelect ? brushSelect.value : null;
   const board = document.getElementById("board");
   if (!board) return { ok: false, why: "没有 #board" };
   const rect = board.getBoundingClientRect();
@@ -85,7 +91,7 @@ const STROKE = `(async () => {
   }
   await new Promise((resolve) => setTimeout(resolve, 60));
   board.dispatchEvent(new PointerEvent("pointerup", at(0.62, 0.6, { buttons: 0 })));
-  return { ok: true, steps: 8 };
+  return { ok: true, steps: 8, brushAtPointerDown: brushAtPointerDown };
 })()`;
 // **统计计数**：能区分"预览被跳过"（有 skip 计数）与"根本没走到"（一个计数都没有）
 const STATS = `(() => {
