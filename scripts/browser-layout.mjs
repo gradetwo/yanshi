@@ -85,6 +85,17 @@ consoleLines.length = 0;
 if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window.yanshiDock === 'object'", "查看器就绪"))) {
   process.exit(3);
 }
+// **等画布真的被设过尺寸再量** ✗ —— 第 47 轮就是在这里栽的 ✓：启动瞬间 `<canvas>` 还是默认的
+// 300×150 ✓、`style.width` 为空 ✓ ⇒ 我据此得出"尺寸没落到元素上"✗，而真相只是"还没轮到它"✓。
+// ⇒ 判据必须**等被测对象稳定** ✓（`board.width` 走出默认值 ✓ + 至少补过一次服务端像素 ✓）。
+if (!(await waitFor(
+  "document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
+  "画布尺寸与首帧",
+  20000,
+))) {
+  console.error("❌ 画布始终没被设过尺寸 ⇒ 这份文档根本没法画 ✗");
+  process.exit(1);
+}
 
 // ① 页面不滚、右栏自己滚 ✓
 const scroll = await evaluate(`(() => {
@@ -161,56 +172,58 @@ for (const key of ["history", "assets", "file", "diag", "paint"]) {
 await evaluate("window.yanshiRightTabs.show('assets')");
 const shotTabs = await capture("layout-tabs-assets");
 
-// ③ 放大 ⇒ 舞台内部横向滚动 ✓；回到 100% ⇒ 不滚 ✓
-const zoom = await evaluate(`(() => {
-  const stage = document.querySelector(".stage");
-  const box = document.getElementById("zoomInput");
-  box.value = "400";
-  box.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
-})()`);
-await sleep(700);
-const zoomed = await evaluate(`(() => {
-  const stage = document.querySelector(".stage");
-  const before = stage.scrollLeft;
-  stage.scrollLeft = 60;
-  return {
-    overflowX: stage.scrollWidth - stage.clientWidth,
-    moved: stage.scrollLeft !== before,
-    pageStillLocked: document.documentElement.scrollHeight - window.innerHeight <= 2,
-  };
-})()`);
-await evaluate(`(() => {
-  const box = document.getElementById("zoomInput");
-  box.value = "100";
-  box.dispatchEvent(new Event("change", { bubbles: true }));
-})()`);
-await sleep(700);
-const fitted = await evaluate(`(() => {
-  const stage = document.querySelector(".stage");
-  return { overflowX: stage.scrollWidth - stage.clientWidth };
-})()`);
+// ③ 放大 ⇒ **画布比舞台宽、且舞台能滚** ✓；回到 100% ⇒ 画布正好塞满 ✓。
+//    **量画布本身，别量 `.stage` 的 scrollWidth** ✗ —— 那里恒有 11px 的差（另有子元素 ✓），
+//    100% 与 400% 都是 11px ✓ ⇒ 那是我**量错了对象** ✗（连续第三次判据错，教训同型 ✓）。
+const zoomTo = async (percent) => {
+  await evaluate(`(() => {
+    const box = document.getElementById("zoomInput");
+    box.value = ${JSON.stringify(String(percent))};
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await sleep(800);
+};
+const metrics = () =>
+  evaluate(`(() => {
+    const stage = document.querySelector(".stage");
+    const board = document.getElementById("board");
+    const width = Math.round(board.getBoundingClientRect().width);
+    const client = stage.clientWidth;
+    const before = stage.scrollLeft;
+    stage.scrollLeft = 60;
+    const canScroll = stage.scrollLeft !== before;
+    stage.scrollLeft = before;
+    return {
+      boardWidth: width,
+      stageClient: client,
+      overflow: width - client,
+      canScroll,
+      pageStillLocked: document.documentElement.scrollHeight - window.innerHeight <= 2,
+    };
+  })()`);
+await zoomTo(400);
+const zoomed = await metrics();
+// **"正好塞满"要按「适配」量** ✗ —— 输入框里的 `100%` 意思是 **1:1**（1 文档像素 = 1 CSS 像素 ✓），
+// 那时画布 900px 比舞台宽 **正是对的** ✓（连续第四次判据错，教训同型 ✓：先问判据在问什么 ✓）。
+await evaluate(`document.getElementById("zoomFit").click()`);
+await sleep(800);
+const fitted = await metrics();
 console.log(
-  `  ③ 缩放：400% 时舞台溢出 ${zoomed.overflowX}px（能滚=${zoomed.moved}，页面仍锁=${zoomed.pageStillLocked}）` +
-    `；回到 100% ⇒ 溢出 ${fitted.overflowX}px`,
+  `  ③ 缩放：400% ⇒ 画布 ${zoomed.boardWidth}px vs 舞台 ${zoomed.stageClient}px（溢出 ${zoomed.overflow}，能滚=${zoomed.canScroll}）` +
+    `；适配 ⇒ 画布 ${fitted.boardWidth}px vs 舞台 ${fitted.stageClient}px（溢出 ${fitted.overflow}）`,
 );
-// **③ 如实报为"已知未修"** ✗ —— 本轮实测：`canvas` 的 CSS 尺寸根本没被设过 ✓
-//（`style.width` 为空 ✓、`getBoundingClientRect().width` 恒为 300 ✓ = `<canvas>` 默认值 ✓），
-// 而 `displayScale` 正常变化 ✓ ⇒ "尺寸没落到元素上"这条得单独查 ✓。
-// **不在这里判红** ✓：判红会逼着人回退到更差的版本 ✗（与上一轮"闪 vs 看不见"同一条取舍 ✓）。
-if (!(zoomed.overflowX > 10) || !zoomed.moved) {
-  console.log(
-    `  ⚠ 已知未修：放大之后舞台没有内部滚动（溢出 ${zoomed.overflowX}px、能滚=${zoomed.moved}）` +
-      " ⇒「画布内部独立滚动」还没做到 ✗；线索：canvas 的 CSS 宽高始终是默认的 300×150 ✓（见笔记第 47 轮 ✓）。",
-  );
-  await capture("layout-stage-scroll-known-issue");
+if (!(zoomed.overflow > 10) || !zoomed.canScroll) {
+  console.error("❌ 放大之后画布没有超出舞台 / 舞台滚不动 ⇒「画布内部独立滚动」没做到 ✗");
+  await capture("layout-no-stage-scroll");
+  process.exit(1);
 }
 if (!zoomed.pageStillLocked) {
   console.error("❌ 放大把整页顶开了 ⇒ 垂直锁死被破坏 ✗");
   process.exit(1);
 }
-if (fitted.overflowX > 2) {
-  console.log(`  ⚠ 100% 时舞台仍溢出 ${fitted.overflowX}px（同一条线索 ✓）`);
+if (fitted.overflow > 2) {
+  console.error(`❌ 回到 100% 之后画布仍比舞台宽 ${fitted.overflow}px ⇒ fit 不再"正好塞满" ✗`);
+  process.exit(1);
 }
 const shotZoom = await capture("layout-zoomed-stage-scrolls");
 
@@ -260,7 +273,7 @@ console.log(
       scroll,
       tabs: Object.fromEntries(Object.entries(tabStates).map(([key, value]) => [key, value.visibleCards])),
       movedToFileMenu: movedOut,
-      stageScroll: { zoomed: zoomed.overflowX, fitted: fitted.overflowX, pageStillLocked: zoomed.pageStillLocked },
+      stageScroll: { zoomed: zoomed.overflow, fitted: fitted.overflow, canScroll: zoomed.canScroll, pageStillLocked: zoomed.pageStillLocked },
       dockHomes: dockFlow,
       screenshots: [shotTabs, shotZoom, shotDock],
     },

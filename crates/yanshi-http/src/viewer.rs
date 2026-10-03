@@ -104,6 +104,11 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
      两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
      提交后画布变空白（刷新才恢复）。 */
   #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
+  /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
+     盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
+     ⇒ 放大时给 `body` 加 `canvas-zoomed` ✓，把这两条上限放开 ✓ ⇒ 画布真的超出舞台 ✓、
+     `.stage` 的 `overflow: auto` 才**有东西可滚** ✓（用户："画布是内部一个可以独立上下和左右滚动的"✓）。 */
+  body.canvas-zoomed #board, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
   #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   /* **标注图钉层** ✓（设计 4.6 / 13.4 ✓）：用**独立的 DOM 层** ✓，不跟 `#overlay` 的笔迹预览抢画布 ✓，
      而且图钉**可点** ✓（点它跳到该标注 ✓）。 */
@@ -922,24 +927,28 @@ function sizeBoards(width, height) {
 function applyDisplaySize() {
   const available = availableArea();
   const scale = state.displayScale || 1;
-  // **画布的内部滚动：本轮**查了一半，先不发布** ✗（如实 ✓）。
+  // **`fit` 时正好塞满、放大后才让舞台自己滚** ✓（用户："画布是内部一个可以独立上下和左右滚动的"✓）。
   //
-  // **想做的** ✓：`fit` 时正好塞满 ✓、**放大后让 `.stage` 自己滚** ✓（用户："画布是内部一个可以独立
-  // 上下和左右滚动的"✓）——所以我把这里的"按可用区封顶"改成了"只有 `zoom <= 1` 才封顶" ✓。
-  // **但实测对不上** ✗（探针 + 直接读数 ✓）：`canvas` 的 `style.width` **是空的** ✓、
-  // `getBoundingClientRect().width` 恒为 **300** ✓（= `<canvas>` 的**默认** 300×150 ✓），
-  // 而 `state.displayScale` 确实在 0.55 / 4 / 1 之间正常变化 ✓ ⇒ **这里算出来的尺寸没有落到元素上** ✗。
-  // 这与本项目既有的"`sizeBoards` 设 `board.width` + `applyDisplaySize` 设 CSS 宽"那条路径**不符** ✗，
-  // 背后大概是另一段代码在管尺寸（或那段没被走到 ✓）—— **没查清就不发布** ✗（本项目纪律 ✓），
-  // 所以这段**恢复原样** ✓（仍然封顶 ✓ = 零回归风险 ✓），把"内部滚动"留给下一轮的**窄问题** ✓：
-  // **判据** ✓：放大到 400% ⇒ `.stage` 的 `scrollWidth > clientWidth + 10` ✓ 且 `scrollLeft` 能变 ✓、
-  // 而整页 `scrollY` 必须仍是 0 ✓；回到 100% ⇒ 溢出 ≤ 2px ✓。
-  const width = Math.max(32, Math.min(Math.round(state.viewport.w * scale), available.w));
-  const height = Math.max(32, Math.min(Math.round(state.viewport.h * scale), available.h));
+  // **第 47 轮的"没查清"其实是测量假象** ✗（第 49 轮查明 ✓）：当时我在**启动瞬间**读
+  // `board.style.width`（空 ✗）、`getBoundingClientRect().width`（300 = `<canvas>` 默认值 ✗）
+  // ⇒ 得出"算出来的尺寸没落到元素上"✗ —— 而真相是那一刻**画布还没被设过尺寸** ✓
+  //（同一刻 `state.viewport` 还是默认的 1024×1024 ✓）。等它稳定之后再量 ✓ 就一切正常 ✓。
+  // ⇒ **判据要等被测对象稳定** ✓，否则量到的是"还没开始"✗（与"怀疑判据"那条纪律同型 ✓）。
+  //
+  // **两条都要** ✓：一直封顶 ⇒ 放大也塞得进 ⇒ `.stage` 的 `overflow: auto` 永远不触发 ✗
+  //（"内部滚动"成了空话 ✓）；一直不封顶 ⇒ `fit` 时也多出十几像素 ✗（平白多一条滚动条 ✓）。
+  // ⇒ 判据就是**用户缩放**：`state.zoom <= 1`（适配档 ✓）⇒ 封顶到可用区 ✓；放大 ⇒ 不封顶 ✓。
+  const zoomedIn = (state.zoom || 1) > 1.0001;
+  const rawWidth = Math.round(state.viewport.w * scale);
+  const rawHeight = Math.round(state.viewport.h * scale);
+  const width = Math.max(32, zoomedIn ? rawWidth : Math.min(rawWidth, available.w));
+  const height = Math.max(32, zoomedIn ? rawHeight : Math.min(rawHeight, available.h));
   board.style.width = width + "px";
   board.style.height = height + "px";
   overlay.style.width = width + "px";
   overlay.style.height = height + "px";
+  // **放大时就放开 CSS 上限** ✓（见 `#board` 那条注释 ✓）—— 一处开关、两个元素一起管 ✓。
+  document.body.classList.toggle("canvas-zoomed", zoomedIn);
 }
 
 /// 舞台可用区域（主栅格第一列减去右侧面板、间隙与内边距）。

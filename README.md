@@ -224,9 +224,12 @@ The right column is split into five tabs, drawing, history, assets, file and dia
 seventeen cards as before and shows only the ones belonging to the active tab. The cards are moved rather than
 rebuilt, so their listeners, selected options and drawn thumbnails survive a switch, and the grouping lives in the
 markup as a data-panel attribute rather than being guessed from order. The page itself no longer scrolls at all;
-each panel scrolls inside itself, and the canvas stage is the scroll container for a canvas too large to fit, which
-is the intent even though the display size still caps at the available area, a half finished piece recorded in the
-notes with the measurement that blocked it. The tab panes also have to be built before the asset dock records where
+each panel scrolls inside itself, and the canvas stage is the scroll container for a canvas too large to fit. Fitting
+caps the display size to the available area so no scrollbar appears, while zooming past fit lifts that cap, both the
+inline size and the stylesheet's maximum width, because the latter alone silently clamped the canvas back to the
+stage and made the inline width pointless. Two rounds were spent on this for a measurement reason worth recording:
+the first reading was taken during startup, when the canvas is still the 300 by 150 default and the viewport is still
+the initial 1024 square, so it looked as though the computed size never reached the element. The tab panes also have to be built before the asset dock records where
 the palette and texture cards live, otherwise closing the dock returns them to a node that no longer holds them,
 which the layout script checks.
 
