@@ -23,20 +23,28 @@ let checked = 0, mismatched = 0, unchecked = 0;
 const rows = [];
 for (const tool of tools) {
   const name = tool.name;
-  const declared = new Set((tool.parameters || []).map((p) => p.name));
+  // **目录的形状是 `inputSchema`（JSON Schema）** ✗ —— 本判据原来只认 `tool.parameters` ✓，
+  // 而服务端早已改成 `inputSchema.properties` / `inputSchema.required` ✓
+  // ⇒ "声明的参数"恒为空 ⇒ 探针只发 `{__probe_unknown__:1}` ⇒ 每个工具都先报"缺必填" ✗
+  // ⇒ 结果就是 **127 个全部对不了账** ✓（本判据自己报的"先报了别的错" ✓，见第 245 轮 ✓）。
+  // 这里**两种形状都认** ✓（向后兼容 ✓，也让这条判据在两种目录下都有效 ✓）。
+  const declaredParams = Array.isArray(tool.parameters)
+    ? tool.parameters
+    : Object.entries(tool.inputSchema?.properties || {}).map(([name, schema]) => ({
+        name,
+        type: schema?.type,
+        required: (tool.inputSchema?.required || []).includes(name),
+        description: schema?.description,
+      }));
+  const declared = new Set(declaredParams.map((p) => p.name));
   // **按声明的类型造一份像样的参数** —— 否则工具先报"缺必填项"✗，那个"可用参数"提示根本不出现 ✗
   //（上一版就是这么得到"可对账 0 个"却报"全部一致"的**假绿** ✗ —— 判据必须先证明自己会红 ✓）。
   const argumentsForProbe = { __probe_unknown__: 1 };
-  for (const parameter of tool.parameters || []) {
-    if (parameter.name === "__probe_unknown__") continue;
-    const type = String(parameter.type || "any").toLowerCase();
-    argumentsForProbe[parameter.name] =
-      type.includes("number") || type.includes("integer") ? 1
-      : type.includes("bool") ? true
-      : type.includes("array") ? []
-      : type.includes("object") ? {}
-      : "x";
-  }
+  // **只发那一个"未知参数"** ✓ —— 本判据要的是服务端回"**可用参数：…**"那句提示 ✓，
+  // 而它的**取值**就是我需要对账的"实现真正接受的参数名" ✓。
+  // 旧版会**同时**塞一份"像样的参数" ✗ ⇒ 那些参数先撞上别的校验（例如 `layer_id: "x"` 不存在 ✗）
+  // ⇒ 未知参数提示不出现 ⇒ **127 个全被判"未能对账"** ✓（第 245 轮观察到的现象 ✓）。
+  // ⇒ 这里保持"**只发未知参数**" ✓（这也是它注释里写的初衷 ✓）。
   const response = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ tool: name, arguments: argumentsForProbe }),
