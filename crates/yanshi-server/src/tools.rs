@@ -2305,7 +2305,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // 现在补上 ✓ —— 与 `brush_stroke` 的语义**完全一致** ✓（都是"这一笔用多少不透明度 / 多硬的边"✓）。
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
-            param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓；≤512px ✓）"),
+            param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓）"),
+            param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 原因，不再静默只给地址"),
         ],
     },
     ToolSpec {
@@ -2933,8 +2934,19 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         "filter_padding": preview.filter_padding,
         "warnings": preview.warnings,
     });
-    // 7.5：MCP 响应可选内嵌小尺寸 image content（≤512px），其余走 URL。
-    if include_image && preview.width <= 512 && preview.height <= 512 {
+    // 7.5：MCP 响应可选内嵌 image content ✓ —— **超限不再静默降级** ✗（第三方 MCP 实测报告 P0-1 ✓：
+    // "画 50 笔之前看不到任何效果，只能盲画" ✗ ⇒ 调用方拿到 `yanshi://blob/…` 却**不知道为什么不给图** ✗）。
+    // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。
+    let max_px = optional_u64(args, "max_px").unwrap_or(512).clamp(1, 8192) as f64;
+    if include_image && (f64::from(preview.width) > max_px || f64::from(preview.height) > max_px) {
+        value["image_omitted"] = json!(true);
+        value["image_omitted_reason"] = json!(format!(
+            "区域 {}×{} 超过 max_px={} ⇒ 未内嵌 base64（避免超大响应）；\n             出路：① 传更小的 region（例如只取刚画过的那块）✓；② 传 max_px={} 提高上限 ✓；\n             ③ 先用 export_png 落盘再自己看 ✓；④ 只按 thumb_url 走 HTTP 取图 ✓",
+            preview.width, preview.height, max_px as u64, preview.width.max(preview.height)
+        ));
+        value["max_px"] = json!(max_px as u64);
+    }
+    if include_image && f64::from(preview.width) <= max_px && f64::from(preview.height) <= max_px {
         let png = ctx.workspace.store().get(&preview.blob_hash)?;
         value["image"] = json!({
             "mime_type": preview.mime_type,
