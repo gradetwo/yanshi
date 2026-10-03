@@ -928,8 +928,32 @@ impl Renderer {
                         let erase_hardness = hardness.clamp(0.0, 1.0);
                         let strength = opacity.clamp(0.0, 1.0);
                         let spacing = (size.max(1.0) * 0.15).max(1.0);
-                        let samples: Vec<(f64, f64, f64)> =
-                            points.iter().map(|(x, y)| (*x, *y, 1.0)).collect();
+                        // **压力要按每枚采样来** ✗ —— 用户实测："橡皮没有压力支持，不同压力下表现都一样" ✓。
+                        // 链路（第 191/192 轮逐环读过 ✓）：查看器**已发**三元组 ✓、服务端**原样存** `data` ✓、
+                        // 解析器**收**三元组 ✓ ⇒ 但 `points` 这个字段是**二元组** ✗（`object.rs:243/306` ✓），
+                        // 且这里把每枚采样**写死成 1.0** ✗、强度又是**整笔一个常量** ✗ ⇒ 端到端无效 ✓。
+                        // 改法（不动共享类型 ✓）：压力**从原始 `data` 里取** ✓（三元组还在 ✓），
+                        // **缺省 1.0** ✓ ⇒ 不传压力时与今天**逐字节一致** ✓（既有 786 项应当不动 ✓）。
+                        let pressures: Vec<f64> = object
+                            .data
+                            .get("points")
+                            .and_then(Value::as_array)
+                            .map(|list| {
+                                list.iter()
+                                    .map(|point| {
+                                        point.get(2).and_then(Value::as_f64).unwrap_or(1.0)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let pressure_at = |index: usize| -> f64 {
+                            pressures.get(index).copied().unwrap_or(1.0).clamp(0.0, 1.0)
+                        };
+                        let samples: Vec<(f64, f64, f64)> = points
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (x, y))| (*x, *y, strength * pressure_at(index)))
+                            .collect();
                         // 擦除同样受选区约束 ✓ —— 否则选区下擦除会擦掉选区**外**的内容 ✓
                         //（那是数据丢失 ✓，而不是功能缺失 ✓）。
                         let clip = object_clip(state, &layer.id, object);
@@ -941,7 +965,7 @@ impl Renderer {
                                     stamp.1,
                                     brush_radius,
                                     erase_hardness,
-                                    strength,
+                                    stamp.2,
                                     &|x, y| clip.coverage(x, y),
                                 );
                             } else {
@@ -951,7 +975,7 @@ impl Renderer {
                                     stamp.1,
                                     brush_radius,
                                     erase_hardness,
-                                    strength,
+                                    stamp.2,
                                 );
                             }
                         }
