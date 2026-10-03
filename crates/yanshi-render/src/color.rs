@@ -337,6 +337,16 @@ pub fn parse_spec_color(value: &serde_json::Value) -> Option<LinearRgba> {
             }
         }
         Value::Object(map) => {
+            // **未知键必须拒绝** ✗（真实报告 ✓，2026-10-03 ✓）：`from:{color:"#FF0000"}` 这种写法
+            // 以前会**静默变成黑色** ✓ —— `r`/`g`/`b` 全部取默认 0 ✓、`ok` 还是 `true` ✓
+            // ⇒ 调用方拿到一张**全黑**的图却以为成功了 ✗（比报错危险得多 ✓）。
+            // 与"参数被静默忽略"是本项目的头号病症 ✓ ⇒ 这里**按名拒绝** ✓，
+            // 由调用方给出"可用写法"的错误信息 ✓（三个工具共用这一个解析器 ✓，一处修好全都受益 ✓）。
+            for key in map.keys() {
+                if !matches!(key.as_str(), "r" | "g" | "b" | "a") {
+                    return None;
+                }
+            }
             let channel = |key: &str, default: u8| -> Option<u8> {
                 match map.get(key) {
                     None => Some(default),

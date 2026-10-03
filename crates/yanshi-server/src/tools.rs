@@ -9206,6 +9206,13 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         "width": width,
         "height": height,
         "blank": true,
+        // **说清"会话还在哪个文档上"** ✗（真实报告 ✓ 2026-10-03 ✓）：它用
+        // `new_document{width:800,height:600}` 建好了新文档 ✓（返回值里尺寸也对 ✓），
+        // 但**后续调用量的还是原文档** ✓（会话的 doc 没变 ✓）⇒ 它看到 1024×1024 ✓、
+        // 于是报"width/height 被静默忽略"✗ —— **误报** ✓
+        //（与它自己撤掉的坐标误报**同一个方法论错误** ✓）。
+        // 工具改不了客户端的会话归属 ✓，但可以把这件事**写在返回值里** ✓。
+        "session_document": ctx.doc_id,
     }))
 }
 
