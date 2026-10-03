@@ -25,7 +25,7 @@
 
 use crate::atom::{Atom, AtomId, AtomKind};
 use crate::error::{ErrorCode, ErrorContext, Result, YanshiError};
-use crate::fold::{compute_suppressed, fold_atoms, FoldEngine, FoldResult, FoldWarning};
+use crate::fold::{fold_atoms, FoldEngine, FoldResult, FoldWarning};
 use crate::ids::{ActorId, Seq, SessionId};
 use crate::log::AtomLog;
 use crate::state::{DeclareHead, DocumentState, HeadBase};
@@ -406,7 +406,11 @@ impl IncrementalFolder {
             return false;
         }
         // revert/reapply 必须指向旧区间之后的目标（见模块级约定）。
-        let suppressed = compute_suppressed(log.atoms_upto(n));
+        // **删掉一次全量扫描** ✗（第三方代码审计 #7 ✓，实测属实 ✓）：这里原有
+        // `let suppressed = compute_suppressed(log.atoms_upto(n));` ✓，而函数末尾是
+        // `let _ = suppressed;` ✗ ⇒ **每次增量折叠都白扫全部历史再扔掉结果** ✓
+        //（`let _ =` 还压住了"未使用"告警 ✗，所以一直没被发现 ✓）。
+        // 删除是**纯行为等价** ✓ ⇒ 判据 = 既有 786 项测试全绿 ✓。
         for atom in slice {
             if matches!(atom.kind, AtomKind::Revert | AtomKind::Reapply) {
                 if let Some(target_seq) = atom.target_atom().and_then(|t| log.seq_of(t)) {
@@ -418,7 +422,6 @@ impl IncrementalFolder {
         }
         // 旧区间内的原子若被新区间撤销，撤销动作本身在新区间里，状态可继续前推；
         // 但被撤销的原子必须仍留在版本链上以便审计，因此这里只做上面的保守检查。
-        let _ = suppressed;
         true
     }
 }
