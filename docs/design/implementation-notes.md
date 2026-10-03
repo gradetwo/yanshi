@@ -12792,3 +12792,26 @@ assertion `left == right` failed: multiply 应当真的写进图层（实测 nor
 * 只想验证"这一笔对不对"就**取刚画过的小 region** ✓ ⇒ base64 很小 ✓，**逐笔验证可行** ✓。
 **仍差** ✗（如实 ✓）：`brush_preview` 那一份**同样的 512px 判断**还没改 ✓（`tools.rs:11083` 一带 ✓）
 ⇒ 下一轮按**完全相同**的做法改它 ✓（判据同上 ✓）。
+
+### ✅ 第 215 轮：**P0-1 契约判据入库 + 全绿** ✓✓（判据当场抓出我自己的一处锚点错误 ✓）
+
+**新增判据** ✓：`scripts/tool-preview-image-contract.mjs` ✓ —— 把报告 P0-1 的契约**钉死** ✓：
+```
+① render_region 大区域(900×640) ⇒ 必须 image_omitted + 可读原因 ✓、且**不许**塞 image ✓
+② render_region 小区域(64×64)  ⇒ 必须有 image.data ✓
+③ render_region 大区域 + max_px=900 ⇒ **必须有 image.data** ✓（"给得出图"是硬要求 ✓）
+④ brush_preview + include_image ⇒ 必须有 image.data ✓
+```
+**实测（全绿 ✓）** ✓：
+```
+✓ 大区域 image_omitted ✓｜✓ 原因可读 ✓｜✓ 不塞大数据 ✓
+✓ 小区域内嵌 404 字符 ✓｜✓ max_px=900 ⇒ 大区域 21104 字符 ✓｜✓ brush_preview 2388 字符 ✓
+✓ P0-1 契约满足：要图有图、不给图必说明原因
+```
+**判据的价值当场体现** ✓：第一版只跑出 **5/6** ✗ —— `max_px` 提高后**没给出图** ✗ ⇒
+查出原因 ✓：我的 `param!("max_px"…)` 被加进了**别的工具**（`list_assets` ✗，因为锚点命中了那处 `include_image` ✗）
+⇒ `render_region` 的 schema 里没有它 ⇒ 传参被拒 ✓ ⇒ 撤回并加到 `render_region` ✓ ⇒ 21104 字符 ✓。
+**另一条事实** ✓：`brush_preview` **没有**"超限静默"问题 ✓（它内嵌处**没有尺寸门** ✓、
+`size` 本身被限制在 512 ✓、而且 MCP 侧 `inline_images` **默认就是 true** ✓）⇒
+报告里 `brush_preview` 那条**从代码上复现不出来** ✗ ⇒ 现在有了判据 ✓，它必须一直"要么有图要么说明原因" ✓。
+**结论** ✓：报告 P0-1 的**根因（512px 静默降级）已修 + 已用判据钉死 + 已提交** ✓。

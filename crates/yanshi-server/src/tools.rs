@@ -1018,8 +1018,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "include_image",
                 Boolean,
                 false,
-                "是否内嵌 base64 PNG（≤512px）"
+                "是否内嵌 base64 PNG（缺省上限 512px；超限时回 image_omitted + 原因，不许静默）"
             ),
+            param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 可读原因；想看图就把它调大"),
         ],
     },
     // ---- 图层 ----
@@ -2306,7 +2307,6 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("include_image", Boolean, false, "true ⇒ 额外内嵌 base64 PNG（MCP 客户端常用 ✓）"),
-            param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 原因，不再静默只给地址"),
         ],
     },
     ToolSpec {
