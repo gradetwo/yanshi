@@ -11015,3 +11015,28 @@ FMT=0 CLIPPY=0 TEST=0｜passed=786｜FAILED=0 ✓
 2. `write_new_document` 与 HTTP `create_document` **都调它** ✓（两处锚点已确认 ✓）；
 3. **同时**更新那两条旧测试 ✓：它们要能接受"新文档自带 `layer_1`" ✓
    （`layer_1` 撞名那条改用别的 id ✓ —— **请求体与断言一起改** ✗ 不许只改一半 ✓）。
+
+### 🔁 第 129 轮：默认图层**第二次回退** ✓ —— 但这次拿到了**正确的设计** ✓（进初始 fold，而不是加一条原子 ✗）
+
+**第二次尝试做了什么** ✓（都在回退前实测过 ✓）：
+* helper 落在 `impl Workspace` ✓ + HTTP 与 `new_document` **两条路都调它** ✓；
+* 把默认图层 id 从 `layer_1` 改成不易撞的 `layer_default` ✓（本意是避开测试自建的 `layer_1` ✓）。
+**结果** ✓：`cargo test` 仍有 **6 条集成测试红** ✗，名字很说明问题 ✓：
+```
+client_supplied_atom_ids_are_idempotent ✓ capability_token_gates_http_endpoints ✓
+document_persistence_over_http_survives_restart ✓ one_connection_serves_multiple_requests ✓
+tool_call_renders_region_and_serves_png_from_cas …（以及另外几条）
+```
+⇒ 真因**不是撞名** ✗，而是：**多了一条 `CreateLayer` 原子 ⇒ 文档日志的形状变了** ✗
+⇒ 凡是**数原子 / 撤销步数 / 持久化快照 / 渲染区域**的测试都会跟着动 ✓。（撞名只是其中一条 ✓。）
+**按用户的规矩回头看业界** ✓ ⇒ 得到一个**设计纠正** ✓：
+> 主流编辑器把"默认图层"当成**新文档的初始状态** ✓（打开就有一层 ✓），
+> 而不是"先建空文档、再追加一次建图层操作" ✗。
+⇒ 落到本仓库的结构上 ✓：应该让默认图层进**文档的初始 fold / `NewDocument` 的初始状态** ✓，
+**不产生额外的原子** ✓ —— 这样日志形状不变 ✓（那 6 条测试自然不动 ✓），
+而 `list_layers` 会如实报出那一层 ✓（旧脚本的 `layer_id` 也就有了 ✓）。
+**本轮处置** ✓：**整体回退** ✓（`main` 回到全绿 ✓：786 / 0 FAILED ✓），把这个设计纠正记档 ✓。
+**下一轮** ✓：先读**文档初始状态**那条路（`fold` / `DocumentState` 初始化 / `NewDocument` 如何变成初始状态 ✓），
+把"初始就有一层"做进去 ✓；判据仍是 `scripts/tool-session-semantics.mjs`（现在 6/7 ✓，红的正是"新文档自带图层"那两条 ✓）。
+**今天第几次"改一半/想当然"了** ✗：锚点 ✗、正则排版 ✗、只改请求体不改断言 ✗、以及这次"以为只是撞名" ✗ ——
+共同的解药只有一条 ✓：**先读清再改，并且一次改全** ✓。
