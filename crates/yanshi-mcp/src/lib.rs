@@ -327,6 +327,16 @@ impl Server {
             return Ok(tool_error(&error.to_response()));
         }
 
+        // **让"显式点名的文档"成为会话活跃文档** ✓（用户报告 2.2 ✓ 会话级上下文锁定 ✗）：
+        // 老行为是"每次都回落到 CLI 的 `--doc`"✗ ⇒ `new_document(second)` 之后 **仍画在 first** ✗
+        // （判据 `scripts/mcp-document-switch.mjs` 用**磁盘**复现过 ✓：图层落在 `first/atoms.jsonl` ✗）
+        // ⇒ 客户端画第二幅只能**重启进程** ✗，与"MCP 是常驻服务"的设计初衷相悖 ✓。
+        // 现在：只要这次调用**显式**给了 `doc_id` ✓（`new_document` ✓、或任何带该参数的工具 ✓），
+        // 它就**粘住**成为后续调用的缺省 ✓ —— 这同时给了报告建议③一个可用的"切换"手段 ✓。
+        if arguments.get("doc_id").and_then(Value::as_str).is_some() {
+            self.options.doc_id = doc_id.clone();
+        }
+
         let mut context = ToolContext::new(
             &mut self.workspace,
             doc_id,
