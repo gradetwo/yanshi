@@ -9479,3 +9479,31 @@ spray            不同字节 6243  首个 @3（通道 3）｜最大通道差 25
 **下一轮** ✓：把这套门面接进查看器（拖动期本地渲染 ✓、`brush_preview` 本地出图 ✓、
 `.myb` 资产怎么送到浏览器定下来 ✓），并补回归判据（N 支笔刷逐字节一致 ✓、指针还按着时就有纹理 ✓、
 对象数 1 ✓、撤销一步 ✓）。
+
+### 🔌 第 59 轮：接线的**逐步方案** ✓（本轮只侦查、不塞代码 ✗ —— 如实 ✓）
+
+侦察结论 ✓（读 `crates/yanshi-http/src/server.rs` ✓）：资产是**白名单式**路由 ✓ ——
+`/wasm/`（wasm-bindgen 的四个文件 ✓）、`/mediums/{file}`（只收该目录下 `.wasm` ✓，拒 `..`/`/` ✓）、
+`/brand/`、`/samples/`（名字在常量表里 ✓）、`/textures/` ✓；`HttpOptions.wasm_dir` 已存在 ✓
+（缺省 `crates/yanshi-wasm/pkg` ✓，`--wasm-dir` / `--no-wasm` 可调 ✓，且 `/health` 会据它告知查看器
+"内核可用不可用" ✓）⇒ **门面照它做即可** ✓，不要另发明一套 ✗。
+
+**下一轮按这个顺序做** ✓（每步都有判据 ✓）：
+1. **发门面 wasm** ✓：`HttpOptions` 加一个显式路径（例如 `--brush-wasm` ✓，缺省指向
+   `target/wasm32-unknown-unknown/release/yanshi_brush_wasm.wasm` ✓ —— 与 `wasm_dir` 同一思路 ✓）；
+   加一条**单文件**路由（不拼接路径 ✓，因此没有穿越面 ✓）。
+   **判据** ✓：从页面 `fetch` 它 ⇒ `WebAssembly.instantiate` 成功 ✓ 且 `yanshi_brush_paint` 落下墨 ✓。
+2. **发 `.myb` 文本** ✓：`/brushes/{name}.myb` ✓ —— **只收直接位于 `assets/brushes/`、以 `.myb` 结尾**的名字 ✓
+   （与 `/mediums/` 同一条规矩 ✓，拒 `..`/`/` ✗）。
+   **判据** ✓：取一支真实笔刷 ⇒ 文本能 `hokusai::myb::from_str` 解析 ✓（在页面里解析由门面负责 ✓）。
+3. **查看器接线** ✓：`.myb` 笔刷按下指针时 ⇒ 取模块 + 笔刷文本 ⇒ 实例化 ✓；
+   拖动中**本地**渲染（30ms 节流 ✓、**区域 = 当前笔迹 bbox** ✓）⇒ `putImageData` ✓；
+   抬手仍走既有 `brush_stroke` 提交 ✓（**像素与服务端逐字节相同** ✓ —— 第 58 轮已证 ✓）。
+   **判据** ✓：现成的 `scripts/browser-live-brush.mjs` ✓（**指针还按着时画布上就有该笔刷纹理** ✓、
+   对象数为 1 ✓、撤销一步回到画之前 ✓）—— 这正是此前六次失败的那条判据 ✓，这次它应当**转绿** ✓。
+4. **收尾** ✓：把 `brush_color_to_hsv` 挪进 `yanshi-render` 两边共用 ✓（收掉门面里那份拷贝与
+   `dead_code` 放行 ✓）；胶水定稿时补齐两个 `extern "C"` 的 `# Safety` 段 ✓（收掉另一条放行 ✓）；
+   打包脚本把门面 wasm 一起构建并装进包里 ✓（与内核/介质同一处 ✓）。
+**打包那一步的坑（提前记下 ✓）**：门面 wasm 目前只在 `target/wasm32-unknown-unknown/release/` ✓，
+`make release` 必须**显式构建它**并把**实际路径**告诉服务器 ✓（否则包里少一个文件 ✗ —— 与
+第 8 轮那次"包里只有提交的资产、内容却落后"是同一类问题 ✓，脚本里已有对应的警告模式可照抄 ✓）。
