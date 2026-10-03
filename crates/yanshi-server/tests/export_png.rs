@@ -159,9 +159,12 @@ fn bad_arguments_are_refused_with_a_reason() {
             "nearest",
         ),
         (
-            "路径写不进去",
+            // **审计驱动的话术变更**：`/proc/...` 现在在**更早**的路径守卫处就被拒了
+            //（第三方代码审计 P0 #1：导出原先能写任意路径 ⇒ 现在只允许导出目录与系统临时目录）。
+            // 该用例的**本意**（坏路径必须被拒、且给出原因）不变 ✓，只是原因换了措辞 ✓。
+            "路径在允许目录之外",
             json!({"path": "/proc/definitely/not/writable/x.png"}),
-            "写文件失败",
+            "拒绝写",
         ),
     ];
     for (label, args, expected) in cases {

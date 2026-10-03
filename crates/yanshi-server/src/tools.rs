@@ -11237,8 +11237,61 @@ fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }))
 }
 
+/// **客户端给的输出路径必须落在允许目录内** —— 第三方代码审计的 P0 第 1 条：
+/// `export_png` / `export_project` 原先直接 `std::fs::write(客户端给的路径)`，等于开放宿主机任意文件覆写
+///（我自己也踩过：一个示例写 `{"path":"x"}` 真在仓库根造出文件）。
+///
+/// **只给"写盘"用** ✗ —— 实测教训：一开始我把它也加到了 `import_asset`（那是**从路径读** ✓）上，
+/// 结果把**合法导入**一起拒了 ⇒ `assets_import.rs` 四条测试当场红 ✓（判据/测试抓住了 ✓）。
+///
+/// 规则：只接受**相对**路径 ✓；拒绝任何 `..` 组件 ✓；相对**导出目录**解析
+///（缺省 `./exports`，可用 `YANSHI_EXPORT_DIR` 改 ✓，目录不存在就自己建 ✓）；错误信息可照做 ✓。
+fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
+    let candidate = std::path::Path::new(raw);
+    let root = std::env::var("YANSHI_EXPORT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("exports"));
+    if candidate.is_absolute() {
+        // **绝对路径只在两处放行** —— 导出目录内 ✓（`YANSHI_EXPORT_DIR` ✓）或**系统临时目录内** ✓。
+        // 为什么会放行临时目录：实测 `crates/yanshi-server/tests/brush_stroke.rs:264` 就是
+        // **合法地**导出到自己的临时根 ✓ ⇒ 一律拒绝会把正常用法也关掉 ✗（门禁当场红 ✓）。
+        // 反过来，`/etc/...`、`/usr/...`、家目录里的任意文件**一律拒绝** ✓ —— 那才是审计说的"任意覆写" ✗。
+        let inside = candidate.starts_with(&root) || candidate.starts_with(std::env::temp_dir());
+        if !inside {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "拒绝写 {raw}：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录"
+                )),
+            ));
+        }
+        return Ok(candidate.to_path_buf());
+    }
+    if candidate
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "拒绝写 {raw}：路径里不许出现 ..（导出目录内的相对路径才行）"
+            )),
+        ));
+    }
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "导出目录 {} 建不出来 ⇒ {error}（可用 YANSHI_EXPORT_DIR 指定一个可写目录）",
+                root.display()
+            )),
+        ));
+    }
+    Ok(root.join(candidate))
+}
+
 fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let path = require_str(args, "path")?;
+    let path = guarded_output_path(&require_str(args, "path")?)?;
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     let (width, height) = ctx
         .workspace
@@ -11265,7 +11318,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     std::fs::write(&path, &tar).map_err(|error| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("写文件失败：{path} ⇒ {error}")),
+            ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", path.display())),
         )
     })?;
     Ok(json!({
@@ -11291,7 +11344,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 /// **语义** ✓：`mutating: false` ✓ —— 它**不改文档** ✓；但**它会写文件** ✓
 /// ⇒ 这一点写进了 tools.md ✓，不假装它"只是读" ✗。
 fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let path = require_str(args, "path")?;
+    let path = guarded_output_path(&require_str(args, "path")?)?;
     // 缺省整幅 ✓：区域没给就用文档尺寸 ✓。
     let region = match args.get("region") {
         Some(value) if !value.is_null() => parse_bbox(value)?,
@@ -11405,7 +11458,7 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     std::fs::write(&path, &png).map_err(|error| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("写文件失败：{path} ⇒ {error}")),
+            ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", path.display())),
         )
     })?;
     if covers_frame && target_w == width && target_h == height {
