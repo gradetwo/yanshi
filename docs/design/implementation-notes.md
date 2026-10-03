@@ -13028,3 +13028,20 @@ if (created && created.ok === false) console.log("  建 layer_paint 失败：", 
 **处置** ✓：**删掉那条判据** ✗ —— **空跑的判据比没有更糟** ✓（它会给出虚假的安心 ✓）；
 把这条**未完成**如实记录 ✓：**在能稳定复现那 6 条的环境里**（例如全新 clone + 冷构建 ✓）再做这条判据 ✓
 才是对的 ✓；本轮**不做** ✓，也不假装做了 ✓。
+
+### 📌 第 225 轮：`cdylib` 警告**在本 checkout 里复现不出来**（第 5 种办法也失败 ✓）⇒ **要用户的确切命令** ✓
+
+**这一轮试的** ✓（上一轮之后又试了"冷 target 目录"这条最可能的 ✓）：
+```
+CARGO_TARGET_DIR=/tmp/cold94  cargo build --workspace                     ⇒ dropping 警告 **0** 条 ✗
+CARGO_TARGET_DIR=/tmp/cold94b cargo build -p yanshi-medium-watercolor     ⇒ warning 行 **0** 条 ✗
+```
+**累计试过的 5 种** ✗：`--workspace` ✓、`-p <medium>` ✓、`cargo clean -p` 后重编 ✓、
+显式 `--target x86_64-unknown-linux-gnu` ✓、**全新 target 目录冷构建** ✓ ⇒ **都是 0 条** ✓
+⇒ 说明这个 checkout + 我这个 cargo 版本下，那些 crate **不产生**该警告 ✓
+（用户环境里会有 ✓ —— 可能是 cargo 版本不同 ✓、或 `make dev` 用了别的 profile/目标 ✓）。
+**处置** ✓：**不猜第四次** ✗ ⇒ 向用户**要素那条确切命令** ✓（`make dev` 的目标内容 / 原始命令行 ✓），
+拿到后**照抄复现** ✓ ⇒ 能红之后再把它做成"构建警告上限"判据 ✓（否则一律不做 ✓，见第 224 轮 ✓）。
+**✅ 对用户问题的答复不变 ✓**：结论靠的是**代码事实**（原生经 `yanshi_medium_host` 静态调用 ✓、
+全仓库无 `libloading`/`dlopen`/`wasmtime`/`wasmer` ✓）+ **警告类别**（cargo 提示 ✓，不是 lint ✓）
+⇒ **对功能与门禁都无影响** ✓，只损失"输出干净度" ✓。
