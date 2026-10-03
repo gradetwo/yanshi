@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// ⚠ **模板字符串里绝对不要写反引号** ✗ —— 这个坑在本仓库已经吃掉三轮
+//（注释里的反引号会**提前结束模板** ⇒ SyntaxError ✓）。要引名字就用「」。
 // **本地预览（`default_preview_points`）与服务端 `brush_preview` 必须逐字节相同** ✓。
 //
 // **为什么放在页面里** ✓：服务端回的是 **PNG** ✓，而 Node 没有内置 PNG 解码 ✗、浏览器有 ✓
@@ -34,6 +36,10 @@ const script = `(async () => {
   const { instance } = await WebAssembly.instantiate(bytes, {});
   const api = instance.exports;
   const size = 24;
+  // **可选覆盖**（第 42 轮）：环境变量 HARDNESS / OPACITY 给值 ✓，**两边喂同一个值** ✓
+  // ⇒ 一次只动一个变量 ✓（前几轮的假设都是这样被否掉的 ✓）。
+  const hardness = ${process.env.HARDNESS ? Number(process.env.HARDNESS) : "null"};
+  const opacity = ${process.env.OPACITY ? Number(process.env.OPACITY) : "null"};
   // **服务端那份固定笔迹**（tools.rs:10158 的「default_preview_points」✓，一字不差 ✓）。
   const length = Math.min(Math.max(size * 5.0, 64.0), 160.0);
   const margin = size + 8.0;
@@ -52,7 +58,8 @@ const script = `(async () => {
   for (const brush of ${JSON.stringify(names)}) {
     const made = await fetch("/api/tools?doc=" + doc + "&token=" + token, { method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tool: "brush_preview", arguments: { brush, size } }) }).then((r) => r.json());
+      body: JSON.stringify({ tool: "brush_preview", arguments: Object.assign({ brush, size },
+        hardness === null ? {} : { hardness }, opacity === null ? {} : { opacity }) }) }).then((r) => r.json());
     if (!made.ok) { out.push({ brush, error: (made.context || {}).detail || "被拒" }); continue; }
     const bitmap = await fetch("/api/blob/" + made.blob_hash + "?doc=" + doc + "&token=" + token).then((r) => r.arrayBuffer());
     const bitmapBlob = new Blob([bitmap], { type: "image/png" });
@@ -64,7 +71,7 @@ const script = `(async () => {
     const server = context.getImageData(0, 0, image.width, image.height).data;
     const myb = mybCache.get(brush) || await fetch("/brushes/" + brush + ".myb").then((r) => r.text());
     mybCache.set(brush, myb);
-    const request = JSON.stringify({ myb, points, size, color: null, opacity: null, hardness: null, region });
+    const request = JSON.stringify({ myb, points, size, color: null, opacity, hardness, region });
     const payload = new TextEncoder().encode(request);
     const pointer = api.yanshi_brush_alloc(payload.length);
     new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
@@ -120,6 +127,7 @@ for (const row of results) {
   console.log(`  ${row.brush.padEnd(14)} 服务端 ${row.serverW}×${row.serverH} vs 算出的区域 ${row.region.w}×${row.region.h}` +
     `｜字节 ${row.serverBytes} vs ${row.facadeBytes}｜不同 ${row.differing}` +
     (row.firstDiff >= 0 ? `（首个 @${row.firstDiff}，最大差 ${row.maxDelta}）` : "") + `｜${ok ? "**逐字节相同** ✓" : "有差异 ✗"}`);
+  console.log(`      覆盖：hardness=${JSON.stringify(process.env.HARDNESS || null)} opacity=${JSON.stringify(process.env.OPACITY || null)}`);
   console.log(`      枚数：服务端 steps=${row.serverSteps} vs 门面规则算得 ${row.expectedSteps}` +
     `｜${row.serverSteps === row.expectedSteps ? "相同 ✓" : "**不同** ✗ ⇒ 抽取顺序/枚数就是差异来源 ✓"}`);
   if (!ok && row.oneBit) {
