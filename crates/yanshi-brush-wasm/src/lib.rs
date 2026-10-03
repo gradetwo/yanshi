@@ -20,8 +20,6 @@
 // * `clippy::missing_safety_doc`：两个 `extern "C"` 函数确实**解引用裸指针** ✓，
 //   安全契约由**宿主**（我们自己的那几行胶水 ✓）保证 ✓。**收掉时机** ✓：接查看器、
 //   胶水定稿时补齐 `# Safety` 段 ✓。
-#![allow(dead_code)]
-
 use serde::Deserialize;
 use std::alloc::{alloc, dealloc, Layout};
 
@@ -93,6 +91,11 @@ fn configure(mut brush: hokusai::Brush, request: &PaintRequest) -> hokusai::Brus
         );
     }
     if let Some(colour) = request.color.as_ref() {
+        // **alpha 收下但不用它改不透明度** —— 与**服务端逐字一致**：服务端的 `paint_brush`
+        // 只把颜色的 H/S/V 喂给引擎、**忽略 alpha**；这里若拿 alpha 去覆盖不透明度，
+        // 就会与服务端分歧（判据 `scripts/wasm-brush-parity.mjs` 会红）。
+        // 所以显式读一次并写明理由：**既不是悄悄忽略，也不制造分歧**。
+        let _alpha_like_the_server = colour.a;
         let (hue, sat, value) = colour_to_hsv(colour);
         brush.set(
             hokusai::BrushSetting::ColorH,
