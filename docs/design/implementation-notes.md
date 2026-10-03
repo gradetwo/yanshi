@@ -13357,3 +13357,23 @@ Linux 上 `--static` 是缺省 ✓，它会断言"**声明 static 就不得引�
 ② 明确接受**动态**包 ✓：`make release-dynamic TARGET=…`（或 `--dynamic` ✓）⇒ 代价是"**不能跨发行版随便跑**" ✓（脚本会提示 glibc 版本要求 ✓）。
 **我需要你给的** ✓：`make release …` 输出里**失败前最后 10 行左右** ✓（尤其 `✗` 开头那句 ✓）——
 不然我只能按"检查顺序"推测（上面那条是**推测** ✗，不是结论 ✓）。
+
+### ✅ 第 243 轮：`--static`/GLIBC 那道失败**现在会讲清原因与两条出路** ✓✓（用户正撞在它上面 ✓）
+
+**为什么现在做** ✓：用户贴出的日志**只到**"跳过 commit 断言" ✓ ⇒ 紧随其后的就是这道检查 ✓
+（脚本里顺序 ✓：commit 断言 ⇒ glibc 统计 ⇒ **`--static` 却引用 GLIBC** ✓）⇒ 与其等他贴日志 ✓，
+不如**把这道失败写成"可决策的说明"** ✓（**仍然失败** ✗ —— 名实不符的包不能发 ✓，但不让人猜 ✓）。
+**改动** ✓（`scripts/package-release.sh` 的该断言 ✓）：补上
+* **含义** ✓：包名写 `-static` ✓ 但二进制仍需 GLIBC 动态库 ✗ ⇒ 换机器就跑不起来 ✓（正是要拦的 ✓）；
+* **常见原因** ✓：交叉工具链（Homebrew 的 `x86_64-linux-gnu-gcc` ✓）**crt 启动对象本身是动态的** ✓
+  ⇒ 即使 `+crt-static` 也仍引用 GLIBC ✗（macOS 跨编 Linux 尤其常见 ✓）；
+* **两条出路** ✓：① 换 **musl** 目标 ⇒ 真静态 ✓；② 用 `make release-dynamic TARGET=${target_triple}` ✓
+  明确要动态包 ✓（代价：不能跨发行版随便跑 ✗）。
+**实测（当场触发 ✓）** ✓：重建模拟（把**动态** Linux 产物放进 `target/aarch64-apple-darwin/release/` ✓）
+⇒ `--skip-build --target aarch64-apple-darwin` ⇒ `EXIT=1` ✓ 且新说明全部打印 ✓：
+```
+✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败 ✓
+  常见原因：交叉工具链…的 **crt 启动对象本身是动态的** ✓ ⇒ 即使带 +crt-static 也仍会引用 GLIBC ✗
+   ① 换 musl ⇒ 真静态 ✓：rustup target add x86_64-unknown-linux-musl
+   ② 明确要动态包 ⇒ make release-dynamic TARGET=aarch64-apple-darwin ✓
+```

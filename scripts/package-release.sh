@@ -688,6 +688,17 @@ if [ "${is_linux}" = 1 ]; then
   if [ "$static_build" = 1 ]; then
     if objdump -T "$stage/bin/yanshi-serve" 2>/dev/null | grep -q "GLIBC_2"; then
       echo "    ✗ 声明了 --static 却仍引用 GLIBC ⇒ 打包失败" >&2
+      # **把"为什么"和"两条出路"一起说清** ✓ —— 真实用户在 macOS 跨编 Linux 时正是撞在这里 ✓
+      #（他贴出的日志只到"跳过 commit 断言"✓ ⇒ 后一道就是这个 ✓）。宁可**失败并说清** ✓，也不静默降级 ✗。
+      echo "      含义：包名写着 -static ✓，但二进制**仍需要** GLIBC 动态库 ✗" >&2
+      echo "            ⇒ 换一台没装对应 glibc 的机器就跑不起来 ✓（这正是这条断言要拦的 ✗）。" >&2
+      echo "      常见原因：交叉工具链（例如 Homebrew 的 x86_64-linux-gnu-gcc ✓）的" >&2
+      echo "               **crt 启动对象本身是动态的** ✓ ⇒ 即使带 +crt-static 也仍会引用 GLIBC ✗。" >&2
+      echo "      两条出路（都不静默降级 ✓）：" >&2
+      echo "        ① 换 musl ⇒ 真静态 ✓：rustup target add x86_64-unknown-linux-musl" >&2
+      echo "           并装对应 musl 交叉工具链 ✓ ⇒ make release TARGET=x86_64-unknown-linux-musl ✓" >&2
+      echo "        ② 明确要动态包 ⇒ make release-dynamic TARGET=${target_triple} ✓" >&2
+      echo "           代价：**不能跨发行版随便跑** ✗（上面的输出已给出最低 glibc 版本 ✓）。" >&2
       exit 1
     fi
     echo "    已断言：静态包**不引用**任何 GLIBC 符号 ✓"
