@@ -46,7 +46,11 @@ if (check) {
   }
   // **README 必须链到它** —— 否则文档生成了却没人找得到（那是另一种"静默"）。
   const readme = (() => { try { return readFileSync("README.md", "utf8"); } catch { return ""; } })();
-  if (!readme.includes("docs/design/tool-examples.md")) {
+  // **要求的是"能点开的链接"，不是一个恰好出现的字符串** ✗ ——
+  // 上一版只查字符串，而 README 里链接文字与目标都是同一个路径（出现两次）⇒
+  // 我把第一处改坏时检查照样通过 ⇒ **变异无效、我当时写下的"能红"是假的** ✗。
+  // 现在要求 Markdown 链接的目标形式 `](docs/design/tool-examples.md)`。
+  if (!readme.includes("](docs/design/tool-examples.md)")) {
     console.error("❌ README.md 没有链到 docs/design/tool-examples.md ⇒ 文档没人找得到");
     process.exit(1);
   }
