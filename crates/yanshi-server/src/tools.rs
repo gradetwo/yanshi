@@ -12431,6 +12431,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("list_effects", r#"{}"#),
     ("list_annotations", r#"{}"#),
     ("list_comments", r#"{}"#),
+    // 第 (5) 条继续扩 ✓：必填只有 `layer_id` ✓ ⇒ 用新建文档自带的 `layer_default` ✓（机器普查选出 ✓）。
+    ("lock_layer", r#"{"layer_id": "layer_default"}"#),
+    // 第 (5) 条继续扩 ✓：必填只有 `layer_id` ✓ ⇒ 用新建文档自带的 `layer_default` ✓（机器普查选出 ✓）。
+    ("unlock_layer", r#"{"layer_id": "layer_default"}"#),
     // **`get_object_history` 不能作为单条示例** ✗ —— 判据实测报"对象 s1 不存在" ✓：
     // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
     //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。
