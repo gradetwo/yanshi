@@ -5949,8 +5949,20 @@ async function paintLiveFrame() {
     offscreen.height = region.h;
     offscreen.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer), region.w, region.h), 0, 0);
     ctx.drawImage(offscreen, Math.round(region.x - state.viewport.x), Math.round(region.y - state.viewport.y));
-    // **记住本地覆盖过的那块**（第 67 轮定：《提交之后按它从服务端补画一次》）。
-    liveLastRegion = { x: region.x, y: region.y, w: region.w, h: region.h };
+    // **记住本地覆盖过的那块 —— 而且是"整笔的并集"** ✗（第 74 轮修 ✓）：
+    // 原来只记**最后一帧**的区域 ✓ ⇒ 若最后一帧落后于真实笔迹 ✓，露在区域外的一小截
+    // 在提交后补画时清不掉 ✗ ⇒ 撤销之后画布上还剩墨 ✗（第 25 轮没踩到、第 73 轮踩到了 ⇒ **时序性** ✓）。
+    // 并集是**单调增长**的 ✓ ⇒ 补画一定覆盖住所有画过的像素 ✓，不再看时序的脸色 ✓。
+    liveLastRegion = liveLastRegion
+      ? {
+          x: Math.min(liveLastRegion.x, region.x),
+          y: Math.min(liveLastRegion.y, region.y),
+          w: Math.max(liveLastRegion.x + liveLastRegion.w, region.x + region.w)
+            - Math.min(liveLastRegion.x, region.x),
+          h: Math.max(liveLastRegion.y + liveLastRegion.h, region.y + region.h)
+            - Math.min(liveLastRegion.y, region.y),
+        }
+      : { x: region.x, y: region.y, w: region.w, h: region.h };
     stats.localBrushFrames = (stats.localBrushFrames || 0) + 1;
   } catch (error) {
     stats.localBrushErrors = (stats.localBrushErrors || 0) + 1;
