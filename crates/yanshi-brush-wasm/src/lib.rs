@@ -234,7 +234,13 @@ fn paint(request_json: &str) -> Result<Vec<u8>, String> {
     let brush = hokusai::myb::from_str(&request.myb)
         .map_err(|error| format!("不是能解析的 .myb：{error}"))?;
     let brush = configure(brush, &request);
-    let mut state = hokusai::BrushState::new(1);
+    // **必须用 `default()`，与服务端逐字一致** ✓（第 58 轮实测的血泪 ✓）：
+    // 服务端写的是 `hokusai::BrushState::default()` ✓，而 crate 注释写明
+    // **"libmypaint seeds its per-brush PRNG with `1000`; matching it here"** ✓
+    // ⇒ 默认种子 = **1000** ✓。我第一版写成 `new(1)` ✗ ⇒ 随机抖动（`offset_by_random` 一类 ✓）
+    // 走了**完全不同的序列** ✓ ⇒ 与 `spray` / `2B_pencil` 比出 **6243 个不同字节、最大通道差 255** ✗，
+    // 而 `100%_Opaque`（不吃随机）**0 个不同字节** ✓ —— 这个对照正好把根因钉死 ✓。
+    let mut state = hokusai::BrushState::default();
     let mut surface = hokusai::tile_mem::MemSurface::new();
     stamp(&brush, &mut state, &mut surface, &request.points);
     Ok(read_back(&surface, &request.region))
