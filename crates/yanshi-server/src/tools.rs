@@ -10291,7 +10291,7 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     );
     // **多边形区域**（测试报告 §二.3）✓：`area.points = [[x,y], …]` ⇒ 由它推 bbox ✓，
     // 之后每个点再做"点在多边形内"的**有界重采样** ✓；放不下就**少落一笔并如实计数** ✓。
-    let polygon: Vec<[f64; 2]> = args
+    let polygon: Vec<(f64, f64)> = args
         .get("area")
         .and_then(|value| value.get("points"))
         .and_then(Value::as_array)
@@ -10300,7 +10300,7 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                 .iter()
                 .filter_map(|point| {
                     let pair = point.as_array()?;
-                    Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
+                    Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
                 })
                 .collect()
         })
@@ -10312,16 +10312,10 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     };
     let (ax, ay, aw, ah) = match &polygon {
         Some(points) => {
-            let min_x = points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-            let max_x = points
-                .iter()
-                .map(|p| p[0])
-                .fold(f64::NEG_INFINITY, f64::max);
-            let min_y = points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-            let max_y = points
-                .iter()
-                .map(|p| p[1])
-                .fold(f64::NEG_INFINITY, f64::max);
+            let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+            let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+            let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+            let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
             (
                 min_x,
                 min_y,
@@ -10371,13 +10365,13 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         let mut y = ay + scatter_next(&mut state) * ah;
         if let Some(points) = &polygon {
             let mut tries = 0;
-            while tries < 64 && !point_in_polygon(x, y, points) {
+            while tries < 64 && !yanshi_render::geometry::point_in_polygon(x, y, points) {
                 x = ax + scatter_next(&mut state) * aw;
                 y = ay + scatter_next(&mut state) * ah;
                 tries += 1;
             }
             // **放不下就少落一笔** ✓（并在响应里如实计数 ✓ —— 不假装画了 ✗）。
-            if !point_in_polygon(x, y, points) {
+            if !yanshi_render::geometry::point_in_polygon(x, y, points) {
                 continue;
             }
         }
@@ -13244,6 +13238,30 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             // 预览次数不在这里汇总 ✓：**判据直接数"逐项结果里有没有 `preview`"** ✓
             //（更可靠 ✓ —— 不依赖响应顶层字段的命名与位置 ✓）。
             last_preview = std::time::Instant::now();
+            // **落盘那另一半**（测试报告 §一.4 的另一半 ✓）：`render.png` 平时只在"有人请求整幅渲染"时才写 ✓
+            //（`service.rs:1339` ✓）⇒ 长批次里没人请求 ⇒ 文件冻结 ✓ ⇒ 这里**主动补写一次** ✓。
+            // **只有"按毫秒"那一档才做** ✗：每 N 笔渲一次整幅太贵 ✓ —— 两个参数各管一件事 ✓。
+            if due_by_time {
+                let size = ctx
+                    .workspace
+                    .document(&ctx.doc_id)
+                    .map(|document| (document.state().width, document.state().height));
+                if let Some((width, height)) = size {
+                    if width > 0 && height > 0 {
+                        let bbox = yanshi_core::Bbox::new(0.0, 0.0, width as f64, height as f64);
+                        if let Ok((_, _, pixels)) =
+                            ctx.workspace.render_region_raw(&ctx.doc_id, bbox)
+                        {
+                            if let Some(png) =
+                                yanshi_render::png::encode_png(width, height, &pixels)
+                            {
+                                // **尽力而为** ✓：写缓存失败不该让整批失败 ✓（它只是缓存 ✓）。
+                                let _ = ctx.workspace.cache_full_frame_png(&ctx.doc_id, &png);
+                            }
+                        }
+                    }
+                }
+            }
         }
         ctx.silent = saved_silent;
     }
@@ -14017,39 +14035,6 @@ mod tests {
                 );
             }
         }
-    }
-}
-
-/// **射线法：点是否在多边形内**（测试报告 §二.3）✓ —— 让 `scatter_strokes` 的 `area` 支持
-/// `points: [[x,y], …]` ✓（头发/衣服/斜投影这类倾斜区域用轴对齐矩形会溢出 ✗）。
-fn point_in_polygon(x: f64, y: f64, points: &[[f64; 2]]) -> bool {
-    let mut inside = false;
-    let mut j = points.len() - 1;
-    for i in 0..points.len() {
-        let (xi, yi) = (points[i][0], points[i][1]);
-        let (xj, yj) = (points[j][0], points[j][1]);
-        if (yi > y) != (yj > y) {
-            let t = (y - yi) / (yj - yi);
-            if x < xi + t * (xj - xi) {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
-#[cfg(test)]
-mod polygon_area_tests {
-    use super::point_in_polygon;
-
-    #[test]
-    fn point_in_polygon_matches_an_oblique_triangle() {
-        let triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
-        assert!(point_in_polygon(10.0, 10.0, &triangle));
-        assert!(!point_in_polygon(90.0, 90.0, &triangle)); // 斜边之外 ✓
-        assert!(!point_in_polygon(-1.0, 10.0, &triangle));
-        assert!(!point_in_polygon(10.0, 120.0, &triangle));
     }
 }
 

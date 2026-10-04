@@ -20034,3 +20034,65 @@ test (stable & beta)：**220 passed; 1 failed** ✗
 `fill_region.color` / `save_palette.colors` 的**描述文字**写明"任一分量 > 1 即按字节" ✓ ⇒ **描述与实现不一致** ✗。
 **待办（✓）** ✓：① `tool-batch-preview` 的失败细节（去 CI 日志里取 ✓）；② 补两条描述的说明 ✓；
 ③ runner 适配"参数约定不同"的判据 ✓；④ 重推后让 CI 复验 ✓。
+
+### 🎯 第 321 轮：**§一.4 的重要更正 —— 我的改动只修了"响应里的预览"，没修"磁盘上的 `render.png`"** ✗
+
+**读到的两处（✓）** ✓：
+```
+service.rs:1339   if full_frame { persist.save_render(doc_id, head, png) }   ← **只在"有人请求整幅渲染"时才写** ✓
+service.rs:1866   pub fn cache_full_frame_png(&mut self, doc_id, png)        ← **Workspace 上现成的方法** ✓
+```
+**推论（✓）** ✓：**长批次期间没有任何人请求整幅渲染** ✗ ⇒ **`render.png` 必然冻结** ✓ ⇒
+⇒ ⇒ **我加的 `preview_every_n_strokes` 只让批次**响应里**带回中途预览** ✓
+（那是报告**建议 3.1**"返回进度事件"要的东西 ✓），**但磁盘上的 `render.png` 仍然不动** ✗
+⇒ ⇒ **我修的那一半比报告说的那一半小** ✓（**必须如实说** ✗ —— 不能说"§一.4 已修" ✗）。
+**而仓库早就知道这个坑（✓）** ✓：`cache_full_frame_png` 的注释写着
+"用户拿 `export_png` 画完整幅画 ⇒ 磁盘上的 `render.png` **仍停在刚建文档时的空白**" ✓ ⇒ **同一类问题** ✓。
+**下一步（✓，明确且小 ✓）** ✓：在 `batch` 循环里"该放行预览"的那一次 ✓，**顺带**调用
+`ctx.workspace.cache_full_frame_png(&ctx.doc_id, &png)?` ✓ ——
+PNG 从哪来 ✓：用 `render_region_raw` 渲染整幅 ⇒ 编码（`yanshi_render::png::encode_png` ✓ 现成 ✓）✓；
+**节流**用 `preview_interval_ms` ✓（**默认 0 ⇒ 行为不变** ✓），而 `preview_every_n_strokes` **不应**触发整幅渲染 ✗
+（每 N 笔渲一次整幅，成本太高 ✓ ⇒ **两个参数各管一件事** ✓：笔数管"响应预览" ✓、毫秒管"落盘" ✓）。
+**判据（✓）** ✓：`tool-batch-preview` 里那条 mtime 检查**现在正好能量到它** ✓（今天报 `前 null ⇒ 后 null` ✓
+⇒ 修好后应变成 **mtime 推进** ✓）—— **判据已经在那里等着了** ✓。
+
+### 🎯🎯 第 322 轮：**§二.1 的缝找到了；同时发现我自己重复造了一个轮子** ✗
+
+**列接口 + 读一遍（✓，这次是对的 ✓）** ✓：
+```
+crates/yanshi-render/src/render.rs:1574   pub fn shape_coverage(kind: ShapeKind, bbox: Bbox, points: &[(f64,f64)]) -> Coverage
+crates/yanshi-render/src/geometry.rs:104  pub fn rect_coverage(bbox) -> Coverage
+crates/yanshi-render/src/geometry.rs:139  pub fn ellipse_coverage(bbox, supersample) -> Coverage
+crates/yanshi-render/src/geometry.rs:186  pub fn polygon_coverage(points, supersample) -> Coverage
+crates/yanshi-render/src/geometry.rs:244  pub fn point_in_polygon(x, y, points) -> bool       ← **早就有了** ✗
+crates/yanshi-render/src/brush.rs:321     coverage: Option<&dyn Fn(f64, f64) -> f32>           ← 光栅器**本来就吃覆盖率函数** ✓
+```
+⇒ ⇒ **§二.1（`fill_region` 羽化）** ✓：形状覆盖率有**唯一出口** `shape_coverage` ✓、而 `Coverage` 就是一张覆盖率数据 ✓
+⇒ **羽化 = 对边缘做一次软化** ✓ ⇒ **有界** ✓（**不是"要动渲染核心"** ✗ —— **我第五次猜错难度** ✗ ✓）。
+**⚠️ 同时抓到我自己的一处重复实现（✗，如实记 ✓）** ✓：
+`geometry.rs:244` **早就有 `point_in_polygon`** ✓，而我在第 303 轮给 `scatter_strokes` 的 `area.points`
+**又手写了一个** ✗ ✓。⇒ ⇒ 这正是 `blend.rs` 那条注释警告过的
+"**各写一份必然漂移**" ✗ —— 我**刚在混合模式上修完同一个毛病** ✓，转头**自己犯了一个** ✗。
+**待办（✓）** ✓：① 删掉我那份、**改用 `geometry::point_in_polygon`** ✓；② §二.1 羽化接到 `shape_coverage` 的出口 ✓；
+③ 两件事都要**能红的判据** ✓（羽化：边缘梯度两侧都判 ✓；去重：把旧的那份改坏 ⇒ 判据必须红 ✓）。
+
+### 🧭 第 323 轮：**§二.1 羽化的实施计划（4 处，有界）** ✓ —— **本轮有意不动手** ✗
+
+**为什么不动手（✓，如实说 ✓）** ✓：这是一处**跨 4 个文件的 schema 改动** ✓（对象格式 + 渲染 + 工具 + 判据 ✓），
+而**我这一轮的上下文已接近末尾** ✓ ⇒ 开了一半就会有**半成品** ✗（纪律不允许 ✓）⇒ **先把计划落清，下轮从头做** ✓。
+**计划（✓，接口都已确认过 ✓）** ✓：
+1. **`crates/yanshi-render/src/object.rs`**（形状 schema 在这里 ✓，`518–545` 行 ✓）：
+   解析 `geometry.feather`（**像素半径** ✓，缺省 0 ✓）⇒ 存进形状图元 ✓；
+2. **`crates/yanshi-render/src/geometry.rs`** ✓：给三种覆盖率各加"软化"版本 ✓，或在
+   `render.rs:1574 shape_coverage` 的**出口**统一做 ✓（**出口一处更不易漂移** ✓）；
+   实现选择 ✓：**对覆盖率掩码做两次可分离盒式模糊** ≈ 高斯 ✓（比分维距离场简单 ✓、且对三种形状一致 ✓）；
+   * **半径 = 0 ⇒ 走原路径** ✓（**逐字节不变** ✓ —— 这是"不破坏既有一致性判据"的关键 ✓）；
+3. **`crates/yanshi-server/src/tools.rs` `write_fill_region`** ✓：接受 `feather` ✓ ⇒ 放进 `geometry` ✓ + **登记参数** ✓
+   （框架会拒绝未声明参数 ✓）；
+4. **判据** ✓：`scripts/tool-fill-region-feather.mjs` ✓ ——
+   **两侧都判** ✓：某一列像素在**硬边**下应是**阶跃** ✓、在 `feather=20` 下应是**渐变** ✓
+   （用 `analyze_region` 取区域、比"边界附近亮度差" ✓）；
+   **能红** ✓：把软化整段去掉 ⇒ 渐变那条立刻红 ✓（**改到被判条件本身** ✓）。
+**⚠️ 一处风险（✓，先记下 ✓）** ✓：`feather` 进了对象 schema ⇒ **老文档没有这个字段** ✓ ⇒
+必须**缺省 0 = 完全不启用** ✓ ⇒ 既有的"内核 vs 服务端逐字节一致"判据才不会被改坏 ✓。
+**本轮状态（✓）** ✓：**不改产品代码** ✓、**不推送** ✓（仍等 `bash-598` ✓）。
