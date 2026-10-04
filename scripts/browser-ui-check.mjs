@@ -1522,6 +1522,12 @@ const jumpUndoResult = await evaluate(`(async () => {
   const undone = ${canvasFingerprint};
   return { ok: true, jumped, undone };
 })()`);
+// **第二次求值**读行数（第 727 轮）：上一次我**往页模板里加代码**做诊断，
+// 结果页面拒绝整段表达式、判据整条无法运行（比没有诊断更糟，已撤）。
+// 所以改成**另起一次求值**：既不改模板，又能拿到想要的事实。
+const rowsAfterJump = await evaluate(
+  `document.querySelectorAll("#history .row").length`
+);
 
 // 导出 PNG：必须是**当前文档整幅分辨率**的 PNG（显式导出路径）。
 // 尺寸从页面读（前面几段会切换文档，写死 1024 会误报）。
