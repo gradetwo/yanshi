@@ -1332,6 +1332,11 @@ await new Promise((resolve) => setTimeout(resolve, 1200));
 // ⇒ 判据便报「没有改变画面（用例无效：目标原子选得不对）」✓ —— **而那是它的猜测** ✗
 // ⇒ ⇒ **真正的错是"取样时机"** ✓，**而第 458 轮我照它的猜测改了目标选取** ✗（改了它猜的那件事 ✓）。
 // ⇒ 这也是"时有时无"的来源 ✓：**取决于那 2.2s 内跳完没跳完** ✓。
+// **先画一笔，让"跳转前"非空** ✓（第 493 轮 ✓）：原先这一段**指望前面几段留下的画面** ✗
+// ⇒ 而那几段会切文档／清空 ✓ ⇒ 跳转前本来就是初始态 ✗ ⇒ **"跳到最早那条原子"一个像素都不改** ✓
+// ⇒ `jumped === fingerprintBeforeJump` ⇒ 判据报「目标原子选得不对」✗（**而那是它的猜测** ✓）。
+// ⇒ 所以这里**自己把状态造出来** ✓，**不依赖别人** ✗ —— 段落之间的隐式依赖，一改上游就静默失效 ✓。
+await strokeAt(0.5, 0.5, 41);
 const fingerprintBeforeJump = await evaluate(canvasFingerprint);
 const jumpResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
