@@ -1006,7 +1006,13 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // **实测补全（第 168 轮 ✓）**：原来只有 `get_document`/`list_layers` ✗ —— 但离线实测失败的还有
 // `get_preferences` ✓ 与 **`list_effects`** ✓（注意：**不是** `/api/effects` ✗ ——
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "list_layers", "get_preferences", "list_effects"];
+const LOCAL_READ_TOOLS = [
+  "get_document",
+  "list_layers",
+  "get_preferences",
+  "list_effects",
+  "get_log", // **第 169 轮实测补的** ✓ —— 又一次"靠失败 URL 才发现" ✓（我列的清单总是漏 ✓）
+];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
