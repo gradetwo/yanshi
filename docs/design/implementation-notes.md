@@ -22777,3 +22777,25 @@ grep -aE '点击按钮后的工具|蒙版编辑|蒙版拖动期间'  ⇒ **零�
    ⇒ ⇒ **于是 `jumped.sum === fingerprintBeforeJump.sum`** ✓ ⇒ **判据报"用例无效"** ✓ ✓。
 **⇒ 下一处（✓）** ✓：**读 `jumpUndoResult` 那个 evaluate 内部** ✓ ——
 **看它点完按钮之后等了多久、在哪里取 `jumped`** ✓。
+
+### 🎯🎯🎯 第 490 轮：**判据里有两次跳转，而"跳转前"的取样跨在它们之间** ✗
+
+**读到（✓，`browser-ui-check.mjs:1357-1369` ✓）** ✓：
+```js
+:1358  const rows = Array.from(document.querySelectorAll("#history .row"));
+:1360  const target = rows[0];                    // **跳到最早那条原子** ✓
+:1362  target.querySelector("button").click();    // ← **第二次跳转** ✗
+:1363  await new Promise((r) => setTimeout(r, 2200));
+:1364  const jumped = ${canvasFingerprint};       // **跳完 2.2s 后取** ✓
+:1365  document.querySelector('button[data-tool="undo"]').click();
+:1367  const undone = ${canvasFingerprint};
+```
+**⇒ 机制（✓）** ✓：**在它之前还有一个 `jumpResult` 块（`:1329-1343` ✓）已经跳过一次** ✓
+⇒ ⇒ 于是序列是：**`fingerprintBeforeJump`**（第 477 轮我挪到**跳 #1 之前** ✓）→ **跳 #1** → **跳 #2** → **`jumped`**
+⇒ ⇒ **若跳 #1 已把画面带回"接近初始" ✓ ⇒ 跳 #2（到第一行）不再改变画面** ✗ ✓
+⇒ ⇒ **两个指纹相等 ⇒ 报「画面没有改变」** ✓ ✓ —— **而两次跳转都是判据自己做的** ✗ ✓。
+**⇒ 三次假设之外的真因（✓）** ✓：**不是"目标原子"✗、不是"取样时机"✗、不是"点错按钮"✗** ✓
+—— **而是"这一段做了两次跳转，而断言的语义只承认一次"** ✓。
+**⇒ 修法（✓，下一轮 ✓）** ✓：**只跳一次** ✓ ——
+**要么去掉 `jumpResult` 那次跳转 ✓，要么把"跳转前"的取样挪到跳 #2 之前** ✓
+（**前者更干净 ✓：同一件事在一段里做两遍，本来就容易自相抵消** ✓）。
