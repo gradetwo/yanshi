@@ -2645,6 +2645,9 @@ const layerPanel = await evaluate(`(async () => {
   // 固定 1200ms 在冷启动时不够、在热路径上又白等 ✓。
   for (let i = 0; i < 40 && ink() !== 0; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterHide = ink();
+  out.hideDiag = { target: targetLayerId, clicked: out.hidContentRow === true,
+    serverVisible: (() => { const l = (listed.layers || []).find((x) => x.layer_id === targetLayerId); return l ? l.visible : "no-row"; })(),
+    rows: rows().map((r) => r.dataset.layerId) };
   await clickFlag(targetLayerId, "visible");
   for (let i = 0; i < 40 && ink() === 0; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterShow = ink();
@@ -2700,6 +2703,7 @@ if ((layerPanel?.paintedAfterShow || 0) !== (layerPanel?.paintedBefore || 0)) {
 }
 if (!layerPanel?.lockedOnServer) layerProblems.push("点锁图标之后服务端应记录 locked=true");
 console.log(`  【切层】from=${layerPanel?.switchedFrom} to=${layerPanel?.switchedTo} failed=${layerPanel?.switchFailed} rows=${JSON.stringify(layerPanel?.rowsAfterSwitch)} perLayer=${JSON.stringify(layerPanel?.objectsPerLayer)}`);
+console.log("  【隐藏诊断】" + JSON.stringify(layerPanel?.hideDiag));
 console.log(`  图层面板：${layerPanel?.rowCount} 行（自上而下 ✓ ${layerPanel?.firstRowIsTop ? "是" : "否"}）｜＋⇒${layerPanel?.afterAdd}｜⧉⇒${layerPanel?.afterDuplicate}（${layerPanel?.copyName}）｜上移生效 ${layerPanel?.moveChanged ? "✓" : "✗"}｜隐藏 ${layerPanel?.paintedBefore}→${layerPanel?.paintedAfterHide}→${layerPanel?.paintedAfterShow}｜锁定 ${layerPanel?.lockedOnServer ? "✓" : "✗"}（图标 ${layerPanel?.lockIcon}）`);
 const layerShot = await capture("05-layer-panel");
 console.log(`  截图：${layerShot || "（无）"}`);
