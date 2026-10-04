@@ -24336,3 +24336,22 @@ awk -v e="$((n+3))" ⇒ `grep -n` 返回**两行**（607 / 1379 ✓）⇒ 算术
 **⇒ 下一处（✓）** ✓：**在 `:568` 之后加一个"等页面就绪"的循环** ✓
 （**如轮询 `document.readyState === "complete"` 且 `getElementById("board")` 非空 ✓**），
 **并在取不到时**明确报错**而不是静默抛** ✓（**"判据无法运行"与"判据失败"要分开 ✓**）。
+
+### 🎯 第 591 轮：**更正 —— 确实有就绪等待，但它等的是"内核"而不是"DOM"** ✗
+
+**读到（✓，`browser-ui-check.mjs:568-572` ✓）** ✓：
+```js
+:568  await send("Page.navigate", { url: `…?doc=${maskDoc}&token=${maskToken}&debug=1` });
+:569  for (let i = 0; i < 80; i++) {
+:570    if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+:571    await new Promise((r) => setTimeout(r, 250));
+:572  }
+```
+**⇒ 两条（✓）** ✓：
+1. ✅ **navigate 之后确实有等待** ✓（**最多 80×250ms = 20s ✓**）⇒ **"完全没等"这个假设不成立** ✗；
+2. ⇒ ✗ **但它等的是 `kernelHead > 0`（内核就绪 ✓）** —— **而段首用的是 DOM 元素** ✓：
+   **`zoomFit` ✓、`color` ✓、`data-tool="brush"` ✓、`size` ✓、`feather` ✓** ✗
+   ⇒ ⇒ **"内核就绪"与"DOM 元素齐了"是两件事** ✓ ⇒ **后者没有被等** ✗ ✓。
+**⇒ 下一处（✓）** ✓：**把就绪条件改成"内核就绪 **且** 段首要用的元素都存在"** ✓ ——
+**并让"取不到"时**明确报"判据无法运行"** ✓（**与"判据失败"分开 ✓**）——
+**这样即使它再发生，报的也是"元素没到"，而不是一串 `undefined`** ✓。
