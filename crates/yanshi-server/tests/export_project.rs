@@ -173,7 +173,7 @@ fn exporting_from_a_memory_workspace_is_refused_with_a_reason() {
         registry().call(
             &mut ctx,
             "export_project",
-            &json!({ "path": "/tmp/never.yanshi" }),
+            &json!({ "path": &std::env::temp_dir().join("never.yanshi").to_string_lossy() }),
         )
     };
     assert_eq!(refused["ok"], json!(false), "{refused}");
