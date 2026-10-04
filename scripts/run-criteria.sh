@@ -59,7 +59,9 @@ FAIL_SUMMARY=""      # **末尾汇总** ✓：GitHub 的 --log-failed 只给"步
 # ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
 SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs 2>/dev/null | sort); do
+# ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
+# 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -75,7 +77,7 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   # **心跳** ✓：卡住时一眼看出是**哪一条** ✓（以前只看到"Job 还在跑" ✗）。
   echo "  → $name"
   case "$name" in
-    kernel-brush-parity.mjs)
+    kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
       # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。
