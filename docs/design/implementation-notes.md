@@ -26169,3 +26169,17 @@ scripts/browser-brush-preview-local.mjs:50  const local = rows.filter((row) => r
 2. ⇒ ✗ **路径二：服务端回退** ✓ ⇒ **而**没有**"本地 `yanshi-wasm` 出图"这条** ✗；
 3. ⇒ ⇒ **即：`(A)③` 在**这里**确实缺一条分支** ✓ ⇒ **判据那三个断言（来源标记 / 近似标注 / data URL）对应的正是它** ✓。
 **★ 一条**：**"分支缺口"比"逻辑错误"更常见也更难看见** ✓ —— 而**判据的 `local=0` 一眼就指出来了** ✓。
+
+### 🎯 第 761 轮：**`:5651` 是吸管不是缩略图 ⇒ 下一轮再动手** ✓
+
+**核到**：
+```
+:1523-1527  **内核合约白名单**：render_region_rgba ✓ / extend_preview_stroke ✓ / commit_preview ✓
+:1693/2209/5651  state.kernel.render_region_rgba(…) 的三处调用
+:5651  ⇒ 它属于 `pickColorAt`（吸管 ✓），**不是**缩略图** ✗
+```
+**⇒ 三条**：
+1. ✅ **共享内核确实暴露 `render_region_rgba`** ✓ ⇒ **本地出图的技术前提具备** ✓；
+2. ⇒ ✗ **而页面里**没有**"用内核画笔刷缩略图"的函数** ✓ ⇒ **要新写一条分支** ✓；
+3. ⇒ ⇒ **下一轮**：**在 `:7245` 之前加分支** ✓ —— **用 `render_region_rgba` 出 `data:image/png` ✓、并设 `img.title` 含「近似」✓、`row.dataset.previewSource="local"` ✓**。
+**★ 一条**：**"技术前提具备"与"那条路已铺好"是两回事** ✓ —— 而**判据只报"没走到"** ✓。
