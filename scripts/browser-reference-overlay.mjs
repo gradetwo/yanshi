@@ -49,5 +49,8 @@ await post("clear_reference", {});
 const second = await inspect();
 console.log("  清掉参考图之后：" + JSON.stringify(second));
 if (second.found) failures.push("清掉参考图之后页面上仍有叠加元素 ✗");
-if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
+if (failures.length) { console.log("  ✗ " + failures.join("；")); socket.close(); process.exit(1); }
 console.log("  ✓ 参考图：设置后可见且半透明，清除后消失");
+// **显式关闭再退出** ✓：留着 WebSocket 会让进程挂着 ⇒ 外层 timeout 报 124 ✗（红绿不分 ✓）。
+socket.close();
+process.exit(0);

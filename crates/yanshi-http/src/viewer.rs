@@ -6965,6 +6965,51 @@ if ("serviceWorker" in navigator) {
 // **离线**时即使走缓存也有延迟 ⇒ 那一笔的前几帧会白丢 ✓（实测：同一脚本两跑 +1060 ✓ / +8 ✗）。
 // 页面初始化后就加载 ⇒ 落笔时**已在内存** ✓，顺带也让它进 SW 缓存 ✓（离线可用 ✓）。
 void loadLocalBrushModule().catch(() => undefined);
+
+/// **参考图叠加**（AI 画家需求 P2-9 的可见那一半）：服务端把 `reference.*` **只记在偏好里**
+/// （文档一个字节都没改 ✓），这里把它**叠着画**出来 ✓ ⇒ 临摹时不用来回切窗口 ✓。
+///
+/// **为什么不写进任何图层** ✓：一旦写进去，用户"清掉参考图"就**拿不回原画** ✗（数据损失）。
+/// 所以这里是**独立的 DOM 层** ✓：`pointer-events: none` ✓（不吃鼠标 ✓）、`z-index` 高于画布 ✓、
+/// 位置取**画布当前的屏幕矩形** ✓（不掺进视口变换 ⇒ 换实现也不会算错 ✓）。
+async function refreshReferenceOverlay() {
+  try {
+    const value = await callTool("get_preferences", { keys: ["reference.blob_hash", "reference.opacity", "reference.position"] });
+    const prefs = (value && (value.preferences || (value.data || {}).preferences)) || {};
+    const hash = prefs["reference.blob_hash"];
+    const existing = document.getElementById("referenceOverlay");
+    if (!hash) {
+      if (existing) existing.remove();   // **清掉即移除** ✓（文档本来就没被动过 ✓）
+      return;
+    }
+    const canvas = document.getElementById("board") || document.querySelector("canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const overlay = existing || document.createElement("img");
+    if (!existing) {
+      overlay.id = "referenceOverlay";
+      overlay.alt = "参考图";
+      overlay.style.position = "fixed";
+      overlay.style.pointerEvents = "none";
+      overlay.style.zIndex = "9";
+      overlay.style.objectFit = "contain";
+      overlay.dataset.reference = "1";
+      document.body.appendChild(overlay);
+    }
+    overlay.dataset.blob = String(hash);
+    overlay.src = "/api/blob/" + String(hash).replace(/^sha256:/, "sha256:");
+    overlay.style.left = rect.left + "px";
+    overlay.style.top = rect.top + "px";
+    overlay.style.width = rect.width + "px";
+    overlay.style.height = rect.height + "px";
+    const opacity = Number(prefs["reference.opacity"]);
+    overlay.style.opacity = String(Number.isFinite(opacity) && opacity > 0 ? opacity : 0.5);
+  } catch (error) {
+    // **参考图不是关键路径** ✗：读不到就安静地不画 ✓（绝不因为它把查看器拖垮 ✓）。
+  }
+}
+void refreshReferenceOverlay();
+window.addEventListener("resize", () => { void refreshReferenceOverlay(); });
 }
 }
 
