@@ -701,7 +701,12 @@ const namingResult = await evaluate(`(async () => {
   await wait(90);
   fire("pointerup", at(0.6, 0.5), 501);
   let before = ${canvasFingerprint};
-  for (let i = 0; i < 30 && before.sum === 0; i++) { await wait(250); before = ${canvasFingerprint}; }
+  for (let i = 0; i < 40; i++) {
+    const sized = document.getElementById("board").width === (state.docSize ? state.docSize.w : -1);
+    if (before.sum !== 0 && sized) break;
+    await wait(250);
+    before = ${canvasFingerprint};
+  }
 
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
   document.getElementById("openDoc").click();
@@ -713,7 +718,12 @@ const namingResult = await evaluate(`(async () => {
     if (document.getElementById("identity").textContent.includes(${JSON.stringify(copyName)})) break;
   }
   let after = ${canvasFingerprint};
-  for (let i = 0; i < 30 && after.sum === 0; i++) { await wait(250); after = ${canvasFingerprint}; }
+  for (let i = 0; i < 40; i++) {
+    const sized = document.getElementById("board").width === (state.docSize ? state.docSize.w : -1);
+    if (after.sum !== 0 && sized) break;
+    await wait(250);
+    after = ${canvasFingerprint};
+  }
   return {
     prefilled,
     identity,
