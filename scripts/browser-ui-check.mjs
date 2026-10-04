@@ -705,6 +705,11 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     // 判据早就能读 state() ✓（第 474 轮我自己加的 ✓）⇒ **能观测的，就别推理** ✓。
     // 观测值接进 logDuringDrag ✓ ⇒ **它会顺着已有的打印进日志** ✓，不必再改打印处 ✓。
     const stateProbe = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
+    // 必须**先声明再引用**（第 683 轮）：它在下面那句拼接里被用到，
+    // 而原先写在拼接**之后** ⇒ TDZ ⇒ Cannot access before initialization。
+    // **抬手之前**再读一次点数 ✓（第 577 轮 ✓）：实测拖动期是 2 ✓ 而蒙版仍失败 ✗
+    // ⇒ 与 commitMask 的「< 2」矛盾 ✓ ⇒ 唯一解释是"抬手前掉了" ✓ ⇒ 这一读分辨它 ✓。
+    const ptsBeforeUp = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
     const logDuringDrag = document.getElementById("log").innerText.slice(-160)
       + "｜拖动中 tool=" + (stateProbe ? stateProbe.tool : "?")
       // 第 557 轮：state 的 points 已经是「点数」本身，我原先又取了一次 length
@@ -715,9 +720,6 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
       + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
       + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2)
       + " 抬手前=" + String(ptsBeforeUp);
-    // **抬手之前**再读一次点数 ✓（第 577 轮 ✓）：实测拖动期是 2 ✓ 而蒙版仍失败 ✗
-    // ⇒ 与 commitMask 的「< 2」矛盾 ✓ ⇒ 唯一解释是"抬手前掉了" ✓ ⇒ 这一读分辨它 ✓。
-    const ptsBeforeUp = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
     fire("pointerup", at(0.75, 0.75), 301);
     let masked = ink();
     for (let i = 0; i < 120 && masked >= filled; i++) {
