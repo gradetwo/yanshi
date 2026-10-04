@@ -22948,3 +22948,21 @@ awk 查 :6420-6600 的监听器 ⇒ **:6428 pointermove（结束于 :6485 前 �
 —— **它到底往 `state.points` 放了什么、在什么条件下放** ✓。
 **★ 六轮假设后的收敛（✓）** ✓：**六个里两个成立 ✓（双重跳转 ✓、以及"分支在 pointerup"这个"读法确认"✓），
 其余四个都被一行代码推翻** ✗ —— **而每一次推翻，都来自"读那处代码"** ✓。
+
+### 🎯🎯🎯 第 501 轮：**两处嫌疑，都能精确解释"只有 1 个点"** ✓
+
+**读到（✓，`viewer.rs:6428-6484` ✓）** ✓：
+```js
+:6429  if (state.dragging !== event.pointerId) return;      // ← **按下时必须把 dragging 设为这个 pointerId** ✗
+:6473  const TWO_CORNER_TOOLS = new Set(["rect","ellipse","select_rect","mask_rect","mask_ellipse"]);
+:6474  if (TWO_CORNER_TOOLS.has(state.tool)) state.points = [state.points[0], point];
+```
+**⇒ 两条候选机制（✓，各自都能解释症状 ✓）** ✓：
+* **A**：**`:6429` 对蒙版直接 `return`** ✗ ⇒ `points` 保持"按下时的样子" ✓
+  ⇒ 抬手时 `:6595` 再 push 一个 ⇒ **长度 1** ✗ ⇒ **与实测"只有抬手点"完全吻合** ✓ ✓；
+* **B**：**`:6474` 用 `state.points[0]`** ✓ ⇒ **若它为空 ⇒ `[undefined, point]`** ✗
+  ⇒ **长度 2 而几何无效** ⇒ `commitMask` 报"需要拖出一个区域" ✓。
+**⇒ 下一处（✓）** ✓：**读 `:6149`（主 `pointerdown`）里"设 `state.dragging` 与首个点"的部分** ✓
+—— **看它对 `mask_rect` 是否设了 dragging ✓、是否 push 了首个点** ✓。
+**★ 这一轮的价值（✓）** ✓：**两个候选都"可被一行代码证伪"** ✓ ——
+**这正是我这段里唯一稳定的推进方式** ✓：**不是"想出更好的假设"✓，而是"让假设落到一处可读的代码上"** ✓。
