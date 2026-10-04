@@ -21851,3 +21851,22 @@ const countBand = async (fromY, toY) => {
 **自比 ⇒ ΔE ≈ 0** ✓、**改画面 ⇒ ΔE > 0** ✓（**判据的语义仍然成立** ✓）
 ⇒ **而前提是先读清"ΔE 的参考图从哪来"** ✓：**`set_reference` 的 summary 说的是"只记进偏好、查看器负责叠加"** ✗
 ⇒ **它不是 ΔE 的来源** ✓ ⇒ **须读设计 §三.2 与写入器 `:3117-3201`** ✓（**先读来源，再改判据** ✓）。
+
+### ✅ 第 427 轮：**更正 —— `set_reference` 就是 ΔE 的来源（我第 426 轮说反了）** ✗
+
+**读到（✓，`tools.rs:3117-3140` ✓）** ✓：
+```rust
+// 与参考图比 ΔE（测试报告 §三.2 ✓，可选 ✓）：只有调用方明确要 compare_with_reference 时才做 ✓
+let prefs = ctx.workspace.preferences(Some(&["reference.blob_hash"]));     // **读偏好里这一个键** ✓
+match prefs.get("reference.blob_hash") {
+    None => comparison = json!({ "ok": false, "reason": "没有参考图 ⇒ 先用 set_reference 设一张" }),  // **明确作答** ✓
+    Some(text) => { let hash = text.parse()?; let bytes = store().get(&hash)?; decode_png(bytes) ⇒ 逐像素 ΔE }
+}
+```
+**⇒ 更正（✓）** ✓：**`set_reference` 就是来源** ✓ —— 它"只记进偏好" ✓ **正是写 `reference.blob_hash`** ✓
+⇒ **我第 426 轮把"不写进文档"误读成"ΔE 不用它"** ✗ ✓。
+**⇒ 所以判据的流程本来是对的（✓）** ✓：`set_reference` ⇒ 比较 ✓ —— **错的只是工具名与参数** ✗
+⇒ ⇒ **修法很窄** ✓：**三个调用点改用 `gradient_fill`** ✓（必填 `layer_id` / `from` / `to` ✓），
+**`set_reference` 与判据语义（自比 ≈ 0 ✓、改画面 > 0 ✓）都不动** ✓。
+**★ 一条反复出现的教训（✓）** ✓：**我从"某句 summary 的措辞"里推结论** ✗ ——
+**而真正的事实写在实现里** ✓（**"只记进偏好"是行为描述 ✓，不是"别的地方不用它"** ✗）。
