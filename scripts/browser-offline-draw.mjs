@@ -8,7 +8,12 @@
 // 真正的要求是**离线下还能画**（本地渲染 + 本地状态，服务端不在也算数）。
 // 用法：node scripts/browser-offline-draw.mjs <viewer-url> [cdpPort]
 const url = process.argv[2];
-const port = process.argv[3] || process.env.CDP_PORT || "9333";
+// **端口一律先从环境变量取** ✓（第 408 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
+// `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（一个完整 URL）** ✗ ⇒
+// 原先 `process.argv[3] || process.env.CDP_PORT` ✗ ⇒ **port 拿到的是 URL** ✗ ⇒
+// 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **这两个判据一直取不到调试目标** ✗
+//（**而它们是"离线"判据** ✓ ⇒ 影响 A⑥ 的验证 ✓）。
+const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-offline-draw.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();

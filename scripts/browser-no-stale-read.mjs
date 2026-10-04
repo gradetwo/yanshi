@@ -9,7 +9,12 @@
 //      —— 这条是**变异敏感**的 ✓：谁把可变读改回"本地优先"✗ ⇒ 网络上就不会有这个请求 ⇒ **当场红** ✓
 //      （第 171 轮我就是这么把在线画面弄空过一次 ✗ ⇒ 这条判据正是为那次教训立的 ✓）。
 const url = process.argv[2];
-const port = process.argv[3] || process.env.CDP_PORT || "9333";
+// **端口一律先从环境变量取** ✓（第 408 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
+// `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（一个完整 URL）** ✗ ⇒
+// 原先 `process.argv[3] || process.env.CDP_PORT` ✗ ⇒ **port 拿到的是 URL** ✗ ⇒
+// 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **这两个判据一直取不到调试目标** ✗
+//（**而它们是"离线"判据** ✓ ⇒ 影响 A⑥ 的验证 ✓）。
+const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-no-stale-read.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const parsed = new URL(url);
