@@ -567,7 +567,15 @@ const maskToken = await fetch(`${origin}/api/documents`, {
 }).then((r) => r.json()).then((v) => v.token);
 await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}&debug=1` });
 for (let i = 0; i < 80; i++) {
-  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  // **就绪条件要含"段首要用的元素"** ✓（第 592 轮 ✓）：原先只等 kernelHead > 0 ✗
+  // ⇒ 而段首紧接着用 zoomFit / color / data-tool="brush" / size / feather ✓
+  // ⇒ 内核就绪与 DOM 齐了是两件事 ✓ ⇒ 元素未到时第一处 click 就抛 ✗
+  // ⇒ 整段 reject ⇒ 外部拿到一串 undefined ✓（第 589 轮实测：着色 undefined → undefined ✓）。
+  if (await evaluate(`window.yanshiStats && window.yanshiStats.kernelHead > 0
+      && document.getElementById("board") && document.getElementById("zoomFit")
+      && document.getElementById("color") && document.getElementById("size")
+      && document.getElementById("feather")
+      && document.querySelector('button[data-tool="brush"]')`)) break;
   await new Promise((r) => setTimeout(r, 250));
 }
 const maskResult = await evaluate(`(async () => {
