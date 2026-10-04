@@ -1785,6 +1785,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]"),
+            param!("preview_every_n_strokes", Number, false, "每 N 个调用放行一次预览（长批次中途给 AI 看进展；缺省 0 = 不放行，行为不变）"),
+            param!("preview_interval_ms", Number, false, "每 M 毫秒放行一次预览（与上一个参数是「或」的关系；缺省 0 = 不放行）"),
             param!(
                 "preview",
                 Boolean,
@@ -10204,6 +10206,48 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         number("w", 100.0).max(1.0),
         number("h", 100.0).max(1.0),
     );
+    // **多边形区域**（测试报告 §二.3）✓：`area.points = [[x,y], …]` ⇒ 由它推 bbox ✓，
+    // 之后每个点再做"点在多边形内"的**有界重采样** ✓；放不下就**少落一笔并如实计数** ✓。
+    let polygon: Vec<[f64; 2]> = args
+        .get("area")
+        .and_then(|value| value.get("points"))
+        .and_then(Value::as_array)
+        .map(|points| {
+            points
+                .iter()
+                .filter_map(|point| {
+                    let pair = point.as_array()?;
+                    Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let polygon = if polygon.len() >= 3 {
+        Some(polygon)
+    } else {
+        None
+    };
+    let (ax, ay, aw, ah) = match &polygon {
+        Some(points) => {
+            let min_x = points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+            let max_x = points
+                .iter()
+                .map(|p| p[0])
+                .fold(f64::NEG_INFINITY, f64::max);
+            let min_y = points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+            let max_y = points
+                .iter()
+                .map(|p| p[1])
+                .fold(f64::NEG_INFINITY, f64::max);
+            (
+                min_x,
+                min_y,
+                (max_x - min_x).max(1.0),
+                (max_y - min_y).max(1.0),
+            )
+        }
+        None => (ax, ay, aw, ah),
+    };
     let palette = args
         .get("palette")
         .and_then(Value::as_array)
@@ -10238,9 +10282,23 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     };
 
     let mut state = seed;
+    let mut placed = 0usize;
     for _ in 0..count {
-        let x = ax + scatter_next(&mut state) * aw;
-        let y = ay + scatter_next(&mut state) * ah;
+        let mut x = ax + scatter_next(&mut state) * aw;
+        let mut y = ay + scatter_next(&mut state) * ah;
+        if let Some(points) = &polygon {
+            let mut tries = 0;
+            while tries < 64 && !point_in_polygon(x, y, points) {
+                x = ax + scatter_next(&mut state) * aw;
+                y = ay + scatter_next(&mut state) * ah;
+                tries += 1;
+            }
+            // **放不下就少落一笔** ✓（并在响应里如实计数 ✓ —— 不假装画了 ✗）。
+            if !point_in_polygon(x, y, points) {
+                continue;
+            }
+        }
+        placed += 1;
         let size = size_low + scatter_next(&mut state) * (size_high - size_low).max(0.0);
         let alpha = opacity_low + scatter_next(&mut state) * (opacity_high - opacity_low).max(0.0);
         let angle = fixed_angle.unwrap_or_else(|| scatter_next(&mut state) * std::f64::consts::TAU);
@@ -10271,7 +10329,7 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     }
     Ok(json!({
         "ok": true,
-        "strokes": count,
+        "strokes": placed,
         "seed": seed,
         "direction": direction,
     }))
@@ -13046,11 +13104,27 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     if optional_bool(args, "silent").unwrap_or(false) {
         ctx.silent = true;
     }
+    // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
+    // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
+    // 这两个参数让**循环内部**周期性放行一次预览 ✓（默认 0 ⇒ **行为完全不变** ✓）。
+    let preview_every = optional_u64(args, "preview_every_n_strokes").unwrap_or(0);
+    let preview_interval_ms = optional_u64(args, "preview_interval_ms").unwrap_or(0);
+    let mut last_preview = std::time::Instant::now();
     // batch 内的原子共用一个变更集（5.6：一个 batch 通常对应一个变更集）。
     let previous = ctx.changeset.replace(changeset.clone());
     let mut results = Vec::new();
     let mut atom_ids = Vec::new();
-    for call in calls {
+    for (call_index, call) in calls.iter().enumerate() {
+        // **每 N 个调用 / 每 M 毫秒**放行一次预览 ✓：临时清掉 `silent` ✓ ⇒ 这一子调用照常产出预览 ✓
+        //（`silent` 在**共享** `ctx` 上 ✓ ⇒ 用完**必须还原** ✓ —— 与 `changeset` 同一条规矩 ✓）。
+        let due_by_count = preview_every > 0 && (call_index as u64 + 1) % preview_every == 0;
+        let due_by_time = preview_interval_ms > 0
+            && last_preview.elapsed().as_millis() as u64 >= preview_interval_ms;
+        let want_preview = due_by_count || due_by_time;
+        let saved_silent = ctx.silent;
+        if want_preview {
+            ctx.silent = false;
+        }
         let name = call
             .get("tool")
             .or_else(|| call.get("name"))
@@ -13083,6 +13157,12 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             atom_ids.push(json!(atom_id));
         }
         results.push(json!({"tool": name, "result": value}));
+        if want_preview {
+            // 预览次数不在这里汇总 ✓：**判据直接数"逐项结果里有没有 `preview`"** ✓
+            //（更可靠 ✓ —— 不依赖响应顶层字段的命名与位置 ✓）。
+            last_preview = std::time::Instant::now();
+        }
+        ctx.silent = saved_silent;
     }
     ctx.changeset = previous;
     // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
@@ -13854,6 +13934,39 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// **射线法：点是否在多边形内**（测试报告 §二.3）✓ —— 让 `scatter_strokes` 的 `area` 支持
+/// `points: [[x,y], …]` ✓（头发/衣服/斜投影这类倾斜区域用轴对齐矩形会溢出 ✗）。
+fn point_in_polygon(x: f64, y: f64, points: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut j = points.len() - 1;
+    for i in 0..points.len() {
+        let (xi, yi) = (points[i][0], points[i][1]);
+        let (xj, yj) = (points[j][0], points[j][1]);
+        if (yi > y) != (yj > y) {
+            let t = (y - yi) / (yj - yi);
+            if x < xi + t * (xj - xi) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+#[cfg(test)]
+mod polygon_area_tests {
+    use super::point_in_polygon;
+
+    #[test]
+    fn point_in_polygon_matches_an_oblique_triangle() {
+        let triangle = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
+        assert!(point_in_polygon(10.0, 10.0, &triangle));
+        assert!(!point_in_polygon(90.0, 90.0, &triangle)); // 斜边之外 ✓
+        assert!(!point_in_polygon(-1.0, 10.0, &triangle));
+        assert!(!point_in_polygon(10.0, 120.0, &triangle));
     }
 }
 

@@ -28,6 +28,8 @@ case "${SKIP_SERVER:-0}" in
      for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/api/documents" >/dev/null 2>&1 && break; sleep 0.5; done ;;
 esac
 BASE="http://127.0.0.1:$PORT"
+# 让判据能核对落盘产物（render.png 等）；不设则相关检查自行跳过并打印 ✓。
+export YANSHI_WORKSPACE="$ROOT_DIR/work"
 
 if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
   chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CDP_PORT" \
