@@ -122,9 +122,23 @@ const dragPath = async (points, pointerId) => {
   })()`);
 };
 
-const evaluate = async (expression) =>
-  (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
-    ?.result?.value;
+// **页面侧异常必须被看见** ✓（第 635 轮 ✓）：原先只取 `result.value` ✗
+// ⇒ **页面里任何抛错 ⇒ CDP 返回 `exceptionDetails` ✓ 而 `value` 是 `undefined`** ✗
+// ⇒ ⇒ **所有页面异常都变成静默的 `undefined`** ✓ —— 这正是"蒙版整段没跑"的机制 ✗
+// ⇒ ⇒ ⇒ **实测：`maskResult` 恒为 `undefined` ✓、而 `:1557` 的守卫只能说"没返回结果"** ✗
+// ⇒ **现在把 `exceptionDetails` 变成异常抛出** ✓ ⇒ 抛出的是**页面里的真实消息与栈** ✓。
+const evaluate = async (expression) => {
+  const payload = (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result;
+  const details = payload?.exceptionDetails;
+  if (details) {
+    const text = details.exception?.description
+      || details.exception?.value
+      || details.text
+      || "（无描述）";
+    throw new Error("页面侧抛错：" + String(text).split("\n").slice(0, 3).join(" ｜ "));
+  }
+  return payload?.result?.value;
+};
 
 // **截图** ✓：用户反复要求"用截图验收界面" ✓，而本脚本此前只能打文本断言 ✓
 // ⇒ 排版类改动（两列、隐藏、全屏）**看得到才敢说做对了** ✓。
