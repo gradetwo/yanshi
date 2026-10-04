@@ -911,6 +911,11 @@ pub fn vignette(
 
 /// 可分离方框模糊（`passes` 趟近似高斯；边缘按 clamp 复制）。
 /// 水平/垂直方框模糊（滑动窗口，O(1)/像素；见文件内 `blur_horizontal` 的说明）。
+/// **⚠️ 这不是唯一的方框模糊**（✓，第 371 轮 ✓）：`geometry::feather_coverage` 自带一份，
+/// 因为**羽化需要"向外补零"的边界语义** ✓（输出 bbox 外扩、扩出来的一圈是 0 ✓），
+/// 而本函数按自己的通用策略处理边界 ✗ ⇒ **两者不能直接互换** ✓
+///（实测：换过去会让 `the_falloff_stays_bounded` 红 ✓）。
+/// **若要合并**：先统一边界语义 ✓，并接受蒙版输出会变 ✗。
 pub fn box_blur(buffer: &mut Buffer, radius: u32, passes: u32) {
     if radius == 0 {
         return;
