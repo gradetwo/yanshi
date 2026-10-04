@@ -25954,3 +25954,8 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`16e7678` 与 `8d4d2df` 仍 `in_progress`（各剩 `criteria shard 1/6` ✓）；
 最近完成仍是 `2ded141`（**崩在 `SyntaxError` ✗**）。⇒ **待干净轮** ✓。
+
+### 🎯 第 738 轮：**两项仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`16e7678` 与 `8d4d2df` 仍 `in_progress`（各剩 `criteria shard 1/6` ✓）；最近完成仍是 `2ded141`（**崩在 `SyntaxError` ✗**）。
+⇒ **待干净轮** ✓ —— **若再一轮仍不完成，我会去看那一片的实时日志尾部** ✓。
