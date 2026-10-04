@@ -19834,3 +19834,24 @@ palette = [{r:200,g:186,b:168,a:240}] ⇒ 主色 #fefefe 91.9% + **#c8baa8 7.01%
 **⚠️ 过程中的自伤（✓）** ✗：第一版判据用 `draw_stroke` 传 `color` ✗ —— 而它的参数是 `layer_id`/`data`/`object_id` ✓
 ⇒ **三笔根本没画上** ✗ ⇒ "污染后对象 0 个" ✓ 却**没被察觉** ✓（我打印了计数但没断言 ✓）
 ⇒ 改用 `brush_stroke` ✓ 并**打印落笔结果** ✓ ⇒ 才看到真相 ✓。
+
+## 🔁 第 310 轮：**CI/CD 交给 GitHub（本地不再跑重活）+ 报告 §一.4 的机制更正** ✓
+
+**用户指示（✓）** ✓：**CI/CD 一律走 GitHub** ✓；**本地避免高负载与长等待** ✓；**异步查询是否完成** ✓；**不要单点阻塞** ✓。
+⇒ **工作方式随之改变** ✓：本地只做**小改动 + push** ✓；`cargo test` / `clippy` / 浏览器判据 / wasm 构建
+**一律不在本地跑** ✓ ⇒ 需要结果时用 `gh run list` / `gh run view` **异步查** ✓。
+**改动（✓）** ✓：
+1. `ci.yml` 触发从"**只手动**" ✓ 改为 **`push`（main） + `pull_request` + 手动** ✓
+   —— 注释里原先记着早先"不要 push 就 CI（按次计费）"的决定 ✓ ⇒ **本次指示覆盖它** ✓，注释已改写说明原因 ✓；
+2. 新增 **`criteria` job** ✓：构建 server（debug）+ wasm 包（`wasm-bindgen` 钉 `0.2.129` ✓，与 `wasm-smoke` 一致 ✓）、
+   装 chromium 并**暴露成 `chromium` 名字** ✓（判据脚本按这个名字找浏览器 ✓）、再跑 `scripts/run-criteria.sh` ✓；
+3. **`scripts/run-criteria.sh`** ✓：**自动发现** `tool-*.mjs` / `browser-*.mjs` / `kernel-brush-parity.mjs` ✓，
+   自己拉起 server 与无头浏览器 ✓，逐条打印 ✓，末尾一行汇总 ✓；**没有 chromium 就跳过**（本地友好 ✓）；
+4. **`scripts/criteria-known-red.txt`** ✓：**已知红名单**（每条写清"为什么红" ✓）——
+   它们**仍然会被运行、输出照印** ✓，但**不让 CI 变红** ✓ ⇒ CI 对**其余判据仍是真门禁** ✓，待办也**不被藏起来** ✓。
+**顺便更正报告 §一.4 的机制（✓）** ✓：报告说"`render.png` 的更新触发点仅绑定在整块 batch 执行完毕" ✓
+⇒ 我查到 `tools.rs:900` 的 `if ctx.wait_for_render && !ctx.silent` ✓ 门控的是**响应里的预览 JSON** ✓
+（区域预览 ✓ 或缓存地址 ✓），**不是 `render.png` 的落盘** ✗（后者在 `persist.rs:229 save_render` ✓，另有调用方 ✓）。
+⇒ ⇒ 所以"按笔数刷新 `render.png`"要动的是**后台写盘那一处** ✓ —— **先读准、再动手** ✓（**本轮不写半成品** ✓）。
+**待办（✓）** ✓：读 `save_render` 的调用方与 `run_pending_jobs` / 渲染线程的节流点 ✓ ⇒
+再加 `preview_every_n_strokes` / `preview_interval_ms` ✓ 与对应判据 ✓。
