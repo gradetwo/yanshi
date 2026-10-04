@@ -50,7 +50,9 @@ if (flags.size < 2) {
 }
 
 const work = mkdtempSync(join(tmpdir(), "yanshi-launcher-"));
-const valueFor = ["--root", work, "--doc", "boot"];
+// **必须显式绑一个随机端口** ✗：不绑就用默认端口 ⇒ 与正在跑的服务/上一次探测**撞端口** ✗
+//（本机实测过 `Address already in use` ✓）⇒ 那会让"是否被接受"的读数依赖环境 ✓ ⇒ 判据不稳 ✗。
+const valueFor = ["--bind", "127.0.0.1:0", "--root", work, "--doc", "boot"];
 
 /** 跑一次二进制 ⇒ 回 { text, rejectedToken }：rejectedToken 是"被它拒掉的那个 token"，无则 null。 */
 function runOnce(args) {
