@@ -16451,3 +16451,26 @@ pub fn stamp_stroke_configured(
 ③ 在那个循环里按 dab 中心取覆盖率 ✓ ⇒ **≤ 0 就跳过** ✓、否则**乘进它的不透明度** ✓（与注释语义一字不差 ✓）；
 ④ 缺省 ⇒ **不查、不乘** ✓ ⇒ 逐字节如旧 ✓；
 ⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+
+### 🎯 第 139 轮：**笔触循环的骨架与"下一站名字"都拿到了** ✓（`paint_brush` ✓）
+
+**骨架（原文 ✓）** ✓：`stamp_stroke_from`（11190 ✓）里
+```rust
+for (x, y, pressure) in points {          // 11201 ✓：逐控制点
+    …
+    for step in 1..=divisions { … }       // 嵌套：按间距补间 ✓（与宿主那条 `size/4` 同源 ✓）
+```
+**顺带排除了一个"看起来像缝"的东西** ✗：`brush_deposit_mask`（11313 ✓）其实是**诊断工具** ✓ ——
+它把整笔盖到**一张新 surface** 上 ✓，用来回答"**这支笔真的在哪些像素落过墨**" ✓（注释解释了为什么
+不能用"把笔刷改成不透明"来蒙混 ✓：`Flat2#1` 的 `offset_by_random = 1.07` ✓ 会让并集盖满整个区域 ✗）；
+它只被**一处**调用 ✓（11643 ✓）⇒ **不是**落墨裁剪的缝 ✗。
+**下一站（注释自己点名的 ✓）** ✓：**`paint_brush`（落笔 ✓）** ——
+`load_brush` 的文档注释里明写："**`paint_brush`（落笔 ✓）与"改色重跑"（`restyle_baked_brush_stroke` ✓）
+都必须解析出同一支笔刷**" ✓ ⇒ 也就是说 **`paint_brush` 才是真正落墨的那个函数** ✓。
+**下一轮（写死 ✓）** ✓：
+① 读 `fn paint_brush` ✓（它的签名 + 它怎么把 dab 写进图层 ✓ —— **先读再改** ✗，这里源码警告过会漂移 ✓）；
+② 在**它**（而不是 `stamp_stroke_from` ✗、也不是 `brush_deposit_mask` ✗）里接选区覆盖率 ✓：
+   按 dab 中心取 `coverage(x,y)` ✓ ⇒ **≤ 0 跳过** ✓、否则**乘进不透明度** ✓（`brush.rs:515` 的语义 ✓）；
+③ `write_brush_stroke` 加 `clip_to_selection`（id 字符串 ✓，兼容 `true` = 最新 ✓）⇒ 由 `Selection.shape`
+   造 `Coverage` ✓（`rect/ellipse/polygon_coverage_clipped` ✓ + `feather`/`invert` ✓；其余 `mode` **明确报错** ✗）；
+④ 缺省 ⇒ 逐字节如旧 ✓；⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 提交 + 推送 ✓。
