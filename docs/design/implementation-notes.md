@@ -20536,3 +20536,22 @@ object.rs:1126  matches!(…, Primitive::Shape { .. })                    ← �
 
 **★ 六轮阅读的产出（✓）** ✓：**四处确切落点 + 一条已知的安全网（`fill_coverage` 只认交集 ✓）
 + 一条必须成立的硬要求（缺省 0 ⇒ 逐字节不变 ✓）** —— **下一轮可以直接写，不必再试探** ✓。
+
+### 🎯 第 353 轮：**更正 —— 只有一处构造点** ✓（`object.rs:997` 是匹配 ✗）
+
+**读到的（✓）** ✓：
+```rust
+// object.rs:566 —— **唯一的构造点** ✓（"描述 → 图元"的转换点 ✓）
+let stroke_color = data.get("stroke_color").map(parse_color);
+Primitive::Shape { kind, bbox, points, color, stroke_width, stroke_color }
+// object.rs:997 —— **模式匹配** ✗（有 `=>` 与 `{ … }` 体 ✓、且已用 `..` ✓）
+Primitive::Shape { kind, bbox, points, stroke_width, .. } => { … }
+```
+⇒ ⇒ **改动清单（✓，最终 ✓）** ✓：
+1. `Primitive::Shape` 变体加 **`feather: f64`** ✓；
+2. **`object.rs:566` 这一处**读出 `feather`（`data.get("feather")` ✓，缺省 0 ✓、`.max(0.0)` ✓）；
+3. **`render.rs:754` 之后**：`if feather > 0.0 { coverage = feather_coverage(&coverage, feather) }` ✓；
+4. **`tools.rs write_fill_region`**：把 `feather` 写进**存下来的形状描述** ✓ + `param!` 登记 ✓。
+**⚠️ 又一次"我上一轮写下的清单是错的"** ✗（把匹配当成了构造 ✓）⇒
+**这正是我不肯"凭清单开写"的理由** ✓：**清单来自阅读，而阅读会有偏差** ✓；
+**每一条锚点，都要在改之前再看一眼** ✓。
