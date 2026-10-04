@@ -19,6 +19,49 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Quick start
+
+**Requirements**
+
+- **Rust** — the stable toolchain pinned by [`rust-toolchain.toml`](rust-toolchain.toml), including the
+  `rustfmt` and `clippy` components.
+- **`make`** and a POSIX shell — every entry point below is a Make target that calls `scripts/`.
+- Optional, to get **client-side rendering** (the browser kernel):
+  `rustup target add wasm32-unknown-unknown` and `wasm-bindgen-cli` **0.2.129**
+  (`cargo install wasm-bindgen-cli --version 0.2.129 --locked`). Its version must match the
+  `wasm-bindgen` crate, or the generated glue will not load the `.wasm`.
+  **Without both, the server still starts** and the viewer renders on the server side.
+- Optional, only to run the criteria: **Node** and **chromium**
+  (the runner skips browser criteria when chromium is absent).
+
+**Build and run**
+
+```bash
+git clone https://github.com/gradetwo/yanshi.git && cd yanshi
+make dev        # build the WASM kernel if the toolchain is present, build the server, start it
+                # ⇒ open http://127.0.0.1:8110/  (the page obtains its capability token)
+```
+
+Data lives in `~/.local/share/yanshi/workspace` by default. To change the port or the data root, pass
+**environment variables** — `make dev` does not forward Make variables into its recipe, while
+`make serve` passes `--port` explicitly:
+
+```bash
+PORT=9000 make dev                 # `make dev PORT=9000` would NOT reach the recipe
+ROOT=/tmp/yanshi PORT=9000 make dev
+make serve PORT=9000
+```
+
+Then:
+
+```bash
+make check      # fmt + clippy + tests — the three gates to run before pushing
+make test       # workspace tests (the fast set); make test-heavy runs the long #[ignore]d jobs
+make serve      # rebuild -p yanshi-http and serve (run this before verifying tools with curl)
+make release    # build the release package
+make help       # every target
+```
+
 ## Where the name comes from
 
 Yanshi is the artificer in the *Liezi*, "Questions of Tang", who builds a mechanical performer. The passage:
@@ -587,15 +630,11 @@ Without them the server still runs; the viewer then renders on the server side.
 
 ## Build and run
 
-```bash
-make run          # build the WASM kernel if the toolchain is present, build the server, start it
-                  # then open http://127.0.0.1:8110/ (the page obtains its capability token)
-make build        # server only
-make build-wasm   # WASM kernel only
-```
+See [Quick start](#quick-start) for the entry points and the requirements. The commands are:
 
 ```bash
-make run PORT=9000 ROOT=/tmp/yanshi                 # PORT / ROOT (default ~/.local/share/yanshi/workspace)
+make dev                                            # build the WASM kernel (if present), build, serve
+make serve PORT=9000                                # rebuild -p yanshi-http and serve on another port
 cargo run --release -p yanshi-http -- --no-wasm     # server only, no browser kernel
 make help                                           # all targets
 ```
@@ -603,8 +642,9 @@ make help                                           # all targets
 ## Test
 
 ```bash
-make test         # workspace test suite
-make ci           # fmt, clippy, tests, WASM runtime smoke check
+make test         # workspace test suite (the fast set)
+make test-heavy   # the long #[ignore]d jobs
+make check        # fmt + clippy + tests — what to run before pushing
 ```
 
 Long jobs (perf budgets, 100k-atom fold fuzz, 4K profile) are `#[ignore]`d and run on GitHub:
@@ -707,7 +747,7 @@ systemctl --user daemon-reload && systemctl --user enable --now yanshi-serve
 o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
 ```
 
-Uses `systemctl --user`, so Linux only; on macOS the server runs the same way (`make run`).
+Uses `systemctl --user`, so Linux only; on macOS the server runs the same way (`make dev`).
 Details: [deploy/omarchy/README.md](deploy/omarchy/README.md).
 
 ## Documentation

@@ -18,6 +18,45 @@
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) 是权威设计文档，
 代码不得与之静默分叉。
 
+## 快速开始
+
+**前置要求**
+
+- **Rust** —— [`rust-toolchain.toml`](rust-toolchain.toml) 固定的 stable 工具链，含 `rustfmt` 与 `clippy` 组件；
+- **`make`** 与 POSIX shell —— 下面的入口都是 Make 目标，内部调用 `scripts/`；
+- 可选，**要用客户端渲染**（浏览器内核）时：`rustup target add wasm32-unknown-unknown`，以及
+  `wasm-bindgen-cli` **0.2.129**（`cargo install wasm-bindgen-cli --version 0.2.129 --locked`）。
+  它的版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水加载不了那个 `.wasm`。
+  **不装这两项也能启动服务端**，查看器退化为服务端渲染；
+- 可选，**只在跑判据时**：**Node** 与 **chromium**（没有 chromium 时运行器会跳过浏览器判据）。
+
+**编译与运行**
+
+```bash
+git clone https://github.com/gradetwo/yanshi.git && cd yanshi
+make dev        # 有工具链时构建 WASM 内核，构建服务端并启动
+                # ⇒ 打开 http://127.0.0.1:8110/ （页面自行获取 capability token）
+```
+
+数据缺省落在 `~/.local/share/yanshi/workspace`。要换端口或数据目录，请用**环境变量** ——
+`make dev` **不会**把 Make 变量传进它的 recipe，而 `make serve` 是显式传 `--port` 的：
+
+```bash
+PORT=9000 make dev                 # 写成 make dev PORT=9000 **不会**传进去
+ROOT=/tmp/yanshi PORT=9000 make dev
+make serve PORT=9000
+```
+
+随后：
+
+```bash
+make check      # fmt + clippy + 测试 —— 推送前要跑的三项
+make test       # 工作区测试（快的那一批）；make test-heavy 跑很慢的 #[ignore] 任务
+make serve      # 重编 -p yanshi-http 并起服务（用 curl 验工具前先跑它）
+make release    # 打出发布包
+make help       # 全部目标
+```
+
 ## 名字的由来
 
 「偃师」出自《列子·汤问》里造木偶的工匠。原文：
@@ -489,15 +528,11 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked
 
 ## 编译与运行
 
-```bash
-make run          # 有工具链时构建 WASM 内核，构建服务端并启动
-                  # 随后打开 http://127.0.0.1:8110/ （页面自行获取 capability token）
-make build        # 只构建服务端
-make build-wasm   # 只构建 WASM 内核
-```
+入口与前置要求见上面的 [快速开始](#快速开始)。命令如下：
 
 ```bash
-make run PORT=9000 ROOT=/tmp/yanshi                 # PORT / ROOT（缺省 ~/.local/share/yanshi/workspace）
+make dev                                            # 有工具链时构建 WASM 内核，构建并启动
+make serve PORT=9000                                # 重编 -p yanshi-http 并在另一个端口起服务
 cargo run --release -p yanshi-http -- --no-wasm     # 只跑服务端，不用浏览器内核
 make help                                           # 全部目标
 ```
@@ -505,8 +540,9 @@ make help                                           # 全部目标
 ## 测试
 
 ```bash
-make test         # 工作区测试套件
-make ci           # fmt、clippy、测试、WASM 运行时冒烟检查
+make test         # 工作区测试套件（快的那一批）
+make test-heavy   # 很慢的 #[ignore] 任务
+make check        # fmt + clippy + 测试 —— 推送前要跑的三项
 ```
 
 性能预算、10 万原子折叠 fuzz、4K 剖面等长任务带 `#[ignore]`，在 GitHub 上执行：
@@ -571,7 +607,7 @@ systemctl --user daemon-reload && systemctl --user enable --now yanshi-serve
 o.bind("SUPER + ALT + Y", "Yanshi", { webapp = "http://127.0.0.1:8110/?doc=yanshi", focus = true })
 ```
 
-用到 `systemctl --user`，因此仅适用于 Linux；macOS 上服务端用法相同（`make run`）。
+用到 `systemctl --user`，因此仅适用于 Linux；macOS 上服务端用法相同（`make dev`）。
 细节见 [deploy/omarchy/README.md](deploy/omarchy/README.md)。
 
 ## 文档

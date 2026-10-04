@@ -41,7 +41,7 @@ if curl -s -m 1 -o /dev/null "http://127.0.0.1:${PORT}/health"; then
     [ -n "${running_commit}" ] || running_commit="unknown"
     if [ "${running_commit}" = "${checkout_commit}" ]; then
       echo "已有 Yanshi 实例在 http://127.0.0.1:${PORT}/ 运行（身份 ${running_commit} ⇒ 与当前检出一致 ✓）"
-      echo "  如需另起一个：make run PORT=9000"
+      echo "  如需另起一个：PORT=9000 make dev"
       exit 0
     fi
     echo "⚠️  http://127.0.0.1:${PORT}/ 上**已经有一个实例**，但它跑的是**别的版本** ✗" >&2
@@ -52,12 +52,12 @@ if curl -s -m 1 -o /dev/null "http://127.0.0.1:${PORT}/health"; then
     echo "       1) 停掉它再重跑：systemctl --user stop yanshi-serve" >&2
     echo "                        或 pkill -f 'yanshi-serve --bind 127.0.0.1:${PORT}'" >&2
     echo "                        然后重新 make dev" >&2
-    echo "       2) 换个端口跑新的：make run PORT=9000" >&2
+    echo "       2) 换个端口跑新的：PORT=9000 make dev" >&2
     echo "     注意：那个 systemd 用户服务是 **enabled** 的 ⇒ 每次开机都会再占住这个端口 ✓" >&2
     echo "     长期做法：让它指向你希望常驻的那份构建 ✓，或 systemctl --user disable yanshi-serve ✓" >&2
     exit 1
   fi
-  echo "端口 ${PORT} 已被其它程序占用；换一个端口：make run PORT=9000" >&2
+  echo "端口 ${PORT} 已被其它程序占用；换一个端口：PORT=9000 make dev" >&2
   exit 1
 fi
 
