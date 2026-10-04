@@ -601,6 +601,9 @@ const maskResult = await evaluate(`(async () => {
   // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
   document.getElementById("feather").value = "0";
   document.querySelector('button[data-tool="mask_rect"]').click();
+  // **点完按钮，工具真的切过去了吗** ✓（第 467 轮 ✓）：画笔那条用的是 setTool ✓ 而这条用 click ✗
+  // ⇒ 这是两条路径唯一的差别 ✓ ⇒ **把工具状态记下来，返回给 Node 侧断言** ✓。
+  const toolAfterClick = (window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())");
   fire("pointerdown", at(0.25, 0.25), 301);
   // **中间要再 move 一次**（第 362 轮对照出来的）：上面画笔铺底是「0.02 → 0.5 → 0.98」
   // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
@@ -608,18 +611,17 @@ const maskResult = await evaluate(`(async () => {
   fire("pointermove", at(0.5, 0.5), 301);
   fire("pointermove", at(0.75, 0.75), 301);
   await new Promise((r) => setTimeout(r, 100));
-  fire("pointerup", at(0.75, 0.75), 301);
-  // **探针**（第 398 轮 ✓）：在**没抬手之前**取一次日志尾部 ✓ ——
-  // 目前的两种解释（"合成事件没到处理器" ✗ vs "move 没记点" ✗）**都只能靠运行时观测分** ✓，
-  // 而"拖动期间产品说了什么"正是那个观测 ✓（拖动若被认到，产品通常会打预览/提示 ✓）。
+  // **探针必须在抬手之前取** ✓（第 467 轮 ✓）：原先它写在 pointerup **之后** ✗
+  // ⇒ 抓到的是"抬手之后"的日志 ✓ ⇒ **名字承诺了它没做的事** ✗（与"算了不断言"同族 ✓）。
   const logDuringDrag = document.getElementById("log").innerText.slice(-160);
+  fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
   for (let i = 0; i < 120 && masked >= filled; i++) {
     await new Promise((r) => setTimeout(r, 250));
     masked = ink();
   }
   document.querySelector('button[data-tool="brush"]').click();
-  return { filled, masked, logDuringDrag, log: document.getElementById("log").innerText };
+  return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
 })()`);
 
 // 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
