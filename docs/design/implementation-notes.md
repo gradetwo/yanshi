@@ -25577,3 +25577,8 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`run 37225841790`（`b7a98d9`）｜`status=in_progress`｜**未完成：`criteria shard 1/6`** ✓。
 **⇒ 只等那一片** ⇒ **它一完成就会报出 `unable` 的内容** ✓。
+
+### 🎯 第 681 轮：**`unable` 报告仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`b7a98d9` 仍 `in_progress`（只剩含 `browser-ui-check` 的那片 ✓）；最近完成仍是 `2537a65`。
+⇒ **预判待对照：最可能是「缺元素」** ✓。
