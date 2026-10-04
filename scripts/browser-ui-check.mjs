@@ -2567,6 +2567,9 @@ const layerPanel = await evaluate(`(async () => {
   const ids = () => rows().map((row) => row.dataset.layerId);
   const out = {};
   out.rowCount = rows().length;
+  // **记住"还没新增/复制之前"的选中层**（第 307 轮更正）：新增与复制都会把选中项移到新建的那一层，
+  // 而画面上的墨在**原来那层**上；隐藏若不作用在原来那层，隐藏的就是空层或副本，画面当然不变。
+  const originalLayerId = document.getElementById("layer")?.value || rows()[0]?.dataset.layerId || null;
   out.ids = ids();
   out.selected = document.querySelector("#layerList .layer-row.selected")?.dataset.layerId || null;
   out.current = document.getElementById("layer")?.value || null;
@@ -2632,6 +2635,20 @@ const layerPanel = await evaluate(`(async () => {
   // （layer_paint），于是每一处都静默失败：隐藏/显示量到的墨量不变、
   // 锁定读到的图标是 null。改为取**面板此刻选中的那一层**，四处都用它，
   // 而"面板 DOM"与"服务端 list_layers"仍然核对**同一个 id**，交叉核对没有削弱。
+  // **把选中项切回"原来那层"**：复制那一步的处理器会把选中项设成副本，
+  // 于是 targetLayerId 会是副本，隐藏与锁定就都打在副本上。
+  try {
+    const select = document.getElementById("layer");
+    out.selectedBeforeHide = select ? select.value : null;
+    if (originalLayerId && select && select.value !== originalLayerId) {
+      select.value = originalLayerId;
+      if (typeof select.onchange === "function") select.onchange();
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+    out.selectedForHide = select ? select.value : null;
+  } catch (error) {
+    out.selectForHideFailed = String((error && error.message) || error);
+  }
   const targetLayerId = document.getElementById("layer")?.value || rows()[0]?.dataset.layerId || null;
 
   const clickFlag = async (id, action) => {
