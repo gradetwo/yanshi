@@ -1529,7 +1529,11 @@ if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEf
 if (dialogResult.count < 1) {
   problems.push("打开对话框没有列出任何服务器文档");
 }
-if (importResult.layersAfter <= importResult.layersBefore) {
+// **先判对象存在** ✓（第 634 轮 ✓）：这一行才是崩溃的第一现场 ✗ ——
+// 我前几轮改的是它下面的两行（同族 ✓），而**源头**在这里 ✓。
+if (!importResult) {
+  problems.push("本地导入判据无法运行：页面侧求值没有返回结果（不是判据失败）");
+} else if (importResult.layersAfter <= importResult.layersBefore) {
   problems.push(`本地导入没有新建图层：${importResult.layersBefore} → ${importResult.layersAfter}｜日志 ${JSON.stringify(importResult.log)}`);
 }
 // 像素层次的正确性由确定性测试覆盖（crates/yanshi-http 的
@@ -2403,7 +2407,7 @@ console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → 
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
-console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${((importResult || {}).log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  本地导入：图层 ${(importResult || {}).layersBefore} → ${(importResult || {}).layersAfter}｜日志报告成功 ${((importResult || {}).log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
 
 // **连续两次移动必须累积** ✓ —— 子 agent 报的 #6：`delta` 此前被编成**绝对矩阵** ✗
