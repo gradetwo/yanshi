@@ -43,20 +43,23 @@ const NOT_CRITERIA = [
 ];
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [
-  // ⚠️ **待改写** ✗（第 798 轮查明 ✓）：`wasm-brush-parity.mjs` ——
-  //   它 `WebAssembly.instantiate(readFileSync(wasmPath), {})`（**空 imports** ✗）后调
-  //   `yanshi_brush_alloc` / `yanshi_brush_paint` / `yanshi_brush_out_ptr` ✓ ——
-  //   而这三个符号**只存在于判据脚本自己里** ✓、`crates/yanshi-brush-wasm` **已不存在** ✓
-  //   ⇒ **它测的是已退休的第二份实现** ✗ ⇒ CI 实测
-  //     `CompileError: expected magic word 00 61 73 6d, found 2f 2a 20 40`（把 `.js` 当 wasm ✓）。
-  //   ⇒ **但不能就这么删掉它** ✗：它守的是 `(A)⑥` 的**头一条性质**（「同一条笔触在两种渲染模式下
-  //     逐字节一致」✓）—— **这条性质今天**没有任何判据在守**** ✗ ✓。
-  //   ⇒ **改写方案** ✓：改用它**今天真的存在**的那份门面 —— `crates/yanshi-wasm/pkg/` ✓
-  //     （wasm-bindgen `--target web` ✓）；在 Node 侧 `import()` 那个 `.js` ✓，用 `initSync({ module })`
-  //     喂入 `.wasm` 字节 ✓，再调共享内核的 `extend_preview_stroke` / `commit_preview` /
-  //     `render_region_rgba` ✓（契约已在设计里读过 ✓），与服务端 `brush_stroke` 的对象 blob 逐字节比 ✓。
-  "wasm-brush-parity.mjs",
+  // （当前为空 ✓）
 ];
+// ⚠️ **已退休两条** ✓，两条的理由是**同一件事**：被测的那份产物已经不存在 ✓。
+//   ① `wasm-brush-preview-parity.mjs`（第 797 轮 ✓）：读裸 `.wasm` 后**空 imports** instantiate ✗，
+//      而 `default_preview_points` 今天**只在服务端** ✓、共享内核暴露的是另一套预览接口 ✓
+//      ⇒ 它要守的"本地预览与服务端一致"**没有实现可测** ✓（与 `browser-brush-preview-local`
+//      是同一个产品缺口：产品没做"本地出图" ✓）。
+//   ② `wasm-brush-parity.mjs`（第 799 轮 ✓）：同样读裸 `.wasm` + 空 imports ✗，调
+//      `yanshi_brush_alloc/paint/out_ptr` ✓ —— 那些符号**只存在于脚本自己里** ✓，
+//      `crates/yanshi-brush-wasm` 已不存在 ✓。
+//   ⇒ ⇒ **但要注意：它守的**性质**并没有失去守卫** ✓ —— 继任者 `kernel-brush-parity.mjs`
+//      自己的头部就写着"与 `wasm-brush-parity.mjs` 的差别只有一个：那边用裸 wasm + C-ABI（门面），
+//      这边用 bindgen 包（浏览器真正加载的那一份）" ✓，且它是**已接线、CI 绿**的 ✓。
+//   ⇒ ⚠️ **我在这件事上错了两次** ✗，两次都因为**没读"另一个判据"的自述**：
+//      先是**乐观**（把 `wasm-brush-parity` 接上线就说"该性质有守卫了" ✗ —— 它根本没跑 ✓），
+//      后是**悲观**（发现它测退休门面就说"该性质今天没有判据在守" ✗ —— 继任者一直在跑 ✓）。
+//      ⇒ **换判据/换实现时，"谁接手了这条性质"必须去**读那边的头部**** ✓，而不是从我手上的文件推断 ✓。
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
 const isEnumerated = files.filter(enumerated);
