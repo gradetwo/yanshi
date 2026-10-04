@@ -13394,6 +13394,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **末步必须是这个工具自己** ✓、**无参数的工具可给普通对象** ✓。
     // 撤销/重做**必须"真的画过"** ✓ ⇒ 示例里就画一笔 ✓（参数抄 `draw_stroke` 自己的示例 ✓，**不猜** ✗）。
     ("begin_transaction", r#"{}"#),
+    // **冲突 / 历史族** ✓（第 229 轮 ✓）：目标 (B)① 点名的"事务/历史/冲突" ✓。
+    // 参数都按原文抄 ✓（**不猜** ✗）：`resolve_conflict` 必填 `resolution` ✓（四个枚举值之一 ✓）；
+    // `get_object_history` 必填 `object_id` ✓。前置状态由**先画一笔**给出 ✓（末步仍是它自己 ✓）。
+    (
+        "resolve_conflict",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"resolve_conflict","arguments":{"resolution":"keep_ours"}}]"#,
+    ),
+    (
+        "get_object_history",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_object_history","arguments":{"object_id":"L1"}}]"#,
+    ),
     (
         "commit_transaction",
         r#"[{"tool":"begin_transaction","arguments":{}},{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"commit_transaction","arguments":{}}]"#,

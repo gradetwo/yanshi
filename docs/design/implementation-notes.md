@@ -18412,3 +18412,21 @@ redo_last            ⇒ [ draw_stroke ✓, undo_last(count=1) ✓, redo_last(co
 **方法论（✓，与前面那条一脉相承 ✓）** ✓：**计数也是一个断言** ✓ ⇒ 它需要**一个不会静默跳过目标集合的量具** ✓
 —— 具体到这里就是"**别用只匹配单行写法的正则去数一个会被格式化重排的数组**" ✗。
 **而且更正必须写进档** ✓：**把错数字当"更正"宣布出去** ✗，比**原来那个数字只是不够精确** ✓ 更糟 ✓。
+
+## 🎉 第 229 轮：**(B)① 事务/历史/冲突族补齐** ✓ —— **6 个工具 6 条示例，一个不空** ✓
+
+**新增两条（✓，参数照原文抄 ✓）** ✓：
+```
+resolve_conflict    ⇒ [ draw_stroke ✓, resolve_conflict(resolution="keep_ours") ✓ ]        ✓
+get_object_history  ⇒ [ draw_stroke ✓, get_object_history(object_id="L1") ✓ ]             ✓
+```
+（`resolve_conflict` 必填 `resolution` ✓，取值是四个枚举之一 ✓；`get_object_history` 必填 `object_id` ✓ ——
+**两个都从原文读的** ✓，不是猜的 ✗ ✓。）
+**族内覆盖（✓）** ✓：
+```
+begin_transaction ✓  commit_transaction ✓  undo_last ✓  redo_last ✓  get_object_history ✓  resolve_conflict ✓
+```
+⇒ **6/6** ✓ —— 目标 (B)① 点名的"事务/历史/冲突等前置状态"**全部有示例** ✓。
+**总数（✓，按载荷计的可靠量具 ✓）** ✓：**61** ✓（本轮 +2 ✓）。
+**这一轮又是零试错（✓）** ✓ ⇒ 靠的还是那两个动作 ✓：**照契约写** ✓ + **写入前 `json.loads` 解析并校验结构** ✓
+（第 227 轮起沿用 ✓）⇒ **上一轮三次失败 / 这一轮 0 次** ✓。
