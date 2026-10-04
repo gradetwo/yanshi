@@ -1,6 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/logo-horizontal-cn-dark.svg">
+    <img src="assets/brand/svg/logo-horizontal-cn.svg" alt="偃师 Yanshi" width="320">
+  </picture>
+</p>
+
 # 偃师 Yanshi
 
 **中文** | [English](README.md)
+
+**界面语言**：查看器支持中英双语。顶栏有 `EN` / `中文` 开关，也可以用 `?lang=en` / `?lang=zh` 直接指定（便于分享链接），选过的语言会被记住。服务端给的数据（文档 id、图层名、笔刷名）按原样显示。
 
 偃师是一个无头（headless）图像编辑引擎：只追加的原子日志、由日志折叠求值出的状态、纯 Rust 渲染
 计算内核、零依赖的 HTTP/WebSocket 服务端，以及一个最小 Web 查看器。同一套内核在服务端原生编译、

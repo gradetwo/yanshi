@@ -322,6 +322,7 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
     <button id="toggleDockers" type="button" aria-pressed="false" title="隐藏 / 显示右侧面板（快捷键 ] ）">◨ 面板</button>
     <button id="toggleZen" type="button" aria-pressed="false" title="全屏画布（快捷键 Tab，Esc 退出）">⛶ 全屏</button>
   </span>
+<button id="langToggle" type="button" data-i18n="off" aria-pressed="false" title="把界面切成英文（English）">EN</button>
 </header>
 <button id="zenExit" type="button" title="退出全屏画布（Esc）">⛶ 退出全屏（Esc）</button>
 <dialog id="newDialog">
@@ -8201,6 +8202,167 @@ $("importFile").addEventListener("change", async (event) => {
   const button = $("assetFloat");
   if (button) button.addEventListener("click", toggleAssetDock);
 })();
+
+// ------------------------------------------------------- 界面双语（中文 / English）
+// **按"精确匹配中文原文"翻译**，而不是给 67 处元素逐个加 key：一行 HTML 都不用改，
+// 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
+// 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
+const I18N_EN_TEXT = {
+  "偃师 Yanshi 查看器": "Yanshi Viewer",
+  "偃师 Yanshi": "Yanshi",
+  "文件 ▾": "File ▾",
+  "新建": "New",
+  "打开…": "Open…",
+  "未连接": "disconnected",
+  "◧ 工具栏": "◧ Toolbar",
+  "◨ 面板": "◨ Panels",
+  "⛶ 全屏": "⛶ Full screen",
+  "⛶ 退出全屏（Esc）": "⛶ Exit full screen (Esc)",
+  "新建文档": "New document",
+  "取消": "Cancel",
+  "创建": "Create",
+  "打开文档": "Open document",
+  "示例作品": "Sample works",
+  "我的文档": "My documents",
+  "导入本地图片": "Import a local image",
+  "另存为副本": "Save a copy",
+  "另存为…": "Save as…",
+  "关闭": "Close",
+  "画笔": "Brush",
+  "粗细": "Size",
+  "颜色": "Colour",
+  "末端色": "End colour",
+  "强度": "Strength",
+  "羽化": "Feather",
+  "字号": "Font size",
+  "工作区": "Workspace",
+  "绘画": "Paint",
+  "修图": "Retouch",
+  "校对": "Proof",
+  "介质": "Medium",
+  "示范点（v1）": "Example (v1)",
+  "油画（v2）": "Oil (v2)",
+  "水彩（v2）": "Watercolour (v2)",
+  "马克笔（v2）": "Marker (v2)",
+  "铅笔（v2）": "Pencil (v2)",
+  "像素（v2）": "Pixel (v2)",
+  "三条落笔路径 · 只作用于当前图层": "Three stroke paths, all constrained to the current layer",
+  "画笔 ▾": "Brush ▾",
+  "笔刷": "Brushes",
+  "（内置画笔）": "(built-in brushes)",
+  "笔刷库": "Brush library",
+  "素材": "Assets",
+  "搜笔刷": "Search brushes",
+  "★ 收藏": "★ Favourites"
+};
+const I18N_EN_ATTR = {
+  "文件：新建 / 打开 / 导入 / 导出（顶栏这一个入口，信息面板里不再重复）": "File: new / open / import / export; this single entry point lives in the top bar and is not repeated in the info panel",
+  "隐藏 / 显示左侧工具栏（快捷键 [ ）": "Show or hide the left toolbar (shortcut [ )",
+  "隐藏 / 显示右侧面板（快捷键 ] ）": "Show or hide the right panels (shortcut ] )",
+  "全屏画布（快捷键 Tab，Esc 退出）": "Full-screen canvas (shortcut Tab, Esc to exit)",
+  "退出全屏画布（Esc）": "Exit full-screen canvas (Esc)",
+  "文档以 id 作为名字（也是主键）。换个名字即可并存多份作品；重名会提示。": "A document is named by its id, which is also its primary key; a different name keeps several works side by side, and a duplicate name is reported",
+  "例如 我的第一幅画": "for example my-first-painting",
+  "支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。": "Any format the browser can decode (PNG/JPEG/WebP); the image arrives on a new layer at its original pixels",
+  "以新 id 保存一份完整副本（原文档保留，可逆）。文档以 id 为主键，因此这里填的是新文档的 id。": "Save a complete copy under a new id, leaving the original in place; the new id goes here because a document's id is its primary key",
+  "新文档 id": "new document id",
+  "一笔多色：同一条笔迹上从「颜色」渐变到「末端色」（Loaded Brush；与 MCP 的 brush_stroke.color_to 同一条实现）": "One stroke, several colours: it fades from the start colour to the end colour along the stroke (Loaded Brush, the same implementation as the MCP brush_stroke.color_to)",
+  "布局预设（绘画 / 修图 / 校对）": "Layout presets (paint / retouch / proof)",
+  "画笔 = MyPaint .myb（Hokusai 引擎）；介质 = 我们自己的插件（油画/水彩/…）；内置画笔 = 纯几何无物理。每条笔触只作用于当前图层：跨图层只是普通叠加，介质的湿搅/混色不跨层。": "Brush = MyPaint .myb through the Hokusai engine; Medium = our own plugins (oil, watercolour, …); built-in brushes are pure geometry with no physics. Every stroke affects only the current layer: crossing layers is plain compositing and a medium's wet mixing does not cross layers",
+  "折叠 / 展开画笔区（快捷键 \\ 也可；折叠只隐藏控件，不改你选好的笔与颜色）": "Collapse or expand the brush section (the backslash shortcut also works); collapsing hides controls without changing your brush or colour",
+  "MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）": "MyPaint .myb brushes on the Hokusai engine, so strokes are committed by the server and the list loads the first time you open it",
+  "把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角": "Treat the stamped points as a smooth curve (Catmull-Rom, so it passes through them), which removes the hard corners of a hand-drawn polyline",
+  "笔刷库：每支笔刷都带**真实落笔**的效果图（滚到哪画到哪）；点一行就换那支笔": "Brush library: every brush carries a preview of a real stroke, painted as you scroll; clicking a row switches to that brush",
+  "把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）": "Float the palettes and textures over the canvas; click again to put them back where they were",
+  "这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）": "What a real stroke with this brush looks like, from the server's brush_preview, the same implementation that paints strokes",
+  "名字片段，如 knife / pen": "part of a name, such as knife or pen",
+  "把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）": "Add or remove the selected brush from favourites; kept in the workspace preferences and readable through MCP"
+};
+const LANG_KEY = "yanshi.lang";
+const uiLang = (() => {
+  try {
+    const fromUrl = new URL(location.href).searchParams.get("lang");
+    if (fromUrl === "en" || fromUrl === "zh") return fromUrl;
+    const saved = localStorage.getItem(LANG_KEY);
+    if (saved === "en" || saved === "zh") return saved;
+  } catch (_) { /* 隐私模式等：退回默认 */ }
+  return "zh";
+})();
+const i18nOriginal = new WeakMap();
+const i18nAttrOriginal = new WeakMap();
+const I18N_ATTRS = ["title", "placeholder", "aria-label"];
+let i18nApplying = false;
+let i18nObserver = null;
+const i18nObserverOptions = { childList: true, subtree: true, characterData: true };
+function i18nSkip(node) {
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el) return true;
+  return !!el.closest("#log, pre, code, textarea, [data-i18n='off']");
+}
+function i18nText(node) {
+  if (!node.nodeValue) return;
+  let original = i18nOriginal.get(node);
+  if (original === undefined) { i18nOriginal.set(node, node.nodeValue); original = node.nodeValue; }
+  const zh = original.trim();
+  if (!zh) return;
+  const en = I18N_EN_TEXT[zh];
+  node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
+}
+function i18nAttrs(el) {
+  let store = i18nAttrOriginal.get(el);
+  for (const name of I18N_ATTRS) {
+    const current = el.getAttribute(name);
+    if (current === null) continue;
+    if (!store) { store = {}; i18nAttrOriginal.set(el, store); }
+    if (store[name] === undefined) store[name] = current;
+    const zh = store[name].trim();
+    const en = I18N_EN_ATTR[zh];
+    el.setAttribute(name, (uiLang === "en" && en) ? store[name].replace(zh, en) : store[name]);
+  }
+}
+function i18nWalk(root) {
+  if (!root) return;
+  if (root.nodeType === 3) { i18nText(root); return; }
+  if (root.nodeType !== 1) return;
+  if (i18nSkip(root)) return;
+  i18nAttrs(root);
+  for (const child of root.childNodes) i18nWalk(child);
+}
+function updateLangButton() {
+  const button = document.getElementById("langToggle");
+  if (!button) return;
+  button.textContent = uiLang === "en" ? "中文" : "EN";
+  button.title = uiLang === "en" ? "Switch the interface to Chinese" : "把界面切成英文（English）";
+  button.setAttribute("aria-pressed", uiLang === "en" ? "true" : "false");
+}
+function applyUILanguage() {
+  if (i18nApplying) return;
+  i18nApplying = true;
+  try {
+    if (i18nObserver) i18nObserver.disconnect();
+    document.documentElement.lang = uiLang === "en" ? "en" : "zh-CN";
+    i18nWalk(document.body);
+    updateLangButton();
+  } finally {
+    i18nApplying = false;
+    if (i18nObserver) i18nObserver.observe(document.body, i18nObserverOptions);
+  }
+}
+// 面板会不停重建（图层/对象/历史每次刷新都换节点）⇒ 让新节点也跟上语言。
+if (typeof MutationObserver === "function") {
+  i18nObserver = new MutationObserver(() => { if (uiLang === "en") applyUILanguage(); });
+}
+applyUILanguage();
+document.addEventListener("click", (event) => {
+  const button = event.target && event.target.closest ? event.target.closest("#langToggle") : null;
+  if (!button) return;
+  const next = uiLang === "en" ? "zh" : "en";
+  try { localStorage.setItem(LANG_KEY, next); } catch (_) { /* 记不住就只在本次会话生效 */ }
+  const url = new URL(location.href);
+  url.searchParams.set("lang", next);
+  location.search = url.search;
+});
+
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
      关掉时按**记下来的原位**搬回去 ✓ ⇒ 右侧面板永远不会被搬空 ✗。 -->

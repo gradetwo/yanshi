@@ -1,6 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/logo-horizontal-dark.svg">
+    <img src="assets/brand/svg/logo-horizontal.svg" alt="Yanshi" width="320">
+  </picture>
+</p>
+
 # Yanshi 偃师
 
 [中文](README.zh-CN.md) | **English**
+
+**Interface language**: the viewer is bilingual. The top bar carries an `EN` / `中文` toggle, and `?lang=en` or `?lang=zh` picks a language for a link; the choice is remembered. Names that come from the server (document ids, layer names, brush names) are shown as they are.
 
 Yanshi is a headless image editor engine: an append-only atom log, a folded state, a pure-Rust
 render compute kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer. The
@@ -600,13 +609,13 @@ Where the controls are, since a few are easy to miss: the tool rail down the lef
 the rest, each with its icon and shortcut; the option row above the canvas holds the tool's parameters, including the
 **medium** picker (example, oil, watercolour, marker, pencil, pixel), which is the control for painting with a plugin
 rather than the built-in brush; the layer list on the right carries a per-layer eye and lock; and the buttons above
-the canvas include `导出 PNG`. Hiding the last visible layer blanks the canvas, which is what hiding means rather
+the canvas include `Export PNG`. Hiding the last visible layer blanks the canvas, which is what hiding means rather
 than a fault; the eye toggles visibility and the lock only prevents editing. Exporting a project, as opposed to a
 PNG, is available over the tool API as `export_project` and does not yet have a button in the viewer.
 
-Drag to paint; `＋ 图层` adds a layer; `撤销` / `重做` undo and redo repeatedly (multi-level). Wheel zooms around the cursor,
+Drag to paint; `＋ Layer` adds a layer; `Undo` / `Redo` undo and redo repeatedly (multi-level). Wheel zooms around the cursor,
 middle-drag pans, `+` / `-` / `0` zoom in, out and fit, and `1:1` shows one document pixel per CSS
-pixel, `导出 PNG` downloads the full-resolution render, the 打开 dialog lists the server's documents and imports local images (PNG/JPEG/WebP are decoded
+pixel, `Export PNG` downloads the full-resolution render, the Open dialog lists the server's documents and imports local images (PNG/JPEG/WebP are decoded
 by the browser and uploaded as raw pixels; over the tool API, `POST /api/blob` also accepts a **PNG**
 directly and normalises it to raw pixels with the repository's own decoder, since the project takes no
 external dependencies - JPEG and WebP are refused there with an explanation rather than stored as-is),
@@ -616,18 +625,18 @@ current layer (names come from the kernel, parameters default to the kernel's ow
 
 Recent panels close the same kind of gap - a tool that existed with unit tests but no way to reach it. A PSD
 chosen in the import dialog is routed to the server, which reads the flattened composite and says so in the
-log; layer structure and masks are not imported, and the contract is read-only. The `标注` panel creates,
-edits, resolves and deletes annotations and draws clickable pins on the canvas. The `对象` panel lists the
+log; layer structure and masks are not imported, and the contract is read-only. The `Annotations` panel creates,
+edits, resolves and deletes annotations and draws clickable pins on the canvas. The `Objects` panel lists the
 current layer's objects, turns one into a live-linked instance, groups several together, rotates, scales or
 moves them, and converts any object into a shape or a path so it can be kept as vector work. The history panel marks checkpoints and jumps
 back to them; the log is append-only, so nothing is lost and the canvas can move forward again. Effects can be
 edited after they are added, by clicking one in the list, which loads its parameters and updates that same
-object instead of stacking another. A The history panel now inspects an atom: clicking one shows the payload of what it actually changed, which needed a new `get_atom` tool, since the log and search tools return metadata only by design. A `评论` panel posts comments and lists them with their author and text, which needed a new tool: comments could always be written but no tool could read them back, a gap a browser check exposed and `list_comments` closes. Annotations can be rejected as well as resolved, and a suggestion can be previewed first: preview validates every patch step and reports it without applying anything, so the effect count stays put until accept is pressed. Every toolbar button carries an inline SVG icon and its keyboard shortcut in the tooltip, and a guard test keeps it that way after the annotation tool shipped without an icon and rendered as an invisible button. `medium_stroke` paints with a medium plugin from a server-side or MCP session, not only in the browser:
+object instead of stacking another. A The history panel now inspects an atom: clicking one shows the payload of what it actually changed, which needed a new `get_atom` tool, since the log and search tools return metadata only by design. A `Comments` panel posts comments and lists them with their author and text, which needed a new tool: comments could always be written but no tool could read them back, a gap a browser check exposed and `list_comments` closes. Annotations can be rejected as well as resolved, and a suggestion can be previewed first: preview validates every patch step and reports it without applying anything, so the effect count stays put until accept is pressed. Every toolbar button carries an inline SVG icon and its keyboard shortcut in the tooltip, and a guard test keeps it that way after the annotation tool shipped without an icon and rendered as an invisible button. `medium_stroke` paints with a medium plugin from a server-side or MCP session, not only in the browser:
 
     {"layer_id": "L", "medium": "oil", "points": [[20, 30, 0.2], [60, 36, 0.9], [100, 42, 0.5]],
      "size": 24, "color": {"r": 210, "g": 80, "b": 40, "a": 255}}
 
-Points take an optional pressure and the object records the plugin id and version. Six medium plugins ship as dependency-free wasm modules under assets/mediums, example, oil, watercolour, marker, pencil and pixel, and the object records the medium by id and version so upgrading a plugin cannot change how older documents render. The object panel can restyle a stroke, changing its colour, size and opacity, which the update_stroke tool had no tests for until this round added two. A 变更集 section in the history panel groups a run of edits so they can be undone together, and the served tool profile list was missing the changeset and conflict groups even though its own comment says the web editor enables the full set, so the button reported an unknown tool until that was fixed, while the semantic group stays deliberately absent. A `建议` panel lists suggestions from section 12.6 with their status and priority, and accepting one replays its patch in order and resolves the annotation it came from, which is the other half of the review loop the annotation panel begins. The `存储 / 维护` panel reports the blob store's three
+Points take an optional pressure and the object records the plugin id and version. Six medium plugins ship as dependency-free wasm modules under assets/mediums, example, oil, watercolour, marker, pencil and pixel, and the object records the medium by id and version so upgrading a plugin cannot change how older documents render. The object panel can restyle a stroke, changing its colour, size and opacity, which the update_stroke tool had no tests for until this round added two. A changeset section in the history panel groups a run of edits so they can be undone together, and the served tool profile list was missing the changeset and conflict groups even though its own comment says the web editor enables the full set, so the button reported an unknown tool until that was fixed, while the semantic group stays deliberately absent. A `Suggestions` panel lists suggestions from section 12.6 with their status and priority, and accepting one replays its patch in order and resolves the annotation it came from, which is the other half of the review loop the annotation panel begins. The `Storage / maintenance` panel reports the blob store's three
 lifecycle tiers from design 6.3 - active, history and orphan - and can reclaim orphans past the TTL or demote
 history to cold storage, both only after an explicit confirmation, since deletion is irreversible; the report
 alone is always safe and never deletes anything.
@@ -648,15 +657,15 @@ Object groups follow design section 9.4: `create_group`, `add_to_group`, `remove
 the members carry the resulting geometry, so rendering, bounding boxes, hit testing and dirty planning all
 stay consistent without special cases.
 
-`选区` drags a rectangular selection that constrains everything painted afterwards - strokes, erasing,
-shapes, fills, text, liquify and retouch - per pixel, so nothing outside it is touched, and `清除选区`
+`Selection` drags a rectangular selection that constrains everything painted afterwards - strokes, erasing,
+shapes, fills, text, liquify and retouch - per pixel, so nothing outside it is touched, and `Clear selection`
 removes it, after which the same objects render unconstrained again because the constraint is
-recomputed from the log. `文本`
+recomputed from the log. `Text`
 places a text object at the clicked point. Text stays an editable object in the log - editing its data
 through `supersede` changes the render - and the kernel rasterises it with an embedded open-source
 font: a built-in 5×7 ASCII font plus a 1-bit 16×16 atlas generated from Noto Sans CJK (SIL OFL 1.1),
 covering ASCII, 6763 GB2312 level-1 and level-2 hanzi (3755 common plus 3008 less common) and the GB2312 symbol rows. Provenance, format
-and the regeneration command live in `assets/fonts/`. `刷新` re-renders from the server and `一致性自检` runs the kernel-versus-server comparison.
+and the regeneration command live in `assets/fonts/`. `Refresh` re-renders from the server and `Consistency check` runs the kernel-versus-server comparison.
 
 ## Desktop entry (Linux: Omarchy / Hyprland)
 
