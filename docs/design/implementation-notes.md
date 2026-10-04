@@ -16545,3 +16545,50 @@ collect2: fatal error: ld terminated with signal 7 [Bus error], core dumped
    （本会话早前记过"门禁必须是提交的条件" ✓，这次是它的**语法级**翻版 ✓）；
 2. **`/tmp` 满会伪装成"代码红"** ✗ —— 所以"红了"先看**失败形状** ✓（这里是**链接器** ✗ 不是断言 ✓）
    ⇒ 再量 `/tmp` ✓（这是第二次栽同一处 ✓ ⇒ 以后**每轮跑门禁前顺手看一眼 `/tmp`** ✓）。
+
+### 🎯🎯 第 143 轮：**选区裁剪的落点终于精确到"那个循环"** ✓（配方可直接照抄 ✓）
+
+**原文（`tools.rs:11637` 起 ✓）** ✓：
+```rust
+let (mut rgba, mut painted) = read_surface_region(&surface, region);
+// 只保留"这一笔真的碰到过"的像素 ✗ —— 绝不能把喂进去的底图原样复制出来 ✓
+//（否则会留下"直角矩形幽灵"✗ —— 那正是用户报过的 `Flat2#1` 画叶子出矩形 artifact ✓）
+if reads_canvas {
+    let deposit = brush_deposit_mask(&brush, points, region);
+    let before = before_pixels.unwrap_or_default();
+    const CANVAS_DRIFT_TOLERANCE: i32 = 3;
+    for index in (0..rgba.len()).step_by(4) {
+        let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
+        let moved = before.len() >= index + 4 && (0..4).any(|channel| { … > CANVAS_DRIFT_TOLERANCE });
+        if !(deposited || moved) { …把它清零… }         // ← **"留还是丢"就在这里** ✓
+```
+⇒ ⇒ **选区只需成为"留"的第三个条件** ✓：不在选区内 ⇒ 与"没碰过"**同等对待** ✓ ⇒ 直接落回底图 ✓
+（**不写进图层** ✓ ⇒ 判据要的"**选区外零字节**"✓ 正是这个语义 ✓）。
+**配方（下一轮照抄 ✓）** ✓：
+① 在 `write_brush_stroke` 里把 `clip_to_selection` 解析成一个**闭包** ✓
+   `Option<Box<dyn Fn(f64, f64) -> f32>>` ✓（`Selection.shape` ⇒ `rect/ellipse/polygon_coverage_clipped` ✓
+   + `feather` ✓ + `invert` ✓；其余 `mode` **明确报错** ✗）⇒ 一路传进 `paint_brush` ✓（**三个调用点**要一起传 ✓）；
+② 在 `paint_brush` 里**紧接这段循环之后**加**第二个小循环** ✓（**放在 `if reads_canvas` 之外** ✓ ——
+   因为不走底图那条路时也必须有选区语义 ✓）：
+   ```rust
+   if let Some(coverage) = coverage {
+       let width = region.width as usize;
+       let stride = width * 4;
+       for index in (0..rgba.len()).step_by(4) {
+           // **由 index 反推文档坐标** ✓（这个循环里只有 index ✓）
+           let pixel = index / 4;
+           let document_x = region.x0 + (pixel % width) as i32;
+           let document_y = region.y0 + (pixel / width) as i32;
+           let inside = coverage(f64::from(document_x), f64::from(document_y)).clamp(0.0, 1.0);
+           if inside <= 0.0 {
+               rgba[index] = 0; rgba[index + 1] = 0; rgba[index + 2] = 0; rgba[index + 3] = 0;
+           } else if inside < 1.0 {
+               // **羽化** ✓：按覆盖率**乘 alpha** ✓（不粗暴二值化 ✓）
+               rgba[index + 3] = (f64::from(rgba[index + 3]) * inside).round().clamp(0.0, 255.0) as u8;
+           }
+       }
+   }
+   ```
+   （⚠️ `stride` 若用不上就别定义 ✗ —— `-D warnings` 会红 ✓）
+③ `clip_to_selection` 缺省 ⇒ 闭包为 `None` ⇒ **整段不执行** ✓ ⇒ **逐字节如旧** ✓；
+④ 跑 `scripts/tool-selection-clip.mjs` ✓（目标 **内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
