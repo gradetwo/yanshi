@@ -727,7 +727,7 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     document.querySelector('button[data-tool="brush"]').click();
     return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
     } catch (err) {
-      return { unable: "段内抛错：" + String((err && err.message) || err), filled: undefined, masked: undefined, log: , toolAfterClick: undefined };
+      return { unable: "段内抛错：" + String((err && err.message) || err), filled: undefined, masked: undefined, log: "", toolAfterClick: undefined };
     }
     })()`);
   } catch (err) {
