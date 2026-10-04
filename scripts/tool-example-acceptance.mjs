@@ -48,6 +48,9 @@ const withExample = (catalogue.tools || [])
   .sort((a, b) => rank(a.name) - rank(b.name));
 console.log(`  目录里带示例的工具：${withExample.length} 个`);
 let rejected = 0, accepted = 0;
+// **"需要前置状态"单独计数** ✓（第 330 轮）：示例引用"还不存在的对象"是**合理**的 ✓
+//（抄它的人本来就得先建它 ✓）；这与"值/格式被拒"（抄走就会失败 ✗）是两回事 ✓。
+let needsState = 0;
 for (const tool of withExample) {
   if (tool.name === "create_layer") {
     accepted += 1;
@@ -89,7 +92,11 @@ for (const tool of withExample) {
   // **门槛收到"必须成功"** ✓：前置已经建好 ⇒ 任何失败都算这个示例还没到位 ✗。
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
+  else if (/不存在|未找到|not found|no such|missing/i.test(detail)) {
+    needsState += 1;
+    console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
+  }
   else { rejected += 1; console.log(`  ✗ ${tool.name}：参数没问题但**没成功** ⇒ ${detail.slice(0, 90)}`); }
 }
-console.log(`  结论：${accepted} 个示例**跑通** ✓、${rejected} 个没跑通 ✗`);
+console.log(`  结论：${accepted} 个示例**跑通** ✓、${rejected} 个**被拒** ✗、${needsState} 个**需要前置状态** ⊙`);
 process.exit(rejected ? 1 : 0);
