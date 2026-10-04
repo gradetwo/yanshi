@@ -13610,6 +13610,22 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "batch",
         r#"{"calls":[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}}]}"#,
     ),
+    // **建议 / 图章 / 基线 / 实例脱离 / 原子**（第 292 轮）：这一批的取值全部来自参数说明 ——
+    // `clone_stamp` 与 `heal_stamp` 必填 `layer_id`/`points`/`source_offset`（`points` = [[x,y],…]）；
+    // `declare_head` 必填 `base_type`（atom|checkpoint）与 `base_id`；`detach_instance` 必填 `instance_id`；
+    // `get_atom` / `accept_suggestion` 各必填一个 id。（`add_adjustment`/`add_filter` 的取值说明写"见工具说明"，仍旧不写。）
+    ("accept_suggestion", r#"{"suggestion_id":"sug1"}"#),
+    (
+        "clone_stamp",
+        r#"{"layer_id":"L1","points":[[10,10],[50,50]],"source_offset":[0,-30]}"#,
+    ),
+    (
+        "heal_stamp",
+        r#"{"layer_id":"L1","points":[[10,10],[50,50]],"source_offset":[0,-30]}"#,
+    ),
+    ("declare_head", r#"{"base_type":"atom","base_id":"atom1"}"#),
+    ("detach_instance", r#"{"instance_id":"inst1"}"#),
+    ("get_atom", r#"{"atom_id":"atom1"}"#),
 ];
 
 #[cfg(test)]

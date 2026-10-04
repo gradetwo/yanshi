@@ -19506,3 +19506,19 @@ batch             ⇒ { calls:[ {"tool":"draw_stroke","arguments":{…}} ] }    
 **这一轮印证了上一轮的判断（✓）** ✓：那两条**不是不可写** ✗，而是**我的读法漏了它们的参数说明** ✗
 ⇒ ⇒ **换成"按条目边界截取"之后** ✓，**取值就摆在说明里** ✓（`type` / `intent` 的枚举 ✓、`calls` 的嵌套形状 ✓）✓。
 **进度（✓）** ✓：**85/136 = 63%** ✓；**九批零试错** ✓。
+
+### 🎉 第 292 轮：**(B)① 一轮六条** ✓（85 ⇒ **91** ✓）
+
+**新增（✓，取值全部来自参数说明 ✓）** ✓：
+```
+accept_suggestion ⇒ { suggestion_id:"sug1" }                                        ✓
+clone_stamp       ⇒ { layer_id:"L1", points:[[10,10],[50,50]], source_offset:[0,-30] } ✓
+heal_stamp        ⇒ 同 `clone_stamp` 的形状 ✓                                        ✓
+declare_head      ⇒ { base_type:"atom", base_id:"atom1" }                            ✓（两个取值来自说明 ✓）
+detach_instance   ⇒ { instance_id:"inst1" }                                          ✓
+get_atom          ⇒ { atom_id:"atom1" }                                              ✓
+```
+⇒ 守卫测试 **ok** ✓ ⇒ 总数 **91** ✓ ⇒ 门禁全绿 ✓。
+**仍被跳过（✓）** ✓：`add_adjustment` / `add_filter` ✗ —— **取值说明只写"见工具说明"** ✓
+⇒ **编一个能过测试、但照着抄会错** ✗ ⇒ **不写** ✓（**第四次"宁缺勿编"** ✓）。
+**进度（✓）** ✓：**91/136 = 67%** ✓、**十批零试错** ✓。
