@@ -81,6 +81,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: wasm
+      - name: Cache wasm-bindgen-cli
+        # **缓存"不可并行的固定成本"** ✓：这一列判据分 6 片并行 ✓，但装工具**不该跟着复制 6 份** ✗
+        #（从源码编要好几分钟 ✗）。缓存住了下一步的 `command -v` 就命中 ✓，没命中则照常 `cargo install` ✓（优雅降级 ✓）。
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.129-${{ runner.os }}
       - name: Install wasm-bindgen-cli (pinned)
         # 版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水与 .wasm 不兼容。
         run: |
@@ -110,6 +117,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: criteria
+      - name: Cache wasm-bindgen-cli
+        # **缓存"不可并行的固定成本"** ✓：这一列判据分 6 片并行 ✓，但装工具**不该跟着复制 6 份** ✗
+        #（从源码编要好几分钟 ✗）。缓存住了下一步的 `command -v` 就命中 ✓，没命中则照常 `cargo install` ✓（优雅降级 ✓）。
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.129-${{ runner.os }}
       - name: Install wasm-bindgen-cli (pinned)
         # **这一步历史上要几分钟** ✓（`cargo install` 从源码编 ✗）—— 加时间戳便于判断它是否卡住 ✓。
         run: |
