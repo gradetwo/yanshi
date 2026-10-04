@@ -3192,6 +3192,17 @@ async function switchDocument(docId, token) {
   } else {
     await ensureDocument();
   }
+  // **装载之后必须按"文档自己的尺寸"重设画板**（真正修的那一处）：
+  // 上面两行无条件把画板设成 1024²，而**只有 else 分支**会带着尺寸去创建文档；
+  // 「另存为副本」自带令牌 ⇒ 走 `loadDocumentData` ⇒ 而那个函数里**一处都没有** sizeBoards / docSize
+  // ⇒ 副本的画布就停在 1024² ✗（实测：源 262144 像素 = 512²，副本 1048576 = 1024² ✓）。
+  // ⇒ 不论走哪条分支，都在这里按**已装载文档**的尺寸重设一次；“新建”那路数值不变，行为不变。
+  if (state.docSize && state.docSize.w > 0 && state.docSize.h > 0) {
+    state.zoom = 1;
+    state.displayScale = null;
+    state.viewport = { x: 0, y: 0, w: state.docSize.w, h: state.docSize.h };
+    sizeBoards(state.docSize.w, state.docSize.h);
+  }
   // **按 id 打开示例也要种入画面** ✓ —— 此前种入只挂在"点示例卡片"上 ✗
   // ⇒ 收藏的链接、程序化打开（子 agent 的脚本 ✓）都只会得到一个**空文档** ✓，
   // 而那看起来就像"示例是坏的" ✗（我自己的探针就这样误判过一次 ✓：按 id 切过去 ⇒ 墨 0 ✗）。
