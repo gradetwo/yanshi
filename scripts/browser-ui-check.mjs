@@ -1482,8 +1482,13 @@ const jumpUndoResult = await evaluate(`(async () => {
   // ⇒ 跳到它 = 跳到当前状态 ⇒ **画面当然不变** ✓ ⇒ 而那不是产品的问题，是判据挑错了目标 ✗。
   // ⇒ **改成跳到"倒数第二条"** ✓：**它一定比当前**更早一步** ✓ ⇒ 跳转必然改变画面 ✓**
   //（"跳转改变画面"这条断言有设计依据 ✓，第 623 轮 ✓；而"最早那条一定不同"没有 ✗）。
-  const target = rows.length >= 2 ? rows[rows.length - 2] : rows[0];
-  if (!target) return { ok: false, reason: "历史为空" };
+  // 不足两条时不能凑合用第一行（第 692 轮）：第一行往往就是当前状态，
+  // 跳到它画面当然不变，而那样会被记成「用例无效：目标原子选得不对」。
+  // 判据该说「我测不了」，而不是「我失败了」——于是这里明确报「无法运行」。
+  if (rows.length < 2) {
+    return { ok: false, unable: "历史里只有 " + rows.length + " 条原子，不足以测「跳转会改变画面」" };
+  }
+  const target = rows[rows.length - 2];
   const before = ${canvasFingerprint};
   target.querySelector("button").click();
   // **等条件，不等时长** ✓（第 629 轮 ✓）：原先固定 2200ms ✗ ——
