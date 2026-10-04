@@ -1574,14 +1574,23 @@ await evaluate(`(() => {
 })()`);
 await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
 await dragPath([[0.25, 0.85], [0.45, 0.78], [0.65, 0.86], [0.85, 0.8]], 503);
+// **必须在页面里查** ✓（第 244 轮 ✓，与图层面板那段同一先例 ✓）：
+// 旧版从 node 用 `mediumDoc` / `mediumToken`（**更早捕获的变量** ✗）查 ⇒
+// 若页面已切到别的文档 ⇒ **墨量那一半对 ✓、对象这一半看错了地方** ✗
+// （实测：before 1960 → after 3102 ✓ 墨涨了 ✓，却找不到水彩对象 ✗）。
+// 经页面自己的入口查（`window.yanshiCallTool` ✓）⇒ **不可能与页面显示的不一致** ✓。
 let wcObject = null;
 for (let i = 0; i < 40 && !wcObject; i++) {
   await new Promise((r) => setTimeout(r, 250));
-  const listed = await fetch(
-    `${origin}/api/tools/list_objects?doc=${mediumDoc}&token=${mediumToken}`,
-    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
-  ).then((response) => response.json()).catch(() => ({}));
-  wcObject = (listed.objects || []).find((o) => o.medium && o.medium.id === "watercolor") || null;
+  const listed = await evaluate(`(async () => {
+    try {
+      const result = await window.yanshiCallTool("list_objects", {});
+      return JSON.stringify((result && result.objects) || []);
+    } catch (error) { return "[]"; }
+  })()`);
+  let objects = [];
+  try { objects = JSON.parse(listed || "[]"); } catch (error) { objects = []; }
+  wcObject = objects.find((o) => o.medium && o.medium.id === "watercolor") || null;
 }
 // 与示例介质同理 ✓：对"有墨"轮询 ✓（补画可能晚于一次测量 ✓ ⇒ 否则偶发读到 0 ✗）。
 let wcAfter = wcBefore;
