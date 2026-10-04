@@ -88,8 +88,17 @@ if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window
 // **等画布真的被设过尺寸再量** ✗ —— 第 47 轮就是在这里栽的 ✓：启动瞬间 `<canvas>` 还是默认的
 // 300×150 ✓、`style.width` 为空 ✓ ⇒ 我据此得出"尺寸没落到元素上"✗，而真相只是"还没轮到它"✓。
 // ⇒ 判据必须**等被测对象稳定** ✓（`board.width` 走出默认值 ✓ + 至少补过一次服务端像素 ✓）。
+// **不要用写死的像素阈值** ✗（第 430 轮 ✓）：`board.width` 是**位图**宽度 ✓，它按
+// **显示尺寸 × 设备缩放** 来设 ✓（实测：`style.width = "424px"` 而 `board.width = 320` ✓，
+// 比值 0.755 就是缩放 ✓）⇒ 拿它去卡一个"CSS 像素"的常数（原来的 `> 400` ✗）会在缩放 ≠ 1 时**假红** ✓。
+// ⇒ 改成与**该元素自己的显示宽度**比较 ✓（缩放无关 ✓），并保留"不是默认 300×150"这一层 ✓。
 if (!(await waitFor(
-  "document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
+  `(() => {
+     const b = document.getElementById("board");
+     const shown = b.getBoundingClientRect().width;
+     return b.width !== 300 && b.width >= Math.floor(shown * 0.5)
+            && window.yanshi.state().serverBlits > 0;
+   })()`,
   "画布尺寸与首帧",
   20000,
 ))) {
@@ -102,7 +111,7 @@ if (!(await waitFor(
     try { blits = window.yanshi.state().serverBlits; } catch (e) { blits = "取不到: " + e; }
     return { width: b && b.width, height: b && b.height, styleWidth: b && b.style.width, serverBlits: blits };
   })()`);
-  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（需 >400 ✓） height=${diag.height} style.width=${JSON.stringify(diag.styleWidth)} serverBlits=${diag.serverBlits}（需 >0 ✓）`);
+  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（应与显示宽度同量级、且不是默认 300 ✓）显示宽度=${JSON.stringify(diag.styleWidth)} height=${diag.height} serverBlits=${diag.serverBlits}（需 >0 ✓）`);
   process.exit(1);
 }
 
