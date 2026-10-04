@@ -13992,6 +13992,21 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "add_filter",
         r#"{"layer_id":"layer_default","filter_name":"invert"}"#,
     ),
+    // **`add_adjustment`**（✓，第 461 轮 ✓）：必填两个 ✓ —— `layer_id`（默认图层 ✓）与 `adjustment_type`
+    // （**取值域 spec 自己就列了** ✓：brightness_contrast / saturation / vibrance / invert / levels /
+    // exposure / white_balance / curves / hsl / posterize … ✓，且与 `filter.rs:48-54` 的解析分支一致 ✓）。
+    // 选 **invert**：与 add_filter 同一个理由 —— **不需要额外参数** ✓ ⇒ 只给两个必填项就成立 ✓。
+    (
+        "add_adjustment",
+        r#"{"layer_id":"layer_default","adjustment_type":"invert"}"#,
+    ),
+    // **`suggest`**（✓）：唯一必填参数 `patch` 是**非空的工具步骤数组** ✓ ⇒
+    // 这里填一步 `add_filter` ✓，**参数就是上面那条示例里验证过的那组** ✓（`invert` 不需要额外参数 ✓）。
+    // ⇒ 这条示例**自足** ✓：照抄它能真的提交一条建议 ✓。
+    (
+        "suggest",
+        r#"{"patch":[{"tool":"add_filter","arguments":{"layer_id":"layer_default","filter_name":"invert"}}],"summary":"把画面反相"}"#,
+    ),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
