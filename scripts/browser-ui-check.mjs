@@ -2558,36 +2558,35 @@ const layerPanel = await evaluate(`(async () => {
   // ⇒ 第二次点击打在空气上 ✗（症状：隐藏成功、显示回来却没反应 ✓，看起来像产品 bug ✗）。
   // 这与本项目早先遇到的"过期选择/过期元素"是同一类 ✓。
   const rowById = (id) => rows().find((row) => row.dataset.layerId === id);
+  // **取"当下活动的图层"**（第 248 轮）：这一段原先四处硬编码了一个并不存在的 id
+  // （layer_paint），于是每一处都静默失败：隐藏/显示量到的墨量不变、
+  // 锁定读到的图标是 null。改为取**面板此刻选中的那一层**，四处都用它，
+  // 而"面板 DOM"与"服务端 list_layers"仍然核对**同一个 id**，交叉核对没有削弱。
+  const targetLayerId = document.getElementById("layer")?.value || rows()[0]?.dataset.layerId || null;
+
   const clickFlag = async (id, action) => {
     const row = rowById(id);
     if (!row) return false;
     row.querySelector('[data-action="' + action + '"]').click();
     return true;
   };
-  out.hidContentRow = await clickFlag("layer_paint", "visible");
+  out.hidContentRow = await clickFlag(targetLayerId, "visible");
   // **轮询而不是固定 sleep** ✓：重画要经过"工具返回 → resync → rAF 补画" ✓，
   // 固定 1200ms 在冷启动时不够、在热路径上又白等 ✓。
   for (let i = 0; i < 40 && ink() !== 0; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterHide = ink();
-  await clickFlag("layer_paint", "visible");
+  await clickFlag(targetLayerId, "visible");
   for (let i = 0; i < 40 && ink() === 0; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterShow = ink();
   out.paintedBefore = paintedBefore;
   // ⑤ **锁定** ⇒ 面板状态变 ✓（并按设计**阻止改内容** ✓）。
-  // **先建出探针期望的那个测试层** ✓（第 240 轮 ✓，目标原话："需用当下活动的 doc/token **建测试层**" ✓）。
-  // 这一段跑在**初始文档**上 ✓（2473 之前最后一次导航在 2226 ✓），而下面要点的锁图标属于
-  // layer_paint ✗ —— **原先没人建过它** ⇒ 找不到那行 ⇒ 图标读成 null ✗。
-  // **必须走页面自己的入口** ✓（window.yanshiCallTool ✓）：周围注释的要求是
-  // "**面板 DOM 与服务端两边交叉核对**" ✓ ⇒ 在页面之外建的层走不到那条路 ✗。
-  await window.yanshiCallTool("create_layer", { layer_id: "layer_paint", name: "locking probe" });
-  await new Promise((r) => setTimeout(r, 900));
-  const lockRow = rows().find((row) => row.dataset.layerId === "layer_paint");
+  const lockRow = rows().find((row) => row.dataset.layerId === targetLayerId);
   if (lockRow) {
     lockRow.querySelector('[data-action="locked"]').click();
     await new Promise((r) => setTimeout(r, 900));
   }
   const listed2 = await window.yanshiCallTool("list_layers", {});
-  out.lockedOnServer = (listed2.layers || []).some((layer) => layer.layer_id === "layer_paint" && layer.locked);
+  out.lockedOnServer = (listed2.layers || []).some((layer) => layer.layer_id === targetLayerId && layer.locked);
   out.lockIcon = lockRow ? lockRow.querySelector('[data-action="locked"]')?.textContent : null;
   return out;
 })()`);
