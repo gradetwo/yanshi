@@ -25586,3 +25586,9 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 ### 🎯 第 682 轮：**`unable` 报告仍在跑 ⇒ 只记状态** ✓
 
 **读到**：`b7a98d9` 仍 `in_progress`；最近完成仍是 `2537a65`。⇒ **预判待对照：最可能是「缺元素」** ✓。
+
+### 🎯 第 683 轮：**TDZ 修复仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`dce6bfe`（把 `ptsBeforeUp` 声明移到使用之前 ✓）仍 `in_progress`；
+最近完成仍是 `b7a98d9`（**它报出的正是 `Cannot access ptsBeforeUp before initialization`** ✓）。
+**⇒ 两层真因均已修**：**`log: ,` 语法错 ✓** 与 **`ptsBeforeUp` TDZ ✓** ⇒ **待 CI 验证** ✓。
