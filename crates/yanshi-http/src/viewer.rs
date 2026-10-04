@@ -7519,6 +7519,12 @@ window.yanshi = {
         brush: ($("brush") || {}).value || null,
         // **平滑开关也要能读** ✓（"界面里有的东西必须能被断言" ✓ —— 与 size 那次同类 ✓）。
         smooth: !!($("smooth") || {}).checked,
+        // **点数与拖动指针也要能读** ✓（第 542 轮 ✓）：`commitMask` 要求 **≥ 2 个点** ✓，
+        // 而"蒙版提交失败"到底是"按下/移动没记到点"✗还是别的，**看点数一次就能分辨** ✓。
+        // ⇒ 这一条是补我自己的疏漏 ✗：我先加了探针 ✓，却选了一个 `state()` **本来不暴露**的字段 ✓
+        // ⇒ **"先让这个量存在，再去观测它"** ✓ —— 与上面 size/smooth 那几条同一个理由 ✓。
+        points: (state.points || []).length,
+        dragging: state.dragging === undefined ? null : state.dragging,
         // **一笔多色开关也要能读** ✓（探针要断言界面状态 ✓）。
         duoTone: !!($("duoTone") || {}).checked,
         colorTo: ($("colorTo") || {}).value || null,
