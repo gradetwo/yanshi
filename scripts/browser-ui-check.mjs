@@ -599,6 +599,16 @@ let maskEvalError = null;
 for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
   try {
     maskResult = await evaluate(`(async () => {
+    // 段首自检：能不能取画布像素（第 639 轮）。段内的 ink() 会调 getImageData，
+    // 而画布被跨源图像污染时它会抛 SecurityError，整段就没了。
+    // 实测页面日志里没有填充/蒙版原子，说明抛点在段内前半段（第 638 轮）。
+    // 先试取 1x1：抛了就明确报「无法运行」，而不是让求值变成静默的 undefined。
+    try {
+      document.getElementById("board").getContext("2d").getImageData(0, 0, 1, 1);
+    } catch (err) {
+      return { unable: "画布像素不可读（可能被跨源图像污染）：" + String((err && err.message) || err),
+               filled: undefined, masked: undefined, log: "" };
+    }
     // **段内保护** ✓（第 599 轮 ✓）：段首若某个元素取不到，第一处 click/value 就抛 ✗
     // ⇒ 整段 reject ⇒ 外部拿到一串 undefined ✓（实测：着色 undefined -> undefined、日志 "" ✓）
     // ⇒ 那样报的是"判据失败"，而真相是"判据无法运行" ✓ —— 两者必须分开 ✓。
