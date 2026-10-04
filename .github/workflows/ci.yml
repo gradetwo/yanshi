@@ -114,6 +114,10 @@ jobs:
       - name: Put a chromium name on PATH
         # 判据脚本按 `chromium` 找浏览器；这里把装好的 chrome 暴露成这个名字。
         run: sudo ln -sf "$(command -v chrome || command -v google-chrome)" /usr/local/bin/chromium
+      - name: Add the wasm32 target
+        # `rust-toolchain.toml` 会固定工具链 ⇒ 这里**显式**装目标（与 wasm-smoke job 同一做法 ✓，
+        # 第一轮 CI 就是因为漏了这一步而报 `can't find crate for core` ✗）。
+        run: rustup target add wasm32-unknown-unknown
       - name: Build server and wasm package
         run: |
           cargo build --workspace

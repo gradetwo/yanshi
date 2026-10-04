@@ -50,7 +50,7 @@ for script in scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-pari
   [ -f "$script" ] || continue
   # 浏览器判据没有 chromium 就跳过（本地环境常见；CI 里一定装了）。
   if [[ "$name" == browser-* ]] && [ "${SKIP_BROWSER:-0}" = "1" -o -z "${CHROME_PID:-}" ]; then
-    echo "  ⊘ $name（没有 chromium，跳过）"; skipped=$((skipped+1)); continue
+    echo "  ⊘ ${name}（没有 chromium，跳过）"; skipped=$((skipped+1)); continue
   fi
   doc="crit_$(echo "$name" | tr -cd 'a-z0-9')"
   tok="$(token_for "$doc")"
@@ -66,12 +66,12 @@ for script in scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-pari
   if [ "$code" = 0 ]; then
     echo "  ✓ $name"; pass=$((pass+1))
   elif is_known_red "$name"; then
-    echo "  ⚠ $name（**已知红，按记录不阻塞 CI**）: $(grep -m1 -E '^     - ' "$ROOT_DIR/out.txt" | cut -c1-120)"
+    echo "  ⚠ ${name}（**已知红，按记录不阻塞 CI**）: $(grep -m1 -E '^     - ' "$ROOT_DIR/out.txt" | cut -c1-120)"
     expected_red=$((expected_red+1))
   else
     echo "  ✗ $name (EXIT=$code)"; tail -6 "$ROOT_DIR/out.txt" | sed 's/^/       /'; fail=$((fail+1))
   fi
 done
 
-echo "  —— 通过 $pass｜意外失败 $fail｜已知红 $expected_red｜跳过 $skipped"
+echo "  —— 通过 ${pass}｜意外失败 ${fail}｜已知红 ${expected_red}｜跳过 $skipped"
 [ "$fail" = 0 ] || exit 1
