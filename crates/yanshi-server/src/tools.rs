@@ -2300,6 +2300,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "analyze_region",
+        profile: Profile::Core,
+        // **AI 画家需求 P2-10**：让 AI **先看再画** ✓（读一块区域的主色/亮度/冷暖 ✓）。
+        // **纯读** ✓ ⇒ `mutating: false`（与 render_region 同类 ✓）。
+        // **字段定义写在这里** ✓（别让调用方猜 ✗）：
+        //   `dominant_colors` —— 每通道取**高 4 位**分桶 ✓（16³ 桶 ✓）⇒ 按像素数排序 ✓
+        //     ⇒ 每项给该桶内像素的**平均色** ✓ 与 `count`/`share` ✓（比回桶中心准 ✓）；
+        //   `avg_brightness` —— `0.299r + 0.587g + 0.114b` 的均值 ÷ 255 ✓（**0..1** ✓）；
+        //   `warm_cool_ratio` —— **暖像素占（暖+冷）的比例** ✓（`r > b` 记暖 ✓、`b > r` 记冷 ✓，
+        //     相等不计 ✓）⇒ **恒在 0..1** ✓、**不会除零** ✓（红块≈1 ✓、蓝块≈0 ✓）。
+        summary: "分析一块区域的颜色：主色（分桶取平均）/ 平均亮度（0..1）/ 暖冷比（暖/(暖+冷)，0..1）",
+        mutating: false,
+        params: &[
+            param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]（同 render_region）"),
+        ],
+    },
+    ToolSpec {
         name: "list_palette_colors",
         profile: Profile::Core,
         summary: "读一个调色板的颜色（.gpl / .kpl / open-color 那种 .json）⇒ 供界面显示与取色",
@@ -2637,6 +2654,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "brush_preview" => write_brush_preview(ctx, args),
         "save_palette" => write_save_palette(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
+        "analyze_region" => read_analyze_region(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
@@ -2953,6 +2971,78 @@ fn read_collect_garbage(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         response["retained_historical"] = json!(report.retained_historical);
     }
     Ok(response)
+}
+
+/// **`analyze_region`**（AI 画家需求 P2-10 ✓）：**纯读** ✓ —— 取像素走**既有的**
+/// `ctx.workspace.render_region_raw` ✓（与 `render_region(raw:true)` 同一条路 ✓，不另写渲染 ✗）。
+fn read_analyze_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let region = parse_bbox(require_object(args, "region")?)?;
+    let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    if pixels.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("这块区域没有像素可分析".to_string()),
+        ));
+    }
+    // 每通道高 4 位 ⇒ 16³ 个桶 ✓；同时累计每桶的通道**和** ✓（以便回"桶内平均色" ✓）。
+    const SIDE: usize = 16;
+    let mut counts = vec![0u64; SIDE * SIDE * SIDE];
+    let mut sums = vec![[0u64; 3]; SIDE * SIDE * SIDE];
+    let mut brightness = 0.0_f64;
+    let (mut warm, mut cool) = (0u64, 0u64);
+    for index in (0..pixels.len()).step_by(4) {
+        let (r, g, b) = (
+            u64::from(pixels[index]),
+            u64::from(pixels[index + 1]),
+            u64::from(pixels[index + 2]),
+        );
+        let bucket = (((r >> 4) as usize) << 8) | (((g >> 4) as usize) << 4) | ((b >> 4) as usize);
+        counts[bucket] += 1;
+        sums[bucket][0] += r;
+        sums[bucket][1] += g;
+        sums[bucket][2] += b;
+        brightness += 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+        if r > b {
+            warm += 1;
+        } else if b > r {
+            cool += 1;
+        }
+    }
+    let total = (pixels.len() / 4).max(1) as u64;
+    let mut order: Vec<usize> = (0..counts.len()).filter(|&i| counts[i] > 0).collect();
+    order.sort_by(|a, b| counts[*b].cmp(&counts[*a]));
+    let dominant: Vec<Value> = order
+        .iter()
+        .take(5)
+        .map(|&i| {
+            let count = counts[i].max(1);
+            json!({
+                "r": sums[i][0] / count,
+                "g": sums[i][1] / count,
+                "b": sums[i][2] / count,
+                "hex": format!("#{:02x}{:02x}{:02x}", sums[i][0] / count, sums[i][1] / count, sums[i][2] / count),
+                "count": count,
+                "share": count as f64 / total as f64,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "width": width,
+        "height": height,
+        "pixels": total,
+        "dominant_colors": dominant,
+        // **0..1** ✓（÷255 ✓）
+        "avg_brightness": brightness / total as f64 / 255.0,
+        "warm_pixels": warm,
+        "cool_pixels": cool,
+        // **暖/(暖+冷)** ✓ —— 恒在 0..1 ✓、不会除零 ✓（相等不计入任何一边 ✓）。
+        "warm_cool_ratio": if warm + cool == 0 {
+            0.5
+        } else {
+            warm as f64 / (warm + cool) as f64
+        },
+    }))
 }
 
 fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
