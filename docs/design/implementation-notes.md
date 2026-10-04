@@ -17072,3 +17072,33 @@ WORKSPACE_STORE  7456 setItem ／ 7476 getItem ／ 7470 removeItem          → 
    第 160 轮的行业资料指向它 ✓）⇒ 再 IndexedDB 存元数据 ⇒ 再"导出"✓；
 ③ **导出**那一步：**先查证 `showSaveFilePicker` 的现行形态与降级路径** ✗（不写"我记得的 API"✗）；
 ④ 判据转绿后 ⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 英文提交 + 推送 ✓。
+
+### 🎯 第 162 轮：**判据有效性的前提查清了** ✓（SW **不缓存 API** ✓ ⇒ 不会假绿 ✓）
+
+**SW 本体在 `crates/yanshi-http/src/server.rs` ✓**（注册处是 `viewer.rs:6962` 的
+`navigator.serviceWorker.register("/service-worker.js")` ✓），其 `fetch` 处理器的**第一句就是排除** ✓：
+```js
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;   // ← **关键** ✓
+  …（离线时：`caches.match(request)` ⇒ 回落 `caches.match("/")` ✓）
+});
+```
+⇒ **两条结论** ✓：
+1. **外壳**（导航请求 ✓）会被缓存并回落 ✓ ⇒ **服务端不在时页面仍能打开** ✓（这条**已实现且已被既有判据钉过** ✓）；
+2. **`/api/` 一律不缓存** ✓ ⇒ ⇒ 所以"**停掉服务端 ⇒ 重载 ⇒ 画面还有那一笔**"这条判据 ✓
+   **今天必然是红的** ✓（像素拿不到 ✗），而且它**不可能**因为"SW 顺手缓存了 API"而假绿 ✓ ✓
+   —— **这正是我写判据前必须确认的事** ✗（否则又是一个"看起来绿"的假判据 ✓）。
+**下一轮（写死 ✓）** ✓：
+① 写 `scripts/browser-offline-reload.mjs` ✓（CDP ✓，沿用我那套 ✓）：
+   * 起服务端 + 文档（画一笔 ✓）⇒ 开页 ⇒ 等渲染完成（读一次画布像素做基线 ✓）；
+   * **杀掉服务端** ✗ ⇒ `Page.reload` ✓ ⇒ 断言 **画面里那一笔仍在** ✓（在笔迹处取样 ⇒ 必须是深色 ✓，
+     并断言画面**不是全白** ✓ ⇒ 防"空白也算通过"✗）；
+   * **正对照** ✓：同一张画布在**没画之前**必须是白的 ✓（否则"深色"这个量法本身不可信 ✗）；
+② 运行 ⇒ **预期红** ✓（今天的红样子：断网重载后画面空白 ✓）⇒ 提交这条红判据 ✓；
+③ **再实现** ✓：viewer 侧在拿到文档/笔触后把像素与元数据写进 **OPFS + IndexedDB** ✓ ⇒
+   离线重载时**优先从本地读** ✓ ⇒ 判据转绿 ✓；
+④ 门禁全绿（先看 `/tmp` ✓）⇒ 英文提交 + 推送 ✓。
