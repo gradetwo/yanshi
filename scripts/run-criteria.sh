@@ -99,6 +99,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   code=$?
   if [ "$code" = 0 ]; then
     echo "  ✓ $name"; pass=$((pass+1))
+      # **通过时也打最后一行** ✓（第 355 轮）：否则"绿了但为什么绿"这种问题，
+      # **通道答不了** ✗（`tool-example-acceptance` 的 `结论：N 跑通 / M 被拒 / K 需前置状态`
+      # 就只在失败时才进日志 ✗）⇒ 每条都打最后一行 ✓，绿红都能回答 ✓。
+      tail -1 "$ROOT_DIR/out.txt" | sed 's/^/       ↳ /'
   elif is_known_red "$name"; then
     echo "  ⚠ ${name}（**已知红，按记录不阻塞 CI**）: $(grep -m1 -E '^     - ' "$ROOT_DIR/out.txt" | cut -c1-120)"
     expected_red=$((expected_red+1))
