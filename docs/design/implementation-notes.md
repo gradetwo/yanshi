@@ -18125,3 +18125,19 @@ SHELL = ["/", "/favicon.svg", "/brand/svg/icon-light.svg", "/brush-previews/inde
 3. 于是查到 `SHELL` **从来不含内核** ✗ ⇒ 补上两件 ✓ ⇒ **转绿** ✓。
 **教训（✓，值得记 ✓）** ✓：**"删掉某个缓存的唯一写入者"** ✗ 并**不等于**"删掉了那个缓存的内容" ✓ ——
 代码里看不到"谁还在写"的时候 ✓，**要问一句"那它现在谁来写"** ✓（否则就是**静默的离线能力缺失** ✗）。
+
+## 🎉🎉🎉 第 214 轮：**19/19 判据同时全绿** ✓✓✓（工具 12 + 浏览器 7 ✓）
+
+```
+HTTP 工具判据 12/12 ✓  gradient-blend · scatter-strokes · save-palette · snapshot-roundtrip · brush-style ·
+                       analyze-region · fill-region · layer-blend · batch-preview · export-path ·
+                       selection-clip · brush-dynamics
+浏览器判据  7/7 ✓  offline-reload · offline-export · no-stale-read · render-switch · reference-overlay ·
+                   offline-draw · kernel-brush-parity
+—— 通过 19，失败 0 ✓
+```
+**为什么这一次"一起跑"特别有意义（✓）** ✓：**最近三轮修掉的两个缺陷都是静默的** ✗ ——
+① **方法调在模块上而不是实例上** ✗；② **内核从来没被缓存给离线用** ✗ ——
+**两者都逃过 `cargo test`** ✓（测试全绿时它们是坏的 ✗）⇒ ⇒ **只有这一整类判据能看见它们** ✓。
+**当前状态的参考点（✓）** ✓：主线**六条主项各有绿判据** ✓；其中**三条先红后绿** ✓、**一条已证明能红** ✓；
+**离线内核现在是真的可用** ✓（断网下 ✓ —— 而不只是"有网时能用"✗）。
