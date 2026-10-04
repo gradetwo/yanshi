@@ -18534,3 +18534,29 @@ test move_object_shifts_rendered_pixels_and_bbox ... ok ✓    （4 passed ✓�
 ⇒ ⇒ **三次的共同点** ✓：**我量的/读的不是"当下真的那个东西"** ✗ —— 量具 ✗、注释 ✗、文档 ✓。
 **剩余待判（✓）** ✓：**快捷面板·贴光标** ✗、**图层面板·锁定** ✗、**水彩介质** ✗ ——
 **每一条都要先查"它量的/断言的是不是当下的那个东西"** ✓，再判"设计 vs 缺陷" ✓。
+
+### 🎯 第 235 轮：**贴光标这一条：产品看着是对的，需要真实数字** ✓
+
+**两侧原文（✓）** ✓：
+```js
+// 判据（`browser-ui-check.mjs:2400–2408` ✓）
+const x = rect.left + rect.width * 0.5;      // 画布中心 ✓
+const y = rect.top + rect.height * 0.5;
+const box = panel.getBoundingClientRect();
+const near = Math.hypot(box.left - x, box.top - y) < 40;   // **左上角**距光标 < 40 ✗
+
+// 产品（`viewer.rs:7880` `openQuickPanel` ✓）
+panel.hidden = false;
+const rect = panel.getBoundingClientRect();      // 先显示再量尺寸 ✓
+const left = Math.max(6, Math.min(clientX, window.innerWidth - rect.width - 6));
+const top  = Math.max(6, Math.min(clientY, window.innerHeight - rect.height - 6));
+panel.style.left = left + "px";                  // ⇒ **就放在光标处** ✓
+panel.style.top  = top + "px";
+```
+⇒ ⇒ **产品把面板放在光标处** ✓ ⇒ `box.left ≈ x` ✓、`box.top ≈ y` ✓ ⇒ ⇒ **`near` 本应通过** ✗。
+⇒ ⇒ **所以需要数字** ✓（不是再读代码 ✓）：下一轮**开同一个面板并把真实数字打出来** ✓ ——
+`box.left/top` ✓、`x/y` ✓、`window.innerWidth/Height` ✓、以及**夹取是否生效** ✓。
+**⚠️ 一个待定性的设计问题（✓，与判据无关 ✓）** ✓：断言要求"**左上角**靠近光标" ✗ ——
+这**预设了"角点锚定"** ✓；若将来改成"**以光标为中心**" ✗（Krita 一类面板常这么做 ✓）
+⇒ **设计没问题、判据会红** ✓ ⇒ 判据应当断言"**面板离光标足够近**" ✓（例如**矩形到点的距离** ✓），
+而**不是**"某个角点恰好接近" ✗。
