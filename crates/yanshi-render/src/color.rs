@@ -560,3 +560,65 @@ pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     // —— 这正是实测"黄和蓝都画成红"的**确切原因** ✓（不是随机 ✓，是**整除余数** ✓）。
     (hue / 360.0, sat, max)
 }
+
+/// **线性 sRGB → CIE Lab（D65 白点）**（测试报告 §三.2 ✓）。
+///
+/// **为什么需要它** ✓：`analyze_region` 现在只描述"画面是什么" ✓（直方图/亮度/冷暖/主色 ✓），
+/// **没有"和参考图比差多少"** ✗ ⇒ 报告说的"AI 纯盲调参数"就来自这里 ✓。
+/// ΔE 必须在**感知均匀**的空间里算 ✓ ⇒ 先把线性 RGB 变成 Lab ✓（线性值是本仓库的通用表示 ✓）。
+pub fn linear_to_lab(linear: [f32; 3]) -> [f32; 3] {
+    let [r, g, b] = linear;
+    // sRGB 基色 + D65：RGB → XYZ ✓
+    let x = 0.4124 * r + 0.3576 * g + 0.1805 * b;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = 0.0193 * r + 0.1192 * g + 0.9505 * b;
+    // D65 白点 ✓
+    let (xn, yn, zn) = (0.95047_f32, 1.0_f32, 1.08883_f32);
+    let f = |t: f32| {
+        if t > 0.008_856 {
+            t.cbrt()
+        } else {
+            7.787 * t + 16.0 / 116.0
+        }
+    };
+    let (fx, fy, fz) = (f(x / xn), f(y / yn), f(z / zn));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// **CIE76 色差**（§三.2 ✓）：Lab 空间里的欧氏距离 ✓。**同一个颜色恒为 0** ✓（判据的一侧靠它 ✓）。
+pub fn delta_e_cie76(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (dl, da, db) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    (dl * dl + da * da + db * db).sqrt()
+}
+
+/// 便捷入口：直接比较两个**线性 RGB** 的色差 ✓（调用方不必自己转 Lab ✓）。
+pub fn delta_e_linear_rgb(a: [f32; 3], b: [f32; 3]) -> f32 {
+    delta_e_cie76(linear_to_lab(a), linear_to_lab(b))
+}
+
+#[cfg(test)]
+mod lab_delta_e_tests {
+    use super::{delta_e_cie76, delta_e_linear_rgb, linear_to_lab};
+
+    /// **同一颜色 ΔE = 0** ✓ —— 这是判据"自比必须≈0"那一侧的依据 ✓。
+    #[test]
+    fn identical_colours_have_zero_difference() {
+        let lab = linear_to_lab([0.2, 0.5, 0.8]);
+        assert!(delta_e_cie76(lab, lab).abs() < 1e-6);
+        assert!(delta_e_linear_rgb([0.2, 0.5, 0.8], [0.2, 0.5, 0.8]).abs() < 1e-6);
+    }
+
+    /// **黑白的 ΔE ≈ 100** ✓ —— 已知量级 ⇒ 说明亮度轴落在**规范**尺度上 ✓（不是自造单位 ✓）。
+    #[test]
+    fn black_and_white_differ_by_about_one_hundred() {
+        let d = delta_e_linear_rgb([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        assert!((d - 100.0).abs() < 1.0, "黑白 ΔE 应为 ~100，实得 {d}");
+    }
+
+    /// **微小变化 ⇒ 小但非零** ✓ —— 判据另一侧"改色后必须 > 阈值"要的就是这个 ✓。
+    #[test]
+    fn a_small_change_is_small_but_not_zero() {
+        let d = delta_e_linear_rgb([0.5, 0.5, 0.5], [0.6, 0.5, 0.5]);
+        assert!(d > 0.5 && d < 30.0, "小幅变亮的 ΔE 应在小量级，实得 {d}");
+    }
+}
