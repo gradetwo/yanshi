@@ -50,7 +50,6 @@ const NOT_WIRED = [
   //   ⇒ **假设与产物形态不匹配** ⇒ **修法**：让判据在页面里按 wasm-bindgen 的方式装载
   //   （产品自己就是这么装内核的 ✓ ⇒ 模式已有 ✓），而不是直接 instantiate 裸 .wasm ✓。
   "wasm-brush-preview-parity.mjs",
-  "server-token-policy.mjs",       // 收 <base> <allow|refuse> ✓ ⇒ 要跑**两种**模式 ✓，不是"跑一次" ✓
 ];
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
