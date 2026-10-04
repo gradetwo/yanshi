@@ -23375,3 +23375,24 @@ render.rs:760    if feather > 0.0 { coverage = crate::geometry::feather_coverage
 ⇒ ⇒ **下一处（✓）** ✓：**读 `workspace.render_region` 的实现** ✓（**它在 `yanshi-http` 或 `yanshi-core` 的 workspace 里** ✓），
 **看它合成对象时是否经过 `feather_coverage`** ✓ —— **若不经过 ⇒ 那就是"羽化不生效"的真因** ✓
 （**而它与 `pointerdown` 那三处监听器同族 ✓：一个行为挂在多条路径上时，总有一条被漏掉** ✗）。
+
+### 🎯 第 526 轮：**"区域渲染"有四条入口 —— 又是"几条路"** ✗
+
+**读到（✓）** ✓：
+```
+render.rs:209    pub fn render_region(&mut self, state, store, bbox) -> Result<RegionRender>   // **渲染器** ✓
+document.rs:813  pub fn render_region(&mut self, bbox) -> Result<RenderedPreview>            // **文档层** ✓
+document.rs:704  pub fn render_region_raw(&mut self, bbox)                                   // raw 路径 ✓
+document.rs:742  pub fn render_region_raw_layer(…)                                           // 另一条 raw ✓
+```
+**⇒ 推理（✓）** ✓：**`tools.rs:911` 调的是 `ctx.workspace.render_region`** ✓ ⇒ **很可能是 `document.rs:813`** ✓
+⇒ ⇒ **而"带 feather 的对象合成"在 `render.rs:752-761`** ✓
+⇒ ⇒ ⇒ **所以关键问题：`document.rs:813` 走的是不是 `render.rs:209`** ✗
+   **若它走 `render_region_raw`（另一条 ✓）⇒ 羽化被漏掉** ✓ ✓
+**★ 至此，本段"几条路"的清单（✓）** ✓：
+| 行为 | 路径数 | 结果 |
+|---|---|---|
+| **`pointerdown`** | **3** ✓ | 前两条提前 `return` ✓ ⇒ 无害 ✓ |
+| **`pointerup`** | **2** ✓ | 第一条只管 pan ✓ ⇒ 无害 ✓ |
+| **区域渲染** | **4** ✓ | **嫌疑：羽化只挂在其中一条上** ✗ |
+⇒ ⇒ **三次问"几条路"，两次无害、一次命门** ✓ —— **而这正是"问结构"的价值：它有时排除、有时定位** ✓。
