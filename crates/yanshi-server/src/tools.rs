@@ -2402,6 +2402,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
             param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
+            param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪"),
         ],
     },
     ToolSpec {
@@ -11835,11 +11836,91 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         y0,
         width,
         height,
-        rgba,
+        mut rgba,
         steps,
         painted,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
+    // **选区裁剪**（需求 P0-3）：不在选区内的像素**不许进图层** ⇒ 与"引擎没碰过"同等对待 ✓
+    // —— 与 `brush.rs:515` 的注释一字不差："覆盖度 ≤ 0 的印章**直接跳过**" ✓。
+    // **位置为什么在这里** ✓：这是 `paint_brush` 返回值的解构点之后、落库之前 ✓ ⇒
+    // `x0/y0/width/height/rgba` **必然已在作用域** ✓（前三次我把循环插进函数内部 ✗，三次都落在声明之前 ✗）。
+    if let Some(id) = optional_str(args, "clip_to_selection") {
+        let state = document_state(ctx)?;
+        let alive: Vec<(String, yanshi_core::Bbox)> = state
+            .selections
+            .values()
+            .filter(|selection| !selection.is_deleted())
+            .filter_map(|selection| {
+                let bbox = selection.shape.get("bbox")?;
+                let number = |key: &str| bbox.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+                Some((
+                    selection.id.clone(),
+                    yanshi_core::Bbox::new(number("x"), number("y"), number("w"), number("h")),
+                ))
+            })
+            .collect();
+        let wanted = matches!(id.as_str(), "1" | "true" | "latest" | "all");
+        let picked = if wanted {
+            alive.last().cloned()
+        } else {
+            alive.iter().find(|(name, _)| name == &id).cloned()
+        };
+        let Some((name, bbox)) = picked else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "找不到可裁剪的选区 {id} ⇒ 现有：{}（也可用 \"latest\" 取最新那个 ✓）",
+                    if alive.is_empty() {
+                        "（一个都没有 ✓）".to_string()
+                    } else {
+                        alive
+                            .iter()
+                            .map(|(name, _)| name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )),
+            ));
+        };
+        let clip = yanshi_core::Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64);
+        let coverage = yanshi_render::geometry::rect_coverage_clipped(bbox, &clip);
+        let mut dropped = 0usize;
+        for index in (0..rgba.len()).step_by(4) {
+            let pixel = index / 4;
+            let step = width.max(1);
+            let document_x = f64::from(x0) + (pixel % step) as f64;
+            let document_y = f64::from(y0) + (pixel / step) as f64;
+            // `Coverage` 是**裸掩码**（`bbox`/`width`/`height`/`data: Vec<f32>` ✓）⇒ 直接按下标取样 ✓
+            //（`coverage(x,y)` 那个方法是 **`SelectionShape`** 的 ✗ —— 我一开始把它当成了本类型的 ✓）。
+            let inside = {
+                let column = (document_x - coverage.bbox.x).floor();
+                let row = (document_y - coverage.bbox.y).floor();
+                let inside_bounds = column >= 0.0
+                    && row >= 0.0
+                    && column < coverage.width as f64
+                    && row < coverage.height as f64;
+                if inside_bounds {
+                    coverage.data[row as usize * coverage.width as usize + column as usize]
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            if inside <= 0.0 {
+                rgba[index] = 0;
+                rgba[index + 1] = 0;
+                rgba[index + 2] = 0;
+                rgba[index + 3] = 0;
+                dropped += 1;
+            } else if inside < 1.0 {
+                rgba[index + 3] = (f64::from(rgba[index + 3]) * f64::from(inside))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+        eprintln!("  选区 {name} 裁剪：清掉 {dropped} 个选区外像素 ✓");
+    }
     let composite = ctx.workspace.store().put(&rgba)?;
     let import_args = json!({
         // **来源参数** ✓（`update_stroke` 靠它重跑 ✓）：**原始控制点** ✓（不是加密后的 ✓）、

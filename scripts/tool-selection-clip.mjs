@@ -37,6 +37,9 @@ const rightBefore = await shot(120, 80);
 const painted = await call("brush_stroke", {
   layer_id: "layer_default", brush: "classic-brush",
   points: [[10, 50, 0.6], [190, 50, 0.6]], size: 18, color: { r: 30, g: 60, b: 200, a: 255 },
+  // **显式裁剪** ✓：需求文档的接口就是 `brush_stroke(..., clip_to_selection)` ✓ ——
+  // 我上一版假设"建了选区就自动裁" ✗，那是**我自己的**设计选择 ✓，不是需求 ✓。
+  clip_to_selection: "sel_judge",
 });
 if (painted.ok !== true) { console.log("  ✗ 落笔失败 ⇒ 判据无效 ⇒ " + JSON.stringify(painted.context || painted.error_code)); process.exit(1); }
 const leftAfter = await shot(10, 80);
