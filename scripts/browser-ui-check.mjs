@@ -601,9 +601,17 @@ const maskResult = await evaluate(`(async () => {
   // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
   document.getElementById("feather").value = "0";
   document.querySelector('button[data-tool="mask_rect"]').click();
-  // **点完按钮，工具真的切过去了吗** ✓（第 467 轮 ✓）：画笔那条用的是 setTool ✓ 而这条用 click ✗
-  // ⇒ 这是两条路径唯一的差别 ✓ ⇒ **把工具状态记下来，返回给 Node 侧断言** ✓。
-  const toolAfterClick = (window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())");
+  // **点完按钮，等工具真的切过去再按下** ✓（第 474 轮 ✓）：原先点击之后**立刻**发 pointerdown ✗
+  // ⇒ 若切换慢一拍 ✓ ⇒ **按下时工具还不是 mask_rect** ✗ ⇒ **state.points 拿不到点** ✓
+  // ⇒ 产品报「蒙版需要拖出一个区域」✓ ⇒ ⇒ **表现为「间歇性」** ✗（第 473 轮实测：这一项时有时无 ✓）。
+  // ⇒ **等条件，不等时长** ✓ —— 与第 450 轮那个稳定性等待同一手法 ✓。
+  // 注意：**本段处在模板字符串里** ⇒ 注释里不能出现反引号 ✗（本轮我已因此失败一次 ✓）。
+  let toolAfterClick = null;
+  for (let i = 0; i < 20; i++) {
+    toolAfterClick = window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())";
+    if (toolAfterClick === "mask_rect") break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   fire("pointerdown", at(0.25, 0.25), 301);
   // **中间要再 move 一次**（第 362 轮对照出来的）：上面画笔铺底是「0.02 → 0.5 → 0.98」
   // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
