@@ -19,7 +19,12 @@ const token = (await (await fetch(`${base}/api/documents`, {
 
 const strokeCall = (i) => ({ tool: "brush_stroke", arguments: { layer_id: "layer_default", brush: "100%_Opaque",
   points: [[10 + i * 4, 20, 0.8], [60 + i * 4, 80, 0.8]], size: 10, color: { r: 180, g: 40, b: 40, a: 255 } } });
-const withPreview = (result) => JSON.stringify(result || "").includes('"preview"');
+// **只看具体字段** ✓：以前扫整串 JSON ✗ ⇒ 任何含 "preview" 字样的字段都会命中 ✓
+// （CI 实测：silent 组也报 4/4 ✗）⇒ 改成"该字段存在且非 null" ✓。
+const withPreview = (result) => {
+  const value = (result && result.preview !== undefined) ? result.preview : undefined;
+  return value !== undefined && value !== null;
+};
 
 const failures = [];
 const workspace = process.env.YANSHI_WORKSPACE;

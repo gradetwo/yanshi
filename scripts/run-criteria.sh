@@ -60,7 +60,9 @@ for script in scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-pari
     browser-*)
       CDP_PORT="$CDP_PORT" timeout 900 node "$script" "$BASE/?doc=$doc&token=$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
-      timeout 900 node "$script" "$BASE" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
+      # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
+      timeout 900 node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
   if [ "$code" = 0 ]; then

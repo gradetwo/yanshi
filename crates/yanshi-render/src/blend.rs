@@ -371,13 +371,22 @@ mod color_dodge_tests {
         assert!(dodge.blend_channel(0.9, 0.95) <= 1.0); // 不越界 ✓
     }
 
-    /// **清单与解析必须一致** ✓：`NAMES` 里每一个都能解析 ✓、且解析回来名字相同 ✓
-    ///（这条守的正是"渲染层与工具层各写一份必然漂移" ✗）。
+    /// **清单与解析必须一致** ✓（这条守的正是"渲染层与工具层各写一份必然漂移" ✗）。
+    ///
+    /// ⚠️ **第一版断言写错了** ✗（CI 抓到的 ✓）：我断言"解析回来的**字符串**必须相同" ✓ ——
+    /// 但 `add` 与 `linear_dodge` 是**同一个变体的两个别名** ✓ ⇒ `as_str()` 只会回其中一个 ✗
+    /// ⇒ 这条测试在**别名**上必然失败 ✓（而本机我只跑了颜色那组测试 ✗ ⇒ **一直没发现** ✓）。
+    /// **正确的性质** ✓：每个名字都能解析 ✓，**且规范化后的名字解析回同一个变体** ✓（别名允许不同写法 ✓）。
     #[test]
     fn the_name_list_round_trips_through_parsing() {
         for name in BlendMode::NAMES {
             let parsed = BlendMode::parse(name).unwrap_or_else(|| panic!("{name} 解析不了"));
-            assert_eq!(parsed.as_str(), name);
+            let canonical = parsed.as_str();
+            assert_eq!(
+                BlendMode::parse(canonical),
+                Some(parsed),
+                "{name} 规范化成 {canonical} 后应解析回同一个模式"
+            );
         }
     }
 }

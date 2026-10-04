@@ -19987,3 +19987,50 @@ crates/yanshi-render/src/png.rs:20    pub fn encode_png(width, height, rgba8) ->
    取 `reference.blob_hash`（preferences ✓）⇒ `BlobStore` 取字节 ⇒ `decode_png` ✓ ⇒ 参考图 RGBA ✓ ⇒ ΔE ✓；
 3. **缺参考图 / 尺寸不一致 ⇒ 明确作答** ✓（不静默 0 ✗）；
 4. **判据两侧都判** ✓：自比 ΔE ≈ 0 ✓、改色后 ΔE > 阈值 ✓（**能红** ✓）。
+
+### 🎯 第 319 轮：**`Workspace::store()` —— 工具里取 blob 的入口（列接口找到的 ✓）** ✓
+
+**找到它的方式（✓，这次是对的 ✓）** ✓：**把 `Workspace` 的全部公开接口列出来** ✓（`grep -nE "^\s{4}pub fn "` ✓），
+然后**通读一遍** ✓ —— 而不是搜我猜的词 ✗：
+```
+crates/yanshi-server/src/service.rs:880   pub fn store(&self) -> Arc<dyn BlobStore>          ← **就是它** ✓
+crates/yanshi-server/src/service.rs:789   pub fn preferences(&self, keys: Option<&[String]>) -> Value   ✓
+crates/yanshi-server/src/service.rs:1308  pub fn render_region_raw(&mut self, doc_id, bbox) -> (u32,u32,Vec<u8>) ✓
+```
+⇒ ⇒ **§三.2 第二步的路径完全打通（✓）** ✓：
+1. `ctx.workspace.preferences(Some(&["reference.blob_hash".into()]))` ⇒ 哈希 ✓；
+2. `ctx.workspace.store().get(&hash)?` ⇒ **PNG 字节** ✓；
+3. `yanshi_render::png::decode_png(&bytes)` ⇒ `(w, h, rgba)` ✓；
+4. 与 `render_region_raw` 的区域像素比 ✓ ⇒ 两者都是 **RGBA8（sRGB 编码 ✓）** ⇒
+   用**已有的** `byte_to_linear` ✓ → `linear_to_lab` ✓ → `delta_e_cie76` ✓ ⇒ **ΔE** ✓；
+5. **缺参考图 / 尺寸不一致 ⇒ 明确作答** ✓（不静默 0 ✗）。
+**⚠️ 本会话第四条同类教训的反面（✓）** ✓：**前三次我搜关键词都空手而归** ✗
+（`Paeth` ✗、`inflate` ✗、`pub fn` 在 trait 上 ✗），**这次列接口一次就找到** ✓ ——
+⇒ **"列出来读一遍"比"搜我记得的名字"更快，也更可靠** ✓。
+
+## 📋 第 320 轮：**第一份 CI 成绩单（含 4 个真问题）** ✓✓
+
+**背景（✓）** ✓：前几轮我**推得太勤** ✗ ⇒ 队列涨到 4~5 轮 ⇒ 我**两次取消被取代的轮次** ✓ ——
+而第二次取消掉的 `37202246959`，**正是我等了两轮的"第一份判据成绩单"** ✗
+⇒ **我亲手把要的答案取消了** ✓（`bash-569` 最终只报出 `cancelled` ✓）。
+**成绩单（✓，来自 `37202246959` 的 criteria job，它其实**跑完了**才被取消 ✓）** ✓：
+```
+✓ tool-analyze-region ✓ tool-blend-modes ✓ tool-brush-dynamics/names/style ✓ tool-cjk-text …
+⚠ tool-archive-bloat（**已知红名单生效** ✓：仍运行、结果照印、**不阻塞** ✓）
+✗ tool-batch-preview.mjs (EXIT=1)      ← **我新写的判据** ✗
+✗ tool-brush-tag-filter.mjs (EXIT=2)   ← **不在我名单里** ⇒ 既有问题 ✓（EXIT=2 = 用法不符 ✓）
+✗ tool-color-schema.mjs (EXIT=1)       ← "fill_region.color / save_palette.colors 的描述没写「任一分量 > 1 即按字节」" ✗
+test (stable & beta)：**220 passed; 1 failed** ✗
+  ✗ blend::color_dodge_tests::the_name_list_round_trips_through_parsing   ← **我写的单测** ✗
+```
+**我那条单测为什么错（✓，已修 ✓）** ✗：我断言"`NAMES` 里每个名字解析回来**字符串相同**" ✗ ——
+而 **`add` 与 `linear_dodge` 是同一个变体的两个别名** ✓ ⇒ `as_str()` 只回 `"add"` ✗ ⇒ 断言在别名上**必然失败** ✓。
+⇒ **改成正确的性质** ✓：每个名字都能解析 ✓，**规范化后的名字必须解析回同一个变体** ✓（允许别名 ✓）。
+**⚠️ 而"本机绿"这次是假的（✓，第四次同类 ✓）** ✗：我之前只跑了
+`cargo test -p yanshi-render lab_delta_e` ✓ —— **一个带过滤的测试** ✗ ⇒ 这条 blend 测试**一次都没跑过** ✓
+⇒ **是 CI 替我跑出来的** ✓。**教训**：**"我跑了测试"与"我跑了那一条测试"是两件事** ✗。
+**两个既有问题（✓，不是我这轮引入的 ✓）** ✓：`tool-brush-tag-filter.mjs` 报 **EXIT=2** ✓（用法不符 ⇒
+**我的 runner 参数约定不适用于它** ✗ ⇒ 那是**runner 的锅** ✓）；`tool-color-schema.mjs` 要求
+`fill_region.color` / `save_palette.colors` 的**描述文字**写明"任一分量 > 1 即按字节" ✓ ⇒ **描述与实现不一致** ✗。
+**待办（✓）** ✓：① `tool-batch-preview` 的失败细节（去 CI 日志里取 ✓）；② 补两条描述的说明 ✓；
+③ runner 适配"参数约定不同"的判据 ✓；④ 重推后让 CI 复验 ✓。

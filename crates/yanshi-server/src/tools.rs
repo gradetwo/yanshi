@@ -1162,7 +1162,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层"),
             param!("shape", Object, true, "{type: rect|ellipse|polygon, x,y,w,h | cx,cy,rx,ry | points}"),
-            param!("color", Object, true, "填充色 {r,g,b,a} 或 #rrggbb"),
+            param!("color", Object, true, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例"),
             param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
             param!("texture", String, false, "暂不支持（只接受缺省/smooth）⇒ 给别的会明确报错"),
         ],
@@ -2308,6 +2308,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("center", Object, false, "radial 的中心 {x,y}（缺省取区域中心）"),
             param!("radius", Number, false, "radial 的半径（缺省取区域对角线的一半）"),
             param!("region", Object, false, "只填这块 {x,y,w,h}；不给就整层（按画布尺寸）"),
+            param!("compare_with_reference", Boolean, false, "true = 与文档的参考图逐像素比 ΔE（CIE76）；缺参考图 / 尺寸不一致会**明确作答**,不会静默给 0"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -2339,7 +2340,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[
             param!("name", String, true, "调色板名（**要带扩展名**，如 my.gpl；见 import_asset 的约束）"),
-            param!("colors", Array, true, "颜色数组 [{r,g,b,a} 或 #rrggbb]"),
+            param!("colors", Array, true, "颜色数组 [{r,g,b,a} 或 #rrggbb]；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例"),
         ],
     },
     ToolSpec {
@@ -3110,11 +3111,91 @@ fn read_analyze_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             })
         })
         .collect();
+    // **与参考图比 ΔE**（测试报告 §三.2 ✓，可选 ✓）：只有调用方明确要 `compare_with_reference` 时才做 ✓。
+    // 路径全部照抄仓库已有写法（`write_import_psd` ✓）：preferences 取哈希 ⇒ `store().get` ⇒ 解码 ⇒ 逐像素 ✓。
+    let mut comparison = Value::Null;
+    if optional_bool(args, "compare_with_reference").unwrap_or(false) {
+        let prefs = ctx
+            .workspace
+            .preferences(Some(&["reference.blob_hash".to_string()]));
+        match prefs.get("reference.blob_hash").and_then(Value::as_str) {
+            // **明确作答** ✓：没有参考图就直说 ✗ —— **绝不静默返回 0** ✗（与 §一.1 那条调色板 Bug 同一纪律 ✓）。
+            None => {
+                comparison = json!({
+                    "ok": false,
+                    "reason": "没有参考图 ⇒ 先用 set_reference 设一张",
+                });
+            }
+            Some(text) => {
+                let hash: yanshi_core::BlobHash = text.parse().map_err(|_| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("reference.blob_hash 不是合法哈希"),
+                    )
+                })?;
+                let bytes = ctx.workspace.store().get(&hash)?;
+                match yanshi_render::png::decode_png(&bytes) {
+                    None => {
+                        comparison = json!({
+                            "ok": false,
+                            "reason": "参考图不是能解码的 PNG",
+                        });
+                    }
+                    Some((reference_width, reference_height, reference)) => {
+                        if reference_width != width || reference_height != height {
+                            // **比不了就说比不了** ✓：给 AI 一个假数字比不给更糟 ✗。
+                            comparison = json!({
+                                "ok": false,
+                                "reason": format!(
+                                    "参考图 {reference_width}x{reference_height} 与区域 {width}x{height} 尺寸不一致 ⇒ 无法逐像素比"
+                                ),
+                            });
+                        } else {
+                            let mut sum = 0.0_f64;
+                            let mut worst = 0.0_f64;
+                            let mut worst_at = [0_u32, 0_u32];
+                            let count = (width as usize) * (height as usize);
+                            for index in 0..count {
+                                let at = index * 4;
+                                let rendered_linear = [
+                                    yanshi_render::color::byte_to_linear(pixels[at]),
+                                    yanshi_render::color::byte_to_linear(pixels[at + 1]),
+                                    yanshi_render::color::byte_to_linear(pixels[at + 2]),
+                                ];
+                                let reference_linear = [
+                                    yanshi_render::color::byte_to_linear(reference[at]),
+                                    yanshi_render::color::byte_to_linear(reference[at + 1]),
+                                    yanshi_render::color::byte_to_linear(reference[at + 2]),
+                                ];
+                                let delta = yanshi_render::color::delta_e_linear_rgb(
+                                    rendered_linear,
+                                    reference_linear,
+                                ) as f64;
+                                sum += delta;
+                                if delta > worst {
+                                    worst = delta;
+                                    worst_at = [(index as u32) % width, (index as u32) / width];
+                                }
+                            }
+                            comparison = json!({
+                                "ok": true,
+                                "delta_e_mean": sum / (count.max(1) as f64),
+                                "delta_e_max": worst,
+                                "delta_e_max_at": worst_at,
+                                "reference": {"width": reference_width, "height": reference_height},
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(json!({
         "ok": true,
         "width": width,
         "height": height,
         "pixels": total,
+        "comparison_with_reference": comparison,
         "dominant_colors": dominant,
         // **0..1** ✓（÷255 ✓）
         "avg_brightness": brightness / total as f64 / 255.0,
