@@ -20197,3 +20197,21 @@ shard 6（2）：browser-canvas-handfeel｜browser-layout｜
 * `tool-example-acceptance` / `tool-batch-preview` / `tool-reference-delta-e` / `tool-cjk-text` ✓（**4 条是我方/判据侧，可今天动** ✓）；
 * `browser-drag-perf` / `browser-pan-vs-paint` / `browser-file-menu` / `browser-brush-preview` /
   `browser-brush-preview-local` / `browser-kernel-perf` / `browser-canvas-handfeel` / `browser-layout` ✓（**8 条浏览器侧，逐条按原因定性** ✓）。
+
+### 🎯 第 330 轮：**12 条失败的分类推进（3 条已修 + 1 条已定性）** ✓
+
+**已修（✓，全部是"判据侧"，不是产品 ✗）** ✓：
+1. **`tool-batch-preview`** ✓：**判据前提错** ✗ —— 不给 `silent` 时**每个子调用本来就带预览** ✓
+   ⇒ 数出 12 个是**默认行为** ✓；该参数是"**给静默的长批次中途放行预览**" ✓ ⇒ 判据改为 `silent: true` + 每 4 个 ⇒ 期望 3 ✓；
+2. **`tool-reference-delta-e`** ✓：**判据崩了** ✗ —— `JSON.stringify(undefined)` 返回 `undefined` ✓ ⇒ `.slice` 抛异常 ✓
+   ⇒ 5 处包 `String(...)` ✓ + **字段缺失时打印原始返回** ✓（让它下次说得出真因 ✓）；
+3. **`tool-example-acceptance`** ✓：**分类口径太窄** ✗ —— 50 条里大多是"**引用了还不存在的对象**" ✓
+   （`ann1` / `g1` ✓）⇒ 对**示例**而言这是**合理**的 ✓（抄的人本来就得先建它 ✓）
+   ⇒ 新增 `needsState` 单独计数 ✓，**只有"真正被拒"才红** ✓。
+**已定性、修法明确（✓，下一步）** ✓：
+4. **`tool-cjk-text`** ✓：`ENOENT: open 'crit_toolcjktextmjs/cjk-doc.png'` ✓ ⇒
+   **它读的是"服务端写出的文件"，用的却是相对路径** ✗ ⇒ 服务端写在自己的 `--root` 下 ✓，判据在仓库根下找 ✗
+   ⇒ **修法**：判据改用 `YANSHI_WORKSPACE` 解析 ✓（**runner 已经导出它** ✓，`tool-batch-preview` 就是这么用的 ✓）。
+**⚠️ 规律（✓，值得记 ✓）** ✓：这四条里**没有一条是产品缺陷** ✗ —— 它们是
+**"判据的前提/口径/健壮性/路径"** ✓ ⇒ 与前面 7 条合起来，**12 条里判据侧已占多数** ✓
+（**判据是我写的，产品不是我写的** ✓ ⇒ **"红"的第一嫌疑永远是判据** ✓）。
