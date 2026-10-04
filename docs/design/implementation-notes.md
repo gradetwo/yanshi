@@ -18060,3 +18060,21 @@ pkg 里的 js        20868 B ✓   paint_brush ×2 ✓      ⇒ **一致** ✓�
 **下一轮（写死 ✓）** ✓：把返回形态改成**能带原因**的 ✓ ——
 最简做法 ✓：返回**一个小 JSON 信封** ✓（成功给像素 ✓ / 失败给 `{ok:false, detail}` ✓），
 或者**同时**暴露一个 `paint_brush_error()` ✓ ⇒ 无论哪种 ✓，都要**恢复门面曾经有的那条性质** ✓。
+
+### 🧭 第 211 轮：**HTTP 缓存被排除** ✓ —— 下一步看"页面手上那个对象" ✓
+
+**实测（✓）** ✓：
+```
+/wasm/yanshi_wasm.js  ⇒ Cache-Control: no-cache ✓（且没有 ETag / Last-Modified ⇒ 无法走条件请求 ✓）
+/service-worker.js    ⇒ Cache-Control: no-cache ✓
+磁盘上发出的 js       ⇒ paint_brush ×2 ✓、paint_brush_error ×2 ✓（**是新的** ✓）
+SW 缓存名             ⇒ yanshi-shell-3062036 ✓（**已带构建标识** ✓ ⇒ 旧外壳自动作废 ✓）
+```
+⇒ ⇒ **两条缓存路径都排除了** ✗（HTTP 缓存 ✗、SW 外壳缓存 ✓ 已版本化 ✓）
+⇒ 但页面**仍然**报 `paint_brush_error` 不存在 ✗ ⇒ ⇒ **下一步不查文件，查对象** ✓：
+① `typeof state.wasm.paint_brush_error` ✓；
+② `state.wasm.constructor.name` 与它**有没有** `paint_brush` ✓；
+③ `String(state.wasm.paint_brush).slice(0,120)` ✓ —— **看函数体长什么样** ✓
+   ⇒ 这能分辨"**模块是旧的**"✗ 与"**生成出来的接口形态和我以为的不同**"✗（**两种可能，读一次就见分晓** ✓）。
+**方法论（沿用本会话那条 ✓）** ✓：**"文件是新的" ≠ "页面手上的是新的"** ✗ ——
+所以**别再查文件** ✓，**查对象** ✓。
