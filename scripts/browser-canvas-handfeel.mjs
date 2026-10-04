@@ -256,7 +256,7 @@ console.log(
     {
       ok: true,
       wheel: { before: beforeWheel, after: afterWheel, panned, screenshot: shotWheel },
-      wheelPan: { moved: panMoved, screenshot: shotPan },
+      wheelPan: { moved: panned, screenshot: shotPan },
       zoomInput: { displayScale: afterInput },
       layer: { before: beforeLayer, ...layerState, screenshot: shotLayer },
       strokeKeepsZoom: {

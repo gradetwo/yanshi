@@ -75,9 +75,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
       # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。
-      # **统一多传三个** ✓：有的浏览器判据还要 <server-base> <token> [cdpPort] ✓
+      # **viewer URL 统一带 debug=1** ✓：有的判据要读内核句柄 ✓，而它**只在调试模式暴露** ✗
+      # （`browser-kernel-perf` 就是这么报的 ✓）。**统一多传三个** ✓：有的还要 <server-base> <token> [cdpPort] ✓
       # （`browser-pan-vs-paint` 就是 ✗）⇒ 只收 viewer-url 的会**忽略多余参数** ✓（与工具判据同一招 ✓）。
-      CDP_PORT="$CDP_PORT" timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      CDP_PORT="$CDP_PORT" timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&debug=1" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
