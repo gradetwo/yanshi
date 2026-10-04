@@ -18491,3 +18491,23 @@ const bytes = new Uint8Array(await fetch(`${origin}${exportResult.url}`)…);   
 （在 `dirty_for_object` 的调用处把**移动前**的包围盒并进去 ✓）。
 **剩下三条待判（✓）** ✓：**水彩介质** ✓、**快捷面板·贴光标** ✓、**图层面板·锁定** ✓ ——
 方法同上 ✓：**先读它断言什么，再判** ✓（**不猜** ✗）。
+
+### ⚠️ 第 233 轮：**更正上一轮的判定** ✗ —— **残影的修复早就在了、单元测试是绿的** ✓
+
+**原文（✓，`yanshi-render/src/dirty.rs:293` 起 ✓）** ✓：
+```rust
+// **几何变化必须同时失效"旧位置"** ✓ —— 否则移动后原处会留下残影 ✗。
+let old_bbox = previous.and_then(|s| s.objects.get(object_id).and_then(|o| object_bbox_in(s, o)));
+let union = old_bbox.map(|old| union_bbox(old, bbox)).unwrap_or(bbox);   // ← **并集已在做** ✓
+```
+**单元测试（✓）** ✓：`crates/yanshi-server/tests/move_object.rs` ⇒
+```
+test moving_an_object_clears_the_pixels_it_left_behind ... **ok** ✓
+test move_object_shifts_rendered_pixels_and_bbox ... ok ✓    （4 passed ✓）
+```
+⇒ ⇒ ⇒ **所以我在第 232 轮判的"真缺陷、根因在 `dirty_for_object`"是错的** ✗ ——
+**修复在位** ✓、**测试绿** ✓，而**浏览器判据**却量到 **576** 个残影像素 ✗ ⇒ ⇒ ⇒ **这个矛盾才是线索** ✓。
+**而目标早就写明了这一类（✓）** ✓：**"`layer_paint` 子项属判据侧问题，需用当下活动的 doc/token 建测试层"** ✗ ——
+⇒ ⇒ **最可能的解释**：那条探针**量的不是它画的那份文档** ✗（doc/token 不是"当下活动的" ✗）。
+**教训（✓，与计数那次同类 ✓）** ✓：**我把"注释里写着的根因"当成了"尚未修复的缺陷"** ✗ ——
+**注释描述的是修复的理由，不是遗留的问题** ✓ ⇒ ⇒ **读注释只能证明"有人想过这件事"，不能证明"它还没被做"** ✗。
