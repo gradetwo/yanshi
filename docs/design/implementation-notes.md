@@ -25582,3 +25582,7 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`b7a98d9` 仍 `in_progress`（只剩含 `browser-ui-check` 的那片 ✓）；最近完成仍是 `2537a65`。
 ⇒ **预判待对照：最可能是「缺元素」** ✓。
+
+### 🎯 第 682 轮：**`unable` 报告仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`b7a98d9` 仍 `in_progress`；最近完成仍是 `2537a65`。⇒ **预判待对照：最可能是「缺元素」** ✓。
