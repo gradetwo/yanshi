@@ -2539,6 +2539,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：structure ----
     ToolSpec {
+        name: "set_layer_blend",
+        profile: Profile::Core,
+        // **AI 画家需求 P1-4**：`multiply` 是**罩染**的基础 ✓（报告："现在只能调 opacity 硬叠 ⇒ 颜色发脏"✗）。
+        // **查过现状** ✓：渲染器的 `BlendMode`（`blend.rs:17` ✓）与合成（`render.rs:294` ✓）**早就有** ✓，
+        // 图层字段 `blend_mode` 也**早就被解析** ✓（`fold.rs:1348` ✓）⇒ 缺的**只是这个友好名字** ✓。
+        // ⇒ 本工具是**薄包装** ✓：转发给既有的 `set_property` ✓（不另有状态 ✗、不与它分叉 ✓）。
+        summary: "设置图层混合模式（normal/multiply/screen/overlay/darken/lighten/add）—— 罩染用 multiply",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("mode", String, true, "normal / multiply / screen / overlay / darken / lighten / add"),
+        ],
+    },
+    ToolSpec {
         name: "set_property",
         profile: Profile::Structure,
         summary: "设置对象/图层属性（低层原子 set_property）",
@@ -2710,6 +2724,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
+        "set_layer_blend" => write_set_layer_blend(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
         "list_brushes" => read_list_brushes(),
@@ -7613,6 +7628,38 @@ fn write_cancel_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let document = ctx.workspace.document_mut(&ctx.doc_id)?;
     let status = document.jobs_mut().cancel(&job_id, ctx.now)?;
     Ok(json!({"job_id": job_id, "status": status}))
+}
+
+/// **`set_layer_blend`**（AI 画家需求 P1-4 ✓）：**薄包装** ✓ ——
+/// 直接转发给既有的 `set_property{key:"blend_mode"}` ✓（渲染器与 core **早就有**这条能力 ✓，
+/// 本轮只是给它一个符合直觉的名字 ✓；**不另存状态** ✗、**不与该属性分叉** ✗）。
+fn write_set_layer_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let mode = require_str(args, "mode")?;
+    const ALLOWED: [&str; 7] = [
+        "normal", "multiply", "screen", "overlay", "darken", "lighten", "add",
+    ];
+    let lowered = mode.to_ascii_lowercase();
+    if !ALLOWED.contains(&lowered.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知混合模式 {mode} ⇒ 可用：{}",
+                ALLOWED.join(" / ")
+            )),
+        ));
+    }
+    let applied = write_set_property(
+        ctx,
+        &json!({"layer_id": layer_id, "key": "blend_mode", "value": lowered}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "layer_id": layer_id,
+        "mode": lowered,
+        "applied": applied,
+        "hint": "normal 是缺省 ✓ ⇒ 不设它就是老行为（逐字节不变）✓",
+    }))
 }
 
 fn write_set_property(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
