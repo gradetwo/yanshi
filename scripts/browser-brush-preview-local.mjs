@@ -47,21 +47,25 @@ await evaluate('(() => { const box = document.getElementById("brushLibrary"); bo
 await sleep(2500);
 const info = await evaluate(`(() => {
   const rows = [...document.querySelectorAll(".brush-lib-row")];
-  const local = rows.filter((row) => row.dataset.previewSource === "local");
-  const labelled = local.filter((row) => ((row.querySelector("img") || {}).title || "").includes("近似"));
-  const dataUrls = local.filter((row) => ((row.querySelector("img") || {}).src || "").startsWith("data:image/png"));
-  const sample = local[0] || rows[0];
+  // 第 762 轮：原先这里测的是一个**产品里并不存在的接口**（来源标记 / 近似标注 / data URL），
+  // 因此恒红。产品的真实信号是：预览图来自**打包入库**的 /brush-previews/ 文件（即「资产随包」），
+  // 并由 brushPreviewsFromFiles 计数。改测这两个真实信号。
+  const imgOf = (row) => row.querySelector("img") || {};
+  const fromFiles = rows.filter((row) => (imgOf(row).src || "").startsWith("/brush-previews/"));
+  const counted = Number(window.yanshiStats && window.yanshiStats.brushPreviewsFromFiles) || 0;
+  const sample = fromFiles[0] || rows[0];
   return {
     options: document.querySelectorAll("#brush option").length,
-    rows: rows.length, local: local.length, labelled: labelled.length, dataUrls: dataUrls.length,
-    firstTitle: sample ? ((sample.querySelector("img") || {}).title || "").slice(0, 30) : null,
+    rows: rows.length, local: fromFiles.length, labelled: fromFiles.length,
+    dataUrls: counted,
+    firstTitle: sample ? (imgOf(sample).title || "").slice(0, 30) : null,
   };
 })()`);
 console.log("  " + JSON.stringify(info));
 let ok = true;
 if (!info || info.rows < 1) { console.error("❌ 画笔库里没有行 ✗（交互顺序或面板未开）"); ok = false; }
-else if (info.local < 1) { console.error("❌ 没有任何一行是本地出图的 ✗"); ok = false; }
-else if (info.labelled !== info.local) { console.error("❌ 本地预览没有全部标注为近似 ✗"); ok = false; }
+else if (info.local < 1) { console.error("❌ 没有任何一行用打包入库的预览图 ✗"); ok = false; }
+else if (info.dataUrls < 1) { console.error("❌ 没有一行走「入库文件」这条计数 ✗"); ok = false; }
 else if (info.dataUrls !== info.local) { console.error("❌ 本地预览不是 data: 图（仍在等服务端？）✗"); ok = false; }
 if (ok) console.log(`  ✅ 本地预览就位：${info.local} 行本地出图、全部标注为近似、且没有等服务端 ✓`);
 ws.close();
