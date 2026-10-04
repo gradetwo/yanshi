@@ -16632,3 +16632,40 @@ if reads_canvas {
 
 **门禁与工作树** ✓：`fmt=0` ✓ / `clippy=0` ✓ / **test=0｜792 passed｜0 FAILED** ✓ / 工作树干净 ✓；
 **判据全家桶 12/12 同时全绿** ✓；`/tmp` **91%（185M ✓）** ✓。
+
+### ✅ 第 145 轮：**P0-3 的四个未知量全部到手** ✓（配方已无缺口 ✓，下一轮可直接写 ✓）
+
+**① `paint_brush` 的完整签名（原文 ✓）** ✓：
+```rust
+fn paint_brush(
+    ctx: &mut ToolContext<'_>, brush_name: &str, points: &[(f64, f64, f64)],
+    size: Option<f64>, color: Option<&Value>, color_to: Option<&Value>,
+    opacity: Option<f64>, hardness: Option<f64>, feed_base: bool,
+) -> Result<BrushPaint>
+```
+⇒ 加**第 10 个**参数 ✓：`coverage: Option<&dyn Fn(f64, f64) -> f32>` ✓。
+**② 只有一处要改（重要 ✓）** ✓：`paint_brush` 的调用点共 **3 处**（`4120` ✓ / `11822` ✓ / `11926` ✓），
+而**`.myb` 笔触走的是 `11822`** ✓（它在 `write_brush_stroke` 里 ✓，实参一目了然 ✓）
+⇒ 另两处传 `None` ✓ 即可（它们不是"用户落笔"那条 ✓）。
+**③ 取选区（照抄 ✓）** ✓：`read_list_selections`（8145 ✓）用的是
+```rust
+let state = document_state(ctx)?;            // ← 现成的取 state 助手 ✓
+state.selections.values().filter(|s| !s.is_deleted())   // ← 现成的过滤 ✓
+… selection.shape / feather / mode …
+```
+**④ `Coverage` 的真身（关键 ✓）** ✓：它是 `geometry.rs:11` 的**结构体** ✓
+（`bbox` / `width` / `height` / `data: Vec<f32>` ✓），构造器是
+`rect_coverage_clipped(bbox, clip: &Bbox)` ✓ 与 `polygon_coverage_clipped(points, supersample, clip)` ✓，
+**并且它有 `coverage(x, y)` 方法** ✓（`render.rs:732` 正在用 ✓ `clip.coverage(x, y)` ✓）
+⇒ ⇒ 于是"闭包"那一侧只是**薄薄一层** ✓：`|x, y| coverage.coverage(x, y)` ✓。
+**下一轮（写死 ✓，无未知量 ✓）** ✓：
+① 新建 `fn selection_coverage(ctx, id_or_true) -> Result<Option<Coverage>>` ✓：取 state ✓ ⇒
+   拿 `Selection` ✓ ⇒ 按 `shape.kind` 走 `rect/ellipse/polygon_coverage_clipped` ✓（`ellipse` 也走 rect 那条 ✓
+   —— `selection.rs:159` 里 `"rect" | "ellipse" => …` ✓ 说明**椭圆由同一个构造器处理** ✓）⇒
+   `invert` ✓/`feather` ✓（先做 `new`+`invert` ✓；`add/subtract/intersect` **明确报错** ✗）；
+② `write_brush_stroke` 读 `clip_to_selection`（id 字符串 ✓ / `true` = 取唯一或最新 ✓）⇒ 造闭包 ✓ ⇒
+   传给 `11822` 那处 ✓ ⇒ 另两处传 `None` ✓；
+③ 在 `paint_brush` 里**紧接"读回并写进图层"那段循环之后**、**放在 `if reads_canvas` 之外** ✓
+   加第二个小循环 ✓（由 `index` 反推文档坐标 ✓ ⇒ 全在外 ⇒ 清零 ✓ / 部分在内 ⇒ **乘 alpha** ✓）；
+④ 缺省 ⇒ `None` ⇒ **整段不执行** ✓ ⇒ 逐字节如旧 ✓；
+⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿（**先看 `/tmp`** ✓）⇒ 英文提交 + 推送 ✓。
