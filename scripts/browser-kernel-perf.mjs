@@ -8,16 +8,20 @@
 // 用法（URL 必须带 debug=1，否则内核句柄不暴露）：
 //   node scripts/browser-kernel-perf.mjs "http://127.0.0.1:8110/?doc=myDoc&token=...&debug=1"
 
-const url = process.argv[2];
+// **需要 `debug=1` 就自己带上** ✓（第 413 轮 ✓）：runner 的注释写明"需要它的那一条自己传" ✓
+// —— 因为给**全体**浏览器判据加 `debug=1` 会改变页面的 SW/离线行为 ✗（第 338 轮实测：
+// 9 条本来绿的判据开始报 `undici:15270` ✗）。原先这里只是**报错退出** ✗ ⇒ 这条判据在 CI 里
+// **永远红** ✗（`EXIT=2` ✓，而"意外失败"还被算成 0 ✗ —— 第 412 轮才修好那个计数 ✓）。
+const rawUrl = process.argv[2];
+const url = rawUrl && !rawUrl.includes("debug=1")
+  ? `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}debug=1`
+  : rawUrl;
 const debugPort = process.env.CDP_PORT || "9333";
 if (!url) {
   console.error("用法: node scripts/browser-kernel-perf.mjs <viewer-url?debug=1>");
   process.exit(2);
 }
-if (!url.includes("debug=1")) {
-  console.error("URL 需要带 debug=1（内核句柄仅在调试模式暴露）");
-  process.exit(2);
-}
+// （原先此处是"缺 `debug=1` 就报错退出" ✗ ⇒ 那条路现在不会再走到 ✓ —— 上面已按需补上 ✓。）
 
 const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
 let target = list.find((t) => t.type === "page");
