@@ -105,7 +105,9 @@ jobs:
         with:
           key: criteria
       - name: Install wasm-bindgen-cli (pinned)
+        # **这一步历史上要几分钟** ✓（`cargo install` 从源码编 ✗）—— 加时间戳便于判断它是否卡住 ✓。
         run: |
+          echo "::group::wasm-bindgen-cli install $(date -u +%T)"
           if ! command -v wasm-bindgen >/dev/null 2>&1; then
             cargo install wasm-bindgen-cli --version 0.2.129 --locked
           fi
@@ -120,10 +122,17 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Build server and wasm package
         run: |
+          echo "::group::cargo build --workspace $(date -u +%T)"
           cargo build --workspace
+          echo "::endgroup::"
+          echo "::group::wasm build + bindgen $(date -u +%T)"
           cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
           wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
       - name: Run criteria
         # 已知红名单在 scripts/criteria-known-red.txt：仍会运行、结果照印，但不阻塞 CI。
-        run: scripts/run-criteria.sh
+        run: |
+          echo "::endgroup::"
+          echo "::group::criteria $(date -u +%T)"
+          scripts/run-criteria.sh
+          echo "::endgroup::"
