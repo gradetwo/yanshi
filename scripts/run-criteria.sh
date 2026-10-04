@@ -78,17 +78,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # **viewer URL 统一带 debug=1** ✓：有的判据要读内核句柄 ✓，而它**只在调试模式暴露** ✗
       # （`browser-kernel-perf` 就是这么报的 ✓）。**统一多传三个** ✓：有的还要 <server-base> <token> [cdpPort] ✓
       # （`browser-pan-vs-paint` 就是 ✗）⇒ 只收 viewer-url 的会**忽略多余参数** ✓（与工具判据同一招 ✓）。
-      # **每条浏览器判据用一个全新的浏览器实例** ✓（第 333 轮，用于**证伪**一个假设 ✓）：
-      # 判据在同一实例里串行跑时 ✓，**前面的离线判据会把这个实例留在离线态** ✗ ⇒
-      # 后面的判据**再也拿不到服务端像素** ✗（`serverBlits` 恒为 0 ✓，实测三条同时红 ✓：
-      # `browser-layout` / `browser-brush-preview` / `browser-brush-preview-local` ✓）。
-      # **隔离的代价只有每次 1~2 秒** ✓；若这三条因此转绿 ⇒ 假设成立 ✓；仍红 ⇒ 假设被否 ✗。
-      [ -n "${CHROME_PID:-}" ] && { kill "$CHROME_PID" 2>/dev/null; wait "$CHROME_PID" 2>/dev/null; }
-      PROFILE="$(mktemp -d)"
-      chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CDP_PORT" \
-        --user-data-dir="$PROFILE" about:blank >>"$ROOT_DIR/chrome.log" 2>&1 &
-      CHROME_PID=$!
-      for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break; sleep 0.5; done
+      # **回滚隔离**（第 335 轮 ✗）：第 333 轮我给"每条浏览器判据重启浏览器" ✓
+      # ⇒ **离线判据依赖的 SW 持久化被破坏** ✗ ⇒ 8 条浏览器判据开始报
+      # `node:internal/deps/undici/undici:15270` ✗（其中多条**上一轮还是绿的** ✓）。
+      # ⇒ 实验的答案是"**我的隔离方式错了**" ✗，不是"隔离假设错" ✗ ⇒ 回到"每分片一个实例" ✓。
       CDP_PORT="$CDP_PORT" timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&debug=1" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
