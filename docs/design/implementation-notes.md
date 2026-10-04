@@ -18379,3 +18379,20 @@ golden：FAILED ✗（**预期内** ✓ —— 观感本来就该变 ✓）
 下一轮可以**一次写对四条** ✓（`begin_transaction` ⇒ `{}` ✓；`commit_transaction` / `undo_last` / `redo_last` ⇒
 带 `arguments` 的多步 ✓，且**末步是自己** ✓）。
 **现状（✓）** ✓：`TOOL_EXAMPLES` **36 条** ✓（笔记里的"57 条"是**过时的** ✗）；**事务/历史/冲突那一族一条都没有** ✓。
+
+## 🎉 第 227 轮：**(B)① 首批四条示例落地** ✓ —— **契约照着写、写入前先校验** ✓
+
+**新增四条（✓，目标点名的事务/历史那一族 ✓）** ✓：
+```
+begin_transaction    ⇒ {}                                             ✓（无参数 ✓ ⇒ 普通对象 ✓）
+commit_transaction   ⇒ [ begin_transaction ✓, draw_stroke ✓, commit_transaction ✓ ]   ✓（末步是自己 ✓）
+undo_last            ⇒ [ draw_stroke ✓, undo_last(count=1) ✓ ]                          ✓
+redo_last            ⇒ [ draw_stroke ✓, undo_last(count=1) ✓, redo_last(count=1) ✓ ]    ✓
+```
+⇒ 守卫测试 `every_documented_example_only_uses_declared_parameters` **ok** ✓ ⇒ 门禁全绿 ✓（`fmt=0` ✓ / `clippy=0` ✓ / **791 passed｜0 FAILED** ✓）。
+**这一轮一次就成了（✓，与上一轮三次失败对比 ✓）** ✓ —— 差别只在**两个动作** ✓：
+1. **照着上一轮问出来的契约写** ✓（**末步是自己** ✓ / **参数在 `arguments` 里** ✓ / **无参数给对象** ✓）；
+2. **写入前先用 Python `json.loads` 解析 + 校验结构** ✓ ⇒ ⇒ **上一轮那个"漏一个 `{`"的问题从根上不可能再发生** ✓ ✓。
+**方法论（✓，本项最值钱的一条 ✓）** ✓：**"写入前先按目标判据自检"** ✓ ——
+判据是 Rust 测试 ✓，但**同一套规则可以用 10 行 Python 先验一遍** ✓ ⇒ ⇒ **试错轮次从 3 降到 0** ✓。
+**现状（✓）** ✓：`TOOL_EXAMPLES` 由 **36 条增至 40 条** ✓；**事务/历史那一族不再为空** ✓。

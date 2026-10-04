@@ -13388,6 +13388,24 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("duplicate_layer", r#"{"layer_id":"L1"}"#),
     ("draw_text", r#"{"layer_id":"L1","data":{}}"#),
     ("draw_stroke", r#"{"layer_id":"L1","data":{}}"#),
+    // **事务 / 历史这一族的多步示例** ✓（第 227 轮 ✓）—— 目标 (B)① 点名的"需事务/历史/冲突等前置状态" ✓。
+    // 契约（`every_documented_example_only_uses_declared_parameters` ✓，我为此栽过三次 ✗）：
+    // **合法 JSON** ✓、**每步都是 `{"tool":…,"arguments":{…}}`** ✓（参数**不**平铺 ✗）、
+    // **末步必须是这个工具自己** ✓、**无参数的工具可给普通对象** ✓。
+    // 撤销/重做**必须"真的画过"** ✓ ⇒ 示例里就画一笔 ✓（参数抄 `draw_stroke` 自己的示例 ✓，**不猜** ✗）。
+    ("begin_transaction", r#"{}"#),
+    (
+        "commit_transaction",
+        r#"[{"tool":"begin_transaction","arguments":{}},{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"commit_transaction","arguments":{}}]"#,
+    ),
+    (
+        "undo_last",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"undo_last","arguments":{"count":1}}]"#,
+    ),
+    (
+        "redo_last",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"undo_last","arguments":{"count":1}},{"tool":"redo_last","arguments":{"count":1}}]"#,
+    ),
     ("create_group", r#"{"group_id":"x","layer_id":"L1"}"#),
     ("comment", r#"{"text": "x"}"#),
     ("collect_garbage", r#"{}"#),
