@@ -19638,3 +19638,22 @@ target.querySelector("button").click();
 ⇒ ⇒ 这正是**同一类错误**：**没确认锚点唯一就动手** ✗（**规矩早已写过** ✓）。
 **处置（✓）** ✓：**本项时间盒** ✓，**两处位置已写清** ✓ ⇒ **转去读 ②（清除选区）** ✓
 —— 它**从未读过** ✓、**可能更便宜** ✓。
+
+### 🎯 第 300 轮：**② 的算法读到 —— 0 有两种读法** ✓
+
+**原文（✓，841–847 行 ✓）** ✓：
+```js
+const cleared = await stable();
+let clearedOutside = 0;
+for (let index = 0; index < cleared.length; index += 4) {
+  if (!strokeColor(cleared, index)) continue;
+  const x = …, y = …;
+  if (!inSelection(x, y)) clearedOutside += 1;      // ⇒ 统计"清除后落在选区外"的笔触像素 ✓
+}
+if (selectionResult.clearedOutside === 0) problems.push("清除选区后选区外仍看不到笔画色");  ✗
+```
+⇒ ⇒ **0 有两种读法（✓）** ✓：
+1. **裁剪在清除后仍生效** ✗ ⇒ **这是真缺陷** ✓（**而它正是本会话交付的选区裁剪功能** ✓）
+   —— 若成立，**必须承认并修** ✓；
+2. **清除后那一笔本来就画在选区内** ✗ ⇒ **0 是对的、断言是错的** ✗ ✓。
+**下一轮（✓）** ✓：**读那一笔画在哪** ✓ ⇒ 一次就能分开 ✓。
