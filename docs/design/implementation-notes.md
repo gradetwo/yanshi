@@ -16772,3 +16772,42 @@ let (mut rgba, mut painted) = read_surface_region(&surface, region);   // ← 11
 ③ **缺省/不给 ⇒ 一个字节都不改** ✓（判据与既有 golden 共同兜住 ✓）；
 ④ 落地 5 处 ✓（**计数 67→68 core / 123→124 total** ✓）；
 ⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓（**曲线生效 + 方向为"轻入重出"** ✓）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
+
+### ✅ 第 152 轮：**动力学曲线的三个类型原文全部到手** ✓（下一轮可直接写 ✓）
+
+**原文（`hokusai-core-0.3.0` ✓）** ✓：
+```rust
+// src/input.rs:8
+pub enum BrushInput { #[default] Pressure, Speed1, Speed2, Random, Stroke, Direction,
+                      Tilt, TiltDeclination, TiltAscension, DirectionAngle, AttackAngle, … }
+
+// src/mapping.rs:6
+pub struct InputMapping {
+    pub input: BrushInput,
+    /// `(input_value, output_offset)` knots. libmypaint requires `x` strictly
+    /// ascending. Output is added to `base_value` after summing all inputs.
+    pub points: Vec<(f32, f32)>,
+}
+impl InputMapping { pub fn new(input: BrushInput) -> Self { … points: Vec::new() … } }
+
+// src/mapping.rs:65
+pub struct SettingValue {
+    pub base_value: f32,
+    pub inputs: Vec<InputMapping>,
+    …
+}
+```
+**关键语义（文档原话 ✓）** ✓：`points` 是 `(输入值, **输出偏移**)` ✓ —— 它**加到 `base_value`** 上 ✓
+⇒ ⇒ 于是用户的 `size_pressure: [[0, 0.5], [0.5, 1.0], [1, 1.5]]` ✓ **不能直接塞进去** ✗：
+那组 `[[压力, 系数]]` 看起来是**乘数** ✓，而 `InputMapping` 要的是**加数** ✓ ⇒
+⇒ **正确的映射** ✓：`base_value` 取**当前半径的对数** ✓（`Radius` 用 `ln` ✓，见 `tools.rs:11464` ✓），
+`points` 取 **(压力, (系数-1) × 某基准)** ✓ —— 具体基准必须**读 `Radius` 的既有取值**再定 ✓，
+**不能拍脑袋** ✗（本会话"猜参数/猜形状"栽过多次 ✓）。
+**下一轮（写死 ✓）** ✓：
+① 读 `hokusai-core` 的 `Brush`/`BrushSetting` 里**怎么读当前设置值** ✓（找 `pub fn get` / `value(` ✓）
+   —— 这决定 `base_value` 与"偏移基准"怎么取 ✓；
+② `set_brush_dynamics{brush, curve:{size_pressure, opacity_pressure, tilt_size}}` ✓：
+   只处理**给到的**输入 ✓ ⇒ `inputs` 里**同名项替换、其余保留** ✓（**部分更新** ✗ 不是整体覆盖 ✓）；
+③ **缺省 ⇒ 一个字节都不改** ✓（不碰 `brush.set` ✓）；
+④ 落地 5 处 ✓（**计数 67→68 core / 123→124 total** ✓）；
+⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓（生效 + 方向"轻入重出" ✓）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
