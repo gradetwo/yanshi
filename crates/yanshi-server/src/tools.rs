@@ -13433,6 +13433,18 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "get_descendants",
         r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_descendants","arguments":{"object_id":"L1"}}]"#,
     ),
+    // **选区 / 填充 / 变更集**（第 279 轮）：这一族原先一条示例都没有；
+    // 取值按各自参数说明里的形状照写（`shape` 的字段名就是从说明里抄的），不编造。
+    (
+        "fill_region",
+        r#"{"layer_id":"L1","shape":{"type":"rect","x":10,"y":10,"w":60,"h":60},"color":{"r":200,"g":30,"b":60,"a":255}}"#,
+    ),
+    (
+        "create_selection",
+        r#"{"selection_id":"sel1","shape":{"kind":"rect","bbox":{"x":10,"y":10,"w":60,"h":60}}}"#,
+    ),
+    ("delete_selection", r#"{"selection_id":"sel1"}"#),
+    ("commit_changeset", r#"{}"#),
     ("create_group", r#"{"group_id":"x","layer_id":"L1"}"#),
     ("comment", r#"{"text": "x"}"#),
     ("collect_garbage", r#"{}"#),
