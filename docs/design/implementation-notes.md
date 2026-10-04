@@ -18253,3 +18253,20 @@ let texture = args.get("texture").and_then(Value::as_f64).unwrap_or(0.0);   // �
 **下一轮（写死 ✓，可以动手了 ✓）** ✓：① 在 `texture = 0` 路径上**把 `body` 归一化到加权均值 1** ✓；
 ② **保住** `texture_keeps_the_average_ink` ✓；③ **有意更新** golden ✓ 并在**提交信息里写明理由** ✓（引用报告 2.3 ✓）；
 ④ 跑 `tool-impasto-plateau.mjs` ✓ ⇒ 目标 `acf(4)−acf(2) < 0.05` ✓（现 0.180 ✗）、**暗环占比 < 0.28** ✓、**平坦对照仍 0.000** ✓。
+
+### 🔴 第 221 轮：**"显然的修法"被那条不变量第三次拦住** ✗ —— 但它这次**说清了为什么** ✓
+
+**结果（✓）** ✓：改动后 `cargo test -p yanshi-medium-oil` ⇒
+```
+tests::texture_keeps_the_average_ink ... **FAILED** ✗
+tests::texture_zero_matches_prechange_golden ... FAILED ✗（**预期内** ✓）
+其余 4 条 ok ✓（texture_reduces_grain / is_deterministic / is_clamped / zero_is_byte_identical ✓）
+```
+⇒ ⇒ **我的推理错了** ✗：我写"`toward_mean` 按构造保均值 ⇒ 所以降幅度不丢墨" ✓ ——
+**那是对"线性量"成立** ✗，而我们真正在意的是 **`clamp(edge.sqrt() * body * pressure * load)`** ✓ ⇒
+**`clamp` 不是线性的** ✗ ⇒ ⇒ **"先平均再夹" ≠ "先夹再平均"** ✓ ✓。
+**这次它给出的信息比前两次多（✓）** ✓：`flat_level`（混合的目标 ✓）**本身就是"逐样本夹过之后再平均"** ✓
+（`oil_flat_coverage` ✓）⇒ ⇒ ⇒ 所以笔记里那句"**用 `oil_flat_coverage` 归一化**" ✓ 的**真正含义**是：
+**要用同一个"夹过之后的均值"去归一化** ✓ —— 而不是用图案自己的线性均值 ✗（**我这次就是后者** ✗）。
+**处置（✓）** ✓：**整体回退** ✓（`git checkout` ✓，残留 0 ✓）⇒ 介质 6 条测试**恢复全绿** ✓ ⇒
+**树保持绿** ✓，**原因已写清** ✓ ⇒ 下一次的改法**有具体依据** ✓。
