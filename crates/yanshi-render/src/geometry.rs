@@ -656,11 +656,14 @@ mod feather_blur_tests {
 /// * 这里**向外补零** ✓ —— 输出 bbox 外扩后，**扩出来的一圈必须是 0** ✓
 ///   （否则只留下"内半边" ⇒ 看起来羽化了、其实只向内淡出 ✗）；
 /// * `filter::box_blur` 是**给蒙版/滤镜用的通用模糊** ✓，边界处按它自己的策略处理 ✗。
+///
 /// **实测**：把这里改调它 ⇒ `the_falloff_stays_bounded` 当场红 ✓（232 过 / 1 红 ✓）
 /// ⇒ **不要合并** ✓；**要复用，先让两边边界语义一致** ✓，而那会改蒙版的输出 ✗。
 /// **裁剪到文档**：由**调用方**负责 ✓ —— 这里只做几何 ✓（渲染层知道文档边界，几何层不知道 ✓）。
 pub fn feather_coverage(cov: &Coverage, radius_px: f64) -> Coverage {
-    if !(radius_px > 0.0) || cov.width == 0 || cov.height == 0 {
+    // 写成 is_nan() || <= 0.0 而不写 !(x > 0.0)：后者触发 clippy::neg_cmp_op_on_partial_ord，
+    // 而两者对 NaN 的行为一致（NaN 时都按「原样返回」处理）。
+    if radius_px.is_nan() || radius_px <= 0.0 || cov.width == 0 || cov.height == 0 {
         return cov.clone();
     }
     let radius = radius_px.round().max(1.0) as usize;
