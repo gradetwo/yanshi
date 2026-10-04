@@ -589,6 +589,10 @@ const maskToken = await fetch(`${origin}/api/documents`, {
   body: JSON.stringify({ doc_id: maskDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
 await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}&debug=1` });
+// 必须把标签页拉到前台（第 649 轮）：后台标签页的定时器会被节流，
+// 而本段有大量 setTimeout 等待，实测会拖到 promise 长时间不 resolve，
+// 外部于是拿到 undefined。本文件开头与其它三处都调了它，只有蒙版段漏了。
+await send("Page.bringToFront", {});
 for (let i = 0; i < 80; i++) {
   // **就绪条件要含"段首要用的元素"** ✓（第 592 轮 ✓）：原先只等 kernelHead > 0 ✗
   // ⇒ 而段首紧接着用 zoomFit / color / data-tool="brush" / size / feather ✓
