@@ -18179,3 +18179,25 @@ wasm32：警告 0 条 ✓（打包真正用的那条 ✓）
    （报的是 build 的用法错 ✓，**很难一眼看出是上一句的错** ✓）；
 ② **`$VAR` 紧邻非 ASCII 必须写 `${VAR}`** ✗ —— 我写了 `echo "  $1：警告 …"` ✓ ⇒
    **仓库自己的 `script_portability` 测试当场拦下** ✓（**这是它第二次替我拦下文本编辑造成的破坏** ✓）。
+
+### 🎯🎯🎯 第 217 轮：**2.3 的修法精确到手** ✓（归一化到加权均值 1 ✓）
+
+**度量与主循环**同一种权重形**（原文 ✓）** ✓：
+```rust
+// oil_flat_coverage（第 98 行起 ✓，逐 dab 调用见 218 ✓）
+let weight = edge.sqrt() * (0.75 + 0.45 * (1.0 - edge)) * pressure * load;   // ← 与主循环 `edge.sqrt() * body * …` 同形 ✓
+coverage_sum += (weight * bristle).clamp(0.0, 1.0);                          // ← 夹的是**整条覆盖率** ✓
+// ⇒ 返回 coverage_sum / weight_sum = **"这枚 dab 夹过之后的等效电平"** ✓ = 文档点名的**目标** ✓
+
+// 主循环（约 240 行 ✓）
+let rim = 1.0 - edge;
+let body = bristle * (0.75 + 0.45 * rim);          // ← 2.3 的来源 ✗（`bristle` 能到 ≈2.3 ✓）
+let coverage = (edge.sqrt() * body * pressure * load).clamp(0.0, 1.0);
+```
+**修法（✓，与文件自己的开篇主张一致 ✓）** ✓：**让 `body` 的加权均值为 1** ✓ ——
+文件第 14 行原文就是"**削的是对比、不是墨量** ✓" ✓ ⇒ ⇒ 归一化到均值 1 **正好**是这句的意思 ✓：
+* **保住平均覆盖率** ✓（那条不变量两次把我拦下 ✓）；
+* **去掉逐纹素的调制** ✓ ⇒ 周期性的"鼓包"消失 ✓ ⇒ `acf(4)−acf(2)` 应当从 **0.180** 掉到 **<0.05** ✓。
+**下一轮（写死 ✓）** ✓：实现那个归一化 ✓ ⇒ 跑**介质自己的两条测试** ✓（`texture_keeps_the_average_ink` ✓ /
+`texture_zero_matches_prechange_golden` ✓ —— **上次就是它们拦下我的** ✓）⇒ 再跑
+`scripts/tool-impasto-plateau.mjs` ✓（**平坦对照必须仍为 0.000** ✓）。
