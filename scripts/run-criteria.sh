@@ -61,7 +61,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -69,7 +69,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   name="$(basename "$script")"
   [ -f "$script" ] || continue
   # 浏览器判据没有 chromium 就跳过（本地环境常见；CI 里一定装了）。
-  if [[ "$name" == browser-* ]] && [ "${SKIP_BROWSER:-0}" = "1" -o -z "${CHROME_PID:-}" ]; then
+  # ⚠️ `ui-control-heights.mjs` 也**需要真浏览器** ✓（第 794 轮 ✓）⇒ 显式并进来 ✓。
+  # **不改名成 `browser-*`** ✗：它的参数形状与那一族**不同** ✗ —— 它读 `argv[3]` 当 CDP 端口 ✓，
+  # 而 `browser-*` 拿到的 `argv[3]` 是 server-base ✗ ⇒ 改名会让端口错位 ✓。
+  if [[ "$name" == browser-* || "$name" == ui-control-heights.mjs ]] && [ "${SKIP_BROWSER:-0}" = "1" -o -z "${CHROME_PID:-}" ]; then
     echo "  ⊘ ${name}（没有 chromium，跳过）"; skipped=$((skipped+1)); continue
   fi
   doc="crit_$(echo "$name" | tr -cd 'a-z0-9')"
@@ -96,6 +99,16 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # ui-text-density：直接可见的文本不得是长解释句 ✓。
     ui-layout-grid.mjs|ui-text-density.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **MCP 判据** ✓（第 793 轮接线 ✓）：两条都**自己 spawn** target/debug/yanshi-mcp ✓、
+    # 自己造 root/doc ✓ ⇒ **不需要服务端/浏览器** ✓（mcp-document-switch ✓ 看磁盘上图层落在哪个文档 ✓；
+    # mcp-tool-descriptions ✓ 直接驱动 tools/list ✓ —— 那是 MCP 客户端的真正视角 ✓）。
+    mcp-document-switch.mjs|mcp-tool-descriptions.mjs)
+      timeout 180 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **控件高度** ✓（第 794 轮接线 ✓）：要**真浏览器**量渲染高度 ✓（源码看不出 ✓）⇒
+    # 传 `<viewer-url> <cdpPort>` ✓（端口走 argv[3] ✓，与 browser-* 那一族不同 ✗）。
+    # 本机实测：✓ 控件高度统一（26px×2 checkbox / 28px×84 button ✓）。
+    ui-control-heights.mjs)
+      timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)

@@ -44,10 +44,7 @@ const NOT_CRITERIA = [
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [
   "wasm-brush-preview-parity.mjs", // 收 <viewer-url> <wasm>（要 CDP ✓）⇒ 需要与 browser-* 不同的接线 ✓
-  "mcp-document-switch.mjs",       // 待查接口 ✓（MCP：可能要起 MCP 端 ✓）
-  "mcp-tool-descriptions.mjs",     // 待查接口 ✓
   "server-token-policy.mjs",       // 收 <base> <allow|refuse> ✓ ⇒ 要跑**两种**模式 ✓，不是"跑一次" ✓
-  "ui-control-heights.mjs",        // 待查接口 ✓
 ];
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
