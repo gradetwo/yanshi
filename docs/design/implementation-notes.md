@@ -16331,3 +16331,26 @@ error: linking with `x86_64-linux-gnu-gcc` failed: exit status: 1
 规矩 ✓：**遇到"链接/编译阶段"的红，先量磁盘与 `/tmp`** ✓（我这次量了 `df /tmp` ⇒ 一眼看出 99% ✓）。
 **给用户的提示（如实 ✓）** ✓：`/tmp` 长期**紧**（96% ✓），跑门禁时容易再次 SIGBUS ✗ ⇒
 建议清掉那些**不属于本会话**的临时目录 ✓（尤其 `wy261cdp` 141M ✓），或把 `TMPDIR` 指到 `/home` 下 ✓。
+
+### 🔑 第 130 轮：`fill_region` 的**承接点找到了** ✓（`write_draw` + `AtomKind::DrawShape` ✓）
+
+**读到的原文（照抄即可 ✓）** ✓：
+```rust
+"draw_shape" => write_draw(ctx, args, AtomKind::DrawShape),          // tools.rs:2579 ✓
+```
+* `draw_shape` 的规格 ✓（1153 ✓）：`{layer_id ✓, data:{geometry, color, stroke_width, stroke_color} ✓, object_id ✓}`，
+  summary 是"绘制形状（矩形/椭圆/多边形，**可描边**）" ✓；
+* `tools.rs:690` 起有一处**归一化** ✓：把 `geometry.bbox` 从数组变 `{x,y,w,h}` ✓，
+  并且**允许**扁平写法（`{x,y,w,h}` 直接写在 geometry 上 ✓ —— 注释说"没有理由逼人多套一层" ✓）；
+* `tools.rs:714` 说明 **`geometry` 必须是对象** ✓（不是数组 ✗）。
+⇒ 所以 `fill_region` 应当是**薄包装** ✓：把 `shape{type,cx,cy,rx,ry|points}` 变成
+`draw_shape` 认的 `data.geometry` ✓ + `data.color` ✓ ⇒ 再调 `write_draw(ctx, &args, AtomKind::DrawShape)` ✓。
+**下一轮（写死 ✓，一次做完 ✓）** ✓：
+① 读 `tools.rs:690-745` ✓ 把 **`geometry` 认哪些 `kind`/键** 看清楚 ✓（**别猜** ✗ ——
+   本会话已经反复吃过"猜参数名/猜形状"的亏 ✓）；② `fill_region{layer_id, shape, color, opacity, texture?}` ✓：
+   * `shape.type` ∈ `rect`/`ellipse`/`polygon` ✓ ⇒ 映射成 `geometry` ✓；
+   * `opacity` ✓ ⇒ 乘进颜色的 `a` ✓（与 `scatter_strokes` 里同一套颜色处理 ✓）；
+   * **`texture` 明确不支持** ✓：给了非缺省值就**报错并说明**✗（报告里"厚涂肌理"是重活 ✓，
+     我在分诊里已把它与 `smooth` 分开排期 ✓）—— **绝不能静默忽略** ✗（那是本仓库头号病症 ✓）；
+③ 落地 5 处 ✓（计数 **65→66 core / 121→122 total** ✓）；
+④ 跑**那条已先红的几何判据** ✓（中心填上 ✓、**四角留白** ✓）⇒ 转绿 ⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
