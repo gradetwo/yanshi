@@ -25949,3 +25949,8 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 **读到**：`8d4d2df ⇒ in_progress 更新=19:32:54 ｜ 未完成：criteria shard 1/6` ✓
 　　　　`16e7678 ⇒ in_progress 更新=19:33:28 ｜ 未完成：criteria shard 1/6` ✓
 **⇒ 两条**：① 只剩**含 `browser-ui-check` 的那一片** ✓；② **它已跑约 5 分钟** ✓ —— **对"多次拖拽 + 多次等待"的浏览器判据属正常** ✓。
+
+### 🎯 第 737 轮：**两项仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`16e7678` 与 `8d4d2df` 仍 `in_progress`（各剩 `criteria shard 1/6` ✓）；
+最近完成仍是 `2ded141`（**崩在 `SyntaxError` ✗**）。⇒ **待干净轮** ✓。
