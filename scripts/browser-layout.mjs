@@ -93,7 +93,16 @@ if (!(await waitFor(
   "画布尺寸与首帧",
   20000,
 ))) {
-  console.error("❌ 画布始终没被设过尺寸 ⇒ 这份文档根本没法画 ✗");
+  // **两个条件各自的值都打出来** ✓（第 422 轮 ✓）：这条等待是**两个条件相与** ✗ ——
+  // `board.width > 400` ✓ **且** `serverBlits > 0` ✓ ⇒ 任一边没成立都会在这里退出 ✓，
+  // 而原消息只描述前者的症状 ✗ ⇒ **看不出是哪一边** ✓（**失败理由无法定位** ✗）。
+  const diag = await evaluate(`(() => {
+    const b = document.getElementById("board");
+    let blits = "?";
+    try { blits = window.yanshi.state().serverBlits; } catch (e) { blits = "取不到: " + e; }
+    return { width: b && b.width, height: b && b.height, styleWidth: b && b.style.width, serverBlits: blits };
+  })()`);
+  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（需 >400 ✓） height=${diag.height} style.width=${JSON.stringify(diag.styleWidth)} serverBlits=${diag.serverBlits}（需 >0 ✓）`);
   process.exit(1);
 }
 
