@@ -61,7 +61,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -91,6 +91,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 三情形正反都能红：跨站 Origin 必须**拒**、本机 Origin 必须 101、不带 Origin 必须 101 ✓。
     server-ws-origin.mjs)
       timeout 120 node "$script" 127.0.0.1 "$PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **静态界面判据** ✓（第 792 轮接线 ✓）：只读查看器的 HTML/CSS ⇒ **不需要服务端/浏览器** ✓。
+    # ui-layout-grid：间距/字号必须落在少数几档、且间距在 4 的倍数上 ✓；
+    # ui-text-density：直接可见的文本不得是长解释句 ✓。
+    ui-layout-grid.mjs|ui-text-density.mjs)
+      timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
     kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)

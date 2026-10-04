@@ -48,8 +48,6 @@ const NOT_WIRED = [
   "mcp-tool-descriptions.mjs",     // 待查接口 ✓
   "server-token-policy.mjs",       // 收 <base> <allow|refuse> ✓ ⇒ 要跑**两种**模式 ✓，不是"跑一次" ✓
   "ui-control-heights.mjs",        // 待查接口 ✓
-  "ui-layout-grid.mjs",            // 待查接口 ✓
-  "ui-text-density.mjs",           // 待查接口 ✓
 ];
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
