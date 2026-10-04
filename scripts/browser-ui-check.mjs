@@ -1434,8 +1434,11 @@ const historyFinal = await historyRows();
 
 const jumpUndoResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
-  // 跳到**最早**那条原子：这一定改变画面（此前挑"笔画前一条"，若那一步本身无效果就断言不出东西）。
-  const target = rows[0];
+  // **不能跳到"最早"那条** ✓（第 628 轮 ✓）：**新建文档里最早那条很可能就是本判据自己刚画的那一笔** ✗
+  // ⇒ 跳到它 = 跳到当前状态 ⇒ **画面当然不变** ✓ ⇒ 而那不是产品的问题，是判据挑错了目标 ✗。
+  // ⇒ **改成跳到"倒数第二条"** ✓：**它一定比当前**更早一步** ✓ ⇒ 跳转必然改变画面 ✓**
+  //（"跳转改变画面"这条断言有设计依据 ✓，第 623 轮 ✓；而"最早那条一定不同"没有 ✗）。
+  const target = rows.length >= 2 ? rows[rows.length - 2] : rows[0];
   if (!target) return { ok: false, reason: "历史为空" };
   target.querySelector("button").click();
   await new Promise((r) => setTimeout(r, 2200));
