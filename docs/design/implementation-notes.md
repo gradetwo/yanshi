@@ -16287,3 +16287,47 @@ let colors = match extension.as_str() {
 **方法记 ✓**（本会话反复生效 ✓）：**"存储格式"这种事必须问解析器，不能凭样例文件猜** ✗ ——
 样例是 `.json` 的命名字典 ✓，若照着它写就会把扁平数组塞成字典 ✗；
 而**读一眼解析器**就发现 `.gpl` 天生扁平 ✓、且**扩展名有硬约束** ✓。
+
+### 🎯 第 123 轮：`analyze_region` 的**取像素 API 找到了** ✓（`render_region_raw` ✓）
+
+**关键发现（原文 ✓）** ✓：`read_render_region`（`tools.rs:2958` ✓）里那一行
+```rust
+let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+```
+⇒ **工作区直接给"宽/高/直通 RGBA8"** ✓ ⇒ `analyze_region` **不必**绕 `raw_url` + 读 blob ✗
+（那是给客户端逐像素比对用的 ✓），**直接算**就行 ✓ ⇒ 实现面**很小** ✓。
+**下一轮（写死 ✓，一次做完 ✓）** ✓：
+① 规格 ✓：`analyze_region{region}` ✓（`Any` ⇒ `{x,y,w,h}` 或 `[x,y,w,h]` ✓，与 `render_region` 同形 ✓；
+   注释里写清 **`warm_cool_ratio` 的定义** ✓ —— 暖冷像素**计数比** ✓（`r > b` 记暖 ✓，`r < b` 记冷 ✓），
+   **别让调用方猜** ✗）；`mutating: false` ✓（纯读 ✓，与 `render_region` 同类 ✓）；
+② 实现 ✓（`read_analyze_region` ✓）：
+   * `let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;` ✓；
+   * **主色** ✓：按**每通道高 4 位**（16³ 桶 ✓）统计 ⇒ 取**最大桶** ⇒ 回该桶内像素的**平均色** ✓
+     （比回桶中心更准 ✓）；顺带回**前几名** ✓（文档要的是 `dominant_colors` **数组** ✓）；
+   * `avg_brightness` ✓ = `(0.299r + 0.587g + 0.114b) / 255` 的平均 ✓（与判据里算亮度**同一条** ✓）；
+   * `warm_cool_ratio` ✓ = 暖像素数 / 冷像素数 ✓（**定义写进 summary** ✓；冷为 0 时给一个明确值 ✓ 如 `null` 加 `warm_pixels` ✓，**不要**偷偷返回 0 或无穷 ✗）；
+③ 落地 5 处 ✓（计数 **62→63 core / 118→119 total** ✓）；
+④ 跑**那条已先红的判据** ✓（红区主色=红 ✓、蓝区主色=蓝 ✓、亮度 0..1 ✓、暖冷比红>蓝 ✓）
+   ⇒ 转绿 ⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+
+### 🧯 第 124 轮：**门禁红了，但根因是 `/tmp` 被占满** ✗（不是代码 ✓）
+
+**现象（如实 ✓）** ✓：`cargo test --workspace` 报
+```
+error: linking with `x86_64-linux-gnu-gcc` failed: exit status: 1
+  = note: collect2: fatal error: ld terminated with signal 7 [Bus error], core dumped
+```
+⇒ 红的是 **`yanshi-mcp` 的 doctest** ✗，报的是**链接器 SIGBUS** ✗ —— 与我当轮的改动**无关** ✓。
+**根因（量出来的 ✓）** ✓：`/tmp` 是 **1.9G 的 tmpfs** ✓，当时 **已用 99%（仅剩 39M）** ✗
+⇒ 链接器要在 `/tmp` 写临时文件 ✓ ⇒ **空间不足 ⇒ SIGBUS** ✗（而 `/home` 还有 48G 空闲 ✓）。
+**谁占的（列过 ✓）** ✓：我自己这几轮的临时根/日志/`save_palette` 的临时 `.gpl` ≈ **53M** ✓
+＋ 一个刚写的 **core dump** ✓ ⇒ 清掉后 **doctest 立刻通过** ✓（`93M` 可用 ✓）。
+**顺带看到的事实（不许动 ✓）** ✓：`/tmp` 里还有**别人/更早会话**的东西 ✓
+（`wy261cdp` 141M ✓、`pkgfull` 42M ✓、`dyn101` 45M ✓、`sk117` 39M ✓、`e2e4` 34M ✓、
+`oil_1_wheatfield_crows.yanshi` 31M ✓ —— 那是**用户自己的导出** ✓）⇒ ⇒ **我一律不删** ✗，
+只删**我自己前缀**的 ✓ 与 `core*` ✓。
+**教训（本会话第 N 次、但这次是环境类 ✓）** ✓：**"门禁红了"不等于"我的改动错了"** ✗ ——
+必须先看**红的形状** ✓：这次是**链接器**而不是**断言** ✓ ⇒ 指向**环境** ✓ 而不是逻辑 ✓。
+规矩 ✓：**遇到"链接/编译阶段"的红，先量磁盘与 `/tmp`** ✓（我这次量了 `df /tmp` ⇒ 一眼看出 99% ✓）。
+**给用户的提示（如实 ✓）** ✓：`/tmp` 长期**紧**（96% ✓），跑门禁时容易再次 SIGBUS ✗ ⇒
+建议清掉那些**不属于本会话**的临时目录 ✓（尤其 `wy261cdp` 141M ✓），或把 `TMPDIR` 指到 `/home` 下 ✓。
