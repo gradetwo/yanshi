@@ -838,6 +838,17 @@ const selectionResult = await evaluate(`(async () => {
     const clearButton = document.getElementById("clearSelection");
     if (!clearButton) throw new Error("工具栏里没有清除选区按钮");
     clearButton.click();
+    await new Promise((r) => setTimeout(r, 900));
+    // **清除之后必须**再画一笔，否则 "clearedOutside" 必然为 0（第 301 轮更正）：
+    // 清除选区**不可能**让先前被裁掉的墨"追溯地"出现 —— 那些像素从来没被画上去。
+    // 旧版清完就直接测量 ⇒ 断言永远不成立（**判据自己错了**，不是产品）。
+    fire("pointerdown", at(0.05, 0.75), 622);
+    fire("pointermove", at(0.5, 0.75), 622);
+    fire("pointermove", at(0.95, 0.75), 622);
+    await new Promise((r) => setTimeout(r, 80));
+    fire("pointerup", at(0.95, 0.75), 622);
+    await stable();
+
     const cleared = await stable();
     let clearedOutside = 0;
     for (let index = 0; index < cleared.length; index += 4) {
