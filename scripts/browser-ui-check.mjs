@@ -1560,6 +1560,18 @@ const oilResult = { ok: Boolean(oilObject), medium: oilObject ? oilObject.medium
 // 水彩介质（ABI v2 ✓）：与油画走**同一条宿主链路** ✓，差别全在插件内部 ✓
 //（渗开的边界 / 边缘沉积 / 半透明 ✓ —— 三条特征由 `make medium-check` 逐项量过 ✓）。
 // 这里只验证**接线** ✓：选择器能选中它 ✓、对象上记录的是水彩的 id 与版本 ✓、画布确实增加 ✓。
+// **给水彩这一步一份干净文档**（第 250 轮）：上面 oil 那一步与它**共用** `mediumDoc`，
+// 于是水彩落笔之前文档里**已经有**一个带 oil 介质的对象，而查看器有一条**正当**行为
+// （`detectHeavyContent`，viewer.rs:1589）：把选择器**同步成"文档里最后一个带介质的对象"**。
+// ⇒ 探针每次设水彩都会被改回 oil，**不是产品 bug**，是探针与产品行为相抵。
+// ⇒ 换成一份**没有介质对象**的文档，页面自己的规则就与探针一致。
+const wcDoc = "uicheck_wc_" + Date.now().toString(36);
+const wcToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: wcDoc, width: 320, height: 240 }),
+}).then((response) => response.json()).then((value) => value.token);
+await send("Page.navigate", { url: `${origin}/?doc=${wcDoc}&token=${wcToken}&debug=1` });
+await new Promise((resolve) => setTimeout(resolve, 3500));
 const wcBefore = await evaluate(MEDIUM_INK) || 0;
 await evaluate(`(() => {
   const select = document.getElementById("medium");
