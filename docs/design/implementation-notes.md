@@ -21918,3 +21918,23 @@ match prefs.get("reference.blob_hash") {
 **⚠️ 并更正我上一轮的猜想（✗）** ✓：**两条笔刷预览红"同源"多半是错的** ✓ ——
 `brush-preview` 是**落笔颜色** ✗、`brush-preview-local` 是**预览来源** ✗ ⇒ **不一定同一处** ✓
 （**我这次没有先拼结论，而是先读了它数什么** ✓）。
+
+### 🎯 第 432 轮：**CI 确实构建内核 ⇒ `local: 0` 不是"没内核"** ✗（方向转向查看器）
+
+**读到（✓，`ci.yml:112-167` ✓）** ✓：
+```yaml
+112| criteria:                                     # 判据作业（6 分片 ✓）
+130| - name: Cache wasm-bindgen-cli                 # 缓存了绑定工具 ✓
+142|     cargo install wasm-bindgen-cli --version 0.2.129 --locked
+149| - name: Add the wasm32 target
+153| - name: Build server and wasm package
+155|     cargo build --workspace
+159|     cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release   ← **内核确实建了** ✓
+162| - name: Run criteria（SHARD=… SHARDS=6 scripts/run-criteria.sh ✓）
+```
+**⇒ 判断（✓）** ✓：**`brush-preview-local` 的 `local: 0` 与"新克隆没有内核"无关** ✗ ✓
+⇒ ⇒ **不是环境缺东西** ✓ ⇒ **方向转向** ✓：**查看器在什么条件下才把预览标成 `data-preview-source="local"`** ✓
+—— **要么那个条件没满足 ✓，要么它的路径与 CI 产出的位置不一致** ✗（`cargo build --release` 的产物
+与 `scripts/dev.sh` 用 `wasm-bindgen` 生成到 `crates/yanshi-wasm/pkg/` 的那一份**不一定是同一处** ✓）。
+**★ 这一轮的价值（✓）** ✓：**它排除了一个我想当然的假设** ✗（"CI 没建内核 ✓"）——
+**而这是靠读 CI 的实际步骤 ✓，不是靠回忆 README 那句话** ✓。
