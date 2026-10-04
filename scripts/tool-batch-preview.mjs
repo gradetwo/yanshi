@@ -31,7 +31,10 @@ const workspace = process.env.YANSHI_WORKSPACE;
 const renderPath = workspace ? `${workspace}/docs/${doc}/render.png` : null;
 const mtimeBefore = renderPath ? (() => { try { return statSync(renderPath).mtimeMs; } catch { return null; } })() : null;
 
-const streamed = await call(doc, token, "batch", { preview_every_n_strokes: 4,
+// **必须连同 `silent: true` 一起用** ✓（第 329 轮更正 ✗）：不给 `silent` 时，
+// 每个子调用**本来就带预览** ✓ ⇒ 那时"数出 12 个"是**默认行为**，不是特性生效 ✗。
+// 这个参数的用途是"**给静默的长批次中途放行预览**" ✓（长批次正为省临时 IO 才静默 ✓）。
+const streamed = await call(doc, token, "batch", { silent: true, preview_every_n_strokes: 4,
   calls: Array.from({ length: 12 }, (_, i) => strokeCall(i)) });
 const results = (streamed && streamed.calls) || (streamed && streamed.results) || [];
 const previews = results.filter((r) => withPreview(r.result || r)).length;
