@@ -118,10 +118,15 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     fail=$((fail+1))
     echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
       tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）
-    first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
-    # **抓不到就退而取首个非空行** ✓：`browser-*` 那几条用别的格式打印原因 ✗ ⇒
-    # 只按 `- `/`✗ ` 抓会得到空原因 ✓（第 328 轮实测：12 条里大半是空的 ✗）。
-    [ -z "$first_reason" ] && first_reason=$(grep -m1 -av '^[[:space:]]*$' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
+    # **理由必须来自"失败行"** ✓（第 415 轮 ✓）：原先抓不到 `- `/`✗ ` 就退回
+    # "首个非空行" ✗ ⇒ **进度日志被当成失败原因** ✗（实测：`browser-brush-preview` 的
+    # `① … loaded=true …` 就是这么被端上来的 ✓ —— 与我读到的"理由"一模一样 ✓）。
+    # ⇒ 现在**只认失败信号** ✓（`- ` 原因列表 ✓ / `✗` ✓ / `EXIT=` ✓ / 失败 ✓ / panic ✓ / Error ✓），
+    # **并把 `①②③…`、`→`、`↳` 这类进度行排除** ✗。
+    first_reason=$(grep -m1 -aE '^ *- |(^|[[:space:]])(✗|❌)|EXIT=[0-9]|失败|panic|Error:' "$ROOT_DIR/out.txt" \
+      | grep -avE '^ *[①②③④⑤⑥⑦⑧⑨⑩]|^ *→ |^ *↳ ' | sed 's/^[[:space:]]*//' | cut -c1-120)
+    # **找不到就明说** ✓ —— 不要拿普通输出充当理由 ✗（那样读的人会以为这就是原因 ✓）。
+    [ -z "$first_reason" ] && first_reason='（没找到明确的失败行 ⇒ 看上面的 前│/后│ 输出）'
     FAIL_SUMMARY="${FAIL_SUMMARY}  ✗ ${name}｜${first_reason}
 "
   fi
