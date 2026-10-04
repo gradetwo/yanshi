@@ -6363,9 +6363,12 @@ async function paintLiveFrame() {
     if (!bytes || !bytes.length) {
       // 失败：内核给不出原因文本 ✗（它与门面的错误通道不同 ✓）⇒ 就**说清是"内核没画出来"** ✓
       stats.localBrushErrors = (stats.localBrushErrors || 0) + 1;
+      const reason = kernel && typeof kernel.paint_brush_error === "function" ? kernel.paint_brush_error() : "(内核没给原因)";
+      stats.localBrushLastError = reason;
       if (!stats.localBrushErrorLogged) {
         stats.localBrushErrorLogged = true;
-        log("本地笔刷预览：内核没画出这一帧 ⇒ 本帧跳过 ✓（抬手仍由服务端落笔 ✓）", "#c93");
+        // **必须说出原因** ✓（第 209 轮 ✓：我第一版只报"没画出来"✗ ⇒ 真因被我的接口挡住了一轮 ✓）
+        log("本地笔刷预览：内核没画出这一帧 ⇒ " + String(reason || "(无原因)").slice(0, 160), "#c93");
         }
       return;
     }

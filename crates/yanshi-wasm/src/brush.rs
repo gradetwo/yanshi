@@ -9,6 +9,22 @@
 
 use serde::Deserialize;
 
+/// **最后一次失败的原因** ✓ —— 门面当年有独立的错误通道 ✓，我第一版把它丢了 ✗
+/// ⇒ "失败 = 空" ✗ ⇒ **说不出为什么** ✓（而本仓库最反对这个 ✗）⇒ 现在补回来 ✓。
+static LAST_ERROR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// 记下原因 ✓（由下面的 `paint` 在失败时调用 ✓）。
+pub(crate) fn set_error(reason: &str) {
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = reason.to_owned();
+    }
+}
+
+/// 取走原因 ✓（取走即清 ✓ —— 免得把一次失败的原因**粘到下一次成功**上 ✗）。
+pub(crate) fn take_error() -> String {
+    LAST_ERROR.lock().map(|mut slot| std::mem::take(&mut *slot)).unwrap_or_default()
+}
+
 #[derive(Deserialize)]
 pub(crate) struct Colour {
     // **`a` 目前不参与笔刷设置** ✓（颜色走 `ColorH/S/V` ✓，alpha 由 `.myb` 自己的不透明度曲线管 ✓）
@@ -205,8 +221,14 @@ pub(crate) fn read_back(surface: &hokusai::tile_mem::MemSurface, region: &Region
 
 /// **门面的主入口** ✓：JSON 进 ⇒ RGBA 出 ✓（宿主自己知道 `w*h*4` ✓）。
 pub(crate) fn paint(request_json: &str) -> Result<Vec<u8>, String> {
-    let request: PaintRequest = serde_json::from_str(request_json)
-        .map_err(|error| format!("请求不是合法 JSON：{error}"))?;
+    let request: PaintRequest = match serde_json::from_str(request_json) {
+        Ok(request) => request,
+        Err(error) => {
+            let reason = format!("请求不是合法 JSON：{error}");
+            set_error(&reason);
+            return Err(reason);
+        }
+    };
     let brush = hokusai::myb::from_str(&request.myb)
         .map_err(|error| format!("不是能解析的 .myb：{error}"))?;
     let brush = configure(brush, &request);
