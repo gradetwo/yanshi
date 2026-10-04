@@ -23714,3 +23714,22 @@ job 111481660491 ⇒ `意外失败 0｜已知红 0` ✓（**干干净净** ✓�
 **⇒ 下一处（✓）** ✓：**在判据里打印"请求的点"与"返回图的尺寸"** ✓ ——
 **若返回的不止 1×1 ⇒ 第一个像素未必是请求点** ✗ ✓（**而第 537 轮的 padding 只来自滤镜/蒙版 ✓
 ⇒ 本判据 `fill_region` **不产生** padding ✗ ⇒ **仍可能是别的加宽** ✓）。
+
+### 🎯🎯🎯 第 549 轮：**决定性读数 —— `dragging=301` 而 `points=undefined`** ✗
+
+**读到（✓，`run 37217923525`（`d46d9b5` ✓ = `points` 暴露那一轮 ✓）✓）** ✓：
+```
+蒙│  拖动中 **tool=mask_rect** ✓  **points=undefined** ✗  **dragging=301** ✓
+```
+**⇒ 三条（✓）** ✓：
+1. ✅ **`dragging = 301`** ✓ ⇒ **按下确实设了拖动状态** ✓ ⇒ **"按下没被处理"彻底排除** ✗；
+2. ✗ **而 `points` 是 `undefined`** ✗ —— 注意**不是 `0`** ✓：
+   **我写的是 `points: (state.points || []).length`** ✓ ⇒ **哪怕 `state.points` 是 `undefined`，也应当得到 `0`** ✓
+   ⇒ ⇒ ⇒ **所以打出 `undefined` 只能说明"我在 `state()` 里加的那个字段没有生效"** ✗ ✓
+   （**即：那次构建里 `state()` 还是旧的** ✗，或**我加错了位置** ✗ —— 而 `:7501` 是 `window.yanshi` ✓）；
+3. ⇒ **而 `dragging: state.dragging === undefined ? null : state.dragging`** ✓ 给出 `301` ✓
+   ⇒ ⇒ **所以 `dragging` 那个字段生效了 ✓、`points` 没有** ✗ ⇒ ⇒ ⇒ **两者在同一次改动里 ✓
+   ⇒ 唯一解释：`state.points` 在**那一刻**确实是 `undefined`** ✗，**而 `(undefined || []).length` 应为 0** ✓
+   ⇒ ⇒ ⇒ **除非 `state` 在这里不是同一个对象** ✗ ✓（**JS 的 `state` 若是另一个同名变量 ✓**）。
+**⇒ 下一处（✓）** ✓：**核 `state()` 里 `state.points` 指向的对象** ✓ ——
+**产品里 `state` 是不是就是那个持有 `points` 的对象** ✓（**`:6213` 写的是 `state.points`** ✓）。
