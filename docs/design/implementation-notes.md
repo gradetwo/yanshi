@@ -16474,3 +16474,33 @@ for (x, y, pressure) in points {          // 11201 ✓：逐控制点
 ③ `write_brush_stroke` 加 `clip_to_selection`（id 字符串 ✓，兼容 `true` = 最新 ✓）⇒ 由 `Selection.shape`
    造 `Coverage` ✓（`rect/ellipse/polygon_coverage_clipped` ✓ + `feather`/`invert` ✓；其余 `mode` **明确报错** ✗）；
 ④ 缺省 ⇒ 逐字节如旧 ✓；⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 提交 + 推送 ✓。
+
+### 🎯 第 140 轮：**选区过滤的确切插入点找到了** ✓ —— 顺带发现一处**过时注释** ✗
+
+**插入点（原文 ✓）** ✓：`paint_brush`（11401 ✓）里把 surface 写回的那段循环 ✓：
+```rust
+let tile = surface.tile_request_start(tile_x, tile_y);
+for row in 0..64i32 {
+    for column in 0..64i32 {
+        let document_x = tile_x * 64 + column;
+        let document_y = tile_y * 64 + row;
+        if document_x < seed_region.x0 || document_y < seed_region.y0
+            || document_x >= seed_region.x1 || document_y >= seed_region.y1
+        { continue; }                       // ← **已经在按文档坐标过滤** ✓
+        …
+```
+⇒ ⇒ **选区过滤插在同一处** ✓：在这个 `continue` 旁边再加一条
+"`coverage(document_x, document_y) <= 0.0 ⇒ continue`" ✓、否则把覆盖率**乘进写回的 alpha** ✓
+⇒ 与 `brush.rs:515` 的语义**一字不差** ✓（"覆盖度 ≤ 0 的印章直接跳过" ✓），
+而且**不需要碰笔刷引擎** ✓（只是"哪些像素允许写回" ✓）—— 风险面**比之前设想的小得多** ✓。
+**顺带发现（小而真 ✓）** ✓：`brush_coverage_mask` **只出现在两处注释里** ✗（`11276` ✓ / `11496` ✓），
+**全仓没有它的定义** ✗ ⇒ **过时引用** ✓ ⇒ 正是本仓库最警惕的那类问题 ✓
+（"**过时的描述会让 agent 主动放弃可用的能力**"✗ —— `draw_text` 那次就是这么栽的 ✓）
+⇒ 下一轮**顺手把它改掉** ✓（要么指向真正存在的函数 ✓，要么说明机制已经改了 ✓；**不留悬空引用** ✗）。
+**下一轮（写死 ✓，一次做完 ✓）** ✓：
+① `write_brush_stroke` 加 `clip_to_selection`（**选区 id 字符串** ✓，兼容 `true` = 取最新 ✓）⇒
+   由 `Selection.shape` 造覆盖率闭包 ✓（`rect/ellipse/polygon_coverage_clipped` ✓ + `feather` ✓ + `invert` ✓；
+   其余 `mode` **明确报错** ✗）；
+② 在**上面那个循环**里按 `document_x/document_y` 取值 ✓ ⇒ `<= 0` 跳过 ✓、否则乘进 alpha ✓；
+③ 缺省 ⇒ **不查、不乘** ✓ ⇒ 逐字节如旧 ✓；④ 修掉两处 `brush_coverage_mask` 的悬空引用 ✓；
+⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
