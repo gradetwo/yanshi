@@ -1019,6 +1019,10 @@ const LOCAL_READ_TOOLS = [
   "list_objects",
   "list_assets",
   "list_selections",
+  // **第 175 轮实测抓到的** ✓：`list_palette_colors` —— **第 7 次**"靠点名才发现" ✓。
+  // 它的特别之处 ✓：它**抛异常** ✗（不是"悄悄失败"✗）⇒ 于是**打断了启动链** ✓
+  // ⇒ `preview_src` 一直是空 ✓、`objects` 一直是 no-objects ✓ ⇒ 画面全空 ✓。
+  "list_palette_colors",
 ];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
@@ -1084,6 +1088,14 @@ async function fetchOrLocal(url, options) {
       }
     } catch (error) {
       // URL 都解析不了 ⇒ 按原样转发 ✓
+    }
+    // **点名** ✓：走到这里说明**这条调用不在白名单** ✓ —— 离线时它**必然失败** ✗
+    // ⇒ 只有把**它到底是谁**打出来 ✓，才知道下一个要补的是哪一个 ✓
+    //（第 174 轮实测：报出的行号落在注释上 ✗ ⇒ 实际是这条"原样转发" ✓，但**看不到 URL** ✗）。
+    try {
+      console.warn("[yanshi] 未缓存即转发：" + method + " " + new URL(url, location.href).pathname);
+    } catch (error) {
+      console.warn("[yanshi] 未缓存即转发（URL 解析不了）");
     }
     return fetch(url, options);
   }
