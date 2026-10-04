@@ -13417,6 +13417,22 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "redo_last",
         r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"undo_last","arguments":{"count":1}},{"tool":"redo_last","arguments":{"count":1}}]"#,
     ),
+    // **变更集 / 祖先族**（第 278 轮）：与事务/历史相邻的一族，原先一条示例都没有。
+    // 参数照原文抄：`abort_changeset` 无参数；`revert_changeset` 必填 `changeset_id`；
+    // `get_ancestors` / `get_descendants` 必填 `object_id`。契约同前：末步是自己、参数在 arguments 里。
+    ("abort_changeset", r#"{}"#),
+    (
+        "revert_changeset",
+        r#"[{"tool":"begin_changeset","arguments":{}},{"tool":"commit_changeset","arguments":{}},{"tool":"revert_changeset","arguments":{"changeset_id":"cs1"}}]"#,
+    ),
+    (
+        "get_ancestors",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_ancestors","arguments":{"object_id":"L1"}}]"#,
+    ),
+    (
+        "get_descendants",
+        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_descendants","arguments":{"object_id":"L1"}}]"#,
+    ),
     ("create_group", r#"{"group_id":"x","layer_id":"L1"}"#),
     ("comment", r#"{"text": "x"}"#),
     ("collect_garbage", r#"{}"#),
