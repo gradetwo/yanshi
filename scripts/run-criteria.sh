@@ -115,6 +115,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 跑了 ✓ 却没进日志 ✓ ⇒ 我白白等了一轮 ✗。**绿 / 已知红 / 失败，三种都要说话** ✓。
     head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'
     tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/' 
+    # **已知红也要做定向抽取** ✓（第 531 轮 ✓）：第 484/519 轮把 `项│` 与 `蒙│`
+    # 只加在了**普通失败分支** ✗ ⇒ 而 `browser-ui-check` 是已知红 ✓ ⇒ **那个分支里从不执行** ✓
+    # ⇒ 实测 `grep 蒙│` 零命中 ✓ ⇒ **等于没加** ✗（这一族已出现多次 ✓）。
+    grep -F "✗" "$ROOT_DIR/out.txt" | head -20 | sed 's/^/     项│/'
+    grep -F "蒙版" "$ROOT_DIR/out.txt" | head -6 | sed 's/^/     蒙│/'
     expected_red=$((expected_red+1))
   else
     # **计数必须独立成行** ✓（第 412 轮 ✓）：原先写成 `tail -6 … # 注释 ; fail=$((fail+1))` ✗
