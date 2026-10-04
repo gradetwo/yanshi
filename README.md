@@ -11,7 +11,7 @@
 
 **Interface language**: the viewer is bilingual. The top bar carries an `EN` / `中文` toggle, and `?lang=en` or `?lang=zh` picks a language for a link; the choice is remembered. Names that come from the server (document ids, layer names, brush names) are shown as they are.
 
-Yanshi is a headless image editor engine: an append-only atom log, a folded state, a pure-Rust
+Yanshi is a headless painting engine: an append-only atom log, a folded state, a pure-Rust
 render compute kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer. The
 kernel compiles natively for the server and to WebAssembly for the browser, so optimistic local
 rendering and server rendering are one implementation.
