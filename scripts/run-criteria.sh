@@ -121,7 +121,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # ⇒ **`#` 之后全被当注释** ✓ ⇒ 那行**永不执行** ✗ ⇒ 汇总恒写"意外失败 0" ✗
     #（`—— 通过 8｜意外失败 0` 与同片两条 `(EXIT=1/2)` 并存，就是这样来的 ✓）。
     fail=$((fail+1))
-    echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
+    echo "  ✗ $name (EXIT=$code)";
+    # **失败行要定向抽出来** ✓（第 484 轮 ✓）：普通失败**本来就**打 head-3/tail-6 ✓（第 484 轮更正 ✓），
+    # 而这种判据有 **134 行逐项输出** ⇒ **散在中间的失败行既不在头三行、也不在尾六行** ✗
+    # ⇒ 实测「示例被拒」0 条进日志 ✓ ⇒ **等于没打** ✓ ⇒ 这里把带 ✗ 的逐项行单独抽出来 ✓（最多 20 条 ✓）。
+    grep -E "^ *✗ " "$ROOT_DIR/out.txt" | head -20 | sed 's/^/     项│/' head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
       tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）
     # **理由必须来自"失败行"** ✓（第 415 轮 ✓）：原先抓不到 `- `/`✗ ` 就退回
     # "首个非空行" ✗ ⇒ **进度日志被当成失败原因** ✗（实测：`browser-brush-preview` 的
