@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 // **离线画一笔**判据（目标 (A)③⑥）：断网后仍必须能在画布上画出墨。
+// **第 213 轮更正** ✓：这里原来找 `/brush-module.wasm` ✗ —— 那是**已退休的第二份实现** ✓（端点现在 404 ✓）
+// ⇒ 判据应当看**共享内核**（`/wasm/yanshi_wasm.js` ✓）在不在 SW 缓存里 ✓。
+// 另一条更硬的信号 ✓：`localBrushFrames`（成功帧数 ✓）必须 > 0，且 `localBrushErrors` 必须为 0 ✓
+// —— 第 212 轮那个"一个词的错"就是**只有它**能一眼看出 ✓（15 次调用 / 15 次失败 ✓）。
 // 为什么它是"离线优先"的成功定义：能"打开页面"只是外壳（已达成 ✓），
 // 真正的要求是**离线下还能画**（本地渲染 + 本地状态，服务端不在也算数）。
 // 用法：node scripts/browser-offline-draw.mjs <viewer-url> [cdpPort]
@@ -34,7 +38,7 @@ socket.addEventListener("message", (event) => {
   } else if (m.method === "Network.responseReceived") {
     // **不扰动的观测** ✓（第 55 轮定 ✓）：只记网络流水，不替页面发请求 ✓。
     const response = (m.params && m.params.response) || {};
-    if (String(response.url || "").includes("brush-module.wasm")) {
+    if (String(response.url || "").includes("yanshi_wasm.js") || String(response.url || "").includes("yanshi_wasm_bg.wasm")) {
       evidence.push("module-response: status=" + response.status + " fromDisk=" + !!response.fromDiskCache +
         " fromSW=" + !!response.fromDiskCache + " encoded=" + (m.params.response && m.params.response.encodedDataLength) +
         " mime=" + response.mimeType);
@@ -227,8 +231,8 @@ console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // 这条**今天是红的** ✗ ⇒ 它就是"离线优先"还差的那一块 ✓。
 const cacheNames = (cachesAfter && cachesAfter.caches) || [];
 const cachedUrls = cacheNames.flatMap((entry) => entry.entries || []);
-const hasModuleInWorkerCache = cachedUrls.some((url) => url.startsWith("/brush-module.wasm"));
-console.log("  SW 缓存里有门面吗：" + hasModuleInWorkerCache + "（条目 " + cachedUrls.length + " 条）");
+const hasModuleInWorkerCache = cachedUrls.some((url) => url.startsWith("/wasm/yanshi_wasm.js") || url.startsWith("/wasm/yanshi_wasm_bg.wasm"));
+console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（条目 " + cachedUrls.length + " 条）");
 // **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
 console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
 for (const line of evidence) console.log("    · " + line);
@@ -250,7 +254,7 @@ if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效
 const onlineOverlayInk = (after1.parts.find((p) => p.id === "overlay") || {}).ink || 0;
 const floor = Math.max(200, Math.floor(onlineOverlayInk / 4));
 if (!hasModuleInWorkerCache) {
-  failures.push("SW 缓存里没有 /brush-module.wasm ⇒ 离线能力其实依赖浏览器 HTTP 缓存");
+  failures.push("SW 缓存里没有**共享内核**（/wasm/yanshi_wasm.js）⇒ 离线预览没有内核可用 ⇒ 只能寄望 HTTP 缓存（不可靠 ✗）");
 }
 if (!(deltaOffline >= floor)) {
   failures.push("离线这一笔的增量 " + deltaOffline + " 达不到本地预览量级的门槛 " + floor + " ⇒ 不像真的画上了一笔");

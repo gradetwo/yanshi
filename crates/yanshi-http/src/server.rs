@@ -1409,7 +1409,18 @@ const BUILD_ID: &str = match option_env!("YANSHI_COMMIT") {
 };
 
 const SERVICE_WORKER_JS: &str = r##""use strict";
-const SHELL = ["/", "/favicon.svg", "/brand/svg/icon-light.svg", "/brush-previews/index.json"];
+// **外壳清单** ✓ —— 第 213 轮补上**共享内核**两件 ✓：
+// 退休前是**查看器自己**用 `cache.put("/brush-module.wasm", …)` 把门面塞进来的 ✓，
+// 而那行随门面一起被删 ✗ ⇒ 于是**没人**再把内核放进 SW 缓存 ✗ ⇒
+// **离线时内核拿不到** ✗（`cachedUrls` 里没有它 ✓ —— 判据当场把这件事量了出来 ✓）。
+const SHELL = [
+  "/",
+  "/favicon.svg",
+  "/brand/svg/icon-light.svg",
+  "/brush-previews/index.json",
+  "/wasm/yanshi_wasm.js",
+  "/wasm/yanshi_wasm_bg.wasm",
+];
 // **缓存名里带上构建标识** ✓（(A)⑥「SW 升级不脏读」的正主 ✓）：
 // 名字一变 ⇒ 下面那句"删掉所有名字不同的缓存"✓ 就自动作废**整份旧外壳** ✓
 // ⇒ 这正是第 210 轮查到的真因 ✓（旧 js + 新 wasm ⇒ 内核预览失败 ✓）。
