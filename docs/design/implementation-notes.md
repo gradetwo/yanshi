@@ -16669,3 +16669,38 @@ state.selections.values().filter(|s| !s.is_deleted())   // ← 现成的过滤 �
    加第二个小循环 ✓（由 `index` 反推文档坐标 ✓ ⇒ 全在外 ⇒ 清零 ✓ / 部分在内 ⇒ **乘 alpha** ✓）；
 ④ 缺省 ⇒ `None` ⇒ **整段不执行** ✓ ⇒ 逐字节如旧 ✓；
 ⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿（**先看 `/tmp`** ✓）⇒ 英文提交 + 推送 ✓。
+
+### 🎯🎯🎯 第 146 轮：**"选区 ⇒ 覆盖率"本来就是现成 API** ✓（P0-3 缩成"包一层" ✓）
+
+**决定性原文（`crates/yanshi-render/src/selection.rs` ✓）** ✓：
+```rust
+impl SelectionShape {
+    /// 容错解析 `Selection.shape`（外加 `feather` / `mode` / `invert`）。
+    pub fn coverage(&self, x: f64, y: f64) -> f32 { … }        // ← **191 行** ✓
+}
+```
+⇒ ⇒ 也就是说 ✓：**羽化 ✓、组合模式 ✓、反选 ✓** 全都**已经被这个类型处理掉了** ✓
+（文档原文 ✓：`kind` 为 `polygon`/`lasso` 时顶点少于 3 退化 ✓、`bbox` 当退化多边形 ✓ ……）
+⇒ 于是 P0-3 的实现**从"造 Coverage + 处理几何"** ✗ 缩成 **"包一层闭包"** ✓：
+```rust
+// write_brush_stroke 里：
+let shape = selection_shape_from(args, ctx)?;          // 取出 Selection.shape 并解析 ✓（现成 ✓）
+let coverage = shape.as_ref().map(|s| {
+    // **薄薄一层** ✓：把"文档坐标 ⇒ 覆盖率"直接转发给现成的 `SelectionShape::coverage` ✓
+    Box::new(move |x: f64, y: f64| s.coverage(x, y)) as Box<dyn Fn(f64, f64) -> f32>
+});
+… paint_brush(…, feed_base, coverage.as_deref())?;      // 只有 11822 那处要传 ✓
+```
+**收益（可量 ✓）** ✓：原本估计要"碰渲染 + 造掩码 + 处理羽化/反选" ✗ ⇒ 实际只需
+**一个助手（解析）+ 一处调用 + `paint_brush` 里一个小循环** ✓ ⇒ 风险与工作量都小一个量级 ✓
+（与 `P1-4`/`P1-5`/`P1-6` 那三项**同一形态** ✓：**仓库早就有能力，只缺一个入口** ✓）。
+**下一轮（写死 ✓，一次写完 ✓）** ✓：
+① `paint_brush` 加第 10 参 `coverage: Option<&dyn Fn(f64, f64) -> f32>` ✓
+   ⇒ **三处调用**：`11822` 传真实闭包 ✓、`4120` 与 `11926` 传 `None` ✓；
+② `write_brush_stroke` 加规格参数 `clip_to_selection`（**选区 id** ✓ / `true` = 取唯一或最新 ✓）⇒
+   从 `document_state(ctx)?.selections` 取 `Selection` ✓（照 `read_list_selections` ✓）⇒
+   用 `SelectionShape` 的**容错解析** ✓（`selection.rs:114-118` 那套 ✓）⇒ 造闭包 ✓；
+③ `paint_brush` 里**紧接"读回并写进图层"那段之后、`if reads_canvas` 之外** ✓ 加第二个小循环 ✓
+   （由 `index` 反推 `document_x/document_y` ✓ ⇒ 全在外 ⇒ 清零 ✓ / 部分在内 ⇒ **乘 alpha** ✓）；
+④ 缺省 ⇒ `None` ⇒ 整段不执行 ⇒ **逐字节如旧** ✓；
+⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿（**先看 `/tmp`** ✓）⇒ 英文提交 + 推送 ✓。
