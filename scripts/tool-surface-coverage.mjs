@@ -84,6 +84,32 @@ if (mentions.length === 0) {
   }
 }
 
+// ⑥ **文档里写死的工具数也必须等于实测** ✓（第 807 轮 ✓）：这类数字会**静默过时** ✗ ——
+// 实测过一次：网站的落地页与两份指南都写着「114 个工具（core 46 个）」✗，而真实是 136 / 68 ✓
+//（那是我把过时数字**从 README 一起搬进指南**时发现的 ✗ ⇒ 搬运也会搬运错误 ✓）。
+// ⇒ 找不到那句话就**报错**（不许静默通过 ✗ —— 改写了措辞等于**检查消失了** ✓）。
+const docClaims = [
+  { file: "docs/guide.md", re: /(\d+) tools against the (\d+) that core alone gives/ },
+  // ⚠️ 中文那句里「个工具」与「（」之间夹着 `**`（粗体标记 ✓）⇒ 正则必须容忍它 ✓。
+  { file: "docs/guide.zh-CN.md", re: /(\d+) 个工具\**（只开 core 是 (\d+) 个/ },
+];
+let docChecked = 0;
+for (const { file, re } of docClaims) {
+  const text = readFileSync(file, "utf8");
+  const m = text.match(re);
+  if (!m) {
+    fail(`${file} 里找不到「工具数」那句话 ⇒ 要么改写了措辞、要么删了 ⇒ 检查随之消失 ✗（请更新本判据的正则）`);
+    continue;
+  }
+  docChecked += 1;
+  // ⚠️ **局部名不要用 `core`/`all`** ✗：`core` 是外层的 `{ set, raw }` ✓、`all` 是全局 ✓
+  // ⇒ 遮蔽过一次，`core.set` 当场变成读一个数字 ⇒ `TypeError` ✓（**跑一次才发现的 ✓**）。
+  const [, claimedTotal, claimedCore, sentence] = [m[0], Number(m[1]), Number(m[2]), m[0]];
+  if (claimedTotal !== http.size || claimedCore !== core.set.size) {
+    fail(`${file} 写「${sentence.trim()}」，而实测是 ${http.size} / core ${core.set.size}`);
+  }
+}
+
 // ⑥ 打印覆盖面 ✓（让"绿"带上"覆盖了多少" ✓）
 console.log(`  HTTP 面：${http.size} 个工具｜声明 profile：${declaredProfiles.join("、")}`);
 console.log(`  MCP 默认（core）：${core.set.size} 个 ⇒ 覆盖 HTTP 的 ${(100 * core.set.size / http.size).toFixed(1)}%`);
@@ -95,6 +121,7 @@ for (const profile of declaredProfiles) {
     `${added.slice(0, 5).join("、")}${added.length > 5 ? " …" : ""}）`);
 }
 console.log(`  源码里「核心层 N 个」的说明：${mentions.length} 处，均已与实际一致 ✓`);
+console.log(`  文档里写死的工具数：${docChecked}/${docClaims.length} 处已核对 ✓`);
 
 if (bad > 0) {
   console.log(`  结论：三个面之间存在 ${bad} 处不一致 ✗（覆盖面对账不通过）`);
