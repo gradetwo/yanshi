@@ -6,12 +6,15 @@
 #     内核原生计时），改为**每夜定时 + 手动触发**，不再阻塞每次 push。
 name: CI
 
-# **只手动触发** ✓（用户决定 ✓）：`push` 不再跑 CI ✓。
+# **触发** ✓（用户指示更新 ✓）：`main` 上 push 与 PR 都跑 ✓，也保留手动触发 ✓。
 #
-# 原因 ✓：① 开发机上每轮都会本地跑**全量** `cargo test` + `clippy` + 真实浏览器检查 ✓，
-# 这些已经覆盖了 CI 的判据 ✓；② 而 push 触发会**按次计费** ✓（用户明确要求"不要 push 就 CI" ✓）。
-# 需要跑时：`gh workflow run ci.yml`（或网页上的 Run workflow ✓）。
+# 为什么改了 ✓：现在的分工是「**重活全部交给 GitHub，本地只做小改动** ✓」——
+# 本地不再跑全量 `cargo test` / 浏览器判据 / wasm 构建 ✓，改为 push 后**异步查看**结果 ✓
+# （`gh run list`、`gh run view` ✓）。长任务仍在 `heavy.yml` 里手动/定时跑 ✓。
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -88,3 +91,35 @@ jobs:
         # 这是唯一能抓住「原生全绿、浏览器/内核全崩」那类回归的检查
         # （曾有一个探针在 wasm32 上调用 Instant::now() 导致渲染必崩）。
         run: scripts/wasm-smoke.sh
+
+  criteria:
+    name: criteria (tool + browser + kernel parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: criteria
+      - name: Install wasm-bindgen-cli (pinned)
+        run: |
+          if ! command -v wasm-bindgen >/dev/null 2>&1; then
+            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          fi
+      - name: Install chromium
+        uses: browser-actions/setup-chrome@v1
+      - name: Put a chromium name on PATH
+        # 判据脚本按 `chromium` 找浏览器；这里把装好的 chrome 暴露成这个名字。
+        run: sudo ln -sf "$(command -v chrome || command -v google-chrome)" /usr/local/bin/chromium
+      - name: Build server and wasm package
+        run: |
+          cargo build --workspace
+          cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
+            target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+      - name: Run criteria
+        # 已知红名单在 scripts/criteria-known-red.txt：仍会运行、结果照印，但不阻塞 CI。
+        run: scripts/run-criteria.sh
