@@ -112,6 +112,9 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/' 
     expected_red=$((expected_red+1))
   else
+    # **必须真的计数** ✓（第 412 轮 ✓）：原先只打印不累加 ✗ ⇒
+    # 汇总永远写"意外失败 0" ✗ ⇒ **我这一整段读的就是这行** ✓ ⇒ 它一直没能反映失败 ✗。
+    fail=$((fail+1))
     echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
       tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）; fail=$((fail+1))
     first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
