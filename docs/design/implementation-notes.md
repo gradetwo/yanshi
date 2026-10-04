@@ -20329,3 +20329,24 @@ pub fn feather_coverage(cov: &Coverage, radius_px: f64) -> Coverage
 2. `render.rs` 加 `feather_coverage` ✓ + 单测（半径 0 ⇒ 完全相等 ✓；半径 >0 ⇒ 边缘出现中间值 ✓）；
 3. `write_fill_region` 接受并登记 `feather` ✓；
 4. 新判据 `tool-fill-region-feather.mjs` ✓（**硬边阶跃 vs `feather=20` 渐变，两侧都判** ✓）。
+
+### 🎯 第 343 轮：**羽化的正确性要点 —— 输出 bbox 必须外扩** ✓（动手前定清 ✓）
+
+**`Coverage` 结构（✓）** ✓：
+```rust
+pub struct Coverage { pub bbox: Bbox, pub width: u32, pub height: u32, pub data: Vec<f32> }
+```
+**要点（✓，必须先定 ✓）** ✓：**羽化会让颜色溢出到形状之外** ✓ ⇒
+⇒ **输出 `bbox` 要比输入大 `ceil(radius)`** ✗（并**在文档边界处裁剪** ✓）——
+否则**羽化的"外半边"会被裁掉** ✗，而结果是"**看起来羽化了、其实只是向内淡出**" ✗ ✓。
+**为什么这条值得单独记（✓）** ✓：**"只向内淡出"的实现能骗过一条"边缘出现中间值"的简单判据** ✗ ✓
+⇒ ⇒ **判据必须两侧都判** ✓：
+* **形状内部**（离边 > radius）⇒ 仍应**接近满覆盖** ✓；
+* **形状之外**（离边 ≤ radius）⇒ **必须出现中间值** ✓（**这一条才是"外半边没被裁掉"的证据** ✓）；
+* **离边 > radius 之外** ⇒ **仍应为 0** ✓（**边界不能无限扩散** ✓）。
+**下一步（✓，动手顺序已定 ✓）** ✓：
+1. `object.rs` 解析 `geometry.feather`（像素半径，缺省 0 ✓）；
+2. `render.rs` 加 `feather_coverage(cov, radius_px) -> Coverage` ✓
+   （**输出 bbox 外扩 `ceil(radius)`** ✓ + 两次可分离盒式模糊 ≈ 高斯 ✓）+ 单测 ✓；
+3. `write_fill_region` 接受并登记 `feather` ✓；
+4. 判据 `tool-fill-region-feather.mjs` ✓（**内 / 外 / 远处 三处都判** ✓，见上面的三侧 ✓）。
