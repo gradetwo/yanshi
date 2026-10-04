@@ -22,7 +22,10 @@ pub(crate) fn set_error(reason: &str) {
 
 /// 取走原因 ✓（取走即清 ✓ —— 免得把一次失败的原因**粘到下一次成功**上 ✗）。
 pub(crate) fn take_error() -> String {
-    LAST_ERROR.lock().map(|mut slot| std::mem::take(&mut *slot)).unwrap_or_default()
+    LAST_ERROR
+        .lock()
+        .map(|mut slot| std::mem::take(&mut *slot))
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
