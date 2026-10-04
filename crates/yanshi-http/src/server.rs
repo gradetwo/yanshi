@@ -68,7 +68,6 @@ pub struct HttpOptions {
     ///
     /// 指向**一个文件** ✓（`GET /brush-module.wasm` ✓）—— 不拼接路径 ⇒ 没有穿越面 ✓。
     /// 缺省是仓库里的构建产物路径 ✓；包里由打包脚本放到 `share/yanshi/` 下并显式指过来 ✓。
-    pub brush_wasm: Option<PathBuf>,
     /// **随发行包发布的资产根目录** ✓（仓库里是 `assets/` ✓；包内是 `share/yanshi` ✓）。
     ///
     /// **为什么与介质同类** ✓：它们都是**发行物的一部分** ✓ ⇒ 由命令行指定 ✓、
@@ -117,9 +116,6 @@ impl Default for HttpOptions {
             brand_dir: Some(PathBuf::from("assets/brand")),
             medium_dir: Some(PathBuf::from("assets/mediums")),
             // 门面是**构建产物** ✓（与 `crates/yanshi-wasm/pkg` 同一性质 ✓）⇒ 缺省指向 target 里那份 ✓。
-            brush_wasm: Some(PathBuf::from(
-                "target/wasm32-unknown-unknown/release/yanshi_brush_wasm.wasm",
-            )),
             assets_dir: Some(PathBuf::from("assets")),
         }
     }
@@ -147,8 +143,6 @@ impl HttpOptions {
                 "--no-wasm" => options.wasm_dir = None,
                 "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
                 "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
-                "--brush-wasm" => options.brush_wasm = Some(value_of("--brush-wasm")?.into()),
-                "--no-brush-wasm" => options.brush_wasm = None,
                 "--assets-dir" => options.assets_dir = Some(value_of("--assets-dir")?.into()),
                 "--no-assets" => options.assets_dir = None,
                 "--no-mediums" => options.medium_dir = None,
@@ -536,13 +530,6 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
         return match method {
             "GET" => medium_asset(state, file),
-            _ => method_not_allowed(request, "GET"),
-        };
-    }
-    if path == "/brush-module.wasm" {
-        // **`.myb` 笔刷的 wasm 门面** ✓ —— 固定一个文件 ✓（不拼接路径 ⇒ 不可能借它读到别的东西 ✓）。
-        return match method {
-            "GET" => brush_module_asset(state),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -1254,22 +1241,11 @@ const SAMPLE_FILES: [&str; 6] = [
     "sample-yanshi.png",
 ];
 
-/// `GET /brush-module.wasm`：把**门面**发给浏览器 ✓（第 58 轮证明它与服务端**逐字节相同** ✓）。
-fn brush_module_asset(state: &ServerState) -> Response {
-    let Some(path) = state.options.brush_wasm.as_ref() else {
-        return crate::http::not_found("这一份服务端没有配置笔刷门面（--brush-wasm）");
-    };
-    match std::fs::read(path) {
-        Ok(bytes) => Response::bytes(200, "application/wasm", bytes),
-        Err(_) => crate::http::not_found(format!(
-            // **不要再教人构建第二份实现** ✗（第 185 轮 ✓：(A)③ 要求**退休**它 ✓）：
-            // 这个端点发的是**运行时指定的那一份 wasm** ✓ ⇒ 要指向**共享内核 `yanshi-wasm`** ✓
-            //（客户端渲染用的就是它 ✓ ⇒ 两份合一 ✓）。过时的文案会把人引向已被退休的那条路 ✗。
-            "笔刷门面还没配置：{}（把 `--brush-wasm` 指向共享内核 `yanshi-wasm` 的产物 ✓，例如 package-release.sh 打出来的 `assets/brush-module.wasm` ✓）",
-            path.display()
-        )),
-    }
-}
+// **已退休** ✓（(A)③ ✓）：这里原来是 `GET /brush-module.wasm` 与它的处理函数 ✓ ——
+// 它把**第二份实现**（`.myb` 门面 ✓）发给浏览器 ✓，供拖动期的本地笔刷预览用 ✓。
+// 预览现在走**共享内核** ✓（`state.wasm.paint_brush` ✓，一份实现 ✓）⇒ 这条路由**没有存在意义**了 ✓
+// ⇒ 连同 `--brush-wasm` / `--no-brush-wasm` 与那个选项字段一并删除 ✓
+//（**留说明而不是留空白** ✓ —— 空白会让人以为"少了个端点"✗，与过时的描述一样误导 ✓）。
 
 /// `GET /brushes/{file}.myb`：把**笔刷文本**发给浏览器 ✓。
 ///

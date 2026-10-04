@@ -17988,3 +17988,22 @@ const bytes = kernel.paint_brush(request);
 **还剩什么（下一轮 ✓）** ✓：**删门面本身** ✓ —— 那个 crate ✓、`--brush-wasm` 那套 ✓、
 打包那一步（`package-release.sh:448/456` ✓）、`/brush-module.wasm` 路由 ✓、
 以及查看器里**那句已经没用的 `fetch("/brush-module.wasm")`** ✗（它现在只是**白拉一份文件** ✗）。
+
+## 🎉 第 205 轮：**服务端端点正式退休** ✓（`/brush-module.wasm` ⇒ **404** ✓）
+
+**删掉的六处（全在 `server.rs` ✓）** ✓：
+```
+71        pub brush_wasm: Option<PathBuf>          ✓ 选项字段
+118–122   缺省值（指向 target/…/yanshi_brush_wasm.wasm ✓）
+150–151   --brush-wasm / --no-brush-wasm           ✓ 两个标志
+540–547   路由块（固定发那一个文件 ✓）
+1258–1270 fn brush_module_asset(state)              ✓ 处理函数
+```
+⇒ `server.rs` **2560 → 2536 行** ✓、编译通过 ✓、离线判据 `dark 0/3288/3288` ✓ **完全不变** ✓、
+`/brush-module.wasm` ⇒ **404** ✓ ⇒ ⇒ **没有任何东西再需要它** ✓。
+**留的是说明而不是空白** ✓：`"留空白会让人以为'少了个端点'✗，与过时的描述一样误导 ✓"` ✓。
+**⚠️ 一个必须立刻修的连带问题（已写进提交与这里 ✓）** ✓：
+`scripts/package-release.sh` **仍在建那个 crate** ✓ 并**仍在传 `--brush-wasm`** ✗ ——
+而那个标志**刚刚被删掉** ✗ ⇒ ⇒ **打包出来的二进制会带一个未知选项** ✗
+⇒ ⇒ **下一轮必须一并处理** ✓：那个脚本的 448/456/566/633 四处 ✓ + crate 本体 ✓ + workspace 成员 ✓。
+（`cargo test` 测不到这条 ✓ —— 打包脚本不在门禁里 ✓ ⇒ 所以**必须靠"改完还剩谁在引用"这一查** ✓。）
