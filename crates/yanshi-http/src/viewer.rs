@@ -11,6 +11,19 @@
 //! 该页面是 Phase 1 的「最小 Web 查看器」交付物；完整编辑器属后续阶段。
 
 /// 查看器页面（HTML + CSS + JS）。
+/// **发页面时把只读工具清单注入进去** ✓ —— 来源是 `yanshi-server` 的 `ALL_TOOLS` ✓，
+/// 取 `!spec.mutating` ✓ ⇒ **权威、自动、不会漏** ✓（这比手写白名单强的地方就在这里 ✓）。
+pub fn page_with_read_tools() -> String {
+    let names: Vec<String> = yanshi_server::tools::ALL_TOOLS
+        .iter()
+        .filter(|spec| !spec.mutating)
+        .map(|spec| format!("\"{}\"", spec.name))
+        .collect();
+    PAGE.replace("__READ_TOOLS__", &names.join(", "))
+}
+
+/// **查看器整页** ✓（原样 ✓；发出去时会把只读工具清单注入 `__READ_TOOLS__` ✓ —— 见上面那个函数 ✓）。
+/// 注意 ✓：我这个函数是**插在它之前**的 ✓ ⇒ 一度把它的文档注释"抢"走了 ✗ ⇒ `clippy -D warnings` 当场红 ✓。
 pub const PAGE: &str = r##"<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1006,24 +1019,11 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // **实测补全（第 168 轮 ✓）**：原来只有 `get_document`/`list_layers` ✗ —— 但离线实测失败的还有
 // `get_preferences` ✓ 与 **`list_effects`** ✓（注意：**不是** `/api/effects` ✗ ——
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
-const LOCAL_READ_TOOLS = [
-  "get_document",
-  "list_layers",
-  "get_preferences",
-  "list_effects",
-  "get_log", // **第 169 轮实测补的** ✓ —— 又一次"靠失败 URL 才发现" ✓（我列的清单总是漏 ✓）
-  // **第 171 轮实测补的** ✓：这三条是**离线报出来的** ✓ ——
-  // `list_objects`（客户端渲染器**靠它才有东西可画** ✓ ⇒ 缺它画面就是空的 ✓）、
-  // `list_assets`（笔刷/纹理清单 ✓）、`list_selections`（选区 ✓）。
-  // ⇒ 又一次印证：**我的清单总是漏，只有"失败的 URL"是全的** ✓。
-  "list_objects",
-  "list_assets",
-  "list_selections",
-  // **第 175 轮实测抓到的** ✓：`list_palette_colors` —— **第 7 次**"靠点名才发现" ✓。
-  // 它的特别之处 ✓：它**抛异常** ✗（不是"悄悄失败"✗）⇒ 于是**打断了启动链** ✓
-  // ⇒ `preview_src` 一直是空 ✓、`objects` 一直是 no-objects ✓ ⇒ 画面全空 ✓。
-  "list_palette_colors",
-];
+/// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
+/// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
+/// 服务端发页面时会把 `__READ_TOOLS__` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
+const LOCAL_READ_TOOLS = [__READ_TOOLS__];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
