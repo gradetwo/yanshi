@@ -17763,3 +17763,22 @@ crates/yanshi-wasm/Cargo.toml ：只有 serde / serde_json ✓ ⇒ **没有 hoku
 **下一轮（写死 ✓，三件小事 ✓）** ✓：① 给 `yanshi-wasm/Cargo.toml` 加 `hokusai` ✓；
 ② 把助手区与 `paint()` **照抄**进 `kernel.rs`（或新文件 ✓）⇒ 编译 ✓；
 ③ 加判定性**判据**（内核方法 vs 服务端笔触逐字节相同 ✓）⇒ 之后才改查看器、才删门面 ✓。
+
+### 🟠 第 194 轮：**内核 parity 判据已写好** ✓ —— 但它**跑不起来** ✗，原因很具体 ✓
+
+**做了什么（✓）** ✓：`scripts/kernel-brush-parity.mjs` ✓ —— 与 `wasm-brush-parity.mjs` **同形** ✓，
+唯一差别是：那边用**裸 wasm + C-ABI**（门面 ✓），这边用 **bindgen 包**（`crates/yanshi-wasm/pkg/yanshi_wasm.js` ✓
+= **浏览器真正加载的那一份** ✓）。初始化照查看器那句 ✓（`viewer.rs:1536` 的 `await module.default()` ✓），
+Node 里把**同目录的 `_bg.wasm`** 交给它 ✓。
+**两个实测卡点（✓）** ✓：
+1. **`pkg/` 是旧的** ✗ —— 我在**加方法之前**构建的 ✓ ⇒ `kernel.paint_brush is not a function` ✓；
+2. **重建失败** ✗：`wasm32-unknown-unknown` **当前工具链没装** ✓（`can't find crate for std` ✓ + rustup 的提示 ✓）
+   —— 而**门面产物是能编的** ✓（10月2日 ✓）⇒ 说明**打包脚本用的是它自己探测的另一个工具链** ✓
+   （`package-release.sh:318–321` 的 `kernel_toolchain` ✓）。
+**下一轮（写死 ✓）** ✓：
+① 读 `package-release.sh` 的**工具链探测段** ✓（300–325 ✓）⇒ 用**同一个**工具链重建 `pkg` ✓
+   （`cargo build --release --target wasm32-unknown-unknown -p yanshi-wasm` ✓ + `wasm-bindgen --target web` ✓）；
+② 重建后跑 `scripts/kernel-brush-parity.mjs` ✓ ⇒ 目标 **全部逐字节相同** ✓；
+③ **判据绿了**才改查看器 ✓、才删门面 ✓（顺序不可反 ✗ —— 这是第 187 轮定的规矩 ✓）。
+**五轮之后的进度（如实 ✓）** ✓：**内核侧已就位且编译绿** ✓（第 192 轮 ✓）、**判据已写好** ✓（本轮 ✓）、
+剩 **重建 pkg ⇒ 判据转绿 ⇒ 改查看器 ⇒ 删门面** ✓。
