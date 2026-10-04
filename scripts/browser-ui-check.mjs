@@ -933,8 +933,13 @@ const selectionResult = await evaluate(`(async () => {
       for (let i = 0; i < 40; i++) {
         await wait(250);
         const current = snapshot();
+        // ⚠️ **必须逐像素比** ✗（第 815 轮实测 ✓）：原先进位是 97 * 4 字节 ⇒ **每 97 个像素只看 1 个** ✗
+        // ⇒ 一条**细笔画**（例如沿 y = 0.9 的一条线）可能**整条落在采样点之间** ✗ ⇒ 判成"没变" ✓
+        // ⇒ 于是在**笔画异步补上之前**就 return ✗ ⇒ 随后按这份**旧画布**计数 ✓
+        // ⇒ 表现就是「清除后画的那笔看不见」✗ 与「文本没画出像素」✗ —— 而两者**间歇**出现 ✓
+        //（本机隔离探针用充足固定等待 ⇒ 每次都画得上 ✓ ⇒ 说明产品没问题 ✓，是判据抢跑 ✓）。
         let same = true;
-        for (let index = 0; index < current.length; index += 97 * 4) {
+        for (let index = 0; index < current.length; index += 4) {
           if (current[index] !== previous[index]) { same = false; break; }
         }
         previous = current;
