@@ -13984,6 +13984,14 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "set_preferences",
         r#"{"values":{"reference.blob_hash":null}}"#,
     ),
+    // **`add_filter`**（✓，第 460 轮 ✓）：必填两个 ✓ —— `layer_id`（用默认图层 ✓，第 349 轮那条羽化判据
+    // 实际用过 ✓）与 `filter_name`（spec 里写"见工具说明" ✗ ⇒ **取值域在渲染层** ✓：
+    // `crates/yanshi-render/src/filter.rs` 的解析分支列出了 invert / posterize / blur / sharpen / noise … ✓）。
+    // 这里选 **invert**：它**不需要额外参数** ✓ ⇒ 只给两个必填项就成立 ✓；`params` 与 `opacity` 都有缺省 ✓。
+    (
+        "add_filter",
+        r#"{"layer_id":"layer_default","filter_name":"invert"}"#,
+    ),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
