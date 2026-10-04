@@ -27,7 +27,21 @@ const draw = async (docId, text) => {
   if (drawn.ok !== true || out.ok !== true) {
     throw new Error(`画/导出失败 ⇒ 判据无法运行（不是通过）：${JSON.stringify({ drawn, out }).slice(0, 200)}`);
   }
-  return createHash("sha256").update(readFileSync(`${exportDir}/${docId}.png`)).digest("hex");
+  // **按候选路径查找** ✓（第 331 轮）：服务端把导出写在自己的 `--root` 下 ✓，
+  // 而判据在仓库根下跑 ✗ ⇒ 只用一个相对路径在 CI 里必然 `ENOENT` ✗（实测 ✓）。
+  // 候选里优先 `YANSHI_WORKSPACE`（**runner 已经导出它** ✓，`tool-batch-preview` 就是这么用的 ✓）。
+  const candidates = (() => {
+    const ws = process.env.YANSHI_WORKSPACE;
+    const dirs = [process.env.YANSHI_EXPORT_DIR, ws && `${ws}/exports`, ws, exportDir, "."].filter(Boolean);
+    return dirs.map((dir) => `${dir}/${docId}.png`);
+  })();
+  for (const candidate of candidates) {
+    try {
+      return createHash("sha256").update(readFileSync(candidate)).digest("hex");
+    } catch (_) { /* 试下一个 ✓ */ }
+  }
+  // **失败时把试过的路径打出来** ✓ —— 下次它自己就能说明"我找过哪里" ✓。
+  throw new Error(`找不到导出文件 ${docId}.png ⇒ 试过：${candidates.join(" ｜ ")}`);
 };
 const cjk = await draw("cjk-doc", "你好世界");
 const marks = await draw("marks-doc", "????????");
