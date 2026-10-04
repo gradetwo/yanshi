@@ -6209,7 +6209,7 @@ board.addEventListener("pointerdown", (event) => {
     liveStrokeClosed = false;
     liveStroke = { name: selectedBrushName, size: Number(($("size") || {}).value) || undefined, lastAt: 0 };
     liveLastRegion = null;
-    void loadLocalBrushModule().catch(() => {});
+
   } else {
     liveStroke = null;
     liveLastRegion = null;
@@ -6252,40 +6252,10 @@ let localBrushLoading = null;
 let liveLastRegion = null;
 const localBrushText = new Map();
 
-async function loadLocalBrushModule() {
-  if (localBrushApi) return localBrushApi;
-  if (!localBrushLoading) {
-    localBrushLoading = fetch("/brush-module.wasm")
-      .then((response) => {
-        if (!response.ok) throw new Error("模块 HTTP " + response.status);
-        // **顺手把它写进 SW 用的那个缓存**（离线时 SW 的回落会 caches.match 到它）。
-        // 缓存名必须与 SW 里的 CACHE 一致。
-        // **必须在读 body 之前就 clone** ✗ —— 我上一版把 `response.clone()` 写在下面的 `.then()` 里 ✗，
-        // 那时代码已经调用过 `arrayBuffer()` ⇒ 同一个 body 被读了两次 ⇒ 实测报
-        // `TypeError: Failed to execute 'clone' on 'Response': Response body is already used` ✓
-        // ⇒ 门面**从未进过缓存** ⇒ 离线就没有本地预览 ✗（这就是"离线画不了"的直接原因 ✓）。
-        let forCache = null;
-        try {
-          if (window.caches) forCache = response.clone();
-        } catch (error) { forCache = null; }
-        if (forCache) {
-          caches.open("yanshi-shell-v1")
-            .then((cache) => cache.put("/brush-module.wasm", forCache))
-            .catch((error) => console.warn("写缓存失败 /brush-module.wasm（离线将没有本地预览）：" + error));
-        }
-        return response.arrayBuffer();
-      })
-      .then((bytes) => WebAssembly.instantiate(bytes, {}))
-      .then(({ instance }) => { localBrushApi = instance.exports; return localBrushApi; })
-      .catch((error) => {
-        localBrushLoading = null;
-        window.yanshiStats.localBrushErrors = (window.yanshiStats.localBrushErrors || 0) + 1;
-        log("笔刷本地渲染模块没加载上：" + String(error).slice(0, 80), "#c93");
-        throw error;
-      });
-  }
-  return localBrushLoading;
-}
+// **已退休** ✓（(A)③ ✓）：这里原来是 `loadLocalBrushModule()` ✓ —— 它去拿 `/brush-module.wasm`（**第二份实现** ✗）
+// 并用那套 C-ABI 内存管道做笔刷预览 ✓。现在预览走**共享内核** ✓（`state.wasm.paint_brush` ✓，见 `paintLiveFrame` ✓）
+// ⇒ 这个函数、它的缓存键、以及那句 fetch **全都没有存在意义**了 ✓ ⇒ 删掉 ✓（**留一段说明** ✓，
+// 免得后人以为"少了个加载步骤"✗ —— **过时的沉默与过时的描述一样会误导** ✗）。
 
 async function loadLocalBrushText(name) {
   if (localBrushText.has(name)) return localBrushText.get(name);
@@ -6354,7 +6324,7 @@ async function paintLiveFrame() {
   liveStroke.lastAt = now;
   livePaintBusy = true;
   try {
-    const api = await loadLocalBrushModule();
+    // 门面已退休 ✓ ⇒ 这里不再取它 ✓（预览直接用 `state.wasm` ✓）
     const brush = await loadLocalBrushText(liveStroke.name);
     if (brush.readsCanvas) {
       // **承认边界，而不是给一个会漂的预览** ✓（第 68 轮定 ✓）：涂抹 / colorize 一类要靠"抹开画布上
@@ -7328,7 +7298,7 @@ if (serverRenderPreferred()) {
   needsServerPixels = true;
   if (typeof queueServerBlit === "function") queueServerBlit();
 } else {
-  void loadLocalBrushModule().catch(() => undefined);
+
 }
 
 /// **参考图叠加**（AI 画家需求 P2-9 的可见那一半）：服务端把 `reference.*` **只记在偏好里**
