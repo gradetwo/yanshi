@@ -22966,3 +22966,24 @@ awk 查 :6420-6600 的监听器 ⇒ **:6428 pointermove（结束于 :6485 前 �
 —— **看它对 `mask_rect` 是否设了 dragging ✓、是否 push 了首个点** ✓。
 **★ 这一轮的价值（✓）** ✓：**两个候选都"可被一行代码证伪"** ✓ ——
 **这正是我这段里唯一稳定的推进方式** ✓：**不是"想出更好的假设"✓，而是"让假设落到一处可读的代码上"** ✓。
+
+### 🎯 第 502 轮：**按下部分的结构 —— 每个特殊工具各一段，且都设 `dragging` + `points = [point]`** ✓
+
+**读到（✓，`viewer.rs:6149-6175` ✓）** ✓：
+```js
+:6152  if (wantsPanEvent(event)) return;
+:6153  if (state.tool === "text") { … return; }
+:6158  if (state.tool === "medium_dab") { const point = localPoint(event);
+:6164    state.dragging = event.pointerId;   :6165  state.points = [point];   … return; }
+:6170  if (state.tool === MOVE_LAYER_TOOL) { const start = localPoint(event);
+:6174    state.dragging = event.pointerId;   :6175  state.points = [start];   … return; }
+```
+**⇒ 观察（✓）** ✓：**模式高度一致** ✓ —— **每个特殊工具都在按下时"设 `dragging` ✓ + `points = [首个点]`"** ✓
+⇒ ⇒ **蒙版自己那一段在更下面** ✓ ⇒ ⇒ **若它照同一模式写 ⇒ 候选 A（`:6429` 直接 `return`）不成立** ✗
+⇒ ⇒ **而候选 B（`:6474` 用 `points[0]`）也就没有问题** ✗
+⇒ ⇒ ⇒ **即：我上一轮提出的两个候选，可能**都不成立**** ✓（**须读蒙版那一分支才能定** ✓）。
+**⇒ 下一处（✓）** ✓：**读蒙版（`mask_rect` / `MASK_TOOLS`）在按下处理器里的那一段** ✓
+—— **它是否设 `dragging` ✓、是否 `points = [point]` ✓、有没有提前 `return`** ✓。
+**★ 一个可复用的读法（✓）** ✓：**"把同类分支排成一行看"** ✓ ——
+**这次一眼就看出"模式一致"，从而对候选 A/B 同时产生怀疑** ✓；
+**如果我只读蒙版那一段 ✓，就没有这个对照 ✓**（**对照组又一次比单点更有信息量 ✓，第 443 轮同款** ✓）。
