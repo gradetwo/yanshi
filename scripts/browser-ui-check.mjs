@@ -2574,7 +2574,15 @@ const layerPanel = await evaluate(`(async () => {
   out.afterAdd = rows().length;
   try {
     const listed = await window.yanshiCallTool("list_objects", {});
-    const withLayer = ((listed && listed.objects) || []).find((o) => o.layer_id);
+    const objects = (listed && listed.objects) || [];
+    const counts = {};
+    for (const o of objects) { if (o.layer_id) counts[o.layer_id] = (counts[o.layer_id] || 0) + 1; }
+    out.objectsPerLayer = counts;
+    let withLayer = null;
+    for (const id of Object.keys(counts)) {
+      if (!withLayer || counts[id] > counts[withLayer.layer_id]) withLayer = { layer_id: id };
+    }
+    if (!withLayer) withLayer = objects.find((o) => o.layer_id) || null;
     const select = document.getElementById("layer");
     out.switchedFrom = select ? select.value : null;
     if (withLayer && select && select.value !== withLayer.layer_id) {
@@ -2680,7 +2688,7 @@ if ((layerPanel?.paintedAfterShow || 0) !== (layerPanel?.paintedBefore || 0)) {
   );
 }
 if (!layerPanel?.lockedOnServer) layerProblems.push("点锁图标之后服务端应记录 locked=true");
-console.log(`  【切层】from=${layerPanel?.switchedFrom} to=${layerPanel?.switchedTo} failed=${layerPanel?.switchFailed} rows=${JSON.stringify(layerPanel?.rowsAfterSwitch)}`);
+console.log(`  【切层】from=${layerPanel?.switchedFrom} to=${layerPanel?.switchedTo} failed=${layerPanel?.switchFailed} rows=${JSON.stringify(layerPanel?.rowsAfterSwitch)} perLayer=${JSON.stringify(layerPanel?.objectsPerLayer)}`);
 console.log(`  图层面板：${layerPanel?.rowCount} 行（自上而下 ✓ ${layerPanel?.firstRowIsTop ? "是" : "否"}）｜＋⇒${layerPanel?.afterAdd}｜⧉⇒${layerPanel?.afterDuplicate}（${layerPanel?.copyName}）｜上移生效 ${layerPanel?.moveChanged ? "✓" : "✗"}｜隐藏 ${layerPanel?.paintedBefore}→${layerPanel?.paintedAfterHide}→${layerPanel?.paintedAfterShow}｜锁定 ${layerPanel?.lockedOnServer ? "✓" : "✗"}（图标 ${layerPanel?.lockIcon}）`);
 const layerShot = await capture("05-layer-panel");
 console.log(`  截图：${layerShot || "（无）"}`);
