@@ -25700,3 +25700,7 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`91b7d4b` 与 `109997a` 仍 `in_progress`（各剩 1 片 ✓）；最近完成仍是 `dce6bfe`（**❌ 1 项** ✓）。
 **⇒ 已定**：**文档有 ≥7 条原子 ⇒ 最早那条是 `create_object` ⇒ 跳到它必改像素** ✓ ⇒ **待 CI** ✓。
+
+### 🎯 第 702 轮：**两个修复仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`91b7d4b` 与 `109997a` 仍 `in_progress`；最近完成仍是 `dce6bfe`（**❌ 1 项** ✓）。⇒ **待 CI** ✓。
