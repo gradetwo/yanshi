@@ -13964,6 +13964,14 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("clear_reference", r#"{}"#),
     ("estimate_dehaze", r#"{}"#),
     ("list_textures", r#"{}"#),
+    // **`set_property`**（✓，第 441 轮 ✓）：它的"必填"有一部分**只写在实现里** ✗ ——
+    // `param!` 把 `layer_id`/`object_id` 都标成可选 ✓，而写入器要求**二者必居其一** ✓
+    //（`tools.rs:7907` ✓）⇒ **照 spec 写会被拒** ✗ ⇒ 这里按实现写 ✓。
+    // `layer_default` 是默认图层 id ✓（第 349 轮那条羽化判据实际用过 ✓，有证据 ✓）。
+    (
+        "set_property",
+        r#"{"layer_id":"layer_default","key":"visible","value":true}"#,
+    ),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
