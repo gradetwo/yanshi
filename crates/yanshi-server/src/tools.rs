@@ -3863,10 +3863,16 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("rect")
         .to_string();
+    // **羽化半径**（像素 ✓，`shape.feather` ✓，缺省 0 ✓ ⇒ **不传 ⇒ 行为逐字节不变** ✓）：
+    // **负值按 0** ✓（没有"负羽化"这回事 ✓）；真正的模糊在**渲染侧**做 ✓
+    //（`render.rs` 里 `feather_coverage` ✓）—— 这里只把**参数存进形状描述** ✓，
+    // 这样**文档模型存的是参数而不是像素** ✓（改半径不必重画 ✓）。
+    let feather = number("feather", 0.0).max(0.0);
     let geometry = match kind.as_str() {
         "rect" => json!({
             "kind": "rect",
             "bbox": {"x": number("x", 0.0), "y": number("y", 0.0), "w": number("w", 0.0), "h": number("h", 0.0)},
+            "feather": feather,
         }),
         "ellipse" => {
             let (cx, cy) = (number("cx", 0.0), number("cy", 0.0));
@@ -3874,6 +3880,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             json!({
                 "kind": "ellipse",
                 "bbox": {"x": cx - rx, "y": cy - ry, "w": rx * 2.0, "h": ry * 2.0},
+                "feather": feather,
             })
         }
         "polygon" => {
@@ -3883,7 +3890,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     ErrorContext::detail("polygon 需要 points（[[x,y], …]）".to_string()),
                 )
             })?;
-            json!({"kind": "polygon", "points": points})
+            json!({"kind": "polygon", "points": points, "feather": feather})
         }
         other => {
             return Err(YanshiError::new(
