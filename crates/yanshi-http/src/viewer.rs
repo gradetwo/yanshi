@@ -6359,7 +6359,12 @@ async function paintLiveFrame() {
     // （形状正是 `kernel-brush-parity.mjs` 逐字节验过的那一份 ✓）。
     // 与门面那套 C-ABI 的区别 ✓：**内存管道不用手写** ✓（bindgen 接管 ✓）⇒
     // `paint_brush` 成功给像素 ✓、失败给 `undefined` ✓ ⇒ **两条路可区分** ✓。
-    const kernel = state.wasm;
+    // **是 `state.kernel`（实例）不是 `state.wasm`（模块）** ✗ —— 我第一版把两者混了 ✓：
+    // `state.wasm` 是**模块命名空间** ✓（`new state.wasm.WasmKernel(...)` 的模板 ✓），
+    // 而 `paint_brush` 挂在**实例**上 ✓ ⇒ 写错就等于"每次调用都拿不到方法" ✓
+    // ⇒ 于是**每一次预览都失败** ✗（实测 `localBrushCalls: 15 / localBrushErrors: 15` ✓），
+    // 而失败原因又被我当时的 `Option` 接口丢掉 ✗ ⇒ **一个词的错伪装成了"内核坏了"** ✓。
+    const kernel = state.kernel;
     const bytes = kernel && typeof kernel.paint_brush === "function" ? kernel.paint_brush(request) : null;
     if (!bytes || !bytes.length) {
       // 失败：内核给不出原因文本 ✗（它与门面的错误通道不同 ✓）⇒ 就**说清是"内核没画出来"** ✓
