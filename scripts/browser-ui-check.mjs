@@ -1497,6 +1497,7 @@ const jumpUndoResult = await evaluate(`(async () => {
   // 所以跳到「倒数第二条」画面一样 —— 那条路走不通。
   // 而最早那条（日志里的 create_object）一定与当前状态不同，故用它。
   const target = rows[0];
+  const rowsBefore = rows.length;
   const before = ${canvasFingerprint};
   // 必须点「回到此处」，而不是行内第一个按钮（第 707 轮）：实测行内依次是
   // 「详情」与「回到此处」两个按钮，而 querySelector("button") 取的是「详情」，
@@ -1513,6 +1514,15 @@ const jumpUndoResult = await evaluate(`(async () => {
     await new Promise((r) => setTimeout(r, 100));
     jumped = ${canvasFingerprint};
     if (jumped !== before) break;
+  }
+  // 画面没变时，把点击后的历史行数写进页面日志（失败时判据会打印它）。
+  // 行数加一 ⇒ 跳转执行了，那是跳转不重绘；行数不变 ⇒ 点击没触发跳转。
+  if (jumped === before) {
+    const rowsAfter = document.querySelectorAll("#history .row").length;
+    const logEl = document.getElementById("log");
+    if (logEl) {
+      logEl.innerText += "\n[判据] 跳转后画面未变｜历史行数 " + rowsBefore + " → " + rowsAfter;
+    }
   }
   document.querySelector('button[data-tool="undo"]').click();
   await new Promise((r) => setTimeout(r, 2200));
