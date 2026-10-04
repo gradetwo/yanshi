@@ -621,7 +621,14 @@ const maskResult = await evaluate(`(async () => {
   await new Promise((r) => setTimeout(r, 100));
   // **探针必须在抬手之前取** ✓（第 467 轮 ✓）：原先它写在 pointerup **之后** ✗
   // ⇒ 抓到的是"抬手之后"的日志 ✓ ⇒ **名字承诺了它没做的事** ✗（与"算了不断言"同族 ✓）。
-  const logDuringDrag = document.getElementById("log").innerText.slice(-160);
+  // **直接观测，不再猜上游** ✓（第 506 轮 ✓）：八个假设全被推翻之后 ✗，改成"读运行时的状态" ✓ ——
+  // 判据早就能读 state() ✓（第 474 轮我自己加的 ✓）⇒ **能观测的，就别推理** ✓。
+  // 观测值接进 logDuringDrag ✓ ⇒ **它会顺着已有的打印进日志** ✓，不必再改打印处 ✓。
+  const stateProbe = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
+  const logDuringDrag = document.getElementById("log").innerText.slice(-160)
+    + "｜拖动中 tool=" + (stateProbe ? stateProbe.tool : "?")
+    + " points=" + (stateProbe && stateProbe.points ? stateProbe.points.length : "?")
+    + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
   fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
   for (let i = 0; i < 120 && masked >= filled; i++) {
