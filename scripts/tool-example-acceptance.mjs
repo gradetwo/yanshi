@@ -90,8 +90,13 @@ for (const tool of withExample) {
   const badParameter =
     /不接受参数|不是合法 JSON|invalid type|缺少必填|应当|格式非法|未知资产种类|要一起给|必须|不在允许/.test(detail);
   // **门槛收到"必须成功"** ✓：前置已经建好 ⇒ 任何失败都算这个示例还没到位 ✗。
+  // 第 562 轮：缺上下文的判定要优先于「参数错」——
+  // badParameter 的正则里有「缺少必填」与「必须」⇒ 上面两条实测先命中它
+  // ⇒ 走了「示例被拒」而永远到不了下面的 needsState ⇒ 我补的措辞等于没加。
+  // 缺上下文比「参数错」更具体（要你先建对象，不是写错值），所以先算它。
+  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch/i.test(detail);
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
-  else if (badParameter) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
+  else if (badParameter && !needsPriorState) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
   // 实测 15 条"其实是缺前置状态"的示例被归进了 `rejected` ✗ —— 它们的措辞是：
   // 「不在日志（里/中）」「从未存在过」「找不到…」「没有可修改的…」「已经有一个打开的…」
