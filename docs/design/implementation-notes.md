@@ -16428,3 +16428,26 @@ pub fn stamp_stroke_configured(
    其余 `mode` **明确报错** ✗）；
 ④ `clip_to_selection` 缺省 ⇒ `coverage = None` ✓ ⇒ **逐字节如旧** ✓；
 ⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（目标 **内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+
+### 🎯 第 138 轮：**`.myb` 笔触走的是"服务端自己那套盖章"** ✓（两处盖章，别改错 ✗）
+
+**追出来的链路（原文 ✓）** ✓：
+* 渲染器侧 ✓：`render.rs:805` `stamp_stroke(layer_buffer, &brush, &geometry)` ✓
+  ⇒ 它内部是 `brush.rs:480` `stamp_stroke_configured(buffer, brush, stroke, None, None)` ✓
+  ⇒ **`coverage = None`** ✗（所以形状/文字那条 `coverage` 与它**不是同一处** ✓）；
+* **服务端侧（`.myb` 走这里 ✓）** ✓：`tools.rs:11178` `fn stamp_stroke(…)` ✓ + `tools.rs:11190` `fn stamp_stroke_from(…)` ✓
+  ⇒ 这是**服务端自己**的盖章循环 ✓（`write_brush_stroke` 用的是它 ✓ —— 我在它附近只搜到 `encode_png` ✓ 就是证据 ✓）。
+⇒ **结论** ✓：选区的接线点在 **`tools.rs` 的 `stamp_stroke_from` 那个循环里** ✓
+（按 dab 逐个判覆盖率 ✓ —— 与 `brush.rs:515` 注释给的语义**完全一致** ✓：
+"`coverage(x, y)` 按文档坐标给出 0..1 ✓；覆盖度 ≤ 0 的印章**直接跳过**" ✓）。
+**为什么这一轮到此为止（纪律 ✓）** ✓：目标函数 `stamp_stroke_from` 约 **130 行** ✓（11190–11320 ✓），
+而"把一个掩码接进逐个 dab 的循环"必须**看清它的循环骨架**（dab 中心怎么算 ✓、写到哪 ✓、压力/颜色在哪乘 ✓）
+——**盲补一定会错位** ✗，而源码自己又警告过这里**漂移过** ✗ ⇒ **下一轮先读它，再改** ✓。
+**下一轮（写死 ✓）** ✓：
+① 读 `tools.rs:11190-11320` ✓（`stamp_stroke_from` 的循环骨架 ✓）；
+② `write_brush_stroke` 加 `clip_to_selection`（**选区 id 字符串** ✓，兼容 `true` = 取最新 ✓）⇒ 解析成
+   `Option<Box<dyn Fn(f64,f64)->f32>>` ✓（用 `rect/ellipse/polygon_coverage_clipped` ✓ + `feather` ✓ + `invert` ✓；
+   其余 `mode` **明确报错** ✗）；
+③ 在那个循环里按 dab 中心取覆盖率 ✓ ⇒ **≤ 0 就跳过** ✓、否则**乘进它的不透明度** ✓（与注释语义一字不差 ✓）；
+④ 缺省 ⇒ **不查、不乘** ✓ ⇒ 逐字节如旧 ✓；
+⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（**内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
