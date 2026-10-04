@@ -4,7 +4,6 @@
 # **为什么不能只发二进制** ✗：服务端启动时要读**两棵资产树** ✓：
 #   * WASM 计算内核 → 缺省 `crates/yanshi-wasm/pkg` ✓（`--wasm-dir` 可改 ✓）
 #   * 介质插件     → 缺省 `assets/mediums` ✓（`--medium-dir` 可改 ✓）
-#   * 笔刷门面     → `assets/brush-module.wasm` ✓（`--brush-wasm` 可改 ✓；服务端若不指它，
 #                    缺省会去 `target/` 找 ✓ ⇒ 包里必须显式指到 assets 这一份 ✓）
 # 两者都是**相对当前工作目录**的默认值 ✓ ⇒ 只发二进制、又在别的目录里跑 ⇒
 # 浏览器端内核与油画/水彩等插件**全都取不到** ✗（查看器会退化 ✓、`/mediums/*.wasm` 会 404 ✓）。
@@ -440,24 +439,10 @@ fi
 # 正是这一块让"拖动期就用真笔刷"成立 ✓，此前六次走服务端往返都失败 ✗）。
 # 它**不需要 wasm-bindgen** ✓（纯 C ABI ✓）⇒ 只要一个带 `wasm32-unknown-unknown` 的工具链 ✓。
 # 与内核那一段同样的纪律 ✓：**报错不许被吞** ✗、失败**不阻塞打包** ✓、但必须**说清后果** ✓。
-if [ -n "$kernel_toolchain" ]; then
-  echo "--> 构建 .myb 笔刷门面（wasm）"
-  facade_log="$(mktemp)"
-  if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
-       --manifest-path "$repo/Cargo.toml" --release \
-       --target wasm32-unknown-unknown -p yanshi-brush-wasm >"${facade_log}" 2>&1; then
-    if cp "$repo/target/wasm32-unknown-unknown/release/yanshi_brush_wasm.wasm" \
-          "$repo/assets/brush-module.wasm"; then
-      echo "    ✓ 门面已生成：$(du -h "$repo/assets/brush-module.wasm" | cut -f1)（assets/brush-module.wasm ✓）"
-    fi
-  else
-    echo "    ✗ 门面构建失败 ⇒ 下面是**真正的报错**（最后 20 行 ✓）："
-    tail -20 "${facade_log}" | sed 's/^/      /'
-    echo "      复现：cargo build --release --target wasm32-unknown-unknown -p yanshi-brush-wasm"
-    echo "      **失败不阻塞打包** ✓：拖动期不显示真笔刷 ✓（抬手仍由服务端落笔 ✓，画出来的东西一样 ✓）。"
-  fi
-  rm -f "${facade_log}"
-fi
+# **笔刷门面已退休** ✓（(A)③ ✓）：这一段原来建 `yanshi-brush-wasm` ✓ 并把它拷成
+# `assets/brush-module.wasm` ✓，供拖动期的本地笔刷预览 ✓。预览现在走**共享内核** ✓
+# （`crates/yanshi-wasm` 的 `paint_brush` ✓，与上面那段**同一个**内核 ✓）⇒ 这里**不再需要**建第二份 ✓
+#（**留说明不留空白** ✓：空白会让人以为"漏了一步"✗，与过时描述一样误导 ✓）。
 
 
 # **介质插件也要重建** ✓ —— 它们**提交在 `assets/mediums/`** ✓，
@@ -563,7 +548,6 @@ if [ -f "$repo/assets/brush-module.wasm" ]; then
   cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
   echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"
 else
-  echo "    ⚠️ 没有笔刷门面可装（先构建 yanshi-brush-wasm）⇒ 拖动期不显示真笔刷（功能正常 ✓，可接受 ✓）"
 fi
 if [ -n "${missing_hard}" ]; then
   echo "" >&2
@@ -630,7 +614,6 @@ fi
 # 没有它 ⇒ 查看器不会本地渲染真笔刷（拖动期就没有真笔刷效果），但**功能仍正常**（抬手由服务端落笔）。
 brush_args=()
 if [ -f "$here/share/yanshi/brush-module.wasm" ]; then
-  brush_args+=(--brush-wasm "$here/share/yanshi/brush-module.wasm")
 else
   brush_args+=(--no-brush-wasm)
   echo "提示：本包未含笔刷门面 ⇒ 拖动期不显示真笔刷（功能正常，抬手由服务端落笔）" >&2
