@@ -10,10 +10,10 @@
 
 const url = process.argv[2];
 const segments = Number(process.argv[3] || 20);
-const list = await fetch("http://127.0.0.1:9333/json/list").then((r) => r.json());
+const list = await fetch("http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/list").then((r) => r.json());
 let target = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1:8110"));
 if (!target) {
-  const created = await fetch("http://127.0.0.1:9333/json/new?" + encodeURIComponent(url), { method: "PUT" }).then((r) => r.json());
+  const created = await fetch("http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/new?" + encodeURIComponent(url), { method: "PUT" }).then((r) => r.json());
   target = created;
   await new Promise((r) => setTimeout(r, 3500));
 }
