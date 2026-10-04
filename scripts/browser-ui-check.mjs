@@ -1440,9 +1440,17 @@ const jumpUndoResult = await evaluate(`(async () => {
   //（"跳转改变画面"这条断言有设计依据 ✓，第 623 轮 ✓；而"最早那条一定不同"没有 ✗）。
   const target = rows.length >= 2 ? rows[rows.length - 2] : rows[0];
   if (!target) return { ok: false, reason: "历史为空" };
+  const before = ${canvasFingerprint};
   target.querySelector("button").click();
-  await new Promise((r) => setTimeout(r, 2200));
-  const jumped = ${canvasFingerprint};
+  // **等条件，不等时长** ✓（第 629 轮 ✓）：原先固定 2200ms ✗ ——
+  // 而"跳转改画面"是个**可观测条件** ✓ ⇒ 这里轮询到画面真的变了为止（上限约 6 秒 ✓）。
+  //（第 587 轮我只改了**跳转前**那一处 ✗ ⇒ 这是同一个"两处"里的第二处 ✓。）
+  let jumped = before;
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise((r) => setTimeout(r, 100));
+    jumped = ${canvasFingerprint};
+    if (jumped !== before) break;
+  }
   document.querySelector('button[data-tool="undo"]').click();
   await new Promise((r) => setTimeout(r, 2200));
   const undone = ${canvasFingerprint};
