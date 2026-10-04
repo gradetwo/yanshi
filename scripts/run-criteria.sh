@@ -112,11 +112,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/' 
     expected_red=$((expected_red+1))
   else
-    # **必须真的计数** ✓（第 412 轮 ✓）：原先只打印不累加 ✗ ⇒
-    # 汇总永远写"意外失败 0" ✗ ⇒ **我这一整段读的就是这行** ✓ ⇒ 它一直没能反映失败 ✗。
+    # **计数必须独立成行** ✓（第 412 轮 ✓）：原先写成 `tail -6 … # 注释 ; fail=$((fail+1))` ✗
+    # ⇒ **`#` 之后全被当注释** ✓ ⇒ 那行**永不执行** ✗ ⇒ 汇总恒写"意外失败 0" ✗
+    #（`—— 通过 8｜意外失败 0` 与同片两条 `(EXIT=1/2)` 并存，就是这样来的 ✓）。
     fail=$((fail+1))
     echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
-      tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）; fail=$((fail+1))
+      tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）
     first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
     # **抓不到就退而取首个非空行** ✓：`browser-*` 那几条用别的格式打印原因 ✗ ⇒
     # 只按 `- `/`✗ ` 抓会得到空原因 ✓（第 328 轮实测：12 条里大半是空的 ✗）。
