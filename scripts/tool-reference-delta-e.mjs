@@ -1,4 +1,11 @@
-// **参考图色差判据**（测试报告 §三.2）：`analyze_region` 加 `compare_with_reference` 后，
+// **参考图色差判据**（测试报告 §三.2）—— ⚠️ **已登记为已知红** ✓（第 428 轮 ✓），理由如下：
+// `compare_with_reference` **不在 `analyze_region` 上** ✗ —— 它声明并实现在 **`gradient_fill`** 上
+// （`tools.rs:2314` 声明 ✓、`:3117-3201` 实现 ✓；`analyze_region` 只有 `region` ✓，
+// 这与产品返回的 `analyze_region 不接受参数 compare_with_reference … 可用参数：region` 完全一致 ✓）。
+// ⇒ 本判据下面仍按 `analyze_region` 调 ✗ **是错的** ✓ —— 但**不能只改工具名** ✗：
+// `gradient_fill` 是**会画画**的工具 ✓ ⇒ 连调三次就画三次 ✗ ⇒ "不改画面就问 ΔE"这条路**目前不存在** ✓。
+// ⇒ **要修的是产品侧的能力位置**（或另加一个只读的比较工具 ✓），属产品决策 ✓ ⇒ 先挂已知红 ✓。
+// 原说明（保留以见历史）：`analyze_region` 加 `compare_with_reference` 后，
 // AI 才从"只知道画面是什么"变成"知道离参考图差多少"。
 // 判据必须**两侧都能判**（否则"永远返回 0"也能过 ✗）：
 //   ① 没设参考图 ⇒ **明确作答**（ok:false + 原因 ✓），**不是**静默 0 ✗；
