@@ -26393,3 +26393,26 @@ a3bfdcf（run 37239881243）⇒ **failure criteria shard 5/6** ✗ ｜ **failure
 **`shard 6/6` 的失败与我的判据无关** ✗（它在 5/6 ✓）⇒ 待 `a3bfdcf` 整轮结束后读日志 ✓。
 **`f0fc85a` 起的那些轮**才是"修好后的判据在 CI 上是否绿"的答案 ✓ ⇒ **在读到它之前，我不再推新改动** ✓
 （推一个改动会堵队列 ✓，而被取消轮的日志会截断 ✓）。
+
+### 第 777 轮：**本机复现 `browser-ui-check` 的间歇**（做法记档 ✓）
+
+**为什么要在本机复现** ✓：CI 每轮要排队十几分钟 ✗，而"间歇"必须**连跑多次**才看得见 ✓
+（第 775 轮的教训：只看一轮的绿就下结论 ✗）⇒ **本机更快、且能连跑** ✓。
+
+**复现要素**（照 `run-criteria.sh` 的做法 ✓，全部读自它的源码 ✓）：
+```
+① 服务端：./target/debug/yanshi-serve --bind 127.0.0.1:$PORT --root $WORK \
+            --doc boot --width 320 --height 240 --assets-dir "$PWD/assets"     （run-criteria.sh:29-30 ✓）
+② 拿 token：POST $BASE/api/documents {"doc_id":"boot","width":320,"height":240} ⇒ .token （:50-53 ✓）
+③ 浏览器：chromium --headless=new --no-sandbox --disable-gpu \
+            --remote-debugging-port=$CDP --user-data-dir=$PROF about:blank        （:39-40 ✓）
+④ 跑判据：CDP_PORT=$CDP timeout 240 node scripts/browser-ui-check.mjs \
+            "$BASE/?doc=$doc&token=$tok"                                        （:92 ✓）
+```
+⚠️ **`browser-*.mjs` 的 viewer-url 形状是 `$BASE/?doc=<doc>&token=<tok>`** ✓（`:92` ✓）—— 不是 `$BASE` ✗。
+
+**本轮做法**：写 `/tmp/repro-ui.sh`（含起服务 ✓、起浏览器 ✓、连跑 3 次 ✓、把每次的红项汇总到
+`/tmp/repro-ui/summary.txt` ✓），**以后台作业**跑 ✓（**不阻塞** ✓），进程在脚本退出时清理 ✓。
+
+**下一轮**：读 `summary.txt` ⇒ **如果 3 次里有失败**，就拿"失败那一次的**那一条读数**"去定位 ✓；
+**如果 3 次全绿**，就**加大次数**（间歇可能更稀疏 ✓）—— **而不是就此宣布它稳定** ✗。
