@@ -18781,3 +18781,29 @@ select.value = "watercolor" ⇒ **afterSet = "watercolor"** ✓（hasWatercolor:
 **⚠️ 我这次编辑的教训（✓）** ✓：我用 `re.sub` 配 `.*?` + `re.S` 删那个建层块 ✗ ——
 **这种"跨行非贪婪"很容易吃到比预期更远的东西** ✗ ⇒ 这次侥幸没伤到水彩段 ✓（已 grep 确认 ✓），
 但**规矩应当是"按行锚定或整块精确匹配"** ✓，而不是靠 `.*?` ✓。
+
+### 🎯🎯🎯 第 249 轮：**改写选择器的是产品的正当行为** ✓（**证据一直在页面日志里** ✗）
+
+**原文（✓，`viewer.rs:1589` 起 ✓）** ✓：
+```js
+async function detectHeavyContent() {
+  const listed = await callTool("list_objects", {}, { refresh: false });
+  const withMedium = objects.filter((o) => o.medium && o.medium.id);
+  const latest = withMedium[withMedium.length - 1];        // **文档里最后一个带介质的对象** ✓
+  if (latest) { … $("medium").value = key;
+    $("medium").dispatchEvent(new Event("change", { bubbles: true }));
+    log("这份文档使用介质「" + latest.medium.id + " v" + latest.medium.version + "」"); }
+}
+```
+⇒ ⇒ **它不是 bug** ✗：注释写明它是为修一个**真缺陷**而加 ✓（"重载之后选择器总回落到 `example` ✗，
+于是界面显示的不是'这份画是用什么画的' ✓"）⇒ ⇒ **意图正当** ✓。
+⇒ ⇒ 而探针**先画过 oil** ✗ ⇒ 于是**每次设水彩都被改回** ✗ ✓ ⇒ ⇒
+**那句 `这份文档使用介质「oil v2」` 早就打在我自己 dump 的页面日志里** ✗ ✓ —— **证据一直在眼前** ✓。
+**修法（✓，下一轮 ✓）** ✓：**让探针与产品行为一致** ✓ ——
+**把水彩那一笔做成"这份文档上的第一笔介质落笔"** ✓（文档里**没有**带介质的对象 ✓）
+⇒ 页面自己的规则就**不会覆盖它** ✓ ⇒ 断言**照样测它本来要测的三件事** ✓
+（选择器 ✓、对象上记的介质与版本 ✓、墨量增加 ✓）。
+**⚠️ 三条教训并列（✓，本项最贵的一组 ✗）** ✓：
+1. **失败路径没打印已有诊断** ✗ ⇒ 多猜 5 轮 ✓（已修 ✓）；
+2. **"每次都被改回同一个值"是个强信号** ✗ ⇒ 我当成"没生效" ✗ 而没问"**谁在改**" ✓；
+3. **页面日志里早就有 `这份文档使用介质「oil v2」`** ✗ ⇒ **我 dump 过它、却没读它** ✗。
