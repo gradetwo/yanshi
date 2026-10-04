@@ -1528,6 +1528,8 @@ const jumpUndoResult = await evaluate(`(async () => {
 const rowsAfterJump = await evaluate(
   `document.querySelectorAll("#history .row").length`
 );
+// 无条件打印它（第 743 轮）：上一轮我只赋值、没打印 ⇒ 它等于没说 ✓
+console.log("  [跳转] 点击后历史行数：" + rowsAfterJump);
 
 // 导出 PNG：必须是**当前文档整幅分辨率**的 PNG（显式导出路径）。
 // 尺寸从页面读（前面几段会切换文档，写死 1024 会误报）。
