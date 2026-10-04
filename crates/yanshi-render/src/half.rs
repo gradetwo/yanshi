@@ -113,7 +113,12 @@ mod tests {
         assert_eq!(f16_bits_to_f32(0x3C00), 1.0);
         assert_eq!(f16_bits_to_f32(0xC000), -2.0);
         assert_eq!(f16_bits_to_f32(0x7BFF), 65504.0);
-        assert_eq!(f16_bits_to_f32(0x0001), 2f32.powi(-24), "最小次正规数");
+        // 2^-24 = 0x3380_0000（精确的 2 的幂 ✓）⇒ 写成位模式 ⇒ 内核里**再无 `powi`** ✓
+        assert_eq!(
+            f16_bits_to_f32(0x0001),
+            f32::from_bits(0x3380_0000),
+            "最小次正规数"
+        );
         assert!(f16_bits_to_f32(0x7C00).is_infinite());
         assert!(f16_bits_to_f32(0x7C01).is_nan());
     }

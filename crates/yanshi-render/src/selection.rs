@@ -439,12 +439,12 @@ fn segment_distance(px: f64, py: f64, a: (f64, f64), b: (f64, f64)) -> f64 {
     let len_sq = dx * dx + dy * dy;
     if len_sq <= 0.0 {
         // 退化边（重合顶点）：退化为点距。
-        return ((px - ax).powi(2) + (py - ay).powi(2)).sqrt();
+        return (((px - ax) * (px - ax)) + ((py - ay) * (py - ay))).sqrt();
     }
     let t = (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0);
     let cx = ax + t * dx;
     let cy = ay + t * dy;
-    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+    (((px - cx) * (px - cx)) + ((py - cy) * (py - cy))).sqrt()
 }
 
 /// 射线法判定内外（水平向右的射线，奇数为内）；**边界点算内**。

@@ -249,7 +249,7 @@ pub fn levels_channel(buffer: &mut Buffer, black: f32, white: f32, gamma: f32, c
     let inverse_gamma = 1.0 / gamma.max(1e-3);
     let map = |value: f32| {
         let normalized = ((value - black) / (white - black)).clamp(0.0, 1.0);
-        normalized.powf(inverse_gamma)
+        libm::powf(normalized, inverse_gamma)
     };
     for_each_straight_color(buffer, |color| match channel {
         "r" => color[0] = map(color[0]),
@@ -466,7 +466,7 @@ pub fn hsl(buffer: &mut Buffer, hue_degrees: f32, saturation: f32, lightness: f3
 
 /// 曝光：线性光下按 EV 整体缩放（`2^ev`）。
 pub fn exposure(buffer: &mut Buffer, ev: f32) {
-    let factor = 2.0f32.powf(ev.clamp(-10.0, 10.0));
+    let factor = libm::powf(2.0, ev.clamp(-10.0, 10.0));
     for_each_straight_color(buffer, |color| {
         for value in color.iter_mut() {
             *value = (*value * factor).clamp(0.0, 1.0);
@@ -591,7 +591,7 @@ pub fn motion_blur(buffer: &mut Buffer, angle_degrees: f32, distance: f32, sampl
     }
     let source = buffer.clone();
     let radians = angle_degrees.to_radians();
-    let (dx, dy) = (radians.cos(), radians.sin());
+    let (dx, dy) = (libm::cosf(radians), libm::sinf(radians));
     let width = buffer.width();
     let height = buffer.height();
     // 采样偏移是**循环不变量**（只与 angle/distance/samples 有关），却在每个像素的每次采样里
@@ -935,7 +935,7 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     let mut kernel = Vec::with_capacity((radius * 2 + 1) as usize);
     let mut sum = 0.0f32;
     for offset in -radius..=radius {
-        let value = (-((offset * offset) as f32) / (2.0 * sigma * sigma)).exp();
+        let value = libm::expf(-((offset * offset) as f32) / (2.0 * sigma * sigma));
         kernel.push(value);
         sum += value;
     }
@@ -1784,7 +1784,7 @@ mod tests {
 
         // 独立重算：同样的角度/距离/采样数、同样的 round 与 clamp。
         let radians = angle.to_radians();
-        let (dx, dy) = (radians.cos(), radians.sin());
+        let (dx, dy) = (libm::cosf(radians), libm::sinf(radians));
         for y in 0..32u32 {
             for x in 0..32u32 {
                 let mut sum = [0.0f32; 4];

@@ -1111,8 +1111,10 @@ impl Renderer {
                             // 就退回纯 clone 语义（不做低频校正）。
                             for step in 0..8 {
                                 let angle = std::f32::consts::TAU * (step as f32) / 8.0;
-                                let ox = (angle.cos() * (radius_u32 as f32 * 0.5)).round() as i64;
-                                let oy = (angle.sin() * (radius_u32 as f32 * 0.5)).round() as i64;
+                                let ox =
+                                    (libm::cosf(angle) * (radius_u32 as f32 * 0.5)).round() as i64;
+                                let oy =
+                                    (libm::sinf(angle) * (radius_u32 as f32 * 0.5)).round() as i64;
                                 let source_x =
                                     (sx as i64 + ox).clamp(0, source.width() as i64 - 1) as u32;
                                 let source_y =
@@ -1734,7 +1736,7 @@ pub fn shape_outline(kind: ShapeKind, bbox: Bbox, points: &[(f64, f64)]) -> Vec<
             (0..=segments)
                 .map(|index| {
                     let angle = index as f64 / segments as f64 * std::f64::consts::TAU;
-                    (cx + rx * angle.cos(), cy + ry * angle.sin())
+                    (cx + rx * libm::cos(angle), cy + ry * libm::sin(angle))
                 })
                 .collect()
         }

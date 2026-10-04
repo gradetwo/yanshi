@@ -136,7 +136,13 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # ⇒ **「参数位置相同」不等于「参数含义相同」** ✓ —— 我当时只对了**个数** ✗。
     # ⇒ `wasm-brush-parity` 已从枚举中撤下 ✓（见覆盖率守卫里登记的改写方案 ✓）。
     kernel-brush-parity.mjs)
-      timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **传 `all` ⇒ 全量 199 支笔** ✓（第 806 轮起 ✓）：这条判据守的是「两种渲染模式逐字节相同」✓，
+      # 而它原先**默认只测 3 支**（3/199 = 1.5% ✗）⇒ 一条"绿"骗了我很久 ✗（第 800 轮实测约一半不同 ✗）。
+      # ⇒ 现在**门禁就按全部笔刷判** ✓ —— 覆盖现实，而不是覆盖样本 ✓。
+      # 内核已换成两端同源数学（`libm` ✓、`powi(2)` 改乘法 ✓）⇒ 结果应当由**构造**保证一致 ✓。
+      # 耗时约 6 分钟 ✓ ⇒ 上限给 900s ✓（原 600s 是按 3 支笔估的 ✗）。
+      timeout 900 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" all \
+        >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
       # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。
       # **⚠️ 不要给全体 URL 加 `debug=1`** ✗（第 338 轮实测 ✓）：只有一个判据需要它 ✓

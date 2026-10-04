@@ -178,8 +178,8 @@ impl Dynamics {
             let angle = unit_to(rng.unit(), 0.0, std::f32::consts::TAU);
             let distance = self.jitter * rng.unit().sqrt();
             (
-                f64::from(distance * angle.cos()),
-                f64::from(distance * angle.sin()),
+                f64::from(distance * libm::cosf(angle)),
+                f64::from(distance * libm::sinf(angle)),
             )
         } else {
             (0.0, 0.0)
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(params.x, -1.989_521_503_448_486_3_f64);
         assert_eq!(params.y, 2.402_004_241_943_359_4_f64);
         // 偏移必落在 jitter 半径内。
-        assert!(params.x.hypot(params.y) <= 5.0 + 1.0e-9);
+        assert!(libm::hypot(params.x, params.y) <= 5.0 + 1.0e-9);
     }
 
     #[test]
@@ -733,7 +733,7 @@ mod tests {
             assert!(a.radius >= 0.0);
             assert!((0.0..=1.0).contains(&a.alpha));
             assert!((0.0..std::f32::consts::TAU).contains(&a.rotation));
-            let offset = (a.x - 3.5).hypot(a.y + 2.5);
+            let offset = libm::hypot(a.x - 3.5, a.y + 2.5);
             assert!(offset <= 3.0 + 1.0e-6, "offset={offset}");
         }
     }

@@ -33,6 +33,10 @@ serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
 proptest = "1.6"
+# **两端同源的数学** ✓（第 806 轮）：`std` 的 `sin/cos/exp/powf` 在 native（glibc ✓）
+# 与 wasm32（Rust 自带 ✓）上差最后一位 ✗ ⇒ 实测两个模式对约一半笔刷给出**不同画面** ✗。
+# `libm` 是纯 Rust ✓ ⇒ **同一份源码编两次** ⇒ 结果逐位相同 ✓（`sqrt` 仍用 std ✓：IEEE 要求它正确舍入 ✓）。
+libm = "0.2"
 
 [profile.release]
 lto = "thin"

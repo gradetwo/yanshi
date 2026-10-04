@@ -254,8 +254,8 @@ fn keyhole_ring(outer: &[Point], inner: &[Point]) -> Vec<Point> {
             let distance = outer
                 .iter()
                 .map(|outer_point| {
-                    (outer_point.0 - inner_point.0).powi(2)
-                        + (outer_point.1 - inner_point.1).powi(2)
+                    ((outer_point.0 - inner_point.0) * (outer_point.0 - inner_point.0))
+                        + ((outer_point.1 - inner_point.1) * (outer_point.1 - inner_point.1))
                 })
                 .fold(f64::INFINITY, f64::min);
             (index, distance)
@@ -272,7 +272,8 @@ fn keyhole_ring(outer: &[Point], inner: &[Point]) -> Vec<Point> {
         .enumerate()
         .min_by(|left, right| {
             let distance = |point: &Point| {
-                (point.0 - inner_point.0).powi(2) + (point.1 - inner_point.1).powi(2)
+                ((point.0 - inner_point.0) * (point.0 - inner_point.0))
+                    + ((point.1 - inner_point.1) * (point.1 - inner_point.1))
             };
             distance(left.1)
                 .partial_cmp(&distance(right.1))

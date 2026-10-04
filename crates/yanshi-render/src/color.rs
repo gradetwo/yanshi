@@ -13,7 +13,7 @@ pub fn srgb_to_linear(value: f32) -> f32 {
     if v <= 0.040_45 {
         v / 12.92
     } else {
-        ((v + 0.055) / 1.055).powf(2.4)
+        libm::powf((v + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -23,7 +23,7 @@ pub fn linear_to_srgb(value: f32) -> f32 {
     if v <= 0.003_130_8 {
         v * 12.92
     } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
+        1.055 * libm::powf(v, 1.0 / 2.4) - 0.055
     }
 }
 
@@ -576,7 +576,7 @@ pub fn linear_to_lab(linear: [f32; 3]) -> [f32; 3] {
     let (xn, yn, zn) = (0.95047_f32, 1.0_f32, 1.08883_f32);
     let f = |t: f32| {
         if t > 0.008_856 {
-            t.cbrt()
+            libm::cbrtf(t)
         } else {
             7.787 * t + 16.0 / 116.0
         }

@@ -317,7 +317,7 @@ pub fn dashed_line_from(
     for window in points.windows(2) {
         let (x0, y0, p0) = window[0];
         let (x1, y1, p1) = window[1];
-        let segment = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        let segment = (((x1 - x0) * (x1 - x0)) + ((y1 - y0) * (y1 - y0))).sqrt();
         if segment <= f64::EPSILON {
             continue;
         }
@@ -363,7 +363,7 @@ pub fn dashed_line(
     for window in points.windows(2) {
         let (x0, y0, p0) = window[0];
         let (x1, y1, p1) = window[1];
-        let segment = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        let segment = (((x1 - x0) * (x1 - x0)) + ((y1 - y0) * (y1 - y0))).sqrt();
         if segment <= f64::EPSILON {
             continue;
         }
@@ -391,7 +391,7 @@ mod cursor_tests {
             .map(|i| {
                 (
                     10.0 + i as f64 * 7.3,
-                    20.0 + (i as f64 * 1.7).sin() * 9.0,
+                    20.0 + libm::sin(i as f64 * 1.7) * 9.0,
                     1.0,
                 )
             })

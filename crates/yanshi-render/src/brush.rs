@@ -363,7 +363,7 @@ fn stamp_samples_with_appearance(
     for (index, (x, y, pressure)) in stamps.iter().enumerate() {
         // 湿度耗墨：与上一枚印章之间的**距离**成正比 ✓（点按不耗墨 ✓、连续拖动更耗墨 ✓）。
         if let Some((px, py)) = previous {
-            reservoir.advance(((x - px).powi(2) + (y - py).powi(2)).sqrt());
+            reservoir.advance((((x - px) * (x - px)) + ((y - py) * (y - py))).sqrt());
         }
         previous = Some((*x, *y));
         // ① 曲线：**尺寸/不透明度按笔迹进度**采样 ✓（`size_curve` 是"沿笔迹塑形" ✓，
@@ -1202,7 +1202,9 @@ mod smoothing_tests {
             let nearest = smoothed
                 .iter()
                 .map(|candidate| {
-                    ((candidate.x - control.x).powi(2) + (candidate.y - control.y).powi(2)).sqrt()
+                    (((candidate.x - control.x) * (candidate.x - control.x))
+                        + ((candidate.y - control.y) * (candidate.y - control.y)))
+                        .sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
             assert!(nearest < 1e-9, "控制点应被精确穿过（最近距离 {nearest}）");
@@ -1284,7 +1286,7 @@ mod smoothing_tests {
                     continue;
                 }
                 let cosine = ((v1x * v2x + v1y * v2y) / (len1 * len2)).clamp(-1.0, 1.0);
-                worst = worst.max(cosine.acos());
+                worst = worst.max(libm::acos(cosine));
             }
             worst
         };
