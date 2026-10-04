@@ -20717,3 +20717,20 @@ fire("pointerup",   at(0.75, 0.75), 301);
 **★ 附带发现（✓，重要 ✓）** ✓：**`:588` 有 `document.getElementById("feather").value = "0"`** ✓
 ⇒ **产品 UI 里早就有"羽化"入口** ✓ ⇒ **我在渲染层新加的那个 `feather`，与它可能是同一功能的不同入口** ✓
 ⇒ ⇒ **落地后必须对齐** ✓（**不能让仓库里出现两套羽化** ✗）—— **记下这条，避免留下不一致** ✓。
+
+### 🎯🎯 第 363 轮：**产品早就有"羽化" —— 是蒙版羽化（`create_mask` 的 `feather`）** ✓
+
+**读到的（✓，`crates/yanshi-http/src/viewer.rs`）** ✓：
+```
+:392   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" … />   ← UI 入口，**默认 8** ✓
+:5899  const feather = Number($("feather").value) || 0;
+:5902  { mask_id: maskId, shape: { kind, bbox }, feather, invert: false, linked_layer: state.layerId }  ← **随 create_mask 发出** ✓
+:5921  "蒙版（羽化 " + feather + "）"                                                     ← 日志文案 ✓
+```
+⇒ ⇒ **"羽化"在这个仓库里不是新概念** ✓ —— **`create_mask` 早就收 `feather`** ✓
+⇒ ⇒ **于是有一个必须先回答的问题（✓）** ✓：**蒙版羽化在服务端/渲染层是怎么实现的** ✓ ——
+* **若它已经做了模糊** ✗ ⇒ **我这一整段新写的 `feather_coverage` 就是第二套** ✓
+  ⇒ **应当复用/合并** ✓，**而不是留两套** ✗（**正是第 362 轮担心的那件事** ✓）；
+* **若它只是"存了参数、还没实现"** ✓ ⇒ **那我这套正好补上了它** ✓，**并且应当让蒙版也走同一条路** ✓。
+**⇒ 下一步（✓，必读）** ✓：**读 `create_mask` 怎么用 `feather`** ✓（`tools.rs` 一侧 ✓）⇒
+**按它的现状决定"复用"还是"合并"** ✓ —— **不先读就动手，等于给仓库留下两套同名的东西** ✗。
