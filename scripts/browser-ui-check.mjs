@@ -588,6 +588,10 @@ const maskResult = await evaluate(`(async () => {
   document.getElementById("feather").value = "0";
   document.querySelector('button[data-tool="mask_rect"]').click();
   fire("pointerdown", at(0.25, 0.25), 301);
+  // **中间要再 move 一次**（第 362 轮对照出来的）：上面画笔铺底是「0.02 → 0.5 → 0.98」
+  // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
+  // 照它自己的正确写法补即可。（本行在模板字符串里 ⇒ 注释中不可出现反引号 ✗）
+  fire("pointermove", at(0.5, 0.5), 301);
   fire("pointermove", at(0.75, 0.75), 301);
   await new Promise((r) => setTimeout(r, 100));
   fire("pointerup", at(0.75, 0.75), 301);
