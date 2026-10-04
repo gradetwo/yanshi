@@ -13588,6 +13588,16 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "create_mask",
         r#"{"mask_id":"m1","shape":{"kind":"rect","bbox":{"x":10,"y":10,"w":60,"h":60}}}"#,
     ),
+    // **区域分析 / 实例**（第 290 轮）：`analyze_region` 必填 `region`（`{x,y,w,h}`，与 `render_region` 同一形状）；
+    // `create_instance` 必填 `instance_id` / `layer_id` / `master_id`（`local_transform` 可选）。
+    (
+        "analyze_region",
+        r#"{"region":{"x":0,"y":0,"w":100,"h":100}}"#,
+    ),
+    (
+        "create_instance",
+        r#"{"instance_id":"inst1","layer_id":"L1","master_id":"L1"}"#,
+    ),
 ];
 
 #[cfg(test)]

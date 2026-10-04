@@ -19476,3 +19476,19 @@ create_mask        ⇒ { mask_id:"m1", shape:{kind:"rect",bbox:{…}} }  ✓（�
 ⇒ ⇒ **"先复核汇总的断言"就是把同一套纪律用到汇总自己身上** ✓。
 **另外（✓）** ✓：`add_adjustment` / `add_filter` 的**合法取值**用我现有的读法**取不到** ✗
 ⇒ **这两条示例就此放弃** ✓（**"宁缺勿编"** ✓）⇒ **不再为它们耗轮次** ✓。
+
+### 🎉 第 290 轮：**(B)① 再补两条 + 换用可靠的读参数法** ✓（81 ⇒ **83** ✓）
+
+**新增（✓）** ✓：
+```
+analyze_region  ⇒ { region:{x:0,y:0,w:100,h:100} }                              ✓（形状与 `render_region` 同 ✓）
+create_instance ⇒ { instance_id:"inst1", layer_id:"L1", master_id:"L1" }         ✓（`local_transform` 可选 ✓）
+```
+⇒ 守卫测试 **ok** ✓ ⇒ 总数 **83** ✓ ⇒ 门禁全绿 ✓。
+**⚠️ 本轮的工程改进（✓，值得记 ✓）** ✓：**读参数改用"从 `name:` 打到下一个 `name:` 之前"** ✓
+—— 之前的**固定行数窗口**会**漏掉长参数表** ✗（`create_annotation` 与 `batch` 就是这样被我错误地跳过的 ✓）
+⇒ ⇒ 换成**按下一个条目边界截取**之后 ✓，一次就把四条读全 ✓（`analyze_region` 1 个必填 ✓、
+`create_annotation` 3 个必填 ✓、`batch` 1 个必填 ✓、`create_instance` 3 个必填 ✓）。
+**于是有两条可以立刻写（✓）** ✓（`analyze_region` 的形状与 `render_region` 同 ✓、`create_instance` 是三个 id ✓）；
+**另两条暂缓** ✓ —— 它们的**取值枚举**（`type` / `intent` ✓、`calls` 的嵌套形状 ✗）**还没读到** ✓
+（**宁缺勿编** ✓）。
