@@ -1528,6 +1528,15 @@ function verifyKernelSurface(kernel) {
 }
 
 async function initWasm() {
+  // **显式要求服务端渲染 ⇒ 内核根本不加载** ✓（第 198 轮的真因 ✓）：
+  // 我上一版把守卫加在了 `loadLocalBrushModule()`（**门面** ✓ = 本地笔刷预览 ✓）上 ✗，
+  // 而内核是**这个函数**拉起来的 ✓ ⇒ 于是"用服务端渲染"勾上之后**内核照样加载** ✗
+  // ⇒ `state.wasm` 一直是 true ✗ ⇒ 开关**从未生效** ✓（而当时那条时序敏感的判据**没抓到** ✗）。
+  // 加在**函数内部**而不是某个调用点 ✓：这样**所有**调用路径都被覆盖 ✓。
+  if (serverRenderPreferred()) {
+    setWasmState("已按设置跳过（用服务端渲染）", "#a60");
+    return;
+  }
   try {
     const health = await (await fetch("/health")).json();
     if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
