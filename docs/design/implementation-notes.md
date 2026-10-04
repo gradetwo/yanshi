@@ -20495,3 +20495,21 @@ Primitive::Shape { kind, bbox, points, color, stroke_width, stroke_color } => { 
 **为什么 ④ 重要（✓）** ✓：**外扩后的覆盖率会超出原 bbox** ✓ ⇒ 若 `fill_coverage` 不处理越界 ✗
 ⇒ **可能 panic 或画出界** ✗ ✓ —— **这是"外扩"这个设计带来的第一个下游影响** ✓，
 **必须在写 ①②之前先确认** ✓（**否则我会写出一个"本地单测全绿、一渲染就出事"的东西** ✗）。
+
+### 🎉 第 351 轮：**前置风险解除 —— `fill_coverage` 自带"网格 ∩ 缓冲"裁剪** ✓
+
+**读到的（✓）** ✓：`crates/yanshi-render/src/buffer.rs:177 fill_coverage` ✓：
+```rust
+// 只遍历「覆盖率网格 ∩ 本缓冲」——未裁剪的调用方（例如蒙版）也不会白跑。
+let start_x = (self.origin_x - doc_x0).max(0) as u32;
+let end_x   = (self.origin_x + self.width as i64 - doc_x0).min(coverage.width as i64);
+if end_x <= start_x as i64 || end_y <= start_y as i64 { return; }   // **空交集直接返回** ✓
+```
+⇒ ⇒ **第 350 轮担心的风险（外扩覆盖率越界）不存在** ✓：
+**`fill_coverage` 只遍历交集** ✓ ⇒ **不会 panic ✓、不会画出界 ✓**。
+**而且守护这条的测试早就存在** ✓ ✓：`buffer.rs:393 fill_coverage_respects_document_origin` ✓
+—— **这条既有测试，正好是"羽化外扩"的安全网** ✓（**我不用新写它，但我该在实现时引用它** ✓）。
+**⇒ 接线清单的 ④ 从"待读"变为"已解决（安全）"** ✓ ⇒ **① ② ③ 三处可以直接写** ✓。
+**★ 记一条方法（✓）** ✓：**"外扩"这种设计变更，第一件事是找"下游谁假设了尺寸不变"** ✓ ——
+**这次找到的是"填充器只认交集"** ✓（**好消息** ✓）；**如果它是"按 buffer 尺寸逐格读 coverage"** ✗ ⇒ **就会越界** ✗。
+**五分钟的阅读，换来"知道哪一行是安全网"** ✓。
