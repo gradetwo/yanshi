@@ -103,7 +103,8 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     echo "  ⚠ ${name}（**已知红，按记录不阻塞 CI**）: $(grep -m1 -E '^     - ' "$ROOT_DIR/out.txt" | cut -c1-120)"
     expected_red=$((expected_red+1))
   else
-    echo "  ✗ $name (EXIT=$code)"; tail -6 "$ROOT_DIR/out.txt" | sed 's/^/       /'; fail=$((fail+1))
+    echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
+      tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）; fail=$((fail+1))
     first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
     # **抓不到就退而取首个非空行** ✓：`browser-*` 那几条用别的格式打印原因 ✗ ⇒
     # 只按 `- `/`✗ ` 抓会得到空原因 ✓（第 328 轮实测：12 条里大半是空的 ✗）。
