@@ -19522,3 +19522,18 @@ get_atom          ⇒ { atom_id:"atom1" }                                       
 **仍被跳过（✓）** ✓：`add_adjustment` / `add_filter` ✗ —— **取值说明只写"见工具说明"** ✓
 ⇒ **编一个能过测试、但照着抄会错** ✗ ⇒ **不写** ✓（**第四次"宁缺勿编"** ✓）。
 **进度（✓）** ✓：**91/136 = 67%** ✓、**十批零试错** ✓。
+
+### 🎉 第 293 轮：**(B)① 一轮 23 条** ✓（91 ⇒ **114** ✓）
+
+**做法（✓）** ✓：先把**还缺示例的工具连同"必填参数"一次列全**（50 个 ✓）⇒
+⇒ 挑出**必填参数全是 id 或什么都不需要**的那些 ✓（**取值不需要猜** ✓）⇒ **一次补齐 23 条** ✓：
+```
+blob_gc(run) export_project import_project update_stroke transform_object restore_object move_object
+revert reapply revert_to restore_checkpoint update_annotation resolve_annotation reject_annotation
+remove_from_group link_to_master update_override reject_suggestion accept_suggestions reject_suggestions
+list_suggestions preview_suggestion list_brushes
+```
+⇒ 守卫测试 **ok** ✓ ⇒ 总数 **114** ✓ ⇒ 门禁全绿 ✓。
+**仍缺（✓）** ✓：**27 个** ✓ —— 其中多数**取值说明不足** ✗（`add_adjustment` / `add_filter` / `set_property` /
+`set_layer_blend` / `set_brush_dynamics` / `scatter_strokes` / `patch` / `suggest` … ✓）⇒ **继续"宁缺勿编"** ✓。
+**进度（✓）** ✓：**114/136 = 84%** ✓、**十一批零试错** ✓（**本批是单轮最大增量：23 条** ✓）。

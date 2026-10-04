@@ -13626,6 +13626,34 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("declare_head", r#"{"base_type":"atom","base_id":"atom1"}"#),
     ("detach_instance", r#"{"instance_id":"inst1"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
+    // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
+    // 取值不需要猜 ⇒ 一次补齐。（`add_adjustment`/`add_filter`/`set_property` 等仍不写：取值说明不足。）
+    ("blob_gc", r#"{"dry_run":true}"#),
+    ("export_project", r#"{"path":"exports/demo.yanshi"}"#),
+    ("import_project", r#"{"path":"exports/demo.yanshi"}"#),
+    ("update_stroke", r#"{"object_id":"L1"}"#),
+    ("transform_object", r#"{"object_id":"L1"}"#),
+    ("restore_object", r#"{"object_id":"L1"}"#),
+    ("move_object", r#"{"object_id":"L1"}"#),
+    ("revert", r#"{"atom_id":"atom1"}"#),
+    ("reapply", r#"{"atom_id":"atom1"}"#),
+    ("revert_to", r#"{"atom_id":"atom1"}"#),
+    ("restore_checkpoint", r#"{"checkpoint_id":"cp1"}"#),
+    ("update_annotation", r#"{"annotation_id":"ann1"}"#),
+    ("resolve_annotation", r#"{"annotation_id":"ann1"}"#),
+    ("reject_annotation", r#"{"annotation_id":"ann1"}"#),
+    ("remove_from_group", r#"{"group_id":"g1","object_id":"L1"}"#),
+    (
+        "link_to_master",
+        r#"{"instance_id":"inst1","master_id":"L1"}"#,
+    ),
+    ("update_override", r#"{"instance_id":"inst1"}"#),
+    ("reject_suggestion", r#"{"suggestion_id":"sug1"}"#),
+    ("accept_suggestions", r#"{"suggestion_ids":["sug1"]}"#),
+    ("reject_suggestions", r#"{"suggestion_ids":["sug1"]}"#),
+    ("list_suggestions", r#"{}"#),
+    ("preview_suggestion", r#"{}"#),
+    ("list_brushes", r#"{}"#),
 ];
 
 #[cfg(test)]
