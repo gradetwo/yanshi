@@ -65,10 +65,12 @@ if (!isBg(await plain.read(97, 100)))
 
 // ② **`feather=20`** ⇒ **形状之外**（≤ 2×radius = 40）**必须出现中间值** ✓
 const feathered = await draw("fth_soft", 20);
-const softOut = alpha(await feathered.read(94, 100));       // 左边**之外** 6 像素 ✓
-if (softOut === null) failures.push("羽化后取不到外侧像素 ⇒ 判据无法运行（不是通过）");
-else if (softOut === 0) failures.push(`羽化后形状之外仍为 0 ⇒ **只向内淡出**（外半边被切掉了）✗ 实测 ${softOut}`);
-else if (softOut === 255) failures.push(`羽化后形状之外仍是满覆盖 ⇒ 没有渐变 ✗ 实测 ${softOut}`);
+const softOutRaw = await feathered.read(94, 100);   // 左边**之外** 6 像素 ✓
+if (!softOutRaw) failures.push("羽化后取不到外侧像素 ⇒ 判据无法运行（不是通过）");
+// **按类别判** ✓（第 568 轮 ✓）：底色 [255,255,255] 与填充色 [220,40,40] 的 alpha 都是 255
+// ⇒ 「外侧既不是填充色、也不是底色」才是「羽化发生过」的可判形式。
+else if (isFill(softOutRaw)) failures.push(`羽化后形状之外仍是填充色 ⇒ 没有渐变 ✗ 实测 ${JSON.stringify(softOutRaw)}`);
+else if (isBg(softOutRaw)) failures.push(`羽化后形状之外仍是底色 ⇒ 只向内淡出 ✗ 实测 ${JSON.stringify(softOutRaw)}`);
 // ③ **远处仍是原值** ✓：> 2×radius 之外必须严格 0 ✓、深内部必须满 ✓
 const softFar = alpha(await feathered.read(40, 100));        // 离边 60 > 40 ✓
 const softDeep = alpha(await feathered.read(150, 100));      // 中心离边 ≥ 40 ✓
