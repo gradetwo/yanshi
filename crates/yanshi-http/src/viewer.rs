@@ -3614,6 +3614,11 @@ async function refreshHistory() {
     jump.textContent = "回到此处";
     jump.addEventListener("click", async () => {
       // `revert_to` 通过 declare_head 回到该时刻；它本身也是一个原子，所以可被撤销。
+      // **"跳转前的头"必须在跳转之前取** ✓（第 496 轮 ✓）：原先它在 `revert_to` **之后**才读 ✗
+      // ⇒ 读到的其实是**跳转之后**的头 ✓ ⇒ `undoStack` 里记的是"跳转后的位置" ✓
+      // ⇒ **撤销"回到此处"会跳回跳转后，而不是跳转前** ✗ ⇒ 与"可撤销"的承诺不符 ✓。
+      //（这与判据那边 `fingerprintBeforeJump` 的错**同源** ✓：都是"把前值取在了后值之后" ✓。）
+      const headBefore = currentHeadAtomId();
       const result = await callTool("revert_to", { atom_id: atom.atom_id }, { refresh: false });
       if (!result.ok) {
         log("回到此处失败：" + (result.error_code || "unknown"), "#c33");
@@ -3623,7 +3628,6 @@ async function refreshHistory() {
       // （服务端会正确地拒绝：目标原子位于当前求值起点之前 ✓）。
       // 因此「撤销这次跳转」的实现是**再跳回跳转前的那个原子** ✓：
       // 记住跳转前的头部 id，把它作为撤销条目（kind=head）。
-      const headBefore = currentHeadAtomId();
       state.undoStack = headBefore ? [{ kind: "head", id: headBefore }] : [];
       state.redoStack = [];
       updateUndoStatus();
