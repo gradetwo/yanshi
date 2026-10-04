@@ -615,17 +615,12 @@ else
   wasm_args+=(--no-wasm)
   echo "提示：本包未含 WASM 计算内核 ⇒ 查看器将走服务端渲染（功能正常，浏览器端少一份内核）" >&2
 fi
-# **`.myb` 笔刷的 wasm 门面**：包里那份在 `share/yanshi/brush-module.wasm`。
-# 没有它 ⇒ 查看器不会本地渲染真笔刷（拖动期就没有真笔刷效果），但**功能仍正常**（抬手由服务端落笔）。
-brush_args=()
-if [ -f "$here/share/yanshi/brush-module.wasm" ]; then
-else
-  brush_args+=(--no-brush-wasm)
-  echo "提示：本包未含笔刷门面 ⇒ 拖动期不显示真笔刷（功能正常，抬手由服务端落笔）" >&2
-fi
+# **笔刷门面已退休**（(A)③）：原先这段测试包里有没有那个门面文件，
+# 有就什么都不做、没有就传一个"关闭门面"的开关。该开关与那个文件都已从产品里删除，
+# 所以它既永远不成立、又会把已删的开关传给二进制 ⇒ 打包后的启动脚本会直接退出。
+# 本轮整块删除（保留这条注记说明为什么这里不再需要判断）。
 exec "$here/bin/yanshi-serve" \
   "${wasm_args[@]}" \
-  "${brush_args[@]}" \
   --medium-dir "$here/share/yanshi/mediums" \
   --assets-dir "$here/share/yanshi" \
   --brand-dir "$here/share/yanshi/brand" \
