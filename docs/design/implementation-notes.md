@@ -19492,3 +19492,17 @@ create_instance ⇒ { instance_id:"inst1", layer_id:"L1", master_id:"L1" }      
 **于是有两条可以立刻写（✓）** ✓（`analyze_region` 的形状与 `render_region` 同 ✓、`create_instance` 是三个 id ✓）；
 **另两条暂缓** ✓ —— 它们的**取值枚举**（`type` / `intent` ✓、`calls` 的嵌套形状 ✗）**还没读到** ✓
 （**宁缺勿编** ✓）。
+
+### 🎉 第 291 轮：**(B)① 补回上一批"错误跳过"的两条** ✓（83 ⇒ **85** ✓）
+
+**新增（✓，取值全部来自参数说明 ✓）** ✓：
+```
+create_annotation ⇒ { type:"region", intent:"add", target:{target:"region",bbox:{x:10,y:10,w:60,h:60}} } ✓
+   （`type` ∈ region|object|arrow|text|doodle|highlight ✓；`intent` ∈ modify|add|remove|replace|style|move|resize|color ✓）
+batch             ⇒ { calls:[ {"tool":"draw_stroke","arguments":{…}} ] }                                 ✓
+   （说明原文：`calls` = `[{tool, arguments}]` ✓ —— 是**参数里的嵌套形状** ✓，**不是**多步示例的写法 ✓）
+```
+⇒ 守卫测试 **ok** ✓ ⇒ 总数 **85** ✓ ⇒ 门禁全绿 ✓。
+**这一轮印证了上一轮的判断（✓）** ✓：那两条**不是不可写** ✗，而是**我的读法漏了它们的参数说明** ✗
+⇒ ⇒ **换成"按条目边界截取"之后** ✓，**取值就摆在说明里** ✓（`type` / `intent` 的枚举 ✓、`calls` 的嵌套形状 ✓）✓。
+**进度（✓）** ✓：**85/136 = 63%** ✓；**九批零试错** ✓。

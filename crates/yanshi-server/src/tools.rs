@@ -13598,6 +13598,18 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "create_instance",
         r#"{"instance_id":"inst1","layer_id":"L1","master_id":"L1"}"#,
     ),
+    // **标注创建 / 批处理**（第 291 轮）：取值照参数说明抄 ——
+    // `create_annotation`：`type` ∈ region|object|arrow|text|doodle|highlight、
+    // `intent` ∈ modify|add|remove|replace|style|move|resize|color、`target` = {target:"region",bbox}；
+    // `batch`：`calls` = [{tool, arguments}]（**参数**里的嵌套形状，不是多步示例的写法）。
+    (
+        "create_annotation",
+        r#"{"type":"region","intent":"add","target":{"target":"region","bbox":{"x":10,"y":10,"w":60,"h":60}}}"#,
+    ),
+    (
+        "batch",
+        r#"{"calls":[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}}]}"#,
+    ),
 ];
 
 #[cfg(test)]
