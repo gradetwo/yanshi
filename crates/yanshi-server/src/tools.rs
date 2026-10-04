@@ -1150,6 +1150,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "fill_region",
+        profile: Profile::Core,
+        // **AI 画家需求 P0-1.1**：一次完成**带形状**的填充 ✓（矩形/椭圆/多边形 ✓）。
+        // **复用既有的形状绘制** ✓：映射成 `draw_shape` 认的 `{kind, bbox}`（见 `object.rs:518` ✓ /
+        // `selection.rs:14` ✓ 里记的 `rect | ellipse | polygon | lasso`）⇒ **不另写绘制** ✗。
+        // **`texture` 明确不支持** ✓：**厚涂肌理是独立的活** ✓（需要笔触合成/高度场 ✓，我已分诊另排 ✓）
+        // ⇒ 给了非缺省值就**报错说清** ✗，**绝不静默忽略** ✗（那是本仓库的头号病症 ✓）。
+        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 暂不支持会明确报错",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("shape", Object, true, "{type: rect|ellipse|polygon, x,y,w,h | cx,cy,rx,ry | points}"),
+            param!("color", Object, true, "填充色 {r,g,b,a} 或 #rrggbb"),
+            param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
+            param!("texture", String, false, "暂不支持（只接受缺省/smooth）⇒ 给别的会明确报错"),
+        ],
+    },
+    ToolSpec {
         name: "draw_shape",
         profile: Profile::Core,
         summary: "绘制形状（矩形/椭圆/多边形，可描边）",
@@ -2577,6 +2595,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "import_image" => write_import_image(ctx, args),
         "draw_stroke" => write_draw(ctx, args, AtomKind::DrawStroke),
         "draw_shape" => write_draw(ctx, args, AtomKind::DrawShape),
+        "fill_region" => write_fill_region(ctx, args),
         "draw_text" => write_draw(ctx, args, AtomKind::DrawText),
         "fill" => write_draw(ctx, args, AtomKind::Fill),
         "erase" => write_draw(ctx, args, AtomKind::Erase),
@@ -3692,6 +3711,94 @@ fn require_non_empty_points(args: &Value) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// **`fill_region`**（AI 画家需求 P0-1.1 ✓）：把 `shape` 映射成 `draw_shape` 认的 `geometry` ✓
+/// ⇒ **复用 `write_draw(…, AtomKind::DrawShape)`** ✓（与手画图形**同一条路** ✓，不另写绘制 ✗）。
+fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let shape = require_object(args, "shape")?;
+    let color = args.get("color").cloned().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("缺少 color（{r,g,b,a} 或 #rrggbb）".to_string()),
+        )
+    })?;
+    // **只接受缺省/smooth** ✓：别的值**报错说清** ✗（不静默忽略 ✗）。
+    if let Some(texture) = optional_str(args, "texture") {
+        if texture != "smooth" {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "texture={texture} 暂不支持 ⇒ 目前只有缺省（= smooth）✓；厚涂/干刷肌理是独立的活，另行排期"
+                )),
+            ));
+        }
+    }
+    let number =
+        |key: &str, default: f64| shape.get(key).and_then(Value::as_f64).unwrap_or(default);
+    let kind = shape
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("rect")
+        .to_string();
+    let geometry = match kind.as_str() {
+        "rect" => json!({
+            "kind": "rect",
+            "bbox": {"x": number("x", 0.0), "y": number("y", 0.0), "w": number("w", 0.0), "h": number("h", 0.0)},
+        }),
+        "ellipse" => {
+            let (cx, cy) = (number("cx", 0.0), number("cy", 0.0));
+            let (rx, ry) = (number("rx", 0.0), number("ry", 0.0));
+            json!({
+                "kind": "ellipse",
+                "bbox": {"x": cx - rx, "y": cy - ry, "w": rx * 2.0, "h": ry * 2.0},
+            })
+        }
+        "polygon" => {
+            let points = shape.get("points").cloned().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("polygon 需要 points（[[x,y], …]）".to_string()),
+                )
+            })?;
+            json!({"kind": "polygon", "points": points})
+        }
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("未知形状 {other} ⇒ 可用：rect / ellipse / polygon")),
+            ))
+        }
+    };
+    // **opacity 乘进颜色的 a** ✓ —— 与 `scatter_strokes` 里同一套处理 ✓（颜色两种形态都收 ✓）。
+    let opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    let color = if let Some(object) = color.as_object() {
+        let alpha = object.get("a").and_then(Value::as_f64).unwrap_or(255.0) * opacity;
+        let mut copy = object.clone();
+        copy.insert("a".to_string(), json!(alpha.clamp(0.0, 255.0)));
+        Value::Object(copy)
+    } else {
+        color
+    };
+    let drawn = write_draw(
+        ctx,
+        &json!({
+            "layer_id": layer_id,
+            "data": {"geometry": geometry, "color": color},
+        }),
+        AtomKind::DrawShape,
+    )?;
+    Ok(json!({
+        "ok": true,
+        "shape": kind,
+        "opacity": opacity,
+        "drawn": drawn,
+    }))
 }
 
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {
