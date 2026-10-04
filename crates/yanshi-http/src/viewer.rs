@@ -897,6 +897,107 @@ const octx = overlay.getContext("2d");
 // 「看到的像素来自被拉伸的 img、点击落在下面的 canvas」这种几何不一致）。
 const preview = new Image();
 
+// ——— **本地持久化（离线优先）** ✓ ———
+// **为什么用 OPFS + IndexedDB** ✓（第 160 轮的算术依据 ✓）：文档像素可达 **48MB** ✓，
+// 而 `localStorage` 上限约 **5MB** ✗ ⇒ 差近一个数量级 ⇒ 像素必须走 **OPFS**（大二进制 ✓），
+// 索引走 **IndexedDB** ✓（行业常见配对 ✓）。验收判据是 `scripts/browser-offline-reload.mjs` ✓：
+// **断网重载后那一笔还得在** ✓ ⇒ 只有像素真落到本地才会绿 ✓。
+const LOCAL_DB = "yanshi-local-v1";
+const LOCAL_STORE = "blobs";
+/// **缓存键** ✓：必须剥掉破缓存参数 `t` ✗ —— 它每次渲染都不同 ✓
+/// ⇒ 拿整个 URL 当键 ⇒ **每次都是新键** ⇒ 存储**无限增长** ✗（第 163 轮记下的坑之一 ✓）。
+/// 按**文档 id** 分区 ✓（不同文档不互相覆盖 ✓）。
+function localKey(url) {
+  try {
+    const parsed = new URL(url, location.href);
+    parsed.searchParams.delete("t");
+    return String(state.docId || "doc") + "|" + parsed.pathname + "?" + parsed.searchParams.toString();
+  } catch (error) {
+    return String(state.docId || "doc") + "|" + url;
+  }
+}
+/// IndexedDB 打开（只存 `{key, file, size, at}` ✓，**不存字节** ✗ —— 字节在 OPFS ✓）。
+function localDb() {
+  return new Promise((resolve, reject) => {
+    if (!self.indexedDB) { reject(new Error("没有 IndexedDB")); return; }
+    const request = indexedDB.open(LOCAL_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(LOCAL_STORE, { keyPath: "key" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function localWithStore(mode, run) {
+  const db = await localDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_STORE, mode);
+      const store = tx.objectStore(LOCAL_STORE);
+      const request = run(store);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+async function localDir() {
+  const root = await navigator.storage.getDirectory();
+  return await root.getDirectoryHandle("yanshi", { create: true });
+}
+/// 取本地那份 blob ✓ ⇒ 返回 object URL（**离线可显示** ✓）或 null ✓。
+async function localBlobGet(url) {
+  try {
+    const record = await localWithStore("readonly", (store) => store.get(localKey(url)));
+    if (!record || !record.file) return null;
+    const dir = await localDir();
+    const handle = await dir.getFileHandle(record.file);
+    const file = await handle.getFile();
+    if (!file || file.size === 0) return null;
+    return URL.createObjectURL(file);
+  } catch (error) {
+    // **存储不可用就静默降级** ✓（无痕/配额满/老浏览器 ✗）⇒ 退化成在线行为 ✓，
+    // 绝不因为存储把查看器拖垮 ✗（与"参考图不在关键路径"同一个原则 ✓）。
+    return null;
+  }
+}
+/// 存一份 blob ✓（文件名用**内容无关的稳定键**的哈希 ✓，避免文件名里出现怪字符 ✓）。
+async function localBlobPut(url, bytes) {
+  try {
+    const key = localKey(url);
+    let hash = 0;
+    for (let index = 0; index < key.length; index += 1) {
+      hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
+    }
+    const file = hash.toString(16) + "-" + key.length.toString(16) + ".bin";
+    const dir = await localDir();
+    const handle = await dir.getFileHandle(file, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+    await localWithStore("readwrite", (store) =>
+      store.put({ key: key, file: file, size: bytes.byteLength, at: Date.now() }),
+    );
+    return file;
+  } catch (error) {
+    return null; // 同上：存储问题**不影响**主流程 ✓
+  }
+}
+/// **本地优先地**装底图 ✓ —— 这是 5014 那唯一一处的替身 ✓。
+async function loadPreview(url) {
+  const local = await localBlobGet(url);
+  if (local) {
+    preview.src = local;
+    return;
+  }
+  preview.src = url; // 老行为 ✓（一个字节都没改 ✓）
+  try {
+    const response = await fetch(url);
+    if (response && response.ok) await localBlobPut(url, await response.arrayBuffer());
+  } catch (error) {
+    // 网络失败就算了 ✓（存储里没有就是没有 ✓，不要在这里制造假象 ✗）
+  }
+}
+
 /// 内容层尺寸变化时同步覆盖层的显示矩形（画布按 CSS 缩放，覆盖层必须精确对齐它）。
 function syncOverlayGeometry() {
   const stage = board.parentElement;
@@ -5011,7 +5112,7 @@ async function refreshPreview(fromKernel = false) {
         queueServerBlit();
       }
     };
-    preview.src = value.thumb_url + "&t=" + Date.now();
+    void loadPreview(value.thumb_url + "&t=" + Date.now());
     setStatus({ rendered: value.head_seq !== undefined ? value.head_seq : undefined, dirty: 0 });
   }
 }
