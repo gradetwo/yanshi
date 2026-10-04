@@ -91,6 +91,9 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   else
     echo "  ✗ $name (EXIT=$code)"; tail -6 "$ROOT_DIR/out.txt" | sed 's/^/       /'; fail=$((fail+1))
     first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
+    # **抓不到就退而取首个非空行** ✓：`browser-*` 那几条用别的格式打印原因 ✗ ⇒
+    # 只按 `- `/`✗ ` 抓会得到空原因 ✓（第 328 轮实测：12 条里大半是空的 ✗）。
+    [ -z "$first_reason" ] && first_reason=$(grep -m1 -av '^[[:space:]]*$' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
     FAIL_SUMMARY="${FAIL_SUMMARY}  ✗ ${name}｜${first_reason}
 "
   fi
