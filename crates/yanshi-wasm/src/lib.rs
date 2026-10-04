@@ -19,6 +19,7 @@
 
 pub mod kernel;
 
+mod brush;
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 use yanshi_core::Bbox;
@@ -49,6 +50,13 @@ pub struct WasmKernel {
 impl WasmKernel {
     /// 新建内核：`doc_id`、tile 尺寸（32/64/128/256/512）、画布宽高、内存硬上限（字节）。
     #[wasm_bindgen(constructor)]
+    /// **笔刷预览** ✓（(A)③：把门面那件事搬进内核 ⇒ **一份实现** ✓）。
+    /// 收一段 JSON 请求 ⇒ 成功返回像素 ✓；失败返回 `undefined` ✓（**与"零长度成功"可区分** ✓）。
+    pub fn paint_brush(&self, request_json: &str) -> Option<Vec<u8>> {
+        crate::brush::paint(request_json).ok()
+    }
+
+    /// **构造一个内核实例** ✓（文档注释被我的插入"抢走"过一次 ✗ ⇒ 这是**第二次**踩同一个坑 ✓）。
     pub fn new(
         doc_id: &str,
         tile_size: u32,
