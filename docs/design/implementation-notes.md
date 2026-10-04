@@ -26155,3 +26155,17 @@ scripts/browser-brush-preview-local.mjs:50  const local = rows.filter((row) => r
 3. ⇒ ⇒ ⇒ **两条正当出路**：**(a) 实现该接口（作者倾向 ✓）** ｜ **(b) 判据改测真实信号** ✓
    ⇒ ⇒ ⇒ ⇒ **下一轮**：**按 (a) 动手** —— **产品里让本地出图的预览自带 `data-preview-source="local"` + `title` 含「近似」+ `src` 为 `data:image/png`** ✓。
 **★ 一条**：**"判据的注释"是一等证据** ✓ —— **它写明了设计意图与登记状态，而我只在追红时才读它** ✗。
+
+### ✅ 第 760 轮：**预览只有"入库静态图"与"服务端回退"两条路，缺"本地门面出图"** ✗
+
+**读到**（`viewer.rs:7240-7262`）：
+```
+:7246  const shipped = index && index.files && index.files[name];
+:7247  if (shipped) { const url = "/brush-previews/" + shipped; … brushPreviewsFromFiles++ … return; }   ← 入库静态图 ✓
+:7257  const value = await callTool("brush_preview", { brush: name, size: 24 }, { refresh: false }); ← 服务端回退 ✗
+```
+**⇒ 三条**：
+1. ✅ **路径一：入库静态图** ✓（**打包资源 ⇒ 正是 `(A)②`"资产随包" ✓**），并记 `brushPreviewsFromFiles` ✓；
+2. ⇒ ✗ **路径二：服务端回退** ✓ ⇒ **而**没有**"本地 `yanshi-wasm` 出图"这条** ✗；
+3. ⇒ ⇒ **即：`(A)③` 在**这里**确实缺一条分支** ✓ ⇒ **判据那三个断言（来源标记 / 近似标注 / data URL）对应的正是它** ✓。
+**★ 一条**：**"分支缺口"比"逻辑错误"更常见也更难看见** ✓ —— 而**判据的 `local=0` 一眼就指出来了** ✓。
