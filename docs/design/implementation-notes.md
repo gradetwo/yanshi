@@ -20856,3 +20856,24 @@ pub fn box_blur(buffer: &mut Buffer, radius: u32, passes: u32) {
 **⇒ 只剩一个未知（✗）** ✓：**`Buffer` 的构造与读写 API** ✗（**下一处必读** ✓）⇒ **读到即可动手** ✓。
 **⇒ 合并后必须守住的（✓）** ✓：**`layer_mask_clips_inverts_and_feathers`** ✓（蒙版侧不变 ✓）
 + **我自己的 9 条** ✓（几何侧不变 ✓）⇒ **两侧都逐字节不变** ✓。
+
+### 🎯 第 370 轮：**合并 recipe 可以执行了（附一个必须先说清的代价 ✓）** ✓
+
+**`Buffer` API（✓，`crates/yanshi-render/src/buffer.rs` ✓）** ✓：
+```rust
+Buffer::new(origin_x: i64, origin_y: i64, width: u32, height: u32) -> Self   // :23
+pub fn pixels_mut(&mut self) -> &mut [f32]                                   // :83  ← 就地写 ✓
+pub fn pixel(&self, x: u32, y: u32) -> LinearRgba                            // :117
+pub fn set_pixel(&mut self, x: u32, y: u32, pixel: LinearRgba)              // :131
+```
+**⇒ 合并 recipe（✓）** ✓：
+1. **`Buffer::new(0, 0, ow, oh)`** ✓（临时缓冲 ✓，origin 无所谓 ✓）；
+2. **把外扩补零后的网格写进 alpha 通道** ✓（RGB 保持 0 ✓）；
+3. **`crate::filter::box_blur(&mut buf, radius, 2)`** ✓（**复用仓库既有原语** ✓）；
+4. **取回 alpha** ✓ 装进 `Coverage` ✓；
+5. **删掉 `geometry::box_blur_2d`** ✓ + **把它的 9 条单测改为走 `filter::box_blur`** ✓。
+**⚠️ 代价（✓，必须先说清 ✗）** ✓：**`Buffer` 是 `LinearRgba`（每像素 4 个 `f32` ✓），而覆盖率每像素只有 1 个** ✗
+⇒ **用 `Buffer` 承载覆盖率 = 4 倍内存 + 3 个恒零通道** ✓ ——
+**但模糊对 4 个通道一视同仁 ⇒ alpha 的结果与单通道逐位一致** ✓（**不是"近似等价"，是"同一套算术"** ✓）
+⇒ **数学上等价 ✓，代价只是浪费** ✓ ⇒ **临时缓冲可接受** ✓。
+**⇒ 下一轮即可动手** ✓，**且两侧测试（蒙版那条 ✓ + 我的 9 条 ✓）都必须不变** ✓。
