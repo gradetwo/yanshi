@@ -20304,3 +20304,28 @@ status = completed   conclusion = **success** ✓
   **多花了两轮才找到第二个成因** ✓；
 * **先读"判据自己在等什么 / 报什么"，再动手** ✓：`serverBlits > 0` ✓、`试过：…` ✓、
   `mjs:47` ✓、`panMoved` ✓ —— **四次的答案都写在输出里** ✓。
+
+### 💡 第 342 轮：**§二.1 羽化 —— 读接口后改进了方案（更小、更安全 ✓）** ✓
+
+**读到的接口（✓）** ✓：
+```rust
+pub fn shape_coverage(kind, bbox, points) -> Coverage            // 1574
+pub fn shape_coverage_in(kind, bbox, points, clip) -> Coverage   // 1583 ← **唯一出口** ✓
+```
+**原计划（✗）** ✓：在 `shape_coverage` 出口处做模糊 ✓ —— 但它**签名里没有半径** ✗ ⇒
+要加参数就得改**所有调用点** ✗（风险大，且违背"半径 0 时逐字节不变"这条硬要求 ✓）。
+**改后的方案（✓）** ✓：**新增一个附加函数** ✓，**只在 `fill_region` 且 `feather ≠ 0` 时调用** ✓：
+```rust
+pub fn feather_coverage(cov: &Coverage, radius_px: f64) -> Coverage
+// 两次可分离盒式模糊 ≈ 高斯 ✓；半径 0 或不被调用 ⇒ **既有输出逐字节不变** ✓
+```
+**为什么这样更好（✓）** ✓：
+* **不动任何既有签名** ⇒ 既有调用点**零改动** ⇒ **不可能影响别的形状/工具** ✓；
+* "半径 0 ⇒ 逐字节不变"这条判据**自动成立** ✓（因为根本不进新路径 ✓），
+  而不是"靠分支里小心翼翼判断" ✗；
+* 羽化的**唯一入口**在 `fill_region` ✓ ⇒ **判据只需覆盖一条路径** ✓。
+**下一步（✓）** ✓：
+1. `object.rs` 解析 `geometry.feather`（像素半径，缺省 0 ✓）；
+2. `render.rs` 加 `feather_coverage` ✓ + 单测（半径 0 ⇒ 完全相等 ✓；半径 >0 ⇒ 边缘出现中间值 ✓）；
+3. `write_fill_region` 接受并登记 `feather` ✓；
+4. 新判据 `tool-fill-region-feather.mjs` ✓（**硬边阶跃 vs `feather=20` 渐变，两侧都判** ✓）。
