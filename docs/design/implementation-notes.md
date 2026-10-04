@@ -20215,3 +20215,26 @@ shard 6（2）：browser-canvas-handfeel｜browser-layout｜
 **⚠️ 规律（✓，值得记 ✓）** ✓：这四条里**没有一条是产品缺陷** ✗ —— 它们是
 **"判据的前提/口径/健壮性/路径"** ✓ ⇒ 与前面 7 条合起来，**12 条里判据侧已占多数** ✓
 （**判据是我写的，产品不是我写的** ✓ ⇒ **"红"的第一嫌疑永远是判据** ✓）。
+
+### 🎯 第 331 轮：**12 条失败的推进（8 修 + 1 假设被否）** ✓
+
+**已修 8 条（**全部是判据/调用侧** ✗）** ✓：
+| # | 判据 | 它错在哪 |
+|---|---|---|
+| 1 | `tool-batch-preview` | 前提错 ✗：不给 `silent` 时**每个子调用本来就带预览** ✓（该参数是给**静默**批次放行的 ✓）|
+| 2 | `tool-reference-delta-e` | 崩了 ✗：`JSON.stringify(undefined)` 是 `undefined` ⇒ `.slice` 抛异常 ✓ |
+| 3 | `tool-example-acceptance` | 口径太窄 ✗：把"引用还不存在的对象"算成失败 ✓（对示例**合理** ✓）|
+| 4 | `tool-cjk-text` | 路径错 ✗：读服务端写的文件却用相对路径 ✓ |
+| 5 | `browser-drag-perf` | 端口硬编码 ✗：它连 **9333**，而 runner 用 `CDP_PORT` ✓ |
+| 6 | `browser-pan-vs-paint` | 参数少传 ✗：它要 `<viewer-url> <base> <token> [cdp]` ✓ |
+| 7 | `browser-kernel-perf` | URL 缺 **`debug=1`** ✗（内核句柄只在调试模式暴露 ✓）|
+| 8 | `browser-canvas-handfeel` | 变量名手滑 ✗：`panMoved` **从未定义** ✓（107 行是 `panned` ✓）|
+**剩下 4 条与一个被否掉的假设（✓）** ✓：
+* `browser-brush-preview` ✓（"红带/蓝带 红 0 / 蓝 0"）、`browser-brush-preview-local` ✓（`local:0` ✓）、
+  `browser-layout` ✓（"画布始终没被设过尺寸" ✓）—— **三条都指向"画布没建起来"** ✓；
+* **假设 A：CI 里内核没加载** ✗ ⇒ ⇒ **被一条现成的绿判据否掉** ✓：
+  **`browser-render-switch` 在 CI 上绿** ✓，而它断言的正是**内核句柄** ✓ ⇒ **内核是可用的** ✓；
+* 同理 `browser-i18n` ✓ 与 `browser-offline-shell` ✓ 绿 ⇒ **页面能加载** ✓；大量 `tool-*` 绿 ⇒ **服务端可用** ✓。
+⇒ ⇒ **收窄后的判断** ✓：问题在**"打开文档 ⇒ 建立画布尺寸/首帧"这一段** ✓，而不在底层能力 ✓。
+**方法（✓，值得记 ✓）** ✓：**"三条同根"的假设，先用已有判据去否证** ✓ ——
+**一次新实验都不做，就能把"内核问题"排除** ✓（`render-switch` 早就在跑它 ✓）。
