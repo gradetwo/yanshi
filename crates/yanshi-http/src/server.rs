@@ -1444,6 +1444,28 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // **blob 是"按内容哈希命名"的不可变资源** ✓ ⇒ **cache-first** ✓（行业口径 ✓，与 (A)⑥ 同一条原则 ✓）。
+  // **为什么放在这里** ✓：查看器里所有 blob 都出自 `const blobUrl = (hash) => api("/api/blob/" + hash)` ✓
+  // ⇒ 有的是 `fetch` ✓、有的是 **`<img src>`** ✗（后者**根本不经过我的 `fetchOrLocal`** ✓
+  // ⇒ 这就是"离线时那条 blob 一直失败 ✓、而且我加的写失败警告一条都不打"✓ 的原因 ✓）。
+  // ⇒ 交给 SW 做，**一处覆盖全部** ✓，不必去追十几个 `<img>` 赋值点 ✗。
+  if (url.pathname.startsWith("/api/blob/")) {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      const hit = await cache.match(request, { ignoreSearch: true });
+      if (hit) return hit;
+      try {
+        const response = await fetch(request);
+        if (response && response.ok) cache.put(request, response.clone()).catch(() => undefined);
+        return response;
+      } catch (error) {
+        const fallback = await cache.match(request, { ignoreSearch: true });
+        if (fallback) return fallback;
+        throw error;
+      }
+    })());
+    return;
+  }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;
   event.respondWith((async () => {
     try {
