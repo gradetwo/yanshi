@@ -1528,7 +1528,13 @@ if (overflow.scrollWidth > overflow.clientWidth + 1) {
 }
 
 // 蒙版编辑
-if (maskResult.filled === 0) {
+// Node 侧守卫（第 620 轮）：我先前把 try/catch 加在页面内，而失败发生在 CDP/Node 层，
+// 也就是 await evaluate 自己 reject：maskResult 会是 undefined，
+// 于是下一行读它的 filled 就抛 TypeError —— 实测堆栈正是 browser-ui-check.mjs:1531:16，
+// 而它被记成「蒙版没有裁掉区域外」，把「判据无法运行」当成了「判据失败」。
+if (!maskResult) {
+  problems.push("蒙版判据无法运行：页面侧求值没有返回结果（不是判据失败）");
+} else if (maskResult.filled === 0) {
   problems.push("蒙版用例前置条件不成立：填充没有产生内容");
 } else if (!(maskResult.masked < maskResult.filled)) {
   problems.push(
