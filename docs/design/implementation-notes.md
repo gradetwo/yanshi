@@ -23749,3 +23749,23 @@ job 111481660491 ⇒ `意外失败 0｜已知红 0` ✓（**干干净净** ✓�
     —— **与"加在了别的分支"同族** ✗）。
 **⇒ 下一处（✓）** ✓：**读判据里 `points=` 那一行的**原文** ✓ —— 看它到底怎么写的** ✓
 （**若它写的是 `stateProbe.points.length` 无兜底 ⇒ 会抛错 ✓；若写的是别的对象 ⇒ 一切就通了 ✓**）。
+
+### 🎯 第 551 轮：**同一行里 `dragging` 对、`points` 像旧版 ⇒ 页面跑的不是这一版** ✗
+
+**读到（✓，`browser-ui-check.mjs:630` ✓）** ✓：
+```js
+:630  + " points=" + (stateProbe && stateProbe.points ? stateProbe.points.length : "?")
+      + " dragging=" + (stateProbe ? stateProbe.dragging : "?")
+```
+**⇒ 推理（✓）** ✓：**带兜底 ⇒ `points` 为假时应打 `"?"`** ✓
+⇒ ⇒ **而日志原文是 `points=undefined`** ✗ ✓ ⇒ **`"?"` 与 `undefined` 不同** ✓
+⇒ ⇒ ⇒ **同一行里 `dragging=301` 是对的** ✓、**`points=undefined` 不对** ✗
+⇒ ⇒ ⇒ ⇒ **两个字段同出一行 ⇒ 只能是"页面里跑的不是这一版逻辑"** ✗ ✓
+   （**`dragging` 那个字段在产品里已存在 ✓；`points` 是我新加的 ✓**）
+   ⇒ ⇒ ⇒ **即：`state()` 的 `points` 字段没有随构建进到页面** ✗ ✓
+   —— **而 `dragging` 之所以有值，是因为探针的兜底对 `undefined` 也能打出 `undefined`** ✗ ✓
+   ⇒ ⇒ ⇒ ⇒ **等等：`dragging` 若不存在，兜底给 `"?"`** ✗，**而它给了 `301`** ✓
+   ⇒ ⇒ ⇒ ⇒ ⇒ **所以产品侧 `dragging` 在 ✓、`points` 不在** ✗ ✓ —— **两者都在我同一次改动里** ✗
+   ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **唯一自洽的解释：`state()` 里加的 `points` 行被覆盖/未生效** ✗ ✓
+**⇒ 下一处（✓）** ✓：**读 `d46d9b5` 之后 `viewer.rs` 里 `state()` 的**当前**内容** ✓
+—— **确认 `points:` 那一行真的在文件里、且在 `return { … }` 内** ✓。
