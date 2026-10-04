@@ -33,80 +33,55 @@
 </header>
 <main>
 <h1>偃师 Yanshi</h1>
-<p class="lede">一个无头（headless）绘画引擎：只追加的原子日志、由日志折叠求值出的状态、纯 Rust 渲染计算内核、零依赖的 HTTP/WebSocket 服务端，以及一个最小的 Web 查看器。同一份内核在服务端原生编译，在浏览器里编译为 WebAssembly。</p>
+<p class="lede">AI Native 的 headless 绘画引擎，<strong>人与 AI 在同一张画布上协作</strong>的创作工具。</p>
+<ul>
+<li><strong>操作原子化。</strong>每次编辑是一条原子、追加进日志；画面是这份日志折叠求值的结果。撤销与重做只移动指针。</li>
+<li><strong>一份内核，两个宿主。</strong>同一套 Rust 内核在服务端原生编译、在浏览器编译为 WebAssembly ⇒ 本地渲染与服务端渲染是同一份实现，不是两份近似。</li>
+<li><strong>工程包自包含。</strong><code>.yanshi</code> 包带着原子日志与它引用的全部 blob，导进别处即可复现同一幅画。</li>
+</ul>
+<p>在这套引擎之上是一个 <strong>MCP 服务端</strong>与一个 <strong>Web 查看器</strong> ⇒ Agent 与人操作的是同一份文档。</p>
 
 <h2>快速开始</h2>
-<p><strong>前置要求</strong></p>
-<ul>
-<li><strong>Rust</strong>：<code>rust-toolchain.toml</code> 固定的 stable 工具链，含 <code>rustfmt</code> 与 <code>clippy</code> 组件；</li>
-<li><strong><code>make</code></strong> 与 POSIX shell —— 下面的入口都是 Make 目标，内部调用 <code>scripts/</code>；</li>
-<li>可选，<strong>要用客户端渲染</strong>（浏览器内核）时：<code>rustup target add wasm32-unknown-unknown</code>，以及
-<code>wasm-bindgen-cli</code> <strong>0.2.129</strong>（<code>cargo install wasm-bindgen-cli --version 0.2.129 --locked</code>）。
-它的版本必须与 <code>wasm-bindgen</code> crate 匹配，否则生成的胶水加载不了那个 <code>.wasm</code>。
-<strong>不装这两项也能启动服务端</strong>，查看器退化为服务端渲染；</li>
-<li>可选，<strong>只在跑判据时</strong>：<strong>Node</strong> 与 <strong>chromium</strong>（没有 chromium 时运行器会跳过浏览器判据）。</li>
-</ul>
-<p><strong>编译与运行</strong></p>
+<p>需要 <strong>Rust</strong>（<code>rust-toolchain.toml</code> 固定的 stable ✓，含 <code>rustfmt</code>/<code>clippy</code>）与 <strong><code>make</code></strong>。
+要用<strong>浏览器端内核</strong>（客户端渲染）再装 <code>rustup target add wasm32-unknown-unknown</code> 与
+<code>wasm-bindgen-cli</code> <strong>0.2.129</strong>；<strong>不装也能跑</strong>，查看器退回服务端渲染。</p>
 <pre><code>git clone https://github.com/gradetwo/yanshi.git
 cd yanshi
 make dev        # 有工具链时构建 WASM 内核，构建服务端并启动 ⇒ 打开 http://127.0.0.1:8110/</code></pre>
-<p>数据缺省落在 <code>~/.local/share/yanshi/workspace</code>。换端口或数据目录请用<strong>环境变量</strong>：
-<code>make dev</code> 不会把 Make 变量传进它的 recipe，而 <code>make serve</code> 是显式传 <code>--port</code> 的。</p>
-<pre><code>PORT=9000 make dev                 # 写成 make dev PORT=9000 不会传进去
+<p>数据缺省在 <code>~/.local/share/yanshi/workspace</code>。换端口或目录请用<strong>环境变量</strong>
+（<code>make dev</code> 不会把 Make 变量传进 recipe，而 <code>make serve</code> 是显式传 <code>--port</code> 的）：</p>
+<pre><code>PORT=9000 make dev
 make serve PORT=9000</code></pre>
 <p>推送前跑 <code>make check</code>（格式、静态检查、测试）；全部目标见 <code>make help</code>。</p>
 
+<h2>当前状态</h2>
+<ul>
+<li>版本 0.1.0，<strong>尚无已发布的发行版</strong>；源码从 GitHub 取得，<code>make release</code> 自行打包。</li>
+<li><code>semantic</code> 工具组按既定裁定只作预留，未实现。</li>
+<li>浏览器端内核是构建产物，新克隆里没有它；缺了不报错，查看器退回服务端渲染。</li>
+</ul>
+
 <h2>名字的由来</h2>
 <p>「偃师」出自《列子·汤问》里造木偶的工匠。原文：</p>
-<blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p></blockquote>
-<p class="muted">据 <a href="https://ctext.org/liezi/tang-wen/zhs">中国哲学书电子化计划《列子·汤问》</a>；此处按简体转录。</p>
-<p>值得借来做名字的，不是"巧"，而是<strong>构造与行为是分开的</strong>：那个能唱能舞的东西，剖开看是"革木胶漆、白黑丹青"；拆掉心肝腎，它分别不能言、不能视、不能步；<strong>而"合会"之后，又和当初一样</strong>。</p>
-<ul>
-<li><strong>日志即构造。</strong>每次编辑是一条原子，追加进日志；画面是把它折叠求值的结果。</li>
-<li><strong>拆开再装上，结果不变。</strong><code>.yanshi</code> 工程包连同日志引用到的全部 blob 一起装走，导进另一个工作区后逐字节一致。</li>
-<li><strong>行为出自同一份内核。</strong>服务端原生与浏览器 WebAssembly 是同一份实现，不是两套各自近似的东西。</li>
-</ul>
+<blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p>
+<p class="muted">据 <a href="https://ctext.org/liezi/tang-wen/zhs">中国哲学书电子化计划《列子·汤问》</a>；此处按简体转录。
+<p>值得借来做名字的，不是"巧"，而是<strong>构造与行为是分开的</strong>：剖开看是"革木胶漆、白黑丹青"；拆掉心肝腎，它分别不能言、不能视、不能步；<strong>而"合会"之后，又和当初一样</strong>。</p>
 <p>原文结尾是穆王的赞叹——"人之巧乃可与造化者同功乎"。<strong>这一句我们不当真</strong>：这个项目只是把构造写清楚，做不到的也照样写在文档里。</p>
 
 <h2>Logo</h2>
-<p>标是一个<strong>弹弓</strong>：Y 形的杈，两根蓝色皮筋，一颗红色弹丸。灵感来自电影《谁说我不在乎》里的一句台词：</p>
-<blockquote><p>抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。</p></blockquote>
-<p class="muted"><a href="https://www.bilibili.com/video/BV1Rw411c7Bx/">片段（bilibili）</a>；影片版权属原权利人。</p>
-<p>借的只是一句玩笑话里那个动作——<strong>用现成的东西做一件能用的东西</strong>。这与项目本身的态度一致：把构造讲清楚，能用就用，不能就说不能。</p>
+<p>标记是一个<strong>弹弓</strong>：Y 形的杈，两根蓝色皮筋，一颗红色弹丸。灵感来自电影《谁说我不在乎》里的一句台词：</p>
+<blockquote><p>抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。</p>
+<p class="muted"><a href="https://www.bilibili.com/video/BV1Rw411c7Bx/">片段（bilibili）</a>；影片版权属原权利人。
+<p>借的只是一句玩笑话里那个动作——<strong>用现成的东西做一件能用的东西</strong>。与项目本身的态度一致：把构造讲清楚，能用就用，不能就说不能。</p>
 
-<h2>设计取向</h2>
-<ul>
-<li><strong>日志即真相。</strong>每次编辑写成一条原子，追加进日志；当前状态由日志折叠求值得到。撤销与重做只移动指针，不是"把操作反过来做一遍"。</li>
-<li><strong>一份内核，两处运行。</strong>拖动时的乐观预览与最终落笔是同一份实现，不是两套代码各自近似。</li>
-<li><strong>确定性。</strong>同样的输入得到同样的输出。导出与重放有逐字节比对的测试守着。</li>
-<li><strong>可搬走。</strong><code>.yanshi</code> 工程包是未压缩 tar，内含原子日志、文档元数据、日志引用到的全部 blob，以及导出时当场渲染的一份 HEAD 预览。任何系统的 <code>tar</code> 都能列出与解开。</li>
-</ul>
-
-<h2>工具面</h2>
-<p><code>--profile all</code> 一个词开启全部已实现的组：<strong>114 个工具</strong>（只开 core 是 46 个）。图层混合模式按渲染层那份清单校验，不认识的名字会被明确拒绝并列出可用值，而不是写进日志之后被静默忽略。</p>
-
-<h2>当前状态</h2>
-<ul>
-<li>版本 0.1.0，<strong>尚无已发布的发行版</strong>。源码从 GitHub 取得，<code>make release</code> 自行打包（带校验和）。</li>
-<li><code>semantic</code> 工具组按既定裁定只作预留，未实现。</li>
-<li><code>appearance.texture</code> 的纸纹是<strong>近似</strong>水彩纸与画布，可调；但没有专门的"粗纹水彩纸 / 帆布纹理"预设。</li>
-<li>浏览器端内核是构建产物，新克隆的仓库里没有它。缺了它不会报错，查看器会退回服务端渲染；要本地渲染就按 README 构建。</li>
-</ul>
-
-<h2>联系</h2>
-<p>缺陷上报与协作沟通：<a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>。安全漏洞请不要开公开 issue，直接发邮件。</p>
-
-<h2>取得源码</h2>
-<pre><code>git clone https://github.com/gradetwo/yanshi.git
-cd yanshi
-make dev       # 编译并启动（打开 http://127.0.0.1:8110/ ）
-make check     # 格式、静态检查、测试
-make release   # 打包发行版：两个可执行文件、浏览器端 WASM 内核、介质插件</code></pre>
+<h2>联系与源码</h2>
+<p>缺陷上报与协作：<a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>。安全漏洞请不要开公开 issue，直接发邮件。</p>
 <ul class="links">
-<li>仓库：<a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a></li>
-<li>源码下载（zip）：<a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
-<li>设计文档（权威规范，中文）：<a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
-<li>说明文档：<a href="https://github.com/gradetwo/yanshi/blob/main/README.zh-CN.md">README.zh-CN.md</a>｜<a href="https://github.com/gradetwo/yanshi/blob/main/README.md" hreflang="en" lang="en">README.md</a></li>
+<li>仓库：<a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a>｜
+源码下载（zip）：<a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
+<li>说明文档：<a href="https://github.com/gradetwo/yanshi/blob/main/README.zh-CN.md">README.zh-CN.md</a>｜
+<a href="https://github.com/gradetwo/yanshi/blob/main/docs/guide.zh-CN.md">使用指南</a>｜
+设计文档（权威规范）：<a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
 </ul>
 </main>
 <footer>
