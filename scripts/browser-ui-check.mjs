@@ -579,6 +579,17 @@ for (let i = 0; i < 80; i++) {
   await new Promise((r) => setTimeout(r, 250));
 }
 const maskResult = await evaluate(`(async () => {
+  // **段内保护** ✓（第 599 轮 ✓）：段首若某个元素取不到，第一处 click/value 就抛 ✗
+  // ⇒ 整段 reject ⇒ 外部拿到一串 undefined ✓（实测：着色 undefined -> undefined、日志 "" ✓）
+  // ⇒ 那样报的是"判据失败"，而真相是"判据无法运行" ✓ —— 两者必须分开 ✓。
+  const missing = [];
+  for (const id of ["board", "zoomFit", "color", "size", "feather"]) {
+    if (!document.getElementById(id)) missing.push(id);
+  }
+  if (!document.querySelector('button[data-tool="brush"]')) missing.push("brush 按钮");
+  if (missing.length) {
+    return { unable: "缺元素：" + missing.join("、"), filled: undefined, masked: undefined, log: "" };
+  }
   const board = document.getElementById("board");
   const rect = board.getBoundingClientRect();
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
