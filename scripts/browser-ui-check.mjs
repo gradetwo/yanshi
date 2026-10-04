@@ -617,7 +617,11 @@ const maskResult = await evaluate(`(async () => {
   // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
   // 照它自己的正确写法补即可。（本行在模板字符串里 ⇒ 注释中不可出现反引号 ✗）
   fire("pointermove", at(0.5, 0.5), 301);
+  // **第一次 move 之后，产品记了几个点** ✓（第 572 轮 ✓）：静态阅读已到极限 ✗
+  // ⇒ 在两次 move 之间各读一次 ✓ ⇒ 就能分辨"第一次没记"还是"第二次把它清了" ✓。
+  const ptsAfterMove1 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
   fire("pointermove", at(0.75, 0.75), 301);
+  const ptsAfterMove2 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
   await new Promise((r) => setTimeout(r, 100));
   // **探针必须在抬手之前取** ✓（第 467 轮 ✓）：原先它写在 pointerup **之后** ✗
   // ⇒ 抓到的是"抬手之后"的日志 ✓ ⇒ **名字承诺了它没做的事** ✗（与"算了不断言"同族 ✓）。
@@ -633,6 +637,7 @@ const maskResult = await evaluate(`(async () => {
     // 拖动中若为 2，就说明 commitMask 要求的「至少 2 个点」是满足的。
     + " points=" + (stateProbe ? stateProbe.points : "?")
     + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
+    + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2);
   fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
   for (let i = 0; i < 120 && masked >= filled; i++) {
