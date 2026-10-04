@@ -1488,7 +1488,11 @@ const jumpUndoResult = await evaluate(`(async () => {
   if (rows.length < 2) {
     return { ok: false, unable: "历史里只有 " + rows.length + " 条原子，不足以测「跳转会改变画面」" };
   }
-  const target = rows[rows.length - 2];
+  // 目标要选一条**确定会改变像素**的原子（第 694 轮）：
+  // 实测最后几条是 reorder_layers 与 set_property，它们不改像素，
+  // 所以跳到「倒数第二条」画面一样 —— 那条路走不通。
+  // 而最早那条（日志里的 create_object）一定与当前状态不同，故用它。
+  const target = rows[0];
   const before = ${canvasFingerprint};
   target.querySelector("button").click();
   // **等条件，不等时长** ✓（第 629 轮 ✓）：原先固定 2200ms ✗ ——
