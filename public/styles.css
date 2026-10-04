@@ -35,7 +35,12 @@ header {
   display: flex; align-items: center; justify-content: space-between;
   gap: 1rem; padding: 1.5rem 0 0;
 }
-header .brand img { display: block; width: 176px; height: auto; }
+/* **logo 要看得清**（用户反馈 ✓）：176px 时副标 `YANSHI.WANGDA.TODAY` 只有几像素高 ✗
+   ⇒ 桌面 280px ✓、窄屏 200px ✓（两个 logo 的 viewBox 是 420×160 与 560×180 ✓，等比缩放 ✓）。 */
+header .brand img { display: block; width: 280px; height: auto; }
+@media (max-width: 34rem) {
+  header .brand img { width: 200px; }
+}
 header .brand .for-dark { display: none; }
 @media (prefers-color-scheme: dark) {
   header .brand .for-light { display: none; }
