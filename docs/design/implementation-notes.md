@@ -19946,3 +19946,28 @@ palette = [{r:200,g:186,b:168,a:240}] ⇒ 主色 #fefefe 91.9% + **#c8baa8 7.01%
 **方法（✓）** ✓：**"要不要引依赖"这种判断，必须查完仓库再下** ✗ ——
 我上一轮已经写下"要动渲染核心/需要产品决策" ✓，而这轮一 grep 就推翻了它的一半 ✓
 （**与本会话多次"先猜后查"同源** ✓：**先查，再定性** ✓）。
+
+### 🎯🎯 第 317 轮：**再次推翻自己 —— `decode_png` 早就在仓库里** ✗✗（§三.2 可以一轮做完 ✓）
+
+**读到的事实（✓）** ✓：
+```
+crates/yanshi-render/src/png.rs:782   pub fn decode_png(bytes) -> Option<(u32, u32, Vec<u8>)>   ← **完整 PNG 解码器** ✓
+crates/yanshi-render/src/png.rs:321   pub fn zlib_decompress(stream) -> Option<Vec<u8>>         ✓
+crates/yanshi-render/src/png.rs:646   fn inflate_raw(data) -> Option<(Vec<u8>, usize)>           ✓
+crates/yanshi-render/src/png.rs:20    pub fn encode_png(width, height, rgba8) -> Option<Vec<u8>>  ✓（早已知道 ✓）
+```
+⇒ ⇒ **§三.2 需要的机器全都在仓库里** ✓（读参考图 blob ⇒ `decode_png` ⇒ RGBA ⇒ 与渲染区域比 ✓）。
+**⚠️ 我连续两轮判断错（✓，如实记 ✓）** ✗：
+1. 第 316 轮我写"要服务端解 PNG ⇒ 得引解码器 ⇒ **产品决策**" ✗ —— 错 ✓；
+2. 紧接着写"缺的只是**反滤波**" ✗ —— **也错** ✓（`decode_png` 已经把它做完了 ✓）。
+⇒ 而两次的**根因相同** ✓：我**只 grep 了自己想到的词**（`Paeth`/`unfilter` ✓、`inflate` ✓），
+**没有先列"这个仓库里跟 PNG 有关的全部公开函数"** ✗ ——
+**一 grep `^pub fn ` 就看见了 `decode_png`** ✓。
+**规矩（✓）** ✓：**判断"缺什么"之前，先把那个模块的公开接口整个列出来** ✓
+（**不是搜我猜的名字** ✗ —— 我猜的名字里当然没有我没见过的东西 ✓）。
+⇒ 这条与本会话的"**先查再定性**"是同一条 ✓，只是这次**"查"要更彻底：列接口，而不是搜关键词** ✓。
+**§三.2 的范围（✓，最终 ✓）** ✓：
+① 取 `reference.blob_hash`（preferences ✓）⇒ **读 blob** ✓ ⇒ `decode_png` ✓ ⇒ 参考图 RGBA ✓；
+② 与 `analyze_region` 已渲染的区域像素比 ✓ ⇒ 返回 **ΔE（CIE76，先做）** ✓ + 平均偏差 ✓；
+③ **没有参考图 / 尺寸不一致** ⇒ **明确作答** ✓（**不静默返回 0** ✗）；
+④ 判据两侧都能判 ✓：**自比 ΔE ≈ 0** ✓、**刻意改色后 ΔE 明显 > 阈值** ✓；SSIM 第二步 ✓。
