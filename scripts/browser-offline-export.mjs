@@ -8,7 +8,12 @@
 // 判据 ✓：在线开一次页 ✓ ⇒ **断网** ✓ ⇒ **点导出** ✓ ⇒ **下载目录里必须真的出现一个文件** ✓
 //（用 CDP 的下载目录 ✓ —— 这比"读一句提示文字"强得多 ✓：**文件是硬证据** ✓）。
 const url = process.argv[2];
-const port = process.argv[3] || process.env.CDP_PORT || "9333";
+// **端口从环境变量取** ✓（第 409 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
+// `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（完整 URL）** ✗ ⇒
+// 原先的 `process.argv[3] || process.env.CDP_PORT` ✗ 让端口变成一个 URL ✓ ⇒
+// 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **取不到调试目标** ✗。
+//（全仓共 8 条这样写 ✓ —— **含"离线"全家** ✓ ⇒ 影响 A⑥ 的证据 ✓。）
+const port = process.env.CDP_PORT || "9333";
 const dir = process.argv[4] || "/var/tmp/yanshi-dl";
 if (!url) { console.error("用法: node scripts/browser-offline-export.mjs <viewer-url> [cdpPort] [downloadDir]"); process.exit(2); }
 const fs = await import("node:fs");

@@ -8,7 +8,12 @@
 //        ④ 它的不透明度必须**接近设置值** ✓（0.5 ⇒ 0.3~0.7 ✓，防"设了没生效" ✗）；
 //        ⑤ 经 API 清掉参考图 ⇒ **重新打开后该元素不再出现** ✓。
 const url = process.argv[2];
-const port = process.argv[3] || process.env.CDP_PORT || "9333";
+// **端口从环境变量取** ✓（第 409 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
+// `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（完整 URL）** ✗ ⇒
+// 原先的 `process.argv[3] || process.env.CDP_PORT` ✗ 让端口变成一个 URL ✓ ⇒
+// 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **取不到调试目标** ✗。
+//（全仓共 8 条这样写 ✓ —— **含"离线"全家** ✓ ⇒ 影响 A⑥ 的证据 ✓。）
+const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-reference-overlay.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hash = "sha256:" + "a".repeat(64);

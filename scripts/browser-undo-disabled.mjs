@@ -4,7 +4,12 @@
 // ⇒ `null === 0` 为**假** ✗ ⇒ 按钮**保持可点** ✓ ⇒ 用户点了没反应 ✓（判据实测：`撤销/重做栈深度：null`）。
 // 用法：node scripts/browser-undo-disabled.mjs <viewer-url> [cdpPort]
 const url = process.argv[2];
-const port = process.argv[3] || process.env.CDP_PORT || "9333";
+// **端口从环境变量取** ✓（第 409 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
+// `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（完整 URL）** ✗ ⇒
+// 原先的 `process.argv[3] || process.env.CDP_PORT` ✗ 让端口变成一个 URL ✓ ⇒
+// 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **取不到调试目标** ✗。
+//（全仓共 8 条这样写 ✓ —— **含"离线"全家** ✓ ⇒ 影响 A⑥ 的证据 ✓。）
+const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-undo-disabled.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
