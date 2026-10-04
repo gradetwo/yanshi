@@ -20836,3 +20836,23 @@ if mask.feather > 0.0 {
 **★ 但这二十轮也不是白花（✓）** ✓：`feather_coverage` 的**外扩 bbox** ✓、**零半径惰性** ✓、
 **三条边界语义** ✓、**9 条单测** ✓ —— **这些是仓库里原先没有的** ✓（`filter::box_blur` 只管"在已有缓冲上糊" ✓，
 **不管"糊完之后边界要往外长"** ✓）⇒ ⇒ **要合并的是模糊原语，要保留的是"羽化的几何"** ✓。
+
+### 🎯 第 369 轮：**`filter::box_blur` 与我的 `box_blur_2d` 是同一个计算** ✓（合并方案 B1 明确 ✓）
+
+**读到的（✓，`crates/yanshi-render/src/filter.rs:914` ✓）** ✓：
+```rust
+pub fn box_blur(buffer: &mut Buffer, radius: u32, passes: u32) {
+    if radius == 0 { return; }
+    for _ in 0..passes.max(1) { blur_horizontal(buffer, radius); blur_vertical(buffer, radius); }
+}
+```
+⇒ ⇒ **就地 ✓、可分离 ✓、`passes` 次 ✓** —— **我的 `box_blur_2d(data, w, h, radius)` 做的是同一件事** ✓
+⇒ **连"两遍"都对得上** ✓：我写 `for _ in 0..2` ✓，它就是 `passes = 2` ✓ ✓ ⇒ ⇒ **它们是同一个原语的两种写法** ✓。
+**⇒ 合并方案 B1（✓，明确 ✓）** ✓：
+1. `feather_coverage` 里**建一个 `Buffer`**（内容 = 外扩补零后的网格 ✓）；
+2. 调 **`filter::box_blur(&mut buf, radius, 2)`** ✓；
+3. **取回数据** ✓，装进 `Coverage` ✓；
+4. **删掉 `geometry::box_blur_2d`** ✓ ⇒ **全仓一个方框模糊** ✓。
+**⇒ 只剩一个未知（✗）** ✓：**`Buffer` 的构造与读写 API** ✗（**下一处必读** ✓）⇒ **读到即可动手** ✓。
+**⇒ 合并后必须守住的（✓）** ✓：**`layer_mask_clips_inverts_and_feathers`** ✓（蒙版侧不变 ✓）
++ **我自己的 9 条** ✓（几何侧不变 ✓）⇒ **两侧都逐字节不变** ✓。
