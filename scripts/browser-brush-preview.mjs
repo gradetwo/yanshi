@@ -203,13 +203,19 @@ const countBand = async (fromY, toY) => {
   );
   let red = 0;
   let blue = 0;
+  // **墨量探针**（第 418 轮 ✓）：数"可见像素"（`a >= 40` ✓），**不看颜色** ✓。
+  // 为什么需要它：`红带(红 0 / 蓝 0)` 有三种解释 ✗ —— **没画** ✓ / **画在取样区外** ✓ /
+  // **画了但颜色不对**（默认黑 ⇒ 红蓝计数天然为 0 ✓）。**颜色计数分不开这三者** ✗，
+  // 而 `ink` 一次就分开：`ink > 0` ⇒ **画了** ✓ ⇒ 问题在**颜色** ✓；`ink == 0` ⇒ **这里没墨** ✓。
+  let ink = 0;
   for (let index = 0; index + 3 < bytes.length; index += 4) {
     const [r, g, b, a] = [bytes[index], bytes[index + 1], bytes[index + 2], bytes[index + 3]];
     if (a < 40) continue;
+    ink += 1; // **可见像素** ✓（不看颜色 ✓）
     if (r > 150 && r > g + 60 && r > b + 60) red += 1;
     if (b > 150 && b > r + 60 && b > g + 60) blue += 1;
   }
-  return { red, blue };
+  return { red, blue, ink };
 };
 
 const dragStroke = async (fractionY, pointerId) =>
@@ -239,8 +245,8 @@ await sleep(2000);
 const redBand = await countBand(90, 120);
 const blueBand = await countBand(195, 225);
 console.log(
-  `  ⑤ 落笔颜色：红带(红 ${redBand && redBand.red} / 蓝 ${redBand && redBand.blue}) ` +
-    `蓝带(红 ${blueBand && blueBand.red} / 蓝 ${blueBand && blueBand.blue})`,
+  `  ⑤ 落笔颜色：红带(红 ${redBand && redBand.red} / 蓝 ${redBand && redBand.blue} / 墨 ${redBand && redBand.ink}) ` +
+    `蓝带(红 ${blueBand && blueBand.red} / 蓝 ${blueBand && blueBand.blue} / 墨 ${blueBand && blueBand.ink})`,
 );
 if (
   !redBand ||
