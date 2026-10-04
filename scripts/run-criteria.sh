@@ -120,6 +120,8 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # ⇒ 实测 `grep 蒙│` 零命中 ✓ ⇒ **等于没加** ✗（这一族已出现多次 ✓）。
     grep -F "✗" "$ROOT_DIR/out.txt" | head -20 | sed 's/^/     项│/'
     grep -F "蒙版" "$ROOT_DIR/out.txt" | head -6 | sed 's/^/     蒙│/'
+    # **`px` 探查行也要抽** ✓（第 549 轮 ✓）：它不以 ✗ 开头 ✗ ⇒ 头尾窗口抓不到 ✓
+    grep -F "px 请求" "$ROOT_DIR/out.txt" | head -12 | sed 's/^/     px│/'
     expected_red=$((expected_red+1))
   else
     # **计数必须独立成行** ✓（第 412 轮 ✓）：原先写成 `tail -6 … # 注释 ; fail=$((fail+1))` ✗
@@ -138,6 +140,8 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # ⇒ 实测 `head -3`/`tail -6` **抓不到** ✓（`grep 蒙版拖动期间` 零命中 ✓）
     # ⇒ 而那三个观测（`tool` / `points` / `dragging`）是"蒙版为什么提交失败"的唯一直接证据 ✓。
     grep -F "蒙版" "$ROOT_DIR/out.txt" | head -6 | sed 's/^/     蒙│/'
+    # **`px` 探查行也要抽** ✓（第 549 轮 ✓）：它不以 ✗ 开头 ✗ ⇒ 头尾窗口抓不到 ✓
+    grep -F "px 请求" "$ROOT_DIR/out.txt" | head -12 | sed 's/^/     px│/'
     # **先体检，再抽取** ✓（第 495 轮 ✓）：我已在"抽取什么"上错了两次 ✗ ⇒
     # 这里先把"文件里到底有什么"打出来 ✓（行数 ✓ + 含 ✗ 的行数 ✓ + 头几行的真实形态 ✓），
     # **再决定抽取条件** ✓ —— 「零命中」只能推出"没落在我的条件里" ✗，推出不了"不存在" ✓。
