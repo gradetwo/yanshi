@@ -595,13 +595,17 @@ const maskResult = await evaluate(`(async () => {
   fire("pointermove", at(0.75, 0.75), 301);
   await new Promise((r) => setTimeout(r, 100));
   fire("pointerup", at(0.75, 0.75), 301);
+  // **探针**（第 398 轮 ✓）：在**没抬手之前**取一次日志尾部 ✓ ——
+  // 目前的两种解释（"合成事件没到处理器" ✗ vs "move 没记点" ✗）**都只能靠运行时观测分** ✓，
+  // 而"拖动期间产品说了什么"正是那个观测 ✓（拖动若被认到，产品通常会打预览/提示 ✓）。
+  const logDuringDrag = document.getElementById("log").innerText.slice(-160);
   let masked = ink();
   for (let i = 0; i < 120 && masked >= filled; i++) {
     await new Promise((r) => setTimeout(r, 250));
     masked = ink();
   }
   document.querySelector('button[data-tool="brush"]').click();
-  return { filled, masked, log: document.getElementById("log").innerText };
+  return { filled, masked, logDuringDrag, log: document.getElementById("log").innerText };
 })()`);
 
 // 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
@@ -2544,6 +2548,7 @@ console.log(`  选区/文本：${selectionResult && selectionResult.ok
   : `失败于阶段「${selectionResult && selectionResult.stage}」：${JSON.stringify(selectionResult)}`}`);
 console.log(`  新建/另存为：预填 ${JSON.stringify(namingResult.prefilled)}｜identity ${JSON.stringify(namingResult.identity)}｜副本内容 ${namingResult.before} → ${namingResult.after}`);
 console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
+console.log(`  蒙版拖动期间的日志尾部 ⇒ ${JSON.stringify((maskResult.logDuringDrag || "").slice(-120))}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
 console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);
 console.log(`  dialog.open=${overflow.dialogOpen}｜自身超宽的：${overflow.scrollWide.join(", ")}`);
