@@ -94,7 +94,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
       # **工具判据 180s** ✓（其中含浏览器的那几条自带更长的内部等待 ✓）。
-      timeout 180 node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **这一条要自己的预算** ✓（第 471 轮 ✓）：`tool-example-acceptance` 会把目录里每个带示例的工具
+      # 都真跑一遍 ✓ ⇒ 示例数涨到 **134** 后 180s 不够 ✗ ⇒ 实测 `EXIT=124`（超时 ✓）⇒
+      # **超时让整条判据失去结论** ✗（不是红，是没有结论 ✓）⇒ 单独给 420s ✓，其余仍是 180s ✓。
+      to=180
+      [ "$name" = "tool-example-acceptance.mjs" ] && to=420
+      timeout "$to" node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
   if [ "$code" = 0 ]; then
