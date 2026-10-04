@@ -35,6 +35,31 @@
 <h1>Yanshi 偃师</h1>
 <p class="lede">A headless painting engine: an append-only atom log, a state folded out of that log, a pure-Rust render kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer. One kernel compiles natively for the server and to WebAssembly for the browser.</p>
 
+<h2>Quick start</h2>
+<p><strong>Requirements</strong></p>
+<ul>
+<li><strong>Rust</strong> — the stable toolchain pinned by <code>rust-toolchain.toml</code>, including the
+<code>rustfmt</code> and <code>clippy</code> components;</li>
+<li><strong><code>make</code></strong> and a POSIX shell — every entry point below is a Make target that calls <code>scripts/</code>;</li>
+<li>Optional, to get <strong>client-side rendering</strong> (the browser kernel):
+<code>rustup target add wasm32-unknown-unknown</code> and <code>wasm-bindgen-cli</code> <strong>0.2.129</strong>
+(<code>cargo install wasm-bindgen-cli --version 0.2.129 --locked</code>). Its version must match the
+<code>wasm-bindgen</code> crate, or the generated glue will not load the <code>.wasm</code>.
+<strong>Without both, the server still starts</strong> and the viewer renders on the server side;</li>
+<li>Optional, only to run the criteria: <strong>Node</strong> and <strong>chromium</strong>
+(the runner skips browser criteria when chromium is absent).</li>
+</ul>
+<p><strong>Build and run</strong></p>
+<pre><code>git clone https://github.com/gradetwo/yanshi.git
+cd yanshi
+make dev        # build the WASM kernel if the toolchain is present, build, serve ⇒ http://127.0.0.1:8110/</code></pre>
+<p>Data lives in <code>~/.local/share/yanshi/workspace</code> by default. To change the port or the data root, pass
+<strong>environment variables</strong>: <code>make dev</code> does not forward Make variables into its recipe, while
+<code>make serve</code> passes <code>--port</code> explicitly.</p>
+<pre><code>PORT=9000 make dev                 # make dev PORT=9000 would NOT reach the recipe
+make serve PORT=9000</code></pre>
+<p>Run <code>make check</code> (format, lint, tests) before pushing; <code>make help</code> lists every target.</p>
+
 <h2>Where the name comes from</h2>
 <p>Yanshi is the artificer in the <em>Liezi</em>, "Questions of Tang", who builds a mechanical performer. The passage, in the original:</p>
 <blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p></blockquote>
@@ -78,6 +103,7 @@
 <h2>Getting the source</h2>
 <pre><code>git clone https://github.com/gradetwo/yanshi.git
 cd yanshi
+make dev       # build and serve (open http://127.0.0.1:8110/ )
 make check     # format, lint, tests
 make release   # package: both executables, the browser WASM kernel, the medium plugins</code></pre>
 <ul class="links">
