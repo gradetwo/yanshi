@@ -17102,3 +17102,37 @@ self.addEventListener("fetch", (event) => {
 ③ **再实现** ✓：viewer 侧在拿到文档/笔触后把像素与元数据写进 **OPFS + IndexedDB** ✓ ⇒
    离线重载时**优先从本地读** ✓ ⇒ 判据转绿 ✓；
 ④ 门禁全绿（先看 `/tmp` ✓）⇒ 英文提交 + 推送 ✓。
+
+### 🎯 第 163 轮：**本地持久化的钩子精确定位** ✓（`viewer.rs:5014` ✓）
+
+**已查清（原文 ✓）** ✓：
+* `viewer.rs:894` ✓ `const preview = new Image();` ✓ —— 注释写明它承载"**服务端渲染结果**" ✓、
+  再"**画进内容画布**"✓（刻意**不用覆盖 `<img>`** ✓，免得"看到的像素来自拉伸的 img、点击落在下面 canvas"✗）；
+* `viewer.rs:5014` ✓（**唯一的赋值点** ✓）：
+  ```js
+  preview.src = value.thumb_url + "&t=" + Date.now();
+  ```
+  ⇒ `thumb_url` = 服务端缩略图 PNG ✓；`&t=<时间戳>` = **破缓存** ✓；
+* 画板本身是 **2D canvas** ✓（`board.getContext("2d")` ✓，4 处 ✓），
+  客户端合成走 `render_region_rgba` ✓ / `extend_preview_stroke` ✓ / `commit_preview` ✓ / `drawImage` ✓
+  ⇒ 所以 **(A)③ 的客户端渲染确实在跑** ✓，而**初次底图**仍是服务端 PNG ✓。
+**据此的最小实现（下一轮落地 ✓）** ✓：给那**唯一一处**赋值加一层"**本地优先**" ✓：
+```js
+async function loadPreview(url) {
+  const local = await localBlobGet(url);        // ① OPFS 里有没有这份 blob（IndexedDB 记 url→文件名 ✓）
+  if (local) { preview.src = local; return; }   //    有 ⇒ **离线也能显示** ✓
+  preview.src = url;                            // ② 没有 ⇒ 走网络（老行为 ✓，一个字节都不改 ✓）
+  try {                                         // ③ 取回后**顺手存进本地** ✓（离线优先的关键 ✓）
+    const bytes = await (await fetch(url)).arrayBuffer();
+    await localBlobPut(url, bytes);
+  } catch { /* 存储不可用就当没这回事 ✓（绝不因为它把查看器拖垮 ✗） */ }
+}
+```
+**两个必须注意的点（都能变成坑 ✗）** ✓：
+1. **缓存键要剥掉 `&t=`** ✓ —— 那串时间戳每次渲染都不同 ✓ ⇒ 直接用整个 URL 当键 ⇒ **每次都是新键** ✗
+   ⇒ 存储**无限增长** ✗ ⇒ 键应为"**去掉 `t` 之后**的 URL" ✓（并按**文档 id** 分区 ✓）；
+2. **存储不可用要静默降级** ✓（无痕模式/配额满/老浏览器 ✗）⇒ 退化成今天的行为 ✓，
+   **不能**因为存储问题白屏 ✗（这条与参考图那次"参考图不在关键路径"同一个原则 ✓）。
+**下一轮（写死 ✓）** ✓：① 写 `localBlobGet/Put`（**OPFS + IndexedDB** ✓ —— IDB 存 `{key → opfs 文件名, 大小, 时间}` ✓）；
+② 把 5014 那处换成 `loadPreview(...)` ✓；③ 跑 `scripts/browser-offline-reload.mjs` ✓
+（**期望：断网重载后 dark 从 0 变成 ≈3288 ✓**）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 英文提交 + 推送 ✓。
