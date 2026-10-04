@@ -17639,3 +17639,24 @@ bindgen 接口** ✓ —— 也就是把 `viewer.rs:6242` 那段"取 `/brush-mod
 ③ 先**加内核方法**（不动查看器 ✓）⇒ 再加**一条判据**：同一支笔、同一串点 ⇒
    **内核笔刷预览** 与 **服务端笔触** 的像素**逐字节相同** ✓（可复用 `wasm-brush-parity.mjs` 的思路 ✓）；
 ④ 判据绿了**才**改查看器 ✓、**才**删门面 ✓（**顺序不能反** ✗ —— 反了就是"先删后补" ✗）。
+
+### 🎯🎯🎯 第 188 轮：**移植量比想象的小得多** ✓（6 个导出 ✓、388 行 ✓、**一个真正的入口** ✓）
+
+**门面的完整导出面（原文 ✓，`crates/yanshi-brush-wasm/src/lib.rs` ✓）** ✓：
+```
+242: #[no_mangle] pub extern "C" fn yanshi_brush_alloc(len: usize) -> *mut u8        ✓ 缓冲区
+255: #[no_mangle] pub unsafe extern "C" fn yanshi_brush_free(ptr, len: usize)        ✓ 缓冲区
+285: #[no_mangle] pub unsafe extern "C" fn yanshi_brush_paint(ptr, len) -> usize    ✓ **唯一"干活"入口** ✓
+322: #[no_mangle] pub extern "C" fn yanshi_brush_out_ptr() -> *const u8              ✓ 输出
+331: #[no_mangle] pub extern "C" fn yanshi_brush_error_ptr() -> *const u8            ✓ 错误
+339: #[no_mangle] pub extern "C" fn yanshi_brush_error_len() -> usize                ✓ 错误
+（全文 **388 行** ✓）
+```
+⇒ ⇒ **于是"移植"有了准确的形状** ✓：前两个与后三个都是 **C-ABI 的内存管道** ✓
+（alloc/free ✓、出参指针 ✓、错误指针 ✓）⇒ **bindgen 会替我处理掉这些** ✓
+⇒ ⇒ **真正要搬的只有一个操作** ✓：`yanshi_brush_paint`（收一段 JSON ⇒ 出像素或错误 ✓）
+⇒ 在内核里对应成**一个方法**即可 ✓（形如 `paint_brush(&self, json: &str) -> Vec<u8>` ✓）。
+**下一轮（写死 ✓）** ✓：读 **`yanshi_brush_paint` 的函数体** ✓（285–322 ✓）
+⇒ 看它的 **JSON 契约**（请求字段 ✓）与**输出去向** ✓ ⇒ 那就是内核方法的**签名与语义** ✓；
+读完后**先加内核方法** ✓、**再加判据**（内核预览 vs 服务端笔触逐字节相同 ✓）、**最后**才改查看器与删门面 ✓
+（**顺序不能反** ✗ —— 这是上一轮定下的规矩 ✓）。
