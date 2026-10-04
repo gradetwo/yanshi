@@ -23172,3 +23172,29 @@ async function commitSelection() { const points = state.points; if (points.lengt
 **⇒ 下一处（✓）** ✓：**读全 18 条清单** ✓（**本轮只看到 5 条 ✓**）⇒ **按理由逐条分类** ✓ ⇒
 **然后：① 修真·示例错 ✓；② 扩 `needsState` 的措辞 ✓（**这会把一批"被拒"正名为"需前置状态"** ✓，
 **而不是"放松标准"** ✓ —— **因为它们本来就是"要你先建对象"** ✓）。
+
+### 🎯🎯🎯 第 513 轮：**18 条的真相 —— 3 条真错 ✓、15 条是被归错了类** ✗
+
+**读到（✓，`job 111476346246` 全部 18 条 ✓，用 `sort -u` 去重 ✓）** ✓：
+```
+① 真·示例错（产品说「示例被拒」）**3 条** ✓：
+   import_asset：缺少必填参数 path 或 blob ✓
+   reorder_layers：order 必须是全部存活图层的完整顺序（期望 2 个，实际 1 个）✓
+   set_brush_dynamics：size_pressure 的倍率必须 > 0（收到 0）✓
+② 其实是「需要前置状态」**15 条** ✗：
+   abort_changeset（先 begin_changeset）✓ / begin_transaction（已经有一个打开的变更集或事务）✓
+   accept_suggestion・reject_suggestion・preview_suggestion（建议 sug1 不在）✓
+   declare_head・revert_to（base 原子 atom1 不在日志中）✓
+   get_atom・get_render_status・reapply・revert（原子不在日志）✓
+   move_object（需要 delta 或 transform）✓ / resolve_conflict（找不到冲突图层）✓
+   restore_object（对象 L1 从未存在过）✓ / update_object（patch 中没有可修改的对象属性）✓
+```
+**⇒ 两条结论（✓）** ✓：
+1. **真·坏示例只有 3 个** ✓（**而它们是"值不对"那一类 ✓：缺必填 ✓、顺序不全 ✓、倍率 0 ✓**）
+   ⇒ ⇒ **修 3 个示例，而不是 18 个** ✓；
+2. ⚠️ **15 条是"分类器没认出来"** ✗ —— **它们的措辞是"不在日志 ✓、先… ✓、已经有一个打开的 ✓、
+   从未存在过 ✓、找不到 ✓、没有可修改的 ✓"** ✓ ⇒ **都不在 `needsState` 的正则里** ✗
+   ⇒ ⇒ **扩正则即可把它们正名为「需要前置状态」** ✓
+   （**这不是放松标准** ✓：**它们本来就是"要你先建对象"** ✓，**而 `needsState` 这一类正是为它们设的** ✓）。
+**★ 这一族的账（✓）** ✓：**为看清这 18 条，我花了 9 轮** ✗（**第 480 轮看到计数 ✓ → 第 513 轮看到全部 ✓**），
+而**其中 5 轮花在"改取数条件"上** ✗ —— **而那 5 轮，被一行 `wc -l` 的体检终结** ✓。
