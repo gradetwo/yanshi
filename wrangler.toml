@@ -1,0 +1,14 @@
+# Cloudflare Workers 配置 —— 纯静态资源，无 Worker 脚本。
+# 部署：在仓库根目录执行   npx wrangler deploy
+# 本地预览：               npx wrangler dev
+#
+# 没有 `main` ⇒ 不打包任何 Worker 脚本，只把 public/ 下的文件作为静态资源发布。
+# 自定义域（yanshi.wangda.today）在控制台绑定：
+#   Cloudflare 控制台 → Workers & Pages → 选中本 Worker → Settings → Domains & Routes → Add → Custom Domain
+
+name = "yanshi-site"                # ← 改成你的 Worker 名（同时决定 <name>.<account>.workers.dev）
+compatibility_date = "2025-01-01"   # ← 可改成首次部署的日期
+
+[assets]
+directory = "./public"              # 站点根目录
+not_found_handling = "404-page"     # 用 public/404.html 作为找不到时的页面

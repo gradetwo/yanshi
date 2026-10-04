@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yanshi — a headless image editing engine</title>
+<meta name="description" content="Yanshi is a headless image editing engine: an append-only atom log, a pure-Rust render kernel, a zero-dependency server and a minimal web viewer, with one kernel running natively and in the browser via WebAssembly.">
+<link rel="canonical" href="https://yanshi.wangda.today/en/">
+<link rel="alternate" hreflang="zh-Hans" href="https://yanshi.wangda.today/">
+<link rel="alternate" hreflang="en" href="https://yanshi.wangda.today/en/">
+<link rel="alternate" hreflang="x-default" href="https://yanshi.wangda.today/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Yanshi — a headless image editing engine">
+<meta property="og:description" content="Yanshi is a headless image editing engine: an append-only atom log, a pure-Rust render kernel, a zero-dependency server and a minimal web viewer, with one kernel running natively and in the browser via WebAssembly.">
+<meta property="og:url" content="https://yanshi.wangda.today/en/">
+<meta property="og:image" content="https://yanshi.wangda.today/assets/brand/png/logo-horizontal-560.png">
+<meta name="theme-color" content="#f7f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a1f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/brand/svg/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/brand/png/favicon-180.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+<header>
+<a class="brand" href="/" aria-label="Yanshi">
+<img class="for-light" src="/assets/brand/svg/logo-horizontal.svg" alt="Yanshi" width="420" height="160">
+<img class="for-dark" src="/assets/brand/svg/logo-horizontal-dark.svg" alt="Yanshi" width="420" height="160">
+</a>
+<nav><a href="/" hreflang="zh-Hans" lang="zh-CN">中文</a></nav>
+</header>
+<main>
+<h1>Yanshi 偃师</h1>
+<p class="lede">A headless image editing engine: an append-only atom log, a state folded out of that log, a pure-Rust render kernel, a zero-dependency HTTP/WebSocket server, and a minimal web viewer. One kernel compiles natively for the server and to WebAssembly for the browser.</p>
+
+<h2>Design stance</h2>
+<ul>
+<li><strong>The log is the truth.</strong> Every edit is written as an atom and appended to the log; the current state is folded out of it. Undo and redo move a pointer rather than performing the operation backwards.</li>
+<li><strong>One kernel, two places.</strong> The optimistic preview while dragging and the final stroke are the same implementation, not two approximations of each other.</li>
+<li><strong>Determinism.</strong> The same input gives the same output. Export and replay are guarded by byte-for-byte comparisons.</li>
+<li><strong>Portable by construction.</strong> A <code>.yanshi</code> project package is an uncompressed tar holding the atom log, the document metadata, every blob the log references, and a HEAD preview rendered at export time. Any system's <code>tar</code> can list and unpack it.</li>
+</ul>
+
+<h2>Tool surface</h2>
+<p><code>--profile all</code> enables every implemented group in one word: <strong>114 tools</strong>, against 46 for core alone. Layer blend modes are validated against the renderer's own list, so an unknown name is refused with the available values instead of being written to the log and silently ignored.</p>
+
+<h2>Current state</h2>
+<ul>
+<li>Version 0.1.0, with <strong>no published release yet</strong>. Take the source from GitHub and build the package yourself with <code>make release</code>, which writes a checksum alongside it.</li>
+<li>The <code>semantic</code> tool group is reserved by decision and not implemented.</li>
+<li>The paper grain in <code>appearance.texture</code> <strong>approximates</strong> watercolour paper and canvas and is tunable, but there is no dedicated rough-paper or canvas-weave preset.</li>
+<li>The browser-side kernel is a build artefact and a fresh clone does not have it. Nothing fails without it: the viewer falls back to server-side rendering. Build it as the README describes to render locally.</li>
+</ul>
+
+<h2>Contact</h2>
+<p>Bug reports and collaboration: <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>. For security issues, please write to us rather than opening a public issue.</p>
+
+<h2>Getting the source</h2>
+<pre><code>git clone https://github.com/gradetwo/yanshi.git
+cd yanshi
+make check     # format, lint, tests
+make release   # package: both executables, the browser WASM kernel, the medium plugins</code></pre>
+<ul class="links">
+<li>Repository: <a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a></li>
+<li>Source download (zip): <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
+<li>Design document (authoritative, in Chinese): <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
+<li>Documentation: <a href="https://github.com/gradetwo/yanshi/blob/main/README.md">README.md</a> | <a href="https://github.com/gradetwo/yanshi/blob/main/README.zh-CN.md" hreflang="zh-Hans" lang="zh-CN">README.zh-CN.md</a></li>
+</ul>
+</main>
+<footer>
+<p>MIT licensed · © 2026 The Yanshi Authors</p>
+<p><a href="https://github.com/gradetwo/yanshi">GitHub</a> · <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a> · <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">Source download</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">Design document</a></p>
+</footer>
+</div>
+</body>
+</html>

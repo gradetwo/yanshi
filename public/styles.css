@@ -1,0 +1,72 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f5f1;
+  --fg: #2b2b2b;
+  --muted: #6d675e;
+  --rule: #ddd7cd;
+  --link: #3f6f88;
+  --accent: #c0392b;
+  --code-bg: #efece6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1f;
+    --fg: #e8e6e1;
+    --muted: #9a938a;
+    --rule: #34343c;
+    --link: #6ba3c7;
+    --accent: #e74c3c;
+    --code-bg: #24242b;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+}
+.wrap { max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1.5rem 0 0;
+}
+header .brand img { display: block; width: 176px; height: auto; }
+header .brand .for-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  header .brand .for-light { display: none; }
+  header .brand .for-dark { display: block; }
+}
+header nav { font-size: 0.9rem; white-space: nowrap; }
+h1 { font-size: 1.6rem; line-height: 1.3; margin: 2.5rem 0 0.75rem; font-weight: 600; }
+h2 {
+  font-size: 1.05rem; font-weight: 600; margin: 2.25rem 0 0.5rem;
+  padding-top: 1.25rem; border-top: 1px solid var(--rule);
+}
+p { margin: 0.6rem 0; }
+.lede { font-size: 1.05rem; color: var(--fg); }
+ul { padding-left: 1.15rem; margin: 0.6rem 0; }
+li { margin: 0.45rem 0; }
+.muted { color: var(--muted); }
+small { color: var(--muted); }
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+}
+pre {
+  background: var(--code-bg); padding: 0.9rem 1rem; border-radius: 6px;
+  overflow-x: auto; line-height: 1.6;
+}
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+pre code { background: none; padding: 0; }
+.links { list-style: none; padding: 0; }
+.links li { margin: 0.5rem 0; }
+footer {
+  margin: 3rem 0 0; padding: 1.25rem 0 2.5rem;
+  border-top: 1px solid var(--rule); font-size: 0.875rem; color: var(--muted);
+}
+footer a { color: var(--muted); text-decoration: underline; }
