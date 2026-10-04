@@ -18606,3 +18606,22 @@ const near = Math.abs(box.left - expectedLeft) <= 2 && Math.abs(box.top - expect
 （教训 ✓：**往模板字符串里插注释时，先确认没有反引号** ✗）。
 **剩余两条（✓）** ✓：**水彩介质** ✗（"未出现带 watercolor 的对象" ✓）、**图层面板·锁定** ✗（图标 `null` ✓）
 ⇒ **同样先读断言、再查前提是否与产品承诺一致** ✓。
+
+### 🎯🎯🎯 第 238 轮：**锁定条目 —— 起因是"找了一个不存在的图层"** ✓（**目标点名过 ✓**）
+
+**原文（✓，`browser-ui-check.mjs:2548–2556` ✓）** ✓：
+```js
+const lockRow = rows().find((row) => row.dataset.layerId === "layer_paint");   // ← **硬编码 id** ✗
+if (lockRow) { lockRow.querySelector('[data-action="locked"]').click(); … }
+out.lockedOnServer = (listed2.layers || []).some((l) => l.layer_id === "layer_paint" && l.locked);  ✗
+out.lockIcon = lockRow ? lockRow.querySelector('[data-action="locked"]')?.textContent : null;        ⇒ **null** ✗
+```
+⇒ ⇒ **断言的意思是对的 ✓，前提是错的** ✗：**当前文档里没有任何代码建出 `layer_paint` 这个图层** ✓
+⇒ 找不到那行 ⇒ 图标读成 `null` ✓ ⇒ ⇒ ⇒ **与目标原话完全一致** ✓：
+**"`layer_paint` 子项属判据侧问题，**需用当下活动的 doc/token 建测试层**"** ✓（**连 id 都点到了** ✓）。
+**两种修法（✓，选前者 ✓）** ✓：
+1. ✅ **按目标说的"建测试层"** ✓：在动面板**之前**在**当下文档**里建出探针期望的那个图层 ✓
+   ⇒ 断言**继续测它本来要测的行为** ✓（**不是**把断言放松 ✗）；
+2. ❌ 从第一行反推 id ✗ —— 会让探针**测得更少** ✓（它还交叉核对了**服务端**对同一 id 的记录 ✓）。
+**至此四条里三条已定性（✓）** ✓：**残影 ✓（判据）**、**贴光标 ✓（判据）**、**锁定 ✓（判据）** ⇒
+**只剩水彩介质** ✓ ⇒ **它的读法也一样：先看它断言什么、前提是否与产品承诺一致** ✓。
