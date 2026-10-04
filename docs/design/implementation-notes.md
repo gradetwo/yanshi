@@ -18430,3 +18430,26 @@ begin_transaction ✓  commit_transaction ✓  undo_last ✓  redo_last ✓  get
 **总数（✓，按载荷计的可靠量具 ✓）** ✓：**61** ✓（本轮 +2 ✓）。
 **这一轮又是零试错（✓）** ✓ ⇒ 靠的还是那两个动作 ✓：**照契约写** ✓ + **写入前 `json.loads` 解析并校验结构** ✓
 （第 227 轮起沿用 ✓）⇒ **上一轮三次失败 / 这一轮 0 次** ✓。
+
+### 🎯 第 230 轮：**(B)② 首跑 —— 判据在 `blob:` URL 上崩溃** ✗（**与目标预判吻合** ✓）
+
+**逐条清单（✓，崩溃前跑到的那些数字都是好的 ✓）** ✓：
+```
+示例作品：6 个定义 ✓（sample-oil / sample-lake / sample-yanshi / sample-watercolor / sample-brush / sample-reference ✓）
+页面脚本：2085 字节｜语法 ok ✓
+**移动旧位置：570 个非背景像素（须 0）** ✗ ← **待判"设计 vs 缺陷"** ✓
+"绘画"工作区：内核 展开 ✓｜历史 折叠 ✓｜调整 折叠 ✓
+Dockers：16 个面板 ✓｜折叠切换高度 44 → 169 ✓｜"校对"折叠 3 个 ✓｜持久化 review ✓
+布局结构：工具条 56px（22 按钮 ✓）｜画布 356px｜面板 320px ✓
+工具条：22 个按钮 ✓｜图标 22 ✓｜提示 22 ✓｜无障碍名称 22 ✓
+然后**崩溃** ✗：
+  TypeError: Failed to parse URL from http://127.0.0.1:13211**blob:**http://127.0.0.1:13211/8e647d9b-…
+```
+**根因（✓，判据侧 ✓）** ✓：`browser-ui-check.mjs:1296` ✓
+```js
+const bytes = new Uint8Array(await fetch(`${origin}${exportResult.url}`)…);   // ✗ 拼 origin ✓
+```
+⇒ 导出**已改成"本地优先"** ✓（`board.toBlob()` ⇒ `blob:` URL ✓，我这轮改的 ✓）
+⇒ 判据还在**拼 origin** ✗ ⇒ **非法 URL** ✓ ⇒ ⇒ **正是目标对这条判据的预判："`layer_paint` 子项属判据侧问题"** ✓。
+**⚠️ 不能只靠"别拼 origin"修（✓）** ✗：`blob:` URL 是**页面作用域**的 ✓ ⇒ **node 根本 fetch 不了它** ✗
+⇒ 必须**在页面里读字节再带回来** ✓ ⇒ 比"加一句守卫"要大一些 ✓（下一轮按这个做 ✓）。
