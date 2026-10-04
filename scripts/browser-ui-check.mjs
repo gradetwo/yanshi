@@ -398,7 +398,12 @@ const renderCenter = await fetch(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ region: { x: 432, y: 432, w: 160, h: 160 }, raw: true }),
+    // **区域要落在文档里** ✓（第 455 轮 ✓）：原来写的是 432,432,160,160 ✗ ——
+    // 那是**为 1024² 画布写的中心** ✓（引入它的提交 6d55973 就叫 1024-square canvas ✓），
+    // 而 runner 建的文档是 **320×240**（run-criteria.sh:52 ✓）⇒ 432..592 **整个在文档外** ✗
+    // ⇒ 取回的是空内容 ✓。这里改用**左上角一块**：**对任何不小于 160 的文档都成立** ✓，
+    // **不写死 320×240** ✗（写死就是同一个错误的第三次 ✓）。
+    body: JSON.stringify({ region: { x: 0, y: 0, w: 160, h: 160 }, raw: true }),
   }
 ).then((r) => r.json());
 let centerInk = -1;
