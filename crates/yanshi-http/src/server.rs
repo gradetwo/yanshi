@@ -1262,7 +1262,10 @@ fn brush_module_asset(state: &ServerState) -> Response {
     match std::fs::read(path) {
         Ok(bytes) => Response::bytes(200, "application/wasm", bytes),
         Err(_) => crate::http::not_found(format!(
-            "笔刷门面还没构建：{}（跑 `cargo build -p yanshi-brush-wasm --target wasm32-unknown-unknown --release` ✓）",
+            // **不要再教人构建第二份实现** ✗（第 185 轮 ✓：(A)③ 要求**退休**它 ✓）：
+            // 这个端点发的是**运行时指定的那一份 wasm** ✓ ⇒ 要指向**共享内核 `yanshi-wasm`** ✓
+            //（客户端渲染用的就是它 ✓ ⇒ 两份合一 ✓）。过时的文案会把人引向已被退休的那条路 ✗。
+            "笔刷门面还没配置：{}（把 `--brush-wasm` 指向共享内核 `yanshi-wasm` 的产物 ✓，例如 package-release.sh 打出来的 `assets/brush-module.wasm` ✓）",
             path.display()
         )),
     }

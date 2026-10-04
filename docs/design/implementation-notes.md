@@ -17575,3 +17575,21 @@ spray/red, grey, blue, white, black      … 全部 **0** ✓
    ⇒ 并把这个**文案**改成指向新路径 ✓（**报错文案也是"文档"** ✓，过时的会误导 ✗）。
 **判据（要能红 ✓）** ✓：`scripts/wasm-brush-parity.mjs` **今天传的就是 `--brush-wasm` 那份** ✓
 ⇒ 退休后应当**换成共享内核的产物** ✓ 并**仍然逐字节相同** ✓ ⇒ 这条判据正好**守住"替换后行为不变"** ✓。
+
+### 🗺️ 第 185 轮：**退休第二份实现的四个触点全找到了** ✓（下一轮按图动刀 ✓）
+
+```
+crates/yanshi-http/src/server.rs:150   "--brush-wasm" => options.brush_wasm = Some(…)      ✓ 标志
+crates/yanshi-http/src/server.rs:151   "--no-brush-wasm" => options.brush_wasm = None      ✓ 标志
+crates/yanshi-http/src/server.rs:1265  报错文案里教人 `cargo build -p yanshi-brush-wasm` ✗ ← **本轮已改** ✓
+scripts/package-release.sh:448/456     打包第二份实现 ⇒ 拷成 `assets/brush-module.wasm` ✓ ← **下一轮改** ✗
+Cargo.toml（workspace 成员 ✓）+ crates/yanshi-brush-wasm/（本体 ✓）        ← **下一轮删** ✗
+```
+**下一轮的三步（写死 ✓）** ✓：
+1. `package-release.sh` 里那次 `-p yanshi-brush-wasm` 的构建 ⇒ 改成**用共享内核 `yanshi-wasm` 的产物** ✓
+   （它本来就已经被构建了 ✓ ⇒ 只是**少建一份** ✓、把拷贝源换掉 ✓）；
+2. 删 `crates/yanshi-brush-wasm` ✓ + 从 `Cargo.toml` 成员表移除 ✓（**无人依赖 ⇒ 干净** ✓）；
+3. 复跑 **`scripts/wasm-brush-parity.mjs`** ✓（把它传的 wasm 换成共享内核产物 ✓）
+   ⇒ 必须**仍然逐字节相同** ✓ —— **这就是"替换后行为不变"的守门判据** ✓。
+**为什么这几轮偏慢（如实 ✓）** ✓：删除类改动的**代价不对称** ✗ —— 改错一行要回退整轮 ✓，
+而"先画地图再动刀"能把**一次做对的概率**拉高 ✓（本会话在锚点上栽过 3 次 ✓，正是这个道理 ✓）。
