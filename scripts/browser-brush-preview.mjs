@@ -356,8 +356,11 @@ if (newestDuo && newestDuo.object_id) {
   duoSource = got && got.data ? got.data.source || null : null;
 }
 const band = await callTool("render_region", {
-  // **量在被画的那一带上** ✓：这一拖在 y≈0.9×300≈270 ✓、x 从 ≈100 到 ≈220 ✓。
-  region: { x: 0, y: 250, w: 400, h: 40 },
+  // **量在被画的那一带上** ✓ —— 而带的 y 必须**由比例算出来** ✗（第 452 轮 ✓）：
+  // 原注释写的是「这一拖在 y≈0.9×300≈270」✗ —— **作者以为文档高 300** ✓，而 runner 建的是
+  // **320×240**（run-criteria.sh:52 ✓）⇒ 实际笔迹在 0.9×240 = **216** ✓ ⇒ 原来的 y=250 差 34 像素 ✗
+  // ⇒ 与 ⑤ 那次完全同因 ✓。这里用 ⑤ 里已经算好的 boardH ✓（同一作用域 ✓）。
+  region: { x: 0, y: Math.max(0, Math.round(boardH * 0.9) - 20), w: 400, h: 40 },
   raw: true,
 });
 const counts = { leftBlue: 0, leftRed: 0, rightBlue: 0, rightRed: 0 };
