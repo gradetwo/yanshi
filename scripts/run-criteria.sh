@@ -50,6 +50,7 @@ token_for() {
 }
 
 pass=0; fail=0; expected_red=0; skipped=0
+FAIL_SUMMARY=""      # **末尾汇总** ✓：GitHub 的 --log-failed 只给"步骤日志尾部" ✗
 # **分片** ✓（`SHARD`/`SHARDS` 由 CI 的矩阵传入 ✓）：按**文件名排序后取模** ✓
 # ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
 SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
@@ -89,8 +90,17 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     expected_red=$((expected_red+1))
   else
     echo "  ✗ $name (EXIT=$code)"; tail -6 "$ROOT_DIR/out.txt" | sed 's/^/       /'; fail=$((fail+1))
+    first_reason=$(grep -m1 -aE '^\s+- |^\s*✗ ' "$ROOT_DIR/out.txt" | sed 's/^[[:space:]]*//' | cut -c1-120)
+    FAIL_SUMMARY="${FAIL_SUMMARY}  ✗ ${name}｜${first_reason}
+"
   fi
 done
 
+if [ -n "$FAIL_SUMMARY" ]; then
+  # **失败清单（重复打印）** ✓：GitHub 的 --log-failed 只返回日志尾部 ✗ ⇒
+  # 这一段保证"尾部"里就有全部失败的名字与第一条原因 ✓（分片下同样有效 ✓）。
+  echo "  ==== 失败清单（${fail} 条）===="
+  printf '%s' "$FAIL_SUMMARY"
+fi
 echo "  —— 通过 ${pass}｜意外失败 ${fail}｜已知红 ${expected_red}｜跳过 $skipped"
 [ "$fail" = 0 ] || exit 1
