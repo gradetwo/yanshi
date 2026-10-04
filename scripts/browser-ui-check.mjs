@@ -100,7 +100,7 @@ const strokeAt = async (fx, fy, pointerId) => {
     const point = { clientX: rect.left + rect.width * ${fx}, clientY: rect.top + rect.height * ${fy} };
     const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
       bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
-      isPrimary: true, buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...point,
+      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
     }));
     fire("pointerdown");
     await new Promise(r => setTimeout(r, 120));
@@ -119,7 +119,7 @@ const dragPath = async (points, pointerId) => {
     const at = (p) => ({ clientX: rect.left + rect.width * p[0], clientY: rect.top + rect.height * p[1] });
     const fire = (type, p) => board.dispatchEvent(new PointerEvent(type, {
       bubbles: true, cancelable: true, pointerId: ${pointerId}, pointerType: "mouse",
-      isPrimary: true, buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...at(p),
+      isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...at(p),
     }));
     const path = ${JSON.stringify(points)};
     fire("pointerdown", path[0]);
@@ -253,7 +253,7 @@ const drawStroke = `(async () => {
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
   const send = (type, point) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true,
-    buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...point,
+    buttons: type === "pointerup" ? 0 : 1, ...point,
   }));
   const points = [[0.25, 0.3], [0.45, 0.45], [0.65, 0.35]].map(([x, y]) => at(x, y));
   send("pointerdown", points[0]);
@@ -346,7 +346,7 @@ const zoomCheck = await evaluate(`(async () => {
   const after = { w: board.width, h: board.height };
   const fire = (type) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: 21, pointerType: "mouse", isPrimary: true,
-    buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...center,
+    buttons: type === "pointerup" ? 0 : 1, ...center,
   }));
   fire("pointerdown");
   await new Promise(r => setTimeout(r, 120));
@@ -639,7 +639,7 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     const board = document.getElementById("board");
     const rect = board.getBoundingClientRect();
     const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1 === "pointerup" ? 0 : 1, ...p }));
+    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
     const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
     document.getElementById("zoomFit").click();
     await new Promise((r) => setTimeout(r, 800));
@@ -761,7 +761,7 @@ const moveResult = await evaluate(`(async () => {
   const board = document.getElementById("board");
   const rect = board.getBoundingClientRect();
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1 === "pointerup" ? 0 : 1, ...p }));
+  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
   document.getElementById("zoomFit").click();
   await new Promise((r) => setTimeout(r, 800));
   // 画一个矩形（0.2,0.2 → 0.4,0.4）
@@ -844,7 +844,7 @@ const namingResult = await evaluate(`(async () => {
   const board = document.getElementById("board");
   const rect = board.getBoundingClientRect();
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1 === "pointerup" ? 0 : 1, ...p }));
+  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
   fire("pointerdown", at(0.4, 0.4), 501);
   fire("pointermove", at(0.6, 0.5), 501);
   await wait(90);
@@ -939,7 +939,7 @@ const selectionResult = await evaluate(`(async () => {
     const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
     const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, {
       bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
-      isPrimary: true, buttons: t === "pointerup" ? 0 : 1 === "pointerup" ? 0 : 1, ...p,
+      isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p,
     }));
     document.getElementById("zoomFit").click();
     await wait(800);
@@ -1215,7 +1215,7 @@ const eraserResult = await evaluate(`(async () => {
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
   const fire = (type, point, id) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
-    isPrimary: true, buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...point,
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
   }));
   const painted = () => {
     const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
@@ -1317,7 +1317,7 @@ const pickResult = await evaluate(`(async () => {
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
   const fire = (type, point, id) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
-    isPrimary: true, buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...point,
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
   }));
   // 画一个点（落笔即提交），再在同处用吸管取色。
   fire("pointerdown", at(0.2, 0.2), 61);
@@ -1385,7 +1385,7 @@ const retouchResult = await evaluate(`(async () => {
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
   const fire = (type, point) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: 51, pointerType: "mouse",
-    isPrimary: true, buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...point,
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
   }));
   fire("pointerdown", at(0.3, 0.5));
   await new Promise((r) => setTimeout(r, 80));
@@ -2276,7 +2276,7 @@ const selectionDrag = JSON.parse(await evaluate(`JSON.stringify((() => {
   });
   const fire = (type, dx, dy) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: 991, pointerType: "mouse", isPrimary: true,
-    buttons: t === "pointerup" ? 0 : 1ype === "pointerup" ? 0 : 1, ...toClient(dx, dy),
+    buttons: type === "pointerup" ? 0 : 1, ...toClient(dx, dy),
   }));
   const from = { x: 64, y: 60 };
   const to = { x: 320, y: 180 };
