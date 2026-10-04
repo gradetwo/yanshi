@@ -1573,6 +1573,14 @@ await evaluate(`(() => {
   return select ? select.value : null;
 })()`);
 await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
+// **落笔前一刻再设一次选择器**（第 247 轮）：诊断证明那一笔实际用的是 oil
+// （window.yanshiStats.medium 里 id 是 oil、status 是 dabbed），
+// 而选择器在点工具之后被重置回了 oil ⇒ 所以要在**点完工具之后、落下之前**设它。
+await evaluate(`(() => {
+  const select = document.getElementById("medium");
+  if (select) { select.value = "watercolor"; select.dispatchEvent(new Event("change", { bubbles: true })); }
+  return select ? select.value : null;
+})()`);
 await dragPath([[0.25, 0.85], [0.45, 0.78], [0.65, 0.86], [0.85, 0.8]], 503);
 // **必须在页面里查** ✓（第 244 轮 ✓，与图层面板那段同一先例 ✓）：
 // 旧版从 node 用 `mediumDoc` / `mediumToken`（**更早捕获的变量** ✗）查 ⇒
@@ -1600,7 +1608,11 @@ for (let i = 0; i < 40; i++) {
   await new Promise((r) => setTimeout(r, 250));
 }
 if (!wcObject) {
-  problems.push("水彩介质用例失败：未出现带 watercolor 的对象");
+  // **失败时把已有诊断打出来**（第 246 轮）：判据**早就**收集了它（1608 行），
+  // 只是没在失败路径上打印 ⇒ 我为此多花了几轮去猜"文档 / 选择器"。
+  // 教训：**已有的证据比新造的可靠**，它当时就在现场。
+  const wcDiagnosis = await evaluate(`JSON.stringify(window.yanshiStats.medium || null).slice(0, 300)`);
+  problems.push("水彩介质用例失败：未出现带 watercolor 的对象｜诊断 " + String(wcDiagnosis));
 } else if (wcObject.medium.version !== 2) {
   problems.push(`水彩介质版本应为 2，实际 ${JSON.stringify(wcObject.medium)}`);
 } else if (wcAfter <= wcBefore) {
