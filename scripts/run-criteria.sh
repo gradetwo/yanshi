@@ -61,7 +61,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -109,6 +109,25 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 本机实测：✓ 控件高度统一（26px×2 checkbox / 28px×84 button ✓）。
     ui-control-heights.mjs)
       timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **令牌策略** ✓（第 796 轮接线 ✓）：**两半段都要跑** ✓ ——
+    #   allow  ⇒ 跑在本分片已有的**回环**服务端上 ✓；
+    #   refuse ⇒ **另起一个「对外」实例** ✓（`--bind 0.0.0.0` ✓、**故意不配** YANSHI_API_KEY ✓）。
+    #   服务端的判定读的是**配置的 bind** ✓（`bind_is_loopback` ✓）⇒ 绑 0.0.0.0 即算对外 ✓，
+    #   而仍可从 127.0.0.1 连上它 ✓。两半段本机都已单独验证通过 ✓。
+    #   ⚠️ **分支里不要 `exit`** ✗：`:143` 取的是**本分支最后一条命令的退出码** ✓ ⇒
+    #   结尾用 `[ "$rc" = 0 ]` 把结果交出去 ✓，并先杀掉临时实例 ✓。
+    server-token-policy.mjs)
+      : > "$ROOT_DIR/out.txt"
+      ALT_PORT=$((PORT + 1)); ALT_ROOT="$ROOT_DIR/tokenpolicy"; mkdir -p "$ALT_ROOT"
+      ./target/debug/yanshi-serve --bind "0.0.0.0:$ALT_PORT" --root "$ALT_ROOT" --doc boot \
+        --width 320 --height 240 --assets-dir "$ROOT/assets" >"$ROOT_DIR/tokenpolicy-server.log" 2>&1 &
+      ALT_PID=$!
+      for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$ALT_PORT/api/documents" >/dev/null 2>&1 && break; sleep 0.25; done
+      timeout 60 node "$script" "$BASE" allow >>"$ROOT_DIR/out.txt" 2>&1 \
+        && timeout 60 node "$script" "http://127.0.0.1:$ALT_PORT" refuse >>"$ROOT_DIR/out.txt" 2>&1
+      rc=$?
+      kill "$ALT_PID" 2>/dev/null
+      [ "$rc" = 0 ] ;;
     kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
