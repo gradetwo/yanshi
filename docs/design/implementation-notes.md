@@ -22049,3 +22049,27 @@ setColor(css) {
 —— **计数恒 0** ✓、**进度日志当理由** ✓、**跨分片读串** ✓、**这次"先退出的错"** ✓。
 **⇒ 下一处（✓）** ✓：**读 `:170` 所在块的起止** ✓（**找出块从哪开始 ✓、为什么 `:293` 在块外** ✗）
 ⇒ **修法是把它提到块外** ✓（**而不是把 `:293` 删掉** ✗）。
+
+### 🎯 第 440 轮：**(B)① 的"不能猜"落地 —— `set_property` 的要求在实现里，不在 spec 里** ✓
+
+**读到（✓）** ✓：
+```
+2586|  summary: "设置对象/图层属性（低层原子 set_property）"
+2589|    param!("key", String, true, "属性名")            ← **必填，但没有枚举值** ✗
+2590|    param!("value", Any, false, "属性值（类型随 key 变化）")
+2591|    param!("object_id", String, false, "对象 id")     ← **标的是可选** ✗
+2592|    param!("layer_id", String, false, "图层 id")      ← **标的是可选** ✗
+
+7902| fn write_set_property(…) {
+7903|   let key = require_str(args, "key")?;               // **key 自由字符串** ✓（透传 ✓）
+7907|   if object_id.is_none() && layer_id.is_none() {     // **运行时要求：二者必居其一** ✗
+7908|     return Err(… "set_property 需要 object_id 或 layer_id");
+```
+**⇒ 结论（✓）** ✓：**"必填"这件事有一部分只写在实现里** ✗ ——
+**`param!` 说 `layer_id` 可选 ✓，而 writer 要求它（或 `object_id`）** ✓ ⇒
+⇒ **这就是我早先说的"这 8 个示例不能猜"的确切含义** ✓：**照 spec 写会缺参被拒** ✗，**得读实现** ✓。
+**⇒ 可写的安全示例（✓，下一轮 ✓）** ✓：
+`{"layer_id": "layer_default", "key": "visible", "value": true}` ✓
+（**`layer_default` 是我第 349 轮那条羽化判据实际用过的默认层 id** ✓ ⇒ **有证据，不是猜** ✓）。
+**★ 这一类示例的"有意义"标准（✓）** ✓：**不是"能填满字段" ✗，而是"照它调用会真的成立"** ✓
+—— **`key` 用什么名字不重要（writer 透传 ✓），但 `layer_id`/`object_id` 必须有** ✓。
