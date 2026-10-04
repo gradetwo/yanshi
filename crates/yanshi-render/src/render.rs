@@ -495,7 +495,16 @@ impl Renderer {
             //（`implementation-notes.md` 第 343 轮 ✓），而 `render.rs:755` 按**图层缓冲**裁剪覆盖率 ✓、
             // `:760` 才向外扩 ✓ ⇒ **缓冲若不为它留边 ⇒ 外半边被裁** ✗ ⇒ 现象正是「只向内淡出」✓。
             // **故在跳过之前先认它** ✓（蒙版那一支用的是同一公式：`半径/2 + 1` ✓）。
-            if let Some(f) = object.data.get("feather").and_then(Value::as_f64) {
+            // **羽化写在 `geometry` 里** ✓（第 602 轮 ✓）：`tools.rs:3889` 的 `"feather": feather` 属于
+            // `geometry` 那个 json ✓，不在 `object.data` 顶层 ✗ ⇒ 我前两轮读错了键 ✓
+            // ⇒ 两处修复都是空操作 ⇒ **实测读数逐字未变** ✓ ✓。
+            if let Some(f) = object
+                .data
+                .get("geometry")
+                .and_then(|g| g.get("feather"))
+                .or_else(|| object.data.get("feather"))
+                .and_then(Value::as_f64)
+            {
                 if f > 0.0 {
                     let radius = (f / 2.0).round().max(1.0) as u32;
                     padding = padding.max(radius + 1);
@@ -525,7 +534,16 @@ impl Renderer {
             // 上一轮我把这一支加进了 `global_padding`（**整层类** ✓），而**区域渲染走的是这里** ✗
             // ⇒ 于是 1×1 区域拿不到 `feather/2+1` 的外扩 ⇒ 形状被裁在缓冲外 ⇒ 羽化的外半边丢了 ✗
             // ⇒ 实测形状外仍是 `[255,255,255,255]` ✓（与修复前一致 ✓）⇒ **加错了支** ✓。
-            if let Some(f) = object.data.get("feather").and_then(Value::as_f64) {
+            // **羽化写在 `geometry` 里** ✓（第 602 轮 ✓）：`tools.rs:3889` 的 `"feather": feather` 属于
+            // `geometry` 那个 json ✓，不在 `object.data` 顶层 ✗ ⇒ 我前两轮读错了键 ✓
+            // ⇒ 两处修复都是空操作 ⇒ **实测读数逐字未变** ✓ ✓。
+            if let Some(f) = object
+                .data
+                .get("geometry")
+                .and_then(|g| g.get("feather"))
+                .or_else(|| object.data.get("feather"))
+                .and_then(Value::as_f64)
+            {
                 if f > 0.0 {
                     let radius = (f / 2.0).round().max(1.0) as u32;
                     padding = padding.max(radius + 1);
