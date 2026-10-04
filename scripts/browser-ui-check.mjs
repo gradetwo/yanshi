@@ -681,7 +681,10 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     // ⇒ **等条件，不等时长** ✓ —— 与第 450 轮那个稳定性等待同一手法 ✓。
     // 注意：**本段处在模板字符串里** ⇒ 注释里不能出现反引号 ✗（本轮我已因此失败一次 ✓）。
     let toolAfterClick = null;
-    for (let i = 0; i < 20; i++) {
+    // 上面那道等待是**条件式**的 ✓（第 474 轮 ✓），但实测仍然间歇（四轮三结果 ✓）。
+    // 既然条件是 tool === mask_rect，那就只剩一种解释：**2 秒（20×100ms）不够**。
+    // 提到 100×100ms = 10 秒；失败时日志里的 toolAfterClick 会直接显示它当时是什么。
+    for (let i = 0; i < 100; i++) {
       toolAfterClick = window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())";
       if (toolAfterClick === "mask_rect") break;
       await new Promise((r) => setTimeout(r, 100));
