@@ -2343,6 +2343,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("hardness", Number, false, "笔尖硬度 0..1（映射到 MyPaint 的 `hardness` ✓：0=软边、1=硬边）；缺省用 `.myb` 自带的 ✓"),
             param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
         ],
     },
     ToolSpec {
@@ -11405,10 +11406,54 @@ fn paint_brush(
     })
 }
 
+/// **笔触风格** ✓（AI 画家需求 P2-8）：**只改压感/位置，不碰渲染** ✓。
+/// **缺省（没给 `style`）⇒ 原样返回** ⇒ 老行为**逐字节不变** ✓（本仓库的老规矩 ✓）。
+/// `sketchy` 的抖动由**确定性 PRNG** 生成 ✓（同输入 ⇒ 同结果 ✓，否则与本仓库底线冲突 ✗）。
+fn apply_brush_style(
+    mut points: Vec<(f64, f64, f64)>,
+    args: &Value,
+) -> Result<Vec<(f64, f64, f64)>> {
+    let Some(style) = optional_str(args, "style") else {
+        return Ok(points);
+    };
+    match style.as_str() {
+        "confident" => {
+            // **起笔重、收笔轻** ✓：沿笔画把压力从 1.15 线性收到 0.55 ✓（**位置不动** ✓）。
+            let last = points.len().max(2) - 1;
+            for (index, point) in points.iter_mut().enumerate() {
+                let t = index as f64 / last as f64;
+                point.2 = (point.2 * (1.15 - 0.60 * t)).clamp(0.0, 1.0);
+            }
+            Ok(points)
+        }
+        "sketchy" => {
+            // **抖动与断笔** ✓：幅度取"笔尖的百分之几"这个量级 ✓；种子由点数派生 ⇒ 可复现 ✓。
+            let mut state = 0x5DEE_CE66_D000_0000_u64 ^ (points.len() as u64);
+            for point in points.iter_mut() {
+                let jitter_x = (scatter_next(&mut state) - 0.5) * 2.5;
+                let jitter_y = (scatter_next(&mut state) - 0.5) * 2.5;
+                point.0 += jitter_x;
+                point.1 += jitter_y;
+                // **断笔**：压力乘一个 0.55~1.05 的系数 ✓（轻的地方更像"擦过"✓）。
+                point.2 = (point.2 * (0.55 + 0.50 * scatter_next(&mut state))).clamp(0.0, 1.0);
+            }
+            Ok(points)
+        }
+        other => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知笔触风格 {other} ⇒ 可用：confident / sketchy（不给 = 原样 ✓）"
+            )),
+        )),
+    }
+}
+
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
+    // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
+    let points = apply_brush_style(points, args)?;
     // **调用方给的原话** ✓（重跑时要用它 ✓，而不是"平滑之后的中间量" ✗）。
     let points_source = json!(points
         .iter()
