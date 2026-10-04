@@ -1326,6 +1326,13 @@ await new Promise((resolve) => setTimeout(resolve, 1200));
 // （service_flow::revert_to_restores_the_state_at_that_atom ✓）；这里只断言 UI 事实：
 // 点击后确实提交了一个新的 `revert_to` 原子（历史列表 +1）。
 // 目标：最后一条 draw_stroke **之前**的那条原子（当前文档最早的原子未必是 create_document）。
+// **必须在跳转之前取** ✓（第 477 轮 ✓）：原先这一行写在下面那次跳转**之后** ✗
+// ⇒ 页面若在等待的 2.2s 内跳完 ⇒ 它取到的其实是「跳转后」的画面 ✓
+// ⇒ 于是 `:1793` 那条判定（jumped 与 beforeJump 相等）**必然成立** ✓
+// ⇒ 判据便报「没有改变画面（用例无效：目标原子选得不对）」✓ —— **而那是它的猜测** ✗
+// ⇒ ⇒ **真正的错是"取样时机"** ✓，**而第 458 轮我照它的猜测改了目标选取** ✗（改了它猜的那件事 ✓）。
+// ⇒ 这也是"时有时无"的来源 ✓：**取决于那 2.2s 内跳完没跳完** ✓。
+const fingerprintBeforeJump = await evaluate(canvasFingerprint);
 const jumpResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
   // **挑「足够靠前」的目标** ✓（第 458 轮 ✓）：原先是从最后往前找 draw_stroke 行再取**它的上一行** ✗
@@ -1346,7 +1353,7 @@ const historyFinal = await historyRows();
 // **没有**"回到此处会产生新原子"这一条 ✗ —— 那是判据作者自己加的 ✓）。
 // 本段仍检查"跳转后画面确实回到那一刻" ✓（那是导航该有的效果 ✓），
 // **但不再要求它进历史** ✓；撤销那一路也据此**不假定**多了一个原子 ✓。
-const fingerprintBeforeJump = await evaluate(canvasFingerprint);
+
 const jumpUndoResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
   // 跳到**最早**那条原子：这一定改变画面（此前挑"笔画前一条"，若那一步本身无效果就断言不出东西）。
