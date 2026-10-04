@@ -590,6 +590,9 @@ const maskResult = await evaluate(`(async () => {
   if (missing.length) {
     return { unable: "缺元素：" + missing.join("、"), filled: undefined, masked: undefined, log: "" };
   }
+  // **整段套 try** ✓（第 609 轮 ✓）：段内某处抛错 ⇒ 整段 reject ⇒ 外部只见 undefined ✗
+  // ⇒ 把消息与阶段带回来 ✓（**一处 try 省掉 N 轮猜测** ✓）。
+  try {
   const board = document.getElementById("board");
   const rect = board.getBoundingClientRect();
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
@@ -675,6 +678,9 @@ const maskResult = await evaluate(`(async () => {
   }
   document.querySelector('button[data-tool="brush"]').click();
   return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
+  } catch (err) {
+    return { unable: "段内抛错：" + String((err && err.message) || err), filled: undefined, masked: undefined, log: , toolAfterClick: undefined };
+  }
 })()`);
 
 // 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
