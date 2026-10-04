@@ -19971,3 +19971,19 @@ crates/yanshi-render/src/png.rs:20    pub fn encode_png(width, height, rgba8) ->
 ② 与 `analyze_region` 已渲染的区域像素比 ✓ ⇒ 返回 **ΔE（CIE76，先做）** ✓ + 平均偏差 ✓；
 ③ **没有参考图 / 尺寸不一致** ⇒ **明确作答** ✓（**不静默返回 0** ✗）；
 ④ 判据两侧都能判 ✓：**自比 ΔE ≈ 0** ✓、**刻意改色后 ΔE 明显 > 阈值** ✓；SSIM 第二步 ✓。
+
+### 🧭 第 318 轮：**§三.2 开工前，把两个模块的接口列清**（按第 317 轮立下的规矩 ✓）
+
+**① blob 读取（✓）** ✓：`yanshi-core/src/blob.rs:98` 定义 **`pub trait BlobStore`** ✓ ⇒
+"按哈希取字节"是它的**方法** ✓（`persist.rs:101` 的 `blob_store()` 拿到 `FsBlobStore` ✓，后者在 `blob.rs:407` ✓）。
+⇒ **教训补记** ✓：我第一遍 grep `^\s*pub fn ` **在 trait 的方法上什么都搜不到** ✗ ——
+因为 **trait 方法通常不写 `pub`** ✓ ⇒ **列接口时要把 trait 一并列** ✓（不只列 `pub fn` ✓）。
+**② 颜色空间（✓）** ✓：`yanshi-render/src/color.rs` 有 **sRGB ↔ 线性** ✓（`srgb_to_linear` ✓、`byte_to_linear` ✓、
+`linear_to_byte` ✓、预乘/合成 ✓）—— **但没有任何 Lab / ΔE** ✗ ⇒ **要自己加** ✓
+（线性 RGB → XYZ → Lab ✓，D65 白点 ✓，约 30 行 ✓；`color.rs` 是合适的位置 ✓）。
+**③ §三.2 的实施清单（✓，一步一个可判的点 ✓）** ✓：
+1. `color.rs`：加 `linear_to_lab` + `delta_e_cie76` ✓（**先写单测**：同色 ΔE=0 ✓、黑白 ΔE 已知量级 ✓）；
+2. `read_analyze_region`：加**可选** `compare_with_reference` ✓ ⇒
+   取 `reference.blob_hash`（preferences ✓）⇒ `BlobStore` 取字节 ⇒ `decode_png` ✓ ⇒ 参考图 RGBA ✓ ⇒ ΔE ✓；
+3. **缺参考图 / 尺寸不一致 ⇒ 明确作答** ✓（不静默 0 ✗）；
+4. **判据两侧都判** ✓：自比 ΔE ≈ 0 ✓、改色后 ΔE > 阈值 ✓（**能红** ✓）。
