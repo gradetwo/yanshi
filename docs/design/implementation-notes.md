@@ -23565,3 +23565,29 @@ grep "width: [0-9]*, height: [0-9]*" scripts/*.mjs ⇒ **36 个文件命中** �
 **逐个改** ✓（**而这也可能解释若干"看起来通过、其实量了默认区域"的判据** ✗）。
 **★ 这一族的价值（✓）** ✓：**"参数传下去之后，接收方叫它什么"** ✓ ——
 **这类错会静默退化，且判据仍可能"通过"** ✗（**更坏：假绿 ✓**）。
+
+### 🎯🎯🎯 第 539 轮：**11 条判据把 `width/height` 传进 `region` ⇒ 全在读默认区域** ✗
+
+**精确清单（✓，`grep -rnE "region: *\{[^}]*width:" scripts/*.mjs` ✓）** ✓：
+```
+tool-brush-dynamics:26      region: { x:0, y:0, width:200, height:120 }   ✗
+tool-brush-style:35         region: { x:0, y:0, width:200, height:120 }   ✗
+tool-fill-region-feather:28 region: { x, y, width:1, height:1 }           ✗   ← **本轮追的那条**
+tool-fill-region:23         region: { x, y, width:1, height:1 }           ✗
+tool-gradient-blend:47      region: { x:0, y:0, width:300, height:200 }   ✗
+tool-impasto-plateau:28     region: { x:0, y:0, width:400, height:160 }   ✗
+tool-layer-blend:24         region: { x, y, width:1, height:1 }           ✗
+tool-reference-overlay:24   region: { x:0, y:0, width:200, height:150 }   ✗
+tool-scatter-strokes:24     region: { x:0, y:0, width:200, height:150 }   ✗
+tool-selection-clip:28      region: { x, y:0, width:w, height:100 }       ✗
+tool-snapshot-roundtrip:22  region: { x:0, y:0, width:200, height:150 }   ✗
+```
+**⇒ 三条结论（✓）** ✓：
+1. **11 条判据的 `region` 全被服务端忽略** ✗（**spec：`{x,y,w,h}` 或 `[x,y,w,h]`** ✓）
+   ⇒ **它们读的是默认区域** ✓；
+2. ⇒ ⚠️ **其中若干可能"通过"** ✗ ⇒ ⇒ **假绿** ✓ —— **这比红更危险** ✓
+   （**"判据绿了"与"判据量到该量的东西"是两件事** ✗）；
+3. **修法是机械的** ✓（**`region` 内 `width:`/`height:` ⇒ `w:`/`h:`** ✓）
+   ⇒ ⇒ **但修完可能有几条转红** ✗ ⇒ **那正是"原来一直在读错地方"被暴露** ✓。
+**★ 一条该记的后果（✓）** ✓：**修完之后，我必须重新报告"哪些判据真的绿"** ✓ ——
+**此前的"绿"里有一部分是"量了默认区域还恰好通过"** ✗。
