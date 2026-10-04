@@ -20454,3 +20454,23 @@ let geometry = match kind.as_str() {
 且**文档模型里存的是像素而不是参数** ✗（改半径就得重画 ✗）⇒ **与"形状描述"这个设计相反** ✗。
 **下一步（✓）** ✓：找到"描述 → 覆盖率"的调用处 ✓（`object.rs` 一侧 ✓）⇒
 在那里**只在 `feather > 0`** 时套 `feather_coverage` ✓ ⇒ **`feather` 缺省 0 ⇒ 逐字节不变** ✓。
+
+### 🎯 第 349 轮：**渲染侧接线点只有一处** ✓（`render.rs:754` ✓）
+
+**`shape_coverage` 的全部调用点（✓）** ✓：
+```
+crates/yanshi-render/src/render.rs:754   shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox())  ← **唯一渲染调用** ✓
+crates/yanshi-render/src/render.rs:1575  （shape_coverage 内部转调 ✓）
+crates/yanshi-render/src/render.rs:1626  （shape_outline 一侧 ✓）
+crates/yanshi-render/src/lib.rs:135      （导出 ✓）
+```
+⇒ ⇒ **羽化的渲染侧接线是"一处"** ✓：
+```rust
+// render.rs:754 之后 ✓
+if feather > 0.0 { coverage = feather_coverage(&coverage, feather); }   // **只在 >0 时** ✓
+```
+**还剩一件事要读（✓）** ✓：**上面那段"取 `kind` / `bbox` / `points`"的地方** ✗
+—— `feather` 必须在**那里一并读出** ✓（同一个形状描述对象里 ✓）。
+**为什么这一步值得单独做（✓）** ✓：**"只有一处调用"意味着改动面最小** ✓ ——
+**我不用碰 `shape_coverage` 的签名** ✓（第 342 轮的判断再次成立 ✓），
+**也不会有"某些形状忘了羽化"的漏网** ✓（所有形状都走同一处 ✓）。
