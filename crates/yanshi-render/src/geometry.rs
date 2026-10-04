@@ -521,3 +521,120 @@ mod tests {
         assert!(stamps.len() < 13, "虚线应少于实线 stamp 数");
     }
 }
+
+/// **可分离盒式模糊**（横纵各两遍 ≈ 高斯 ✓）—— 供 `fill_region` 羽化使用 ✓（测试报告 §二.1 ✓）。
+///
+/// **边界语义（第 345 轮 ✓）**：向外**补零** ✓ —— 羽化的输出 bbox 会外扩 ✓，扩出来的一圈本该是 0 ✓
+/// ⇒ **不要**改成边界复制 ✗（那会撑住边缘 ⇒ 羽化就没了 ✗）。
+///
+/// **写法（第 344/345 轮 ✓）**：滑窗 O(1)/像素版本**快但错** ✗（窗口和没维护住 ⇒ 整行被糊 ✗，
+/// 被 `the_falloff_stays_bounded` 抓住 ✓）⇒ 现为**朴素内层循环**：O(w·h·r) 但**一眼可查** ✓。
+/// 羽化只在**可选**路径上跑一次 ✓ ⇒ **先要正确，再谈快** ✓。
+///
+/// **⚠️ 等效影响半径 = `2 × radius`** ✓（第 347 轮 ✓）—— **两遍盒式叠加**的结果 ✓
+/// ⇒ 调用方**外扩 bbox 时必须按 `2 × radius` 算** ✗（按 `radius` 算会**切掉外半边** ✗）。
+///
+/// **`radius == 0` ⇒ 原样返回** ✓ ⇒ 调用方据此保证"半径 0 ⇒ 逐字节不变" ✓。
+fn box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<f32> {
+    if radius == 0 || width == 0 || height == 0 {
+        return data.to_vec();
+    }
+    let win = (2 * radius + 1) as f32;
+    let mut cur = data.to_vec();
+    for _ in 0..2 {
+        // ① 横：读 `cur`、写 `tmp` ✓（**每遍角色固定** ✓ —— 第 344 轮的错就是这里串了 ✓）
+        let mut tmp = vec![0.0f32; cur.len()];
+        for y in 0..height {
+            for x in 0..width {
+                let mut sum = 0.0f32;
+                for k in 0..(2 * radius + 1) {
+                    let xi = x as isize + k as isize - radius as isize;
+                    if xi >= 0 && (xi as usize) < width {
+                        sum += cur[y * width + xi as usize];
+                    }
+                }
+                tmp[y * width + x] = sum / win;
+            }
+        }
+        // ② 纵：读 `tmp`、写 `cur` ✓
+        for x in 0..width {
+            for y in 0..height {
+                let mut sum = 0.0f32;
+                for k in 0..(2 * radius + 1) {
+                    let yi = y as isize + k as isize - radius as isize;
+                    if yi >= 0 && (yi as usize) < height {
+                        sum += tmp[yi as usize * width + x];
+                    }
+                }
+                cur[y * width + x] = sum / win;
+            }
+        }
+    }
+    cur
+}
+
+#[cfg(test)]
+mod feather_blur_tests {
+    use super::box_blur_2d;
+
+    /// **32×32 画布 + 中心 12×12 方块**（x,y ∈ 10..22）✓ ⇒ **四周留 10 像素** ✓，
+    /// 满足第 345–347 轮攒下的规则：边距 > `2·radius` = 4 ✓、边长 12 ≥ `4·radius` = 8 ✓。
+    fn block_on_canvas() -> (Vec<f32>, usize, usize) {
+        let (w, h) = (32usize, 32usize);
+        let mut data = vec![0.0f32; w * h];
+        for y in 10..22 {
+            for x in 10..22 {
+                data[y * w + x] = 1.0;
+            }
+        }
+        (data, w, h)
+    }
+
+    /// 半径 0 ⇒ **一模一样** ✓。
+    #[test]
+    fn zero_radius_changes_nothing() {
+        let (data, w, h) = block_on_canvas();
+        assert_eq!(box_blur_2d(&data, w, h, 0), data);
+    }
+
+    /// **外侧**：紧贴方块之外收到扩散 ✓（>0 且 <1 ✓）—— 羽化**向外发生**的证据 ✓。
+    #[test]
+    fn a_hard_edge_gains_values_outside_it() {
+        let (data, w, h) = block_on_canvas();
+        let blurred = box_blur_2d(&data, w, h, 2);
+        let outside = blurred[16 * w + 9]; // 方块左边（x=10）之外 1 像素 ✓
+        assert!(outside > 0.0, "紧邻外侧应收扩散 ⇒ {outside}");
+        assert!(outside < 1.0, "紧邻外侧不该满覆盖 ⇒ {outside}");
+    }
+
+    /// **内部**：中心离边 6 像素 > `2·radius` = 4 ⇒ **应接近满覆盖** ✓。
+    #[test]
+    fn the_interior_stays_nearly_full() {
+        let (data, w, h) = block_on_canvas();
+        let blurred = box_blur_2d(&data, w, h, 2);
+        let center = blurred[16 * w + 16];
+        assert!(center > 0.9, "中心应接近满覆盖 ⇒ {center}");
+    }
+
+    /// **有界**：离方块 **> `2·radius` = 4** 像素处**严格为 0** ✓
+    /// —— 第 347 轮的教训：按 `radius` 判会**误判**（角点离 3 像素时本来就该有值 ✓）。
+    #[test]
+    fn the_falloff_stays_bounded() {
+        let (data, w, h) = block_on_canvas();
+        let blurred = box_blur_2d(&data, w, h, 2);
+        assert_eq!(blurred[2 * w + 2], 0.0, "离方块 8 像素 > 4 ⇒ 必须为 0");
+        assert_eq!(blurred[29 * w + 29], 0.0, "离方块 8 像素 > 4 ⇒ 必须为 0");
+    }
+
+    /// **守恒**：边距 10 > 4 ⇒ 扩散**够不到画布边界** ✓ ⇒ 总覆盖量不变 ✓。
+    #[test]
+    fn blur_conserves_total_coverage_away_from_edges() {
+        let (data, w, h) = block_on_canvas();
+        let before: f32 = data.iter().sum();
+        let after: f32 = box_blur_2d(&data, w, h, 2).iter().sum();
+        assert!(
+            (before - after).abs() < 0.01,
+            "覆盖率不该凭空增减 ⇒ {before} vs {after}"
+        );
+    }
+}
