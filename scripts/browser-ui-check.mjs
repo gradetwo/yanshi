@@ -712,10 +712,19 @@ const namingResult = await evaluate(`(async () => {
   fire("pointermove", at(0.6, 0.5), 501);
   await wait(90);
   fire("pointerup", at(0.6, 0.5), 501);
+  // **等「尺寸稳定」，而不是等「等于某个值」** ✓（第 450 轮 ✓）：原先等的是
+  // board.width 等于 state.docSize.w ✗ —— 而 state.docSize **可能不存在** ✗ ⇒ 比较退化成
+  // board.width 等于 -1 ⇒ **永远不为真** ⇒ 循环空转完 40 次 ⇒ **两次读数取在当时的任意布局尺寸上** ✓
+  //（实测一次 512²、一次 1024² ✓ ⇒ total 不同只是症状 ✓，病因是守卫没生效 ✗）。
+  // 注意：**本段处在模板字符串里** ⇒ 注释里**不能出现反引号** ✗（那会把模板闭合 ✓）。
   let before = ${canvasFingerprint};
+  let beforeWidth = -1;
+  let beforeStable = 0;
   for (let i = 0; i < 40; i++) {
-    const sized = document.getElementById("board").width === (state.docSize ? state.docSize.w : -1);
-    if (before.sum !== 0 && sized) break;
+    const width = document.getElementById("board").width;
+    if (width > 0 && width === beforeWidth) beforeStable += 1; else beforeStable = 0;
+    beforeWidth = width;
+    if (before.sum !== 0 && beforeStable >= 2) break;
     await wait(250);
     before = ${canvasFingerprint};
   }
@@ -730,9 +739,13 @@ const namingResult = await evaluate(`(async () => {
     if (document.getElementById("identity").textContent.includes(${JSON.stringify(copyName)})) break;
   }
   let after = ${canvasFingerprint};
+  let afterWidth = -1;
+  let afterStable = 0;
   for (let i = 0; i < 40; i++) {
-    const sized = document.getElementById("board").width === (state.docSize ? state.docSize.w : -1);
-    if (after.sum !== 0 && sized) break;
+    const width = document.getElementById("board").width;
+    if (width > 0 && width === afterWidth) afterStable += 1; else afterStable = 0;
+    afterWidth = width;
+    if (after.sum !== 0 && afterStable >= 2) break;
     await wait(250);
     after = ${canvasFingerprint};
   }
