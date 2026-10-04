@@ -20111,3 +20111,26 @@ crates/yanshi-render/src/brush.rs:321     coverage: Option<&dyn Fn(f64, f64) -> 
 3. **无 chromium 时的快速失败** ✓：连不上 CDP 就**立刻判"环境不满足"并跳过** ✓，而不是干等 ✓。
 **⚠️ 这条本身也是一个教训（✓）** ✓：**"把重活搬上 CI"之后，重活里的超时也得跟着设计** ✗ ——
 我在本地跑这些判据时从没遇到卡住 ✓ ⇒ **一搬上别人的机器，就暴露了我的 runner 只有"逐条 15 分钟"这一档** ✗。
+
+## 📋 第 325 轮：**CI 判据的完整点名名单（分片并行逼出来的）** ✓✓
+
+**分片跑完（旧轮 `6848028`，六片并行）** ✓：
+```
+shard 1 → 通过 6｜意外失败 4：browser-drag-perf ✗、browser-pan-vs-paint ✗、
+                              tool-example-acceptance ✗（**点名产品级原因**：delete_annotation 参数没问题但没成功 ⇒ 标注 ann1 不存在）、
+                              tool-reference-delta-e ✗（本会话新写的 §三.2 判据）
+shard 2 → 通过 8｜意外失败 1：browser-file-menu ✗
+shard 4 → 通过 7｜意外失败 1：browser-brush-preview-local ✗
+shard 5 → 通过 5｜意外失败 4：browser-brush-preview ✗、browser-kernel-perf ✗、tool-batch-preview ✗、tool-cjk-text ✗
+shard 6 → 通过 6｜意外失败 2：browser-canvas-handfeel ✗、browser-layout ✗
+shard 3 → 全绿 ✓
+—— 合计：**通过 32｜意外失败 12｜已知红 1** ✓（**已知红名单按设计只计数、不阻塞** ✓）
+```
+**为什么这份名单是分片逼出来的（✓）** ✓：同一个 job **串行**时，它只会一直显示"在跑" ✗ ——
+**拆成六片后，每片跑完就把自己的名字交出来** ✓ ⇒ **"失败"从"一个大 job 卡着"变成"12 个带名字的条目"** ✓。
+**下一步（✓，按名字逐条，不再猜 ✓）** ✓：
+1. **`tool-example-acceptance`** ✓（已点名产品级原因 ⇒ 先看它 ✓）；
+2. 本会话新写的三条 ✓：`tool-reference-delta-e` / `tool-batch-preview` / `tool-cjk-text`（**先判"是判据错还是产品错"** ✓）；
+3. 九条 `browser-*` ✓（很可能是 **CI 环境差异** ⇒ 逐条按日志定性 ✓，例如无显示器、字体缺失、CDP 时序 ✓）。
+**⚠️ 已知红名单的打印也验证了（✓）** ✓：shard 6 里它照常打印原因 ✓
+（"蒙版没有裁掉区域外的内容：着色 122352 → 130149" ✓）而**不阻塞** ✓ —— 这正是我设计它时要的行为 ✓。
