@@ -627,7 +627,11 @@ const maskResult = await evaluate(`(async () => {
   const stateProbe = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
   const logDuringDrag = document.getElementById("log").innerText.slice(-160)
     + "｜拖动中 tool=" + (stateProbe ? stateProbe.tool : "?")
-    + " points=" + (stateProbe && stateProbe.points ? stateProbe.points.length : "?")
+    // 第 557 轮：state 的 points 已经是「点数」本身，我原先又取了一次 length
+    // ⇒ 对数字 2 取 length 得 undefined（本地验证过）⇒ 日志打出 points=undefined
+    // ⇒ 我据此以为「点没入列」，白读六处产品代码。现在直接打它：
+    // 拖动中若为 2，就说明 commitMask 要求的「至少 2 个点」是满足的。
+    + " points=" + (stateProbe ? stateProbe.points : "?")
     + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
   fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
