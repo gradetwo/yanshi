@@ -24667,3 +24667,20 @@ tools.rs:8355 / :8423  args.get("feather")…            ← **工具顶层参�
 | 使用 ✓ | `render.rs:798` 值来源 | **错 ✗ ⇒ 已修 ✓** |
 | 外扩 ✓ | `render.rs` 两处 padding | **键错 ✗ ⇒ 已修 ✓** |
 | 选区 ✓ | `selection.rs:131` | **正确 ✓（另一条链 ✓）** |
+
+### ✅ 第 613 轮：**wasm 侧与服务端共用同一套 `yanshi-render` ⇒ 修复对两边同时生效** ✓
+
+**核对（✓）** ✓：
+```
+grep -rln 'get("feather")' crates/ ⇒ **只有 4 个文件** ✓
+  selection.rs ✓、render.rs ✓、object.rs ✓、tools.rs ✓
+crates/yanshi-wasm/Cargo.toml:18  ⇒ yanshi-render = { path = "../yanshi-render", version = "0.1.0" } ✓
+crates/yanshi-wasm/src/kernel.rs:8 ⇒ 「与服务端**同一套** `yanshi-render` 代码 ✓（D0 bit-exact ✓）」
+```
+**⇒ 三条（✓）** ✓：
+1. ✅ **没有第二份"读 feather"的实现** ✓ ⇒ **不存在"改了服务端、漏了 wasm"** ✗
+   ⇒ ⇒ **我的三处修复对客户端渲染同样生效** ✓；
+2. ✅ **这正是 (A)③「共享内核」要求的形态** ✓ —— **渲染逻辑只有一份 ✓**；
+3. ⇒ ⇒ **所以 `e902343` 一旦进来，两条路径（服务端区域渲染 ✓、wasm 客户端渲染 ✓）应当同时转绿** ✓。
+**★ 一条（✓）** ✓：**"我改的是共享代码还是某一条路径"** ✓ ——
+**这个问题问一次就能避免"修了服务端、wasm 仍坏"这一族** ✓（**而它在 `padding` 上刚发生过一次 ✓：`global` vs `local` ✓**）。
