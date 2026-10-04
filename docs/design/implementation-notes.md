@@ -21938,3 +21938,22 @@ match prefs.get("reference.blob_hash") {
 与 `scripts/dev.sh` 用 `wasm-bindgen` 生成到 `crates/yanshi-wasm/pkg/` 的那一份**不一定是同一处** ✓）。
 **★ 这一轮的价值（✓）** ✓：**它排除了一个我想当然的假设** ✗（"CI 没建内核 ✓"）——
 **而这是靠读 CI 的实际步骤 ✓，不是靠回忆 README 那句话** ✓。
+
+### 🎯🎯🎯 第 433 轮：**`data-preview-source="local"` 只存在于判据里 —— 产品从不产出它** ✗
+
+**查证（✓）** ✓：
+```
+grep -rn "preview-source|data-preview|previewSource" --include=*.rs --include=*.mjs --include=*.js --include=*.html .
+（排除 target/）⇒ **只有两处命中，都在判据自己文件里** ✓：
+  browser-brush-preview-local.mjs:8   （注释：要求至少一行带 data-preview-source="local"）
+  browser-brush-preview-local.mjs:45  （筛选：row.dataset.previewSource === "local"）
+⇒ **`viewer.rs` 里连这个字符串都没有** ✗ ⇒ **产品从不产出这个属性** ✓
+```
+**⇒ 结论（✓）** ✓：**`local: 0` 的真相是"判据在等一个产品没有的东西"** ✗ ✓
+⇒ 而 `labelled` / `dataUrls` **都是由 `local` 派生** ✓ ⇒ **一起为 0** ✓（**三条消息其实是同一个原因** ✓）。
+**⇒ 这与 `reference-delta-e` 同族（✓）** ✓：**判据假定了一个产品不提供的接口** ✗ ——
+**一个是"参数挂在别的工具上" ✓，一个是"属性根本不存在"** ✓。
+**⇒ 下一处必读（✓）** ✓：**查看器是否用别的名字表达"本地出图"这个事实** ✓
+（若**有** ⇒ **改写判据去用真名字** ✓，这是真修 ✓；若**没有** ⇒ **登记已知红并写明"这是一条想测尚未存在的接口"** ✓）。
+**★ 方法（✓）** ✓：**这一轮我做的是"全仓确认"而不是"在 viewer.rs 里没看到就说没有"** ✓ ——
+**结果反过来救了我** ✗：**不是"我没找到"，是"它确实不存在"** ✓。
