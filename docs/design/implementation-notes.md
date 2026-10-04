@@ -18217,3 +18217,22 @@ fn toward_mean(value, mean, t) = value + (mean - value) * t                     
 修法**仍是**从度量函数推出来的那个 ✓：**让每枚 dab 的 `body` 因子加权均值为 1** ✓
 ⇒ **降低调制的幅度** ✓、**同时保住平均覆盖率** ✓（那条**两次拦住我**的不变量 ✓）。
 ⇒ ⇒ **判据应当继续用默认 texture** ✓ —— **在默认档把幅度降下来** ✓ 正是报告要的 ✓。
+
+### 📊 第 219 轮：**2.3 的基线数字（改动将以此对照 ✓）**
+
+**介质自己的测试（✓，6 passed —— 含上次拦住我的那两条 ✓）** ✓：
+```
+tests::texture_keeps_the_average_ink ✓
+tests::texture_zero_matches_prechange_golden ✓
+tests::texture_reduces_grain ✓ / texture_is_deterministic ✓ / texture_is_clamped ✓ / texture_zero_is_byte_identical_to_before ✓
+```
+**impasto 判据的基线（红 ✗，但**量法自证** ✓）** ✓：
+```
+正对照（fill 平坦块）acf(4)-acf(2) = **0.000** ✓      ← 量法可信 ✓（平坦就该是 0 ✓）
+被测笔触：dabs = 86 ✓｜**acf(4)-acf(2) = 0.180** ✗｜**暗环数 = 24（占 dab 的 0.28）** ✗
+acf(1..16) = [0.40, 0.11, 0.26, 0.29, 0.19, 0.16, 0.16, 0.28, 0.24, 0.13, 0.19, 0.32, 0.22, 0.15, 0.15, 0.18]
+```
+⇒ ⇒ **两条可量的修后目标** ✓：`acf(4)-acf(2) **< 0.05** ✓ 且**暗环占比**从 **0.28** 降下来 ✓ ——
+判据的消息本来就是这么写的 ✓（"一串泡泡"✗ + "每枚 dab 自带边缘"✗）。
+**为什么先取基线（✓）** ✓：`texture_keeps_the_average_ink` 与 golden 两条**上次把我拦下** ✓
+⇒ 有了基线 ✓，改动才能被**数字对照** ✓ 而不是"感觉好了" ✗。
