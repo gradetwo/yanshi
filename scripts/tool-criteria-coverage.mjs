@@ -43,7 +43,13 @@ const NOT_CRITERIA = [
 ];
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [
-  "wasm-brush-preview-parity.mjs", // 收 <viewer-url> <wasm>（要 CDP ✓）⇒ 需要与 browser-* 不同的接线 ✓
+  // ⚠️ **不是"还没接线"，而是"它跑不起来"** ✗（第 795 轮查清 ✓）：
+  //   它把 <wasm 路径> 读成 base64 传进页面 ✓ ⇒ 页面里 `WebAssembly.instantiate` 它 ✗ ——
+  //   而**现在的产物是 wasm-bindgen `--target web`** ✓（`.wasm` 依赖 `./yanshi_wasm_bg.js` 的 imports ✗）
+  //   ⇒ 实测报 `Import #0 "./yanshi_wasm_bg.js": module is not an object or function` ✓
+  //   ⇒ **假设与产物形态不匹配** ⇒ **修法**：让判据在页面里按 wasm-bindgen 的方式装载
+  //   （产品自己就是这么装内核的 ✓ ⇒ 模式已有 ✓），而不是直接 instantiate 裸 .wasm ✓。
+  "wasm-brush-preview-parity.mjs",
   "server-token-policy.mjs",       // 收 <base> <allow|refuse> ✓ ⇒ 要跑**两种**模式 ✓，不是"跑一次" ✓
 ];
 

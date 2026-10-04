@@ -25,7 +25,19 @@ let id = 1; const pending = new Map();
 ws.addEventListener("message", (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
 await new Promise((resolve) => ws.addEventListener("open", resolve));
 const send = (method, params = {}) => new Promise((resolve) => { const i = id++; pending.set(i, resolve); ws.send(JSON.stringify({ id: i, method, params })); });
-const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+// **页面侧异常必须被看见** ✓（第 795 轮，照 `browser-ui-check.mjs:142` 移植 ✓）：
+// 原先只取 `result.value` ✗ ⇒ **页面里任何抛错 ⇒ CDP 给 `exceptionDetails` 而 `value` 是 undefined** ✗
+// ⇒ ⇒ 本判据实测就是 `TypeError: results is not iterable`（`:126` ✓）—— **它把页内的真错吞成了"空结果"** ✗
+// ⇒ 现在把 `exceptionDetails` 抛出来 ✓，抛出的是**页面里的真实消息** ✓。
+const evaluate = async (expression) => {
+  const payload = (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result;
+  const details = payload?.exceptionDetails;
+  if (details) {
+    const text = details.exception?.description || details.exception?.value || details.text || "（无描述）";
+    throw new Error("页面侧抛错：" + String(text).split("\n").slice(0, 3).join(" ｜ "));
+  }
+  return payload?.result?.value;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await send("Runtime.enable"); await send("Page.enable");
 await send("Page.navigate", { url }); await send("Page.reload", { ignoreCache: true }); await sleep(1800);
