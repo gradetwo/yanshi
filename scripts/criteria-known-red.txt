@@ -5,3 +5,12 @@
 tool-archive-bloat.mjs  # 报告 2.6：覆盖 12 次后归档 1.69×，需日志压缩/快照（架构级）
 tool-impasto-plateau.mjs  # 报告 2.3：修法已把偏差从 34.85% 降到 0.59%，差 0.09 个百分点，待产品决策
 browser-ui-check.mjs  # (B)②：9 项已逐条判定，剩 4 项为判据侧（另存为副本读数陈旧 / 回到此处 / 隐藏的取样时机）
+
+# **文档陈旧（真实存在 ✓，且本机可修 ✓）**
+# `docs/design/tool-examples.md` 与工具目录不一致（47 小节 vs 52 个带示例 ✓）。
+# 生成器一直提供 `--check`（过期就红 ✓），但**仓库里没有任何东西调用它** ✗ ⇒ 本轮才接上 ✓。
+# **怎么变绿**：起一个服务端后跑
+#   node scripts/tool-examples-doc.mjs <server-base>        # 重新生成（会改写 docs/design/tool-examples.md）
+# 然后**把重新生成的文档一起提交** ✓ ⇒ 这条判据即转绿 ✓。
+# **注意**：CI 里不能替你生成（它只能读不能提交 ✓）⇒ **必须在本机做一次** ✓。
+tool-examples-doc-check.mjs
