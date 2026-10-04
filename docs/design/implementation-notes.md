@@ -26111,3 +26111,17 @@ conclusion=failure ｜ clippy failure ｜ criteria shard 4/6 failure ｜ **crite
    ⇒ ⇒ **即：查看器**没有**走本地预览那条路** ✗ ⇒ **`(A)③`（默认客户端渲染）在这条判据上没生效** ✗；
 3. ⇒ ⇒ ⇒ **下一步**：**查 `previewSource` 在哪里被设为 `local`** ✓ ⇒ **为什么这次没设上** ✓。
 **★ 一条**：**判据打印的 `info` 里，`local=0` 与 `rows=199` 并列** ✓ ——**一句话就说清了"行在、来源不对"** ✓。
+
+## 🎯 第 757 轮：**`previewSource` 只存在于判据里 ⇒ 产品从未设置它 ⇒ 该判据必然恒红** ✗
+
+**读到**（`grep -rn previewSource crates/ scripts/`）：
+```
+scripts/browser-brush-preview-local.mjs:9   // 全仓搜 preview-source / previewSource 只命中**本文件两处** ✓（viewer.rs 里连这个字符串都没有 ✗）
+scripts/browser-brush-preview-local.mjs:50  const local = rows.filter((row) => row.dataset.previewSource === "local");
+```
+**⇒ 三条**：
+1. ✗ **产品从未写 `dataset.previewSource`** ✓ ⇒ **`local` 恒为 0** ⇒ **该断言恒红** ✓；
+2. ⇒ ⇒ **而第 9 行的注释**已经写明这件事**** ✓ ⇒ **判据作者知道它 ✓，却没据此改判据** ✗；
+3. ⇒ ⇒ ⇒ **两种解读**：**(a) 判据过时（应删/改 ✓）** ｜ **(b) `(A)③` 真的没做完（产品应写这个标记 ✓）**
+   ⇒ ⇒ ⇒ ⇒ **下一轮**：**核产品里"本地预览"是用什么标记的** ✓（**若用别的属性 ⇒ (a) ✓；若什么都没标 ⇒ (b) ✗**）。
+**★ 一条**：**"判据断言的东西，产品里存在吗"** ✓ —— **这一步 `grep` 就能回答，而我先前没做** ✗。
