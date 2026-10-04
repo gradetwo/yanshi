@@ -11273,7 +11273,7 @@ fn stamp_stroke_from(
 /// * `colorize` / `posterize` / `lock_alpha`：按已有像素着色 / 只改 alpha ✓（dab 的混合读了底 ✓）。
 ///
 /// 这条判断**不是省事** ✗，而是**正确性** ✓：喂了底图 ⇒ 落笔后 surface 里**整个区域**都有像素 ✓
-/// ⇒ 必须用掩膜把"没碰过的底图"剔掉 ✓（见 [`brush_coverage_mask`] ✓）。
+/// ⇒ 必须用掩膜把"没碰过的底图"剔掉 ✓（见 `paint_brush` 里"读回并写进图层"那一步对底图与落墨的重叠判断 ✓）。
 /// 绝大多数 `.myb` 笔刷不读画布 ✓ ⇒ 它们那条路连这个风险都没有 ✓。
 /// **`.myb` 文本会不会读画布** ✓ —— 给**没有 hokusai 依赖**的调用方（HTTP 层 ✓）用 ✓；
 /// 解析失败按 `false` 处理 ✓（那种笔刷反正也画不出来 ✓，由落笔路径自己报错 ✓）。
@@ -11493,7 +11493,7 @@ fn paint_brush(
     // **喂进去的底图要留着** ✓ —— 读回时用它把"笔刷没碰过的像素"剔掉 ✓
     //（否则会把**笔触的包围矩形**原样复制成一个新对象 ✗，见下面读回那一段的说明 ✓）。
     // **只有会读画布的笔刷才喂底图** ✓ —— 其余笔刷喂了反而要额外剔掉"没碰过的底图" ✓
-    //（见 `brush_reads_the_canvas` 与 `brush_coverage_mask` ✓）。
+    //（见 `brush_reads_the_canvas` ✓，以及 `paint_brush` 里读回时对"笔刷没碰过的像素"的剔除 ✓）。
     let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
     if reads_canvas {
         if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
