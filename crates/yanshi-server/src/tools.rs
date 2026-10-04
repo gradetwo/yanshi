@@ -13972,6 +13972,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "set_property",
         r#"{"layer_id":"layer_default","key":"visible","value":true}"#,
     ),
+    // **`texture_background`**（✓，第 456 轮 ✓）：唯一必填参数是纹理名 ✓，
+    // 取值域来自仓库里的真实文件 `assets/textures/`（Paper001.png ✓ / Cardboard001.png ✓ …）⇒
+    // **不是编的** ✓。`mode` 缺省是 tile ✓ ⇒ 只给必填项就成立 ✓。
+    ("texture_background", r#"{"texture":"Paper001.png"}"#),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
