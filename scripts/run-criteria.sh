@@ -36,6 +36,11 @@ if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
     --user-data-dir="$PROFILE" about:blank >"$ROOT_DIR/chrome.log" 2>&1 &
   CHROME_PID=$!
   for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break; sleep 0.5; done
+  # **连不上就快速失败** ✓：以前会**逐条各等 15 分钟** ✗ ⇒ 一小时内什么都拿不到 ✓。
+  if ! curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
+    echo "  ⚠️ 浏览器起来了但 CDP 连不上 ⇒ **跳过全部浏览器判据**（不干等 ✓）"
+    kill "$CHROME_PID" 2>/dev/null; CHROME_PID=""; SKIP_BROWSER=1
+  fi
 fi
 
 token_for() {
@@ -54,15 +59,19 @@ for script in scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-pari
   fi
   doc="crit_$(echo "$name" | tr -cd 'a-z0-9')"
   tok="$(token_for "$doc")"
+  # **心跳** ✓：卡住时一眼看出是**哪一条** ✓（以前只看到"Job 还在跑" ✗）。
+  echo "  → $name"
   case "$name" in
     kernel-brush-parity.mjs)
-      timeout 900 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
-      CDP_PORT="$CDP_PORT" timeout 900 node "$script" "$BASE/?doc=$doc&token=$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。
+      CDP_PORT="$CDP_PORT" timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
-      timeout 900 node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **工具判据 180s** ✓（其中含浏览器的那几条自带更长的内部等待 ✓）。
+      timeout 180 node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
   if [ "$code" = 0 ]; then
