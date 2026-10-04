@@ -43,12 +43,19 @@ const NOT_CRITERIA = [
 ];
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [
-  // ⚠️ **不是"还没接线"，而是"它跑不起来"** ✗（第 795 轮查清 ✓）：
-  //   它把 <wasm 路径> 读成 base64 传进页面 ✓ ⇒ 页面里 `WebAssembly.instantiate` 它 ✗ ——
-  //   而**现在的产物是 wasm-bindgen `--target web`** ✓（`.wasm` 依赖 `./yanshi_wasm_bg.js` 的 imports ✗）
-  //   ⇒ 实测报 `Import #0 "./yanshi_wasm_bg.js": module is not an object or function` ✓
-  //   ⇒ **假设与产物形态不匹配** ⇒ **修法**：让判据在页面里按 wasm-bindgen 的方式装载
-  //   （产品自己就是这么装内核的 ✓ ⇒ 模式已有 ✓），而不是直接 instantiate 裸 .wasm ✓。
+  // ⚠️ **待改写** ✗（第 798 轮查明 ✓）：`wasm-brush-parity.mjs` ——
+  //   它 `WebAssembly.instantiate(readFileSync(wasmPath), {})`（**空 imports** ✗）后调
+  //   `yanshi_brush_alloc` / `yanshi_brush_paint` / `yanshi_brush_out_ptr` ✓ ——
+  //   而这三个符号**只存在于判据脚本自己里** ✓、`crates/yanshi-brush-wasm` **已不存在** ✓
+  //   ⇒ **它测的是已退休的第二份实现** ✗ ⇒ CI 实测
+  //     `CompileError: expected magic word 00 61 73 6d, found 2f 2a 20 40`（把 `.js` 当 wasm ✓）。
+  //   ⇒ **但不能就这么删掉它** ✗：它守的是 `(A)⑥` 的**头一条性质**（「同一条笔触在两种渲染模式下
+  //     逐字节一致」✓）—— **这条性质今天**没有任何判据在守**** ✗ ✓。
+  //   ⇒ **改写方案** ✓：改用它**今天真的存在**的那份门面 —— `crates/yanshi-wasm/pkg/` ✓
+  //     （wasm-bindgen `--target web` ✓）；在 Node 侧 `import()` 那个 `.js` ✓，用 `initSync({ module })`
+  //     喂入 `.wasm` 字节 ✓，再调共享内核的 `extend_preview_stroke` / `commit_preview` /
+  //     `render_region_rgba` ✓（契约已在设计里读过 ✓），与服务端 `brush_stroke` 的对象 blob 逐字节比 ✓。
+  "wasm-brush-parity.mjs",
 ];
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
