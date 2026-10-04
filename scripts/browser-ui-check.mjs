@@ -1563,7 +1563,14 @@ const oilResult = { ok: Boolean(oilObject), medium: oilObject ? oilObject.medium
 const wcBefore = await evaluate(MEDIUM_INK) || 0;
 await evaluate(`(() => {
   const select = document.getElementById("medium");
-  if (select) { select.value = "watercolor"; }
+  if (select) {
+    // **必须派发 change** ✗（第 243 轮 ✓）：只赋 value 时，页面自己的处理函数**不会跑** ✓
+    // ⇒ 于是仍然停在**上一个介质**（oil ✓）⇒ 落墨有 ✓ 但**没有水彩对象** ✗ —— 与实测症状吻合 ✓
+    // （before 1960 → after 3102 ✓：墨量涨了 ✓，却找不到 medium.id === "watercolor" ✓）。
+    select.value = "watercolor";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  return select ? select.value : null;
 })()`);
 await evaluate(`document.querySelector('button[data-tool="medium_dab"]').click()`);
 await dragPath([[0.25, 0.85], [0.45, 0.78], [0.65, 0.86], [0.85, 0.8]], 503);
