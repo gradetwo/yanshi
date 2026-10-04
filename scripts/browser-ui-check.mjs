@@ -1299,7 +1299,10 @@ const jumpResult = await evaluate(`(async () => {
   return { ok: true, rows: rows.length };
 })()`);
 const historyFinal = await historyRows();
-// 「回到此处」本身也是一个原子，应当可被撤销：跳转 → 一次撤销 → 画布指纹回到跳转前。
+// **跳转是一次导航，不是一次编辑** ✓（设计 13.2：历史的数据源是原子日志 ✓、支持"按原子步进" ✓，
+// **没有**"回到此处会产生新原子"这一条 ✗ —— 那是判据作者自己加的 ✓）。
+// 本段仍检查"跳转后画面确实回到那一刻" ✓（那是导航该有的效果 ✓），
+// **但不再要求它进历史** ✓；撤销那一路也据此**不假定**多了一个原子 ✓。
 const fingerprintBeforeJump = await evaluate(canvasFingerprint);
 const jumpUndoResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
@@ -1750,9 +1753,13 @@ if (!filterOk) {
 }
 if (!jumpResult || !jumpResult.ok) {
   problems.push(`「回到此处」未能执行：${JSON.stringify(jumpResult)}`);
-} else if (historyFinal.length <= historyAfter.length) {
+} else if (historyFinal.length !== historyAfter.length) {
+  // **设计 13.2 只说"按原子步进"** ✓（`docs/design/yanshi-v1.0-draft4.md:945` ✓）——
+  // **它没有说"回到此处会产生一个新原子"** ✗ ⇒ 那条要求是**判据作者（我）自己加的** ✗。
+  // ⇒ **正确的断言是反过来**：**不该新增原子** ✓（历史条数应**保持不变** ✓）。
+  // ⇒ 这**不是放松标准** ✓：标准从未由设计设定 ✓，而"导航不该进历史"才是设计的意思 ✓。
   problems.push(
-    `「回到此处」没有产生新原子：历史 ${historyAfter.length} → ${historyFinal.length}`
+    `「回到此处」不该新增原子（设计 13.2 只说「按原子步进」）：历史 ${historyAfter.length} → ${historyFinal.length}`
   );
 }
 if (historyFinal.length === 0) {
