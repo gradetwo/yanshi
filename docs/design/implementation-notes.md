@@ -23415,3 +23415,21 @@ document.rs:742  pub fn render_region_raw_layer(…)                            
 （**若是蒙版对象 ⇒ 可能 1 成立 ⇒ 对象羽化缺失** ✗）。
 **★ 一条（✓）** ✓：**"几条路"这一族，四次里有三次是排除** ✓ ——
 **而排除同样有价值 ✓：它把可能从 4 个减到 2 个** ✓，**且每次只花一轮** ✓。
+
+### 🎯🎯🎯 第 528 轮：**羽化在形状对象上确实实现 ⇒ 所以是"值没传到"** ✗（嫌疑落到写入侧 ✓）
+
+**读到（✓，`render.rs:745-762` ✓）** ✓：
+```rust
+:745  Primitive::Shape { kind, bbox, points, color, stroke_width, stroke_color, feather } => {
+:755      let mut coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());   ✓
+:760      if feather > 0.0 { coverage = crate::geometry::feather_coverage(&coverage, feather); }   ✓
+```
+**⇒ 结论（✓）** ✓：**形状对象的羽化确实实现了 ✓，且在正确的渲染路径上 ✓**
+⇒ ⇒ **所以"没生效"只剩一种解释：`feather` 的值没进到那个 `Primitive::Shape`** ✗
+⇒ ⇒ **嫌疑落到写入侧** ✓ —— 而 **spec 明说"顶层 `feather` ✓ 或 `shape.feather` ✓ 都可以"** ✓
+⇒ ⇒ ⇒ **若写入器只读其中一个，而示例传的是另一个 ⇒ 那一个被静默忽略** ✗ ✓（**最可能** ✓）。
+**★ 至此（✓）** ✓：**判据侧 ✓、参数名 ✓、渲染路径 ✓、渲染实现 ✓ 全部排除** ⇒
+**剩下的唯一位置是"从 `arguments` 到 `Primitive::Shape` 之间那段"** ✓ ——
+**而这一段只需读一处代码 ✓**（**`fill_region` 的写入器** ✓）。
+**⇒ 下一处（✓）** ✓：**读 `tools.rs` 里 `fill_region` 的写入器** ✓ —— **它从哪一层读 `feather`** ✓
+（**并对照 spec 的承诺："也可写进 shape.feather"** ✓ ⇒ **若只读一层 ⇒ 产品与 spec 不符** ✗）。
