@@ -20474,3 +20474,24 @@ if feather > 0.0 { coverage = feather_coverage(&coverage, feather); }   // **只
 **为什么这一步值得单独做（✓）** ✓：**"只有一处调用"意味着改动面最小** ✓ ——
 **我不用碰 `shape_coverage` 的签名** ✓（第 342 轮的判断再次成立 ✓），
 **也不会有"某些形状忘了羽化"的漏网** ✓（所有形状都走同一处 ✓）。
+
+### 🎯 第 350 轮：**形状是 struct variant ⇒ 接线四处明确、两处待读** ✓
+
+**读到的（✓）** ✓：
+```rust
+Primitive::Shape { kind, bbox, points, color, stroke_width, stroke_color } => {   // 745
+    let mut coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());  // 754
+    let shape_clip = object_clip(state, &layer.id, object);                            // 756
+    if let Some(clip) = &shape_clip { clip_coverage(&mut coverage, clip); }            // 758
+    layer_buffer.fill_coverage(&coverage, color, BlendMode::Normal, opacity);          // 760
+```
+**接线清单（✓）** ✓：
+| # | 位置 | 动作 | 状态 |
+|---|---|---|---|
+| ① | `Primitive::Shape` 变体 ✓ | 加 `feather: f64`（缺省 0 ✓）| **明确** ✓ |
+| ② | 754 行**之后** ✓ | `if feather > 0.0 { coverage = feather_coverage(&coverage, feather) }` ✓ | **明确** ✓ |
+| ③ | **构造 `Primitive::Shape` 处** ✗ | 从形状描述读出 `feather` ✓ | **待读** ✓ |
+| ④ | **裁剪** ✓ | 754 的 `shape_clip` 是**选区**不是文档 ✗ ⇒ 要确认 `fill_coverage` 对**越界**的行为 ✓ | **待读** ✓ |
+**为什么 ④ 重要（✓）** ✓：**外扩后的覆盖率会超出原 bbox** ✓ ⇒ 若 `fill_coverage` 不处理越界 ✗
+⇒ **可能 panic 或画出界** ✗ ✓ —— **这是"外扩"这个设计带来的第一个下游影响** ✓，
+**必须在写 ①②之前先确认** ✓（**否则我会写出一个"本地单测全绿、一渲染就出事"的东西** ✗）。
