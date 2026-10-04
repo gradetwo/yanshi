@@ -719,6 +719,10 @@ const namingResult = await evaluate(`(async () => {
     identity,
     before: before.sum,
     after: after.sum,
+    // 尺寸也带出来（第 253 轮）：sum 是一个**取模哈希**，它同时依赖像素值与 data.length，
+    // 所以两块画布尺寸不同时，内容再一样也会不同。断言必须先看 total 是否相同。
+    beforeTotal: before.total,
+    afterTotal: after.total,
     log: document.getElementById("log").innerText.slice(0, 200),
   };
 })()`);
@@ -1414,9 +1418,15 @@ if (!namingResult.identity.includes(namedNew)) {
 }
 if (namingResult.before === 0) {
   problems.push("新建文档里画不出内容（前置条件不成立）");
+} else if (namingResult.beforeTotal !== namingResult.afterTotal) {
+  // **先把"尺寸不同"与"内容不同"分开**（第 253 轮）：sum 是哈希，尺寸变了它必然变，
+  // 拿它断言"副本内容不对"是把两件事混成一件（本项第 5 次同类）。
+  problems.push(
+    `另存为副本的画布尺寸不同（${namingResult.beforeTotal} vs ${namingResult.afterTotal} 像素）⇒ sum 不可比｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
+  );
 } else if (namingResult.after !== namingResult.before) {
   problems.push(
-    `另存为副本内容不一致：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
+    `另存为副本内容不一致（同尺寸 ${namingResult.beforeTotal} 像素）：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
   );
 }
 
