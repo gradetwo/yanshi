@@ -532,6 +532,9 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
   <button data-tool="check">一致性自检</button>
   <button id="addLayer">＋ 图层</button>
   <button id="exportPng">导出 PNG</button>
+  <!-- **显式渲染开关** ✓（(A)⑤）：勾上就走**服务端像素**那条 ✓（= 弱设备回退 ✓）。
+       改了会**重载页面** ✓ —— 比热切换简单，也不会有"半客户端半服务端"的中间状态 ✓。 -->
+  <label style="display:block;margin-top:6px;font-size:12px"><input type="checkbox" id="useServerRender" /> 用服务端渲染（弱设备回退）</label>
   <button id="zoomFit">适配</button>
   <button id="zoomActual">1:1</button>
       </div>
@@ -4849,7 +4852,24 @@ function setupFileMenu() {
   // **导出** ✓（`#exportPng` 原来在「操作」卡里 ✓ —— 那是信息面板 ✓，搬走 ✓）。
   const exportWrap = document.createElement("div");
   exportWrap.className = "toolbar";
-  const exportPng = $("exportPng");
+  const SERVER_RENDER_KEY = "yanshi.serverRender";
+/// **是否强制走服务端渲染** ✓（(A)⑤ 的显式开关 ✓）。缺省 `false` = 照旧（客户端优先 ✓）。
+const serverRenderPreferred = () => {
+  try { return localStorage.getItem(SERVER_RENDER_KEY) === "1"; } catch (error) { return false; }
+};
+const useServerRenderBox = $("useServerRender");
+if (useServerRenderBox) {
+  useServerRenderBox.checked = serverRenderPreferred();
+  useServerRenderBox.addEventListener("change", () => {
+    try {
+      if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1");
+      else localStorage.removeItem(SERVER_RENDER_KEY);
+    } catch (error) { /* 存不了就算了 ✓ */ }
+    // **重载** ✓：让渲染路径从**干净状态**重新开始 ✓（不做热切换 ✓）
+    location.reload();
+  });
+}
+const exportPng = $("exportPng");
   addGroup("导出");
   if (exportPng) exportWrap.appendChild(exportPng);
   // **工程包整张卡搬进来** ✓（打包 / 打开 *.yanshi ✓）—— 原来占着「文件」tab 一整格 ✓。
@@ -7291,7 +7311,14 @@ if ("serviceWorker" in navigator) {
 // **预热门面** ✓（第 52 轮定 ✓）：现在它只在 `pointerdown` 才异步加载 ✗ ⇒
 // **离线**时即使走缓存也有延迟 ⇒ 那一笔的前几帧会白丢 ✓（实测：同一脚本两跑 +1060 ✓ / +8 ✗）。
 // 页面初始化后就加载 ⇒ 落笔时**已在内存** ✓，顺带也让它进 SW 缓存 ✓（离线可用 ✓）。
-void loadLocalBrushModule().catch(() => undefined);
+if (serverRenderPreferred()) {
+  // **显式要求服务端渲染** ✓ ⇒ 不初始化 wasm 内核 ✓ ⇒ 走**本来就有**的服务端像素路径 ✓
+  //（= (A)⑤ 的"弱设备/能力缺失时的回退" ✓，只是这次是**用户显式选的** ✓）。
+  needsServerPixels = true;
+  if (typeof queueServerBlit === "function") queueServerBlit();
+} else {
+  void loadLocalBrushModule().catch(() => undefined);
+}
 
 /// **参考图叠加**（AI 画家需求 P2-9 的可见那一半）：服务端把 `reference.*` **只记在偏好里**
 /// （文档一个字节都没改 ✓），这里把它**叠着画**出来 ✓ ⇒ 临摹时不用来回切窗口 ✓。
