@@ -64,10 +64,6 @@ pub struct HttpOptions {
     pub brand_dir: Option<PathBuf>,
     /// 介质插件目录（设计 11.1）：`GET /mediums/{file}` ✓。
     pub medium_dir: Option<PathBuf>,
-    /// **`.myb` 笔刷的 wasm 门面** ✓（第 58 轮起：浏览器本地渲染真笔刷 ✓）。
-    ///
-    /// 指向**一个文件** ✓（`GET /brush-module.wasm` ✓）—— 不拼接路径 ⇒ 没有穿越面 ✓。
-    /// 缺省是仓库里的构建产物路径 ✓；包里由打包脚本放到 `share/yanshi/` 下并显式指过来 ✓。
     /// **随发行包发布的资产根目录** ✓（仓库里是 `assets/` ✓；包内是 `share/yanshi` ✓）。
     ///
     /// **为什么与介质同类** ✓：它们都是**发行物的一部分** ✓ ⇒ 由命令行指定 ✓、
