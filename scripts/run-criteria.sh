@@ -217,7 +217,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 这里先把"文件里到底有什么"打出来 ✓（行数 ✓ + 含 ✗ 的行数 ✓ + 头几行的真实形态 ✓），
     # **再决定抽取条件** ✓ —— 「零命中」只能推出"没落在我的条件里" ✗，推出不了"不存在" ✓。
     echo "     体│ out.txt 行数 $(wc -l < "$ROOT_DIR/out.txt")｜含 ✗ 的行 $(grep -c "✗" "$ROOT_DIR/out.txt" 2>/dev/null || echo 0)"
-    sed -n "1,5p" "$ROOT_DIR/out.txt" | sed "s/^/     头│/" head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
+    # ⚠️ **这里曾经少一个 `|`** ✗（第 808 轮 ✓）：写成 `sed … out.txt head -3 out.txt` ⇒
+    # `head` 被当成 sed 的输入文件 ⇒ `sed: invalid option -- '3'` + 一大段 usage ✗ ⇒
+    # **失败诊断被它吃掉** ✓：CI 上只看得到「out.txt 行数 6｜含 ✗ 的行 1」，看不到那 6 行 ✗。
+    sed -n "1,5p" "$ROOT_DIR/out.txt" | sed "s/^/     头│/"; \
+      head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
       tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'   # **头部也要** ✓（第 340 轮）：只打尾巴会把**我加在最前面的诊断**切掉 ✗（`tool-reference-delta-e` 的「第一次调用完整返回」就是这样丢的 ✓）
     # **理由必须来自"失败行"** ✓（第 415 轮 ✓）：原先抓不到 `- `/`✗ ` 就退回
     # "首个非空行" ✗ ⇒ **进度日志被当成失败原因** ✗（实测：`browser-brush-preview` 的
