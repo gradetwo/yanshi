@@ -638,3 +638,108 @@ mod feather_blur_tests {
         );
     }
 }
+
+/// **羽化**：把已有覆盖率做一次模糊 ⇒ **边缘产生渐变** ✓（测试报告 §二.1 ✓）。
+///
+/// **为什么要外扩 bbox（✓，第 343 轮定 ✓）**：羽化让颜色**溢出到形状之外** ✓
+/// ⇒ 输出 `bbox` 必须**四周各外扩 `grow`** ✓，原数据放进中心、**四周补零** ✓。
+/// **不这么做**的话只留下"内半边" ✗ ⇒ 结果是"**看起来羽化了、其实只向内淡出**" ✗
+/// —— 而**这种假实现能骗过"边缘出现中间值"的简单判据** ✗。
+///
+/// **`grow` 用 `2 × radius`** ✓（第 347 轮 ✓）：`box_blur_2d` 是**两遍**盒式 ✓，
+/// **等效影响半径是 `2 × radius`** ✗ ⇒ 按 `radius` 外扩会**切掉外半边** ✗。
+///
+/// **`radius_px <= 0` ⇒ 原样返回** ✓ ⇒ `feather` 缺省 0 时**逐字节不变** ✓（调用方据此保证 ✓）。
+///
+/// **裁剪到文档**：由**调用方**负责 ✓ —— 这里只做几何 ✓（渲染层知道文档边界，几何层不知道 ✓）。
+pub fn feather_coverage(cov: &Coverage, radius_px: f64) -> Coverage {
+    if !(radius_px > 0.0) || cov.width == 0 || cov.height == 0 {
+        return cov.clone();
+    }
+    let radius = radius_px.round().max(1.0) as usize;
+    let grow = 2 * radius; // **等效半径** ✓（两遍盒式叠加 ✓）
+    let (w, h) = (cov.width as usize, cov.height as usize);
+    let (ow, oh) = (w + 2 * grow, h + 2 * grow);
+    // 原数据放进中心 ✓、四周补零 ✓（**补零是正确语义** ✓，第 345 轮 ✓）
+    let mut padded = vec![0.0f32; ow * oh];
+    for y in 0..h {
+        let src = y * w;
+        let dst = (y + grow) * ow + grow;
+        padded[dst..dst + w].copy_from_slice(&cov.data[src..src + w]);
+    }
+    let blurred = box_blur_2d(&padded, ow, oh, radius);
+    Coverage {
+        bbox: Bbox {
+            x: cov.bbox.x - grow as f64,
+            y: cov.bbox.y - grow as f64,
+            w: ow as f64,
+            h: oh as f64,
+        },
+        width: ow as u32,
+        height: oh as u32,
+        data: blurred,
+    }
+}
+
+#[cfg(test)]
+mod feather_coverage_tests {
+    use super::*;
+
+    fn square() -> Coverage {
+        // 8×8 全覆盖 ⇒ 羽化后应"中间满、边缘渐变、外面有溢出" ✓
+        Coverage {
+            bbox: Bbox {
+                x: 100.0,
+                y: 200.0,
+                w: 8.0,
+                h: 8.0,
+            },
+            width: 8,
+            height: 8,
+            data: vec![1.0f32; 64],
+        }
+    }
+
+    /// 半径 0 ⇒ **逐字节不变** ✓（`feather` 缺省时的行为 ✓）。
+    #[test]
+    fn zero_radius_is_inert() {
+        let c = square();
+        let f = feather_coverage(&c, 0.0);
+        assert_eq!(f.bbox.x, c.bbox.x);
+        assert_eq!(f.bbox.w, c.bbox.w);
+        assert_eq!(f.width, c.width);
+        assert_eq!(f.data, c.data);
+    }
+
+    /// **bbox 四周各外扩 `2 × radius`** ✓ —— **这是"外半边不会被切掉"的几何证据** ✓
+    ///（第 343 轮：不外扩 ⇒ 假羽化 ✗；按 `radius` 扩 ⇒ 切掉外半边 ✗）。
+    #[test]
+    fn the_box_grows_by_twice_the_radius() {
+        let f = feather_coverage(&square(), 2.0);
+        assert_eq!(f.bbox.x, 100.0 - 4.0, "左边要外扩 2×2 ⇒ {}", f.bbox.x);
+        assert_eq!(f.bbox.y, 200.0 - 4.0, "上边要外扩 2×2 ⇒ {}", f.bbox.y);
+        assert_eq!(f.bbox.w, 8.0 + 8.0, "宽要加两个 2×2 ⇒ {}", f.bbox.w);
+        assert_eq!(f.width, 16, "像素宽同理 ⇒ {}", f.width);
+    }
+
+    /// **外侧确实出现了非零** ✓ —— 羽化**溢出到形状之外**的直接证据 ✓
+    ///（**只有这一侧能否证"只向内淡出"的假实现** ✗）。
+    #[test]
+    fn paint_spills_outside_the_original_box() {
+        let f = feather_coverage(&square(), 2.0);
+        let (ow, grow) = (f.width as usize, 4usize);
+        // 原方块左上角在 (grow, grow) ✓ ⇒ **它左上方一格**（原形状之外 ✓）应当 > 0 ✓
+        let outside = f.data[(grow - 1) * ow + (grow - 1)];
+        assert!(outside > 0.0, "形状之外应收到溢出 ⇒ {outside}");
+        assert!(outside < 1.0, "溢出处不该是满覆盖 ⇒ {outside}");
+    }
+
+    /// **中心仍是满覆盖** ✓（没把内部糊掉 ✓）。
+    #[test]
+    fn the_centre_stays_full() {
+        let f = feather_coverage(&square(), 2.0);
+        let (ow, grow) = (f.width as usize, 4usize);
+        let centre = f.data[(grow + 4) * ow + (grow + 4)];
+        assert!(centre > 0.9, "中心应接近满覆盖 ⇒ {centre}");
+    }
+}
