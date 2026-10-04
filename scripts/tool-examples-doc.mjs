@@ -26,7 +26,11 @@ const lines = [
   "**这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，",
   "所以它不会与实现漂移；`--check` 模式会在文档过期时失败。",
   "",
-  `当前共 ${withExample.length} 个工具带示例，**全部经过实调验证**（见 \`scripts/tool-example-acceptance.mjs\`）。`,
+  // **不要在这里断言"全部验证过"** ✗（第 387-388 轮 ✓）：本生成器只数"有多少工具带示例" ✓，
+  // 它**没有跑过任何示例** ✗ ⇒ 写"全部经过实调验证"是**一句永远不会自动为真的话** ✗
+  //（实测：`tool-example-acceptance.mjs` 打印过 `18 个被拒` ✗ ⇒ 那句话当时是假的 ✓）。
+  // ⇒ 只说本文件能保证的事 ✓，**把"能不能跑通"指给真正判它的判据** ✓。
+  `当前共 ${withExample.length} 个工具带示例；**这些示例是否真能跑通，由 \`scripts/tool-example-acceptance.mjs\` 判定**（本文件只保证与工具目录一致）。`,
   "",
 ];
 for (const tool of withExample) {
