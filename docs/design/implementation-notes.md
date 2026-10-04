@@ -20513,3 +20513,26 @@ if end_x <= start_x as i64 || end_y <= start_y as i64 { return; }   // **空交�
 **★ 记一条方法（✓）** ✓：**"外扩"这种设计变更，第一件事是找"下游谁假设了尺寸不变"** ✓ ——
 **这次找到的是"填充器只认交集"** ✓（**好消息** ✓）；**如果它是"按 buffer 尺寸逐格读 coverage"** ✗ ⇒ **就会越界** ✗。
 **五分钟的阅读，换来"知道哪一行是安全网"** ✓。
+
+### 🎯 第 352 轮：**改动清单最终定型（2 个构造点 + 1 处套用 + 1 处参数）** ✓
+
+**`Primitive::Shape` 的全部出现（✓）** ✓：
+```
+render.rs:745   Primitive::Shape { kind, bbox, points, color, … } => {   ← **渲染匹配** ✓
+object.rs:566   Primitive::Shape { … }                                  ← **构造点 1** ✓
+object.rs:841   Primitive::Shape { bbox, points, .. } => …              ← 匹配，用 `..` ✓ 不受影响 ✓
+object.rs:997   Primitive::Shape { … }                                  ← **构造点 2** ✓
+object.rs:1108  Primitive::Shape { kind, bbox, .. } => …                ← 匹配，用 `..` ✓
+object.rs:1126  matches!(…, Primitive::Shape { .. })                    ← 匹配，用 `..` ✓
+```
+**⇒ 改动清单（✓，四处 ✓）** ✓：
+1. **`Primitive::Shape` 变体加 `feather: f64`** ✓（新增 ✓）；
+2. **`object.rs:566` 与 `object.rs:997` 两个构造点补上 `feather`** ✓
+   （**从各自的形状描述里读** ✓ —— **这两处就是"描述 → 图元"的转换点** ✓）；
+3. **`render.rs:754` 之后套 `feather_coverage`** ✓（**仅 `feather > 0.0`** ✓）；
+4. **`tools.rs` 的 `write_fill_region` 把 `feather` 写进存下来的形状描述** ✓ + **`param!` 登记** ✓。
+**⇒ 判据（✓）** ✓：`scripts/tool-fill-region-feather.mjs` ✓（**内 / 外 / 远处 三侧** ✓，走真实 HTTP 工具链 ✓）+
+**"不传 feather ⇒ 逐字节不变"** ✓（**这条是硬要求** ✓）。
+
+**★ 六轮阅读的产出（✓）** ✓：**四处确切落点 + 一条已知的安全网（`fill_coverage` 只认交集 ✓）
++ 一条必须成立的硬要求（缺省 0 ⇒ 逐字节不变 ✓）** —— **下一轮可以直接写，不必再试探** ✓。
