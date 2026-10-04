@@ -12,8 +12,8 @@ name: CI
 # 本地不再跑全量 `cargo test` / 浏览器判据 / wasm 构建 ✓，改为 push 后**异步查看**结果 ✓
 # （`gh run list`、`gh run view` ✓）。长任务仍在 `heavy.yml` 里手动/定时跑 ✓。
 on:
+  # **开源项目：CI 免费且不限额度** ✓ ⇒ 所有分支都跑 ✓（分支多、并行多，正是该用的地方 ✓）。
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -93,9 +93,15 @@ jobs:
         run: scripts/wasm-smoke.sh
 
   criteria:
-    name: criteria (tool + browser + kernel parity)
+    # **并行分片** ✓：判据约 55 条，串行跑要十几分钟 ✗ ⇒ 拆 6 片并发 ✓（免费额度下这是纯赚 ✓）。
+    # 每片各自构建 ✓（`Swatinem/rust-cache` 会命中缓存 ✓），因此**不依赖 build 产物传递** ✓（少一个失败点 ✓）。
+    name: criteria shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -133,6 +139,6 @@ jobs:
         # 已知红名单在 scripts/criteria-known-red.txt：仍会运行、结果照印，但不阻塞 CI。
         run: |
           echo "::endgroup::"
-          echo "::group::criteria $(date -u +%T)"
-          scripts/run-criteria.sh
+          echo "::group::criteria shard ${{ matrix.shard }}/6 $(date -u +%T)"
+          SHARD=${{ matrix.shard }} SHARDS=6 scripts/run-criteria.sh
           echo "::endgroup::"

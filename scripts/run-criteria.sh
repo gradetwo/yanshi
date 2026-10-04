@@ -50,7 +50,15 @@ token_for() {
 }
 
 pass=0; fail=0; expected_red=0; skipped=0
-for script in scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs; do
+# **分片** ✓（`SHARD`/`SHARDS` 由 CI 的矩阵传入 ✓）：按**文件名排序后取模** ✓
+# ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
+SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
+shard_index=0
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs 2>/dev/null | sort); do
+  shard_index=$((shard_index + 1))
+  if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
+    continue
+  fi
   name="$(basename "$script")"
   [ -f "$script" ] || continue
   # 浏览器判据没有 chromium 就跳过（本地环境常见；CI 里一定装了）。
