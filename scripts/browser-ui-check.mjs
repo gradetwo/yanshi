@@ -1535,10 +1535,10 @@ if (importResult.layersAfter <= importResult.layersBefore) {
 // 像素层次的正确性由确定性测试覆盖（crates/yanshi-http 的
 // `uploaded_blob_can_be_imported_and_renders_pixels`：上传 → import_image → 渲染出红色 ✓）。
 // 这里只断言 UI 事实：图层增加、日志报告成功、且没有失败信息。
-if (!(importResult.log || "").includes("已导入")) {
+if (!((importResult || {}).log || "").includes("已导入")) {
   problems.push(`本地导入没有报告成功：${JSON.stringify(importResult.log)}`);
 }
-if ((importResult.log || "").includes("导入失败")) {
+if (((importResult || {}).log || "").includes("导入失败")) {
   problems.push(`本地导入报告失败：${JSON.stringify(importResult.log)}`);
 }
 
@@ -1560,11 +1560,11 @@ if (!maskResult) {
   problems.push("蒙版用例前置条件不成立：填充没有产生内容");
 } else if (!(maskResult.masked < maskResult.filled)) {
   problems.push(
-    `蒙版没有裁掉区域外的内容：着色 ${maskResult.filled} → ${maskResult.masked}｜日志 ${JSON.stringify((maskResult.log || "").slice(0, 120))}`
+    `蒙版没有裁掉区域外的内容：着色 ${maskResult.filled} → ${maskResult.masked}｜日志 ${JSON.stringify(((maskResult || {}).log || "").slice(0, 120))}`
   );
 }
-if (!(maskResult.log || "").includes("添加") || (maskResult.log || "").includes("失败")) {
-  problems.push(`蒙版日志未报告成功：${JSON.stringify((maskResult.log || "").slice(0, 120))}`);
+if (!((maskResult || {}).log || "").includes("添加") || ((maskResult || {}).log || "").includes("失败")) {
+  problems.push(`蒙版日志未报告成功：${JSON.stringify(((maskResult || {}).log || "").slice(0, 120))}`);
 }
 
 // 移动工具
@@ -1581,8 +1581,8 @@ if (!moveResult.beforeBbox || !moveResult.afterBbox) {
       `移动位移不对：期望 ≈(${wantX}, ${wantY})，实际 (${dx}, ${dy})｜bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`
     );
   }
-  if (!(moveResult.log || "").includes("已移动")) {
-    problems.push(`移动日志未报告成功：${JSON.stringify((moveResult.log || "").slice(0, 120))}`);
+  if (!((moveResult || {}).log || "").includes("已移动")) {
+    problems.push(`移动日志未报告成功：${JSON.stringify(((moveResult || {}).log || "").slice(0, 120))}`);
   }
 }
 
@@ -1599,11 +1599,11 @@ if (namingResult.before === 0) {
   // **先把"尺寸不同"与"内容不同"分开**（第 253 轮）：sum 是哈希，尺寸变了它必然变，
   // 拿它断言"副本内容不对"是把两件事混成一件（本项第 5 次同类）。
   problems.push(
-    `另存为副本的画布尺寸不同（${namingResult.beforeTotal} vs ${namingResult.afterTotal} 像素）⇒ sum 不可比｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
+    `另存为副本的画布尺寸不同（${namingResult.beforeTotal} vs ${namingResult.afterTotal} 像素）⇒ sum 不可比｜日志 ${JSON.stringify(((namingResult || {}).log || "").slice(0, 120))}`
   );
 } else if (namingResult.after !== namingResult.before) {
   problems.push(
-    `另存为副本内容不一致（同尺寸 ${namingResult.beforeTotal} 像素）：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify((namingResult.log || "").slice(0, 120))}`
+    `另存为副本内容不一致（同尺寸 ${namingResult.beforeTotal} 像素）：源 ${namingResult.before} vs 副本 ${namingResult.after}｜日志 ${JSON.stringify(((namingResult || {}).log || "").slice(0, 120))}`
   );
 }
 
@@ -1849,7 +1849,7 @@ if (eraserResult.beforeErase === 0) {
   problems.push("橡皮用例的前置条件不成立：画笔画不出内容");
 } else if (!(eraserResult.afterErase < eraserResult.beforeErase)) {
   problems.push(
-    `橡皮没有擦掉内容：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}｜日志 ${JSON.stringify((eraserResult.log || "").slice(0, 120))}`
+    `橡皮没有擦掉内容：着色 ${eraserResult.beforeErase} → ${eraserResult.afterErase}｜日志 ${JSON.stringify(((eraserResult || {}).log || "").slice(0, 120))}`
   );
 }
 
@@ -1873,11 +1873,11 @@ if (afterFill.sum === beforeFill.sum && afterFillRefresh.sum !== beforeFill.sum)
 }
 
 // 基础修图 / 液化
-if ((retouchResult.log || "").includes("操作失败") || (retouchResult.log || "").includes("错误 ")) {
-  problems.push(`修图/液化出现工具错误：${JSON.stringify((retouchResult.log || "").slice(0, 200))}`);
+if (((retouchResult || {}).log || "").includes("操作失败") || ((retouchResult || {}).log || "").includes("错误 ")) {
+  problems.push(`修图/液化出现工具错误：${JSON.stringify(((retouchResult || {}).log || "").slice(0, 200))}`);
 }
-if (!(retouchResult.log || "").includes("请先按住 Alt")) {
-  problems.push(`仿制图章未设置源点时没有提示：${JSON.stringify((retouchResult.log || "").slice(0, 120))}`);
+if (!((retouchResult || {}).log || "").includes("请先按住 Alt")) {
+  problems.push(`仿制图章未设置源点时没有提示：${JSON.stringify(((retouchResult || {}).log || "").slice(0, 120))}`);
 }
 if (retouchAfter.opaque !== retouchAfter.total) {
   problems.push(`修图后画布停在透明态：${retouchAfter.opaque}/${retouchAfter.total}`);
@@ -2403,7 +2403,7 @@ console.log(`  缩放：视口 ${zoomCheck.before.w}×${zoomCheck.before.h} → 
 console.log(`  撤销/重做栈深度：${JSON.stringify(depthBefore)} → 撤1 ${JSON.stringify(depthUndo1)} → 撤2 ${JSON.stringify(depthUndo2)} → 重做2 ${JSON.stringify(depthRedone)}`);
 console.log(`  调整/滤镜：目录 ${effectNames.length} 项｜invert 后指纹 ${fingerprintBeforeEffect.sum} → ${fingerprintAfterEffect?.sum}（不透明 ${fingerprintAfterEffect?.opaque}/${fingerprintAfterEffect?.total}）｜列表：${JSON.stringify(effectResult.list.slice(0, 80))}`);
 console.log(`  打开对话框：列出 ${dialogResult.count} 个服务器文档（${JSON.stringify(dialogResult.labels.slice(0, 2))}）`);
-console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${(importResult.log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
+console.log(`  本地导入：图层 ${importResult.layersBefore} → ${importResult.layersAfter}｜日志报告成功 ${((importResult || {}).log || "").includes("已导入") ? "✓" : "✗"}（像素由确定性测试覆盖）`);
 console.log(`  移动工具：bbox ${JSON.stringify(moveResult.beforeBbox)} → ${JSON.stringify(moveResult.afterBbox)}`);
 
 // **连续两次移动必须累积** ✓ —— 子 agent 报的 #6：`delta` 此前被编成**绝对矩阵** ✗
@@ -2703,7 +2703,7 @@ console.log(`  橡皮：着色 ${eraserResult.beforeErase} → ${eraserResult.af
 console.log(`  打开已有作品（重载后）着色：${paintedAfterReload}`);
 console.log(`  回到此处可撤销：跳转前后指纹 ${jumpUndoResult?.ok ? `${fingerprintBeforeJump.sum} → ${jumpUndoResult.jumped.sum} → 撤销后 ${jumpUndoResult.undone.sum}` : "未执行"}`);
 console.log(`  吸管/填充：吸管取到 ${pickResult.picked}（期望 #c81e3c）｜填充指纹 ${beforeFill.sum} → ${afterFill.sum} → 刷新 ${afterFillRefresh.sum}（撤销填充由确定性测试覆盖）`);
-console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${(retouchResult.log || "").includes("请先按住 Alt") ? "✓" : "✗"}`);
+console.log(`  修图/液化：液化推后指纹 ${retouchBefore.sum} → ${retouchAfter.sum}（不透明 ${retouchAfter.opaque}/${retouchAfter.total}）｜仿制无源点有提示 ${((retouchResult || {}).log || "").includes("请先按住 Alt") ? "✓" : "✗"}`);
 console.log(`  历史浏览：${historyBefore.length} 条 → 提交后 ${historyAfter.length} 条（含 draw_stroke ✓、筛选 ${filteredRows.length} 行 ✓）→ 回到此处后 ${historyFinal.length} 条`);
 console.log(`  导出 PNG：${exportPng ? `${exportPng.width}×${exportPng.height}，${(exportPng.bytes/1024).toFixed(0)} KB` : "无"}`);
 console.log(`  一笔的 draw_stroke 日志条数：${atomLines}｜右侧面板右边界 ${layout.asideRight} / 视口 ${layout.viewport}`);
