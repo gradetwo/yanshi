@@ -2687,14 +2687,14 @@ console.log(`  选区/文本：${selectionResult && selectionResult.ok
   ? `选区内笔画色 ${selectionResult.inside}｜选区外 ${selectionResult.outside}（须 0）｜清除后选区外 ${selectionResult.clearedOutside}（须 >0）｜文本改变 ${selectionResult.textChanged}`
   : `失败于阶段「${selectionResult && selectionResult.stage}」：${JSON.stringify(selectionResult)}`}`);
 console.log(`  新建/另存为：预填 ${JSON.stringify(namingResult.prefilled)}｜identity ${JSON.stringify(namingResult.identity)}｜副本内容 ${namingResult.before} → ${namingResult.after}`);
-console.log(`  蒙版编辑：填充后着色 ${maskResult.filled} → 加矩形蒙版后 ${maskResult.masked}`);
+console.log(`  蒙版编辑：填充后着色 ${(maskResult || {}).filled} → 加矩形蒙版后 ${(maskResult || {}).masked}`);
 // **工具状态必须打出来** ✓（第 468 轮 ✓）：第 467 轮只是把它 return 了 ✗ ⇒ **返回值不进日志** ✓
 // ⇒ 不打印就等于没取 ✓ —— 与「算了不断言」「探针取晚」同族 ✓。
-console.log(`  蒙版：点击按钮后的工具 ⇒ ${JSON.stringify(maskResult.toolAfterClick)}（应为 mask_rect ✓）`);
+console.log(`  蒙版：点击按钮后的工具 ⇒ ${JSON.stringify((maskResult || {}).toolAfterClick)}（应为 mask_rect ✓）`);
 // **这里不能再切短** ✓（第 584 轮 ✓）：变量已取 `slice(-160)` ✓，而这一行又 `slice(-120)` ✗
 // ⇒ **我追加在尾部的 `move1后=/move2后=/抬手前=` 被它截掉** ✓（日志里只剩到 `dragging=301` ✓）。
 // ⇒ 放宽到 `-260` ✓ —— **追加的内容在尾部 ✓，尾巴要留够** ✓。
-console.log(`  蒙版拖动期间的日志尾部 ⇒ ${JSON.stringify((maskResult.logDuringDrag || "").slice(-260))}`);
+console.log(`  蒙版拖动期间的日志尾部 ⇒ ${JSON.stringify((((maskResult || {}).logDuringDrag) || "").slice(-260))}`);
 console.log(`  布局：scrollWidth ${overflow.scrollWidth} / clientWidth ${overflow.clientWidth}｜body ${overflow.bodyWidth}｜main ${overflow.mainWidth}｜侧栏 ${overflow.asideWidth}`);
 console.log(`  最靠右的元素：${overflow.widest.join(", ")}`);
 console.log(`  dialog.open=${overflow.dialogOpen}｜自身超宽的：${overflow.scrollWide.join(", ")}`);
