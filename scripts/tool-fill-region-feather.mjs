@@ -48,13 +48,20 @@ const draw = async (docId, feather) => {
   return { token, read: px(docId, token) };
 };
 const alpha = (v) => (v ? v[3] : null);
+// **按 RGBA 分类** ✓（第 566 轮 ✓）：底色是 [255,255,255,255] ✓、填充色是 [220,40,40,255] ✓
+// ⇒ **两者的 alpha 都是 255** ✗ ⇒ **只看 alpha 区分不了「里面」与「外面」** ✓
+// ⇒ 实测（px 探针 ✓）：形状内 [220,40,40,255] ✓、形状外 [255,255,255,255] ✗。
+const same = (v, r, g, b) => Array.isArray(v) && v[0] === r && v[1] === g && v[2] === b;
+const isFill = (v) => same(v, 220, 40, 40);
+const isBg = (v) => same(v, 255, 255, 255);
 
 // ① **不羽化** ⇒ 边缘是**阶跃** ✓：里面满、**外面一格就是 0** ✓
 const plain = await draw("fth_plain");
 const plainIn = alpha(await plain.read(150, 100));          // 中心 ✓
 const plainOut = alpha(await plain.read(97, 100));          // 左边之外 3 像素 ✓
 if (plainIn !== 255) failures.push(`不羽化时中心应为满覆盖 255 ⇒ 实测 ${plainIn}`);
-if (plainOut !== 0) failures.push(`不羽化时形状之外应为 0 ⇒ 实测 ${plainOut}`);
+if (!isBg(await plain.read(97, 100)))
+  failures.push(`不羽化时形状之外应为底色（白）⇒ 实测 ${JSON.stringify(await plain.read(97, 100))}`);
 
 // ② **`feather=20`** ⇒ **形状之外**（≤ 2×radius = 40）**必须出现中间值** ✓
 const feathered = await draw("fth_soft", 20);
@@ -65,7 +72,8 @@ else if (softOut === 255) failures.push(`羽化后形状之外仍是满覆盖 �
 // ③ **远处仍是原值** ✓：> 2×radius 之外必须严格 0 ✓、深内部必须满 ✓
 const softFar = alpha(await feathered.read(40, 100));        // 离边 60 > 40 ✓
 const softDeep = alpha(await feathered.read(150, 100));      // 中心离边 ≥ 40 ✓
-if (softFar !== 0) failures.push(`远处置信应为 0（离边 60 > 2×20）⇒ 实测 ${softFar}`);
+if (!isBg(await feathered.read(40, 100)))
+  failures.push(`远处置信应为底色（离边 60 > 2×20）⇒ 实测 ${JSON.stringify(await feathered.read(40, 100))}`);
 if (softDeep === null || softDeep < 230) failures.push(`深内部应接近满覆盖 ⇒ 实测 ${softDeep}`);
 
 // ④ **硬要求：不传 feather ⇒ 逐字节不变** ✓（同一条命令两次、两个文档、同一形状 ✓）
