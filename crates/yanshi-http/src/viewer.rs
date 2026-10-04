@@ -7999,6 +7999,32 @@ $("exportPng").addEventListener("click", async () => {
     log("导出失败：文档尺寸未知", "#c33");
     return;
   }
+  // **离线优先的导出** ✓（第 180 轮 ✓）：本地**早就有像素** ✓ —— `board` 就是 2D canvas ✓、
+  // 客户端合成本来就跑在 wasm 上 ✓ ⇒ 用 canvas **自己编码 PNG** ✓（浏览器原生能力 ✓）
+  // ⇒ ⇒ **离线必然可用** ✓，而且**不必问服务端** ✓。
+  // 拿不到本地像素时**才**退到服务端 ✓（= 弱设备回退 ✓，与 (A)⑤ 同一条思路 ✓）。
+  //（查证过 ✓：原处理器第一句就是 `callTool("render_region", …)` ✓ ⇒ 离线时 `value.ok` 假 ✗
+  //  ⇒ 提前 return ✓ ⇒ **一个文件都不落** ✗ —— 这正是上一轮那条判据量到 `[]` 的原因 ✓。）
+  try {
+    if (board && board.width > 0 && board.height > 0) {
+      const blob = await new Promise((resolve) => board.toBlob(resolve, "image/png"));
+      if (blob) {
+        const href = URL.createObjectURL(blob);
+        const localLink = document.createElement("a");
+        localLink.href = href;
+        localLink.download = (state.docId || "yanshi") + ".png";
+        document.body.appendChild(localLink);
+        localLink.click();
+        localLink.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 10000);
+        window.yanshiStats.lastExport = { url: href, width: board.width, height: board.height, bytes: blob.size };
+        log("已导出 PNG（本地）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）");
+        return;
+      }
+    }
+  } catch (error) {
+    // 本地导出失败 ⇒ 退到服务端那条 ✓（**不让它把导出整体弄坏** ✗）
+  }
   const value = await callTool("render_region", { region: { x: 0, y: 0, w, h } }, { refresh: false });
   if (!value.ok || !value.thumb_url) {
     log("导出失败：" + (value.error_code || "no url"), "#c33");
