@@ -1498,7 +1498,13 @@ const jumpUndoResult = await evaluate(`(async () => {
   // 而最早那条（日志里的 create_object）一定与当前状态不同，故用它。
   const target = rows[0];
   const before = ${canvasFingerprint};
-  target.querySelector("button").click();
+  // 必须点「回到此处」，而不是行内第一个按钮（第 707 轮）：实测行内依次是
+  // 「详情」与「回到此处」两个按钮，而 querySelector("button") 取的是「详情」，
+  // 它只弹详情面板、不改画布 —— 这正是"点了但画面不变"的原因，产品本身没问题。
+  const jumpButton = [...target.querySelectorAll("button")]
+    .find((b) => (b.textContent || "").includes("回到此处"));
+  if (!jumpButton) return { ok: false, unable: "这一行里找不到「回到此处」按钮" };
+  jumpButton.click();
   // **等条件，不等时长** ✓（第 629 轮 ✓）：原先固定 2200ms ✗ ——
   // 而"跳转改画面"是个**可观测条件** ✓ ⇒ 这里轮询到画面真的变了为止（上限约 6 秒 ✓）。
   //（第 587 轮我只改了**跳转前**那一处 ✗ ⇒ 这是同一个"两处"里的第二处 ✓。）
