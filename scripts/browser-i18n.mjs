@@ -53,7 +53,11 @@ const bodyProbe = `JSON.stringify((() => {
   };
   walk(document.body);
   const body = document.body.innerText;
+  // 第 769 轮：labels 走 innerText（只含可见），而 distinct 走全节点遍历 ⇒ 口径不同。
+  // 所以这里直接打印那个面板此刻是否可见，一次就能判断 palette:false 的含义。
+  const cardPalette = document.getElementById("cardPalette");
   return { distinct: found.size, sample: [...found.keys()].slice(0, 6),
+    paletteVisible: !!(cardPalette && cardPalette.offsetParent),
     labels: { refresh: body.includes("Refresh"), palette: body.includes("Palette"),
       file: body.includes("File") } };
 })())`;
