@@ -17717,3 +17717,28 @@ fn paint(request_json: &str) -> Result<Vec<u8>, String> {
    返回值形态**先看查看器怎么用**再定 ✓：它要的是**像素字节** ✓ + 能区分**错误** ✗）；
 ③ 加**判据**：内核方法 vs 服务端笔触 ⇒ **逐字节相同** ✓（可复用 `wasm-brush-parity.mjs` 的形状 ✓）；
 ④ **判据绿之后**才改查看器 ✓、**才**删门面 ✓（**顺序不可反** ✗）。
+
+### 🔍 第 191 轮：**移植量的**修正**：≈130 行，不是 12 行** ✗（我上轮低估了 ✓）
+
+**四个助手（原文 ✓）** ✓：
+```
+53:  struct PaintRequest { myb: String, points: Vec<[f64;3]>, size: Option<f64>,
+                           color: Option<Colour>, opacity: Option<f64>,
+                           hardness: Option<f64>, region: Region }              ~10 行 ✓
+80:  fn configure(brush, request) -> Brush   ⇒ brush.set(Opaque / Hardness / …)   ~30 行 ✓
+126: fn stamp(brush, state, surface, points) ⇒ STEP_SECONDS = 0.01 ⇒ 逐点盖章      ~50 行 ✓
+184: fn read_back(surface, region) -> Vec<u8> ⇒ 按 64 像素 tile 逐像素读回          ~40 行 ✓
+```
+⇒ ⇒ **真实移植量 ≈ 130 行** ✗（我上一轮说"12 行" ✓ —— 那只数了 `paint()` 本身 ✓，
+**把四个助手漏掉了** ✗ ⇒ **在此更正** ✓）。
+**但仍有三条"容易"的理由 ✓** ✓：
+1. **全是 `hokusai` 的公开 API** ✓（`myb::from_str` / `BrushState` / `tile_mem::MemSurface` / `brush.set` ✓）；
+2. **与服务器同源** ✓：`configure` 用的 `brush.set(Opaque/Hardness, SettingValue::constant(…))` ✓
+   **正是 `tools.rs` 的 `paint_brush` 里那几句** ✓ ⇒ ⇒ 两边**已经在做同一件事** ✓；
+3. **没有新依赖** ✓（内核本来就用 `hokusai` ✓）。
+**下一轮（写死 ✓，可以开始搬了 ✓）** ✓：
+① 把这四段 + `Region`/`Colour` 定义**搬进 `yanshi-wasm`** ✓（**照抄，不改语义** ✓ ——
+   改语义就等于制造**第三份实现** ✗，那正是 (A)③ 要消灭的东西 ✗）；
+② 外面加**一个 bindgen 方法** ✓（返回**像素字节** ✓、错误**另走一条** ✓ —— 形态**照查看器的用法**定 ✓）；
+③ 加**判据**：内核方法 vs 服务端笔触 ⇒ **逐字节相同** ✓（复用 `wasm-brush-parity.mjs` 的形状 ✓）；
+④ **判据绿之后**才改查看器 ✓、**才**删门面 ✓（顺序不可反 ✗）。
