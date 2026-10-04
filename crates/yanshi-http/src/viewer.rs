@@ -1003,17 +1003,28 @@ async function localBlobPut(url, bytes) {
 /// （`/api/blob` 那 5 处是像素 ✓，已由缩略图那条覆盖 ✓，这里**不重复缓存** ✗）。
 const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/atoms", "/api/effects"];
 /// **只缓存读工具** ✗ —— 写工具绝不缓存 ✓（缓存写请求会造成"看着成功其实没落库"✗）。
-const LOCAL_READ_TOOLS = ["get_document", "list_layers"];
+// **实测补全（第 168 轮 ✓）**：原来只有 `get_document`/`list_layers` ✗ —— 但离线实测失败的还有
+// `get_preferences` ✓ 与 **`list_effects`** ✓（注意：**不是** `/api/effects` ✗ ——
+// 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
+const LOCAL_READ_TOOLS = ["get_document", "list_layers", "get_preferences", "list_effects"];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
   const method = (options && options.method) || "GET";
   let cacheable = false;
+  let binary = false;
   let toolName = "";
   try {
     const parsed = new URL(url, location.href);
     if (method === "GET") {
-      cacheable = LOCAL_JSON.includes(parsed.pathname);
+      // **`/api/blob/…` 一律本地化** ✓（实测：离线时有一条 blob 请求失败 ✗ ⇒ 图层/预览要用它 ✓）。
+      // 字节存 OPFS ✓（48MB 级别的算术依据 ✓），索引仍走 IndexedDB ✓。
+      if (parsed.pathname.startsWith("/api/blob/")) {
+        binary = true;
+        cacheable = true;
+      } else {
+        cacheable = LOCAL_JSON.includes(parsed.pathname);
+      }
     } else if (
       method === "POST" &&
       parsed.pathname.startsWith("/api/tools/") &&
@@ -1042,7 +1053,29 @@ async function fetchOrLocal(url, options) {
     cacheable = false;
   }
   if (!cacheable) return fetch(url, options);
-  const key = localKey(url) + (toolName ? "|tool:" + toolName : "") + "|json";
+  const key = localKey(url) + (toolName ? "|tool:" + toolName : "") + (binary ? "|bin" : "|json");
+  if (binary) {
+    // 二进制：本地有 ⇒ **直接回一个 Response** ✓（离线可显示 ✓）；没有 ⇒ 取网并**写进 OPFS** ✓。
+    const localBytes = await localBytesGet(key);
+    if (localBytes) {
+      return new Response(localBytes, { status: 200, headers: { "content-type": "application/octet-stream" } });
+    }
+    try {
+      const response = await fetch(url, options);
+      try {
+        if (response && response.ok) await localBytesPut(key, await response.clone().arrayBuffer());
+      } catch (error) {
+        console.warn("[yanshi] blob 缓存写入失败（不影响主流程）：", error);
+      }
+      return response;
+    } catch (error) {
+      const fallbackBytes = await localBytesGet(key);
+      if (fallbackBytes) {
+        return new Response(fallbackBytes, { status: 200, headers: { "content-type": "application/octet-stream" } });
+      }
+      throw error;
+    }
+  }
   const local = await localJsonGet(key);
   if (local !== null) return new Response(local, { status: 200, headers: { "content-type": "application/json" } });
   try {
@@ -1084,6 +1117,40 @@ async function localJsonPut(key, text) {
     // **降级仍然静默**（不影响主流程 ✓），但**必须留痕** ✗ —— 我这轮就是被"吞掉的错误"挡住了一整轮 ✓。
     console.warn("[yanshi] 本地缓存写入失败（不影响主流程）：", key, error);
     return false;
+  }
+}
+/// 读回 OPFS 里的字节（与 `localBlobGet` 同一套机制 ✓，区别是**返回字节**而不是 object URL ✓）。
+async function localBytesGet(key) {
+  try {
+    const record = await localWithStore("readonly", (store) => store.get(key + "|file"));
+    if (!record || !record.file) return null;
+    const dir = await localDir();
+    const handle = await dir.getFileHandle(record.file);
+    const file = await handle.getFile();
+    return file && file.size > 0 ? await file.arrayBuffer() : null;
+  } catch (error) {
+    return null;
+  }
+}
+async function localBytesPut(key, buffer) {
+  try {
+    let hash = 0;
+    for (let index = 0; index < key.length; index += 1) {
+      hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
+    }
+    const file = hash.toString(16) + "-" + key.length.toString(16) + ".bin";
+    const dir = await localDir();
+    const handle = await dir.getFileHandle(file, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(buffer);
+    await writable.close();
+    await localWithStore("readwrite", (store) =>
+      store.put({ key: key + "|file", file: file, size: buffer.byteLength, at: Date.now() }),
+    );
+    return file;
+  } catch (error) {
+    console.warn("[yanshi] blob 缓存写入失败（不影响主流程）：", error);
+    return null;
   }
 }
 /// **本地优先地**装底图 ✓ —— 这是 5014 那唯一一处的替身 ✓。
