@@ -29,15 +29,21 @@ await send("Page.navigate", { url }); await sleep(4500);
 const setPref = (value) => evaluate(value === null
   ? `localStorage.removeItem("yanshi.serverRender"), "cleared"`
   : `localStorage.setItem("yanshi.serverRender", ${JSON.stringify(value)}), "set"`);
+/// **确定性信号** ✓（第 197 轮的教训 ✓）：**内核句柄在不在** ✓ —— 它与时间无关 ✓，
+/// 而"固定等 5 秒内的请求数"**时序敏感** ✗（当初的 `4 vs 3` 就是运气 ✓）。
 const load = async () => { seen.length = 0; await send("Page.navigate", { url }); await sleep(5000);
-  return seen.filter((u) => u.includes("/api/tools/render_region")).length; };
+  const hasWasm = await evaluate('(typeof state !== "undefined" && state) ? !!state.wasm : "no-state"');
+  return { count: seen.filter((u) => u.includes("/api/tools/render_region")).length, hasWasm }; };
 const server = await (async () => { await setPref("1"); return await load(); })();
 const client = await (async () => { await setPref(null); return await load(); })();
-console.log(`  偏好=服务端 ⇒ render_region 请求数 = ${server}`);
-console.log(`  偏好=客户端 ⇒ render_region 请求数 = ${client}`);
+console.log(`  偏好=服务端 ⇒ 内核句柄 = ${server.hasWasm}｜render_region 请求数 = ${server.count}（**次要观察** ✓）`);
+console.log(`  偏好=客户端 ⇒ 内核句柄 = ${client.hasWasm}｜render_region 请求数 = ${client.count}（**次要观察** ✓）`);
 const failures = [];
-if (server === 0) failures.push("打开「用服务端渲染」之后，**一次服务端像素请求都没有** ⇒ 开关不存在或没生效 ✗");
-if (client >= server) failures.push(`两种模式请求数没有差别（${client} ≥ ${server}）⇒ 开关没有真正改变渲染路径 ✗`);
+// **主断言：与时间无关** ✓ —— 开关打开就该**不加载内核** ✓（第 182 轮的守卫 ✓）
+if (server.hasWasm !== false) failures.push(`打开「用服务端渲染」之后内核句柄 = ${server.hasWasm}，应当是 false ⇒ 开关没生效 ✗`);
+if (client.hasWasm !== true) failures.push(`关掉开关之后内核句柄 = ${client.hasWasm}，应当是 true ⇒ 客户端渲染没了 ✗`);
+// **次断言（只在明显矛盾时才报）** ✓：服务端模式不该比客户端**少**走服务端像素 ✓
+if (server.count < client.count) failures.push(`服务端模式的 render_region 请求数（${server.count}）少于客户端（${client.count}）⇒ 可疑 ✗`);
 if (failures.length) { console.log("  ✗ " + failures.join("；")); socket.close(); process.exit(1); }
 console.log("  ✓ 显式开关：服务端模式确实多走服务端像素，客户端模式更少");
 socket.close();
