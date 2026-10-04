@@ -19442,3 +19442,21 @@ create_mask        ⇒ { mask_id:"m1", shape:{kind:"rect",bbox:{…}} }  ✓（�
 **又一次"宁缺勿编"（✓）** ✓：`analyze_region` **被放弃** ✗ —— **它的参数列表比截取到的更长** ✓
 ⇒ **没看全就不写** ✓（**写错值能过测试，但照着抄会失败** ✗）。
 **进度（✓）** ✓：**81 条 / 136 个工具** ✓、**连续六批零试错** ✓、**插入锚点已固化** ✓。
+
+## 📊 第 288 轮：**全域复验 —— 21 条判据，19 ✓ / 2 ✗，且两条红均为已知** ✓✓
+
+```
+✓ HTTP 工具判据 12 ✓：gradient-blend · scatter-strokes · save-palette · snapshot-roundtrip · brush-style ·
+                       analyze-region · fill-region · layer-blend · batch-preview · export-path ·
+                       selection-clip · brush-dynamics
+✓ 浏览器判据 7 ✓：offline-reload · offline-export · no-stale-read · render-switch · reference-overlay ·
+                  offline-draw · kernel-brush-parity
+✗ tool-impasto-plateau ⇒ **已知**（报告 2.3：修法有效 **0.59%** ✓、**待产品决策** ✗）
+✗ tool-archive-bloat   ⇒ **已知**（报告 2.6：**1.69×** ✓、**需日志压缩** ✗）
+—— 通过 **19**，失败 **2** ⇒ **无回归** ✓
+```
+**为什么这次复验有意义（✓）** ✓：它跨过了**约 40 轮** ✓，其中包含
+**一处产品改动**（`switchDocument` 按文档尺寸重设画板 ✓）、
+**多处判据改动**（`browser-ui-check` 的残影/贴光标/滚轮三处 ✓）、
+以及**新写的两条判据**（`kernel-brush-parity` 早已有之 ✓、`tool-archive-bloat` 本轮首次纳入 ✓）
+⇒ ⇒ **19 条绿 = 这些改动没有碰坏别的** ✓ ✓。
