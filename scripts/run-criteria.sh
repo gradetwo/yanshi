@@ -22,7 +22,11 @@ trap cleanup EXIT
 
 case "${SKIP_SERVER:-0}" in
   1) : ;;
-  *) ./target/debug/yanshi-serve --bind "127.0.0.1:$PORT" --root "$ROOT_DIR/work" \
+  # **给服务端指定导出目录** ✓（第 339 轮）：产品的 `guarded_output_path` 把导出目录**相对它的 CWD** 解析 ✗
+  #（缺省 `./exports` ✓，可用 `YANSHI_EXPORT_DIR` 改 ✓）⇒ **判据与服务端对"文件在哪"的理解不一致** ✗ ⇒
+  # `tool-cjk-text` 正是因此报「找不到导出文件 ⇒ 试过：$WORKSPACE/exports/… ｜ …」✓。
+  # 指到工作区内 ⇒ **写与读对齐** ✓（判据的候选路径**第一位就是它** ✓）。
+  *) YANSHI_EXPORT_DIR="$ROOT_DIR/work/exports" ./target/debug/yanshi-serve --bind "127.0.0.1:$PORT" --root "$ROOT_DIR/work" \
        --doc boot --width 320 --height 240 --assets-dir "$ROOT/assets" >"$ROOT_DIR/server.log" 2>&1 &
      SERVER_PID=$!
      for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/api/documents" >/dev/null 2>&1 && break; sleep 0.5; done ;;
