@@ -26582,3 +26582,36 @@ CI（a3bfdcf，criteria shard 6/6）：
 **下一步（下一轮做 ✓）**：判据里**同时取** `state.docSize` 与画板尺寸 ✓ ⇒
 **断言用文档尺寸**（产品真相 ✓）、**画板尺寸只作诊断** ✓
 ⇒ **变异检验**：把 `duplicate_document` 改成用默认尺寸建副本 ⇒ **判据必须红** ✓（**改的是被判条件本身 ✓**）。
+
+## 🎯🎯🎯 第 787 轮：**74 个判据里，14 个**从未在 CI 里跑过**** ✗
+
+**怎么发现的** ✓：用户问"离线这个功能实现了哪些、还差哪些" ✓ ⇒ 我去**逐条读判据的自述**（而不是复述记忆 ✓）⇒
+发现 `run-criteria.sh:62` 的枚举是**按前缀**的 ✗：
+```bash
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs | sort); do
+```
+⇒ ⇒ **`scripts/*.mjs` 共 74 个，被枚举到 60 个 ⇒ 14 个**从不运行**** ✗ ✓。
+
+**未被枚举的**（`comm -23` 实测 ✓）：
+```
+✗ wasm-brush-parity.mjs         ← **(A)⑥「同一笔在两种模式下逐字节相同」的核心判据** ✗✗
+✗ wasm-brush-preview-parity.mjs ← 预览的同一条
+✗ kernel-wasm-allowlist.mjs ｜ medium-abi-check.mjs        （内核/介质 契约 ✓）
+✗ mcp-document-switch.mjs ｜ mcp-tool-descriptions.mjs      （MCP ✓）
+✗ server-token-policy.mjs ｜ server-ws-origin.mjs           （服务端策略 ✓）
+✗ ui-control-heights.mjs ｜ ui-layout-grid.mjs ｜ ui-text-density.mjs   （UI ✓）
+（generate-brush-previews / generate-tool-examples / make-samples 是**生成器** ⇒ 本就不该当判据 ✓）
+```
+⇒ ⇒ **即：至少 11 条真判据**红不红，CI 都不知道**** ✗ ✓ —— **这比某一条判据写错更严重** ✓：
+**"门禁全绿"里**不包含**它们** ✗ ✓。
+
+**这直接影响 (A)⑥ 的证据链** ✗：`wasm-brush-parity` 是"两种模式必须同笔同结果"的判据 ✓，
+而它**从来没在 CI 里跑过** ✗ ⇒ **"两模式一致"这件事此前**没有任何门禁在守**** ✗ ✓。
+
+**顺手改正的一处过时自述** ✓：`browser-render-switch.mjs` 头部原写「查看器**只有自动回退** ⇒ 判据天然红」✗，
+而产品里**确实已有**显式开关 ✓（`SERVER_RENDER_KEY = "yanshi.serverRender"` ✓、`serverRenderPreferred()` ✓、
+以及 UI 复选框 ✓ `viewer.rs:4895` ✓）⇒ 已按现状改写 ✓。
+⚠️ 这提醒一条：**判据头部的"现状"会过期** ✓ ⇒ **它必须与产品一起被检查** ✓（**而我此前把头部当作可靠证据 ✓**）。
+
+**下一步** ✓：**让枚举覆盖全部判据**（用"排除生成器"的白名单式规则 ✓，而不是前缀 ✗）⇒
+**新判据不会再静默地跑不到** ✓；然后**逐条处理被打开后的红** ✓（**该修产品就修 ✓、该登记就登记 ✓**）。

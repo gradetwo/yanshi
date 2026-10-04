@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // **显式渲染开关判据** ✓（(A)⑤ ✓："服务端仅作弱设备/能力缺失时的回退，并给一个显式开关"✓）。
 //
-// **查证过的现状（✓）** ✓：查看器**只有自动回退** ✓（`needsServerPixels = true` 在 1376/1554/1582 ✓）
-// ⇒ **没有**用户可以显式打开的"用服务端渲染"✗ ⇒ 判据**天然红** ✓。
+// **现状（第 787 轮重新查证 ✓）** ✓：查看器**已经有**显式开关 ✓ ——
+// `SERVER_RENDER_KEY = "yanshi.serverRender"` ✓、`serverRenderPreferred()` ✓（`viewer.rs:855-857` ✓），
+// 且**有 UI 复选框** ✓（`viewer.rs:4895 useServerRenderBox.checked = serverRenderPreferred()` ✓）。
+// ⇒ 上面那句「只有自动回退、判据天然红」是**过时注记** ✗ ⇒ 已按现状改正 ✓。
 //
 // 判据（**只断言可观察的差别** ✓，不猜内部字段 ✗）：
 //   ① 设好偏好 `yanshi.serverRender = "1"` ✓ ⇒ 重载 ⇒ **服务端像素请求（`render_region`）必须 > 0** ✓；
