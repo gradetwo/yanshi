@@ -643,7 +643,11 @@ const maskResult = await evaluate(`(async () => {
     // 拖动中若为 2，就说明 commitMask 要求的「至少 2 个点」是满足的。
     + " points=" + (stateProbe ? stateProbe.points : "?")
     + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
-    + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2);
+    + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2)
+    + " 抬手前=" + String(ptsBeforeUp);
+  // **抬手之前**再读一次点数 ✓（第 577 轮 ✓）：实测拖动期是 2 ✓ 而蒙版仍失败 ✗
+  // ⇒ 与 commitMask 的「< 2」矛盾 ✓ ⇒ 唯一解释是"抬手前掉了" ✓ ⇒ 这一读分辨它 ✓。
+  const ptsBeforeUp = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
   fire("pointerup", at(0.75, 0.75), 301);
   let masked = ink();
   for (let i = 0; i < 120 && masked >= filled; i++) {
