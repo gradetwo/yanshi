@@ -9,7 +9,7 @@
 // 与 `wasm-brush-parity.mjs` 的差别只有一个 ✓：那边用**裸 wasm + C-ABI**（门面 ✓），
 // 这边用**bindgen 包**（`crates/yanshi-wasm/pkg/yanshi_wasm.js` ✓ = 浏览器真正加载的那一份 ✓）。
 // 用法：node scripts/kernel-brush-parity.mjs <server-base> <doc> <token> <pkg/yanshi_wasm.js 路径> [笔刷名...]
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const [base, doc, token, wasmPath, ...brushes] = process.argv.slice(2);
@@ -17,7 +17,15 @@ if (!base || !doc || !token || !wasmPath) {
   console.error("用法: node scripts/wasm-brush-parity.mjs <server-base> <doc> <token> <wasm> [brush...]");
   process.exit(2);
 }
-const names = brushes.length ? brushes : ["100%_Opaque", "2B_pencil", "spray"];
+// **覆盖面必须自己说出来** ✓（第 804 轮）：判据默认只测 3 支笔 ✓，而仓库里有 **199 支** ✗ ⇒
+// 一条"绿"如果不说覆盖面，就会被读成"性质成立" ✗（第 800 轮实测：约一半笔刷其实不同 ✗）。
+// ⇒ ① 结论行里**打出覆盖比例** ✓（runner 成功时也会打最后一行 ✓ ⇒ CI 日志里每次都看得到 ✓）；
+//   ② 传 `all` 当笔刷名 ⇒ **跑全部** ✓（调研/定期全量用 ✓）；③ 默认仍是小的那一组 ✓
+//      —— **不改成默认全量** ✗：那会让 CI 立刻红 ✗，而差异原因（两边数学实现不同 ✓）正在修 ✓。
+const allBrushes = readdirSync("assets/brushes").filter((f) => f.endsWith(".myb"))
+  .map((f) => f.replace(/\.myb$/, "")).sort();
+const wantsAll = brushes.includes("all");
+const names = wantsAll ? allBrushes : (brushes.length ? brushes : ["100%_Opaque", "2B_pencil", "spray"]);
 const tool = async (name, args) => {
   const response = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {
     method: "POST",
@@ -120,5 +128,12 @@ for (const brush of names) {
   );
  }
 }
-console.log(allEqual ? "结论：全部逐字节相同 ✓" : "结论：存在差异 ✗（见上，按目标第 4 条决定取舍 ✓）");
+const total = allBrushes.length;
+const pct = total > 0 ? (100 * names.length / total).toFixed(1) : "?";
+const sample = wantsAll ? "全量" : (brushes.length ? "指定" : "**默认样本**");
+console.log(
+  (allEqual ? "结论：逐字节相同 ✓" : "结论：存在差异 ✗（见上；差异的机制是两边数学实现不同 ⇒ 正在修 ✓）") +
+  `｜覆盖 ${names.length}/${total} 支笔（${pct}%｜${sample}）` +
+  (allEqual && names.length < total ? "｜⚠️ 这只说明**这几支**相同，不代表全部 ✗（用 `all` 可全量 ✓）" : ""),
+);
 process.exit(allEqual ? 0 : 1);
