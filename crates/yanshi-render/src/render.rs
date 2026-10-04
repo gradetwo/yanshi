@@ -491,6 +491,16 @@ impl Renderer {
             padding = padding.max(radius + 1);
         }
         for object in state.alive_objects() {
+            // **形状对象的羽化也要计入外扩** ✓（第 581 轮 ✓）：设计要求「羽化溢出到形状之外」✓
+            //（`implementation-notes.md` 第 343 轮 ✓），而 `render.rs:755` 按**图层缓冲**裁剪覆盖率 ✓、
+            // `:760` 才向外扩 ✓ ⇒ **缓冲若不为它留边 ⇒ 外半边被裁** ✗ ⇒ 现象正是「只向内淡出」✓。
+            // **故在跳过之前先认它** ✓（蒙版那一支用的是同一公式：`半径/2 + 1` ✓）。
+            if let Some(f) = object.data.get("feather").and_then(Value::as_f64) {
+                if f > 0.0 {
+                    let radius = (f / 2.0).round().max(1.0) as u32;
+                    padding = padding.max(radius + 1);
+                }
+            }
             if object.object_type != yanshi_core::ObjectType::Filter {
                 continue;
             }
