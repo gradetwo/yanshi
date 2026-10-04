@@ -31,3 +31,6 @@ tool-reference-delta-e.mjs  # 能力挂错位置：`compare_with_reference` 在 
 #   而 `gradient_fill` 会画画 ⇒ 无法在不改画面的前提下问 ΔE ✗ ⇒ 需产品决策（挪能力或加只读工具）。
 #   **已验证**：产品报错 `analyze_region 不接受参数 compare_with_reference；可用参数：region` ✓
 #   ⇒ 这是**判据与产品能力位置不一致**，不是产品算错 ✓。
+browser-brush-preview-local.mjs  # 测的是不存在的接口：要 data-preview-source 与 title 含「近似」，
+#   而全仓只有本文件写过这两个字符串（viewer.rs 零命中）✗ ⇒ local: 0 不是产品没出图，是没人产出该属性。
+#   待产品决策：给笔刷列表的预览加一个来源信号 ✓，或本判据改测别的真实信号 ✓。
