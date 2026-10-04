@@ -69,7 +69,10 @@ const send = (method, params = {}, timeoutMs = 45000) =>
       pending.delete(current);
       reject(new Error(`CDP 无响应：${method} 超过 ${timeoutMs}ms（不是判据失败，而是这一段没跑完）`));
     }, timeoutMs);
-    if (typeof timer.unref === "function") timer.unref();
+    // ⚠️ **不要 unref 这个定时器** ✗（第 786 轮）：unref 的语义是「不阻止进程退出」✓，
+    // 而此刻若没有别的被引用句柄（CDP 无响应时正是如此 ✓）⇒ node **会在超时之前就退出** ✗，
+    // 日志里只剩 Detected unsettled top-level await 与退出码 13 ✗ ⇒ 那条「超时抛错」的路**永远走不到** ✗。
+    // ⇒ 取消 unref，让 45 秒那条错误路径真的可达 ✓（失败路径另加 ws.close() ✓，见文件末尾 ✓）。
     pending.set(current, (value) => { clearTimeout(timer); resolve(value); });
     ws.send(JSON.stringify({ id: current, method, params }));
   });
@@ -866,6 +869,9 @@ const namingResult = await evaluate(`(async () => {
     before = ${canvasFingerprint};
   }
 
+  // **文档尺寸**（第 785 轮）：切文档时画板会先按默认 1024² 摆一次、之后才按真实尺寸重建，
+  // 所以只量画板可能量到「还没重建完的默认板」。真相应看文档尺寸（yanshi.state().docSize）。
+  const beforeDoc = window.yanshi.state().docSize;
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
   document.getElementById("openDoc").click();
   await wait(1200);
@@ -886,7 +892,10 @@ const namingResult = await evaluate(`(async () => {
     await wait(250);
     after = ${canvasFingerprint};
   }
+  const afterDoc = window.yanshi.state().docSize;
   return {
+    beforeDoc,
+    afterDoc,
     prefilled,
     identity,
     before: before.sum,
@@ -1679,6 +1688,13 @@ if (!namingResult.identity.includes(namedNew)) {
 }
 if (namingResult.before === 0) {
   problems.push("新建文档里画不出内容（前置条件不成立）");
+} else if (namingResult.beforeDoc && namingResult.afterDoc &&
+           (namingResult.beforeDoc.w !== namingResult.afterDoc.w ||
+            namingResult.beforeDoc.h !== namingResult.afterDoc.h)) {
+  // **按文档尺寸判**（第 785 轮）：这是产品真相；画板尺寸只是视图。
+  problems.push(
+    `另存为副本的文档尺寸不同（源 ${namingResult.beforeDoc.w}×${namingResult.beforeDoc.h} vs 副本 ${namingResult.afterDoc.w}×${namingResult.afterDoc.h}）⇒ 复制未沿用源尺寸`
+  );
 } else if (namingResult.beforeTotal !== namingResult.afterTotal) {
   // **先把"尺寸不同"与"内容不同"分开**（第 253 轮）：sum 是哈希，尺寸变了它必然变，
   // 拿它断言"副本内容不对"是把两件事混成一件（本项第 5 次同类）。
@@ -3098,6 +3114,9 @@ if (problems.length) {
   }
   console.log(`  ❌ ${problems.length} 项不合格：`);
   for (const problem of problems) console.log(`     - ${problem}`);
+  // **失败路径也要关 WS** ✓（第 786 轮）：原先靠上面那个 unref 才能退出 ✗ ⇒
+  // 而 unref 会连「超时可上报」一起破坏 ✗ ⇒ 这里显式关闭，两条路就都不依赖它 ✓。
+  ws.close();
   process.exit(1);
 }
 console.log("  ✅ UI 检查通过（画布非空、几何一致、缩略图自动刷新）");

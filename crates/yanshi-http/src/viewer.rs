@@ -7553,6 +7553,11 @@ window.yanshi = {
         blitLog: (window.yanshiStats.blitLog || []).slice(-12),
         lastBlitServerInk: window.yanshiStats.lastBlitServerInk || 0,
         blankBlitsSkipped: window.yanshiStats.blankBlitsSkipped || 0,
+        // **文档尺寸也要能读** ✓（「界面里有的东西必须能被断言」✓ —— 与 size/smooth/zoom 同一条 ✓）：
+        // 「另存为副本」那条断言原先量的是**画板**（`board.width` ✓），而切文档时画板
+        // 先按默认 1024² 摆一次、**之后**才按真实尺寸重建 ✗ ⇒ 判据可能量到「还没重建完的默认板」✗。
+        // ⇒ 真相应看**文档尺寸** ✓ ⇒ **先让它可读**，判据才断言得了对的对象 ✓。
+        docSize: { w: state.docSize.w, h: state.docSize.h },
         displayScale: state.displayScale || 1,
       };
     },
