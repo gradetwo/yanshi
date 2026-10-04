@@ -406,6 +406,15 @@ const renderCenter = await fetch(
     body: JSON.stringify({ region: { x: 0, y: 0, w: 160, h: 160 }, raw: true }),
   }
 ).then((r) => r.json());
+// **这里原本只算不断言** ✗（第 463 轮 ✓）：centerInk 被赋值三次而**没有任何地方用它** ✓
+// ⇒ 这一段**永远不会失败** ✓ ⇒ 属于「静默检查」那一族 ✓。
+// 补的断言**只声明「这条路能取回像素」** ✓ —— 因为「文档里该有多少内容」取决于用例 ✓，
+// 断言它反而是替这段代码猜意图 ✗；而「取回 raw_url」正是这一段在做的事 ✓，且**它能失败** ✓。
+if (!renderCenter || !renderCenter.raw_url) {
+  problems.push(
+    `文档左上一块取不回像素（raw_url 缺失）⇒ 区域渲染这条路断了｜返回 ${JSON.stringify(renderCenter).slice(0, 120)}`,
+  );
+}
 let centerInk = -1;
 if (renderCenter.raw_url) {
   const bytes = new Uint8Array(await fetch(`${origin}${renderCenter.raw_url}`).then((r) => r.arrayBuffer()));
