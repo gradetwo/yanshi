@@ -1012,6 +1012,13 @@ const LOCAL_READ_TOOLS = [
   "get_preferences",
   "list_effects",
   "get_log", // **第 169 轮实测补的** ✓ —— 又一次"靠失败 URL 才发现" ✓（我列的清单总是漏 ✓）
+  // **第 171 轮实测补的** ✓：这三条是**离线报出来的** ✓ ——
+  // `list_objects`（客户端渲染器**靠它才有东西可画** ✓ ⇒ 缺它画面就是空的 ✓）、
+  // `list_assets`（笔刷/纹理清单 ✓）、`list_selections`（选区 ✓）。
+  // ⇒ 又一次印证：**我的清单总是漏，只有"失败的 URL"是全的** ✓。
+  "list_objects",
+  "list_assets",
+  "list_selections",
 ];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
@@ -1058,7 +1065,28 @@ async function fetchOrLocal(url, options) {
   } catch (error) {
     cacheable = false;
   }
-  if (!cacheable) return fetch(url, options);
+  if (!cacheable) {
+    // **可选依赖失败不得致命** ✓（第 170 轮实测的因果链 ✓）：
+    // 离线时 `render_region`（**服务端像素回退** ✓）必然失败 ✓ ⇒ 它原来**抛异常** ✗
+    // ⇒ 把**整个启动链**打断 ✓ ⇒ `state.wasm` 永远是 false ✓（**尽管 wasm 就在 SW 缓存里** ✓）
+    // ⇒ 画布停在 `<canvas>` 默认 `300×150` ✓。
+    // 修法 ✓：只对**这一条可选调用**把网络错误变成**失败的 Response**（503 ✓）——
+    // 调用方按 `response.ok` 走它本来就有的降级 ✓，**而不再中断初始化** ✓
+    //（行业原则 ✓：`try/catch` 包住**可选**依赖 ✓，只在关键路径上抛 ✓ —— 第 160 轮已记 ✓）。
+    try {
+      const probe = new URL(url, location.href);
+      if (probe.pathname.endsWith("/api/tools/render_region") || probe.pathname === "/api/tools/render_region") {
+        try {
+          return await fetch(url, options);
+        } catch (error) {
+          return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+        }
+      }
+    } catch (error) {
+      // URL 都解析不了 ⇒ 按原样转发 ✓
+    }
+    return fetch(url, options);
+  }
   const key = localKey(url) + (toolName ? "|tool:" + toolName : "") + (binary ? "|bin" : "|json");
   if (binary) {
     // 二进制：本地有 ⇒ **直接回一个 Response** ✓（离线可显示 ✓）；没有 ⇒ 取网并**写进 OPFS** ✓。
@@ -1082,8 +1110,12 @@ async function fetchOrLocal(url, options) {
       throw error;
     }
   }
-  const local = await localJsonGet(key);
-  if (local !== null) return new Response(local, { status: 200, headers: { "content-type": "application/json" } });
+  // **可变数据必须"网络优先、缓存兜底"** ✗（第 171 轮实测的教训 ✓）：
+  // 我原来写的是"本地优先" ✓ ⇒ 于是**在线**也读到了**空白那一次**的旧 `list_objects` ✗
+  // ⇒ 在线画布**也变成空的** ✓（dark 3288 → **0** ✓ ⇒ 判据当场红 ✓）。
+  // **行业做法** ✓：**可变**读用 `networkFirst` ✓（拿新的 ✓，失败才回落 ✓）；
+  // **不可变**资源（`/brush-module.wasm` ✓、**按内容哈希命名**的 `/api/blob/…` ✓）才用 `cacheFirst` ✓
+  // —— 这也是 **(A)⑥"SW 升级不脏读"** 的同一条原则 ✓。
   try {
     const response = await fetch(url, options);
     try {
