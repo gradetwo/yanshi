@@ -16852,3 +16852,38 @@ brush.set(hokusai::BrushSetting::Radius,
 ③ **缺省 ⇒ 不碰 `brush.set`** ✓ ⇒ 逐字节不变 ✓；
 ④ 落地 5 处 ✓（**67→68 core / 123→124 total** ✓）；
 ⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓ ⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
+
+### 🎯 第 154 轮：动力学曲线的**写入 API 到手** ✓ —— 并发现**真正的难点不是写入，而是"持久化"** ✓
+
+**API（原文 ✓）** ✓：`hokusai-core/src/brush.rs`
+```rust
+impl Brush {
+    pub fn get(&self, s: BrushSetting) -> &SettingValue { … }        // 44 ✓ 读得到 ✓
+    pub fn get_mut(&mut self, s: BrushSetting) -> &mut SettingValue { … }  // 49 ✓ 就地改 ✓
+    pub fn set(&mut self, s: BrushSetting, v: SettingValue) { … }    // 53 ✓
+    pub fn settings(&self) -> &[SettingValue] { … }
+}
+```
+⇒ 所以"**给某支笔刷加一条压力曲线**"本身**只是几行** ✓：
+```rust
+let mut value = brush.get(BrushSetting::Radius).clone();     // 取现值（保留 base 与其它输入 ✓）
+value.inputs.retain(|m| m.input != BrushInput::Pressure);    // 同名**替换** ✓（不是叠加 ✗）
+value.inputs.push(InputMapping { input: BrushInput::Pressure, points: knots });  // knots = [[压力, ln(倍率)]]
+brush.set(BrushSetting::Radius, value);
+```
+**但真正的难点（本轮最有价值的发现 ✓）** ✓：**这改的只是"当场加载的那支笔刷"** ✗ ——
+而 `brush_stroke` **每次都重新 `load_brush`** ✓（从工作区缓存里的 `.myb` ✓）⇒ ⇒ **曲线根本不会留到下一笔** ✗ ✗
+⇒ 所以"`set_brush_dynamics` 改一下内存对象"✗ **是个会通过判据的假实现** ✗
+（判据里我在**同一个会话**里画 ✓ ⇒ 甚至可能**碰巧生效** ✗ —— 那种"看起来对"最危险 ✓）。
+**行业做法（按用户指示先看权威 ✓）** ✓：MyPaint / Krita 里"改笔刷动力学"就是**存成一个笔刷预设** ✓
+（`.myb` 里 `settings[radius_logarithmic].inputs[pressure].points` ✓ 那一层 ✓）
+⇒ ⇒ 我们的对应做法 ✓：**把改过的 `SettingValue` 落回一份 `.myb`** ✓（例如 `<name>@<curve 摘要>.myb` ✓，
+或写进**偏好**再由 `load_brush` 叠加 ✓）—— **两条路二选一，下一轮先读 `.myb` 的结构再定** ✗。
+**下一轮（写死 ✓）** ✓：
+① 读 `assets/brushes/*.myb` 里 `settings…inputs…points` 的**实际键路径** ✓（行业格式 ✓，**别猜** ✗）；
+② 定"改完存哪" ✓：**优先**"写回工作区缓存里的一份 `.myb`" ✓（与 `import_asset` 同一条路 ✓、
+   与 `save_palette` 同一手法 ✓ ⇒ **判据能在"另开一个请求"里验证 ✓** ⇒ 不会自我欺骗 ✓）；
+③ 实现 `set_brush_dynamics{brush, curve}` ✓：映射 **倍率 ⇒ `ln(倍率)`** ✓（行业依据 ✓，写进 summary ✓）；
+④ 落地 5 处 ✓（**67→68 core / 123→124 total** ✓）；
+⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓ ⇒ **并且**判据要加一条"**隔一次请求仍然生效**"✗（否则测不到持久化 ✓
+   —— 这一条我下一轮补进判据 ✓）；门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
