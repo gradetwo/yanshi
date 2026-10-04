@@ -8,7 +8,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 const base = process.argv[2];
-const exportDir = (process.argv[3] || "exports").replace(/\/$/, "");
+// **导出目录优先放在工作区下** ✓（第 336 轮）：服务端只能写它自己**有权限的路径** ✗，
+// 而 CI 里工作目录与这里不一致 ✗ ⇒ `export_png` 会**直接失败** ✓（实测：判据在 mjs:44 抛错 ✓）。
+// 读回也用同一个目录 ✓ ⇒ **一处修，两边都跟着对** ✓。
+const exportDir = process.env.YANSHI_WORKSPACE ? `${process.env.YANSHI_WORKSPACE}/exports` : (process.argv[3] || "exports").replace(/\/$/, "");;
 if (!base) { console.error("用法: node scripts/tool-cjk-text.mjs <server-base> [exportDir]"); process.exit(2); }
 const newDoc = async (id) => {
   const made = await fetch(`${base}/api/documents`, { method: "POST", headers: { "content-type": "application/json" },
