@@ -904,6 +904,7 @@ const preview = new Image();
 // **断网重载后那一笔还得在** ✓ ⇒ 只有像素真落到本地才会绿 ✓。
 const LOCAL_DB = "yanshi-local-v1";
 const LOCAL_STORE = "blobs";
+const LOCAL_JSON_STORE = "json";
 /// **缓存键** ✓：必须剥掉破缓存参数 `t` ✗ —— 它每次渲染都不同 ✓
 /// ⇒ 拿整个 URL 当键 ⇒ **每次都是新键** ⇒ 存储**无限增长** ✗（第 163 轮记下的坑之一 ✓）。
 /// 按**文档 id** 分区 ✓（不同文档不互相覆盖 ✓）。
@@ -911,7 +912,12 @@ function localKey(url) {
   try {
     const parsed = new URL(url, location.href);
     parsed.searchParams.delete("t");
-    return String(state.docId || "doc") + "|" + parsed.pathname + "?" + parsed.searchParams.toString();
+    // **文档 id 从 URL 自己解析** ✗ —— 实测：用 `state.docId` 会在**引导期取到空值** ✓
+    // ⇒ 写进去的键前缀是 `doc` ✗、后来读的却是真 id ✗ ⇒ **4 个端点只缓存了 2 个** ✓
+    //（第 165 轮实测：`json` store 里 count=2 ✓，而缺的正是启动第一个要用的那个 ✓）。
+    // 每个 `api()` 生成的 URL 里**都带 `doc=`** ✓ ⇒ 从 URL 取就**与初始化顺序无关** ✓。
+    const doc = parsed.searchParams.get("doc") || String(state.docId || "doc");
+    return doc + "|" + parsed.pathname + "?" + parsed.searchParams.toString();
   } catch (error) {
     return String(state.docId || "doc") + "|" + url;
   }
@@ -920,18 +926,27 @@ function localKey(url) {
 function localDb() {
   return new Promise((resolve, reject) => {
     if (!self.indexedDB) { reject(new Error("没有 IndexedDB")); return; }
-    const request = indexedDB.open(LOCAL_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(LOCAL_STORE, { keyPath: "key" });
+    const request = indexedDB.open(LOCAL_DB, 2);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(LOCAL_STORE)) {
+        database.createObjectStore(LOCAL_STORE, { keyPath: "key" });
+      }
+      if (!database.objectStoreNames.contains(LOCAL_JSON_STORE)) {
+        database.createObjectStore(LOCAL_JSON_STORE, { keyPath: "key" });
+      }
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
-async function localWithStore(mode, run) {
+async function localWithStore(mode, run, storeName) {
   const db = await localDb();
+  const name = storeName || LOCAL_STORE;
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(LOCAL_STORE, mode);
-      const store = tx.objectStore(LOCAL_STORE);
+      const tx = db.transaction(name, mode);
+      const store = tx.objectStore(name);
       const request = run(store);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -980,6 +995,64 @@ async function localBlobPut(url, bytes) {
     return file;
   } catch (error) {
     return null; // 同上：存储问题**不影响**主流程 ✓
+  }
+}
+/// **引导期 JSON 的本地缓存** ✓ —— 断网时查看器**连状态都建不起来** ✗，
+/// 所以光缓存缩略图不够 ✓（第 164 轮实测：断网后画布是 **300×150 的小占位** ✓ ⇒ 说明它**没进正常状态** ✗）。
+/// 实测出的引导链只有三处 ✓：`/api/tools/get_document` ✓、`/api/tools/list_layers` ✓、`/api/atoms` ✓
+/// （`/api/blob` 那 5 处是像素 ✓，已由缩略图那条覆盖 ✓，这里**不重复缓存** ✗）。
+const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/atoms", "/api/effects"];
+
+/// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
+async function fetchOrLocal(url, options) {
+  const method = (options && options.method) || "GET";
+  let cacheable = false;
+  try {
+    const parsed = new URL(url, location.href);
+    cacheable = method === "GET" && LOCAL_JSON.includes(parsed.pathname);
+  } catch (error) {
+    cacheable = false;
+  }
+  if (!cacheable) return fetch(url, options);
+  const key = localKey(url) + "|json";
+  const local = await localJsonGet(key);
+  if (local !== null) return new Response(local, { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const response = await fetch(url, options);
+    try {
+      if (response && response.ok) {
+        const text = await response.clone().text();
+        await localJsonPut(key, text);
+      }
+    } catch (error) {
+      // 存不进去就算了 ✓（不因为缓存影响主流程 ✓）
+    }
+    return response;
+  } catch (error) {
+    // **取网失败 ⇒ 必须回落到本地** ✓ —— 这才是"离线优先" ✓。
+    //（实测：我第一版只在**开头**查了一次缓存 ✗ ⇒ 那时缓存还没写进去 ✗ ⇒
+    //  `refreshLayers` 直接抛 `TypeError: Failed to fetch` ✓ ⇒ 查看器进不了正常状态 ✓，
+    //  画布停在 `<canvas>` 的默认 **300×150** ✓ —— 这个尺寸就是线索 ✓。）
+    const fallback = await localJsonGet(key);
+    if (fallback !== null) {
+      return new Response(fallback, { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw error;
+  }
+}
+async function localJsonGet(key) {
+  try {
+    const record = await localWithStore("readonly", (store) => store.get(key), LOCAL_JSON_STORE);
+    return record && typeof record.text === "string" ? record.text : null;
+  } catch (error) {
+    return null;
+  }
+}
+async function localJsonPut(key, text) {
+  try {
+    await localWithStore("readwrite", (store) => store.put({ key: key, text: text, at: Date.now() }), LOCAL_JSON_STORE);
+  } catch (error) {
+    // 同上 ✓
   }
 }
 /// **本地优先地**装底图 ✓ —— 这是 5014 那唯一一处的替身 ✓。
@@ -1187,7 +1260,7 @@ function setStatus(patch) {
 }
 
 async function callTool(name, args, options = {}) {
-  const response = await fetch(api("/api/tools/" + name), {
+  const response = await fetchOrLocal(api("/api/tools/" + name), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(args || {}),
@@ -1225,7 +1298,7 @@ async function refreshThumb() {
   if (thumbInFlight) return;
   thumbInFlight = true;
   try {
-    const value = await fetch(api("/api/tools/get_document"), {
+    const value = await fetchOrLocal(api("/api/tools/get_document"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -1362,7 +1435,7 @@ async function detectHeavyContent() {
 async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
-  const atoms = await fetch(api("/api/atoms") + "&since=" + since).then((r) => r.json());
+  const atoms = await fetchOrLocal(api("/api/atoms") + "&since=" + since).then((r) => r.json());
   if (!atoms.ok) {
     log("读取原子失败：" + JSON.stringify(atoms).slice(0, 160), "#c33");
     return false;
@@ -1572,7 +1645,7 @@ async function blitServerBox(bbox) {
   const url = value.raw_url || value.thumb_url;
   if (!url) return 0;
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
-  const bytes = new Uint8ClampedArray(await fetch(api(url)).then((r) => r.arrayBuffer()));
+  const bytes = new Uint8ClampedArray(await fetchOrLocal(api(url)).then((r) => r.arrayBuffer()));
   if (bytes.length < w * h * 4) return 0;
   // **数一下服务端这批字节里有多少墨** ✓ —— 决定性的那一问 ✓：
   // "画布上没有墨"到底是**服务端给的就是空白** ✗，还是**客户端随后把它擦了** ✗（内核重绘 ✓）。
@@ -1908,7 +1981,7 @@ async function submitAtom(atom) {
   // 而画面上**什么都没说** ✓ ⇒ 用户不知道这一笔到底提交了没有 ✓。
   let response;
   try {
-    response = await fetch(api("/api/atoms"), {
+    response = await fetchOrLocal(api("/api/atoms"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(atom),
@@ -1949,7 +2022,7 @@ async function checkBitExact() {
     raw: true,
   }, { refresh: false });
   if (!server.raw_url) { log("服务端未返回原始像素，无法自检", "#c33"); return; }
-  const response = await fetch(api(server.raw_url.replace("yanshi://blob/", "/api/blob/")));
+  const response = await fetchOrLocal(api(server.raw_url.replace("yanshi://blob/", "/api/blob/")));
   const serverPixels = new Uint8Array(await response.arrayBuffer());
   // 用服务端实际渲染的尺寸请求本地像素，避免双方尺寸口径不同。
   const width = server.width || w;
@@ -2659,7 +2732,7 @@ async function mediumDabInner(name, point) {
   }
   const size = mediumTipSize(spec);
   // 注意命名 ✓：**不要**叫 `api` ✗ —— 查看器自己有一个 `api(path)` 的 URL 助手 ✓，
-  // 同名局部变量会把它遮蔽 ✓，于是后面 `fetch(api("/api/blob"))` 会调到一个对象上 ✗
+  // 同名局部变量会把它遮蔽 ✓，于是后面 `fetchOrLocal(api("/api/blob"))` 会调到一个对象上 ✗
   //（实测报 "api is not a function" ✓ —— 这一条是靠 yanshiStats.medium 的可观测信号才立刻定位的 ✓）。
   const plugin = spec.instance.exports;
   // v2：把上下文写进插件的输入缓冲 ✓ —— 笔尖色、目标处已有色、载墨、湿度 ✓。
@@ -2692,7 +2765,7 @@ async function mediumDabInner(name, point) {
 
 /// 介质产出的位图入库 ✓：上传 CAS → 建层 → `import_image` → 把 `{id, version}` 钉到对象数据上 ✓。
 async function commitMediumBitmap(rgba, region, spec, stamps) {
-  const upload = await fetch(api("/api/blob"), {
+  const upload = await fetchOrLocal(api("/api/blob"), {
     method: "POST",
     headers: { "content-type": "image/x-yanshi-raw" },
     body: rgba,
@@ -2787,7 +2860,7 @@ async function seedSampleIfEmpty(docId) {
   canvas.height = bitmap.height;
   canvas.getContext("2d").drawImage(bitmap, 0, 0);
   const bytes = new Uint8Array(canvas.getContext("2d").getImageData(0, 0, bitmap.width, bitmap.height).data.buffer);
-  const upload = await fetch(api("/api/blob"), {
+  const upload = await fetchOrLocal(api("/api/blob"), {
     method: "POST",
     headers: { "content-type": "image/x-yanshi-raw" },
     body: bytes,
@@ -2826,7 +2899,7 @@ async function seedSampleIfEmpty(docId) {
 /// 把**原始字节**交给服务端的 `import_psd` ✓（它只取**合成图** ✓、并会给**具体原因** ✓）。
 async function importPsdFile(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const upload = await fetch(api("/api/blob"), {
+  const upload = await fetchOrLocal(api("/api/blob"), {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
     body: bytes,
@@ -2865,7 +2938,7 @@ async function importLocalImage(file) {
   const imageData = context.getImageData(0, 0, bitmap.width, bitmap.height);
   const bytes = new Uint8Array(imageData.data.buffer);
 
-  const upload = await fetch(api("/api/blob"), {
+  const upload = await fetchOrLocal(api("/api/blob"), {
     method: "POST",
     headers: { "content-type": "image/x-yanshi-raw" },
     body: bytes,
@@ -3086,7 +3159,7 @@ function updateUndoStatus() {
 let effectCatalog = { adjustment: [], filter: [] };
 
 async function loadEffectCatalog() {
-  const value = await fetch(api("/api/effects"), {
+  const value = await fetchOrLocal(api("/api/effects"), {
     method: "GET",
     headers: { "content-type": "application/json" },
   }).then((response) => response.json());
@@ -4272,7 +4345,7 @@ async function ensurePaintLayer() {
 }
 
 async function refreshLayers() {
-  const value = await fetch(api("/api/tools/list_layers"), {
+  const value = await fetchOrLocal(api("/api/tools/list_layers"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
@@ -5050,7 +5123,7 @@ async function setupLayerPanel() {
 
 /// 读一次图层列表 ✓（面板与移动都用它 ✓，避免各自解析响应 ✗）。
 async function listLayers() {
-  const value = await fetch(api("/api/tools/list_layers"), {
+  const value = await fetchOrLocal(api("/api/tools/list_layers"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
