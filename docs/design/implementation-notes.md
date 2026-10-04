@@ -16747,3 +16747,28 @@ let (mut rgba, mut painted) = read_surface_region(&surface, region);   // ← 11
 **备选（更稳 ✓）** ✓：既然 `BrushPaint` 是**结构体** ✓，可以在**它自己的构造函数/解构点**附近加一个
 **`fn clip_paint_to_selection(paint: &mut BrushPaint, …)`** ✓ ⇒ 在**一处**调用它 ✓ ⇒ 同样的插入问题 ✓，
 但**逻辑独立、可单测** ✓ —— 下一轮若 1–4 仍不顺 ✓，就走这条 ✓。
+
+### 🎯🎯 第 151 轮：**动力学曲线的机制早就有了** ✓（`SettingValue` + `InputMapping` ✓）
+
+**追出来的原文（✓）** ✓：
+* `tools.rs:11464` ✓ 已经在用 `hokusai::BrushSetting::Radius` ✓ 配 `hokusai::SettingValue::constant((diameter/2).ln())` ✓
+  —— 而且旁边有注释纠正过我自己："**`SettingValue` 是个结构体，不是枚举** ✗，构造器是 `constant(f32)` ✓"；
+* 顺着它追到 **`hokusai-brush`** 的 `lib.rs:30` ✓：
+  ```rust
+  use hokusai_core::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
+  ```
+  ⇒ **`InputMapping` 与 `BrushInput` 就在同一行** ✓ ⇒ 这正是 MyPaint 的"**设置 + 输入曲线**"模型 ✓
+  （`base_value` ✓ + 每个输入（压力/倾斜…）各一条 `InputMapping` 曲线 ✓）；
+* `lib.rs:164` 还有 `let mut sv = SettingValue { … }` ✓ ⇒ **结构字面可写** ✓ ⇒ 说明
+  `size_pressure: [[压力, 系数], …]` ✓ 可以直接映射成"**压力这条输入的曲线**" ✓。
+**结论** ✓：**P1-7 与 P1-4/P1-5/P1-6/P0-3 同一形态** ✓ —— **能力早在依赖里，仓库只是没给入口** ✓
+⇒ `set_brush_dynamics` ≈ **薄包装** ✓ + 把分段线性曲线塞进 `InputMapping` ✓。
+**下一轮（写死 ✓）** ✓：
+① 读 `hokusai_core` 里 `SettingValue` / `InputMapping` / `BrushInput` 的**字段与构造** ✓
+   （`find ~/.cargo/registry/src -maxdepth 2 -name "hokusai-core-*"` ✓ ⇒ 然后读 `lib.rs` ✓ —— **别猜字段名** ✗，
+   本会话已为此栽过多次 ✓）；
+② `set_brush_dynamics{brush, curve:{size_pressure, opacity_pressure, tilt_size}}` ✓ ⇒
+   **只做给到的那些输入** ✓、其余**原样不动** ✓（部分更新 ✓，不是整体覆盖 ✗）；
+③ **缺省/不给 ⇒ 一个字节都不改** ✓（判据与既有 golden 共同兜住 ✓）；
+④ 落地 5 处 ✓（**计数 67→68 core / 123→124 total** ✓）；
+⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓（**曲线生效 + 方向为"轻入重出"** ✓）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
