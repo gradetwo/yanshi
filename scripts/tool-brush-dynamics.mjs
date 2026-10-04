@@ -37,7 +37,7 @@ const paintAndShot = async (id, token, fixedPressure = null) => {
   // **恒定压力**（给了就全程用它 ✓）—— 这样"高压 vs 低压"是**单一变量** ✓。
   for (let i = 0; i <= 10; i += 1) points.push([20 + i * 15, 60, fixedPressure === null ? i / 10 : fixedPressure]);
   const painted = await call(id, token, "brush_stroke", {
-    layer_id: "layer_default", brush: "classic-brush", points, size: 20,
+    layer_id: "layer_default", brush: "classic-brush", points,
     color: { r: 40, g: 80, b: 160, a: 255 },
   });
   if (painted.ok !== true) return { error: JSON.stringify((painted.context || {}).detail || painted.error_code) };

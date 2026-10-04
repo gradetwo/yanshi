@@ -2540,6 +2540,27 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 扩展：structure ----
     ToolSpec {
+        name: "set_brush_dynamics",
+        profile: Profile::Core,
+        // **AI 画家需求 P1-7**：默认 pressure→size 是线性的 ⇒ 画不出"轻入重出"。
+        // **行业口径（查过权威实现 ✓）**：MyPaint/.myb 里曲线是 `settings[设置].inputs[输入] = [[输入值, 偏移]]`，
+        // 而**偏移在对数域**（`radius_logarithmic` 的 `base_value` 就是 `ln(半径)`）⇒
+        // ⇒ **本工具收的是"倍率"，写进去的是 `ln(倍率)`** ✓（写在这里，别让调用方猜 ✗）。
+        // **改完落回工作区缓存里的同名 `.myb`** ✓（= MyPaint 的"预设覆盖内置" ✓；内置资产**一个字节不动** ✓）
+        // ⇒ 后续 `brush_stroke` **自然读到** ✓（这条正是"持久化"的关键 ✓）。
+        summary: "设置笔刷动力学曲线：curve 里的值是**倍率**（如 1.5 = 粗一半）⇒ 按 ln(倍率) 写进 .myb 的对数偏移；改完存回工作区缓存（覆盖内置）",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）"),
+            param!(
+                "curve",
+                Object,
+                true,
+                "{size_pressure|opacity_pressure|tilt_size: [[输入值, 倍率], …]}；只替换给到的输入，其余保留"
+            ),
+        ],
+    },
+    ToolSpec {
         name: "set_layer_blend",
         profile: Profile::Core,
         // **AI 画家需求 P1-4**：`multiply` 是**罩染**的基础 ✓（报告："现在只能调 opacity 硬叠 ⇒ 颜色发脏"✗）。
@@ -2726,6 +2747,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "set_layer_blend" => write_set_layer_blend(ctx, args),
+        "set_brush_dynamics" => write_set_brush_dynamics(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
         "list_brushes" => read_list_brushes(),
@@ -7634,6 +7656,125 @@ fn write_cancel_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **`set_layer_blend`**（AI 画家需求 P1-4 ✓）：**薄包装** ✓ ——
 /// 直接转发给既有的 `set_property{key:"blend_mode"}` ✓（渲染器与 core **早就有**这条能力 ✓，
 /// 本轮只是给它一个符合直觉的名字 ✓；**不另存状态** ✗、**不与该属性分叉** ✗）。
+/// **`set_brush_dynamics`**（AI 画家需求 P1-7 ✓）：把"倍率曲线"写进工作区缓存里的一份 `.myb` ✓。
+///
+/// **为什么必须落盘** ✗（本轮最值钱的判断 ✓）：`brush_stroke` **每次都重新 `load_brush`** ✓
+/// ⇒ 只改内存里的 `Brush` **留不到下一笔** ✗ ⇒ 那会是一个"**能在同一会话里骗过判据**"的假实现 ✗。
+/// **行业做法** ✓：改动力学 = **存一个笔刷预设** ✓（预设覆盖内置 ⇒ `resolve_asset` 缓存优先 ✓）。
+fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    let curve = require_object(args, "curve")?;
+    // **先解析出真实文件** ✓（复用落笔那套放宽规则 ✓：精确 ⇒ 大小写不敏感 ⇒ 报错给候选 ✓）。
+    let (name, _brush) = load_brush(ctx, &brush_name)?;
+    let source = ctx.workspace.resolve_asset("brush", &name)?;
+    let text = std::fs::read_to_string(&source).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到笔刷 {}：{error}", source.display())),
+        )
+    })?;
+    let mut data: Value = serde_json::from_str(&text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 不是合法的 .myb JSON：{error}")),
+        )
+    })?;
+    // **三条曲线的落点** ✓（键路径来自真实 `.myb`：`settings[设置].inputs[输入]` ✓）
+    const MAPPING: [(&str, &str, &str); 3] = [
+        ("size_pressure", "radius_logarithmic", "pressure"),
+        ("opacity_pressure", "opaque", "pressure"),
+        ("tilt_size", "radius_logarithmic", "tilt"),
+    ];
+    let mut applied: Vec<Value> = Vec::new();
+    for (key, setting, input) in MAPPING {
+        let Some(knots) = curve.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        let mut points: Vec<Value> = Vec::new();
+        for pair in knots {
+            let Some(pair) = pair.as_array() else {
+                continue;
+            };
+            let (Some(at), Some(factor)) = (
+                pair.first().and_then(Value::as_f64),
+                pair.get(1).and_then(Value::as_f64),
+            ) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{key} 的每一项都应当是 [输入值, 倍率]")),
+                ));
+            };
+            if factor <= 0.0 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{key} 的倍率必须 > 0（收到 {factor}）")),
+                ));
+            }
+            // **倍率 ⇒ 对数偏移** ✓（行业口径 ✓，见 summary ✓）
+            points.push(json!([at, factor.ln()]));
+        }
+        if points.is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key} 一个点都没有 ⇒ 曲线没意义")),
+            ));
+        }
+        let Some(settings) = data.get_mut("settings").and_then(Value::as_object_mut) else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("这份 .myb 里没有 settings 对象".to_string()),
+            ));
+        };
+        let entry = settings
+            .entry(setting.to_string())
+            .or_insert_with(|| json!({"base_value": 0.0, "inputs": {}}));
+        let Some(inputs) = entry.get_mut("inputs").and_then(Value::as_object_mut) else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("settings.{setting} 里没有 inputs 对象")),
+            ));
+        };
+        // **同名替换** ✓（不是叠加 ✗）；**其它输入与 `base_value` 原样保留** ✓。
+        inputs.insert(input.to_string(), Value::Array(points));
+        applied.push(json!({"curve": key, "setting": setting, "input": input}));
+    }
+    if applied.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "curve 里没有可识别的键 ⇒ 可用：size_pressure / opacity_pressure / tilt_size"
+                    .to_string(),
+            ),
+        ));
+    }
+    // **写临时文件 ⇒ 交给既有的资产导入（覆盖）** ✓ —— 与 `save_palette` 同一手法 ✓。
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let path =
+        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
+    std::fs::write(&path, serde_json::to_vec_pretty(&data).unwrap_or_default()).map_err(
+        |error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
+            )
+        },
+    )?;
+    let imported = write_import_asset(
+        ctx,
+        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "brush": name,
+        "applied": applied,
+        "imported": imported,
+        "note": "倍率已按 ln(倍率) 写进对数域偏移 ✓；改的是工作区缓存里的同名笔刷（预设覆盖内置 ✓）",
+    }))
+}
+
 fn write_set_layer_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let mode = require_str(args, "mode")?;
