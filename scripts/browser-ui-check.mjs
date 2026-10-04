@@ -1600,7 +1600,11 @@ if (overflow.scrollWidth > overflow.clientWidth + 1) {
 // 也就是 await evaluate 自己 reject：maskResult 会是 undefined，
 // 于是下一行读它的 filled 就抛 TypeError —— 实测堆栈正是 browser-ui-check.mjs:1531:16，
 // 而它被记成「蒙版没有裁掉区域外」，把「判据无法运行」当成了「判据失败」。
-if (!maskResult) {
+// 语法修好之后（第 674 轮），页块能跑了，但可能走两条"早退"之一
+//（画布不可读 / 缺元素），它们返回 { unable: … } —— 这里把原因直接说出来。
+if (maskResult && maskResult.unable) {
+  problems.push("蒙版判据无法运行：" + String(maskResult.unable));
+} else if (!maskResult) {
   // 五次改动症状不变之后（第 658 轮），先弄清"到底收到了什么"：
   // maskEvalError 非空 ⇒ 有话说；两者都空 ⇒ evaluate 真的返回了 undefined。
   problems.push("蒙版判据无法运行：页面侧求值没有返回结果（不是判据失败）" + "｜typeof=" + typeof maskResult + "｜错误=" + JSON.stringify(maskEvalError));
