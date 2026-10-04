@@ -23343,3 +23343,22 @@ job=111477990222          browser-ui-check ⇒ **❌ 2 项** ✓（**蒙版两�
    **没接上 ✓ / 半径被吞 ✓ / `render_region` 读了"未模糊"的缓存 ✓** —— 三者之一 ✓。
 **⇒ 下一处（✓）** ✓：**找"渲染侧的模糊"** ✓ —— **看 `feather` 从写入到渲染经过了哪些地方** ✓
 （**起点：`tools.rs` 里 `fill_region` 的写入器 ✓；终点：`render_region` 读对象时怎么用 `feather` ✓**）。
+
+### 🎯🎯🎯 第 524 轮：**羽化确实实现了 ⇒ 嫌疑是"`render_region` 走了另一条渲染路径"** ✗
+
+**读到（✓，`render.rs` 与 `geometry.rs` ✓）** ✓：
+```
+geometry.rs:662  pub fn feather_coverage(cov: &Coverage, radius_px: f64) -> Coverage   ✓（含"半径 0 ⇒ 逐字节不变" ✓）
+object.rs:38-39  /// 由渲染侧在"描述 → 覆盖率"处套用 ✓（见 render.rs 的调用 ✓）；feather: f64  ✓
+render.rs:752    feather,                                       // 从对象读出 ✓
+render.rs:758    // feather_coverage 会把 bbox 四周外扩 2×radius ✓
+render.rs:760    if feather > 0.0 { coverage = crate::geometry::feather_coverage(&coverage, feather); }  ✓
+```
+**⇒ 三条（✓）** ✓：
+1. **参数合法 ✓（第 523 轮 ✓）、管道齐全 ✓、渲染侧确实调用 ✓** ⇒ **不是"没实现"** ✗；
+2. ⇒ ⚠️ **而判据读的是 `render_region`** ✓ ⇒ **嫌疑收窄为"那条路径与 `:752-761` 不是同一条"** ✗
+   （**若"对象渲染"与"区域渲染"是两条路 ⇒ `feather_coverage` 只挂在其中一条上** ✓
+   —— **而这一族我已栽过：`pointerdown` 有三个监听器 ✓、`pointerup` 有两个 ✓**）；
+3. ⇒ ⇒ **下一处（✓）** ✓：**读 `render_region` 的实现** ✓ —— **它走哪条合成路径、有没有经过 `:752-761`** ✓。
+**★ 一条可复用的问法（✓）** ✓：**"这个功能挂在几条路径上"** ✓ ——
+**本段我已在"同名事件多处理者"上栽两次 ✓，这次是"同名渲染多路径"** ✗。
