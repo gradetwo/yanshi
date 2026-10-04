@@ -37,6 +37,16 @@ That is the part this project matches:
 
 The passage ends with the king marvelling that a person's craft could rival nature. **We do not claim that.** This project writes down how the tool is built, and it writes down what it cannot do as well as what it can.
 
+## Logo
+
+The mark is a **slingshot**: a forked frame, two rubber bands and a red pellet. It takes its inspiration from a line in the film *Who Cares* (《谁说我不在乎》):
+
+> 抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。
+
+> (Take the rubber band out of your underpants and make a slingshot to break your window.) [Clip](https://www.bilibili.com/video/BV1Rw411c7Bx/) on bilibili; the film's rights belong to its rights holders.
+
+What it borrows is the gesture in a joke, **making something usable out of whatever is at hand**, which is the same attitude the project takes: write the construction down, use what works, and say so when it does not.
+
 ## Enabling all tool groups
 
 `--profile all` enables every implemented group in one word, which is 114 tools against the 46 that core alone gives;
