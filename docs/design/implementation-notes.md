@@ -16399,3 +16399,32 @@ error: linking with `x86_64-linux-gnu-gcc` failed: exit status: 1
 ⇒ 记下来 ✗ 免得以后又当成"矛盾"✗ 查一遍 ✓。
 **下一轮** ✓：回到 **P0-3 选区的接线** ✓（四个钩子已在第 135 轮记清 ✓；这是跨 core→render→tools 的实质改动 ✓，
 需要的上下文余量较大 ✓ ⇒ 放到下一轮开头做 ✓）。
+
+### 🎯 第 137 轮：**选区裁剪的"缝"就是 `coverage`** ✓ —— 而且源码明说"别再开第二条路" ✗
+
+**决定性原文（`brush.rs:313-321` ✓）** ✓：
+```rust
+/// 之所以只保留一条路径：此前"整段盖章"与"增量盖章"存在语义差异 ✓，
+/// 加上**选区裁剪需要另一条分支** ✓，三条路径很容易漂移 ✓（本会话已因此栽过一次 ✓）。
+/// 现在渲染侧统一走这里 ✓，`appearance = None` 且 `coverage = None` 时行为与旧路径**逐字节一致** ✓。
+pub fn stamp_stroke_configured(
+    buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeometry,
+    appearance: Option<&StrokeAppearance>,
+    coverage: Option<&dyn Fn(f64, f64) -> f32>,
+) -> usize {
+```
+⇒ 三条结论 ✓（每条都改变了做法 ✓）：
+1. **`coverage` 就是选修区的那个参数** ✓ —— 而且它已经是"**唯一那条路**"的一部分 ✓
+   ⇒ 所以正确做法是"**把选区作为 coverage 传进去**" ✓，**绝不开第二条绘制路** ✗（源码明确警告过 ✓）；
+2. **`coverage = None` 时逐字节等于旧路径** ✓（注释原文 ✓）⇒ 判据里"**不给参数 ⇒ 不变**"那条 ✓
+   是**设计者自己许下的承诺** ✓ ⇒ 我的实现必须守住它 ✓；
+3. **这个区域"容易漂移"** ✓，且**此前已栽过一次** ✗ ⇒ ⇒ 这正是我这一轮**没有硬上**的原因 ✓：
+   跨 core→render→tools 的改动 ✓ 加一个"历史上栽过"的位置 ✗ ⇒ **宁可下一轮用充足上下文一次做对** ✓。
+**下一轮（写死 ✓，按源码的指示做 ✓）** ✓：
+① 找出**服务端画 `.myb` 笔触**时**最终调的是哪个入口** ✓（`render.rs:737` 那条是**形状/文字**的 ✓；
+   笔触那条要从 `write_brush_stroke` 往下追 ✓ —— **先追清再改** ✗）；
+② 在**同一条** `stamp_stroke_configured` 上把 `coverage = Some(选区)` ✓（**不开新路** ✗）；
+③ 选区 ⇒ `Coverage` ✓（`rect/ellipse/polygon_coverage_clipped` ✓ + `feather`/`invert` ✓；
+   其余 `mode` **明确报错** ✗）；
+④ `clip_to_selection` 缺省 ⇒ `coverage = None` ✓ ⇒ **逐字节如旧** ✓；
+⑤ 跑 `scripts/tool-selection-clip.mjs` ✓（目标 **内 > 0 / 外 = 0** ✓）⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
