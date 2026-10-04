@@ -10,7 +10,10 @@
 
 const url = process.argv[2];
 const segments = Number(process.argv[3] || 20);
-const list = await fetch("http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/list").then((r) => r.json());
+// **`Number(...)` 必须包在 `${}` 里** ✓：它在**普通字符串**里只是字面文本 ✗ ⇒ 拼出来的 URL 是
+// `http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/list` ✗ ⇒ 取目标列表必失败 ✓
+//（这是我早先"去掉硬编码端口"时留下的 ✗ —— **改完必须看拼出来的东西** ✓）。
+const list = await fetch(`http://127.0.0.1:${Number(process.env.CDP_PORT || 9333)}/json/list`).then((r) => r.json());
 let target = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1:8110"));
 if (!target) {
   const created = await fetch("http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/new?" + encodeURIComponent(url), { method: "PUT" }).then((r) => r.json());
