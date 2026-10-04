@@ -268,8 +268,18 @@ if [ "${target_triple}" != "${host_triple}" ]; then
       fi ;;
   esac
 fi
-if [ "${target_triple}" != "${host_triple}" ] && ! target_installed "${target_triple}"; then
-  echo "✗ 目标是 ${target_triple}，但本机未安装它 ⇒ 请先：rustup target add ${target_triple}" >&2
+# **三态要分开说**（✓，第 376-377 轮）：`target_installed` 回 0/1/2 ✓
+#（`2` = 没有 rustup ⇒ **无法判断** ✗）。原先这里写 `! target_installed` ✗ ⇒ 把 `2` 也当成
+# "没装" ⇒ 于是给用户一句**错的建议**（"请 rustup target add" ✗ —— 而机器上可能根本没有 rustup ✗）。
+# **注意**：变量一律写 `${...}` ✓ —— 本仓库的 portability 判据要求 `$VAR` 不得紧邻非 ASCII 文本 ✓。
+target_installed "${target_triple}"; ti_status=$?
+if [ "${target_triple}" != "${host_triple}" ] && [ "${ti_status}" -ne 0 ]; then
+  if [ "${ti_status}" -eq 2 ]; then
+    echo "✗ 目标是 ${target_triple}，但本机**没有 rustup** ⇒ **无法判断**是否装了它" >&2
+    echo "  ⇒ 交给构建去回答 ✓（若确实没装，构建会失败并给出它自己的话 ✓）" >&2
+  else
+    echo "✗ 目标是 ${target_triple}，但本机未安装它 ⇒ 请先：rustup target add ${target_triple}" >&2
+  fi
   echo "  （宿主是 ${host_triple} ✓；**不会**给你打一个"名字是 ${target_triple}、内容是宿主"的包 ✗）" >&2
   exit 1
 fi
