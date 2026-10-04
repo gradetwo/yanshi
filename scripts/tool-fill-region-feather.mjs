@@ -89,5 +89,9 @@ if (failures.length) {
   for (const f of failures) console.error(`   - ${f}`);
   process.exit(1);
 }
-console.log(`  ④ 不羽化：内 ${plainIn} / 外 ${plainOut}（阶跃 ✓）｜羽化 20：外侧 ${softOut}（中间值 ✓）/ 远处 ${softFar}（0 ✓）/ 深处 ${softDeep}（满 ✓）`);
+// **第 615 轮修** ✓：上面把 `softOut` 改名成 `softOutRaw`（**因为要按 RGBA 分类 ✓**），
+// 而这里还引用旧名 ✗ ⇒ **`ReferenceError: softOut is not defined`** ✗
+// ⇒ **整条判据在最后一行崩掉 ⇒ 报的是"羽化不合格"，而真相是"判据自己没跑完"** ✓
+// ⇒ 即：**产品侧的结果被我的崩溃掩盖了** ✗ —— 与"判据无法运行 ≠ 判据失败"同一族 ✓。
+console.log(`  ④ 不羽化：内 ${plainIn} / 外 ${plainOut}（阶跃 ✓）｜羽化 20：外侧 ${JSON.stringify(softOutRaw)}（中间值 ✓）/ 远处 ${softFar}（底色 ✓）/ 深处 ${softDeep}（满 ✓）`);
 console.log("  ✓ 羽化三侧 + 缺省惰性 全部合格");
