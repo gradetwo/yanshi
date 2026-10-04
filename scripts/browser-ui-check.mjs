@@ -578,110 +578,121 @@ for (let i = 0; i < 80; i++) {
       && document.querySelector('button[data-tool="brush"]')`)) break;
   await new Promise((r) => setTimeout(r, 250));
 }
-const maskResult = await evaluate(`(async () => {
-  // **段内保护** ✓（第 599 轮 ✓）：段首若某个元素取不到，第一处 click/value 就抛 ✗
-  // ⇒ 整段 reject ⇒ 外部拿到一串 undefined ✓（实测：着色 undefined -> undefined、日志 "" ✓）
-  // ⇒ 那样报的是"判据失败"，而真相是"判据无法运行" ✓ —— 两者必须分开 ✓。
-  const missing = [];
-  for (const id of ["board", "zoomFit", "color", "size", "feather"]) {
-    if (!document.getElementById(id)) missing.push(id);
-  }
-  if (!document.querySelector('button[data-tool="brush"]')) missing.push("brush 按钮");
-  if (missing.length) {
-    return { unable: "缺元素：" + missing.join("、"), filled: undefined, masked: undefined, log: "" };
-  }
-  // **整段套 try** ✓（第 609 轮 ✓）：段内某处抛错 ⇒ 整段 reject ⇒ 外部只见 undefined ✗
-  // ⇒ 把消息与阶段带回来 ✓（**一处 try 省掉 N 轮猜测** ✓）。
+// 第 621 轮：实测 evaluate 会在 CDP/Node 层 reject ⇒ maskResult 为 undefined ⇒ 下游读 .filled 抛错，
+// 而它被记成「蒙版没有裁掉区域外」。这里重试一次，并在两次都失败时明确记「判据无法运行」。
+let maskResult = null;
+let maskEvalError = null;
+for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
   try {
-  const board = document.getElementById("board");
-  const rect = board.getBoundingClientRect();
-  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-  const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
-  const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
-  document.getElementById("zoomFit").click();
-  await new Promise((r) => setTimeout(r, 800));
-  // 铺底：**用画笔铺**而不是 heavy 填充 ✓ ——
-  // 填充是 heavy 原子，其异步渲染落地时间不稳定，本段曾多次误报"填充没有产生内容" ✗
-  //（选区/文本段改用画笔铺底后就没再出现 ✓，这里沿用同一做法 ✓）。
-  document.getElementById("color").value = "#1f6feb";
-  document.querySelector('button[data-tool="brush"]').click();
-  document.getElementById("size").value = "200";
-  for (let row = 0; row < 4; row++) {
-    const y = 0.15 + row * 0.23;
-    fire("pointerdown", at(0.02, y), 640 + row);
-    fire("pointermove", at(0.5, y), 640 + row);
-    fire("pointermove", at(0.98, y), 640 + row);
-    await new Promise((r) => setTimeout(r, 60));
-    fire("pointerup", at(0.98, y), 640 + row);
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  let filled = ink();
-  for (let i = 0; i < 120 && filled === 0; i++) {
-    await new Promise((r) => setTimeout(r, 250));
-    filled = ink();
-  }
-  // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
-  document.getElementById("feather").value = "0";
-  document.querySelector('button[data-tool="mask_rect"]').click();
-  // **点完按钮，等工具真的切过去再按下** ✓（第 474 轮 ✓）：原先点击之后**立刻**发 pointerdown ✗
-  // ⇒ 若切换慢一拍 ✓ ⇒ **按下时工具还不是 mask_rect** ✗ ⇒ **state.points 拿不到点** ✓
-  // ⇒ 产品报「蒙版需要拖出一个区域」✓ ⇒ ⇒ **表现为「间歇性」** ✗（第 473 轮实测：这一项时有时无 ✓）。
-  // ⇒ **等条件，不等时长** ✓ —— 与第 450 轮那个稳定性等待同一手法 ✓。
-  // 注意：**本段处在模板字符串里** ⇒ 注释里不能出现反引号 ✗（本轮我已因此失败一次 ✓）。
-  let toolAfterClick = null;
-  for (let i = 0; i < 20; i++) {
-    toolAfterClick = window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())";
-    if (toolAfterClick === "mask_rect") break;
+    maskResult = await evaluate(`(async () => {
+    // **段内保护** ✓（第 599 轮 ✓）：段首若某个元素取不到，第一处 click/value 就抛 ✗
+    // ⇒ 整段 reject ⇒ 外部拿到一串 undefined ✓（实测：着色 undefined -> undefined、日志 "" ✓）
+    // ⇒ 那样报的是"判据失败"，而真相是"判据无法运行" ✓ —— 两者必须分开 ✓。
+    const missing = [];
+    for (const id of ["board", "zoomFit", "color", "size", "feather"]) {
+      if (!document.getElementById(id)) missing.push(id);
+    }
+    if (!document.querySelector('button[data-tool="brush"]')) missing.push("brush 按钮");
+    if (missing.length) {
+      return { unable: "缺元素：" + missing.join("、"), filled: undefined, masked: undefined, log: "" };
+    }
+    // **整段套 try** ✓（第 609 轮 ✓）：段内某处抛错 ⇒ 整段 reject ⇒ 外部只见 undefined ✗
+    // ⇒ 把消息与阶段带回来 ✓（**一处 try 省掉 N 轮猜测** ✓）。
+    try {
+    const board = document.getElementById("board");
+    const rect = board.getBoundingClientRect();
+    const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+    const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
+    document.getElementById("zoomFit").click();
+    await new Promise((r) => setTimeout(r, 800));
+    // 铺底：**用画笔铺**而不是 heavy 填充 ✓ ——
+    // 填充是 heavy 原子，其异步渲染落地时间不稳定，本段曾多次误报"填充没有产生内容" ✗
+    //（选区/文本段改用画笔铺底后就没再出现 ✓，这里沿用同一做法 ✓）。
+    document.getElementById("color").value = "#1f6feb";
+    document.querySelector('button[data-tool="brush"]').click();
+    document.getElementById("size").value = "200";
+    for (let row = 0; row < 4; row++) {
+      const y = 0.15 + row * 0.23;
+      fire("pointerdown", at(0.02, y), 640 + row);
+      fire("pointermove", at(0.5, y), 640 + row);
+      fire("pointermove", at(0.98, y), 640 + row);
+      await new Promise((r) => setTimeout(r, 60));
+      fire("pointerup", at(0.98, y), 640 + row);
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    let filled = ink();
+    for (let i = 0; i < 120 && filled === 0; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      filled = ink();
+    }
+    // 拖一个居中矩形蒙版（羽化 0，便于判断边界）
+    document.getElementById("feather").value = "0";
+    document.querySelector('button[data-tool="mask_rect"]').click();
+    // **点完按钮，等工具真的切过去再按下** ✓（第 474 轮 ✓）：原先点击之后**立刻**发 pointerdown ✗
+    // ⇒ 若切换慢一拍 ✓ ⇒ **按下时工具还不是 mask_rect** ✗ ⇒ **state.points 拿不到点** ✓
+    // ⇒ 产品报「蒙版需要拖出一个区域」✓ ⇒ ⇒ **表现为「间歇性」** ✗（第 473 轮实测：这一项时有时无 ✓）。
+    // ⇒ **等条件，不等时长** ✓ —— 与第 450 轮那个稳定性等待同一手法 ✓。
+    // 注意：**本段处在模板字符串里** ⇒ 注释里不能出现反引号 ✗（本轮我已因此失败一次 ✓）。
+    let toolAfterClick = null;
+    for (let i = 0; i < 20; i++) {
+      toolAfterClick = window.yanshi && window.yanshi.state ? window.yanshi.state().tool : "(没有 state())";
+      if (toolAfterClick === "mask_rect") break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    fire("pointerdown", at(0.25, 0.25), 301);
+    // **派发之间让出一拍** ✓（第 576 轮 ✓）：实测同一个探针在两轮里读出 points=2 ✓ 与 points=0 ✗
+    // ⇒ **这是竞态** ✓（不是逻辑错 ✓ —— 我为它读了六处产品代码 ✓、排除五个假设 ✗）
+    // ⇒ 三次派发挤在同一个任务里 ⇒ 产品的处理有时还没就绪 ✓ ⇒ 这里各让 30ms ✓。
+    await new Promise((r) => setTimeout(r, 30));
+    // **中间要再 move 一次**（第 362 轮对照出来的）：上面画笔铺底是「0.02 → 0.5 → 0.98」
+    // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
+    // 照它自己的正确写法补即可。（本行在模板字符串里 ⇒ 注释中不可出现反引号 ✗）
+    fire("pointermove", at(0.5, 0.5), 301);
+    // **第一次 move 之后，产品记了几个点** ✓（第 572 轮 ✓）：静态阅读已到极限 ✗
+    // ⇒ 在两次 move 之间各读一次 ✓ ⇒ 就能分辨"第一次没记"还是"第二次把它清了" ✓。
+    const ptsAfterMove1 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
+    await new Promise((r) => setTimeout(r, 30));
+    fire("pointermove", at(0.75, 0.75), 301);
+    const ptsAfterMove2 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
+    await new Promise((r) => setTimeout(r, 30));
     await new Promise((r) => setTimeout(r, 100));
-  }
-  fire("pointerdown", at(0.25, 0.25), 301);
-  // **派发之间让出一拍** ✓（第 576 轮 ✓）：实测同一个探针在两轮里读出 points=2 ✓ 与 points=0 ✗
-  // ⇒ **这是竞态** ✓（不是逻辑错 ✓ —— 我为它读了六处产品代码 ✓、排除五个假设 ✗）
-  // ⇒ 三次派发挤在同一个任务里 ⇒ 产品的处理有时还没就绪 ✓ ⇒ 这里各让 30ms ✓。
-  await new Promise((r) => setTimeout(r, 30));
-  // **中间要再 move 一次**（第 362 轮对照出来的）：上面画笔铺底是「0.02 → 0.5 → 0.98」
-  // **两次 move**，而这里原先只有一次 ⇒ 产品报「蒙版需要拖出一个区域」⇒ **判据侧缺陷**，
-  // 照它自己的正确写法补即可。（本行在模板字符串里 ⇒ 注释中不可出现反引号 ✗）
-  fire("pointermove", at(0.5, 0.5), 301);
-  // **第一次 move 之后，产品记了几个点** ✓（第 572 轮 ✓）：静态阅读已到极限 ✗
-  // ⇒ 在两次 move 之间各读一次 ✓ ⇒ 就能分辨"第一次没记"还是"第二次把它清了" ✓。
-  const ptsAfterMove1 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
-  await new Promise((r) => setTimeout(r, 30));
-  fire("pointermove", at(0.75, 0.75), 301);
-  const ptsAfterMove2 = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
-  await new Promise((r) => setTimeout(r, 30));
-  await new Promise((r) => setTimeout(r, 100));
-  // **探针必须在抬手之前取** ✓（第 467 轮 ✓）：原先它写在 pointerup **之后** ✗
-  // ⇒ 抓到的是"抬手之后"的日志 ✓ ⇒ **名字承诺了它没做的事** ✗（与"算了不断言"同族 ✓）。
-  // **直接观测，不再猜上游** ✓（第 506 轮 ✓）：八个假设全被推翻之后 ✗，改成"读运行时的状态" ✓ ——
-  // 判据早就能读 state() ✓（第 474 轮我自己加的 ✓）⇒ **能观测的，就别推理** ✓。
-  // 观测值接进 logDuringDrag ✓ ⇒ **它会顺着已有的打印进日志** ✓，不必再改打印处 ✓。
-  const stateProbe = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
-  const logDuringDrag = document.getElementById("log").innerText.slice(-160)
-    + "｜拖动中 tool=" + (stateProbe ? stateProbe.tool : "?")
-    // 第 557 轮：state 的 points 已经是「点数」本身，我原先又取了一次 length
-    // ⇒ 对数字 2 取 length 得 undefined（本地验证过）⇒ 日志打出 points=undefined
-    // ⇒ 我据此以为「点没入列」，白读六处产品代码。现在直接打它：
-    // 拖动中若为 2，就说明 commitMask 要求的「至少 2 个点」是满足的。
-    + " points=" + (stateProbe ? stateProbe.points : "?")
-    + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
-    + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2)
-    + " 抬手前=" + String(ptsBeforeUp);
-  // **抬手之前**再读一次点数 ✓（第 577 轮 ✓）：实测拖动期是 2 ✓ 而蒙版仍失败 ✗
-  // ⇒ 与 commitMask 的「< 2」矛盾 ✓ ⇒ 唯一解释是"抬手前掉了" ✓ ⇒ 这一读分辨它 ✓。
-  const ptsBeforeUp = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
-  fire("pointerup", at(0.75, 0.75), 301);
-  let masked = ink();
-  for (let i = 0; i < 120 && masked >= filled; i++) {
-    await new Promise((r) => setTimeout(r, 250));
-    masked = ink();
-  }
-  document.querySelector('button[data-tool="brush"]').click();
-  return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
+    // **探针必须在抬手之前取** ✓（第 467 轮 ✓）：原先它写在 pointerup **之后** ✗
+    // ⇒ 抓到的是"抬手之后"的日志 ✓ ⇒ **名字承诺了它没做的事** ✗（与"算了不断言"同族 ✓）。
+    // **直接观测，不再猜上游** ✓（第 506 轮 ✓）：八个假设全被推翻之后 ✗，改成"读运行时的状态" ✓ ——
+    // 判据早就能读 state() ✓（第 474 轮我自己加的 ✓）⇒ **能观测的，就别推理** ✓。
+    // 观测值接进 logDuringDrag ✓ ⇒ **它会顺着已有的打印进日志** ✓，不必再改打印处 ✓。
+    const stateProbe = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
+    const logDuringDrag = document.getElementById("log").innerText.slice(-160)
+      + "｜拖动中 tool=" + (stateProbe ? stateProbe.tool : "?")
+      // 第 557 轮：state 的 points 已经是「点数」本身，我原先又取了一次 length
+      // ⇒ 对数字 2 取 length 得 undefined（本地验证过）⇒ 日志打出 points=undefined
+      // ⇒ 我据此以为「点没入列」，白读六处产品代码。现在直接打它：
+      // 拖动中若为 2，就说明 commitMask 要求的「至少 2 个点」是满足的。
+      + " points=" + (stateProbe ? stateProbe.points : "?")
+      + " dragging=" + (stateProbe ? stateProbe.dragging : "?");
+      + " ｜move1后=" + String(ptsAfterMove1) + " move2后=" + String(ptsAfterMove2)
+      + " 抬手前=" + String(ptsBeforeUp);
+    // **抬手之前**再读一次点数 ✓（第 577 轮 ✓）：实测拖动期是 2 ✓ 而蒙版仍失败 ✗
+    // ⇒ 与 commitMask 的「< 2」矛盾 ✓ ⇒ 唯一解释是"抬手前掉了" ✓ ⇒ 这一读分辨它 ✓。
+    const ptsBeforeUp = (window.yanshi && window.yanshi.state ? window.yanshi.state().points : "?");
+    fire("pointerup", at(0.75, 0.75), 301);
+    let masked = ink();
+    for (let i = 0; i < 120 && masked >= filled; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      masked = ink();
+    }
+    document.querySelector('button[data-tool="brush"]').click();
+    return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
+    } catch (err) {
+      return { unable: "段内抛错：" + String((err && err.message) || err), filled: undefined, masked: undefined, log: , toolAfterClick: undefined };
+    }
+    })()`);
   } catch (err) {
-    return { unable: "段内抛错：" + String((err && err.message) || err), filled: undefined, masked: undefined, log: , toolAfterClick: undefined };
+    maskEvalError = String((err && err.message) || err);
+    await new Promise((r) => setTimeout(r, 500));
   }
-})()`);
+}
 
 // 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
 // 通过 list_objects 断言 bbox **恰好**平移该位移（绝对量断言，不依赖指纹）。
