@@ -25607,3 +25607,8 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`dce6bfe` 仍 `in_progress`（只剩 `shard 1/6` 与 `6/6` ✓）；最近完成仍是 `b7a98d9`（报的正是 TDZ 那条 ✓）。
 **⇒ 两层真因均已修 ⇒ 待 CI 验证** ✓。
+
+### 🎯 第 687 轮：**TDZ 修复仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`dce6bfe` 仍 `in_progress`（只剩两片 ✓）；最近完成仍是 `b7a98d9`（报的正是 TDZ ✓）。
+**⇒ 两层真因均已修 ⇒ 待 CI 验证** ✓。
