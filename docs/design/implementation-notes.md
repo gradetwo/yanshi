@@ -16887,3 +16887,34 @@ brush.set(BrushSetting::Radius, value);
 ④ 落地 5 处 ✓（**67→68 core / 123→124 total** ✓）；
 ⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓ ⇒ **并且**判据要加一条"**隔一次请求仍然生效**"✗（否则测不到持久化 ✓
    —— 这一条我下一轮补进判据 ✓）；门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
+
+### 🎯🎯🎯 第 155 轮：**真实笔刷文件证实了 `ln(倍率)` 那条映射** ✓（行业格式也完全到手 ✓）
+
+**`assets/brushes/classic-brush.myb` 的真实结构（原样 ✓）** ✓：
+```
+顶层键：comment / group / parent_brush_name / settings / version
+settings 是**对象**（不是数组 ✓），43 项，键是设置名（`anti_aliasing` / `radius_logarithmic` / …）
+"radius_logarithmic": {"base_value": 1.01,
+    "inputs": {"pressure": [[0.0, -1.86375], [0.237952, -1.42], [0.5, -0.355],
+                            [0.76506, 1.42], [1.0, 2.13]]}}
+```
+**两条立刻可用的结论 ✓** ✓：
+1. **键路径**：`settings[<设置名>].inputs[<输入名>] = [[压力, 偏移], …]` ✓ —— **与 `hokusai-core` 的类型一一对应** ✓
+   （`SettingValue{base_value, inputs}` ✓ + `InputMapping{input, points}` ✓）⇒ 落地**无需猜任何东西** ✗；
+2. **换算被真实文件证实** ✓：那组偏移是 **−1.86 … +2.13** ✓ ⇒ 对应倍率 **`e^-1.86 ≈ 0.16` … `e^2.13 ≈ 8.4`** ✓
+   ⇒ ⇒ **`ln(倍率)`** 正是行业口径 ✓（我上一轮按 `evaluator.rs` 推出来的 ✓，这一轮被**实物**确认 ✓）。
+**"存哪"也定了（行业做法 ✓）** ✓：`resolve_asset` 是**工作区缓存优先** ✓（我早前查过 ✓）
+⇒ ⇒ **把改过的 `.myb` 写回缓存里的同名文件** ✓ ⇒ 后续 `load_brush` **自然读到它** ✓
+（正是 MyPaint 的"**预设覆盖内置**" ✓；而内置文件**一个字节都没动** ✓）
+⇒ 手法与 `save_palette` **完全一致** ✓（写临时文件 ⇒ `import_asset{overwrite:true}` ✓）。
+**下一轮（写死 ✓，无未知量 ✓）** ✓：
+① `set_brush_dynamics{brush, curve:{size_pressure, opacity_pressure, tilt_size}}` ✓：
+   * `size_pressure` ⇒ `settings.radius_logarithmic.inputs.pressure` ✓（**保留 `base_value` 与其它输入** ✓）；
+   * `opacity_pressure` ⇒ `settings.opaque.inputs.pressure` ✓；`tilt_size` ⇒ `settings.radius_logarithmic.inputs.tilt` ✓；
+   * **映射**：`[[压力, 倍率]] ⇒ [[压力, ln(倍率)]]` ✓（写进 `summary` ✓）；
+   * **只替换给到的输入** ✓，其余原样 ✓；
+② 解析出笔刷的**真实文件**（`load_brush` 那套放宽规则 ✓ 或 `resolve_asset("brush", name)` ✓）⇒ 读 JSON ✓ ⇒ 改 ✓
+   ⇒ 写临时文件 ⇒ `import_asset{kind:"brush", name, path, overwrite:true}` ✓；
+③ **缺省/不给 curve ⇒ 立刻报错** ✓（这个工具没给 curve 就没有意义 ✓ —— 别静默成功 ✗）；
+④ 落地 5 处 ✓（**67→68 core / 123→124 total** ✓）；
+⑤ **判据补一条"隔一次请求仍生效"** ✗ ⇒ 跑 `scripts/tool-brush-dynamics.mjs` ✓ ⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
