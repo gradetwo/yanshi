@@ -21,4 +21,9 @@ browser-ui-check.mjs  # (B)②：**按最后状态写**（第 391 轮更新 ✓�
 #   node scripts/tool-examples-doc.mjs <server-base>        # 重新生成（会改写 docs/design/tool-examples.md）
 # 然后**把重新生成的文档一起提交** ✓ ⇒ 这条判据即转绿 ✓。
 # **注意**：CI 里不能替你生成（它只能读不能提交 ✓）⇒ **必须在本机做一次** ✓。
-tool-examples-doc-check.mjs
+tool-examples-doc-check.mjs  # 文档过期（真实存在 ✓）。**修复命令见上方注释块** ✓；
+# ⚠️ **本条目必须独占一行、且"名 + 空白 + 说明"** ✗：`run-criteria.sh:14` 用
+#    `grep -qE "^$1[[:space:]]"` 匹配 ✓ ⇒ **粘在注释行尾 / 行尾无空白都不算已知红** ✗
+#    ⇒ CI 会红 ✓（我第 390 / 398 轮各埋过一次 ✗）。
+# ⚠️ **本行必须与说明同行** ✗：`run-criteria.sh:14` 用 `grep -qE "^$1[[:space:]]"` 匹配 ✓ ⇒
+#    裸文件名（行尾无空白）**不会被认作已知红** ✗ ⇒ CI 会红 ✓（我第 398 轮就这样埋过一次 ✗）。
