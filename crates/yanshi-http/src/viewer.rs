@@ -20,6 +20,7 @@ pub fn page_with_read_tools() -> String {
         .map(|spec| format!("\"{}\"", spec.name))
         .collect();
     PAGE.replace("__READ_TOOLS__", &names.join(", "))
+        .replace("__BUILD_ID__", crate::server::BUILD_ID_TEXT)
 }
 
 /// **查看器整页** ✓（原样 ✓；发出去时会把只读工具清单注入 `__READ_TOOLS__` ✓ —— 见上面那个函数 ✓）。
@@ -6265,7 +6266,7 @@ async function loadLocalBrushText(name) {
   // **笔刷文本也写进同一个缓存**（**按需**：只有真正用到的笔刷才进缓存，199 支不会全下）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-v1")
+      caches.open("yanshi-shell-__BUILD_ID__")
         .then((cache) => cache.put("/brushes/" + name + ".myb",
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 /brushes/" + name + ".myb（离线将没有本地预览）：" + error));

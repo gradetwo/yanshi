@@ -555,12 +555,12 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     //  `/service-worker.js` ⇒ 缓存外壳 ⇒ **服务端不在时页面仍能打开**；`/manifest.webmanifest` ⇒ 可安装。
     if path == "/service-worker.js" {
         return match method {
-            "GET" => Response::bytes(
-                200,
-                "text/javascript; charset=utf-8",
-                SERVICE_WORKER_JS.as_bytes().to_vec(),
-            )
-            .with_header("Cache-Control", "no-cache"),
+            "GET" => {
+                // **注入构建标识** ✓（`build.rs` 已把 commit 编进来 ✓ ⇒ 新构建 ⇒ 新缓存名 ✓）。
+                let body = SERVICE_WORKER_JS.replace("__BUILD_ID__", BUILD_ID);
+                Response::bytes(200, "text/javascript; charset=utf-8", body.into_bytes())
+                    .with_header("Cache-Control", "no-cache")
+            }
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -1398,9 +1398,22 @@ const BRAND_FILES: [(&str, &str); 14] = [
 ];
 
 /// **Service Worker**（离线优先 PWA 第一步）：缓存外壳，服务端不在时页面仍能打开。
+/// 上面那个标识的**可读副本** ✓（`viewer.rs` 注入页面时要用 ✓ —— 两边的缓存名必须**一模一样** ✗，否则查不到 ✓）。
+pub const BUILD_ID_TEXT: &str = BUILD_ID;
+
+/// **这份构建的标识** ✓（`build.rs` 编进来的短 commit ✓；取不到就退回版本号 ✓）。
+/// 它进 SW 的**缓存名** ✓ ⇒ 新构建自动作废旧外壳 ✓。
+const BUILD_ID: &str = match option_env!("YANSHI_COMMIT") {
+    Some(commit) => commit,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const SERVICE_WORKER_JS: &str = r##""use strict";
 const SHELL = ["/", "/favicon.svg", "/brand/svg/icon-light.svg", "/brush-previews/index.json"];
-const CACHE = "yanshi-shell-v1";
+// **缓存名里带上构建标识** ✓（(A)⑥「SW 升级不脏读」的正主 ✓）：
+// 名字一变 ⇒ 下面那句"删掉所有名字不同的缓存"✓ 就自动作废**整份旧外壳** ✓
+// ⇒ 这正是第 210 轮查到的真因 ✓（旧 js + 新 wasm ⇒ 内核预览失败 ✓）。
+const CACHE = "yanshi-shell-__BUILD_ID__";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
