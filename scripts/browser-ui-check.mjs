@@ -2491,6 +2491,13 @@ const layerPanel = await evaluate(`(async () => {
   const rows = () => [...document.querySelectorAll("#layerList .layer-row")];
   const ids = () => rows().map((row) => row.dataset.layerId);
   const out = {};
+  // **先建出探针期望的那个测试层** ✓（第 240 轮 ✓，目标原话："需用当下活动的 doc/token **建测试层**" ✓）。
+  // 这一段跑在**初始文档**上 ✓（2473 之前最后一次导航在 2226 ✓），而下面要点的锁图标属于
+  // layer_paint ✗ —— **原先没人建过它** ⇒ 找不到那行 ⇒ 图标读成 null ✗。
+  // **必须走页面自己的入口** ✓（window.yanshiCallTool ✓）：周围注释的要求是
+  // "**面板 DOM 与服务端两边交叉核对**" ✓ ⇒ 在页面之外建的层走不到那条路 ✗。
+  await window.yanshiCallTool("create_layer", { layer_id: "layer_paint", name: "locking probe" });
+  await new Promise((r) => setTimeout(r, 900));
   out.rowCount = rows().length;
   out.ids = ids();
   out.selected = document.querySelector("#layerList .layer-row.selected")?.dataset.layerId || null;
