@@ -52,25 +52,41 @@ if (flags.size < 2) {
 const work = mkdtempSync(join(tmpdir(), "yanshi-launcher-"));
 const valueFor = ["--root", work, "--doc", "boot"];
 
-/** 把某个开关交给二进制解析 ⇒ 回 { accepted, message }。 */
-function probe(flag) {
-  const runs = [[flag], [flag, "/tmp"]];
-  for (const args of runs) {
+/** 跑一次二进制 ⇒ 回 { text, rejectedToken }：rejectedToken 是"被它拒掉的那个 token"，无则 null。 */
+function runOnce(args) {
+  const text = (() => {
     try {
-      const out = execFileSync(BINARY, args.concat(valueFor), {
+      return String(execFileSync(BINARY, args.concat(valueFor), {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 4000,
-      });
-      const text = String(out);
-      if (/未知参数|unexpected argument|unrecognized/i.test(text)) return { accepted: false, message: text.trim().split("\n")[0] };
-      return { accepted: true, message: "启动到运行期（开关被接受）" };
+      }));
     } catch (err) {
-      const text = String((err && (err.stderr || err.stdout)) || err.message || err);
-      if (/未知参数|unexpected argument|unrecognized/i.test(text)) return { accepted: false, message: text.trim().split("\n")[0] };
-      if (/需要值|requires a value|value is required/i.test(text)) continue;
-      return { accepted: true, message: "启动到运行期（开关被接受）" };
+      return String((err && (err.stderr || err.stdout)) || err.message || err);
     }
+  })();
+  const zh = text.match(/未知参数\s+(\S+)/);
+  const en = text.match(/unexpected argument '?([^'\s]+)'?/i) || text.match(/unrecognized[^\n]*?'?([^'\s]+)'?/i);
+  const token = (zh && zh[1]) || (en && en[1]) || null;
+  return { text, rejectedToken: token };
+}
+
+/**
+ * 把某个开关交给二进制解析 ⇒ 回 { accepted, message }。
+ *
+ * ⚠️ **必须看"被拒的是哪个 token"** ✗：带值开关若不给值，clap 会把**下一个 token** 当它的值，
+ * 于是报错里的"未知参数"指的是**别的 token**（本轮实测：`--assets-dir --root …` 报
+ * "未知参数 /tmp/yanshi-launcher-…"）⇒ **只看"有没有未知参数"就会把合法开关判成非法** ✗。
+ * ⇒ 所以：**只有当被拒的 token 就是这个开关本身**，才算"二进制不认识它" ✓。
+ */
+function probe(flag) {
+  const notes = [];
+  for (const args of [[flag, "/tmp"], [flag]]) {
+    const r = runOnce(args);
+    const first = r.text.trim().split("\n").filter(Boolean)[0] || "(无输出)";
+    if (!r.rejectedToken) return { accepted: true, message: "启动到运行期（开关被接受）" };
+    if (r.rejectedToken !== flag) return { accepted: true, message: "被拒的是别的 token（" + r.rejectedToken + "）⇒ 本开关被接受" };
+    notes.push(first);
   }
-  return { accepted: true, message: "两种形式都未被判为未知（按接受处理）" };
+  return { accepted: false, message: notes[0] || "被拒" };
 }
 
 console.log("  启动脚本传的开关：" + [...flags].join(" "));
