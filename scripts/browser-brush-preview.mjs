@@ -247,8 +247,20 @@ await evaluate("window.yanshi.setColor('#0000ff')");
 await dragStroke(0.65, 12);
 await sleep(2000);
 
-const redBand = await countBand(90, 120);
-const blueBand = await countBand(195, 225);
+// **带的中心由「拖动的那个比例 × 画布高」算出来** ✓（第 445 轮 ✓）：原先两条带是**常数** ✗
+// ⇒ 那是**按更大的画布**写的 ✓，而 runner 建的文档是 **320×240**（`run-criteria.sh:52` ✓）
+// ⇒ 笔迹落在 y≈84 与 y≈156 ✓ ⇒ **两条带都没盖住** ✗ ⇒ 读数是「新增墨 0」✓（**伪装成「落笔没生效」** ✗）。
+// 画布位图尺寸与文档尺寸一致 ✓（实测：文档宽 320 ⇒ board.width = 320 ✓，见第 429 轮那条探针 ✓）。
+const boardH = await evaluate("document.getElementById('board').height");
+const bandAround = (fy) => {
+  const center = Math.round(boardH * fy);
+  const half = Math.max(12, Math.round(boardH * 0.075));
+  return [Math.max(0, center - half), Math.min(boardH, center + half)];
+};
+const [redFrom, redTo] = bandAround(0.35);
+const [blueFrom, blueTo] = bandAround(0.65);
+const redBand = await countBand(redFrom, redTo);
+const blueBand = await countBand(blueFrom, blueTo);
 console.log(
   `  ⑤ 落笔颜色：红带(红 ${redBand && redBand.red} / 蓝 ${redBand && redBand.blue}` +
     ` / 新增墨 ${redBand && baseRed ? redBand.ink - baseRed.ink : "?"}) ` +
