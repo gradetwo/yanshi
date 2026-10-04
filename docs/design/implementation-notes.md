@@ -21701,3 +21701,22 @@ const countBand = async (fromY, toY) => {
 3. 笔太细 + 抗锯齿 ⇒ 没有像素过 `>150 && >g+60` ✗。
 **⇒ 下一刀（✓）** ✓：**加"带内非透明像素数"探针** ✓（`a >= 40` 的计数 ✓）
 ⇒ **一次区分"什么都没画"与"画了、颜色不对"** ✓ —— **先造观测，再改代码** ✓（这一段最有效的手法 ✓）。
+
+### 🎯🎯🎯 第 419 轮：**`offline-draw` 通过（2/5）；又浮出 `tool-reference-delta-e` 的真失败** ✗
+
+**读到（✓，`run 37210236196` 的另一片，只读一个 job ✓）** ✓：
+```
+→ browser-offline-draw.mjs
+✓ browser-offline-draw.mjs          ← **离线能画：通过** ✓ ✓（接线修复后第二条恢复 ✓）
+✓ browser-brush-panel / browser-first-paint / browser-reference-overlay
+✓ tool-analyze-region / tool-brush-style / tool-examples-doc / tool-gradient-blend / tool-self-heal
+✗ tool-reference-delta-e.mjs (EXIT=1)  ｜**参考图色差不合格** ✗
+—— 通过 9｜意外失败 0｜已知红 0｜跳过 0      ← **这一轮早于计数修复** ⇒ 那个 0 不可信 ✓
+```
+**⇒ 结论（✓）** ✓：
+1. **A⑥ 离线：2/5 确认恢复** ✓（`offline-reload` ✓ + `offline-draw` ✓）⇒ **还差 `offline-export` / `offline-shell` / `no-stale-read`** ✓；
+2. **又一条被藏住的真失败** ✗：**`tool-reference-delta-e` 报"参考图色差不合格"** ✓
+   —— **它有具体数值** ✓ ⇒ **是真失败，不是"没跑起来"** ✓（**这条此前也被"意外失败 0"与"进度日志当理由"两层盖住** ✓）。
+**★ 这一段的总账（✓）** ✓：**修好两个读数通道之后，浮出来的真失败已经有三条** ✓：
+`browser-brush-preview`（颜色没落到画面 ✓）、`browser-kernel-perf`（曾是永远红 ✓，已修 ✓）、
+`tool-reference-delta-e`（参考图色差 ✗）⇒ ⇒ **"绿"从来不是没有失败，只是没有人把它数出来** ✓。
