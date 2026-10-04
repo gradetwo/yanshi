@@ -97,12 +97,13 @@ for (const tool of withExample) {
   // 「不在日志（里/中）」「从未存在过」「找不到…」「没有可修改的…」「已经有一个打开的…」
   // 「先 begin_changeset」「需要 delta 或 transform」（**都是产品在说"你引用的东西还不具备"** ✓）。
   // ⇒ **这不是放松标准** ✓：`needsState` 这一类**就是为它们设的** ✓ —— 例如 `revert_to` 必须先有 `declare_head` ✓。
-  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform
-           // **第 520 轮补的三条** ✓：它们同样"缺上下文"而非"值写错" ✗ ——
-           // 「缺少必填参数 path 或 blob」（**没有可导入的文件** ✓）、
-           // 「order 必须是全部存活图层的完整顺序」（**要运行时图层清单** ✓）、
-           // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
-           |缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch/i.test(detail)) {
+  // **第 520 轮补的三条** ✓：它们同样"缺上下文"而非"值写错" ✗ ——
+  // 「缺少必填参数 path 或 blob」（**没有可导入的文件** ✓）、
+  // 「order 必须是全部存活图层的完整顺序」（**要运行时图层清单** ✓）、
+  // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
+  // ⚠️ **注释不能写在正则字面量里面** ✗（第 546 轮实测 ✓）：`//` 会**终止正则** ✓
+  // ⇒ 报 `SyntaxError: Invalid regular expression: missing /` ✓ ⇒ **整条判据当场失效** ✗。
+  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch/i.test(detail)) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }
