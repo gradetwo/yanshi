@@ -1038,6 +1038,10 @@ const selectionResult = await evaluate(`(async () => {
     textButton.click();
     fire("pointerdown", at(0.3, 0.12), 622);
     const afterText = await stable();
+    // ⚠️ 日志要**立刻**读（第 811 轮）：后面还有别的步骤，而 switchDocument
+    // （viewer.rs:3184）会 $("log").innerHTML = "" ⇒ **切文档就清空日志** ⇒
+    // 若在整段末尾才读，读到的是被清过的那一份（本机隔离实验已证实：立刻读就有）。
+    const logAfterText = document.getElementById("log").innerText;
     let textChanged = 0;
     for (let index = 0; index < afterText.length; index += 4) {
       if (afterText[index] !== beforeText[index] || afterText[index + 1] !== beforeText[index + 1]) {
@@ -1051,7 +1055,11 @@ const selectionResult = await evaluate(`(async () => {
       ok: true, inside, outside, clearedOutside, textChanged,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
-      textLogged: log.includes("已输入文本"),
+      // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
+      textLogged: logAfterText.includes("已输入文本"),
+      textLoggedAtEnd: log.includes("已输入文本"),
+      logLenAfterText: logAfterText.length,
+      logLenAtEnd: log.length,
     };
   } catch (error) {
     return { error: String((error && error.message) || error), stage };
