@@ -17613,3 +17613,29 @@ bindgen 接口** ✓ —— 也就是把 `viewer.rs:6242` 那段"取 `/brush-mod
 改成"**加载 `crates/yanshi-wasm/pkg/` 那套 JS 胶水**"✓（**客户端渲染早就在用它** ✓ ⇒ 两条路**共用同一份内核** ✓）。
 **一条方法论（本会话第 N 次印证 ✓）** ✓：**"两个东西同名" ≠ "两个东西可换"** ✗ ——
 差的是 **ABI** ✓。地图画到"文件名"就停 ✗，就会漏掉这一层 ✓；**先跑一次/先读一次** ✓ 才看得出来 ✓。
+
+### 🎯 第 187 轮：**退休的真实工作量 = 把笔刷预览 API 移植进共享内核** ✗（不是接线 ✗）
+
+**两条路的实测对照（原文 ✓）** ✓：
+```
+共享内核：await import("/wasm/yanshi_wasm.js")  ✓（bindgen 胶水 ✓）⇒ new module.WasmKernel(…) ✓
+          暴露的 pub fn（crates/yanshi-wasm/src/lib.rs ✓）：
+            new / version / load_atoms_json / apply_atom_json /
+            render_region_rgba / render_region_png / render_region_info / render_region_direct_rgba /
+            set_preview_object / extend_preview_stroke / commit_preview / clear_preview
+          ⇒ **全是文档与渲染** ✓ ⇒ **没有"笔尖预览"入口** ✗
+门面：    loadLocalBrushModule() ✓（viewer.rs:6239 ✓）在 6341 处被用 ✓
+          ⇒ 提供**拖动期的本地笔刷预览** ✓（取笔刷文本 ⇒ 本地画 ✓）
+```
+⇒ ⇒ **结论** ✓：`WasmKernel` 与门面**不是"同一接口的两种打包"** ✗ —— 前者**根本没有**后者那套笔刷 API ✓
+⇒ ⇒ 所以退休 = **把门面那套笔刷预览 API 移植进 `yanshi-wasm`** ✗
+（= **新增导出 + 让查看器改调它** ✓），**不是**换文件 ✗、也**不是**改打包脚本 ✗。
+**这也解释了它为什么一直没做（如实 ✓）** ✓：它不是"顺手删一个 crate"✓，而是一次**真实的代码迁移** ✓
+（门面的 C-ABI 导出 ⇒ 内核的 bindgen 方法 ✓，两边调用形态不同 ✓）。
+**下一轮（写死 ✓）** ✓：
+① 读**门面导出的函数名与签名** ✓（`crates/yanshi-brush-wasm/src/lib.rs` ✓ 的 `#[no_mangle] pub extern "C"` ✓）
+   —— 那**就是要往内核里加的清单** ✓；
+② 读查看器 6341 那段**怎么用它** ✓（调用序列与数据形状 ✓）⇒ 决定内核侧该暴露**哪些**方法 ✓；
+③ 先**加内核方法**（不动查看器 ✓）⇒ 再加**一条判据**：同一支笔、同一串点 ⇒
+   **内核笔刷预览** 与 **服务端笔触** 的像素**逐字节相同** ✓（可复用 `wasm-brush-parity.mjs` 的思路 ✓）；
+④ 判据绿了**才**改查看器 ✓、**才**删门面 ✓（**顺序不能反** ✗ —— 反了就是"先删后补" ✗）。
