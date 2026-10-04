@@ -23,8 +23,9 @@ const failures = [];
 // ① 没设参考图
 const before = await call(doc, token, "analyze_region", { region, compare_with_reference: true });
 const cmp0 = before && before.comparison_with_reference;
-console.log("  没参考图 ⇒ " + JSON.stringify(cmp0).slice(0, 150));
+console.log("  没参考图 ⇒ " + String(JSON.stringify(cmp0)).slice(0, 150));
 if (!cmp0 || cmp0.ok !== false) failures.push("没有参考图时没有明确作答 ⇒ 可能是静默给了一个值");
+if (cmp0 === undefined) console.log("  【原始返回】" + String(JSON.stringify(before)).slice(0, 400));
 
 // 画几笔并把它设为参考图
 for (let i = 0; i < 4; i++) {
@@ -39,13 +40,13 @@ console.log("  render_region 的 blob=" + (hashMatch ? hashMatch[1].slice(0, 12)
 if (!hashMatch) failures.push("从 render_region 拿不到 blob 哈希 ⇒ 判据无法继续（先看它的返回形状）");
 else {
   const set = await call(doc, token, "set_reference", { blob_hash: hashMatch[1] });
-  console.log("  set_reference ⇒ " + JSON.stringify(set).slice(0, 120));
-  if (set && set.ok === false) failures.push("set_reference 失败：" + JSON.stringify(set).slice(0, 140));
+  console.log("  set_reference ⇒ " + String(JSON.stringify(set)).slice(0, 120));
+  if (set && set.ok === false) failures.push("set_reference 失败：" + String(JSON.stringify(set)).slice(0, 140));
 
   // ② 自比 ⇒ ΔE ≈ 0
   const same = await call(doc, token, "analyze_region", { region, compare_with_reference: true });
   const cmp1 = same && same.comparison_with_reference;
-  console.log("  自比 ⇒ " + JSON.stringify(cmp1).slice(0, 170));
+  console.log("  自比 ⇒ " + String(JSON.stringify(cmp1)).slice(0, 170));
   if (!cmp1 || cmp1.ok !== true) failures.push("设了参考图后仍没有 ok:true 的比较结果");
   else if (!(cmp1.delta_e_mean < 1.0)) failures.push(`同一画面自比的 ΔE 均值应 ≈ 0，实为 ${cmp1.delta_e_mean}`);
 
@@ -55,7 +56,7 @@ else {
     color: { r: 20, g: 140, b: 200, a: 255 } });
   const changed = await call(doc, token, "analyze_region", { region, compare_with_reference: true });
   const cmp2 = changed && changed.comparison_with_reference;
-  console.log("  改画面后 ⇒ " + JSON.stringify(cmp2).slice(0, 170));
+  console.log("  改画面后 ⇒ " + String(JSON.stringify(cmp2)).slice(0, 170));
   if (!cmp2 || cmp2.ok !== true) failures.push("改变画面后没有拿到比较结果");
   else if (!(cmp2.delta_e_mean > 5.0)) failures.push(`改变画面后 ΔE 均值应明显 > 5，实为 ${cmp2.delta_e_mean}`);
 }
