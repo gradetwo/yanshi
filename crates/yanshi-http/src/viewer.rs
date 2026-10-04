@@ -1002,19 +1002,47 @@ async function localBlobPut(url, bytes) {
 /// 实测出的引导链只有三处 ✓：`/api/tools/get_document` ✓、`/api/tools/list_layers` ✓、`/api/atoms` ✓
 /// （`/api/blob` 那 5 处是像素 ✓，已由缩略图那条覆盖 ✓，这里**不重复缓存** ✗）。
 const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/atoms", "/api/effects"];
+/// **只缓存读工具** ✗ —— 写工具绝不缓存 ✓（缓存写请求会造成"看着成功其实没落库"✗）。
+const LOCAL_READ_TOOLS = ["get_document", "list_layers"];
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
   const method = (options && options.method) || "GET";
   let cacheable = false;
+  let toolName = "";
   try {
     const parsed = new URL(url, location.href);
-    cacheable = method === "GET" && LOCAL_JSON.includes(parsed.pathname);
+    if (method === "GET") {
+      cacheable = LOCAL_JSON.includes(parsed.pathname);
+    } else if (
+      method === "POST" &&
+      parsed.pathname.startsWith("/api/tools/") &&
+      options &&
+      options.body
+    ) {
+      // **实测教训（第 167 轮 ✓）**：这个调用是 **POST**，但路径是 `/api/tools/list_layers` ✓
+      // ⇒ 我原来只认**正好等于** `/api/tools` ✗ ⇒ `cacheable` 一直是 false ✓
+      // ⇒ 于是"**写入根本没发生**"✗（而不是写失败 ✓ —— 我加的警告一句都没出现 ✓，
+      //   正是这个"没有警告"把范围从"写失败"缩小到"没进分支"✓）。
+      // 工具名**从路径末段取** ✓（`{tool}` 那个 body 形态也仍然支持 ✓）。
+      // **实测根因（第 166 轮 ✓）**：`list_layers` 与 `get_document` **在源码里根本不出现** ✗
+      // ⇒ 它们是**构造出来**的调用 ✓ ⇒ 走的是 **`POST /api/tools`**（`{tool, arguments}` ✓）
+      // ⇒ 而我第一版只放行 `GET` ✗ ⇒ 于是 `atoms`/`effects`（GET ✓）进了缓存 ✓，
+      //   这两个（POST ✓）**一条都没写进去** ✗ ⇒ 离线时 `refreshLayers` 就炸在这里 ✓。
+      // ⇒ **只放行"读性质"的那两个工具** ✓（**写工具绝不放行** ✗ —— 缓存写请求是灾难 ✓）。
+      try {
+        const fromBody = String(JSON.parse(String(options.body)).tool || "");
+        toolName = fromBody || parsed.pathname.slice("/api/tools/".length);
+      } catch (error) {
+        toolName = parsed.pathname.slice("/api/tools/".length);
+      }
+      cacheable = LOCAL_READ_TOOLS.includes(toolName);
+    }
   } catch (error) {
     cacheable = false;
   }
   if (!cacheable) return fetch(url, options);
-  const key = localKey(url) + "|json";
+  const key = localKey(url) + (toolName ? "|tool:" + toolName : "") + "|json";
   const local = await localJsonGet(key);
   if (local !== null) return new Response(local, { status: 200, headers: { "content-type": "application/json" } });
   try {
@@ -1025,7 +1053,7 @@ async function fetchOrLocal(url, options) {
         await localJsonPut(key, text);
       }
     } catch (error) {
-      // 存不进去就算了 ✓（不因为缓存影响主流程 ✓）
+      console.warn("[yanshi] 缓存写入失败（不影响主流程）：", error);
     }
     return response;
   } catch (error) {
@@ -1051,8 +1079,11 @@ async function localJsonGet(key) {
 async function localJsonPut(key, text) {
   try {
     await localWithStore("readwrite", (store) => store.put({ key: key, text: text, at: Date.now() }), LOCAL_JSON_STORE);
+    return true;
   } catch (error) {
-    // 同上 ✓
+    // **降级仍然静默**（不影响主流程 ✓），但**必须留痕** ✗ —— 我这轮就是被"吞掉的错误"挡住了一整轮 ✓。
+    console.warn("[yanshi] 本地缓存写入失败（不影响主流程）：", key, error);
+    return false;
   }
 }
 /// **本地优先地**装底图 ✓ —— 这是 5014 那唯一一处的替身 ✓。
