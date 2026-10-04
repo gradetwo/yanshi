@@ -645,8 +645,13 @@ const moveResult = await evaluate(`(async () => {
 if (moveResult && moveResult.beforeBbox) {
   const [bx, by, bw, bh] = moveResult.beforeBbox;
   const region = { x: bx, y: by, w: Math.max(1, bw), h: Math.max(1, bh) };
+  // **必须用"当下活动的" doc/token** ✓（第 234 轮更正 ✓）：
+  // 这一段前面（606 行 ✓）已经把页面切到 `moveDoc` ✓，而 `docId`/`token`（344/345 ✓）是**初始 URL** 的 ✓
+  // ⇒ 旧版拿**另一份文档**去渲染 ✓ ⇒ 量到的 576 个"残影"像素其实是**那份文档自己的内容** ✗
+  // ⇒ **产品那侧一直是好的** ✓（`dirty.rs` 已经做了新旧包围盒**并集** ✓、单测
+  // `moving_an_object_clears_the_pixels_it_left_behind` 绿 ✓）⇒ **错的是这条探针** ✓。
   const rendered = await fetch(
-    `${origin}/api/tools/render_region?doc=${docId}&token=${token}`,
+    `${origin}/api/tools/render_region?doc=${moveDoc}&token=${moveToken}`,
     { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ region, raw: true }) },
   ).then((r) => r.json()).catch(() => ({}));
