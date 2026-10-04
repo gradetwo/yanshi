@@ -21583,3 +21583,24 @@ runner 传 `<viewer-url> <base> <token> <cdp-port>` ✓，而判据各自用 `ar
 —— **问题在于它没有被当成约定** ✗。
 **★ 该固定的一条（✓）** ✓：**browser 判据的端口一律从 `CDP_PORT` 环境变量取** ✓
 （**runner 已经设了 ✓**）；**argv 只用于 viewer URL / base / token** ✓。
+
+### 🎯 第 411 轮：**接线修好之后 —— 离线判据跑起来了，而且通过** ✓
+
+**读到（✓，run `37210236196` = `062ad2f`，含全部三处接线修复 ✓）** ✓：
+```
+→ browser-offline-reload.mjs
+✓ browser-offline-reload.mjs          ← **离线判据现在真的跑起来，而且通过** ✓ ✓
+✗ browser-brush-preview.mjs (EXIT=1)  ｜① 2B_pencil: loaded=true 78×30 hint=78×30
+✗ browser-kernel-perf.mjs   (EXIT=2)  ｜URL 需要带 debug=1（内核句柄仅在调试模式暴露）
+—— 通过 8｜意外失败 0｜已知红 0｜跳过 0
+```
+**⇒ 结论（✓）** ✓：**第 408-410 轮那 8 处接线修复是有效的** ✓ —— **`browser-offline-reload` 从"取不到调试目标"变成"通过"** ✓ ✓
+⇒ ⇒ **A⑥ 的"离线"证据开始恢复** ✓（**还差 `offline-draw` / `offline-export` / `offline-shell` / `no-stale-read` 的读数** ✓）。
+**⚠️ 但有两处没对上（✗，留待下一轮）** ✓：
+1. **同一次读数里既有 `✗ … (EXIT=1/2)` 又有"意外失败 0"** ✗ ⇒ **两者不可能同片** ✓
+   ⇒ 要么这些 `✗` 来自**另一片** ✓，要么**汇总行的口径**与 `✗` 行不同源 ✓ ⇒ **须按"只读一个 job"重读** ✓；
+2. `browser-kernel-perf` 的理由是 **"URL 需要带 `debug=1`"** ✓ ⇒ 这是**已知的、有意的要求** ✓
+   （第 347 轮那一条 ✓）⇒ **如果它现在没人加 `debug=1`，它就是一条"永远红"** ✗ ⇒ **要么加、要么进已知红** ✓。
+**★ 另一件事（✓，与主线并行 ✓）** ✓：**站点分支 `site` 已交付** ✓（orphan ✓、双语 ✓、零脚本 ✓、自检 ✓）
+⇒ 其中的联系方式 **`yanshi@wangda.today` 在仓库里四处印证** ✓（`CONTRIBUTING.md` ✓ `SECURITY.md` ✓
+issue 模板 ✓ `Cargo.toml` ✓）⇒ **用的是项目自己的地址，不是猜的** ✓。
