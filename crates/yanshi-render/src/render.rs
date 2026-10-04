@@ -521,6 +521,16 @@ impl Renderer {
     fn local_padding(&self, state: &DocumentState, area: &Bbox) -> u32 {
         let mut padding = 0u32;
         for object in state.alive_objects() {
+            // **形状对象的羽化也要算进「区域内需要的外扩」** ✓（第 594 轮 ✓）：
+            // 上一轮我把这一支加进了 `global_padding`（**整层类** ✓），而**区域渲染走的是这里** ✗
+            // ⇒ 于是 1×1 区域拿不到 `feather/2+1` 的外扩 ⇒ 形状被裁在缓冲外 ⇒ 羽化的外半边丢了 ✗
+            // ⇒ 实测形状外仍是 `[255,255,255,255]` ✓（与修复前一致 ✓）⇒ **加错了支** ✓。
+            if let Some(f) = object.data.get("feather").and_then(Value::as_f64) {
+                if f > 0.0 {
+                    let radius = (f / 2.0).round().max(1.0) as u32;
+                    padding = padding.max(radius + 1);
+                }
+            }
             let reach: u32 = match object.object_type {
                 yanshi_core::ObjectType::Retouch => {
                     let size = object
