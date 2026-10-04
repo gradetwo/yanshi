@@ -23519,3 +23519,28 @@ render.rs:1598                  ShapeKind::Rect => rect_coverage_clipped(bbox, c
 ⇒ ⇒ ⇒ **这一条同时解释两条断言失败（`plainOut` ✓ 与 `softOut` ✓）** ✓ —— **因为它们读的是同一个点** ✓。
 **⇒ 下一处（✓）** ✓：**读 `render_region` 的返回尺寸与 padding** ✓ ——
 **请求 `1×1` 时它返回几张像素、那个像素对应哪里** ✓（**若返回更大 ⇒ 判据必须按 padding 换算坐标** ✗）。
+
+### 🎯🎯🎯 第 537 轮：**padding 只来自滤镜/蒙版羽化 ⇒ "读错像素"也排除；新嫌疑是字段名** ✗
+
+**读到（✓，`render.rs:466-480` ✓）** ✓：
+```rust
+:466  pub fn padding_for_region(&self, state, region) -> u32
+:477  /// 整层类效果的外扩（**调整不产生外扩；滤镜与蒙版羽化产生邻域需求**）
+:478  fn global_padding(&self, state) -> u32 { for layer in state.alive_layers() { … } }
+```
+**⇒ 推理（✓）** ✓：**外扩只来自"滤镜与蒙版羽化"** ✓ ⇒ **本判据的文档里没有滤镜、没有蒙版** ✗
+⇒ ⇒ **所以 `padding = 0`** ✓ ⇒ **返回的就是请求的那 1 个像素** ✓
+⇒ ⇒ ⇒ **"读错像素"这个嫌疑也被排除** ✗ ✓（**第四个 ✓**）
+⇒ ⇒ **剩下的唯一嫌疑：`region` 的字段名** ✗：
+```js
+// 判据（px 辅助函数）：
+{ region: { x, y, **width: 1, height: 1** }, raw: true, max_px: 1000 }   ✓
+// 而写入器 / `Bbox` 用的是 **w / h** ✓
+```
+⇒ ⇒ ⇒ **若服务端只认 `w/h` ⇒ 判据传的 `width/height` 被忽略** ✗ ⇒
+**`region` 可能退化成"默认/整幅"** ✓ ⇒ **读到的第一个像素当然不是它请求的点** ✗ ✓
+   —— **这一条同时解释 `plainOut` 与 `softOut`** ✓（**同一段读法 ✓**）。
+**⇒ 下一处（✓）** ✓：**读 `render_region` 的 spec 里 `region` 的字段名** ✓ ——
+**是 `x,y,w,h` 还是 `x,y,width,height`** ✓（**而"两种写法都收"是最可能的真相 ✓**）。
+**★ 这一族（✓）** ✓：**`button` vs `buttons` ✓（第 505 轮）、现在 `w/h` vs `width/height`** ✗ ——
+**"同名不同字的字段"在这个项目里已经出现过一次，而那次也没有触发** ✗。
