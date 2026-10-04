@@ -24505,3 +24505,21 @@ grep "prefers-color-scheme" ⇒ **随系统自动明暗** ✓
 **⇒ 待两件读数（✓）** ✓：**`1761ce1`（geometry 读法 ✓）** 与 **`524c7f7`（段内点名 ✓）** 都在队列里 ✓。
 **★ 一条（✓）** ✓：**这一轮我没有新证据** ✓ —— 只做了一次"读写两端并排核对" ✓
 ⇒ ⇒ **而这一步本该在做第一处修复之前就做** ✗（**那样能省掉两轮空操作 ✓**）。
+
+### ✅ 第 603 轮：**链路确认 —— `padding_for_region` 同时用 `global` 与 `local`** ✓
+
+**核对（✓）** ✓：
+```
+:216  let declared = self.padding_for_region(state, &region);      ← **区域渲染用它** ✓
+:466  pub fn padding_for_region(&self, state, region) -> u32 {
+:467    let global = self.global_padding(state);
+:474    self.local_padding(state, &reach_area).max(global)          ← **两者取最大** ✓
+```
+**⇒ 三条（✓）** ✓：
+1. ✅ **区域渲染走 `padding_for_region`** ✓ ⇒ **它同时用 `global` 与 `local`** ✓
+   ⇒ **所以我这两处（`b00ca1e` ✓、`6f3de15` ✓）都被用到了** ✓；
+2. ⇒ ✗ **而它们此前都是空操作** ✓ —— **因为键读错了** ✓（**`object.data["feather"]` 不存在 ✓**）
+   ⇒ ⇒ **本轮把键改成 `data.geometry.feather`** ✓ ⇒ **这才是使它们生效的那一步** ✓；
+3. ⇒ ⇒ **即：链路上现在通了** ✓ —— **待 CI 验证 ✓**。
+**★ 一条（✓）** ✓：**"两处都补了"与"两处都生效"之间隔着一个"键对不对"** ✗ ——
+**而"读数逐字未变"是它唯一的信号 ✓**（**本轮我用它定案 ✓**）。
