@@ -17593,3 +17593,23 @@ Cargo.toml（workspace 成员 ✓）+ crates/yanshi-brush-wasm/（本体 ✓） 
    ⇒ 必须**仍然逐字节相同** ✓ —— **这就是"替换后行为不变"的守门判据** ✓。
 **为什么这几轮偏慢（如实 ✓）** ✓：删除类改动的**代价不对称** ✗ —— 改错一行要回退整轮 ✓，
 而"先画地图再动刀"能把**一次做对的概率**拉高 ✓（本会话在锚点上栽过 3 次 ✓，正是这个道理 ✓）。
+
+### 🔴 第 186 轮：**"两份合一"不是"拷一个文件"** ✗ —— 我的地图漏了 ABI 这一层 ✓（幸好先量 ✓）
+
+**实测（原文 ✓）** ✓：
+```
+package-release.sh:408  cargo build … -p yanshi-wasm                        ⇒ target/…/release/yanshi_wasm.wasm ✓
+package-release.sh:410  … --out-dir crates/yanshi-wasm/pkg                  ⇒ 再经 **wasm-bindgen** ✓
+package-release.sh:412  ✓ 内核已生成：crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm ✓
+package-release.sh:441  （第二份实现的注释）"它**不需要 wasm-bindgen** ✓（**纯 C ABI** ✓）"
+```
+⇒ ⇒ **结论** ✓：两者**不是同一种接口** ✗ ——
+* **第二份实现（门面 ✓）** = **纯 C ABI** ✓ ⇒ 查看器用 `WebAssembly.instantiate` 直接调它的导出 ✓；
+* **共享内核 `yanshi-wasm`** = **wasm-bindgen 产物** ✓ ⇒ 它的入口是 bindgen 生成的 JS 胶水 ✓
+  （`crates/yanshi-wasm/pkg/` ✓），**不能**当成同名 `.wasm` 直接喂给 C-ABI 那条路 ✗。
+⇒ **所以我上一轮地图里的第 1 步（"把拷贝源换掉"✗）会直接弄坏本地笔刷预览** ✗ —— **已作废** ✓。
+**这才是 (A)③ 真正的工作量（下一轮按这个走 ✓）** ✓：退休不是"换一个文件"✓，而是 **让查看器改用共享内核的
+bindgen 接口** ✓ —— 也就是把 `viewer.rs:6242` 那段"取 `/brush-module.wasm` 再 C-ABI 实例化"✓
+改成"**加载 `crates/yanshi-wasm/pkg/` 那套 JS 胶水**"✓（**客户端渲染早就在用它** ✓ ⇒ 两条路**共用同一份内核** ✓）。
+**一条方法论（本会话第 N 次印证 ✓）** ✓：**"两个东西同名" ≠ "两个东西可换"** ✗ ——
+差的是 **ABI** ✓。地图画到"文件名"就停 ✗，就会漏掉这一层 ✓；**先跑一次/先读一次** ✓ 才看得出来 ✓。
