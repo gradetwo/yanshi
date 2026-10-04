@@ -17966,3 +17966,25 @@ EXC ReferenceError: serverRenderPreferred is not defined
    这不是新知识 ✓（我在 `needsServerPixels` 与 `LOCAL_JSON_STORE` 上都处理过 ✓）⇒ 却仍犯了一次 ✓；
 2. **"绿"要看是"哪条路在绿"** ✗：内核坏掉时三条判据**照样绿** ✓（走服务端那一路 ✓）
    ⇒ ⇒ 所以**判据全绿 ≠ 客户端路径被验证过** ✗ —— 这正是我加**内核句柄**这个信号的价值 ✓。
+
+## 🎉 第 203 轮：**(A)③ 第 ① 步完成** ✓ —— 查看器改走**共享内核** ✓（零回归 ✓）
+
+**换掉的是一整段 C-ABI 舞蹈** ✓：
+```js
+// 之前（门面）：分配缓冲 ⇒ 拷 JSON ⇒ paint ⇒ free ⇒ 出参指针 ⇒ 错误指针 …
+const pointer = api.yanshi_brush_alloc(payload.length);
+new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
+const length = api.yanshi_brush_paint(pointer, payload.length);
+api.yanshi_brush_free(pointer, payload.length);
+const bytes = new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), length).slice();
+// 现在（内核 ✓）：**一句话** ✓ —— 内存管道交给 bindgen ✓
+const bytes = kernel.paint_brush(request);
+```
+**三条约束都守住了** ✓：
+1. **请求 JSON 原样不变** ✓ —— 它的形状正是 `kernel-brush-parity.mjs` **逐字节验过**的那一份 ✓；
+2. **失败可区分** ✓ —— 内核成功给像素 ✓、失败给 `undefined` ✓（**不是"零长度成功"** ✗）⇒ 失败分支只说
+   "内核没画出这一帧 ⇒ 本帧跳过 ✓（抬手仍由服务端落笔 ✓）" ✓，**不编造原因** ✗；
+3. **零回归** ✓ —— 离线判据 `dark 0 / 3288 / 3288` ✓（与改前**完全一致** ✓）、开关判据 `false / true` ✓。
+**还剩什么（下一轮 ✓）** ✓：**删门面本身** ✓ —— 那个 crate ✓、`--brush-wasm` 那套 ✓、
+打包那一步（`package-release.sh:448/456` ✓）、`/brush-module.wasm` 路由 ✓、
+以及查看器里**那句已经没用的 `fetch("/brush-module.wasm")`** ✗（它现在只是**白拉一份文件** ✗）。

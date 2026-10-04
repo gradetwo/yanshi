@@ -6384,27 +6384,22 @@ async function paintLiveFrame() {
       hardness: null,
       region,
     });
-    const payload = new TextEncoder().encode(request);
-    const pointer = api.yanshi_brush_alloc(payload.length);
-    if (!pointer) return;
-    new Uint8Array(api.memory.buffer, pointer, payload.length).set(payload);
-    const length = api.yanshi_brush_paint(pointer, payload.length);
-    api.yanshi_brush_free(pointer, payload.length);
-    if (!length) {
-      stats.localBrushEmptyPaint = (stats.localBrushEmptyPaint || 0) + 1;
-      let reason = "";
-      try {
-        const errorLength = api.yanshi_brush_error_len();
-        if (errorLength) {
-          reason = new TextDecoder().decode(
-            new Uint8Array(api.memory.buffer, api.yanshi_brush_error_ptr(), errorLength),
-          );
+    // **改用共享内核** ✓（(A)③：**一份实现** ✓）—— 请求 JSON **原样不变** ✓
+    // （形状正是 `kernel-brush-parity.mjs` 逐字节验过的那一份 ✓）。
+    // 与门面那套 C-ABI 的区别 ✓：**内存管道不用手写** ✓（bindgen 接管 ✓）⇒
+    // `paint_brush` 成功给像素 ✓、失败给 `undefined` ✓ ⇒ **两条路可区分** ✓。
+    const kernel = state.wasm;
+    const bytes = kernel && typeof kernel.paint_brush === "function" ? kernel.paint_brush(request) : null;
+    if (!bytes || !bytes.length) {
+      // 失败：内核给不出原因文本 ✗（它与门面的错误通道不同 ✓）⇒ 就**说清是"内核没画出来"** ✓
+      stats.localBrushErrors = (stats.localBrushErrors || 0) + 1;
+      if (!stats.localBrushErrorLogged) {
+        stats.localBrushErrorLogged = true;
+        log("本地笔刷预览：内核没画出这一帧 ⇒ 本帧跳过 ✓（抬手仍由服务端落笔 ✓）", "#c93");
         }
-      } catch (_) { /* 读不到原因也不许静默 */ }
-      log("本地笔刷这一帧没画出来：" + (reason || "门面没给出原因"), "#c93");
       return;
     }
-    const bytes = new Uint8Array(api.memory.buffer, api.yanshi_brush_out_ptr(), length).slice();
+    const painted = Uint8Array.from(bytes);
     const offscreen = document.createElement("canvas");
     offscreen.width = region.w;
     offscreen.height = region.h;
