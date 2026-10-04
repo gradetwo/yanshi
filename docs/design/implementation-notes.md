@@ -22755,3 +22755,25 @@ grep -aE '点击按钮后的工具|蒙版编辑|蒙版拖动期间'  ⇒ **零�
 **它是否真的发出 rewind ✓、失败时是否静默 ✓、`declare_head` 是否真的换了 head ✓**
 ⇒ ⇒ **而判据那边的 `jumpUndoResult.ok` 是 true ✓**（**否则会报"未能执行"** ✓）⇒ **说明按钮被点了、也返回了 ok** ✓
 ⇒ ⇒ **那么"画面没变"只可能是"rewind 请求本身没有改变画面"** ✗ ✓。
+
+### 🎯🎯🎯 第 489 轮：**handler 读到了 —— 里面也有一处"取晚了"✗，而"画面没变"的嫌疑转到判据** ✓
+
+**读到（✓，`viewer.rs:3613-3636` ✓）** ✓：
+```js
+:3617  const result = await callTool("revert_to", { atom_id: atom.atom_id }, { refresh: false });
+:3626  const headBefore = currentHeadAtomId();   // ← **"跳转前的头部"在 revert 之后读** ✗ ✗
+:3627  state.undoStack = headBefore ? [{ kind: "head", id: headBefore }] : [];
+:3631  await refreshPreview();   :3632  await refreshHistory();
+```
+**⇒ 三条（✓）** ✓：
+1. **handler 会 `refreshPreview()`** ✓ ⇒ **点它应当改变画面** ✗ ⇒ **"画面没变"不是"没刷新"** ✓；
+2. ⚠️ **`:3626` 与判据的 `fingerprintBeforeJump` 是同一类错** ✗ ——
+   **"跳转前的值"在跳转之后读** ✓ ⇒ ⇒ **影响的是"撤销回到跳转前"** ✓：
+   **`undoStack` 里记的是"跳转后的头"** ✗ ⇒ **撤销会跳回"跳转后"而不是"跳转前"** ✓
+   ⇒ ⇒ **这是本段以来第一条有代码证据的产品侧缺陷** ✓（**与判据那处同源 ✓：都是"取晚了"** ✓）；
+3. ⇒ **而"画面没变"仍无解释** ✗ ⇒ **最大嫌疑转到判据那边** ✓：
+   **`jumped` 是在 `jumpUndoResult` 那个 evaluate **内部**取的** ✓
+   ⇒ ⇒ **若它在点击"回到此处"之后**没有等待**就取指纹 ⇒ `jumped` 仍是"跳转前"** ✗
+   ⇒ ⇒ **于是 `jumped.sum === fingerprintBeforeJump.sum`** ✓ ⇒ **判据报"用例无效"** ✓ ✓。
+**⇒ 下一处（✓）** ✓：**读 `jumpUndoResult` 那个 evaluate 内部** ✓ ——
+**看它点完按钮之后等了多久、在哪里取 `jumped`** ✓。
