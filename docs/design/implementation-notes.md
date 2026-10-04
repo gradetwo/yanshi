@@ -23362,3 +23362,16 @@ render.rs:760    if feather > 0.0 { coverage = crate::geometry::feather_coverage
 3. ⇒ ⇒ **下一处（✓）** ✓：**读 `render_region` 的实现** ✓ —— **它走哪条合成路径、有没有经过 `:752-761`** ✓。
 **★ 一条可复用的问法（✓）** ✓：**"这个功能挂在几条路径上"** ✓ ——
 **本段我已在"同名事件多处理者"上栽两次 ✓，这次是"同名渲染多路径"** ✗。
+
+### 🎯 第 525 轮：**渲染入口是 `workspace.render_region`** ✓（下一问：它是否走同一条合成路径 ✓）
+
+**读到（✓，`tools.rs:911` 与 `:1010` ✓）** ✓：
+```rust
+:911   let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;   // **渲染入口** ✓
+:1010  name: "render_region"                                            // 工具 spec ✓
+```
+**⇒ 推理（✓）** ✓：**`render_region` 工具 ⇒ `workspace.render_region`** ✓
+⇒ ⇒ **而"对象带 feather 的合成"在 `render.rs:752-761`** ✓ ⇒ ⇒ **两者是不是同一条路，取决于这个函数** ✗
+⇒ ⇒ **下一处（✓）** ✓：**读 `workspace.render_region` 的实现** ✓（**它在 `yanshi-http` 或 `yanshi-core` 的 workspace 里** ✓），
+**看它合成对象时是否经过 `feather_coverage`** ✓ —— **若不经过 ⇒ 那就是"羽化不生效"的真因** ✓
+（**而它与 `pointerdown` 那三处监听器同族 ✓：一个行为挂在多条路径上时，总有一条被漏掉** ✗）。
