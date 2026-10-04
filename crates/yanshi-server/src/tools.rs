@@ -13570,6 +13570,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("list_assets", r#"{"kind": "brush"}"#),
     ("delete_object", r#"{"object_id": "o1"}"#),
+    // **分组 / 悬空变更集 / 路径转换**（第 287 轮）：这几族原先都没有示例；
+    // 参数照原文抄：`add_to_group` 必填 `group_id` 与 `object_id`；
+    // `apply_stash` / `discard_stash` 必填 `stash_id`；`convert_to_shape` 必填 `object_id`（`shape_id` 可选）。
+    ("add_to_group", r#"{"group_id":"g1","object_id":"L1"}"#),
+    ("apply_stash", r#"{"stash_id":"st1"}"#),
+    ("discard_stash", r#"{"stash_id":"st1"}"#),
+    ("convert_to_shape", r#"{"object_id":"L1"}"#),
 ];
 
 #[cfg(test)]
