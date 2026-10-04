@@ -26554,3 +26554,31 @@ CI（a3bfdcf，criteria shard 6/6）：
   而不是让它每轮去赌 ✓；
 - **B. 逐条判 ①–⑤「设计 vs 缺陷」** ✓（这正是 `(B)②` 的正文 ✓）；
 - **C. 拿到"连续多次绿"的证据后**才把它移出名单 ✓。
+
+## 🎯 第 784 轮：**(B)② 的 ① 号项定位到「判据量错了对象」** ✓
+
+**① 号项**：`另存为副本的画布尺寸不同（262144 vs 1048576 像素）⇒ sum 不可比` ✓（= **512² vs 1024²** ✓）。
+
+**逐层查证** ✓：
+```
+① 断言本身是对的 ✓（`:1682` 已把"尺寸不同"与"内容不同"分开 ✓，第 253 轮的成果 ✓）；
+② 产品侧「另存为副本」= POST /api/documents {copy_from, from_token} ✓（viewer.rs:8159-8162 ✓）
+   ⇒ 服务端在 server.rs:705-735 处理 ⇒ 委托给 workspace.duplicate_document ✓；
+③ **而 duplicate_document 本来就是对的** ✓（service.rs ✓）：
+     let (width, height, …) = { … (state.width, state.height, …) };   ← **取源文档尺寸** ✓
+     let mut spec = NewDocument::new(to, width, height);              ← **用它建新文档** ✓
+④ 接口也返回尺寸 ✓（summary_json ⇒ "width": state.width / "height": state.height ✓）；
+⑤ ⇒ **所以"副本 1024²"不是服务端建错了** ✓ ⇒ 看判据怎么量的 ✓：
+     :869-877 点 copyDoc ⇒ **等 identity 变成副本名** ✓
+     :878     `after = canvasFingerprint`（**量的是当前 board** ✗）
+     :881-888 轮询到 `after.sum !== 0 && afterStable >= 2` ✓ ⇒ **只保证"连续两次宽度相同"** ✗
+⑥ ⇒ 而切文档时**先 `sizeBoards(1024,1024)`** ✓（viewer.rs:3190 ✓）、**之后**才按真实尺寸重建 ✓
+   ⇒ ⇒ **`afterTotal = 1024²`（默认板）+ `beforeTotal = 512²`（源）** ✓✓ **与实测数字完全吻合** ✓
+```
+⇒ ⇒ **结论：这条是**判据侧**的问题 —— 它量的是**画板**，而真相应看**文档尺寸**（`state.docSize` ✓）** ✓。
+（**同一族已出现过**：早先"另存为副本"那条断言本身修过一次 ✓ —— 那次修的是"尺寸与内容混为一谈" ✓，
+这次修的是"量的对象不对" ✗ ✓。）
+
+**下一步（下一轮做 ✓）**：判据里**同时取** `state.docSize` 与画板尺寸 ✓ ⇒
+**断言用文档尺寸**（产品真相 ✓）、**画板尺寸只作诊断** ✓
+⇒ **变异检验**：把 `duplicate_document` 改成用默认尺寸建副本 ⇒ **判据必须红** ✓（**改的是被判条件本身 ✓**）。
