@@ -16354,3 +16354,26 @@ error: linking with `x86_64-linux-gnu-gcc` failed: exit status: 1
      我在分诊里已把它与 `smooth` 分开排期 ✓）—— **绝不能静默忽略** ✗（那是本仓库头号病症 ✓）；
 ③ 落地 5 处 ✓（计数 **65→66 core / 121→122 total** ✓）；
 ④ 跑**那条已先红的几何判据** ✓（中心填上 ✓、**四角留白** ✓）⇒ 转绿 ⇒ 门禁全绿 ⇒ 英文提交 + 推送 ✓。
+
+### 🎯 第 135 轮：P0-3 选区的**四个钩子全找到了** ✓（下一轮照此一次做完 ✓）
+
+**钩子（原文级 ✓）** ✓：
+1. **覆盖率抽象早已存在** ✓：`render.rs:25`
+   `ellipse_coverage_clipped, polygon_coverage_clipped, rect_coverage_clipped, Coverage` ✓
+   ⇒ 而且落笔那条路**本来就收**这个掩码 ✓：`brush.rs:321` `coverage: Option<&dyn Fn(f64, f64) -> f32>` ✓，
+   注释写明"覆盖度 ≤ 0 的印章**直接跳过**"✓（正是我们要的语义 ✓）；
+2. **现成的样板** ✓：`render.rs:730` 起，**形状/文字**已经在用 `clip.coverage(x, y)` ✓
+   ⇒ 说明"把一条 Coverage 接进绘制"这件事**有先例** ✓（照抄它 ✓，不发明 ✗）；
+3. **选区结构** ✓：`state.rs:270` `Selection{id, shape, feather, mode(new/add/subtract/intersect), invert}` ✓
+   ⇒ 它的 `shape` 与我刚在 `fill_region` 里用过的**同一种** `{kind, bbox}` ✓
+   ⇒ **由选区造一条 Coverage 是直路** ✓（不必再解析几何 ✓）；
+4. **没有"活跃选区"字段** ✗（`core` 里搜不到 ✓）⇒ 所以"要用哪个选区"应当**由调用方显式给** ✓
+   —— 这正好与报告建议的 API **一致** ✓：`brush_stroke(..., clip_to_selection: bool)` ✓。
+**设计（下一轮照做 ✓）** ✓：
+* `brush_stroke` 加参数 `clip_to_selection`（**字符串 id** 更明确 ✓，也兼容 `true` = 取**唯一/最新**那个 ✓）；
+* 在 `write_brush_stroke` 里：拿到 id ⇒ 从 `document.state().selections` 取 `Selection` ✓ ⇒
+  按其 `shape`（+ `feather` ✓ / `invert` ✓ / `mode` ✓ 先做 `new` 与 `invert` ✓，其余**明确报错** ✗ 不静默 ✗）
+  造一条 `Coverage` ✓ ⇒ 作为 `coverage` 传进落笔 ✓（`brush.rs` 那条路**本来就收** ✓）；
+* **清空/去掉该参数 ⇒ 逐字节回到今天** ✓（`coverage = None` ✓ —— 判据里"内 > 0"那条会顺带保护 ✓）。
+**验收判据（已先红 ✓）** ✓：`scripts/tool-selection-clip.mjs` ✓ ——
+现在读数 **内 4320 / 外 3588** ✗ ⇒ 修完必须变成 **内 > 0 / 外 = 0** ✓。
