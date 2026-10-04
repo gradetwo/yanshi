@@ -58,10 +58,19 @@ ws.addEventListener("message", (event) => {
   }
 });
 await new Promise((resolve) => ws.addEventListener("open", resolve));
-const send = (method, params = {}) =>
-  new Promise((resolve) => {
+// 给每一处等待加上界（第 648 轮）：原先只有 resolve，没有超时也没有 reject，
+// 于是响应永不到达时 promise 永挂，而调用方一直等下去 ——
+// 蒙版段那次「既没抛错、也没返回」的最后一环就是它（第 644 轮）。
+// 现在超时会带方法名抛错，让「挂住」自己说出来，而不是变成 undefined。
+const send = (method, params = {}, timeoutMs = 45000) =>
+  new Promise((resolve, reject) => {
     const current = id++;
-    pending.set(current, resolve);
+    const timer = setTimeout(() => {
+      pending.delete(current);
+      reject(new Error(`CDP 无响应：${method} 超过 ${timeoutMs}ms（不是判据失败，而是这一段没跑完）`));
+    }, timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+    pending.set(current, (value) => { clearTimeout(timer); resolve(value); });
     ws.send(JSON.stringify({ id: current, method, params }));
   });
 // 等待页面条件成立（比固定 sleep 稳：临时实例冷启动可能明显更慢）。
