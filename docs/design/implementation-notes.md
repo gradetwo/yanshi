@@ -19807,3 +19807,30 @@ palette = [{r:200,g:186,b:168,a:240}] ⇒ 主色 #fefefe 91.9% + **#c8baa8 7.01%
 **⚠️ 过程中的自伤（✓）** ✗：`list_objects` **不返回颜色** ✗ ⇒ 第一版判据量不到东西 ✓
 ⇒ 改用 `analyze_region` 的**主色** ✓；另有一次变异**因 Python 引号语法错而没注入** ✗
 ⇒ 那次 `EXIT=0` **不是红证明** ✓（**已重做** ✓）。
+
+## 🔎 第 309 轮：**报告 §一.3 的两处更正 —— `delete_layer` 存在，且**无需 shell 即可自愈** ✓✓
+
+**报告原文（✓）** ✓："MCP 缺乏 `reset_document`、`clear_document` 或 `delete_layer` 工具，
+智能体在纯 MCP 环境下无法自愈，**必须借助外部 shell 去 `rm -rf`**" ✗。
+**实测更正（✓，判据 `scripts/tool-self-heal.mjs` ✓）** ✓：
+```
+落笔 [true,true,true] ✓ ⇒ 污染后：图层 3 个、对象 3 个 ✓
+只用现有工具清理（delete_object × N + delete_layer × N）⇒ **图层 1 个、对象 0 个** ✓
+清理后再画一笔 ⇒ **成功** ✓（atom_id 01M43DH2…、dirty_bbox [29,109,102,62] ✓）
+✓ 仅用现有工具即可自愈（无需 shell）
+```
+⇒ ⇒ **两处更正** ✓：
+1. **`delete_layer` 是存在的** ✓（报告这一点不准确 ✓）—— 全部工具里带删除语义的有
+   `delete_object` / `delete_layer` / `delete_annotation` / `delete_selection` / `clear_reference` / `discard_stash` ✓；
+2. **纯 MCP 下的自愈路径是通的** ✓ ⇒ **"必须 `rm -rf`"不成立** ✓。
+**仍然成立的部分（✓，如实说 ✓）** ✓：**没有** `reset_document` / `clear_document` / `delete_document` ✓；
+而且自愈要**枚举 N 次调用** ✗（不是一次原子操作 ✓）、**原子日志会留下 N 个墓碑** ✗
+（**与报告 2.6 的归档膨胀同源** ✓）。
+⇒ ⇒ 所以"`reset_document` 这种**一个调用清空**的便利工具"**仍是合理的功能请求** ✓ ——
+但它属于**新功能**（核心模型要么追加 N 个墓碑 ✓、要么新增一种"重置原子" ✗ ⇒ **架构改动** ✓），
+**不是"无法自愈"这种缺陷** ✓。
+**判据能红（✓）** ✓：把 `delete_layer` 改成**墓碑一个不存在的层**（即变成空操作 ✓）⇒
+**EXIT=1** ✓（"清理后仍有 3 个图层" ✓）；撤销后 **EXIT=0** ✓。
+**⚠️ 过程中的自伤（✓）** ✗：第一版判据用 `draw_stroke` 传 `color` ✗ —— 而它的参数是 `layer_id`/`data`/`object_id` ✓
+⇒ **三笔根本没画上** ✗ ⇒ "污染后对象 0 个" ✓ 却**没被察觉** ✓（我打印了计数但没断言 ✓）
+⇒ 改用 `brush_stroke` ✓ 并**打印落笔结果** ✓ ⇒ 才看到真相 ✓。
