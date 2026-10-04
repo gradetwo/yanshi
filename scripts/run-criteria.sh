@@ -61,7 +61,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -81,6 +81,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 上限给 120s 就够（它只 readFileSync 几个文件 ✓）。
     kernel-wasm-allowlist.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **介质插件 ABI 契约** ✓（第 790 轮接线 ✓）：拿**仓库里的** assets/mediums/*.wasm 当
+    # 插件加载并验收（无 imports ✓、按 seed 确定 ✓、有配额 ✓、v2 上下文语义 ✓）⇒
+    # 显式把产物路径传给它 ✓（不依赖它内建的那份默认清单 ✓ —— 那样才是「检查真产物」✓）。
+    # 本机实测：6 个插件全部通过、耗时数秒 ✓。
+    medium-abi-check.mjs)
+      timeout 300 node "$script" assets/mediums/*.wasm >"$ROOT_DIR/out.txt" 2>&1 ;;
     kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
