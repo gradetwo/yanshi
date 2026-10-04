@@ -47,7 +47,6 @@ const NOT_WIRED = [
   "mcp-document-switch.mjs",       // 待查接口 ✓（MCP：可能要起 MCP 端 ✓）
   "mcp-tool-descriptions.mjs",     // 待查接口 ✓
   "server-token-policy.mjs",       // 收 <base> <allow|refuse> ✓ ⇒ 要跑**两种**模式 ✓，不是"跑一次" ✓
-  "server-ws-origin.mjs",          // 待查接口 ✓
   "ui-control-heights.mjs",        // 待查接口 ✓
   "ui-layout-grid.mjs",            // 待查接口 ✓
   "ui-text-density.mjs",           // 待查接口 ✓

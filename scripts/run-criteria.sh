@@ -61,7 +61,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/wasm-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -87,6 +87,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 本机实测：6 个插件全部通过、耗时数秒 ✓。
     medium-abi-check.mjs)
       timeout 300 node "$script" assets/mediums/*.wasm >"$ROOT_DIR/out.txt" 2>&1 ;;
+    # **WebSocket 跨站防护** ✓（第 791 轮接线 ✓）：只要服务端在跑 ✓ ⇒ 传 <host> <port> ✓。
+    # 三情形正反都能红：跨站 Origin 必须**拒**、本机 Origin 必须 101、不带 Origin 必须 101 ✓。
+    server-ws-origin.mjs)
+      timeout 120 node "$script" 127.0.0.1 "$PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     kernel-brush-parity.mjs|wasm-brush-parity.mjs)
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
