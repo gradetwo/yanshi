@@ -458,7 +458,7 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked
 
 ## 编译与运行
 
-入口与前置要求见上面的 [快速开始](../README.zh-CN.md#快速开始)。命令如下：
+入口与前置要求见 README 里的 [快速开始](../README.zh-CN.md#快速开始)。命令如下：
 
 ```bash
 make dev                                            # 有工具链时构建 WASM 内核，构建并启动
