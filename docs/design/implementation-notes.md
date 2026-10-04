@@ -24179,3 +24179,23 @@ grep -n "抬手之前" ⇒ **匹配到 2 行**（注释出现在两处 ✓）⇒
    而 `fill_region` 这条路径没有** ✗ ✓（**即"两条路径、只有一条做了"—— 本段第 N 次 ✓**）。
 **⇒ 下一处（✓）** ✓：**看 `fill_region` 写入的形状对象与"选区/蒙版"那条路径的差别** ✓ ——
 **`feather_coverage` 会把 bbox 外扩 ✓（第 347 轮 ✓）⇒ 若 `fill_region` 的覆盖率网格没外扩 ⇒ 外半边被裁** ✗ ✓。
+
+### 🎯🎯🎯 第 580 轮：**确认 `global_padding` 不含"形状对象的 feather"** ✗（真因锁定 ✓）
+
+**读到（✓，`render.rs:477-500` ✓）** ✓：
+```rust
+:478  fn global_padding(&self, state: &DocumentState) -> u32 {
+:480    for layer in state.alive_layers() {
+:487      if mask.is_deleted() || mask.feather <= 0.0 { … }
+:490      let radius = (mask.feather / 2.0).round().max(1.0) as u32;   ← **只数蒙版羽化** ✓
+:491      padding = padding.max(radius + 1);
+:493    for object in state.alive_objects() { … :499 .get("filter_name") … }   ← **只查滤镜** ✗
+```
+**⇒ 因果链（✓，完整 ✓）** ✓：
+**① `fill_region` 写入的形状带 `feather`** ✓ ⇒ **② 渲染时 `:755` 按"图层缓冲"裁剪覆盖率** ✓
+⇒ **③ `:760` 再把它向外扩 `2×radius`** ✓ ⇒ **④ 而 `fill_coverage` 只遍历「网格 ∩ 缓冲」** ✓
+⇒ ⇒ ⇒ **⑤ 而缓冲的外扩（`global_padding`）**只数蒙版与滤镜** ✗ ⇒ **形状的 feather 没算进去** ✓
+⇒ ⇒ ⇒ ⇒ **所以缓冲是紧的 ⇒ 向外扩出的那半边被丢掉** ✗ ✓ **= "只向内淡出"的现象** ✓ ✓
+**⇒ 修法（✓）** ✓：**在 `:493` 的 `alive_objects()` 循环里也读形状的 `feather`** ✓，
+**按同一公式取 `radius = feather/2 + 1` ✓**（**与蒙版那一支一致 ✓**）。
+**★ 这一条与设计一致（✓）** ✓：**设计要求"向外溢出"** ✓（第 579 轮 ✓）⇒ **所以是产品侧实现漏了一支 ✓**。
