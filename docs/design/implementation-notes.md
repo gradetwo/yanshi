@@ -21565,3 +21565,21 @@ set_preferences (1)  set_property (1)  set_reference (1)  suggest (1)  texture_b
 **★ 方法（✓，本段最值钱的一条 ✓）** ✓：**"判据红"不等于"产品错"** ✗ ——
 **判据自己的驱动失败（URL 拼错 ✓、画布没起来 ✓）会伪装成产品缺陷** ✗
 ⇒ ⇒ **看到红，先问"它有没有真的跑起来"** ✓。
+
+### ✅ 第 410 轮：**系统排查完成 —— 8 条全在 browser 侧，tool 侧干净** ✓
+
+**排查（✓）** ✓：
+```
+tool-*.mjs / kernel-*.mjs 里的 argv 用法（40+ 处）：
+  一律 `const base = process.argv[2];` ✓，`process.argv[3]` 只当**可选 doc id** ✓
+  ⇒ **没有"把 argv 当端口"的写法** ✓
+判据总数 60 ✓ ⇒ **受影响的 8 条全在 browser 侧** ✓（`c479b2c` / `68a4d7b` / `062ad2f` 已全修 ✓）
+```
+**⇒ 结论（✓）** ✓：**这个 bug 的边界清楚了** ✓ ——
+**它不是"到处都有"** ✗，**而是"browser 判据里的一族"** ✓（**因为只有它们要连 CDP** ✓）
+⇒ **而根因是"传参约定"与"判据读参"之间没有单一来源** ✗：
+runner 传 `<viewer-url> <base> <token> <cdp-port>` ✓，而判据各自用 `argv[N]` 或环境变量取 ✓
+⇒ ⇒ **正确写法在仓库里本来就有** ✓（`browser-pan-vs-paint.mjs` 用 `process.argv.slice(2)` 解构 ✓）
+—— **问题在于它没有被当成约定** ✗。
+**★ 该固定的一条（✓）** ✓：**browser 判据的端口一律从 `CDP_PORT` 环境变量取** ✓
+（**runner 已经设了 ✓**）；**argv 只用于 viewer URL / base / token** ✓。
