@@ -646,7 +646,12 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
       await new Promise((r) => setTimeout(r, 300));
     }
     let filled = ink();
-    for (let i = 0; i < 120 && filled === 0; i++) {
+    // 总等待预算必须远低于 CDP 超时（第 646 轮）：段内等待合计原为约 33.6 秒，
+      // 其中这一处就是 120×250ms = 30 秒，而 Runtime.evaluate 配 awaitPromise 等不到，
+      // 于是返回里没有 result，值成了 undefined 且没有 exceptionDetails，
+      // 表现为「既没抛错、也没返回」（第 644 轮）；真因是我自己等了 33 秒。
+      // 120 改为 24（6 秒），合计约 9.6 秒，仍足够等一次填充。
+      for (let i = 0; i < 24 && filled === 0; i++) {
       await new Promise((r) => setTimeout(r, 250));
       filled = ink();
     }
