@@ -13577,6 +13577,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("apply_stash", r#"{"stash_id":"st1"}"#),
     ("discard_stash", r#"{"stash_id":"st1"}"#),
     ("convert_to_shape", r#"{"object_id":"L1"}"#),
+    // **作业 / 渲染状态 / 路径转换 / 蒙版**（第 288 轮）：这几族原先都没有示例；
+    // 参数照原文抄：`cancel_job` 与 `get_job` 必填 `job_id`；`get_render_status` 必填 `atom_id`；
+    // `convert_to_path` 必填 `object_id`；`create_mask` 必填 `mask_id` 与 `shape`（说明里给了 kind/bbox 的形状）。
+    ("cancel_job", r#"{"job_id":"job1"}"#),
+    ("get_job", r#"{"job_id":"job1"}"#),
+    ("get_render_status", r#"{"atom_id":"atom1"}"#),
+    ("convert_to_path", r#"{"object_id":"L1"}"#),
+    (
+        "create_mask",
+        r#"{"mask_id":"m1","shape":{"kind":"rect","bbox":{"x":10,"y":10,"w":60,"h":60}}}"#,
+    ),
 ];
 
 #[cfg(test)]
