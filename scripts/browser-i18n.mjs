@@ -38,6 +38,26 @@ const snapshot = `JSON.stringify((() => {
   };
 })())`;
 
+const bodyProbe = `JSON.stringify((() => {
+  const zh = /[\\u4e00-\\u9fff]/;
+  const skip = (el) => el.closest("#log, pre, code, script, style, textarea, #langToggle, [data-i18n='off']");
+  const found = new Map();
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      const text = node.nodeValue.trim();
+      if (text && zh.test(text) && !skip(node.parentElement)) found.set(text.slice(0, 60), (found.get(text.slice(0, 60)) || 0) + 1);
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    for (const child of node.childNodes) walk(child);
+  };
+  walk(document.body);
+  const body = document.body.innerText;
+  return { distinct: found.size, sample: [...found.keys()].slice(0, 6),
+    labels: { refresh: body.includes("Refresh"), palette: body.includes("Palette"),
+      file: body.includes("File") } };
+})())`;
+
 const failures = [];
 await send("Page.navigate", { url });
 await sleep(6000);
@@ -63,6 +83,13 @@ else {
   if (String(en.toggle).trim() !== "中文") failures.push(`英文下开关应显示「中文」，实为 ${en.toggle}`);
   // **最强的一条**：顶栏里**一个中文都不该剩**（漏翻立刻红）
   if (en.headerChinese > 0) failures.push(`英文顶栏里仍有中文 ${en.headerChinese} 个：${en.headerChineseText}`);
+  // **更强的一条**：英文模式下**整页**（除日志、代码示例、语言开关）**不应再有中文**。
+  const probe = JSON.parse(await evaluate(bodyProbe));
+  console.log("  【整页】" + JSON.stringify(probe));
+  if (probe.distinct > 0) failures.push(`英文模式下整页仍有 ${probe.distinct} 条中文：${JSON.stringify(probe.sample)}`);
+  // 只断言"默认布局下一定可见"的标签（工具栏刷新 ✓、调色板面板 ✓、顶栏文件菜单 ✓）；
+  // 历史/标注等面板默认收起 ⇒ 断言它们存在等于假设布局，会很脆。
+  for (const [name, ok] of Object.entries(probe.labels)) if (!ok) failures.push(`英文模式下看不到英文标签 ${name}`);
 }
 
 // 再点一次 ⇒ 回到中文
