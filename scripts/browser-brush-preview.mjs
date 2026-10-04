@@ -235,6 +235,11 @@ const dragStroke = async (fractionY, pointerId) =>
 
 await evaluate("window.yanshi.setTool('brush')");
 await evaluate(`window.yanshi.setBrush(${JSON.stringify(brushB)})`);
+// **先量基准** ✓（第 438 轮 ✓）：`ink` 数的是「非透明像素」✓，而画布**本来就有底色/纸纹** ✗
+// ⇒ 直接读它会把底色当成笔迹 ✗（实测「墨 9600」= 取样带面积本身 ✓ ⇒ 它量的是画布，不是笔 ✓）。
+// ⇒ **落笔前后各量一次，报告差值** ✓ —— 那才是「这一笔画下去的像素」✓。
+const baseRed = await countBand(90, 120);
+const baseBlue = await countBand(195, 225);
 await evaluate("window.yanshi.setColor('#ff0000')");
 await dragStroke(0.35, 11);
 await sleep(2000);
@@ -245,9 +250,19 @@ await sleep(2000);
 const redBand = await countBand(90, 120);
 const blueBand = await countBand(195, 225);
 console.log(
-  `  ⑤ 落笔颜色：红带(红 ${redBand && redBand.red} / 蓝 ${redBand && redBand.blue} / 墨 ${redBand && redBand.ink}) ` +
-    `蓝带(红 ${blueBand && blueBand.red} / 蓝 ${blueBand && blueBand.blue} / 墨 ${blueBand && blueBand.ink})`,
+  `  ⑤ 落笔颜色：红带(红 ${redBand && redBand.red} / 蓝 ${redBand && redBand.blue}` +
+    ` / 新增墨 ${redBand && baseRed ? redBand.ink - baseRed.ink : "?"}) ` +
+    `蓝带(红 ${blueBand && blueBand.red} / 蓝 ${blueBand && blueBand.blue}` +
+    ` / 新增墨 ${blueBand && baseBlue ? blueBand.ink - baseBlue.ink : "?"})`,
 );
+// **「根本没落笔」与「画错色」必须分开** ✓（第 438 轮 ✓）：新增墨为 0 ⇒ 这一带没有新像素 ✓。
+const addedRed = redBand && baseRed ? redBand.ink - baseRed.ink : null;
+const addedBlue = blueBand && baseBlue ? blueBand.ink - baseBlue.ink : null;
+if (addedRed === 0 && addedBlue === 0) {
+  console.error("❌ 两笔都没有在画面上留下新像素 ⇒ 落笔没生效（与「颜色不对」是两回事 ✗）");
+  await capture("brush-paint-no-ink");
+  process.exit(1);
+}
 if (
   !redBand ||
   !blueBand ||
