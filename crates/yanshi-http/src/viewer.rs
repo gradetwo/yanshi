@@ -845,6 +845,18 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
 let needsServerPixels = false;
 
+// **开关的判定必须在这里** ✓ —— `needsServerPixels` 上面那句注释早就写着
+// "必须在任何启动路径之前声明" ✓，而我第一版把这两个定义放在了**导出按钮的接线块**里 ✗（≈4852 行 ✓）
+// ⇒ `initWasm`（**1510 行** ✓）用到时还没定义 ✗ ⇒ 浏览器报
+// `ReferenceError: serverRenderPreferred is not defined` ✓ ⇒ **内核初始化中断** ✓
+// ⇒ `state.wasm` 恒为 false ✗、状态停在"检测中…" ✗ —— 与实测症状**完全吻合** ✓。
+const SERVER_RENDER_KEY = "yanshi.serverRender";
+/// **是否强制走服务端渲染** ✓（(A)⑤ 的显式开关 ✓）。缺省 `false` = 照旧（客户端优先 ✓）。
+const serverRenderPreferred = () => {
+  try { return localStorage.getItem(SERVER_RENDER_KEY) === "1"; } catch (error) { return false; }
+};
+
+
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
   // 当前打开的文档与令牌 ✓ —— 自动化验收需要知道"查看器此刻在编辑哪一个文档" ✓
@@ -4861,12 +4873,7 @@ function setupFileMenu() {
   // **导出** ✓（`#exportPng` 原来在「操作」卡里 ✓ —— 那是信息面板 ✓，搬走 ✓）。
   const exportWrap = document.createElement("div");
   exportWrap.className = "toolbar";
-  const SERVER_RENDER_KEY = "yanshi.serverRender";
-/// **是否强制走服务端渲染** ✓（(A)⑤ 的显式开关 ✓）。缺省 `false` = 照旧（客户端优先 ✓）。
-const serverRenderPreferred = () => {
-  try { return localStorage.getItem(SERVER_RENDER_KEY) === "1"; } catch (error) { return false; }
-};
-const useServerRenderBox = $("useServerRender");
+  const useServerRenderBox = $("useServerRender");
 if (useServerRenderBox) {
   useServerRenderBox.checked = serverRenderPreferred();
   useServerRenderBox.addEventListener("change", () => {
