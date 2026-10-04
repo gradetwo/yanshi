@@ -109,6 +109,59 @@ jobs:
         # （曾有一个探针在 wasm32 上调用 Instant::now() 导致渲染必崩）。
         run: scripts/wasm-smoke.sh
 
+  parity-arm64:
+    # **跨平台结论必须有跨平台数据** ✓（第 805 轮）：此前**所有 job 都是 `ubuntu-latest`** ✗ ⇒
+    # 「同一笔在两种渲染模式下逐字节相同」只在 **x86-64 native vs wasm32** 这一对上验过 ✓，
+    # **aarch64 一行数据都没有** ✗ ⇒ 本 job 用 **arm64 runner** 只跑**这一条**判据 ✓（成本最小 ✓）。
+    #
+    # ⚠️ **它现在**不阻塞 CI****（`continue-on-error` ✓）—— 这是**有意的** ✓：
+    #   微实验已证实**两边数学实现不同**（native=glibc ✓、wasm=Rust 自带 ✓ ⇒ 超越函数差 1 ulp ✗，
+    #   而 `sqrt` 因为 IEEE 要求正确舍入 ⇒ 零差异 ✓）。传 `all` ⇒ **全量 199 支** ✓，
+    #   **它会红，而"红"本身就是要收集的数据** ✓（差异有多大、哪些笔刷 ✓），
+    #   不是"故障"✗ ⇒ 用与 `scripts/criteria-known-red.txt` **同一套机制**（照跑、照印、不阻塞 ✓）。
+    # ⇒ **待内核换成两端同源实现后** ✓（第 801 轮记录的方案 ✓），把这一行删掉 ⇒ **改为阻塞** ✓。
+    name: brush parity (arm64 vs wasm32, all brushes)
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Add the wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64-parity
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.129-${{ runner.os }}-arm64
+      - name: Install wasm-bindgen-cli (pinned)
+        # 版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水与 .wasm 不兼容。
+        run: |
+          if ! command -v wasm-bindgen >/dev/null 2>&1; then
+            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          fi
+      - name: Build server and wasm package
+        run: |
+          cargo build --workspace
+          cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
+            target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+      - name: Start a server and compare every brush
+        # 起服务端的方式**照抄 `scripts/run-criteria.sh`** ✓（同一组 flag ✓ ⇒ 判据看到同样的环境 ✓）。
+        run: |
+          PORT=15100
+          WORK="$(mktemp -d)"
+          ./target/debug/yanshi-serve --bind "127.0.0.1:$PORT" --root "$WORK" \
+            --doc boot --width 320 --height 240 --assets-dir "$PWD/assets" >"$WORK/server.log" 2>&1 &
+          for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/api/documents" >/dev/null 2>&1 && break; sleep 0.5; done
+          TOKEN="$(curl -s -X POST "http://127.0.0.1:$PORT/api/documents" -H 'content-type: application/json' \
+            -d '{"doc_id":"boot","width":320,"height":240}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
+          # 结论行会打出覆盖面与差异统计 ✓（runner 的成功/失败两种路径都会打最后一行 ✓）。
+          node scripts/kernel-brush-parity.mjs "http://127.0.0.1:$PORT" boot "$TOKEN" \
+            "$PWD/crates/yanshi-wasm/pkg/yanshi_wasm.js" all
+
   criteria:
     # **并行分片** ✓：判据约 55 条，串行跑要十几分钟 ✗ ⇒ 拆 6 片并发 ✓（免费额度下这是纯赚 ✓）。
     # 每片各自构建 ✓（`Swatinem/rust-cache` 会命中缓存 ✓），因此**不依赖 build 产物传递** ✓（少一个失败点 ✓）。
