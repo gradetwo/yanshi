@@ -92,7 +92,12 @@ for (const tool of withExample) {
   // **门槛收到"必须成功"** ✓：前置已经建好 ⇒ 任何失败都算这个示例还没到位 ✗。
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
-  else if (/不存在|未找到|not found|no such|missing/i.test(detail)) {
+  // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
+  // 实测 15 条"其实是缺前置状态"的示例被归进了 `rejected` ✗ —— 它们的措辞是：
+  // 「不在日志（里/中）」「从未存在过」「找不到…」「没有可修改的…」「已经有一个打开的…」
+  // 「先 begin_changeset」「需要 delta 或 transform」（**都是产品在说"你引用的东西还不具备"** ✓）。
+  // ⇒ **这不是放松标准** ✓：`needsState` 这一类**就是为它们设的** ✓ —— 例如 `revert_to` 必须先有 `declare_head` ✓。
+  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform/i.test(detail)) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }
