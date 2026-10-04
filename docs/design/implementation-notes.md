@@ -16998,3 +16998,27 @@ Round_Bl.myb   ⇒ pressure = [[0.0, -0.4667], [1.0, 0.7]]
 ③ 重新落地**产品修复** ✓（"取现值 ⇒ 只替换 `base_value` ⇒ 保留 inputs" ✓）⇒ 跑门禁 ⇒
    预期**只剩那一条测试**需要按新期望收敛 ✓（若还有别的红 ✓ ⇒ 逐个读清 ✓ 再定 ✗）；
 ④ 跑 `scripts/tool-brush-dynamics.mjs` ✓（已改为方向无关 ✓）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
+
+### ✅ 第 159 轮：**两次整体回退之后，判据全家桶 12/12 仍然全绿** ✓（无回归 ✓）
+
+**为什么这一轮必须先验证 ✓**：第 156 轮我为回退那处真 bug 修复 ✗ **两次 `git checkout -- tools.rs`** ✓
+—— 而 `set_brush_dynamics` 与 **P0-3 的 `clip_to_selection`** **都在同一个文件里** ✓
+（虽然它们**早已提交** ✓ ⇒ checkout 恢复到的是**已提交版本** ✓ ⇒ 理论上安全 ✓）⇒ ⇒
+但"**理论上安全**"不是证据 ✗ ⇒ 所以本轮**实测** ✓：
+```
+P0-3 残留：2 处 ✓        P1-7 残留：4 处 ✓
+✓ gradient-blend ✓ scatter-strokes ✓ save-palette ✓ snapshot-roundtrip
+✓ brush-style    ✓ analyze-region  ✓ fill-region   ✓ layer-blend
+✓ batch-preview  ✓ export-path     ✓ **selection-clip** ✓ **brush-dynamics**
+—— 通过 12，失败 0 ✓
+✓ 默认暴露全部 **136** 个已实现工具 ✓（135 → 136 ✓ = 新增 `set_brush_dynamics` ✓）
+```
+⇒ **结论** ✓：**没有回归** ✓；两条计数线依旧各自自洽 ✓
+（**124 total** = `DEFAULT_PROFILES` 集合 ✓ 由 cargo 的 `tool_inventory` 断言 ✓；
+ **136** = 全部 `ToolSpec` 块 = 默认暴露数 ✓）。
+**这一轮的方法意义（值得记 ✓）** ✓：**"回退了别人的/自己早前的工作"之后，必须重跑受影响的判据** ✓ ——
+本轮就是这条规矩的实例 ✓（我一次回退动了一个装着**两项已交付功能**的文件 ✓）。
+**下一轮（写死 ✓）** ✓：主线继续 ✓ —— **优先 (A)④ 本地持久化 + 本地导出** ✓
+（PWA 的下一个大件 ✓；按用户指示 ✓ **先看行业做法** ✓：IndexedDB vs OPFS 的取舍 ✓、
+Workbox 的缓存策略 ✓、以及"离线导出"在该生态里的常规形态 ✓）；若那一项需要的上下文过大 ✓，
+则退一步做 **(B)④ 构建警告上限** ✓（在全新 clone + 冷构建里复现那 6 条 cdylib 噪声 ✓）。
