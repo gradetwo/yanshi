@@ -20170,3 +20170,30 @@ shard 3 → 全绿 ✓
 * **属于"缺前置状态"** ✓（如 `delete_annotation` / `resolve_annotation` / `update_annotation` ✓）⇒ 出路 1 或 2 ✓；
 * **属于"值/格式真错"** ✗（判据里 `badParameter` 那一类 ✓：颜色写成字符串 ✗、资产种类不存在 ✗…）⇒ **必须修** ✓，
   因为**抄走就会失败** ✓ —— 这是 (B)① 那条要求的**硬核部分** ✓。
+
+### 🎉 第 328 轮：**失败清单终于进了日志尾部** ✓（我上一轮的 runner 改动生效 ✓）
+
+**原文（✓，`244a788` 那轮）** ✓：
+```
+shard 1（4）：browser-drag-perf｜browser-pan-vs-paint｜
+              tool-example-acceptance｜✗ add_to_group：组 g1 不存在（或不是对象组）
+              tool-reference-delta-e｜
+shard 2（1）：browser-file-menu｜
+shard 4（1）：browser-brush-preview-local｜
+shard 5（4）：browser-brush-preview｜browser-kernel-perf｜
+              tool-batch-preview｜✗ 长批次中途预览不合格：    tool-cjk-text｜
+shard 6（2）：browser-canvas-handfeel｜browser-layout｜
+（shard 3 全绿 ✓）—— **合计 12 条 ✓**
+```
+**这证明了两件事（✓）** ✓：
+1. **`--log-failed` 只给尾部** ✗ 是真的（前几轮我因此只看到 5 条 ✗）⇒
+   **把清单在末尾重打一遍** ✓ 就直接解决了它 ✓ —— **这一轮我不再需要"讨"信息** ✓；
+2. **`add_to_group：组 g1 不存在（或不是对象组）`** ✓ ⇒ **50 条示例失败的典型形态确认** ✓：
+   **示例引用了"并不存在的 id"** ✓（与我第 326 轮的推测方向一致 ✓，但这次**是它自己说的** ✓）。
+**⚠️ 仍需改进（✓）** ✓：多数条目**原因为空** ✗（如 `browser-drag-perf.mjs｜` ✓）⇒
+我的 `first_reason` 只匹配 `^\s+- ` 与 `^\s*✗ ` ✗ ⇒ 这些判据用别的格式打印原因 ✗
+⇒ **下一轮把抓法放宽**（取该脚本输出的**首个非空行** ✓ 或最后 3 行中的首行 ✓）。
+**下一步（✓，终于可以点着名字走 ✓）** ✓：
+* `tool-example-acceptance` / `tool-batch-preview` / `tool-reference-delta-e` / `tool-cjk-text` ✓（**4 条是我方/判据侧，可今天动** ✓）；
+* `browser-drag-perf` / `browser-pan-vs-paint` / `browser-file-menu` / `browser-brush-preview` /
+  `browser-brush-preview-local` / `browser-kernel-perf` / `browser-canvas-handfeel` / `browser-layout` ✓（**8 条浏览器侧，逐条按原因定性** ✓）。
