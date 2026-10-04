@@ -17660,3 +17660,26 @@ bindgen 接口** ✓ —— 也就是把 `viewer.rs:6242` 那段"取 `/brush-mod
 ⇒ 看它的 **JSON 契约**（请求字段 ✓）与**输出去向** ✓ ⇒ 那就是内核方法的**签名与语义** ✓；
 读完后**先加内核方法** ✓、**再加判据**（内核预览 vs 服务端笔触逐字节相同 ✓）、**最后**才改查看器与删门面 ✓
 （**顺序不能反** ✗ —— 这是上一轮定下的规矩 ✓）。
+
+### 🎯 第 189 轮：**移植的"契约"已读到原文** ✓（真正要搬的只是一个**内部函数** ✓）
+
+**`yanshi_brush_paint` 的函数体（原文 ✓）** ✓：
+```rust
+static OUTPUT: Mutex<Vec<u8>>;   static ERROR: Mutex<Vec<u8>>;      // 两条通道 ✓
+#[no_mangle] pub unsafe extern "C" fn yanshi_brush_paint(ptr, len) -> usize {
+    let request = str::from_utf8(bytes)…                            // ← 输入：**一段 JSON 文本** ✓
+    match paint(request) {                                          // ← 真正的活：**内部函数 `paint(request)`** ✓
+        Ok(rgba) => { OUTPUT = rgba; ERROR.clear(); rgba.len() }    // ← 成功：**返回那块 RGBA 的长度** ✓
+        Err(reason) => { ERROR = reason; 0 }                        // ← 失败：**错误另走一条**、返回 0 ✓
+    }
+}
+```
+**两条结论 ✓** ✓：
+1. **要搬的是 `paint(request)` 本身** ✓ —— 那才是逻辑 ✓；外面那层 `ptr/len`、`OUTPUT`、`ERROR`
+   全是 **C-ABI 的内存管道** ✓ ⇒ **bindgen 会自动接管** ✓ ⇒ **不用搬** ✗；
+2. **输出语义** ✓：成功给一块 **RGBA 字节** ✓、失败给**一段错误文本** ✓（且**必须能区分** ✗ ——
+   不能把"失败"和"零长度成功"混起来 ✓，这正是我上一轮提醒的"两种结果两条通道" ✓）。
+**下一轮（写死 ✓，只做一件 ✓）** ✓：读 **`fn paint(request)`**（它的长度与它用到的依赖 ✓）
+⇒ 那决定移植是"整段搬" ✓ 还是"内核里已有等价物、只需接线" ✓
+（**后者很可能** ✓ —— 内核本来就会画笔触 ✓：`extend_preview_stroke` / `commit_preview` ✓
+⇒ 若 `paint()` 干的正是这两件事 ✓ ⇒ 移植量**再降一档** ✓ ⇒ 那就只是**在内核上开一个薄接口** ✓）。
