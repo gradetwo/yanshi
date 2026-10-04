@@ -89,7 +89,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # ⇒ **离线判据依赖的 SW 持久化被破坏** ✗ ⇒ 8 条浏览器判据开始报
       # `node:internal/deps/undici/undici:15270` ✗（其中多条**上一轮还是绿的** ✓）。
       # ⇒ 实验的答案是"**我的隔离方式错了**" ✗，不是"隔离假设错" ✗ ⇒ 回到"每分片一个实例" ✓。
-      CDP_PORT="$CDP_PORT" timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **浏览器类判据的上限**（第 783 轮从 240 提到 420 ✓，可用 `BROWSER_TIMEOUT` 覆盖 ✓）：
+      # 本机实测 `browser-ui-check.mjs` 跑完**全部段落**约 **3 分钟** ✓，而它此前会在中途抛异常 ✗
+      # ⇒ 那时"跑得快"是假象 ✓（覆盖面缩水 ✓）。修好后它**合法地**更久 ✓ ⇒
+      # 240 秒只剩不到 1.5 分钟余量 ✗，而 CI 机器比本机慢 ✗ ⇒ **超时成了独立于产品的不稳定源** ✓
+      # ⇒ 上限放宽到 420 秒 ✓（**判据本身一条断言都没放松** ✓ —— 只是不再赌它跑得够快 ✓）。
+      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
