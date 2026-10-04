@@ -26737,3 +26737,79 @@ native 与 wasm 编**同一份代码** ✓）⇒ **逐字节相同由构造保�
 **尚未做（下一轮 ✓）**：① 在内核里换成同源实现 ⇒ **像素需要重新基线化** ✓；
 ② 按用户选择**在 CI 加一个 arm64 job 只跑这条判据** ✓；
 ③ 把判据的**默认覆盖面**从 3 支改成全部（或至少**打印覆盖面** ✓）⇒ **让"绿"代表性质，而不是样本** ✓。
+
+## 🎯 第 802 轮：**三个面的对账（"已实现 / Web 暴露 / MCP 暴露" ⇒ 差在哪）** ✓
+
+**用户的问题** ✓：「现在我们已经开发完成的功能、web 端暴露的功能、mcp 暴露的功能，这三者之间还有什么不一致？」
+**做法** ✓：**把三个面各自**实际**暴露的名字集取出来求差** ✓ —— 不凭印象说"应该一致" ✗。
+
+**取到的三个面** ✓：
+```
+① **服务端（"已开发完成"的权威面）** = `GET /api/tools` ⇒ **136 个工具** ✓
+   profiles = core, history, changeset, retouch, conflict, annotation, collab, structure （8 个 ✓）
+② **MCP** = `./target/debug/yanshi-mcp --list-tools` ⇒ **68 个** ✓（默认 `profiles: ["core"]` ✓）
+   `with_profiles`：**总是把 Core 并进来** ✓（`enabled.insert(Profile::Core)` ✓）
+   ⇒ 所以"单独启用某个 profile"= Core + 该 profile ✓（我按这个把增量逐个数出来了 ✓）
+③ **Web 查看器** = 调色板里的 **21 个用户可选工具** ✓
+   （annotate / brush / clone_stamp / ellipse / erase / eyedropper / heal_stamp / liquify_pinch /
+     liquify_push / liquify_twirl / mask_ellipse / mask_rect / medium_dab / move_layer / move_object /
+     pan / rect / select_rect / smudge / text ✓）
+   —— 这是**UI 轴**（用户选的"工具模式" ✓），与 API 工具名**不是同一套命名** ✓ ⇒ 要按**调用点**对账 ✓。
+```
+
+**差集（实测 ✓）**：
+```
+HTTP 136 ｜ MCP 默认 68
+⇒ **HTTP 有、MCP 默认没有：68 个** ✓（**正好一半** ✓）
+⇒ **MCP 有、HTTP 没有：0 个** ✓ ⇒ **MCP ⊆ HTTP** ✓（**这个方向干净 ✓：MCP 不会拥有服务端没有的能力 ✓**）
+四者自洽 ✓：各 profile"减去 core 的新增"之和 = 11+11+14+1+7+9+15 = **68** ✓
+```
+
+**按能力面拆开（各 profile 减去 Core 的新增 ✓）**：
+```
+history    +11  blob_gc / checkpoint / declare_head / find_atom / get_ancestors / get_checkpoints /
+                get_descendants / get_diff / get_object_history / restore_checkpoint / revert_to
+changeset  +11  begin/commit/abort_changeset / begin/commit_transaction / apply&discard_stash /
+                get_changesets / list_stashes / revert_changeset / submit_offline
+retouch    +14  add_adjustment / add_filter / clone_stamp / estimate_dehaze / heal_stamp /
+                liquify_pinch / liquify_push / liquify_twirl / list_effects / patch / resample / smudge …
+conflict    +1  resolve_conflict
+annotation  +7  create/delete/get/list/reject/resolve/update_annotation
+collab      +9  accept_suggestion(s) / comment / list_comments / list_suggestions / preview_suggestion /
+                reject_suggestion(s) / suggest
+structure  +15  collect_garbage / convert_to_path / convert_to_shape / create_mask / create_selection /
+                delete_selection / duplicate_layer / list_brushes / list_selections / lock_layer /
+                path_edit / restore_object …
+```
+
+**最实质的一处不一致（已坐实 ✓，不是推断 ✓）**：
+```
+Web 查看器**真的调用**这些非 Core 工具（grep 调用点 ✓）：
+  clone_stamp 3 次 ✓ heal_stamp 3 ✓ smudge 3 ✓ liquify_pinch 2 ✓ create_mask 1 ✓
+  create_selection 1 ✓ duplicate_layer 1 ✓ create_annotation 1 ✓ checkpoint 1 ✓
+  不调：lock_layer 0 ✓ resolve_conflict 0 ✓ begin_transaction 0 ✓
+⇒ ⇒ **人（Web）能驱动 retouch / structure / annotation / history 这一整片** ✓
+   ⇒ ⇒ ⇒ **而 Agent（MCP 默认）连一个对应工具都看不到** ✗ ✓
+   ⇒ ⇒ ⇒ ⇒ **同一份文档，两个面的能力差一半** ✓ —— **这是本轮要回答的核心不一致** ✓
+```
+
+**第二处：文档与实现不符（过时注释 ✓）** ✗：
+```
+crates/yanshi-server/src/tools.rs:33  /// 核心层：默认注册（**27 个**）。   ← **实际 Core = 68 个** ✗
+⇒ ⇒ 这类不一致**没有判据在守** ✗ ⇒ 建议随"覆盖面对账"判据一起守住 ✓。
+```
+
+**第三处（也是缺口）：没有任何判据在守"三个面的覆盖面"** ✗
+```
+现有的跨面判据只有：
+  `mcp-tool-descriptions` ✓（工具**描述**与实现是否一致 ✓）
+  `tool-param-parity` ✓（**声明的参数面 vs 实现接受的参数面** ✓ —— **不是 HTTP vs MCP** ✗）
+  `tool-examples-doc-check` ✓（示例 ✓）
+⇒ ⇒ **"哪个面暴露了哪些工具"这件事，今天没有对账** ✗ ⇒ 所以上面的 68 与"27 vs 68"都长期无人发现 ✓。
+```
+
+**下一轮要加的判据** ✓（`tool-surface-coverage.mjs` ✓，全部可红 ✓）：
+1. **`MCP ⊆ HTTP`** ✓（结构性守卫；今天 0 违反 ✓ ⇒ 它守的是未来 ✓）；
+2. **`Profile::Core` 注释里的数量 == 实际数量** ✓（**今天红** ✓：27 vs 68 ✓ ⇒ 立刻有用 ✓）；
+3. **每个 profile 单独启用时必然包含 Core** ✓（实测不变式 ✓）；
+4. **打印每个面的覆盖面** ✓（**让"绿"带上"覆盖了多少"** ✓ —— 这是第 800 轮学到的规矩 ✓）。
