@@ -25602,3 +25602,8 @@ catch (err) { return { unable: "…" + String((err && err.message) || err),
 
 **读到**：`run 37226331526`（`dce6bfe`）｜`status=in_progress`｜未完成：`criteria shard 1/6` 与 `6/6` ✓。
 **⇒ 只等这两片**（`1/6` 含 `browser-ui-check` ✓）⇒ **它一完成就见分晓** ✓。
+
+### 🎯 第 686 轮：**TDZ 修复仍在跑 ⇒ 只记状态** ✓
+
+**读到**：`dce6bfe` 仍 `in_progress`（只剩 `shard 1/6` 与 `6/6` ✓）；最近完成仍是 `b7a98d9`（报的正是 TDZ 那条 ✓）。
+**⇒ 两层真因均已修 ⇒ 待 CI 验证** ✓。
