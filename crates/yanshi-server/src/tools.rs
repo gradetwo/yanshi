@@ -1666,6 +1666,29 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 历史 ----
     ToolSpec {
+        name: "set_reference",
+        profile: Profile::Core,
+        // **AI 画家需求 P2-9**：临摹时**半透明看参考图** ✓，不用来回切窗口 ✓。
+        // **关键取舍** ✓：参考图**只记进偏好** ✓（`reference.blob_hash/opacity/position` ✓），
+        // **绝不写进任何图层** ✗ ⇒ 文档**逐字节不受影响** ✓（判据断言的正是这条 ✓）⇒ `mutating: false` ✓。
+        // 显示由查看器负责 ✓（在画布上叠一层半透明图 ✓，服务端不参与绘制 ✓）。
+        summary: "设置参考图（只记进偏好，**不写进文档**；查看器负责半透明叠加）；用 clear_reference 移除",
+        mutating: false,
+        params: &[
+            param!("blob_hash", String, true, "参考图的 blob 哈希（sha256:…）"),
+            param!("opacity", Number, false, "不透明度 0..1（缺省 0.5）"),
+            param!("position", Object, false, "显示位置 {x, y, w, h}（缺省铺满画布）"),
+        ],
+    },
+    ToolSpec {
+        name: "clear_reference",
+        profile: Profile::Core,
+        // **移除参考图** ✓ —— 同样**只动偏好** ✓ ⇒ 文档逐字节不变 ✓（可逆 ✓）。
+        summary: "移除参考图（只把偏好里的键删掉；文档从未被改过 ⇒ 自然逐字节还原）",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
         name: "get_preferences",
         profile: Profile::Core,
         // **工作区级偏好** ✓（目标 ⑧-1 ✓：收藏的笔刷、最近使用 ✓）。
@@ -2604,6 +2627,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "reapply" => write_history_atom(ctx, args, AtomKind::Reapply, "atom_id"),
         "get_log" => read_get_log(ctx, args),
         "get_preferences" => read_get_preferences(ctx, args),
+        "set_reference" => write_set_reference(ctx, args),
+        "clear_reference" => write_clear_reference(ctx, args),
         "set_preferences" => write_set_preferences(ctx, args),
         "get_job" => read_get_job(ctx, args),
         "get_render_status" => read_get_render_status(ctx, args),
@@ -6020,6 +6045,47 @@ fn read_get_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 }
 
 /// **合并写入工作区偏好** ✓（目标 ⑧-1 ✓）。
+/// **`set_reference` / `clear_reference`**（AI 画家需求 P2-9 ✓）：**薄包装** ✓ ——
+/// 直接把键写进**既有的偏好**（`write_set_preferences` ✓）⇒ **文档一个字节都不碰** ✓
+/// ⇒ "参考图不许改文档""清掉必须可逆"两条**结构性成立** ✓（不是靠"我记得别写"✗，而是**根本没有写的路** ✓）。
+fn write_set_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let blob_hash = require_str(args, "blob_hash")?;
+    let opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    let position = args.get("position").cloned().unwrap_or(Value::Null);
+    let stored = write_set_preferences(
+        ctx,
+        &json!({"values": {
+            "reference.blob_hash": blob_hash,
+            "reference.opacity": opacity,
+            "reference.position": position,
+        }}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "reference": {"blob_hash": blob_hash, "opacity": opacity, "position": position},
+        "stored": stored,
+        "note": "参考图只记在偏好里 ⇒ 文档未被改动（查看器据此叠一层半透明图）",
+    }))
+}
+
+fn write_clear_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let _ = args;
+    // **值为 null ⇒ 删除该键** ✓（`set_preferences` 的既有语义 ✓，见它的 hint ✓）。
+    let stored = write_set_preferences(
+        ctx,
+        &json!({"values": {
+            "reference.blob_hash": Value::Null,
+            "reference.opacity": Value::Null,
+            "reference.position": Value::Null,
+        }}),
+    )?;
+    Ok(json!({"ok": true, "cleared": true, "stored": stored}))
+}
+
 fn write_set_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **`require_object` 回的是 `&Value`** ✗（不是 `&Map` ✓）⇒ 取一次 `as_object` ✓
     //（编译器当场纠正 ✓ —— 这类"我以为的返回类型"这个项目已经栽过好几次 ✓）。
