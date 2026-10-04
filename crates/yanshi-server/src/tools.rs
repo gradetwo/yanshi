@@ -13952,6 +13952,18 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "set_brush_dynamics",
         r#"{"brush":"100%_Opaque","curve":{"size_pressure":[[0,0],[1,1]]}}"#,
     ),
+    // **无参数工具**（✓，第 404 轮批量补 ✓）：这些 spec 的 `params` 是空数组 ✓
+    // ⇒ **示例只可能是"成功"或"需要前置状态"** ✓，**不可能因缺参被拒** ✗。
+    //（`commit_changeset` / `commit_transaction` 之类确实需要先有开启的变更集 ✓ ⇒ 归"需要前置状态"是**合理**的 ✓）
+    ("list_selections", r#"{}"#),
+    ("list_stashes", r#"{}"#),
+    ("begin_transaction", r#"{}"#),
+    ("begin_changeset", r#"{}"#),
+    ("commit_changeset", r#"{}"#),
+    ("abort_changeset", r#"{}"#),
+    ("clear_reference", r#"{}"#),
+    ("estimate_dehaze", r#"{}"#),
+    ("list_textures", r#"{}"#),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
