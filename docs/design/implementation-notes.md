@@ -24317,3 +24317,22 @@ awk -v e="$((n+3))" ⇒ `grep -n` 返回**两行**（607 / 1379 ✓）⇒ 算术
 或我自己新加的探针（`window.yanshi.state()` 若不存在 ✓）** ✗。
 **★ 一条（✓）** ✓：**"间歇"有两种形态** ✓ —— **"结果有时对、有时错"✗ 与 "整段有时没跑"✗**，
 **而它们的修法完全不同** ✓ ⇒ **我一直按前者在找** ✗（**加等待 ✓、改探针 ✓**）。
+
+### 🎯 第 590 轮：**嫌疑定位 —— 段首取不到元素 ⇒ 立刻抛错 ⇒ 整段空** ✗
+
+**读到（✓，`browser-ui-check.mjs:561-600` ✓）** ✓：
+```
+:568  Page.navigate（切到蒙版那份文档 ✓）
+:574  const board = document.getElementById("board");                     ⇒ 若 null ⇒ :575 抛错 ✓
+:579  document.getElementById("zoomFit").click();                          ← **id 从未核实** ✗
+:584  document.getElementById("color").value = "#1f6feb";                  ⇒ 若 null ⇒ 抛错 ✓
+:585  document.querySelector('button[data-tool="brush"]').click();          ⇒ 若 null ⇒ 抛错 ✗
+```
+**⇒ 结论（✓）** ✓：**这几行紧接在 `Page.navigate` 之后** ✓ ⇒
+**若页面尚未加载完 ⇒ `getElementById` 返回 null ⇒ 第一处 `.click()`/`.value` 就抛** ✗ ✓
+⇒ ⇒ ⇒ **`evaluate` 整体 reject ⇒ 外部拿到"空结果" ⇒ 全 `undefined` ✓（正是第 589 轮看到的 ✓）**
+⇒ ⇒ ⇒ ⇒ **所以真因很可能是"navigate 之后没有等页面就绪"** ✗ ✓
+（**而不是"事件被漏掉"✗** —— 我此前十几轮都按后者找 ✓）。
+**⇒ 下一处（✓）** ✓：**在 `:568` 之后加一个"等页面就绪"的循环** ✓
+（**如轮询 `document.readyState === "complete"` 且 `getElementById("board")` 非空 ✓**），
+**并在取不到时**明确报错**而不是静默抛** ✓（**"判据无法运行"与"判据失败"要分开 ✓**）。
