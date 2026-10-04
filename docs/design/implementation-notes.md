@@ -17683,3 +17683,37 @@ static OUTPUT: Mutex<Vec<u8>>;   static ERROR: Mutex<Vec<u8>>;      // 两条通
 ⇒ 那决定移植是"整段搬" ✓ 还是"内核里已有等价物、只需接线" ✓
 （**后者很可能** ✓ —— 内核本来就会画笔触 ✓：`extend_preview_stroke` / `commit_preview` ✓
 ⇒ 若 `paint()` 干的正是这两件事 ✓ ⇒ 移植量**再降一档** ✓ ⇒ 那就只是**在内核上开一个薄接口** ✓）。
+
+### 🎯🎯🎯 第 190 轮：**移植量最终确定：约 12 行 + 几个小助手** ✓（全是 `hokusai` 常规用法 ✓）
+
+**`fn paint` 全文（原文 ✓，`crates/yanshi-brush-wasm/src/lib.rs:221` ✓）** ✓：
+```rust
+fn paint(request_json: &str) -> Result<Vec<u8>, String> {
+    let request: PaintRequest = serde_json::from_str(request_json)
+        .map_err(|error| format!("请求不是合法 JSON：{error}"))?;
+    let brush = hokusai::myb::from_str(&request.myb)
+        .map_err(|error| format!("不是能解析的 .myb：{error}"))?;
+    let brush = configure(brush, &request);
+    let mut state = hokusai::BrushState::default();
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    stamp(&brush, &mut state, &mut surface, &request.points);
+    Ok(read_back(&surface, &request.region))
+}
+```
+**三条结论 ✓** ✓：
+1. **逻辑极薄** ✓：解析请求 ✓ ⇒ 解析 `.myb` ✓ ⇒ 应用设置 ✓ ⇒ 盖章 ✓ ⇒ 读回 ✓
+   ⇒ **用的全是 `hokusai` 的公开 API** ✓（`myb::from_str` ✓、`BrushState` ✓、`tile_mem::MemSurface` ✓）；
+2. **而内核本来就在用 `hokusai`** ✓（它要渲染笔触 ✓）⇒ ⇒ **没有新的依赖要引** ✓；
+3. **要搬的** = 这 12 行 ✓ + 四个小助手（`PaintRequest` ✓、`configure` ✓、`stamp` ✓、`read_back` ✓）
+   ⇒ 外面再包**一个 bindgen 方法** ✓（C-ABI 那 5 个内存管道由 bindgen 接管 ✓、**不用搬** ✗）。
+**至此六轮"先查再动"的净收益（是一条收敛曲线 ✓）** ✓：
+```
+"删一个 crate" ✗ → C-ABI ≠ bindgen ✗ → 内核没有笔刷 API ✗ → 6 导出 / 388 行 / 1 入口
+→ 5 个是管道、只剩 `paint()` → **`paint()` 只有 12 行、全是 hokusai 常规用法** ✓
+```
+**下一轮（写死 ✓，可以动真格了 ✓）** ✓：
+① 读 `PaintRequest` / `configure` / `stamp` / `read_back` 四个助手 ✓（它们加起来才是剩下的全部工作量 ✓）；
+② **在内核里加一个方法** ✓（形如 `pub fn paint_brush(&self, request_json: &str) -> String` ✗ ——
+   返回值形态**先看查看器怎么用**再定 ✓：它要的是**像素字节** ✓ + 能区分**错误** ✗）；
+③ 加**判据**：内核方法 vs 服务端笔触 ⇒ **逐字节相同** ✓（可复用 `wasm-brush-parity.mjs` 的形状 ✓）；
+④ **判据绿之后**才改查看器 ✓、**才**删门面 ✓（**顺序不可反** ✗）。
