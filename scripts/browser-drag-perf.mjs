@@ -16,7 +16,11 @@ const segments = Number(process.argv[3] || 20);
 const list = await fetch(`http://127.0.0.1:${Number(process.env.CDP_PORT || 9333)}/json/list`).then((r) => r.json());
 let target = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1:8110"));
 if (!target) {
-  const created = await fetch("http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/new?" + encodeURIComponent(url), { method: "PUT" }).then((r) => r.json());
+  // **同一处的第二个实例** ✗（第 534 轮 ✓）：`:16` 在更早一轮修成了模板串 ✓，
+  // 而这一行**仍是普通引号 + 拼接** ✗ ⇒ 端口表达式成了**字面文本** ✓
+  // ⇒ 实测 `ERR_INVALID_URL` ✓（`input` 里就是那段字面文本 ✓）。
+  // ⇒ 这正是"改一处之前先搜一遍"（第 452 轮立的规矩 ✓）当时漏掉的那一处 ✓。
+  const created = await fetch(`http://127.0.0.1:${Number(process.env.CDP_PORT || 9333)}/json/new?` + encodeURIComponent(url), { method: "PUT" }).then((r) => r.json());
   target = created;
   await new Promise((r) => setTimeout(r, 3500));
 }
