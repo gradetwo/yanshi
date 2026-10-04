@@ -49,7 +49,6 @@ const NOT_WIRED = [
   //   ⇒ 实测报 `Import #0 "./yanshi_wasm_bg.js": module is not an object or function` ✓
   //   ⇒ **假设与产物形态不匹配** ⇒ **修法**：让判据在页面里按 wasm-bindgen 的方式装载
   //   （产品自己就是这么装内核的 ✓ ⇒ 模式已有 ✓），而不是直接 instantiate 裸 .wasm ✓。
-  "wasm-brush-preview-parity.mjs",
 ];
 
 const files = readdirSync("scripts").filter((name) => name.endsWith(".mjs")).sort();
