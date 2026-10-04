@@ -1309,11 +1309,13 @@ await new Promise((resolve) => setTimeout(resolve, 1200));
 // 目标：最后一条 draw_stroke **之前**的那条原子（当前文档最早的原子未必是 create_document）。
 const jumpResult = await evaluate(`(async () => {
   const rows = Array.from(document.querySelectorAll("#history .row"));
-  let target = null;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i].textContent.includes("draw_stroke")) { target = rows[i - 1] || null; break; }
-  }
-  if (!target) return { ok: false, reason: "找不到笔画之前的原子" };
+  // **挑「足够靠前」的目标** ✓（第 458 轮 ✓）：原先是从最后往前找 draw_stroke 行再取**它的上一行** ✗
+  // ⇒ 那一行往往与「跳转前」同态 ✗ ⇒ 跳过去画面不变 ⇒ 判据自己报
+  // **「回到此处」本身没有改变画面（用例无效：目标原子选得不对）** ✓（**它说得对** ✓）。
+  // ⇒ 改成挑**第一个带按钮的行** ✓：它在**任何一笔之前** ✓ ⇒ **跳过去画面必然不同** ✓。
+  // 注意：**本段处在模板字符串里** ⇒ 注释里**不能出现反引号** ✗（这一轮我又踩了一次 ✓）。
+  let target = rows.find((row) => row.querySelector("button")) || null;
+  if (!target) return { ok: false, reason: "找不到可跳转的原子行" };
   const button = target.querySelector("button");
   if (!button) return { ok: false, reason: "该行没有按钮" };
   button.click();
