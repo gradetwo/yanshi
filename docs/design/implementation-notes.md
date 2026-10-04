@@ -25478,3 +25478,17 @@ in_progress：**criteria shard 1/6** ⇐ **`browser-ui-check` 所在的片** ✓
 2. **错误是 SyntaxError: Unexpected token ,** ⇒ **页内模板里有语法错误** ⇒ **我 `61caba7` 插入的"画布自检"就是它**；
 3. ⇒ **`node --check` 检查不到页模板内的语法** ⇒ **两个提交都通过了静态检查** ✗ —— **而这是本段"判据崩溃伪装成产品失败"的最后一个伪装**。
 **★ 一条**：**"页模板内的语法"是静态检查的盲区** ⇒ **必须靠运行时诊断**（本轮那条 `typeof`/`错误=` 就是它）。
+
+### 🎯 第 667 轮：**修正 —— 那个 `SyntaxError` 可能早于我的插入** ✓
+
+**读到**（`:615-624`）：插入的自检是
+```js
+try { document.getElementById("board").getContext("2d").getImageData(0, 0, 1, 1); }
+catch (err) { return { unable: "…" + String((err && err.message) || err),
+                     filled: undefined, masked: undefined, log: "" }; }
+```
+**⇒ 三条**：
+1. **它语法合法** ⇒ **不像元凶**；
+2. **`8547374`（异常浮出）先于 `61caba7`** ⇒ **那个 `SyntaxError` 很可能早已存在** ⇒ **只是之前被"静默 undefined"盖住** ✗；
+3. ⇒ **下一步**：**把页模板抽出来单独跑 `node --check`** ✓ —— **这是唯一能看见模板内语法的办法** ✓。
+**★ 一条**：**"错误可见的时间"不等于"错误产生的时间"** ⇒ **`8547374` 让老错误露出来，而我把它当成了新错误** ✗。
