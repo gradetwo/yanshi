@@ -44,7 +44,7 @@ if (result.ok !== true) {
   if (first && String(first).toLowerCase() !== "#2040a0") failures.push("首笔颜色不是 from");
   if (last && String(last).toLowerCase() !== "#f0e0c0") failures.push("末笔颜色不是 to");
   // ③ **画面真的出现过渡** ✓：在左/中/右三点取样，亮度必须单调（暗 ⇒ 亮 ✓）
-  const region = await call("render_region", { region: { x: 0, y: 0, width: 300, height: 200 }, include_image: true, max_px: 200000 }, token);
+  const region = await call("render_region", { region: { x: 0, y: 0, w: 300, h: 200 }, include_image: true, max_px: 200000 }, token);
   // **形状以实测为准** ✓：HTTP 的 `callTool` 回的是**工具原始 JSON** ⇒ 图在 `image.data`
   //（`content[]` 那一层是 **MCP** 的封装 ✓ —— 我先前按 MCP 的形状写，于是永远"拿不到图" ✗）。
   const image = region.image || {};

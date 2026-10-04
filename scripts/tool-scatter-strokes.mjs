@@ -21,7 +21,7 @@ const call = async (id, token, tool, args) => (await fetch(`${base}/api/tools?do
   body: JSON.stringify({ tool, arguments: args }),
 })).json();
 const render = async (id, token) => {
-  const raw = await call(id, token, "render_region", { region: { x: 0, y: 0, width: 200, height: 150 }, raw: true, max_px: 4_000_000 });
+  const raw = await call(id, token, "render_region", { region: { x: 0, y: 0, w: 200, h: 150 }, raw: true, max_px: 4_000_000 });
   if (!raw.ok || !raw.raw_url) { console.log("  ✗ 拿不到直通 RGBA"); process.exit(1); }
   return Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
 };

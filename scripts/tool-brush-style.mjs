@@ -32,7 +32,7 @@ const paintAndShot = async (id, token, style) => {
   if (style) args.style = style;
   const result = await call(id, token, "brush_stroke", args);
   if (result.ok !== true) return { error: String((result.context || {}).detail || result.error_code || "?") };
-  const raw = await call(id, token, "render_region", { region: { x: 0, y: 0, width: 200, height: 120 }, raw: true, max_px: 4_000_000 });
+  const raw = await call(id, token, "render_region", { region: { x: 0, y: 0, w: 200, h: 120 }, raw: true, max_px: 4_000_000 });
   if (!raw.ok || !raw.raw_url) return { error: "拿不到直通 RGBA" };
   return { bytes: Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer()) };
 };

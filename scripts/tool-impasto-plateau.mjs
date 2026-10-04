@@ -25,7 +25,7 @@ const call = async (tool, args) => (await fetch(`${base}/api/tools?doc=${docId}&
   body: JSON.stringify({ tool, arguments: args }),
 })).json();
 const sampleRow = async (y, x0, x1) => {
-  const raw = await call("render_region", { region: { x: 0, y: 0, width: 400, height: 160 }, raw: true, max_px: 200000 });
+  const raw = await call("render_region", { region: { x: 0, y: 0, w: 400, h: 160 }, raw: true, max_px: 200000 });
   if (!raw.ok || !raw.raw_url) return null;
   const buffer = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
   const width = raw.width || 400;

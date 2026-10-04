@@ -25,7 +25,7 @@ const call = (docId, token) => async (tool, args) =>
     body: JSON.stringify({ tool, arguments: args }),
   })).json();
 const px = (docId, token) => async (x, y) => {
-  const raw = await call(docId, token)("render_region", { region: { x, y, width: 1, height: 1 }, raw: true, max_px: 1000 });
+  const raw = await call(docId, token)("render_region", { region: { x, y, w: 1, h: 1 }, raw: true, max_px: 1000 });
   if (!raw.ok || !raw.raw_url) return null;
   const buf = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
   return [buf[0], buf[1], buf[2], buf[3]];
