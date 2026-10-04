@@ -19537,3 +19537,20 @@ list_suggestions preview_suggestion list_brushes
 **仍缺（✓）** ✓：**27 个** ✓ —— 其中多数**取值说明不足** ✗（`add_adjustment` / `add_filter` / `set_property` /
 `set_layer_blend` / `set_brush_dynamics` / `scatter_strokes` / `patch` / `suggest` … ✓）⇒ **继续"宁缺勿编"** ✓。
 **进度（✓）** ✓：**114/136 = 84%** ✓、**十一批零试错** ✓（**本批是单轮最大增量：23 条** ✓）。
+
+## 🎉🎉 第 294 轮：**一次 20 条（114 ⇒ 135）+ 踩到并解决一个"原始字符串陷阱"** ✓✓
+
+**新增（✓，取值全部写在参数说明里 ✓）** ✓：`reorder_layers` `update_object` `submit_offline` `resample`
+`path_edit` `update_sync_policy` `set_group_transform` `replace_object_data` `update_adjustment` `update_filter`
+`liquify_push` `liquify_twirl` `liquify_pinch` `smudge` `patch` `scatter_strokes` `save_palette` `import_asset`
+`set_brush_dynamics` `set_layer_blend` ✓ ⇒ 守卫测试 **ok** ⇒ 总数 **135** ✓。
+**⚠️ 一个真正的仓库陷阱（✓，本轮最重要的收获 ✓）** ✗：
+**`r#"…"#` 原始字符串遇到 `"#` 就提前结束** ✗ ——
+而我写的 `"palette":["**"#**ff0000"]` 正好含这两个字符 ✓ ⇒ **整个 `tools.rs` 不再能解析** ✗
+⇒ **编译器报 `prefix \`_Opaque\` is unknown` 等一串怪错** ✓（**报错位置与真正的原因隔了两行** ✓）
+⇒ ⇒ **处置** ✓：**立刻 `git checkout` 回退** ✓（**回退后构建错误 0** ✓）⇒
+**改用对象色 `{r,g,b,a}`** ✓ ⇒ **并在脚本里加断言：载荷不得含 `"#`** ✓ ⇒ 重做一次成功 ✓。
+**教训（✓）** ✓：**这个仓库用 `r#"…"#` 存 JSON 示例** ✓ ⇒
+**凡是要写进示例的颜色，一律用对象** ✅，**不要用 `#rrggbb`** ✗。
+**进度（✓）** ✓：**135/136 = 99%** ✓ ⇒ **只剩 7 个**（`add_adjustment` `add_filter` `set_reference` `set_property`
+`import_psd` `suggest` `set_preferences` ✓）—— **每一个都是因为"取值说明不足"** ✓（**宁缺勿编** ✓）。

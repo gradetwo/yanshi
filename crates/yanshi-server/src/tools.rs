@@ -13654,6 +13654,56 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("list_suggestions", r#"{}"#),
     ("preview_suggestion", r#"{}"#),
     ("list_brushes", r#"{}"#),
+    // **取值写在参数说明里的那一批**（第 294 轮）：`op` ∈ reverse|close|join|merge|split、
+    // `policy` ∈ all|none、`mode` ∈ normal|multiply|screen|overlay|darken|lighten|add、
+    // `delta` = {dx,dy}、`source_region` / `area` = {x,y,w,h}、`points` = [[x,y],…]。
+    // **颜色一律用对象** {r,g,b,a} —— **不能用 "#rrggbb"**：`"#` 会**提前结束** `r#"…"#` 原始字符串。
+    // 仍不写的 7 个：`add_adjustment`/`add_filter`（"见工具说明"）、`set_reference`（占位哈希）、
+    // `set_property`（key 未知）、`import_psd`（要先有 blob）、`suggest`（说明被截断）、`set_preferences`（键未知）。
+    ("reorder_layers", r#"{"order":["L1"]}"#),
+    ("update_object", r#"{"object_id":"L1","patch":{}}"#),
+    (
+        "submit_offline",
+        r#"{"atoms":[{"kind":"draw_stroke","payload":{}}]}"#,
+    ),
+    ("resample", r#"{"object_id":"L1"}"#),
+    ("path_edit", r#"{"op":"reverse","object_id":"L1"}"#),
+    (
+        "update_sync_policy",
+        r#"{"instance_id":"inst1","policy":"all"}"#,
+    ),
+    (
+        "set_group_transform",
+        r#"{"group_id":"g1","delta":{"dx":10,"dy":0}}"#,
+    ),
+    ("replace_object_data", r#"{"object_id":"L1","data":{}}"#),
+    ("update_adjustment", r#"{"object_id":"L1","params":{}}"#),
+    ("update_filter", r#"{"object_id":"L1","params":{}}"#),
+    (
+        "liquify_push",
+        r#"{"layer_id":"L1","points":[[10,10]],"direction":[10,0]}"#,
+    ),
+    ("liquify_twirl", r#"{"layer_id":"L1","points":[[10,10]]}"#),
+    ("liquify_pinch", r#"{"layer_id":"L1","points":[[10,10]]}"#),
+    ("smudge", r#"{"layer_id":"L1","points":[[10,10]]}"#),
+    (
+        "patch",
+        r#"{"layer_id":"L1","source_region":{"x":0,"y":0,"w":20,"h":20},"target":[40,40]}"#,
+    ),
+    (
+        "scatter_strokes",
+        r#"{"layer_id":"L1","seed":1,"area":{"x":0,"y":0,"w":100,"h":100},"palette":[{"r":255,"g":0,"b":0,"a":255}],"brush":"100%_Opaque"}"#,
+    ),
+    (
+        "save_palette",
+        r#"{"name":"my.gpl","colors":[{"r":255,"g":0,"b":0,"a":255}]}"#,
+    ),
+    ("import_asset", r#"{"kind":"brush","name":"my.myb"}"#),
+    (
+        "set_brush_dynamics",
+        r#"{"brush":"100%_Opaque","curve":{"size_pressure":[[0,0],[1,1]]}}"#,
+    ),
+    ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
 ];
 
 #[cfg(test)]
