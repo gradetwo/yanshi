@@ -544,11 +544,6 @@ if [ -d "$repo/assets/brush-previews" ]; then
 else
   missing_hard="${missing_hard} brush-previews"
 fi
-if [ -f "$repo/assets/brush-module.wasm" ]; then
-  cp "$repo/assets/brush-module.wasm" "$stage/share/yanshi/brush-module.wasm"
-  echo "    ✓ 笔刷门面已装包：$(du -h "$stage/share/yanshi/brush-module.wasm" | cut -f1)"
-else
-fi
 if [ -n "${missing_hard}" ]; then
   echo "" >&2
   echo "    ⚠️⚠️ **这个包会直接 404** ✗：缺${missing_hard}（它们在仓库里是资产，不是构建产物 ✓）" >&2
