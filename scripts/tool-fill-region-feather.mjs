@@ -28,6 +28,10 @@ const px = (docId, token) => async (x, y) => {
   const raw = await call(docId, token)("render_region", { region: { x, y, w: 1, h: 1 }, raw: true, max_px: 1000 });
   if (!raw.ok || !raw.raw_url) return null;
   const buf = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
+  // **打印"请求的点"与"返回字节数"** ✓（第 548 轮 ✓）：三条断言里"深内部"对 ✓ 而"外面/远处"全 255 ✗
+  // ⇒ 形状本身画对了 ✓ ⇒ **唯一自洽的解释是"读到的不是请求的那个像素"** ✗
+  // ⇒ 若返回不止 4 字节（1 像素）⇒ **第一个像素未必是请求点** ✗ —— 这一行就是把那件事照出来 ✓。
+  console.log(`  px 请求 (${x},${y}) ⇒ 返回 ${buf.length} 字节 = ${buf.length / 4} 像素 ⇒ 首像素 [${buf[0]},${buf[1]},${buf[2]},${buf[3]}]`);
   return [buf[0], buf[1], buf[2], buf[3]];
 };
 const failures = [];
