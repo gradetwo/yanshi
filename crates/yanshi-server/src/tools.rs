@@ -10248,11 +10248,12 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             [(scatter_next(&mut state) * palette.len() as f64) as usize % palette.len()]
         .clone();
         // **颜色**：调色板里的那一项 ✓，不透明度用这次抽到的 ✓（`a` 若调色板没给就按 255 ✓）。
+        let rgb = parse_colour_value(&pick, "palette")?;
         let color = json!({
-            "r": pick.get("r").and_then(Value::as_f64).unwrap_or(0.0),
-            "g": pick.get("g").and_then(Value::as_f64).unwrap_or(0.0),
-            "b": pick.get("b").and_then(Value::as_f64).unwrap_or(0.0),
-            "a": (pick.get("a").and_then(Value::as_f64).unwrap_or(255.0) * alpha).clamp(0.0, 255.0),
+            "r": rgb[0] as f64,
+            "g": rgb[1] as f64,
+            "b": rgb[2] as f64,
+            "a": ((rgb[3] as f64) * alpha).clamp(0.0, 255.0),
         });
         // **一小段**（长度 ≈ 笔尖 ✓）：与 `gradient_blend` 同样的两点式 ✓（一个点会被判"没落下任何像素"✗）。
         let length = (size * 1.2).max(4.0);
@@ -10557,21 +10558,78 @@ fn write_gradient_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 // ⇒ 共用函数**最后除以 360** ✓、**调用方不要再除** ✗（第 73 轮多除一次 ⇒ 蓝画成红 ✓）。
 
 /// **解析 `{r,g,b,a}` 颜色参数** ✓（0..255 ✓；`a` 缺省 255 ✓）。
-fn parse_color_arg(value: Option<&Value>, name: &str) -> Result<[u8; 4]> {
-    let object = value.and_then(Value::as_object).ok_or_else(|| {
+/// **十六进制颜色**（测试报告第 1 条）✓ —— 支持 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` ✓，
+/// 前面的 `#` 可省略 ✓。**解析不了返回 `None`** ✓，由调用方**明确报错** ✗ 而不是静默变黑 ✗。
+fn parse_hex_colour(text: &str) -> Option<[u8; 4]> {
+    let trimmed = text.trim();
+    let body = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    let digits: Vec<u8> = body
+        .chars()
+        .map(|c| c.to_digit(16).map(|d| d as u8))
+        .collect::<Option<Vec<u8>>>()?;
+    match digits.len() {
+        3 => Some([digits[0] * 17, digits[1] * 17, digits[2] * 17, 255]),
+        4 => Some([
+            digits[0] * 17,
+            digits[1] * 17,
+            digits[2] * 17,
+            digits[3] * 17,
+        ]),
+        6 => Some([
+            digits[0] * 16 + digits[1],
+            digits[2] * 16 + digits[3],
+            digits[4] * 16 + digits[5],
+            255,
+        ]),
+        8 => Some([
+            digits[0] * 16 + digits[1],
+            digits[2] * 16 + digits[3],
+            digits[4] * 16 + digits[5],
+            digits[6] * 16 + digits[7],
+        ]),
+        _ => None,
+    }
+}
+
+/// **颜色取值的统一入口**（对象或十六进制都认 ✓）—— **认不出来就报错** ✓。
+/// 这一条是报告里"静默变黑"的根因修复：以前只有对象一条路 ✓，字符串走 `.get("r")` 全是 `None` ✗
+/// ⇒ `unwrap_or(0.0)` ⇒ **全黑且无告警** ✗。
+fn parse_colour_value(value: &Value, name: &str) -> Result<[u8; 4]> {
+    if let Some(text) = value.as_str() {
+        return parse_hex_colour(text).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "{name} 的颜色 {text:?} 解析不了 ⇒ 给 #rgb / #rrggbb / #rrggbbaa 或 {{r,g,b,a}}（0..255）"
+                )),
+            )
+        });
+    }
+    let object = value.as_object().ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("{name} 必须是对象 {{r,g,b,a}}（0..255）")),
+            ErrorContext::detail(format!(
+                "{name} 必须是颜色对象 {{r,g,b,a}}（0..255）或 #rrggbb 这样的字符串"
+            )),
         )
     })?;
     let mut out = [0u8; 4];
     for (index, key) in ["r", "g", "b", "a"].iter().enumerate() {
         let raw = object.get(*key).and_then(Value::as_u64);
         let fallback = if *key == "a" { 255 } else { 0 };
-        let channel = raw.unwrap_or(fallback).min(255) as u8;
-        out[index] = channel;
+        out[index] = raw.unwrap_or(fallback).min(255) as u8;
     }
     Ok(out)
+}
+
+fn parse_color_arg(value: Option<&Value>, name: &str) -> Result<[u8; 4]> {
+    let value = value.ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 缺失 ⇒ 给 #rrggbb 或 {{r,g,b,a}}")),
+        )
+    })?;
+    parse_colour_value(value, name)
 }
 
 fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -13796,5 +13854,33 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod colour_parsing_tests {
+    use super::parse_hex_colour;
+
+    /// **十六进制颜色的四种写法**（测试报告第 1 条）：支持 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` ✓，
+    /// `#` 可省略 ✓。这条测试保证"接口说明写了支持"与"代码真的支持"一致 ✓。
+    #[test]
+    fn hex_colours_parse_in_all_documented_forms() {
+        assert_eq!(parse_hex_colour("#C8BAA8"), Some([0xc8, 0xba, 0xa8, 255]));
+        assert_eq!(parse_hex_colour("C8BAA8"), Some([0xc8, 0xba, 0xa8, 255]));
+        assert_eq!(parse_hex_colour("#fff"), Some([255, 255, 255, 255]));
+        assert_eq!(parse_hex_colour("#f00a"), Some([255, 0, 0, 170]));
+        assert_eq!(
+            parse_hex_colour("#C8BAA880"),
+            Some([0xc8, 0xba, 0xa8, 0x80])
+        );
+    }
+
+    /// **认不出来必须是 `None`** ✓（由调用方报错 ✓）—— 这一条守的就是"不再静默变黑" ✗。
+    #[test]
+    fn unparsable_colours_return_none_instead_of_black() {
+        assert_eq!(parse_hex_colour("这不是颜色"), None);
+        assert_eq!(parse_hex_colour("#12345"), None);
+        assert_eq!(parse_hex_colour("#gggggg"), None);
+        assert_eq!(parse_hex_colour(""), None);
     }
 }
