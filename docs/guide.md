@@ -556,7 +556,7 @@ Without them the server still runs; the viewer then renders on the server side.
 
 ## Build and run
 
-See [Quick start](#quick-start) for the entry points and the requirements. The commands are:
+See [Quick start](../README.md#quick-start) for the entry points and the requirements. The commands are:
 
 ```bash
 make dev                                            # build the WASM kernel (if present), build, serve
