@@ -1376,7 +1376,18 @@ const jumpResult = await evaluate(`(async () => {
   const button = target.querySelector("button");
   if (!button) return { ok: false, reason: "该行没有按钮" };
   button.click();
-  await new Promise((r) => setTimeout(r, 2200));
+  // **等条件，不等时长** ✓（第 587 轮 ✓）：原先固定等 2200ms ✗ ⇒ 实测这条断言**间歇失败** ✓
+  // ⇒ 与蒙版同源 ✓（两处都靠定时等待 ✓）⇒ 这里改成"等历史条数稳定" ✓（连续两次相同即认为跳完 ✓），
+  // 上限约 6 秒 ✓（超时后照常返回，让断言自己说话 ✓，不在这里硬造通过 ✗）。
+  let prevLen = -1;
+  let stableTicks = 0;
+  for (let i = 0; i < 60; i++) {
+    const len = document.querySelectorAll("#history .row").length;
+    if (len === prevLen) stableTicks += 1; else stableTicks = 0;
+    prevLen = len;
+    if (stableTicks >= 2) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   return { ok: true, rows: rows.length };
 })()`);
 const historyFinal = await historyRows();
