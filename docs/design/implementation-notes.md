@@ -16377,3 +16377,25 @@ error: linking with `x86_64-linux-gnu-gcc` failed: exit status: 1
 * **清空/去掉该参数 ⇒ 逐字节回到今天** ✓（`coverage = None` ✓ —— 判据里"内 > 0"那条会顺带保护 ✓）。
 **验收判据（已先红 ✓）** ✓：`scripts/tool-selection-clip.mjs` ✓ ——
 现在读数 **内 4320 / 外 3588** ✗ ⇒ 修完必须变成 **内 > 0 / 外 = 0** ✓。
+
+### ✅ 第 136 轮：**判据全家桶 12/12 全绿** ✓（跨二十来轮的工具改动，**零回退** ✓）
+
+**同一个服务端上跑全部 HTTP 判据** ✓：
+```
+✓ tool-gradient-blend ✓ tool-scatter-strokes ✓ tool-save-palette ✓ tool-snapshot-roundtrip
+✓ tool-brush-style   ✓ tool-analyze-region  ✓ tool-fill-region  ✓ tool-layer-blend
+✓ tool-batch-preview ✓ tool-export-path                      —— 通过 10，失败 0 ✓
+脚本类：✓ 默认暴露全部 135 个已实现工具 ✓   ✓ target-installed 三条全过 ✓
+```
+⇒ 这说明一件重要的事 ✓：**新工具不是"各修各的"** ✗ —— 它们**共用**同一条落笔路径（`write_brush_stroke` ✓）
+与同一套颜色处理 ✓ ⇒ 所以后续改动**能把早先的判据弄红** ✓ ⇒ **这一轮跑一遍是有意义的** ✓
+（它把"我这十几轮加的 20 个判据"从"各自曾经绿过"✗ 升级为"**同时、在同一台上、现在都绿**" ✓）。
+**顺带解清一个数字疑点（重要 ✓）** ✓：
+* 文档 `docs/tools.md` 写 **123 total** ✓（这是 **`DEFAULT_PROFILES`** 那个集合 ✓，由 cargo 里的
+  `tool_inventory` 断言 ✓ —— 刚跑过 ✓ 2 passed ✓）；
+* 而"**默认暴露**"判据数的是**全部 `ToolSpec` 块** = **135** ✓ ⇒ 服务端默认**真的把它们全暴露** ✓
+  （这正是第 87 轮那次普查的结论 ✓：**默认一个不缺** ✓）。
+⇒ **两个数都对，只是口径不同** ✓（123 = 预设 profile 集合 ✓；135 = 规格总数 = 默认暴露数 ✓）
+⇒ 记下来 ✗ 免得以后又当成"矛盾"✗ 查一遍 ✓。
+**下一轮** ✓：回到 **P0-3 选区的接线** ✓（四个钩子已在第 135 轮记清 ✓；这是跨 core→render→tools 的实质改动 ✓，
+需要的上下文余量较大 ✓ ⇒ 放到下一轮开头做 ✓）。
