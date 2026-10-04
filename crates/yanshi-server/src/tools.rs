@@ -7780,9 +7780,11 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 fn write_set_layer_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let mode = require_str(args, "mode")?;
-    const ALLOWED: [&str; 7] = [
-        "normal", "multiply", "screen", "overlay", "darken", "lighten", "add",
-    ];
+    // **权威清单只有一份** ✓（`BlendMode::NAMES` ✓）—— 本文件此前**硬编码 7 个** ✗，
+    // 而渲染层能解析 10 个 ✓ ⇒ 已经漂移 ✓（`blend.rs` 的注释恰好警告过这种漂移 ✗）。
+    // `ALLOWED` 用 `const` 引用它 ⇒ 以后加模式只改一处 ✓。
+    const ALLOWED: [&str; yanshi_render::blend::BlendMode::NAMES.len()] =
+        yanshi_render::blend::BlendMode::NAMES;
     let lowered = mode.to_ascii_lowercase();
     if !ALLOWED.contains(&lowered.as_str()) {
         return Err(YanshiError::new(

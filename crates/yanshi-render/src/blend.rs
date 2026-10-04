@@ -33,6 +33,8 @@ pub enum BlendMode {
     Subtract,
     /// 差值。
     Difference,
+    /// **颜色减淡**（测试报告 §三.4 ✓）：提亮高光刀痕用 ✓，规范公式 `Cb / (1 - Cs)` ✓。
+    ColorDodge,
 }
 
 impl BlendMode {
@@ -53,7 +55,7 @@ impl BlendMode {
     ///
     /// **为什么集中在这里** ✓：渲染层与工具层**必须用同一份** ✗ ——
     /// 各写一份必然漂移 ✓ ⇒ 于是"工具说合法、渲染不认"或反过来 ✗。
-    pub const NAMES: [&'static str; 9] = [
+    pub const NAMES: [&'static str; 11] = [
         "normal",
         "multiply",
         "screen",
@@ -63,6 +65,8 @@ impl BlendMode {
         "add",
         "linear_dodge",
         "subtract",
+        "color_dodge",
+        "difference",
     ];
 
     /// **严格解析** ✓：不认识就返回 `None` ✓（供**入口**做校验 ✓）。
@@ -82,6 +86,7 @@ impl BlendMode {
             "add" | "linear_dodge" => Some(Self::Add),
             "subtract" => Some(Self::Subtract),
             "difference" => Some(Self::Difference),
+            "color_dodge" => Some(Self::ColorDodge),
             _ => None,
         }
     }
@@ -103,6 +108,7 @@ impl BlendMode {
             Self::Add => "add",
             Self::Subtract => "subtract",
             Self::Difference => "difference",
+            Self::ColorDodge => "color_dodge",
         }
     }
 
@@ -114,6 +120,14 @@ impl BlendMode {
             Self::Normal => cs,
             Self::Multiply => cb * cs,
             Self::Screen => cb + cs - cb * cs,
+            // **颜色减淡**（§三.4）✓：`Cb / (1 - Cs)` ✓；`Cs == 1` 时按规范取 1 ✓（避免除零 ✓）。
+            Self::ColorDodge => {
+                if cs >= 1.0 {
+                    1.0
+                } else {
+                    (cb / (1.0 - cs)).clamp(0.0, 1.0)
+                }
+            }
             Self::Overlay => {
                 // HardLight(Cs, Cb)：以 base 决定分支。
                 if cb <= 0.5 {
@@ -340,5 +354,30 @@ mod mode_name_tests {
             BlendMode::parse("not_a_mode").is_none(),
             "严格解析应当拒绝未知值 ✓（入口用它校验 ✓）"
         );
+    }
+}
+
+#[cfg(test)]
+mod color_dodge_tests {
+    use super::BlendMode;
+
+    /// **颜色减淡**（测试报告 §三.4）✓：`Cb / (1 - Cs)` ✓，`Cs = 1` 取 1 ✓，且**绝不越界** ✓。
+    #[test]
+    fn color_dodge_follows_the_spec_and_stays_in_range() {
+        let dodge = BlendMode::ColorDodge;
+        assert!((dodge.blend_channel(0.25, 0.5) - 0.5).abs() < 1e-6);
+        assert!((dodge.blend_channel(0.0, 0.5) - 0.0).abs() < 1e-6);
+        assert!((dodge.blend_channel(0.25, 1.0) - 1.0).abs() < 1e-6); // 规范：Cs=1 ⇒ 1 ✓
+        assert!(dodge.blend_channel(0.9, 0.95) <= 1.0); // 不越界 ✓
+    }
+
+    /// **清单与解析必须一致** ✓：`NAMES` 里每一个都能解析 ✓、且解析回来名字相同 ✓
+    ///（这条守的正是"渲染层与工具层各写一份必然漂移" ✗）。
+    #[test]
+    fn the_name_list_round_trips_through_parsing() {
+        for name in BlendMode::NAMES {
+            let parsed = BlendMode::parse(name).unwrap_or_else(|| panic!("{name} 解析不了"));
+            assert_eq!(parsed.as_str(), name);
+        }
     }
 }
