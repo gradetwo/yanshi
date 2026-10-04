@@ -1136,6 +1136,11 @@ async function fetchOrLocal(url, options) {
     if (fallback !== null) {
       return new Response(fallback, { status: 200, headers: { "content-type": "application/json" } });
     }
+    // **只把"真正落空"的那一次打出来** ✗ —— 改成 network-first 之后 ✓，
+    // 离线时**每次读都先试网络** ✓ ⇒ `ERR_INTERNET_DISCONNECTED` **必然会刷一屏** ✓
+    // ⇒ 那份清单**不再等于"缓存没命中"** ✗（第 174 轮实测踩到的解读陷阱 ✓）。
+    // 真正要找的是：**回落也空了的那一次** ✓（`key` 里带 token ✓ ⇒ 打出来才能看出键对不对 ✓）。
+    console.warn("[yanshi] 缓存落空：", key);
     throw error;
   }
 }
