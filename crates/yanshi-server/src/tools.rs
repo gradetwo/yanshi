@@ -3866,11 +3866,22 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("rect")
         .to_string();
-    // **羽化半径**（像素 ✓，`shape.feather` ✓，缺省 0 ✓ ⇒ **不传 ⇒ 行为逐字节不变** ✓）：
+    // **羽化半径**（像素 ✓，缺省 0 ✓ ⇒ **不传 ⇒ 行为逐字节不变** ✓）：
     // **负值按 0** ✓（没有"负羽化"这回事 ✓）；真正的模糊在**渲染侧**做 ✓
     //（`render.rs` 里 `feather_coverage` ✓）—— 这里只把**参数存进形状描述** ✓，
     // 这样**文档模型存的是参数而不是像素** ✓（改半径不必重画 ✓）。
-    let feather = number("feather", 0.0).max(0.0);
+    //
+    // **顶层与 shape 内都要认** ✓（第 530 轮修复 ✓）：spec 写的是「羽化半径（像素；
+    // **也可写进 shape.feather**；缺省 0）」✓ —— "也可写进 shape" 意味着**顶层是主形式** ✓，
+    // 而原先这里**只从 `shape` 里读** ✗ ⇒ **顶层传的 `feather` 被静默忽略** ✗
+    // ⇒ 实测表现为"羽化半径传了却不生效" ✓（`tool-fill-region-feather` 量到形状之外仍是 255 ✓）。
+    // ⇒ 现在**两处都认** ✓，`shape` 内的优先（更具体 ✓），都没有则缺省 0 ✓。
+    let feather = shape
+        .get("feather")
+        .and_then(Value::as_f64)
+        .or_else(|| args.get("feather").and_then(Value::as_f64))
+        .unwrap_or(0.0)
+        .max(0.0);
     let geometry = match kind.as_str() {
         "rect" => json!({
             "kind": "rect",
