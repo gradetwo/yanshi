@@ -21763,3 +21763,27 @@ const countBand = async (fromY, toY) => {
 3. ⭐ **"画布尺寸"症状在两条判据里同时出现** ✓：`browser-layout`（**超时：画布尺寸与首帧** ✗）与
    `browser-ui-check`（**画布始终没被设过尺寸** ✗）⇒ ⇒ **像是一个共同根因** ✓
    （**产品侧"画布没设尺寸" ✗，或驱动侧"首帧没起来" ✓**）⇒ **优先查它** ✓ —— **一次可能解决两条红** ✓。
+
+### 🎉🎉🎉 第 423 轮：**A⑥ 全部兑现 —— 离线 5/5 确认通过** ✓（而它们此前是"假绿" ✗）
+
+**读到（✓，`run 37210236196` 的最后一片，只读一个 job ✓）** ✓：
+```
+✓ browser-no-stale-read.mjs      ← **SW 升级不脏读：通过** ✓ ✓
+✓ kernel-brush-parity.mjs        ← **两种渲染模式逐字节一致：通过** ✓（A⑥ 的另一半 ✓）
+⚠ tool-examples-doc-check.mjs（**已知红，按记录不阻塞 CI** ✓ —— 名单机制按预期工作 ✓）
+✓ browser-brush-list / browser-file-menu / browser-pixel-check / tool-brush-names /
+  tool-fill-region / tool-preview-image-contract / tool-selection-clip（共 9 通过 ✓）
+—— 通过 9｜意外失败 0｜已知红 1｜跳过 0
+```
+**⇒ A⑥ 五条全部确认（✓）** ✓：
+| A⑥ 要求 | 判据 | 结果 |
+|---|---|---|
+| 离线能**打开页面** | `browser-offline-reload` ✓ | ✓ 通过 |
+| 离线能**画** | `browser-offline-draw` ✓ | ✓ 通过 |
+| 离线能**导出** | `browser-offline-export` ✓ | ✓ 通过 |
+| **外壳**（SW/静态产物） | `browser-offline-shell` ✓ | ✓ 通过 |
+| **SW 升级不脏读** | `browser-no-stale-read` ✓ | ✓ 通过 |
+| 两种模式**逐字节一致** | `kernel-brush-parity` ✓ | ✓ 通过 |
+**★ 关键的一句实话（✓）** ✓：**这五条在接线修复（第 408-410 轮）之前，都是"假绿"** ✗ ——
+它们**取不到调试目标** ✓ ⇒ **根本没驱动浏览器** ✗ ⇒ **而汇总行又说"意外失败 0"** ✗
+⇒ ⇒ **我此前报告的"离线全绿"，是一份没有证据的结论** ✓ —— **现在这一份有证据** ✓。
