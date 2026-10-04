@@ -105,6 +105,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       tail -1 "$ROOT_DIR/out.txt" | sed 's/^/       ↳ /'
   elif is_known_red "$name"; then
     echo "  ⚠ ${name}（**已知红，按记录不阻塞 CI**）: $(grep -m1 -E '^     - ' "$ROOT_DIR/out.txt" | cut -c1-120)"
+    # **已知红也要把输出打出来** ✓（第 403 轮 ✓）：原先只打"第一条原因" ✗ ⇒
+    # **写在别处的探针 / 诊断就等于没写** ✗ —— 我加的那条"拖动期间日志尾部"探针，
+    # 跑了 ✓ 却没进日志 ✓ ⇒ 我白白等了一轮 ✗。**绿 / 已知红 / 失败，三种都要说话** ✓。
+    head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'
+    tail -6 "$ROOT_DIR/out.txt" | sed 's/^/     后│/' 
     expected_red=$((expected_red+1))
   else
     echo "  ✗ $name (EXIT=$code)"; head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'; \
