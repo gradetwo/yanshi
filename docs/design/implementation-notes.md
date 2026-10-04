@@ -16811,3 +16811,44 @@ pub struct SettingValue {
 ③ **缺省 ⇒ 一个字节都不改** ✓（不碰 `brush.set` ✓）；
 ④ 落地 5 处 ✓（**计数 67→68 core / 123→124 total** ✓）；
 ⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓（生效 + 方向"轻入重出" ✓）⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
+
+## 🧭 方法规矩（用户 2026-10-04 指示 ✓）：**多利用开源实现与行业做法，借鉴与学习** ✓
+
+**从这一轮起，凡遇到"该怎么做才对"的问题 ✓，先找行业权威实现 ✓，再自己写 ✗。**
+而且**这个仓库里就躺着好几份权威实现** ✓（依赖即教材 ✓）：
+* `hokusai-*` = **libmypaint 的 Rust 移植** ✓ ⇒ 一切"MyPaint 笔刷语义"的问题**问它** ✓
+  （本轮就是靠它一举解决了"曲线基准怎么定"✓ —— 见下 ✓）；
+* `assets/palettes/*.gpl` = **GIMP 调色板** ✓、`open-color.json` = 行业常见命名格式 ✓ ⇒ 我此前"走 `.gpl`" ✓ 正是这条路 ✓；
+* 源文件里的**注释与测试**本身就是"前人踩坑记录" ✓ —— 本会话多次靠它们少走弯路 ✓
+  （如 `brush.rs:313`"三条路容易漂移"✓、`evaluator.rs` 的公式 ✓）。
+
+### ✅ 第 153 轮：**行业权威一击解决了动力学曲线的基准问题** ✓
+**`hokusai-core/src/evaluator.rs` 的模块文档（原文 ✓）** ✓：
+```
+this module is the pure `(base_value + Σ mapping.eval(input_value))` step.
+For each setting: `value = base_value + Σ mapping.eval(inputs[mapping.input])`.
+```
+⇒ **语义定死** ✓：`InputMapping.points` 给的是**偏移** ✓，最终值 = **基准 + 各偏移之和** ✓。
+**再看本仓库怎么设半径（原文 ✓）** ✓：`tools.rs:11464`
+```rust
+brush.set(hokusai::BrushSetting::Radius,
+          hokusai::SettingValue::constant((diameter / 2.0).ln() as f32));
+```
+⇒ 半径走的是 **对数域** ✓（= libmypaint 的 `radius_logarithmic` ✓）。
+**于是"用户讲的倍率"到"曲线偏移"的映射是唯一确定的 ✓** ✓：
+```
+倍率 m（想要把半径变成 m 倍）  ⇒  偏移 offset = ln(m)
+例：size_pressure: [[0, 0.5], [0.5, 1.0], [1, 1.5]]  ⇒  偏移 = [[0, ln 0.5], [0.5, 0], [1, ln 1.5]]
+     ≈ [[0, -0.693], [0.5, 0], [1, 0.405]]
+```
+⇒ **这正好解释了我上一轮的困惑** ✓：`[[0,0.5],[0.5,1.0],[1,1.5]]` **确实不能直接塞进 `points`** ✗
+（那是**倍率** ✓，而 `points` 要**加数** ✓）⇒ **对数换算** ✓ 才是对的 ✓
+（**行业依据** ✓：libmypaint 的 `radius_logarithmic` 曲线本来就是"对数域偏移" ✓）。
+**下一轮（写死 ✓）** ✓：
+① 读 `hokusai-core` 的 `Brush` 有没有**读取当前设置值**的方法 ✓（`pub fn get` / `value(` ✓）
+   —— 有 ⇒ `base_value` 取原值 ✓；没有 ⇒ 就以"当前 `size` 换算的对数半径"为基准 ✓（`write_brush_stroke` 本来就会设它 ✓）；
+② `set_brush_dynamics{brush, curve}` ✓：**只处理给到的输入** ✓ ⇒ `inputs` 里**同名替换、其余保留** ✓；
+   映射规则 ✓：**倍率 ⇒ `ln(倍率)`** ✓（把这条**写进 `summary`** ✓，别让调用方猜 ✗）；
+③ **缺省 ⇒ 不碰 `brush.set`** ✓ ⇒ 逐字节不变 ✓；
+④ 落地 5 处 ✓（**67→68 core / 123→124 total** ✓）；
+⑤ 跑 `scripts/tool-brush-dynamics.mjs` ✓ ⇒ 门禁全绿（先看 `/tmp` ✓）⇒ 提交 + 推送 ✓。
