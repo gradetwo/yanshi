@@ -19886,3 +19886,26 @@ palette = [{r:200,g:186,b:168,a:240}] ⇒ 主色 #fefefe 91.9% + **#c8baa8 7.01%
 （用 `analyze_region` 量多边形外一圈 ✓）—— 这条**能红** ✓（去掉点在多边形内判定 ⇒ 外圈立刻有色 ✓）。
 **⚠️ 本轮未 push（✓）** ✓：本地还有 §一.4 的改动**未提交** ✓ ⇒ **攒在一起推一次** ✓，
 **少触发一次 CI** ✓（CI 在 GitHub 上按次计 ✓）。
+
+## 🛠️ 第 313 轮：**CI 第一轮抓出两个"只在本机不出现"的问题** ✓（**这正是搬上 CI 的价值** ✓）
+
+**第一轮 CI（run 37201788436，commit `013a5be`）结论（✓，GitHub 说的 ✓）** ✓：
+```
+✓ clippy（43s）✓ wasm-smoke（全步成功 ✓）
+✗ test (stable) / test (beta)   ⇒ 同一条失败 ✓
+✗ criteria：✓ 装 chromium ✓ ✓ 暴露成 chromium 名字 ✓ ✗ **Build server and wasm package** ✗ ⇒ Run criteria 被跳过
+```
+**失败 ①（✓）** ✓：`script_portability.rs:98` 的 `dollar_variables_never_touch_non_ascii_text` FAILED ✗
+⇒ 我新写的 `run-criteria.sh` 里 `$name（…）` 这种 **`$变量` 紧跟非 ASCII** 违反了仓库既有规则 ✗
+⇒ **修**：**5 处** 改成 `${name}` ✓ ⇒ **本机复现该测试即绿** ✓（`2 passed` ✓）。
+**失败 ②（✓）** ✓：`error[E0463]: can't find crate for 'core'` ✗ ⇒ **wasm32 目标没装** ✓
+（`wasm-smoke` job 里有**显式** `rustup target add` ✓，我新加的 job 漏了 ✗）⇒ **修**：补 `Add the wasm32 target` ✓。
+**⚠️ 同时记下我自己的老毛病（✓）** ✗：`gh run watch --exit-status | tail` ⇒ **管道尾部的退出码把失败掩盖成 0** ✗
+（`echo` 掩盖 ✓、`grep -c` 掩盖 ✓、管道掩盖 ✓ ⇒ **本会话第三次"量具把失败报成成功"** ✓）
+⇒ **处置**：**不再用管道尾部的退出码判断** ✓，改成**直接读 GitHub 的 job 表与失败步骤日志** ✓。
+**第 314 轮：报告 §三.4 的两处真相 → 一处结构修复（✓）** ✓：
+* **`overlay` 内核早就支持** ✓（报告想补的它一直可用 ✓ ⇒ **报告此处需更正** ✓）；
+* **真正的病是漂移** ✗：`blend.rs` 注释写着"渲染层与工具层**必须用同一份**，各写一份**必然漂移**" ✓，
+  而工具层**硬编码 7 个** ✗、内核解析 **10 个** ✓ ⇒ `linear_dodge` / `difference` 工具会拒绝、内核却懂 ✗；
+* **修**：内核加 **`color_dodge`**（规范 `Cb/(1-Cs)` ✓、`Cs=1` 取 1 ✓、夹紧 ✓）✓、权威清单 **9 → 11**（补上漏掉的 `difference` ✓）✓、
+  工具层 `ALLOWED` **改用 `BlendMode::NAMES`** ✓ ⇒ **漂移在结构上消掉** ✓；**2 条单测**（规范值/边界 ✓、清单与解析往返一致 ✓）✓。
