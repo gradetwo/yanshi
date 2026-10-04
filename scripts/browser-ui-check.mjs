@@ -2572,6 +2572,21 @@ const layerPanel = await evaluate(`(async () => {
   document.getElementById("layerAdd").click();
   await new Promise((r) => setTimeout(r, 900));
   out.afterAdd = rows().length;
+  try {
+    const listed = await window.yanshiCallTool("list_objects", {});
+    const withLayer = ((listed && listed.objects) || []).find((o) => o.layer_id);
+    const select = document.getElementById("layer");
+    out.switchedFrom = select ? select.value : null;
+    if (withLayer && select && select.value !== withLayer.layer_id) {
+      select.value = withLayer.layer_id;
+      if (typeof select.onchange === "function") select.onchange();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    out.switchedTo = withLayer ? withLayer.layer_id : "none";
+    out.rowsAfterSwitch = rows().map((row) => row.dataset.layerId);
+  } catch (error) {
+    out.switchFailed = String((error && error.message) || error);
+  }
   // ② **复制** ⇒ 多一行 ✓，且名字带"副本" ✓。
   document.getElementById("layerDuplicate").click();
   await new Promise((r) => setTimeout(r, 1200));
@@ -2665,6 +2680,7 @@ if ((layerPanel?.paintedAfterShow || 0) !== (layerPanel?.paintedBefore || 0)) {
   );
 }
 if (!layerPanel?.lockedOnServer) layerProblems.push("点锁图标之后服务端应记录 locked=true");
+console.log(`  【切层】from=${layerPanel?.switchedFrom} to=${layerPanel?.switchedTo} failed=${layerPanel?.switchFailed} rows=${JSON.stringify(layerPanel?.rowsAfterSwitch)}`);
 console.log(`  图层面板：${layerPanel?.rowCount} 行（自上而下 ✓ ${layerPanel?.firstRowIsTop ? "是" : "否"}）｜＋⇒${layerPanel?.afterAdd}｜⧉⇒${layerPanel?.afterDuplicate}（${layerPanel?.copyName}）｜上移生效 ${layerPanel?.moveChanged ? "✓" : "✗"}｜隐藏 ${layerPanel?.paintedBefore}→${layerPanel?.paintedAfterHide}→${layerPanel?.paintedAfterShow}｜锁定 ${layerPanel?.lockedOnServer ? "✓" : "✗"}（图标 ${layerPanel?.lockIcon}）`);
 const layerShot = await capture("05-layer-panel");
 console.log(`  截图：${layerShot || "（无）"}`);
