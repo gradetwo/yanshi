@@ -18201,3 +18201,19 @@ let coverage = (edge.sqrt() * body * pressure * load).clamp(0.0, 1.0);
 **下一轮（写死 ✓）** ✓：实现那个归一化 ✓ ⇒ 跑**介质自己的两条测试** ✓（`texture_keeps_the_average_ink` ✓ /
 `texture_zero_matches_prechange_golden` ✓ —— **上次就是它们拦下我的** ✓）⇒ 再跑
 `scripts/tool-impasto-plateau.mjs` ✓（**平坦对照必须仍为 0.000** ✓）。
+
+### 🎯 第 218 轮：**两个改变读法的事实** ✓（判据用**默认 texture** ✓；纹理本来**可调** ✓）
+
+**实测（原文 ✓）** ✓：
+```
+scripts/tool-impasto-plateau.mjs:83
+  call("medium_stroke", { layer_id, medium: "oil", points, size: 30, color })   ← **没有 texture** ✗
+⇒ 走默认值 ✓ ⇒ ⇒ 判据量的是**产品的默认观感** ✓（这对"用户报告的样子"来说**正是该量的东西** ✓）
+
+fn toward_mean(value, mean, t) = value + (mean - value) * t                     ← 线性插值 ✓
+⇒ `t = 1` ⇒ value = mean ⇒ **图案完全变平** ✓ ⇒ 幅度**本来就是参数化**的 ✓
+```
+**于是 2.3 应当这样读（✓）** ✓：**"鼓包"是幅度问题，不是"没有控制"** ✓；
+修法**仍是**从度量函数推出来的那个 ✓：**让每枚 dab 的 `body` 因子加权均值为 1** ✓
+⇒ **降低调制的幅度** ✓、**同时保住平均覆盖率** ✓（那条**两次拦住我**的不变量 ✓）。
+⇒ ⇒ **判据应当继续用默认 texture** ✓ —— **在默认档把幅度降下来** ✓ 正是报告要的 ✓。
