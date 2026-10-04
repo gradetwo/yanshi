@@ -17022,3 +17022,33 @@ P0-3 残留：2 处 ✓        P1-7 残留：4 处 ✓
 （PWA 的下一个大件 ✓；按用户指示 ✓ **先看行业做法** ✓：IndexedDB vs OPFS 的取舍 ✓、
 Workbox 的缓存策略 ✓、以及"离线导出"在该生态里的常规形态 ✓）；若那一项需要的上下文过大 ✓，
 则退一步做 **(B)④ 构建警告上限** ✓（在全新 clone + 冷构建里复现那 6 条 cdylib 噪声 ✓）。
+
+### 📐 第 160 轮：(A)④ 本地持久化的**现状 + 行业做法**（按用户指示先查权威 ✓）
+
+**现状（实测 ✓，能红的证据 ✓）** ✓：`crates/yanshi-http/src/viewer.rs` 里客户端存储只有
+```
+localStorage          9 处（6502 / 6511 / 6528 / 7398 / 7436 / 7456 / 7470 / 7474 / 7476）
+caches.open("yanshi-shell-v1")   2 处（5909 / 5935，SW 的应用外壳缓存 ✓）
+indexedDB 0 处 ✗   OPFS 0 处 ✗   navigator.storage 0 处 ✗   createObjectURL 0 处 ✗
+```
+⇒ ⇒ **(A)④ 是真缺口** ✓（不是"已经有了"✗ —— 这一条**实测过** ✓，符合我"先查现状"的规矩 ✓）。
+**行业做法（外部资料，仅作数据 ✓）** ✓：
+* **OPFS 适合存大文件** ✓ —— [Telerik：How to Store Files on a User's Device Using OPFS](https://www.telerik.com/blogs/how-store-files-user-device-opfs?ref=dailydev) ✓
+  （原文要点：OPFS 是**按源隔离**的私有文件系统 ✓、支持**同步**式读写 ✓、为**大二进制**设计 ✓）；
+* **真实产品尺度** ✓：[Kiwix PWA 让用户在浏览器里存 **GB 级**离线数据](https://web.developers.google.cn/case-studies/kiwix?hl=zh_tw&authuser=19) ✓
+  ⇒ 这证明"浏览器存大块数据"在**真产品**里是常规做法 ✓（不是奇技 ✗）；
+* **应用外壳仍走 Workbox 式预缓存** ✓：[Workbox 与预缓存](https://developers.google.com/codelabs/pwa-training/pwa03--working-with-workbox?authuser=3&hl=bn) ✓ /
+  [预缓存文件的作用](https://www.volcengine.com/article/912542) ✓ ⇒ 我们**已经有** `yanshi-shell-v1` ✓（这条对齐 ✓）。
+**决定性的算术（比任何偏好都硬 ✓）** ✓：本项目文档可达 **4000×3000** ✓ ⇒ RGBA8 = **48MB** ✓
+⇒ ⇒ **`localStorage` 的上限约 5MB** ✗ ⇒ **差了近一个数量级** ✗ ⇒ 所以"**用 localStorage 存文档**"**从原理上不可行** ✓
+（这条算术就是"为什么必须换存储"的**证据** ✓，而不是"大家都这么说"✗）。
+**据此的设计（下一轮落地 ✓）** ✓：
+1. **像素/大块字节 ⇒ OPFS** ✓（按**文档 id + 内容哈希**命名 ✓ ⇒ 天然去重 ✓、天然可校验 ✓）；
+2. **元数据/索引 ⇒ IndexedDB** ✓（文档清单、图层/对象 JSONL、指针、时间戳 ✓ —— 这正是行业常见的
+   "**IndexedDB 存元数据 + OPFS 存大文件**"配对 ✓）；
+3. **`localStorage` 只留"界面小偏好"** ✓（它现在那 9 处多半就是这类 ✓ —— 下一轮先**读清它们存的是什么** ✗，
+   别误把它当文档存储 ✗）；
+4. **导出** ✓：`showSaveFilePicker` 是行业较常见的落盘方式 ✗ **但我这轮的资料没证实它** ✗
+   ⇒ ⇒ **下一轮先查证再写** ✓（**不写"我记得的 API"** ✗ —— 这是我这几轮反复吃过的亏 ✓）；
+5. **判据（下一个能红的）** ✓：**关掉服务端** ✗ ⇒ 刷新页面 ⇒ **画面还在** ✓（像素来自 OPFS ✓）
+   ⇒ **并且能导出一个文件** ✓ ⇒ 用我已有的 CDP 手法 ✓（读 `navigator.storage` 现状 + 断网重载 ✓）。
