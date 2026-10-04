@@ -21720,3 +21720,26 @@ const countBand = async (fromY, toY) => {
 **★ 这一段的总账（✓）** ✓：**修好两个读数通道之后，浮出来的真失败已经有三条** ✓：
 `browser-brush-preview`（颜色没落到画面 ✓）、`browser-kernel-perf`（曾是永远红 ✓，已修 ✓）、
 `tool-reference-delta-e`（参考图色差 ✗）⇒ ⇒ **"绿"从来不是没有失败，只是没有人把它数出来** ✓。
+
+### 🎯🎯 第 420 轮：**离线能导出通过（A⑥ 3/5）；`browser-brush-preview-local` 又一条真失败** ✗
+
+**读到（✓，`run 37210236196` 的另一片，只读一个 job ✓）** ✓：
+```
+✓ browser-offline-export.mjs     ← **离线能导出：通过** ✓ ✓
+✓ browser-render-switch / browser-i18n / tool-brush-tag-filter / tool-export-path-doc /
+  tool-reference-overlay / tool-session-semantics（共 7 通过 ✓）
+⚠ tool-archive-bloat / ⚠ tool-impasto-plateau（**已知红，按设计 ✓** —— 名单机制正常 ✓）
+✗ browser-brush-preview-local.mjs (EXIT=1)｜{"options":200,"rows":199,"local":0,"labelled":0,"dataUrls":0,"firstTitle":""}
+—— 通过 7｜意外失败 0｜已知红 2｜跳过 0
+```
+**⇒ 结论（✓）** ✓：
+1. **A⑥ 离线：3/5 确认** ✓（`offline-reload` ✓ + `offline-draw` ✓ + `offline-export` ✓）
+   ⇒ **还差 `offline-shell` / `no-stale-read`** ✓；
+2. **`browser-brush-preview-local` 真失败** ✗：**`local:0 / labelled:0 / dataUrls:0`** ✓
+   ⇒ **本地笔刷预览一个都没找到** ✗ ⇒ **与 `browser-brush-preview`（颜色没落到画面 ✗）可能同族** ✓
+   （**都围绕"笔刷预览/本地资源"** ✓）⇒ **下一轮先看这两条的交集** ✓；
+3. **理由这次是 JSON 数据** ✓（比进度日志好 ✓，**但仍不是失败说明** ✗）⇒
+   **第 415 轮的启发式只认 `✗`/`- `/`EXIT=`** ✓ ⇒ **判据"只打数据、不打失败句"时仍会拿到数据** ✓
+   ⇒ **可再改进：把"最像失败的那一行"排在数据之前** ✗（**但优先级低于处置真失败** ✓）。
+**★ 已知红机制（✓）** ✓：**两条 `⚠` 照原样打印且不阻塞** ✓ ⇒ **这套机制工作正常** ✓
+（**而它之所以重要，是因为它让"有意保留的红"与"意外红"能分开** ✓ —— **可惜"意外红"的计数直到第 412 轮才修好** ✗）。
