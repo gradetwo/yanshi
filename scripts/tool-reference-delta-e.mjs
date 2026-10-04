@@ -23,6 +23,9 @@ const failures = [];
 // ① 没设参考图
 const before = await call(doc, token, "analyze_region", { region, compare_with_reference: true });
 const cmp0 = before && before.comparison_with_reference;
+// **无条件打印第一次调用的完整返回** ✓（第 337 轮）：上一轮的诊断**没有触发** ✗ ⇒
+// 说明它的控制流与我以为的不同 ✓ ⇒ 改成"无论怎样都打印" ✓，下一轮它必然说出真相 ✓。
+console.log("  【第一次调用完整返回】" + String(JSON.stringify(before)).slice(0, 500));
 console.log("  没参考图 ⇒ " + String(JSON.stringify(cmp0)).slice(0, 150));
 if (!cmp0 || cmp0.ok !== false) failures.push("没有参考图时没有明确作答 ⇒ 可能是静默给了一个值");
 if (cmp0 === undefined) console.log("  【原始返回】" + String(JSON.stringify(before)).slice(0, 400));
