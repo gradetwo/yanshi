@@ -1291,18 +1291,24 @@ const exportResult = await evaluate(`(async () => {
   }
   return window.yanshiStats.lastExport || null;
 })()`);
-let exportPng = null;
-if (exportResult && exportResult.url) {
-  const bytes = new Uint8Array(await fetch(`${origin}${exportResult.url}`).then((r) => r.arrayBuffer()));
-  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+// **必须"在页面里"读字节** ✓（第 231 轮更正 ✓）：
+// 导出现在是**本地优先** ✓（`board.toBlob()` ⇒ `blob:` URL ✓）⇒ 而 `blob:` 是**页面作用域**的 ✗
+// ⇒ **node 根本 fetch 不了它** ✗（旧版写 `fetch(\`${origin}${url}\`)` ✓ ⇒ 拼出非法 URL ✓ ⇒ 判据**崩溃** ✓，
+// 实测：`Failed to parse URL from http://127.0.0.1:…/blob:http://…` ✗）。
+// 搬进页面之后**两种模式都成立** ✓：`blob:`（本地导出 ✓）与 `/api/…`（服务端回退 ✓）在页面里都 fetch 得动 ✓。
+const exportPng = await evaluate(`(async () => {
+  const info = window.yanshiStats.lastExport || null;
+  if (!info || !info.url) return null;
+  const bytes = new Uint8Array(await (await fetch(info.url)).arrayBuffer());
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  exportPng = {
-    isPng,
+  return {
+    isPng: bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47,
     width: view.getUint32(16),
     height: view.getUint32(20),
     bytes: bytes.length,
+    via: String(info.url).startsWith("blob:") ? "blob" : "http",
   };
-}
+})()`);
 
 // 缩放段结束：复位到「适配」（整幅、1:1）。后续各段都假定画布比例坐标 == 文档坐标，
 // 否则吸管/跳转这类按坐标算的用例会静默失效（本轮的教训）。
