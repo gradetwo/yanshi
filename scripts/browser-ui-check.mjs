@@ -2405,7 +2405,15 @@ const quickAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   open();
   const panel = document.getElementById("quickPanel");
   const box = panel.getBoundingClientRect();
-  const near = Math.hypot(box.left - x, box.top - y) < 40;
+  // **断言"产品的契约"，不是"某个角点恰好接近"** ✓（第 237 轮更正 ✓）：
+  // 产品把面板放在光标处 ✓、并**夹进视口** ✓（viewer.rs:7901–7904 ✓："夹在视口内" 是它自己的注释 ✓）。
+  // ⇒ 视口**比光标下方的空间还矮**时 ✓，面板**必然**离光标很远 ✓ —— 实测：光标 y=350 ✓、视口 437 ✓、
+  // 面板高 211 ✓ ⇒ top = min(350, 437-211-6) = **220** ✓ ⇒ 距离 **130** ✗ ⇒ 旧断言**不可能成立** ✗。
+  // ⇒ 正确的断言：**面板位置 == "光标夹进视口"** ✓（这既覆盖"放在光标处" ✓、也覆盖"不越界" ✓），
+  //    而且它**能红** ✓：产品若不再夹取或不再跟随光标 ✓ ⇒ 这个等式立刻不成立 ✓。
+  const expectedLeft = Math.max(6, Math.min(x, window.innerWidth - box.width - 6));
+  const expectedTop = Math.max(6, Math.min(y, window.innerHeight - box.height - 6));
+  const near = Math.abs(box.left - expectedLeft) <= 2 && Math.abs(box.top - expectedTop) <= 2;
   const withinViewport = box.left >= 0 && box.top >= 0 &&
     box.right <= window.innerWidth + 1 && box.bottom <= window.innerHeight + 1;
   const counts = {
