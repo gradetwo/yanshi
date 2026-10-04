@@ -1861,8 +1861,12 @@ if (panAudit.moved < 1) {
 if (panAudit.panDrift > 1.5) {
   problems.push(`平移后光标下的文档点漂移 ${panAudit.panDrift.toFixed(2)}px（应保持不动）`);
 }
-if (!(panAudit.zoomAfter > panAudit.zoomBefore)) {
-  problems.push(`滚轮向上没有放大（${panAudit.zoomBefore} → ${panAudit.zoomAfter}）`);
+// **新契约：滚轮只平移、不缩放**（第 251 轮更正）：上面 313 行与下面那段注释都写着这一条，
+// 而这里的老断言却要求"滚轮向上必须放大"——**判据自己和自己矛盾**，于是永远报红。
+// 真实用户反馈是"想滚动画布的人必然误触缩放"，所以缩放入口只剩显式那几种。
+// 反过来断言才正确，而且**照样能红**：哪天滚轮又缩放，这条立刻不成立。
+if (panAudit.zoomAfter !== panAudit.zoomBefore) {
+  problems.push(`滚轮不该缩放（${panAudit.zoomBefore} → ${panAudit.zoomAfter}）`);
 }
 // **契约已变** ✓（真实用户实测反馈）：**滚轮只平移、不缩放** ✗ ——
 // 触摸板两指滑动与鼠标滚轮是同一个事件 ✓ ⇒ "想滚动画布的人必然误触缩放" ✓，
