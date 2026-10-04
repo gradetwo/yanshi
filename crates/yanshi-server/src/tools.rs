@@ -13425,6 +13425,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "revert_changeset",
         r#"[{"tool":"begin_changeset","arguments":{}},{"tool":"commit_changeset","arguments":{}},{"tool":"revert_changeset","arguments":{"changeset_id":"cs1"}}]"#,
     ),
+    // **标注 / 参考图**（第 280 轮）：这一族原先一条示例都没有；
+    // `delete_annotation` 与 `get_annotation` 必填 `annotation_id`；`clear_reference` 无参数。
+    ("delete_annotation", r#"{"annotation_id":"ann1"}"#),
+    ("get_annotation", r#"{"annotation_id":"ann1"}"#),
+    ("clear_reference", r#"{}"#),
     (
         "get_ancestors",
         r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_ancestors","arguments":{"object_id":"L1"}}]"#,
