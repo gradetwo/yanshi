@@ -22909,3 +22909,24 @@ job=111474411802  ⇒ 后│ 结论：84 跑通 ✓ / 18 被拒 ✗ / 32 需前�
    `MASK_TOOLS` 会在某处提前 `return`** ✓）⇒ ⇒ **而那个 `return` 的位置与条件，可能正是"点没入列"的原因** ✗。
 **⇒ 假设清单（✓，已到第五个 ✓）** ✓：目标原子 ✗ / 取样时机 ✗ / 点错按钮 ✗ / 双重跳转 ✓（**这条改了 ✓**）/
 三个监听器抢事件 ✗ ⇒ ⇒ **只有一条成立 ✓，其余全被证据推翻 ✓**。
+
+### 🎯🎯🎯 第 499 轮：**蒙版在 `pointerup` 上只 push 抬手点就提交** ✗（而要求 ≥ 2）
+
+**读到（✓，`viewer.rs:6585-6600` ✓）** ✓：
+```js
+:6586  if (state.tool === "select_rect") { state.points.push(localPoint(event)); await commitSelection(); … return; }
+:6594  if (MASK_TOOLS.has(state.tool)) {
+:6595    state.points.push(localPoint(event));     // ← **只推"抬手"这一个点** ✗
+:6596    await commitMask();                         // ← **立刻提交**（而 commitMask 要求 points.length >= 2 ✗）
+:6597    state.points = [];  :6598 redraw();  :6599 return;  }
+```
+**⇒ 推理（✓）** ✓：
+1. **这一段在 `pointerup` 的处理器里** ✓（**它推的是"抬手"的坐标 ✓**）；
+2. 按第 470 轮的读法，**`pointermove` 里"两点工具"会替换第二点** ✓
+   ⇒ **拖动期间 `state.points` 应是 `[down, move]`** ✓ ⇒ **`:6595` 再推一个 ⇒ `length = 3` ⇒ 提交应成功** ✓；
+3. ⇒ ⚠️ **而实测 `commitMask` 报"需要拖出一个区域"** ✓ ⇒ **说明提交时 `points.length < 2`** ✗
+   ⇒ ⇒ **只可能是在它之前有人把 `points` 清空了** ✗
+   ⇒ ⇒ **而 `pointerup` 有**两个**监听器（`:6069` ✓ 与 `:6485` ✓）** ✗ ⇒
+   **若 `:6069` 那个先跑并清空 / 覆盖了 `points`，`:6596` 拿到的就是"只剩抬手那一个点"** ✗ ✓
+**⇒ 下一处（✓）** ✓：**读 `:6069` 那个 `pointerup`** ✓ —— **看它是否也动 `state.points`** ✓
+（**同一族第四次：同名事件有多个处理者 ✓；前两次是 `pointerdown` ✓ 与 `pointerup` ✓ 各一对 ✓**）。
