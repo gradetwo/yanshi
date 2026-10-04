@@ -567,8 +567,16 @@ fn parse_shape(data: &Value) -> Primitive {
         .max(0.0);
     let stroke_color = data.get("stroke_color").map(parse_color);
     // **羽化半径**（像素 ✓，缺省 0 ✓ ⇒ **不羽化 ⇒ 逐字节不变** ✓）：负值按 0 ✓（没有"负羽化"这回事 ✓）。
+    // **羽化写在 `geometry` 里** ✓（第 605 轮 ✓，真因）：
+    // 写入端 `tools.rs:3889` 把 `"feather"` 放进 `geometry` 那个 json ✓，
+    // 而这里（**构造 `Primitive::Shape` 的第三站** ✓）原先只读 `data` 顶层 ✗
+    // ⇒ `feather` 永远是 0 ⇒ `render.rs:798` 的 `if feather > 0.0` 永不成立 ✗
+    // ⇒ `feather_coverage` 从未被触发 ⇒ **形状外当然没有过渡色** ✓
+    // ⇒ 这才是"只向内淡出"的真因 ✓ —— 而我前面两轮加 padding 全是空操作 ✓。
     let feather = data
-        .get("feather")
+        .get("geometry")
+        .and_then(|g| g.get("feather"))
+        .or_else(|| data.get("feather"))
         .and_then(Value::as_f64)
         .unwrap_or(0.0)
         .max(0.0);
