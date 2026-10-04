@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// **采集日志时不要截断** ✓（第 359 轮实测 ✓）：原先这里取 `innerText.slice(0, 200)` ✗ ⇒
+// 日志面板里**原子行排在前面** ✓ ⇒ 断言要找的「添加」**落在 200 字符之外** ✗ ⇒
+// **断言永远看不到它** ✓（现象：`⚠ 蒙版日志未报告成功` ✓）。
+// ⇒ 规则：**做判断的字符串要完整 ✓，给读者看的才截断** ✓（消息里仍用 slice ✓）。
 // 真实 Chromium 里的**查看器 UI 回归检查**（针对实际使用中报告的问题）：
 //
 //   1. 画一笔之后，内容画布**不应变空白**（提交后仍能看到结果）；
@@ -593,7 +597,7 @@ const maskResult = await evaluate(`(async () => {
     masked = ink();
   }
   document.querySelector('button[data-tool="brush"]').click();
-  return { filled, masked, log: document.getElementById("log").innerText.slice(0, 200) };
+  return { filled, masked, log: document.getElementById("log").innerText };
 })()`);
 
 // 移动工具（设计 13.3「移动」）：画一个矩形 → 用移动工具拖已知位移 →
@@ -636,7 +640,7 @@ const moveResult = await evaluate(`(async () => {
   const afterBbox = (after.objects || []).map((o) => o.bbox).filter(Boolean)[0];
   // 旧位置的像素断言放到 Node 侧（用 render_region 直接量 ✓）——
   // 第一版我在页面里猜视图变量名（viewState 等 ✗）去换算画布坐标，既脆弱又不可靠 ✓。
-  return { beforeBbox, afterBbox, log: document.getElementById("log").innerText.slice(0, 200) };
+  return { beforeBbox, afterBbox, log: document.getElementById("log").innerText };
 })()`);
 
 // **移动后旧位置必须被清掉** ✓ —— 用户实测：移动后画布旧位置不刷新、留下残影 ✗
@@ -733,7 +737,7 @@ const namingResult = await evaluate(`(async () => {
     // 所以两块画布尺寸不同时，内容再一样也会不同。断言必须先看 total 是否相同。
     beforeTotal: before.total,
     afterTotal: after.total,
-    log: document.getElementById("log").innerText.slice(0, 200),
+    log: document.getElementById("log").innerText,
   };
 })()`);
 
@@ -1086,7 +1090,7 @@ const eraserResult = await evaluate(`(async () => {
     afterErase = painted();
   }
   document.querySelector('button[data-tool="brush"]').click();
-  return { beforeErase, afterErase, log: document.getElementById("log").innerText.slice(0, 200) };
+  return { beforeErase, afterErase, log: document.getElementById("log").innerText };
 })()`);
 
 // 打开已有作品：**重新加载页面**后应立刻显示已有内容（而不是白布）。
@@ -1168,7 +1172,7 @@ const pickResult = await evaluate(`(async () => {
   fire("pointerup", at(0.2, 0.2), 62);
   await new Promise((r) => setTimeout(r, 600));
   document.querySelector('button[data-tool="brush"]').click();
-  return { picked: color.value, log: document.getElementById("log").innerText.slice(0, 200) };
+  return { picked: color.value, log: document.getElementById("log").innerText };
 })()`);
 
 // 填充图层：指纹必须变化，画布保持不透明；随后撤销应回到填充前的指纹。
