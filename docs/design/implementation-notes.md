@@ -17782,3 +17782,34 @@ Node 里把**同目录的 `_bg.wasm`** 交给它 ✓。
 ③ **判据绿了**才改查看器 ✓、才删门面 ✓（顺序不可反 ✗ —— 这是第 187 轮定的规矩 ✓）。
 **五轮之后的进度（如实 ✓）** ✓：**内核侧已就位且编译绿** ✓（第 192 轮 ✓）、**判据已写好** ✓（本轮 ✓）、
 剩 **重建 pkg ⇒ 判据转绿 ⇒ 改查看器 ⇒ 删门面** ✓。
+
+### 🔴 第 195 轮：**pkg 重建被 wasm-bindgen 拒绝** ✗ + **我的退出码量错了** ✗（两件都记 ✓）
+
+**实测（✓）** ✓：
+```
+工具链探测（照抄脚本 ✓）：$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/ ✓
+wasm32 构建：Finished `release` profile ✓（**成功** ✓ ⇒ 工具链找对了 ✓）
+wasm-bindgen（~/.cargo/bin/ 绝对路径 ✓）：
+  error: The constructor for class `WasmKernel` tries to return a JS primitive type,
+         which would cause the return value to be ignored.
+         Use a builder instead (remove the `constructor` attribute).
+⇒ **生成失败** ✗ ⇒ `pkg` 里 `paint_brush` 仍是 **0** ✗
+```
+⇒ **这就是"pkg 为什么一直是旧的"的真因** ✓：**现在装的 wasm-bindgen 比当年造 pkg 的那个更严** ✗
+⇒ 它**拒绝** `WasmKernel::new` 上的 `#[wasm_bindgen(constructor)]` ✓。
+**⚠️ 而这构成一个真实的冲突（下一轮要决策 ✓）** ✓：
+* 那个构造器**正是查看器在用的** ✓（`new state.wasm.WasmKernel(docId, 256, w, h, 64MiB)` ✓）；
+* wasm-bindgen 要的"builder"改法 ✓ ⇒ **会改掉这个 API** ✗ ⇒ **查看器也得跟着改** ✗；
+* ⇒ 两条路 ✓：**(a) 用与旧 pkg 匹配的 wasm-bindgen 版本** ✓（最小改动 ✓ —— 但要找到是哪个版本 ✓）；
+  **(b) 按新规则改构造器 + 同步改查看器** ✓（更"正确" ✓，但改动面大 ✓）。
+**⚠️ 另一件必须记的我自己的错** ✗：我那行
+```sh
+timeout 300 node … | tail -8; echo "判据 EXIT=$?"
+```
+**量到的是 `tail` 的退出码** ✗（管道 ✓）⇒ 判据明明**失败**了 ✓，却打印 **EXIT=0** ✗
+⇒ ⇒ **"看起来绿"的假读数** ✓ —— 与本会话早前栽过的"不透明像素数饱和"✓、"失败清单在 network-first 下失效"✓
+**同一类** ✓：**量法本身会骗人** ✗。规矩 ✓：**管道后面的 `$?` 不是被测程序的退出码** ✗
+⇒ 要用 `set -o pipefail` ✓ 或**先落盘再判** ✓（本会话多数命令是这么做的 ✓ —— 这次偷懒了 ✗）。
+**下一轮（写死 ✓）** ✓：① 查**旧 pkg 是哪个 wasm-bindgen 版本**造的 ✓（`crates/yanshi-wasm/pkg/*.d.ts` 或
+`Cargo.lock` 里 `wasm-bindgen` 的版本 ✓）⇒ 优先走 (a) ✓；② 或走 (b) ✓（改构造器 + 同步改查看器 ✓，
+**但那时"改查看器"就发生在本该更晚的一步** ✗ ⇒ 要重新排顺序 ✓，并**先**把判据跑绿 ✗）。
