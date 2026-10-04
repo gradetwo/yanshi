@@ -19,6 +19,24 @@ rendering and server rendering are one implementation.
 [docs/design/yanshi-v1.0-draft4.md](docs/design/yanshi-v1.0-draft4.md) is the authoritative
 specification (Chinese); the code must not diverge from it silently.
 
+## Where the name comes from
+
+Yanshi is the artificer in the *Liezi*, "Questions of Tang", who builds a mechanical performer. The passage:
+
+> 周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。
+
+> (After [Chinese Text Project, *Liezi*, "Tang Wen"](https://ctext.org/liezi/tang-wen/zhs); transcribed here in simplified characters.)
+
+What is worth borrowing from the story is not the cleverness but that **the construction and the behaviour are separable**. Opened up, the singing, dancing figure is leather, wood, glue, lacquer and pigment. Take away its heart, liver or kidney and it cannot speak, see or walk; **put it back together and it is as it was**.
+
+That is the part this project matches:
+
+- **The log is the construction.** Every edit is an atom appended to the log, and the picture is the result of folding it.
+- **Taken apart and reassembled, the result is the same.** A `.yanshi` package carries the atom log and every blob it references, and importing it into another workspace is byte for byte identical.
+- **One kernel produces the behaviour.** The native build for the server and the WebAssembly build for the browser are the same implementation, not two approximations of each other.
+
+The passage ends with the king marvelling that a person's craft could rival nature. **We do not claim that.** This project writes down how the tool is built, and it writes down what it cannot do as well as what it can.
+
 ## Enabling all tool groups
 
 `--profile all` enables every implemented group in one word, which is 114 tools against the 46 that core alone gives;
