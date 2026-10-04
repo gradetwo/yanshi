@@ -26275,3 +26275,18 @@ viewer.rs:724  <label>调色板 <select id="palettePick"></select></label>   ←
    ⇒ ⇒ ⇒ **即：这条"额外检查"对**隐藏面板**是**误报**** ✓ —— **而不是产品缺翻译** ✗ ✓
    ⇒ ⇒ ⇒ ⇒ **下一轮**：**把 `labels` 检查限定在**可见**元素**（**`offsetParent !== null`** ✓）。
 **★ 一条**：**"隐藏的东西"与"不存在的东西"，在 `body.includes` 下无法区分** ✓。
+
+### 🎯 第 768 轮：**`innerText` 只含可见文本 ⇒ 两条读数都与"面板不可见"一致** ✓
+
+**读到**（`browser-i18n.mjs:44-58`）：
+```
+:46  if (node.nodeType === 3) { … if (text && zh.test(text) && !skip(node.parentElement)) found.set(…) }   ← 遍历所有文本节点 ✓
+:55  const body = document.body.innerText;   ← **只含可见文本**（不是 textContent ✓）
+:57  labels: { refresh: body.includes("Refresh"), palette: body.includes("Palette"), file: body.includes("File") }
+```
+**⇒ 三条**：
+1. ✅ **`distinct` 走的是**全节点遍历**（`:46` ✓）** ⇒ **含隐藏节点 ✓**；
+2. ⇒ **而 `labels` 走的是 `innerText`（**只含可见** ✓）** ✗ ⇒ **两者口径不同** ✓；
+3. ⇒ ⇒ **`distinct=0` + `palette:false` 同时成立 ⇒ 与"该面板此刻不可见"**完全一致**** ✓
+   ⇒ ⇒ ⇒ **决定性一问：此刻 `#cardPalette` 可见吗** ✓ ⇒ **下一轮在判据里打它的可见性 ⇒ 一次定案** ✓。
+**★ 一条**：**`innerText` 与 `textContent` 的口径差**，正好制造了"两条读数看似都指向缺翻译"的假象 ✓。
