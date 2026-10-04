@@ -26341,3 +26341,10 @@ viewer.rs:724  <label>调色板 <select id="palettePick"></select></label>   ←
 **`browser-ui-check.mjs` 退出已知红名单** ✓（`b89c364`）：`f14771d`（`run 37230657109`）里**全部 12 个 job**
 成功 ✓（含 `criteria shard 1/6` ✓）⇒ 再靠名单豁免它就会**把一个通过的判据藏起来** ✗；
 名单里只留一条注记：**它偶尔仍会间歇**（`browser-i18n.mjs` 同理 ✓）⇒ 若 CI 再红，**按当轮读数重新分诊** ✓。
+
+### 新判据的落位（第 773 轮 ✓）
+`run-criteria.sh:58-64` 按**文件名排序后取模**分片 ✓（不是手写清单 ✓）⇒
+`scripts/tool-release-launcher.mjs` 排序后是**第 53 个** ⇒ 分片 `((53-1) % 6) + 1 = **5/6**` ✓ ⇒
+**CI 一定会跑到它** ✓（`ci.yml:167` 传 `SHARD`/`SHARDS` ✓）。
+它依赖 `target/debug/yanshi-serve` ✓ —— 而 `run-criteria.sh:29` 起服务用的**正是同一个二进制** ✓
+⇒ **门槛没变高**：本就要求它存在 ✓。
