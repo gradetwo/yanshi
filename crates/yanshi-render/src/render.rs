@@ -749,9 +749,17 @@ impl Renderer {
                     color,
                     stroke_width,
                     stroke_color,
+                    feather,
                 } => {
                     // 只生成落在本层缓冲内的覆盖率（tile 渲染时省下十几倍工作量）。
                     let mut coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());
+                    // **羽化**（测试报告 §二.1 ✓）：**只在 >0 时**才走新路径 ✓
+                    // ⇒ **缺省 0 ⇒ 逐字节不变** ✓（硬要求 ✓）。
+                    // `feather_coverage` 会**把 bbox 四周外扩 `2×radius`** ✓（第 347 轮的等效半径 ✓）；
+                    // **越界是安全的** ✓ —— `fill_coverage` 只遍历"网格 ∩ 缓冲" ✓（第 351 轮 ✓）。
+                    if feather > 0.0 {
+                        coverage = crate::geometry::feather_coverage(&coverage, feather);
+                    }
                     // 选区「约束落笔」：**逐像素**乘进覆盖率 ✓（从不触碰选区外 ✓）。
                     let shape_clip = object_clip(state, &layer.id, object);
                     if let Some(clip) = &shape_clip {
