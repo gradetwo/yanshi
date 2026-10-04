@@ -23024,3 +23024,22 @@ async function commitSelection() { const points = state.points; if (points.lengt
 **② 对照判据 `fire()` 造事件时设了哪些字段** ✓ —— **两边一对，就知道合成事件是否被误判** ✓。
 **★ 这一轮的方法（✓）** ✓：**我直接搜了"那句报错"在源码里的位置** ✓ ——
 **而不是继续在"链路上游"猜** ✗ ⇒ ⇒ **"从报文反查它的判定处"** ✓，一次就把范围落到两行 ✓。
+
+### 🎯 第 505 轮：**产品看 `button`（单选）而判据设 `buttons`（掩码）—— 但不是本次的原因** ✗（第八个假设推翻 ✓）
+
+**对比（✓）** ✓：
+```js
+产品 :6041  function wantsPanEvent(event) { return event.button === 1 || state.tool === "pan" || spaceHeld; }
+判据 :92-95  new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: N, pointerType: "mouse",
+                                       isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point })
+```
+**⇒ 两条（✓）** ✓：
+1. **字段不同类** ✗：**判据设 `buttons`（"现在按着哪些键"的位掩码 ✓），产品问 `button`（"哪个键触发了这次事件" ✓）**
+   ⇒ ⇒ **未指定时 `button` 默认 0** ✓ ⇒ **`button === 1` 为假** ✓ ⇒ **不会误判成平移** ✓
+   ⇒ ⇒ ⇒ **所以"按下被 `wantsPanEvent` 挡回"这个假设不成立** ✗（**第八个 ✓**）；
+2. ⇒ **但"字段类型不匹配"本身值得记** ✓：**判据在描述"按住状态"✓，产品在问"触发键"✓**
+   ⇒ ⇒ **这种结构下，判据永远造不出"中键事件" ✓（`button: 1`）** ✗ ⇒ **它测不到"中键平移"这条路** ✓
+   —— 而**它想测的是"左键拖蒙版"** ✓ ⇒ **恰好绕开了** ✓。
+**⇒ 下一处（✓）** ✓：**回到"抬手时 `points` 到底有几个"这个直接观测上** ✗
+—— **判据已经能读 `state()`** ✓ ⇒ **在拖动中途与抬手之前各读一次 `state().points.length`** ✓
+（**这是"直接观测"，不是"再猜一个链路上游"** ✓ —— 我第 474 轮加过同类探针 ✓）。
