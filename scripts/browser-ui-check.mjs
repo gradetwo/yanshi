@@ -1013,11 +1013,15 @@ const selectionResult = await evaluate(`(async () => {
     // **清除之后必须**再画一笔，否则 "clearedOutside" 必然为 0（第 301 轮更正）：
     // 清除选区**不可能**让先前被裁掉的墨"追溯地"出现 —— 那些像素从来没被画上去。
     // 旧版清完就直接测量 ⇒ 断言永远不成立（**判据自己错了**，不是产品）。
-    fire("pointerdown", at(0.05, 0.75), 622);
-    fire("pointermove", at(0.5, 0.75), 622);
-    fire("pointermove", at(0.95, 0.75), 622);
+    // ⚠️ **必须画在「确实框外」的地方** ✗（第 814 轮实测 ✓）：原先画在 y = 0.75 ——
+    // **正好是选区下边界** ✗，而 inSelection 的容差是 ±2px ⇒ 笔画像素多数仍算框内 ✗
+    // ⇒ clearedOutside 恒为 0 ✗ ⇒ **是判据的几何问题，不是产品** ✓
+    //（本机隔离实验：在 y = 0.9 画 ⇒ 非白像素 +790 ✓，说明「清除后能画」是**成立的** ✓）。
+    fire("pointerdown", at(0.05, 0.90), 622);
+    fire("pointermove", at(0.5, 0.90), 622);
+    fire("pointermove", at(0.95, 0.90), 622);
     await new Promise((r) => setTimeout(r, 80));
-    fire("pointerup", at(0.95, 0.75), 622);
+    fire("pointerup", at(0.95, 0.90), 622);
     await stable();
 
     const cleared = await stable();
