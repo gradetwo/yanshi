@@ -144,6 +144,10 @@ if (scroll.pageScrollMoved !== 0 || scroll.docOverflow > 2) {
 
 // ② 切 tab：只有那一个窗格可见，且**卡片总数不变** ✓
 const tabStates = {};
+// **声明必须在循环外** ✓（第 440 轮 ✓）：原先把结果声明在循环体里 ✗
+// ⇒ `const` 是块级作用域 ✓ ⇒ 循环一结束它就没了 ✓ ⇒ 下面汇总里再用 ⇒ **ReferenceError** ✗
+//（这个错一直没露头 ✓ —— **上面的 `waitFor` 超时会先 `process.exit(1)`** ✗ ⇒ **一处红遮住下一处** ✓）。
+let movedOut = null; // 循环内赋值 ✓；循环外仍可见 ✓（取最后一次迭代的值 ✓，与汇总语义一致 ✓）
 for (const key of ["history", "assets", "file", "diag", "paint"]) {
   const state = await evaluate(`(() => { window.yanshiRightTabs.show(${JSON.stringify(key)}); return window.yanshiRightTabs.state(); })()`);
   tabStates[key] = state;
@@ -167,7 +171,7 @@ for (const key of ["history", "assets", "file", "diag", "paint"]) {
     await capture("layout-lost-card");
     process.exit(1);
   }
-  const movedOut = await evaluate(`(() => {
+  movedOut = await evaluate(`(() => {
     const ids = ["newDoc", "openDoc", "exportPng", "projectExport", "projectImport"];
     const menu = document.getElementById("fileMenuBody");
     return {
