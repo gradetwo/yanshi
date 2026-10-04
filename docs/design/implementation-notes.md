@@ -23785,3 +23785,19 @@ grep -n "points: (state.points\|dragging: state.dragging" viewer.rs
 **⇒ 下一处（✓）** ✓：**看那轮的构建时间戳与提交号** ✓ ——
 **日志里那串 `1.0 (commit d46d9b5, built …)` 就是产品自报的提交 ✓ ⇒ 若它真是 `d46d9b5` ✓
 则"字段在里面"✓ ⇒ **矛盾仍在** ✗（**那就得看 `state()` 是不是被另一处覆盖 ✗**）。
+
+### 🎯🎯🎯 第 554 轮：**`undefined` 只能来自"真值但无 `length`" ⇒ 对象里 `points` 另有其人** ✗
+
+**推理（✓）** ✓：
+```js
+:630  stateProbe && stateProbe.points ? stateProbe.points.length : "?"
+⇒ 若 `points` 为 `0`/`false`/`undefined` ⇒ 打 **`"?"`** ✓
+⇒ **能打出 `undefined` 的只有一种：`points` 是真值、而它没有 `length`** ✗ ✓
+⇒ 而我写的是 `points: (state.points || []).length` ✓ ⇒ **它只能给数字** ✗
+⇒ ⇒ ⇒ **所以 `state()` 返回的对象里，那个 `points` 不是我的那一行** ✗ ✓
+   —— **JS 对象字面量中重复键，后者覆盖前者** ✓ ⇒ **我的被覆盖了** ✗ ✓（或**我的没进构建 ✗**）
+```
+**⇒ 下一处（✓）** ✓：**在 `state()` 的 `return { … }` 里找**所有** `points`** ✓
+—— **若有第二处 ⇒ 就是它覆盖了我的 ✓**（**这也解释了 `dragging=301` 为何正常：它只有我那一行 ✓**）。
+**★ 这一族的账（✓）** ✓：**为了这一个 `undefined`，我读了六处产品代码、三轮判据通道、两轮字段名** ✗
+⇒ ⇒ **而它一直是"我自己的键被覆盖"** ✓ —— **`grep` 一次就能看出来** ✗。
