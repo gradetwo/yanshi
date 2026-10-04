@@ -6,8 +6,12 @@
 # 自定义域（yanshi.wangda.today）在控制台绑定：
 #   Cloudflare 控制台 → Workers & Pages → 选中本 Worker → Settings → Domains & Routes → Add → Custom Domain
 
-name = "yanshi-site"                # ← 改成你的 Worker 名（同时决定 <name>.<account>.workers.dev）
+name = "yanshi-site"                # ← 改成你的 Worker 名
 compatibility_date = "2025-01-01"   # ← 可改成首次部署的日期
+
+# **关掉 `<name>.<account>.workers.dev` 这个默认子域** ✓ ⇒ 站点只从自定义域（yanshi.wangda.today）访问 ✓。
+# ⚠️ 注意：**自定义域绑好之前，Worker 会连一个入口都没有** ✗ ⇒ 先绑域再部署，或部署后在控制台补绑 ✓。
+workers_dev = false
 
 [assets]
 directory = "./public"              # 站点根目录
