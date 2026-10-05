@@ -79,7 +79,7 @@ await send("Page.enable");
 await send("Page.navigate", { url });
 // **强制重新取页面** ✓（旧页面会让探针看到旧行为 ✓，见 scripts/README.md ✓）。
 await send("Page.reload", { ignoreCache: true });
-await sleep(1500);
+// **睡眠已删** ✓（第 899 轮 ✓）：下一行 `waitFor` 已在正确地等 ✓，且**等不到会 exit** ✓。
 if (!(await waitFor("typeof window.yanshiDock === 'object'", "浮层入口就绪"))) process.exit(3);
 if (!(await waitFor("document.querySelectorAll('#paletteSwatches button').length > 0", "调色板色块装载"))) {
   process.exit(3);
