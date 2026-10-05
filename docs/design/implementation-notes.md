@@ -35983,3 +35983,36 @@ macOS 的 BSD `cp` 与 `._*` 路径没跑 ✗（本机只有 Linux ✓）。
 **★ 一条** ✓：**"计数核对"如果拿同一个源目录算期望值，它就检测不出"源目录不在"** ✗ ——
 它只能证明"我拷了我看到的" ✓，不能证明"我看到了该看到的" ✗。要挡这类缺陷，必须换一个
 **独立口径**（这里：运行期约定的目标位置 ✓ ＋ 与源目录**逐名**比对 ✓ ＋ 反向控制 ✓）。
+
+## 第 1149 轮：目标项闭环清单（截至本轮），以及仍然开着的项
+
+(A) 离线优先 PWA：
+① 静态化查看器 ＋ Service Worker：**完成**。三个独立资产（viewer.css / viewer-app.js / service-worker.js）、
+   各有路由、都在 SW 的 SHELL 里、都有能红的判据。
+② 资产随包：**完成**。199 支 `.myb` 进 SHELL（离线面板判据读到 200 项）；本轮又补上打包侧：
+   抽出 `scripts/stage-asset-kinds.sh`，缺源目录/空源目录/0 支 `.myb` 都**具名失败并 exit 1**，
+   并新增判据 `scripts/tool-package-brushes.mjs`（含"缺源/空源必须非零且点名 brushes"的负对照）。
+   注意：外部报告说的"打包缺笔刷"在当前 HEAD **不可复现**；真正的缺陷是**静默容忍**源目录缺失或为空。
+③ 默认客户端渲染 ＋ 退休第二份实现：**完成**（`yanshi-brush-wasm` 已退休，参数校验拒绝）。
+④ 本地持久化与本地导出：**完成**。离线读（OPFS ＋ IndexedDB 索引）、离线写（outbox journal）、
+   离线笔触持久化（复用 outbox 作重放源）、`.yanshi` 浏览器下载（本轮并入：
+   export_project 把同一份 tar 存进 CAS 并返回可下载 URL，查看器用 <a download> 保存）。
+   边界（明确、已记档）：离线**导出**仍不行 —— export_project 是服务端工具，包来自服务端日志 ＋ CAS。
+⑤ 服务端回退开关：**完成**（复选框 ＋ localStorage 键 `yanshi.serverRender` ＋ 默认客户端优先）。
+⑥ 判据：**完成**。同一笔触在线 vs 离线**逐字节一致**（307200 vs 307200，0 不同字节，
+   离线期间 0 次 brush_stroke 请求，内核计数增长），离线可画、离线可导出 PNG、离线笔触活过离线重载。
+
+(B) 已列明的非缺陷项：
+① 示例覆盖：**完成**（141/141，新增"每个注册工具都必须有示例"判据，并亲手变异验证能红）。
+② browser-ui-check 重新基线化：**完成**（四项修复 ＋ 四条判据侧竞态，已移出已知红）。
+③ target_installed 三态：**实现早已完成**；本轮补齐判据并能红（缺 rustup 时必须回 2，不许当成已装）。
+④ 构建警告上限：**完成**（冷构建两个 target 都必须 0 条警告；已接进 runner 并亲手变异验证能红）。
+
+仍然开着（所以目标不能算完成）：
+1. `brush_stroke` 的 `other_ms` 仍占 85-95%，大笔刷（size=80）比 f462a6f 慢约 30-40%。
+   下一步照第 1147 轮对 export 的做法：**先量真实分布**，再决定拆哪两段；不要凭猜测改渲染代码。
+2. main 上仍有 4 条既有失败（browser-i18n / browser-layout / browser-live-brush / browser-ui-check）。
+   其中 browser-render-switch 已证明是**判据侧竞态**（读了异步的 state.wasm）并已修 ⇒ 其余很可能同族。
+3. `blob_by_hash` 对所有 blob 都回 `Content-Type: image/png`，对 tar 不正确；
+   对 `<a download>` 无害，但属于准确性问题（低优先，且改动会碰到共享的缩略图/资产路由）。
+4. 离线导出（见 ④ 的边界）。
