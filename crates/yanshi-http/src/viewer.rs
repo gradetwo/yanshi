@@ -5623,9 +5623,23 @@ function localPoint(event) {
   const pressure = event.pointerType === "pen" && typeof event.pressure === "number"
     ? Math.max(0, Math.min(1, event.pressure))
     : null;
+  // **换算要用「文档尺寸」，不能用「画布位图尺寸」**（第 989 轮）：
+  //
+  // 缩放后画布位图像素会变少 ✓（`sizeBoards` 为"看得更细"而有意缩小 ✓，见 `:1258` 的说明 ✓），
+  // 而 `state.viewport` 是**文档坐标** ✓ ⇒ 两者不能混：把客户端位移乘 `board.width / rect.width`
+  // 等于把**位图像素**当成**文档像素** ✗ ⇒ 在缩放不为 1 时位移会**系统性偏小** ✓。
+  //
+  // 实测（`browser-ui-check` 的移动用例 ✓）：画布显示 344 宽 ✓、位图约 474 ✓、文档 512 ✓；
+  // 指针走 69 客户端像素 ⇒ 正确位移 69 × 512/344 ＝ **102.7** ✓，
+  // 而旧式 69 × 474/344 ＝ **95** ✗ ⇒ 判据量到 95、期望 102 ⇒ 红 ✓（**13 轮追查的终点 ✓**）。
+  //
+  // 文档尺寸取 `state.docSize` ✓（`viewer.rs:893` 给初值 ✓、由服务端尺寸覆盖 ✓）；
+  // 若它还没有效值 ⇒ 退回位图尺寸 ✓（**保底与旧行为一致 ✓**，不会更糟 ✓）。
+  const docW = Number(state.docSize && state.docSize.w) > 0 ? Number(state.docSize.w) : board.width;
+  const docH = Number(state.docSize && state.docSize.h) > 0 ? Number(state.docSize.h) : board.height;
   return {
-    x: state.viewport.x + (event.clientX - rect.left) * board.width / rect.width,
-    y: state.viewport.y + (event.clientY - rect.top) * board.height / rect.height,
+    x: state.viewport.x + (event.clientX - rect.left) * docW / rect.width,
+    y: state.viewport.y + (event.clientY - rect.top) * docH / rect.height,
     pressure: pressure,
   };
 }
