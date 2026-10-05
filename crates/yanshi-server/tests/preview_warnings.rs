@@ -127,6 +127,21 @@ fn document_preview_reports_patches_it_could_not_draw() {
         "`preview` 字段丢了告警 ⇒ 客户端看不到：{as_json}"
     );
 
+    // **"文档自己也记下了"必须单独断言**（第 1099 轮：我亲手变异发现这里没有独立判据）。
+    // 证据：把 `document.rs` 里 4 处 `last_render_warnings = ...unsupported.clone()` 换成
+    // `Vec::new()`，上面两条断言**仍然全绿** ⇒ 那 4 处赋值当时**没有任何判据在看**。
+    // 它们是**裸像素出口**（`render_region` 的调用方）唯一能拿到的告警来源，所以必须有人守。
+    let recorded = restored
+        .document(doc)
+        .expect("文档已打开")
+        .last_render_warnings()
+        .to_vec();
+    let recorded_joined = recorded.join(" | ");
+    assert!(
+        recorded_joined.contains("缺少 blob") && recorded_joined.contains(&dropped_hash),
+        "文档自己没记下告警 ⇒ 裸像素出口的调用方看不到：{recorded_joined}"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&restore_root);
 }
