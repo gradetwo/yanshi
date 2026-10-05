@@ -35096,3 +35096,28 @@ Object.keys 看真键表）。
 
 处置：探针未通过判据（三次里这次也红），已 git checkout 回退，未提交任何改动。
 本会话"量错对象"的模式又出现一次，这次是读了一个函数对象的属性。
+
+## 第 1122 轮：突破——工具确实切到了 brush，方向转向"等服务端像素"
+
+用正确读数（`window.yanshi.state` 是函数，必须**调用**）重测，得到：
+  {"type":"function","buttonFound":true,"pressed":[],"brushTool":"false",
+   "called":{"tool":"brush","keys":["docId","layerId","tool","color","size","opacity","medium","brush",
+             "smooth","points","dragging","duoTone","viewport","zoom","userZoom","liveStroke",
+             "needsServerPixels","serverBlits","lastServerBlitArea","lastServerBlitReason",
+             "blitLog","lastBlitServerInk","blankBlitsSkipped"]}}
+
+三条结论：
+1. **工具确实切到了 brush**（调用后 `tool === "brush"`），而且 `layerId` 在键表里 ⇒ 有图层。
+   ⇒ 此前"工具没生效/被守卫拒绝/缺图层/选择器不命中"的推论**全部作废**。
+2. `aria-pressed` 全是 "false"，`brushTool` 也是 "false" ⇒ **UI 不用 aria-pressed 反映激活态**。
+   ⇒ 上一轮我读到的 `pressedTools = []` 是**假信号**，我的第二个读法也错。
+3. 键表里出现 `needsServerPixels` / `serverBlits` / `lastServerBlitArea` / `lastServerBlitReason` /
+   `blankBlitsSkipped` ⇒ 页面**在等服务端像素**。这与 viewer.rs:198 的注释吻合：
+   MyPaint `.myb` 笔刷"由服务端落笔"（Hokusai 引擎）。
+
+下一步（方向明确，且 state 里已有现成的键）：
+打印 `needsServerPixels`、`serverBlits`、`lastServerBlitReason`、`blankBlitsSkipped` 在落笔前后的变化。
+若提交没发生 ⇒ 查指针事件到提交的链路；若提交发生了但像素没回来 ⇒ 查服务端像素回传与 blit。
+同时要确认：**断网**时这条路径的预期行为是什么（离线判据不能在断网时依赖服务端像素）。
+
+处置：探针未通过判据，已 git checkout 回退，未提交任何改动。
