@@ -1577,13 +1577,30 @@ const pickResult = await evaluate(`(async () => {
   await new Promise((r) => setTimeout(r, 120));
   fire("pointerup", at(0.2, 0.2), 61);
   await new Promise((r) => setTimeout(r, 1500));
+  // 第 1018 轮：量"落笔之后画布上到底有没有墨"，并取**那一点的颜色** ——
+  // 这样就能分辨"笔没画上 / 取色读了未提交的像素 / 就是等得不够"这三种。
+  const oll = board.getContext("2d");
+  const px = (function () {
+    const cx = Math.round((at(0.2, 0.2).clientX - rect.left) / rect.width * board.width);
+    const cy = Math.round((at(0.2, 0.2).clientY - rect.top) / rect.height * board.height);
+    const d = oll.getImageData(cx, cy, 1, 1).data;
+    return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+  })();
+  const inkAfterStroke = (function () {
+    const d = oll.getImageData(0, 0, board.width, board.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 8 && (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245)) n += 1;
+    }
+    return n;
+  })();
   color.value = "#000000";
   document.querySelector('button[data-tool="eyedropper"]').click();
   fire("pointerdown", at(0.2, 0.2), 62);
   fire("pointerup", at(0.2, 0.2), 62);
   await new Promise((r) => setTimeout(r, 600));
   document.querySelector('button[data-tool="brush"]').click();
-  return { picked: color.value, log: document.getElementById("log").innerText };
+  return { picked: color.value, log: document.getElementById("log").innerText, pxAtStroke: px, inkAfterStroke: inkAfterStroke };
 })()`);
 
 // 填充图层：指纹必须变化，画布保持不透明；随后撤销应回到填充前的指纹。
@@ -2276,6 +2293,8 @@ if (paintedAfterReload === 0) {
 }
 
 // 吸管 + 填充图层
+try { (await import("node:fs")).appendFileSync("/tmp/yanshi-pickobs.txt",
+  JSON.stringify({ picked: pickResult.picked, pxAtStroke: pickResult.pxAtStroke, inkAfterStroke: pickResult.inkAfterStroke, log: String(pickResult.log || "").slice(-160) }) + "\n"); } catch (_) { /* 忽略 */ }
 if (pickResult.picked !== "#c81e3c") {
   problems.push(`吸管取色不对：期望 #c81e3c，实际 ${pickResult.picked}`);
 }
