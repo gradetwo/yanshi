@@ -35187,3 +35187,32 @@ Object.keys 看真键表）。
    并把"离线落笔"单列为待实现项，避免用一条永远红的判据掩盖真实进度。
 
 本轮探针未通过判据，已 git checkout 回退，未提交任何改动。
+
+## 第 1126 轮：派发 (A)⑥ 的核心缺口——离线时笔刷走本地内核
+
+依据（第 1125 轮定案）：
+1. viewer-app.js:6120 的注释写明"画笔不能走这条本地内核路 —— 这是用户报的'换什么笔都一样'的真正原因"，
+   即**普通笔刷的墨来自服务端**。
+2. state 里的 needsServerPixels / serverBlits / lastServerBlitReason 与该结论吻合。
+3. 离线判据实测：合成指针笔画之后 points 仍是 0、dragging 仍 false、serverBlits 仍 0，
+   画布只剩底色（76800 = 320×240）。
+4. 两个成因必须都处理：
+   a. 判据侧：viewer-app.js:5943 的 wantsPanEvent = button===1 || tool==="pan" || spaceHeld，
+      判据用 button 0、tool brush，所以只剩 spaceHeld；它为真时落笔处理器第一行就返回。
+   b. 产品侧：笔刷的墨来自服务端 ⇒ 断网时没有墨。
+
+已派 subagent（/tmp/wt-offlinepaint，分支 feat/offline-brush-kernel），任务书要点：
+1. 让笔刷在**服务端不可达（离线）时走本地内核**（crates/yanshi-wasm）；在线仍走现有服务端路径，
+   或者统一到本地内核——由它选择，但必须说明理由。
+2. **硬要求**：离线画的同一条笔触必须与在线画的**逐字节一致**（这是 (A)⑥ 的原话要求：
+   "两种模式必须同笔同结果"）。若因仓库已记录的既有例外（滑窗 box blur 的 ±1 LSB）无法完全一致，
+   必须给出实测数字并精确说明，不许含糊。
+3. 不得回退在线路径（在线行为今天是正确的，且被大量判据覆盖）。
+4. 判据三条，各自必须能红并变异验证：
+   ① 离线指针笔画使 #board 的不透明/深色像素增加（必须先修判据侧的 Space 问题，否则触不到产品代码）；
+   ② 离线与在线同笔触逐字节一致（或有精确实测的例外）；
+   ③ 离线的墨确实由本地内核产生（断言内核计数或"没有服务端往返"，而不是只看像素）。
+5. 环境前提（写进任务书，避免重蹈覆辙）：新 worktree 没有 crates/yanshi-wasm/pkg（gitignore），
+   缺它 viewer 会静默退回服务端渲染并导致浏览器判据误报；JS/CSS 是 include_str! 编进二进制的，
+   跑浏览器判据前必须先 cargo build --workspace --bins；window.yanshi.state 是**函数**必须调用；
+   绘制画布是 #board（页面有多个 canvas）。
