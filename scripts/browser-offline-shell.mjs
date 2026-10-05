@@ -44,6 +44,26 @@ const ready = await evaluate(`(async () => {
 })()`);
 console.log(`  ① Service Worker 状态：${ready}`);
 // ② 切离线 ⇒ 重载 ⇒ 页面必须仍能渲染
+// **断网前先取证**：SW 是否接管、缓存里到底有什么（页面的"新旧"由这里判定）。
+const cacheReport = await evaluate(`(async () => {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const keys = await caches.keys();
+  const out = { controller: !!navigator.serviceWorker.controller, keys, caches: {} };
+  for (const k of keys) {
+    const c = await caches.open(k);
+    const reqs = await c.keys();
+    const urls = reqs.map((r) => new URL(r.url).pathname);
+    let rootLen = -1;
+    const root = await c.match("/");
+    if (root) rootLen = (await root.text()).length;
+    out.caches[k] = { count: urls.length, hasAppJs: urls.includes("/viewer-app.js"),
+                      hasCss: urls.includes("/viewer.css"), rootBytes: rootLen,
+                      scope: reg ? reg.scope : null };
+  }
+  return out;
+})()`);
+console.log(`  · 断网前缓存报告 = ${JSON.stringify(cacheReport)}`);
+
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 await send("Page.reload", { ignoreCache: false });
 // ⚠️ **这一处只等 `readyState` ＋ 有界沉降** ✗（第 892 轮 ✓，**不要"顺手改成等 board"** ✗）：
