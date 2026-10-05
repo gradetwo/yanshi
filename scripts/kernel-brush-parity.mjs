@@ -97,6 +97,25 @@ for (const brush of names) {
       if (delta > maxDelta) maxDelta = delta;
     }
   }
+  // **可选：把差异画成一张小图** ✓（`DUMP_DIFF=1` ✓，第 820 轮 ✓）——
+  // 因为"最大通道差 255、而与颜色无关"这种读数**说不清形状** ✗，而形状能直接指向机制 ✓。
+  // 字符含义：`.` 两边都透明 ✓｜`#` 都实、且颜色一致 ✓｜`S` 只有服务端有墨 ✗｜`K` 只有内核有墨 ✗｜
+  // `x` 两边都有墨但颜色不同 ✗。
+  if (process.env.DUMP_DIFF && differing > 0) {
+    const at = (buf, x, y) => { const i = (y * region.w + x) * 4; return [buf[i], buf[i+1], buf[i+2], buf[i+3]]; };
+    console.log(`    差异图（${region.w}×${region.h}，区域左上 = ${region.x},${region.y}）：`);
+    for (let y = 0; y < region.h; y += 1) {
+      let line = "";
+      for (let x = 0; x < region.w; x += 1) {
+        const a = at(serverBytes, x, y), b = at(facadeBytes, x, y);
+        const aInk = a[3] > 8, bInk = b[3] > 8;
+        if (!aInk && !bInk) line += ".";
+        else if (aInk && bInk) line += (a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]) ? "#" : "x";
+        else line += aInk ? "S" : "K";
+      }
+      console.log("      " + line);
+    }
+  }
   const same = serverBytes.length === facadeBytes.length && differing === 0;
   if (!same) allEqual = false;
   // **本地框必须是服务端区域的超集**（第 121 轮定的规矩）：查看器拖动时用的是**本地算的框**，
