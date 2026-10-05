@@ -33,8 +33,9 @@ fn block<'a>(source: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn every_tool_button_has_an_icon() {
-    // **直接读查看器源码** ✓（页面就是一段 Rust 原始字符串 ✓ ⇒ `include_str!` 即可 ✓）。
-    let source = include_str!("../src/viewer.rs");
+    // **直接读查看器的主脚本资产** ✓（(A)① 之后它已是独立文件 ✓ ⇒ `include_str!` 即可 ✓；
+    // 此前读的是 `src/viewer.rs` 里的内联字符串 ✗ —— JS 拆成资产后这里也要跟着走 ✓）。
+    let source = include_str!("../assets/viewer-app.js");
     let icons = block(source, "TOOL_ICONS");
     let tools = block(source, "TOOL_DEFS");
 
@@ -92,7 +93,7 @@ fn every_tool_button_has_an_icon() {
 /// **图标内容不能是空的** ✓（定义了键但值是空串，同样会是空按钮 ✗）。
 #[test]
 fn no_icon_is_empty() {
-    let source = include_str!("../src/viewer.rs");
+    let source = include_str!("../assets/viewer-app.js");
     let icons = block(source, "TOOL_ICONS");
     let mut empty: Vec<String> = Vec::new();
     for line in icons.lines() {

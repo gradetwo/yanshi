@@ -32878,3 +32878,24 @@ pointerDelta = `{x:69, y:40}` ✓ ｜ bboxDelta = `{x:95, y:51}` ✓
 · **变异判据 ✓**：删资产文件 ⇒ 红 ✓；去掉占位 ⇒ 红 ✓；删任一内核条目 ⇒ 红 ✓
   （**内核缺席会导致离线时内核拿不到 ✗ —— 第 213 轮的教训 ✓**）。
 ```
+
+## ✅ 第 1044 轮（(A)①）：**HTML/CSS/JS 三者拆分完成** ✓
+
+```
+| 产物 | 位置 | 行数 | 判据（**变异可红 ✓**） |
+|---|---|---|---|
+| Service Worker | `assets/service-worker.js` | 75 | `the_service_worker_is_a_separate_packable_asset` ✓ |
+| **样式表** | `assets/viewer.css` | 260 | `the_stylesheet_is_a_separate_packable_asset` ✓ |
+| **主脚本** | `assets/viewer-app.js` | **7760** | `the_main_script_is_a_separate_packable_asset` ✓ |
+⇒ `viewer.rs` 现在只剩 `PAGE_HEAD` ／ `PAGE_TAIL_A` ／ `PAGE_TAIL_B` 三段**骨架** ✓ ＋
+   `page_template()` 把三段骨架与两个 `include_str!` 资产**拼接** ✓（**:1256**）。
+```
+**★ 三条** ✓：
+```
+1. **必须拼接、不能 `format!`** ✗ —— CSS/JS 里全是花括号 ✗；真占位符只有 `__READ_TOOLS__`/`__BUILD_ID__` ✓
+   ⇒ **∴ 这条已写进 `page_template()` 的注释 ✓**（否则后来者很容易"顺手格式化"⇒ 全页崩 ✗）；
+2. **∴ 页面里还有一个小 `<script>` 块（49 行 ✓）留在骨架里 ✓** ——
+   **∴ 它在 `<head>` 里、与主脚本**位置不同**✗ ⇒ **∴ 合并会改变执行时机/作用域 ✗ ⇒ 故不合并 ✓** ✓
+   （**∴ 只拆最大的那块 ✓，并保留既有"遍历全部内联脚本"的守卫 ✓**）✓；
+3. **∴ 三个判据同一形状 ✓** —— **存在性 ✓ ＋ 页面片段逐字节一致 ✓ ⇒ **∴ 挪位置/漏拼都会红 ✓** ✓。
+```

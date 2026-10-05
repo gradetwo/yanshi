@@ -23,7 +23,12 @@ fn read(relative: &str) -> String {
 
 #[test]
 fn every_url_the_viewer_requests_is_a_route_the_server_serves() {
-    let viewer = read("crates/yanshi-http/src/viewer.rs");
+    // **(A)①：请求字面量在主脚本资产里** ✓ ⇒ 骨架与资产**拼起来**再看 ✓。
+    let viewer = format!(
+        "{}{}",
+        read("crates/yanshi-http/src/viewer.rs"),
+        read("crates/yanshi-http/assets/viewer-app.js")
+    );
     let server = read("crates/yanshi-http/src/server.rs");
     // **只看查看器发请求的那些调用** ✓ —— 从 `fetch(` / `api(` / `new WebSocket(` 后面取字面量 ✓。
     let mut wanted: Vec<String> = Vec::new();

@@ -51,8 +51,11 @@ fn every_tool_name_used_in_the_repo_exists_in_the_registry() {
         .collect();
     assert!(registered.len() > 27, "注册表应包含核心层之外的扩展工具");
 
+    // **来源就是"页面源代码"** ✓ —— (A)① 之后**主脚本是独立资产** ✓，而 `viewer.rs` 只剩骨架 ✗
+    // ⇒ **∴ 骨架里已无任何工具调用 ✓** ⇒ 把它留在列表里会让"每个来源都应有工具调用"这条断言误报 ✗
+    //（本轮实测：`viewer.rs 里应至少调用一个工具` ✓）⇒ **∴ 只列真正的页面源 ✓**。
     let sources = [
-        root.join("crates/yanshi-http/src/viewer.rs"),
+        root.join("crates/yanshi-http/assets/viewer-app.js"),
         root.join("scripts/browser-ui-check.mjs"),
     ];
     let mut checked = 0usize;
@@ -81,8 +84,13 @@ fn every_tool_name_used_in_the_repo_exists_in_the_registry() {
 #[test]
 fn the_viewer_still_calls_its_literal_tools() {
     let root = repo_root();
-    let text = std::fs::read_to_string(root.join("crates/yanshi-http/src/viewer.rs"))
-        .expect("应能读取查看器源码");
+    let mut text = std::fs::read_to_string(root.join("crates/yanshi-http/src/viewer.rs"))
+        .expect("应能读取查看器骨架");
+    // **(A)①：主脚本已是独立资产** ✓ ⇒ 字面量工具名要连它一起看 ✓（**只看骨架会漏掉全部工具调用** ✗）。
+    text.push_str(
+        &std::fs::read_to_string(root.join("crates/yanshi-http/assets/viewer-app.js"))
+            .expect("应能读取查看器主脚本资产"),
+    );
     let names = tool_names_in(&text);
     for expected in [
         "draw_stroke",
