@@ -25,6 +25,13 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
              测试代码不参与 wasm 构建，永不编译进客户端",
         ),
         (
+            "crates/yanshi-render/src/geometry.rs",
+            2,
+            "`#[cfg(test)]` 测试模块 `blur_work_does_not_grow_with_radius` 里的 2 处 `Instant::now()`：\
+             同一张图分别用 radius 8 与 radius 128 计时、用**同一次运行的比值**判「每像素 O(1)」\
+             —— 测试代码不参与 wasm 构建，永不编译进客户端",
+        ),
+        (
             "crates/yanshi-core/src/ids.rs",
             2,
             "`SystemTime::now()` 用于 ULID 进程种子与 `now_ms()`：目前只被服务端/宿主路径调用 \

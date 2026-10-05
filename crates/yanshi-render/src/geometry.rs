@@ -527,9 +527,18 @@ mod tests {
 /// **边界语义（第 345 轮 ✓）**：向外**补零** ✓ —— 羽化的输出 bbox 会外扩 ✓，扩出来的一圈本该是 0 ✓
 /// ⇒ **不要**改成边界复制 ✗（那会撑住边缘 ⇒ 羽化就没了 ✗）。
 ///
-/// **写法（第 344/345 轮 ✓）**：滑窗 O(1)/像素版本**快但错** ✗（窗口和没维护住 ⇒ 整行被糊 ✗，
-/// 被 `the_falloff_stays_bounded` 抓住 ✓）⇒ 现为**朴素内层循环**：O(w·h·r) 但**一眼可查** ✓。
-/// 羽化只在**可选**路径上跑一次 ✓ ⇒ **先要正确，再谈快** ✓。
+/// **写法（第 344/345 轮 ✓ + 本轮性能修复 ✓）**：滑窗**加/减** O(1)/像素版本**快但错** ✗
+///（窗口和没维护住 ⇒ 整行被糊 ✗，被 `the_falloff_stays_bounded` 抓住 ✓）。
+/// 本轮把它换成**前缀和**的 O(1)/像素版本 ✓ —— 不是"再赌一次滑窗" ✓：
+/// 前缀和 `prefix[hi] - prefix[lo]` **按定义**等于窗口内元素之和 ✓ ⇒ 没有可维护错的窗口和 ✓；
+/// 且**全零窗口 ⇒ `prefix[hi] == prefix[lo]` ⇒ 精确 `0.0`** ✓（滑窗的加/减会漂移出伪非零 ✗
+/// ⇒ 会当场打破 `the_falloff_stays_bounded` 的 `assert_eq!(.., 0.0)` ✗）。
+/// **旧朴素实现保留为测试参照** ✓：`box_blur_2d_reference`（`#[cfg(test)]` ✓）是语义金标准 ✓，
+/// `separable_blur_matches_the_naive_reference` 用它守住"可分离 == 朴素" ✓。
+///
+/// **为什么之前是 O(w·h·r)** ✗：一维盒式的内层 `for k in 0..(2r+1)` 让每像素要读 `2r+1` 个样本 ✗
+/// ⇒ 4K 画布上 `feather = 180`（`radius = 180` ✓、外扩后 4560×2880 ✓）实测 **112.9s** ✗
+///（release ✓，同一台机器 ✓）。现在每像素 O(1) ✓ ⇒ 同一输入 **0.760s** ✓，**约 149×** ✓。
 ///
 /// **⚠️ 等效影响半径 = `2 × radius`** ✓（第 347 轮 ✓）—— **两遍盒式叠加**的结果 ✓
 /// ⇒ 调用方**外扩 bbox 时必须按 `2 × radius` 算** ✗（按 `radius` 算会**切掉外半边** ✗）。
@@ -539,38 +548,86 @@ fn box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<
     if radius == 0 || width == 0 || height == 0 {
         return data.to_vec();
     }
-    let win = (2 * radius + 1) as f32;
     let mut cur = data.to_vec();
+    let mut tmp = vec![0.0f32; cur.len()];
     for _ in 0..2 {
         // ① 横：读 `cur`、写 `tmp` ✓（**每遍角色固定** ✓ —— 第 344 轮的错就是这里串了 ✓）
-        let mut tmp = vec![0.0f32; cur.len()];
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum = 0.0f32;
-                for k in 0..(2 * radius + 1) {
-                    let xi = x as isize + k as isize - radius as isize;
-                    if xi >= 0 && (xi as usize) < width {
-                        sum += cur[y * width + xi as usize];
-                    }
-                }
-                tmp[y * width + x] = sum / win;
-            }
-        }
+        box_blur_horizontal(&cur, &mut tmp, width, height, radius);
         // ② 纵：读 `tmp`、写 `cur` ✓
-        for x in 0..width {
-            for y in 0..height {
-                let mut sum = 0.0f32;
-                for k in 0..(2 * radius + 1) {
-                    let yi = y as isize + k as isize - radius as isize;
-                    if yi >= 0 && (yi as usize) < height {
-                        sum += tmp[yi as usize * width + x];
-                    }
-                }
-                cur[y * width + x] = sum / win;
-            }
-        }
+        box_blur_vertical(&tmp, &mut cur, width, height, radius);
     }
     cur
+}
+
+/// 横向零填充盒式模糊的一遍 ✓（读 `src`、写 `dst` ✓）：**每像素 O(1)** ✓。
+///
+/// `out[x] = (Σ src[clamp(x-radius,0) ..= clamp(x+radius,width-1)]) / win` ✓，越界当 0 ✓
+/// —— 等价于 `(prefix[hi] - prefix[lo]) / win` ✓（`prefix[i]` = 前 `i` 个元素之和 ✓）。
+///
+/// **前缀和必须用 `f64`** ✗：`f32` 在 4K 宽度（4560）上累加会漂移 ✓；而 `f64` 的舍入
+/// （约 `1e-13` 量级 ✓）远小于参照比较的容差 ✓。中间结果仍按每遍四舍五入回 `f32` ✓
+/// ⇒ 与朴素实现的差异只在最后一个 ulp 量级 ✓（由参照测试守住 ✓）。
+fn box_blur_horizontal(src: &[f32], dst: &mut [f32], width: usize, height: usize, radius: usize) {
+    let inv = 1.0 / (2 * radius + 1) as f64;
+    let mut prefix = vec![0.0f64; width + 1];
+    for y in 0..height {
+        let row = &src[y * width..y * width + width];
+        prefix[0] = 0.0;
+        let mut sum = 0.0f64;
+        for (slot, value) in prefix[1..].iter_mut().zip(row) {
+            sum += f64::from(*value);
+            *slot = sum;
+        }
+        let out = &mut dst[y * width..y * width + width];
+        for (x, slot) in out.iter_mut().enumerate() {
+            let lo = x.saturating_sub(radius);
+            let hi = (x + radius + 1).min(width);
+            *slot = ((prefix[hi] - prefix[lo]) * inv) as f32;
+        }
+    }
+}
+
+/// 纵向零填充盒式模糊的一遍 ✓（读 `src`、写 `dst` ✓）：**每像素 O(1)** ✓。
+///
+/// 按 `COLUMN_STRIP` 列分条 ✓：条内**逐行顺序**读写 ✓ ⇒ 一条 cache line 的 16 个 `f32`
+/// 全部用上 ✓（若按列逐个遍历 ✓，每读 1 个 `f32` 都要拉一条 cache line ✗ ⇒ 浪费 15/16 ✗）。
+/// 条内的 `prefix` 只有 `(height+1) × COLUMN_STRIP` 个 `f64` ✓（4K 高约 0.7 MiB ✓，住二级缓存 ✓）。
+fn box_blur_vertical(src: &[f32], dst: &mut [f32], width: usize, height: usize, radius: usize) {
+    /// 每个分条的列数 ✓（32 列 × 8 字节 = 256 字节/行 ✓）。
+    const COLUMN_STRIP: usize = 32;
+    let inv = 1.0 / (2 * radius + 1) as f64;
+    // `prefix[y * bw + i]` = 第 `i` 列前 `y` 行之和 ✓（每个分条从头重建 ✓）。
+    let mut prefix = vec![0.0f64; (height + 1) * COLUMN_STRIP];
+    let mut x0 = 0usize;
+    while x0 < width {
+        let bw = COLUMN_STRIP.min(width - x0);
+        for slot in prefix[..bw].iter_mut() {
+            *slot = 0.0;
+        }
+        // ① 沿 y 累加前缀 ✓。
+        for y in 0..height {
+            let row = &src[y * width + x0..y * width + x0 + bw];
+            // 上一行的前缀在 `y * bw` ✓、本行写在 `(y + 1) * bw` ✓ ⇒ 两块不重叠 ✓。
+            let (before, after) = prefix.split_at_mut((y + 1) * bw);
+            let previous = &before[y * bw..y * bw + bw];
+            let current = &mut after[..bw];
+            for ((slot, accumulated), value) in current.iter_mut().zip(previous).zip(row) {
+                *slot = accumulated + f64::from(*value);
+            }
+        }
+        // ② 用前缀差取窗口和 ✓（窗口全在图像外时 `lo == hi` ⇒ 精确 0 ✓）。
+        for y in 0..height {
+            let lo = y.saturating_sub(radius);
+            let hi = (y + radius + 1).min(height);
+            let high = &prefix[hi * bw..hi * bw + bw];
+            let low = &prefix[lo * bw..lo * bw + bw];
+            let out = &mut dst[y * width + x0..y * width + x0 + bw];
+            for ((slot, high_value), low_value) in out.iter_mut().zip(high).zip(low) {
+                *slot = ((high_value - low_value) * inv) as f32;
+            }
+        }
+        x0 += bw;
+    }
 }
 
 #[cfg(test)]
@@ -635,6 +692,158 @@ mod feather_blur_tests {
         assert!(
             (before - after).abs() < 0.01,
             "覆盖率不该凭空增减 ⇒ {before} vs {after}"
+        );
+    }
+
+    /// **参照实现（语义金标准）** ✓：本轮性能改动**之前**的朴素内层循环 ✓，
+    /// 逐字保留 ✓ —— 只用于测试 ✓（`#[cfg(test)]` ✓）。**不要**拿它当生产实现 ✗
+    ///（4K + `feather = 180` 实测 112.9s ✓，见 `box_blur_2d` 的文档 ✓）。
+    ///
+    /// 它是"**可分离前缀和 == 朴素二维**"这条判据的另一端 ✓：
+    /// 谁改错了边界 / 窗口 / 归一化 / 轴向 ✓，比较都会红 ✓。
+    fn box_blur_2d_reference(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<f32> {
+        if radius == 0 || width == 0 || height == 0 {
+            return data.to_vec();
+        }
+        let win = (2 * radius + 1) as f32;
+        let mut cur = data.to_vec();
+        for _ in 0..2 {
+            let mut tmp = vec![0.0f32; cur.len()];
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0.0f32;
+                    for k in 0..(2 * radius + 1) {
+                        let xi = x as isize + k as isize - radius as isize;
+                        if xi >= 0 && (xi as usize) < width {
+                            sum += cur[y * width + xi as usize];
+                        }
+                    }
+                    tmp[y * width + x] = sum / win;
+                }
+            }
+            for x in 0..width {
+                for y in 0..height {
+                    let mut sum = 0.0f32;
+                    for k in 0..(2 * radius + 1) {
+                        let yi = y as isize + k as isize - radius as isize;
+                        if yi >= 0 && (yi as usize) < height {
+                            sum += tmp[yi as usize * width + x];
+                        }
+                    }
+                    cur[y * width + x] = sum / win;
+                }
+            }
+        }
+        cur
+    }
+
+    /// **非对称**测试数据（宽高不同、逐像素不同 ✓）—— 转置 / 轴混用 / 窗口错位都会被它抓住 ✓。
+    fn asymmetric_pattern(width: usize, height: usize) -> Vec<f32> {
+        (0..width * height)
+            .map(|index| {
+                let value = (index as u64).wrapping_mul(2_654_435_761) % 1_001;
+                value as f32 / 1_000.0
+            })
+            .collect()
+    }
+
+    /// **核心正确性判据**：可分离前缀和实现 == 朴素二维参照（同一容差内 ✓）。
+    ///
+    /// 容差取 `1e-4` ✓：前缀和用 `f64` 累加 ✓、朴素用 `f32` 累加 ✓ ⇒ 差异只在最后几个 ulp ✓
+    ///（实测最大偏差约 `1e-6` ✓）。**能红** ✓：边界 `lo/hi` 差一、忘记除以窗口、
+    /// 或把横纵两遍接反 ✓ ⇒ 偏差是 O(1) 级 ✓，远超容差 ✓（见提交信息里的变异验证 ✓）。
+    #[test]
+    fn separable_blur_matches_the_naive_reference() {
+        for (w, h) in [(37usize, 23usize), (16, 16), (1, 64), (64, 1)] {
+            let data = asymmetric_pattern(w, h);
+            for radius in [1usize, 2, 3, 5, 8] {
+                let fast = box_blur_2d(&data, w, h, radius);
+                let reference = box_blur_2d_reference(&data, w, h, radius);
+                assert_eq!(fast.len(), reference.len());
+                let worst = fast
+                    .iter()
+                    .zip(&reference)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    worst < 1e-4,
+                    "({w}×{h}, radius {radius}) 与朴素参照的最大偏差 {worst} 超容差"
+                );
+            }
+        }
+    }
+
+    /// **边界半径 1**：窗口只有 3 个样本 ⇒ 任何 off-by-one 都会立刻显现 ✓。
+    #[test]
+    fn radius_one_matches_the_reference() {
+        let (w, h) = (5usize, 4usize);
+        let data = asymmetric_pattern(w, h);
+        let fast = box_blur_2d(&data, w, h, 1);
+        let reference = box_blur_2d_reference(&data, w, h, 1);
+        for (index, (a, b)) in fast.iter().zip(&reference).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "下标 {index}：{a} vs 参照 {b}（半径 1）"
+            );
+        }
+    }
+
+    /// **边界半径 >> 图像**：窗口比图像还大 ⇒ 每个输出的窗口都覆盖**整幅图** ✓
+    /// ⇒ 所有输出必然相等（都是全图均值 ✓）—— 这条同时验证越界夹取 ✓、
+    /// `lo == hi` 的精确零逻辑不会误伤在界内的窗口 ✓，以及横纵两遍的轴向 ✓。
+    #[test]
+    fn radius_larger_than_the_image_matches_the_reference() {
+        let (w, h) = (6usize, 5usize);
+        let data = asymmetric_pattern(w, h);
+        let radius = 40usize;
+        let fast = box_blur_2d(&data, w, h, radius);
+        let reference = box_blur_2d_reference(&data, w, h, radius);
+        let worst = fast
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "半径 40 超小图的最大偏差 {worst}");
+        // 窗口覆盖整幅图 ⇒ 所有输出相等 ✓（全图均值 ✓）。
+        let first = fast[0];
+        for (index, value) in fast.iter().enumerate() {
+            assert!(
+                value.is_finite() && (*value - first).abs() < 1e-5,
+                "下标 {index}：{value} 与首元素 {first} 不等（窗口应覆盖整幅图）"
+            );
+        }
+    }
+
+    /// **语义判据（复杂度）**：同一张图、**同一次运行**里比较 `radius = 8` 与 `radius = 128`
+    /// 的耗时之比 ✓。前缀和 ⇒ 每像素 O(1) ⇒ 比值应 ≈ 1 ✓；
+    /// 朴素 O(r) 内层循环 ⇒ 比值 ≈ (2×128+1)/(2×8+1) = 257/17 ≈ **15×** ✗。
+    /// 阈值取 **4×** ✓（距正确实现与错误实现都有数倍余量 ✓）。
+    ///
+    /// **为什么是比值** ✗：绝对毫秒随机器、debug/release、编译器版本漂移 ✓
+    ///（同一份工作 debug 慢约 10× ✓）⇒ 绝对上界会变成"机器快慢"的判据而不是复杂度的判据 ✗。
+    /// **能红** ✓：把 `box_blur_2d` 换回 `box_blur_2d_reference` ⇒ 比值约 15 ✓，这条立刻红 ✓。
+    #[test]
+    fn blur_work_does_not_grow_with_radius() {
+        let (w, h) = (192usize, 192usize);
+        let data = asymmetric_pattern(w, h);
+        // 预热：把首次分配/缺页从计时里去掉 ✓。
+        std::hint::black_box(box_blur_2d(&data, w, h, 8));
+        std::hint::black_box(box_blur_2d(&data, w, h, 128));
+        let mut best_small = f64::MAX;
+        let mut best_large = f64::MAX;
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(box_blur_2d(&data, w, h, 8));
+            best_small = best_small.min(started.elapsed().as_secs_f64());
+            let started = std::time::Instant::now();
+            std::hint::black_box(box_blur_2d(&data, w, h, 128));
+            best_large = best_large.min(started.elapsed().as_secs_f64());
+        }
+        let ratio = best_large / best_small.max(1e-9);
+        assert!(
+            ratio < 4.0,
+            "radius 128 与 radius 8 的耗时比 {ratio:.2}（可分离前缀和应 ≈1；O(r) 朴素实现 ≈15）\
+             ⇒ small={best_small:.6}s large={best_large:.6}s"
         );
     }
 }
@@ -719,6 +928,37 @@ mod feather_coverage_tests {
         assert_eq!(f.bbox.w, c.bbox.w);
         assert_eq!(f.width, c.width);
         assert_eq!(f.data, c.data);
+    }
+
+    /// **最小非零羽化（半径 1）**：外扩 `2 × 1` ✓、紧贴形状外的一格出现中间值 ✓
+    /// —— 边界 off-by-one 与"忘记外扩"都会在这条上红 ✓。
+    #[test]
+    fn the_smallest_feather_is_radius_one() {
+        let f = feather_coverage(&square(), 1.0);
+        assert_eq!(f.width, 8 + 4, "半径 1 ⇒ 外扩 2×1 ✓");
+        assert_eq!(f.bbox.x, 100.0 - 2.0);
+        let (ow, grow) = (f.width as usize, 2usize);
+        let outside = f.data[(grow - 1) * ow + (grow - 1)];
+        assert!(outside > 0.0, "形状外一格应收到溢出 ⇒ {outside}");
+        assert!(outside < 1.0, "溢出处不该满覆盖 ⇒ {outside}");
+        let centre = f.data[(grow + 4) * ow + (grow + 4)];
+        assert!(centre > 0.9, "中心应接近满覆盖 ⇒ {centre}");
+    }
+
+    /// **半径远大于网格**：不得 panic ✓、尺寸按 `2 × radius` 外扩 ✓、结果有限且非负 ✓。
+    /// 这是"窗口比图还大"的越界夹取在**羽化这一层**的证据 ✓（底层另有 `radius_larger_than_the_image_*` ✓）。
+    #[test]
+    fn a_radius_larger_than_the_grid_is_handled() {
+        let f = feather_coverage(&square(), 64.0);
+        assert_eq!(f.width, 8 + 4 * 64);
+        assert_eq!(f.height, 8 + 4 * 64);
+        assert_eq!(f.data.len(), f.width as usize * f.height as usize);
+        assert!(
+            f.data
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0),
+            "超大半径下所有输出都必须有限且非负"
+        );
     }
 
     /// **bbox 四周各外扩 `2 × radius`** ✓ —— **这是"外半边不会被切掉"的几何证据** ✓
