@@ -69,6 +69,8 @@ const brushOptions = await evaluate(`(() => {
   return select.options.length;
 })()`);
 
+console.log(`  · 断网后笔刷面板选项数 = ${brushOptions}`);
+
 const failures = [];
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
@@ -76,7 +78,10 @@ if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页
 // **必须显式退出** ✗ —— 第一版成功时"自然走到结尾" ✗，而 WebSocket 让事件循环不退出 ✓
 // ⇒ 外层 `timeout` 把它当超时（exit 124 ✓）⇒ **红绿分不开** ✗（这是判据的致命问题 ✓）。
 socket.close();
-if (brushOptions < 1) {
+// **阈值必须 > 1** —— 面板**永远保留 1 个内置笔选项**（主脚本里"只留第一个内置画笔选项"），
+// 所以 `< 1` 这条**永远不会触发**（第一次实跑就暴露了：它是"永远绿"的判据）。
+// 有离线回退时选项来自随包清单（约 24 个）⇒ 阈值取 2 即可分辨"只有内置那一项"与"清单回来了"。
+if (brushOptions < 2) {
   failures.push(`断网后笔刷面板没有选项（options=${brushOptions}）⇒ 选不到笔 ⇒ 离线画不了`);
 }
 

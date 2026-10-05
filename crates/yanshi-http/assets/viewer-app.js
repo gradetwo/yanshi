@@ -6269,6 +6269,12 @@ async function refreshBrushOptions() {
     try {
       listed = await callTool("list_assets", { kind: "brush" }, { refresh: false });
     } catch (error) {
+      console.warn("离线：list_assets 调用失败", error);
+    }
+    // 回退条件必须是「拿不到可用清单」，不能只看是否抛错 ——
+    // 实跑实测：断网时 callTool 未必抛（可能吞掉错误并回一个空结果），
+    // 只写在 catch 里的回退根本不会触发（第一次实跑：面板仍是 1 个选项）。
+    if (!listed || !(listed.assets || []).length) {
       const response = await fetch("/brush-previews/index.json");
       const index = await response.json();
       listed = {
@@ -6276,7 +6282,7 @@ async function refreshBrushOptions() {
           name: file, usable: true, category: "其他",
         })),
       };
-      console.warn("离线：笔刷清单回退到 /brush-previews/index.json", error);
+      console.warn("离线：笔刷清单已回退到 /brush-previews/index.json");
     }
     const assets = (listed && listed.assets) || [];
     const keep = select.value;
