@@ -35149,3 +35149,9 @@ Object.keys 看真键表）。
 
 未亲手验证的部分（如实记录）：我没有亲手对这四个修复做变异（改回产品顺序看判据变红）。
 子代理提供了改动前后的 verdict 行作为证据，但那不等于我亲手变异。
+
+## 第 1124 轮：清理两个已完成 worktree
+
+移除 /tmp/wt-offline（离线写队列，已合并）与 /tmp/wt-ui4（browser-ui-check 四项，已合并）。
+两者工作树都干净，分支 feat/offline-journal 与 fix/browser-ui-four 与它们的提交都保留。
+保留 /tmp/wt-4cb 之外的其它原有 worktree（fresh/heavy/site，不是本次工作建的）。
