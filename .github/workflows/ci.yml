@@ -31,6 +31,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# **同一分支只保留最新一轮 CI** ✓（第 883 轮 ✓）：本仓判据整套跑一次很久（6 个 shard ＋
+# wasm/browser 作业 ✓）⇒ 而**每次 push 都会起一轮** ✗ ⇒ 高频推送会让队列**严重拥堵** ✗
+#（本会话实测：约 20 次推送 ⇒ 约 20 轮排队 ✓，要等很久才看到结论 ✗）。
+# ⇒ ⇒ 用 GitHub **原生**的 `concurrency` ✓：新推送**自动取消**同一分支上被取代的轮 ✓ ✓ ——
+#    ⇒ **永远只等最新一轮** ✓、**不再需要人工取消** ✗（人工取消踩过一次坑 ✓：
+#      我取消的恰是**承载 `enter` 修法**的那一轮 ✗ —— 第 869 轮的教训 ✓）。
+# ⚠️ **为什么 `cancel-in-progress` 在这里是对的** ✓：CI 的目的是**验证 HEAD** ✓，
+#    而**最新提交包含此前所有修法** ✓ ⇒ 被取代那一轮的结论**已被新轮覆盖** ✓。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fmt:
     name: rustfmt
