@@ -9,7 +9,8 @@
 > · **工作树**：**0 改动** ✓、与 `origin/main` 同步 ✓；
 > · **悬着的一件事** ✗：CI 的结论 ⇒ **看**最新轮**（它包含全部修法 ✓）** —— 读时**按 job 名取 `.conclusion`** ✓
 >   （**"缺席" ≠ "通过"** ✗）；**不要人工取消排队轮** ✗ —— 已改用 **`concurrency` 自动取消被取代的轮** ✓
->   （`.github/workflows/ci.yml` 顶层 ✓，`cancel-in-progress: true` ✓，第 883 轮 ✓）⇒ **队列不会再拥堵** ✓；
+>   （`.github/workflows/ci.yml` 顶层 ✓，`cancel-in-progress: true` ✓，第 883 轮 ✓）
+>   ⇒ **已实测生效 ✓**：加之前队列约 5 轮 ✓、加之后**只留最新轮** ✓（旧的自动 cancelled ✓）；
 > · **下一步（第一条 ✓）**：**缩略图按目标尺寸渲染** ✓ —— 落点 `document.rs:859` / `thumb.rs:326` ✓，
 >   验证 `node scripts/tool-paint-memory.mjs 12` ⇒ 比值 **≤1.2×** ✓ ⇒ 两条一起移出已知红名单 ✓；
 > · **待用户决策** ✓：① **MCP 默认是否加宽（69 → 137）** ② **125 vs 137 哪个口径权威**
