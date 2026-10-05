@@ -895,33 +895,53 @@ impl Renderer {
                     offset,
                     mime_type,
                 } => {
-                    if mime_type != RAW_RGBA_MIME {
-                        stats.unsupported.push(format!(
-                            "位图补丁格式未实现: {mime_type}（对象 {}，内核仅支持 {RAW_RGBA_MIME}）",
-                            object.id
-                        ));
-                        continue;
-                    }
+                    // **按 MIME 分派** ✓（体积专题，第 1056 轮）：
+                    // 位图现在可以**存成 PNG** ✓（无损 ⇒ 渲染结果不变 ✓），
+                    // 而 `image/x-yanshi-raw`（**旧工程 ✓**）走原路径 ✓
+                    // ⇒ **∴ 向后兼容是硬要求 ✓**：那份 349 MB 的旧工程必须仍然能打开 ✓。
                     let bytes = store.get(&blob)?;
-                    let expected = (width as usize) * (height as usize) * 4;
-                    if bytes.len() < expected {
-                        return Err(YanshiError::new(
-                            yanshi_core::ErrorCode::InvalidArgument,
-                            yanshi_core::ErrorContext::detail(format!(
-                                "位图补丁 {} 字节数不足：期望 {expected}，实际 {}",
-                                object.id,
-                                bytes.len()
-                            )),
-                        )
-                        .with_object(object.id.clone())
-                        .with_blob(blob.to_string()));
-                    }
+                    let (width, height, pixels) = if mime_type == PNG_MIME {
+                        let (width, height, rgba8) = decode_png(&bytes).ok_or_else(|| {
+                            YanshiError::new(
+                                yanshi_core::ErrorCode::InvalidArgument,
+                                yanshi_core::ErrorContext::detail(format!(
+                                    "位图补丁 PNG 解码失败（对象 {}）",
+                                    object.id
+                                )),
+                            )
+                            .with_object(object.id.clone())
+                            .with_blob(blob.to_string())
+                        })?;
+                        (width, height, rgba8)
+                    } else {
+                        if mime_type != RAW_RGBA_MIME {
+                            stats.unsupported.push(format!(
+                                "位图补丁格式未实现: {mime_type}（对象 {}，内核仅支持 {RAW_RGBA_MIME} 与 {PNG_MIME}）",
+                                object.id
+                            ));
+                            continue;
+                        }
+                        let expected = (width as usize) * (height as usize) * 4;
+                        if bytes.len() < expected {
+                            return Err(YanshiError::new(
+                                yanshi_core::ErrorCode::InvalidArgument,
+                                yanshi_core::ErrorContext::detail(format!(
+                                    "位图补丁 {} 字节数不足：期望 {expected}，实际 {}",
+                                    object.id,
+                                    bytes.len()
+                                )),
+                            )
+                            .with_object(object.id.clone())
+                            .with_blob(blob.to_string()));
+                        }
+                        (width, height, bytes[..expected].to_vec())
+                    };
                     layer_buffer.blit_rgba8(
                         offset.0 as i64,
                         offset.1 as i64,
                         width,
                         height,
-                        &bytes[..expected],
+                        &pixels,
                         opacity,
                     );
                 }
@@ -1410,7 +1430,16 @@ impl Renderer {
 pub const MAX_EFFECT_PADDING: u32 = 128;
 
 /// 位图补丁的原始像素 MIME（RGBA8 直通字节）。
+use crate::png::decode_png;
+
+/// **原始 RGBA 位图的 MIME** ✓（**旧工程与内核内部表示都用它** ✓）。
+/// ⚠️ 插入新常量时**别把它的文档注释抢走** ✗ —— 本会话已两次踩到（`viewer.rs` 的 `page_len` 与这里 ✓）：
+/// 新常量若插在它之前而不自带注释 ⇒ `clippy -D warnings` 会报 `missing documentation` ✓。
 pub const RAW_RGBA_MIME: &str = "image/x-yanshi-raw";
+
+/// **PNG 位图的 MIME** ✓（体积专题，第 1056 轮）：**存储用 PNG（无损 ✓、小 4~8× ✓）**，
+/// 而内核内部表示**仍然是 RGBA** ✓ ⇒ **∴ 渲染结果不变 ✓**（"同笔同结果" ✓）。
+pub const PNG_MIME: &str = "image/png";
 
 /// 笔迹几何的文档包围盒（含笔尖半径）。
 fn geometry_bbox(geometry: &crate::brush::StrokeGeometry, size: f64) -> Option<Bbox> {
