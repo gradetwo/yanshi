@@ -1537,35 +1537,113 @@ function renderSamples() {
 
 async function showOpenDialog() {
   const dialog = $("openDialog");
-  const list = $("docList");
   renderSamples();
-  list.textContent = "载入中…";
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
+  await refreshDocumentList();
+}
+
+/// **打开面板的状态机** ✓：`loading` / `ready` / `empty` / `error` 四种 ✓。
+///
+/// **为什么要有它** ✗（产品负责人："文件里头打开那也很乱" ✓）：
+/// 原来的列表**把失败与空当成同一件事** ✓（一个 `textContent = "读取文档列表失败：…"` ✓
+/// 而空列表只写一句"（服务器上还没有文档）" ✓ —— 两者都不告诉用户"接下来能做什么" ✗），
+/// 而且它拿 `info.thumb_url` 当缩略图 ✓，那个字段 `GET /api/documents` **根本不回** ✗
+/// ⇒ 每一格都是一块**空白白框** ✓。现在状态写在 `#docList` 的 `data-state` 上 ✓
+/// （样式见 viewer.css ✓），**空**与**坏**永远长得不一样 ✓，并且都给出下一步 ✓。
+async function refreshDocumentList() {
+  const list = $("docList");
+  if (!list) return;
+  const count = $("docCount");
+  list.dataset.state = "loading";
+  list.dataset.message = "载入中…";
+  list.innerHTML = "";
+  if (count) count.textContent = "";
   try {
-    const value = await fetch("/api/documents").then((response) => response.json());
-    const documents = value.documents || [];
+    const response = await fetch("/api/documents");
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const value = await response.json();
+    const documents = (value.documents || []).slice();
+    // **最近创建的排前面** ✓：这张列表是给人找"我刚画的那张"用的 ✓。
+    documents.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
     list.innerHTML = "";
-    if (documents.length === 0) list.textContent = "（服务器上还没有文档）";
-    for (const info of documents) {
-      const card = document.createElement("button");
-      card.style.cssText = "display:flex;flex-direction:column;gap:4px;padding:6px;text-align:left";
-      const thumb = document.createElement("img");
-      thumb.style.cssText = "width:100%;height:72px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:4px";
-      if (info.thumb_url) thumb.src = info.thumb_url;
-      const label = document.createElement("span");
-      label.style.fontSize = "12px";
-      label.textContent = info.doc_id + (info.head_seq !== undefined ? " · head " + info.head_seq : "");
-      card.append(thumb, label);
-      card.addEventListener("click", async () => {
-        closeOpenDialog();
-        await switchDocument(info.doc_id);
-      });
-      list.appendChild(card);
+    if (documents.length === 0) {
+      list.dataset.state = "empty";
+      list.dataset.message = "服务器上还没有文档 ⇒ 用「文件 → 新建」开一张";
+      return;
     }
+    list.dataset.state = "ready";
+    list.dataset.message = "";
+    if (count) count.textContent = "共 " + documents.length + " 份";
+    for (const info of documents) list.appendChild(documentRow(info));
   } catch (error) {
-    list.textContent = "读取文档列表失败：" + error.message;
+    list.dataset.state = "error";
+    list.dataset.message =
+      "读取文档列表失败：" + String(error).slice(0, 90) + " ⇒ 点「刷新」重试";
   }
+}
+
+/// 列表里的一行 = 一份作品 ✓。
+///
+/// **动作是显式的** ✓（`data-action="open"` ✓）：不像原来"整块可点、但看不出来" ✗。
+/// 元信息只写**服务端真的回了的字段** ✗（`doc_id` / `width` / `height` / `atoms` / `objects` /
+/// `created_at` ✓）—— 不编一个不存在的"文件大小"出来 ✓（`/api/documents` 没有这个字段 ✓）。
+function documentRow(info) {
+  const row = document.createElement("div");
+  row.className = "doc-row" + (info.doc_id === state.docId ? " current" : "");
+  row.dataset.docId = info.doc_id;
+  const text = document.createElement("div");
+  text.className = "doc-text";
+  const name = document.createElement("span");
+  name.className = "doc-name";
+  name.textContent = info.doc_id;
+  const meta = document.createElement("span");
+  meta.className = "doc-meta";
+  meta.textContent = documentMetaText(info);
+  text.append(name, meta);
+  const actions = document.createElement("div");
+  actions.className = "doc-actions";
+  if (info.doc_id === state.docId) {
+    const current = document.createElement("span");
+    current.className = "doc-meta";
+    current.textContent = "当前";
+    actions.appendChild(current);
+  }
+  const open = document.createElement("button");
+  open.type = "button";
+  open.dataset.action = "open";
+  open.textContent = "打开";
+  open.addEventListener("click", async () => {
+    closeOpenDialog();
+    await switchDocument(info.doc_id);
+  });
+  actions.appendChild(open);
+  row.append(text, actions);
+  return row;
+}
+
+/// 一行的元信息（**只写服务端真的给了的字段** ✓）。
+function documentMetaText(info) {
+  const parts = [];
+  if (info.width && info.height) parts.push(info.width + "×" + info.height);
+  if (typeof info.atoms === "number") parts.push(info.atoms + " 原子");
+  if (typeof info.objects === "number") parts.push(info.objects + " 对象");
+  const when = formatTimestamp(info.created_at);
+  if (when) parts.push("创建 " + when);
+  if (info.persisted === false) parts.push("未落盘");
+  return parts.join(" · ");
+}
+
+/// Unix 毫秒 ⇒ 本地 `YYYY-MM-DD HH:MM` ✓（列表要的是"哪张更新" ✓，不是秒级精度 ✗）。
+function formatTimestamp(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const date = new Date(value);
+  const pad = (number) => String(number).padStart(2, "0");
+  return (
+    date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+    " " + pad(date.getHours()) + ":" + pad(date.getMinutes())
+  );
 }
 
 function closeOpenDialog() {
@@ -7496,6 +7574,8 @@ $("clearSelection").addEventListener("click", async () => {
   await refreshSelectionHint();
 });
 $("openClose").addEventListener("click", closeOpenDialog);
+// **「刷新」真的重新拉一次列表** ✓（它是**读失败**之后唯一的出路 ✓ —— 原来什么都没有 ✗）。
+$("docReload").addEventListener("click", () => { void refreshDocumentList(); });
 $("copyDoc").addEventListener("click", async () => {
   const name = ($("copyName").value || "").trim();
   if (!name) {

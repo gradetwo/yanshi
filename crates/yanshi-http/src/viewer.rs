@@ -89,15 +89,25 @@ const PAGE_TAIL_A: &str = r##"</style>
 </dialog>
 <dialog id="openDialog">
   <h2 style="margin-top:0">打开文档</h2>
-  <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。
-       入口放在文档列表**之前** ✓ —— 这样"打开示例看看"是第一步 ✓，而不是在一堆自己的文档里翻 ✗。 -->
-  <h3 style="margin:12px 0 4px">示例作品</h3>
+  <!-- **打开面板重排** ✓（产品负责人："文件里头打开那也很乱" ✗）——
+       原来的列表是**一格一格的白框** ✗：它按 `info.thumb_url` 取缩略图 ✓，
+       而 `GET /api/documents` **根本不回这个字段** ✗ ⇒ 每一格都是一块空白 ✓，
+       底下只有一行 id ✓，没有明确的"打开"动作 ✓，空列表与读失败也长得一样 ✗。
+       现在：**一行一份**（名字 + 尺寸 + 原子数 + 创建时间 ✓）、**每行一个「打开」** ✓、
+       四种状态（载入 / 有内容 / 空 / 读失败 ✓）都由 `#docList` 的 `data-state` 承载 ✓
+       ⇒ "空"与"坏"再也混不起来 ✓（样式见 viewer.css 的 `#docList` ✓）。 -->
+  <h3 style="margin:12px 0 4px">我的文档 <span id="docCount" class="hint"></span></h3>
+  <div style="display:flex;gap:8px;align-items:center;margin:0 0 8px">
+    <button id="docReload" type="button">刷新</button>
+    <span class="hint" title="一行一份作品：名字、尺寸、原子数与创建时间；点「打开」切换过去。">名字 · 尺寸 · 时间</span>
+  </div>
+  <div id="docList" data-state="loading" data-message="载入中…"></div>
+  <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。 -->
+  <h3 style="margin:16px 0 4px">示例作品</h3>
   <p style="opacity:.75;font-size:12px;margin:0 0 8px">
     用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。
   </p>
   <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
-  <h3 style="margin:16px 0 4px">我的文档</h3>
-  <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
   <hr />
   <h2>导入本地图片</h2>
   <p style="opacity:.75;font-size:12px;margin:4px 0"
