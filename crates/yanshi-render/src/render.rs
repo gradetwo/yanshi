@@ -1599,9 +1599,10 @@ mod stage_probe {
     impl ObjectTimings {
         pub const fn record(&mut self, _label: &str, _elapsed: Duration) {}
         pub const fn report(&self) {}
-
-        pub const fn enter(_region: (i64, i64, u32, u32)) {}
     }
+
+    /// **入口记录（wasm32 上是空操作 ✓）** ✓：真实现会打区域与调用点 ✓。
+    pub const fn enter(_region: (i64, i64, u32, u32)) {}
 
     /// 空报告。
     pub fn report(
