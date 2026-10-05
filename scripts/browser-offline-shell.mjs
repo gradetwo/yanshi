@@ -75,6 +75,16 @@ const refreshCount = await evaluate(`(() => {
 })()`);
 console.log(`  · 断网后笔刷面板选项数 = ${brushOptions}`);
 console.log(`  · refreshBrushOptions 计数 = ${JSON.stringify(refreshCount)}`);
+// **段是否执行**：`setupBrushLibrary` 是主脚本里的顶层函数声明 ⇒
+// 若页面里 `typeof` 是 "undefined" ⇒ **那一段整体没执行**（上游抛了）；
+// 若是 "function" ⇒ 段执行了 ⇒ 问题在函数内部。
+const scopeProbe = await evaluate(`(() => ({
+  setup: typeof setupBrushLibrary,
+  refresh: typeof refreshBrushOptions,
+  counter: typeof window.__brushRefresh,
+  wasm: typeof window.yanshi,
+}))()`);
+console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
 // 三个分支：0 次进入 ⇒ 上游抛了；进过但没出来 ⇒ 中途抛了；进出一致却没选项 ⇒ 渲染环节的问题。
 if (brushOptions < 2) {
   const c = refreshCount || { entered: 0, exited: 0 };
