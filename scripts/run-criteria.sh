@@ -149,6 +149,14 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       timeout 1800 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" all \
         >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
+      # **先让调试浏览器打开被测地址** ✓（第 967 轮）：这一族约定"页面已经打开"✓（见 :73-74 ✓），
+      # 而 :43 只起了 about:blank ✗ ⇒ 判据会去连别的页面 ⇒ 前置不成立（第 966 轮实测 ✓）。
+      # CDP 的 /json/new 可以新开一个标签页并直接导航；新版 Chromium 要求 PUT ✓。
+      if [ -n "${CHROME_PID:-}" ]; then
+        curl -sf -X PUT "http://127.0.0.1:$CDP_PORT/json/new?$BASE/?doc=$doc&token=$tok" >/dev/null 2>&1 ||
+          echo "  ⚠ 无法让浏览器打开被测地址（/json/new 失败）⇒ 浏览器判据可能报前置不成立"
+        sleep 1
+      fi
       # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。
       # **⚠️ 不要给全体 URL 加 `debug=1`** ✗（第 338 轮实测 ✓）：只有一个判据需要它 ✓
       # （`browser-kernel-perf` ✓，内核句柄只在调试模式暴露 ✓），而给**全体**加会让
