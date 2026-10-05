@@ -36046,3 +36046,32 @@ render_ms / png_ms 是 0（它们是 export 阶段，brush_stroke 不填）。
 快照/持久化、预览重建）。不要凭猜测改渲染代码。
 判据侧的证据已经具备：这次测量本身就是"拆之前"的基线读数（other 占 68-81%），
 拆完之后应当能用同一条判据断言 other 的占比明显下降（而不是只断言"字段存在"）。
+
+## 第 1151 轮：读 brush_stroke 的实现，定位 other_ms 的构成
+
+入口：crates/yanshi-server/src/tools.rs:12728 `fn write_brush_stroke`。
+
+函数体里的步骤（去注释后按顺序）：
+1. 解析参数：require_str ×2、parse_brush_points、apply_brush_style、若干 *_source 取值。
+2. 取画布尺寸（doc_width/doc_height）。
+3. 算包围盒并判 entirely_outside / clipped。
+4. 可选平滑（`if optional_bool(args,"smooth")`）。
+5. **`paint_brush(...)`**（:46 一带）—— 核心调用；:57 用 `let BrushPaint { ... }` 解构它。
+6. **`let composite_started = std::time::Instant::now();`**（:67）—— 有一处**手工**计时。
+7. 可选 `clip_to_selection`（:68 起）—— 活选区过滤，逐个取 bbox 求交。
+
+关键负结果（有用）：在函数体 150 行的范围内，**没有任何 `ctx.time(Phase::…)` 调用**。
+也就是说：
+- `raster_ms` 不是在这里填的，而是更下层（`paint_brush` 内部或提交路径）填的；
+- 因此 `other_ms` 覆盖了这个函数体**绝大部分**的工作。
+所以"加阶段计时"的正确落点就在这个函数体里，而不是在别处。
+
+`other` 里最可能的构成（按嫌疑排序，尚未测量）：
+① `paint_brush`：内核渲染 dab（笔刷引擎主循环）；
+② 合成 / 写回画布（`:67` 那处手工计时附近）；
+③ 脏区与瓦片重算（`dirty_tiles` 那套）；
+④ 快照 / 持久化；
+⑤ 预览重建。
+
+下一步：读 `paint_brush` 的实现与 `:67` 之后那一段，确认那处手工计时**覆盖了什么、漏了什么**，
+再决定加哪两到三个阶段。仍然不凭猜测改渲染代码。
