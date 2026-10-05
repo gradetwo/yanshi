@@ -46,6 +46,20 @@ pub enum ErrorCode {
     JobPending,
     /// 异步 job 不存在或已被 TTL 清理。
     JobNotFound,
+    /// **同一文档上已有一个在飞的变更操作** ✓（外部测试报告 P1 ✓）：
+    /// 客户端超时**不会**让服务端停下来 ✗ ⇒ 盲目重试会**重复落笔** ✗
+    ///（真实事故：seq 477/478 的孤儿原子 ✓）⇒ 新的变更请求在此**被明确拒绝** ✓，
+    /// 并带上"是哪个操作、已经跑了多久" ✓。
+    ///
+    /// **为什么 `retryable` 为 false** ✗：`busy` 不是"等一会儿就会好"的临时故障 ✓ ——
+    /// 调用方**无法知道**它上一次超时的请求到底完成了没有 ✓，
+    /// 直接重试正是"重复落笔"的成因 ✗ ⇒ 必须先查 `get_inflight` / 核对 `head` ✓。
+    Busy,
+    /// **操作已被协作式取消** ✓（服务端在安全点看到取消标志 ⇒ 不提交新的原子 ✓）。
+    ///
+    /// 与 `busy` 一样**不可盲目重试** ✗：取消可能发生在已经落下若干原子之后 ✓，
+    /// 调用方应当先看响应里的 `rolled_back`（若给了）与当前 `head` ✓。
+    Cancelled,
 }
 
 impl ErrorCode {
@@ -61,6 +75,8 @@ impl ErrorCode {
             Self::Degraded => "degraded",
             Self::JobPending => "job_pending",
             Self::JobNotFound => "job_not_found",
+            Self::Busy => "busy",
+            Self::Cancelled => "cancelled",
         }
     }
 

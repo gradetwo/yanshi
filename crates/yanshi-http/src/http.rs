@@ -356,6 +356,10 @@ impl Response {
             yanshi_core::ErrorCode::Degraded => 503,
             yanshi_core::ErrorCode::JobPending => 202,
             yanshi_core::ErrorCode::JobNotFound => 404,
+            // **在飞冲突 / 已取消** ✓：两者都表示"这次请求与文档上正在发生的事冲突" ✓
+            // ⇒ 409（不是 4xx 参数错，也不是 5xx 服务错 ✓）。
+            yanshi_core::ErrorCode::Busy => 409,
+            yanshi_core::ErrorCode::Cancelled => 409,
         };
         Self::json(status, &error.to_response())
     }
