@@ -815,11 +815,15 @@ const moveResult = await evaluate(`(async () => {
   const before = await window.yanshiCallTool("list_objects", {});
   // 拖到 +0.2,+0.1（以画布比例折算成文档像素）
   document.querySelector('button[data-tool="move_object"]').click();
+  const rectAtMoveDown = (function () { const r = board.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), left: Math.round(r.left), top: Math.round(r.top) }; })();
   fire("pointerdown", at(0.3, 0.3), 402);
   await new Promise((r) => setTimeout(r, 400));
   fire("pointermove", at(0.5, 0.4), 402);
   await new Promise((r) => setTimeout(r, 120));
   fire("pointerup", at(0.5, 0.4), 402);
+  const rectAtMoveUp = (function () { const r = board.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), left: Math.round(r.left), top: Math.round(r.top) }; })();
   await new Promise((r) => setTimeout(r, 2200));
   const after = await window.yanshiCallTool("list_objects", {});
   const beforeBbox = (before.objects || []).map((o) => o.bbox).filter(Boolean)[0];
@@ -833,6 +837,7 @@ const moveResult = await evaluate(`(async () => {
   // 第 991 轮：三个量一起打出来 —— 位移偏小的公式里到底哪一个量不对。
   // 本段在模板内，注释里也不能出现反引号或美元加大括号。
   return { beforeBbox, afterBbox, log: document.getElementById("log").innerText,
+    rectAtMoveDown, rectAtMoveUp,
     scaleProbe: { boardW: board.width, rectW: Math.round(rect.width),
       docW: window.yanshi.state().docSize && window.yanshi.state().docSize.w,
       ratioUsedByProduct: board.width / rect.width,
@@ -866,7 +871,7 @@ if (moveResult && moveResult.beforeBbox) {
 try {
   const moved = String((moveResult || {}).log || "").split("\n").filter((line) => line.includes("已移动")).slice(-1)[0] || null;
   (await import("node:fs")).appendFileSync("/tmp/yanshi-moveobs.txt",
-    JSON.stringify({ sentLog: moved, bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] }, rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta, scaleProbe: moveResult.scaleProbe }) + "\n");
+    JSON.stringify({ sentLog: moved, bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] }, rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta, scaleProbe: moveResult.scaleProbe, rectAtMoveDown: moveResult.rectAtMoveDown, rectAtMoveUp: moveResult.rectAtMoveUp }) + "\n");
 } catch (_) { /* 落盘失败不影响判据 */ }
 try { (await import("node:fs")).appendFileSync("/tmp/yanshi-disp-obs.txt",
   JSON.stringify({ rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta,
