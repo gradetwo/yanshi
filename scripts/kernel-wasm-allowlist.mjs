@@ -24,6 +24,8 @@ const ALLOWED = [
     why: "计时探针模块 stage_probe：wasm 上为空实现（只影响性能观测，不参与像素）" },
   { file: "crates/yanshi-render/src/render.rs", anchor: "fn object_probe_label",
     why: "调试标签 object_probe_label：wasm 上返回空串（只是日志/诊断字符串，不参与像素）" },
+  { file: "crates/yanshi-render/src/render.rs", anchor: "mod parallel_impl",
+    why: "并行分块渲染的执行器：wasm32 没有共享内存线程 ⇒ 该目标下 workers() 恒为 1、整条 std::thread 路径被 cfg 掉（不参与编译），回退是**纯串行**；并行只是把同一段 render_accumulation 分块，块的像素由该像素自己的输入决定 ⇒ 与串行逐字节一致（仅滑动窗口方框模糊有项目已批准的 ±1 LSB D1 例外）" },
 ];
 
 const roots = ["crates/yanshi-core/src", "crates/yanshi-render/src"];
