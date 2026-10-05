@@ -35155,3 +35155,35 @@ Object.keys 看真键表）。
 移除 /tmp/wt-offline（离线写队列，已合并）与 /tmp/wt-ui4（browser-ui-check 四项，已合并）。
 两者工作树都干净，分支 feat/offline-journal 与 fix/browser-ui-four 与它们的提交都保留。
 保留 /tmp/wt-4cb 之外的其它原有 worktree（fresh/heavy/site，不是本次工作建的）。
+
+## 第 1125 轮：browser-offline-shell 两个根因都定位（其一是真实产品缺口）
+
+用 window.yanshi.state()（正确读数）在落笔前后各取一次快照：
+  落笔前 {"tool":"brush","layerId":"layer_default","points":0,"dragging":false,
+          "needsServerPixels":true,"serverBlits":0,"lastServerBlitReason":"viewport"}
+  落笔后 {"tool":"brush","layerId":"layer_default","points":0,"dragging":false,
+          "needsServerPixels":false,"serverBlits":0}
+所以：事件确实被页面收到（needsServerPixels 被 :5840 的 capture 处理器改掉），但**笔画状态机没启动**
+（points 仍是 0、dragging 仍 false），而且 serverBlits 一直是 0。
+
+根因一：viewer-app.js:5943
+    function wantsPanEvent(event) { return event.button === 1 || state.tool === "pan" || spaceHeld; }
+判据派发的是 button 0、tool 是 brush ⇒ 只剩 spaceHeld 这个变量。
+它若为 true：:6052 的落笔处理器第一行 `if (wantsPanEvent(event)) return;` 直接返回，
+事件落到 :5948 的平移处理器 ⇒ points 不启动、dragging 不变 ⇒ 与读数完全吻合。
+修法：判据在派发前先发 keyup(Space)（或断言 spaceHeld 为假），并在派发后断言 points 从 0 变成 >0。
+
+根因二（**真实产品缺口**）：viewer-app.js:6120 的注释原文：
+    "🚨 画笔不能走这条"本地内核"路 ✗ —— 这是用户报的"换什么笔都一样"的真正原因 ✓：
+     只要内核就绪，这里就会建 pendingStroke ✓，…"
+也就是说**普通笔刷的墨来自服务端**（与 state 里的 needsServerPixels / serverBlits 吻合）。
+⇒ **断网时普通笔刷画不出墨，是当前实现的真实行为** ⇒ (A)⑥ 要求的"离线可画"**尚未实现**。
+
+处置与下一步：
+1. 判据侧：先修 spaceHeld 这条（发 keyup 并断言 points 增长），这能区分"事件被吞"与"墨要靠服务端"。
+2. 产品侧（待排期，属 (A)⑥ 主线）：让普通笔刷在离线时也能走本地内核落笔，
+   即把 :6120 那条"画笔不能走本地内核"的限制按"离线/无服务端"条件放开。
+3. 若短期不做产品改造，则把这条判据的目标缩到"离线仍能打开页面、能选笔、能导出"，
+   并把"离线落笔"单列为待实现项，避免用一条永远红的判据掩盖真实进度。
+
+本轮探针未通过判据，已 git checkout 回退，未提交任何改动。
