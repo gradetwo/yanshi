@@ -872,6 +872,12 @@ const namingResult = await evaluate(`(async () => {
   // **文档尺寸**（第 785 轮）：切文档时画板会先按默认 1024² 摆一次、之后才按真实尺寸重建，
   // 所以只量画板可能量到「还没重建完的默认板」。真相应看文档尺寸（yanshi.state().docSize）。
   const beforeDoc = window.yanshi.state().docSize;
+  // **并排观测两侧**（第 940 轮）：duplicate_document 用**源文档的** state.width/height 建副本
+  //（service.rs:963-969）⇒ 若副本是 1024x1024，则**服务端看到的源就是 1024x1024**。
+  // 而这里读的 beforeDoc 是**页面**的 state().docSize。⇒ 把**两者连同 docId** 一起打出来，
+  // 就能判定"页面看到的源"是否等于"服务端持有的源"，**不必再猜是哪一侧不对**。
+  // ⚠️ 本段在**模板字符串内** ⇒ 注释里也不能出现反引号、也不能出现美元加大括号。
+  const beforeDocIdForProbe = window.yanshi.state().docId;
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
   document.getElementById("openDoc").click();
   await wait(1200);
@@ -911,7 +917,11 @@ const namingResult = await evaluate(`(async () => {
   const afterDoc = window.yanshi.state().docSize;
   return {
     beforeDoc,
+    beforeDocIdForProbe,
+    beforeBoardW: beforeWidth,
+    afterBoardW: afterWidth,
     afterDoc,
+    afterDocIdForProbe: window.yanshi.state().docId,
     prefilled,
     identity,
     before: before.sum,
@@ -1729,6 +1739,19 @@ if (!namingResult.prefilled) {
 if (!namingResult.identity.includes(namedNew)) {
   problems.push(`「新建」没有切到用户输入的名字：identity=${JSON.stringify(namingResult.identity)}`);
 }
+// **并排观测**（第 940 轮）：把"页面看到的源"与"页面看到的副本"连同各自 docId、画板宽度打出来，
+// 就能判定是不是"页面读到的源尺寸 ≠ 服务端持有的源尺寸"（duplicate_document 用的是**服务端那份**）。
+// ⚠️ **同时写文件**（第 940 轮）：runner 只回显 out.txt 的头 3/尾 6 行，中间的行看不到，
+// 所以把观测**落盘**，不受窗口限制。
+// ⚠️ 本文件是 ESM（.mjs）⇒ 没有 require，要用动态 import。
+try { (await import("node:fs")).appendFileSync("/tmp/yanshi-uicheck-obs.txt", JSON.stringify({
+  beforeDoc: namingResult.beforeDoc, beforeDocId: namingResult.beforeDocIdForProbe, beforeBoardW: namingResult.beforeBoardW,
+  afterDoc: namingResult.afterDoc, afterDocId: namingResult.afterDocIdForProbe, afterBoardW: namingResult.afterBoardW,
+}) + "\n"); } catch (_) { /* 写不了也不影响判据 */ }
+console.log("  尺寸观测 " + JSON.stringify({
+  beforeDoc: namingResult.beforeDoc, beforeDocId: namingResult.beforeDocIdForProbe, beforeBoardW: namingResult.beforeBoardW,
+  afterDoc: namingResult.afterDoc, afterDocId: namingResult.afterDocIdForProbe, afterBoardW: namingResult.afterBoardW,
+}));
 if (namingResult.before === 0) {
   problems.push("新建文档里画不出内容（前置条件不成立）");
 } else if (namingResult.beforeDoc && namingResult.afterDoc &&
