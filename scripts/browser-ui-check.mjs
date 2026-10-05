@@ -1760,11 +1760,21 @@ const jumpUndoResult = await evaluate(`(async () => {
   // 实测最后几条是 reorder_layers 与 set_property，它们不改像素，
   // 所以跳到「倒数第二条」画面一样 —— 那条路走不通。
   // 而最早那条（日志里的 create_object）一定与当前状态不同，故用它。
-  const target = rows[0];
+  // 第 1005 轮：这里原来是 rows[0]（最早那条）—— 而 1749 行上方（第 628 轮）已经写明
+  // 不能跳到最早那条，两轮结论互相打架：第 628 轮说最早那条往往就是当前状态，
+  // 第 694 轮说最早那条一定不同。本会话实测支持前者（新建后判据自己先画了一笔）。
+  // 正解是取一条既改像素、又不是当前状态的原子：
+  //   改像素的类型 = create_object / draw_stroke / draw_shape（reorder_layers 与 set_property 不改像素）；
+  //   且排除最后一条（它可能正是当前状态）。
+  const PAINTY = ["create_object", "draw_stroke", "draw_shape"];
+  const paintyRows = rows.filter((row) => PAINTY.some((k) => (row.innerText || "").includes(k)));
+  const target = (paintyRows.length > 1 ? paintyRows[0] : null) || rows[0];
   const before = ${canvasFingerprint};
   // 必须点「回到此处」，而不是行内第一个按钮（第 707 轮）：实测行内依次是
   // 「详情」与「回到此处」两个按钮，而 querySelector("button") 取的是「详情」，
   // 它只弹详情面板、不改画布 —— 这正是"点了但画面不变"的原因，产品本身没问题。
+  const targetIndex2 = rows.indexOf(target);
+  const targetText2 = (target.innerText || "").replace(/\s+/g, " ").slice(0, 60);
   const jumpButton = [...target.querySelectorAll("button")]
     .find((b) => (b.textContent || "").includes("回到此处"));
   if (!jumpButton) return { ok: false, unable: "这一行里找不到「回到此处」按钮" };
