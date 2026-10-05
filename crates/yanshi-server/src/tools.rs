@@ -12354,6 +12354,13 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "smooth": smooth_source,
             "opacity": opacity_source,
             "hardness": hardness_source,
+            // **显式记下随机种子**（第 1062 轮）：内核的抖动由 `(seed, index)` 派生
+            //（`render/src/brush.rs:4` 明说"同一份历史在任何平台重放出相同笔迹"），
+            // 而它从**对象 `data`** 读 `seed`（`brush.rs:206/229`），**缺省 0**（`:199`）。
+            // **不写会依赖默认值**：一旦默认值变了，同一份历史就重放不出同样的像素 ——
+            // 而"位图不进工程包、打开时按参数重放"正依赖这条确定性（第 1061 轮）。
+            // 这里的默认值与引擎保持一致（0），调用方给了就用调用方的。
+            "seed": args.get("seed").and_then(serde_json::Value::as_u64).unwrap_or(0),
         },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),
