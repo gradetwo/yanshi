@@ -28238,3 +28238,37 @@ node -e 用**判据里的同两条正则**分别 match 两份指南 ✓ ⇒ 打�
    ⇒ **一个"三条都返回同一常数"的实现居然让 ④ 通过** ✗ ⇒ **要改成"直接比两值是否相等"** ✓（待修 ✓）；
 3. **`PNG` 这个读数一眼定性** ✓ —— **"魔数前 4 字节"** 是**自证式证据** ✓：
    不需要再问"它读的是哪儿" ✓ ⇒ **凡读数恰好等于某个格式的魔数，就直接指向"格式不符"** ✓ ✓。
+
+## 第 858 轮：**修法精确到行 —— 但本轮没改成，如实记下** ✗
+
+**查明** ✓（一次 grep ✓）：
+```
+`crates/yanshi-server/src/document.rs:704`
+   `pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)>` ✓ ← **真 RAW ✓**
+`crates/yanshi-server/src/document.rs:813 render_region`
+   ⇒ `:818 encode_png(rendered.width, rendered.height, &rendered.rgba8)` ✗ ⇒ `:821 store.put(&png)` ✗
+   ⇒ ⇒ **即：同一份 `rgba8` ✓，一条路直接给 ✓、另一条压成 PNG ✗**
+⇒ ⇒ **我的 `sample_color` 要改的就是一行** ✓：
+   `crates/yanshi-server/src/tools.rs:2808`
+     `let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;` ✗
+   ⇒ 改成 `let (width, height, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;` ✓
+   ⇒ 再把后面 4 处 `rendered.*`（`width`/`height`/`mime_type`/`blob_hash` 与那段 `store().get` ✓）一起换 ✓
+```
+**⚠️ 本轮我为什么没改成（过程如实记录 ✓）**：
+```
+① 我先用**长锚点**整段替换 ✗ ⇒ `cargo fmt` 早先重排过我写入的代码 ⇒ **锚点匹配 0 处** ✓
+   ⇒ **断言当场拦住** ✓（若没断言，我会"以为改了" ✓ —— **这正是"核对新行"规矩的价值 ✓**）；
+② 我改用**短锚点 + `re.S` 正则** ✓ ⇒ 改动本身正确 ✓（"5 处"是我误读：**该模式本来就有 4 处** ✓），
+   但**漏换了一行残留的 `rendered.blob_hash`** ✗ ⇒ **编译报错** ✓（编译器当场拦住 ✓）；
+③ 我**回退整个文件** ✓ ⇒ **树回到绿色 ✓**（**未提交 ⇒ 可安全回退 ✓** ⇒ **不留红树 ✓**）。
+⇒ ⇒ **教训** ✓：**"改一行 + 换 4 处引用"这种小编辑，用正则跨行替换是错的工具** ✗ ——
+   应**逐行**改（`sed -i` 单行 ✓ / 编辑器精确替换 ✓），或**一次只改一处并立刻编译** ✓ ✓。
+```
+**⇒ 下一轮第一件事（一行 ✓ + 4 处引用 ✓）**：
+```
+改 `tools.rs:2808` ⇒ `render_region_raw` ✓ ⇒ 换掉 `rendered.width/height/mime_type/blob_hash` 与 `store().get` ✓
+⇒ `cargo build` ✓ ⇒ `node scripts/tool-sample-color.mjs` ⇒ **退出码 0** ✓（三条断言同时成立 ✓）
+⇒ **从 `criteria-known-red.txt` 移出 `tool-sample-color.mjs`** ✓ ⇒ **红→绿闭环 ✓**。
+⚠️ **顺带要核** ✓：`tools.rs:3328` 的 `read_render_region`（它自己声明 `RAW_RGBA_MIME` ✓ 见 `:3315` ✓）
+   **是不是同一个 bug** ✗ —— **很可能是** ✓ ⇒ 一并修 ✓（**同一处根因、两个调用方** ✓）。
+```
