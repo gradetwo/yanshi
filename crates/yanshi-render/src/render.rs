@@ -1606,13 +1606,13 @@ mod stage_probe {
 
     /// 空报告。
     pub fn report(
-        _scope: (i64, i64, u32, u32, usize, usize),
         _has_background: bool,
         _fill: Duration,
         _layers: Duration,
         _composite: Duration,
         _crop: Duration,
         _quantize: Duration,
+        _scope: (i64, i64, u32, u32, usize, usize),
     ) {
     }
 }
