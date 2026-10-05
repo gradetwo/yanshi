@@ -156,7 +156,11 @@ round trip is byte-exact and a package still reads back after being extracted un
 omitted only when its recorded brush recipe provably replays byte-identical (never for canvas-reading smudge brushes
 or media strokes, which carry no replayable recipe); pass `include_bitmaps: true` to ship every blob. The format is
 tar rather than zip because tar is a header plus the bytes and any system can list and extract it, and packs are
-byte-identical for the same content because timestamps are written as zero.
+byte-identical for the same content because timestamps are written as zero. The package is also stored in the
+content-addressed store and returned as a `yanshi://blob/<hash>` URL, which the HTTP layer rewrites into a directly
+fetchable `/api/blob/<hash>?doc=..&token=..` — the same channel thumbnails, PNG export and the diagnostics archive
+use — so a browser saves it with an ordinary download link. `path` is therefore optional: pass it to additionally
+write a copy on the server (what MCP and the command line do), omit it to get only the downloadable URL.
 
 A tester hand-zipped a document directory and shipped the stale cached render, whose sequence was five or six while
 the log had reached ninety-seven to two hundred and seventeen atoms, so all four of their packages
