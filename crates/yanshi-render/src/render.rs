@@ -213,6 +213,12 @@ impl Renderer {
         bbox: Bbox,
     ) -> Result<RegionRender> {
         let region = clamp_region(state, &bbox)?;
+        stage_probe::enter((
+            region.x as i64,
+            region.y as i64,
+            region.w.ceil() as u32,
+            region.h.ceil() as u32,
+        ));
         let declared = self.padding_for_region(state, &region);
         let padding = if self.options.expand_for_filters {
             declared.min(self.options.max_filter_padding)
@@ -1470,6 +1476,29 @@ mod stage_probe {
         *ENABLED.get_or_init(|| std::env::var_os("YANSHI_RENDER_PROBE").is_some())
     }
 
+    /// **入口记录**（第 835 轮 ✓）：`report` 只有一处调用 ✓ ⇒ 分不开"一次请求两条渲染" ✗
+    /// ⇒ 在入口记一条 ✓，并带上**调用点**（前几帧）⇒ **谁多调了一次**立刻可见 ✓。
+    pub fn enter(region: (i64, i64, u32, u32)) {
+        if enabled() {
+            let mut frames = Vec::new();
+            let bt = std::backtrace::Backtrace::force_capture();
+            for line in format!("{bt}").lines().skip(1).take(6) {
+                let line = line.trim();
+                if line.starts_with("at ") || line.contains("yanshi") {
+                    frames.push(line.to_owned());
+                }
+            }
+            eprintln!(
+                "PROBE 进入 区域={}x{}@{},{} 调用点: {}",
+                region.2,
+                region.3,
+                region.0,
+                region.1,
+                frames.join(" ← ")
+            );
+        }
+    }
+
     /// 一个计时点；未启用时不取时间。
     pub struct Stage(Option<Instant>);
 
@@ -1570,6 +1599,8 @@ mod stage_probe {
     impl ObjectTimings {
         pub const fn record(&mut self, _label: &str, _elapsed: Duration) {}
         pub const fn report(&self) {}
+
+        pub const fn enter(_region: (i64, i64, u32, u32)) {}
     }
 
     /// 空报告。
