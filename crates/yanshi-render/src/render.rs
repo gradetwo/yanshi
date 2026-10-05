@@ -1482,7 +1482,7 @@ mod stage_probe {
         if enabled() {
             let mut frames = Vec::new();
             let bt = std::backtrace::Backtrace::force_capture();
-            for line in format!("{bt}").lines().skip(1).take(6) {
+            for line in format!("{bt}").lines().skip(1).take(14) {
                 let line = line.trim();
                 if line.starts_with("at ") || line.contains("yanshi") {
                     frames.push(line.to_owned());
