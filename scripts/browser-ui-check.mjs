@@ -931,14 +931,14 @@ const namingResult = await evaluate(`(async () => {
   }
   let after = ${canvasFingerprint};
   let afterWidth = -1;
-  let afterStable = 0;
-  for (let i = 0; i < 40; i++) {
-    const width = document.getElementById("board").width;
-    if (width > 0 && width === afterWidth) afterStable += 1; else afterStable = 0;
-    afterWidth = width;
-    if (after.sum !== 0 && afterStable >= 2) break;
+  // 第 950 轮：这里原来等"画布宽度连续两次相同"就退出，但**旧值也是稳定的**，
+  // 所以它一两次迭代就返回，从来没等到按新尺寸重建（那正是"文档 1024 而画布 512"的成因）。
+  // 稳定只能排除抖动，排除不了"该变的没变"；而"等画布变成文档尺寸"又是被判的关系
+  // （会让断言永不失败）。所以这里只留**有界沉降**，让重建有时间发生，尺寸对不对仍由断言判。
+  for (let i = 0; i < 24; i++) {
     await wait(250);
     after = ${canvasFingerprint};
+    afterWidth = document.getElementById("board").width;
   }
   // **等 docSize 稳定下来**（第 939 轮）：它**初值是默认 1024x1024**，
   // 由**服务端返回的尺寸**覆盖（viewer.rs:893 是初值、:2194 明写"会因时序滞后"）。
