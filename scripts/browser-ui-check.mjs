@@ -1989,6 +1989,11 @@ if (!selectionResult || !selectionResult.ok) {
   if (selectionResult.clearedOutside === 0) {
     problems.push("清除选区后选区外仍看不到笔画色（应恢复为不受约束）");
   }
+  // 第 997 轮：把这两条的量**每次运行都落盘**（runner 只回显头 3/尾 6 行，落盘才看得全）。
+  try { (await import("node:fs")).appendFileSync("/tmp/yanshi-textobs.txt",
+    JSON.stringify({ textLogged: selectionResult.textLogged, textChanged: selectionResult.textChanged,
+      inside: selectionResult.inside, clearedOutside: selectionResult.clearedOutside,
+      promptCalls: selectionResult.promptCalls }) + "\n"); } catch (_) { /* 落盘失败不影响判据 */ }
   if (!selectionResult.textLogged) {
     problems.push(`文本工具日志缺失：${JSON.stringify(selectionResult)}` +
       `｜工具 before=${selectionResult.toolBeforeText} after=${selectionResult.toolAfterText}` + `｜prompt 被调用 ${selectionResult.promptCalls} 次`);
