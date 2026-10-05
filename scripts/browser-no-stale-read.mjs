@@ -48,7 +48,17 @@ await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
-const load = async () => { await send("Page.navigate", { url }); await sleep(4500); return await evaluate(SAMPLER); };
+// **等到"页面就绪"这个独立信号** ✓（第 890 轮 ✓）：原来固定睡 4.5 秒 ✗ ⇒ 机器慢时间歇红 ✗。
+// ⚠️ **等待条件与断言条件必须不同** ✗：`SAMPLER`（`:26` ✓）读的是**画板像素** ✓，
+//    而这里只等 **`readyState` 完成 ＋ `#board` 存在** ✓ ✓（**"画板存在" ≠ "画板像素正确"** ✓）；
+//    最后留 **800ms 有界沉降** ✓ 让首帧画完 ✓ —— **"像素对不对"始终只由断言判** ✓ ✓。
+const waitReady = async () => {
+  for (let i = 0; i < 40; i++) {
+    await sleep(300);
+    try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("board")')) { await sleep(800); return; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  }
+};
+const load = async () => { await send("Page.navigate", { url }); await waitReady(); return await evaluate(SAMPLER); };
 
 await post("create_layer", { layer_id: "layer_default", name: "l" });
 await post("brush_stroke", { layer_id: "layer_default", brush: "classic-brush", size: 24, color: { r: 10, g: 10, b: 10, a: 255 }, points: [[50, 70, 0.8], [110, 70, 0.8]] });
