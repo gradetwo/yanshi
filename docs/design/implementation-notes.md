@@ -36075,3 +36075,36 @@ render_ms / png_ms 是 0（它们是 export 阶段，brush_stroke 不填）。
 
 下一步：读 `paint_brush` 的实现与 `:67` 之后那一段，确认那处手工计时**覆盖了什么、漏了什么**，
 再决定加哪两到三个阶段。仍然不凭猜测改渲染代码。
+
+## 第 1152 轮：定位到"每笔恒定 11 秒"的机制——preview_dirty 变 Unknown 后永久整幅
+
+外部报告的数据（/tmp/yanshi-fc33320-perf-issue-20261006.zip）：
+1. 小笔刷（round 12-16）：other_ms 10800-11350，raster_ms 只有 13-21 ⇒ **other 占 99.8-99.9%**。
+2. 大笔刷（oil 22-60）：other_ms 10700-11800（**与小笔刷同一水平**），raster_ms 5196-7095 ⇒ other 占 60-69%。
+3. **最强的对照**：被静默跳过的笔（点间距 <2px）⇒ **other_ms = 3.4ms / 1.1ms**。
+   同一文档、同一工具 ⇒ **不落墨 ⇒ other ≈ 0；一落墨 ⇒ other ≈ 11 秒**。
+   ⇒ 所以那 11 秒只可能是"落墨之后做的某件事"，而且**与笔刷大小无关** ⇒ 全幅级别的重合成。
+4. 对照版本 f462a6f：other_ms 0.6-3.4s，且随笔刷变化（"随输入变化"说明那是真正与笔触成比例的工作）。
+
+代码侧的机制（本轮的定位）：
+- document.rs:187 `fn planned_preview_dirty(dirty)`：若 `dirty.kind == DirtyKind::Full`
+  或（`Structure` 且 `bbox.is_none()`）⇒ 返回 `PreviewDirty::Unknown`（预览只能整幅重算）。
+- document.rs:690 提交路径：`self.preview_dirty = self.preview_dirty.merged(planned_preview_dirty(&dirty))`。
+- PreviewDirty::merged（:176）里 **Unknown 吸收一切** ⇒ **一旦变成 Unknown，就再也不会退回 Region**。
+⇒ 所以：`texture_background` 只要产生一次 Full（或 Structure 无 bbox），
+  preview_dirty 就永久变成 Unknown ⇒ **之后每一笔的预览都变成整幅 4K 重算 ⇒ 恒定 11 秒**。
+  这同时解释了"与笔刷大小无关"（整幅成本）与"跳过的笔 ≈ 0"（没有新脏区 ⇒ 不需要重算预览）。
+
+**已知取舍（不能盲目改）**：document.rs:1124 的注释写着"写回 Unknown/None 又会误判成冷启动 ⇒
+下一笔直接整幅（旧实现的坑）"。也就是说"渲染完把 preview_dirty 清成 Clean"这条看似显然的修法
+曾经踩过坑。修法必须同时满足两件事：
+  ① 渲染完一次整幅之后，**下一次**不要仅因为"没有新脏区信息"又整幅；
+  ② 但也不能把"真的不知道哪里变了"（冷启动/求值起点跳变）误判成 Clean。
+  这正是三态设计要处理的，所以正确的修法要么是"渲染完整幅后**以当前 HEAD 为基座**重新记账"，
+  要么是"让 texture_background 只产生 Region 而不是 Full"（如果它确实只改了背景层的一块）。
+
+下一步（两种确认，先做便宜的）：
+A. 读 yanshi_render 的 `plan_dirty_with_log`，确认 `DirtyKind::Full` 在什么条件下被产生，
+   以及 `texture_background` 会不会命中它。
+B. 用报告里的工程包 parrot-4k-v3-fc33320.yanshi（6.9MB）实测：同一文档，先落一笔看 other_ms；
+   再构造"无背景层"的同尺寸文档落一笔看 other_ms。如果无背景时 other 显著小 ⇒ 机制确认。
