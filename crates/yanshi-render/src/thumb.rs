@@ -244,6 +244,23 @@ impl Thumb {
         doc_size: Bbox,
         blocks: &BTreeSet<(u32, u32)>,
     ) {
+        // `source` 覆盖**整个文档** ⇒ 源区域就是文档本身 ✓（旧行为，保持不变 ✓）。
+        self.update_blocks_from_region(source, doc_size, doc_size, blocks);
+    }
+
+    /// 只刷新指定块，而 `source` **只覆盖文档的一部分** `source_doc` ✓（增量预览用）。
+    ///
+    /// 为什么要单独一个方法 ✓：`source` 若只是"为某个脏区渲染出来的小缓冲区" ✗，
+    /// 仍按"铺满整幅文档"去映射 ⇒ 块内像素会落到错误位置 ✓ ⇒ 缩略图出现错位内容 ✗。
+    /// ⇒ 这里先把缩略图像素映射到**文档坐标** ✓，再按 `source_doc` 折算到源缓冲区的
+    /// 像素窗口 ✓ ⇒ 子区域源也能正确落块 ✓。
+    pub fn update_blocks_from_region(
+        &mut self,
+        source: &Buffer,
+        source_doc: Bbox,
+        doc_size: Bbox,
+        blocks: &BTreeSet<(u32, u32)>,
+    ) {
         let content = self.content_box(doc_size);
         if content.w <= 0.0 || content.h <= 0.0 {
             self.stats.blocks_rendered = 0;
@@ -266,17 +283,24 @@ impl Thumb {
                     if u1 <= 0.0 || v1 <= 0.0 || u0 >= 1.0 || v0 >= 1.0 {
                         continue; // 留白区域保持透明
                     }
-                    let source_x0 = (u0.clamp(0.0, 1.0) * source.width() as f64)
-                        .floor()
-                        .max(0.0) as u32;
-                    let source_y0 = (v0.clamp(0.0, 1.0) * source.height() as f64)
-                        .floor()
-                        .max(0.0) as u32;
-                    let source_x1 =
-                        (u1.clamp(0.0, 1.0) * source.width() as f64).ceil().max(1.0) as u32;
-                    let source_y1 = (v1.clamp(0.0, 1.0) * source.height() as f64)
-                        .ceil()
-                        .max(1.0) as u32;
+                    // 归一化缩略图坐标 ⇒ **文档坐标** ⇒ 源缓冲区的像素坐标 ✓（第 1040 轮）。
+                    // 当 `source_doc == doc_size` 时它与旧写法等价 ✓（`doc_size.x/y` 为 0 ✓）。
+                    let doc_x0 = doc_size.x + u0.clamp(0.0, 1.0) * doc_size.w;
+                    let doc_x1 = doc_size.x + u1.clamp(0.0, 1.0) * doc_size.w;
+                    let doc_y0 = doc_size.y + v0.clamp(0.0, 1.0) * doc_size.h;
+                    let doc_y1 = doc_size.y + v1.clamp(0.0, 1.0) * doc_size.h;
+                    let to_source_x = |doc_x: f64| {
+                        ((doc_x - source_doc.x) / source_doc.w.max(1e-9)).clamp(0.0, 1.0)
+                            * source.width() as f64
+                    };
+                    let to_source_y = |doc_y: f64| {
+                        ((doc_y - source_doc.y) / source_doc.h.max(1e-9)).clamp(0.0, 1.0)
+                            * source.height() as f64
+                    };
+                    let source_x0 = to_source_x(doc_x0).floor().max(0.0) as u32;
+                    let source_y0 = to_source_y(doc_y0).floor().max(0.0) as u32;
+                    let source_x1 = to_source_x(doc_x1).ceil().max(1.0) as u32;
+                    let source_y1 = to_source_y(doc_y1).ceil().max(1.0) as u32;
                     let mut accumulator = [0.0f64; 4];
                     let mut count = 0.0f64;
                     for source_y in source_y0..source_y1.max(source_y0 + 1) {

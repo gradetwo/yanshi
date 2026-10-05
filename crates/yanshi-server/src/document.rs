@@ -22,11 +22,12 @@ use yanshi_core::{
     ErrorCode, ErrorContext, FoldEngine, HeadBase, IncrementalFolder, Result, Seq, Snapshot,
     SnapshotBase, SnapshotDecision, SnapshotStore, StateAt, YanshiError,
 };
-use yanshi_render::dirty::{plan_dirty_with_log, DirtySet};
+use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind, DirtySet};
 use yanshi_render::png::encode_png;
 use yanshi_render::render::Renderer;
 use yanshi_render::thumb::{render_thumbnail, Thumb, ThumbKind};
 use yanshi_render::tile::{TileGrid, TileKey};
+use yanshi_render::Buffer;
 
 use crate::annotations::AnnotationStore;
 use crate::broadcast::{Broadcaster, PushChannel, SubscriberId};
@@ -188,6 +189,13 @@ pub struct Document {
     document_thumbnail: Option<BlobHash>,
     /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
     document_thumbnail_seq: Seq,
+    /// **缓存文档级缩略图的像素** ✓（性能专题，第 1040 轮）。
+    ///
+    /// 增量预览必须拿得到"上一版像素" ✓：只重新渲染变过的区域，再把它刷进对应块 ✓；
+    /// 若每次都从 `Thumb::new` 开始 ✗，未刷新的块就会是空白 ✗。256² RGBA ＝ 256KB/文档 ✓。
+    document_thumb: Option<Thumb>,
+    /// 自上次预览以来**累积的文档脏区** ✓（`None` ＝ 需要整幅重算 ✓）。
+    preview_dirty: Option<Bbox>,
     /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
     ///
     /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
@@ -284,6 +292,8 @@ impl Document {
             last_render_blob: None,
             document_thumbnail: None,
             document_thumbnail_seq: 0,
+            document_thumb: None,
+            preview_dirty: None,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
@@ -557,6 +567,23 @@ impl Document {
         // 双 dirty 传播 → 失效 tile（6.6）。
         let dirty = plan_dirty_with_log(&self.state, previous.as_ref(), &self.log, &appended);
         let dirty_tiles = self.renderer.apply_dirty(&self.state, &dirty);
+        // **累积文档脏区** ✓：给"增量文档预览"用（性能专题，第 1040 轮）。
+        // `Full`（求值起点跳变等）或"结构脏但没有 bbox" ⇒ 视为整幅 ✓（保守但正确 ✓）。
+        {
+            let whole = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
+            let incoming = if dirty.kind == DirtyKind::Full
+                || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
+            {
+                Some(whole)
+            } else {
+                dirty.bbox
+            };
+            self.preview_dirty = match (self.preview_dirty, incoming) {
+                (Some(a), Some(b)) => Some(union_bounds(a, b)),
+                (None, b) => b,
+                (a, None) => a,
+            };
+        }
 
         // 控制流广播（6.8）。
         self.broadcaster.publish_atom(&appended);
@@ -856,19 +883,75 @@ impl Document {
     ///
     /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。
     pub fn render_document_preview(&mut self) -> Result<RenderedPreview> {
-        let preview = self.thumbnail(ThumbKind::Doc256, None)?;
+        // **增量** ✓：只重渲染"自上次预览以来变过的文档区域"，并只刷新对应的缩略图块 ✓
+        //（性能专题，第 1040 轮）。
+        //
+        // 旧实现每次都 `render_thumbnail(…, None)` ✗ —— 它为了得到一张 **256²** 的小图，
+        // **先按整幅文档做全分辨率渲染**（4K ⇒ 830 万像素缓冲区 ＋ 逐像素拷贝 ＋ 降采样）✗
+        // ⇒ 实测单笔 1.5s~4.0s、单核 100%、且**随文档对象数线性增长** ✓。
+        let doc_size = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
+        let dirty = self.preview_dirty.take();
+        let region = match (self.document_thumb.is_some(), dirty) {
+            // 有缓存像素、且知道变过哪里 ⇒ **只渲染那一块** ✓。
+            (true, Some(bbox)) => clamp_to_document(bbox, doc_size),
+            // 冷启动，或"不知道变过哪里" ⇒ 整幅 ✓（**与旧行为一致** ✓，不会更差 ✓）。
+            _ => doc_size,
+        };
+        let render = self
+            .renderer
+            .render_region(&self.state, &*self.store, region)?;
+        let mut buffer = Buffer::new(0, 0, render.width, render.height);
+        for y in 0..render.height {
+            for x in 0..render.width {
+                if let Some(pixel) = render.pixel(x, y) {
+                    buffer.set_pixel(x, y, yanshi_render::color::u8x4_to_linear_premul(pixel));
+                }
+            }
+        }
+        // 只刷新与 `region` 相交的块 ✓；其余块**保留上一版像素** ✓。
+        let (thumb_size, thumb_rgba) = {
+            let thumb = self
+                .document_thumb
+                .get_or_insert_with(|| Thumb::new(ThumbKind::Doc256));
+            let blocks = thumb.dirty_blocks_for(&region, doc_size);
+            thumb.update_blocks_from_region(&buffer, region, doc_size, &blocks);
+            (thumb.size, thumb.rgba8.clone())
+        };
+        let png = encode_png(thumb_size, thumb_size, &thumb_rgba)
+            .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
+        let previous = self.cached_preview_hashes();
+        let blob_hash = self.store.put(&png)?;
+        self.last_thumb_blob = Some(blob_hash.clone());
+        self.document_thumbnail = Some(blob_hash.clone());
         self.render_watermark = self.log.head_seq();
         self.document_thumbnail_seq = self.render_watermark;
-        // 让响应里的 `preview` 指向这张小图（此前的整幅 PNG 只是更大，用途相同）。
-        self.last_render_blob = Some(preview.blob_hash.clone());
+        self.last_render_blob = Some(blob_hash.clone());
+        self.evict_replaced_previews(&previous);
+        self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
         self.complete_render_jobs()?;
-        Ok(preview)
+        Ok(RenderedPreview {
+            bbox: [0.0, 0.0, self.state.width as f64, self.state.height as f64],
+            width: thumb_size,
+            height: thumb_size,
+            blob_hash: blob_hash.clone(),
+            url: preview_url(&blob_hash),
+            mime_type: "image/png".to_owned(),
+            bytes: png.len(),
+            tiles: 0,
+            thumb_kind: Some(ThumbKind::Doc256),
+            filter_padding: 0,
+            warnings: Vec::new(),
+        })
     }
 
     /// 生成缩略图并输出 PNG 到 CAS（7 章）。
     pub fn thumbnail(&mut self, kind: ThumbKind, target: Option<Bbox>) -> Result<RenderedPreview> {
         let thumb: Thumb =
             render_thumbnail(&mut self.renderer, &self.state, &*self.store, kind, target)?;
+        // 整幅重建 ⇒ 增量用的缓存像素已经过期 ✓（第 1040 轮）。
+        if target.is_none() && kind.is_document_level() {
+            self.document_thumb = None;
+        }
         let png = encode_png(thumb.size, thumb.size, &thumb.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
         let previous = self.cached_preview_hashes();
@@ -1139,6 +1222,28 @@ fn needs_previous_state(kind: AtomKind) -> bool {
 
 fn dirty_kind_str(dirty: &DirtySet) -> &'static str {
     dirty.kind.as_str()
+}
+
+/// 两个文档区域的**并集** ✓（累积脏区用，第 1040 轮）。
+fn union_bounds(a: Bbox, b: Bbox) -> Bbox {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = (a.x + a.w).max(b.x + b.w);
+    let y1 = (a.y + a.h).max(b.y + b.h);
+    Bbox::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// 把 `bbox` 裁剪到文档范围内 ✓；裁剪后为空 ⇒ 退回整幅 ✓（第 1040 轮）。
+fn clamp_to_document(bbox: Bbox, doc: Bbox) -> Bbox {
+    let x0 = bbox.x.max(doc.x);
+    let y0 = bbox.y.max(doc.y);
+    let x1 = (bbox.x + bbox.w).min(doc.x + doc.w);
+    let y1 = (bbox.y + bbox.h).min(doc.y + doc.h);
+    if x1 <= x0 || y1 <= y0 {
+        doc
+    } else {
+        Bbox::new(x0, y0, x1 - x0, y1 - y0)
+    }
 }
 
 fn preview_url(hash: &BlobHash) -> String {
