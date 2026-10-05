@@ -1594,13 +1594,20 @@ const pickResult = await evaluate(`(async () => {
     }
     return n;
   })();
+  // 第 1020 轮：吸管前**重新取一次 rect**（并与笔前那次比较）——
+  // 因为 localPoint 的基准是"每次 pointerdown 刷新"（第 995 轮的修法 ✓），
+  // 若两次交互之间布局变了 ⇒ 两次换算的基准不同 ⇒ 同一个客户端点会算出不同文档坐标 ✓。
+  const rectAtPick = (function () { const r = board.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), left: Math.round(r.left), top: Math.round(r.top) }; })();
+  const rectAtStroke = { w: Math.round(rect.width), h: Math.round(rect.height),
+    left: Math.round(rect.left), top: Math.round(rect.top) };
   color.value = "#000000";
   document.querySelector('button[data-tool="eyedropper"]').click();
   fire("pointerdown", at(0.2, 0.2), 62);
   fire("pointerup", at(0.2, 0.2), 62);
   await new Promise((r) => setTimeout(r, 600));
   document.querySelector('button[data-tool="brush"]').click();
-  return { picked: color.value, log: document.getElementById("log").innerText, pxAtStroke: px, inkAfterStroke: inkAfterStroke };
+  return { picked: color.value, log: document.getElementById("log").innerText, pxAtStroke: px, inkAfterStroke: inkAfterStroke, rectAtStroke: rectAtStroke, rectAtPick: rectAtPick };
 })()`);
 
 // 填充图层：指纹必须变化，画布保持不透明；随后撤销应回到填充前的指纹。
@@ -2294,7 +2301,7 @@ if (paintedAfterReload === 0) {
 
 // 吸管 + 填充图层
 try { (await import("node:fs")).appendFileSync("/tmp/yanshi-pickobs.txt",
-  JSON.stringify({ picked: pickResult.picked, pxAtStroke: pickResult.pxAtStroke, inkAfterStroke: pickResult.inkAfterStroke, log: String(pickResult.log || "").slice(-160) }) + "\n"); } catch (_) { /* 忽略 */ }
+  JSON.stringify({ picked: pickResult.picked, pxAtStroke: pickResult.pxAtStroke, inkAfterStroke: pickResult.inkAfterStroke, rectAtStroke: pickResult.rectAtStroke, rectAtPick: pickResult.rectAtPick, log: String(pickResult.log || "").slice(-160) }) + "\n"); } catch (_) { /* 忽略 */ }
 if (pickResult.picked !== "#c81e3c") {
   problems.push(`吸管取色不对：期望 #c81e3c，实际 ${pickResult.picked}`);
 }
