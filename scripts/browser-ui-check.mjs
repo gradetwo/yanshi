@@ -1792,7 +1792,15 @@ const jumpUndoResult = await evaluate(`(async () => {
     // ⇒ 改成比**数值字段**（sum 与 ink）✓，且**两个都相同**才继续等 ✓。
     if (jumped.sum !== before.sum || jumped.ink !== before.ink) break;
   }
-  document.querySelector('button[data-tool="undo"]').click();
+  const undoBtn = document.querySelector('button[data-tool="undo"]');
+  const undoDisabledBefore = undoBtn ? !!undoBtn.disabled : null;
+  const histRowsBeforeUndo = document.querySelectorAll("#history .row").length;
+  if (undoBtn) undoBtn.click();
+  // 第 1008 轮：把撤销按钮的状态与历史条数带出来，失败时才能分辨
+  // 按钮点错了或被禁用与撤销真的没回退画面这两种情况。
+  const histRowsAfterUndo = document.querySelectorAll("#history .row").length;
+  const undoProbe = { hasBtn: !!undoBtn, disabledBefore: undoDisabledBefore,
+    rowsBefore: histRowsBeforeUndo, rowsAfter: histRowsAfterUndo };
   // 第 1007 轮：原来是**固定等 2200ms** ✗ ⇒ 实测报「撤销「回到此处」没有生效（画布与跳转后完全一致）」✓
   // ⇒ 与上面那段同一个毛病（"等时长"而不是"等条件"✓，第 629 轮的教训只落到了前一处 ✗）。
   // ⇒ 改成轮询到画面**真的变了**为止（**比数值字段 ✓，不比对象引用 ✓**，上限约 6 秒 ✓）。
@@ -1802,7 +1810,7 @@ const jumpUndoResult = await evaluate(`(async () => {
     undone = ${canvasFingerprint};
     if (undone.sum !== jumped.sum || undone.ink !== jumped.ink) break;
   }
-  return { ok: true, jumped, undone };
+  return { ok: true, jumped, undone, undoProbe, targetIndex2, targetText2 };
 })()`);
 // **第二次求值**读行数（第 727 轮）：上一次我**往页模板里加代码**做诊断，
 // 结果页面拒绝整段表达式、判据整条无法运行（比没有诊断更糟，已撤）。
@@ -2322,9 +2330,9 @@ if (historyFinal.length === 0) {
 if (!jumpUndoResult || !jumpUndoResult.ok) {
   problems.push(`「回到此处」的可撤销用例未执行：${JSON.stringify(jumpUndoResult)}`);
 } else if (jumpUndoResult.jumped.sum === fingerprintBeforeJump.sum) {
-  problems.push("「回到此处」本身没有改变画面（用例无效：目标原子选得不对）");
+  problems.push("「回到此处」本身没有改变画面（用例无效）｜" + JSON.stringify({ targetIndex2: jumpUndoResult.targetIndex2, targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
 } else if (jumpUndoResult.undone.sum === jumpUndoResult.jumped.sum) {
-  problems.push("撤销「回到此处」没有生效（画布与跳转后完全一致）");
+  problems.push("撤销「回到此处」没有生效｜" + JSON.stringify({ targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
 } else if (jumpUndoResult.undone.sum !== fingerprintBeforeJump.sum) {
   problems.push(
     `撤销「回到此处」未回到跳转前的像素：${jumpUndoResult.undone.sum} ≠ ${fingerprintBeforeJump.sum}`
