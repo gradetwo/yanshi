@@ -734,6 +734,62 @@ mod tests {
     use serde_json::json;
     use yanshi_core::{Layer, LayerType, Object, ObjectType, Transform};
 
+    /// **精确位图区域**：当 atom 的像素**已经烘焙成位图**、且 payload 给了 `region` 时，
+    /// 失效范围必须**只是那个区域** ✓（性能专题，第 1039 轮）。
+    ///
+    /// 为什么这条重要 ✓：此前这类 atom（`brush_stroke` 走的正是 `ImportImage` ✓）一律整层失效 ✗
+    /// ⇒ 4K 下一次落笔要把整层都标脏并重新复合该层全部对象 ⇒ 单笔随对象数线性变慢 ✓。
+    ///
+    /// **变异判据** ✓：把 `exact_bitmap_region` 那一支去掉（退回 `dirty_for_layer`）⇒
+    /// 下面 `kind` / `bbox` / `objects` 三条断言**必然红** ✓。
+    #[test]
+    fn an_exact_bitmap_import_only_invalidates_its_own_region() {
+        let state = state_with_layers();
+        let atom = |kind: AtomKind, id: &str, payload: serde_json::Value| {
+            yanshi_core::Atom::new(kind, "human:1", "session:test", payload).with_id(id)
+        };
+        let empty_bytes =
+            json!({"blob_hash": "sha256:00", "size": 4, "mime_type": "image/x-yanshi-raw"});
+
+        // ① 像素已烘焙 + 给了精确 region ⇒ 只失效该区域 ✓。
+        let exact = atom(
+            AtomKind::ImportImage,
+            "a_img_exact",
+            json!({"layer_id": "layer_1", "bitmap": empty_bytes,
+                   "region": {"x": 40.0, "y": 30.0, "w": 16.0, "h": 8.0}}),
+        );
+        let plan = plan_dirty(&state, Some(&state), &exact);
+        assert_eq!(
+            plan.kind,
+            DirtyKind::Geometry,
+            "应只做几何失效，实际 {plan:?}"
+        );
+        let bbox = plan.bbox.expect("几何失效必须给 bbox");
+        assert_eq!(
+            (bbox.x, bbox.y, bbox.w, bbox.h),
+            (40.0, 30.0, 16.0, 8.0),
+            "失效范围应**只是** region 本身，实际 {plan:?}"
+        );
+        assert!(
+            plan.objects.is_empty(),
+            "精确区域不应把整层对象都标脏，实际 {plan:?}"
+        );
+
+        // ② 同一形状但**没有 bitmap**（渲染侧还会再加工，如羽化）⇒ 必须保守回退整层 ✓。
+        let conservative = atom(
+            AtomKind::ImportImage,
+            "a_img_loose",
+            json!({"layer_id": "layer_1", "feather": 12.0,
+                   "region": {"x": 40.0, "y": 30.0, "w": 16.0, "h": 8.0}}),
+        );
+        let plan = plan_dirty(&state, Some(&state), &conservative);
+        assert_ne!(
+            plan.kind,
+            DirtyKind::Geometry,
+            "带渲染侧加工的 atom 不能只失效 region，实际 {plan:?}"
+        );
+    }
+
     fn state_with_layers() -> DocumentState {
         let mut state = DocumentState::empty();
         state.width = 128;
