@@ -876,10 +876,15 @@ const namingResult = await evaluate(`(async () => {
   // 等 state.docId 变成**新建的那个名字**（判据知道它，且与 docSize 相互独立）。
   // 上一轮我撤掉过这里的等待，理由是"它等 state.token，而 state() 不导出 token"——
   // 那个理由说明**等错了字段**，但不说明**这里不需要等**。
+  // 判据：docId 发生变化（而不是猜它的拼写）。新建文档会让 state.docId 变成另一个值，
+  // 具体拼写由实现决定（实测带 uicheck-named- 前缀），所以只比较是否还是原来那个。
+  const docIdAtProbeStart = String(window.yanshi.state().docId || "");
+  let sawNewDoc = false;
   for (let i = 0; i < 60; i++) {
-    if (String(window.yanshi.state().docId || "") === ${JSON.stringify(namedNew)}) break;
+    if (String(window.yanshi.state().docId || "") !== docIdAtProbeStart) { sawNewDoc = true; break; }
     await wait(250);
   }
+  if (!sawNewDoc) console.log("  ⚠ 等待新文档切换超时（docId 仍是 " + docIdAtProbeStart + "）⇒ 下面的尺寸可能不可信");
   const beforeDoc = window.yanshi.state().docSize;
   // **并排观测两侧**（第 940 轮）：duplicate_document 用**源文档的** state.width/height 建副本
   //（service.rs:963-969）⇒ 若副本是 1024x1024，则**服务端看到的源就是 1024x1024**。
@@ -954,10 +959,13 @@ const namingResult = await evaluate(`(async () => {
   // **就在这里等"确实切到副本了"**（第 944 轮）：信号是 state.docId 变成副本名 ——
   // 判据知道副本名，且它与被判的 docSize 相互独立。原来 not 等，于是读到的是
   // 页面**初始默认** 1024x1024，让"文档尺寸"这条因为双方都错而相等（第 943 轮的教训）。
+  // 同理：副本也有自己的拼接规则，所以只等 docId 不再是新建那个。
+  let sawCopyDoc = false;
   for (let i = 0; i < 60; i++) {
-    if (String(window.yanshi.state().docId || "") === ${JSON.stringify(copyName)}) break;
+    if (String(window.yanshi.state().docId || "") !== docIdAtProbeStart) { sawCopyDoc = true; break; }
     await wait(250);
   }
+  if (!sawCopyDoc) console.log("  ⚠ 等待切到副本超时（docId 仍是 " + docIdAtProbeStart + "）⇒ 下面的尺寸可能不可信");
   const afterDoc = window.yanshi.state().docSize;
   return {
     beforeDoc,
