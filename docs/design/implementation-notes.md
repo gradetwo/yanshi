@@ -32805,3 +32805,42 @@ pointerDelta = `{x:69, y:40}` ✓ ｜ bboxDelta = `{x:95, y:51}` ✓
    **① `perf record` 采样写入路径** ✓（**最省 ✓，不需要改代码 ✓**）；
    **② 若大头是**笔触栅格化**⇒ 正是报告 §4.1 的**瓦片并行** ✓（**现在才轮到它 ✓**）；
    **③ 冷启动那次整幅预览** ✓（一次性 ✓，收益小 ✓）。
+
+## 📌 第 1042 轮：(A) PWA 六项的**精确现状**（**逐条有出处 ✓**）
+
+**已完成的 ✓**：
+```
+(A)③ **退休第二份实现** ✅ —— `GET /brush-module.wasm` 与 `loadLocalBrushModule()` 都已消失 ✓：
+   · `server.rs:1240` ⇒「**已退休** ✓（(A)③ ✓）：这里原来是 `GET /brush-module.wasm` 与它的处理函数 ✓」；
+   · `viewer.rs:6334` ⇒「**已退休** ✓（(A)③ ✓）：这里原来是 `loadLocalBrushModule()` ✓」；
+   · `scripts/package-release.sh:453` ⇒ 不再随包复制 `assets/brush-module.wasm` ✓
+     （**拖动预览改走共享内核** ✓ —— **与 (A)③ 的目标一致 ✓**）✓。
+
+(A)⑤ **显式"用服务端渲染"开关** ✅ ——
+   · `viewer.rs:539` ⇒ `<input type="checkbox" id="useServerRender" /> 用服务端渲染（弱设备回退）` ✓；
+   · `:855-857` ⇒ `SERVER_RENDER_KEY = "yanshi.serverRender"` ＋ `serverRenderPreferred()` ✓；
+   · `:1550` ⇒ **该偏好 gate 内核加载** ✓（**勾上就不加载内核 ✓ ＝ 服务端渲染模式 ✓**）✓。
+
+(A)⑥ **判据** 部分 ✅ —— `scripts/browser-offline-shell.mjs` 已存在 ✓（**离线打开** ✓）；
+   `wasm-brush-parity` 在已知红名单里 ✓（**逐字节一致**那条 ✓）。
+```
+**未完成 / 待审的 ✗**：
+```
+(A)① **静态化查看器** ✗ —— **最大项** ✓：
+   `crates/yanshi-http/src/` 只有 `{http,lib,main,server,sha1,viewer,ws}.rs` ✓ ⇒ **无静态资产目录** ✗；
+   **全仓库 `include_str!` / `include_bytes!` 零命中** ✗ ⇒ **∴ HTML/CSS/JS 仍是 viewer.rs 里的
+   Rust 字符串字面量** ✓ ⇒ **∴ 既不可单独打包、也无法被 SW 预缓存为独立资源 ✓**（**SW 只能在页面内注册 ✓**）✓。
+(A)② **资产随包** 部分 ✗ —— 笔刷定义/调色板/预览图/纹理/介质插件的**按需取用路径**未逐项审计 ✗；
+   已知 `brush-module.wasm` 那条**已退休 ✓**（**是这条里最重的一块 ✓**）。
+(A)④ **本地持久化** 部分 ✗ —— `indexedDB` 确实出现在 `viewer.rs` ✓，但**范围未审** ✗：
+   待确认是"**本地导出/持久化已有**"✓ 还是"只是缓存层"✗。
+(A)⑥ **SW 升级不脏读** 待审 ✗ —— SW **存在**（`viewer.rs`/`server.rs` 命中 ✓）但**版本化升级**那条判据未确认 ✗。
+```
+**⇒ 下一步（**顺序已定 ✓**）**：
+```
+1. **(A)① 拆静态产物** ✓：新建 `crates/yanshi-http/assets/` ✓，把 HTML/CSS/JS 从 `viewer.rs` 搬过去 ✓，
+   用 `include_str!`/`include_bytes!` 引用 ✓（**保留"单二进制可分发" ✓，同时产出可预缓存资源 ✓**）——
+   **判据** ✓：**SW 能列出并预缓存**这些独立资源 ✓；**且改动前后页面功能判据全绿 ✓**（**含 3/3 的 `browser-i18n` ✓**）；
+2. **审计 (A)②** ✓：逐项列"笔刷/调色板/预览图/纹理/内核/介质"的取用路径 ✓，标出仍依赖服务端路由的项 ✗；
+3. **审计 (A)④** ✓：`indexedDB` 用法定位 ✓，判断是否满足"本地持久化 ＋ 本地导出" ✓；
+4. **(A)⑥** ✓：给"SW 升级不脏读"补一条**能红**的判据 ✓。
