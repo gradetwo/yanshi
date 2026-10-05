@@ -5378,9 +5378,14 @@ async function refreshPreview(fromKernel = false) {
       // ⇒ **∴ 每次预览加载都 `state.zoom = 1`** ✗ ⇒ `clampViewport` 把视口撑满 ⇒ `viewport = 0,0`
       // ⇒ **∴ 吸管取到别处（实测 99,102 vs 笔的 148 ✓）** ✓ —— **整条链由此而来 ✓**。
       // ⇒ **改成"预览尺寸是否变了"** ✓（**与 `docSize` 解耦 ✓，恢复"预览换了才归位缩放"的原意 ✓**）。
-      const lastPreview = state.lastPreviewSize || null;
-      const resized = !lastPreview || lastPreview.w !== natural.w || lastPreview.h !== natural.h;
-      state.lastPreviewSize = natural;
+      // 第 1033 轮：**判据必须用"服务端文档尺寸"，不能用"预览图尺寸"** ✗ ——
+      // 第 1032 轮的临时诊断一次定案 ✓：`natural=512x512 resized=true docSize=512x512`
+      // ⇒ **∴ 预览图尺寸**自己会变**（474 ⇒ 512 ✓）⇒ **∴ 拿它当"文档换了"的判据**永远为真**✗** ✓；
+      // ⇒ 于是每次预览加载都把 `state.zoom = 1` ✗ ⇒ `clampViewport` 把视口撑满 ⇒ `viewport = 0,0`
+      // ⇒ **∴ 吸管取到别处（99,102 vs 笔的 148 ✓）** ✓ —— **整条链的根 ✓**。
+      const lastDoc = state.lastDocSizeForZoom || null;
+      const resized = !lastDoc || lastDoc.w !== state.docSize.w || lastDoc.h !== state.docSize.h;
+      state.lastDocSizeForZoom = { w: state.docSize.w, h: state.docSize.h };
       if (resized) {
         // **不要用预览图尺寸改写文档尺寸**（第 990 轮）：`preview` 是**带尺寸参数生成**的位图 ✓，
         // 它的 `naturalWidth` 在本机实测是 **474**，而文档宽是 **512** ✓ ⇒ 一旦写进去，
