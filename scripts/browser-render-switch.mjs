@@ -49,7 +49,16 @@ const setPref = (value) => evaluate(value === null
 /// **确定性信号** ✓（第 197 轮的教训 ✓）：**内核句柄在不在** ✓ —— 它与时间无关 ✓，
 /// 而"固定等 5 秒内的请求数"**时序敏感** ✗（当初的 `4 vs 3` 就是运气 ✓）。
 const load = async () => { seen.length = 0; await send("Page.navigate", { url }); await waitReady();
-  const hasWasm = await evaluate('(typeof state !== "undefined" && state) ? !!state.wasm : "no-state"');
+  // **有界等待内核句柄**（第 1146 轮）：wasm 模块的 import 是异步的，
+// 而原来在 readyState 完成之后**立刻**读 state.wasm ⇒ 竞态（实测 t=3s 仍 false、t=6s 才 true）✗。
+// 改成轮询到出现为止（有界），让**等待条件与断言条件对齐** ✓。
+let hasWasm = null;
+for (let wait = 0; wait < 40; wait += 1) {
+  hasWasm = await evaluate('(typeof state !== "undefined" && state) ? !!state.wasm : "no-state"');
+  if (hasWasm) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+
   return { count: seen.filter((u) => u.includes("/api/tools/render_region")).length, hasWasm }; };
 const server = await (async () => { await setPref("1"); return await load(); })();
 const client = await (async () => { await setPref(null); return await load(); })();
