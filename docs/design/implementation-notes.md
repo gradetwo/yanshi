@@ -35043,3 +35043,29 @@ Object.keys 看真键表）。
 修法（下一步，判据侧）：用**当下活动的 doc/token 先建一个测试图层**，再点笔刷工具，
 然后在落笔前**断言** window.yanshi.state.tool === "brush"；若不是 brush，要报出具体守卫原因。
 这与 (B)② 里已列明的 `layer_paint` 子项完全同类（那里的记录就是"需用当下活动的 doc/token 建测试层"）。
+
+## 第 1120 轮：排除"缺图层"与"守卫拒绝"两个假设
+
+做法：在断网之前先建一个测试图层（用 window.yanshiCallTool("create_layer", {layer_id:"L1"})），
+然后点笔刷工具，并在落笔前做 15 秒有界等待，断言 window.yanshi.state.tool === "brush"。
+
+读数：
+1. 第 1 次：建图层**成功**。返回 `{"atom_id":"01M46N4REMMC7MT82DCAPT8016",
+   "dirty_bbox":[0,0,320,240],"dirty_kind":"full","head":2,...}`。
+   第 2、3 次：服务端答 `precondition_failed`，detail 是"图层 L1 已存在"
+   ⇒ 这反过来证明图层确实建成了（并且落盘了）。
+2. 三次落笔前都是 `tool-not-brush:{"tool":null,"kernel":true或false}`，
+   即工具**始终**没有变成 brush。
+
+结论：
+1. "缺图层"不是根因（图层建成了，工具仍然 null）。
+2. "被守卫静默拒绝"也不是根因（viewer-app.js:3035 那条注释不解释这个现象）。
+3. 剩下两个候选：
+   ① `brushBtn.click()` 没有改变工具状态（处理器没设置，或被别的前置拦下）；
+   ② **`window.yanshi.state` 根本不反映工具状态** —— 也就是我一直读的是一个**错的读数**。
+      本会话已经多次栽在"量错对象"上，所以这个嫌疑最大。
+
+下一步：改读**真实 UI 状态**（工具条按钮的 `aria-pressed` 或 class），
+并把 `window.yanshi.state` 的全部键打印出来对照。若两者不一致，判据应改读 UI 状态。
+
+处置：本轮改动未通过（三次全红），已 git checkout 回退，未提交任何改动。
