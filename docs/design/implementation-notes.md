@@ -35455,3 +35455,26 @@ Object.keys 看真键表）。
 
 证据边界（如实）：本次只测了一个文档（4K、debug）。release 与其它文档没有重测；
 上面的 10 倍换算基于本会话早先记录的经验关系，不是本次实测。
+
+## 第 1138 轮：timings 拆阶段的可行性已确认（新增阶段天然兼容残差设计）
+
+读到的结构（有出处）：
+1. crates/yanshi-server/src/timings.rs:46 是 `pub struct ToolTimings`；:61/:66 是
+   `add(phase, Duration)` 与 `add_micros(phase, micros)`；:13 的注释写明"各阶段的定义都在本文件与调用点写明"。
+2. **关键设计**（:23）：`other_ms` 是**残差**而不是"又一件事"，这样"五相之和恒等于 total_ms"。
+   :105-107 的 report(total) 里 `other_us = total_us.saturating_sub(self.measured_us())` ——
+   也就是说 other 是 **total 减去已测阶段之和**。
+3. 判据侧：tests/timings_and_cancel.rs:120 遍历 PHASES 加 `total_ms`/`other_ms`；
+   :141 断言"各相之和（含残差）必须等于总时长"（容差 0.01）。
+
+结论（这决定了怎么改最安全）：
+因为 other 是**补差**得到的，所以**新增 render_ms / png_ms 只要算进 measured_us()，
+那条既有判据会自动继续成立**（other 会相应变小）。这正是残差设计的好处。
+所以"把导出时间拆成渲染与编码两段"这件事**没有兼容性风险**，只需要：
+  ① 在 ToolTimings 的 Phase 枚举里加两个阶段；
+  ② 在导出路径（write_export_png 一带）分别计时渲染与 PNG 编码；
+  ③ 确认 tests/timings_and_cancel.rs 的"各相之和 = 总时长"仍然绿（应当自动绿）。
+
+导出路径的位置：service.rs:1487-1548 是 **commit** 的带计时版本（phases.log_us 等），
+所以 export_png 的渲染与编码计时点要另找（write_export_png 一带），下一步先定位它。
+这一步是纯服务端改动，与正在修改 viewer-app.js 的子代理**不冲突**。
