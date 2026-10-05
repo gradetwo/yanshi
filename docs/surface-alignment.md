@@ -4,7 +4,7 @@
 三面各自"实际暴露了什么"都来自**运行命令或读源码**，不来自记忆；每个数字都写了出处。
 
 * **日期**：2026-10-05（Asia/Shanghai）。
-* **被测版本**：`main` @ `f5835cb`，工作树干净。
+* **被测版本**：工具面在 `f5835cb`（`main`，工作树干净）上实测；截至 `3b71267`，`crates/yanshi-server/src/tools.rs`、`crates/yanshi-http/src/viewer.rs`、`crates/yanshi-mcp/src/lib.rs`、`docs/tools.md`、`docs/guide*.md`、`scripts/criteria-known-red.txt` 自 `f5835cb` 起**无改动**（`git diff --stat f5835cb..HEAD -- <上述文件>` 为空），并在 `3b71267` 的工作树上复核过全部计数，读数一致。
 * **口径定义**（本文三张表都按它）：
   * `系统实现` = `ToolRegistry`（`crates/yanshi-server/src/tools.rs`）里注册的工具；`已在` / `计划中` / `无` 三态。
   * `Web 暴露` = **查看器页面的 JS 真的会调到**的 `/api/tools` 工具名（`callTool` / `callToolChecked` 的直接实参，以及经 `convertCheckedObjects(...)` 这类助手中转的工具名）。**不含**只在注释或 Rust 测试字符串里出现的名字。
