@@ -679,8 +679,19 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     try {
     const board = document.getElementById("board");
     const rect = board.getBoundingClientRect();
-    const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+    // **每次拖动都按"那一刻"的 rect 换算** ✓（与选区段同一处修 ✓）：产品在 pointerdown 时
+    // 重新读 getBoundingClientRect() 并**在这一拖之内锁定** ✓（见 localPoint ✓），而本段在铺底
+    // （4 笔 + 等待）之后才拖蒙版 ✓ ⇒ 沿用段首那份 rect 会把蒙版拖到另一个文档坐标 ✓。
+    // 这里照产品的口径做：**一次拖动内锁一份 rect** ✓，抬手后解锁 ✓。判据侧修 ✓ —— 产品是对的 ✓。
+    let gestureRect = null;
+    const at = (fx, fy) => {
+      if (!gestureRect) gestureRect = board.getBoundingClientRect();
+      return { clientX: gestureRect.left + gestureRect.width * fx, clientY: gestureRect.top + gestureRect.height * fy };
+    };
+    const fire = (t, p, id) => {
+      board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
+      if (t === "pointerup") gestureRect = null;
+    };
     const ink = () => { const d = board.getContext("2d").getImageData(0, 0, board.width, board.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i+3] > 8 && (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245)) n++; return n; };
     document.getElementById("zoomFit").click();
     await new Promise((r) => setTimeout(r, 800));
@@ -773,6 +784,14 @@ for (let attempt = 0; attempt < 2 && !maskResult; attempt += 1) {
     for (let i = 0; i < 120 && masked >= filled; i++) {
       await new Promise((r) => setTimeout(r, 250));
       masked = ink();
+    }
+    // **等「成功日志」出现再收尾** ✓（本轮修 ✓）：commitMask 的「已为图层…添加…」那句 log
+    // 发生在 create_mask 与 set_property **都返回之后** ✓，而"蒙版生效 ⇒ 着色像素下降"走的是
+    // WS 推送 + 服务端补画 ✓ ⇒ **像素可能先降、日志后到** ✓（本机探针实测：抬手后 150ms 到 750ms
+    // 之间日志才出现 ✓）。原判据一看到像素降就取日志 ⇒ 量到"日志还没打" ✗，却被判成
+    // "没报告成功" ✗。这里等一段**有界**时间 ✓：等不到 ⇒ 断言照样红 ✓（真的没打日志不会变绿 ✓）。
+    for (let i = 0; i < 40 && !document.getElementById("log").innerText.includes("添加"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
     }
     document.querySelector('button[data-tool="brush"]').click();
     return { filled, masked, logDuringDrag, toolAfterClick, log: document.getElementById("log").innerText };
@@ -1031,6 +1050,23 @@ const namingResult = await evaluate(`(async () => {
       headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
     serverSourceDocProbe = await r.json();
   } catch (error) { serverSourceDocProbe = "查询失败: " + String(error); }
+  // **源文档的 before 必须取在"本文档尺寸就绪"之后** ✓（本轮修 ✓）：
+  // 上面的稳定循环只保证"两次读数相同" ✓ —— 实测它停在**上一篇文档残留的 512** 上 ✓
+  //（那一刻 state.docSize 还是旧的 ✓），而切到副本后画板按本文档的 1024 重建 ✓
+  // ⇒ total 从 262144 变成 1048576 ⇒ **内容比对被尺寸差污染** ✗（本机连续三次一致 ✓）。
+  // 这里在"本文档尺寸已读到"之后再适配一次并**重取 before** ✓：两边同视图后才可比 ✓；
+  // 尺寸本身仍由下面的 beforeDoc / afterDoc 断言判 ✓（这里不改那个判据 ✓）。
+  // ⚠️ 本段在模板字符串内 ⇒ 注释里也不能出现反引号、也不能出现美元加大括号。
+  document.getElementById("zoomFit").click();
+  for (let i = 0; i < 60; i++) {
+    const size = window.yanshi.state().docSize;
+    const board = document.getElementById("board");
+    if (size && beforeDoc && size.w === beforeDoc.w && size.h === beforeDoc.h &&
+        board.width === size.w && board.height === size.h) break;
+    await wait(250);
+  }
+  before = ${canvasFingerprint};
+  beforeWidth = document.getElementById("board").width;
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
   document.getElementById("openDoc").click();
   await wait(1200);
@@ -1167,11 +1203,24 @@ const selectionResult = await evaluate(`(async () => {
 
     stage = "几何";
     const rect = board.getBoundingClientRect();
-    const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
-    const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, {
-      bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
-      isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p,
-    }));
+    // **每次拖动都按"那一刻"的 rect 换算** ✓（本轮修 ✓）：产品在 pointerdown 时重新读
+    // getBoundingClientRect() 并在**这一拖之内锁定** ✓（见 localPoint ✓），而本段从"捕获 rect"
+    // 到"建选区/画笔触"之间隔着铺底与 stable() 的**数秒**等待 ✓ ⇒ 日志/面板会把画布宽度改掉 ✓
+    // ⇒ 选区与笔画被映射到**不同**的文档坐标 ✓ ⇒ 笔画整个落在选区之外被裁掉 ✓
+    //（本轮实测：选区用例前置条件不成立、选区内与选区外**都为 0** ✓）。
+    // 这里照产品的口径做：一次拖动内锁一份 rect，抬手后解锁 ✓。判据侧修 ✓ —— 产品是对的 ✓。
+    let gestureRect = null;
+    const at = (fx, fy) => {
+      if (!gestureRect) gestureRect = board.getBoundingClientRect();
+      return { clientX: gestureRect.left + gestureRect.width * fx, clientY: gestureRect.top + gestureRect.height * fy };
+    };
+    const fire = (t, p, id) => {
+      board.dispatchEvent(new PointerEvent(t, {
+        bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
+        isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p,
+      }));
+      if (t === "pointerup") gestureRect = null;
+    };
     document.getElementById("zoomFit").click();
     await wait(800);
 
@@ -1601,10 +1650,21 @@ const pickResult = await evaluate(`(async () => {
     return { w: Math.round(r.width), h: Math.round(r.height), left: Math.round(r.left), top: Math.round(r.top) }; })();
   const rectAtStroke = { w: Math.round(rect.width), h: Math.round(rect.height),
     left: Math.round(rect.left), top: Math.round(rect.top) };
+  // **吸管的客户端点必须用"取色那一刻"的 rect 换算** ✓ ——
+  // 产品在**每次 pointerdown** 重新读 getBoundingClientRect() ✓（见 localPoint 的说明 ✓），
+  // 而画布宽度会随日志/面板重排而变 ✓（本机实测：落笔时 344 客户端像素、取色时 354 ✓）。
+  // 若沿用落笔时那份 rect 算客户端点 ⇒ 产品按新 rect 换算 ⇒ 落到**另一个文档坐标** ✓
+  //（本机实测 102,102 → 99,102 ✓）⇒ 取到的是笔点**边缘**（#e6bcbf ✗）而不是中心（#c81e3c ✓）。
+  // 这是**判据侧**的问题 ✓（产品按"当下布局"取色是对的 ✓）⇒ 只改判据 ✓。
+  const liveRect = board.getBoundingClientRect();
+  const pickAt = (fx, fy) => ({
+    clientX: liveRect.left + liveRect.width * fx,
+    clientY: liveRect.top + liveRect.height * fy,
+  });
   color.value = "#000000";
   document.querySelector('button[data-tool="eyedropper"]').click();
-  fire("pointerdown", at(0.2, 0.2), 62);
-  fire("pointerup", at(0.2, 0.2), 62);
+  fire("pointerdown", pickAt(0.2, 0.2), 62);
+  fire("pointerup", pickAt(0.2, 0.2), 62);
   await new Promise((r) => setTimeout(r, 600));
   document.querySelector('button[data-tool="brush"]').click();
   return { picked: color.value, log: document.getElementById("log").innerText, pxAtStroke: px, inkAfterStroke: inkAfterStroke, rectAtStroke: rectAtStroke, rectAtPick: rectAtPick };
@@ -3202,6 +3262,21 @@ const layerPanel = await evaluate(`(async () => {
   };
   const rows = () => [...document.querySelectorAll("#layerList .layer-row")];
   const ids = () => rows().map((row) => row.dataset.layerId);
+  // **条件轮询，不用固定 sleep** ✓ —— 加这一段的直接原因（本轮实测 ✓）：
+  // 图层按钮的处理器是**异步**的（list_layers 往返 ✓ + refreshLayers() 重建整个列表 ✓），
+  // 负载下会超过 900ms ✓ ⇒ 同一份产品代码两次运行分别读到 1 与 2 ✓、
+  // ⧉ 读到 2 与 3 ✓ —— 而服务端原子日志显示**两次操作都提交了** ✓
+  //（create_layer / create_layer + create_object ✓）⇒ 固定等待量到的是"界面还没刷新" ✗，
+  // 却被判成"按钮没生效" ✗。**等的量必须与判的量一致** ✓ ⇒ 轮询"行数/顺序/名字真的变了" ✓。
+  // 这不是放松 ✓：条件不成立时照样超时失败 ✓（产品真没生效时读数不会变 ✓）。
+  const waitUntil = async (predicate, timeoutMs) => {
+    const until = Date.now() + (timeoutMs || 10000);
+    while (Date.now() < until) {
+      if (predicate()) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  };
   const out = {};
   out.rowCount = rows().length;
   // **记住"还没新增/复制之前"的选中层**（第 307 轮更正）：新增与复制都会把选中项移到新建的那一层，
@@ -3221,7 +3296,7 @@ const layerPanel = await evaluate(`(async () => {
   out.firstRowIsTop = out.ids[0] === out.serverOrder[out.serverOrder.length - 1];
   // ① **新建** ⇒ 多一行 ✓。
   document.getElementById("layerAdd").click();
-  await new Promise((r) => setTimeout(r, 900));
+  await waitUntil(() => rows().length >= out.rowCount + 1, 10000);
   out.afterAdd = rows().length;
   try {
     const listed = await window.yanshiCallTool("list_objects", {});
@@ -3248,19 +3323,30 @@ const layerPanel = await evaluate(`(async () => {
   }
   // ② **复制** ⇒ 多一行 ✓，且名字带"副本" ✓。
   document.getElementById("layerDuplicate").click();
-  await new Promise((r) => setTimeout(r, 1200));
+  await waitUntil(() => rows().length >= out.rowCount + 2, 10000);
   out.afterDuplicate = rows().length;
-  out.copyName = rows().map((row) => row.querySelector(".layer-name")?.textContent || "")
-    .find((text) => text.includes("副本")) || null;
+  // 名字也要等它出现 ✓（refreshLayers() 重建列表与选中项是同一个异步处理器 ✓）。
+  await waitUntil(() => rows().some((row) =>
+    (row.querySelector(".layer-name")?.textContent || "").includes("副本")), 5000);
+  const copyRow = rows().find((row) =>
+    (row.querySelector(".layer-name")?.textContent || "").includes("副本")) || null;
+  out.copyName = copyRow ? copyRow.querySelector(".layer-name").textContent : null;
+  out.copyId = copyRow ? copyRow.dataset.layerId : null;
+  // **选中项也要等到复制处理器把它移到副本** ✓ —— 否则下面量"移动是否换掉选中项"时，
+  // 读到的还是处理器**还没跑完**的旧值 ✓（实测：复制处理器晚于 selectedBefore 的读数落地 ✓
+  // ⇒ 于是判据把"处理器后来换了选中项"误判成"移动换了选中项" ✗）。
+  if (out.copyId) {
+    await waitUntil(() => (document.getElementById("layer")?.value || null) === out.copyId, 5000);
+  }
   // ③ **上移** ⇒ 顺序变化 ✓（比较行序快照 ✓）。
   const beforeMove = ids().join(",");
   const selectedBefore = document.getElementById("layer")?.value;
   document.getElementById("layerUp").click();
-  await new Promise((r) => setTimeout(r, 900));
+  await waitUntil(() => ids().join(",") !== beforeMove, 8000);
   out.moveChanged = ids().join(",") !== beforeMove;
   out.selectedKept = document.getElementById("layer")?.value === selectedBefore;
   document.getElementById("layerDown").click();
-  await new Promise((r) => setTimeout(r, 900));
+  await waitUntil(() => ids().join(",") === beforeMove, 8000);
   // ④ **显示/隐藏** ⇒ 画布墨量变化 ✓（把有内容的图层藏起来 ✓ ⇒ 墨量应变为 0 ✓）。
   const paintedBefore = ink();
   // **每次都要重新查询行** ✓ —— 我第一版把行元素**存下来**、点第二次时再用 ✗，
