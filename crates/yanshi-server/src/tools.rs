@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 68 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 69 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -940,7 +940,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 68 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 69 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -954,6 +954,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             false,
             "缩略图档位 64/128/256 或 false 跳过（缺省 256）"
         )],
+    },
+    ToolSpec {
+        // **只读的"观察口"** ✓（第 856 轮 ✓）：外部实测报告 #13 —— "一旦落笔，画布就变成
+        // **完全不透明的黑盒**" ✗ ⇒ agent 只能"导出 PNG 再解析" ✓。
+        // 本工具**不改动画面的任何像素** ✓（只渲染 1×1 区域并读出 ✓）⇒
+        // 它同时解掉另一处待决策：`tool-reference-delta-e` 的"**想测量却必须先改画面**" ✗。
+        name: "sample_color",
+        profile: Profile::Core,
+        summary: "读取画布上某一点的**显示空间颜色**（只读 ✓，不改变画面 ✓）。落笔后用它可以自查颜色，不必导出 PNG 再解析 ✓",
+        mutating: false,
+        params: &[
+            param!("x", Number, true, "画布 x（文档坐标，像素 ✓）"),
+            param!("y", Number, true, "画布 y（文档坐标，像素 ✓）"),
+        ],
     },
     ToolSpec {
         name: "get_state",
@@ -2625,6 +2639,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
 
 fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     match spec.name {
+        "sample_color" => read_sample_color(ctx, args),
         "get_document" => read_get_document(ctx, args),
         "get_state" => read_get_state(ctx, args),
         "list_documents" => read_list_documents(ctx),
@@ -2771,6 +2786,51 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 // ---------------------------------------------------------------------------
 // 只读工具
 // ---------------------------------------------------------------------------
+
+/// **读取画布某一点的颜色** ✓（第 856 轮 ✓，只读 ✓）。
+///
+/// **为什么必须有它** ✗：外部实测报告 #13 的原话是"一旦落笔，画布就变成了**完全不透明的黑盒**" ✓
+/// ⇒ agent 只能"**导出 PNG 再解析**" ✓ —— 而那是**慢、且有副作用**（写文件 ✓）的观察方式 ✓。
+/// 本函数渲染 **1×1** 区域并读回该像素 ✓（与"区域渲染"同一实现 ✓ ⇒ 与客户端所见同源 ✓）。
+fn read_sample_color(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let number = |key: &str| -> Result<f64> {
+        args.get(key).and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "缺少 {key}（画布坐标，像素 ⇒ 例如 {{\"x\": 120, \"y\": 64}}）"
+                )),
+            )
+        })
+    };
+    let (x, y) = (number("x")?, number("y")?);
+    let region = Bbox::new(x, y, 1.0, 1.0);
+    let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
+    // ⚠️ **`RenderedPreview` 本身不含像素** ✗（`document.rs:126` ✓ 只有 `bbox`/`width`/`height`/`blob_hash` ✓）
+    // ⇒ 像素在 **blob store** 里 ✓ ⇒ 按 `blob_hash` 取 ✓（与 `service.rs:1332` 同一做法 ✓）。
+    // 1×1 的 RAW_RGBA ⇒ **前 4 个字节就是那个像素** ✓。
+    let bytes = ctx
+        .workspace
+        .document_mut(&ctx.doc_id)?
+        .store()
+        .get(&rendered.blob_hash)?;
+    let rgba = match bytes.first_chunk::<4>() {
+        Some(chunk) => json!([chunk[0], chunk[1], chunk[2], chunk[3]]),
+        // **取不到就说取不到** ✓（"读不出"与"读到一个黑点"是两件事 ✓）
+        None => Value::Null,
+    };
+    Ok(json!({
+        "ok": true,
+        "x": x,
+        "y": y,
+        "rgba": rgba,
+        "bbox": rendered.bbox,
+        "width": rendered.width,
+        "height": rendered.height,
+        "mime_type": rendered.mime_type,
+        "blob_hash": rendered.blob_hash.to_string(),
+    }))
+}
 
 fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut summary = ctx.workspace.summary_json(&ctx.doc_id)?;
@@ -13810,6 +13870,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
     //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。
     ("list_layers", r#"{}"#),
+    ("sample_color", r#"{"x": 120, "y": 64}"#),
     ("get_document", r#"{}"#),
     (
         "new_document",
