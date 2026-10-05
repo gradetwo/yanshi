@@ -35478,3 +35478,61 @@ Object.keys 看真键表）。
 导出路径的位置：service.rs:1487-1548 是 **commit** 的带计时版本（phases.log_us 等），
 所以 export_png 的渲染与编码计时点要另找（write_export_png 一带），下一步先定位它。
 这一步是纯服务端改动，与正在修改 viewer-app.js 的子代理**不冲突**。
+
+## 第 1139 轮：导出两相（render_ms / png_ms）落地——一条读数即可分辨渲染与编码
+
+做法：给 `ToolTimings` 加两相，在导出路径的**真实**调用点上计时（不是推断）。
+
+**导出渲染与编码究竟在哪**（第 1138 轮只找到 commit 的计时点 service.rs:1487-1548 ✗）：
+`crates/yanshi-server/src/tools.rs` 的 `write_export_png`（:13347 起）——
+* 渲染 = `render_region_raw` / `render_region_raw_layer` 那个 match（:13372-13377）；
+* 缩放 = `resample_rgba`（:13431 一带）—— 也算"产出要编码的像素" ⇒ 并入 `render_ms`；
+* 编码 = `encode_png`（:13447 一带）⇒ `png_ms`（落盘与刷缓存**不算**编码，留在残差）。
+
+改动的文件与行（落盘后）：
+1. `timings.rs`：`Phase::Render` / `Phase::Png`；`ToolTimings.render_us` / `png_us`（:66-67）；
+   `add_micros`（:89-90）、`since`（:110-111）、`measured_us`（:122-123）、
+   `report` 的 `render_ms` / `png_ms`（:137-138）；单元判据 `export_phases_shrink_the_residual…`（:206 起）。
+2. `tools.rs`：`render_started`（:13371）⇒ `ctx.time(Phase::Render, …)`（:13378）；
+   `resample_started`（:13431）⇒（:13435）；`png_started`（:13447）⇒（:13449）。
+3. 判据：`tests/timings_and_cancel.rs` 的 `PHASES` 从 5 项变 7 项（:71-79）——
+   新两相**必须**进这张表，否则"各相之和 = 总时长"会和式少两块而变红；
+   新增 `an_export_reports_render_and_encode_phases_and_a_small_residual`（:546 起）；
+   新增手动探针 `measure_real_4k_export_timings`（:654 起，`#[ignore]`，与 coldstart_measure 同规矩）。
+
+**4K 实测**（debug，3840×2160，文档 `parrot-4k-bold`，`bytes=7,078,095` 与旧读数**逐字节一致**）：
+* 旧读数（本轮开工时，`/tmp/cold4k`）：`total_ms=246176.9`，**`other_ms=246176.9`**（占 100%）。
+* 新读数（本次；同一文档的**字节副本** `/tmp/cold4k-timingcopy`，同一台机、同一 debug 档）：
+  * `total_ms=281916.693`
+  * `render_ms=268368.425`（95.2%）
+  * `png_ms=13526.220`（4.8%）
+  * `other_ms=22.029`（0.008%）
+  * `prep_ms=0.019`；`raster/dirty/fold/log=0`
+  * wall=290.04s（含打开文档与刷缓存；总时长 281.9s 与旧 246.2s 不同是运行/负载差异，
+    本次**不据此比较绝对快慢** —— 只用同一读数内的两相占比）。
+* ⇒ 一条读数现在直接说明：4K debug 导出约 **95% 在渲染、5% 在 PNG 编码**。
+  （注意：png 13.5s 是 **debug** 数；早先 release 下 1.7-2.8s 的独立测量是另一个档，
+  按本仓库规矩不跨档比较。）
+
+**三条判据与如何变红**（都按"**直接**跑 `cargo test -p yanshi-server --test timings_and_cancel`"验过 ✓）：
+1. 既有"各相之和（含残差）= 总时长"：把 `report()` 的 `other_us` 改回 `total_us` ⇒
+   实测 `sum=1980.016 vs total=1813.646` ⇒ 既有判据红；同时新判据的 ③ 红
+   （`other` 占比 = 1 ✓，而两相仍非零 ⇒ 新判据的 ② 反而绿 ✓）。
+2. 两相**真的被量到**（> 0）：去掉 `write_export_png` 里的 `Phase::Render` 计时 ⇒
+   实测 `render_ms=0.0` ⇒ 红。
+3. 残差**不吞掉几乎全部导出**（`other/total ≤ 0.5`）：在 `other_us=total` 的变异下，
+   `render_ms/png_ms` 仍非零（判据 2 绿 ✓）而 `other` 占比 = 1 ⇒ 第③条红 ✓ ——
+   这正是本轮开工时那条读数的形状（`other_ms == total_ms`）。
+
+**阈值 0.5 从哪来**：同一台机上，判据自带那份 **800×600 / debug / 内存工作区**实测
+`total_ms=1027.474`、`render_ms=755.328`、`png_ms=271.845`、`other_ms=0.294`
+⇒ `render+png` 占 **99.97%**、残差占 **0.03%**。取 0.5 比实测低约 50 个百分点，
+抓得住"两相没量到"（0%）与"别的开销盖过一半"（<50%），抓不住"渲染与编码**之间**的比例是否合理"。
+
+**如实边界（两面都写）**：
+1. 在"残差算法正确"的前提下，判据 3 与判据 2 **不独立**：`other = total − measured`，
+   所以 `render+png ≥ 50%` 必然推出 `other ≤ 50%`。判据 3 的独立价值是**直接盯住调用方真正读的字段**：
+   残差若被算成 `total`（实现 bug）而两相又非零，判据 2 仍绿、判据 3 红（上面变异实测支持这一点）。
+   代价：多一条与判据 2 部分重叠的断言，换来对"残差字段本身算错"的覆盖。
+2. 4K 只测了一份文档、只有 debug；release 与其它文档未重测。
+3. `render_ms` 含 `resample_rgba`；`png_ms` 只含 `encode_png`（落盘/刷缓存留在残差）。
