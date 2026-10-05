@@ -1764,7 +1764,15 @@ if (maskResult && maskResult.unable) {
   );
 }
 if (!((maskResult || {}).log || "").includes("添加") || ((maskResult || {}).log || "").includes("失败")) {
-  problems.push(`蒙版日志未报告成功：${JSON.stringify(((maskResult || {}).log || "").slice(0, 120))}`);
+  // **把长度与首尾也带出来**（第 952 轮）：只有这一条一直红，需要区分"采集被截断"与"日志真没打"，
+  // 而这两种情况看长度与尾部就能分开。文件头正是同一个症状的旧记录（第 359 轮截断坑）。
+  const maskLog = String((maskResult || {}).log || "");
+  // 落盘（runner 只回显 out.txt 的头 3/尾 6 行，消息可能落在窗口外）。
+  try { (await import("node:fs")).appendFileSync("/tmp/yanshi-mask-obs.txt",
+    JSON.stringify({ len: maskLog.length, hasAdd: maskLog.includes("添加"), hasFail: maskLog.includes("失败"),
+      head: maskLog.slice(0, 120), tail: maskLog.slice(-120) }) + "\n"); } catch (_) { /* 写不了不影响判据 */ }
+  problems.push(`蒙版日志未报告成功：len=${maskLog.length}｜含添加=${maskLog.includes("添加")}｜` +
+    `含失败=${maskLog.includes("失败")}｜尾=${JSON.stringify(maskLog.slice(-80))}`);
 }
 
 // 移动工具
