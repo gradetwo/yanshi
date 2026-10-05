@@ -79,8 +79,15 @@ const firstDiff = (left, right) => {
   const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
   const evaluate = async (expression) => {
     const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    // **判据自身抛错时必须看得见原因** ✗（第 1110 轮）：原来只抛 "页内求值抛错" ✗，
+    // 栈被 runner 的回显截断 ⇒ 无从定位 ✓。这里把 exceptionDetails 全文打出来 ✓。
+    if (result && result.exceptionDetails) {
+      console.log("  ‼️ 页内异常全文 = " + JSON.stringify(result.exceptionDetails));
+    }
     if (result.result && result.result.exceptionDetails) {
-      throw new Error("页内求值抛错：" + JSON.stringify(result.result.exceptionDetails).slice(0, 300));
+      const __d = ((result.result.exceptionDetails || {}).exception || {}).description || "无描述";
+      console.log("  ‼️ 页内 TypeError 全文 = " + __d);
+      throw new Error("页内求值抛错：" + __d);
     }
     return result.result && result.result.result ? result.result.result.value : undefined;
   };
@@ -116,6 +123,20 @@ const firstDiff = (left, right) => {
   console.log("  前置：WASM 内核就绪 = " + kernelReady + "（指针笔迹走内核那条路；不去清缓存刷新 ✓）");
 
   // **清掉可能残留的队列** ✓（同一浏览器 profile 复用时 ✓ —— 否则计数会从中间开始 ✓）。
+  // **等 window.yanshi 挂上再调用**（第 1112 轮）：真错是
+  // `TypeError: window.yanshi.discardOutbox is not a function`，
+  // 而该方法确实存在（viewer-app.js:7513）⇒ 所以是**调用太早** ✗。
+  let ifaceReady = false;
+  for (let i = 0; i < 60; i++) {
+    let ok = false;
+    try {
+      ok = await evaluate('typeof (window.yanshi && window.yanshi.discardOutbox) === "function"');
+    } catch (_) { /* 继续等 ✓ */ }
+    if (ok) { ifaceReady = true; break; }
+    await sleep(250);
+  }
+  console.log("  前置：window.yanshi.discardOutbox 就绪 = " + ifaceReady);
+  if (!ifaceReady) throw new Error("window.yanshi.discardOutbox 迟迟未挂上 ⇒ 判据无法进行");
   await evaluate("window.yanshi.discardOutbox()");
   await evaluate("window.yanshi.refreshOutbox()");
 

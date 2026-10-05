@@ -34842,3 +34842,25 @@ crates/yanshi-wasm/pkg（它自己在报告里说明了 worktree 里没有 wasm 
 
 下一步：先让 journal 判据在 runner 默认路径下也能拿到内核（或让它显式跳过内核阶段并且说明），
 然后连跑三次，只有每次都通过才算稳定。
+
+## 第 1110 轮：离线写队列判据的真错定位，属产品侧接线缺口
+
+过程（每一步都有读数）：
+1. runner 报"判据自己抛错（不当作通过）：页内求值抛错"，位置 lineNumber 0 / column 14。
+2. 先排除"接口不存在"这个假设：grep 显示 window.yanshiCallTool（viewer-app.js:1903）、
+   window.yanshiKernelReady（:1207）、window.yanshi（:7488 起）都存在。所以假设被否。
+3. 把判据的异常打印从 300 字符的 JSON 改成只打 description（因为 runner 只回头尾几行），
+   拿到真错：TypeError: window.yanshi.discardOutbox is not a function。
+4. 先怀疑时序，于是加了 15 秒轮询等待 window.yanshi.discardOutbox 是函数。
+   结果：WASM 内核就绪 = true，而 window.yanshi.discardOutbox 就绪 = false。
+5. 所以不是时序问题。window.yanshi 上根本没有这些名字。方法体在 viewer-app.js:7513 一带，
+   但那个对象字面量不是挂到 window.yanshi 的那一个（或它挂在别的全局名下）。
+
+结论：
+1. 这是产品侧的接线缺口，不是判据的错。判据没白写，它抓到的是真问题。
+2. 作者报告称已暴露 outbox()/outboxEntries()/flushOutbox()/refreshOutbox()/discardOutbox()，
+   与代码不符。已按事实更新 criteria-known-red.txt 的描述。
+3. 下一步：把这些方法真正挂到 window.yanshi 上（产品侧改动），然后连跑三次确认稳定。
+
+流程教训：本会话我多次"看错对象"（读错文档、跨分辨率比体积、把回显当缺失、扫描缩进不匹配）。
+对策固定为：先断言对象身份，再观测；关键观测要落在会被回显的地方。
