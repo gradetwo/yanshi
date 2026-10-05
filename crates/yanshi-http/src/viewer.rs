@@ -565,17 +565,19 @@ const PAGE_TAIL_A: &str = r##"</style>
     </div>
     <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓。
          **两个方向不是同一种东西** ✓，界面里必须分开写 ✗：
-         导出 ⇒ 服务端写文件 ✓（所以是**服务器上的路径** ✓，浏览器给不了 ✓）；
+         导出 ⇒ **下载到你自己的电脑** ✓（`export_project` 把包放进 CAS 并回 `yanshi://blob/<hash>` ✓，
+         由 HTTP 层改写成 `/api/blob/..` ✓ ⇒ 一个 `<a download>` 就落地 ✓ —— 与 PNG / 诊断包同一条路 ✓）；
+         路径框是**可选**的"服务器上另存一份" ✓（MCP / 命令行仍走 `path` ✓，浏览器不再需要它 ✓）；
          导入 ⇒ 用户**本机上有一个 `.yanshi`** ✓ ⇒ 必须能**选文件上传** ✓，
          而不是让他在服务器路径框里敲一个自己的文件（那是**做不到**的 ✗ —— 产品负责人报的正是这一条 ✓）。
          上传走分片协议 ✓（真实工程包几百 MB，一次 POST 过不了 32 MiB 的请求体上限 ✓，
          见 `server.rs` 的 `import_document` ✓）。 -->
     <div class="card" data-panel="file">
       <h2>工程包</h2>
-      <div class="hint" title="导出写到服务器上的路径；导入从你的电脑选 .yanshi 文件（分片上传，整包多大都行）。">
-        导出写到服务器 ｜ 导入从本机选文件
+      <div class="hint" title="导出直接把 .yanshi 下载到你的电脑；下面的路径留空即可（填了就在服务器上再存一份）。导入从你的电脑选 .yanshi 文件（分片上传，整包多大都行）。">
+        导出下载到本机 ｜ 导入从本机选文件
       </div>
-      <label>导出路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <label>服务器另存路径 <input id="projectPath" type="text" placeholder="留空 ⇒ 只下载到本机" style="width:200px" /></label>
       <div class="toolbar"><button id="projectExport" type="button">导出工程</button></div>
       <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">

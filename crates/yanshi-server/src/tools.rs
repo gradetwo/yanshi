@@ -2475,10 +2475,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "export_project",
         profile: Profile::Core,
-        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）",
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）",
         mutating: false,
         params: &[
-            param!("path", String, true, "输出文件路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）"),
+            param!("path", String, false, "可选：**服务器上**的另存路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）。不填 ⇒ 只回可直接下载的 url（浏览器走这条）"),
             param!("doc_id", String, false, "要导出的文档（缺省当前会话的文档）"),
             param!(
                 "include_bitmaps",
@@ -13297,7 +13297,16 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
 }
 
 fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let path = guarded_output_path(&require_str(args, "path")?)?;
+    // **`path` 从"必填"改成"可选"** ✓（本轮补的是**浏览器那一半** ✓）：原来只回一个**服务器上的
+    // 路径** ✗ ⇒ 浏览器给不出服务器路径、也拿不到那台机器上的文件 ✗ ⇒ 对 Web 端等于**没有出口** ✗。
+    // 现在**总是**把包当成 CAS 里的一个 blob ✓ ⇒ 回一个 `yanshi://blob/<hash>` ✓，
+    // 由 HTTP 层改写成可直接 GET 的 `/api/blob/<hash>?doc=..&token=..` ✓
+    //（与缩略图 / PNG / 诊断包**同一条通道** ✓）⇒ 浏览器一个 `<a download>` 就存到本机 ✓。
+    // **给了 `path` 仍照旧写那份文件** ✓（MCP、命令行与既有判据都在用它 ✓ ⇒ 行为不破 ✓）。
+    let path = match optional_str(args, "path") {
+        Some(text) => Some(guarded_output_path(&text)?),
+        None => None,
+    };
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     if ctx.workspace.document(&doc_id).is_none() {
         return Err(YanshiError::new(
@@ -13316,19 +13325,33 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let tar = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
-    std::fs::write(&path, &tar).map_err(|error| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", path.display())),
-        )
-    })?;
-    Ok(json!({
-        "path": path,
+    // **先落 `path`** ✓（老行为 ✓：写不进去要**响亮地失败** ✓，而不是回一个 URL 就当成功 ✓）。
+    if let Some(path) = &path {
+        std::fs::write(path, &tar).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", path.display())),
+            )
+        })?;
+    }
+    // **再把同一份字节放进 CAS** ✓：`put` 是**内容寻址**的 ✓（同内容幂等去重 ✓），
+    // 回的哈希就是 `yanshi://blob/<hash>` 里的那一个 ✓ ⇒ 取回来的**必然**是这份包 ✓。
+    let hash = ctx.workspace.store().put(&tar)?;
+    let mut value = json!({
+        // **浏览器下载用的地址** ✓（服务端 URL 形态会被改写 ✓；`path` 只对同机的调用方有意义 ✓）。
+        "url": format!("yanshi://blob/{hash}"),
+        "blob_hash": hash.as_str(),
+        // 建议的下载文件名 ✓（`<a download>` 用它 ✓；不带路径分隔符 ⇒ 不会写进子目录 ✓）。
+        "filename": format!("{doc_id}.yanshi"),
         "doc_id": doc_id,
         "bytes": tar.len(),
         "include_bitmaps": include_bitmaps,
         "format": "tar (uncompressed)",
-    }))
+    });
+    if let Some(path) = &path {
+        value["path"] = json!(path);
+    }
+    Ok(value)
 }
 
 /// **`export_png`** ✓ —— 把整幅（或指定区域）渲染成 PNG **落盘** ✓。
