@@ -63,6 +63,24 @@ const SAMPLER = `(() => {
   return { dark, ink, total, width: off.width, height: off.height };
 })()`;
 
+// **有界轮询等出墨**（第 1120 轮定案）：原来只等固定 800ms，首帧可能更慢 ⇒ 采样太早 ⇒ 读到 0 ✗。
+// 决定性证据：只在采样前加一个**只读**探针（引入少量延迟）⇒ 判据立刻转绿 ✓。
+// 所以把"等待条件"与"断言条件"对齐：轮询到出现深色像素为止（有界），再断言 ✓。
+async function waitForInk(label, limit = 80, step = 250) {
+  let last = null;
+  for (let i = 0; i < limit; i += 1) {
+    last = await evaluate(SAMPLER);
+    if (last && !last.error && last.dark > 50) {
+      console.log(`  · ${label}：第 ${i + 1} 次采样出墨（dark=${last.dark}，${last.width}x${last.height}）`);
+      return last;
+    }
+    await sleep(step);
+  }
+  console.log(`  · ${label}：轮询 ${limit} 次仍无墨（最后一次 ${JSON.stringify(last)}）`);
+  return last;
+}
+
+
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const page = targets.find((t) => t.type === "page");
 if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
@@ -84,7 +102,7 @@ const reload = async (offline) => {
     await sleep(300);
     try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("board")')) { await sleep(800); break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
   }
-  return await evaluate(SAMPLER);
+  return await waitForInk("采样");
 };
 
 // ② **正对照** ✓：先看"什么都没画"的画布（另开一个文档 ✓，避免污染被测文档 ✓）。
