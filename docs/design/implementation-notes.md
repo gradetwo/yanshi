@@ -35357,3 +35357,30 @@ Object.keys 看真键表）。
   ④ 亲手变异验证能红，并逐字节还原。
 "6 条 cdylib 噪声"这个前提在本机能查到的范围内始终复现不出来（冷构建 0 条），
 所以这一项的价值落在"守住零警告"这条回归线上，而不是"消掉那 6 条"。
+
+## 第 1133 轮：离线笔刷分支的合并失败与回退（如实记录）
+
+子代理交付（/tmp/wt-offlinepaint，分支 feat/offline-brush-kernel，提交 fbfcf83）的核心成果是好的：
+- 离线普通笔刷作画成功；在线 vs 离线同一笔触 **307200 vs 307200 字节，不同 0 字节，最大通道差 0**；
+- 离线出墨 0 ⇒ 3285；内核 head_seq 1→2、blobs 0→1、serverBlits 0；
+  CDP 观测离线期间 brush_stroke 请求 = 0（所以确实由本地内核完成）；
+- 设计选择：offline fallback（不是统一），理由是服务端路径还负责读画布笔刷、duotone、选区裁剪、style、source；
+- 额外修掉两个真 bug：① 本地 JSON 缓存键忽略请求体 ⇒ 离线笔刷面板列出的是纹理文件名，用户选不到笔；
+  ② blob_put 在 wasm32 上 panic（put ⇒ now_ms ⇒ SystemTime::now）⇒ 内核对象被毒化成"递归使用"。
+- 并修正 browser-offline-shell 的两处判据侧错误：①"不透明像素"永远不可能满足（底色完全不透明，
+  所以 76800 => 76800 恒等）；② points 是在 pointerup 之后读的，而它设计上会被清空。
+  它也实测 spaceHeld 为 false，所以"事件被平移吃掉"这个假设不成立（我此前的判断需要撤回）。
+
+但我独立验三步验证时发现两个阻断问题，因此**合并已回退**：
+1. **它的分支有 1 个失败测试**：`cargo test --workspace` ⇒ exit 101，36 组 ok、**1 组 FAILED**：
+   `host_only_time_apis_are_explicitly_accounted_for ... FAILED`。
+   几乎肯定是 blob_put 的改法（put ⇒ put_at(bytes,0)）与仓库既有的"宿主时间 API 守卫"冲突。
+   而它的报告说门禁全绿 —— 以我这边实测为准，所以已让它重跑并说明。
+2. **已知红净增**：合并后 criteria-known-red.txt 从 48 条变成 54 条（它移出了 shell，
+   但又多出 6 条）。净增不可接受，已让它定位是哪六条、为什么。
+3. 另外，合并时 `docs/design/implementation-notes.md` 冲突，我的脚本用 `--theirs` 解决，
+   那会**丢掉 main 上积累的记录**（它的 diff 显示该文件被删掉约两百行）。这也是回退的原因之一。
+   已要求它以后**追加**自己的轮次到文件末尾，不要重写该文件。
+
+回退动作与结果：`git reset --hard a1573dc` ⇒ HEAD 与远端 main 一致、工作树干净、
+已知红回到 48 条、门禁 133 组全绿。它的分支与提交都保留（成果没丢）。
