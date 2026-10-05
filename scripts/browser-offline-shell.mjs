@@ -128,7 +128,7 @@ console.log(`  · 点开面板后 = ${JSON.stringify(afterOpen)}`);
 
 // (A)⑥ 第二层：离线画一笔要有墨。用真实指针事件驱动页面自己的落笔路径，前后比画布不透明像素数。
 const canvasSig = `(() => {
-  const c = document.querySelector("canvas");
+  const c = document.getElementById("board");
   if (!c) return { error: "no-canvas" };
   const g = c.getContext("2d");
   if (!g) return { error: "no-2d-context" };
@@ -139,7 +139,10 @@ const canvasSig = `(() => {
 })()`;
 const inkBefore = await evaluate(canvasSig);
 const strokeResult = await evaluate(`(async () => {
-  const c = document.querySelector("canvas");
+  // 先选笔刷工具（页面有多个 pointerdown 监听；工具不是 brush 时落笔会被当成别的操作）
+  const brushBtn = document.querySelector('[data-tool="brush"]');
+  if (brushBtn) { brushBtn.click(); await new Promise((r) => setTimeout(r, 300)); }
+  const c = document.getElementById("board");
   if (!c) return "no-canvas";
   const r = c.getBoundingClientRect();
   const o = (x, y) => ({ bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse",

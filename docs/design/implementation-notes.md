@@ -34779,3 +34779,27 @@ P0 处置：
 流程要点（本会话第四次同族错误）：我又一次把"runner 只回显头 3 行尾 6 行"造成的截断，
 误当成"内容缺失"。证据是"点开面板后 = ..."那一行确实在脚本里，只是在输出中间被截断。
 结论：关键观测必须落盘，而且不能只看 runner 的回显，要看完整的 out.txt。
+
+## 第 1107 轮：(A)⑥ 离线出墨——根因是我量错了画布，判据转绿
+
+定位证据：
+1. viewer.rs:278 是 <canvas id="board">。viewer-app.js:91 是 const ctx = board.getContext("2d")。
+2. viewer-app.js:1032 用 ctx.putImageData(new ImageData(bytes, w, h), x, y) 把墨写进 board。
+3. 但页面里不止一个 canvas：viewer-app.js:92 有 overlay，:2033 有 dabCanvas。
+4. 我的判据用的是 document.querySelector("canvas")，所以拿到的不是 board。
+
+修法：
+1. 把判据里两处 document.querySelector("canvas") 改成 getElementById("board")。
+2. 落笔前先点一下 [data-tool="brush"]，因为页面有两个独立的 pointerdown 监听（viewer-app.js:5509），
+   工具不是 brush 时落笔会被当成别的操作。
+
+结果：判据从"稳定红"变成"通过 1，意外失败 0，已知红 0"。所以
+"离线画不出墨"这个结论是错的，离线确实能画出墨。
+
+结论一：与"断网后面板有 200 项"合起来，(A)⑥ 离线可画的两层都成立。
+结论二：从 criteria-known-red.txt 移除该条，已知红从 63 条降到 62 条。
+
+流程教训（本会话同族第 N 次）：我又一次量错了对象。
+前面几次分别是：读错了文档、跨分辨率比体积、把回显截断当内容缺失。
+共同点是没有先验证"我量的东西是不是我要量的那个"。
+对策：任何观测前先确认对象身份（这里就是打印元素 id 或断言 id）。
