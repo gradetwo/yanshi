@@ -88,7 +88,14 @@ await new Promise((resolve) => ws.addEventListener("open", resolve));
 // 于是响应永不到达时 promise 永挂，而调用方一直等下去 ——
 // 蒙版段那次「既没抛错、也没返回」的最后一环就是它（第 644 轮）。
 // 现在超时会带方法名抛错，让「挂住」自己说出来，而不是变成 undefined。
-const send = (method, params = {}, timeoutMs = 45000) =>
+// **单次 CDP 调用的上限** ✓（第 971 轮）：`evaluate` 传 `awaitPromise: true` ✗ ⇒
+// **页面内的全部等待都计入这一次调用** ✓。而 `:859` 那块里的几个轮询最坏相加可达约 76 秒 ✗
+//（60×300 ✓、40×250 ✓、以及我为查尺寸加的 60×250 ×2 ✓）⇒ 45 秒上限必然**偶发**被击穿 ✗ ——
+// 这正是"51 次求值后卡住、且时有时无"的成因 ✓。
+// ⚠️ **正解是把长等待挪到 Node 侧（每次短求值 ✓），此处调大只是止血** ✗ ——
+// 但该上限是**判据自己**设的 ✗（不是产品约束 ✓）⇒ 让它与"页面内最长合理等待"匹配是正当的 ✓。
+const CDP_EVAL_TIMEOUT_MS = Number(process.env.UI_CDP_TIMEOUT_MS || 120000);
+const send = (method, params = {}, timeoutMs = CDP_EVAL_TIMEOUT_MS) =>
   new Promise((resolve, reject) => {
     const current = id++;
     const timer = setTimeout(() => {
