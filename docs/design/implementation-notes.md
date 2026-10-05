@@ -35069,3 +35069,30 @@ Object.keys 看真键表）。
 并把 `window.yanshi.state` 的全部键打印出来对照。若两者不一致，判据应改读 UI 状态。
 
 处置：本轮改动未通过（三次全红），已 git checkout 回退，未提交任何改动。
+
+## 第 1121 轮：决定性发现——window.yanshi.state 是函数，我一直读错对象
+
+探针（最小、名字唯一）在落笔前打印：
+  {"pressedTools":[],"stateKeys":[],"stateTool":null,"stateType":"function","canvasCount":2}
+
+三条读数：
+1. `typeof window.yanshi.state` 是 **"function"**，不是对象。
+2. `Object.keys(window.yanshi.state)` 是空数组（符合函数对象）。
+3. 所以 `window.yanshi.state.tool` **永远是 null**，与是否点笔刷**完全无关**。
+
+后果（必须更正）：
+- 此前我据 `state.tool === null` 推出的三个结论全部作废：
+  ① "被守卫静默拒绝"（viewer-app.js:3035 那条注释不解释这个现象）；
+  ② "缺图层"；（但"图层已建成"是独立证据，仍然成立）
+  ③ "选择器 [data-tool=brush] 不命中"。
+- 同时探针给出**真实 UI** 读数：`pressedTools = []`，即没有任何 button[data-tool] 处于
+  aria-pressed="true" ⇒ 所以"点击后工具没有被激活"这个**现象是真的**，
+  只是它必须用**正确读数**重新确认（现在的读数是错的，不能拿它当证据）。
+
+下一步：
+1. 改读法：调用函数（`window.yanshi.state()`）或直接读真实 UI（aria-pressed / class）。
+2. 用正确读数重测"点笔刷后工具是否变成 brush"。
+3. 若确实不变，再顺着 viewer-app.js 的工具切换处理器找原因（注意页面有 2 个 canvas）。
+
+处置：探针未通过判据（三次里这次也红），已 git checkout 回退，未提交任何改动。
+本会话"量错对象"的模式又出现一次，这次是读了一个函数对象的属性。
