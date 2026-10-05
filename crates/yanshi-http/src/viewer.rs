@@ -5710,7 +5710,7 @@ function pickColorAt(event) {
   // 而同段取到的两次 rect 只差 2 客户端像素（≈1.5 文档像素 ✗）⇒ **∴ 主因疑为 viewport 变了** ✓。
   log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）｜viewport="
     + Math.round(state.viewport.x) + "," + Math.round(state.viewport.y)
-    + "｜strokeVP=" + (state.lastPointerUpViewport ? Math.round(state.lastPointerUpViewport.x) + "," + Math.round(state.lastPointerUpViewport.y) : "?") + "｜rect=" + Math.round(localPointRect ? localPointRect.left : -1) + ","
+    + "｜strokeVP=" + (state.viewportAtLastStroke ? Math.round(state.viewportAtLastStroke.x) + "," + Math.round(state.viewportAtLastStroke.y) : "?") + "｜rect=" + Math.round(localPointRect ? localPointRect.left : -1) + ","
     + Math.round(localPointRect ? localPointRect.width : -1));
 }
 
@@ -6556,6 +6556,9 @@ board.addEventListener("pointerup", async (event) => {
       return;
     }
     try {
+      // 第 1036 轮（临时诊断）：记下**画笔真正提交那一刻**的 viewport ——
+      // 上一轮已证明"装载路径没被调用"✓，所以差异只能来自两次换算的**输入**✓。
+      state.viewportAtLastStroke = { x: state.viewport.x, y: state.viewport.y };
       await mediumStroke($("medium").value, pending.points);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);

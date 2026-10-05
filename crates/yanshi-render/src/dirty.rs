@@ -238,6 +238,15 @@ pub fn plan_dirty(
         kind if GEOMETRY_KINDS.contains(&kind) => {
             if atom.object_id().is_some() {
                 dirty_for_object(state, previous, atom, "几何修改")
+            } else if let Some(region) = exact_bitmap_region(&atom.payload) {
+                // **像素已经烘焙成位图、且 payload 给了精确区域 ⇒ 只失效该区域** ✓。
+                //
+                // 此前这里一律 `dirty_for_layer`（整层失效）✗ ⇒ 一次 `brush_stroke` 会把
+                // 整个图层（4K 下约 135 个 tile）全部标脏、并在每个 tile 上重新复合该层
+                // 全部对象 ⇒ 单笔耗时随对象数线性增长（实测 1.5s 基线 + 0.073s/对象）✗。
+                // 而这类 atom 的 payload 里本来就带着栅格化结果的 `region`（已含笔尖半径）✓
+                // ⇒ 用它做 `DirtyKind::Geometry` 即可，正确性不依赖对象数 ✓。
+                DirtySet::geometry(region, format!("{kind} 精确区域"))
             } else {
                 dirty_for_layer(state, atom.layer_id(), format!("{kind} 影响整层"))
             }
@@ -411,6 +420,26 @@ pub fn dependents_of(state: &DocumentState, object_id: &str) -> Vec<String> {
         frontier = next;
     }
     out
+}
+
+/// **精确区域**：仅当 atom 的像素**已经烘焙成位图**、且 payload 给了 `region` 时返回它。
+///
+/// 为什么加"已烘焙位图"这个前提 ✓：`region` 只描述**位图本身**的范围；若该 atom 的效果
+/// 由渲染侧再加工（例如 `fill_region` 的 `feather` 模糊、滤镜外扩），真实受影响范围会
+/// **大于** `region` ✗ ⇒ 那样必须继续走"整层失效"这条保守路径 ✓，否则会留下陈旧像素。
+fn exact_bitmap_region(payload: &Value) -> Option<Bbox> {
+    // 像素已烘焙：payload 里有 `bitmap`（`brush_stroke` / `import_image` 等）✓。
+    payload.get("bitmap")?;
+    // 渲染侧还会再加工的参数一旦出现，就不敢只失效 `region` ✗。
+    if payload.get("feather").is_some() {
+        return None;
+    }
+    let region = payload.get("region")?;
+    let number = |key: &str| region.get(key).and_then(Value::as_f64);
+    match (number("x"), number("y"), number("w"), number("h")) {
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(Bbox::new(x, y, w, h)),
+        _ => None,
+    }
 }
 
 fn dirty_for_layer(
