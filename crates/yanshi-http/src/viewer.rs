@@ -6152,7 +6152,14 @@ board.addEventListener("pointerdown", (event) => {
   if (wantsPanEvent(event)) return;
   if (state.tool === "text") {
     event.preventDefault();
-    void commitText(localPoint(event));
+    // ⚠️ **失败必须说出来** ✗（第 817 轮实测 ✓）：这里原本是 fire-and-forget ✗ ⇒
+    // `commitText` 里 `callTool("draw_text")` **抛/被拒**时，拒绝**没有接收者** ✗ ⇒
+    // **一行日志都没有** ✓（判据实测：工具已切到 text ✓、`window.prompt` 被调用 1 次 ✓，
+    // 而"已输入文本"与"输入文本失败"**两条都没出现** ✗ ⇒ 失败被静默吞掉 ✓）。
+    // ⇒ 用户看到的是"点了没反应"✗，而真正的原因一个字都没留下 ✓。
+    commitText(localPoint(event)).catch((error) => {
+      log("输入文本失败（未捕获）：" + String((error && error.message) || error), "#c33");
+    });
     return;
   }
   if (state.tool === "medium_dab") {

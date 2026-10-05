@@ -1042,9 +1042,16 @@ const selectionResult = await evaluate(`(async () => {
     const textButton = document.querySelector('button[data-tool="text"]');
     if (!textButton) throw new Error("工具栏里没有文本按钮");
     // 用 **CJK** 验收：这条路径会走内嵌 OFL 图集 ✓（纯 ASCII 走内置 5×7 ✓）。
-    window.prompt = () => "中文永";
+    // **记录 prompt 到底被调用几次**（第 816 轮 ✓）：若为 0 ⇒ commitText 根本没走到它 ⇒
+    // 问题不在「文本内容」上，而在「那次 pointerdown 没进文本分支」✗（否则它必然调用 prompt ✓）。
+    let promptCalls = 0;
+    window.prompt = () => { promptCalls += 1; return "中文永"; };
     const beforeText = await stable();
+    // **把「工具到底切没切过去」变成可读事实** ✓（第 816 轮 ✓）：yanshi.state() 的 tool 字段本来就暴露它 ✓
+    // ⇒ 否则只能从"没画出来"反推，而那条路我已经走错六次 ✗。
+    const toolBeforeText = (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : "(no-api)";
     textButton.click();
+    const toolAfterText = (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : "(no-api)";
     fire("pointerdown", at(0.3, 0.12), 622);
     const afterText = await stable();
     // ⚠️ 日志要**立刻**读（第 811 轮）：后面还有别的步骤，而 switchDocument
@@ -1069,6 +1076,9 @@ const selectionResult = await evaluate(`(async () => {
       textLoggedAtEnd: log.includes("已输入文本"),
       logLenAfterText: logAfterText.length,
       logLenAtEnd: log.length,
+      toolBeforeText,
+      toolAfterText,
+      promptCalls,
     };
   } catch (error) {
     return { error: String((error && error.message) || error), stage };
@@ -1742,7 +1752,8 @@ if (!selectionResult || !selectionResult.ok) {
     problems.push("清除选区后选区外仍看不到笔画色（应恢复为不受约束）");
   }
   if (!selectionResult.textLogged) {
-    problems.push(`文本工具日志缺失：${JSON.stringify(selectionResult)}`);
+    problems.push(`文本工具日志缺失：${JSON.stringify(selectionResult)}` +
+      `｜工具 before=${selectionResult.toolBeforeText} after=${selectionResult.toolAfterText}` + `｜prompt 被调用 ${selectionResult.promptCalls} 次`);
   }
   if (selectionResult.textChanged === 0) {
     problems.push("文本工具没有画出任何像素");
