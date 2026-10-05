@@ -26,8 +26,8 @@
 //   * `GET /api/documents/import` ⇒ 405（证明这条路由**没有被 `/api/documents/` 前缀吃掉**）。
 //
 // 用法：node scripts/tool-import-project.mjs <base-url> [docId] [token]
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -205,11 +205,50 @@ process.on("exit", stopB);
 for (let i = 0; i < 80 && !baseB; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 100));
 }
-check("另起的服务端（全新根目录）可用", baseB.length > 0, baseB || logB.slice(0, 200));
+check(
+  "另起的服务端（全新根目录）可用",
+  baseB.length > 0,
+  baseB || logB.slice(0, 200),
+);
 if (!baseB) {
   stopB();
   process.exit(1);
 }
+
+/// **再起一个全新的服务端** ✓（工具面那一路要用**它自己的 CAS** ✗ ——
+/// 同一个根里"blob 其实没落盘"会被副本遮住 ✓，那正是本判据第一版的假绿来源 ✓）。
+const spawnFreshServer = async (tag) => {
+  const root = mkdtempSync(join(tmpdir(), `yanshi-import-${tag}-`));
+  const child = spawn(serveBin, ["--bind", "127.0.0.1:0", "--root", root], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let seen = "";
+  let address = "";
+  const read = (chunk) => {
+    seen += chunk.toString();
+    const match = /(http:\/\/127\.0\.0\.1:\d+)/.exec(seen);
+    if (match && !address) address = match[1];
+  };
+  child.stdout.on("data", read);
+  child.stderr.on("data", read);
+  const stop = () => {
+    try {
+      child.kill("SIGKILL");
+    } catch (_) {
+      /* 已经没了 */
+    }
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (_) {
+      /* 删不掉就算了 */
+    }
+  };
+  process.on("exit", stop);
+  for (let i = 0; i < 80 && !address; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { base: address, root, stop, log: seen };
+};
 
 // ⑤ 分片上传（故意用小片 ⇒ 真的走多片，而不是只有一片的"伪分片"）。
 const CHUNK = 4 * 1024;
@@ -284,6 +323,92 @@ check(
   destRender.ok && sourceRender.hash.length > 0 && sourceRender.hash === destRender.hash,
   "源 " + (sourceRender.hash || "(空)") + " ｜ 导入 " + (destRender.hash || "(空)") + " " + destRender.detail,
 );
+
+// ⑧ **两个面的对等** ✓（产品负责人的硬要求 ✓）：同一个包，
+//    一路走 **HTTP 路由**（上面的 B ✓），一路走 **工具层**（MCP 用的就是同一个注册表 ✓）
+//    ⇒ 状态与**渲染哈希**必须完全一样 ✓，而且工具那一路也要在**全新的 CAS** 上 ✓。
+const catalog = (await json("/api/tools")).value;
+const importSpec = ((catalog && catalog.tools) || []).find((tool) => tool.name === "import_project");
+check(
+  "工具清单里有 `import_project`（Web 与 MCP 共用同一份清单）",
+  Boolean(importSpec) && Boolean(importSpec.inputSchema),
+  JSON.stringify(importSpec || {}).slice(0, 160),
+);
+const mcpBin =
+  process.env.YANSHI_MCP_BIN ||
+  [
+    join("target", "debug", "yanshi-mcp"),
+    process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "debug", "yanshi-mcp") : null,
+  ]
+    .filter(Boolean)
+    .find((candidate) => existsSync(candidate)) ||
+  join("target", "debug", "yanshi-mcp");
+if (existsSync(mcpBin)) {
+  try {
+    const raw = execFileSync(mcpBin, ["--list-tools", "--profiles", "core"], {
+      encoding: "utf8",
+      timeout: 60000,
+    });
+    const names = (JSON.parse(raw).tools || []).map((tool) => tool.name);
+    check(
+      "MCP 的 core 清单里也有 `import_project`",
+      names.includes("import_project"),
+      "core 工具数 " + names.length,
+    );
+  } catch (error) {
+    check("MCP 的 core 清单可读", false, String(error).slice(0, 160));
+  }
+} else {
+  check("找得到 MCP 可执行文件（否则「两个面」缺一半）", false, mcpBin);
+}
+
+// 工具面收的是**服务器上的路径** ✓ ⇒ 把同一个包写一份给它 ✓。
+const toolPackagePath = join(freshRoot, "tool-surface-import.yanshi");
+writeFileSync(toolPackagePath, packageBytes);
+const serverC = await spawnFreshServer("tool");
+check("工具面用的服务端（又一个全新根目录）可用", serverC.base.length > 0, serverC.base || serverC.log.slice(0, 200));
+if (serverC.base) {
+  const sessionDoc = await postJsonAt(serverC.base, "/api/documents", {
+    doc_id: "crit_import_tool_session",
+    width: 64,
+    height: 64,
+  });
+  const sessionToken = sessionDoc.value && sessionDoc.value.token;
+  const toolImport = await postJsonAt(
+    serverC.base,
+    `/api/tools/import_project?doc=crit_import_tool_session&token=${encodeURIComponent(sessionToken || "")}`,
+    { path: toolPackagePath, doc_id: "crit_import_tool" },
+  );
+  check(
+    "工具面（MCP 同一条）导入成功",
+    toolImport.value && toolImport.value.ok === true,
+    JSON.stringify(toolImport.value).slice(0, 200),
+  );
+  const toolDoc = await postJsonAt(serverC.base, "/api/documents", {
+    doc_id: "crit_import_tool",
+    width: 64,
+    height: 64,
+  });
+  const toolToken = toolDoc.value && toolDoc.value.token;
+  const toolSummary = await summaryOf(serverC.base, "crit_import_tool", toolToken || "");
+  const toolSame = ["width", "height", "head_seq", "atoms", "layers", "objects"].filter(
+    (key) => JSON.stringify(fieldOf(srcSummary, key)) !== JSON.stringify(fieldOf(toolSummary, key)),
+  );
+  check(
+    "工具面导入的文档与源文档**状态一致**",
+    toolSame.length === 0,
+    toolSame.map((key) => key + "：" + fieldOf(srcSummary, key) + " ⇒ " + fieldOf(toolSummary, key)).join("，") ||
+      "head=" + fieldOf(toolSummary, "head_seq"),
+  );
+  const toolRender = await renderHashAt(serverC.base, "crit_import_tool", toolToken || "");
+  check(
+    "**两个面的渲染完全相同**（路由导入 vs 工具导入，各自全新 CAS）",
+    toolRender.ok && toolRender.hash === sourceRender.hash,
+    "路由 " + (destRender.hash || "(空)") + " ｜ 工具 " + (toolRender.hash || "(空)") + " ｜ 源 " +
+      (sourceRender.hash || "(空)"),
+  );
+  serverC.stop();
+}
 
 // 反例 (a)：目标 id 已存在 ⇒ 拒绝，且**已有文档一个字节都不动**。
 const beforeOverwrite = fieldOf(await summaryOf(baseB, DEST, destToken || ""), "atoms");
