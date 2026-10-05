@@ -149,16 +149,19 @@ unset control is byte identical, that the same stroke yields sixteen colour leve
 and ninety seven with it, and that the mean colour moves by less than twelve levels.
 
 export_project writes a .yanshi package: an uncompressed tar holding the append-only atom log, the document
-metadata, every content-addressed blob the log references, a build info file, and a render of the current head made
-at export time. The format is tar rather than zip because zip needs deflate, and the zero-dependency rule rules out
-both a compression library and a hand-written one; tar is a header plus the bytes, any system can list and extract
-it, and the payload is mostly PNGs and raw pixels which would not compress much anyway. Packs are byte-identical for
-the same content because timestamps are written as zero.
+metadata, the content-addressed blobs the log references, a `blobs.encoding` manifest, and a build info file. It
+deliberately does NOT ship a render of the head: that preview was 96-97% of the bytes and is rebuildable from the
+log. Blob contents are zlib-packed with the repository's own deflate — the same codec the local CAS uses — so the
+round trip is byte-exact and a package still reads back after being extracted under `--root`. By default a bitmap is
+omitted only when its recorded brush recipe provably replays byte-identical (never for canvas-reading smudge brushes
+or media strokes, which carry no replayable recipe); pass `include_bitmaps: true` to ship every blob. The format is
+tar rather than zip because tar is a header plus the bytes and any system can list and extract it, and packs are
+byte-identical for the same content because timestamps are written as zero.
 
-The preview inside the pack is rendered fresh rather than copied from the cached render on disk, which is the
-difference that matters: a tester hand-zipped a document directory and shipped the stale cache, whose sequence was
-five or six while the log had reached ninety-seven to two hundred and seventeen atoms, so all four of their packages
-contained the same blank image. Export refuses on an in-memory workspace with a message naming the flag that would
+A tester hand-zipped a document directory and shipped the stale cached render, whose sequence was five or six while
+the log had reached ninety-seven to two hundred and seventeen atoms, so all four of their packages
+contained the same blank image. That is why the package carries no preview at all now: the log is the authority and
+any view can be rendered from it. Export refuses on an in-memory workspace with a message naming the flag that would
 make it work, and it refuses if a referenced blob is missing rather than emitting a package that cannot be replayed.
 The tests unpack what they produce with the system tar instead of a parser of my own, since reading a format back
 with the same understanding that wrote it proves nothing.

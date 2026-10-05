@@ -221,10 +221,16 @@ fn a_blob_whose_content_does_not_match_its_hash_is_refused() {
             path: "atoms.jsonl".to_string(),
             bytes: b"{\"seq\":1}\n".to_vec(),
         },
+        // **包必须显式声明编码** ✓（缺了它会被"没有 blobs.encoding"先拦下 ✓ ——
+        // 那条判据在 `export_small.rs` 里 ✓；这里要测的是**哈希不符** ✓）。
+        yanshi_server::archive::TarEntry {
+            path: "blobs.encoding".to_string(),
+            bytes: b"zlib".to_vec(),
+        },
         yanshi_server::archive::TarEntry {
             // 路径写着"全零"的哈希 ✓，但内容不是它 ✓ ⇒ 必须被拒 ✓。
             path: format!("blobs/sha256/00/00/{}", "0".repeat(64)),
-            bytes: b"this is not the content of that hash".to_vec(),
+            bytes: yanshi_render::png::zlib_compress_best(b"this is not the content of that hash"),
         },
     ]);
     let path = root.join("bad_blob.yanshi");
@@ -240,6 +246,45 @@ fn a_blob_whose_content_does_not_match_its_hash_is_refused() {
     // **而且不许留下半成品** ✓（文档根本没有被建出来 ✓）。
     assert!(
         !root.join("docs/doc_bad_blob").exists(),
+        "被拒的导入不该留下文档目录 ✗"
+    );
+}
+
+/// **有 blob 却没有 `blobs.encoding` ⇒ 拒绝** ✓（**不做"默认按明文读"的静默兜底** ✗）。
+///
+/// **为什么这条必须存在** ✗：导出曾经写**明文** ✓、而本地 CAS 只认编解码器 ✓
+/// ⇒ 把包解开到 `--root/` **根本读不出图** ✗（导出与读回**不对称** ✓）。
+/// 若读端给一个"没有清单就按明文读"的兜底 ✗ ⇒ 那个缺陷**永远不会被发现** ✓
+/// —— 它会把"字节解释错了"变成"导入成功" ✗。⇒ **一种格式，显式声明，否则拒绝** ✓。
+#[test]
+fn a_package_with_blobs_but_no_encoding_manifest_is_refused() {
+    let root = temp_dir("no_manifest");
+    let mut workspace = workspace(&root);
+    let tar = yanshi_server::archive::write_tar(&[
+        yanshi_server::archive::TarEntry {
+            path: "atoms.jsonl".to_string(),
+            bytes: b"{\"seq\":1}\n".to_vec(),
+        },
+        yanshi_server::archive::TarEntry {
+            path: format!("blobs/sha256/00/00/{}", "0".repeat(64)),
+            bytes: b"plaintext bytes with no manifest".to_vec(),
+        },
+    ]);
+    let path = root.join("no_manifest.yanshi");
+    std::fs::write(&path, &tar).unwrap();
+    let refused = call(
+        &mut workspace,
+        "import_project",
+        json!({ "path": path.display().to_string(), "doc_id": "doc_no_manifest" }),
+    );
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("blobs.encoding"),
+        "要说清缺的是 blobs.encoding：{detail}"
+    );
+    assert!(
+        !root.join("docs/doc_no_manifest").exists(),
         "被拒的导入不该留下文档目录 ✗"
     );
 }

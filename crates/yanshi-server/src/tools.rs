@@ -2405,11 +2405,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "export_project",
         profile: Profile::Core,
-        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob + 当场渲染的预览）",
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）",
         mutating: false,
         params: &[
             param!("path", String, true, "输出文件路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）"),
             param!("doc_id", String, false, "要导出的文档（缺省当前会话的文档）"),
+            param!(
+                "include_bitmaps",
+                Boolean,
+                false,
+                "缺省 false：能证明重放得出来的位图不装（包更小）；true：每个被引用的位图都装（老行为，排查用）"
+            ),
         ],
     },
     ToolSpec {
@@ -3452,6 +3458,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
         let region = parse_bbox(require_object(args, "region")?)?;
         let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+        // **裸像素出口也必须带告警** ✗：它返回的是 `(宽, 高, RGBA)` ✓，没有地方带告警 ✓
+        // ⇒ 缺一个补丁时**必须**在这里读一次并报出去 ✓，否则就是"静默的不完整画面" ✗
+        //（`Document::last_render_warnings` 的说明 ✓）。
+        let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
         let raw_hash = ctx.workspace.store().put(&pixels)?;
         let document = ctx.workspace.document_mut(&ctx.doc_id)?;
         // **越界区域是"被裁掉的"，不许静默** ✗（外部 agent 实测 ✓：900 宽画布上要 `{x:790,w:130}` ✓
@@ -3482,14 +3492,16 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "clipped": clipped,
             "raw_url": format!("yanshi://blob/{raw_hash}"),
             "mime_type": yanshi_render::RAW_RGBA_MIME,
-            "warnings": if clipped {
-                vec![format!(
-                    "区域越界 ⇒ 已裁到画布内：请求 {}×{} @({},{})，实际 {}×{} @({},{}) ✓",
-                    region.w, region.h, region.x, region.y, actual_w, actual_h, actual_x, actual_y
-                )]
-            } else {
-                Vec::new()
-            },
+            "warnings": ({
+                let mut warnings = render_warnings.clone();
+                if clipped {
+                    warnings.push(format!(
+                        "区域越界 ⇒ 已裁到画布内：请求 {}×{} @({},{})，实际 {}×{} @({},{}) ✓",
+                        region.w, region.h, region.x, region.y, actual_w, actual_h, actual_x, actual_y
+                    ));
+                }
+                warnings
+            }),
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
@@ -4466,7 +4478,7 @@ fn restyle_baked_brush_stroke(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     // **读画布的笔刷不许这样改** ✗（见函数头 ✓）—— 先解析出来问一句 ✓。
-    let (_, probe) = load_brush(ctx, &brush)?;
+    let (_, probe) = load_brush(ctx.workspace, &brush)?;
     if brush_reads_the_canvas(&probe) {
         return refuse(format!(
             "笔刷「{brush}」会**读画布**（涂抹 / colorize 一类 ✓）⇒ 它的结果取决于**底下当时是什么** ✓；             而现在底下已经有这一笔了 ✗ ⇒ 重跑会把它自己再抹一遍 ✓。             要换色请**撤销后用新颜色重画一笔** ✓"
@@ -8074,7 +8086,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
     let brush_name = require_str(args, "brush")?;
     let curve = require_object(args, "curve")?;
     // **先解析出真实文件** ✓（复用落笔那套放宽规则 ✓：精确 ⇒ 大小写不敏感 ⇒ 报错给候选 ✓）。
-    let (name, _brush) = load_brush(ctx, &brush_name)?;
+    let (name, _brush) = load_brush(ctx.workspace, &brush_name)?;
     let source = ctx.workspace.resolve_asset("brush", &name)?;
     let text = std::fs::read_to_string(&source).map_err(|error| {
         YanshiError::new(
@@ -11995,24 +12007,29 @@ fn brush_deposit_mask(
 ///
 /// **为什么抽出来** ✓：`paint_brush`（落笔 ✓）与"改色重跑"（`restyle_baked_brush_stroke` ✓）
 /// 都必须**解析出同一支笔刷** ✓ ⇒ 也要能问它"这支笔刷读不读画布" ✓（`brush_reads_the_canvas` ✓）。
-fn load_brush(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, hokusai::Brush)> {
+///
+/// **为什么收 `&Workspace` 而不是 `&ToolContext`** ✓：工程包导出要**在提交之外**
+/// 问"这条来源能不能重放" ✓（`export_project` 里没有 `ToolContext` ✓）——
+/// 而它用到的只有 `resolve_asset` / `list_assets` ✓ ⇒ 收工作区就够 ✓，
+/// 不必为了问一句话去造一个假上下文 ✗。
+fn load_brush(workspace: &Workspace, brush_name: &str) -> Result<(String, hokusai::Brush)> {
     let name = if brush_name.ends_with(".myb") {
         brush_name.to_owned()
     } else {
         format!("{brush_name}.myb")
     };
     // 名字放宽：精确 → 大小写不敏感 → 报错里给最接近的候选与清单指引（错误信息必须能指导下一步）。
-    let path = match ctx.workspace.resolve_asset("brush", &name) {
+    let path = match workspace.resolve_asset("brush", &name) {
         Ok(path) => path,
         Err(original) => {
-            let all = ctx.workspace.list_assets("brush").unwrap_or_default();
+            let all = workspace.list_assets("brush").unwrap_or_default();
             let names: Vec<String> = all.iter().map(|entry| entry.name.clone()).collect();
             let lowered = name.to_lowercase();
             if let Some(exact_case) = names
                 .iter()
                 .find(|candidate| candidate.to_lowercase() == lowered)
             {
-                let (found, brush) = load_brush(ctx, exact_case)?;
+                let (found, brush) = load_brush(workspace, exact_case)?;
                 return Ok((found, brush));
             }
             let stem = name.trim_end_matches(".myb").to_lowercase();
@@ -12058,6 +12075,93 @@ fn load_brush(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, hokusa
     Ok((name, brush))
 }
 
+/// **一条 `import_image` 的 `source` 是不是"可重放的配方"** ✓ —— 工程包导出用它决定
+/// 能不能不装位图 ✓。
+///
+/// **判据只有两条** ✓（都要满足 ✓）：
+///
+/// * `kind == "brush"` ✓（介质 / 渐变 / 直接导入的图都没有配方 ✗）；
+/// * **笔刷不读画布** ✓（`!brush_reads_the_canvas` ✓）—— 这是**实质**的那一条 ✗：
+///   读画布的笔刷（`oil-03-paint.myb` 的 `smudge = 0.9` ✓）结果取决于**落笔时底下是什么** ✓
+///   ⇒ `source` 再全也重放不出同一张位图 ✗
+///   （实测：同参数、空画布 vs 绿底 ⇒ 6.2% 字节不同 ✓；真实 4K 工程里 369/376 条 `source`
+///   用的正是这种笔刷 ✓）。
+///
+/// **这不只是"省事"** ✗：把读画布的笔刷当可重放 ✗ ⇒ 导出的包**打开就是错的画** ✓
+/// ⇒ 那是**静默的错误画面** ✓（比"包大"糟糕得多 ✗）。
+///
+/// **光看笔刷名不算数** ✗：调用方（`export_project`）必须再**真的重跑一遍并比对哈希** ✓ ——
+/// 这条函数只回答"值不值得试" ✓。
+pub(crate) fn brush_source_is_replayable(workspace: &Workspace, source: &Value) -> bool {
+    if source.get("kind").and_then(Value::as_str) != Some("brush") {
+        return false;
+    }
+    let Some(brush) = source.get("brush").and_then(Value::as_str) else {
+        return false;
+    };
+    match load_brush(workspace, brush) {
+        Ok((_, parsed)) => !brush_reads_the_canvas(&parsed),
+        Err(_) => false,
+    }
+}
+
+/// **按记录的 `source` 把一张位图重跑出来** ✓（工程包不带位图时，导入端用它补回来 ✓）。
+///
+/// **与 `brush_stroke` 共用 [`paint_brush`]** ✓ —— 不另写一条落笔实现 ✗
+/// （本项目对"两份实现迟早漂移"已有多次前科 ✓）。参数还原规则：
+///
+/// * `points` 记的**已经是**风格变换之后的点 ✓ ⇒ 这里不再套 `apply_brush_style` ✓；
+/// * `smooth` 为真时仍要**再平滑一次** ✓（与落笔时一致 ✓）；
+/// * `feed_base = false` ✓ —— **调用方必须先**用 [`brush_source_is_replayable`] 确认这支笔刷
+///   **不读画布** ✓；读画布的根本不该走到这里 ✗（走了也只会画出没有底图的错东西 ✗）。
+pub(crate) fn replay_brush_bitmap(
+    workspace: &mut Workspace,
+    doc_id: &str,
+    source: &Value,
+) -> Result<Vec<u8>> {
+    let brush = source
+        .get("brush")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("source 里没有 brush ⇒ 不能重放".to_owned()),
+            )
+        })?
+        .to_owned();
+    let mut points = brush_points_from_json(source.get("points"))?;
+    if source
+        .get("smooth")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        points = smooth_stroke_points(&points);
+    }
+    let mut ctx = ToolContext::new(workspace, doc_id, "system:replay", "session:replay");
+    // **`null` 要还原成 `None`** ✗ —— 这不是小事 ✓：`source` 里 `color_to` / `color` / `opacity` /
+    // `hardness` **没给时记的是 `null`** ✓，而落笔时调用方给的是**根本没这个键** ✓
+    //（`args.get("color_to")` ⇒ `None` ✓）。`paint_brush` 的分支是
+    // `match color_to { Some(_) => 一笔多色, None => 单色 }` ✓
+    // ⇒ 把 `Some(Null)` 递进去会**走进一笔多色的分支** ✓ ⇒ 解析空颜色 ⇒
+    // **每一次重放都报"颜色格式非法：null"** ✓（我第一次跑判据时 7/7 全部落回"照装" ✓，
+    // 就是这个原因 ✓）。
+    let color = source.get("color").filter(|value| !value.is_null());
+    let color_to = source.get("color_to").filter(|value| !value.is_null());
+    let paint = paint_brush(
+        &mut ctx,
+        &brush,
+        &points,
+        source.get("size").and_then(Value::as_f64),
+        color,
+        color_to,
+        source.get("opacity").and_then(Value::as_f64),
+        source.get("hardness").and_then(Value::as_f64),
+        // **不喂底图** ✗（见函数头 ✓）。
+        false,
+    )?;
+    Ok(paint.rgba)
+}
+
 /// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
 ///
 /// `feed_base`：是否把**目标区域现有的像素**喂进引擎 ✓ ——
@@ -12082,7 +12186,7 @@ fn paint_brush(
     hardness: Option<f64>,
     feed_base: bool,
 ) -> Result<BrushPaint> {
-    let (name, mut brush) = load_brush(ctx, brush_name)?;
+    let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     if let Some(opacity) = opacity {
         brush.set(
             hokusai::BrushSetting::Opaque,
@@ -13015,28 +13119,23 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
 fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = guarded_output_path(&require_str(args, "path")?)?;
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
-    let (width, height) = ctx
-        .workspace
-        .document(&doc_id)
-        .map(|document| (document.state().width, document.state().height))
-        .ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("文档 {doc_id} 未打开 ⇒ 无法导出")),
-            )
-        })?;
-    // **当场渲染一张整幅图** ✓（不是为了保存缓存 ✓，而是为了**包里那张预览必须是当前的** ✓）。
-    let (_, _, pixels) = ctx.workspace.render_region_raw(
-        &doc_id,
-        yanshi_core::Bbox::new(0.0, 0.0, width as f64, height as f64),
-    )?;
-    let png = yanshi_render::png::encode_png(width, height, &pixels).ok_or_else(|| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("PNG 编码失败（{width}×{height}）")),
-        )
-    })?;
-    let tar = ctx.workspace.export_project(&doc_id, &png)?;
+    if ctx.workspace.document(&doc_id).is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {doc_id} 未打开 ⇒ 无法导出")),
+        ));
+    }
+    // **`include_bitmaps` 缺省 false** ✓：只省掉**能证明重放得出来**的位图 ✓（见 `export_project` ✓）。
+    // `true` ⇒ **每个位图都装** ✓（老行为 ✓，排查"是不是我省错了"时用 ✓）。
+    //
+    // **为什么不再"当场渲染一张整幅图"** ✗：那一张**从来没有进过包** ✓
+    //（`export_project` 的 `render.png` 分支早已删掉 ✓）⇒ 每次导出都在**白渲染一张 4K 图**
+    // 再把 PNG 编码一遍丢掉 ✓ ⇒ 顺手去掉 ✓（导出更快 ✓，行为不变 ✓ —— 包里本来就没有它 ✓）。
+    let include_bitmaps = args
+        .get("include_bitmaps")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let tar = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
     std::fs::write(&path, &tar).map_err(|error| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -13047,7 +13146,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "path": path,
         "doc_id": doc_id,
         "bytes": tar.len(),
-        "render": {"width": width, "height": height, "bytes": png.len()},
+        "include_bitmaps": include_bitmaps,
         "format": "tar (uncompressed)",
     }))
 }
@@ -13091,6 +13190,9 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .render_region_raw_layer(&ctx.doc_id, region, &layer_id)?,
         None => ctx.workspace.render_region_raw(&ctx.doc_id, region)?,
     };
+    // **落盘的图也必须把"被跳过的东西"带出去** ✗：这条路同样返回裸像素 ✓，
+    // 缺块时**不能**默默写一张不完整的 PNG 却不提 ✓。
+    let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
     if width == 0 || height == 0 {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -13195,6 +13297,7 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "source_width": width,
         "source_height": height,
         "scaled": target_w != width || target_h != height,
+        "warnings": render_warnings,
     }))
 }
 

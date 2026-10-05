@@ -19,6 +19,13 @@ use crate::persist::{DocumentMeta, FileStore};
 use crate::timings::CommitPhases;
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
+/// **工程包里 `blobs/` 的编码** ✓ —— 写进 `blobs.encoding` ✓，导入端据此解码 ✓。
+///
+/// 目前只有一种：`zlib` ✓（与本地 CAS 同一个编解码器 ✓，**逐字节可逆** ✓）。
+/// 它是**显式**的 ✓ —— 导入端不需要"试着解一下，失败就当明文" ✗
+/// （那种猜法会把"解出来是垃圾"变成"悄悄导入了坏字节" ✗）。
+const PACKAGE_BLOB_ENCODING: &str = "zlib";
+
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocThumbSize {
@@ -1053,6 +1060,22 @@ impl Workspace {
                 }
             }
             self.documents.insert(doc_id.to_owned(), document);
+            // **"只解压到 `--root`"那条路也要能把省掉的位图补回来** ✓。
+            //
+            // **为什么必须在这里做** ✗：README 的还原方式是"把包解开到 `<root>/`" ✓ ——
+            // 那条路**根本不经过 `import_project`** ✓（没有工具调用 ✓）⇒ 只有渲染器直接读 CAS ✓。
+            // 若不在这里补 ✓，`export_project` 省掉的那些位图就**永远缺着** ✗
+            // ⇒ 打开是**静默不完整的画** ✓（有告警 ✓，但谁也不该被迫看这种画 ✓）。
+            //
+            // **正常文档零成本** ✓：每个引用先问一次 `store.exists` ✓（几百次文件存在性检查 ✓），
+            // 只有**真的缺**且**配方可重放**才落笔 ✓ ⇒ 平时的打开**一次重放都不做** ✓；
+            // 补回来的会**写进本地 CAS** ✓ ⇒ 第二次打开就是普通的读 ✓（本地缓存 ✓）。
+            let replayed = self.materialize_pending_replayable_blobs(doc_id)?;
+            if replayed > 0 {
+                if let Some(document) = self.documents.get_mut(doc_id) {
+                    document.set_replayed_blobs(replayed);
+                }
+            }
         }
         self.document_mut(doc_id)
     }
@@ -1419,17 +1442,34 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见
+    /// `Document::last_render_warnings` 的说明 ✓）。
+    ///
+    /// **为什么需要它** ✗：`render_region_raw` / `render_region_raw_layer` 的返回类型是
+    /// `(宽, 高, RGBA)` ✓，**没有地方带告警** ✗ ⇒ 缺一个补丁时它们会给出
+    /// **静默的不完整画面** ✗（`export_png` / `patch` 正是走这条路 ✓）。
+    /// ⇒ 渲染完读一次这个 ✓，把告警一起报给调用方 ✓。
+    pub fn last_render_warnings(&self, doc_id: &str) -> Vec<String> {
+        self.document(doc_id)
+            .map(|document| document.last_render_warnings().to_vec())
+            .unwrap_or_default()
+    }
+
     /// **导入一个 `.yanshi` 工程包** ✓（真实用户报过的另一半 ✓：导出有了 ✓，导入一直没有 ✗）。
     ///
     /// **和 `export_project` 是配对的两个方向** ✓ —— 于是"备份 / 搬到另一台机器 / 给人复现问题"
     /// 这几种事**都能闭环** ✓（用户当初报这个缺口时正是为了这些 ✓）。
     ///
-    /// **三条硬规矩** ✓（都来自既有教训 ✓）：
+    /// **四条硬规矩** ✓（都来自既有教训 ✓）：
     /// 1. **只导入、绝不覆盖** ✗：目标 `doc_id` 已存在就**拒绝** ✓
     ///    （"导入把现有文档冲掉"是**不可逆**的 ✓ —— 与"不做不可逆动作"一致 ✓）；
     /// 2. **blob 按内容寻址核对** ✓：包里的路径写着 sha256 ✓ ⇒ 写进存储后再比对算出来的哈希 ✓
     ///    ⇒ 不符就**拒绝** ✗（"看起来导进去了、其实字节是坏的"最糟糕 ✓）；
-    /// 3. **缺东西要说清缺什么** ✓（包里只有 `BUILD-INFO` 之类的说明文件时 ✓，报错会**列出包里有什么** ✓）。
+    /// 3. **缺东西要说清缺什么** ✓（包里只有 `BUILD-INFO` 之类的说明文件时 ✓，报错会**列出包里有什么** ✓）；
+    /// 4. **编码显式声明、缺了就拒绝** ✗（`blobs.encoding` ✓，本版本只认 `zlib` ✓）——
+    ///    **不给"没有清单就按明文读"的兜底** ✗：本地 CAS（`FsBlobStore` ＋ `RenderCodec` ✓）
+    ///    也是按编解码器读的 ✓ ⇒ 一个兜底会把"导出与读回不对称"这种缺陷**藏起来** ✓
+    ///    （"字节解释错了"会伪装成"导入成功" ✗）。
     ///
     /// **列表后面必须空一行** ✓（clippy 的 `doc list item without indentation` 又抓了我一次 ✓ ——
     /// 这条 lint 其实一直在帮我保持文档可读 ✓）。
@@ -1448,6 +1488,8 @@ impl Workspace {
         let mut render: Option<(u64, Vec<u8>)> = None;
         let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
         let mut names: Vec<String> = Vec::new();
+        // `blobs.encoding` 声明的编码 ✓（缺省 ⇒ 明文 ✓，兼容手写的包/测试夹具 ✓）。
+        let mut blob_encoding: Option<String> = None;
         for entry in &entries {
             names.push(entry.path.clone());
             let path = entry.path.as_str();
@@ -1469,6 +1511,9 @@ impl Workspace {
                         render = Some((seq, Vec::new()));
                     }
                 }
+            } else if path == "blobs.encoding" {
+                // **显式声明** ✓（不是"试着解一下" ✗）：值不认识就明确拒绝 ✓。
+                blob_encoding = Some(String::from_utf8_lossy(&entry.bytes).trim().to_owned());
             } else if let Some(rest) = path.strip_prefix("blobs/sha256/") {
                 // 形如 `<ab>/<cd>/<64 位十六进制>` ✓
                 if let Some(hex) = rest.rsplit('/').next() {
@@ -1517,9 +1562,57 @@ impl Workspace {
             ));
         }
         // **先把 blob 落进内容寻址存储并逐个核对** ✓（不符就整体拒绝 ✓，不留半成品 ✓）。
+        //
+        // **顺序很重要** ✗：**先按 `blobs.encoding` 解码** ✓、**再对"解出来的明文"核哈希** ✓
+        // —— 哈希的定义就是**对明文**算的 ✓（`blob_codec.rs` 的注释 ✓：
+        // "哈希仍对明文算 ⇒ 内容寻址/去重/导入对账都不受影响" ✓）⇒ 反过来就会把好包判成坏包 ✗。
+        //
+        // **只有一种编码，而且是显式声明的** ✗（用户裁定：不做兼容 ✓）：
+        // * 有 blob 却**没有** `blobs.encoding` ⇒ **拒绝** ✓ —— 这正是"导出写明文、
+        //   而读端只认编解码器"那个**不对称缺陷**的入口 ✓；给一个**默认按明文读**的兜底 ✗
+        //   只会把这一类 bug **藏起来** ✓（"看起来导入了、其实字节解释错了" ✗）；
+        // * 声明了别的编码 ⇒ **拒绝** ✓（不认识就是不认识 ✓）。
+        // **没有 blob 的包**（纯矢量文档 ✓）不要求清单 ✓ —— 没有东西要用它解释 ✓。
+        if !blobs.is_empty() {
+            match blob_encoding.as_deref() {
+                Some(PACKAGE_BLOB_ENCODING) => {}
+                Some(other) => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "包里的 blobs.encoding 是「{other}」⇒ 这个版本只认「{PACKAGE_BLOB_ENCODING}」\
+                             ⇒ 拒绝导入（硬猜会把坏字节悄悄导入 ✗）"
+                        )),
+                    ));
+                }
+                None => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "包里有 {} 个 blob，却没有 blobs.encoding ⇒ 拒绝导入 ✗：\
+                             不猜编码（默认按明文读会把「字节解释错了」变成「看起来导入成功」✗）。\
+                             本版本导出的包一律带 `blobs.encoding: {PACKAGE_BLOB_ENCODING}` ✓",
+                            blobs.len()
+                        )),
+                    ));
+                }
+            }
+        }
         let mut restored = 0usize;
         for (hex, blob_bytes) in &blobs {
-            let hash = self.store.put(blob_bytes)?;
+            let plain: Vec<u8> = if blob_encoding.as_deref() == Some(PACKAGE_BLOB_ENCODING) {
+                yanshi_render::png::zlib_decompress(blob_bytes).ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "工程包里的 blob {hex} 声明是 zlib，但解不开（流坏了或被截断）⇒ 拒绝导入"
+                        )),
+                    )
+                })?
+            } else {
+                blob_bytes.clone()
+            };
+            let hash = self.store.put(&plain)?;
             if hash.hex().to_ascii_lowercase() != *hex {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -1556,6 +1649,11 @@ impl Workspace {
         }
         // **载进工作区** ✓ —— 到这一步文档才算真的可用 ✓（能画、能导、能被 MCP 看到 ✓）。
         self.open_document(&doc_id)?;
+        // **包省掉的位图由 `open_document` 内部补回来** ✓（导入与"解压到 `--root`"两条路共用 ✓）。
+        let replayed = self
+            .document(&doc_id)
+            .map(|document| document.replayed_blobs())
+            .unwrap_or(0);
         let atom_count = atoms_text
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -1564,10 +1662,73 @@ impl Workspace {
             "doc_id": doc_id,
             "atoms": atom_count,
             "blobs": restored,
+            "blobs_replayed": replayed,
             "entries": entries.len(),
             "had_render": render.is_some(),
             "hint": "已导入并打开 ⇒ 可用 get_document / render_region 核对；原文档未被触碰 ✓",
         }))
+    }
+
+    /// **把省掉的"可重放位图"按日志重跑回来** ✓（`export_project` 的另一半 ✓）。
+    ///
+    /// **两条路都要它** ✓：① `import_project` 走工具导入 ✓；② **把包解开到 `--root/`**
+    /// （README 的还原方式 ✓）**完全不经过工具层** ✗ ⇒ 只有 `open_document` 这一处能兜住 ✓。
+    ///
+    /// **判据与导出侧逐条对称** ✓（两边都调 [`crate::tools::brush_source_is_replayable`] ✓）：
+    /// 只补"配方可重放 **且** 重跑出来的哈希与日志里记的**逐字节相同**"的那些 ✓；
+    /// 有一条对不上就**不补** ✗ —— 宁可让这一次渲染报缺 blob ✓（可见 ✓），
+    /// 也绝不把**另一张图**塞进那个哈希 ✓（那是**静默的错误画面** ✗）。
+    ///
+    /// **正常文档零成本** ✓：先 `store.exists` 逐个问 ✓（几百次文件存在性检查 ✓）；
+    /// 只有真的缺才落笔 ✓ ⇒ 平时打开**不做一次重放** ✓。补回来的写进本地 CAS ✓
+    /// ⇒ 第二次打开就是普通读 ✓。
+    ///
+    /// **判据** ✓：`crates/yanshi-server/tests/export_small.rs` 的
+    /// `a_package_restores_through_root_and_renders_identically`（变异：去掉这一步 ⇒ 红 ✓）。
+    fn materialize_pending_replayable_blobs(&mut self, doc_id: &str) -> Result<usize> {
+        let store = self.store();
+        // **先收齐再落笔** ✗：下面要 `&mut self` 去重放 ✓，不能在遍历日志的同时持有它的借用 ✓。
+        let pending: Vec<(yanshi_core::BlobHash, serde_json::Value)> = {
+            let Some(document) = self.document(doc_id) else {
+                return Ok(0);
+            };
+            let mut pending = Vec::new();
+            for atom in document.log().iter() {
+                let payload = &atom.payload;
+                let Some(hash_text) = payload
+                    .get("bitmap")
+                    .and_then(|bitmap| bitmap.get("blob_hash"))
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Ok(hash) = hash_text.parse::<yanshi_core::BlobHash>() else {
+                    continue;
+                };
+                // **已经在包里的（或者上一轮补过的）跳过** ✓ —— 绝不覆盖已有字节 ✓。
+                if store.exists(&hash) {
+                    continue;
+                }
+                let Some(source) = payload.get("source") else {
+                    continue;
+                };
+                if !crate::tools::brush_source_is_replayable(self, source) {
+                    continue;
+                }
+                pending.push((hash, source.clone()));
+            }
+            pending
+        };
+        let mut replayed = 0usize;
+        for (hash, source) in pending {
+            if let Ok(bytes) = crate::tools::replay_brush_bitmap(self, doc_id, &source) {
+                if yanshi_core::BlobHash::from_bytes(&bytes) == hash {
+                    store.put(&bytes)?;
+                    replayed += 1;
+                }
+            }
+        }
+        Ok(replayed)
     }
 
     /// **纹理缓存目录** ✓（`<root>/textures` ✓ —— **不入 git** ✗）。
@@ -1819,10 +1980,20 @@ impl Workspace {
     /// * `meta.json` ✓ / `atoms.jsonl` ✓（**不可变原子日志** ✓ —— 这是唯一权威 ✓）；
     /// * `blobs/<hash>` ✓：**只装这份日志真正引用到的 blob** ✓（从每条原子的 `refs.blobs` 收集 ✓）
     ///   ⇒ 不把整个 CAS 一股脑塞进去 ✓（CAS 可能有很多别的文档的 blob ✓）；
-    /// * **`render.png`：由调用方传入的"最新整幅渲染"** ✓ —— 这一点是**故意**的 ✓：
-    ///   用户手 zip 时把**过期的 `render.png` 缓存**一起装了进去 ✓ ⇒ 四个工程包的预览**全是空白** ✗
-    ///   ⇒ 导出必须**当场**写一张最新的 ✓，而不是复用磁盘缓存 ✗；
+    /// * `blobs.encoding` ✓：`blobs/` 的编码 ✓（`zlib` ✓，与本地 CAS 同一个编解码器 ✓，逐字节可逆 ✓）；
     /// * `render.seq` ✓ / `BUILD-INFO` ✓ / `README.txt` ✓（告诉人怎么还原 ✓）。
+    ///
+    /// **`include_bitmaps`** ✓：`true` ⇒ **每个被引用的位图都装** ✓（老行为 ✓，排查用 ✓）；
+    /// `false`（缺省 ✓）⇒ **只省掉"能证明重放得出来"的那些** ✗ —— 判据是
+    /// **真的重跑一遍**（`crate::tools::replay_brush_bitmap` ✓）且**哈希逐字节相同** ✓，
+    /// 外加**引用它的每条原子都带配方** ✓、**笔刷不读画布** ✓。
+    /// 一条对不上就**照装** ✓ —— **包的体积可以谈，打开的画面不能错** ✗。
+    ///
+    /// **为什么不能省读画布的笔刷** ✗（实测 ✓）：`oil-03-paint.myb` 的 `smudge = 0.9` ✓
+    /// ⇒ 烘出来的像素取决于**落笔时底下是什么** ✓ ⇒ `source` 不是重放配方 ✗
+    /// （同参数、空画布 vs 绿底 ⇒ 6.2% 字节不同 ✓；真实 4K 工程 369/376 条 `source` 正是这种 ✓）
+    /// ⇒ 省了它 ⇒ **打开就是错的画** ✓（静默错误 ✓，比包大糟糕得多 ✗）。
+    /// **19 条介质笔触（142.1 MiB）连 `source` 都没有** ✗ ⇒ 永远得装 ✓。
     ///
     /// **为什么要求落盘工作区** ✓：原子日志与元数据是**在磁盘上**的权威副本 ✓；
     /// 纯内存工作区没有它们 ✓ ⇒ 那里应当**明确拒绝** ✓（而不是导出一个**不完整**的包 ✗）。
@@ -1831,7 +2002,7 @@ impl Workspace {
     /// **与缓存的关系** ✓：内置的是"**开箱就有**"的那几款 ✓（`assets/textures/` ✓，随 `make release` 进包 ✓）；
     /// 缓存（`<root>/textures/` ✓）是用户用 `scripts/fetch-textures.sh` 另外抓的 ✓。
     /// **重名时缓存优先** ✓ —— 用户放进去的同名文件**覆盖**内置的 ✓（想换就换 ✓，不必改仓库 ✓）。
-    pub fn export_project(&mut self, doc_id: &str, _render_png: &[u8]) -> Result<Vec<u8>> {
+    pub fn export_project(&mut self, doc_id: &str, include_bitmaps: bool) -> Result<Vec<u8>> {
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -1848,7 +2019,12 @@ impl Workspace {
             )
         })?;
         // **只收这条日志引用到的 blob** ✓（逐行解析 ✓，坏行跳过但**不静默**：计数后写进包里 ✓）。
+        //
+        // **同时记下"每个 blob 是被哪些净荷引用的"** ✓ —— 省略位图前必须问"引用它的每一条原子
+        // 是不是都带着可重放的配方" ✓（只被一条没有配方的原子引用 ⇒ **必须装** ✗）。
         let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut refs_by_blob: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            std::collections::BTreeMap::new();
         let mut broken_lines = 0usize;
         for line in atoms_text.lines() {
             if line.trim().is_empty() {
@@ -1861,9 +2037,17 @@ impl Workspace {
                         .and_then(|refs| refs.get("blobs"))
                         .and_then(serde_json::Value::as_array)
                     {
+                        let payload = atom
+                            .get("payload")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         for blob in blobs {
                             if let Some(hash) = blob.as_str() {
                                 wanted.insert(hash.to_owned());
+                                refs_by_blob
+                                    .entry(hash.to_owned())
+                                    .or_default()
+                                    .push(payload.clone());
                             }
                         }
                     }
@@ -1888,9 +2072,38 @@ impl Workspace {
             path: "render.seq".to_owned(),
             bytes: head.to_string().into_bytes(),
         });
+        // **包里的 blob 用与本地 CAS 同一个编解码器压一遍** ✓（`crate::blob_codec` ✓
+        // ＝ `yanshi_render::png::zlib_compress_best` / `zlib_decompress` ✓）。
+        //
+        // **为什么这样是安全的** ✓（这是上一轮 PNG 方案被否之后必须说清的一条 ✓）：
+        // 这两步是**逐字节可逆**的 ✓（`zlib_decompress(zlib_compress_best(x)) == x` ✓，
+        // 由 `crates/yanshi-core/tests/blob_codec.rs` 与 `crates/yanshi-render/src/png.rs` 的
+        // 往返判据守着 ✓）⇒ **它只是把同样的字节换个容器** ✓，**不重新解释像素** ✓
+        // ⇒ **预乘 alpha / 半透明颜色 / 不透明度全部原样通过** ✓
+        // —— 而 PNG 那次红的根因正是"把预乘字节当普通 RGBA 重新编码" ✗（见 `ce17665` ✓）。
+        //
+        // **为什么不会让打开变慢** ✓：本地 CAS 的**每一次** `store.get()` 本来就要 inflate ✓
+        //（`blob_codec.rs` 的 `decode` ✓）⇒ 打开/渲染那条路**一个字节的解码成本都没多** ✓；
+        // 多出来的只是**导入时解一次压** ✓（一次性 ✓）。
+        //
+        // **为什么是 manifest 而不是改路径** ✓：`blobs.encoding` 是显式的 ✓ ——
+        // 读包的人**不需要猜**这些字节是明文还是 zlib ✓（猜错就是"看起来导入了、其实是垃圾" ✗）。
+        entries.push(crate::archive::TarEntry {
+            path: "blobs.encoding".to_owned(),
+            bytes: PACKAGE_BLOB_ENCODING.as_bytes().to_vec(),
+        });
         // **blob 走存储接口取** ✓（内存/落盘都能用 ✓，也顺带保证"包里每一个字节都真的存在" ✓）。
         let store = self.store();
         let mut blob_count = 0usize;
+        let mut plain_bytes = 0usize;
+        let mut packed_bytes = 0usize;
+        let mut omitted = 0usize;
+        // **"为什么这一条必须装"要可观测** ✓（否则判据只能间接地测它 ✓ —— 而"间接"正是
+        // 实测里被漏掉的那一类 ✗：我第一版去掉 `brush_reads_the_canvas` 那条判据时，
+        // 读画布的那一笔**仍然**因为"重跑哈希对不上"而照装 ✓ ⇒ 判据**照样绿** ✗。
+        // ⇒ 把两个理由**分别**记进 `BUILD-INFO` ✓：判据才能钉住**判据本身** ✓）。
+        let mut kept_no_recipe = 0usize;
+        let mut kept_mismatch = 0usize;
         for hash_text in &wanted {
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(
@@ -1899,10 +2112,42 @@ impl Workspace {
                 )
             })?;
             let bytes = store.get(&hash)?;
+            // **能不能不装** ✗ ⇒ **真的重跑一遍再说** ✓（不是看名字猜 ✓）。
+            //
+            // 条件：引用它的**每一条**净荷都带可重放配方 ✓（`brush_source_is_replayable` ✓，
+            // 即 `kind == "brush"` 且笔刷**不读画布** ✓），**并且**按配方重跑出来的字节
+            // **哈希与记录的一致** ✓。两条都过才省 ✗ —— 只要有一条对不上 ✓
+            // 就**照装** ✓（包大一点，但**打开一定是对的** ✓）。
+            if !include_bitmaps {
+                let all_replayable = refs_by_blob.get(hash_text).is_some_and(|payloads| {
+                    !payloads.is_empty()
+                        && payloads.iter().all(|payload| {
+                            payload.get("source").is_some_and(|source| {
+                                crate::tools::brush_source_is_replayable(self, source)
+                            })
+                        })
+                });
+                if all_replayable {
+                    let source = refs_by_blob[hash_text][0]["source"].clone();
+                    let reproved = crate::tools::replay_brush_bitmap(self, doc_id, &source);
+                    if let Ok(replayed) = reproved {
+                        if yanshi_core::BlobHash::from_bytes(&replayed) == hash {
+                            omitted += 1;
+                            continue;
+                        }
+                    }
+                    kept_mismatch += 1;
+                } else {
+                    kept_no_recipe += 1;
+                }
+            }
             let hex = hash.hex();
+            let packed = yanshi_render::png::zlib_compress_best(&bytes);
+            plain_bytes += bytes.len();
+            packed_bytes += packed.len();
             entries.push(crate::archive::TarEntry {
                 path: format!("blobs/sha256/{}/{}/{}", &hex[0..2], &hex[2..4], hex),
-                bytes,
+                bytes: packed,
             });
             blob_count += 1;
         }
@@ -1911,6 +2156,11 @@ impl Workspace {
             // **版本与 commit 一起进包** ✓（用户提过的排查需求 ✓）：拿到包就知道是哪一版产的 ✓。
             bytes: format!(
                 "name: yanshi\ndoc_id: {doc_id}\nhead_seq: {head}\nblobs: {blob_count}\n\
+                 blobs_omitted_replayable: {omitted}\n\
+                 blobs_kept_no_replayable_recipe: {kept_no_recipe}\n\
+                 blobs_kept_replay_mismatch: {kept_mismatch}\n\
+                 blob_encoding: {PACKAGE_BLOB_ENCODING}\n\
+                 blob_bytes_plain: {plain_bytes}\nblob_bytes_packed: {packed_bytes}\n\
                  unparsable_atom_lines: {broken_lines}\n\
                  restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，渲染可重放）\n"
             )
@@ -1919,11 +2169,18 @@ impl Workspace {
         entries.push(crate::archive::TarEntry {
             path: "README.txt".to_owned(),
             bytes: b"Yanshi project package.\n\
-Contents:\n  atoms.jsonl   append-only atom log; this is the authority\n\
-  meta.json     document metadata\n  render.png    a render of HEAD at export time\n\
-  render.seq    the seq that render corresponds to\n\
-  blobs/        content-addressed blobs referenced by the log\n\
-Restore by extracting under <root>/ of a yanshi-serve instance.\n"
+Contents:\n  atoms.jsonl      append-only atom log; this is the authority\n\
+  meta.json        document metadata\n  render.seq       the seq that render corresponds to\n\
+  blobs.encoding   how blobs/ is encoded (zlib = byte-exact deflate of the raw blob)\n\
+  blobs/           content-addressed blobs referenced by the log\n\
+Not every blob is here: a patch whose brush recipe provably replays byte-exact is omitted\n\
+(BUILD-INFO blobs_omitted_replayable). Importing replays those from the log; blobs whose\n\
+pixels cannot be proven reproducible (canvas-reading brushes, media strokes) are always kept.\n\
+Restore under <root>/ of a yanshi-serve instance (the doc lives under docs/<doc_id>/):\n\
+  mkdir -p <root>/docs/<doc_id>\n\
+  mv atoms.jsonl meta.json <root>/docs/<doc_id>/\n\
+  mv blobs <root>/            # merge into the workspace CAS; same encoding it already uses\n\
+The first open replays any omitted bitmap into the local CAS; later opens just read it.\n"
                 .to_vec(),
         });
         Ok(crate::archive::write_tar(&entries))

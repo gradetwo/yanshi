@@ -266,6 +266,20 @@ pub struct Document {
     /// 设计 §6.1 说"内存 tile 用 f16 线性 ✓，**持久缓存与网络传输用 u8（显示空间）**" ✓
     /// ⇒ 命中就该给字节 ✓，不必重量化 ✓。
     region_cache: yanshi_render::region_block::RegionBlockCache,
+    /// **最近一次渲染里"被跳过的东西"** ✓（工程包体积专题 ✓）。
+    ///
+    /// **为什么必须记** ✗：渲染器现在**不因为缺一个 blob 就整幅失败** ✓（`render.rs` 的
+    /// `Primitive::RasterPatch` ✓：跳过 + 记 `RenderStats::unsupported` ✓）——
+    /// 但**裸像素那条出口**（`render_region_raw` ✓，`patch` / `export_png` 都走它 ✓）
+    /// 的返回类型是个三元组 ✓，**没有地方带告警** ✗ ⇒ 跳过就会变成**静默的不完整画面** ✗
+    /// —— 那正是不能接受的那一种 ✓。⇒ 把告警**挂在文档上** ✓，
+    /// 裸像素出口的调用方渲染完读一次即可 ✓（[`Document::last_render_warnings`] ✓）。
+    last_render_warnings: Vec<String>,
+    /// **打开这一份文档时重放回来的位图数** ✓（`export_project` 省掉的那些 ✓）。
+    ///
+    /// **为什么记在文档上** ✓：补的动作发生在 `Workspace::open_document` ✓，
+    /// 而 `import_project` 要把"补了几条"写进响应 ✓ ⇒ 记在这里，两边不必各算一遍 ✓。
+    replayed_blobs: usize,
     created_at: i64,
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
@@ -357,6 +371,8 @@ impl Document {
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
+            last_render_warnings: Vec::new(),
+            replayed_blobs: 0,
             created_at,
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
@@ -831,23 +847,34 @@ impl Document {
         if let Some(block) = self.region_cache.get(key, version) {
             // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
             // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
+            //
+            // **缓存命中 ⇒ 上次没有跳过任何东西** ✓：带告警的渲染**从不进缓存** ✗
+            //（见下面 `if rendered.stats.unsupported.is_empty()` ✓）⇒ 命中就等价于"完整" ✓。
+            self.last_render_warnings.clear();
             return Ok((block.key.w, block.key.h, block.data.clone()));
         }
         let rendered = self
             .renderer
             .render_region(&self.state, &*self.store, bbox)?;
+        // **跳过的东西必须留下痕迹** ✗（否则裸像素出口 = 静默的不完整画面 ✗）。
+        self.last_render_warnings = rendered.stats.unsupported.clone();
         let data = rendered.rgba8.clone();
-        self.region_cache
-            .put(yanshi_render::region_block::RegionBlock {
-                // **用"请求的键"存** ✓（不是渲染后的尺寸 ✗）：查的时候用的是请求键 ✓，
-                // 两边不一致就会永远差一点点、永不命中 ✗ —— 我第一版正是这个错 ✗。
-                key,
-                hash: yanshi_render::region_block::content_hash(&data),
-                data,
-                version_atom: version,
-                layers: self.state.alive_layers().len() as u32,
-                objects: self.state.alive_objects().len() as u32,
-            });
+        // **不完整的画面绝不进缓存** ✗：缓存里没有"告警"这一维 ✓ ⇒ 一旦缓存了 ✓，
+        // 之后**命中**就会把同一张缺块的图**当成完整的**发出去 ✓（而且没有任何提示 ✗）。
+        // 缺块本身应当是**罕见**的 ✓ ⇒ 放弃这一次缓存**不影响**正常路径的性能 ✓。
+        if rendered.stats.unsupported.is_empty() {
+            self.region_cache
+                .put(yanshi_render::region_block::RegionBlock {
+                    // **用"请求的键"存** ✓（不是渲染后的尺寸 ✗）：查的时候用的是请求键 ✓，
+                    // 两边不一致就会永远差一点点、永不命中 ✗ —— 我第一版正是这个错 ✗。
+                    key,
+                    hash: yanshi_render::region_block::content_hash(&data),
+                    data,
+                    version_atom: version,
+                    layers: self.state.alive_layers().len() as u32,
+                    objects: self.state.alive_objects().len() as u32,
+                });
+        }
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
@@ -875,7 +902,28 @@ impl Document {
                 )),
             ));
         }
+        // **这条出口也带告警** ✓（它同样返回裸像素 ✓）。
+        self.last_render_warnings = rendered.stats.unsupported.clone();
         Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见字段说明 ✓）。
+    ///
+    /// **为什么不是一个 `Result`** ✗：缺一个补丁**不该**让整幅渲染失败 ✓
+    ///（一条丢了的笔触不该让整张画都出不来 ✓）⇒ 像素照给 ✓、告警挂在这里 ✓、
+    /// 由调用方一起报给用户 ✓（`render_region` 那条路本来就把告警放进 `warnings` ✓）。
+    pub fn last_render_warnings(&self) -> &[String] {
+        &self.last_render_warnings
+    }
+
+    /// **打开时重放回来的位图数** ✓（0 ＝ 包里本来就都带着 ✓，或没有可重放的配方 ✓）。
+    pub const fn replayed_blobs(&self) -> usize {
+        self.replayed_blobs
+    }
+
+    /// 记下"打开时重放回来几条" ✓（由 `Workspace::open_document` 在补完之后写一次 ✓）。
+    pub(crate) fn set_replayed_blobs(&mut self, count: usize) {
+        self.replayed_blobs = count;
     }
 
     /// 区域字节缓存的统计 ✓（设计要求可观测 ✓）。
@@ -959,6 +1007,8 @@ impl Document {
         }
         let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
+        // **与裸像素出口共用同一个告警槽** ✓（两条出口对同一件事给同一个答案 ✓）。
+        self.last_render_warnings = rendered.stats.unsupported.clone();
         let previous = self.cached_preview_hashes();
         let blob_hash = self.store.put(&png)?;
         self.render_watermark = self.log.head_seq();
