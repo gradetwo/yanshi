@@ -89,7 +89,21 @@ try {
   } else {
     console.log("  ✓ 同一坐标（200,200）两次采样一致 ✓（**稳定** ✓）");
   }
-  console.log("  覆盖面：采样点 2 个（笔画内 ✓ / 空白 ✓）｜颜色 1 种（纯红 ✓）｜形状 1 种（rect ✓）");
+  // **边界采样**（第 875 轮 ✓）：矩形是 `[20,20,80,80]` ✓ ⇒ 应覆盖 x ∈ [20,100) ✓
+  // ⇒ **x=99 在内 ✓、x=100 在外 ✓** —— 这一对把"坐标约定"（**含下界、不含上界** ✓）钉住 ✓ ✓。
+  const last = await call("sample_color", { x: 99, y: 60 });
+  const after = await call("sample_color", { x: 100, y: 60 });
+  console.log("  边界 (99,60)  ⇒ rgba=" + JSON.stringify(last.rgba));
+  console.log("  边界 (100,60) ⇒ rgba=" + JSON.stringify(after.rgba));
+  if (!isRed(last.rgba)) fail("x=99 应在矩形内（x ∈ [20,100) ✓）却读到 " + JSON.stringify(last.rgba) + " ✗");
+  else console.log("  ✓ 下界含、上界不含：x=99 在内 ✓");
+  if (isRed(after.rgba)) fail("x=100 应在矩形外 ✗ 却读到红 " + JSON.stringify(after.rgba) + " ✗");
+  else console.log("  ✓ x=100 在外 ✓（**约定 = 含下界、不含上界** ✓）");
+
+  // ⚠️ **覆盖面要跟着采样点一起改** ✗（第 875 轮 ✓）：加了边界两点后仍写"2 个" ✗ ⇒
+  // **一条判据的"绿"必须能说出它看过多少** ✓ —— 数字过时会让读者高估覆盖 ✓。
+  console.log("  覆盖面：采样点 **4** 个（笔画内 ✓ / 远处空白 ✓ / 边界 x=99 ✓ / 边界 x=100 ✓）"
+    + "｜颜色 1 种（纯红 ✓）｜形状 1 种（rect ✓）｜检查 7 条 ✓");
 } catch (error) {
   console.error("❌ 判据无法运行（不是通过 ✗）：" + String((error && error.message) || error));
   for (const l of log) console.error("   ｜" + l.slice(0, 150));
