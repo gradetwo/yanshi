@@ -35824,3 +35824,29 @@ Object.keys 看真键表）。
 合并方式：合成**一个** `if`，先诊断、再 push 失败 ⇒ 两条语义都保留（既不丢诊断，也不丢失败）。
 验证：node --check OK；用它所在分片跑（SHARD=20 SHARDS=75）⇒ `→ browser-offline-shell.mjs` /
 `✓ browser-offline-shell.mjs` / `通过 1｜意外失败 0｜已知红 0`。
+
+## 第 1148 轮：外部回归报告的处理（按用户指示忽略跨版本那条）
+
+用户给了 fc33320（本树）的回归测试报告，并明确指示"忽略跨版本那个建议"。
+所以只提取其中**可执行**的项，跨版本 blob 不兼容那条不处理。
+
+报告里通过/验证的项（可作为我们工作的外部确认）：
+1. `scatter_strokes` P0 已修复：调用后立即关闭会话，10 笔全部提交（delta=10）。
+2. 冷启动 replay 从 ~34s 降到 0.2s（约 170 倍），1166 atom 文档下仍极快。
+3. 状态持久化正常：连 render 两次的 PNG sha256 完全一致（无状态丢失）。
+4. `timings` 字段完整，且已包含我们本轮新加的 `render_ms` / `png_ms`。
+
+报告里可执行的缺陷与观察（不含跨版本）：
+A. **P1 打包缺笔刷（真实、可修、且直接对应 (A)② 的"资产随包"）**：
+   静态包的 `share/yanshi/` 没有 `brushes/` 子目录 ⇒ `brush_stroke` 报 `reference_not_found`、
+   可用笔刷为 0；测试者手动从旧包复制 199 个 .myb 才继续。
+   我读脚本定位到：package-release.sh:525 建 `bin` 与 `share/yanshi`；
+   :533 只 `cp -R crates/yanshi-wasm/pkg → share/yanshi/wasm`；
+   :514 只对 `mediums` 做了缺失检查；**没有**任何一步复制 `assets/brushes`（仓库里 199 个 .myb）。
+   ⇒ 已派 subagent（/tmp/wt-shipbrushes，分支 fix/ship-brushes）修打包 + 补判据。
+B. 大笔刷（size=80）比 f462a6f 慢约 30-40%（10-15s vs 7-11s），小笔刷持平。
+C. `other_ms` 在 `brush_stroke` 上仍占 85-95%（我们只给 export 拆了 render/png 两段）。
+
+下一步：A 由子代理修；B、C 属于同一族（brush_stroke 的耗时归因），
+应当参照第 1147 轮对 export 的做法，把 brush_stroke 的 other_ms 也拆出可归因的阶段
+（先用 timings 读一次真实分布，再决定拆哪两段），不要凭猜测改渲染代码。
