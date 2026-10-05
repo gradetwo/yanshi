@@ -29661,3 +29661,34 @@ tool-session-semantics.mjs
    因为**它把 API 响应算作页面文本 ✓，命中与否取决于那一刻响应是否在 DOM 里** ✓ ✓。
 ⇒ ⇒ **∴ 正确的说法是**："**取样仍未收窄 ✓；观测已就位 ✓，下次命中会点出容器 ✓**" ✗ ——
    **而不是"它绿了 ✓"** ✗ ✓（**同族** ✓：本会话"绿 ≠ 可靠"已第四次 ✓）。
+
+## 🎯🎯🎯 第 926 轮：**本地完整复现 `shard 4` ⇒ 三件事同时确定** ✓（**追了十几轮的问题到此收口 ✓**）
+
+**做法 ✓**：`SHARD=4 SHARDS=6 bash scripts/run-criteria.sh` ✓（**本地跑整个分片 ✓** —— 新能力 ✓）。
+**结果（`通过 9｜意外失败 2｜已知红 1｜跳过 0` ✓）**：
+```
+✅ browser-brush-preview-local ✓ ｜ ✅ browser-offline-export ✓ ｜ ✅ mcp-document-switch ✓
+✅ tool-brush-tag-filter ✓ ｜ ✅ tool-examples-doc ✓ ｜ ✅ tool-gradient-blend ✓
+✅ tool-param-parity ✓ ｜ ✅ tool-sample-color ✓ ｜ ✅ tool-session-semantics ✓
+⚠ tool-archive-bloat（**已知红 ⇒ 不阻塞 ✓**）
+✗ **browser-i18n** ✗（「双语切换不合格」✓ = **取样过宽 ⇒ 间歇** ✗）
+✗ **browser-render-switch** ✗（「关掉开关后内核句柄 = false，应当是 true」✓ = **本地缺 wasm** ✗）
+```
+**⇒ 三件事同时确定 ✓**：
+```
+① `shard 4` 的红**不是**名单成员** ✓ —— **`browser-brush-preview-local` 本地**通过**** ✓ ✓、
+   `tool-archive-bloat` **不阻塞** ✓ ⇒ ⇒ **∴ 红来自**非名单**成员 ✓**（**与第 920 轮推理一致 ✓**）；
+② **`browser-render-switch` 在本地因**缺 wasm 内核**而红** ✓ ⇒ **CI 会构建 wasm ✓ ⇒ 它可能绿** ✗ ✓；
+③ **`browser-i18n` 的取样问题**（把 API 的 JSON 响应算作"页面里的中文"✗）⇒ **它在 CI 里也会**间歇红**** ✗ ✓
+   ⇒ ⇒ **∴ 这就是那个"真正需要修的"** ✓ ✓。
+```
+**★ 四条（**这一轮把方法也钉住了 ✓**）**：
+```
+1. **"本地能跑"这条能力，价值在于"能把 CI 的分片搬回家"** ✓ ——
+   追了十几轮的 `shard 4` 红因 ✓，**一条 `SHARDS=<片数>` 就在本地复现 ✓** ✓；
+2. **名单又一次骗了我** ✗ —— `browser-brush-preview-local` **在名单里却通过** ✓ ⇒
+   ⇒ **∴ "已知红"是**历史**** ✓、**不是**现状**** ✗（**本会话第 2 次确认 ✓；名单需要实测重核 ✗**）；
+3. **"本地红"要分"环境红"与"真红"** ✗ —— `render-switch` 是**缺 wasm** ✓、
+   `i18n` 是**取样** ✓ ⇒ **两者都红，但只有后者该改判据** ✓ ✓；
+4. **同一句"它红了"可以有三个完全不同的原因** ✓ ——
+   **我的改动 ✗ / 环境 ✓ / 判据自身 ✗** ⇒ ⇒ **∴ 归因必须靠"读它为什么红" ✗，不靠"读它红没红"** ✓。
