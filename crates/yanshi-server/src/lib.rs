@@ -11,7 +11,8 @@
 //! | [`annotations`] | 4.6 / 13.4 | 标注独立 append-only 通道 |
 //! | [`document`] | 3 / 6.2 / 12.1 | 文档服务：提交、增量折叠、dirty、渲染、Job、广播 |
 //! | [`persist`] | 18 | 文件持久化：原子 JSONL、CAS、渲染缓存、令牌 |
-//! | [`tools`] | 10 章 | 工具协议层：核心 71 工具、profile 分层、10.1/5.7 响应 |
+//! | [`tools`] | 10 章 | 工具协议层：核心 73 工具、profile 分层、10.1/5.7 响应 |
+//! | [`diagnostics`] | — | 诊断包（zip）：stderr 环形缓冲、去密、采集与体积上限 |
 //! | [`timings`] | — | 写路径阶段耗时（`timings`，外部报告 P2）|
 //! | [`inflight`] | — | 在飞变更操作登记与协作式取消（`busy`/`cancelled`，外部报告 P1）|
 //! | [`base64`] | 7.5 | MCP image content 需要的 base64 编码 |
@@ -25,6 +26,7 @@ pub mod annotations;
 pub mod archive;
 pub mod base64;
 pub mod broadcast;
+pub mod diagnostics;
 pub mod document;
 pub mod inflight;
 pub mod job;
@@ -41,6 +43,9 @@ pub use annotations::{
 pub use broadcast::{
     tile_bounds, BroadcastEvent, BroadcastStats, Broadcaster, Delivery, PushChannel, Subscriber,
     SubscriberId,
+};
+pub use diagnostics::{
+    collect, DiagnosticsBundle, DiagnosticsRequest, Limits, LogStats, SurfaceFacts,
 };
 pub use document::{
     CommitResult, Document, DocumentSettings, NewDocument, RenderStatus, RenderedPreview,

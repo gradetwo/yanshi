@@ -17,6 +17,10 @@ yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 hokusai = "0.3"
+# **诊断包的 zip 容器** —— 取舍见 `src/diagnostics.rs` 头部：
+# 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
+# zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。
+zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 proptest.workspace = true

@@ -17,6 +17,7 @@
 use yanshi_core::{ErrorCode, ErrorContext, Result, YanshiError};
 
 /// 一个待写入的文件 ✓（路径 + 内容 ✓）。
+#[derive(Debug, Clone)]
 pub struct TarEntry {
     /// 包内路径 ✓（用 `/` 分隔 ✓，不含前导 `/` ✓）。
     pub path: String,
