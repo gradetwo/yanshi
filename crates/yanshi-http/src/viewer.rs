@@ -3201,6 +3201,9 @@ async function switchDocument(docId, token) {
   if (state.docSize && state.docSize.w > 0 && state.docSize.h > 0) {
     state.zoom = 1;
     state.displayScale = null;
+    // 第 1035 轮（临时诊断）：报出"谁走了装载路径"——
+    // 若吸管前出现这行 ⇒ **∴ 就是它把 zoom 设 1、viewport 归零** ✓。
+    log("装载路径重置 zoom/viewport: doc=" + state.docId + " docSize=" + state.docSize.w + "x" + state.docSize.h);
     state.viewport = { x: 0, y: 0, w: state.docSize.w, h: state.docSize.h };
     sizeBoards(state.docSize.w, state.docSize.h);
   }
