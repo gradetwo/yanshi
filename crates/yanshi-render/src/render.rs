@@ -71,7 +71,92 @@ pub struct RenderStats {
     pub tiles_reused: usize,
     /// 本次为滤镜扩展的像素半径。
     pub filter_padding: u32,
+    /// **本次渲染实际使用的并行 worker 数**（`1` ⇒ 串行路径）。
+    ///
+    /// **它不是计时**：这是"并行真的发生了"的**语义证据**（测试据此断言，而不是靠墙钟快慢）。
+    /// wasm32 上恒为 `1`（该目标没有共享内存线程，见 `parallel_impl` 的说明）。
+    pub parallel_workers: usize,
+    /// **本次渲染的并行分块数**（`0` ⇒ 未走并行路径）。
+    ///
+    /// 与 [`Self::parallel_workers`] 一起证明并行路径被走到；串行路径下两者分别是 `1`/`0`。
+    pub parallel_chunks: usize,
 }
+
+/// **一次渲染内共享的位图补丁缓存**（并行分块用）。
+///
+/// 没有它，同一个补丁会在**每一块**里被重新 `store.get` + 解码（PNG 解码尤其贵）。
+/// 目标 4K 工程里有 300+ 个存活位图对象 ⇒ 那会把解码成本乘以块数，并行反而更慢。
+/// 串行路径传 `None`：不改变原行为，也不额外占内存。
+///
+/// 键里带上声明尺寸与 MIME：`image/x-yanshi-raw` 的字节语义由对象声明的宽高决定，
+/// 同一个 blob 若被两个对象用不同宽高声明，不能共用同一份切片。
+type BitmapCache =
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<(u32, u32, Vec<u8>)>>>;
+
+/// **图层对象渲染的账本**（内部）。
+///
+/// `objects` / `objects_culled` 在并行分块下不能靠"每块各自 +1 再相加"得到：同一个对象
+/// 会在多块里各出现一次（也只在部分块里被裁掉）✗。这里按**对象 id 去重**记账 ⇒
+/// 串行与并行算出的 `stats.objects` / `objects_culled` **必然一致** ✓（判据见
+/// `tests/tile_parallel.rs` 的 `parallel_stats_match_serial`）。
+#[derive(Default)]
+struct ObjectTrack {
+    /// 参与渲染的对象 id（去重）。
+    rendered: std::collections::BTreeSet<String>,
+    /// 因包围盒不相交被裁掉的对象 id（去重）。
+    culled: std::collections::BTreeSet<String>,
+    /// 未实现/缺失资源的告警（串行时无重复；并行时按块合并去重）。
+    unsupported: Vec<String>,
+}
+
+impl ObjectTrack {
+    /// 把另一块的账本并入自身（并行合并用；id 去重、告警保序去重）。
+    ///
+    /// 只有**并行**执行器需要合并多个账本 ⇒ wasm 上（恒串行）没有调用者，故按目标门控，
+    /// 避免在 wasm 构建里留下 dead_code 警告（`scripts/build-warnings-check.sh` 会抓警告）。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn merge(&mut self, other: ObjectTrack) {
+        self.rendered.extend(other.rendered);
+        self.culled.extend(other.culled);
+        for warning in other.unsupported {
+            if !self.unsupported.contains(&warning) {
+                self.unsupported.push(warning);
+            }
+        }
+    }
+}
+
+impl RenderStats {
+    /// **把对象账本折算进统计**（`objects`/`objects_culled`/`unsupported`）。
+    ///
+    /// 串行与并行走**同一段折算** ⇒ 不会出现"两条路径各算一套口径"的漂移 ✓。
+    fn absorb(&mut self, track: &ObjectTrack) {
+        self.objects = track.rendered.len();
+        // **"被裁"的串行口径**是"与整幅外扩盒不相交" ⇔ 它在**每一块**里都没被渲染。
+        // 按块合并时 `culled` 是各块之并（某块里被裁就会被记进去）⇒ 不能直接用它的基数；
+        // 正确口径是「考虑过的对象（渲染 ∪ 被裁）− 渲染过的对象」。
+        self.objects_culled = track
+            .rendered
+            .union(&track.culled)
+            .count()
+            .saturating_sub(track.rendered.len());
+        self.unsupported.extend(track.unsupported.iter().cloned());
+    }
+}
+
+/// 各阶段耗时（`YANSHI_RENDER_PROBE=1` 诊断用；并行时是各块之和）。wasm32 上恒为零。
+#[derive(Debug, Clone, Copy, Default)]
+struct RenderProbe {
+    /// 铺底/分配。
+    fill: std::time::Duration,
+    /// 逐层渲染对象。
+    render: std::time::Duration,
+    /// 逐层合成。
+    composite: std::time::Duration,
+}
+
+/// **并行渲染的最小区域面积（像素）**：小于它时线程创建与每块的固定开销盖过收益。
+const PARALLEL_MIN_PIXELS: usize = 128 * 128;
 
 /// 区域渲染结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +203,12 @@ pub struct Renderer {
     /// 而那条循环被多处共用 ✓ ⇒ 挂在这里只需改**一处** ✓，不会出现"某个入口忘了过滤" ✗
     ///（"两条路径漂移"是这个项目反复吃过的亏 ✓）。
     only_layer: Option<String>,
+    /// **并行 worker 数上限**（`None` ⇒ 自动取可用核数；`1` ⇒ 强制串行）。
+    ///
+    /// 存在的意义是**可判定性**：并行与串行的像素必须逐字节相同，测试需要一条
+    /// 「同一份文档、两种模式」的可控路径，而不是靠机器核数碰运气（见
+    /// `tests/tile_parallel.rs`）。
+    max_workers: Option<usize>,
 }
 
 impl Renderer {
@@ -125,6 +216,23 @@ impl Renderer {
     /// 渲染器是**复用**的 ✓，忘了还原就会**悄悄影响下一次渲染** ✗。
     pub fn set_only_layer(&mut self, layer: Option<String>) -> Option<String> {
         std::mem::replace(&mut self.only_layer, layer)
+    }
+
+    /// **覆盖并行度**（`1` ⇒ 强制串行；`0` 视为 `1`），返回原值。
+    /// `None` 恢复自动（可用核数）。
+    pub fn set_max_workers(&mut self, workers: Option<usize>) -> Option<usize> {
+        std::mem::replace(&mut self.max_workers, workers.map(|n| n.max(1)))
+    }
+
+    /// 以并行度覆盖构造（链式）。
+    pub fn with_max_workers(mut self, workers: usize) -> Self {
+        self.max_workers = Some(workers.max(1));
+        self
+    }
+
+    /// 当前并行度覆盖（`None` ⇒ 自动）。
+    pub const fn max_workers(&self) -> Option<usize> {
+        self.max_workers
     }
 
     /// 以 tile 网格构造（默认缓存预算 64 MiB）。
@@ -136,6 +244,7 @@ impl Renderer {
             cache,
             options: RenderOptions::default(),
             only_layer: None,
+            max_workers: None,
         }
     }
 
@@ -147,6 +256,7 @@ impl Renderer {
             cache,
             options: RenderOptions::default(),
             only_layer: None,
+            max_workers: None,
         }
     }
 
@@ -225,14 +335,7 @@ impl Renderer {
         } else {
             0
         };
-        let mut mask_truncated = None;
-        if declared > padding {
-            // 历史原子可能声明了超限外扩：必须可观测，否则表现为「分块与整幅静默不一致」。
-            mask_truncated = Some(format!(
-                "区域外扩被截断：声明 {declared}px，上限 {}px；该区域的分块渲染可能与整幅渲染不一致",
-                self.options.max_filter_padding
-            ));
-        }
+        // 报告用的外扩框（口径与 `render_accumulation` 内部完全一致）。
         let padded = Bbox::new(
             region.x - padding as f64,
             region.y - padding as f64,
@@ -248,8 +351,12 @@ impl Renderer {
             filter_padding: padding,
             ..RenderStats::default()
         };
-        if let Some(warning) = mask_truncated {
-            stats.unsupported.push(warning);
+        if declared > padding {
+            // 历史原子可能声明了超限外扩：必须可观测，否则表现为「分块与整幅静默不一致」。
+            stats.unsupported.push(format!(
+                "区域外扩被截断：声明 {declared}px，上限 {}px；该区域的分块渲染可能与整幅渲染不一致",
+                self.options.max_filter_padding
+            ));
         }
 
         // 背景：文档 background 为不透明时先铺底。
@@ -259,51 +366,46 @@ impl Renderer {
             .or_else(|| parse_background(&state.background));
         // 阶段计时（诊断用，默认关闭）：`YANSHI_RENDER_PROBE=1` 时打印各阶段耗时。
         // wasm32 下是空操作（见 `stage_probe` 的说明：`Instant` 在 wasm32 会 panic）。
-        let mut probe_fill_stage = stage_probe::Stage::start();
-        let mut accumulation = match background {
-            Some(color) if color[3] > 0 => Buffer::filled(
-                origin_x,
-                origin_y,
-                width,
-                height,
-                u8x4_to_linear_premul(color),
-            ),
-            _ => Buffer::new(origin_x, origin_y, width, height),
+        let mut probe = RenderProbe::default();
+
+        // **串行与并行在这里分派**：并行分块同样调用 `render_accumulation`（见其说明）⇒
+        // 两条路径算的是同一件事，区别只是"谁来算哪几行"。
+        let workers = parallel_impl::workers(self.max_workers);
+        let region_pixels =
+            (region.w.ceil().max(0.0) as usize).saturating_mul(region.h.ceil().max(0.0) as usize);
+        let cropped = if workers > 1 && region_pixels >= PARALLEL_MIN_PIXELS {
+            // 区域足够大且核数 > 1：按行分块并行。**顺序无关性**见 `parallel_impl` 的说明。
+            let (buffer, chunk_stats, chunk_probe, chunks) = parallel_impl::render_region(
+                self, state, store, &region, padding, background, workers,
+            )?;
+            stats.layers = chunk_stats.layers;
+            stats.objects = chunk_stats.objects;
+            stats.objects_culled = chunk_stats.objects_culled;
+            stats.unsupported.extend(chunk_stats.unsupported);
+            stats.parallel_workers = chunks;
+            stats.parallel_chunks = chunks;
+            probe = chunk_probe;
+            buffer
+        } else {
+            let mut track = ObjectTrack::default();
+            let accumulation = self.render_accumulation(
+                state, store, &region, padding, background, &mut stats, &mut track, &mut probe,
+                None,
+            )?;
+            stats.absorb(&track);
+            stats.parallel_workers = 1;
+            stats.parallel_chunks = 0;
+            // 串行路径的 accumulation 覆盖"区域 + 外扩"⇒ 裁回请求区域；
+            // 并行路径的 `buffer` 已经**恰好**覆盖请求区域 ⇒ 不再白复制一次（4K 上这是一次 33MB 拷贝）。
+            if accumulation.bbox() == region {
+                accumulation
+            } else {
+                accumulation.crop(&region)
+            }
         };
-        let probe_fill = probe_fill_stage.stop();
-        let mut probe_render = std::time::Duration::ZERO;
-        let mut probe_composite = std::time::Duration::ZERO;
 
-        for layer in state.alive_layers() {
-            if let Some(only) = self.only_layer.as_deref() {
-                // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
-                // "把这一层导出来"是明确要求 ✓ ⇒ 隐藏的层也应当能导出 ✓（有意为之 ✓）。
-                if layer.id != only {
-                    continue;
-                }
-            } else if !layer.visible && !self.options.include_hidden_layers {
-                continue;
-            }
-            stats.layers += 1;
-            let mut probe_stage = stage_probe::Stage::start();
-            let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
-            self.render_layer_objects(state, store, layer, &mut layer_buffer, &mut stats)?;
-            apply_layer_mask(state, layer, &mut layer_buffer, &mut stats);
-            probe_render += probe_stage.stop();
-            if layer.clipping_mask {
-                // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
-                layer_buffer.multiply_alpha_by(&accumulation);
-            }
-            layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
-            let mode = BlendMode::from_name(&layer.blend_mode);
-            let mut probe_stage = stage_probe::Stage::start();
-            accumulation.composite(&layer_buffer, mode, 1.0);
-            probe_composite += probe_stage.stop();
-        }
-
-        // 裁剪回请求区域并切片入缓存。
+        // 切片入缓存（串行：缓存是 &mut self；见 `store_tiles` 的说明）。
         let mut probe_stage = stage_probe::Stage::start();
-        let cropped = accumulation.crop(&region);
         let tiles = self.store_tiles(&cropped);
         stats.tiles_rendered = tiles.len();
         let probe_crop = probe_stage.stop();
@@ -311,13 +413,16 @@ impl Renderer {
         // 再转显示空间。这样「整幅区域渲染」与「按 tile 组合渲染」（客户端 WASM 内核走后者）
         // 逐字节一致，不会因 f32 scratch 与 f16 tile 的舍入差出现 ±1 分歧（Phase 2 bit-exact）；
         // 且量化是就地计算，不依赖 tile 是否仍在缓存里（小预算下会被淘汰）。
+        //
+        // 这一段的成本随画布面积线性增长（4K 上实测约半秒）⇒ **同样按行并行**；
+        // 每像素只由自己的输入决定 ⇒ 与串行逐字节一致。
         let mut probe_stage = stage_probe::Stage::start();
-        let rgba8 = quantize_to_rgba8(&cropped, background);
+        let rgba8 = parallel_impl::quantize_to_rgba8(&cropped, background, workers);
         stage_probe::report(
             background.is_some(),
-            probe_fill,
-            probe_render,
-            probe_composite,
+            probe.fill,
+            probe.render,
+            probe.composite,
             probe_crop,
             probe_stage.stop(),
             (
@@ -338,6 +443,79 @@ impl Renderer {
             tiles,
             stats,
         })
+    }
+
+    /// **区域渲染的公共内核**：在「区域 + 外扩」的缓冲上跑完整的图层循环，返回该缓冲（不裁剪）。
+    ///
+    /// **串行整幅与并行分块都调用它** ⇒ 两条路径只有"算多大一块"的区别，没有"两套合成逻辑"，
+    /// 不会出现这个项目反复吃过的「两条路径漂移」。写 tile / 量化 / 外扩截断告警由
+    /// [`Self::render_region`] 统一处理（也正因此两块共用的收尾只有一处）。
+    // 参数多是因为它刻意把"渲染一份区域"的输入/输出都显式列出（便于分块调用方复用同一段）；
+    // 拆成结构体只会让调用点更绕，收益不明显。
+    #[allow(clippy::too_many_arguments)]
+    fn render_accumulation(
+        &self,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        region: &Bbox,
+        padding: u32,
+        background: Option<[u8; 4]>,
+        stats: &mut RenderStats,
+        track: &mut ObjectTrack,
+        probe: &mut RenderProbe,
+        bitmaps: Option<&BitmapCache>,
+    ) -> Result<Buffer> {
+        let padded = Bbox::new(
+            region.x - padding as f64,
+            region.y - padding as f64,
+            region.w + padding as f64 * 2.0,
+            region.h + padding as f64 * 2.0,
+        );
+        let origin_x = padded.x.floor() as i64;
+        let origin_y = padded.y.floor() as i64;
+        let width = ((padded.x + padded.w).ceil() as i64 - origin_x).max(0) as u32;
+        let height = ((padded.y + padded.h).ceil() as i64 - origin_y).max(0) as u32;
+
+        let mut probe_fill_stage = stage_probe::Stage::start();
+        let mut accumulation = match background {
+            Some(color) if color[3] > 0 => Buffer::filled(
+                origin_x,
+                origin_y,
+                width,
+                height,
+                u8x4_to_linear_premul(color),
+            ),
+            _ => Buffer::new(origin_x, origin_y, width, height),
+        };
+        probe.fill += probe_fill_stage.stop();
+
+        for layer in state.alive_layers() {
+            if let Some(only) = self.only_layer.as_deref() {
+                // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
+                // "把这一层导出来"是明确要求 ✓ ⇒ 隐藏的层也应当能导出 ✓（有意为之 ✓）。
+                if layer.id != only {
+                    continue;
+                }
+            } else if !layer.visible && !self.options.include_hidden_layers {
+                continue;
+            }
+            stats.layers += 1;
+            let mut probe_stage = stage_probe::Stage::start();
+            let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
+            self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;
+            apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
+            probe.render += probe_stage.stop();
+            if layer.clipping_mask {
+                // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
+                layer_buffer.multiply_alpha_by(&accumulation);
+            }
+            layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
+            let mode = BlendMode::from_name(&layer.blend_mode);
+            let mut probe_stage = stage_probe::Stage::start();
+            accumulation.composite(&layer_buffer, mode, 1.0);
+            probe.composite += probe_stage.stop();
+        }
+        Ok(accumulation)
     }
 
     /// 渲染单个 tile（命中缓存则直接返回）。
@@ -706,7 +884,8 @@ impl Renderer {
         store: &dyn BlobStore,
         layer: &Layer,
         layer_buffer: &mut Buffer,
-        stats: &mut RenderStats,
+        track: &mut ObjectTrack,
+        bitmaps: Option<&BitmapCache>,
     ) -> Result<()> {
         let mut probe_objects = stage_probe::ObjectTimings::default();
         // 选区「约束落笔」（路线 A）✓：**把覆盖度折进印章**（见 `stamp_samples_clipped`）✓ ——
@@ -755,11 +934,11 @@ impl Renderer {
                     })
                     .unwrap_or(false);
                 if !intersects {
-                    stats.objects_culled += 1;
+                    track.culled.insert(object.id.clone());
                     continue;
                 }
             }
-            stats.objects += 1;
+            track.rendered.insert(object.id.clone());
             // 对象不透明度：`data.opacity`（缺省 1）。
             let opacity = object
                 .data
@@ -870,7 +1049,7 @@ impl Renderer {
                 }
                 Primitive::Adjustment { kind, params } => {
                     if !apply_adjustment(layer_buffer, &kind, &params, opacity) {
-                        stats
+                        track
                             .unsupported
                             .push(format!("调整类型未实现: {kind}（对象 {}）", object.id));
                     }
@@ -883,7 +1062,7 @@ impl Renderer {
                         opacity,
                         (state.width as f64, state.height as f64),
                     ) {
-                        stats
+                        track
                             .unsupported
                             .push(format!("滤镜未实现: {name}（对象 {}）", object.id));
                     }
@@ -909,59 +1088,59 @@ impl Renderer {
                     // **但绝不能静默** ✗：跳过必须进 `stats.unsupported` ✓（它一路进
                     // `RenderedPreview.warnings` ✓ ⇒ 调用方看得见 ✓），而且要**说清缺哪个哈希/对象** ✓。
                     // **也绝不能画错** ✗：这里**什么都不画** ✓（跳过 ✓），不是拿别的字节顶上 ✓。
-                    let bytes = match store.get(&blob) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            stats.unsupported.push(format!(
-                                "位图补丁缺少 blob ⇒ 这一块**没有画**（对象 {}，blob {blob}）：{error} \
-                                 —— 工程包可能省略了它而本地又重放不出来；画面因此可能不完整 ✓",
-                                object.id
-                            ));
-                            continue;
+                    // 分块并行时同一个补丁会被多块请求：**缓存已解码的字节**，
+                    // 否则 `store.get`（文件存储还要读盘）+ PNG 解码会被乘以块数（见 `BitmapCache`）。
+                    let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
+                    let entry: std::sync::Arc<(u32, u32, Vec<u8>)> = match bitmaps {
+                        Some(cache) => {
+                            // **在锁内取值/解码**：保证同一 blob 在一次渲染里只读/解码一次。
+                            // 若在锁外解码，多块可能同时未命中 ⇒ 重复读盘/解码，缓存就白设了。
+                            let mut guard = cache
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            match guard.get(&cache_key) {
+                                Some(entry) => entry.clone(),
+                                None => {
+                                    let Some(fetched) = fetch_raster_patch(
+                                        store,
+                                        &blob,
+                                        &mime_type,
+                                        width,
+                                        height,
+                                        &object.id,
+                                        &mut track.unsupported,
+                                    )?
+                                    else {
+                                        continue;
+                                    };
+                                    let entry = std::sync::Arc::new(fetched);
+                                    guard.insert(cache_key, entry.clone());
+                                    entry
+                                }
+                            }
                         }
-                    };
-                    let (width, height, pixels) = if mime_type == PNG_MIME {
-                        let (width, height, rgba8) = decode_png(&bytes).ok_or_else(|| {
-                            YanshiError::new(
-                                yanshi_core::ErrorCode::InvalidArgument,
-                                yanshi_core::ErrorContext::detail(format!(
-                                    "位图补丁 PNG 解码失败（对象 {}）",
-                                    object.id
-                                )),
-                            )
-                            .with_object(object.id.clone())
-                            .with_blob(blob.to_string())
-                        })?;
-                        (width, height, rgba8)
-                    } else {
-                        if mime_type != RAW_RGBA_MIME {
-                            stats.unsupported.push(format!(
-                                "位图补丁格式未实现: {mime_type}（对象 {}，内核仅支持 {RAW_RGBA_MIME} 与 {PNG_MIME}）",
-                                object.id
-                            ));
-                            continue;
+                        None => {
+                            let Some(fetched) = fetch_raster_patch(
+                                store,
+                                &blob,
+                                &mime_type,
+                                width,
+                                height,
+                                &object.id,
+                                &mut track.unsupported,
+                            )?
+                            else {
+                                continue;
+                            };
+                            std::sync::Arc::new(fetched)
                         }
-                        let expected = (width as usize) * (height as usize) * 4;
-                        if bytes.len() < expected {
-                            return Err(YanshiError::new(
-                                yanshi_core::ErrorCode::InvalidArgument,
-                                yanshi_core::ErrorContext::detail(format!(
-                                    "位图补丁 {} 字节数不足：期望 {expected}，实际 {}",
-                                    object.id,
-                                    bytes.len()
-                                )),
-                            )
-                            .with_object(object.id.clone())
-                            .with_blob(blob.to_string()));
-                        }
-                        (width, height, bytes[..expected].to_vec())
                     };
                     layer_buffer.blit_rgba8(
                         offset.0 as i64,
                         offset.1 as i64,
-                        width,
-                        height,
-                        &pixels,
+                        entry.0,
+                        entry.1,
+                        &entry.2,
                         opacity,
                     );
                 }
@@ -996,7 +1175,7 @@ impl Renderer {
                         &coverage,
                     );
                     if drawn == 0 {
-                        stats.unsupported.push(format!(
+                        track.unsupported.push(format!(
                             "文本未绘制出像素（对象 {}，文本 {:?}）",
                             object.id, text
                         ));
@@ -1017,7 +1196,7 @@ impl Renderer {
                         && kind != "smudge"
                         && kind != "erase"
                     {
-                        stats
+                        track
                             .unsupported
                             .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
                         continue;
@@ -1415,7 +1594,7 @@ impl Renderer {
                     continue;
                 }
                 Primitive::Unsupported { reason } => {
-                    stats
+                    track
                         .unsupported
                         .push(format!("{reason}（对象 {}）", object.id));
                 }
@@ -1461,6 +1640,68 @@ pub const RAW_RGBA_MIME: &str = "image/x-yanshi-raw";
 /// 而内核内部表示**仍然是 RGBA** ✓ ⇒ **∴ 渲染结果不变 ✓**（"同笔同结果" ✓）。
 pub const PNG_MIME: &str = "image/png";
 
+/// 读取并解码一个位图补丁（`Ok(None)` ⇒ 该对象应被跳过，告警已写入 `warnings`）。
+///
+/// 抽出来是为了让"缓存未命中"那条路径也能在 [`BitmapCache`] 的锁内执行
+/// （保证同一 blob 一次渲染只读/解码一次）。
+#[allow(clippy::too_many_arguments)]
+fn fetch_raster_patch(
+    store: &dyn BlobStore,
+    blob: &yanshi_core::atom::BlobHash,
+    mime_type: &str,
+    declared_width: u32,
+    declared_height: u32,
+    object_id: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<(u32, u32, Vec<u8>)>> {
+    let bytes = match store.get(blob) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warnings.push(format!(
+                "位图补丁缺少 blob ⇒ 这一块**没有画**（对象 {object_id}，blob {blob}）：{error} \
+                 —— 工程包可能省略了它而本地又重放不出来；画面因此可能不完整 ✓"
+            ));
+            return Ok(None);
+        }
+    };
+    if mime_type == PNG_MIME {
+        let (width, height, rgba8) = decode_png(&bytes).ok_or_else(|| {
+            YanshiError::new(
+                yanshi_core::ErrorCode::InvalidArgument,
+                yanshi_core::ErrorContext::detail(format!(
+                    "位图补丁 PNG 解码失败（对象 {object_id}）"
+                )),
+            )
+            .with_object(object_id.to_owned())
+            .with_blob(blob.to_string())
+        })?;
+        return Ok(Some((width, height, rgba8)));
+    }
+    if mime_type != RAW_RGBA_MIME {
+        warnings.push(format!(
+            "位图补丁格式未实现: {mime_type}（对象 {object_id}，内核仅支持 {RAW_RGBA_MIME} 与 {PNG_MIME}）"
+        ));
+        return Ok(None);
+    }
+    let expected = (declared_width as usize) * (declared_height as usize) * 4;
+    if bytes.len() < expected {
+        return Err(YanshiError::new(
+            yanshi_core::ErrorCode::InvalidArgument,
+            yanshi_core::ErrorContext::detail(format!(
+                "位图补丁 {object_id} 字节数不足：期望 {expected}，实际 {}",
+                bytes.len()
+            )),
+        )
+        .with_object(object_id.to_owned())
+        .with_blob(blob.to_string()));
+    }
+    Ok(Some((
+        declared_width,
+        declared_height,
+        bytes[..expected].to_vec(),
+    )))
+}
+
 /// 笔迹几何的文档包围盒（含笔尖半径）。
 fn geometry_bbox(geometry: &crate::brush::StrokeGeometry, size: f64) -> Option<Bbox> {
     if geometry.points.is_empty() {
@@ -1483,15 +1724,6 @@ fn geometry_bbox(geometry: &crate::brush::StrokeGeometry, size: f64) -> Option<B
     ))
 }
 
-/// f16 量化后转显示空间 RGBA8（与 tile 存储精度一致，且与缓存状态无关）。
-fn quantize_to_rgba8(buffer: &Buffer, background: Option<[u8; 4]>) -> Vec<u8> {
-    let mut quantized = buffer.crop(&buffer.bbox());
-    for value in quantized.pixels_mut() {
-        *value = crate::half::quantize_f16(*value);
-    }
-    quantized.to_rgba8(background)
-}
-
 fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
     let x0 = bbox.x.floor().max(0.0);
     let y0 = bbox.y.floor().max(0.0);
@@ -1507,6 +1739,317 @@ fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
         ));
     }
     Ok(Bbox::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+/// **并行分块渲染**：按行把请求区域切块，各块走与串行**完全相同**的
+/// [`Renderer::render_accumulation`]，最后按文档坐标拼回。
+///
+/// 顺序无关性的根据：
+/// * **图层顺序没有被并行**：每块内部仍按 z 序逐层渲染并合成 —— 混合模式/透明度的顺序语义
+///   只发生在**同一像素**上，块与块之间没有共享像素。
+/// * **块与块写互不重叠的行**：每块拿到的是输出缓冲里**自己那几行**的可变切片
+///   （`split_at_mut` 保证不相交）⇒ 谁先算完、以什么顺序拼回，都不改变任何字节。
+/// * **邻域靠外扩而不是靠邻块**：滤镜/蒙版羽化/修图源采样都由 `padding` 提供邻域 ——
+///   每块按**整幅相同**的 padding 外扩（外扩由 `render_accumulation` 统一做）。
+///   把 padding 去掉就能看到接缝（变异演示见 `tests/tile_parallel.rs`）。
+/// * **没有浮点规约**：这里不做任何跨块求和/累加 ⇒ 不存在"线程调度改变舍入"的可能。
+///
+/// wasm32 上没有共享内存线程：该目标的 [`workers`] 恒为 1，且真正的线程代码**不参与编译**
+/// （`#[cfg]`），由 `scripts/wasm-smoke.sh` 在 node 里真跑一次渲染兜底。
+#[cfg(not(target_arch = "wasm32"))]
+mod parallel_impl {
+    use super::*;
+
+    /// **每个并行分块的最小行数**：块太薄时"每块都要重新解析对象/分配缓冲"的固定成本会反噬。
+    const MIN_BAND_ROWS: u32 = 24;
+    /// **worker 上限**：避免在超高核数机器上把区域切得过碎、内存峰值失控。
+    const MAX_WORKERS: usize = 16;
+
+    /// 本次可用的 worker 上限（显式覆盖优先，其次可用核数）。
+    pub fn workers(explicit: Option<usize>) -> usize {
+        explicit
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|value| value.get())
+                    .unwrap_or(1)
+            })
+            .max(1)
+    }
+
+    /// 把 `height` 行切成至多 `workers` 块（前面的块各多一行 ⇒ 覆盖完整、与调度无关的确定性切法）。
+    fn split_bands(height: u32, workers: usize) -> Vec<(u32, u32)> {
+        let count = workers.min(height as usize).max(1);
+        let base = height / count as u32;
+        let extra = height % count as u32;
+        let mut bands = Vec::with_capacity(count);
+        let mut row = 0u32;
+        for index in 0..count {
+            let rows = base + if (index as u32) < extra { 1 } else { 0 };
+            if rows == 0 {
+                continue;
+            }
+            bands.push((row, rows));
+            row += rows;
+        }
+        bands
+    }
+
+    /// 并行渲染 `region`：返回**恰好覆盖 `region`** 的缓冲、合并后的统计、各阶段耗时、实际块数。
+    pub fn render_region(
+        renderer: &Renderer,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        region: &Bbox,
+        padding: u32,
+        background: Option<[u8; 4]>,
+        workers: usize,
+    ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+        // `region` 来自 `clamp_region`，已是整数框。
+        let rx = region.x.floor() as i64;
+        let ry = region.y.floor() as i64;
+        // **宽高要用"右/下边界 − 原点"**（不是 `w − x`）：`x`/`y` 是绝对文档坐标，
+        // 偏移区域（例如脏区 (301,361)）若按 `w − x` 算会被算成 0 宽 ⇒ 整块渲染成空。
+        // 这个缺陷被 `crates/yanshi-server/tests/coldstart_reuse.rs` 抓住（脏区渲染返回 0×0）。
+        let rw = ((region.x + region.w).ceil() as i64 - rx).max(0) as u32;
+        let rh = ((region.y + region.h).ceil() as i64 - ry).max(0) as u32;
+        let empty_stats = RenderStats {
+            filter_padding: padding,
+            ..RenderStats::default()
+        };
+        if rw == 0 || rh == 0 {
+            return Ok((
+                Buffer::new(rx, ry, 0, 0),
+                empty_stats,
+                RenderProbe::default(),
+                0,
+            ));
+        }
+        // 每块至少 `MIN_BAND_ROWS` 行、块数不超过上限 ⇒ 块不是越薄越好。
+        let wanted = workers.min(MAX_WORKERS);
+        let by_rows = (rh / MIN_BAND_ROWS).max(1) as usize;
+        let bands = split_bands(rh, wanted.min(by_rows));
+        let chunks = bands.len();
+
+        let mut out = Buffer::new(rx, ry, rw, rh);
+        let stride = rw as usize * 4;
+        // 把输出按行切成互不重叠的可变切片：这是"块之间没有共享像素"的机器保证。
+        let mut slices: Vec<(&mut [f32], (u32, u32))> = Vec::with_capacity(chunks);
+        {
+            let mut rest: &mut [f32] = out.pixels_mut();
+            for &band in &bands {
+                let len = band.1 as usize * stride;
+                let (head, tail) = rest.split_at_mut(len);
+                slices.push((head, band));
+                rest = tail;
+            }
+        }
+
+        // **一份补丁只读/解码一次**，各块共享（见 `BitmapCache` 的说明）。
+        let bitmaps = BitmapCache::default();
+        let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> =
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(chunks);
+                // 传引用（不是把缓存 move 进第一个闭包）⇒ 各块共享同一份缓存。
+                let bitmaps_ref = &bitmaps;
+                for (destination, (row_start, rows)) in slices {
+                    let band = Bbox::new(
+                        rx as f64,
+                        (ry + row_start as i64) as f64,
+                        rw as f64,
+                        rows as f64,
+                    );
+                    handles.push(scope.spawn(
+                        move || -> Result<(RenderStats, ObjectTrack, RenderProbe)> {
+                            let mut stats = RenderStats {
+                                filter_padding: padding,
+                                ..RenderStats::default()
+                            };
+                            let mut track = ObjectTrack::default();
+                            let mut probe = RenderProbe::default();
+                            let buffer = renderer.render_accumulation(
+                                state,
+                                store,
+                                &band,
+                                padding,
+                                background,
+                                &mut stats,
+                                &mut track,
+                                &mut probe,
+                                Some(bitmaps_ref),
+                            )?;
+                            stats.absorb(&track);
+                            // 只把本块对应的行拷回输出；外扩出来的行丢弃。
+                            let (origin_x, origin_y) = buffer.origin();
+                            let source_x = (rx - origin_x) as usize;
+                            let source_y = (band.y as i64 - origin_y) as usize;
+                            let source_width = buffer.width() as usize;
+                            let source = buffer.as_f32();
+                            for row in 0..rows as usize {
+                                let from = ((source_y + row) * source_width + source_x) * 4;
+                                let to = row * stride;
+                                destination[to..to + stride]
+                                    .copy_from_slice(&source[from..from + stride]);
+                            }
+                            Ok((stats, track, probe))
+                        },
+                    ));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| match handle.join() {
+                        Ok(result) => result,
+                        Err(_) => Err(YanshiError::new(
+                            yanshi_core::ErrorCode::Degraded,
+                            yanshi_core::ErrorContext::detail(
+                                "并行渲染的 worker 线程 panic；本次渲染未完成",
+                            ),
+                        )),
+                    })
+                    .collect()
+            });
+
+        let mut merged_track = ObjectTrack::default();
+        let mut merged_stats = empty_stats;
+        let mut merged_probe = RenderProbe::default();
+        for result in results {
+            let (stats, track, probe) = result?;
+            merged_stats.layers = merged_stats.layers.max(stats.layers);
+            merged_track.merge(track);
+            merged_probe.fill += probe.fill;
+            merged_probe.render += probe.render;
+            merged_probe.composite += probe.composite;
+        }
+        merged_stats.absorb(&merged_track);
+        Ok((out, merged_stats, merged_probe, chunks))
+    }
+
+    /// **输出量化 + sRGB 编码**（按行并行）。
+    ///
+    /// 与 [`Buffer::to_rgba8`] **逐位等价**：每像素先量化到 f16，再按背景合成/编码；
+    /// 每像素只由自己的输入决定 ⇒ 行与行之间没有共享状态，怎么分块都不改变任何字节。
+    /// 这一段成本随画布面积线性增长（4K 上实测约半秒）⇒ 与分块渲染一样并行。
+    pub fn quantize_to_rgba8(
+        buffer: &Buffer,
+        background: Option<[u8; 4]>,
+        workers: usize,
+    ) -> Vec<u8> {
+        let width = buffer.width() as usize;
+        let height = buffer.height() as usize;
+        let mut out = vec![0u8; width * height * 4];
+        if width == 0 || height == 0 {
+            return out;
+        }
+        let source = buffer.as_f32();
+        let bg_linear = background.map(crate::color::background_linear_premul);
+        // 小图 / 单 worker：不启线程（线程创建对小图是净亏）。
+        if workers <= 1 || width * height < PARALLEL_MIN_PIXELS {
+            encode_rows(source, &mut out, 0, height, width, bg_linear);
+            return out;
+        }
+        let bands = split_bands(height as u32, workers.clamp(1, MAX_WORKERS));
+        // 输出按行切成互不重叠的可变切片（块之间没有共享字节，拼回顺序也不影响结果）。
+        let mut jobs: Vec<(&mut [u8], usize, usize)> = Vec::with_capacity(bands.len());
+        let mut rest: &mut [u8] = &mut out;
+        for (row_start, rows) in bands {
+            let len = rows as usize * width * 4;
+            let (head, tail) = rest.split_at_mut(len);
+            jobs.push((head, row_start as usize, rows as usize));
+            rest = tail;
+        }
+        std::thread::scope(|scope| {
+            for (destination, row_start, rows) in jobs {
+                scope.spawn(move || {
+                    encode_rows(source, destination, row_start, rows, width, bg_linear);
+                });
+            }
+        });
+        out
+    }
+
+    /// 把 `[row_start, row_start + rows)` 这些行的像素量化到 f16 并编码成显示空间 u8。
+    ///
+    /// **逐像素独立** ⇒ 行区间怎么切都不改变输出字节（与串行 `Buffer::to_rgba8` 逐位一致）。
+    fn encode_rows(
+        source: &[f32],
+        destination: &mut [u8],
+        row_start: usize,
+        rows: usize,
+        width: usize,
+        bg_linear: Option<crate::color::LinearRgba>,
+    ) {
+        let table = crate::color::srgb_encode_table();
+        for row in 0..rows {
+            let y = row_start + row;
+            let src = &source[y * width * 4..(y + 1) * width * 4];
+            let dst = &mut destination[row * width * 4..(row + 1) * width * 4];
+            for x in 0..width {
+                let base = x * 4;
+                let pixel = [
+                    crate::half::quantize_f16(src[base]),
+                    crate::half::quantize_f16(src[base + 1]),
+                    crate::half::quantize_f16(src[base + 2]),
+                    crate::half::quantize_f16(src[base + 3]),
+                ];
+                let bytes = match bg_linear {
+                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+                };
+                dst[base..base + 4].copy_from_slice(&bytes);
+            }
+        }
+    }
+}
+
+/// **wasm32 串行回退**：`wasm32-unknown-unknown` 没有共享内存线程 ⇒ 恒为单 worker。
+///
+/// 这里**不引用**任何 `std::thread` 内容 ⇒ 线程代码不参与 wasm 构建（`cfg` 掉的是整条并行路径）。
+#[cfg(target_arch = "wasm32")]
+mod parallel_impl {
+    use super::*;
+
+    /// wasm：永远串行。
+    pub const fn workers(_explicit: Option<usize>) -> usize {
+        1
+    }
+
+    /// 串行回退（本目标上 `workers()` 恒为 1，因此调用点不会走到这里；保留它是为了让
+    /// 强行抬高 worker 数的调用仍然得到**正确画面**而不是 panic）。
+    pub fn render_region(
+        renderer: &Renderer,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        region: &Bbox,
+        padding: u32,
+        background: Option<[u8; 4]>,
+        _workers: usize,
+    ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+        let mut stats = RenderStats {
+            filter_padding: padding,
+            ..RenderStats::default()
+        };
+        let mut track = ObjectTrack::default();
+        let mut probe = RenderProbe::default();
+        let buffer = renderer.render_accumulation(
+            state, store, region, padding, background, &mut stats, &mut track, &mut probe, None,
+        )?;
+        stats.absorb(&track);
+        Ok((buffer.crop(region), stats, probe, 1))
+    }
+
+    /// **串行**输出量化 + sRGB 编码（wasm 上没有线程 ⇒ 逐行顺序处理）。
+    ///
+    /// 与原生并行版**同一口径**（逐像素量化到 f16 再编码）⇒ 两端逐字节一致。
+    pub fn quantize_to_rgba8(
+        buffer: &Buffer,
+        background: Option<[u8; 4]>,
+        _workers: usize,
+    ) -> Vec<u8> {
+        let mut quantized = buffer.crop(&buffer.bbox());
+        for value in quantized.pixels_mut() {
+            *value = crate::half::quantize_f16(*value);
+        }
+        quantized.to_rgba8(background)
+    }
 }
 
 /// 渲染阶段计时探针（诊断用）。
@@ -1743,6 +2286,22 @@ pub fn shape_coverage_in(
 
 /// 由蒙版 `shape` 字段构造覆盖率（支持 `{"kind": "rect"|"ellipse"|"polygon", ...}`）。
 pub fn coverage_from_shape(shape: &Value) -> Coverage {
+    let (kind, bbox, points) = parse_shape_coverage(shape);
+    shape_coverage(kind, bbox, &points)
+}
+
+/// 由蒙版 `shape` 字段构造覆盖率，但**只生成与 `clip` 相交的像素**。
+///
+/// 与 [`coverage_from_shape`] 在相交处**逐像素相同**（覆盖率只取决于该像素与形状的几何关系）。
+/// 分块渲染时这条很关键：否则**每一块**都要按整块蒙版的 bbox 重算覆盖率
+/// （实测一份 90% 画布大的椭圆蒙版把并行收益吃光：图层耗时从 1.7s 变成 4 块合计 7.3s）。
+fn coverage_from_shape_clipped(shape: &Value, clip: &Bbox) -> Coverage {
+    let (kind, bbox, points) = parse_shape_coverage(shape);
+    shape_coverage_in(kind, bbox, &points, clip)
+}
+
+/// 解析蒙版 `shape` 字段为（形状、bbox、顶点）。
+fn parse_shape_coverage(shape: &Value) -> (ShapeKind, Bbox, Vec<(f64, f64)>) {
     let kind = match shape.get("kind").and_then(Value::as_str) {
         Some("ellipse") => ShapeKind::Ellipse,
         Some("polygon") => ShapeKind::Polygon,
@@ -1765,7 +2324,7 @@ pub fn coverage_from_shape(shape: &Value) -> Coverage {
             }
         }
     }
-    shape_coverage(kind, bbox, &points)
+    (kind, bbox, points)
 }
 
 /// 图层蒙版：用蒙版覆盖率乘以图层 alpha（蒙版缺失或已删除时保持原样）。
@@ -1775,14 +2334,22 @@ pub fn apply_layer_mask(
     layer_buffer: &mut Buffer,
     stats: &mut RenderStats,
 ) {
+    apply_layer_mask_warn(state, layer, layer_buffer, &mut stats.unsupported);
+}
+
+/// 同 [`apply_layer_mask`]，但告警写进调用方给的列表（并行分块按块去重合并用）。
+fn apply_layer_mask_warn(
+    state: &DocumentState,
+    layer: &Layer,
+    layer_buffer: &mut Buffer,
+    warnings: &mut Vec<String>,
+) {
     let Some(mask_id) = &layer.mask_id else {
         return;
     };
     let Some(mask) = state.masks.get(mask_id) else {
         // 引用不存在的蒙版必须可观测（9 章校验也会报 missing）。
-        stats
-            .unsupported
-            .push(format!("蒙版不存在: {mask_id}（图层 {}）", layer.id));
+        warnings.push(format!("蒙版不存在: {mask_id}（图层 {}）", layer.id));
         return;
     };
     if mask.is_deleted() {
@@ -1795,7 +2362,7 @@ pub fn apply_layer_mask(
         layer_buffer.width(),
         layer_buffer.height(),
     );
-    let coverage = coverage_from_shape(&mask.shape);
+    let coverage = coverage_from_shape_clipped(&mask.shape, &layer_buffer.bbox());
     mask_buffer.fill_coverage(&coverage, [0.0, 0.0, 0.0, 1.0], BlendMode::Normal, 1.0);
     if mask.invert {
         for y in 0..mask_buffer.height() {

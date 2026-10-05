@@ -258,23 +258,24 @@ impl Buffer {
         opacity: f32,
     ) {
         let factor = opacity.clamp(0.0, 1.0);
-        for row in 0..height {
-            for col in 0..width {
-                let index = ((row * width + col) * 4) as usize;
+        // **只遍历与自身相交的行列**：过去整块补丁（例如覆盖全画布的 import_image）在每个
+        // 分块里都被完整扫一遍，逐像素才发现越界 ⇒ 分块渲染时成本 `∝ 补丁面积`（不是 `∝ 相交面积`）。
+        // 被跳过的迭代在旧实现里本来就因越界而不写任何像素 ⇒ 结果逐字节相同。
+        let col_start = (self.origin_x - x).max(0);
+        let row_start = (self.origin_y - y).max(0);
+        let col_end = (self.origin_x + self.width as i64 - x).min(width as i64);
+        let row_end = (self.origin_y + self.height as i64 - y).min(height as i64);
+        if col_end <= col_start || row_end <= row_start {
+            return;
+        }
+        for row in row_start..row_end {
+            for col in col_start..col_end {
+                let index = ((row * width as i64 + col) * 4) as usize;
                 if index + 3 >= rgba8.len() {
                     return;
                 }
-                let document_x = x + col as i64;
-                let document_y = y + row as i64;
-                let local_x = document_x - self.origin_x;
-                let local_y = document_y - self.origin_y;
-                if local_x < 0 || local_y < 0 {
-                    continue;
-                }
-                let (local_x, local_y) = (local_x as u32, local_y as u32);
-                if local_x >= self.width || local_y >= self.height {
-                    continue;
-                }
+                let local_x = (x + col - self.origin_x) as u32;
+                let local_y = (y + row - self.origin_y) as u32;
                 let bytes = [
                     rgba8[index],
                     rgba8[index + 1],
