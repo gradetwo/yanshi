@@ -878,6 +878,21 @@ const namingResult = await evaluate(`(async () => {
   // 就能判定"页面看到的源"是否等于"服务端持有的源"，**不必再猜是哪一侧不对**。
   // ⚠️ 本段在**模板字符串内** ⇒ 注释里也不能出现反引号、也不能出现美元加大括号。
   const beforeDocIdForProbe = window.yanshi.state().docId;
+  // **直接问服务端"源文档多大"**（第 942 轮）：duplicate_document 用的是**服务端持有的** state.width，
+  // 而页面看到的是 512x512（第 940 轮实测）。把服务端那份也打出来，就能一刀劈开候选集：
+  // 服务端说 512 则走样在"建文档"一侧；服务端说 1024 则页面与服务端看到的不是同一份。
+  // 本段在模板字符串内，注释里也不能出现反引号或美元加大括号。
+  let serverSourceDocProbe = null;
+  // **先看清 state.token 长什么样**（第 942 轮）：服务端说它必须是 64 位小写十六进制，
+  // 所以要量出长度与首尾，而不是继续猜它取自哪里。
+  const tokenProbe = (function () { const t = String(window.yanshi.state().token || "");
+    return { len: t.length, head: t.slice(0, 8), tail: t.slice(-4) }; })();
+  try {
+    const r = await fetch("/api/tools/get_document?doc=" + window.yanshi.state().docId +
+      "&token=" + window.yanshi.state().token, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ arguments: {} }) });
+    serverSourceDocProbe = await r.json();
+  } catch (error) { serverSourceDocProbe = "查询失败: " + String(error); }
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
   document.getElementById("openDoc").click();
   await wait(1200);
@@ -918,6 +933,8 @@ const namingResult = await evaluate(`(async () => {
   return {
     beforeDoc,
     beforeDocIdForProbe,
+    serverSourceDocProbe,
+    tokenProbe,
     beforeBoardW: beforeWidth,
     afterBoardW: afterWidth,
     afterDoc,
@@ -1747,7 +1764,9 @@ if (!namingResult.identity.includes(namedNew)) {
 try { (await import("node:fs")).appendFileSync("/tmp/yanshi-uicheck-obs.txt", JSON.stringify({
   beforeDoc: namingResult.beforeDoc, beforeDocId: namingResult.beforeDocIdForProbe, beforeBoardW: namingResult.beforeBoardW,
   afterDoc: namingResult.afterDoc, afterDocId: namingResult.afterDocIdForProbe, afterBoardW: namingResult.afterBoardW,
+  serverSourceDocProbe: namingResult.serverSourceDocProbe, tokenProbe: namingResult.tokenProbe,
 }) + "\n"); } catch (_) { /* 写不了也不影响判据 */ }
+console.log("  服务端持有的源文档 " + JSON.stringify(namingResult.serverSourceDocProbe));
 console.log("  尺寸观测 " + JSON.stringify({
   beforeDoc: namingResult.beforeDoc, beforeDocId: namingResult.beforeDocIdForProbe, beforeBoardW: namingResult.beforeBoardW,
   afterDoc: namingResult.afterDoc, afterDocId: namingResult.afterDocIdForProbe, afterBoardW: namingResult.afterBoardW,
