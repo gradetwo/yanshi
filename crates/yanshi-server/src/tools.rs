@@ -674,6 +674,11 @@ pub enum PreviewInfo {
 
 impl PreviewInfo {
     /// 10.1 的 `preview` 字段。
+    ///
+    /// **`warnings` 必须带上** ✗（真实事故复盘暴露的缺口 ✓）：预览常常是用户
+    /// "看到画"的唯一一眼 ✓ —— 若它缺了补丁而这里不报 ✓，"不完整的画面"就会被
+    /// 当成"画丢了"✗（与 [`RenderedPreview::warnings`] 的语义一致 ✓：
+    /// [`Self::Cached`] 是复用旧地址、本次没有新渲染 ⇒ 没有新告警可报 ✓）。
     pub fn to_json(&self) -> Value {
         match self {
             Self::Fresh(preview) => json!({
@@ -682,8 +687,9 @@ impl PreviewInfo {
                 "mime_type": preview.mime_type,
                 "width": preview.width,
                 "height": preview.height,
+                "warnings": preview.warnings,
             }),
-            Self::Cached(url) => json!({"thumb_url": url}),
+            Self::Cached(url) => json!({"thumb_url": url, "warnings": []}),
         }
     }
 

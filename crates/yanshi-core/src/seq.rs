@@ -802,6 +802,7 @@ impl FoldEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::{generate, ScenarioConfig};
     use serde_json::Value;
 
     fn atom(kind: AtomKind, id: &str, payload: Value) -> Atom {
@@ -1442,6 +1443,112 @@ mod tests {
         assert_eq!(
             incremental.state.doc_id, None,
             "① 撤销的 create_document 不能复活"
+        );
+    }
+
+    /// **P0「状态丢失」判据**：在"检查点与撤销高度交错"的长日志上，**每一个前缀**的
+    /// 增量折叠都必须与冷重放**逐字段一致**（状态 ＋ 有效集 ＋ 警告）。
+    ///
+    /// **为什么单列一条** ✓：真实事故日志（667 个原子）的结构是
+    /// **33 个 `create_checkpoint` ＋ 102 个 `revert` 交错**，其中 **70 个撤销的目标
+    /// 位于"最近一次检查点之前"**。检查点切在还原点阶梯与 `origin` 的边界上，
+    /// 正好落在 [`IncrementalFolder`] 的三条路（前推／续折／完整求值）之间；
+    /// 既有的小日志用例只有几十步，覆盖不到这个规模与密度。
+    ///
+    /// 判据有两部分 ✓：
+    /// 1. **编辑路径 == 冷重放**：逐 seq 比对整个 [`StateAt`]；
+    /// 2. **写下的日志 == 提交路径的状态**：冷重放到 head 的状态必须等于
+    ///    testkit 走真实提交路径逐条维护出来的 `final_state`（即"N 次提交的日志
+    ///    冷重放 == N 次提交增量得到的状态"）。
+    ///
+    /// **变异验证** ✓：把 `IncrementalFolder::fold` 里 `earliest` 的 `affects_fold`
+    /// 过滤条件改成恒假（等价于"撤销旧原子时仍按前推走"），本判据当场红；
+    /// 恢复后逐字节相同（见提交说明）。
+    #[test]
+    fn incremental_and_cold_replay_agree_at_every_seq_on_a_checkpoint_heavy_log() {
+        let scenario = generate(&ScenarioConfig {
+            seed: 0x9E37_79B9_7F4A_7C15,
+            steps: 1200,
+            blob_bytes: 0,
+            // 事故日志**没有** `declare_head`（求值起点不跳变）⇒ 这一条必须照着来。
+            snapshot_window: 0,
+            revert_permille: 300,
+            sampling_permille: 20,
+            max_entities: 8,
+        });
+        let log = &scenario.log;
+        let head = log.head_seq();
+
+        // **前置条件**（否则判据名不副实）：检查点、撤销都要够密，
+        // 而且要有足够多"目标在最近一次检查点之前"的撤销。
+        let checkpoint_seqs: Vec<Seq> = log
+            .iter()
+            .filter(|a| a.kind == AtomKind::CreateCheckpoint)
+            .map(|a| a.seq)
+            .collect();
+        let reverts: Vec<&Atom> = log.iter().filter(|a| a.kind == AtomKind::Revert).collect();
+        let crossing = reverts
+            .iter()
+            .filter(|revert| {
+                let Some(target_seq) = revert
+                    .payload
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .and_then(|target| log.get(target))
+                    .map(|target| target.seq)
+                else {
+                    return false;
+                };
+                checkpoint_seqs
+                    .iter()
+                    .any(|ckpt| *ckpt > target_seq && *ckpt < revert.seq)
+            })
+            .count();
+        assert!(
+            checkpoint_seqs.len() >= 5,
+            "样例日志的检查点太少（{}）⇒ 覆盖不到交错",
+            checkpoint_seqs.len()
+        );
+        assert!(
+            reverts.len() >= 40,
+            "样例日志的撤销太少（{}）⇒ 覆盖不到交错",
+            reverts.len()
+        );
+        assert!(
+            crossing >= 10,
+            "跨检查点的撤销太少（{crossing}）⇒ 覆盖不到事故日志的结构"
+        );
+        eprintln!(
+            "结构：atoms={head} checkpoints={} reverts={} crossing={}",
+            checkpoint_seqs.len(),
+            reverts.len(),
+            crossing
+        );
+
+        // ① 编辑路径（逐条前推）== 冷重放（每步一个全新缓存）。
+        let mut folder = IncrementalFolder::new();
+        for n in 1..=head {
+            let incremental = folder.fold(log, n).unwrap();
+            let cold = state_at(log, n, &mut StateAtCache::new()).unwrap();
+            assert!(
+                incremental == cold,
+                "seq {n} 处增量折叠与冷重放分歧：state={} suppressed={} warnings={}",
+                incremental.state == cold.state,
+                incremental.suppressed == cold.suppressed,
+                incremental.warnings == cold.warnings
+            );
+        }
+
+        // ② 写下的日志冷重放 == 提交路径逐条得到的状态。
+        let cold_head = state_at(log, head, &mut StateAtCache::new()).unwrap();
+        assert_eq!(
+            cold_head.state, scenario.final_state,
+            "日志冷重放与提交路径的状态不一致 ⇒ 写下的东西重放不出来"
+        );
+        assert_eq!(
+            folder.fold_head(log).unwrap(),
+            cold_head,
+            "head 处增量结果必须与冷重放逐字段一致"
         );
     }
 }
