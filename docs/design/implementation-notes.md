@@ -35737,3 +35737,31 @@ Object.keys 看真键表）。
   `SystemTime::now()` 在 `wasm32-unknown-unknown` 上 **panic**（浏览器实测 `RuntimeError: unreachable`，
   `unregister()` + `caches.delete()` 全部缓存 ⇒ 把**别的判据要用的外壳缓存**删了 ✓
 * `WasmKernel::smooth_stroke_json` ＋ `brush::smooth_points_json`：导出
+
+## 第 1144 轮：里程碑——(A)⑥ 离线可画完整并入 main，主线只剩 (A)④ 的下载
+
+并入的东西（提交 fc33320，9 个提交）：
+1. 实现：`feat(web): paint ordinary .myb brushes offline via the shared kernel`（fbfcf83）——
+   离线时 `commitShape` 走本地共享内核，在线路径逐字节不变（设计选择是 fallback 而不是统一，
+   因为服务端路径还负责读画布笔刷、duotone、选区裁剪、style、source）。
+2. 修守卫：`5b9631d` —— `wasm_target_guard` 数的是字面量出现次数**含注释**，
+   它新写的注释里拼了宿主时间 API 的名字 ⇒ 计数不匹配；改注释措辞，而**没有**加 allowlist 条目
+   （理由：allowlist 记的是"允许的使用"，那里没有调用点，登记就是让 allowlist 说谎）。
+   并在同一提交里持久化离线笔触（复用已有的持久化 outbox 作为重放源）。
+3. 修共享缓存：`62be86b` —— 新判据原本在**共享浏览器实例**里注销 SW 并删掉所有 cache，
+   会擦掉别的判据需要的壳缓存 ⇒ 改为只用 session 级 `Network.setCacheDisabled`。
+4. `9716d10` 去掉一处硬编码的轮次号，避免以后过期。
+5. 新判据 `scripts/browser-offline-brush.mjs`（23427 字节）：离线出墨、在线 vs 离线逐字节一致、
+   内核计数增长且离线期间 0 次 brush_stroke 请求；第 4 阶段还断言"离线笔触活过离线重载"，
+   重载后与**在线画布也逐字节一致**（0 不同字节）。
+6. 边界明确：读画布笔刷（smudge/knife）与 `color_to` duotone 离线仍不作画，它们记日志并留在队列里，
+   重连后由服务端正确落笔；要做需要把基础图像喂进内核。
+
+核对（本轮亲测）：
+- notes 两份都在（我的 1140/1142/1143 轮与对方的轮次都能 grep 到），合并对 notes 是 **169 插入 / 0 删除**；
+  这说明本轮坚持"docs 冲突手工合并、两份都保留"的规则是有效的（上两轮用 --theirs 各丢过一次）。
+- 已知红 **48 → 47**（browser-offline-shell 已移出；grep 该文件已无匹配）。
+- 新判据自动进套件：run-criteria.sh:67 枚举 `scripts/browser-*.mjs`，而它正是以 browser- 开头。
+
+所以主线只剩一件：(A)④ 的"工程包 `.yanshi` 下载到本地"（改法已定位在 tools.rs:13299，
+照抄 export_png 生成可下载 URL 的做法）。其余主线项（①②③⑤⑥）都已闭环或在本次并入后闭环。
