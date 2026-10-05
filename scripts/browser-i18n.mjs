@@ -40,7 +40,10 @@ const snapshot = `JSON.stringify((() => {
 
 const bodyProbe = `JSON.stringify((() => {
   const zh = /[\\u4e00-\\u9fff]/;
-  const skip = (el) => el.closest("#log, pre, code, script, style, textarea, #langToggle, [data-i18n='off']");
+  // **第 931 轮：把 #last 也排除** ✓ —— 它**不是 UI 标签** ✓，而是**「最近一次响应」的输出区** ✓
+  //（viewer.rs:629 的标题是「最近一次响应」✓）⇒ 页面里的 API JSON 会被算成「中文」✗ ⇒ 判据**间歇红** ✗。
+  // 观测证据：where 报 div#last ✓、sample 是 API 的 JSON（count/ok/persisted 那些字段）✓。
+  const skip = (el) => el.closest("#log, #last, pre, code, script, style, textarea, #langToggle, [data-i18n='off']");
   const found = new Map();
   const where = [];
   const walk = (node) => {
