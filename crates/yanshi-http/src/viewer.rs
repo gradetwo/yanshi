@@ -19,13 +19,16 @@ pub fn page_with_read_tools() -> String {
         .filter(|spec| !spec.mutating)
         .map(|spec| format!("\"{}\"", spec.name))
         .collect();
-    PAGE.replace("__READ_TOOLS__", &names.join(", "))
+    page_template()
+        .replace("__READ_TOOLS__", &names.join(", "))
         .replace("__BUILD_ID__", crate::server::BUILD_ID_TEXT)
 }
 
 /// **查看器整页** ✓（原样 ✓；发出去时会把只读工具清单注入 `__READ_TOOLS__` ✓ —— 见上面那个函数 ✓）。
 /// 注意 ✓：我这个函数是**插在它之前**的 ✓ ⇒ 一度把它的文档注释"抢"走了 ✗ ⇒ `clippy -D warnings` 当场红 ✓。
-pub const PAGE: &str = r##"<!DOCTYPE html>
+/// **整页 HTML 的头部** ✓（`<!DOCTYPE html> … <style>` ✓）—— 与 `PAGE_TAIL` 之间夹的是
+/// **独立可打包的 CSS 资产** ✓（(A)① ✓）。
+const PAGE_HEAD: &str = r##"<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -34,268 +37,10 @@ pub const PAGE: &str = r##"<!DOCTYPE html>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
 <link rel="apple-touch-icon" href="/brand/png/favicon-180.png" />
-<style>
-  /* **配色令牌集中在这里** ✓ —— 之前只有一个 `--line` ✓，其余颜色散落硬编码 ✗
-     （`#171a1f`、`#1b1f26`、`#222`… ✓），改主题要满文件找 ✓。
-     现在收敛成一套语义令牌 ✓：底色 / 面板 / 面板浮层 / 分隔线 / 正文 / 次要文字 / 强调色 ✓。
-     对比度按 WCAG 正文标准取 ≥4.5:1 ✓（检查脚本会**实测**这一条 ✓，见 browser-ui-check ✓）。 */
-  :root {
-    color-scheme: dark;
-    --bg: #0f1115;          /* 页面底色 */
-    --surface: #171a1f;     /* 顶栏 / 工具条 / 状态栏 */
-    --surface-2: #1b1f26;   /* 卡片 / 弹出面板 */
-    --line: #2b313b;        /* 分隔线 */
-    --text: #e7eaef;        /* 正文（对 --bg 约 14.6:1 ✓） */
-    --muted: #a3adbb;       /* 次要文字（对 --bg 约 7.8:1 ✓） */
-    --accent: #3d6bb3;      /* 强调 / 选中 / 焦点环 */
-    --accent-soft: #2b4a7d; /* 选中态的柔化底色 */
-    /* **控件统一高度** ✓（真浏览器实测过：同一排按钮曾出现 26 / 27 / 28 三档并存 ✗ ⇒
-       差 1–2px，看着就不规整 ✓ —— 这正是"没有专业软件设计感"的机制之一 ✓）。
-       做法与专业软件一致 ✓：**一个高度令牌** ✓ + 显式高度 ✓；紧凑档按需再定 24px ✓。 */
-    --control-h: 28px;
-  }
-  * { box-sizing: border-box; }
-  /* **整页垂直锁死** ✓（用户："保持整个软件的垂直方向是锁死（但是画布例外，
-     画布是内部一个可以独立上下和左右滚动的）"✓）——
-     页面本身不滚 ✗；要滚的是**各自的面板**（右栏 `.aside` 自己滚 ✓）与**画布舞台**（`.stage` ✓）。 */
-  html, body { height: 100%; overflow: hidden; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
-  /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-  /* **所有控件一个高度** ✓（令牌见 `:root` ✓）：同一排按钮不再各差 1–2px ✓。
-     复选框**排除在外** ✓（它本来就是小方格 ✓）；色块若被压到 28px 会与调色板栅格不符 ⇒ 下一轮实测后再定 ✓。 */
-  button, input:not([type="checkbox"]), select { height: var(--control-h); }
-  /* **复选框也统一** ✓：实测有 3 个是 13px、2 个被容器撑到 26px ✗ ⇒ **同类控件之间**也不一致 ✓
-     （判据只看"总档数 ≤3" ⇒ 这类"同类内的不一致"要靠显式定尺寸消掉 ✓）。 */
-  input[type="checkbox"] { height: 16px; width: 16px; }
-  /* 可点区域下限 ✓：界面控件不低于 26px 高 ✓（密集的深色界面里最影响手感 ✓）。
-     **收窄到具体控件** ✓ —— 第一版写成裸 `button, select, input` ✗，实测两个介质用例的画布
-     同时变空 ✗（可见它影响了画布/舞台的重绘路径 ✓）；现在只作用于界面控件 ✓，
-     与检查里量高的那组选择器完全一致 ✓。 */
-  header button, #tools button, aside button, .options select, .options input,
-  #quickPanel button, .statusbar button { min-height: 26px; }
-  /* 滚动条跟随主题 ✓（否则深色界面里出现一条亮色滚动条，很扎眼 ✓）。 */
-  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 8px; }
-  .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
-  /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
-     右侧露出一块灰色死区，点击落在 .stage 上而不是 canvas 上（用户报告的「右边一块没法用」）。 */
-  /* 第一列用 minmax(0,1fr)：`1fr` 的最小尺寸是 auto ⇒ 左列被内容撑开后整个页面横向溢出，
-     画布被挤到屏幕外（用户截图里的「排版都出去了」）。
-     `body { overflow-x: hidden }` 只是掩盖症状，真正要允许列收缩。 */
-  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
-          /* 兜底：实测 main 自身的 scrollWidth 会达到 2007（其子元素的 rect 都在 1265 内，
-             溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
-             所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
-          overflow-x: clip; }
-  /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
-     不能一起收缩，否则工具按钮会溢出窗口。 */
-  /* **舞台铺满可用区、画布在其中居中** ✓ —— 用户反馈："画布固定在左上角很难受，尤其缩放时" ✓。
-     此前的 `justify-self: start` 是为了消除"右侧灰色死区" ✗（点击落在 stage 上而不是画布上 ✓）；
-     但代价是画布贴左上角 ✓。现在的做法两头兼顾 ✓：
-       * 舞台铺满 ✓（视觉上画布周围就是**工作区** ✓，与成熟绘画软件一致 ✓）；
-       * 画布**居中** ✓（缩放时视觉重心稳定 ✓）；
-       * 画布外的区域**不响应绘制** ✓ —— 事件监听挂在 `#board` 上 ✓，
-         所以点在空白区根本不会进入绘制分支 ✓（检查里有专门的断言 ✓）。 */
-  .stage { justify-self: stretch; display: flex; align-items: center; justify-content: center;
-           min-height: 240px; background: var(--surface); }
-  /* **画布舞台自己滚** ✓：放大到超出可视区时，它内部上下左右滚 ✓（而不是把整页顶开 ✗）。 */
-  .stage { position: relative; border: 1px solid var(--line); border-radius: 6px;
-           overflow: auto; background: #f5f5f5; }
-  /* **「文件」菜单** ✓（用户："导入导出之类功能也不适合放在信息面板，按照行业主流软件的习惯来设置分类"✓）
-     —— 行业习惯就是**顶栏一个「文件」** ✓，而不是散在右侧信息面板里 ✓。 */
-  #fileMenu { position: fixed; top: 52px; left: 118px; z-index: 42; width: min(340px, 92vw);
-    background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.5);
-    border-radius: 8px; padding: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
-  #fileMenu[hidden] { display: none; }
-  #fileMenu .file-menu-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  #fileMenu .file-menu-head .hint { flex: 1; }
-  #fileMenu .file-menu-group { margin: 8px 0 4px; font-size: 11px; opacity: .7; }
-  #fileMenu .card { border: 0; padding: 0; margin: 0; background: transparent; }
-  #fileMenu .card h2 { font-size: 12px; margin: 4px 0; }
-  /* **右栏 tab** ✓（用户："面板内部有小 tab 切换不同信息"✓）—— 一行 CSS 决定显隐 ✓。 */
-  .tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
-  .tabs button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
-                                      border-color: transparent; }
-  .tab-pane > .card, .tab-pane > details { margin-bottom: 8px; }
-  /* 单一几何：内容画布 #board 决定尺寸（文档分辨率位图 + 固有宽高比）；
-     #overlay 只画拖动中的笔迹预览，位置与尺寸由 JS 同步为 board 的显示矩形。
-     两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
-     提交后画布变空白（刷新才恢复）。 */
-  #board { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
-  /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
-     盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
-     ⇒ 放大时给 `body` 加 `canvas-zoomed` ✓，把这两条上限放开 ✓ ⇒ 画布真的超出舞台 ✓、
-     `.stage` 的 `overflow: auto` 才**有东西可滚** ✓（用户："画布是内部一个可以独立上下和左右滚动的"✓）。 */
-  body.canvas-zoomed #board, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
-  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
-  /* **标注图钉层** ✓（设计 4.6 / 13.4 ✓）：用**独立的 DOM 层** ✓，不跟 `#overlay` 的笔迹预览抢画布 ✓，
-     而且图钉**可点** ✓（点它跳到该标注 ✓）。 */
-  #annotationPins { position: absolute; left: 0; top: 0; pointer-events: none; }
-  #annotationPins button {
-    position: absolute; transform: translate(-50%, -50%); pointer-events: auto;
-    width: 20px; height: 20px; border-radius: 50%; padding: 0; font-size: 11px;
-    border: 1px solid #10131a; background: #ffd166; color: #1a1206; cursor: pointer; line-height: 1;
-  }
-  #annotationPins button.resolved { background: #6b7280; color: #e5e7eb; }
-  /* minmax(0,1fr)：否则网格列按 max-content 撑开，卡片里的按钮行会溢出到视口外
-     （实测 29 个按钮里 14 个跑到屏幕外，"导出/＋图层"因此看起来不存在）。 */
-  .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
-             background: var(--surface); border-bottom: 1px solid var(--line); }
-  .options .tool-name { font-weight: 600; min-width: 4em; }
-  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
-  .options input[type="range"] { width: 120px; }
-  /* 工具条：可纵向滚动 ✓ —— 截图里"填充图层"曾被窗口底部截断 ✗（窄条 + 20 个工具必然超出）。 */
-  /* **左列工具两列排布** ✓（用户要求 ✓）：工具多了之后单列会把 rail 拉得很长，
-     两列更接近常见图像软件的工具栏 ✓；用栅格而不是 flex-wrap ✓ —— 栅格保证**列对齐** ✓，
-     换行时不会出现"某一行只有一个按钮、宽度还不同"的参差 ✓。 */
-  #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 8px;
-           min-width: 0; background: var(--surface); border-right: 1px solid var(--line);
-           align-content: start; overflow-y: auto; max-height: calc(100vh - 150px); }
-  #tools button { padding: 8px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
-                  align-items: center; }
-  /* **面板开关** ✓（用户要求：左右都要能隐藏，并能进全屏画布 ✓）。
-     用 `body` 上的三个类表达状态 ✓（`hide-rail` / `hide-dockers` / `zen` ✓）——
-     三列的栅格由这四个选择器穷尽覆盖 ✓（都不隐藏 / 只藏左 / 只藏右 / 都藏 ✓），
-     比在 JS 里拼 grid-template-columns 更可控 ✓（也不会与样式表两处打架 ✓）。 */
-  body { --rail-w: 108px; }
-  body.hide-rail main { grid-template-columns: minmax(0, 1fr) 320px; }
-  body.hide-dockers main { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
-  body.hide-rail.hide-dockers main { grid-template-columns: minmax(0, 1fr); }
-  body.hide-rail #tools, body.hide-dockers aside { display: none; }
-  /* **全屏画布模式** ✓：藏掉头部与选项条 ✓，画布占满窗口 ✓（不留内边距 ✓）。 */
-  body.zen header, body.zen .options { display: none; }
-  body.zen main { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
-  body.zen #tools, body.zen aside { display: none; }
-  body.zen .stage { border: 0; border-radius: 0; }
-  /* 全屏模式下的**退出把手** ✓ —— 没有它就只能靠快捷键 ✓，
-     而"进了全屏不知道怎么出来"是最典型的抱怨 ✓。默认隐藏 ✓，只在 zen 下出现 ✓。 */
-  #zenExit { position: fixed; top: 10px; right: 10px; z-index: 40; display: none;
-             background: rgba(20, 20, 22, .62); color: #fff; border: 1px solid rgba(255, 255, 255, .28);
-             border-radius: 999px; padding: 8px 12px; font-size: 12px; cursor: pointer;
-             backdrop-filter: blur(4px); }
-  body.zen #zenExit { display: inline-flex; align-items: center; gap: 8px; }
-  /* **图层面板** ✓：顶部条 + 行列表 ✓。行里三个可点区域（眼睛 / 锁 / 名字 ✓），
-     名字区最大以便点选 ✓；按钮用最小尺寸以免抢走注意力 ✓。 */
-  .layers { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-  .layers-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px;
-                 opacity: .85; }
-  .layers-actions { display: inline-flex; gap: 4px; }
-  .layers-actions button { padding: 4px 8px; font-size: 12px; line-height: 1.4; }
-  .layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto;
-                border: 1px solid var(--line); border-radius: 6px; padding: 4px; background: var(--bg, #fff); }
-  .layer-row { display: flex; align-items: center; gap: 4px; padding: 4px 4px; border-radius: 4px;
-               font-size: 12px; cursor: pointer; }
-  .layer-row:hover { background: rgba(128, 128, 128, .12); }
-  .layer-row.selected { background: var(--accent, #2b6cb0); color: #fff; }
-  .layer-row .layer-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .layer-row .layer-flag { padding: 0 4px; font-size: 12px; line-height: 1.5; background: transparent;
-                           border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
-  .layer-row .layer-flag:hover { border-color: currentColor; }
-  .layer-row .layer-flag.off { opacity: .35; }
-  .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
-  .panel-toggles button { padding: 4px 8px; font-size: 12px; }
-  /* **素材浮层** ✓：浮在画布上方 ✓、可滚动 ✓、不挡工具条 ✓。 */
-  #assetDock { position: fixed; top: 96px; left: 16px; z-index: 40; width: min(420px, 92vw);
-    max-height: 70vh; overflow: auto; background: Canvas; color: CanvasText;
-    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 8px;
-    box-shadow: 0 8px 28px rgba(0,0,0,.28); }
-  #assetDock[hidden] { display: none; }
-  /* **笔刷库** ✓（用户："笔刷这个列表里头都带个笔刷的效果图是不是更好，直接列表中就能找到想要的"✓）。
-     每行 = **真实落笔**的效果图 ✓（服务端 `brush_preview` ✓，与 `brush_stroke` 同一条实现 ✓）+ 名字 + 分组 ✓；
-     图是**懒加载**的 ✓（滚到哪画到哪 ✓ —— 201 支一次全画既慢又是可见的浪费 ✗）。 */
-  #brushLibrary { position: fixed; top: 96px; right: 16px; z-index: 41; width: min(380px, 92vw);
-    max-height: 76vh; overflow: auto; background: Canvas; color: CanvasText;
-    border: 1px solid rgba(128,128,128,.5); border-radius: 8px; padding: 8px;
-    box-shadow: 0 8px 28px rgba(0,0,0,.28); }
-  #brushLibrary[hidden] { display: none; }
-  #brushLibrary .brush-lib-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  #brushLibrary .brush-lib-head .hint { flex: 1; }
-  .brush-lib-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; border-radius: 6px;
-    cursor: pointer; }
-  .brush-lib-row:hover { background: rgba(128,128,128,.14); }
-  .brush-lib-row.selected { background: var(--accent-soft, rgba(43,108,176,.22)); }
-  .brush-lib-row img { width: 84px; height: 32px; object-fit: contain; background: #fff;
-    border: 1px solid #ccc; flex: none; }
-  .brush-lib-row .name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
-  .brush-lib-row .group { font-size: 11px; opacity: .65; flex: none; }
-  /* **画笔区可折叠** ✓（用户："画笔那块区域应该可以更紧凑和可隐藏"✓）——
-     折叠只**隐藏**这些控件 ✓，不改任何状态 ✓（选中的笔、颜色、平滑都不动 ✓）。 */
-  body.brush-area-collapsed .brush-control { display: none; }
-  /* **快捷键按到哪一张卡** ✓（`P` / `T`）：给个看得见的落点 ✓，不然"按了没反应"✗。 */
-  #assetDock .asset-dock-target { outline: 2px solid var(--accent, #2b6cb0); outline-offset: 3px;
-    border-radius: 6px; }
-  #assetDock .asset-dock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  #assetDock .asset-dock-head .hint { flex: 1; }
-  .panel-toggles button[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff;
-                                               border-color: transparent; }
-  #tools svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6;
-               stroke-linecap: round; stroke-linejoin: round; }
-  #tools button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-  .statusbar { display: flex; gap: 16px; align-items: center; padding: 8px 12px; font-size: 12px;
-               background: var(--surface); border-top: 1px solid var(--line); }
-  .statusbar .spacer { flex: 1 1 auto; }
-  /* 光标处快捷面板 ✓（`position: fixed` ✓ ⇒ 坐标即光标位置 ✓，不受画布滚动影响 ✓）。 */
-  #quickPanel { position: fixed; z-index: 40; min-width: 196px; max-width: 260px; padding: 8px 8px;
-                background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
-                box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
-  #quickPanel[hidden] { display: none; }
-  #quickPanel .qp-title { display: flex; justify-content: space-between; align-items: baseline;
-                          margin-bottom: 8px; opacity: .9; }
-  #quickPanel .qp-hint { opacity: .55; font-size: 11px; }
-  #quickPanel .qp-section { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-  #quickPanel .qp-section:empty { display: none; }
-  #quickPanel button { min-width: 30px; padding: 4px 8px; font-size: 11px; }
-  #quickPanel button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-  #quickPanel .qp-swatch { width: 22px; height: 22px; min-width: 0; padding: 0; border-radius: 4px;
-                           border: 1px solid var(--line); }
-  #quickPanel .qp-swatch[aria-pressed="true"] { outline: 2px solid #6ea8fe; outline-offset: 1px; }
-  #quickPanel .qp-actions { border-top: 1px solid var(--line); padding-top: 8px; }
-  /* 可折叠 Dockers ✓（借鉴成熟绘画软件的面板折叠 ✓）：点标题折叠/展开 ✓，状态持久化 ✓。 */
-  aside .card > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
-  aside .card > h2::before { content: "▾"; font-size: 11px; opacity: .7; transition: transform .1s; }
-  aside .card.collapsed > h2::before { transform: rotate(-90deg); }
-  aside .card.collapsed > *:not(h2) { display: none !important; }
-  aside .card.collapsed { padding-bottom: 8px; }
-  aside { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
-  aside .card { min-width: 0; }
-  /* 面板内的可伸缩元素：下拉的选项名可能很长（图层 id）。光限制 select 不够 ——
-     包裹它的 <label> 的 min-content 仍然等于最长选项 ⇒ label 会撑破 320px 列。
-     因此 label 必须是可收缩的 flex 容器（本轮实测：超宽元素就是 label[1270..1675] ✓）。 */
-  aside label { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
-  aside select, aside input, aside button { max-width: 100%; min-width: 0; }
-  aside label select, aside label input { flex: 1 1 auto; min-width: 0; }
-  #history .row { min-width: 0; }
-  /* 原生 <dialog> 在 top layer，宽度按内容撑开 ⇒ 会撑大 documentElement.scrollWidth
-     （实测：body/main/aside 都在视口内，scrollWidth 却多出 742px ✗）。必须显式限宽。 */
-  dialog { max-width: min(760px, 92vw); border: 1px solid var(--line); border-radius: 8px; }
-  dialog #docList { max-width: 100%; }
-  #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #log { overflow-x: hidden; }
-  #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
-  #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
-  #history .row button { padding: 0 8px; font-size: 11px; }
-  #history .seq { opacity: .6; min-width: 34px; }
-  #history .kind { min-width: 86px; }
-  #history .actor { opacity: .75; }
-  .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px; }
-  .card h2 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
-  button { font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
-  button[aria-pressed="true"] { background: #4a7dff22; border-color: #4a7dff; }
-  input, select { font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: transparent; }
-  #thumb { display: block; border: 1px solid var(--line); border-radius: 5px; background: #fff; width: 128px; height: 128px; object-fit: contain; }
-  #log { max-height: 240px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
-  #log div { white-space: nowrap; }
-  .status { display: flex; gap: 8px; flex-wrap: wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .85; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #c33; vertical-align: middle; }
-  .dot.on { background: #2a2; }
-</style>
+<style>"##;
+
+/// **整页 HTML 的尾部** ✓（`</style> … </html>` ✓）。
+const PAGE_TAIL: &str = r##"</style>
 </head>
 <body>
 <header>
@@ -8633,19 +8378,50 @@ document.addEventListener("click", (event) => {
 </html>
 "##;
 
+/// **整页模板** ✓：把**独立的 CSS 资产**拼回页面 ✓（(A)①：HTML/CSS/JS 要能作为独立产物打包 ✓）。
+///
+/// ⚠️ 这里**必须用拼接、不能用 `format!`** ✗ —— CSS 与 JS 里全是花括号 ✗，格式化会把它们当占位符 ✓
+/// （真正的占位符只有 `__READ_TOOLS__` / `__BUILD_ID__` ✓，用 `.replace` 替换 ✓）。
+fn page_template() -> String {
+    [PAGE_HEAD, include_str!("../assets/viewer.css"), PAGE_TAIL].concat()
+}
+
 /// 页面长度（测试与可观测性）。
 pub fn page_len() -> usize {
-    PAGE.len()
+    page_template().len()
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// **(A)①：CSS 是独立可打包资产** ✓ —— 断言 ① 资产文件存在 ✓；
+    /// ② 生成页面里 `<style>…</style>` 之间的内容与资产**逐字节一致** ✓
+    /// （**变异：把资产拼到 `</style>` 之外 ⇒ 红** ✓）。
+    #[test]
+    fn the_stylesheet_is_a_separate_packable_asset() {
+        let path = std::path::Path::new("assets/viewer.css");
+        assert!(
+            path.is_file(),
+            "(A)①：CSS 应是**独立资产文件**（可打包/可预缓存）✓"
+        );
+        let asset = std::fs::read_to_string(path).expect("应能读取 CSS 资产");
+        let page = page_template();
+        let open = page.find("<style>").expect("页面应有 <style> ✓") + "<style>".len();
+        let close = page.find("</style>").expect("页面应有 </style> ✓");
+        assert!(open < close, "样式块必须是闭合且有序的 ✓");
+        assert_eq!(
+            page[open..close].trim(),
+            asset.trim(),
+            "页面样式块应**逐字节等于**独立 CSS 资产 ✓（顺序/位置错了 ⇒ 红 ✓）"
+        );
+    }
+
     use super::*;
 
     #[test]
     fn page_is_self_contained_and_uses_the_documented_endpoints() {
-        assert!(PAGE.starts_with("<!DOCTYPE html>"));
-        assert!(PAGE.trim_end().ends_with("</html>"));
+        assert!(page_template().starts_with("<!DOCTYPE html>"));
+        assert!(page_template().trim_end().ends_with("</html>"));
         for needle in [
             "/api/documents",
             "/api/tools/",
@@ -8660,12 +8436,12 @@ mod tests {
             "token",
             "viewport",
         ] {
-            assert!(PAGE.contains(needle), "查看器缺少 {needle}");
+            assert!(page_template().contains(needle), "查看器缺少 {needle}");
         }
         // 无外部依赖（不加载 CDN 脚本或字体）。
-        assert!(!PAGE.contains("http://cdn"));
-        assert!(!PAGE.contains("https://cdn"));
-        assert!(!PAGE.contains("<script src="));
+        assert!(!page_template().contains("http://cdn"));
+        assert!(!page_template().contains("https://cdn"));
+        assert!(!page_template().contains("<script src="));
         assert!(page_len() > 4000);
     }
 
@@ -8681,7 +8457,8 @@ mod tests {
         // ⇒ 于是这个守卫开始报"找不到 `refreshPreview`" ✗ —— **守卫自己读错了对象** ✓。
         // **修法**：把**所有**内联块拼起来再检查 ✓（守卫要保证的"整页 JS 不冲突"本来就该覆盖全部 ✓）。
         let mut script = String::new();
-        let mut rest = PAGE;
+        let page_text = page_template();
+        let mut rest = page_text.as_str();
         while let Some((_, after_open)) = rest.split_once("<script>") {
             let Some((block, after_close)) = after_open.split_once("</script>") else {
                 break;
