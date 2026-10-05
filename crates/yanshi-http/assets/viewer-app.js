@@ -6267,7 +6267,13 @@ async function refreshBrushOptions() {
     //（它的 `files` 键就是笔刷文件名 ✓ ⇒ 足够把面板填起来 ✓）。
     let listed = null;
     try {
-      listed = await callTool("list_assets", { kind: "brush" }, { refresh: false });
+      // **必须加超时** —— 实测：离线时 `callTool` 可能**既不抛也不回**（挂在 fetch 上），
+      // 于是"抛错才回退"与"结果为空才回退"**两条都用不上**（第三次实跑：面板仍 1 个选项）。
+      // 超时后按"拿不到清单"处理 ⇒ 走离线回退。
+      listed = await Promise.race([
+        callTool("list_assets", { kind: "brush" }, { refresh: false }),
+        new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
     } catch (error) {
       console.warn("离线：list_assets 调用失败", error);
     }
