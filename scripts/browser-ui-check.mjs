@@ -805,6 +805,19 @@ const moveResult = await evaluate(`(async () => {
   const fire = (t, p, id) => board.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse", isPrimary: true, buttons: t === "pointerup" ? 0 : 1, ...p }));
   document.getElementById("zoomFit").click();
   await new Promise((r) => setTimeout(r, 800));
+  // **等布局稳定再操作**（第 993 轮）：实测拖动期间 rect 宽从 344 变成 354 ✗ ⇒
+  // 两次事件的换算基准不同 ⇒ 位移被算错（x 错 7、y 恰好对，因为高度没变 ✓）。
+  // 判据：连续两次读到的 rect 宽高相同 ⇒ 视为稳定 ✓；位移对不对仍由 Node 侧的断言判 ✗。
+  let stableSeen = 0;
+  let lastRectKey = null;
+  for (let i = 0; i < 40; i++) {
+    const r = board.getBoundingClientRect();
+    const key = Math.round(r.width) + "x" + Math.round(r.height);
+    if (key === lastRectKey) stableSeen += 1; else stableSeen = 0;
+    lastRectKey = key;
+    if (stableSeen >= 2) break;
+    await new Promise((r2) => setTimeout(r2, 150));
+  }
   // 画一个矩形（0.2,0.2 → 0.4,0.4）
   document.querySelector('button[data-tool="rect"]').click();
   fire("pointerdown", at(0.2, 0.2), 401);
@@ -815,6 +828,18 @@ const moveResult = await evaluate(`(async () => {
   const before = await window.yanshiCallTool("list_objects", {});
   // 拖到 +0.2,+0.1（以画布比例折算成文档像素）
   document.querySelector('button[data-tool="move_object"]').click();
+  // **移动之前也要等布局稳定**（第 994 轮）：上一次等待放在按下之前 ✓，但布局是在
+  // **画完矩形之后**才变的（344 → 354 ✓，两次运行一致 ✓）⇒ 这里是那次变化的**之后**，必须再等一次 ✓。
+  let stableSeen2 = 0;
+  let lastRectKey2 = null;
+  for (let i = 0; i < 40; i++) {
+    const r = board.getBoundingClientRect();
+    const key = Math.round(r.width) + "x" + Math.round(r.height);
+    if (key === lastRectKey2) stableSeen2 += 1; else stableSeen2 = 0;
+    lastRectKey2 = key;
+    if (stableSeen2 >= 2) break;
+    await new Promise((r2) => setTimeout(r2, 150));
+  }
   const rectAtMoveDown = (function () { const r = board.getBoundingClientRect();
     return { w: Math.round(r.width), h: Math.round(r.height), left: Math.round(r.left), top: Math.round(r.top) }; })();
   fire("pointerdown", at(0.3, 0.3), 402);
