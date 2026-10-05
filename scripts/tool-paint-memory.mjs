@@ -95,6 +95,29 @@ try {
   const cpuSeconds = after.cpuSeconds - before.cpuSeconds;
   const cpuPerStroke = (cpuSeconds * 1000) / Math.max(1, ok);
 
+  // **把「阶段外」的时间从外面切开** ✓（第 824 轮 ✓）：分别计时几种调用 ✓ ⇒ 差值定位成本 ✓。
+  // 不动产品 ✓（最小改动 ✓）：get_document 与渲染无关 ⇒ HTTP+tool 的基线 ✓；
+  // render_region 只渲染 ✓；brush_stroke 是全链 ✓。
+  const timeIt = async (label, fn, rounds) => {
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < rounds; i += 1) await fn(i);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6 / rounds;
+    console.log("    " + label.padEnd(32) + ms.toFixed(2) + " ms/次（" + rounds + " 次 ✓）");
+    return ms;
+  };
+  console.log("  各调用的**单次耗时**（同机、同文档 ✓）：");
+  await timeIt("get_document（无关渲染 ⇒ 基线）", () => fetch(BASE + "/api/tools?doc=boot&token=" + token, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool: "get_document", arguments: {} }) }).then((r) => r.json()), 10);
+  await timeIt("render_region（只渲染 ✓）", () => fetch(BASE + "/api/tools?doc=boot&token=" + token, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool: "render_region", arguments: { x: 0, y: 0, w: 512, h: 512 } }) }).then((r) => r.json()), 3);
+  await timeIt("brush_stroke（全链 ✓）", (i) => fetch(BASE + "/api/tools?doc=boot&token=" + token, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool: "brush_stroke", arguments: {
+      layer_id: "L", object_id: "t_" + i, brush: "2B_pencil", size: 24,
+      color: { r: 40, g: 90, b: 200, a: 255 },
+      points: [[300 + i, 300, 0.4], [340 + i, 310, 0.8], [380 + i, 300, 0.5]] } }) }).then((r) => r.json()), 5);
   console.log("  画笔数：" + STROKES + "（成功 " + ok + "）｜文档 512×512｜每笔 3 个点");
   console.log("  服务端 RSS：" + before.rssMb.toFixed(1) + " MB ⇒ " + after.rssMb.toFixed(1) + " MB" +
     "（增量 " + rssGrowth.toFixed(1) + " MB）");
