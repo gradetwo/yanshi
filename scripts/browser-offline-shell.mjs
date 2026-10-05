@@ -121,6 +121,40 @@ const afterOpen = await evaluate(`(() => {
   return { options: select ? select.options.length : -1, counters: c ? { entered: c.entered, exited: c.exited } : null };
 })()`);
 console.log(`  · 点开面板后 = ${JSON.stringify(afterOpen)}`);
+
+// (A)⑥ 第二层：离线画一笔要有墨。用真实指针事件驱动页面自己的落笔路径，前后比画布不透明像素数。
+const canvasSig = `(() => {
+  const c = document.querySelector("canvas");
+  if (!c) return { error: "no-canvas" };
+  const g = c.getContext("2d");
+  if (!g) return { error: "no-2d-context" };
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let ink = 0;
+  for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) ink += 1; }
+  return { ink: ink, w: c.width, h: c.height };
+})()`;
+const inkBefore = await evaluate(canvasSig);
+const strokeResult = await evaluate(`(async () => {
+  const c = document.querySelector("canvas");
+  if (!c) return "no-canvas";
+  const r = c.getBoundingClientRect();
+  const o = (x, y) => ({ bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse",
+                         isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y });
+  const x0 = r.left + r.width * 0.35, y0 = r.top + r.height * 0.35;
+  c.dispatchEvent(new PointerEvent("pointerdown", o(x0, y0)));
+  for (let i = 1; i <= 12; i += 1) {
+    c.dispatchEvent(new PointerEvent("pointermove", o(x0 + i * 6, y0 + i * 4)));
+    await new Promise((res) => setTimeout(res, 25));
+  }
+  c.dispatchEvent(new PointerEvent("pointerup", Object.assign(o(x0 + 72, y0 + 48), { buttons: 0 })));
+  await new Promise((res) => setTimeout(res, 900));
+  return "dispatched";
+})()`);
+const inkAfter = await evaluate(canvasSig);
+console.log(`  · 离线落笔 = ${strokeResult} ｜ 不透明像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+if (!(inkAfter && inkBefore && inkAfter.ink > inkBefore.ink)) {
+  failures.push(`离线画不出墨：不透明像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+}
 // 判据对象必须是"打开面板之后"的选项数：面板**懒加载**（不点开就不填充）**是设计**。
 const panelOptions = afterOpen ? afterOpen.options : -1;
 // 三个分支：0 次进入 ⇒ 上游抛了；进过但没出来 ⇒ 中途抛了；进出一致却没选项 ⇒ 渲染环节的问题。
