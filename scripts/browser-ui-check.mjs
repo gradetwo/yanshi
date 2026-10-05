@@ -855,6 +855,13 @@ if (moveResult && moveResult.beforeBbox) {
   const vacatedW = typeof newX === "number" && newX > bx ? Math.min(bw, newX - bx) : bw;
   const region = { x: bx, y: by, w: Math.max(1, vacatedW), h: Math.max(1, bh) };
   console.log("  残影量取区域：x=" + bx + " w=" + region.w + "（旧盒宽 " + bw + "，新盒 x=" + newX + "）");
+// 第 986 轮：页面自己把发的位移打进日志（viewer.rs:6586 「已移动 …（dx=…, dy=…）」）⇒
+// 把它与 bbox 之差并排列出，就能分辨"页面算的 delta"与"服务端实际应用的位移"哪一个不是 102.7。
+try {
+  const moved = String((moveResult || {}).log || "").split("\n").filter((line) => line.includes("已移动")).slice(-1)[0] || null;
+  (await import("node:fs")).appendFileSync("/tmp/yanshi-moveobs.txt",
+    JSON.stringify({ sentLog: moved, bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] }, rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta }) + "\n");
+} catch (_) { /* 落盘失败不影响判据 */ }
 try { (await import("node:fs")).appendFileSync("/tmp/yanshi-disp-obs.txt",
   JSON.stringify({ rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta,
     bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] } }) + "\n");
