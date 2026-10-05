@@ -44,7 +44,12 @@ while (Date.now() < until) {
 await evaluate('document.getElementById("brushLibraryOpen").click()');
 await sleep(600);
 await evaluate('(() => { const box = document.getElementById("brushLibrary"); box.scrollTop = 0; })()');
-await sleep(2500);
+// ⚠️ **只等 `readyState` ＋ 有界沉降** ✗（第 904 轮 ✓）：下面读的是 `.brush-lib-row` 与预览图计数 ✗
+// ⇒ **"行数 > 0"本身就是被断言的东西** ✗ ⇒ 等它就会让断言永不失败 ✗（**第 887 轮的教训** ✓）。
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { if (await evaluate('document.readyState === "complete"')) { await sleep(900); break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+}
 const info = await evaluate(`(() => {
   const rows = [...document.querySelectorAll(".brush-lib-row")];
   // 第 762 轮：原先这里测的是一个**产品里并不存在的接口**（来源标记 / 近似标注 / data URL），
