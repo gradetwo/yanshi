@@ -35536,3 +35536,35 @@ Object.keys 看真键表）。
    代价：多一条与判据 2 部分重叠的断言，换来对"残差字段本身算错"的覆盖。
 2. 4K 只测了一份文档、只有 debug；release 与其它文档未重测。
 3. `render_ms` 含 `resample_rgba`；`png_ms` 只含 `encode_png`（落盘/刷缓存留在残差）。
+
+## 第 1143 轮：补回被合并覆盖的三轮记录，并把规则写死
+
+事实：合并 perf/export-timings（提交 89f4e9b）时，`docs/design/implementation-notes.md` 出现冲突，
+我的合并脚本按 `--theirs` 处理 ⇒ **删掉了 70 行**（`git diff --numstat 8071206 89f4e9b` = 50 插入 / 70 删除），
+其中包含我刚写下的第 1140、1141、1142 三轮记录（核对：grep "第 1140/1141/1142 轮" 都是 0 处）。
+现在把这三轮补回（内容摘要如下），并把规则写死。
+
+补回第 1140 轮（(A)⑤ 的显式开关早已存在）：
+- viewer.rs:321 已有用户可见复选框；viewer-app.js:22 定义 `SERVER_RENDER_KEY = "yanshi.serverRender"`，
+  :23 注释写明这是 (A)⑤ 的显式开关、缺省 false = 客户端优先；:25 从 localStorage 读，:4750 写入。
+- 所以 (A)⑤ 的"开关"一半早已完成；剩下的是它的**判据**（"两种模式同笔同结果"），
+  而那正是离线笔刷子代理在做的判据 ⇒ 两项在此会合。
+- 这是本会话第三次"过期前提"（前两次：(B)③ 三态实现早已完成；(B)① 示例早已 138/141）。
+
+补回第 1141 轮（(A)④ 下载 URL 的改法定位）：
+- 我按"write_export_project 在 service.rs"去找，**没找到**（审计打偏，是"凭记忆归位"的复发）。
+- 全仓 grep 定位到 crates/yanshi-server/src/tools.rs:13299（`fn write_export_project`）；
+  可照抄的对象是 tools.rs:13347 的 `fn write_export_png`，它用 `"raw_url": format!("yanshi://blob/{hash}")`
+  （tools.rs:3579）这一类做法；thumb_url 的用法也散在 :721/:728/:3105/:3156/:3600/:3740/:13012。
+- 改法：让 export_project 也返回一个可直接下载的 URL ⇒ 查看器接上只需一行。
+  刻意延后到两个子代理合并之后，避免与它们争 tools.rs / service.rs。
+
+补回第 1142 轮（编排状态）：
+- 当时两个子代理都在 running，且它们占用的文件覆盖了所有有价值的下一步
+  （viewer-app.js / viewer.rs / tools.rs / service.rs / browser-offline-shell.mjs）⇒
+  本轮刻意不动产品代码，只做只读核对与记录，避免制造冲突。
+
+**规则（写死）**：`docs/design/implementation-notes.md` 的合并冲突**禁止**用 `--theirs` 或 `--ours` 一刀切。
+它是逐轮追加的日志，双方几乎总是"各在文件末尾追加了一段" ⇒ 正确做法是**两份都保留**。
+本会话已经因此回退过一次合并，这是第二次覆盖 ⇒ 从本轮起：docs 冲突一律手工合并并核对
+（`git diff --numstat` 确认没有大规模删除；grep 关键轮次号确认都在）。
