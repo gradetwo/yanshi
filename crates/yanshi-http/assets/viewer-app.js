@@ -6258,6 +6258,11 @@ function applyBrushFilter() {
 }
 
 async function refreshBrushOptions() {
+  // 离线诊断计数（临时）：入口/出口各计一次，判据里读出来即可区分
+  // 「上游抛了 ⇒ entered=0」与「中途抛了 ⇒ entered>=1 且 exited=0」。
+  window.__brushRefresh = window.__brushRefresh || { entered: 0, exited: 0 };
+  window.__brushRefresh.entered += 1;
+  try {
   const select = $("brush");
   if (!select) return;
   try {
@@ -6367,6 +6372,7 @@ async function refreshBrushOptions() {
   } catch (error) {
     log("笔刷列表没拉到：" + String(error).slice(0, 120), "#c93");
   }
+  } finally { window.__brushRefresh.exited += 1; }
 }
 
 /// **笔刷库** ✓（用户："列表里头都带个笔刷的效果图是不是更好，直接列表中就能找到想要的"✓）。
