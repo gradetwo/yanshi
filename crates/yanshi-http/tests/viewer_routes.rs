@@ -112,9 +112,13 @@ fn every_shell_entry_is_served_by_the_server() {
             continue;
         }
         checked += 1;
+        // **两种出处都算** ✓：① 服务端文本里出现该精确路径 ✓；
+        // ② 或它落在某个**前缀路由**下（如 `/brushes/` 由 `strip_prefix` 处理 ✓）。
+        let dir = &url[..url.rfind('/').map(|i| i + 1).unwrap_or(url.len())];
+        let served = server.contains(url) || server.contains(&format!("strip_prefix(\"{dir}\")"));
         assert!(
-            server.contains(url),
-            "SW 预缓存的 {url} 在服务端**没有出处** ⇒ cache.add 会静默失败 ⇒ 离线时缺资源 ✗"
+            served,
+            "SW 预缓存的 {url} 在服务端**没有出处**（精确路径或前缀路由都没有）⇒ cache.add 会静默失败 ⇒ 离线时缺资源 ✗"
         );
     }
     assert!(checked >= 6, "SHELL 至少应有 6 个 URL（实际 {checked}）");
