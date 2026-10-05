@@ -14718,6 +14718,26 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **`collect_diagnostics`** ✓：无必填参数 ✓；示例里关掉缩略图 ✓ ⇒
     // 照抄它得到的是**小而定**的包 ✓（不把一张可能的 1 MiB PNG 塞进结果 ✓）。
     ("collect_diagnostics", r#"{"include_thumbnail":false}"#),
+    // **补三条示例**（第 1135 轮：(B)① 的收尾 ⇒ 让覆盖达到 141/141）。
+    // 三个工具此前没有示例：删除文档、导入 PSD、设置参考图。
+    // 它们都是"用户会问怎么用"的工具，而且各自的坑都写在下面对应的注释里。
+    (
+        "delete_document",
+        // ⚠️ `document_id` 与 `doc_id` **不是一回事**：`doc_id` 是本次调用的会话文档（框架按需创建），
+        // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
+        r##"{"document_id": "sample-oil"}"##,
+    ),
+    (
+        "import_psd",
+        // **blob 先行**：先把 PSD 字节传上去（得到 blob_hash），再让它落到某个图层。
+        r##"{"layer_id": "layer_default", "blob_hash": "sha256:<先上传 PSD 得到的哈希>"}"##,
+    ),
+    (
+        "set_reference",
+        // 只记进偏好，**不写进文档**；移除用 `clear_reference`。`opacity` 缺省 0.5，
+        // `position` 缺省铺满画布。
+        r##"{"blob_hash": "sha256:<参考图的哈希>", "opacity": 0.5, "position": {"x": 0, "y": 0, "w": 320, "h": 240}}"##,
+    ),
 ];
 
 #[cfg(test)]
@@ -14745,6 +14765,27 @@ mod tests {
                 "brush_preview 的实现会读 {needed}，而参数面里没有 ⇒ 调用方会收到「不接受参数 {needed}」并且无从知道它可以覆盖它；declared = {declared:?}"
             );
         }
+    }
+
+    /// **每个注册工具都必须有示例**（第 1135 轮：(B)① 的收尾）。
+    ///
+    /// 既有那条只检查"示例里的参数名没有漂移"⇒ 它对**没有示例的工具**是**永久绿**的假判据 ✗。
+    /// 这条补上：断言 `TOOL_EXAMPLES` 覆盖**全部**注册工具 ⇒ 以后新加工具而忘了写示例，它会立刻红 ✓。
+    #[test]
+    fn every_registered_tool_has_a_documented_example() {
+        let missing: Vec<&str> = super::ALL_TOOLS
+            .iter()
+            .map(|tool| tool.name)
+            .filter(|name| {
+                !super::TOOL_EXAMPLES
+                    .iter()
+                    .any(|(documented, _)| documented == name)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这些工具没有可照抄的示例 ⇒ 补进 TOOL_EXAMPLES：{missing:?}"
+        );
     }
 
     /// **示例里的参数名必须都在该工具的参数面里**（两边不许漂移）。

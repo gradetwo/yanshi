@@ -35407,7 +35407,125 @@ Object.keys 看真键表）。
 下一步：先写"覆盖完整"这条判据（它会立刻因为那 3 个而红 ⇒ 天然能红、天然有目标），
 再补那 3 个示例让它变绿。这符合"判据先行、且判据必须能红"的要求。
 
-## 第 1135 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
+## 第 1136 轮：(A)④ 审计——.yanshi 的本地往返已实现一半，缺口在"下载到本地"
+
+导入（本地文件 → 服务端）**已经实现**：
+- viewer.rs:583 有 `<input id="projectFile" type="file" accept=".yanshi,application/x-tar,...">`。
+- viewer-app.js:2171 是 `async function importProjectFile(file)`；
+  :2163 的注释写明"把本机的 .yanshi 工程包传上服务端并导入"，分片协议见 server.rs 的 import_document。
+- 分片协议在 :2181（`?begin=1`）、:2194（`?upload=…&offset=…`）、:2206（`?finish=1`）。
+- 冲突处理在 :2210：包里记的 id 已存在时**不覆盖**，直接告诉用户改个名字再试。
+- :2216 导入成功后**直接打开**新文档（注释解释了原因：令牌按文档签发，不交回新令牌就会"导入成功但打不开"）。
+
+导出（服务端 → 本地）只做了一半：
+- viewer-app.js:4950 走 `callToolChecked("export_project", {path})` ⇒ **写到服务端路径**，不是浏览器下载。
+- 但 PNG（:8076/:8099）与诊断包 zip（:4107）**都能**用 `a.download` 直接下载。
+
+所以 (A)④ 的真实缺口很具体：
+1. 工程包 `.yanshi` 缺"**下载到本地**"这一半（其它两种产物已经有了现成做法可以直接照抄）。
+2. 文件系统访问 API（showSaveFilePicker 等）仍是 0 次；但既然 `a.download` 已在用且可行，
+   这一项的优先级低于第 1 条（它是增强，不是缺口）。
+
+证据边界（如实）：以上是**静态审计**（读代码得到的结论），还没有跑起来验证"点击导出后浏览器是否下载"。
+若要做成判据，需要一条浏览器判据断言下载发生（或断言 `export_project` 的返回里带有可直接下载的 URL）。
+
+## 第 1137 轮：长期未决的"外部 33.1 秒导出"归因清楚——约 90% 在渲染
+
+做法：用现成的 4K 根（/tmp/cold4k，43M，文档 parrot-4k-bold）起服务，调 export_png，读它返回的 timings。
+
+实测（debug 构建）：
+  ok=True，bytes=7,078,095（6.75 MB），3840×2160，real 4m6s（246 秒）。
+  timings：total_ms=246176.9，**other_ms=246176.9**，
+           prep_ms=0.007，raster_ms=0.0，dirty_ms=0，fold_ms=0，log_ms=0。
+
+结论：
+1. 导出的时间**全部落在 `other`**，也就是没有被 timings 覆盖的那一段（渲染 + PNG 编码）。
+2. 结合早先的独立测量（PNG 编码在 release 下 1.7-2.8 秒），可以判定 246 秒的主体是**渲染**
+   （`render_region_raw` 全流程），PNG 编码只是小头。
+3. 按本机 debug ≈ release 的 10 倍换算：release 下渲染约 25 秒 + 编码约 2 秒 ≈ 27-33 秒，
+   与外部报告的 33.1 秒吻合。所以"外部 33.1 秒导出"不是我复现不出来的异常，
+   而是**渲染占绝对多数**的正常结果。
+4. 因此这个值的改进方向早已明确且已落地：瓦片并行在 4K release 上给出 2.36 倍，
+   导出时间应能降到约 14 秒量级。
+
+发现的可执行缺口：`timings` 的**覆盖度**不够 —— `other_ms` 把渲染与 PNG 编码都吞了。
+它现在能满足"各阶段和 = total"（因为 other 是补差得到的），但**没法回答"渲染占多少、编码占多少"**。
+应当新增 `render_ms` 与 `png_ms` 两个阶段字段（并保持"各阶段和 = total"这条既有判据仍然成立），
+这样下次再有人报"导出慢"时，一条读数就能定位，而不是像这次要绕一大圈。
+
+证据边界（如实）：本次只测了一个文档（4K、debug）。release 与其它文档没有重测；
+上面的 10 倍换算基于本会话早先记录的经验关系，不是本次实测。
+
+## 第 1138 轮：timings 拆阶段的可行性已确认（新增阶段天然兼容残差设计）
+
+读到的结构（有出处）：
+1. crates/yanshi-server/src/timings.rs:46 是 `pub struct ToolTimings`；:61/:66 是
+   `add(phase, Duration)` 与 `add_micros(phase, micros)`；:13 的注释写明"各阶段的定义都在本文件与调用点写明"。
+2. **关键设计**（:23）：`other_ms` 是**残差**而不是"又一件事"，这样"五相之和恒等于 total_ms"。
+   :105-107 的 report(total) 里 `other_us = total_us.saturating_sub(self.measured_us())` ——
+   也就是说 other 是 **total 减去已测阶段之和**。
+3. 判据侧：tests/timings_and_cancel.rs:120 遍历 PHASES 加 `total_ms`/`other_ms`；
+   :141 断言"各相之和（含残差）必须等于总时长"（容差 0.01）。
+
+结论（这决定了怎么改最安全）：
+因为 other 是**补差**得到的，所以**新增 render_ms / png_ms 只要算进 measured_us()，
+那条既有判据会自动继续成立**（other 会相应变小）。这正是残差设计的好处。
+所以"把导出时间拆成渲染与编码两段"这件事**没有兼容性风险**，只需要：
+  ① 在 ToolTimings 的 Phase 枚举里加两个阶段；
+  ② 在导出路径（write_export_png 一带）分别计时渲染与 PNG 编码；
+  ③ 确认 tests/timings_and_cancel.rs 的"各相之和 = 总时长"仍然绿（应当自动绿）。
+
+导出路径的位置：service.rs:1487-1548 是 **commit** 的带计时版本（phases.log_us 等），
+所以 export_png 的渲染与编码计时点要另找（write_export_png 一带），下一步先定位它。
+这一步是纯服务端改动，与正在修改 viewer-app.js 的子代理**不冲突**。
+
+## 第 1139 轮：派发 timings 拆阶段（导出可一条读数定位）
+
+依据第 1137-1138 轮：4K export 的 246 秒几乎全部落进 `other_ms`（total_ms=246176.9，other_ms=246176.9，
+其余阶段都是 0 或微秒），所以从一条读数看不出"是渲染还是 PNG 编码"。
+第 1138 轮确认：`other_ms` 是**残差**（total 减去已测阶段），所以**新增阶段只要算进 measured_us()，
+既有"各相之和（含残差）= 总时长"判据会自动继续成立** ⇒ 这件事没有兼容性风险。
+
+已派 subagent（/tmp/wt-timings，分支 perf/export-timings），任务书要点：
+1. 新增两个阶段：`render_ms`（产出被编码的像素）与 `png_ms`（PNG 编码），填在**导出路径的真实调用点**
+   （我只定位到 commit 的计时挂钩在 service.rs:1487-1548；导出渲染与编码在 write_export_png 一带，要它自己找）。
+2. 判据三条，各自必须能红并变异验证：
+   ① 既有"各相之和（含残差）= 总时长"仍然通过；
+   ② 真跑一次导出时两个新阶段**确实出现且有实质数值**（不是 0）；
+   ③ **新增一条判据**，直接抓住本次的起因：残留桶不许吞掉一次导出的绝大部分
+      （阈值要有测量依据，不能随便取；并说明它能抓什么、不能抓什么）。
+3. 测量纪律（本会话教训）：变异验证必须**直接跑判据**（runner 用隔离副本，工作树里的变异到不了它）；
+   不许跨分辨率/跨档位比较；不许把一次观测写成硬编码期望。
+4. 环境：4K 夹具 /tmp/cold4k，文档 id parrot-4k-bold，debug 导出约 4 分钟。
+5. 门禁四条；英文提交；不碰 main、不推送；报告要写清"导出渲染与编码的实际位置"。
+
+## 第 1140 轮：(A)⑤ 的显式开关早已存在——本会话第三次"过期前提"
+
+审计结果（有出处）：
+1. crates/yanshi-http/src/viewer.rs:321 已经有用户可见的开关：
+   `<label …><input type="checkbox" id="useServerRender…">`。
+2. crates/yanshi-http/assets/viewer-app.js:22 定义 `const SERVER_RENDER_KEY = "yanshi.serverRender"`；
+   :23 的注释写明"**是否强制走服务端渲染**（(A)⑤ 的显式开关）。缺省 false = 照旧（客户端优先）"。
+3. :25 读 `localStorage.getItem(SERVER_RENDER_KEY) === "1"` ⇒ **已持久化**；
+   :4750 `if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1")` ⇒ UI 与存储连通。
+4. 早期的注释（:9-15）还记录了真实踩坑：`needsServerPixels` 必须在任何启动路径之前声明，
+   否则启动读到它就抛错 ⇒ 整段脚本中断 ⇒ 现象是"工具条还在、但后续一切都没接线"。
+   注释里写明那次是"只写了注释、忘了写声明"，而且"探针把任何异常都标成 TDZ，误导了排查"。
+
+结论：
+- **(A)⑤ 的"显式开关"这一半已经完成**（复选框 + localStorage 键 + 默认客户端优先）。
+- 真正剩下的是它的**判据**：目标原话要求"**两种模式必须同笔同结果**"。
+  而这正好是 (A)⑥ 子代理在做的事（kernel-brush-parity 加它那条"在线 vs 离线逐字节一致"的新判据）。
+  也就是说 (A)⑤ 与 (A)⑥ 在这里**会合**：开关提供"能选"，判据提供"两条路一致"。
+
+本会话第三次"过期前提"（我转述的目标状态比实际落后）：
+  ① (B)③ target_installed 三态 —— 实现早已完成；
+  ② (B)① 示例覆盖 —— 早已 138/141（不是"57 条"）；
+  ③ (A)⑤ 显式开关 —— 早已存在。
+教训（值得进 skill）：**转述目标项之前先查证它的现状**，否则会把"已完成"当成"未做"，
+既浪费轮次，也让进度报告失真。
+
+## 第 1141 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
 
 ### 设计选择：**离线回退**，不是"统一走内核"
 
@@ -35514,6 +35632,33 @@ Object.keys 看真键表）。
 4. **门禁**（合并后重跑）：`cargo fmt --all -- --check` ✓、
    `cargo clippy --workspace --all-targets -- -D warnings` ✓、
    `cargo test --workspace` **exit 0，133 个 suite 全 0 failed** ✓、`cargo build --workspace --bins` ✓。
+
+### 官方 runner 的读数（合并后，单分片）
+
+`bash scripts/run-criteria.sh`（本机跑到 `kernel-brush-parity` 为止；那一条是**已知红**的
+1800s 超时项，与本次改动无关）：
+
+* **`browser-offline-journal` ✓ 通过** —— 干净读数：`✓ 离线写队列达成：断网不丢、按序补交、有界、被拒/冲突都说得清`
+  ✓（第一轮我在 ad-hoc 复用服务端根目录时报的 `conflict` 是**复用**造成的 ✓ —— 官方 runner
+  每次 `mktemp -d` 全新根目录 ✓ ⇒ 这条**不是**产品缺陷 ✓）。
+* `browser-offline-brush` ✓（新判据）、`browser-offline-reload` ✓、`browser-offline-export` ✓、
+  `browser-offline-shell` ✓、`browser-no-stale-read` ✓、`browser-first-paint` ✓、
+  `browser-brush-panel` / `browser-brush-list` / `browser-brush-preview` /
+  `browser-brush-preview-local` ✓ —— 缓存键那处改动**没有**打破离线读。
+* **我这条判据自己咬过别人一次**（已修 ✓）：它第一版在共享浏览器里
+  `unregister()` + `caches.delete()` 全部缓存 ⇒ 把**别的判据要用的外壳缓存**删了 ✓
+  ⇒ `browser-offline-draw` 报「SW 缓存里没有共享内核」✗、
+  `browser-render-switch` 报「内核句柄 = false」✗。
+  去掉清理（只保留 `Network.setCacheDisabled` ✓，它是**会话级**的 ✓）后：
+  连续同浏览器复跑 `browser-offline-brush` ✓ + `browser-offline-draw` ✓。
+  **判据不许改动共享环境** ✓ —— 这是本轮的一条流程教训 ✓。
+* runner 里另外几条 `✗`（`browser-i18n` / `browser-layout` / `browser-live-brush` /
+  `browser-render-switch`）**在 main（`bab50d2`）上逐条复现，读数逐字相同** ✓
+  （本机另起一个 main 工作区、各自独立的 server + chromium 对照跑过 ✓）
+  ⇒ **不是本次改动引入的** ✓。`browser-render-switch` 的机制是**判据侧竞态**：
+  它读完 `readyState === "complete"` 就立刻读 `state.wasm` ✓，而 wasm 模块的
+  `import` + 实例化是**异步**的 ✓（本机实测 `t=3s` 还是 `false`、`t=6s` 才 `true` ✓）
+  ⇒ 机器一慢就红 ✓。**我没有动它**（超出本次范围 ✓，且两条路都同样红 ✓）。
 
 ### 没做 / 边界
 
