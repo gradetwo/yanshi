@@ -3,7 +3,7 @@
 The design's `semantic` group lists six tools - `analyze_image`, `inpaint_region`,
 `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke` and `apply_style_transfer` - and states
 that they call an **external model service**. This project has no external dependencies: the transport is
-hand-written, the kernel is self-contained, and the only crate dependency is `wasm-bindgen`.
+hand-written, the kernel is self-contained, and the kernel keeps its dependency set deliberately small, and any dependency is chosen by weighing benefit against cost.
 
 **Status: reserved, deliberately not developed.** Per the project owner's decision, the interface is
 recorded here so the tool surface and the guarantees are settled, but **no code, no tool registration and no
