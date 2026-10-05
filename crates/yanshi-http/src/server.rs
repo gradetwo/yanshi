@@ -1901,6 +1901,38 @@ pub fn owner_from_role(role: Role) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// **页面与 SW 的缓存名必须逐字一致** ✓ —— 这是 (A)⑥「SW 升级不脏读」的核心不变量 ✓。
+    ///
+    /// 页面按缓存名开缓存、SW 按缓存名安装与清理 ✗ ⇒ **名字一分岔 ⇒ 就会读到旧外壳** ✗
+    /// （第 210 轮查到的真因：**旧 js 配新 wasm ⇒ 内核预览失败** ✓）。
+    ///
+    /// **变异判据** ✓：把**任一侧**的 `yanshi-shell-` 名字改掉（或去掉 `__BUILD_ID__` 替换）⇒ 红 ✓。
+    #[test]
+    fn the_page_and_the_service_worker_agree_on_the_shell_cache_name() {
+        let sw = SERVICE_WORKER_JS.replace("__BUILD_ID__", BUILD_ID_TEXT);
+        let page = crate::viewer::page_with_read_tools();
+        let name_in = |text: &str| -> String {
+            let prefix = "yanshi-shell-";
+            let start = text
+                .find(prefix)
+                .unwrap_or_else(|| panic!("应含外壳缓存名前缀 {prefix} ✓"))
+                + prefix.len();
+            text[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.')
+                .collect()
+        };
+        assert_eq!(
+            name_in(&sw),
+            name_in(&page),
+            "页面与 SW 的缓存名必须一致 ✓（否则 SW 升级后会读到旧外壳 ⇒ 脏读 ✗）"
+        );
+        assert!(
+            name_in(&sw).contains(BUILD_ID_TEXT),
+            "缓存名里必须带构建标识 ✓ ⇒ 新构建自动作废旧外壳 ✓"
+        );
+    }
+
     /// **(A)① 的第一个可打包静态产物** ✓：Service Worker 必须是**独立文件** ✓、
     /// 保留构建标识占位 ✓、且外壳清单里含**共享内核两件** ✓。
     ///
