@@ -73,10 +73,21 @@ try {
   if (isRed(outside.rgba)) fail("远处空白也读到红：" + JSON.stringify(outside.rgba) + " ⇒ 它可能在**返回常数** ✗");
   else console.log("  ✓ 远处空白不是红 ✓（**对照成立** ⇒ 它确实在看坐标 ✓）");
 
-  if (JSON.stringify(inside.rgba) === JSON.stringify(swapped.rgba) && isRed(swapped.rgba)) {
-    fail("(60,60) 与 (200,200) 返回相同 ⇒ 它可能**忽略了参数** ✗");
+  // ⚠️ **第 ④ 条原先写弱了** ✗（第 861 轮自查发现 ✓）：旧写法是
+  //   `inside == swapped && isRed(swapped)` ⇒ **三条都返回同一常数时它竟然通过** ✗
+  //   （实测正是如此 ✓：改好之前，笔画内/空白/对调**都返回 `[137,80,78,71]`** ✗，
+  //    而旧写法因为 `isRed(swapped)` 为假而走了 else ✓ ⇒ **假实现能骗过它** ✗）。
+  // ⇒ 改成**直接比较"笔画内"与"远处空白"** ✓：一个**返回常数**的实现**必然**被这条抓住 ✓。
+  if (JSON.stringify(inside.rgba) === JSON.stringify(outside.rgba)) {
+    fail("笔画内 " + JSON.stringify(inside.rgba) + " 与远处空白 " + JSON.stringify(outside.rgba)
+      + " **相同** ⇒ 它可能**返回常数**（没真的看坐标）✗");
   } else {
-    console.log("  ✓ 不同坐标给出不同结果 ✓（**参数真的被用了** ✓）");
+    console.log("  ✓ 笔画内与空白**读数不同** ✓（**它确实在看坐标** ✓）");
+  }
+  if (JSON.stringify(inside.rgba) === JSON.stringify(swapped.rgba)) {
+    fail("同一坐标两次采样结果不同 ⇒ 它可能**不稳定** ✗");
+  } else {
+    console.log("  ✓ 同一坐标（200,200）两次采样一致 ✓（**稳定** ✓）");
   }
   console.log("  覆盖面：采样点 2 个（笔画内 ✓ / 空白 ✓）｜颜色 1 种（纯红 ✓）｜形状 1 种（rect ✓）");
 } catch (error) {
