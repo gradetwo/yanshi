@@ -105,6 +105,8 @@ const scopeProbe = await evaluate(`(() => ({
   wasm: typeof window.yanshi,
 }))()`);
 console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
+const marks = await evaluate(`(() => window.__appMarks || null)()`);
+console.log(`  · 脚本执行标记 = ${JSON.stringify(marks)}`);
 // 三个分支：0 次进入 ⇒ 上游抛了；进过但没出来 ⇒ 中途抛了；进出一致却没选项 ⇒ 渲染环节的问题。
 if (brushOptions < 2) {
   const c = refreshCount || { entered: 0, exited: 0 };

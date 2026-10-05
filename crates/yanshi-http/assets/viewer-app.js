@@ -1,3 +1,7 @@
+// 执行进度标记（诊断，第 1072 轮）：一次实跑即可看出脚本"跑到哪里就断了"。
+window.__appMarks = window.__appMarks || [];
+window.__appMarks.push("script-start");
+
 // 服务端会把 yanshi://blob/<hash> 改写成 /api/blob/<hash>?doc=..&token=..
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。
 const blobUrl = (hash) => api("/api/blob/" + hash);
@@ -6637,6 +6641,7 @@ window.addEventListener("resize", () => { void refreshReferenceOverlay(); });
 
 // **在定义这一侧自初始化** ✓ —— 跨 `<script>` 段够不到函数名 ✗（见上面那条注释 ✓）；
 // 而 DOM 在这段脚本执行时已经解析完 ✓ ⇒ 直接接上即可 ✓（`loading` 时等 `DOMContentLoaded` ✓）。
+window.__appMarks.push("before-self-init");
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => setupBrushLibrary());
 } else {
