@@ -136,8 +136,8 @@ const PAGE_TAIL_A: &str = r##"</style>
   <h2 style="margin-top:0">删除文档</h2>
   <p id="deleteWhat" style="margin:4px 0"></p>
   <p class="hint" style="margin:4px 0"
-     title="文档目录会被移除；按内容寻址的 blob 跨文档共享，本次一个都不删（本项目还没有 GC）。">
-    删掉磁盘上的这份文档；它引用的 blob 暂时保留。
+     title="文档目录会被移除；它引用的 blob 里，只有它自己引用的会被删掉，被别的作品或离线变更集引用的一律保留。">
+    删掉磁盘上的这份文档与只属于它的 blob。
   </p>
   <div id="deleteError" class="hint" style="color:#ffb4a2;min-height:16px"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end">

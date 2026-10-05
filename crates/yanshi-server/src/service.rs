@@ -1193,9 +1193,11 @@ impl Workspace {
     /// 2. **正在使用中 ⇒ 拒绝** ✗：文档还有**实时订阅者**（WebSocket 客户端 ✓）时删它 ✓
     ///    等于把人脚下的地板抽掉 ✓ ⇒ `conflict`，并说清有几个连接 ✓。
     ///    "打开着"与"只是加载在内存里"是**两件事** ✓：后者没有人在看 ✓ ⇒ 可以删 ✓；
-    /// 3. **blob 不删** ✓（如实记下 ✗）：blob 是**内容寻址、跨文档共享**的 ✓
-    ///    ⇒ 删它们会破坏别的作品 ✗，而本项目**还没有 GC** ✓ ⇒ 这里只删文档自己的目录 ✓，
-    ///    并在回执里写明 `blobs_kept` ✓ —— **绝不假装磁盘空间立刻回来了** ✗。
+    /// 3. **blob 按引用计数删** ✓（产品负责人的裁定 ✓）：
+    ///    只有**这份文档引用**的 blob 才删 ✓，**被别的文档或 Stash 引用的一律保留** ✗
+    ///    —— 详见 `document_blob_roots` 与 `referenced_blobs_except` 的说明 ✓。
+    ///    **别的来源的孤儿**（历史遗留、没有任何文档引用 ✓）**不在本次范围内** ✗：
+    ///    那是孤儿回收（`collect_garbage` ✓）的事 ✓，这里**不冒领** ✓。
     pub fn delete_document(&mut self, doc_id: &str) -> Result<Value> {
         // **路径安全** ✗：`doc_id` 会被拼进目录名 ✓ ⇒ 形状不对就当场拒绝 ✓
         //（删除是不可逆动作 ✓，宁可多一条检查 ✗）。
@@ -1231,6 +1233,14 @@ impl Workspace {
                 ErrorContext::detail(format!("文档 {doc_id} 不存在 ⇒ 没有可删除的东西")),
             ));
         }
+        // **引用计数必须在删之前算** ✗：文档目录一删，它的日志就读不出来了 ✓
+        //（`document_blob_roots` 要读它 ✓）。
+        let referenced_by_target = self.document_blob_roots(doc_id)?;
+        let referenced_elsewhere = self.referenced_blobs_except(Some(doc_id))?;
+        let only_here: Vec<String> = referenced_by_target
+            .difference(&referenced_elsewhere)
+            .map(|hash| hash.to_string())
+            .collect();
         let mut freed_bytes = 0u64;
         if let Some(dir) = &dir {
             if persisted {
@@ -1249,6 +1259,9 @@ impl Workspace {
             }
         }
         let removed_from_memory = self.documents.remove(doc_id).is_some();
+        // **真正删存储这一件事只有一处实现** ✓（`collect_orphan_blobs` ✓）——
+        // 删除这层只负责**算出"哪些只有它引用"** ✓。
+        let (blobs_deleted, blob_bytes_freed) = self.collect_orphan_blobs(&only_here)?;
         Ok(json!({
             // **`ok` 必须有** ✗：本服务**每一个**回执都带它 ✓，而第一版这里漏了 ✓
             // ⇒ 查看器按 `value.ok` 判成败 ✓ ⇒ **删除其实成功了，界面却报 "unknown"** ✗
@@ -1258,9 +1271,82 @@ impl Workspace {
             "doc_id": doc_id,
             "freed_bytes": freed_bytes,
             "removed_from_memory": removed_from_memory,
-            "blobs_kept": true,
-            "note": "文档目录已删除；blob 是内容寻址、跨文档共享的，本次一个都没删（本项目还没有 GC）⇒ 磁盘占用不会完全回落",
+            "blobs_referenced": referenced_by_target.len(),
+            "blobs_deleted": blobs_deleted,
+            "blob_bytes_freed": blob_bytes_freed,
+            "blobs_shared_kept": referenced_by_target.len().saturating_sub(blobs_deleted),
+            "note": "文档目录已删；只删了**只有这份文档引用**的 blob，被别的文档或 Stash 引用的一律保留；**别的来源的孤儿不动**（孤儿回收是 collect_garbage 的事，不是删除的事）",
         }))
+    }
+
+    /// **某一份文档引用到的 blob 集合** ✓（日志的引用闭包 ＋ 活跃 Manifest ✓）。
+    ///
+    /// **没打开的文档要从磁盘读** ✗：`self.documents` 里只有**打开着**的文档 ✓，
+    /// 而磁盘上还躺着一堆没打开的 ✓ —— 只看内存那几份 ✓，就会把"别的作品的 blob"
+    /// 当成无人引用而删掉 ✗（那正是"删一份、坏另一份" ✓）。
+    fn document_blob_roots(
+        &self,
+        doc_id: &str,
+    ) -> Result<std::collections::BTreeSet<yanshi_core::BlobHash>> {
+        let mut roots = std::collections::BTreeSet::new();
+        if let Some(document) = self.documents.get(doc_id) {
+            roots.extend(document.log().blob_roots());
+            // **活跃 Manifest 也要算** ✓：它连**图层**的 blob 一起算 ✓（只数对象的会漏 ✗）。
+            roots.extend(document.state().active_blob_manifest());
+            return Ok(roots);
+        }
+        if let Some(persist) = &self.persist {
+            for atom in persist.load_atoms(doc_id)? {
+                roots.extend(atom.all_blob_refs());
+            }
+        }
+        Ok(roots)
+    }
+
+    /// **除 `skip` 之外，整个工作区引用到的 blob** ✓
+    ///（内存里的文档 ＋ **磁盘上没打开的文档** ＋ **Stash** ✓）。
+    ///
+    /// **Stash 必须算** ✗：设计 §899 明说「Stash 引用的 blob 归**历史级保留、不被 GC**」✓ ——
+    /// 漏了它 ⇒ 删一份文档会顺手删掉"离线期间的编辑"里那个 blob ✗，
+    /// 而那些编辑**还没有重放** ✓ ⇒ 用户的离线成果凭空消失 ✗。
+    ///
+    /// **落盘但没载入的 Stash 也要算** ✗：`with_file_store` 至今**不载入**它们 ✓
+    ///（那是另一个缺口 ✗，不是本轮的范围 ✗）—— 但"删 blob"必须对它**保守** ✓：
+    /// 宁可少删几个 ✓，也不能删掉离线编辑里的像素 ✗。
+    fn referenced_blobs_except(
+        &self,
+        skip: Option<&str>,
+    ) -> Result<std::collections::BTreeSet<yanshi_core::BlobHash>> {
+        let mut roots = std::collections::BTreeSet::new();
+        for (doc_id, document) in &self.documents {
+            if Some(doc_id.as_str()) == skip {
+                continue;
+            }
+            roots.extend(document.log().blob_roots());
+            roots.extend(document.state().active_blob_manifest());
+        }
+        if let Some(persist) = &self.persist {
+            for doc_id in persist.list_documents()? {
+                if Some(doc_id.as_str()) == skip || self.documents.contains_key(&doc_id) {
+                    continue;
+                }
+                for atom in persist.load_atoms(&doc_id)? {
+                    roots.extend(atom.all_blob_refs());
+                }
+            }
+            roots.extend(persisted_stash_roots(persist));
+        }
+        for stash in self.stashes.values() {
+            for atom in &stash.atoms {
+                roots.extend(atom.all_blob_refs());
+            }
+            for text in &stash.blob_refs {
+                if let Ok(hash) = text.parse() {
+                    roots.insert(hash);
+                }
+            }
+        }
+        Ok(roots)
     }
 
     /// 文档列表（磁盘上的也包含，标记 `persisted`）。
@@ -2279,6 +2365,36 @@ fn directory_bytes(dir: &std::path::Path) -> u64 {
         }
     }
     total
+}
+
+/// **落盘但没载入的 Stash 引用到的 blob** ✓（`<root>/stash/*.json` ✓）。
+///
+/// **为什么要单独读一遍** ✗：`with_file_store` **不载入**已落盘的 Stash ✓
+///（那是另一个缺口 ✗，不在本轮范围 ✗）⇒ 只看 `self.stashes` 会把"离线期间的编辑"
+/// 引用的 blob 当成无人引用 ✓ ⇒ 删除时顺手删掉 ✗。
+/// **读不出来的文件就跳过** ✓：这是**保守**方向 ✓（少删几个 ✓，绝不误删 ✗）。
+fn persisted_stash_roots(persist: &FileStore) -> std::collections::BTreeSet<yanshi_core::BlobHash> {
+    let mut roots = std::collections::BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(persist.root().join("stash")) else {
+        return roots;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(stash) = serde_json::from_str::<Stash>(&text) else {
+            continue;
+        };
+        for atom in &stash.atoms {
+            roots.extend(atom.all_blob_refs());
+        }
+        for text in &stash.blob_refs {
+            if let Ok(hash) = text.parse() {
+                roots.insert(hash);
+            }
+        }
+    }
+    roots
 }
 
 #[cfg(test)]

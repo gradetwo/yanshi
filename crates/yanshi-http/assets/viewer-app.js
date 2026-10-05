@@ -1672,10 +1672,13 @@ async function confirmDeleteDocument() {
     if (typeof dialog.close === "function") dialog.close();
     else dialog.removeAttribute("open");
     if (error) error.textContent = "";
-    // **如实说出释放了多少** ✓，并说明 blob 没有回收 ✓（不让"删了"暗示"空间立刻回来了" ✗）。
+    // **如实说出释放了多少** ✓，并把 blob 的去向讲清楚 ✓：
+    // "删了几个 / 有几个因为别处还在用而保留" ✓ —— 一句"已删除"会让人以为空间全回来了 ✗。
     log(
-      "已删除文档 " + docId + "（释放 " + formatBytes(value.freed_bytes || 0) +
-        "；blob 内容寻址共享，本次不回收）",
+      "已删除文档 " + docId + "（目录 " + formatBytes(value.freed_bytes || 0) +
+        "；blob 删 " + (value.blobs_deleted || 0) + " 个 / " +
+        formatBytes(value.blob_bytes_freed || 0) +
+        "，保留 " + (value.blobs_shared_kept || 0) + " 个被别处引用的）",
     );
     pendingDelete = "";
     await refreshDocumentList();

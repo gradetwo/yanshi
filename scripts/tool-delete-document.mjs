@@ -14,8 +14,9 @@
 //      工具的调用走 `POST /api/tools/delete_document`（与 MCP **同一个注册表** ✓），
 //      并且 MCP 二进制的 core 清单里**真的有这个名字** ✓；
 //      两面对**同一种失败**必须给出**同一个错误码** ✓（两条路各写一套就会漂移 ✗）；
-//   ⑥ **blob 的诚实交代** ✓：回执里写明 `blobs_kept` ✓ 与"本项目还没有 GC" ✓
-//      —— 不假装删了文档磁盘就立刻空了 ✗。
+//   ⑥ **blob 按引用计数删** ✓：只有这份文档引用的才删 ✓，被别的文档或 Stash 引用的保留 ✓；
+//      回执里写明删了几个 / 保留几个 ✓，并说明**别的来源的孤儿不在范围内** ✗
+//      —— 不假装"删文档 = 磁盘全清干净" ✗。
 //
 // 用法：node scripts/tool-delete-document.mjs <base-url> [docId] [token]
 import { existsSync } from "node:fs";
@@ -246,17 +247,136 @@ check(
   "status=" + toolDeleted.status + " " + JSON.stringify(toolDeleted.value).slice(0, 180),
 );
 check(
-  "工具面返回的回执与路由**同一形状**（`deleted` / `freed_bytes` / `blobs_kept`）",
+  "工具面返回的回执与路由**同一形状**（`deleted` / `freed_bytes` / `blobs_deleted` 等）",
   toolDeleted.value &&
     typeof toolDeleted.value.freed_bytes === "number" &&
-    typeof toolDeleted.value.blobs_kept === "boolean",
+    typeof toolDeleted.value.blobs_deleted === "number" &&
+    typeof toolDeleted.value.blob_bytes_freed === "number" &&
+    typeof toolDeleted.value.blobs_shared_kept === "number",
   JSON.stringify(toolDeleted.value).slice(0, 200),
 );
 check(
-  "回执**明说 blob 没回收**（GC 不在范围内，不许暗示磁盘立刻空了）",
-  toolDeleted.value && toolDeleted.value.blobs_kept === true &&
-    /GC/.test(String(toolDeleted.value.note || "")),
-  String((toolDeleted.value && toolDeleted.value.note) || "").slice(0, 160),
+  "回执**明说别的来源的孤儿不在范围内**（不冒领「磁盘全清干净了」）",
+  toolDeleted.value && /孤儿/.test(String(toolDeleted.value.note || "")),
+  String((toolDeleted.value && toolDeleted.value.note) || "").slice(0, 180),
+);
+
+// ⑧ **共享 blob 的安全** ✓（产品负责人点名的关键用例 ✓）：
+//   两份文档引用**同一个** blob ✓ ⇒ 删掉第一份 ⇒ 第二份必须**照常渲染、像素不变** ✓；
+//   反方向也要成立 ✓：**只有它引用**的 blob 必须**真的被删掉** ✗（否则引用计数只做了一半 ✗）。
+const S1 = "crit_delete_share_1";
+const S2 = "crit_delete_share_2";
+const OWNER = "crit_delete_only_1";
+const tokenS1 = await makeDoc(S1);
+const tokenS2 = await makeDoc(S2);
+const tokenOwner = await makeDoc(OWNER);
+const createLayerIn = (doc, token, layer) =>
+  json(`/api/tools/create_layer?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layer_id: layer, name: layer }),
+  });
+const bitmap = (seed) => {
+  const bytes = Buffer.alloc(8 * 8 * 4);
+  for (let i = 0; i < 64; i += 1) {
+    bytes[i * 4] = seed;
+    bytes[i * 4 + 1] = (i * 3) % 256;
+    bytes[i * 4 + 2] = 200;
+    bytes[i * 4 + 3] = 255;
+  }
+  return bytes;
+};
+const putBlob = async (doc, token, bytes) =>
+  (await json(`/api/blob?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: bytes,
+  })).value;
+const useBlob = async (doc, token, hash, size) => {
+  await createLayerIn(doc, token, "L");
+  return json(
+    `/api/tools/import_image?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        layer_id: "L",
+        bitmap: { blob_hash: hash, size, mime_type: "image/x-yanshi-raw" },
+        region: { x: 0, y: 0, w: 8, h: 8 },
+      }),
+    },
+  );
+};
+const renderHashOf = async (doc, token) => {
+  const value = (await json(
+    `/api/tools/render_region?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: { x: 0, y: 0, w: 8, h: 8 }, raw: true }),
+    },
+  )).value;
+  const match = /\/(?:api\/)?blob\/([^?]+)/.exec((value && value.raw_url) || "");
+  return match ? match[1] : "";
+};
+const sharedBlob = await putBlob(S1, tokenS1, bitmap(10));
+const uniqueBlob = await putBlob(OWNER, tokenOwner, bitmap(99));
+check("夹具：两个 blob 都已入库", Boolean(sharedBlob && sharedBlob.blob_hash && uniqueBlob && uniqueBlob.blob_hash));
+await useBlob(S1, tokenS1, sharedBlob.blob_hash, sharedBlob.size);
+await useBlob(S2, tokenS2, sharedBlob.blob_hash, sharedBlob.size);
+await useBlob(OWNER, tokenOwner, uniqueBlob.blob_hash, uniqueBlob.size);
+const beforeS2 = await renderHashOf(S2, tokenS2);
+check("夹具：第二份文档能渲染出像素", beforeS2.length > 0, beforeS2);
+
+// 删掉**共享那份** ⇒ 共享 blob 必须留下。
+const deleteS1 = await json(`/api/documents/${S1}?confirm=${S1}`, { method: "DELETE" });
+check(
+  "删掉共享那份 ⇒ 回执说**没有**删掉被别处引用的 blob",
+  deleteS1.value && deleteS1.value.blobs_deleted === 0 && deleteS1.value.blobs_shared_kept >= 1,
+  JSON.stringify(deleteS1.value).slice(0, 200),
+);
+const sharedStillThere = await json(
+  `/api/blob/${sharedBlob.blob_hash}?doc=${S2}&token=${tokenS2}`,
+);
+check(
+  "共享 blob **仍然在存储里**（直接取得到）",
+  sharedStillThere.status === 200,
+  "status=" + sharedStillThere.status,
+);
+const afterS2 = await renderHashOf(S2, tokenS2);
+check(
+  "第二份文档**照常渲染，且像素与删除前逐像素相同**",
+  afterS2.length > 0 && afterS2 === beforeS2,
+  "删前 " + beforeS2 + " ｜ 删后 " + afterS2,
+);
+// **再从磁盘上重新打开一次** ✓：这是"用户明天再打开它"的那条路 ✓。
+// ⚠️ **它不能单独证明 blob 还在** ✗（实测 ✓：图层在提交时可能已经把像素烘进自己的 blob ✓
+// ⇒ 渲染这条路不再读那个对象 blob ✓ ⇒ 在"忽略引用计数"的变异下这条**照样绿** ✗）
+// ⇒ **锋利的判据是上面那条"直接取得到"** ✓，这一条是补充 ✓。
+await postJson(`/api/documents/${S2}/close?token=${encodeURIComponent(tokenS2)}`, {});
+const reopened = await postJson("/api/documents", { doc_id: S2, width: 8, height: 8 });
+const reopenedToken = reopened.value && reopened.value.token;
+const afterReload = await renderHashOf(S2, reopenedToken || "");
+check(
+  "关掉再从磁盘打开第二份 ⇒ 仍然**渲染成功且像素不变**（共享 blob 真的还在）",
+  afterReload.length > 0 && afterReload === beforeS2,
+  "删前 " + beforeS2 + " ｜ 重新装载后 " + (afterReload || "(渲染失败)"),
+);
+
+// 反方向：只属于它自己的 blob **必须真的被删掉**（否则引用计数只做了一半 ✗）。
+const deleteOwner = await json(`/api/documents/${OWNER}?confirm=${OWNER}`, { method: "DELETE" });
+check(
+  "只有它引用的 blob 被**真的删掉**（回执计数 ≥1）",
+  deleteOwner.value && deleteOwner.value.blobs_deleted >= 1 && deleteOwner.value.blob_bytes_freed > 0,
+  JSON.stringify(deleteOwner.value).slice(0, 200),
+);
+const uniqueGone = await json(
+  `/api/blob/${uniqueBlob.blob_hash}?doc=${S2}&token=${tokenS2}`,
+);
+check(
+  "那个独占 blob 在存储里**真的没了**（404）",
+  uniqueGone.status === 404,
+  "status=" + uniqueGone.status,
 );
 
 // ⑦ MCP 二进制自己的清单里也必须真有这个名字（工具清单一致 ≠ MCP 面真能调 ✓）。
