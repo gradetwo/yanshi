@@ -1537,41 +1537,272 @@ function renderSamples() {
 
 async function showOpenDialog() {
   const dialog = $("openDialog");
-  const list = $("docList");
   renderSamples();
-  list.textContent = "载入中…";
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
+  await refreshDocumentList();
+}
+
+/// **打开面板的状态机** ✓：`loading` / `ready` / `empty` / `error` 四种 ✓。
+///
+/// **为什么要有它** ✗（产品负责人："文件里头打开那也很乱" ✓）：
+/// 原来的列表**把失败与空当成同一件事** ✓（一个 `textContent = "读取文档列表失败：…"` ✓
+/// 而空列表只写一句"（服务器上还没有文档）" ✓ —— 两者都不告诉用户"接下来能做什么" ✗），
+/// 而且它拿 `info.thumb_url` 当缩略图 ✓，那个字段 `GET /api/documents` **根本不回** ✗
+/// ⇒ 每一格都是一块**空白白框** ✓。现在状态写在 `#docList` 的 `data-state` 上 ✓
+/// （样式见 viewer.css ✓），**空**与**坏**永远长得不一样 ✓，并且都给出下一步 ✓。
+async function refreshDocumentList() {
+  const list = $("docList");
+  if (!list) return;
+  const count = $("docCount");
+  list.dataset.state = "loading";
+  list.dataset.message = "载入中…";
+  list.innerHTML = "";
+  if (count) count.textContent = "";
   try {
-    const value = await fetch("/api/documents").then((response) => response.json());
-    const documents = value.documents || [];
+    const response = await fetch("/api/documents");
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const value = await response.json();
+    const documents = (value.documents || []).slice();
+    // **最近创建的排前面** ✓：这张列表是给人找"我刚画的那张"用的 ✓。
+    documents.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
     list.innerHTML = "";
-    if (documents.length === 0) list.textContent = "（服务器上还没有文档）";
-    for (const info of documents) {
-      const card = document.createElement("button");
-      card.style.cssText = "display:flex;flex-direction:column;gap:4px;padding:6px;text-align:left";
-      const thumb = document.createElement("img");
-      thumb.style.cssText = "width:100%;height:72px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:4px";
-      if (info.thumb_url) thumb.src = info.thumb_url;
-      const label = document.createElement("span");
-      label.style.fontSize = "12px";
-      label.textContent = info.doc_id + (info.head_seq !== undefined ? " · head " + info.head_seq : "");
-      card.append(thumb, label);
-      card.addEventListener("click", async () => {
-        closeOpenDialog();
-        await switchDocument(info.doc_id);
-      });
-      list.appendChild(card);
+    if (documents.length === 0) {
+      list.dataset.state = "empty";
+      list.dataset.message = "服务器上还没有文档 ⇒ 用「文件 → 新建」开一张";
+      return;
     }
+    list.dataset.state = "ready";
+    list.dataset.message = "";
+    if (count) count.textContent = "共 " + documents.length + " 份";
+    for (const info of documents) list.appendChild(documentRow(info));
   } catch (error) {
-    list.textContent = "读取文档列表失败：" + error.message;
+    list.dataset.state = "error";
+    list.dataset.message =
+      "读取文档列表失败：" + String(error).slice(0, 90) + " ⇒ 点「刷新」重试";
   }
+}
+
+/// 列表里的一行 = 一份作品 ✓。
+///
+/// **动作是显式的** ✓（`data-action="open"` ✓）：不像原来"整块可点、但看不出来" ✗。
+/// 元信息只写**服务端真的回了的字段** ✗（`doc_id` / `width` / `height` / `atoms` / `objects` /
+/// `created_at` ✓）—— 不编一个不存在的"文件大小"出来 ✓（`/api/documents` 没有这个字段 ✓）。
+function documentRow(info) {
+  const row = document.createElement("div");
+  row.className = "doc-row" + (info.doc_id === state.docId ? " current" : "");
+  row.dataset.docId = info.doc_id;
+  const text = document.createElement("div");
+  text.className = "doc-text";
+  const name = document.createElement("span");
+  name.className = "doc-name";
+  name.textContent = info.doc_id;
+  const meta = document.createElement("span");
+  meta.className = "doc-meta";
+  meta.textContent = documentMetaText(info);
+  text.append(name, meta);
+  const actions = document.createElement("div");
+  actions.className = "doc-actions";
+  if (info.doc_id === state.docId) {
+    const current = document.createElement("span");
+    current.className = "doc-meta";
+    current.textContent = "当前";
+    actions.appendChild(current);
+  }
+  const open = document.createElement("button");
+  open.type = "button";
+  open.dataset.action = "open";
+  open.textContent = "打开";
+  open.addEventListener("click", async () => {
+    closeOpenDialog();
+    await switchDocument(info.doc_id);
+  });
+  actions.appendChild(open);
+  // **删除也在这一行上** ✓（一行一份作品 ⇒ 对它的动作都在这行 ✓）。
+  // **不在这里判断"能不能删"** ✗：那是**服务端**的权威（它知道有没有实时连接 ✓）——
+  // 两边各判一套必然漂移 ✓，而这里判错一次就是**真删了一份不该删的** ✗。
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.dataset.action = "delete";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => askDeleteDocument(info.doc_id));
+  actions.appendChild(remove);
+  row.append(text, actions);
+  return row;
+}
+
+/// **要删的那一份** ✓（确认对话框里记着它 ✓）。
+let pendingDelete = "";
+
+/// **删除的确认步** ✓（不可逆动作 ✗ ⇒ 再问一次 ✓）。
+///
+/// **为什么把拒绝留给服务端** ✓：服务端才知道"这份文档还有没有实时连接" ✓
+/// ⇒ 界面**照发** ✓，然后把服务端的原话显示出来 ✓（"正在使用中"就是一条**清楚的错误** ✓，
+/// 而"界面以为能删、服务端其实拒绝"这种两面不一致正是要避免的 ✗）。
+function askDeleteDocument(docId) {
+  pendingDelete = docId;
+  const dialog = $("deleteDialog");
+  if ($("deleteWhat")) $("deleteWhat").textContent = "要删掉的是：" + docId;
+  if ($("deleteError")) $("deleteError").textContent = "";
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+/// 确认之后**真的删** ✓：`DELETE /api/documents/<id>?confirm=<id>` ✓。
+///
+/// `confirm` 不是装饰 ✓：它要求调用方把文档 id **再写一遍** ✓
+/// ⇒ "手滑点到删除"与"确定要删这一份"在**协议层**就能区分 ✓（服务端缺它就直接 400 ✓）。
+async function confirmDeleteDocument() {
+  const docId = pendingDelete;
+  const error = $("deleteError");
+  if (!docId) return;
+  const url =
+    "/api/documents/" + encodeURIComponent(docId) + "?confirm=" + encodeURIComponent(docId);
+  try {
+    const response = await fetch(url, { method: "DELETE" });
+    const value = await response.json();
+    // **两个信号都要看** ✓：HTTP 状态 ✓ 与回执里的 `ok` ✓ ——
+    // 只信其中一个都出过事 ✓（第一版服务端漏了 `ok` ✓ ⇒ 删除**成功**了，界面却报 "unknown" ✗，
+    // 真浏览器判据当场抓到 ✓）。
+    if (!response.ok || value.ok === false) {
+      if (error) error.textContent = describeFailure(value);
+      return;
+    }
+    const dialog = $("deleteDialog");
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+    if (error) error.textContent = "";
+    // **如实说出释放了多少** ✓，并把 blob 的去向讲清楚 ✓：
+    // "删了几个 / 有几个因为别处还在用而保留" ✓ —— 一句"已删除"会让人以为空间全回来了 ✗。
+    log(
+      "已删除文档 " + docId + "（目录 " + formatBytes(value.freed_bytes || 0) +
+        "；blob 删 " + (value.blobs_deleted || 0) + " 个 / " +
+        formatBytes(value.blob_bytes_freed || 0) +
+        "，保留 " + (value.blobs_shared_kept || 0) + " 个被别处引用的）",
+    );
+    pendingDelete = "";
+    await refreshDocumentList();
+  } catch (failure) {
+    if (error) error.textContent = "删除失败：" + String(failure).slice(0, 120);
+  }
+}
+
+/// 一行的元信息（**只写服务端真的给了的字段** ✓）。
+function documentMetaText(info) {
+  const parts = [];
+  if (info.width && info.height) parts.push(info.width + "×" + info.height);
+  if (typeof info.atoms === "number") parts.push(info.atoms + " 原子");
+  if (typeof info.objects === "number") parts.push(info.objects + " 对象");
+  const when = formatTimestamp(info.created_at);
+  if (when) parts.push("创建 " + when);
+  if (info.persisted === false) parts.push("未落盘");
+  return parts.join(" · ");
+}
+
+/// Unix 毫秒 ⇒ 本地 `YYYY-MM-DD HH:MM` ✓（列表要的是"哪张更新" ✓，不是秒级精度 ✗）。
+function formatTimestamp(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const date = new Date(value);
+  const pad = (number) => String(number).padStart(2, "0");
+  return (
+    date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+    " " + pad(date.getHours()) + ":" + pad(date.getMinutes())
+  );
 }
 
 function closeOpenDialog() {
   const dialog = $("openDialog");
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
+}
+
+/// **人类可读的字节数** ✓（`1048576` ⇒ `1.0 MB` ✓）。
+///
+/// **为什么必须有** ✗：文档列表与导入进度都要报大小 ✓，而裸字节数（`349123456`）
+/// 人眼读不出量级 ✓（"这是 349 MB 还是 34 MB"）——那正是"界面不专业"的来源之一 ✓。
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "?";
+  if (value < 1024) return value + " B";
+  const units = ["KB", "MB", "GB"];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+  return scaled.toFixed(scaled >= 100 ? 0 : 1) + " " + units[unit];
+}
+
+/// 服务端错误体 ⇒ 一行能读懂的话 ✓（`{error_code, context.detail}` ✓，与工具响应同一形状 ✓）。
+function describeFailure(value) {
+  if (!value) return "没有响应";
+  const code = value.error_code || value.code || "unknown";
+  const detail = (value.context && value.context.detail) || value.message || "";
+  return code + (detail ? "：" + String(detail).slice(0, 200) : "");
+}
+
+/// **把本机的 `.yanshi` 工程包传上服务端并导入** ✓（分片协议见 `server.rs` 的 `import_document` ✓）。
+///
+/// **为什么分片** ✗：HTTP 请求体上限是 32 MiB ✓（`http::MAX_BODY_BYTES` ✓），
+/// 而真实工程包是**几百 MB** ✓（产品负责人给的夹具约 349 MB ✓）⇒ 一次 POST 根本传不进来 ✓。
+/// **为什么每片都用服务端回的 `received` 推进** ✓：服务端回的是**它实际收到的字节数** ✓
+/// ⇒ 少传一段会当场暴露 ✓，而不是导出一份**悄悄缺内容**的文档 ✗（那是最坏的一种"成功" ✓）。
+/// **为什么导入完直接打开** ✓：令牌是**按文档签发**的 ✗ ⇒ 不把新令牌交回去，
+/// 用户面对的就是"导入成功了但打不开" ✓（旧的路径导入按钮正是这样，只好让人去敲 curl ✓）。
+async function importProjectFile(file) {
+  const info = $("projectInfo");
+  const say = (text) => { if (info) info.textContent = text; };
+  const chunk = 8 * 1024 * 1024;
+  if (!file || !file.size) {
+    say("这个文件是空的 ⇒ 不是 .yanshi 工程包");
+    return;
+  }
+  say("正在导入 " + file.name + "（" + formatBytes(file.size) + "）…");
+  try {
+    const begun = await fetch("/api/documents/import?begin=1", { method: "POST" })
+      .then((response) => response.json());
+    if (!begun.ok) {
+      say("开始上传失败：" + describeFailure(begun));
+      return;
+    }
+    const uploadId = begun.upload_id;
+    // **以服务端说的单片上限为准** ✓（自己写死一个数，改了服务端就会莫名其妙地断 ✓）。
+    const perChunk = Math.max(1, Math.min(Number(begun.max_chunk_bytes) || chunk, chunk));
+    let offset = Number(begun.received) || 0;
+    while (offset < file.size) {
+      const slice = file.slice(offset, offset + perChunk);
+      const value = await fetch(
+        "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&offset=" + offset,
+        { method: "POST", body: slice },
+      ).then((response) => response.json());
+      if (!value.ok) {
+        say("上传中断（已传 " + formatBytes(offset) + "）：" + describeFailure(value));
+        return;
+      }
+      offset = Number(value.received);
+      say("正在上传 " + Math.round((offset / file.size) * 100) + "%（" +
+        formatBytes(offset) + " / " + formatBytes(file.size) + "）…");
+    }
+    const name = (($("projectImportName") || {}).value || "").trim();
+    const finishUrl = "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&finish=1" +
+      (name ? "&doc_id=" + encodeURIComponent(name) : "");
+    const done = await fetch(finishUrl, { method: "POST" }).then((response) => response.json());
+    if (!done.ok) {
+      // **冲突要给出路** ✓：包里记的 id 已经存在时导入**不覆盖** ✓ ⇒ 直接告诉用户改个名字 ✓。
+      say("导入被拒绝：" + describeFailure(done) + "（可在「导入为」里写一个新 id 再试）");
+      return;
+    }
+    const atoms = typeof done.atoms === "number" ? done.atoms + " 条原子" : "已还原";
+    const blobs = typeof done.blobs === "number" ? "，" + done.blobs + " 个 blob" : "";
+    log("已导入工程包：" + done.doc_id + " ✓（" + atoms + blobs + "）", "#2a2");
+    if (window.yanshiFileMenu) window.yanshiFileMenu.close();
+    closeOpenDialog();
+    await switchDocument(done.doc_id, done.token);
+  } catch (error) {
+    say("导入失败：" + String(error).slice(0, 140));
+  }
 }
 
 /// `#rrggbb` → `[r, g, b]`（0..1）✓。
@@ -4282,30 +4513,21 @@ async function setupAssetPanels() {
       });
     }
     if (importButton) {
-      importButton.addEventListener("click", async () => {
-        const path = pathOf();
-        if (!path) {
-          if (info) info.textContent = "先写一个路径 ✓";
-          return;
-        }
-        // **新文档 id** ✓：默认从未导入过的一个 ✓；已存在会被工具**拒绝**（绝不覆盖 ✓）。
-        const docId = (window.prompt("导入成哪个文档 id？（已存在的会被拒绝，绝不覆盖）", "imported") || "").trim();
-        if (!docId) return;
-        const value = await callToolChecked("import_project", { path: path, doc_id: docId }, "导入工程");
-        // **令牌是按文档签发的** ✗ ⇒ 导入的新文档**用当前令牌打不开** ✓
-        // ⇒ 必须把这条**和可照做的命令**一起说出来 ✓（否则用户会以为导入失败了 ✓）。
-        if (info) {
-          info.innerHTML =
-            "已导入为 <code>" + docId + "</code>（" +
-            (typeof value.atoms === "number" ? value.atoms + " 条原子" : "已还原") +
-            (typeof value.blobs === "number" ? "，" + value.blobs + " 个 blob" : "") +
-            "）✓ —— **令牌按文档签发** ✗ ⇒ 打开它要先为它签一个：<br>" +
-            "<code>curl -X POST 'http://127.0.0.1:" + (location.port || "80") +
-            "/api/documents' -H 'content-type: application/json' -d '{\"doc_id\":\"" + docId + "\"}'</code><br>" +
-            "然后把地址栏里的 <code>doc=</code> 与 <code>token=</code> 换成返回的那两个 ✓";
-        }
-        log("已导入工程包：" + docId + " ✓（新文档需要新令牌 ✓）", "#2a2");
+      const fileInput = $("projectFile");
+      // **按钮只是"选文件"的替身** ✓ —— 浏览器只允许用户直接点 `<input type=file>` 来选择本机文件 ✓，
+      // 所以按钮把这个动作转给它 ✓（用户看到的是一个动作 ✓，不是两个 ✓）。
+      importButton.addEventListener("click", () => {
+        if (fileInput) fileInput.click();
+        else if (info) info.textContent = "这个构建里没有文件选择控件";
       });
+      if (fileInput) {
+        fileInput.addEventListener("change", async () => {
+          const file = fileInput.files && fileInput.files[0];
+          // **立刻清空** ✓：同一个文件连选两次也要能再次触发 `change` ✓（否则第二次什么都不发生 ✗）。
+          fileInput.value = "";
+          if (file) await importProjectFile(file);
+        });
+      }
     }
   }
 
@@ -7420,6 +7642,15 @@ $("clearSelection").addEventListener("click", async () => {
   await refreshSelectionHint();
 });
 $("openClose").addEventListener("click", closeOpenDialog);
+// **「刷新」真的重新拉一次列表** ✓（它是**读失败**之后唯一的出路 ✓ —— 原来什么都没有 ✗）。
+$("docReload").addEventListener("click", () => { void refreshDocumentList(); });
+// **删除的确认对话框** ✓（不可逆动作才需要它 ✓ —— 关闭、打开都不问 ✓）。
+$("deleteCancel").addEventListener("click", () => {
+  const dialog = $("deleteDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+});
+$("deleteConfirm").addEventListener("click", () => { void confirmDeleteDocument(); });
 $("copyDoc").addEventListener("click", async () => {
   const name = ($("copyName").value || "").trim();
   if (!name) {

@@ -239,6 +239,28 @@
      （实测：body/main/aside 都在视口内，scrollWidth 却多出 742px ✗）。必须显式限宽。 */
   dialog { max-width: min(760px, 92vw); border: 1px solid var(--line); border-radius: 8px; }
   dialog #docList { max-width: 100%; }
+  /* **打开面板的文档列表** ✓（产品负责人："文件里头打开那也很乱" ✗）。
+     一行一份作品 ✓：名字 + 元信息（尺寸 / 原子数 / 创建时间 ✓）+ 一个明确的「打开」✓。
+     **四种状态由 `data-state` 承载** ✓ —— 载入 / 空 / 读失败都用 `::before` 显示 `data-message` ✓
+     ⇒ "还没有文档"与"列表读不到"**长得不一样** ✓（那正是原来的毛病之一 ✓）。
+     样式沿用同一套令牌（`--line` / `--surface-2` / `--accent` ✓），不引新颜色 ✗。 */
+  #docList { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow: auto;
+             min-height: 88px; }
+  #docList[data-state="loading"]::before,
+  #docList[data-state="empty"]::before,
+  #docList[data-state="error"]::before { content: attr(data-message); display: block; padding: 8px;
+             font-size: 12px; opacity: .72; }
+  #docList[data-state="error"]::before { color: #ffb4a2; opacity: .95; }
+  .doc-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid var(--line);
+             border-radius: 6px; background: var(--surface-2); }
+  .doc-row.current { border-color: var(--accent); background: var(--accent-soft); }
+  .doc-row .doc-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .doc-row .doc-name { font-size: 12px; font-weight: 600; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
+  .doc-row .doc-meta { font-size: 11px; opacity: .7; overflow: hidden; text-overflow: ellipsis;
+                       white-space: nowrap; }
+  .doc-row .doc-actions { display: flex; gap: 4px; align-items: center; flex: none; }
+  .doc-row .doc-actions button { padding: 0 8px; font-size: 11px; }
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #log { overflow-x: hidden; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }

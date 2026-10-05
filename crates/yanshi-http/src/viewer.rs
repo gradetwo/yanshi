@@ -89,15 +89,25 @@ const PAGE_TAIL_A: &str = r##"</style>
 </dialog>
 <dialog id="openDialog">
   <h2 style="margin-top:0">打开文档</h2>
-  <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。
-       入口放在文档列表**之前** ✓ —— 这样"打开示例看看"是第一步 ✓，而不是在一堆自己的文档里翻 ✗。 -->
-  <h3 style="margin:12px 0 4px">示例作品</h3>
+  <!-- **打开面板重排** ✓（产品负责人："文件里头打开那也很乱" ✗）——
+       原来的列表是**一格一格的白框** ✗：它按 `info.thumb_url` 取缩略图 ✓，
+       而 `GET /api/documents` **根本不回这个字段** ✗ ⇒ 每一格都是一块空白 ✓，
+       底下只有一行 id ✓，没有明确的"打开"动作 ✓，空列表与读失败也长得一样 ✗。
+       现在：**一行一份**（名字 + 尺寸 + 原子数 + 创建时间 ✓）、**每行一个「打开」** ✓、
+       四种状态（载入 / 有内容 / 空 / 读失败 ✓）都由 `#docList` 的 `data-state` 承载 ✓
+       ⇒ "空"与"坏"再也混不起来 ✓（样式见 viewer.css 的 `#docList` ✓）。 -->
+  <h3 style="margin:12px 0 4px">我的文档 <span id="docCount" class="hint"></span></h3>
+  <div style="display:flex;gap:8px;align-items:center;margin:0 0 8px">
+    <button id="docReload" type="button">刷新</button>
+    <span class="hint" title="一行一份作品：名字、尺寸、原子数与创建时间；点「打开」切换过去。">名字 · 尺寸 · 时间</span>
+  </div>
+  <div id="docList" data-state="loading" data-message="载入中…"></div>
+  <!-- 示例作品 ✓：每种介质/功能一份 ✓（画它们的过程本身就是验收 ✓，见 docs/samples.md ✓）。 -->
+  <h3 style="margin:16px 0 4px">示例作品</h3>
   <p style="opacity:.75;font-size:12px;margin:0 0 8px">
     用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。
   </p>
   <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
-  <h3 style="margin:16px 0 4px">我的文档</h3>
-  <div id="docList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:50vh;overflow:auto"></div>
   <hr />
   <h2>导入本地图片</h2>
   <p style="opacity:.75;font-size:12px;margin:4px 0"
@@ -118,6 +128,21 @@ const PAGE_TAIL_A: &str = r##"</style>
   </div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
     <button id="openClose">关闭</button>
+  </div>
+</dialog>
+<!-- **删除确认** ✓（产品负责人：要能删别的作品 ✓）—— 删除**不可逆** ✗ ⇒
+     必须再确认一次 ✓，而且把**服务端说的话原样显示**出来 ✓（"正在使用中"要看得见 ✓）。 -->
+<dialog id="deleteDialog">
+  <h2 style="margin-top:0">删除文档</h2>
+  <p id="deleteWhat" style="margin:4px 0"></p>
+  <p class="hint" style="margin:4px 0"
+     title="文档目录会被移除；它引用的 blob 里，只有它自己引用的会被删掉，被别的作品或离线变更集引用的一律保留。">
+    删掉磁盘上的这份文档与只属于它的 blob。
+  </p>
+  <div id="deleteError" class="hint" style="color:#ffb4a2;min-height:16px"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button id="deleteCancel">取消</button>
+    <button id="deleteConfirm">删除</button>
   </div>
 </dialog>
   <div class="options" id="options">
@@ -514,21 +539,24 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
       <div id="gradInfo" class="hint"></div>
     </div>
-    <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓，
-         而界面里**一次都没提到过它们** ✗（实测：查看器里出现次数 = 0 ✓）
-         ⇒ "真人备份不了自己的画" ✓ —— 这正是"两边都要有"的**反面缺口** ✓。
-         **路径是服务端的路径** ✓（不是浏览器的文件选择器 ✓）⇒ 这一点必须写在界面上 ✗，
-         否则用户会以为点一下就从自己电脑上选文件 ✓。 -->
+    <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓。
+         **两个方向不是同一种东西** ✓，界面里必须分开写 ✗：
+         导出 ⇒ 服务端写文件 ✓（所以是**服务器上的路径** ✓，浏览器给不了 ✓）；
+         导入 ⇒ 用户**本机上有一个 `.yanshi`** ✓ ⇒ 必须能**选文件上传** ✓，
+         而不是让他在服务器路径框里敲一个自己的文件（那是**做不到**的 ✗ —— 产品负责人报的正是这一条 ✓）。
+         上传走分片协议 ✓（真实工程包几百 MB，一次 POST 过不了 32 MiB 的请求体上限 ✓，
+         见 `server.rs` 的 `import_document` ✓）。 -->
     <div class="card" data-panel="file">
       <h2>工程包</h2>
-      <div class="hint">
-        <span title="整份文档（原子日志 + 元数据 + 全部 blob）打成一个 .yanshi：未压缩 tar，任何 tar 都能看。">打包整个文档为 <code>.yanshi</code></span>
-        <strong>路径是服务器上的路径</strong> ✓ —— 不是从你电脑上选文件 ✗。
+      <div class="hint" title="导出写到服务器上的路径；导入从你的电脑选 .yanshi 文件（分片上传，整包多大都行）。">
+        导出写到服务器 ｜ 导入从本机选文件
       </div>
-      <label>路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <label>导出路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <div class="toolbar"><button id="projectExport" type="button">导出工程</button></div>
+      <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">
-        <button id="projectExport" type="button">导出工程</button>
-        <button id="projectImport" type="button">导入为新文档</button>
+        <button id="projectImport" type="button">导入 .yanshi…</button>
+        <input id="projectFile" type="file" accept=".yanshi,application/x-tar,application/octet-stream" hidden />
       </div>
       <div id="projectInfo" class="hint"></div>
     </div>

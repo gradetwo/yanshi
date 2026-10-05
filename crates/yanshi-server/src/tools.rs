@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 71 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 72 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（71 个）。
+    /// 核心层：默认注册（72 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -431,7 +431,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，71 个）。
+    /// 核心层（默认注册，72 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1066,7 +1066,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 71 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 72 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -2430,6 +2430,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "delete_document",
+        profile: Profile::Core,
+        // **产品负责人要的是"真删"** ✓ —— 原来的 `DELETE` 路由只关内存 ✗
+        //（那是"隐藏"不是"缺失" ✓）：现在**两个面**都能真删 ✓，而且共用同一个实现 ✓。
+        summary: "**真删**一份文档（磁盘上的原子日志与元数据目录一并移除）；有实时连接时拒绝；**只删只有它引用的 blob**，被别的文档或 Stash 引用的一律保留（其他来源的孤儿不在范围内）",
+        mutating: true,
+        params: &[param!(
+            "document_id",
+            String,
+            true,
+            "要删除的文档 id。**注意它跟 `doc_id` 不是一回事**：`doc_id` 是本次调用的会话文档（框架会按需创建），`document_id` 才是要被删掉的那一份"
+        )],
+    },
+    ToolSpec {
         name: "scatter_strokes",
         profile: Profile::Core,
         // **AI 画家需求 P0-1.3**：区域内随机撒笔触 —— 画头发、胡须、背景纹理、破碎色彩的核心工具。
@@ -2943,6 +2957,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "gradient_blend" => write_gradient_blend(ctx, args),
         "scatter_strokes" => write_scatter_strokes(ctx, args),
         "import_project" => write_import_project(ctx, args),
+        "delete_document" => write_delete_document(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -10582,6 +10597,21 @@ fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     })?;
     let value = ctx.workspace.import_project(&bytes, doc_id.as_deref())?;
     Ok(value)
+}
+
+/// **`delete_document`** ✓ —— 真正删掉一份文档 ✓
+///（与 HTTP 的 `DELETE /api/documents/<id>?confirm=<id>` **同一条实现** ✓：`Workspace::delete_document` ✓）。
+///
+/// **为什么参数叫 `document_id` 而不是 `doc_id`** ✗（这一点必须写清楚 ✓）：
+/// 两个入口都**先保证"会话文档"存在** ✓（HTTP 的 `tool_call_with` ✓ 与 MCP 的调用路径 ✓ 都有这一步 ✗）
+/// ⇒ 若要删的 id 放在 `doc_id` 上 ✓，删一份**不存在**的文档会**先被创建出来、再被删掉** ✓
+/// ⇒ "不存在"这条反例**永远触发不了** ✗，而且会**静默成功** ✓ —— 那正是最坏的一种回答 ✓。
+/// 分开命名之后 ✓：`doc_id` 仍是会话文档（由框架管 ✓），`document_id` 是**要被删掉的那一份** ✓。
+///
+/// **校验、占用检查、落盘删除**都在工作区那一份实现里 ✓ ⇒ 工具这一层只做**取名** ✓。
+fn write_delete_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let document_id = require_str(args, "document_id")?;
+    ctx.workspace.delete_document(&document_id)
 }
 
 /// **`gradient_blend`**（AI 画家需求 P0-1.2）：两点之间**位置与颜色同时插值**，逐笔交给
