@@ -2806,15 +2806,12 @@ fn read_sample_color(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let (x, y) = (number("x")?, number("y")?);
     let region = Bbox::new(x, y, 1.0, 1.0);
     let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
-    // ⚠️ **`RenderedPreview` 本身不含像素** ✗（`document.rs:126` ✓ 只有 `bbox`/`width`/`height`/`blob_hash` ✓）
-    // ⇒ 像素在 **blob store** 里 ✓ ⇒ 按 `blob_hash` 取 ✓（与 `service.rs:1332` 同一做法 ✓）。
-    // 1×1 的 RAW_RGBA ⇒ **前 4 个字节就是那个像素** ✓。
-    let bytes = ctx
-        .workspace
-        .document_mut(&ctx.doc_id)?
-        .store()
-        .get(&rendered.blob_hash)?;
-    let rgba = match bytes.first_chunk::<4>() {
+    // ⚠️ **像素必须走 `render_region_raw`** ✗（第 859 轮 ✓，判据抓出来的 ✓）：
+    // `render_region`（`document.rs:813`）会 `encode_png`（`:818`）再存 ✗ ⇒ 由 `blob_hash` 取到的
+    // 前 4 字节是 **PNG 魔数** ✗（**不是像素** ✓）；而 `document.rs:704` **本来就有** raw 路径 ✓
+    // ⇒ 它给的与 `mime_type` 的声明**一致** ✓。（`bbox`/`width`/`height` 仍用上面那次 ✓。）
+    let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    let rgba = match raw.first_chunk::<4>() {
         Some(chunk) => json!([chunk[0], chunk[1], chunk[2], chunk[3]]),
         // **取不到就说取不到** ✓（"读不出"与"读到一个黑点"是两件事 ✓）
         None => Value::Null,
