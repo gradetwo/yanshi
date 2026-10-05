@@ -1776,6 +1776,12 @@ if (maskResult && maskResult.unable) {
 if (!((maskResult || {}).log || "").includes("添加") || ((maskResult || {}).log || "").includes("失败")) {
   // **把长度与首尾也带出来**（第 952 轮）：只有这一条一直红，需要区分"采集被截断"与"日志真没打"，
   // 而这两种情况看长度与尾部就能分开。文件头正是同一个症状的旧记录（第 359 轮截断坑）。
+  // **前置断言：内核必须就绪**（第 955 轮）：本机编不了 wasm32 ⇒ 没有内核 ⇒
+  // viewer.rs:1615 的 loadKernel 立刻返回 ⇒ docSize/renderViewport 都不执行 ⇒ 画布不会重建。
+  // 那样得到的"画布尺寸不同"会**误导**（看起来像产品问题）。先把前置条件说出来。
+  if (!(await evaluate("!!window.yanshiKernelReady"))) {
+    problems.push("前置条件不成立：内核未就绪（本机多半没构建 wasm 包）⇒ 画布不会按新尺寸重建，下面的尺寸断言不可信");
+  }
   const maskLog = String((maskResult || {}).log || "");
   // 落盘（runner 只回显 out.txt 的头 3/尾 6 行，消息可能落在窗口外）。
   try { (await import("node:fs")).appendFileSync("/tmp/yanshi-mask-obs.txt",
