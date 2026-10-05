@@ -99,7 +99,10 @@ const INK = `(() => {
   return { canvases: canvases.length, parts, ink };
 })()`;
 // **画一笔**：合成指针事件（本地渲染路径看得见它们 ✓；服务端提交在离线时必然失败 ✓，正是要测的点 ✓）
-const STROKE = `(async () => {
+// **每一笔都要落在"还没有墨"的地方** ✗ —— 原来是**固定位置**（0.3,0.4 → 0.62,0.6 ✓），
+// 于是离线那一笔**正好盖在在线那一笔上面** ✓ ⇒ 增量量到的是"两次的差"（实测 4 / 0 ✓），
+// 而不是"这一笔自己画了多少" ✗ ⇒ 换个位置才是这条判据想量的东西 ✓（门槛、断言语义都不动 ✓）。
+const STROKE = (originX, originY) => `(async () => {
   // **每一笔之前立刻重设笔刷** ✓ —— 实测「设过」到「落笔」之间会被覆盖 ✗（查看器读到空串 ✓）。
   // 这里在**同一时刻**设、并**回读**，好判定"是不是产品把它抹掉了" ✗。
   const brushSelect = document.getElementById("brush");
@@ -113,15 +116,16 @@ const STROKE = `(async () => {
     clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy,
     bubbles: true, pointerId: 1, isPrimary: true, button: 0, buttons: 1, pressure: 0.7, pointerType: "pen",
   }, extra || {});
-  board.dispatchEvent(new PointerEvent("pointerdown", at(0.3, 0.4)));
+  const ox = ${originX}, oy = ${originY};
+  board.dispatchEvent(new PointerEvent("pointerdown", at(ox, oy)));
   // **每步之间真的等一会儿** —— 本地预览有 35ms 节流,同一个 tick 里连发会被丢掉大半
   // (实测:那样只画出 2 帧、增量 6 像素,看起来像"离线画不了",其实是判据的笔画不真实)。
   for (let step = 1; step <= 5; step += 1) {
     await new Promise((resolve) => setTimeout(resolve, 150));
-    board.dispatchEvent(new PointerEvent("pointermove", at(0.3 + 0.04 * step, 0.4 + 0.025 * step)));
+    board.dispatchEvent(new PointerEvent("pointermove", at(ox + 0.04 * step, oy + 0.025 * step)));
   }
   await new Promise((resolve) => setTimeout(resolve, 60));
-  board.dispatchEvent(new PointerEvent("pointerup", at(0.62, 0.6, { buttons: 0 })));
+  board.dispatchEvent(new PointerEvent("pointerup", at(ox + 0.32, oy + 0.2, { buttons: 0 })));
   return { ok: true, steps: 5, brushAtPointerDown: brushAtPointerDown };
 })()`;
 // **统计计数**：能区分"预览被跳过"（有 skip 计数）与"根本没走到"（一个计数都没有）
@@ -181,7 +185,7 @@ if (!(brushOptions.nonEmpty >= 1)) {
 
 // ① 在线：画一笔，记录**这一笔自己的增量**
 const before1 = await evaluate(INK);
-const online = await evaluate(STROKE);
+const online = await evaluate(STROKE(0.10, 0.12));
 await sleep(1500);
 const after1 = await evaluate(INK);
 const deltaOnline = after1.ink - before1.ink;
@@ -193,7 +197,7 @@ await send("Network.emulateNetworkConditions", { offline: true, latency: 0, down
 // ⇒ 行为随机器负载而异 ✓ ⇒ 与观测到的"非确定性"完全吻合 ✓）。
 await sleep(800);
 const before2 = await evaluate(INK);
-const offlineStroke = await evaluate(STROKE);
+const offlineStroke = await evaluate(STROKE(0.40, 0.20));
 // **抬手之后按 100ms 取样** ✓（第 41 轮定 ✓）：判定墨是"**从未出现**"✗ 还是"**出现后被抹掉**"✗。
 const inkSamples = [];
 for (let step = 0; step < 6; step += 1) {
@@ -232,7 +236,7 @@ const CACHES = `(async () => {
 // **同跑多笔** ✓（第 57 轮定 ✓）：断网状态**保持不变**再画一笔 ⇒ 若同跑内有成有败 ✓，
 // 就说明与"首访/复访"无关 ✓，而是**每一笔各自的时序** ✓。
 const before3 = await evaluate(INK);
-const stroke3 = await evaluate(STROKE);
+const stroke3 = await evaluate(STROKE(0.56, 0.62));
 await sleep(1800);
 const after3 = await evaluate(INK);
 const delta3 = after3.ink - before3.ink;

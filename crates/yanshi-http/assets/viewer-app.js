@@ -224,6 +224,28 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
 const LOCAL_READ_TOOLS = [__READ_TOOLS__];
 
+/// **缓存键必须带上请求参数** ✗ —— 实测（第 1126 轮）：`list_assets {kind:"brush"}` 与
+/// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
+/// ⇒ 本地缓存的键也一样 ✓ ⇒ 断网时打开的笔刷面板里装的是**贴图文件名** ✓
+///（实测选项全是 `Cardboard001.png` ✓ ⇒ 用户**选不到笔** ⇒ 离线画不了 ✗）。
+/// 同类还有 `brush_preview`（不同笔刷 ✓）、`get_atom`（不同 atom_id ✓）——
+/// 都是"同一个端点、不同参数" ✓，而旧键把它们当成同一条 ✓。
+///
+/// 修法：把**请求体的短哈希**并进键 ✓（参数不同 ⇒ 条目不同 ✓）。
+/// **已知边界** ✓：哈希是 FNV-1a ✓ ⇒ 理论上可能碰撞 ✓ —— 碰撞的后果是"离线读到另一个参数的结果" ✓
+///（与修之前**每次都这样**相比是严格更好的 ✓）；要绝对无碰撞得整串拼进键 ✓，
+/// 而键会进 IndexedDB 与文件名 ✓ ⇒ 长度有成本 ✓（本项的判据只需要"不同参数不同条目" ✓）。
+function bodyDigest(body) {
+  const text = typeof body === "string" ? body : "";
+  if (!text) return "0";
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16) + "-" + text.length.toString(16);
+}
+
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
   const method = (options && options.method) || "GET";
@@ -298,7 +320,9 @@ async function fetchOrLocal(url, options) {
     }
     return fetch(url, options);
   }
-  const key = localKey(url) + (toolName ? "|tool:" + toolName : "") + (binary ? "|bin" : "|json");
+  const key = localKey(url) + (toolName ? "|tool:" + toolName : "") +
+    (options && options.body ? "|args:" + bodyDigest(options.body) : "") +
+    (binary ? "|bin" : "|json");
   if (binary) {
     // 二进制：本地有 ⇒ **直接回一个 Response** ✓（离线可显示 ✓）；没有 ⇒ 取网并**写进 OPFS** ✓。
     const localBytes = await localBytesGet(key);
@@ -6603,7 +6627,8 @@ async function commitShape() {
         point.y,
         point.pressure === undefined ? 0.5 : point.pressure,
       ]);
-      await callToolChecked(
+      const duo = duoToneEnabled();
+      const result = await callToolChecked(
         "brush_stroke",
         {
           layer_id: state.layerId,
@@ -6615,7 +6640,7 @@ async function commitShape() {
           smooth: smooth,
           // **一笔多色** ✓：与 MCP 同名同义（`brush_stroke.color_to` ✓）—— 不勾就**不传** ✓
           //（缺省逐字节不变 ✓）。
-          color_to: duoToneEnabled() ? colorToCss() : undefined,
+          color_to: duo ? colorToCss() : undefined,
           // **颜色也必须带上** ✗ —— 此前写的是 `color: undefined` ✓ ⇒
           // 用户在工具条上**选了颜色也画不上** ✗（笔触只用 `.myb` 自带色 ✓），
           // 这正是"界面里有的东西实际不生效" ✓（本轮连同工具层的颜色缺陷一起修 ✓）。
@@ -6627,6 +6652,32 @@ async function commitShape() {
       liveStroke = null;
       // **先宣布这一笔结束** ✗（在飞的帧就此作废 ✓，见上面那个标记 ✓）。
       liveStrokeClosed = true;
+      // **断网 ⇒ 这一笔改走本地内核** ✓（(A)⑥ 的最后一个缺口 ✓）。
+      //
+      // **为什么必须在这里分叉** ✓：`callTool` 在服务端不可达时只把这一笔**记进离线队列** ✓
+      //（`outboxQueuedResult` ✓）⇒ 用户的操作不会丢 ✓，但**画布上一个像素都没有** ✗
+      //（这正是判据 `browser-offline-shell` 一直红的那一条 ✓）。
+      // ⇒ 队列照记 ✓（联网后仍由服务端权威落笔 ✓），同时用**共享内核**把它画出来 ✓。
+      // **判据** ✓：`scripts/browser-offline-brush.mjs`（离线出墨 ＋ 与在线逐字节相同 ＋ 内核计数器 ✓）。
+      if (result && result.offline) {
+        const painted = await paintBrushOffline({
+          brush: brushName,
+          layerId: state.layerId,
+          points: controlPoints,
+          size: size,
+          color: color,
+          smooth: smooth,
+          colorTo: duo ? colorToCss() : null,
+        });
+        liveLastRegion = null;
+        if (painted) {
+          window.yanshiStats.offlineBrushPaintedStrokes =
+            (window.yanshiStats.offlineBrushPaintedStrokes || 0) + 1;
+        } else {
+          log("离线：这一笔**已经记入本地队列** ✓，但本地没能画出来 ⇒ 联网补交后就能看到", "#c93");
+        }
+        return;
+      }
       // **提交之后按"本地覆盖过的那块"从服务端补画一次**（第 67 轮定：否则画布上留的是本地那层，
       // 撤销只清对象脏区 ⇒ 外面那圈永远清不掉 ✗）。多留 4px 余量覆盖取整误差 ✓。
       if (liveLastRegion && window.yanshiDebugBlit) {
@@ -6684,8 +6735,211 @@ async function commitShape() {
   await refreshPreview();
 }
 
+/// **离线落笔的笔触区域** ✓ —— 与服务端逐字同一个公式 ✓。
+///
+/// 对应 `crates/yanshi-server/src/tools.rs` 的 `brush_stroke_region` ✓ ＋ `PaintRegion::clamped` ✓：
+/// 控制点包围盒向四周各外扩 `size/2 + 4` ✓、`floor`/`ceil` ✓，最后**裁到画布内** ✓。
+/// `size` 非法/缺失时服务端用 **128** ✓（`size.unwrap_or(128.0)` ✓）—— 这里必须一样 ✓，
+/// 否则同一笔在离线与在线会取到**不同的区域** ✗ ⇒ 像素不再逐字节相同 ✓
+///（判据 `browser-offline-brush` 的逐字节比对就是钉住这一条 ✓）。
+///
+/// **为什么要在这里再写一份** ✗：服务端只在**响应里**告诉我们区域 ✓（`region` 字段 ✓），
+/// 而离线时**根本没有响应** ✓。查看器里已有一份近似实现 `liveRegion` ✓（拖动预览用 ✓），
+/// 但它按 `state.points` 取值、且注释自己只写"**与服务端算法对齐**" ✓（不是"同一条代码" ✗）
+/// ⇒ 落笔这一条**不能**用近似 ✓ ⇒ 这里按服务端公式逐字写 ✓，并由逐字节判据把它钉住 ✓（漂移必红 ✓）。
+/// 返回 `null` 表示**整条笔迹在画布之外**（服务端对这种情况是明确拒绝 ✓，这里也不许静默画空 ✓）。
+function brushStrokeRegion(points, size) {
+  const diameter = Number.isFinite(size) && size > 0 ? size : 128;
+  const radius = diameter / 2 + 4;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxX = Math.max(maxX, point[0]);
+    maxY = Math.max(maxY, point[1]);
+  }
+  if (!Number.isFinite(minX)) return null;
+  const canvasWidth = state.docSize ? state.docSize.w : 0;
+  const canvasHeight = state.docSize ? state.docSize.h : 0;
+  if (canvasWidth <= 0 || canvasHeight <= 0) return null;
+  const inside = (value, high) => Math.max(0, Math.min(high, value));
+  const x0 = inside(Math.floor(minX - radius), canvasWidth);
+  const y0 = inside(Math.floor(minY - radius), canvasHeight);
+  const x1 = inside(Math.ceil(maxX + radius), canvasWidth);
+  const y1 = inside(Math.ceil(maxY + radius), canvasHeight);
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/// **离线落笔** ✓（普通 `.myb` 画笔）：服务端不可达时，用**共享内核**把这一笔落到本地文档 ✓。
+///
+/// **为什么需要它** ✓（(A)⑥ 的最后一个缺口 ✓）：普通画笔的墨**一直来自服务端** ✓
+///（见 `commitShape` 里那条"画笔不能走本地内核"的说明 ✓ —— 用户报的"换什么笔都一样"就是这么来的 ✓）
+/// ⇒ 断网时 `brush_stroke` 被记进离线队列 ✓，而画布上**一个像素都没有** ✗。
+///
+/// **为什么内核能画出同一笔** ✓：`kernel.paint_brush` 与服务端 `paint_brush` 是**同一份 hokusai 数学** ✓、
+/// 区域用同一个公式 ✓（`brushStrokeRegion` ✓）、点列用同一个平滑 ✓（内核导出的 `smooth_stroke_json` ✓）
+/// ⇒ 两边像素**逐字节相同** ✓ —— 这正是判据 `kernel-brush-parity` 一直在验的那条性质 ✓；
+/// 本函数把它用在**离线**这一侧 ✓（判据 `browser-offline-brush` 逐字节对照在线与离线 ✓）。
+///
+/// **走的是"本地原子"这条路** ✓（不是把像素贴到画布上就完事 ✗）：
+/// `blob_put` 把像素写进内核自己的 CAS ✓（blob 先行 ✓，与服务端同一条规矩 ✓），
+/// 再把一条**与服务端同形的 `import_image` 原子** `commit_preview` 进本地日志 ✓
+/// ⇒ 画布由**内核渲染**得出 ✓（与服务端同一套 `yanshi-render` ✓）。好处有二 ✓：
+/// ① 重绘/缩放/换视口时这一笔**还在** ✓（贴上去的像素会没 ✓）；
+/// ② 本地日志里**真的有这一条** ✓ ⇒ 断网重载后内核仍能折叠出它 ✓。
+///
+/// **联网后的权威仍是服务端** ✓：离线队列里的 `brush_stroke` 照常补交 ✓
+///（服务端用同一个引擎重跑同一笔 ✓ ⇒ 同一份像素 ✓）；服务端确认后 `resync()` 用权威日志
+/// **整份替换**本地日志 ✓ ⇒ 本地这条预测对象不会留下重复 ✓（对象 id 不同 ✓、像素相同 ✓）。
+///
+/// **明确的边界**（不许静默 ✓ —— 服务器恢复后补交仍会画出正确的一笔 ✓）：
+/// * **会读画布的笔刷**（涂抹一类 ✓）⇒ 内核的 `paint_brush` 只有一张**空**底图 ✓
+///   ⇒ 离线会画出**错误**的笔触 ✓ ⇒ 这里**不画** ✓，并说清"这一笔只进了离线队列" ✓。
+/// * **一笔多色**（`color_to` ✓）⇒ 在线由服务端**逐段换色** ✓，内核没有这条 ✓ ⇒ 同上 ✓。
+async function paintBrushOffline(request) {
+  const stats = window.yanshiStats;
+  const kernel = state.kernel;
+  if (!kernelReady() || !kernel) {
+    log("离线：WASM 内核不可用 ⇒ 这一笔只进了离线队列（联网后补交）✓", "#c93");
+    return false;
+  }
+  if (request.colorTo) {
+    log("离线：「一笔多色」要服务端逐段换色 ⇒ 这一笔**没有本地预览** ✓，已记入队列，联网后补交 ✓", "#c93");
+    return false;
+  }
+  let brush = null;
+  try {
+    brush = await loadLocalBrushText(request.brush);
+  } catch (error) {
+    log("离线：拿不到笔刷定义（" + request.brush + "）⇒ 这一笔只进了离线队列：" +
+        String(error).slice(0, 80), "#c93");
+    return false;
+  }
+  if (brush.readsCanvas) {
+    log("离线：笔刷「" + request.brush + "」会读画布（涂抹一类）⇒ 本地没有底图可抹 ⇒ " +
+        "这一笔只进了离线队列，联网后由服务端落笔 ✓", "#c93");
+    return false;
+  }
+  const control = request.points.map((point) => [
+    point[0], point[1], Number.isFinite(point[2]) ? Math.max(0, Math.min(1, point[2])) : 0.5,
+  ]);
+  // **服务端是"先平滑 ⇒ 再算区域 ⇒ 再落笔"** ✓ ⇒ 顺序不许换 ✗（换了就不是同一笔 ✓）。
+  let points = control;
+  if (request.smooth) {
+    if (typeof kernel.smooth_stroke_json !== "function") {
+      log("离线：内核没有平滑导出（页面与内核版本不一致）⇒ 这一笔按**原始点列**画，" +
+          "与在线可能有细微差别 ✓；刷新（Ctrl+Shift+R）可修", "#c93");
+    } else {
+      try {
+        const smoothed = JSON.parse(kernel.smooth_stroke_json(JSON.stringify(control)));
+        if (smoothed && smoothed.ok && Array.isArray(smoothed.points) && smoothed.points.length) {
+          points = smoothed.points;
+        } else {
+          log("离线：平滑失败（沿用原始点列）：" + JSON.stringify(smoothed).slice(0, 120), "#c93");
+        }
+      } catch (error) {
+        log("离线：平滑异常（沿用原始点列）：" + String(error).slice(0, 80), "#c93");
+      }
+    }
+  }
+  const region = brushStrokeRegion(points, request.size);
+  if (!region) {
+    log("离线：这一笔整条在画布之外（或文档尺寸未知）⇒ 没有可落的像素 ✓", "#c93");
+    return false;
+  }
+  let bytes = null;
+  try {
+    bytes = kernel.paint_brush(JSON.stringify({
+      myb: brush.text,
+      points: points,
+      size: Number.isFinite(request.size) && request.size > 0 ? request.size : null,
+      color: request.color,
+      opacity: null,
+      hardness: null,
+      region: region,
+    }));
+  } catch (error) {
+    log("离线落笔异常：" + String(error).slice(0, 120), "#c33");
+    return false;
+  }
+  if (!bytes || !bytes.length) {
+    const reason = typeof kernel.paint_brush_error === "function"
+      ? kernel.paint_brush_error() : "(内核没给原因)";
+    log("离线：内核没画出这一笔 ⇒ " + String(reason).slice(0, 160), "#c33");
+    return false;
+  }
+  const pixels = Uint8Array.from(bytes);
+  // **blob 先行** ✓（设计 6.3 ✓）：内核渲染这条原子时要按 blob 哈希去取像素 ✓
+  // ⇒ 不先写进去，渲染出来就是**缺一块**（`fetch_raster_patch` 只留一句告警 ✓）。
+  //
+  // ⚠️ **`blob_put` 回的是 JSON 信封**（`{"ok":true,"blob_hash":"sha256:…"}` ✓），
+  // **不是裸哈希字符串** ✗ —— 我第一版直接把整串塞进 `bitmap.blob_hash` ✓
+  // ⇒ 原子形状合法、折叠也成功 ✓，但渲染层解析 `blob_hash` 失败 ✓
+  // ⇒ 这一笔**什么也画不出来**②（对象进了日志、画布全白 ✓），而且日志里**一个字都没有** ✗。
+  // 判据 `browser-offline-brush` 的像素比对就是用来当场抓这种"静默不成形"的 ✓。
+  const put = JSON.parse(kernel.blob_put(pixels));
+  if (!put || !put.ok || !put.blob_hash) {
+    log("离线：blob 没能写进内核 CAS ⇒ " + JSON.stringify(put).slice(0, 120), "#c33");
+    return false;
+  }
+  const hash = put.blob_hash;
+  const atom = {
+    id: ulid(),
+    kind: "import_image",
+    actor: "human:web",
+    session: "session:wasm",
+    timestamp: Date.now(),
+    payload: {
+      object_id: "obj_" + ulid(),
+      layer_id: request.layerId || state.layerId,
+      type: "raster_patch",
+      bitmap: {
+        blob_hash: hash,
+        size: pixels.length,
+        mime_type: "image/x-yanshi-raw",
+      },
+      region: { x: region.x, y: region.y, w: region.w, h: region.h },
+      width: region.w,
+      height: region.h,
+      // **来源参数照服务端的形状记下** ✓（`update_stroke` 靠它重跑 ✓；这里也用调用方给的原话 ✓）。
+      source: {
+        kind: "brush",
+        brush: request.brush,
+        points: control,
+        size: Number.isFinite(request.size) ? request.size : null,
+        color: request.color,
+        color_to: null,
+        smooth: !!request.smooth,
+        opacity: null,
+        hardness: null,
+        seed: 0,
+      },
+    },
+  };
+  let committed = null;
+  try {
+    committed = JSON.parse(kernel.commit_preview(JSON.stringify(atom)));
+  } catch (error) {
+    log("离线：本地落笔异常：" + String(error).slice(0, 120), "#c33");
+    return false;
+  }
+  if (!committed || !committed.ok) {
+    log("离线：本地落笔失败：" + JSON.stringify(committed).slice(0, 160), "#c33");
+    return false;
+  }
+  state.localSeq = committed.seq;
+  stats.kernelHead = committed.seq;
+  stats.offlineBrushPaints = (stats.offlineBrushPaints || 0) + 1;
+  stats.offlineBrushRegion = region.w * region.h;
+  if (committed.report) drawKernelDirty(committed.report);
+  return true;
+}
+
 // 工具条：**数据表驱动** ✓ —— 借鉴成熟绘画软件的做法 ✓（图标 + 快捷键 + 悬停提示 ✓）。
-//
 // 为什么改成生成而不是写死 HTML ✓：图标、快捷键、工具提示、以后的工作区与右键快捷面板
 // 都要读同一份定义 ✓；写死 20 个按钮会让每加一个能力就要改四处 ✓（本会话已经吃过
 // "改了结构忘了同步"的亏 ✗）。
@@ -7577,6 +7831,21 @@ window.yanshi = {
         docSize: { w: state.docSize.w, h: state.docSize.h },
         displayScale: state.displayScale || 1,
       };
+    },
+    /// **内核自报的计数** ✓（`WasmKernel.stats_json` 的原样转发 ✓，取不到回 `null` ✓）。
+    ///
+    /// **为什么要有它** ✓：判据要断言"这一笔**真的是内核画的**" ✓ ——
+    /// 只看画布像素分不清三种来源（拖动期的本地覆盖层 ✓ / 服务端补画 ✓ / 内核落笔 ✓）。
+    /// 内核自己的 `blobs`（本地 CAS 条数 ✓）、`atoms`（已应用原子数 ✓）、`head_seq` 是
+    /// **不可伪造的内核读数** ✓ ⇒ 离线判据拿它当"内核确实做了这件事"的证据 ✓
+    ///（判据 `browser-offline-brush` ✓）。
+    kernelStats() {
+      if (!state.kernel || typeof state.kernel.stats_json !== "function") return null;
+      try {
+        return JSON.parse(state.kernel.stats_json());
+      } catch (error) {
+        return { error: String(error).slice(0, 120) };
+      }
     },
     /// 设**笔刷颜色** ✓（任意 CSS 颜色串 ✓）。
     ///

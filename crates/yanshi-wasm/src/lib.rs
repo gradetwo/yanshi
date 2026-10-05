@@ -67,6 +67,21 @@ impl WasmKernel {
         crate::brush::take_error()
     }
 
+    /// **可选平滑** ✓ —— 与服务端 `brush_stroke.smooth` **同一条实现** ✓
+    ///（`yanshi_render::brush::catmull_rom_smooth` ✓、同一个细分数 ✓）。
+    ///
+    /// 收 `[[x, y, pressure], ...]` ✓ ⇒ 成功回 `{"ok":true,"points":[…]}` ✓、
+    /// 失败回 `{"ok":false,…}`（5.7 形状 ✓ —— 与内核其余导出同一套信封 ✓）。
+    /// **为什么离线落笔要它** ✓：服务端是**先平滑 ⇒ 再算区域 ⇒ 再落笔** ✓
+    /// ⇒ 离线要复现同一笔，必须走**同一个**平滑 ✓（见 `crate::brush::smooth_points_json` 的说明 ✓）。
+    pub fn smooth_stroke_json(&self, points_json: &str) -> String {
+        envelope(
+            crate::brush::smooth_points_json(points_json)
+                .map(|points| json!({"ok": true, "points": points}))
+                .map_err(|reason| KernelError::new("invalid_argument", reason)),
+        )
+    }
+
     /// **构造一个内核实例** ✓（文档注释被我的插入"抢走"过一次 ✗ ⇒ 这是**第二次**踩同一个坑 ✓）。
     #[wasm_bindgen(constructor)]
     pub fn new(

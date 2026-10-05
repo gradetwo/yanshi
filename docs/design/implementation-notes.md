@@ -35187,3 +35187,91 @@ Object.keys 看真键表）。
    并把"离线落笔"单列为待实现项，避免用一条永远红的判据掩盖真实进度。
 
 本轮探针未通过判据，已 git checkout 回退，未提交任何改动。
+
+## 第 1126 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
+
+### 设计选择：**离线回退**，不是"统一走内核"
+
+两条路都可选（任务书明确允许统一）。选**离线回退**，理由是**在线那条路的覆盖面大得多**：
+`brush_stroke` 服务端一侧还管着"会读画布的笔刷（涂抹）"、`color_to` 一笔多色、
+选区裁剪、`style` 笔触风格、`source`（改色重跑 `update_stroke`）；这些**内核都没有**。
+统一走内核 = 把上面几项一起降级或另写一遍 ⇒ 直接违反"不许回退在线路径"。
+所以：**在线照旧走服务端**；`callTool` 判定为离线时，才用**同一份 hokusai 数学**在本地下笔。
+
+代价（如实写）：两条路并存 ⇒ 存在漂移风险。对策是把漂移变成**判据**：
+`scripts/browser-offline-brush.mjs` 逐字节对照"在线那一笔"与"离线那一笔"，
+`scripts/kernel-brush-parity.mjs`（既有）对照内核与服务端的同一笔。
+
+### 产品改动
+
+1. `viewer-app.js` `commitShape`（`:6655` 附近）：`.myb` 画笔提交后若 `result.offline` 为真
+   ⇒ 调 `paintBrushOffline(...)` 并**提前返回**（不再做只对服务端有意义的补画/`resync`）。
+2. 新增 `brushStrokeRegion(points, size)`：与服务端 `brush_stroke_region` + `PaintRegion::clamped`
+   逐字同一公式（外扩 `size/2+4`、`floor`/`ceil`、裁到画布）。
+3. 新增 `paintBrushOffline(request)`：`kernel.paint_brush` → `blob_put`（blob 先行）
+   → 一条与**服务端同形**的 `import_image` 原子 → `commit_preview` → `drawKernelDirty`。
+4. 新增 `window.yanshi.kernelStats()`：把内核 `stats_json` 原样转出去 ⇒ 判据能断言
+   "内核真的做了这件事"（`blobs` / `head_seq`），而不是只看画布像素。
+5. **缓存键带上请求参数**（`bodyDigest`）：实测 `list_assets {kind:"brush"}` 与 `{kind:"texture"}`
+   共用一条本地缓存 ⇒ 断网时笔刷面板里是**贴图文件名**（实测选项全是 `Cardboard001.png`）⇒
+   用户选不到笔。同类还有 `brush_preview`（不同笔刷）与 `get_atom`。修后不同参数不同条目。
+
+### 内核改动（`crates/yanshi-wasm`）
+
+* `WasmKernel::smooth_stroke_json` ＋ `brush::smooth_points_json`：导出
+  `catmull_rom_smooth` ＋ `SMOOTH_SUBDIVISIONS`（**与服务端 `smooth_stroke_points` 同一份实现**）。
+  服务端的顺序是"先平滑 ⇒ 再算区域 ⇒ 再落笔"，离线必须一致。
+* `Kernel::blob_put` 改走 `MemoryBlobStore::put_at(bytes, 0)`：原来走 `put` ⇒ `now_ms()` ⇒
+  `SystemTime::now()` 在 `wasm32-unknown-unknown` 上 **panic**（浏览器实测 `RuntimeError: unreachable`，
+  内核对象随即进入"递归借用"状态、后续调用全废）。`created_at` 只服务服务端 GC/TTL ⇒ 常数 0 不影响行为。
+* `CommitReport` 增加 `dirty_kind` / `dirty_reason`（与 `ApplyReport` 同口径，可观测性）。
+* 新增单测 `imported_raster_patch_pixels_render_locally`：先渲染一次（热 tile 缓存）再 `blob_put`
+  ＋ `commit_preview` 一条 `import_image`，断言渲染里有墨且 `stats().blobs == 1`。
+
+### 逐字节对照的实测数字（判据 `browser-offline-brush`，本机跑 4 次）
+
+```
+在线落笔：非背景 0 => 3285｜服务端补画 1–4 次｜服务端墨 3271
+离线落笔：非背景 0 => 3285｜内核 head_seq 1 => 2｜blobs 0 => 1｜serverBlits 0｜离线期间 brush_stroke 请求 0
+逐字节比对：在线 307200 字节 vs 离线 307200 字节｜不同 0｜**逐字节相同**
+```
+
+**逐字节相同是构造出来的**：同一份 hokusai ＋ 同一串点 ＋ 同一个平滑 ＋ 同一组设置。
+**区域不需要逐字节相同**（本轮变异实测）：把区域半径 `+4` 改成 `+8`、或把 `x0` 平移 1px，
+**画布仍然逐字节相同** —— `paint_brush` 的 dab 用**绝对文档坐标**落进 tile，
+区域只是**读回窗口**；窗口偏移/变大只是多带一圈透明像素，合成结果不变。
+⇒ 真正决定像素的是**点列 / size / color / opacity / hardness / smooth 与引擎种子**，
+判据 `browser-offline-brush` 的逐字节比对正是钉住这些（把 size +4 就红：实测不同 3192 字节、最大通道差 239）。
+
+已知例外（**显式边界，不是静默**；服务器恢复后补交仍会画出正确的一笔）：
+* **会读画布的笔刷**（涂抹 / knife 一类）：内核 `paint_brush` 只有一张**空**底图 ⇒ 离线不下笔、只入队；
+* **一笔多色**（`color_to`）：要服务端逐段换色 ⇒ 离线不下笔、只入队。
+
+### 判据与变异（每条都真的能红）
+
+| 判据 | 断言 | 变异 ⇒ 转红 |
+|---|---|---|
+| `browser-offline-brush` ① | 离线后 `#board` 非背景像素 > 之前 | 修前基线实测 `0 => 0`（记录在 `browser-offline-shell`/`-draw` 的旧读数里） |
+| `browser-offline-brush` ② | 在线画布 vs 离线画布逐字节 | 把离线落笔的 `size +4` ⇒ 不同 3192 字节 |
+| `browser-offline-brush` ③ | `offlineBrushPaints>0`、内核 `kernelInk>0`、`blobs` 涨、`head_seq` 涨、离线期间 `brush_stroke` 请求 = 0 | 让 `paintBrushOffline` 直接 `return false` ⇒ 全部为 0；或改成"直接 `drawImage` 到画布、不碰内核" ⇒ `kernelInk=0`、`blobs` 不涨 |
+
+`browser-offline-shell`（原已知红，本轮转绿并移出名单）：
+① 判据数的是"不透明像素" ⇒ 底色本来就整块不透明 ⇒ **永远 76800 => 76800**（那条阈值不可能满足）；
+改成数"非背景像素"；② 派发前 `keyup(Space)` 并断言 `points` 0→>0、`dragging` 为真
+（实测 `spaceHeld` 本来就是 false ⇒ 事件其实进了状态机；旧读数里的 `points=0` 是
+`pointerup` **之后**的快照 —— `pointerup` 按设计会清空 `points`）。
+另外给三条离线判据加了**有界等内核就绪**：本机高负载时实测"`readyState` 完成 ≠ 内核装载完成"，
+不等就会把"内核还没起来"误报成"离线画不出墨"（量错对象）。
+
+`browser-offline-draw`（本机在基线代码上复现为红：`增量 0`）：
+原来在线/离线两笔落在**同一位置** ⇒ 离线那一笔盖在在线那一笔上 ⇒ 量到的是"两次的差"（4 / 0）。
+改成每笔给一个**不同的起点** ⇒ 离线两笔各 +502 / +501，与在线 +502 同量级 ⇒ 转绿。
+
+### 没做 / 边界
+
+* **会读画布的笔刷离线仍不出墨**（明确的边界 + 日志说明），需要给内核喂底图才能做。
+* **一笔多色离线仍不出墨**（同上）。
+* 未跑 `run-criteria.sh` 全量（本机内存小、且任务只要求相关判据）；跑的是离线全家＋
+  `browser-offline-brush` ＋ `browser-stroke-refresh` ＋ `browser-pan-vs-paint` ＋ `browser-brush-preview`
+  ＋ `kernel-brush-parity`（默认 3 支笔），读数见上方与提交说明。
+* 未做"离线落笔后**断网重载**仍在"的判据（本地原子在日志里 ⇒ 理论成立，但本轮没写判据钉它）。

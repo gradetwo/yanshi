@@ -46,4 +46,10 @@ kernel-brush-parity.mjs  # **类型：跑不完（超时）** ✗ —— 不是�
 #   * **转绿条件** ✓：① `tool-paint-memory.mjs` 的成本比 ≤1.2× ✓（缩略图改走 tile 缩放 ✓，
 #     可行性已在第 838 轮证实 ✓）；② 差异消失 ⇒ **两条一起移出名单** ✓。
 
-browser-offline-shell（离线出墨｜**两个根因都已定位，其一是真实产品缺口**。读数：落笔前 tool=brush、layerId=layer_default，落笔后 **points 仍是 0**、dragging 仍 false、serverBlits 仍是 0（needsServerPixels 从 true 变 false，那是 :5840 的 capture 处理器设的，说明事件确实被收到）⇒ 事件**没有进入笔画状态机**。根因一：viewer-app.js:5943 的 `wantsPanEvent(event)` 是 `event.button === 1 || state.tool === "pan" || spaceHeld`；判据用的是 button 0、tool 是 brush，所以**只剩 spaceHeld**。它若为 true，:6052 的落笔处理器第一行就 return，事件落到 :5948 的平移处理器，于是 points 不启动、dragging 不变 —— 与读数完全吻合。修法：判据在派发前先发 keyup(Space) （或断言 spaceHeld 为假），并断言 points 从 0 变成 >0。根因二（**真实产品缺口**）：viewer-app.js:6120 的注释原文写着"🚨 画笔不能走这条'本地内核'路 —— 这是用户报的'换什么笔都一样'的真正原因：只要内核就绪，这里就会建 pendingStroke"，即**普通笔刷的墨来自服务端**（与 state 里的 needsServerPixels/serverBlits 吻合）。⇒ 所以**断网时普通笔刷画不出墨是当前实现的真实行为**，(A)⑥ 要求的"离线可画"**尚未实现**；判据要么先走本地内核路径（需要产品改造：让笔刷在离线时走本地内核），要么把这条判据的目标缩到"离线仍能打开页面、能选笔、能导出"，并把"离线落笔"单列为待实现项）
+# **已修（第 1126 轮）**：`browser-offline-shell` 原来红，两个根因分开处置 ——
+# ① 判据侧：数的是"不透明像素"（底色本来就整块不透明 ⇒ 永远 76800 => 76800 ✗），
+#    改为数"非背景像素"；并在派发前 keyup(Space) 清掉"临时手形"、落笔后断言 points 0→>0；
+#    （实测 spaceHeld 本来就是 false ⇒ 事件其实进了状态机，points 一直是 0 是因为读的是
+#     pointerup **之后**的快照 —— pointerup 按设计会清空 points ✓。）
+# ② 产品侧：普通 .myb 画笔离线时改走共享内核（`paintBrushOffline`），不再只躺在离线队列里。
+# 修后本机复跑：`非背景像素 0 => 716`、`points@down=1 / points@move=13` ⇒ 转绿 ⇒ 从名单移除 ✓。
