@@ -32899,3 +32899,40 @@ pointerDelta = `{x:69, y:40}` ✓ ｜ bboxDelta = `{x:95, y:51}` ✓
    （**∴ 只拆最大的那块 ✓，并保留既有"遍历全部内联脚本"的守卫 ✓**）✓；
 3. **∴ 三个判据同一形状 ✓** —— **存在性 ✓ ＋ 页面片段逐字节一致 ✓ ⇒ **∴ 挪位置/漏拼都会红 ✓** ✓。
 ```
+
+## 🔍 第 1045 轮（(A)②）：**资产随包审计 —— 缺口明确：笔刷定义与示例未预缓存** ✗
+
+**页面实际请求（**从主脚本抽取 ✓**）**：
+```
+/api/atoms ／ /api/blob（＋ /api/blob/ ✓）／ /api/documents ／ /api/effects ／ /api/tools/（＋ 具名工具 ✓）
+／ /brushes/ ✓ ／ /brush-previews/index.json ✓ ／ /samples/ ✓ ／ /health ✓
+```
+**服务端对应路由（**已核实 ✓**）**：`/health` ✓、`/api/effects` ✓、`/api/documents` ✓、`/api/tools` ✓、
+`/api/blob` ✓、`/api/atoms` ✓、`/service-worker.js` ✓、`/viewer.css` ✓、`/viewer-app.js` ✓、
+`/manifest.webmanifest` ✓、`/favicon.*` ✓、`/ws` ✓（**静态目录 `/brushes/`、`/samples/`、`/wasm/`、`/brand/`
+另有处理 ✓**）。
+
+**SW 的 `SHELL` 现值（**已核实 ✓**）**：
+```
+"/" ✓ ／ "/favicon.svg" ✓ ／ "/brand/svg/icon-light.svg" ✓ ／ "/brush-previews/index.json" ✓
+／ "/wasm/yanshi_wasm.js" ✓ ／ "/wasm/yanshi_wasm_bg.wasm" ✓ ／ "/viewer.css" ✓ ／ "/viewer-app.js" ✓
+```
+**⇒ 缺口（**本轮最重要的结论 ✓**）**：
+```
+**`/brushes/`（笔刷定义 ✓）与 `/samples/`（示例 ✓）**没有**列入 `SHELL`** ✗
+⇒ **∴ 断网后：页面能打开 ✓、样式与脚本在 ✓、内核在 ✓，但**拿不到笔刷定义 ⇒ 画不出来**✗** ✓
+   ⇒ **∴ 这正是 (A)②「资产随包」要解决的核心 ✓，也是"离线可画"（(A)⑥）的必要条件 ✓** ✓。
+```
+**★ 三条** ✓：
+```
+1. **审计的价值在于把"资产随包"变成**可执行的缺口清单**✓** ——
+   **∴ 逐项对照"页面请求什么 / SW 缓存什么"✓ ⇒ **∴ 一眼看出差哪几项 ✓** ✓
+   （**∴ 与 (A)① 的 `SHELL↔路由` 判据同族 ✓：都是"清单与实现是否对齐"✓**）✓；
+2. **⇒ 下一步（**二选一 ✓**）**：
+   **① 预缓存清单** ✓：确认笔刷定义是否有一个**清单文件**（如 `/brushes/index.json` ✗ 待核 ✓）⇒
+      **把清单加进 `SHELL` ✓，具体笔刷走运行时 cache-first ✓**（**笔刷定义是**不可变**资源 ✓，
+      与 `SHELL` 里已有的 `/brush-previews/index.json` 同族 ✓）✓；
+   **② 或按需预缓存** ✓：把页面**实际用到的那几支笔刷**列进 `SHELL` ✓（**离线创作常用笔必须可用 ✓**）✓；
+3. **∴ 判据（**能红 ✓**）**：**对 `SHELL` 里的每一项发一次请求断言 200** ✓（**端到端版 ✓**，
+   本轮已在 `viewer_routes` 里留了源码级版本 ✓）＋ **新增"离线可画"判据**：
+   **断开服务端后打开页面 ⇒ 选一支笔 ⇒ 画一笔 ⇒ 画布出现墨** ✓（**扩 `browser-offline-shell.mjs` ✓**）✓。
