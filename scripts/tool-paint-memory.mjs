@@ -24,7 +24,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
-const STROKES = Number(process.argv[2] || process.env.PAINT_STROKES || 200);
+// **缺省笔数的选择有结构理由** ✓（第 930 轮 ✓），**不是"某次实测的数"** ✗：
+// 本判据比的是 **前 1/3 vs 后 1/3 的平均耗时** ✓ ⇒ **只有当前 1/3 明显更便宜时，才测得出增长** ✓；
+// 而 **N 笔的第 1/3 里最多已有约 N/3 个对象** ✓ ⇒ **N 太大（原来的 200 ⇒ 前 1/3 就有 ~67 个对象 ✗）
+// ⇒ 起点已经很慢 ⇒ 前后两段趋同 ⇒ 比值回落到预算内 ⇒ 判据**看不出**它要测的东西** ✗ ✓
+//（实测：同一台机器 **12 笔 ⇒ 1.67×** ✓、**200 笔 ⇒ 通过** ✗）。
+// ⇒ ⇒ **取 30** ✓：前 1/3 约 10 个对象 ✓ ⇒ **增长可见 ✓，而总时长仍在可接受范围 ✓**。
+const STROKES = Number(process.argv[2] || process.env.PAINT_STROKES || 30);
 // **端口要挑空闲的** ✗（第 829 轮实测 ✓）：固定端口一旦被上一次泄漏的实例占着 ✓，
 // 服务端就静默起不来 ✓ ⇒ 判据只报 `ENOENT: /proc/<pid>/status` ✗（**症状与真因相距很远** ✓）。
 const pickPort = (start) => {
