@@ -4976,13 +4976,41 @@ async function setupAssetPanels() {
     const pathOf = () => (($("projectPath") || {}).value || "").trim();
     if (exportButton) {
       exportButton.addEventListener("click", async () => {
+        // **路径是可选的** ✓（本轮 ✓）：浏览器**下载**才是默认动作 ✓；
+        // 填了路径 ⇒ 顺带在**服务器上**再存一份 ✓（MCP / 命令行的老用法 ✓）。
         const path = pathOf();
-        if (!path) {
-          if (info) info.textContent = "先写一个路径 ✓";
+        const value = await callToolChecked("export_project", path ? { path: path } : {}, "导出工程");
+        if (!value || !value.ok) return;
+        // **一个 `<a download>`** ✓ —— 与 PNG 导出（`#exportPng` ✓）和诊断包同一条路 ✓。
+        // `value.url` 已被 HTTP 层从 `yanshi://blob/<hash>` 改写成可直接 GET 的
+        // `/api/blob/<hash>?doc=..&token=..` ✓；若这一层没开改写 ✓，就自己补一次 ✓。
+        let href = typeof value.url === "string" ? value.url : "";
+        if (href.startsWith("yanshi://blob/")) {
+          href = api("/api/blob/" + href.slice("yanshi://blob/".length));
+        }
+        if (!href && value.blob_hash) href = api("/api/blob/" + value.blob_hash);
+        if (!href) {
+          if (info) info.textContent = "导出回执里没有可下载的地址 ⇒ 这次导出拿不到包";
           return;
         }
-        const value = await callToolChecked("export_project", { path: path }, "导出工程");
-        // **如实报出服务端算出来的东西** ✓（字节数 / 原子数 ✓）—— 只说"成功"没用 ✗。
+        const filename = typeof value.filename === "string" && value.filename
+          ? value.filename
+          : (state.docId || "yanshi") + ".yanshi";
+        const link = document.createElement("a");
+        link.href = href;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        // **给判据留一个能核对的记录** ✓（url / 文件名 / 字节数 ✓）——
+        // 与 PNG 导出的 `lastExport` 同一思路 ✓（`browser-project-download.mjs` 读它 ✓）。
+        window.yanshiStats.lastProjectExport = {
+          url: href,
+          filename: filename,
+          bytes: value.bytes,
+          blob_hash: value.blob_hash,
+        };
+        // **如实报出服务端算出来的东西** ✓（字节数 / 格式 ✓）—— 只说"成功"没用 ✗。
         if (info) {
           // **只说自己知道的字段** ✗ —— 我第一版凭印象写了 `atoms` / `blobs` ✓，
           // 而 `export_project` **根本不回**这两个 ✓ ⇒ 界面上出现「? 条原子，? 个 blob」✗
@@ -4990,12 +5018,14 @@ async function setupAssetPanels() {
           const parts = [];
           if (typeof value.bytes === "number") parts.push(value.bytes + " 字节");
           if (value.format) parts.push(String(value.format));
-          if (value.render && value.render.width) {
-            parts.push("内嵌预览 " + value.render.width + "×" + value.render.height);
-          }
-          info.textContent = "已导出到 " + path + (parts.length ? "（" + parts.join("，") + "）" : "") + " ✓";
+          if (path) parts.push("服务器另存 " + path);
+          info.textContent = "已下载 " + filename + (parts.length ? "（" + parts.join("，") + "）" : "") + " ✓";
         }
       });
+      // **就绪信号** ✓：这个处理器挂在**异步的** `setupAssetPanels()` 里 ✓
+      //（它前面还 await 了资产列表 ✓）⇒ 按钮虽早就在静态 HTML 里 ✓，但"能点"要晚一步 ✓。
+      // 判据等这个信号 ✓ —— 否则会抢在挂监听器之前点 ⇒ 看起来像"点了没反应" ✗。
+      window.yanshiStats.projectExportReady = true;
     }
     if (importButton) {
       const fileInput = $("projectFile");
