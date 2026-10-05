@@ -35498,3 +35498,29 @@ Object.keys 看真键表）。
    不许跨分辨率/跨档位比较；不许把一次观测写成硬编码期望。
 4. 环境：4K 夹具 /tmp/cold4k，文档 id parrot-4k-bold，debug 导出约 4 分钟。
 5. 门禁四条；英文提交；不碰 main、不推送；报告要写清"导出渲染与编码的实际位置"。
+
+## 第 1140 轮：(A)⑤ 的显式开关早已存在——本会话第三次"过期前提"
+
+审计结果（有出处）：
+1. crates/yanshi-http/src/viewer.rs:321 已经有用户可见的开关：
+   `<label …><input type="checkbox" id="useServerRender…">`。
+2. crates/yanshi-http/assets/viewer-app.js:22 定义 `const SERVER_RENDER_KEY = "yanshi.serverRender"`；
+   :23 的注释写明"**是否强制走服务端渲染**（(A)⑤ 的显式开关）。缺省 false = 照旧（客户端优先）"。
+3. :25 读 `localStorage.getItem(SERVER_RENDER_KEY) === "1"` ⇒ **已持久化**；
+   :4750 `if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1")` ⇒ UI 与存储连通。
+4. 早期的注释（:9-15）还记录了真实踩坑：`needsServerPixels` 必须在任何启动路径之前声明，
+   否则启动读到它就抛错 ⇒ 整段脚本中断 ⇒ 现象是"工具条还在、但后续一切都没接线"。
+   注释里写明那次是"只写了注释、忘了写声明"，而且"探针把任何异常都标成 TDZ，误导了排查"。
+
+结论：
+- **(A)⑤ 的"显式开关"这一半已经完成**（复选框 + localStorage 键 + 默认客户端优先）。
+- 真正剩下的是它的**判据**：目标原话要求"**两种模式必须同笔同结果**"。
+  而这正好是 (A)⑥ 子代理在做的事（kernel-brush-parity 加它那条"在线 vs 离线逐字节一致"的新判据）。
+  也就是说 (A)⑤ 与 (A)⑥ 在这里**会合**：开关提供"能选"，判据提供"两条路一致"。
+
+本会话第三次"过期前提"（我转述的目标状态比实际落后）：
+  ① (B)③ target_installed 三态 —— 实现早已完成；
+  ② (B)① 示例覆盖 —— 早已 138/141（不是"57 条"）；
+  ③ (A)⑤ 显式开关 —— 早已存在。
+教训（值得进 skill）：**转述目标项之前先查证它的现状**，否则会把"已完成"当成"未做"，
+既浪费轮次，也让进度报告失真。
