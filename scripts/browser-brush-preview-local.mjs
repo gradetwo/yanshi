@@ -51,7 +51,7 @@ const info = await evaluate(`(() => {
   // 因此恒红。产品的真实信号是：预览图来自**打包入库**的 /brush-previews/ 文件（即「资产随包」），
   // 并由 brushPreviewsFromFiles 计数。改测这两个真实信号。
   const imgOf = (row) => row.querySelector("img") || {};
-  const fromFiles = rows.filter((row) => (imgOf(row).src || "").startsWith("/brush-previews/"));
+  const fromFiles = rows.filter((row) => (imgOf(row).getAttribute("src") || "").startsWith("/brush-previews/"));
   const counted = Number(window.yanshiStats && window.yanshiStats.brushPreviewsFromFiles) || 0;
   const sample = fromFiles[0] || rows[0];
   return {
