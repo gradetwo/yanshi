@@ -166,7 +166,12 @@ const dragPath = async (points, pointerId) => {
 // ⇒ ⇒ ⇒ **实测：`maskResult` 恒为 `undefined` ✓、而 `:1557` 的守卫只能说"没返回结果"** ✗
 // ⇒ **现在把 `exceptionDetails` 变成异常抛出** ✓ ⇒ 抛出的是**页面里的真实消息与栈** ✓。
 const evaluate = async (expression) => {
+  // 第 968 轮：给每次求值计时并**落盘**（runner 只回显 out.txt 的头 3/尾 6 行，日志会落在窗口外）。
+  // 挂住的那一次不会有落盘行 ⇒ 上一行就是"最后成功的一次"，据此定位卡点。
+  const evalStarted = Date.now();
+  const evalLabel = String(expression).replace(/\s+/g, " ").slice(0, 70);
   const payload = (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result;
+  try { (await import("node:fs")).appendFileSync("/tmp/yanshi-eval-trace.txt", (Date.now() - evalStarted) + "ms  " + evalLabel + "\n"); } catch (_) { /* 落盘失败不影响判据 */ }
   const details = payload?.exceptionDetails;
   if (details) {
     const text = details.exception?.description
