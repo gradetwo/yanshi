@@ -95,6 +95,11 @@ const firstDiff = (left, right) => {
   const online = () => send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 
   await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
+  // **禁用 HTTP 缓存**（第 1113 轮定案）：SW 的 SHELL 只缓存 /viewer.css 与 /viewer-app.js，
+  // **页面 HTML 本身不在 SHELL 里** ⇒ 它由 HTTP 缓存提供 ⇒ 旧页面内联旧 JS ⇒
+  // 于是"晚期全局都在、只有本次新加的方法缺"✗。curl 抓的是新页面（含 discardOutbox），
+  // 而浏览器用的是旧副本 ⇒ 判据必须禁用缓存 ✓。
+  await send("Network.setCacheDisabled", { cacheDisabled: true });
   await send("Page.navigate", { url });
   for (let i = 0; i < 40; i++) {
     await sleep(300);
@@ -135,6 +140,29 @@ const firstDiff = (left, right) => {
     if (ok) { ifaceReady = true; break; }
     await sleep(250);
   }
+  // **全局阶梯探测**（第 1113 轮）：服务端**确实发出了** discardOutbox（curl 页面确认），
+  // 语法也 OK（node --check 两块都过），但页面里它不存在 ⇒ 脚本必然在**中途抛错**，
+  // 使得后半段的 `window.yanshi = {...}`（viewer-app.js:7488）从未执行 ✗。
+  // 这些全局按定义行号递增排列 ⇒ 哪个存在、哪个不存在，就能夹出抛错的行段 ✓。
+  const ladder = await evaluate(`(() => {
+    const names = ["yanshiStats","yanshiKernel","yanshiKernelReady","yanshiDebugBlit","yanshiCallTool",
+                   "yanshiMediumBatch","yanshiApplyScore","yanshiListLayers","yanshiBrushArea",
+                   "yanshiDockFocus","yanshiDock","yanshiRightTabs","yanshi"];
+    const out = {};
+    for (const n of names) { try { out[n] = typeof window[n]; } catch (e) { out[n] = "throws"; } }
+    out.__marks = window.__appMarks || null;
+    return out;
+  })()`);
+  console.log("  全局阶梯 = " + JSON.stringify(ladder));
+  // **对象的真实键表**（第 1114 轮）：服务端发出的资产里含 discardOutbox（curl 已确认），
+  // 语法也 OK（node --check 过），而浏览器里 yanshi 是 object 却没有该方法 ⇒ 必须看真键表 ✓。
+  const keys = await evaluate(`(() => {
+    try {
+      const k = Object.keys(window.yanshi || {});
+      return { count: k.length, keys: k.slice(0, 60), hasDiscard: typeof (window.yanshi || {}).discardOutbox };
+    } catch (e) { return { error: String(e) }; }
+  })()`);
+  console.log("  window.yanshi 真键表 = " + JSON.stringify(keys));
   console.log("  前置：window.yanshi.discardOutbox 就绪 = " + ifaceReady);
   if (!ifaceReady) throw new Error("window.yanshi.discardOutbox 迟迟未挂上 ⇒ 判据无法进行");
   await evaluate("window.yanshi.discardOutbox()");

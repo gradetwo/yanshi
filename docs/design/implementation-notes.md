@@ -34864,3 +34864,26 @@ crates/yanshi-wasm/pkg（它自己在报告里说明了 worktree 里没有 wasm 
 
 流程教训：本会话我多次"看错对象"（读错文档、跨分辨率比体积、把回显当缺失、扫描缩进不匹配）。
 对策固定为：先断言对象身份，再观测；关键观测要落在会被回显的地方。
+
+## 第 1111 轮：离线写队列判据的深度定位（服务端资产正确，浏览器拿到旧外壳）
+
+已确证的事实（每一条都有读数）：
+1. window.yanshi = { 在 viewer-app.js:7488，对象里含 discardOutbox（花括号配对提取确认）。
+2. 服务端**确实发出**了它：curl 抓页面（519985 字节）含 discardOutbox 1 次、flushOutbox 5 次、
+   outboxEntries 1 次、refreshOutbox 18 次；/viewer-app.js 路由（450660 字节）也含。
+3. SW 缓存名正确：实际发出的是 yanshi-shell-47a8eb8（BUILD_ID 来自 build.rs 编进来的短 commit）。
+4. 内联脚本语法 OK：抽出的两块（2085 字节与 343945 字节）node --check 都通过。
+5. 浏览器里脚本**执行到底**：全局阶梯显示 yanshiStats/yanshiDebugBlit/yanshiCallTool/yanshiMediumBatch/
+   yanshiBrushArea/yanshiDock/yanshiRightTabs/yanshi 全部存在（只有调试模式才挂的 yanshiKernel 是 undefined）。
+6. 但浏览器里 window.yanshi 的真实键**只有 18 个**，全是笔刷/颜色/工具相关：
+   state, setColor, setSize, setOpacity, setBrush, toggleFavoriteBrush, recordBrushUse, applyBrushFilter,
+   loadBrushes, previewBrush, openBrushLibrary, closeBrushLibrary, brushLibraryState, scheduleBrushPreview,
+   setDuoTone, setSmooth, setMedium, setTool。
+   **没有** discardOutbox/outbox/outboxEntries/flushOutbox/refreshOutbox ⇒ hasDiscard = "undefined"。
+
+结论：这不是产品代码缺陷（代码有，服务端也发出），而是**浏览器在用旧外壳**：
+那份 18 键的 window.yanshi 是旧版本。判据已加 Network.setCacheDisabled(true)，但仍是旧外壳
+⇒ 所以必须注销 Service Worker 并清空 caches（SW 的 SHELL 含 /viewer-app.js 与 /viewer.css），
+或者用一次性的 user-data-dir 起浏览器，避免复用带旧缓存的 profile。
+
+下一步（明确）：在判据导航前 Unregister SW + 遍历 caches.delete，或用临时 profile，然后连跑三次确认稳定。
