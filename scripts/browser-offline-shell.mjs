@@ -107,8 +107,24 @@ const scopeProbe = await evaluate(`(() => ({
 console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
 const marks = await evaluate(`(() => window.__appMarks || null)()`);
 console.log(`  · 脚本执行标记 = ${JSON.stringify(marks)}`);
+// **先打开笔刷库面板再断言**（第 1076 轮）：`refreshBrushOptions()` 可能只在面板打开时调用，
+// 此前判据从未打开面板 ⇒ 选项停在"内置 1 项" ⇒ 可能把**设计**当成了缺陷。
+await evaluate(`(() => {
+  const btn = document.getElementById("brushLibraryOpen");
+  if (btn) btn.click();
+  return true;
+})()`);
+await sleep(1500);
+const afterOpen = await evaluate(`(() => {
+  const select = document.getElementById("brush");
+  const c = window.__brushRefresh;
+  return { options: select ? select.options.length : -1, counters: c ? { entered: c.entered, exited: c.exited } : null };
+})()`);
+console.log(`  · 点开面板后 = ${JSON.stringify(afterOpen)}`);
+// 判据对象必须是"打开面板之后"的选项数：面板**懒加载**（不点开就不填充）**是设计**。
+const panelOptions = afterOpen ? afterOpen.options : -1;
 // 三个分支：0 次进入 ⇒ 上游抛了；进过但没出来 ⇒ 中途抛了；进出一致却没选项 ⇒ 渲染环节的问题。
-if (brushOptions < 2) {
+if (panelOptions < 2) {
   const c = refreshCount || { entered: 0, exited: 0 };
   if (c.entered === 0) console.log("  ↳ 诊断：refreshBrushOptions 从未被进入 ⇒ 上游（setupBrushLibrary）失败");
   else if (c.exited < c.entered) console.log("  ↳ 诊断：进入了但没返回 ⇒ 清空选项后、写入前失败");
@@ -125,8 +141,8 @@ socket.close();
 // **阈值必须 > 1** —— 面板**永远保留 1 个内置笔选项**（主脚本里"只留第一个内置画笔选项"），
 // 所以 `< 1` 这条**永远不会触发**（第一次实跑就暴露了：它是"永远绿"的判据）。
 // 有离线回退时选项来自随包清单（约 24 个）⇒ 阈值取 2 即可分辨"只有内置那一项"与"清单回来了"。
-if (brushOptions < 2) {
-  failures.push(`断网后笔刷面板没有选项（options=${brushOptions}）⇒ 选不到笔 ⇒ 离线画不了`);
+if (panelOptions < 2) {
+  failures.push(`断网后笔刷面板没有选项（options=${panelOptions}）⇒ 选不到笔 ⇒ 离线画不了`);
 }
 
 if (failures.length) { console.log(`  ✗ 离线外壳未达成：${failures.join("；")}`); process.exit(1); }

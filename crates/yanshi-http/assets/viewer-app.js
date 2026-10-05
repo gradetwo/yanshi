@@ -6541,6 +6541,9 @@ async function pumpBrushPreview() {
 }
 
 function setupBrushLibrary() {
+  // 诊断标记（第 1076 轮）：若这条出现而 refresh 的计数仍为空 ⇒ **函数进去了但提前 return**；
+  // 若这条也不出现 ⇒ **函数没被调用**（自初始化/时机问题）。
+  (window.__appMarks = window.__appMarks || []).push("setup-entered");
   const open = $("brushLibraryOpen");
   const panel = $("brushLibrary");
   const close = $("brushLibraryClose");
