@@ -59,6 +59,10 @@ const PAGE_TAIL_A: &str = r##"</style>
     <span>head <b id="head">0</b></span>
     <span>rendered <b id="rendered">0</b></span>
     <span>dirty <b id="dirty">0</b></span>
+    <!-- **离线写队列的状态** ✓（离线优先）—— 用户必须能一眼分辨「已保存 / 离线排队 / 被拒」✗，
+         不能"看着像保存了、其实只在本地攒着"✗。`data-state` 是判据读的那个字段 ✓。 -->
+    <span id="outbox" class="outbox" data-state="saved"
+          title="离线时改动先写进浏览器本地队列，联网后按顺序补交；服务端上的这份文档若已变化则暂停补交">已保存</span>
   </span>
   <!-- **面板开关** ✓（用户要求：左侧工具栏与右侧各窗口都要能隐藏 ✓，并能进全屏画布 ✓）。
        三个开关都用 `aria-pressed` 表达状态 ✓ ⇒ 屏幕阅读器与检查脚本都能读到"现在是开还是关" ✓，
@@ -70,6 +74,13 @@ const PAGE_TAIL_A: &str = r##"</style>
   </span>
 <button id="langToggle" type="button" data-i18n="off" aria-pressed="false" title="把界面切成英文（English）">EN</button>
 </header>
+<!-- **离线队列的操作条** ✓：只在有待补交 / 被拒 / 队列满时出现 ✓（平时不占版面 ✓）。
+     「补交」= 立刻重放一次 ✓；「放弃」= 丢掉未补交的改动 ✓（需点两次 ✓，绝不自动丢 ✗）。 -->
+<div id="outboxBar" data-state="saved" hidden>
+  <span id="outboxText"></span>
+  <button id="outboxRetry" type="button" title="立刻把本地队列按顺序补交给服务端">补交</button>
+  <button id="outboxDiscard" type="button" title="丢弃本地队列里尚未补交的改动（需点两次确认）">放弃</button>
+</div>
 <button id="zenExit" type="button" title="退出全屏画布（Esc）">⛶ 退出全屏（Esc）</button>
 <dialog id="newDialog">
   <h2 style="margin-top:0">新建文档</h2>

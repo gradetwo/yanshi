@@ -69,6 +69,11 @@ const state = {
   // 当前选区（用于"清除选区"与覆盖层显示）。
   // **最近一次"连不上服务端"的提示时间** ✓（用来限流 ✓ —— 见 `reportServerUnreachable` ✓）。
   lastOfflineReport: 0,
+  // **离线写队列的网络记忆** ✓：`null` = 还不知道 ✓、`true` = 上一次改文档的请求网络失败了 ✓
+  // （有了它，后续的改文档请求**不再挂着等** ✗ —— 直接入队 ✓）。
+  outboxOffline: null,
+  // **队列满过几次** ✓（`refreshOutboxBadge` 读它显示"队列已满" ✓；一次成功入队就清零 ✓）。
+  outboxRefused: 0,
   // **上一次"设为背景"建的那一层** ✓（用它保证同一时刻只有一张纹理底 ✓ —— 见 `textureApply` ✓）。
   textureLayerId: null,
   // **可撤销 / 可重做的笔数** ✓ —— 来自服务端工具 ✓；`null` = 还不知道 ✓（界面显示 — ✓，不猜 ✓）。
@@ -102,6 +107,11 @@ const preview = new Image();
 const LOCAL_DB = "yanshi-local-v1";
 const LOCAL_STORE = "blobs";
 const LOCAL_JSON_STORE = "json";
+/// **离线写队列的 store** ✓（与字节缓存**同一个库** ✓ —— 一次升级把三张表都建好 ✓）。
+const OUTBOX_STORE = "outbox";
+/// **库版本必须升** ✗ —— 不升 `onupgradeneeded` 根本不会被调用 ✓，
+/// 于是新 store **永远建不出来** ✓（而 `localDb` 里那个 `contains` 守卫会让人误以为它在跑 ✓）。
+const OUTBOX_DB_VERSION = 3;
 /// **缓存键** ✓：必须剥掉破缓存参数 `t` ✗ —— 它每次渲染都不同 ✓
 /// ⇒ 拿整个 URL 当键 ⇒ **每次都是新键** ⇒ 存储**无限增长** ✗（第 163 轮记下的坑之一 ✓）。
 /// 按**文档 id** 分区 ✓（不同文档不互相覆盖 ✓）。
@@ -123,7 +133,7 @@ function localKey(url) {
 function localDb() {
   return new Promise((resolve, reject) => {
     if (!self.indexedDB) { reject(new Error("没有 IndexedDB")); return; }
-    const request = indexedDB.open(LOCAL_DB, 2);
+    const request = indexedDB.open(LOCAL_DB, OUTBOX_DB_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(LOCAL_STORE)) {
@@ -131,6 +141,11 @@ function localDb() {
       }
       if (!database.objectStoreNames.contains(LOCAL_JSON_STORE)) {
         database.createObjectStore(LOCAL_JSON_STORE, { keyPath: "key" });
+      }
+      // **自增主键 = 入队顺序** ✓（同一 store 的自增键单调 ✓，删除后**不复用** ✗
+      // ⇒ 重载、补交、再入队都不会把顺序搅乱 ✓）。键名 `seq` ✓。
+      if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
+        database.createObjectStore(OUTBOX_STORE, { keyPath: "seq", autoIncrement: true });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -392,6 +407,367 @@ async function localBytesPut(key, buffer) {
     return null;
   }
 }
+// ——— **离线写队列（outbox）** ✓ ———
+// **为什么必须有** ✓：上面那套字节层只解决**读** ✓ —— 离线时一次 `brush_stroke` / `create_layer`
+// 仍然会丢 ✗（`callTool` 的 `fetch` 抛错 ⇒ 用户的操作从世界上消失 ✓）。这里把**改文档的调用**
+// 先记进浏览器本地 ✓，联网后**按入队顺序**补交 ✓。
+//
+// **边界（写死在这里，判据按它断言 ✓）** ✓：
+// * **上限 = 200 条 或 4 MiB**（先到者为准 ✓；按条目序列化后的字节算 ✓）。
+// * **超限 = 拒绝新操作并说出来** ✗ —— **不静默丢** ✗、**也不悄悄丢掉最旧的** ✗：
+//   用户此刻更需要"知道自己在攒" ✓，而不是"最早那一笔被无声吃掉" ✗。
+// * **顺序 = IndexedDB 自增主键** ✓（不是墙钟 ✓ —— 同毫秒入队也不会乱 ✓）。
+// * **补交 = 逐条、按序、只删被确认的条目** ✓（服务端 `ok` ⇒ 按主键删一条 ✓）
+//   ⇒ 每条最多删一次 ✓、队列空了再补交就是**空操作** ✓。
+// * **冲突 = 入队时记下当时的服务端 HEAD** ✓；联网后 HEAD 变了 ⇒ **暂停补交并告诉用户** ✗。
+//   **不做合并** ✗（合并是另一个产品决策 ✓，这里只拒绝覆盖 ✓）。
+// * 原子路径（`/api/atoms` ✓）另有**服务端 ULID 幂等** ✓（12.2 ✓）⇒ 重放不会重复应用 ✓；
+//   工具路径**没有幂等键** ✗ ⇒ "服务端已应用但响应丢了"这一种仍可能重复 ✓（已知残留风险 ✓）。
+const OUTBOX_MAX_ENTRIES = 200;
+const OUTBOX_MAX_BYTES = 4 * 1024 * 1024;
+/// **一次"改文档"的请求最多等多久** ✓ —— 本地服务端正常时是毫秒级 ✓；
+/// 超过就**先入队** ✓（请求**不取消** ✗ —— 真回来了再撤回那一条 ✓，见 `callTool` ✓）。
+const OUTBOX_FETCH_TIMEOUT_MS = 8000;
+/// 已入队条数（内存镜像 ✓，供 4 秒轮询做廉价短路 ✓；权威永远是 IndexedDB ✓）。
+let outboxPendingCount = 0;
+/// 正在补交的那一次 ✓（同一时刻只允许一个 ✓ —— 否则同一条可能被发两遍 ✓）。
+let outboxFlushing = null;
+let outboxFlushTimer = null;
+
+function outboxTextBytes(text) {
+  try { return new TextEncoder().encode(text).length; } catch (error) { return text.length; }
+}
+
+/// **入队** ✓：返回 `{ok:true, seq, size}` 或 `{ok:false, reason}` ✓
+/// （`reason` ∈ `count` / `bytes` / `idb` ✓ —— **拒绝必须能被调用方说出来** ✗）。
+async function outboxEnqueue(kind, payload) {
+  const entry = {
+    kind: kind, doc: state.docId, token: state.token || "", at: Date.now(),
+    // **入队那一刻的服务端 HEAD** ✓ —— 补交前拿它做冲突判定 ✓（离线时它是我们最后见到的版本 ✓）。
+    base_head: Number(window.yanshiStats.serverHead || 0) || 0,
+    state: "queued", error: null, tries: 0,
+  };
+  if (kind === "atom") entry.atom = payload.atom;
+  else { entry.tool = payload.tool; entry.args = payload.args || {}; }
+  const size = outboxTextBytes(JSON.stringify(entry));
+  try {
+    const db = await localDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(OUTBOX_STORE, "readwrite");
+        const store = tx.objectStore(OUTBOX_STORE);
+        let outcome = null;
+        // **上限必须在同一个事务里判** ✗ —— 先 `getAll` 再另开事务会与并发入队竞态 ✓。
+        const all = store.getAll();
+        all.onsuccess = () => {
+          const rows = all.result || [];
+          let bytes = 0;
+          for (const row of rows) bytes += outboxTextBytes(JSON.stringify(row));
+          if (rows.length >= OUTBOX_MAX_ENTRIES) { outcome = { ok: false, reason: "count", size: rows.length }; return; }
+          if (bytes + size > OUTBOX_MAX_BYTES) { outcome = { ok: false, reason: "bytes", size: bytes }; return; }
+          const add = store.add(entry);
+          add.onsuccess = () => { outcome = { ok: true, seq: add.result, size: size, total: rows.length + 1 }; };
+          add.onerror = () => { outcome = { ok: false, reason: "idb" }; };
+        };
+        all.onerror = () => { outcome = { ok: false, reason: "idb" }; };
+        tx.oncomplete = () => resolve(outcome || { ok: false, reason: "idb" });
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => (outcome && outcome.ok ? reject(tx.error) : resolve(outcome || { ok: false, reason: "idb" }));
+      });
+    } finally { db.close(); }
+  } catch (error) {
+    console.warn("[yanshi] 离线队列写入失败：", error);
+    return { ok: false, reason: "idb" };
+  }
+}
+
+/// 读出全部条目 ✓（按自增主键 = 入队顺序 ✓；失败返回空数组 ✓ —— 存储不可用不致命 ✓）。
+async function outboxAll() {
+  try {
+    const rows = await localWithStore("readonly", (store) => store.getAll(), OUTBOX_STORE);
+    return rows || [];
+  } catch (error) {
+    return [];
+  }
+}
+/// **按主键删除一条** ✓ —— 这就是"每条只删一次"的全部实现 ✓（不做任何按内容匹配 ✗）。
+async function outboxDelete(seq) {
+  try {
+    await localWithStore("readwrite", (store) => store.delete(seq), OUTBOX_STORE);
+    return true;
+  } catch (error) {
+    console.warn("[yanshi] 离线队列删除失败：", error);
+    return false;
+  }
+}
+/// 原地更新一条 ✓（`seq` 随对象一起 `put` ⇒ 键不变 ✓）。
+async function outboxPut(row) {
+  try {
+    await localWithStore("readwrite", (store) => store.put(row), OUTBOX_STORE);
+    return true;
+  } catch (error) {
+    console.warn("[yanshi] 离线队列更新失败：", error);
+    return false;
+  }
+}
+
+/// 条目的**人话描述** ✓（日志与界面都用它 ✓，避免两处各写一套 ✓）。
+function outboxDescribe(row) {
+  if (!row) return "?";
+  if (row.kind === "atom") return "原子 " + String((row.atom && row.atom.kind) || "?");
+  return "工具 " + String(row.tool || "?");
+}
+/// **入队结果 → 界面 + 返回给调用方的形状** ✓。
+/// `ok:false, queued:true` 是刻意的 ✓：调用方**不会**误以为已经落库 ✓，
+/// 而 `queued` 让 `callToolChecked` 与界面能把"排队"与"被拒"分开说 ✓。
+function outboxQueuedResult(name, outcome, detail) {
+  let message;
+  if (outcome.ok) {
+    message = "离线：已把「" + name + "」记入本地队列（第 " + outcome.seq + " 条，共 " +
+      (outcome.total || 0) + " 条）⇒ 联网后按顺序补交 ✓";
+    log(message, "#c93");
+    state.outboxRefused = 0;
+  } else {
+    const why = outcome.reason === "count"
+      ? "队列已满（上限 " + OUTBOX_MAX_ENTRIES + " 条）"
+      : outcome.reason === "bytes"
+        ? "队列已满（上限 " + Math.round(OUTBOX_MAX_BYTES / 1048576) + " MB）"
+        : "浏览器本地存储不可用";
+    message = "**这一步没有保存** ✗：" + why + " ⇒ 先联网补交，或点「放弃」清空队列";
+    log(message, "#c33");
+    state.outboxRefused = (state.outboxRefused || 0) + 1;
+  }
+  $("last").textContent = JSON.stringify({
+    queued: !!outcome.ok, offline: true, tool: name,
+    outbox_seq: outcome.ok ? outcome.seq : null,
+  }).slice(0, 600);
+  void refreshOutboxBadge();
+  return {
+    ok: false,
+    queued: !!outcome.ok,
+    offline: true,
+    error_code: outcome.ok ? "queued_offline" : "outbox_refused",
+    context: { detail: message + (detail ? "（" + String(detail).slice(0, 80) + "）" : "") },
+    outbox_seq: outcome.ok ? outcome.seq : null,
+  };
+}
+
+/// **发一个"改文档"的请求** ✓ —— 与只读请求只差两点 ✓（都是离线优先必需的 ✓）：
+/// ① 已知离线（`navigator.onLine === false` 或上一次刚失败 ✓）⇒ **不发** ✓、直接抛离线错 ✓
+///    （否则会反复挂在必然失败的 `fetch` 上 ✓ —— 仓库里记过这个坑 ✓）；
+/// ② 未知状态给它**有界等待** ✓（`yanshiPending` 把那条仍在飞的请求带出去 ✓，
+///    由调用方入队后**在它真成功时撤回** ✓）。
+async function fetchMutating(url, options) {
+  if (navigator.onLine === false || state.outboxOffline === true) {
+    const error = new Error("offline");
+    error.yanshiOffline = true;
+    throw error;
+  }
+  const pending = fetch(url, options);
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error("timeout");
+      error.yanshiOffline = true;
+      error.yanshiPending = pending;
+      reject(error);
+    }, OUTBOX_FETCH_TIMEOUT_MS);
+    pending.then(
+      (response) => { clearTimeout(timer); resolve(response); },
+      (error) => {
+        clearTimeout(timer);
+        error.yanshiOffline = true;
+        reject(error);
+      },
+    );
+  });
+}
+
+/// 上一次改文档的请求**是不是网络失败** ✓（`null` = 还不知道 ✓）。
+function outboxNoteNetwork(ok) {
+  state.outboxOffline = !ok;
+  if (ok) {
+    state.outboxRefused = 0;
+    if (outboxPendingCount > 0) scheduleOutboxFlush(0);
+  }
+}
+
+/// **有界地发一个请求** ✓ —— 只有超时**不取消**请求 ✗（调用方按自己的语义决定保留还是撤回 ✓）。
+/// 补交路径全用它 ✓：否则离线时一次挂在 `fetch` 上的探测会把 `outboxFlushing` 永久占住 ✗
+/// ⇒ 之后所有补交都返回那个**永不落定**的 promise ✓（判据与用户都只能干等 ✗）。
+async function outboxFetchBounded(url, options, timeoutMs) {
+  const pending = fetch(url, options);
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("请求超时（" + (timeoutMs || OUTBOX_FETCH_TIMEOUT_MS) + "ms）")),
+      timeoutMs || OUTBOX_FETCH_TIMEOUT_MS);
+    pending.then(
+      (response) => { clearTimeout(timer); resolve(response); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+/// 探服务端当前 HEAD ✓（**直连、不走本地缓存** ✗ —— 冲突判定必须看**此刻**的服务端 ✓）。
+async function outboxProbeHead(doc, token) {
+  const url = "/api/atoms?doc=" + encodeURIComponent(doc) + "&token=" + encodeURIComponent(token) +
+    "&since=999999999&limit=1";
+  const response = await outboxFetchBounded(url, undefined, 5000);
+  if (!response || !response.ok) throw new Error("HTTP " + (response ? response.status : "?"));
+  const value = await response.json();
+  if (!value || !value.ok) throw new Error((value && value.error_code) || "HEAD 探测失败");
+  return Number(value.head_seq || 0);
+}
+
+/// **补交一条** ✓：返回 `{ack}` / `{offline}` / `{error}` ✓（三态必须分开 ✗ ——
+/// "网络还没好"与"服务端拒绝"要采取**完全不同的处置** ✓）。
+async function outboxReplayOne(row) {
+  const url = row.kind === "atom" ? api("/api/atoms") : api("/api/tools/" + row.tool);
+  const body = row.kind === "atom" ? JSON.stringify(row.atom) : JSON.stringify(row.args || {});
+  let response;
+  try {
+    response = await outboxFetchBounded(url,
+      { method: "POST", headers: { "content-type": "application/json" }, body: body },
+      OUTBOX_FETCH_TIMEOUT_MS);
+  } catch (error) {
+    return { offline: true, error: String(error) };
+  }
+  let value = null;
+  try { value = await response.json(); } catch (error) { value = null; }
+  if (!value) return { error: "HTTP " + response.status + "（响应不是 JSON）" };
+  // **同一个 `ok` 字段** ✓：工具与原子两条路都回它 ✓ ⇒ 判据只有一处 ✓（不各写一套 ✓）。
+  if (value.ok) return { ack: true, value: value };
+  return { error: (value.error_code || "unknown") + " " + ((value.context && value.context.detail) || "") };
+}
+
+/// **补交整个队列** ✓（当前文档 ✓）。并发调用共享同一次 ✓（`outboxFlushing` ✓）。
+async function flushOutbox() {
+  if (outboxFlushing) return outboxFlushing;
+  outboxFlushing = (async () => {
+    const rows = (await outboxAll()).filter((row) => row.doc === state.docId)
+      .sort((a, b) => a.seq - b.seq);
+    if (rows.length === 0) { await refreshOutboxBadge(); return { ok: true, replayed: 0, remaining: 0 }; }
+    if (!state.token) { await refreshOutboxBadge(); return { ok: false, offline: true, replayed: 0, remaining: rows.length }; }
+    // **冲突判定必须在发第一条之前** ✓ —— 一旦发出去就无法撤回了 ✓。
+    const expected = Number(rows[0].base_head || 0);
+    let head = null;
+    try {
+      head = await outboxProbeHead(state.docId, state.token);
+    } catch (error) {
+      state.outboxOffline = true;
+      await refreshOutboxBadge();
+      return { ok: false, offline: true, replayed: 0, remaining: rows.length };
+    }
+    outboxNoteNetwork(true);
+    if (expected > 0 && head !== expected) {
+      for (const row of rows) {
+        if (row.state !== "conflict") {
+          row.state = "conflict";
+          row.error = "server head " + head + " != " + expected;
+          await outboxPut(row);
+        }
+      }
+      log("**暂停补交** ✗：这份文档在服务端已经变了（HEAD " + expected + " ⇒ " + head + "）" +
+          "⇒ 为避免覆盖别人的改动，队列按序原样保留 ✓（点「补交」可再试，或点「放弃」丢弃）", "#c33");
+      await refreshOutboxBadge();
+      return { ok: false, conflict: true, replayed: 0, remaining: rows.length };
+    }
+    let replayed = 0;
+    for (const row of rows) {
+      const outcome = await outboxReplayOne(row);
+      if (outcome.ack) {
+        // **只删被确认的这一条** ✓（删的是主键 ✓ ⇒ 绝不会误删别的条目 ✓）。
+        await outboxDelete(row.seq);
+        replayed += 1;
+        continue;
+      }
+      if (outcome.offline) {
+        state.outboxOffline = true;
+        await refreshOutboxBadge();
+        if (replayed > 0) log("已补交 " + replayed + " 条；网络又断了 ⇒ 其余留在队列 ✓", "#c93");
+        return { ok: false, offline: true, replayed: replayed, remaining: rows.length - replayed };
+      }
+      // **服务端明确拒绝 ⇒ 标记、保留、停下** ✗（停下是为了保序 ✓：后面的操作可能依赖它 ✓）。
+      row.state = "failed";
+      row.error = outcome.error || "rejected";
+      row.tries = Number(row.tries || 0) + 1;
+      await outboxPut(row);
+      log("补交被拒（**仍在队列** ✓）：" + outboxDescribe(row) + " ⇒ " + row.error, "#c33");
+      await refreshOutboxBadge();
+      return { ok: false, rejected: true, replayed: replayed, remaining: rows.length - replayed };
+    }
+    log("离线队列已补交完：共 " + replayed + " 条 ✓", "#2a7");
+    await refreshOutboxBadge();
+    return { ok: true, replayed: replayed, remaining: 0 };
+  })().finally(() => { outboxFlushing = null; });
+  return outboxFlushing;
+}
+
+/// 合并触发 ✓（4 秒轮询 / 上线事件 / WS 重连 / 一次成功调用之后都会来 ✓）。
+function scheduleOutboxFlush(delay) {
+  if (outboxFlushTimer) return;
+  outboxFlushTimer = setTimeout(() => {
+    outboxFlushTimer = null;
+    void flushOutbox();
+  }, typeof delay === "number" && delay >= 0 ? delay : 300);
+}
+
+/// **清空当前文档的队列** ✓（只有用户显式点两次才会走到这里 ✓ —— 绝不自动丢 ✗）。
+async function outboxDiscardDoc(doc) {
+  const rows = (await outboxAll()).filter((row) => row.doc === doc);
+  for (const row of rows) await outboxDelete(row.seq);
+  // **"队列满"是一个瞬时事件** ✗ —— 用户清空队列（或下一次成功入队 ✓）之后就**不再成立** ✓
+  // ⇒ 不清掉的话徽标会一直红着说"队列已满" ✓，而队列其实是空的 ✗。
+  state.outboxRefused = 0;
+  log("已放弃 " + rows.length + " 条未补交的改动（用户确认）", "#c93");
+  await refreshOutboxBadge();
+  return rows.length;
+}
+
+/// **状态必须看得见** ✓（用户原话的要求 ✓）：已保存 / 离线排队 / 被拒，三者**一眼可分** ✓。
+/// 判据读 `#outbox` 的 `data-state` 与文本 ✓（不是读我的内部变量 ✓）。
+async function refreshOutboxBadge() {
+  const rows = await outboxAll();
+  const mine = rows.filter((row) => row.doc === state.docId);
+  const others = rows.length - mine.length;
+  outboxPendingCount = mine.length;
+  const failed = mine.filter((row) => row.state === "failed").length;
+  const conflict = mine.filter((row) => row.state === "conflict").length;
+  const refused = Number(state.outboxRefused || 0);
+  const node = $("outbox");
+  const bar = $("outboxBar");
+  const text = $("outboxText");
+  let stateName = "saved";
+  let label = "已保存";
+  // **优先级**：冲突 > 被拒 > 队列满 > 排队 > 离线 > 已保存 ✓（越靠前越需要人处理 ✓）。
+  if (conflict > 0) { stateName = "conflict"; label = "冲突待处理 " + conflict; }
+  else if (failed > 0) { stateName = "failed"; label = "被拒 " + failed + " 条"; }
+  else if (refused > 0) { stateName = "full"; label = "队列已满"; }
+  else if (mine.length > 0) { stateName = "queued"; label = "离线排队 " + mine.length + " 条"; }
+  else if (state.outboxOffline === true || navigator.onLine === false) { stateName = "offline"; label = "离线"; }
+  if (node) {
+    node.dataset.state = stateName;
+    node.textContent = label;
+    node.title = "离线时改动先写进浏览器本地队列，联网后按顺序补交；" +
+      "服务端上的这份文档若已变化则暂停补交（上限 " + OUTBOX_MAX_ENTRIES + " 条 / " +
+      Math.round(OUTBOX_MAX_BYTES / 1048576) + " MB）" +
+      (others > 0 ? "。其他文档还有 " + others + " 条未补交" : "");
+  }
+  if (bar) {
+    const show = mine.length > 0 || refused > 0;
+    bar.hidden = !show;
+    bar.dataset.state = stateName;
+    if (text && show) {
+      if (conflict > 0) text.textContent = "服务端这份文档已变化，已暂停补交（" + mine.length + " 条）";
+      else if (failed > 0) text.textContent = failed + " 条被服务端拒绝，仍留在队列";
+      else if (refused > 0) text.textContent = "队列已满，刚才那一步没有记录（" + mine.length + " 条已排队）";
+      else text.textContent = "离线排队 " + mine.length + " 条，联网后自动按序补交";
+    }
+  }
+  window.yanshiStats.outboxPending = mine.length;
+  window.yanshiStats.outboxState = stateName;
+  window.yanshiStats.outboxOthers = others;
+  return { state: stateName, label: label, pending: mine.length, failed: failed, conflict: conflict, others: others };
+}
+
 /// **本地优先地**装底图 ✓ —— 这是 5014 那唯一一处的替身 ✓。
 async function loadPreview(url) {
   const local = await localBlobGet(url);
@@ -597,14 +973,50 @@ function setStatus(patch) {
 }
 
 async function callTool(name, args, options = {}) {
-  const response = await fetchOrLocal(api("/api/tools/" + name), {
+  // **只读工具在注入的清单里** ✓（服务端按 `ToolSpec.mutating` 生成 ✓ ⇒ 权威、不漏 ✓）；
+  // 不在清单里 = **改文档** ✓ ⇒ 网络失败时要进离线队列 ✓，不能丢 ✗。
+  const mutating = !LOCAL_READ_TOOLS.includes(name);
+  const url = api("/api/tools/" + name);
+  const init = {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(args || {}),
-  });
+  };
+  let response;
+  try {
+    // **改文档走 `fetchMutating`** ✓（离线短路 + 有界等待 ✓，好入队 ✓）；
+    // **只读仍走 `fetchOrLocal`** ✗ —— 那里面有"网络优先 + 本地缓存兜底" ✓，
+    // 换成 `fetchMutating` 会把**离线读**一起打断 ✗（这正是本地字节层已经修好的那一半 ✓，绝不能碰 ✗）。
+    response = mutating ? await fetchMutating(url, init) : await fetchOrLocal(url, init);
+  } catch (error) {
+    if (!mutating) throw error; // 只读工具保持原行为 ✓（`fetchOrLocal` 已做缓存兜底 ✓）
+    const outcome = await outboxEnqueue("tool", { tool: name, args: args || {} });
+    // **超时的请求不取消** ✗：它若其实是成功的（只是慢 ✓），那一条入队要**撤回** ✓
+    // ⇒ 否则补交时会**重复应用** ✓（工具路径没有服务端幂等键 ✗）。
+    if (outcome.ok && error && error.yanshiPending) {
+      const seq = outcome.seq;
+      error.yanshiPending.then(async (late) => {
+        let lateOk = false;
+        try { lateOk = !!(await late.clone().json()).ok; } catch (_) { lateOk = !!(late && late.ok); }
+        if (lateOk) {
+          await outboxDelete(seq);
+          log("已撤回队列里的 1 条（服务端其实收到了，只是回得慢）✓", "#c93");
+          await refreshOutboxBadge();
+        }
+      }, () => { /* 请求最终还是失败 ⇒ 保留队列 ✓ */ });
+    }
+    state.outboxOffline = true;
+    return outboxQueuedResult(name, outcome, error && error.message);
+  }
   const value = await response.json();
+  // **只有"真的走网"的成功才算连得上** ✓ —— 只读工具可能由**本地缓存**兜底返回 ✓，
+  // 那不能当成"网络好了" ✗（否则离线时会反复去试必然失败的请求 ✓、把队列拖慢 ✓）。
+  if (mutating) outboxNoteNetwork(true);
   $("last").textContent = JSON.stringify(value).slice(0, 600);
   if (value.ok) {
+    // **成功响应 = 我们知道服务端 HEAD 了** ✓ —— 离线队列用它当"入队时的基线" ✓
+    //（此前只有 `submitAtom` 与 WS 更新它 ✗ ⇒ 工具路径入队的基线可能是 0 ⇒ 冲突判定被跳过 ✗）。
+    if (value.head !== undefined) window.yanshiStats.serverHead = value.head;
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
     // 入栈与"是否刷新"无关：`revert` / `reapply` 自身不入栈（它们由撤销/重做逻辑显式管理栈）。
     const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
@@ -1327,18 +1739,23 @@ async function submitAtom(atom) {
   // 而画面上**什么都没说** ✓ ⇒ 用户不知道这一笔到底提交了没有 ✓。
   let response;
   try {
-    response = await fetchOrLocal(api("/api/atoms"), {
+    response = await fetchMutating(api("/api/atoms"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(atom),
     }).then((r) => r.json());
   } catch (error) {
+    // **这一笔不再丢** ✓：原子的 `id` 是**客户端 ULID** ✓、服务端按 id **幂等** ✓（12.2 ✓）
+    // ⇒ 入队重放**不会重复应用** ✓ —— 这是最干净的一条离线写路径 ✓。
+    // 本地内核在 `commit_preview` 时已经把墨画上了 ✓ ⇒ 离线时画面**也看得见这一笔** ✓。
     $("conn").className = "dot";
     $("connText").textContent = "已断开";
-    log("提交失败：连不上服务端 ✗ ⇒ **这一笔没有提交** ✓（服务端可能已退出 ✓；" +
-        "把它起回来再画，或刷新页面 ✓）", "#c33");
-    return null;
+    state.outboxOffline = true;
+    const outcome = await outboxEnqueue("atom", { atom: atom });
+    outboxQueuedResult("原子 " + String((atom && atom.kind) || ""), outcome, error && error.message);
+    return null; // 保持原返回形状 ✓（调用方本来就按 `null` 处理 ✓）
   }
+  outboxNoteNetwork(true);
   $("last").textContent = JSON.stringify(response).slice(0, 600);
   window.yanshiStats.serverHead = response.head ?? window.yanshiStats.serverHead;
   setStatus({ head: response.head, dirty: (response.dirty_tiles || []).length });
@@ -2621,6 +3038,9 @@ async function switchDocument(docId, token) {
   // **打开文档就拉一次标注与对象** ✓（面板立刻正确 ✓）。
   await refreshAnnotations();
   await refreshObjects();
+  // **换文档就把队列徽标重算一次** ✓（它是**按文档**分区的 ✓ —— 别的文档的条目不能显示成本文档的 ✓）。
+  await refreshOutboxBadge();
+  if (outboxPendingCount > 0) scheduleOutboxFlush(300);
 }
 
 async function ensureDocument() {
@@ -3937,6 +4357,9 @@ async function createAnnotationAt(x, y) {
 /// **`what` 是给用户看的动作名** ✓（"删除图层" ✓ 比 `delete_layer` 有用得多 ✓）。
 async function callToolChecked(name, args, what) {
   const result = await callTool(name, args);
+  // **离线这一支已经说过了** ✗：`outboxQueuedResult` 已经写了"已记入队列"或"这一步没有保存" ✓
+  // ⇒ 这里再补一句"失败"只会把"排队"读成"失败"✗（用户要能分辨三者 ✓）。
+  if (result && result.offline) return result;
   if (!result || !result.ok) {
     const code = (result && result.error_code) || "unknown";
     const detail = (result && result.context && result.context.detail) || "";
@@ -4855,6 +5278,9 @@ function connect() {
     // **连上了就把重试计数清零** ✓（否则一次短暂断开会让"上限"永久少一格 ✓）。
     state.reconnectAttempts = 0;
     subscribeViewport();
+    // **WS 重连 = 真的能连上服务端** ✓（比 `navigator.onLine` 可信 ✓）⇒ 试一次补交 ✓。
+    state.outboxOffline = false;
+    scheduleOutboxFlush(300);
   };
   socket.onclose = () => {
     // 只允许**当前**这条连接触发重连：切换文档时我们主动关闭旧连接，
@@ -7018,7 +7444,73 @@ window.addEventListener("error", (event) => {
   }
 });
 
+// ——— **离线写队列的接线** ✓ ———
+// **四条触发** ✓（都指向同一个 `flushOutbox` ✓ —— 只有一处补交实现 ✓，不会各写一套 ✓）：
+// ① 浏览器说"上线了" ✓；② WS 重连成功（连接性真的回来了 ✓ —— 比 `navigator.onLine` 可信 ✓）；
+// ③ 每 4 秒轮询一次 ✓（有队列才做 ✓）；④ 任何一次请求成功之后 ✓（见 `outboxNoteNetwork` ✓）。
+window.addEventListener("online", () => {
+  state.outboxOffline = false;
+  void refreshOutboxBadge();
+  scheduleOutboxFlush(200);
+});
+window.addEventListener("offline", () => {
+  state.outboxOffline = true;
+  void refreshOutboxBadge();
+});
+setInterval(() => {
+  if (outboxPendingCount > 0) scheduleOutboxFlush(0);
+}, 4000);
+
+const outboxRetryButton = $("outboxRetry");
+if (outboxRetryButton) outboxRetryButton.addEventListener("click", () => {
+  state.outboxOffline = null; // 用户显式要求 ⇒ 重新试一次网络 ✓（不再被"上次失败"短路 ✓）
+  void refreshOutboxBadge();
+  void flushOutbox();
+});
+// **放弃必须点两次** ✗ —— 一次点击就丢掉未补交的改动是不可接受的 ✓，
+// 而 `window.confirm` 在无头浏览器里会**挂住**判据 ✓ ⇒ 用按钮自己的文案做二次确认 ✓。
+let outboxDiscardArmed = 0;
+const outboxDiscardButton = $("outboxDiscard");
+if (outboxDiscardButton) outboxDiscardButton.addEventListener("click", async () => {
+  const button = outboxDiscardButton;
+  const now = Date.now();
+  if (now - outboxDiscardArmed > 5000) {
+    outboxDiscardArmed = now;
+    button.textContent = "确认放弃";
+    setTimeout(() => { if (Date.now() - outboxDiscardArmed >= 5000) button.textContent = "放弃"; }, 5200);
+    return;
+  }
+  outboxDiscardArmed = 0;
+  button.textContent = "放弃";
+  await outboxDiscardDoc(state.docId);
+});
+
 window.yanshi = {
+    /// **离线写队列的状态** ✓（可断言 ✓）—— 判据读它 ✓；
+    /// 界面上的红/黄字读的是同一份数据（`#outbox` 的 `data-state` / 文本 ✓）。
+    outbox() {
+      const node = $("outbox");
+      const bar = $("outboxBar");
+      return {
+        pending: outboxPendingCount,
+        offline: state.outboxOffline === true,
+        refused: Number(state.outboxRefused || 0),
+        max_entries: OUTBOX_MAX_ENTRIES,
+        max_bytes: OUTBOX_MAX_BYTES,
+        state: node && node.dataset ? node.dataset.state : null,
+        label: node ? node.textContent : null,
+        banner_visible: !!(bar && !bar.hidden),
+        banner: bar && !bar.hidden && $("outboxText") ? $("outboxText").textContent : null,
+      };
+    },
+    /// **队列里的条目**（原始载荷 ✓ —— 判据要断言"记对了没有" ✓）。
+    outboxEntries() { return outboxAll(); },
+    /// 显式补交一次 ✓（判据用它把"靠 4 秒轮询"换成确定性时序 ✓）。
+    flushOutbox() { return flushOutbox(); },
+    /// 刷新徽标（切换文档后判据可能要立刻读 ✓）。
+    refreshOutbox() { return refreshOutboxBadge(); },
+    /// **丢弃当前文档的队列** ✓（自动化与"放弃"按钮共用**同一实现** ✓，不各写一套 ✓）。
+    discardOutbox() { return outboxDiscardDoc(state.docId); },
     /// 当前设置 ✓（可断言 ✓）。
     state() {
       return {
@@ -7737,6 +8229,10 @@ $("importFile").addEventListener("change", async (event) => {
     refreshContactLink();
     void warmKernel();
   }
+  // **开机就把本地队列读回来** ✓ —— 刷新/重开页面之后未补交的改动必须还在 ✓、且立刻可见 ✓
+  //（这就是"离线优先"里"不丢"的那一半 ✓；只留在内存里的队列是没有意义的 ✗）。
+  await refreshOutboxBadge();
+  if (outboxPendingCount > 0) scheduleOutboxFlush(1000);
 })();
 
 // **素材浮层的"开关"这一半，在脚本段末尾就绑上** ✓ —— 只切可见性、不搬卡片 ✓（无副作用 ✓）。
@@ -7763,6 +8259,14 @@ const I18N_EN_TEXT = {
   "✓ —— 不是从你电脑上选文件 ✗。": "✓ — and not a file picked from your computer ✗.",
   "刷新": "Refresh",
   "收起": "Collapse",
+  // **离线写队列的界面** ✓（`browser-i18n` 会把**整页**的中文都算上 ✓ ——
+  // 含 `hidden` 的节点 ✓ ⇒ 这两颗按钮**必须**有词条 ✗，否则英文模式下立刻红 ✓）。
+  "已保存": "Saved",
+  "补交": "Retry",
+  "放弃": "Discard",
+  "确认放弃": "Confirm discard",
+  "离线": "Offline",
+  "队列已满": "Queue full",
   "撤销": "Undo",
   "重做": "Redo",
   "导出 PNG": "Export PNG",
@@ -7997,10 +8501,18 @@ function i18nText(node) {
     const m2 = /^图层 (\d+) \(#(.+)\)$/.exec(zh);
     const m3 = /^共 (\d+) 色 ✓$/.exec(zh);
     const m4 = /^可撤销 (.+?) 笔 \/ 可重做 (.+?) 笔$/.exec(zh);
+    // **离线队列徽标是动态的** ✓（条数会变 ✓）⇒ 它必须有模式词条 ✗，
+    // 否则英文模式下"离线排队 3 条"会原样留着中文 ✓。
+    const m5 = /^离线排队 (\d+) 条$/.exec(zh);
+    const m6 = /^被拒 (\d+) 条$/.exec(zh);
+    const m7 = /^冲突待处理 (\d+)$/.exec(zh);
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
     else if (m4) en = m4[1] + " strokes undoable / " + m4[2] + " redoable";
+    else if (m5) en = "Offline queue: " + m5[1];
+    else if (m6) en = m6[1] + " rejected";
+    else if (m7) en = m7[1] + " conflict(s)";
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }
