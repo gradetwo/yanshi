@@ -35188,7 +35188,226 @@ Object.keys 看真键表）。
 
 本轮探针未通过判据，已 git checkout 回退，未提交任何改动。
 
-## 第 1126 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
+## 第 1126 轮：派发 (A)⑥ 的核心缺口——离线时笔刷走本地内核
+
+依据（第 1125 轮定案）：
+1. viewer-app.js:6120 的注释写明"画笔不能走这条本地内核路 —— 这是用户报的'换什么笔都一样'的真正原因"，
+   即**普通笔刷的墨来自服务端**。
+2. state 里的 needsServerPixels / serverBlits / lastServerBlitReason 与该结论吻合。
+3. 离线判据实测：合成指针笔画之后 points 仍是 0、dragging 仍 false、serverBlits 仍 0，
+   画布只剩底色（76800 = 320×240）。
+4. 两个成因必须都处理：
+   a. 判据侧：viewer-app.js:5943 的 wantsPanEvent = button===1 || tool==="pan" || spaceHeld，
+      判据用 button 0、tool brush，所以只剩 spaceHeld；它为真时落笔处理器第一行就返回。
+   b. 产品侧：笔刷的墨来自服务端 ⇒ 断网时没有墨。
+
+已派 subagent（/tmp/wt-offlinepaint，分支 feat/offline-brush-kernel），任务书要点：
+1. 让笔刷在**服务端不可达（离线）时走本地内核**（crates/yanshi-wasm）；在线仍走现有服务端路径，
+   或者统一到本地内核——由它选择，但必须说明理由。
+2. **硬要求**：离线画的同一条笔触必须与在线画的**逐字节一致**（这是 (A)⑥ 的原话要求：
+   "两种模式必须同笔同结果"）。若因仓库已记录的既有例外（滑窗 box blur 的 ±1 LSB）无法完全一致，
+   必须给出实测数字并精确说明，不许含糊。
+3. 不得回退在线路径（在线行为今天是正确的，且被大量判据覆盖）。
+4. 判据三条，各自必须能红并变异验证：
+   ① 离线指针笔画使 #board 的不透明/深色像素增加（必须先修判据侧的 Space 问题，否则触不到产品代码）；
+   ② 离线与在线同笔触逐字节一致（或有精确实测的例外）；
+   ③ 离线的墨确实由本地内核产生（断言内核计数或"没有服务端往返"，而不是只看像素）。
+5. 环境前提（写进任务书，避免重蹈覆辙）：新 worktree 没有 crates/yanshi-wasm/pkg（gitignore），
+   缺它 viewer 会静默退回服务端渲染并导致浏览器判据误报；JS/CSS 是 include_str! 编进二进制的，
+   跑浏览器判据前必须先 cargo build --workspace --bins；window.yanshi.state 是**函数**必须调用；
+   绘制画布是 #board（页面有多个 canvas）。
+
+## 第 1127 轮：(B)③ 核实——target_installed 的三态实现已完成，但缺判据
+
+核实结果（逐条有出处）：
+1. `scripts/package-release.sh:89-109` 的 `target_installed()` **已经实现三态**：
+   - 找到 `~/.rustup/toolchains/*/lib/rustlib/<target>` 目录 ⇒ `return 0`（已安装）；
+   - 有 rustup 目录但没有该目标 ⇒ `return 1`（明确没装）；
+   - 没有 rustup（系统 cargo / Homebrew rust）⇒ `return 2`（**无法判断**）。
+   注释里还写了历史教训：老版本这里回 0（当成已装）⇒ 调用方放心去构建 ⇒ 后面才炸，
+   而且报的是误导性错误（看着像工具链坏，其实是根本没装）；现在回 2，调用方一律按没装处理。
+2. `package-release.sh:271-275` 的调用点**也按三态分开**（注释注明"三态要分开说，第 376-377 轮"，
+   原先写 `! target_installed` 会把 2 也当成已装 ✗）。
+3. 但**判据侧没有覆盖它**：`scripts/tool-release-launcher.mjs` 是"发布启动脚本开关"判据，
+   与三态语义无关（我核实了它的文件头说明）。
+
+结论：**(B)③ 的"实现"部分早就完成**，我此前把它列为"未做"是错的；
+真正剩下的是**给三态加一条能红的判据**（例如把 `return 2` 改回 `return 0` ⇒ 判据必须红）。
+这条判据的价值正是历史上真实发生过的 bug（静态判据全绿、发布包才炸）。
+
+下一步：写一条 shell 层或 node 层的判据，用 mock 的 HOME（无 rustup 目录、有 rustup 目录但缺目标、
+有目标三种情况）断言 2/1/0 三态，并变异验证（把 2 改成 0 应变红）。
+
+## 第 1128 轮：(B)③ 补上三态判据（能红，已血脉验证）
+
+背景：第 1127 轮核实 target_installed() 的三态实现早已完成，但**没有判据覆盖**它。
+本轮补上 scripts/tool-release-target-tri-state.mjs。
+
+判据做法：用 sed 只提取 `target_installed()` 函数本身（不跑脚本主体），
+再用**假的 HOME** 造三种文件系统状态，断言 return code：
+  情况 A：~/.rustup/toolchains/*/lib/rustlib/<target> 存在 ⇒ 期望 0（已安装）
+  情况 B：有 ~/.rustup/toolchains 但没有该目标 ⇒ 期望 1（明确没装）
+  情况 C：没有 ~/.rustup（系统 cargo / Homebrew rust）⇒ 期望 2（**无法判断**）
+
+血脉验证（亲手做，不是自述）：
+  把 `return 2` 改成 `return 0`（复现历史 bug：把"无法判断"当成"已安装"）
+  ⇒ 读数变成 `已安装=0 明确没装=1 无法判断=0` ⇒ **判据红**，失败信息是
+  "没有 rustup 时应当回 2（无法判断，不能当成已安装），实得 0" ⇒ 直指被判条件 ✓
+  ⇒ 还原后逐字节一致，判据回绿 ✓
+
+顺手加固（因为发现了一个可疑现象）：第一次用 runner 做变异时它**没有红**。
+怀疑是相对路径问题（原判据用 "scripts/package-release.sh"；runner 可能在别的 cwd 跑，
+或把脚本复制到别处，于是"变异没红"可能只是**没读到我变异的那份文件**）。
+改成用 import.meta.url 解析仓库根之后复验三种情形：
+  ① 从仓库根跑 ⇒ 绿；② 从 /tmp 跑 ⇒ 同样绿；③ 变异后从 /tmp 跑 ⇒ 红（EXIT=1）。
+所以判据本体与路径都稳健。runner 那次没红的原因仍待确认（可能是 runner 的隔离方式），
+但判据本身已可直接血脉验证，且失败信息落在被判条件上。
+
+## 第 1129 轮：流程发现——runner 用隔离副本，所以在 runner 里做变异不能验证判据
+
+事实：新判据 scripts/tool-release-target-tri-state.mjs
+1. **直接跑**：
+   - 基线：三态读数 0/1/2，绿（EXIT=0）。
+   - 把 `return 2` 改成 `return 0`（复现历史 bug）：读数变 0/1/0，**红**（EXIT=1），
+     失败信息直指被判条件。还原后逐字节一致，回绿。
+2. **经 runner 跑**（SHARD=64 SHARDS=73）：无论变异前后，都是 `通过 1｜意外失败 0`。
+
+结论：**runner 把仓库复制到它自己的 $ROOT_DIR 再跑判据**（判据用 import.meta.url 解析到的
+"仓库根"是那份副本），所以**我在仓库工作树里做的变异与它无关**。
+⇒ 因此：**判据的血脉验证必须直接跑判据本体**；runner 的 `RUN EXIT=0` 只能说明"副本里是绿的"，
+**不能**用来证明"这条判据能红"。
+这条也解释了本会话此前几次"在 runner 里变异，判据没红"的现象（当时我误判为判据不敏感）。
+
+推论（对流程的要求）：
+1. 每条判据都要能**脱离 runner 单独跑**（脚本层面做到"任意 cwd 都能跑"），
+   本次为此把路径从相对路径改成按 import.meta.url 解析仓库根。
+2. 变异验证要在**直接跑**的路径上做；runner 只用来确认"在隔离环境里也绿"。
+
+## 第 1130 轮：(B)④ 核实——构建警告上限判据已完整实现且实测通过，但没接进判据套件
+
+核实内容（有出处）：
+1. `scripts/build-warnings-check.sh` 已经是**完整的判据**：
+   - 它先 `cargo clean -p` 那 6 个 cdylib crate（yanshi-wasm + 5 个 medium），再 `cargo build --workspace`。
+     注释写明**为什么必须冷构建**：热构建不会重新发出那些警告 ⇒ 判据会永远绿（假判据）。
+   - 它检查**两个 target**：native 与 **wasm32**（打包真正用的那条）。
+   - 判法是 `grep -cE '^warning'`，必须为 0，否则 `exit 1`（红）。
+   - 注释还记录了两个坑：`cargo clean` 必须重复写 `-p`（写成 `-p a b c` 会报用法错），
+     而坏参数会连累下一句 `cargo build`（报的是 build 的用法错，很难一眼看出）。
+2. **直接跑它**：EXIT=0，读数 "native：警告 0 条" ＋ "wasm32：警告 0 条" ＋
+   "✓ 构建警告上限：冷构建两个 target 都是 0 条警告"。
+3. 这与 notes:26392 的记录一致：本机冷构建（7 个 cdylib crate，CARGO_TARGET_DIR 指向空目录）warning 行数 0。
+   所以"6 条 cdylib 噪声"这个前提在我能查到的范围内**复现不出来**。
+
+真实缺口（可执行）：**`scripts/run-criteria.sh` 完全没有提及这个脚本**（grep 计数为 0）
+⇒ 这条判据不在判据套件里，可能很久没被跑过。
+下一步（明确）：把它接进套件。但它是**冷构建**，很慢，所以要么单独成组（例如"昂贵判据"），
+要么在文档里明确列出并定期手工跑；同时它本身已经能红（有警告或构建失败即 exit 1），
+所以接进去之后还要按新纪律**直接跑一次变异**（例如人为引入一条 warning 看它是否变红）。
+
+## 第 1131 轮：把构建警告判据接进套件（(B)④ 的缺口闭合）
+
+背景：第 1130 轮核实 build-warnings-check.sh 已完整实现且实测 0 条警告，
+但 run-criteria.sh 完全没有提及它 ⇒ 这条判据不在套件里，可能很久没被跑过。
+
+根因（有出处）：run-criteria.sh:67 的枚举是**按前缀**的
+  for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs \
+                       scripts/kernel-wasm-allowlist.mjs scripts/...)
+而 build-warnings-check.sh 是 .sh ⇒ 天然不在枚举里。注释里其实记着这个坑：
+"枚举是按前缀的 ⇒ 任何不匹配的判据静默地永不运行（第 787 轮实测：74 个里 14 个没跑）"。
+
+改动两处：
+1. 枚举行里**显式**加上 scripts/build-warnings-check.sh（与第 788 轮"显式补上 wasm-brush-parity"同一种做法）。
+2. case 里加专用分支：timeout 1800 bash "$script"（它是**冷构建**：cargo clean 6 个 cdylib crate
+   再编 native 与 wasm32 ⇒ 比普通判据的 120-300 秒慢得多）。
+
+验证：bash -n 通过；判据总数 73 → 74；用它所在分片跑（SHARD=28 SHARDS=74）⇒
+  → build-warnings-check.sh
+  ✓ build-warnings-check.sh
+  —— 通过 1｜意外失败 0｜已知红 0｜跳过 0
+即确实被枚举到且跑绿。
+
+下一步（差一步才算完整）：**变异验证**。这条判据的存在理由是"有警告就红"，
+所以要按第 1129 轮的纪律**直接跑**一次变异：人为在某处产生一条 warning（例如用 #[deprecated] 项），
+断言判据变红；然后逐字节还原。它很慢（冷构建），所以单独安排。
+
+## 第 1132 轮：(B)④ 变异验证成功，(B)④ 完整闭合
+
+变异方式：在 crates/yanshi-medium-oil/src/lib.rs 末尾加一个**未使用**的函数
+  fn mutation_warning_probe() -> u32 { 12345 }
+它必然产生 dead_code 警告（两个 target 都会）。
+
+直接跑判据（按第 1129 轮的纪律：变异验证必须在**直接跑**的路径上做）：
+  EXIT=1（**红 ✓**），读数：
+    native：警告 2 条（须为 0）
+        warning: function `mutation_warning_probe` is never used
+        651 | fn mutation_warning_probe() -> u32 { 12345 }
+        warning: `yanshi-medium-oil` (lib) generated 1 warning
+    wasm32：警告 2 条（须为 0）
+        （同样的两行）
+    ✗ 构建警告上限：有警告（或构建失败）⇒ 判据红 ✗
+所以：判据**确实能红**，而且失败信息**落在被判条件上**（不是别的副作用）。
+
+还原：cp 回备份 ⇒ `git diff` 为空、与 HEAD **逐字节一致**；再跑 ⇒ EXIT=0，
+读数回到 "native：警告 0 条 / wasm32：警告 0 条 / ✓ 冷构建两个 target 都是 0 条警告"。
+
+(B)④ 状态：**完整闭合** ——
+  ① 判据已实现（冷构建、两个 target、grep '^warning' 必须为 0）；
+  ② 已接进 run-criteria.sh（枚举显式加入 ＋ 1800 秒专用超时）；
+  ③ 在套件里实测绿；
+  ④ 亲手变异验证能红，并逐字节还原。
+"6 条 cdylib 噪声"这个前提在本机能查到的范围内始终复现不出来（冷构建 0 条），
+所以这一项的价值落在"守住零警告"这条回归线上，而不是"消掉那 6 条"。
+
+## 第 1133 轮：离线笔刷分支的合并失败与回退（如实记录）
+
+子代理交付（/tmp/wt-offlinepaint，分支 feat/offline-brush-kernel，提交 fbfcf83）的核心成果是好的：
+- 离线普通笔刷作画成功；在线 vs 离线同一笔触 **307200 vs 307200 字节，不同 0 字节，最大通道差 0**；
+- 离线出墨 0 ⇒ 3285；内核 head_seq 1→2、blobs 0→1、serverBlits 0；
+  CDP 观测离线期间 brush_stroke 请求 = 0（所以确实由本地内核完成）；
+- 设计选择：offline fallback（不是统一），理由是服务端路径还负责读画布笔刷、duotone、选区裁剪、style、source；
+- 额外修掉两个真 bug：① 本地 JSON 缓存键忽略请求体 ⇒ 离线笔刷面板列出的是纹理文件名，用户选不到笔；
+  ② blob_put 在 wasm32 上 panic（put ⇒ now_ms ⇒ SystemTime::now）⇒ 内核对象被毒化成"递归使用"。
+- 并修正 browser-offline-shell 的两处判据侧错误：①"不透明像素"永远不可能满足（底色完全不透明，
+  所以 76800 => 76800 恒等）；② points 是在 pointerup 之后读的，而它设计上会被清空。
+  它也实测 spaceHeld 为 false，所以"事件被平移吃掉"这个假设不成立（我此前的判断需要撤回）。
+
+但我独立验三步验证时发现两个阻断问题，因此**合并已回退**：
+1. **它的分支有 1 个失败测试**：`cargo test --workspace` ⇒ exit 101，36 组 ok、**1 组 FAILED**：
+   `host_only_time_apis_are_explicitly_accounted_for ... FAILED`。
+   几乎肯定是 blob_put 的改法（put ⇒ put_at(bytes,0)）与仓库既有的"宿主时间 API 守卫"冲突。
+   而它的报告说门禁全绿 —— 以我这边实测为准，所以已让它重跑并说明。
+2. **已知红净增**：合并后 criteria-known-red.txt 从 48 条变成 54 条（它移出了 shell，
+   但又多出 6 条）。净增不可接受，已让它定位是哪六条、为什么。
+3. 另外，合并时 `docs/design/implementation-notes.md` 冲突，我的脚本用 `--theirs` 解决，
+   那会**丢掉 main 上积累的记录**（它的 diff 显示该文件被删掉约两百行）。这也是回退的原因之一。
+   已要求它以后**追加**自己的轮次到文件末尾，不要重写该文件。
+
+回退动作与结果：`git reset --hard a1573dc` ⇒ HEAD 与远端 main 一致、工作树干净、
+已知红回到 48 条、门禁 133 组全绿。它的分支与提交都保留（成果没丢）。
+
+## 第 1134 轮：(B)① 审计——示例覆盖已达 138/141，目标里"57 条"是过期数字
+
+实测（有出处）：
+1. 示例表在 crates/yanshi-server/src/tools.rs:14320，是 `pub const TOOL_EXAMPLES: &[(&str, &str)]`，
+   形如 `("tool", …)` 的条目 130 条。
+2. 用脚本统计：注册工具 **141** 个，其中有示例的 **138** 个 ⇒ 只有 **3 个**没有示例：
+   - `delete_document`
+   - `import_psd`
+   - `set_reference`
+3. 已有一条判据在遍历这张表（tools.rs:14756 `for (name, example) in super::TOOL_EXAMPLES`），
+   但它现在是绿的 ⇒ 说明它检查的是"示例能被解析/能对上工具"，而**不是**"每个工具都有示例"。
+
+结论：
+- 目标描述里"示例覆盖面继续扩（现 57 条）"这个前提**已经过期**（和 (B)③ 一样属于我转述的旧状态）。
+  现状是 138/141，只差 3 个。
+- 可执行的净收益有两件：① 给那 3 个工具补示例（它们都值得有：删除文档、导入 PSD、参考图，
+  都是"用户会问怎么用"的工具）；② 把判据从"示例可用"**加强**到"覆盖完整"
+  （断言 TOOL_EXAMPLES 覆盖全部注册工具），这样新加工具时不会静默地没有示例。
+
+下一步：先写"覆盖完整"这条判据（它会立刻因为那 3 个而红 ⇒ 天然能红、天然有目标），
+再补那 3 个示例让它变绿。这符合"判据先行、且判据必须能红"的要求。
+
+## 第 1135 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
 
 ### 设计选择：**离线回退**，不是"统一走内核"
 
