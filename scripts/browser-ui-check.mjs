@@ -1786,11 +1786,22 @@ const jumpUndoResult = await evaluate(`(async () => {
   for (let i = 0; i < 60; i += 1) {
     await new Promise((r) => setTimeout(r, 100));
     jumped = ${canvasFingerprint};
-    if (jumped !== before) break;
+    // 第 1006 轮：原来写的是 if (jumped !== before) break ✗ ——
+    // 而 canvasFingerprint 每次返回**新对象** ⇒ 引用比较**永远为真** ⇒ 它**第一次（100ms）就 break** ✗
+    // ⇒ 画面多半还没变 ⇒ 后面 :2313 比 jumped.sum 与 before.sum 相等 ⇒ 报「用例无效」✓。
+    // ⇒ 改成比**数值字段**（sum 与 ink）✓，且**两个都相同**才继续等 ✓。
+    if (jumped.sum !== before.sum || jumped.ink !== before.ink) break;
   }
   document.querySelector('button[data-tool="undo"]').click();
-  await new Promise((r) => setTimeout(r, 2200));
-  const undone = ${canvasFingerprint};
+  // 第 1007 轮：原来是**固定等 2200ms** ✗ ⇒ 实测报「撤销「回到此处」没有生效（画布与跳转后完全一致）」✓
+  // ⇒ 与上面那段同一个毛病（"等时长"而不是"等条件"✓，第 629 轮的教训只落到了前一处 ✗）。
+  // ⇒ 改成轮询到画面**真的变了**为止（**比数值字段 ✓，不比对象引用 ✓**，上限约 6 秒 ✓）。
+  let undone = jumped;
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise((r) => setTimeout(r, 100));
+    undone = ${canvasFingerprint};
+    if (undone.sum !== jumped.sum || undone.ink !== jumped.ink) break;
+  }
   return { ok: true, jumped, undone };
 })()`);
 // **第二次求值**读行数（第 727 轮）：上一次我**往页模板里加代码**做诊断，
