@@ -80,7 +80,9 @@ proptest! {
         }
         let incremental = folder.fold_head(&scenario.log).unwrap();
         let full = state_at(&scenario.log, scenario.log.head_seq(), &mut StateAtCache::new()).unwrap();
-        prop_assert_eq!(incremental.state.clone(), full.state.clone());
+        // **逐字段**比对：不只是状态 ⇒ 有效集（`suppressed`）与警告也必须一致
+        //（增量折叠曾只返回"本次区间"的有效集/警告，长日志下会与完整求值分歧）。
+        prop_assert_eq!(incremental.clone(), full.clone());
         prop_assert_eq!(full.state.clone(), scenario.final_state.clone());
     }
 

@@ -31,6 +31,7 @@
 use crate::atom::{payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind};
 use crate::error::{ErrorCode, ErrorContext, Result, YanshiError};
 use crate::ids::Seq;
+use crate::log::AtomLog;
 use crate::state::{
     Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Object, ObjectType,
     Selection, Style, Transform,
@@ -124,49 +125,161 @@ impl FoldEngine {
 
 /// 计算被有效 revert 撤销的原子集合（设计文档 5.3 有效集）。
 pub fn compute_suppressed(atoms: &[Atom]) -> BTreeSet<AtomId> {
-    /// 有效动作。
-    #[derive(Clone, Copy, PartialEq)]
-    enum Action {
-        Revert,
-        Reapply,
-    }
+    EffectiveActions::from_atoms(atoms).suppressed().clone()
+}
 
-    // 目标原子 id -> 作用于它的有效动作（seq 最大者，即最先在倒序扫描中遇到者）。
-    let mut latest_action: BTreeMap<AtomId, (Seq, Action)> = BTreeMap::new();
-    let mut suppressed = BTreeSet::new();
+/// 有效集里的一个动作（设计文档 5.3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevertAction {
+    /// `revert`：目标原子失效。
+    Revert,
+    /// `reapply`：目标原子恢复生效。
+    Reapply,
+}
 
-    for atom in atoms.iter().rev() {
-        let existing = latest_action.get(&atom.id).copied();
-        match atom.kind {
-            AtomKind::Revert => {
-                // revert 自身被更晚的有效 revert 撤销时失效（revert(revert(x)) ≡ reapply(x)）。
-                let effective = !matches!(existing, Some((_, Action::Revert)));
-                if effective {
-                    if let Some(target) = atom.target_atom() {
-                        latest_action
+/// **可增量前推**的有效动作表（设计文档 5.3 有效集）。
+///
+/// 语义与 [`compute_suppressed`] **逐位一致**（后者现在就是它的薄封装），
+/// 但它额外保留"目标原子 → seq 最大的生效动作"这张表，因此日志**尾部追加**
+/// 时只需处理新增区间：新增原子的 `seq` 严格更大，不可能被既有动作指向。
+///
+/// 为什么需要它：`IncrementalFolder` 原先一遇到"`revert` 指向旧区间"就退回
+/// **从 0 全量重放**（见 `seq` 模块的历史注释）。有了这张表，前推就能先算出
+/// "到底哪些原子的撤销状态真的变了"，只在**变化确实影响折叠结果**时才回退，
+/// 并且回退也能从还原点续折而不是从 0 重来。
+///
+/// 唯一的例外是"撤销撤销"（动作的目标本身是 `revert`/`reapply`）：那时级联长度不定
+/// （`revert(revert(x)) ≡ reapply(x)` 会继续影响 x 的目标），[`Self::extend`] 返回
+/// `None`，调用方整表重算即可 —— 这条路径正确但与增量无关。
+#[derive(Debug, Default, Clone)]
+pub struct EffectiveActions {
+    /// 目标原子 → (seq 最大的生效动作的 seq, 动作)。
+    actions: BTreeMap<AtomId, (Seq, RevertAction)>,
+    /// 被有效 revert 撤销的原子。
+    suppressed: BTreeSet<AtomId>,
+}
+
+impl EffectiveActions {
+    /// 整表重算（与 [`compute_suppressed`] 同一趟倒序扫描）。
+    pub fn from_atoms(atoms: &[Atom]) -> Self {
+        let mut effective = Self::default();
+        for atom in atoms.iter().rev() {
+            match atom.kind {
+                AtomKind::Revert => {
+                    // revert 自身被更晚的有效 revert 撤销时失效（revert(revert(x)) ≡ reapply(x)）。
+                    let revert_of_revert = matches!(
+                        effective.actions.get(&atom.id),
+                        Some((_, RevertAction::Revert))
+                    );
+                    if revert_of_revert {
+                        effective.suppressed.insert(atom.id.clone());
+                    } else if let Some(target) = atom.target_atom() {
+                        effective
+                            .actions
                             .entry(target.to_owned())
-                            .or_insert((atom.seq, Action::Revert));
+                            .or_insert((atom.seq, RevertAction::Revert));
                     }
-                } else {
-                    suppressed.insert(atom.id.clone());
                 }
-            }
-            AtomKind::Reapply => {
-                // reapply 不是 revert 的合法目标（5.4），永远有效。
-                if let Some(target) = atom.target_atom() {
-                    latest_action
-                        .entry(target.to_owned())
-                        .or_insert((atom.seq, Action::Reapply));
+                AtomKind::Reapply => {
+                    // reapply 不是 revert 的合法目标（5.4），永远有效。
+                    if let Some(target) = atom.target_atom() {
+                        effective
+                            .actions
+                            .entry(target.to_owned())
+                            .or_insert((atom.seq, RevertAction::Reapply));
+                    }
                 }
-            }
-            _ => {
-                if matches!(existing, Some((_, Action::Revert))) {
-                    suppressed.insert(atom.id.clone());
+                _ => {
+                    if matches!(
+                        effective.actions.get(&atom.id),
+                        Some((_, RevertAction::Revert))
+                    ) {
+                        effective.suppressed.insert(atom.id.clone());
+                    }
                 }
             }
         }
+        effective
     }
-    suppressed
+
+    /// 在尾部追加一批 `seq` 严格更大的原子；返回**撤销状态发生变化**的原子 id。
+    ///
+    /// `origin` 是当前求值起点：只有位于 `origin` 之后的原子才可能被撤销
+    /// （模块级约定：`revert`/`reapply` 的目标必须晚于求值起点），因此这里只把
+    /// 该区间内的目标记进有效集 —— 与 [`Self::from_atoms`] 作用在同一区间时等价。
+    ///
+    /// 返回 `None` 表示这批原子里出现了"撤销撤销"——它的目标是 `revert`/`reapply`
+    /// 本身，级联可能任意长，调用方应改用 [`Self::from_atoms`] 整表重算。
+    pub fn extend(&mut self, atoms: &[Atom], log: &AtomLog, origin: Seq) -> Option<Vec<AtomId>> {
+        // 先把这批动作筛成 `(目标, seq, 动作)`；顺带做"撤销撤销"体检。
+        let mut pending: Vec<(&str, Seq, RevertAction)> = Vec::new();
+        for atom in atoms {
+            if !matches!(atom.kind, AtomKind::Revert | AtomKind::Reapply) {
+                continue;
+            }
+            let Some(target) = atom.target_atom() else {
+                continue;
+            };
+            match log.get(target) {
+                // "撤销撤销"：目标本身是历史动作 ⇒ 目标自身的注册状态会级联变化。
+                Some(found) if matches!(found.kind, AtomKind::Revert | AtomKind::Reapply) => {
+                    return None;
+                }
+                // 跨起点撤销（提交期已被拒绝）⇒ 不影响有效集。
+                Some(found) if found.seq <= origin => continue,
+                // 目标不在日志里（非法日志）⇒ 同样不影响有效集。
+                Some(_) => {}
+                None => continue,
+            }
+            let action = if atom.kind == AtomKind::Revert {
+                RevertAction::Revert
+            } else {
+                RevertAction::Reapply
+            };
+            pending.push((target, atom.seq, action));
+        }
+
+        // "目标 → seq 最大者胜出"：倒序登记（先到先得），与 `compute_suppressed` 同一套次序。
+        pending.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        let mut changed: Vec<AtomId> = Vec::new();
+        for (target, seq, action) in pending {
+            if self.set_action(target, seq, action) {
+                changed.push(target.to_owned());
+            }
+        }
+        Some(changed)
+    }
+
+    /// 当前被有效 revert 撤销的原子集合。
+    pub fn suppressed(&self) -> &BTreeSet<AtomId> {
+        &self.suppressed
+    }
+
+    /// 指定原子当前的最新生效动作（没有则为 `None`）。
+    pub fn action_of(&self, atom_id: &str) -> Option<RevertAction> {
+        self.actions.get(atom_id).map(|(_, action)| *action)
+    }
+
+    /// 登记一个动作（seq 更大者胜出），返回目标的撤销状态是否因此翻转。
+    fn set_action(&mut self, target: &str, seq: Seq, action: RevertAction) -> bool {
+        if let Some((existing, _)) = self.actions.get(target) {
+            if *existing > seq {
+                return false; // 已经有一个更晚的动作胜出。
+            }
+        }
+        self.actions.insert(target.to_owned(), (seq, action));
+        let suppressed = action == RevertAction::Revert;
+        let was = self.suppressed.contains(target);
+        if suppressed == was {
+            return false;
+        }
+        if suppressed {
+            self.suppressed.insert(target.to_owned());
+        } else {
+            self.suppressed.remove(target);
+        }
+        true
+    }
 }
 
 /// 折叠一段原子：`base` 为起点状态，`atoms` 必须按 seq 升序。
@@ -175,6 +288,26 @@ pub fn compute_suppressed(atoms: &[Atom]) -> BTreeSet<AtomId> {
 /// 本函数只记录警告（见 [`crate::seq`]）。
 pub fn fold_atoms(base: DocumentState, atoms: &[Atom]) -> FoldResult {
     let suppressed = compute_suppressed(atoms);
+    fold_atoms_skipping(base, atoms, &suppressed)
+}
+
+/// 折叠一段原子，但**跳过调用方给出的撤销集合**。
+///
+/// 与 [`fold_atoms`] 的唯一区别是有效集由外面传进来：`compute_suppressed(atoms)`
+/// 只看得见这一段，而调用方（增量折叠器）持有**整条历史**的有效集。
+/// 逐原子前推时这一点是必需的 —— 否则 `revert` 找不到它撤销的目标（目标不在这一段里）。
+///
+/// `FoldResult::suppressed` 返回"传入集合 ∩ 这段原子"。
+pub fn fold_atoms_skipping(
+    base: DocumentState,
+    atoms: &[Atom],
+    suppressed: &BTreeSet<AtomId>,
+) -> FoldResult {
+    let suppressed: BTreeSet<AtomId> = atoms
+        .iter()
+        .filter(|atom| suppressed.contains(&atom.id))
+        .map(|atom| atom.id.clone())
+        .collect();
     let mut state = base;
     let mut warnings = Vec::new();
     let mut applied = Vec::new();
@@ -1590,6 +1723,156 @@ mod tests {
             result.state.objects["obj_1"].current_version.as_deref(),
             Some("a_super")
         );
+    }
+
+    /// 增量维护的有效动作表必须与整表重算**逐位一致**。
+    ///
+    /// 含"撤销撤销"（`revert(revert(x))`）——`extend` 对这类目标返回 `None`
+    /// （级联长度不定），此时调用方整表重算，这里也把那条路验一遍。
+    #[test]
+    fn effective_actions_extend_matches_full_scan() {
+        let mut full = chain();
+        push(
+            &mut full,
+            atom(
+                AtomKind::Supersede,
+                "a_super1",
+                json!({"object_id": "obj_1", "data": {"v": 2}}),
+            ),
+        );
+        push(
+            &mut full,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj2",
+                json!({"object_id": "obj_2", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Revert, "a_r1", json!({"target": "a_super1"})),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Reapply, "a_re1", json!({"target": "a_obj2"})),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Revert, "a_r2", json!({"target": "a_r1"})),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Revert, "a_r3", json!({"target": "a_obj2"})),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Reapply, "a_re2", json!({"target": "a_super1"})),
+        );
+        push(
+            &mut full,
+            atom(AtomKind::Revert, "a_r4", json!({"target": "a_doc"})),
+        );
+        let log = crate::log::AtomLog::with_atoms(full.clone()).unwrap();
+
+        // 每 2 个原子前推一次，与整表重算比对。
+        let mut incremental = EffectiveActions::default();
+        for chunk in full.chunks(2) {
+            if incremental.extend(chunk, &log, 0).is_none() {
+                // "撤销撤销"⇒ 调用方整表重算（这里重算到该 chunk 末尾）。
+                let upto = chunk.last().unwrap().seq;
+                incremental = EffectiveActions::from_atoms(log.atoms_upto(upto));
+            }
+            let upto = chunk.last().unwrap().seq;
+            let reference = EffectiveActions::from_atoms(log.atoms_upto(upto));
+            assert_eq!(
+                incremental.suppressed(),
+                reference.suppressed(),
+                "seq {upto} 处的撤销集合必须一致"
+            );
+        }
+        assert_eq!(
+            incremental.suppressed(),
+            &compute_suppressed(full.as_slice()),
+            "整条日志上也要与 compute_suppressed 一致"
+        );
+    }
+
+    /// 未生效（被撤销）的 revert 不登记自己的动作 —— `revert(revert(x)) ≡ reapply(x)`。
+    #[test]
+    fn effective_actions_track_revert_of_revert() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Supersede,
+                "a_super",
+                json!({"object_id": "obj_1", "data": {"v": 2}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_r1", json!({"target": "a_super"})),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_r2", json!({"target": "a_r1"})),
+        );
+
+        let actions = EffectiveActions::from_atoms(&atoms);
+        assert_eq!(actions.action_of("a_r1"), Some(RevertAction::Revert));
+        assert_eq!(
+            actions.action_of("a_super"),
+            None,
+            "r1 失效后不再登记它对 a_super 的动作"
+        );
+        assert!(actions.suppressed().contains("a_r1"));
+        assert!(!actions.suppressed().contains("a_super"));
+        assert_eq!(actions.suppressed(), &compute_suppressed(&atoms));
+    }
+
+    /// `fold_atoms_skipping` 在传入"由外面算出的有效集"时必须与 `fold_atoms` 等价。
+    #[test]
+    fn fold_atoms_skipping_matches_fold_atoms() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Supersede,
+                "a_super",
+                json!({"object_id": "obj_1", "data": {"v": 2}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_r1", json!({"target": "a_super"})),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj2",
+                json!({"object_id": "obj_2", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+
+        let direct = fold_atoms(DocumentState::empty(), &atoms);
+        let skipped =
+            fold_atoms_skipping(DocumentState::empty(), &atoms, &compute_suppressed(&atoms));
+        assert_eq!(direct.state, skipped.state);
+        assert_eq!(direct.suppressed, skipped.suppressed);
+        assert_eq!(direct.warnings, skipped.warnings);
+        assert_eq!(direct.applied, skipped.applied);
+
+        // 逐原子前推（增量折叠器建还原点走的就是这条路）也必须收敛到同一个结果。
+        let mut state = DocumentState::empty();
+        let mut warnings = Vec::new();
+        for a in &atoms {
+            let one = fold_atoms_skipping(state, std::slice::from_ref(a), &direct.suppressed);
+            state = one.state;
+            warnings.extend(one.warnings);
+        }
+        assert_eq!(state, direct.state, "逐原子前推必须与一次折完一致");
+        assert_eq!(warnings, direct.warnings);
     }
 
     #[test]
