@@ -832,6 +832,13 @@ const moveResult = await evaluate(`(async () => {
 // **移动后旧位置必须被清掉** ✓ —— 用户实测：移动后画布旧位置不刷新、留下残影 ✗
 //（缩略图整幅重绘所以正常 ✓）。根因是脏区规划只用**新**包围盒 ✗（`dirty_for_object` ✓），
 // 本用例因此直接量"旧包围盒里还有没有非背景像素" ✓，而不是只看对象属性 ✓。
+// 第 978 轮：判据其实**已经取了**移动前后的 bbox（`:808`/`:817` ✓），只是没打印。
+// 若两者不同 ⇒ 对象在 state 里确实移走了 ⇒ 残影出在渲染；若相同 ⇒ 移动没生效。
+try { (await import("node:fs")).appendFileSync("/tmp/yanshi-move-obs.txt",
+  JSON.stringify({ before: moveResult && moveResult.beforeBbox, after: moveResult && moveResult.afterBbox,
+    sameCount: !!(moveResult && moveResult.beforeBbox && moveResult.afterBbox &&
+      JSON.stringify(moveResult.beforeBbox) === JSON.stringify(moveResult.afterBbox)) }) + "\n");
+} catch (_) { /* 落盘失败不影响判据 */ }
 if (moveResult && moveResult.beforeBbox) {
   const [bx, by, bw, bh] = moveResult.beforeBbox;
   const region = { x: bx, y: by, w: Math.max(1, bw), h: Math.max(1, bh) };
