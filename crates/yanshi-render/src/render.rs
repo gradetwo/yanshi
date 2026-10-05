@@ -315,6 +315,8 @@ impl Renderer {
             probe_crop,
             probe_stage.stop(),
             (origin_x, origin_y, width, height),
+            stats.objects,
+            stats.objects_culled,
         );
 
         Ok(RegionRender {
@@ -1527,13 +1529,15 @@ mod stage_probe {
         crop: Duration,
         quantize: Duration,
         region: (i64, i64, u32, u32),
+        objects: usize,
+        culled: usize,
     ) {
         if enabled() {
             // **把「正在渲染的区域」也打出来** ✓（第 827 轮 ✓）：否则一行 `量化=167ms` 无从判断
             // 它对应的是"dirty 小区" ✗ 还是"全幅" ✓ —— 而这两者的修法完全不同 ✓。
             eprintln!(
-                "PROBE 区域={}x{}@{},{} 有背景={has_background} 填充={fill:?} 图层={layers:?} \
-                 合成={composite:?} 裁剪+存tile={crop:?} 量化={quantize:?}",
+                "PROBE 区域={}x{}@{},{} 对象={objects} 裁掉={culled} 有背景={has_background} \
+                 填充={fill:?} 图层={layers:?} 合成={composite:?} 裁剪+存tile={crop:?} 量化={quantize:?}",
                 region.2, region.3, region.0, region.1
             );
         }
@@ -1568,6 +1572,8 @@ mod stage_probe {
     /// 空报告。
     pub fn report(
         _region: (i64, i64, u32, u32),
+        _objects: usize,
+        _culled: usize,
         _has_background: bool,
         _fill: Duration,
         _layers: Duration,
