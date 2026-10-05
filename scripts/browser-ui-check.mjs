@@ -896,8 +896,15 @@ const namingResult = await evaluate(`(async () => {
   let serverSourceDocProbe = null;
   // **先看清 state.token 长什么样**（第 942 轮）：服务端说它必须是 64 位小写十六进制，
   // 所以要量出长度与首尾，而不是继续猜它取自哪里。
-  const tokenProbe = (function () { const t = String(window.yanshi.state().token || "");
-    return { len: t.length, head: t.slice(0, 8), tail: t.slice(-4) }; })();
+  // **两个来源同时量**：state().token 可能根本不存在（state() 有两处定义），
+  // 而 yanshiStats.token 是页面从 url 参数记下来的那一个。二者一比，
+  // 就能分清"我读错了对象"与"这个文档真的没有令牌"。
+  const tokenProbe = (function () {
+    const a = String((window.yanshi.state() || {}).token || "");
+    const b = String((window.yanshiStats || {}).token || "");
+    return { stateTokenLen: a.length, statsTokenLen: b.length,
+      statsHead: b.slice(0, 8), statsTail: b.slice(-4),
+      stateKeys: Object.keys(window.yanshi.state() || {}).slice(0, 12).join(",") }; })();
   try {
     const r = await fetch("/api/tools/get_document?doc=" + window.yanshi.state().docId +
       "&token=" + window.yanshi.state().token, { method: "POST",
