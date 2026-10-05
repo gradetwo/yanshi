@@ -61,6 +61,14 @@ const rendered = await evaluate(`(() => ({
 }))()`);
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 console.log(`  ② 离线重载后：board=${rendered.board}｜标题=${rendered.title}｜正文长度>20=${rendered.hasShellText}`);
+// (A)② 的端到端判据 —— 断网后笔刷面板必须仍有选项。
+// 面板清单走服务端工具 list_assets ⇒ 若没有离线回退，下拉是空的 ⇒ 选不到笔 ⇒ 画不出来。
+const brushOptions = await evaluate(`(() => {
+  const select = document.getElementById("brush");
+  if (!select) return -1;
+  return select.options.length;
+})()`);
+
 const failures = [];
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
@@ -68,6 +76,10 @@ if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页
 // **必须显式退出** ✗ —— 第一版成功时"自然走到结尾" ✗，而 WebSocket 让事件循环不退出 ✓
 // ⇒ 外层 `timeout` 把它当超时（exit 124 ✓）⇒ **红绿分不开** ✗（这是判据的致命问题 ✓）。
 socket.close();
+if (brushOptions < 1) {
+  failures.push(`断网后笔刷面板没有选项（options=${brushOptions}）⇒ 选不到笔 ⇒ 离线画不了`);
+}
+
 if (failures.length) { console.log(`  ✗ 离线外壳未达成：${failures.join("；")}`); process.exit(1); }
 console.log("  ✓ 离线外壳达成：断网后页面仍能打开并渲染");
 process.exit(0);
