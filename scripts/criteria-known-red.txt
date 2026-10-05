@@ -61,4 +61,4 @@ kernel-brush-parity.mjs  # **类型：跑不完（超时）** ✗ —— 不是�
 #     （**3/199 = 1.5%** ⇒ "样本通过"被读成"性质成立" ✗）⇒ **宁可红着、如实登记** ✓。
 #   * **转绿条件** ✓：① `tool-paint-memory.mjs` 的成本比 ≤1.2× ✓（缩略图改走 tile 缩放 ✓，
 #     可行性已在第 838 轮证实 ✓）；② 差异消失 ⇒ **两条一起移出名单** ✓。
-browser-offline-shell（离线可画｜判据已修成能红｜实测红：断网后 #brush 只有 1 个内置选项 ⇒ 拿不到笔刷清单 ⇒ 选不到笔；已排除"没编译"与"只写在 catch 里"两种原因 ⇒ 下一步查"离线重载时 refreshBrushOptions 是否被调用"）
+browser-offline-shell（离线可画｜判据已修成能红｜实测红：断网后 #brush 只有 1 个内置选项；已排除 ① 没编译 ② 只写在 catch 里 ③ 结果为空才回退 ④ callTool 挂起（已加 1.5s 超时仍无效）⇒ 下一步查「离线时 refreshBrushOptions 是否被调用」：调用点在 setupBrushLibrary 与 reportServerUnreachable）
