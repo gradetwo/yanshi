@@ -5375,7 +5375,12 @@ async function refreshPreview(fromKernel = false) {
       const resized =
         !state.docSize || state.docSize.w !== natural.w || state.docSize.h !== natural.h;
       if (resized) {
-        state.docSize = natural;
+        // **不要用预览图尺寸改写文档尺寸**（第 990 轮）：`preview` 是**带尺寸参数生成**的位图 ✓，
+        // 它的 `naturalWidth` 在本机实测是 **474**，而文档宽是 **512** ✓ ⇒ 一旦写进去，
+        // 所有以 `state.docSize` 为文档尺寸的换算（如 `localPoint` ✓）都会**系统性偏小** ✗ ——
+        // 实测位移 95 vs 期望 102.7 ⇒ 判据红 ✓（**14 轮追查的终点 ✓**）。
+        // 文档尺寸的权威来源是**服务端元数据** ✓（下面 `:1478` 一带由服务端尺寸覆盖 ✓）；
+        // 这里只保留"文档换了尺寸就归位缩放"这个**原意** ✓（`state.zoom = 1` ✓）。
         state.zoom = 1;
       }
       clampViewport();

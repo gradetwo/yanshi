@@ -830,7 +830,13 @@ const moveResult = await evaluate(`(async () => {
   // 判据的期望是 0.2 × 512（文档边长），而这只有在「画布 1:1 对应文档」时才等于指针位移。
   const p0 = at(0.3, 0.3);
   const p1 = at(0.5, 0.4);
+  // 第 991 轮：三个量一起打出来 —— 位移偏小的公式里到底哪一个量不对。
+  // 本段在模板内，注释里也不能出现反引号或美元加大括号。
   return { beforeBbox, afterBbox, log: document.getElementById("log").innerText,
+    scaleProbe: { boardW: board.width, rectW: Math.round(rect.width),
+      docW: window.yanshi.state().docSize && window.yanshi.state().docSize.w,
+      ratioUsedByProduct: board.width / rect.width,
+      ratioDocOverRect: (window.yanshi.state().docSize && window.yanshi.state().docSize.w || 0) / rect.width },
     rectSize: { w: Math.round(rect.width), h: Math.round(rect.height) },
     pointerDelta: { x: Math.round(p1.clientX - p0.clientX), y: Math.round(p1.clientY - p0.clientY) } };
 })()`);
@@ -860,7 +866,7 @@ if (moveResult && moveResult.beforeBbox) {
 try {
   const moved = String((moveResult || {}).log || "").split("\n").filter((line) => line.includes("已移动")).slice(-1)[0] || null;
   (await import("node:fs")).appendFileSync("/tmp/yanshi-moveobs.txt",
-    JSON.stringify({ sentLog: moved, bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] }, rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta }) + "\n");
+    JSON.stringify({ sentLog: moved, bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] }, rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta, scaleProbe: moveResult.scaleProbe }) + "\n");
 } catch (_) { /* 落盘失败不影响判据 */ }
 try { (await import("node:fs")).appendFileSync("/tmp/yanshi-disp-obs.txt",
   JSON.stringify({ rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta,
