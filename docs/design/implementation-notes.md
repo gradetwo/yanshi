@@ -28544,3 +28544,24 @@ run 37248735096（`bad0905` ✓）：✗ **wasm smoke (node)** ✗ ← **硬 job
 · **`path_edit` 的 summary 已过时** ✗：写着"只实现 reverse/close/join" ✗，实际已有 **merge/split/boolean** ✓；
 · **`compare_with_reference` 挂错位置** ✗（声明在 `gradient_fill` ✓、消费在 `read_analyze_region` ✓）⇒ **已登记 ✓**；
 · **Web 能调 78 个工具，其中 44 个默认 MCP 看不到** ✗ ⇒ 「**人能，Agent 默认不能**」✓ ⇒ **待用户决策 ✓**。
+
+## 🎯 第 868 轮：**修 `browser-brush-preview-local` 的判据侧 bug（`.src` 是绝对 URL ✗）** ✓
+
+**它是怎么浮出来的** ✓：**子代理**做三方对齐表时，用 CDP **实测**了页面 ✓：
+```
+`rows=199 / local=0 / dataUrls=199` ✓ ｜ `getAttribute('src')=/brush-previews/…` ✓、`.src=`**绝对 URL** ✗
+而看板文件 `:54` 用的是 `(imgOf(row).**src**).startsWith("/brush-previews/")` ✗ ⇒ **恒不匹配 ⇒ 恒红** ✗
+⇒ ⇒ 而 `:51` 的注释**早就写着**「因此恒红」✓ ⇒ ⇒ **不是"不知道"，是"判据与产品信号不一致"** ✗ ✓
+```
+**修法（一行 ✓）**：`imgObj(row).src` ⇒ **`getAttribute("src")`** ✓（相对串 ✓，`/brush-previews/…` ✓）。
+```
+预期 ✓：修后 `fromFiles` 应为 **199** ✓（产品侧 `brushPreviewsFromFiles=199` ✓）⇒ **这条可能转绿** ✓
+⇒ ⇒ **若转绿 ⇒ 从 `criteria-known-red.txt` 移出** ✓（**这正是"先红后绿"该有的闭环 ✓**）。
+```
+**⚠️ 如实边界** ✗：**这条是 `browser-*` 判据** ✓ ⇒ 要 **chromium** 才能跑 ✓
+⇒ **我的余量不足以在本地跑它** ✗ ⇒ **所以"是否真转绿"由 CI / 下次跑浏览器判据时确认 ✓**，
+   而**我改了的那一行**是**子代理 CDP 实测支持**的 ✓（**不是我猜的 ✓**）。
+**★ 一条** ✓：**"已知红的理由"会过时** ✗ ——
+本条的理由写着"产品没产出 `data-preview-source`" ✓，而**实测**发现红的原因是
+**判据自己的属性比较写错** ✗ ⇒ ⇒ **已知红名单要定期用"实测"重新核对理由** ✓ ✓
+（**否则名单会变成"借口清单"** ✗ —— 与本会话前半"3/199 支笔刷"那次同族 ✓。）
