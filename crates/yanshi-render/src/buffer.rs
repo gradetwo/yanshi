@@ -372,6 +372,35 @@ impl Buffer {
             }
         }
     }
+
+    /// **就地把本缓冲改写为指定尺寸/原点的全透明缓冲**（缓冲池复用路径）。
+    ///
+    /// 与 [`Buffer::new`] 的唯一区别是**不新建底层分配**（容量够时 `Vec` 原地复用）：
+    /// `clear` + `resize(len, 0.0)` 会把新长度的**每一个元素**都写成 `0.0`
+    /// ⇒ 起点与 `vec![0.0; len]` 完全相同 ✓（判据 `buffer_pool_matches_fresh...` 逐字节比对）。
+    pub fn reset(&mut self, origin_x: i64, origin_y: i64, width: u32, height: u32) {
+        self.origin_x = origin_x;
+        self.origin_y = origin_y;
+        self.width = width;
+        self.height = height;
+        let len = width as usize * height as usize * 4;
+        // 先清空再按新长度填充：`resize` 从 len = 0 长到 len ⇒ **每个元素都被写入 0.0**。
+        // 容量足够时 `Vec` 不会重新分配 ⇒ 这正是池化的收益来源。
+        self.pixels.clear();
+        self.pixels.resize(len, 0.0);
+    }
+
+    /// 底层分配的**像素容量**（≥ [`Buffer::len`]）。
+    ///
+    /// 缓冲池据此做 best-fit：把大分配降级给小请求后，容量不丢 ⇒ 后续大请求仍能复用它。
+    pub fn capacity_pixels(&self) -> usize {
+        self.pixels.capacity() / 4
+    }
+
+    /// 底层分配的**字节容量**（缓冲池的字节上限按它记账）。
+    pub fn capacity_bytes(&self) -> usize {
+        self.pixels.capacity() * std::mem::size_of::<f32>()
+    }
 }
 
 #[cfg(test)]

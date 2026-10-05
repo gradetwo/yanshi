@@ -85,6 +85,7 @@
 pub mod blend;
 pub mod brush;
 pub mod buffer;
+pub mod buffer_pool;
 pub mod color;
 pub mod curve;
 pub mod dirty;
@@ -109,6 +110,7 @@ pub mod tile;
 pub use blend::{blend_pixel, over, scale_alpha, BlendMode};
 pub use brush::{draw_stamp, stamp_stroke, BrushSpec, StrokeGeometry, StrokePoint};
 pub use buffer::Buffer;
+pub use buffer_pool::{BufferLease, BufferPool, BufferPoolStats};
 pub use color::{
     background_linear_premul, byte_to_linear, composite_over_background, composite_over_linear,
     composite_over_linear_with, linear_premul_to_u8x4, linear_premul_to_u8x4_with, linear_to_byte,

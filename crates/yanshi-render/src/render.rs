@@ -80,6 +80,14 @@ pub struct RenderStats {
     ///
     /// 与 [`Self::parallel_workers`] 一起证明并行路径被走到；串行路径下两者分别是 `1`/`0`。
     pub parallel_chunks: usize,
+    /// 本次渲染**新建**的图层缓冲个数（缓冲池的资源类判据用；**不是计时**）。
+    ///
+    /// 与 [`Self::layer_buffers_reused`] 一起构成"一次全幅渲染里分配 vs 复用"的语义证据：
+    /// 图层的层缓冲都来自 [`crate::buffer_pool::BufferPool`]，若每层都新建，这两项会是
+    /// `层数 / 0`——判据据此变红（而不是靠墙钟）。
+    pub layer_buffers_allocated: usize,
+    /// 本次渲染从缓冲池**复用**图层缓冲的次数（见 [`Self::layer_buffers_allocated`]）。
+    pub layer_buffers_reused: usize,
 }
 
 /// **一次渲染内共享的位图补丁缓存**（并行分块用）。
@@ -209,6 +217,11 @@ pub struct Renderer {
     /// 「同一份文档、两种模式」的可控路径，而不是靠机器核数碰运气（见
     /// `tests/tile_parallel.rs`）。
     max_workers: Option<usize>,
+    /// **图层缓冲池**（见 [`crate::buffer_pool`]）：复用图层缓冲的底层分配，
+    /// 消灭"每层重新分配 + 清零"（4K 单层约 132.7 MB，5 层每帧约 663 MB）。
+    ///
+    /// 池挂在渲染器上 ⇒ **跨帧复用**（同一渲染器的第二次渲染不再分配）。
+    buffer_pool: crate::buffer_pool::BufferPool,
 }
 
 impl Renderer {
@@ -235,6 +248,11 @@ impl Renderer {
         self.max_workers
     }
 
+    /// **图层缓冲池**（只读）：可开关池化、读分配/复用计数（判据与测量用）。
+    pub const fn buffer_pool(&self) -> &crate::buffer_pool::BufferPool {
+        &self.buffer_pool
+    }
+
     /// 以 tile 网格构造（默认缓存预算 64 MiB）。
     pub fn new(grid: TileGrid) -> Self {
         let budget = 64 * 1024 * 1024;
@@ -245,6 +263,7 @@ impl Renderer {
             options: RenderOptions::default(),
             only_layer: None,
             max_workers: None,
+            buffer_pool: crate::buffer_pool::BufferPool::new(),
         }
     }
 
@@ -257,6 +276,7 @@ impl Renderer {
             options: RenderOptions::default(),
             only_layer: None,
             max_workers: None,
+            buffer_pool: crate::buffer_pool::BufferPool::new(),
         }
     }
 
@@ -381,6 +401,8 @@ impl Renderer {
             stats.layers = chunk_stats.layers;
             stats.objects = chunk_stats.objects;
             stats.objects_culled = chunk_stats.objects_culled;
+            stats.layer_buffers_allocated = chunk_stats.layer_buffers_allocated;
+            stats.layer_buffers_reused = chunk_stats.layer_buffers_reused;
             stats.unsupported.extend(chunk_stats.unsupported);
             stats.parallel_workers = chunks;
             stats.parallel_chunks = chunks;
@@ -501,7 +523,15 @@ impl Renderer {
             }
             stats.layers += 1;
             let mut probe_stage = stage_probe::Stage::start();
-            let mut layer_buffer = Buffer::new(origin_x, origin_y, width, height);
+            // **从池里取图层缓冲**（见 `crate::buffer_pool`）：归还即复用，消灭每层
+            // 132.7 MB 的重新分配 + 首次触碰（4K 5 层每帧约 663 MB）。
+            // 租约在本次迭代结束时 Drop ⇒ 本层的渲染与合成都用它，之后才归还。
+            let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
+            if layer_buffer.was_reused() {
+                stats.layer_buffers_reused += 1;
+            } else {
+                stats.layer_buffers_allocated += 1;
+            }
             self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;
             apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
             probe.render += probe_stage.stop();
@@ -1914,6 +1944,9 @@ mod parallel_impl {
         for result in results {
             let (stats, track, probe) = result?;
             merged_stats.layers = merged_stats.layers.max(stats.layers);
+            // 缓冲取用计数**按块求和**（每块各自从池里取用；它跟 `layers` 不同，不是去重口径）。
+            merged_stats.layer_buffers_allocated += stats.layer_buffers_allocated;
+            merged_stats.layer_buffers_reused += stats.layer_buffers_reused;
             merged_track.merge(track);
             merged_probe.fill += probe.fill;
             merged_probe.render += probe.render;
