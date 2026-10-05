@@ -123,3 +123,24 @@ fn every_shell_entry_is_served_by_the_server() {
     }
     assert!(checked >= 6, "SHELL 至少应有 6 个 URL（实际 {checked}）");
 }
+
+/// **(A)② 离线回退的不变量** ✓：主脚本里出现的"离线清单"路径，**必须也在 SW 的 `SHELL` 里** ✓。
+///
+/// 为什么 ✓：回退本身若依赖一个**没被预缓存**的 URL ✗，那它**在离线时同样失败** ✗ ⇒
+/// 回退就是**假的** ✓（看起来写了、实际不工作 ✗）⇒ **∴ 必须有这条不变量 ✓**。
+///
+/// **变异判据** ✓：把 `SHELL` 里的 `/brush-previews/index.json` 删掉 ⇒ 红 ✓。
+#[test]
+fn the_offline_fallback_manifest_is_itself_precached() {
+    let app = read("crates/yanshi-http/assets/viewer-app.js");
+    let sw = read("crates/yanshi-http/assets/service-worker.js");
+    let manifest = "/brush-previews/index.json";
+    assert!(
+        app.contains(manifest),
+        "主脚本应使用 {manifest} 作为离线回退清单 ✓"
+    );
+    assert!(
+        sw.contains(&format!("\"{manifest}\"")),
+        "回退清单 {manifest} **必须在 SHELL 里** ✓（否则回退在离线时同样失败 ⇒ 回退是假的 ✗）"
+    );
+}

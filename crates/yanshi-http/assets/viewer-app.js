@@ -6261,7 +6261,23 @@ async function refreshBrushOptions() {
   const select = $("brush");
   if (!select) return;
   try {
-    const listed = await callTool("list_assets", { kind: "brush" }, { refresh: false });
+    // **离线回退** ✓（(A)② 的最后一环 ✓）：`list_assets` 是**服务端工具** ✗ ⇒
+    // 服务端不在时它必然失败 ⇒ 面板**一个选项都没有** ⇒ 用户**选不到笔** ⇒ 画不出来 ✗。
+    // ⇒ 退回到**已随包、且已在 SW `SHELL` 里**的 `/brush-previews/index.json` ✓
+    //（它的 `files` 键就是笔刷文件名 ✓ ⇒ 足够把面板填起来 ✓）。
+    let listed = null;
+    try {
+      listed = await callTool("list_assets", { kind: "brush" }, { refresh: false });
+    } catch (error) {
+      const response = await fetch("/brush-previews/index.json");
+      const index = await response.json();
+      listed = {
+        assets: Object.keys(index.files || {}).map((file) => ({
+          name: file, usable: true, category: "其他",
+        })),
+      };
+      console.warn("离线：笔刷清单回退到 /brush-previews/index.json", error);
+    }
     const assets = (listed && listed.assets) || [];
     const keep = select.value;
     // **只留第一个"内置画笔"选项** ✓，其余重建 ✓（重复装载不会越堆越多 ✓）。
