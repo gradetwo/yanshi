@@ -35536,3 +35536,23 @@ Object.keys 看真键表）。
 
 注意：`service.rs` 与 `tools.rs` 是正在运行的两个子代理（离线笔刷、timings 拆阶段）都可能碰的文件，
 所以这一步要在它们合并之后再做，避免代码冲突。
+
+## 第 1142 轮：编排状态——两个子代理在跑，相关文件全部被占用
+
+事实（本轮核对）：
+- 子代理 9c4461a2（修 (A)⑥ 分支的三个阻断问题）与 6a7f57f3（timings 拆阶段）**都在 running**。
+- 它们涉及的文件覆盖了当前所有有价值的下一步：
+  viewer-app.js / viewer.rs（(A)⑥）与 tools.rs / service.rs（timings），
+  以及 scripts/browser-offline-shell.mjs（(A)⑥ 改过它的墨度量）。
+- 因此本轮**刻意不动产品代码**，只做只读核对与记录，避免制造代码冲突。
+  这与本会话早先的教训一致：并行时不要两个人改同一批文件。
+
+当前基线（可作合并后的对照）：磁盘可用与 /tmp 用量已核对；
+已知红 48 条；main 在工作树上干净；两个分支各自有提交（feat/offline-brush-kernel 与 perf/export-timings）。
+
+下一步（等它们返回后按顺序做）：
+1. 各自三步验证（独立门禁 ⇒ 我亲手变异（直接跑判据）⇒ 合并后门禁 + 推送）。
+2. (A)⑥ 合并时**留意它是否又重写 docs/design/implementation-notes.md**（上次因此回退）：
+   只接受**追加**，不接受覆盖。
+3. 合并完成后清 worktree（每个约 7-8 G）。
+4. 冲突解除后做 (A)④ 的 `.yanshi` 下载（tools.rs:13299 起，照抄 raw_url 的做法）。
