@@ -5619,7 +5619,15 @@ function redraw() {
 }
 
 function localPoint(event) {
-  const rect = board.getBoundingClientRect();
+  // 基准要锁定在一次拖动之内（第 995 轮）：实测拖动期间 rect.width 从 344 变成 354，
+  // 因为日志与状态面板刷新会让布局重排；而这里每个事件都重取，两次事件的换算基准不同，
+  // 于是位移被算错（实测 x 少 7%，y 恰好对，因为高度没变）。
+  // 改法：pointerdown 时重取并记住；同一拖动内的 move 与 up 一律用它。
+  // 只改这一处，所有 board 的 pointer 处理器都自动受益（本文件有多个 pointerdown 监听）。
+  if (event.type === "pointerdown" || !localPointRect) {
+    localPointRect = board.getBoundingClientRect();
+  }
+  const rect = localPointRect;
   // 画布内部像素 = 视口文档像素；再加视口原点得到文档坐标。
   // **压感** ✓（用户要求"创作时要把笔触压感用起来" ✓）：
   // 数位笔（`pointerType === "pen"`）给的是**随力度变化的 0..1** ✓ ⇒ 采用 ✓；
@@ -5703,6 +5711,8 @@ async function fillCurrentLayer() {
 /// 移动工具（设计 13.3 基础工具「移动」）：点击选中光标下最上层的对象，拖动后提交
 /// `move_object{object_id, delta:{dx,dy}}`（注意参数名是 **dx/dy**，不是 x/y ✓）。
 const MOVE_TOOL = "move_object";
+// 一次拖动内锁定的画布基准（第 995 轮）：由 localPoint 在 pointerdown 时刷新。
+let localPointRect = null;
 const MOVE_LAYER_TOOL = "move_layer";
 // 整层拖动状态（起点 + 目标图层 ✓）。
 let layerMoveState = null;
