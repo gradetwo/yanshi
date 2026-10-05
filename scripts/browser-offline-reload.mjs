@@ -76,7 +76,14 @@ await send("Runtime.enable"); await send("Page.enable"); await send("Network.ena
 const reload = async (offline) => {
   await send("Network.emulateNetworkConditions", { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await send("Page.navigate", { url });
-  await sleep(4000);
+  // **等到"页面就绪"这个独立信号** ✓（第 891 轮 ✓）：原来固定睡 4 秒 ✗ ⇒ 机器慢时间歇红 ✗。
+  // ⚠️ **等待条件与断言条件不同** ✗：`SAMPLER` 读的是**深色像素数** ✓，
+  //    这里只等 `readyState` 完成 ＋ `#board` 存在 ✓，再留 **800ms 有界沉降** 让首帧画完 ✓；
+  //    **"深色像素有多少"始终只由断言判** ✓ ✓。
+  for (let i = 0; i < 40; i++) {
+    await sleep(300);
+    try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("board")')) { await sleep(800); break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  }
   return await evaluate(SAMPLER);
 };
 
