@@ -42,10 +42,19 @@ const bodyProbe = `JSON.stringify((() => {
   const zh = /[\\u4e00-\\u9fff]/;
   const skip = (el) => el.closest("#log, pre, code, script, style, textarea, #langToggle, [data-i18n='off']");
   const found = new Map();
+  const where = [];
   const walk = (node) => {
     if (node.nodeType === 3) {
       const text = node.nodeValue.trim();
-      if (text && zh.test(text) && !skip(node.parentElement)) found.set(text.slice(0, 60), (found.get(text.slice(0, 60)) || 0) + 1);
+      if (text && zh.test(text) && !skip(node.parentElement)) {
+        const key = text.slice(0, 60);
+        found.set(key, (found.get(key) || 0) + 1);
+        // **第 926 轮：加观测看它到底在哪个元素里** ✓（**读数停滞时加观测** ✗，而不是继续猜 ✓）：
+        // 「页面里还有 1 条中文」✗ 而那条是 **API 的 JSON 响应** ✓ ⇒ **它在哪个容器 ⇒ 决定 skip 该怎么补** ✓。
+        const el = node.parentElement;
+        // ⚠️ **这里不能再用反引号/嵌套模板** ✗（第 926 轮踩了两次 ✓）：bodyProbe 本身就是模板字符串 ✓。
+        if (el) where.push("<" + el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.className ? "." + String(el.className).split(" ")[0] : "") + ">");
+      }
       return;
     }
     if (node.nodeType !== 1) return;
@@ -56,7 +65,7 @@ const bodyProbe = `JSON.stringify((() => {
   // 第 769 轮：labels 走 innerText（只含可见），而 distinct 走全节点遍历 ⇒ 口径不同。
   // 所以这里直接打印那个面板此刻是否可见，一次就能判断 palette:false 的含义。
   const cardPalette = document.getElementById("cardPalette");
-  return { distinct: found.size, sample: [...found.keys()].slice(0, 6),
+  return { distinct: found.size, where: where.slice(0, 6), sample: [...found.keys()].slice(0, 6),
     paletteVisible: !!(cardPalette && cardPalette.offsetParent),
     labels: { refresh: body.includes("Refresh"), palette: body.includes("Palette"),
       file: body.includes("File") } };
