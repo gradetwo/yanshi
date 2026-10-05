@@ -56,9 +56,12 @@ class of defect as a tool that accepts input and does nothing with it.
 ## Project packages
 
 `export_project` writes a `.yanshi` package: an uncompressed tar containing the append-only atom log, the document
-metadata, the content-addressed blobs the log references, and a render of the current head taken at export time. Any
-system `tar` can list and extract it. Use it instead of copying a document directory by hand, because the cached
-`render.png` on disk may be stale.
+metadata, the content-addressed blobs the log references, and a `blobs.encoding` manifest. Blob contents are
+zlib-packed with the same codec the local CAS uses, so the round trip is byte-exact and a package still reads back
+after being extracted under `--root`; by default a bitmap is omitted only when its recorded brush recipe provably
+replays byte-identical, and `include_bitmaps: true` ships every blob. No head render is included — that preview was
+96-97% of the bytes and is rebuildable from the log. Any system `tar` can list and extract it. Use it instead of
+copying a document directory by hand, because the cached `render.png` on disk may be stale.
 
 
 ## Medium texture and mixing

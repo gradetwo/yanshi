@@ -899,7 +899,27 @@ impl Renderer {
                     // 位图现在可以**存成 PNG** ✓（无损 ⇒ 渲染结果不变 ✓），
                     // 而 `image/x-yanshi-raw`（**旧工程 ✓**）走原路径 ✓
                     // ⇒ **∴ 向后兼容是硬要求 ✓**：那份 349 MB 的旧工程必须仍然能打开 ✓。
-                    let bytes = store.get(&blob)?;
+                    // **缺 blob ≠ 整幅渲染失败** ✓（判据见 `crates/yanshi-server/tests/export_small.rs` ✓）。
+                    //
+                    // **为什么不能 `?`** ✗：工程包可以**故意不带**"能证明重放得出来"的位图 ✓
+                    //（`export_project` ✓），导入端负责补回来 ✓；万一带不回来 ✓，
+                    // 用 `?` 会让**整幅渲染**直接失败 ✓ ⇒ 一个丢失的补丁让**整张画都出不来** ✗
+                    // —— 比"缺一块 + 一句告警"糟糕得多 ✓。
+                    //
+                    // **但绝不能静默** ✗：跳过必须进 `stats.unsupported` ✓（它一路进
+                    // `RenderedPreview.warnings` ✓ ⇒ 调用方看得见 ✓），而且要**说清缺哪个哈希/对象** ✓。
+                    // **也绝不能画错** ✗：这里**什么都不画** ✓（跳过 ✓），不是拿别的字节顶上 ✓。
+                    let bytes = match store.get(&blob) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            stats.unsupported.push(format!(
+                                "位图补丁缺少 blob ⇒ 这一块**没有画**（对象 {}，blob {blob}）：{error} \
+                                 —— 工程包可能省略了它而本地又重放不出来；画面因此可能不完整 ✓",
+                                object.id
+                            ));
+                            continue;
+                        }
+                    };
                     let (width, height, pixels) = if mime_type == PNG_MIME {
                         let (width, height, rgba8) = decode_png(&bytes).ok_or_else(|| {
                             YanshiError::new(
@@ -3203,10 +3223,21 @@ mod tests {
         assert!(out.stats.unsupported.is_empty());
     }
 
+    /// **缺一个 blob ⇒ 跳过那一块 + 告警，绝不让整幅渲染失败** ✓（工程包体积专题 ✓）。
+    ///
+    /// **为什么改了旧行为** ✗：以前这里是 `store.get(&blob)?` ✓ ⇒ 一个丢了的补丁
+    /// 会让**整张画都出不来** ✗ —— 而工程包可以**故意不带**能证明重放得出来的位图 ✓
+    /// （`export_project` ✓，导入/打开时补回来 ✓）；补不回来时正确的结果是
+    /// **"缺一块 + 一句说清缺了谁"** ✓，不是"什么都没有" ✗。
+    /// **但绝不能静默** ✗：告警必须进 `stats.unsupported`（它一路上 `RenderedPreview.warnings` ✓），
+    /// 而且**什么都不画** ✓（不是拿别的字节顶上 ✗）。
+    ///
+    /// **变异** ✓：把这里改回 `store.get(&blob)?` ⇒ 本条红 ✓。
     #[test]
-    fn missing_blob_surfaces_reference_not_found() {
+    fn missing_blob_is_skipped_with_a_warning_not_fatal() {
         let store = MemoryBlobStore::new();
         let mut state = white_document();
+        let missing = format!("sha256:{}", "b".repeat(64));
         state.objects.insert(
             "obj_patch".to_owned(),
             object(
@@ -3216,7 +3247,7 @@ mod tests {
                 0,
                 json!({
                     "bitmap": {
-                        "blob_hash": format!("sha256:{}", "b".repeat(64)),
+                        "blob_hash": missing,
                         "size": 16,
                         "mime_type": RAW_RGBA_MIME,
                     },
@@ -3226,8 +3257,24 @@ mod tests {
                 }),
             ),
         );
-        let error = renderer().render_document(&state, &store).unwrap_err();
-        assert_eq!(error.code, yanshi_core::ErrorCode::ReferenceNotFound);
+        let out = renderer()
+            .render_document(&state, &store)
+            .expect("缺一个补丁不该让整幅渲染失败");
+        // **告警必须说清缺的是哪一个** ✓（不静默 ✓）。
+        assert_eq!(
+            out.stats.unsupported.len(),
+            1,
+            "缺块必须留下恰好一条告警：{:?}",
+            out.stats.unsupported
+        );
+        assert!(
+            out.stats.unsupported[0].contains(&missing)
+                && out.stats.unsupported[0].contains("没有画"),
+            "告警要说清缺了哪个 blob、以及那一块没画：{:?}",
+            out.stats.unsupported
+        );
+        // **什么都没画** ✓：那一块保持白底 ✓（不是别的像素 ✓）。
+        assert_eq!(out.pixel(0, 0), Some([255, 255, 255, 255]));
     }
 
     #[test]
