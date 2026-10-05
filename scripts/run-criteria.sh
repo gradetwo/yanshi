@@ -8,6 +8,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PORT="${PORT:-13990}"
 CDP_PORT="${CDP_PORT:-9490}"
+# **必须导出** ✓（第 966 轮）：判据按约定读 process.env.CDP_PORT（:3 ✓），
+# 而普通赋值只对它自己可见 ✗ ⇒ 子进程看不到 ⇒ 判据会去连别的端口（第 964 轮实测：连到了服务端）。
+export CDP_PORT
 ROOT_DIR="$(mktemp -d)"
 PROFILE="$(mktemp -d)"
 KNOWN="$ROOT/scripts/criteria-known-red.txt"

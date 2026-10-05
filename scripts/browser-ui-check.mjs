@@ -21,20 +21,10 @@ const checkDeadline = () => {
     process.exit(3);
   }
 };
-// 第 963 轮：runner 是把端口作**第二个命令行参数**传进来的（run-criteria.sh:111 ✓），
-// 而这里原本只读 process.env.CDP_PORT ✗ ⇒ 两边协议不一致 ⇒ 判据去连了别的端口 ⇒
-// 结果是"没有正在打开被测地址的页面 ⇒ 复用 about:blank ⇒ CDP 超时"（第 960-962 轮实测）。
-// 第 964 轮：实测 argv[3] 可能是**整条 URL**（"http://127.0.0.1:13990"），也可能是纯端口，
-// 而后面是 `http://127.0.0.1:${debugPort}/json/list` ⇒ 直接拼就成了
-// "http://127.0.0.1:http://127.0.0.1:13990/json/list"（ERR_INVALID_URL，第 963 轮实测）。
-// 所以这里只取端口：纯数字直接用，URL 则解析出 port（都没有则退回环境变量/默认值）。
-const rawPort = process.argv[3] || process.env.CDP_PORT || "9333";
-const debugPort = (() => {
-  const text = String(rawPort).trim();
-  if (/^\d+$/.test(text)) return text;
-  try { const parsed = new URL(text.includes("://") ? text : "http://" + text); return parsed.port || "9333"; }
-  catch (_) { return "9333"; }
-})();
+// 第 966 轮：端口**只从环境变量读** —— 与 run-criteria.sh:3 的约定一致（"browser-*.mjs 读 CDP_PORT"）。
+// ⚠️ 第 963 轮我曾让这里接受 argv[3] ✗，而 `:73-74` 明写 browser-* 的 argv[3] 是 **server-base**
+// ⇒ 于是我把它当端口 ⇒ 连到了自家服务端 ⇒ 得到 object 而非数组（第 964-965 轮实测）。
+const debugPort = process.env.CDP_PORT || "9333";
 if (!url) {
   console.error("用法: node scripts/browser-ui-check.mjs <viewer-url>");
   process.exit(2);
