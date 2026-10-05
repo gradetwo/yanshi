@@ -74,7 +74,11 @@ try {
   const before = sample();
   const started = Date.now();
   let ok = 0;
+  // **每笔单独计时** ✓（第 825 轮 ✓ —— 这是 `needs` 里那条"对象数增长曲线" ✓）：
+  // 若成本随对象数累积 ✓，这条曲线会**单调上升** ✓；若只是首笔重建 ✓，它会**很快变平** ✓。
+  const perStroke = [];
   for (let i = 0; i < STROKES; i += 1) {
+    const strokeStarted = process.hrtime.bigint();
     // 每条笔触落在不同位置 ✓，避免"同一处重复覆盖"掩盖真实成本 ✓
     const x = 40 + (i % 16) * 26;
     const y = 40 + Math.floor(i / 16) * 26;
@@ -86,6 +90,14 @@ try {
         points: [[x, y, 0.4], [x + 40, y + 10, 0.8], [x + 80, y, 0.5]],
       } }) }).then((r) => r.json());
     if (reply && reply.ok) ok += 1;
+    perStroke.push(Number(process.hrtime.bigint() - strokeStarted) / 1e6);
+  }
+  console.log("  每笔墙钟耗时（ms ✓）：" + perStroke.map((v) => v.toFixed(0)).join(" "));
+  if (perStroke.length >= 4) {
+    const head = perStroke.slice(0, Math.ceil(perStroke.length / 3)).reduce((a, b) => a + b, 0) / Math.ceil(perStroke.length / 3);
+    const tail = perStroke.slice(-Math.ceil(perStroke.length / 3)).reduce((a, b) => a + b, 0) / Math.ceil(perStroke.length / 3);
+    console.log("  前 1/3 平均 " + head.toFixed(0) + " ms ⇒ 后 1/3 平均 " + tail.toFixed(0) + " ms" +
+      "｜比值 " + (tail / Math.max(1, head)).toFixed(2) + "×（**>1.5 ⇒ 随对象数累积** ✗）");
   }
   const wallSeconds = (Date.now() - started) / 1000;
   await sleep(500); // 让异步的缩略图/缓存落定 ✓
