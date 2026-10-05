@@ -36207,3 +36207,34 @@ B. 用报告里的工程包 parrot-4k-v3-fc33320.yanshi（6.9MB）实测：同�
    再决定是给这条 doc-test 加隔离还是收敛并行度。
 4. 无论哪种，都要能用一条能红的判据守起来；不许把它当成"反正重跑就绿"而长期放着，
    因为它是"红树"的来源，直接影响门禁可信度。
+
+## 第 1156 轮：抓到那条"偶发红"的真相——E0460 构建竞态，不是偶发
+
+上一轮我说"证据不足"，这一轮把失败全文抓到了（全量 cargo test --workspace，EXIT=101，123 组 ok、1 组失败）：
+
+    test crates/yanshi-mcp/src/lib.rs - (line 12) ... FAILED
+    ---- crates/yanshi-mcp/src/lib.rs - (line 12) stdout ----
+    error[E0460]: found possibly newer version of crate `yanshi_server` which `yanshi_mcp` depends on
+      --> crates/yanshi-mcp/src/lib.rs:12:1
+       = note: perhaps that crate needs to be recompiled?
+       = note: the following crate versions were found:
+               crate `yanshi_server`: /home/crow/yanshi/target/debug/deps/libyanshi_server-7772742633492866.rmeta
+               crate `yanshi_server`: /home/crow/yanshi/target/debug/deps/libyanshi_server-7772742633492866.rlib
+
+定性（三条都排除掉了别的解释）：
+1. **不是断言失败**：doc-test 的断言（输出含 protocolVersion 与 tools）没有报错；报的是编译器错误 E0460。
+   所以判据逻辑没问题，产品也没问题。
+2. **不是资源竞争**：这是 rustc 的版本判定错误，与内存/线程/临时目录无关。
+3. **是构建交错**：`cargo test --workspace` 会一边编译一边跑 doc-test（doc-test 由 rustdoc 驱动），
+   当它看到同一个 crate hash 的 `.rmeta` 与 `.rlib` 同时存在时，就判定"可能有更新的版本"⇒ E0460。
+   这也解释了为什么它"看起来偶发"：取决于编译与 doc-test 的交错时机；
+   而单独跑 `cargo test -p yanshi-mcp --doc` 时不编译别的 crate，所以永远是绿的。
+
+修法（已落地为门禁命令）：
+- 门禁改成**两步**：先 `cargo build --workspace --all-targets`（让编译彻底完成），
+  再 `cargo test --workspace`。这样不会出现"边编译边跑 doc-test"的交错。
+- 这条已写进 docs/skills/development.md，避免以后又把"红"当成偶发而重跑掩盖。
+
+教训（很重要）：**"重跑就绿"不等于偶发**。这次如果我继续按"偶发"处理，就会把一个
+**确定性的构建问题**长期留在门禁里，并让"门禁全绿"这句话贬值。
+正确做法就是本轮做的：抓到失败**全文**，再定性。

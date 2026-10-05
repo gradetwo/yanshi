@@ -150,3 +150,15 @@
 **代价**：浪费轮次，而且进度报告**双向失真**（既少报已完成，也误导优先级）。
 **要求**：任何"未做/待做"的判断，都要先有**一条当前代码或当前读数的证据**，
 不能凭上一轮的转述或记忆。判断"已完成"同样要给证据（文件 + 行号，或一次实测读数）。
+
+### 9.9 门禁要分两步：先 build，再 test（否则 doc-test 会偶发 E0460）
+**现象**：`cargo test --workspace` 间歇性报
+`error[E0460]: found possibly newer version of crate 'yanshi_server' which 'yanshi_mcp' depends on`，
+指向某个 doc-test；**单独**跑 `cargo test -p <crate> --doc` 却永远是绿的。
+**原因**：`cargo test --workspace` 会**一边编译一边跑 doc-test**（doc-test 由 rustdoc 驱动）。
+当 rustdoc 看到同一个 crate hash 的 `.rmeta` 与 `.rlib` 同时存在时，就判定"可能有更新版本" ⇒ E0460。
+**这不是偶发，也不是资源竞争，更不是判据或产品的问题。**
+**做法**：门禁分两步 —— 先 `cargo build --workspace --all-targets`（让编译彻底完成），
+再 `cargo test --workspace`。
+**教训**：**"重跑就绿"不等于偶发**。遇到间歇性失败，必须抓到失败**全文**再定性；
+否则会把确定性问题当成噪声，让"门禁全绿"这句话贬值。
