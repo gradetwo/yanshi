@@ -13364,12 +13364,18 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **"忽略可见性"是有意的** ✓ —— 导出某一层是明确要求 ✓（隐藏层也应当能导出 ✓）。
     // **注意它会绕过区域字节缓存** ✓：那张缓存的键里**没有图层** ✗ ⇒
     // 一旦误用就会把别的图层的像素当成这一层的 ✓（见 `render_region_raw_layer` 的说明 ✓）。
+    //
+    // **`render_ms` 从这里开始** ✓（导出路径的像素产出 ✓）：取像素是一段 ✓，
+    // 缩放是另一段 ✓（两段分别计时后累加 ✓ —— 同一个 `Instant` 不能记两次 ✗，
+    // 那会把同一段重复累计成两倍 ✓）。
+    let render_started = std::time::Instant::now();
     let (width, height, pixels) = match optional_str(args, "layer_id") {
         Some(layer_id) => ctx
             .workspace
             .render_region_raw_layer(&ctx.doc_id, region, &layer_id)?,
         None => ctx.workspace.render_region_raw(&ctx.doc_id, region)?,
     };
+    ctx.time(Phase::Render, render_started);
     // **落盘的图也必须把"被跳过的东西"带出去** ✗：这条路同样返回裸像素 ✓，
     // 缺块时**不能**默默写一张不完整的 PNG 却不提 ✓。
     let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
@@ -13420,18 +13426,28 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let scaled = if target_w == width && target_h == height {
         pixels
     } else {
-        yanshi_core::resample::resample_rgba(&pixels, width, height, target_w, target_h, filter)
-            .ok_or_else(|| {
-                YanshiError::new(
-                    ErrorCode::InvalidArgument,
-                    ErrorContext::detail(format!(
-                        "缩放失败 ✓（{width}×{height} ⇒ {target_w}×{target_h}）"
-                    )),
-                )
-            })?
+        // **缩放也算"产出要编码的像素"** ✓：它同样在 `render_ms` 里 ✓，
+        // 否则缩放型导出的这一段时间又会掉回残差 ✓（这里同样只记一次 ✓）。
+        let resample_started = std::time::Instant::now();
+        let resampled = yanshi_core::resample::resample_rgba(
+            &pixels, width, height, target_w, target_h, filter,
+        );
+        ctx.time(Phase::Render, resample_started);
+        resampled.ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "缩放失败 ✓（{width}×{height} ⇒ {target_w}×{target_h}）"
+                )),
+            )
+        })?
     };
     // `encode_png` 对**不可用的尺寸**返回 `None` ✓ ⇒ 按"参数不合法"报 ✓（`ErrorCode` 里没有 Internal ✓）。
-    let png = yanshi_render::png::encode_png(target_w, target_h, &scaled).ok_or_else(|| {
+    // **`png_ms` 只圈编码这一段** ✓（写文件与刷新缓存都留在残差里 ✓ —— 它们不是编码 ✓）。
+    let png_started = std::time::Instant::now();
+    let png = yanshi_render::png::encode_png(target_w, target_h, &scaled);
+    ctx.time(Phase::Png, png_started);
+    let png = png.ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(

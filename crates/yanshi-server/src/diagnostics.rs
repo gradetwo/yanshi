@@ -873,7 +873,7 @@ pub fn collect(workspace: &Workspace, request: &DiagnosticsRequest) -> Result<Di
             &json!({
                 "recent_tool_results": recent,
                 "max_records": MAX_TIMING_RECORDS,
-                "note": "阶段耗时的字段解释见 timings.rs：prep/raster/dirty/fold/log + other（残差），六项之和 = total_ms。",
+                "note": "阶段耗时的字段解释见 timings.rs：prep/raster/dirty/fold/log/render/png + other（残差），各相之和 = total_ms；render/png 只在导出路径非零。",
             }),
             MAX_TEXT_BYTES,
             &mut notes,
@@ -1368,7 +1368,7 @@ const ENTRY_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "timings.json",
-        "最近若干次工具调用的阶段耗时（prep/raster/dirty/fold/log/other）",
+        "最近若干次工具调用的阶段耗时（prep/raster/dirty/fold/log/render/png/other）",
     ),
     (
         "stderr.log",
