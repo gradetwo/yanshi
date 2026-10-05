@@ -81,7 +81,7 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true });
-await sleep(1600);
+// **睡眠已删** ✓（第 900 轮 ✓）：下面 waitFor 已在正确地等 ✓，且等不到会 exit ✓。
 consoleLines.length = 0;
 if (!(await waitFor("typeof window.yanshiFileMenu === 'object'", "查看器就绪"))) {
   process.exit(3);

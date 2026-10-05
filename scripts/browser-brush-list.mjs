@@ -79,7 +79,7 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true });
-await sleep(1600);
+// **睡眠已删** ✓（第 900 轮 ✓）：下面 waitFor 已在正确地等 ✓，且等不到会 exit ✓。
 // **从这里开始才算我们的** ✓ —— 浏览器标签里可能还留着**上一次运行**的旧页面 ✓
 //（实测：它留下的 `ReferenceError: setupBrushLibrary is not defined` 被算到了本轮头上 ✗）。
 consoleLines.length = 0;
