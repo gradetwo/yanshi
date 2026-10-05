@@ -81,7 +81,9 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true }); // **必须忽略缓存** ✓（见 scripts/README.md ✓）
-await sleep(1600);
+// ⚠️ **这里不需要固定睡眠** ✗（第 896 轮 ✓，**类别③：等待多余 ⇒ 直接去掉** ✓）：
+// **下一行已经在正确地等** ✓ —— `waitFor(… "查看器就绪")` ✓ 并且**等不到就 `exit(3)`** ✓
+//（**"等不到要有自己的失败信息"** ✓，正是要提倡的形态 ✓）⇒ 1.6 秒纯属多余 ✓，删掉它。
 if (!(await waitFor("typeof window.yanshi === 'object' && !!document.getElementById('board')", "查看器就绪"))) {
   process.exit(3);
 }
