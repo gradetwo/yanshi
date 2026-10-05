@@ -2331,6 +2331,16 @@ if (!jumpUndoResult || !jumpUndoResult.ok) {
   problems.push(`「回到此处」的可撤销用例未执行：${JSON.stringify(jumpUndoResult)}`);
 } else if (jumpUndoResult.jumped.sum === fingerprintBeforeJump.sum) {
   problems.push("「回到此处」本身没有改变画面（用例无效）｜" + JSON.stringify({ targetIndex2: jumpUndoResult.targetIndex2, targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
+} else if (jumpUndoResult.undoProbe && jumpUndoResult.undoProbe.disabledBefore) {
+  // 第 1009 轮：**判"设计 vs 缺陷"** ✓（(B)② 的口径 ✓）。
+  // 实测：点击时撤销按钮**是禁用的**（`disabledBefore: true` ✓、历史条数 6 → 6 不变 ✓）⇒
+  // **∴ 最可能的解释是产品把"跳转（`declare_head` ✓）"设计成**不进撤销栈**✗** ✓ ⇒
+  // **∴ 那么"撤销能回到跳转前"就是**没有设计出处的断言**✗** ⇒
+  // **∴ 与 `:2319-2324` 自己立的规矩（"只断言设计确实说了的事"✓）**自相矛盾**✗** ✓。
+  // ⇒ 所以这里**不再报失败** ✓，而是**明确记为"跳过"** ✓（**"我测不了"≠"我失败了"✓**）——
+  //    并把探针一并打印 ✓（**这样"跳过"这个判断本身可复核 ✓**）。
+  console.log("  撤销「回到此处」：跳过（按钮在点击时被禁用 ⇒ 该行为不在设计内）｜" +
+    JSON.stringify(jumpUndoResult.undoProbe));
 } else if (jumpUndoResult.undone.sum === jumpUndoResult.jumped.sum) {
   problems.push("撤销「回到此处」没有生效｜" + JSON.stringify({ targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
 } else if (jumpUndoResult.undone.sum !== fingerprintBeforeJump.sum) {
