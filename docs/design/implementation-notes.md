@@ -34887,3 +34887,21 @@ crates/yanshi-wasm/pkg（它自己在报告里说明了 worktree 里没有 wasm 
 或者用一次性的 user-data-dir 起浏览器，避免复用带旧缓存的 profile。
 
 下一步（明确）：在判据导航前 Unregister SW + 遍历 caches.delete，或用临时 profile，然后连跑三次确认稳定。
+
+## 第 1112 轮：离线写队列判据定位完成——根因是复用 profile 里的旧 Service Worker
+
+修法（判据侧）：导航后先注销所有 Service Worker、删掉所有 caches，然后 Page.reload(ignoreCache)，
+再等 document.readyState 完成，最后等 window.yanshi 的方法就绪。
+
+结果：通过 1，意外失败 0，已知红 0（单次）。随后连跑三次确认（见本轮结论）。
+
+根因（最终）：
+1. 服务端发出的资产是新的（curl 页面含 discardOutbox）；语法也 OK（node --check 两块都过）。
+2. 浏览器里脚本执行到底（全局阶梯全在），但 window.yanshi 的真实键只有 18 个旧键
+   （state/setColor/…/setTool），没有 outbox 那五个。
+3. 所以浏览器执行的是旧外壳。清掉 SW 与 caches 后立刻转绿 ⇒ 定案。
+
+更正：第 1110 轮我把它判成"产品侧接线缺口"，那是错的。产品代码从头到尾都是对的。
+教训：在断言"产品缺功能"之前，必须先证明被测对象就是我以为的那个对象
+（本轮靠四步才纠回来：curl 看服务端资产 → node --check 看语法 → 全局阶梯看执行到哪 →
+Object.keys 看真键表）。

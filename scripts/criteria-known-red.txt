@@ -63,4 +63,3 @@ kernel-brush-parity.mjs  # **类型：跑不完（超时）** ✗ —— 不是�
 #     可行性已在第 838 轮证实 ✓）；② 差异消失 ⇒ **两条一起移出名单** ✓。
 
 browser-offline-shell（离线出墨｜**不稳定，且上一轮误判为已修**：三次同行读数 —— 用 querySelector("canvas") 时 0 => 0（那个 canvas 是空的）；改成 getElementById("board") 并点笔刷后一次通过；脚本未变再跑一次则是 76800 => 76800（76800 ＝ 320×240 ＝ board 尺寸，说明读的确实是 board，但那一笔没画上去）。结论：读错画布已经修好，但**落笔间歇失效**（时序／工具状态／内核就绪）。下一步：落笔前断言 state.tool 与内核就绪，并等一帧再读像素）
-browser-offline-journal（离线写队列｜**产品侧接线缺口，判据无过**：真错为 "TypeError: window.yanshi.discardOutbox is not a function"；判据已加 15 秒轮询等待，结果仍是 **就绪 = false** ⇒ 所以 window.yanshi 上**根本没有** discardOutbox／flushOutbox／outboxEntries／refreshOutbox 这些名字（方法体在 viewer-app.js:7513 一带，但不在该全局对象上）。作者报告称已暴露这些接口，与代码不符。下一步：把这些方法真正挂到 window.yanshi 上（产品侧一行），再连跑三次确认稳定；若判据改用别的入口，必须写明）

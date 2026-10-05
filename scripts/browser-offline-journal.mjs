@@ -128,6 +128,28 @@ const firstDiff = (left, right) => {
   console.log("  前置：WASM 内核就绪 = " + kernelReady + "（指针笔迹走内核那条路；不去清缓存刷新 ✓）");
 
   // **清掉可能残留的队列** ✓（同一浏览器 profile 复用时 ✓ —— 否则计数会从中间开始 ✓）。
+  // **先清掉旧外壳**（第 1115 轮定案）：SW 的 SHELL 含 /viewer-app.js 与 /viewer.css，
+  // 而复用的浏览器 profile 会留下旧缓存 ⇒ 浏览器里的 window.yanshi 只有 18 个旧键
+  // （没有 outbox 那五个），而服务端发出的资产是新的（curl 已确认）✗。
+  // 所以：注销所有 Service Worker、删掉所有 caches，然后重载页面，再等就绪 ✓。
+  const purged = await evaluate(`(async () => {
+    const out = { workers: 0, caches: 0 };
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) { await r.unregister(); out.workers += 1; }
+    } catch (e) { out.workerError = String(e); }
+    try {
+      const keys = await caches.keys();
+      for (const k of keys) { await caches.delete(k); out.caches += 1; }
+    } catch (e) { out.cacheError = String(e); }
+    return out;
+  })()`);
+  console.log("  清旧外壳 = " + JSON.stringify(purged));
+  await send("Page.reload", { ignoreCache: true });
+  for (let i = 0; i < 60; i++) {
+    await sleep(250);
+    try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 继续等 ✓ */ }
+  }
   // **等 window.yanshi 挂上再调用**（第 1112 轮）：真错是
   // `TypeError: window.yanshi.discardOutbox is not a function`，
   // 而该方法确实存在（viewer-app.js:7513）⇒ 所以是**调用太早** ✗。
