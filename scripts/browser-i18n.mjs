@@ -68,12 +68,20 @@ await send("Page.navigate", { url });
 // 本文件在**切换语言后**用的是"轮询 40×300ms 直到条件成立" ✓（见下面两处 ✓），
 // 却在**首次导航后**用了固定 `sleep(6000)` ✗ ⇒ 机器慢一点 ⇒ 快照就是"没加载完"的状态 ✗
 // ⇒ ⇒ **这条判据的间歇红就出在这里** ✓（第 800 轮实测：同一提交有时绿有时红 ✓）。
-let zh = null;
+// ⚠️ **等待条件必须与断言条件分开** ✗（第 887 轮 ✓，我第一版写错过 ✓）：
+// 我第一版"等到 `htmlLang === "zh-CN"` 才 break" ✗ ⇒ **那等于把被判条件当等待条件** ✗ ⇒
+// 「默认语言必须是中文」这条断言就**几乎永远不会失败** ✗（**判据被自己削弱了** ✓）。
+// ⇒ 现在等到的是**独立的就绪信号** ✓：`readyState === "complete"` 且语言开关已存在 ✓；
+//   **"是不是中文"仍然只由下面的断言判** ✓ ✓。
+let ready = false;
 for (let i = 0; i < 40; i++) {
   await sleep(300);
-  try { const candidate = JSON.parse(await evaluate(snapshot)); if (candidate && candidate.htmlLang === "zh-CN") { zh = candidate; break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  try {
+    if (await evaluate(`document.readyState === "complete" && !!document.getElementById("langToggle")`)) { ready = true; break; }
+  } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
 }
-if (!zh) zh = JSON.parse(await evaluate(snapshot));
+const zh = JSON.parse(await evaluate(snapshot));
+if (!ready) failures.push("等待页面就绪超时（readyState 未到 complete 或缺 langToggle）⇒ 下面的断言可能不可信");
 console.log("  【默认】" + JSON.stringify(zh));
 if (zh.htmlLang !== "zh-CN") failures.push(`默认 html lang 应为 zh-CN，实为 ${zh.htmlLang}`);
 if (!String(zh.newDoc).includes("新建")) failures.push(`默认「新建」按钮应为中文，实为 ${zh.newDoc}`);
