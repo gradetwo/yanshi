@@ -36,7 +36,17 @@ await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable");
-const inspect = async () => { await send("Page.navigate", { url }); await sleep(3500); return await evaluate(`(() => {
+// **只等 `readyState` ＋ 有界沉降** ✗（第 893 轮 ✓，**不要"顺手改成等叠加元素"** ✗）：
+// 下面的断言读的正是"页面上有没有引用该 blob 的叠加元素" ✗ ⇒ **等它就等于让断言永不失败** ✗
+//（**第 887 轮我犯过这个错** ✓）⇒ 这里只等"文档完成" ✓ ＋ 800ms 让叠加层画出来 ✓；
+// **"参考图可不可见"始终只由断言判** ✓ ✓。
+const inspect = async () => {
+  await send("Page.navigate", { url });
+  for (let i = 0; i < 40; i++) {
+    await sleep(300);
+    try { if (await evaluate('document.readyState === "complete"')) { await sleep(800); break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  }
+  return await evaluate(`(() => {
   const short = ${JSON.stringify(hash)};
   const nodes = Array.from(document.querySelectorAll("img, canvas"));
   const hit = nodes.find((node) => String(node.src || node.dataset.blob || "").includes(short) || String(node.dataset.reference || "") === "1" || node.id === "referenceOverlay");
