@@ -44,10 +44,17 @@ await send("Page.navigate", { url });
 // 会取不到 ⇒ `:46` 直接 `return false` ⇒ 判据间歇红 ✗（**"取不到就静默 false"正是间歇的机制** ✓）。
 // ⚠️ **等待条件与断言条件不同** ✗：这里等 `readyState` ＋ **`#zoomInput` 存在** ✓，
 //    而断言读的是 **`displayScale` 的值** ✓ ✓（**等"值"就等于让断言永不失败** ✗ —— 第 887 轮的教训 ✓）。
+// ⚠️ **"元素存在"还不够强** ✗（第 925 轮 ✓，本地实测抓到 ✓）：
+// 只等 `#zoomInput` 存在 ⇒ **它的事件处理可能还没接上** ✗ ⇒ 下面 `dispatchEvent("change")` 被忽略 ✗
+// ⇒ **缩放停在适配值（实测 15.9 ✗，而意图是 400 ✓）** ⇒ 画布全可见 ⇒ **平移被夹 ⇒ `:79` 断言失败** ✗。
+// ⇒ 所以：**轮询存在性 ＋ 有界沉降** ✓（**让接线跑完 ✓**），**而"缩放是否真的变了"仍由断言判** ✗ ✓。
+let readyForZoom = false;
 for (let i = 0; i < 40; i++) {
   await sleep(300);
-  try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("zoomInput")')) break; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("zoomInput")')) { readyForZoom = true; break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
 }
+if (!readyForZoom) console.log("  ⚠ 等待 #zoomInput 超时 ⇒ 下面的缩放可能不生效（**但结论仍由断言给出** ✓）");
+await sleep(800);
 // **先放大到 400%** ✗ —— 让画布**超出**窗口，平移才有余量（否则"视图没变"是正常的 ✓）。
 await evaluate(`(() => { const input = document.getElementById("zoomInput");
   if (!input) return false; input.value = "400"; input.dispatchEvent(new Event("change", { bubbles: true }));
