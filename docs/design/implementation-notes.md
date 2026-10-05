@@ -34628,3 +34628,22 @@ P0 处置：
 (A)④ 不是从零开始。它已有三层（localStorage、IndexedDB、OPFS）加本地 PNG 导出，
 缺的是文件系统访问、离线本地日志、以及 .yanshi 的本地往返。缺口比想象的小。
 下一步：查 IndexedDB 是否已经在存离线日志，一次 grep 即可定性。
+
+## 第 1100 轮：清理 worktree ＋ 亲手变异诊断包的第二条判据
+
+清理：
+1. 移除 /tmp/wt-tiles（8.1 G）与 /tmp/wt-diag（7.6 G）。两者工作树都干净，分支与提交保留。
+2. /tmp 用量 26 G 降到 11 G。磁盘可用 15 G 升到 31 G（已用 87% 降到 73%）。
+3. 剩余 worktree：main、三个原有 worktree（fresh、heavy、site，不是本次工作建的）、
+   以及 P0 排查留下的 /tmp/wt-4cb 与 /tmp/wt-p0。后两个可以再清，但先保留。
+
+亲手变异（诊断包第二条）：
+1. 目标：crates/yanshi-server/src/diagnostics.rs:111 的容量夹取
+   while self.lines.len() >= self.capacity
+2. 变异：把 self.capacity 改成 usize::MAX（等于去掉容量夹取）。
+3. 结果：stderr_ring_is_bounded_and_pre_collection_lines_are_in_the_archive FAILED
+   （diagnostics.rs:223）。其余 5 条不受影响。
+4. 结论：精确命中被判条件。已逐字节还原，工作树干净。
+
+累计：诊断包 6 条判据里，我亲手变异了 2 条（zip 条目清单、环形缓冲有界）。
+其余 3 条（隐私扫描、跳过补丁告警、双面条目一致）由子代理做了变异验证并报告了细节。
