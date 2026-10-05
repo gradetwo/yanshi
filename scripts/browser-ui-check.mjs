@@ -895,6 +895,9 @@ const namingResult = await evaluate(`(async () => {
   // 所以从 location.search 取，而不是从 yanshiStats（初始 url）或 state()（不导出令牌）。
   const curDocIdForProbe = new URLSearchParams(window.location.search).get("doc");
   const beforeDocIdForProbe = window.yanshi.state().docId;
+  // 记下切换前的 docSize：服务端尺寸到达时 state.docSize 会被改写（viewer.rs:1633），
+  // 所以等它变化，就是「尺寸已从服务端拿到」的独立信号（断言比的是画布像素数，与它无涉）。
+  const docSizeBeforeSwitch = JSON.stringify(window.yanshi.state().docSize);
   // **直接问服务端"源文档多大"**（第 942 轮）：duplicate_document 用的是**服务端持有的** state.width，
   // 而页面看到的是 512x512（第 940 轮实测）。把服务端那份也打出来，就能一刀劈开候选集：
   // 服务端说 512 则走样在"建文档"一侧；服务端说 1024 则页面与服务端看到的不是同一份。
@@ -935,7 +938,14 @@ const namingResult = await evaluate(`(async () => {
   // 所以它一两次迭代就返回，从来没等到按新尺寸重建（那正是"文档 1024 而画布 512"的成因）。
   // 稳定只能排除抖动，排除不了"该变的没变"；而"等画布变成文档尺寸"又是被判的关系
   // （会让断言永不失败）。所以这里只留**有界沉降**，让重建有时间发生，尺寸对不对仍由断言判。
-  for (let i = 0; i < 24; i++) {
+  // 先等 docSize 已从服务端更新（变化，而不是等于某个值），再留短沉降让画布重建。
+  let docSizeMoved = false;
+  for (let i = 0; i < 60; i++) {
+    if (JSON.stringify(window.yanshi.state().docSize) !== docSizeBeforeSwitch) { docSizeMoved = true; break; }
+    await wait(250);
+  }
+  if (!docSizeMoved) console.log("  ⚠ 等待 docSize 更新超时 ⇒ 画布尺寸可能仍是旧的");
+  for (let i = 0; i < 12; i++) {
     await wait(250);
     after = ${canvasFingerprint};
     afterWidth = document.getElementById("board").width;
