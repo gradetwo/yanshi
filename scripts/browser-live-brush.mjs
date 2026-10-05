@@ -120,7 +120,7 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true });
-await sleep(1600);
+// **睡眠已删** ✓（第 903 轮 ✓）：下面 waitFor 已在正确地等 ✓，且它**自带 20 秒超时** ✓（等不到会自己失败 ✓）。
 consoleLines.length = 0;
 await waitFor(
   "document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
@@ -359,7 +359,7 @@ const diff = await evaluate(`(() => {
 // **④d：重载页面再取一次** ✓ —— 重载后的画面**只可能来自服务端** ✓（本地预览的临时帧不会活过重载 ✓）。
 // 用它判定："我量到的最终"到底是**服务端像素** ✓ 还是**本地预览的残留** ✗（这一条决定前面结论的方向 ✓）。
 await send("Page.reload", { ignoreCache: true });
-await sleep(1600);
+// **睡眠已删** ✓（第 903 轮 ✓）：下面 waitFor 已在正确地等 ✓，且它**自带 20 秒超时** ✓（等不到会自己失败 ✓）。
 await waitFor("document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
   "重载后首帧", 20000);
 await sleep(600);
