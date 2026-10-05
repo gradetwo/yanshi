@@ -29220,3 +29220,24 @@ tool-session-semantics.mjs
 （**同族** ✓：第 905 轮"行号会漂"✗、"凭印象数处数"✗ —— **都要读**计数**而不是**感觉**** ✓）。
 **⚠️ 附带确认** ✓：`a42874d` 与 `e25efb1`（都是 `docs:` ✓）**根本没有 run** ✓ ⇒
   **`paths-ignore` 按预期工作** ✓（**纯文档提交不占 CI** ✓）。
+
+## 🗺️ 第 909 轮：**"我改过的判据落在哪些 shard" —— 结论该读哪几片** ✓
+
+**做法（**同一套"按文件名排序取模"重算** ✓，与第 885 轮同法 ✓）**：
+```
+我这几轮改过 **20 个 `browser-*` 判据** ✓ ⇒ 按真实规则映射到 shard ✓：
+   shard 1 ⇒ 4 个（`asset-dock` ✓ `live-brush` ✓ `pan-vs-paint` ✓ `undo-disabled` ✓）
+   shard 2 ⇒ 3 个（`brush-list` ✓ `file-menu` ✓ `no-stale-read` ✓）
+   shard 3 ⇒ 3 个（`brush-panel` ✓ `offline-draw` ✓ `reference-overlay` ✓）
+   shard 4 ⇒ 4 个（`brush-preview-local` ✓ `i18n` ✓ `offline-export` ✓ `render-switch` ✓）
+   shard 5 ⇒ 3 个（`brush-preview` ✓ `offline-reload` ✓ `stroke-refresh` ✓）
+   shard 6 ⇒ 3 个（`canvas-handfeel` ✓ `layout` ✓ `offline-shell` ✓）
+⇒ ⇒ **均匀铺满 6 片** ✓ ⇒ **任何一片都能反映"是否改坏"** ✓
+   ⇒ ⇒ ⇒ 但**没有任何一片覆盖全部** ✗ ⇒ **结论必须看整体** ✗（**不能像第 885 轮那样只读一片** ✓）。
+```
+**★ 一条** ✓：**"读哪几片"取决于"改动铺在哪"** ✗ ——
+```
+第 885 轮：改动**只影响一条判据**（`i18n` ✓）⇒ **读它所在的那一片** ✓ 就够 ✓；
+本轮：改动**铺满 6 片** ✗ ⇒ **必须看整轮的失败列表** ✓（**按 job 名逐条取 `.conclusion`** ✓）。
+⇒ ⇒ **同一件"读 CI"，两种读法** ✓ ⇒ **读之前先问"我的改动落在哪"** ✓ ✓
+（**同族** ✓：本会话"覆盖面决定能不能下结论" ✓ —— **这里决定的是"读多少证据才够"** ✓）。
