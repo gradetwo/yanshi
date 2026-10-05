@@ -206,6 +206,12 @@ impl HttpOptions {
 pub struct ServerState {
     /// 工作区。
     pub workspace: Mutex<Workspace>,
+    /// **在飞变更操作登记表** ✓（外部测试报告 P1）。
+    ///
+    /// **与 `Workspace` 里那份是同一张表** ✓（`Arc` 克隆 ✓），但它**不经过工作区锁** ✓ ——
+    /// 长操作正持着那把锁 ✓，所以"忙不忙 / 取消 / 观察"必须在**取锁之前**回答 ✓，
+    /// 否则第二个请求会排队等到长操作结束 ✗（正是报告里的现象 ✓）。
+    pub inflight: Arc<yanshi_server::InflightRegistry>,
     /// 工具注册表。
     pub registry: ToolRegistry,
     /// 选项。
@@ -320,8 +326,11 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
         resolved
     });
     let registry = ToolRegistry::with_profiles(&options.profiles);
+    // **登记表的共享句柄要在工作区进锁之前拿到** ✓（同一张表 ✓，见 `ServerState::inflight` ✓）。
+    let inflight = Arc::clone(workspace.inflight());
     let state = Arc::new(ServerState {
         workspace: Mutex::new(workspace),
+        inflight,
         registry,
         options: options.clone(),
         started_at: yanshi_core::now_ms(),
@@ -1117,6 +1126,16 @@ fn tool_call_with(
         arguments["doc_id"] = json!(doc_id);
     }
 
+    // **控制面：三件事必须在取工作区锁之前办** ✓（外部测试报告 P1）。
+    //
+    // 报告的事故链是：客户端 300 s 超时 ⇒ 服务端仍在跑、**文档仍被独占** ⇒ 用户分不清
+    // "慢"与"挂死" ⇒ 重试 ⇒ **重复落笔**（真实事故：seq 477/478 的孤儿原子 ✗）。
+    // 若"忙不忙"也要先拿工作区锁才能问 ✓，第二个请求就只会**排队等** ✗ —— 那正是原现象 ✓。
+    // ⇒ `busy` 拒绝 / `cancel_operation` / `get_inflight` 都在这里回答 ✓（用的是同一张登记表 ✓）。
+    if let Some((status, value)) = control_plane(state, principal.role, &doc_id, name, &arguments) {
+        return Response::json(status, &value);
+    }
+
     let Ok(mut workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
@@ -1151,6 +1170,8 @@ fn tool_call_with(
             Some("permission_denied") => 403,
             Some("reference_not_found") | Some("job_not_found") => 404,
             Some("precondition_failed") | Some("conflict") => 409,
+            // 与 `http.rs::from_error` 保持同一套映射 ✓（busy/cancelled ⇒ 409 ✓）。
+            Some("busy") | Some("cancelled") => 409,
             Some("resource_exhausted") | Some("degraded") => 503,
             Some("job_pending") => 202,
             _ => 400,
@@ -1158,6 +1179,93 @@ fn tool_call_with(
         return Response::json(status, &value);
     }
     Response::json(200, &value)
+}
+
+/// **控制面：在取工作区锁之前就能回答的三件事** ✓（外部测试报告 P1）。
+///
+/// | 工具 | 为什么不能等锁 |
+/// |---|---|
+/// | 任意**变更**工具（`busy` 拒绝 ✓） | 长操作持锁 ⇒ 先取锁就变成"排队等它跑完" ✗（原现象 ✓） |
+/// | `cancel_operation` | 等锁 ⇒ 要等到被取消的那个操作**自己结束**才生效 ✗（等于没有取消 ✓） |
+/// | `get_inflight` | 等锁 ⇒ 恰恰在"卡住"时查不到东西 ✗ |
+///
+/// 三件事都只读/写 `state.inflight` ✓（**自己的锁** ✓，与工作区无关 ✓）。
+/// 工具层仍有同样的实现 ✓（MCP／嵌入式走那边 ✓）—— 这里只是为了**不排队** ✓。
+///
+/// **返回 `(HTTP 状态, JSON 体)`** ✓：HTTP 用它组响应 ✓，WebSocket 直接把 JSON 体塞进 `ack` ✓
+/// （两个入口共用这一份判定 ✓ —— 免得又出现"只堵住了一个入口"✗ 的老问题 ✓）。
+fn control_plane(
+    state: &ServerState,
+    role: Role,
+    doc_id: &str,
+    name: &str,
+    arguments: &Value,
+) -> Option<(u16, Value)> {
+    let wanted = arguments
+        .get("doc_id")
+        .and_then(Value::as_str)
+        .unwrap_or(doc_id);
+    match name {
+        "get_inflight" => {
+            let inflight = if wanted == "*" {
+                state.inflight.list()
+            } else {
+                state.inflight.status(wanted).into_iter().collect()
+            };
+            Some((
+                200,
+                json!({
+                    "ok": true,
+                    "doc_id": wanted,
+                    "inflight": inflight,
+                    "count": inflight.len(),
+                    "begun": state.inflight.begun(),
+                    "rejected": state.inflight.rejected(),
+                    "cancel_requests": state.inflight.cancel_requests(),
+                }),
+            ))
+        }
+        "cancel_operation" => {
+            if !role.can_edit() {
+                return Some((
+                    403,
+                    YanshiError::new(
+                        ErrorCode::PermissionDenied,
+                        ErrorContext::detail(format!(
+                            "该 token 的角色是 {} ⇒ 不允许取消别人的操作（读类查询不受限）",
+                            role.as_str()
+                        )),
+                    )
+                    .to_response(),
+                ));
+            }
+            let info = state.inflight.request_cancel(wanted);
+            Some((
+                200,
+                json!({
+                    "ok": true,
+                    "doc_id": wanted,
+                    // **协作式**：`cancelled: true` 只表示"请求已受理" ✓（不是"已经停了" ✗）。
+                    "cancelled": info.is_some(),
+                    "inflight": info,
+                }),
+            ))
+        }
+        _ => {
+            // 只读工具不受影响 ✓（读文档本来就要锁 ✓，而且它们本来就快 ✓）。
+            if state
+                .registry
+                .get(name)
+                .map(|spec| spec.mutating)
+                .unwrap_or(false)
+            {
+                if let Some(busy) = state.inflight.busy_error(doc_id, yanshi_core::now_ms()) {
+                    return Some((409, busy.to_response()));
+                }
+            }
+            None
+        }
+    }
 }
 
 /// 把 `yanshi://blob/<hash>` 改写成可直接 GET 的 URL（带 doc 与 token，12.7）。
@@ -1822,22 +1930,31 @@ fn handle_ws_message(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let result = {
-                let Ok(mut workspace) = state.workspace.lock() else {
-                    let _ = send_json(
-                        write_stream,
-                        &json!({"type": "error", "request_id": request_id,
-                                "error": {"code": "resource_exhausted", "message": "工作区锁中毒"}}),
-                    );
-                    return;
-                };
-                let mut context = ToolContext::new(&mut workspace, doc_id, actor, "session:ws")
-                    // **别再无条件 owner** ✗（**这就是那个漏洞** ✓）：
-                    // `owner` 的语义是"**可跨 actor 撤销**" ✓ ⇒ 它只应对 `Owner` 为真 ✓；
-                    // 而"**能不能改文档**"由工具层按 `role.can_edit()` 判 ✓ ⇒ 两者**各司其职** ✓。
-                    .with_owner(matches!(role, Role::Owner))
-                    .with_role(role)
-                    .with_wait_for_render(true, 500);
-                state.registry.call(&mut context, name, &arguments)
+                // **控制面与 busy 检查先于工作区锁** ✓（P1）：与 HTTP 入口**同一份判定** ✓ ——
+                // WebSocket 曾经绕过了角色检查 ✗（见 `ToolRegistry::call` 的说明 ✓），
+                // 所以这里不再各写一份 ✓。
+                match control_plane(state, role, doc_id, name, &arguments) {
+                    Some((_, value)) => value,
+                    None => {
+                        let Ok(mut workspace) = state.workspace.lock() else {
+                            let _ = send_json(
+                                write_stream,
+                                &json!({"type": "error", "request_id": request_id,
+                                        "error": {"code": "resource_exhausted", "message": "工作区锁中毒"}}),
+                            );
+                            return;
+                        };
+                        let mut context =
+                            ToolContext::new(&mut workspace, doc_id, actor, "session:ws")
+                                // **别再无条件 owner** ✗（**这就是那个漏洞** ✓）：
+                                // `owner` 的语义是"**可跨 actor 撤销**" ✓ ⇒ 它只应对 `Owner` 为真 ✓；
+                                // 而"**能不能改文档**"由工具层按 `role.can_edit()` 判 ✓ ⇒ 两者**各司其职** ✓。
+                                .with_owner(matches!(role, Role::Owner))
+                                .with_role(role)
+                                .with_wait_for_render(true, 500);
+                        state.registry.call(&mut context, name, &arguments)
+                    }
+                }
             };
             let result = rewrite_blob_urls_value(result, doc_id, state.options.rewrite_blob_urls);
             let _ = send_json(
@@ -1989,8 +2106,11 @@ mod tests {
 
     fn state() -> ServerState {
         let settings = DocumentSettings::default();
+        let workspace = Workspace::in_memory(settings);
+        let inflight = Arc::clone(workspace.inflight());
         ServerState {
-            workspace: Mutex::new(Workspace::in_memory(settings)),
+            workspace: Mutex::new(workspace),
+            inflight,
             registry: ToolRegistry::full(),
             options: HttpOptions {
                 width: 32,

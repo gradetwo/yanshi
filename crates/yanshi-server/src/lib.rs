@@ -11,7 +11,9 @@
 //! | [`annotations`] | 4.6 / 13.4 | 标注独立 append-only 通道 |
 //! | [`document`] | 3 / 6.2 / 12.1 | 文档服务：提交、增量折叠、dirty、渲染、Job、广播 |
 //! | [`persist`] | 18 | 文件持久化：原子 JSONL、CAS、渲染缓存、令牌 |
-//! | [`tools`] | 10 章 | 工具协议层：核心 27 工具、profile 分层、10.1/5.7 响应 |
+//! | [`tools`] | 10 章 | 工具协议层：核心 71 工具、profile 分层、10.1/5.7 响应 |
+//! | [`timings`] | — | 写路径阶段耗时（`timings`，外部报告 P2）|
+//! | [`inflight`] | — | 在飞变更操作登记与协作式取消（`busy`/`cancelled`，外部报告 P1）|
 //! | [`base64`] | 7.5 | MCP image content 需要的 base64 编码 |
 
 #![forbid(unsafe_code)]
@@ -24,9 +26,11 @@ pub mod archive;
 pub mod base64;
 pub mod broadcast;
 pub mod document;
+pub mod inflight;
 pub mod job;
 pub mod persist;
 pub mod service;
+pub mod timings;
 pub mod token;
 pub mod tools;
 
@@ -41,9 +45,11 @@ pub use broadcast::{
 pub use document::{
     CommitResult, Document, DocumentSettings, NewDocument, RenderStatus, RenderedPreview,
 };
+pub use inflight::{InflightGuard, InflightInfo, InflightOp, InflightRegistry};
 pub use job::{Job, JobId, JobManager, JobStatus, DEFAULT_JOB_TTL_SECONDS};
 pub use persist::{DocumentMeta, FileStore, TokenRecord};
 pub use service::{DocThumbSize, DocumentSummary, Workspace};
+pub use timings::{CommitPhases, Phase, ToolTimings};
 pub use token::{
     CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind, TOKEN_HEX_LEN,
 };

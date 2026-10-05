@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 69 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 71 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -23,14 +23,16 @@ use crate::annotations::{
 };
 use crate::base64;
 use crate::document::{CommitResult, RenderedPreview};
+use crate::inflight::InflightOp;
 use crate::job::JobStatus;
 use crate::service::{DocThumbSize, Workspace};
+use crate::timings::{CommitPhases, Phase, ToolTimings};
 
 /// 工具分层（10.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（69 个）。
+    /// 核心层：默认注册（71 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -261,6 +263,18 @@ pub struct ToolContext<'a> {
     pub now: i64,
     /// batch 内部使用的变更集 id（5.6）。
     changeset: Option<ChangesetId>,
+    /// **本次调用的阶段耗时累计** ✓（外部测试报告 P2）。
+    ///
+    /// **为什么挂在上下文上** ✓：阶段发生在**很深的调用栈**里 ✓
+    ///（`paint_brush` ✓、`Document::commit_as_timed` ✓、`Workspace::journal` ✓）
+    /// ⇒ 一路把它们当返回值传上来会污染所有中间签名 ✗；
+    /// 上下文本来就已经在所有工具实现之间传递 ✓ ⇒ 记在这里最省 ✓。
+    timings: ToolTimings,
+    /// **本次调用登记的在飞操作** ✓（外部测试报告 P1）。
+    ///
+    /// 由 [`ToolRegistry::call`] 设置 ✓：变更类工具在开始前登记 ✓、结束时注销 ✓。
+    /// 协作式取消检查（[`ToolContext::check_cancelled`] ✓）读的就是它的 `AtomicBool` ✓。
+    inflight: Option<std::sync::Arc<InflightOp>>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -284,6 +298,8 @@ impl<'a> ToolContext<'a> {
             wait_budget_ms: 500,
             now: yanshi_core::now_ms(),
             changeset: None,
+            timings: ToolTimings::default(),
+            inflight: None,
         }
     }
 
@@ -318,22 +334,32 @@ impl<'a> ToolContext<'a> {
                 self.changeset = Some(open);
             }
         }
-        match self.changeset.clone() {
+        let mut phases = CommitPhases::default();
+        let result = match self.changeset.clone() {
             // batch 内部：所有原子归属同一个变更集（5.6）。
             Some(changeset) => {
-                let mut results = self.workspace.commit_changeset(
+                let mut results = self.workspace.commit_changeset_timed(
                     &self.doc_id,
                     vec![atom],
                     &self.actor,
                     self.owner,
                     changeset,
+                    &mut phases,
                 )?;
-                Ok(results.remove(0))
+                results.remove(0)
             }
-            None => self
-                .workspace
-                .commit(&self.doc_id, atom, &self.actor, self.owner),
-        }
+            None => self.workspace.commit_timed(
+                &self.doc_id,
+                atom,
+                &self.actor,
+                self.owner,
+                &mut phases,
+            )?,
+        };
+        // **阶段耗时在这里并进上下文** ✓（P2）：`commit_as_timed` 量折叠/脏区 ✓、
+        // `Workspace::journal` 量落盘 ✓ ⇒ 调用方在响应里看到的分项就是它们 ✓。
+        self.timings.absorb_commit(&phases);
+        Ok(result)
     }
 
     fn commit_changeset(
@@ -342,8 +368,58 @@ impl<'a> ToolContext<'a> {
         changeset_id: ChangesetId,
     ) -> Result<Vec<CommitResult>> {
         let changeset = self.changeset.clone().unwrap_or(changeset_id);
-        self.workspace
-            .commit_changeset(&self.doc_id, atoms, &self.actor, self.owner, changeset)
+        let mut phases = CommitPhases::default();
+        let results = self.workspace.commit_changeset_timed(
+            &self.doc_id,
+            atoms,
+            &self.actor,
+            self.owner,
+            changeset,
+            &mut phases,
+        )?;
+        self.timings.absorb_commit(&phases);
+        Ok(results)
+    }
+
+    /// **记一段阶段耗时** ✓（P2）：调用点形如
+    /// `let started = std::time::Instant::now(); …; ctx.time(Phase::Raster, started);` ✓。
+    pub fn time(&mut self, phase: Phase, started: std::time::Instant) {
+        self.timings.add(phase, started.elapsed());
+    }
+
+    /// 本次调用已累计的阶段耗时（观察用 ✓）。
+    pub fn timings(&self) -> &ToolTimings {
+        &self.timings
+    }
+
+    /// 本次调用登记的在飞操作（没有则 `None` ✓）。
+    pub fn inflight_op(&self) -> Option<&std::sync::Arc<InflightOp>> {
+        self.inflight.as_ref()
+    }
+
+    /// 是否已被请求取消 ✓。
+    pub fn cancellation_requested(&self) -> bool {
+        self.inflight
+            .as_ref()
+            .map(|op| op.cancel_requested())
+            .unwrap_or(false)
+    }
+
+    /// **协作式取消的安全点检查** ✓（外部测试报告 P1）。
+    ///
+    /// 在**每个可分割的工作单元之前**调用 ✓（`batch` 的每个子调用 ✓、
+    /// `scatter_strokes` 的每一笔 ✓、渐变的每一段 ✓、多色笔刷的每一段 ✓）——
+    /// 置位后立刻以 `cancelled` 收尾 ✓，**不再提交新的原子** ✓。
+    ///
+    /// **为什么不放进 `commit` 本身** ✗：取消后的回滚（`revert_changeset_atoms` ✓）
+    /// 也要提交原子 ✓ ⇒ 在那里拦会把"回滚"本身也拦掉 ✗，反而留下一半的批次 ✓。
+    pub fn check_cancelled(&self) -> Result<()> {
+        if self.cancellation_requested() {
+            if let Some(op) = &self.inflight {
+                return Err(op.cancelled_error(yanshi_core::now_ms()));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -355,7 +431,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，69 个）。
+    /// 核心层（默认注册，71 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -446,7 +522,14 @@ impl ToolRegistry {
     }
 
     /// 调用工具；返回 10.1 或 5.7 形状的 JSON。
+    ///
+    /// **这里是三条横切关注点的唯一收口** ✓（本项目的既定纪律：一处生效、全部受益 ✓）：
+    /// * 角色权限（`spec.mutating` ＋ `ctx.role` ✓）；
+    /// * **在飞登记**（同文档的第二个变更请求 ⇒ `busy` ✓，外部测试报告 P1 ✓）；
+    /// * **阶段耗时**（`timings` ✓，外部测试报告 P2 ✓）。
     pub fn call(&self, ctx: &mut ToolContext<'_>, name: &str, args: &Value) -> Value {
+        // **整个工具调用的起表** ✓：`total_ms` 与 `prep_ms` 都由它量 ✓（P2）。
+        let call_started = std::time::Instant::now();
         let Some(spec) = self.get(name) else {
             return error_response(&YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -491,7 +574,35 @@ impl ToolRegistry {
         if let Err(error) = validate_args(spec, args) {
             return error_response(&error);
         }
-        match dispatch(spec, ctx, args) {
+        // **阶段计时从这里开始记** ✓（P2；batch 里的子调用由 `dispatch` 记 ✓）。
+        ctx.timings.reset();
+        ctx.timings.add(Phase::Prep, call_started.elapsed());
+        // **在飞登记** ✓（P1）：变更类工具开始前登记 ✓ ⇒
+        // **同一文档上并发的第二个变更请求会拿到 `busy`＋"谁在跑、跑了多久"** ✓，
+        // 而不是排队等到超时、再盲目重试成第二次落笔 ✗（报告里的真实事故 ✓）。
+        //
+        // **登记在 `Workspace` 之外** ✓：登记表有自己的锁 ✓，
+        // 所以"忙不忙"可以在**取工作区锁之前**回答 ✓（HTTP 层就是这么做的 ✓）。
+        let guard = if spec.mutating {
+            let registry = ctx.workspace.inflight().clone();
+            match registry.begin(&ctx.doc_id, spec.name, &ctx.actor, &ctx.session, ctx.now) {
+                Ok(guard) => Some(guard),
+                Err(busy) => return error_response(&busy),
+            }
+        } else {
+            None
+        };
+        // **把登记的操作挂到上下文上** ✓：`check_cancelled` 读的就是它 ✓。
+        // 先 `take` 保存上一层（batch 子调用会嵌套 ✓），离开时还原 ✓。
+        let previous_inflight = ctx.inflight.take();
+        if let Some(op) = guard.as_ref() {
+            ctx.inflight = Some(std::sync::Arc::clone(op.op()));
+        }
+        let outcome = dispatch(spec, ctx, args);
+        ctx.inflight = previous_inflight;
+        // 注销在飞登记（`drop` 也可，但显式写出来意图更清楚 ✓）。
+        drop(guard);
+        let mut response = match outcome {
             Ok(value) => ok_response(value),
             Err(error) => {
                 // **事务：写操作失败 ⇒ 自动回滚已落的原子** ✓（这是"事务"与"变更集"的**唯一**区别 ✓，
@@ -520,7 +631,18 @@ impl ToolRegistry {
                 }
                 response
             }
-        }
+        };
+        // **阶段耗时如实附上** ✓（P2）：成功与失败都带 ✓ ——
+        // "超时到底花在哪"这个问题在**失败**时最需要答案 ✓。
+        attach_timings(&mut response, &ctx.timings.report(call_started.elapsed()));
+        response
+    }
+}
+
+/// 把 `timings` 附到工具结果 JSON 上 ✓（对象才附 ✓；非对象原样返回 ✓）。
+fn attach_timings(value: &mut Value, timings: &Value) {
+    if let Value::Object(map) = value {
+        map.insert("timings".to_owned(), timings.clone());
     }
 }
 
@@ -940,7 +1062,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 69 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 71 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -1801,6 +1923,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("job_id", String, true, "job id")],
     },
+    // ---- 在飞操作：观察与取消（外部测试报告 P1）----
+    ToolSpec {
+        name: "get_inflight",
+        profile: Profile::Core,
+        summary: "**看文档上有没有正在跑的变更操作**（谁在跑、跑了多久、是否已被请求取消）。客户端超时后先用它分清\"慢\"与\"挂死\"，再决定重试还是取消——盲目重试会重复落笔",
+        mutating: false,
+        params: &[param!("doc_id", String, false, "文档 id（缺省 = 当前文档；也可看全部 = \"*\"）")],
+    },
+    ToolSpec {
+        name: "cancel_operation",
+        profile: Profile::Core,
+        summary: "**请求取消当前文档上在飞的变更操作**（协作式：长循环在安全点看到标志后停手，不再提交新原子；`batch` 会整体回滚）。这是超时客户端的\"中止\"按钮，不是重试",
+        // **声明成非变更工具** ✗：它**不碰文档** ✓；但它是控制面动作 ⇒ 在实现里**显式查角色** ✓
+        //（若声明成 mutating ✓，那么"忙时"它自己会被 busy 拒绝 ✗ —— 那正是最需要它的时候 ✗）。
+        mutating: false,
+        params: &[param!("doc_id", String, false, "文档 id（缺省 = 当前文档）")],
+    },
     // ---- 批量 ----
     ToolSpec {
         name: "batch",
@@ -2640,7 +2779,31 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
 // 分发
 // ---------------------------------------------------------------------------
 
+/// **所有工具实现的公共包装** ✓（外部测试报告 P2）。
+///
+/// 量出**这一次派发**的总时长与各阶段增量 ✓，并把 `timings` 附到结果上 ✓。
+///
+/// **为什么包装而不是在每个工具里写一遍** ✓：`batch` 的子调用也走 `dispatch` ✓
+/// ⇒ 每个子调用**各自**拿到一份真实耗时 ✓ —— 报告说"`batch` 里每笔的数字是假的"✗
+/// （`scatter_strokes` 在 batch 里 0 s 返回 ✓）正是这条路要修的东西 ✓。
 fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let started = std::time::Instant::now();
+    // `ToolTimings` 是 `Copy` ✓（只有 5 个 `u64` ✓）⇒ 快照就是复制 ✓。
+    let base = ctx.timings;
+    let outcome = dispatch_inner(spec, ctx, args);
+    let delta = ctx.timings.since(&base);
+    match outcome {
+        Ok(mut value) => {
+            attach_timings(&mut value, &delta.report(started.elapsed()));
+            Ok(value)
+        }
+        // 失败不在这里附：错误路径的总时长由 `ToolRegistry::call` 统一附 ✓
+        //（那里才知道 `prep_ms` 与事务回滚的收尾 ✓）。
+        Err(error) => Err(error),
+    }
+}
+
+fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     match spec.name {
         "sample_color" => read_sample_color(ctx, args),
         "get_document" => read_get_document(ctx, args),
@@ -2716,6 +2879,8 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         "get_job" => read_get_job(ctx, args),
         "get_render_status" => read_get_render_status(ctx, args),
         "cancel_job" => write_cancel_job(ctx, args),
+        "get_inflight" => read_get_inflight(ctx, args),
+        "cancel_operation" => write_cancel_operation(ctx, args),
         "batch" => write_batch(ctx, args),
         "checkpoint" => write_checkpoint(ctx, args),
         "get_checkpoints" => read_get_checkpoints(ctx),
@@ -7821,6 +7986,78 @@ fn write_cancel_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(json!({"job_id": job_id, "status": status}))
 }
 
+/// **看在飞的变更操作** ✓（外部测试报告 P1）。
+///
+/// **为什么必须有这个观察口** ✗：报告的痛点原话是"用户**无法区分** '慢' 与 '挂死'" ✓ ——
+/// 客户端超时之后，调用方手里只有一个"超时" ✓，既不知道服务端还在不在跑 ✓，
+/// 也不知道它跑了多久 ✓ ⇒ 于是只能重试 ⇒ **重复落笔** ✗。
+/// 有了它：两次查询之间 `running_ms` **在变大** ⇒ 在动 ✓；操作不见了 ⇒ 已经结束 ✓
+///（再去核对 `head` ✓）。
+///
+/// `doc_id: "*"` ⇒ 看**所有**文档 ✓（多文档服务里排查"锁在哪"最有用 ✓）。
+fn read_get_inflight(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let registry = ctx.workspace.inflight();
+    let wanted = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    let inflight = if wanted == "*" {
+        registry.list()
+    } else {
+        registry.status(&wanted).into_iter().collect()
+    };
+    Ok(json!({
+        "ok": true,
+        "doc_id": wanted,
+        "inflight": inflight,
+        "count": inflight.len(),
+        // **累计计数** ✓：排查"刚才那阵子到底忙不忙"时，这两条比瞬时值更有用 ✓。
+        "begun": registry.begun(),
+        "rejected": registry.rejected(),
+        "cancel_requests": registry.cancel_requests(),
+    }))
+}
+
+/// **请求取消在飞的变更操作** ✓（外部测试报告 P1）。
+///
+/// **语义** ✓：**协作式** —— 只是置一个标志 ✓；长循环在安全点（每笔/每段/每个子调用之前 ✓）
+/// 看到它 ⇒ 以 `cancelled` 收尾 ✓、不再提交新的原子 ✓；`batch` 还会把整批**回滚** ✓。
+/// 因此响应里的 `cancel_requested: true` 表示"请求已受理" ✓，
+/// **不**表示"活已经停了" ✗（这一点写清楚，免得调用方以为可以立刻重发 ✗）。
+///
+/// **角色** ✓：它不改文档 ✓（所以 `mutating: false` ✓，不会在"忙"时被自己拒掉 ✓），
+/// 但它是控制面动作 ⇒ **只允许有编辑权的角色** ✓（viewer 令牌不能打断别人的落笔 ✓）。
+fn write_cancel_operation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    if !ctx.role.can_edit() {
+        return Err(YanshiError::new(
+            ErrorCode::PermissionDenied,
+            ErrorContext::detail(format!(
+                "该 token 的角色是 {} ⇒ 不允许取消别人的操作（读类查询不受限）",
+                ctx.role.as_str()
+            )),
+        ));
+    }
+    let wanted = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // **自己正在跑的那一个优先** ✓：`batch` 里的子调用就是这种情况 ✓
+    //（此时登记表里那条就是**本次**调用 ✓ —— 报告里的"超时重试"场景则是下一条 ✓）。
+    let info = match ctx.inflight_op() {
+        Some(op) if op.doc_id() == wanted => {
+            op.request_cancel();
+            Some(op.info(yanshi_core::now_ms()))
+        }
+        _ => ctx.workspace.inflight().request_cancel(&wanted),
+    };
+    let cancelled = info.is_some();
+    Ok(json!({
+        "ok": true,
+        "doc_id": wanted,
+        "cancelled": cancelled,
+        "inflight": info,
+        "note": if cancelled {
+            "取消请求已受理：它是**协作式**的 ⇒ 操作会在下一个安全点停手（不再提交新的原子；batch 会整体回滚）"
+        } else {
+            "该文档上当前没有在飞的变更操作 ⇒ 无需取消"
+        },
+    }))
+}
+
 /// **`set_layer_blend`**（AI 画家需求 P1-4 ✓）：**薄包装** ✓ ——
 /// 直接转发给既有的 `set_property{key:"blend_mode"}` ✓（渲染器与 core **早就有**这条能力 ✓，
 /// 本轮只是给它一个符合直觉的名字 ✓；**不另存状态** ✗、**不与该属性分叉** ✗）。
@@ -10446,6 +10683,10 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     let mut state = seed;
     let mut placed = 0usize;
     for _ in 0..count {
+        // **协作式取消的安全点** ✓（P1）：一笔一停 ✓ ——
+        // `scatter_strokes` 的 `count` 上限是 2000 ✓（每次落笔都是完整的一次光栅化 ✓）
+        // ⇒ 这里是最该能停下来的地方之一 ✓。
+        ctx.check_cancelled()?;
         let mut x = ax + scatter_next(&mut state) * aw;
         let mut y = ay + scatter_next(&mut state) * ah;
         if let Some(points) = &polygon {
@@ -10494,6 +10735,9 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         "strokes": placed,
         "seed": seed,
         "direction": direction,
+        // **同步还是推迟** ✓（P1 的相关项）：报告实测"在 batch 里 0 s 返回、
+        // 真正的合成发生在下一次渲染"✗ ⇒ 调用方与日志必须能分辨 ✓。
+        "execution": execution_report(ctx),
     }))
 }
 
@@ -10585,6 +10829,8 @@ fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     let mut first_stroke = Value::Null;
     let (mut first_color, mut last_color) = (String::new(), String::new());
     for index in 0..steps {
+        // **协作式取消的安全点** ✓（P1）：一段一停 ✓（`steps` 上限 200 ✓）。
+        ctx.check_cancelled()?;
         let t = index as f64 / (steps - 1) as f64;
         let x = from_x + (to_x - from_x) * t;
         let y = from_y + (to_y - from_y) * t;
@@ -11915,6 +12161,9 @@ fn paint_brush(
     // **只有会读画布的笔刷才喂底图** ✓ —— 其余笔刷喂了反而要额外剔掉"没碰过的底图" ✓
     //（见 `brush_reads_the_canvas` ✓，以及 `paint_brush` 里读回时对"笔刷没碰过的像素"的剔除 ✓）。
     let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+    // **光栅阶段之一：喂底图** ✓（P2）—— `render_region_raw` 是真正的渲染，
+    // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
+    let base_started = std::time::Instant::now();
     if reads_canvas {
         if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
             &ctx.doc_id,
@@ -11979,6 +12228,7 @@ fn paint_brush(
             }
         }
     }
+    ctx.time(Phase::Raster, base_started);
     // **落笔前的快照** ✓（只在喂了底图时需要 ✓）：用来判断"引擎有没有把这一像素**挪动**过" ✓。
     // **为什么不能只看"和底图逐字节相等"** ✗：引擎盖 dab 时会把同一 tile 里**没碰过的像素**
     // 重新量化 ±1..3 个台阶 ✓（喂进去的纯白 255 读回来是 254 ✓）⇒ 必须留一个小容差 ✓；
@@ -11990,6 +12240,9 @@ fn paint_brush(
     } else {
         None
     };
+    // **光栅阶段之二：dab 生成** ✓（P2）—— `stamp_stroke` 是 Hokusai 内部的落墨循环 ✓，
+    // 它不可中断 ✗（见 `crate::inflight` ✓）⇒ 取消的安全点只能落在**段之间** ✓。
+    let stamp_started = std::time::Instant::now();
     let steps = match color_to {
         // **一笔多色（Loaded Brush）** ✓：把路径按弧长切段 ✓、**每段换一次笔刷颜色** ✓，
         // 但 `surface` 与 `BrushState` **一路共用** ✓ ⇒ 落下来的还是**一条笔迹** ✓
@@ -12016,6 +12269,8 @@ fn paint_brush(
             let mut steps = 0usize;
             let mut cursor = 0usize;
             while cursor < seats {
+                // **取消安全点** ✓（P1）：一笔多色会切成最多 128 段 ✓ ⇒ 段与段之间可停 ✓。
+                ctx.check_cancelled()?;
                 let t = if seats == 0 {
                     0.0
                 } else {
@@ -12049,11 +12304,14 @@ fn paint_brush(
         }
         None => stamp_stroke(&brush, &mut state, &mut surface, points),
     };
+    ctx.time(Phase::Raster, stamp_started);
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
     // **同一份（已裁的）区域** ✓ —— 读回与掩膜都必须与喂底图用的那个完全一致 ✗。
     let region = seed_region;
+    // **光栅阶段之三：读回与掩膜** ✓（P2）。
+    let read_started = std::time::Instant::now();
     let (mut rgba, mut painted) = read_surface_region(&surface, region);
     // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
     // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
@@ -12087,6 +12345,7 @@ fn paint_brush(
             }
         }
     }
+    ctx.time(Phase::Raster, read_started);
     if painted == 0 {
         // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。
         //
@@ -12264,6 +12523,9 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // —— 与 `brush.rs:515` 的注释一字不差："覆盖度 ≤ 0 的印章**直接跳过**" ✓。
     // **位置为什么在这里** ✓：这是 `paint_brush` 返回值的解构点之后、落库之前 ✓ ⇒
     // `x0/y0/width/height/rgba` **必然已在作用域** ✓（前三次我把循环插进函数内部 ✗，三次都落在声明之前 ✗）。
+    // **落笔路径的最后一段光栅工作** ✓（P2）：选区裁剪 ＋ blob 落库（CAS 写入 ✓）——
+    // 报告里的模型把这段与"dab 生成"混在一起 ✓，现在分开算 ✓。
+    let composite_started = std::time::Instant::now();
     if let Some(id) = optional_str(args, "clip_to_selection") {
         let state = document_state(ctx)?;
         let alive: Vec<(String, yanshi_core::Bbox)> = state
@@ -12341,6 +12603,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         eprintln!("  选区 {name} 裁剪：清掉 {dropped} 个选区外像素 ✓");
     }
     let composite = ctx.workspace.store().put(&rgba)?;
+    ctx.time(Phase::Raster, composite_started);
     let import_args = json!({
         // **来源参数** ✓（`update_stroke` 靠它重跑 ✓）：**原始控制点** ✓（不是加密后的 ✓）、
         // 当时给的 size / color / smooth ✓ —— 都是**调用方给的原话** ✓，不是我们的中间量 ✓。
@@ -13283,7 +13546,17 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let previous = ctx.changeset.replace(changeset.clone());
     let mut results = Vec::new();
     let mut atom_ids = Vec::new();
+    // **协作式取消** ✓（P1）：置位后**不再开始新的子调用** ✓，
+    // 并把这一批**整体回滚** ✓（"一半的批次"比"什么都没做"更难收拾 ✗）。
+    let mut cancelled: Option<YanshiError> = None;
     for (call_index, call) in calls.iter().enumerate() {
+        // **安全点** ✓：每个子调用之前检查一次 ✓ ——
+        // `batch` 正是"长任务"的典型形态 ✓（报告实测 300 笔 ⇒ 4~6 分钟 ✓）
+        // ⇒ 这里不检查，客户端超时之后就只剩"干等"或"盲目重试"两条路 ✗。
+        if let Err(error) = ctx.check_cancelled() {
+            cancelled = Some(error);
+            break;
+        }
         // **每 N 个调用 / 每 M 毫秒**放行一次预览 ✓：临时清掉 `silent` ✓ ⇒ 这一子调用照常产出预览 ✓
         //（`silent` 在**共享** `ctx` 上 ✓ ⇒ 用完**必须还原** ✓ —— 与 `changeset` 同一条规矩 ✓）。
         let due_by_count = preview_every > 0 && (call_index as u64 + 1) % preview_every == 0;
@@ -13361,6 +13634,31 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
     //（那些调用本该照常带预览 ✓）。**共享上下文里"改了就要还原"** ✓ —— 与 `changeset` 同一规矩 ✓。
     ctx.silent = previous_silent;
+    // **取消 ⇒ 整批回滚** ✓（P1）：先还原上下文 ✓，再撤销 ✓ ——
+    // 撤销本身要提交原子（`ctx.commit` ✓），所以必须放在"取消检查"之外 ✓
+    //（见 `ToolContext::check_cancelled` 的说明 ✓）。
+    if let Some(error) = cancelled {
+        let outcome = revert_changeset_atoms(ctx, &changeset);
+        let (reverted, ok) = match outcome {
+            Ok((count, _)) => (count, true),
+            Err(_) => (0, false),
+        };
+        // **如实报告** ✓：调用方必须知道"这一批被整体撤了、撤了几条" ✓（不静默 ✗）。
+        // 返回**错误形状的 JSON**（`ok:false` ✓）：`ok_response` 会保留它 ✓，
+        // HTTP 入口据此映射成 409 ✓（与顶层 `rolled_back` 的既有形状一致 ✓）。
+        let mut response = error_response(&error);
+        response["rolled_back"] = json!({
+            "changeset_id": changeset,
+            "reverted": reverted,
+            "ok": ok,
+            "completed_calls": results.len(),
+            "total_calls": calls.len(),
+        });
+        // **取消后的执行状态也要说清** ✓：回滚之后可能仍有**之前那批**留下的渲染 job ✓
+        //（回滚不会替它们跑完 ✓）⇒ 调用方据此知道"还要不要等渲染" ✓。
+        response["execution"] = execution_report(ctx);
+        return Ok(response);
+    }
     let head = ctx
         .workspace
         .document(&ctx.doc_id)
@@ -13396,7 +13694,39 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "count": results.len(),
         "atom_ids": atom_ids,
         "head": head,
+        // **这次是"同步做完"还是"把活留到下一次渲染"** ✓（P1 的相关项）——
+        // 报告实测：`scatter_strokes` 在 `batch` 里 0 s 返回 ✓，真正的光栅合成发生在下一次渲染 ✓
+        // ⇒ 日志里的"每笔耗时"是假的 ✗、调用方也不知道活干完没有 ✗。
+        "execution": execution_report(ctx),
     }))
+}
+
+/// **这次调用是"同步做完"还是"把活留到下一次渲染"** ✓（外部测试报告 P1 的相关项）。
+///
+/// **判据不靠掐表** ✓：只看**未完成的渲染 job 数**（`JobManager::pending` ✓）——
+/// 重型原子（`raster_patch` / `filter` / `retouch` / `liquify` / `declare_head` ✓）
+/// 在 `wait_for_render=false` 或预算用尽时**会留在队列里** ✓，那就是"真的还没做完" ✓。
+/// 于是日志里不再出现"0 s 就返回"这种**看着像做完了**的假象 ✓。
+fn execution_report(ctx: &ToolContext<'_>) -> Value {
+    let pending = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| document.jobs().pending().len())
+        .unwrap_or(0);
+    let deferred = pending > 0;
+    json!({
+        "mode": if deferred { "deferred" } else { "synchronous" },
+        "deferred": deferred,
+        "pending_jobs": pending,
+        "waited_for_render": ctx.wait_for_render,
+        "reason": if deferred && !ctx.wait_for_render {
+            "wait_for_render=false：重型原子的渲染 job 留到下一次渲染 ✓"
+        } else if deferred {
+            "仍有未完成的渲染 job（预算用尽或渲染失败）✓"
+        } else {
+            ""
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -13915,6 +14245,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("cancel_job", r#"{"job_id":"job1"}"#),
     ("get_job", r#"{"job_id":"job1"}"#),
     ("get_render_status", r#"{"atom_id":"atom1"}"#),
+    // **在飞观察/取消**（外部测试报告 P1 ✓）：两个都**无必填参数** ✓
+    //（`doc_id` 可选 ✓ ⇒ 缺省就是当前文档 ✓）—— 客户端超时后先查、再决定重试还是中止 ✓。
+    ("get_inflight", r#"{}"#),
+    ("cancel_operation", r#"{}"#),
     ("convert_to_path", r#"{"object_id":"L1"}"#),
     (
         "create_mask",

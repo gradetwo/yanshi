@@ -32,6 +32,7 @@ use yanshi_render::Buffer;
 use crate::annotations::AnnotationStore;
 use crate::broadcast::{Broadcaster, PushChannel, SubscriberId};
 use crate::job::{JobId, JobManager, JobStatus};
+use crate::timings::CommitPhases;
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
 /// 新建文档的规格。
@@ -486,10 +487,33 @@ impl Document {
     /// 折叠器据此做前后对比 ✓ —— 不需要的原子就不克隆状态 ✓（省一次大拷贝 ✓）。
     pub fn commit_as(
         &mut self,
+        atom: Atom,
+        actor: &str,
+        owner: bool,
+        changeset_id: Option<ChangesetId>,
+    ) -> Result<CommitResult> {
+        self.commit_as_timed(
+            atom,
+            actor,
+            owner,
+            changeset_id,
+            &mut CommitPhases::default(),
+        )
+    }
+
+    /// **`commit_as` 的带计时版本** ✓（外部测试报告 P2）：把折叠 ✓ / 脏区 ✓ / 日志 ✓
+    /// 三段分别量出来 ✓，填进 `phases` ✓。
+    ///
+    /// **为什么不改 `commit_as` 的签名** ✗：它被测试与内部大量调用 ✓ ⇒
+    /// 改签名会为了**一个观察功能**去动所有调用方 ✗；加一个 `_timed` 兄弟、老的转调它 ✓
+    /// 是本项目一贯的做法 ✓（`commit` / `commit_changeset` 同理 ✓）。
+    pub fn commit_as_timed(
+        &mut self,
         mut atom: Atom,
         actor: &str,
         owner: bool,
         changeset_id: Option<ChangesetId>,
+        phases: &mut CommitPhases,
     ) -> Result<CommitResult> {
         // 变更集是原子字段（5.1）；显式写在原子上者优先。
         if atom.changeset_id.is_none() {
@@ -505,6 +529,8 @@ impl Document {
         let atom_session = atom.session.clone();
         let atom_id = atom.id.clone();
 
+        // 日志段：校验 ＋ 追加（写内存日志 ✓；落盘由 `Workspace::journal` 量 ✓）。
+        let log_started = std::time::Instant::now();
         let validation = {
             let exists = |hash: &BlobHash| self.store.exists(hash);
             let mut context = CommitContext::new(&self.state, &exists, actor, &atom_session);
@@ -513,6 +539,9 @@ impl Document {
             }
             self.log.append_validated(atom, &context)
         };
+        phases.log_us = phases
+            .log_us
+            .saturating_add(log_started.elapsed().as_micros() as u64);
         let outcome = match validation {
             Ok(outcome) => outcome,
             // 12.3 第 2 步：采样性替换冲突时先确保冲突图层存在，再把错误交回客户端。
@@ -548,7 +577,8 @@ impl Document {
             .cloned()
             .ok_or_else(|| internal("刚追加的原子不在日志中"))?;
 
-        // 增量折叠（6.6）。
+        // 折叠段（6.6）。
+        let fold_started = std::time::Instant::now();
         let folded: StateAt = self.folder.fold(&self.log, self.log.head_seq())?;
         self.state = folded.state;
         if self.state.width > 1 {
@@ -563,8 +593,12 @@ impl Document {
                 }
             }
         }
+        phases.fold_us = phases
+            .fold_us
+            .saturating_add(fold_started.elapsed().as_micros() as u64);
 
-        // 双 dirty 传播 → 失效 tile（6.6）。
+        // 脏区段：双 dirty 传播 → 失效 tile（6.6）。
+        let dirty_started = std::time::Instant::now();
         let dirty = plan_dirty_with_log(&self.state, previous.as_ref(), &self.log, &appended);
         let dirty_tiles = self.renderer.apply_dirty(&self.state, &dirty);
         // **累积文档脏区** ✓：给"增量文档预览"用（性能专题，第 1040 轮）。
@@ -584,6 +618,9 @@ impl Document {
                 (a, None) => a,
             };
         }
+        phases.dirty_us = phases
+            .dirty_us
+            .saturating_add(dirty_started.elapsed().as_micros() as u64);
 
         // 控制流广播（6.8）。
         self.broadcaster.publish_atom(&appended);

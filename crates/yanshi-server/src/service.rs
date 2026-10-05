@@ -14,7 +14,9 @@ use yanshi_render::thumb::ThumbKind;
 use crate::document::{
     CommitResult, Document, DocumentSettings, NewDocument, RenderStatus, RenderedPreview,
 };
+use crate::inflight::InflightRegistry;
 use crate::persist::{DocumentMeta, FileStore};
+use crate::timings::CommitPhases;
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
@@ -494,6 +496,13 @@ fn read_texture_dir(path: &std::path::Path) -> Result<Vec<(String, u64)>> {
 /// 多文档工作区。
 pub struct Workspace {
     store: Arc<dyn BlobStore>,
+    /// **在飞变更操作登记表** ✓（外部测试报告 P1 ✓）。
+    ///
+    /// **为什么用 `Arc`** ✓：登记表必须在**不取这把 `Workspace` 锁**的前提下被读到 ✓
+    ///（长操作正持着锁 ✓）⇒ HTTP 层另存一份句柄 ✓，两边指向**同一张表** ✓。
+    /// **为什么放在这里而不是 HTTP 层** ✗：MCP／嵌入式／测试也走工具层 ✓，
+    /// 状态只有放在**所有入口共用**的地方才不会分叉 ✓（见 `crate::inflight` ✓）。
+    inflight: Arc<InflightRegistry>,
     documents: BTreeMap<String, Document>,
     persist: Option<FileStore>,
     /// **工作区级偏好** ✓（收藏的笔刷、最近使用…… ✓）。
@@ -836,6 +845,7 @@ impl Workspace {
     pub fn in_memory(settings: DocumentSettings) -> Self {
         Self {
             store: Arc::new(MemoryBlobStore::new()),
+            inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
             persist: None,
             assets_dir: None,
@@ -864,6 +874,7 @@ impl Workspace {
         );
         Ok(Self {
             store,
+            inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
             preferences: read_preferences(&persist),
             persist: Some(persist),
@@ -879,6 +890,14 @@ impl Workspace {
     /// CAS。
     pub fn store(&self) -> Arc<dyn BlobStore> {
         Arc::clone(&self.store)
+    }
+
+    /// **在飞操作登记表的共享句柄** ✓（外部测试报告 P1）。
+    ///
+    /// 克隆出来的是**同一张表** ✓ —— HTTP 层在取工作区锁**之前**用它做
+    /// "忙不忙 / 取消 / 观察"三件事 ✓（见 `crate::inflight` 的模块说明 ✓）。
+    pub fn inflight(&self) -> &Arc<InflightRegistry> {
+        &self.inflight
     }
 
     /// 持久化层。
@@ -1255,11 +1274,30 @@ impl Workspace {
         actor: &str,
         owner: bool,
     ) -> Result<CommitResult> {
+        self.commit_timed(doc_id, atom, actor, owner, &mut CommitPhases::default())
+    }
+
+    /// **`commit` 的带计时版本** ✓（外部测试报告 P2）：分项耗时写进 `phases` ✓（微秒 ✓）。
+    ///
+    /// **为什么不改 `commit` 的签名** ✗：它是公开 API ✓ 且有大量调用方与测试 ✓ ⇒
+    /// 加一个 `_timed` 兄弟、老的转调它 ✓（与 `Document::commit_as_timed` 同一规矩 ✓）。
+    pub fn commit_timed(
+        &mut self,
+        doc_id: &str,
+        atom: Atom,
+        actor: &str,
+        owner: bool,
+        phases: &mut CommitPhases,
+    ) -> Result<CommitResult> {
         let result = {
             let document = self.document_mut(doc_id)?;
-            document.commit_as(atom, actor, owner, None)?
+            document.commit_as_timed(atom, actor, owner, None, phases)?
         };
+        let journal_started = std::time::Instant::now();
         self.journal(doc_id, &result)?;
+        phases.log_us = phases
+            .log_us
+            .saturating_add(journal_started.elapsed().as_micros() as u64);
         Ok(result)
     }
 
@@ -1272,13 +1310,37 @@ impl Workspace {
         owner: bool,
         changeset_id: ChangesetId,
     ) -> Result<Vec<CommitResult>> {
+        self.commit_changeset_timed(
+            doc_id,
+            atoms,
+            actor,
+            owner,
+            changeset_id,
+            &mut CommitPhases::default(),
+        )
+    }
+
+    /// **`commit_changeset` 的带计时版本** ✓：各原子分项耗时**累加**进 `phases` ✓。
+    pub fn commit_changeset_timed(
+        &mut self,
+        doc_id: &str,
+        atoms: Vec<Atom>,
+        actor: &str,
+        owner: bool,
+        changeset_id: ChangesetId,
+        phases: &mut CommitPhases,
+    ) -> Result<Vec<CommitResult>> {
         let mut results = Vec::with_capacity(atoms.len());
         for atom in atoms {
             let result = {
                 let document = self.document_mut(doc_id)?;
-                document.commit_as(atom, actor, owner, Some(changeset_id.clone()))?
+                document.commit_as_timed(atom, actor, owner, Some(changeset_id.clone()), phases)?
             };
+            let journal_started = std::time::Instant::now();
             self.journal(doc_id, &result)?;
+            phases.log_us = phases
+                .log_us
+                .saturating_add(journal_started.elapsed().as_micros() as u64);
             results.push(result);
         }
         Ok(results)
