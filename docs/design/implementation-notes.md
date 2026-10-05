@@ -35237,3 +35237,28 @@ Object.keys 看真键表）。
 
 下一步：写一条 shell 层或 node 层的判据，用 mock 的 HOME（无 rustup 目录、有 rustup 目录但缺目标、
 有目标三种情况）断言 2/1/0 三态，并变异验证（把 2 改成 0 应变红）。
+
+## 第 1128 轮：(B)③ 补上三态判据（能红，已血脉验证）
+
+背景：第 1127 轮核实 target_installed() 的三态实现早已完成，但**没有判据覆盖**它。
+本轮补上 scripts/tool-release-target-tri-state.mjs。
+
+判据做法：用 sed 只提取 `target_installed()` 函数本身（不跑脚本主体），
+再用**假的 HOME** 造三种文件系统状态，断言 return code：
+  情况 A：~/.rustup/toolchains/*/lib/rustlib/<target> 存在 ⇒ 期望 0（已安装）
+  情况 B：有 ~/.rustup/toolchains 但没有该目标 ⇒ 期望 1（明确没装）
+  情况 C：没有 ~/.rustup（系统 cargo / Homebrew rust）⇒ 期望 2（**无法判断**）
+
+血脉验证（亲手做，不是自述）：
+  把 `return 2` 改成 `return 0`（复现历史 bug：把"无法判断"当成"已安装"）
+  ⇒ 读数变成 `已安装=0 明确没装=1 无法判断=0` ⇒ **判据红**，失败信息是
+  "没有 rustup 时应当回 2（无法判断，不能当成已安装），实得 0" ⇒ 直指被判条件 ✓
+  ⇒ 还原后逐字节一致，判据回绿 ✓
+
+顺手加固（因为发现了一个可疑现象）：第一次用 runner 做变异时它**没有红**。
+怀疑是相对路径问题（原判据用 "scripts/package-release.sh"；runner 可能在别的 cwd 跑，
+或把脚本复制到别处，于是"变异没红"可能只是**没读到我变异的那份文件**）。
+改成用 import.meta.url 解析仓库根之后复验三种情形：
+  ① 从仓库根跑 ⇒ 绿；② 从 /tmp 跑 ⇒ 同样绿；③ 变异后从 /tmp 跑 ⇒ 红（EXIT=1）。
+所以判据本体与路径都稳健。runner 那次没红的原因仍待确认（可能是 runner 的隔离方式），
+但判据本身已可直接血脉验证，且失败信息落在被判条件上。
