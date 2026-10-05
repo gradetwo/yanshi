@@ -5372,8 +5372,15 @@ async function refreshPreview(fromKernel = false) {
       // 正确语义 ✓：**只有文档真的换了尺寸**（新建 / 打开另一份 ✓）才归位缩放 ✓；
       // 尺寸没变 ⇒ 像素照旧要画（下面那段 ✓），但**几何一律不动** ✗。
       const natural = { w: preview.naturalWidth, h: preview.naturalHeight };
-      const resized =
-        !state.docSize || state.docSize.w !== natural.w || state.docSize.h !== natural.h;
+      // 第 1031 轮：**判定不能拿"预览图尺寸"与"文档尺寸"比** ✗ ——
+      // 第 990 轮我删掉了 `state.docSize = natural`（**对 ✓**），但**没同步改这里** ✗ ⇒
+      // ⇒ 于是 `resized` 变成"服务端文档尺寸 ≠ 预览图尺寸"⇒ **∴ 恒真** ✗ ⇒
+      // ⇒ **∴ 每次预览加载都 `state.zoom = 1`** ✗ ⇒ `clampViewport` 把视口撑满 ⇒ `viewport = 0,0`
+      // ⇒ **∴ 吸管取到别处（实测 99,102 vs 笔的 148 ✓）** ✓ —— **整条链由此而来 ✓**。
+      // ⇒ **改成"预览尺寸是否变了"** ✓（**与 `docSize` 解耦 ✓，恢复"预览换了才归位缩放"的原意 ✓**）。
+      const lastPreview = state.lastPreviewSize || null;
+      const resized = !lastPreview || lastPreview.w !== natural.w || lastPreview.h !== natural.h;
+      state.lastPreviewSize = natural;
       if (resized) {
         // **不要用预览图尺寸改写文档尺寸**（第 990 轮）：`preview` 是**带尺寸参数生成**的位图 ✓，
         // 它的 `naturalWidth` 在本机实测是 **474**，而文档宽是 **512** ✓ ⇒ 一旦写进去，
