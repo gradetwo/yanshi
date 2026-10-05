@@ -120,6 +120,10 @@ const afterOpen = await evaluate(`(() => {
   const c = window.__brushRefresh;
   return { options: select ? select.options.length : -1, counters: c ? { entered: c.entered, exited: c.exited } : null };
 })()`);
+// `failures` 必须在**用到它的检查之前**声明（第 1081 轮：原来在后面 ⇒ 失败分支抛
+// `ReferenceError: Cannot access 'failures' before initialization` ⇒ 既没消息也没数字 ✗）。
+const failures = [];
+
 console.log(`  · 点开面板后 = ${JSON.stringify(afterOpen)}`);
 
 // (A)⑥ 第二层：离线画一笔要有墨。用真实指针事件驱动页面自己的落笔路径，前后比画布不透明像素数。
@@ -165,7 +169,6 @@ if (panelOptions < 2) {
   else console.log("  ↳ 诊断：进出正常但选项没进 DOM ⇒ 查 renderBrushLibrary/分组逻辑");
 }
 
-const failures = [];
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
 if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页面没有内容");
