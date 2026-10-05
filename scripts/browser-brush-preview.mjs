@@ -90,7 +90,12 @@ await send("Page.navigate", { url });
 // 只 `navigate` 会命中**内存缓存** ✓ ⇒ 跑的是**旧界面的 JS** ✓
 //（现象：服务端明明已经改了 ✓，探针却一直看到旧行为 ✗ —— 与"我改了却没生效"同类 ✓，代价极高 ✓）。
 await send("Page.reload", { ignoreCache: true });
-await sleep(1500);
+// ⚠️ **这里不需要固定睡眠** ✗（第 897 轮 ✓，**类别③：等待多余 ⇒ 直接去掉** ✓）：
+// **下一行已经在正确地等** ✓ —— `waitFor("… brush …", "查看器就绪")` ✓ 且**等不到就 `exit(3)`** ✓
+//（**"等不到要有自己的失败信息"** ✓）。
+// ⚠️ **本文件其余五处 `sleep`（`dragStroke` 之后的 2000/2500）是**故意保留**的** ✗（第 897 轮判过 ✓）：
+//   它们等的是"**对象出现在服务端**" ✗，而断言读的**正是 `list_objects` 的结果** ✗ ⇒
+//   **"等它出现"会把"没出现"也等成通过** ✗（**改成轮询服务端也一样** ✗）⇒ **只能留固定上限** ✓。
 if (!(await waitFor("typeof window.yanshi === 'object' && !!document.getElementById('brush')", "查看器就绪"))) {
   process.exit(3);
 }
