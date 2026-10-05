@@ -280,3 +280,13 @@
   .status { display: flex; gap: 8px; flex-wrap: wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .85; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #c33; vertical-align: middle; }
   .dot.on { background: #2a2; }
+  /* **离线写队列** ✓：状态的颜色 + 操作条的显隐 ✓。间距只用已有的 4/8 档 ✓（`ui-layout-grid` 会数 ✓）。 */
+  .status .outbox { opacity: 1; font-weight: 600; }
+  .status .outbox[data-state="queued"], .status .outbox[data-state="full"] { color: #b8860b; }
+  .status .outbox[data-state="failed"], .status .outbox[data-state="conflict"] { color: #c33; }
+  .status .outbox[data-state="offline"] { color: #888; }
+  #outboxBar { display: flex; gap: 8px; align-items: center; padding: 4px 8px;
+    border-bottom: 1px solid var(--line); background: #fff8e1; font-size: 12px; }
+  #outboxBar[hidden] { display: none; }
+  #outboxBar[data-state="failed"], #outboxBar[data-state="conflict"] { background: #ffe9e6; }
+  #outboxBar #outboxText { flex: 1; }
