@@ -1574,6 +1574,94 @@ function closeOpenDialog() {
   else dialog.removeAttribute("open");
 }
 
+/// **人类可读的字节数** ✓（`1048576` ⇒ `1.0 MB` ✓）。
+///
+/// **为什么必须有** ✗：文档列表与导入进度都要报大小 ✓，而裸字节数（`349123456`）
+/// 人眼读不出量级 ✓（"这是 349 MB 还是 34 MB"）——那正是"界面不专业"的来源之一 ✓。
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "?";
+  if (value < 1024) return value + " B";
+  const units = ["KB", "MB", "GB"];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+  return scaled.toFixed(scaled >= 100 ? 0 : 1) + " " + units[unit];
+}
+
+/// 服务端错误体 ⇒ 一行能读懂的话 ✓（`{error_code, context.detail}` ✓，与工具响应同一形状 ✓）。
+function describeFailure(value) {
+  if (!value) return "没有响应";
+  const code = value.error_code || value.code || "unknown";
+  const detail = (value.context && value.context.detail) || value.message || "";
+  return code + (detail ? "：" + String(detail).slice(0, 200) : "");
+}
+
+/// **把本机的 `.yanshi` 工程包传上服务端并导入** ✓（分片协议见 `server.rs` 的 `import_document` ✓）。
+///
+/// **为什么分片** ✗：HTTP 请求体上限是 32 MiB ✓（`http::MAX_BODY_BYTES` ✓），
+/// 而真实工程包是**几百 MB** ✓（产品负责人给的夹具约 349 MB ✓）⇒ 一次 POST 根本传不进来 ✓。
+/// **为什么每片都用服务端回的 `received` 推进** ✓：服务端回的是**它实际收到的字节数** ✓
+/// ⇒ 少传一段会当场暴露 ✓，而不是导出一份**悄悄缺内容**的文档 ✗（那是最坏的一种"成功" ✓）。
+/// **为什么导入完直接打开** ✓：令牌是**按文档签发**的 ✗ ⇒ 不把新令牌交回去，
+/// 用户面对的就是"导入成功了但打不开" ✓（旧的路径导入按钮正是这样，只好让人去敲 curl ✓）。
+async function importProjectFile(file) {
+  const info = $("projectInfo");
+  const say = (text) => { if (info) info.textContent = text; };
+  const chunk = 8 * 1024 * 1024;
+  if (!file || !file.size) {
+    say("这个文件是空的 ⇒ 不是 .yanshi 工程包");
+    return;
+  }
+  say("正在导入 " + file.name + "（" + formatBytes(file.size) + "）…");
+  try {
+    const begun = await fetch("/api/documents/import?begin=1", { method: "POST" })
+      .then((response) => response.json());
+    if (!begun.ok) {
+      say("开始上传失败：" + describeFailure(begun));
+      return;
+    }
+    const uploadId = begun.upload_id;
+    // **以服务端说的单片上限为准** ✓（自己写死一个数，改了服务端就会莫名其妙地断 ✓）。
+    const perChunk = Math.max(1, Math.min(Number(begun.max_chunk_bytes) || chunk, chunk));
+    let offset = Number(begun.received) || 0;
+    while (offset < file.size) {
+      const slice = file.slice(offset, offset + perChunk);
+      const value = await fetch(
+        "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&offset=" + offset,
+        { method: "POST", body: slice },
+      ).then((response) => response.json());
+      if (!value.ok) {
+        say("上传中断（已传 " + formatBytes(offset) + "）：" + describeFailure(value));
+        return;
+      }
+      offset = Number(value.received);
+      say("正在上传 " + Math.round((offset / file.size) * 100) + "%（" +
+        formatBytes(offset) + " / " + formatBytes(file.size) + "）…");
+    }
+    const name = (($("projectImportName") || {}).value || "").trim();
+    const finishUrl = "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&finish=1" +
+      (name ? "&doc_id=" + encodeURIComponent(name) : "");
+    const done = await fetch(finishUrl, { method: "POST" }).then((response) => response.json());
+    if (!done.ok) {
+      // **冲突要给出路** ✓：包里记的 id 已经存在时导入**不覆盖** ✓ ⇒ 直接告诉用户改个名字 ✓。
+      say("导入被拒绝：" + describeFailure(done) + "（可在「导入为」里写一个新 id 再试）");
+      return;
+    }
+    const atoms = typeof done.atoms === "number" ? done.atoms + " 条原子" : "已还原";
+    const blobs = typeof done.blobs === "number" ? "，" + done.blobs + " 个 blob" : "";
+    log("已导入工程包：" + done.doc_id + " ✓（" + atoms + blobs + "）", "#2a2");
+    if (window.yanshiFileMenu) window.yanshiFileMenu.close();
+    closeOpenDialog();
+    await switchDocument(done.doc_id, done.token);
+  } catch (error) {
+    say("导入失败：" + String(error).slice(0, 140));
+  }
+}
+
 /// `#rrggbb` → `[r, g, b]`（0..1）✓。
 function hexToUnit(hex) {
   const value = String(hex || "#000000").replace("#", "");
@@ -4282,30 +4370,21 @@ async function setupAssetPanels() {
       });
     }
     if (importButton) {
-      importButton.addEventListener("click", async () => {
-        const path = pathOf();
-        if (!path) {
-          if (info) info.textContent = "先写一个路径 ✓";
-          return;
-        }
-        // **新文档 id** ✓：默认从未导入过的一个 ✓；已存在会被工具**拒绝**（绝不覆盖 ✓）。
-        const docId = (window.prompt("导入成哪个文档 id？（已存在的会被拒绝，绝不覆盖）", "imported") || "").trim();
-        if (!docId) return;
-        const value = await callToolChecked("import_project", { path: path, doc_id: docId }, "导入工程");
-        // **令牌是按文档签发的** ✗ ⇒ 导入的新文档**用当前令牌打不开** ✓
-        // ⇒ 必须把这条**和可照做的命令**一起说出来 ✓（否则用户会以为导入失败了 ✓）。
-        if (info) {
-          info.innerHTML =
-            "已导入为 <code>" + docId + "</code>（" +
-            (typeof value.atoms === "number" ? value.atoms + " 条原子" : "已还原") +
-            (typeof value.blobs === "number" ? "，" + value.blobs + " 个 blob" : "") +
-            "）✓ —— **令牌按文档签发** ✗ ⇒ 打开它要先为它签一个：<br>" +
-            "<code>curl -X POST 'http://127.0.0.1:" + (location.port || "80") +
-            "/api/documents' -H 'content-type: application/json' -d '{\"doc_id\":\"" + docId + "\"}'</code><br>" +
-            "然后把地址栏里的 <code>doc=</code> 与 <code>token=</code> 换成返回的那两个 ✓";
-        }
-        log("已导入工程包：" + docId + " ✓（新文档需要新令牌 ✓）", "#2a2");
+      const fileInput = $("projectFile");
+      // **按钮只是"选文件"的替身** ✓ —— 浏览器只允许用户直接点 `<input type=file>` 来选择本机文件 ✓，
+      // 所以按钮把这个动作转给它 ✓（用户看到的是一个动作 ✓，不是两个 ✓）。
+      importButton.addEventListener("click", () => {
+        if (fileInput) fileInput.click();
+        else if (info) info.textContent = "这个构建里没有文件选择控件";
       });
+      if (fileInput) {
+        fileInput.addEventListener("change", async () => {
+          const file = fileInput.files && fileInput.files[0];
+          // **立刻清空** ✓：同一个文件连选两次也要能再次触发 `change` ✓（否则第二次什么都不发生 ✗）。
+          fileInput.value = "";
+          if (file) await importProjectFile(file);
+        });
+      }
     }
   }
 

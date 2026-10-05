@@ -514,21 +514,24 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
       <div id="gradInfo" class="hint"></div>
     </div>
-    <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓，
-         而界面里**一次都没提到过它们** ✗（实测：查看器里出现次数 = 0 ✓）
-         ⇒ "真人备份不了自己的画" ✓ —— 这正是"两边都要有"的**反面缺口** ✓。
-         **路径是服务端的路径** ✓（不是浏览器的文件选择器 ✓）⇒ 这一点必须写在界面上 ✗，
-         否则用户会以为点一下就从自己电脑上选文件 ✓。 -->
+    <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓。
+         **两个方向不是同一种东西** ✓，界面里必须分开写 ✗：
+         导出 ⇒ 服务端写文件 ✓（所以是**服务器上的路径** ✓，浏览器给不了 ✓）；
+         导入 ⇒ 用户**本机上有一个 `.yanshi`** ✓ ⇒ 必须能**选文件上传** ✓，
+         而不是让他在服务器路径框里敲一个自己的文件（那是**做不到**的 ✗ —— 产品负责人报的正是这一条 ✓）。
+         上传走分片协议 ✓（真实工程包几百 MB，一次 POST 过不了 32 MiB 的请求体上限 ✓，
+         见 `server.rs` 的 `import_document` ✓）。 -->
     <div class="card" data-panel="file">
       <h2>工程包</h2>
-      <div class="hint">
-        <span title="整份文档（原子日志 + 元数据 + 全部 blob）打成一个 .yanshi：未压缩 tar，任何 tar 都能看。">打包整个文档为 <code>.yanshi</code></span>
-        <strong>路径是服务器上的路径</strong> ✓ —— 不是从你电脑上选文件 ✗。
+      <div class="hint" title="导出写到服务器上的路径；导入从你的电脑选 .yanshi 文件（分片上传，整包多大都行）。">
+        导出写到服务器 ｜ 导入从本机选文件
       </div>
-      <label>路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <label>导出路径 <input id="projectPath" type="text" value="yanshi-project.yanshi" style="width:200px" /></label>
+      <div class="toolbar"><button id="projectExport" type="button">导出工程</button></div>
+      <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">
-        <button id="projectExport" type="button">导出工程</button>
-        <button id="projectImport" type="button">导入为新文档</button>
+        <button id="projectImport" type="button">导入 .yanshi…</button>
+        <input id="projectFile" type="file" accept=".yanshi,application/x-tar,application/octet-stream" hidden />
       </div>
       <div id="projectInfo" class="hint"></div>
     </div>

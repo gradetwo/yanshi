@@ -476,6 +476,19 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET, POST"),
         };
     }
+    // **工程包导入** ✓：浏览器把用户电脑上的 `.yanshi` **字节**交给服务端 ✓。
+    //
+    // **为什么必须在 `strip_prefix("/api/documents/")` 之前** ✗：那条前缀路由会把
+    // `/api/documents/import` 当成"文档 id 叫 import" ✓ ⇒ 走到 `document_summary` ✗
+    //（GET 200/404、POST 405），表现为"导入路由不存在" ✓。
+    // 这不是假想的坑 ✓：本项目已经因为"两条路由前缀互相遮蔽"翻过一次车 ✓
+    // ⇒ 这里同时用注释与判据把它钉住 ✓（判据里有一条正对着它 ✓）。
+    if path == "/api/documents/import" {
+        return match method {
+            "POST" => import_document(state, request),
+            _ => method_not_allowed(request, "POST"),
+        };
+    }
     if path == "/api/tools" {
         return match method {
             // **`GET /api/tools` = 工具清单** ✓（本轮补 ✓）。
@@ -810,35 +823,9 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     // 策略（最小且可预期 ✓）：**绑回环** ⇒ 维持现状 ✓（本机开发/探针都靠它 ✓）；
     // **绑对外** ⇒ Editor/Owner 必须带密钥 `YANSHI_API_KEY` ✓；没配密钥就**明确拒绝**并给出两条出路 ✓。
     let write_role = matches!(requested_role, Role::Editor | Role::Owner);
-    let loopback = bind_is_loopback(&state.options.bind);
-    if write_role && !loopback {
-        let expected = std::env::var("YANSHI_API_KEY")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let provided = request
-            .param("key")
-            .map(str::to_owned)
-            .or_else(|| request.header("x-yanshi-key").map(str::to_owned));
-        match expected {
-            None => {
-                return Response::from_error(&YanshiError::new(
-                    ErrorCode::PreconditionFailed,
-                    ErrorContext::detail(
-                        "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                         两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                         ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
-                            .to_owned(),
-                    ),
-                ));
-            }
-            Some(key) => {
-                if provided.as_deref() != Some(key.as_str()) {
-                    return Response::from_error(&YanshiError::new(
-                        ErrorCode::PermissionDenied,
-                        ErrorContext::detail(
-                            "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>".to_owned(),
-                        ),
-                    ));
-                }
-            }
+    if write_role {
+        if let Some(response) = require_write_access(state, request) {
+            return response;
         }
     }
     let token = match workspace.issue_token(&doc_id, &actor, requested_role) {
@@ -861,6 +848,269 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             "height": height,
             "url": format!("/?doc={doc_id}&token={token}"),
             "document": summary,
+        }),
+    )
+}
+
+/// **写权限的入口守卫** ✓（第三方代码审计 P0 第 2 条）。
+///
+/// `/api/documents` 原先任何人无需凭据即可拿到 **Editor** 令牌 ✓，
+/// 与"任意路径写"合起来就是"未授权 + 任意写"完整链 ✗。策略（最小且可预期 ✓）：
+/// **绑回环** ⇒ 放行 ✓（本机开发/探针都靠它 ✓）；**绑对外** ⇒ 必须带密钥 `YANSHI_API_KEY` ✓；
+/// 没配密钥就**明确拒绝**并给出两条出路 ✓。
+///
+/// **为什么抽成函数** ✓：工程包导入与文档删除都会**新建/销毁落盘文档** ✓，
+/// 与"开一个文档"是同一级写操作 ✓ ⇒ **必须用同一条策略** ✓。
+/// 各写一份必然漂移 ✗（本项目在这上面栽过不止一次 ✓）。
+fn require_write_access(state: &ServerState, request: &Request) -> Option<Response> {
+    if bind_is_loopback(&state.options.bind) {
+        return None;
+    }
+    let expected = std::env::var("YANSHI_API_KEY")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let provided = request
+        .param("key")
+        .map(str::to_owned)
+        .or_else(|| request.header("x-yanshi-key").map(str::to_owned));
+    match expected {
+        None => Some(Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(
+                "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                                 两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                                 ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
+                    .to_owned(),
+            ),
+        ))),
+        Some(key) => {
+            if provided.as_deref() == Some(key.as_str()) {
+                None
+            } else {
+                Some(Response::from_error(&YanshiError::new(
+                    ErrorCode::PermissionDenied,
+                    ErrorContext::detail(
+                        "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>".to_owned(),
+                    ),
+                )))
+            }
+        }
+    }
+}
+
+/// 导入用的临时目录（`<root>/.imports`）。
+///
+/// **为什么落在工作区而不是系统临时目录** ✓：同一次导入最终要把整个包读进内存并交给
+/// 落盘工作区 ✓ ⇒ 放在**同一个文件系统**上更可控 ✓，也不会在小分区上撑爆 `/tmp` ✗。
+fn import_dir(root: &std::path::Path) -> PathBuf {
+    root.join(".imports")
+}
+
+/// 分片上传 id 的合法形状 ✓（它会被拼进文件名 ✓ ⇒ 必须挡住路径穿越 ✗）。
+fn is_safe_upload_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// **`POST /api/documents/import`：把 `.yanshi` 工程包导入成一份新文档** ✓。
+///
+/// **为什么要有这条路由** ✗：工具层早就有 `import_project` ✓，查看器也早有一个按钮 ✓，
+/// 但那条路收的是**服务器上的路径** ✗ —— 浏览器里的用户拿不到自己的文件 ✓
+/// ⇒ "导入"在 Web 上**形同虚设** ✓（这正是产品负责人报的缺口 ✓）。
+/// 这里补的是**传输**：把**字节**从浏览器送进服务端 ✓，解析与落盘仍然只有一份实现 ✓
+///（`Workspace::import_project` ✓ —— 与 MCP 的 `import_project` 工具**同一条** ✓）。
+///
+/// **为什么是分片协议而不是一次 POST** ✗：HTTP 请求体上限是 **32 MiB** ✓
+///（`http::MAX_BODY_BYTES` ✓，且本服务**不支持 chunked** ✓），
+/// 而真实工程包是**几百 MB** ✓（产品负责人给的夹具：492 atom / 约 349 MB blob ✓）
+/// ⇒ 一次 POST 根本传不进来 ✓。协议三步（全部落在这一条路由上 ✓）：
+///
+/// 1. `?begin=1` ⇒ 建一个上传会话，回 `upload_id` 与单片上限；
+/// 2. `?upload=<id>&offset=<n>` ⇒ 把这一段追加进临时文件，回**服务端实际收到的字节数**；
+///    `offset` 与服务端已经收到的字节数不符 ⇒ **409 并告诉客户端该从哪续** ✓
+///    （"静默丢弃一段"会让导入出来的文档**悄悄缺内容** ✗ —— 那是最坏的一种成功 ✓）；
+/// 3. `?upload=<id>&finish=1[&doc_id=<新 id>]` ⇒ 走真实导入，回**新文档的令牌** ✓。
+///
+/// **令牌随导入一起回** ✓：令牌是**按文档签发**的 ✗ ⇒ 导入完不给令牌，用户面对的就是
+/// "导入成功了但打不开" ✓（旧按钮正是这样，只好让人去敲 curl ✓）⇒ 这里一次给全 ✓。
+///
+/// **已知的代价**（如实记下 ✗）：`Workspace::import_project` 收 `&[u8]` ✓
+/// ⇒ 收尾那一步仍然要把整包读进内存（外加 tar 解析的副本 ✓）
+/// ⇒ 分片只解决了"传得进来" ✓，没解决"解析时的内存峰值" ✗（值得单独立项 ✓）。
+fn import_document(state: &ServerState, request: &Request) -> Response {
+    if let Some(response) = require_write_access(state, request) {
+        return response;
+    }
+    let Some(root) = state.options.root.clone() else {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(
+                "导入工程包需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有地方放它".to_owned(),
+            ),
+        ));
+    };
+    if request.param("begin").is_some() {
+        return import_begin(&root);
+    }
+    let Some(upload_id) = request.param("upload").map(str::to_owned) else {
+        return crate::http::bad_request(
+            "导入工程包要分三步：① ?begin=1 建会话；② ?upload=<id>&offset=<已上传字节数> 传分片；\
+             ③ ?upload=<id>&finish=1 落盘并签发令牌",
+        );
+    };
+    if !is_safe_upload_id(&upload_id) {
+        return crate::http::bad_request("upload id 形状不合法（只允许字母数字与 -_）");
+    }
+    if request.param("finish").is_some() {
+        return import_finish(state, request, &upload_id);
+    }
+    import_chunk(request, &root, &upload_id)
+}
+
+/// 第 ① 步：开一个上传会话（`?begin=1`）。
+///
+/// 顺手清掉**过期的**半截上传 ✓（24 小时前开始的 ✓）：放弃的会话不该在磁盘上留一辈子 ✗。
+/// 只清过期的 ✓ —— 正在传的那个**绝不碰** ✗（时间窗就是这条不变量 ✓）。
+fn import_begin(root: &std::path::Path) -> Response {
+    let dir = import_dir(root);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("建不了导入临时目录 {}：{error}", dir.display())),
+        ));
+    }
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let upload_id = yanshi_core::Ulid::new().encode();
+    let path = dir.join(format!("{upload_id}.part"));
+    if let Err(error) = std::fs::write(&path, []) {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("建不了上传文件 {}：{error}", path.display())),
+        ));
+    }
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "upload_id": upload_id,
+            "received": 0,
+            // **单片上限照实说** ✓：客户端据此切片 ✓（猜一个数就会撞上 32 MiB 的墙 ✗）。
+            "max_chunk_bytes": crate::http::MAX_BODY_BYTES,
+        }),
+    )
+}
+
+/// 第 ② 步：追加一片（`?upload=<id>&offset=<n>`）。
+///
+/// **同一个会话假定单写者** ✓（查看器就是串行上传 ✓）。真并发同偏移的两片会被偏移检查挡住 ✓
+/// —— 也就是**响亮地失败** ✓，而不是两段交错拼出一个坏包 ✗。
+fn import_chunk(request: &Request, root: &std::path::Path, upload_id: &str) -> Response {
+    let path = import_dir(root).join(format!("{upload_id}.part"));
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "上传会话 {upload_id} 不存在（可能已过期被清理）⇒ 请从 ?begin=1 重新开始"
+            )),
+        ));
+    };
+    let received = metadata.len();
+    let Some(offset) = request
+        .param("offset")
+        .and_then(|text| text.parse::<u64>().ok())
+    else {
+        return crate::http::bad_request(
+            "分片要带 ?offset=<服务端已收到的字节数>（begin/finish 两回复里都有）",
+        );
+    };
+    if offset != received {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::Conflict,
+            ErrorContext::detail(format!(
+                "分片偏移不符：服务端已经有 {received} 字节，而这一片从 {offset} 开始 ⇒ 请从 {received} 续传（少一段会让导入出来的文档悄悄缺内容）"
+            )),
+        ));
+    }
+    let appended = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
+        file.write_all(&request.body)?;
+        file.flush()
+    })();
+    if let Err(error) = appended {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("写不进上传文件 {}：{error}", path.display())),
+        ));
+    }
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "upload_id": upload_id,
+            "received": received + request.body.len() as u64,
+        }),
+    )
+}
+
+/// 第 ③ 步：收尾（`?upload=<id>&finish=1`）—— 走真实导入并**把令牌一起给** ✓。
+fn import_finish(state: &ServerState, request: &Request, upload_id: &str) -> Response {
+    let Some(root) = state.options.root.as_ref() else {
+        return internal("导入收尾时工作区根目录消失了");
+    };
+    let path = import_dir(root).join(format!("{upload_id}.part"));
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "上传会话 {upload_id} 不存在（可能已过期被清理）⇒ 请重新上传"
+            )),
+        ));
+    };
+    // **收尾是终态** ✓：无论成不成，临时文件都删掉 ✓（留着只会变成一个"看起来还在传"的僵尸 ✗）。
+    let _ = std::fs::remove_file(&path);
+    if bytes.is_empty() {
+        return crate::http::bad_request("上传内容为空 ⇒ 这不是一个 .yanshi 工程包");
+    }
+    let doc_id = request.param("doc_id").map(str::to_owned);
+    let actor = "human:web";
+    let Ok(mut workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    let imported = match workspace.import_project(&bytes, doc_id.as_deref()) {
+        Ok(value) => value,
+        Err(error) => return Response::from_error(&error),
+    };
+    let Some(doc_id) = imported.get("doc_id").and_then(Value::as_str) else {
+        return internal("导入成功却没有回 doc_id");
+    };
+    let token = match workspace.issue_token(doc_id, actor, Role::Editor) {
+        Ok(token) => token,
+        Err(error) => return Response::from_error(&error),
+    };
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "doc_id": doc_id,
+            "token": token.as_str(),
+            "url": format!("/?doc={doc_id}&token={token}"),
+            "atoms": imported.get("atoms").cloned().unwrap_or(Value::Null),
+            "blobs": imported.get("blobs").cloned().unwrap_or(Value::Null),
+            "entries": imported.get("entries").cloned().unwrap_or(Value::Null),
+            "had_render": imported.get("had_render").cloned().unwrap_or(Value::Null),
         }),
     )
 }
