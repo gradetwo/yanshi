@@ -1408,83 +1408,15 @@ const BUILD_ID: &str = match option_env!("YANSHI_COMMIT") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
-const SERVICE_WORKER_JS: &str = r##""use strict";
-// **外壳清单** ✓ —— 第 213 轮补上**共享内核**两件 ✓：
-// 退休前是**查看器自己**用 `cache.put("/brush-module.wasm", …)` 把门面塞进来的 ✓，
-// 而那行随门面一起被删 ✗ ⇒ 于是**没人**再把内核放进 SW 缓存 ✗ ⇒
-// **离线时内核拿不到** ✗（`cachedUrls` 里没有它 ✓ —— 判据当场把这件事量了出来 ✓）。
-const SHELL = [
-  "/",
-  "/favicon.svg",
-  "/brand/svg/icon-light.svg",
-  "/brush-previews/index.json",
-  "/wasm/yanshi_wasm.js",
-  "/wasm/yanshi_wasm_bg.wasm",
-];
-// **缓存名里带上构建标识** ✓（(A)⑥「SW 升级不脏读」的正主 ✓）：
-// 名字一变 ⇒ 下面那句"删掉所有名字不同的缓存"✓ 就自动作废**整份旧外壳** ✓
-// ⇒ 这正是第 210 轮查到的真因 ✓（旧 js + 新 wasm ⇒ 内核预览失败 ✓）。
-const CACHE = "yanshi-shell-__BUILD_ID__";
-self.addEventListener("install", (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(CACHE);
-    await Promise.all(SHELL.map((url) => cache.add(url).catch(() => undefined)));
-    await self.skipWaiting();
-  })());
-});
-self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    const names = await caches.keys();
-    await Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name)));
-    await self.clients.claim();
-  })());
-});
-self.addEventListener("fetch", (event) => {
-  const request = event.request;
-  if (request.method !== "GET") return;
-  const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
-  // **blob 是"按内容哈希命名"的不可变资源** ✓ ⇒ **cache-first** ✓（行业口径 ✓，与 (A)⑥ 同一条原则 ✓）。
-  // **为什么放在这里** ✓：查看器里所有 blob 都出自 `const blobUrl = (hash) => api("/api/blob/" + hash)` ✓
-  // ⇒ 有的是 `fetch` ✓、有的是 **`<img src>`** ✗（后者**根本不经过我的 `fetchOrLocal`** ✓
-  // ⇒ 这就是"离线时那条 blob 一直失败 ✓、而且我加的写失败警告一条都不打"✓ 的原因 ✓）。
-  // ⇒ 交给 SW 做，**一处覆盖全部** ✓，不必去追十几个 `<img>` 赋值点 ✗。
-  if (url.pathname.startsWith("/api/blob/")) {
-    event.respondWith((async () => {
-      const cache = await caches.open(CACHE);
-      const hit = await cache.match(request, { ignoreSearch: true });
-      if (hit) return hit;
-      try {
-        const response = await fetch(request);
-        if (response && response.ok) cache.put(request, response.clone()).catch(() => undefined);
-        return response;
-      } catch (error) {
-        const fallback = await cache.match(request, { ignoreSearch: true });
-        if (fallback) return fallback;
-        throw error;
-      }
-    })());
-    return;
-  }
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;
-  event.respondWith((async () => {
-    try {
-      const response = await fetch(request);
-      if (response && response.ok && request.mode === "navigate") {
-        const cache = await caches.open(CACHE);
-        cache.put("/", response.clone()).catch(() => undefined);
-      }
-      return response;
-    } catch (error) {
-      const cached = await caches.match(request, { ignoreSearch: true });
-      if (cached) return cached;
-      const shell = await caches.match("/");
-      if (shell) return shell;
-      throw error;
-    }
-  })());
-});
-"##;
+/// **Service Worker 脚本** ✓（离线优先 PWA 的第一步 ／ (A)① 的**第一个可打包静态产物** ✓）。
+///
+/// 它从 `viewer.rs` 的字符串里**拆成独立文件** ✓，理由有两条 ✓：
+///   ① **SW 必须是独立可寻址资源** ✓ —— 内嵌在页面里的脚本**无法注册为 SW** ✗；
+///   ② **离线预缓存需要一份可枚举、可打包的清单** ✓ —— 独立文件才能被 `package-release.sh` 复制、
+///      被校验、也被 SW 自己 `cache.add` ✓。
+///
+/// 内容里的 `__BUILD_ID__` 是**构建标识占位** ✓，由用法处替换 ✓（**两侧必须一致 ✗**）。
+const SERVICE_WORKER_JS: &str = include_str!("../assets/service-worker.js");
 
 /// **PWA manifest**（可安装）。
 const WEB_MANIFEST_JSON: &str = r##"{ "name": "偃师 Yanshi", "short_name": "偃师", "start_url": "/", "display": "standalone", "background_color": "#ffffff", "theme_color": "#ffffff", "icons": [ { "src": "/brand/svg/icon-light.svg", "sizes": "any", "type": "image/svg+xml" } ] }"##;
@@ -1968,6 +1900,37 @@ pub fn owner_from_role(role: Role) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// **(A)① 的第一个可打包静态产物** ✓：Service Worker 必须是**独立文件** ✓、
+    /// 保留构建标识占位 ✓、且外壳清单里含**共享内核两件** ✓。
+    ///
+    /// **变异判据** ✓：① 把资产文件删掉 ⇒ 红 ✓；② 去掉 `__BUILD_ID__` 占位 ⇒ 红 ✓；
+    /// ③ 从外壳清单里删掉任一内核条目 ⇒ 红 ✓（**内核缺席会导致离线时内核拿不到** ✗ —— 第 213 轮的教训 ✓）。
+    #[test]
+    fn the_service_worker_is_a_separate_packable_asset() {
+        let path = std::path::Path::new("assets/service-worker.js");
+        assert!(
+            path.is_file(),
+            "(A)①：Service Worker 应是**独立资产文件**（可打包/可预缓存/可校验）✓"
+        );
+        let on_disk = std::fs::read_to_string(path).expect("应能读取资产文件");
+        assert_eq!(
+            on_disk, SERVICE_WORKER_JS,
+            "二进制内嵌的内容必须与磁盘资产**逐字节一致** ✓"
+        );
+        assert!(
+            on_disk.contains("__BUILD_ID__"),
+            "SW 必须保留 __BUILD_ID__ 占位 ✓（它进缓存名 ⇒ 新构建自动作废旧外壳 ✓，即 (A)⑥ ✓）"
+        );
+        for url in [
+            "/wasm/yanshi_wasm.js",
+            "/wasm/yanshi_wasm_bg.wasm",
+            "/brush-previews/index.json",
+        ] {
+            assert!(on_disk.contains(url), "SW 外壳清单应含 {url} ✓");
+        }
+    }
+
     use super::*;
 
     fn state() -> ServerState {
