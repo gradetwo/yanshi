@@ -948,7 +948,15 @@ const namingResult = await evaluate(`(async () => {
     await wait(250);
   }
   if (!docSizeMoved) console.log("  ⚠ 等待 docSize 更新超时 ⇒ 画布尺寸可能仍是旧的");
-  for (let i = 0; i < 12; i++) {
+  // 再等「确实又渲染过一次」：产品每次渲染后写 yanshiStats.lastArea（viewer.rs:1717），
+  // 所以等它从切换前的值变化，比赌一段固定时间更可靠，而且它不是被判的「画布像素数」本身。
+  let renderedAgain = false;
+  for (let i = 0; i < 60; i++) {
+    if ((window.yanshiStats && window.yanshiStats.lastArea) !== lastAreaBeforeSwitch) { renderedAgain = true; break; }
+    await wait(250);
+  }
+  if (!renderedAgain) console.log("  ⚠ 等待再次渲染超时（lastArea 未变）⇒ 画布尺寸可能仍是旧的");
+  for (let i = 0; i < 8; i++) {
     await wait(250);
     after = ${canvasFingerprint};
     afterWidth = document.getElementById("board").width;
