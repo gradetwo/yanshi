@@ -34602,3 +34602,29 @@ P0 处置：
    我立刻重做，改用语义变异（改行为，不改注释），才拿到真结果。
 3. 亲手验证的价值就在这里：子代理的自述说"两半独立"，
    而我实测只成立一半。仅读自述不会发现这一点。
+
+## 第 1099 轮：(A)④ 本地持久化现状审计
+
+审计对象：crates/yanshi-http/assets/viewer-app.js。
+
+已存在：
+1. IndexedDB 已有一套存储层：viewer-app.js:125-146。indexedDB.open(LOCAL_DB, 2)，
+   两个 object store（键值 LOCAL_STORE 与 JSON LOCAL_JSON_STORE），createObjectStore，事务封装。
+   结论：本地键值与 JSON 存储已具备。
+2. OPFS 出现 6 次。navigator.storage 出现 1 次。localStorage 出现 15 次。
+3. 本地 PNG 导出已能用：viewer-app.js:7546-7553。board.toBlob("image/png")，
+   URL.createObjectURL，a.download = docId + ".png"，之后 click()。
+   结论：客户端本地导出这一半已经成立。
+
+缺口：
+1. showSaveFilePicker 与 showOpenFilePicker 各出现 0 次。所以没有文件系统访问 API。
+   现状只能经 a.download 下载，不能选择保存位置，也不能覆盖原文件。
+2. .yanshi 工程包的本地往返缺失。服务端有 export_project 与 export_png 两个工具，
+   但查看器侧的"下载工程包"与"从本地读回工程包"仍然要经过服务端，不是纯本地。
+3. 离线可编辑的本地日志未知。IndexedDB 存的是键值或 JSON，它是否已经用于
+   "断网继续画并本地暂存"没有确认。这是 (A)④ 的核心问题。
+
+结论：
+(A)④ 不是从零开始。它已有三层（localStorage、IndexedDB、OPFS）加本地 PNG 导出，
+缺的是文件系统访问、离线本地日志、以及 .yanshi 的本地往返。缺口比想象的小。
+下一步：查 IndexedDB 是否已经在存离线日志，一次 grep 即可定性。
