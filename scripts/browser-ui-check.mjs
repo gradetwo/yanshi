@@ -892,6 +892,22 @@ const namingResult = await evaluate(`(async () => {
     await wait(250);
     after = ${canvasFingerprint};
   }
+  // **等 docSize 稳定下来**（第 939 轮）：它**初值是默认 1024x1024**，
+  // 由**服务端返回的尺寸**覆盖（viewer.rs:893 是初值、:2194 明写"会因时序滞后"）。
+  // ⚠️ **等的量必须就是判的量**：上面那段等的是**画板宽度**，而断言判的是 **docSize**
+  // ⇒ 两者不同步 ⇒ 于是量到"还没被覆盖的默认值"（这就是那条红的成因）。
+  // 判据：**连续两次读数相同 ⇒ 视为已稳定**；"最终必须等于源尺寸"仍由断言判。
+  // ⚠️ 本段位于**模板字符串内** ⇒ 注释里也**不能出现反引号，也不能出现美元加大括号**（第 939 轮各踩一次）。
+  let docSettled = 0;
+  let lastDoc = null;
+  for (let i = 0; i < 40; i++) {
+    const now = window.yanshi.state().docSize;
+    const key = now && now.w + "x" + now.h;
+    if (key === lastDoc) docSettled += 1; else docSettled = 0;
+    lastDoc = key;
+    if (docSettled >= 2) break;
+    await wait(250);
+  }
   const afterDoc = window.yanshi.state().docSize;
   return {
     beforeDoc,
