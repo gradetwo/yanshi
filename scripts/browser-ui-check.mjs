@@ -21,13 +21,44 @@ const checkDeadline = () => {
     process.exit(3);
   }
 };
-const debugPort = process.env.CDP_PORT || "9333";
+// 第 963 轮：runner 是把端口作**第二个命令行参数**传进来的（run-criteria.sh:111 ✓），
+// 而这里原本只读 process.env.CDP_PORT ✗ ⇒ 两边协议不一致 ⇒ 判据去连了别的端口 ⇒
+// 结果是"没有正在打开被测地址的页面 ⇒ 复用 about:blank ⇒ CDP 超时"（第 960-962 轮实测）。
+// 第 964 轮：实测 argv[3] 可能是**整条 URL**（"http://127.0.0.1:13990"），也可能是纯端口，
+// 而后面是 `http://127.0.0.1:${debugPort}/json/list` ⇒ 直接拼就成了
+// "http://127.0.0.1:http://127.0.0.1:13990/json/list"（ERR_INVALID_URL，第 963 轮实测）。
+// 所以这里只取端口：纯数字直接用，URL 则解析出 port（都没有则退回环境变量/默认值）。
+const rawPort = process.argv[3] || process.env.CDP_PORT || "9333";
+const debugPort = (() => {
+  const text = String(rawPort).trim();
+  if (/^\d+$/.test(text)) return text;
+  try { const parsed = new URL(text.includes("://") ? text : "http://" + text); return parsed.port || "9333"; }
+  catch (_) { return "9333"; }
+})();
 if (!url) {
   console.error("用法: node scripts/browser-ui-check.mjs <viewer-url>");
   process.exit(2);
 }
 
-const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+// 第 965 轮：让失败说清自己 —— 把"连了哪个地址、拿到什么形状"打出来。
+const cdpListUrl = `http://127.0.0.1:${debugPort}/json/list`;
+let list = null;
+try {
+  const response = await fetch(cdpListUrl);
+  const body = await response.text();
+  try { list = JSON.parse(body); } catch (error) {
+    console.error(`连上了 ${cdpListUrl}，但它返回的不是 JSON（前 200 字符：${body.slice(0, 200)}）` +
+      ` ⇒ 这个端口上多半不是调试端口。CDP_PORT/argv[3] 现在解析为 ${debugPort}。`);
+    process.exit(3);
+  }
+} catch (error) {
+  console.error(`连不上 ${cdpListUrl}：${String(error)} ⇒ 调试浏览器没起在这个端口（解析为 ${debugPort}）。`);
+  process.exit(3);
+}
+if (!Array.isArray(list)) {
+  console.error(`连上了 ${cdpListUrl}，但返回的不是数组（是 ${typeof list}）⇒ 这个端口上不是调试端口。`);
+  process.exit(3);
+}
 // **按 URL 匹配目标** ✓ —— 此前取的是"第一个 page" ✗：长期运行的调试浏览器里
 // 往往还开着别的页面（我自己实验留下的 ✓），于是检查跑在**旧页面**上 ✓，
 // 现象是"点击完全没反应、断言全错" ✗（但页面本身是好的 ✓），排查代价极高 ✓。
