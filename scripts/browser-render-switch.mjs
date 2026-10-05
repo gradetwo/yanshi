@@ -32,13 +32,23 @@ const send = (method, params) => new Promise((resolve) => { const id = nextId++;
 const evaluate = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
 // 先开一次页，让我们能在同一个 origin 上写 localStorage ✓
-await send("Page.navigate", { url }); await sleep(4500);
+await send("Page.navigate", { url }); await waitReady();
+// **等到"页面就绪"这个独立信号** ✓（第 889 轮 ✓）：原来固定睡 5 秒/4.5 秒 ✗ ⇒ 机器慢时间歇红 ✗。
+// ⚠️ **等待条件与断言条件必须不同** ✗：这里只等 `readyState` 与 `state` **存在** ✓，
+//    而断言读的是 **`state.wasm` 的值** ✓ ✓（**等"值"就等于让断言永不失败** ✗ —— 第 887 轮的教训 ✓）。
+const waitReady = async () => {
+  for (let i = 0; i < 40; i++) {
+    await sleep(300);
+    try { if (await evaluate('document.readyState === "complete" && typeof state !== "undefined"')) return true; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+  }
+  return false;
+};
 const setPref = (value) => evaluate(value === null
   ? `localStorage.removeItem("yanshi.serverRender"), "cleared"`
   : `localStorage.setItem("yanshi.serverRender", ${JSON.stringify(value)}), "set"`);
 /// **确定性信号** ✓（第 197 轮的教训 ✓）：**内核句柄在不在** ✓ —— 它与时间无关 ✓，
 /// 而"固定等 5 秒内的请求数"**时序敏感** ✗（当初的 `4 vs 3` 就是运气 ✓）。
-const load = async () => { seen.length = 0; await send("Page.navigate", { url }); await sleep(5000);
+const load = async () => { seen.length = 0; await send("Page.navigate", { url }); await waitReady();
   const hasWasm = await evaluate('(typeof state !== "undefined" && state) ? !!state.wasm : "no-state"');
   return { count: seen.filter((u) => u.includes("/api/tools/render_region")).length, hasWasm }; };
 const server = await (async () => { await setPref("1"); return await load(); })();
