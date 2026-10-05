@@ -35216,3 +35216,24 @@ Object.keys 看真键表）。
    缺它 viewer 会静默退回服务端渲染并导致浏览器判据误报；JS/CSS 是 include_str! 编进二进制的，
    跑浏览器判据前必须先 cargo build --workspace --bins；window.yanshi.state 是**函数**必须调用；
    绘制画布是 #board（页面有多个 canvas）。
+
+## 第 1127 轮：(B)③ 核实——target_installed 的三态实现已完成，但缺判据
+
+核实结果（逐条有出处）：
+1. `scripts/package-release.sh:89-109` 的 `target_installed()` **已经实现三态**：
+   - 找到 `~/.rustup/toolchains/*/lib/rustlib/<target>` 目录 ⇒ `return 0`（已安装）；
+   - 有 rustup 目录但没有该目标 ⇒ `return 1`（明确没装）；
+   - 没有 rustup（系统 cargo / Homebrew rust）⇒ `return 2`（**无法判断**）。
+   注释里还写了历史教训：老版本这里回 0（当成已装）⇒ 调用方放心去构建 ⇒ 后面才炸，
+   而且报的是误导性错误（看着像工具链坏，其实是根本没装）；现在回 2，调用方一律按没装处理。
+2. `package-release.sh:271-275` 的调用点**也按三态分开**（注释注明"三态要分开说，第 376-377 轮"，
+   原先写 `! target_installed` 会把 2 也当成已装 ✗）。
+3. 但**判据侧没有覆盖它**：`scripts/tool-release-launcher.mjs` 是"发布启动脚本开关"判据，
+   与三态语义无关（我核实了它的文件头说明）。
+
+结论：**(B)③ 的"实现"部分早就完成**，我此前把它列为"未做"是错的；
+真正剩下的是**给三态加一条能红的判据**（例如把 `return 2` 改回 `return 0` ⇒ 判据必须红）。
+这条判据的价值正是历史上真实发生过的 bug（静态判据全绿、发布包才炸）。
+
+下一步：写一条 shell 层或 node 层的判据，用 mock 的 HOME（无 rustup 目录、有 rustup 目录但缺目标、
+有目标三种情况）断言 2/1/0 三态，并变异验证（把 2 改成 0 应变红）。
