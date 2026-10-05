@@ -871,17 +871,9 @@ const namingResult = await evaluate(`(async () => {
 
   // **文档尺寸**（第 785 轮）：切文档时画板会先按默认 1024² 摆一次、之后才按真实尺寸重建，
   // 所以只量画板可能量到「还没重建完的默认板」。真相应看文档尺寸（yanshi.state().docSize）。
-  // **先等"文档真的装好了"**（第 943 轮）：第 942 轮实测到这一刻 state.token 是**空的**，
-  // 说明页面正在换文档，而那时读到的 beforeDoc（512）是**上一个文档的残留**、
-  // afterDoc（1024）是**初始默认值** —— 两个都不可信。
-  // 判据：等 state.token 变成 64 位小写十六进制（页面自己的 api() 也靠它，所以它非空才算装好）。
-  // 这是**独立于被判量**的信号：判的仍是"副本尺寸等于源尺寸"。
-  // 本段在模板字符串内，注释里也不能出现反引号或美元加大括号。
-  const TOKEN_OK = /^[0-9a-f]{64}$/;
-  for (let i = 0; i < 60; i++) {
-    if (TOKEN_OK.test(String(window.yanshi.state().token || ""))) break;
-    await wait(250);
-  }
+  // ⚠️ **第 944 轮撤销了这里的一段等待**：它等的是 state.token，而 state() **不导出 token**
+  //（它的键是 docId/layerId/tool/...），所以那段等待**永远超时 ⇒ 等于没等**。
+  // 而 beforeDoc 是在**源文档上**读的（此时还没切走）⇒ 它读到 512x512 是**对的**，无需等待。
   const beforeDoc = window.yanshi.state().docSize;
   // **并排观测两侧**（第 940 轮）：duplicate_document 用**源文档的** state.width/height 建副本
   //（service.rs:963-969）⇒ 若副本是 1024x1024，则**服务端看到的源就是 1024x1024**。
@@ -945,6 +937,13 @@ const namingResult = await evaluate(`(async () => {
     if (key === lastDoc) docSettled += 1; else docSettled = 0;
     lastDoc = key;
     if (docSettled >= 2) break;
+    await wait(250);
+  }
+  // **就在这里等"确实切到副本了"**（第 944 轮）：信号是 state.docId 变成副本名 ——
+  // 判据知道副本名，且它与被判的 docSize 相互独立。原来 not 等，于是读到的是
+  // 页面**初始默认** 1024x1024，让"文档尺寸"这条因为双方都错而相等（第 943 轮的教训）。
+  for (let i = 0; i < 60; i++) {
+    if (String(window.yanshi.state().docId || "") === ${JSON.stringify(copyName)}) break;
     await wait(250);
   }
   const afterDoc = window.yanshi.state().docSize;
