@@ -34647,3 +34647,29 @@ P0 处置：
 
 累计：诊断包 6 条判据里，我亲手变异了 2 条（zip 条目清单、环形缓冲有界）。
 其余 3 条（隐私扫描、跳过补丁告警、双面条目一致）由子代理做了变异验证并报告了细节。
+
+## 第 1101 轮：(A)④ 审计第二步，本地持久化的用途已定性
+
+已具备（注释里带算术依据）：
+1. viewer-app.js:102-104 定义 LOCAL_DB = "yanshi-local-v1"，两个 store：LOCAL_STORE = "blobs" 与
+   LOCAL_JSON_STORE = "json"。
+2. viewer-app.js:122 注释写明：IndexedDB 只存 {key, file, size, at}，不存字节，字节在 OPFS。
+3. viewer-app.js:98-99 注释写明算术依据：文档像素可达 48MB，而 localStorage 上限约 5MB，
+   所以像素必须走 OPFS。
+4. viewer-app.js:156-157 用 navigator.storage.getDirectory() 取 yanshi 目录；
+   :186 与 :383 用 handle.createWritable() 写字节。
+5. viewer-app.js:288 注释写明：二进制本地有就直接回一个 Response（离线可显示），
+   没有就取网并写进 OPFS。
+
+结论一：这是一套成套设计，OPFS 存字节加 IndexedDB 存索引，而且已经接入取数路径。
+所以现状是"离线可读已经成立"，不是雏形。
+
+仍缺三处：
+1. 离线写队列（本地 journal）。outbox 出现 0 次，journal 出现 0 次；queue 19 次与 pending 61 次
+   需要再看是否只是网络队列；offline 只出现 4 次，离线分支很薄。
+   所以现状是"离线可读，离线可写还没有"。
+2. .yanshi 工程包的本地往返（上一轮已确认缺失）。
+3. 文件系统访问 API（showSaveFilePicker 与 showOpenFilePicker 各 0 次）。
+
+结论二：缺口已收窄到三处。其中"离线可写"是 (A)④ 与 (A)⑥ 离线可画的交汇点，
+应作为 (A)④ 的第一项。
