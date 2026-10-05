@@ -40,7 +40,14 @@ const docId = new URL(url).searchParams.get("doc");
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
-await sleep(2600);
+// **等到"页面就绪"这个独立信号** ✓（第 895 轮 ✓）：原来固定睡 2.6 秒 ✗ ⇒ 机器慢时下面 `#zoomInput`
+// 会取不到 ⇒ `:46` 直接 `return false` ⇒ 判据间歇红 ✗（**"取不到就静默 false"正是间歇的机制** ✓）。
+// ⚠️ **等待条件与断言条件不同** ✗：这里等 `readyState` ＋ **`#zoomInput` 存在** ✓，
+//    而断言读的是 **`displayScale` 的值** ✓ ✓（**等"值"就等于让断言永不失败** ✗ —— 第 887 轮的教训 ✓）。
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("zoomInput")')) break; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+}
 // **先放大到 400%** ✗ —— 让画布**超出**窗口，平移才有余量（否则"视图没变"是正常的 ✓）。
 await evaluate(`(() => { const input = document.getElementById("zoomInput");
   if (!input) return false; input.value = "400"; input.dispatchEvent(new Event("change", { bubbles: true }));
