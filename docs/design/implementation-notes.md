@@ -35303,3 +35303,29 @@ Object.keys 看真键表）。
 下一步（明确）：把它接进套件。但它是**冷构建**，很慢，所以要么单独成组（例如"昂贵判据"），
 要么在文档里明确列出并定期手工跑；同时它本身已经能红（有警告或构建失败即 exit 1），
 所以接进去之后还要按新纪律**直接跑一次变异**（例如人为引入一条 warning 看它是否变红）。
+
+## 第 1131 轮：把构建警告判据接进套件（(B)④ 的缺口闭合）
+
+背景：第 1130 轮核实 build-warnings-check.sh 已完整实现且实测 0 条警告，
+但 run-criteria.sh 完全没有提及它 ⇒ 这条判据不在套件里，可能很久没被跑过。
+
+根因（有出处）：run-criteria.sh:67 的枚举是**按前缀**的
+  for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs \
+                       scripts/kernel-wasm-allowlist.mjs scripts/...)
+而 build-warnings-check.sh 是 .sh ⇒ 天然不在枚举里。注释里其实记着这个坑：
+"枚举是按前缀的 ⇒ 任何不匹配的判据静默地永不运行（第 787 轮实测：74 个里 14 个没跑）"。
+
+改动两处：
+1. 枚举行里**显式**加上 scripts/build-warnings-check.sh（与第 788 轮"显式补上 wasm-brush-parity"同一种做法）。
+2. case 里加专用分支：timeout 1800 bash "$script"（它是**冷构建**：cargo clean 6 个 cdylib crate
+   再编 native 与 wasm32 ⇒ 比普通判据的 120-300 秒慢得多）。
+
+验证：bash -n 通过；判据总数 73 → 74；用它所在分片跑（SHARD=28 SHARDS=74）⇒
+  → build-warnings-check.sh
+  ✓ build-warnings-check.sh
+  —— 通过 1｜意外失败 0｜已知红 0｜跳过 0
+即确实被枚举到且跑绿。
+
+下一步（差一步才算完整）：**变异验证**。这条判据的存在理由是"有警告就红"，
+所以要按第 1129 轮的纪律**直接跑**一次变异：人为在某处产生一条 warning（例如用 #[deprecated] 项），
+断言判据变红；然后逐字节还原。它很慢（冷构建），所以单独安排。
