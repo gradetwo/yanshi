@@ -143,6 +143,9 @@ await waitFor(
   "落笔之后的补画",
   10000,
 );
+// ⚠️ **这一处**故意保留** ✗（第 905 轮判过 ✓，不要"顺手改成等墨"✗）：上面那次 `waitFor` 等的是
+// "**服务端补画**"（`serverBlits > N` ✓），而这里要等的是"**墨真的画到画布上**" ✗ ——
+// 那**正是下一条断言要读的量** ✗ ⇒ 等它就会让断言永不失败 ✗ ⇒ **只能留有界等待** ✓。
 await sleep(1200);
 const after = await inkOnCanvas();
 const state = await evaluate("window.yanshi.state()");

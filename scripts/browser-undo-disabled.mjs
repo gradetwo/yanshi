@@ -23,7 +23,12 @@ const send = (method, params) => new Promise((resolve) => { const id = nextId++;
 const evaluate = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable");
 await send("Page.navigate", { url });
-await sleep(3000);
+// **等到"页面就绪"这个独立信号** ✓（第 905 轮 ✓）：原来固定睡 3 秒 ✗ ⇒ 机器慢时间歇红 ✗。
+// ⚠️ **不能等 `undo.disabled`** ✗ —— **那正是下面断言读的值** ✗（**等它就等于让断言永不失败** ✗）。
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { if (await evaluate('document.readyState === "complete" && !!document.querySelector(\'button[data-tool="undo"]\')')) break; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+}
 // **等"计数未知"这个状态真正出现** ✓：它正是老代码会误判的那个状态 ✓。
 const state = await evaluate(`(() => {
   const undo = document.querySelector('button[data-tool="undo"]');
