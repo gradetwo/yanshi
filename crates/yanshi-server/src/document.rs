@@ -413,7 +413,11 @@ impl Document {
     /// 重新折叠整篇日志（打开文档、恢复、调试用）。
     pub fn rebuild(&mut self) -> Result<()> {
         self.folder = IncrementalFolder::new();
-        self.state = FoldEngine::new().fold(&self.log)?.state;
+        // **走折叠器而不是另起一次 `FoldEngine::fold`** ✓：`IncrementalFolder` 的完整求值
+        // 与 `FoldEngine::fold` 逐字段一致 ✓（见 `seq` 模块的不变量 ✓），但它顺手留下
+        // **还原点阶梯** ✓ ⇒ 之后第一次提交不必再全量折一遍 ✓、第一次撤销也能就近续折 ✓
+        //（实测 1050 原子工程：完整求值 103ms／续折一次 ~20ms ✓）。
+        self.state = self.folder.fold_head(&self.log)?.state;
         self.render_watermark = self.state.head_seq;
         let grid = self.grid_for_state()?;
         let cache_bytes = self.settings.render_cache_bytes;
