@@ -521,6 +521,25 @@ if [ -n "$missing_soft" ]; then
   echo "    然后**重新跑** make release ✓（脚本会现场构建内核 ✓）。"
 fi
 
+# **三类内置资产也要在这里先按种类点名** ✓（外部回归报告 ✓：静态包的 `share/yanshi/` 里
+# **没有 `brushes/`** ✗ ⇒ 随包的 `brush_stroke` 报 `reference_not_found` ✗、
+# 用户手里**一支可用笔刷都没有** ✗ —— 而打包脚本**照样报成功** ✗）。
+# **为什么不能只靠"软缺"** ✗：缺 wasm 是"查看器降级" ✓（可接受 ✓）；
+# 缺 `brushes/` / `textures/` / `palettes/` 是**功能直接不可用** ✗ ⇒ 真正的拦截在
+# 下面调用 `scripts/stage-asset-kinds.sh` 那一段 ✓（缺源目录 ⇒ 退非 0 ⇒ 打包失败 ✗）。
+# 这一段只是**先报** ✓ ⇒ 日志第一屏就能看出缺哪一类 ✓，不必翻到失败处 ✗。
+missing_assets=""
+for asset_kind in textures brushes palettes; do
+  [ -d "$repo/assets/${asset_kind}" ] || missing_assets="${missing_assets} ${asset_kind}"
+done
+if [ -n "${missing_assets}" ]; then
+  echo "⚠️  包内会缺少内置资产：${missing_assets}"
+  echo "    **后果** ✓：运行期把「资产根目录 + 种类子目录」拼起来找资产 ✓ ⇒"
+  echo "    缺 \`brushes/\` ⇒ \`brush_stroke\` 报 \`reference_not_found\` ✗、用户没有任何可用笔刷 ✗；"
+  echo "    缺 \`textures/\` / \`palettes/\` ⇒ 纹理与调色板列表为空 ✗。"
+  echo "    **处理** ✓：这些是**仓库里的资产**（不是构建产物 ✓）⇒ 请在**完整检出**的仓库根跑打包 ✓。"
+fi
+
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/yanshi"
 
@@ -565,37 +584,18 @@ fi
 # **为什么平铺在 share/yanshi/ 下** ✓：服务端把"资产根目录 + 种类子目录"拼在一起 ✓
 #（`assets_dir` + `textures|brushes|palettes` ✓）⇒ 包内只要让 `--assets-dir` 指到 `share/yanshi` ✓
 # ⇒ `scripts/fetch-textures.sh` 那条路（工作区缓存 ✓）与这条（随包内置 ✓）**并存** ✓。
-# **逐文件拷，并且拷完核对数量** ✓（真实用户报告 ✓：macOS 上 `cp -R` 撞上
-# `assets/brushes/P._Shade.myb` ✓ —— 名字里含 `._` ✓，而 **macOS 把 `._` 当
-# AppleDouble（资源叉）的标记** ✗ ⇒ BSD `cp` 把它当成 `PShade.myb` 的旁文件 ✓，报
-# `cp: found P._Shade.myb, looking for PShade.myb` ✗。
-# **为什么改成"逐文件 + 核对"** ✓：
-#   1. 递归拷贝的怪癖**不该能让我们少文件** ✗ —— 逐文件是最简单、最没歧义的操作 ✓；
-#   2. **跳过 macOS 的元数据垃圾** ✓（`._*` 与 `.DS_Store` ✓）—— 它们本来就**不该进包** ✗；
-#   3. **拷完比对数量** ✓ ⇒ 少了就**当场失败** ✗，而不是打出一个"能跑但缺资产"的包 ✓
-#（"产物里少东西却没人知道"正是本项目反复抓的一类病 ✓）。
-for asset_kind in textures brushes palettes; do
-  source_dir="$repo/assets/${asset_kind}"
-  target_dir="$stage/share/yanshi/${asset_kind}"
-  [ -d "${source_dir}" ] || continue
-  mkdir -p "${target_dir}"
-  copied=0
-  skipped=0
-  while IFS= read -r asset_file; do
-    asset_base="$(basename "${asset_file}")"
-    case "${asset_base}" in
-      ._*|.DS_Store) skipped=$((skipped + 1)); continue ;;
-    esac
-    cp "${asset_file}" "${target_dir}/${asset_base}"
-    copied=$((copied + 1))
-  done < <(find "${source_dir}" -type f | sort)
-  expected="$(find "${source_dir}" -type f ! -name '._*' ! -name '.DS_Store' | wc -l | tr -d ' ')"
-  if [ "${copied}" != "${expected}" ]; then
-    echo "    ✗ ${asset_kind}：应当拷 ${expected} 个，实际拷了 ${copied} 个 ⇒ 打包失败" >&2
-    exit 1
-  fi
-  echo "    ${asset_kind}：${copied} 个文件 ✓"
-done
+# **组装逻辑已抽到 `scripts/stage-asset-kinds.sh`** ✓（外部回归报告 ✓）：内联时只有"跑完整打包"
+# 才验得到它 ✗ ⇒ **判据没法直接跑这段组装** ✗。抽出来之后 ✓：打包脚本与判据
+#（`scripts/tool-package-brushes.mjs` ✓）跑的是**同一段代码** ✓ ⇒ 判据守的是真行为 ✓。
+# 该脚本负责：逐文件拷（跳过 macOS 的 `._*` / `.DS_Store` ✓ —— 真实用户报告 ✓：
+# BSD `cp -R` 撞上含 `._` 的笔刷名会把它当 AppleDouble 报错 ✗）、
+# **装完逐名比对源目录** ✓、**缺源目录 / 空源目录 / 一个 `.myb` 都没有 ⇒ 当场失败** ✗
+#（原来的 `[ -d "${source_dir}" ] || continue` 会**静默**打出一个没有笔刷的包还说成功 ✗ ——
+# 那正是外部报告里"用户零可用笔刷、却没人被警告"✗ 的成因 ✓）。
+if ! bash "$repo/scripts/stage-asset-kinds.sh" "$repo" "$stage"; then
+  echo "✗ 内置资产（textures / brushes / palettes）没有完整装进包 ⇒ 打包失败" >&2
+  exit 1
+fi
 [ -f "$repo/LICENSE" ] && cp "$repo/LICENSE" "$stage/"
 cp "$repo/README.md" "$stage/README.md"
 

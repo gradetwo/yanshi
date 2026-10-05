@@ -35824,3 +35824,60 @@ Object.keys 看真键表）。
 合并方式：合成**一个** `if`，先诊断、再 push 失败 ⇒ 两条语义都保留（既不丢诊断，也不丢失败）。
 验证：node --check OK；用它所在分片跑（SHARD=20 SHARDS=75）⇒ `→ browser-offline-shell.mjs` /
 `✓ browser-offline-shell.mjs` / `通过 1｜意外失败 0｜已知红 0`。
+
+## 第 1148 轮：发布包的笔刷缺失——先复核外部报告，再堵住"静默少资产"
+
+**外部报告（版本 fc33320）**：静态发布包的 `share/yanshi/` 里**没有 `brushes/`** ⇒
+随包的 `brush_stroke` 报 `reference_not_found`、用户零可用笔刷；测试者手工从旧包拷了 199 个 `.myb`。
+兄弟包（f462a6f）却带了 201 个。
+
+**第一步：先复核，不照抄结论** ✓（本项目反复吃"外部结论先核版本"的亏）：
+- 运行期**确实**找 `<exe>/../share/yanshi/brushes/`：`crates/yanshi-server/src/service.rs:190`
+  的 `resolve_assets_dir`（候选含 `bin_dir.join("../share/yanshi")` ✓；判定条件是
+  `candidate.join("textures").is_dir() || candidate.join("brushes").is_dir()` ✓）、
+  `crates/yanshi-http/src/server.rs:1861` 的 `root.join("brushes").join(file)` ✓、
+  包装脚本 `--assets-dir "$here/share/yanshi"` ✓ ⇒ **位置没找错** ✓。
+- **但报告的字面症状在 HEAD 不成立** ✗：`scripts/package-release.sh` 里**早有一段**
+  `for asset_kind in textures brushes palettes`（旧行 577 ✓，含逐文件拷 + 计数核对 ✓）。
+  我**跑了真的打包脚本**（`--skip-build` ＋ 桩二进制 ✓）⇒ 组装输出 `brushes：201 个文件 ✓`、
+  stage 里 `share/yanshi/brushes/` 有 **199 支 `.myb`** ✓、与 `assets/brushes` **逐名一致** ✓。
+  `git diff f462a6f fc33320 -- scripts/package-release.sh` **为空** ✗ ⇒ 报告里"两个 commit
+  一个有笔刷一个没有"**不可能**由这段脚本解释（多半是两次打包的**工作树状态不同**或版本标注有误 ✓）。
+- **真正的残留缺陷** ✓：源目录缺失时 `[ -d "${source_dir}" ] || continue`（旧行 580）
+  **静默跳过** ✗ ⇒ 打出一个**没有任何笔刷**的包、退 0 报成功 ✗；空目录更糟 ✓：
+  `copied == expected == 0` ⇒ 旧检查**照样通过** ✗（还打印"0 个文件 ✓" ✗）。
+  而旧的"拷完核对数量"用的**是同一个源目录** ⇒ **自指** ✗ ⇒ 检测不出"源目录根本不在" ✗。
+  这正是"用户零可用笔刷、却没有任何警告"的成因 ✓。
+
+**修法**：
+1. 把三类的装配抽成 `scripts/stage-asset-kinds.sh <仓库根> <包内根>` ✓ ——
+   打包脚本与判据跑**同一段代码** ✓（不然判据只能验一份复制品 ✗）。
+   新行为：源目录缺失 / 为空 / 一个 `.myb` 都没有 ⇒ **点名种类并退非 0** ✗；
+   装完**逐名比对源目录** ✓（平铺 basename ✓，顺带抓"子目录同名互相覆盖" ✓）；
+   仍跳过 macOS 的 `._*` / `.DS_Store` ✓。
+2. `scripts/package-release.sh`：内联循环 → 调用该脚本（失败即打包失败 ✗）；
+   并在 `missing_soft` 旁边**按种类先点名**三项内置资产（`missing_assets` ✓）⇒
+   日志第一屏就说清缺哪类、后果是什么 ✓。
+
+**判据**：`scripts/tool-package-brushes.mjs`（`tool-*` 前缀 ⇒ runner 自动枚举 ✓、覆盖率守卫也认 ✓）：
+- ① 真仓库上跑**真正的组装** ⇒ `share/yanshi/brushes/` 必须存在、`.myb` 名字集合必须与
+  `assets/brushes/*.myb` **逐个相同** ✓、且 > 0 ✓；
+- ② **反向控制**：源目录**缺失**与**为空**两种情形，组装必须退非 0 **并点名 brushes** ✓。
+- **红→绿**（**直接跑判据** ✓，不经过会复制仓库的 runner ✓）：
+  - 修前（抽出但保持旧语义 ✓）：`✗ 缺 assets/brushes：组装**静默成功**了（退出码 0）` 等 **3 条**、EXIT=1 ✗；
+  - 修后：`结论：发布包会带上完整的笔刷目录，且缺源目录时会明确失败 ✓`、EXIT=0 ✓。
+- **变异验证**（两次 ✓，直接跑判据 ✓）：
+  - 把默认种类里的 `brushes` 去掉 ⇒ ① 红（`包内没有 share/yanshi/brushes/`）EXIT=1 ✓；
+  - 把缺源目录改回静默 `continue` ⇒ ② 红（`组装静默成功了`）EXIT=1 ✓。
+
+**真打包复验** ✓：`bash scripts/package-release.sh --out … --skip-build`（桩二进制 ✓）⇒
+`brushes：201 个文件（其中 199 支 .myb ✓，与源目录逐名一致 ✓）` ✓、
+`/tmp/realdist2/*/share/yanshi/brushes/*.myb` = **199** ✓。
+
+**没能端到端跑到的部分**（说清 ✓）：真二进制没编（用桩代替 ✓）⇒ `--version`/commit 断言那段
+会故意失败 ✓（与本次无关 ✓）；交叉目标（`--target` / `--all-targets`）没跑 ✗；
+macOS 的 BSD `cp` 与 `._*` 路径没跑 ✗（本机只有 Linux ✓）。
+
+**★ 一条** ✓：**"计数核对"如果拿同一个源目录算期望值，它就检测不出"源目录不在"** ✗ ——
+它只能证明"我拷了我看到的" ✓，不能证明"我看到了该看到的" ✗。要挡这类缺陷，必须换一个
+**独立口径**（这里：运行期约定的目标位置 ✓ ＋ 与源目录**逐名**比对 ✓ ＋ 反向控制 ✓）。
