@@ -17,13 +17,24 @@
 //   PAINT_RSS_GROWTH_MB=…    超过则红（不设则只报告 ✓）
 //   PAINT_CPU_MS_PER_STROKE=… 超过则红（不设则只报告 ✓）
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
 const STROKES = Number(process.argv[2] || process.env.PAINT_STROKES || 200);
-const PORT = Number(process.env.PAINT_PORT || 15600);
+// **端口要挑空闲的** ✗（第 829 轮实测 ✓）：固定端口一旦被上一次泄漏的实例占着 ✓，
+// 服务端就静默起不来 ✓ ⇒ 判据只报 `ENOENT: /proc/<pid>/status` ✗（**症状与真因相距很远** ✓）。
+const pickPort = (start) => {
+  for (let port = start; port < start + 40; port += 1) {
+    const probe = require("node:net").createServer();
+    try { probe.listen(port, "127.0.0.1"); probe.close(); return port; } catch { probe.close(); }
+  }
+  return start;
+};
+const PORT = Number(process.env.PAINT_PORT || pickPort(15600));
 const BASE = "http://127.0.0.1:" + PORT;
 const RSS_GROWTH_BUDGET = process.env.PAINT_RSS_GROWTH_MB ? Number(process.env.PAINT_RSS_GROWTH_MB) : null;
 const CPU_PER_STROKE_BUDGET = process.env.PAINT_CPU_MS_PER_STROKE ? Number(process.env.PAINT_CPU_MS_PER_STROKE) : null;
@@ -151,6 +162,24 @@ try {
   }
   if (CPU_PER_STROKE_BUDGET !== null && cpuPerStroke > CPU_PER_STROKE_BUDGET) {
     fail("每笔 CPU " + cpuPerStroke.toFixed(1) + " ms 超过预算 " + CPU_PER_STROKE_BUDGET + " ms");
+  }
+  // **成本比**（第 829 轮 ✓）：后 1/3 ÷ 前 1/3 ≤ `PAINT_SLOPE_RATIO` ✓（缺省 1.2 ✓）。
+  // 它守的是"每笔成本是否随对象数累积" ✓ —— 现在实测 **1.66×** ✗ ⇒ 这条**今天会红** ✓，
+  // 因此它**先登记进已知红名单** ✓（`scripts/criteria-known-red.txt` ✓，写明理由与修法 ✓），
+  // 等对象级光栅缓存落地后 ⇒ **它会转绿 ⇒ 那时从名单里移出** ✓（**先红后绿，才算判据** ✓）。
+  if (perStroke.length >= 6) {
+    const third = Math.ceil(perStroke.length / 3);
+    const head = perStroke.slice(0, third).reduce((a, b) => a + b, 0) / third;
+    const tail = perStroke.slice(-third).reduce((a, b) => a + b, 0) / third;
+    const ratio = tail / Math.max(1, head);
+    const budget = Number(process.env.PAINT_SLOPE_RATIO || 1.2);
+    if (ratio > budget) {
+      fail("成本比 " + ratio.toFixed(2) + "× 超过 " + budget + "×（后 1/3 比前 1/3 慢 ⇒ 成本随对象数累积 ✗）");
+    } else {
+      console.log("  ✓ 成本比 " + ratio.toFixed(2) + "× ≤ " + budget + "×（未随对象数累积 ✓）");
+    }
+  } else {
+    console.log("  ⓘ 笔数 < 6 ⇒ 成本比不判 ✓（样本太少会失真 ✓）");
   }
   if (RSS_GROWTH_BUDGET === null || CPU_PER_STROKE_BUDGET === null) {
     console.log("  ⓘ 增量预算**尚未设定** ✓（`PAINT_RSS_GROWTH_MB` / `PAINT_CPU_MS_PER_STROKE`）——" +
