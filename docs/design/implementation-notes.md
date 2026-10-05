@@ -35329,3 +35329,31 @@ Object.keys 看真键表）。
 下一步（差一步才算完整）：**变异验证**。这条判据的存在理由是"有警告就红"，
 所以要按第 1129 轮的纪律**直接跑**一次变异：人为在某处产生一条 warning（例如用 #[deprecated] 项），
 断言判据变红；然后逐字节还原。它很慢（冷构建），所以单独安排。
+
+## 第 1132 轮：(B)④ 变异验证成功，(B)④ 完整闭合
+
+变异方式：在 crates/yanshi-medium-oil/src/lib.rs 末尾加一个**未使用**的函数
+  fn mutation_warning_probe() -> u32 { 12345 }
+它必然产生 dead_code 警告（两个 target 都会）。
+
+直接跑判据（按第 1129 轮的纪律：变异验证必须在**直接跑**的路径上做）：
+  EXIT=1（**红 ✓**），读数：
+    native：警告 2 条（须为 0）
+        warning: function `mutation_warning_probe` is never used
+        651 | fn mutation_warning_probe() -> u32 { 12345 }
+        warning: `yanshi-medium-oil` (lib) generated 1 warning
+    wasm32：警告 2 条（须为 0）
+        （同样的两行）
+    ✗ 构建警告上限：有警告（或构建失败）⇒ 判据红 ✗
+所以：判据**确实能红**，而且失败信息**落在被判条件上**（不是别的副作用）。
+
+还原：cp 回备份 ⇒ `git diff` 为空、与 HEAD **逐字节一致**；再跑 ⇒ EXIT=0，
+读数回到 "native：警告 0 条 / wasm32：警告 0 条 / ✓ 冷构建两个 target 都是 0 条警告"。
+
+(B)④ 状态：**完整闭合** ——
+  ① 判据已实现（冷构建、两个 target、grep '^warning' 必须为 0）；
+  ② 已接进 run-criteria.sh（枚举显式加入 ＋ 1800 秒专用超时）；
+  ③ 在套件里实测绿；
+  ④ 亲手变异验证能红，并逐字节还原。
+"6 条 cdylib 噪声"这个前提在本机能查到的范围内始终复现不出来（冷构建 0 条），
+所以这一项的价值落在"守住零警告"这条回归线上，而不是"消掉那 6 条"。
