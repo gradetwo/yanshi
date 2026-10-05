@@ -1165,7 +1165,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // （见下面 `draw_text` 那条实测纠正 ✓）⇒ `feather` 在**同一句里**说清 ✓。
             param!("shape", Object, true, "{type: rect|ellipse|polygon, x,y,w,h | cx,cy,rx,ry | points；可选 feather = 羽化半径（像素，缺省 0 = 不羽化）}"),
             param!("feather", Number, false, "羽化半径（像素；也可写进 shape.feather；缺省 0 = 不羽化）；实际模糊在渲染侧做，文档里存的是这个参数"),
-            param!("color", Object, true, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例"),
+            // **类型要与实现一致** ✗（第 842 轮 ✓，外部报告 #10 ✓）：实现走 `.and_then(Value::as_str)` ✓
+            // ⇒ 它**接受** "#rrggbb" ✓，而这里原本声明成 `Object` ✗ ⇒ **字符串在 schema 层就被拒** ✓
+            // ⇒ 调用方按描述传 `"#rrggbb"` 会拿到 `expected object, got string` ✗ ——
+            // **"描述说支持、schema 拒绝"** ✓ ⇒ 与同仓 `brush_stroke` / `preview` / `test_color` 一致 ⇒ 用 `Any` ✓。
+            param!("color", Any, true, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例"),
             param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
             param!("texture", String, false, "暂不支持（只接受缺省/smooth）⇒ 给别的会明确报错"),
         ],
