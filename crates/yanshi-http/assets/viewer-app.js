@@ -1618,8 +1618,70 @@ function documentRow(info) {
     await switchDocument(info.doc_id);
   });
   actions.appendChild(open);
+  // **删除也在这一行上** ✓（一行一份作品 ⇒ 对它的动作都在这行 ✓）。
+  // **不在这里判断"能不能删"** ✗：那是**服务端**的权威（它知道有没有实时连接 ✓）——
+  // 两边各判一套必然漂移 ✓，而这里判错一次就是**真删了一份不该删的** ✗。
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.dataset.action = "delete";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => askDeleteDocument(info.doc_id));
+  actions.appendChild(remove);
   row.append(text, actions);
   return row;
+}
+
+/// **要删的那一份** ✓（确认对话框里记着它 ✓）。
+let pendingDelete = "";
+
+/// **删除的确认步** ✓（不可逆动作 ✗ ⇒ 再问一次 ✓）。
+///
+/// **为什么把拒绝留给服务端** ✓：服务端才知道"这份文档还有没有实时连接" ✓
+/// ⇒ 界面**照发** ✓，然后把服务端的原话显示出来 ✓（"正在使用中"就是一条**清楚的错误** ✓，
+/// 而"界面以为能删、服务端其实拒绝"这种两面不一致正是要避免的 ✗）。
+function askDeleteDocument(docId) {
+  pendingDelete = docId;
+  const dialog = $("deleteDialog");
+  if ($("deleteWhat")) $("deleteWhat").textContent = "要删掉的是：" + docId;
+  if ($("deleteError")) $("deleteError").textContent = "";
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+/// 确认之后**真的删** ✓：`DELETE /api/documents/<id>?confirm=<id>` ✓。
+///
+/// `confirm` 不是装饰 ✓：它要求调用方把文档 id **再写一遍** ✓
+/// ⇒ "手滑点到删除"与"确定要删这一份"在**协议层**就能区分 ✓（服务端缺它就直接 400 ✓）。
+async function confirmDeleteDocument() {
+  const docId = pendingDelete;
+  const error = $("deleteError");
+  if (!docId) return;
+  const url =
+    "/api/documents/" + encodeURIComponent(docId) + "?confirm=" + encodeURIComponent(docId);
+  try {
+    const response = await fetch(url, { method: "DELETE" });
+    const value = await response.json();
+    // **两个信号都要看** ✓：HTTP 状态 ✓ 与回执里的 `ok` ✓ ——
+    // 只信其中一个都出过事 ✓（第一版服务端漏了 `ok` ✓ ⇒ 删除**成功**了，界面却报 "unknown" ✗，
+    // 真浏览器判据当场抓到 ✓）。
+    if (!response.ok || value.ok === false) {
+      if (error) error.textContent = describeFailure(value);
+      return;
+    }
+    const dialog = $("deleteDialog");
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+    if (error) error.textContent = "";
+    // **如实说出释放了多少** ✓，并说明 blob 没有回收 ✓（不让"删了"暗示"空间立刻回来了" ✗）。
+    log(
+      "已删除文档 " + docId + "（释放 " + formatBytes(value.freed_bytes || 0) +
+        "；blob 内容寻址共享，本次不回收）",
+    );
+    pendingDelete = "";
+    await refreshDocumentList();
+  } catch (failure) {
+    if (error) error.textContent = "删除失败：" + String(failure).slice(0, 120);
+  }
 }
 
 /// 一行的元信息（**只写服务端真的给了的字段** ✓）。
@@ -7576,6 +7638,13 @@ $("clearSelection").addEventListener("click", async () => {
 $("openClose").addEventListener("click", closeOpenDialog);
 // **「刷新」真的重新拉一次列表** ✓（它是**读失败**之后唯一的出路 ✓ —— 原来什么都没有 ✗）。
 $("docReload").addEventListener("click", () => { void refreshDocumentList(); });
+// **删除的确认对话框** ✓（不可逆动作才需要它 ✓ —— 关闭、打开都不问 ✓）。
+$("deleteCancel").addEventListener("click", () => {
+  const dialog = $("deleteDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+});
+$("deleteConfirm").addEventListener("click", () => { void confirmDeleteDocument(); });
 $("copyDoc").addEventListener("click", async () => {
   const name = ($("copyName").value || "").trim();
   if (!name) {

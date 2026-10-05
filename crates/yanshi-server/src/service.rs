@@ -1180,6 +1180,89 @@ impl Workspace {
         self.documents.remove(doc_id).is_some()
     }
 
+    /// **真正删掉一份文档** ✓（原子日志与元数据从磁盘上一并移除 ✓）。
+    ///
+    /// **与 `close_document` 的区别必须保留** ✗：关闭只把它从**内存**里放下 ✓
+    ///（磁盘上还在 ✓，下次打开就回来 ✓）；删除是**不可逆**的 ✓ —— 产品负责人要的正是后者 ✓
+    /// ⇒ 两者**各自命名、各自成路** ✓，绝不让一个悄悄变成另一个 ✗。
+    ///
+    /// **三条硬规矩** ✓：
+    ///
+    /// 1. **不存在就说"不存在"** ✗：内存里没有、磁盘上也没有 ⇒ `reference_not_found`
+    ///    （"删成功了"而其实什么也没删 ✓，是这里最坏的一种回答 ✗）；
+    /// 2. **正在使用中 ⇒ 拒绝** ✗：文档还有**实时订阅者**（WebSocket 客户端 ✓）时删它 ✓
+    ///    等于把人脚下的地板抽掉 ✓ ⇒ `conflict`，并说清有几个连接 ✓。
+    ///    "打开着"与"只是加载在内存里"是**两件事** ✓：后者没有人在看 ✓ ⇒ 可以删 ✓；
+    /// 3. **blob 不删** ✓（如实记下 ✗）：blob 是**内容寻址、跨文档共享**的 ✓
+    ///    ⇒ 删它们会破坏别的作品 ✗，而本项目**还没有 GC** ✓ ⇒ 这里只删文档自己的目录 ✓，
+    ///    并在回执里写明 `blobs_kept` ✓ —— **绝不假装磁盘空间立刻回来了** ✗。
+    pub fn delete_document(&mut self, doc_id: &str) -> Result<Value> {
+        // **路径安全** ✗：`doc_id` 会被拼进目录名 ✓ ⇒ 形状不对就当场拒绝 ✓
+        //（删除是不可逆动作 ✓，宁可多一条检查 ✗）。
+        if doc_id.is_empty()
+            || doc_id.contains('/')
+            || doc_id.contains('\\')
+            || doc_id.contains("..")
+        {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("文档 id 不合法：{doc_id:?}")),
+            ));
+        }
+        let subscribers = self
+            .documents
+            .get(doc_id)
+            .map(|document| document.broadcaster().len())
+            .unwrap_or(0);
+        if subscribers > 0 {
+            return Err(YanshiError::new(
+                ErrorCode::Conflict,
+                ErrorContext::detail(format!(
+                    "文档 {doc_id} 正在使用中（{subscribers} 个实时连接）⇒ 先关掉正在打开它的标签页 / 客户端，再删除"
+                )),
+            ));
+        }
+        let dir = self.persist.as_ref().map(|persist| persist.doc_dir(doc_id));
+        let persisted = dir.as_ref().map(|path| path.exists()).unwrap_or(false);
+        let in_memory = self.documents.contains_key(doc_id);
+        if !in_memory && !persisted {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {doc_id} 不存在 ⇒ 没有可删除的东西")),
+            ));
+        }
+        let mut freed_bytes = 0u64;
+        if let Some(dir) = &dir {
+            if persisted {
+                freed_bytes = directory_bytes(dir);
+                // **先删磁盘、再摘内存** ✓：磁盘删失败就**什么都没变** ✓
+                //（反过来的话会留下"内存里没了、磁盘上还在"的半截状态 ✗）。
+                std::fs::remove_dir_all(dir).map_err(|error| {
+                    YanshiError::new(
+                        ErrorCode::PreconditionFailed,
+                        ErrorContext::detail(format!(
+                            "删不掉文档目录 {}：{error} ⇒ 文档保持原样（没有半删状态）",
+                            dir.display()
+                        )),
+                    )
+                })?;
+            }
+        }
+        let removed_from_memory = self.documents.remove(doc_id).is_some();
+        Ok(json!({
+            // **`ok` 必须有** ✗：本服务**每一个**回执都带它 ✓，而第一版这里漏了 ✓
+            // ⇒ 查看器按 `value.ok` 判成败 ✓ ⇒ **删除其实成功了，界面却报 "unknown"** ✗
+            //（真浏览器判据当场抓到 ✓ —— 这正是"同一份回执要两处都读得懂"的那类错 ✓）。
+            "ok": true,
+            "deleted": true,
+            "doc_id": doc_id,
+            "freed_bytes": freed_bytes,
+            "removed_from_memory": removed_from_memory,
+            "blobs_kept": true,
+            "note": "文档目录已删除；blob 是内容寻址、跨文档共享的，本次一个都没删（本项目还没有 GC）⇒ 磁盘占用不会完全回落",
+        }))
+    }
+
     /// 文档列表（磁盘上的也包含，标记 `persisted`）。
     pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
         let mut summaries: BTreeMap<String, DocumentSummary> = BTreeMap::new();
@@ -2174,6 +2257,28 @@ fn read_preferences(persist: &FileStore) -> BTreeMap<String, Value> {
         Ok(Value::Object(map)) => map.into_iter().collect(),
         _ => BTreeMap::new(),
     }
+}
+
+/// **一个目录下所有文件的字节数** ✓（只用于删除回执里那句"释放了多少" ✓）。
+///
+/// **读不到就算 0** ✓：这只是**观测**，不是删除的前提 ✗ ——
+/// 因为一个统计数字读不出来就拒绝删除 ✓，那才是本末倒置 ✗。
+fn directory_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            total = total.saturating_add(directory_bytes(&entry.path()));
+        } else if let Ok(metadata) = entry.metadata() {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    total
 }
 
 #[cfg(test)]

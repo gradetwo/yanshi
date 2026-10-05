@@ -631,9 +631,20 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         };
     }
     if let Some(id) = path.strip_prefix("/api/documents/") {
+        // **关闭与删除是两件事，所以是两条路** ✗（产品负责人要的是**真删** ✓）：
+        // `POST /api/documents/<id>/close` ⇒ 只放下内存 ✓（磁盘上还在 ✓，再打开就回来 ✓）；
+        // `DELETE /api/documents/<id>?confirm=<id>` ⇒ **不可逆地删掉磁盘上的文档目录** ✓。
+        // 以前 `DELETE` 走的是**关闭** ✓ —— 那正是"子 agent 报成 bug"的那条 ✓：
+        // 一个方法名叫 DELETE 却只关内存 ✓，谁都读不出这个语义 ✓ ⇒ 现在各归各位 ✓。
+        if let Some(id) = id.strip_suffix("/close") {
+            return match method {
+                "POST" => close_document(state, request, id),
+                _ => method_not_allowed(request, "POST"),
+            };
+        }
         return match method {
             "GET" => document_summary(state, request, id),
-            "DELETE" => close_document(state, request, id),
+            "DELETE" => delete_document(state, request, id),
             _ => method_not_allowed(request, "GET, DELETE"),
         };
     }
@@ -1167,6 +1178,14 @@ fn document_summary(state: &ServerState, request: &Request, doc_id: &str) -> Res
     }
 }
 
+/// **`POST /api/documents/<id>/close`：把文档从内存里放下** ✓（磁盘上的内容**一点不动** ✓）。
+///
+/// **关闭 ≠ 删除** ✓，所以现在**各有各的路** ✓：
+/// 关闭 ⇒ 这里 ✓（`closed` ✓，磁盘上还在 ✓，下次打开就回来 ✓）；
+/// 删除 ⇒ `DELETE /api/documents/<id>?confirm=<id>` ✓（不可逆 ✓）。
+/// 以前 `DELETE` 走的**就是关闭** ✗ —— 子 agent 把这当成 bug 报上来 ✓
+///（"DELETE 返回 closed:true，但文档还在列表里" ✓）：那不是它的错 ✓，
+/// 是**方法名与语义对不上** ✓ ⇒ 本次把两者分开 ✓，并让关闭这条**只**回答关闭这件事 ✓。
 fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Response {
     if let Err(response) = authorize(state, request, doc_id) {
         return response;
@@ -1175,12 +1194,8 @@ fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Respo
         return internal("工作区锁中毒");
     };
     let closed = workspace.close_document(doc_id);
-    // **关闭 ≠ 删除** ✓ —— 这里只把文档从**内存**里放下 ✓，磁盘上的工作区**仍然保留** ✓，
-    // 因此它依旧出现在 `GET /api/documents` 里 ✓（子 agent 把这当成 bug 报上来 ✓：
-    // "DELETE 返回 closed:true，但文档还在列表里" ✓）。
-    // 这是**设计内的持久化行为** ✓（重新打开展示作品正是需求 ✓），所以不改语义 ✗，
-    // 而是让**响应说实话** ✓：明确给出 `persisted` ✓。
-    // 真删文件是**不可逆**动作 ✗ ⇒ 按纪律不擅自实现 ✓（需要时再单独立项 ✓）。
+    // 让**响应说实话** ✓：明确给出 `persisted` ✓（它依旧出现在 `GET /api/documents` 里 ✓，
+    // 那是**设计内的持久化行为** ✓ —— 重新打开展示作品正是需求 ✓）。
     let persisted = workspace
         .list_documents()
         .map(|documents| documents.iter().any(|summary| summary.doc_id == doc_id))
@@ -1191,9 +1206,51 @@ fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Respo
             "ok": true,
             "closed": closed,
             "persisted": persisted,
-            "note": if persisted { "已关闭内存中的文档；磁盘上的工作区仍然保留" } else { "已关闭" },
+            "deleted": false,
+            "note": if persisted { "已关闭内存中的文档；磁盘上的工作区仍然保留（要真删请用 DELETE /api/documents/<id>?confirm=<id>）" } else { "已关闭" },
         }),
     )
+}
+
+/// **`DELETE /api/documents/<id>?confirm=<id>`：真正把文档从磁盘上删掉** ✓。
+///
+/// **为什么带 `confirm`** ✓：删除**不可逆** ✗ ⇒ 要求调用方把文档 id **再写一遍** ✓
+/// （"手滑点到删除"与"确定要删这一份"必须能区分开 ✓）。缺了或对不上 ⇒ 400 并说清 ✓。
+///
+/// **为什么走写权限策略而不是文档令牌** ✓：查看器要能删**别的**作品 ✓，
+/// 而令牌是**按文档签发**的 ✗ ⇒ 它手里根本没有那些文档的令牌 ✓。
+/// 于是用与"新建文档"**同一条**策略 ✓（`require_write_access` ✓：绑回环放行 ✓，
+/// 绑对外必须带 `YANSHI_API_KEY` ✓）—— 删一份落盘文档与新建一份落盘文档是同一级动作 ✓。
+///
+/// **实现只有一份** ✓：这里只做**传输与守卫** ✓，真正动手的是 `Workspace::delete_document` ✓
+/// —— MCP 的 `delete_document` 工具调的是**同一个函数** ✓ ⇒ 两个面不可能漂移 ✓。
+fn delete_document(state: &ServerState, request: &Request, doc_id: &str) -> Response {
+    if let Some(response) = require_write_access(state, request) {
+        return response;
+    }
+    match request.param("confirm") {
+        Some(confirm) if confirm == doc_id => {}
+        Some(confirm) => {
+            // **先建字符串再返回** ✓：直接写在 `return` 里会让 rustfmt 在这两种写法之间**来回摆** ✗
+            //（`cargo fmt --check` 因此永远不绿 ✓ —— 那不是风格问题，是它真的不收敛 ✓）。
+            let detail = format!(
+                "confirm={confirm} 与要删的文档 {doc_id} 不一致 ⇒ 删除不可逆，请把文档 id 原样再写一遍"
+            );
+            return crate::http::bad_request(detail);
+        }
+        None => {
+            let detail =
+                format!("删除不可逆 ⇒ 必须带 ?confirm={doc_id}（把要删的文档 id 原样写一遍）");
+            return crate::http::bad_request(detail);
+        }
+    }
+    let Ok(mut workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    match workspace.delete_document(doc_id) {
+        Ok(value) => Response::json(200, &value),
+        Err(error) => Response::from_error(&error),
+    }
 }
 
 /// 上传 blob（`POST /api/blob?doc=..&token=..`，请求体即字节）。

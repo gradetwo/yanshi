@@ -130,6 +130,21 @@ const PAGE_TAIL_A: &str = r##"</style>
     <button id="openClose">关闭</button>
   </div>
 </dialog>
+<!-- **删除确认** ✓（产品负责人：要能删别的作品 ✓）—— 删除**不可逆** ✗ ⇒
+     必须再确认一次 ✓，而且把**服务端说的话原样显示**出来 ✓（"正在使用中"要看得见 ✓）。 -->
+<dialog id="deleteDialog">
+  <h2 style="margin-top:0">删除文档</h2>
+  <p id="deleteWhat" style="margin:4px 0"></p>
+  <p class="hint" style="margin:4px 0"
+     title="文档目录会被移除；按内容寻址的 blob 跨文档共享，本次一个都不删（本项目还没有 GC）。">
+    删掉磁盘上的这份文档；它引用的 blob 暂时保留。
+  </p>
+  <div id="deleteError" class="hint" style="color:#ffb4a2;min-height:16px"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button id="deleteCancel">取消</button>
+    <button id="deleteConfirm">删除</button>
+  </div>
+</dialog>
   <div class="options" id="options">
     <span class="tool-name" id="toolName">画笔</span>
   <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>

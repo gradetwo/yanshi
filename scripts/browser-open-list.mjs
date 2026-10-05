@@ -235,7 +235,79 @@ await waitFor(
   20000,
 );
 
-// ⑤ 点别的作品的「打开」⇒ 真的切过去。
+// ⑤ **删除**：同一行上要有明确的删除动作 ✓，而且**必须先确认** ✓（不可逆动作 ✗）。
+if (serverBase) {
+  await fetch(`${serverBase}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: "crit_open_list_victim", width: 40, height: 24 }),
+  }).catch(() => undefined);
+  await evaluate("refreshDocumentList()");
+  await waitFor(
+    `document.getElementById("docList").dataset.state === "ready"`,
+    "列表恢复 ready（删除前）",
+    20000,
+  );
+  const deletable = await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll("#docList .doc-row"));
+    return rows.every((row) => {
+      const button = row.querySelector('[data-action="delete"]');
+      return Boolean(button) && button.textContent.trim().includes("删除");
+    });
+  })()`);
+  check("每一行都有明确的「删除」动作", deletable, "");
+
+  // ⑤a 删**正在看的**那一份 ⇒ 服务端必须拒绝，而且拒绝的理由要**显示在确认框里** ✓
+  //（界面不自己判"能不能删" ✓ —— 那会变成两套判断 ✗）。
+  const clickDelete = (docId) => evaluate(`(() => {
+    const row = document.querySelector('.doc-row[data-doc-id=' + JSON.stringify(${JSON.stringify(docId)}) + ']');
+    const button = row && row.querySelector('[data-action="delete"]');
+    if (button) button.click();
+  })()`);
+  await clickDelete(rows.currentDoc);
+  await sleep(200);
+  const confirmShown = await evaluate(`document.getElementById("deleteDialog").open === true`);
+  check("点「删除」先弹**确认**（不是直接删掉）", confirmShown, "open=" + confirmShown);
+  await evaluate(`document.getElementById("deleteConfirm").click()`);
+  const refused = await waitFor(
+    `(document.getElementById("deleteError").textContent || "").length > 0`,
+    "正在使用的文档被拒绝",
+    20000,
+  );
+  const refusalText = await evaluate(`document.getElementById("deleteError").textContent || ""`);
+  check(
+    "删**正在看的**文档 ⇒ 确认框里出现明确错误（不是静默成功）",
+    refused && /使用中/.test(refusalText),
+    refusalText.slice(0, 140),
+  );
+  await evaluate(`document.getElementById("deleteCancel").click()`);
+  await sleep(200);
+
+  // ⑤b 删**别的**作品 ⇒ 真的要删掉（列表里那一行消失 ✓）。
+  await clickDelete("crit_open_list_victim");
+  await sleep(200);
+  const what = await evaluate(`document.getElementById("deleteWhat").textContent || ""`);
+  check("确认框说清要删的是哪一份", what.includes("crit_open_list_victim"), what.slice(0, 120));
+  await evaluate(`document.getElementById("deleteConfirm").click()`);
+  const gone = await waitFor(
+    `!Array.from(document.querySelectorAll("#docList .doc-row")).some((row) => row.dataset.docId === "crit_open_list_victim")`,
+    "被删的那一行从列表里消失",
+    25000,
+  );
+  const deleteDialogClosed = await evaluate(`document.getElementById("deleteDialog").open === false`);
+  const victimError = await evaluate(`document.getElementById("deleteError").textContent || ""`);
+  const victimStillListed = await evaluate(
+    `Array.from(document.querySelectorAll("#docList .doc-row")).some((row) => row.dataset.docId === "crit_open_list_victim")`,
+  );
+  check(
+    "删另一份作品 ⇒ 真的删掉（那一行消失）",
+    gone,
+    "还在列表里=" + victimStillListed + "｜框里的话=" + victimError.slice(0, 120),
+  );
+  check("删除成功后确认框收起", deleteDialogClosed, "open=" + !deleteDialogClosed);
+}
+
+// ⑥ 点别的作品的「打开」⇒ 真的切过去。
 const targetRow = rows.rows.find((row) => row.docId !== rows.currentDoc);
 if (!targetRow) {
   check("列表里有一份**别的**作品可供切换", false, JSON.stringify(rows.rows.map((row) => row.docId)));
@@ -256,7 +328,7 @@ if (!targetRow) {
   await capture("open-list-switched");
 }
 
-// ⑥ 零控制台错误。
+// ⑦ 零控制台错误。
 const errors = consoleLines.filter(
   (line) => /error|uncaught|exception|failed/i.test(line) && !/favicon/i.test(line),
 );
@@ -266,6 +338,6 @@ ws.close();
 console.log(
   bad
     ? `  结论：${bad} 条不成立 ✗（打开面板仍不清楚）`
-    : "  结论：打开面板是「一行一份 + 明确开打 + 三种状态互不相同」 ✓",
+    : "  结论：打开面板是「一行一份 + 明确开打 + 删除要先确认 + 状态互不相同」 ✓",
 );
 process.exit(bad ? 1 : 0);

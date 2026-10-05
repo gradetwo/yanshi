@@ -23,12 +23,12 @@
 
 | 面 | 数量 | 口径 | 证据 |
 |---|---|---|---|
-| 系统实现（`ToolRegistry` / HTTP `/api/tools`） | HTTP 默认 **137**；注册表/文档口径 **125**（core **69**） | ① HTTP 口径 = 服务端默认启用的 8 个 profile 并集的工具数；② 注册表口径 = `docs/tools.md` 写死的"全部已实现组"数，它用的 profile 集只有 6 个（**不含 changeset / conflict**） | ① `curl -s http://127.0.0.1:15900/api/tools` ⇒ `profiles` 恰为 `core,history,changeset,retouch,conflict,annotation,collab,structure`（8 个）、`tools` 长度 137；默认集见 `crates/yanshi-http/src/server.rs:97-105`，profile 全集见 `crates/yanshi-server/src/tools.rs:63-72`；② `docs/tools.md:24`「**69 core tools** … **125 tools in total**」＋`crates/yanshi-server/tests/tool_inventory.rs:12-19`（6 组）；实测 `--profiles core,history,retouch,annotation,collab,structure` ⇒ **125** |
+| 系统实现（`ToolRegistry` / HTTP `/api/tools`） | HTTP 默认 **140**；注册表/文档口径 **128**（core **72**） | ① HTTP 口径 = 服务端默认启用的 8 个 profile 并集的工具数；② 注册表口径 = `docs/tools.md` 写死的"全部已实现组"数，它用的 profile 集只有 6 个（**不含 changeset / conflict**） | ① `curl -s http://127.0.0.1:15900/api/tools` ⇒ `profiles` 恰为 `core,history,changeset,retouch,conflict,annotation,collab,structure`（8 个）、`tools` 长度 140；默认集见 `crates/yanshi-http/src/server.rs:97-105`，profile 全集见 `crates/yanshi-server/src/tools.rs:63-72`；② `docs/tools.md:24`「**72 core tools** … **128 tools in total**」＋`crates/yanshi-server/tests/tool_inventory.rs:12-19`（6 组）；实测 `--profiles core,history,retouch,annotation,collab,structure` ⇒ **128** |
 | Web 查看器 | 工具条 **22** 个按钮；真正调到的服务端工具 **78** 个 | ① 工具条 = `TOOL_DEFS` 数组条目数（20 个 `{tool:…}` + 2 个 `{id:…}`；`pan` / `eyedropper` / `move_layer` 是纯客户端伪工具）；② 调用面 = 查看器 JS 调用的**去重** `/api/tools` 工具名（直接 `callTool` / `callToolChecked` + 助手 `convertCheckedObjects` 中转的 `convert_to_shape` / `convert_to_path`，以及动态分支 `viewer.rs:3396/3404/6002` 的 10 个） | ① `crates/yanshi-http/src/viewer.rs:6816-6843`，按钮由 `renderToolStrip()`（`:6844`）填充 `#tools`（`:505`）；② 提取命令见文末，其中 **34** 个在 core、**44** 个不在 core |
-| MCP | 默认 **69**；全开 **137** | ① 默认 = 不带 `--profile` 启动（`profiles = [Profile::Core]`）；② 全开 = `--profiles all`（= `Profile::IMPLEMENTED`，8 组，**不含 semantic**） | ① `crates/yanshi-mcp/src/lib.rs:86`；实测 `target/debug/yanshi-mcp --list-tools` ⇒ 69；② `crates/yanshi-server/src/tools.rs:100-109`；实测 `--profiles all` ⇒ 137 |
+| MCP | 默认 **72**；全开 **140** | ① 默认 = 不带 `--profile` 启动（`profiles = [Profile::Core]`）；② 全开 = `--profiles all`（= `Profile::IMPLEMENTED`，8 组，**不含 semantic**） | ① `crates/yanshi-mcp/src/lib.rs:86`；实测 `target/debug/yanshi-mcp --list-tools` ⇒ 72；② `crates/yanshi-server/src/tools.rs:100-109`；实测 `--profiles all` ⇒ 140 |
 
 **由表 1 直接推出的两个覆盖率**（来自 `scripts/tool-surface-coverage.mjs` 的打印）：
-`MCP 默认 69 / HTTP 137 = 50.4%`；`MCP 默认 ∩ Web 调用 = 34 / 78 = 43.6%`。
+`MCP 默认 72 / HTTP 140 = 51.4%`；`MCP 默认 ∩ Web 调用 = 34 / 78 = 43.6%`。
 
 **两个口径不一致（本次实测，非引用）**：
 `docs/tools.md:24` 的"every implemented group = 125"用的是 6 组口径，而服务端默认启用了 8 组（多 `changeset`、`conflict`）= 137；
