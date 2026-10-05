@@ -224,7 +224,7 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
 const LOCAL_READ_TOOLS = [__READ_TOOLS__];
 
-/// **缓存键必须带上请求参数** ✗ —— 实测（第 1126 轮）：`list_assets {kind:"brush"}` 与
+/// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
 /// ⇒ 本地缓存的键也一样 ✓ ⇒ 断网时打开的笔刷面板里装的是**贴图文件名** ✓
 ///（实测选项全是 `Cardboard001.png` ✓ ⇒ 用户**选不到笔** ⇒ 离线画不了 ✗）。
@@ -1222,6 +1222,8 @@ async function loadKernel(since = 0) {
     log("读取原子失败：" + JSON.stringify(atoms).slice(0, 160), "#c33");
     return false;
   }
+  // **刚建出来的内核才需要重放"离线落笔"** ✗ —— 增量续传（`since > 0`）时本地日志里已经有了 ✓。
+  const rebuilt = !state.kernel || since === 0;
   if (!state.kernel || since === 0) {
     state.kernel = new state.wasm.WasmKernel(state.docId, 256, w, h, 64 * 1024 * 1024);
     // 诊断句柄：仅在 `?debug=1` 时挂到 window 上，供 scripts/browser-kernel-perf.mjs
@@ -1268,6 +1270,14 @@ async function loadKernel(since = 0) {
   state.kernel.set_viewport(0, 0, w, h);
   // 内核就绪 ⇒ 判断这份文档内核表示得了吗 ✓（否则首屏是白板 ✓）。
   void detectHeavyContent();
+  // **离线落笔必须能挺过一次"断网重载"** ✓ —— 队列里**还没补交**的 `.myb` 笔触在本地重放一遍 ✓。
+  //
+  // **为什么必须做** ✗：离线那一笔只进了内核日志与离线队列 ✓；内核日志**不持久** ✗
+  // ⇒ 一刷新就没了 ✓（判据 `browser-offline-brush` 第四段量的就是这个 ✓）。
+  // 队列（`outbox`）本来就是持久的 ✓ ⇒ **不再另立一份日志** ✗，直接拿它当重放源 ✓
+  //（"同一件事只有一份存储" ✓ —— 本项目反复吃过"两份必然漂移"的亏 ✓）。
+  // **补交成功 ⇒ 那一行被删掉** ✓ ⇒ 下次重载自然不再重放 ✓（不会与服务端权威重复 ✓）。
+  if (rebuilt) await replayOfflineBrushJournal();
   // **打开文档时核对已有选区** ✓ —— 子 agent 实测：文档里遗留一个选区时，
   // 之后画的**一切**都被裁掉（画布看似全白 ✗），而状态栏还写着"无选区" ✗。
   // 选区是设计内的能力 ✓（约束之后的绘制 ✓），不该禁止 ✗，但**必须让人看见** ✓。
@@ -6803,25 +6813,29 @@ function brushStrokeRegion(points, size) {
 async function paintBrushOffline(request) {
   const stats = window.yanshiStats;
   const kernel = state.kernel;
+  // **重放时不刷屏** ✗：`replayOfflineBrushJournal` 每次打开文档都会走一遍这条函数 ✓
+  // ⇒ 每次加载都打一串"离线：…"会把日志冲掉 ✓（用户看不到真正的新消息 ✗）。
+  // **只压掉"说明性"的 `#c93` ✓；"失败"（`#c33`）照打 ✓** —— 失败必须看得见 ✓。
+  const note = (message) => { if (!request.quiet) log(message, "#c93"); };
   if (!kernelReady() || !kernel) {
-    log("离线：WASM 内核不可用 ⇒ 这一笔只进了离线队列（联网后补交）✓", "#c93");
+    note("离线：WASM 内核不可用 ⇒ 这一笔只进了离线队列（联网后补交）✓");
     return false;
   }
   if (request.colorTo) {
-    log("离线：「一笔多色」要服务端逐段换色 ⇒ 这一笔**没有本地预览** ✓，已记入队列，联网后补交 ✓", "#c93");
+    note("离线：「一笔多色」要服务端逐段换色 ⇒ 这一笔**没有本地预览** ✓，已记入队列，联网后补交 ✓");
     return false;
   }
   let brush = null;
   try {
     brush = await loadLocalBrushText(request.brush);
   } catch (error) {
-    log("离线：拿不到笔刷定义（" + request.brush + "）⇒ 这一笔只进了离线队列：" +
-        String(error).slice(0, 80), "#c93");
+    note("离线：拿不到笔刷定义（" + request.brush + "）⇒ 这一笔只进了离线队列：" +
+        String(error).slice(0, 80));
     return false;
   }
   if (brush.readsCanvas) {
-    log("离线：笔刷「" + request.brush + "」会读画布（涂抹一类）⇒ 本地没有底图可抹 ⇒ " +
-        "这一笔只进了离线队列，联网后由服务端落笔 ✓", "#c93");
+    note("离线：笔刷「" + request.brush + "」会读画布（涂抹一类）⇒ 本地没有底图可抹 ⇒ " +
+        "这一笔只进了离线队列，联网后由服务端落笔 ✓");
     return false;
   }
   const control = request.points.map((point) => [
@@ -6831,24 +6845,24 @@ async function paintBrushOffline(request) {
   let points = control;
   if (request.smooth) {
     if (typeof kernel.smooth_stroke_json !== "function") {
-      log("离线：内核没有平滑导出（页面与内核版本不一致）⇒ 这一笔按**原始点列**画，" +
-          "与在线可能有细微差别 ✓；刷新（Ctrl+Shift+R）可修", "#c93");
+      note("离线：内核没有平滑导出（页面与内核版本不一致）⇒ 这一笔按**原始点列**画，" +
+          "与在线可能有细微差别 ✓；刷新（Ctrl+Shift+R）可修");
     } else {
       try {
         const smoothed = JSON.parse(kernel.smooth_stroke_json(JSON.stringify(control)));
         if (smoothed && smoothed.ok && Array.isArray(smoothed.points) && smoothed.points.length) {
           points = smoothed.points;
         } else {
-          log("离线：平滑失败（沿用原始点列）：" + JSON.stringify(smoothed).slice(0, 120), "#c93");
+          note("离线：平滑失败（沿用原始点列）：" + JSON.stringify(smoothed).slice(0, 120));
         }
       } catch (error) {
-        log("离线：平滑异常（沿用原始点列）：" + String(error).slice(0, 80), "#c93");
+        note("离线：平滑异常（沿用原始点列）：" + String(error).slice(0, 80));
       }
     }
   }
   const region = brushStrokeRegion(points, request.size);
   if (!region) {
-    log("离线：这一笔整条在画布之外（或文档尺寸未知）⇒ 没有可落的像素 ✓", "#c93");
+    note("离线：这一笔整条在画布之外（或文档尺寸未知）⇒ 没有可落的像素 ✓");
     return false;
   }
   let bytes = null;
@@ -6937,6 +6951,53 @@ async function paintBrushOffline(request) {
   stats.offlineBrushRegion = region.w * region.h;
   if (committed.report) drawKernelDirty(committed.report);
   return true;
+}
+
+/// **重放离线队列里还没补交的 `.myb` 落笔** ✓ —— 让"断网时画的那一笔"挺过**断网重载** ✓。
+///
+/// **为什么复用离线队列当存储** ✓：队列本来就是**持久**的（IndexedDB ✓，见 `outboxEnqueue` ✓），
+/// 里面已经逐字存着 `brush_stroke` 的**全部参数**（layer_id / brush / points / size / color /
+/// smooth ✓）⇒ 再另立一份"本地日志"就是**同一件事两份存储** ✗（本项目反复吃过这个亏 ✓）。
+/// 补交成功 ⇒ 那一行被删掉 ✓ ⇒ 下次重载自然不再重放 ✓（不会与服务端权威重复 ✓）。
+///
+/// **顺序** ✓：按 `seq`（IndexedDB 自增主键 ✓）⇒ 与用户作画顺序一致 ✓。
+/// **只重放 `brush_stroke`** ✓：别的写操作（建层 / 形状 / 介质…）没有这条本地渲染路径 ✓
+/// —— 不假装能画 ✓（那会画出与服务端不一致的东西 ✗）。
+///
+/// **失败就停** ✗：后面的笔触建立在前面的图层/状态上 ✓ ⇒ 跳过一笔会让后面的落点错位 ✓。
+/// 停下来的那一笔仍在队列里 ✓、联网后照样补交 ✓（不静默丢 ✓）。
+async function replayOfflineBrushJournal() {
+  if (!kernelReady()) return 0;
+  let rows = [];
+  try {
+    rows = await outboxAll();
+  } catch (error) {
+    return 0;
+  }
+  const pending = rows
+    .filter((row) => row.doc === state.docId && row.kind === "tool" && row.tool === "brush_stroke")
+    .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+  let replayed = 0;
+  for (const row of pending) {
+    const args = row.args || {};
+    const ok = await paintBrushOffline({
+      brush: args.brush,
+      layerId: args.layer_id || state.layerId,
+      points: Array.isArray(args.points) ? args.points : [],
+      size: args.size,
+      color: args.color,
+      smooth: !!args.smooth,
+      colorTo: args.color_to || null,
+      quiet: true,
+    });
+    if (!ok) break;
+    replayed += 1;
+  }
+  if (replayed > 0) {
+    window.yanshiStats.offlineBrushReplayed = replayed;
+    log("离线：本地重放了 " + replayed + " 笔还没补交的笔触 ✓（它们本来只躺在队列里）", "#c93");
+  }
+  return replayed;
 }
 
 // 工具条：**数据表驱动** ✓ —— 借鉴成熟绘画软件的做法 ✓（图标 + 快捷键 + 悬停提示 ✓）。

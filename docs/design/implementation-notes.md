@@ -35434,6 +35434,11 @@ Object.keys 看真键表）。
 5. **缓存键带上请求参数**（`bodyDigest`）：实测 `list_assets {kind:"brush"}` 与 `{kind:"texture"}`
    共用一条本地缓存 ⇒ 断网时笔刷面板里是**贴图文件名**（实测选项全是 `Cardboard001.png`）⇒
    用户选不到笔。同类还有 `brush_preview`（不同笔刷）与 `get_atom`。修后不同参数不同条目。
+6. **离线笔触要挺过"断网重载"**：内核日志**不持久** ⇒ 一刷新那一笔就没了。
+   **不另立一份本地日志**，直接拿**离线队列**当重放源（`replayOfflineBrushJournal`）：
+   队列里本来就逐字存着 `brush_stroke` 的全部参数 ⇒ `loadKernel` 建出新内核时按 `seq` 重放一遍
+   （`paint_brush` → `blob_put` → `commit_preview`）。补交成功 ⇒ 那一行被删 ⇒ 下次不再重放
+   （不会与服务端权威重复）。**只重放 `brush_stroke`** —— 别的写操作没有本地渲染路径，不假装能画。
 
 ### 内核改动（`crates/yanshi-wasm`）
 
@@ -35473,6 +35478,7 @@ Object.keys 看真键表）。
 | `browser-offline-brush` ① | 离线后 `#board` 非背景像素 > 之前 | 修前基线实测 `0 => 0`（记录在 `browser-offline-shell`/`-draw` 的旧读数里） |
 | `browser-offline-brush` ② | 在线画布 vs 离线画布逐字节 | 把离线落笔的 `size +4` ⇒ 不同 3192 字节 |
 | `browser-offline-brush` ③ | `offlineBrushPaints>0`、内核 `kernelInk>0`、`blobs` 涨、`head_seq` 涨、离线期间 `brush_stroke` 请求 = 0 | 让 `paintBrushOffline` 直接 `return false` ⇒ 全部为 0；或改成"直接 `drawImage` 到画布、不碰内核" ⇒ `kernelInk=0`、`blobs` 不涨 |
+| `browser-offline-brush` ④ | **断网重载后**那一笔还在（非背景 > 0）且与刷新前、与在线都逐字节相同；`offlineBrushReplayed>=1`；重载后内核 `blobs>=1` | 把 `if (rebuilt) await replayOfflineBrushJournal()` 关掉 ⇒ 重载后 `非背景 0`、`重放 0 笔`、`blobs 0`、与在线差 9855 字节 |
 
 `browser-offline-shell`（原已知红，本轮转绿并移出名单）：
 ① 判据数的是"不透明像素" ⇒ 底色本来就整块不透明 ⇒ **永远 76800 => 76800**（那条阈值不可能满足）；
@@ -35486,11 +35492,37 @@ Object.keys 看真键表）。
 原来在线/离线两笔落在**同一位置** ⇒ 离线那一笔盖在在线那一笔上 ⇒ 量到的是"两次的差"（4 / 0）。
 改成每笔给一个**不同的起点** ⇒ 离线两笔各 +502 / +501，与在线 +502 同量级 ⇒ 转绿。
 
+### 合并 `main` 之后的处置（第二轮）
+
+1. **`cargo test --workspace` 真的红了一条** ✗ —— `crates/yanshi-render/tests/wasm_target_guard.rs`
+   的 `host_only_time_apis_are_explicitly_accounted_for`：它**按字面量**数
+   `Instant::now` / `SystemTime::now` 的出现次数（**连注释一起数** ✓），
+   而我在 `Kernel::blob_put` 的**说明注释**里写出了那个 API 名 ⇒ 把 `crates/yanshi-wasm/src/kernel.rs`
+   从 0 顶到 **1** ⇒ 白名单对不上 ⇒ 红 ✓。
+   **修法：改措辞**（写成"它底下的**宿主时钟**在 wasm32 上直接 panic"，不写出那个 API 名 ✓），
+   **不动白名单** —— 白名单记的是"允许出现的**用法**" ✓，而这里**一处调用都没有** ✗，
+   为一句注释登记一条"允许用法"会让白名单撒谎 ✓。
+   （教训：这条守卫是**文本启发式** ✓，写注释时要绕开它的关键词 ✓ —— 已在注释里写明原因 ✓。）
+2. **已知红文件名下的"+6 条"是行数假象** ✗：`scripts/criteria-known-red.txt` 原文 **48 行** ✓，
+   我删掉 `browser-offline-shell` 那一条后**加了 6 行解释性注释** ⇒ `wc -l` 变成 **54** ✓
+   —— 外部统计把行数读成了"新增 6 条已知红" ✓。**实际条目 6 → 5（净减 1）** ✓。
+   修法：**不留多行注释块** ✓，解释一律写进本轮笔记 ✓ ⇒ 现在 **47 行 / 5 条** ✓。
+3. **文档冲突**：本轮笔记原来是从 `994549c` 那份文件长出来的 ⇒ 合并时会把 main 期间累积的
+   ~200 行**整段丢掉** ✗。修法：以 **main 的版本为底** ✓，只把我这一节**追加到文件末尾** ✓
+   （`git diff main -- docs/design/implementation-notes.md` 现在是**纯新增 88 行** ✓、无删除 ✓）✓。
+   轮次号让开 main 已用掉的号（改用 **1135** ✓）。
+4. **门禁**（合并后重跑）：`cargo fmt --all -- --check` ✓、
+   `cargo clippy --workspace --all-targets -- -D warnings` ✓、
+   `cargo test --workspace` **exit 0，133 个 suite 全 0 failed** ✓、`cargo build --workspace --bins` ✓。
+
 ### 没做 / 边界
 
 * **会读画布的笔刷离线仍不出墨**（明确的边界 + 日志说明），需要给内核喂底图才能做。
 * **一笔多色离线仍不出墨**（同上）。
-* 未跑 `run-criteria.sh` 全量（本机内存小、且任务只要求相关判据）；跑的是离线全家＋
-  `browser-offline-brush` ＋ `browser-stroke-refresh` ＋ `browser-pan-vs-paint` ＋ `browser-brush-preview`
-  ＋ `kernel-brush-parity`（默认 3 支笔），读数见上方与提交说明。
-* 未做"离线落笔后**断网重载**仍在"的判据（本地原子在日志里 ⇒ 理论成立，但本轮没写判据钉它）。
+* `browser-offline-journal` 的**干净读数**未取得：它在 ad-hoc 复用同一个服务端根目录时会读到
+  上一跑留下的文档与队列（实测报 `conflict` ✓）；它的官方语义要求**全新的服务端根**
+  （`run-criteria.sh` 每次 `mktemp -d` ✓）。本机没有在官方 runner 上跑完这条 —— **如实记下** ✓。
+* 未跑 `run-criteria.sh` 全量（本机内存小）；跑的是离线全家（direct 调用、每次全新 doc）＋
+  `browser-stroke-refresh` ＋ `browser-brush-preview` ＋ `kernel-brush-parity`（默认 3 支笔）。
+  `browser-pan-vs-paint` 在本机红，但原因是它自己的端口参数（`portArg || "9222"` ✓，
+  而 runner 传的是 base URL ✓）—— **与本次改动无关** ✓，runner 源码注释里也记着这条 ✓。

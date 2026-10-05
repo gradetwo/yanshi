@@ -312,6 +312,21 @@ const outbox = await evaluate("window.yanshi.outbox()");
 console.log(`  · 离线落笔后：${JSON.stringify(offlineInk)}｜内核 ${JSON.stringify(kernelAfter)}`);
 console.log(`  · 离线本地落笔次数 = ${offlineStats && offlineStats.offlineBrushPaints}｜内核渲染墨 = ${offlineStats && offlineStats.kernelInk}｜离线期间 brush_stroke 请求数 = ${brushStrokeRequests}｜离线队列 = ${JSON.stringify(outbox && { pending: outbox.pending, state: outbox.state })}`);
 
+// ④b **断网重载**：那一笔必须**还在** ✓ —— 离线时它只进了内核日志与离线队列 ✓，
+// 内核日志**不持久** ✗ ⇒ 不重放的话一刷新就没了 ✓（这就是"本地队列重放"那条产品改动 ✓）。
+await send("Page.reload", { ignoreCache: false });
+await waitComplete();
+let reloadKernel = await evaluate("window.yanshi.kernelStats()");
+for (let i = 0; i < 60 && !reloadKernel; i += 1) {
+  await sleep(250);
+  reloadKernel = await evaluate("window.yanshi.kernelStats()");
+}
+const reloadInk = await waitForInk("断网重载后", 40);
+const reloadBoard = await evaluate(BOARD_B64);
+const reloadReplayed = await evaluate("window.yanshiStats.offlineBrushReplayed || 0");
+const reloadOutbox = await evaluate("window.yanshi.outbox()");
+console.log(`  · 断网重载后：${JSON.stringify(reloadInk)}｜内核 ${JSON.stringify(reloadKernel && { head_seq: reloadKernel.head_seq, blobs: reloadKernel.blobs })}｜本地重放 ${reloadReplayed} 笔｜队列 ${JSON.stringify({ pending: reloadOutbox && reloadOutbox.pending })}`);
+
 // ⑤ 三条断言
 if (!offlineInk || offlineInk.nonBackground <= offlineBefore.nonBackground) {
   failures.push(`离线画不出墨：非背景像素 ${offlineBefore && offlineBefore.nonBackground} => ${offlineInk && offlineInk.nonBackground}`);
@@ -338,6 +353,26 @@ if (brushStrokeRequests !== 0) {
 if (onlineFlag !== false) {
   failures.push(`网络并没有真的被切断（navigator.onLine=${onlineFlag}）⇒ 判据前提不成立`);
 }
+if (!(reloadInk && reloadInk.nonBackground > 0)) {
+  failures.push(`断网重载后那一笔没了（非背景像素 ${reloadInk && reloadInk.nonBackground}）⇒ 离线落笔没有挺过刷新`);
+}
+if (!(reloadReplayed >= 1)) {
+  failures.push(`断网重载后没有从离线队列重放（offlineBrushReplayed=${reloadReplayed}）⇒ 笔触没有本地持久来源`);
+}
+if (!(reloadKernel && reloadKernel.blobs >= 1)) {
+  failures.push(`断网重载后的内核里没有那张位图（blobs=${reloadKernel && reloadKernel.blobs}）`);
+}
+if (!reloadBoard || typeof reloadBoard !== "string") {
+  failures.push("断网重载后读画布失败 ⇒ 逐字节比对无法进行");
+} else if (offlineBoard && typeof offlineBoard === "string" && reloadBoard !== offlineBoard) {
+  const leftReload = Buffer.from(offlineBoard, "base64");
+  const rightReload = Buffer.from(reloadBoard, "base64");
+  let differingReload = 0;
+  for (let index = 0; index < Math.min(leftReload.length, rightReload.length); index += 1) {
+    if (leftReload[index] !== rightReload[index]) differingReload += 1;
+  }
+  failures.push(`断网重载后的画布与刷新前不同（${differingReload} 个字节不同）⇒ 重放不是同一笔`);
+}
 if (!offlineBoard || typeof offlineBoard !== "string" || !onlineBoard || typeof onlineBoard !== "string") {
   failures.push("读画布失败 ⇒ 逐字节比对无法进行");
 } else {
@@ -361,6 +396,15 @@ if (!offlineBoard || typeof offlineBoard !== "string" || !onlineBoard || typeof 
     `｜${differing + extra === 0 ? "**逐字节相同** ✓" : "有差异 ✗"}`);
   if (differing + extra !== 0) {
     failures.push(`离线与在线不是逐字节相同：${differing + extra} 个字节不同（首个 @${firstDiff}，最大通道差 ${maxDelta}）`);
+  }
+  if (reloadBoard && typeof reloadBoard === "string") {
+    const reloadBytes = Buffer.from(reloadBoard, "base64");
+    let reloadDiff = 0;
+    for (let index = 0; index < Math.min(left.length, reloadBytes.length); index += 1) {
+      if (left[index] !== reloadBytes[index]) reloadDiff += 1;
+    }
+    console.log(`  · 断网重载后的画布 vs 在线：不同 ${reloadDiff} 字节｜${reloadDiff === 0 ? "**逐字节相同** ✓" : "有差异 ✗"}`);
+    if (reloadDiff !== 0) failures.push(`断网重载后的画布与在线不同（${reloadDiff} 个字节）`);
   }
 }
 

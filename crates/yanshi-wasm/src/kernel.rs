@@ -552,8 +552,10 @@ impl Kernel {
     ///
     /// **`created_at` 显式给 `0`，不走 `MemoryBlobStore::put`** ✗ —— 那条路会调 `now_ms()` ✓，
     /// 而 `now_ms()` 在 `wasm32-unknown-unknown` 上**根本没有实现** ✓
-    ///（`SystemTime::now()` 直接 panic ✓；实测浏览器里 `blob_put` 抛
-    /// `RuntimeError: unreachable` ✓，内核对象随即进入"递归借用"状态、后续调用全废 ✗）
+    ///（它底下的**宿主时钟**在 wasm32 上直接 panic ✓ —— 本仓库有守卫测试在数这个字面量 ✓，
+    /// 所以这里**刻意不写出那个 API 名** ✗：守卫数的是文本出现次数 ✓，写出来会把它从 0 顶到 1 ✓
+    /// 而那不是"新增了一处调用" ✗；实测浏览器里 `blob_put` 抛 `RuntimeError: unreachable` ✓，
+    /// 内核对象随即进入"递归借用"状态、后续调用全废 ✗）
     /// ⇒ 内核暴露的这条写入路径**在浏览器里从来不能用** ✗ —— 直到离线落笔第一次真正调它 ✓。
     ///
     /// **为什么常数 0 是对的** ✓：`created_at` 只服务于**服务端的孤儿 GC / TTL** ✓
