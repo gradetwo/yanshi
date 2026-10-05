@@ -33726,3 +33726,34 @@ entered == exited >= 1  ⇒ **③ 函数正常返回但选项没进 DOM**（**�
    **∴ "函数被调用"与"函数内第一行没执行"不能同时为真 ✗ ⇒ **∴ 必然有一条中间路径**提前返回**✗** ✓
    ⇒ **∴ 教训**：**遇到矛盾 ⇒ 说明"隐含假设"错了 ✓**（**∴ 我的隐含假设是"调用它 ⇒ 它会跑到 refresh ✗"** ✓）✓；
 3. **⇒ 而这条链终于短了** ✓：**∴ 从"整页/缓存/资产"✗ 收敛到**一个早退判断**✓** ✓（**∴ `:6543` 的两个 DOM 元素 ✗**）✓。
+
+## ✅ 第 1073 轮：**亲手变异验证 subagent D 的判据 —— 确实能红** ✓（**补上我上轮承认的缺口 ✓**）
+
+**为什么要做 ✓**：上一轮我合并 D 时，只独立跑了门禁 ✓ ＋ 读它的自述 ✓ ⇒
+**∴ 但没亲手验证"判据真能红"✗** ⇒ **∴ 那正是本会话反复强调的纪律 ✗** ⇒ **∴ 本轮补上 ✓**。
+**变异 A（**关掉 in-flight 注册 ✓**）**：
+```
+`tools.rs:586` `let guard = if spec.mutating {` ⇒ **改成 `if false {`** ✓ ⇒
+`cargo test -p yanshi-server --test timings_and_cancel` ✓：
+  ✅ a_viewer_cannot_cancel_someone_elses_operation ✓
+  ❌ **a_second_mutating_request_is_rejected_while_the_same_document_is_busy FAILED** ✓
+  ✅ inflight_state_is_observable_and_cancel_is_actually_requested ✓
+  ❌ **a_cancelled_batch_stops_and_rolls_its_changeset_back FAILED** ✓（**连带 ✓，合理：取消也要先注册 ✓**）
+  ✅ a_deferred_batch_says_so_instead_of_pretending_it_finished ✓
+  ✅ a_write_response_carries_a_self_consistent_timing_breakdown ✓
+⇒ **4 passed ／ 2 failed** ✓ ⇒ **∴ 判据确实能红 ✓、且失败**精确指向**被判条件 ✓**（**不是连带全红 ✓**）
+⇒ **∴ 已逐字节还原 ✓**（残留 0 ✓、工作树干净 ✓）✓。
+```
+**顺带核实 ✓**：`execution_report`（tools.rs:13710 ✓）的 `deferred = pending > 0` ✓ ——
+**∴ 按 job 计数、**无墙上时钟阈值**** ✓ ⇒ **∴ 符合"语义判据优先于计时判据"✓** ✓。
+**★ 三条** ✓：
+```
+1. **"独立跑门禁"不等于"验证判据"** ✗ ——
+   **∴ 门禁绿只说明"测试通过"✓，而**这不等于"测试能红"✗** ✓ ⇒
+   **∴ 前者只能排除"实现坏了"✗，后者才能排除"判据是摆设"✗** ✓（**∴ 二者缺一不可 ✓**）✓；
+2. **∴ 而这次变异还暴露了一个"连带"现象** ✓ ——
+   **∴ 关掉注册 ⇒ **两条**判据同时红 ✓ ⇒ **∴ 失败面比被判条件宽 ✓** ⇒
+   **∴ 这本身也是信息 ✓：它说明这两条判据**共享同一个前置**✓（in-flight 注册 ✓）✓；
+3. **⇒ 流程固化（**下轮起一律照办 ✓**）**：**收 subagent 的提交时必须三步 ✓** ——
+   **① 在它的 worktree 独立跑门禁 ✓；② **亲手变异至少一条判据**看它变红 ✓；③ 合并后再跑一次门禁 ✓** ✓。
+   **∴ A／B／C 回来时同样处理 ✓** ✓。
