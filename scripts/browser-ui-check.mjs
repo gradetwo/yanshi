@@ -841,7 +841,14 @@ try { (await import("node:fs")).appendFileSync("/tmp/yanshi-move-obs.txt",
 } catch (_) { /* 落盘失败不影响判据 */ }
 if (moveResult && moveResult.beforeBbox) {
   const [bx, by, bw, bh] = moveResult.beforeBbox;
-  const region = { x: bx, y: by, w: Math.max(1, bw), h: Math.max(1, bh) };
+  // 只量「旧盒里没被新盒覆盖」的那条（第 979 轮）：判据原来量整个旧盒，
+  // 而实测新旧盒在 x 方向重叠（旧 [102,204]、新 [197,299] ⇒ 重叠 [197,204]），
+  // 重叠区里本来就有对象的新一部分 ⇒ 那是真实内容，不是残影。
+  // 所以宽度取 min(bw, 新盒.x - 旧盒.x)，由实测 bbox 推出，不写死。
+  const newX = moveResult.afterBbox && moveResult.afterBbox[0];
+  const vacatedW = typeof newX === "number" && newX > bx ? Math.min(bw, newX - bx) : bw;
+  const region = { x: bx, y: by, w: Math.max(1, vacatedW), h: Math.max(1, bh) };
+  console.log("  残影量取区域：x=" + bx + " w=" + region.w + "（旧盒宽 " + bw + "，新盒 x=" + newX + "）");
   // **必须用"当下活动的" doc/token** ✓（第 234 轮更正 ✓）：
   // 这一段前面（606 行 ✓）已经把页面切到 `moveDoc` ✓，而 `docId`/`token`（344/345 ✓）是**初始 URL** 的 ✓
   // ⇒ 旧版拿**另一份文档**去渲染 ✓ ⇒ 量到的 576 个"残影"像素其实是**那份文档自己的内容** ✗
