@@ -41,12 +41,25 @@ const post = async (tool, args) => (await fetch(`${parsed.origin}/api/tools?doc=
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, arguments: args }) })).json();
 await post("create_layer", { layer_id: "layer_default", name: "l" });
 await post("brush_stroke", { layer_id: "layer_default", brush: "classic-brush", size: 24, color: { r: 10, g: 10, b: 10, a: 255 }, points: [[60, 80, 0.8], [140, 80, 0.8]] });
-await send("Page.navigate", { url }); await sleep(5000);
+await send("Page.navigate", { url });
+// **等到"页面就绪"这个独立信号** ✓（第 888 轮 ✓）：原来固定睡 5 秒 ✗ ⇒ 机器慢时下面取
+// `exportPng` 会取不到 ⇒ 判据间歇红 ✗（**同族问题**：25 个 browser 判据里 20 个都有这种睡眠 ✗）。
+// ⚠️ **等待条件必须与断言条件不同** ✗：这里等的是 `readyState` 与按钮存在 ✓，
+//    而"断网后能否导出文件"仍由下面的断言判 ✓ ✓。
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { if (await evaluate(`document.readyState === "complete" && !!document.getElementById("exportPng")`)) break; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+}
 // ② 断网 ✓
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 // ③ 点导出 ✓
 const clicked = await evaluate(`(() => { const b = document.getElementById("exportPng"); if (!b) return "no-button"; b.click(); return "clicked"; })()`);
 console.log("  导出按钮：" + clicked);
+// ⚠️ **这一处**故意保留**有界等待** ✗（第 888 轮 ✓，不要"顺手也改掉" ✗）：
+// 点导出后**唯一**可等的信号就是"下载目录里出现文件" ✗ —— 而那正是下面 `:56` 断言的内容 ✗ ⇒
+// **一旦"等到文件才继续"，那条断言就永远不会失败** ✗（**第 887 轮我刚犯过这个错** ✓）。
+// ⇒ 正确出路是**等一个与断言独立的信号**（CDP 的 `Browser.downloadProgress` 事件 ✓），
+//   或像现在这样**留足有界等待** ✓；**"文件是否存在"始终只由断言判** ✓ ✓。
 await sleep(5000);
 // ④ **硬证据**：下载目录里有没有文件 ✓
 const files = fs.readdirSync(dir).filter((name) => !name.endsWith(".crdownload"));
