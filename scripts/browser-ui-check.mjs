@@ -826,7 +826,13 @@ const moveResult = await evaluate(`(async () => {
   const afterBbox = (after.objects || []).map((o) => o.bbox).filter(Boolean)[0];
   // 旧位置的像素断言放到 Node 侧（用 render_region 直接量 ✓）——
   // 第一版我在页面里猜视图变量名（viewState 等 ✗）去换算画布坐标，既脆弱又不可靠 ✓。
-  return { beforeBbox, afterBbox, log: document.getElementById("log").innerText };
+  // 第 981 轮：把「指针在**客户端像素**上走了多远」与「画布显示尺寸」也带出来 ——
+  // 判据的期望是 0.2 × 512（文档边长），而这只有在「画布 1:1 对应文档」时才等于指针位移。
+  const p0 = at(0.3, 0.3);
+  const p1 = at(0.5, 0.4);
+  return { beforeBbox, afterBbox, log: document.getElementById("log").innerText,
+    rectSize: { w: Math.round(rect.width), h: Math.round(rect.height) },
+    pointerDelta: { x: Math.round(p1.clientX - p0.clientX), y: Math.round(p1.clientY - p0.clientY) } };
 })()`);
 
 // **移动后旧位置必须被清掉** ✓ —— 用户实测：移动后画布旧位置不刷新、留下残影 ✗
@@ -849,6 +855,10 @@ if (moveResult && moveResult.beforeBbox) {
   const vacatedW = typeof newX === "number" && newX > bx ? Math.min(bw, newX - bx) : bw;
   const region = { x: bx, y: by, w: Math.max(1, vacatedW), h: Math.max(1, bh) };
   console.log("  残影量取区域：x=" + bx + " w=" + region.w + "（旧盒宽 " + bw + "，新盒 x=" + newX + "）");
+try { (await import("node:fs")).appendFileSync("/tmp/yanshi-disp-obs.txt",
+  JSON.stringify({ rectSize: moveResult.rectSize, pointerDelta: moveResult.pointerDelta,
+    bboxDelta: { x: moveResult.afterBbox[0] - moveResult.beforeBbox[0], y: moveResult.afterBbox[1] - moveResult.beforeBbox[1] } }) + "\n");
+} catch (_) { /* 落盘失败不影响判据 */ }
   // **必须用"当下活动的" doc/token** ✓（第 234 轮更正 ✓）：
   // 这一段前面（606 行 ✓）已经把页面切到 `moveDoc` ✓，而 `docId`/`token`（344/345 ✓）是**初始 URL** 的 ✓
   // ⇒ 旧版拿**另一份文档**去渲染 ✓ ⇒ 量到的 576 个"残影"像素其实是**那份文档自己的内容** ✗
