@@ -35568,3 +35568,172 @@ Object.keys 看真键表）。
 它是逐轮追加的日志，双方几乎总是"各在文件末尾追加了一段" ⇒ 正确做法是**两份都保留**。
 本会话已经因此回退过一次合并，这是第二次覆盖 ⇒ 从本轮起：docs 冲突一律手工合并并核对
 （`git diff --numstat` 确认没有大规模删除；grep 关键轮次号确认都在）。
+1800s 超时项，与本次改动无关）：
+   ① 既有"各相之和（含残差）= 总时长"仍然通过；
+① 判据数的是"不透明像素" ⇒ 底色本来就整块不透明 ⇒ **永远 76800 => 76800**（那条阈值不可能满足）；
+1. 新增两个阶段：`render_ms`（产出被编码的像素）与 `png_ms`（PNG 编码），填在**导出路径的真实调用点**
+  ① (B)③ target_installed 三态 —— 实现早已完成；
+1. **`cargo test --workspace` 真的红了一条** ✗ —— `crates/yanshi-render/tests/wasm_target_guard.rs`
+1. crates/yanshi-http/src/viewer.rs:321 已经有用户可见的开关：
+1. `viewer-app.js` `commitShape`（`:6655` 附近）：`.myb` 画笔提交后若 `result.offline` 为真
+   ~200 行**整段丢掉** ✗。修法：以 **main 的版本为底** ✓，只把我这一节**追加到文件末尾** ✓
+   :23 的注释写明"**是否强制走服务端渲染**（(A)⑤ 的显式开关）。缺省 false = 照旧（客户端优先）"。
+2. 判据三条，各自必须能红并变异验证：
+2. 新增 `brushStrokeRegion(points, size)`：与服务端 `brush_stroke_region` + `PaintRegion::clamped`
+2. **已知红文件名下的"+6 条"是行数假象** ✗：`scripts/criteria-known-red.txt` 原文 **48 行** ✓，
+   ② 真跑一次导出时两个新阶段**确实出现且有实质数值**（不是 0）；
+  ② (B)① 示例覆盖 —— 早已 138/141（不是"57 条"）；
+2. crates/yanshi-http/assets/viewer-app.js:22 定义 `const SERVER_RENDER_KEY = "yanshi.serverRender"`；
+3. :25 读 `localStorage.getItem(SERVER_RENDER_KEY) === "1"` ⇒ **已持久化**；
+3. 测量纪律（本会话教训）：变异验证必须**直接跑判据**（runner 用隔离副本，工作树里的变异到不了它）；
+3. **文档冲突**：本轮笔记原来是从 `994549c` 那份文件长出来的 ⇒ 合并时会把 main 期间累积的
+   ③ **新增一条判据**，直接抓住本次的起因：残留桶不许吞掉一次导出的绝大部分
+3. 新增 `paintBrushOffline(request)`：`kernel.paint_brush` → `blob_put`（blob 先行）
+  ③ (A)⑤ 显式开关 —— 早已存在。
+   :4750 `if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1")` ⇒ UI 与存储连通。
+4. 环境：4K 夹具 /tmp/cold4k，文档 id parrot-4k-bold，debug 导出约 4 分钟。
+4. **门禁**（合并后重跑）：`cargo fmt --all -- --check` ✓、
+4. 新增 `window.yanshi.kernelStats()`：把内核 `stats_json` 原样转出去 ⇒ 判据能断言
+4. 早期的注释（:9-15）还记录了真实踩坑：`needsServerPixels` 必须在任何启动路径之前声明，
+5. **缓存键带上请求参数**（`bodyDigest`）：实测 `list_assets {kind:"brush"}` 与 `{kind:"texture"}`
+5. 门禁四条；英文提交；不碰 main、不推送；报告要写清"导出渲染与编码的实际位置"。
+6. **离线笔触要挺过"断网重载"**：内核日志**不持久** ⇒ 一刷新那一笔就没了。
+本会话第三次"过期前提"（我转述的目标状态比实际落后）：
+  （本机另起一个 main 工作区、各自独立的 server + chromium 对照跑过 ✓）
+本轮改为全仓 grep 定位，并把结论写回本文档；若本轮 grep 已确认位置，则下一步就是：
+不等就会把"内核还没起来"误报成"离线画不出墨"（量错对象）。
+   **不动白名单** —— 白名单记的是"允许出现的**用法**" ✓，而这里**一处调用都没有** ✗，
+   （不会与服务端权威重复）。**只重放 `brush_stroke`** —— 别的写操作没有本地渲染路径，不假装能画。
+   **不另立一份本地日志**，直接拿**离线队列**当重放源（`replayOfflineBrushJournal`）：
+  ⇒ **不是本次改动引入的** ✓。`browser-render-switch` 的机制是**判据侧竞态**：
+   不许跨分辨率/跨档位比较；不许把一次观测写成硬编码期望。
+参照 export_png 生成可直接下载 URL 的做法（raw_url / thumb_url 同族），
+### 产品改动
+   从 0 顶到 **1** ⇒ 白名单对不上 ⇒ 红 ✓。
+代价（如实写）：两条路并存 ⇒ 存在漂移风险。对策是把漂移变成**判据**：
+   的 `host_only_time_apis_are_explicitly_accounted_for`：它**按字面量**数
+第 1138 轮确认：`other_ms` 是**残差**（total 减去已测阶段），所以**新增阶段只要算进 measured_us()，
+## 第 1139 轮：派发 timings 拆阶段（导出可一条读数定位）
+第 1140 轮的教训（先查证再判断）在这里再次适用：定位函数之前不该凭记忆归位。
+## 第 1140 轮：(A)⑤ 的显式开关早已存在——本会话第三次"过期前提"
+## 第 1141 轮：(A)④ 下载 URL 的改法定位（审计中途记录）
+## 第 1142 轮：(A)⑥ 离线落笔落地 —— 普通 `.myb` 画笔断网时改走共享内核
+  ✓（第一轮我在 ad-hoc 复用服务端根目录时报的 `conflict` 是**复用**造成的 ✓ —— 官方 runner
+   ⇒ 调 `paintBrushOffline(...)` 并**提前返回**（不再做只对服务端有意义的补画/`resync`）。
+   队列里本来就逐字存着 `brush_stroke` 的全部参数 ⇒ `loadKernel` 建出新内核时按 `seq` 重放一遍
+而且**不用动 viewer-app.js 之外的产品逻辑**（服务端先把"能下载"这件事做出来）。
+   而我在 `Kernel::blob_put` 的**说明注释**里写出了那个 API 名 ⇒ 把 `crates/yanshi-wasm/src/kernel.rs`
+  而这正好是 (A)⑥ 子代理在做的事（kernel-brush-parity 加它那条"在线 vs 离线逐字节一致"的新判据）。
+  而 runner 传的是 base URL ✓）—— **与本次改动无关** ✓，runner 源码注释里也记着这条 ✓。
+   否则启动读到它就抛错 ⇒ 整段脚本中断 ⇒ 现象是"工具条还在、但后续一切都没接线"。
+  服务端的顺序是"先平滑 ⇒ 再算区域 ⇒ 再落笔"，离线必须一致。
+改成每笔给一个**不同的起点** ⇒ 离线两笔各 +502 / +501，与在线 +502 同量级 ⇒ 转绿。
+改成数"非背景像素"；② 派发前 `keyup(Space)` 并断言 `points` 0→>0、`dragging` 为真
+   共用一条本地缓存 ⇒ 断网时笔刷面板里是**贴图文件名**（实测选项全是 `Cardboard001.png`）⇒
+### 官方 runner 的读数（合并后，单分片）
+### 合并 `main` 之后的处置（第二轮）
+**画布仍然逐字节相同** —— `paint_brush` 的 dab 用**绝对文档坐标**落进 tile，
+* **会读画布的笔刷离线仍不出墨**（明确的边界 + 日志说明），需要给内核喂底图才能做。
+* **会读画布的笔刷**（涂抹 / knife 一类）：内核 `paint_brush` 只有一张**空**底图 ⇒ 离线不下笔、只入队；
+  ⇒ 机器一慢就红 ✓。**我没有动它**（超出本次范围 ✓，且两条路都同样红 ✓）。
+既浪费轮次，也让进度报告失真。
+既有"各相之和（含残差）= 总时长"判据会自动继续成立** ⇒ 这件事没有兼容性风险。
+   （教训：这条守卫是**文本启发式** ✓，写注释时要绕开它的关键词 ✓ —— 已在注释里写明原因 ✓。）
+教训（值得进 skill）：**转述目标项之前先查证它的现状**，否则会把"已完成"当成"未做"，
+离线落笔：非背景 0 => 3285｜内核 head_seq 1 => 2｜blobs 0 => 1｜serverBlits 0｜离线期间 brush_stroke 请求 0
+  连续同浏览器复跑 `browser-offline-brush` ✓ + `browser-offline-draw` ✓。
+两条路都可选（任务书明确允许统一）。选**离线回退**，理由是**在线那条路的覆盖面大得多**：
+另外给三条离线判据加了**有界等内核就绪**：本机高负载时实测"`readyState` 完成 ≠ 内核装载完成"，
+   轮次号让开 main 已用掉的号（本节的号随每次合并往上抬 ✓ —— main 一直在动 ✓，
+### 没做 / 边界
+  每次 `mktemp -d` 全新根目录 ✓ ⇒ 这条**不是**产品缺陷 ✓）。
+  内核对象随即进入"递归借用"状态、后续调用全废）。`created_at` 只服务服务端 GC/TTL ⇒ 常数 0 不影响行为。
+### 内核改动（`crates/yanshi-wasm`）
+   "内核真的做了这件事"（`blobs` / `head_seq`），而不是只看画布像素。
+  **判据不许改动共享环境** ✓ —— 这是本轮的一条流程教训 ✓。
+| 判据 | 断言 | 变异 ⇒ 转红 |
+### 判据与变异（每条都真的能红）
+判据 `browser-offline-brush` 的逐字节比对正是钉住这些（把 size +4 就红：实测不同 3192 字节、最大通道差 239）。
+其余阶段都是 0 或微秒），所以从一条读数看不出"是渲染还是 PNG 编码"。
+**区域不需要逐字节相同**（本轮变异实测）：把区域半径 `+4` 改成 `+8`、或把 `x0` 平移 1px，
+区域只是**读回窗口**；窗口偏移/变大只是多带一圈透明像素，合成结果不变。
+  去掉清理（只保留 `Network.setCacheDisabled` ✓，它是**会话级**的 ✓）后：
+让 export_project 也返回一个可下载的 URL，这样查看器接上只需一行，
+  上一跑留下的文档与队列（实测报 `conflict` ✓）；它的官方语义要求**全新的服务端根**
+### 设计选择：**离线回退**，不是"统一走内核"
+审计结果（有出处）：
+（实测 `spaceHeld` 本来就是 false ⇒ 事件其实进了状态机；旧读数里的 `points=0` 是
+所以：**在线照旧走服务端**；`callTool` 判定为离线时，才用**同一份 hokusai 数学**在本地下笔。
+所以这一步要在它们合并之后再做，避免代码冲突。
+  它读完 `readyState === "complete"` 就立刻读 `state.wasm` ✓，而 wasm 模块的
+统一走内核 = 把上面几项一起降级或另写一遍 ⇒ 直接违反"不许回退在线路径"。
+   —— 外部统计把行数读成了"新增 6 条已知红" ✓。**实际条目 6 → 5（净减 1）** ✓。
+   为一句注释登记一条"允许用法"会让白名单撒谎 ✓。
+* 未跑 `run-criteria.sh` 全量（本机内存小）；跑的是离线全家（direct 调用、每次全新 doc）＋
+我按"`write_export_project` 在 service.rs"去找，结果**没找到**（那次审计打偏）。
+   我删掉 `browser-offline-shell` 那一条后**加了 6 行解释性注释** ⇒ `wc -l` 变成 **54** ✓
+* **我这条判据自己咬过别人一次**（已修 ✓）：它第一版在共享浏览器里
+   （我只定位到 commit 的计时挂钩在 service.rs:1487-1548；导出渲染与编码在 write_export_png 一带，要它自己找）。
+* 新增单测 `imported_raster_patch_pixels_render_locally`：先渲染一次（热 tile 缓存）再 `blob_put`
+   修法：**不留多行注释块** ✓，解释一律写进本轮笔记 ✓ ⇒ 现在 **47 行 / 5 条** ✓。
+   **修法：改措辞**（写成"它底下的**宿主时钟**在 wasm32 上直接 panic"，不写出那个 API 名 ✓），
+选区裁剪、`style` 笔触风格、`source`（改色重跑 `update_stroke`）；这些**内核都没有**。
+  也就是说 (A)⑤ 与 (A)⑥ 在这里**会合**：开关提供"能选"，判据提供"两条路一致"。
+* **一笔多色离线仍不出墨**（同上）。
+* **一笔多色**（`color_to`）：要服务端逐段换色 ⇒ 离线不下笔、只入队。
+   → 一条与**服务端同形**的 `import_image` 原子 → `commit_preview` → `drawKernelDirty`。
+依据第 1137-1138 轮：4K export 的 246 秒几乎全部落进 `other_ms`（total_ms=246176.9，other_ms=246176.9，
+已派 subagent（/tmp/wt-timings，分支 perf/export-timings），任务书要点：
+已知例外（**显式边界，不是静默**；服务器恢复后补交仍会画出正确的一笔）：
+   硬写一个号必然撞车 ✓）。
+   用户选不到笔。同类还有 `brush_preview`（不同笔刷）与 `get_atom`。修后不同参数不同条目。
+      （阈值要有测量依据，不能随便取；并说明它能抓什么、不能抓什么）。
+原来在线/离线两笔落在**同一位置** ⇒ 离线那一笔盖在在线那一笔上 ⇒ 量到的是"两次的差"（4 / 0）。
+在线落笔：非背景 0 => 3285｜服务端补画 1–4 次｜服务端墨 3271
+⇒ 真正决定像素的是**点列 / size / color / opacity / hardness / smooth 与引擎种子**，
+- 真正剩下的是它的**判据**：目标原话要求"**两种模式必须同笔同结果**"。
+逐字节比对：在线 307200 字节 vs 离线 307200 字节｜不同 0｜**逐字节相同**
+### 逐字节对照的实测数字（判据 `browser-offline-brush`，本机跑 4 次）
+**逐字节相同是构造出来的**：同一份 hokusai ＋ 同一串点 ＋ 同一个平滑 ＋ 同一组设置。
+   逐字同一公式（外扩 `size/2+4`、`floor`/`ceil`、裁到画布）。
+   注释里写明那次是"只写了注释、忘了写声明"，而且"探针把任何异常都标成 TDZ，误导了排查"。
+注意：`service.rs` 与 `tools.rs` 是正在运行的两个子代理（离线笔刷、timings 拆阶段）都可能碰的文件，
+- **(A)⑤ 的"显式开关"这一半已经完成**（复选框 + localStorage 键 + 默认客户端优先）。
+`bash scripts/run-criteria.sh`（本机跑到 `kernel-brush-parity` 为止；那一条是**已知红**的
+  `browser-brush-panel` / `browser-brush-list` / `browser-brush-preview` /
+  `browser-brush-preview-local` ✓ —— 缓存键那处改动**没有**打破离线读。
+| `browser-offline-brush` ① | 离线后 `#board` 非背景像素 > 之前 | 修前基线实测 `0 => 0`（记录在 `browser-offline-shell`/`-draw` 的旧读数里） |
+| `browser-offline-brush` ② | 在线画布 vs 离线画布逐字节 | 把离线落笔的 `size +4` ⇒ 不同 3192 字节 |
+| `browser-offline-brush` ③ | `offlineBrushPaints>0`、内核 `kernelInk>0`、`blobs` 涨、`head_seq` 涨、离线期间 `brush_stroke` 请求 = 0 | 让 `paintBrushOffline` 直接 `return false` ⇒ 全部为 0；或改成"直接 `drawImage` 到画布、不碰内核" ⇒ `kernelInk=0`、`blobs` 不涨 |
+| `browser-offline-brush` ④ | **断网重载后**那一笔还在（非背景 > 0）且与刷新前、与在线都逐字节相同；`offlineBrushReplayed>=1`；重载后内核 `blobs>=1` | 把 `if (rebuilt) await replayOfflineBrushJournal()` 关掉 ⇒ 重载后 `非背景 0`、`重放 0 笔`、`blobs 0`、与在线差 9855 字节 |
+* `browser-offline-brush` ✓（新判据）、`browser-offline-reload` ✓、`browser-offline-export` ✓、
+  ⇒ `browser-offline-draw` 报「SW 缓存里没有共享内核」✗、
+`browser-offline-draw`（本机在基线代码上复现为红：`增量 0`）：
+* `browser-offline-journal` 的**干净读数**未取得：它在 ad-hoc 复用同一个服务端根目录时会读到
+* **`browser-offline-journal` ✓ 通过** —— 干净读数：`✓ 离线写队列达成：断网不丢、按序补交、有界、被拒/冲突都说得清`
+`browser-offline-shell`（原已知红，本轮转绿并移出名单）：
+  `browser-offline-shell` ✓、`browser-no-stale-read` ✓、`browser-first-paint` ✓、
+  `browser-pan-vs-paint` 在本机红，但原因是它自己的端口参数（`portArg || "9222"` ✓，
+  `browser-render-switch` 报「内核句柄 = false」✗。
+  `browser-render-switch`）**在 main（`bab50d2`）上逐条复现，读数逐字相同** ✓
+  `browser-stroke-refresh` ＋ `browser-brush-preview` ＋ `kernel-brush-parity`（默认 3 支笔）。
+`brush_stroke` 服务端一侧还管着"会读画布的笔刷（涂抹）"、`color_to` 一笔多色、
+   `cargo clippy --workspace --all-targets -- -D warnings` ✓、
+   `cargo test --workspace` **exit 0，133 个 suite 全 0 failed** ✓、`cargo build --workspace --bins` ✓。
+  `catmull_rom_smooth` ＋ `SMOOTH_SUBDIVISIONS`（**与服务端 `smooth_stroke_points` 同一份实现**）。
+  ＋ `commit_preview` 一条 `import_image`，断言渲染里有墨且 `stats().blobs == 1`。
+* `CommitReport` 增加 `dirty_kind` / `dirty_reason`（与 `ApplyReport` 同口径，可观测性）。
+   （`git diff main -- docs/design/implementation-notes.md` 现在是**纯新增 88 行** ✓、无删除 ✓）✓。
+  `import` + 实例化是**异步**的 ✓（本机实测 `t=3s` 还是 `false`、`t=6s` 才 `true` ✓）
+   `Instant::now` / `SystemTime::now` 的出现次数（**连注释一起数** ✓），
+* `Kernel::blob_put` 改走 `MemoryBlobStore::put_at(bytes, 0)`：原来走 `put` ⇒ `now_ms()` ⇒
+   `<label …><input type="checkbox" id="useServerRender…">`。
+   （`paint_brush` → `blob_put` → `commit_preview`）。补交成功 ⇒ 那一行被删 ⇒ 下次不再重放
+`pointerup` **之后**的快照 —— `pointerup` 按设计会清空 `points`）。
+  （`run-criteria.sh` 每次 `mktemp -d` ✓）。本机没有在官方 runner 上跑完这条 —— **如实记下** ✓。
+* runner 里另外几条 `✗`（`browser-i18n` / `browser-layout` / `browser-live-brush` /
+`scripts/browser-offline-brush.mjs` 逐字节对照"在线那一笔"与"离线那一笔"，
+`scripts/kernel-brush-parity.mjs`（既有）对照内核与服务端的同一笔。
+  `SystemTime::now()` 在 `wasm32-unknown-unknown` 上 **panic**（浏览器实测 `RuntimeError: unreachable`，
+  `unregister()` + `caches.delete()` 全部缓存 ⇒ 把**别的判据要用的外壳缓存**删了 ✓
+* `WasmKernel::smooth_stroke_json` ＋ `brush::smooth_points_json`：导出

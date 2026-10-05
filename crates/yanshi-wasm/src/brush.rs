@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use serde::Deserialize;
+use serde_json::Value;
 
 /// **最后一次失败的原因** ✓ —— 门面当年有独立的错误通道 ✓，我第一版把它丢了 ✗
 /// ⇒ "失败 = 空" ✗ ⇒ **说不出为什么** ✓（而本仓库最反对这个 ✗）⇒ 现在补回来 ✓。
@@ -245,4 +246,36 @@ pub(crate) fn paint(request_json: &str) -> Result<Vec<u8>, String> {
     let mut surface = hokusai::tile_mem::MemSurface::new();
     stamp(&brush, &mut state, &mut surface, &request.points);
     Ok(read_back(&surface, &request.region))
+}
+
+/// **可选平滑** ✓ —— 与服务端 `brush_stroke.smooth` **同一条实现** ✓
+///（`yanshi_render::brush::catmull_rom_smooth` ✓、同一个细分数 `SMOOTH_SUBDIVISIONS` ✓）。
+///
+/// **内核为什么要导出它** ✓：离线落笔要在浏览器里复现服务端那一笔 ✓，而服务端
+/// `write_brush_stroke` 的顺序是**先平滑 ⇒ 再算区域 ⇒ 再落笔** ✓（见 `tools.rs` ✓）
+/// ⇒ 少了这一步，同一笔在离线与在线会走**不同的点列** ✗（区域也随之不同 ⇒ 不再逐字节相同 ✓）。
+///
+/// **压力先夹到 0..1** ✓ —— 与服务端 `parse_brush_points` 逐字一致 ✓
+///（那一步同样影响平滑结果 ✓，不夹就会在极值上分叉 ✓）。
+/// 收 `[[x, y, pressure], ...]` ✓ ⇒ 回同形状的 JSON 数组 ✓；解析失败回 `Err(原因)` ✓。
+pub(crate) fn smooth_points_json(points_json: &str) -> Result<Value, String> {
+    let raw: Vec<[f64; 3]> =
+        serde_json::from_str(points_json).map_err(|error| format!("点列不是合法 JSON：{error}"))?;
+    let points: Vec<yanshi_render::brush::StrokePoint> = raw
+        .iter()
+        .map(|point| yanshi_render::brush::StrokePoint {
+            x: point[0],
+            y: point[1],
+            pressure: point[2].clamp(0.0, 1.0),
+        })
+        .collect();
+    let smoothed = yanshi_render::brush::catmull_rom_smooth(
+        &points,
+        yanshi_render::brush::SMOOTH_SUBDIVISIONS,
+    );
+    let out: Vec<[f64; 3]> = smoothed
+        .into_iter()
+        .map(|point| [point.x, point.y, point.pressure])
+        .collect();
+    serde_json::to_value(out).map_err(|error| error.to_string())
 }

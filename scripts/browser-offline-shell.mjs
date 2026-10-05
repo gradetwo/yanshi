@@ -64,6 +64,16 @@ const cacheReport = await evaluate(`(async () => {
 })()`);
 console.log(`  · 断网前缓存报告 = ${JSON.stringify(cacheReport)}`);
 
+// **断网前先让内核装载完** ✗ —— 离线重载要靠**本地缓存**里的 `/api/atoms` 才建得起内核 ✓；
+// 在线这趟没装完就断网 ⇒ 离线内核是 null ⇒ 后面量到的"画不出墨"是**前提不成立** ✗，
+// 而不是"离线不会画" ✓（本机高负载时实测踩到过：`readyState` 完成 ≠ 内核装载完成 ✓）。
+let onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+for (let attempt = 0; attempt < 80 && !onlineKernel; attempt += 1) {
+  await sleep(250);
+  onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+}
+console.log(`  · 断网前内核 = ${onlineKernel ? JSON.stringify({ head_seq: onlineKernel.head_seq }) : "null（在线都没就绪）"}`);
+
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 await send("Page.reload", { ignoreCache: false });
 // ⚠️ **这一处只等 `readyState` ＋ 有界沉降** ✗（第 892 轮 ✓，**不要"顺手改成等 board"** ✗）：
@@ -126,7 +136,24 @@ const failures = [];
 
 console.log(`  · 点开面板后 = ${JSON.stringify(afterOpen)}`);
 
-// (A)⑥ 第二层：离线画一笔要有墨。用真实指针事件驱动页面自己的落笔路径，前后比画布不透明像素数。
+// **离线这一趟必须先把内核等出来** ✗ —— 落笔那一段的本地渲染／本地落笔**都以内核为前提** ✓
+//（内置画笔走 `pendingStroke` ✓、`.myb` 画笔走 `paintBrushOffline` ✓）。
+// 实测（本机高负载时）：`readyState` 完成 ≠ 内核装载完成 ✓ ⇒ 断网后内核还是 `null` ✓
+// ⇒ 报出来的是"离线画不出墨" ✗ —— 那是**量错对象** ✓，不是产品不会画 ✗。
+// ⇒ 有界等内核就绪 ✓；等不到就**如实报"离线没有内核"** ✓（那才是真的缺口 ✓）。
+let kernelState = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+for (let attempt = 0; attempt < 80 && !kernelState; attempt += 1) {
+  await sleep(250);
+  kernelState = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+}
+console.log(`  · 断网后内核 = ${kernelState ? JSON.stringify({ head_seq: kernelState.head_seq, blobs: kernelState.blobs }) : "null（没就绪）"}`);
+if (!kernelState) failures.push("断网后本地内核没有就绪（kernelStats() 为 null）⇒ 离线落笔没有内核可用");
+
+// (A)⑥ 第二层：离线画一笔要有墨。用真实指针事件驱动页面自己的落笔路径，前后比画布**非背景**像素数。
+//
+// ⚠️ **原来数的是"不透明像素"（`alpha > 8`）** ✗ —— 画布底色本来就整块不透明 ✓
+// ⇒ 实测**永远是 76800 => 76800** ✓ ⇒ 那条阈值**永远不可能满足** ✗（第 1125 轮记的 76800 就是这个 ✓）。
+// 现在数**非背景（非纯白）像素** ✓：底色是白的 ✓ ⇒ 一笔黑墨必然让它上涨 ✓，阈值才有意义 ✓。
 const canvasSig = `(() => {
   const c = document.getElementById("board");
   if (!c) return { error: "no-canvas" };
@@ -134,7 +161,9 @@ const canvasSig = `(() => {
   if (!g) return { error: "no-2d-context" };
   const d = g.getImageData(0, 0, c.width, c.height).data;
   let ink = 0;
-  for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) ink += 1; }
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] > 8 && !(d[i] === 255 && d[i + 1] === 255 && d[i + 2] === 255)) ink += 1;
+  }
   return { ink: ink, w: c.width, h: c.height };
 })()`;
 const inkBefore = await evaluate(canvasSig);
@@ -142,6 +171,14 @@ const strokeResult = await evaluate(`(async () => {
   // 先选笔刷工具（页面有多个 pointerdown 监听；工具不是 brush 时落笔会被当成别的操作）
   const brushBtn = document.querySelector('[data-tool="brush"]');
   if (brushBtn) { brushBtn.click(); await new Promise((r) => setTimeout(r, 300)); }
+  // 先把"按住空格 = 临时手形"这个状态清掉（第 1125 轮定的判据侧根因之一）：
+  // wantsPanEvent 是 "event.button === 1 || state.tool === \"pan\" || spaceHeld"，
+  // 而判据发的是 button: 0、工具是 brush ⇒ 只剩 spaceHeld。
+  // 它若为 true：落笔处理器第一行就 return ⇒ points 不启动、dragging 不变
+  // ⇒ 事件被平移那条吃掉（与当时"points 仍 0"的读数吻合）。
+  // 发一个 keyup(Space) 把状态显式归零（不靠"之前没人按过空格"这种巧合）。
+  window.dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " ", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 50));
   const c = document.getElementById("board");
   if (!c) return "no-canvas";
   const r = c.getBoundingClientRect();
@@ -149,18 +186,39 @@ const strokeResult = await evaluate(`(async () => {
                          isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y });
   const x0 = r.left + r.width * 0.35, y0 = r.top + r.height * 0.35;
   c.dispatchEvent(new PointerEvent("pointerdown", o(x0, y0)));
+  await new Promise((res) => setTimeout(res, 30));
+  // 落笔必须真的进了笔画状态机 —— 只看像素分不清"事件被吞"与"墨来自别处"
+  //（判据用 window.yanshi.state()：它是函数，读属性会永远拿到 null —— 第 1121 轮的坑）。
+  const atDown = window.yanshi.state();
+  const pointsAtDown = atDown.points;
+  const draggingAtDown = !!atDown.dragging;
   for (let i = 1; i <= 12; i += 1) {
     c.dispatchEvent(new PointerEvent("pointermove", o(x0 + i * 6, y0 + i * 4)));
     await new Promise((res) => setTimeout(res, 25));
   }
+  const atMove = window.yanshi.state();
   c.dispatchEvent(new PointerEvent("pointerup", Object.assign(o(x0 + 72, y0 + 48), { buttons: 0 })));
-  await new Promise((res) => setTimeout(res, 900));
-  return "dispatched";
+  await new Promise((res) => setTimeout(res, 1200));
+  return { result: "dispatched", tool: atDown.tool, pointsAtDown: pointsAtDown,
+           draggingAtDown: draggingAtDown, pointsAtMove: atMove.points };
 })()`);
-const inkAfter = await evaluate(canvasSig);
-console.log(`  · 离线落笔 = ${strokeResult} ｜ 不透明像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+// **有界等出墨** ✓（等待条件与断言条件对齐 ✓ —— 第 1116 轮的规矩 ✓）：提交是异步的 ✓，
+// 固定睡一次会把"还没画完"读成"画不出来" ✗。
+let inkAfter = await evaluate(canvasSig);
+for (let i = 0; i < 32 && !(inkAfter && inkBefore && inkAfter.ink > inkBefore.ink); i += 1) {
+  await sleep(250);
+  inkAfter = await evaluate(canvasSig);
+}
+console.log(`  · 离线落笔 = ${JSON.stringify(strokeResult)} ｜ 非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+// ① **事件确实进了笔画状态机** ✓（`points` 从 0 变成 > 0 ✓、`dragging` 为真 ✓）。
+if (!strokeResult || typeof strokeResult !== "object" || strokeResult.pointsAtDown <= 0 || !strokeResult.draggingAtDown) {
+  failures.push(`落笔事件没有进入笔画状态机（tool=${strokeResult && strokeResult.tool}｜points@down=${strokeResult && strokeResult.pointsAtDown}｜dragging@down=${strokeResult && strokeResult.draggingAtDown}）⇒ 事件被平移那条吃掉了`);
+} else if (!(strokeResult.pointsAtMove > strokeResult.pointsAtDown)) {
+  failures.push(`pointermove 没有累积笔画点（${strokeResult.pointsAtDown} => ${strokeResult.pointsAtMove}）`);
+}
+// ② **画布上真的多了墨** ✓。
 if (!(inkAfter && inkBefore && inkAfter.ink > inkBefore.ink)) {
-  failures.push(`离线画不出墨：不透明像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+  failures.push(`离线画不出墨：非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
 }
 // 判据对象必须是"打开面板之后"的选项数：面板**懒加载**（不点开就不填充）**是设计**。
 const panelOptions = afterOpen ? afterOpen.options : -1;

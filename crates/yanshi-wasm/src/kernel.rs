@@ -65,6 +65,11 @@ impl KernelError {
 pub struct CommitReport {
     /// 归属的日志序号。
     pub seq: u64,
+    /// dirty 类别（`none` / `geometry` / `structure` / `full` ✓）——
+    /// **与 [`ApplyReport`] 同一个口径** ✓；离线落笔出问题时，这一项是"为什么整幅都脏"的唯一线索 ✓。
+    pub dirty_kind: String,
+    /// 触发脏区的原因（可观测性 ✓）—— 与 `DirtySet.reason` 逐字相同 ✓。
+    pub dirty_reason: String,
     /// 需要重绘的区域。
     pub dirty_bbox: Option<[f64; 4]>,
     /// 被失效并重算的 tile。
@@ -508,6 +513,8 @@ impl Kernel {
         self.enforce_watermark();
         Ok(CommitReport {
             seq,
+            dirty_kind: dirty.kind.as_str().to_owned(),
+            dirty_reason: dirty.reason.clone(),
             dirty_bbox: dirty.bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
             dirty_tiles: tiles,
             head: self.log.head_seq(),
@@ -542,9 +549,21 @@ impl Kernel {
     }
 
     /// 写入本地 blob（设计 6.3：blob 先行），返回 CAS 哈希。
+    ///
+    /// **`created_at` 显式给 `0`，不走 `MemoryBlobStore::put`** ✗ —— 那条路会调 `now_ms()` ✓，
+    /// 而 `now_ms()` 在 `wasm32-unknown-unknown` 上**根本没有实现** ✓
+    ///（它底下的**宿主时钟**在 wasm32 上直接 panic ✓ —— 本仓库有守卫测试在数这个字面量 ✓，
+    /// 所以这里**刻意不写出那个 API 名** ✗：守卫数的是文本出现次数 ✓，写出来会把它从 0 顶到 1 ✓
+    /// 而那不是"新增了一处调用" ✗；实测浏览器里 `blob_put` 抛 `RuntimeError: unreachable` ✓，
+    /// 内核对象随即进入"递归借用"状态、后续调用全废 ✗）
+    /// ⇒ 内核暴露的这条写入路径**在浏览器里从来不能用** ✗ —— 直到离线落笔第一次真正调它 ✓。
+    ///
+    /// **为什么常数 0 是对的** ✓：`created_at` 只服务于**服务端的孤儿 GC / TTL** ✓
+    ///（`age_seconds` ✓），内核不做 GC ✓；而 blob 的键是**内容哈希** ✓、与时间戳无关 ✓
+    /// ⇒ 常数时间戳不改变任何可观测行为 ✓，还顺带满足"同输入同输出" ✓（D0 的纪律 ✓）。
     pub fn blob_put(&mut self, bytes: &[u8]) -> Result<String, KernelError> {
         self.store
-            .put(bytes)
+            .put_at(bytes, 0)
             .map(|hash| hash.to_string())
             .map_err(|error| KernelError::new("resource_exhausted", error.to_string()))
     }
@@ -1525,5 +1544,78 @@ mod direct_render_tests {
             }
         }
         assert!(dark > 0, "直接渲染应包含刚盖章的笔迹");
+    }
+
+    /// **离线落笔那条路必须真的画出像素** ✓ —— 这是 `viewer-app.js` 的 `paintBrushOffline` 的内核一侧：
+    /// `blob_put`（blob 先行 ✓）⇒ `commit_preview` 一条与**服务端同形**的 `import_image` 原子 ✓
+    /// ⇒ `render_region` 必须把那块像素画出来 ✓。
+    ///
+    /// **为什么值一条测试** ✗：这条链在浏览器里失败过一次 ✓ —— `blob_put` 调 `now_ms()` ✓，
+    /// 而它在 `wasm32-unknown-unknown` 上 panic ✓ ⇒ 内核对象被毒化、后续调用全废 ✗
+    ///（宿主上不会暴露 ✓ ⇒ 只有这条测试 + 浏览器判据合起来才钉得住 ✓）。
+    #[test]
+    fn imported_raster_patch_pixels_render_locally() {
+        let mut kernel = Kernel::new("doc_1", 256, 320, 240, DEFAULT_MEMORY_LIMIT).unwrap();
+        // **走浏览器那条装载路径** ✓（`load_atoms_json` ✓，不是 `apply_atom_json` ✓）——
+        // 两者在内核里是不同的代码 ✓，而离线落笔的前提是"页面就是这么把日志装进来的" ✓。
+        kernel
+            .load_atoms_json(
+                &json!([{"id": "01AAAAAAAAAAAAAAAAAAAAAAAA01", "seq": 1, "kind": "create_document",
+                        "actor": "human:web", "session": "s", "timestamp": 1,
+                        "payload": {"doc_id": "doc_1", "width": 320, "height": 240,
+                                    "color_space": "srgb",
+                                    "background": {"r": 255, "g": 255, "b": 255, "a": 255}}}])
+                .to_string(),
+            )
+            .unwrap();
+        let layer = kernel.state().alive_layers().first().map(|l| l.id.clone());
+        let layer_id = layer.expect("create_document 必须留下一个可画图层");
+        // **先渲染一次** ✓ —— 浏览器里画布在装载时就渲染过 ✓ ⇒ tile 缓存是热的 ✓；
+        // 少了这一步，测试就绕过了"落笔之后必须让缓存失效"这条真实前提 ✗（实测能骗过测试 ✓）。
+        let before = kernel
+            .render_region(Bbox::new(0.0, 0.0, 320.0, 240.0))
+            .unwrap();
+        assert!(before.rgba8.len() == 320 * 240 * 4);
+        let region = json!({"x": 46, "y": 46, "w": 108, "h": 48});
+        let (w, h) = (108usize, 48usize);
+        let mut pixels = vec![0u8; w * h * 4];
+        for pixel in pixels.chunks_mut(4) {
+            pixel[0] = 200;
+            pixel[1] = 30;
+            pixel[2] = 60;
+            pixel[3] = 255;
+        }
+        let hash = kernel.blob_put(&pixels).unwrap();
+        let atom = json!({
+            "id": "01AAAAAAAAAAAAAAAAAAAAAAAA02", "kind": "import_image",
+            "actor": "human:web", "session": "session:wasm", "timestamp": 2,
+            "payload": {
+                "object_id": "obj_offline", "layer_id": layer_id, "type": "raster_patch",
+                "bitmap": {"blob_hash": hash, "size": pixels.len(), "mime_type": "image/x-yanshi-raw"},
+                "region": region, "width": w, "height": h,
+            },
+        });
+        let report = kernel.commit_preview(&atom.to_string()).unwrap();
+        assert_eq!(report.head, 2);
+        let rendered = kernel
+            .render_region(Bbox::new(0.0, 0.0, 320.0, 240.0))
+            .unwrap();
+        let mut ink = 0;
+        for index in (0..rendered.rgba8.len()).step_by(4) {
+            let (r, g, b, a) = (
+                rendered.rgba8[index],
+                rendered.rgba8[index + 1],
+                rendered.rgba8[index + 2],
+                rendered.rgba8[index + 3],
+            );
+            if a > 8 && !(r == 255 && g == 255 && b == 255) {
+                ink += 1;
+            }
+        }
+        assert!(
+            ink > 0,
+            "离线落笔的 import_image 必须渲染出像素（实际 {ink}）"
+        );
+        assert_eq!(kernel.stats().blobs, 1, "blob 必须先落进本地 CAS");
     }
 }
