@@ -64,8 +64,16 @@ const bodyProbe = `JSON.stringify((() => {
 
 const failures = [];
 await send("Page.navigate", { url });
-await sleep(6000);
-const zh = JSON.parse(await evaluate(snapshot));
+// **等到"页面真的就绪"，而不是固定睡 6 秒** ✗（第 886 轮 ✓）：
+// 本文件在**切换语言后**用的是"轮询 40×300ms 直到条件成立" ✓（见下面两处 ✓），
+// 却在**首次导航后**用了固定 `sleep(6000)` ✗ ⇒ 机器慢一点 ⇒ 快照就是"没加载完"的状态 ✗
+// ⇒ ⇒ **这条判据的间歇红就出在这里** ✓（第 800 轮实测：同一提交有时绿有时红 ✓）。
+let zh = null;
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { const candidate = JSON.parse(await evaluate(snapshot)); if (candidate && candidate.htmlLang === "zh-CN") { zh = candidate; break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+}
+if (!zh) zh = JSON.parse(await evaluate(snapshot));
 console.log("  【默认】" + JSON.stringify(zh));
 if (zh.htmlLang !== "zh-CN") failures.push(`默认 html lang 应为 zh-CN，实为 ${zh.htmlLang}`);
 if (!String(zh.newDoc).includes("新建")) failures.push(`默认「新建」按钮应为中文，实为 ${zh.newDoc}`);
