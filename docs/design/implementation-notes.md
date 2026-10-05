@@ -35479,80 +35479,60 @@ Object.keys 看真键表）。
 所以 export_png 的渲染与编码计时点要另找（write_export_png 一带），下一步先定位它。
 这一步是纯服务端改动，与正在修改 viewer-app.js 的子代理**不冲突**。
 
-## 第 1139 轮：派发 timings 拆阶段（导出可一条读数定位）
+## 第 1139 轮：导出两相（render_ms / png_ms）落地——一条读数即可分辨渲染与编码
 
-依据第 1137-1138 轮：4K export 的 246 秒几乎全部落进 `other_ms`（total_ms=246176.9，other_ms=246176.9，
-其余阶段都是 0 或微秒），所以从一条读数看不出"是渲染还是 PNG 编码"。
-第 1138 轮确认：`other_ms` 是**残差**（total 减去已测阶段），所以**新增阶段只要算进 measured_us()，
-既有"各相之和（含残差）= 总时长"判据会自动继续成立** ⇒ 这件事没有兼容性风险。
+做法：给 `ToolTimings` 加两相，在导出路径的**真实**调用点上计时（不是推断）。
 
-已派 subagent（/tmp/wt-timings，分支 perf/export-timings），任务书要点：
-1. 新增两个阶段：`render_ms`（产出被编码的像素）与 `png_ms`（PNG 编码），填在**导出路径的真实调用点**
-   （我只定位到 commit 的计时挂钩在 service.rs:1487-1548；导出渲染与编码在 write_export_png 一带，要它自己找）。
-2. 判据三条，各自必须能红并变异验证：
-   ① 既有"各相之和（含残差）= 总时长"仍然通过；
-   ② 真跑一次导出时两个新阶段**确实出现且有实质数值**（不是 0）；
-   ③ **新增一条判据**，直接抓住本次的起因：残留桶不许吞掉一次导出的绝大部分
-      （阈值要有测量依据，不能随便取；并说明它能抓什么、不能抓什么）。
-3. 测量纪律（本会话教训）：变异验证必须**直接跑判据**（runner 用隔离副本，工作树里的变异到不了它）；
-   不许跨分辨率/跨档位比较；不许把一次观测写成硬编码期望。
-4. 环境：4K 夹具 /tmp/cold4k，文档 id parrot-4k-bold，debug 导出约 4 分钟。
-5. 门禁四条；英文提交；不碰 main、不推送；报告要写清"导出渲染与编码的实际位置"。
+**导出渲染与编码究竟在哪**（第 1138 轮只找到 commit 的计时点 service.rs:1487-1548 ✗）：
+`crates/yanshi-server/src/tools.rs` 的 `write_export_png`（:13347 起）——
+* 渲染 = `render_region_raw` / `render_region_raw_layer` 那个 match（:13372-13377）；
+* 缩放 = `resample_rgba`（:13431 一带）—— 也算"产出要编码的像素" ⇒ 并入 `render_ms`；
+* 编码 = `encode_png`（:13447 一带）⇒ `png_ms`（落盘与刷缓存**不算**编码，留在残差）。
 
-## 第 1140 轮：(A)⑤ 的显式开关早已存在——本会话第三次"过期前提"
+改动的文件与行（落盘后）：
+1. `timings.rs`：`Phase::Render` / `Phase::Png`；`ToolTimings.render_us` / `png_us`（:66-67）；
+   `add_micros`（:89-90）、`since`（:110-111）、`measured_us`（:122-123）、
+   `report` 的 `render_ms` / `png_ms`（:137-138）；单元判据 `export_phases_shrink_the_residual…`（:206 起）。
+2. `tools.rs`：`render_started`（:13371）⇒ `ctx.time(Phase::Render, …)`（:13378）；
+   `resample_started`（:13431）⇒（:13435）；`png_started`（:13447）⇒（:13449）。
+3. 判据：`tests/timings_and_cancel.rs` 的 `PHASES` 从 5 项变 7 项（:71-79）——
+   新两相**必须**进这张表，否则"各相之和 = 总时长"会和式少两块而变红；
+   新增 `an_export_reports_render_and_encode_phases_and_a_small_residual`（:546 起）；
+   新增手动探针 `measure_real_4k_export_timings`（:654 起，`#[ignore]`，与 coldstart_measure 同规矩）。
 
-审计结果（有出处）：
-1. crates/yanshi-http/src/viewer.rs:321 已经有用户可见的开关：
-   `<label …><input type="checkbox" id="useServerRender…">`。
-2. crates/yanshi-http/assets/viewer-app.js:22 定义 `const SERVER_RENDER_KEY = "yanshi.serverRender"`；
-   :23 的注释写明"**是否强制走服务端渲染**（(A)⑤ 的显式开关）。缺省 false = 照旧（客户端优先）"。
-3. :25 读 `localStorage.getItem(SERVER_RENDER_KEY) === "1"` ⇒ **已持久化**；
-   :4750 `if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1")` ⇒ UI 与存储连通。
-4. 早期的注释（:9-15）还记录了真实踩坑：`needsServerPixels` 必须在任何启动路径之前声明，
-   否则启动读到它就抛错 ⇒ 整段脚本中断 ⇒ 现象是"工具条还在、但后续一切都没接线"。
-   注释里写明那次是"只写了注释、忘了写声明"，而且"探针把任何异常都标成 TDZ，误导了排查"。
+**4K 实测**（debug，3840×2160，文档 `parrot-4k-bold`，`bytes=7,078,095` 与旧读数**逐字节一致**）：
+* 旧读数（本轮开工时，`/tmp/cold4k`）：`total_ms=246176.9`，**`other_ms=246176.9`**（占 100%）。
+* 新读数（本次；同一文档的**字节副本** `/tmp/cold4k-timingcopy`，同一台机、同一 debug 档）：
+  * `total_ms=281916.693`
+  * `render_ms=268368.425`（95.2%）
+  * `png_ms=13526.220`（4.8%）
+  * `other_ms=22.029`（0.008%）
+  * `prep_ms=0.019`；`raster/dirty/fold/log=0`
+  * wall=290.04s（含打开文档与刷缓存；总时长 281.9s 与旧 246.2s 不同是运行/负载差异，
+    本次**不据此比较绝对快慢** —— 只用同一读数内的两相占比）。
+* ⇒ 一条读数现在直接说明：4K debug 导出约 **95% 在渲染、5% 在 PNG 编码**。
+  （注意：png 13.5s 是 **debug** 数；早先 release 下 1.7-2.8s 的独立测量是另一个档，
+  按本仓库规矩不跨档比较。）
 
-结论：
-- **(A)⑤ 的"显式开关"这一半已经完成**（复选框 + localStorage 键 + 默认客户端优先）。
-- 真正剩下的是它的**判据**：目标原话要求"**两种模式必须同笔同结果**"。
-  而这正好是 (A)⑥ 子代理在做的事（kernel-brush-parity 加它那条"在线 vs 离线逐字节一致"的新判据）。
-  也就是说 (A)⑤ 与 (A)⑥ 在这里**会合**：开关提供"能选"，判据提供"两条路一致"。
+**三条判据与如何变红**（都按"**直接**跑 `cargo test -p yanshi-server --test timings_and_cancel`"验过 ✓）：
+1. 既有"各相之和（含残差）= 总时长"：把 `report()` 的 `other_us` 改回 `total_us` ⇒
+   实测 `sum=1980.016 vs total=1813.646` ⇒ 既有判据红；同时新判据的 ③ 红
+   （`other` 占比 = 1 ✓，而两相仍非零 ⇒ 新判据的 ② 反而绿 ✓）。
+2. 两相**真的被量到**（> 0）：去掉 `write_export_png` 里的 `Phase::Render` 计时 ⇒
+   实测 `render_ms=0.0` ⇒ 红。
+3. 残差**不吞掉几乎全部导出**（`other/total ≤ 0.5`）：在 `other_us=total` 的变异下，
+   `render_ms/png_ms` 仍非零（判据 2 绿 ✓）而 `other` 占比 = 1 ⇒ 第③条红 ✓ ——
+   这正是本轮开工时那条读数的形状（`other_ms == total_ms`）。
 
-本会话第三次"过期前提"（我转述的目标状态比实际落后）：
-  ① (B)③ target_installed 三态 —— 实现早已完成；
-  ② (B)① 示例覆盖 —— 早已 138/141（不是"57 条"）；
-  ③ (A)⑤ 显式开关 —— 早已存在。
-教训（值得进 skill）：**转述目标项之前先查证它的现状**，否则会把"已完成"当成"未做"，
-既浪费轮次，也让进度报告失真。
+**阈值 0.5 从哪来**：同一台机上，判据自带那份 **800×600 / debug / 内存工作区**实测
+`total_ms=1027.474`、`render_ms=755.328`、`png_ms=271.845`、`other_ms=0.294`
+⇒ `render+png` 占 **99.97%**、残差占 **0.03%**。取 0.5 比实测低约 50 个百分点，
+抓得住"两相没量到"（0%）与"别的开销盖过一半"（<50%），抓不住"渲染与编码**之间**的比例是否合理"。
 
-## 第 1141 轮：(A)④ 下载 URL 的改法定位（审计中途记录）
-
-我按"`write_export_project` 在 service.rs"去找，结果**没找到**（那次审计打偏）。
-第 1140 轮的教训（先查证再判断）在这里再次适用：定位函数之前不该凭记忆归位。
-本轮改为全仓 grep 定位，并把结论写回本文档；若本轮 grep 已确认位置，则下一步就是：
-参照 export_png 生成可直接下载 URL 的做法（raw_url / thumb_url 同族），
-让 export_project 也返回一个可下载的 URL，这样查看器接上只需一行，
-而且**不用动 viewer-app.js 之外的产品逻辑**（服务端先把"能下载"这件事做出来）。
-
-注意：`service.rs` 与 `tools.rs` 是正在运行的两个子代理（离线笔刷、timings 拆阶段）都可能碰的文件，
-所以这一步要在它们合并之后再做，避免代码冲突。
-
-## 第 1142 轮：编排状态——两个子代理在跑，相关文件全部被占用
-
-事实（本轮核对）：
-- 子代理 9c4461a2（修 (A)⑥ 分支的三个阻断问题）与 6a7f57f3（timings 拆阶段）**都在 running**。
-- 它们涉及的文件覆盖了当前所有有价值的下一步：
-  viewer-app.js / viewer.rs（(A)⑥）与 tools.rs / service.rs（timings），
-  以及 scripts/browser-offline-shell.mjs（(A)⑥ 改过它的墨度量）。
-- 因此本轮**刻意不动产品代码**，只做只读核对与记录，避免制造代码冲突。
-  这与本会话早先的教训一致：并行时不要两个人改同一批文件。
-
-当前基线（可作合并后的对照）：磁盘可用与 /tmp 用量已核对；
-已知红 48 条；main 在工作树上干净；两个分支各自有提交（feat/offline-brush-kernel 与 perf/export-timings）。
-
-下一步（等它们返回后按顺序做）：
-1. 各自三步验证（独立门禁 ⇒ 我亲手变异（直接跑判据）⇒ 合并后门禁 + 推送）。
-2. (A)⑥ 合并时**留意它是否又重写 docs/design/implementation-notes.md**（上次因此回退）：
-   只接受**追加**，不接受覆盖。
-3. 合并完成后清 worktree（每个约 7-8 G）。
-4. 冲突解除后做 (A)④ 的 `.yanshi` 下载（tools.rs:13299 起，照抄 raw_url 的做法）。
+**如实边界（两面都写）**：
+1. 在"残差算法正确"的前提下，判据 3 与判据 2 **不独立**：`other = total − measured`，
+   所以 `render+png ≥ 50%` 必然推出 `other ≤ 50%`。判据 3 的独立价值是**直接盯住调用方真正读的字段**：
+   残差若被算成 `total`（实现 bug）而两相又非零，判据 2 仍绿、判据 3 红（上面变异实测支持这一点）。
+   代价：多一条与判据 2 部分重叠的断言，换来对"残差字段本身算错"的覆盖。
+2. 4K 只测了一份文档、只有 debug；release 与其它文档未重测。
+3. `render_ms` 含 `resample_rgba`；`png_ms` 只含 `encode_png`（落盘/刷缓存留在残差）。

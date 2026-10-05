@@ -63,7 +63,20 @@ fn call_on_with(
 }
 
 /// `timings` 的字段名（10.1 的附加对象 ✓）。
-const PHASES: [&str; 5] = ["prep_ms", "raster_ms", "dirty_ms", "fold_ms", "log_ms"];
+///
+/// **`render_ms` / `png_ms` 是导出路径的两相** ✓（其余工具恒为 0 ✓）；它们**必须在这里** ✓ ——
+/// `other_ms` 是"总时长 − 已量各相" ✓ ⇒ 若把新两相漏在这张表外 ✗，
+/// `sum_of_phases` 就会比 `total_ms` **少掉这两相** ✓ ⇒ ③ 的和式判据当场变红 ✓
+///（这正是"新相加进来、残差要相应缩小"这条约束的判据形式 ✓）。
+const PHASES: [&str; 7] = [
+    "prep_ms",
+    "raster_ms",
+    "dirty_ms",
+    "fold_ms",
+    "log_ms",
+    "render_ms",
+    "png_ms",
+];
 
 fn sum_of_phases(timings: &Value) -> f64 {
     PHASES
@@ -79,6 +92,18 @@ fn sum_of_phases(timings: &Value) -> f64 {
             .unwrap_or_else(|| panic!("timings.other_ms 必须是数字：{timings}"))
 }
 
+/// **已量各相之和** ✓（不含残差 ✓）—— 判据 ③ 要看的就是"残差之外到底量到了多少" ✓。
+fn sum_of_measured_phases(timings: &Value) -> f64 {
+    PHASES
+        .iter()
+        .map(|key| {
+            timings[*key]
+                .as_f64()
+                .unwrap_or_else(|| panic!("timings.{key} 必须是数字：{timings}"))
+        })
+        .sum::<f64>()
+}
+
 // ---------------------------------------------------------------------------
 // P2：阶段耗时
 // ---------------------------------------------------------------------------
@@ -88,7 +113,7 @@ fn sum_of_phases(timings: &Value) -> f64 {
 /// **怎么变红** ✗（两条都实测过 ✓）：
 /// * 去掉附 `timings` 的那两处（`dispatch` 与 `ToolRegistry::call` ✓）⇒ 键缺失 ⇒ 第一条断言失败 ✓；
 /// * 把残差算错（`other_ms` 直接用 `total` 而不是 `total - 已量各相` ✓）⇒
-///   五项之和**大于** `total_ms` ⇒ 第三条断言失败 ✓（实测 sum=2031.8 vs total=1897.7 ✓）。
+///   各相之和**大于** `total_ms` ⇒ 第三条断言失败 ✓（实测 sum=2031.8 vs total=1897.7 ✓）。
 #[test]
 fn a_write_response_carries_a_self_consistent_timing_breakdown() {
     let root = temp_dir("timings");
@@ -488,4 +513,200 @@ fn a_deferred_batch_says_so_instead_of_pretending_it_finished() {
         "{scattered}"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// P2 续：导出路径的两相（render_ms / png_ms）
+// ---------------------------------------------------------------------------
+
+/// **判据（导出两相，② + ③）**：一次真实 `export_png` 的报告里
+/// `render_ms` 与 `png_ms` **真的被量到** ✓（不是只多两个恒为 0 的字段 ✗），
+/// 而且**残差不该吞掉几乎全部导出时间** ✓。
+///
+/// **为什么需要它** ✓（本轮开工时的实测 ✓）：4K / debug 导出（`/tmp/cold4k`、`parrot-4k-bold` ✓）
+/// 的读数是 `total_ms=246176.9` 而 **`other_ms=246176.9`** ✓ —— 渲染与编码全被残差吞掉 ✗
+/// ⇒ 一条读数分不清"慢在渲染"还是"慢在编码" ✗。本判据要能当场抓住这种读数 ✓。
+///
+/// **阈值从哪来** ✓（不是拍的 ✓）：同一台机器上，本测试这份 **800×600 / debug / 内存工作区**
+/// 的导出实测（`--nocapture` 打印在下面 ✓）：
+/// `total_ms=1027.474`、`render_ms=755.328`、`png_ms=271.845`、`other_ms=0.294`
+/// ⇒ `render+png` 占 **99.97%** ✓、残差占 **0.03%** ✓；而**旧代码**下这两相是 0 ✗
+///（占 0% ✓、残差占 100% ✗）。
+/// ⇒ 阈值取 **0.5** 是"比实测低 ~50 个百分点"的**保守线** ✓：
+/// 它抓得住"两相没被量到"（0% ✗）与"两相被别的开销盖过一半以上"（<50% ✗）✓，
+/// 抓不住"渲染与编码**之间**的比例是否合理" ✓（那不在本判据的目的内 ✓，
+/// 比例要由读数的人按 4K 实测判断 ✓）。
+///
+/// **怎么变红** ✗（两条都实测过 ✓，且是**直接**跑本测试文件 ✓）：
+/// * 去掉 `write_export_png` 里的 `ctx.time(Phase::Render, …)` 与 `Phase::Png` ⇒
+///   两相为 0.0 ⇒ ①②③ 全红 ✓（旧读数 `other_ms == total_ms` 正是这一条要抓的 ✓）；
+/// * 把 `report()` 里的 `other_us` 写回 `total_us`（残差不减已量各相 ✓）⇒
+///   各相之和大于总时长 ⇒ 既有判据红 ✓ **且**本判据的 ③ 红 ✓
+///   （实测 `other` 占比 = 1，而 `render_ms/png_ms` 仍非零 ⇒ ② 反而绿 ✓ ——
+///   这正是判据 ③ 相对判据 ② 的独立覆盖：盯住残差字段本身算错 ✓）。
+#[test]
+fn an_export_reports_render_and_encode_phases_and_a_small_residual() {
+    // **本判据的门槛** ✓：两相合计至少占总时长的这个比例 ✓（推导见 doc comment ✓）。
+    const MIN_RENDER_PLUS_PNG_SHARE: f64 = 0.5;
+    // **残差上限** ✓：残差最多占总时长的这个比例 ✓（即已量各相至少一半 ✓）。
+    const MAX_OTHER_SHARE: f64 = 0.5;
+
+    let doc = "doc_export_timings";
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    workspace
+        .create_document(NewDocument::new(doc, 800, 600), "human:1", "session:test")
+        .unwrap();
+    let path =
+        std::env::temp_dir().join(format!("yanshi_timing_export_{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    let exported = {
+        let mut ctx = ToolContext::new(&mut workspace, doc, "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let registry = registry();
+        assert_eq!(
+            registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}))["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            registry.call(
+                &mut ctx,
+                "draw_shape",
+                &json!({"layer_id": "L", "object_id": "sq",
+                        "data": {"geometry": {"kind": "rect",
+                                              "bbox": {"x": 40, "y": 40, "w": 300, "h": 200}},
+                                 "color": {"r": 220, "g": 60, "b": 40, "a": 255}}})
+            )["ok"],
+            json!(true)
+        );
+        // **每一次 `call` 都会重置并重新累计 timings** ✓ ⇒ 这里读到的是导出这一次的 ✓。
+        registry.call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy() }),
+        )
+    };
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+
+    let timings = exported
+        .get("timings")
+        .unwrap_or_else(|| panic!("导出响应必须带 timings：{exported}"));
+    let total = timings["total_ms"].as_f64().expect("total_ms 是数字");
+    let render = timings["render_ms"].as_f64().expect("render_ms 是数字");
+    let png = timings["png_ms"].as_f64().expect("png_ms 是数字");
+    let other = timings["other_ms"].as_f64().expect("other_ms 是数字");
+    eprintln!(
+        "MEASURED-EXPORT-INMEMORY-800x600-DEBUG: {timings}  render+png share={:.4}",
+        (render + png) / total
+    );
+
+    // ① **两相都真的被量到** ✓：存在 ≠ 已量 ✓（旧代码这里是 0.0 ✗）。
+    assert!(render > 0.0, "导出的渲染相必须真的被量到：{timings}");
+    assert!(png > 0.0, "导出的编码相必须真的被量到：{timings}");
+
+    // ② **两相合计是总时长的实质一部分** ✓（不是被残差盖过的零头 ✓）。
+    let render_png_share = (render + png) / total;
+    assert!(
+        render_png_share >= MIN_RENDER_PLUS_PNG_SHARE,
+        "渲染＋编码至少应占总时长的 {MIN_RENDER_PLUS_PNG_SHARE}，实测 {render_png_share}：{timings}"
+    );
+
+    // ③ **残差没有吞掉几乎全部导出** ✓：已量各相至少占一半 ✓。
+    //    旧读数 `other_ms == total_ms`（other 占比 100% ✗）在这里当场红 ✓。
+    let other_share = other / total;
+    assert!(
+        other_share <= MAX_OTHER_SHARE,
+        "残差最多应占总时长的 {MAX_OTHER_SHARE}（已量各相至少一半），实测 other 占比 {other_share}：{timings}"
+    );
+    assert!(
+        sum_of_measured_phases(timings) >= total * (1.0 - MAX_OTHER_SHARE),
+        "已量各相之和至少应占总时长的一半：{timings}"
+    );
+
+    // ④ **账目仍然对得上** ✓（与既有判据同式 ✓，在新两相存在的前提下再验一次 ✓）。
+    let sum = sum_of_phases(timings);
+    assert!(
+        (sum - total).abs() < 0.01,
+        "各相之和（含残差）必须等于总时长：sum={sum} total={total} {timings}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// 手动探针：真实 4K 导出的读数
+// ---------------------------------------------------------------------------
+
+/// **真实 4K 导出的读数探针**（**默认 ignore** ✓，只在有真实工程时手动跑 ✓）。
+///
+/// 与 `coldstart_measure.rs` 同规矩 ✓：**只打印读数、不设性能门槛** ✓
+///（数字随机器与构建档变化 ✓ ⇒ 不做断言 ✓，只断言调用成功 ✓）。
+///
+/// 用法：
+/// ```text
+/// YANSHI_COLD_DOC_ROOT=/tmp/cold4k YANSHI_COLD_DOC_ID=parrot-4k-bold \
+///   cargo test -p yanshi-server --test timings_and_cancel \
+///     measure_real_4k_export_timings -- --ignored --nocapture
+/// ```
+///
+/// **为什么留这枚探针** ✓：本轮的验收读数（4K / debug / 3840×2160 ✓）就是它跑出来的 ✓
+/// ⇒ 下次有人报"导出慢"时可以直接重跑同一份读数 ✓，而不必再从外部反推 ✓。
+#[test]
+#[ignore = "需要真实 4K 工程（约 4 分钟 / debug），手动运行"]
+fn measure_real_4k_export_timings() {
+    let root = std::env::var("YANSHI_COLD_DOC_ROOT").unwrap_or_else(|_| "/tmp/cold4k".to_owned());
+    let doc_id =
+        std::env::var("YANSHI_COLD_DOC_ID").unwrap_or_else(|_| "parrot-4k-bold".to_owned());
+    // **没有工程就跳过** ✓（CI 上没有 /tmp/cold4k ✓，探针不该因此变红 ✓）。
+    let store = match yanshi_server::persist::FileStore::open(&root) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("跳过：文件存储 {root} 打不开（{error}）");
+            return;
+        }
+    };
+    if store
+        .load_atoms(&doc_id)
+        .map(|atoms| atoms.is_empty())
+        .unwrap_or(true)
+    {
+        eprintln!("跳过：{root} 里没有文档 {doc_id}");
+        return;
+    }
+
+    let path = std::env::temp_dir().join(format!("yanshi_4k_export_{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let started = std::time::Instant::now();
+    let mut workspace =
+        Workspace::with_file_store(&root, DocumentSettings::default()).expect("打开落盘工作区");
+    workspace.open_document(&doc_id).expect("打开 4K 文档");
+    let exported = {
+        let mut ctx = ToolContext::new(&mut workspace, &doc_id, "human:1", "session:measure")
+            .with_owner(true)
+            // **渲染预算放宽到 10 分钟** ✓：debug 下 4K 整幅渲染本身就要几分钟 ✓。
+            .with_wait_for_render(true, 600_000);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy() }),
+        )
+    };
+    let wall = started.elapsed();
+    eprintln!(
+        "4K-EXPORT wall={wall:?} ok={} width={} height={} bytes={}",
+        exported["ok"], exported["width"], exported["height"], exported["bytes"]
+    );
+    eprintln!("4K-EXPORT timings={}", exported["timings"]);
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    // ① 两相必须真的被量到 ✓（这条是探针里唯一的存在性断言 ✓，不是性能门槛 ✓）。
+    let timings = &exported["timings"];
+    assert!(
+        timings["render_ms"].as_f64().unwrap_or(0.0) > 0.0,
+        "4K 导出的渲染相必须被量到：{exported}"
+    );
+    assert!(
+        timings["png_ms"].as_f64().unwrap_or(0.0) > 0.0,
+        "4K 导出的编码相必须被量到：{exported}"
+    );
+    let _ = std::fs::remove_file(&path);
 }

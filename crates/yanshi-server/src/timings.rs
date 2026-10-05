@@ -18,10 +18,20 @@
 //! * `dirty_ms`：**脏区/tile 计算**（`plan_dirty_with_log` ＋ `apply_dirty` ✓）；
 //! * `fold_ms`：**增量折叠**（状态推进 ＋ 渲染网格重建 ✓）；
 //! * `log_ms`：**日志追加与落盘**（内存日志 append ＋ `FileStore` 持久化 ✓；纯内存工作区不落盘 ✓）；
+//! * `render_ms`：**导出路径的像素产出** —— `export_png` 从取像素
+//!   （`render_region_raw` / `render_region_raw_layer` ✓）到缩放
+//!   （`resample_rgba` ✓）为止 ✓（**只有导出路径会填它** ✓，其余工具恒为 0 ✓）；
+//! * `png_ms`：**导出路径的 PNG 编码** —— `encode_png` 那一段 ✓
+//!   （**只有导出路径会填它** ✓，其余工具恒为 0 ✓）；
 //! * `other_ms`：**残差** —— 总时长减去上面已量的部分 ✓（预览渲染、快照、响应组装……✓）。
 //!
-//! `other_ms` 是残差而不是"又一件事" ✓：这样**五项之和恒等于 `total_ms`** ✓ ——
+//! `other_ms` 是残差而不是"又一件事" ✓：这样**各相之和恒等于 `total_ms`** ✓ ——
 //! 判据因此可以断言"账目对得上" ✓（阶段若被重复累计，和会超过总时长 ⇒ 判据变红 ✓）。
+//!
+//! **为什么单列 `render_ms` / `png_ms`** ✗（本轮实测的缺口 ✓）：4K 导出（debug ✓）的读数
+//! 曾是 `total_ms=246176.9` 而 **`other_ms=246176.9`** ✓ —— 渲染与编码**全被残差吞掉** ✗
+//! ⇒ 一条读数分不清"慢在渲染"还是"慢在编码" ✗。单列之后两者**直接可读** ✓，
+//! 而残差按定义自动缩小 ✓ ⇒ 既有的"各相之和 = 总时长"判据不受影响 ✓。
 
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -39,6 +49,10 @@ pub enum Phase {
     Fold,
     /// 日志追加与落盘。
     Log,
+    /// **导出路径的像素产出**（取像素 ＋ 缩放 ✓；只有 `export_png` 会填 ✓）。
+    Render,
+    /// **导出路径的 PNG 编码**（只有 `export_png` 会填 ✓）。
+    Png,
 }
 
 /// 一次工具调用的阶段累计（微秒 ✓）。
@@ -49,6 +63,8 @@ pub struct ToolTimings {
     dirty_us: u64,
     fold_us: u64,
     log_us: u64,
+    render_us: u64,
+    png_us: u64,
 }
 
 impl ToolTimings {
@@ -70,6 +86,8 @@ impl ToolTimings {
             Phase::Dirty => &mut self.dirty_us,
             Phase::Fold => &mut self.fold_us,
             Phase::Log => &mut self.log_us,
+            Phase::Render => &mut self.render_us,
+            Phase::Png => &mut self.png_us,
         };
         *slot = slot.saturating_add(micros);
     }
@@ -89,6 +107,8 @@ impl ToolTimings {
             dirty_us: self.dirty_us.saturating_sub(base.dirty_us),
             fold_us: self.fold_us.saturating_sub(base.fold_us),
             log_us: self.log_us.saturating_sub(base.log_us),
+            render_us: self.render_us.saturating_sub(base.render_us),
+            png_us: self.png_us.saturating_sub(base.png_us),
         }
     }
 
@@ -99,6 +119,8 @@ impl ToolTimings {
             .saturating_add(self.dirty_us)
             .saturating_add(self.fold_us)
             .saturating_add(self.log_us)
+            .saturating_add(self.render_us)
+            .saturating_add(self.png_us)
     }
 
     /// **10.1 的 `timings` 对象** ✓（毫秒 ✓，3 位小数 ✓）。
@@ -112,6 +134,8 @@ impl ToolTimings {
             "dirty_ms": millis(self.dirty_us),
             "fold_ms": millis(self.fold_us),
             "log_ms": millis(self.log_us),
+            "render_ms": millis(self.render_us),
+            "png_ms": millis(self.png_us),
             "other_ms": millis(other_us),
         })
     }
@@ -148,10 +172,12 @@ mod tests {
             + report["dirty_ms"].as_f64().unwrap()
             + report["fold_ms"].as_f64().unwrap()
             + report["log_ms"].as_f64().unwrap()
+            + report["render_ms"].as_f64().unwrap()
+            + report["png_ms"].as_f64().unwrap()
             + report["other_ms"].as_f64().unwrap();
         assert!(
             (sum - report["total_ms"].as_f64().unwrap()).abs() < 1e-9,
-            "五项（含残差）之和必须等于总时长：{report}"
+            "各相（含残差）之和必须等于总时长：{report}"
         );
         assert_eq!(report["raster_ms"], json!(3.0));
         assert_eq!(report["other_ms"], json!(6.5));
@@ -175,5 +201,20 @@ mod tests {
         timings.add(Phase::Raster, Duration::from_millis(2));
         let delta = timings.since(&base);
         assert_eq!(delta.raster_us, 2_000);
+    }
+
+    /// **导出两相进账目** ✓：`render_ms` / `png_ms` 被算进 `measured_us()` ✓
+    /// ⇒ 残差相应变小 ✓，而各相之和仍等于总时长 ✓。
+    #[test]
+    fn export_phases_shrink_the_residual_instead_of_breaking_the_sum() {
+        let mut timings = ToolTimings::default();
+        timings.add(Phase::Render, Duration::from_millis(4));
+        timings.add(Phase::Png, Duration::from_millis(1));
+        let report = timings.report(Duration::from_millis(10));
+        assert_eq!(report["render_ms"], json!(4.0));
+        assert_eq!(report["png_ms"], json!(1.0));
+        // 残差 = 10 − 4 − 1 = 5 ✓（不是 10 ✗ —— 那正是"两相被吞掉"的旧读数 ✓）。
+        assert_eq!(report["other_ms"], json!(5.0));
+        assert_eq!(timings.measured_us(), 5_000);
     }
 }
