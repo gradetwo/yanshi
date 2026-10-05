@@ -898,6 +898,9 @@ const namingResult = await evaluate(`(async () => {
   // 记下切换前的 docSize：服务端尺寸到达时 state.docSize 会被改写（viewer.rs:1633），
   // 所以等它变化，就是「尺寸已从服务端拿到」的独立信号（断言比的是画布像素数，与它无涉）。
   const docSizeBeforeSwitch = JSON.stringify(window.yanshi.state().docSize);
+  // 只加这一处观测：产品在每次渲染后会写 yanshiStats.lastArea = w * h（viewer.rs:1717），
+  // 所以它直接回答「切换后有没有按新尺寸渲染过」。
+  const lastAreaBeforeSwitch = window.yanshiStats && window.yanshiStats.lastArea;
   // **直接问服务端"源文档多大"**（第 942 轮）：duplicate_document 用的是**服务端持有的** state.width，
   // 而页面看到的是 512x512（第 940 轮实测）。把服务端那份也打出来，就能一刀劈开候选集：
   // 服务端说 512 则走样在"建文档"一侧；服务端说 1024 则页面与服务端看到的不是同一份。
@@ -982,6 +985,8 @@ const namingResult = await evaluate(`(async () => {
     beforeDocIdForProbe,
     serverSourceDocProbe,
     tokenProbe,
+    lastAreaBeforeSwitch,
+    lastAreaAfterSwitch: window.yanshiStats && window.yanshiStats.lastArea,
     beforeBoardW: beforeWidth,
     afterBoardW: afterWidth,
     afterDoc,
@@ -1826,6 +1831,7 @@ try { (await import("node:fs")).appendFileSync("/tmp/yanshi-uicheck-obs.txt", JS
   beforeDoc: namingResult.beforeDoc, beforeDocId: namingResult.beforeDocIdForProbe, beforeBoardW: namingResult.beforeBoardW,
   afterDoc: namingResult.afterDoc, afterDocId: namingResult.afterDocIdForProbe, afterBoardW: namingResult.afterBoardW,
   serverSourceDocProbe: namingResult.serverSourceDocProbe, tokenProbe: namingResult.tokenProbe,
+  lastAreaBeforeSwitch: namingResult.lastAreaBeforeSwitch, lastAreaAfterSwitch: namingResult.lastAreaAfterSwitch,
 }) + "\n"); } catch (_) { /* 写不了也不影响判据 */ }
 console.log("  服务端持有的源文档 " + JSON.stringify(namingResult.serverSourceDocProbe));
 console.log("  尺寸观测 " + JSON.stringify({
