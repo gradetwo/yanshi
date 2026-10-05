@@ -34702,3 +34702,21 @@ P0 处置：
    要在报告里明说，不要硬造一个 MCP 对应物。
 7. 不得回退既有的离线判据 scripts/browser-offline-shell.mjs（页面可打开、笔刷库有选项、
    真实指针落笔出墨），优先扩展它而不是另写第三套 harness。
+
+## 第 1103 轮：清理 P0 排查的工作树，磁盘恢复
+
+清理过程：
+1. /tmp/wt-p0（6.3 G）工作树干净，已移除。分支 fix/p0-state-loss 与提交 aef52e3 保留。
+2. /tmp/wt-4cb（542 M）先被保留，因为它有三个未跟踪文件。核对后处理：
+   - crates/yanshi-core/tests/p0_replay_probe.rs（70 行，首行自述 TEMPORARY probe）
+   - crates/yanshi-core/tests/p0_state_probe.rs（66 行，同上）
+   - crates/yanshi-server/tests/p0_render_probe.rs（58 行，同上）
+3. 先确认正式判据已经在 main 上：crates/yanshi-core/tests/p0_incident_replay.rs
+   （5885 字节，来自 aef52e3）。所以那三个探针是冗余的临时脚手架，删除它们并移除工作树。
+4. 剩余工作树：main、三个原有工作树（fresh、heavy、site，不是本次工作建的）、
+   /tmp/wt-offline（离线写队列进行中）。
+
+结果：
+1. /tmp 用量 11 G 降到 3.9 G。
+2. 磁盘可用 15 G 升到 36 G（已用 87% 降到 68%）。
+3. 工作树干净。git fsck 只有悬空对象，没有损坏。
