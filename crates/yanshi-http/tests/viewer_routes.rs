@@ -88,3 +88,34 @@ fn every_url_the_viewer_requests_is_a_route_the_server_serves() {
         missing.join("\n")
     );
 }
+
+/// **(A)① 收尾判据** ✓：SW 的 `SHELL` 里**每一项都必须在服务端有出处** ✓。
+///
+/// 为什么必须有一条 ✓：拆出资产后，若只把 URL 写进 `SHELL` 却**忘了加路由** ✗，
+/// SW 里的 `cache.add(url).catch(() => undefined)` 会**静默吞掉失败** ✓ ⇒
+/// **离线打开时样式/脚本缺失** ✗，而**日志上什么都看不到** ✗ ⇒ **∴ 靠这条结构性守卫 ✓**。
+///
+/// **变异判据** ✓：往 `SHELL` 里加一个服务端不存在的路径（如 `/nope.js`）⇒ 红 ✓。
+///
+/// 说明 ✓：这里做的是**源码级**检查（服务端文本里是否出现该路径 ✓）；
+/// 端到端版本（真的发一次请求看 200 ✓）留作后续加强 ✓。
+#[test]
+fn every_shell_entry_is_served_by_the_server() {
+    let sw = read("crates/yanshi-http/assets/service-worker.js");
+    let server = read("crates/yanshi-http/src/server.rs");
+    let start = sw.find("const SHELL = [").expect("SW 应有 SHELL 清单");
+    let end = sw[start..].find("];").expect("SHELL 应闭合") + start;
+    let mut checked = 0usize;
+    for piece in sw[start..end].split('"').skip(1).step_by(2) {
+        let url = piece.trim();
+        if !url.starts_with('/') {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            server.contains(url),
+            "SW 预缓存的 {url} 在服务端**没有出处** ⇒ cache.add 会静默失败 ⇒ 离线时缺资源 ✗"
+        );
+    }
+    assert!(checked >= 6, "SHELL 至少应有 6 个 URL（实际 {checked}）");
+}

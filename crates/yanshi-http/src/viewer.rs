@@ -637,6 +637,18 @@ fn page_template() -> String {
 }
 
 /// 页面长度（测试与可观测性）。
+/// **独立样式表资产的对外出口** ✓（(A)①：让"可打包产物"同时**可路由 / 可预缓存** ✓）。
+pub fn stylesheet() -> &'static str {
+    include_str!("../assets/viewer.css")
+}
+
+/// **主脚本资产的对外出口** ✓（同上 ✓）。
+pub fn app_script() -> &'static str {
+    include_str!("../assets/viewer-app.js")
+}
+
+/// 页面长度（测试与可观测性）✓ —— **⚠️ 插入新函数时别把它的文档注释抢走** ✗
+///（`viewer.rs` 顶部那条警告说的就是这件事 ✓：插在它之前 ⇒ 注释会挂到新函数上 ⇒ `clippy -D warnings` 红 ✓）。
 pub fn page_len() -> usize {
     page_template().len()
 }

@@ -564,6 +564,28 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // **(A)①：拆出来的两个资产必须有**可路由的 URL** ✓** —— 否则它们只是"编译进二进制"✗，
+    // SW 也就**无法把它们作为独立资源预缓存** ✗（**离线外壳的完整性靠这个** ✓）。
+    if path == "/viewer.css" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/css; charset=utf-8",
+                viewer::stylesheet().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/viewer-app.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                viewer::app_script().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if path == "/manifest.webmanifest" {
         return match method {
             "GET" => Response::bytes(
