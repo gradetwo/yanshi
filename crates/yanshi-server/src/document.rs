@@ -1091,6 +1091,12 @@ impl Document {
                 if covers_canvas(region, self.state.width, self.state.height) {
                     self.full_canvas_renders += 1;
                 }
+                // **这条出口也必须留下告警** ✗（真实事故复盘暴露的缺口 ✓）：预览是
+                // "打开文档 / 提交一笔之后用户看到的那张图" ✓ —— 缺一个补丁时它以前
+                // **既不进 `last_render_warnings`、也不进返回的 `warnings`** ✗
+                // ⇒ 用户看到的是一张**静默的不完整画面** ✓，与"数据丢了"长得一模一样 ✗
+                //（`render_region` 与 `export_png` 两条出口早已带告警 ✓，只有这条路漏了 ✓）。
+                self.last_render_warnings = rendered.stats.unsupported.clone();
                 Some(rendered)
             }
             None => None,
@@ -1129,6 +1135,12 @@ impl Document {
         self.evict_replaced_previews(&previous);
         self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
         self.complete_render_jobs()?;
+        // 本次预览渲染跳过了什么 ✓（没有渲染（`region == None`）⇒ 空 ✓：
+        // 那时没有新信息，`last_render_warnings` 保留上一次的值 ✓）。
+        let render_warnings = render
+            .as_ref()
+            .map(|rendered| rendered.stats.unsupported.clone())
+            .unwrap_or_default();
         Ok(RenderedPreview {
             bbox: [0.0, 0.0, self.state.width as f64, self.state.height as f64],
             width: thumb_size,
@@ -1140,7 +1152,7 @@ impl Document {
             tiles: 0,
             thumb_kind: Some(ThumbKind::Doc256),
             filter_padding: 0,
-            warnings: Vec::new(),
+            warnings: render_warnings,
         })
     }
 
