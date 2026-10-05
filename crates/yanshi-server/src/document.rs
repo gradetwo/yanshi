@@ -956,6 +956,26 @@ impl Document {
         // 实测一个工作区累积到 1.3GB / 245 个 PNG（平均约 5MB）。
         // 体验不受影响：画布像素由内核或客户端的显式 `render_region` 提供，
         // 缩略图本来就是 256² —— 客户端拿到的 `preview` 因此更小且足够。
+        // **这里不再无条件重渲染整幅文档预览** ✗（性能专题，第 1037 轮）：
+        //
+        // 原先每次"有 pending job"（`brush_stroke` 等重型原子每次提交都会排一个 ✓）就
+        // `render_document_preview()` ⇒ **在本次调用内把整幅文档重渲染一遍** ✗ ⇒
+        // 实测 4K 下单笔 1.5s~4.0s、单核 100%，**且随文档对象数线性增长** ✓。
+        //
+        // 而"按需预览"这条路**本来就已经完备** ✓：`ensure_document_thumbnail`
+        // （`service.rs:1895` ✓）会用 `document_thumbnail_is_current()`（比 `log.head_seq()` ✓）
+        // 判断缓存是否落后，落后才重建 ✓；`tools.rs:2843/2894` 在需要预览时会调它 ✓。
+        // ⇒ **∴ 于是"提交时预先渲染"是**多余的**✗ ⇒ 去掉它，预览改为**首次被请求时**生成 ✓**。
+        //
+        // 注意 ✓：`render_document_preview()` 仍然由**显式导出/预览请求**使用 ✓（那条路不变 ✓）；
+        // 本函数下面的 job 状态推进（`for job in pending` ✓）保持不变 ✓。
+        // **回退（第 1038 轮）**：把"job 完成"与"整幅渲染"解耦会破坏两条既有契约 ✗ ——
+        // ① `heavy_atoms_create_jobs_and_render_completes_them`（`completed == [job_id]` ✓）
+        //    之所以能通过，正是因为**渲染顺便调了 `complete_render_jobs()`** ✓；
+        // ② `jobs_ttl_cancel_and_render_watermark` 还要求**渲染水位随提交推进** ✓。
+        // ⇒ **∴ 正确方向不是"删掉渲染"✗，而是"让这次渲染**只做变更区域**"✓** ——
+        //    见 `thumb.rs` 已有的**分块增量**机制（`incremental.dirty_blocks_for(…)` ✓）。
+        // ⇒ 本轮先**恢复原行为**（不留红树 ✓）；增量预览作为下一轮的判据项 ✓。
         let _ = self.render_document_preview()?;
         let now = yanshi_core::now_ms();
         let mut completed = Vec::new();
