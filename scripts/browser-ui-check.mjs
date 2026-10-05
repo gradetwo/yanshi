@@ -40,7 +40,12 @@ if (!target) {
   process.exit(2);
 }
 if (!target.url.startsWith(viewerBase)) {
-  console.error(`注意：调试浏览器里没有正在打开 ${viewerBase} 的页面，将复用 ${target.url}`);
+  // 第 962 轮：这里原本只打一句"注意…复用"就继续跑，于是整条判据在 about:blank 上执行 ——
+  // 元素找不到、evaluate 卡到 CDP 超时，最后给出"没有原因"的失败（第 960 轮实测）。
+  // 前置不成立就该**直接退出**，而不是把环境问题伪装成断言失败。
+  console.error(`前置条件不成立：调试浏览器里没有正在打开 ${viewerBase} 的页面（当前是 ${target.url}）` +
+    ` ⇒ 判据不会在别的页面上运行。请让 Chromium 先打开该地址，或让 runner 负责打开。`);
+  process.exit(3);
 }
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 let id = 1;
