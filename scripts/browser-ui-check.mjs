@@ -2614,9 +2614,15 @@ const selectionDrag = JSON.parse(await evaluate(`JSON.stringify((() => {
   if (!select) return { error: "找不到选区工具" };
   select.click();
   const rect = board.getBoundingClientRect();
+  // 第 1016 轮：这里原来用 rect.width / board.width ✗ —— 而 board.width 是**位图宽**（＝视口尺寸 ✓，
+  // sizeBoards 为"缩放看清"而有意缩小 ✓），**不是文档宽** ✗ ⇒ 而产品的 localPoint 用 docSize.w / rect.width ✓
+  // ⇒ ⇒ **二者不互逆** ⇒ 往返乘出 docSize.w / board.width ＝ 320/212 ＝ 1.509 ✓ ⇒ 实测矩形大了 1.509 倍 ✓ ✓。
+  // ⇒ **改用文档尺寸** ✓（与产品那条互逆 ✓）。
+  const docW = (window.yanshi.state().docSize && window.yanshi.state().docSize.w) || board.width;
+  const docH = (window.yanshi.state().docSize && window.yanshi.state().docSize.h) || board.height;
   const toClient = (dx, dy) => ({
-    clientX: rect.left + (dx - state.viewport.x) * (rect.width / board.width),
-    clientY: rect.top + (dy - state.viewport.y) * (rect.height / board.height),
+    clientX: rect.left + (dx - state.viewport.x) * (rect.width / docW),
+    clientY: rect.top + (dy - state.viewport.y) * (rect.height / docH),
   });
   const fire = (type, dx, dy) => board.dispatchEvent(new PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId: 991, pointerType: "mouse", isPrimary: true,
@@ -2630,7 +2636,14 @@ const selectionDrag = JSON.parse(await evaluate(`JSON.stringify((() => {
     fire("pointermove", from.x + ((to.x - from.x) * i) / 10, from.y + ((to.y - from.y) * i) / 10);
   }
   fire("pointerup", to.x, to.y);
-  return { from, to, expected: { w: to.x - from.x, h: to.y - from.y } };
+  // 第 1014 轮：与移动用例同款探针（同一类换算的每个用例都该带一份）——
+  // 往返应当是 docSize.w / board.width，若三者不等则判据与产品的换算不互逆。
+  const scaleProbe = { boardW: board.width, rectW: Math.round(rect.width),
+    docW: window.yanshi.state().docSize && window.yanshi.state().docSize.w,
+    ratioUsedByCriterion: rect.width / docW,
+    ratioProductUses: (window.yanshi.state().docSize && window.yanshi.state().docSize.w || 0) / rect.width,
+    viewport: { x: state.viewport.x, y: state.viewport.y, w: state.viewport.w, h: state.viewport.h } };
+  return { from, to, expected: { w: to.x - from.x, h: to.y - from.y }, scaleProbe };
 })())`));
 await new Promise((r) => setTimeout(r, 2500));
 // **用查看器此刻的文档与令牌** ✓ —— 本会话第三次栽在"查的是旧文档"上 ✗（前面段落会切换文档 ✓）。
@@ -2653,6 +2666,10 @@ const hintText = await evaluate(`document.getElementById("selectionHint").textCo
     problems.push(`选区拖拽后没有选区（期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}）`);
   } else if (Math.abs(bbox[2] - selectionDrag.expected.w) > 4 || Math.abs(bbox[3] - selectionDrag.expected.h) > 4) {
     problems.push(`多步拖拽提交了错误的矩形：得 ${JSON.stringify(bbox.slice(2))}，期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}`);
+    // 落盘而不是只打印：runner 只回显 out.txt 的头 3/尾 6 行，打印会落在窗口外（第 1015 轮）。
+    try { (await import("node:fs")).appendFileSync("/tmp/yanshi-selobs.txt",
+      JSON.stringify({ scaleProbe: selectionDrag.scaleProbe, got: bbox.slice(2),
+        expected: [selectionDrag.expected.w, selectionDrag.expected.h] }) + "\n"); } catch (_) { /* 忽略 */ }
   } else {
     console.log(`  选区拖拽：十步拖出 ${Math.round(bbox[2])}×${Math.round(bbox[3])}（期望 ${selectionDrag.expected.w}×${selectionDrag.expected.h}）｜状态栏「${hintText}」`);
   }
