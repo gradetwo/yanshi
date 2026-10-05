@@ -3666,6 +3666,33 @@ function setupStoragePanel() {
   if (demote) demote.addEventListener("click", () => { void storageMutate(true); });
 }
 
+/// **诊断包** ✓（P0 事故复盘：事发时柜台是空的 ✗）—— `collect_diagnostics` 的 Web 入口 ✓。
+///
+/// **为什么直接导航、不走 `callTool`** ✗：工具把 zip 放进 JSON（base64 ✓），
+/// 而浏览器要的是**一个压缩包文件** ✓ ⇒ `GET /api/diagnostics` 由服务端带
+/// `Content-Type: application/zip` 与 `Content-Disposition: attachment` ✓ ⇒ 点一下即下载 ✓。
+/// **采集实现只有一份** ✓：与 MCP 的工具共用 `yanshi_server::diagnostics::collect` ✓
+/// ⇒ 两个面的包内条目**逐字相同** ✓。
+///
+/// **为什么用隐藏链接而不是 `location.href`** ✗：后者会把 `?token=…` 写进浏览器历史 ✓，
+/// 也会离开当前画布 ✓ —— 诊断包是**只读**操作 ✓，不该打断正在画的人 ✓。
+function setupDiagnosticsPanel() {
+  const button = $("diagnosticsDownload");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const info = $("diagnosticsInfo");
+    if (info) info.textContent = "正在收集…（画布很大时可能要几秒）";
+    const link = document.createElement("a");
+    link.href = api("/api/diagnostics");
+    link.download = "yanshi-diagnostics-" + state.docId + ".zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    log("诊断包开始下载 ✓（zip：README / build / config / document / atoms / warnings / timings / stderr / thumbnail）");
+    if (info) info.textContent = "已发起下载 ✓ 包内先读 README.txt";
+  });
+}
+
 /// **对象变换** ✓（设计 §783）—— `transform_object` 此前在查看器里**零引用** ✗ ⇒
 /// "**旋转 / 缩放 / 平移一个对象**"完全够不到 ✓，而这是画家最常用的动作之一 ✓。
 ///
@@ -3798,6 +3825,7 @@ async function resampleCheckedObjects() {
 /// 对象面板的按钮 ✓。
 function setupObjectPanel() {
   setupStoragePanel();
+  setupDiagnosticsPanel();
   // **素材面板** ✓（调色板取色 + 纹理背景 ✓）—— 与其它面板一样，**只在这儿挂一次** ✓。
   void setupAssetPanels();
   setupSuggestionPanel();

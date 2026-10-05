@@ -3,6 +3,9 @@
 use yanshi_http::{serve, HttpOptions};
 
 fn main() {
+    // **panic 也要留痕** ✓：诊断包常常在进程出问题**之后**才被采集 ✓，
+    // 所以先把 hook 装上 ✓ ⇒ panic 摘要会进 stderr 环形缓冲 ✓。
+    yanshi_server::diagnostics::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // **`--version` 要与健康接口说同一句话** ✓（用户提的排查建议 ✓）：
     // 拿到一个正在跑的服务时 ✓，第一句想问的往往是"这是哪个 commit 的构建" ✓ ——

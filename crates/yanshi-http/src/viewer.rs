@@ -487,6 +487,19 @@ const PAGE_TAIL_A: &str = r##"</style>
       <label class="hint"><input id="storageConfirm" type="checkbox" /> 我确认（删除不可逆）</label>
       <div id="storageReport0" style="font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap"></div>
     </div>
+    <!-- **诊断包** ✓（P0 事故复盘：报告说丢了几个小时的工作 ✓，而事发时**没有任何东西可收** ✗）——
+         这条入口与 MCP 的 `collect_diagnostics` 工具走**同一个**采集实现 ✓
+         ⇒ 两个面交出来的包**条目完全相同** ✓。
+         **它不是变更操作** ✓：只读 ✓，不改文档 ✓（viewer 令牌也能下载 ✓）。 -->
+    <div class="card" data-panel="diag" id="cardDiagnostics">
+      <h2>诊断</h2>
+      <div class="hint"
+        title="把构建/平台/配置（已去密）、文档元数据、原子日志尾部（注明截断）、服务端 stderr 环形缓冲、渲染告警（含被跳过的补丁）、阶段耗时与当前缩略图打成一个 zip 下载；包内有 README 逐条说明。只读，不改文档。">
+        出问题时一键下载排查包（zip）
+      </div>
+      <div class="toolbar"><button id="diagnosticsDownload" type="button">下载诊断包</button></div>
+      <div id="diagnosticsInfo" class="hint"></div>
+    </div>
     <!-- **调色板** ✓（目标第 ① 件 ✓）—— `list_palette_colors` 此前**只有工具层入口** ✗
          ⇒ MCP 能用 ✓，而界面里**点不到颜色** ✗ ⇒ 这正是"只在一边有"的缺陷 ✓。 -->
     <div class="card" data-panel="assets" id="cardPalette">

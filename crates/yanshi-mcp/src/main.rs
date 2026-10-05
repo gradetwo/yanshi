@@ -4,6 +4,9 @@ use std::io::{self, Write};
 use yanshi_mcp::{serve, McpOptions, SERVER_NAME, SERVER_VERSION};
 
 fn main() {
+    // **stdio 模式的 stderr 会被客户端丢掉** ✗ ⇒ panic 摘要必须先转进环形缓冲 ✓，
+    // 否则进程倒掉之后**一个字都留不下** ✓（这正是 P0 复盘时柜台为空的原因之一 ✓）。
+    yanshi_server::diagnostics::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print!("{}", McpOptions::help());

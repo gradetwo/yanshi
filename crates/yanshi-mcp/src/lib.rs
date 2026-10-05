@@ -197,9 +197,24 @@ impl Server {
             let (resolved, note) = yanshi_server::service::resolve_assets_dir(Some(
                 std::path::PathBuf::from("assets"),
             ));
-            eprintln!("{note}");
+            yanshi_server::diagnostics::log_line(&note);
             resolved
         });
+        // **启动即记一行** ✓：MCP stdio 模式的 stderr 会被客户端丢掉 ✗ ⇒
+        // 这一行是"这个进程是什么时候、以什么身份起来的"的**唯一**证据 ✓，
+        // 会随下一次 `collect_diagnostics` 一起交出去 ✓。
+        yanshi_server::diagnostics::log_line(format!(
+            "{SERVER_NAME} {SERVER_VERSION} 启动（commit {}，root={}，doc={}，profiles={:?}，wait_for_render={}）",
+            option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+            options
+                .root
+                .as_ref()
+                .map(|root| root.display().to_string())
+                .unwrap_or_else(|| "<内存>".to_owned()),
+            options.doc_id,
+            options.profiles.iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
+            options.wait_for_render,
+        ));
         let registry = ToolRegistry::with_profiles(&options.profiles);
         Self {
             options,
@@ -337,6 +352,36 @@ impl Server {
             self.options.doc_id = doc_id.clone();
         }
 
+        // **事实必须在借出 `&mut self.workspace` 之前收齐** ✓（否则 `self.workspace.len()`
+        // 会与那次可变借用冲突 ✓ —— 编译器替我们挡住了一次"边借边读" ✓）。
+        let open_documents = self.workspace.len();
+        let facts = yanshi_server::SurfaceFacts {
+            surface: "mcp".to_owned(),
+            build: json!({
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "commit": option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+                "built": option_env!("YANSHI_BUILD_TIME").unwrap_or("unknown"),
+                "transport": "stdio",
+            }),
+            config: json!({
+                "transport": "stdio (JSON-RPC，每行一条)",
+                "root": self.options.root.as_ref().map(|root| root.display().to_string()),
+                "doc_id": self.options.doc_id,
+                "width": self.options.width,
+                "height": self.options.height,
+                "profiles": self.options.profiles.iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
+                "wait_for_render": self.options.wait_for_render,
+                "wait_budget_ms": self.options.wait_budget_ms,
+                "inline_images": self.options.inline_images,
+                "log_ring_capacity": yanshi_server::diagnostics::LOG_RING_CAPACITY,
+            }),
+            extra: json!({
+                "requests": self.requests,
+                "open_documents": open_documents,
+            }),
+            secrets: diagnostics_secrets(),
+        };
         let mut context = ToolContext::new(
             &mut self.workspace,
             doc_id,
@@ -344,7 +389,10 @@ impl Server {
             format!("session:{SERVER_NAME}"),
         )
         .with_owner(true)
-        .with_wait_for_render(self.options.wait_for_render, self.options.wait_budget_ms);
+        .with_wait_for_render(self.options.wait_for_render, self.options.wait_budget_ms)
+        // **告诉工具层"这个面是什么"** ✓：`collect_diagnostics` 的 build/config/extra 全从这里来 ✓
+        // ⇒ 包内条目与 HTTP 面**不会漂移** ✓（各写一份必然漂移 ✗）。
+        .with_diagnostics_facts(facts);
 
         let result = self.registry.call(&mut context, name, &arguments);
         Ok(tool_result(result, self.options.inline_images))
@@ -380,6 +428,28 @@ fn tool_error(response: &Value) -> Value {
     })
 }
 
+/// 采集诊断时要抹掉的机密值（环境里的密钥都要洗掉 ✓）。
+///
+/// **为什么列一串环境变量名** ✓：诊断包会带上"生效配置" ✓，
+/// 而这些值是**部署时**从环境注入的 ✓ ⇒ 采集时按同一批名字读出来当机密 ✓，
+/// 去密器会把它们在**所有条目**里替换成占位串 ✓（见 `diagnostics::redact_text` ✓）。
+fn diagnostics_secrets() -> Vec<String> {
+    let mut secrets = Vec::new();
+    for key in [
+        "YANSHI_API_KEY",
+        "YANSHI_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if value.len() >= 4 {
+                secrets.push(value);
+            }
+        }
+    }
+    secrets
+}
+
 /// 把工具返回的 JSON 包装成 MCP `tools/call` 结果。
 ///
 /// 7.5 的工具返回默认是 URL；当结果里带 `image`（小尺寸预览）时额外发一条
@@ -409,6 +479,32 @@ pub fn tool_result(value: Value, inline_images: bool) -> Value {
             }
             if let Value::Object(map) = &mut text_value {
                 map.remove("image");
+            }
+        }
+    }
+    // **诊断包要作为 MCP 的二进制内容块交出去** ✓（与 `image` 同一条规矩 ✓）：
+    // `archive_base64` 是 zip 的全部字节 ✓ ⇒ 转成 `resource` 内容块 ✓（`blob` 就是 base64 ✓），
+    // 并从 text 里**移走** ✓ —— 不然同一条消息里它要出现两遍 ✓（响应体积翻倍 ✗）。
+    if let Some(archive) = text_value
+        .get("archive_base64")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        if !archive.is_empty() {
+            content.push(json!({
+                "type": "resource",
+                "resource": {
+                    "uri": "yanshi://diagnostics/latest.zip",
+                    "mimeType": "application/zip",
+                    "blob": archive,
+                },
+            }));
+            if let Value::Object(map) = &mut text_value {
+                map.remove("archive_base64");
+                map.insert(
+                    "archive_transport".to_owned(),
+                    json!("MCP resource 内容块（mimeType=application/zip，blob=base64 zip 的全部字节）"),
+                );
             }
         }
     }
