@@ -5627,6 +5627,11 @@ function localPoint(event) {
   if (event.type === "pointerdown" || !localPointRect) {
     localPointRect = board.getBoundingClientRect();
   }
+  // 第 1026 轮（临时诊断）：记下**抬手那一刻**的 viewport ——
+  // 落笔提交发生在 pointerup ✓，而吸管走 pointerdown ✓ ⇒ 两者不会互相覆盖 ✓。
+  if (event.type === "pointerup") {
+    state.lastPointerUpViewport = { x: state.viewport.x, y: state.viewport.y };
+  }
   const rect = localPointRect;
   // 画布内部像素 = 视口文档像素；再加视口原点得到文档坐标。
   // **压感** ✓（用户要求"创作时要把笔触压感用起来" ✓）：
@@ -5690,7 +5695,7 @@ function pickColorAt(event) {
   // 而同段取到的两次 rect 只差 2 客户端像素（≈1.5 文档像素 ✗）⇒ **∴ 主因疑为 viewport 变了** ✓。
   log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）｜viewport="
     + Math.round(state.viewport.x) + "," + Math.round(state.viewport.y)
-    + "｜rect=" + Math.round(localPointRect ? localPointRect.left : -1) + ","
+    + "｜strokeVP=" + (state.lastPointerUpViewport ? Math.round(state.lastPointerUpViewport.x) + "," + Math.round(state.lastPointerUpViewport.y) : "?") + "｜rect=" + Math.round(localPointRect ? localPointRect.left : -1) + ","
     + Math.round(localPointRect ? localPointRect.width : -1));
 }
 
