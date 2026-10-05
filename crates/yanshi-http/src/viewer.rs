@@ -5685,7 +5685,13 @@ function pickColorAt(event) {
     .map((channel) => channel.toString(16).padStart(2, "0"))
     .join("");
   $("color").value = hex;
-  log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）");
+  // 第 1021 轮：把**当时的 viewport 与 rect**也报出来（临时诊断 ✓）——
+  // 实测：吸管取到 (99,102) 而按 viewport.x=84 算出的笔位置是 148 ✗，差 49 ✓；
+  // 而同段取到的两次 rect 只差 2 客户端像素（≈1.5 文档像素 ✗）⇒ **∴ 主因疑为 viewport 变了** ✓。
+  log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）｜viewport="
+    + Math.round(state.viewport.x) + "," + Math.round(state.viewport.y)
+    + "｜rect=" + Math.round(localPointRect ? localPointRect.left : -1) + ","
+    + Math.round(localPointRect ? localPointRect.width : -1));
 }
 
 /// 填充图层：用当前颜色填充整幅区域（`fill` 的语义是**按区域**填充，不是洪水填充）。
