@@ -1510,7 +1510,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "path_edit",
         profile: Profile::Structure,
-        summary: "笔迹路径编辑（设计 792；本片只实现 reverse/close/join）",
+        // ⚠️ **summary 不要再枚举 op** ✗（第 870 轮 ✓，子代理实测发现过时 ✓）：
+        // 旧文写「本片只实现 reverse/close/join」✗，而实际 op 已有 merge/split（见下一行 ✓）
+        // ⇒ 枚举会**随实现漂移** ✗ ⇒ 改为**指向参数**（参数本身就是权威 ✓，不会过时 ✓）。
+        summary: "笔迹路径编辑（设计 792；**支持哪些操作见 op 参数** ✓ —— 不在摘要里枚举 ✓，避免随实现漂移 ✗）",
         mutating: true,
         params: &[
             param!("op", String, true, "reverse | close | join | merge | split"),
