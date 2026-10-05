@@ -28996,3 +28996,36 @@ chmod 让**本地**一致了 ✓，而 **git 的工作树是干净的** ✓ ⇒ 
 ⇒ ⇒ 但**判据是配置里的超时上限** ✓：**只要没超过它 ✓，就还在正常范围** ✓ ✓
    （**与"未读到的裁定是 pending"同族 ✓**：**没有证据说它坏 ⇒ 不能说它坏** ✓）。
 ```
+
+## 🎯🎯 第 885 轮：**不用日志，按分片规则算出 `shard 4/6` 的成员，锁定红因** ✓
+
+**做法（**静态推导** ✓，绕开"整轮未完成 ⇒ 拿不到日志" ✗）**：
+```
+`run-criteria.sh:58` 规则 ✓：**按文件名排序后取模** ✓
+  ⇒ `for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs
+     scripts/kernel-wasm-allowlist.mjs scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs
+     scripts/ui-layout-grid.mjs …)` ✓ ⇒ `shard_index % 6 + 1` ✓
+⇒ 用**同一条 `ls`** 重算 ✓ ⇒ 判据总数 **75** ✓（**与覆盖率守卫报的 75 一致 ✓**）
+```
+**`shard 4/6` 的 12 条（并对照已知红 ✓）**：
+```
+browser-brush-preview-local.mjs   **已知红** ✓
+browser-i18n.mjs                  ← **本会话实测过"间歇红"** ✗✓ !!!
+browser-offline-export.mjs ｜ browser-render-switch.mjs ｜ mcp-document-switch.mjs
+tool-archive-bloat.mjs            **已知红** ✓
+tool-brush-tag-filter.mjs ｜ tool-examples-doc.mjs ｜ tool-gradient-blend.mjs
+tool-param-parity.mjs ｜ **tool-sample-color.mjs**（本会话新加 ✓，本机绿 ✓）
+tool-session-semantics.mjs
+⇒ ⇒ **除了那 2 条已知红，其余 10 条本该绿** ✗ ⇒ **最可能的红因是 `browser-i18n.mjs` 的间歇性** ✓ ✓。
+```
+**为什么"只有 4/6 红、3/6 与 6/6 绿"** ✓ —— **shard 是轮转的 ✓，间歇红只砸中它自己那一片** ✓ ✓。
+
+**★ 一条** ✓：**"间歇红的判据"会变成"间歇红的分片"** ✗ ——
+```
+第 800 轮我就记过 `browser-i18n.mjs` 间歇 ✓（`c722370` ✗ / `77fa8f5` ✓ / `f14771d` ✓），
+  当时的处置是"**未定因前不登记**" ✓（**这是对的 ✓**：不能把"没定因的间歇"写成已知红 ✗）；
+⇒ ⇒ 但**代价现在显形了** ✗：**它每次偶发，就把所在分片拉红一次** ✓ ⇒
+   **读者看到的是"shard 4/6 failure"** ✗，而**真因是"某条判据偶发"** ✓ ✓
+⇒ ⇒ ⇒ **规矩**：**间歇红的判据要**尽快定因** ✓（定因前至少**记下"它间歇"这个事实** ✓，
+   否则每次它红，下一个人都要**从头查一遍"是编译？是环境？还是真失败？"** ✗）。
+```
