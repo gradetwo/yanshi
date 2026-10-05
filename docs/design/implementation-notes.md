@@ -35824,3 +35824,95 @@ Object.keys 看真键表）。
 合并方式：合成**一个** `if`，先诊断、再 push 失败 ⇒ 两条语义都保留（既不丢诊断，也不丢失败）。
 验证：node --check OK；用它所在分片跑（SHARD=20 SHARDS=75）⇒ `→ browser-offline-shell.mjs` /
 `✓ browser-offline-shell.mjs` / `通过 1｜意外失败 0｜已知红 0`。
+
+## 第 1148 轮：(A)④ 工程包 `.yanshi` 从浏览器下载到本机 —— 主线最后一项闭环
+
+上一轮记的"只剩 (A)④"就是这一轮。改法与当时定位的一致：**照抄 `export_png` 那条可下载 URL 的路**
+（但不是 PNG 的本地 canvas 那条，而是 `yanshi://blob/<hash>` 那条 ✓）。
+
+### 缺口（先复核，再动手）
+* `write_export_project`（`tools.rs:13299`）**只**收 `path`（必填），把包 `std::fs::write` 到**服务器上**的
+  沙箱路径 ⇒ 浏览器给不出服务器路径、也拿不到那台机器上的文件 ⇒ Web 端**等于没有出口**（与当年
+  `render_region` 只回伪协议 `yanshi://blob/...` 是同一类缺陷，只是这次在导出侧）。
+* 可下载的现成通道早就在：工具回 `yanshi://blob/<hash>`，HTTP 层 `rewrite_blob_urls`
+  （`server.rs:1745`）改写成 `/api/blob/<hash>?doc=..&token=..`；缩略图（`tools.rs:13012`）、
+  原始像素（`tools.rs:3579`）、`render_region` 的 `thumb_url` 都走它。查看器里 PNG 导出
+  （`viewer-app.js` 的 `#exportPng`）与诊断 zip 都用 `<a download>` 落地。
+
+### 改法（最小连贯）
+1. **服务端**（`crates/yanshi-server/src/tools.rs:13299`）：`path` 变成**可选**；
+   包照旧生产 ⇒ **同一份字节** `store.put(&tar)` 进内容寻址存储 ⇒ 回
+   `url: "yanshi://blob/<hash>"`、`blob_hash`、`filename: "<doc_id>.yanshi"`、`bytes`、`format`；
+   **给了 `path` 仍照旧写那份文件并在回执里带 `path`** ⇒ MCP / 命令行 / 既有判据**一个都不破**。
+   `ToolSpec` 里 `path` 的 `required` 从 `true` 改成 `false`，summary/说明同步。
+2. **Web**（`crates/yanshi-http/assets/viewer-app.js:4978`）：点「导出工程」
+   ⇒ 调 `export_project`（没填路径就不传）⇒ `value.url` 已经是改写过的 `/api/blob/..`
+   （万一没开改写就自己补一次）⇒ 建一个 `<a download=filename>` 点一下 ⇒ 落到用户机器。
+   界面文案从"导出写到服务器"改成"导出下载到本机"，路径框改成**可选**的"服务器另存路径"；
+   `yanshiStats.lastProjectExport` 记下 url/文件名/字节数（判据核对用）。
+3. **一个测试专用就绪信号**：`#projectExport` 的处理器挂在**异步的** `setupAssetPanels()` 里
+   （前面还 await 资产列表）⇒ 判据光等按钮会**抢在挂监听器之前**点 ⇒ 看起来像"点了没反应"。
+   查看器在挂上后写 `yanshiStats.projectExportReady = true`（`viewer-app.js:5028`），判据等它。
+   **这是等待信号，不是断言对象** —— 断言仍然只看下载下来的字节。
+
+### 设计取舍（为什么是 CAS blob，不是新路由）
+* **收益**：复用**已经存在且已被判据覆盖**的 `/api/blob` 通道（授权、content-addressed 缓存头、
+  SW 的 cache-first 都在）；服务端**不新增路由、不新增依赖**（依赖政策两面都写：本轮**没有**新依赖，
+  因为 `BlobStore`、tar 写出器、改写器都现成，值不值得引库无从谈起）；
+  回执里只有一个哈希与元数据 ⇒ **几百 MB 的包不会进 JSON / WebSocket 帧**（比 base64 方案好）。
+* **代价**：包会**多存一份**在 CAS 里（给了 `path` 时磁盘上有两份）；它是一个**孤儿 blob**
+  （没有原子引用它）⇒ `blob_gc(run)` 在 TTL 之后可以回收它 —— 那之前下载早就完成了。
+  另一条路（新开 `/api/documents/<id>/export` 路由现渲染现流）需要重复导出逻辑或每次请求重导，
+  且要重做授权与 SW 处理 ⇒ 本轮不取。
+
+### 判据与变异（每条都直接跑，证明能红）
+* **判据 ①（服务端）**：`crates/yanshi-server/tests/export_project_download.rs`
+  * `cargo test -p yanshi-server --test export_project_download`
+  * 断言：一次导出同时给 `path` 与 `url` ⇒ 磁盘字节 `==` 按 url 哈希从 CAS 取回的字节（长度 + 内容）、
+    `BlobHash::from_bytes(取回字节) == url 里的哈希`、`archive::read_tar`（**导入路径真正用的读包器**
+    `service.rs:1654` 就是它）能解开且含 `atoms.jsonl` / `meta.json` / `BUILD-INFO` / `blobs/...`；
+    第二个测试**不给 path** 导出，然后把 url 后面的字节导入全新工作区（`doc_copy`）成功。
+  * **变异**：`store.put(&tar)` ⇒ `store.put(&tar[..tar.len()/2])`。实测红（原样摘录）：
+    `URL 取回的字节数与磁盘上的包不同 ⇒ 下载下来的不是那个包 ✗  left: 8960  right: 17920`；
+    另一条 `工程包被截断：blobs.encoding 声明 4 字节，但后面只剩 0`。还原后 `cmp` 逐字节相同。
+* **判据 ②（浏览器）**：`scripts/browser-project-download.mjs`（`browser-*` ⇒ 自动进 runner）
+  * 真实路径：CDP 里点 `#projectExport` ⇒ 等下载目录出现**大小稳定**的文件 ⇒ 断言
+    文件名 `.yanshi` 结尾、非空、`lastProjectExport.bytes == 文件长度`、
+    **文件与 url 上的字节 SHA-256 相同**、url 哈希 == 回执 `blob_hash`。
+  * 实测绿（本机）：`10752 字节`，`url 10752B c0de92f5… vs 文件 10752B c0de92f5…`。
+  * **变异 A**（查看器里 `return` 掉锚点，重新 `cargo build --workspace --bins`）：
+    `✗ 点导出后下载目录里出现了一个文件｜[]` ⇒ 红。还原后 `cmp` 逐字节相同、重跑绿。
+  * **变异 B**（`store.put(b"MUTATION: not a tar package")`）：文件照样下载 ⇒ 三条内容断言红：
+    `✗ 回执里的字节数等于下载下来的字节数｜回执 10752 vs 文件 27`、
+    `✗ 下载下来的包能被导入路径读懂并导入｜…这不是一个工程包（里面一个文件都没有）`、
+    `✗ 导入还原出了原子与 blob（不是空壳）` ⇒ 证明判据断言的是**内容**，不是"有个文件"。
+    还原后 `cmp` 逐字节相同、重跑绿。
+* **判据 ③（导入不回退）**：浏览器判据第 ⑦ 段把**下载下来的那些字节**按查看器同一条分片协议
+  上传并导入 ⇒ `ok:true, atoms:4, blobs:1`；另**直接跑既有判据**
+  `node scripts/tool-import-project.mjs <base>` ⇒ 全绿（含"另起全新 CAS 后两边渲染逐像素相同"）。
+  变异 B 里导入那两条同时红 ⇒ 这条也能红。
+* **字节级证据**：浏览器判据比较的是下载文件与 `GET value.url` 两份字节的 SHA-256；
+  服务端判据比较的是磁盘包与 CAS 字节（长度 + 内容 + 哈希）⇒ 两侧都是**同一份导出**的字节，
+  不是"打了两次碰巧一样"（tar 的 mtime 写 0 确实逐字节确定，但判据没依赖这一点）。
+
+### 回归与门禁（本机实测）
+* `cargo fmt --all -- --check` ✓（先 `cargo fmt --all` 修了测试文件的换行）
+* `cargo clippy --workspace --all-targets -- -D warnings` ✓（**没有**踩到"插新 `pub fn` 偷 doc 注释"那个坑；
+  本轮没有在既有项前面插任何 `pub fn` / `pub const` / `#[test]`）
+* `cargo test --workspace` ✓（exit 0）
+* `cargo build --workspace --bins` ✓
+* 抽跑：`export_project`(2) / `import_project`(6) / `export_small`(6) / `diagnostics`(6) /
+  `preview_warnings`(1) 全绿；`tool-export-path-safety.mjs` 绿（合法相对路径仍成功）；
+  `tool-archive-bloat.mjs` 仍按**已知红**（1.63×，与本轮无关，行为没变）。
+* 浏览器判据需要 `crates/yanshi-wasm/pkg`（新 worktree 是 gitignored 的）：
+  `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` +
+  `~/.cargo/bin/wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg`（本机 `wasm-bindgen` 不在 PATH 上）。
+
+### 没能做到的（如实记）
+* **离线**下载没做：`export_project` 是**服务端**工具（包由服务端日志 + CAS 产出）⇒ 断网时同样拿不到包。
+  本轮补的是"浏览器能下载"这一半（= 上一轮记的 (A)④ 的措辞），**不是**"离线也能导出工程包"。
+* `blob_by_hash`（`server.rs:1510`）对所有 blob 一律回 `Content-Type: image/png` ⇒ tar 的 MIME 是错的。
+  下载不受影响（`<a download>` 不看 MIME），但**没有改**它：改 MIME 嗅探会动到缩略图/资产那条公共路由，
+  收益不抵风险。要改应单开一轮，并给 transport 判据补非 PNG blob 的用例。
+* 没在官方 `run-criteria.sh` 全量跑一遍（本机只直接跑了相关判据 + 全套 Rust 门禁）；
+  新判据以 `browser-` 开头 ⇒ 会自动进枚举，但**CI 上的表现本轮没有实测**。
