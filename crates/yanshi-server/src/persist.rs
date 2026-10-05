@@ -9,7 +9,14 @@
 //!   docs/<doc_id>/meta.json           # 文档元数据与 capability token
 //!   docs/<doc_id>/render.png          # 最近一次 HEAD 渲染缓存（14.5「打开即图片」）
 //!   docs/<doc_id>/render.seq          # 渲染缓存对应的 seq
+//!   docs/<doc_id>/preview.png         # 最近一次 HEAD 的**小图**文档预览（256²，增量预览基座）
+//!   docs/<doc_id>/preview.seq         # 上述预览对应的 seq
 //! ```
+//!
+//! **为什么预览与渲染分成两份文件** ✓（冷启动复用专题）：两者用途与代价都不同 ✓ ——
+//! `render.png` 是**整幅**导出缓存（4K 实测 6.7MB、解码 153.7s ✓），只在"整幅区域渲染
+//! 与 HEAD 一致"时用来**直接命中** ✓；`preview.png` 是**小的**文档预览（256²、解码 ~1s ✓），
+//! 用来做**增量预览的像素基座** ✓。共用一份文件会互相顶掉 ✓ ⇒ 两条复用路径都失效 ✗。
 
 use crate::token::{CapabilityToken, Role};
 use serde::{Deserialize, Serialize};
@@ -227,23 +234,50 @@ impl FileStore {
 
     /// 保存渲染缓存（`render.png` + `render.seq`）。
     pub fn save_render(&self, doc_id: &str, seq: Seq, png: &[u8]) -> Result<PathBuf> {
+        self.save_image_cache(doc_id, "render", seq, png)
+    }
+
+    /// 读取渲染缓存。
+    pub fn load_render(&self, doc_id: &str) -> Result<Option<(Seq, Vec<u8>)>> {
+        self.load_image_cache(doc_id, "render")
+    }
+
+    /// **保存文档预览缓存**（`preview.png` + `preview.seq`）✓（冷启动复用专题）。
+    ///
+    /// **为什么必须与 `render.png` 分开两个文件** ✗：两者的用途与代价完全不同 ✓ ——
+    /// `render.png` 是**整幅**导出缓存 ✓（4K 实测 6.7MB ✓，解码 **153.7s** ✓），
+    /// 只在"整幅区域渲染与 HEAD 一致"时才值得用 ✓；
+    /// `preview.png` 是**小的**文档预览 ✓（256² ✓，解码 ~1s ✓），是**增量预览的像素基座** ✓。
+    /// 若共用一份文件 ✗：写预览（256²）会**顶掉**整幅缓存 ✓、写整幅会**顶掉**预览基座 ✓
+    /// ⇒ 两条复用路径**互相破坏** ✗（实测正是如此 ✓）。
+    pub fn save_preview(&self, doc_id: &str, seq: Seq, png: &[u8]) -> Result<PathBuf> {
+        self.save_image_cache(doc_id, "preview", seq, png)
+    }
+
+    /// 读取文档预览缓存。
+    pub fn load_preview(&self, doc_id: &str) -> Result<Option<(Seq, Vec<u8>)>> {
+        self.load_image_cache(doc_id, "preview")
+    }
+
+    /// 图像缓存写入（`<name>.png` + `<name>.seq`；先写临时文件再改名 ✓）。
+    fn save_image_cache(&self, doc_id: &str, name: &str, seq: Seq, png: &[u8]) -> Result<PathBuf> {
         let dir = self.doc_dir(doc_id);
         fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
-        let image_path = dir.join("render.png");
-        let seq_path = dir.join("render.seq");
+        let image_path = dir.join(format!("{name}.png"));
+        let seq_path = dir.join(format!("{name}.seq"));
         // 先写临时文件再 rename，避免崩溃留下半张图（与 CAS 同一策略）。
-        let tmp = dir.join("render.png.tmp");
+        let tmp = dir.join(format!("{name}.png.tmp"));
         fs::write(&tmp, png).map_err(|error| io_error(&tmp, error))?;
         fs::rename(&tmp, &image_path).map_err(|error| io_error(&image_path, error))?;
         fs::write(&seq_path, seq.to_string()).map_err(|error| io_error(&seq_path, error))?;
         Ok(image_path)
     }
 
-    /// 读取渲染缓存。
-    pub fn load_render(&self, doc_id: &str) -> Result<Option<(Seq, Vec<u8>)>> {
+    /// 图像缓存读取。
+    fn load_image_cache(&self, doc_id: &str, name: &str) -> Result<Option<(Seq, Vec<u8>)>> {
         let dir = self.doc_dir(doc_id);
-        let image_path = dir.join("render.png");
-        let seq_path = dir.join("render.seq");
+        let image_path = dir.join(format!("{name}.png"));
+        let seq_path = dir.join(format!("{name}.seq"));
         let png = match fs::read(&image_path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
