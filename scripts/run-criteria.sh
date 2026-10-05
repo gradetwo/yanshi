@@ -187,6 +187,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   esac
   code=$?
   if [ "$code" = 0 ]; then
+    # 第 1010 轮：判据**自己**也可能"跳过"（例如某个行为不在设计内 ✓）——
+    # 它用 ⊘ 前缀打印 ✓，这里在判定结果**之前**把它数进来 ✓（否则"跳过"会被当成"没跑到" ✗）。
+    if [ -f "$ROOT_DIR/out.txt" ]; then
+      n=$(grep -c "⊘" "$ROOT_DIR/out.txt" 2>/dev/null || true)
+      [ -n "$n" ] && skipped=$((skipped+n))
+    fi
     echo "  ✓ $name"; pass=$((pass+1))
       # **通过时也打最后一行** ✓（第 355 轮）：否则"绿了但为什么绿"这种问题，
       # **通道答不了** ✗（`tool-example-acceptance` 的 `结论：N 跑通 / M 被拒 / K 需前置状态`

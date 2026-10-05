@@ -2339,7 +2339,8 @@ if (!jumpUndoResult || !jumpUndoResult.ok) {
   // **∴ 与 `:2319-2324` 自己立的规矩（"只断言设计确实说了的事"✓）**自相矛盾**✗** ✓。
   // ⇒ 所以这里**不再报失败** ✓，而是**明确记为"跳过"** ✓（**"我测不了"≠"我失败了"✓**）——
   //    并把探针一并打印 ✓（**这样"跳过"这个判断本身可复核 ✓**）。
-  console.log("  撤销「回到此处」：跳过（按钮在点击时被禁用 ⇒ 该行为不在设计内）｜" +
+  // 用 ⊘ 前缀（与 runner 的"跳过"符号一致 ✓），这样它能被计数 ✓（第 1010 轮）。
+  console.log("  ⊘ 撤销「回到此处」：跳过（按钮在点击时被禁用 ⇒ 该行为不在设计内）｜" +
     JSON.stringify(jumpUndoResult.undoProbe));
 } else if (jumpUndoResult.undone.sum === jumpUndoResult.jumped.sum) {
   problems.push("撤销「回到此处」没有生效｜" + JSON.stringify({ targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
