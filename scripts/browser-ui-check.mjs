@@ -1711,8 +1711,16 @@ const jumpResult = await evaluate(`(async () => {
   // **「回到此处」本身没有改变画面（用例无效：目标原子选得不对）** ✓（**它说得对** ✓）。
   // ⇒ 改成挑**第一个带按钮的行** ✓：它在**任何一笔之前** ✓ ⇒ **跳过去画面必然不同** ✓。
   // 注意：**本段处在模板字符串里** ⇒ 注释里**不能出现反引号** ✗（这一轮我又踩了一次 ✓）。
-  let target = rows.find((row) => row.querySelector("button")) || null;
-  if (!target) return { ok: false, reason: "找不到可跳转的原子行" };
+  // 第 1004 轮：这里原来取**第一个**带按钮的行 ✗ —— 而那就是**最早**那条 ✓，
+  // 而本地新建文档里"最早那条"很可能就是**本判据自己刚画的那一笔** ✗ ⇒ 跳到它等于跳到当前状态 ⇒
+  // 画面当然不变 ⇒ 判据自己报「用例无效」✓。这正是 1741 行那段（第 628 轮）**已经写明**的告诫 ✓，
+  // 而这里**仍在违反它** ✗。⇒ 改成取**中段**那一行 ✓：既早于当前状态、又不是最早那条 ✓。
+  const withButton = rows.filter((row) => row.querySelector("button"));
+  let target = withButton.length > 2 ? withButton[Math.floor(withButton.length / 2)] : null;
+  if (!target) return { ok: false, reason: "找不到可跳转的原子行（带按钮的行不足 3 个）" };
+  // 把"点了哪一行"带出来 ✓（第 1004 轮）：否则失败了也只能看到"画面没变" ✓。
+  const targetIndex = rows.indexOf(target);
+  const targetText = (target.innerText || "").replace(/\s+/g, " ").slice(0, 60);
   const button = target.querySelector("button");
   if (!button) return { ok: false, reason: "该行没有按钮" };
   button.click();
@@ -1728,7 +1736,7 @@ const jumpResult = await evaluate(`(async () => {
     if (stableTicks >= 2) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return { ok: true, rows: rows.length };
+  return { ok: true, rows: rows.length, targetIndex: targetIndex, targetText: targetText };
 })()`);
 const historyFinal = await historyRows();
 // **跳转是一次导航，不是一次编辑** ✓（设计 13.2：历史的数据源是原子日志 ✓、支持"按原子步进" ✓，
