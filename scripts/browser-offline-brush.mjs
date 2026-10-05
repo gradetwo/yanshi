@@ -187,18 +187,15 @@ const preparePage = async (docId, docToken) => {
   return chosen;
 };
 
-// ① **清掉 Service Worker 与缓存** ⇒ 保证页面跑的是这一版 JS/WASM ✗（旧外壳会喂旧代码 ✓）。
-await send("Page.navigate", { url });
-await waitComplete();
-await evaluate(`(async () => {
-  try {
-    const registrations = await navigator.serviceWorker.getRegistrations();
-    for (const registration of registrations) await registration.unregister();
-    const keys = await caches.keys();
-    for (const key of keys) await caches.delete(key);
-  } catch (error) { /* 清不掉就按现状走 */ }
-  return true;
-})()`);
+// ① **只等页面与 Service Worker 就绪，不清理缓存** ✗。
+//
+// 我第一版在这里 `unregister()` + `caches.delete()` 全部缓存 —— 本机单跑没问题 ✓，
+// 但官方 runner 里**所有 browser-* 判据共用同一个浏览器实例** ✓ ⇒
+// 这一下会把**别的判据要用的外壳缓存**删掉 ✓：
+// 实测 `browser-offline-draw` 报「SW 缓存里没有共享内核」✗、
+// `browser-render-switch` 报「内核句柄 = false」✗ —— 两条都不是它们自己的问题 ✓。
+// ⇒ **判据不许改动共享环境** ✓（要保证"跑的是这一版 JS"，用 `Network.setCacheDisabled` 就够 ✓；
+// 官方 runner 每次都是全新 profile ✓，本来就没有旧外壳 ✗）。
 await send("Page.navigate", { url });
 await waitComplete();
 const swState = await evaluate(`(async () => {
