@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 72 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 73 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（72 个）。
+    /// 核心层：默认注册（73 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -275,6 +275,12 @@ pub struct ToolContext<'a> {
     /// 由 [`ToolRegistry::call`] 设置 ✓：变更类工具在开始前登记 ✓、结束时注销 ✓。
     /// 协作式取消检查（[`ToolContext::check_cancelled`] ✓）读的就是它的 `AtomicBool` ✓。
     inflight: Option<std::sync::Arc<InflightOp>>,
+    /// **诊断采集要的面特有事实** ✓（`collect_diagnostics` 用 ✓）。
+    ///
+    /// **为什么挂在上下文上** ✓：MCP 与 HTTP 各自知道自己的选项与机密 ✓，
+    /// 而采集函数在 `yanshi-server` 里 ✓、够不到那些类型 ✓ ⇒
+    /// 由面自己填好放进上下文 ✓，工具只负责转交 ✓（两面的包内条目因此不会漂移 ✓）。
+    diagnostics_facts: Option<crate::diagnostics::SurfaceFacts>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -300,6 +306,7 @@ impl<'a> ToolContext<'a> {
             changeset: None,
             timings: ToolTimings::default(),
             inflight: None,
+            diagnostics_facts: None,
         }
     }
 
@@ -320,6 +327,17 @@ impl<'a> ToolContext<'a> {
         self.wait_for_render = wait;
         self.wait_budget_ms = budget_ms;
         self
+    }
+
+    /// **带上诊断采集要的面特有事实** ✓（构建标识 / 生效配置 / 机密 / 附加计数 ✓）。
+    pub fn with_diagnostics_facts(mut self, facts: crate::diagnostics::SurfaceFacts) -> Self {
+        self.diagnostics_facts = Some(facts);
+        self
+    }
+
+    /// 诊断采集要的面特有事实（没设就是 `None` ✓）。
+    pub fn diagnostics_facts(&self) -> Option<&crate::diagnostics::SurfaceFacts> {
+        self.diagnostics_facts.as_ref()
     }
 
     fn commit(&mut self, kind: AtomKind, payload: Value) -> Result<CommitResult> {
@@ -431,7 +449,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，72 个）。
+    /// 核心层（默认注册，73 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -635,6 +653,24 @@ impl ToolRegistry {
         // **阶段耗时如实附上** ✓（P2）：成功与失败都带 ✓ ——
         // "超时到底花在哪"这个问题在**失败**时最需要答案 ✓。
         attach_timings(&mut response, &ctx.timings.report(call_started.elapsed()));
+        // **把这次结果记进诊断环** ✓（`collect_diagnostics` 的 `timings.json` 就是它 ✓）：
+        // 这是工具结果里**本来就有**的那份 `timings` 与 `warnings` ✓，
+        // 采集时不必再猜"上一次慢在哪、有没有告警" ✓。
+        crate::diagnostics::record_tool_result(name, &response);
+        // **失败的调用也进 stderr 环形缓冲** ✓ —— 一次事故的起点往往就是某个工具报错 ✓，
+        // 而 MCP stdio 模式的 stderr 会被客户端丢掉 ✗ ⇒ 不记就真的没有了 ✓。
+        if response.get("ok").and_then(Value::as_bool) == Some(false) {
+            let code = response
+                .get("error_code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let detail = response
+                .get("context")
+                .and_then(|context| context.get("detail"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            crate::diagnostics::log_line(format!("tool {name} 失败：{code} {detail}"));
+        }
         response
     }
 }
@@ -1072,7 +1108,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 72 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 73 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -1169,6 +1205,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  （并回 scaled_from 记录原尺寸 ✓）；连缩小都失败才回 image_omitted + 原因 ✓。"
             ),
             param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 可读原因；想看图就把它调大"),
+        ],
+    },
+    // **诊断包** ✓（P0 事故复盘：事发时柜台是空的 ✓）—— 见 `crate::diagnostics` ✓。
+    // **必须非变更** ✓：只读令牌（viewer）也要能收集证据 ✓，否则"出事了却只有 owner 能取证"✓。
+    ToolSpec {
+        name: "collect_diagnostics",
+        profile: Profile::Core,
+        summary: "把排查所需的信息与文件打成**一个 zip**：构建/平台/配置（去密）、文档元数据、原子日志尾部（注明截断）、服务端 stderr 环形缓冲、渲染告警（含被跳过的补丁）、阶段耗时、缩略图与包内 README。**只读**，viewer 令牌也能用；缺省直接返回 base64，给 path 就写到导出目录",
+        mutating: false,
+        params: &[
+            param!(
+                "path",
+                String,
+                false,
+                "写到这个路径（导出目录或系统临时目录内，见 export_png 的沙箱规矩）；缺省不落盘，直接在结果里返回 archive_base64"
+            ),
+            param!(
+                "include_thumbnail",
+                Boolean,
+                false,
+                "是否带当前缩略图（缺省 true；过大或没有会在 thumbnail.json 里说明，不会为它现场渲染整幅）"
+            ),
+            param!(
+                "max_bytes",
+                Integer,
+                false,
+                "zip 上限（字节，缺省 4194304 = 4 MiB）；超限按固定顺序裁剪并在 README 里注明"
+            ),
         ],
     },
     // ---- 图层 ----
@@ -2975,6 +3039,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
         "list_brushes" => read_list_brushes(),
+        "collect_diagnostics" => read_collect_diagnostics(ctx, args),
         other => Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!("工具 {other} 尚未实现")),
@@ -3712,6 +3777,85 @@ fn read_list_brushes() -> Result<Value> {
         //（详见 implementation-notes 的架构结论 ✓）。
         "note": "列出的是内核自带的光栅笔刷；油画/水彩/马克笔/铅笔/像素是**插件介质**（已发行，在 assets/mediums）——浏览器端可直接选用；MCP/服务端侧因六个插件导出同名 C 符号而无法链入同一二进制，另见实现笔记",
     }))
+}
+
+/// **采集诊断包** ✓（`collect_diagnostics` ✓）—— 采集实现见 `crate::diagnostics` ✓。
+///
+/// **只读** ✓：不改文档、不写原子 ✓ ⇒ `mutating: false` ✓ —— 出事故时**只有 owner 能取证**
+/// 等于没有取证能力 ✓，所以 viewer 令牌也必须能调 ✓。
+/// 缺省把 zip 以 base64 **直接**放进结果 ✓（"直接交出一个压缩包" ✓）；
+/// 给了 `path` 就写进导出沙箱 ✓（与 `export_png` / `export_project` 同一条规矩 ✓）。
+fn read_collect_diagnostics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let mut limits = crate::diagnostics::Limits::default();
+    if let Some(include) = optional_bool(args, "include_thumbnail") {
+        limits.include_thumbnail = include;
+    }
+    if let Some(max_bytes) = optional_u64(args, "max_bytes") {
+        if max_bytes < 64 * 1024 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "max_bytes 太小（至少 65536）⇒ 诊断包至少要装得下 README 与元数据",
+                ),
+            ));
+        }
+        limits.max_archive_bytes = max_bytes as usize;
+        // **内容上限给 zip 留出余量** ✓：deflate 对 JSON/PNG 最多只加极少头部开销 ✓，
+        // 3/4 是保守值 ✓（宁可多裁一点，也不交出越过上限的包 ✓）。
+        // 下界取 32 KiB（不是 64 KiB ✗）：调用方已保证 `max_bytes ≥ 64 KiB` ✓
+        // ⇒ 48 KiB 的内容上限**一定**小于归档上限 ✓（否则"内容上限 > 归档上限"自相矛盾 ✓）。
+        limits.max_content_bytes = ((max_bytes as usize) / 4 * 3).max(32 * 1024);
+    }
+    let facts =
+        ctx.diagnostics_facts()
+            .cloned()
+            .unwrap_or_else(|| crate::diagnostics::SurfaceFacts {
+                surface: "tool".to_owned(),
+                ..Default::default()
+            });
+    let request = crate::diagnostics::DiagnosticsRequest {
+        doc_id: ctx.doc_id.clone(),
+        facts,
+        limits,
+    };
+    let bundle = crate::diagnostics::collect(ctx.workspace, &request)?;
+    let zip = bundle.zip()?;
+    let hash = yanshi_core::BlobHash::from_bytes(&zip);
+    let mut value = json!({
+        "doc_id": ctx.doc_id,
+        "format": "zip (deflate)",
+        "bytes": zip.len(),
+        "content_bytes": bundle.content_bytes,
+        "sha256": hash.as_str(),
+        "entries": bundle.entry_names(),
+        "entry_sizes": bundle.entry_sizes(),
+        "notes": bundle.notes,
+        "privacy": bundle.privacy,
+        "max_archive_bytes": limits.max_archive_bytes,
+        "not_captured": [
+            "进程 fd 2 上第三方/panic 直接写出的原始字节（本 crate 禁止 unsafe，无法接管 stderr）",
+            "已被 stderr 环形缓冲覆盖掉的更早行（只在 stderr.meta.json 里报数量）",
+            "已被截断掉的更早原子（见 atoms.meta.json 的 total / first_included_seq）",
+            "全量像素与全部 blob（需要时用 export_project 单独导出）",
+        ],
+        "hint": "archive_base64 就是 zip 的全部字节：base64 解码后另存为 .zip，任何 zip 读取器都能打开，包内先读 README.txt",
+    });
+    match optional_str(args, "path") {
+        Some(raw) => {
+            let path = guarded_output_path(&raw)?;
+            std::fs::write(&path, &zip).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("写诊断包失败：{} ⇒ {error}", path.display())),
+                )
+            })?;
+            value["archive_path"] = json!(path);
+        }
+        None => {
+            value["archive_base64"] = json!(crate::base64::encode(&zip));
+        }
+    }
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -14571,6 +14715,9 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"patch":[{"tool":"add_filter","arguments":{"layer_id":"layer_default","filter_name":"invert"}}],"summary":"把画面反相"}"#,
     ),
     ("set_layer_blend", r#"{"layer_id":"L1","mode":"multiply"}"#),
+    // **`collect_diagnostics`** ✓：无必填参数 ✓；示例里关掉缩略图 ✓ ⇒
+    // 照抄它得到的是**小而定**的包 ✓（不把一张可能的 1 MiB PNG 塞进结果 ✓）。
+    ("collect_diagnostics", r#"{"include_thumbnail":false}"#),
 ];
 
 #[cfg(test)]

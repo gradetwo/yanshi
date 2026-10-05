@@ -21,7 +21,7 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **72 core tools**, and with every implemented group enabled there are **128 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **73 core tools**, and with every implemented group enabled there are **129 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -532,6 +532,20 @@ lifecycle tier (active / historical / orphan / expiring); pass `confirm: true` t
 orphans older than the TTL (7 days by default; pass `ttl_seconds` to tighten it, which is how
 render-produced orphans - written seconds ago - become reclaimable). Render previews, exports and pixel self-checks
 write blobs that no atom references, so this is the tool that reclaims them.
+
+## Diagnostics
+
+`collect_diagnostics` is the one place that gathers what an incident needs and hands it back as a
+single zip. It is read-only (a viewer token can call it) and the Web viewer's "download diagnostics"
+button hits the same collection code through `GET /api/diagnostics`, so the two surfaces cannot drift
+about what the archive contains. The fixed entry list is `README.txt`, `build.json`, `config.json`,
+`surface.json`, `document.json`, `atoms.jsonl` (+ `atoms.meta.json`), `warnings.json`, `timings.json`,
+`stderr.log` (+ `stderr.meta.json`), `thumbnail.json` (+ `thumbnail.bin`) and `privacy.json`. The
+stderr entry is a bounded ring buffer, because in stdio MCP mode the client discards stderr and
+otherwise nothing survives an incident. Every text entry is redacted (tokens, declared secrets and
+absolute home paths), the uncompressed content is capped at 3 MiB and the zip at 4 MiB, and trimming
+is recorded inside the archive rather than happening silently. Call it with `path` to write the zip
+under the export sandbox, or without it to get `archive_base64` in the result.
 
 ## Collaboration (Phase 4b)
 

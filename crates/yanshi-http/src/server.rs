@@ -13,6 +13,7 @@
 //! | GET | `/api/documents` | 无 | 文档列表（仅元数据） |
 //! | POST | `/api/documents` | 无 | 打开/新建文档，返回 capability token 与 URL |
 //! | GET | `/api/documents/{id}` | token | 文档摘要 |
+//! | GET | `/api/diagnostics?doc=..` | token | 诊断包（zip，两面的采集实现同一份）|
 //! | POST | `/api/tools/{name}?doc=..` | token | 工具调用（10.1 / 5.7） |
 //! | GET | `/api/blob/{hash}?doc=..` | token | 取回 CAS 中的 PNG |
 //! | GET | `/ws?doc=..` | token | WebSocket 升级与推送 |
@@ -322,9 +323,27 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
     .with_assets_dir({
         let (resolved, note) =
             yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
-        eprintln!("  {note}");
+        yanshi_server::diagnostics::log_line(format!("  {note}"));
         resolved
     });
+    // **启动即记一行** ✓：`--bind 0.0.0.0` 这种部署细节、
+    // 以及"这是哪个 commit"——都从这一刻起进环形缓冲 ✓，随诊断包一起交出去 ✓。
+    yanshi_server::diagnostics::log_line(format!(
+        "yanshi-serve 启动：{}｜bind={}｜root={}｜profiles={:?}｜assets_dir={:?}",
+        build_identity(),
+        options.bind,
+        options
+            .root
+            .as_ref()
+            .map(|root| root.display().to_string())
+            .unwrap_or_else(|| "<内存>".to_owned()),
+        options
+            .profiles
+            .iter()
+            .map(|profile| profile.as_str())
+            .collect::<Vec<_>>(),
+        options.assets_dir,
+    ));
     let registry = ToolRegistry::with_profiles(&options.profiles);
     // **登记表的共享句柄要在工作区进锁之前拿到** ✓（同一张表 ✓，见 `ServerState::inflight` ✓）。
     let inflight = Arc::clone(workspace.inflight());
@@ -502,6 +521,15 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             "GET" => Response::json(200, &state.registry.tools_list_json()),
             "POST" => tool_route(state, request),
             _ => method_not_allowed(request, "GET, POST"),
+        };
+    }
+    // **诊断包** ✓（P0 事故复盘：事发时柜台是空的 ✗）—— 采集实现与 MCP 工具**同一份** ✓
+    //（`yanshi_server::diagnostics::collect` ✓）⇒ 包内条目不会漂移 ✓。
+    // **只读** ✓：viewer 令牌也能取 ✓（出事了却只有 owner 能取证 = 没有取证能力 ✓）。
+    if path == "/api/diagnostics" {
+        return match method {
+            "GET" => diagnostics_route(state, request),
+            _ => method_not_allowed(request, "GET"),
         };
     }
     if path == "/api/blob" {
@@ -1178,6 +1206,141 @@ fn document_summary(state: &ServerState, request: &Request, doc_id: &str) -> Res
     }
 }
 
+/// **`GET /api/diagnostics`：把诊断包（zip）直接交给浏览器** ✓。
+///
+/// **为什么是独立的一条路由、而不是让查看器去调工具** ✓：工具把 zip 放进 JSON（base64 ✓），
+/// 而浏览器要的是**一个可下载的压缩包** ✓ —— 走这条路由就带上
+/// `Content-Type: application/zip` 与 `Content-Disposition: attachment` ✓，点一下即下载 ✓。
+/// **采集实现只有一份** ✓：与 MCP 的 `collect_diagnostics` 工具**同一个**
+/// [`yanshi_server::diagnostics::collect`] ✓ ⇒ 包内条目不会漂移 ✓
+///（`scripts/tool-collect-diagnostics.mjs` 断言两面的条目名逐字相同 ✓）。
+///
+/// **谁能取** ✓：能通过该文档鉴权的**任何角色** ✓ —— 包括 `viewer` ✓。
+/// "出事了却只有 owner 能取证"等于没有取证能力 ✓。
+///
+/// **它不改文档** ✓：采集只读 ✓（`GET` 也表达了这一点 ✓）。
+fn diagnostics_route(state: &ServerState, request: &Request) -> Response {
+    let doc_id = match doc_param(request) {
+        Ok(doc_id) => doc_id,
+        Err(response) => return response,
+    };
+    let principal = match authorize(state, request, &doc_id) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    let Ok(mut workspace) = state.workspace.lock() else {
+        return internal("工作区锁中毒");
+    };
+    // **与工具面同一条规矩：文档没打开就按需创建** ✓ ——
+    // 否则"新文档"在 Web 面会 404、在 MCP 面却能出包 ✓ ⇒ 两面的条目对不上 ✗。
+    if workspace.document(&doc_id).is_none() {
+        let spec = NewDocument::new(doc_id.clone(), state.options.width, state.options.height);
+        if let Err(error) = workspace.open_or_create(spec, "local:http", "session:http") {
+            return Response::from_error(&error);
+        }
+    }
+    let facts = web_diagnostics_facts(state, request, &principal, workspace.len());
+    let bundle = match yanshi_server::diagnostics::collect(
+        &workspace,
+        &yanshi_server::DiagnosticsRequest {
+            doc_id: doc_id.clone(),
+            facts,
+            limits: yanshi_server::Limits::default(),
+        },
+    ) {
+        Ok(bundle) => bundle,
+        Err(error) => return Response::from_error(&error),
+    };
+    let zip = match bundle.zip() {
+        Ok(zip) => zip,
+        Err(error) => return Response::from_error(&error),
+    };
+    Response::bytes(200, "application/zip", zip)
+        .with_header(
+            "Content-Disposition",
+            format!("attachment; filename=\"yanshi-diagnostics-{doc_id}.zip\""),
+        )
+        .with_header("Cache-Control", "no-store")
+        // **把条目名也放在头里** ✓：不看包体也能一眼对账两个面的条目是否一致 ✓。
+        .with_header(
+            "X-Yanshi-Diagnostics-Entries",
+            bundle.entry_names().join(","),
+        )
+}
+
+/// 采集诊断时要抹掉的机密值（当前令牌 / API key / 环境里的模型密钥 ✓）。
+fn diagnostics_secrets(request: &Request) -> Vec<String> {
+    let mut secrets = Vec::new();
+    for value in [request.token(), request.param("key").map(str::to_owned)]
+        .into_iter()
+        .flatten()
+    {
+        if value.len() >= 4 {
+            secrets.push(value);
+        }
+    }
+    for key in [
+        "YANSHI_API_KEY",
+        "YANSHI_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if value.len() >= 4 {
+                secrets.push(value);
+            }
+        }
+    }
+    secrets
+}
+
+/// **Web 面的诊断事实** ✓ —— 独立路由与 `/api/tools/collect_diagnostics` **共用这一份** ✓。
+///
+/// **为什么要抽出来** ✗：同一条事实若在两条路上各写一遍 ✓，两边必然慢慢分叉 ✓
+///（本项目的老毛病 ✓）⇒ 一处定义、两处使用 ✓。
+fn web_diagnostics_facts(
+    state: &ServerState,
+    request: &Request,
+    principal: &yanshi_server::Principal,
+    open_documents: usize,
+) -> yanshi_server::SurfaceFacts {
+    yanshi_server::SurfaceFacts {
+        surface: "web".to_owned(),
+        build: json!({
+            "name": "yanshi-serve",
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("YANSHI_COMMIT").unwrap_or("unknown"),
+            "built": option_env!("YANSHI_BUILD_TIME").unwrap_or("unknown"),
+            "transport": "http",
+        }),
+        config: json!({
+            "bind": state.options.bind,
+            "root": state.options.root.as_ref().map(|root| root.display().to_string()),
+            "doc_id": state.options.doc_id,
+            "width": state.options.width,
+            "height": state.options.height,
+            "profiles": state.options.profiles.iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
+            "max_connections": state.options.max_connections,
+            "push_interval_ms": state.options.push_interval_ms,
+            "rewrite_blob_urls": state.options.rewrite_blob_urls,
+            "wasm_dir": state.options.wasm_dir.as_ref().map(|dir| dir.display().to_string()),
+            "brand_dir": state.options.brand_dir.as_ref().map(|dir| dir.display().to_string()),
+            "medium_dir": state.options.medium_dir.as_ref().map(|dir| dir.display().to_string()),
+            "assets_dir": state.options.assets_dir.as_ref().map(|dir| dir.display().to_string()),
+            "log_ring_capacity": yanshi_server::diagnostics::LOG_RING_CAPACITY,
+        }),
+        extra: json!({
+            "requests": state.requests.load(Ordering::Relaxed),
+            "connections": state.connections.load(Ordering::Relaxed),
+            "role": principal.role.as_str(),
+            "actor": principal.actor.clone(),
+            "open_documents": open_documents,
+            "uptime_ms": yanshi_core::now_ms().saturating_sub(state.started_at),
+        }),
+        secrets: diagnostics_secrets(request),
+    }
+}
+
 /// **`POST /api/documents/<id>/close`：把文档从内存里放下** ✓（磁盘上的内容**一点不动** ✓）。
 ///
 /// **关闭 ≠ 删除** ✓，所以现在**各有各的路** ✓：
@@ -1454,6 +1617,9 @@ fn tool_call_with(
         }
     }
     let owner = principal.role.can_revert_others();
+    // **诊断事实在这里也挂上** ✓：`POST /api/tools/collect_diagnostics` 与
+    // `GET /api/diagnostics` **必须给出同一份包** ✓ ⇒ 两条路共用 `web_diagnostics_facts` ✓。
+    let diagnostics_facts = web_diagnostics_facts(state, request, &principal, workspace.len());
     let mut context = ToolContext::new(
         &mut workspace,
         doc_id.clone(),
@@ -1463,7 +1629,8 @@ fn tool_call_with(
     .with_owner(owner)
     // **真实角色必须带进上下文** ✓：工具层的强制检查读的就是它 ✓（见 `ToolRegistry::call` ✓）。
     .with_role(principal.role)
-    .with_wait_for_render(true, 500);
+    .with_wait_for_render(true, 500)
+    .with_diagnostics_facts(diagnostics_facts);
     let value = state.registry.call(&mut context, name, &arguments);
     let value = if state.options.rewrite_blob_urls {
         rewrite_blob_urls(value, &doc_id, request.token().as_deref())
@@ -2323,6 +2490,10 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
         ("DELETE /api/documents/{id}", "关闭文档（需 token）"),
         ("POST /api/tools/{name}?doc=", "工具调用（需 token）"),
         ("POST /api/tools", "工具调用（body 里带 tool）"),
+        (
+            "GET /api/diagnostics?doc=",
+            "诊断包（zip：构建/配置/文档元数据/原子尾部/stderr 环形缓冲/渲染告警/耗时/缩略图，需 token）",
+        ),
         ("GET /api/blob/{hash}?doc=", "取回 CAS 中的 PNG（需 token）"),
         (
             "POST /api/atoms?doc=",
