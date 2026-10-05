@@ -985,9 +985,13 @@ impl Workspace {
     /// 打开（或返回已打开的）文档：从磁盘加载日志并重建状态。
     pub fn open_document(&mut self, doc_id: &str) -> Result<&mut Document> {
         if !self.documents.contains_key(doc_id) {
-            let (atoms, render) = match &self.persist {
-                Some(persist) => (persist.load_atoms(doc_id)?, persist.load_render(doc_id)?),
-                None => (Vec::new(), None),
+            let (atoms, render, preview) = match &self.persist {
+                Some(persist) => (
+                    persist.load_atoms(doc_id)?,
+                    persist.load_render(doc_id)?,
+                    persist.load_preview(doc_id)?,
+                ),
+                None => (Vec::new(), None, None),
             };
             if atoms.is_empty() {
                 return Err(YanshiError::new(
@@ -1002,9 +1006,20 @@ impl Workspace {
                 self.settings.clone(),
             )?;
             if let Some((seq, png)) = render {
-                // 打开即图片（14.5/6.2）：直接复用持久化渲染缓存，不重放历史。
+                // 打开即图片（14.5/6.2）：**复用持久化渲染**，不重放历史。
+                //
+                // `restore_persisted_render` **不解码像素** ✗（4K 解码实测 153.7s ✓）——
+                // 它只从 PNG 头读尺寸 ✓，把"整幅、且与 HEAD 一致"的那份记成**整幅区域渲染的缓存** ✓
+                //（下一次整幅请求直接命中 ✓，省掉实测 142s 的重渲染 ✓）。
                 let hash = self.store.put(&png)?;
-                document.mark_rendered(seq, Some(hash));
+                document.restore_persisted_render(seq, hash, &png);
+            }
+            if let Some((seq, png)) = preview {
+                // **小图才是增量预览的基座** ✓（256² 解码 ~1s ✓）：接回像素 ✓ + 算出脏区 ✓
+                // ⇒ 第一个新连接的预览只重渲染 `(seq, HEAD]` ✓，而不是整幅 ✗
+                //（实测落后 9 个 atom 时整幅 122s ✓）。
+                let hash = self.store.put(&png)?;
+                document.restore_persisted_preview(seq, hash, &png);
             }
             // 恢复令牌（12.7）。
             if let Some(persist) = &self.persist {
@@ -1892,6 +1907,12 @@ Restore by extracting under <root>/ of a yanshi-serve instance.\n"
     /// 确保存在文档级缩略图并返回它的地址（6.2「打开即图片」）。
     ///
     /// 已有缓存（渲染过全幅或从磁盘恢复）直接返回；否则按 `preview_size` 生成一张。
+    ///
+    /// **默认 256² 走增量预览** ✓（冷启动复用专题）：`render_document_preview` 只需要重渲染
+    /// `(持久化 seq, HEAD]` 的脏区 ✓（像素基座由打开时的 `restore_persisted_render` 恢复 ✓）。
+    /// 旧路径走 `thumbnail()` ✗ ⇒ 每次都 `render_thumbnail(…, None)` ⇒ **整幅全分辨率渲染** ✗
+    /// ⇒ 实测 4K/318 对象 **122s**，而**每个新连接**都会走到这里 ✗（磁盘缓存的 seq 一落后就重来 ✓）。
+    /// 其它尺寸（64/128）仍走原来的整幅缩略图路径 ✓（请求少见，行为保持不变 ✓）。
     pub fn ensure_document_thumbnail(
         &mut self,
         doc_id: &str,
@@ -1910,8 +1931,54 @@ Restore by extracting under <root>/ of a yanshi-serve instance.\n"
             return Ok(None);
         }
         let kind = size.kind();
+        if kind == ThumbKind::Doc256 {
+            let (preview, head, png) = {
+                let document = self.document_mut(doc_id)?;
+                let preview = document.render_document_preview()?;
+                let png = document.store().get(&preview.blob_hash)?;
+                (preview, document.head_seq(), png)
+            };
+            // 落盘**小图**预览缓存 ⇒ 下一次打开（或新进程）有基座可用 ✓，不再整幅重渲染 ✗。
+            if let Some(persist) = &self.persist {
+                let _ = persist.save_preview(doc_id, head, &png);
+            }
+            return Ok(Some(preview.url));
+        }
         let preview = self.thumbnail(doc_id, kind, None)?;
         Ok(Some(preview.url))
+    }
+
+    /// **把当前文档预览落盘** ✓（若它已与 HEAD 一致 ✓）——「打开即图片」的写入端 ✓。
+    ///
+    /// **为什么每次提交后都要写** ✗：文档预览是**每个新连接**都要的东西 ✓，
+    /// 而它一旦落后一个 seq ✓，旧路径就会**整幅重渲染**（实测 4K / 318 对象 **122s** ✗）✓。
+    /// 一份 256² PNG 只有几十 KB ✓ ⇒ 用它换掉"每个连接一次整幅渲染" ✓ 是本专题性价比最高的一步 ✓。
+    ///
+    /// **只写 256²** ✗：`document_thumbnail` 也可能是**整幅** blob ✓（整幅 `render_region` 会更新它 ✓）
+    /// ⇒ 用 PNG 头判尺寸 ✓，不是 256² 就不写 ✓（那份由 `render.png` 负责 ✓）。
+    pub fn cache_document_preview(&mut self, doc_id: &str) -> Result<()> {
+        let Some(persist) = self.persist.clone() else {
+            return Ok(());
+        };
+        let (head, png) = {
+            let document = self.document_mut(doc_id)?;
+            if !document.document_thumbnail_is_current() {
+                return Ok(());
+            }
+            let Some(blob) = document.document_thumbnail_blob() else {
+                return Ok(());
+            };
+            let png = document.store().get(blob)?;
+            (document.head_seq(), png)
+        };
+        let Some((width, height)) = crate::document::png_dimensions(&png) else {
+            return Ok(());
+        };
+        if width != height || width != ThumbKind::Doc256.size() {
+            return Ok(());
+        }
+        let _ = persist.save_preview(doc_id, head, &png);
+        Ok(())
     }
 
     /// 渲染状态。

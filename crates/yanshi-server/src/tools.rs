@@ -889,6 +889,10 @@ fn finish_mutation(
             let _ = document.run_pending_jobs()?;
             let job = document.jobs_mut().get(job_id, ctx.now)?;
             job_status = Some(job.status.as_str().to_owned());
+            // **顺手把文档预览落盘** ✓（冷启动复用专题）：
+            // 这份预览是本进程刚渲染的、且与 HEAD 一致 ✓ ⇒ 几十 KB 的 256² PNG ✓
+            // 换掉"下一个连接再整幅重渲染一次" ✗（实测 4K/318 对象 **122s** ✓）。
+            let _ = ctx.workspace.cache_document_preview(&ctx.doc_id);
         } else {
             job_status = Some(JobStatus::Submitted.as_str().to_owned());
         }

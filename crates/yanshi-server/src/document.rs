@@ -151,6 +151,49 @@ pub struct RenderedPreview {
     pub warnings: Vec<String>,
 }
 
+/// **文档预览自"已知基座"以来累积的脏区** ✓（冷启动复用专题）。
+///
+/// 为什么要三态、而不是原来那个 `Option<Bbox>` ✗：`None` 原来**同时**表示两件相反的事 ✓——
+/// ① "冷启动，不知道哪里变了" ⇒ 必须整幅 ✗；② "刚刚整幅渲染过，没有残留脏区" ✓。
+/// 于是**刚渲染完紧接着又被要求渲染**时 ✓，`None` 会让它**再整幅渲染一遍** ✗
+///（复用持久化像素时这是致命的 ✓：一次打开就退化成整幅 ✗）。
+/// 三态把这两件事分开 ✓：只有 [`PreviewDirty::Unknown`] 才允许退回整幅 ✓。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PreviewDirty {
+    /// 冷启动/求值起点跳变 ⇒ 不知道哪里变过 ⇒ 只能整幅渲染。
+    Unknown,
+    /// 确定没有变化 ⇒ 不需要渲染。
+    Clean,
+    /// 只有这一块变过 ⇒ 只渲染这一块。
+    Region(Bbox),
+}
+
+impl PreviewDirty {
+    /// **累积**（提交路径与冷启动基座共用同一套语义 ✓）。
+    ///
+    /// `Unknown` 会**吸收**一切 ✓（保守方向）——这正是"不确定就整幅"的落点 ✓。
+    fn merged(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Clean, other) => other,
+            (other, Self::Clean) => other,
+            (Self::Region(a), Self::Region(b)) => Self::Region(union_bounds(a, b)),
+        }
+    }
+}
+
+/// 把 dirty 规划结果折算成预览脏区（与提交路径此前的口径**逐字一致** ✓）。
+fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
+    if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
+    {
+        return PreviewDirty::Unknown;
+    }
+    match dirty.bbox {
+        Some(bbox) if bbox.w > 0.0 && bbox.h > 0.0 => PreviewDirty::Region(bbox),
+        _ => PreviewDirty::Clean,
+    }
+}
+
 /// 渲染状态（6.7 `get_render_status`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderStatus {
@@ -194,8 +237,21 @@ pub struct Document {
     /// 增量预览必须拿得到"上一版像素" ✓：只重新渲染变过的区域，再把它刷进对应块 ✓；
     /// 若每次都从 `Thumb::new` 开始 ✗，未刷新的块就会是空白 ✗。256² RGBA ＝ 256KB/文档 ✓。
     document_thumb: Option<Thumb>,
-    /// 自上次预览以来**累积的文档脏区** ✓（`None` ＝ 需要整幅重算 ✓）。
-    preview_dirty: Option<Bbox>,
+    /// **自"已知基座"以来累积的文档脏区** ✓（`Unknown` ＝ 需要整幅重算 ✓）。
+    preview_dirty: PreviewDirty,
+    /// **持久化的整幅渲染** ✓（磁盘 `render.png` 且尺寸 == 画布 ✓）—— 它可以在
+    /// `seq == HEAD` 时**直接充当"整幅区域渲染"的结果** ✓，不必重算 ✗（冷启动复用专题）。
+    ///
+    /// **必须是整幅** ✗：`render.png` 也可能是 256² 缩略图 ✓ ⇒ 那种只能做增量预览的像素基座 ✓，
+    /// 绝不能拿去回答"给我整幅 3840×2160" ✗（那会把 256² 的图当成整幅返回 ✓ —— 分辨率都不对 ✗）。
+    full_frame_render: Option<BlobHash>,
+    /// 上述整幅渲染对应的 seq（**与 HEAD 比对**，落后就不许当缓存用 ✗）。
+    full_frame_render_seq: Seq,
+    /// **真正整幅渲染画布的次数** ✓（判据用语义计数 ✓，不看墙钟 ✗）。
+    ///
+    /// 复用持久化像素的全部价值就是让它**保持 0** ✓ ⇒ 一旦有人把某条路径改回整幅 ✗，
+    /// 判据立刻变红 ✓，不需要在慢机器上等 140 秒 ✗。
+    full_canvas_renders: usize,
     /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
     ///
     /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
@@ -293,7 +349,10 @@ impl Document {
             document_thumbnail: None,
             document_thumbnail_seq: 0,
             document_thumb: None,
-            preview_dirty: None,
+            preview_dirty: PreviewDirty::Unknown,
+            full_frame_render: None,
+            full_frame_render_seq: 0,
+            full_canvas_renders: 0,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
@@ -411,9 +470,14 @@ impl Document {
     }
 
     /// 重新折叠整篇日志（打开文档、恢复、调试用）。
+    ///
+    /// **走 `folder` 而不是一次性 `FoldEngine::fold`** ✓（冷启动专题）：两者算出的状态完全一样 ✓，
+    /// 但 `FoldEngine::fold` 用的是**临时**缓存 ✗ ⇒ `self.folder.last` 仍是 `None` ✓
+    /// ⇒ **打开后的第一次提交又会全量重放一遍** ✗（实测 494 atom ≈ 30ms ×2 ✓）。
+    /// 走 `folder` ⇒ 打开这一次顺带把增量折叠器**预热**好 ✓ ⇒ 首笔提交只折叠新增区间 ✓。
     pub fn rebuild(&mut self) -> Result<()> {
         self.folder = IncrementalFolder::new();
-        self.state = FoldEngine::new().fold(&self.log)?.state;
+        self.state = self.folder.fold_head(&self.log)?.state;
         self.render_watermark = self.state.head_seq;
         let grid = self.grid_for_state()?;
         let cache_bytes = self.settings.render_cache_bytes;
@@ -569,21 +633,7 @@ impl Document {
         let dirty_tiles = self.renderer.apply_dirty(&self.state, &dirty);
         // **累积文档脏区** ✓：给"增量文档预览"用（性能专题，第 1040 轮）。
         // `Full`（求值起点跳变等）或"结构脏但没有 bbox" ⇒ 视为整幅 ✓（保守但正确 ✓）。
-        {
-            let whole = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
-            let incoming = if dirty.kind == DirtyKind::Full
-                || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
-            {
-                Some(whole)
-            } else {
-                dirty.bbox
-            };
-            self.preview_dirty = match (self.preview_dirty, incoming) {
-                (Some(a), Some(b)) => Some(union_bounds(a, b)),
-                (None, b) => b,
-                (a, None) => a,
-            };
-        }
+        self.preview_dirty = self.preview_dirty.merged(planned_preview_dirty(&dirty));
 
         // 控制流广播（6.8）。
         self.broadcaster.publish_atom(&appended);
@@ -793,12 +843,18 @@ impl Document {
     }
 
     /// **收集当前仍被缓存指针引用的 blob** ✓（淘汰时的"保留名单" ✓）。
+    ///
+    /// **`full_frame_render` 必须在这个名单里** ✗ —— 这一条是被实测抓住的 ✓：
+    /// 整幅渲染落盘后它是"整幅区域渲染的缓存" ✓，而**下一次增量预览会把
+    /// `last_render_blob` 指向新的 256² 图** ✓ ⇒ 若这里不保留它 ✓，它就会被当孤儿删掉 ✗
+    /// ⇒ 整幅请求再也命中不了缓存 ✓、退回整幅重渲染（实测 227s ✗）。
     fn cached_preview_hashes(&self) -> std::collections::BTreeSet<BlobHash> {
         let mut keep = std::collections::BTreeSet::new();
         for slot in [
             self.last_render_blob.as_ref(),
             self.document_thumbnail.as_ref(),
             self.last_thumb_blob.as_ref(),
+            self.full_frame_render.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -837,11 +893,29 @@ impl Document {
     }
 
     /// 渲染区域并编码为 PNG 写入 CAS（7.2）；整幅覆盖时同时更新文档级缩略图。
+    ///
+    /// **冷启动复用** ✓（14.5 / 本专题）：若请求覆盖整幅画布 ✓、且磁盘上那份**整幅**渲染
+    /// 对应的 seq **正好等于 HEAD** ✓，直接把它当作本次结果返回 ✓ —— 不重渲染 ✗。
+    /// 这是**纯缓存命中** ✓：同一份像素、同一个 blob ✓ ⇒ 输出逐字节相同 ✓。
+    /// 落后一个 seq 都不许命中 ✗（那是"拿旧图冒充 HEAD" ✗）——见 `full_frame_render_seq` 比对。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
         let region = bbox;
+        if covers_canvas(region, self.state.width, self.state.height) {
+            if let Some(preview) = self.current_full_frame_preview()? {
+                // **缓存命中也要走完"渲染收尾"** ✓：本地渲染路径靠 `complete_render_jobs()`
+                // 推进 job 状态 ✓（`heavy_atoms_create_jobs_and_render_completes_them` 守着 ✓）
+                // ⇒ 快路径少这一步就会**漏掉 job 完成** ✗。
+                self.complete_render_jobs()?;
+                return Ok(preview);
+            }
+        }
+        let full_canvas = covers_canvas(region, self.state.width, self.state.height);
         let rendered = self
             .renderer
             .render_region(&self.state, &*self.store, region)?;
+        if full_canvas {
+            self.full_canvas_renders += 1;
+        }
         let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
         let previous = self.cached_preview_hashes();
@@ -852,6 +926,10 @@ impl Document {
         if covers_canvas(region, self.state.width, self.state.height) {
             self.document_thumbnail = Some(blob_hash.clone());
             self.document_thumbnail_seq = self.render_watermark;
+            // **刚渲染出来的整幅结果本身就是最好的缓存** ✓：把它记成 `full_frame_render` ✓
+            // ⇒ 同一进程内的下一次整幅请求（以及落盘后的下一次打开 ✓）都能直接命中 ✓。
+            self.full_frame_render = Some(blob_hash.clone());
+            self.full_frame_render_seq = self.render_watermark;
         }
         self.complete_render_jobs()?;
         // **淘汰必须放在"指针都更新完"之后** ✓ —— 这条是测试逼出来的 ✗：
@@ -882,6 +960,11 @@ impl Document {
     /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
     ///
     /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。
+    ///
+    /// **冷启动复用** ✓（本专题）：`document_thumb` 可以由
+    /// [`Self::restore_persisted_render`] **从磁盘 `render.png` 恢复** ✓ ⇒
+    /// 打开后的第一次预览只需重渲染 `(持久化 seq, HEAD]` 的脏区 ✓，
+    /// 而不是整幅 4K ✗（实测整幅 122s vs 增量区域 ≪ 1s ✓）。
     pub fn render_document_preview(&mut self) -> Result<RenderedPreview> {
         // **增量** ✓：只重渲染"自上次预览以来变过的文档区域"，并只刷新对应的缩略图块 ✓
         //（性能专题，第 1040 轮）。
@@ -890,33 +973,59 @@ impl Document {
         // **先按整幅文档做全分辨率渲染**（4K ⇒ 830 万像素缓冲区 ＋ 逐像素拷贝 ＋ 降采样）✗
         // ⇒ 实测单笔 1.5s~4.0s、单核 100%、且**随文档对象数线性增长** ✓。
         let doc_size = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
-        let dirty = self.preview_dirty.take();
+        let dirty = self.preview_dirty;
         let region = match (self.document_thumb.is_some(), dirty) {
+            // **已知没有变化** ✓ ⇒ 一个像素都不用重渲染 ✓（旧写法会在这里退回整幅 ✗）。
+            (true, PreviewDirty::Clean) => None,
             // 有缓存像素、且知道变过哪里 ⇒ **只渲染那一块** ✓。
-            (true, Some(bbox)) => clamp_to_document(bbox, doc_size),
-            // 冷启动，或"不知道变过哪里" ⇒ 整幅 ✓（**与旧行为一致** ✓，不会更差 ✓）。
-            _ => doc_size,
-        };
-        let render = self
-            .renderer
-            .render_region(&self.state, &*self.store, region)?;
-        let mut buffer = Buffer::new(0, 0, render.width, render.height);
-        for y in 0..render.height {
-            for x in 0..render.width {
-                if let Some(pixel) = render.pixel(x, y) {
-                    buffer.set_pixel(x, y, yanshi_render::color::u8x4_to_linear_premul(pixel));
-                }
+            // **外扩到整块** ✗：块只被脏区**部分**覆盖时，`update_blocks_from_region` 会把
+            // 块内"脏区之外"的像素按边界 clamp 采样 ✗ ⇒ 缩略图与整幅重算**不一致** ✓。
+            // 外扩后每个被刷新的块都被完整渲染覆盖 ✓ ⇒ **逐像素一致** ✓（判据有逐字节比对 ✓）。
+            (true, PreviewDirty::Region(bbox)) => {
+                let dirty = clamp_to_document(bbox, doc_size);
+                Some(expand_to_thumb_blocks(
+                    self.document_thumb.as_ref().expect("上面判过 Some"),
+                    dirty,
+                    doc_size,
+                ))
             }
-        }
+            // 冷启动，或"不知道变过哪里" ⇒ 整幅 ✓（**与旧行为一致** ✓，不会更差 ✓）。
+            _ => Some(doc_size),
+        };
+        let render = match region {
+            Some(region) => {
+                let rendered = self
+                    .renderer
+                    .render_region(&self.state, &*self.store, region)?;
+                if covers_canvas(region, self.state.width, self.state.height) {
+                    self.full_canvas_renders += 1;
+                }
+                Some(rendered)
+            }
+            None => None,
+        };
         // 只刷新与 `region` 相交的块 ✓；其余块**保留上一版像素** ✓。
         let (thumb_size, thumb_rgba) = {
             let thumb = self
                 .document_thumb
                 .get_or_insert_with(|| Thumb::new(ThumbKind::Doc256));
-            let blocks = thumb.dirty_blocks_for(&region, doc_size);
-            thumb.update_blocks_from_region(&buffer, region, doc_size, &blocks);
+            if let (Some(region), Some(render)) = (region, render.as_ref()) {
+                let buffer = Buffer::from_f32(
+                    0,
+                    0,
+                    render.width,
+                    render.height,
+                    &linear_premul_from_u8x4(&render.rgba8),
+                )
+                .ok_or_else(|| internal("预览缓冲区尺寸与像素数不匹配"))?;
+                let blocks = thumb.dirty_blocks_for(&region, doc_size);
+                thumb.update_blocks_from_region(&buffer, region, doc_size, &blocks);
+            }
             (thumb.size, thumb.rgba8.clone())
         };
+        // **渲染完必清污** ✓：不清的话下一次预览会把同一块再渲染一遍 ✗；
+        // 而写回 `Unknown`/`None` 又会**误判成冷启动** ✗ ⇒ 下一笔直接整幅 ✗（旧实现的坑 ✓）。
+        self.preview_dirty = PreviewDirty::Clean;
         let png = encode_png(thumb_size, thumb_size, &thumb_rgba)
             .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
         let previous = self.cached_preview_hashes();
@@ -942,6 +1051,162 @@ impl Document {
             filter_padding: 0,
             warnings: Vec::new(),
         })
+    }
+
+    /// **与 HEAD 一致的持久化整幅渲染** ✓（若存在）—— 可直接当成一次整幅区域渲染的结果 ✓。
+    ///
+    /// 三条准入条件缺一不可 ✓（任何一条不满足都必须退回真渲染 ✗）：
+    /// 1. 有整幅缓存 ✓（`render.png` 的尺寸必须**恰好等于画布** ✗ —— 256² 缩略图不算 ✓）；
+    /// 2. `full_frame_render_seq == HEAD` ✓（**落后一个 seq 都不许用** ✗ —— 那是拿旧图冒充新图 ✗）；
+    /// 3. blob 仍在 CAS 里 ✓（预览是缓存 ✓，可能已被淘汰 ✓）。
+    fn current_full_frame_preview(&mut self) -> Result<Option<RenderedPreview>> {
+        let head = self.log.head_seq();
+        let Some(blob) = self.full_frame_render.clone() else {
+            return Ok(None);
+        };
+        if self.full_frame_render_seq != head {
+            return Ok(None);
+        }
+        let Ok(png) = self.store.get(&blob) else {
+            return Ok(None);
+        };
+        self.render_watermark = head;
+        self.last_render_blob = Some(blob.clone());
+        self.document_thumbnail = Some(blob.clone());
+        self.document_thumbnail_seq = head;
+        Ok(Some(RenderedPreview {
+            bbox: [0.0, 0.0, self.state.width as f64, self.state.height as f64],
+            width: self.state.width,
+            height: self.state.height,
+            blob_hash: blob.clone(),
+            url: preview_url(&blob),
+            mime_type: "image/png".to_owned(),
+            bytes: png.len(),
+            tiles: 0,
+            thumb_kind: None,
+            filter_padding: 0,
+            warnings: Vec::new(),
+        }))
+    }
+
+    /// **恢复"持久化的整幅渲染"** ✓（服务端打开文档时调用；14.5「打开即图片」✓）。
+    ///
+    /// 旧实现（`mark_rendered`）只恢复了**一个 blob 指针** ✗ ⇒ 缩略图序列号落在旧 seq 上 ✓
+    /// ⇒ `document_thumbnail_is_current()` 为假 ✓ ⇒ 新连接**又把整幅渲染一遍** ✗。
+    ///
+    /// 这里多记一件事 ✓：**如果那张图就是整幅画布** ✓（从 PNG 头读尺寸 ✓，**不解码像素** ✗），
+    /// 就把它记成"整幅区域渲染的缓存" ✓ ⇒ 与 HEAD 一致时可直接命中 ✓（见
+    /// [`Self::current_full_frame_preview`] ✓）。
+    ///
+    /// **为什么不顺手解码成预览基座** ✗：实测这份 4K 图 `decode_png` **153.7s**
+    /// ＋ u8→线性 26.4s ＝ **183.6s**（debug ✓），比整幅重渲染（122s）**还贵** ✗
+    /// ⇒ 拿它当预览基座是**负优化** ✗。预览基座改由**小的** `preview.png`（256² ✓）负责 ✓，
+    /// 那张解码只要 ~1s ✓ —— 见 [`Self::restore_persisted_preview`] ✓。
+    ///
+    /// 返回是否把它认成了"整幅渲染缓存" ✓。
+    pub fn restore_persisted_render(&mut self, seq: Seq, blob: BlobHash, png: &[u8]) -> bool {
+        // **水位不许越过 HEAD** ✗（文件可能比日志新：先渲染后回滚 ✓）。
+        let seq = seq.min(self.log.head_seq());
+        self.render_watermark = seq;
+        self.document_thumbnail = Some(blob.clone());
+        self.last_render_blob = Some(blob.clone());
+        self.document_thumbnail_seq = seq;
+        self.full_frame_render = None;
+        self.full_frame_render_seq = 0;
+        let Some((width, height)) = png_dimensions(png) else {
+            return false;
+        };
+        if (width, height) != (self.state.width, self.state.height) {
+            // 256²/64²/图层缩略图…**不是**整幅 ✗ ⇒ 绝不能拿去回答"给我整幅" ✗。
+            return false;
+        }
+        self.full_frame_render = Some(blob);
+        self.full_frame_render_seq = seq;
+        true
+    }
+
+    /// **恢复"持久化的文档预览"** ✓（小的 256² 图；预览像素基座的**唯一**来源 ✓）。
+    ///
+    /// 它把"上次预览时的像素"接回来 ✓，并算出 `(seq, HEAD]` 的脏区 ✓ ⇒
+    /// 这次预览只重渲染**那一块** ✓，而不是整幅 ✗。
+    ///
+    /// **只在"基座 + 脏区 = HEAD"可证时接受** ✗：尺寸不是 256²、解不出像素、
+    /// 或脏区不确定 ⇒ 返回 `false` ✓ 并保持 `document_thumb = None` ✓（退回整幅 ✓，正确性优先 ✓）。
+    ///
+    /// **为什么必须是小图** ✗：整幅 4K 的解码实测 153.7s（见上 ✓）⇒ 复用它是负优化 ✓；
+    /// 256² 的解码 ~1s ✓ ⇒ 这一条是"复用"能否成立的分水岭 ✓。
+    pub fn restore_persisted_preview(&mut self, seq: Seq, blob: BlobHash, png: &[u8]) -> bool {
+        let seq = seq.min(self.log.head_seq());
+        let Some((width, height)) = png_dimensions(png) else {
+            return false;
+        };
+        if width != height || width != ThumbKind::Doc256.size() {
+            return false;
+        }
+        let Some((_, _, rgba8)) = yanshi_render::png::decode_png(png) else {
+            return false;
+        };
+        if rgba8.len() != (width * width * 4) as usize {
+            return false;
+        }
+        let mut thumb = Thumb::new(ThumbKind::Doc256);
+        thumb.rgba8.copy_from_slice(&rgba8);
+        self.document_thumb = Some(thumb);
+        // 预览基座是**更新的**那一份 ⇒ 它才是"当前文档预览" ✓。
+        if seq >= self.document_thumbnail_seq {
+            self.document_thumbnail = Some(blob.clone());
+            self.last_render_blob = Some(blob);
+            self.document_thumbnail_seq = seq;
+            self.render_watermark = seq;
+        }
+        // **脏区必须可证** ✗：算不出来就整幅（`Unknown`）✓。
+        self.preview_dirty = self.dirty_since(seq);
+        true
+    }
+
+    /// `(from, HEAD]` 的累积脏区 ✓（冷启动复用：持久化基座 seq → HEAD ✓）。
+    ///
+    /// **逐原子**调用 `plan_dirty_with_log` ✓（与提交路径**同一套口径** ✓）——
+    /// 它对 `revert`/`reapply` 会归约到目标原子的 dirty ✓，对"无几何线索"会保守返回整幅 ✓。
+    /// 因此这里的结论与"逐笔提交累积出来的脏区"**逐字一致** ✓。
+    fn dirty_since(&self, from: Seq) -> PreviewDirty {
+        let head = self.log.head_seq();
+        if from >= head {
+            return PreviewDirty::Clean;
+        }
+        let mut folder = IncrementalFolder::new();
+        let Ok(mut previous) = folder.fold(&self.log, from) else {
+            return PreviewDirty::Unknown;
+        };
+        let mut dirty = PreviewDirty::Clean;
+        for atom in self.log.range_exclusive_inclusive(from, head) {
+            let Ok(current) = folder.fold(&self.log, atom.seq) else {
+                return PreviewDirty::Unknown;
+            };
+            dirty = dirty.merged(planned_preview_dirty(&plan_dirty_with_log(
+                &current.state,
+                Some(&previous.state),
+                &self.log,
+                atom,
+            )));
+            previous = current;
+        }
+        dirty
+    }
+
+    /// 真正**整幅**渲染画布的次数 ✓（判据用语义计数 ✓；复用持久化像素就该让它保持 0 ✓）。
+    pub const fn full_canvas_render_count(&self) -> usize {
+        self.full_canvas_renders
+    }
+
+    /// 日志被**全量重放**的次数 ✓（打开一次 + 每次"增量前推被拒"的提交 ✓）。
+    pub fn full_fold_count(&self) -> usize {
+        self.folder.full_steps()
+    }
+
+    /// 持久化整幅渲染是否与 HEAD 一致 ✓（判据用）。
+    pub fn full_frame_render_is_current(&self) -> bool {
+        self.full_frame_render.is_some() && self.full_frame_render_seq == self.log.head_seq()
     }
 
     /// 生成缩略图并输出 PNG 到 CAS（7 章）。
@@ -1007,6 +1272,11 @@ impl Document {
     /// 文档级缩略图地址（覆盖整幅画布，6.2「打开即图片」）。
     pub fn document_thumbnail_url(&self) -> Option<String> {
         self.document_thumbnail.as_ref().map(preview_url)
+    }
+
+    /// 文档级缩略图对应的 blob ✓（落盘预览缓存时用 ✓）。
+    pub fn document_thumbnail_blob(&self) -> Option<&BlobHash> {
+        self.document_thumbnail.as_ref()
     }
 
     /// 文档级缩略图是否与当前 HEAD 一致（落后就需要重新生成）。
@@ -1244,6 +1514,72 @@ fn clamp_to_document(bbox: Bbox, doc: Bbox) -> Bbox {
     } else {
         Bbox::new(x0, y0, x1 - x0, y1 - y0)
     }
+}
+
+/// **把脏区外扩到它触及的那些缩略图块** ✓（冷启动复用专题）。
+///
+/// **为什么必须外扩** ✗：`Thumb::update_blocks_from_region` 会把块内的**每一个缩略图像素**
+/// 映射回文档坐标再采样 ✓ ⇒ 若 `source_doc` 只是**部分的**脏区 ✓，块里"脏区之外"的采样点
+/// 会被 `clamp` 到边界像素 ✗ ⇒ 刷出来的缩略图与"整幅重算"**不一致** ✓（边界上差几个像素 ✓）。
+/// 外扩之后 ✓，每个被刷新的块的文档范围**完整落在**渲染区域内 ✓ ⇒ 采样点全部落在缓冲区内 ✓
+/// ⇒ 与整幅重算**逐像素一致** ✓（判据里有逐字节比对 ✓）。
+fn expand_to_thumb_blocks(thumb: &Thumb, dirty: Bbox, doc: Bbox) -> Bbox {
+    let content = thumb.content_box(doc);
+    if content.w <= 0.0 || content.h <= 0.0 {
+        return doc;
+    }
+    let blocks = thumb.dirty_blocks_for(&dirty, doc);
+    let (mut x0, mut y0) = (f64::INFINITY, f64::INFINITY);
+    let (mut x1, mut y1) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (block_x, block_y) in blocks {
+        let bounds = thumb.block_bounds(block_x, block_y);
+        let u0 = (bounds.x - content.x) / content.w;
+        let u1 = (bounds.x + bounds.w - content.x) / content.w;
+        let v0 = (bounds.y - content.y) / content.h;
+        let v1 = (bounds.y + bounds.h - content.y) / content.h;
+        x0 = x0.min(doc.x + u0 * doc.w);
+        y0 = y0.min(doc.y + v0 * doc.h);
+        x1 = x1.max(doc.x + u1 * doc.w);
+        y1 = y1.max(doc.y + v1 * doc.h);
+    }
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return doc;
+    }
+    let (x0, y0) = (x0.floor(), y0.floor());
+    let expanded = Bbox::new(x0, y0, (x1.ceil() - x0).max(1.0), (y1.ceil() - y0).max(1.0));
+    clamp_to_document(expanded, doc)
+}
+
+/// u8（显示空间、直通 alpha）→ f32（线性、预乘）✓ —— 与渲染路径 `u8x4_to_linear_premul` **同一口径** ✓。
+///
+/// 单独抽出来是为了**一次转换整块像素** ✓：旧的逐像素 `set_pixel` 在 4K 上是 830 万次带边界
+/// 检查的调用 ✗（实测 u8→线性这一步在 4K 上 **26.4s**，debug ✓）。
+fn linear_premul_from_u8x4(rgba8: &[u8]) -> Vec<f32> {
+    let mut pixels = Vec::with_capacity(rgba8.len());
+    for pixel in rgba8.chunks_exact(4) {
+        pixels.extend_from_slice(&yanshi_render::color::u8x4_to_linear_premul([
+            pixel[0], pixel[1], pixel[2], pixel[3],
+        ]));
+    }
+    pixels
+}
+
+/// 只读 PNG 头里的宽高 ✓（**不解码像素** ✗）。
+///
+/// 为什么要这一步 ✗：磁盘上的 `render.png` **可能是 256² 缩略图，也可能是整幅 4K** ✓，
+/// 而"能不能拿它回答整幅请求"完全取决于这个尺寸 ✓。整幅解码要 **153.7s**（debug ✓）
+/// ⇒ 判断尺寸**绝不能**顺带解码 ✗（PNG 的 IHDR 就在偏移 16 的 8 个字节 ✓）。
+pub(crate) fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((width, height))
 }
 
 fn preview_url(hash: &BlobHash) -> String {
