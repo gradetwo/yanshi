@@ -85,7 +85,10 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true });
-await sleep(1600);
+// ⚠️ **这里不需要固定睡眠** ✗（第 898 轮 ✓，**类别③：等待多余 ⇒ 直接去掉** ✓）：
+// **下一行（`waitFor(… "查看器就绪")`）已经在正确地等** ✓ 且**等不到就 `exit(3)`** ✓。
+// ⚠️ **注意顺序未被改变** ✓：中间的 `consoleLines.length = 0` 仍**先于** `waitFor` ✓ ⇒
+//    "清空控制台后才开始等就绪"这个既有行为**与本轮改动无关** ✓（**原先如此 ✓**）。
 consoleLines.length = 0; // 从这里开始才算我们的（浏览器里可能还挂着上一次的页面 ✓）
 if (!(await waitFor("typeof window.yanshiBrushArea === 'object' && typeof window.yanshiDock === 'object'", "查看器就绪"))) {
   process.exit(3);
