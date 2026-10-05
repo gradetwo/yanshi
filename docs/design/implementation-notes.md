@@ -32426,3 +32426,36 @@ pointerDelta = `{x:69, y:40}` ✓ ｜ bboxDelta = `{x:95, y:51}` ✓
    （**同族** ✓：本会话"先验证前提"✓）；
 4. **⇒ 交接** ✓：**读 `:1345` 所在的函数 ✗**（**它按 `viewW/viewH` 重算 viewport ✓**）⇒
    **看它是否在**落笔提交之后**被调用 ✓** ✓。
+
+## 🎯🎯🎯 第 1029 轮：**机制找到 —— `clampViewport` 在 `displayScale` 变大时把视口撑满整幅 ⇒ `x,y ＝ 0`** ✓
+
+**读证（`viewer.rs:1331-1345` ✓）**：
+```
+`:1331` ⇒ `function clampViewport(center) {` ✓；
+`:1336` ⇒ **`state.displayScale = fit * state.zoom;`** ✓；
+`:1337-1338` ⇒ `const viewW = Math.min(docW, Math.max(32, Math.floor(available.w / state.displayScale)));` ✓（**`viewH` 同理 ✓**）；
+`:1339-1342` ⇒ `const focus = center || { x: state.viewport.x + state.viewport.w / 2, … };` ✓（**默认取当前视口中心 ✓**）；
+`:1343-1345` ⇒ `const x = Math.max(0, Math.min(docW - viewW, Math.round(focus.x - viewW / 2)));` ✓ ＋ `state.viewport = { x, y, w: viewW, h: viewH };` ✓。
+⇒ ⇒ **∴ 若 `state.zoom` 变成 1 ✗ ⇒ `displayScale ＝ fit` ⇒ `viewW ＝ docW`（**整幅可见 ✓**）** ⇒
+   ⇒ ⇒ **∴ 那么 `docW - viewW ＝ 0`** ✗ ⇒ **∴ `x ＝ max(0, min(0, …)) ＝ **0**** ✓ ✓ !!!
+      ⇒ ⇒ ⇒ **∴ **所以 `viewport ＝ 0,0` 不是"谁直接写了 0"✗，而是**"`zoom` 被重置 ⇒ 钳制把视口撑满"**✓** ✓。
+```
+**⇒ 于是问题变成**谁把 `zoom`（或 `displayScale`）改了**✗** ✓：
+```
+**已排除** ✓：**整体赋值 `state`（grep 只有定义 ✓）｜ `switchDocument`（**5 个调用点都是用户换文档 ✓**）**；
+⇒ **∴ 候选** ✓：**别处写 `state.zoom = …` ✗**、或 **`state.displayScale = null` ✗**（**那会让 `fit` 重算 ✓**）；
+⇒ **∴ 而判据** ✓：**grep `state.zoom =` 与 `state.displayScale =` 的全部出现处 ✗** ⇒ **∴ 一次即可 ✓** ✓。
+```
+**★ 四条** ✓：
+```
+1. **"值变成 0"未必是"被赋成 0"** ✓ ——
+   **∴ 这是**钳制函数**的产物** ✓（**`docW - viewW ＝ 0` ⇒ 上界为 0 ✓**）⇒
+   ⇒ **∴ 所以我此前一直在找"谁写了 0"✗ ⇒ **∴ 而正确的问法是"什么使 `viewW` 等于 `docW`"✓** ✓
+   （**同族** ✓：本会话"区分'被改'与'被算出来'"✓）；
+2. **∴ 而这条同时解释了 rect 也变宽（344 ⇒ 354 ✓）** ✓ ——
+   **∴ 视口撑满后布局与画布尺寸都跟着变 ✓ ⇒ **∴ 两个现象**同一根因**✓** ✓
+   （**∴ 第 1020 轮"rect 漂移不是主因"的结论仍成立 ✓ —— 因为它是**同一根因的另一表现**✓**）✓；
+3. **∴ 而"提交后视图跳到原点"对用户是可见的** ✗ ——
+   **∴ 若 `zoom` 被重置 ⇒ 用户画一笔后就看不到原来的缩放 ✗ ⇒ **∴ 这是一个**真实的产品缺陷**✓** ✓；
+4. **⇒ 交接** ✓：**grep `state.zoom =` 与 `state.displayScale =` 的全部赋值 ✗** ⇒
+   **看哪一处会在"落笔提交"之后被执行 ✓** ✓。
