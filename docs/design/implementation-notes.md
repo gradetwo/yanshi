@@ -35628,7 +35628,8 @@ Object.keys 看真键表）。
 3. **文档冲突**：本轮笔记原来是从 `994549c` 那份文件长出来的 ⇒ 合并时会把 main 期间累积的
    ~200 行**整段丢掉** ✗。修法：以 **main 的版本为底** ✓，只把我这一节**追加到文件末尾** ✓
    （`git diff main -- docs/design/implementation-notes.md` 现在是**纯新增 88 行** ✓、无删除 ✓）✓。
-   轮次号让开 main 已用掉的号（改用 **1135** ✓）。
+   轮次号让开 main 已用掉的号（本节的号随每次合并往上抬 ✓ —— main 一直在动 ✓，
+   硬写一个号必然撞车 ✓）。
 4. **门禁**（合并后重跑）：`cargo fmt --all -- --check` ✓、
    `cargo clippy --workspace --all-targets -- -D warnings` ✓、
    `cargo test --workspace` **exit 0，133 个 suite 全 0 failed** ✓、`cargo build --workspace --bins` ✓。
