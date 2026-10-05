@@ -28895,3 +28895,36 @@ runner 开头写着「约定：**`tool-*.mjs` 收 `<base-url>`** ✓」 ✗
 chmod 让**本地**一致了 ✓，而 **git 的工作树是干净的** ✓ ⇒ **我没提交、也没该提交的** ✓ ✓
 ⇒ ⇒ **若我为了"这轮做了事"而硬造一次提交** ✗ ⇒ **那才是噪声** ✓（**本会话一直守住这条 ✓**）。
 ```
+
+## 📋 第 881 轮：**把三方对齐表的**要结论**写进尾部** ✓（用户要的那份交付物 ✓，`docs/surface-alignment.md` ✓）
+
+**三面实测计数（子代理实测 ✓，我机械核对 ✓）**：
+```
+**HTTP 面（权威清单 ✓）**：`curl /api/tools` ⇒ **137 个** ✓，8 个 profile ✓
+  （core、history、changeset、retouch、conflict、annotation、collab、structure ✓）
+**注册表口径**（`docs/tools.md:24` + `tool_inventory.rs` 的 6 组 ✓）：**125 个**，core **69** ✓
+  ⇒ ⇒ **两套账本并存且数值不同（125 vs 137）** ✗ —— **哪个权威待用户决定** ✓；
+**MCP 默认**：**69 个**（core ✓，`lib.rs:86` ✓）⇒ **`--profiles all` = 137** ✓
+  ⇒ ⇒ **默认覆盖率 69/137 = 50.4%** ✗；
+**Web**：工具条 `TOOL_DEFS` **22 条** ✓（20 `tool` + 2 `id` ✓，`viewer.rs:6816-6843` ✓）；
+  而**查看器真正调到的去重服务端工具 = 78 个** ✓（含助手转交与 10 个动态分支 ✓），**其中仅 34 个在 core** ✓。
+```
+**两个方向都存在缺口（这是本轮最有价值的一句 ✓）**：
+```
+① **Agent 默认看不到 44 个** ✗（Web 能调的 78 个里 ⇒ 选区/蒙版/标注/检查点/变更集/修图/液化/调整滤镜/分组/路径 ✓）
+   ⇒ 「**人能，Agent 默认不能**」✗；
+② **Web 少一个入口** ✗：`set_reference` / `clear_reference` 都是 **core** ✓（MCP 默认有 ✓），
+   而 `viewer.rs` **一次都没调用它们** ✗（只 `get_preferences` **读** `reference.*` ✓，`:7344` ✓）
+   ⇒ 「**Agent 能设，Web 上的人不能**」✗ —— **反方向 ✓**。
+⇒ ⇒ ⇒ **"对齐"必须看三面的**差集**（两个方向 ✓），**只看「MCP ⊆ HTTP」会漏掉②这种反向缺口** ✗ ✓。
+```
+**其余已核实的要点** ✓（详见 `docs/surface-alignment.md` ✓）：
+```
+· 采样：`sample_color` / `analyze_region` 是 core ✓（MCP 默认有 ✓）；Web 吸管走**客户端 WASM** ✓
+  ⇒ **两条取色路径可能漂移** ✗（**未做逐像素比对** ✗）；
+· 介质：Web 走浏览器 WASM 插件 + `import_image` ✓；MCP 走服务端 `medium_stroke` ✓
+  ⇒ **同一能力两份实现** ✗（**未比像素** ✗）；
+· `compare_with_reference` **挂错位置** ✗（声明在 `gradient_fill` ✓、消费在 `read_analyze_region` ✓）
+  ⇒ **该判据仍红 ✓**（**已登记 ✓**）；
+· 示例：工具表 **137** ✓ ｜ `TOOL_EXAMPLES` **89** ✓ ⇒ **48 个无示例** ✗（**部分结构上不适用 ✓**，已被判据跟踪 ✓）。
+```
