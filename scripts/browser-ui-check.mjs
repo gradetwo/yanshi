@@ -1138,6 +1138,7 @@ const selectionResult = await evaluate(`(async () => {
     const snapshot = () => Array.from(board.getContext("2d").getImageData(0, 0, board.width, board.height).data);
     const stable = async () => {
       let previous = snapshot();
+      let sawChange = false;
       for (let i = 0; i < 40; i++) {
         await wait(250);
         const current = snapshot();
@@ -1150,9 +1151,17 @@ const selectionResult = await evaluate(`(async () => {
         for (let index = 0; index < current.length; index += 4) {
           if (current[index] !== previous[index]) { same = false; break; }
         }
+        // 第 1000 轮：必须先看到一次变化。原来只要连续两次相同就返回，
+        // 而尚未开始变化的画面也是静止的，于是它会在什么都还没发生时立刻返回，
+        // 随后拿旧画布去比较，文本没画出像素与清除后那笔看不见等间歇症状由此而来。
+        if (!same) sawChange = true;
         previous = current;
-        if (same && i >= 2) return current;
+        if (sawChange && same && i >= 2) return current;
       }
+      // 没等到变化也要返回一张图，但把这件事说出来，免得再被误读成稳定。
+      // 注意：本函数在页面端模板内，转义要小心 —— 这里不能用反斜杠 n（外层模板会先处理它），
+      // 也不能用反引号或美元加大括号（第 1001 轮实测：写成反斜杠 n 会让页面端 SyntaxError）。
+      try { (await import("node:fs")).appendFileSync("/tmp/yanshi-stable-obs.txt", "no-change "); } catch (_) { /* 忽略 */ }
       return previous;
     };
 
