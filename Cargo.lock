@@ -676,6 +676,7 @@ name = "yanshi-wasm"
 version = "0.1.0"
 dependencies = [
  "hokusai",
+ "libm",
  "serde",
  "serde_json",
  "wasm-bindgen",

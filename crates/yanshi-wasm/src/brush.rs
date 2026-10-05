@@ -120,7 +120,7 @@ pub(crate) fn configure(mut brush: hokusai::Brush, request: &PaintRequest) -> ho
             // **`ln` 不是 log2** ✓（与服务端逐字一致 ✓ —— 这里差一点、画面就整体不一样 ✓）。
             brush.set(
                 hokusai::BrushSetting::Radius,
-                hokusai::SettingValue::constant((diameter / 2.0).ln() as f32),
+                hokusai::SettingValue::constant(libm::log(diameter / 2.0) as f32),
             );
         }
     }
@@ -155,7 +155,7 @@ pub(crate) fn stamp(
                 steps += 1;
             }
             Some((px, py, pp)) => {
-                let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+                let distance = (((x - px) * (x - px)) + ((y - py) * (y - py))).sqrt();
                 let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
                 let (mut last_x, mut last_y) = (px, py);
                 for step in 1..=divisions {

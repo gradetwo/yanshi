@@ -20,7 +20,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ROOTS = ["crates/yanshi-render/src", "crates/yanshi-core/src"];
+// ⚠️ **范围必须包含 wasm 门面层** ✗（第 821 轮实测 ✓）：原先只扫 render/core ✓ ⇒
+// `crates/yanshi-wasm/src/brush.rs:158` 的 `.powi(2)` **整整漏了一轮** ✗ ⇒
+// 而它正是"两种模式画面不同"的一项成因 ✓（差 1 ulp ⇒ `ceil` 在边界上差 1 ⇒ 步数差 1 ⇒
+// 多或少一个 dab ⇒ 一块 tile 大小的差异 ✓）。**浏览器真正加载的那份内核就在这里** ✓。
+const ROOTS = ["crates/yanshi-render/src", "crates/yanshi-core/src", "crates/yanshi-wasm/src"];
 // **"各平台各自实现"的浮点函数** ✗（`sqrt` 不在其中 ✓：IEEE 要求它正确舍入 ✓）
 const FORBIDDEN = [
   "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",

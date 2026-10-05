@@ -150,11 +150,11 @@ fn point_segment_distance(px: f64, py: f64, x0: f64, y0: f64, x1: f64, y1: f64) 
     let (dx, dy) = (x1 - x0, y1 - y0);
     let length_squared = dx * dx + dy * dy;
     if length_squared <= f64::EPSILON {
-        return ((px - x0).powi(2) + (py - y0).powi(2)).sqrt();
+        return (((px - x0) * (px - x0)) + ((py - y0) * (py - y0))).sqrt();
     }
     let t = (((px - x0) * dx + (py - y0) * dy) / length_squared).clamp(0.0, 1.0);
     let (cx, cy) = (x0 + t * dx, y0 + t * dy);
-    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+    (((px - cx) * (px - cx)) + ((py - cy) * (py - cy))).sqrt()
 }
 
 /// 两个区域（任一可空）的并集。

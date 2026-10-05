@@ -141,7 +141,9 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # ⇒ 现在**门禁就按全部笔刷判** ✓ —— 覆盖现实，而不是覆盖样本 ✓。
       # 内核已换成两端同源数学（`libm` ✓、`powi(2)` 改乘法 ✓）⇒ 结果应当由**构造**保证一致 ✓。
       # 耗时约 6 分钟 ✓ ⇒ 上限给 900s ✓（原 600s 是按 3 支笔估的 ✗）。
-      timeout 900 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" all \
+      # ⚠️ **预算要按 `all` 定** ✗（第 821 轮实测 ✓）：`all` = 199 支 × 4 色 = **796 次比对** ✓
+      # ⇒ 900s **跑不完** ✗（CI 实测 `EXIT=124` = 超时 ⇒ 那份数据是**截断**的 ✓）⇒ 提到 1800s ✓。
+      timeout 1800 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" all \
         >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
       # **浏览器判据 240s** ✓（本地实测多在 1 分钟内 ✓）—— 以前一律 900s ✗ ⇒ 25 条最坏要跑几小时 ✗。

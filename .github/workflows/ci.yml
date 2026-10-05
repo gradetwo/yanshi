@@ -127,7 +127,7 @@ jobs:
     # `node … all`（**没有 `timeout` 包住** ✗）⇒ 一旦卡住就**永远不结束** ✓
     # ⇒ **整个 run 永远不完成** ✓ ⇒ `gh` 在整轮完成前**拒绝给日志** ✗ ⇒
     # **我连别的 job 的失败都读不到** ✓（实测：卡了约 45 分钟 ✓）。
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -165,7 +165,7 @@ jobs:
             -d '{"doc_id":"boot","width":320,"height":240}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
           # 结论行会打出覆盖面与差异统计 ✓（runner 的成功/失败两种路径都会打最后一行 ✓）。
           # **命令也要有自己的上限** ✓（与 `run-criteria.sh` 同一做法 ✓）。
-          timeout 900 node scripts/kernel-brush-parity.mjs "http://127.0.0.1:$PORT" boot "$TOKEN" \
+          timeout 1800 node scripts/kernel-brush-parity.mjs "http://127.0.0.1:$PORT" boot "$TOKEN" \
             "$PWD/crates/yanshi-wasm/pkg/yanshi_wasm.js" all
 
   criteria:
