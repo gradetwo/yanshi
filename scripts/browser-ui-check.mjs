@@ -880,6 +880,9 @@ const namingResult = await evaluate(`(async () => {
   // 而这里读的 beforeDoc 是**页面**的 state().docSize。⇒ 把**两者连同 docId** 一起打出来，
   // 就能判定"页面看到的源"是否等于"服务端持有的源"，**不必再猜是哪一侧不对**。
   // ⚠️ 本段在**模板字符串内** ⇒ 注释里也不能出现反引号、也不能出现美元加大括号。
+  // **用当前文档自己的 doc/token 问服务端**（第 946 轮）：页面把两者同步在地址栏 ✓，
+  // 所以从 location.search 取，而不是从 yanshiStats（初始 url）或 state()（不导出令牌）。
+  const curDocIdForProbe = new URLSearchParams(window.location.search).get("doc");
   const beforeDocIdForProbe = window.yanshi.state().docId;
   // **直接问服务端"源文档多大"**（第 942 轮）：duplicate_document 用的是**服务端持有的** state.width，
   // 而页面看到的是 512x512（第 940 轮实测）。把服务端那份也打出来，就能一刀劈开候选集：
@@ -898,9 +901,12 @@ const namingResult = await evaluate(`(async () => {
       statsHead: b.slice(0, 8), statsTail: b.slice(-4),
       stateKeys: Object.keys(window.yanshi.state() || {}).slice(0, 12).join(",") }; })();
   try {
-    const r = await fetch("/api/tools/get_document?doc=" + window.yanshi.state().docId +
-      "&token=" + window.yanshi.state().token, { method: "POST",
-      headers: { "content-type": "application/json" }, body: JSON.stringify({ arguments: {} }) });
+    // 令牌要取**当前文档**的那一个：页面把它同步在地址栏（viewer.rs:3242），
+    // 而 yanshiStats.token 是**初始 url** 的（可能属于别的文档）、state() 根本不导出 token。
+    const params = new URLSearchParams(window.location.search);
+    const r = await fetch("/api/tools/get_document?doc=" + params.get("doc") +
+      "&token=" + params.get("token"), { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
     serverSourceDocProbe = await r.json();
   } catch (error) { serverSourceDocProbe = "查询失败: " + String(error); }
   // ② 另存为副本：打开对话框 → 填新名字 → 另存为… → 应切到副本且内容一致。
