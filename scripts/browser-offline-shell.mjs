@@ -69,7 +69,19 @@ const brushOptions = await evaluate(`(() => {
   return select.options.length;
 })()`);
 
+const refreshCount = await evaluate(`(() => {
+  const c = window.__brushRefresh;
+  return c ? { entered: c.entered, exited: c.exited } : null;
+})()`);
 console.log(`  · 断网后笔刷面板选项数 = ${brushOptions}`);
+console.log(`  · refreshBrushOptions 计数 = ${JSON.stringify(refreshCount)}`);
+// 三个分支：0 次进入 ⇒ 上游抛了；进过但没出来 ⇒ 中途抛了；进出一致却没选项 ⇒ 渲染环节的问题。
+if (brushOptions < 2) {
+  const c = refreshCount || { entered: 0, exited: 0 };
+  if (c.entered === 0) console.log("  ↳ 诊断：refreshBrushOptions 从未被进入 ⇒ 上游（setupBrushLibrary）失败");
+  else if (c.exited < c.entered) console.log("  ↳ 诊断：进入了但没返回 ⇒ 清空选项后、写入前失败");
+  else console.log("  ↳ 诊断：进出正常但选项没进 DOM ⇒ 查 renderBrushLibrary/分组逻辑");
+}
 
 const failures = [];
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
