@@ -28146,3 +28146,23 @@ node -e 用**判据里的同两条正则**分别 match 两份指南 ✓ ⇒ 打�
 · `tool-reference-delta-e` **挪能力 vs 加只读工具** ✓；
 · `browser-brush-preview-local` **给预览加来源信号 vs 该判据改测别的信号** ✓。
 ```
+
+## 📌 第 855 轮：**`sample_color` 的插入形状已读清（含一处新发现的清单 ✗）**
+
+**五处（我此前只知四处 ✗）**：
+```
+① `ALL_TOOLS`（`crates/yanshi-server/src/tools.rs:944` ✓）里加一条 ✓：
+   `ToolSpec { name: "sample_color", profile: Profile::Core, summary: …, mutating: false,
+              params: &[param!("x", Number, true, …), param!("y", Number, true, …)] }` ✓
+   （照 `get_document`（`:946-957` ✓）的形状 ✓ —— `mutating: false` ✓）
+② **调度**（`:2628` 那种 ✓）⇒ 加 `"sample_color" => read_sample_color(ctx, args),` ✓
+③ **handler** ✓ ⇒ 内部 `render_region(Bbox::new(x, y, 1.0, 1.0))` ✓ ⇒ 回 `{r,g,b,a}` ✓（只读 ✓，不改画面 ✓）
+④ **计数 4 处**：`docs/guide.md:7` ✓、`docs/guide.zh-CN.md:7` ✓、`tools.rs:4` ✓、`tools.rs:943` ✓
+⑤ **第 5 处（本轮新发现 ✗）**：`tools.rs:13813` `("get_document", r#"{}"#)` ✓
+   ⇒ 这是**另一份工具清单**（形如 `("<tool>", r#"<示例参数>"#)` ✓）⇒ **加工具要同步** ✓
+   ⇒ ⇒ **判据 `tool-surface-coverage` 未必覆盖它** ✗ ⇒ **加工具时手工核一次 ✓**（并考虑把它也纳入判据 ✓）。
+```
+**★ 一条** ✓：**"改一处、牵动几处"必须靠**搜索**，不能靠记忆** ✓ ——
+我早先记的是"四处计数" ✗，本轮一搜就多出**第 5 处清单** ✓
+（**技能第 6 条：受影响的集合靠搜索，不靠回忆** ✓ —— **本会话第 2 次被它救** ✓：
+ 第一次是笔刷数 3 → 199 ✓，这次是计数 4 → 5 ✓。）
