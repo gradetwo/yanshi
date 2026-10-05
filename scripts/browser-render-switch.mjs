@@ -31,8 +31,6 @@ await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
-// 先开一次页，让我们能在同一个 origin 上写 localStorage ✓
-await send("Page.navigate", { url }); await waitReady();
 // **等到"页面就绪"这个独立信号** ✓（第 889 轮 ✓）：原来固定睡 5 秒/4.5 秒 ✗ ⇒ 机器慢时间歇红 ✗。
 // ⚠️ **等待条件与断言条件必须不同** ✗：这里只等 `readyState` 与 `state` **存在** ✓，
 //    而断言读的是 **`state.wasm` 的值** ✓ ✓（**等"值"就等于让断言永不失败** ✗ —— 第 887 轮的教训 ✓）。
@@ -43,6 +41,8 @@ const waitReady = async () => {
   }
   return false;
 };
+// 先开一次页，让我们能在同一个 origin 上写 localStorage ✓
+await send("Page.navigate", { url }); await waitReady();
 const setPref = (value) => evaluate(value === null
   ? `localStorage.removeItem("yanshi.serverRender"), "cleared"`
   : `localStorage.setItem("yanshi.serverRender", ${JSON.stringify(value)}), "set"`);
