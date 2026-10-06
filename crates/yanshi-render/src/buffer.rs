@@ -311,7 +311,30 @@ impl Buffer {
     }
 
     /// 导出为 u8 RGBA（显示空间）；`background` 为不透明底色。
+    ///
+    /// 本机（非 `wasm32`）上**按行并行**，细节见 [`Buffer::to_rgba8_blocks`]；
+    /// `wasm32` 没有共享内存线程 ⇒ 那条路径整体不参与编译，这里走串行循环。
     pub fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
+        self.to_rgba8_blocks(background, None).0
+    }
+
+    /// 同 [`Buffer::to_rgba8`]，但可指定 worker 上限，并回报**并行分块数**。
+    ///
+    /// * `workers = Some(1)` ⇒ 强制串行（判据里的"串行参照"）；`None` ⇒ 可用核数；
+    ///   `wasm32` 上恒为串行（`render::workers` 在该目标恒返回 1）。
+    /// * 第二个返回值沿用 `RenderStats::parallel_chunks` 的口径：
+    ///   **`0` = 走串行**（小图 / 单 worker / 只有一行 / 空缓冲），**`≥ 2` = 并行块数**
+    ///   （`std::thread::scope` 实际起的 worker 数；按构造不会等于 1）。
+    ///   这是给判据的**语义观测值** —— 墙钟会被机器负载骗过
+    ///   （见 `tests/tile_parallel.rs` 的说明）。
+    ///
+    /// **输出字节与并行度无关**：每行只由自己那 4 个 f32 决定，块与块之间没有共享状态
+    /// ⇒ `Some(1)` / `Some(4)` / `None` 三种调用的输出逐字节相同。
+    pub fn to_rgba8_blocks(
+        &self,
+        background: Option<[u8; 4]>,
+        workers: Option<usize>,
+    ) -> (Vec<u8>, usize) {
         // **背景解码与查表都提到循环外、并改按行块写入** ✓（全部**逐位等价** ✓）：
         // 原来每像素都要①重解一次背景（4 次 `powf` ✗）②过一次 `OnceLock` ✗
         // ③走一次 `extend_from_slice`（容量检查 ✗）⇒ 512² 下是 26 万次 × 3 类开销 ✗。
@@ -319,18 +342,53 @@ impl Buffer {
         let bg_linear = background.map(crate::color::background_linear_premul);
         let table = crate::color::srgb_encode_table();
         let width = self.width as usize;
-        let mut out = vec![0u8; self.len() * 4];
-        for (row, line) in out.chunks_exact_mut(width * 4).enumerate() {
-            for (x, chunk) in line.chunks_exact_mut(4).enumerate() {
-                let pixel = self.pixel(x as u32, row as u32);
-                let bytes = match bg_linear {
-                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
-                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
-                };
-                chunk.copy_from_slice(&bytes);
-            }
+        let height = self.height as usize;
+        let mut out = vec![0u8; width * height * 4];
+        if width == 0 || height == 0 {
+            return (out, 0);
         }
-        out
+        // 逐行取切片（与 `pixel(x, y)` 同源同值，只省掉每次的边界判断与下标算术）。
+        let source: &[f32] = &self.pixels;
+        let encode = |row_start: usize, rows: usize, line: &mut [u8]| {
+            for row in 0..rows {
+                let y = row_start + row;
+                let src = &source[y * width * 4..(y + 1) * width * 4];
+                let dst = &mut line[row * width * 4..(row + 1) * width * 4];
+                for x in 0..width {
+                    let base = x * 4;
+                    let pixel = [src[base], src[base + 1], src[base + 2], src[base + 3]];
+                    let bytes = match bg_linear {
+                        Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                        None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+                    };
+                    dst[base..base + 4].copy_from_slice(&bytes);
+                }
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            // wasm32 没有共享内存线程 ⇒ 串行（与并行版逐字节相同）。
+            let _ = workers;
+            encode(0, height, &mut out);
+            return (out, 0);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let workers = crate::render::workers(workers).min(crate::rows::MAX_WORKERS);
+            // 三个条件缺一不可：① 有并行度；② 像素数够多（阈值与依据见 `crate::rows`）；
+            // ③ **行数够切**——宽而只有一两行的图（例如 16384×1）按行只能切出 1 块，
+            // 那时起线程是纯开销、没有任何并行，也必须走串行。
+            if workers <= 1
+                || width * height < crate::rows::PARALLEL_MIN_PIXELS
+                || crate::rows::split_bands(height as u32, workers).len() <= 1
+            {
+                encode(0, height, &mut out);
+                return (out, 0);
+            }
+            let chunks =
+                crate::rows::for_each_band_mut(height, width * 4, workers, &mut out, encode);
+            (out, chunks)
+        }
     }
 
     /// 仅保留 alpha 通道，颜色置零（用于裁剪 / 蒙版测试）。

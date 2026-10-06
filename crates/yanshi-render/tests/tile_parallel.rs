@@ -12,6 +12,10 @@
 //! 判据 3：wasm 目标**不编译线程路径**（见 `thread_code_is_cfg_gated_out_of_wasm` 与
 //! `scripts/wasm-smoke.sh`）。
 //!
+//! 判据 4：`Buffer::to_rgba8` 的按行并行与串行（`workers = Some(1)`）逐字节相同；
+//! 判据 5：它的**阈值真的在选边**（小图串行、大图并行，用 `blocks` 语义计数断言）。
+//! 这两条盯的是同一条不变量用在"输出量化"这条公开 API 上的样子。
+//!
 //! 每个判据都做过**变异演示**（改坏被测条件 ⇒ 判红 ⇒ 逐字改回），见专题报告。
 
 use serde_json::json;
@@ -622,6 +626,70 @@ fn thread_code_is_cfg_gated_out_of_wasm() {
             );
         }
     }
+
+    // **共享的行并行设施（`src/rows.rs`）适用同一约定**：所有 `std::thread` 必须落在
+    // `#[cfg(not(target_arch = "wasm32"))]` 门控的执行器函数体里，别处一处都不许有。
+    // 变异：把执行器的 `#[cfg]` 去掉，或在 rows.rs 别处新增一处 `std::thread` ⇒ 判红。
+    let rows_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/rows.rs");
+    let rows_text = std::fs::read_to_string(&rows_path).expect("应能读到 rows.rs");
+    let rows_lines: Vec<&str> = rows_text.lines().collect();
+    let executor = rows_lines
+        .iter()
+        .position(|line| {
+            line.trim_start()
+                .starts_with("pub(crate) fn for_each_band_mut(")
+        })
+        .expect("rows.rs 应有按行并行的执行器 for_each_band_mut");
+    let gate = rows_lines[..executor]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_owned())
+        .unwrap_or_default();
+    assert_eq!(
+        gate, "#[cfg(not(target_arch = \"wasm32\"))]",
+        "行并行执行器必须整体 cfg 掉 wasm"
+    );
+    // 执行器函数体的行范围（花括号配对；签名跨行 ⇒ 从第一处 `{` 起算）。
+    let mut depth = 0i32;
+    let mut started = false;
+    let mut executor_end = executor;
+    for (offset, candidate) in rows_lines[executor..].iter().enumerate() {
+        let opens = candidate.matches('{').count() as i32;
+        let closes = candidate.matches('}').count() as i32;
+        if !started {
+            if opens == 0 {
+                continue;
+            }
+            started = true;
+        }
+        depth += opens - closes;
+        if depth == 0 {
+            executor_end = executor + offset;
+            break;
+        }
+    }
+    assert!(started, "应能找到执行器 for_each_band_mut 的函数体");
+    let mut rows_threads = 0usize;
+    for (index, line) in rows_lines.iter().enumerate() {
+        // 只看代码：文档注释里可以出现 `std::thread` 这个词。
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if line.contains("std::thread") {
+            rows_threads += 1;
+            assert!(
+                index >= executor && index <= executor_end,
+                "rows.rs:{} 的 std::thread 不在 cfg(not(wasm32)) 门控的执行器内：{}",
+                index + 1,
+                line.trim()
+            );
+        }
+    }
+    assert!(
+        rows_threads > 0,
+        "rows.rs 应真的用了线程（否则这条静态判据是空转）"
+    );
 }
 
 /// 判据 3 的**语义**部分：wasm 上并行度恒为 1（该目标没有共享内存线程）。
@@ -1041,4 +1109,133 @@ fn default_buffer_pool_stays_within_its_published_limits() {
         budget, MIN_POOLED_BYTES,
         "串行小画布的公布预算应等于下界 MIN_POOLED_BYTES"
     );
+}
+
+/// 造一张**确定性**、内容多样的缓冲区（alpha 覆盖 0 / 1 / 分数；颜色略越界以走 clamp）。
+fn rgba8_probe_buffer(width: u32, height: u32, seed: u32) -> yanshi_render::Buffer {
+    let mut buffer = yanshi_render::Buffer::new(0, 0, width, height);
+    let mut state = seed | 1;
+    for (index, pixel) in buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let a = ((state >> 8) & 0xff) as f32 / 255.0;
+        let b = ((state >> 16) & 0xff) as f32 / 255.0;
+        let c = ((state >> 24) & 0xff) as f32 / 255.0;
+        let alpha = match index % 5 {
+            0 => 0.0,
+            1 => 1.0,
+            2 => 0.5,
+            3 => a,
+            _ => 1.0 - a,
+        };
+        pixel.copy_from_slice(&[b * 1.2 - 0.1, c, a * 0.5, alpha]);
+    }
+    buffer
+}
+
+/// 逐字节比较，失败时只报**第一处不同**与两边的字节数。
+///
+/// 不能用 `assert_eq!`：输出是 MB 级，断言失败会把整块向量打进日志，
+/// 把真正的失败行淹掉（本专题的红/绿证据要能一眼读到是哪一行、哪个字节）。
+fn assert_bytes_identical(label: &str, left: &[u8], right: &[u8]) {
+    assert_eq!(left.len(), right.len(), "{label}：字节数不同");
+    if let Some(index) = left.iter().zip(right).position(|(a, b)| a != b) {
+        panic!(
+            "{label}：第 {index} 字节不同（{} ≠ {}）",
+            left[index], right[index]
+        );
+    }
+}
+
+/// **判据 4：`Buffer::to_rgba8` 的按行并行与串行逐字节相同**。
+///
+/// 与判据 1 是同一条不变量（"块与块没有共享像素 ⇒ 怎么切都不改变字节"），只是对象从
+/// "整幅渲染"换成"输出量化"这条公开 API。强制串行的办法是 `workers = Some(1)`；
+/// `Some(4)` 与 `None`（可用核数）都必须与它逐字节相同。
+///
+/// 变异演示：让并行分带**漏写一块**（或重叠写两次）⇒ `Some(4)` 与 `Some(1)` 的字节不同 ⇒
+/// 本判据红；逐字改回 ⇒ 绿（专题报告有 red/green 原文与 `cmp` 复原证明）。
+#[test]
+fn to_rgba8_is_byte_identical_across_worker_counts() {
+    // 大（确定走并行）、奇数高（分带不整除）、小（确定走串行）、宽而一行（只能切 1 块）
+    // 四种形状都要覆盖。
+    for (width, height) in [(512u32, 512u32), (1024, 257), (64, 64), (16_384, 1)] {
+        let buffer = rgba8_probe_buffer(width, height, width * 31 + height);
+        for background in [None, Some([255u8, 255, 255, 255]), Some([12, 200, 90, 255])] {
+            let (serial, serial_blocks) = buffer.to_rgba8_blocks(background, Some(1));
+            let (four, four_blocks) = buffer.to_rgba8_blocks(background, Some(4));
+            let (auto, auto_blocks) = buffer.to_rgba8_blocks(background, None);
+            assert_bytes_identical(
+                &format!("{width}×{height} bg={background:?}：4 worker 与串行"),
+                &serial,
+                &four,
+            );
+            assert_bytes_identical(
+                &format!("{width}×{height} bg={background:?}：自动 worker 与串行"),
+                &serial,
+                &auto,
+            );
+            assert_eq!(serial.len(), width as usize * height as usize * 4);
+            assert_eq!(serial_blocks, 0, "Some(1) 必须走串行（0 块）");
+            // 走并行的条件是「像素数 ≥ 128² **且** 行数 ≥ 2」（一行切不出两块）。
+            let parallel_expected = width * height >= 128 * 128 && height >= 2;
+            assert_eq!(
+                four_blocks > 0,
+                parallel_expected,
+                "{width}×{height} 的并行/串行选边与阈值不符：four={four_blocks}"
+            );
+            assert!(
+                four_blocks != 1,
+                "{width}×{height}：分块数 1 与「串行」无法区分，按构造不应出现"
+            );
+            assert_eq!(
+                auto_blocks > 0,
+                parallel_expected,
+                "{width}×{height} 的自动选边与阈值不符：auto={auto_blocks}"
+            );
+        }
+    }
+}
+
+/// **判据 5：阈值是真的在选边** —— 小图必须走串行、阈值上与大图必须走并行，
+/// 断言的是第二个返回值这个**语义计数**（`0` = 串行，`≥2` = 并行块数，沿用
+/// `RenderStats::parallel_chunks` 的口径），不是墙钟（墙钟会被机器负载骗过）。
+///
+/// 变异演示：阈值改 `0` ⇒ 64² 也切成 4 块 ⇒ 红；阈值改 `usize::MAX` ⇒ 128²/512² 都串行 ⇒
+/// 红；去掉"行数够切"那一项 ⇒ 16384×1 也起 1 个 worker ⇒ 红；逐字改回 ⇒ 绿。
+#[test]
+fn to_rgba8_threshold_selects_the_serial_and_parallel_paths() {
+    // 阈值以下：64² = 4096 px < 128² = 16384 px ⇒ 即使给 4 个 worker 也不启线程。
+    let small = rgba8_probe_buffer(64, 64, 1);
+    let (_, small_blocks) = small.to_rgba8_blocks(None, Some(4));
+    assert_eq!(small_blocks, 0, "小图必须走串行路径");
+
+    // 恰好在阈值上：128² = 16384 px ⇒ 走并行（判据是 `<` 阈值，不是 `<=`）。
+    let edge = rgba8_probe_buffer(128, 128, 2);
+    let (_, edge_blocks) = edge.to_rgba8_blocks(None, Some(4));
+    assert_eq!(edge_blocks, 4, "阈值上的图应切成 4 块");
+
+    // 明显大于阈值 ⇒ 走并行。
+    let large = rgba8_probe_buffer(512, 300, 3);
+    let (_, large_blocks) = large.to_rgba8_blocks(None, Some(4));
+    assert_eq!(large_blocks, 4, "大图应切成 4 块");
+
+    // 单 worker：大图也不启线程（判据 4 的"串行参照"就建立在这一点上）。
+    let (_, forced_serial) = large.to_rgba8_blocks(None, Some(1));
+    assert_eq!(forced_serial, 0, "workers=Some(1) 必须走串行");
+
+    // **宽而只有一行**：像素数够了（16384 = 128²），但按行只能切出 1 块 ⇒ 没有并行可言，
+    // 起线程是纯开销 ⇒ 必须走串行（阈值不只按像素数，还要求行数够切）。
+    let single_row = rgba8_probe_buffer(16_384, 1, 4);
+    let (_, single_row_blocks) = single_row.to_rgba8_blocks(None, Some(4));
+    assert_eq!(single_row_blocks, 0, "只有一行时不应起线程");
+    // 两行就能切成 2 块 ⇒ 走并行（同一像素量级，区别只在行数）。
+    let two_rows = rgba8_probe_buffer(16_384, 2, 5);
+    let (_, two_rows_blocks) = two_rows.to_rgba8_blocks(None, Some(4));
+    assert_eq!(two_rows_blocks, 2, "两行应切成 2 块");
+
+    // 空缓冲：没有像素可算 ⇒ 0 块，输出也是空的。
+    let empty = yanshi_render::Buffer::new(0, 0, 0, 0);
+    let (bytes, empty_blocks) = empty.to_rgba8_blocks(None, Some(4));
+    assert!(bytes.is_empty());
+    assert_eq!(empty_blocks, 0, "空缓冲不应分块");
 }

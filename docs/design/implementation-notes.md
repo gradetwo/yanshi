@@ -37978,3 +37978,90 @@ wasm 没有线程。wasm 侧剩下的是**每像素成本**（刚被 256 项解�
 - 8K 复测（§3.1 报告的"预算饥饿"场景）尚未执行：本轮先把 4K 对照做扎实；
   8K 需要更长的运行时间，计划下一轮在 apple2011 上跑（它的内存够：可用 10.4 GiB）。
 - `oil-01-paint` 那 4 秒（4K size48 一笔）与报告 §3.5 的"双重印章"一致，本轮未优化。
+## 第 1194 轮：`Buffer::to_rgba8` 按行并行——**先更正范围**，再谈收益
+### 先更正上一轮记下的"报告建议 4"（这条比加速数字重要）
+报告说"8K 33M 像素的解码→sRGB 是单线程、约 180ms 降到约 45ms"。**在 main 上这不成立**：
+`crates/yanshi-render/src/render.rs:613` 的服务端渲染走的是
+`parallel_impl::quantize_to_rgba8`（`render.rs:2116`，`#[cfg(not(target_arch = "wasm32"))]`），
+它**已经**用 `std::thread::scope` 按行并行同一套逐像素编码（由 commit `37728ce`
+"整幅渲染按行分块并行"引入，阈值 `PARALLEL_MIN_PIXELS = 128*128`，`MAX_WORKERS = 16`）。
+`Buffer::to_rgba8` 在 main 上的生产调用点只有一处：**wasm 串行回退**
+（`render.rs:2246` 的 `quantize_to_rgba8`）——那里本来就该串行。
+其余全是测试/诊断。⇒ 本轮的收益只落在"**直接调用 `Buffer::to_rgba8` 的 API 使用者**"，
+不是服务端 8K 导出；服务端 8K 早就是并行的。
+另外，报告的量级在本机也复现不出来：本机实测串行 **80–84 ns/像素**
+（4K 667.8ms、8K 2.776s，release、4 核、不透明白底），报告隐含 **5.4 ns/像素**
+（180ms / 33M）——差约 16×。仓库自己记的"4K 量化约 0.5s"与本机一致，
+所以采信**本机实测**，不采信报告的绝对毫秒数。
+### 改了什么
+- 新增 `crates/yanshi-render/src/rows.rs`：把原本藏在 `render::parallel_impl` 里的
+  **分带切法**（`split_bands`）、**并发上限**（`MAX_WORKERS = 16`、`MIN_BAND_ROWS = 24`）
+  与阈值（`PARALLEL_MIN_PIXELS = 128*128`）抽成**一份**，并新增本 crate 唯一的
+  行并行执行器 `for_each_band_mut`（`std::thread::scope`，互不重叠的 `split_at_mut` 行切片）。
+  `render.rs` 改为 `use crate::rows::{split_bands, MAX_WORKERS, MIN_BAND_ROWS}`（**行为不变**）。
+- `Buffer::to_rgba8` 改调 `Buffer::to_rgba8_blocks(background, None).0`；
+  新公开方法 `to_rgba8_blocks(background, workers) -> (Vec<u8>, usize)` 可强制串行
+  （`Some(1)`）并回报**并行分块数**（口径同 `RenderStats::parallel_chunks`：`0` = 串行，
+  `≥2` = 并行块数）。逐像素算式一字未动（仍用 `composite_over_linear_with(table, …)` /
+  `linear_premul_to_u8x4_with(table, …)` 与同一张 4097 项编码表），只把行循环搬进分块执行器。
+- 并行化的**三个必要条件**（缺一走串行）：① `workers > 1`；② `width*height ≥ 128²`；
+  ③ `split_bands(height, workers).len() > 1`——**宽而只有一行**的图（如 16384×1）
+  按行只能切 1 块，起线程是纯开销。第 ③ 条是复核时发现的边界，已单独有判据。
+- **阈值依据**（release、4 核、同进程交替 best-of-5、不透明白底）：
+  128²（16384 px）串行 1.360ms → 并行 0.746ms（1.82×）；
+  256² 5.450ms → 2.351ms（2.32×）；4K 667.8ms → 269.0ms（2.48×）；
+  8K 2.776s → 1.101s（2.52×）；64²（4096 px）串行本身仅 0.326ms，
+  且实测新实现走串行时 0.364ms（差值在噪声内）⇒ 128² 作为阈值是保守的。
+### wasm 门控的选择与理由
+用 `#[cfg(not(target_arch = "wasm32"))]` 包住**整段并行分支**（执行器与 `to_rgba8` 的
+调用点都是），wasm 分支是原来的串行行循环、**逐字节相同**。选它而不是
+`cfg(feature = …)` 或运行时判断的理由：本 crate 已有的并行契约就是"**线程代码不参与
+wasm 构建**"（`render.rs::parallel_impl` 的两个 cfg 变体 + `tests/tile_parallel.rs` 的静态判据
++ `scripts/wasm-smoke.sh`），沿用它就不引入第二套门控语义；运行时判断则会把
+`std::thread` 编进 wasm（`spawn` 在 `wasm32-unknown-unknown` 上会 panic）。
+**静态门控扩展到 `rows.rs`**：`thread_code_is_cfg_gated_out_of_wasm` 现在也读 `src/rows.rs`，
+要求所有非注释 `std::thread` 都落在 `#[cfg(not(target_arch = "wasm32"))]` 门控的
+`for_each_band_mut` 函数体内（花括号配对定位）；变异：去掉那条 cfg ⇒ 判红（已演示）。
+### 判据（都加在既有的 `crates/yanshi-render/tests/tile_parallel.rs`，没有第三条 harness）
+- 判据 4 `to_rgba8_is_byte_identical_across_worker_counts`：512²、1024×257（分带不整除）、
+  64²、16384×1 四种形状 × 三种背景，`Some(1)` / `Some(4)` / `None` 的输出**逐字节**相同
+  （失败只报第一处不同的字节，避免把 MB 级向量打进日志）。
+- 判据 5 `to_rgba8_threshold_selects_the_serial_and_parallel_paths`：小图/单 worker/单行 ⇒ `0`
+  块，阈值上与 512×300 ⇒ 4 块，两行 ⇒ 2 块，空缓冲 ⇒ 0 块。用的是**语义计数**，不是墙钟。
+- 变异演示（都是直接跑 `cargo test`、不经过 `run-criteria.sh`；每次复原后 `cmp` 与
+  sha256 全等，见报告）：
+  - 并行分带**漏写第一块** ⇒ 判据 4 红：`512×512 bg=None：4 worker 与串行：第 4 字节不同（223 ≠ 0）`；
+  - 阈值 `0` ⇒ 判据 5 红（`小图必须走串行路径`，`left: 4  right: 0`）；
+  - 阈值 `usize::MAX` ⇒ 判据 5 红（`阈值上的图应切成 4 块`，`left: 0  right: 4`）；
+  - 去掉"行数够切" ⇒ 判据 5 红（`只有一行时不应起线程`，`left: 1  right: 0`）；
+  - 去掉执行器的 cfg ⇒ 判据 3 的静态部分红。
+  全部逐字改回后 `sha256sum -c` 五个文件全等 ⇒ 无残留。
+### 复核既有阈值/并发上限（"不改也要报"的那一项）
+- wasm 回退（`#[cfg(target_arch = "wasm32")] parallel_impl::quantize_to_rgba8`）**不读**
+  `PARALLEL_MIN_PIXELS`、忽略 `_workers` ⇒ 阈值与核数对它没有影响，它本来就恒串行。
+  这条是合理的，没有问题。
+- 小缓冲：阈值对 native 量化生效；实测 64² 串行 0.326ms，起线程无收益 ⇒ 128² 合适。
+- 发现一处**未改**的低效（不在本任务范围，登记备查）：wasm 的 `quantize_to_rgba8` 先
+  `buffer.crop(&buffer.bbox())` 做一次**整幅 f32 拷贝**（8K ≈ 530MB）再就地量化到 f16；
+  在 wasm 上这会**同时**持有两份整幅缓冲。改成 `pixels` 直接 clone 再就地量化并不省内存，
+  但可以改成边量化边编码、不落第二份 f32。留待专门一轮。
+### 验证了什么 / 没能验证什么
+- ✅ wasm 构建：`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release`
+  （rustup `stable` 工具链，本机唯一带 wasm32 std 的那条）——**0 警告**。
+  第一版这里报过 `unused import: parallel_impl::workers`（wasm 上 `to_rgba8` 不引用它）；
+  已给该 re-export 加 `#[cfg(not(target_arch = "wasm32"))]` 修掉——
+  这也说明"原生 clippy 全绿"看不见 wasm 侧警告，`scripts/build-warnings-check.sh` 那条判据有价值。
+- ✅ wasm **运行时**：`scripts/wasm-smoke.sh` 在 node 里真跑（本机可跑，输出
+  "渲染路径：RGBA 262144 字节，PNG 203 字节｜写入路径：预览 + 提交成功"）。
+  它经 `render_region_rgba` → wasm 版 `quantize_to_rgba8` → `Buffer::to_rgba8`，
+  因此**确实覆盖了**本轮的 wasm 串行分支。
+- ⚠️ **没做**：wasm 运行时的输出字节与原生未逐字节对比（`scripts/wasm-smoke.sh` 只验形状与
+  不 panic；`render_parity.rs` 比的是**原生**编译的内核，不是 wasm 运行时）。
+  "wasm 与原生逐字节一致"目前仍只有**构造性**论据（wasm 分支就是改动前的串行循环）+ 原生侧
+  的逐字节判据，没有 wasm 侧的端到端字节比对。
+- ⚠️ **没跑** `scripts/build-warnings-check.sh`（冷构建 6 个 cdylib × 两个 target，很重）；
+  替代证据是：改动后 native `cargo build --workspace --all-targets` 与 wasm release 构建
+  **各 0 警告**（且都重编了 `yanshi-render`）。
+- ⚠️ **没跑** `server_and_kernel_agree_on_the_full_phase3_document`（基线里就是 `#[ignore]`，
+  它是"已知不一致"的定位靶子，不是本轮的判据）；默认门禁里跑的是
+  `server_and_kernel_agree_on_shapes_and_strokes`（绿）。

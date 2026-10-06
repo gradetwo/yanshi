@@ -25,6 +25,7 @@ use crate::geometry::{
     ellipse_coverage_clipped, polygon_coverage_clipped, rect_coverage_clipped, Coverage,
 };
 use crate::object::{parse_object, Primitive, ShapeKind};
+use crate::rows::PARALLEL_MIN_PIXELS;
 use crate::tile::{Tile, TileCache, TileGrid, TileKey};
 use serde_json::Value;
 use yanshi_core::{Bbox, BlobStore, DocumentState, Layer, Object, Result, YanshiError};
@@ -308,9 +309,6 @@ struct RenderProbe {
     /// 逐层合成。
     composite: std::time::Duration,
 }
-
-/// **并行渲染的最小区域面积（像素）**：小于它时线程创建与每块的固定开销盖过收益。
-const PARALLEL_MIN_PIXELS: usize = 128 * 128;
 
 /// 区域渲染结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -1935,11 +1933,8 @@ fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
 #[cfg(not(target_arch = "wasm32"))]
 mod parallel_impl {
     use super::*;
-
-    /// **每个并行分块的最小行数**：块太薄时"每块都要重新解析对象/分配缓冲"的固定成本会反噬。
-    const MIN_BAND_ROWS: u32 = 24;
-    /// **worker 上限**：避免在超高核数机器上把区域切得过碎、内存峰值失控。
-    const MAX_WORKERS: usize = 16;
+    // 分带切法与并发上限与 `Buffer::to_rgba8` 共用同一套（见 `crate::rows` 的说明）。
+    use crate::rows::{split_bands, MAX_WORKERS, MIN_BAND_ROWS};
 
     /// 本次可用的 worker 上限（显式覆盖优先，其次可用核数）。
     pub fn workers(explicit: Option<usize>) -> usize {
@@ -1950,24 +1945,6 @@ mod parallel_impl {
                     .unwrap_or(1)
             })
             .max(1)
-    }
-
-    /// 把 `height` 行切成至多 `workers` 块（前面的块各多一行 ⇒ 覆盖完整、与调度无关的确定性切法）。
-    fn split_bands(height: u32, workers: usize) -> Vec<(u32, u32)> {
-        let count = workers.min(height as usize).max(1);
-        let base = height / count as u32;
-        let extra = height % count as u32;
-        let mut bands = Vec::with_capacity(count);
-        let mut row = 0u32;
-        for index in 0..count {
-            let rows = base + if (index as u32) < extra { 1 } else { 0 };
-            if rows == 0 {
-                continue;
-            }
-            bands.push((row, rows));
-            row += rows;
-        }
-        bands
     }
 
     /// 并行渲染 `region`：返回**恰好覆盖 `region`** 的缓冲、合并后的统计、各阶段耗时、实际块数。
@@ -2246,6 +2223,16 @@ mod parallel_impl {
         quantized.to_rgba8(background)
     }
 }
+
+/// **worker 上限策略的单一入口**：显式覆盖优先，其次可用核数；wasm 上恒为 1。
+///
+/// `Buffer::to_rgba8` 也走这里 ⇒ 输出量化与渲染分带用的是**同一个**并发策略，
+/// 不会出现"渲染说 4 核、量化说 1 核"这种漂移。
+///
+/// 按目标门控：wasm 上 `Buffer::to_rgba8` 走的是编译期串行分支、不引用它，
+/// 不门控会留下 `unused_imports` 警告（`scripts/build-warnings-check.sh` 会抓）。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use parallel_impl::workers;
 
 /// 渲染阶段计时探针（诊断用）。
 ///
