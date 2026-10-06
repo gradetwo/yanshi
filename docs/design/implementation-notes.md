@@ -38528,3 +38528,47 @@ SW 的设计我复核过：`/api/blob/` cache-first、`/api/` 与 `/ws` 放行�
 
 已把这份清单发给在跑的子代理（含两条须它自己决定的点：运行时资产缓存**是否需要自己的 build id**
 以免新 SW 版本提供陈旧资产；以及判据要**如实说明**"静态覆盖不变量"证明了什么、没证明什么）。
+
+## 第 1209 轮：子代理逐行核实了我的清单——两条更正 ＋ 一个新发现的既有 bug，缺口收窄为 4 类
+
+### 我确认的部分
+- 纹理：`viewer-app.js:4871` 裸路径 `"/textures/" + name` ✓；
+- 介质插件：`MEDIUMS` 映射（`:2275-2285`）＋ `loadMedium()` 里 `fetch(spec.url)` 裸路径 ✓；
+- 预览图：**真的被 fetch** ✓ —— `pumpBrushPreview`（约 `:7539`）做
+  `img.src = "/brush-previews/" + shipped`，而 `index.json` 里有 **199 条：185 个 `.png` ＋ 14 个 `.svg`**；
+  `brushPreviewCache` 只是一个 `Map<笔刷名, url>`（不是"运行时绘制"）⇒ **199 个预览文件都是真实缺口**；
+- 样例：`seedSampleIfEmpty` 做 `fetch("/samples/" + docId + ".png")`（约 `:2880`）⇒ **也是缺口**。
+
+### 两条更正（都改变结论）
+1. **调色板不是缺口**：SW 确实放行 `/api/tools`，但查看器的 `fetchOrLocal()` 会把
+   `POST /api/tools/<读工具>` 的响应缓存进 **IndexedDB**（`LOCAL_READ_TOOLS` 由 `ToolSpec.mutating == false` 注入，
+   `list_assets` 与 `list_palette_colors` 都是 `mutating:false`）⇒ 调色板**在一次在线使用后**离线可用。
+   另外 `server.rs` **根本没有 `/palettes` 路由** ⇒ 它本来就不该按"SW 静态路由"来建模。
+   ⇒ 判据应当断言"`list_assets` / `list_palette_colors` 仍是 `mutating:false`，且查看器仍然缓存读工具"。
+2. **字体不是缺口**：`crates/yanshi-render/src/font_atlas.rs:20` 用
+   `include_bytes!("../../../assets/fonts/yanshi-bitmap-16.bin")` 把字体**编进 wasm**，
+   而那个 wasm 就在 SHELL 里 ⇒ 字体**按构造已覆盖**；`assets/fonts/` 里的 README/LICENSE 是文档。
+
+### 它自己新发现的一个**既有 bug**（与本次缺口无关，但真实）
+SHELL 里有 **9 条笔刷条目含 `#`**（例如 `"/brushes/8B_Pencil#1.myb"`）。`cache.add()` 会**去掉片段**，
+于是缓存键变成 `/brushes/8B_Pencil`，而真实请求是 `/brushes/8B_Pencil%231.myb`；
+更糟的是 `viewer-app.js:6253` 用 `fetch("/brushes/" + name + ".myb")` **不做百分号编码**，
+而 `server.rs` **也不做百分号解码** ⇒ **这 9 支笔刷在线时也取不到**。
+子代理把它记成判据里的一条 note 并**明确不声称已修** —— 处理得对；它值得单独一轮。
+
+### 它的设计选择（有据）
+运行时 cache-on-first-use **写进同一个 build-id 键控的缓存** `yanshi-shell-__BUILD_ID__`，而不是另开一个资产缓存。
+理由：`activate()` 会删除所有名字 ≠ `CACHE` 的缓存 ⇒ 独立稳定名的资产缓存**每次 activate 都会被擦掉**；
+复用 build-id 缓存则相反：版本变更会清空整个运行时资产集（**无陈旧资产跨版本**），
+而同一 build 内该分支保持 network-first（**无陈旧读**）。排除项：`/api/`、`/ws`、`/service-worker.js`、206 部分响应。
+
+### 缺口最终收窄为 4 类
+| 类别 | 数量 | 状态 |
+|---|---|---|
+| 纹理 | 11 | 缺口（裸路径） |
+| 介质插件 | 7 | 缺口（裸路径） |
+| 预览图 | 199（185 png + 14 svg） | 缺口（裸路径） |
+| 样例 | 7 | 缺口（裸路径） |
+| 笔刷 | 199 | 已覆盖（**除 9 支带 `#` 的既有 bug**） |
+| 调色板 | 43 | **本已覆盖**（查看器 IndexedDB 读工具缓存） |
+| 字体 | — | **本已覆盖**（编进 wasm） |
