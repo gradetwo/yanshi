@@ -103,6 +103,7 @@ pub mod prng;
 pub mod psd;
 pub mod region_block;
 pub mod render;
+mod rows;
 pub mod selection;
 pub mod thumb;
 pub mod tile;
