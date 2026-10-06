@@ -40826,3 +40826,32 @@ console.log(`  ${needsPrior ? "⊙" : "✗"} ${name} ${needsPrior ? "需要前�
 **∴ 判断"加一个字段"✗ 的工作量 ⇒ **必须看那个字段的**值怎么算**✗** ✓ ⇒
    **∴ 因为**字段的载体**（**∴ 一个 `json!` 对象 ✓**）往往很便宜 ✗，而**它的**来源**✗ 才是成本 ✓
    ⇒ **∴ 这次如果按"加一行"✗ 估 ⇒ **∴ 会低估到**抽函数的规模**✗ ✓** ✓✓
+
+## 第 1310 轮：**CI 大部分转绿** ⋯ 以及**我第三次踩同一个回退坑** ✗
+
+### 🎯 CI 结果（run `37466999254`，含我推的 5 条修复）
+| job | 结果 |
+|---|---|
+| `criteria shard 1/2/3/4/5` | ✅ **全部通过** ✓ |
+| `criteria shard 6/6` | ❌ 红（`browser-offline-draw` ＋ `browser-ui-check`） |
+| `brush parity (arm64 vs wasm32)` | ⚠️ 标 `failure`，但 `continue-on-error` ⇒ **不阻塞** ✓ |
+| `clippy`／`rustfmt`／`test (beta)`／`test (stable)` | ✅ 通过 ✓ |
+
+⇒ **∴ 净结果** ✓✓：**∴ 我修的那 5 条**全部生效**✗** ✓：
+`tool-offline-asset-coverage`（**∴ 注释被当条目 ✓**）｜`kernel-wasm-allowlist`（**∴ 登记 ＋ 锚点退化 ✓**）｜
+`tool-surface-coverage`（**∴ 两份指南的工具数 ✓**）｜`tool-example-acceptance`（**∴ 分类 ＋ 示例值 ✓**）｜
+`browser-ui-check`（**∴ 刷新 `tool-examples.md` ✓**）｜**∴ 而 `browser-i18n`（shard 5）也绿了** ✓。
+⇒ **∴ 只剩 `shard 6/6` 的两条** ✗：
+- `browser-ui-check` **又红了** ✗（**∴ 上一轮它是绿的 ⇒ **∴ 说明它**不稳定**✗ ⇒ **∴ 是 flake ✓**）；
+- `browser-offline-draw` **仍报负对照** ✗，而**我加的"取证"（条目数／形状）没出现在失败行里** ✗
+  ⇒ **∴ 因为 `run-criteria.sh` 只打印**与失败相关的片段**✗ ⇒ **∴ 所以把取证并进失败消息**✗ 这一招
+     **这一次仍未生效** ✗ ⇒ **∴ 下一轮要看**完整 `out.txt`✗（**∴ 也许得让它多打印几行 ✓**）** ✓✓
+
+### ⚠️ 我**第三次**踩同一个回退坑 ✗
+我用 `git checkout -- crates/yanshi-server/src/tools.rs` 回退重构 ✓，但 `grep` 显示改动**仍在** ✗
+⇒ **∴ 原因** ✓：**∴ 之前那次失败的提交尝试里跑过 `git add -A`✗ ⇒ **∴ 改动**已进索引**✗ ⇒
+   **∴ 而 `checkout -- <path>`✗ **从索引还原**✗（**∴ 不是从 HEAD ✓**）⇒ **∴ 于是把**坏版本**✗ 还原回来了** ✗ ✓✓
+⇒ **∴ 正确做法** ✓：**`git checkout HEAD -- <path>`✗** ⇒ **∴ 这次用对了 ⇒ **∴ 标记归 0 ＋ 树干净 ✓** ✓✓
+⇒ **∴ 这正是 `docs/skills/development.md` 9.12 记过的坑 ✗** ⇒ **∴ 我在同一会话里**踩了三次**✗**
+   ⇒ **∴ 教训** ✓：**∴ `git add -A`✗ 之后 ⇒ **任何**回退**✗ 都必须**带修订号**✗ ⇒ **∴ 包括"只是回退一个文件"✗
+      这种"看起来无害"✗ 的情形 ✓** ✓✓
