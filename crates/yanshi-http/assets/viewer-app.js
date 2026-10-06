@@ -824,6 +824,11 @@ function syncOverlayGeometry() {
 /// 画布内部分辨率 = 视口的文档像素数（内核 1:1 渲染），CSS 显示尺寸由 `applyDisplaySize` 决定：
 /// 缩放后画布像素变少、显示尺寸不变，于是看得更细（`image-rendering: pixelated` 保持清晰）。
 function sizeBoards(width, height) {
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "enter sizeBoards", area: -1, at: Math.round(performance.now()),
+      serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   // **只有尺寸真的变了才碰 backing store** ✗ —— 这是"每一笔结束抖一下"的**真凶** ✓（第 43 轮 ✓）。
   //
   // **为什么** ✗：给 `board.width`/`height` 赋值会**重建 backing store ⇒ 清空画布** ✓（浏览器规范 ✓，
@@ -836,8 +841,13 @@ function sizeBoards(width, height) {
   // ⇒ 只能是**本地清屏** ✓ ✓。
   const changed = board.width !== width || board.height !== height;
   if (changed) {
-    board.width = width;
+    board.width = width;   // reset of the backing store follows
     board.height = height;
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "assign board size", area: -1, at: Math.round(performance.now()),
+      serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
     overlay.width = width;
     overlay.height = height;
     // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
@@ -845,7 +855,17 @@ function sizeBoards(width, height) {
     const background = state.backgroundCss || "#ffffff";
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, width, height);
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "clear ctx.fillRect", area: -1, at: Math.round(performance.now()),
+      serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
     octx.clearRect(0, 0, width, height);
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
+      serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
     (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
       reason: "erase sizeBoards " + width + "x" + height, area: width * height,
       at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
@@ -5616,6 +5636,11 @@ function redraw() {
   // 每次重绘前同步几何：窗口缩放、滚动或布局变化都会让覆盖层偏离内容层。
   syncOverlayGeometry();
   octx.clearRect(0, 0, overlay.width, overlay.height);
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
+    serverInk: -1, canvasInk: -1,
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   redrawSourceMark();
   drawSelectionBox();
   drawSelectionOutline();
@@ -6552,6 +6577,11 @@ board.addEventListener("pointermove", (event) => {
       const [x, y, w, h] = moveState.bbox;
       const topLeft = toCanvas({ x: x + dx, y: y + dy });
       octx.clearRect(0, 0, overlay.width, overlay.height);
+      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+        reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
+        serverInk: -1, canvasInk: -1,
+      });
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
       octx.save();
       octx.strokeStyle = "#4a7dff";
       octx.lineWidth = 1;
