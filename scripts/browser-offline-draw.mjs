@@ -278,7 +278,13 @@ const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("
 // 但 `evaluate` 走的是**页面** target ⇒ 那里根本没有这个属性 ⇒ `(… || [])` 给出**假空** ✗
 //（2026-10-06 实测并撤回 ✓）⇒ 现在读 SW 写进缓存的那份报告 ✓。
 // 兜底返回 `null` ✓（**∴ 而不是 `[]`✗**）⇒ **∴ 从而区分"没有失败"✗ 与"读不到"✗** ✓。
-const preFail = await evaluate(`(async () => {
+// **报告可能比内核晚一点落盘** ✗ —— `install` 里是 208 条**并行** `cache.add` ✓，
+// 报告写在 `Promise.all` **之后** ✓ ⇒ 若这里读得太早 ⇒ 会拿到 `null` ✗
+//（2026-10-06 本地实测：内核已在缓存里、而报告仍是 null ✓ ⇒ 差的就是时机 ✓）。
+// ⇒ **短重试** ✓（最多 ~5 秒 ✓）⇒ 与"内核在缓存"那一刻对齐 ✓。
+let preFail = null;
+for (let i = 0; i < 10; i += 1) {
+  preFail = await evaluate(`(async () => {
   try {
     // 不指定缓存名：SW 的 CACHE 常量含 __BUILD_ID__ 占位符，构建时才替换，
     // 所以硬写任何具体名字都打不开缓存；用全局 caches.match 在所有缓存里找即可。
@@ -289,6 +295,25 @@ const preFail = await evaluate(`(async () => {
     return { total: r.total, failed: (r.failed || []).slice(0, 5), failedCount: (r.failed || []).length };
   } catch (_) { return null; }
 })()`).catch(() => null);
+  if (preFail) break;
+  await sleep(500);
+}
+// **报告读不到时，列出各缓存的名字与键** ✗ —— 只报 `null` 无法区分
+// "条目没写进去" 与 "键的形状不匹配"（2026-10-06 本地实测：重试也拿不到 ✓）⇒ 直接取证 ✓。
+if (!preFail) {
+  const dump = await evaluate(`(async () => {
+    const names = await caches.keys();
+    const out = {};
+    for (const n of names) {
+      const c = await caches.open(n);
+      const keys = await c.keys();
+      out[n] = keys.map((r) => r.url).filter((u) => u.includes("precache") || u.includes("report")).slice(0, 3);
+      out[n + "（总数）"] = keys.length;
+    }
+    return out;
+  })()`).catch(() => null);
+  console.log("  【缓存键取证】" + JSON.stringify(dump));
+}
 const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90))) +
   "｜SW 预缓存失败：" + JSON.stringify(preFail);
 console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（" + cacheShape + "）");

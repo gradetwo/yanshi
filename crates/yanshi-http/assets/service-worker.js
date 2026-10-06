@@ -234,6 +234,9 @@ const SHELL = [
 // 名字一变 ⇒ 下面那句"删掉所有名字不同的缓存"✓ 就自动作废**整份旧外壳** ✓
 // ⇒ 这正是第 210 轮查到的真因 ✓（旧 js + 新 wasm ⇒ 内核预览失败 ✓）。
 const CACHE = "yanshi-shell-__BUILD_ID__";
+// **取证报告单独一个缓存**（固定名，不随 BUILD_ID 变）—— 它要跨版本可读，
+// 否则 `activate` 删旧缓存时会把报告一起删掉（2026-10-06 实测：判据读到 null）。
+const REPORT_CACHE = "yanshi-sw-report";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
@@ -252,7 +255,8 @@ self.addEventListener("install", (event) => {
     // 读不到 SW 的 `self.*` ✓ ⇒ 那样写只会得到 `undefined || []` 的**假空** ✗（2026-10-06 实测 ✓）。
     // ⇒ 写成一个**缓存条目** ✓ ⇒ 页面用 `caches.match` 就能读到 ✓（不需要额外建 SW 调试目标 ✓）。
     try {
-      await cache.put(
+      const reportCache = await caches.open(REPORT_CACHE);
+      await reportCache.put(
         new Request("/__sw_precache_report"),
         new Response(
           JSON.stringify({
@@ -278,7 +282,10 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const names = await caches.keys();
-    await Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name)));
+    // **保留当前外壳缓存与取证报告缓存** ✓（报告要跨版本可读 ✓）。
+    await Promise.all(
+      names.filter((name) => name !== CACHE && name !== REPORT_CACHE).map((name) => caches.delete(name))
+    );
     await self.clients.claim();
   })());
 });
