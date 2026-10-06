@@ -87,31 +87,69 @@ if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window
 }
 // **等画布真的被设过尺寸再量** ✗ —— 第 47 轮就是在这里栽的 ✓：启动瞬间 `<canvas>` 还是默认的
 // 300×150 ✓、`style.width` 为空 ✓ ⇒ 我据此得出"尺寸没落到元素上"✗，而真相只是"还没轮到它"✓。
-// ⇒ 判据必须**等被测对象稳定** ✓（`board.width` 走出默认值 ✓ + 至少补过一次服务端像素 ✓）。
+// ⇒ 判据必须**等被测对象稳定** ✓（`board.width` 走出默认值 ✓ + **当前模式的渲染器真的画过一帧** ✓）。
 // **不要用写死的像素阈值** ✗（第 430 轮 ✓）：`board.width` 是**位图**宽度 ✓，它按
 // **显示尺寸 × 设备缩放** 来设 ✓（实测：`style.width = "424px"` 而 `board.width = 320` ✓，
 // 比值 0.755 就是缩放 ✓）⇒ 拿它去卡一个"CSS 像素"的常数（原来的 `> 400` ✗）会在缩放 ≠ 1 时**假红** ✓。
 // ⇒ 改成与**该元素自己的显示宽度**比较 ✓（缩放无关 ✓），并保留"不是默认 300×150"这一层 ✓。
+//
+// **"画过一帧"的判据必须按当前渲染模式分开** ✓（本轮 ✓）：本仓缺省是**客户端优先** ✓
+//（`yanshi.serverRender` 不在 `localStorage` 里 ⇒ 加载内核 ✓），此时"服务端补过一次像素"**不是**
+// 任何一条路径的必然后果 ✗ —— 实测（本机，同一份产物、重载 8 次）：7 次在"内核已经画完"那一刻
+// `serverBlits = 0` ✓（补画是**异步排队**的 ✓，而且只有产品在启动竞态里先走了一次服务端预览、
+// 把 `needsServerPixels` 立起来才会排 ✓）⇒ 旧判据 `serverBlits > 0` 在这条路径上是**靠竞态碰运气** ✗
+//（**过时的基线** ✓，不是被测对象的毛病 ✓：画布尺寸对、内核也真的画了 ✓）。
+// ⇒ 分开要求 ✓，**两边都不许恒真** ✓：
+//   · 服务端模式（读产品**同一个键** ✓）⇒ **仍然要**一次真的服务端补画 ✓（与今天一致，不放宽 ✓）；
+//   · 客户端模式 ⇒ 要**内核真的把像素贴到了画布上** ✓（不是"内核句柄在不在"✗ —— 那只是"已装载" ✓）。
+// **客户端那条路的证据是三层** ✓（缺一层都会把"空白画布"放过去 ✓）：
+//   ① `yanshiStats.wasm` ✓：内核模块已装载 —— 产品正是用它 gate 客户端路径 ✓（`kernelReady()` ✓）；
+//   ② `yanshiKernelReady` ✓：内核实例已建好、原子已装载 ✓（`loadKernel` 里置位 ✓，随后立刻
+//      `renderViewport` ✓；`browser-ui-check` 早就拿它当"内核就绪"的判据 ✓ ⇒ 与既有约定一致 ✓）；
+//   ③ `yanshiStats.lastArea > 0` ✓ **且** 内核自报的 tile 缓存读写 > 0 ✓（后者的门面是
+//      `window.yanshi.kernelStats()` ✓，它原样转发内核的 `stats_json` ✓）：
+//      `lastArea` **全仓只有一处写入** ✓ —— `drawKernelRegion` 里**成功 `putImageData` 之后** ✓
+//      ⇒ 它证明"画布上真的被内核写过一块像素" ✓；内核计数是**内核自己报的** ✓
+//      ⇒ 它证明"内核确实渲染过 tile" ✓。两个一起才排得掉"内核渲染出空缓冲区 ⇒ 早退" ✗
+//      与"贴了个 0 面积" ✗ 这两种**现象一样**的空白画布 ✓。
+// **判据仍然能红** ✓：内核恒不画（`lastArea`/计数停在 0 ✓）⇒ 这里超时退出 ✓；
+// `board.width` 停在默认 300 ✓、或尺寸小于显示宽度的一半 ✓ ⇒ 第一层就退出 ✓。
+const serverRenderOn = `(() => { try { return localStorage.getItem("yanshi.serverRender") === "1"; } catch (error) { return false; } })()`;
 if (!(await waitFor(
   `(() => {
      const b = document.getElementById("board");
      const shown = b.getBoundingClientRect().width;
-     return b.width !== 300 && b.width >= Math.floor(shown * 0.5)
-            && window.yanshi.state().serverBlits > 0;
+     if (!(b.width !== 300 && b.width >= Math.floor(shown * 0.5))) return false;
+     const st = window.yanshi.state();
+     if (${serverRenderOn}) return st.serverBlits > 0;
+     const stats = window.yanshiStats || {};
+     if (stats.wasm !== true || window.yanshiKernelReady !== true) return false;
+     const kernel = window.yanshi.kernelStats ? window.yanshi.kernelStats() : null;
+     return (stats.lastArea | 0) > 0
+            && !!kernel && ((kernel.cache_misses | 0) + (kernel.cache_hits | 0)) > 0;
    })()`,
   "画布尺寸与首帧",
   20000,
 ))) {
-  // **两个条件各自的值都打出来** ✓（第 422 轮 ✓）：这条等待是**两个条件相与** ✗ ——
-  // `board.width > 400` ✓ **且** `serverBlits > 0` ✓ ⇒ 任一边没成立都会在这里退出 ✓，
-  // 而原消息只描述前者的症状 ✗ ⇒ **看不出是哪一边** ✓（**失败理由无法定位** ✗）。
+  // **两边各自的值都打出来** ✓（第 422 轮 ✓）：这条等待是**模式相关的合取** ✗ ——
+  // 任一边没成立都会在这里退出 ✓，而只说前者的症状 ✗ ⇒ **看不出是哪一边** ✓（**失败理由无法定位** ✗）。
   const diag = await evaluate(`(() => {
     const b = document.getElementById("board");
-    let blits = "?";
-    try { blits = window.yanshi.state().serverBlits; } catch (e) { blits = "取不到: " + e; }
-    return { width: b && b.width, height: b && b.height, styleWidth: b && b.style.width, serverBlits: blits };
+    const stats = window.yanshiStats || {};
+    const out = { width: b && b.width, height: b && b.height, styleWidth: b && b.style.width,
+                  shownWidth: b ? Math.round(b.getBoundingClientRect().width) : null,
+                  mode: ${serverRenderOn} ? "服务端" : "客户端优先" };
+    try { out.serverBlits = window.yanshi.state().serverBlits; } catch (e) { out.serverBlits = "取不到: " + e; }
+    out.wasm = stats.wasm === true;
+    out.kernelReady = window.yanshiKernelReady === true;
+    out.lastArea = stats.lastArea | 0;
+    try {
+      const kernel = window.yanshi.kernelStats ? window.yanshi.kernelStats() : null;
+      out.kernelTiles = kernel ? ((kernel.cache_misses | 0) + (kernel.cache_hits | 0)) : null;
+    } catch (e) { out.kernelTiles = "取不到: " + e; }
+    return out;
   })()`);
-  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（应与显示宽度同量级、且不是默认 300 ✓）显示宽度=${JSON.stringify(diag.styleWidth)} height=${diag.height} serverBlits=${diag.serverBlits}（需 >0 ✓）`);
+  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（应与显示宽度同量级、且不是默认 300 ✓）显示宽度=${JSON.stringify(diag.styleWidth)}（rect=${diag.shownWidth}）height=${diag.height}｜模式=${diag.mode} ⇒ 服务端模式需 serverBlits>0（实测 ${diag.serverBlits} ✓）｜客户端模式需内核画过（wasm=${diag.wasm} kernelReady=${diag.kernelReady} lastArea=${diag.lastArea} 内核 tile 读写=${diag.kernelTiles}，四者都需成立 ✓）`);
   process.exit(1);
 }
 
@@ -164,10 +202,14 @@ for (const key of ["history", "assets", "file", "diag", "paint"]) {
     await capture("layout-tab-mismatch");
     process.exit(1);
   }
-  // **16 张** ✓ = 原来的 17 张减去**工程包那张** —— 它按用户第 6 条的要求被搬进了**顶栏「文件」菜单** ✓
+  // **17 张** ✓ = **18 张**减去**工程包那张** —— 后者按用户第 6 条被搬进了**顶栏「文件」菜单** ✓
   //（"导入导出不适合放在信息面板" ✓）。少的那张必须**在菜单里找得到** ✓，所以这里同时点名 ✓。
-  if (total !== 16) {
-    console.error(`❌ 面板里的卡片总数变成 ${total} ⇒ 搬卡时丢了卡 ✗（应当是 16 张 ✓）`);
+  // **为什么从 16 改成 17** ✓（本轮 ✓）：诊断入口 `#cardDiagnostics`（"下载诊断包" ✓）
+  // 作为**一张新的诊断卡**加进了 `aside` ✓（`7083595` ✓）⇒ 面板里的卡片**本来就该是 17 张** ✓。
+  // ⇒ 这条**计数**是"搬卡时丢卡"的**绊线** ✓：数量一变就得**显式重新基线** ✓ ——
+  // 所以这里改的是**基线**，不是把绊线放松 ✗（判据强度不变 ✓：数量再变一次照样红 ✓）。
+  if (total !== 17) {
+    console.error(`❌ 面板里的卡片总数变成 ${total} ⇒ 搬卡时丢了卡 ✗（应当是 17 张 ✓）`);
     await capture("layout-lost-card");
     process.exit(1);
   }
