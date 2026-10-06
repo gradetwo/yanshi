@@ -19,6 +19,7 @@ const BUDGET_MS = Number(process.env.THUMB_COLD_MS || 16);
 
 const stamp = Date.now().toString(36);
 const doc = `thumb_cold_${stamp}`;
+const createStarted = process.hrtime.bigint();
 const created = await (await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: doc, width: 320, height: 240 }),
@@ -40,8 +41,12 @@ const first = await timeIt();
 // 第二次（稳态对照 ✓）—— 只打印，不判 ✓。
 const second = await timeIt();
 
+const createMs = Number(process.hrtime.bigint() - createStarted) / 1e6;
+const endToEnd = createMs + first.ms;
+console.log(`  建文档（**打开** ⇒ 预热在这里付）：${createMs.toFixed(2)} ms`);
 console.log(`  第一次 get_document：${first.ms.toFixed(2)} ms（**首冷** ⇒ 生成缩略图 ⇒ 触发服务端第一次渲染）`);
 console.log(`  第二次 get_document：${second.ms.toFixed(2)} ms（**稳态** ⇒ 只作对照，不判）`);
+console.log(`  端到端（**建文档 ＋ 首次取状态**）：${endToEnd.toFixed(2)} ms（**这是用户实际感知的第一步**）`);
 if (first.value && first.value.ok !== true) {
   console.error("  ✗ 第一次调用本身失败：" + JSON.stringify(first.value).slice(0, 200));
   process.exit(2);
@@ -52,3 +57,13 @@ if (first.ms > BUDGET_MS) {
   process.exit(1);
 }
 console.log(`  ✓ 第一次取状态 ${first.ms.toFixed(2)} ms ≤ ${BUDGET_MS} ms ⇒ 首冷不阻塞请求`);
+// **端到端也要判**：否则把成本往建文档挪会永远通过，而那只是把卡顿换了位置。
+// 上限取实测值的量级：本机 2026-10-07 实测建文档约 190 ms ＋ 首次取状态约 5 ms ⇒ 端到端约 195 ms，
+// 所以 400 ms 能容忍机器抖动，而真回归（例如回到 900 ms）会红。
+const END_TO_END_BUDGET_MS = Number(process.env.THUMB_E2E_MS || 400);
+if (endToEnd > END_TO_END_BUDGET_MS) {
+  console.error(`  ✗ 端到端（建文档 ＋ 首次取状态）要 ${endToEnd.toFixed(2)} ms ⇒ 超过 ${END_TO_END_BUDGET_MS} ms` +
+    `（建文档 ${createMs.toFixed(2)} ＋ 首次取状态 ${first.ms.toFixed(2)}）⇒ 别把一次性成本往这儿挪`);
+  process.exit(1);
+}
+console.log(`  ✓ 端到端 ${endToEnd.toFixed(2)} ms ≤ ${END_TO_END_BUDGET_MS} ms ⇒ 成本没有被挪到别处`);
