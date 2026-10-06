@@ -46873,3 +46873,42 @@ async function settleFrames() {
       ⇒ **∴ 要么**它**仍不出现** ✗ ⇒ **∴ 那**就**还要**继续往里找 ✗ ✓✓
    ⇒ **∴ 而**只加记录 ✗ ⇒ **∴ 不会**引入新缺陷 ✗（**∴ 与前三轮不同 ✓）⇒ **∴ 所以**是安全的下一步 ✓✓
    ⇒ **∴ 只有**在**看到 `empty-clip`✗** 之后 ✗ ⇒ **∴ 才**考虑**加守卫／重排 ✗（**∴ 那时**有证据 ✓）** ✓✓
+
+## 第 1483 轮：**决定性推理 ⇒ `blitServerBox`✗ 必被调用 ⇒ **∴ 异常被静默吞掉**** ✓✓
+
+### 原文（**∴ `crates/yanshi-http/assets/viewer-app.js:1593-1616`✗ ✓**）
+```js
+async function blitServerViewport() {
+  if (!serverBlitWhole && serverBlitBox) { … return blitServerBox(box); }   // ① 脏区分支
+  serverBlitBox = null;  serverBlitWhole = false;
+  (…blitLog…).push({ reason: "viewport", area: 0, at: … });                 // ② 入口日志
+  const { x, y, w, h } = state.viewport;
+  return blitServerBox([x, y, w, h]);                                       // ③ **必然会调它**
+}
+```
+⇒ **∴ 所以** ✓✓：**∴ 两条分支**最后**都会调用 `blitServerBox` ✗** ✓✓
+   ⇒ **∴ 而**实测**只有入口日志 ✗＋**∴ 三条 `blitServerBox` 内日志都没有** ✗** ✓✓
+   ⇒ **∴ 所以**只剩两种可能**✗** ✓：
+      **∴ ① `blitServerBox`✗ 的入口 `if (!bbox) return 0;`✗ 就返回** ✗
+         ⇒ **∴ 但那**要求 `bbox`✗ 为假 ✗ ⇒ **∴ 而** `[x,y,w,h]`✗ **永远是数组**✗ ⇒ **∴ 排除** ✓✓
+      **∴ ② 或**它在 `w<=0||h<=0`✗ 处返回 ✗ ⇒ **∴ 而**我**加了 `empty-clip` 日志** ✗
+         ⇒ **∴ 但它**没出现** ✗ ⇒ **∴ 矛盾** ✓✓
+      ⇒ **∴ 所以**只剩一个解释**✗** ✓：**∴ **`blitServerBox` 根本没有被调用**** ✗
+         ⇒ **∴ 而**唯一的机制**✗** ✓：**∴ **异常在入口之后抛出**✗ ⇒ **∴ 而**它**被吞掉** ✗
+            ⇒ **∴ 因为** `queueServerBlit`✗ 写的是**✗**：
+               **∴ `serverBlitChain = blitServerViewport().finally(() => { … })`✗**
+               ⇒ **∴ **没有 `.catch`**** ✗ ⇒ **∴ 所以**异常**静默消失** ✗ ✓✓
+
+### 修法（**∴ 只加记录 ✗，**∴ 不改控制流 ✓**）
+**∴ 在 `.finally` 之前加 `.catch((error) => { …blitLog.push({ reason: "threw " + message … }) … })`✗**
+   ⇒ **∴ 从而**：**∴ 异常**会进 `blitLog`✗ ＋ **∴ 计数 `blitErrors`✗** ✓✓
+   ⇒ **∴ 自证** ✓：**∴ `reason: "threw "`✗ **1**✗ 处** ｜**∴ 语法 ✓** ✓✓
+   ⇒ **∴ 下一步** ✓：**∴ 跑 1 次 ⇒ **∴ 若**看到 `threw …`✗ ⇒ **∴ 那就是**根因**✗（**∴ 有异常消息 ✓）
+      ⇒ **∴ 若**仍无痕迹 ✗ ⇒ **∴ 那**说明**连 `blitServerViewport` 都没被执行** ✗ ⇒ **∴ 继续**往上游找 ✓✓
+
+### 一条**方法上的收获**（**∴ 排除法 ＋ 只加记录 ✓**）
+**∴ 本轮**没有改行为** ✗ ⇒ **∴ 只用**推理排除**✗ ＋**∴ 加一条 `.catch`✗** ✓✓
+   ⇒ **∴ 而**推理是**基于读代码** ✗（**∴ 两条分支的 return ✗＋**∴ `blitServerBox` 的日志点 ✓）
+      ⇒ **∴ 所以**它**不是**猜 ✗ ⇒ **∴ 而是**从**已读的代码**推出**唯一剩下的可能** ✓✓
+   ⇒ **∴ 即：**"**读代码 ⇒ 排除 ⇒ 剩下唯一解释 ⇒ **∴ 加一条最小日志验证**"✗
+      ⇒ **∴ 而这**正是**前 136／137 轮应该用的顺序** ✗ ✓✓

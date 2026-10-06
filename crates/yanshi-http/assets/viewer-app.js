@@ -1582,7 +1582,18 @@ function queueServerBlit(bbox = null) {
     return serverBlitChain;
   }
   serverBlitBusy = true;
-  serverBlitChain = blitServerViewport().finally(() => {
+  serverBlitChain = blitServerViewport()
+    .catch((error) => {
+      // Record the failure instead of letting it vanish: without this a throw inside
+      // the blit leaves only the entry log behind and the canvas silently stays stale.
+      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+        reason: "threw " + String((error && error.message) || error),
+        area: -1, at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
+      });
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+      window.yanshiStats.blitErrors = (window.yanshiStats.blitErrors || 0) + 1;
+    })
+    .finally(() => {
     serverBlitBusy = false;
     if (serverBlitPending) { serverBlitPending = false; queueServerBlit(); }
   });
