@@ -171,7 +171,11 @@ if (!(controlProbe && controlProbe.failed)) {
 // （`window.yanshi.kernelStats()` 为 `null` ✓；SW 缓存里 `/api/blob/` 条数为 **0** ✓，
 //  而离线初始化需要它 ⇒ 只能靠 SW **现取活网** ✓ —— 这正是"网络其实没断"的证据 ✓）。
 // ⇒ 这是**真发现**，不在这里掩盖 ✓：本次审计**只**让 SW 缓存那条断言（离线重载）真的离线 ✓。
-await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+// **这里原先就恢复联网** ✗ ⇒ 下面"断网后笔刷面板"与"离线落笔"三段**其实跑在线上** ✗
+// （既有问题，本次审计确认 ✓）。现在把它**移到最后** ✓，让那三段成为**真正的离线断言** ✓。
+// 以前不能移：那时 `/health` 不在 `SHELL` 里 ⇒ 离线首次 `fetch("/health")` 落空 ⇒
+// 回落到外壳 HTML ⇒ `.json()` 抛 `Unexpected token '<'` ⇒ 内核起不来 ⇒ 三段全红 ✗。
+// 现在 `SHELL` 已预缓存 `/health` ✓（与 wasm 两件同版 ✓）⇒ 内核能在离线时起来 ✓。
 console.log(`  ② 离线重载后：board=${rendered.board}｜标题=${rendered.title}｜正文长度>20=${rendered.hasShellText}`);
 // (A)② 的端到端判据 —— 断网后笔刷面板必须仍有选项。
 // 面板清单走服务端工具 list_assets ⇒ 若没有离线回退，下拉是空的 ⇒ 选不到笔 ⇒ 画不出来。
@@ -321,6 +325,7 @@ if (!(controlProbe && controlProbe.failed)) {
   failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
 }
 // **收尾：把 SW 的网络恢复** ✓（页面网络已在上面恢复 ✓；别把这个浏览器实例弄成半残 ✓）。
+await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 await setServiceWorkerFetch(false);
 if (swControl) swControl.socket.close();
 // **必须显式退出** ✗ —— 第一版成功时"自然走到结尾" ✗，而 WebSocket 让事件循环不退出 ✓
