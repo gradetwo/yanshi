@@ -2209,7 +2209,15 @@ mod parallel_impl {
         let mut track = ObjectTrack::default();
         let mut probe = RenderProbe::default();
         let buffer = renderer.render_accumulation(
-            state, store, region, padding, background, &mut stats, &mut track, &mut probe, None,
+            state,
+            store,
+            region,
+            padding,
+            background,
+            &mut stats,
+            &mut track,
+            &mut probe,
+            &renderer.bitmaps,
         )?;
         stats.absorb(&track);
         Ok((buffer.crop(region), stats, probe, 1))

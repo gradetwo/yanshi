@@ -37079,3 +37079,37 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
   **逐位相等**（比较 `to_bits()`）⇒ 这条能红（改成近似或改错表项就会红），且它守的正是 D0 性质；
 - 另加一条"逐字节渲染一致"的既有判据作为回归（渲染结果不许变）；
 - 时间对照（1024² 的 blit_rgba8：6.454s，6.15 µs/px）作为**记录**，不作为判据（本机噪声大）。
+
+## 第 1179 轮：修一个严重缺口——主干的 wasm 内核根本编不出来（我的门禁漏了 wasm 目标）
+
+子代理在重新基线化 browser-layout 时发现并报给我，我自己复现确认：
+
+    cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+    error[E0308]: mismatched types
+      --> crates/yanshi-render/src/render.rs:2212:92
+      expected `&BitmapCache`, found `Option<_>`
+
+原因：提交 049e3ec（跨渲染位图缓存）给 `render_accumulation` 加了 `bitmaps: &BitmapCache` 参数，
+**原生路径改了（render.rs:575 传 `&self.bitmaps`），但 wasm32 的调用点漏了**（2212 还是 `None`）。
+
+严重性：**(A)③ 的核心（默认客户端渲染）在 wasm32 上根本编译不过**。而我这轮合并时只跑了原生门禁
+（build --all-targets 用的是宿主目标），所以完全没看到。这也**根本解释**了本会话反复提到的那个陷阱：
+"新 worktree 缺 crates/yanshi-wasm/pkg ⇒ viewer 静默退回服务端渲染" —— 不只是 gitignore，
+而是**它压根编不出来**。
+
+修法：一行 —— wasm32 调用点把 `None` 换成 `&renderer.bitmaps`（与原生串行路径 render.rs:575 一致）。
+
+**门禁缺口（本轮的真正教训）**：我此前固定用的"两步门禁"是
+  cargo build --workspace --all-targets && cargo test --workspace
+**它不含 wasm 目标** ⇒ 浏览器内核编译失败也照样"全绿"。
+从本轮起门禁固定为**四步**：
+  ① cargo fmt --all -- --check
+  ② cargo clippy --workspace --all-targets -- -D warnings
+  ③ cargo build --workspace --all-targets
+  ④ cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release   ← 本轮补上
+  ⑤ cargo test --workspace
+（wasm 目标需要 rustup 工具链：~/.cargo/bin/cargo，宿主 /usr/bin/cargo 没有 wasm32 std。）
+
+另注：子代理还发现 browser-layout 的第二条过期基线 —— `total !== 16`（:206），
+因为 7083595 加了 `#cardDiagnostics` 卡片，aside 现在合法地有 17 张 ⇒ 判据在步骤 ② 就红。
+它已把 16 → 17 重新基线化（守卫未变，仍是绊线），这一条会在它的分支里合并进来。
