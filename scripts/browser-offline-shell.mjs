@@ -22,6 +22,33 @@ socket.onmessage = (event) => { const m = JSON.parse(event.data); if (m.id && pe
 await new Promise((open) => { socket.onopen = open; });
 const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+// **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
+// 把 `self.fetch` 换成必然失败的桩 ✓（与 `browser-offline-assets.mjs` 同一招 ✓）。
+const connectTarget = async (target) => {
+  const targetSocket = new WebSocket(target.webSocketDebuggerUrl);
+  let targetNextId = 1;
+  const targetPending = new Map();
+  targetSocket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id && targetPending.has(message.id)) {
+      targetPending.get(message.id)(message);
+      targetPending.delete(message.id);
+    }
+  };
+  await new Promise((open) => { targetSocket.onopen = open; });
+  const targetSend = (method, params) =>
+    new Promise((resolve) => {
+      const id = targetNextId++;
+      targetPending.set(id, resolve);
+      targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
+    });
+  const targetEvaluate = async (expression) => {
+    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    const result = message.result || {};
+    return result.result ? result.result.value : undefined;
+  };
+  return { socket: targetSocket, send: targetSend, evaluate: targetEvaluate };
+};
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
 await send("Page.navigate", { url });
 // **只等"页面就绪"** ✓（第 892 轮 ✓）：原来固定睡 3 秒 ✗ ⇒ 纯猜测 ✗ ——
@@ -64,6 +91,33 @@ const cacheReport = await evaluate(`(async () => {
 })()`);
 console.log(`  · 断网前缓存报告 = ${JSON.stringify(cacheReport)}`);
 
+// ⚠️ **CDP 的网络模拟到不了 service worker 自己的 `fetch()`** ✗（本次审计复核 ✓）：
+// 页面 `navigator.onLine === false` 时，SW 里 `fetch(...)` 照样 200 ✓，
+// `Network.setCacheDisabled` 与 `clearBrowserCache` 都管不住 ✓ ⇒ **只模拟页面网络时，
+// 本判据可以在 SW 仍走活网（每次导航与每个资产都现取）的情况下通过** ✗ ⇒ 那样它就没有证明 SW 缓存 ✓。
+// ⇒ 在 SW 上下文里把 `self.fetch` 换成必然失败的桩 ✓ —— 这正是"网络没了"时 SW 看到的那件事 ✓
+// ⇒ 之后外壳只能来自 **SW 自己的 Cache Storage** ✓（`caches.match` 回落那条路才是被考的对象 ✓）。
+const swTarget = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json())
+  .find((target) => target.type === "service_worker");
+const swControl = swTarget ? await connectTarget(swTarget) : null;
+if (swControl) await swControl.send("Runtime.enable");
+const setServiceWorkerFetch = async (broken) => {
+  if (!swControl) return false;
+  const value = await swControl.evaluate(
+    broken
+      ? `(() => { if (!self.__yanshiRealFetch) self.__yanshiRealFetch = self.fetch;
+           self.fetch = () => Promise.reject(new TypeError("yanshi-offline-stub")); return typeof self.fetch; })()`
+      : `(() => { if (self.__yanshiRealFetch) self.fetch = self.__yanshiRealFetch; return typeof self.fetch; })()`,
+  );
+  return value === "function";
+};
+if (!(await setServiceWorkerFetch(true))) {
+  console.error("  ✗ 切不断 service worker 的网络（拿不到 SW 调试目标 / 桩没装上）⇒ 判据无法作出离线结论");
+  if (swControl) swControl.socket.close();
+  socket.close();
+  process.exit(1);
+}
+
 // **断网前先让内核装载完** ✗ —— 离线重载要靠**本地缓存**里的 `/api/atoms` 才建得起内核 ✓；
 // 在线这趟没装完就断网 ⇒ 离线内核是 null ⇒ 后面量到的"画不出墨"是**前提不成立** ✗，
 // 而不是"离线不会画" ✓（本机高负载时实测踩到过：`readyState` 完成 ≠ 内核装载完成 ✓）。
@@ -89,6 +143,34 @@ const rendered = await evaluate(`(() => ({
   title: document.title || "",
   hasShellText: document.body ? document.body.innerText.length > 20 : false,
 }))()`);
+// **负对照**（本次审计加的 ✓）：断网状态下，页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
+// 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
+//（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
+// ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+const controlProbe = await evaluate(`(async () => {
+  try {
+    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
+    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+  } catch (error) { return { failed: true, error: String(error) }; }
+})()`);
+console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+// **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
+if (!(controlProbe && controlProbe.failed)) {
+  console.error(`  ⊘ 判据作废（VOID）：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 本跑没有结论`);
+  await setServiceWorkerFetch(false);
+  if (swControl) swControl.socket.close();
+  await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  socket.close();
+  process.exit(1);
+}
+// ⚠️ **恢复联网**（原样保留 ✓）：下面的"断网后笔刷面板"与"离线落笔"三段其实运行在**在线**网络上 ✗
+// ⇒ 它们**从来不是离线断言** ✓（本次审计确认的既有问题 ✓，见报告 ✓）。
+// 我实验过把这一句挪到末尾（让那三段真正离线 ✓）⇒ **判据转红** ✗：离线重载后内核起不来
+// （`window.yanshi.kernelStats()` 为 `null` ✓；SW 缓存里 `/api/blob/` 条数为 **0** ✓，
+//  而离线初始化需要它 ⇒ 只能靠 SW **现取活网** ✓ —— 这正是"网络其实没断"的证据 ✓）。
+// ⇒ 这是**真发现**，不在这里掩盖 ✓：本次审计**只**让 SW 缓存那条断言（离线重载）真的离线 ✓。
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 console.log(`  ② 离线重载后：board=${rendered.board}｜标题=${rendered.title}｜正文长度>20=${rendered.hasShellText}`);
 // (A)② 的端到端判据 —— 断网后笔刷面板必须仍有选项。
@@ -234,6 +316,13 @@ if (panelOptions < 2) {
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
 if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页面没有内容");
+// **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
+if (!(controlProbe && controlProbe.failed)) {
+  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+}
+// **收尾：把 SW 的网络恢复** ✓（页面网络已在上面恢复 ✓；别把这个浏览器实例弄成半残 ✓）。
+await setServiceWorkerFetch(false);
+if (swControl) swControl.socket.close();
 // **必须显式退出** ✗ —— 第一版成功时"自然走到结尾" ✗，而 WebSocket 让事件循环不退出 ✓
 // ⇒ 外层 `timeout` 把它当超时（exit 124 ✓）⇒ **红绿分不开** ✗（这是判据的致命问题 ✓）。
 socket.close();

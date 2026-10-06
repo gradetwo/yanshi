@@ -61,6 +61,33 @@ const evaluate = async (expression) => {
   }
   return result.result?.result?.value;
 };
+// **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
+// 把 `self.fetch` 换成必然失败的桩 ✓（与 `browser-offline-assets.mjs` 同一招 ✓）。
+const connectTarget = async (target) => {
+  const targetSocket = new WebSocket(target.webSocketDebuggerUrl);
+  let targetNextId = 1;
+  const targetPending = new Map();
+  targetSocket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id && targetPending.has(message.id)) {
+      targetPending.get(message.id)(message);
+      targetPending.delete(message.id);
+    }
+  };
+  await new Promise((open) => { targetSocket.onopen = open; });
+  const targetSend = (method, params) =>
+    new Promise((resolve) => {
+      const id = targetNextId++;
+      targetPending.set(id, resolve);
+      targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
+    });
+  const targetEvaluate = async (expression) => {
+    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    const result = message.result || {};
+    return result.result ? result.result.value : undefined;
+  };
+  return { socket: targetSocket, send: targetSend, evaluate: targetEvaluate };
+};
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Network.enable");
@@ -264,6 +291,54 @@ if (!onlineInk || onlineInk.nonBackground <= 0) failures.push(`在线落笔后�
 
 // ④ 断网 + 在**另一份同样全新的文档**上画同一笔
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+// ⚠️ **CDP 的网络模拟到不了 service worker 自己的 `fetch()`** ✗（本次审计复核 ✓）：
+// 页面 `navigator.onLine === false` 时，SW 里 `fetch(...)` 照样 200 ✓，
+// `Network.setCacheDisabled` 与 `clearBrowserCache` 都管不住 ✓ ⇒ **只模拟页面网络时，
+// 本判据可以在 SW 仍走活网（离线导航与 .myb 都现取）的情况下通过** ✗ ⇒ 那样它就没有证明 SW 缓存 ✓。
+// ⇒ 在 SW 上下文里把 `self.fetch` 换成必然失败的桩 ✓ —— 这正是"网络没了"时 SW 看到的那件事 ✓
+// ⇒ 之后外壳/内核/笔刷只能来自 **SW 自己的 Cache Storage** ✓。
+const swTarget = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json())
+  .find((target) => target.type === "service_worker");
+const swControl = swTarget ? await connectTarget(swTarget) : null;
+if (swControl) await swControl.send("Runtime.enable");
+const setServiceWorkerFetch = async (broken) => {
+  if (!swControl) return false;
+  const value = await swControl.evaluate(
+    broken
+      ? `(() => { if (!self.__yanshiRealFetch) self.__yanshiRealFetch = self.fetch;
+           self.fetch = () => Promise.reject(new TypeError("yanshi-offline-stub")); return typeof self.fetch; })()`
+      : `(() => { if (self.__yanshiRealFetch) self.fetch = self.__yanshiRealFetch; return typeof self.fetch; })()`,
+  );
+  return value === "function";
+};
+if (!(await setServiceWorkerFetch(true))) {
+  console.error("  ✗ 切不断 service worker 的网络（拿不到 SW 调试目标 / 桩没装上）⇒ 判据无法作出离线结论");
+  if (swControl) swControl.socket.close();
+  socket.close();
+  process.exit(1);
+}
+// **负对照**（本次审计加的 ✓）：断网状态下，页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
+// 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
+//（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
+// ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+const controlProbe = await evaluate(`(async () => {
+  try {
+    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
+    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+  } catch (error) { return { failed: true, error: String(error) }; }
+})()`);
+console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+// **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑几十秒。
+if (!(controlProbe && controlProbe.failed)) {
+  console.error(`  ⊘ 判据作废（VOID）：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 本跑没有结论`);
+  await setServiceWorkerFetch(false);
+  if (swControl) swControl.socket.close();
+  await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  socket.close();
+  process.exit(1);
+}
 brushStrokeRequests = 0; // **只数离线之后的** ✓
 const offlineBrush = await preparePage(offlineDoc.id, offlineDoc.token);
 const onlineFlag = await evaluate("navigator.onLine");
@@ -350,6 +425,10 @@ if (brushStrokeRequests !== 0) {
 if (onlineFlag !== false) {
   failures.push(`网络并没有真的被切断（navigator.onLine=${onlineFlag}）⇒ 判据前提不成立`);
 }
+// **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
+if (!(controlProbe && controlProbe.failed)) {
+  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+}
 if (!(reloadInk && reloadInk.nonBackground > 0)) {
   failures.push(`断网重载后那一笔没了（非背景像素 ${reloadInk && reloadInk.nonBackground}）⇒ 离线落笔没有挺过刷新`);
 }
@@ -405,6 +484,8 @@ if (!offlineBoard || typeof offlineBoard !== "string" || !onlineBoard || typeof 
   }
 }
 
+await setServiceWorkerFetch(false);
+if (swControl) swControl.socket.close();
 await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 socket.close();
 if (failures.length) {
