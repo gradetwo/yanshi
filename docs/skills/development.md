@@ -182,3 +182,15 @@
 3. 遇到"全量红、单跑绿"，**第一嫌疑是构建产物污染**，先 `cargo clean -p <crate>` 或换 target 复验，
    再怀疑产品缺陷或判据；
 4. **不要**因为这种读数去改产品代码 —— 本会话我差点因此把一处本来正确的共享缓存改成"修复版"。
+
+### 9.11 浏览器离线判据：CDP 的离线模拟到不了 service worker 的 fetch
+**现象**：`Network.emulateNetworkConditions {offline:true}` 之后，页面的 `navigator.onLine === false`，
+但 service worker 里自己的 `fetch("/mediums/marker.wasm")` **仍然返回 200**。
+在 SW 的 debug target 上也设 offline **没有变化**；`Network.setCacheDisabled` 与
+`Network.clearBrowserCache` **也没用**（不可变响应照样被 SW 的 fetch 拿到）。
+**后果**：任何"只模拟网络条件"的浏览器离线判据，都可能在**被测代码已经坏掉**的情况下**假绿**。
+**做法**：
+1. 在 SW 上下文里 **stub `self.fetch`**（让它按你的需要在"在线/离线"之间切换）；
+2. 加一条**负对照**：一个**故意不缓存**的同源资产在"离线"时**必须取不到**；
+   若它仍然返回自己的字节，则判据应当**自宣无效**，而不是通过；
+3. 把上面两条写进判据的注释，说明它证明了什么、没证明什么（例如不证明浏览器配额/驱逐）。

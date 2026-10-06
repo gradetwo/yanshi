@@ -38663,3 +38663,42 @@ SHELL 里有 **9 条笔刷条目含 `#`**（例如 `"/brushes/8B_Pencil#1.myb"`�
 ### 教训
 "`+` 在路径里是字面加号"这类**协议细节**可以通过推理得出，但"**这个具体实现会不会解码**"
 必须实测 —— 我这次对 `%` 的推理就是错的，而实测一次就纠正了。
+
+## 第 1213 轮：离线资产覆盖分支完成——并带回两个**影响其他判据可信度**的发现
+
+### 分支成果（fix/offline-asset-coverage，4 提交）
+`service-worker.js` 的静态分支从"只在 `request.mode === "navigate"` 时写缓存"改成
+**cache-on-first-use**（任何成功的同源静态 GET 都写进同一个 build-id 缓存）：
+  `if (response && response.ok && !neverCache && response.status !== 206) { if (navigate) cache.put("/", …); else cache.put(request, …); }`
+排除 `/api/`、`/ws`、`/service-worker.js`、206；`/api/blob/` 仍是 cache-first（它在更早的分支返回）。
+**不新增预缓存**（`SHELL` 仍 207 条）⇒ **按需上限实测 19.0 MiB**（纹理 12.0 ＋ 样例 4.9 ＋ 预览 1.8 ＋ 品牌 0.2 ＋ 介质 0.2）。
+
+两条判据都**先红后绿**并 `cmp` 验证还原：
+- `tool-offline-asset-coverage.mjs`：在 `node:vm` 里**真跑** `service-worker.js`（内存版 Cache Storage ＋
+  可切换 fetch），8 类各取一个代表，在线取一次再离线取一次，字节必须是该文件自己的；
+  另外断言 `/api/` 与 `/ws` 不被拦截、`/api/blob/` 仍被拦、`/service-worker.js` 永不缓存、
+  **build-A ⇒ build-B 会清掉 A**。红时 5 类"断网后落到了外壳 `/`（HTML）"。
+- `browser-offline-assets.mjs`：真 Chromium、离线重载。红时离线纹理 0/10、每个探针都返回
+  542,416 字节的 HTML 外壳；绿时 cache 401 条、离线纹理 10/10、调色板 132，
+  纹理/介质/样例/品牌/预览**长度与在线一致**。
+  ⇒ 它还**修了自己判据的一个 flake**：第一版数"懒加载的 `<img>`"，同代码读到 15 又读到 0 ⇒ 改成**字节级**检查。
+
+### ⚠️ 发现 1：CDP 的离线模拟**到不了 service worker 自己的 `fetch()`**
+实测：页面 `navigator.onLine === false`，而 SW 里 `fetch("/mediums/marker.wasm")` **仍返回 200／30,281 字节**；
+在 SW 的 debug target 上也设 offline **没有变化**；`Network.setCacheDisabled` 与 `clearBrowserCache` **也没用**
+（不可变响应照样被 SW 的 fetch 拿到）⇒ **早先那些"离线"跑法在变异代码上曾经是假绿**。
+对策（它采用的）：在 SW 上下文里 **stub `self.fetch`**，并加一条**负对照** ——
+一个未缓存的 `/brand` SVG 离线**必须不返回自己的字节**；若返回，判据**自宣无效**而不是通过。
+⇒ **结论：任何"只模拟网络条件"的浏览器离线判据单独不可靠，值得审计其他 `browser-offline-*`。**
+
+### ⚠️ 发现 2：`browser-no-stale-read.mjs` 有一条**既有**竞态（与本分支无关）
+它在这里红，但用 **main 的 service worker 也完全一样红**（A/B 重建重跑）。
+根因在判据本身：`waitReady` 在 `Page.navigate` 之后**立刻**轮询 `readyState && #board`，
+可能匹配到**上一个文档** ⇒ 于是约 1.1 s 就在**默认 300×150 画布**上采样
+（画布 1.8 s 才到 320×240，暗像素几秒后才落）⇒ 这是既有竞态，不是回归。
+
+### 它如实标注的范围
+node 判据证明的是**SW 缓存策略**（在忠实的 Request/Response 语义下；**不**证明浏览器配额/驱逐）；
+浏览器判据证明的是**离线渲染与字节正确**（**不**覆盖那 9 支 `#` 笔刷、PWA 安装、配额）。
+调色板经**查看器读工具缓存**（没有 `/palettes` 路由）、字体经 `include_bytes!` 进 wasm ——
+两者都**明确标注为"不是 SW 覆盖"**。
