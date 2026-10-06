@@ -110,6 +110,26 @@ for (const { file, re } of docClaims) {
   }
 }
 
+  // **Web 面**（目标 (C)②）：查看器实际调用的工具必须在 HTTP 面里。
+  // **为什么能红**：viewer-app.js 里每出现一个 callTool(name)，而 name 不在 /api/tools 里，
+  // 就是「界面能调、服务端没有」⇒ 用户点下去必失败。（2026-10-07 首次对账：这个方向当时是空的。）
+  const WEB_JS = "crates/yanshi-http/assets/viewer-app.js";
+  const web = new Set(
+    (readFileSync(WEB_JS, "utf8").match(/callTool\("([a-z_0-9]+)"/g) || [])
+      .map((t) => t.replace(/^callTool\("/, "").replace(/"$/, ""))
+  );
+  const webNotHttp = [...web].filter((name) => !http.has(name));
+  if (webNotHttp.length > 0) {
+    fail(`viewer 调用了 HTTP 面没有的工具（点下去必失败）：${webNotHttp.join("、")}`);
+  }
+  // **缺口：Web 用、而任何 profile 都拿不到** = 「人能做、Agent 看不到」。
+  // **只记录、不判**：「Web 面独有的操作是否该让 Agent 也能做」是产品决策，
+  // 既定设计只要求 MCP ⊆ HTTP 与「每 profile 必含 core」，没有说这一条。
+  const anyProfile = new Set([...core.set, ...[...perProfile.values()].flatMap((v) => [...v])]);
+  const webNoProfile = [...web].filter((name) => !anyProfile.has(name));
+  console.log(`  Web 面：${web.size} 个工具（viewer 实际调用）｜任何 profile 都拿不到的 ${webNoProfile.length} 个（记录，不判）` +
+    (webNoProfile.length > 0 ? `：${webNoProfile.join("、")}` : ""));
+
 // ⑥ 打印覆盖面 ✓（让"绿"带上"覆盖了多少" ✓）
 console.log(`  HTTP 面：${http.size} 个工具｜声明 profile：${declaredProfiles.join("、")}`);
 console.log(`  MCP 默认（core）：${core.set.size} 个 ⇒ 覆盖 HTTP 的 ${(100 * core.set.size / http.size).toFixed(1)}%`);
