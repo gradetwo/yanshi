@@ -38986,3 +38986,32 @@ HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 
   `CDP_PORT` 从环境变量读、不从 argv；变异要确认落盘；**回退必须带修订号**（`git add -A` 之后尤其）；
   notes 只追加且轮次编号唯一；五步门禁全绿才提交；英文提交；不碰 main；不推送。
 - 并提示它：现成的红色证据在 `/tmp/wt-offctl`（分支 `test/offline-negative-controls`），可读不可合。
+
+## 第 1236 轮：把两个既有问题定位到**具体行**（供后续修，本轮不动手）
+
+### ① `browser-offline-shell` 的"提前恢复网络"
+`scripts/browser-offline-shell.mjs:92` 在**读完 `rendered` 之后立刻**发
+`Network.emulateNetworkConditions { offline: false, … }` ⇒ 而**紧随其后**的那段
+「(A)② 的端到端判据 —— 断网后笔刷面板必须仍有选项」与更后面的「离线落笔」
+**其实是在线跑的** ✗（它们注释里写着"断网后"，但网络已经恢复）。
+⇒ 子代理实验性地把恢复移到末尾试过 ⇒ **因同一个 kernel/blob 原因变红**
+⇒ 所以**这条要等产品侧修好离线初始化之后再改**，否则只是把一个假绿换成真红。
+
+### ② `browser-offline-journal` 的既有 flake：根因是**一行 head 回退**
+链路（全部在 `crates/yanshi-http/assets/viewer-app.js`）：
+- `:471` 入队时记基线 `base_head: Number(window.yanshiStats.serverHead || 0) || 0` ✓；
+- `:1043` `if (value.head !== undefined) window.yanshiStats.serverHead = value.head;` ✓；
+- **`:1268` `window.yanshiStats.serverHead = atoms.head_seq;`** ← **就是这一行** ✗
+  —— 它的 `atoms` 来自 `fetchOrLocal`，网络失败时会拿到**本地陈旧快照**，
+  于是 `serverHead` 会从服务端的 2 **回退**成快照里的 1 ✗；
+- `:1794` `= response.head ?? window.yanshiStats.serverHead;`（网络优先，本身不回退）✓。
+⇒ 后果：`flushOutbox` 拿回退后的 head 与行上的 `base_head` 比，报**假的"服务端变了"冲突**
+⇒ 队列清不空（实测剩 3 条）⇒ 判据红。判据侧 `:227` 只断言 `base_head > 0`（不敏感），
+所以 flake 出现在后续的"补交后队列清空"断言上。
+⇒ 修法：**只有 `atoms` 来自网络时才更新 `serverHead`**；或者把"离线时最后已知的 head"与
+"服务端当前 head"**分成两个量**，冲突判定只用后者。**这是产品侧改动**。
+
+### 为什么本轮只定位、不动手
+两条都在 `viewer-app.js` / `scripts/browser-offline-*.mjs` 上，而**此刻有一个子代理正在改
+离线内核初始化**（它会动 `viewer-app.js`）⇒ 现在同时改会冲突。
+按"不要与在跑的子代理改同一批文件"的规则，本轮只把位置钉死，留给后续轮次。
