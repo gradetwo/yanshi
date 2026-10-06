@@ -566,6 +566,14 @@ state@seq_n := fold(A_n, base_state(H_n))
 - 默认 `true`，短超时 500ms。
 - 超时返回 `job_pending` + `job_id`。
 - Agent 通过 `get_job(job_id)` 轮询。
+- **它等的是哪一次渲染**（性能专题澄清）：**这一笔改动的脏区**那一次。
+  返回时保证 `render_status.rendered == true`、`job_status == committed`，
+  响应里的 `preview` 就是该脏区的真实渲染。
+- **它不等文档级缩略图**：那张 256² 图是一份**缓存**，改为**按需**产生 ——
+  落后时 `get_document` / `GET /api/documents/<id>/preview` 会**当场重建**（绝不拿旧图冒充 HEAD），
+  而在被请求之前 `get_render_status.thumbnail_current` 为 `false`（滞后可见）。
+  8K 实测：默认单笔 39.5 s（那次重算全在提交收尾）vs `wait_for_render=false` 95.1 ms，
+  两者**逐像素一致** —— 那一次渲染本来就不是调用方要的东西。
 
 Job 对象：
 
