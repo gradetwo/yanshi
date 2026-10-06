@@ -127,6 +127,55 @@ for (const { file, re } of docClaims) {
   // 既定设计只要求 MCP ⊆ HTTP 与「每 profile 必含 core」，没有说这一条。
   const anyProfile = new Set([...core.set, ...[...perProfile.values()].flatMap((v) => [...v])]);
   const webNoProfile = [...web].filter((name) => !anyProfile.has(name));
+  // **参数名也要对账**（目标 (C)③）：viewer 是**唯一**手写参数对象的面，
+  // 所以只有它可能把参数名写错（另两面共用同一份 inputSchema，结构上不会漂移）。
+  // 做法：从 callTool("name", { 起，按**字符串／注释／括号深度**取深度 1 的 `ident:` 键名，
+  // 再与该工具 inputSchema.properties 的名字比对。只看**字面量**参数；变量或函数调用无法静态看，单独计数。
+  const schemaProps = new Map((catalog.tools || []).map((t) =>
+    [t.name, new Set(Object.keys((t.inputSchema || {}).properties || {}))]));
+  const topLevelKeys = (text, at) => {
+    const keys = [];
+    let depth = 0, j = at;
+    const n = text.length;
+    while (j < n) {
+      const ch = text[j];
+      if (ch === '"' || ch === "'" || ch === '`') {
+        const q = ch; j += 1;
+        while (j < n && text[j] !== q) j += text[j] === '\\' ? 2 : 1;
+        j += 1; continue;
+      }
+      if (ch === '/' && text[j + 1] === '/') { const nl = text.indexOf('\n', j); j = nl < 0 ? n : nl; continue; }
+      if (ch === '/' && text[j + 1] === '*') { const e = text.indexOf('*/', j); j = e < 0 ? n : e + 2; continue; }
+      if ('{([ '.includes(ch) && ch !== ' ') depth += 1;
+      else if ('})]'.includes(ch)) { depth -= 1; j += 1; }
+      if (depth === 0) break;
+      if (depth === 1) {
+        const m = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(text.slice(j));
+        if (m) { keys.push(m[1]); j += m[0].length; continue; }
+      }
+      j += 1;
+    }
+    return keys;
+  };
+  let argChecked = 0, argSkipped = 0;
+  const badArgs = [];
+  for (const m of readFileSync(WEB_JS, "utf8").matchAll(/callTool\(\s*"([a-z_0-9]+)"\s*,\s*/g)) {
+    const name = m[1];
+    let at = m.index + m[0].length;
+    const src = readFileSync(WEB_JS, "utf8");
+    while (at < src.length && ' \t\r\n'.includes(src[at])) at += 1;
+    if (src[at] !== '{') { argSkipped += 1; continue; }
+    const props = schemaProps.get(name);
+    if (!props) continue;
+    for (const key of topLevelKeys(src, at)) {
+      if (!props.has(key)) badArgs.push(`${name}.${key}`);
+    }
+    argChecked += 1;
+  }
+  if (badArgs.length > 0) {
+    fail(`viewer 传了 schema 里没有的参数名（写错 ⇒ 服务端会忽略或报错）：${badArgs.join("、")}`);
+  }
+  console.log(`  参数名对账：检查了 ${argChecked} 处字面量参数对象（另有 ${argSkipped} 处无法静态看，跳过）⇒ 越界 ${badArgs.length} 处`);
   console.log(`  Web 面：${web.size} 个工具（viewer 实际调用）｜任何 profile 都拿不到的 ${webNoProfile.length} 个（记录，不判）` +
     (webNoProfile.length > 0 ? `：${webNoProfile.join("、")}` : ""));
 
