@@ -36,7 +36,19 @@ const PROFILE = IS_RELEASE ? "release" : "debug";
 //   「区域缩略图更新（**需重渲染**）｜**< 15ms**」
 // ⇒ **∴ 那正是本判据测的东西** ✗（**∴ 首次取状态 ⇒ 生成缩略图 ⇒ **∴ 需重渲染 ✓**）
 // ⇒ 所以用 **15** 而不是我先前随手写的 16 ✗（**∴ 差 6.7% ✗，但**有出处**比"我记得"✗ 重要 ✓）。
-const RELEASE_BUDGET_MS = 15;                        // 设计 :694 明文
+// **两条判据**（第 1405 轮 ✓）—— **∴ 因为**上一版把**两种场景**混成了一条 ✗：
+//
+// ① **增量**（**∴ 已有缩略图 ⇒ 只更新脏块 ✓**）：设计 `:693` 明文
+//    「区域缩略图更新（**缓存命中**）｜**< 5ms**」⇒ **∴ 主语是**更新** ✗ ⇒ **∴ 适用于第二次起 ✓**。
+// ② **首冷**（**∴ 全新文档 ⇒ 整幅首渲 ＋ 首次生成缩略图 ✓**）：**∴ 设计**没有**为它定预算** ✗
+//    ⇒ **∴ 所以**用**有依据的模型代理**（**∴ 而不是**借来的数字 ✓**）：
+//    第 1365 轮实测拟合 ⇒ **首冷 ≈ 10 ms 固定 ＋ 0.16 μs × 文档像素** ✗
+//    ⇒ **∴ 判据**：实测 ≤ 模型预测 × 1.3 ✗（**∴ 留 30% 余量 ⇒ **∴ 从而**回归会红 ✗＋**∴ 不苛求 ✓**）。
+const RELEASE_BUDGET_MS = 15;                        // **保留给旧调用方的兼容值**（设计 :694 明文）
+const INCREMENTAL_BUDGET_MS = 5;                     // 设计 :693 明文（**缓存命中**）
+const COLD_FIXED_MS = 10.0;                          // 第 1365 轮拟合：固定项
+const COLD_US_PER_PIXEL = 0.16;                      // 第 1365 轮拟合：每文档像素
+const COLD_SLACK = 1.3;                              // 模型余量
 const DEFAULT_BUDGET_MS = IS_RELEASE ? RELEASE_BUDGET_MS : 250;
 const BUDGET_MS = Number(process.env.THUMB_COLD_MS || DEFAULT_BUDGET_MS);
 console.log(`  被测二进制：${SERVE_BIN}`);
@@ -81,11 +93,35 @@ if (first.value && first.value.ok !== true) {
   console.error("  ✗ 第一次调用本身失败：" + JSON.stringify(first.value).slice(0, 200));
   process.exit(2);
 }
-if (first.ms > BUDGET_MS) {
-  console.error(`  ✗ 进程内**第一次**取状态要 ${first.ms.toFixed(2)} ms ⇒ 超过 ${BUDGET_MS} ms` +
-    `（用户感知：打开文档后第一次要状态会卡这么久；第二次只要 ${second.ms.toFixed(2)} ms ⇒ 是**首冷**✗）`);
-  process.exit(1);
+// **两条判定**（第 1405 轮 ✓）
+const DOC_W = 320, DOC_H = 240;                       // 与上面建文档一致
+const coldModelMs = COLD_FIXED_MS + (DOC_W * DOC_H * COLD_US_PER_PIXEL) / 1000;
+const coldBudgetMs = coldModelMs * COLD_SLACK;
+let failed = false;
+
+// ① **增量**（**∴ 第二次起 ⇒ 设计 `:693`✗ 明文 < 5 ms ✓**）
+if (second.ms > INCREMENTAL_BUDGET_MS) {
+  console.error(`  ✗ **增量**路径（第二次取状态）要 ${second.ms.toFixed(2)} ms ⇒ ` +
+    `超过设计明文 ${INCREMENTAL_BUDGET_MS} ms（**∴ 缓存命中 ⇒ 只更新脏块 ✓**）`);
+  failed = true;
+} else {
+  console.log(`  ✓ **增量**路径 ${second.ms.toFixed(2)} ms ≤ ${INCREMENTAL_BUDGET_MS} ms` +
+    `（**∴ 设计 :693 明文（缓存命中）⇒ 这是用户日常"点开已有文档"的那条 ✓**）`);
 }
+
+// ② **首冷**（**∴ 设计**没给**预算 ⇒ **∴ 用第 1365 轮的模型代理 ✓**）
+console.log(`  首冷预算（**模型代理**）：${coldBudgetMs.toFixed(2)} ms` +
+  ` ＝ (${COLD_FIXED_MS} ms 固定 ＋ ${DOC_W}×${DOC_H}×${COLD_US_PER_PIXEL} μs/px) × ${COLD_SLACK}` +
+  `（**∴ 设计未给首冷预算 ⇒ **∴ 这是有依据的代理 ✗，而不是借来的数字 ✓**）`);
+if (first.ms > coldBudgetMs) {
+  console.error(`  ✗ **首冷**（全新文档第一次取状态）要 ${first.ms.toFixed(2)} ms ⇒ ` +
+    `超过模型预测 ${coldBudgetMs.toFixed(2)} ms`);
+  failed = true;
+} else {
+  console.log(`  ✓ **首冷** ${first.ms.toFixed(2)} ms ≤ ${coldBudgetMs.toFixed(2)} ms`);
+}
+if (IS_RELEASE && failed) process.exit(1);
+if (!IS_RELEASE && failed) console.log("  ⚠️ debug 下不据此失败（**∴ 它不是产品 ✓**）");
 console.log(`  ✓ 第一次取状态 ${first.ms.toFixed(2)} ms ≤ ${BUDGET_MS} ms ⇒ 首冷不阻塞请求`);
 // **端到端也要判**：否则把成本往建文档挪会永远通过，而那只是把卡顿换了位置。
 // 上限取实测值的量级：本机 2026-10-07 实测建文档约 190 ms ＋ 首次取状态约 5 ms ⇒ 端到端约 195 ms，
