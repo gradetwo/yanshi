@@ -37276,3 +37276,33 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 `transfer_function_round_trip_quantizes_to_same_byte`（同一变异下红于 `byte=1`）守住。
 范围边界：`filter.rs::display_byte_to_linear` 是另一处解码包装（调试/测试辅助），本轮**未改**
 （不在 `u8x4_to_linear_premul` 的六处调用链上）；`linear_to_srgb` / 编码表完全未动。
+
+## 第 1184 轮：按报告建议 3 派工——用已在依赖树里的 flate2 替换手写 LZ77
+
+外部 4K/8K 报告的第 3 条瓶颈：`crates/yanshi-render/src/png.rs` 手写固定 Huffman + LZ77，
+在 8K 下 `prev = vec![u32::MAX; raw.len()]` 造成**单个约 530MB 的数组**（8K raw ≈132MB，元素是 u32），
+而且完全单线程。报告自己的建议 3 就是"评估引入 zlib-rs / flate2 替代手写单线程 LZ77"。
+
+我在第 1163 轮已经只读核实并纠正过这份建议的选型：
+- **`flate2` 与 `zlib-rs` 早就在 `Cargo.lock` 里**（随 `zip` 引入；flate2 依赖纯 Rust 的 zlib-rs）；
+- `miniz_oxide` / `zopfli` / `libz-sys` / `fdeflate` **都不在树里**；
+- 所以选 **`flate2`** ⇒ **零新增包**（只是把已有依赖暴露给 `yanshi-render`），
+  这比亚的马报告建议的 miniz_oxide 更省事；
+- 而且 `png.rs:320` 的注释写着那段压缩"**给 blob 存储复用**" ⇒
+  **受益方是两处（PNG 输出 + blob 存储），比报告说的更大**。
+
+已派 subagent（worktree /tmp/wt-deflate，分支 perf/flate2-deflate，独立 target）。任务书要点：
+1. **决定性**：同输入必须同输出（两端都依赖内容寻址与可复现）⇒ 必须用**判据**证明，
+   不许靠断言；flate2 的 level/strategy 要有意识选择并写进提交信息。
+2. **往返正确**：压缩后解压必须逐字节等于原文；**已写入的数据必须仍可读** ——
+   如果做不到向后兼容，**停下来报告**，不许猜（要明确说清会破坏什么）。
+3. **wasm32 仍必须构建**且与服务端保持逐位一致（zlib-rs 是纯 Rust，预期没问题，但要验证）。
+4. **不碰色彩管线的编码方向与 D0/D1 边界**。
+5. 判据四条，各自必须能红并变异验证：① 决定性（故意引入不确定 ⇒ 红）；② 往返（破坏解码侧 ⇒ 红）；
+   ③ 内存（优先用计数断言而不是计时；若只能给测量，需写明档位与分辨率）；
+   ④ 既有 PNG 与 blob 判据保持绿（点名，而不是另写第三套 harness）。
+6. **两面都要写**：收益＝删掉手写编码器与 8K 的 530MB 单数组、两处消费者受益；
+   代价＝把已有 crate 暴露给 yanshi-render（lock 不变，但编译时间可能增加、wasm 体积可能变化）、
+   新增第三方解压错误的语义映射面。
+7. 纪律：独立 target；变异必须直接跑判据并确认补丁落盘；五步门禁（含 wasm）全绿才提交；
+   notes 只追加、冲突双方都保留；英文提交、不碰 main、不推送。
