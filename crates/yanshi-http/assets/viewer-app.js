@@ -1643,24 +1643,7 @@ function queueServerBlit(bbox = null) {
     return serverBlitChain;
   }
   serverBlitBusy = true;
-  // A region request that never settles would leave the busy flag set forever and
-  // every later blit would only mark itself pending, which is exactly the observed
-  // failure: one run stalls after starting the download, another lands fully and then
-  // stalls on a second region call. Race the work against a timeout so the chain always
-  // settles, and on timeout requeue once instead of giving up.
-  serverBlitChain = Promise.race([
-    blitServerViewport(),
-    new Promise((resolve) => setTimeout(() => {
-      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
-        reason: "timeout waiting for region", area: -1,
-        at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
-      });
-      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
-      window.yanshiStats.blitTimeouts = (window.yanshiStats.blitTimeouts || 0) + 1;
-      serverBlitPending = true;
-      resolve();
-    }, 4000)),
-  ])
+  serverBlitChain = blitServerViewport()
     .catch((error) => {
       // Record the failure instead of letting it vanish: without this a throw inside
       // the blit leaves only the entry log behind and the canvas silently stays stale.
