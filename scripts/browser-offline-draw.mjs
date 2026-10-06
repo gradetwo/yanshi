@@ -260,12 +260,14 @@ console.log("  离线第二笔：画前 " + before3.ink + " ⇒ 画后 " + after
 // 而 SW 报告里写着 `{"total":208,"failed":[],"failedCount":0}` ✓ ⇒ **∴ 一条都没失败 ⇒ **∴ 纯粹是抢跑 ✓**。
 // ⇒ **∴ 等报告出现** ✓ —— 它写在 `Promise.all` **之后** ✓ ⇒ **∴ 它出现 ⇒ 预缓存已写完 ✓**。
 // **∴ 这不削弱判据** ✓：**∴ 若写完之后内核仍不在缓存 ⇒ **∴ 下面照样红 ✓**。
-for (let i = 0; i < 40; i += 1) {
+// **CI 上 install 可能明显更慢** ✗（本地约 1 秒 ⇒ 那里 5 分钟的分片里仍报没有内核 ✓）
+// ⇒ 上限从 10 秒抬到 **30 秒** ✓（60×500ms ✓）⇒ 而写完之后仍缺 ⇒ 照样红 ✓。
+for (let i = 0; i < 60; i += 1) {
   const done = await evaluate(`(async () => {
     try { const hit = await caches.match("/__sw_precache_report"); return !!hit; } catch (_) { return false; }
   })()`).catch(() => false);
   if (done) break;
-  await sleep(250);
+  await sleep(500);
 }
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
