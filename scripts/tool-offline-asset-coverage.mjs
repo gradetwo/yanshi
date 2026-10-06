@@ -79,7 +79,16 @@ if (shellStart < 0 || shellEnd < 0) {
   console.log("  ✗ 在 service-worker.js 里找不到 `const SHELL = [` 清单 ⇒ 判据无法运行");
   process.exit(1);
 }
-const SHELL = [...sw.slice(shellStart, shellEnd).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+// **只取"条目行"** ✗ —— 原先用 `/"([^"]+)"/g` 匹配 `SHELL` 范围内的**所有**双引号字符串，
+// 会把**注释里**的 `fetch("/health")` 之类也当成条目 ⇒ 与真条目重名 ⇒ **误报"清单在腐化"** ✗
+//（2026-10-06 CI 实测：我给 `SHELL` 加 `/health` 时附了一段注释，判据就报了重复 ✓）。
+// 条目行的形状是：**去掉行首空白后以 `"` 开头** ✓ ⇒ 按行过滤后再取引号内容 ✓。
+const shellBlock = sw.slice(shellStart, shellEnd);
+const entryLines = shellBlock.split("\n").filter((line) => {
+  const t = line.trim();
+  return t.startsWith('"');
+});
+const SHELL = entryLines.flatMap((line) => [...line.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
 const shellSet = new Set(SHELL);
 const duplicate = SHELL.find((url, index) => SHELL.indexOf(url) !== index);
 if (duplicate) fail(`SHELL 里有重复条目：${duplicate} ⇒ 清单在腐化`);
