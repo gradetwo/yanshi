@@ -68,12 +68,19 @@ fn call_on_with(
 /// `other_ms` 是"总时长 − 已量各相" ✓ ⇒ 若把新两相漏在这张表外 ✗，
 /// `sum_of_phases` 就会比 `total_ms` **少掉这两相** ✓ ⇒ ③ 的和式判据当场变红 ✓
 ///（这正是"新相加进来、残差要相应缩小"这条约束的判据形式 ✓）。
-const PHASES: [&str; 7] = [
+///
+/// **`preview_ms` 同样必须在这张表里** ✗（本轮新增 ✓，同一个理由 ✓）：
+/// 它是落笔路径上"文档级预览 ＋ 响应区域预览"两段墙钟 ✓（带背景层的文档上，
+/// 那个恒定 ~11 s 的固定开销就落在这里 ✓，见 `tests/background_stroke_cost.rs` ✓）。
+/// 漏掉它 ⇒ 这条和式判据立刻红 ✓ —— 那正是它该有的反应 ✓
+/// ⇒ 本轮把数组从 7 个补到 8 个 ✓。
+const PHASES: [&str; 8] = [
     "prep_ms",
     "raster_ms",
     "dirty_ms",
     "fold_ms",
     "log_ms",
+    "preview_ms",
     "render_ms",
     "png_ms",
 ];

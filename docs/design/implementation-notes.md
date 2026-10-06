@@ -36108,3 +36108,143 @@ A. 读 yanshi_render 的 `plan_dirty_with_log`，确认 `DirtyKind::Full` 在什
    以及 `texture_background` 会不会命中它。
 B. 用报告里的工程包 parrot-4k-v3-fc33320.yanshi（6.9MB）实测：同一文档，先落一笔看 other_ms；
    再构造"无背景层"的同尺寸文档落一笔看 other_ms。如果无背景时 other 显著小 ⇒ 机制确认。
+
+## 第 1154 轮：11 秒/笔的成因是"每一笔重新解压整幅背景"——修的是跨渲染的位图解码缓存
+
+**结论先说** ✓：报告里那个"恒定 ~11 秒、与笔刷大小/atom 数无关"的 `other_ms`，
+成因**不是**第 1152/1153 轮猜的 `preview_dirty` 永久整幅 ✓，而是：
+
+> 服务端把 blob 交给 [`RenderCodec`]（**deflate** ✓）存盘 ✓，
+> 而渲染器**每一次渲染**都对相交的每个位图补丁 `store.get` ＋ **整块解压** ✓ ⇒
+> 一张覆盖整幅画布的 `texture_background`（3840×2160×4 ＝ **33.2 MiB** 明文 ✓）
+> **每一笔都被完整解压至少一遍** ✓。成本 ∝ **补丁面积（＝画布面积）** ✓，
+> 与"这一笔多大"完全无关 ✓ ⇒ 这就是那个恒定值 ✓。
+
+### 一、调用路径与触发条件（实测，不是推断）
+
+```
+write_brush_stroke (tools.rs)
+  └─ paint_brush                       → Phase::Raster，小笔刷 13-21 ms
+  └─ write_import_image → ctx.commit   → dirty/fold/log，合计 <1 ms
+  └─ finish_mutation
+       ├─ run_pending_jobs → Document::render_document_preview
+       │    └─ Renderer::render_region → render_accumulation
+       │         └─ render_layer_objects → Primitive::RasterPatch
+       │              └─ store.get(blob)   ← FsBlobStore 读盘 ＋ RenderCodec::decode
+       │                                     ＝ 整幅 33.2 MiB 的 inflate
+       │              └─ blit_rgba8(...)   ← 这一段**已经**按区域裁剪，实测很快
+       └─ Workspace::render_region（响应里的区域预览）→ 同一段路再走一遍
+```
+
+**触发条件** ✓：渲染区域与一个**覆盖整幅画布**的 `raster_patch` 相交 ✓ ——
+背景层永远相交 ✓ ⇒ **每一笔、每一次预览都付一次全幅解压** ✓。
+**不是** dirty 区域的问题 ✓：本轮的调试读数显示 `planned_preview_dirty` 对每一笔
+都返回 `Region(小 bbox)` ✓、`render_region` 的请求 bbox 也只有 168×34 这种尺寸 ✓
+（所以第 1153 轮那条"preview_dirty 永久 Unknown ⇒ 整幅预览"的机制**在本案里没有发生** ✗）。
+
+**实测证据（debug，1024²，带背景）** ✓：`fetch_raster_patch` 里加临时打印 ⇒
+`store.get bytes=262144 in 622-878 ms` ✓（256 KiB 明文的一次读盘＋解压 ✓），
+而同一块区域渲染的 `blit_rgba8` 只要 5-13 ms ✓ ⇒ 时间**几乎全在解压** ✓。
+
+### 二、修复：渲染器上挂一份**跨渲染**的"已解码位图"缓存
+
+`crates/yanshi-render/src/render.rs`：
+
+* 新增 `BitmapCache`（`Mutex<{entries, order, bytes, hits, misses, missed_bytes, evictions}>`）✓，
+  **挂在 `Renderer` 字段上** ✓ —— 文档的渲染器是长期复用的 ✓ ⇒ 缓存能跨"这一笔/下一笔"存活 ✓；
+* 键 = `blob|声明宽x请求高|MIME` ✓（blob 是**内容寻址**的 ⇒ 同一把哈希的字节永不改变 ✓
+  ⇒ **不需要失效逻辑** ✓，也不可能给出与冷路径不同的像素 ✓）；
+* **未命中时在锁内解码** ✓（并行分块会同时请求同一块补丁 ✓ ⇒ 一次未命中只解一遍 ✓，
+  其余各块拿同一份 `Arc` ✓，不复制 33 MiB ✗）；
+* 预算 **64 MiB**、按 LRU 淘汰 ✓（实测 4K 背景解出来 33.2 MiB ⇒ 能稳定常驻 ✓；
+  超预算淘汰只影响速度 ✓，不影响正确性 ✓）；
+* **串行路径也用** ✓ —— 修复前串行路径传 `None` ✗、并行路径每次渲染新建一份局部缓存 ✗
+  （那只在**一次**渲染内去重 ✓，下一笔照样重新解压整幅 ✗）。
+* 可观测读数 `Renderer::bitmap_cache_stats()` ✓ → `Document::bitmap_cache_stats()` ✓
+  （`entries/bytes/hits/misses/missed_bytes/evictions` ✓）⇒ 判据不用靠墙钟猜 ✓。
+
+### 三、为什么选它，而不是另外两条候选
+
+* **不改 `preview_dirty` 的 rebase/清 Clean** ✗：实测那条路**本来是对的** ✓
+  （每笔都是 `Region` ✓、预览是增量的 ✓）⇒ 改它不解决这里的病 ✓，
+  而且 `document.rs:1124` 记录的坑（清成 Clean 后下一笔反而整幅 ✓）依然存在 ✓。
+* **不做"缓存合成后的背景层"** ✗：那只治**这一层** ✓；任何大的位图补丁
+  （导入的图、大块贴图、别的底图 ✓）每笔照样被整体解压 ✗ ——
+  而"已解码的补丁"是**所有**位图对象共用的最小缓存单元 ✓。
+* **不改存储编码（不压 raw RGBA / 换更快的 inflate）** ✗：那只是把**每次**读盘＋解压变便宜 ✓，
+  重复的"整幅读＋整幅解"仍在 ✓；而且会改动磁盘占用与存储语义 ✓。
+  它**可以作为后续的补充** ✓（见"没做"一节 ✓），但不是本案最短的那一刀 ✓。
+
+### 四、新增阶段计时：`Phase::Preview`
+
+`write_brush_stroke` 自己只填 `Raster`（dab 生成 ✓）⇒ 上面那一段**一个阶段都不落** ✗ ✓。
+本轮在 `finish_mutation` 里把两段**互不重叠**的墙钟都记进新阶段 `Phase::Preview` ✓：
+① 文档级预览渲染（`run_pending_jobs` ⇒ `render_document_preview` ✓）；
+② 响应里的区域预览渲染（`render_region` ✓）。
+
+`crates/yanshi-server/src/timings.rs`：`Phase::Preview` ＋ `preview_us` ＋ `preview_ms` ✓，
+并加进 `measured_us()` / `since()` / `report()` ✓。
+`tests/timings_and_cancel.rs` 的 `PHASES` 数组**必须**从 7 个补到 8 个 ✓ ——
+否则那条"各相（含残差）之和 ＝ 总时长"的判据会当场红 ✓（这是它**应该**有的反应 ✓，
+也正是"新增阶段要让残差自动缩小"这条约束的判据形式 ✓）。
+
+### 五、实测（同一台机器、同一个档位、同一个包）
+
+**档位声明** ✓：`--release`（workspace 的 `lto="thin"`, `codegen-units=1`），
+Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
+`/tmp/perfrep/parrot-4k-v3-fc33320.yanshi` ⇒ **parrot-4k-v3，3840×2160，26 atom ＋ 4K texture_background** ✓；
+笔 = `2B_pencil`、`size 16`、控制点两点（`[[1600,200],[2000,220]]` 等 ✓）。
+**只与同一档位比较** ✓。
+
+| 笔 | 修复前（同一台机器、release ✓） | 修复后（release ✓） |
+|---|---|---|
+| 第 1 笔 | 39.24 s（`other_ms` 39192 ✓） | **6.66 s**（`preview_ms` 6643 ✓ / `other_ms` **0.27** ✓）|
+| 第 2 笔 | 31.18 s（`other_ms` 31147 ✓） | **0.477 s**（`preview_ms` 465 ✓ / `other_ms` 0.19 ✓）|
+| 第 3 笔 | 37.51 s（`other_ms` 37458 ✓） | **0.452 s**（`preview_ms` 435 ✓ / `other_ms` 0.35 ✓）|
+
+⇒ **稳定态单笔 31-39 s → 0.45-0.48 s（约 70-80×）** ✓；
+报告方那台机器上的 10.6-11.8 s 是同一个成因的不同绝对速度 ✓（他们 2 核 ✓）。
+
+**debug 侧（合成复现，256²/512² ＋ `Paper001.png` 背景）** ✓：
+修复前每笔多解 2 次（文档级预览一次 ＋ 响应预览一次 ✓）；
+一笔**重新解出** 571392 字节明文（背景只有 262144 ✓）；
+修复后每笔只解 1 枚**自己的新补丁**（≈ 23 KiB ✓），背景常驻 ✓（4K 时 34.4 MiB ✓）。
+
+### 六、判据与红证（变异都验证过"真的落盘"了 ✓，并按 `cmp` 逐字节还原 ✓）
+
+1. `crates/yanshi-server/tests/background_stroke_cost.rs::the_background_patch_is_decoded_once_not_per_stroke`
+   （256² 与 512² 各跑 ✓）：预热后**每一笔最多多解 1 个补丁** ✓。
+   **红**：把缓存命中分支短路（＝回到"每次渲染新建缓存"的修复前行为 ✓）⇒
+   每笔多解 **4** 次 ⇒ 红 ✓。
+2. `…::a_warm_stroke_never_decodes_a_canvas_sized_blob`：
+   一笔重新解出的明文必须 **< 背景补丁本身** ✓（阈值就是 `side²×4` ✓，自校准 ✓）。
+   **红**：同一条变异 ⇒ 一笔解出 **571392 > 262144** ⇒ 红 ✓。
+3. `…::a_background_stroke_populates_the_preview_phase`：
+   `preview_ms > 0` ✓ 且 `other_ms < total_ms × 0.5` ✓。
+   **红**：删掉 `finish_mutation` 里两处 `ctx.time(Phase::Preview, …)` ✓ ⇒
+   `preview_ms=0`、`other_ms=4984 ≈ total=5068` ⇒ 红 ✓。
+4. `crates/yanshi-render/tests/bitmap_cache.rs::the_decoded_bitmap_cache_never_changes_pixels`
+   （**整幅**逐字节比 ✓；**强制串行**运行 ✓ —— 并行分块下"第一次渲染"里会同时发生
+   未命中与命中 ✓，冷/热两条路在一次渲染里混在一起 ⇒ 变异不可判定 ✗）：
+   冷缓存 ✓、热缓存 ✓、全新渲染器 ✓ 三者逐字节相同 ✓。
+   **红**：把缓存里存下的字节改 1（命中路径与冷路径给出不同像素 ✓）⇒ `assert_eq` 变红、退出码 101 ✓。
+
+**为什么墙钟不做成判据** ✗：debug 下 512² 的一个 preview 里"缩略图编码/图层合成"等
+固定开销很大 ✓，并行分块又会把同一段解压时间按块数重复计入 ✓ ⇒ 实测同一份代码
+在并发构建压力下跑出过 **5.05** 与 **0.45** 两个比值 ✓ ⇒ 阈值判据会假红 ✓。
+墙钟对照因此放在上面那张 **release ＋ 真实 4K 包** 的表里 ✓，判据用与调度无关的
+"解码次数/解码字节" ✓。
+
+### 七、门槛与没做的事
+
+* `cargo fmt --all -- --check` ✓ 干净；`cargo clippy --workspace --all-targets -- -D warnings` ✓；
+  `cargo test --workspace` ✓（见提交说明 ✓）。
+* **没做**：**打开文档后的第一笔**仍要付一次整幅背景的解压 ✓（本机 release 6.66 s ✓）。
+  要把它也消掉需要"可部分解码"的 blob 格式（按行/按块的索引 ✓）——
+  那是存储格式的改动 ✓，本轮不动 ✓，已记在这里 ✓。
+* **没做**：没有跑浏览器验收（fresh worktree 没有 `crates/yanshi-wasm/pkg` ✓）。
+  改动是目标无关的 ✓（`Mutex` ＋ 缓存 ✓），`cargo test --workspace` 覆盖了
+  `yanshi-wasm` 的编译 ✓ 与 `tests/render_parity.rs` 的原生/内核逐字节一致 ✓。
+* **没做**：没有改 `RenderCodec`（见第三节的取舍 ✓）。
+* **注意（notes 冲突）** ✗：主 checkout 的工作区里有一份**未提交**的"第 1153 轮"追加 ✓，
+  而本分支的文件止于 `21674f4` ✓ ⇒ 合并时要**两边都保留** ✓（本文件只追加、不重写 ✓）。

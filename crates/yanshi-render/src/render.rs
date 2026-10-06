@@ -82,16 +82,162 @@ pub struct RenderStats {
     pub parallel_chunks: usize,
 }
 
-/// **一次渲染内共享的位图补丁缓存**（并行分块用）。
+/// **解码后的位图补丁缓存**（跨渲染复用；按字节预算做 LRU 淘汰）。
 ///
-/// 没有它，同一个补丁会在**每一块**里被重新 `store.get` + 解码（PNG 解码尤其贵）。
-/// 目标 4K 工程里有 300+ 个存活位图对象 ⇒ 那会把解码成本乘以块数，并行反而更慢。
-/// 串行路径传 `None`：不改变原行为，也不额外占内存。
+/// 没有它，同一个补丁会在**每一次渲染**里被重新 `store.get` + 解码 ✗：
+/// 存储层会把 blob 交给 `BlobCodec`（服务端是 **deflate** ✓）⇒
+/// 一个覆盖整幅 4K 画布的背景补丁（3840×2160×4 = **33.2 MiB** 明文 ✓）
+/// **每笔都要重新解压一遍** ✓ —— 实测（debug，1024² 画布）单次 `store.get`
+/// 解码 256 KiB 就要 **约 0.62-0.88 s** ✓，与"区域多大"无关、只与**补丁多大**有关 ✓
+/// ⇒ 落在小区域上的每一笔都被一笔**全画布解压**拖住 ✓。
 ///
-/// 键里带上声明尺寸与 MIME：`image/x-yanshi-raw` 的字节语义由对象声明的宽高决定，
-/// 同一个 blob 若被两个对象用不同宽高声明，不能共用同一份切片。
-type BitmapCache =
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<(u32, u32, Vec<u8>)>>>;
+/// **为什么可以跨渲染缓存** ✓：blob 是**内容寻址**的 ✓ ⇒ 同一把哈希的字节永不改变 ✓
+/// ⇒ 缓存不需要失效逻辑 ✓，也不可能给出与冷路径不同的像素 ✓（判据见
+/// `tests/bitmap_cache.rs` ✓）。键里**再带上声明尺寸与 MIME** ✗：
+/// `image/x-yanshi-raw` 的字节语义由对象声明的宽高决定 ✓，同一个 blob 若被两个对象
+/// 用不同宽高声明，不能共用同一份切片 ✓。
+///
+/// **预算的取舍** ✓：实测那份 4K 背景解出来是 33.2 MiB ✓ ⇒ 预算取 **64 MiB** 时
+/// 它能稳定常驻 ✓，而一笔的**工作集**（这块背景 ＋ 附近几枚小补丁 ✓）也在预算内 ✓。
+/// 代价是每文档最多多占 64 MiB 内存 ✓；超预算时按 LRU 淘汰 ✓ ——
+/// 淘汰只影响速度 ✓（下次重新解压 ✓），不影响正确性 ✓。
+#[derive(Debug, Default)]
+struct BitmapCache {
+    inner: std::sync::Mutex<BitmapCacheInner>,
+}
+
+/// [`BitmapCache`] 的内部状态（单独成结构只为在锁内整体访问 ✓）。
+#[derive(Debug, Default)]
+struct BitmapCacheInner {
+    /// 键 ⇒ 解码结果（`Arc` ⇒ 命中只克隆指针 ✓，不复制 33 MiB ✗）。
+    entries: std::collections::HashMap<String, DecodedBitmap>,
+    /// 插入序（命中时移到末尾 ⇒ 这是 LRU，不是 FIFO）。
+    order: std::collections::VecDeque<String>,
+    /// `entries` 里像素字节总数（用于预算判断）。
+    bytes: usize,
+    /// 命中次数。
+    hits: usize,
+    /// 未命中次数（＝真正 `store.get` + 解码的次数 ✓，判据据此断言"没有重复解码" ✓）。
+    misses: usize,
+    /// 未命中时解出来的明文字节之和 ✓。
+    missed_bytes: u64,
+    /// 因超预算被淘汰的条目数。
+    evictions: usize,
+}
+
+/// 解码位图缓存能占用的**明文字节**上限（64 MiB ✓，理由见 [`BitmapCache`] 的说明 ✓）。
+const MAX_DECODED_BITMAP_BYTES: usize = 64 * 1024 * 1024;
+
+/// **一份解码好的位图补丁** ✓：`(宽, 高, RGBA8 明文)` ✓。
+///
+/// 用 `Arc` ✓ ⇒ 命中时只克隆一个指针 ✓，**绝不复制 33 MiB 的像素** ✗；
+/// 单独起个名字是因为 clippy 的 `type_complexity` 会挡在函数签名上 ✓
+/// （而它同时让"锁内解码、锁外共享"这件事在签名里一眼看得出来 ✓）。
+type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
+
+/// [`BitmapCache`] 的可观测读数（判据用 ✓）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BitmapCacheStats {
+    /// 当前常驻条目数。
+    pub entries: usize,
+    /// 当前常驻明文字节。
+    pub bytes: usize,
+    /// 命中次数。
+    pub hits: usize,
+    /// 未命中次数（＝解码次数）。
+    pub misses: usize,
+    /// 未命中时**解出来的明文字节**之和 ✓ —— 它比"次数"更能说明"这一笔重新解压了多大的东西" ✓
+    /// （一次整幅 4K 背景 ＝ 33.2 MiB ✓，一枚小补丁 ＝ 几十 KiB ✓）。
+    pub missed_bytes: u64,
+    /// 淘汰条目数。
+    pub evictions: usize,
+}
+
+impl BitmapCache {
+    /// **取值，未命中则当场解码**（`decode` 在**锁内**执行 ✓）。
+    ///
+    /// 为什么解码必须在锁内 ✗：并行分块会同时请求同一块补丁 ✓ ——
+    /// 若在锁外解码，四块会各解一遍 33 MiB 的背景 ✗（实测把"缓存"变成负优化 ✓）；
+    /// 锁内解码则**一次未命中 ⇒ 只解一次** ✓，其余各块命中同一份 `Arc` ✓。
+    ///
+    /// `decode` 返回 `Ok(None)`（缺 blob / 格式未实现 ✓）⇒ 本函数也返回 `Ok(None)` ✓，
+    /// **且不写缓存** ✓ —— 否则下次会把"跳过"记成命中、把告警吞掉 ✗。
+    /// `decode` 返回 `Err` ⇒ 原样上抛 ✓（与没有缓存时的行为**逐字一致** ✓，不静默降级 ✗）。
+    fn get_or_decode<F>(&self, key: &str, decode: F) -> Result<Option<DecodedBitmap>>
+    where
+        F: FnOnce() -> Result<Option<(u32, u32, Vec<u8>)>>,
+    {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = inner.entries.get(key).cloned() {
+            inner.hits += 1;
+            if let Some(position) = inner.order.iter().position(|candidate| candidate == key) {
+                if let Some(moved) = inner.order.remove(position) {
+                    inner.order.push_back(moved);
+                }
+            }
+            return Ok(Some(entry));
+        }
+        let Some((width, height, bytes)) = decode()? else {
+            return Ok(None);
+        };
+        inner.misses += 1;
+        inner.missed_bytes = inner.missed_bytes.saturating_add(bytes.len() as u64);
+        let entry = std::sync::Arc::new((width, height, bytes));
+        insert_locked(&mut inner, key.to_owned(), entry.clone());
+        Ok(Some(entry))
+    }
+
+    /// 可观测读数 ✓。
+    fn stats(&self) -> BitmapCacheStats {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        BitmapCacheStats {
+            entries: inner.entries.len(),
+            bytes: inner.bytes,
+            hits: inner.hits,
+            misses: inner.misses,
+            missed_bytes: inner.missed_bytes,
+            evictions: inner.evictions,
+        }
+    }
+}
+
+/// 在**已持有锁**的前提下放入一份解码结果；超预算按 LRU 淘汰 ✓。
+///
+/// 永不淘汰**刚插入的这份** ✗（它正是调用方马上要用的 ✓）；
+/// 当预算小到连它都装不下时，宁可不缓存它，也不把别人挤光 ✓。
+fn insert_locked(inner: &mut BitmapCacheInner, key: String, entry: DecodedBitmap) {
+    if inner.entries.contains_key(&key) {
+        return;
+    }
+    let size = entry.2.len();
+    // **单份就超过预算 ⇒ 根本不缓存它** ✗（调用方本次照样拿得到 ✓）：
+    // 否则下面那条淘汰循环会**把库里所有东西挤光** ✓ 然后仍然超预算 ✗ ——
+    // "不把别人挤光"这句承诺必须由这一段兑现 ✓（8K 画布的一张全幅补丁 ≈ 126 MiB ✓，
+    // 就属于这种单份超预算的情况 ✓）。
+    if size > MAX_DECODED_BITMAP_BYTES {
+        return;
+    }
+    // 淘汰到装得下为止 ✓。`key` 此刻不在 `order` 里 ✓（上面已判过不存在 ✓）
+    // ⇒ 被淘汰的一定是别人 ✓，绝不会把刚放进去的这份挤掉 ✓。
+    while inner.bytes + size > MAX_DECODED_BITMAP_BYTES {
+        let Some(oldest) = inner.order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = inner.entries.remove(&oldest) {
+            inner.bytes = inner.bytes.saturating_sub(removed.2.len());
+            inner.evictions += 1;
+        }
+    }
+    inner.bytes = inner.bytes.saturating_add(size);
+    inner.order.push_back(key.clone());
+    inner.entries.insert(key, entry);
+}
 
 /// **图层对象渲染的账本**（内部）。
 ///
@@ -209,6 +355,13 @@ pub struct Renderer {
     /// 「同一份文档、两种模式」的可控路径，而不是靠机器核数碰运气（见
     /// `tests/tile_parallel.rs`）。
     max_workers: Option<usize>,
+    /// **解码后的位图补丁缓存**（挂在这里 ⇒ 跨渲染、跨两阶段预览都复用 ✓）。
+    ///
+    /// 为什么挂在渲染器上（而不是每次 `render_region` 新建 ✗）：文档的渲染器是
+    /// **长期复用**的 ✓（`Document` 持有它，只在网格尺寸变化时才重建 ✓）⇒
+    /// 挂在这里缓存才能跨"这一笔"与"下一笔"存活 ✓ —— 而本案的病正是
+    /// **每一笔都把整幅背景重新解压一遍** ✗（见 [`BitmapCache`] 的实测数字 ✓）。
+    bitmaps: BitmapCache,
 }
 
 impl Renderer {
@@ -245,6 +398,7 @@ impl Renderer {
             options: RenderOptions::default(),
             only_layer: None,
             max_workers: None,
+            bitmaps: BitmapCache::default(),
         }
     }
 
@@ -257,7 +411,13 @@ impl Renderer {
             options: RenderOptions::default(),
             only_layer: None,
             max_workers: None,
+            bitmaps: BitmapCache::default(),
         }
+    }
+
+    /// **解码位图缓存的可观测读数** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
+    pub fn bitmap_cache_stats(&self) -> BitmapCacheStats {
+        self.bitmaps.stats()
     }
 
     /// 设置渲染选项。
@@ -389,8 +549,15 @@ impl Renderer {
         } else {
             let mut track = ObjectTrack::default();
             let accumulation = self.render_accumulation(
-                state, store, &region, padding, background, &mut stats, &mut track, &mut probe,
-                None,
+                state,
+                store,
+                &region,
+                padding,
+                background,
+                &mut stats,
+                &mut track,
+                &mut probe,
+                &self.bitmaps,
             )?;
             stats.absorb(&track);
             stats.parallel_workers = 1;
@@ -463,7 +630,7 @@ impl Renderer {
         stats: &mut RenderStats,
         track: &mut ObjectTrack,
         probe: &mut RenderProbe,
-        bitmaps: Option<&BitmapCache>,
+        bitmaps: &BitmapCache,
     ) -> Result<Buffer> {
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -885,7 +1052,7 @@ impl Renderer {
         layer: &Layer,
         layer_buffer: &mut Buffer,
         track: &mut ObjectTrack,
-        bitmaps: Option<&BitmapCache>,
+        bitmaps: &BitmapCache,
     ) -> Result<()> {
         let mut probe_objects = stage_probe::ObjectTimings::default();
         // 选区「约束落笔」（路线 A）✓：**把覆盖度折进印章**（见 `stamp_samples_clipped`）✓ ——
@@ -1090,50 +1257,25 @@ impl Renderer {
                     // **也绝不能画错** ✗：这里**什么都不画** ✓（跳过 ✓），不是拿别的字节顶上 ✓。
                     // 分块并行时同一个补丁会被多块请求：**缓存已解码的字节**，
                     // 否则 `store.get`（文件存储还要读盘）+ PNG 解码会被乘以块数（见 `BitmapCache`）。
+                    // **跨渲染复用已解码的字节** ✓：键是内容寻址的 blob ＋ 声明尺寸 ＋ MIME ✓
+                    // ⇒ 同一块补丁（尤其是覆盖整幅画布的那层背景 ✓）**只解压一次** ✓，
+                    // 之后的每一笔、每一次预览都命中缓存 ✓（实测数字见 [`BitmapCache`] ✓）。
+                    // 未命中时**在锁内解码**：并行分块下同一 blob 只读/解码一次 ✓，
+                    // 否则多块会同时未命中 ⇒ 重复读盘/解码，缓存就白设了 ✓。
                     let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
-                    let entry: std::sync::Arc<(u32, u32, Vec<u8>)> = match bitmaps {
-                        Some(cache) => {
-                            // **在锁内取值/解码**：保证同一 blob 在一次渲染里只读/解码一次。
-                            // 若在锁外解码，多块可能同时未命中 ⇒ 重复读盘/解码，缓存就白设了。
-                            let mut guard = cache
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            match guard.get(&cache_key) {
-                                Some(entry) => entry.clone(),
-                                None => {
-                                    let Some(fetched) = fetch_raster_patch(
-                                        store,
-                                        &blob,
-                                        &mime_type,
-                                        width,
-                                        height,
-                                        &object.id,
-                                        &mut track.unsupported,
-                                    )?
-                                    else {
-                                        continue;
-                                    };
-                                    let entry = std::sync::Arc::new(fetched);
-                                    guard.insert(cache_key, entry.clone());
-                                    entry
-                                }
-                            }
-                        }
-                        None => {
-                            let Some(fetched) = fetch_raster_patch(
-                                store,
-                                &blob,
-                                &mime_type,
-                                width,
-                                height,
-                                &object.id,
-                                &mut track.unsupported,
-                            )?
-                            else {
-                                continue;
-                            };
-                            std::sync::Arc::new(fetched)
-                        }
+                    let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
+                        fetch_raster_patch(
+                            store,
+                            &blob,
+                            &mime_type,
+                            width,
+                            height,
+                            &object.id,
+                            &mut track.unsupported,
+                        )
+                    })?
+                    else {
+                        continue;
                     };
                     layer_buffer.blit_rgba8(
                         offset.0 as i64,
@@ -1844,13 +1986,15 @@ mod parallel_impl {
             }
         }
 
-        // **一份补丁只读/解码一次**，各块共享（见 `BitmapCache` 的说明）。
-        let bitmaps = BitmapCache::default();
+        // **一份补丁只读/解码一次**，各块共享 —— 而且用的就是渲染器上那份**跨渲染**的缓存 ✓
+        //（见 `BitmapCache` 的说明 ✓：这里若再新建一份局部缓存，就只在"本次渲染"内去重 ✗，
+        //  下一笔又会把整幅背景重新解压一遍 ✓ —— 那正是本案要修的病 ✓）。
+        let bitmaps = &renderer.bitmaps;
         let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> =
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(chunks);
                 // 传引用（不是把缓存 move 进第一个闭包）⇒ 各块共享同一份缓存。
-                let bitmaps_ref = &bitmaps;
+                let bitmaps_ref = bitmaps;
                 for (destination, (row_start, rows)) in slices {
                     let band = Bbox::new(
                         rx as f64,
@@ -1875,7 +2019,7 @@ mod parallel_impl {
                                 &mut stats,
                                 &mut track,
                                 &mut probe,
-                                Some(bitmaps_ref),
+                                bitmaps_ref,
                             )?;
                             stats.absorb(&track);
                             // 只把本块对应的行拷回输出；外扩出来的行丢弃。

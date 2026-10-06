@@ -931,6 +931,15 @@ impl Document {
         self.region_cache.stats()
     }
 
+    /// **解码位图缓存的统计** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
+    ///
+    /// `misses` 就是真正 `store.get` + 解码的次数 ✓ ⇒
+    /// "带背景层的文档上，第 2 笔起不能再出现背景的解码"这句话可以被**直接断言** ✓，
+    /// 而不必靠墙钟读数去猜 ✓。
+    pub fn bitmap_cache_stats(&self) -> yanshi_render::render::BitmapCacheStats {
+        self.renderer.bitmap_cache_stats()
+    }
+
     /// **收集当前仍被缓存指针引用的 blob** ✓（淘汰时的"保留名单" ✓）。
     ///
     /// **`full_frame_render` 必须在这个名单里** ✗ —— 这一条是被实测抓住的 ✓：
