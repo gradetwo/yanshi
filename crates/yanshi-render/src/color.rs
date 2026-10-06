@@ -27,9 +27,32 @@ pub fn linear_to_srgb(value: f32) -> f32 {
     }
 }
 
-/// 字节 → 线性光分量。
+/// 解码方向 sRGB 查找表的项数：输入是 **u8** ⇒ 定义域只有 **256** 个值。
+///
+/// 与编码方向的 [`SRGB_ENCODE_LUT_SIZE`]（4097 项、属 D1 显示路径、允许 ±1 LSB）本质不同：
+/// 这里的表是 [`srgb_to_linear`] 在 256 个字节上的**原值**，没有索引量化 ⇒ **精确**，
+/// 查表与直接计算**逐位相同**（D0 基线不受影响）。
+const SRGB_DECODE_LUT_SIZE: usize = 256;
+
+/// 字节 → 线性光的**精确**查找表（表项由**同一个** [`srgb_to_linear`] 逐项生成）。
+///
+/// 为什么不能用近似公式：color.rs 头注释把该转换列入 **D0 基线**（同一份代码在任何平台
+/// 必须给出相同位结果）。表项既然就是该函数的值，查表只是省掉每分量一次 `libm::powf`，
+/// **不引入任何新算式**。与编码表同构，用 `OnceLock` 只算一次。
+fn srgb_decode_lut() -> &'static [f32; SRGB_DECODE_LUT_SIZE] {
+    static LUT: std::sync::OnceLock<[f32; SRGB_DECODE_LUT_SIZE]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut table = [0.0f32; SRGB_DECODE_LUT_SIZE];
+        for (index, slot) in table.iter_mut().enumerate() {
+            *slot = srgb_to_linear(index as f32 / 255.0);
+        }
+        table
+    })
+}
+
+/// 字节 → 线性光分量（查 [`srgb_decode_lut`]；**逐位等于** `srgb_to_linear(byte as f32 / 255.0)`）。
 pub fn byte_to_linear(byte: u8) -> f32 {
-    srgb_to_linear(byte as f32 / 255.0)
+    srgb_decode_lut()[byte as usize]
 }
 
 /// 显示编码用的 sRGB 查找表（**仅用于显示/预览/缩略图等输出编码**）。
@@ -283,6 +306,24 @@ mod tests {
             composite_over_background([0.0, 0.0, 0.0, 0.0], white),
             [255, 255, 255, 255]
         );
+    }
+
+    /// **核心判据**：解码表对**全部 256 个字节**都必须与直接计算**逐位相同**（D0）。
+    ///
+    /// 为什么这条能红：表项一旦不来自同一个 `srgb_to_linear`（换成近似、或索引差一档），
+    /// 至少一个字节的 `to_bits()` 就会不同 ⇒ `assert_eq!` 当场失败并点名该字节。
+    /// 它守的性质正是 color.rs 头注释写进 D0 基线的那条：查表结果 == 函数值，不是"接近"。
+    #[test]
+    fn decode_lut_is_bit_identical_to_direct_formula() {
+        for byte in 0..=255u8 {
+            let direct = srgb_to_linear(byte as f32 / 255.0);
+            let tabled = byte_to_linear(byte);
+            assert_eq!(
+                tabled.to_bits(),
+                direct.to_bits(),
+                "byte={byte}：查表 {tabled:?} != 直接计算 {direct:?}（逐位比较）"
+            );
+        }
     }
 }
 
