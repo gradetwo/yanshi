@@ -208,6 +208,14 @@ if (!(await waitFor(`document.readyState === "complete" && !!document.getElement
 }
 // 内核就绪 = 本地导出那条路可用（离线优先的出口）。等不到也继续：在线还有服务端那条。
 await waitFor(`window.yanshiStats.wasm === true`, "WASM 内核就绪", 30000);
+// **还要等"文档尺寸就绪"** ✗ —— `applyZoomInput` 的第一句是
+// `if (!box || !state.docSize) return;`（早退 ✓）⇒ 若在 `state.docSize` 有值之前设值 ✓，
+// 那次 `change` 会被**静默丢掉** ✗ ⇒ 后面看到 `zoomPercent=39`（**∴ 适配档 ✓**）
+// ⇒ 判据自报"失去区分力" ✗（**∴ CI 实测：2026-10-06 ✓**）。
+await waitFor(
+  `(() => { const s = window.yanshi.state && window.yanshi.state(); return !!(s && s.docSize && s.docSize.w > 0); })()`,
+  "文档尺寸就绪", 30000
+);
 
 // ③ 显示缩放设为 200%（**远离"适配"** ⇒ 视口的文档像素数必然远小于文档）。
 const zoomSet = await evaluate(`(() => {
@@ -217,7 +225,22 @@ const zoomSet = await evaluate(`(() => {
   box.dispatchEvent(new Event("change", { bubbles: true }));
   return "set";
 })()`);
-await sleep(600);
+// **设完要确认它真的生效** ✗ —— 只发事件而不核对 ⇒ **无法区分"设置了"与"被早退丢掉"** ✓。
+// 等 `#zoom` 标签离开适配档（**这是页面上真实显示的缩放 ✓**）⇒ 拿不到就说明设置没生效 ✓。
+let zoomTook = false;
+for (let i = 0; i < 20; i += 1) {
+  await sleep(200);
+  const shown = await evaluate(`(() => {
+    const label = document.getElementById("zoom");
+    return label ? parseInt(String(label.textContent).replace("%", ""), 10) : NaN;
+  })()`);
+  if (Number.isFinite(shown) && shown > 105) { zoomTook = true; break; }
+}
+if (!zoomTook) {
+  console.error("❌ 设了 200% 但页面显示的缩放仍在适配档 ⇒ 设置那一步没生效（判据前置不成立）");
+  process.exit(1);
+}
+await sleep(300);
 // **前置条件要用"页面上真实的缩放"判定** ✗（CI 实测教训 ✓）：
 // 原先读 `window.yanshi.state().zoom` 并当成 `displayScale` ⇒ 得到的值像**适配档的 scale**
 // （CI 上 0.3877）⇒ 判据自报"失去区分力"而退出 ✗。
