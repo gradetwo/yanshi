@@ -1093,8 +1093,11 @@ impl Workspace {
                     }
                 }
             }
+            // 末尾也要打一个点 ✓：差值按相邻两点算 ⇒ 没有后继点的那一段**永远打不出来** ✗
+            //（上一版就漏了 `restore_meta` ✓）。
             if timing {
                 mark("restore_meta");
+                mark("done");
                 let mut report = format!("open_timing doc={doc_id} atoms={atoms_len}");
                 for pair in marks.windows(2) {
                     report.push_str(&format!(
