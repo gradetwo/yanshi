@@ -37,6 +37,11 @@ proptest = "1.6"
 # 与 wasm32（Rust 自带 ✓）上差最后一位 ✗ ⇒ 实测两个模式对约一半笔刷给出**不同画面** ✗。
 # `libm` 是纯 Rust ✓ ⇒ **同一份源码编两次** ⇒ 结果逐位相同 ✓（`sqrt` 仍用 std ✓：IEEE 要求它正确舍入 ✓）。
 libm = "0.2"
+# **`flate2` 已经在树里** ✓（`zip` 把它带进来了 ✓，见 `Cargo.lock` ✓）⇒ 把它暴露给
+# `yanshi-render` **不新增任何包/版本** ✓。**必须**照抄 `zip` 的 feature 写法 ✓
+#（`default-features = false` + `zlib-rs` ✓）：flate2 的默认后端是 `miniz_oxide` ✗ ⇒
+# 一旦打开默认 feature，锁文件里就会多出 `miniz_oxide`（正是要避免的 ✓）。
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 
 [profile.release]
 lto = "thin"

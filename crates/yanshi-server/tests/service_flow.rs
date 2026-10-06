@@ -1477,184 +1477,23 @@ fn invalid_colors_are_rejected_and_byte_arrays_paint_correctly() {
     }
 }
 
-/// 极简 PNG 解码（本仓库的 PNG 用 stored deflate，因此 zlib 展开即可）。
+/// 极简 PNG 解码 ✓ —— **直接复用内核的解码器** ✓（`yanshi_render::png::decode_png` ✓）。
+///
+/// **有意改写** ✓（第三次 ✓）：这里原先只认 deflate 的 **stored（未压缩）块** ✓，
+/// 后来跟着编码器改成"**固定 Huffman + LZ77** 的手写解压"（RFC 1951 §3.2.6 ✓）；
+/// 第 1183 轮编码器换成 `flate2`＋`zlib-rs`（级别 7 ⇒ **dynamic Huffman** ✓）✗
+/// ⇒ 只认固定 Huffman 的手写解压**必须**跟着换 ✓。
+///
+/// **为什么不再手写一份** ✗：测试里的"独立解压器"只有在它**自己也会随编码器一起演进**时才有价值 ✓；
+/// 本轮之后块类型由第三方决定 ✓ ⇒ 再抄一遍 RFC 只会得到**第二个会腐烂的实现** ✗。
+/// 别的服务端判据（`export_png.rs` / `brush_preview.rs` / `gradient_fill.rs` ✓）早就直接用
+/// `yanshi_render::png::decode_png` ✓ —— 这里与它们对齐 ✓；
+/// 编码器本身的独立验证改由**外部产物**承担 ✓（`png_decode.rs` 的 PIL 夹具 ✓、
+/// `deflate_backward_compat.rs` 里**旧编码器**写下的夹具 ✓）。
 fn decode_png(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
-    assert_eq!(
-        &bytes[0..8],
-        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
-    );
-    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
-    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as usize;
-    // 跳过 IHDR，累加 IDAT。
-    let mut idat = Vec::new();
-    let mut offset = 8usize;
-    while offset + 8 <= bytes.len() {
-        let length = u32::from_be_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]) as usize;
-        let kind = &bytes[offset + 4..offset + 8];
-        let body = &bytes[offset + 8..offset + 8 + length];
-        if kind == b"IDAT" {
-            idat.extend_from_slice(body);
-        }
-        if kind == b"IEND" {
-            break;
-        }
-        offset += 12 + length;
-    }
-    let raw = inflate(&idat);
-    let stride = width * 4;
-    let mut pixels = Vec::with_capacity(stride * height);
-    let mut previous = vec![0u8; stride];
-    let mut position = 0usize;
-    for _ in 0..height {
-        let filter = raw[position];
-        position += 1;
-        let mut line = raw[position..position + stride].to_vec();
-        position += stride;
-        for index in 0..stride {
-            let a = if index >= 4 { line[index - 4] } else { 0 };
-            let b = previous[index];
-            let c = if index >= 4 { previous[index - 4] } else { 0 };
-            let value = match filter {
-                1 => line[index].wrapping_add(a),
-                2 => line[index].wrapping_add(b),
-                3 => line[index].wrapping_add(((a as u16 + b as u16) / 2) as u8),
-                4 => {
-                    let p = a as i16 + b as i16 - c as i16;
-                    let pa = (p - a as i16).abs();
-                    let pb = (p - b as i16).abs();
-                    let pc = (p - c as i16).abs();
-                    let predictor = if pa <= pb && pa <= pc {
-                        a
-                    } else if pb <= pc {
-                        b
-                    } else {
-                        c
-                    };
-                    line[index].wrapping_add(predictor)
-                }
-                _ => line[index],
-            };
-            line[index] = value;
-        }
-        pixels.extend_from_slice(&line);
-        previous = line;
-    }
-    (width, height, pixels)
-}
-
-/// zlib 展开 ✓ —— **固定 Huffman + LZ77**（`yanshi_render::png` 现在的编码方式 ✓）。
-///
-/// **有意改写** ✓：这里原先只认 deflate 的 **stored（未压缩）块** ✓，
-/// 因为编码器当时就是那样写的 ✓；而子 agent 报的 G4（960×640 导出 **2,458,493 字节** ✓
-/// ≈ 原始 RGBA ✓）促使把它换成固定 Huffman + LZ77 ✓，于是这条辅助函数也必须跟着能解压 ✓。
-///
-/// **为什么不去给库加一个公开的 inflate** ✗：那是**只为测试**存在的 API 面 ✓；
-/// 而 `#[cfg(test)]` 的东西跨不了 crate ✓。测试要的独立性更重要 ✓：
-/// 这里照着 RFC 1951 §3.2.6 重新实现一遍 ✓，若压缩侧写错，**往返就会对不上** ✓。
-fn inflate(data: &[u8]) -> Vec<u8> {
-    const LENGTH_BASE: [u16; 29] = [
-        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
-        131, 163, 195, 227, 258,
-    ];
-    const LENGTH_EXTRA: [u8; 29] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
-    ];
-    const DIST_BASE: [u16; 30] = [
-        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
-        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
-    ];
-    const DIST_EXTRA: [u8; 30] = [
-        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
-        13, 13,
-    ];
-    /// 固定 Huffman 字面/长度码（RFC 1951 §3.2.6）✓。
-    fn code_of(symbol: u16) -> (u16, u8) {
-        match symbol {
-            0..=143 => (0x30 + symbol, 8),
-            144..=255 => (0x190 + (symbol - 144), 9),
-            256..=279 => (symbol - 256, 7),
-            _ => (0xC0 + (symbol - 280), 8),
-        }
-    }
-    fn symbol_of(code: u16, width: u8) -> Option<u16> {
-        (0..288u16).find(|symbol| {
-            let (expected, bits) = code_of(*symbol);
-            bits == width && expected == code
-        })
-    }
-
-    assert_eq!((data[0], data[1]), (0x78, 0x01), "zlib 头");
-    let mut position = 2usize;
-    let mut buffer = 0u32;
-    let mut bits = 0u32;
-    let read = |count: u8, position: &mut usize, buffer: &mut u32, bits: &mut u32| -> u32 {
-        while *bits < u32::from(count) {
-            *buffer |= u32::from(data[*position]) << *bits;
-            *position += 1;
-            *bits += 8;
-        }
-        let mask = if count == 0 { 0 } else { (1u32 << count) - 1 };
-        let value = *buffer & mask;
-        *buffer >>= count;
-        *bits -= u32::from(count);
-        value
-    };
-    assert_eq!(
-        read(1, &mut position, &mut buffer, &mut bits),
-        1,
-        "应为最后一块"
-    );
-    assert_eq!(
-        read(2, &mut position, &mut buffer, &mut bits),
-        1,
-        "应为固定 Huffman 块"
-    );
-    let mut out: Vec<u8> = Vec::new();
-    loop {
-        let mut code = 0u16;
-        let mut symbol = None;
-        for width in 1..=9u8 {
-            code = (code << 1) | read(1, &mut position, &mut buffer, &mut bits) as u16;
-            if let Some(found) = symbol_of(code, width) {
-                symbol = Some(found);
-                break;
-            }
-        }
-        match symbol.expect("合法码字") {
-            0..=255 => out.push(symbol.unwrap() as u8),
-            256 => break,
-            other => {
-                let slot = (other - 257) as usize;
-                let length = LENGTH_BASE[slot] as usize
-                    + read(LENGTH_EXTRA[slot], &mut position, &mut buffer, &mut bits) as usize;
-                let mut distance_code = 0u16;
-                for _ in 0..5 {
-                    distance_code = (distance_code << 1)
-                        | read(1, &mut position, &mut buffer, &mut bits) as u16;
-                }
-                let distance_slot = distance_code as usize;
-                let distance = DIST_BASE[distance_slot] as usize
-                    + read(
-                        DIST_EXTRA[distance_slot],
-                        &mut position,
-                        &mut buffer,
-                        &mut bits,
-                    ) as usize;
-                assert!(distance > 0 && distance <= out.len(), "距离越界");
-                let start = out.len() - distance;
-                for offset in 0..length {
-                    let byte = out[start + offset];
-                    out.push(byte);
-                }
-            }
-        }
-    }
-    out
+    let (width, height, pixels) =
+        yanshi_render::png::decode_png(bytes).expect("必须是内核能解的 PNG");
+    (width as usize, height as usize, pixels)
 }
 
 #[test]

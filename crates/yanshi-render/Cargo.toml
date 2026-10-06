@@ -15,6 +15,9 @@ yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 libm.workspace = true
+# **deflate**：`flate2` + `zlib-rs`（纯 Rust ✓，wasm32 可用 ✓）——
+# 它**本来就在依赖树里** ✓（`zip` 带进来的 ✓）⇒ 本轮**零新增包** ✓（代价与收益见 `png.rs` 文件头 ✓）。
+flate2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

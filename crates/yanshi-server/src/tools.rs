@@ -13373,7 +13373,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 ///
 /// **零件其实都齐** ✓，缺的只是把它们接起来 ✓：
 /// `render_region_raw` ✓（取像素 ✓）＋ `yanshi_core::resample::resample_rgba` ✓（缩放 ✓）
-/// ＋ `yanshi_render::png::encode_png` ✓（零依赖手写编码器 ✓）。
+/// ＋ `yanshi_render::png::encode_png` ✓（`flate2`＋`zlib-rs` ✓）。
 ///
 /// **语义** ✓：`mutating: false` ✓ —— 它**不改文档** ✓；但**它会写文件** ✓
 /// ⇒ 这一点写进了 tools.md ✓，不假装它"只是读" ✗。

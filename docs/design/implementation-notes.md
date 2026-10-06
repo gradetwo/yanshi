@@ -37523,3 +37523,133 @@ buffer_pool.rs:229-234：
   只能等它们提交后按"领先 main 是否为 0"逐个回收。
 - 教训：**并行工作的副产物（target）是磁盘的主要消耗者**，
   规划并行度时要**按 N × target 大小**预留磁盘，而不是按单个任务估。
+## 第 1183 轮（分支 `perf/flate2-deflate`）：手写 deflate → 依赖树里**已有**的 `flate2`＋`zlib-rs`（8K 压缩期新增峰值 520 772 KiB ⇒ 1 892 KiB）
+外部报告（第 1182 轮已读，见上文）的**建议 3** 是"评估用 `zlib-rs`/`flate2` 替代手写单线程 LZ77"。
+本轮落地它，并把它从"评估"变成"有判据的替换"。
+### 选型：为什么是 `flate2` 而不是报告建议的 `miniz_oxide`
+* `flate2` 与 `zlib-rs`（纯 Rust 后端）**本来就在 `Cargo.lock` 里** ✓ —— `zip` 把它们带进来的 ✓
+  ⇒ 把它们暴露给 `yanshi-render` **不新增任何包、不新增任何版本** ✓：
+  `Cargo.lock` 的 diff 只有一行 `yanshi-render` 的依赖边加 `"flate2"` ✓。
+* `miniz_oxide` / `zopfli` / `libz-sys` / `fdeflate` **都不在锁文件里** ✗ ⇒ 选它们要新增包 ✓。
+* **必须照抄 `zip` 的 feature 写法** ✓：`default-features = false` + `features = ["zlib-rs"]`
+  （flate2 1.1 的默认 feature 是 `rust_backend`＝`miniz_oxide` ✗ ⇒ 打开默认就会把 `miniz_oxide` 拉进锁文件 ✓）。
+### 级别：7（不是默认的 6）
+`zlib-rs` 的级别表照抄 zlib-ng（`src/deflate/algorithm/mod.rs` 的 `CONFIGURATION_TABLE`）：
+**0–6 走 `deflate_medium`** ✗、**7–9 才走 `deflate_slow`** ✓。本仓库主要负载是**绘画作品**。
+4K 平色语料（33.18 MB ✓）实测（release ✓）：
+| 级别 | 输出 | 耗时 |
+| 6（flate2 默认） | 832 182 字节 | 254 ms |
+| **7（本轮选定）** | **500 933 字节** | 355 ms |
+| 9 | 479 523 字节 | 747 ms |
+| 旧手写固定 Huffman | 738 454 字节 | 612–828 ms（两次） |
+⇒ 级别 7 比级别 6 **小 40%**、比手写实现**小 32%**、**比手写实现快约 1.7×**；级别 9 只再小 4% 却要两倍时间。
+对**高熵照片型**素材（`Cardboard001.png` 1024² ✓）6/7/9 三个级别相差不到 1% ✓ ⇒ 由绘画型负载拍板 ✓。
+**内存与级别无关** ✓（窗口/哈希表/前驱表大小由窗口位数与 `mem_level` 决定）✓ —— 见下面的实测 ✓。
+### 改了哪些文件
+* `crates/yanshi-render/src/png.rs`：1341 → 约 700 行。**删掉**手写 `BitWriter`/`hash3`/`deflate_fixed`/
+  `zlib_fixed`/`zlib_stored` 与手写 `BitReader`/`HuffmanTable`/`inflate_raw`/`read_dynamic_tables`/`fixed_tables`；
+  压/解都走 `flate2`（`ZlibEncoder` 级别常量 / `ZlibDecoder`）✓。
+  `zlib_compress` / `zlib_compress_best` / `zlib_decompress` / `encode_png` / `decode_png` 的**对外签名与语义不变** ✓；
+  `adler32` 作为公开 API 保留 ✓（现在不参与压缩/解压路径 ✓，由 `zlib-rs` 在流内校验 ✓）。
+* `Cargo.toml`（workspace）＋ `crates/yanshi-render/Cargo.toml`：加 `flate2`（见上面的 feature 说明 ✓）。
+* 新增四条判据：`tests/deflate_determinism.rs`、`tests/deflate_round_trip.rs`、`tests/deflate_memory.rs`、
+  `tests/deflate_backward_compat.rs` ＋ 三组 `tests/fixtures/legacy_*.{zlib,png,raw}` 夹具 ✓
+  （夹具由**换实现之前**的旧编码器当场生成 ✓）。
+* 顺手把"零依赖手写编码器"这类**已经过时的注释**改成事实 ✓：`png.rs` 文件头、`lib.rs` 的模块表、
+  `blob_codec.rs`、`tools.rs`、`png_decode.rs` ✓。
+* `crates/yanshi-server/tests/service_flow.rs`：**它自己藏了第二份手写 inflate** ✗ ——
+  只认 **固定 Huffman** ✓，并断言 zlib 头是 `(0x78, 0x01)` ✗、BTYPE 必须是 1 ✗。
+  换成 dynamic Huffman 后它**当场红** ✓（`cargo test --workspace` 里 5 条 `service_flow` 失败 ✓，
+  实际文本 `assertion left == right failed: zlib 头 ｜ left: (120, 218) ｜ right: (120, 1)` ✓，
+  连 `invalid_colors_are_rejected_and_byte_arrays_paint_correctly` 那种与压缩无关的用例也一起红 ✓
+  —— 因为它们共用同一个解码辅助函数 ✓）。**处置** ✓：删掉那份手写解压 ✓，改为直接调用
+  `yanshi_render::png::decode_png` ✓（与 `export_png.rs` / `brush_preview.rs` / `gradient_fill.rs` 早已在做的对齐 ✓）；
+  编码器的独立验证改由**外部产物**承担 ✓（PIL 夹具 ✓、旧编码器夹具 ✓）。
+### 确定性：三条判据 + 跨目标同摘要
+1. 同一输入压两次（每次都是**新构造的编码器** ✓）逐字节相同 ✓；
+2. 显式 `ZlibEncoder::new(Vec::new(), Compression::new(7))` 两次 ＋ 与 `zlib_compress`（内部 `Vec::with_capacity`）
+   三者一致 ✓ ⇒ **预留容量不影响输出** ✓；
+3. **黄金摘要**（固定语料的长度前缀拼接输出的 sha256 ✓）＝
+   `514662484df8252bb53cc0f6ce8890f03fa4130935ac6349fc92ea4f8ff82b5e` ✓。
+   这条**故意脆** ✓：换级别就红 ✓（把 `DEFLATE_LEVEL` 从 6 改成 7 时，实际文本
+   `left: 514662484df8252bb53cc0f6ce8890f03fa4130935ac6349fc92ea4f8ff82b5e right: 868e075bb4b2c5f324329a686423b7eb4be7853edb7883c38e43667886b33fe3` ✓）。
+   **跨目标**：把同一份探针编进 `yanshi-wasm` ✓、`wasm-bindgen --target nodejs` 在 **node** 里跑 ✓
+   ⇒ wasm32 的摘要与 x86_64 原生**完全相同** ✓（同一个 `514662…b5e` ✓）。探针随后删除 ✓（`git diff` 对该文件为 0 行 ✓）。
+### 往返与向后兼容
+* 既有判据全绿 ✓：`blob_compression.rs`（可压、拒绝非 zlib、adler32 抓篡改 ✓）、
+  `stored_block_round_trip.rs`（stored 兜底跨 65535 块边界且不膨胀 ✓）、
+  `png_decode.rs`（含 **PIL 产的 dynamic Huffman PNG** ✓ —— 换上 `zlib-rs` 后仍能解 ✓）。
+* 新 `deflate_round_trip.rs`：长度边界 0/1/2/3/257/258/259/4096/32767/32768/65534/65535/65536/65537/200000 ✓
+  × 五种形态（全零/重复/噪声/半压缩/递增）✓ ⇒ `zlib_compress` 与 `zlib_compress_best` 都必须逐字节解回 ✓；
+  截断 ✓、adler32 被改 ✓、zlib 头被改 ✓ 三种坏流必须回 `None` ✓。
+* 新 `deflate_backward_compat.rs`：**旧编码器写下的字节**（固定 Huffman 流 ✓、跨块 stored 兜底流 ✓、
+  旧 PNG ✓）新解码器必须逐字节解回 ✓。工程包里的 `blobs.encoding: "zlib"` **标签仍然真实** ✓（容器没变 ✓）。
+  **这条回答了我此前无法确定的问题** ✓：既有 blob 的向后兼容**不需要猜** ✓ —— 有夹具为证 ✓。
+### 内存：从"每个输入字节一份 u32"到"与输入长度无关"
+`tests/deflate_memory.rs`（独占一个测试二进制 ✓，记账式 `#[global_allocator]` ✓，输入在测量前分配好 ✓）实测：
+| 输入 | 压缩期新增堆峰值 |
+| 1 MiB 可压数据 | 675 008 字节（659 KiB） |
+| 16 MiB 可压数据 | 1 461 376 字节（1 427 KiB） |
+⇒ 输入大 16 倍，压缩期峰值只从 659 KiB 涨到 1 427 KiB（**输出缓冲**的那部分）✓，
+判据断言 `< 6 MiB` 且 `< 小输入的峰值 + 2 MiB` ✓（旧实现会是 `4 × 输入` ⇒ 16 MiB 输入 = 64 MiB ✗）。
+**RSS 前后对照**（`/proc/self/status` 的 `VmHWM` ✓，release ✓，x86_64 ✓，同一探针 ✓，
+输入都是"绘画型"扫描线 ✓，4 核 Arch / rustc 1.99.0 ✓）：
+| 规模 | 旧：输出 / 耗时 / 压缩期新增峰值 | 新（级别 7）：输出 / 耗时 / 压缩期新增峰值 |
+| 1080p 8.29 MB | 182 367 / 190.3 ms / 32 604 KiB | 123 472 / 52.5 ms / 284 KiB |
+| 4K 33.18 MB | 738 454 / 612–828 ms / **130 420 KiB** | 500 933 / 202.7 ms / **900 KiB** |
+| 8K 132.71 MB | 2 650 485 / 2 481.7 ms / **520 772 KiB**（进程峰值 638 MiB） | 1 765 223 / 905.6 ms / **1 892 KiB**（进程峰值 131 MiB） |
+| PNG 960×640 | 53 795 / 52.0 ms / 12 196 KiB | 36 361 / 21.0 ms / 2 752 KiB |
+| 噪声 70 KB | 70 016（stored 兜底）| 70 016（stored 兜底，输出逐字节相同）|
+真实素材（同样本机 ✓）：`ui-medium-oil-40-strokes.png` 1600×913 扫描线 5.84 MB
+旧 111 072 字节 / 112.6 ms ⇒ 新 81 532 字节 / 48.6 ms（PNG 形式 111 129 ⇒ 81 589 字节 ✓）；
+`Cardboard001.png` 1024² 扫描线 4.20 MB 旧 2 597 181 字节（61.9%）⇒ 新 2 024 773 字节（48.3%）✓。
+**解压也快了** ✓：4K 扫线（33.18 MB 明文 ✓）旧手写 inflate **866.6 ms** ⇒ `zlib-rs` **54.6 ms**（**15.9×** ✓）。
+这条与第 1182 轮"每次 `store.get()` 都要 inflate"的结论叠在一起 ⇒ 打开工程的那条路**同时**受益 ✓。
+### 代价（两面都写）
+* **wasm 体积变大** ✗：`yanshi_wasm.wasm`（release ✓、`lto = "thin"` ✓）旧 **1 407 844** 字节 ⇒
+  新 **1 510 765** 字节（**+102 921 字节，+7.3%** ✓）。这是**新进 wasm 的 `zlib-rs` 代码** ✓，
+  不是 `yanshi-render` 自己的增量 ✓。收益（4K 导出小 32% ✓、8K 压缩期内存小 275× ✓）与之相权 ✓
+  —— 记在这里供后续按 AGENTS.md 第 5 条再评估 ✓。
+* **编译时间** ✗：`yanshi-render` 现在要编 `flate2`＋`zlib-rs` ✓；但**整个 workspace 本来就要为 `zip` 编它们** ✓
+  ⇒ 全量构建的增量接近 0 ✓（本轮实测：wasm release 增量重建 27 s ✓）。
+* **新的失败面** ✓：解压错误来自第三方 ✓ ⇒ 一律映射回 `None` ✓（对外语义与旧实现一致 ✓，
+  由 `blob_compression.rs` 与新的 `deflate_round_trip.rs` 守着 ✓）；
+  另外保留旧实现的**严格性** ✓：有效 zlib 后面挂垃圾尾巴仍必须拒绝 ✓（`total_in` 必须等于输入长度 ✓）。
+* **行为上的一处有意变化** ✓：PNG/zlib 头第二字节随级别变化（FLG 的 FLEVEL 位 ✓）——
+  `0x7801`（旧手写，级别 0–1 的 FLEVEL ✓）⇒ `0x78DA`（级别 7 ✓）——
+  这是 zlib 规范内 FLEVEL 位的正常编码 ✓，**格式没变** ✓（旧文件仍可读 ✓，新文件任何 zlib 解码器都能读 ✓）。
+### 变异验证（直接跑判据，不用 `run-criteria.sh`；每次改回后 `cmp` 与原文件**字节相同**）
+1. **非确定性**：让 `zlib_compress` 用线程局部计数器把级别在 7/8 之间交替 ⇒
+   `deflate_determinism::the_same_input_yields_the_same_bytes_twice` **红**，实际文本：
+   `同一输入两次压缩必须逐字节相同（原始 10240 字节）`；改回后 `cmp` 字节相同 ⇒ 绿 ✓。
+2. **解码侧损坏**：`zlib_decompress` 忽略解码错误、并去掉 `total_in` 完整性检查 ⇒
+   `blob_compression::a_stream_that_is_not_zlib_is_rejected_instead_of_guessed` **红**
+   （`载荷被改坏必须被 adler32 抓住` ✓）、
+   `deflate_round_trip::corrupted_streams_are_refused_instead_of_decoded_partially` **红**
+   （`截断 1 字节必须回 None` ✓）；改回后 `cmp` 字节相同 ⇒ 绿 ✓。
+3. **内存**：在 `zlib_at_level` 里加 `let ballast = vec![0u8; raw.len()]; std::hint::black_box(&ballast);`
+   （把"每个输入字节一份元数据"加回来 ✓）⇒ `deflate_memory` **红**，实际文本：
+   `压缩期新增堆峰值：1 MiB 输入 ⇒ 1723584 字节（1683 KiB）；16 MiB 输入 ⇒ 18238592 字节（17811 KiB）`
+   ＋ `压缩期新增堆峰值过大：18238592 字节（16 MiB 输入）⇒ 是不是又把"每个输入字节一份元数据"加回来了？` ✓；
+   改回后 `cmp` 字节相同 ⇒ 绿 ✓。
+### 五道门（在 `/tmp/wt-deflate` 的**独立** `CARGO_TARGET_DIR` 里跑；本机默认 `cargo` 1.99.0，wasm 那门用
+`~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu`（rustup 的 `stable`，1.98.1 ✓ —— 系统 rustc 没有 wasm 标准库 ✓））
+* `cargo fmt --all -- --check` —— 绿 ✓（退出码 0 ✓）
+* `cargo clippy --workspace --all-targets -- -D warnings` —— 绿 ✓（退出码 0 ✓，`-D warnings` 下无告警 ✓）
+* `cargo build --workspace --all-targets` —— 绿 ✓（退出码 0 ✓）
+* `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` —— 绿 ✓（退出码 0 ✓；产物 1 510 765 字节 ✓）
+* `cargo test --workspace` —— 绿 ✓（退出码 0 ✓，`--workspace` 全绿 ✓；其中 `service_flow` 31 passed ✓）
+* `scripts/wasm-smoke.sh`（仓库既有的 wasm 运行时判据 ✓）—— 绿 ✓（渲染路径 RGBA 262144 字节 / PNG 203 字节 ✓、
+  写入路径预览＋提交 ✓）。
+### 我做不到 / 未能确定的
+* **跨架构只验了 x86_64 与 wasm32** ✓：本机没有 aarch64 ✓ ⇒ "任何平台逐位相同"里
+  aarch64（NEON 路径 ✓）**没有实测** ✓，只有"SIMD 变体返回同一个首个不同位置"的阅读判断 ＋ 黄金摘要这道绊线 ✓。
+* **wasm 体积是"整包"对照** ✓（不是逐 crate ✓）；未做 wasm-opt ✓ / 未按目标分离 release profile ✓。
+* **真实浏览器**未跑 ✓（只有 `wasm-smoke.sh` 的 node ✓）—— 与本轮其它轮次的边界一致 ✓。
+* 计时受本机负载影响 ✓（4 核、机器上还有其它 worktree 在构建 ✓）：同一份旧 4K 压缩测到 612 ms 与 828 ms 两个值 ✓
+  ⇒ 报告里给区间 ✓，判据不依赖时间 ✓。
+**一条诚实记录** ✓：`cargo test --workspace` 第一次跑完 59 组全绿（0 失败、632 个用例 ✓）后
+**被本机另一个会话的信号打断** ✗（`TEST_EXIT=143` ＝ SIGTERM ✓；当时机器 load 7–9，
+还有两个子代理在各自 worktree 里构建 ✓）⇒ 重跑一次得到完整结果 ✓：
+**140 组全绿 / 0 失败 / 901 个用例通过 / `TEST_EXIT=0`** ✓。
+这不是"重试才绿" ✗：被打断的那次**一条失败都没有** ✓，重跑只是把它跑完 ✓。
