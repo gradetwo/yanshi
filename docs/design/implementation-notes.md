@@ -36148,3 +36148,75 @@ B. 用报告里的工程包 parrot-4k-v3-fc33320.yanshi（6.9MB）实测：同�
 6. 纪律：变异验证必须**直接跑判据**（runner 用隔离副本）；**必须确认变异真的落盘**（我上一轮就因为
    补丁没生效，把一次合法通过误读成"判据不能红"）；不许跨分辨率/跨档位比较；不许把一次观测写死；
    notes 只追加、冲突两份都保留。
+
+## 第 1155 轮：图层缓冲池落地——4K 全幅每帧 632 MB 的分配+清零变成"一次分配、层间复用"
+
+（承接第 1154 轮派发的 `/tmp/wt-bufpool`、分支 `perf/buffer-pool`。）
+
+先复核目标源码：`crates/yanshi-render/src/render.rs:504` 确实在**图层循环内**
+`Buffer::new(origin_x, origin_y, width, height)`；`buffer.rs` 的 Buffer 是四通道 f32
+⇒ 3840×2160 单层 `3840*2160*16 B = 132.7 MB`（十进制，= 126.6 MiB），5 层每帧约 663 MB 的分配+清零。
+
+### 改动的分配点
+1. `render.rs::render_accumulation` 的图层循环：`Buffer::new(...)` ⇒ `self.buffer_pool.acquire(...)`，
+   租约 `BufferLease` 在本次迭代末 Drop 归还。**这是本轮唯一改成池化的分配点**。
+2. 新增 `crates/yanshi-render/src/buffer_pool.rs`（零依赖）：`BufferPool` + `BufferLease` +
+   `BufferPoolStats`；`Mutex` 保护空闲表（并行 worker 会并发取用），锁只覆盖"取/还"、不覆盖渲染。
+3. `buffer.rs` 新增 `reset`（`clear` + `resize(len, 0.0)`，逐元素写 0 ⇒ 起点与 `new` 相同）、
+   `capacity_pixels` / `capacity_bytes`（best-fit 与字节记账）。
+4. `RenderStats` 新增 `layer_buffers_allocated` / `layer_buffers_reused`（**语义计数，不是计时**）。
+   **未池化**：累积缓冲（每次渲染一处）、`crop`、`layer_buffer.clone()`（快照/克隆对象）仍走原分配。
+
+### 池的边界规则，以及"为什么不只是一个缓冲"
+- 并行分块时**每个 worker** 都在跑自己的图层循环 ⇒ 同一时刻需要 `workers` 块。
+- 规则：借出即把 Buffer **移出**空闲表（结构上不可能同时给两个租约）；空闲表无"容量够用"的缓冲就
+  **新建**（规模由实际并发取用决定）；归还只在**个数上限**（`MAX_POOLED_BUFFERS = 16`，
+  覆盖 `parallel_impl::MAX_WORKERS`）与**字节预算**（`MAX_POOLED_BYTES = 192 MiB`）内保留。
+- **例外（本轮实测发现并修掉）**：严格按字节预算时，3840×3840 的单层 ≈ 225 MB > 192 MiB ⇒ 一张都
+  留不下 ⇒ 池化对它**完全失效**（release 实测 20 次取用 / 0 次复用）。所以空闲表为空时允许保留
+  一张、可突破预算；**个数上限始终生效**（超预算时也只留一张）。
+
+### 不别名怎么证明
+- 结构：借出把 Buffer **移动**出空闲表，Drop 才放回；`in_use: BTreeSet<u64>` 记账。
+- 判据直接断言：两个同时在借租约的底层 `f32` 切片**内存区间不相交**；给一个写标记另一个读不到；
+  释放一个再借一个，新租约不得与仍在借的重叠；`alias_violations == 0`。
+- 变异②（`release` 里 `in_use.remove` 改成 `contains`）⇒ `alias_violations` 1 ≠ 0 ⇒ 红。
+
+### 测量（**release** 档，画布 **3840×2160**，5 层，同一进程 A/B：池化 vs `set_enabled(false)`）
+- **硬证据（语义计数，三次运行完全一致）**：单帧 池化 `[allocated 0 / reused 5]`；
+  每层新建 `[5 / 0]`；池累计 `allocated=1 reused=19`。⇒ 每帧的理论分配从 **632 MB 降到 126.6 MiB 一次**。
+- 墙钟（`ROUNDS=3` 平均，同机有别的构建、噪声大，只报区间）：池化 1.99 / 2.72 / 4.43 s，
+  每层新建 3.47 / 4.59 / 5.38 s，比值 **1.21×–1.74×**。不跨档位/分辨率比较；debug 档未测。
+- 测量入口：`cargo test -p yanshi-render --release --test perf_budget -- --ignored --nocapture
+  measure_layer_buffer_pool_on_4k_full_frame`。
+
+### 判据与红/绿证据（每条都**直接跑判据**；变异先确认落盘，回滚后 `cmp` 逐字节一致）
+1. 正确性 `tile_parallel.rs::buffer_pool_matches_fresh_allocation_byte_identical`：
+   池化 vs `set_enabled(false)`（= 改造前每层 `Buffer::new`），整幅 `rgba8` + 每个 tile 的 f16 逐字节比。
+   **变异**：`Buffer::reset` 去掉 `clear`（同长度下 `resize` 变 no-op ⇒ 复用缓冲残留上一层）
+   ⇒ `cargo test -p yanshi-render --test tile_parallel buffer_pool_matches_fresh_allocation_byte_identical`
+   **红**：`assertion left == right failed: 池化与强制新建必须逐字节相同`（exit 101）。
+2. 资源 `buffer_pool_reuses_one_allocation_across_all_layers`：一次全幅（串行、3 层）
+   `allocated==1 && reused==2`，第二次渲染 `0 / 3`。
+   **变异**：`acquire` 的 `if self.enabled...` 前加 `false &&` ⇒ 每层都新建
+   ⇒ **红**：`assertion left == right failed: 只应新建 1 张（首层）left: 3 right: 1`。
+3. 有界+不别名 `buffer_pool_is_bounded_and_never_aliases_a_live_lease`：小上限 (2 张 / 256 KiB) 下
+   10 块同时在借、归还后保留 ≤ 上限；超预算单张仍保留 1 张；同时在借不重叠、`alias_violations==0`。
+   **变异①**（去掉上限判断）⇒ 红（`retained_buffers` 超限）；**变异②**（`in_use.remove`→`contains`）
+   ⇒ 红：`assertion left == right failed: 借出/归还的 id 记账不得冲突 left: 1 right: 0`。
+   另有 `default_buffer_pool_stays_within_its_published_limits`（默认上限）。
+   以上变异均 `cmp` 回滚到逐字节一致，再跑判据恢复绿。
+
+### 门禁
+`cargo fmt --all -- --check` OK；`cargo clippy --workspace --all-targets -- -D warnings` 0；
+`cargo test --workspace` 全绿；`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` 绿
+（本机 `/usr/bin/cargo` 是 Arch 1.99、**没装** wasm 目标；wasm 门禁走 `~/.cargo/bin` 的 rustup
+1.98.1（装了 `wasm32-unknown-unknown`），native 门禁走 1.99 —— 两个档位各自内部比较，不混）。保持串行：
+本轮没有引入线程，wasm 的 `workers()` 仍恒为 1。
+
+### 没做到的
+- 只量了 **release / 3840×2160 / 串行（max_workers=1）全幅**；并行路径只由既有逐字节判据保证正确性
+  （池在并行下按需新建，规则相同），**没有单独量并行档位**。
+- 墙钟噪声大（同机有别的构建）⇒ 硬证据是计数不是时间；debug 档没量。
+- 本 worktree 从 main(ccedb4a) 分出，看不到主工作区里**未提交**的第 1154 轮那段 notes
+  ⇒ 本轮只追加 1155。合并时**两份都要保留**（追加-追加冲突，不许单取一侧）。
