@@ -313,14 +313,22 @@ mod tests {
                 serde_json::from_str(&kernel.apply_atom_json(&atom.to_string())).unwrap();
             assert_eq!(response["ok"], json!(true), "{response}");
         }
-        for (x, y, w, h) in [(0.0, 0.0, 64.0, 64.0), (8.0, 8.0, 32.0, 32.0), (6.0, 6.0, 20.0, 12.0)] {
+        for (x, y, w, h) in [
+            (0.0, 0.0, 64.0, 64.0),
+            (8.0, 8.0, 32.0, 32.0),
+            (6.0, 6.0, 20.0, 12.0),
+        ] {
             let tile = kernel.render_region_rgba(x, y, w, h);
             let direct = kernel.render_region_direct_rgba(x, y, w, h);
             // **这是判据，不是测量**（第 1341 轮 ✓）：两路**必须逐字节一致** ✓。
             // 依据（2026-10-07 实测 ✓）：三个代表性区域（整幅 / 中段 / 小片）都是**差异 0 字节** ✓
             // ⇒ 所以"改成走 tile 组合"是**安全的**，而这条断言就是那次改动的护栏 ✓。
             let first_diff = tile.iter().zip(direct.iter()).position(|(a, b)| a != b);
-            let differing = tile.iter().zip(direct.iter()).filter(|(a, b)| a != b).count();
+            let differing = tile
+                .iter()
+                .zip(direct.iter())
+                .filter(|(a, b)| a != b)
+                .count();
             println!(
                 "  ({x},{y},{w},{h})：tile {} 字节｜direct {} 字节｜逐字节相同 {}｜首个差异位 {:?}｜差异字节 {}",
                 tile.len(), direct.len(), first_diff.is_none(), first_diff, differing

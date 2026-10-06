@@ -2419,7 +2419,11 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         });
         Ok((
             crate::archive::write_tar(&entries),
-            ExportStats { blob_count, blob_bytes_plain: plain_bytes, blob_bytes_packed: packed_bytes },
+            ExportStats {
+                blob_count,
+                blob_bytes_plain: plain_bytes,
+                blob_bytes_packed: packed_bytes,
+            },
         ))
     }
 
