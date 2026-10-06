@@ -572,6 +572,8 @@ impl Renderer {
             buffer
         } else {
             let mut track = ObjectTrack::default();
+            // 串行路径只有一个并发取用者 ⇒ 预算 = max(下界, 1 × 整幅工作集)。
+            self.buffer_pool.begin_render(1);
             let accumulation = self.render_accumulation(
                 state,
                 store,
@@ -2003,6 +2005,10 @@ mod parallel_impl {
         let by_rows = (rh / MIN_BAND_ROWS).max(1) as usize;
         let bands = split_bands(rh, wanted.min(by_rows));
         let chunks = bands.len();
+        // **告诉缓冲池本轮的真实并发块数**：池的字节预算 = 并发数 × 每块工作集
+        // （下界 `MIN_POOLED_BYTES`），这样 8K/4 worker 那种"每块 126.56 MiB、合计 506 MiB"
+        // 的工作集才留得住（写死 192 MiB 时只留得下 1 块，其余每层重新分配）。
+        renderer.buffer_pool.begin_render(chunks);
 
         let mut out = Buffer::new(rx, ry, rw, rh);
         let stride = rw as usize * 4;
@@ -2208,6 +2214,8 @@ mod parallel_impl {
         };
         let mut track = ObjectTrack::default();
         let mut probe = RenderProbe::default();
+        // wasm 上没有线程 ⇒ 恒为 1 个并发取用者。
+        renderer.buffer_pool.begin_render(1);
         let buffer = renderer.render_accumulation(
             state,
             store,
