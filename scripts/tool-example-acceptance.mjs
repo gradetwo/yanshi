@@ -98,7 +98,7 @@ for (const tool of withExample) {
   // badParameter 的正则里有「缺少必填」与「必须」⇒ 上面两条实测先命中它
   // ⇒ 走了「示例被拒」而永远到不了下面的 needsState ⇒ 我补的措辞等于没加。
   // 缺上下文比「参数错」更具体（要你先建对象，不是写错值），所以先算它。
-  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch/i.test(detail);
+  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter && !needsPriorState) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
@@ -106,13 +106,16 @@ for (const tool of withExample) {
   // 「不在日志（里/中）」「从未存在过」「找不到…」「没有可修改的…」「已经有一个打开的…」
   // 「先 begin_changeset」「需要 delta 或 transform」（**都是产品在说"你引用的东西还不具备"** ✓）。
   // ⇒ **这不是放松标准** ✓：`needsState` 这一类**就是为它们设的** ✓ —— 例如 `revert_to` 必须先有 `declare_head` ✓。
+  // **第 1278 轮补的一条** ✓：「**目标已存在 ⇒ 不会覆盖**」也是"缺上下文"而非"值写错" ✗ ——
+  // `import_project` 的参数没问题 ✓，但它要求**目标文档必须不存在** ✓
+  // ⇒ 抄这条示例的人本来就得**先准备一份新文档** ✓ ⇒ 与 `revert_to` 要先 `declare_head` 同类 ✓。
   // **第 520 轮补的三条** ✓：它们同样"缺上下文"而非"值写错" ✗ ——
   // 「缺少必填参数 path 或 blob」（**没有可导入的文件** ✓）、
   // 「order 必须是全部存活图层的完整顺序」（**要运行时图层清单** ✓）、
   // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
   // ⚠️ **注释不能写在正则字面量里面** ✗（第 546 轮实测 ✓）：`//` 会**终止正则** ✓
   // ⇒ 报 `SyntaxError: Invalid regular expression: missing /` ✓ ⇒ **整条判据当场失效** ✗。
-  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch/i.test(detail)) {
+  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }
