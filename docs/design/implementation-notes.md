@@ -40855,3 +40855,30 @@ console.log(`  ${needsPrior ? "⊙" : "✗"} ${name} ${needsPrior ? "需要前�
 ⇒ **∴ 这正是 `docs/skills/development.md` 9.12 记过的坑 ✗** ⇒ **∴ 我在同一会话里**踩了三次**✗**
    ⇒ **∴ 教训** ✓：**∴ `git add -A`✗ 之后 ⇒ **任何**回退**✗ 都必须**带修订号**✗ ⇒ **∴ 包括"只是回退一个文件"✗
       这种"看起来无害"✗ 的情形 ✓** ✓✓
+
+## 第 1311 轮：**F02 的抽取重构落地** ✓（第 5 次尝试）—— 五次失败原因全部来自**编译器／linter** ✗
+
+### 结果
+```
+:6612  fn collect_gestures(document: &crate::document::Document) -> (Vec<Gesture>, usize)
+:6620  let (gestures, ignored) = collect_gestures(document);      ← write_undo_last 现在调它 ✓
+```
+- ✅ `clippy -D warnings`（**∴ 问题数 0 ✓**）｜✅ `cargo build --workspace --all-targets` ✓
+- ✅ `cargo test -p yanshi-server --lib` ⇒ **56 passed** ✓（**∴ 纯重构 ⇒ **∴ 行为不变 ✓**）
+- 提交 `1b32eaa` ✓。
+
+### 五次尝试的失败原因（**∴ 每一个都只有编译／lint 才能揭示 ✓**）
+1. **只替换 block 的开头** ✗ ⇒ **剩余部分留在原地 ⇒ **∴ 多出闭合括号**✗ ＋ `alive`／`atoms` 被算两遍 ✓
+   ⇒ **∴ 必须**按行号范围整段替换**✗ ✓**；
+2. **`Document`✗ 的模块路径猜错** ✗ ⇒ **∴ 它在 `crate::document`✗（**∴ 服务端 crate ✓**），不在 `yanshi_core`✗ ✓**；
+3. **doc 注释被当成**列表项的延续**✗** ⇒ **∴ 因为 `write_undo_last`✗ 的 doc 块里有 `1.`／`2.`✗ 有序列表 ✓
+   ⇒ **∴ clippy 报 `doc list item without indentation`✗ ⇒ **∴ 按既有风格**缩进续行**✗ 解决 ✓**；
+4. **我为了隔开两个块插了一个**裸空行**✗** ⇒ **∴ 它让 doc 注释块**提前结束**✗ ⇒ **∴ 后面的 `///`✗ 变成**孤立注释**✗
+   ⇒ **∴ 编译器报 `empty line after doc comment`✗ ⇒ **∴ 把裸空行换成**空注释行 `///`**✗ 解决 ✓**；
+5. （第 1 次之前还有一次）**类型路径**与**范围**都错 ✓ —— **∴ 与 1／2 同因 ✓**。
+
+### 教训（**∴ 两次"同一个坑"＋ 三次"语法细节"✗**）
+**∴ 本会话总共踩到**同一类坑**✗ 三次** ✓：**∴ `git add -A`✗ 之后用**不带修订号**✗ 的 `checkout --`✗ 回退** ✗
+   ⇒ **∴ 而其余失败都是**Rust doc 注释的排版规则**✗（**∴ 列表延续要缩进 ✗、空行要写成 `///`✗ ✓**）
+   ⇒ **∴ 两者共同点** ✓：**∴ 都是**"看起来无害的排版／命令"✗ 造成的 ✓ ⇒ **∴ 而它们**不会**✗ 在任何
+      业务判据里暴露 ✗ ⇒ **∴ 只能靠**编译器 ＋ linter ＋ 谨慎**✗ 拦住 ✓** ✓✓
