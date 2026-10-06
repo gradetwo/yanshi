@@ -1,0 +1,71 @@
+{
+  "_comment": "两端共用的同一份输入：scripts/wasm-smoke.sh 把它交给 node 的 wasm 内核，crates/yanshi-wasm/tests/wasm_native_parity.rs 把它交给宿主的同一内核。比对的是 render 指定的同一块区域在同一串原子下的字节。",
+  "doc_id": "smoke",
+  "tile_size": 256,
+  "width": 512,
+  "height": 512,
+  "memory_limit": 67108864,
+  "atoms": [
+    {
+      "seq": 1,
+      "id": "01AAAAAAAAAAAAAAAAAAAAAAAA",
+      "kind": "create_document",
+      "actor": "human:1",
+      "session": "session:a",
+      "timestamp": 1,
+      "payload": {
+        "doc_id": "smoke",
+        "width": 512,
+        "height": 512,
+        "background": { "r": 255, "g": 255, "b": 255, "a": 255 }
+      }
+    },
+    {
+      "seq": 2,
+      "id": "01BBBBBBBBBBBBBBBBBBBBBBBB",
+      "kind": "create_layer",
+      "actor": "human:1",
+      "session": "session:a",
+      "timestamp": 2,
+      "payload": { "layer_id": "layer_1", "name": "base" }
+    },
+    {
+      "seq": 3,
+      "id": "01CCCCCCCCCCCCCCCCCCCCCCCC",
+      "kind": "create_object",
+      "actor": "human:1",
+      "session": "session:a",
+      "timestamp": 3,
+      "payload": {
+        "object_id": "shape",
+        "layer_id": "layer_1",
+        "kind": "shape",
+        "data": {
+          "geometry": {
+            "kind": "rect",
+            "bbox": { "x": 32, "y": 32, "w": 128, "h": 128 }
+          },
+          "color": { "r": 200, "g": 80, "b": 40, "a": 255 }
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "id": "01DDDDDDDDDDDDDDDDDDDDDDDD",
+      "kind": "create_object",
+      "actor": "human:1",
+      "session": "session:a",
+      "timestamp": 4,
+      "payload": {
+        "object_id": "grain",
+        "layer_id": "layer_1",
+        "kind": "filter",
+        "data": {
+          "filter_name": "film_grain",
+          "params": { "amount": 0.4, "size": 3, "seed": 7 }
+        }
+      }
+    }
+  ],
+  "render": { "x": 0, "y": 0, "w": 64, "h": 64 }
+}
