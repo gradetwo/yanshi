@@ -1109,31 +1109,11 @@ impl Workspace {
             Some(persist) => !persist.load_atoms(&doc_id)?.is_empty(),
             None => false,
         };
-        // **∴ 先做完派发**（丢弃返回值 ✓）—— 因为 `document_mut` 会借用 `self` ✗，
-        // 所以不能"先拿文档再调 self 的方法" ✓。
         if exists {
-            self.open_document(&doc_id)?;
+            self.open_document(&doc_id)
         } else {
-            self.create_document(spec, actor, session)?;
+            self.create_document(spec, actor, session)
         }
-        // **预热渲染器**（第 1352 轮 ✓）：**进程内第一次渲染要一次性初始化** ✗
-        //（建 tile 网格 ✗、分配缓冲 ✗、加载画笔与纹理资源 ✓）⇒ 实测**第一次** `get_document`
-        // 要 **204 ms** ✗，第二次只要 **3 ms** ✗（判据 `scripts/tool-thumbnail-cold.mjs` ✓ 盯着它 ✓）。
-        //
-        // **∴ 为什么预热要调 `render_document_preview` ✗**（**∴ 而不是别的渲染入口 ✓**）：
-        // 实测两次失败尝试 ✓ —— ① `render_region_raw(1×1)` ✗ 与 ② 位置错 ✗ ⇒ **∴ 而第 ① 次说明
-        // **小区域渲染不触发那 200 ms** ✗**（打开仍 1.62 ms ✓）⇒ **∴ 所以那 200 ms 属于
-        // `render_document_preview`✗ 这条路 ✓**（**∴ 与缩略图同路 ✓**）** ✓✓
-        //
-        // **为什么加在这里而不是"第一次取状态"** ✗：**∴ 打开是用户**已预期等待**✗ 的时刻 ✓，
-        // 而"第一次取状态"是**首屏**✗ ⇒ 挪走它 ⇒ 用户不再遇到那次卡顿 ✓。
-        //
-        // **不改任何东西** ✓：该调用只读 ✗ ⇒ 幂等 ✗ ⇒ 像素／缓存／日志全不变 ✓。
-        // **代价**：每次**打开或新建**慢 ≈200 ms ✗（**∴ 即使随后没人取状态也付 ✓**）。
-        if let Some(document) = self.documents.get_mut(&doc_id) {
-            let _ = document.render_document_preview();
-        }
-        self.document_mut(&doc_id)
     }
 
     /// 只读文档引用。
