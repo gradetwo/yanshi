@@ -39701,3 +39701,33 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 ② **新 id 报 created、真存在才报 opened 且保留像素**（两个方向都要）；③ **安全约束**：已有文档不被清空/改尺寸（破坏就红）；
 ④ 既有判据点名保持绿。纪律照旧（独立 target、直接跑判据、补丁确认落盘、**带修订号的回退**、
 **变异备份分两份**、**六步门禁含编号唯一判据**、英文提交、不碰 main、不推送、不碰 `service-worker.js`）。
+
+## 第 1259 轮：接管离线内核初始化的修复（**子代理已 inactive 但没提交**）
+
+### 发现
+`list_agents` 显示 **`2af273d3`（Fix offline kernel init）已经是 `inactive`**，
+但它的 worktree `/tmp/wt-offkernel` **0 个提交、1 个未提交文件**，
+且**近 40 分钟没有任何源文件改动** ⇒ 它**停在了"修复已写好、尚未提交"的状态**。
+它留下的改动正是**那一行**：把 `"/health",` 加进 `SHELL`（并附了完整的理由注释）。
+
+### 我今天做了什么
+把**同一处修复**应用到**主干**的 `crates/yanshi-http/assets/service-worker.js`：
+在 `SHELL` 的 `"/",` 之前插入 `"/health",` 与那段说明注释。
+⇒ 理由（它已经写清，我也核对过）：
+`initWasm()` 第一句 `await (await fetch("/health")).json()` 读 `health.wasm` 决定要不要 `import(...)`；
+而 `/health` **不是** `/api/` 前缀 ⇒ 走"网络优先、回落到缓存"分支 ⇒ **只有在线取过一次才进缓存**；
+若离线时它不在缓存里 ⇒ `fetch` 落空、`caches.match` 也没有 ⇒ **回落到外壳 `/` 的 HTML** ⇒
+`.json()` 抛 `Unexpected token '<', "<!DOCTYPE "...` ⇒ `state.wasm=false` ⇒ **内核永远起不来**。
+预缓存 `/health` 是安全的：它是"这一版服务端有没有 wasm"的**静态声明**，
+而与之配套的两个 wasm 文件**本来就在 SHELL 里** ⇒ 离线读到的标志与缓存里的产物**同源同版** ✓。
+
+### 判据在哪里（**不需要新写** ✓）
+`/tmp/wt-offctl`（分支 `test/offline-negative-controls`，3 个提交）**就是这条修复的判据**：
+它给 6 条浏览器离线判据加了**负对照**，并给 `shell`/`brush` 切断了 SW 自己的网络
+⇒ **修复前那两条是红的**（`kernelStats()` 为 `null`）⇒ **修复后应当变绿**。
+⇒ 所以**顺序是**：先把这个修复落进 main（本轮）⇒ **再收 `wt-offctl`** ⇒ 那时两条判据应当**绿**。
+⇒ 若收进来仍红，说明还有别的问题 ⇒ 我会**回退 `wt-offctl`** 而不是留红树。
+
+### 保留物
+`/tmp/wt-offkernel` **先不删**（它带着那份未提交的改动，留作对照）；
+真正的修复以**主干上的这一处**为准。

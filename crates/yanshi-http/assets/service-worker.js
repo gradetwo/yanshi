@@ -3,6 +3,16 @@
 // 而那行随门面一起被删 ✗ ⇒ 于是**没人**再把内核放进 SW 缓存 ✗ ⇒
 // **离线时内核拿不到** ✗（`cachedUrls` 里没有它 ✓ —— 判据当场把这件事量了出来 ✓）。
 const SHELL = [
+  // **`/health` 是内核初始化的硬前置** ✗ —— 查看器的 `initWasm()` 第一句就是
+  // `await (await fetch("/health")).json()`，读 `health.wasm` 决定要不要 `import("/wasm/yanshi_wasm.js")` ✓。
+  // 它**不是** `/api/` 前缀 ⇒ 走"网络优先、回落到缓存"那条分支 ⇒ **只有在线被取过一次才会进缓存** ✗，
+  // 而是否取过取决于"页面启动时 SW 有没有在控制" ✓ ⇒ **离线时它可能不在缓存里** ✗：
+  // `fetch` 落空 ⇒ `caches.match` 也没有 ⇒ 回落到外壳 `/` 的 **HTML** ✓
+  // ⇒ `.json()` 抛 `Unexpected token '<', "<!DOCTYPE "... is not valid JSON` ✗ ⇒ `state.wasm=false` ✗
+  // ⇒ **内核永远起不来** ✗（离线落笔/导出全红，而日志里只是一个 JSON 解析错误 ✓）。
+  // ⇒ **把 health 与外壳一起预缓存** ✓：它是"这一版服务端有没有 wasm"的**静态声明** ✓，
+  //   而与之配套的 wasm 两件本来就在 SHELL 里 ✓ ⇒ 离线读到的 `wasm` 标志与缓存里的产物**同源同版** ✓。
+  "/health",
   "/",
   "/favicon.svg",
   "/brand/svg/icon-light.svg",
