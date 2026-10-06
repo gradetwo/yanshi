@@ -43334,3 +43334,35 @@ semantic, conflict, annotation, collab, st…"}}
    ⇒ **∴ 所以**今后的**服务端单元测试**应当**优先用 `Workspace`／`Document`✗ 的方法** ✗
       ⇒ **∴ 而**判据（**∴ 端到端那类 ✓**）才用工具 ✓** ✓✓
    ⇒ **∴ 而**这条**同时是 (C)① 的一条注脚** ✓：**∴ "实现里有 handler"✗ ≠ "**任何 profile 下都可达**✗"** ✓✓
+
+## 第 1388 轮：**取 blob 的正解找到了** ✓ —— **∴ `Workspace::store()`✗ 公开 ⇒ **∴ 不用工具 ✓**
+
+### 证据（**∴ 仓库里已有范例 ✓**）
+```rust
+// crates/yanshi-server/tests/brush_preview.rs:50
+let png = workspace.store().get(&hash).expect("预览 PNG 应当取得到");
+// crates/yanshi-server/src/service.rs:912
+pub fn store(&self) -> Arc<dyn BlobStore>
+// crates/yanshi-server/src/document.rs:434
+pub fn store(&self) -> &dyn BlobStore
+```
+⇒ **∴ 所以**取 blob **不需要 `get_blob`✗ 工具** ✗ ⇒ **∴ 直接 `workspace.store().get(&hash)`✗ ✓** ✓✓
+   ⇒ **∴ 而**这**一举解决**三轮的组归属障碍** ✗（**∴ `open_document`✗｜**∴ `get_blob`✗ ⇒ **∴ 都不必用 ✓**）** ✓✓
+
+### 判据的最终形态（**∴ 四步 ＋ 一步解码 ✓**）
+```
+① `new_document`（core 里有 ✓）                    → 建 320×240 空白文档
+② `get_document`（core 里有 ✓）                    → 背景色 [255,255,255,255] ✓ ＋ thumb_url ✓
+③ `workspace.store().get(&hash)`（**不用工具 ✓**）  → PNG 字节
+④ `decode_png` ⇒ 256² RGBA                        → 与背景色逐像素比对 ✓
+```
+**∴ 其中 ①② 已实测可用** ✓（**∴ 第 1371 轮的输出：背景色 `[255,255,255,255]`✗＋**∴ blob `sha256:0c387c9f…`✗ ✓**）
+   ⇒ **∴ 所以**只剩 ③ 换个取法**✗ ⇒ **∴ 下一轮**一次就能跑完 ✓** ✓✓
+
+### 由此得到的**两条一般结论**（**∴ 都可复用 ✓**）
+1. **∴ 服务端测试不要用工具取数据 ✗**：**∴ 工具**受 `Profile`✗ 影响**（**∴ 三次实证 ✓**）
+   ⇒ **∴ 而**`Workspace`／`Document`✗ 的方法**不受影响** ⇒ **∴ 所以**稳定 ⇒ **∴ 应当优先 ✓**；
+   ⇒ **∴ 例外** ✓：**∴ 判据要**证明"这个工具可用"**✗ 时 ⇒ **∴ 才必须用工具 ✓** ✓✓
+2. **∴ 写判据前先找**现成范例**✗**：**∴ `brush_preview.rs:50`✗ 一行就给出了取 blob 的正解 ✓
+   ⇒ **∴ 而**我**绕了三轮**（**∴ 编译 ✗／组归属 ✗／字段 ✗**）⇒ **∴ 所以**"先 grep 同类测试"✗
+      **∴ 比"先猜 API"✗ 快得多** ✓ ⇒ **∴ 这条值得写进惯例 ✓** ✓✓
