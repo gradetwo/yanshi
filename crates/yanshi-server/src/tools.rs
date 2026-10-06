@@ -249,6 +249,21 @@ pub struct ToolContext<'a> {
     /// 而**任何网络入口都必须显式设置它** ✗（HTTP/WS 现在都设了 ✓）—— 这条写在字段上 ✓，免得下次忘 ✓。
     pub role: crate::token::Role,
     /// 是否等待渲染完成（6.7 `wait_for_render`，默认 true）。
+    ///
+    /// **它等的是哪一次渲染** ✗（性能专题本轮澄清 ✓，实现见 [`finish_mutation`] ✓）：
+    /// **这一笔改动的脏区**那一次 ✓（`Workspace::render_region` ✓）——
+    /// 它推进渲染水位 ✓、跑完 `complete_render_jobs()` ✓
+    /// ⇒ 返回时 `render_status.rendered == true` ✓、`job_status == "committed"` ✓。
+    ///
+    /// **它不等什么** ✗：**不**等那张 256² **文档级缩略图** ✓ ——
+    /// 那是**缓存** ✓，改为**按需**产生 ✓（`get_document` / `GET /api/documents/<id>/preview` /
+    /// `ensure_document_thumbnail` ✓ ⇒ 落后就当场重建 ✓，绝不拿旧图冒充 HEAD ✗）。
+    /// 在这之前 `render_status.thumbnail_current` 会是 `false` ✓，调用方**看得见** ✓。
+    ///
+    /// **为什么必须拆** ✗：外部 4K/8K 报告实测 8K 单笔 **39,505.8 ms**（默认）vs
+    /// **95.1 ms**（`wait_for_render=false`）—— **415.8×** ✓，而两者**逐像素完全一致** ✓
+    /// ⇒ 原先挂在 `wait_for_render` 上的那次"为缩略图重算一遍"**不是调用方要的东西** ✗。
+    /// `wait_for_render=false` 的语义**一个字都没变** ✓（本来就不走任何渲染 ✓）。
     pub wait_for_render: bool,
     /// **静默：不生成每次调用的预览** ✓（真实用户 §五-5 的"批量静默提交" ✓）。
     ///
@@ -1040,61 +1055,119 @@ fn document_state(ctx: &mut ToolContext<'_>) -> Result<DocumentState> {
 }
 
 /// 提交后的收尾：按 `wait_for_render` 决定是否等待渲染完成，并给出预览。
+///
+/// ## 本轮（性能专题）的**契约澄清**：`wait_for_render` 等的是**这一笔的渲染**，不是缩略图
+///
+/// **外部 4K/8K 报告的根因** ✗：一笔 `brush_stroke` 的墙钟里，**与笔刷大小无关**的那一段
+/// 恒定开销来自提交收尾的 `run_pending_jobs` ⇒ `render_document_preview` ✓ ——
+/// 它为了产出/刷新那张 **256² 文档级缩略图**，在**同一次调用里**又渲染了一遍画布 ✓。
+/// 8K 实测：默认（同步）**39,505.8 ms** vs `wait_for_render=false` **95.1 ms**（415.8× ✓），
+/// 而两者**逐像素完全一致** ✓ ⇒ 那一次渲染**不是调用方要的东西** ✓。
+///
+/// **原先为什么把它挂在 `wait_for_render` 上** ✓：那是**唯一**会跑
+/// `complete_render_jobs()` 的地方 ✓ ⇒ 它同时承担了三件事 ✗：
+/// ① 跑完重型 job ✓；② 推进渲染水位（`render_status.rendered` ✓）；③ 刷缩略图 ✓。
+/// ① ② 是 `wait_for_render` 的**承诺** ✓，③ 是**副作用** ✓ —— 三者被绑在一起 ✓
+/// ⇒ 想省掉 ③ 就会连带丢掉 ① ② ✗（第 1038 轮试过，被两条判据挡下 ✓）。
+///
+/// **本轮的拆法** ✓：承诺由**调用方要的那次渲染**兑现 ✓ —— 也就是"这一笔的脏区"那一次
+/// （`Workspace::render_region` ✓）。它同样会推进渲染水位 ✓、同样会跑
+/// `complete_render_jobs()`（`Document::render_region` ✓）⇒ ①② 一字不少 ✓，
+/// 而 ③（整幅/块级的文档级预览）**不再无条件发生** ✗ ⇒ 那笔固定开销消失 ✓。
+///
+/// **顺序是契约的一部分** ✗：必须**先**渲染调用方要的脏区 ✓、**再**读 job 状态 ✓ ——
+/// 反过来的话 `complete_render_jobs()` 还没跑 ✓ ⇒ `job_status` 会停在 `submitted` ✓
+///（这正是"提前返回"的形态 ✓，判据 3 守着它 ✓）。
+///
+/// **调用方现在观察到什么** ✓（改动的语义面 ✓，已写进
+/// `docs/design/implementation-notes.md` 第 1185 轮与 `docs/design/yanshi-v1.0-draft4.md`
+/// 的 `wait_for_render` 那一节 ✓）：
+/// * `preview`（响应里的那张图）：**仍是这一次改动脏区的真实渲染** ✓，
+///   与改动前**逐字节相同** ✓（同一条 `render_region` ✓，同一份像素 ✓）；
+/// * `job_status` / `render_status.rendered`：**不变** ✓ —— 返回时这一笔的渲染已完成 ✓；
+/// * **文档级缩略图会滞后** ✗（`get_document` / `GET /api/documents/<id>/preview` /
+///   `ensure_document_thumbnail` 仍是"落后就重建"的逻辑 ✓ ⇒ **要新鲜就得显式要** ✓）。
+///   滞后是**可见**的 ✓：`document_thumbnail_is_current()` 为 false ✓，
+///   而缩略图请求会**当场重建**（不会拿旧图冒充 HEAD ✗）✓；
+/// * `wait_for_render=false`：**一个字都没变** ✓（本来就不走渲染 ✓）。
 fn finish_mutation(
     ctx: &mut ToolContext<'_>,
     result: &CommitResult,
     preview_region: Option<Bbox>,
 ) -> Result<Value> {
+    // **第一步：调用方真正要的那次渲染** ✓（这一笔的脏区 ✓，不是整幅、也不是缩略图 ✓）。
+    //
+    // 它**先做** ✓，于是 `wait_for_render=true` 的两条承诺（水位推进 ✓、job 完成 ✓）
+    // 在下面读 `job_status` 之前就已经兑现 ✓。
+    //
+    // **什么时候该做** ✗（三条，缺一条就会把活加回来 ✓）：
+    // * 非静默 ⇒ 这张图**要放进响应** ✓（8.2/8.3 的区域预览 ✓）；
+    // * 静默 ＋ **重型**原子（有 job ✓）⇒ 响应里不要图 ✓，但**要它把 job 跑完** ✓
+    //   （`complete_render_jobs` ✓）⇒ 用"这一笔的脏区"这一次渲染兑现承诺 ✓
+    //   —— 比"为缩略图重算一遍"便宜 ✓；
+    // * 静默 ＋ **轻型**原子（没有 job ✓）⇒ **既不要图、也没有 job 要跑** ✓
+    //   ⇒ 保持既有行为：**一个像素都不渲染** ✗。
+    //   这一条不能省 ✗：`silent` 的初衷正是"批量静默提交**不**产生额外 IO"✓
+    //   （真实用户 §五-5 的原话 ✓）—— 在这里"顺手渲一下"就是把它反过来了 ✗。
+    let caller_render_wanted = preview_region.is_some() && (!ctx.silent || result.job_id.is_some());
+    let mut preview = None;
+    let mut caller_render_done = false;
+    if ctx.wait_for_render && caller_render_wanted {
+        if let Some(bbox) = preview_region {
+            let preview_started = std::time::Instant::now();
+            let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+            let (width, height) = (document.state().width, document.state().height);
+            let x = bbox.x.max(0.0).min((width as f64 - 1.0).max(0.0));
+            let y = bbox.y.max(0.0).min((height as f64 - 1.0).max(0.0));
+            let w = bbox.w.max(1.0).min(width as f64 - x);
+            let h = bbox.h.max(1.0).min(height as f64 - y);
+            let region = Bbox::new(x, y, w.max(1.0), h.max(1.0));
+            let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
+            ctx.time(Phase::Preview, preview_started);
+            caller_render_done = true;
+            // **静默时不把图放进响应** ✓（用户 §五-5 的批量静默提交 ✓）——
+            // 但**已经渲过了** ✓：静默省的是"每次调用一份预览 JSON 与它的取回" ✓，
+            // 不是"不推进渲染水位" ✗（后者会削弱 `wait_for_render` 的承诺 ✗）。
+            if !ctx.silent {
+                preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
+            }
+        }
+    }
+
     let mut job_status = None;
     if let Some(job_id) = &result.job_id {
         if ctx.wait_for_render {
-            // **这一段是"文档级预览渲染"** ✓（本轮新增计时 ✓）：
-            // 重型原子（`raster_patch` ✓ —— `brush_stroke` / `texture_background` /
-            // `import_image` 都是 ✓）会在这里同步跑完 job ✓，而 job 的收尾就是
-            // `render_document_preview` ✓ ⇒ **它才是那笔"与笔刷大小无关"的固定开销** ✓。
-            // 以前这一段**不计时** ✗ ⇒ 外部报告只能看到一个恒定的 `other_ms` ✓。
-            let preview_started = std::time::Instant::now();
-            // 进程内实现是同步渲染：在预算内直接跑完 job（6.7 的 wait_for_render）。
-            let document = ctx.workspace.document_mut(&ctx.doc_id)?;
-            let _ = document.run_pending_jobs()?;
-            let job = document.jobs_mut().get(job_id, ctx.now)?;
-            job_status = Some(job.status.as_str().to_owned());
-            // **顺手把文档预览落盘** ✓（冷启动复用专题）：
-            // 这份预览是本进程刚渲染的、且与 HEAD 一致 ✓ ⇒ 几十 KB 的 256² PNG ✓
-            // 换掉"下一个连接再整幅重渲染一次" ✗（实测 4K/318 对象 **122s** ✓）。
-            let _ = ctx.workspace.cache_document_preview(&ctx.doc_id);
-            ctx.time(Phase::Preview, preview_started);
+            if caller_render_done {
+                // **只读状态** ✓：脏区渲染已经把 job 跑完了（`complete_render_jobs` ✓）。
+                let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+                let job = document.jobs_mut().get(job_id, ctx.now)?;
+                job_status = Some(job.status.as_str().to_owned());
+            } else {
+                // **没有"调用方要的渲染"可用** ✓（这一条原子没算出差集 ✓）⇒ 保持既有行为 ✓：
+                // 由文档级预览兑现承诺 ✓（它也是唯一一条能推进水位的路 ✓）。
+                let preview_started = std::time::Instant::now();
+                // 进程内实现是同步渲染：在预算内直接跑完 job（6.7 的 wait_for_render）。
+                let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+                let _ = document.run_pending_jobs()?;
+                let job = document.jobs_mut().get(job_id, ctx.now)?;
+                job_status = Some(job.status.as_str().to_owned());
+                // **顺手把文档预览落盘** ✓（冷启动复用专题）：
+                // 这份预览是本进程刚渲染的、且与 HEAD 一致 ✓ ⇒ 几十 KB 的 256² PNG ✓
+                // 换掉"下一个连接再整幅重渲染一次" ✗（实测 4K/318 对象 **122s** ✓）。
+                let _ = ctx.workspace.cache_document_preview(&ctx.doc_id);
+                ctx.time(Phase::Preview, preview_started);
+            }
         } else {
             job_status = Some(JobStatus::Submitted.as_str().to_owned());
         }
     }
 
-    let mut preview = None;
-    // **静默时连"取缓存地址"都跳过** ✓ —— 不只是省一次渲染 ✓：
-    // 500 次调用各带一份预览 JSON ✓ 本身就是可观的响应体积与 IO ✓（用户报的正是这份额外开销 ✓）。
-    if ctx.wait_for_render && !ctx.silent {
-        // 区域预览（8.2/8.3）：只渲染 dirty 区域，避免每次修改都全图重算。
-        match preview_region {
-            Some(bbox) => {
-                // **响应里的区域预览渲染** ✓（与上面那段互不重叠 ✓，同记 `Preview` ✓）。
-                let preview_started = std::time::Instant::now();
-                let document = ctx.workspace.document_mut(&ctx.doc_id)?;
-                let (width, height) = (document.state().width, document.state().height);
-                let x = bbox.x.max(0.0).min((width as f64 - 1.0).max(0.0));
-                let y = bbox.y.max(0.0).min((height as f64 - 1.0).max(0.0));
-                let w = bbox.w.max(1.0).min(width as f64 - x);
-                let h = bbox.h.max(1.0).min(height as f64 - y);
-                let region = Bbox::new(x, y, w.max(1.0), h.max(1.0));
-                let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
-                ctx.time(Phase::Preview, preview_started);
-                preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
-            }
-            None => {
-                let document = ctx.workspace.document_mut(&ctx.doc_id)?;
-                if let Some(url) = document.latest_preview_url() {
-                    preview = Some(PreviewInfo::Cached(url));
-                }
-            }
+    // **没有脏区可渲染时** ✓：保留"取最近一次预览地址"的既有行为 ✓
+    //（`Cached` 只是地址 ✓，不代表它是最新像素 ✓ —— `render_status` 才是新鲜度的答案 ✓）。
+    if ctx.wait_for_render && !ctx.silent && preview.is_none() && preview_region.is_none() {
+        let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        if let Some(url) = document.latest_preview_url() {
+            preview = Some(PreviewInfo::Cached(url));
         }
     }
     Ok(commit_response(
@@ -1124,7 +1197,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_document",
         profile: Profile::Core,
-        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位、文档级缩略图）",
+        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位、文档级缩略图）。**缩略图是一份缓存**：落后于 head 时会**当场重建**再返回 —— 所以「要一张最新的文档缩略图」就用它（`wait_for_render=true` 不承诺缩略图是新的，只承诺这一笔的渲染完成了）",
         mutating: false,
         params: &[param!(
             "preview_size",
@@ -1996,7 +2069,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_render_status",
         profile: Profile::Core,
-        summary: "查询某个原子是否已渲染",
+        summary: "查询某个原子是否已渲染。`rendered=true` 只说明**这一笔的像素已经渲染出来了**；`thumbnail_current=false` 说明 `thumb_url` 指向的**文档缩略图**还没跟上 head（它是缓存，要新鲜请再调 `get_document`，它会当场重建）",
         mutating: false,
         params: &[param!("atom_id", String, true, "原子 id")],
     },
@@ -3742,12 +3815,25 @@ fn read_get_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 fn read_get_render_status(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let atom_id = require_str(args, "atom_id")?;
     let status = ctx.workspace.render_status(&ctx.doc_id, &atom_id)?;
+    // **缩略图有没有落后** ✗（本轮新增 ✓）：`wait_for_render=true` 承诺的是
+    // **这一笔的渲染**（`rendered` / `rendered_seq` ✓），**不是**文档级缩略图 ✓ ——
+    // 后者是一份缓存 ✓，由"谁要新鲜谁显式要"的口径刷新 ✓（`get_document` ✓）。
+    // 调用方需要能**看见**这件事 ✓，而不是从 `thumb_url` 里猜 ✗。
+    // `false` ⇒ `thumb_url` 指向的是**旧画面** ✓，此刻去 `get_document` 才会当场重建 ✓。
+    let thumbnail_current = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| document.document_thumbnail_is_current())
+        .unwrap_or(false);
     Ok(json!({
         "rendered": status.rendered,
         "head_seq": status.head_seq,
         "rendered_seq": status.rendered_seq,
         "atom_seq": status.atom_seq,
         "thumb_url": status.thumb_url,
+        // **与 `rendered` 是两件事** ✓：`rendered=true` ＋ `thumbnail_current=false`
+        // 是完全正常的组合 ✓（这一笔的像素已经渲染出来了 ✓，只是那张 256² 缓存还没跟上 ✓）。
+        "thumbnail_current": thumbnail_current,
     }))
 }
 
