@@ -37416,3 +37416,19 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 * **没做**：报告 3.5（`oil-01-paint` 双重盖章 ＋ 区域重采样）未处理；
   `wait_budget_ms` 在进程内实现里本来就不生效（`run_pending_jobs`/`render_region` 跑完为止），
   这是本专题之前就存在的偏差，本轮**没有**改动它。
+
+## 第 1185 轮补记：`thumbnail` 广播事件现在只在缩略图**真的变了**的时候发
+
+承接上一段"缩略图滞后"。查了一下消费侧（`crates/yanshi-http/assets/viewer-app.js` ✓）：
+查看器在 `message.event.event === "thumbnail"` 时 `scheduleThumbRefresh()` ✓，
+而那个事件此前**每一笔**都发（因为提交收尾每次都跑 `render_document_preview` ✓），
+现在只在**缩略图真的被重建**时发 ✓ —— 事件的含义因此更准确了 ✓
+（它表达的本来就是"缩略图变了"✓，不是一个心跳 ✓）。
+
+查看器还有别的刷新时机 ✓：打开文档（`refreshThumb()` ✓）、它**自己**每次成功改文档之后
+（`afterMutation` ⇒ `scheduleThumbRefresh` ⇒ `get_document` ✓ —— 那条路会**发现缩略图落后并当场重建** ✓）、
+以及显式的 `refresh` 工具 ✓。所以"浏览器看自己的操作"这条路**不受影响** ✓；
+受影响的是"浏览器在看一个**由 MCP 远程驱动**的会话"✓ —— 缩略图只在上面那些时机更新 ✓。
+**这一条我没能在浏览器里验证** ✗（fresh worktree 里 `crates/yanshi-wasm/pkg` 是**构建产物**、
+gitignore 掉了 ⇒ 查看器会**静默退回服务端渲染** ✓；本轮的浏览器判据一条都没跑 ✓）——
+按本项目的规矩把它写成**已知未验证面** ✓，而不是写成"没问题" ✗。
