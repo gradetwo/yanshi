@@ -846,20 +846,6 @@ function sizeBoards(width, height) {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, width, height);
     octx.clearRect(0, 0, width, height);
-    // **清屏 ⇒ 必须由**同一个函数**保证重画** ✓（第 1454 轮 ✓）。
-    //
-    // **为什么** ✗：上面那两行赋值会**重建 backing store ⇒ 把整幅画布抹成背景色** ✗
-    //（浏览器规范 ✓ —— 与"赋相同值也会清"这条老坑一致 ✓）。而 `sizeBoards()` 会被**很多**路径调用
-    //（提交后的状态栏 / 历史 / 图层面板刷新都可能改布局 ✓）⇒ **∴ 于是**画布被清空 ✗、
-    // 而**重画的责任此前只落在调用方** ✗ ⇒ **∴ 只要有一个调用方忘了** ✗ ⇒ 用户看到
-    // "**画了看不见，要手工刷新**" ✗（本机实测：**隐藏图层后再显示 ⇒ 墨停在 0** ✗，
-    // 判据 `browser-ui-check.mjs` 稳定报「再显示之后画面应恢复（0 → 10726）」✓）。
-    //
-    // **修法** ✗：清屏的**同一个函数**负责把它画回来 ✗ ⇒ **∴ 所有调用点受益** ✓
-    //（本项目反复吃过"两条路径漏一条"的亏 ✓ ⇒ 同一个函数里成对出现最可靠 ✓）。
-    // **∴ 而且**这正是"**一处修好、所有调用点受益**"那条纪律的用法 ✓。
-    needsServerPixels = true;
-    queueServerBlit(null);
   }
   state.viewport.w = width;
   state.viewport.h = height;
