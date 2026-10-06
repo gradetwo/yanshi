@@ -38393,3 +38393,55 @@ clippy 建议 `size.clamp(1, MAX_DAB)`。核对语义：
 做最简替换后一次成功。
 ⇒ 教训升级：不只是"变量名要照抄"，**匹配表达式本身也必须用打印出来的字面串**，
 不要用"我以为能匹配"的正则去猜结构。
+## 第 1202 轮：把「wasm 与原生逐字节相同」从论证变成运行时判据
+### 缺口（我自己核实的现状）
+`scripts/wasm-smoke.sh` 原来唯一的字节相关输出是**长度**（`RGBA … 字节，PNG … 字节`）与"没 panic" ✗；
+`crates/yanshi-wasm/tests/` 里没有任何跨目标字节比对 ✗ ⇒ "wasm 路径与原生是同一份代码"只是
+**构造性论证**（同一份 Rust 源码、不同 target）✓，不是测量 ✗。
+而且它两端的**输入原本并不相同** ✗：node 侧是 512² 文档 + `rect` + `film_grain`、渲染 256²；
+`crates/yanshi-wasm/src/lib.rs` 的原生单测是 64² 文档 + 一笔 ⇒ 连"同一输入"都还没对齐 ✗。
+### 做了什么
+1. **单一输入源** ✓：新增 `crates/yanshi-wasm/tests/data/wasm_smoke_scene.json`
+   （`doc_id`/tile/宽高/内存上限 + 4 个原子 + 一块 render 区域）。
+   `scripts/wasm-smoke.sh` 把**同一个绝对路径**同时交给 node（环境变量 `SMOKE_SCENE`）与原生测试
+   （`YANSHI_WASM_PARITY_SCENE`）⇒ 不存在"两份输入各自漂移" ✗。
+2. **原生侧现算摘要** ✓：新增 `crates/yanshi-wasm/tests/wasm_native_parity.rs`，
+   在宿主上按与 node **完全同序**的调用（新建 → `load_atoms_json` 整串原子 → 渲染同一区域）
+   打印 `YANSHI_PARITY_NATIVE_RGBA=<sha256>` / `YANSHI_PARITY_NATIVE_PNG=<sha256>`
+   （用 `yanshi_core::BlobHash::from_bytes().hex()`，与 node `createHash('sha256')` 同口径 ✓）。
+   **不写死期望值** ✓：它只**产出**摘要；测试自身只断言确定性（同一输入两次渲染逐字节相同 ✓）。
+   `cargo test --workspace` 也会跑它 ⇒ 原生侧的确定性进常规门禁 ✓。
+3. **脚本比较** ✓：node 侧打印 `YANSHI_PARITY_WASM_*`；脚本比较四个摘要 ⇒
+   不一致就非零退出并打印两边四个值 ✓；**取不到原生摘要也非零退出** ✓（缺一侧不能算通过 ✗）。
+   `wasm-bindgen` 缺失时仍然 `SKIP` 并显式打 `SKIP`（不算通过）✓。
+   顺带把目标目录改成跟 `CARGO_TARGET_DIR` 走（原来写死 `$ROOT/target` ✗，与独立 target 纪律冲突）。
+4. 比对用的渲染对齐到 **64²**（与原生测试同一区域 ✓）；原来的 256² 只保留形状检查 ✓。
+### 判据（本轮实测，本机）
+- **绿**：`scripts/wasm-smoke.sh` 退出码 0，四个摘要两两相同 ——
+  RGBA `0fbba07a833d4dcfc7024eaf313661a0ba8f80a05c6d29b8801c612e10e60dee`（16384 B）、
+  PNG `f4c29e12058a35ddf9cbe4d5c2a18e7f158640936128e04ca4ae3bf74583ddfb`（203 B）。
+- **红①（判据本身）**：只把原生侧 RGBA 摘要的输入翻 1 bit（`tampered[0] ^= 1`）⇒
+  脚本打印两个不同的 RGBA 摘要、退出码 1 ✓；复原后 `cmp` 逐字节相同 ✓。
+- **红②（缺原生一侧）**：把原生摘要行前缀改名 ⇒ 脚本报"取不到原生一侧"、退出码 1 ✓；
+  复原后 `cmp` 相同 ✓。
+- **既有判据保持绿**：`cargo fmt` / `clippy` / `build --workspace --all-targets` /
+  `build -p yanshi-wasm --target wasm32-unknown-unknown --release` / `cargo test --workspace` ✓。
+  其中 `crates/yanshi-server/tests/script_portability.rs` **当场抓到我新写的一处** ✓：
+  `echo "…：$SCENE）"` 里 `$SCENE` 紧跟非 ASCII `）` ⇒ macOS bash 3.2 会把它算进变量名 ✗
+  ⇒ 改成 `${SCENE}` ✓（**既有守卫真的在干活** ✓）。
+### 覆盖与不覆盖（如实）
+- **覆盖**：同一份输入下，**本宿主**原生与 wasm 的 RGBA/PNG **字节相同** ✓；
+  以及同一份输入在原生侧两次渲染的确定性 ✓。
+- **不覆盖**：真实浏览器（DOM/canvas/`ImageData`/传输 ✗）、其它架构原生（另有 `parity-arm64` 作业 ✓）、
+  以及**该场景之外**的像素路径 ✗ —— 它钉的是"这一份场景、这一块 64²、这两种输出"。
+### 环境侧记（值得单独记一笔）
+本轮开工时，`~/.rustup` 的 `stable` 被**外部操作**从 **1.98.1 升到 1.99.0**（构建中途反复重装，
+把正在跑的 rustc 弄坏过一次，症状是 `could not compile proc-macro2`）✗。
+`1.99.0` 的 clippy 把 6 个 medium 插件里**既有**的
+`if size == 0 {1} else if size > MAX_DAB {MAX_DAB} else {size}` 判成 `manual_clamp`（warn-by-default）✓
+⇒ 在 `-D warnings` 下**整个 workspace 变红** ✗，与本次改动无关。
+CI 的 clippy 作业钉 **1.98.1**（`.github/workflows/ci.yml`）✓ ⇒ 本轮五道门用
+`RUSTUP_TOOLCHAIN=1.98.1` + rustup 的 `cargo` 跑（我另装了 `1.98.1` 这条独立 toolchain，**没有**动 `stable` ✓）。
+**坑**：只把 `1.98.1/bin` 前置到 `PATH` **不够** ✗ —— `cargo clippy` 的 `clippy-driver` 是经
+`~/.cargo/bin` 的 rustup shim 解析的 ⇒ 仍然用 `stable`(1.99.0) ✗（`cargo clippy -v` 能看到真实路径）；
+必须 `RUSTUP_TOOLCHAIN=1.98.1`（或 `rustup run`）才能真的换档 ✓。这条若不记，下一个人还会花掉同样的一小时。

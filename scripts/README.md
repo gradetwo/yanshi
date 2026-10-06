@@ -153,6 +153,15 @@ scripts/wasm-smoke.sh
 wasm32 上调用了 `std::time::Instant::now()`（该目标不支持，直接 panic），原生毫无反应、
 浏览器端每次渲染都崩。该脚本就是为拦住这类回归。
 
+**它还做一次运行时字节比对**（不只是长度）：两端读**同一份场景文件**
+`crates/yanshi-wasm/tests/data/wasm_smoke_scene.json`（脚本把同一个路径同时交给 node 与
+原生测试），各算 RGBA 与 PNG 的 sha256，脚本比较两个摘要。
+- **期望值不写死**：原生摘要由这一次运行现算（`crates/yanshi-wasm/tests/wasm_native_parity.rs`），
+  脚本里没有任何"正确摘要"的常数。
+- **不一致 ⇒ 非零退出并打印两个摘要**；**取不到原生摘要也非零退出**（缺一侧不能算通过）。
+- 它覆盖"同一份输入下 wasm 与**本宿主**原生字节相同"；**不覆盖**真实浏览器
+  （DOM/canvas/`ImageData`/传输）与其它架构的原生（跨平台另有 `parity-arm64` 作业）。
+
 已做**反向验证**：把那个 `Instant::now()` 放回去，脚本立刻以 wasm 栈报错并非零退出 ✓
 
 配套还有 `crates/yanshi-render/tests/wasm_target_guard.rs`（普通测试套件里跑）：
