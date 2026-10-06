@@ -1463,11 +1463,21 @@ async function blitServerBox(bbox) {
   }
   // **等布局稳定再取图** ✓（见 `settleFrames` 的说明 ✓ —— 少了这一步，脏区补画会画上一块空白 ✗）。
   await settleFrames();
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "fetch: call render_region", area: -1, at: Math.round(performance.now()),
+    serverInk: -1, canvasInk: -1,
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   const value = await callTool(
     "render_region",
     { region: { x: x0, y: y0, w, h }, raw: true },
     { refresh: false },
   );
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "fetch: got region url", area: -1, at: Math.round(performance.now()),
+    serverInk: -1, canvasInk: -1,
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   const url = value.raw_url || value.thumb_url;
   if (!url) {
     // Make the silent return visible, otherwise a blit can vanish with no trace
@@ -1480,7 +1490,17 @@ async function blitServerBox(bbox) {
     return 0;
   }
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "fetch: downloading bytes", area: -1, at: Math.round(performance.now()),
+    serverInk: -1, canvasInk: -1,
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   const bytes = new Uint8ClampedArray(await fetchOrLocal(api(url)).then((r) => r.arrayBuffer()));
+  (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+    reason: "fetch: bytes downloaded", area: -1, at: Math.round(performance.now()),
+    serverInk: -1, canvasInk: -1,
+  });
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   if (bytes.length < w * h * 4) {
     // Same reason: record the short buffer rather than returning silently.
     (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
