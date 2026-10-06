@@ -40520,3 +40520,40 @@ wet_round/black            …｜不同字节 0｜**逐字节相同** ✓
 ### ⚠️ 教训
 **∴ 已知红名单里的"原因说明"会**过期**✗**（**∴ 这条写的"示例数不足"✗ 早已不准确 ✓**）
 ⇒ **∴ 所以移除或保留名单条目**必须看**判据当前的**实际报错**✗ ⇒ **∴ 而不是名单里那句旧说明 ✓** ✓✓
+
+## 第 1300 轮：新增**发布工作流**（tag 触发 ＋ 手工触发）—— 用户要求
+
+### 需求
+「增加 GitHub Actions 自动发布打包（tag 触发和手工触发）」。
+
+### 侦察到的**真实接口**（**∴ 不猜 ✓**）
+- `Makefile`：`release`（缺省只编当前平台，`TARGET=<triple>` 可指定 ✓）／`release-all`（`--all-targets` ✓）／
+  `release-dynamic`／`release-list` ✓；
+- `scripts/package-release.sh`：**默认静态链接** ✓（必须带 `--target` ✓，否则 `+crt-static` 会作用到主机构建 ✓）；
+- **产物** ✓：`dist/<name>.tar.gz` ＋ `dist/SHA256SUMS` ✓，且每个归档都过
+  `scripts/release-verify-archive.sh` ✓（**包名与包内二进制必须一致** ✓）；
+- 缺 wasm 内核时打包**只警告不失败** ✓（查看器回落服务端渲染 ✓）。
+
+### `.github/workflows/release.yml`（新增 ✓）
+- **两种触发** ✓：`push: tags: ["v*"]` ＋ `workflow_dispatch`（输入：`targets`／`dynamic`／`create_release` ✓）；
+- **矩阵** ✓：`ubuntu-latest` ＋ `macos-latest`（`fail-fast: false` ✓）；
+- **不取消** ✓：`concurrency: cancel-in-progress: false` ✓ —— 与 CI 相反 ✓，
+  因为**取消一次发布没有意义** ✓（CI 的目的是验证 HEAD ⇒ 取消是对的 ✓）；
+- **步骤** ✓：checkout ⇒ toolchain（含 `wasm32` ✓）⇒ rust-cache ⇒ wasm-bindgen-cli（钉 0.2.129 ＋ 缓存 ✓）
+  ⇒ 打包（**一条命令走既有入口 ✓**）⇒ **自检**（归档存在 ＋ `SHA256SUMS` 能验过 ＋ `tar -tzf` 能读 ✓）
+  ⇒ 上传 artifact ⇒ **建／更新 Release** ✓；
+- **供应链取舍** ✓：建 Release 用 runner **自带的 `gh`** ✓ ⇒ **不引入第三方 action** ✗
+  （**∴ 好处**：少一个供应链面／少一次审计 ✓；**∴ 代价**：参数要自己写对 ✓，
+  且没有现成的"上传多文件／自动生成说明"便利 ⇒ 用 shell 展开补上 ✓）。
+
+### 判据 `scripts/tool-release-workflow.mjs`（新增 ✓，**能红 ✓**）
+断言四条：① 文件存在 ✓；② **两种触发都在** ✓（`push.tags` ＋ `workflow_dispatch` ＋ `v*` ✓）；
+③ **调用的脚本真实存在** ✓（把 YAML 里出现的每个 `scripts/*.sh|mjs` 逐个 `existsSync` ✓）；
+④ **处理了 `SHA256SUMS`** ✓。
+**变异证明** ✓：去掉 `workflow_dispatch:` 一行 ⇒ **红**（报"手工发不了版" ✓）；还原 ⇒ **绿** ✓。
+
+### ⚠️ 顺带记一个 YAML 陷阱
+用 PyYAML 读这个文件时，顶层键出现 **`True`** 而不是 `on` ✓ —— 因为 YAML 1.1 把
+`on`／`off`／`yes`／`no` 当**布尔值** ✓。**GitHub Actions 用 YAML 1.2 语义** ✓ ⇒ **不影响运行** ✓，
+但**用 PyYAML 检查 Actions YAML 时不能用 `d["on"]`** ✗ ⇒ 否则会误报"YAML 不合法" ✓
+（**∴ 我这一轮就这么误报了一次 ✓**）。

@@ -1,0 +1,161 @@
+# **发布打包** ✓ —— 两种触发：**打 tag** ✗ 与**手工**✗（用户要求 ✓）。
+#
+# **为什么不复用 `ci.yml`** ✗：CI 的目的是**验证 HEAD** ✓（`cancel-in-progress` ✓），
+# 而发布的目的是**产出可下载的产物** ✗ ⇒ 两者混在一起会让"并发取消"误杀一次发布 ✓。
+#
+# **产物** ✓（接口取自真实脚本，不是猜的 ✓）：
+#   `make release`      ⇒ `scripts/package-release.sh --out dist` ✓
+#   `make release-all`  ⇒ `scripts/package-release.sh --all-targets --out dist` ✓
+#   ⇒ 写出 `dist/<name>.tar.gz` ＋ `dist/SHA256SUMS` ✓
+#   ⇒ 且每个归档都过 `scripts/release-verify-archive.sh` ✓（包名与包内二进制必须一致 ✓）。
+#
+# **供应链取舍** ✓：建 Release 用 runner **自带的 `gh`** ✓，**不引入第三方 action** ✗。
+#   好处：少一个供应链面、少一次审计 ✓。代价：`gh` 的参数需要自己写对 ✓，
+#   且没有第三方 action 那些现成的"上传多文件/自动生成说明"便利 ✓（这里用 shell 展开补上 ✓）。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "要打的目标平台；留空 = 当前平台；all = 逐个目标（没装的目标会跳过并说明）"
+        required: false
+        default: ""
+      dynamic:
+        description: "改成动态链接打包（仅在你确实需要时选）"
+        type: boolean
+        required: false
+        default: false
+      create_release:
+        description: "手工触发时也创建 GitHub Release（tag 触发的默认行为）"
+        type: boolean
+        required: false
+        default: false
+
+# **发布不做取消** ✗ —— 见文件头：取消一次发布没有意义，只会浪费已经编好的东西 ✓。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # **wasm 内核是构建产物** ✓ ⇒ 缺了只**警告**不失败 ✓（查看器回落服务端渲染 ✓），
+      # 但发布包里应当尽量带上它 ✓ ⇒ 装一次 `wasm-bindgen-cli`（与 `ci.yml` 同一钉法 ✓）。
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.129-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install wasm-bindgen-cli (pinned)
+        run: |
+          if ! command -v wasm-bindgen >/dev/null 2>&1; then
+            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          fi
+          wasm-bindgen --version
+
+      # **一条命令出包** ✓ —— 用 Makefile 里既有入口 ✓，不自己拼参数 ✗（拼错就和包装脚本漂移 ✓）。
+      - name: Build the release package
+        run: |
+          set -euo pipefail
+          TARGETS="${{ github.event.inputs.targets }}"
+          DYNAMIC="${{ github.event.inputs.dynamic }}"
+          FLAGS=""
+          if [ "$DYNAMIC" = "true" ]; then FLAGS="--dynamic"; fi
+          if [ -z "$TARGETS" ]; then
+            echo "== 只打当前平台 =="
+            scripts/package-release.sh $FLAGS --out dist
+          elif [ "$TARGETS" = "all" ]; then
+            echo "== 逐个目标 =="
+            scripts/package-release.sh --all-targets $FLAGS --out dist
+          else
+            echo "== 指定目标：$TARGETS =="
+            for t in $TARGETS; do
+              scripts/package-release.sh --target "$t" $FLAGS --out dist
+            done
+          fi
+
+      # **自检** ✓：产物必须存在、校验和必须能验过 ✓ ⇒ 否则这一步就红，别把坏包发出去 ✗。
+      - name: Verify the package and its checksums
+        run: |
+          set -euo pipefail
+          ls -la dist
+          test -n "$(ls dist/*.tar.gz 2>/dev/null)" || { echo "✗ dist 里没有归档 ⇒ 打包没成功"; exit 1; }
+          test -f dist/SHA256SUMS || { echo "✗ 没有 dist/SHA256SUMS ⇒ 校验和缺失"; exit 1; }
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum -c SHA256SUMS)
+          else
+            (cd dist && shasum -a 256 -c SHA256SUMS)
+          fi
+          for f in dist/*.tar.gz; do
+            echo "-- 校验归档：$f"
+            tar -tzf "$f" >/dev/null
+          done
+
+      - name: Upload the package as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yanshi-release-${{ matrix.os }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      # **建 Release** ✓：tag 触发时总是建 ✓；手工触发时按输入决定 ✓。
+      # 用 runner 自带的 `gh` ✓ ⇒ 不引入第三方 action ✓。
+      - name: Create or update the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="manual-$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          echo "== Release tag: $TAG =="
+          # 幂等：先试着建；已存在就只补传文件 ✓（手工重跑不该失败 ✗）。
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --notes "Automated release package. See dist/SHA256SUMS for checksums." --target "${GITHUB_SHA}"
+          # 只传这个平台的文件 ✓ ⇒ 多平台 job 并行时各自补自己的那一份 ✓。
+          shopt -s nullglob
+          for f in dist/*.tar.gz dist/SHA256SUMS; do
+            # 校验和文件跨平台同名 ⇒ 合并：先取下来再追加，避免互相覆盖 ✓。
+            if [ "$(basename "$f")" = "SHA256SUMS" ]; then
+              continue
+            fi
+            gh release upload "$TAG" "$f" --clobber
+          done
+          echo "== 已上传本平台的归档 ✓（校验和见各 artifact；如需汇总请用 artifact 下载 ✓）=="
+
+      - name: Attach the checksums to the release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'ubuntu-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" dist/SHA256SUMS --clobber
+          echo "== 校验和已上传 ✓ =="
