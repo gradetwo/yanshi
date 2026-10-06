@@ -280,9 +280,9 @@ const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("
 // 兜底返回 `null` ✓（**∴ 而不是 `[]`✗**）⇒ **∴ 从而区分"没有失败"✗ 与"读不到"✗** ✓。
 const preFail = await evaluate(`(async () => {
   try {
-    // **不指定缓存名** ✗ —— SW 的 `CACHE` 常量是 `yanshi-shell-__BUILD_ID__` ✓，
-    // 名字在构建时被替换 ⇒ 判据里硬写任何具体名字都会**打不开缓存** ✗
-    // ⇒ 用全局 `caches.match` ✓（**∴ 它在所有缓存里找 ✓**）⇒ **∴ 不需要知道构建后的名字 ✓**。
+    // 不指定缓存名：SW 的 CACHE 常量含 __BUILD_ID__ 占位符，构建时才替换，
+    // 所以硬写任何具体名字都打不开缓存；用全局 caches.match 在所有缓存里找即可。
+    // （注意：这段在**模板字面量**里 ⇒ 注释里绝不能出现反引号，否则会终止模板。）
     const hit = await caches.match("/__sw_precache_report");
     if (!hit) return null;
     const r = await hit.json();
