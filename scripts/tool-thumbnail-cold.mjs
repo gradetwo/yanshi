@@ -31,7 +31,13 @@ const IS_RELEASE = /(^|[\\/])release([\\/]|$)/.test(SERVE_BIN) || SERVE_BIN.incl
 const PROFILE = IS_RELEASE ? "release" : "debug";
 // **∴ debug ✗ 的宽预算怎么定** ✗：**∴ 取**实测 191.56 ms ✗ 的量级留余量**✗ ⇒ **∴ 250 ms ✓**
 // ⇒ **∴ 从而**它只在**真的再慢 30%**✗ 时才红 ⇒ **∴ 而那在 debug ✗ 下**有意义 ✗（**∴ 例如**回归 ✓**）。
-const DEFAULT_BUDGET_MS = IS_RELEASE ? 16 : 250;
+// **`release`✗ 的预算 ＝ 设计明文 ✗**（第 1397 轮 ✓）：
+// `docs/design/yanshi-v1.0-draft4.md:694` 的时延预算表写着
+//   「区域缩略图更新（**需重渲染**）｜**< 15ms**」
+// ⇒ **∴ 那正是本判据测的东西** ✗（**∴ 首次取状态 ⇒ 生成缩略图 ⇒ **∴ 需重渲染 ✓**）
+// ⇒ 所以用 **15** 而不是我先前随手写的 16 ✗（**∴ 差 6.7% ✗，但**有出处**比"我记得"✗ 重要 ✓）。
+const RELEASE_BUDGET_MS = 15;                        // 设计 :694 明文
+const DEFAULT_BUDGET_MS = IS_RELEASE ? RELEASE_BUDGET_MS : 250;
 const BUDGET_MS = Number(process.env.THUMB_COLD_MS || DEFAULT_BUDGET_MS);
 console.log(`  被测二进制：${SERVE_BIN}`);
 console.log(`  构建 profile：**${PROFILE}**｜首屏预算：${BUDGET_MS} ms` +
