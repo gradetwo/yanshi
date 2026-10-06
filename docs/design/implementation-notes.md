@@ -41064,3 +41064,32 @@ const cacheShape = "条目 " + … + "｜SW 预缓存失败：" + JSON.stringify
    （**∴ 内核句柄 ✗ ⇒ **∴ 它与时间无关 ✗＋**∴ 直接反映"是否走客户端内核" ✓**）** ✓✓
 ⇒ **∴ 而判据**仍然能红**✗** ✓（**∴ `server.hasWasm !== false`✗ 或 `client.hasWasm !== true`✗ 任一成立即红 ✓**）
    ⇒ **∴ 所以**没有把判据变成空转**✗ ✓** ✓✓
+
+## 第 1318 轮：**撤回**一个结论 —— `self.__swPrecacheFailures` 的 `[]` 是**假的空**（读数陷阱）
+
+### 我上一轮写了什么
+我读到 CI 的失败取证里出现「**SW 预缓存失败：`[]`**」✓ ⇒ 于是判断「**预缓存一条都没失败** ✗
+⇒ 所以候选 ①（部分 URL 404）被排除 ⇒ 答案就是候选 ②：**竞态** ✓」。
+
+### 为什么它不成立（**∴ 必须撤回 ✓**）
+`scripts/browser-offline-draw.mjs:54` 的 `evaluate` 是：
+```js
+const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, … })).result?.result?.value;
+```
+而它 send 到的 target 是**页面** ✓ —— **∴ 证据** ✓：判据全程用它读 `document.readyState`（`:71`）、
+`document.getElementById`（`:193` 一带）等 ✓ ⇒ **∴ 所以那是**页面上下文**✗ ✓✓
+⇒ ⇒ **∴ 于是 `self.__swPrecacheFailures`✗ 在页面里是 `undefined`✗** ⇒
+   **∴ 我那句 `(self.__swPrecacheFailures || [])` 给出的是 `[]`✗ ⇒ **∴ **假的空**✗** ✓✓
+⇒ **∴ 所以那句 `[]`✗ **不能**证明"没有失败"✗ —— **∴ 它只证明**页面里没有这个属性**✗ ✓** ✓✓
+
+### 正确做法（**∴ 下一步 ✓**）
+判据里**已经**有 SW 的调试 target ✓（`swControl` ✓ —— 它用那个 socket 在 SW 上下文里 **stub 了
+`self.fetch`** ✓）⇒ **∴ 所以**在**同一个 target** 里 `Runtime.evaluate` ✓ 就能读到
+`self.__swPrecacheFailures` ✓ ⇒ **∴ 而**不是**用页面的 `evaluate`✗ ✓** ✓✓
+
+### 教训（**∴ 本会话第 N 次"读数来源没确认"✗**）
+**∴ 跨上下文取数时 ⇒ **必须先确认这次求值跑在哪个 target**✗** ✓
+   ⇒ **∴ 否则 `undefined || []`✗ 这类**兜底**✗ 会把"读不到"✗ **伪装成"空值"✗** ✓✓
+   ⇒ **∴ 而它比直接报错更危险** ✗：**∴ 因为"空"✗ 是一个**看起来正常**✗ 的结果 ✓
+   ⇒ **∴ 规则** ✓：**∴ 兜底值必须**能区分"没有"与"读不到"**✗（**∴ 例如返回 `null`✗ 而不是 `[]`✗ ✓**）
+      ⇒ **∴ 而我这次恰好没做到 ✓** ✓✓
