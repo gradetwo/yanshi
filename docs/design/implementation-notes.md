@@ -39672,3 +39672,32 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 ### 处置
 删掉那条**永远绿**的判据（不留空转的绿）；代码保持原始（F03 **未修**，也**未证明需要修**）；树干净。
 ⇒ 若后续要重开 F03，正确入口是**先找到那个偏差 7.58% 的复现路径**（不是窗口尺寸），再谈修法。
+
+## 第 1258 轮：`new_document` 忽略 `width`/`height` —— 根因定位（**两个症状是同一行**）
+
+用户转来报告：`new_document` 传 `width`/`height` 时**总是 1024×1024**，且**全新 doc_id 误报** `created=false, opened=true`；
+磁盘 `meta.json` 也是 1024×1024；测试矩阵 3840×2160 / 800×600 / 1920×1080 全部 1024×1024。
+
+### 我读到的根因（**一个缺陷解释两个症状**）
+`crates/yanshi-server/src/tools.rs:10457 write_new_document`：
+- **尺寸读取没问题** ✓：`optional_u64(args, "width")` ＋ `.clamp(1, 65536) as u32`（height 同）
+  ⇒ 3840×2160 **会通过**；
+- **出事在存在性判断那一行** ✗：
+  `if ctx.workspace.document_mut(&doc_id).is_ok() { … return opened:true … }`
+  而 `document_mut` 在 `service.rs:1207`。**若它按需创建** ⇒ 对**全新 doc_id 也返回 `Ok`** ⇒
+  于是走进"**已存在 ⇒ 打开它**"分支 ⇒ 返回**已有文档**（默认 1024×1024）并报 `created:false, opened:true`
+  ⇒ **两个症状同时出现**。⇒ 所以报告说的"两个独立缺陷"，**很可能是一个**。
+
+### 仓库里**早就有**正确的只读检查手法（可借用 ✓）
+`service.rs` 多处用 `self.documents.contains_key(doc_id)`：
+`:598 / :933 / :1013 / :1091 / :1267 / :1368 / :1725 / :2506`。
+其中 **`:1725` 最相关**：`if persist.doc_dir(&doc_id).exists() || self.documents.contains_key(&doc_id)`
+—— 它**同时**看磁盘与内存 ⇒ 这正是 `new_document` 需要的"已存在"判据。
+⇒ 修法：把那一处换成只读的存在性检查，**再决定**"打开"还是"真正新建"，并**保留**既有的安全约束
+（**绝不清空/覆盖已有文档** ✓）。
+
+### 已派子代理（worktree /tmp/wt-newdoc，分支 fix/new-document-size）
+判据四条：① **按请求尺寸建文档**（三种尺寸 ＋ 磁盘 `meta.json` 一致；今天必红，要给出 1024×1024 的实测数字）；
+② **新 id 报 created、真存在才报 opened 且保留像素**（两个方向都要）；③ **安全约束**：已有文档不被清空/改尺寸（破坏就红）；
+④ 既有判据点名保持绿。纪律照旧（独立 target、直接跑判据、补丁确认落盘、**带修订号的回退**、
+**变异备份分两份**、**六步门禁含编号唯一判据**、英文提交、不碰 main、不推送、不碰 `service-worker.js`）。
