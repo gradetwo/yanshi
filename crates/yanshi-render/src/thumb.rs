@@ -274,13 +274,23 @@ impl Thumb {
             let end_x = (bounds.x + bounds.w) as u32;
             let end_y = (bounds.y + bounds.h) as u32;
             for thumb_y in start_y..end_y {
+                // **整行留白 ⇒ 整行跳过**（第 1394 轮 ✓）：`v0`／`v1` **只依赖 `thumb_y`** ✗
+                // ⇒ 所以**行内的 `v` 判定是恒定的** ✗ ⇒ **∴ 提到行首一次即可 ⇒ **∴ 且可去掉行内的两次比较 ✓**。
+                // **等价性**：行内每个像素的 `v1 <= 0.0`／`v0 >= 1.0` 与行首**完全相同** ✗ ⇒
+                // 所以"行首不过 ⇒ 整行本都会被 `continue`" ⇒ **∴ 跳过它**不改变任何像素 ✓。
+                let row_v0 = (thumb_y as f64 - content.y) / content.h;
+                let row_v1 = ((thumb_y + 1) as f64 - content.y) / content.h;
+                if row_v1 <= 0.0 || row_v0 >= 1.0 {
+                    continue;
+                }
                 for thumb_x in start_x..end_x {
                     // 缩略图内容区像素映射回源缓冲区的像素窗口。
                     let u0 = (thumb_x as f64 - content.x) / content.w;
                     let u1 = ((thumb_x + 1) as f64 - content.x) / content.w;
                     let v0 = (thumb_y as f64 - content.y) / content.h;
                     let v1 = ((thumb_y + 1) as f64 - content.y) / content.h;
-                    if u1 <= 0.0 || v1 <= 0.0 || u0 >= 1.0 || v0 >= 1.0 {
+                    if u1 <= 0.0 || u0 >= 1.0 {
+                        // `v` 已在行首判过（整行留白 ⇒ 整行跳过）⇒ 这里只剩列的判定 ✓。
                         continue; // 留白区域保持透明
                     }
                     // 归一化缩略图坐标 ⇒ **文档坐标** ⇒ 源缓冲区的像素坐标 ✓（第 1040 轮）。
