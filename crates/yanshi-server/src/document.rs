@@ -1146,7 +1146,10 @@ impl Document {
         let png = encode_png(thumb_size, thumb_size, &thumb_rgba)
             .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
         let previous = self.cached_preview_hashes();
-        let blob_hash = self.store.put(&png)?;
+        // **缩略图是可重建的缓存** ✓（设计 `:572`✗ ⇒ **∴ 改为**按需产生 ✓）
+        // ⇒ **∴ 所以用 `put_cache`✗（**∴ 跳过 `fsync` ✓）⇒ **∴ 而**权威数据（**∴ 原子日志 ✗／位图 ✓**）
+        // 仍走 `put`✗ ⇒ **∴ `/health`✗ 的 `blob_fsync`✗ 语义不变 ✓**。
+        let blob_hash = self.store.put_cache(&png)?;
         self.last_thumb_blob = Some(blob_hash.clone());
         self.document_thumbnail = Some(blob_hash.clone());
         self.render_watermark = self.log.head_seq();
