@@ -1731,6 +1731,13 @@ function afterMutation(atomId, options = {}) {
     state.undoStack.push({ kind: "atom", id: atomId });
     state.redoStack.length = 0;
     updateUndoStatus();
+    // **落笔之后主动问一次只读的撤销状态** ✗（F02 ✓）——
+    // `remainingUndo` 原先**只由 `undo_last` / `redo_last` 的响应回报** ✓（`:3154` 在 `undoOnce()` 里 ✓）
+    // ⇒ 落笔之后它是**旧值或 `null`** ✗ ⇒ 上面的 `updateUndoStatus()` 只会**保持禁用** ✗
+    // ⇒ 用户看到「刚画完却不能撤销」 ✓。
+    // 问 `get_undo_status` ✓（**只读** ✓，与 `undo_last` **同一个数** ✓）⇒ 写回 ＋ 再刷一次 ✓。
+    // **不 await** ✗：落笔的收尾不该被一次查询拖住 ✓（`catch` 静默 ✓ —— 它只是让按钮更准 ✓）。
+    refreshUndoStatusFromServer();
   }
   if (options.skipRefresh) return;
   // **无内核时，任何提交之后都要从服务端补画** ✓ —— 这是"一笔一画"能在新机器上看见的关键 ✓。
@@ -3181,6 +3188,24 @@ async function redoOnce() {
 /// **为什么必须换** ✗：本地栈在"刷新页面 / 另一个客户端改了文档"之后**会与事实不符** ✓
 /// ⇒ 界面写"可撤销 3 步" ✓、实际一步都撤不了 ✗ —— 正是"界面与事实不一致" ✓。
 /// 没拿到服务端数字之前显示 `—` ✓（**不猜** ✓）。
+/// **从服务端拉一次撤销状态** ✓（F02 ✓）—— **只读** ✓，不改文档 ✓。
+///
+/// 为什么要它 ✗：`state.remainingUndo` 只在"用户点撤销/重做"之后才更新 ✓ ⇒ 落笔之后它**过时** ✗
+/// ⇒ 按钮停在禁用 ✓。这个函数**补上**那次刷新 ✓（**而空栈仍报 0 ⇒ 仍禁用** ✓ —— 判据要的正是这条 ✓）。
+async function refreshUndoStatusFromServer() {
+  try {
+    const value = await callTool("get_undo_status", {}, { refresh: false });
+    if (!value || value.ok === false) return;
+    const n = value.remaining_gestures;
+    if (typeof n === "number") {
+      state.remainingUndo = n;
+      updateUndoStatus();
+    }
+  } catch (_) {
+    // 查询失败不该影响落笔 ✓ —— 按钮维持原状（保守：可能仍然禁用 ✓）。
+  }
+}
+
 function updateUndoStatus() {
   const label = $("undoDepth");
   const undoCount = typeof state.remainingUndo === "number" ? state.remainingUndo : null;
