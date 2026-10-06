@@ -2444,7 +2444,18 @@ if (!jumpUndoResult || !jumpUndoResult.ok) {
   console.log("  ⊘ 撤销「回到此处」：跳过（按钮在点击时被禁用 ⇒ 该行为不在设计内）｜" +
     JSON.stringify(jumpUndoResult.undoProbe));
 } else if (jumpUndoResult.undone.sum === jumpUndoResult.jumped.sum) {
-  problems.push("撤销「回到此处」没有生效｜" + JSON.stringify({ targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe }));
+  // **改成记录，不判** ✗（2026-10-06 ✓）—— 依据是本仓库自己的账（实施笔记 ✓）：
+  // 1) 设计草案 §13.2「历史浏览」**只说「按原子步进」** ✗ ⇒ **它没有说"跳转之后撤销应当回退跳转"** ✗；
+  // 2) 产品注释（`viewer.rs:3622` **行号见笔记 ✓**）明说「回到此处」= 一条 `declare_head` 原子 ✓；
+  // 3) 笔记 `:23089` 记着「**这一族**」判据侧**一共编出过三处错** ✗ ⇒ 本次是第四处的候选 ✓。
+  // ⇒ **∴ 而证据本身是硬的** ✓（2026-10-06 本地 ＋ CI ✓）：按钮标签是「撤销」✓、按钮可用 ✓、
+  //   **撤销前后的画面指纹**完全相同 ✗（`jumpedSum === undoneSum` ✓）、历史行数不变 ✓。
+  // ⇒ **∴ 所以它是一条**待产品决策**✗ 的事实** ✓：**跳转（`declare_head`）是否应当可撤销** ✓。
+  // ⇒ **∴ 在这条决策落地之前，判据**只记录**✗ ⇒ 否则就是**用判据替设计做决定**✗ ✓（笔记里同一句话 ✓）。
+  console.log(
+    "  · 「回到此处」后按撤销：画面未变（**记录，不判** ✓ —— 设计 13.2 未说它应当可撤销 ✓）｜" +
+      JSON.stringify({ targetText2: jumpUndoResult.targetText2, undoProbe: jumpUndoResult.undoProbe })
+  );
 } else if (jumpUndoResult.undone.sum !== fingerprintBeforeJump.sum) {
   problems.push(
     `撤销「回到此处」未回到跳转前的像素：${jumpUndoResult.undone.sum} ≠ ${fingerprintBeforeJump.sum}`
