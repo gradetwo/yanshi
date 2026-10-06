@@ -36727,3 +36727,25 @@ C. batch I/O 汇聚：沿已有 `batch` 语义做，代价 = 崩溃窗口从单�
 2. **我先下的结论（"分支自带冲突标记"）也被我立刻用一条命令推翻了** ——
    这再次说明：**下结论前必须让命令的输出直接回答那个问题**（这里是"分支里到底有没有标记"），
    而不是从我自己工作树的现象反推。
+
+## 第 1170 轮：把"加回 main 的 buffer_pool"的精确清单查清（为下一次合并做准备）
+
+本轮实测分支版 render.rs 的内容，得到确定性结论：
+- **分支版完全没有 main 的图层缓冲池改动**：
+  `buffer_pool: crate::buffer_pool::BufferPool,` 0 处；
+  `buffer_pool: crate::buffer_pool::BufferPool::new()` 0 处；
+  `fn buffer_pool(&self)` 0 处；`self.buffer_pool.acquire` 0 处；
+  而且整个文件里 `buffer_pool` 这个词都不出现。
+- **分支版有它自己的位图缓存改动**：`bitmaps: BitmapCache,` 1 处；
+  `bitmaps: BitmapCache::default()` 2 处；`bitmaps: &BitmapCache` 2 处。
+⇒ 所以子代理第 1167 轮说的"两处都要保留"是**正确**的：分支版有位图缓存，main 版有缓冲池，
+  两者落在同一处（Renderer 结构体与它的两个构造器）。
+
+下一次合并的确定流程（不再用 `--theirs` 取文件）：
+1. `git merge perf/background-per-stroke`（会有冲突）；
+2. 冲突文件用 **`git show perf/background-per-stroke:<path> > <path>`** 取**分支完整版**
+   （这是"取整份文件"的正确方式；zdiff3 下 `checkout --theirs` 会留下 `|||||||` base 段）；
+3. 再把 main 的缓冲池加回：结构体 1 行字段（带注释）、**两个构造器各 1 行**、访问器 1 个、
+   以及 `render_accumulation` 里 `let mut layer_buffer = self.buffer_pool.acquire(...)` 那一行取 main 的写法；
+4. 提交前断言：`grep -rE "^(<{7}|\|{7}|={7}|>{7})" crates/` 为 0，并且 `cargo build` 通过；
+5. 两步门禁（先 build --all-targets 再 test --workspace，独立 target）全绿后再推送。
