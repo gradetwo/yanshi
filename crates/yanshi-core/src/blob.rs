@@ -584,39 +584,14 @@ fn is_hex_name(name: &str) -> bool {
 
 impl BlobStore for FsBlobStore {
     fn put(&self, bytes: &[u8]) -> Result<BlobHash> {
-        let hash = BlobHash::from_bytes(bytes);
-        let target = self.path_of(&hash);
-        if target.exists() {
-            return Ok(hash);
-        }
-        let dir = target.parent().expect("CAS 路径必有父目录");
-        fs::create_dir_all(dir).map_err(|error| io_error(dir, error))?;
-        // 并发写入安全：先写唯一 .tmp，再 rename（同哈希并发时 rename 幂等）。
-        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let tmp = dir.join(format!(
-            ".{}.{}.tmp",
-            hash.hex(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        {
-            let mut file = fs::File::create(&tmp).map_err(|error| io_error(&tmp, error))?;
-            // **写入的是"编码后"的字节** ✓，而上面的哈希来自**明文** ✓ ⇒ 内容寻址语义不变 ✓。
-            let stored = self.codec.encode(bytes);
-            file.write_all(&stored)
-                .map_err(|error| io_error(&tmp, error))?;
-            // **`sync_all` 在部分文件系统上不被支持** ✓（真实用户报的第 2 条 ✓）：
-            // 9p / 某些网络挂载上 fsync 返回 `ENOTSUP`（os error 95 ✓）✗
-            // ⇒ 原来这一句让**任何写操作都失败** ✗（"CAS IO 失败 … Operation not supported" ✓）。
-            // **原则** ✓：**只在"文件系统明确不支持"时降级** ✓ ——
-            // 磁盘满 / 权限 / IO 错**照旧失败** ✗，绝不笼统放过 ✓；
-            // 并且**降级要被看见** ✓（见 `unsupported_sync` ✓，由 `/health` 报出 ✓）。
-            if !sync_or_degrade(&file).map_err(|error| io_error(&tmp, error))? {
-                self.unsupported_sync
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        fs::rename(&tmp, &target).map_err(|error| io_error(&target, error))?;
-        Ok(hash)
+        self.put_inner(bytes, true)
+    }
+
+    /// **缓存内容：跳过落盘同步** ✓（第 1402 轮 ✓）。内容寻址与去重语义**完全不变** ✓
+    /// ⇒ **∴ 差别只在**不调 `sync_or_degrade`** ✗ ⇒ **∴ 所以**崩溃后它**可能缺失** ✗
+    /// ⇒ **∴ 而**调用方**必须**能重建它 ✓（**∴ 契约见 trait 上的 `put_cache` ✓**）。
+    fn put_cache(&self, bytes: &[u8]) -> Result<BlobHash> {
+        self.put_inner(bytes, false)
     }
 
     fn get(&self, hash: &BlobHash) -> Result<Vec<u8>> {
@@ -702,6 +677,47 @@ impl BlobStore for FsBlobStore {
         let mut seen = std::collections::BTreeSet::new();
         self.collect_tier(&self.cold.join("sha256"), &mut entries, &mut seen);
         (entries.len(), entries.iter().map(|entry| entry.size).sum())
+    }
+}
+
+/// **`FsBlobStore` 的固有实现** ✓（第 1402 轮 ✓）：**Rust 不允许在 `impl Trait for Type`
+/// 里定义非 trait 方法** ✗（`E0407` 实测 ✓）⇒ **∴ 所以 `put_inner` 放在这里 ✓**。
+impl FsBlobStore {
+    /// **`put` 与 `put_cache` 的共同实现** ✓：`sync` 决定是否调 `sync_or_degrade` ✓。
+    fn put_inner(&self, bytes: &[u8], sync: bool) -> Result<BlobHash> {
+        let hash = BlobHash::from_bytes(bytes);
+        let target = self.path_of(&hash);
+        if target.exists() {
+            return Ok(hash);
+        }
+        let dir = target.parent().expect("CAS 路径必有父目录");
+        fs::create_dir_all(dir).map_err(|error| io_error(dir, error))?;
+        // 并发写入安全：先写唯一 .tmp，再 rename（同哈希并发时 rename 幂等）。
+        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let tmp = dir.join(format!(
+            ".{}.{}.tmp",
+            hash.hex(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        {
+            let mut file = fs::File::create(&tmp).map_err(|error| io_error(&tmp, error))?;
+            // **写入的是"编码后"的字节** ✓，而上面的哈希来自**明文** ✓ ⇒ 内容寻址语义不变 ✓。
+            let stored = self.codec.encode(bytes);
+            file.write_all(&stored)
+                .map_err(|error| io_error(&tmp, error))?;
+            // **`sync_all` 在部分文件系统上不被支持** ✓（真实用户报的第 2 条 ✓）：
+            // 9p / 某些网络挂载上 fsync 返回 `ENOTSUP`（os error 95 ✓）✗
+            // ⇒ 原来这一句让**任何写操作都失败** ✗（"CAS IO 失败 … Operation not supported" ✓）。
+            // **原则** ✓：**只在"文件系统明确不支持"时降级** ✓ ——
+            // 磁盘满 / 权限 / IO 错**照旧失败** ✗，绝不笼统放过 ✓；
+            // 并且**降级要被看见** ✓（见 `unsupported_sync` ✓，由 `/health` 报出 ✓）。
+            if sync && !sync_or_degrade(&file).map_err(|error| io_error(&tmp, error))? {
+                self.unsupported_sync
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        fs::rename(&tmp, &target).map_err(|error| io_error(&target, error))?;
+        Ok(hash)
     }
 }
 
