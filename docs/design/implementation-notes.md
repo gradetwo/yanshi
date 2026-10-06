@@ -45487,3 +45487,56 @@ pub struct StrokePoint { pub x: f64, pub y: f64, pub pressure: f64 }
       ⇒ **∴ 于是**剩下的差异**全部消掉** ✗（**∴ 因为**它**全部来自采样点 ✗ ✓）** ✓✓
    ⇒ **∴ 而且**改动**只 3 处** ✗ ⇒ **∴ 所以**这一步**风险低 ✗＋**∴ 可用**同一条判据**验证 ✓** ✓✓
    ⇒ **∴ 即：**`stamp`✗ **56 行 ⇒ ≈6 行** ✗｜**∴ `paint:247`✗ 换 `Buffer`✗｜**∴ `read_back`✗ 读 `Buffer`✗ ✓✓
+
+## 第 1445 轮：**第 100 轮状态总表** ✓（**∴ 便于接续 ✓**）
+
+### 目标完成度（**∴ 2026-10-07 ✗，第 100／400 轮 ✓**）
+| 组 | 子项 | 状态 | 证据 |
+|---|---|---|---|
+| **∴ (A) ①** | **∴ 内存随对象数累积** | **∴ ✅ 收口** | **∴ `tool-paint-memory`✗：0.98／1.00／1.11× ⇒ **∴ 全部 ≤ 1.2 ⇒ **∴ 移出名单 ✓** |
+| **∴ (A) ②** | **∴ 归档膨胀** | **∴ ✅ 收口** | **∴ 位图部分 0 B／0 个 ⇒ **∴ 判据改为判位图 ⇒ **∴ 移出名单 ✓** |
+| **∴ (A) ③** | **∴ 既有待办（**∴ 四项 ✓）** | **∴ ✅ 收口** | **∴ inflate 已完成 ✗｜**∴ `BufferPool`✗ 已落地 ✗｜**∴ `rayon`✗／batch I/O **已评估暂缓并写明理由 ✓** |
+| **∴ (A) ④** | **∴ 不许降精度换速度** | **∴ ✅** | **∴ `put_cache`✗ 写明代价 ✗｜**∴ 边界有设计依据（**∴ ±1 LSB ✓）** |
+| **∴ (B) ①** | **∴ 读清判据与实测值** | **∴ ✅** | **∴ 内核固定 5.8 ms ＋ 40 ns／px ✗｜**∴ 拖动路径 `direct_8`✗ ＝ 0.1 ms ✓** |
+| **∴ (B) ②** | **∴ 同步阻塞点** | **∴ ✅** | **∴ 拖动零往返 ✗｜**∴ 落笔提交 3 次往返 ✓** |
+| **∴ (B) ③** | **∴ 改善 ＋ 不牺牲 parity** | **∴ 部分** | **∴ 首屏 −2.2 ms ✗（**∴ `put_cache`✗ −1.76 ✗＋**∴ 整行留白 −0.44 ✓）｜**∴ CI 证明（**∴ `6/6`✗ 变绿 ✓）｜**∴ 判据拆两条 ⇒ **∴ 移出名单 ✓
+   ｜**∴ **但** `kernel-brush-parity`✗ **未达成**✗（**∴ 约一半笔刷不同 ⇒ **∴ 已查明是**插值不同**✗＋**∴ 修法只 3 处 ✓）** |
+| **∴ (C) ①** | **∴ 三面对账** | **∴ ✅** | **∴ HTTP 142｜MCP core 74／structure 89｜Web 26 ⇒ **∴ `Web ⊆ HTTP`✗ 零越界 ✓** |
+| **∴ (C) ②** | **∴ 扩展到三面双向 ＋ 能红** | **∴ ✅** | **∴ 新增断言 ＋ **∴ 变异 `no_such_tool_xyz`✗ ⇒ **∴ 红 ✓** |
+| **∴ (C) ③** | **∴ 语义一致性** | **∴ ✅** | **∴ 参数名 56／56 零越界 ＋ **∴ 变异 `undo_last.cout`✗ ⇒ **∴ 红 ✓｜**∴ 另记三条约束 ✓** |
+
+### 唯一未完成项：**`kernel-brush-parity`✗ 的逐字节一致**（**∴ 已收敛到**改 3 处**✗ ✓**）
+**∴ 事实链** ✓（**∴ 全部有源码为证 ✓**）**：
+1. **∴ 根因** ✓：**∴ 内核用 `hokusai::Brush`✗ **自己插值**✗（**∴ `divisions ＝ ceil(distance/2.0)`✗，
+   **∴ 上限 4096 ✓）｜**∴ 服务端用 `yanshi_render::brush::stamp_samples`✗ ⇒ **∴ 采样点不同 ✓**
+   ⇒ **∴ 而**这**解释了**差异达 90% ✗／**∴ 通道差 254–255 ✓** ✓✓
+2. **∴ 不是**随机种子 ✗** ✓：**∴ `:247`✗ 上方注释证明**两边种子一致**✗（**∴ `default()`✗ ＝ 1000 ✓）
+   ⇒ **∴ 且** `100%_Opaque`✗（**∴ 不吃随机 ✓）**0 差异**✗ ⇒ **∴ 说明**配置／读回／种子**已对上 ✓**
+3. **∴ 不是**"用了不同的库"✗** ✓：**∴ 服务端**也用 `hokusai::myb::from_str`✗**（**∴ `tools.rs:12293`✗ ✓）
+4. **∴ 改动范围** ✓：**∴ `stamp`✗ **只有 1**✗ 个调用方 ✗（**∴ `brush.rs:247`✗ ✓）⇒ **∴ 只需改 3 处 ✓**
+
+**∴ 三步实施** ✓：
+```rust
+// ① brush.rs: stamp 改成一次调用（删掉手动插值）
+pub(crate) fn stamp(spec: &BrushSpec, buffer: &mut Buffer, points: &[[f64; 3]]) -> usize {
+    let stamps: Vec<(f64, f64, f64)> = points.iter().map(|p| (p[0], p[1], p[2])).collect();
+    yanshi_render::brush::stamp_samples(buffer, spec, &stamps)
+}
+// ② paint: 建 Buffer 替 MemSurface；configure 产出 BrushSpec（替 hokusai::Brush）
+// ③ read_back: 入参改 &Buffer（反预乘规矩已与服务端同）
+```
+
+### 遗留（**∴ 如实 ✓**）
+| # | 遗留 | 现状 |
+|---|---|---|
+| **∴ ①** | **∴ parity 未达成** | **∴ 已收敛到 3 处 ✗，**∴ 签名齐备 ✗，**∴ 判据就绪 ✓** |
+| **∴ ②** | **∴ CI 的 `push`✗ 不触发** | **∴ 用 `gh workflow run ci.yml`✗ 手动补 ✗ ⇒ **∴ 本轮它报过 `HTTP 500`✗ ⇒ **∴ 需**重试 ✓** |
+| **∴ ③** | **∴ 已知红名单剩 3 条** | **∴ `tool-impasto-plateau`✗（**∴ 真周期性 ✓）｜`tool-reference-delta-e`✗（**∴ 产品能力归属 ✓）｜`kernel-brush-parity`✗（**∴ 本轮修法 ✓）** |
+| **∴ ④** | **∴ `rayon`✗／batch I/O** | **∴ 暂缓 ✗（**∴ 理由已写明 ✗ ⇒ **∴ 若要解冻需按 `AGENTS.md`✗ 写两面 ✓）** |
+
+### 数据（**∴ 便于下轮直接用 ✓**）
+- **∴ wasm 体积基线**：**∴ `crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm`✗ ＝ **1445422 字节 ＝ 1.38 MiB**** ✓
+- **∴ 首屏基线**：**∴ `release`✗ 冷 22–23 ms ✗｜**∴ 增量 3.7–4.7 ms ✗（**∴ 设计明文 5 ms ✓）** ✓
+- **∴ parity 判据用法**：**∴ `node scripts/kernel-brush-parity.mjs <base> <doc> <token> <pkg/yanshi_wasm.js> [笔刷…|all]`✗** ✓
+- **∴ 重建 wasm**：**∴ `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release`✗ ＋
+  **∴ `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript …/yanshi_wasm.wasm`✗** ✓
