@@ -1114,6 +1114,7 @@ impl Workspace {
         } else {
             self.create_document(spec, actor, session)
         }
+        self.document_mut(&doc_id)
     }
 
     /// 只读文档引用。
