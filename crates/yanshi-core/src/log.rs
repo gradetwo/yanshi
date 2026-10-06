@@ -157,7 +157,9 @@ impl AtomLog {
     ///
     /// 原子按 seq 排序；id 与 seq 必须唯一。
     pub fn with_atoms(mut atoms: Vec<Atom>) -> Result<Self> {
-        atoms.sort_by_key(|a| (a.seq, a.id.clone()));
+        // 按 (seq, id) 排序，但**不在 key 里 clone id** ✓ —— 原先 `(a.seq, a.id.clone())`
+        // 会在每次比较时分配一个字符串 ✗（n log n 次）⇒ 大日志上纯属浪费 ✓。
+        atoms.sort_by(|a, b| a.seq.cmp(&b.seq).then_with(|| a.id.cmp(&b.id)));
         let mut log = Self::new();
         for atom in atoms {
             if !atom.is_submitted() {
@@ -174,7 +176,10 @@ impl AtomLog {
                 )
                 .with_atom(atom.id.clone()));
             }
-            if log.atoms.iter().any(|existing| existing.seq == atom.seq) {
+            // 已按 seq 升序 ✓ ⇒ 重复 seq **必然相邻** ✗ ⇒ 只看上一个即可 ✓
+            //（原先是 `log.atoms.iter().any(...)` ✗ ⇒ O(n²)：1050 原子 103 ms ✓，
+            //  而大文档的原子数会高一个量级 ✓）。
+            if log.atoms.last().is_some_and(|existing| existing.seq == atom.seq) {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!("seq {} 重复", atom.seq)),
