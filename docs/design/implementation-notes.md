@@ -37176,3 +37176,43 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 2. 或者用**分块导入协议**（浏览器判据 browser-project-download.mjs 用的那套：
    分包上传 + finish）⇒ 也不受单请求体积限制。
 无论哪条，**落笔后必须先确认 `ok=true` 且文档里有真实内容**，否则读数一律不可用。
+## 第 1182 轮：u8→线性解码 LUT 落地（**精确**替换，每像素三处 `powf` 归零）并当场验证判据能红
+
+按第 1178 轮的核实结论实施，只动 `crates/yanshi-render/src/color.rs` 的**解码方向**：
+
+- 新增 `const SRGB_DECODE_LUT_SIZE: usize = 256` 与 `fn srgb_decode_lut()`（`OnceLock`，与编码表同构）；
+  表项由**同一个** `srgb_to_linear(index as f32 / 255.0)` 逐项生成
+  ⇒ `byte_to_linear(byte)` 改为 `srgb_decode_lut()[byte as usize]`，
+  对全部 256 个输入与直接计算**逐位相同**（D0 语义未动）。
+- **精确而非近似**：解码定义域是 u8（256 个值）⇒ 无索引量化；编码方向（任意 f32）仍是 4097 项 D1 表，未触碰。
+
+新判据 `color::tests::decode_lut_is_bit_identical_to_direct_formula`：对 `0..=255u8`
+断言 `byte_to_linear(b).to_bits() == srgb_to_linear(b as f32 / 255.0).to_bits()`。
+
+**能红验证（直接 `cargo test`，未用 `run-criteria.sh`）**：
+
+- 变异①：表项生成换成近似 `(index as f32 / 255.0).powf(2.2)` ⇒ 红，实际文本：
+  `byte=1：查表 5.0770514e-6 != 直接计算 0.000303527（逐位比较）｜ left: 917134218 right: 966730420`。
+  改回后 `cmp` 与原文件**字节相同**（sha256 `fc45c2aa767bbd1ffbc3bb0c373b5f73a06632786ba1b498bfec04b784dce79b`）。
+- 变异②：把判据本身取反（`assert_eq!`→`assert_ne!`）⇒ 红于 `byte=0`（`left: 0 right: 0`），
+  证明该比较确实在逐字节执行、不是空转；再改回，`cmp` 仍字节相同。
+
+**时间对照（记录，不作判据；1024² = 1,048,576 像素）**：
+
+| 路径 | debug 前 | debug 后 | release 前 | release 后 |
+|---|---|---|---|---|
+| `u8x4_to_linear_premul` 全屏 | 2.431 s（2.319 µs/px） | 317.9 ms（0.303 µs/px） | 936.0 ms | 19.77 ms |
+| `blit_rgba8` 整幅 | 5.708 s（5.443 µs/px） | 1.350 s（1.287 µs/px） | 1.027 s | 90.7 ms |
+
+`blit_rgba8` 输出的 f16 位校验和 before/after 都是 `310501376` ⇒ 端到端像素不变。
+
+**回归**：既有"逐字节一致"渲染判据全绿 —— `tile_parallel`（14 passed，含
+`parallel_and_serial_render_byte_identical`、以及经 `blit_rgba8` 的
+`bitmap_patch_is_read_once_per_render_even_when_banded`）、`bitmap_cache`（1 passed）、
+`render_properties`（8 passed）。**但记录一条诚实边界**：把解码表换成近似后
+`parallel_and_serial_render_byte_identical` **仍绿**（两条路径共用同一张错表）
+⇒ 这一族守的是"路径一致"，不是"绝对值"；绝对值由本轮的逐位判据与既有的
+`transfer_function_round_trip_quantizes_to_same_byte`（同一变异下红于 `byte=1`）守住。
+
+范围边界：`filter.rs::display_byte_to_linear` 是另一处解码包装（调试/测试辅助），本轮**未改**
+（不在 `u8x4_to_linear_premul` 的六处调用链上）；`linear_to_srgb` / 编码表完全未动。
