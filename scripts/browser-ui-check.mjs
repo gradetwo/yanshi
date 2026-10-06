@@ -3374,6 +3374,11 @@ const layerPanel = await evaluate(`(async () => {
   document.getElementById("layerDown").click();
   await waitUntil(() => ids().join(",") === beforeMove, 8000);
   // ④ **显示/隐藏** ⇒ 画布墨量变化 ✓（把有内容的图层藏起来 ✓ ⇒ 墨量应变为 0 ✓）。
+  // **先等画面就绪再量"前"值** ✓ —— 上面几步（复制／上移／下移）都会触发**异步补画** ✗，
+  // 立刻量会拿到 **0** ✗ ⇒ 于是"**再显示后恢复成功**"被误判成失败 ✗
+  //（本机实测「landed」记录到 **11.5 秒**才出现 ✓；而相邻两处测量**本来就有轮询** ✓）。
+  // 这不是放松判据 ✗：断言语义不变 ✓，只是把测量点挪到被测对象稳定之后 ✓。
+  for (let i = 0; i < 40 && ink() === 0; i++) await new Promise((r) => setTimeout(r, 150));
   const paintedBefore = ink();
   // **每次都要重新查询行** ✓ —— 我第一版把行元素**存下来**、点第二次时再用 ✗，
   // 而 refreshLayers() 每次都会**重建整个列表** ✓ ⇒ 存下来的节点已经**脱离文档** ✓
