@@ -41191,3 +41191,29 @@ fn collect_gestures(document: &crate::document::Document, want_alive: bool) -> (
 **∴ 现在**同一段归并有三份**✗**（**∴ `undo`✗／`redo`✗／以及我新加的只读查询复用 `undo`✗ 那份 ✓**）
    ⇒ **∴ 参数化后 ⇒ **∴ 只剩一份 ⇒ **∴ 任何"归并语义"✗ 的修改都只改一处 ✓** ✓✓
    ⇒ **∴ 这正符合本项目反复吃过的亏** ✗：**∴ "两条路各写一份必然漂移"✗ ✓** ✓✓
+
+## 第 1322 轮：**变异验证**参数化重构的"方向"（**∴ 打在被判条件本身 ✓**）
+
+### 做法
+参数化的**唯一差异**是 `want_alive` ✓ ⇒ **∴ 所以我把它翻转** ✗：
+`collect_gestures(document, false)`（**∴ `redo`✗ ✓**）⇒ 改成 `true`（**∴ 方向搞反 ✗**）✓
+
+### 结果（**∴ 基线 ＋ 变异 ＋ 还原 三步 ✓**）
+```
+① 基线：cargo test -p yanshi-server --test undo_last ⇒ **3 passed** ✓
+② 变异：**redo_last_brings_back_exactly_one_gesture FAILED** ✗（`undo_last.rs:281` ✓）
+   报错原文：应当恢复一条原子：{"message":"**没有可重做的笔迹** ✗ ⇒ 没有哪一笔处于「被撤销」状态 ✓",
+   "ok":true,"redone":[],"redone_count":**0**,"remaining_gestures":0}
+   ⇒ **∴ 变异后 `EXIT=101`✗** ✓
+③ 还原（**∴ `git checkout HEAD -- <path>`✗ ⇒ **∴ 带修订号 ✓**）：MUTATION 0 ✓｜`false` 调用 1 ✓｜**3 passed** ✓
+```
+⇒ **∴ 结论** ✓✓：**∴ "方向"✗ 这个唯一差异**一旦搞反 ⇒ **∴ 判据立刻红 ✗ ⇒ **∴ 重构**安全**✗** ✓✓
+
+### 意义（**∴ 对硬要求 ✓**）
+硬要求写「**变异要改到被判条件本身**」✓ ⇒ **∴ 这次变异正是**参数化的那个条件**✗** ✓
+   ⇒ **∴ 而它由**独立于我的**✗ 既有判据（`undo_last.rs` ✓，**∴ 其中 5 处引用 `redo_last`✗ ✓**）抓住 ✓
+   ⇒ **∴ 所以"我把重构做对了"✗ 这件事**有证据**✗ ⇒ **∴ 而不是**我自己说的**✗ ✓** ✓✓
+
+### 顺带确认
+**∴ `redo_last`✗ **本来就有判据**✗** ✓：`crates/yanshi-server/tests/undo_last.rs`（**∴ 5 处引用 ✓**）
+   ＋ 我新加的 `undo_status.rs`（**∴ 1 处 ✓**）⇒ **∴ 所以重构**不是无人区**✗ ✓** ✓✓
