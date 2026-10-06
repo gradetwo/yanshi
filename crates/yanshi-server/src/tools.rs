@@ -6596,6 +6596,52 @@ type Gesture = (Option<String>, Vec<(u64, String, String)>);
 ///    本片**不擅自决定** ✓，只跳过并在结果里**如实报告** ✓）；
 /// 2. **撤销走 `write_history_atom`** ✓ —— 与 `revert` 工具**同一条路径** ✓
 ///    ⇒ "界面撤销一笔"与"MCP 撤销一个原子"**共用同一套语义** ✓（两条路漂移是这个项目反复吃的亏 ✓）。
+///
+///    **把原子归并成"笔"** ✓：一笔 = 同一个 `object_id` 的全部原子，从新到旧 ✓。
+///    抽出来的理由（F02）✓：`undo` 与"只读的撤销状态查询"必须报**同一个数** ✓，
+///    各写一份必然漂移 ✓（本项目反复吃的亏 ✓）。它**只读** ✓：不改文档、不发 revert ✓。
+///    返回 `(gestures, ignored)` ✓：`ignored` 是**被跳过的非内容原子数** ✓（如实报告 ✓）。
+fn collect_gestures(document: &crate::document::Document) -> (Vec<Gesture>, usize) {
+    let mut gestures: Vec<Gesture> = Vec::new();
+    let mut ignored: usize = 0;
+    // 只认"当前还活着"的对象——这是实测逼出来的：
+    // 第一版把"已经撤过的笔迹"也当成候选 ⇒ 再撤一次时会对同一个原子再发一个 revert，
+    // 折叠层接受了它（幂等）⇒ 工具报 undone_count: 1，而画面一个像素都没变。
+    // 那是本项目最忌讳的一类："声称做了、其实没做"。
+    // ⇒ 判据用状态事实：对象已经不在 alive_objects() 里 ⇒ 这一笔早就被撤了。
+    let alive: std::collections::HashSet<String> = document
+        .state()
+        .alive_objects()
+        .iter()
+        .map(|object| object.id.clone())
+        .collect();
+    let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
+    atoms.sort_by_key(|atom| atom.seq);
+    for atom in atoms.iter().rev() {
+        // 文档创建本身不算一笔（撤掉它等于把文档删了——那是另一个工具的事）。
+        if atom.kind == yanshi_core::AtomKind::CreateDocument {
+            continue;
+        }
+        // 结构原子不碰 ⇒ 数一数、报出去，但不进候选。
+        let Some(object) = atom.object_id().map(str::to_owned) else {
+            ignored += 1;
+            continue;
+        };
+        if !alive.contains(&object) {
+            ignored += 1;
+            continue;
+        }
+        let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
+        match gestures.last_mut() {
+            Some((last_object, items)) if *last_object == Some(object.clone()) => {
+                items.push(entry);
+            }
+            _ => gestures.push((Some(object), vec![entry])),
+        }
+    }
+    (gestures, ignored)
+}
+
 fn write_undo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let requested = args
         .get("count")
@@ -6604,56 +6650,14 @@ fn write_undo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .max(1) as usize;
     // ① **从新到旧把原子归成"笔"** ✓：连续的同一个 `object_id` 算一笔 ✓；
     //    没有 object_id 的原子（例如文档级设定 ✓）各自成一笔 ✓。
-    let mut gestures: Vec<Gesture> = Vec::new();
-    // **被跳过的非内容原子数** ✓（如实报告 ✓ —— 让调用方知道"不是所有东西都被撤了" ✓）。
-    let mut ignored: usize = 0;
-    {
-        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
-            )
-        })?;
-        // **只认"当前还活着"的对象** ✗ —— 这是**实测逼出来的** ✓：
-        // 我第一版把"已经撤过的笔迹"也当成候选 ✓ ⇒ **再撤一次**时会对同一个原子**再发一个 revert** ✓，
-        // 折叠层**接受了它**（幂等 ✓）⇒ 工具就报 `undone_count: 1` ✓，**而画面一个像素都没变** ✗ ✓。
-        // 那是本项目最忌讳的一类："**声称做了、其实没做**" ✓
-        //（日志实测：三条 revert 之后又多了**第四条** revert ✓，它没有改变任何东西 ✓）。
-        // ⇒ 判据用**状态事实** ✓：对象已经不在 `alive_objects()` 里 ⇒ 这一笔早就被撤了 ✓。
-        let alive: std::collections::HashSet<String> = document
-            .state()
-            .alive_objects()
-            .iter()
-            .map(|object| object.id.clone())
-            .collect();
-        let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
-        // **`Seq` 就是 `u64`** ✗（不是新类型 ✓ —— 我又假设了一次 ✓，编译器当场纠正 ✓）。
-        atoms.sort_by_key(|atom| atom.seq);
-        for atom in atoms.iter().rev() {
-            // **文档创建本身不算一笔** ✗（撤掉它等于把文档删了 ✓ —— 那是另一个工具的事 ✓）。
-            if atom.kind == yanshi_core::AtomKind::CreateDocument {
-                continue;
-            }
-            // **结构原子不碰** ✗（见上面的说明 ✓）⇒ 数一数、报出去 ✓，但不进候选 ✓。
-            let Some(object) = atom.object_id().map(str::to_owned) else {
-                ignored += 1;
-                continue;
-            };
-            // **早已被撤掉的那一笔不算候选** ✗（否则"再撤一次"会报成功却没变化 ✓）。
-            if !alive.contains(&object) {
-                ignored += 1;
-                continue;
-            }
-            let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
-            match gestures.last_mut() {
-                // **同一笔** ✓：同一个非空 object_id 且紧挨着 ✓。
-                Some((last_object, items)) if *last_object == Some(object.clone()) => {
-                    items.push(entry);
-                }
-                _ => gestures.push((Some(object), vec![entry])),
-            }
-        }
-    }
+    // 归并走共用辅助函数（与只读的撤销状态查询必须报同一个数）。
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let (gestures, ignored) = collect_gestures(document);
     if gestures.is_empty() {
         return Ok(json!({
             "undone": [],
