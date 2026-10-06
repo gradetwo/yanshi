@@ -41126,3 +41126,39 @@ await cache.put(new Request("/__sw_precache_report"),
    ⇒ **∴ 而这一次的陷阱更隐蔽** ✗：**∴ 我以为"指定缓存名"✗ 更严谨 ✗ ⇒ **∴ 而实际上那个名字
       **在运行时不成立**✗** ✓ ⇒ **∴ 规则** ✓：**∴ 引用常量时 ⇒ **先 `grep`✗ 它的定义 ✗
       ⇒ **∴ 看到 `__BUILD_ID__`✗ 这类占位 ⇒ **∴ 就不要硬写 ✓** ✓✓
+
+## 第 1320 轮：把"**改过的脚本逐个语法检查**"固定成提交前步骤
+
+### 为什么
+上一轮我**推了一个语法错误的判据** ✗（**∴ 模板字面量里的注释含反引号 ⇒ `SyntaxError` ✓**），
+而**我的提交前步骤里没有**对脚本做语法检查**✗** ⇒ **∴ `node --check`✗ 的输出被我后面的命令**盖过**✗
+⇒ **∴ 于是"带病提交并推送"✗ ✓✓
+
+### 核查（**本轮对本会话推过的全部脚本跑一遍 ✓**）
+```
+crates/yanshi-http/assets/service-worker.js      ✓
+crates/yanshi-http/assets/viewer-app.js          ✓
+scripts/browser-export-full-document.mjs         ✓
+scripts/browser-i18n.mjs                         ✓
+scripts/browser-offline-draw.mjs                 ✓
+scripts/browser-render-switch.mjs                ✓
+scripts/generate-tool-examples.mjs               ✓
+语法错误数: 0 ｜ 残留变异标记: 0 ｜ 未提交改动: 0
+```
+⇒ **∴ 结论** ✓：**∴ 11 个提交里**只有一个**✗ 曾经语法坏（**∴ 已修 ✓**）⇒ **∴ 现在**全部干净 ✓** ✓✓
+
+### 固定成步骤（**∴ 从本轮起 ✓**）
+提交前**除了**编译／lint／测试 ✗ 还要**对**所有改动过的 `.mjs`／`.js`✗**跑一遍：
+```
+for f in $(git diff --name-only <base>..HEAD -- 'scripts/*.mjs' 'crates/yanshi-http/assets/*.js'); do
+  node --check "$f" || exit 1
+done
+```
+⇒ **∴ 并配合 `set -eu`✗** ⇒ **∴ 这样"语法坏"✗ 与"检查被盖过"✗ 两种情形都堵住 ✓** ✓✓
+
+### 教训
+**∴ `node --check`✗ 的输出**必须在**同一批命令里**被判定 ✗** ✓ ⇒
+   **∴ 否则它只是**打印了一行 ✗，**∴ 而**后续命令照跑**✗ ⇒ **∴ 门禁会给出**虚假的绿**✗ ✓✓
+   ⇒ **∴ 这与 skill 9.14✗（**∴ 改文件的脚本必须校验它真的改了 ✓**）**同源** ✗：
+      **∴ 都是"**检查的输出没有被判定**✗"** ✗ ⇒ **∴ 所以规则统一为：
+      **∴ 每一处检查都必须**直接决定去留**✗（**∴ `|| exit 1`✗ ✓**）** ✓✓
