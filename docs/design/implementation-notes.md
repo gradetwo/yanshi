@@ -45415,3 +45415,41 @@ pub(crate) fn stamp(brush: &hokusai::Brush, state: &mut hokusai::BrushState,
 4. **∴ `read_back`✗ 改为读 `Buffer`✗** ✓（**∴ 反预乘规矩已同 ✓）
 ⇒ **∴ 而**每一步**都能单独编译 ＋ 单独验证** ✗（**∴ `cargo build -p yanshi-wasm --target wasm32-unknown-unknown`✗ ✓）
    ⇒ **∴ 从而**可以用**同一条判据**在**任一步之后**检查进展 ✓** ✓✓
+
+## 第 1443 轮：**第 1 步的全部签名到手 ⇒ 替换完全机械** ✓
+
+### 实测签名（**∴ 三处 ✓**）
+```rust
+// ① 落笔入口（**∴ 一次调用即可 ✓**）
+pub fn stamp_samples(buffer: &mut Buffer, brush: &BrushSpec, stamps: &[(f64, f64, f64)]) -> usize;
+
+// ② 笔刷规格（**∴ 从对象 `data`✗ 解析 ✓**）
+impl BrushSpec {
+    /// 键：size/color/opacity/flow/hardness/spacing/jitter/seed/blend_mode
+    pub fn from_value(value: &Value) -> Self
+}
+
+// ③ 笔画几何（**∴ 点序列 ＋ 是否平滑 ✓**）
+pub struct StrokeGeometry { pub points: Vec<StrokePoint>, pub smooth: bool }
+pub struct StrokePoint { pub x: f64, pub y: f64, pub pressure: f64 }
+// `StrokeGeometry::from_value` 支持 `[[x,y], …]` 与 `[{x,y,pressure}, …]`
+```
+
+### 所以第 1 步**完全机械** ✓
+**∴ 内核 `stamp`✗ 的入参是 `points: &[[f64; 3]]`✗** ✓
+   ⇒ **∴ 而** `stamp_samples`✗ 要的是 `stamps: &[(f64, f64, f64)]`✗** ✓
+   ⇒ **∴ 两者**形状相同** ✗（**∴ 都是**三元组 `x, y, pressure`✗ ✓）⇒ **∴ 所以**无需转换** ✓✓
+   ⇒ **∴ 即：**可以直接**传过去** ✗ ⇒ **∴ 从而**替换只剩四件事 ✓：
+      **∴ ① 建 `Buffer`✗（**∴ 替 `MemSurface`✗ ✓）
+      ｜**∴ ② 用 `BrushSpec::from_value`✗／**∴ 或把 `configure`✗ 改成产出 `BrushSpec`✗ ✓
+      ｜**∴ ③ **一次** `stamp_samples(&mut buffer, &spec, points)`✗** ✓
+      ｜**∴ ④ 返回值改成 `stamp_samples`✗ 的返回值** ✗（**∴ 替 `steps`✗ 计数器 ✓）** ✓✓
+   ⇒ **∴ 从而** `stamp`✗ **从 **56**✗ 行降到 **≈6**✗ 行** ✗ ⇒ **∴ 且**不再有手动插值 ✗
+      ⇒ **∴ 于是**采样点**由服务端同款代码产生** ✗ ⇒ **∴ 一致**由构造保证 ✓** ✓✓
+
+### 一条**方法上的确认**（**∴ 又一次"读签名"省下整轮 ✓**）
+**∴ 我**没有**先写代码再让编译器报错 ✗（**∴ 那是第 1383／1384／1388 轮的教训 ✓）
+   ⇒ **∴ 而是**先读出**三个签名** ✗ ⇒ **∴ 于是**发现"**入参形状相同 ⇒ **∴ 无需转换**✗"
+      ⇒ **∴ 而**这一条**决定了**改写能否一次成功** ✗ ✓✓
+   ⇒ **∴ 所以** ✓：**∴ 动 Rust 代码前 ⇒ **∴ 先读**要调用的签名 ＋ **∴ 要替换的字段**✗
+      ⇒ **∴ 而不是**凭印象 ✓ ⇒ **∴ 本会话**已三次**因"先写后编"✗ 浪费轮次 ✓** ✓✓
