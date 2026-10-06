@@ -22,7 +22,7 @@ use yanshi_core::blob::{BlobEntry, BlobStore, MemoryBlobStore};
 use yanshi_core::{
     DocumentState, Layer, LayerType, Object, ObjectType, Result, Selection, Transform,
 };
-use yanshi_render::buffer_pool::{BufferPool, MAX_POOLED_BUFFERS, MAX_POOLED_BYTES};
+use yanshi_render::buffer_pool::{BufferPool, MAX_POOLED_BUFFERS, MIN_POOLED_BYTES};
 use yanshi_render::render::Renderer;
 use yanshi_render::tile::{TileGrid, TileKey};
 
@@ -800,6 +800,126 @@ fn buffer_pool_reuses_one_allocation_across_all_layers() {
     assert_eq!(second.rgba8, first.rgba8, "热池渲染也必须逐字节相同");
 }
 
+/// 造一份"每个 worker 的工作集很大"的文档：`width × height` 画布、`layers` 层，
+/// 每层只有一个 32×32 的矩形（内容成本与画布面积无关 ⇒ 差值只来自图层缓冲的分配）。
+fn banded_document(width: u32, height: u32, layers: usize) -> DocumentState {
+    let mut state = DocumentState::empty();
+    state.doc_id = Some("doc_pool_budget".to_owned());
+    state.width = width;
+    state.height = height;
+    state.background = json!({"r": 255, "g": 255, "b": 255, "a": 255});
+    for index in 0..layers {
+        let id = format!("layer_{index}");
+        state.layers.insert(id.clone(), layer(&id, index as i64));
+        state.objects.insert(
+            format!("rect_{index}"),
+            object(
+                &format!("rect_{index}"),
+                &id,
+                ObjectType::Shape,
+                index as i64,
+                json!({"geometry": {"kind": "rect",
+                                    "bbox": {"x": 16.0, "y": 16.0, "w": 32.0, "h": 32.0}},
+                       "color": {"r": 20, "g": 40, "b": 80, "a": 200}}),
+            ),
+        );
+    }
+    state
+}
+
+/// **缓冲池判据 4（并发工作集 > 固定预算）——本条是"预算必须由真实并发需求推导"的核心判据**。
+///
+/// 场景：`WORKERS = 4` 个并行 worker，画布 `4096×3076` ⇒ 每块 769 行。每个 worker 的
+/// 图层缓冲是 `4096 × 769 × 4 通道 × 4 B = 50_397_184 B ≈ 48.06 MiB`；4 块合计
+/// `201_588_736 B`，**比旧的固定预算 192 MiB = 201_326_592 B 多 256 KiB**。
+///
+/// **为什么这个组合是忠实的、不是凑数**：并行渲染把 `rh` 行均分给 worker，每个 worker
+/// 的工作集是 `rw × (rh / W)`，而 `W` 块之和**恒等于整幅** `rw × rh`。所以
+/// "N 块之和 > 192 MiB" ⟺ "画布 > 192 MiB / 16 B = 12.58 M 像素"，与外部报告里
+/// 8K（7680×4320、4 worker、每块 126.56 MiB、合计 506 MiB）是**同一个机制**；这里只是
+/// 把画布按比例缩到本机能承载的最小值（12.6 M 像素，刚越过阈值 0.25 MiB），worker 数
+/// 与报告一致（4）。阈值不可能靠"更小的画布"跨过——每块再小，4 块之和仍是整幅大小。
+///
+/// 断言的**被判条件**：冷池时首层每个 worker 各新建一块（4 次），此后每一层都必须复用；
+/// 热池（同一渲染器的第二轮）**一次新建都不该有**。旧实现里空闲表最多留下
+/// `floor(192 MiB / 50.4 MiB) = 3` 块 ⇒ 第 4 块每层都被丢弃 ⇒ 每层重新分配一块 48 MiB，
+/// 即 5 层导出白白 churn 约 1.5 GB 的那个缺陷。
+///
+/// 变异：把归还规则改回"只按固定 192 MiB 预算"（或让 `acquire` 跳过空闲表）⇒ 红。
+#[test]
+fn buffer_pool_budget_covers_every_concurrent_worker() {
+    const W: u32 = 4096;
+    const H: u32 = 3076;
+    const WORKERS: usize = 4;
+    const LAYERS: usize = 2;
+    const OLD_BUDGET: usize = 192 * 1024 * 1024;
+
+    assert_eq!(
+        H as usize % WORKERS,
+        0,
+        "本判据按均分带高断言（切块口径变化时必须同步改）"
+    );
+    let band_bytes = W as usize * (H as usize / WORKERS) * 16;
+    assert!(
+        band_bytes * WORKERS > OLD_BUDGET,
+        "场景必须让 {WORKERS} 块并发缓冲（{} B）超过旧预算 {OLD_BUDGET} B，否则本条空转",
+        band_bytes * WORKERS
+    );
+
+    let state = banded_document(W, H, LAYERS);
+    let store = MemoryBlobStore::new();
+    let grid = TileGrid::new(256, W, H).unwrap();
+    let mut renderer = Renderer::with_budget(grid, 32 * 1024 * 1024).with_max_workers(WORKERS);
+
+    let first = renderer.render_document(&state, &store).unwrap();
+    assert_eq!(
+        first.stats.parallel_workers, WORKERS,
+        "判据要求真的并行到 {WORKERS} 个 worker（否则工作集只有一份，机制不成立）"
+    );
+    assert_eq!(
+        first.stats.layer_buffers_allocated, WORKERS,
+        "冷池首层只应为每个 worker 各新建一块；其余层必须复用。实测 分配/复用 = {}/{}",
+        first.stats.layer_buffers_allocated, first.stats.layer_buffers_reused
+    );
+    assert_eq!(first.stats.layer_buffers_reused, (LAYERS - 1) * WORKERS);
+    drop(first);
+
+    // **热池**：池里已经躺着上一轮归还的全部并发工作集 ⇒ 本轮必须零新建。
+    let second = renderer.render_document(&state, &store).unwrap();
+    assert_eq!(
+        second.stats.layer_buffers_allocated,
+        0,
+        "热池第二轮不得新建：{WORKERS} 个 worker 的工作集合计 {} B > 旧预算 {OLD_BUDGET} B，\
+         旧实现每层都会丢掉一块、于是每层重新分配一块。实测 分配/复用 = {}/{}",
+        band_bytes * WORKERS,
+        second.stats.layer_buffers_allocated,
+        second.stats.layer_buffers_reused
+    );
+    assert_eq!(second.stats.layer_buffers_reused, LAYERS * WORKERS);
+
+    // **有界**（判据 2 的大画布版本）：预算由并发推导，但它仍是一个上界——
+    // N 块并发缓冲之和就是整幅 ⇒ 池留不下超过"一次渲染的工作集"。
+    let pool = renderer.buffer_pool().stats();
+    assert_eq!(pool.alias_violations, 0, "借出/归还的 id 记账不得冲突");
+    let frame_bytes = W as usize * H as usize * 16;
+    let budget = renderer.buffer_pool().retained_byte_budget();
+    assert!(
+        pool.retained_bytes <= budget,
+        "保留字节必须 ≤ 公布的预算：{} > {budget}",
+        pool.retained_bytes
+    );
+    assert!(
+        pool.retained_bytes <= frame_bytes,
+        "保留字节不得超过一次渲染的工作集（N 块之和 = 整幅）：{} > {frame_bytes}",
+        pool.retained_bytes
+    );
+    assert!(
+        pool.retained_buffers <= MAX_POOLED_BUFFERS,
+        "保留个数必须 ≤ {MAX_POOLED_BUFFERS}：{}",
+        pool.retained_buffers
+    );
+}
+
 /// **缓冲池判据 3（有界 + 不别名）**。
 ///
 /// 有界：给定小上限（2 张 / 256 KiB），即使同时借出 10 张，归还后**保留**的也不超过上限
@@ -889,8 +1009,12 @@ fn buffer_pool_is_bounded_and_never_aliases_a_live_lease() {
     );
 }
 
-/// 判据 3 的**默认上限**版本：真实渲染器的池也不得超过公开上限（防止默认值被改大后
-/// 悄悄失去上界）。
+/// 判据 3 的**默认上限**版本：真实渲染器的池也不得超过**公布的规则**——防止默认值被
+/// 改大、或预算推导写错之后悄悄失去上界。
+///
+/// 公布的规则（[`BufferPool::retained_byte_budget`]）是
+/// `max(MIN_POOLED_BYTES, 并发 worker 数 × 本轮最大单块工作集)`；`MIN_POOLED_BYTES`
+/// 只是**下界**，不再是硬上限（旧实现把它当硬上限，8K/4 worker 时每层丢 3 块）。
 #[test]
 fn default_buffer_pool_stays_within_its_published_limits() {
     let state = stress_document(320, false);
@@ -899,15 +1023,22 @@ fn default_buffer_pool_stays_within_its_published_limits() {
         Renderer::with_budget(TileGrid::new(64, 320, 320).unwrap(), 32 * 1024 * 1024)
             .with_max_workers(1);
     renderer.render_document(&state, &store).unwrap();
-    let stats = renderer.buffer_pool().stats();
+    let pool = renderer.buffer_pool();
+    let stats = pool.stats();
     assert!(
         stats.retained_buffers <= MAX_POOLED_BUFFERS,
         "保留个数超过默认上限：{} > {MAX_POOLED_BUFFERS}",
         stats.retained_buffers
     );
+    let budget = pool.retained_byte_budget();
     assert!(
-        stats.retained_bytes <= MAX_POOLED_BYTES,
-        "保留字节超过默认上限：{} > {MAX_POOLED_BYTES}",
+        stats.retained_bytes <= budget,
+        "保留字节超过公布预算：{} > {budget}",
         stats.retained_bytes
+    );
+    // 串行小画布（1.6 MiB/块）的预算就等于固定下界：并发 1 × 工作集 ≪ 192 MiB。
+    assert_eq!(
+        budget, MIN_POOLED_BYTES,
+        "串行小画布的公布预算应等于下界 MIN_POOLED_BYTES"
     );
 }

@@ -37490,3 +37490,65 @@ buffer_pool.rs:229-234：
 `prev = vec![u32::MAX; raw.len()]` = 132,714,720 × 4 B = **506.3 MiB**；
 加上 `raw`（132.7 MB）、`BitWriter.out` 预留（66.3 MB）、输入 `rgba8`（132.7 MB）
 ⇒ **PNG 编码器单次导出占用超过 838 MB**；8K 的 `png_ms` = 4,266.7 ms（占导出阶段近 10%）。
+
+## 第 1191 轮：§3.1 缓冲池预算按"真实并发 × 单块工作集"推导（判据先红后绿）
+
+第 1190 轮确认 §3.1 未修好：写死的 `MAX_POOLED_BYTES = 192 MiB` 小于并行渲染的真实
+工作集（8K/4 worker = 4 × 126.56 = 506 MiB），每个 worker 归还时都被预算判超标。
+本轮把它修成**由本轮渲染的真实并发推导**，并补一条**在旧代码上会红**的判据。
+
+### 复现场景（为什么是忠实的，不是凑数）
+
+- `4096×3076` 画布、`with_max_workers(4)` ⇒ 并行 4 条带、每条 769 行。
+- 单块工作集 = `4096 × 769 × 16 B = 50_397_184 B`；4 块合计 `201_588_736 B`，
+  比旧预算 `192 MiB = 201_326_592 B` 多 **256 KiB**（刚好越过阈值）。
+- 必须越过阈值的**原因**：分带让每块更小，但 **N 块之和恒等于整幅**
+  （`rw × (rh/N) × N = rw × rh`）⇒ "N 块之和 > 192 MiB" 等价于 "画布 > 12.58 M 像素"，
+  与 8K 报告同一个机制。本机内存只有 3 GB，所以把画布缩到最小可行值（12.6 M 像素），
+  worker 数仍取报告里的 **4**。
+- 判据（`tile_parallel.rs::buffer_pool_budget_covers_every_concurrent_worker`）：
+  ① 冷池第一帧 `layer_buffers_allocated == 4`、`reused == 4`；
+  ② **热池第二帧 `layer_buffers_allocated == 0`**（旧代码为 **1/7**）。
+- 旧代码的红（本 worktree、未改 buffer_pool 时实跑）：
+  `热池第二轮不得新建 … 实测 分配/复用 = 1/7`，`left: 1, right: 0`。
+
+**诚实的口径说明**：报告设想"release 全部先发生"，实际是每个 worker 在本层结束时
+`release` 后**立即** `acquire` 下一层 ⇒ 空闲表常被瞬间清空 ⇒ "至少保留一张"的例外会
+**瞬时**多留下几块，于是本场景每帧只丢 1 块（而不是 3 块）。机制与报告一致（保留数
+`floor(预算/块大小) < worker 数`），量级随画布/带宽比例变化：8K/4 worker 时是每层丢 3 块。
+
+### 修法（规则与有界性）
+
+```
+保留字节预算 = max(MIN_POOLED_BYTES, 本轮并发 worker 数 × 本轮最大单次取用字节数)
+```
+
+- `render.rs` 在 spawn worker **之前**调用 `BufferPool::begin_render(chunks)`
+  （并行分派处传真实分块数、串行分支传 1、wasm stub 传 1）并在那时清零"本轮最大单次取用"；
+  每次 `acquire` 记下本轮最大单块工作集。常数改名为 `MIN_POOLED_BYTES`（**下界**，不再是硬上限）。
+- **不会无界增长**：① 并发数被 `MAX_POOLED_BUFFERS` 夹到 ≤ 16；② 真实分带下
+  `N 块之和 = 整幅` ⇒ 预算 ≈ 一次渲染的工作集；③ 个数上限始终生效。池最多留
+  "每个并发 worker 一块、共 ≤ 16 块"，不会因归还次数多而膨胀。
+- 保留的既有保证：缓冲借出即移出空闲表（结构上不可能被两个租约同时持有）、
+  复用必走 `Buffer::reset` 全零、个数上限始终生效。
+
+### 判据与变异（直接跑，改回后 `cmp` 逐字节相同）
+
+| 判据 | 变异 | 结果 |
+| --- | --- | --- |
+| 1 热池零新建（上面的重画布场景） | `max(1)` → `min(1)`（并发因子失效） | 红：`1/7` vs `0`；`cmp` OK |
+| 2 `retained_bytes ≤ 公布预算`、并发停止增长（`byte_budget_*` 两个单元判据 + 重画布上界） | `release` 去掉字节判断只留个数 | 红：保留 8 块 vs 4；`cmp` OK |
+| 3 不别名（既有 `buffer_pool_is_bounded_and_never_aliases_a_live_lease`） | 归还时不摘除在借 id | 红：`alias_violations = 1` vs 0；`cmp` OK |
+| 3 逐字节相同（既有 `buffer_pool_matches_fresh_allocation_byte_identical`） | `Buffer::reset` 去掉 `clear` | 红：池化 ≠ 强制新建；`cmp` OK |
+
+### 五道闸门
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
+`cargo build --workspace --all-targets`、`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release`、
+`cargo test --workspace` —— 全绿（本 worktree 自带 target，见下）。
+
+### 未做/代价
+
+- 重画布判据在 debug 下约 55–90 s（12.6 M 像素 × 2 帧），是 `cargo test --workspace` 的
+  新增固定成本；没有更省的做法——工作集必须 > 192 MiB，而渲染成本 ∝ 工作集。
+- 只覆盖原生并行路径；wasm 恒为 1 个 worker（`begin_render(1)`），预算退化为下界。
