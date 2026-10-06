@@ -37049,3 +37049,33 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 3. browser-live-brush：不复现（共享 target 构建污染同族）⇒ 已绿；
 4. browser-layout：判据过期（serverBlits>0 的断言与客户端优先新默认冲突）⇒ 子代理重新基线化中；
 5. browser-ui-check：判据侧（固定睡眠 900ms 漏改）⇒ 本轮定性，待修。
+
+## 第 1178 轮：核实 u8→线性 的解码 LUT 可行，且它是**精确**替换（不触碰 D0/D1 边界）
+
+只读核实（两个子代理只在改 scripts/*.mjs，不碰 color.rs）：
+
+1. 瓶颈落点：color.rs:84 `u8x4_to_linear_premul` 每像素调用三次 `byte_to_linear`，
+   而 `byte_to_linear(byte)` = `srgb_to_linear(byte as f32 / 255.0)`，
+   后者在 color.rs:11-18 里对每个分量调用一次 `libm::powf(v, 2.4)` ⇒ **每像素 3 次 powf**。
+
+2. **为什么解码方向可以做精确 LUT**（与编码方向的关键区别）：
+   - 解码的输入是 **u8** ⇒ 定义域**只有 256 个值** ⇒ 一张 256 项表可以**精确**表示该函数
+     （不是近似！每一项就是 `srgb_to_linear(b/255.0)` 的原值）；
+   - 编码的输入是**任意 f32** ⇒ 只能量化（现有 `SRGB_ENCODE_LUT_SIZE = 4097`，误差 ≤1 LSB，
+     属于设计 6.1 允许的 D1 显示路径精度）。
+
+3. 约束（必须满足，也自然满足）：color.rs 头注释写明"该定义进入 D0 基线：任何平台上同一份代码
+   必须得到相同的位结果"。因此解码方向的表项**必须**由**同一个** `srgb_to_linear` 生成，
+   这样查表结果与直接计算**逐位相同** ⇒ 不改变 D0 语义，只是省掉 powf。
+   （对比：编码方向能容忍 ±1 LSB 是因为它属 D1 显示路径，注释里写得很清楚。）
+
+4. 收益面：`u8x4_to_linear_premul` 在 6 个文件里被调用（buffer.rs 1、color.rs 5、lib.rs 1、
+   render.rs 2、thumb.rs 2、tile.rs 2）⇒ 受益不限于 oil-01-paint 那条回读路径。
+
+修法与判据（已派子代理）：
+- 加 `const SRGB_DECODE_LUT_SIZE: usize = 256;` 与 `fn srgb_decode_lut() -> &'static [f32; 256]`
+  （用同一个 `srgb_to_linear` 逐项生成，`OnceLock` 或 const 均可），`byte_to_linear` 改成查表；
+- **判据核心**：对**全部 256 个字节** b，断言查表结果与 `srgb_to_linear(b as f32 / 255.0)`
+  **逐位相等**（比较 `to_bits()`）⇒ 这条能红（改成近似或改错表项就会红），且它守的正是 D0 性质；
+- 另加一条"逐字节渲染一致"的既有判据作为回归（渲染结果不许变）；
+- 时间对照（1024² 的 blit_rgba8：6.454s，6.15 µs/px）作为**记录**，不作为判据（本机噪声大）。
