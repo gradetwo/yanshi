@@ -846,6 +846,11 @@ function sizeBoards(width, height) {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, width, height);
     octx.clearRect(0, 0, width, height);
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "erase sizeBoards " + width + "x" + height, area: width * height,
+      at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
   }
   state.viewport.w = width;
   state.viewport.h = height;
@@ -1503,6 +1508,22 @@ async function blitServerBox(bbox) {
     }
   }
   ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
+  // Landing confirmation: read the region back right after writing it, so a later erase
+  // can be told apart from a write that never took effect.
+  {
+    const destX = Math.round(x0 - vx);
+    const destY = Math.round(y0 - vy);
+    const back = ctx.getImageData(destX, destY, w, h).data;
+    let landed = 0;
+    for (let i = 0; i < back.length; i += 4) {
+      if (back[i + 3] > 32 && !(back[i] > 245 && back[i + 1] > 245 && back[i + 2] > 245)) landed += 1;
+    }
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "landed " + landed + "/" + serverInk, area: w * h,
+      at: Math.round(performance.now()), serverInk, canvasInk: landed,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+  }
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
   window.yanshiStats.lastServerBlitReason = "box " + JSON.stringify([x0, y0, w, h]);
