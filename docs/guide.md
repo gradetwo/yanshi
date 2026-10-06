@@ -4,7 +4,7 @@ Everything that used to live in the README, kept in one place. The README itself
 
 ## Enabling all tool groups
 
-`--profile all` enables every implemented group in one word, which is 141 tools against the 73 that core alone gives;
+`--profile all` enables every implemented group in one word, which is 142 tools against the 74 that core alone gives;
 it deliberately excludes semantic, which is reserved by decision. Both `yanshi-serve` and `yanshi-mcp` list the
 values in `--help`. Layer blend modes are validated against the renderer's own list, so an unknown mode is refused
 with the available names instead of being written to the log and silently ignored.
