@@ -38065,3 +38065,23 @@ wasm 构建**"（`render.rs::parallel_impl` 的两个 cfg 变体 + `tests/tile_p
 - ⚠️ **没跑** `server_and_kernel_agree_on_the_full_phase3_document`（基线里就是 `#[ignore]`，
   它是"已知不一致"的定位靶子，不是本轮的判据）；默认门禁里跑的是
   `server_and_kernel_agree_on_shapes_and_strokes`（绿）。
+
+## 第 1197 轮：合并行并行 to_rgba8 并亲手复验它的字节判据
+
+合并 `perf/parallel-to-rgba8`（f096d0e ＋ df8f6e8）⇒ 合并提交 f7a2b93。
+冲突只有 `docs/design/implementation-notes.md`（追加 87 行，两份都保留），代码文件全部自动合并。
+
+**我亲手变异复验（不走共享 runner，直接跑判据）**：
+- 注入：在 `rows.rs::for_each_band_mut` 的 `scope.spawn` 里加
+  `if row_start == 0 { return; }`（第 0 块不写）⇒ 直接跑：
+  ❌ `to_rgba8_is_byte_identical_across_worker_counts` FAILED
+  「512×512 bg=None：4 worker 与串行：**第 4 字节不同（223 ≠ 0）**」
+  ✅ `to_rgba8_threshold_selects_the_serial_and_parallel_paths` 仍 ok（它测阈值选择，与字节无关，合理）
+  ⇒ 1 passed / 1 failed ⇒ 还原后与 HEAD 逐字节一致 ⇒ 重跑 2 passed。
+⇒ 即：这条判据**确实能红**，且失败精确落在"并行与串行逐字节相同"这个被判条件上。
+
+**我的变异过程失误（第 4 次同类，记下来）**：第一次我用了一个**不存在的变量名**（`index`），
+于是编译失败、判据根本没跑到，输出被我的 grep 过滤掉 ⇒ 看起来像"没红"。
+改用**已经打印出来的真实循环变量**（`row_start`）后一次成功。
+⇒ 教训：**变异代码只能使用自己在打印输出里已经见到的变量名**；
+写之前先 `sed` 打印目标函数的真实代码（本轮做了），但**变量名也必须照抄**，不能凭记忆写。
