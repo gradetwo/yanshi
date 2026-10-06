@@ -36989,3 +36989,32 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 
    （本会话此前已经处理过同族情况：browser-render-switch 那条从"完成时立刻读异步 state.wasm"
    改成有界轮询后转绿；browser-i18n 那条是真缺陷，已修并加了静态判据。）
+
+## 第 1176 轮：browser-layout 的判别实验有结果——判据过期，不是缺陷
+
+我把那条断言的实现读出来了（scripts/browser-layout.mjs:100），它是**两个条件相与**：
+
+    b.width !== 300 && b.width >= Math.floor(shown * 0.5) && window.yanshi.state().serverBlits > 0
+
+用第 1175 轮拿到的失败读数逐条核对：
+- b.width = 320 ⇒ ≠ 300，前半成立；
+- Math.floor(424 * 0.5) = 212 ⇒ 320 ≥ 212，前半完全成立；
+- serverBlits = 0 ⇒ **只有第二个条件不成立** ⇒ waitFor 超时 ⇒ 整条判据红。
+
+所以这条红**完全由 `serverBlits > 0` 造成**。而本轮之前的会话已经把渲染默认改成**客户端优先**
+（复选框 + localStorage 键 yanshi.serverRender + 默认客户端），此时服务端 blit 本来就不会发生
+⇒ **这条判据过期了，是判据侧问题，不是缺陷**。
+
+而且判据自己的注释（:104-106）早就记录了关键事实：
+"实测：style.width = "424px" 而 board.width = 320，比值 0.755 就是缩放" ⇒
+424 × 0.755 ≈ 320 是**设备缩放**，完全正常 ⇒ 画布尺寸那部分其实一直是满足的。
+
+修法（重新基线化，具体到可执行）：
+把 `window.yanshi.state().serverBlits > 0` 改成**条件化**断言：
+- 若走服务端渲染（开关打开）⇒ 仍要求 serverBlits > 0；
+- 若走客户端渲染（新默认）⇒ 要求**内核确实绘制过**（例如 kernelStats 的计数 > 0，
+  或 state().wasm 为真并用内核重绘过一次），而不是要求服务端 blit。
+不要删掉这条断言，也不要把它改成恒真 —— 要让它在新默认下仍然能抓住真问题
+（例如"内核既没画、服务端也没补"这种"画布空白"状态）。
+
+这条结论同时也解释了为什么 browser-live-brush 现在能过：那条判据不依赖 serverBlits。
