@@ -38136,3 +38136,40 @@ wasm 构建**"（`render.rs::parallel_impl` 的两个 cfg 变体 + `tests/tile_p
 
 顺带记录：`pgrep -f yanshi` 在这台机器上会命中**别人的**进程；本会话只用只读方式观察，
 从未终止过任何非我启动的进程。
+
+## 第 1200 轮：在 apple2011 上直接跑 §3.1 的语义判据——**绿**，报告的"预算饥饿"已被解决
+
+上一轮的教训是：用 MCP 层的时间／RSS 去推断 §3.1 不可靠（峰值 RSS 对"分配→释放"式浪费不敏感，
+而墙钟在高负载机器上不可用）。所以本轮直接在那台机器上跑**语义判据**
+（分配／复用计数），它不受负载影响。
+
+命令与读数（apple2011，8 核，当轮 loadavg 10.86，`CARGO_TARGET_DIR=/tmp/yt8k/target`）：
+  cargo test --release -p yanshi-render --test tile_parallel buffer_pool
+
+  test buffer_pool_is_bounded_and_never_aliases_a_live_lease ... ok
+  test default_buffer_pool_stays_within_its_published_limits ... ok
+  test buffer_pool_reuses_one_allocation_across_all_layers ... ok
+  test buffer_pool_matches_fresh_allocation_byte_identical ... ok
+  test buffer_pool_budget_covers_every_concurrent_worker ... ok
+  test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 6.74s
+
+⇒ **§3.1 的那条核心判据（`buffer_pool_budget_covers_every_concurrent_worker`）在报告那台机器上通过**：
+  它构造"4 个并发 worker 的工作集合计超过旧 192 MiB 预算"的场景，断言**热池第二轮分配为 0**。
+  这条判据在修复前会红（实测 1/7 ⇒ 0），现在是绿的 ⇒ 报告说的"192MB 预算被多 worker 条带超出而局部失效"
+  **已经被"预算按并发推导"的修法解决**，而且证据来自**报告同一台机器**、且是**语义量**（不受负载影响）。
+
+### 至此报告 5 个瓶颈的证据状态
+1. **3.1 缓冲池预算饥饿** ⇒ ✅ 本机 ＋ apple2011 判据绿（本条）；
+2. **3.2 同步整幅预览** ⇒ ✅ 已修并合 ＋ 8K 实测新主干比旧版快 1.24×（第 1199 轮）；
+3. **3.3 手写 LZ77 的 530MB 单数组** ⇒ ✅ 换成 flate2/zlib-rs：8K 内存峰值增量 +520,772 KiB ⇒ +1,892 KiB；
+4. **3.4 to_rgba8 逐像素串行** ⇒ ✅ 已并行并合，并**更正了范围**（服务端 8K 早已并行，受益者是直接调用者）；
+5. **3.5 涂抹双重盖章** ⇒ ⏳ 机制已核实（先在底图混合、再在空白 Surface 用同一轨迹重盖以取纯掩膜，
+   恒为无涂抹笔刷的 2 倍以上算力），改动在介质引擎底层，**暂缓**。
+
+### 方法学（沉淀）
+跨机器验证性能类问题，可靠顺序是：
+① 优先**语义计数**（不受负载影响，可跨机器复用）；
+② 其次**本进程自己的 `VmHWM`**（不受别人抢占 CPU 影响）；
+③ 墙钟**只作记录**，且必须同时记录 `loadavg`；
+④ 对照必须**同机、同会话、连续**；
+⑤ **绝不终止任何非我启动的进程**（那台机器 `pgrep -f yanshi` 会命中别人的进程，只能只读观察）。
