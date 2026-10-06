@@ -196,6 +196,19 @@ await send("Network.emulateNetworkConditions", { offline: true, latency: 0, down
 // **等离线状态真正生效再落笔** ✓（第 60 轮定 ✓：此前**零等待** ✗ ⇒ 那一笔可能落在"切换中"的窗口里 ✓
 // ⇒ 行为随机器负载而异 ✓ ⇒ 与观测到的"非确定性"完全吻合 ✓）。
 await sleep(800);
+// **负对照**（本次审计加的 ✓）：断网状态下，页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
+// 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
+//（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
+// ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+const controlProbe = await evaluate(`(async () => {
+  try {
+    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
+    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+  } catch (error) { return { failed: true, error: String(error) }; }
+})()`);
+console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE(0.40, 0.20));
 // **抬手之后按 100ms 取样** ✓（第 41 轮定 ✓）：判定墨是"**从未出现**"✗ 还是"**出现后被抹掉**"✗。
@@ -259,6 +272,10 @@ const failures = [];
 if (!brushOptions || !(brushOptions.nonEmpty >= 1)) {
   // **判据无效**：没选上真 `.myb` ⇒ 这一跑测的还是内置画笔 ⇒ 结论没有意义 ✗
   failures.push("#brush 里没有非空选项（" + JSON.stringify(brushOptions) + "）⇒ 判据无效");
+}
+// **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
+if (!(controlProbe && controlProbe.failed)) {
+  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
 }
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");
