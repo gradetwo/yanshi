@@ -52,19 +52,10 @@ await send("Runtime.enable"); await send("Page.enable"); await send("Network.ena
 // ⚠️ **等待条件与断言条件必须不同** ✗：`SAMPLER`（`:26` ✓）读的是**画板像素** ✓，
 //    而这里只等 **`readyState` 完成 ＋ `#board` 存在** ✓ ✓（**"画板存在" ≠ "画板像素正确"** ✓）；
 //    最后留 **800ms 有界沉降** ✓ 让首帧画完 ✓ —— **"像素对不对"始终只由断言判** ✓ ✓。
-// **为什么要等"画布已达目标尺寸"** ✗：原条件只有 `readyState === "complete" && #board 存在` ✓，
-// 而 `Page.navigate` 之后**旧文档同样满足**这两个条件 ✗ ⇒ 第一次轮询（300ms）就"就绪" ⇒ 只等 800ms 就采样
-// ⇒ 而新文档此时**还没渲染到目标尺寸** ✗（画布仍是默认 300×150，到 320×240 约 1.8s ✓）
-// ⇒ 两次采样都落在**同一个旧状态** ⇒ 判据**确定性**红 ✓（实测：`first`/`second` 都是 300×150、dark 0 ✓）。
-// 条件里只用**结构属性**（尺寸），不用像素 ⇒ 仍守住"像素对不对只由断言判" ✓。
-const WAIT_READY_EXPR =
-  'document.readyState === "complete" && !!document.getElementById("board")' +
-  ' && (() => { const b = document.getElementById("board"); return b.clientWidth >= 320 && b.clientHeight >= 240; })()';
-
 const waitReady = async () => {
   for (let i = 0; i < 40; i++) {
     await sleep(300);
-    try { if (await evaluate(WAIT_READY_EXPR)) { await sleep(800); return; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
+    try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("board")')) { await sleep(800); return; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
   }
 };
 const load = async () => { await send("Page.navigate", { url }); await waitReady(); return await evaluate(SAMPLER); };
