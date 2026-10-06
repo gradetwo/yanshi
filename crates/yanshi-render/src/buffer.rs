@@ -391,6 +391,37 @@ impl Buffer {
         }
     }
 
+    /// 导出为 u8 RGBA，但**先把每个通道量化到 f16**（与 [`Buffer::to_rgba8`] 的唯一区别）。
+    ///
+    /// 渲染管线的输出走这一条：内存 tile 用 f16 线性保存，整幅输出也先量化到 f16 再编码，
+    /// 「整幅区域渲染」与「按 tile 组合渲染」才逐字节一致（见
+    /// `render::create_region_render` 附近的说明）。
+    ///
+    /// **逐行读取原始像素、直接写入输出**，不复制整幅 f32 中间副本 ⇒ 8K（33.18M 像素）上
+    /// 峰值少 506 MiB。这是 wasm 串行路径与原生串行回退**共用**的实现，也是原生测试
+    /// 能直接跑到 wasm 分支同一份代码的入口。
+    ///
+    /// `wasm32` 与桌面都可用（本函数不按目标门控），并且恒为串行：wasm 上没有线程，
+    /// 桌面上并行版由 `render::parallel_impl::quantize_to_rgba8` 在更大的图上调用
+    /// [`crate::rows::encode_quantized_rows`] 分带完成。
+    pub fn to_rgba8_quantized(&self, background: Option<[u8; 4]>) -> Vec<u8> {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let mut out = vec![0u8; width * height * 4];
+        if width == 0 || height == 0 {
+            return out;
+        }
+        crate::rows::encode_quantized_rows(
+            &self.pixels,
+            &mut out,
+            0,
+            height,
+            width,
+            background.map(crate::color::background_linear_premul),
+        );
+        out
+    }
+
     /// 仅保留 alpha 通道，颜色置零（用于裁剪 / 蒙版测试）。
     pub fn keep_alpha_only(&mut self) {
         for chunk in self.pixels.chunks_exact_mut(4) {

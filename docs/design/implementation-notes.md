@@ -38294,3 +38294,81 @@ clippy 建议 `size.clamp(1, MAX_DAB)`。核对语义：
 **绿色的增量门禁 ≠ 全树干净**：这次错误在本会话前面**每一轮**都存在，但因为 crate 没被重新 lint
 而一直"绿"。仓库已经有 `scripts/build-warnings-check.sh`（冷构建 6 个 cdylib × 两 target、零警告）
 正是为这类问题准备的 ⇒ 应当在关键节点（例如合并大改动后）跑它，而不是只靠增量 clippy。
+## 第 1201 轮：删掉 wasm 量化路径的整幅 f32 副本——输出逐字节不变，8K 峰值少一份整幅
+第 1196 轮登记备查的那条低效（wasm 的 `quantize_to_rgba8` 先 `buffer.crop(&buffer.bbox())`
+做整幅 f32 拷贝再就地量化到 f16）本轮修掉。改动在
+`/tmp/wt-wasmquant`（分支 `perf/wasm-quantize-no-copy`，`CARGO_TARGET_DIR=<worktree>/target`）。
+### 改了什么（`crates/yanshi-render`）
+| 文件 | 改动 |
+| `src/rows.rs` | 新增**目标无关**（`wasm32` 也编译）的 `pub(crate) fn encode_quantized_rows(source, destination, row_start, rows, width, bg_linear)`：逐行取 `source` 的行切片、逐像素 `quantize_f16` 后编码进 `destination` 对应行。这是输出量化的**唯一**逐像素实现。 |
+| `src/buffer.rs` | 新增 `pub fn Buffer::to_rgba8_quantized(&self, background) -> Vec<u8>`：只分配输出 `Vec<u8>`，逐行调用上面的函数；**不**再 `crop` 出整幅 f32。 |
+| `src/render.rs` | wasm 变体 `parallel_impl::quantize_to_rgba8` 现在只有一句 `buffer.to_rgba8_quantized(background)`（删掉 `crop` + 就地量化 + `to_rgba8`）；原生变体的串行回退改调 `to_rgba8_quantized`、并行分带改调 `encode_quantized_rows`（删掉本地 `encode_rows`），分带条件／`workers` 解析／块数／输出字节均未变。 |
+- 公开签名：只**新增** `Buffer::to_rgba8_quantized`（理由：判据要能从集成测试直接调用
+  wasm 分支实际执行的入口；否则那段代码在原生上不可达）。既有公开签名／像素数学／编码查表／
+  原生并行行为**未动**；**零新增依赖**。
+### 判据如何够到"原本只在 wasm 编译"的代码（诚实说明）
+- 旧代码在 `#[cfg(target_arch = "wasm32")] mod parallel_impl` 里，原生测试**跑不到它的函数体**。
+- 本轮把"逐像素量化 + 编码"抽成目标无关的 `encode_quantized_rows`，wasm 分支与原生分支**共用**；
+  wasm 分支现在只是 `Buffer::to_rgba8_quantized`，而后者逐行调用该函数。
+- 因此 `tests/quantize_no_copy.rs` 直接调用 `Buffer::to_rgba8_quantized`，跑到的就是
+  **wasm 分支实际执行的同一份代码**（`encode_quantized_rows`），不是"另写一套等价实现"。
+- 参照端是旧实现**逐字保留**的测试专用 `copy_reference`（crop→就地量化→`to_rgba8`）。
+- 真正的 wasm 运行由 `scripts/wasm-smoke.sh` 在 node 里跑通——它经
+  `render_region_rgba` → wasm 版 `quantize_to_rgba8` → `to_rgba8_quantized`，
+  证明该分支**能编译、能运行、不 panic**。
+- ⚠️ **没做**：wasm 运行时输出与旧 wasm 输出的端到端字节比对（node 侧没有旧实现的字节）。
+  "wasm 与旧 wasm 逐字节相同"的论据是：wasm 分支现在调用的那个函数已由原生判据对旧实现
+  逐字节验过，且该分支除这次调用外没有别的逻辑。
+### 判据 1（字节同一性）与它的红/绿
+`tests/quantize_no_copy.rs`：对空／单像素／单行／单列／非方形／几百 KB 的多种形状与
+`None`/不透明白／有色底／全透明底四种背景，比较 `to_rgba8_quantized` 与 `copy_reference`；
+另有一组极端 f16 输入（次正规、`MIN_POSITIVE`、`1e9`、`-0.0` 等）。
+- 红（变异 `encode_quantized_rows` 里 `crate::half::quantize_f16(src[base + 1])` → `src[base + 1]`，
+  即跳过绿通道量化）：
+  `test no_copy_path_is_byte_identical_to_the_copy_reference ... FAILED`
+  `64×64 bg=None：新路径 vs 旧复制参照：第 373 字节不同（新 218 ≠ 旧 217）`
+- 逐字改回后 `cmp` 全等、判据回绿。
+### 判据 2（副本真的没了）与它的红/绿
+新文件 `tests/quantize_peak_memory.rs`，**该文件只有一个 `#[test]`**（全局分配器是进程级的，
+测试并行跑会互相污染计数）。它用一个计数 `GlobalAlloc` 记录测量窗口内的**单次最大分配**与总分配。
+- 红（把 `Buffer::to_rgba8_quantized` 换回旧实现，即整幅 crop 副本）：
+  `1024×512（524288 px）量化：单次最大分配 8388608 B｜总分配 10487257 B｜整幅 f32 副本应为 8388608 B｜输出 2097152 B`
+  `量化期间出现了 8388608 B 的单次分配，达到整幅 f32 副本量级（8388608 B）⇒ 副本没有删掉`
+- 绿（当前实现）：
+  `1024×512（524288 px）量化：单次最大分配 2097152 B｜总分配 2097152 B｜整幅 f32 副本应为 8388608 B｜输出 2097152 B`
+  即量化期间**唯一**的一次分配就是输出（= 像素 × 4 B），没有再出现整幅量级的分配。
+- 注意：副本回退时**判据 1 仍是绿的** ⇒ 两条判据各管一件事：字节 vs 内存。
+- `cmp` 复原后逐字节相同。
+### 8K / 4K 实测（release，`--nocapture` 打印）
+- **8K（7680×4320 = 33,177,600 px）新实现**：单次最大分配 **132,710,400 B**（126.56 MiB，= 输出）；
+  整幅 f32 副本应为 **530,841,600 B**（506.25 MiB）。新峰值 ≈ 原缓冲 506.25 MiB + 输出 126.56 MiB
+  ≈ **632.8 MiB**；旧峰值 ≈ 再多一份 506.25 MiB ≈ **1,139.1 MiB** ⇒ **省约 506 MiB**。
+- **4K（4096×2160 = 8,847,360 px）带副本（变异）**：单次最大分配 **141,557,760 B**，
+  与"整幅 f32"141,557,760 B **完全相等** ⇒ 那份副本就是**正好一整幅**。
+  （同尺寸新实现的最大分配是输出 35,389,440 B。）
+- 每处都写明 profile（release）与画布尺寸；没有跨 profile／跨分辨率比较数字。
+### 变异复原（`cmp`）
+- `rows.rs`、`buffer.rs`：变异前备份 → 改 → 跑（红）→ 逐字改回 → `cmp` 全等 ⇒ `REVERT-OK`；
+- `quantize_peak_memory.rs`（临时改 8K/4K 尺寸做测量）：恢复后 `cmp` 全等 ⇒ `REVERT-OK`；
+- 残留检查：`grep -rn MUTATION` 无命中。
+### 五道门（都在 worktree、`CARGO_TARGET_DIR=<worktree>/target`）
+1. `cargo fmt --all -- --check` ⇒ 0；
+2. `cargo clippy --workspace --all-targets -- -D warnings` ⇒ 0；
+3. `cargo build --workspace --all-targets` ⇒ 0；
+4. `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release`（rustup stable）⇒ 0；
+5. `cargo test --workspace` ⇒ 0（exit 0）。
+外加 `scripts/wasm-smoke.sh` ⇒ `✅ 渲染路径：RGBA 262144 字节，PNG 203 字节｜写入路径：预览 + 提交成功`。
+### 必须保持绿的既有字节判据（本次复跑，全绿）
+- `tile_parallel::parallel_and_serial_render_byte_identical`
+- `tile_parallel::parallel_offset_region_byte_identical`
+- `tile_parallel::to_rgba8_is_byte_identical_across_worker_counts`
+- `tile_parallel::to_rgba8_threshold_selects_the_serial_and_parallel_paths`
+- `tile_parallel::buffer_pool_matches_fresh_allocation_byte_identical`
+- `tile_parallel::wasm_target_is_always_serial`
+- `tile_parallel` 整套：17 passed / 1 ignored（`perf_parallel_speedup_same_run` 是 release 性能验收，默认 ignore）。
+### 没能做 / 局限
+- wasm 运行时 vs 旧 wasm 的端到端字节比对（见上）。
+- 没有跨机器 8K 端到端 `VmHWM` 复测；本轮内存证据是**进程内分配器计数**（不受负载影响）。
+  8K 的"旧峰值"是把 4K 实测的"副本 = 正好一整幅"按 16 B/px 外推，不是 8K 真跑旧实现
+  （本机当时可用内存约 2.0 GiB，旧实现 8K 峰值约 1.14 GiB，为稳妥没跑）。
+- 没跑 `scripts/build-warnings-check.sh`（重）；替代证据是 native 与 wasm release 构建各 0 警告。
