@@ -263,12 +263,34 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;
+  // **`/service-worker.js` 永不入缓存** ✗（与上面 SHELL 里那条注释同一条理由 ✓）：
+  // 缓存它可能**把旧版本钉住** ✗ —— 而"新 SW 才作废旧缓存"正是 (A)⑥ 的机制 ✓。
+  const neverCache = url.pathname === "/service-worker.js";
   event.respondWith((async () => {
     try {
       const response = await fetch(request);
-      if (response && response.ok && request.mode === "navigate") {
+      // **(A)②：同源静态资产"用到就存"** ✓（cache on first use ✓）——**为什么不全量预缓存** ✗：
+      // 未预缓存的那几类可路由资产合计 **≈ 19.0 MiB**（实测：textures 12,601,760 ✓ ＋
+      // samples 5,106,710 ✓ ＋ brush-previews 1,896,972 ✓ ＋ brand 159,817 ✓ ＋ mediums 159,873 ✓）
+      // ⇒ 塞进 `SHELL` 等于**每一次 install** 都拖这 19 MiB ✗；而目标原文是"**纹理按需**"✓。
+      // ⇒ 改成"**在线第一趟照常走网络、用过的才留下**"✓：攒够一趟之后断网才由缓存兜底 ✓。
+      //
+      // **为什么写进 `CACHE`（名字里带构建标识 ✓）而不是另开一个资产缓存** ✗：
+      // ① `activate` 会**删掉所有名字不等于 `CACHE` 的缓存** ✓ ⇒ 另开一个必然在每次升级时被删 ✗；
+      // ② 写进带标识的 `CACHE` ⇒ **换构建 ⇒ 整份旧资产一起作废** ✓
+      //    ⇒ 不会拿旧贴图 / 旧笔刷预览去配新页面 ✓（这正是 (A)⑥"升级不脏读"要的那条 ✓）。
+      // **同一份缓存仍不脏读** ✓：本分支**始终网络优先** ✓ ⇒ 构建标识不变时能上网就拿新的 ✓。
+      // **只存 200/2xx 的完整响应** ✗：`206`（Range 部分响应 ✓）存下来会变成一个坏条目 ✓。
+      if (response && response.ok && !neverCache && response.status !== 206) {
         const cache = await caches.open(CACHE);
-        cache.put("/", response.clone()).catch(() => undefined);
+        if (request.mode === "navigate") {
+          // 导航响应按外壳的键 `/` 存 ✓（离线打开页面的先决条件 ✓，与此前行为一致 ✓）。
+          cache.put("/", response.clone()).catch(() => undefined);
+        } else {
+          // 静态资产按**原请求**存 ✓ —— 与下面 `caches.match(request, …)` 的查法**对称** ✗
+          //（存 `url.pathname` 会丢掉查询串 ⇒ 存了也命中不了 ✓）。
+          cache.put(request, response.clone()).catch(() => undefined);
+        }
       }
       return response;
     } catch (error) {
