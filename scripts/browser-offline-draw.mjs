@@ -272,7 +272,8 @@ const pathOf = (u) => {
   try { return new URL(text, "http://x").pathname; } catch (_) { return text; }
 };
 const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
-console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（条目 " + cachedUrls.length + " 条）");
+const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90)));
+console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（" + cacheShape + "）");
 // **打印真实形状** ✗（不再只打布尔）：下一个人一眼就能看出条目是绝对 URL 还是相对路径 ✓。
 for (const u of cachedUrls.slice(0, 5)) console.log("    · 缓存条目形状：" + String(u).slice(0, 120));
 // **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
@@ -300,7 +301,11 @@ if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效
 const onlineOverlayInk = (after1.parts.find((p) => p.id === "overlay") || {}).ink || 0;
 const floor = Math.max(200, Math.floor(onlineOverlayInk / 4));
 if (!hasModuleInWorkerCache) {
-  failures.push("SW 缓存里没有**共享内核**（/wasm/yanshi_wasm.js）⇒ 离线预览没有内核可用 ⇒ 只能寄望 HTTP 缓存（不可靠 ✗）");
+  // **把取证并进失败消息** ✗：`run-criteria.sh` 只打印**与失败相关的片段** ✓ ⇒
+// 单靠 `console.log` 的诊断**到不了 CI 的可见输出** ✗（2026-10-06 实测：我加的两行诊断在
+// `gh run view --log` 里**一次都没出现** ✓，而失败消息本身**必然被打印** ✓）⇒ 所以把
+// **条目数 ＋ 前 3 条的形状**直接写进这条失败消息 ✓。
+failures.push("SW 缓存里没有**共享内核**（/wasm/yanshi_wasm.js）⇒ 离线预览没有内核可用 ⇒ 只能寄望 HTTP 缓存（不可靠 ✗）｜取证：" + cacheShape);
 }
 if (!(deltaOffline >= floor)) {
   failures.push("离线这一笔的增量 " + deltaOffline + " 达不到本地预览量级的门槛 " + floor + " ⇒ 不像真的画上了一笔");
