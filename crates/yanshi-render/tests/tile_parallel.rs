@@ -803,7 +803,8 @@ fn buffer_pool_reuses_one_allocation_across_all_layers() {
 /// **缓冲池判据 3（有界 + 不别名）**。
 ///
 /// 有界：给定小上限（2 张 / 256 KiB），即使同时借出 10 张，归还后**保留**的也不超过上限
-/// （超出上限的按需新建、归还即丢弃，而不是把池撑大）。
+/// （超出上限的按需新建、归还即丢弃，而不是把池撑大）。另测"至少保留一张"的例外：
+/// 超过字节预算的单张整幅缓冲仍保留一张（否则超大画布池化失效），但不会留下第二张。
 ///
 /// 不别名（怎么断言）：把两个同时持有的租约的底层 `f32` 切片换算成内存区间，断言**不相交**；
 /// 给其中一个写标记、另一个读不到；释放一个后重新借出的租约也不得与仍在借的那个重叠；
@@ -866,6 +867,24 @@ fn buffer_pool_is_bounded_and_never_aliases_a_live_lease() {
     assert!(
         stats.retained_bytes <= 256 * 1024,
         "保留字节必须 ≤ 上限：{}",
+        stats.retained_bytes
+    );
+
+    // **至少保留一张**的例外：超过字节预算的单张缓冲仍要能留下（否则超大画布的池化
+    // 完全失效），但个数上限照样成立、且不会留下第二张超预算的。
+    let oversized = BufferPool::with_limits(2, 256 * 1024);
+    let big_a = oversized.acquire(0, 0, 1024, 1024); // 1024² × 16 B = 16 MiB > 256 KiB
+    let big_b = oversized.acquire(0, 0, 1024, 1024);
+    drop(big_a);
+    drop(big_b);
+    let stats = oversized.stats();
+    assert_eq!(
+        stats.retained_buffers, 1,
+        "超预算时也只保留一张（个数上限仍然生效）"
+    );
+    assert!(
+        stats.retained_bytes > 256 * 1024,
+        "这一张超预算的整幅缓冲必须被留下，否则超大画布无法复用：{}",
         stats.retained_bytes
     );
 }

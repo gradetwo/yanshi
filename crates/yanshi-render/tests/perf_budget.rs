@@ -674,16 +674,17 @@ fn diagnose_quantise_cost() {
 #[test]
 #[ignore = "性能测量：4K 全幅的图层缓冲分配/复用（用 --release --ignored 跑）"]
 fn measure_layer_buffer_pool_on_4k_full_frame() {
-    const SIZE: u32 = 3840;
+    const WIDTH: u32 = 3840;
+    const HEIGHT: u32 = 2160;
     const LAYERS: usize = 5;
     const ROUNDS: u32 = 3;
 
-    fn document(size: u32, layers: usize) -> DocumentState {
-        let s = size as f64;
+    fn document(width: u32, height: u32, layers: usize) -> DocumentState {
+        let (w, h) = (width as f64, height as f64);
         let mut state = DocumentState::empty();
         state.doc_id = Some("doc_pool_measure".to_owned());
-        state.width = size;
-        state.height = size;
+        state.width = width;
+        state.height = height;
         state.background = json!({"r": 255, "g": 255, "b": 255, "a": 255});
         for index in 0..layers {
             let id = format!("layer_{index}");
@@ -696,7 +697,7 @@ fn measure_layer_buffer_pool_on_4k_full_frame() {
                     ObjectType::Shape,
                     index as i64,
                     json!({"geometry": {"kind": "rect",
-                                        "bbox": {"x": s * 0.4, "y": s * 0.4, "w": 32.0, "h": 32.0}},
+                                        "bbox": {"x": w * 0.4, "y": h * 0.4, "w": 32.0, "h": 32.0}},
                            "color": {"r": 20, "g": 40, "b": 80, "a": 200}}),
                 ),
             );
@@ -704,12 +705,12 @@ fn measure_layer_buffer_pool_on_4k_full_frame() {
         state
     }
 
-    let state = document(SIZE, LAYERS);
+    let state = document(WIDTH, HEIGHT, LAYERS);
     let store = MemoryBlobStore::new();
-    let grid = TileGrid::new(256, SIZE, SIZE).unwrap();
-    let per_buffer = SIZE as u64 * SIZE as u64 * 4 * 4;
+    let grid = TileGrid::new(256, WIDTH, HEIGHT).unwrap();
+    let per_buffer = WIDTH as u64 * HEIGHT as u64 * 4 * 4;
     println!(
-        "画布 {SIZE}×{SIZE}、{LAYERS} 层、单层缓冲 {:.1} MB、每帧理论分配 {} MB",
+        "画布 {WIDTH}×{HEIGHT}、{LAYERS} 层、单层缓冲 {:.1} MB、每帧理论分配 {} MB",
         per_buffer as f64 / (1024.0 * 1024.0),
         (per_buffer * LAYERS as u64) / (1024 * 1024)
     );

@@ -39,11 +39,16 @@ use std::sync::Mutex;
 /// ——这里只是"最多保留多少"的上限。
 pub const MAX_POOLED_BUFFERS: usize = 16;
 
-/// 池最多保留的**字节数**。
+/// 池最多保留的**字节数**（对**除第一张以外**的缓冲生效，见 [`BufferPool::release`]）。
 ///
 /// 4K 一张整幅图层缓冲约 132.7 MB ⇒ 192 MiB 足以留下一张整幅（串行全幅渲染的典型需求），
-/// 又不会把 8K（约 530 MB/张）的分配长期扣住。并行时各 worker 的缓冲更小（按行分块），
+/// 又不会把 8K（约 530 MB/张）的第二张分配长期扣住。并行时各 worker 的缓冲更小（按行分块），
 /// 16 块合计仍在预算内。
+///
+/// **例外（至少保留一张）**：一张整幅图层缓冲是**不可再省的工作集**。若严格按预算，
+/// 超过 192 MiB 的画布（例如 3840×3840 单层 ≈ 225 MB）会一张都留不下 ⇒ 池化对它
+/// **完全失效**（实测：20 次取用、0 次复用）。所以空闲表为空时允许保留一张、可突破预算；
+/// **个数上限始终生效**，额外缓冲仍受字节预算约束。
 pub const MAX_POOLED_BYTES: usize = 192 * 1024 * 1024;
 
 /// 池的保留上限（个数 + 字节数）。
@@ -220,9 +225,13 @@ impl BufferPool {
         }
         inner.counters.released += 1;
         let bytes = buffer.capacity_bytes();
-        let retain = self.enabled.load(Ordering::SeqCst)
-            && inner.free.len() < self.limits.max_buffers
-            && inner.retained_bytes.saturating_add(bytes) <= self.limits.max_bytes;
+        // 个数上限始终生效；字节预算对**除第一张以外**的缓冲生效 ——
+        // 空闲表为空时允许保留一张、可突破预算（否则超过预算的画布池化完全失效，
+        // 实测 3840×3840 在严格预算下是 20 次取用 / 0 次复用）。
+        let count_ok = inner.free.len() < self.limits.max_buffers.max(1);
+        let bytes_ok = inner.free.is_empty()
+            || inner.retained_bytes.saturating_add(bytes) <= self.limits.max_bytes;
+        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok;
         if retain {
             inner.retained_bytes += bytes;
             inner.free.push((id, buffer));
