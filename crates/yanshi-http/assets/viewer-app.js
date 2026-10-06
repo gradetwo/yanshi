@@ -828,7 +828,7 @@ function sizeBoards(width, height) {
       reason: "enter sizeBoards", area: -1, at: Math.round(performance.now()),
       serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   // **只有尺寸真的变了才碰 backing store** ✗ —— 这是"每一笔结束抖一下"的**真凶** ✓（第 43 轮 ✓）。
   //
   // **为什么** ✗：给 `board.width`/`height` 赋值会**重建 backing store ⇒ 清空画布** ✓（浏览器规范 ✓，
@@ -847,7 +847,7 @@ function sizeBoards(width, height) {
       reason: "assign board size", area: -1, at: Math.round(performance.now()),
       serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     overlay.width = width;
     overlay.height = height;
     // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
@@ -859,18 +859,18 @@ function sizeBoards(width, height) {
       reason: "clear ctx.fillRect", area: -1, at: Math.round(performance.now()),
       serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     octx.clearRect(0, 0, width, height);
     (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
       reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
       serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
       reason: "erase sizeBoards " + width + "x" + height, area: width * height,
       at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   }
   state.viewport.w = width;
   state.viewport.h = height;
@@ -1458,7 +1458,7 @@ async function blitServerBox(bbox) {
       reason: "empty-clip " + JSON.stringify([x0, y0, w, h]), area: w * h,
       at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     return 0;
   }
   // **等布局稳定再取图** ✓（见 `settleFrames` 的说明 ✓ —— 少了这一步，脏区补画会画上一块空白 ✗）。
@@ -1476,7 +1476,7 @@ async function blitServerBox(bbox) {
       reason: "no-url " + JSON.stringify([x0, y0, w, h]), area: w * h,
       at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     return 0;
   }
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
@@ -1488,7 +1488,7 @@ async function blitServerBox(bbox) {
       area: w * h, at: Math.round(performance.now()),
       serverInk: -1, canvasInk: -1,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     return 0;
   }
   // **数一下服务端这批字节里有多少墨** ✓ —— 决定性的那一问 ✓：
@@ -1523,7 +1523,7 @@ async function blitServerBox(bbox) {
         serverInk,
         canvasInk,
       });
-      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
       return 0;
     }
   }
@@ -1542,7 +1542,7 @@ async function blitServerBox(bbox) {
       reason: "landed " + landed + "/" + serverInk, area: w * h,
       at: Math.round(performance.now()), serverInk, canvasInk: landed,
     });
-    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   }
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
@@ -1553,7 +1553,7 @@ async function blitServerBox(bbox) {
     at: Math.round(performance.now()),
     serverInk,
   });
-  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   return w * h;
 }
 
@@ -1631,7 +1631,7 @@ function queueServerBlit(bbox = null) {
         reason: "threw " + String((error && error.message) || error),
         area: -1, at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
       });
-      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
       window.yanshiStats.blitErrors = (window.yanshiStats.blitErrors || 0) + 1;
     })
     .finally(() => {
@@ -1658,7 +1658,7 @@ async function blitServerViewport() {
     area: 0,
     at: Math.round(performance.now()),
   });
-  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   // **等布局稳定** ✓ —— 这段原先是**内联**的 ✓；现在挪进 `settleFrames` ✓，
   // 因为"立刻取图会拿到空白"这件事对**脏区那条**同样成立 ✓（本轮实测 ✓），
   // 而两条路本来就都走 `blitServerBox` ✓（一处修好、两条都对 ✓，不是两份实现 ✓）。
@@ -5640,7 +5640,7 @@ function redraw() {
     reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
     serverInk: -1, canvasInk: -1,
   });
-  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+  window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
   redrawSourceMark();
   drawSelectionBox();
   drawSelectionOutline();
@@ -6581,7 +6581,7 @@ board.addEventListener("pointermove", (event) => {
         reason: "clear octx.clearRect", area: -1, at: Math.round(performance.now()),
         serverInk: -1, canvasInk: -1,
       });
-      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
       octx.save();
       octx.strokeStyle = "#4a7dff";
       octx.lineWidth = 1;
