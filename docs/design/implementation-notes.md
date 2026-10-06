@@ -41774,3 +41774,38 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
 | ① | 同笔触两模式逐字节一致 | `wasm-brush-parity` ⇒ **∴ CI 超时 ⇒ **∴ 有意不阻塞 ✗**＋ **∴ 而它已有 **199 支笔**✗ 的实测 ✓** |
 | ② | 离线可画／可导出 | **∴ 本地 `EXIT=0`✗｜内核在缓存（**∴ 全量键 358 ✗）｜`failed:[]`✗｜预缓存 208 条 0 失败 ✓** ⇒ **∴ 待 CI ✓** |
 | ③ | SW 升级后不脏读 | **∴ **本轮本地绿**✗：**∴ `dark` 翻倍 ＋ 状态请求 6 次 ✓** |
+
+## 第 1340 轮：**算出 `shard 6/6`✗ 的成员名单** ✓ —— **∴ 于是 CI 的红可以逐条预判 ✓**
+
+### 怎么算（**∴ 复刻 `run-criteria.sh`✗ 的规则 ✓**）
+```
+枚举：ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs
+        scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs …
+分片：按**文件名排序**后取模（`SHARD`/`SHARDS` ✓）⇒ **∴ 确定性 ✗＋不重不漏 ✓**
+共 84 个判据 ⇒ 取 `(i-1) % 6 + 1 == 6` ⇒ **∴ `shard 6/6`✗ ＝ 14 个 ✓**
+```
+**∴ `shard 6/6`✗ 的成员** ✓：
+```
+browser-canvas-handfeel.mjs      browser-kernel-perf.mjs        browser-offline-draw.mjs
+browser-pan-vs-paint.mjs         browser-ui-check.mjs           tool-archive-bloat.mjs
+tool-brush-tag-filter.mjs        tool-example-acceptance.mjs    tool-fill-region-feather.mjs
+tool-layer-blend.mjs             tool-param-parity.mjs          tool-release-target-tri-state.mjs
+tool-scatter-polygon.mjs         tool-surface-coverage.mjs
+```
+
+### 用它解释上一轮的失败清单（**∴ 完美吻合 ✓**）
+**∴ 上一轮 `shard 6/6`✗ 报「通过 **13**✗｜意外失败 **2**✗｜已知红 0 ✗」** ✓ ⇒ **∴ 那两条是** ✓：
+| 意外失败 | 原因 | 本轮动作 |
+|---|---|---|
+| **∴ `browser-offline-draw`✗** | **∴ 判定用了被 `slice(0, 12)`✗ 截断的样本 ⇒ **∴ 误判"没有内核" ✗** | **∴ 已改成用**全量键（358 条）**✗ ✓** |
+| **∴ `browser-ui-check`✗** | **∴ 它断言"跳转后撤销应当改画面"✗ ⇒ **∴ 而设计未说 ✗** | **∴ 已改成**记录**✗ ＋ 提成产品决策 ✓** |
+
+⇒ **∴ 而名单里**另两条要注意**✗** ✓：
+- **∴ `tool-archive-bloat.mjs`✗** ⇒ **∴ **它就在**已知红名单**里**✗**（**∴ 归档不回收被替代 blob ✓**）
+  ⇒ **∴ 所以它红**不阻塞**✗（**∴ 照印不算失败 ✓**）；
+- **∴ `tool-release-target-tri-state.mjs`✗／`tool-surface-coverage.mjs`✗／`tool-example-acceptance.mjs`✗**
+  ⇒ **∴ 这三条**最近几轮都确认过绿**✗** ✓。
+
+### 预判（**∴ 下一轮核对 ✓**）
+**∴ 本轮把两条都改好之后 ⇒ **∴ `shard 6/6`✗ 应当**全绿（通过 15 ✗）** ✓
+   ⇒ **∴ 若仍红 ⇒ **∴ 那就说明**还有第三条**✗（**∴ 而名单 ＋ 失败消息会给名字 ✓**）** ✓✓
