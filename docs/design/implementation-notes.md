@@ -36248,3 +36248,37 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 * **没做**：没有改 `RenderCodec`（见第三节的取舍 ✓）。
 * **注意（notes 冲突）** ✗：主 checkout 的工作区里有一份**未提交**的"第 1153 轮"追加 ✓，
   而本分支的文件止于 `21674f4` ✓ ⇒ 合并时要**两边都保留** ✓（本文件只追加、不重写 ✓）。
+
+### 第 1154 轮补记（门禁卫生与自己这一次的污染）
+
+**先认一件事** ✗：本轮一开始我为了省编译时间，把 `CARGO_TARGET_DIR` 指向了
+**主干的 target**（`/home/crow/yanshi/target`）✓ —— 而第 1166 轮查明：
+不同 worktree 的 cargo 单元 hash 与 extra-filename 会撞车 ✓、mtime 又可能让 cargo
+判定"无需重编" ✓ ⇒ **我的构建会污染主干的门禁二进制** ✓（反过来同理 ✓）。
+**这条已改** ✓：所有门禁与验证命令今后一律用**本 worktree 自己的 target**
+（`CARGO_TARGET_DIR=/tmp/wt-bgperf/target` ✓）。
+
+**并且用独立 target 重跑了一遍** ✓（这是本补记最要紧的一行 ✓）：
+* `cargo test -p yanshi-render --test bitmap_cache` ⇒ ok ✓；
+* `cargo test -p yanshi-server --test background_stroke_cost --test timings_and_cancel` ⇒
+  3 passed / 7 passed ✓（1 ignored ✓）；
+* `cargo test --workspace`（独立 target，全新编译）⇒ **136 个 `test result: ok`、0 红、EXIT=0** ✓；
+* `cargo fmt --all -- --check` ✓、`cargo clippy --workspace --all-targets -- -D warnings` ✓。
+
+**与第 1166 轮的关系（重要，别误读）** ✗：第 1166 轮更正的是
+**"并行分块不共享位图缓存"这个并不存在的缺陷** ✓，并说"不要改 `render.rs`" ✓ ——
+那条结论**与本轮不冲突** ✓：
+* 本轮的改动**不是**去改"共享/锁内解码"这件事 ✓ —— 那两件事（锁内取值+解码 ✓、
+  各块共享同一份 `Arc` ✓）**逐字保留** ✓；
+* 本轮改的是**缓存的生命周期与规模** ✓：把它从"每次 `render_region` 新建一份局部缓存"✗
+  改成"挂在 `Renderer` 上、跨渲染存活的 64 MiB LRU" ✓ ——
+  因为实测病根是**每一笔都把整幅 33.2 MiB 背景重新 inflate** ✓（见本节正文 ✓），
+  而这份缓存**恰好是那次实测里的关键对象** ✓。
+* 缓存给出错误像素的可能性由**内容寻址**排除 ✓，并由
+  `crates/yanshi-render/tests/bitmap_cache.rs` 的**整幅逐字节**判据钉住 ✓。
+
+**合并时的冲突** ✗：主干在第 1166 轮之后又加了"图层缓冲池"（`Renderer::buffer_pool` ✓、
+`RenderStats::layer_buffers_allocated/reused` ✓），与本轮的 `Renderer::bitmaps` 落在
+同一处 ✓ ⇒ 两边**都要保留** ✓：结构体里 `buffer_pool` 与 `bitmaps` 两个字段都在 ✓、
+两个构造器两行都加 ✓；`render_accumulation` 的参数是本轮的 `bitmaps: &BitmapCache` ✓、
+`layer_buffer` 取自主干缓冲池的那一行 ✓。两处改动**语义无关** ✓，不取一边 ✓。
