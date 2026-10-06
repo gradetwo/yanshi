@@ -272,7 +272,11 @@ const pathOf = (u) => {
   try { return new URL(text, "http://x").pathname; } catch (_) { return text; }
 };
 const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
-const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90)));
+// **把 SW 的预缓存失败也带上** ✗ —— 只报"少了内核"无法定位（是 404？还是查得太早？✓）。
+// 判据在 SW 上下文里读 `self.__swPrecacheFailures`（`install` 里记的 ✓）⇒ **它直接说明谁失败** ✓。
+const preFail = await evaluate(`(() => (self.__swPrecacheFailures || []).slice(0, 5))()`).catch(() => null);
+const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90))) +
+  "｜SW 预缓存失败：" + JSON.stringify(preFail);
 console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（" + cacheShape + "）");
 // **打印真实形状** ✗（不再只打布尔）：下一个人一眼就能看出条目是绝对 URL 还是相对路径 ✓。
 for (const u of cachedUrls.slice(0, 5)) console.log("    · 缓存条目形状：" + String(u).slice(0, 120));

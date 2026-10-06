@@ -41000,3 +41000,30 @@ await Promise.all(SHELL.map((url) => cache.add(url).catch(() => undefined)));
    ⇒ ⇒ **∴ 于是推出一个**机制不存在**✗ 的假设 ✓** ✓✓
    ⇒ **∴ 规则** ✓：**∴ 提出"某种批量语义"✗ 的假设前 ⇒ **∴ 先 `grep`✗ 那个 API 是否存在 ✗（**∴ `addAll`✗ ✓**）
       ⇒ **∴ 并读一遍那 5 行 ✗ ⇒ **∴ 只要 30 秒 ✓** ✓✓
+
+## 第 1316 轮：**SW 预缓存不再静默吞失败** ✓ —— 这是 `browser-offline-draw` 的取证缺口
+
+### 改了什么
+`crates/yanshi-http/assets/service-worker.js` 的 `install`（`:240`）原先：
+```js
+await Promise.all(SHELL.map((url) => cache.add(url).catch(() => undefined)));
+```
+⇒ **∴ 每条失败都被静默吞掉** ✗ ⇒ **∴ 208 条里失败的**无声消失**✗ ⇒ **∴ 只看得到"少了东西"✗ ✓** ✓✓
+**现在** ✓：把失败记进 **`self.__swPrecacheFailures`✗**（**∴ 判据能直接读 ✓**）＋ `console.warn` 前 8 条 ✓。
+
+`scripts/browser-offline-draw.mjs` 的失败取证里**也带上那个列表** ✓：
+```js
+const preFail = await evaluate(`(() => (self.__swPrecacheFailures || []).slice(0, 5))()`).catch(() => null);
+const cacheShape = "条目 " + … + "｜SW 预缓存失败：" + JSON.stringify(preFail);
+```
+⇒ **∴ 下一次 CI 的失败行会**直接说明**✗：**∴ 是哪些 URL 失败 ✗（⇒ **∴ 产品侧 404 ✓**）
+   **∴ 还是**一个都没失败 ✗（⇒ **∴ 那就是**竞态**✗ ⇒ **∴ 判据查得太早 ✓**）** ✓✓
+
+### 为什么这一条值钱
+`browser-offline-draw` 是 `(A)⑥`（离线可画／可导出）**最后一条红** ✓，而它卡住的原因**不是**缺工具 ✓、
+**不是**判据读不到缓存 ✓（**∴ 已实测：12 条可见 ✓**）⇒ **∴ 而是**不知道少了谁、为什么**✗ ✓
+⇒ **∴ 所以先补上"失败可见"✗ ⇒ **∴ 下一次运行就能**定性并修**✗ ✓ ✓✓
+
+### 教训（**∴ 与 1299 轮同源 ✓**）
+**∴ `catch(() => undefined)`✗ 这类"**吞掉错误**✗"的写法 ⇒ **∴ 事后排查的成本**远大于**当时那五行**✗ ✓
+   ⇒ **∴ 而且它**伪装成"正常但结果少"✗ ⇒ **∴ 比直接报错更难查 ✓** ✓✓

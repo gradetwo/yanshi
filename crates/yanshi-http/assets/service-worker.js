@@ -237,7 +237,23 @@ const CACHE = "yanshi-shell-__BUILD_ID__";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    await Promise.all(SHELL.map((url) => cache.add(url).catch(() => undefined)));
+    // **失败不能静默** ✗（F02/(A)⑥ 的取证缺口 ✓）—— 原先每条都 `.catch(() => undefined)` ✓
+    // ⇒ 208 条里失败的会**无声消失** ✗ ⇒ 只看得到"缓存里少了东西" ✓、看不出**少了谁、为什么** ✓。
+    // 现在把失败记进 `self.__swPrecacheFailures` ✓（**判据可以直接读它 ✓**）并 `console.warn` ✓。
+    self.__swPrecacheFailures = [];
+    await Promise.all(
+      SHELL.map((url) =>
+        cache.add(url).catch((error) => {
+          self.__swPrecacheFailures.push({ url, error: String((error && error.message) || error) });
+        })
+      )
+    );
+    if (self.__swPrecacheFailures.length > 0) {
+      console.warn(
+        "SW 预缓存失败 " + self.__swPrecacheFailures.length + "/" + SHELL.length + " 条：" +
+          JSON.stringify(self.__swPrecacheFailures.slice(0, 8))
+      );
+    }
     await self.skipWaiting();
   })());
 });
