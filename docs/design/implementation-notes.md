@@ -39807,7 +39807,7 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 ⇒ 按既有做法**只改后出现的那一条**，改成未用编号 ⇒ 判据恢复 **唯一** ✓。
 ⇒ **教训**：**"分支上的文档"也会把修好的东西带回去** —— 合并前应**先跑编号判据**，
    而不是合完再看。这条已并入"合并前先跑判据"的既有纪律。
-## 第 1258 轮：**`new_document` 尺寸被忽略、新 id 被报成"打开"** —— 真因在**入口预建**，不在工具
+## 第 1276 轮：**`new_document` 尺寸被忽略、新 id 被报成"打开"** —— 真因在**入口预建**，不在工具
 ### 报告与复现（真进程，非单测）
 空 `--root`，`yanshi-mcp --doc seed --width 1024 --height 1024 --profile core`，全新 id：
 `new_document{doc_id:"brand_new_4k", width:3840, height:2160}` ⇒
@@ -39851,3 +39851,31 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 - M2（"真的存在⇒打开"）：工具存在判据改 `false` ⇒ 红（`已存在于磁盘` 的 `precondition_failed`）；
 - M3（安全）：拆掉工具早返回 **并** 拆掉 `create_document` 的两道存在闸 ⇒ 真的被覆盖成
   640×480、墨点归零 ⇒ 红（尺寸 ✓ 与像素 ✓ 两条断言都咬得住）。
+
+## 第 1277 轮：合并 `new_document` 尺寸修复，并**更正我自己的根因假设**
+
+### 我上一轮的假设**不是**根因（如实更正）
+我判断是"`write_new_document` 用了 `document_mut`，而它按需创建 ⇒ 新 id 也走'已存在'分支"。
+**子代理的定位更准确**：真正的问题在**入口**——
+**MCP／HTTP 入口原先**无条件**按默认尺寸（缺省 1024×1024）替 `doc_id` 预建文档**
+⇒ 于是 `new_document{doc_id:"新id", width:3840, height:2160}` **走到工具里的时候目标已经存在** ✗
+⇒ 工具的"已存在 ⇒ 打开"分支把尺寸丢掉（恒为 1024×1024），并把**新 id 报成 `opened:true`** ✗。
+⇒ **所以**我那句"`document_mut` 按需创建"**不是**根因**（**我在注释里读到 `initWasm`/`document_mut` 就下了结论 ✓，
+   而没有去看**调用的入口** ✓ —— 又一次"读得不够远" ✓）。
+
+### 它的修法（**一处定义、两个入口共用** ✓）
+新增 `ToolSpec::creates_own_document()`，入口**不再**替 `new_document` 预建文档；
+并把工具**描述**也改成与实现一致（此前描述与实现相反 ✗）。
+它给的理由很对：**各写一份 `name == "new_document"` 必然漂移 ✗**。
+
+### 判据（**关键：只有真进程能抓到 ✓**）
+- `crates/yanshi-mcp/tests/stdio.rs`：**真进程**判据（它明确写：直接调 `ToolRegistry` 会**绕过入口** ⇒
+  那种判据**今天是绿的** ✗ —— 这正是本缺陷此前没被既有判据抓住的原因 ✓）；
+- `crates/yanshi-server/tests/new_document.rs`：我直接跑过，**3 passed** ✓
+  （`missing_dimensions_are_refused_with_an_example` / `a_new_document_is_blank_and_recreating_replaces_it` /
+   `an_on_disk_document_is_opened_and_never_resized`）。
+
+### 教训（值得进 skill）
+**"在哪里判断"**比"判断了什么"更容易错：入口先做了一步"为了省事"的预建，
+就把工具里那条正确的分支**变成了错误的分支** ✗。
+⇒ 读一个工具的行为时，**必须一路读到入口**；只读工具函数本身会得出**看起来合理但错的结论** ✓。
