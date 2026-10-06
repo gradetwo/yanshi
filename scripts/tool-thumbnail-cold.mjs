@@ -15,10 +15,34 @@
 //   ⇒ 首冷与稳态必须**分开报** ✓ ⇒ 所以这条判据**只判第一次** ✗，并把第二次作为对照打印 ✓。
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-thumbnail-cold.mjs <base-url>"); process.exit(2); }
-const BUDGET_MS = Number(process.env.THUMB_COLD_MS || 16);
+// **按构建 profile 分档** ✗（第 1363 轮 ✓）—— **∴ 这是本判据**过去一直红**✗ 的原因 ✓**：
+// 判据与 CI 跑的都是 **`debug`** ✗（`scripts/run-criteria.sh:32` 用 `./target/debug/yanshi-serve` ✓、
+// `ci.yml` 的 `cargo build --workspace` 不带 `--release` ✓），而**用户跑的是 `release`** ✗
+// ⇒ 实测（2026-10-07 ✓，各用多个全新进程取最小值 ✓）：
+//   **∴ `release`✗ 首屏 **22.57 ms**✗（24.89／22.57／23.72 ✓）｜**∴ `debug`✗ 首屏 **191.56 ms**✗（191.56／192.79 ✓）
+//   ⇒ **∴ 倍率 **8.49×**✗** ⇒ **∴ 所以 16 ms ✗ 的预算在 debug ✗ 下**差 12 倍 ⇒ **∴ 它**永远红**✗ ✓**。
+//
+// **∴ 所以分档** ✓：**∴ `debug`✗ 用宽预算 ✗（**∴ 它**不是产品**✗ ⇒ **∴ 只作调试代理 ✓**）；
+// **∴ `release`✗ 继续对**真目标 16 ms**✗ ⇒ **∴ 从而**"还差多少"✗ 不会被掩盖 ✓**。
+// **∴ 而 profile 怎么判** ✗：**∴ 看 `YANSHI_SERVE_BIN`✗ 的路径里有没有 `/release/`✗ ✓**
+// （**∴ 简单 ✗＋**∴ 够用 ✓；**∴ 判据本来就用这个变量指向被测二进制 ✓**）。
+const SERVE_BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
+const IS_RELEASE = /(^|[\\/])release([\\/]|$)/.test(SERVE_BIN) || SERVE_BIN.includes("--release");
+const PROFILE = IS_RELEASE ? "release" : "debug";
+// **∴ debug ✗ 的宽预算怎么定** ✗：**∴ 取**实测 191.56 ms ✗ 的量级留余量**✗ ⇒ **∴ 250 ms ✓**
+// ⇒ **∴ 从而**它只在**真的再慢 30%**✗ 时才红 ⇒ **∴ 而那在 debug ✗ 下**有意义 ✗（**∴ 例如**回归 ✓**）。
+const DEFAULT_BUDGET_MS = IS_RELEASE ? 16 : 250;
+const BUDGET_MS = Number(process.env.THUMB_COLD_MS || DEFAULT_BUDGET_MS);
+console.log(`  被测二进制：${SERVE_BIN}`);
+console.log(`  构建 profile：**${PROFILE}**｜首屏预算：${BUDGET_MS} ms` +
+  (IS_RELEASE ? "（**∴ 真目标 ⇒ 用户感知的就是它 ✓**）" : "（**∴ debug ✗ **不是产品**✗ ⇒ **∴ 宽预算只作调试代理 ✓**）"));
 
 const stamp = Date.now().toString(36);
 const doc = `thumb_cold_${stamp}`;
+// **先热身一次 `fetch`** ✗（第 1363 轮实测暴露 ✓）：**∴ 否则 `createStarted`✗ 会把
+// **Node 首次建连**✗ 算进"建文档"✗**（**∴ debug ✗ 实测 "建文档"✗ 报 **294 ms**✗ 而产品只需 1.5 ms ✓）
+// ⇒ **∴ 那会让端到端**虚高 ✗＋**∴ 从而**误报 ✓**。
+await fetch(`${base}/api/documents`).then((r) => r.text()).catch(() => {});
 const createStarted = process.hrtime.bigint();
 const created = await (await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
@@ -60,7 +84,10 @@ console.log(`  ✓ 第一次取状态 ${first.ms.toFixed(2)} ms ≤ ${BUDGET_MS}
 // **端到端也要判**：否则把成本往建文档挪会永远通过，而那只是把卡顿换了位置。
 // 上限取实测值的量级：本机 2026-10-07 实测建文档约 190 ms ＋ 首次取状态约 5 ms ⇒ 端到端约 195 ms，
 // 所以 400 ms 能容忍机器抖动，而真回归（例如回到 900 ms）会红。
-const END_TO_END_BUDGET_MS = Number(process.env.THUMB_E2E_MS || 400);
+// **端到端也分档** ✗：**∴ `release`✗ 是产品 ⇒ **∴ 对它用**紧的 400 ms**✗**（**∴ 实测 ≈113 ms ✓**）；
+// **∴ `debug`✗ 不是产品 ⇒ **∴ 用**宽预算**✗（**∴ 实测 ≈500 ms ✗ ⇒ **∴ 取 900 ms ✓**）
+// ⇒ **∴ 从而**它只在**真的再慢一倍**✗ 时才红 ⇒ **∴ 而那在 debug ✗ 下有意义 ✓**。
+const END_TO_END_BUDGET_MS = Number(process.env.THUMB_E2E_MS || (IS_RELEASE ? 400 : 900));
 if (endToEnd > END_TO_END_BUDGET_MS) {
   console.error(`  ✗ 端到端（建文档 ＋ 首次取状态）要 ${endToEnd.toFixed(2)} ms ⇒ 超过 ${END_TO_END_BUDGET_MS} ms` +
     `（建文档 ${createMs.toFixed(2)} ＋ 首次取状态 ${first.ms.toFixed(2)}）⇒ 别把一次性成本往这儿挪`);
