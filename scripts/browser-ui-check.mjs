@@ -3393,14 +3393,27 @@ const layerPanel = await evaluate(`(async () => {
   out.paintedAfterShow = ink();
   out.paintedBefore = paintedBefore;
   // ⑤ **锁定** ⇒ 面板状态变 ✓（并按设计**阻止改内容** ✓）。
+  // **轮询而不是固定 sleep** ✓：锁定与上面的隐藏/显示走**同一条链** ✓
+  //（工具返回 → refreshLayers 重建整个列表 → resync 补画 ✓）⇒ 固定 900ms 同样是
+  //「冷启动不够、热路径白等」✗（上面那段注释已经记下同一条教训 ✓）。
+  // 判的是**服务端是否记录 locked** ✓ ⇒ 轮询**链末端的可见结果**：图标真的翻成锁 ✓；
+  // 面板渲染的就是 list_layers 的返回 ✓ ⇒ 图标翻了 ⇒ 服务端必然已提交 ✓（判据没有放松 ✓）。
+  // **每一轮都重新查行** ✓：refreshLayers 会重建整个列表 ✓，点击前抓到的节点已脱离文档 ✓
+  //（与隐藏段同一个坑 ✓）—— 读旧节点只会得到点击前的旧文字 ✓。
+  const lockIconText = () => {
+    const row = rows().find((item) => item.dataset.layerId === targetLayerId);
+    return row ? row.querySelector('[data-action="locked"]')?.textContent || null : null;
+  };
   const lockRow = rows().find((row) => row.dataset.layerId === targetLayerId);
   if (lockRow) {
     lockRow.querySelector('[data-action="locked"]').click();
-    await new Promise((r) => setTimeout(r, 900));
+    // 40 × 150ms ≈ 6 秒上限 ✓（与隐藏/显示同一口径 ✓）。真没锁上 ⇒ 轮询走完 ✓
+    // ⇒ 下面照旧读到 false ✓ ⇒ 断言照样红 ✓（不是放松 ✓）。
+    for (let i = 0; i < 40 && lockIconText() !== "🔒"; i++) await new Promise((r) => setTimeout(r, 150));
   }
   const listed2 = await window.yanshiCallTool("list_layers", {});
   out.lockedOnServer = (listed2.layers || []).some((layer) => layer.layer_id === targetLayerId && layer.locked);
-  out.lockIcon = lockRow ? lockRow.querySelector('[data-action="locked"]')?.textContent : null;
+  out.lockIcon = lockIconText();
   return out;
 })()`);
 
