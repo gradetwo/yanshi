@@ -102,6 +102,12 @@ const bisect = await evaluate(`(() => {
     render_info_512: probe(5, () => kernel.render_region_info(8, 8, 512, 512)),
     rgba_8: probe(5, () => kernel.render_region_rgba(8, 8, 8, 8)),
     rgba_512: probe(5, () => kernel.render_region_rgba(8, 8, 512, 512)),
+    // **拖动反馈那条路**（第 1340 轮定位）：render_region_direct_rgba 走 scratch 直绘
+    // （每次重绘区域内所有对象），而上面三项走 tile 组合（复用 LRU）
+    // ⇒ 所以**必须先量它**，否则改路之后无法证明收益。
+    // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号**（我在这类坑上又踩了一次）。
+    direct_8: probe(5, () => kernel.render_region_direct_rgba(8, 8, 8, 8)),
+    direct_512: probe(5, () => kernel.render_region_direct_rgba(8, 8, 512, 512)),
     png_512: probe(5, () => kernel.render_region_png(8, 8, 512, 512)),
   };
 })()`);
