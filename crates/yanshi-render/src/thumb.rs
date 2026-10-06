@@ -586,3 +586,75 @@ mod tests {
         assert_eq!(all.len(), thumb.stats.blocks_total);
     }
 }
+
+#[cfg(test)]
+mod uniform_source_guard {
+    use super::*;
+
+    /// **缩块护栏**（第 1391 轮，目标 (B)③ 的前置）：**均匀源 ⇒ 内容区恰好一种颜色，留边全透明**。
+    ///
+    /// **为什么它是判据而不是"自我比较"**：它**不记录实现的输出**、**不硬写期望像素**
+    /// ⇒ 只依赖一条**独立不变量**（均匀进 ⇒ 均匀出）⇒ 所以任何**索引／窗口／写入**错误
+    /// 都会让它红，而正确实现**无论内部怎么写**都通过 ✓。
+    ///
+    /// **它也能红**（实测 ✓）：把 `update_blocks_from_region` 的窗口取错 1 像素、
+    /// 或把写回目标算错 ⇒ **内容区立刻不均匀** ⇒ 报首个不一致的位置与两个值。
+    #[test]
+    fn uniform_source_gives_uniform_content_and_transparent_padding() {
+        let (w, h) = (320u32, 240u32);
+        let level = 0.4f32;
+        let f = vec![level; (w * h * 4) as usize];
+        let b = crate::buffer::Buffer::from_f32(0, 0, w, h, &f).expect("buffer");
+        let doc = Bbox::new(0.0, 0.0, w as f64, h as f64);
+
+        let mut thumb = Thumb::new(ThumbKind::Doc256);
+        let content = thumb.content_box(doc);
+        let blocks = thumb.dirty_blocks_for(&doc, doc);
+        thumb.update_blocks_from_region(&b, doc, doc, &blocks);
+
+        let mut inside: Option<[u8; 4]> = None;
+        let mut inside_count = 0usize;
+        let mut padding_nonzero = 0usize;
+        let size = thumb.size as usize;
+        for y in 0..size {
+            for x in 0..size {
+                let px = [
+                    thumb.rgba8[(y * size + x) * 4],
+                    thumb.rgba8[(y * size + x) * 4 + 1],
+                    thumb.rgba8[(y * size + x) * 4 + 2],
+                    thumb.rgba8[(y * size + x) * 4 + 3],
+                ];
+                let in_content = (x as f64) >= content.x
+                    && (x as f64) < content.x + content.w
+                    && (y as f64) >= content.y
+                    && (y as f64) < content.y + content.h;
+                if in_content {
+                    inside_count += 1;
+                    match inside {
+                        None => inside = Some(px),
+                        Some(first) => assert_eq!(
+                            px, first,
+                            "均匀源的内容区不一致：({x},{y}) = {px:?}，首个 = {first:?} \
+                             ⇒ 缩块把均匀输入变成了不均匀输出"
+                        ),
+                    }
+                } else if px != [0, 0, 0, 0] {
+                    padding_nonzero += 1;
+                }
+            }
+        }
+        let first = inside.expect("内容区必须至少有一个像素（否则判据无法成立）");
+        assert_eq!(
+            padding_nonzero, 0,
+            "留边区有 {padding_nonzero} 个像素不是全透明"
+        );
+        assert_ne!(
+            first[3], 0,
+            "内容区 alpha 为 0 ⇒ 内容没被写入（首像素 {first:?}）"
+        );
+        assert!(
+            inside_count > 0 && inside_count < size * size,
+            "内容区必须严格小于整张图（否则留边规则无从检查）"
+        );
+    }
+}
