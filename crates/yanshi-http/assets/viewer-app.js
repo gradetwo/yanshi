@@ -6248,18 +6248,30 @@ const localBrushText = new Map();
 // ⇒ 这个函数、它的缓存键、以及那句 fetch **全都没有存在意义**了 ✓ ⇒ 删掉 ✓（**留一段说明** ✓，
 // 免得后人以为"少了个加载步骤"✗ —— **过时的沉默与过时的描述一样会误导** ✗）。
 
+// **笔刷 URL 必须逐段编码** ✓（真 bug ✓）：`8B_Pencil#1.myb` / `arrow#1.myb` / `Fan#1.myb` /
+// `Flat2#1.myb` / `Fountain_SF#1.myb` / `Fount-offset#1.myb` / `HalfTone#1.myb` /
+// `HalfToneCMY#1.myb` / `Round#1.myb` 这九支随仓库发布的笔刷名字里带 `#` ✓，
+// 而 `#` 在 URL 里是**片段起点** ✗ ⇒ 不编码时浏览器实际请求的是 `/brushes/8B_Pencil` ✗
+//（后缀被整段丢掉 ✓，九支笔刷**全都取不到** ✓）。`%`（`100%_Opaque.myb` ✓）与
+// `+`（`blend+paint.myb` ✓）是同一类字符 ✓ ⇒ 一并编码 ✓。
+// 用 `encodeURIComponent` ✓，与服务端 `percent_decode_path` **一一对应** ✓
+//（服务端按**路径段**解码 ✓ ⇒ `%2B` 还原成 `+` ✓，而不是空格 ✓）。
+const brushAssetUrl = (name) => "/brushes/" + encodeURIComponent(name) + ".myb";
+
 async function loadLocalBrushText(name) {
   if (localBrushText.has(name)) return localBrushText.get(name);
-  const response = await fetch("/brushes/" + name + ".myb");
+  const response = await fetch(brushAssetUrl(name));
   if (!response.ok) throw new Error("笔刷文本 HTTP " + response.status);
   const text = await response.text();
   // **笔刷文本也写进同一个缓存**（**按需**：只有真正用到的笔刷才进缓存，199 支不会全下）。
+  // **缓存键与请求 URL 必须逐字相同** ✗：SW 的离线回退按 `request.url` 查缓存 ✓
+  // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
       caches.open("yanshi-shell-__BUILD_ID__")
-        .then((cache) => cache.put("/brushes/" + name + ".myb",
+        .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
-        .catch((error) => console.warn("写缓存失败 /brushes/" + name + ".myb（离线将没有本地预览）：" + error));
+        .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
     }
   } catch (error) { /* 缓存失败不影响这次预览 */ }
 
