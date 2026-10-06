@@ -1426,7 +1426,16 @@ async function blitServerBox(bbox) {
   const y1 = Math.min(Math.ceil(bbox[1] + bbox[3]), vy + board.height);
   const w = Math.round(x1 - x0);
   const h = Math.round(y1 - y0);
-  if (w <= 0 || h <= 0) return 0;
+  if (w <= 0 || h <= 0) {
+    // Record it rather than returning silently; this is where a blit can vanish
+    // when the viewport has no pixels at that moment.
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "empty-clip " + JSON.stringify([x0, y0, w, h]), area: w * h,
+      at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    return 0;
+  }
   // **等布局稳定再取图** ✓（见 `settleFrames` 的说明 ✓ —— 少了这一步，脏区补画会画上一块空白 ✗）。
   await settleFrames();
   const value = await callTool(
