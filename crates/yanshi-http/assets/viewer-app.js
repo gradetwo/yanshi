@@ -1506,6 +1506,8 @@ window.yanshiDebugBlit = async (box) => {
 /// 若写成"有请求在飞就 return" ✓，期间发生的重绘（WS 的 tiles 事件很频繁 ✓）就永远不会再补 ✗
 /// ⇒ 画布停在内核那张空白图上 ✓（实测 `serverBlits` 有值而画面全白 ✓）。
 let serverBlitBusy = false;
+// **最近一次补画的 promise** ✓（第 1447 轮 ✓）：让调用方能等待“补画落地” ✓。
+let serverBlitChain = Promise.resolve();
 let serverBlitPending = false;
 /// **待补画的脏区**（文档坐标 `[x,y,w,h]` ✓）。
 ///
@@ -1539,12 +1541,25 @@ function queueServerBlit(bbox = null) {
   // **整视口请求会"顶掉"脏区** ✓：宁可多画一点 ✓，也不能因为只画了脏区而留下空白 ✗。
   if (bbox) serverBlitBox = unionBox(serverBlitBox, bbox);
   else serverBlitWhole = true;
-  if (serverBlitBusy) { serverBlitPending = true; return; }
+  // **返回一个"补画落地"的 promise** ✓（第 1447 轮 ✓）—— 语义不变 ✗，只是**让调用方能等待** ✓。
+  //
+  // **为什么需要** ✗：判据（以及任何调用方）此前**只能轮询画布** ✗ ⇒ 于是"补画在 6 秒内没到"
+  // 会被读成"**画面没有恢复**" ✗（第 1445 轮实测：同一份代码一次绿、一次红 ✓）。
+  // **∴ 而**"是否还有补画在途"**这个信息本来就存在** ✗（`serverBlitBusy` ✗／`serverBlitPending` ✓）
+  // ⇒ **∴ 所以**把它**暴露成 promise** ✗ ⇒ **∴ 从而**"**补画完成**"变成**可观察**的事件 ✓
+  // ⇒ **∴ 而不是**靠**加长等待**去赌 ✗（**∴ 那**只是把竞态藏起来 ✓，**∴ 与"**少算换速度**✗ 同类 ✗）。
+  if (serverBlitBusy) {
+    // **已有补画在途** ✓ ⇒ **∴ 本次请求会被它合并** ✗ ⇒ **∴ 所以**返回**那一次**的 promise ✓
+    // （**∴ 因为** `.finally` 里会在 pending 时**再排一次** ✗ ⇒ **∴ 等它**即可覆盖本次 ✓）。
+    serverBlitPending = true;
+    return serverBlitChain;
+  }
   serverBlitBusy = true;
-  void blitServerViewport().finally(() => {
+  serverBlitChain = blitServerViewport().finally(() => {
     serverBlitBusy = false;
     if (serverBlitPending) { serverBlitPending = false; queueServerBlit(); }
   });
+  return serverBlitChain;
 }
 
 /// 补画**当前视口** ✓（不知道原子的脏区时用它 ✓，一次请求即可 ✓）。
@@ -1695,7 +1710,14 @@ async function resync() {
   if (!state.wasm) {
     // **无内核 ⇒ 走服务端像素** ✓：可见性/顺序会改变**整幅**外观 ✓ ⇒ 补整个视口 ✓，宁可多补不能漏 ✗。
     needsServerPixels = true;
-    queueServerBlit(null);
+    // **等待补画落地** ✓（第 1448 轮 ✓）—— `queueServerBlit` 现在返回 promise（第 1447 轮 ✓）。
+    //
+    // **为什么必须 await** ✗：不 await 时，`resync()` 会在**补画尚未完成**时就返回 ✗
+    // ⇒ **∴ 于是**调用方（**∴ 判据 ✗／**∴ 任何"改完再看一眼"✗ 的逻辑 ✓）**无法区分**
+    //   "**画面还没恢复**"✗ 与"**补画还在路上**"✗ ⇒ **∴ 第 1445 轮实测**：同一份代码一次绿、一次红 ✓。
+    // ⇒ **∴ 所以**让 `resync()` 的**可见副作用**（**∴ 画面已更新 ✓）成为**可等待的** ✗
+    //   ⇒ **∴ 从而**判据**观察的是**完成**✗，**∴ 而不是**6 秒的运气 ✓。
+    await queueServerBlit(null);
     return;
   }
   const resumeFrom = state.localSeq || 0;
