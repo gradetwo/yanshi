@@ -38905,3 +38905,48 @@ HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 
   以及与目标版本 `diff` 为空。
 - `git status --porcelain` 的**第一列**是"已暂存"、**第二列**是"工作树"；把两列读混过一次就会犯这种错。
 - 变异脚本的备份与还原路径要**成对**检查（本会话早前也因 `rows.pristine` 与 `rows.rs.pristine` 写错而重做过变异）。
+
+## 第 1234 轮：**重大发现**——"离线可画 / 离线外壳"的绿灯是用**实时 SW 网络**买来的（(A)⑥ 的真实缺陷）
+
+子代理（`test/offline-negative-controls`）给 6 条浏览器离线判据加了负对照，结果**推翻了既有绿灯**。
+
+### 分类（与我的审计一致）
+页面级 / 模拟够用：`draw` / `export` / `reload` / `journal`；
+**断言 SW / 不可靠**：**`shell` / `brush`**。
+原因：CDP 的离线模拟作用于**渲染进程的网络栈** ⇒ 页面的 `fetch` 真的被挡，
+但 **SW 上下文里的 `fetch` 不受影响** ⇒ 这两条判据的"离线"是**假的**。
+
+### 让它诚实 ⇒ 它变红（决定性证据）
+- **负对照**（6 条统一）：断网后由**页面**发 `GET /api/__offline_negative_control__?nonce=…`
+  （`cache:"no-store"`），**必须失败**；成功 ⇒ 判据**自宣 VOID**。
+  选这条路径的理由：`service-worker.js:265` 对 `/api/` 前缀**直接 return** ⇒ 永不进 SW 缓存；
+  路径不存在（404）；且 nonce + no-store 也躲开 HTTP 缓存。**特意避开 `/api/blob/`**（那是 cache-first ⇒ 会是假对照）。
+- `shell`/`brush` 另外在 `service_worker` 调试目标里 **stub `self.fetch`**（复用资产判据的做法）。
+- **结果**：`shell` rc=1、`brush` rc=1 ⇒ 断网后 `window.yanshi.kernelStats()` 为 **null** ⇒ 内核没就绪、画不出墨。
+- **根因实测**：SW Cache Storage 里 **`/api/blob/*` 条目为 0**（在线预热从不 fetch 它们），
+  而**离线内核初始化需要那些字节** ⇒ 以前是 SW **从实时网络**取的，而页面同时报告 `navigator.onLine === false`。
+- **对照实验隔离因果**：同判据带负对照但**不 stub** ⇒ **绿**；**加 stub** ⇒ **红**
+  ⇒ 那个绿是**用实时 SW 网络买来的**，不是从 SW 缓存来的。
+
+### 另外两个既有问题（它报告、未擅自修）
+1. `browser-offline-journal` 有**既有 flake**（未改动的 main 上 A/B：1/2 红，失败文本相同）：
+   `base_head` 取自 `window.yanshiStats.serverHead`，会**回退到陈旧的本地 `/api/atoms` 快照**
+   （head 1 vs 服务端 2）⇒ `flushOutbox` 报**假的"服务端变了"冲突**。
+2. `browser-offline-shell` 原本在读完 `rendered` 后**立刻恢复网络** ⇒ 它的"断网后笔刷面板"与"离线落笔"
+   两段**实际是在线跑的**。它没改断言（实验性把恢复移到末尾 ⇒ 因同一 kernel/blob 原因变红）。
+
+### 我为什么不立刻合并它
+它的分支会让 `shell` / `brush` **变红**（那是它的**发现**，不是它写坏了）
+⇒ 直接合并会**产生红树**，违反"门禁与判据都绿才提交"。
+**正确顺序**：① 先在**产品侧**修好这个离线缺陷（让离线初始化需要的 `/api/blob/*` 在用到的进 SW 缓存，
+或在线预热）⇒ ② 再合并它的分支 ⇒ 那时 `shell`/`brush` 才会绿。
+
+### 附带确认
+六个 diff 都是**纯插入**（`git diff --numstat` 每个文件 0 删除）⇒ **没有改动任何既有断言行**；
+变异证明：强制 `offline:false` ⇒ 六个负对照**全部触发**、判据 VOID／红，逐条 `cmp` 还原；五门禁全绿。
+
+### 顺带记录：本轮我自己的**事故与修复**
+我把一个**带 `// MUTATION` 标记、条件被清空**的 `browser-no-stale-read.mjs` 推送到了 main
+（回退时先 `git add -A` 暂存了坏版本，而 `git checkout -- <path>` **只还原工作树、不动索引**）。
+已用**带修订号**的 `git checkout dc68694^ -- <path>` 还原（提交 `7d6c62d`），并复核远端标记计数为 0。
+教训已写进 `docs/skills/development.md` 9.12。
