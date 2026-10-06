@@ -36936,3 +36936,25 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 **流程漏洞（必须记下）**：我在推送条件里只判断了 `test` 的退出码，**没有把 `fmt` 纳入条件**，
 于是推送了一个 `fmt` 为红的提交。虽然 `fmt` 不影响运行时语义，但"不留红树"是硬要求，
 推送前必须四项全查（fmt / clippy / build / test）。已在下一轮立即补上格式并复核判据仍绿。
+
+## 第 1174 轮：亲手变异复核背景层跨渲染缓存的两条判据（确认不是空转）
+
+做法：在 `BitmapCache::get_or_decode` 的**查表行之前**插入 `inner.entries.clear();`
+（⇒ 永远未命中 ⇒ 每次都重新解码），然后**直接跑判据**（不走共享 runner）：
+
+  ❌ a_warm_stroke_never_decodes_a_canvas_sized_blob FAILED（background_stroke_cost.rs:212:13）
+  ❌ the_background_patch_is_decoded_once_not_per_stroke FAILED（background_stroke_cost.rs:167:13）
+  ✅ a_background_stroke_populates_the_preview_phase 仍 ok（它测的是"Preview 阶段有值"，与缓存无关，合理）
+  ⇒ 1 passed; 2 failed ⇒ 还原后与 HEAD 逐字节一致（cmp 通过）。
+
+结论：新合并的两条判据**确实能红**，而且失败精确落在"每笔解码次数"这条被判条件上，
+即它测的正是"每一笔都把整幅背景重新解压一遍"这个病 ⇒ 判据不是空转。
+
+**变异两次没落盘的教训**（本轮真实发生，值得进 skill）：
+1. 我第一次按 `fn get(` 找函数，实际叫 `get_or_decode` ⇒ 正则没匹配 ⇒ `变异标记: 0` ⇒ 判据绿是意料之中；
+2. 第二次按"签名与 `{` 同一行"写正则，实际签名跨三行
+   （`fn get_or_decode<F>(...) -> Result<Option<DecodedBitmap>>` / `where` / `F: FnOnce(...),` / `{`）
+   ⇒ 还是没匹配。
+修法：**变异前先打印真实代码**，并且**用最简锚点** —— 这里最终用一行字符串
+`if let Some(entry) = inner.entries.get(key).cloned() {` 作为锚点，一次成功。
+教训：**"我以为的代码形态"不能作为变异的落点依据**；先看，再改，且改完必须确认标记出现。
