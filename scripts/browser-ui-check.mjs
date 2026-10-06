@@ -1900,9 +1900,9 @@ const jumpUndoResult = await evaluate(`(async () => {
     undone = ${canvasFingerprint};
     if (undone.sum !== jumped.sum || undone.ink !== jumped.ink) break;
   }
-  // **把撤销后的指纹补进 `undoProbe`** ✗ —— 失败消息只打印 `undoProbe` ✓，
+  // **把撤销后的指纹补进 undoProbe** ✗ —— 失败消息只打印 undoProbe ✓，
   // 所以追加在返回值里等于**没带出来** ✗（2026-10-06 实测：消息里只有 jumpedSum ✓）。
-  // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号** ✗。
+  // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号** ✗（我自己在这行上又犯了一次 ✓）。
   undoProbe.undoneSum = undone.sum;
   undoProbe.undoneInk = undone.ink;
   // **撤销前后的指纹要在这里才带得出来** ✗ —— undone 是本段下面用 let 声明的 ⇒
