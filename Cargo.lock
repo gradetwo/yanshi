@@ -696,6 +696,7 @@ version = "0.1.0"
 name = "yanshi-render"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libm",
  "proptest",
  "serde",

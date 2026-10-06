@@ -1,4 +1,5 @@
-//! **存储编码的注入实现** ✓：用**仓库自带的 deflate** ✓（`yanshi_render::png` ✓，零新依赖 ✓）。
+//! **存储编码的注入实现** ✓：用 `yanshi_render::png` 的 deflate ✓ ——
+//! 实现是 `flate2`＋`zlib-rs` ✓（**早就在依赖树里** ✓：`zip` 带进来的 ✓ ⇒ **零新增包** ✓，见 `png.rs` 文件头 ✓）。
 //!
 //! 为什么放在这里而不是 core ✓：core 定义接口（`BlobCodec` ✓）、**不依赖 render** ✓；
 //! server 两边都依赖得上 ✓ ⇒ 由它注入最自然 ✓（见 `blob.rs` 的 `BlobCodec` 说明 ✓）。
