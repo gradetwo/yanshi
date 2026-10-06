@@ -449,6 +449,26 @@ fn yanshi_http_method_get() -> crate::http::Method {
     crate::http::Method::Get
 }
 
+/// 把 `strip_prefix` 取到的**资源路径段**做**百分号解码**（路径语义，见 [`crate::http::percent_decode_path`]）。
+///
+/// **为什么必须解码**（真实 bug）：九支随仓库发布的笔刷名字里带 `#`
+///（`8B_Pencil#1.myb` / `arrow#1.myb` / `Fan#1.myb` / `Flat2#1.myb` / `Fountain_SF#1.myb` /
+/// `Fount-offset#1.myb` / `HalfTone#1.myb` / `HalfToneCMY#1.myb` / `Round#1.myb`）。
+/// `#` 在 URL 里是**片段起点** ⇒ 浏览器根本不会把它发出去（查看器已改成编成 `%23`），
+/// 服务端若不解码，就会去找一个字面名为 `8B_Pencil%231.myb` 的文件 ⇒ 九支笔刷**全都取不到**。
+/// `%`（`100%_Opaque.myb`）与 `+`（`blend+paint.myb`）是同一类字符。
+///
+/// **解码在守卫之前，且不放宽任何一条**：各资源处理器拿到的是**解码后**的名字，
+/// 它自己的守卫（拒 `..`、`/`、`\\`、扩展名不符）**一字未改**地作用其上
+/// ⇒ `%2e%2e` 会被还原成 `..` 并被同一条规则拒掉，即**解码只会让守卫更严**
+///（以前 `%2e%2e` 只是个碰不到任何文件的字面名）。反过来，任何能经解码得到的名字，
+/// 本来就能用**原始字节**直接写进请求行（HTTP 请求目标是原样字符串，服务端不做路径归一化）
+/// ⇒ **解码不会引入新的穿越路径**。
+/// 用**路径版**解码器（`+` 保持字面），否则 `blend%2Bpaint.myb` 会被解成 `blend paint.myb`。
+fn decode_asset_segment(file: &str) -> String {
+    crate::http::percent_decode_path(file)
+}
+
 /// 路由（`Request` → `Response`）。
 pub fn route(state: &ServerState, request: &Request) -> Response {
     let trimmed = request.path.trim_end_matches('/');
@@ -550,52 +570,61 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET, POST"),
         };
     }
+    // **下列资源路由都先做路径段百分号解码**（`decode_asset_segment`）：
+    // 它必须在各处理器自己的白名单/穿越守卫**之前**，且只做"还原"、不改守卫。
     if let Some(file) = path.strip_prefix("/wasm/") {
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => wasm_asset(state, file),
+            "GET" => wasm_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/samples/") {
         // **示例画面** ✓（随仓库发布 ✓）：换一台机器也能打开示例看到内容 ✓。
         // 用**白名单**而不是拼路径 ✓（与品牌资源同一考虑 ✓）。
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => sample_asset(file),
+            "GET" => sample_asset(&file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/textures/") {
         // **纹理缩略图** ✓（目标 (b) ✓）：界面里要显示预览 ✓，
         // 而浏览器不能直接读服务器上的文件 ✓ ⇒ 得像介质那样**由服务端发** ✓。
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => texture_asset(state, file),
+            "GET" => texture_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/mediums/") {
         // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => medium_asset(state, file),
+            "GET" => medium_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/brush-previews/") {
         // **预生成入库的画笔库预览图**（构建期生成、随包发布）—— 面板直接用图片，不再逐支实时渲染。
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => brush_preview_asset(state, file),
+            "GET" => brush_preview_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/brushes/") {
         // **`.myb` 文本** ✓（浏览器拿它喂门面 ✓）—— 与 `/mediums/` **同一条白名单规矩** ✓。
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => brush_text_asset(state, file),
+            "GET" => brush_text_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }
     if let Some(file) = path.strip_prefix("/brand/") {
+        let file = decode_asset_segment(file);
         return match method {
-            "GET" => brand_asset(state, file),
+            "GET" => brand_asset(state, &file),
             _ => method_not_allowed(request, "GET"),
         };
     }

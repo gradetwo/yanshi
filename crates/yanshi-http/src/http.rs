@@ -201,8 +201,27 @@ pub fn parse_query(text: &str) -> BTreeMap<String, String> {
     map
 }
 
-/// 百分号解码（非法序列原样保留）。
+/// 百分号解码（非法序列原样保留）；`+` 视作空格 ⇒ **查询串**语义。
+///
+/// 路径段请用 [`percent_decode_path`] —— 路径里的 `+` 是个**字面加号**
+///（`blend+paint.myb` 这种文件名必须原样），当成空格会把它解成另一个名字。
 pub fn percent_decode(text: &str) -> String {
+    percent_decode_with(text, true)
+}
+
+/// 百分号解码**路径段**：与 [`percent_decode`] 的唯一区别是 `+` **保持字面**。
+///
+/// **为什么必须有它**：浏览器把 URL 路径里会改变含义的字符编成 `%XX`
+///（`#` ⇒ `%23`、`%` ⇒ `%25`、`+` ⇒ `%2B`），服务端要在**文件名白名单/穿越守卫之前**
+/// 把路径段还原，且必须按**路径**的规矩还原 —— 若沿用查询串那套（`+` ⇒ 空格），
+/// `blend%2Bpaint.myb` 会先被还原成 `blend+paint.myb` 再被当成 `blend paint.myb`。
+/// 非法序列（如 `100%_Opaque` 里的 `%_O`）原样保留，与查询串同一套宽容规则。
+pub fn percent_decode_path(text: &str) -> String {
+    percent_decode_with(text, false)
+}
+
+/// 两者的共同实现：`plus_is_space` 决定 `+` 是空格（查询串）还是字面加号（路径段）。
+fn percent_decode_with(text: &str, plus_is_space: bool) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -221,7 +240,7 @@ pub fn percent_decode(text: &str) -> String {
                     }
                 }
             }
-            b'+' => {
+            b'+' if plus_is_space => {
                 out.push(b' ');
                 index += 1;
             }
