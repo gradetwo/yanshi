@@ -40,12 +40,18 @@ const TEXTURE = pick("assets/textures", (name) => name.endsWith(".png"));
 const MEDIUM = pick("assets/mediums", (name) => name.endsWith(".wasm"));
 const SAMPLE = pick("assets/samples", (name) => name.endsWith(".png") && name.startsWith("sample-"));
 const BRAND = "assets/brand/png/yanshi-icon-256.png";
+// **画笔预览也挑一个代表** ✓ —— 它和纹理一样是**裸 `<img src>`** ✓，但画笔库是**懒加载**的 ✓
+//（`IntersectionObserver`：滚到哪画到哪 ✓）⇒ 拿"画笔库里加载了几张"当**断言**会**忽 0 忽 15** ✓（实测两次 ✓）
+// ⇒ 那是**判据自己在抖** ✗，不是产品 ✓。⇒ 这一类的判定改成**字节级代表文件** ✓
+//（`/brush-previews/<x>.png` ✓）；库面板那几张只当**诊断**打印 ✓。
+const PREVIEW = pick("assets/brush-previews", (name) => name.endsWith(".png"));
 // 浏览器请求的 URL（**去掉 `assets/` 前缀** ✓：路由是 `/textures/…` 而不是 `/assets/textures/…` ✓）。
 const URLS = {
   texture: "/" + TEXTURE.replace(/^assets\//, ""),
   medium: "/" + MEDIUM.replace(/^assets\//, ""),
   sample: "/" + SAMPLE.replace(/^assets\//, ""),
   brand: "/" + BRAND.replace(/^assets\//, ""),
+  preview: "/" + PREVIEW.replace(/^assets\//, ""),
 };
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -294,9 +300,8 @@ if (!after.board) failures.push("断网重载后画布不存在 ⇒ 断网重载
 if (!(after.textureThumbs && after.textureThumbs.loaded > 0)) {
   failures.push(`断网后纹理缩略图一张都没画出来（${JSON.stringify(after.textureThumbs)}）⇒ /textures/ 没进缓存（拿到的是外壳 HTML）`);
 }
-if (!(offlinePreviews && offlinePreviews.loaded > 0)) {
-  failures.push(`断网后画笔库预览图一张都没画出来（${JSON.stringify(offlinePreviews)}）⇒ /brush-previews/ 没进缓存`);
-}
+// ⚠️ **画笔库那几张只当诊断** ✗（它的懒加载会忽 0 忽 15 ✓，见 `PREVIEW` 那里的注释 ✓）——
+// 画笔预览这一类的判定在下面**字节级**的 `preview` 那条 ✓。
 // 调色板走查看器的本地只读缓存（没有静态路由 ✓）—— 这是它离线可用的唯一机制 ✓。
 if (!(after.palettes > 0)) {
   failures.push(`断网后调色板色块为 0 ⇒ 查看器没有把只读工具（list_palette_colors / list_assets）的响应缓存下来`);
@@ -307,6 +312,7 @@ const byteChecks = [
   ["sample", "png", MAGIC.png],
   ["brand", "png", MAGIC.png],
   ["texture", "png", MAGIC.png],
+  ["preview", "png", MAGIC.png],
 ];
 for (const [kind, , magic] of byteChecks) {
   const got = offline[kind];
