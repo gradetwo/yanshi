@@ -38445,3 +38445,25 @@ CI 的 clippy 作业钉 **1.98.1**（`.github/workflows/ci.yml`）✓ ⇒ 本轮
 **坑**：只把 `1.98.1/bin` 前置到 `PATH` **不够** ✗ —— `cargo clippy` 的 `clippy-driver` 是经
 `~/.cargo/bin` 的 rustup shim 解析的 ⇒ 仍然用 `stable`(1.99.0) ✗（`cargo clippy -v` 能看到真实路径）；
 必须 `RUSTUP_TOOLCHAIN=1.98.1`（或 `rustup run`）才能真的换档 ✓。这条若不记，下一个人还会花掉同样的一小时。
+
+## 第 1206 轮：跑冷构建警告判据——两个 target 各 0 条警告（兑现上一轮的教训）
+
+上一轮的教训是：**绿色的增量门禁 ≠ 全树干净**（一个既有的 clippy 错误被缓存掩盖了整整一轮会话，
+直到我删 target 全量重编才暴露）。本轮的兑现动作是跑那条**专门做冷构建**的判据：
+
+  bash scripts/build-warnings-check.sh   ⇒ EXIT=0
+    == native（先 range-clean ✓）==
+      native：警告 0 条（须为 0 ✓）
+    == wasm32（打包用的 target ✓）==
+      wasm32：警告 0 条（须为 0 ✓）
+      ✓ 构建警告上限：冷构建两个 target 都是 0 条警告 ✓
+
+⇒ 结论：除了那 6 处 `manual_clamp`（已在本轮之前的提交 b9adcff 修掉）之外，
+**没有别的被增量缓存掩盖的问题**；`(B)④`（构建警告上限）现在有了**冷的、两个 target 的直接证据**。
+
+顺带记下这条判据自身的设计（值得保留）：
+- 它**先 `cargo clean`（range-clean，只有那 6 个 cdylib crate）再编** ⇒ 因为**热构建不会重新发出警告**，
+  不清就会**永远绿**（假判据）；
+- `cargo clean` 必须**重复写 `-p`**（写 `-p a b c` 会报用法错，而且**坏参数会连累下一句 `cargo build`**，
+  报出来的错像是 build 的问题 ⇒ 很难一眼看出）；
+- 两个 target：native 与 **wasm32（打包真正用的那条）**。
