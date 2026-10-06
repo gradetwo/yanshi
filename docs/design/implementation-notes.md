@@ -38734,3 +38734,46 @@ node 判据证明的是**SW 缓存策略**（在忠实的 Request/Response 语�
 ⇒ 已派子代理：给 6 条各加这条负对照；对 `shell` / `brush` 两条，还要**在 SW 上下文里 stub `self.fetch`**
 （复用 `scripts/browser-offline-assets.mjs` 的做法，不要另造第二套），并如实说明判据现在证明了什么、没证明什么。
 并要求它**先分类再改**，如果我的分类有错就明确纠正。
+
+## 第 1215 轮：合并笔刷编码修复（零冲突），并亲手复验它的判据
+
+合并 `fix/hash-named-brush-paths`（32c9d41 ＋ 01c9b2a ＋ 9b02cbe）⇒ 合并提交 cbfef0d，**零冲突**
+（子代理先用 `git merge-tree --write-tree` 干跑过，我复核一致）。改动面：
+`service-worker.js`、`viewer-app.js`、`http.rs`、`server.rs`，测试加到**既有**的
+`transport.rs`（+211）与 `viewer_routes.rs`（+92）—— 没有另造第三套 harness。
+
+**我亲手变异复验**（直接跑判据，不走共享 runner；用 `sed` 打印出的真实函数体做最简一行锚点）：
+把 `server.rs::decode_asset_segment` 的函数体从 `crate::http::percent_decode_path(file)`
+改成 `file.to_string()`（即退回修复前的行为）⇒
+  ❌ `hash_named_brushes_are_served_over_the_http_asset_route` FAILED
+  「`8B_Pencil#1.myb`（`8B_Pencil%231.myb`）：应可经 `/brushes/` 取到 ⇒ **left: 404 right: 200**」
+⇒ 还原后与 HEAD 逐字节一致，重跑 `1 passed`。
+⇒ **这次变异一次成功**（本会话第六次尝试）。前五次失败的原因是：用了不存在的变量名、正则抓错位置、
+签名跨多行。生效的做法是：**先 `sed` 打印真实函数体**、**用最简一行锚点**、**只用见到的标识符**。
+
+### 子代理的两个设计决定（都值得保留）
+1. **`percent_decode_path()` 不复用 `percent_decode()`**：路径语义里 `+` 是**字面加号**，
+   而 query 语义里 `+` 表示空格 ⇒ 若复用，`blend+paint.myb` 会被解成 `blend paint.myb`。
+   现在两者共享 `percent_decode_with(text, plus_is_space)` 的函数体，但语义分明。
+2. **SW 里改的是 12 条而非 9 条**：查看器现在发**编码后**的 URL
+   ⇒ `100%_Opaque` / `blend+paint` / `smudge+paint` 这三条的**预缓存键也必须编码**，
+   否则会**弄坏 3 支今天能加载的笔刷**。它把 12 条的修前/修后都实测了一遍：
+   | 文件 | 旧查看器→旧服务端 | 编码→旧服务端 | 编码→修好的服务端 |
+   |---|---|---|---|
+   | 9 个含 `#` | 400（被截断） | 404 | **200** |
+   | `100%_Opaque.myb` | 200（字面 `%`） | 404 | **200** |
+   | `blend+paint` / `smudge+paint` | 200（`+` 是字面） | 404 | **200** |
+   ⇒ 即：**只修查看器侧**会把那三支"今天能加载"的笔刷**弄坏**（编码后旧服务端 404）
+   ⇒ **两侧一起改**才让 12 支全部 200，且**字面形式仍可用**（向后兼容）。
+
+### 安全：解码在守卫**之前**，且严格更严
+守卫文本未变，现在作用在**解码后**的名字上。用"禁用守卫"证明守卫确实在工作：
+`/brushes/%2e%2e%2foutside.myb` 在禁用后返回 `200 body="ESCAPED-SENTINEL"`，恢复后 `400`。
+它同时论证了**解码不引入新的穿越面**：任何能通过解码到达的名字，本来就能通过
+**把原始字节直接写进请求行**到达（HTTP 请求目标不做路径规范化）
+⇒ 解码只是让守卫**看到真实名字**，**严格更严，绝不更松**。
+
+### 未验证（它如实标注）
+没有真实浏览器跑：查看器那一半由"源码级 ＋ 已服务的脚本"测试覆盖
+（`GET /viewer-app.js` 确认二进制携带了修复），**不是**浏览器真实 fetch；
+SW 的 `cache.add`/`cache.match` 片段语义也未在浏览器里演练（由结构覆盖）。
