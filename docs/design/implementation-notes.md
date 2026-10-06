@@ -36368,3 +36368,32 @@ B. **产品侧**：并行分块在某些条件下各自建缓存 ⇒ 修法是�
   这条已写进 docs/skills/development.md（第 9.9 节）。
 - 位图缓存共享（另一个独立缺陷）已派子代理修（/tmp/wt-bitmapcache，分支 fix/bitmap-cache-sharing），
   它的判据正是"同一份位图在一次并行渲染里只应被读一次"，而现在实测 4 次。
+
+## 第 1162 轮：只读评估——依赖隔离的现状（为引入 rayon 做准备）
+
+背景：用户给的外部性能分析建议了两项依赖引入（rayon 做数据并行、miniz_oxide 替代手写 LZ77）
+和一项语义改动（batch I/O 汇聚）。按 AGENTS.md 的原则，引入前必须写明两面；
+而"怎么写才不伤 wasm"这件事需要先看仓库现状。本轮只读评估（两个子代理正在改 yanshi-render，所以我不碰代码）。
+
+查到的三条：
+1. **全仓没有任何 `target.'cfg(...)'.dependencies`**（13 个 crate 逐个查过，0 处）
+   ⇒ 也就是说"按 target 条件依赖"这个机制在本仓库**还没被用过**，rayon 会是第一次。
+2. **代码侧的 wasm 隔离已经很成体系**（这很重要，说明模式已经存在）：
+   crates/yanshi-render/src/render.rs 里
+   `#[cfg(not(target_arch = "wasm32"))]` 出现在 :117 / :1759 / :2060 / :2214，
+   `#[cfg(target_arch = "wasm32")]` 出现在 :2006 / :2171 / :2233。
+   瓦片并行专题本来就是 native 一套、wasm 一套（wasm 永远串行）。
+3. **依赖基线**：Cargo.lock 共 89 个包；yanshi-render/Cargo.toml 现在只有 4 个依赖
+   （yanshi-core、serde、serde_json、libm）加 dev 的 proptest ⇒ 很干净。
+
+结论（rayon 的正确写法已经确定）：
+  在 crates/yanshi-render/Cargo.toml 增加
+    [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+    rayon = "…"
+  它与 render.rs 现有的 cfg 分区**完全对应** ⇒ wasm 端不会拉进 rayon。
+  代价（必须写进提交与报告）：桌面二进制约 +180KB；Cargo.lock 从 89 个包增加到 89+N
+  （rayon 自身及其传递依赖）；冷构建时间略增。收益：几何模糊的行/列并行，
+  按用户分析是 4K 羽化 772ms ⇒ 约 150ms 量级，且能删掉手写线程同步代码。
+
+这一步**没有改任何代码**（避免与两个正在改 yanshi-render 的子代理冲突），
+只登记评估结果，供真正引入时直接照做。
