@@ -22,6 +22,7 @@ use yanshi_core::blob::{BlobEntry, BlobStore, MemoryBlobStore};
 use yanshi_core::{
     DocumentState, Layer, LayerType, Object, ObjectType, Result, Selection, Transform,
 };
+use yanshi_render::buffer_pool::{BufferPool, MAX_POOLED_BUFFERS, MAX_POOLED_BYTES};
 use yanshi_render::render::Renderer;
 use yanshi_render::tile::{TileGrid, TileKey};
 
@@ -700,4 +701,213 @@ fn bitmap_patch_is_read_once_per_render_even_when_banded() {
         "并行分块也应对同一份位图只读一次（共享缓存）；实测 {parallel_gets} 次"
     );
     assert_eq!(a.rgba8, b.rgba8, "含位图补丁时并行与串行仍须逐字节相同");
+}
+
+// ---------------------------------------------------------------------------
+// 图层缓冲池的判据（性能改动：复用图层缓冲的底层分配；**不改像素**）。
+//
+// 复用点：`render.rs::render_accumulation` 的图层循环。改造前每层 `Buffer::new`
+// （4K 单层约 132.7 MB，5 层每帧约 663 MB 的分配 + 清零）；改造后从
+// `crate::buffer_pool::BufferPool` 取用，层间归还复用。
+// ---------------------------------------------------------------------------
+
+/// **缓冲池判据 1（正确性）**：同一份文档，池化（默认）与**强制每层新建分配**两条
+/// 路径必须逐字节相同（整幅 `rgba8` + 每个 tile 的 f16 像素）。
+///
+/// 强制新建走 `BufferPool::set_enabled(false)` ⇒ 取用点每次 `Buffer::new`，与改造前一致。
+/// 断言"池化确实发生了复用"是为了避免本条空转（两条都新建就没有证明力）。
+///
+/// 变异：`Buffer::reset` 不再清零（去掉 `clear`，只留同长度下 no-op 的 `resize`）
+/// ⇒ 复用缓冲残留上一层像素 ⇒ 本判据红。
+#[test]
+fn buffer_pool_matches_fresh_allocation_byte_identical() {
+    let state = stress_document(320, false);
+    let store = MemoryBlobStore::new();
+    let grid = TileGrid::new(64, 320, 320).unwrap();
+
+    let mut pooled = Renderer::with_budget(grid.clone(), 32 * 1024 * 1024).with_max_workers(1);
+    let mut fresh = Renderer::with_budget(grid.clone(), 32 * 1024 * 1024).with_max_workers(1);
+    fresh.buffer_pool().set_enabled(false);
+
+    let a = pooled.render_document(&state, &store).unwrap();
+    let b = fresh.render_document(&state, &store).unwrap();
+
+    assert!(
+        a.stats.layer_buffers_reused > 0,
+        "池化路径必须真的发生复用，否则本条是空转：{:?}",
+        a.stats
+    );
+    assert_eq!(b.stats.layer_buffers_reused, 0, "强制新建路径不应复用");
+    assert_eq!(a.rgba8.len(), b.rgba8.len());
+    assert_eq!(a.rgba8, b.rgba8, "池化与强制新建必须逐字节相同");
+
+    // tile 缓存（客户端真正组合的那条路径）也必须逐字节相同。
+    for key in grid.all_keys() {
+        let left = pooled.render_tile(&state, &store, key).unwrap();
+        let right = fresh.render_tile(&state, &store, key).unwrap();
+        assert_eq!(
+            left.to_f32(),
+            right.to_f32(),
+            "tile {key:?} 的 f16 像素在池化/新建下必须相同"
+        );
+    }
+}
+
+/// **缓冲池判据 2（资源，不是墙钟）**：一次全幅渲染里"分配 vs 复用"的计数必须是
+/// `1 / (层数 − 1)`——首层建池，其余每层复用；第二次渲染（热池）应当 **0 次新建**。
+///
+/// 这正是"每层都新分配"会红的判据：变异为 `acquire` 跳过空闲表 ⇒
+/// `allocated == 层数`、`reused == 0` ⇒ 红。
+#[test]
+fn buffer_pool_reuses_one_allocation_across_all_layers() {
+    let state = stress_document(320, false);
+    let store = MemoryBlobStore::new();
+    let mut renderer =
+        Renderer::with_budget(TileGrid::new(64, 320, 320).unwrap(), 32 * 1024 * 1024)
+            .with_max_workers(1);
+
+    let first = renderer.render_document(&state, &store).unwrap();
+    let layers = first.stats.layers;
+    assert_eq!(layers, 3, "本判据按 3 层文档断言（口径变化时必须同步改）");
+    assert_eq!(
+        first.stats.layer_buffers_allocated + first.stats.layer_buffers_reused,
+        layers,
+        "每层恰好取用一次图层缓冲"
+    );
+    assert_eq!(
+        first.stats.layer_buffers_allocated, 1,
+        "只应新建 1 张（首层）"
+    );
+    assert_eq!(
+        first.stats.layer_buffers_reused,
+        layers - 1,
+        "其余层必须复用"
+    );
+
+    // 池自身的计数与渲染计数一致（串行路径没有别的取用者）。
+    let stats = renderer.buffer_pool().stats();
+    assert_eq!(stats.allocated, 1);
+    assert_eq!(stats.reused, layers - 1);
+    assert_eq!(stats.alias_violations, 0);
+
+    // 热池：第二次渲染一次都不该新建。
+    let second = renderer.render_document(&state, &store).unwrap();
+    assert_eq!(
+        second.stats.layer_buffers_allocated, 0,
+        "热池再渲染不应新建"
+    );
+    assert_eq!(second.stats.layer_buffers_reused, layers);
+    assert_eq!(second.rgba8, first.rgba8, "热池渲染也必须逐字节相同");
+}
+
+/// **缓冲池判据 3（有界 + 不别名）**。
+///
+/// 有界：给定小上限（2 张 / 256 KiB），即使同时借出 10 张，归还后**保留**的也不超过上限
+/// （超出上限的按需新建、归还即丢弃，而不是把池撑大）。另测"至少保留一张"的例外：
+/// 超过字节预算的单张整幅缓冲仍保留一张（否则超大画布池化失效），但不会留下第二张。
+///
+/// 不别名（怎么断言）：把两个同时持有的租约的底层 `f32` 切片换算成内存区间，断言**不相交**；
+/// 给其中一个写标记、另一个读不到；释放一个后重新借出的租约也不得与仍在借的那个重叠；
+/// 最后断言池的 `alias_violations == 0`（借出/归还的 id 记账冲突计数）。
+///
+/// 变异：① 归还时去掉上限判断 ⇒ 保留数超过上限 ⇒ 红；
+/// ② 归还时不从在借集合移除 id ⇒ 下一次借出命中冲突 ⇒ `alias_violations != 0` ⇒ 红。
+#[test]
+fn buffer_pool_is_bounded_and_never_aliases_a_live_lease() {
+    fn range(slice: &[f32]) -> (usize, usize) {
+        let start = slice.as_ptr() as usize;
+        (start, start + std::mem::size_of_val(slice))
+    }
+    fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
+        a.0 < b.1 && b.0 < a.1
+    }
+
+    // 64×64×4 通道×4 B = 64 KiB/张。
+    let pool = BufferPool::with_limits(2, 256 * 1024);
+    let mut first = pool.acquire(0, 0, 64, 64);
+    let second = pool.acquire(0, 0, 64, 64);
+    let first_range = range(first.as_f32());
+    assert!(
+        !overlaps(first_range, range(second.as_f32())),
+        "同时在借的两块缓冲不得共享内存"
+    );
+    first.set_pixel(1, 1, [1.0, 0.5, 0.25, 1.0]);
+    assert_eq!(
+        second.pixel(1, 1),
+        [0.0; 4],
+        "另一块在借缓冲看不到本块的写入"
+    );
+
+    drop(second);
+    let third = pool.acquire(0, 0, 64, 64);
+    assert!(
+        !overlaps(first_range, range(third.as_f32())),
+        "归还后重借的缓冲不得与仍在借的缓冲重叠"
+    );
+    assert_eq!(third.pixel(1, 1), [0.0; 4], "复用的缓冲必须以全零开始");
+    assert_eq!(
+        pool.stats().alias_violations,
+        0,
+        "借出/归还的 id 记账不得冲突"
+    );
+    assert!(pool.stats().max_in_use >= 2, "应观测到 2 块同时在借");
+
+    // 并发需要可以超过保留上限（按需新建），但归还后保留量不得超限。
+    let others: Vec<_> = (0..8).map(|_| pool.acquire(0, 0, 64, 64)).collect();
+    assert!(pool.stats().max_in_use >= 10, "10 块同时借出应被满足");
+    drop(others);
+    drop(third);
+    drop(first);
+    let stats = pool.stats();
+    assert!(
+        stats.retained_buffers <= 2,
+        "保留个数必须 ≤ 上限：{}",
+        stats.retained_buffers
+    );
+    assert!(
+        stats.retained_bytes <= 256 * 1024,
+        "保留字节必须 ≤ 上限：{}",
+        stats.retained_bytes
+    );
+
+    // **至少保留一张**的例外：超过字节预算的单张缓冲仍要能留下（否则超大画布的池化
+    // 完全失效），但个数上限照样成立、且不会留下第二张超预算的。
+    let oversized = BufferPool::with_limits(2, 256 * 1024);
+    let big_a = oversized.acquire(0, 0, 1024, 1024); // 1024² × 16 B = 16 MiB > 256 KiB
+    let big_b = oversized.acquire(0, 0, 1024, 1024);
+    drop(big_a);
+    drop(big_b);
+    let stats = oversized.stats();
+    assert_eq!(
+        stats.retained_buffers, 1,
+        "超预算时也只保留一张（个数上限仍然生效）"
+    );
+    assert!(
+        stats.retained_bytes > 256 * 1024,
+        "这一张超预算的整幅缓冲必须被留下，否则超大画布无法复用：{}",
+        stats.retained_bytes
+    );
+}
+
+/// 判据 3 的**默认上限**版本：真实渲染器的池也不得超过公开上限（防止默认值被改大后
+/// 悄悄失去上界）。
+#[test]
+fn default_buffer_pool_stays_within_its_published_limits() {
+    let state = stress_document(320, false);
+    let store = MemoryBlobStore::new();
+    let mut renderer =
+        Renderer::with_budget(TileGrid::new(64, 320, 320).unwrap(), 32 * 1024 * 1024)
+            .with_max_workers(1);
+    renderer.render_document(&state, &store).unwrap();
+    let stats = renderer.buffer_pool().stats();
+    assert!(
+        stats.retained_buffers <= MAX_POOLED_BUFFERS,
+        "保留个数超过默认上限：{} > {MAX_POOLED_BUFFERS}",
+        stats.retained_buffers
+    );
+    assert!(
+        stats.retained_bytes <= MAX_POOLED_BYTES,
+        "保留字节超过默认上限：{} > {MAX_POOLED_BYTES}",
+        stats.retained_bytes
+    );
 }

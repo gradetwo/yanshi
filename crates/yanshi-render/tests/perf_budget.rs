@@ -661,3 +661,100 @@ fn diagnose_quantise_cost() {
         access.as_nanos() as f64 / pixels as f64
     );
 }
+
+/// **测量：4K 全幅渲染的"图层缓冲分配 vs 复用"**（`--release --ignored`）。
+///
+/// 文档：3840×2160、5 层，每层一个很小的矩形（**内容成本相同** ⇒ 差值来自图层缓冲的
+/// 分配 + 清零 + 首次触碰）。两种模式在**同一个 release 二进制、同一个进程**里跑：
+/// - `pool`：默认池化（同一渲染器跨帧复用）；
+/// - `fresh`：`buffer_pool().set_enabled(false)` ⇒ 每层 `Buffer::new`（= 改造前行为）。
+///
+/// 先各预热一帧、再取 `ROUNDS` 帧平均。计时只作参考（本机噪声大）；
+/// **语义计数** `layer_buffers_allocated / reused` 才是硬证据。
+#[test]
+#[ignore = "性能测量：4K 全幅的图层缓冲分配/复用（用 --release --ignored 跑）"]
+fn measure_layer_buffer_pool_on_4k_full_frame() {
+    const WIDTH: u32 = 3840;
+    const HEIGHT: u32 = 2160;
+    const LAYERS: usize = 5;
+    const ROUNDS: u32 = 3;
+
+    fn document(width: u32, height: u32, layers: usize) -> DocumentState {
+        let (w, h) = (width as f64, height as f64);
+        let mut state = DocumentState::empty();
+        state.doc_id = Some("doc_pool_measure".to_owned());
+        state.width = width;
+        state.height = height;
+        state.background = json!({"r": 255, "g": 255, "b": 255, "a": 255});
+        for index in 0..layers {
+            let id = format!("layer_{index}");
+            state.layers.insert(id.clone(), layer(&id, index as i64));
+            state.objects.insert(
+                format!("rect_{index}"),
+                base_object(
+                    &format!("rect_{index}"),
+                    &id,
+                    ObjectType::Shape,
+                    index as i64,
+                    json!({"geometry": {"kind": "rect",
+                                        "bbox": {"x": w * 0.4, "y": h * 0.4, "w": 32.0, "h": 32.0}},
+                           "color": {"r": 20, "g": 40, "b": 80, "a": 200}}),
+                ),
+            );
+        }
+        state
+    }
+
+    let state = document(WIDTH, HEIGHT, LAYERS);
+    let store = MemoryBlobStore::new();
+    let grid = TileGrid::new(256, WIDTH, HEIGHT).unwrap();
+    let per_buffer = WIDTH as u64 * HEIGHT as u64 * 4 * 4;
+    println!(
+        "画布 {WIDTH}×{HEIGHT}、{LAYERS} 层、单层缓冲 {:.1} MB、每帧理论分配 {} MB",
+        per_buffer as f64 / (1024.0 * 1024.0),
+        (per_buffer * LAYERS as u64) / (1024 * 1024)
+    );
+
+    // ① 池化。
+    let pooled_elapsed = {
+        let mut renderer =
+            Renderer::with_budget(grid.clone(), 64 * 1024 * 1024).with_max_workers(1);
+        let elapsed = bench("4K 全幅 5 层〔池化〕", ROUNDS, || {
+            renderer.render_document(&state, &store).unwrap();
+        });
+        let stats = renderer.buffer_pool().stats();
+        let frame = renderer.render_document(&state, &store).unwrap();
+        println!(
+            "  池化：池 allocated={} reused={}（进程累计）；单帧 [{}/{}]（分配/复用）",
+            stats.allocated,
+            stats.reused,
+            frame.stats.layer_buffers_allocated,
+            frame.stats.layer_buffers_reused
+        );
+        assert!(stats.reused > 0, "池化路径必须真的复用");
+        assert_eq!(frame.stats.layer_buffers_allocated, 0, "热池单帧不应新建");
+        elapsed
+    };
+
+    // ② 每层新建（= 改造前）。两个渲染器分开建，避免池把内存占着影响 ② 的分配行为。
+    let fresh_elapsed = {
+        let mut renderer = Renderer::with_budget(grid, 64 * 1024 * 1024).with_max_workers(1);
+        renderer.buffer_pool().set_enabled(false);
+        let elapsed = bench("4K 全幅 5 层〔每层新建〕", ROUNDS, || {
+            renderer.render_document(&state, &store).unwrap();
+        });
+        let frame = renderer.render_document(&state, &store).unwrap();
+        println!(
+            "  新建：单帧 allocated={} reused={}（分配/复用）",
+            frame.stats.layer_buffers_allocated, frame.stats.layer_buffers_reused
+        );
+        assert_eq!(frame.stats.layer_buffers_allocated, LAYERS, "每层都新建");
+        assert_eq!(frame.stats.layer_buffers_reused, 0);
+        elapsed
+    };
+
+    println!(
+        "结论：{pooled_elapsed:?}（池化） vs {fresh_elapsed:?}（每层新建），比值 {:.2}×",
+        fresh_elapsed.as_secs_f64() / pooled_elapsed.as_secs_f64().max(f64::EPSILON)
+    );
+}
