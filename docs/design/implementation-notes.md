@@ -38702,3 +38702,44 @@ node 判据证明的是**SW 缓存策略**（在忠实的 Request/Response 语�
 浏览器判据证明的是**离线渲染与字节正确**（**不**覆盖那 9 支 `#` 笔刷、PWA 安装、配额）。
 调色板经**查看器读工具缓存**（没有 `/palettes` 路由）、字体经 `include_bytes!` 进 wasm ——
 两者都**明确标注为"不是 SW 覆盖"**。
+
+## 第 1214 轮：离线判据的负对照审计——**两条（shell / brush）确实不可靠**，且真的切断 SW 后是红的
+
+### 分类（审计前先分类，不做"六条一刀切"）
+| 判据 | 它到底断言什么 | 分类 |
+|---|---|---|
+| `browser-offline-draw` | 断网后页面自己那笔仍上墨（内核在内存里；页面的 `fetch` 真的被 CDP 挡住） | **页面级** ⇒ 页面模拟够用 |
+| `browser-offline-export` | 断网后点导出仍落盘（本地内核渲染） | **页面级** ⇒ 够用 |
+| `browser-offline-reload` | 断网重载后本地存储里的像素还在（`/api/` 被 SW 明确跳过） | **页面级** ⇒ 够用 |
+| `browser-offline-journal` | 断网时写操作进队列、联网按序补交（页面的 `/api/` 调用被真挡住） | **页面级** ⇒ 够用 |
+| `browser-offline-shell` | **SW 缓存**供出外壳 ⇒ 重载还能开 | **SW 断言** ⇒ 单靠页面模拟不够 ✗ |
+| `browser-offline-brush` | **离线**选 `.myb` 笔并画出墨（依赖离线导航/内核） | **SW 断言** ⇒ 单靠页面模拟不够 ✗ |
+
+### 加给六条的负对照（同一形态 ✓）
+断网后由**页面**发一个 `GET /api/__offline_negative_control__?nonce=<每次唯一>`（`cache: "no-store"`），必须**失败**。
+为什么它不可能被缓存 ✓：`service-worker.js:265` 对 `/api/` 前缀直接 `return`（不 `respondWith`）⇒
+**永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404）＋ `no-store` ＋唯一 nonce ⇒
+**也进不了 HTTP 缓存** ✓。它若成功 ⇒ 判据**自宣 VOID/红**，不是产品通过。
+
+### shell / brush：在 SW 上下文里桩掉 `self.fetch`（沿用 `browser-offline-assets.mjs` 的做法）
+`Network.emulateNetworkConditions` **到不了 SW 自己的 `fetch()`**，所以这两条本来可以
+"SW 每次现取活网"而通过。装上桩之后：
+- **main 上绿、装桩后红**（不是判据代码的错，是前提本来就假）：离线重载后
+  `window.yanshi.kernelStats()` 恒为 `null`；**SW 缓存里 `/api/blob/` 条数为 0**（在线预热从不取它）
+  ⇒ 离线初始化拿不到 blob 字节 ⇒ 内核起不来 ⇒ 后面所有落笔断言一起红。
+- **对照实验**：同一条判据只加负对照、**不装桩** ⇒ 绿 ✓；只加"装桩" ⇒ 红 ✓
+  ⇒ 绿是 SW 现取活网换来的，不是 SW 缓存换来的。
+- 结论：**今天的 shell / brush 不能证明"断网时 SW 用缓存供上外壳/内核"**；
+  要转绿需要产品侧把离线初始化真正需要的 `/api/blob/` 收进 SW 缓存（或预热路径），本轮**不改产品代码**。
+
+### 一条既有 flake（与本次改动无关，main 上同样复现）
+`browser-offline-journal` 的 `base_head` 取自 `window.yanshiStats.serverHead`；本机实测它会退回到
+本地 JSON 缓存里那份**旧的** `/api/atoms` 快照（head 1），而服务端已是 2 ⇒ 补交被误判成
+"服务端这份文档已变化" ⇒ 红。A/B：**main 2 次里红 1 次**；加了负对照（不 `await`、与入队并发）后 3 次里红 1 次。
+⇒ 这是既有竞态，本轮如实登记，未动其断言（负对照本身在红跑里仍然成立 ✓）。
+
+### 本轮自己的验证
+- 六条都做了"把离线模拟改成 `offline:false`"的变异：**负对照都触发**（`failed:false, status:404`），
+  四条页面级判据红、shell/brush 直接 `⊘ 判据作废（VOID）` 退出 ✓。
+- 每处变异都用 `cmp` 验证还原到逐字节相同 ✓。
+- 六份 diff 都是**纯插入**（`0` 行删除）⇒ 既有断言一行未改 ✓。
