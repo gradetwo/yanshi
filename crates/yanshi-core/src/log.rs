@@ -179,7 +179,11 @@ impl AtomLog {
             // 已按 seq 升序 ✓ ⇒ 重复 seq **必然相邻** ✗ ⇒ 只看上一个即可 ✓
             //（原先是 `log.atoms.iter().any(...)` ✗ ⇒ O(n²)：1050 原子 103 ms ✓，
             //  而大文档的原子数会高一个量级 ✓）。
-            if log.atoms.last().is_some_and(|existing| existing.seq == atom.seq) {
+            if log
+                .atoms
+                .last()
+                .is_some_and(|existing| existing.seq == atom.seq)
+            {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!("seq {} 重复", atom.seq)),
