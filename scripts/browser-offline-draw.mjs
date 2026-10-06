@@ -241,7 +241,18 @@ const CACHES = `(async () => {
       try { size = (await response.clone().arrayBuffer()).byteLength; } catch (error) { size = -1; }
       entries.push(request.url.replace(location.origin, "") + " (" + size + "B)");
     }
-    out.push({ name: name, count: requests.length, entries: entries });
+    // 另外给出**全量 URL**（2026-10-06 定位到的根因）。
+    // 上面那个 entries 为了打印形状只取**前 12 条** ⇒ 而"内核在不在缓存里"是**全量**问题
+    // ⇒ 实测（CI）：外壳缓存有 **208** 条 ⇒ 内核排在**后面** ⇒ 于是 cachedUrls 里没有它
+    // ⇒ 判据报「SW 缓存里没有共享内核」——而它其实就在缓存里。
+    // ⇒ 所以**判定必须用全量键**；**形状仍可截断**（它只为给人看）。
+    // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号**（我在这段上连踩三次）。
+    out.push({
+      name: name,
+      count: requests.length,
+      entries: entries,
+      allUrls: requests.map((request) => request.url.replace(location.origin, "")),
+    });
   }
   return { supported: true, caches: out };
 })()`;
@@ -275,6 +286,10 @@ console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // 而不是靠浏览器 HTTP 缓存的"侥幸" ✗（实测：CDP 离线模拟下 HTTP 缓存仍供得上 ✓）。
 // 这条**今天是红的** ✗ ⇒ 它就是"离线优先"还差的那一块 ✓。
 const cacheNames = (cachesAfter && cachesAfter.caches) || [];
+// **判定用全量键** ✓（`allUrls` ✓），**形状只用前 12 条** ✓（`entries` ✓）——
+// 原先两者都用 `entries` ✗ ⇒ 而它被 `slice(0, 12)` 截断 ⇒ 于是"内核在不在"被**前 12 条**决定 ✗
+//（2026-10-06 定位 ✓：CI 的外壳缓存 208 条 ⇒ 内核排在后面 ⇒ 误报"没有共享内核" ✓）。
+const allCachedUrls = cacheNames.flatMap((entry) => entry.allUrls || entry.entries || []);
 const cachedUrls = cacheNames.flatMap((entry) => entry.entries || []);
 // **比对前必须规范化** ✗：`cachedUrls` 里的条目通常是**绝对 URL**
 // （`http://127.0.0.1:PORT/wasm/yanshi_wasm.js` ✓），而这里原先用 `startsWith("/wasm/…")` 比
@@ -285,7 +300,7 @@ const pathOf = (u) => {
   const text = String(u || "");
   try { return new URL(text, "http://x").pathname; } catch (_) { return text; }
 };
-const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
+const hasModuleInWorkerCache = allCachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
 // **把 SW 的预缓存失败也带上** ✗ —— 只报"少了内核"无法定位（是 404？还是查得太早？✓）。
 // 判据在 SW 上下文里读 `self.__swPrecacheFailures`（`install` 里记的 ✓）⇒ **它直接说明谁失败** ✓。
 // **从缓存条目里读 SW 的预缓存报告** ✗ —— 原先读 `self.__swPrecacheFailures` ✓，
@@ -328,7 +343,7 @@ if (!preFail) {
   })()`).catch(() => null);
   console.log("  【缓存键取证】" + JSON.stringify(dump));
 }
-const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90))) +
+const cacheShape = "全量键 " + allCachedUrls.length + " 条｜形状样本 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90))) +
   "｜SW 预缓存失败：" + JSON.stringify(preFail);
 console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（" + cacheShape + "）");
 // **打印真实形状** ✗（不再只打布尔）：下一个人一眼就能看出条目是绝对 URL 还是相对路径 ✓。
