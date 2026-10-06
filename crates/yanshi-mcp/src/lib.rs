@@ -335,22 +335,34 @@ impl Server {
             ));
         }
 
-        // 文档：参数 doc_id 优先，其次 CLI 默认值；不存在则按需创建。
+        // 文档：参数 doc_id 优先，其次 CLI 默认值。
         let doc_id = arguments
             .get("doc_id")
             .and_then(Value::as_str)
             .unwrap_or(&self.options.doc_id)
             .to_owned();
-        let spec = yanshi_server::NewDocument::new(
-            doc_id.clone(),
-            self.options.width,
-            self.options.height,
-        );
-        if let Err(error) =
-            self.workspace
-                .open_or_create(spec, "agent:mcp", &format!("session:{SERVER_NAME}"))
-        {
-            return Ok(tool_error(&error.to_response()));
+        // **自己建文档的工具不替它预建** ✗（真实缺陷 ✓ 2026-10-06 ✓）：
+        // 这里原先**无条件**按 CLI 默认尺寸（`--width/--height`，缺省 1024×1024 ✓）
+        // `open_or_create` 参数里的 `doc_id` ✓ ⇒ `new_document` 想建的"全新 id"到工具里
+        // **已经存在** ✗ ⇒ 工具走"打开"分支 ✓ ⇒ 尺寸被丢掉（实测恒 1024×1024 ✗），
+        // 新 id 还被报成 `opened:true` ✗。判据见 `tests/stdio.rs` ✓。
+        // 判据由工具自己声明 ✓（`ToolSpec::creates_own_document` ✓）—— 一处定义 ✓。
+        let pre_create = !self
+            .registry
+            .get(name)
+            .is_some_and(|spec| spec.creates_own_document());
+        if pre_create {
+            let spec = yanshi_server::NewDocument::new(
+                doc_id.clone(),
+                self.options.width,
+                self.options.height,
+            );
+            if let Err(error) =
+                self.workspace
+                    .open_or_create(spec, "agent:mcp", &format!("session:{SERVER_NAME}"))
+            {
+                return Ok(tool_error(&error.to_response()));
+            }
         }
 
         // **让"显式点名的文档"成为会话活跃文档** ✓（用户报告 2.2 ✓ 会话级上下文锁定 ✗）：

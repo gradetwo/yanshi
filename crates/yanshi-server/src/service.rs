@@ -1107,6 +1107,24 @@ impl Workspace {
         self.documents.get(doc_id)
     }
 
+    /// **只读判断："这份文档已经存在"** ✓ —— **内存里已打开 ✓ 或磁盘上有它的目录 ✓**。
+    ///
+    /// **判据与 [`Workspace::import_project`] 的"只导入、绝不覆盖"逐字一致** ✓
+    /// （`persist.doc_dir(..).exists() || documents.contains_key(..)` ✓）——
+    /// **一处定义、多处复用** ✓，免得两个"存在"慢慢漂移 ✗。
+    ///
+    /// **不创建、不加载** ✓（调用方要打开就自己 [`Workspace::open_document`] ✓）。
+    /// **为什么不查 `document_mut`** ✗：那只在**内存**里找 ✓ ⇒ 会漏掉
+    /// "磁盘上有、这次进程还没打开" ✓ —— 真实缺陷（2026-10-06 ✓）里
+    /// `new_document` 正是这样把"已存在"错判成"该新建" ✓，再被底层"已存在于磁盘"拒绝 ✗。
+    pub fn document_exists(&self, doc_id: &str) -> bool {
+        let in_memory = self.documents.contains_key(doc_id);
+        match &self.persist {
+            Some(persist) => persist.doc_dir(doc_id).exists() || in_memory,
+            None => in_memory,
+        }
+    }
+
     /// 可变文档引用。
     /// GC 的输入：**所有文档**引用闭包的并集（安全），加上某个文档的日志/Manifest（分类诊断）。
     fn gc_inputs(
@@ -1202,8 +1220,15 @@ impl Workspace {
         )
     }
 
-    /// 打开（或按需创建）文档。
-    /// 取可变文档引用（不存在则 `reference_not_found`）。
+    /// **取可变文档引用** ✓（**只在内存里找** ✗ —— 不加载 ✓、不创建 ✓）。
+    ///
+    /// **不存在 ⇒ `reference_not_found`** ✓。要"打开磁盘上已有的"用
+    /// [`Workspace::open_document`] ✓，要"没有就建"用 [`Workspace::open_or_create`] ✓，
+    /// 要**判"是否已存在"**用 [`Workspace::document_exists`] ✓（**内存 ∪ 磁盘** ✓）。
+    ///
+    /// **别用"本函数能不能取到"来判存在** ✗ —— 那**只看内存** ✓。这条旧注释原先写着
+    /// "打开（**或按需创建**）文档" ✗，而实现从来没有按需创建 ✓ ⇒ 2026-10-06 的
+    /// `new_document` 缺陷排查一开始就被它误导 ✓（描述与实现相反，正是本项目最忌讳的一类 ✗）。
     pub fn document_mut(&mut self, doc_id: &str) -> Result<&mut Document> {
         self.documents.get_mut(doc_id).ok_or_else(|| {
             YanshiError::new(
@@ -1722,7 +1747,9 @@ impl Workspace {
                 )
             })?;
         // **只导入、绝不覆盖** ✗（不可逆的事不做 ✓）。
-        if persist.doc_dir(&doc_id).exists() || self.documents.contains_key(&doc_id) {
+        // 判据与 `new_document` 的"已存在 ⇒ 打开"**共用** [`Workspace::document_exists`] ✓
+        //（内存 ✓ 或磁盘 ✓ 都算存在 ✓）—— 两处各写一份必然漂移 ✗。
+        if self.document_exists(&doc_id) {
             return Err(YanshiError::new(
                 ErrorCode::Conflict,
                 ErrorContext::detail(format!(

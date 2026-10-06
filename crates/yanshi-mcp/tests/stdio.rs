@@ -184,6 +184,153 @@ fn stdio_handshake_draw_render_and_persist() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **`new_document` 认尺寸、新 id 报 created** ✓ —— 报告的原始场景（2026-10-06 ✓）。
+///
+/// **为什么必须走真进程** ✗：缺陷**不在工具里** ✓。工具的存在判据是"内存里有没有" ✓，
+/// 而 MCP 入口在调工具**之前**就用 CLI 缺省尺寸（`--width/--height` ✓）`open_or_create`
+/// 了参数里的 `doc_id` ✓ ⇒ 新 id 到工具里时**已经存在** ✗ ⇒ 走"打开"分支 ✓、
+/// 尺寸丢掉（实测恒 1024×1024 ✗）、新 id 被报成 `opened:true` ✗。
+/// 直接用 `ToolRegistry` 调（`crates/yanshi-server/tests/new_document.rs` ✓）**绕过了入口** ✓
+/// ⇒ 那种判据今天是绿的 ✓ 而真进程是红的 ✗ —— 所以这条必须走 stdio ✓。
+///
+/// 判据分四段 ✓：① 报告的三个尺寸各用**全新 doc_id** ✓ ⇒ 回执、内存、磁盘 `meta.json`
+/// 三处都必须等于请求值 ✓；② 同 id 再建 ⇒ `opened:true`/`created:false` 且**尺寸不变** ✓；
+/// ③ 画过的东西**还在** ✓（内容没被清空 ✓）；④ 给一个**不同**的尺寸 ⇒ 老文档
+/// **不许被改尺寸** ✓（安全约束 ✓）。
+#[test]
+fn new_document_honours_size_and_reports_created_for_fresh_ids() {
+    let root = temp_root("newdoc");
+    let root_str = root.to_string_lossy().into_owned();
+    let mut process = McpProcess::start(&[
+        "--root",
+        &root_str,
+        "--doc",
+        "seed",
+        "--width",
+        "1024",
+        "--height",
+        "1024",
+        "--profile",
+        "core",
+    ]);
+    process.request("initialize", json!({}));
+    process.notify("notifications/initialized");
+
+    // ① 报告的三个尺寸：每个都用**全新 id** ⇒ 必须是"新建"，且三处尺寸一致。
+    for (doc_id, width, height) in [
+        ("fresh_3840", 3840u64, 2160u64),
+        ("fresh_800", 800, 600),
+        ("fresh_1920", 1920, 1080),
+    ] {
+        let made = process.call_tool(
+            "new_document",
+            json!({"doc_id": doc_id, "width": width, "height": height}),
+        );
+        assert_eq!(made["ok"], json!(true), "{made}");
+        assert_eq!(
+            made["created"],
+            json!(true),
+            "新 id 必须报 created:true：{made}"
+        );
+        assert_eq!(made["opened"], json!(false), "新 id 不是打开：{made}");
+        assert_eq!(
+            (made["width"].as_u64(), made["height"].as_u64()),
+            (Some(width), Some(height)),
+            "{made}"
+        );
+        // 内存里的**真实尺寸** ✓（回执可能是照抄请求 ✓ ⇒ 要独立量一次 ✓）。
+        let state = process.call_tool(
+            "get_state",
+            json!({"doc_id": doc_id, "preview_size": false, "include_objects": true}),
+        );
+        assert_eq!(
+            (state["width"].as_u64(), state["height"].as_u64()),
+            (Some(width), Some(height)),
+            "{state}"
+        );
+        // 磁盘 `meta.json` ✓。
+        let meta_path = root.join("docs").join(doc_id).join("meta.json");
+        let meta: Value = serde_json::from_str(
+            &std::fs::read_to_string(&meta_path)
+                .unwrap_or_else(|error| panic!("{}：{error}", meta_path.display())),
+        )
+        .expect("meta.json 是 JSON");
+        assert_eq!(
+            (meta["width"].as_u64(), meta["height"].as_u64()),
+            (Some(width), Some(height)),
+            "{meta}"
+        );
+    }
+
+    // ②③④：在**同一份**文档上再建 —— 尺寸不变、内容还在、给别的尺寸也不改。
+    let made = process.call_tool(
+        "new_document",
+        json!({"doc_id": "reuse", "width": 96, "height": 96}),
+    );
+    assert_eq!(made["created"], json!(true), "{made}");
+    let layer = made["default_layer"]
+        .as_str()
+        .expect("新文档自带默认图层")
+        .to_owned();
+    let drawn = process.call_tool(
+        "draw_shape",
+        json!({
+            "doc_id": "reuse", "layer_id": layer, "object_id": "s1",
+            "data": {"geometry": {"kind": "rect", "bbox": {"x": 8, "y": 8, "w": 40, "h": 30}},
+                     "color": {"r": 10, "g": 10, "b": 10, "a": 255}}
+        }),
+    );
+    assert_eq!(drawn["ok"], json!(true), "{drawn}");
+
+    // ② 同 id、同样的尺寸 ⇒ 打开 ✓。
+    let reopened = process.call_tool(
+        "new_document",
+        json!({"doc_id": "reuse", "width": 96, "height": 96}),
+    );
+    assert_eq!(reopened["ok"], json!(true), "{reopened}");
+    assert_eq!(reopened["opened"], json!(true), "{reopened}");
+    assert_eq!(reopened["created"], json!(false), "{reopened}");
+    assert_eq!(
+        (reopened["width"].as_u64(), reopened["height"].as_u64()),
+        (Some(96), Some(96)),
+        "{reopened}"
+    );
+
+    // ④ **安全**：同 id、**不同的尺寸** ⇒ 不许被改尺寸 ✓、不许清空 ✓。
+    let safe = process.call_tool(
+        "new_document",
+        json!({"doc_id": "reuse", "width": 640, "height": 480}),
+    );
+    assert_eq!(safe["opened"], json!(true), "{safe}");
+    assert_eq!(safe["created"], json!(false), "{safe}");
+    assert_eq!(
+        (safe["width"].as_u64(), safe["height"].as_u64()),
+        (Some(96), Some(96)),
+        "已存在的文档不许被改成 640×480：{safe}"
+    );
+    // ③ 画过的东西还在 ✓ —— 用对象数说话 ✓。
+    let state = process.call_tool(
+        "get_state",
+        json!({"doc_id": "reuse", "preview_size": false, "include_objects": true}),
+    );
+    assert_eq!(
+        (state["width"].as_u64(), state["height"].as_u64()),
+        (Some(96), Some(96)),
+        "{state}"
+    );
+    let kept = state["objects"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|object| object["object_id"] == json!("s1"))
+        .count();
+    assert_eq!(kept, 1, "打开之后画过的东西必须还在：{state}");
+
+    process.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn stdio_reports_unknown_tools_and_bad_json() {
     let mut process = McpProcess::start(&["--doc", "doc_err"]);

@@ -209,6 +209,26 @@ pub struct ToolSpec {
     pub params: &'static [ParamSpec],
 }
 
+impl ToolSpec {
+    /// **本工具自己负责建目标文档** ✓ —— 调用入口（MCP / HTTP）**不要**替它预先
+    /// `open_or_create` ✗。
+    ///
+    /// **为什么需要这条** ✗（真实缺陷 ✓ 2026-10-06 ✓）：入口原先**无条件**按 CLI / 服务端的
+    /// 默认尺寸（缺省 **1024×1024** ✓）替 `doc_id` 预建文档 ✓
+    /// ⇒ `new_document{doc_id:"新id", width:3840, height:2160}` 走到工具里时目标**已经存在** ✗
+    /// ⇒ 工具的"已存在 ⇒ 打开"分支把尺寸丢掉 ✓（实测恒为 1024×1024 ✗），
+    /// 还把**新 id 报成 `opened:true`** ✗。
+    ///
+    /// **判据** ✓：`crates/yanshi-mcp/tests/stdio.rs::new_document_honours_size_and_reports_created_for_fresh_ids`
+    /// （真进程 ✓ —— 直接调 `ToolRegistry` 会**绕过入口** ✓，那种判据今天是绿的 ✗）。
+    ///
+    /// **一处定义、两个入口共用** ✓（MCP `tools_call` ✓ 与 HTTP `/api/tools/*` ✓）——
+    /// 各写一份 `name == "new_document"` 必然漂移 ✗。
+    pub fn creates_own_document(&self) -> bool {
+        matches!(self.name, "new_document")
+    }
+}
+
 macro_rules! param {
     ($name:literal, $kind:ident, $required:literal, $desc:literal) => {
         ParamSpec {
@@ -2522,7 +2542,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
         // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
         // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
-        summary: "新建文档（doc_id / 宽高 / 背景色）；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true，内容不清空）；要一块干净画布请换新 doc_id",
+        summary: "新建文档（doc_id / 宽高 / 背景色）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true / created:false，内容与尺寸都不动）；要一块干净画布请换新 doc_id",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -10497,22 +10517,34 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **同 id 已存在 ⇒ 语义是"打开它"** ✓（第三方 MCP 实测报告 P0-2 ✓：
     // "每次 MCP 新连接都是全新的 default 文档，之前的画接不回来" ✗ ⇒「今天画底色、明天接着细化」走不通 ✗）。
     // 安全约束**不变** ✓：本工具**绝不清空**已有文档 ✓ —— "打开"就是不碰它的内容 ✓。
-    if ctx.workspace.document_mut(&doc_id).is_ok() {
-        let (existing_width, existing_height) = {
-            let document = ctx.workspace.document_mut(&doc_id)?;
-            let state = document.state();
-            (state.width, state.height)
-        };
-        return Ok(json!({
-            "ok": true,
-            "doc_id": doc_id,
-            "opened": true,
-            "created": false,
-            "width": existing_width,
-            "height": existing_height,
-            "session_document": ctx.doc_id,
-            "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
-        }));
+    //
+    // **"已存在"的判据必须包含磁盘** ✗（真实缺陷 ✓ 2026-10-06 ✓）：入口（MCP ✓）对
+    // "自建文档"的工具**不再预建** ✓（`ToolSpec::creates_own_document` ✓）⇒ 这里若只查
+    // `document_mut`（**只在内存里找** ✗）就会漏掉"磁盘上有、这次进程还没打开" ✓
+    // ⇒ 转去 `create_document` ✓ 而它在磁盘那一层拒绝 ✗ ⇒ 用户拿到"已存在于磁盘" ✗
+    // 而不是"这次是打开" ✓。判据与 `import_project` 的"只导入、绝不覆盖"共用
+    // [`Workspace::document_exists`] ✓（内存 ✓ 或磁盘 ✓）。
+    if ctx.workspace.document_exists(&doc_id) {
+        // 磁盘上可能只有**空壳**（崩溃残留 ✓）⇒ `open_document` 会说"不存在" ✗；
+        // 那种情况**当作不存在** ✓，交给下面的新建 ✓（否则用户会拿到一句"文档不存在"却
+        // 又不能新建 ✓ —— 两句都成立、合起来无路可走 ✗）。
+        if ctx.workspace.open_document(&doc_id).is_ok() {
+            let (existing_width, existing_height) = {
+                let document = ctx.workspace.document_mut(&doc_id)?;
+                let state = document.state();
+                (state.width, state.height)
+            };
+            return Ok(json!({
+                "ok": true,
+                "doc_id": doc_id,
+                "opened": true,
+                "created": false,
+                "width": existing_width,
+                "height": existing_height,
+                "session_document": ctx.doc_id,
+                "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
+            }));
+        }
     }
     let mut request = crate::document::NewDocument::new(&doc_id, width, height);
     request.background = background;
@@ -10560,6 +10592,12 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         })?;
     Ok(json!({
         "doc_id": doc_id,
+        // **新建与打开必须能一眼分开** ✓（真实缺陷 ✓ 2026-10-06 ✓）：这条分支原先**没有**
+        // 这两个字段 ✗ ⇒ 调用方只能"看到 opened 才判断是打开" ✓，而**新建**那条**什么都不说** ✗；
+        // 加上入口预建那个缺陷一叠 ✓，新 id 就变成 `created:false/opened:true` ✗。
+        // 两个方向都显式写出来 ✓（与上面"打开"分支**字段对齐** ✓）。
+        "created": true,
+        "opened": false,
         "width": width,
         "height": height,
         "blank": true,
