@@ -375,7 +375,6 @@ pub struct Renderer {
     /// 挂在这里缓存才能跨"这一笔"与"下一笔"存活 ✓ —— 而本案的病正是
     /// **每一笔都把整幅背景重新解压一遍** ✗（见 [`BitmapCache`] 的实测数字 ✓）。
     bitmaps: BitmapCache,
-
 }
 
 impl Renderer {
@@ -420,7 +419,6 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-
         }
     }
 
@@ -436,7 +434,6 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-
         }
     }
 

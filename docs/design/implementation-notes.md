@@ -36918,3 +36918,21 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 
 这样做的好处：**没有任何中间状态**，每一步都是"从已知干净的分支版本出发，加已知的几行"，
 失败也只会失败在编译上，而编译器的报错是确定的。
+
+## 第 1173 轮：背景层跨渲染缓存合并成功（并补记一个流程漏洞）
+
+合并结果：提交 7017fad（Merge branch 'perf/background-per-stroke'）。
+- 方法（本轮终于走通的）：`git merge --no-commit --no-ff` ⇒ git 自动合并 `render.rs`，
+  但留下 zdiff3 的 `||||||| <base>` 三段（371/422/439 行）⇒ **只删掉那三行** ⇒
+  核对两个特性同时存在：buffer_pool 字段 1 / 构造器 2 / 访问器 1 / `self.buffer_pool.acquire` 1，
+  bitmaps 字段 1 / 构造器 2 / 参数 2 ⇒ 全部满足 ⇒ `cargo build --workspace --all-targets` 通过。
+- 门禁：`test EXIT=0`、**136 组 ok / 0 失败**（比之前多 2 组，就是本分支新增的两条判据）。
+- 四条新判据直接跑全绿：the_background_patch_is_decoded_once_not_per_stroke、
+  a_warm_stroke_never_decodes_a_canvas_sized_blob、a_background_stroke_populates_the_preview_phase、
+  the_decoded_bitmap_cache_never_changes_pixels。
+- 收益（子代理在报告包上的实测，release/4 核）：稳定态每笔 31-39s ⇒ 0.45-0.48s（约 70-80×），
+  other_ms 从 ~35000ms 降到 <0.4ms。
+
+**流程漏洞（必须记下）**：我在推送条件里只判断了 `test` 的退出码，**没有把 `fmt` 纳入条件**，
+于是推送了一个 `fmt` 为红的提交。虽然 `fmt` 不影响运行时语义，但"不留红树"是硬要求，
+推送前必须四项全查（fmt / clippy / build / test）。已在下一轮立即补上格式并复核判据仍绿。
