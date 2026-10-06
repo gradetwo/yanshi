@@ -36676,3 +36676,32 @@ C. batch I/O 汇聚：沿已有 `batch` 语义做，代价 = 崩溃窗口从单�
 三、顺手清掉主干 target 的污染残留：cargo clean -p yanshi-render -p yanshi-server
 （移除 16676 个文件 / 6.8 GiB）。两个子代理都曾把 CARGO_TARGET_DIR 指到主干 target，
 其中 bgperf 那个已主动认错并改用独立 target；这次清理把残留产物一并移除。
+
+## 第 1168 轮：背景层分支自带未解决的冲突标记——合并中止并交回重做
+
+我连续几次尝试手工合并 perf/background-per-stroke 都失败（build 报 `expected identifier, found ||`）。
+本轮把真相查清，不再猜：
+
+证据：
+1. `git show perf/background-per-stroke:crates/yanshi-render/src/render.rs | grep -cE "^(<{7}|\|{7}|={7}|>{7})"`
+   ⇒ **该分支的 render.rs 里本身就有 3 行冲突标记**（三处 `||||||| 21674f4`）。
+2. 之前的失败因此都可解释：
+   - 我第一次"并集"脚本没处理 `|||||||`（因为那不是它的正则能识别的形式），留下孤立标记 ⇒ build 红；
+   - 第二次 `git checkout --theirs` 取整份 theirs 之后**仍然**带那 3 行 ⇒ build 红；
+   - 而且 theirs 里**已经**有 `buffer_pool`（9 处），我又按"main 有、theirs 没有"的假设加了一遍
+     ⇒ `error[E0062]: field buffer_pool specified more than once`。
+3. 仓库的 `merge.conflictStyle` 是 **zdiff3**，所以冲突块含 `|||||||` base 段——这解释了为什么
+   我第一次脚本只匹配 `<<<<<<< / ======= / >>>>>>>` 会留下孤立标记。
+
+处置：`git merge --abort` + `git reset --hard 36fd7eb`，把主干恢复到干净状态（工作树空、HEAD 是 36fd7eb）。
+**不采用**该分支的 render.rs：它带未解决的冲突标记，属于不可编译状态。
+
+结论与下一步：
+- 那个分支**不能直接合并**（自带冲突标记）。虽然它的**实测数字与设计**都很有价值
+  （4K 稳定态 31-39s ⇒ 0.45-0.48s；跨渲染 LRU 的思路正确），但产物本身需要重做。
+- 正确做法：**派一个子代理在当前 main 上重做这个改动**，并加上一条硬规则：
+  **提交前必须断言仓库里没有冲突标记**（`grep -rE "^(<{7}|\|{7}|={7}|>{7})"` 为 0），
+  门禁必须包含 `cargo build`（语法错本来就过不了）。
+- 教训（值得进 skill）：**"子代理报告门禁全绿"不能替代我自己的构建验证**；
+  而且**提交冲突标记**这件事说明它的门禁没有真的跑过 `cargo build`，
+  或者它的分支在被合并/重基时产生了冲突却没处理。
