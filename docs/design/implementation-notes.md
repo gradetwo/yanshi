@@ -44394,3 +44394,47 @@ fn put_cache(&self, bytes: &[u8]) -> Result<BlobHash> {
 **∴ ③** 给文件存储加 `fn put(&self, b) { self.put_inner(b, true) }`✗＋`fn put_cache(&self, b) { self.put_inner(b, false) }`✗
    ⇒ **∴ 编译 ✓**
 ⇒ **∴ 然后**把 `document.rs`✗ 里缩略图的 `store.put(&png)`✗ 换成 `put_cache`✗ ⇒ **∴ 编译 ＋ 量收益 ✓** ✓✓
+
+## 第 1417 轮：**`put_inner` 放错了位置** ✗（**∴ 根因是 Rust 的语言规则 ✓**）
+
+### 我做了什么（**∴ 用**合并锚点**✗ 避免上轮的"就地接体"✗ ✓**）
+**∴ 一次替换**（**∴ 锚点 ＝ `fn put` 签名 ＋ 体首行 ✓**）⇒ **∴ 同时完成**三步**：**
+   **∴ ① 加两个薄方法 ✗（`put` ⇒ `put_inner(true)`｜`put_cache` ⇒ `put_inner(false)` ✓**）
+   **∴ ② 加 `fn put_inner(&self, bytes, sync)` 的签名 ＋ 体首行 ✓**
+   **∴ ③ 条件化 `if sync && !sync_or_degrade(&file)`✗ ✓** ✓✓
+
+### 结果：**编译失败 ✗，而错误信息直接指出了语言规则** ✓
+```
+error[E0407]: method `put_inner` is not a member of trait `BlobStore`
+  --> crates/yanshi-core/src/blob.rs:598:5
+error[E0599]: no method named `put_inner` found for reference `&FsBlobStore`
+  --> crates/yanshi-core/src/blob.rs:587:14
+```
+⇒ **∴ 自证数据** ✓：**∴ `put_inner`✗ 出现 **1**✗ 次**（**∴ 应为 2 ✗ ⇒ **∴ 即**只落在了一处 ✓**）｜
+   **∴ `put_cache`✗ **2**✗｜**∴ `if sync &&`✗ **1**✗｜**∴ 两个入口 ✗ 2**✗ ✓✓
+⇒ **∴ 所以**根因** ✓✓**：**∴ `rust`✗ 的规则是**`impl Trait for Type`✗ 块里只能放**trait 的方法** ✗
+   ⇒ **∴ 而**我把 `fn put_inner`✗ 写在了**同一个 impl 块内** ✗ ⇒ **∴ 于是**它被当成"trait 成员" ✗
+      ⇒ **∴ 而** trait 里没有它 ⇒ **∴ 报 E0407 ✗＋**∴ 调用处也找不到它 ⇒ **∴ 报 E0599 ✓** ✓✓
+
+### 所以正确的布局（**∴ 下一轮照这个做 ✓**）
+**∴ `FsBlobStore`✗ 需要**两个 impl 块** ✗** ✓：
+```rust
+impl BlobStore for FsBlobStore {
+    fn put(&self, bytes: &[u8]) -> Result<BlobHash> { self.put_inner(bytes, true) }
+    fn put_cache(&self, bytes: &[u8]) -> Result<BlobHash> { self.put_inner(bytes, false) }
+    // …其它 trait 方法（get／exists／…）保持不动
+}
+
+impl FsBlobStore {                        // ← **∴ 固有方法必须在这里 ✗**
+    fn put_inner(&self, bytes: &[u8], sync: bool) -> Result<BlobHash> { …原来的函数体… }
+}
+```
+⇒ **∴ 即：**把 `put_inner`✗ **移出**trait impl ✗ ⇒ **∴ 问题就消失 ✓** ✓✓
+   ⇒ **∴ 而**这也**解释了为什么第二次仍然失败** ✗：**∴ 两次都不是"补丁没落"✗
+      ⇒ **∴ 而是**我**对 Rust 的布局规则**想错了** ✗（**∴ 上轮我以为是括号不配 ✗ ⇒ **∴ 而**那只是**症状** ✓）** ✓✓
+   ⇒ **∴ 所以**上轮记的"三步分离"✗ **方向对 ✗，但**还差一条** ✗：**∴ 固有方法要单独开 impl 块 ✓** ✓✓
+
+### 一条**方法上的收获**（**∴ 与"先读代码"✗ 同源 ✓**）
+**∴ 连续两轮在同一处失败 ✗** ⇒ **∴ 而**第二次的**错误信息**已经**直接给出规则** ✗（**∴ E0407 ✗
+   "不是 trait 成员"✗ ✓）⇒ **∴ 所以**：**∴ 读**编译器的话**✗ ⇒ **∴ 比**猜语法**✗ 快 ✓** ✓✓
+   ⇒ **∴ 而**这**与本会话反复的教训一致** ✗：**∴ 先问机制（**∴ 设计 ✗／代码 ✗／编译器 ✓）⇒ **∴ 再动手 ✓** ✓✓
