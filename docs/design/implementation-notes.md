@@ -37018,3 +37018,34 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 （例如"内核既没画、服务端也没补"这种"画布空白"状态）。
 
 这条结论同时也解释了为什么 browser-live-brush 现在能过：那条判据不依赖 serverBlits。
+
+## 第 1177 轮：browser-ui-check 也定性了——同一段代码里只有"锁定"这一处还在用固定睡眠
+
+读判据（scripts/browser-ui-check.mjs:3398 一带）：
+  ⑤ 锁定 ⇒ 点击 `[data-action="locked"]` ⇒ **固定等 900ms**
+       （`await new Promise((r) => setTimeout(r, 900))`）
+  然后 ⇒ `list_layers` ⇒
+       `out.lockedOnServer = (listed2.layers||[]).some(l => l.layer_id === targetLayerId && l.locked)`
+  失败读数还给出 `lockIcon = 🔓`（图标仍是"未锁"）。
+
+关键证据是**同一段代码的注释**：作者已经把"隐藏/显示"那两处改成轮询，并写明原因
+——"轮询而不是固定 sleep：重画要经过'工具返回 → resync → rAF 补画'，
+固定 1200ms 在冷启动时不够、在热路径上又白等"。也就是说：
+**这一处的 900ms 固定睡眠是漏改的**，而不是有意为之。
+
+定性：这与 browser-render-switch 完全同族 —— **判据侧的时序竞态（固定睡眠）**，
+不是产品缺陷。UI 更新链（update_layer → refreshLayers → …）与"隐藏/显示"是同一条，
+冷启动或负载下 900ms 不够，所以断言读到旧状态。
+
+修法：把固定 900ms 改成**有界轮询到断言条件成立**（例如最多 40×150ms，
+轮询 `list_layers` 直到 targetLayerId 的 locked 为真）。
+这个修法同时覆盖两种情况：能等到就绿；永远不生效则轮询超时 ⇒ 判据仍然红，
+而且那时读数可信 ⇒ 才说明是真的"锁定不生效"缺陷。
+**不要**把 900ms 调大（那是"写死某次观测"），也不要删掉这条断言。
+
+至此五条既有失败全部定性：
+1. browser-render-switch：判据侧（读了异步 state.wasm）⇒ 已修（有界轮询）⇒ 绿；
+2. browser-i18n：**真缺陷**（10 条文案没进 i18n 表）⇒ 已修 + 新增静态判据 ⇒ 绿；
+3. browser-live-brush：不复现（共享 target 构建污染同族）⇒ 已绿；
+4. browser-layout：判据过期（serverBlits>0 的断言与客户端优先新默认冲突）⇒ 子代理重新基线化中；
+5. browser-ui-check：判据侧（固定睡眠 900ms 漏改）⇒ 本轮定性，待修。
