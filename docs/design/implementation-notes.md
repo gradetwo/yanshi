@@ -40557,3 +40557,36 @@ wet_round/black            …｜不同字节 0｜**逐字节相同** ✓
 `on`／`off`／`yes`／`no` 当**布尔值** ✓。**GitHub Actions 用 YAML 1.2 语义** ✓ ⇒ **不影响运行** ✓，
 但**用 PyYAML 检查 Actions YAML 时不能用 `d["on"]`** ✗ ⇒ 否则会误报"YAML 不合法" ✓
 （**∴ 我这一轮就这么误报了一次 ✓**）。
+
+## 第 1301 轮：**更正** —— `brush parity` **不是**"绕过已知红名单"✗，而是**按设计不阻塞** ✓
+
+### 我上一轮的推断错了
+我说「`ci.yml:180` 直接 `node scripts/kernel-brush-parity.mjs` ⇒ 不经过 `run-criteria.sh` ⇒
+已知红名单对它无效 ⇒ CI 仍红 ⇒ 待修」。**实测推翻了它** ✓：
+
+| 证据 | 内容 |
+|---|---|
+| `ci.yml:129` 注释 | 「⚠️ **它现在**不阻塞 CI**（`continue-on-error`）—— 这是**有意的**」 |
+| `ci.yml:137` | `continue-on-error: true` ✓ |
+| `ci.yml:135` 注释 | 「用与 `scripts/criteria-known-red.txt` **同一套机制**（照跑、照印、不阻塞）」✓ |
+| run `37464246603` 的 `conclusion` | **`failure`**，而失败的是 **criteria shard 1／4／5／6** ✗ |
+| `brush parity` job 结论 | 标成 **`failure`** ✗，但**不阻止 run 完成"其余判据"的门禁作用** ✓ |
+
+⇒ **∴ 即：**它**确实不阻塞** ✗（**∴ 与名单同效 ✓**）⇒ **∴ 我那条"修法"（让它读名单）会**多此一举**✗，
+   而且**重复**了既有机制 ✓ ⇒ **∴ **不改它**✗** ✓✓
+⇒ **∴ 我误判的原因** ✓：**∴ `gh run view`✗ 把 `continue-on-error`✗ 的 job **也标成 `X … failure`**✗**
+   ⇒ **∴ 看起来和**真正阻塞的红**✗ 一模一样 ✗ ⇒ **∴ 我据此把 ⑧ 列进了"九条红"✗** ✓✓
+
+### 教训（**值得进 skill**）
+**∴ `gh run view`✗ 的 `X`✗ **不等于"它让 run 红了"✗** ⇒ **∴ 要区分两件事** ✓：
+1. **该 job 自己**成功还是失败**✗；2. **该 job 是否**阻塞 run**✗（**∴ 由 `continue-on-error`✗ 决定 ✓**）。
+⇒ **∴ 正确做法** ✓：**∴ 看 **run 的 `conclusion`✗ ＋ **失败的 job 名单**✗，
+   **∴ 并核对 `ci.yml`✗ 里那个 job **有没有 `continue-on-error`✗** ✓
+   ⇒ **∴ 而不是**只看 `X`✗ ✓** ✓✓
+
+### 当前真实状态（**更正后的"九条红"✓**）
+- **∴ 真正**让 run 红的**✗：**∴ `criteria shard 1／4／5／6`✗** ✓；
+- **∴ 而 `brush parity`✗ 属于**有意不阻塞**✗ ⇒ **∴ 不计入"待修"✗** ✓；
+- **∴ 我已修的** ✓：`tool-offline-asset-coverage`✗／`kernel-wasm-allowlist`✗／`tool-surface-coverage`✗／
+  `tool-example-acceptance`✗／`browser-ui-check`✗（**∴ CI 已确认绿 ✓**）；
+- **∴ 待 CI 给答案的** ⏳：`browser-i18n`✗（**∴ 祖先链诊断 ✓**）／`browser-offline-draw`✗（**∴ 取证已并入失败消息 ✓**）。
