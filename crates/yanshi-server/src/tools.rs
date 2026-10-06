@@ -13474,7 +13474,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         .get("include_bitmaps")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let tar = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+    let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
     // **先落 `path`** ✓（老行为 ✓：写不进去要**响亮地失败** ✓，而不是回一个 URL 就当成功 ✓）。
     if let Some(path) = &path {
         std::fs::write(path, &tar).map_err(|error| {
@@ -13497,6 +13497,11 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "bytes": tar.len(),
         "include_bitmaps": include_bitmaps,
         "format": "tar (uncompressed)",
+        // **位图部分的独立读数** ✓（第 1331 轮 ✓）：整包体积会被**原子日志**主导 ✗
+        //（实测：12 次覆盖的差值里 **98.3%** 是日志 ✓）⇒ 所以"位图有没有被回收"必须看这三项 ✓。
+        "blob_count": stats.blob_count,
+        "blob_bytes_plain": stats.blob_bytes_plain,
+        "blob_bytes_packed": stats.blob_bytes_packed,
     });
     if let Some(path) = &path {
         value["path"] = json!(path);

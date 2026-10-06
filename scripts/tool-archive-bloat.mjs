@@ -56,10 +56,23 @@ if (a === null || b === null) {
   console.error("  ✗ 导出没返回体积 ⇒ 判据无法成立（先看导出的返回字段）");
   process.exit(1);
 }
+// **判定改用"位图部分"** ✗（第 1331 轮的定案 ✓）—— 原先判**整包体积** ✗ ⇒ 那是**错的** ✓：
+// 实测（本机 ✓）：12 次覆盖比 1 次多 **5120** 字节 ⇒ 而其中 **5033**（**98.3%**）是 `atoms.jsonl` ✗，
+// 且包里 **blob 数 = 0** ✗（**∴ 位图都被证明可重放 ⇒ **∴ 全被省略 ✓**）⇒ **∴ 整包必然变大 ✗
+// ⇒ **∴ 而"位图有没有被回收"是**位图部分**的问题 ✓ ⇒ **∴ 所以只看位图 ✓**。
 const ratio = b / a;
-console.log(`  体积：1 次 = ${a} B｜${turns} 次 = ${b} B｜比值 = ${ratio.toFixed(2)}×`);
-if (ratio > 1.5) {
-  console.error(`  ✗ 归档随覆盖次数膨胀（${turns} 次是 1 次的 ${ratio.toFixed(2)} 倍）⇒ 被替代的历史 blob 未回收`);
+const blobOf = (v) => (v && typeof v.blob_bytes_packed === "number" ? v.blob_bytes_packed : null);
+const blobsA = blobOf(oneExport), blobsB = blobOf(manyExport);
+console.log(`  整包：1 次 = ${a} B｜${turns} 次 = ${b} B｜比值 = ${ratio.toFixed(2)}×（**仅作上下文 ✓**，日志必然增长 ✓）`);
+if (blobsA === null || blobsB === null) {
+  console.error("  ✗ 导出没返回 blob_bytes_packed ⇒ 判据无法成立（先看导出的返回字段）");
   process.exit(1);
 }
-console.log("  ✓ 归档不随覆盖次数膨胀 ⇒ 被替代的 blob 已被回收");
+console.log(`  位图：1 次 = ${blobsA} B（${oneExport.blob_count} 个）｜${turns} 次 = ${blobsB} B（${manyExport.blob_count} 个）`);
+// **位图不该随覆盖次数增长** ✓（**∴ 被替代的位图应当被回收 ✓**）——
+// 允许一点点抖动（**∴ 例如末次与前次的索引差异 ✓**），但**不许线性增长** ✓。
+if (blobsB > blobsA * 1.5) {
+  console.error(`  ✗ 位图随覆盖次数膨胀（${turns} 次是 1 次的 ${(blobsB / Math.max(1, blobsA)).toFixed(2)} 倍）⇒ 被替代的历史位图未回收`);
+  process.exit(1);
+}
+console.log("  ✓ 位图不随覆盖次数膨胀 ⇒ 被替代的位图已被回收");

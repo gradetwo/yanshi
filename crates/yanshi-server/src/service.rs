@@ -558,6 +558,20 @@ impl std::fmt::Debug for Workspace {
     }
 }
 
+/// **一次工程包导出的统计** ✓（第 1331 轮的定案暴露了需求 ✓）：
+/// `export_project` 原先只回 `Vec<u8>` ✗ ⇒ 调用方**只能看到整包体积** ✗
+/// ⇒ 而"被替代的位图有没有被回收"是**位图部分**的问题 ✓（**∴ 日志必然增长 ✗，位图不该 ✓**）
+/// ⇒ 所以把这三项**显式回出来** ✓ ⇒ 判据就能**断言对的东西** ✓（而不是断言整包体积 ✗）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExportStats {
+    /// 装进包里的位图个数 ✓（**∴ `include_bitmaps: false`✗ 时只装"无法证明可重放"✗ 的 ✓**）。
+    pub blob_count: usize,
+    /// 位图**裸字节**之和 ✓。
+    pub blob_bytes_plain: usize,
+    /// 位图**压缩后**字节之和 ✓（**∴ 它决定包体积 ✓**）。
+    pub blob_bytes_packed: usize,
+}
+
 impl Workspace {
     /// **开始一个变更集** ✓（设计 793 的 `begin_changeset` ✓）。
     ///
@@ -2198,7 +2212,11 @@ impl Workspace {
     /// **与缓存的关系** ✓：内置的是"**开箱就有**"的那几款 ✓（`assets/textures/` ✓，随 `make release` 进包 ✓）；
     /// 缓存（`<root>/textures/` ✓）是用户用 `scripts/fetch-textures.sh` 另外抓的 ✓。
     /// **重名时缓存优先** ✓ —— 用户放进去的同名文件**覆盖**内置的 ✓（想换就换 ✓，不必改仓库 ✓）。
-    pub fn export_project(&mut self, doc_id: &str, include_bitmaps: bool) -> Result<Vec<u8>> {
+    pub fn export_project(
+        &mut self,
+        doc_id: &str,
+        include_bitmaps: bool,
+    ) -> Result<(Vec<u8>, ExportStats)> {
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -2379,7 +2397,10 @@ Restore under <root>/ of a yanshi-serve instance (the doc lives under docs/<doc_
 The first open replays any omitted bitmap into the local CAS; later opens just read it.\n"
                 .to_vec(),
         });
-        Ok(crate::archive::write_tar(&entries))
+        Ok((
+            crate::archive::write_tar(&entries),
+            ExportStats { blob_count, blob_bytes_plain: plain_bytes, blob_bytes_packed: packed_bytes },
+        ))
     }
 
     /// **把一张"整幅"PNG 存成渲染缓存** ✓（`render.png` + `render.seq` ✓，"打开即图片" 14.5 ✓）。
