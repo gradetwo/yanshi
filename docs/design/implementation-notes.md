@@ -42981,3 +42981,35 @@ let region = match (self.document_thumb.is_some(), dirty) {
    ⇒ **∴ 即：**渲染整幅 ＝ 163 ms ✗ ⇒ **∴ 而**缩略图路径 ＝ 200 ms ✗ ⇒ **∴ 差 37 ms ✗ ＝ **缩放 ＋ PNG ＋ 落盘 ✓**
       ⇒ ⇒ **∴ 所以**主要成本是**整幅渲染** ✗ ⇒ **∴ 而修法是**不渲整幅**✗ ⇒
          **∴ 而是**按 256 ✗ 的目标分辨率渲染 ✓** ✓✓
+
+## 第 1377 轮：**决定性发现** ✓ —— **∴ 判据跑 **debug**✗，**∴ 而 wasm 内核跑 **release**✗ ⇒ **∴ 两侧不可比**
+
+### 事实（**∴ 都在仓库里 ✓**）
+| 位置 | 用什么 |
+|---|---|
+| `scripts/run-criteria.sh:32` | **∴ `./target/debug/yanshi-serve`✗** ⇒ **∴ **debug**✗** |
+| `scripts/run-criteria.sh:111` | **∴ `target/debug/yanshi-mcp`✗** ⇒ **∴ debug ✓** |
+| `.github/workflows/ci.yml:90` | **∴ `cargo test --workspace`✗** ⇒ **∴ 默认 debug ✓** |
+| `.github/workflows/ci.yml:164／227` | **∴ `cargo build --workspace`✗** ⇒ **∴ 默认 debug ✓** |
+| `.github/workflows/ci.yml:165／230` | **∴ `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release`✗** ⇒ **∴ **release**✗** |
+
+⇒ **∴ 所以** ✓✓：**∴ 所有**服务端**判据（**∴ 含 `tool-thumbnail-cold.mjs`✗ ✓）在 **debug ✗ 下跑** ✗
+   ｜**∴ 而**wasm 内核**在 **release ✗ 下跑** ✗ ⇒ **∴ 所以两侧的数字**不可比**✗** ✓✓
+
+### 由此得到的两条结论
+1. **∴ 我先前"**服务端比客户端慢 20 倍**✗"✗ 是**测量假象**✗** ✓：
+   **∴ 两侧**共用同一个 `yanshi-render`✗**（**∴ `yanshi-wasm/Cargo.toml:18`✗＋**∴ `yanshi-server/Cargo.toml:16`✗ ✓）
+   ⇒ **∴ 所以**同一个渲染器 ✗ ⇒ **∴ 唯一的大差别是**构建配置 ✗**（**∴ debug vs release ✓**）
+   ⇒ **∴ 而**验算吻合**✗** ✓：**∴ 163 ms ÷ ≈20 ≈ **8 ms**✗ ⇒ **∴ 与内核的 8–9 ms ✗ 一致 ✓** ✓✓
+2. **∴ `tool-thumbnail-cold.mjs`✗ 的 **16 ms**✗ 预算是**在 debug ✗ 下定的** ✓**
+   ⇒ **∴ 而**用户跑的是 release ✗ ⇒ **∴ 所以它**测的延迟比用户实际看到的差 ≈10–20 倍 ✗** ✓✓
+   ⇒ **∴ 即：**它可能是**假判据**✗**（**∴ 与仓库里其他几处同类 ⇒ **∴ 例如"单侧判"✗ ✓**）
+   ⇒ **∴ 而**唯一不受此影响的是 `browser-kernel-perf`✗**（**∴ 它量的是 wasm release ✓**）** ✓✓
+
+### 所以下一步（**∴ 用 release ✗ 实测 ⇒ **∴ 它将**决定这一整条线是否成立**✗ ✓**）
+**∴ 做** ✓：**∴ 构建 `--release`✗ ⇒ **∴ 量同一条 `render_region`✗ 与 `tool-thumbnail-cold.mjs`✗**
+   ⇒ **∴ 若 release ✗ 下首屏 ≤ 16 ms ✗ ⇒ **∴ 那**服务端根本没有 200 ms 的问题**✗
+      ⇒ **∴ 而**正确做法**✗** ✓：**∴ 让判据跑 release ✗（**∴ 更接近用户 ✓**）
+         ｜**∴ 或**把预算按 debug ✗ 定 ＋ **∴ 写明它测的是 debug ✗ ✓** ✓✓
+   ⇒ **∴ 若 release ✗ 下**仍然 ≈200 ms ✗ ⇒ **∴ 那才是**真缺陷**✗ ⇒ **∴ 而我前面几轮的定位才有意义 ✓** ✓✓
+   ⇒ **∴ 所以本轮的发现**本身就是价值 ✗：**∴ 它把**前面几轮的 debug ✗ 数字**都标上了"不可比"✗** ✓✓
