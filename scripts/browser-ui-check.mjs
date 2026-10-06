@@ -3614,7 +3614,7 @@ if (problems.length) {
   try {
     const live = await evaluate(
       `(() => { const s = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
-        return s ? JSON.stringify({ tail: (s.blitLog || []).slice(-14) }) : null; })()`,
+        return s ? JSON.stringify({ tail: (s.blitLog || []).slice(-40) }) : null; })()`,
     );
     if (live) console.log(`  --- 最终补画序列（失败时重读）---\n    ${live}`);
   } catch (error) {
