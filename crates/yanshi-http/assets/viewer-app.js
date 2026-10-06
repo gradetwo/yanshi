@@ -1435,10 +1435,28 @@ async function blitServerBox(bbox) {
     { refresh: false },
   );
   const url = value.raw_url || value.thumb_url;
-  if (!url) return 0;
+  if (!url) {
+    // Make the silent return visible, otherwise a blit can vanish with no trace
+    // and the canvas simply stays as it was.
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "no-url " + JSON.stringify([x0, y0, w, h]), area: w * h,
+      at: Math.round(performance.now()), serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    return 0;
+  }
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
   const bytes = new Uint8ClampedArray(await fetchOrLocal(api(url)).then((r) => r.arrayBuffer()));
-  if (bytes.length < w * h * 4) return 0;
+  if (bytes.length < w * h * 4) {
+    // Same reason: record the short buffer rather than returning silently.
+    (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+      reason: "short-bytes " + bytes.length + "/" + (w * h * 4),
+      area: w * h, at: Math.round(performance.now()),
+      serverInk: -1, canvasInk: -1,
+    });
+    window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-12);
+    return 0;
+  }
   // **数一下服务端这批字节里有多少墨** ✓ —— 决定性的那一问 ✓：
   // "画布上没有墨"到底是**服务端给的就是空白** ✗，还是**客户端随后把它擦了** ✗（内核重绘 ✓）。
   // 不数它就只能在两个假设之间反复猜 ✓（本轮已经猜错一次 ✗）。
