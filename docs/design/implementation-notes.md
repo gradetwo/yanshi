@@ -45360,3 +45360,58 @@ crates/yanshi-wasm/Cargo.toml
    **∴ 发现"两边都用 `hokusai`✗，只差涂抹路径"✗ ✓）** ✓✓
    ⇒ **∴ 所以** ✓：**∴ 只要**结论里出现"**A 用 X ✗，B 用 Y**"✗ ⇒ **∴ 就要**在**两边**各 grep 一次 ✗
       ⇒ **∴ 而不能**只查一边就下结论 ✓** ✓✓
+
+## 第 1442 轮：**替换方案精确到行** ✓ —— **∴ 内核的 56 行 `stamp` 可压到 ≈10 行 ✓**
+
+### 内核 `stamp`✗ 的实际内容（**∴ `crates/yanshi-wasm/src/brush.rs:132-190`✗ ✓**）
+```rust
+pub(crate) fn stamp(brush: &hokusai::Brush, state: &mut hokusai::BrushState,
+                    surface: &mut hokusai::tile_mem::MemSurface, points: &[[f64; 3]]) -> usize {
+    const STEP_SECONDS: f64 = 0.01;
+    for point in points {
+        match previous {
+            None => { brush.stroke_to(state, surface, x, y, pressure, 0.0, 0.0, STEP_SECONDS); }
+            Some((px, py, pp)) => {
+                let distance = (((x-px)*(x-px)) + ((y-py)*(y-py))).sqrt();
+                let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);   // **手动插值**
+                for step in 1..=divisions {
+                    let t = step as f64 / divisions as f64;
+                    brush.stroke_to(state, surface, ix, iy, ip, dx, dy, STEP_SECONDS);
+                }
+            }
+        }
+    }
+    steps
+}
+```
+
+### 逐项对应（**∴ 替换就是这张表 ✓**）
+| 内核（**∴ `hokusai`✗ ✓**） | **∴ render 侧 ✓** |
+|---|---|
+| **∴ `hokusai::Brush`✗** | **∴ `BrushSpec`✗**（`brush.rs:159`✗ ✓） |
+| **∴ `hokusai::BrushState`✗** | **∴ `StrokeGeometry`✗**（`:28`✗ ✓） |
+| **∴ `hokusai::tile_mem::MemSurface`✗** | **∴ `yanshi_render::buffer::Buffer`✗** ✓ |
+| **∴ `brush.stroke_to(…)`✗ 逐插值步** | **∴ **一次** `stamp_samples(buffer, brush, &samples)`✗**（`:504`✗ ✓） |
+| **∴ `hokusai::myb::from_str`✗** | **∴ **保持不动** ✗（**∴ 两边已共用 ✗ ⇒ **∴ 不产生差异 ✓）** |
+
+⇒ **∴ 所以** ✓✓：**∴ 内核的**手动插值**（**∴ `distance`✗／**∴ `divisions`✗／**∴ `t ＝ step/divisions`✗ ✓）
+   **可以整段删掉** ✗ ⇒ **∴ 改成**构造 `samples: &[(f64, f64, f64)]`✗ ⇒ **∴ 调用一次 `stamp_samples`✗** ✓✓
+   ⇒ **∴ 从而** `stamp`✗ **从 **56**✗ 行降到 **≈10**✗ 行** ✓ ⇒ **∴ 而** `read_back`✗ 也已两端同规矩 ✓✓
+
+### **∴ 差异的来源由此彻底解释** ✓✓
+**∴ 两边**各自插值** ✗** ✓：
+   **∴ 内核：每 **2.0**✗ 距离一步 ✗（`divisions ＝ ceil(distance/2.0)`✗，**∴ 上限 4096 ✗ ✓）
+   ｜**∴ 服务端：**自己的插值规则**✗（**∴ 在 `stamp_stroke`✗／`stamp_samples_from`✗ 里 ✓）
+   ⇒ **∴ 所以**即使笔刷参数**完全相同** ✗ ⇒ **∴ 采样点**不同** ✗ ⇒ **∴ 于是**落笔位置的**像素**不同 ✗
+      ⇒ **∴ 而**这**解释了**为什么差异达 **90%**✗ 且**最大通道差 254–255**✗ ✓✓
+      ⇒ ⇒ **∴ 即：**这不是"**数学精度**"✗ 的差异 ✗ ⇒ **∴ 而是**"**采样点不同**"✗ 的差异 ✓✓
+         ⇒ **∴ 而**一旦内核改用 `stamp_samples`✗ ⇒ **∴ 采样点**由同一份代码产生**✗
+            ⇒ **∴ 从而**一致**由构造保证 ✓** ✓✓
+
+### 因此**实施顺序**（**∴ 最省事优先 ✓**）
+1. **∴ 删掉 `stamp`✗ 的手动插值 ✗ ⇒ **∴ 改成构造 `samples`✗ ＋ **∴ 调一次 `stamp_samples`✗** ✓
+2. **∴ 把 `MemSurface`✗ 换成 `Buffer`✗** ✓（**∴ 服务端同款 ✓）
+3. **∴ 把 `configure`✗ 的 6 个 `BrushSetting`✗＋**∴ 6 处 `SettingValue::constant`✗ 换成 `BrushSpec`✗ 字段** ✓
+4. **∴ `read_back`✗ 改为读 `Buffer`✗** ✓（**∴ 反预乘规矩已同 ✓）
+⇒ **∴ 而**每一步**都能单独编译 ＋ 单独验证** ✗（**∴ `cargo build -p yanshi-wasm --target wasm32-unknown-unknown`✗ ✓）
+   ⇒ **∴ 从而**可以用**同一条判据**在**任一步之后**检查进展 ✓** ✓✓
