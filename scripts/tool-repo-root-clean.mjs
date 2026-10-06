@@ -10,9 +10,15 @@
 // 两者都不是 ⇒ 红。这样"产物写进仓库根并被提交"会在门禁就被抓住。
 // 被忽略的条目算允许，是因为"忽略"正是仓库表达"这是产物、不该进版本库"的方式。
 import { readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-const root = process.argv[2] || process.cwd();
+// **根目录按脚本自身位置定位** ✗：`run-criteria.sh` 给 `tool-*` 传的第一个位置参数是
+// **base URL**（例如 `http://127.0.0.1:13990`）✗ ⇒ 原先 `process.argv[2]` 把它当目录 ⇒
+// `readdirSync("http://…")` 必然 `ENOENT` ✗（CI 实测：`scandir 'http://127.0.0.1:13990'` ✓）。
+// ⇒ 忽略位置参数，只按脚本目录定位仓库根 ✓（与 `tool-repo-root-hex-dirs.mjs` 一致 ✓）。
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // 白名单：仓库允许存在于顶层的条目（新增顶层文件/目录时必须同时更新这里）。
 const ALLOWED = new Set([

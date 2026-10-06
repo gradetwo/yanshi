@@ -40019,3 +40019,27 @@ scandir 'http://127.0.0.1:13990'`」。
 - ① 依赖窗口尺寸产生非适配缩放 ⇒ CI 不成立 ⇒ **失去区分力**（它自己报了 ✓）；
 - ③ 依赖"第一个位置参数是路径" ⇒ runner 传的是 URL ⇒ **崩溃** ✗；
 - ② 则是**真产品问题**（离线缺内核）⇒ 必须修产品 ✓。
+
+## 第 1282 轮：修 CI 第 ③ 条（判据把 base URL 当根目录），并定位第 ② 条的真正分歧点
+
+### ③ 已修：`tool-repo-root-clean.mjs` 按脚本目录定位仓库根
+原代码：`const root = process.argv[2] || process.cwd();`
+而 `run-criteria.sh` 给 `tool-*` 传的第一个位置参数是 **base URL**（例如 `http://127.0.0.1:13990`）
+⇒ `readdirSync("http://…")` 必然 `ENOENT` ✗（CI 日志原文：`scandir 'http://127.0.0.1:13990'`）。
+**修法**：改成
+`const root = join(dirname(fileURLToPath(import.meta.url)), "..")` —— 忽略位置参数，
+只按**脚本自身位置**定位仓库根（与 `tool-repo-root-hex-dirs.mjs` 同一做法 ✓）。
+
+### ② 的真正分歧点（**已定位，尚未改**）
+CI 报「**SW 缓存里没有共享内核（`/wasm/yanshi_wasm.js`）**」。但我核对后发现：
+- `SHELL` **确实已经包含**那两件：`service-worker.js:20 "/wasm/yanshi_wasm.js"`、`:21 "/wasm/yanshi_wasm_bg.wasm"` ✓；
+- 判据 `browser-offline-draw.mjs:265` 的比对方式是
+  `cachedUrls.some((url) => url.startsWith("/wasm/yanshi_wasm.js") || …)` ✓，
+  而 `:46` 收集条目用的是 `String(response.url || "")` ✓。
+⇒ **分歧点**：`response.url` 与 `cache.keys()` 里的键**通常是**绝对 URL**
+（例如 `http://127.0.0.1:PORT/wasm/yanshi_wasm.js`），而判据用 `startsWith("/wasm/…")` 比对
+⇒ **永远不匹配** ⇒ 报"没有共享内核" ✗。
+⇒ 但**不能只凭推理改**：还要确认 `SHELL` 的**预缓存本身成功**（`cache.add("/wasm/…")` 是否因
+`ignoreSearch` 或 `addAll` 的整批失败而整体没写进去 ✓ —— `addAll` 是**全有或全无** ✓）。
+⇒ 下一轮：① 打印**缓存条目的真实形状**（前几条）；② 据此把比对比对**规范化**（用 `new URL(u).pathname` ✓）；
+   ③ 并保留"内核真不在缓存"时**仍然红**的能力（变异：把 `SHELL` 里那两条删掉 ⇒ 判据必须红 ✓）。
