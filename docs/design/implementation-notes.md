@@ -38230,3 +38230,67 @@ wasm 构建**"（`render.rs::parallel_impl` 的两个 cfg 变体 + `tests/tile_p
 并提醒：跑判据要**直接**跑（共享 runner 会复制仓库）；**补丁必须确认落盘**（本会话已失败四次）；
 五步门禁（含 wasm 构建）＋ `scripts/wasm-smoke.sh` 全绿才提交；
 另一个子代理正在改 `render.rs`（wasm 量化去拷贝）⇒ 尽量避开该文件，需要改就报告以便我预期冲突。
+
+## 第 1203 轮：核实报告 §3.5——**不做**，理由是"第二遍印章换来的是正确性"，且建议要求改上游 crate
+
+### 核实结果
+1. **`hokusai` 是外部 crate**：`crates/yanshi-server/Cargo.toml:19` 写 `hokusai = "0.3"`，
+   `Cargo.lock:168` 是 `hokusai`（连同 `hokusai-brush` / `hokusai-core` / `hokusai-tile-mem`）。
+   ⇒ 报告建议 5（在 `MemSurface` 的 Tile 内加"落笔命中标记位"）**要改上游 crate**，
+   本仓库**做不到**（除非 fork 并 patch，那是新的维护面）。
+
+2. **`brush_deposit_mask`（tools.rs:12271）的注释已经解释了为什么不能简单去掉第二遍印章**：
+   - 会读画布的笔刷（涂抹 / colorize 类）必须先把底图喂进引擎 ⇒ 落笔后 surface 里**整个区域**都有像素；
+   - 若原样导出，"**笔触的包围矩形**"就会被当成新对象提交 ⇒ 删掉底下的东西之后，
+     画面里留下一块**直角矩形幽灵** —— 这正是用户报过的
+     「`Flat2#1` 画叶子出矩形 artifact」（注释说已实测复现）。
+   - 而"强行把笔刷改成 opaque=1 / smudge=0"这条**已被实测否掉**：
+     `Flat2#1` 的 `offset_by_random = 1.07` ⇒ 每枚 dab 随机偏移整整一个半径
+     ⇒ 全部改成不透明之后所有 dab 的并集**盖满整个区域** ⇒ 掩膜等于没掩
+     （实测：那 3 行绿条一个不少）。
+   - 所以"用**真实笔刷**再盖一次"是**有意为之**：它只标记"这支笔真的落过颜料"的地方。
+
+### 结论
+§3.5 的"省约 50% 盖章算力"**不是"去掉冗余代码"**，而是**换一种方式实现同一个正确性保证**；
+而报告给的换法**需要改上游 crate**。因此本项**判定为"已评估、不做"**（不是遗漏、不是半成品）：
+- 收益：涂抹类笔刷盖上省约一半；
+- 代价：fork／上游改动 ＋ 维护面，或者冒险去掉第二遍印章 ⇒ 回归"矩形幽灵" artifact
+  （那是**用户报过的真实 bug**，有实测复现记录）；
+- 权衡：把一个**已修的正确性 bug** 换回"这类笔刷快一倍"，风险不对等。若将来要做，
+  正确顺序是**先给 hokusai 提上游补丁/发 fork**，并在本仓库用"掩膜等价 + 逐像素一致"的判据守住。
+
+至此报告 5 个瓶颈全部有了明确处置：3.1/3.2/3.3/3.4 已修并有证据，3.5 为"已评估、不做（需上游改动）"。
+
+## 第 1204 轮：冷构建暴露了一个**既有**的 clippy 错误——同一个模式在 **6 个介质插件**里重复
+
+### 怎么发现的
+我清磁盘时删掉了 `/tmp/yt2` / `/tmp/yt3` 这两个临时 target ⇒ 下次门禁**全量重编**
+⇒ **一直存在**的 clippy 错误第一次暴露（**之前被增量缓存掩盖**）：
+  error: clamp-like pattern without using clamp function
+  --> crates/yanshi-medium-watercolor/src/lib.rs:76:16
+  help: replace with clamp: `size.clamp(1, MAX_DAB)`
+
+### 修法与语义核对（不盲改）
+原写法是 `let size = if size == 0 { 1 } else if size > MAX_DAB { MAX_DAB } else { size };`
+clippy 建议 `size.clamp(1, MAX_DAB)`。核对语义：
+- `size: u32` ⇒ **除 0 外都 ≥ 1** ⇒ 原写法把 0 映到 1，与 `clamp` 下界 1 一致；
+- 上界分支截到 `MAX_DAB`，与 `clamp` 上界一致；
+- clippy 提示 `clamp` 在 `max < min` 时会 panic ⇒ 需要 `MAX_DAB >= 1`；
+  水彩的常量是 `pub const MAX_DAB: u32 = 64;` ⇒ 满足。
+⇒ **语义完全等价**。每一处都加了注释记录这个推理。
+
+### 范围：不止一处
+修完水彩后 clippy 继续报 `yanshi-medium-pencil:57`、`yanshi-medium-marker:56`
+（cargo 在第一个错就停 ⇒ 必须迭代）。于是写了个脚本，**按精确的 if/else 形状**匹配、
+从匹配处**提取常量名**，对全部介质插件做同一替换：
+  example / marker / oil / pencil / pixel 各 1 处 ＋ 水彩 1 处 = **6 处**
+⇒ 之后 clippy **第 1 轮就干净**。
+
+### 门禁
+五步全绿：fmt、clippy（-D warnings）、workspace --all-targets、wasm32 release、
+`cargo test --workspace`（**141 组 ok / 0 失败**）—— 141 组全过也**反证了语义等价**（含介质插件测试）。
+
+### 教训（重要，值得进 skill）
+**绿色的增量门禁 ≠ 全树干净**：这次错误在本会话前面**每一轮**都存在，但因为 crate 没被重新 lint
+而一直"绿"。仓库已经有 `scripts/build-warnings-check.sh`（冷构建 6 个 cdylib × 两 target、零警告）
+正是为这类问题准备的 ⇒ 应当在关键节点（例如合并大改动后）跑它，而不是只靠增量 clippy。

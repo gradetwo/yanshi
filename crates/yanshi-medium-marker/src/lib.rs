@@ -53,13 +53,9 @@ fn splitmix64(state: &mut u64) -> u64 {
 
 /// 落一个点 ✓。返回写入字节数（`size * size * 4` ✓）。
 fn marker_dab_body(seed: u32, size: u32, pressure_milli: u32) -> u32 {
-    let size = if size == 0 {
-        1
-    } else if size > MAX_DAB {
-        MAX_DAB
-    } else {
-        size
-    };
+    // `clamp(1, MAX_DAB)` 与原写法**语义等价**：`size: u32` 除 0 外都 ≥ 1，
+    // 且 `MAX_DAB >= 1` ⇒ 不会触发 `clamp` 的 `max < min` panic。
+    let size = size.clamp(1, MAX_DAB);
     let pressure = (pressure_milli.min(1000)) as f32 / 1000.0;
     // SAFETY：单线程 wasm，只读写自己声明的固定缓冲 ✓。
     unsafe {

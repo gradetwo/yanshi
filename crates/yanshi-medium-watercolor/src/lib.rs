@@ -73,13 +73,9 @@ fn edge_wobble(seed: u64, angle: f32) -> f32 {
 
 /// 落一个水彩点 ✓：不规则边界 + 边缘沉积 + 半透明纸感 ✓。
 fn watercolor_dab_body(seed: u32, size: u32, pressure_milli: u32) -> u32 {
-    let size = if size == 0 {
-        1
-    } else if size > MAX_DAB {
-        MAX_DAB
-    } else {
-        size
-    };
+    // `clamp(1, MAX_DAB)` 与原写法**语义等价**：`size: u32` 除 0 外都 ≥ 1，
+    // 且 `MAX_DAB >= 1`（见常量定义）⇒ 不会触发 `clamp` 的 `max < min` panic。
+    let size = size.clamp(1, MAX_DAB);
     let pressure = (pressure_milli.min(1000)) as f32 / 1000.0;
     // SAFETY：单线程 wasm，只读写自己声明的固定缓冲 ✓。
     unsafe {

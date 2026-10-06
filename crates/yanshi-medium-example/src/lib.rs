@@ -56,13 +56,9 @@ fn splitmix64(state: &mut u64) -> u64 {
 /// 返回写入的字节数（`size * size * 4` ✓）；宿主据此读取缓冲 ✓。
 /// **不使用任何导入函数** ⇒ 无法触网、无法读时钟 ✓。
 fn example_dab_body(seed: u32, size: u32, hardness_milli: u32) -> u32 {
-    let size = if size == 0 {
-        1
-    } else if size > MAX_DAB {
-        MAX_DAB
-    } else {
-        size
-    };
+    // `clamp(1, MAX_DAB)` 与原写法**语义等价**：`size: u32` 除 0 外都 ≥ 1，
+    // 且 `MAX_DAB >= 1` ⇒ 不会触发 `clamp` 的 `max < min` panic。
+    let size = size.clamp(1, MAX_DAB);
     let hardness = (hardness_milli.min(1000)) as f32 / 1000.0;
     let bytes = size * size * 4;
     let mut state = (seed as u64) ^ 0x5DEE_CE66_D1CE_4E5B;

@@ -46,13 +46,9 @@ fn pixel_dab_ptr_body() -> usize {
 ///
 /// **完全确定、且与 `seed` 无关** ✓ —— 像素笔刷没有"鬃毛/颗粒"这类需要随机的东西 ✓。
 fn pixel_dab_body(_seed: u32, size: u32, pressure_milli: u32) -> u32 {
-    let size = if size == 0 {
-        1
-    } else if size > MAX_DAB {
-        MAX_DAB
-    } else {
-        size
-    };
+    // `clamp(1, MAX_DAB)` 与原写法**语义等价**：`size: u32` 除 0 外都 ≥ 1，
+    // 且 `MAX_DAB >= 1` ⇒ 不会触发 `clamp` 的 `max < min` panic。
+    let size = size.clamp(1, MAX_DAB);
     // 压力只决定"**画不画**" ✓（像素画没有半透明深浅 ✓ hmm: 轻微压力仍应落笔 ✓）——
     // 阈值取很低即可 ✓：像素笔刷的手感来自"要么有一个像素、要么没有" ✓。
     let paints = pressure_milli > 0;
