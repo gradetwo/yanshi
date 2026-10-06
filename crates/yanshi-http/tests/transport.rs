@@ -972,6 +972,217 @@ fn brand_assets_are_served_from_the_configured_directory() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **九支名字里带 `#` 的笔刷必须能经 `/brushes/` 取到，且字节与磁盘逐字相同** ✓。
+///
+/// **为什么值得一条测试**（真实 bug）：`8B_Pencil#1.myb` / `arrow#1.myb` / `Fan#1.myb` /
+/// `Flat2#1.myb` / `Fountain_SF#1.myb` / `Fount-offset#1.myb` / `HalfTone#1.myb` /
+/// `HalfToneCMY#1.myb` / `Round#1.myb` 这九支随仓库发布 ✓。`#` 在 URL 里是**片段起点** ✗
+/// ⇒ 浏览器真正发出的请求是 `/brushes/8B_Pencil`（后缀被丢掉）✗；查看器因此必须编成 `%23` ✓，
+/// 而服务端必须在文件名校验**之前**把 `%23` 解回 `#` ✓。两侧缺一，这九支笔刷就**一支都取不到** ✓
+/// —— 其中 `Flat2#1` 正是用户报过"画出来是矩形伪影"的那支 ✓。
+///
+/// **判据为什么用编码后的 URL** ✓：浏览器发出去的就是编码形式 ✓；用字面 `#` 发请求
+/// 反而会被服务端当成普通字符而**碰巧命中** ✓（原始 TCP 客户端不做片段剥离 ✓）⇒
+/// 那就不算在量这个 bug ✗。**变异判据**：去掉服务端的 `asset_segment` 解码 ⇒ 红 ✓；
+/// 去掉查看器的 `encodeURIComponent` ⇒ 结构性判据（`viewer_routes.rs`）红 ✓。
+#[test]
+fn hash_named_brushes_are_served_over_the_http_asset_route() {
+    // 与 JS `encodeURIComponent` 同一套不转义集合（字母数字 + `-_.!~*'()`）。
+    fn encode_segment(name: &str) -> String {
+        let mut out = String::new();
+        for byte in name.bytes() {
+            match byte {
+                b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'_'
+                | b'.'
+                | b'!'
+                | b'~'
+                | b'*'
+                | b'\''
+                | b'('
+                | b')' => out.push(byte as char),
+                _ => out.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        out
+    }
+
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("assets");
+    assert!(
+        assets.join("brushes").is_dir(),
+        "仓库资产目录应存在：{}",
+        assets.display()
+    );
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        assets_dir: Some(assets.clone()),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+
+    // ① 九支带 `#` 的笔刷：编码后的 URL 必须 200，且字节与磁盘逐字相同。
+    const HASH_NAMED: [&str; 9] = [
+        "8B_Pencil#1.myb",
+        "arrow#1.myb",
+        "Fan#1.myb",
+        "Flat2#1.myb",
+        "Fountain_SF#1.myb",
+        "Fount-offset#1.myb",
+        "HalfTone#1.myb",
+        "HalfToneCMY#1.myb",
+        "Round#1.myb",
+    ];
+    for name in HASH_NAMED {
+        let encoded = encode_segment(name);
+        assert!(encoded.contains("%23"), "{name} 应编出 %23：{encoded}");
+        let (status, headers, bytes) =
+            client.request("GET", &format!("/brushes/{encoded}"), None, None);
+        let on_disk = std::fs::read(assets.join("brushes").join(name)).unwrap();
+        assert_eq!(status, 200, "{name}（{encoded}）应可经 /brushes/ 取到");
+        assert_eq!(bytes, on_disk, "{name} 的字节必须与磁盘逐字相同");
+        assert!(
+            headers["content-type"].starts_with("application/json"),
+            "{name} 应按 JSON 文本发"
+        );
+        assert!(
+            headers.contains_key("x-yanshi-brush-reads-canvas"),
+            "{name} 应带「会不会读画布」那个头"
+        );
+    }
+
+    // 根因对照：不编码时浏览器实际请求的就是被 `#` 截断的 `/brushes/8B_Pencil`
+    // ⇒ 必须取不到（证明"后缀被丢掉"这件事 ✓，也证明①里的 `%23` 是必需的 ✓）。
+    let (truncated, _, _) = client.request("GET", "/brushes/8B_Pencil", None, None);
+    assert_ne!(
+        truncated, 200,
+        "截断路径 /brushes/8B_Pencil 不该取到笔刷（它连 .myb 后缀都没有）"
+    );
+
+    // ② 同一类字符（`%` 与 `+`）：编码后同样必须逐字节可取 ✓ —— 它们与 `#` 共用一个解码器 ✓。
+    //
+    // **逐项实测的"修前/修后"**（原始 TCP 客户端直接量 ✓，不是推断 ✓）：
+    // * 九支 `#`：旧查看器发出的是被片段截断的 `/brushes/8B_Pencil` ⇒ 旧服务端 **400**（缺 `.myb`）；
+    //   编码形式 `/brushes/8B_Pencil%231.myb` 在旧服务端 **404**（不解码）⇒ 修后 200 ✓。
+    // * `100%_Opaque.myb`：**旧查看器不编码** ⇒ 原样 `/brushes/100%_Opaque.myb` ⇒ 旧服务端 **200**（碰巧能加载 ✓）；
+    //   但编码形式 `/brushes/100%25_Opaque.myb` 在旧服务端 **404** ✗
+    //   ⇒ 修好查看器之后必须靠服务端解码把它救回来 ✓，否则"修九支、坏一支" ✗。
+    // * `blend+paint.myb` / `smudge+paint.myb`：`+` 在路径里是字面加号 ⇒ 旧查看器原样发出时旧服务端 **200** ✓；
+    //   编码形式 `%2B` 在旧服务端 **404** ⇒ 同一道理必须解码 ✓。
+    // ⇒ 结论：旧查看器视角下"坏的是九支" ✓；编码视角下"坏的是十二支" ✓。两侧都修完，十二支全是 200 ✓。
+    const SAME_CLASS: [&str; 3] = ["100%_Opaque.myb", "blend+paint.myb", "smudge+paint.myb"];
+    for name in SAME_CLASS {
+        let encoded = encode_segment(name);
+        let (status, _, bytes) = client.request("GET", &format!("/brushes/{encoded}"), None, None);
+        let on_disk = std::fs::read(assets.join("brushes").join(name)).unwrap();
+        assert_eq!(status, 200, "{name}（{encoded}）应可经 /brushes/ 取到");
+        assert_eq!(bytes, on_disk, "{name} 的字节必须与磁盘逐字相同");
+    }
+    // ③ 对照：不需要编码的名字照常可用（证明改动没有把普通路径弄坏 ✓）。
+    let (status, _, bytes) = client.request("GET", "/brushes/spray.myb", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(
+        bytes,
+        std::fs::read(assets.join("brushes").join("spray.myb")).unwrap()
+    );
+    handle.shutdown();
+}
+
+/// **被服务的查看器脚本必须是"编好码的那一份"** ✓（`include_str!` 管道 ✓）。
+///
+/// 源码级判据（`viewer_routes.rs`）只证明**磁盘上**的 JS 对 ✓；而页面用的是**编译进二进制**的那份 ✗
+/// ⇒ 不重新 `cargo build --workspace --bins`，服务端发出去的还是旧脚本 ✓（本项目为此反复翻车 ✓）。
+/// 这条直接 `GET /viewer-app.js` ✓ ⇒ 把"改动真的到了浏览器"钉住 ✓。
+#[test]
+fn the_served_viewer_script_encodes_brush_names() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, headers, bytes) = client.request("GET", "/viewer-app.js", None, None);
+    assert_eq!(status, 200);
+    assert!(headers["content-type"].starts_with("text/javascript"));
+    let script = String::from_utf8(bytes).unwrap();
+    assert!(
+        script.contains("const brushAssetUrl ="),
+        "被服务的 viewer-app.js 应含 brushAssetUrl（缺它 ⇒ 二进制里嵌的还是旧脚本 ⇒ 先 cargo build --workspace --bins）"
+    );
+    assert!(
+        script.contains("encodeURIComponent(name)"),
+        "被服务的 viewer-app.js 应把笔刷名交给 encodeURIComponent"
+    );
+    assert!(
+        !script.contains("\"/brushes/\" + name"),
+        "被服务的 viewer-app.js 不该再有未编码的 \"/brushes/\" + name（fetch 与 cache.put 都要走 brushAssetUrl）"
+    );
+    handle.shutdown();
+}
+
+/// **穿越守卫在百分号解码之后仍必须拦住所有坏名字** ✓（含编码形式）。
+///
+/// 结构与已有的 `wasm_assets_are_served_from_the_configured_directory` /
+/// `brand_assets_are_served_from_the_configured_directory` 相同（自建临时资产目录 + 原始 TCP 客户端 ✓），
+/// 不另起一套测试装置 ✓。
+///
+/// **关键点**：解码发生在守卫**之前** ✓ ⇒ `%2e%2e` 会被还原成 `..` 并被**同一条**规则拒掉 ✓
+///（即解码只会让守卫更严 ✗→✓）。这里在 `brushes/` 之外放一个 `outside.myb` 哨兵 ✓：
+/// 若去掉守卫，`/brushes/%2e%2e%2foutside.myb` 会被还原成 `../outside.myb`，
+/// `join` 之后正好读到哨兵 ⇒ **哨兵被发出来** ⇒ 判据红 ✓。这就是"去掉守卫就红"的变异点 ✓。
+#[test]
+fn brush_asset_route_rejects_encoded_traversal() {
+    let mut root = std::env::temp_dir();
+    root.push(format!("yanshi-brush-traversal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("brushes")).unwrap();
+    // brushes/ 里一个合法笔刷；brushes/ **之外**一个同扩展名的哨兵（只在守卫失效时可达）。
+    std::fs::write(root.join("brushes/ok.myb"), b"{\"ok\":true}").unwrap();
+    std::fs::write(root.join("outside.myb"), b"ESCAPED-SENTINEL").unwrap();
+
+    let handle = serve(HttpOptions {
+        bind: "127.0.0.1:0".to_owned(),
+        assets_dir: Some(root.clone()),
+        width: 32,
+        height: 32,
+        ..HttpOptions::default()
+    })
+    .unwrap();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+
+    // 正例：合法名字照常 200。
+    let (status, _, bytes) = client.request("GET", "/brushes/ok.myb", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(bytes, b"{\"ok\":true}");
+
+    // 反例：字面与编码的穿越 / 分隔符 / 扩展名不符，一律拒（今天字面那几条就是 400 ✓）。
+    let bad = [
+        "/brushes/../outside.myb",            // 字面 `..`（今天已拒）
+        "/brushes/%2e%2e%2foutside.myb",      // 编码的 `../`（今天不解码 ⇒ 404；解码后必须 400）
+        "/brushes/..%2Foutside.myb",          // 编码的 `/`
+        "/brushes/..%5Coutside.myb",          // 编码的 `\`
+        "/brushes/%2e%2e%2fbrushes%2fok.myb", // 编码的 `../brushes/ok.myb`
+        "/brushes/secret.txt",                // 扩展名不符
+    ];
+    for target in bad {
+        let (status, _, bytes) = client.request("GET", target, None, None);
+        assert_eq!(status, 400, "{target} 必须被判为非法资源名");
+        assert_ne!(
+            &bytes[..],
+            &b"ESCAPED-SENTINEL"[..],
+            "{target} 竟然把 brushes/ 之外的文件发了出来"
+        );
+    }
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// **Phase 5：viewer 令牌不得改动文档** ✓ —— 这一条此前是**真的漏洞** ✗。
 ///
 /// **漏洞是什么** ✓：`can_edit` 原来**只挡住 blob 上传** ✓，而**工具入口没有检查** ✗
