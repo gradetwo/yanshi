@@ -39879,3 +39879,49 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 **"在哪里判断"**比"判断了什么"更容易错：入口先做了一步"为了省事"的预建，
 就把工具里那条正确的分支**变成了错误的分支** ✗。
 ⇒ 读一个工具的行为时，**必须一路读到入口**；只读工具函数本身会得出**看起来合理但错的结论** ✓。
+
+## 第 1278 轮：`new_document` 尺寸缺陷结案（**入口预建**是根因；我的假设错了），并把教训入库
+
+### 子代理核实：我的假设**是错的**
+`Workspace::document_mut`（`service.rs:1207`）**不是**按需创建 ✓：
+```rust
+self.documents.get_mut(doc_id).ok_or_else(|| … ReferenceNotFound "文档 {doc_id} 未打开")
+```
+⇒ **∴ 而它**旧文档注释**✗ 写着「打开（**或按需创建**）✗」✗ ⇒ **∴ 描述与实现相反 ⇒ **∴
+   **这正是误导报告作者**✗（**∴ 也误导了我 ✓**）的原因 ⇒ **∴ 子代理把那条注释也修了 ✓** ✓✓
+
+### 真正的根因（**入口**预建）
+`crates/yanshi-mcp/src/lib.rs Server::tools_call` **在分发任何工具之前**无条件做：
+```rust
+let spec = NewDocument::new(doc_id.clone(), self.options.width, self.options.height);
+self.workspace.open_or_create(spec, …)
+```
+⇒ `new_document{doc_id:"brand_new_4k", width:3840, height:2160}` **走到工具里时目标已按 CLI 缺省 1024×1024 建好** ✗
+⇒ 工具的"已存在 ⇒ 打开"分支于是丢掉尺寸并报 `opened:true` ✗ ⇒ **一个缺陷解释两个症状 ✓**。
+（HTTP 侧同形代码在 `server.rs:1644`，但 HTTP 的 `open_or_create` 用的是**查询参数**里的 doc，
+  `authorize` 已经打开过它 ⇒ **HTTP 不会出现该缺陷** ⇒ 那处守卫是**防御性**的，没有失败的 HTTP 判据 ✓。）
+
+### 修复三件
+1. `ToolSpec::creates_own_document()`（仅 `new_document` 为真）⇒ **MCP 与 HTTP 两个入口都跳过预建**（一处定义 ✓）；
+2. `Workspace::document_exists()`（内存 **或** 磁盘 `persist.doc_dir(id).exists()`）⇒ 与 `import_project` 同一条谓词 ✓；
+3. `write_new_document` 的存在性判断改用 `document_exists` ＋ `open_document`（**仅磁盘上存在**的会打开；
+   空壳则落到"创建"）⇒ 创建分支现在返回 `created:true / opened:false`（**此前两个字段都不返回** ✗）；描述同步更正。
+
+### 修前／修后（**真 MCP 进程**，空 `--root`，CLI 缺省 1024×1024）
+| 请求 | 修前 | 修后 | 修后 `meta.json` |
+|---|---|---|---|
+| 3840×2160 | `false/true/1024×1024` | **`true/false/3840×2160`** | **3840×2160** |
+| 800×600 | `false/true/1024×1024` | **`true/false/800×600`** | **800×600** |
+| 1920×1080 | `false/true/1024×1024` | **`true/false/1920×1080`** | **1920×1080** |
+另一个方向也验过：已存在的 96×96（含对象 `s1`）＋ `new_document{640,480}` ⇒ `opened:true/created:false/96×96`，
+`s1` **仍在**、`meta.json` **仍 96×96**；**重启进程**（走磁盘）后依旧 ✓。
+
+### 判据（**两条都在今天的代码上会红 ✓**）
+- `crates/yanshi-mcp/tests/stdio.rs::new_document_honours_size_and_reports_created_for_fresh_ids`（**真子进程** ✓）；
+- `crates/yanshi-server/tests/new_document.rs::an_on_disk_document_is_opened_and_never_resized` ✓；
+- 我没跑的那条（`stdio` 文件）本轮**已在 push 后直接跑过**：`new_document` 三条 **3 passed** ✓。
+
+### 教训（**进 skill：读工具必须一路读到入口**）
+**"在哪里判断"比"判断了什么"更容易错** ✗：入口为了省事先建了文档，就把工具里那条**正确的分支**
+变成了**错误的分支** ✗。而且**描述与实现相反**（`document_mut` 注释）会**同时误导报告作者与修的人** ✓。
+⇒ 调查一个工具的行为时：① **读到入口**；② **不要相信文档注释**，以代码为准；③ 判据必须**经过入口**（真进程）。
