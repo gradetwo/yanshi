@@ -1025,14 +1025,34 @@ impl Workspace {
     /// 打开（或返回已打开的）文档：从磁盘加载日志并重建状态。
     pub fn open_document(&mut self, doc_id: &str) -> Result<&mut Document> {
         if !self.documents.contains_key(doc_id) {
+            // **打开路径的分阶段计时** ✓（第 1493 轮 ✓）—— 外部报告实测 15.1 MB 文档
+            // `get_document` 要 **294.6 s** ✗，但报告自己说**没做 profiling** ✗。
+            // 读代码只能把候选排到 `load_atoms`／`load_render`／`load_preview`／`load_meta`
+            // 与令牌恢复 ✗（`put`／`restore_persisted_*`／`with_atoms`／`full_fold` 都已按量级排除 ✓）。
+            // 用 `YANSHI_OPEN_TIMING=1` 打开 ✓ ⇒ 把六段耗时打到 stderr ✓，报告方可用**同一份文档**
+            // 复跑取得分层数据 ✓（**∴ 我构造的输入 ≠ 产品真实输入” ✓）。
+            let timing = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
+            let mut marks: Vec<(&str, std::time::Instant)> = Vec::new();
+            let mut mark = |name: &'static str| {
+                if timing {
+                    marks.push((name, std::time::Instant::now()));
+                }
+            };
+            mark("open");
             let (atoms, render, preview) = match &self.persist {
-                Some(persist) => (
-                    persist.load_atoms(doc_id)?,
-                    persist.load_render(doc_id)?,
-                    persist.load_preview(doc_id)?,
-                ),
+                Some(persist) => {
+                    mark("load_atoms");
+                    let atoms = persist.load_atoms(doc_id)?;
+                    mark("load_render");
+                    let render = persist.load_render(doc_id)?;
+                    mark("load_preview");
+                    let preview = persist.load_preview(doc_id)?;
+                    mark("loads_done");
+                    (atoms, render, preview)
+                }
                 None => (Vec::new(), None, None),
             };
+            let atoms_len = atoms.len();
             if atoms.is_empty() {
                 return Err(YanshiError::new(
                     ErrorCode::ReferenceNotFound,
@@ -1072,6 +1092,18 @@ impl Workspace {
                         )?;
                     }
                 }
+            }
+            if timing {
+                mark("restore_meta");
+                let mut report = format!("open_timing doc={doc_id} atoms={atoms_len}");
+                for pair in marks.windows(2) {
+                    report.push_str(&format!(
+                        " {}={}ms",
+                        pair[0].0,
+                        pair[1].1.duration_since(pair[0].1).as_millis()
+                    ));
+                }
+                eprintln!("{report}");
             }
             self.documents.insert(doc_id.to_owned(), document);
             // **"只解压到 `--root`"那条路也要能把省掉的位图补回来** ✓。
