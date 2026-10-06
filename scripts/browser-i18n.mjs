@@ -139,7 +139,16 @@ if (!probe.paletteVisible) console.log("  【调色板祖先链】" + JSON.strin
   if (probe.distinct > 0) failures.push(`英文模式下整页仍有 ${probe.distinct} 条中文：${JSON.stringify(probe.sample)}`);
   // 只断言"默认布局下一定可见"的标签（工具栏刷新 ✓、调色板面板 ✓、顶栏文件菜单 ✓）；
   // 历史/标注等面板默认收起 ⇒ 断言它们存在等于假设布局，会很脆。
-  for (const [name, ok] of Object.entries(probe.labels)) if (!ok) failures.push(`英文模式下看不到英文标签 ${name}`);
+  // **只断言"此刻真的可见"的面板** ✗ —— `paletteChain` 实测（2026-10-06 CI ✓）：
+  // `cardPalette` **自己**是 `block/visible` ✓，但它的父层 `div.tab-pane` 是 **`display:none`** ✗
+  // ⇒ 那个 tab 当前**没被选中** ⇒ `offsetParent` 为 `null` ⇒ 里面的英文标签**取不到** ✓。
+  // ⇒ 这不是"翻译缺失" ✗（**∴ `【整页】distinct:0` ✓**），而是**断言了一个不可见的面板** ✗
+  // ⇒ 与上面那句注释里"历史/标注等面板默认收起 ⇒ 断言它们存在等于假设布局，会很脆"**同一条道理** ✓。
+  const labelVisible = { refresh: true, file: true, palette: probe.paletteVisible };
+  for (const [name, ok] of Object.entries(probe.labels)) {
+    if (labelVisible[name] === false) continue;      // 面板此刻不可见 ⇒ 不断言它的标签 ✓
+    if (!ok) failures.push(`英文模式下看不到英文标签 ${name}`);
+  }
 }
 
 // 再点一次 ⇒ 回到中文
