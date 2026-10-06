@@ -38950,3 +38950,39 @@ HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 
 （回退时先 `git add -A` 暂存了坏版本，而 `git checkout -- <path>` **只还原工作树、不动索引**）。
 已用**带修订号**的 `git checkout dc68694^ -- <path>` 还原（提交 `7d6c62d`），并复核远端标记计数为 0。
 教训已写进 `docs/skills/development.md` 9.12。
+
+## 第 1235 轮：把 (A)⑥ 的离线缺陷缩小到"内核初始化"路径，并派工修
+
+上一轮确认了 `browser-offline-shell` / `browser-offline-brush` 的绿灯是用**实时 SW 网络**买来的。
+本轮我只读地把范围缩小（尚未定位到最后一行，故派工）：
+
+### 已确认的机制
+- **内核本身的字节离线可得**：`viewer-app.js:1161` 用 `await import("/wasm/yanshi_wasm.js")` 加载内核，
+  而 `/wasm/yanshi_wasm.js` 与 `/wasm/yanshi_wasm_bg.wasm` **都在 SW 的 SHELL 里**
+  （`server.rs:2604-2605` 列出这两个 ⇒ SHELL 里的 "wasm: 2" 就是它们）。
+- **初始化喂给内核的是 atoms 的 JSON**：`:1227-1234` 先
+  `new state.wasm.WasmKernel(docId, 256, w, h, 64MiB)`，再
+  `state.kernel.load_atoms_json(JSON.stringify(atoms.atoms))`。
+  而 `atoms` 来自**只读工具**（走 `fetchOrLocal` ⇒ 已落 IndexedDB）⇒ **离线本来应该拿得到**。
+- **SW 的 blob 分支是"用到就存"**：`service-worker.js:251-266` 对 `/api/blob/` 是 cache-first，
+  **命中就返回、未命中才 fetch 并写缓存** ⇒ **在线时从未被请求过的 blob ⇒ 离线时不在缓存里**。
+  查看器另有一条**本地化**路径（`:258-260` 注释：「`/api/blob/…` 一律本地化」）⇒ blob 其实有**两层**缓存（OPFS ＋ SW）。
+
+### 因此最可能的两条阻塞（尚未证伪，故先量后改）
+1. `atoms.atoms` 里的原子**引用了 blob 字节**，内核重建文档时要用到它们，
+   而查看器**没有**把那些字节喂进内核的通路（要先确认"是否存在这条通路"）；
+2. 或者内核**根本没被加载**：`:1158` 的 `await (await fetch("/health")).json()` 在离线时先失败，
+   若回退没命中 ⇒ `health.wasm` 为假 ⇒ 抛错 ⇒ `window.yanshi.kernelStats()` 为 `null`。
+
+### 派工要求（关键几项）
+- **先量后改**：要在真实页面里拿到**那个异常或那个假条件的原始文本**，不许猜。
+- 修完要让 `shell` / `brush` 两条在**负对照 ＋ stub 生效**的前提下变绿；
+  **不许削弱 stub 或负对照**（那正是我们要消灭的假绿）。
+- 判据：① stub 掉真实网络后内核必须初始化并能离线落笔（复用子代理的 harness，先红后绿）；
+  ② 相关的 blob 本地化／离线绘制／导出判据保持绿（点名）；
+  ③ 若加预热，要证明它"在线时确实跑了"（例如断言缓存/OPFS 里的 blob 计数），并证明**关掉预热就红**。
+- 纪律照旧：独立 target；**浏览器判据必须走 `scripts/run-criteria.sh`**（它管 viewer URL 形状、真实 token、
+  CDP 生命周期；我手工复刻两次都错：URL 用了 `/viewer?…` 而 runner 用的是根路径，token 自造而不合法）；
+  `CDP_PORT` 从环境变量读、不从 argv；变异要确认落盘；**回退必须带修订号**（`git add -A` 之后尤其）；
+  notes 只追加且轮次编号唯一；五步门禁全绿才提交；英文提交；不碰 main；不推送。
+- 并提示它：现成的红色证据在 `/tmp/wt-offctl`（分支 `test/offline-negative-controls`），可读不可合。
