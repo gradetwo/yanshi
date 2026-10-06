@@ -144,3 +144,95 @@ fn the_offline_fallback_manifest_is_itself_precached() {
         "回退清单 {manifest} **必须在 SHELL 里** ✓（否则回退在离线时同样失败 ⇒ 回退是假的 ✗）"
     );
 }
+
+/// **特殊字符笔刷名：查看器与 SW 预缓存必须用同一个编码 URL** ✓。
+///
+/// **为什么不只靠 HTTP 那条判据** ✓：HTTP 那条只量"服务端**能**把编码名发出来" ✓；
+/// 若查看器仍写 `"/brushes/" + name + ".myb"`（不编码 ✗）或 SW 仍写字面 `#` ✗，
+/// 浏览器端依然取不到 ✓ ⇒ 这条把"两端同码"钉住 ✓（沿用本文件的源码级检查法 ✓，不另起装置 ✓）。
+///
+/// **判定三条** ✓：① 查看器的笔刷 URL 由 `brushAssetUrl` 唯一拼出 ✓，且必过 `encodeURIComponent` ✓；
+/// ② `SHELL` 里所有 `/brushes/` 条目都**不含字面 `#`** ✓，且百分号解码后都对应磁盘上真实文件 ✓
+///（SW 预缓存若指向不存在的 URL，`cache.add` 会被 `.catch` 静默吞掉 ✗ ⇒ 离线时少笔 ✗）；
+/// ③ 九支带 `#` 的笔刷在 `SHELL` 里**正好**是 `%23` 形式 ✓。
+///
+/// **变异判据** ✓：去掉查看器的 `encodeURIComponent` ⇒ 红 ✓；
+/// 把 `SHELL` 里任一条 `%23` 改回字面 `#` ⇒ 红 ✓。
+#[test]
+fn brush_urls_are_percent_encoded_on_both_sides() {
+    let app = read("crates/yanshi-http/assets/viewer-app.js");
+    let sw = read("crates/yanshi-http/assets/service-worker.js");
+
+    // ① 查看器：笔刷 URL 必须逐段编码（`#` 在 URL 里是片段起点 ⇒ 不编码就丢后缀）。
+    let builder = app
+        .lines()
+        .find(|line| line.contains("const brushAssetUrl ="))
+        .expect("viewer-app.js 应有 `const brushAssetUrl =` 这个唯一入口 ✓");
+    assert!(
+        builder.contains("encodeURIComponent"),
+        "brushAssetUrl 必须用 encodeURIComponent 编码笔刷名：{builder}"
+    );
+    // **请求与缓存键必须走同一个入口**（父 agent 点名的第二处）：老写法
+    // `"/brushes/" + name + ".myb"` 在 fetch 与 `cache.put` 各出现一次 ⇒ 必须一处不剩，
+    // 且 `brushAssetUrl(...)` 至少被调用两次（fetch 一次、cache.put 一次）。
+    // 否则请求编码了、缓存键没编码（或反过来）⇒ 离线回退按 `request.url` 查缓存永远命中不了。
+    assert!(
+        !app.contains("\"/brushes/\" + name"),
+        "查看器里不该再有未编码的 \"/brushes/\" + name（fetch 与 cache.put 都必须走 brushAssetUrl）"
+    );
+    assert!(
+        app.matches("brushAssetUrl(").count() >= 2,
+        "brushAssetUrl 应被 fetch 与 cache.put 各调用一次（实际 {} 次）",
+        app.matches("brushAssetUrl(").count()
+    );
+
+    // ② SW：SHELL 里的 `/brushes/` 条目必须不含 `#`，且解码回磁盘上真实文件。
+    let start = sw.find("const SHELL = [").expect("SW 应有 SHELL 清单");
+    let end = sw[start..].find("];").expect("SHELL 应闭合") + start;
+    let entries: Vec<&str> = sw[start..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::trim)
+        .filter(|url| url.starts_with("/brushes/"))
+        .collect();
+    assert!(
+        entries.len() >= 100,
+        "SHELL 里的笔刷条目太少（{} 条）⇒ 提取器坏了",
+        entries.len()
+    );
+    let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("assets/brushes");
+    for url in &entries {
+        assert!(
+            !url.contains('#'),
+            "SHELL 里不能有字面 `#`（片段起点 ⇒ cache.add 会丢掉后缀）：{url}"
+        );
+        let name = yanshi_http::http::percent_decode_path(&url["/brushes/".len()..]);
+        assert!(
+            assets.join(&name).is_file(),
+            "SHELL 预缓存的 {url} 解码后是 {name}，磁盘上没有这个文件"
+        );
+    }
+
+    // ③ 九支带 `#` 的笔刷：SHELL 里必须正是编码形式（否则离线回退按 URL 查缓存命中不了）。
+    const HASH_NAMED: [&str; 9] = [
+        "8B_Pencil#1.myb",
+        "arrow#1.myb",
+        "Fan#1.myb",
+        "Flat2#1.myb",
+        "Fountain_SF#1.myb",
+        "Fount-offset#1.myb",
+        "HalfTone#1.myb",
+        "HalfToneCMY#1.myb",
+        "Round#1.myb",
+    ];
+    for name in HASH_NAMED {
+        let encoded = name.replace('#', "%23");
+        assert!(
+            sw.contains(&format!("\"/brushes/{encoded}\"")),
+            "SHELL 应预缓存编码后的 /brushes/{encoded}（离线才命中得了）"
+        );
+    }
+}
