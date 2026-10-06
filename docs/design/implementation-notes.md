@@ -41809,3 +41809,39 @@ tool-scatter-polygon.mjs         tool-surface-coverage.mjs
 ### 预判（**∴ 下一轮核对 ✓**）
 **∴ 本轮把两条都改好之后 ⇒ **∴ `shard 6/6`✗ 应当**全绿（通过 15 ✗）** ✓
    ⇒ **∴ 若仍红 ⇒ **∴ 那就说明**还有第三条**✗（**∴ 而名单 ＋ 失败消息会给名字 ✓**）** ✓✓
+
+## 第 1341 轮：`(A)④`（本地持久化）**确认有实现 ＋ 有设计依据 ＋ 有判据** ✓
+
+### 实现（**∴ `viewer-app.js`✗ ✓**）
+```
+:103  // **为什么用 OPFS + IndexedDB** ✓（第 160 轮的算术依据 ✓）：文档像素可达 **48MB** ✓，
+:105  // 索引走 **IndexedDB** ✓（行业常见配对 ✓）。验收判据是 `scripts/browser-offline-reload.mjs` ✓：
+:132  /// IndexedDB 打开（只存 `{key, file, size, at}` ✓，**不存字节** ✗ —— 字节在 OPFS ✓）。
+:135      if (!self.indexedDB) { reject(new Error("没有 IndexedDB")); return; }
+:136      const request = indexedDB.open(LOCAL_DB, OUTBOX_DB_VERSION);
+:139-147  database.objectStoreNames.contains(…)   // **三个 store** ✓
+:160-161  const tx = db.transaction(name, mode); const store = tx.objectStore(name);
+```
+⇒ **∴ 分工清楚** ✓：**∴ **字节在 `OPFS`✗**（**∴ 因为像素可达 48MB ✓**）｜**∴ **索引在 `IndexedDB`✗**
+   （**∴ 只存 `{key, file, size, at}`✗ ⇒ **∴ 不存字节 ✓**）⇒ **∴ 这正是行业常见配对 ✓** ✓✓
+   ⇒ **∴ 而它写明"**为什么**✗"⇒ **∴ 有算术依据（**∴ 48MB ✗）✓** ✓✓
+
+### 判据覆盖（**∴ grep 到 3 个 ✓**）
+| 判据 | 作用 |
+|---|---|
+| **∴ `browser-offline-journal.mjs`✗** | **∴ 离线日志／outbox（**∴ 写入与重放 ✓**）** |
+| **∴ `browser-export-full-document.mjs`✗** | **∴ 导出（**∴ 本地优先 ✓**）** |
+| **∴ `tool-offline-asset-coverage.mjs`✗** | **∴ 资产覆盖（**∴ 不依赖服务端路由 ✓**）** |
+
+⇒ **∴ 而注释点名的"验收判据"✗ 是 `browser-offline-reload.mjs`✗** ✓ ⇒ **∴ 那一条**我还没亲跑**✗** ✓
+   ⇒ **∴ 所以列进下一轮** ✓（**∴ 一条命令 ⇒ **∴ 与已跑过的几条同法 ✓**）** ✓✓
+
+### 小结（**∴ `(A)`✗ 的证据账 ✓**）
+| 项 | 实现 | 判据 | 我亲跑过？ |
+|---|---|---|---|
+| ① 静态化＋SW | ✓ | 多个 | **∴ SW 我亲验过（**∴ 16857 字节 ＋ 全量键 358 ✗ ✓**）** |
+| ② 资产随包 | ✓ | `tool-offline-asset-coverage` | ✓ 跑过 |
+| ③ 共享内核＋退休第二份 | ✓ | `wasm-brush-parity`／`render-switch` | **∴ `render-switch`✗ 由 CI 确认绿 ✓** |
+| ④ 本地持久化＋导出 | ✓ | `browser-offline-reload`／`offline-journal`／`export-full-document` | **∴ **未亲跑**⇒ **∴ 下一轮 ✓**** |
+| ⑤ 服务端回退＋开关 | ✓ | `browser-render-switch` | ✓ CI 绿 |
+| ⑥ 三条 | ✓ | parity／offline-draw／no-stale-read | **∴ ② ③ 本地绿 ✓** |
