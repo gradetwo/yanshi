@@ -69,6 +69,13 @@ pub struct McpOptions {
     /// 启用的 profile。
     pub profiles: Vec<Profile>,
     /// 是否等待渲染（`wait_for_render`，6.7）。
+    ///
+    /// **等的是"这一笔的脏区"那一次渲染** ✓（性能专题本轮澄清 ✓）——
+    /// 它保证返回时该原子 `rendered == true` 且 `job_status == "committed"` ✓。
+    /// **不等那张 256² 文档级缩略图** ✗：它是缓存，按需产生 ✓
+    ///（`get_document` 会发现它落后并当场重建 ✓；在那之前
+    /// `get_render_status.thumbnail_current` 为 `false` ✓ —— 调用方看得见 ✓）。
+    /// 8K 实测：默认（同步）单笔 39.5 s vs `--no-wait` 95.1 ms，**逐像素一致** ✓。
     pub wait_for_render: bool,
     /// 等待预算（毫秒）。
     pub wait_budget_ms: u64,
@@ -165,6 +172,10 @@ impl McpOptions {
                                  （all = 全部已实现的组，即除 semantic 外；缺省只开 core）\n\
            --no-wait             不等待渲染（立即返回 job_pending，由 Agent 轮询）\n\
            --wait-budget <ms>    wait_for_render 的等待预算（缺省 500）\n\
+                                 **注意**：默认的等待只覆盖「这一笔的渲染」（rendered/job_status）\n\
+                                 —— 它**不**等那张 256² 文档缩略图（缓存，按需产生；\n\
+                                 要新鲜就调 get_document，它会当场重建；\n\
+                                 get_render_status.thumbnail_current 会告诉你它是否落后）\n\
            --no-inline-images    关掉内嵌图像；**缺省是内嵌**（图片在 MCP 的 image 内容块里）\n\
            --list-tools          打印工具清单后退出\n\
            --help                显示帮助\n\

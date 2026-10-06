@@ -253,6 +253,14 @@ pub struct Document {
     /// 复用持久化像素的全部价值就是让它**保持 0** ✓ ⇒ 一旦有人把某条路径改回整幅 ✗，
     /// 判据立刻变红 ✓，不需要在慢机器上等 140 秒 ✗。
     full_canvas_renders: usize,
+    /// **文档级预览渲染**（`render_document_preview` 真正渲染了像素）的次数 ✓（判据用语义计数 ✓）。
+    ///
+    /// **为什么单列一个计数** ✗：`full_canvas_renders` 只在"整幅"时 +1 ✓ ⇒ 暖文档上
+    /// `render_document_preview` 只重渲染**缩略图块**（远小于整幅 ✓）⇒ 它**数不到** ✗。
+    /// 而外部 4K/8K 报告指认的固定开销正是"提交收尾同步跑一次文档级预览" ✓ ——
+    /// 判据需要能看见"这一笔到底有没有跑那一次" ✓，且**与画布面积、与墙钟都无关** ✓
+    ///（暖文档上的那一次是块渲染 ✓，冷文档上的那一次是整幅 ✓，两者都该被数到 ✓）。
+    document_preview_renders: usize,
     /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
     ///
     /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
@@ -368,6 +376,7 @@ impl Document {
             full_frame_render: None,
             full_frame_render_seq: 0,
             full_canvas_renders: 0,
+            document_preview_renders: 0,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
@@ -1097,6 +1106,8 @@ impl Document {
                 let rendered = self
                     .renderer
                     .render_region(&self.state, &*self.store, region)?;
+                // **"这条路真的走了"** ✓（判据用它 ✓，与区域大小、与墙钟都无关 ✓）。
+                self.document_preview_renders += 1;
                 if covers_canvas(region, self.state.width, self.state.height) {
                     self.full_canvas_renders += 1;
                 }
@@ -1309,6 +1320,21 @@ impl Document {
     /// 真正**整幅**渲染画布的次数 ✓（判据用语义计数 ✓；复用持久化像素就该让它保持 0 ✓）。
     pub const fn full_canvas_render_count(&self) -> usize {
         self.full_canvas_renders
+    }
+
+    /// **文档级预览渲染**的次数 ✓（`render_document_preview` 真正渲染像素的次数 ✓；
+    /// 判据用语义计数 ✓，不看墙钟 ✗）。
+    ///
+    /// **判据为什么需要它** ✗：外部 4K/8K 报告的根因陈述是"提交收尾同步重算了一遍
+    /// 文档级预览（只为一张 256² 缩略图）" ✓ ⇒ 回归判据要问的是
+    /// **"这一笔有没有跑那次渲染"** ✓ —— 而不是"花了多少毫秒" ✗
+    ///（debug 下同一段能差 3-5 倍 ✓，见 `tests/background_stroke_cost.rs` 的记录 ✓）。
+    ///
+    /// 与 [`Self::full_canvas_render_count`] 的分工 ✓：那一个只数**整幅** ✓
+    ///（冷启动 / 复用持久化像素专题用它 ✓），暖文档上的块渲染它数不到 ✗；
+    /// 这一个数**这条路走没走** ✓，与区域大小无关 ✓。
+    pub const fn document_preview_render_count(&self) -> usize {
+        self.document_preview_renders
     }
 
     /// 日志被**全量重放**的次数 ✓（打开一次 + 每次"增量前推被拒"的提交 ✓）。

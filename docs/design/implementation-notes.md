@@ -37653,3 +37653,105 @@ buffer_pool.rs:229-234：
 还有两个子代理在各自 worktree 里构建 ✓）⇒ 重跑一次得到完整结果 ✓：
 **140 组全绿 / 0 失败 / 901 个用例通过 / `TEST_EXIT=0`** ✓。
 这不是"重试才绿" ✗：被打断的那次**一条失败都没有** ✓，重跑只是把它跑完 ✓。
+## 第 1185 轮：把 `wait_for_render` 的等待从「文档级预览（缩略图）」解耦出来——默认路径不再为一张 256² 缓存重算画布
+报告建议 2 说的正是这一轮（第 1183 轮的记录末行点明了它与我修的另一半正交）：
+"解耦 Job 推进契约与整幅预览"。前一半（跨渲染 `BitmapCache`，第 1182 轮）让**每一次**预览变便宜；
+这一半让**那次预览根本不必发生**。
+### 定位（先在真实 4K 文档上量，不猜）
+`crates/yanshi-server/tests/zz_probe_preview.rs`（临时探针，已删）：
+3840×2160 ＋ 整幅 `Paper001.png` 背景，三笔 `2B_pencil`（size 16），debug 档：
+| | total_ms | preview_ms | `full_canvas_render_count` | `document_thumbnail_is_current` |
+| `wait_for_render=false` 三笔 | 86.6 / 30.7 / 10.2 | **0** | 0 | false |
+| `wait_for_render=true` 三笔（**改动前**） | 799.9 / 589.8 / 1347.3 | **754.5 / 559.0 / 1333.1** | 4 | true |
+⇒ 结论与报告一致：默认路径上**唯一大头就是那次文档级预览**；
+而 `wait_for_render=false` 本来就不做任何渲染（`misses=0`、`missed_bytes=0`）⇒ 那条语义一个字都不用改。
+`unaccounted`/`other_ms` 已经是 1-5 ms（前一半的功劳）✓ —— 这一轮拿掉的是 `preview_ms` 里的那一次。
+### 改动（`tools.rs::finish_mutation`）
+原先一个 `if ctx.wait_for_render` 里塞了三件事 ✗：
+① `document.run_pending_jobs()` ⇒ `render_document_preview()`（文档级预览/缩略图）；
+② 它顺带调用的 `complete_render_jobs()`；③ 它推进的 `render_watermark`。
+② ③ 是 `wait_for_render` 的**承诺**，① 是**副作用**——三者绑在一起，所以第 1038 轮"直接删掉渲染"被
+`heavy_atoms_create_jobs_and_render_completes_them` 与 `jobs_ttl_cancel_and_render_watermark` 两条判据挡下。
+这一轮把它们**拆开**：承诺改由**调用方要的那次渲染**兑现——也就是"这一笔的脏区"那一次
+（`Workspace::render_region` ⇒ `Document::render_region`）。它**同样**推进水位、
+**同样**跑 `complete_render_jobs()`（两条路径都有：整幅缓存命中那条也有）⇒ ①②③ 一字不少 ✓，
+而那次为缩略图的整幅/块级预览**不再无条件发生** ✓。
+顺序是契约的一部分：**先脏区渲染、再读 `job_status`**——反过来读就会看到 `submitted`。
+**"要不要做这次渲染"的三条判据**（`caller_render_wanted`，缺一条就会把活加回来）：
+① 非静默 ⇒ 这张图要进响应；② 静默 ＋ **重型**原子（有 job）⇒ 不要图，但要它把 job 跑完
+（用脏区这一次渲染兑现，比整幅文档预览便宜）；③ 静默 ＋ **轻型**原子（没有 job）⇒
+**一个像素都不渲染**。第③条我第一版漏了：写成"静默也渲一下、只是不放进响应"能降低重型笔触的成本，
+却把轻型原子的成本**加上去** —— 而 `silent` 的初衷正是"批量静默提交不要额外的 CAS IO"。
+判据 1 因此专门钉了一条"静默 ＋ 轻型原子 ⇒ 水位不推进"，并配了一个**对照**
+（同一支工具不静默时**必须**渲染），否则那条断言可能只是"这条原子根本没有脏区"而空转 ——
+对照第一次跑就抓到了空转：我最初用 `missed_bytes` 当探测器，而 `draw_stroke` 是矢量原子、
+渲染它不需要解压位图补丁 ⇒ 探测器全程不动。改用**渲染水位**才是"有没有渲染过"的定义式。
+新语义（写进了 `ToolContext::wait_for_render` 的文档、MCP `--help` 与工具描述）：
+* `wait_for_render=true`：返回时 `render_status.rendered == true`、`job_status == "committed"`，
+  响应里的 `preview` 是**这一笔脏区的真实渲染**（与改动前逐字节相同）；
+* **文档级缩略图会滞后**（缓存）⇒ 要新鲜就 `get_document`（落后当场重建，绝不拿旧图冒充 HEAD）；
+* 新增 `get_render_status.thumbnail_current`，让"落后"**可见**，而不是让调用方从 `thumb_url` 里猜；
+* `wait_for_render=false`：完全没变。
+新增语义计数 `Document::document_preview_render_count()`：`full_canvas_render_count` 在暖文档上
+只重渲染缩略图块、**数不到**，判据需要"这条路走没走"这个与面积、与墙钟无关的量。
+### 读数（同一条探针，改动后）
+| | total_ms | preview_ms | `document_preview_render_count` | `thumbnail_current` |
+| `wait_for_render=true` 三笔 | 245.2 / 263.6 / 137.1 | 199.4 / 233.3 / 101.4 | **0 / 0 / 0** | false |
+| `wait_for_render=false` 三笔 | 33.0 / 35.5 / 8.5 | 0 | 0 | false |
+`preview_ms` 从 559-1333 ms 降到 101-233 ms（debug 4K），降的是**那份调用方没要的文档级预览**；
+剩下的 101-233 ms 是**这一笔脏区**的渲染——那是调用方要的像素，保留。
+（debug 档，仅作同机同场景对照，不作发布性能承诺。）
+### 判据（`crates/yanshi-server/tests/preview_wait_decoupled.rs`，四条）
+1. `a_stroke_that_did_not_ask_for_the_document_preview_never_runs_one`：三种形态
+   （`wait_for_render=false` / 缺省 / `silent=true`）都断言 `document_preview_render_count`
+   与 `full_canvas_render_count` **不增长**；`false` 那一段再加"一个字节都没解出来"。
+   **红法实测**：① 在脏区渲染**之前**插回 `run_pending_jobs()`（必须放前面——
+   放后面 `jobs.pending()` 已空会直接返回、计数不动，我第一版就是这么误判的）
+   ⇒ 红于 `document_previews: 1 → 2`；② 去掉脏区渲染外面的 `if ctx.wait_for_render`
+   ⇒ 红于 `missed_bytes: 1048576 → 1072128`。
+2. `the_final_pixels_and_thumbnail_match_the_eagerly_refreshed_ones`：参照物文档每笔手动跑
+   `render_document_preview()`（＝改动前的提交收尾那一句），被测文档走缺省路径、最后**一次性**要缩略图；
+   比最终**整幅裸 RGBA** 与最终 **256² 缩略图 PNG**。
+   **红法实测**：把 `ensure_document_thumbnail` 的 `document_thumbnail_is_current()` 改成 `if true`
+   ⇒ 红于"最终缩略图与改动前不是同一张：79858 / 89471 字节不同"。
+   （起点必须**真正产生**一张 256²：刚铺完整幅背景时 `document_thumbnail` 被整幅区域渲染换成了 512² 的
+   整幅 PNG 且"与 HEAD 一致" ⇒ `ensure_document_thumbnail` 会直接返回那张整幅图。这一步踩过一次。）
+3. `wait_for_render_true_still_returns_after_the_render_is_complete`：
+   `job_status == "committed"`、`render_status.rendered` 且 `rendered_seq == head_seq`、
+   响应 `preview` 与**此刻重新渲染同一片区域**的 blob 地址相同（内容寻址 ⇒ 一次字符串比较）。
+   **红法实测**：在 `finish_mutation` 开头 `if ctx.wait_for_render { return … Submitted … }`
+   ⇒ 红于 `job_status: "submitted" != "committed"`。
+4. `criterion_four_names_the_existing_harnesses_instead_of_writing_a_third_one`：点名既有判据并
+   **确认它们还在**（不是复制一套）：`background_stroke_cost`（三条，前一半的语义计数）、
+   `render_parity`（服务端/内核逐位一致）、`timings_and_cancel`（各相 ＋ 残差 == total_ms）、
+   `document::tests::heavy_atoms_create_jobs_and_render_completes_them`、
+   `service_flow::jobs_ttl_cancel_and_render_watermark`、
+   `service_flow::document_thumbnail_is_cover_whole_canvas_not_the_last_region`。
+### 代价与边界（两面）
+* **收益**：默认（同步）路径不再为一张 256² 缓存重算一遍；单笔的固定开销从
+  `preview_ms = 文档级预览 ＋ 脏区预览` 变成只有脏区预览。
+* **代价 1（语义）**：`wait_for_render=true` 不再保证"返回时文档级缩略图是新的"——
+  改用 `get_document` 显式要（它本来就有"落后就重建"）。这是**语义改动**，已写进上面三处文档。
+   `get_render_status.thumbnail_current` 让滞后可见。
+* **代价 2（黑盒读者）**：以前"提交完顺手落盘 `preview.png`"（`cache_document_preview`）也一起被延后了；
+  落盘预览仍会在 `ensure_document_thumbnail` 里写（`persist.save_preview`）⇒ 只是**时机**从"每次提交"
+  变成"被请求时"。`wait_for_render=false` 那条路完全没变。
+* **代价 3（极端情况）**：`preview_dirty` 只累积、不再每笔清一次 ⇒ 长时间不请求缩略图、
+  且脏区分散很广时，**那一次请求**会渲染一个较大的并集区域（像素仍正确，只更慢）。
+  这是把成本从"每笔一次"搬到"要的时候一次"的直接结果。
+* **没做**：报告 3.5（`oil-01-paint` 双重盖章 ＋ 区域重采样）未处理；
+  `wait_budget_ms` 在进程内实现里本来就不生效（`run_pending_jobs`/`render_region` 跑完为止），
+  这是本专题之前就存在的偏差，本轮**没有**改动它。
+## 第 1185 轮补记：`thumbnail` 广播事件现在只在缩略图**真的变了**的时候发
+承接上一段"缩略图滞后"。查了一下消费侧（`crates/yanshi-http/assets/viewer-app.js` ✓）：
+查看器在 `message.event.event === "thumbnail"` 时 `scheduleThumbRefresh()` ✓，
+而那个事件此前**每一笔**都发（因为提交收尾每次都跑 `render_document_preview` ✓），
+现在只在**缩略图真的被重建**时发 ✓ —— 事件的含义因此更准确了 ✓
+（它表达的本来就是"缩略图变了"✓，不是一个心跳 ✓）。
+查看器还有别的刷新时机 ✓：打开文档（`refreshThumb()` ✓）、它**自己**每次成功改文档之后
+（`afterMutation` ⇒ `scheduleThumbRefresh` ⇒ `get_document` ✓ —— 那条路会**发现缩略图落后并当场重建** ✓）、
+以及显式的 `refresh` 工具 ✓。所以"浏览器看自己的操作"这条路**不受影响** ✓；
+受影响的是"浏览器在看一个**由 MCP 远程驱动**的会话"✓ —— 缩略图只在上面那些时机更新 ✓。
+**这一条我没能在浏览器里验证** ✗（fresh worktree 里 `crates/yanshi-wasm/pkg` 是**构建产物**、
+gitignore 掉了 ⇒ 查看器会**静默退回服务端渲染** ✓；本轮的浏览器判据一条都没跑 ✓）——
+按本项目的规矩把它写成**已知未验证面** ✓，而不是写成"没问题" ✗。
