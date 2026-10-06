@@ -39948,3 +39948,42 @@ self.workspace.open_or_create(spec, …)
 ### 本地门禁（**现已五步 ✓**）
 ① `fmt` ② `clippy -D warnings` ③ `build --all-targets` ④ **编号唯一** ⑤ **仓库根无 64 位十六进制目录**。
 重型项（全量 test／wasm／浏览器判据）**仍交给 CI** ✓（按用户提醒 ✓）。
+
+## 第 1280 轮：用 `gh` 查 CI —— **全量 test／clippy 全绿，而两条浏览器判据分片红**（用户提醒的直接收益）
+
+用户提醒"用 GitHub CI/CD 降低本地负载"，本轮照做后**立刻拿到了本地看不到的信息**：
+`gh run list` 显示**最近三次 CI 都是 `failure`**（`fix(sw): precache the health probe…`、
+`docs: write the closing evidence…`、`docs: merge the export fix…`），
+而**我正在把重型门禁交给 CI** ⇒ 这些失败**此前没有进入我的视野** ✗。
+
+### 失败定位（run 37458832648，`gh run view`）
+| job | 结果 |
+|---|---|
+| `clippy` | ✅ 绿（44 s） |
+| `rustfmt` | ✅ 绿（18 s） |
+| **`test (beta)`** | ✅ 绿（2 m 35 s） |
+| **`test (stable)`** | ✅ 绿（2 m 46 s） |
+| **`criteria shard 2/6`** | ❌ **红**（`Run criteria` 步） |
+| **`criteria shard 6/6`** | ❌ **红**（`Run criteria` 步） |
+
+⇒ **∴ 重要结论** ✓：
+1. **Rust 侧（全量 test ＋ clippy ＋ rustfmt）在 CI 上是绿的** ⇒ 我的改动没破坏 Rust 侧 ✓；
+2. **红的是**浏览器判据**的**两个分片**✗** ⇒ 即"**6 个分片里有 2 个**✗ 有失败的判据" ✓；
+3. `--log-failed` 这一次**没取到具体判据名**（输出为空）⇒ 下一轮换取法：
+   `gh run view <id> --log` ＋ grep `✗`／`FAILED`／`❌`，或按 job id 单独取日志 ✓。
+
+### 待查（下一轮第一件事）
+**具体是哪两条浏览器判据红**。最可能的候选（按本会话的已知面）：
+- **离线负对照那两条**（`browser-offline-shell`／`browser-offline-brush`）：
+  我合并了负对照分支、并给 `SHELL` 补了 `/health` ⇒ **应当变绿**；若仍红 ⇒ **说明 `/health` 预缓存不够** ✓；
+- **`browser-no-stale-read`**：它有**既有竞态**（`waitReady` 会匹配上一个文档）⇒ 在 CI 上**可能红** ✓；
+- **`browser-ui-check`**：有既存 flake ✓。
+
+### 本轮的修复（已推 ✓）
+- **`scripts/browser-offline-export.mjs:17` 的误用**：`process.argv[4]`（**是 token**）被当成下载目录
+  ⇒ 每次跑在**仓库根**建一个 64 位十六进制目录（本轮删了 **13** 个 ✓）。改用
+  `process.env.EXPORT_DL_DIR || "/var/tmp/yanshi-offline-export"`（与同族判据一致 ✓）；
+- **新增判据** `scripts/tool-repo-root-hex-dirs.mjs`：仓库根**不得**有 `^[0-9a-f]{64}$` 名的目录。
+  **变异证明**：`mkdir` 一个 ⇒ **红**（报出该目录）；`rmdir` ⇒ **绿** ✓；
+- **本地门禁升到五步**：① `fmt` ② `clippy -D warnings` ③ `build --all-targets`
+  ④ **编号唯一** ⑤ **仓库根无 64 位十六进制目录**（重型项仍交 CI ✓）。
