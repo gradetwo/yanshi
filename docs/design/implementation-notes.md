@@ -38777,3 +38777,41 @@ node 判据证明的是**SW 缓存策略**（在忠实的 Request/Response 语�
 没有真实浏览器跑：查看器那一半由"源码级 ＋ 已服务的脚本"测试覆盖
 （`GET /viewer-app.js` 确认二进制携带了修复），**不是**浏览器真实 fetch；
 SW 的 `cache.add`/`cache.match` 片段语义也未在浏览器里演练（由结构覆盖）。
+## 第 1216 轮：把六类资产接进"用到就存"（离线优先 (A)②）
+**问题**（实测）：`assets/` 下 8 类资产，SW 的 `SHELL` 只预缓存 207 条 —— 199 支笔刷、两件内核、
+`/`、`/favicon.svg`、`/brand/svg/icon-light.svg`、`/brush-previews/index.json`、`/viewer.css`、
+`/viewer-app.js`。`textures`（10 张）／`brush-previews` 的 185 PNG ＋ 14 SVG／`samples`（6 张）／
+`mediums`（6 个 wasm）／`brand` 的其余 13 件／`fonts` 都**没有**离线路径：fetch 的静态分支
+**只在 `request.mode === "navigate"` 时写缓存** ⇒ 断网时 `caches.match(request)` 与 `caches.match("/")`
+两条回落都命中不了 ⇒ 普通静态资产一律**回落到外壳 HTML**（HTTP 200、正文是页面 ⇒ `<img>` 解不出来、
+`fetch` 的"魔数"也不对）。
+**改法**（选"用到就存"，不选全量预缓存）：静态分支对**所有**同源 GET 的成功响应写
+`cache.put(request, …)`，导航仍按外壳键 `/` 存；排除 `/api/`、`/ws`（早退）、`/service-worker.js`
+与 `206`。写入的是**带构建标识的 `CACHE`**（`yanshi-shell-__BUILD_ID__`）⇒ 换构建时 `activate`
+把整份旧缓存删掉 ⇒ 资产不跨版本脏读；同一构建内本分支**始终网络优先** ⇒ 也不脏读。
+（**不另开资产缓存**的理由：`activate` 会删掉所有名字不等于 `CACHE` 的缓存 ⇒ 另开一个必然每次升级被删。）
+**为什么不预缓存**：未预缓存的可路由资产实测 **19.0 MiB**（textures 12.0 ＋ samples 4.9 ＋
+brush-previews 1.8 ＋ brand 0.2 ＋ mediums 0.2）⇒ 塞进 `SHELL` 等于每次 install 都拖这 19 MiB；
+而目标原文是"**纹理按需**"。
+**字体与调色板不走 SW 这条路**（如实记，不假装是 SW 覆盖）：
+- 字体经 `crates/yanshi-render/src/font_atlas.rs` 的 `include_bytes!` 编进内核 wasm，而内核在 SHELL 里 ⇒ 已覆盖；
+- `assets/palettes` **没有静态路由**，调色板经只读工具 `list_assets` / `list_palette_colors` 下发，
+  查看器 `fetchOrLocal` 把只读工具的 POST 响应写 IndexedDB（`LOCAL_READ_TOOLS` 由 `mutating: false` 生成）⇒ 用过一次即可离线。
+**判据**（两条都**红过**、都**逐字节回滚**过）：
+- `scripts/tool-offline-asset-coverage.mjs`（node，不需服务端）：用 `node:vm` 把 SW 装进沙箱，配内存版
+  Cache Storage 与可切"在线／断网"的 `fetch`，跑 `install`/`activate`，对**每类资产的代表文件**先在线取一次、
+  再断网取一次，断言拿到的是**它自己的字节**；另查 `/api/`、`/ws` 不被接管、`/api/blob/` 仍被接管、
+  `/service-worker.js` 不进缓存、换构建后旧资产读不到。变异（把写缓存改回"只存导航"）⇒ 红；回滚 ⇒ 绿。
+- `scripts/browser-offline-assets.mjs`（真 Chromium）：断网重载后纹理缩略图／画笔库预览／调色板色块仍渲染，
+  且介质 wasm ＋ 示例 PNG ＋ 品牌 PNG ＋ 纹理 PNG 的**魔数与长度**与在线那趟一致。
+**踩到的坑（重要）**：CDP 的 `Network.emulateNetworkConditions {offline:true}` **管不到 service worker
+自己发起的 `fetch()`** —— 实测：页面 `navigator.onLine === false`，而 SW 里
+`fetch("/mediums/marker.wasm")` 照样 200 ＋ 30281 字节（在 SW target 上再设一次 offline 也一样）；
+`Network.setCacheDisabled` 与 `Network.clearBrowserCache` 也管不住 SW 的 fetch（`immutable` 的响应在
+HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 浏览器判据里必须**在 SW 上下文里把 `self.fetch`
+换成必然失败的桩**，并加一条**负对照**（一个没缓存过的白名单品牌图断网后必须拿不到它自己的字节），
+否则"离线"是假的、判据会假绿。
+**另记一个独立缺口（本轮未修）**：`SHELL` 里 9 条笔刷名含 `#`（如 `/brushes/8B_Pencil#1.myb`），
+`cache.add()` 会把 `#` 之后当片段丢掉 ⇒ 键变成 `/brushes/8B_Pencil`；而查看器
+`fetch("/brushes/" + name + ".myb")` 未编码、服务端也不解路径里的百分号 ⇒ 这 9 支笔**在线也取不到**。
+要修得同时改两侧；已由 `tool-offline-asset-coverage.mjs` 以 note 形式登记（不计入本轮判定）。
