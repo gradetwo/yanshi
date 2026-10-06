@@ -40590,3 +40590,38 @@ wet_round/black            …｜不同字节 0｜**逐字节相同** ✓
 - **∴ 我已修的** ✓：`tool-offline-asset-coverage`✗／`kernel-wasm-allowlist`✗／`tool-surface-coverage`✗／
   `tool-example-acceptance`✗／`browser-ui-check`✗（**∴ CI 已确认绿 ✓**）；
 - **∴ 待 CI 给答案的** ⏳：`browser-i18n`✗（**∴ 祖先链诊断 ✓**）／`browser-offline-draw`✗（**∴ 取证已并入失败消息 ✓**）。
+
+## 第 1302 轮：把已知红名单里 `tool-reference-delta-e` 的**说明更正**（实测取证）
+
+### 先确认 `(B)③` 已完成 ✓
+`scripts/tool-release-target-tri-state.mjs` 已经存在并且**绿** ✓：
+`✓ target_installed 三态分开（0/1/2）` ⇒ **∴ 三态（**已安装 ✗／明确没装 ✗／无法判断 ✓**）**已经分开**✗** ✓。
+它还用**假的 HOME** 造三种文件系统状态 ✓、并**从脚本自身位置**解析仓库根 ✓（**∴ 第 1128 轮的教训已应用 ✓**）。
+⇒ **∴ 所以 `(B)③`✗ **不再欠账**** ✓。
+
+### `tool-reference-delta-e` 的真实原因（**∴ 名单里那句说明不准确 ✗**）
+名单原写「**无参考图时没有明确作答** ✗」。**本地起服务端点实测** ✓（2026-10-06 ✓）：
+```
+【第一次调用完整返回】{"context":{"detail":"analyze_region 不接受参数 compare_with_reference（拼写错误？）；
+   可用参数：region；框架级参数：doc_id, actor, session"},"error_code":"invalid_argument","ok":false}
+没参考图 ⇒ undefined｜自比 ⇒ undefined｜改画面后 ⇒ undefined
+set_reference ⇒ {"ok":true,"note":"参考图只记在偏好里 ⇒ 文档未被改动…"}
+```
+⇒ **∴ 真相** ✓✓：
+1. `compare_with_reference` **声明并实现在 `gradient_fill`** ✓（`tools.rs:2314` 声明、`:3117-3201` 实现 ✓），
+   **不在 `analyze_region`** 上 ✓ ⇒ 判据按 `analyze_region` 调**必然被拒** ✓；
+2. **产品的报错是**准确的**** ✓（**∴ 它明说"不接受该参数、可用参数是 `region`"✗ ✓**）
+   ⇒ **∴ 所以不是"静默返回 0"✗**（**∴ 那才是危险的那种 ✓**）✓；
+3. **不能只改工具名** ✗：`gradient_fill` 是**会画画**的工具 ⇒ 连调三次就画三次 ✗
+   ⇒ **"不改画面就问 ΔE" 这条路目前不存在** ✓ ⇒ **∴ 要修的是**产品侧的能力位置**✗（**∴ 或另加只读比较工具 ✓**）
+   ⇒ **∴ 属**产品决策**✗** ✓✓
+
+### 做了什么
+- **更正名单里的说明** ✓ ⇒ 现在写的是**实测得到的真实原因** ✓（含取证原文 ＋ "属产品决策" ✓）；
+- 判据文件**本身未改** ✓（**∴ 它按 `analyze_region` 调是**错的对象**✗，但**不能只改名字**✗ ⇒
+  改它没有意义 ✗ ⇒ **∴ 保留原样 ＋ 把原因写准 ✓**）。
+
+### 教训
+**∴ 已知红名单里的"原因"会**漂移**✗** ⇒ **∴ 本轮第二次遇到 ✓**（**∴ 上一次是 `tool-examples-doc-check`✗，
+   **∴ 它写的"示例数不足"✗ 早已不准确 ✓**）⇒ **∴ 所以**看到名单条目时应当**先跑一遍拿**当前**报错**✗，
+   **∴ 而不是相信那句说明 ✓** ✓✓
