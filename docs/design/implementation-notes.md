@@ -38702,3 +38702,35 @@ node 判据证明的是**SW 缓存策略**（在忠实的 Request/Response 语�
 浏览器判据证明的是**离线渲染与字节正确**（**不**覆盖那 9 支 `#` 笔刷、PWA 安装、配额）。
 调色板经**查看器读工具缓存**（没有 `/palettes` 路由）、字体经 `include_bytes!` 进 wasm ——
 两者都**明确标注为"不是 SW 覆盖"**。
+
+## 第 1214 轮：审计 6 条浏览器离线判据——**全都没有负对照**，且严重性要细分
+
+起因是离线资产子代理的发现：**CDP 的离线模拟到不了 service worker 自己的 `fetch()`**。
+我据此审计了仓库里所有用离线模拟的判据（`grep emulateNetworkConditions scripts/*.mjs`）：
+
+| 判据 | 模拟调用 | 提及 SW | 负对照 | 只切页面离线 |
+|---|---|---|---|---|
+| `browser-offline-brush.mjs` | 2 | 2 | **0** | 2 |
+| `browser-offline-draw.mjs` | 2 | 1 | **0** | 0 |
+| `browser-offline-export.mjs` | 1 | 0 | **0** | 0 |
+| `browser-offline-journal.mjs` | 2 | 2 | **0** | 0 |
+| `browser-offline-reload.mjs` | 2 | 0 | **0** | 0 |
+| `browser-offline-shell.mjs` | 3 | 5 | **0** | 0 |
+
+⇒ **6 条全部**依赖 CDP 模拟，**全部没有负对照**。
+
+### 但严重性必须细分（否则会把结论说过头）
+`Network.emulateNetworkConditions` 作用于**渲染进程的网络栈**：
+- **页面的 `fetch()` 会被真正挡住** ⇒ 那些只断言"页面离线时还能画／导出／重载／看日志"的判据
+  （`draw` / `export` / `reload` / `journal`）**CDP 的模拟是够用的**；
+- **SW 上下文里的 `fetch()` 不受影响** ⇒ 那些断言"**SW 从缓存里取到东西**"的判据
+  （`shell` / `brush`）**有假绿风险**：SW 可能仍在打真网络，而判据照样通过。
+
+### 普遍弱点与最省的反制
+真正的普遍问题不是"6 条都错"，而是**没有一条能区分"网络真断了"与"模拟没生效"**。
+最省的反制是：**切离线后让页面主动请求一个已知不会被缓存的同源路径，并断言它失败**；
+若它竟然成功，判据应**自宣无效**而不是通过。
+
+⇒ 已派子代理：给 6 条各加这条负对照；对 `shell` / `brush` 两条，还要**在 SW 上下文里 stub `self.fetch`**
+（复用 `scripts/browser-offline-assets.mjs` 的做法，不要另造第二套），并如实说明判据现在证明了什么、没证明什么。
+并要求它**先分类再改**，如果我的分类有错就明确纠正。
