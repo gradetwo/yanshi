@@ -41093,3 +41093,36 @@ const evaluate = async (expression) => (await send("Runtime.evaluate", { express
    ⇒ **∴ 而它比直接报错更危险** ✗：**∴ 因为"空"✗ 是一个**看起来正常**✗ 的结果 ✓
    ⇒ **∴ 规则** ✓：**∴ 兜底值必须**能区分"没有"与"读不到"**✗（**∴ 例如返回 `null`✗ 而不是 `[]`✗ ✓**）
       ⇒ **∴ 而我这次恰好没做到 ✓** ✓✓
+
+## 第 1319 轮：让 SW 的预缓存报告**经缓存条目**到达判据（**并修掉一个假空陷阱**）
+
+### 为什么不能读 `self.__swPrecacheFailures`
+判据的 `evaluate` 走 CDP 的 `Runtime.evaluate` 到**页面** target ✓（**∴ 证据：它用它读
+`document.readyState`／`document.getElementById` ✓**）⇒ **∴ 读 SW 的 `self.*` 只会得到 `undefined` ✗
+⇒ **∴ 而我那句 `(… || [])` 把它变成**假的空**✗** ✓✓
+**∴ 且 `browser-offline-draw.mjs`✗ **没有** SW 调试目标**✗**（**∴ `swControl`✗ 在 `browser-offline-shell.mjs`✗ ✓**）
+   ⇒ **∴ 所以**新建 target ✗ 不是最省的路 ✓** ✓✓
+
+### 改法（**∴ 两处 ✓**）
+1. **SW** ✓（`install` 末尾 ✓）：把报告写成**一个缓存条目** ✓：
+```js
+await cache.put(new Request("/__sw_precache_report"),
+  new Response(JSON.stringify({ total: SHELL.length, failed: self.__swPrecacheFailures, finished_at: Date.now() }),
+               { headers: { "content-type": "application/json" } }));
+```
+   ⇒ **∴ 写失败被 catch 吞掉 ✓**（**∴ 取证不该影响 install ✓**）；
+2. **判据** ✓：从**页面**用 `caches.match("/__sw_precache_report")` 读它 ✓
+   ⇒ **∴ 兜底返回 `null` ✗（**∴ 而不是 `[]`✗ ✓**）⇒ **∴ 从而区分"没有失败"✗ 与"读不到"✗** ✓** ✓✓
+
+### ⚠️ 又一次**假空**陷阱：缓存名是**构建时替换**的
+我第一版在判据里写 `caches.open("yanshi-shell-v1")`✗ ⇒ **∴ 而真实常量是
+`const CACHE = "yanshi-shell-__BUILD_ID__"`✗**（**∴ `service-worker.js:236`✗ ✓**）
+   ⇒ **∴ 那个名字在**构建时**被替换 ⇒ **∴ 硬写任何具体名字都**打不开缓存**✗ ⇒ **∴ 于是又返回 `null` ✗
+      —— **∴ 与我要修的毛病**同一类**✗ ✓** ⇒ **∴ 已改成 `caches.match`✗（**∴ 不指定缓存名 ✓**）** ✓✓
+
+### 教训（**∴ 同一课两次 ✓**）
+**∴ "读不到"✗ 必须与"没有"✗ **外形不同**✗** ✓ ⇒ **∴ 所以兜底要用 `null`✗／`undefined`✗
+   **∴ 而不是空数组／空对象 ✗** ✓✓
+   ⇒ **∴ 而这一次的陷阱更隐蔽** ✗：**∴ 我以为"指定缓存名"✗ 更严谨 ✗ ⇒ **∴ 而实际上那个名字
+      **在运行时不成立**✗** ✓ ⇒ **∴ 规则** ✓：**∴ 引用常量时 ⇒ **先 `grep`✗ 它的定义 ✗
+      ⇒ **∴ 看到 `__BUILD_ID__`✗ 这类占位 ⇒ **∴ 就不要硬写 ✓** ✓✓

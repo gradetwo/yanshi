@@ -274,7 +274,21 @@ const pathOf = (u) => {
 const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
 // **把 SW 的预缓存失败也带上** ✗ —— 只报"少了内核"无法定位（是 404？还是查得太早？✓）。
 // 判据在 SW 上下文里读 `self.__swPrecacheFailures`（`install` 里记的 ✓）⇒ **它直接说明谁失败** ✓。
-const preFail = await evaluate(`(() => (self.__swPrecacheFailures || []).slice(0, 5))()`).catch(() => null);
+// **从缓存条目里读 SW 的预缓存报告** ✗ —— 原先读 `self.__swPrecacheFailures` ✓，
+// 但 `evaluate` 走的是**页面** target ⇒ 那里根本没有这个属性 ⇒ `(… || [])` 给出**假空** ✗
+//（2026-10-06 实测并撤回 ✓）⇒ 现在读 SW 写进缓存的那份报告 ✓。
+// 兜底返回 `null` ✓（**∴ 而不是 `[]`✗**）⇒ **∴ 从而区分"没有失败"✗ 与"读不到"✗** ✓。
+const preFail = await evaluate(`(async () => {
+  try {
+    // **不指定缓存名** ✗ —— SW 的 `CACHE` 常量是 `yanshi-shell-__BUILD_ID__` ✓，
+    // 名字在构建时被替换 ⇒ 判据里硬写任何具体名字都会**打不开缓存** ✗
+    // ⇒ 用全局 `caches.match` ✓（**∴ 它在所有缓存里找 ✓**）⇒ **∴ 不需要知道构建后的名字 ✓**。
+    const hit = await caches.match("/__sw_precache_report");
+    if (!hit) return null;
+    const r = await hit.json();
+    return { total: r.total, failed: (r.failed || []).slice(0, 5), failedCount: (r.failed || []).length };
+  } catch (_) { return null; }
+})()`).catch(() => null);
 const cacheShape = "条目 " + cachedUrls.length + " 条｜前 3 条：" + JSON.stringify(cachedUrls.slice(0, 3).map((u) => String(u).slice(0, 90))) +
   "｜SW 预缓存失败：" + JSON.stringify(preFail);
 console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（" + cacheShape + "）");

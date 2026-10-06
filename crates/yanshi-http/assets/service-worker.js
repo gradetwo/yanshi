@@ -248,6 +248,24 @@ self.addEventListener("install", (event) => {
         })
       )
     );
+    // **把报告也写进缓存** ✗ —— 判据跑在**页面**上下文里（`Runtime.evaluate` 指向页面 ✓），
+    // 读不到 SW 的 `self.*` ✓ ⇒ 那样写只会得到 `undefined || []` 的**假空** ✗（2026-10-06 实测 ✓）。
+    // ⇒ 写成一个**缓存条目** ✓ ⇒ 页面用 `caches.match` 就能读到 ✓（不需要额外建 SW 调试目标 ✓）。
+    try {
+      await cache.put(
+        new Request("/__sw_precache_report"),
+        new Response(
+          JSON.stringify({
+            total: SHELL.length,
+            failed: self.__swPrecacheFailures,
+            finished_at: Date.now(),
+          }),
+          { headers: { "content-type": "application/json" } }
+        )
+      );
+    } catch (_) {
+      // 写报告失败不该影响 install ✓（它只是取证 ✓）。
+    }
     if (self.__swPrecacheFailures.length > 0) {
       console.warn(
         "SW 预缓存失败 " + self.__swPrecacheFailures.length + "/" + SHELL.length + " 条：" +
