@@ -218,17 +218,36 @@ const zoomSet = await evaluate(`(() => {
   return "set";
 })()`);
 await sleep(600);
+// **前置条件要用"页面上真实的缩放"判定** ✗（CI 实测教训 ✓）：
+// 原先读 `window.yanshi.state().zoom` 并当成 `displayScale` ⇒ 得到的值像**适配档的 scale**
+// （CI 上 0.3877）⇒ 判据自报"失去区分力"而退出 ✗。
+// ⇒ 改成三条**独立**证据，任一成立即算"离开适配档"：
+//   ① `#zoom` 标签的百分比（`syncZoomLabel` 回填的就是它 ✓）> 105%；
+//   ② `viewport` 的文档像素数**明显小于**文档尺寸（适配档下两者接近 ✓）；
+//   ③ 兜底：`state().zoom`（用户缩放）> 1.05。
 const view = await evaluate(`(() => {
   const s = window.yanshi.state();
-  return { docSize: s.docSize, viewport: s.viewport, displayScale: s.zoom, userZoom: s.userZoom };
+  const label = document.getElementById("zoom");
+  const percent = label ? parseInt(String(label.textContent).replace("%", ""), 10) : NaN;
+  const inputVal = document.getElementById("zoomInput") ? document.getElementById("zoomInput").value : null;
+  return { docSize: s.docSize, viewport: s.viewport, userZoom: s.userZoom,
+           zoomPercent: percent, zoomInputValue: inputVal };
 })()`);
+const vp = view && view.viewport;
+const vpArea = vp ? vp.w * vp.h : 0;
+const docArea = (view && view.docSize) ? view.docSize.w * view.docSize.h : 0;
+const viewportSmaller = docArea > 0 && vpArea > 0 && vpArea < docArea * 0.8;
+const percentBig = Number.isFinite(view.zoomPercent) && view.zoomPercent > 105;
+const userZoomBig = view && typeof view.userZoom === "number" && view.userZoom > 1.05;
+const leftFit = percentBig || viewportSmaller || userZoomBig;
 notes.push("显示缩放：" + zoomSet + "｜" + JSON.stringify(view));
 if (zoomSet !== "set" || !view || !view.docSize || view.docSize.w !== W || view.docSize.h !== H) {
   console.error("❌ 没拿到 1024×1024 的文档尺寸（拿到 " + JSON.stringify(view) + "）⇒ 判据前置不成立");
   process.exit(1);
 }
-if (!(view.displayScale > 1.05)) {
-  console.error("❌ 显示缩放没有离开适配档（displayScale=" + view.displayScale + "）⇒ 判据失去区分力");
+if (!leftFit) {
+  console.error("❌ 显示缩放没有离开适配档（三条证据都不成立：zoomPercent=" + view.zoomPercent +
+    " vpArea=" + vpArea + " docArea=" + docArea + " userZoom=" + view.userZoom + "）⇒ 判据失去区分力");
   process.exit(1);
 }
 const viewportW = Math.round(view.viewport.w);

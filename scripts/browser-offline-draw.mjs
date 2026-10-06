@@ -262,8 +262,19 @@ console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // 这条**今天是红的** ✗ ⇒ 它就是"离线优先"还差的那一块 ✓。
 const cacheNames = (cachesAfter && cachesAfter.caches) || [];
 const cachedUrls = cacheNames.flatMap((entry) => entry.entries || []);
-const hasModuleInWorkerCache = cachedUrls.some((url) => url.startsWith("/wasm/yanshi_wasm.js") || url.startsWith("/wasm/yanshi_wasm_bg.wasm"));
+// **比对前必须规范化** ✗：`cachedUrls` 里的条目通常是**绝对 URL**
+// （`http://127.0.0.1:PORT/wasm/yanshi_wasm.js` ✓），而这里原先用 `startsWith("/wasm/…")` 比
+// ⇒ **永远不匹配** ⇒ 误报"SW 缓存里没有共享内核" ✗（CI 实测 ✓）。
+// 取 `pathname` 后再比 ⇒ 绝对与相对两种形状都能命中 ✓；
+// **同时保留"内核真不在缓存"时仍然为假** 的能力 ✓（删掉 SHELL 里那两条 ⇒ 这里必然 false ✓）。
+const pathOf = (u) => {
+  const text = String(u || "");
+  try { return new URL(text, "http://x").pathname; } catch (_) { return text; }
+};
+const hasModuleInWorkerCache = cachedUrls.some((url) => pathOf(url).startsWith("/wasm/yanshi_wasm.js") || pathOf(url).startsWith("/wasm/yanshi_wasm_bg.wasm"));
 console.log("  SW 缓存里有共享内核吗：" + hasModuleInWorkerCache + "（条目 " + cachedUrls.length + " 条）");
+// **打印真实形状** ✗（不再只打布尔）：下一个人一眼就能看出条目是绝对 URL 还是相对路径 ✓。
+for (const u of cachedUrls.slice(0, 5)) console.log("    · 缓存条目形状：" + String(u).slice(0, 120));
 // **完整打印离线阶段的取证** ✓（这次不 grep、不截断 ✗ —— 上一轮我就是把它滤掉才看不出原因 ✓）
 console.log("  离线阶段取证（共 " + evidence.length + " 条）：");
 for (const line of evidence) console.log("    · " + line);
