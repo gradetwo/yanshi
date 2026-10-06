@@ -37113,3 +37113,38 @@ Linux x86-64，4 核，3 GB RAM；被测文档来自报告包
 另注：子代理还发现 browser-layout 的第二条过期基线 —— `total !== 16`（:206），
 因为 7083595 加了 `#cardDiagnostics` 卡片，aside 现在合法地有 17 张 ⇒ 判据在步骤 ② 就红。
 它已把 16 → 17 重新基线化（守卫未变，仍是绊线），这一条会在它的分支里合并进来。
+
+## 第 1180 轮：回答"仓库里两个哈希目录是什么"——判据产物误提交，已删并加判据防复发
+
+用户问仓库根下这两个目录是什么：
+  7d69590af0e546daad14b3012cc01484c0548964cc6bf40ea21f4bed6781a317
+  b5d38dc9f7328d77de7ee4c1a999429c6685cdd241f60b738a79ba618e12d38b
+
+实地查证（不猜）：
+- 各自包含**一个文件** `crit_browserofflineexportmjs.png`，`file` 判定为
+  **PNG 300×150 8-bit RGBA**，各 4.0K ⇒ 是**空白默认尺寸画布**，没有诊断价值；
+- 名字来自判据 `scripts/browser-offline-export.mjs`（`crit_<判据名>.png`）；
+- **被 git 跟踪**（`git ls-files` 有 2 条），由提交 4c5abd4 与 4fbd436 加入
+  —— 都是本会话我自己的提交（"reproduce the whole failing shard locally"、
+  "ran eight edited browser criteria locally"）；
+- **仓库里没有任何代码/脚本引用这两个哈希**（grep 无输出）。
+
+根因：判据脚本本身用的是 `/var/tmp/yanshi-dl`（默认值，第 17 行），**并不造哈希目录**；
+真正造它的是我当时那个**一次性的本地批量跑判据脚本** —— 它把下载目录拼成
+`<hash>/crit_<name>.png` 并写在**仓库根**下，于是被 `git add -A` 一并提交。
+而 `.gitignore` 只忽略了具名产物（out.png / exports/ / example-export.png），
+**哈希目录名不可枚举**，所以漏网。
+
+处置（三件，已完成）：
+1. `git rm -r` 删掉这两个目录（它们从索引与工作树移除）；
+2. 新增判据 `scripts/tool-repo-root-clean.mjs`：仓库顶层的每个条目必须**要么**在 ALLOWED
+   白名单里、**要么**被 .gitignore 覆盖（`git check-ignore`）；两者都不是 ⇒ 红，
+   并逐条打印"目录/文件、是否已被跟踪"⇒ 诊断可定位。它按 `tool-*.mjs` 前缀自动进 runner 枚举。
+3. 它自身的能红验证（直接跑）：正常树 `EXIT=0`
+   （"仓库顶层 22 个条目都在白名单内或被忽略 ✓"）；人为造一个未被忽略的哈希目录 ⇒ `EXIT=1`
+   并点名该目录；删掉后恢复 `EXIT=0`。
+
+结论与给用户的回答：
+- **用途**：判据产物（离线导出判据的截图），**没用**，内容是空白画布；
+- **不该放在仓库根，更不该被 git 跟踪**；正确去处是 `/var/tmp/…` 或 `target/…`（都被忽略）；
+- 现在有了防复发的判据：以后任何"产物写进仓库根并被 `git add -A` 吃掉"都会在门禁处变红。
