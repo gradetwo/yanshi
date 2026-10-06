@@ -1437,14 +1437,6 @@ async function blitServerBox(bbox) {
   const url = value.raw_url || value.thumb_url;
   if (!url) return 0;
   // `raw_url` 给的是**原始 RGBA** ✓（不是 PNG ✗）⇒ 直接构造 ImageData ✓。
-  // An empty viewport must not become a silent no-op: during a layout change the
-  // board size can briefly be zero, so the clip yields w = h = 0 and the size test
-  // below is false, leaving a zero-sized pixel write that draws nothing while the
-  // blit counter and log still record a successful blit. Requeue instead, bounded.
-  if (w <= 0 || h <= 0) {
-    if (blitRetry < 3) { blitRetry += 1; serverBlitPending = true; }
-    return 0;
-  }
   const bytes = new Uint8ClampedArray(await fetchOrLocal(api(url)).then((r) => r.arrayBuffer()));
   if (bytes.length < w * h * 4) return 0;
   // **数一下服务端这批字节里有多少墨** ✓ —— 决定性的那一问 ✓：
@@ -1484,7 +1476,6 @@ async function blitServerBox(bbox) {
     }
   }
   ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
-  blitRetry = 0;
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
   window.yanshiStats.lastServerBlitReason = "box " + JSON.stringify([x0, y0, w, h]);
@@ -1517,8 +1508,6 @@ window.yanshiDebugBlit = async (box) => {
 let serverBlitBusy = false;
 // **最近一次补画的 promise** ✓（第 1447 轮 ✓）：让调用方能等待“补画落地” ✓。
 let serverBlitChain = Promise.resolve();
-// retry counter for empty-viewport replays, bounded to avoid a loop
-let blitRetry = 0;
 let serverBlitPending = false;
 /// **待补画的脏区**（文档坐标 `[x,y,w,h]` ✓）。
 ///
