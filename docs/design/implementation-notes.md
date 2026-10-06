@@ -39196,3 +39196,37 @@ RSS 是**整个后端进程**（不是文档独占、不是泄漏结论）；`br
 - **判据**：① 缩放偏离"适配"时 ⇒ **导出尺寸 = 文档尺寸**（今天必红，要给出实测数字）；
   ② 离线仍能导出（**点明它证明了什么／没证明什么**）；③ 既有判据点名保持绿；
 - 并提醒它与另两个在改 `viewer-app.js`／`service-worker.js` 的分支**可能冲突**，要求它在报告里说明。
+
+## 第 1242 轮：核实 F03——**成立**，根因是两个**各自独立**的 `Math.min`（修法一行级）
+
+### 根因（源码确认，不是推测）
+`crates/yanshi-http/assets/viewer-app.js:857 applyDisplaySize()`：
+    const rawWidth  = Math.round(state.viewport.w * scale);
+    const rawHeight = Math.round(state.viewport.h * scale);
+    const width  = Math.max(32, zoomedIn ? rawWidth  : Math.min(rawWidth,  available.w));
+    const height = Math.max(32, zoomedIn ? rawHeight : Math.min(rawHeight, available.h));
+**宽与高各自被不同的上限裁剪**（`available.w` 与 `available.h`）⇒ 两者的缩放因子不同
+⇒ **长宽比被破坏**。而 `:872-873` 的注释本意是「CSS 尺寸 = 视口 × 显示缩放（上限为可用区域）」——
+**意图是对的（不溢出）**，但**实现把两个轴独立裁剪**，于是比例没了。
+
+### 与报告实测吻合（算术核对）
+报告：1400×800 的作品适配为 **854×528**。
+- 1400/800 = **1.750**；854/528 = **1.617** ⇒ 确实没保持比例；
+- 反推两个因子：**宽 854/1400 = 0.610**、**高 528/800 = 0.660** ⇒ **两个不同因子**，正是"独立裁剪"的签名。
+
+### 修法（一行级）
+取**同一个**缩放因子，再让两轴都乘它：
+    const s = Math.min(1, available.w / rawWidth, available.h / rawHeight);
+    const width  = Math.max(32, Math.round(rawWidth  * s));
+    const height = Math.max(32, Math.round(rawHeight * s));
+（`zoomedIn` 时不封顶的既有语义保留：那时 `s = 1`。）
+
+### F02（撤销按钮与历史状态脱节）本轮**未查完**（如实记录）
+我只找到 `undo_last` / `redo_last` 的**动作**实现（`:3132` / `:3160`）与撤销栈的维护
+（`:1727` 那条注释记录了"撤销栈必须无条件维护"的历史修复），**没有**找到
+"撤销/重做按钮的 `disabled` 何时被清除/设置"的那处逻辑 ⇒ 因此**尚未**定位 F02。
+下一轮补：先定位按钮启用逻辑，再构造能红的判据（"落笔后撤销按钮应可点"）。
+
+### 本轮为何不动手改
+F01 的修复子代理与离线内核初始化子代理**都在改 `viewer-app.js`**
+⇒ 按"不要与在跑的子代理改同一批文件"的规则，本轮只把 F03 的根因与修法钉死，留待后续轮次。
