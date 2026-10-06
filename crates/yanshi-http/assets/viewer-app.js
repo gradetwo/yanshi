@@ -4789,8 +4789,11 @@ if (useServerRenderBox) {
   });
 }
 const exportPng = $("exportPng");
+const exportPngView = $("exportPngView");
   addGroup("导出");
   if (exportPng) exportWrap.appendChild(exportPng);
+  // **"当前视图"那颗也跟着搬** ✓（同一张菜单 ✓）—— 留在信息面板里就等于没有显式入口 ✗。
+  if (exportPngView) exportWrap.appendChild(exportPngView);
   // **工程包整张卡搬进来** ✓（打包 / 打开 *.yanshi ✓）—— 原来占着「文件」tab 一整格 ✓。
   const card = document.querySelector('aside .card[data-panel="file"]');
   if (card) body.appendChild(card);
@@ -8424,56 +8427,159 @@ $("addLayer").addEventListener("click", async () => {
   await resync();
 });
 
-/// 导出整幅 PNG：显式请求整幅区域渲染（设计 A 下整幅 PNG 只在**显式导出**时生成），
-/// 再把服务端改写过的可直接 GET 的地址交给浏览器下载。
+/// **触发一次浏览器下载** ✓（整幅 / 当前视图两条路共用一份 ✓ —— 不各写一套 ✗）。
+function triggerPngDownload(href, docId, revokeObjectUrl) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = (docId || "yanshi") + ".png";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  if (revokeObjectUrl) setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+
+/// **问服务端要整幅文档的渲染地址** ✓（在线时默认那条 ✓）。
+/// **不走 `callTool`** ✗：它对只读工具也会在失败时打一行「错误 undefined」（离线必然出现 ✓）⇒
+/// 导出的一次探测不该在日志里留下一句像故障的话 ✓；这里只把失败变成 `null` ✓。
+///
+/// `render_region` 是只读工具 ✓ ⇒ `fetchOrLocal` 对它的网络错误**返回 503 而不是抛** ✓
+///（第 160 轮的既有约定 ✓）⇒ 这里按 `response.ok` 判 ✓。
+async function requestFullDocumentRender(w, h) {
+  try {
+    const response = await fetchOrLocal(api("/api/tools/render_region"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: { x: 0, y: 0, w, h } }),
+    });
+    if (!response || !response.ok) return null;
+    const value = await response.json();
+    return value && value.ok && value.thumb_url ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/// **本地整幅合成** ✓ —— 服务端不可达（离线）时的兜底像素来源 ✓。
+///
+/// **逐块渲染** ✓：每块 512²（= 1 MiB）⇒ 峰值内存**与文档尺寸无关** ✓
+///（4K 整块会是 64 MiB × 两份 ✓ —— 见提交信息里的实测 ✓）。
+/// **内核折叠不了的像素**（画笔笔触在日志里是 `raster_patch` ✓，它的 blob **不在内核 CAS 里** ✗）
+/// 由 `drawImage(board, …)` 按**文档坐标**贴回 ✓：那是画布上已有的服务端像素 ✓，
+/// 也是离线时**唯一**的内容来源 ✓。⇒ 这份合成**不是"整幅都正确"** ✗：
+/// 视口之内是真实像素 ✓、视口之外是背景 ✓ —— 所以日志会把这个边界说出来 ✓（绝不静默 ✗）。
+function composeFullDocumentCanvas(tile = 512) {
+  const w = Math.max(1, Math.round(state.docSize.w));
+  const h = Math.max(1, Math.round(state.docSize.h));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const c2d = canvas.getContext("2d");
+  c2d.fillStyle = state.backgroundCss || "#ffffff";
+  c2d.fillRect(0, 0, w, h);
+  let tiles = 0;
+  if (kernelReady()) {
+    for (let y = 0; y < h; y += tile) {
+      for (let x = 0; x < w; x += tile) {
+        const cw = Math.min(tile, w - x);
+        const ch = Math.min(tile, h - y);
+        const rgba = state.kernel.render_region_rgba(x, y, cw, ch);
+        if (!rgba || rgba.length < cw * ch * 4) continue;
+        c2d.putImageData(new ImageData(new Uint8ClampedArray(rgba), cw, ch), x, y);
+        tiles += 1;
+      }
+    }
+  }
+  try {
+    c2d.drawImage(board, Math.round(state.viewport.x), Math.round(state.viewport.y));
+  } catch (error) { /* 贴不上就只留内核那份 ✓ */ }
+  return { canvas, tiles };
+}
+
+/// **默认导出 = 整幅文档** ✓（P0 ✓：外部审计实测 1024² 文档、显示缩放 200% ⇒ 导出成 **572×330 的视口** ✗）。
+///
+/// **为什么默认先问服务端** ✓ —— 这是**量过之后**定的 ✓，不是偏好 ✗：
+/// 画笔笔触在日志里是 **`raster_patch`**（只引用 blob ✓），而 **wasm 内核的 CAS 里没有那些 blob** ✗
+/// ⇒ 内核 `render_region_png/rgba` 对"真的画过的文档"返回的是**背景** ✓。
+/// 本机实测（本分支）：1024² 文档画一笔后
+/// `kernel.render_region_rgba(0,0,1024,1024)` 的墨量 **0** ✓，而服务端同一区域非零 ✓
+/// ⇒ **内核那条路单独当默认会导出"尺寸对、内容是空白"的图** ✗ —— 比裁剪更坏 ✓。
+/// 服务端 `render_region{0,0,w,h}` 本来就是整幅的权威实现 ✓（同一个 `yanshi-render` ✓、
+/// 不经过浏览器编码器 ✓）⇒ 在线时默认走它 ✓。
+///
+/// **离线**（服务端不可达 ✓）⇒ 退到本地整幅合成 ✓ ⇒ **仍然落一个文档尺寸的文件** ✓，
+/// 并把"只有视口那块有像素"明说出来 ✓。**默认那条绝不裁剪成视口** ✗；
+/// 想导视口请用旁边那颗**显式**的「导出当前视图」✓。
 $("exportPng").addEventListener("click", async () => {
   const { w, h } = state.docSize;
   if (!w || !h) {
     log("导出失败：文档尺寸未知", "#c33");
     return;
   }
-  // **离线优先的导出** ✓（第 180 轮 ✓）：本地**早就有像素** ✓ —— `board` 就是 2D canvas ✓、
-  // 客户端合成本来就跑在 wasm 上 ✓ ⇒ 用 canvas **自己编码 PNG** ✓（浏览器原生能力 ✓）
-  // ⇒ ⇒ **离线必然可用** ✓，而且**不必问服务端** ✓。
-  // 拿不到本地像素时**才**退到服务端 ✓（= 弱设备回退 ✓，与 (A)⑤ 同一条思路 ✓）。
-  //（查证过 ✓：原处理器第一句就是 `callTool("render_region", …)` ✓ ⇒ 离线时 `value.ok` 假 ✗
-  //  ⇒ 提前 return ✓ ⇒ **一个文件都不落** ✗ —— 这正是上一轮那条判据量到 `[]` 的原因 ✓。）
-  try {
-    if (board && board.width > 0 && board.height > 0) {
-      const blob = await new Promise((resolve) => board.toBlob(resolve, "image/png"));
-      if (blob) {
-        const href = URL.createObjectURL(blob);
-        const localLink = document.createElement("a");
-        localLink.href = href;
-        localLink.download = (state.docId || "yanshi") + ".png";
-        document.body.appendChild(localLink);
-        localLink.click();
-        localLink.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 10000);
-        window.yanshiStats.lastExport = { url: href, width: board.width, height: board.height, bytes: blob.size };
-        log("已导出 PNG（本地）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）");
-        return;
-      }
+  // ① 服务端整幅（权威 ✓，重内容也对 ✓）。
+  const startedServer = performance.now();
+  const value = await requestFullDocumentRender(w, h);
+  if (value) {
+    if (value.width !== w || value.height !== h) {
+      log("导出警告：返回 " + value.width + "×" + value.height + "，期望 " + w + "×" + h, "#c33");
     }
-  } catch (error) {
-    // 本地导出失败 ⇒ 退到服务端那条 ✓（**不让它把导出整体弄坏** ✗）
-  }
-  const value = await callTool("render_region", { region: { x: 0, y: 0, w, h } }, { refresh: false });
-  if (!value.ok || !value.thumb_url) {
-    log("导出失败：" + (value.error_code || "no url"), "#c33");
+    triggerPngDownload(value.thumb_url, state.docId, false);
+    window.yanshiStats.lastExport = {
+      url: value.thumb_url, width: value.width, height: value.height,
+      bytes: value.bytes, source: "server", ms: Math.round(performance.now() - startedServer),
+    };
+    log("已导出 PNG（整幅，服务端）：" + value.width + "×" + value.height +
+        "（" + (value.bytes || 0) + " 字节）");
     return;
   }
-  if (value.width !== w || value.height !== h) {
-    log("导出警告：返回 " + value.width + "×" + value.height + "，期望 " + w + "×" + h, "#c33");
+  // ② 离线兜底：本地整幅合成（尺寸 = 文档 ✓，内容边界见上面的说明 ✓）。
+  try {
+    const started = performance.now();
+    const { canvas, tiles } = composeFullDocumentCanvas();
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("canvas.toBlob 返回空");
+    const href = URL.createObjectURL(blob);
+    triggerPngDownload(href, state.docId, true);
+    window.yanshiStats.lastExport = {
+      url: href, width: canvas.width, height: canvas.height,
+      bytes: blob.size, source: "local-full", ms: Math.round(performance.now() - started),
+    };
+    log("已导出 PNG（整幅，离线本地合成）：" + canvas.width + "×" + canvas.height +
+        "（" + blob.size + " 字节）");
+    if (needsServerPixels || tiles === 0) {
+      log("⚠ 离线导出：画笔笔触（raster_patch）的像素只有服务端有 ⇒ 这份整幅 PNG 里" +
+          "视口之内是画布上已有的真实像素、视口之外是背景；要完整整幅请联网后再导一次", "#c93");
+    }
+    return;
+  } catch (error) {
+    log("导出失败：" + (error && error.message ? error.message : String(error)), "#c33");
   }
-  const link = document.createElement("a");
-  link.href = value.thumb_url;
-  link.download = (state.docId || "yanshi") + ".png";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.yanshiStats.lastExport = { url: value.thumb_url, width: value.width, height: value.height, bytes: value.bytes };
-  log("已导出 PNG：" + value.width + "×" + value.height + "（" + (value.bytes || 0) + " 字节）");
+});
+
+/// **显式导出"当前视图"** ✓ —— 裁剪成视口本身是**有用的**（分享眼前这一块 ✓），
+/// 所以这条路保留 ✓；但它必须是**用户点名选的** ✓、日志里写明"当前视图" ✓。
+/// 默认那条（`#exportPng`）**绝不**这样裁 ✗ —— 这正是 P0 的修法 ✓。
+$("exportPngView").addEventListener("click", async () => {
+  const { w, h } = state.docSize;
+  if (!w || !h) {
+    log("导出失败：文档尺寸未知", "#c33");
+    return;
+  }
+  if (!board || !board.width || !board.height) {
+    log("导出失败：画布还没准备好", "#c33");
+    return;
+  }
+  try {
+    const blob = await new Promise((resolve) => board.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("board.toBlob 返回空");
+    const href = URL.createObjectURL(blob);
+    triggerPngDownload(href, state.docId, true);
+    window.yanshiStats.lastExport = {
+      url: href, width: board.width, height: board.height, bytes: blob.size, source: "viewport",
+    };
+    log("已导出 PNG（当前视图）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）");
+  } catch (error) {
+    log("导出当前视图失败：" + (error && error.message ? error.message : String(error)), "#c33");
+  }
 });
 
 $("zoomFit").addEventListener("click", () => {
@@ -8647,6 +8753,7 @@ const I18N_EN_TEXT = {
   "撤销": "Undo",
   "重做": "Redo",
   "导出 PNG": "Export PNG",
+  "导出当前视图": "Export current view",
   "文件": "File",
   "图层": "Layers",
   "角度": "Angle",
