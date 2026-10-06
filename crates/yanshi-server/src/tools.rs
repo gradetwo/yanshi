@@ -1048,6 +1048,12 @@ fn finish_mutation(
     let mut job_status = None;
     if let Some(job_id) = &result.job_id {
         if ctx.wait_for_render {
+            // **这一段是"文档级预览渲染"** ✓（本轮新增计时 ✓）：
+            // 重型原子（`raster_patch` ✓ —— `brush_stroke` / `texture_background` /
+            // `import_image` 都是 ✓）会在这里同步跑完 job ✓，而 job 的收尾就是
+            // `render_document_preview` ✓ ⇒ **它才是那笔"与笔刷大小无关"的固定开销** ✓。
+            // 以前这一段**不计时** ✗ ⇒ 外部报告只能看到一个恒定的 `other_ms` ✓。
+            let preview_started = std::time::Instant::now();
             // 进程内实现是同步渲染：在预算内直接跑完 job（6.7 的 wait_for_render）。
             let document = ctx.workspace.document_mut(&ctx.doc_id)?;
             let _ = document.run_pending_jobs()?;
@@ -1057,6 +1063,7 @@ fn finish_mutation(
             // 这份预览是本进程刚渲染的、且与 HEAD 一致 ✓ ⇒ 几十 KB 的 256² PNG ✓
             // 换掉"下一个连接再整幅重渲染一次" ✗（实测 4K/318 对象 **122s** ✓）。
             let _ = ctx.workspace.cache_document_preview(&ctx.doc_id);
+            ctx.time(Phase::Preview, preview_started);
         } else {
             job_status = Some(JobStatus::Submitted.as_str().to_owned());
         }
@@ -1069,6 +1076,8 @@ fn finish_mutation(
         // 区域预览（8.2/8.3）：只渲染 dirty 区域，避免每次修改都全图重算。
         match preview_region {
             Some(bbox) => {
+                // **响应里的区域预览渲染** ✓（与上面那段互不重叠 ✓，同记 `Preview` ✓）。
+                let preview_started = std::time::Instant::now();
                 let document = ctx.workspace.document_mut(&ctx.doc_id)?;
                 let (width, height) = (document.state().width, document.state().height);
                 let x = bbox.x.max(0.0).min((width as f64 - 1.0).max(0.0));
@@ -1077,6 +1086,7 @@ fn finish_mutation(
                 let h = bbox.h.max(1.0).min(height as f64 - y);
                 let region = Bbox::new(x, y, w.max(1.0), h.max(1.0));
                 let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
+                ctx.time(Phase::Preview, preview_started);
                 preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
             }
             None => {

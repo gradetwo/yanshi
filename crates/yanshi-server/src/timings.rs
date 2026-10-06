@@ -18,6 +18,9 @@
 //! * `dirty_ms`：**脏区/tile 计算**（`plan_dirty_with_log` ＋ `apply_dirty` ✓）；
 //! * `fold_ms`：**增量折叠**（状态推进 ＋ 渲染网格重建 ✓）；
 //! * `log_ms`：**日志追加与落盘**（内存日志 append ＋ `FileStore` 持久化 ✓；纯内存工作区不落盘 ✓）；
+//! * `preview_ms`：**预览/缩略图渲染** —— `finish_mutation` 里"文档级预览"
+//!   （`run_pending_jobs` ⇒ `render_document_preview` ✓）与"响应里的区域预览"
+//!   （`render_region` ✓）两段墙钟之和 ✓（本轮新增 ✓，见 [`Phase::Preview`] ✓）；
 //! * `render_ms`：**导出路径的像素产出** —— `export_png` 从取像素
 //!   （`render_region_raw` / `render_region_raw_layer` ✓）到缩放
 //!   （`resample_rgba` ✓）为止 ✓（**只有导出路径会填它** ✓，其余工具恒为 0 ✓）；
@@ -49,6 +52,18 @@ pub enum Phase {
     Fold,
     /// 日志追加与落盘。
     Log,
+    /// **预览/缩略图渲染**（本轮新增 ✓）。
+    ///
+    /// **为什么必须有** ✗：外部性能报告的观测是"每一笔 `brush_stroke` 的 `other_ms`
+    /// 恒定 ~11 s、与笔刷大小和 atom 数都无关" ✓ —— 而落笔路径里**唯一**具有
+    /// "固定分辨率、与这一笔多大无关"这个特征的工作就是**预览渲染**（连同它内部的
+    /// 位图补丁解码 ✓）。此前这一段**一个阶段都没记** ✗ ⇒ 11 s 全落进残差 ✓，
+    /// 报告方只能从外部反推 ✓。
+    ///
+    /// 覆盖范围 ✓：`finish_mutation` 里"文档级预览渲染"（`run_pending_jobs` ⇒
+    /// `render_document_preview` ✓）与"响应里的区域预览渲染"（`render_region` ✓）
+    /// 两段**互不重叠**的墙钟 ✓（两段都记进同一个阶段 ✓）。
+    Preview,
     /// **导出路径的像素产出**（取像素 ＋ 缩放 ✓；只有 `export_png` 会填 ✓）。
     Render,
     /// **导出路径的 PNG 编码**（只有 `export_png` 会填 ✓）。
@@ -63,6 +78,7 @@ pub struct ToolTimings {
     dirty_us: u64,
     fold_us: u64,
     log_us: u64,
+    preview_us: u64,
     render_us: u64,
     png_us: u64,
 }
@@ -86,6 +102,7 @@ impl ToolTimings {
             Phase::Dirty => &mut self.dirty_us,
             Phase::Fold => &mut self.fold_us,
             Phase::Log => &mut self.log_us,
+            Phase::Preview => &mut self.preview_us,
             Phase::Render => &mut self.render_us,
             Phase::Png => &mut self.png_us,
         };
@@ -107,6 +124,7 @@ impl ToolTimings {
             dirty_us: self.dirty_us.saturating_sub(base.dirty_us),
             fold_us: self.fold_us.saturating_sub(base.fold_us),
             log_us: self.log_us.saturating_sub(base.log_us),
+            preview_us: self.preview_us.saturating_sub(base.preview_us),
             render_us: self.render_us.saturating_sub(base.render_us),
             png_us: self.png_us.saturating_sub(base.png_us),
         }
@@ -119,6 +137,7 @@ impl ToolTimings {
             .saturating_add(self.dirty_us)
             .saturating_add(self.fold_us)
             .saturating_add(self.log_us)
+            .saturating_add(self.preview_us)
             .saturating_add(self.render_us)
             .saturating_add(self.png_us)
     }
@@ -134,6 +153,7 @@ impl ToolTimings {
             "dirty_ms": millis(self.dirty_us),
             "fold_ms": millis(self.fold_us),
             "log_ms": millis(self.log_us),
+            "preview_ms": millis(self.preview_us),
             "render_ms": millis(self.render_us),
             "png_ms": millis(self.png_us),
             "other_ms": millis(other_us),
@@ -166,12 +186,17 @@ mod tests {
         let mut timings = ToolTimings::default();
         timings.add(Phase::Raster, Duration::from_millis(3));
         timings.add(Phase::Fold, Duration::from_micros(500));
+        // **预览阶段也要进这份账目** ✗：残差是按"总时长 − 全部已量阶段"算的 ✓
+        // ⇒ 若这里漏掉 `preview_ms` ✓，残差就会把预览那段时间**再扣一次** ✗
+        // ⇒ 这条"各相之和 = 总时长"的判据会在有预览时红 ✓（正是它该红的 ✓）。
+        timings.add(Phase::Preview, Duration::from_millis(1));
         let report = timings.report(Duration::from_millis(10));
         let sum = report["prep_ms"].as_f64().unwrap()
             + report["raster_ms"].as_f64().unwrap()
             + report["dirty_ms"].as_f64().unwrap()
             + report["fold_ms"].as_f64().unwrap()
             + report["log_ms"].as_f64().unwrap()
+            + report["preview_ms"].as_f64().unwrap()
             + report["render_ms"].as_f64().unwrap()
             + report["png_ms"].as_f64().unwrap()
             + report["other_ms"].as_f64().unwrap();
@@ -180,7 +205,8 @@ mod tests {
             "各相（含残差）之和必须等于总时长：{report}"
         );
         assert_eq!(report["raster_ms"], json!(3.0));
-        assert_eq!(report["other_ms"], json!(6.5));
+        assert_eq!(report["preview_ms"], json!(1.0));
+        assert_eq!(report["other_ms"], json!(5.5));
     }
 
     #[test]
