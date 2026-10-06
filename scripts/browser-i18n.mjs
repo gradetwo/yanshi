@@ -70,6 +70,21 @@ const bodyProbe = `JSON.stringify((() => {
   const cardPalette = document.getElementById("cardPalette");
   return { distinct: found.size, where: where.slice(0, 6), sample: [...found.keys()].slice(0, 6),
     paletteVisible: !!(cardPalette && cardPalette.offsetParent),
+    // **为什么不可见** ✗ —— 只报布尔值无法定位（CI 实测 paletteVisible:false ✓，
+    // 而 cardPalette **没有 hidden 属性** ✓、仓库里也**没有**会藏 data-panel=assets 的
+    // @media 块 ✓）⇒ 把**祖先链**的 display／visibility／overflow 一起打出来 ✓。
+    // ⚠️ 这段在**模板字面量**里 ⇒ 注释里**绝不能出现反引号**✗（会终止模板 ⇒ SyntaxError ✓）。
+    paletteChain: (() => {
+      const out = [];
+      let el = cardPalette;
+      for (let i = 0; el && i < 12; i += 1, el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        out.push((el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
+          (el.className ? "." + String(el.className).split(" ")[0] : "")) +
+          "[" + cs.display + "/" + cs.visibility + (cs.overflow !== "visible" ? "/" + cs.overflow : "") + "]");
+      }
+      return out;
+    })(),
     labels: { refresh: body.includes("Refresh"), palette: body.includes("Palette"),
       file: body.includes("File") } };
 })())`;
@@ -118,6 +133,9 @@ else {
   // **更强的一条**：英文模式下**整页**（除日志、代码示例、语言开关）**不应再有中文**。
   const probe = JSON.parse(await evaluate(bodyProbe));
   console.log("  【整页】" + JSON.stringify(probe));
+// **调色板为何不可见** ✗（CI 实测 `paletteVisible:false` ✓）：打印**祖先链**的 `display`／`visibility` ✓
+// ⇒ 一眼看出是谁藏了它（**∴ 若整条链都正常显示 ⇒ 那就是 `offsetParent` 这类判据侧陷阱 ✓**）。
+if (!probe.paletteVisible) console.log("  【调色板祖先链】" + JSON.stringify(probe.paletteChain));
   if (probe.distinct > 0) failures.push(`英文模式下整页仍有 ${probe.distinct} 条中文：${JSON.stringify(probe.sample)}`);
   // 只断言"默认布局下一定可见"的标签（工具栏刷新 ✓、调色板面板 ✓、顶栏文件菜单 ✓）；
   // 历史/标注等面板默认收起 ⇒ 断言它们存在等于假设布局，会很脆。

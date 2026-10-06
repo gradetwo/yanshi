@@ -40403,3 +40403,28 @@ node scripts/tool-examples-doc-check.mjs <server-base>    # 防陈旧判据（�
 ⇒ **∴ 下一步**（明确 ✓）：**∴ 在判据里打印 `cardPalette` 的**祖先链 `display`／`visibility`**✗
    ⇒ **∴ 一眼就能看出是谁藏的 ✓**（**∴ 这是"判据量错对象"之外的另一种：**判据只问"可见吗"✗，
    **∴ 不问"为什么不可见"✗ ⇒ **∴ 缺诊断 ✓**）** ✓✓
+
+## 第 1296 轮：给 ④ 加**祖先链诊断**（判据只问"可见吗"✗，不问"为什么不可见"✗）
+
+### 为什么要加
+CI 实测 `paletteVisible:false` ✓，而**代码侧证据说明它**应当可见**✗**：
+`viewer.rs:519` 的 `<div class="card" data-panel="assets" id="cardPalette">` **没有 `hidden`** ✓
+（**∴ 而 `:294 quickPanel`／`:646 fileMenu`／`:654 brushLibrary`／`:662 assetDock` **都有**✗ ✓**）；
+仓库里也**没有**含 `card`／`assets`／`panel` 的 `@media` 块 ✓；`brush-area-collapsed` 只折叠**画笔区** ✓。
+⇒ **∴ 判据只报一个布尔值 ⇒ **∴ **无法定位是谁藏的**✗** ✓ ⇒ **∴ 补诊断 ✓**。
+
+### 加了什么
+1. `paletteChain`：把 `cardPalette` 的**祖先链**（最多 12 层 ✓）连同各自的
+   `display`／`visibility`／`overflow` 一起返回 ✓；
+2. **失败路径也打印** ✓：`if (!probe.paletteVisible) console.log("  【调色板祖先链】" + …)` ✓
+   （**∴ 否则诊断只在成功路径上 ✗ ⇒ **∴ 等于没加 ✓**）。
+
+### ⚠️ 踩到的坑（**值得进 skill**）
+我把诊断注释写进了那段代码，而它**位于一个模板字面量里** ✗（`evaluate(\`(() => { … })()\`)` ✓）
+⇒ 注释里的**反引号**（`` `paletteVisible:false` `` ✓）**终止了模板** ✗
+⇒ `SyntaxError: Unexpected identifier 'paletteVisible'` ✓ ⇒ **整条判据当场失效** ✗。
+⇒ **∴ 规则** ✓：**∴ 在模板字面量里 ⇒ 注释／字符串里**绝不能出现反引号**✗（**∴ 要么改用普通引号 ✓，
+   **∴ 要么 `\`` 转义 ✓）** —— **∴ 这也解释了为什么这份文件里既有注释**一律不用反引号**✗ ✓**。
+⇒ **∴ 与第 546 轮那条同型** ✓：**∴ 那次是"注释写进**正则字面量**✗ ⇒ **∴ 报 `Invalid regular expression`✗**；
+   **∴ 这次是"注释写进**模板字面量**✗ ⇒ **∴ 报 `Unexpected identifier`✗ ✓** ⇒ **∴ 两条都属于
+   **"注释的宿主语法"✗** ✓ ⇒ **∴ 改判据时先看这段代码处在**哪种字面量**里 ✓** ✓✓
