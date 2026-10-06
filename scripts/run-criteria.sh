@@ -64,7 +64,7 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
@@ -104,7 +104,9 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # **静态界面判据** ✓（第 792 轮接线 ✓）：只读查看器的 HTML/CSS ⇒ **不需要服务端/浏览器** ✓。
     # ui-layout-grid：间距/字号必须落在少数几档、且间距在 4 的倍数上 ✓；
     # ui-text-density：直接可见的文本不得是长解释句 ✓。
-    ui-layout-grid.mjs|ui-text-density.mjs)
+    # ui-i18n-coverage：模板里会成为文本节点的中文串必须在 I18N_EN_TEXT 里有词条 ✓
+    #（`browser-i18n.mjs` 的静态影子 ✓：没构建 / 没 chromium 时那条只会跳过 ✗，这条照样守 ✓）。
+    ui-layout-grid.mjs|ui-text-density.mjs|ui-i18n-coverage.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
     # **MCP 判据** ✓（第 793 轮接线 ✓）：两条都**自己 spawn** target/debug/yanshi-mcp ✓、
     # 自己造 root/doc ✓ ⇒ **不需要服务端/浏览器** ✓（mcp-document-switch ✓ 看磁盘上图层落在哪个文档 ✓；

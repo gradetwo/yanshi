@@ -8653,6 +8653,10 @@ const I18N_EN_TEXT = {
   "绘制": "Paint",
   "历史": "History",
   "诊断": "Diagnostics",
+  // **诊断包入口**（第 1166 轮 ✓）：`viewer.rs:509 / :511` 的说明与按钮 ——
+  // 这条入口是 P0 事故复盘那轮加的 ✓，**没进词表** ✗ ⇒ 英文模式下它照旧写中文 ✓。
+  "出问题时一键下载排查包（zip）": "Download a diagnostic bundle (zip) in one click when something goes wrong",
+  "下载诊断包": "Download diagnostics bundle",
   "操作": "Actions",
   "一致性自检": "Consistency check",
   "＋ 图层": "＋ Layer",
@@ -8755,6 +8759,12 @@ const I18N_EN_TEXT = {
   "工程包": "Project archive",
   "路径": "Path",
   "导出工程": "Export project",
+  // **工程包卡片的重排文案**（第 1166 轮 ✓）：这四句是"导出下载到本机、导入从本机选文件"那次改动加的，
+  // 当时**没进词表** ✗ ⇒ 英文模式下整张卡仍是中文 ✓。
+  "导出下载到本机 ｜ 导入从本机选文件": "Export downloads to this machine ｜ Import picks a file from this machine",
+  "服务器另存路径": "Server-side save path",
+  "导入为": "Import as",
+  "导入 .yanshi…": "Import .yanshi…",
   "导入为新文档": "Import as a new document",
   "用完即收": "Puts itself away",
   "`Esc` 收起": "`Esc` collapses it",
@@ -8778,10 +8788,18 @@ const I18N_EN_TEXT = {
   "打开文档": "Open document",
   "示例作品": "Sample works",
   "我的文档": "My documents",
+  // **文档列表表头**（第 1166 轮 ✓）：`viewer.rs:113` 的列头（名字 / 尺寸 / 时间 ✓）——
+  // 它随"打开面板重排"一起加进来时**漏了词条** ✗ ⇒ 英文模式下这四个字原样留着 ✓。
+  "名字 · 尺寸 · 时间": "Name · Size · Time",
   "导入本地图片": "Import a local image",
   "另存为副本": "Save a copy",
   "另存为…": "Save as…",
   "关闭": "Close",
+  // **删除文档**（第 1166 轮 ✓）：文件管理那件事加进来的确认对话框 ✓ ——
+  // 标题 / 说明 / 按钮三处都漏了词条 ✗（`viewer.rs:147 / :151 / :156` ✓）。
+  "删除文档": "Delete document",
+  "删掉磁盘上的这份文档与只属于它的 blob。": "Delete this document from disk, together with the blobs only it uses.",
+  "删除": "Delete",
   "画笔": "Brush",
   "粗细": "Size",
   "颜色": "Colour",

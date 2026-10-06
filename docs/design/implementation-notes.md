@@ -36585,3 +36585,67 @@ C. batch I/O 汇聚：沿已有 `batch` 语义做，代价 = 崩溃窗口从单�
 - 墙钟噪声大（同机有别的构建）⇒ 硬证据是计数不是时间；debug 档没量。
 - 本 worktree 从 main(ccedb4a) 分出，看不到主工作区里**未提交**的第 1154 轮那段 notes
   ⇒ 本轮只追加 1155。合并时**两份都要保留**（追加-追加冲突，不许单取一侧）。
+## 第 1166 轮：补齐新增 UI 的 10 条 i18n 词条，并加一条**静态**判据「新文案必须有词条」
+承接第 1165 轮的定性 ✓：`browser-i18n` 报的那 10 条中文**不是竞态** ✗ ——
+切到英文是生效的（`htmlLang=en`、顶栏中文 0 ✓），剩下的正是**新增 UI 忘了进词表** ✓。
+### 机制（读代码确认，不另造第二套 ✓）
+两张表都在 `crates/yanshi-http/assets/viewer-app.js`：
+- `I18N_EN_TEXT`（:8615）：按**中文原文精确匹配** ⇒ `zh ⇒ en` ✓；查不到就**原样保留**（安全降级 ✓）。
+- `I18N_EN_ATTR`（:8830）：管 `title` / `placeholder` / `aria-label` ✓，名单见 `I18N_ATTRS`（:8865）✓。
+施加路径：`i18nText()`（:8874）逐**文本节点**查表 ✓ → `i18nWalk()`（:8914）从 `document.body` 走一遍 ✓；
+跳过 `#log / pre / code / script / style / textarea / [data-i18n='off']`（`i18nSkip()` :8869 ✓）；
+面板重建后由 `MutationObserver` 再施加一次（:8944）✓。语言来自 `LANG_KEY = "yanshi.lang"`（:8853）+ `?lang=` ✓，
+顶栏 `#langToggle` 两者都写 ✓。**动态文案**（图层 N / 离线排队 N 条 …）走 :8883 起的七条正则 ✓ ——
+所以静态判据**不覆盖**它们 ✓（只有真浏览器能验 ✓）。
+### 补的 10 条（zh ⇒ en；都插在同类词条旁边 ✓）
+| viewer.rs | 中文 | English |
+| --- | --- | --- |
+| :113 | 名字 · 尺寸 · 时间 | Name · Size · Time |
+| :147 | 删除文档 | Delete document |
+| :151 | 删掉磁盘上的这份文档与只属于它的 blob。 | Delete this document from disk, together with the blobs only it uses. |
+| :156 | 删除 | Delete |
+| :509 | 出问题时一键下载排查包（zip） | Download a diagnostic bundle (zip) in one click when something goes wrong |
+| :511 | 下载诊断包 | Download diagnostics bundle |
+| :578 | 导出下载到本机 ｜ 导入从本机选文件 | Export downloads to this machine ｜ Import picks a file from this machine |
+| :580 | 服务器另存路径 | Server-side save path |
+| :582 | 导入为 | Import as |
+| :584 | 导入 .yanshi… | Import .yanshi… |
+中文一侧**一个字节都没动** ✓（表只在 `uiLang === "en"` 时生效 ✓）⇒ 判据的"切回中文"一段照旧过 ✓。
+### 新判据 `scripts/ui-i18n-coverage.mjs`（静态 ✓ 不需要服务端/浏览器 ✓；已接进 `run-criteria.sh` ✓）
+做法：按 `page_template()` 的同一顺序拼 `PAGE_HEAD` + `viewer.css` + `PAGE_TAIL_A` + `viewer-app.js` + `PAGE_TAIL_B` ✓，
+按运行时**同一套 skip 规则**剥掉注释 / `<script>` / `<style>` / `pre` / `code` / `textarea` /
+`[data-i18n=off]` / `#log` ✓，取出**文本节点**里含汉字的串 ✓，要求每条都在 `I18N_EN_TEXT` 里 ✓。
+**覆盖边界（写在脚本头部 ✓，不让它冒充全覆盖 ✗）**：
+* 覆盖 ✓：模板里**作为文本节点出现**的中文串（当前 186 条 ✓）。
+* **不覆盖** ✗：① `title=` / `placeholder=` / `aria-label=`（那是 `I18N_EN_ATTR` ✓）——
+  本判据**不检查** ⇒ 英文模式下 tooltip 仍可能是中文 ✓；② `viewer-app.js` 运行时拼的文案与七条正则模式 ✓；
+  ③ 翻译**质量** ✗ —— 只加三条廉价合法性：非空 / 不等于中文 / 不含汉字 ✓。
+两条防伪：
+* **假红防护** ✓：模板里 `#undoDepth` 的初值「撤销 0 / 重做 0」在 `applyUILanguage()` 之前就被
+  `updateUndoStatus()` 用 `textContent` 整段换掉 ✓ ⇒ 它**永远不经过词表** ✓ ⇒ 放进一条**带锚点**
+  （`$("undoDepth")` ✓）+ 理由的 DYNAMIC 清单 ✓；锚点丢了 / 文案没了**也报红** ✓（防清单腐化 ✓）。
+* **假绿防护** ✓：三个 HTML 片段抽不到 / 词表解析为空 / 文案数 < 50 ⇒ **退出码 2**（判据失效 ✓），不是绿 ✓。
+报错给的是 **viewer.rs 的真行号** ✓ —— 为此维持了「拼接串 ⇒ viewer.rs 偏移」的映射 ✓。
+（第一版直接 `rs.indexOf(文案)` 把「删除」报成第 144 行的注释 ✗，真身在第 156 行 ✓ —— 报错本身也会骗人 ✓。）
+### 证据（全部**直接调用** ✓ —— `run-criteria.sh` 会把仓库拷进自己的 root ✗，变异到不了它那里 ✓）
+`node scripts/ui-i18n-coverage.mjs`：
+* 修复前 **红**，逐条点名这 10 条（exit=1）✓：「… viewer.rs:113 "名字 · 尺寸 · 时间" / :147 … / :584 …」✓。
+* 修复后 **绿**（186 条文案 / 203 条词条 / 1 条 DYNAMIC）✓。
+`browser-i18n.mjs`（自己起 server + chromium + CDP ✓，`--wasm-dir` 指本仓新构建的 pkg ✓）：
+* 修复前 `EXIT=1`：`【英文】{… "headerChinese":0 …}`、`【整页】{"distinct":10,…}` ✓ —— 与第 1165 轮的读数一致 ✓。
+* 修复后 `EXIT=0`：`【整页】{"distinct":0,"where":[],"sample":[]}` ✓；默认中文 / 切英文 / 切回中文三段全过 ✓
+  （切回那段的 `headerChinese` 仍是 21 ✓，即中文**没有被降级** ✓）。
+**变异检查**（每条都先 `grep` 确认变异**真的落盘** ✓，跑完立刻改回并 `diff` 确认复原 ✓）：
+1. 删掉 `"下载诊断包"` 词条 ⇒ 红并点名 `viewer.rs:511` ✓；
+2. 在模板里加一个 `<button>全新按钮</button>`（模拟"又加了一个没词条的 UI" ✓）⇒ 红并点名 `viewer.rs:75` ✓；
+3. 把 `"删除"` 的英文改成中文（`zh == en` ✓）⇒ 红「英文与中文一模一样（等于没翻 ✓）」✓。
+* `cargo build --workspace --all-targets` ⇒ `build_exit=0` ✓（**先**跑它 ✓：不先全跑测试会出假的 `E0460` ✓）。
+* `cargo test --workspace` ⇒ `test_exit=0` ✓（134 个测试二进制报 `test result: ok` ✓、`FAILED` 0 ✓）。
+* `cargo fmt --all -- --check` ⇒ `fmt_exit=0` ✓。
+* `cargo clippy --workspace --all-targets -- -D warnings` ⇒ `clippy_exit=0` ✓。
+### 这次**没做**的（如实登记 ✓）
+`I18N_EN_ATTR` 那一侧今天仍有 **25 条中文 tooltip**（`title=` / `placeholder=` ✓）没有英文词条 ✓ ——
+本轮的静态判据**故意不覆盖**它们 ✓（覆盖了就会把这 25 条一起变红 ✓，而那是**另一件事**：
+"属性文案的翻译"而不是"新文本节点的漏词条" ✓）。
+⇒ 英文模式下这些 tooltip（含本轮修的那几个元素的 `title=` ✓，如删除确认的说明 ✓）仍是中文 ✓。
+要修就是下一条判据 + 25 条词条 ✓，这轮只把**文本节点**这一类封住 ✓。
