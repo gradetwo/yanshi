@@ -6613,7 +6613,10 @@ type Gesture = (Option<String>, Vec<(u64, String, String)>);
 ///    抽出来的理由（F02）✓：`undo` 与"只读的撤销状态查询"必须报**同一个数** ✓，
 ///    各写一份必然漂移 ✓（本项目反复吃的亏 ✓）。它**只读** ✓：不改文档、不发 revert ✓。
 ///    返回 `(gestures, ignored)` ✓：`ignored` 是**被跳过的非内容原子数** ✓（如实报告 ✓）。
-fn collect_gestures(document: &crate::document::Document) -> (Vec<Gesture>, usize) {
+fn collect_gestures(
+    document: &crate::document::Document,
+    want_alive: bool,
+) -> (Vec<Gesture>, usize) {
     let mut gestures: Vec<Gesture> = Vec::new();
     let mut ignored: usize = 0;
     // 只认"当前还活着"的对象——这是实测逼出来的：
@@ -6639,7 +6642,13 @@ fn collect_gestures(document: &crate::document::Document) -> (Vec<Gesture>, usiz
             ignored += 1;
             continue;
         };
-        if !alive.contains(&object) {
+        // want_alive=true ⇒ 只要**还活着**的（undo）；false ⇒ 只要**已被撤掉**的（redo）。
+        let matches = if want_alive {
+            alive.contains(&object)
+        } else {
+            !alive.contains(&object)
+        };
+        if !matches {
             ignored += 1;
             continue;
         }
@@ -6665,7 +6674,7 @@ fn read_get_undo_status(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Valu
             ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
         )
     })?;
-    let (gestures, ignored) = collect_gestures(document);
+    let (gestures, ignored) = collect_gestures(document, true);
     Ok(json!({
         "remaining_gestures": gestures.len(),
         "ignored_atoms": ignored,
@@ -6688,7 +6697,7 @@ fn write_undo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
         )
     })?;
-    let (gestures, ignored) = collect_gestures(document);
+    let (gestures, ignored) = collect_gestures(document, true);
     if gestures.is_empty() {
         return Ok(json!({
             "undone": [],
@@ -6752,42 +6761,14 @@ fn write_redo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1) as usize;
-    let mut gestures: Vec<Gesture> = Vec::new();
-    let mut ignored: usize = 0;
-    {
-        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
-            )
-        })?;
-        let alive: std::collections::HashSet<String> = document
-            .state()
-            .alive_objects()
-            .iter()
-            .map(|object| object.id.clone())
-            .collect();
-        let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
-        atoms.sort_by_key(|atom| atom.seq);
-        for atom in atoms.iter().rev() {
-            let Some(object) = atom.object_id().map(str::to_owned) else {
-                ignored += 1;
-                continue;
-            };
-            // **只认已经被撤掉的** ✓（还活着的那些是 `undo_last` 的事 ✓）。
-            if alive.contains(&object) {
-                ignored += 1;
-                continue;
-            }
-            let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
-            match gestures.last_mut() {
-                Some((last_object, items)) if *last_object == Some(object.clone()) => {
-                    items.push(entry)
-                }
-                _ => gestures.push((Some(object), vec![entry])),
-            }
-        }
-    }
+    // 归并走共用辅助函数（want_alive=false ⇒ 只要**已被撤掉**的那些 ✓）。
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let (gestures, ignored) = collect_gestures(document, false);
     if gestures.is_empty() {
         return Ok(json!({
             "redone": [],
