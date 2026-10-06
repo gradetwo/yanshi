@@ -537,10 +537,13 @@ const effectResult = await evaluate(`(async () => {
   document.getElementById("effectApply").click();
   await new Promise((r) => setTimeout(r, 2500));
   // 等画布**不透明**（不透明像素数 = 总数）或超时：断言"不会停在透明态"。
+  // 退出条件必须与断言一致：断言判的是 sum 有没有变，而原先只等 opaque === total，
+  // 于是"画布本来就全不透明"时第一轮就 break，After 与 Before 相同，被误报成没有变化。
   let fingerprint = null;
+  const beforeSum = ${fingerprintBeforeEffect.sum};
   for (let i = 0; i < 30; i++) {
     fingerprint = ${canvasFingerprint};
-    if (fingerprint.opaque === fingerprint.total) break;
+    if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   return { list: document.getElementById("effectsList").textContent, fingerprint };

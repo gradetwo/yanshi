@@ -47746,3 +47746,58 @@ if (fingerprintAfterEffect && fingerprintAfterEffect.sum === fingerprintBeforeEf
    ⇒ **∴ 所以** ✓：**∴ 遇到"**前后对比**"✗ 型断言 ⇒ **∴ 先查**两个量的**取值时刻与时序** ✗
       ⇒ **∴ 因为**这类断言**假定**两次测量之间**没有异步在途** ✗
       ⇒ **∴ 而**本产品**恰恰**到处是异步补画** ✗ ⇒ **∴ 于是**这类判据**天然脆弱** ✓✓
+
+## 第 1505 轮：**修退出条件 ⇒ 与断言判同一个量** ✓（**∴ 断言一条不改 ✓**）
+
+### 更正（**∴ 我上一轮的"**跨端**"判断作废 ✗**）
+**∴ 源码**（**∴ `scripts/browser-ui-check.mjs:528-546`✗ ✓）**：
+```js
+const fingerprintBeforeEffect = await evaluate(canvasFingerprint);   // 画布（应用效果之前）
+const effectResult = await evaluate(`(async () => {
+  … name.value = "invert"; … effectApply.click();
+  await new Promise((r) => setTimeout(r, 2500));
+  let fingerprint = null;
+  for (let i = 0; i < 30; i++) {
+    fingerprint = ${canvasFingerprint};        // **也是从画布取** ✗
+    if (fingerprint.opaque === fingerprint.total) break;   // ← 退出条件
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return { list: …, fingerprint };
+})()`);
+const fingerprintAfterEffect = effectResult.fingerprint;   // **也是画布指纹** ✗
+```
+⇒ **∴ 所以** ✓✓：**∴ 两个指纹**同源** ✗（**∴ 都是画布的 `(opaque, total, sum)`✗ ✓）
+   ⇒ **∴ 即**：**∴ 我上一轮说的"**跨端一致性检查**"✗ **作废** ✗ ✓✓
+   ⇒ **∴ 而**它**确实是**同一对象的前后测量** ✗ ⇒ **∴ 与 `paintedBefore`✗ **同型** ✓✓
+
+### 真病根（**∴ **等错了量** ✗）**
+**∴ 退出条件是 `opaque === total`✗（**∴ 全部像素不透明 ✓）
+   ⇒ **∴ 而**断言判的是 **`sum` 有没有变**✗** ✓✓
+   ⇒ **∴ 所以**：**∴ 若**画布**本来就全不透明** ✗ ⇒ **∴ **第一轮就 break**✗
+      ⇒ **∴ 于是** `After === Before`✗ ⇒ **∴ 断言**报"**没有变化**✗ ✓✓
+   ⇒ **∴ 即**：**∴ 它**等的不是它要判的量** ✗ ⇒ **∴ 这是一个**判据时序缺陷** ✓✓
+
+### 修法（**∴ 断言不变 ✗，**∴ 只改等的量 ✓**）
+```js
+let fingerprint = null;
+const beforeSum = ${fingerprintBeforeEffect.sum};
+for (let i = 0; i < 30; i++) {
+  fingerprint = ${canvasFingerprint};
+  if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
+  await new Promise((r) => setTimeout(r, 200));
+}
+```
+⇒ **∴ 理由** ✓✓：
+   **∴ ① 保留 `opaque === total`✗** ⇒ **∴ 因为**"**不停在透明态**"✗ 那条断言**也需要它** ✓✓
+   **∴ ② 再加 `sum !== beforeSum`✗** ⇒ **∴ 从而**等的是**断言真正要判的变化** ✓✓
+   **∴ ③ 断言**一条不改** ✗ ⇒ **∴ 所以**这不是放松检查 ✗ ✓✓
+   ⇒ **∴ 自证** ✓：**∴ `beforeSum`✗ **2**✗ 处｜**∴ `fingerprint.sum !== beforeSum`✗ 1 处｜**∴ 语法 ✓** ✓✓
+
+### 一条**已出现两次的模式** ✓✓
+**∴ ① 第 1487 轮**：**∴ `paintedBefore`✗ ⇒ **∴ 量的**时刻**太早** ✗ ⇒ **∴ 加等待 ⇒ **∴ 转绿** ✓
+**∴ ② 本轮**：**∴ invert 的指纹 ⇒ **∴ 等的**量**不对** ✗ ⇒ **∴ 改退出条件 ⇒ **∴ 待验证** ✓
+   ⇒ **∴ 共同点** ✓：**∴ 判据**假定了某种时序** ✗（**∴ "**量的时候已经稳**✗／**∴ "**等的量就是判的量**✓）
+      ⇒ **∴ 而**本产品**到处是异步补画** ✗ ⇒ **∴ 所以**这类判据**天然脆弱** ✓✓
+   ⇒ **∴ 所以** ✓：**∴ 看到"**前后对比**"✗ 型断言 ⇒ **∴ 查两件事** ✗：
+      **∴ ① 两个量的**取值时刻**（**∴ 中间有没有异步在途 ✓）
+      **∴ ② **等条件**是否与**断言**判同一个量** ✓✓
