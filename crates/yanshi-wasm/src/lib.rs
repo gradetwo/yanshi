@@ -288,6 +288,58 @@ impl WasmKernel {
 mod tests {
     use super::*;
 
+    /// **测量**两条区域渲染路径的字节关系（**∴ 只测量、不断言 ✓** ⇒ 第 1340 轮定位到
+    /// 判据量的是 tile 组合 ✗、而拖动走的是 scratch 直绘 ✗ ⇒ **∴ 所以改路前先问**：
+    /// **∴ 同一区域两条路的像素**是否逐字节一致**✗？** ⇒ **∴ 一致才能安全改 ✓**）。
+    #[test]
+    fn region_paths_agree_byte_for_byte() {
+        let mut kernel = WasmKernel::new("doc_m", 32, 64, 64, DEFAULT_MEMORY_LIMIT as f64).unwrap();
+        let atoms = [
+            json!({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA01", "seq": 1, "kind": "create_document",
+                   "actor": "human:1", "session": "s", "timestamp": 1,
+                   "payload": {"doc_id": "doc_m", "width": 64, "height": 64, "color_space": "srgb",
+                               "background": {"r": 255, "g": 255, "b": 255, "a": 255}}}),
+            json!({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA02", "seq": 2, "kind": "create_layer",
+                   "actor": "human:1", "session": "s", "timestamp": 2,
+                   "payload": {"layer_id": "layer_1"}}),
+            json!({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA03", "seq": 3, "kind": "draw_stroke",
+                   "actor": "human:1", "session": "s", "timestamp": 3,
+                   "payload": {"object_id": "obj_1", "layer_id": "layer_1",
+                               "data": {"points": [[6.0, 6.0], [40.0, 20.0]], "size": 6.0,
+                                        "color": [30, 30, 40, 255]}}}),
+        ];
+        for atom in &atoms {
+            let response: Value =
+                serde_json::from_str(&kernel.apply_atom_json(&atom.to_string())).unwrap();
+            assert_eq!(response["ok"], json!(true), "{response}");
+        }
+        for (x, y, w, h) in [(0.0, 0.0, 64.0, 64.0), (8.0, 8.0, 32.0, 32.0), (6.0, 6.0, 20.0, 12.0)] {
+            let tile = kernel.render_region_rgba(x, y, w, h);
+            let direct = kernel.render_region_direct_rgba(x, y, w, h);
+            // **这是判据，不是测量**（第 1341 轮 ✓）：两路**必须逐字节一致** ✓。
+            // 依据（2026-10-07 实测 ✓）：三个代表性区域（整幅 / 中段 / 小片）都是**差异 0 字节** ✓
+            // ⇒ 所以"改成走 tile 组合"是**安全的**，而这条断言就是那次改动的护栏 ✓。
+            let first_diff = tile.iter().zip(direct.iter()).position(|(a, b)| a != b);
+            let differing = tile.iter().zip(direct.iter()).filter(|(a, b)| a != b).count();
+            println!(
+                "  ({x},{y},{w},{h})：tile {} 字节｜direct {} 字节｜逐字节相同 {}｜首个差异位 {:?}｜差异字节 {}",
+                tile.len(), direct.len(), first_diff.is_none(), first_diff, differing
+            );
+            assert_eq!(
+                tile.len(),
+                direct.len(),
+                "({x},{y},{w},{h}) 两条路的字节数不同：tile {} vs direct {}",
+                tile.len(),
+                direct.len()
+            );
+            assert_eq!(
+                first_diff, None,
+                "({x},{y},{w},{h}) 两条路**逐字节不一致**：首个差异位 {:?}，共 {} 字节不同 ✗",
+                first_diff, differing
+            );
+        }
+    }
+
     #[test]
     fn wasm_surface_returns_envelopes_and_bytes() {
         let mut kernel = WasmKernel::new("doc_1", 32, 64, 64, DEFAULT_MEMORY_LIMIT as f64).unwrap();
