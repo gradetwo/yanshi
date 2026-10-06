@@ -210,6 +210,24 @@ const firstDiff = (left, right) => {
   section("① 断网：改文档的调用进队列，界面显示「排队」而不是「已保存」");
   await offline();
   await sleep(300);
+  // **负对照**（本次审计加的 ✓）：断网后页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
+  // 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
+  //（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
+  // ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+  // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+  const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+  // **不 `await` 这一次求值** ✓ —— 本判据对时序敏感（入队时读 `window.yanshiStats.serverHead`
+  // 当基线，多一次 CDP 往返会改变它何时被后台更新），所以让这个必然失败的请求**与入队那一步并发**，
+  // 结论稍后再取 ✓（请求仍然真的由页面发出 ✓）。
+  const controlPending = send("Runtime.evaluate", {
+    expression: `(async () => {
+      try {
+        const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
+        return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+      } catch (error) { return { failed: true, error: String(error) }; }
+    })()`,
+    returnByValue: true, awaitPromise: true,
+  });
   const queued = await evaluate(`window.yanshiCallTool("draw_stroke", ${JSON.stringify(DRAW_ARGS)})`);
   const entries1 = await evaluate("window.yanshi.outboxEntries()");
   const ui1 = await evaluate(`(() => {
@@ -220,6 +238,17 @@ const firstDiff = (left, right) => {
   })()`);
   console.log("     入队返回 = " + JSON.stringify(queued).slice(0, 160));
   console.log("     界面 = " + JSON.stringify(ui1));
+  const controlProbe = (await controlPending)?.result?.result?.value;
+  console.log("     负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+  const controlBlocked = !!(controlProbe && controlProbe.failed);
+  check(controlBlocked, `负对照：断网后未缓存的 ${NEGATIVE_CONTROL} 必须失败（拿到了 status=${controlProbe && controlProbe.status} ⇒ 断网模拟没生效 ⇒ 判据作废 VOID）`);
+  if (!controlBlocked) {
+    // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
+    console.error("  ⊘ 判据作废（VOID）：断网模拟没有生效 ⇒ 后续离线结论无效");
+    await online();
+    socket.close();
+    process.exit(1);
+  }
   check(Array.isArray(entries1) && entries1.length === 1, "队列里恰好 1 条（拿到了 " + (entries1 ? entries1.length : "?") + "）");
   const first = entries1 && entries1[0];
   check(!!first && first.kind === "tool" && first.tool === "draw_stroke", "第一条是 draw_stroke 的工具调用");

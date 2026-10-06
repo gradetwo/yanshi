@@ -52,6 +52,20 @@ for (let i = 0; i < 40; i++) {
 }
 // ② 断网 ✓
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+// **负对照**（本次审计加的 ✓ —— 证据：断网前先量一次"断网确实生效"）：
+// 页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒ 它**必须失败** ✓。
+// 为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`（不 respondWith ✓）
+// ⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）＋ `cache: "no-store"`
+// ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+const controlProbe = await evaluate(`(async () => {
+  try {
+    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
+    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+  } catch (error) { return { failed: true, error: String(error) }; }
+})()`);
+console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 // ③ 点导出 ✓
 const clicked = await evaluate(`(() => { const b = document.getElementById("exportPng"); if (!b) return "no-button"; b.click(); return "clicked"; })()`);
 console.log("  导出按钮：" + clicked);
@@ -67,6 +81,10 @@ console.log("  下载目录里的文件：" + JSON.stringify(files));
 const failures = [];
 if (clicked !== "clicked") failures.push("找不到导出按钮 ⇒ 判据无效 ✗");
 if (files.length === 0) failures.push("断网后点导出，**没有任何文件落盘** ⇒ 离线导出不可用 ✗");
+// **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
+if (!(controlProbe && controlProbe.failed)) {
+  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+}
 if (failures.length) { console.log("  ✗ " + failures.join("；")); socket.close(); process.exit(1); }
 console.log("  ✓ 离线导出：断网时仍然导出了 " + files.join(", "));
 socket.close();
