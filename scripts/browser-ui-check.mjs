@@ -1883,8 +1883,14 @@ const jumpUndoResult = await evaluate(`(async () => {
   // 第 1008 轮：把撤销按钮的状态与历史条数带出来，失败时才能分辨
   // 按钮点错了或被禁用与撤销真的没回退画面这两种情况。
   const histRowsAfterUndo = document.querySelectorAll("#history .row").length;
+  // **诊断要能分开"点错按钮"与"产品没回退"** ✗（2026-10-06 本地复现后加 ✓）：
+  // 原来只带行数 ⇒ 而"回到此处"**不产生原子**（设计 13.2 ✓）⇒ 行数**本来就不该变** ✗
+  // ⇒ 于是那两行解释不了失败 ✓。改带：① 被点按钮的**文本**（确认是「撤销」✓）；
+  // ② **撤销前后的画面指纹**（真正被判的量 ✓，此前只在轮询里用、没有带出来 ✗）。
   const undoProbe = { hasBtn: !!undoBtn, disabledBefore: undoDisabledBefore,
-    rowsBefore: histRowsBeforeUndo, rowsAfter: histRowsAfterUndo };
+    rowsBefore: histRowsBeforeUndo, rowsAfter: histRowsAfterUndo,
+    btnText: undoBtn ? String(undoBtn.textContent || "").trim().slice(0, 20) : null,
+    jumpedSum: jumped.sum, jumpedInk: jumped.ink };
   // 第 1007 轮：原来是**固定等 2200ms** ✗ ⇒ 实测报「撤销「回到此处」没有生效（画布与跳转后完全一致）」✓
   // ⇒ 与上面那段同一个毛病（"等时长"而不是"等条件"✓，第 629 轮的教训只落到了前一处 ✗）。
   // ⇒ 改成轮询到画面**真的变了**为止（**比数值字段 ✓，不比对象引用 ✓**，上限约 6 秒 ✓）。
@@ -1894,7 +1900,16 @@ const jumpUndoResult = await evaluate(`(async () => {
     undone = ${canvasFingerprint};
     if (undone.sum !== jumped.sum || undone.ink !== jumped.ink) break;
   }
-  return { ok: true, jumped, undone, undoProbe, targetIndex2, targetText2 };
+  // **把撤销后的指纹补进 `undoProbe`** ✗ —— 失败消息只打印 `undoProbe` ✓，
+  // 所以追加在返回值里等于**没带出来** ✗（2026-10-06 实测：消息里只有 jumpedSum ✓）。
+  // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号** ✗。
+  undoProbe.undoneSum = undone.sum;
+  undoProbe.undoneInk = undone.ink;
+  // **撤销前后的指纹要在这里才带得出来** ✗ —— undone 是本段下面用 let 声明的 ⇒
+  // 放进上面的 undoProbe 会触发 TDZ 报错 ⇒ 整条判据都跑不了（2026-10-06 实测并修 ✓）。
+  // 注意：本段在**模板字面量**里 ⇒ 注释里**不能出现反引号** ✗（否则模板被提前终止 ✓）。
+  return { ok: true, jumped, undone, undoProbe, targetIndex2, targetText2,
+    undoneSum: undone.sum, undoneInk: undone.ink };
 })()`);
 // **第二次求值**读行数（第 727 轮）：上一次我**往页模板里加代码**做诊断，
 // 结果页面拒绝整段表达式、判据整条无法运行（比没有诊断更糟，已撤）。
