@@ -267,8 +267,27 @@ self.addEventListener("install", (event) => {
           { headers: { "content-type": "application/json" } }
         )
       );
-    } catch (_) {
-      // 写报告失败不该影响 install ✓（它只是取证 ✓）。
+    } catch (error) {
+      // **写失败不能静默** ✗（2026-10-06 实测：`REPORT_CACHE` 根本没被创建 ⇒ 而原因被空 catch 吞了 ✓）。
+      // ⇒ 记下原因 ✓，并**回退写到主缓存** ✓（`cache` 一定存在 ⇒ 判据总能读到 ✓）。
+      const reason = String((error && error.message) || error);
+      console.warn("SW 预缓存报告没写进 " + REPORT_CACHE + "：" + reason);
+      try {
+        await cache.put(
+          new Request("/__sw_precache_report"),
+          new Response(
+            JSON.stringify({
+              total: SHELL.length,
+              failed: self.__swPrecacheFailures,
+              finished_at: Date.now(),
+              report_write_error: reason,
+            }),
+            { headers: { "content-type": "application/json" } }
+          )
+        );
+      } catch (second) {
+        console.warn("SW 预缓存报告回退写入也失败：" + String((second && second.message) || second));
+      }
     }
     if (self.__swPrecacheFailures.length > 0) {
       console.warn(
