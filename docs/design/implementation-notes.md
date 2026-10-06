@@ -39077,3 +39077,45 @@ HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 
 1. dump 离线路径**实际用到**的 atoms，看里面**有没有 blob 引用**（光栅补丁／导入位图／参考图）；
    若有，失败文本应当是内核的「本地缺少 blob」——我要**那句原始文本**。
 2. 查那个 blob 在**当时**是否存在于查看器 OPFS 或 SW 缓存里。
+
+## 第 1239 轮：子代理用实测**推翻了我两轮的假设**，并给出真正的阻塞与一行修法
+
+### 真正的阻塞（页面日志 DOM 里的**原始文本**）
+    WASM 内核不可用，退化为服务端渲染：Unexpected token '<', "<!DOCTYPE "… is not valid JSON
+**不是** `服务端未启用`，**不是** fetch 被拒，**也不是**我猜的 `本地缺少 blob`。
+
+**完整链条**：离线 + SW stub ⇒ 页面 `fetch("/health")` ⇒ SW 通用分支 network-first、stub 拒绝、
+`caches.match("/health")` 未命中 ⇒ **兜底的 `caches.match("/")` 返回了缓存的 HTML 外壳（status 200）**
+⇒ `(await fetch("/health")).json()` 抛 **SyntaxError** ⇒ `state.wasm` 保持 false ⇒ `loadKernel()` 从未被调用
+⇒ `kernelStats()` 为 null、`yanshiKernelReady` 未设。它把 shell 判据中途的"恢复在线"移到末尾后，
+判据**真离线 ⇒ 红**（kernelStats null、ink 0），从而复现。
+
+### 为什么 shell 判据以前是 **racy-green**
+`/health` 是**用到就存**的：只有当 SW **正好在控制页面**时首次 fetch 过它，它才会进缓存。
+单次加载的 profile 往往还没被 SW 接管 ⇒ 没缓存；多次在线加载后才有 ⇒ 于是判据时绿时红。
+
+### 我的两个假设都被驳倒（记下来，这是**先量后改**的收益）
+- **候选 ② 错**：`load_atoms_json → folder.fold` **只存 blob 引用、从不读 `BlobStore`**。
+  实测：一个含 `import_image` 原子（`blob_hash sha256:5e2b…`，16384 B）的文档，
+  在离线 + stub 下重载 ⇒ **内核正常初始化**，`kernelStats()` = `{head_seq:3, atoms:3, blobs:0}`。
+  即 `blob_put` 确实只在离线落笔路径，但**初始化不需要它**。
+- **候选 ③ 错**：离线重渲染仍显示图像，`ink 4096` 与在线一致、`lastBlitServerInk: 4096`。
+  机制：`render_region` 是 `mutating:false` ⇒ 在注入的 `LOCAL_READ_TOOLS` 里 ⇒
+  它的 JSON（含 `raw_url`）被 `fetchOrLocal` 本地化，RGBA blob 由 SW 缓存提供（200、字节正确）。
+  并验证页面确实重载（`performance.timeOrigin` 不同）、`navigator.onLine === false`。
+
+### 修法（最小且诚实）
+**把 `"/health"` 加进 SW 的 `SHELL` 预缓存** —— 它是服务端对"这一版有没有 wasm"的**静态声明**，
+而它所门控的那两个 wasm 文件**已经在 SHELL 里**。这样杀掉竞态。blob 本地化**不动**（它已经工作）。
+
+### 我给它追加的三点要求
+1. `/health` 条目**不带 doc/token 查询**；并确认 **install 写的键与离线查找用的键一致**
+   （否则只修了安装、没修查找）。
+2. `SHELL` 变大 ⇒ build id 变 ⇒ activate 清旧缓存（这是期望行为），
+   但要确认"**升级后不脏读**"那条判据仍绿，并**点名**是哪一条；
+   同时确认新条目不会让**旧壳**满足**新查找**。
+3. `caches.match("/")` 这个**兜底**正是"把 HTML 返回给 JSON 端点"的元凶。
+   是否**只对 navigation 请求**回退到壳，是一个**超出最小修复**的行为变更
+   ⇒ 要么**给出证据、单独一个提交、配自己的判据**，要么**留下并写进报告**当后续项。
+   我宁可要"最小修复 + 一条尖锐备注"，也不要**捆在一起**的行为变更。
+4. 并明确要求判据要在**能抓到该竞态**的条件下跑：**全新 profile + 离线前只在线加载一次**。
