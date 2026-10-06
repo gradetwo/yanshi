@@ -39015,3 +39015,32 @@ HTTP 缓存里 ⇒ 变异跑照样 200 ＋ 正确魔数 ⇒ **假绿**）。⇒ 
 两条都在 `viewer-app.js` / `scripts/browser-offline-*.mjs` 上，而**此刻有一个子代理正在改
 离线内核初始化**（它会动 `viewer-app.js`）⇒ 现在同时改会冲突。
 按"不要与在跑的子代理改同一批文件"的规则，本轮只把位置钉死，留给后续轮次。
+
+## 第 1237 轮：离线初始化的两个**硬点**已定位（已发给在跑的子代理去证伪／证实）
+
+### 硬点 ①：`fetch("/health")` 是内核加载的**前置条件**（无条件、且在 import 之前）
+`crates/yanshi-http/assets/viewer-app.js:1158-1159`：
+    const health = await (await fetch("/health")).json();
+    if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
+⇒ 离线时这次 fetch 若失败 ⇒ **抛异常 ⇒ 内核根本不加载** ⇒ `window.yanshi.kernelStats()` 为 `null`，
+与子代理观测到的现象**完全一致**。
+而 SW 对 `/health` **没有任何特判**：`:251` 判的是 `/api/blob/`，`:268` 判的是 `/api/` 与 `/ws`，
+所以 `/health` 落在**通用同源分支**上，而那条分支在合并资产覆盖后是
+**network-first ＋ 用到就存** ⇒ 只要**在线时成功取过一次**就应该能在离线回退。
+⇒ 所以这条**是否**是真凶，取决于"首次 fetch 是否发生在 stub 生效之后／是否来得及写缓存"——**必须实测**。
+
+### 硬点 ②（**我认为更可能是真因**）：内核**自己不去取 blob**，必须由查看器 `blob_put` 喂
+`crates/yanshi-wasm/src/kernel.rs:572-580` 的 `blob_get` 失败时返回
+**「本地缺少 blob {hash}（需先 blob_put）」**；而 `:564` 的 `blob_put` 是字节进入内核
+`MemoryBlobStore` 的**唯一入口**。⇒ 如果 atoms 里引用了 blob（光栅补丁、导入位图、参考图、笔触位图等），
+内核**无法自己取**，查看器必须在 `load_atoms_json` 之前（或期间）逐个 `blob_put`。
+若查看器**只在落笔时**才喂，那就正好解释了"**在线能用、离线不能**"：
+在线时内核不急着要那些字节，离线初始化却要 ⇒ `loaded.ok === false` ⇒ 代码把 `state.kernel = null`。
+
+### 还需廉价排除的第三种可能
+离线时读工具回退到**本地陈旧快照**，快照里的 atoms 引用了**从未被本地化**的 blob
+⇒ 那修法就落在"让这些 blob 被本地化"，而不是"调整顺序"。
+
+⇒ 以上三条已发给正在做离线内核初始化的子代理，要求它**先拿到真实浏览器里的原始错误文本**再动手；
+并再次强调：判据必须在**负对照 ＋ stub** 双生效下变绿（不许削弱任一），
+浏览器判据必须走 `scripts/run-criteria.sh`，`git add -A` 之后的回退必须是**带修订号**的。
