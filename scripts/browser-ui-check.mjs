@@ -3608,6 +3608,18 @@ if (problems.length) {
   for (const line of String(await evaluate(`document.getElementById("log").innerText`)).split("\n").slice(0, 25)) {
     console.log("    " + line);
   }
+  // Read the live state again here: the blit log captured earlier is a snapshot taken
+  // before the recovery may have finished, so a sequence that looks stalled can simply be
+  // unfinished. This is diagnosis only; no assertion is relaxed.
+  try {
+    const live = await evaluate(
+      `(() => { const s = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
+        return s ? JSON.stringify({ tail: (s.blitLog || []).slice(-14) }) : null; })()`,
+    );
+    if (live) console.log(`  --- 最终补画序列（失败时重读）---\n    ${live}`);
+  } catch (error) {
+    console.log(`  --- 最终补画序列（重读失败：${String((error && error.message) || error)}）---`);
+  }
   console.log(`  ❌ ${problems.length} 项不合格：`);
   for (const problem of problems) console.log(`     - ${problem}`);
   // **失败路径也要关 WS** ✓（第 786 轮）：原先靠上面那个 unref 才能退出 ✗ ⇒
