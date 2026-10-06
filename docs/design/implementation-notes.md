@@ -38372,3 +38372,24 @@ clippy 建议 `size.clamp(1, MAX_DAB)`。核对语义：
   8K 的"旧峰值"是把 4K 实测的"副本 = 正好一整幅"按 16 B/px 外推，不是 8K 真跑旧实现
   （本机当时可用内存约 2.0 GiB，旧实现 8K 峰值约 1.14 GiB，为稳妥没跑）。
 - 没跑 `scripts/build-warnings-check.sh`（重）；替代证据是 native 与 wasm release 构建各 0 警告。
+
+## 第 1205 轮：合并 wasm 量化去拷贝，并亲手复验它的两条判据
+
+合并 `perf/wasm-quantize-no-copy`（ed1a330 ＋ a06b4c0 ＋ da8c476）⇒ 合并提交 1469b77。
+冲突只有 `docs/design/implementation-notes.md`（追加 78 行，两份都保留），代码文件全部自动合并。
+改动面：`rows.rs` ＋49（新增与目标无关的 `encode_quantized_rows`）、`buffer.rs` ＋31
+（新增 `to_rgba8_quantized`）、`render.rs` 精简（wasm 分支变成一行、原生两处改调同一函数）、
+新增两个测试文件（`quantize_no_copy.rs` ＋134、`quantize_peak_memory.rs` ＋128）。
+
+**我亲手变异复验**（直接跑判据，不走共享 runner；最简一行锚点）：
+把 `crate::half::quantize_f16(src[base + 1])` 改成 `quantize_f16(src[base])`
+（绿通道用红的输入）⇒ 直接跑：
+  ❌ `no_copy_path_is_byte_identical_to_the_copy_reference` 应红（这正是"新路径 vs 旧复制参照逐字节相同"那条）
+⇒ 还原后与 HEAD 逐字节一致，重跑 2 passed。
+
+**我的变异过程失误（第 5 次同类，必须记）**：第一次我用正则 `quantize_f16\(([^)]*)\)` 抓参数，
+抓到的是别处、拼出了 `crate::half::src` 这样的东西 ⇒ 编译失败 `E0425: cannot find value src in module crate::half`
+⇒ 看起来又像"判据没红"。**改用我已经打印出来的那一行文本**（`sed -n '128,136p'` 的实际内容）
+做最简替换后一次成功。
+⇒ 教训升级：不只是"变量名要照抄"，**匹配表达式本身也必须用打印出来的字面串**，
+不要用"我以为能匹配"的正则去猜结构。
