@@ -1639,7 +1639,14 @@ fn tool_call_with(
         return internal("工作区锁中毒");
     };
     // 文档尚未打开时按需创建（与 MCP 一致）。
-    if workspace.document(&doc_id).is_none() {
+    // **自己建文档的工具不替它预建** ✓（与 MCP 共用同一条规矩 ✓，判据见
+    // `ToolSpec::creates_own_document` ✓）：HTTP 这边通常已经过 `authorize` ⇒ 目标多在内存里 ✓、
+    // 这一句多半不生效 ✓，但**两个入口必须同一套规矩** ✓ —— 各写一套必然漂移 ✗。
+    let pre_create = !state
+        .registry
+        .get(name)
+        .is_some_and(|spec| spec.creates_own_document());
+    if pre_create && workspace.document(&doc_id).is_none() {
         let spec = NewDocument::new(doc_id.clone(), state.options.width, state.options.height);
         if let Err(error) = workspace.open_or_create(spec, &principal.actor, "session:http") {
             return Response::from_error(&error);

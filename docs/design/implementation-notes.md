@@ -39807,3 +39807,47 @@ Node 从脚本所在目录向上找 `node_modules`，找不到仓库里的 `ws` 
 ⇒ 按既有做法**只改后出现的那一条**，改成未用编号 ⇒ 判据恢复 **唯一** ✓。
 ⇒ **教训**：**"分支上的文档"也会把修好的东西带回去** —— 合并前应**先跑编号判据**，
    而不是合完再看。这条已并入"合并前先跑判据"的既有纪律。
+## 第 1258 轮：**`new_document` 尺寸被忽略、新 id 被报成"打开"** —— 真因在**入口预建**，不在工具
+### 报告与复现（真进程，非单测）
+空 `--root`，`yanshi-mcp --doc seed --width 1024 --height 1024 --profile core`，全新 id：
+`new_document{doc_id:"brand_new_4k", width:3840, height:2160}` ⇒
+`{"created":false,"opened":true,"width":1024,"height":1024}`，
+磁盘 `docs/brand_new_4k/meta.json` 也是 **1024×1024**。3840×2160 / 800×600 / 1920×1080 **三个尺寸全一样** ✓。
+### 真因（"`document_mut` 会按需创建"这个假设**是错的**）
+- `Workspace::document_mut`（service.rs:1207）只有一句 `self.documents.get_mut(..)` ⇒
+  **不加载、不创建** ✗，找不到就 `reference_not_found`。它的旧注释写着"打开（**或按需创建**）"
+  ✗ —— 描述与实现相反 ✓，正是它把排查引偏的 ✓（本轮已把注释改成实话 ✓）。
+- 真正的原因是 **MCP 入口** `tools_call`：**调工具之前**它**无条件**用 `arguments.doc_id`
+  ＋ CLI 默认尺寸 `open_or_create` ✓ ⇒ 全新 id 在工具运行**之前**就已经按 **1024×1024** 建好了 ✓。
+- 于是工具里 `if ctx.workspace.document_mut(&doc_id).is_ok()` 为真 ⇒ 走"已存在 ⇒ 打开" ✓
+  ⇒ 返回**预建那份** 1024×1024 ✓。**两个症状同一个因** ✓（不是两个独立缺陷 ✓）。
+- HTTP `/api/tools/*` 的 `open_or_create` 用的是 `doc_param` 的 doc ✓（`authorize` 已经把它
+  开进内存 ✓），而 `new_document` 的 `doc_id` 参数另走 `ctx.doc_id` ✓ ⇒ **HTTP 不表现这个缺陷** ✓。
+### 修法（三处，各管一段）
+1. `ToolSpec::creates_own_document()`（tools.rs）——只有 `new_document` 为真 ⇒
+   MCP `tools_call` 与 HTTP `tool_call_with` 都**不**替它预建 ✓（一处定义 ✓，两个入口共用 ✓）。
+2. `Workspace::document_exists()`（service.rs）——**内存 ∪ 磁盘** ✓；判据与
+   `import_project` 的"只导入、绝不覆盖"**共用** ✓（import 也改用它 ✓，免得两个"存在"漂移 ✓）。
+3. `write_new_document`（tools.rs）——存在判据换成 `document_exists` ＋ `open_document`
+   （磁盘上有就**打开** ✓；只有空壳时当它不存在 ✓）；**新建**分支补上
+   `created:true / opened:false` ✓（原先那条分支**两个字段都没有** ✗）。
+### 判据（今天红、修后绿；都走**已有的**判据文件）
+- `crates/yanshi-mcp/tests/stdio.rs::new_document_honours_size_and_reports_created_for_fresh_ids`
+  ——**真进程** ✓（直接调 `ToolRegistry` 会**绕过入口** ✓，那种判据今天是绿的 ✗）；
+- `crates/yanshi-server/tests/new_document.rs::an_on_disk_document_is_opened_and_never_resized`
+  ——**磁盘上有、此刻没打开** ✓ ＋ 给**不同尺寸**也不许改 ✓；
+- 沿用 `a_new_document_is_blank_and_recreating_replaces_it`（打开语义 ＋ 不清空 ✓）、
+  `import_project`（共用存在判据 ✓）、`transport.rs`（HTTP 工具面 ✓）。
+### 修复前后（真进程实测）
+| 请求 | 修前 `created/opened/width×height` | 修前 meta.json | 修后 | 修后 meta.json |
+| 3840×2160 | `false/true/1024×1024` | 1024×1024 | `true/false/3840×2160` | 3840×2160 |
+| 800×600 | `false/true/1024×1024` | 1024×1024 | `true/false/800×600` | 800×600 |
+| 1920×1080 | `false/true/1024×1024` | 1024×1024 | `true/false/1920×1080` | 1920×1080 |
+已在的文档（先 96×96 画一个 `s1`）再 `new_document{width:640,height:480}`：
+修后仍 `opened:true / created:false / 96×96`，`s1` 还在 ✓，`meta.json` 仍 96×96 ✓；
+**换一个进程重开**（磁盘上有、内存里没有）同样 `opened:true / 96×96 / s1 还在` ✓。
+### 变异检查（每次都 `cmp` 逐字节还原）
+- M1（尺寸）：MCP 入口 `pre_create` 强制为 `true` ⇒ 判据红（1024×1024 / `created:false`）；
+- M2（"真的存在⇒打开"）：工具存在判据改 `false` ⇒ 红（`已存在于磁盘` 的 `precondition_failed`）；
+- M3（安全）：拆掉工具早返回 **并** 拆掉 `create_document` 的两道存在闸 ⇒ 真的被覆盖成
+  640×480、墨点归零 ⇒ 红（尺寸 ✓ 与像素 ✓ 两条断言都咬得住）。
