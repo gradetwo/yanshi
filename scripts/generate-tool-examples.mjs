@@ -90,7 +90,15 @@ for (const name of candidates) {
     added += 1;
     console.log(`  ✓ ${name} 跑通 ⇒ 收录 ${JSON.stringify(args).slice(0, 60)}`);
   } else {
-    console.log(`  ✗ ${name} 没跑通（不收录）⇒ ${String((outcome.context || {}).detail || "").slice(0, 56)}`);
+    // **失败消息不再截断** ✗ —— 原先只取 `detail` 的**前 56 字符** ✓，
+    // 而真实原因常常在后面（实测：`medium_stroke` 的失败其实是"图层 L1 不存在" ✓，
+    // 前 56 字符里看不到关键标识符 ✗）⇒ 改为**打印完整 `detail`** ✓。
+    // **并按判据的同一套措辞分类** ✓ —— 与 `tool-example-acceptance.mjs` 的
+    // `needsPriorState` 保持**同源** ✓（"不存在/未找到/已经存在…"⇒ 缺前置 ⊙ ✓；
+    // 其余"值/格式被拒"⇒ 抄走必然失败 ✗ ✓）。这样两处对同一条示例的**分类一致** ✓。
+    const detail = String((outcome.context || {}).detail || "");
+    const needsPrior = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
+    console.log(`  ${needsPrior ? "⊙" : "✗"} ${name} ${needsPrior ? "需要前置状态（不收录，但抄的人先备好就行）" : "示例被拒（不收录 ⇒ 抄走会失败）"}⇒ ${detail}`);
   }
 }
 if (!dry) writeFileSync(path, source.slice(0, start) + block + source.slice(end));
