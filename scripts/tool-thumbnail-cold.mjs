@@ -122,7 +122,6 @@ if (first.ms > coldBudgetMs) {
 }
 if (IS_RELEASE && failed) process.exit(1);
 if (!IS_RELEASE && failed) console.log("  ⚠️ debug 下不据此失败（**∴ 它不是产品 ✓**）");
-console.log(`  ✓ 第一次取状态 ${first.ms.toFixed(2)} ms ≤ ${BUDGET_MS} ms ⇒ 首冷不阻塞请求`);
 // **端到端也要判**：否则把成本往建文档挪会永远通过，而那只是把卡顿换了位置。
 // 上限取实测值的量级：本机 2026-10-07 实测建文档约 190 ms ＋ 首次取状态约 5 ms ⇒ 端到端约 195 ms，
 // 所以 400 ms 能容忍机器抖动，而真回归（例如回到 900 ms）会红。
