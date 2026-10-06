@@ -11,7 +11,6 @@ tool-impasto-plateau.mjs  # **类型：断言失败（阈值）** ✓
 #   node scripts/tool-examples-doc.mjs <server-base>        # 重新生成（会改写 docs/design/tool-examples.md）
 # 然后**把重新生成的文档一起提交** ✓ ⇒ 这条判据即转绿 ✓。
 # **注意**：CI 里不能替你生成（它只能读不能提交 ✓）⇒ **必须在本机做一次** ✓。
-tool-examples-doc-check.mjs  # **类型：断言失败（覆盖）** ✓ —— 示例数不足 ✗
 # ⚠️ **本条目必须独占一行、且"名 + 空白 + 说明"** ✗：`run-criteria.sh:14` 用
 #    `grep -qE "^$1[[:space:]]"` 匹配 ✓ ⇒ **粘在注释行尾 / 行尾无空白都不算已知红** ✗
 #    ⇒ CI 会红 ✓（我第 390 / 398 轮各埋过一次 ✗）。

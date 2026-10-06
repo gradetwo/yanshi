@@ -113,6 +113,7 @@ What it borrows is the gesture in a joke, **making something usable out of whate
 ## Documentation
 
 - [Design document](docs/design/yanshi-v1.0-draft4.md) — the specification.
+- [Tool examples](docs/design/tool-examples.md) — a copyable call for every tool.
 - [Implementation notes](docs/design/implementation-notes.md) — module map, decisions where the
   specification is silent, measured performance data, known deviations.
 - [docs/tools.md](docs/tools.md) — tools, adjustments, filters, retouch, masks, collaboration.

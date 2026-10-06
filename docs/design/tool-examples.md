@@ -485,9 +485,7 @@
 
 ```json
 {
-  "layer_id": "L1",
-  "max_edge": 512,
-  "path": "example-export.png"
+  "path": "x"
 }
 ```
 
@@ -503,16 +501,8 @@
 
 ```json
 {
-  "data": {
-    "color": {
-      "a": 255,
-      "b": 240,
-      "g": 240,
-      "r": 240
-    }
-  },
-  "layer_id": "layer_default",
-  "object_id": "bg"
+  "data": {},
+  "layer_id": "L1"
 }
 ```
 
@@ -548,21 +538,9 @@
 ## `get_ancestors`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {},
-      "layer_id": "L1"
-    },
-    "tool": "draw_stroke"
-  },
-  {
-    "arguments": {
-      "object_id": "L1"
-    },
-    "tool": "get_ancestors"
-  }
-]
+{
+  "object_id": "o1"
+}
 ```
 
 ## `get_annotation`
@@ -596,52 +574,17 @@
 ## `get_dependency_graph`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {
-        "geometry": {
-          "bbox": {
-            "h": 30,
-            "w": 30,
-            "x": 40,
-            "y": 40
-          },
-          "kind": "rect"
-        }
-      },
-      "layer_id": "layer_default",
-      "object_id": "p0"
-    },
-    "tool": "draw_shape"
-  },
-  {
-    "arguments": {
-      "object_id": "p0"
-    },
-    "tool": "get_dependency_graph"
-  }
-]
+{
+  "object_id": "o1"
+}
 ```
 
 ## `get_descendants`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {},
-      "layer_id": "L1"
-    },
-    "tool": "draw_stroke"
-  },
-  {
-    "arguments": {
-      "object_id": "L1"
-    },
-    "tool": "get_descendants"
-  }
-]
+{
+  "object_id": "o1"
+}
 ```
 
 ## `get_diff`
@@ -682,7 +625,6 @@
 
 ```json
 {
-  "include_history": true,
   "object_id": "o1"
 }
 ```
@@ -690,21 +632,9 @@
 ## `get_object_history`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {},
-      "layer_id": "L1"
-    },
-    "tool": "draw_stroke"
-  },
-  {
-    "arguments": {
-      "object_id": "L1"
-    },
-    "tool": "get_object_history"
-  }
-]
+{
+  "object_id": "o1"
+}
 ```
 
 ## `get_preferences`
@@ -724,32 +654,9 @@
 ## `get_resolved_state`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {
-        "geometry": {
-          "bbox": {
-            "h": 30,
-            "w": 30,
-            "x": 40,
-            "y": 40
-          },
-          "kind": "rect"
-        }
-      },
-      "layer_id": "layer_default",
-      "object_id": "p1"
-    },
-    "tool": "draw_shape"
-  },
-  {
-    "arguments": {
-      "object_id": "p1"
-    },
-    "tool": "get_resolved_state"
-  }
-]
+{
+  "object_id": "o1"
+}
 ```
 
 ## `get_state`
@@ -785,21 +692,9 @@
 
 ```json
 {
-  "angle": 0,
-  "from": {
-    "a": 255,
-    "b": 0,
-    "g": 0,
-    "r": 255
-  },
-  "kind": "linear",
+  "from": {},
   "layer_id": "L1",
-  "to": {
-    "a": 255,
-    "b": 255,
-    "g": 0,
-    "r": 0
-  }
+  "to": {}
 }
 ```
 
@@ -861,7 +756,7 @@
 
 ```json
 {
-  "blob_hash": "sha256:<先上传 PSD 得到的哈希>",
+  "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "layer_id": "layer_default"
 }
 ```
@@ -1045,10 +940,8 @@
 
 ```json
 {
-  "background": {},
-  "doc_id": "demo",
-  "height": 640,
-  "width": 900
+  "height": 1,
+  "width": 1
 }
 ```
 
