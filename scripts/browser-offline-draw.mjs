@@ -255,6 +255,18 @@ const after3 = await evaluate(INK);
 const delta3 = after3.ink - before3.ink;
 console.log("  离线第二笔：画前 " + before3.ink + " ⇒ 画后 " + after3.ink + "（增量 " + delta3 + "）｜分画布 " + JSON.stringify(after3.parts));
 
+// **取快照前必须等 `install` 写完** ✗（2026-10-06 CI 实测 ✓）：
+// 早先那一刻缓存里只有 **12** 条 ✗（**∴ `install` 正在并行写 208 条 ✓**）⇒ 于是判"没有共享内核" ✗；
+// 而 SW 报告里写着 `{"total":208,"failed":[],"failedCount":0}` ✓ ⇒ **∴ 一条都没失败 ⇒ **∴ 纯粹是抢跑 ✓**。
+// ⇒ **∴ 等报告出现** ✓ —— 它写在 `Promise.all` **之后** ✓ ⇒ **∴ 它出现 ⇒ 预缓存已写完 ✓**。
+// **∴ 这不削弱判据** ✓：**∴ 若写完之后内核仍不在缓存 ⇒ **∴ 下面照样红 ✓**。
+for (let i = 0; i < 40; i += 1) {
+  const done = await evaluate(`(async () => {
+    try { const hit = await caches.match("/__sw_precache_report"); return !!hit; } catch (_) { return false; }
+  })()`).catch(() => false);
+  if (done) break;
+  await sleep(250);
+}
 const cachesAfter = await evaluate(CACHES);
 console.log("  缓存（离线后）：" + JSON.stringify(cachesAfter));
 // **PWA 的实质断言** ✓：离线能用，必须靠**我们自己的 SW 缓存** ✓，
