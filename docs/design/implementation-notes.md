@@ -39430,3 +39430,32 @@ F02 / F03 都在 `viewer-app.js`，而**此刻有两个子代理正在改它**�
 我**尚未亲手**对这条新判据做独立变异复验：跑它需要完整浏览器环境（走 `scripts/run-criteria.sh`，
 分片、起 Chromium），而本轮先把 P0 修复落地。子代理的 M1 打在被判条件本身、且有 `cmp` 还原证据，
 但我按纪律**把"我自己的复验"记为未完成**，安排在下一轮。
+
+## 第 1248 轮：修 F03 的尝试**未通过验证 ⇒ 全部回退**（并学清 runner 的 token 取法）
+
+### 我做了什么
+1. 按 F03 的根因改了 `applyDisplaySize()`：把"宽、高**各自**被 `available.w` / `available.h` 裁剪"
+   换成**同一个** `fit` 因子（`zoomedIn` 时为 1，保留"放大不封顶"的既有语义），并写了注释说明 F03。
+2. 写了新判据 `scripts/browser-fit-aspect-ratio.mjs`：**自建 1400×800 非方形文档**（方形测不出轴独立裁剪），
+   然后断言适配档下 `#board` 的 CSS 尺寸比例与**文档**比例一致（容差 1%）。
+3. 手工搭环境跑它 ⇒ **两次都失败**，而且我**没能证明修复有效**。
+
+### 失败原因（两条，都可复现）
+1. **token 取错**：我从服务端**日志**里 grep 64 位十六进制 ⇒ **长度 0** ⇒ 判据拿到空 token ⇒
+   `create_document` / 后续调用被拒。**正确做法**（读 `run-criteria.sh:53-56` 学到的）：
+   token 来自 **`POST /api/documents` 的响应 JSON 字段 `token`**，不是日志。
+2. **`ws` 抛 `Receiver.dataMessage`** ⇒ 我传的 `maxPayload` 没兜住那个 CDP 消息 ⇒ 判据在取样前就崩了。
+
+### ⚠️ 一次**我自己的操作失误**（记下来）
+我为变异备份用了 `cp viewer-app.js /tmp/va.bak`，但那份备份是**改动之前**的版本 ⇒
+"变异后还原"执行 `cp /tmp/va.bak` 时，**把修复本身也一起撤掉了** ✗（校验时 `const fit = zoomedIn` 计数为 0 ⇒ 当场发现）。
+⇒ 教训：**变异备份必须区分"原始版"与"已修复版"两份**，还原要回到**已修复版**；
+   本会话早前在 `rows.rs` 上也踩过同型的坑（`rows.pristine` / `rows.rs.pristine`）。
+
+### 处置（按"不留半成品与红树"）
+- **代码已回到原样**（F03 **未修**）；
+- **删掉**未验证的 `scripts/browser-fit-aspect-ratio.mjs`（**不提交无法证明能红／能绿的判据**）；
+- 树干净（`git status` 为空）。
+⇒ **F03 的根因与修法仍然确定**（两轴独立裁剪 ⇒ 取同一因子），但**验证必须走 `scripts/run-criteria.sh`**，
+   下一轮用正确的前提一次做完：① `POST /api/documents` 取 `token`；② URL 用**根路径** `$BASE/?doc=…&token=…`；
+   ③ **`export CDP_PORT`** 并同时把它作为第 4 个参数传；④ 变异备份分"原始／已修复"两份。
