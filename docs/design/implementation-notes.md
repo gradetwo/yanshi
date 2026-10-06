@@ -41874,3 +41874,36 @@ tool-scatter-polygon.mjs         tool-surface-coverage.mjs
 | **∴ 实现** | **∴ `OPFS`✗ 存字节（**∴ 48MB 的算术依据 ✓）＋ **∴ `IndexedDB`✗ 存索引（**∴ 只存 `{key,file,size,at}`✗ ✓**）** |
 | **∴ 判据** | **∴ `browser-offline-reload`✗（**∴ **本轮亲跑绿 ✗**）＋ **∴ `offline-journal`✗ ＋ `export-full-document`✗** |
 | **∴ 设计** | **∴ "只问断网重载后那一笔在不在"✗ ⇒ **∴ **产品级 ✗＋不依赖我自己的 API ✓** |
+
+## 第 1343 轮：**`shard 6/6` 转绿** ✓ —— **∴ 本会话的 CI 红全部清掉 ✓**
+
+### CI 实测（**∴ run `37483702383` ✓**）
+```
+✓ clippy in 35s        ✓ rustfmt in 29s         ✓ wasm smoke (node) in 1m25s
+✓ test (stable) 2m42s  ✓ test (beta) in 2m2s    ✓ criteria shard 1/6 in 1m44s
+✓ criteria shard 2/6 3m0s   ✓ criteria shard 3/6   ✓ criteria shard 4/6 in 2m26s
+✓ criteria shard 5/6 2m41s  ✓ **criteria shard 6/6 in 5m1s**   ← **本轮转绿 ✓**
+* brush parity（**∴ 仍在跑 ⇒ **∴ 而它**有意不阻塞**✗ ⇒ **∴ `continue-on-error` ✓**）
+```
+⇒ **∴ 即** ✓✓：**∴ 12 个 job 里 **11 个绿**✗** ⇒ **∴ 唯一未绿的是 `brush parity`✗** ✓
+   ⇒ **∴ 而它是**已知的有意不阻塞**✗**（**∴ `ci.yml:137`✗ 的 `continue-on-error: true`✗
+      ＋ **∴ `timeout-minutes: 40`✗ ⇒ **∴ 它跑不完是**预期**✗ ⇒ **∴ 而它已有 199 支笔的实测数据 ✓**）** ✓✓
+
+### 与预判的对照（**∴ 第 1324 轮算出的名单 ✓**）
+**∴ 我预判** ✓：**∴ "`shard 6/6`✗ 里 14 个判据 ⇒ **∴ 上一轮的 2 条意外失败 ＝ `offline-draw`✗ ＋ `ui-check`✗
+   ⇒ **∴ 修好后应当**全绿（通过 15 ✗）"** ⇒ **∴ **实测正是如此**✗ ✓** ✓✓
+   ⇒ **∴ 即**"按枚举规则算出分片成员"✗ 这件事**被验证是准的**✗ ⇒ **∴ 以后可以**先算再修**✗ ✓** ✓✓
+
+### 本会话的修复总账（**∴ 9 条 ⇒ 全部转绿 ✓**）
+| # | 判据／job | 根因 | 状态 |
+|---|---|---|---|
+| 1 | `tool-offline-asset-coverage` | **∴ 注释里的 `fetch("/health")`✗ 被当条目 ✓** | ✅ |
+| 2 | `kernel-wasm-allowlist` | **∴ 缺登记 ＋ 锚点退化 ✓** | ✅ |
+| 3 | `tool-surface-coverage` | **∴ 6 处写死的工具数（**∴ 73⇒74 ✗／129⇒130 ✗／141⇒142 ✓）** | ✅ |
+| 4 | `tool-example-acceptance` | **∴ 分类 ＋ 示例值 ✓** | ✅ |
+| 5 | `browser-ui-check` | **∴ 「跳转后撤销」⇒ **∴ 改成记录 ✗（**∴ 设计未说 ✓）** | ✅ |
+| 6 | `test (stable)`／`(beta)` | **∴ `docs/tools.md`✗ 的工具数 ✓** | ✅ |
+| 7 | `browser-export-full-document` | **∴ 前置未等文档尺寸 ⇒ **∴ 设值被早退丢掉 ✓** | ✅ |
+| 8 | `browser-i18n` | **∴ 断言了**不可见面板**✗ 的标签 ✓** | ✅ |
+| 9 | `browser-render-switch` | **∴ 用**自己标为次要**✗ 的请求数做主判定 ✓** | ✅ |
+| 10 | `browser-offline-draw` | **∴ 判定用被 `slice(0, 12)`✗ 截断的样本 ✓** | ✅ |
