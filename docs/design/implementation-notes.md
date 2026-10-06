@@ -36649,3 +36649,30 @@ C. batch I/O 汇聚：沿已有 `batch` 语义做，代价 = 崩溃窗口从单�
 "属性文案的翻译"而不是"新文本节点的漏词条" ✓）。
 ⇒ 英文模式下这些 tooltip（含本轮修的那几个元素的 `title=` ✓，如删除确认的说明 ✓）仍是中文 ✓。
 要修就是下一条判据 + 25 条词条 ✓，这轮只把**文本节点**这一类封住 ✓。
+
+## 第 1167 轮：亲手变异 BufferPool 成功；背景层分支因代码冲突按规则中止
+
+一、补做我此前没落盘的那次变异（第 1166 轮我替换的模式不存在，判据报 0 passed/11 filtered out）。
+本轮先用真实存在的模式定位：buffer_pool.rs 里的判定是 `if self.enabled.load(Ordering::SeqCst) {`。
+把它改成 `if false { // MUTATION: 永远走新建 }` 之后**直接跑判据**：
+  ❌ buffer_pool_reuses_one_allocation_across_all_layers FAILED
+     「只应新建 1 张（首层）left: 3 right: 1」（tile_parallel.rs:777:5）
+  ❌ buffer_pool_matches_fresh_allocation_byte_identical FAILED（连带，合理）
+  ✅ buffer_pool_is_bounded_and_never_aliases_a_live_lease 与 default_buffer_pool_stays_within_its_published_limits 仍 ok
+⇒ 失败精确落在"复用/新建计数"这条被判条件上；还原后逐字节一致。
+⇒ 所以 BufferPool 的判据确实能红，我之前那次"没落盘"也由此确认只是我的补丁问题，不是判据问题。
+
+二、合并 perf/background-per-stroke（跨渲染位图缓存）时出现**代码冲突**：
+  - crates/yanshi-render/src/render.rs（366-381、423-428 两处）
+  - docs/design/implementation-notes.md
+按合并安全规则（crates/** 代码冲突即中止）执行 git merge --abort，未硬合。
+子代理已给出精确解法，下一轮按它手工合：
+  · Renderer 结构体里 `bitmaps` 与 `buffer_pool` 两个字段都保留；
+  · 两个构造器各加一行；
+  · `render_accumulation` 的参数用它的 `bitmaps: &BitmapCache`；
+  · `layer_buffer` 那一行取 main 的 `buffer_pool.acquire`；
+  · notes 两份追加都保留。
+
+三、顺手清掉主干 target 的污染残留：cargo clean -p yanshi-render -p yanshi-server
+（移除 16676 个文件 / 6.8 GiB）。两个子代理都曾把 CARGO_TARGET_DIR 指到主干 target，
+其中 bgperf 那个已主动认错并改用独立 target；这次清理把残留产物一并移除。
