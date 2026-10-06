@@ -39324,3 +39324,24 @@ F02 / F03 都在 `viewer-app.js`，而**此刻有两个子代理正在改它**�
   （它自己也声明了局限：RSS 是整进程、n=5 不提供 SLA、夹具失败不等于真实浏览器测试。）
 
 这条判定也解释了为什么它的"优先结论"里性能项排得靠前：那是**修复前**的画像。
+
+## 第 1246 轮：把三条待合并分支的**冲突面**先干跑清楚（本轮只做计划，不改任何分支）
+
+按"收之前先看清冲突面"的做法，我用 `git merge-tree --write-tree` **干跑**（不改工作树）确认了顺序：
+
+### `/tmp/wt-offctl`（`test/offline-negative-controls`，3 个提交，8.3 G）
+- 干跑 `EXIT=1`（有冲突），但**只输出一个哈希** ⇒ 冲突只在**一个文件**。
+- 它的改动面：6 个 `scripts/browser-offline-*.mjs` ＋ `docs/design/implementation-notes.md`。
+- 而 **main 在那 6 个脚本上**其后改动为 0 次** ⇒ **不会冲突**；
+  唯一可能在冲突的就是 **只追加的 notes**（main 在其后改了 **19 次**）⇒ 按规则**两份都保留**，
+  我已有的合并脚本能处理。
+- **但不能现在收**：它的负对照会让 `browser-offline-shell` / `-brush` **变红**（那是它的**发现**），
+  必须等**离线内核初始化**修好之后 ⇒ **顺序：先 `wt-offkernel`，再 `wt-offctl`** ✓。
+
+### `/tmp/wt-offkernel`（`fix/offline-kernel-init`）与 `/tmp/wt-pngexport`（`fix/png-export-full-document`）
+- 两者**都还在进行中**（未提交：分别 1 个与 5 个文件）⇒ **暂无东西可收**。
+- 它们要改的文件在 main 上的改动历史（自审核基线 `63c17b6` 起）已核对 ⇒ 合并风险低。
+
+### 现成的可复用资产
+`/tmp/wt-offctl` 的 8.3 G 工作树**不要删**（它有未合并的 3 个提交，合并时要用）；
+`/tmp/wt-pngexport` 已经写好一条新判据 `scripts/browser-export-full-document.mjs`（未提交）。
