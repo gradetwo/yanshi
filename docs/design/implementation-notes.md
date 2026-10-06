@@ -43183,3 +43183,41 @@ let region = match (self.document_thumb.is_some(), dirty) {
 **∴ 我在**同一个调用里**✗ 既改文件又编译 ✗ ⇒ **∴ 而**错误 ② 的位置（`:31`✗）与**我改后的行号**对不上 ✗
    ⇒ **∴ 很像**编译器读的是**改前**的文件 ✗** ⇒ **∴ 所以**"改文件 ＋ 立即编译"✗ 要**分两步** ✗
       ⇒ **∴ 或**至少在失败时**重读文件确认补丁已落 ✓** ⇒ **∴ 与本会话多次的"补丁静默失败"✗ 同源 ✓** ✓✓
+
+## 第 1383 轮：**根因找到** ✓ —— **∴ `ToolRegistry::call`✗ 返回 **`Value`✗**（**∴ 不是 `Result`✗**）
+
+### 事实（**∴ 一行签名 ✓**）
+```rust
+// crates/yanshi-server/src/tools.rs:583
+pub fn call(&self, ctx: &mut ToolContext<'_>, name: &str, args: &Value) -> Value
+```
+⇒ **∴ 它**把失败也包在 `Value`✗ 里**（**∴ 例如 `{ok:false, error:…}`✗ ✓**）⇒ **∴ 不是** `Result`✗** ✓✓
+
+### 它解释了**两轮**的编译错误（**∴ 同一个根因 ✓**）
+| 轮 | 报错 | 真因 |
+|---|---|---|
+| 1366 | **∴ `Value`✗ 上没有 `unwrap_or_else`✗** | **∴ 我以为链里是 `Option`✗ ⇒ **∴ 而某一环返回 `Value`✗** |
+| 1367 | **∴ `Value`✗ 上没有 `is_err`✗／`as_ref`✗／`unwrap_or`✗** | **∴ 我写 `let outcome = registry.call(…)`✗ 后当 `Result`✗ 用** |
+
+⇒ **∴ 所以**两轮都栽在**同一个错误假设**✗** ⇒ **∴ 而它**只需读一行签名就能避免** ✓✓
+   ⇒ **∴ 教训** ✓：**∴ 用陌生 API 前先看签名 ✗（**∴ 而不是**按名字猜返回类型 ✓**）** ✓✓
+   ⇒ **∴ 而**本轮我先 `grep "pub fn call"`✗ 才拿到它 ⇒ **∴ 所以**方法是有效的 ⇒ **∴ 只是晚了一轮 ✓** ✓✓
+
+### 下一轮可以直接写成（**∴ 修法明确 ✓**）
+```rust
+fn call(workspace: &mut Workspace, registry: &ToolRegistry, doc: &str, tool: &str,
+        args: serde_json::Value) -> serde_json::Value {
+    let mut ctx = ToolContext::new(workspace, doc, "human:1", "session:test");
+    let value = registry.call(&mut ctx, tool, &args);        // 直接是 Value
+    assert_ne!(value.get("ok"), Some(&serde_json::Value::Bool(false)),
+        "{tool} 失败：{}", value);                            // 失败也包在 Value 里
+    value
+}
+```
+⇒ **∴ 其余部分**（**∴ 取 `thumb_url`✗ ⇒ **∴ `get_blob`✗ ⇒ **∴ `decode_png`✗ ⇒ **∴ 逐字节比对 ✓**）** ✓：
+   **∴ 已经写好过两遍 ✗ ⇒ **∴ 只剩把"当 `Result`✗ 用"✗ 的那几行换掉 ✓** ✓✓
+
+### 状态（**∴ 如实 ✓**）
+**∴ 该测试文件**当前不在树里 ✗** ✓（**∴ 两轮都因编译不过而删除 ⇒ **∴ 树保持绿 ✓**）
+   ⇒ **∴ 验证** ✓：**∴ 全量构建（含 tests）OK ✗｜**∴ `fmt`✗ ✓｜**∴ `clippy`✗ ✓** ✓✓
+   ⇒ **∴ 而**这一轮**不是白费** ✗：**∴ 它确定了**根因 ＋ **∴ 给出了**可直接使用的写法 ✓** ✓✓
