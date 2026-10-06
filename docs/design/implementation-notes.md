@@ -40276,3 +40276,41 @@ node scripts/tool-examples-doc-check.mjs <server-base>    # 防陈旧判据（�
 「SW 缓存里有共享内核吗：…（条目 N 条）」与「缓存条目形状」两行**在该 run 的日志里没 grep 到** ✓
 ⇒ **∴ 所以下一次必须**先确认那两行有没有输出**✗（**∴ 若没有 ⇒ **∴ 说明判据在打印前就退出了 ✓**）**
 ⇒ **∴ 两种可能** ✓：**① `cachesAfter`✗ 收集不到条目**（**∴ 判据侧 ✓**）｜**② 内核真不在 SW 缓存**（**∴ 产品侧 ✓**）。
+
+## 第 1292 轮：**用本地服务端闭环 ③⑦**，并提交生成器的正当产物（**示例覆盖面 ＋10 条**）
+
+### 为什么能本地闭环
+`tool-surface-coverage.mjs`、`tool-examples-doc.mjs`、`generate-tool-examples.mjs`、
+`tool-example-acceptance.mjs` **都需要一个跑着的服务端**（用法都是 `<server-base>` ⇒ 没有就 `EXIT=2` ✓）
+⇒ 本地起一次 `yanshi-serve`（临时 root ＋ 独立端口 ✓）就能跑它们 ✓。
+
+### ③ 的不一致明细（**上一轮我只取了 `tail` ✗ 漏掉了这一行 ✓**）
+```
+✗ docs/guide.zh-CN.md 写「140 个工具**（只开 core 是 72 个」，而实测是 141 / core 73
+文档里写死的工具数：2/2 处已核对 ✓
+```
+⇒ **∴ 我只改了英文 `docs/guide.md`✗ ⇒ **∴ 中文版 `docs/guide.zh-CN.md`✗ 也有同样的数字 ⇒ **∴ 必须一起改 ✓**
+（**∴ 已改 ✓**）。⇒ **∴ 教训** ✓：**∴ 同一份数据出现在**两个语言的文件**✗ 里 ⇒ **∴ 改一处不够 ⇒ **∴ 而判据抓到了 ✓** ✓✓
+
+### ⑦ 的刷新链与**一个重要的意外发现**
+刷新链 ✓：`generate-tool-examples.mjs <base>` ⇒ `tool-examples-doc.mjs <base>` ⇒ `…-doc-check.mjs <base>` ✓。
+**∴ 但 `generate-tool-examples.mjs`✗ **不只写文档**✗** —— 它还会**回填源码** ✓：
+`scripts/generate-tool-examples.mjs:40` 指向 `crates/yanshi-server/src/tools.rs`，
+`:96` 用 `writeFileSync` 把 `pub const TOOL_EXAMPLES: &[(&str, &str)]`（`tools.rs:14493`）**整块重写** ✓
+⇒ 于是工作树里出现 **40 行未提交的源码改动**（10 个工具的示例参数 ✓）。
+⇒ **∴ 那是**正当产物**✗，不是别人改的，也不是污染 ✓**：
+  - `tools.rs:14988 every_registered_tool_has_a_documented_example` **断言 `TOOL_EXAMPLES` 覆盖全部注册工具** ✓
+    （**∴ "以后新加工具而忘了写示例 ⇒ 它会立刻红"✗ ✓**）；
+  - `tools.rs:15009 every_documented_example_only_uses_declared_parameters` 断言示例只用已声明参数 ✓。
+⇒ ⇒ **∴ 这正是 `(B)①`「示例覆盖面」✗ 这条目标的**真实推进**✗** —— **∴ 新增 10 条**可照抄的示例**✗ ✓**：
+   `new_document`／`gradient_fill`／`fill`／`get_object`／`get_object_history`／`get_resolved_state`／
+   `get_descendants`／`get_dependency_graph`／`get_ancestors`／`export_png` ✓；
+   生成的 `docs/design/tool-examples.md` **+53 行**（141 个工具、14259 字节 ✓）。
+⇒ **∴ 而 `medium_stroke` 没被收录** ✓：生成器报「没跑通（不收录）⇒ 介质笔触需要至少一个点」✗，
+   但它**本来就有**示例（`tools.rs:14625-14626`，带 `points` ✓）⇒ **∴ 所以是**运行那一条失败**✗，
+   **∴ 不是缺示例** ⇒ **∴ 待查（**可能是介质插件的前置／参数 ✓**）** ✓✓
+
+### 门禁
+`fmt`（自动修 ✓）｜`clippy -D warnings` ✓｜`build --all-targets` ✓｜
+**`cargo test -p yanshi-server --lib` ⇒ 56 passed** ✓（**∴ 含上述两条示例判据 ✓**）｜
+编号唯一 ✓｜仓库根干净 ✓｜离线资产覆盖 ✓｜wasm 登记 ✓。

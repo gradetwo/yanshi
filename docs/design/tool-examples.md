@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 135 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 141 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -169,6 +169,12 @@
 }
 ```
 
+## `cancel_operation`
+
+```json
+{}
+```
+
 ## `checkpoint`
 
 ```json
@@ -200,6 +206,14 @@
     0,
     -30
   ]
+}
+```
+
+## `collect_diagnostics`
+
+```json
+{
+  "include_thumbnail": false
 }
 ```
 
@@ -355,6 +369,14 @@
 ```json
 {
   "annotation_id": "ann1"
+}
+```
+
+## `delete_document`
+
+```json
+{
+  "document_id": "sample-oil"
 }
 ```
 
@@ -636,6 +658,12 @@
 {}
 ```
 
+## `get_inflight`
+
+```json
+{}
+```
+
 ## `get_job`
 
 ```json
@@ -826,6 +854,15 @@
 ```json
 {
   "path": "exports/demo.yanshi"
+}
+```
+
+## `import_psd`
+
+```json
+{
+  "blob_hash": "sha256:<先上传 PSD 得到的哈希>",
+  "layer_id": "layer_default"
 }
 ```
 
@@ -1346,6 +1383,21 @@
   "key": "visible",
   "layer_id": "layer_default",
   "value": true
+}
+```
+
+## `set_reference`
+
+```json
+{
+  "blob_hash": "sha256:<参考图的哈希>",
+  "opacity": 0.5,
+  "position": {
+    "h": 240,
+    "w": 320,
+    "x": 0,
+    "y": 0
+  }
 }
 ```
 
