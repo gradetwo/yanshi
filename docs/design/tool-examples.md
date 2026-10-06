@@ -989,27 +989,7 @@
 ## `redo_last`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {},
-      "layer_id": "L1"
-    },
-    "tool": "draw_stroke"
-  },
-  {
-    "arguments": {
-      "count": 1
-    },
-    "tool": "undo_last"
-  },
-  {
-    "arguments": {
-      "count": 1
-    },
-    "tool": "redo_last"
-  }
-]
+{}
 ```
 
 ## `reject_annotation`
@@ -1263,9 +1243,7 @@
 
 ```json
 {
-  "values": {
-    "reference.blob_hash": null
-  }
+  "values": {}
 }
 ```
 
@@ -1283,14 +1261,7 @@
 
 ```json
 {
-  "blob_hash": "sha256:<参考图的哈希>",
-  "opacity": 0.5,
-  "position": {
-    "h": 240,
-    "w": 320,
-    "x": 0,
-    "y": 0
-  }
+  "blob_hash": "x"
 }
 ```
 
@@ -1357,21 +1328,7 @@
 ## `undo_last`
 
 ```json
-[
-  {
-    "arguments": {
-      "data": {},
-      "layer_id": "L1"
-    },
-    "tool": "draw_stroke"
-  },
-  {
-    "arguments": {
-      "count": 1
-    },
-    "tool": "undo_last"
-  }
-]
+{}
 ```
 
 ## `unlock_layer`

@@ -40882,3 +40882,37 @@ console.log(`  ${needsPrior ? "⊙" : "✗"} ${name} ${needsPrior ? "需要前�
    ⇒ **∴ 而其余失败都是**Rust doc 注释的排版规则**✗（**∴ 列表延续要缩进 ✗、空行要写成 `///`✗ ✓**）
    ⇒ **∴ 两者共同点** ✓：**∴ 都是**"看起来无害的排版／命令"✗ 造成的 ✓ ⇒ **∴ 而它们**不会**✗ 在任何
       业务判据里暴露 ✗ ⇒ **∴ 只能靠**编译器 ＋ linter ＋ 谨慎**✗ 拦住 ✓** ✓✓
+
+## 第 1312 轮：**加只读撤销状态工具** ✓（F02 的第 ① 步）—— 判据能红（两个变异）
+
+### 加了什么
+`crates/yanshi-server/src/tools.rs`：
+- **spec** ✓：`name: "get_undo_status"`／`mutating: false`／无参数 ✓（**∴ 插在 `undo_last`✗ 的 spec 之后 ✓**）；
+- **dispatch** ✓：`"get_undo_status" => read_get_undo_status(ctx, args),` ✓；
+- **handler `read_get_undo_status`** ✓：复用 `collect_gestures`（**∴ 与 `undo_last`✗ **同一个数**✗ ✓**），
+  **只算不动** ✓ ⇒ 返回 `remaining_gestures` ／ `ignored_atoms` ✓；
+- **`TOOL_EXAMPLES`** ✓：加 `("get_undo_status", r#"{}"#)` ✓。
+
+### 判据 `crates/yanshi-server/tests/undo_status.rs`（**三条，都能红 ✓**）
+① 空文档 ⇒ `remaining_gestures == 0`（**∴ 不是 `null`✗、**∴ 不是缺字段 ✓**）；
+② **连查两次 ⇒ 完全相同** ✓（**∴ 它不消耗任何东西 ✓**）；
+③ **查它不改变文档** ✓ ⇒ 前后 `get_log` 的原子数一致 ✓（**∴ 若偷偷发 revert ⇒ **∴ 立刻红 ✓**）。
+**变异证明** ✓（**∴ 打在被判条件上 ✓**）：
+- **∴ 让空文档报 1 ✗** ⇒ **∴ 第 ① 条红 ✗ ⇒ **∴ 报「空文档应当报 0 笔可撤销（**∴ 实得 1 ✗）⇒ {…}」** ✓；
+- **∴ 让两次返回不同的数 ✗** ⇒ **∴ 第 ② 条红 ✓**；**∴ 还原后绿 ✓**。
+⚠️ **∴ 第一次变异后我用 `git checkout HEAD -- <path>`✗ 还原 ✗ ⇒ **∴ 它把**未提交的新工具**也撤了** ✗
+   ⇒ **∴ 于是"还原后仍红"✗ ⇒ **∴ 我改用 `cp /tmp/tools.keep`✗ ⇒ **∴ 这次"还原后绿"✓** ✓✓
+   ⇒ **∴ 教训** ✓：**∴ 当被变异的文件**含有未提交的新代码**✗ 时 ⇒ **∴ "还原"✗ 必须是**从备份**✗
+      ⇒ **∴ 而不是 `checkout HEAD`✗（**∴ 那会丢掉新代码 ✓**）** ✓✓
+
+### 加新工具**顺带触发两条既有判据**（**∴ 它们按设计工作 ✓**）
+1. **`tools::tests::every_registered_tool_has_a_documented_example`✗ 立刻红** ✓
+   ⇒ **∴ 报「这些工具没有可照抄的示例 ⇒ 补进 `TOOL_EXAMPLES`：`["get_undo_status"]`」** ✓
+   ⇒ **∴ 这正是它存在的理由 ✓**（**∴ "以后新加工具而忘了写示例 ⇒ 立刻红"✗ ✓**）⇒ **∴ 补上后绿 ✓**；
+2. **clippy 红** ✓：我的测试文件 `use … NewDocument …` **没用到** ⇒ **∴ 删掉 ✓**。
+
+### 刷新生成的文档（**∴ 必须做 ⇒ **∴ 否则会推红树 ✓**）
+起服务端跑生成链 ✓ ⇒ `docs/design/tool-examples.md` **141 个工具、12060 字节** ✓（**∴ 又 -48 行 ✓**）。
+三条相关判据全绿 ✓：`tool-surface-coverage`（**∴ 三个面一致 ✓**）／`tool-examples-doc-check` ✓／
+`tool-example-acceptance`（**∴ 「93 跑通 ✗、**0 被拒**✗、48 需前置 ⊙」✓**）✓✓
+⇒ **∴ 而且我上一轮修的**两态分类 ＋ 不截断**✗ 正在输出里生效 ✓。

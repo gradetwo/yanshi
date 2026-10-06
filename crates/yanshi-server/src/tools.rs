@@ -1999,6 +1999,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("count", Integer, false, "撤销几笔（缺省 1）")],
     },
     ToolSpec {
+        // **只读的撤销状态** ✓（F02 ✓）：`remaining_gestures` **本来只由 `undo_last` / `redo_last`
+        // 的响应回报** ✗ ⇒ 落笔之后查看器**没有新数字** ✗ ⇒ 「刚画完却不能撤销」 ✓。
+        // 这个工具**只算不动** ✓：复用 `collect_gestures`（与 `undo_last` **同一个数** ✓），
+        // 不改文档、不发 revert ✓ ⇒ 查看器可以**随时问一次** ✓。
+        name: "get_undo_status",
+        profile: Profile::Core,
+        summary: "只读查询可撤销/可重做的笔数（不改变任何内容）：复用撤销路径的同一套归并，保证与 undo_last 报的数一致。落笔之后问它即可刷新界面按钮。",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
         name: "reapply",
         profile: Profile::Core,
         summary: "恢复被撤销的原子（不恢复级联链）",
@@ -3066,6 +3077,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "delete_object" => write_tombstone(ctx, args, "object_id"),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
         "undo_last" => write_undo_last(ctx, args),
+        "get_undo_status" => read_get_undo_status(ctx, args),
         "redo_last" => write_redo_last(ctx, args),
         "reapply" => write_history_atom(ctx, args, AtomKind::Reapply, "atom_id"),
         "get_log" => read_get_log(ctx, args),
@@ -6640,6 +6652,25 @@ fn collect_gestures(document: &crate::document::Document) -> (Vec<Gesture>, usiz
         }
     }
     (gestures, ignored)
+}
+
+/// **只读的撤销状态** ✓（F02）：报"现在还能撤几笔／重做几笔"，**什么也不改**。
+///
+/// 与 `undo_last` 用**同一个** `collect_gestures` ✓ ⇒ 两边**不可能漂移** ✓。
+/// 查看器在**落笔之后**问一次它，就能把"撤销"按钮从禁用改成可用（**∴ 而空栈仍报 0 ⇒ 仍禁用 ✓**）。
+fn read_get_undo_status(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let (gestures, ignored) = collect_gestures(document);
+    Ok(json!({
+        "remaining_gestures": gestures.len(),
+        "ignored_atoms": ignored,
+        "note": "只读查询：没有改动任何内容（与 undo_last 的 remaining_gestures 同源）",
+    }))
 }
 
 fn write_undo_last(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -14496,6 +14527,8 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("undo_last", r#"{}"#),
+    // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
+    ("get_undo_status", r#"{}"#),
     ("set_reference", r#"{"blob_hash":"x"}"#),
     ("set_preferences", r#"{"values":{}}"#),
     ("redo_last", r#"{}"#),
