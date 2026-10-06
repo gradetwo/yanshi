@@ -7,7 +7,11 @@
 // 这样"可复制示例"就有了实质判据，而不只是"名字出现在参数面里"。
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-example-acceptance.mjs <server-base>"); process.exit(2); }
-const doc = "ea1";
+// **`doc_id` 必须每次唯一** ✗ —— 原先写死 `"ea1"` ⇒ **第一次跑会新建它 ✓**，
+// 第二次跑时它**已经存在** ⇒ `import_project` 的语义是「**目标已存在 ⇒ 不覆盖**」（刻意设计 ✓）
+// ⇒ 该示例被判「被拒」✗ ⇒ **判据不可重跑** ✗（2026-10-06 CI 与本地各踩一次 ✓）。
+// ⇒ 用**唯一后缀** ✓（同文件里 `bloat_one_*`／`bloat_many_*` 已经是这个做法 ✓）。
+const doc = "ea1_" + Math.random().toString(36).slice(2, 10);
 // **用自己这份文档的 token** —— 上一版拿外面传进来的 token，结果每次都是
 // capa token 无效（工具根本没执行），而脚本却报「参数被接受」：**典型的假绿**。
 const created = await fetch(`${base}/api/documents`, {
