@@ -11,6 +11,10 @@
 //!
 //! `wasm32-unknown-unknown` 没有共享内存线程 ⇒ 本模块的并行部分被 `#[cfg]` 掉，
 //! 调用方在 wasm 上回退到原来的**串行**循环，逐字节一致。
+//!
+//! 本模块还放着输出量化的**逐像素实现** [`encode_quantized_rows`]：它不按目标门控
+//! （wasm 也编译），原生并行版与 wasm 串行版共用同一份 ⇒ 原生判据能直接跑到 wasm
+//! 分支所用的代码，且 wasm 上不再需要"先复制整幅 f32 再就地量化"。
 
 /// **并行任务的最小像素数**：低于它时线程创建与每块的固定开销盖过收益。
 ///
@@ -90,4 +94,49 @@ pub(crate) fn for_each_band_mut(
         }
     });
     blocks
+}
+
+/// 把 `[row_start, row_start + rows)` 行的像素**逐像素量化到 f16 再编码**成显示空间 u8。
+///
+/// 这是输出量化的**唯一逐像素实现**：原生并行版（`render::parallel_impl`）与 wasm 串行版
+/// （`render::parallel_impl` 的 wasm 变体）都调用它 ⇒ 两端不会各自演化出不同的量化/编码。
+///
+/// **不复制整幅 f32**：直接在调用方给的 `source`（原始缓冲的像素切片）上按行取切片，
+/// 边量化边写入 `destination` 的对应行。旧 wasm 实现先 `buffer.crop(&buffer.bbox())`
+/// 复制一份整幅 f32（8K 上 506 MiB）再就地量化 ⇒ 峰值内存多一份整幅；本函数是这个副本
+/// 被删掉之后的落点。
+///
+/// 本函数**不按目标门控**（`wasm32` 也编译），因此原生测试能直接跑到与 wasm 分支
+/// **同一份**代码，不是"另一套等价实现"。
+///
+/// 每像素只由它自己那 4 个 f32 决定（没有跨行状态、没有浮点规约）⇒ 行区间怎么切都不改变
+/// 任何字节（顺序无关性的根据见本模块文档）。
+pub(crate) fn encode_quantized_rows(
+    source: &[f32],
+    destination: &mut [u8],
+    row_start: usize,
+    rows: usize,
+    width: usize,
+    bg_linear: Option<crate::color::LinearRgba>,
+) {
+    let table = crate::color::srgb_encode_table();
+    for row in 0..rows {
+        let y = row_start + row;
+        let src = &source[y * width * 4..(y + 1) * width * 4];
+        let dst = &mut destination[row * width * 4..(row + 1) * width * 4];
+        for x in 0..width {
+            let base = x * 4;
+            let pixel = [
+                crate::half::quantize_f16(src[base]),
+                crate::half::quantize_f16(src[base + 1]),
+                crate::half::quantize_f16(src[base + 2]),
+                crate::half::quantize_f16(src[base + 3]),
+            ];
+            let bytes = match bg_linear {
+                Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+            };
+            dst[base..base + 4].copy_from_slice(&bytes);
+        }
+    }
 }

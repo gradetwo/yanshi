@@ -2097,17 +2097,14 @@ mod parallel_impl {
     ) -> Vec<u8> {
         let width = buffer.width() as usize;
         let height = buffer.height() as usize;
-        let mut out = vec![0u8; width * height * 4];
-        if width == 0 || height == 0 {
-            return out;
+        // 小图 / 单 worker / 空缓冲：不启线程（线程创建对小图是净亏），走**与 wasm 同一个**
+        // 无副本实现（`Buffer::to_rgba8_quantized`）。这样"串行量化"只有一处实现。
+        if width == 0 || height == 0 || workers <= 1 || width * height < PARALLEL_MIN_PIXELS {
+            return buffer.to_rgba8_quantized(background);
         }
+        let mut out = vec![0u8; width * height * 4];
         let source = buffer.as_f32();
         let bg_linear = background.map(crate::color::background_linear_premul);
-        // 小图 / 单 worker：不启线程（线程创建对小图是净亏）。
-        if workers <= 1 || width * height < PARALLEL_MIN_PIXELS {
-            encode_rows(source, &mut out, 0, height, width, bg_linear);
-            return out;
-        }
         let bands = split_bands(height as u32, workers.clamp(1, MAX_WORKERS));
         // 输出按行切成互不重叠的可变切片（块之间没有共享字节，拼回顺序也不影响结果）。
         let mut jobs: Vec<(&mut [u8], usize, usize)> = Vec::with_capacity(bands.len());
@@ -2121,44 +2118,19 @@ mod parallel_impl {
         std::thread::scope(|scope| {
             for (destination, row_start, rows) in jobs {
                 scope.spawn(move || {
-                    encode_rows(source, destination, row_start, rows, width, bg_linear);
+                    // 与 wasm 串行路径、`Buffer::to_rgba8_quantized` **同一个**逐像素实现。
+                    crate::rows::encode_quantized_rows(
+                        source,
+                        destination,
+                        row_start,
+                        rows,
+                        width,
+                        bg_linear,
+                    );
                 });
             }
         });
         out
-    }
-
-    /// 把 `[row_start, row_start + rows)` 这些行的像素量化到 f16 并编码成显示空间 u8。
-    ///
-    /// **逐像素独立** ⇒ 行区间怎么切都不改变输出字节（与串行 `Buffer::to_rgba8` 逐位一致）。
-    fn encode_rows(
-        source: &[f32],
-        destination: &mut [u8],
-        row_start: usize,
-        rows: usize,
-        width: usize,
-        bg_linear: Option<crate::color::LinearRgba>,
-    ) {
-        let table = crate::color::srgb_encode_table();
-        for row in 0..rows {
-            let y = row_start + row;
-            let src = &source[y * width * 4..(y + 1) * width * 4];
-            let dst = &mut destination[row * width * 4..(row + 1) * width * 4];
-            for x in 0..width {
-                let base = x * 4;
-                let pixel = [
-                    crate::half::quantize_f16(src[base]),
-                    crate::half::quantize_f16(src[base + 1]),
-                    crate::half::quantize_f16(src[base + 2]),
-                    crate::half::quantize_f16(src[base + 3]),
-                ];
-                let bytes = match bg_linear {
-                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
-                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
-                };
-                dst[base..base + 4].copy_from_slice(&bytes);
-            }
-        }
     }
 }
 
@@ -2211,16 +2183,18 @@ mod parallel_impl {
     /// **串行**输出量化 + sRGB 编码（wasm 上没有线程 ⇒ 逐行顺序处理）。
     ///
     /// 与原生并行版**同一口径**（逐像素量化到 f16 再编码）⇒ 两端逐字节一致。
+    ///
+    /// **不复制整幅 f32**：旧实现先 `buffer.crop(&buffer.bbox())` 得到一份整幅副本
+    /// （8K、33.18M 像素、16 B/px ⇒ 506 MiB）再就地量化 ⇒ 峰值内存多出整整一份整幅。
+    /// 现在直接走 [`Buffer::to_rgba8_quantized`]：逐行读原始像素、边量化边编码进输出。
+    /// 那条路径与原生串行回退、以及 [`crate::rows::encode_quantized_rows`] 是**同一份**
+    /// 逐像素实现（本文件原生分支也调用它）⇒ 不是"另写一套等价实现"。
     pub fn quantize_to_rgba8(
         buffer: &Buffer,
         background: Option<[u8; 4]>,
         _workers: usize,
     ) -> Vec<u8> {
-        let mut quantized = buffer.crop(&buffer.bbox());
-        for value in quantized.pixels_mut() {
-            *value = crate::half::quantize_f16(*value);
-        }
-        quantized.to_rgba8(background)
+        buffer.to_rgba8_quantized(background)
     }
 }
 
