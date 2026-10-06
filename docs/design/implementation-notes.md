@@ -39925,3 +39925,26 @@ self.workspace.open_or_create(spec, …)
 **"在哪里判断"比"判断了什么"更容易错** ✗：入口为了省事先建了文档，就把工具里那条**正确的分支**
 变成了**错误的分支** ✗。而且**描述与实现相反**（`document_mut` 注释）会**同时误导报告作者与修的人** ✓。
 ⇒ 调查一个工具的行为时：① **读到入口**；② **不要相信文档注释**，以代码为准；③ 判据必须**经过入口**（真进程）。
+
+## 第 1279 轮：修掉"判据把 token 当下载目录"的既有 bug（**它每次跑都在仓库根留垃圾**）
+
+### 缺陷
+`scripts/browser-offline-export.mjs:17`：`const dir = process.argv[4] || "/var/tmp/yanshi-dl";`
+而判据的调用约定是 `<viewer-url> <base> <token> <cdp-port>`（见 `run-criteria.sh:182`）
+⇒ **`argv[4]` 是 token**（64 位小写十六进制）✗ ⇒ `fs.mkdirSync(dir, {recursive:true})`
+在**当前目录（仓库根）**建出一个 **64 位十六进制命名的目录** ✗。
+⇒ 本轮清理时**实测删掉 13 个**这样的目录 ⇒ 每次规范运行留一份垃圾 ✓。
+
+### 修法
+改用 `process.env.EXPORT_DL_DIR || "/var/tmp/yanshi-offline-export"` ——
+与同族的 `browser-export-full-document.mjs`（`EXPORT_DL_DIR || /var/tmp/yanshi-export-full-document`）**同一做法** ✓。
+
+### 新增判据（**能红 ✓**）
+`scripts/tool-repo-root-hex-dirs.mjs`：仓库根下**不得存在**名字匹配 `^[0-9a-f]{64}$` 的**目录**。
+- **变异证明**：`mkdir $(printf 'a%.0s' {1..64})` ⇒ **红**（报出该目录并给出处理提示）；
+  `rmdir` 后 ⇒ **绿** ✓（打在被判条件本身 ✓）；
+- 它同时保护了既有的"仓库根白名单"判据（`tool-repo-root-clean.mjs`）不被垃圾污染 ✓。
+
+### 本地门禁（**现已五步 ✓**）
+① `fmt` ② `clippy -D warnings` ③ `build --all-targets` ④ **编号唯一** ⑤ **仓库根无 64 位十六进制目录**。
+重型项（全量 test／wasm／浏览器判据）**仍交给 CI** ✓（按用户提醒 ✓）。

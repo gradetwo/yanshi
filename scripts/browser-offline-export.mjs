@@ -14,7 +14,11 @@ const url = process.argv[2];
 // 拼出 `http://127.0.0.1:http://127.0.0.1:13990/json/list` ✗ ⇒ **取不到调试目标** ✗。
 //（全仓共 8 条这样写 ✓ —— **含"离线"全家** ✓ ⇒ 影响 A⑥ 的证据 ✓。）
 const port = process.env.CDP_PORT || "9333";
-const dir = process.argv[4] || "/var/tmp/yanshi-dl";
+// **下载目录不能从位置参数取** ✗：调用约定是 `<viewer-url> <base> <token> <cdp-port>` ✓
+// ⇒ `argv[4]` 是 **token**（64 位十六进制）✗ ⇒ 原先会在**仓库根**建一个 64 位十六进制名的目录，
+// 每次规范运行留一份垃圾（实测删过 13 个 ✓）。改用**环境变量 ＋ 固定的临时目录** ✓
+// （与 `browser-export-full-document.mjs` 同一做法 ✓）。
+const dir = process.env.EXPORT_DL_DIR || "/var/tmp/yanshi-offline-export";
 if (!url) { console.error("用法: node scripts/browser-offline-export.mjs <viewer-url> [cdpPort] [downloadDir]"); process.exit(2); }
 const fs = await import("node:fs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
