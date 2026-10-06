@@ -36488,3 +36488,38 @@ C. batch I/O 汇聚：沿已有 `batch` 语义做，代价 = 崩溃窗口从单�
 判据已经存在且能红（browser-i18n 自己就是判据），不需要新写判据；
 但应当顺手加一条"**新增 UI 字符串必须都在 i18n 表里**"的静态判据（可静态扫描），
 这样以后加 UI 忘了加词条会被立刻抓住，而不是等浏览器判据。
+
+## 第 1166 轮：重大更正——第 1158/1160 轮说的"位图缓存缺陷"不存在，根因是共享 target 的构建污染
+
+子代理 17b6d737 给出了实测证据（我核对后接受）：
+1. 在**隔离 worktree + 全新 target** 下：该判据单跑 ok；整个 tile_parallel 二进制（11 项）**10 passed / 0 failed**；
+   跑全量 `cargo test --workspace` 时该判据也是 **ok**。
+2. 但**主干 target 里那个已存在的二进制**稳定红：连跑 3 次全部 `left: 4 right: 1`。
+3. 那个二进制**不是主干源码编出来的**：cmp 证明 worktree 与主干的 src/render.rs、tests/tile_parallel.rs
+   逐字节相同，主干 render.rs 的 mtime 还是 2026-10-05 23:55:38（并行合并那次之后没动过）；
+   可是该二进制里含字符串 `missed_bytes`（主干 render.rs 出现 0 次），
+   而 `/tmp/wt-bgperf/crates/yanshi-render/src/render.rs`（另一位子代理正在改的跨渲染位图缓存）里出现 4 次。
+4. 污染路径：/tmp/wt-bgperf **没有自己的 target**，它用主干的 target 目录做构建；
+   两棵树的 cargo 单元 hash 与 extra-filename 相同（实测三棵树里出现同名
+   `tile_parallel-a2143a7633b804b6`），而主干源码文件 mtime 更旧 ⇒ cargo 判定"无需重编"
+   ⇒ 于是**跑了别人源码编出来的测试二进制**。我 07:47/07:48 那两次全量红（/tmp/i3b.txt、/tmp/j3b.txt）
+   就是这份产物。
+
+所以：
+- **主干里"并行分块不共享位图缓存"这个缺陷不存在**。render.rs:1847-1878 的
+  `let bitmaps = BitmapCache::default()` + 各块 `Some(bitmaps_ref)`，以及 :1094-1128 的锁内取值/解码，
+  本来就是正确且共享的；`fetch_raster_patch` 在整个 crate 里只有一个调用点（render.rs:1657 的 store.get）。
+- **不要改 render.rs**（那不是缺陷；谁改谁制造真缺陷）。
+- 我第 1158/1160 轮把它写成"真实缺陷"是错的；这与本会话反复出现的"量错对象"是同一族，
+  只不过这次量错的是**测试二进制**。
+
+真正该做的是**门禁卫生**（这条要写进 skill）：
+1. 每个 worktree 用**独立 target**：`CARGO_TARGET_DIR="$PWD/target"`；
+2. 或者至少在执行门禁前 `cargo clean -p yanshi-render` 并确认 build 真的重编；
+3. 我自己的门禁命令今后统一用**独立 target 目录**（例如 `CARGO_TARGET_DIR=/tmp/yanshi-gate-target`），
+   这样既不受别人污染，也不污染别人；
+4. 遇到"某条判据全量红、单跑绿"时，**第一嫌疑是构建产物污染**，不是产品缺陷，
+   也不是"判据不敏感"。
+
+顺带更正我之前的一个混淆：E0460 那一条**独立成立**（它是明确的编译器错误，读数清楚），
+与这次污染是两件事。
