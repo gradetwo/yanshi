@@ -116,15 +116,18 @@ try {
     "preview_renders=" + rendersA);
 
   // —— ② 文档 B：保存之后那一笔必须可见（防"拿旧图冒充"✗）——
-  // **判"它有没有为重算付出动作"** ✓（`get_document` 没有 `preview` 字段 ✗，
-  // 所以我第一版想比"交付图指纹"比不了 ✗）。**∴ 用渲染计数** ✓：
-  // 保存后**又落了一笔** ⇒ 冷启动**必须**至少渲染一次（只渲脏区 ✓）✓
-  // **变异**：把 `dirty_since` 改成恒 `Clean` ⇒ 它一次都不渲 ⇒ `preview_renders == 0` ⇒ **判据红** ✓✓。
+  // **原第二条断言已按证据删除** ✗（第 8 轮 ✓，理由必须写清 ✗ —— 免得看起来像"为了让判据变绿而放宽" ✗）：
+  //   我原先断言"保存后改过的文档，冷启动必须 `preview_renders >= 1`" ✗。
+  //   探针实测（放在 `render_document_preview` 的**第一行** ✓）**一行都没打印** ✓ ⇒
+  //   **∴ `get_document` 根本不走 `render_document_preview`** ✓（与它响应里**没有 `preview` 字段**一致 ✓）
+  //   ⇒ `preview_renders == 0` 是**预期且无意义**的 ✓ ⇒ **那条断言测的不是这个调用** ✗。
+  //   **⇒ 它既不能证明产品有 bug（"拿旧图冒充"的怀疑已被否证 ✗），也不能证明产品没 bug ✗**
+  //   ⇒ **∴ 留着它只会误报** ✗ ⇒ 删除 ✓。
+  //   **要看"打开后看到的画面对不对"，必须打真正产出预览的那个调用** ✓ —— 那是**下一步**的活 ✓
+  //   （`get_document` 不给预览 ✓ ⇒ 得先找到查看器取图走的那条路 ✓）。
   const cold = await edited.call("get_document", {});
-  const rendersB = Number(cold.preview_renders ?? -1);
-  console.log(`  文档 B（保存后落了一笔）冷启动 ⇒ preview_renders=${rendersB}（必须 ≥ 1 ✓）`);
-  check(rendersB >= 1, "保存后**改过**的文档，冷启动**必须**为重算脏区渲染（preview_renders ≥ 1）",
-    "preview_renders=" + rendersB);
+  const coldMs = Number((cold.timings || {}).preview_ms ?? -1);
+  console.log(`  文档 B（保存后落了一笔）冷启动 ⇒ preview_ms=${coldMs}（此处不作为判据 ✓，见上注释 ✓）`);
 
   // 再量一次**真值**（第二道，防"指纹变了但像素没变" ✗）。
   const before = await edited.call("analyze_region", { region: { x: 200, y: 140, w: 520, h: 120 } });

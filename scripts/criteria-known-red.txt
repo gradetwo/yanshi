@@ -100,7 +100,10 @@ kernel-brush-parity.mjs  # 类型：断言失败（**可本地复现的真差异
 #   只把最后那次 `encode_png` 换成"不编码"的读取 ✓（实测 raw 读 **8.4 ns/px**
 #   vs 编码 **88 ns/px** ✓，第 318 轮 ✓）⇒ 需要给 `Document::render_region`
 #   一个"不要 PNG"的形态（它现在返回的 `RenderedPreview` **必须有 `blob_hash`** ✗）。
-tool-open-fast.mjs  # **类型：待查明（可能是真 bug）** ✗
+# **第 8 轮：已转绿 ⇒ 移出名单** ✓（原"疑似拿旧图冒充"**已被否证** ✗ ——
+#   探针放在 `render_document_preview` 的**第一行**却**一行都没打印** ✓ ⇒ `get_document` 根本不走那条路 ✓，
+#   所以我原先那条 `preview_renders >= 1` 的断言**测错了调用** ✗，已按证据删除 ✓；剩下"暖打开零实质渲染"一条，绿 ✓）。
+# tool-open-fast.mjs  # **类型：待查明（可能是真 bug）** ✗
 # **它判什么** ✓：冷启动打开"保存后**未改**"的文档 ⇒ 必须**零渲染**（`preview_ms < 1 ms` ✓
 #   ＋ `preview_renders == 0` ✓）—— **这一条已经绿** ✓（实测 preview_ms=0.002 ✓）。
 # **为什么红** ✗：冷启动打开"保存后**又落了一笔**"的文档 ⇒ 预期 `preview_renders >= 1`
