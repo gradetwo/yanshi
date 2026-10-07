@@ -1300,6 +1300,21 @@ impl Document {
         if from >= head {
             return PreviewDirty::Clean;
         }
+        // **落后太多就直接"不确定"** ✓（第 1512 轮 ✓）—— `PreviewDirty::Unknown` 会吸收一切 ✓
+        // ⇒ 语义是"**不确定就整幅**" ✓ ⇒ 这是作者**已经设计好**的保守出口 ✗，我没有新编语义 ✓。
+        //
+        // **为什么必须加这个上限** ✗：下面那个循环**逐原子折一次** ✗，而每次折叠都要
+        // `remember` **深拷贝一份完整状态** ✗（状态随对象增长 ✓）⇒ 实测真实 4K 文档
+        //（15.1 MB／9742 原子）**187 秒** ✓，采样为每轮 5→33 ms（越往后越慢 ✓）。
+        //
+        // **上限怎么定** ✗：单步实测约 19 ms ✓；一张 256² 预览的全幅渲染按实现注释约 1 s ✓
+        // ⇒ 扫描成本 ≲ 一次全幅渲染 ⇒ 取 64 步（约 1.2 s ✓）。
+        // **代价** ✗：落后超过 64 原子时预览整幅重画 ✗ —— 但预览是 256² ✓，
+        // 且 `Unknown` 本来就是"整幅"的合法结果 ✓ ⇒ **不降精度** ✓，只多画一张小图 ✓。
+        const DIRTY_SCAN_LIMIT: u64 = 64;
+        if head.saturating_sub(from) > DIRTY_SCAN_LIMIT {
+            return PreviewDirty::Unknown;
+        }
         let mut folder = IncrementalFolder::new();
         let Ok(mut previous) = folder.fold(&self.log, from) else {
             return PreviewDirty::Unknown;
