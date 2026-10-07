@@ -12727,7 +12727,12 @@ fn paint_brush(
             }
             steps
         }
-        None => stamp_stroke(&brush, &mut state, &mut surface, points),
+        None => {
+            if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
+                eprintln!("stamp_input side=server points={points:?}");
+            }
+            stamp_stroke(&brush, &mut state, &mut surface, points)
+        }
     };
     ctx.time(Phase::Raster, stamp_started);
 

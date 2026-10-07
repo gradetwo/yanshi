@@ -152,6 +152,11 @@ pub(crate) fn stamp(
     points: &[[f64; 3]],
 ) -> usize {
     const STEP_SECONDS: f64 = 0.01;
+    // **运行时输入 dump**（第 249 轮）：把"我读代码得出的输入清单"换成"实际输入" ✓。
+    // 受已有开关控制 ⇒ 默认不打 ✓。
+    if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
+        eprintln!("stamp_input side=kernel points={points:?}");
+    }
     let mut previous: Option<(f64, f64, f64)> = None;
     let mut steps = 0usize;
     for point in points {
