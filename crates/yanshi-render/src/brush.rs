@@ -501,6 +501,62 @@ pub fn stamp_stroke_incremental(
 }
 
 /// 把预先生成的采样盖章到缓冲（抖动序号从 0 起，与一次性整段一致）。
+/// **把底图像素喂进引擎的 surface**（第 242 轮）：**两端共用这一处** ✓。
+///
+/// **为什么要抽出来**：这段循环原先有**两份**（服务端 `tools.rs` 与内核 `brush.rs` ✓）
+/// ⇒ 而"两份实现必然漂移"是本项目记录过的**头号病** ✓。搬到这里 ⇒ 两端都调它 ✓。
+///
+/// **做法与原先逐字一致** ✓：
+/// - 按 **64×64** 的 tile 取块（`tile_request_start` / `tile_request_end` ✓）；
+/// - 只写落在 `region` 内的像素 ✓；
+/// - **RGBA8 ⇒ fix15**：`u16::from(byte) << 7`（与读回的 `>> 7` 对称 ✓）。
+///
+/// **尺寸不符就不写** ✗：宁可"这次没有底图" ✓，也不要**错位**地抹 ✓。
+pub fn feed_base(
+    surface: &mut hokusai::tile_mem::MemSurface,
+    x0: i32,
+    y0: i32,
+    width: i32,
+    height: i32,
+    rgba: &[u8],
+) -> bool {
+    if width <= 0 || height <= 0 || rgba.len() < (width as usize) * (height as usize) * 4 {
+        return false;
+    }
+    use hokusai::TiledSurface;
+    let x1 = x0 + width;
+    let y1 = y0 + height;
+    for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
+        for tile_x in x0.div_euclid(64)..=x1.div_euclid(64) {
+            let tile = surface.tile_request_start(tile_x, tile_y);
+            for row in 0..64i32 {
+                for column in 0..64i32 {
+                    let document_x = tile_x * 64 + column;
+                    let document_y = tile_y * 64 + row;
+                    if document_x < x0 || document_y < y0 || document_x >= x1 || document_y >= y1 {
+                        continue;
+                    }
+                    let at = ((document_y - y0) as usize * width as usize
+                        + (document_x - x0) as usize)
+                        * 4;
+                    if at + 3 >= rgba.len() {
+                        continue;
+                    }
+                    tile[row as usize][column as usize] = [
+                        u16::from(rgba[at]) << 7,
+                        u16::from(rgba[at + 1]) << 7,
+                        u16::from(rgba[at + 2]) << 7,
+                        u16::from(rgba[at + 3]) << 7,
+                    ];
+                }
+            }
+            surface.tile_request_end(tile_x, tile_y);
+        }
+    }
+    true
+}
+
+/// **把一行 dab 盖到缓冲区上**（服务端与服务端预览共用 ✓；参数与语义保持原样 ✓）。
 pub fn stamp_samples(buffer: &mut Buffer, brush: &BrushSpec, stamps: &[(f64, f64, f64)]) -> usize {
     stamp_samples_from(buffer, brush, stamps, 0)
 }

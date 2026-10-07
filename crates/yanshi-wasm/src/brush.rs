@@ -263,48 +263,16 @@ pub(crate) fn paint(request_json: &str) -> Result<Vec<u8>, String> {
     // **喂底图**（与服务端 `tools.rs` 同一段循环与同一套换算 ✓）：
     // 尺寸不符就**不喂** ✗（宁可"这次没底图"，也不要**错位**地抹 ✓）。
     if let Some(base) = request.base.as_ref() {
+        // **调共享实现** ✓（原先这里有一段 40 行的循环副本 ✗）。
         let region = &request.region;
-        let fits = base.width == region.w
-            && base.height == region.h
-            && base.rgba.len() >= (region.w as usize) * (region.h as usize) * 4;
-        if fits {
-            use hokusai::TiledSurface;
-            let x0 = region.x;
-            let y0 = region.y;
-            let x1 = region.x + region.w;
-            let y1 = region.y + region.h;
-            for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
-                for tile_x in x0.div_euclid(64)..=x1.div_euclid(64) {
-                    let tile = surface.tile_request_start(tile_x, tile_y);
-                    for row in 0..64i32 {
-                        for column in 0..64i32 {
-                            let document_x = tile_x * 64 + column;
-                            let document_y = tile_y * 64 + row;
-                            if document_x < x0
-                                || document_y < y0
-                                || document_x >= x1
-                                || document_y >= y1
-                            {
-                                continue;
-                            }
-                            let at = ((document_y - y0) as usize * region.w as usize
-                                + (document_x - x0) as usize)
-                                * 4;
-                            if at + 3 >= base.rgba.len() {
-                                continue;
-                            }
-                            tile[row as usize][column as usize] = [
-                                u16::from(base.rgba[at]) << 7,
-                                u16::from(base.rgba[at + 1]) << 7,
-                                u16::from(base.rgba[at + 2]) << 7,
-                                u16::from(base.rgba[at + 3]) << 7,
-                            ];
-                        }
-                    }
-                    surface.tile_request_end(tile_x, tile_y);
-                }
-            }
-        }
+        let _ = yanshi_render::brush::feed_base(
+            &mut surface,
+            region.x,
+            region.y,
+            region.w,
+            region.h,
+            &base.rgba,
+        );
     }
     stamp(&brush, &mut state, &mut surface, &request.points);
     Ok(read_back(&surface, &request.region))

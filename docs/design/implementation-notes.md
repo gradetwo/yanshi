@@ -50133,3 +50133,38 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 ### 磁盘
 1. 可用从 25 GB 降到 19 GB（反复构建 + 多个 target 目录）。
 2. 下一轮开始前我会清理。
+
+## 第 245 轮：喂底图的循环收拢到一处（内核侧已完成）
+
+### 改动
+1. crates/yanshi-render/src/brush.rs 新增 pub fn feed_base(surface, x0, y0, width, height, rgba)。
+   - 按 64×64 tile 取块（tile_request_start / tile_request_end）
+   - 只写落在 region 内的像素
+   - RGBA8 ⇒ fix15：u16::from(byte) << 7（与读回的 >> 7 对称）
+   - 尺寸不符 ⇒ 不写（宁可这次没有底图，也不要错位地抹）
+2. crates/yanshi-wasm/src/brush.rs 删掉自己那份 40 行循环，改调 yanshi_render::brush::feed_base。
+
+### 自证
+| 项目 | 结果 |
+|---|---|
+| feed_base 定义 | 1 处 |
+| 内核调用 | 1 处 |
+| 内核残留循环（tile_request_start） | 0 处 |
+
+### 中途修掉的错误
+1. 第一次插入把 stamp_samples 的文档注释挤掉了。
+2. clippy 报 missing documentation（该 crate 有 deny(missing_docs)）。
+3. 补回那一行文档注释后通过。
+
+### 门禁
+1. clippy（全 workspace，-D warnings）通过。
+2. yanshi-render 单测 249 通过（4 ignored）。
+3. yanshi-server 单测 57 通过。
+4. 全量构建通过。
+
+### 下一步
+1. 服务端那份循环也改成调 feed_base（两份 → 一份）。
+2. 跑 kernel-brush-parity.mjs all 确认 345 条吃底图的笔刷行为不变。
+
+### 磁盘
+1. 可用 18 GB。偏低，继续清理。
