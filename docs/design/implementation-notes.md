@@ -49177,3 +49177,26 @@ smudge  服务端拒绝：这一笔没落下任何像素 ⇒ 笔刷「smudge.myb
 1. 收益：无。实测更差。
 2. 代价：一轮时间与一次误解。已回退。
 3. 保留的成果：判据现在能重建 wasm 包了（wasm-bindgen 已在 ~/.cargo/bin）。
+
+## 第 213 轮：暴露"是否喂了底图"的改动点已定位
+
+### 要改三处
+1. crates/yanshi-server/src/tools.rs:11852 —— struct BrushPaint 加一个字段 fed_base: bool。
+2. tools.rs:12828 —— 构造 BrushPaint 时填 fed_base: reads_canvas
+   （reads_canvas 在 12605 算出：feed_base && brush_reads_the_canvas ✓）。
+3. 工具响应里加 "fed_base" 字段。响应在 brush_stroke 的返回处，
+   region 与 dirty_bbox 一起组装（见 tools.rs:791 附近的 dirty_bbox ✓ 与 region 附近 ✓）。
+
+### 判据随后怎么用
+1. 判据读 made.fed_base。
+2. 为真 ⇒ 这一笔吃了底图 ⇒ 按"喂同样底图"比对。
+   底图来源必须与服务端一致：整层合成，不是某个对象的 blob。
+3. 为假 ⇒ 按"空表面"比对，不喂底图。
+4. 这样两类都能比，而且都不猜。
+
+### 为什么要暴露而不是在判据里写名单
+1. 名单会漂移。谓词在服务端，只有一处真相。
+2. 判据本来就已经依赖服务端的 region 上报，再加一个布尔字段是同一手法。
+
+### 门禁
+1. 本轮只读代码与记录。产品代码没改。
