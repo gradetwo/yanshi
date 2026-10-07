@@ -48182,3 +48182,43 @@ before_meta=0ms after_meta=0ms restore_meta=0ms
 2. 分点是 hash、exists、encode、write、sync、rename。
 3. 这样能确定它在哪一步。
 4. 也要查 restore_persisted_render 里的那次 store.put 是不是同一个。
+
+## 第 1517 轮：排除了编码，得到一个新事实
+
+### 新事实：store 的 codec 是 RenderCodec
+1. service.rs 891 行构造 store。
+2. 它调用 with_codec，注入 crate::blob_codec::RenderCodec。
+3. 所以 store.put 会用 RenderCodec 编码。它不是 PlainCodec。
+4. 这说明我的 fsync 实验不完整。我只测了写未压缩数据。
+
+### RenderCodec 的实现
+```
+impl BlobCodec for RenderCodec {
+    fn encode(&self, plain: &[u8]) -> Vec<u8> { zlib_compress_best(plain) }
+    fn decode(&self, stored: &[u8]) -> Option<Vec<u8>> { zlib_decompress(stored) }
+}
+```
+
+### zlib_compress_best 的实现
+1. 它先调 zlib_compress。那是级别 6。
+2. 若结果更小就返回它。
+3. 否则调 zlib_at_level(raw, 0)。那是 stored 块。
+4. 所以对已压过的 PNG，它会先做一次级别 6 的压缩，然后可能丢弃结果。
+
+### 已排除的清单
+| 步骤 | 状态 | 依据 |
+|---|---|---|
+| hash | 排除 | 内存操作 |
+| exists | 排除 | 一次 stat |
+| encode | 排除 | 级别 6，4.35 MB 约 0.5 秒 |
+| write | 排除 | 实测 0.001 秒 |
+| fsync | 排除 | 实测 0.028 秒 |
+| rename | 排除 | 元数据操作 |
+| restore_persisted_render | 排除 | 只读 PNG 头 |
+
+### 结论
+1. 那 186 秒无处可去。
+2. 所以我的打点本身有问题。
+3. 下一步我直接测两件事。第一是 BlobHash::from_bytes 对 4.35 MB 的耗时。
+   第二是 zlib_compress_best 对 4.35 MB 的耗时。
+4. 我用单测或小程序测。我用数据判断，不用推断。
