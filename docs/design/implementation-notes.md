@@ -48043,3 +48043,32 @@ r, dt = call('tools/call', {'name': 'render_region', 'arguments': {
 1. 查清 initialize 为什么没有回复。
 2. 检查 MCP 是否需要别的启动参数。
 3. 检查 stdout 是否被别的输出污染。
+
+## 第 1513 轮：真实文档的分层数据
+
+### 输入
+1. 用户给了真实工程包。/tmp/parrot-4k-v10-docs-20261007.tar.gz
+2. 解开后是 15.1 MB。原子数是 9742。
+3. 服务二进制是 yanshi-mcp。它走 stdio。它不需要端口。
+4. 我之前用了 yanshi-serve。那是 HTTP 服务。所以 initialize 没有回复。
+
+### 实测
+```
+open_timing doc=parrot-4k-v10 atoms=9742 open=0ms load_atoms=72ms
+             load_render=0ms load_preview=0ms loads_done=188106ms restore_meta=0ms
+```
+1. get_document 墙钟是 205.4 秒。
+2. load_atoms 耗时 72 毫秒。
+3. load_render 耗时 0 毫秒。
+4. load_preview 耗时 188106 毫秒，即 188.1 秒。
+5. render_region 耗时 0.0 秒。它内部的 total_ms 是 41.61。
+
+### 结论
+1. 主因是 load_preview。它占总时间的 91.6%。
+2. 源码注释说 256 平方的预览解码约 1 秒。实测是 188 秒。差 188 倍。
+3. 下一步要读 load_preview 的实现。我要找出它为什么这么慢。
+
+### 一条方法教训
+1. 我用了四个回合在 HTTP 上猜接口。
+2. 原因是我没有先照现成的脚本跑通。
+3. 我还用错了二进制。yanshi-serve 不是 MCP 入口。
