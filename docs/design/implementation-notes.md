@@ -53317,3 +53317,44 @@ acf(4)-acf(2) = 0.079
 
 ### 门禁
 1. 本轮只做测量与记录 ✓（工作区 **0 处产品改动** ✓）。
+
+## 第 325 轮：P0 根因锁定 —— `silent` 挡不住**有大 job 的长笔触**（调用栈为准 ✓）
+
+### 探针（与第 300 轮定位 blob 删除者**同一招** ✓，一次得手 ✓）
+在 `yanshi-render/src/png.rs` 的 `encode_png` 里加 env 门控的**调用栈打印** ✓，然后跑一次
+`batch(silent:true, preview_every_n_strokes 缺省 = 不放行) × 3 笔长笔触`（4K、`Clouds.myb`、size 180 ✓）：
+```
+这一批触发了 3 次编码（每笔一次 ✗）
+PNG_ENCODE 2888x248
+ 1: Document::render_region
+ 2: Workspace::render_region
+ 3: tools::finish_mutation
+ 4: **tools::write_import_image**      ← 真凶
+ 5: tools::write_brush_stroke          （brush_stroke 内部走它 ✓）
+ 7: tools::write_batch
+```
+1. **∴ 编码来自 `write_import_image` 的 `finish_mutation`** ✓（`brush_stroke` 内部调它 ✓，`tools.rs:13146` ✓），
+   而它把自己的 `bbox` **无条件**当预览区域传下去 ✓（`:4387` ✓）。
+2. **∴ 但光看这一点还不够** ✗：`finish_mutation` 自己写着
+   `caller_render_wanted = preview_region.is_some() && (!ctx.silent || result.job_id.is_some())` ✓
+   ⇒ **`silent` 只挡得住"没有 job 的小笔触"** ✓
+   ⇒ **∴ 大笔触会创建渲染 job** ✗ ⇒ 条件为真 ⇒ **照编 PNG** ✓✓
+   ⇒ **∴ 这正好解释了用户报告里那类"长笔触（122 ms preview）"为何躲不过 `silent`** ✓✓。
+3. **∴ 这也修正了我第 322 轮那句"参数存在但没生效"的笼统说法** ✓：
+   参数**确实生效** ✓ —— 只是**只对"无 job 的小笔触"生效** ✓，而对**用户真正在画的长笔触**无效 ✗。
+
+### 修法设计（下一轮实施 ✓）
+1. **拆开两件事** ✗：`静默/免预览` 应当省的是**"给调用方的那张 PNG"** ✓，
+   而**不是**"job 的完成" ✓（`finish_mutation` 的注释本来就写着：静默省的是预览 JSON 与取回，
+   **不是**"不推进渲染水位" ✓）。
+2. **∴ 做法**：在"免预览"时，**仍然完成 job** ✓，但**不产出/不编码那张预览 PNG** ✓
+   —— 即把 `render_region`（会 `encode_png` ✓）换成**只读原始像素**那条（`render_region_raw` ✓
+   ⇒ 实测 **8.4 ns/px** vs 编码 **88 ns/px** ✓，第 318 轮 ✓），或直接在免预览时空过预览那一段 ✓。
+3. **`brush_stroke` 加显式开关** ✓（用户主路径 748 次调用 ✓）：`preview: false` ✓，
+   并让框架级 `silent` 语义一致 ✓（两者都表示"这一笔不要给我 PNG" ✓）。
+4. **`fill_region` 字典点改为响亮拒绝** ✓（第 298／324 轮已复现：`ok:true` ＋ `dirty_bbox:null`
+   ＋ 192 瓦片 ✗；数组形式对照只有 6 瓦片 ✓）。
+5. **两条能红的判据 ＋ 变异检验** ✓（免预览 ⇒ 每笔 `preview_ms == 0`／放行那笔 > 0；字典点必须被拒 ✓）。
+
+### 门禁
+1. 探针已还原 ✓（工作区 **0 处产品改动** ✓）。
