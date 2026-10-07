@@ -4,8 +4,11 @@
 **上一个 session 做了什么**：性能优化＋实时性提升＋三面对齐查证。**目标已标记完成。**
 **唯一未达成项**：笔刷逐字节一致。见第五节。
 
-> 写法约定：本仓库的报告与文档用**中文**，风格对齐 **ASD-STE100**（短句、一句一意、少用从句）。
+> 写法约定：本仓库的**汇报**与**需要用户决策的问题**都用**中文**，风格对齐 **ASD-STE100**
+> （短句、一句一意、少用从句）。
+> 决策问题要给**选项表**，并附我的建议。
 > 依赖与库的取舍必须**写明两面**（收益与代价），这是 `AGENTS.md` 的要求。
+> **重活尽量交给 GitHub CI/CD**，本地只做小改动。见第 3.3 节。
 
 ---
 
@@ -15,13 +18,16 @@
 |---|---|
 | 仓库 | `/home/crow/yanshi`，分支 `main` |
 | 远端 | `git@github.com:gradetwo/yanshi.git` |
-| HEAD | `99dc51e` |
+| HEAD | 见 `git log --oneline -1`（写这份更新时是 `5fd5fa0`） |
 | 本地与远端 | **一致** |
 | 工作区 | **干净**（0 处改动） |
 | 磁盘 | **18 GB 可用**（偏低） |
 | CI | 每轮补触发，均为成功 |
 
 **注意**：磁盘 18 GB 偏低。原因是反复重建（多个 target 目录）。开工前建议先清理。
+清理命令见第十二节。
+
+**注意**：本仓库约定**重活交给 GitHub CI/CD**，本地只做小改动。见第 3.3 节。
 
 ---
 
@@ -101,10 +107,81 @@ node scripts/tool-notes-round-numbers.mjs      # 笔记轮号必须唯一
    ```bash
    gh workflow run ci.yml --ref main
    ```
-   HTTP 500 时重试，但**同一次推送不要反复触发**。
-3. 报告用**中文 ＋ ASD-STE100**。
+   HTTP 500 时重试。**同一次推送不要反复触发**。
+3. **汇报**与**需要用户决策的问题**都用**中文 ＋ ASD-STE100**。
+   决策问题要给**选项表**，并附我的建议。
+4. 依赖取舍**必须写明两面**（收益与代价）。
 
-### 3.3 审批提示
+### 3.3 用 CI/CD 降负载（**优先这样做**）
+
+**原则**：本地只做小改动，重活交给 GitHub。
+
+这不是我编的，是仓库自己的约定。`scripts/run-criteria.sh` 的头部就写着这句。
+
+**两面**：
+
+| 面 | 内容 |
+|---|---|
+| 收益 | 省本机磁盘（现在只有 **18 GB**）与编译时间。CI 有缓存，还能并行分片 |
+| 代价 | 一轮反馈要等几分钟到十几分钟。而且要联网 |
+
+**CI 已经覆盖的东西**（`.github/workflows/ci.yml`）：
+
+| job | 跑什么 | 备注 |
+|---|---|---|
+| `fmt` | `cargo fmt --all -- --check` | |
+| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | |
+| `test (matrix rust)` | `cargo test --workspace` | |
+| `wasm-smoke` | `scripts/wasm-smoke.sh` | |
+| `parity-arm64` | `kernel-brush-parity.mjs all`（**全量 199 支**） | arm64 runner。**非阻塞**（`continue-on-error`）。见第五节 |
+| `criteria shard N/6` | `SHARD=N SHARDS=6 scripts/run-criteria.sh` | **6 片并发** |
+
+**重要**：`criteria` job **会装 chromium**。
+所以 `browser-*.mjs` 那批浏览器判据**可以在 CI 上跑**，不必占本机。
+
+**必须本地跑的东西**：
+
+1. 想**立刻**看到结果、不想等 CI 的**单条**判据。
+2. 需要本机**真实工程文件**的实验（例如 `/tmp/parrot-4k-v10-docs-*.tar.gz`）。
+3. 需要**交互式 CDP 调试**的排查（边改边看）。
+4. 编译不过、CI 连跑都跑不起来时。
+
+**本地批量跑判据**（只在必要时）：
+
+```bash
+SHARD=1 SHARDS=1 scripts/run-criteria.sh      # 串行全跑（十几分钟）
+SHARD=2 SHARDS=6 scripts/run-criteria.sh      # 只跑第 2 片
+```
+
+脚本默认 `PORT=13990`、`CDP_PORT=9490`，并会 `export CDP_PORT`。
+它**自己起服务端与 chromium**，退出时清理。
+`scripts/criteria-known-red.txt` 里的脚本**照跑、照印，但不让脚本失败**。
+
+**注意**：MCP 判据（`mcp-document-switch.mjs`、`mcp-tool-descriptions.mjs`）
+**自己 spawn** `target/debug/yanshi-mcp`。它们**不需要**服务端与浏览器。
+
+### 3.4 怎么读 CI 结果
+
+```bash
+gh run list --limit 5                                  # 最近几次 run
+gh run watch                                           # 盯最新一次
+gh run view <run-id> --log-failed                      # 只看失败的日志
+gh run view <run-id> --json jobs -q '.jobs[]|"\(.name) \(.conclusion)"'   # 各 job 结论
+```
+
+**陷阱**：run **没结束**时 `gh` 拒绝给日志。
+`parity-arm64` 历史上卡过约 **45 分钟**（后来才加了 `timeout-minutes: 40`）。
+所以别在它没结束时反复拉日志。
+
+**三个 workflow**：
+
+| workflow | 触发方式 |
+|---|---|
+| `ci.yml` | push、PR、`gh workflow run ci.yml --ref main` |
+| `heavy.yml` | 仅 `workflow_dispatch`（含 `ignored-suite` job） |
+| `release.yml` | 见文件头部 |
+
+### 3.5 审批提示
 
 本会话**禁用审批提示**。不要设置 `sandbox_permissions`，否则会被自动拒绝。
 
@@ -174,6 +251,20 @@ invert 段原先**间歇失败**。我删掉那段里多加的"建层并选中"�
 
 **注意**：`scripts/wasm-brush-parity.mjs` **不存在**。唯一判据是 `kernel-brush-parity.mjs`。
 
+**CI 已经在跑这条判据**：`ci.yml` 的 `parity-arm64` job 在 **arm64 runner** 上跑 `… all`（全量 199 支）。
+它**非阻塞**（`continue-on-error: true`）。
+⇒ **想拿全量数据时优先看 CI**，不必在本机跑 199 支。见第 3.3 节。
+
+**一处需要留意的口径差异**：
+1. **CI 那个 job 的注释**写着：微实验证实"两边数学实现不同"（native 用 glibc、wasm 用 Rust 自带
+   ⇒ 超越函数差 1 ulp）。
+2. **我在第 249 轮的实测**是：`8B_Pencil#1` 的 red 上，**原生（x86-64）与 wasm 都是 5757**，
+   两者**逐字节相同**。
+3. 两者**可以同时成立**：那条注释讲的是**跨平台**（arm64 vs wasm32），
+   我的实测是**同平台**（x86-64 native vs wasm32）。
+4. **所以别把"平台差异"当成已定论**。这条我在本会话里先立后破过一次（第 241 → 249 轮）。
+   要判定平台，就得**跨平台**取数据 —— 那正是 CI 的 `parity-arm64` job 能给的。
+
 **全量结果（199 支笔 × 4 色）**：
 
 | 分类 | 数量 |
@@ -239,6 +330,9 @@ invert 段原先**间歇失败**。我删掉那段里多加的"建层并选中"�
 
 ### 5.5 下一步（建议按此顺序）
 
+0. **先看 CI 的 `parity-arm64` 数据**（不用本机负载）。
+   若它给出的 arm64 差异**远大于** 41 条 ⇒ 平台因素确实存在，值得单独立项。
+   若接近 41 条 ⇒ 与本机同源，继续下面的步骤。
 1. **把门面实际收到的整串 JSON dump 出来**，与原生测试的请求串**逐字符**比对。
    这是最直接的一步。判据里已有三处打印的位置可参照。
 2. 若请求串相同 ⇒ 在 `yanshi-wasm` 的 `brush::paint` 里加日志，看它**在哪一步返回空**。
@@ -247,6 +341,16 @@ invert 段原先**间歇失败**。我删掉那段里多加的"建层并选中"�
    `return out ? Uint8Array.from(out) : null;`。
    JS 里 `[]` 是 **truthy** ⇒ **失败会被当成成功**。
    建议把这个判空改成**判长度**。这是我留下的一个判据弱点。
+
+**本地要跑这条判据时，先重建两样东西**（否则比的是新旧混合体）：
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"; export CARGO_TARGET_DIR=/tmp/yt4
+cargo build --release --bin yanshi-serve
+cargo build -q -p yanshi-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript \
+  /tmp/yt4/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+```
 
 ### 5.6 可复用的工具（我留下的）
 
@@ -388,8 +492,9 @@ env CDP_PORT=$C node scripts/browser-ui-check.mjs "http://127.0.0.1:$P/?doc=d1&t
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| 1 | 笔刷逐字节一致 | 见第五节。建议先 dump 门面收到的整串 JSON |
-| 2 | 清磁盘 | 18 GB 偏低。清理 `/tmp/yt4` 历史产物与 `/tmp/br*`、`/tmp/kp*` |
+| 0 | **改用 CI/CD 承担重活** | 见第 3.3 节。目标是少占本机磁盘与时间 |
+| 1 | 笔刷逐字节一致 | 见第五节。建议先读 CI 的 `parity-arm64` 数据 |
+| 2 | 清磁盘 | 18 GB 偏低。命令见第十二节 |
 | 3 | 345 条吃底图笔刷的比对 | 需要判据拿到**整层合成**作为底图（对象 blob 不是整层合成） |
 | 4 | `rayon` 并行羽化 | 仓库里已列明，理由与代价写在笔记里 |
 | 5 | 批量 I/O | 同上 |
@@ -413,13 +518,33 @@ env CDP_PORT=$C node scripts/browser-ui-check.mjs "http://127.0.0.1:$P/?doc=d1&t
 
 ## 十二、交接自查
 
-新 session 开始时，建议先跑这三条确认环境：
+新 session 开始时，建议先跑这几条确认状态：
 
 ```bash
 cd /home/crow/yanshi
-git rev-parse --short HEAD          # 期望 99dc51e（或更新）
+git rev-parse --short HEAD          # 期望 5fd5fa0 或更新
 git status --short | wc -l          # 期望 0
-export CARGO_TARGET_DIR=/tmp/yt4 && cargo build --workspace --all-targets 2>&1 | tail -2
+gh run list --limit 3               # 看最近三次 CI 的结论
+df -h /home | tail -1               # 看磁盘（上次是 18 GB）
 ```
 
-若 HEAD 比 `99dc51e` 新，先看 `git log --oneline 99dc51e..HEAD` 了解差异。
+**先看 CI，不要先编译**（第 3.3 节）。
+若 HEAD 比文档记录的提交新，先看 `git log --oneline` 了解差异。
+
+**只有需要本地跑判据时**，才做这两件重活：
+
+```bash
+export CARGO_TARGET_DIR=/tmp/yt4
+cargo build --workspace --all-targets          # 本机编译（费磁盘）
+# 若要比 wasm：见第 5.5 节的重建三条命令
+```
+
+**开工前的清理建议**（磁盘只有 18 GB）：
+
+```bash
+rm -rf /tmp/yt4/debug /tmp/yt4/wasm32-unknown-unknown/debug   # 只删 debug 产物
+rm -rf /tmp/br* /tmp/kp* /tmp/rc* /tmp/fr* /tmp/rv*           # 我留下的临时文档目录
+df -h /home | tail -1
+```
+
+**别删 `release` 与 `/tmp/yt4/wasm32-unknown-unknown/release`**：那是判据要用的产物。
