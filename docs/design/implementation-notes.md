@@ -48307,3 +48307,30 @@ put_timing bytes=1723 exists_hit=0ms
 3. 我在 service 的 mark 里也加 elapsed_ms。
 4. 这样两次记录能按同一时间线对齐。
 5. 我按时间戳排序阅读，不再靠行的先后。
+
+## 第 1521 轮：四次 put 都在同一毫秒
+
+### 数据
+```
+put_timing epoch_ms=1791333862359 bytes=1723    exists_hit=0ms
+put_timing epoch_ms=1791333862359 bytes=1723    hash=0ms
+put_timing epoch_ms=1791333862359 bytes=4349754 exists_hit=0ms
+put_timing epoch_ms=1791333862359 bytes=4349754 hash=28ms
+get_document 墙钟: 188.0s
+```
+1. 四行都在同一个 epoch 毫秒。所以两次 put 都在这同一毫秒内完成。
+2. render 的 hash 花 28 毫秒。那是唯一可测的一步。
+3. 所以 188 秒不在 put 里。
+4. 这否证了 service 侧的分段标签。那个标签把 188 秒算给了 preview 的 put。
+
+### 结论
+1. put 已被彻底排除。它 28 毫秒做完两件事。
+2. 188 秒在别处。它在 open_document 的其它部分。
+3. service 侧的 mark 标签与 put_inner 的记录对不上。这是因为 mark 的打印在最后，
+   而 put 的打印在当场。两边的行交错，标签对应错了。
+4. 下一步我给 service 侧也加 epoch 时间戳。这样能按同一时钟排序。
+
+### 下一步
+1. 在 open_timing 那一行里附带 epoch_ms。
+2. 这样与 put_timing 的 epoch 可直接比较。
+3. 然后我就能读出 188 秒落在两个 epoch 之间。

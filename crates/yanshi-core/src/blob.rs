@@ -693,8 +693,13 @@ impl FsBlobStore {
         let mut step = |name: &str| {
             if trace {
                 let now = std::time::Instant::now();
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
                 eprintln!(
-                    "put_timing bytes={} {}={}ms",
+                    "put_timing epoch_ms={} bytes={} {}={}ms",
+                    epoch_ms,
                     bytes.len(),
                     name,
                     now.duration_since(last).as_millis()
