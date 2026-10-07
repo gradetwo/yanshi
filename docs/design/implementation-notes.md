@@ -51257,3 +51257,44 @@ let region = match (self.document_thumb.is_some(), dirty) {
 
 ### 门禁
 1. fmt ✓、clippy ✓、`yanshi-server` 与 `yanshi-render` 库测试 ✓（全量交给 CI ✓）。
+
+## 第 274 轮：给预览计数加只读出口，并补上 ④ 的**结构性**判据（能红 ✓）
+
+### 为什么这一轮必须做
+上一轮（273 ✓）实现了"空文档冷启动不再整幅光栅化" ✓（808 ms → 141 ms ✓、缩略图**逐字节相同** ✓），
+但**没有能红的判据** ✗ ⇒ 那是个真缺口 ✓，不能拿漂亮数字当结论 ✓。
+
+### 改动
+1. `crates/yanshi-server/src/document.rs`：加只读访问器
+   `pub fn preview_render_counts(&self) -> (usize, usize)` ✓ —— 返回
+   `(document_preview_renders, full_canvas_renders)` ✓（第 273 轮那个跳过**不增加**它们 ✓）。
+2. `crates/yanshi-server/src/tools.rs` 的 `read_get_document`：把两个计数放进响应
+   （`preview_renders` / `full_canvas_renders` ✓）。**没有**判据断言过 `get_document` 的键集 ✓ ⇒ 加字段安全 ✓。
+   （第一次写成 `if let Ok(document)` ✗ —— `workspace.document()` 回的是 **`Option`** ✓，编译当场报 ✓，已改 `Some` ✓。）
+
+### 新判据（**结构性** ⇒ 与区域大小、机器快慢、墙钟都无关 ✓）
+`scripts/tool-preview-render-count.mjs` ✓（`tool-*` 前缀 ⇒ CI 会跑到 ✓）：
+| 断言 | 内容 | 变异检验 |
+|---|---|---|
+| ① | 空文档（无对象）第一次 `get_document` ⇒ `preview_renders == 0` ✓ | 让跳过永不命中 ⇒ **`preview_renders=1`、判据 EXIT=1** ✓ |
+| ② | **画一笔之后** ⇒ `preview_renders ≥ 1` ✓（**防作弊** ✓：否则"干脆永远不渲染"也能过 ① ✗，而用户会看到永不更新的缩略图 ✗） | — |
+
+1. **不看时间** ✗ ⇒ 不会在慢机器上假红 ✓；**不写死观测值** ✓（比的是 `0` / `≥1` 这个**语义边界** ✓）。
+2. 实测：空文档 `preview_renders=0` ✓；画一笔后 `=1` ✓；判据 **EXIT=0** ✓。
+3. **变异检验** ✓：把 `if self.state.objects.is_empty()` 改成 `if false && …` ⇒
+   空文档报 `preview_renders=1 full_canvas_renders=1` ⇒ ① 红 ✓、**EXIT=1** ✓。已还原（并重建 ✓）。
+4. 覆盖率守卫通过 ✓（99 个 `.mjs`，被枚举 96，尚未接线 0 ✓）。
+5. 还原后**再查一次**：缩略图 blob 与基线 `sha256:ccc6036b…` **仍然相同** ✓ ⇒ 逐字节一致成立 ✓。
+
+### ④ 就此收口 ✓
+| 项 | 状态 |
+|---|---|
+| 先测量 | ✓（第 270 轮：成本随像素数、100% 在残差里） |
+| 定位 | ✓（第 272 轮：冷启动那一条整幅渲染） |
+| 实现 | ✓（第 273 轮：方案 d） |
+| 效果 | ✓ **808 → 141 ms**（5.7×） |
+| 不牺牲逐字节一致 | ✓ 旧/新两个二进制的缩略图 `sha256` **相同** |
+| **能红的判据** | ✓ 第 274 轮（结构性 ✓＋防作弊 ✓＋变异检验红 ✓） |
+
+### 门禁
+1. fmt ✓、clippy ✓、`yanshi-server` 库测试 ✓（全量交给 CI ✓）。

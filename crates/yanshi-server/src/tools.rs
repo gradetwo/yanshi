@@ -3231,6 +3231,13 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }
     ctx.time(Phase::Preview, preview_started);
     summary["preview_size"] = json!(size.kind().size());
+    // **预览渲染计数**（第 274 轮 ✓）：只读出口 ✓，让判据能断言"这条路真的走了没有" ✗。
+    // 它是**结构性**的证据 ✓（与区域大小、与机器快慢、与墙钟都无关 ✓）。
+    if let Some(document) = ctx.workspace.document(&ctx.doc_id) {
+        let (renders, full_canvas) = document.preview_render_counts();
+        summary["preview_renders"] = json!(renders);
+        summary["full_canvas_renders"] = json!(full_canvas);
+    }
     Ok(summary)
 }
 

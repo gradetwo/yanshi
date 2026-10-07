@@ -558,6 +558,18 @@ impl Document {
     }
 
     /// 以指定 actor 提交，可选 owner 权限（跨 actor revert，12.5）。
+    /// **预览渲染的计数**（只读 ✓）：`(走了渲染的次数, 其中整幅的次数)` ✓。
+    ///
+    /// **为什么要有出口** ✗（第 274 轮 ✓）：`document_preview_renders` / `full_canvas_renders`
+    /// 的注释写着它们是"**这条路真的走了**"的凭证 ✓、判据用它 ✓ ——
+    /// 但它们是**私有字段、且不进任何响应** ✗ ⇒ **判据根本读不到** ✓
+    /// ⇒ 于是第 273 轮那条"空白文档冷启动不再整幅光栅化"的优化**没有能红的判据** ✗。
+    /// ⇒ 这里给它一个只读出口 ✓，判据即可断言"**空文档的冷启动预览不增加这个计数**" ✓
+    /// （**结构性**判据 ✓：与区域大小、与机器快慢都无关 ✓）。
+    pub fn preview_render_counts(&self) -> (usize, usize) {
+        (self.document_preview_renders, self.full_canvas_renders)
+    }
+
     /// 渲染缓存统计（可观测性：设计 1319 行要求包含缓存/生命周期指标）。
     pub fn cache_stats(&self) -> yanshi_render::TileCacheStats {
         self.renderer.cache().stats()
