@@ -1565,6 +1565,25 @@ async function blitServerBox(bbox) {
       return 0;
     }
   }
+  // **过期补丁不许盖** ✗（第 390 轮 ✓，真实用户报告 ✓）：
+  //   `putImageData` 是**替换**语义 ✓ —— 连补丁里的**透明像素**也一并替换 ✗
+  //   ⇒ 贴一块**过期**补丁 ⇒ 把它之后画的内容抹掉 ⇒ **露出页面白底** ✓
+  //   ⇒ 皮肤上就是用户说的"**好像加了不透明白色背景**"✓ 与"**闪一下**"✓。
+  // **∴ 服务端早就把序号放进补丁了** ✓（`render_region` 响应的 `head_seq` ✓）—— 这里**没读它** ✗。
+  // **为什么不重取** ✗：本次取图本身由一次更新触发 ✓ ⇒ 更新的补丁随后会到 ✓ ⇒ 跳过旧的严格更好 ✓。
+  {
+    const patchSeq = Number(value.head_seq || 0);
+    const knownSeq = Number(window.yanshiStats.serverHead || state.localSeq || 0);
+    if (patchSeq > 0 && knownSeq > 0 && patchSeq < knownSeq) {
+      window.yanshiStats.staleBlitsSkipped = (window.yanshiStats.staleBlitsSkipped || 0) + 1;
+      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+        reason: "skipped-stale " + patchSeq + "<" + knownSeq + " " + JSON.stringify([x0, y0, w, h]),
+        area: w * h, at: Math.round(performance.now()), serverInk, canvasInk: -1,
+      });
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
+      return 0;
+    }
+  }
   ctx.putImageData(new ImageData(bytes, w, h), Math.round(x0 - vx), Math.round(y0 - vy));
   // Landing confirmation: read the region back right after writing it, so a later erase
   // can be told apart from a write that never took effect.
