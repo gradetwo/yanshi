@@ -48482,3 +48482,34 @@ fn remember(&mut self, result: StateAt) -> StateAt {
 1. 先做第一步。它小，且容易验证。
 2. 用已有的 dirty 正确性测试守住行为。
 3. 再用同一条判据证明 get_document 墙钟回落。
+
+## 第 1526 轮：我的 remember 修法失败并回退
+
+### 我做了什么
+1. 我把 remember 里的 self.last = Some(result.clone()) 改成 mem::replace。
+2. 想法是：把旧的那份交回调用方，新的存进 last。这样零深拷贝。
+
+### 结果
+1. yanshi-core 有两个测试失败：
+   - seq::tests::incremental_fold_falls_back_on_declare_head
+   - seq::tests::incremental_and_cold_replay_agree_at_every_seq_on_a_checkpoint_heavy_log
+2. 100 个通过，2 个失败。
+3. 我立刻用 git checkout 回退。回退后 102 个全通过。
+
+### 修正后的理解
+1. fold 的契约是：返回**这次**的结果。
+2. last 的契约是：保留**上一份**状态，供下次增量折叠用。
+3. 两者需要同时存在。所以那次深拷贝是契约要求的，不能省。
+4. 我把旧的返回给调用方，调用方就拿到了过期状态。所以测试抓到它。
+5. 判据在这里有效。它直接打在被改动的行为上。
+
+### 所以真正的修法在调用方
+1. 不改 remember。它必须留一份，返一份。
+2. 改 dirty_since：不要逐原子折。
+3. 改成一次折叠，在折叠过程中顺手记录脏区。
+4. 这与作者在 ladder_fold 里用过的手法相同：在同一趟里留下还原点阶梯。
+5. 这样只付一次深拷贝，而不是 9739 次。
+
+### 保留的成果
+1. 根因已定位到 dirty_since 的逐原子折叠，以及 remembered 状态的深拷贝。
+2. 采样数据保留：每轮 5 到 33 毫秒，总计 187 秒。
