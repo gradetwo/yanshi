@@ -55020,3 +55020,38 @@ fn load_brush(workspace: &Workspace, brush_name: &str) -> Result<(String, hokusa
 ### 三、门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）、覆盖率守卫 ✓；
 2. 改动仅**生成物**（`docs/design/tool-examples.md` ✓ —— 由生成器写出 ✓）。
+
+## 第 372 轮：🎯 查明"**推了却不跑 CI**"的原因 —— `paths-ignore` ✓（并找到验证办法 ✓）
+
+### 一、现象与真因
+推送成功 ✓（`5c064e5` 已在远端 ✓），但 **`gh run list` 里没有新 run** ✗。
+**真因** ✓（`.github/workflows/ci.yml:3-12` ✓）：
+```yaml
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'scripts/criteria-known-red.txt'
+  pull_request:
+  workflow_dispatch:
+```
+⇒ **∴ 我那两处修复正好落在被忽略的路径上** ✓（`docs/design/tool-examples.md` ✓ 与
+`scripts/criteria-known-red.txt` ✓）⇒ **∴ CI 根本没触发** ✓（**这是有意的设计** ✓：文档改动不必跑 CI ✓）。
+
+### 二、∴ 正确的验证办法 ✓（本轮已用 ✓）
+**手动触发** ✓：`gh workflow run ci.yml --ref main` ✓
+```text
+https://github.com/gradetwo/yanshi/actions/runs/37642746528
+in_progress｜workflow_dispatch｜main ✓
+```
+⇒ **∴ 它是唯一能验证"docs／known-red 类修复"的方式** ✓（推代码才会自动触发 ✓）。
+
+### 三、∴ 一个有用的推论 ✓（省了我很多等待 ✓）
+**推"被忽略路径"的改动 ⇒ 不会触发 workflow ⇒ **也就不会**取消正在跑的 run** ✓✓
+⇒ **∴ 我可以安全地"记笔记 ＋ 推送"** ✓，而不必为了"让 run 跑完"而**完全停止提交** ✓
+（第 44／45 轮我因此什么都没提交 ✗ —— 那是**过度**的克制 ✓）。
+**⚠️ 例外** ✗：**改 `scripts/*.mjs`／`crates/**`／`ci.yml`** 会触发 ✓ ⇒ 那些要**攒着推** ✓。
+
+### 四、门禁
+1. 本轮只加笔记 ✓（`fmt` 无关 ✓）；工作区在提交后干净 ✓。
