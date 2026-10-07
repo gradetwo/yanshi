@@ -190,6 +190,26 @@ impl PreviewDirty {
 /// 删掉用它的那个 `if` ⇒ 该测试红。
 pub(crate) const DIRTY_SCAN_LIMIT: u64 = 64;
 
+/// **只在测试里存在的扫描步数计数器**（第 192 轮）。
+///
+/// **为什么需要它**：判据要能区分"走上限早退"与"走满扫描" ✓。
+/// 只看返回值不行 —— 样本在没有上限时也会返回 `Unknown` ✓（第 191 轮实测 ✓）。
+#[cfg(test)]
+pub(crate) static DIRTY_SCAN_STEPS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// 清零扫描步数（测试用）。
+#[cfg(test)]
+pub(crate) fn dirty_scan_steps_reset() {
+    DIRTY_SCAN_STEPS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 读扫描步数（测试用）。
+#[cfg(test)]
+pub(crate) fn dirty_scan_steps() -> usize {
+    DIRTY_SCAN_STEPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
     if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
     {
@@ -1330,6 +1350,8 @@ impl Document {
         let total = head.saturating_sub(from) as usize;
         let mut seen = 0usize;
         for atom in self.log.range_exclusive_inclusive(from, head) {
+            #[cfg(test)]
+            DIRTY_SCAN_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if trace {
                 if total > 0
                     && (seen == 0
@@ -1838,14 +1860,38 @@ mod tests {
         }
         let head = document.log.head_seq();
         assert!(head > DIRTY_SCAN_LIMIT, "样本要够大：head={head}");
-        assert!(
-            matches!(document.dirty_since(0), PreviewDirty::Unknown),
-            "落后 {head} 步、超过上限 {DIRTY_SCAN_LIMIT} ⇒ 必须是 Unknown（整幅）"
+
+        // **主判据**：落后超过上限 ⇒ 必须走上限早退 ⇒ 扫描步数必须是 0。
+        dirty_scan_steps_reset();
+        let far = document.dirty_since(0);
+        let far_steps = dirty_scan_steps();
+        assert_eq!(
+            far_steps, 0,
+            "落后 {head} 步（上限 {DIRTY_SCAN_LIMIT}）⇒ 不许扫描任何一步"
         );
+        assert!(
+            matches!(far, PreviewDirty::Unknown),
+            "早退必须给出 Unknown（整幅）"
+        );
+
+        // **对照**：落后在上限之内 ⇒ 必须真的扫（否则"永远早退"也能过）。
+        dirty_scan_steps_reset();
+        let near_from = head - (DIRTY_SCAN_LIMIT - 1);
+        let _ = document.dirty_since(near_from);
+        let near_steps = dirty_scan_steps();
+        assert!(
+            near_steps > 0 && near_steps <= DIRTY_SCAN_LIMIT as usize,
+            "落后 {} 步（上限 {DIRTY_SCAN_LIMIT}）⇒ 应当扫 {near_steps} 步，且不超过上限",
+            head - near_from
+        );
+
+        // 落后为 0 ⇒ 既不扫，也不是 Unknown。
+        dirty_scan_steps_reset();
         assert!(
             matches!(document.dirty_since(head), PreviewDirty::Clean),
-            "落后为 0 ⇒ 必须是 Clean"
+            "落后 0 ⇒ Clean"
         );
+        assert_eq!(dirty_scan_steps(), 0, "落后 0 ⇒ 不扫");
     }
 
     #[test]
