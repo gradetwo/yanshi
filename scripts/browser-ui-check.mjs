@@ -553,7 +553,7 @@ const effectResult = await evaluate(`(async () => {
   // 于是"画布本来就全不透明"时第一轮就 break，After 与 Before 相同，被误报成没有变化。
   let fingerprint = null;
   const beforeSum = ${fingerprintBeforeEffect.sum};
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 60; i++) {
     fingerprint = ${canvasFingerprint};
     if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
     await new Promise((r) => setTimeout(r, 200));
@@ -1565,12 +1565,20 @@ const eraserResult = await evaluate(`(async () => {
   await new Promise((r) => setTimeout(r, 100));
   fire("pointerup", at(0.55, 0.35), 72);
   let afterErase = painted();
-  for (let i = 0; i < 24 && afterErase >= beforeErase; i++) {
+  // **轮询上限从 24 提到 60**（第 224 轮）：6 秒在负载高时不够 ⇒ 误报"没擦掉" ✗。
+  // 15 秒仍不变才是真没擦 ✓。失败时由下面的诊断说明当时的状态 ✓。
+  for (let i = 0; i < 60 && afterErase >= beforeErase; i++) {
     await new Promise((r) => setTimeout(r, 250));
     afterErase = painted();
   }
   document.querySelector('button[data-tool="brush"]').click();
-  return { beforeErase, afterErase, log: document.getElementById("log").innerText };
+  return {
+    beforeErase, afterErase,
+    // 诊断：失败时能看出"当时工具是哪个"与"服务端报了什么"。
+    activeTool: document.querySelector('button[data-tool].active')?.dataset.tool
+      || document.querySelector('button[data-tool="erase"]')?.className || null,
+    log: document.getElementById("log").innerText,
+  };
 })()`);
 
 // 打开已有作品：**重新加载页面**后应立刻显示已有内容（而不是白布）。
