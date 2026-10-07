@@ -525,6 +525,45 @@ const canvasFingerprint = `(() => {
   }
   return { opaque, total: data.length / 4, sum };
 })()`;
+// **先建立本段自己的前置内容**（第 225 轮）：invert 必须**有可反转的内容**才有意义 ✓，
+// 而前面的段落留下的画布状态**不稳定** ✗ ⇒ 实测 2 次里 1 次报"没有任何变化" ✓
+//（不透明像素 36040/36040 ⇒ 画布有内容，指纹却完全不变 ⇒ 不是等待不够 ✓）。
+// 这里用**确定的颜色**画一笔，并**轮询**确认它出现，前置才成立 ✓。
+await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const rect = board.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (type, point, id) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: id, pointerType: "mouse",
+    isPrimary: true, buttons: type === "pointerup" ? 0 : 1, ...point,
+  }));
+  document.getElementById("size").value = "64";
+  // **灰度 128**：invert 后应当变成另一个值 ⇒ 只要效果生效，指纹必然变 ✓。
+  document.getElementById("color").value = "#808080";
+  document.querySelector('button[data-tool="brush"]').click();
+  fire("pointerdown", at(0.30, 0.45), 81);
+  fire("pointermove", at(0.70, 0.45), 81);
+  await new Promise((r) => setTimeout(r, 100));
+  fire("pointerup", at(0.70, 0.45), 81);
+})()`);
+// 轮询到"画布确实有内容"为止（上限 12 秒）。
+const inkBeforeEffect = await evaluate(`(async () => {
+  const board = document.getElementById("board");
+  const painted = () => {
+    const data = board.getContext("2d").getImageData(0, 0, board.width, board.height).data;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i+3] > 8 && (data[i] < 245 || data[i+1] < 245 || data[i+2] < 245)) count++;
+    }
+    return count;
+  };
+  let count = painted();
+  for (let i = 0; i < 48 && count === 0; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    count = painted();
+  }
+  return count;
+})()`);
 const fingerprintBeforeEffect = await evaluate(canvasFingerprint);
 const effectResult = await evaluate(`(async () => {
   // **先显式选中一个确定的层**（第 222 轮）：effect 作用于**查看器当前选中的层**
@@ -566,6 +605,10 @@ const effectResult = await evaluate(`(async () => {
   };
 })()`);
 const fingerprintAfterEffect = effectResult.fingerprint;
+// 前置若不成立，就不是 invert 的错 ⇒ 单独报出来（而不是混进"没有变化"）。
+if (inkBeforeEffect === 0) {
+  problems.push("invert 用例的前置条件不成立：本段自己画的那一笔没有出现");
+}
 // 撤销这次 invert：既验证"撤销也能撤掉效果"，也让后续用例回到白底。
 await evaluate(`document.querySelector('button[data-tool="undo"]').click()`);
 await new Promise((r) => setTimeout(r, 1800));
