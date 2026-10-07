@@ -543,6 +543,19 @@ await send("Page.navigate", { url: `${origin}/?doc=${invertDoc}&token=${invertTo
 // ⇒ 原先等的是 kernelHead（空文档可能一直是 0 ✓）⇒ 等了 20 秒仍然没有可用图层 ✓
 // ⇒ 画笔落在不存在的层上 ⇒ 画不上 ⇒ 实测两次都报"前置不成立" ✓。
 // 所以这里等**可选项出现**；若没有，就先建一个确定的层 ✓。
+// **同时等内核就绪**（第 230 轮）：只等图层面板不够 ✓
+// ⇒ 实测新文档上"画的那一笔没出现"（不透明 576000/576000 ＝ 整幅白底不变 ✓）
+// ⇒ 因为内核还没接管画布时，落笔会被丢弃 ✓。
+const readyKernel = await evaluate(`(async () => {
+  for (let i = 0; i < 80; i++) {
+    if (window.yanshi && window.yanshiStats) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+})()`);
+if (!readyKernel) {
+  problems.push("invert 用例的前置条件不成立：新文档上前端内核没有就绪");
+}
 const readyLayer = await evaluate(`(async () => {
   const has = () => {
     const select = document.getElementById("layer");
