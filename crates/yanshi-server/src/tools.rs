@@ -13707,6 +13707,11 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "blob_count": stats.blob_count,
         "blob_bytes_plain": stats.blob_bytes_plain,
         "blob_bytes_packed": stats.blob_bytes_packed,
+        // **重放验证的读数** ✓（第 35 轮 ✓）：`omitted` ＝ 被"可重放证明"省掉的位图数 ✓
+        // ⇒ 它**就是导出慢的来源有多少次** ✓（第 346 轮查明：那 2.65 s／12 s 主要是重放 ✓）。
+        "omitted": stats.omitted,
+        "kept_no_recipe": stats.kept_no_recipe,
+        "kept_mismatch": stats.kept_mismatch,
     });
     if let Some(path) = &path {
         value["path"] = json!(path);

@@ -570,6 +570,17 @@ pub struct ExportStats {
     pub blob_bytes_plain: usize,
     /// 位图**压缩后**字节之和 ✓（**∴ 它决定包体积 ✓**）。
     pub blob_bytes_packed: usize,
+    /// **被"可重放证明"省掉**的位图个数 ✓（= 重放后哈希一致 ⇒ 不装 ✓）。
+    ///
+    /// **为什么暴露它** ✗（第 35 轮 ✓）：`blob_count` 只说"装了几个"✗ ⇒ 看不出
+    /// **重放验证跑了多少次** ✓ —— 而那次重放**正是导出慢的主因** ✓
+    ///（实测：4K **2.65 s** ✗／8K **12 s** ✗）。有了这三个数 ✓，才能量化
+    /// "**把证明记忆化**能省多少" ✓（第 346 轮定的真杠杆 ✓）。
+    pub omitted: usize,
+    /// **没有可重放配方** ⇒ 照装 ✓ 的个数（笔刷读画布／非笔刷来源 ✓）。
+    pub kept_no_recipe: usize,
+    /// **有配方但重放对不上** ⇒ 照装 ✓ 的个数（宁可包大，也要能打开 ✓）。
+    pub kept_mismatch: usize,
 }
 
 impl Workspace {
@@ -2506,6 +2517,10 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 blob_count,
                 blob_bytes_plain: plain_bytes,
                 blob_bytes_packed: packed_bytes,
+                // **重放验证的三个读数** ✓（第 35 轮 ✓，纯观测 ✓）。
+                omitted,
+                kept_no_recipe,
+                kept_mismatch,
             },
         ))
     }
