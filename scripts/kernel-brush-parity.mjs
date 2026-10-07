@@ -64,6 +64,8 @@ const facade = (request) => {
 // 而门面从空表面开始 ⇒ **两边输入不等价** ⇒ 389/796 次"差异"其实是判据的假设不成立。
 // 新图层 ⇒ 底图恒为空 ⇒ 两边输入真正等价 ✓。
 let allEqual = true;
+let fedBaseCount = 0;
+let missingFlagCount = 0;
 for (const brush of names) {
  for (const [colourName, colour] of colours) {
   const slug = `${brush.replace(/[^a-z0-9]/gi, "_")}_${colourName}`;
@@ -81,6 +83,20 @@ for (const brush of names) {
   if (!made.ok) {
     console.log(`  ${brush.padEnd(14)} 服务端拒绝：${(made.context || {}).detail?.slice(0, 60)}`);
     allEqual = false;
+    continue;
+  }
+  // **按服务端报的 `fed_base` 分类**（第 216 轮）：
+  // 这一笔**吃了底图** ⇒ 门面必须拿到**同一份整层合成**才可比 ✓，而判据现在拿不到
+  //（`render_region` 回的是 PNG ✗，对象 blob 只是**那一笔**✗，不是整层 ✓）
+  // ⇒ **不参与**逐字节判定 ✗，但要**如实计数并打印** ✓（不假装它通过了 ✓）。
+  if (made.fed_base === true) {
+    fedBaseCount += 1;
+    console.log(`  ${brush.padEnd(14)} 吃了底图（fed_base=true）⇒ 需要整层合成才可比，本次跳过`);
+    continue;
+  }
+  if (made.fed_base !== false) {
+    console.log(`  ${brush.padEnd(14)} 服务端没报 fed_base（旧二进制？）⇒ 本次跳过`);
+    missingFlagCount += 1;
     continue;
   }
   const region = made.region;
@@ -161,7 +177,9 @@ const total = allBrushes.length;
 const pct = total > 0 ? (100 * names.length / total).toFixed(1) : "?";
 const sample = wantsAll ? "全量" : (brushes.length ? "指定" : "**默认样本**");
 console.log(
-  (allEqual ? "结论：逐字节相同 ✓" : "结论：存在差异 ✗（见上；差异的机制是两边数学实现不同 ⇒ 正在修 ✓）") +
+  (allEqual ? "结论：可比范围内逐字节相同 ✓" : "结论：存在差异 ✗（见上；差异的机制是两边数学实现不同 ⇒ 正在修 ✓）") +
+  `｜吃了底图而**未比对**：${fedBaseCount} 条（需要整层合成才可比）` +
+  (missingFlagCount > 0 ? `｜服务端未报 fed_base：${missingFlagCount} 条` : "") +
   `｜覆盖 ${names.length}/${total} 支笔（${pct}%｜${sample}）` +
   (allEqual && names.length < total ? "｜⚠️ 这只说明**这几支**相同，不代表全部 ✗（用 `all` 可全量 ✓）" : ""),
 );
