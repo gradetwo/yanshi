@@ -55500,3 +55500,48 @@ fn put_inner(&self, bytes: &[u8], sync: bool) -> Result<BlobHash> {
   且**绝不出现**块状伪影／偏色 ✓"）；
 * **∴ 顺序** ✗：**先量当前的缩放实现**（在哪 ✓、用什么算法 ✓、为何 1.24 s ✓）
   ⇒ **再**决定是"换成金字塔"还是"只做加速的等距采样" ✓。
+
+## 第 386 轮：🎯 缩略图那 1.24 s 的**机制**查清 ✓ ⇒ 修法＝**用已有的整幅预览降采样** ✓
+
+### 一、读码（`crates/yanshi-render/src/thumb.rs` ✓）
+```rust
+pub fn render_thumbnail(renderer, state, store, kind, target) -> Result<Thumb> {
+    let region = target.unwrap_or_else(|| Bbox::new(0,0, state.width, state.height));  // ← **整幅** ✓
+    let render = renderer.render_region(state, store, region)?;      // ★① **整幅渲染**（4K：830 万像素 ✗）★
+    let mut buffer = Buffer::new(0, 0, render.width, render.height); // ← 整幅缓冲 ✓
+    for y in 0..render.height { for x in 0..render.width {           // ★② **830 万次逐像素** ★
+        if let Some(pixel) = render.pixel(x, y) {
+            buffer.set_pixel(x, y, u8x4_to_linear_premul(pixel));    //   还含**颜色变换** ✓
+        } } }
+    let mut thumb = Thumb::new(kind);
+    thumb.update_full(&buffer, region);                              // ③ 整幅 → 256²
+}
+```
+**③很便宜** ✓（`update_full` → `update_blocks_from_region` ✓ 只遍历**目标块** ⇒ 256² ＝ **6.5 万次** ✓）
+⇒ **∴ 成本在①与②** ✓ —— 而①是**整幅合成** ✓（4K 整幅渲染的基线正是 **~1.8 s** ✓ ⇒ 与 **1.24 s** 吻合 ✓）。
+
+### 二、∴ 相位读数（导出第 2 次 ✓）
+```
+total_ms 2797.83｜other_ms 2797.829
+prep_ms 0.001｜raster_ms 0｜render_ms **0.0**｜preview_ms 0｜png_ms 0｜dirty/fold/log 0
+```
+⇒ **∴ 缩略图那次整幅渲染**不计入** `render_ms`** ✗（相位是工具自己的口径 ✓）⇒
+**∴ `other_ms` 里那一大块无法从相位看出** ✓ ⇒ **∴ 只能靠探针** ✓（第 385 轮已定位到 `thumbnail_doc256` ✓）。
+
+### 三、∴ 修法（**方向明确 ✓，且很可能无画质取舍 ✓**）
+**代码注释已写明** ✓：保存点此前 `render_region(整幅)` **已经留下一份 4096×3072 的 `document_thumbnail`** ✓
+⇒ **∴ 要 256²，只需把这份**已有的整幅预览**降采样** ✓ ⇒ **省掉整幅重渲** ✗ ⇒ 预期 **1.24 s → ~几十 ms** ✓
+⇒ **∴ 而且像素来源相同** ✓（同一张整幅预览 ✓）⇒ **∴ 不是"降精度换速度"** ✓（**这点必须实测确认 ✓**：
+   与"直接渲染再降采样"的结果**逐像素比对** ✓）。
+⇒ **⚠️ 附带工作** ✗：`thumbnail()` 还做了**缓存预览** ＋ **广播** ✓（`cache_document_preview` ✓、
+   `publish_thumbnail` ✓、`document_thumbnail_seq` ✓）⇒ 新路径也要走这些 ✓，否则会**破坏打开快** ✗。
+
+### 四、∴ 判据（先行 ✓）
+1. **等价性** ✓：新路径产出的 Doc256 **必须等于**"整幅渲染后降采样"的结果（**逐像素**或**允许 ≤1 LSB** ✓）；
+   **变异**：把源换成**错的预览**（如 256² 自身或空图 ✓）⇒ 判据**必须红** ✓；
+2. **不许撒谎** ✓：新路径**不得**跳过 `cache_document_preview` / 广播 ✓
+   —— 用既有判据（**打开快** ✓：`preview_renders == 0` ＋ `preview_ms < 1 ms` ✓）守住 ✓；
+3. **性能** ✓：导出 `other_ms` 必须**显著下降** ✓（判据只钉语义 ✓；性能由本轮的实测数字报告 ✓）。
+
+### 五、门禁
+1. 本轮**未改产品代码** ✓（只读码 ＋ 测量 ✓）；工作区提交后干净 ✓。
