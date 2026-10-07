@@ -3216,10 +3216,20 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .get("preview_size")
         .map(DocThumbSize::parse)
         .unwrap_or(DocThumbSize::S256);
+    // **读路径的预览渲染也要计时**（第 270 轮补 ✗ → ✓）：
+    // `Phase::Preview` 此前只在**写入路径**（`finish_mutation` ⇒ `run_pending_jobs` ⇒
+    // `render_document_preview` ✓）被填 ✓，而**读路径**这一处**一个阶段都没记** ✗
+    // ⇒ **∴ 它整段落进残差 `other_ms`** ✓。
+    // **实测**：4K 文档**第一次** `get_document` 要 **942 ms** ✗，而响应里
+    // `preview_ms` / `render_ms` / `raster_ms` / `png_ms` **全是 0** ✓、`other_ms=859.995` ✓
+    // ⇒ 报告方只能从外部反推 ✓（正是 `timings.rs` 警告过的失败模式 ✓）。
+    // 成本随文档像素数增长（320×240 → 26 ms；3840×2160 → 942 ms ✓）。
+    let preview_started = std::time::Instant::now();
     if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
         summary["thumb_url"] = json!(url);
         summary["thumb_size"] = json!(size.kind().size());
     }
+    ctx.time(Phase::Preview, preview_started);
     summary["preview_size"] = json!(size.kind().size());
     Ok(summary)
 }
@@ -3267,9 +3277,12 @@ fn read_get_state(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .get("preview_size")
         .map(DocThumbSize::parse)
         .unwrap_or(DocThumbSize::S256);
+    // 与 `read_get_document` 同一处理由 ✓：读路径的预览渲染此前**不在任何阶段里** ✗（见那处的注释 ✓）。
+    let preview_started = std::time::Instant::now();
     if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
         value["thumb_url"] = json!(url);
     }
+    ctx.time(Phase::Preview, preview_started);
     Ok(value)
 }
 

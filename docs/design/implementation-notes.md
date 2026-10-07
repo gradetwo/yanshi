@@ -51107,3 +51107,52 @@ for y in 0..render.height { for x in 0..render.width { ... buffer.set_pixel(...)
 2. **下一轮**：核实"首次缩略图是同步、后续是异步"这件事 ✓（读 `document.rs:1416` 的 `thumbnail()` 与 `broadcast.rs:296` 的 `publish_thumbnail()` ✓），
    若成立 ⇒ 把首次也走同一条异步路 ✓，并让 `tool-thumbnail-cold.mjs` 作为判据证明改善 ✓。
 3. **代价**：本机磁盘紧张（36G ✓）且 `target/` 已删 ⇒ 重活交给 CI ✓，本轮只做测量与记录 ✓。
+
+## 第 271 轮：目标 A④ —— 把读路径的预览渲染**测出来**，并加一条能红的判据
+
+### 上一轮留下的问题
+1. 4K 文档**第一次** `get_document` 要 **942 ms** ✗，而响应里
+   `preview_ms` / `render_ms` / `raster_ms` / `png_ms` **全是 0** ✓、`other_ms=859.995` ✓
+   ⇒ **∴ 成本 100% 落在残差里** ✗ ⇒ 从未被测量 ✗。
+
+### 根因（读代码，不是猜 ✓）
+1. `get_document` 默认 `preview_size = S256` ✓（`tools.rs:3215`）⇒ 走
+   `ensure_document_thumbnail` ⇒ `Document::render_document_preview()` ✓（**读路径** ✓）。
+2. 而 `Phase::Preview` 此前**只在写入路径**被填 ✓（`finish_mutation` ⇒ `run_pending_jobs` ✓）
+   ⇒ **∴ 读路径那一处一个阶段都没记** ✗✓✓。
+3. `timings.rs` 自己的文档就警告过这个失败模式："渲染与编码全被残差吞掉" ✓ ——
+   而**没有任何判据守它** ✗（`scripts/*.mjs` 里 grep `other_ms` **零命中** ✓）⇒ 才能藏这么久 ✓。
+
+### 改法（最小 ✓）
+1. 在 `read_get_document`（`tools.rs:3219` 附近）与同样走这条路的那一处（`~3280`）**各加一次计时** ✓：
+   `let preview_started = std::time::Instant::now(); … ctx.time(Phase::Preview, preview_started);` ✓
+2. **不加新枚举** ✓：`Phase::Preview` 的文档本来就写着它覆盖"预览/缩略图渲染" ✓ ⇒ 两者语义一致 ✓。
+
+### 实测（release，4K，全新文档，先热身 ✓）
+| | 修之前 | 修之后 |
+|---|---|---|
+| `preview_ms` | **0.0** ✗ | **886.964** ✓ |
+| `other_ms` | **859.995** | **0.019** ✓ |
+| `other_ms / total_ms` | **100%** ✗ | **0.002%** ✓ |
+| `total_ms` | 860.0 | 886.984 |
+
+⇒ **∴ 成本被归属** ✓（它没有变小 ✗ —— 那是下一件事 ✓；本轮只解决"看不见" ✓）。
+
+### 新增判据（能红，已做变异检验 ✓）
+`scripts/tool-timing-attribution.mjs` ✓（`tool-*` 前缀 ⇒ 被 `run-criteria.sh` 枚举 ⇒ CI 会跑到 ✓）：
+1. **① 读路径的预览渲染必须是非零阶段** ✓：全新 4K 文档第一次 `get_document` ⇒ `preview_ms > 0` ✓。
+2. **② 残差不得吞掉成本** ✓：当 `total_ms ≥ 50 ms` 时要求 `other_ms ≤ 10% × total_ms` ✓
+   （门槛与占比都写在注释里 ✓；实测修好后 0.002% ⇒ 余量极大 ✓）。
+3. **不写死观测值** ✓：两条都拿**当次运行**的三个数互相比 ✓；唯一固定的是"4K 文档"与那两个判据参数 ✓。
+4. **变异检验** ✓：删掉 `read_get_document` 里那处 `ctx.time(Phase::Preview, …)` ⇒
+   `preview_ms=0`、`other_ms/total_ms = 100.000%` ⇒ 判据 **EXIT=1** ✓，两条都红 ✓。已还原 ✓。
+5. 覆盖率守卫通过 ✓（98 个 `.mjs`，被枚举 95，尚未接线 0 ✓）。
+
+### 下一轮（仍是 A④）
+1. 成本**没有变小** ✗：4K 首次仍要 **~890 ms** ✓。现在它**可见**了 ✓ ⇒ 可以按上一轮的三选项动手 ✓。
+2. 我仍建议**选项 b（首次缩略图/预览改异步）** ✓：唯一不降精度 ✓。
+   但先要读清 `ensure_document_thumbnail` 与 `broadcast.rs` 的**调用方**，
+   确认"异步之后谁来把缩略图推给客户端" ✓（`publish_thumbnail` 只是**投递**已算好的图 ✓，不是异步渲染 ✓）。
+
+### 门禁
+1. fmt ✓、clippy ✓、`yanshi-server` 与 `yanshi-render` 的库测试 ✓（全量 `cargo test --workspace` 交给 CI ✓ —— 本机磁盘与时间都紧 ✓）。
