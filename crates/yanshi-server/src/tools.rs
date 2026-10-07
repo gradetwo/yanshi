@@ -4472,6 +4472,49 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     ErrorContext::detail("polygon 需要 points（[[x,y], …]）".to_string()),
                 )
             })?;
+            // **形状必须校验** ✓（第 3 轮 ✓，收口"静默成功" ✗）：
+            // 原先这里**原样克隆 `points`** ✗ ⇒ 传 `[{x,y},…]`（字典点 ✓）会被**照收** ✓
+            // ⇒ 几何进了文档 ✓、渲染器却**提取不出坐标** ⇒ **`dirty_bbox: null`** ✗
+            //（实测：字典点 ⇒ `ok:true` ＋ **192 个瓦片被弄脏** ✗；数组点对照只有 **6** 个 ✓）
+            // ⇒ **∴ 这正是本仓头号病根"说成功了其实没按语义画"** ✓✓。
+            // **∴ 现在响亮拒绝** ✓，并在错误体里**给出正确形状** ✓（调用方照抄即可 ✓）。
+            let array = points.as_array().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "polygon 的 points 必须是**数组的数组** `[[x, y], …]` ⇒ 收到的是 {points} ⇒ \
+                         字典点 `{{'x': …, 'y': …}}` 不受支持（以前会被静默接受、然后渲染器跳过 ⇒ \
+                         画面里「没有这个形状」而 API 却报 ok:true ✗）"
+                    )),
+                )
+            })?;
+            if array.len() < 3 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "polygon 至少需要 3 个点（收到 {} 个）⇒ 形状 `[[x, y], …]`",
+                        array.len()
+                    )),
+                ));
+            }
+            for (index, point) in array.iter().enumerate() {
+                let pair = point.as_array().ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "points[{index}] 必须是 `[x, y]` 这类**两个数的数组** ⇒ 收到的是 {point}"
+                        )),
+                    )
+                })?;
+                if pair.len() < 2 || pair[0].as_f64().is_none() || pair[1].as_f64().is_none() {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "points[{index}] 必须是两个**数字** `[x, y]` ⇒ 收到的是 {point}"
+                        )),
+                    ));
+                }
+            }
             json!({"kind": "polygon", "points": points, "feather": feather})
         }
         other => {
