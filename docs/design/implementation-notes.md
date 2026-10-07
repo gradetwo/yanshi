@@ -52274,3 +52274,64 @@ basic_digital_knife_smudging/{red,grey,blue,white,black}  1/2/2/1/3  ｜最大�
 
 ### 门禁
 1. 本轮只改笔记 ✓（工作区 **0 处产品/判据改动** ✓）。
+
+## 第 298 轮：A① 落地一半 —— 参数已归位 ✓，并**挖出真正的根因**（参考图的 blob 被回收 ✗）
+
+### 一、A① 的"声明归位"（已做 ✓，比预想简单得多）
+1. **读源码发现**：`compare_with_reference` 的**实现本来就在 `analyze_region` 里** ✓
+   （`read_analyze_region`（`tools.rs:3526` ✓）内的 `:3580` ✓），
+   而**声明**却错放在 `gradient_fill` 上（`:2682` ✓）—— 那个工具**从未实现**它 ✓。
+2. ⇒ 于是 `analyze_region` **拒绝**这个参数 ✓（错误体："`analyze_region` 不接受参数 `compare_with_reference`；可用参数：`region`" ✓）
+   ⇒ `tool-reference-delta-e.mjs` 长期红 ✓。
+3. **改动**：
+   * **加**到 `analyze_region` 的 `params` ✓；
+   * 从 `gradient_fill` 的 `params` **删掉**那条**从未兑现**的声明 ✓
+     —— 删掉不是"减功能" ✓，而是**删掉一句谎报** ✓（`gradient_fill` 从来不比 ΔE ✓）。
+4. **为什么这样定** ✓：`gradient_fill` 是**会画画**的工具 ✓ ⇒ 连调三次就画三次 ✗
+   ⇒ "不改画面就问 ΔE"这条路**只有只读工具**能给 ✓ ⇒ 语义本来就在 `analyze_region` ✓（与您选的 A 一致 ✓）。
+5. 手测（`analyze_region` + `compare_with_reference:true` ✓）：
+   `comparison_with_reference = {"delta_e_max":0.0,"delta_e_mean":0.0,"ok":true,"reference":{"height":60,"width":80}}` ✓
+   ⇒ **能力已可用** ✓。
+
+### 二、顺带修掉的两处 ✗→✓
+1. **`set_reference` 原来照收任何字符串** ✗ ⇒ 存下一个**永远比不了**的参考图 ✓
+   ⇒ 失败被推迟到几十分钟后的 `analyze_region` ✓ —— 正是本仓库一直在清除的
+   "**说能用其实不能用**" ✓。⇒ 现在**两道校验**：① 是合法 `BlobHash` ✓；② **那个 blob 真的在 store 里** ✓
+   （光能解析不够 ✗ —— 语法正确但不存在的哈希同样永远比不了 ✓）。
+2. **判据的哈希提取丢了 `sha256:` 前缀** ✗（`match(/([0-9a-f]{64})/)` ✓）
+   ⇒ 现在取**完整**哈希 ✓（两道防线 ✓）。
+
+### 三、🎯🎯 真正的根因（本轮最重要的发现 ✓）
+修完上面两处后，判据变成：
+```
+没参考图 ⇒ {"ok":false,"reason":"没有参考图 ⇒ 先用 set_reference 设一张"} ✓（明确作答 ✓）
+set_reference ⇒ ok:true｜blob_hash="sha256:228bef… ✓（带前缀 ✓）
+自比 ⇒ {"delta_e_mean":0,"ok":true} ✓✓
+改画面后 ⇒ **undefined** ✗
+```
+手测那一步（`fill_region` 之后立刻 `analyze_region` ✓）：
+```
+① fill_region   ⇒ ok=True ✓
+② analyze_region ⇒ ok=False ✗
+   错误: {"error_code":"reference_not_found","context":{"blob_hash":"sha256:b9ca…",
+         "detail":"blob sha256:b9ca… 不存在"}}
+```
+1. **∴ 设参考图时那个 blob 还在** ✓（我新加的"必须在 store 里"校验**通过了** ✓）
+   ⇒ 而**`fill_region` 之后它就没了** ✗✓✓
+2. **∴ 参考图只记在偏好里** ✓ ⇒ 垃圾回收**不认识它是活的** ✗
+   ⇒ 下一次写入就把它**删掉** ✓ ⇒ **∴ 这是"设了参考图、过一会儿就没了"的数据丢失类缺陷** ✓✓
+   —— 比"参数放错位置"严重得多 ✓，而且**判据一直在报这个症状** ✓（只是被前两层掩盖 ✓）。
+3. GC 的根在 `crates/yanshi-core/src/blob.rs:261-263` ✓：
+   `log.blob_roots()` ＋ `extra_roots` ＋ `active_manifest` ✓
+   ⇒ 而 grep 全仓**没有**任何地方把 `reference.blob_hash` 登记进 `extra_roots` ✗ ✓✓。
+
+### 四、下一轮（A① 收尾 ✓）
+1. **把参考图登记为 GC 根** ✓：`set_reference` / `clear_reference` 时更新一份"钉住的哈希" ✓，
+   并在 GC 的 `extra_roots` 里带上它 ✓（与**缩略图 / 导出**等其它"只被偏好或旁路引用的 blob"一并核对 ✓
+   —— 它们**很可能有同一个病** ✗，值得一次查完 ✓）。
+2. **能红** ✓：判据 `tool-reference-delta-e.mjs` **从红转绿** ✓ 就是证明 ✓；
+   **变异检验**：把"登记为根"去掉 ⇒ 判据必须**重新变红** ✓（而且是同一个 `reference_not_found` ✓）。
+3. 顺手：`set_reference` 的两道校验也要**有判据** ✓（变异：去掉校验 ⇒ 用非法哈希设参考图必须**当场被拒** ✓）。
+
+### 门禁
+1. `cargo build --release --bin yanshi-serve` ✓（无 error ✓）；`node --check` 判据 ✓。

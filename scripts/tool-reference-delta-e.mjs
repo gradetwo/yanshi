@@ -45,7 +45,11 @@ for (let i = 0; i < 4; i++) {
 }
 const rendered = await call(doc, token, "render_region", { region, include_image: true, max_px: 1_000_000 });
 const blobUrl = JSON.stringify(rendered || "");
-const hashMatch = blobUrl.match(/([0-9a-f]{64})/);
+// **必须连 `sha256:` 前缀一起取** ✓（第 298 轮 ✓）：只取 64 位十六进制 ✗ ⇒
+  // `set_reference` 会把一个**非法的**哈希照收下来 ✗ ⇒ 真正的失败推迟到
+  // `analyze_region`（报"不是合法哈希" ✗）⇒ 判据只看到 `comparison_with_reference` 缺失 ✓。
+  // （产品的 `set_reference` 现在也会**当场拒绝**这种哈希 ✓ —— 两道防线 ✓。）
+  const hashMatch = blobUrl.match(/(sha256:[0-9a-f]{64})/) || blobUrl.match(/([0-9a-f]{64})/);
 console.log("  render_region 的 blob=" + (hashMatch ? hashMatch[1].slice(0, 12) + "…" : "（没找到 64 位哈希）"));
 if (!hashMatch) failures.push("从 render_region 拿不到 blob 哈希 ⇒ 判据无法继续（先看它的返回形状）");
 else {

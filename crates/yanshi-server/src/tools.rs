@@ -2679,7 +2679,6 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("center", Object, false, "radial 的中心 {x,y}（缺省取区域中心）"),
             param!("radius", Number, false, "radial 的半径（缺省取区域对角线的一半）"),
             param!("region", Object, false, "只填这块 {x,y,w,h}；不给就整层（按画布尺寸）"),
-            param!("compare_with_reference", Boolean, false, "true = 与文档的参考图逐像素比 ΔE（CIE76）；缺参考图 / 尺寸不一致会**明确作答**,不会静默给 0"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -2729,6 +2728,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[
             param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]（同 render_region）"),
+            // **`compare_with_reference` 归位到只读工具** ✓（A① ✓，第 298 轮 ✓）：
+            // 实现**本来就在这里**（`read_analyze_region` 内 ✓），而**声明**原先错放在
+            // `gradient_fill` 上 ✗（那个工具**从未实现**它 ✓）⇒ 于是 `analyze_region` 会**拒绝**
+            // 这个参数 ✓（错误体："`analyze_region` 不接受参数 `compare_with_reference`；可用参数：`region`" ✓）
+            // ⇒ `tool-reference-delta-e.mjs` 长期红 ✓。
+            // **∴ 本轮把声明挪到实现所在处** ✓，并把 `gradient_fill` 上那条**从未兑现**的声明删掉 ✓
+            //（删掉不是"减功能" ✓，而是**删掉一句谎报** ✓ —— `gradient_fill` 从来不比 ΔE ✓）。
+            // **为什么不挪实现** ✗：`gradient_fill` 是**会画画**的工具 ✓ ⇒ 连调三次就画三次 ✗
+            // ⇒ "不改画面就问 ΔE"这条路只有**只读工具**能给 ✓ ⇒ 语义本来就在 `analyze_region` ✓。
+            param!("compare_with_reference", Boolean, false, "true = 与文档的参考图逐像素比 ΔE（CIE76）；缺参考图 / 尺寸不一致会**明确作答**，不会静默给 0"),
+
         ],
     },
     ToolSpec {
@@ -6861,6 +6871,32 @@ fn read_get_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 /// ⇒ "参考图不许改文档""清掉必须可逆"两条**结构性成立** ✓（不是靠"我记得别写"✗，而是**根本没有写的路** ✓）。
 fn write_set_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let blob_hash = require_str(args, "blob_hash")?;
+    // **先校验，再记下来** ✓（A① 配套修复 ✓，第 298 轮 ✓）：
+    // 原先它**照收任何字符串** ✗ ⇒ 存下一个**永远比不了**的参考图 ✓
+    // ⇒ `analyze_region` 到用时才因"不是合法哈希"**报错** ✗
+    // ⇒ 调用方在**设参考图**那一步拿到 `ok:true` ✓，在**几十分钟后**才失败 ✗
+    // —— 那正是本仓库一直在清除的"**说能用其实不能用**" ✓（同一个坑：`set_reference` 说成功 ✓、
+    //   而它记下的东西**根本用不了** ✗）。
+    // **∴ 两个检查**：① 是合法 `BlobHash` ✓；② **那个 blob 真的在 store 里** ✓
+    //（光能解析还不够 ✗ —— 一个语法正确但不存在的哈希同样会让后面的比较永远失败 ✗）。
+    let parsed: yanshi_core::BlobHash = blob_hash.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "blob_hash 必须是 `sha256:<64 位十六进制>`（收到 `{blob_hash}`）⇒ \
+                 它会被逐字存进偏好，稍后 `analyze_region` 的 `compare_with_reference` 要用它解码参考图"
+            )),
+        )
+    })?;
+    if ctx.workspace.store().get(&parsed).is_err() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "blob_hash `{blob_hash}` 是合法格式，但**这个 blob 不在存储里** ⇒ \
+                 参考图存下来也永远比不了 ⇒ 先用 `render_region` / `export_png` 产出它"
+            )),
+        ));
+    }
     let opacity = args
         .get("opacity")
         .and_then(Value::as_f64)
