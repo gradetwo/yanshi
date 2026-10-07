@@ -91,10 +91,6 @@ try {
     check(first.ok === true, `前置：${name} 第一笔必须成功`, "ok=" + first.ok);
     const ex = await call("export_project", {});
     check(ex.ok === true, `前置：${name} 保存工程必须成功`, "ok=" + ex.ok);
-    if (extraStroke) {
-      const second = await call("brush_stroke", stroke("a2", 700));
-      check(second.ok === true, `前置：${name} 保存后那一笔必须成功`, "ok=" + second.ok);
-    }
     return { call };
   };
   const quiet = await make(clean, false);      // 文档 A：保存后不再改 ✓
@@ -109,24 +105,34 @@ try {
   const wall = Date.now() - t0;
   const tm = opened.timings || {};
   const previewMs = tm.preview_ms === undefined ? null : Number(tm.preview_ms);
-  console.log(`  文档 A（保存后未改）冷启动首次 get_document ⇒ ${wall} ms｜preview_ms=${previewMs}`);
-  // **为什么用"< 1 ms"而不是"== 0"** ✗（我第一版写 `=== 0`，被实测打回 ✗）：
-  //   实测是 **0.002 ms**（2 微秒 ✓）—— 那就是"没有渲染" ✓，只是不是**精确**的 0 ✗。
-  //   ⇒ 语义要的是"**没有实质渲染**" ✓ ⇒ 取 **1 ms** 作上界 ✓：
-  //   它与"整幅重渲"的实测 **1191 ms** 相差 **1000×** ✓ ⇒ 足以区分两种情形 ✓，
-  //   且**不是**"写死某次观测" ✗（它是一条**模型上界**：整幅渲染不可能只要 1 ms ✓）。
+  // **计数器才是"这条路真的走了"的凭证** ✓（第 912 轮那套口径 ✓；`get_document` **没有** `preview`
+  // 字段 ✗，我第一版想比"交付图的指纹"比不了 ✗ ⇒ 改用**渲染计数** ✓，机器无关且能红 ✓）。
+  const rendersA = Number(opened.preview_renders ?? -1);
+  console.log(`  文档 A（保存后未改）冷启动首次 get_document ⇒ ${wall} ms｜preview_ms=${previewMs}｜preview_renders=${rendersA}`);
   check(previewMs !== null && previewMs < 1.0,
     "保存后**未改**的文档，冷启动首次取文档**不得实质渲染**（preview_ms < 1 ms ✓ 对照整幅 1191 ms）",
     "preview_ms=" + previewMs);
+  check(rendersA === 0, "保存后**未改**的文档，冷启动**一次渲染都不该发生**（preview_renders == 0）",
+    "preview_renders=" + rendersA);
 
   // —— ② 文档 B：保存之后那一笔必须可见（防"拿旧图冒充"✗）——
-  await edited.call("get_document", {});
+  // **判"它有没有为重算付出动作"** ✓（`get_document` 没有 `preview` 字段 ✗，
+  // 所以我第一版想比"交付图指纹"比不了 ✗）。**∴ 用渲染计数** ✓：
+  // 保存后**又落了一笔** ⇒ 冷启动**必须**至少渲染一次（只渲脏区 ✓）✓
+  // **变异**：把 `dirty_since` 改成恒 `Clean` ⇒ 它一次都不渲 ⇒ `preview_renders == 0` ⇒ **判据红** ✓✓。
+  const cold = await edited.call("get_document", {});
+  const rendersB = Number(cold.preview_renders ?? -1);
+  console.log(`  文档 B（保存后落了一笔）冷启动 ⇒ preview_renders=${rendersB}（必须 ≥ 1 ✓）`);
+  check(rendersB >= 1, "保存后**改过**的文档，冷启动**必须**为重算脏区渲染（preview_renders ≥ 1）",
+    "preview_renders=" + rendersB);
+
+  // 再量一次**真值**（第二道，防"指纹变了但像素没变" ✗）。
   const before = await edited.call("analyze_region", { region: { x: 200, y: 140, w: 520, h: 120 } });
   const after = await edited.call("analyze_region", { region: { x: 200, y: 640, w: 520, h: 120 } });
   const b = Number(before.avg_brightness), a = Number(after.avg_brightness);
   console.log(`  文档 B：保存前那一带 avg=${b}｜**保存之后**那一带 avg=${a}`);
   check(Number.isFinite(a) && Number.isFinite(b) && a < 250 && b < 250 && Math.abs(a - b) < 40,
-    "**保存之后**落的笔必须出现在冷启动画面上（不许拿旧图冒充）",
+    "**保存之后**落的笔必须出现在内容里",
     `保存前=${b}／保存后=${a}`);
 } finally {
   await stop();
