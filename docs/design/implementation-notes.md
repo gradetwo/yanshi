@@ -54317,3 +54317,33 @@ for layer in state.alive_layers() {                       // **自下而上** �
 
 ### 门禁
 1. 本轮只做测量与记录 ✓（工作区 **0 处产品改动** ✓）。
+
+## 第 351 轮：⚠️ **更正第 350 轮** ✗ —— `hits` 早就有，缺的是"哪份统计被暴露" ✓
+
+### 一、代码事实（`crates/yanshi-render/src/render.rs` ✓）
+```
+:128   hits: usize                     ← BitmapCacheInner 里**有** ✓
+:155   pub hits: usize                 ← 公开统计结构里**有** ✓
+:184   inner.hits += 1                 ← **查表命中时累加** ✓（:183 是 entries.get ✓）
+:211   hits: inner.hits                ← **已经汇总进 stats** ✓
+:733   if let Some(tile) = self.cache.get(key)   ← 另有**tile 缓存**（另一个结构 ✓）
+```
+1. **∴ 我第 350 轮说"统计里没有 `hits`"是错的** ✗✓ ——
+   **`BitmapCache` 不仅**有** hits，而且**已经放进它的 stats** ✓**。
+2. **∴ 真正的问题缩小为** ✓：`/health` 的 `cache/*`（`tiles / used_bytes / misses / evictions /
+   pixel_bytes_estimate` ✓）**是哪一份**缓存的统计 ✓，以及**那份**是否暴露 `hits` ✗。
+   —— 我实测**只看到 `misses`** ✗，而 `BitmapCacheStats` 里明明两者都有 ✓
+   ⇒ **∴ 很可能 `/health` 报的是另一个缓存（tile 缓存 ✓，`self.cache` ✓）** ✓，而**那个**缺 hits ✗。
+3. **∴ 教训（本会话同类错的第 N 次 ✗）**：我从**输出**（`/health` 的字段 ✓）**反推代码** ✗，
+   而没有**先读代码** ✓ ⇒ 得出了错的"缺计数器"结论 ✗。
+   ⇒ **∴ 顺序应是：先读代码确认"有没有" ✓，再下"缺什么"的结论** ✓。
+
+### 二、∴ 下一轮（精确定位 ✓，一步即可 ✓）
+1. 读 `crates/yanshi-render/src/tile.rs` 的 **tile 缓存统计结构** ✓（或 `self.cache` 的类型 ✓）
+   ⇒ 看它**有没有 hits** ✗。
+2. 再看**服务端** `/health` 的 `cache` 字段是从**哪个** `stats()` 取的 ✓。
+3. **∴ 若 tile 缓存确实缺 hits** ✓ ⇒ **加一个** ✓（纯计数、不参与决策 ✓ ⇒ **零行为风险** ✓）。
+4. 若它其实也有 ✓ ⇒ **∴ 那这条"缺口"不存在** ✗ ⇒ 撤回 ✓，转去查**别的**（例如"命中率低不低"✓）。
+
+### 门禁
+1. 本轮只做代码阅读与更正 ✓（工作区 **0 处产品改动** ✓）。
