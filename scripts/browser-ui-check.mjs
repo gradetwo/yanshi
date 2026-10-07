@@ -539,10 +539,32 @@ const invertToken = await fetch(`${origin}/api/documents`, {
   body: JSON.stringify({ doc_id: invertDoc, width: 900, height: 640 }),
 }).then((r) => r.json()).then((v) => v.token);
 await send("Page.navigate", { url: `${origin}/?doc=${invertDoc}&token=${invertToken}` });
-// 等查看器就绪（与重载段同一手法：轮询内核头）。
-for (let i = 0; i < 80; i++) {
-  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
-  await new Promise((r) => setTimeout(r, 250));
+// **等图层面板就绪**（第 229 轮）：空文档可能**没有** layer_default ✓
+// ⇒ 原先等的是 kernelHead（空文档可能一直是 0 ✓）⇒ 等了 20 秒仍然没有可用图层 ✓
+// ⇒ 画笔落在不存在的层上 ⇒ 画不上 ⇒ 实测两次都报"前置不成立" ✓。
+// 所以这里等**可选项出现**；若没有，就先建一个确定的层 ✓。
+const readyLayer = await evaluate(`(async () => {
+  const has = () => {
+    const select = document.getElementById("layer");
+    return select && select.options.length > 0;
+  };
+  for (let i = 0; i < 60 && !has(); i++) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (has()) return "present";
+  // 没有任何图层 ⇒ 显式建一个。
+  try {
+    await window.yanshiCallTool("create_layer", { layer_id: "layer_default", name: "default" });
+  } catch (error) {
+    return "create-failed:" + String(error).slice(0, 80);
+  }
+  for (let i = 0; i < 60 && !has(); i++) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return has() ? "created" : "still-missing";
+})()`);
+if (readyLayer !== "present" && readyLayer !== "created") {
+  problems.push(`invert 用例的前置条件不成立：新文档上没有可用图层（${readyLayer}）`);
 }
 
 // **先建立本段自己的前置内容**（第 225 轮）：invert 必须**有可反转的内容**才有意义 ✓，
