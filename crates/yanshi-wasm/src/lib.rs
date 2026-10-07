@@ -284,6 +284,19 @@ impl WasmKernel {
     }
 }
 
+/// **原生对照入口**（第 245 轮）：把 `brush::paint` 暴露给**本机测试**。
+///
+/// **为什么需要它**：`paint_brush` 是 wasm-bindgen 门面上的**方法**，而本机测试
+/// 造不出那个门面（它要 JS 环境）⇒ 于是"wasm 与 x86_64 是否逐字节一致"这个
+/// 唯一能判定笔刷差异**是否可修**的问题**无法实测**。
+///
+/// **它只转发**：不改变任何行为，不参与浏览器路径。
+/// **代价**：公开面多一个函数（文档与稳定性成本）。**收益**：把推断变成实测。
+#[doc(hidden)]
+pub fn paint_brush_bytes_for_test(request_json: &str) -> Option<Vec<u8>> {
+    crate::brush::paint(request_json).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,17 +447,4 @@ mod tests {
         assert!(evicted <= 4);
         let _ = kernel.version();
     }
-}
-
-/// **原生对照入口**（第 245 轮）：把 `brush::paint` 暴露给**本机测试**。
-///
-/// **为什么需要它**：`paint_brush` 是 wasm-bindgen 门面上的**方法**，而本机测试
-/// 造不出那个门面（它要 JS 环境）⇒ 于是"wasm 与 x86_64 是否逐字节一致"这个
-/// 唯一能判定笔刷差异**是否可修**的问题**无法实测**。
-///
-/// **它只转发**：不改变任何行为，不参与浏览器路径。
-/// **代价**：公开面多一个函数（文档与稳定性成本）。**收益**：把推断变成实测。
-#[doc(hidden)]
-pub fn paint_brush_bytes_for_test(request_json: &str) -> Option<Vec<u8>> {
-    crate::brush::paint(request_json).ok()
 }
