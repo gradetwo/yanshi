@@ -54456,3 +54456,37 @@ json!({ …, "misses": misses, "hits": hits, … })
 ### 门禁
 1. `node --check` ✓、判据 **EXIT=0** ✓、覆盖率守卫 ✓（106 个 `.mjs`／未接线 0 ✓）；
    `BitmapCache` 的变异**已还原** ✓（工作区只剩新判据 1 处 ✓）、服务端已按原实现重建 ✓。
+
+## 第 355 轮：🎯 查明计数来源 ＋ 两次变异**都太窄** ✗（正确对象＝`TileCache` 的 `hits` 累加点 ✓）
+
+### 一、`/health` 的 `hits/misses/tiles` 就是 **`TileCacheStats`** ✓（代码实证 ✓）
+```rust
+// crates/yanshi-server/src/document.rs:586
+pub fn cache_stats(&self) -> yanshi_render::TileCacheStats {
+    self.renderer.cache().stats()          // ← **tile 缓存** ✓✓（与 `tiles=12` 完全一致 ✓）
+}
+```
+（我第 26 轮怀疑的"`document.rs:999` → `bitmap_cache_stats()`" ✗ **是另一条路** ✓：
+`Document::bitmap_cache_stats()` 存在 ✓ 但 **`cache_stats()` 走的是 tile** ✓ —— 我之前把两者看混了 ✗。）
+
+### 二、⚠️ 两次变异**都没打中被判的那一处** ✗（诚实记录 ✓）
+| 轮次 | 我变异了什么 | 结果 |
+|---|---|---|
+| 第 26 轮 | **位图缓存**的查表（`render.rs:183` ✗） | 判据**仍绿** ✗ |
+| 第 27 轮 | **tile 缓存的**一处**查表**（`render_tile` 里的 `self.cache.get(key)` ✗） | 判据**仍绿** ✗ |
+**∴ 原因** ✗：`TileCache::get` **不止被那一处调用** ✓（合成取瓦片那条路也调 ✓）
+⇒ 去掉**一处** ⇒ 命中数照样涨 ✓。
+**∴ 正确的变异** ✓：**让 `TileCache` 里 `hits` 的累加本身不发生** ✓
+（即判据**读的那个计数器** ✗ ⇒ 这才叫"打进被判的那一处" ✓）
+⇒ 那时 `/health` 的 `hits` 恒为 0 ⇒ 判据第 ② 条（"hits 必须增长"）**必然红** ✓✓。
+
+### 三、∴ 下一轮（一步即可 ✓）
+1. 在 `crates/yanshi-render/src/tile.rs` 的 `TileCache::get` 里，把 `hits += 1` 那一行**注释掉** ✗
+   （即"计数器不再累加" ✓ —— 这正是判据所读之处 ✓）⇒ 跑判据 ⇒ 应 **EXIT=1** ✓；
+2. 还原 ✓；
+3. **∴ 这也是本判据"能红"的证明** ✓ —— 在此之前，它只能算**观测护栏** ✓，**不能**算"已验证的判据" ✗（如实 ✓）。
+
+### 四、本轮的门禁
+1. 变异**已还原** ✓（`git status` **0 处改动** ✓ —— 连新判据都已在上轮提交 ✓）；
+2. 构建目录换成 `/tmp/yt4b` ✓（上轮清理删了 `/tmp/yt4` ✓）；
+3. `fmt` ✓（未改产品代码 ✓）。
