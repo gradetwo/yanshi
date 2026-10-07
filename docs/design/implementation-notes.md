@@ -49387,3 +49387,33 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. 本轮只读日志与记录。产品代码没改。
+
+## 第 220 轮：effect 段从不选层，所以它作用于 UI 的当前层
+
+### 代码事实（scripts/browser-ui-check.mjs:529-550）
+1. 指纹取样：读 board 的 getImageData，算 opaque 与 sum。
+2. effect 段在一个 evaluate 里做四件事：
+   - kind.value = "adjustment"，派发 change
+   - name.value = "invert"
+   - effectParams.value = "{}"
+   - effectApply.click()
+3. 然后轮询 30 次，等 opaque === total 且 sum 变了。
+4. 全程**没有**选择图层。它用 UI 下拉里**当前选中**的层。
+
+### 所以
+1. 失败那次的列表是 invert {} @layer_01M4A1X7ZDAJYRAM3MZ4H6K8AC。
+   那是当时的当前层。
+2. 若之前有别的段落改变了当前层，invert 就落到别的层 ⇒ 画布不变。
+3. 判据在 :637 附近另有一段"等 sum 变且层数增加"的轮询
+   ⇒ 说明效果有时会新建图层或改变层结构。
+4. 所以 intermittency 来自 UI 的层状态，而不是画布等待时机。
+
+### 下一步（能红的判据）
+1. 在 effect 段开始时，先显式选中一个已知的层（例如判据自己创建的层），
+   并断言"当前层 id 就是它"。
+2. 再做 invert，并断言 sum 变了。
+3. 若显式选中后就不再间歇失败 ⇒ 根因就是"作用于当前层"这一条。
+4. 这一步同时把判据从"依赖 UI 隐含状态"改成"显式声明前提"。
+
+### 门禁
+1. 本轮只读代码与记录。产品代码没改。
