@@ -111,7 +111,24 @@ for (const brush of names) {
     `    门面请求：region=${JSON.stringify(region)} size=${JSON.stringify(size)}` +
     ` myb_len=${myb.length} points=${JSON.stringify(pointList)}`,
   );
-  const facadeBytes = facade({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region });
+  // **另建一个只用于笔刷比对的内核实例**（第 260 轮）：
+  // 上面那个 kernel 在前序段落里已被用过（预览/渲染等）⇒ 文档状态可能已变
+  // ⇒ 笔刷可能落在**空的当前图层**上 ⇒ 门面返回**整块全透明**
+  //（实测：服务端有墨 #115，门面 #-1 ✓）。
+  const brushKernel = new module_.WasmKernel("kernel-parity-brush", 256, 400, 300, 64 * 1024 * 1024);
+  const facadeFresh = (request) => {
+    const out = brushKernel.paint_brush(JSON.stringify(request));
+    return out ? Uint8Array.from(out) : null;
+  };
+  const freshBytes = facadeFresh({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region });
+  {
+    const firstInk = (buf) => {
+      for (let i = 0; i + 3 < buf.length; i += 4) if (buf[i + 3] > 0) return i / 4;
+      return -1;
+    };
+    console.log(`    新实例门面：len=${freshBytes ? freshBytes.length : -1} 有墨首像素 #${freshBytes ? firstInk(freshBytes) : "-"}`);
+  }
+  const facadeBytes = facadeFresh({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region });
   if (!facadeBytes) {
     console.log(`  ${brush.padEnd(14)} 门面返回 0 ⇒ 画不出来 ✗`);
     allEqual = false;
