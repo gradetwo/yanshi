@@ -184,6 +184,12 @@ impl PreviewDirty {
 }
 
 /// 把 dirty 规划结果折算成预览脏区（与提交路径此前的口径**逐字一致** ✓）。
+/// 预览落后超过这个步数时，[`Document::dirty_since`] 不再逐原子扫描（第 191 轮）。
+///
+/// 判据：`dirty_since_returns_unknown_when_preview_is_far_behind` ——
+/// 删掉用它的那个 `if` ⇒ 该测试红。
+pub(crate) const DIRTY_SCAN_LIMIT: u64 = 64;
+
 fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
     if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
     {
@@ -1311,7 +1317,6 @@ impl Document {
         // ⇒ 扫描成本 ≲ 一次全幅渲染 ⇒ 取 64 步（约 1.2 s ✓）。
         // **代价** ✗：落后超过 64 原子时预览整幅重画 ✗ —— 但预览是 256² ✓，
         // 且 `Unknown` 本来就是"整幅"的合法结果 ✓ ⇒ **不降精度** ✓，只多画一张小图 ✓。
-        const DIRTY_SCAN_LIMIT: u64 = 64;
         if head.saturating_sub(from) > DIRTY_SCAN_LIMIT {
             return PreviewDirty::Unknown;
         }
@@ -1802,6 +1807,45 @@ mod tests {
                 }),
             ),
         ]
+    }
+
+    /// 预览落后超过上限 ⇒ `dirty_since` 必须直接返回 `Unknown`（第 191 轮）。
+    ///
+    /// 判据打在被判条件本身：删掉 `dirty_since` 里用 `DIRTY_SCAN_LIMIT` 的那个 `if`
+    /// ⇒ 这个测试红（它会走满扫描，返回的不是 `Unknown`）。
+    /// 后半段是反例方向：落后为 0 ⇒ 必须是 `Clean`，防止判据退化成"永远 Unknown"。
+    #[test]
+    fn dirty_since_returns_unknown_when_preview_is_far_behind() {
+        let mut document = document();
+        // 先提交辅助函数给的两颗原子。它们里面有 CreateLayer，图层必须先存在。
+        for atom in drawing_atoms() {
+            document.commit(atom).expect("建图层与首笔应当成功");
+        }
+        // 再提交足够多的唯一笔画，使头超出上限。每颗 payload 都不同，避免被去重。
+        for i in 0..(DIRTY_SCAN_LIMIT + 8) {
+            let atom = Atom::new(
+                AtomKind::DrawStroke,
+                "human:1",
+                "session:a",
+                json!({
+                    "object_id": format!("obj_extra_{i}"),
+                    "layer_id": "layer_1",
+                    "data": {"points": [[8.0, 8.0], [40.0, 24.0]], "size": 5.0,
+                             "color": [0.0, 0.0, 0.0, 1.0]}
+                }),
+            );
+            document.commit(atom).expect("后续笔画应当成功");
+        }
+        let head = document.log.head_seq();
+        assert!(head > DIRTY_SCAN_LIMIT, "样本要够大：head={head}");
+        assert!(
+            matches!(document.dirty_since(0), PreviewDirty::Unknown),
+            "落后 {head} 步、超过上限 {DIRTY_SCAN_LIMIT} ⇒ 必须是 Unknown（整幅）"
+        );
+        assert!(
+            matches!(document.dirty_since(head), PreviewDirty::Clean),
+            "落后为 0 ⇒ 必须是 Clean"
+        );
     }
 
     #[test]
