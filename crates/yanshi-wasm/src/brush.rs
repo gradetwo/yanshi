@@ -68,6 +68,22 @@ pub(crate) struct PaintRequest {
     hardness: Option<f64>,
     /// 要**读回**的文档区域 ✓（输出就是这块的 `w*h*4` 字节 ✓）。
     region: Region,
+    /// **底图**（第 209 轮）：目标区域现有的像素 ✓，行优先 RGBA8 ✓。
+    ///
+    /// **为什么必须有** ✗：涂抹类（`smudge=1`）与混合类笔刷**靠抹开画布上已有的颜色** ✓
+    /// ⇒ 服务端会先 `render_region_raw` 取底图再喂进 `surface` ✓；门面原先只建**空** surface ✗
+    /// ⇒ 这类笔刷**永远**没东西可抹 ✓ ⇒ 判据实测：`smudge` 被服务端直接拒绝
+    /// （"这一笔没落下任何像素"✓），而有底图时又是两边输入不等价 ✓（实测 386/796 条"差异" ✓）。
+    /// **喂进去的方式与服务端逐字一致** ✓：按 64×64 tile 写，`<< 7` 把 0..255 映回 fix15 ✓。
+    base: Option<Base>,
+}
+
+/// 门面要喂的**底图** ✓（行优先 RGBA8 ✓，长度必须是 `width*height*4` ✓）。
+#[derive(Deserialize)]
+pub(crate) struct Base {
+    width: i32,
+    height: i32,
+    rgba: Vec<u8>,
 }
 
 /// **颜色 → HSV** ✓（与服务端 `brush_color_to_hsv` 同一条数学 ✓）。
@@ -244,6 +260,52 @@ pub(crate) fn paint(request_json: &str) -> Result<Vec<u8>, String> {
     // 而 `100%_Opaque`（不吃随机）**0 个不同字节** ✓ —— 这个对照正好把根因钉死 ✓。
     let mut state = hokusai::BrushState::default();
     let mut surface = hokusai::tile_mem::MemSurface::new();
+    // **喂底图**（与服务端 `tools.rs` 同一段循环与同一套换算 ✓）：
+    // 尺寸不符就**不喂** ✗（宁可"这次没底图"，也不要**错位**地抹 ✓）。
+    if let Some(base) = request.base.as_ref() {
+        let region = &request.region;
+        let fits = base.width == region.w
+            && base.height == region.h
+            && base.rgba.len() >= (region.w as usize) * (region.h as usize) * 4;
+        if fits {
+            use hokusai::TiledSurface;
+            let x0 = region.x;
+            let y0 = region.y;
+            let x1 = region.x + region.w;
+            let y1 = region.y + region.h;
+            for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
+                for tile_x in x0.div_euclid(64)..=x1.div_euclid(64) {
+                    let tile = surface.tile_request_start(tile_x, tile_y);
+                    for row in 0..64i32 {
+                        for column in 0..64i32 {
+                            let document_x = tile_x * 64 + column;
+                            let document_y = tile_y * 64 + row;
+                            if document_x < x0
+                                || document_y < y0
+                                || document_x >= x1
+                                || document_y >= y1
+                            {
+                                continue;
+                            }
+                            let at = ((document_y - y0) as usize * region.w as usize
+                                + (document_x - x0) as usize)
+                                * 4;
+                            if at + 3 >= base.rgba.len() {
+                                continue;
+                            }
+                            tile[row as usize][column as usize] = [
+                                u16::from(base.rgba[at]) << 7,
+                                u16::from(base.rgba[at + 1]) << 7,
+                                u16::from(base.rgba[at + 2]) << 7,
+                                u16::from(base.rgba[at + 3]) << 7,
+                            ];
+                        }
+                    }
+                    surface.tile_request_end(tile_x, tile_y);
+                }
+            }
+        }
+    }
     stamp(&brush, &mut state, &mut surface, &request.points);
     Ok(read_back(&surface, &request.region))
 }
