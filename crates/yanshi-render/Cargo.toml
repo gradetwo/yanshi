@@ -11,6 +11,13 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# **笔刷引擎**（第 241 轮）：为"两端同源"做准备 —— 喂底图的那段 tile 循环
+# 现在有**两份**（服务端 tools.rs 与内核 brush.rs）⇒ 本项目记过的头号病 ✓。
+# 收拢到 yanshi-render 需要它依赖 hokusai。
+# **收益**：一处真相；两端喂底图语义必然一致。
+# **代价**：yanshi-render 多一个依赖。但 yanshi-wasm 与 yanshi-server 都已依赖它
+#（同一个 0.3，同一个 lock）⇒ **零新增包** ✓；且它已在 wasm32 上可用 ✓。
+hokusai = "0.3"
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
