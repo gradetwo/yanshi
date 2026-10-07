@@ -2420,7 +2420,13 @@ impl Workspace {
                     ErrorContext::detail(format!("日志里有一个不合法的 blob 引用：{hash_text}")),
                 )
             })?;
-            let bytes = store.get(&hash)?;
+            // **先判定，再读字节** ✓（第 20 轮 ✓）：这一行原先在**判定之前** ✗
+            // ⇒ 即使这张位图随后被**省掉**（`omitted` ✓），也先把**整张位图的字节**
+            // 读进内存 ✗（4K 画布上可能是**数百 MB** ✗）。
+            // 而**判定与重放都不需要这些字节** ✓：`brush_source_is_replayable` 只看日志 ✓、
+            // `replay_brush_bitmap` 也是从**日志里的配方**重跑 ✓ ⇒ **∴ 挪到真要打包时读** ✓。
+            // **代价两面** ✗：收益＝省掉"每张被省掉的位图一次全量读" ✓（内存与 I/O ✓）；
+            // 代价≈0 ✓ —— **输出字节一个都不变** ✓（读的时机变了，读的内容与用法没变 ✓）。
             // **能不能不装** ✗ ⇒ **真的重跑一遍再说** ✓（不是看名字猜 ✓）。
             //
             // 条件：引用它的**每一条**净荷都带可重放配方 ✓（`brush_source_is_replayable` ✓，
@@ -2450,6 +2456,8 @@ impl Workspace {
                     kept_no_recipe += 1;
                 }
             }
+            // 到这里才真的需要字节 ✓（下面要把它按十六进制路径放进 tar ✓）。
+            let bytes = store.get(&hash)?;
             let hex = hash.hex();
             let packed = yanshi_render::png::zlib_compress_best(&bytes);
             plain_bytes += bytes.len();
