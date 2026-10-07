@@ -48651,3 +48651,31 @@ node scripts/kernel-brush-parity.mjs <server-base> <doc> <token> crates/yanshi-w
 
 ### 门禁
 1. 本轮只运行判据与更新说明。产品代码没改。
+
+## 第 196 轮：笔刷分岔点的精确定位
+
+### 服务端怎么排 dab
+1. render.rs:1459 调 crate::geometry::dashed_line(&samples, brush.spacing_pixels(), …)。
+2. 所以服务端沿采样点按固定间距排 dab。间距来自 brush.spacing_pixels()。
+3. 排好后交给 stamp_samples(buffer, brush, &stamps)。
+
+### 内核怎么排 dab
+1. crates/yanshi-wasm/src/brush.rs 用 hokusai::Brush 与 hokusai::BrushState。
+2. 它调 configure 把 opacity/hardness/color/radius 灌进笔刷设置。
+3. dab 的推进由 hokusai 自己的笔画引擎负责。
+4. 所以两端的 dab 位置算法不同。
+
+### 结论
+1. 分岔点有两处：dab 位置算法，以及每枚 dab 的形状数学。
+2. 位置：服务端用 dashed_line 的等间距；内核用 hokusai 的推进。
+3. 形状：服务端用 stamp_samples_with_appearance；内核用 hokusai 的 dab。
+4. 所以"同源数学"要统一这两处。任一不同，输出就不逐字节相同。
+
+### 方向（三选一，都要写明两面）
+1. 内核改为消费 dashed_line 的 dab 序列。收益：与服务端同一实现。代价：放弃 hokusai 的笔画引擎。
+2. 服务端改为消费 hokusai 的 dab 序列。收益：与浏览器内核同一实现。代价：服务端要引入 hokusai。
+3. 抽出共享 crate，两端都调它。收益：一处真相。代价：改动面最大。
+4. 三选一都必须保持逐字节一致，不能用降精度换。
+
+### 门禁
+1. 本轮只读代码与记录。产品代码没改。
