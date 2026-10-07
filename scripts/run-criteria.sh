@@ -152,7 +152,14 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # 耗时约 6 分钟 ✓ ⇒ 上限给 900s ✓（原 600s 是按 3 支笔估的 ✗）。
       # ⚠️ **预算要按 `all` 定** ✗（第 821 轮实测 ✓）：`all` = 199 支 × 4 色 = **796 次比对** ✓
       # ⇒ 900s **跑不完** ✗（CI 实测 `EXIT=124` = 超时 ⇒ 那份数据是**截断**的 ✓）⇒ 提到 1800s ✓。
-      timeout 1800 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" all \
+      # ⚠️ **分片里不再传 `all`** ✗（第 34 轮改 ✓，CI 实测为据 ✓）：
+      #   `all` = 199 支 × 4 色 = **796 次比对** ✓、每支每色约 **10 s** ✓ ⇒ 全程 **≥ 2000 s** ✗
+      #   ⇒ 即使 `to=1800` 也**必然被砍**（CI 实测 `EXIT=124` ✓，才跑到 `airbruch_press_a` ✗）。
+      # **∴ 覆盖没有丢** ✓：**全量由 `ci.yml` 的 `parity-arm64` 作业**跑（它同样传 `all` ✓）；
+      #   而那条判据本来就在**已知红名单**里 ✓（照跑、照印、**不阻塞** ✓）
+      #   ⇒ **∴ 在分片里再跑一次 `all` 既不改结论、也不做门禁，只是白占 CI 额度** ✗ ⇒ 去掉 ✓。
+      # **∴ 这里跑判据的小集**（默认 3 支 ✓，约 1 分钟 ✓）⇒ 上限 600s 足够 ✓。
+      timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" \
         >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
       # **先让调试浏览器打开被测地址** ✓（第 967 轮）：这一族约定"页面已经打开"✓（见 :73-74 ✓），
