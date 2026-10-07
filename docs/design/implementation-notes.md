@@ -55343,3 +55343,50 @@ impl BlobStore for FsBlobStore {
 
 ### 四、门禁
 1. 本轮只加笔记 ✓（`md` ⇒ 不触发 CI ✓；CI 现为**全绿** ✓ ⇒ 最后一次**代码**推送前一切正常 ✓）。
+
+## 第 382 轮（轮次已重置 ✓，目标重新激活 ✓）：✅ 导出 `put_cache` 改动的**判据先行**已完成（含变异 ✓）
+
+### 一、契约（读码所得 ✓，`crates/yanshi-core/src/blob.rs` ✓）
+```rust
+fn put_cache(&self, bytes: &[u8]) -> Result<BlobHash> { self.put(bytes) }   // trait 默认实现＝put ✓
+// FsBlobStore 覆盖它 ⇒ put_inner(bytes, /*sync=*/false) ✓（即**跳过 fsync** ✓）
+/// ⚠️ **契约**：存进来的东西**崩溃后可能不在** ✗ ⇒ 调用方**必须能重建它** ✗
+///    ⇒ **不得**用它存**权威数据**（原子日志 ✗／**位图 ✓**）✓
+```
+⇒ **∴ 导出的 tar 由"原子日志 ＋ 重放"完全决定 ✓ ⇒ 属"可重建" ✓ ⇒ 可用 `put_cache`** ✓
+⇒ **∴ 预期收益** ✓：省掉那 **~1.2 s 的 fsync** ✗（实测 724 KB ⇒ 1224／1247 ms ✓）
+⇒ 配合已有记忆化 ✓ ⇒ 导出 **2664 ms → ~100 ms** 量级 ✓。
+
+### 二、∴ 判据先行（本轮已完成 ✓）
+**新增 Rust 测试** ✓：`put_cache_has_identical_semantics_to_put`（`crates/yanshi-core/src/blob.rs` 的 `mod tests` ✓）
+钉住四件事 ✓（**削弱持久性可以 ✓，其它一样都不许变 ✗**）：
+1. **同哈希** ✓（内容寻址不因入口不同而变 ✓）；
+2. **读回逐字节相等** ✓（`put_cache` **绝不是"不写"** ✗）；
+3. **`exists` / `size` 一致** ✓；
+4. **重复写入幂等** ✓（去重语义同 `put` ✓）。
+
+### 三、**变异检验** ✓（一次通过 ✓ —— 但**第一次锚点写错了** ✗，如实记下 ✓）
+| 步骤 | 结果 |
+|---|---|
+| 判据本身 ✓ | `put_cache_has_identical_semantics_to_put ... ok` ✓ |
+| **变异** ✗：`self.put_inner(bytes, false)` → **`self.put_inner(&bytes[..0], false)`** ✓ | **FAILED** ✓✓（`left: …e3b0c442…`（空内容 ✓）vs `right: …1d5546f3…` ✓） |
+| 还原 ✓ | **ok** ✓ |
+| 门禁 ✓ | `fmt` ✓、`clippy` ✓、`cargo test --workspace` **passed=927／failed=0** ✓（**926 → 927** ＝ 新判据 ✓） |
+**⚠️ 我踩的坑** ✗：第一次变异的锚点我按 **12 空格**缩进写 ✗，实际是 **8 空格** ✓
+⇒ 断言 `s.count(old) == 1` **失败** ✓ ⇒ **变异根本没打上** ✗ ⇒ 而当时打印的"变异后 ok" ✗
+**是跑在未变异的代码上** ✓ ⇒ **∴ 差点得出"变异通过"的假结论** ✗✓
+⇒ **∴ 教训（第 7 条 ✓）**：**变异脚本的锚点失败必须让整轮停住** ✓ ——
+本次靠 `assert` 拦住了 ✓，但**屏幕上的"ok"仍然会被误读** ✓ ⇒ **∴ 变异与还原必须打印可区分的标记** ✓。
+
+### 四、∴ 下一步（**一行** ✓，护栏已就位 ✓）
+把 `write_export_project` 里的
+```rust
+let hash = ctx.workspace.store().put(&tar)?;
+```
+改为
+```rust
+let hash = ctx.workspace.store().put_cache(&tar)?;   // 契约允许：tar 可重建 ✓
+```
+**两面（先写清 ✗）** ✓：**收益** ＝ 省 ~1.2 s ✓（导出 ≈26× ✓）；
+**代价** ✗ ＝ 崩溃后该 tar **可能缺失** ✓ ⇒ 但**可重建** ✓ ⇒ **用户数据不丢** ✓。
+**∴ 完成后** ✓：跑全量测试 ✓ ＋ 用**真实 8K 工程**复测导出 ✓（8K 原为 **12 s** ✗）。

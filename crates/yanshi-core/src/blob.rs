@@ -824,6 +824,46 @@ mod tests {
         );
     }
 
+    /// **`put_cache` 必须与 `put` 有完全相同的语义** ✓（第 60+ 轮 ✓，判据先行 ✓）。
+    ///
+    /// **为什么先立它** ✗：导出的 tar 满足 `put_cache` 的契约（"**可重建**"✓ ——
+    /// 它由**原子日志 ＋ 重放**完全决定 ✓），所以**下一步要**把导出改走 `put_cache` ✓
+    /// ⇒ 省掉那 **~1.2 s 的 fsync** ✗（实测 724 KB ⇒ 1224/1247 ms ✓）。
+    /// **∴ 但**那次改动会**削弱持久性** ✗ ⇒ **∴ 所以**先钉住"**削弱**的只是持久性" ✓：
+    /// **内容寻址 ✓、去重 ✓、可读 ✓、字节相等 ✓、同哈希只落一份 ✓** —— **一样都不许变** ✗。
+    /// **变异** ✓（打在**被judged的那一处** ✗）：让 `put_cache` **不写**或**换一个哈希** ✗ ⇒ 本判据必红 ✓。
+    #[test]
+    fn put_cache_has_identical_semantics_to_put() {
+        let dir = std::env::temp_dir().join(format!("yanshi-putcache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let store = FsBlobStore::open(&dir).expect("打开文件存储");
+        let bytes = b"cache me: identical semantics, only durability differs".to_vec();
+
+        let cached = store.put_cache(&bytes).expect("put_cache 必须成功");
+        let put_hash = store.put(&bytes).expect("put 必须成功");
+
+        // ① **同哈希** ✓（内容寻址不许因入口不同而变 ✗）
+        assert_eq!(cached, put_hash, "put_cache 与 put 必须得到同一个哈希");
+        // ② **可读且字节相等** ✓（`put_cache` 绝不是"不写"✗）
+        assert_eq!(
+            store.get(&cached).expect("必须读得回"),
+            bytes,
+            "读回内容必须逐字节相同"
+        );
+        // ③ **`exists` / `size` 一致** ✓
+        assert!(store.exists(&cached), "put_cache 写入后必须 exists");
+        assert_eq!(
+            store.size(&cached),
+            Some(bytes.len() as u64),
+            "size 必须正确"
+        );
+        // ④ **同哈希只落一份** ✓（去重语义与 `put` 相同 ✓）
+        let again = store.put_cache(&bytes).expect("重复 put_cache 必须幂等");
+        assert_eq!(again, cached, "重复写入必须返回同一哈希");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn fs_store_roundtrip_and_sharded_paths() {
         let root = temp_root("roundtrip");
