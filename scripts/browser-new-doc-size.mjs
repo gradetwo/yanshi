@@ -42,11 +42,46 @@ if (!url) {
   process.exit(2);
 }
 
-const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
-const target = list.find((t) => t.type === "page");
+// **选目标要按 `doc` 匹配，不能盲取第一个 page** ✗ → ✓。
+//
+// 为什么 ✗：`run-criteria.sh` 会在**每个**浏览器判据前用 `PUT /json/new` 新开一个标签页 ✓，
+// 而旧标签页**不会关** ⇒ `/json/list` 会积累若干 page ✓，且**顺序不保证把最新的放第一** ✗。
+// 本机复现（先开两个 `about:blank` 再跑本判据）：`/json/list` 把 `about:blank` 排在前 ✓
+// ⇒ 盲取第一个 ⇒ `window.yanshiCallTool` 永远不是函数 ⇒ 前置不成立 ⇒ **EXIT=2** ✗。
+// 这条在本地"单独跑"时看不出来 ✗（只有一个标签页 ✓），只在 CI 上暴露 ✓。
+//
+// 做法 ✓：① 先按 `doc` 找到匹配的目标 ✓；② 找不到就**自己开一个**并等它就绪 ✓。
+const wantDoc = (() => {
+  try { return new URL(url).searchParams.get("doc"); } catch (_) { return null; }
+})();
+const pagesOf = (listing) => listing.filter((item) => item.type === "page");
+const matchesDoc = (item) => {
+  try {
+    return wantDoc !== null && new URL(item.url).searchParams.get("doc") === wantDoc;
+  } catch (_) {
+    return false;
+  }
+};
+const listTargets = () => fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+let listing = await listTargets();
+let target = pagesOf(listing).find(matchesDoc);
 if (!target) {
-  console.error(`未找到调试目标（Chromium 是否以 --remote-debugging-port=${debugPort} 启动？）`);
-  process.exit(2);
+  // **自己开一个**：`/json/new` 在新版 Chromium 要求 `PUT` ✓（与 run-criteria.sh 同一做法 ✓）。
+  await fetch(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(url)}`, { method: "PUT" })
+    .catch(() => null);
+  for (let i = 0; i < 40 && !target; i += 1) {
+    // 这里**不能**用后面的 `const sleep` ✗（`const` 有暂时性死区 ⇒ ReferenceError ✓）⇒ 内联 ✓。
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    listing = await listTargets();
+    target = pagesOf(listing).find(matchesDoc);
+  }
+  if (!target) {
+    console.error(
+      `✗ 前置不成立：找不到 doc=${wantDoc} 的标签页，也没能开出新的（现有 page：` +
+      pagesOf(listing).map((item) => (item.url || "").slice(0, 40)).join(" / ") + "）",
+    );
+    process.exit(2);
+  }
 }
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 let id = 1;
@@ -145,8 +180,11 @@ const created = await evaluate(`(async () => {
   // **要等 docSize 跟上**，不能只看 docId ✗：docId 先变 ✓，
   // 而 docSize 由 refreshThumb 的 get_document 覆盖 ✓（它有 in-flight 去重 ⇒ 可能晚一拍 ✓）。
   let last = null;
+  // **等待预算要留给 CI** ✓：CI 用的是 target/debug/yanshi-serve ✗（run-criteria.sh:32 ✓）
+  // —— 比 release 慢得多 ✓，而这里要新建的是 **1920×1080**（2.07M 像素 ✓）
+  // ⇒ 20 秒不够稳 ⇒ 提到 80 × 500ms = **40 秒** ✓。
   for (let i = 0; i < 80; i += 1) {
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
     const st = window.yanshi && window.yanshi.state && window.yanshi.state();
     if (!st) continue;
     const board = document.getElementById("board");
@@ -197,7 +235,7 @@ const byDefault = await evaluate(`(async () => {
   document.getElementById("newCreate").click();
   let last = null;
   for (let i = 0; i < 80; i += 1) {
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
     const st = window.yanshi && window.yanshi.state && window.yanshi.state();
     if (!st) continue;
     last = { docId: st.docId, w: st.docSize ? st.docSize.w : 0, h: st.docSize ? st.docSize.h : 0 };

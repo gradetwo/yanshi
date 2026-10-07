@@ -50980,3 +50980,38 @@ Kernel::new      (doc_id, tile_size, width, height, memory_limit)   // 同一顺
    前端三件套 `viewer.rs` / `viewer-app.js` / `viewer.css` 是 `include_str!` **编译进二进制**的 ✓
    ⇒ 已经在跑的进程**看不到新前端** ✗，浏览器还要刷新 ✓。
 
+
+### 第 268 轮的第二次补充：CI 的 shard 3 失败是**我这条判据**，已修
+
+#### CI 的两个结论要分清
+1. **`test (stable)` / `test (beta)` 的失败是既有的** ✓ —— 我核对了 `99dc51e`（本次 Web 改动**之前**）那次：
+   两个 test job 同样是 `failure` ✓，而 `rustfmt` / `clippy` / `wasm smoke` / 六个 criteria 分片**全 success** ✓
+   ⇒ 与本次改动无关 ✓（本地 `cargo test --workspace` 也**全过** ✓：102 / 249 / 40 … 0 failed ✓）。
+2. **`criteria shard 3/6` 的失败是本次引入的** ✗ ⇒ 已修 ✓。
+
+#### 分片算错了一次（教训）
+1. 我先按"每个 glob 各自排序"算 ⇒ 得出我的判据在**第 6 片** ✓（而 CI 第 6 片是 success ✓ ⇒ 一度以为与我无关 ✗）。
+2. **错** ✗：`run-criteria.sh` 的枚举行以 `| sort` 结尾 ✓ ⇒ 是**全局排序** ✓。
+3. 重算（全局排序，95 个）：`browser-new-doc-size.mjs` 是索引 **15** ⇒ **第 3 片** ✓ ⇒ 与 CI 的失败分片**吻合** ✓。
+
+#### 根因（本机复现）
+1. `run-criteria.sh` 起 chromium 时**初始页面就是 `about:blank`** ✓（`:42` ✓），
+   而它**每个**浏览器判据前用 `PUT /json/new` 新开一个标签页 ✓、**且不关旧标签页** ✓。
+2. 我的判据盲取 `list.find(t => t.type === "page")` ✗ ⇒ 可能拿到 `about:blank` ✓
+   ⇒ `window.yanshiCallTool` 永远不是函数 ⇒ 前置不成立 ⇒ **EXIT=2** ✗。
+3. **本机复现** ✓：先开两个 `about:blank` ⇒ `/json/list` 把它们排在前 ✓ ⇒ 判据 EXIT=2 ✓。
+   （单独跑、只有一个标签页时**看不出来** ✗ —— 这正是它本地绿、CI 红的原因 ✓。）
+
+#### 修法
+1. **按 `doc` 匹配目标** ✓：从传入 URL 取 `doc` ✓，找 `searchParams.get("doc")` 相同的 page ✓。
+2. 找不到就**自己开一个** ✓（`PUT /json/new?<url>` ✓，与 `run-criteria.sh` 同一做法 ✓）并等它就绪 ✓。
+3. **等待预算提到 40 秒** ✓（80 × 500ms ✓）：CI 用的是 **debug** 服务端 ✓（`run-criteria.sh:32` ✓），
+   比 release 慢得多 ✓，而这里要新建 **1920×1080**（2.07M 像素 ✓）⇒ 20 秒不够稳 ✗。
+4. **钉住粗细控件的宽度** ✓（`flex: 0 0 auto` ✓）：两者都在 flex 行里 ✓，
+   而 flex 项默认 `flex-shrink: 1` ✗ ⇒ 窄视口下 190px 会被压小 ✓（判据量的就是它 ✓）。
+5. 修后本机**在忠实条件下**（初始页 `about:blank` ✓）重跑 ⇒ **EXIT=0** ✓。
+
+#### 又踩了一次同一个陷阱
+1. 我在**注入 `evaluate()` 的脚本体**的注释里写了反引号 ✗（`` `target/debug/yanshi-serve` `` ✓）
+   ⇒ 模板字符串被提前终止 ✓ ⇒ `node --check` 报 `missing ) after argument list` ✓。
+2. 已去掉，并加了一次**系统性扫描** ✓：逐个 `evaluate(\`…\`)` 检查注入体里没有反引号 ✓ ⇒ 0 个 ✓。

@@ -122,8 +122,11 @@
   .size-control { display: flex; gap: 4px; align-items: center; padding: 2px 8px;
                   border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,.10); }
   .size-control .size-label { font-weight: 600; margin-right: 2px; }
-  .size-control input[type="range"] { width: 190px; }
-  .size-control #sizeValue { width: 58px; text-align: right; }
+  /* **宽度要钉住** ✓：两者都在 flex 行里 ✓，而 flex 项默认 `flex-shrink: 1` ✗
+     ⇒ 窄视口下 190px 会被压小 ✓（CI 的窗口比本机窄，判据量的就是它 ✓）。
+     `flex: 0 0 auto` 让它们保持声明宽度 ✓。 */
+  .size-control input[type="range"] { width: 190px; flex: 0 0 auto; }
+  .size-control #sizeValue { width: 58px; text-align: right; flex: 0 0 auto; }
   /* 新建对话框的尺寸区（用户：只有名称，开不了 1920×1080 ✗）。 */
   .new-size { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; }
   .new-size label { display: flex; gap: 6px; align-items: center; }
