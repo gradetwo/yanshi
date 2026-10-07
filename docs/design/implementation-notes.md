@@ -54864,3 +54864,32 @@ key = ( crate_version,  source 的 canonical 串,  .myb 的内容哈希,  目标
 ### 五、门禁与状态
 1. 本轮只做代码阅读与方案 ✓（工作区 0 处产品改动 ✓）；`fmt` ✓。
 2. **CI 仍未确认** ✗（修复版 run 被新推送取代而 cancelled ✓ ⇒ 新 run 在跑 ✓ ⇒ 下轮确认 ✓）。
+
+## 第 367 轮：✅ 记忆化**已完全解锁** —— 内容哈希不需要新助手 ✓（`resolve_asset` 够用 ✓）
+
+### 一、关键一行（`tools.rs:12482-12490` ✓）
+```rust
+fn load_brush(workspace: &Workspace, brush_name: &str) -> Result<(String, hokusai::Brush)> {
+    let name = if brush_name.ends_with(".myb") { … } else { format!("{brush_name}.myb") };
+    let path = workspace.resolve_asset("brush", &name)   // ← ★ 已有的解析器 ✓★
+```
+⇒ **∴ 直接用它拿路径 ⇒ 读字节 ⇒ 哈希** ✓ ⇒ 第 365 轮定的"键必须含 `.myb` 内容哈希"**可以算了** ✓
+⇒ **∴ 不需要给 `load_brush` 加助手** ✗（我上一轮以为要加 ✓ ⇒ **本轮自我更正** ✓）。
+
+### 二、∴ 实现清单（**逐句可执行** ✓，下一轮 ✓）
+1. **算笔刷哈希** ✓：
+   * 取 `source["brush"]` 的名字 ✓ ⇒ 补 `.myb` 后缀 ✓ ⇒ `workspace.resolve_asset("brush", &name)` ✓；
+   * **解析失败就"不缓存"** ✓（**保守回退** ✓：照旧重放 ✓ ⇒ **绝不用不完整的键** ✗）；
+   * 成功 ⇒ `fs::read(path)` ＋ 哈希 ✓（一次导出里**同一支笔刷只算一次** ✓，缓存进一个小 `HashMap` ✓）。
+2. **键** ✓ ＝ `(crate_version, source canonical 串, 笔刷哈希, 目标哈希)` ✓（四元组 ✓）。
+3. **缓存放 `Workspace`** ✓（进程内 ✓ ⇒ **零过期风险** ✓、无需磁盘失效 ✓）。
+4. **钩子** ✓：命中 ⇒ `omitted += 1; continue;` ✓（与重放成功**同一条路** ✓）；
+   未命中 ⇒ 照旧重放 ✓，成功则**写入** ✓。
+5. **验收** ✓：`scripts/tool-export-idempotent.mjs` ✓（**已通过变异验证** ✓）——
+   两次导出的**字节数／哈希／重放计数**必须一致 ✓ ＋ `omitted > 0` ✓。
+6. **预期** ✓（已量化 ✓）：同一进程内重复保存 ⇒ 4K **2.62 s → 几十 ms** ✓、8K **12 s → ~0.1 s** ✓；
+   ⚠️ **边界** ✗：**重启后第一次保存仍慢** ✓（磁盘持久化是下一步 ✓，届时需"版本变了必须重证"的判据 ✓）。
+
+### 三、门禁与状态
+1. 本轮只做代码阅读与方案 ✓（工作区 0 处产品改动 ✓）；`fmt` ✓。
+2. **CI 仍未确认** ✗（前两次 run 都被新推送取代而 cancelled ✓ ⇒ 待新 run 完成 ✓）。
