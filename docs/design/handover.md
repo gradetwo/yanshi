@@ -103,14 +103,26 @@ node scripts/tool-notes-round-numbers.mjs      # 笔记轮号必须唯一
 ### 3.2 提交与 CI
 
 1. 每轮：**英文提交** ＋ 推送。
-2. 推送后补触发 CI **只一次**：
+2. **代码提交推送后，CI 已经自动触发** ⇒ **不要**再手工触发。
    ```bash
-   gh workflow run ci.yml --ref main
+   gh run list --limit 3        # 看它有没有起来
+   ```
+   **为什么不要手工触发**：`ci.yml` 的并发组是 `cancel-in-progress: true`。
+   你手工 `gh workflow run` 会**取消**刚被 push 触发的那一次，再开一次。
+   净效果是白费一次运行（实测：push 触发的那次变成 `cancelled`）。
+3. **只有"文档提交"需要手工补触发**。因为 `ci.yml` 故意忽略纯文档改动：
+   ```yaml
+   paths-ignore: ['docs/**', '**/*.md', 'scripts/criteria-known-red.txt']
+   ```
+   ⇒ 只改 `docs/` 或 `*.md` 的推送**不会**跑流水线（这是第 398 轮的有意设计：文档提交曾把并发位占满）。
+   这时才有必要：
+   ```bash
+   gh workflow run ci.yml --ref main      # 只一次
    ```
    HTTP 500 时重试。**同一次推送不要反复触发**。
-3. **汇报**与**需要用户决策的问题**都用**中文 ＋ ASD-STE100**。
+4. **汇报**与**需要用户决策的问题**都用**中文 ＋ ASD-STE100**。
    决策问题要给**选项表**，并附我的建议。
-4. 依赖取舍**必须写明两面**（收益与代价）。
+5. 依赖取舍**必须写明两面**（收益与代价）。
 
 ### 3.3 用 CI/CD 降负载（**优先这样做**）
 
@@ -145,6 +157,18 @@ node scripts/tool-notes-round-numbers.mjs      # 笔记轮号必须唯一
 2. 需要本机**真实工程文件**的实验（例如 `/tmp/parrot-4k-v10-docs-*.tar.gz`）。
 3. 需要**交互式 CDP 调试**的排查（边改边看）。
 4. 编译不过、CI 连跑都跑不起来时。
+
+**改了 `viewer.rs` / `viewer-app.js` / `viewer.css` 之后要重建**：
+
+```bash
+export CARGO_TARGET_DIR=/tmp/yt4
+cargo build --release --bin yanshi-serve
+```
+
+前端三件套是**编译进二进制**的（`include_str!`）。所以：
+1. 改前端 ⇒ 必须重建 `yanshi-serve`。
+2. **已经在跑的旧进程看不到新前端** ⇒ 必须重启服务端。
+3. 浏览器还要**刷新页面**（旧资源会进缓存）。
 
 **本地批量跑判据**（只在必要时）：
 
