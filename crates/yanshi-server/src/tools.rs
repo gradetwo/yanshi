@@ -14725,7 +14725,14 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
     ("get_undo_status", r#"{}"#),
-    ("set_reference", r#"{"blob_hash":"x"}"#),
+    // **示例必须是"语法合法"的哈希** ✗（第 41 轮实测 ✓）：原来是占位符 `"x"` ✗
+    // ⇒ 被 `write_set_reference` 的**形状校验**拒掉（"blob_hash 必须是 sha256:<64 位十六进制>" ✓）
+    // ⇒ 而 `scripts/tool-example-acceptance.mjs` 把"**形状／类型不对**"判成**红** ✗
+    //（它的判据是"**抄走会被拒**"✓）⇒ **CI 的 criteria shard 2/6 因此失败** ✗。
+    // 换成合法形状后 ✓，错误变成"**这个 blob 不在存储里**"（＝**缺前置状态** ✓）
+    // ⇒ 判据记作"参数被接受 ✓，另有原因" ✓（93 个跑通 ＋ 1 个"需要前置状态" ✓）。
+    // **∴ 不要把它改回 `x`** ✗ —— 那会让 CI 再红一次 ✓。
+    ("set_reference", r#"{"blob_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}"#),
     ("set_preferences", r#"{"values":{}}"#),
     ("redo_last", r#"{}"#),
     ("new_document", r#"{"width":1,"height":1}"#),
