@@ -13621,7 +13621,27 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         .get("include_bitmaps")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // **分段探针（第 51 轮 ✓）**：在**调用侧**量 ✓ —— 原因 ✗：构造点 `ExportStats { … }`
+    // 位于**表达式位置**（`Ok((…))` ✓），语句插不进去 ✓（我为此失败两次 ✗）。
+    // 这里量两段 ✓：① `export_project`（读日志 ＋ 收集 ＋ 组装 tar ✓）② `store.put`（入 CAS ✓）。
+    let _probe_t0 = std::time::Instant::now();
     let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+    if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/yanshi-export2-trace.log")
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(
+                    f,
+                    "EXPORT2 export_project={} ms tar_bytes={}",
+                    _probe_t0.elapsed().as_millis(),
+                    tar.len()
+                )
+            });
+    }
+    let _probe_t1 = std::time::Instant::now();
 
     // **保存工程时顺手把"整幅渲染"落成缓存** ✓（第 3 轮 ✓，"打开太慢"专题 ✓）。
     //
@@ -13692,6 +13712,20 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     // **再把同一份字节放进 CAS** ✓：`put` 是**内容寻址**的 ✓（同内容幂等去重 ✓），
     // 回的哈希就是 `yanshi://blob/<hash>` 里的那一个 ✓ ⇒ 取回来的**必然**是这份包 ✓。
     let hash = ctx.workspace.store().put(&tar)?;
+    if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/yanshi-export2-trace.log")
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(
+                    f,
+                    "EXPORT2 store_put={} ms",
+                    _probe_t1.elapsed().as_millis()
+                )
+            });
+    }
     let mut value = json!({
         // **浏览器下载用的地址** ✓（服务端 URL 形态会被改写 ✓；`path` 只对同机的调用方有意义 ✓）。
         "url": format!("yanshi://blob/{hash}"),
