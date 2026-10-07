@@ -54391,3 +54391,37 @@ fn cache_stats(state: &ServerState) -> serde_json::Value {
 |---|---|
 | `fmt` ✓／工作区 **0 处产品改动** ✓ | |
 | 本轮 | **又一次更正自己** ✗（第 350 轮说"缺 hits" ✗ ⇒ 第 351 轮查明**两份统计都有** ✓，只是服务端没放 ✓） |
+
+## 第 353 轮：✅ 观测缺口补上 —— `/health` 暴露 `hits`，**命中率可算** ✓（且立刻显示缓存真的命中 ✓）
+
+### 一、改动（**两处**，纯观测 ✓，**不参与任何渲染决策** ✗ ⇒ 输出像素不变 ✓）
+```rust
+// crates/yanshi-server/src/service.rs:2686
+pub fn cache_stats(&self) -> (usize, usize, u64, u64, u64) {   // ← 末尾加 hits ✓
+    … hits += stats.hits;  …  (tiles, used_bytes, evictions, misses, hits)
+}
+// crates/yanshi-http/src/server.rs:774
+let (tiles, used_bytes, evictions, misses, hits) = workspace.cache_stats();
+json!({ …, "misses": misses, "hits": hits, … })
+```
+**依据** ✓：底层统计**本来就有** `hits` ✓（`render.rs:155` ✓、命中时 `hits += 1` ✓）——
+**∴ 只是没往上传** ✗（第 351 轮的更正 ✓）。
+**类型坑** ✗：`BitmapCacheStats::hits` 是 **`u64`** ✗（不是 `usize` ✓ —— 我第一版写错 ✓，编译立刻报 ✓
+⇒ **∴ 又一次"先让它编译"** ✓）。
+
+### 二、实测（`/health` 的 `cache` ✓）
+| 时点 | `hits` | `misses` | `tiles` |
+|---|---|---|---|
+| 空载 | 0 | 0 | 0 |
+| 第 1 笔后 | **6** | 18 | 12 |
+| 第 2 笔后 | **12** | 24 | 12 |
+| 第 3 笔后 | **18** | 30 | 12 |
+1. **∴ 每笔稳定 +6 hits / +6 misses** ✓ ⇒ **∴ 命中率 ＝ 6/12 ＝ **50%** ✓** ——
+   此前**算不出来** ✗ ⇒ **∴ 缺口已补** ✓。
+2. **∴ 而且立刻排除了一种退化** ✓：缓存**不是**"全 miss" ✗ ⇒ 确实有命中 ✓。
+3. **∴ 这为"缓存必须命中"的能红判据铺好了路** ✓（下一轮可写 ✓ ＋ 变异：去掉查表 ⇒ 命中归零 ⇒ 红 ✓）。
+
+### 三、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）。
+2. **代价两面** ✗：收益＝命中率**可见** ✓（可据以立判据 ✓）；代价＝一个计数字段 ✓（近零 ✓）；
+   **风险**＝零 ✓ —— **计数器不参与渲染决策** ✗ 是它与"可能撒谎的簿记"✗的本质区别 ✓。

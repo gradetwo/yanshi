@@ -771,12 +771,15 @@ fn cache_stats(state: &ServerState) -> serde_json::Value {
     let Ok(workspace) = state.workspace.lock() else {
         return json!({"error": "工作区锁中毒"});
     };
-    let (tiles, used_bytes, evictions, misses) = workspace.cache_stats();
+    let (tiles, used_bytes, evictions, misses, hits) = workspace.cache_stats();
     json!({
         "tiles": tiles,
         "used_bytes": used_bytes,
         "evictions": evictions,
         "misses": misses,
+        // **命中数** ✓（第 25 轮 ✓）：与 `misses` 一起才能算**命中率** ✓
+        //（此前只有 misses ✗ ⇒ 缓存有效性不可观测 ✓）。
+        "hits": hits,
         "pixel_bytes_estimate": workspace.pixel_bytes_estimate(),
     })
 }

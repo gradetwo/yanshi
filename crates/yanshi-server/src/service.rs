@@ -2683,19 +2683,28 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
 
     /// 文档数量。
     /// 汇总所有已打开文档的渲染缓存统计（`/health` 用）。
-    pub fn cache_stats(&self) -> (usize, usize, u64, u64) {
+    /// **缓存读数** ✓：`(tiles, used_bytes, evictions, misses, hits)` ✓。
+    ///
+    /// **为什么加上 `hits`** ✗（第 25 轮 ✓）：底层的 `BitmapCacheStats` **本来就有** `hits` ✓
+    ///（`render.rs:155` ✓，命中时 `hits += 1` ✓），但这里**没往上传** ✗ ⇒ `/health` 只有 `misses`
+    /// ⇒ **∴ 命中率算不出来** ✓ ⇒ **∴ 无法为"缓存是否有效"立判据** ✗
+    ///（"查表全变未命中"这种退化会无人察觉 ✓）。
+    /// **∴ 这是纯观测补充** ✓：**不参与任何渲染决策** ✗ ⇒ 输出像素一个都不变 ✓。
+    pub fn cache_stats(&self) -> (usize, usize, u64, u64, u64) {
         let mut tiles = 0usize;
         let mut used_bytes = 0usize;
         let mut evictions = 0u64;
         let mut misses = 0u64;
+        let mut hits = 0u64;
         for document in self.documents.values() {
             let stats = document.cache_stats();
             tiles += stats.tiles;
             used_bytes += stats.used_bytes;
             evictions += stats.evictions;
             misses += stats.misses;
+            hits += stats.hits;
         }
-        (tiles, used_bytes, evictions, misses)
+        (tiles, used_bytes, evictions, misses, hits)
     }
 
     /// 所有已打开文档的像素缓冲**估算上界**（按「每层整幅 RGBA8」计）。
