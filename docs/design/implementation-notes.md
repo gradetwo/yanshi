@@ -53702,3 +53702,36 @@ if let Some((seq, png)) = preview { let hash = store.put(&png)?; document.restor
 
 ### 门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace` **147 目标全过／FAILED 0** ✓。
+
+## 第 335 轮：⚠️ 判据"红"的**真因收窄** —— 计数器就在渲染分支里 ⇒ 高度怀疑**真交了旧图** ✗
+
+### 一、代码证据（`crates/yanshi-server/src/document.rs` ✓）
+```
+:1125  render_region                 → full_canvas_renders += 1
+:1094  render_region_complete_jobs   → full_canvas_renders += 1
+:1263  render_document_preview       → document_preview_renders += 1   ← **在"真的要渲"的分支里** ✓
+:1265  render_document_preview       → full_canvas_renders += 1
+```
+`document.rs:1258-1266` 的现实是：
+```rust
+None => {
+    let rendered = self.renderer.render_region(&self.state, &*self.store, region)?;
+    self.document_preview_renders += 1;        // ← 先渲，再加 ✓
+    if covers_canvas(...) { self.full_canvas_renders += 1; }
+    ...
+}
+```
+1. **∴ `preview_renders == 0` 说明那条渲染分支**没被走到** ✗** ⇒ 走的是**缓存命中**那条 ✓。
+2. **∴ 而文档 B 在保存后**又落过一笔** ✓ ⇒ **高度怀疑：冷启动交出了旧图** ✗✓
+   —— 即本仓**头号病根**（"拿旧图冒充" ✓）。
+3. **∴ 我先前偏好的"只是计数口径"解释** ✗ **已被代码否掉** ✓（诚实更正 ✓）。
+
+### 二、下一步的**决定性探针** ✓
+1. **取冷启动交付的那张预览 blob 的像素** ✓（`get_document` 不给 `preview` 字段 ✗ ⇒ 走查看器取图那条路 ✓）
+   ⇒ 看它**有没有保存后那一笔** ✓ —— **没有** ⇒ 铁证 ✓。
+2. 在 `render_document_preview` 的**缓存命中分支**上加 env 门控打印 ✓
+   （与第 300／325 轮定位 blob 删除者／第二条编码路径**同一招** ✓，两次都一击即中 ✓）。
+
+### 三、纪律
+1. 判据已按本仓机制登记为**已知红** ✓（照跑照印、不阻塞 ✓），条目里写全了代码证据、两种可能与探针 ✓。
+2. **不猜、不改产品** ✗ —— 先用探针把"到底交没交旧图"钉死 ✓，再动代码 ✓。
