@@ -82,4 +82,20 @@ kernel-brush-parity.mjs  # 类型：断言失败（**可本地复现的真差异
 #   x86-64 用 glibc ✓）⇒ 要消除就得让**两端调用同一套**（例如都走 `libm` ✓）。
 #   ⚠️ 注意：本条原先写着"`libm` 那一改**没有**消除它" ✓ —— 那是**在结构性分歧还在时**测得 ✓
 #   ⇒ **∴ 现在值得重测** ✓（41 条里大多数当时是结构性的 ✓）。
-
+tool-preview-decoupling.mjs  # **类型：待实现（P0 预览解耦）** ✓
+# **为什么红** ✗（用户现场 ＋ 我复现 ✓）：连续作画时**每一笔**都编一张预览 PNG ✓
+#   ⇒ 单笔延迟里 **~130 ms** 在这里（4K、`Clouds.myb`、`size 180`、5 点长笔触；
+#     `preview_ms` 实测 **116~148 ms** ✓）；而 `batch(silent:true)` 在"不放行预览"时
+#     **仍然编码** ✓ ⇒ 调用栈已定位：`write_batch` → `write_brush_stroke` →
+#     `write_import_image` → `finish_mutation` → `render_region` → `encode_png` ✓。
+# **转绿条件** ✓：`brush_stroke` 接受 `preview: false` ✓，且带它时该笔 `preview_ms == 0` ✓
+#   （同时**默认仍产出预览** ✓ —— 判据第③条守着这一点 ✗）。
+# **两次已排除的修法** ✗（都实测更差，已撤回 ✓）：
+#   ① 去掉 `finish_mutation` 的 `|| result.job_id.is_some()` ⇒ 掉进 job 分支
+#      ⇒ 整幅 4K 预览 ⇒ **962 ms/笔** ✗；
+#   ② 再去掉那次整幅落盘 ⇒ 仍有 **999 ms/笔** ✗（因为该分支的 `preview_ms` 计时
+#      **把 `run_pending_jobs` 也算进去了** ✓ ⇒ 贵的是那条路本身 ✓）。
+# **正确方向** ✓：**不换路** —— 保留便宜的脏区渲染（它顺手完成 job ✓），
+#   只把最后那次 `encode_png` 换成"不编码"的读取 ✓（实测 raw 读 **8.4 ns/px**
+#   vs 编码 **88 ns/px** ✓，第 318 轮 ✓）⇒ 需要给 `Document::render_region`
+#   一个"不要 PNG"的形态（它现在返回的 `RenderedPreview` **必须有 `blob_hash`** ✗）。
