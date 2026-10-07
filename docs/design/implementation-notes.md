@@ -48679,3 +48679,38 @@ node scripts/kernel-brush-parity.mjs <server-base> <doc> <token> crates/yanshi-w
 
 ### 门禁
 1. 本轮只读代码与记录。产品代码没改。
+
+## 第 197 轮：共享代码不必新建 crate
+
+### 决定性事实
+```
+crates/yanshi-wasm/Cargo.toml:
+  yanshi-core   = { path = "../yanshi-core" }
+  yanshi-render = { path = "../yanshi-render", version = "0.1.0" }   ← 已经依赖
+  hokusai = "0.3"
+  libm
+```
+1. yanshi-wasm 已经依赖 yanshi-render。
+2. 所以它可以调 yanshi-render 的任何公开函数。
+3. 不必新建共享 crate。
+
+### 三个选项重新评估
+| 选项 | 原来的代价 | 修正后的代价 |
+|---|---|---|
+| 1. 内核消费 dashed_line 的 dab 序列 | 放弃 hokusai 笔画引擎 | 只需暴露绘制入口。改动小 |
+| 2. 服务端消费 hokusai 的 dab 序列 | 服务端引入 hokusai | 仍要新增依赖 |
+| 3. 抽共享 crate | 改动面最大 | **不需要**。等于选项 1 |
+
+### 结论
+1. 选项 3 退化为选项 1。因为共享层已经存在。
+2. 所以选选项 1。收益：两端逐字节同源。代价：内核放弃 hokusai 的笔画引擎，
+   但保留它的 .myb 解析（笔刷参数仍来自 .myb）。
+3. 判据：同一条 kernel-brush-parity.mjs，传 all。改前 389 次不同，改后应当接近 0。
+
+### 最小可行第一步
+1. 读 yanshi-wasm 现在怎么用 hokusai 画一笔。
+2. 换成调 yanshi-render 的绘制路径。
+3. 用 all 判据对比。
+
+### 门禁
+1. 本轮只读清单与记录。产品代码没改。
