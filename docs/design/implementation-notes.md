@@ -50168,3 +50168,25 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 磁盘
 1. 可用 18 GB。偏低，继续清理。
+
+## 第 246 轮：重复实现已消除（两份 → 一份）
+
+### 改动
+1. 服务端 tools.rs 里那段 2371 字节的喂底图循环，替换成一行调用
+   yanshi_render::brush::feed_base(&mut surface, seed_region.x0, seed_region.y0, w, h, &base)。
+2. 保留 base_ok 的尺寸前置检查（feed_base 内部也会再检查一次，无害）。
+3. 失败时仍打印"底图尺寸不符"的说明，语义不变。
+
+### 自证
+| 项目 | 结果 |
+|---|---|
+| 服务端调用 feed_base | 2 处（注释 1 + 调用 1） |
+| 服务端残留 tile 循环 | **0 处** |
+| 内核残留 tile 循环 | 0 处（第 245 轮已清） |
+| feed_base 定义 | 1 处（yanshi-render） |
+⇒ 喂底图的实现现在**只有一处** ✓。
+
+### 门禁
+1. clippy（全 workspace，-D warnings）通过。
+2. 测试与构建见下。
+3. 行为不变：同样的 64×64 tile 遍历、同样的 << 7 换算、同样的 region 裁剪。

@@ -12636,45 +12636,19 @@ fn paint_brush(
                 );
             }
             if base_ok {
-                use hokusai::TiledSurface;
-                let first_tile_x = seed_region.x0.div_euclid(64);
-                let first_tile_y = seed_region.y0.div_euclid(64);
-                let last_tile_x = seed_region.x1.div_euclid(64);
-                let last_tile_y = seed_region.y1.div_euclid(64);
-                for tile_y in first_tile_y..=last_tile_y {
-                    for tile_x in first_tile_x..=last_tile_x {
-                        {
-                            let tile = surface.tile_request_start(tile_x, tile_y);
-                            for row in 0..64i32 {
-                                for column in 0..64i32 {
-                                    let document_x = tile_x * 64 + column;
-                                    let document_y = tile_y * 64 + row;
-                                    if document_x < seed_region.x0
-                                        || document_y < seed_region.y0
-                                        || document_x >= seed_region.x1
-                                        || document_y >= seed_region.y1
-                                    {
-                                        continue;
-                                    }
-                                    let at = ((document_y - seed_region.y0) as usize
-                                        * seed_region.width
-                                        + (document_x - seed_region.x0) as usize)
-                                        * 4;
-                                    if at + 3 >= base.len() {
-                                        continue;
-                                    }
-                                    // **RGBA8 ⇒ fix15** ✓（`<< 7` 把 0..255 映回 0..32767 ✓，与读回来的 `>> 7` 对称 ✓）。
-                                    tile[row as usize][column as usize] = [
-                                        u16::from(base[at]) << 7,
-                                        u16::from(base[at + 1]) << 7,
-                                        u16::from(base[at + 2]) << 7,
-                                        u16::from(base[at + 3]) << 7,
-                                    ];
-                                }
-                            }
-                        }
-                        surface.tile_request_end(tile_x, tile_y);
-                    }
+                // **调共享实现**（第 243 轮）：这段循环原先在这里与内核各有一份 ✗
+                // ⇒ 而"两份实现必然漂移"是本项目记录过的头号病 ✓。
+                // 内核那一份已在第 245 轮改成调 yanshi_render::brush::feed_base ✓。
+                let fed = yanshi_render::brush::feed_base(
+                    &mut surface,
+                    seed_region.x0,
+                    seed_region.y0,
+                    seed_region.width as i32,
+                    seed_region.height as i32,
+                    &base,
+                );
+                if !fed {
+                    eprintln!("  底图尺寸不符 ⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）");
                 }
             }
         }
