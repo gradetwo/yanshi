@@ -3275,6 +3275,9 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **缩略图渲染计数** ✓（第 69 轮 ✓）：结构性证据 ✓ ⇒ 判据可断言
         // "**重复保存时没有再整幅渲染缩略图**" ✓（不看耗时 ✗）。
         summary["thumbnail_renders"] = json!(document.thumbnail_render_count());
+        // **冷加载耗时** ✓（第 71 轮 ✓）：**独立读数** ✗ —— 加载在工具开始之前 ✓
+        // ⇒ 装不进 `total_ms` ✗（用户实测：2.2 s 的加载 vs `total_ms` 1.7 ms ✗）。
+        summary["open_ms"] = json!(document.open_ms());
     }
     Ok(summary)
 }

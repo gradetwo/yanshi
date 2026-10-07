@@ -305,6 +305,11 @@ pub struct Document {
     /// ⇒ **∴ 它违反本目标第 3 条**："**缩略图按需生成**" ✓。
     /// **∴ 要靠它做判据** ✓：**重复保存时该计数不得增长** ✓（**变异**：去掉跳过去掉 ⇒ 计数增长 ⇒ 判据红 ✓）。
     document_thumbnail_renders: usize,
+    /// **本次打开花了多少毫秒** ✓（第 71 轮 ✓）—— **回应真实用户报的"可观测性缺口"** ✗：
+    /// 15MB 文档冷加载实测 **2.2 s** ✓，而 `timings.total_ms` 只有 **1.7 ms** ✗
+    /// ⇒ **∴ 因为加载发生在**工具开始之前**✗** ⇒ **∴ 物理上装不进 `total_ms`** ✓
+    /// ⇒ **∴ 它必须是一个独立读数** ✓（"**上一次打开花了多少**" ✓）。
+    open_ms: u64,
     /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
     ///
     /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
@@ -423,6 +428,7 @@ impl Document {
             pinned_blobs: std::collections::BTreeSet::new(),
             document_preview_renders: 0,
             document_thumbnail_renders: 0,
+            open_ms: 0,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
@@ -1533,6 +1539,16 @@ impl Document {
     /// —— 而不是"花了多少毫秒" ✗。
     pub fn thumbnail_render_count(&self) -> usize {
         self.document_thumbnail_renders
+    }
+
+    /// **本次打开耗时（毫秒 ✓）** —— 见 `open_ms` 字段的说明 ✓。
+    pub const fn open_ms(&self) -> u64 {
+        self.open_ms
+    }
+
+    /// 由 `Workspace::open_document` 写入 ✓（**唯一写入点** ✓）。
+    pub(crate) fn set_open_ms(&mut self, ms: u64) {
+        self.open_ms = ms;
     }
 
     /// **文档级预览渲染**的次数 ✓（`render_document_preview` 真正渲染像素的次数 ✓；

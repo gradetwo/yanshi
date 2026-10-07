@@ -1123,7 +1123,22 @@ impl Workspace {
     }
 
     /// 打开（或返回已打开的）文档：从磁盘加载日志并重建状态。
+    /// **打开文档（计时包装 ✓）** —— 第 71 轮 ✓：把整段耗时记进文档 ✓，
+    /// 供 `get_document` 以 `open_ms` 报出 ✓（**加载在工具开始之前 ⇒ 装不进 `total_ms`** ✗）。
     pub fn open_document(&mut self, doc_id: &str) -> Result<&mut Document> {
+        let started = std::time::Instant::now();
+        // 第一次调用**真正做加载** ✓（第二次只是 map 查找 ✓ ⇒ 极快 ✓）。
+        self.open_document_inner(doc_id)?;
+        let ms = started.elapsed().as_millis() as u64;
+        let document = self.open_document_inner(doc_id)?;
+        // **只在"冷开"时写入** ✗：已打开的文档走的是"取出来"那条 ✓ ⇒ 不该覆盖真实读数 ✓。
+        if document.open_ms() == 0 {
+            document.set_open_ms(ms);
+        }
+        Ok(document)
+    }
+
+    fn open_document_inner(&mut self, doc_id: &str) -> Result<&mut Document> {
         if !self.documents.contains_key(doc_id) {
             // **打开路径的分阶段计时** ✓（第 1493 轮 ✓）—— 外部报告实测 15.1 MB 文档
             // `get_document` 要 **294.6 s** ✗，但报告自己说**没做 profiling** ✗。
