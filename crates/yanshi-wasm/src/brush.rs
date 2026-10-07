@@ -228,6 +228,11 @@ pub(crate) fn read_back(surface: &hokusai::tile_mem::MemSurface, region: &Region
                 Some(tile) => {
                     let pixel = tile[in_y][in_x];
                     let alpha15 = u32::from(pixel[3]);
+                    // **dump 同一像素的 fix15 值**（第 256 轮）：区域偏移 115（第 1 行第 27 列）。
+                    if row == 1 && column == 27 && std::env::var_os("YANSHI_OPEN_TIMING").is_some()
+                    {
+                        eprintln!("fix15_dump side=kernel pixel={:?}", pixel);
+                    }
                     let straight = |channel: u16| -> u8 {
                         // **`checked_div`** ✓（clippy 要求 ✓，语义与"除零给 0"一致 ✓）。
                         (u32::from(channel) * 32767)

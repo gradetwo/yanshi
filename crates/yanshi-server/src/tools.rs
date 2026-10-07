@@ -12160,6 +12160,10 @@ fn read_surface_region(
                     // 外部报告说的"颜色回归"因此**是真的** ✓，但真因是**这个口径** ✓，不是喂底图那件事 ✗。
                     let pixel = tile[row as usize][column as usize];
                     let alpha15 = u32::from(pixel[3]);
+                    if row == 1 && column == 27 && std::env::var_os("YANSHI_OPEN_TIMING").is_some()
+                    {
+                        eprintln!("fix15_dump side=server pixel={:?}", pixel);
+                    }
                     let straight_byte = |channel: u16| -> u8 {
                         if alpha15 == 0 {
                             return 0;
