@@ -1103,7 +1103,25 @@ async function refreshThumb() {
     }).then((r) => r.json());
     if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
     if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
-    if (value.width && value.height) state.docSize = { w: value.width, h: value.height };
+    if (value.width && value.height) {
+      // **尺寸变了就重设画板**（本轮修 ✗ → ✓）：
+      // `switchDocument` 只在装载那一刻按**当时的** `state.docSize` 调一次 `sizeBoards` ✓，
+      // 而 `docSize` 是被**本函数**（`get_document` 的 width/height）覆盖的 ✓ ⇒
+      // 时序一旦倒过来（本函数还没回来），画板就停在旧尺寸上 ✗。
+      // **实测**：新建 1920×1080 的文档 ⇒ 服务端与 `state.docSize` 都是 1920×1080 ✓，
+      // 而 `board` 仍是 **1024×1024** ✗（改动前每个新文档都是 1024² ⇒ 这个时序坑不显形 ✓）。
+      // `sizeBoards` 自己会判"尺寸真变了才碰 backing store" ✓ ⇒ 无条件调用安全又便宜 ✓；
+      // 但**改尺寸会清空画布**（浏览器规范 ✓）⇒ 必须补一次 `renderViewport` ✓
+      //（它在内核未就绪时会改用服务端补画 ✓ ⇒ 两条路都覆盖 ✓）。
+      const next = { w: value.width, h: value.height };
+      const changed = !state.docSize || state.docSize.w !== next.w || state.docSize.h !== next.h;
+      state.docSize = next;
+      if (changed) {
+        sizeBoards(next.w, next.h);
+        clampViewport();
+        renderViewport();
+      }
+    }
     if (value.background) state.backgroundCss = backgroundToCss(value.background);
   } catch (error) {
     // **缩略图取不到不许变成未处理的拒绝** ✗（探针实测：翻页/重载时冒
@@ -2020,15 +2038,47 @@ async function checkBitExact() {
 ///
 /// 文档以 `doc_id` 作为名字与主键 ✓；`POST /api/documents` 是"打开或创建"语义 ✓，
 /// 因此这里**先查列表**：重名时提示换名字，而不是悄悄打开已有文档 ✓。
+/// 上一次新建用的尺寸（本会话内有效 ✓；不落盘 ✗ —— 那要牵动设置存储，本改动不做）。
+let lastNewSize = null;
+
 function newDocument() {
   const dialog = $("newDialog");
   const name = $("newName");
   name.value = "yanshi-" + Date.now().toString(36);
   $("newHint").textContent = "";
+  // **尺寸的初值**：优先用"上次新建时用的尺寸" ✓（同一会话里连开几块同尺寸画布不用重填 ✓），
+  // 没有就用 1024² —— 与改动前**完全一致**的缺省 ✓ ⇒ 不改默认行为 ✓。
+  const last = lastNewSize || { w: 1024, h: 1024 };
+  $("newWidth").value = String(last.w);
+  $("newHeight").value = String(last.h);
+  updateNewSizeHint();
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
   name.focus();
   name.select();
+}
+
+/// 读 `#newWidth` / `#newHeight` ⇒ `{w, h}` 或 `null`（非法）。
+/// 只挡住明显的错（非整数 / 越界 ✓）；真正的边界由服务端把关（`width == 0` 会被拒 ✓）。
+function readNewSize() {
+  const w = Math.floor(Number($("newWidth").value));
+  const h = Math.floor(Number($("newHeight").value));
+  if (!(w > 0) || !(h > 0)) return null;
+  if (w > 8192 || h > 8192) return null;
+  return { w, h };
+}
+
+/// 把"将要新建多大的画布"写进对话框 ✓（含总像素 ✓ —— 大画布更费内存与磁盘 ✓，先说清 ✓）。
+function updateNewSizeHint() {
+  const hint = $("newSizeHint");
+  if (!hint) return;
+  const size = readNewSize();
+  if (!size) {
+    hint.textContent = "宽度与高度都要是 1..8192 之间的整数";
+    return;
+  }
+  const mega = (size.w * size.h / 1e6).toFixed(2);
+  hint.textContent = size.w + " × " + size.h + "（" + mega + "M px）";
 }
 
 async function createNamedDocument() {
@@ -2040,6 +2090,11 @@ async function createNamedDocument() {
   }
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     hint.textContent = "名称只能用字母、数字、点、下划线与连字符（它会进入 URL 与文件路径）";
+    return;
+  }
+  const size = readNewSize();
+  if (!size) {
+    hint.textContent = "宽度与高度都要是 1..8192 之间的整数";
     return;
   }
   try {
@@ -2054,8 +2109,9 @@ async function createNamedDocument() {
   const dialog = $("newDialog");
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
-  log("新建文档：" + name);
-  await switchDocument(name);
+  log("新建文档：" + name + "（" + size.w + " × " + size.h + "）");
+  lastNewSize = size;
+  await switchDocument(name, "", size);
 }
 
 // **无条件**提供工具入口 ✓ —— 此前它挂在 `if (DEBUG)` 下 ✗，于是四份不同的自动化脚本
@@ -3141,7 +3197,10 @@ async function promptDocument() {
 ///
 /// 此前「打开 / 新建文档」按钮只是用**当前** doc_id 再调一次 `/api/documents`，
 /// 因此点了等于没点（用户报告「点击后没有打开或者创建新的功能」）。
-async function switchDocument(docId, token) {
+/// 切换/新建文档。
+/// `size`（可选 ✓）：只在**新建**那条路上用得到 ✓（`{w, h}` ✓）——
+/// 带 `token` 时是在**引用**已有文档 ✓ ⇒ 传了也不影响（服务端对已存在的文档不读尺寸 ✓）。
+async function switchDocument(docId, token, size) {
   if (state.socket) {
     const previous = state.socket;
     state.socket = null; // 先置空，onclose 便不会重连
@@ -3152,6 +3211,9 @@ async function switchDocument(docId, token) {
   // 显式传入的令牌优先（「另存为副本」刚创建文档时已经拿到令牌，避免再建一次文档）；
   // 否则交给 ensureDocument 去创建/打开并取回令牌。
   state.token = token || "";
+  // **新建时指定的尺寸** ✓（可选）：只在"真的要去创建"那条路上用得到 ✓；
+  // 带令牌（引用已有文档）时用不上 ⇒ 不传就沿用服务端缺省 ✓（行为与改动前一致 ✓）。
+  state.pendingSize = size || null;
   state.localSeq = 0;
   state.undoStack = [];
   state.redoStack = [];
@@ -3209,7 +3271,15 @@ async function ensureDocument() {
   const response = await fetch("/api/documents", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: state.docId, width: 1024, height: 1024, actor: "human:web" }),
+    // **尺寸来自调用方** ✓（新建对话框 ✓）；没给就退回 1024² —— 与改动前一致 ✓。
+    // 服务端 `POST /api/documents` 本来就是"打开或创建"语义 ✓ ⇒ 对已存在的文档，
+    // 这里的尺寸**不会被采用** ✓（它只用于创建那一次 ✓）。
+    body: JSON.stringify({
+      doc_id: state.docId,
+      width: (state.pendingSize && state.pendingSize.w) || 1024,
+      height: (state.pendingSize && state.pendingSize.h) || 1024,
+      actor: "human:web",
+    }),
   });
   const value = await response.json();
   if (!value.ok) { log("打开文档失败：" + JSON.stringify(value), "#c33"); return; }
@@ -8793,6 +8863,56 @@ $("newCreate").addEventListener("click", createNamedDocument);
 $("newName").addEventListener("keydown", (event) => {
   if (event.key === "Enter") void createNamedDocument();
 });
+// **新建对话框的尺寸**（用户：想开 1920×1080 做不到 ✗）。
+// ① 两个输入框：改动就刷新"将要建多大"的提示 ✓；
+$("newWidth").addEventListener("input", updateNewSizeHint);
+$("newHeight").addEventListener("input", updateNewSizeHint);
+// ② 常用尺寸按钮：点一下填进输入框 ✓（**不**立刻创建 ✗ —— 名字还要用户确认 ✓）。
+$("newPresets").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-size]");
+  if (!button) return;
+  const parts = String(button.getAttribute("data-size")).split("x");
+  const w = Math.floor(Number(parts[0]));
+  const h = Math.floor(Number(parts[1]));
+  if (!(w > 0) || !(h > 0)) return;
+  $("newWidth").value = String(w);
+  $("newHeight").value = String(h);
+  updateNewSizeHint();
+});
+updateNewSizeHint();
+// **粗细控件**（用户：这个滑杆不显眼 ✗）：`#size` 仍是那个 range ✓（id 与语义没变 ✓），
+// 另加三样 **从属**控件 —— 读数 `#sizeValue`、细/粗 `#sizeDown`/`#sizeUp` ✓。
+// 关键：`#size` **只有一处**程序化写入（快捷面板 ✓），而它**会派发 `input`** ✓
+// ⇒ 只靠一个 `input` 监听就能覆盖"拖动 / 快选 / 程序化赋值"三种来源 ✓（单一真源 ✓）。
+function sizeClamp(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(512, n));
+}
+function syncSizeControls() {
+  const size = $("size");
+  const value = sizeClamp(size.value);
+  const out = $("sizeValue");
+  // 只在**真的不一致**时回写 ⇒ 不会打断用户正在拖动的手感 ✓。
+  if (Number(size.value) !== value) size.value = String(value);
+  if (out && Number(out.value) !== value) out.value = String(value);
+}
+/// 设粗细（唯一入口 ✓）：写 `#size` 并**派发 `input`** ✓ —— 让 11 处读它的地方与读数一起更新 ✓。
+function setBrushSize(value) {
+  const size = $("size");
+  size.value = String(sizeClamp(value));
+  size.dispatchEvent(new Event("input", { bubbles: true }));
+}
+$("size").addEventListener("input", syncSizeControls);
+$("sizeValue").addEventListener("input", () => {
+  // 输入框：只在能解析成合法值时同步 ✓（否则用户删空的那一瞬间会被改成 1 ✓，很烦 ✗）。
+  const raw = Number($("sizeValue").value);
+  if (!Number.isFinite(raw) || raw <= 0) return;
+  setBrushSize(raw);
+});
+$("sizeDown").addEventListener("click", () => setBrushSize(Number($("size").value) - 1));
+$("sizeUp").addEventListener("click", () => setBrushSize(Number($("size").value) + 1));
+syncSizeControls();
 $("openDoc").addEventListener("click", showOpenDialog);
 $("clearSelection").addEventListener("click", async () => {
   await clearSelection();
@@ -8919,6 +9039,10 @@ const I18N_EN_TEXT = {
   "已连接": "connected",
   "id 即名字": "the id is the name",
   "名称": "Name",
+  // **新建文档对话框的尺寸**（用户：只有名称，想开 1920×1080 做不到 ✗）——
+  // 这两个是**模板里的文本节点** ✓ ⇒ `ui-i18n-coverage` 要求有词条 ✓，否则静态判据立刻红 ✓。
+  "宽度": "Width",
+  "高度": "Height",
   "新 id 即新文档": "a new id is a new document",
   "一笔多色": "Multi-colour stroke",
   "平滑": "Smooth",
@@ -9110,6 +9234,14 @@ const I18N_EN_ATTR = {
   "退出全屏画布（Esc）": "Exit full-screen canvas (Esc)",
   "文档以 id 作为名字（也是主键）。换个名字即可并存多份作品；重名会提示。": "A document is named by its id, which is also its primary key; a different name keeps several works side by side, and a duplicate name is reported",
   "例如 我的第一幅画": "for example my-first-painting",
+  // **粗细控件与新建尺寸的 tooltip**（本改动新加 ✓）——
+  // `ui-i18n-coverage` **不检查**属性（它只管文本节点）✗，但 `I18N_EN_ATTR` 是
+  // 英文模式下 tooltip 的真源 ✓ ⇒ 新加的属性文案都要有词条 ✓。
+  "画笔粗细（像素）。拖滑杆、点 −/＋，或直接输入数值。":
+    "Brush size in pixels; drag the slider, use the minus and plus buttons, or type a number.",
+  "细一档": "one step thinner",
+  "粗一档": "one step thicker",
+  "画笔粗细的精确数值（像素）": "exact brush size in pixels",
   "支持浏览器能解码的任何格式（PNG/JPEG/WebP）。图片在新图层上按原始像素导入。": "Any format the browser can decode (PNG/JPEG/WebP); the image arrives on a new layer at its original pixels",
   "以新 id 保存一份完整副本（原文档保留，可逆）。文档以 id 为主键，因此这里填的是新文档的 id。": "Save a complete copy under a new id, leaving the original in place; the new id goes here because a document's id is its primary key",
   "新文档 id": "new document id",

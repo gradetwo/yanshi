@@ -92,6 +92,25 @@ const PAGE_TAIL_A: &str = r##"</style>
     名称
     <input id="newName" type="text" placeholder="例如 我的第一幅画" style="flex:1 1 auto" />
   </label>
+  <!-- **尺寸**（用户报告：新建对话框只有名称，想开 1920×1080 做不到 ✗）。
+       服务端 `POST /api/documents` **一直收** `width`/`height`（缺省用服务端 flag ✓），
+       而对话框从来没把它们暴露出来 ✗ ⇒ `ensureDocument()` 把每个新文档都写死成 1024² ✓。
+       这里补两个输入框 + 几个常用尺寸按钮 ✓，并把数值**贯穿到那一次 POST** ✓。 -->
+  <div class="new-size">
+    <label>宽度 <input id="newWidth" type="number" min="1" max="8192" step="1" value="1024" /></label>
+    <span class="new-size-x">×</span>
+    <label>高度 <input id="newHeight" type="number" min="1" max="8192" step="1" value="1024" /></label>
+  </div>
+  <div class="new-presets" id="newPresets">
+    <button type="button" data-size="1920x1080">1920 × 1080</button>
+    <button type="button" data-size="1280x720">1280 × 720</button>
+    <button type="button" data-size="2560x1440">2560 × 1440</button>
+    <button type="button" data-size="3840x2160">3840 × 2160</button>
+    <button type="button" data-size="1024x1024">1024 × 1024</button>
+    <button type="button" data-size="2048x2048">2048 × 2048</button>
+    <button type="button" data-size="2480x3508">2480 × 3508</button>
+  </div>
+  <div id="newSizeHint" class="hint"></div>
   <div id="newHint" style="font-size:12px;opacity:.75;min-height:16px;margin:8px 0"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button id="newCancel">取消</button>
@@ -158,7 +177,22 @@ const PAGE_TAIL_A: &str = r##"</style>
 </dialog>
   <div class="options" id="options">
     <span class="tool-name" id="toolName">画笔</span>
-  <label>粗细 <input id="size" type="range" min="1" max="64" value="6" /></label>
+  <!-- **粗细**（用户报告：这个滑杆"不显眼" ✗）。
+       原来只是一个裸 `<label>` + 120px 滑杆 ✓：没有读数、没有边界感、和旁边的复选框长得一样 ✓。
+       现在把它**独立成组** ✓（边框 + 底色 + 标签 ✓），并给三样东西：
+         ① **实时读数** ✓（`#sizeValue`，拖滑杆、点快选、程序化赋值都会跟上 ✓）；
+         ② **± 按钮** ✓（细/粗各一档，不用精确拖 ✓）；
+         ③ 上限从 64 提到 **512** ✓ —— 应用本来就支持到 512（`brush_preview` 的上限就是 512 ✓），
+            而介质插件另有自报的 `maxDab`，会在落笔时自己夹住 ✓ ⇒ 提到 512 不会越界。
+       **注意**：`#size` 仍是那个 range，id 与语义**没变** ⇒ 11 处 `Number($("size").value)` 不受影响 ✓。 -->
+  <div class="size-control" title="画笔粗细（像素）。拖滑杆、点 −/＋，或直接输入数值。">
+    <span class="size-label">粗细</span>
+    <button type="button" id="sizeDown" title="细一档">−</button>
+    <input id="size" type="range" min="1" max="512" value="6" />
+    <button type="button" id="sizeUp" title="粗一档">＋</button>
+    <input id="sizeValue" type="number" min="1" max="512" step="1" value="6"
+           title="画笔粗细的精确数值（像素）" />
+  </div>
   <label>颜色 <input id="color" type="color" value="#c81e3c" /></label>
   <!-- **一笔多色（Loaded Brush）** ✓（用户："花瓣渐变只能分两笔，交界硬" ✗）：
        起点 = 上面的「颜色」✓、末端 = 这里 ✓；勾上之后**同一条笔迹**上渐变 ✓（不是一个对象两笔 ✗）。 -->
