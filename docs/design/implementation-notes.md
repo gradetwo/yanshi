@@ -51156,3 +51156,61 @@ for y in 0..render.height { for x in 0..render.width { ... buffer.set_pixel(...)
 
 ### 门禁
 1. fmt ✓、clippy ✓、`yanshi-server` 与 `yanshi-render` 的库测试 ✓（全量 `cargo test --workspace` 交给 CI ✓ —— 本机磁盘与时间都紧 ✓）。
+
+## 第 272 轮：A④ 定位到**冷启动整幅渲染**，并定下可证明逐字节相同的改法（本轮**未实现**）
+
+### 定位（读代码 ✓，不是猜 ✓）
+`crates/yanshi-server/src/document.rs:1112` 的选择逻辑：
+```rust
+let region = match (self.document_thumb.is_some(), dirty) {
+    (true, PreviewDirty::Clean) => None,                        // 一个像素都不渲染 ✓
+    (true, PreviewDirty::Region(bbox)) => Some(展开到整块),      // 只渲染脏块 ✓
+    _ => Some(doc_size),                                        // **冷启动 ⇒ 整幅** ✗
+};
+```
+1. **增量路径早已修好** ✓（第 1040 轮 ✓：`Clean` 与 `Region` 两条都不做整幅 ✓）。
+2. **剩下的成本全在冷启动那一条** ✗：`document_thumb` 还是 `None` ⇒ `Some(doc_size)` ⇒ **整幅 4K 渲染** ✓。
+3. 这正好解释我的实测：**空白**的 4K 新文档也要 **890 ms** ✓，且成本只随**像素数**增长（与内容无关 ✓）
+   ⇒ **∴ 它不像"画"的成本，像"分配与搬 830 万像素"的成本** ✓ —— 与 1107-1108 行的旧注释一致 ✓
+   （"先按整幅文档做全分辨率渲染（4K ⇒ 830 万像素缓冲区 ＋ 逐像素拷贝 ＋ 降采样）" ✓）。
+
+### 改法的前提（已核实 ✓）
+1. 背景在渲染器里是**一个 RGBA** ✓：`render.rs:542` 的
+   `let background = self.options.background.or_else(|| parse_background(&state.background));` ✓
+   而 `parse_background` 是 **`pub`** ✓（`render.rs:2395`）⇒ 可复用 ✓。
+2. 文档为空 = `self.state.objects.is_empty()` ✓（`document.rs:330` 已经这么读 ✓）。
+   ⚠️ **不能**用 `DocumentState::is_blank()` ✗ —— 它要求 `doc_id.is_none()` ✓（`state.rs:516` ✓），
+   而真实文档的 `doc_id` 是 `Some` ✗ ⇒ 它永远为假 ✓。
+3. **往返精确性有现成测试** ✓：`crates/yanshi-render/src/color.rs:283`
+   `u8_round_trip_is_exact_for_opaque_pixels` ⇒ **不透明**（alpha=255 ✓）像素的
+   `u8x4_to_linear_premul` ⇒ `linear_premul_to_u8x4` **逐位往返** ✓。
+   而默认背景正是不透明的白 ✓（`document.rs:58`：`{"r":255,"g":255,"b":255,"a":255}` ✓）
+   ⇒ **∴ 对不透明背景，这条优化可证明逐字节相同** ✓✓。
+
+### 定下的改法（下一轮实现 ✓）
+1. 在 `render_document_preview` 的**冷启动**分支加一个判别 ✓：
+   `document_thumb.is_none() && self.state.objects.is_empty() && 背景不透明` ✓。
+2. 命中时**不调 `render_region`** ✗ → ✓：改为构造一份**均匀**的 `render.rgba8`
+   （宽高 = 区域尺寸 ✓、每像素 = 背景色 ✓），然后**照原样**走
+   `Buffer::from_f32(… linear_premul_from_u8x4(&render.rgba8))` ⇒ `thumb.update_blocks_from_region(…)` ✓
+   ⇒ **∴ 平均那一步的输入与整幅渲染在空白文档上完全一致** ✓ ⇒ **∴ 输出逐字节相同** ✓✓。
+3. **不增加计数器** ✓：`document_preview_renders` / `full_canvas_renders` 是"这条路真的走了"的凭证 ✓
+   ⇒ 跳过渲染就不该 +1 ✓（实测 grep 过：`scripts/*.mjs` 里**没有判据**用这两个计数器 ✓ ⇒ 不会假红 ✓）。
+4. **代价两面** ✓：
+   * 收益：冷启动不再做整幅光栅化 ✓；仍要分配并填一份区域大小的 RGBA ＋ f32 缓冲 ✓
+     （4K 约 33 MB ＋ 133 MB ✓）⇒ 预期从 **890 ms** 降到**几十毫秒** ✓。
+   * 代价：**多一次分配**（比整幅渲染便宜得多 ✓）；**只在"空文档 ＋ 不透明背景"时生效** ✓
+     ⇒ 有内容的 4K 文档**不变** ✓（那一条要靠持久化预览 ✓）。
+5. **验证方式**（强 ✓）：用**旧二进制**与**新二进制**各取一份新 4K 文档的缩略图 blob ⇒ **两个 sha256 必须相同** ✓✓
+   （比"看起来一样"强 ✓）；并测首次 `get_document` 的前后对比 ✓；再加变异检验 ✓。
+
+### 本轮**未完成**的部分（如实报告 ✗）
+1. **改法尚未实现** ✗ —— 本轮只做到"定位 ＋ 证明前提 ＋ 定方案" ✓。
+   原因：实现要动 `render_document_preview` 的主路径 ✓，而我的上下文预算在本轮已接近用尽 ✗
+   ⇒ **∴ 宁可不写半成品** ✓（写错会破坏"缩略图逐字节一致"这条既有性质 ✗）。
+2. 下一轮：实现 ＋ 上面第 5 条的**双哈希比对**（旧/新二进制）＋ 变异检验 ✓。
+3. 我仍保留上一轮列的选项 a/b/c ✓ —— 本方案是**新的**选项 d：**只优化"空文档冷启动"** ✓，
+   **不降精度** ✓、**不动有内容的路径** ✓、**可证明逐字节相同** ✓。
+
+### 门禁
+1. 本轮**只改文档** ✓ ⇒ 不触发 CI ✓（`ci.yml` 的 `paths-ignore` 含 `docs/**` ✓）。
