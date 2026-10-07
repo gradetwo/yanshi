@@ -298,6 +298,13 @@ pub struct Document {
     /// 判据需要能看见"这一笔到底有没有跑那一次" ✓，且**与画布面积、与墙钟都无关** ✓
     ///（暖文档上的那一次是块渲染 ✓，冷文档上的那一次是整幅 ✓，两者都该被数到 ✓）。
     document_preview_renders: usize,
+    /// **缩略图**渲染次数 ✓（第 66 轮 ✓，**纯观测** ✓）。
+    ///
+    /// **为什么要它** ✗：保存点**无条件**调 `document.thumbnail(Doc256)` ✓，
+    /// 而那次调用会**自己整幅渲染一遍** ✗ ⇒ 实测 **+1241 ms**（4K ✓）／8K 更大 ✓
+    /// ⇒ **∴ 它违反本目标第 3 条**："**缩略图按需生成**" ✓。
+    /// **∴ 要靠它做判据** ✓：**重复保存时该计数不得增长** ✓（**变异**：去掉跳过去掉 ⇒ 计数增长 ⇒ 判据红 ✓）。
+    document_thumbnail_renders: usize,
     /// **最近一份缩略图缓存槽** ✓（不管哪一级 ✓）—— 每次写缩略图都要淘汰它替换掉的那份 ✓。
     ///
     /// **为什么需要它** ✓：真实工作区实测 **2161 个 blob 里 1912 个是孤儿、共 1.07 GB（约 95%）** ✗，
@@ -415,6 +422,7 @@ impl Document {
             full_canvas_renders: 0,
             pinned_blobs: std::collections::BTreeSet::new(),
             document_preview_renders: 0,
+            document_thumbnail_renders: 0,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
@@ -1543,6 +1551,8 @@ impl Document {
 
     /// 生成缩略图并输出 PNG 到 CAS（7 章）。
     pub fn thumbnail(&mut self, kind: ThumbKind, target: Option<Bbox>) -> Result<RenderedPreview> {
+        // **按需生成的计数** ✓（第 66 轮 ✓）：走到这里就说明**真的做了一次渲染** ✓。
+        self.document_thumbnail_renders += 1;
         let thumb: Thumb =
             render_thumbnail(&mut self.renderer, &self.state, &*self.store, kind, target)?;
         // 整幅重建 ⇒ 增量用的缓存像素已经过期 ✓（第 1040 轮）。

@@ -55583,3 +55583,31 @@ if let Ok(document) = ctx.workspace.document_mut(&doc_id) {
 
 ### 四、门禁
 1. 本轮未改产品代码 ✓（只读码 ✓）；工作区提交后干净 ✓。
+
+## 第 388 轮：✅ 加**缩略图渲染计数**（**纯观测** ✓，零行为改动 ✓）—— 下一步判据的前提 ✓
+
+### 一、改动（照 `preview_renders` 的样子 ✓，三处 ✓）
+| 处 | 内容 |
+|---|---|
+| `document.rs` 字段区 ✓ | `document_thumbnail_renders: usize` ✓（注释写明**为什么需要它** ✓） |
+| 初始化 ✓ | `document_thumbnail_renders: 0` ✓ |
+| `thumbnail()` 内 ✓ | 进入渲染前 `self.document_thumbnail_renders += 1;` ✓（"走到这里就是真做了一次渲染"✓） |
+
+### 二、门禁 ✓
+`cargo build --release` ✓、`fmt --check` ✓、`clippy -D warnings` ✓、
+`cargo test --workspace` **passed=927／failed=0** ✓（**927** ＝ 第 382 轮那条 `put_cache` 判据 ✓）
+⇒ **∴ 纯观测 ⇒ 行为不变 ⇒ 测试数不变** ✓（**这正是"加观测不该动行为"的证据** ✓）。
+
+### 三、∴ 下一步（**两小步 ✓**，然后才是实现）
+1. **暴露** ✓：在 `get_document` 的 `summary` 旁边 ✓（`tools.rs` 里 `summary["preview_renders"] = …` ✓）
+   加 `summary["thumbnail_renders"] = …` ✓ ⇒ 需要给 `Document` 加一个**同级访问器** ✓
+   （照 `document.rs` 里现有那个访问器写 ✓）。
+2. **判据先行** ✓（三形态 ✓，见第 387 轮 ✓）：
+   * ①"**重复保存 ⇒ 计数不增长**"✓（**变异**：去掉跳过 ⇒ 红 ✓）；
+   * ②"**首次保存仍产出正确 Doc256**"✓（由**已建且含变异**的"打开快"判据守住 ✓）；
+   * ③（**最关键 ✓**）"**有变化之后再保存 ⇒ 缩略图必须更新**"✓
+     （**变异**：跳过条件**永不失效** ⇒ 缩略图停旧 ⇒ **红** ✓）。
+3. **然后**才实现"按需"跳过 ✓（用已有的 `document_thumbnail_seq` ＋ `render_watermark` ✓）。
+
+### 四、门禁
+1. 本轮改动仅**加一个计数** ✓（无行为变化 ✓）；工作区提交后干净 ✓。
