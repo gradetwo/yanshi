@@ -525,6 +525,26 @@ const canvasFingerprint = `(() => {
   }
   return { opaque, total: data.length / 4, sum };
 })()`;
+// **先换到一个全新的文档**（第 228 轮）：这是唯一稳妥的隔离方式 ✓。
+// 证据：失败时的起始指纹（139391153）接近通过时的**结束**指纹（139044406）
+// ⇒ 画布停在**上一轮 invert 之后**的状态（末尾那次 undo **没有**总是生效 ✓）
+// ⇒ 本轮 invert 把它反转回去 ⇒ 指纹与"之前"相同 ⇒ 误报 ✓。
+// 而 effect **始终**落在 layer_default（我显式选层的尝试无效 ✓）
+// ⇒ 只有"换文档"能保证前置确定 ✓。
+// **搬动是安全的** ✓：invert 段之后的步骤各自新建文档并导航（maskDoc:707、moveDoc:890、
+// selDoc:1239、eraserDoc:1584 ✓）⇒ 它们不看这个文档 ✓。
+const invertDoc = "uicheck-invert-" + Date.now().toString(36);
+const invertToken = await fetch(`${origin}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: invertDoc, width: 900, height: 640 }),
+}).then((r) => r.json()).then((v) => v.token);
+await send("Page.navigate", { url: `${origin}/?doc=${invertDoc}&token=${invertToken}` });
+// 等查看器就绪（与重载段同一手法：轮询内核头）。
+for (let i = 0; i < 80; i++) {
+  if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+
 // **先建立本段自己的前置内容**（第 225 轮）：invert 必须**有可反转的内容**才有意义 ✓，
 // 而前面的段落留下的画布状态**不稳定** ✗ ⇒ 实测 2 次里 1 次报"没有任何变化" ✓
 //（不透明像素 36040/36040 ⇒ 画布有内容，指纹却完全不变 ⇒ 不是等待不够 ✓）。
