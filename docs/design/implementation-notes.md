@@ -50067,3 +50067,35 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. 本轮只读现有判据与记录。产品代码没改。
+
+## 第 243 轮：原生对照需要暴露一个函数
+
+### 读到的事实
+1. Kernel（内核主类型）的公开方法里**没有** paint_brush：
+   new / doc_id / head_seq / set_memory_limit / set_viewport / evict_outside_viewport /
+   set_preview_object / extend_preview_stroke / commit_preview / clear_preview /
+   has_preview / blob_put / blob_get / load_atoms_json / apply_atom_json / apply_atom /
+   render_region_direct_rgba / render_region。
+2. paint_brush 在 **lib.rs:54**，属于另一个类型（wasm-bindgen 的对外门面）。
+3. 它内部调 crate::brush::paint（brush.rs:243）。
+4. 而 brush::paint 是 **pub(crate)** ⇒ **原生测试调用不到**。
+
+### 所以原生对照实验需要一处产品改动
+1. 把 brush::paint 暴露成本 crate 之外可调（例如 pub 或 #[doc(hidden)] pub）。
+2. 或者给 Kernel 加一个同名的转发方法。
+3. 两种都只是"开口"，不改行为、不降精度。
+4. 代价：公开面多一个函数（文档与稳定性成本）。
+5. 收益：能让"wasm 与 x86_64 是否逐字节一致"从推断变成**实测**。
+
+### 我这一轮做了什么
+1. 写了一个原生测试 crates/yanshi-wasm/tests/native_brush_bytes.rs。
+2. 它编译不过：Kernel 上没有 paint_brush。
+3. 我**删掉**了它，保持树绿。没有把它留在仓库里。
+
+### 下一步（需要决策）
+1. 若允许"开口"⇒ 我把 brush::paint 提升为 pub（带 doc 注释说明用途），
+   再写原生对照测试，一次定三件事（见第 242 轮）。
+2. 若不允许 ⇒ 这项停在"已定性、未实测"。
+
+### 门禁
+1. fmt 通过，clippy 通过，全量构建通过。测试文件已删除。
