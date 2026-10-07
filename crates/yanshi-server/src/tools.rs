@@ -2148,7 +2148,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "batch",
         profile: Profile::Core,
-        summary: "批量调用（同一变更集，可整体撤销）",
+        summary: "批量调用（同一变更集，可整体撤销）。\
+                 **连续作画提速** ✓：`silent: true` 时子调用**不产出预览图** ✓\
+                 ⇒ 也就**不编码 PNG** ✓（实测每笔省 ~50 ms ✓，4K / `Clouds.myb` / size 180 ✓）。\
+                 需要中途看进展就用 `preview_every_n_strokes: N`（每 N 笔放行一次 ✓）\
+                 或 `preview_interval_ms: M`（每 M 毫秒放行一次 ✓）—— 放行的那一次**照常产出预览** ✓。\
+                 **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
+                 要图时**不传**它即可 ✓（默认行为不变 ✓）。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]"),
