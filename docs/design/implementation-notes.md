@@ -49200,3 +49200,31 @@ smudge  服务端拒绝：这一笔没落下任何像素 ⇒ 笔刷「smudge.myb
 
 ### 门禁
 1. 本轮只读代码与记录。产品代码没改。
+
+## 第 214 轮：服务端已报出 fed_base
+
+### 改动（tools.rs，四处）
+1. struct BrushPaint 加字段 fed_base: bool。
+2. 构造点填 fed_base: reads_canvas。
+3. 解构点加 fed_base,。
+4. 响应加 value["fed_base"] = json!(fed_base);（紧跟在 value["region"] 之后）。
+
+### reads_canvas 的定义
+tools.rs:12605：let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+
+### 自证与门禁
+| 项目 | 结果 |
+|---|---|
+| fed_base 出现次数 | 4 |
+| fmt | 通过 |
+| clippy（全 workspace） | 通过 |
+| yanshi-server 单测 | 57 通过 |
+| 全量构建 | 通过 |
+
+### 下一步
+1. 判据读 made.fed_base。
+   - 真 ⇒ 喂底图比对。底图必须与服务端同源（整层合成，不是对象 blob）。
+   - 假 ⇒ 空表面比对，不喂。
+2. 重建 yanshi-mcp 与 yanshi-serve（响应字段）。
+3. 跑全量，看 386 是否回落。
+4. 变异检验：把 fed_base 反转，判据应当红。

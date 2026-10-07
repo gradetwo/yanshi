@@ -11866,6 +11866,15 @@ struct BrushPaint {
     steps: usize,
     /// 真正落下的像素数 ✓（0 ⇒ 由 `paint_brush` 统一报错 ✓，不静默 ✓）。
     painted: usize,
+    /// **这一笔是否吃了底图** ✓（第 215 轮 ✓）：等值于
+    /// `feed_base && brush_reads_the_canvas(&brush)` ✓。
+    ///
+    /// **为什么要报出来** ✗：涂抹类与混合类笔刷靠抹开画布上已有的颜色 ✓ ⇒ 服务端会先
+    /// `render_region_raw` 取整层合成再喂进 `surface` ✓；而判据的门面原先从**空** surface 起
+    /// ⇒ 这类笔刷**输入不等价** ✓（实测 386/796 条"差异" ✓），而**不吃画布**的笔刷又必须
+    /// **从空表面**比（喂了反而要剔"没碰过的像素"✗，实测喂了就 0 条相同 ✓）。
+    /// ⇒ 判据**无法**自己判断该不该喂 ✗ ⇒ 必须由**唯一的事实源**告出 ✓。
+    fed_base: bool,
 }
 
 /// **采样点解析** ✓：`[[x,y], [x,y,pressure?], ...]` ✓（`brush_stroke` / `brush_preview` 共用 ✓）。
@@ -12834,6 +12843,7 @@ fn paint_brush(
         rgba,
         steps,
         painted,
+        fed_base: reads_canvas,
     })
 }
 
@@ -12959,6 +12969,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         mut rgba,
         steps,
         painted,
+        fed_base,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     // **选区裁剪**（需求 P0-3）：不在选区内的像素**不许进图层** ⇒ 与"引擎没碰过"同等对待 ✓
@@ -13081,6 +13092,9 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
     value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
+    // **再报出这一笔是否吃了底图**（第 215 轮）：判据据此分类比对 ✓
+    //（吃了 ⇒ 比"喂同样底图"；没吃 ⇒ 比"空表面"✓），不再自己猜名单 ✓。
+    value["fed_base"] = json!(fed_base);
     // **部分越界要说出来** ✗（不静默 ✓）：否则调用方会以为"我要的那一片都画到了" ✓。
     value["clipped"] = json!(clipped);
     if clipped {
