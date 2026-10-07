@@ -125,6 +125,17 @@ for (const brush of names) {
       }
     }
   }
+  // **两端第一个有墨像素的索引**（第 257 轮）：若不同 ⇒ 布局／起点差异 ✓。
+  const firstInked = (buf) => {
+    for (let i = 0; i + 3 < buf.length; i += 4) {
+      if (buf[i + 3] > 0) return i / 4;
+    }
+    return -1;
+  };
+  console.log(
+    `    有墨首像素：服务端 #${firstInked(serverBytes)}｜门面 #${firstInked(facadeBytes)}` +
+    `（区域 ${region.w}×${region.h} ⇒ 行 = 索引 / ${region.w}）`,
+  );
   const expected = region.w * region.h * 4;
   let firstDiff = -1, maxDelta = 0, differing = 0;
   const length = Math.min(serverBytes.length, facadeBytes.length);
