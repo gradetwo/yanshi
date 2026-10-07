@@ -48891,3 +48891,51 @@ tools.rs:12577:  let mut surface = hokusai::tile_mem::MemSurface::new();
 
 ### 门禁
 1. 本轮只读代码与记录。产品代码没改。
+
+## 第 203 轮：决定性分类。差异全在吃画布的笔刷上
+
+### 统计结果
+| 项目 | 数值 |
+|---|---|
+| 全同的笔刷 | 103 |
+| 有差异的笔刷 | **79** |
+| 总比对条目 | 796（199 支 × 4 色） |
+| 不同条目 | 389 |
+
+### 有差异的笔刷名（去重后节选）
+smudge、Smear、Smear_sm、Blender、blending、blending_knife、blend+paint、blur、Blur_Fast、
+airsmudge_a、basic_digital_brush_smudging、basic_digital_knife_smudging、sponge_smudging、
+imp_blending、imp_details、RS_blendOP、Wet_Direction、wet_knife、wet_paint_sm、Smear_sm、
+oil-01-paint、oil-01-clean、oil-03-paint、oil-mop、acrylic-03-paint、acrylic-03-with-water、
+acrylic-04-with-water、acrylic-05-with-water、water-01、water-05、water-06、
+watercolor-02-paint、watercolor-glazing、watercolor_expressive、wet_watercolor、only_water_fringe、
+pick_and_drag、Posterizer、Dirty_Noise、modelling、modelling2、puantilism、impressionism、Splash…
+
+### 结论
+1. 有差异的笔刷**全部**是吃画布或与画布混合的那一类。
+2. 不吃画布的笔刷（100%_Opaque、2B_pencil、chalk 的多数）**全部相同**。
+3. 所以差异**正好按"是否读画布"分类**。
+4. 而服务端对这些笔刷会先喂图层像素进 surface（见 tools.rs:11820 的注释）。
+5. 判据调门面时**没有**喂同样的底图。
+6. 所以这是**判据的输入不等价**，不是产品缺陷。
+
+### 判据原话与它的漏洞
+判据开头写："两边喂的笔刷、设置、点列、区域全都相同"。
+1. 它列了四项，**漏了底图**。
+2. 对吃画布的笔刷，底图是输入的一部分。
+3. 所以那句话对这类笔刷不成立。
+
+### 修法（两步）
+1. 第一步：判据按"是否吃画布"分类统计并打印两类计数。
+   收益：绿的含义变清楚。代价：判据变复杂一点，且要维护一份笔刷分类。
+2. 第二步：给门面喂同样的底图，真正逐字节比对。
+   收益：覆盖吃画布的笔刷，这才是产品要支持的能力。
+   代价：要把图层区域像素传进 wasm。改动面较大。
+3. 两步都不降精度。
+
+### 也可以选：先只做第一步
+1. 它便宜，而且立刻让判据的结论可信。
+2. 第二步留作独立任务。
+
+### 门禁
+1. 本轮只统计与记录。产品代码没改。
