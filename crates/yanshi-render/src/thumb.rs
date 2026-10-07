@@ -359,24 +359,19 @@ pub fn render_thumbnail(
 ) -> Result<Thumb> {
     // **缩略图三段探针** ✓（第 72 轮 ✓）：用户 P1-1（512px 与全幅**同耗时** ✗）与会话实测
     //（`thumbnail(Doc256)` **+1241 ms** ✗）指向同一处 ⇒ **∴ 先分清三段各占多少** ✓。
-    let _tp = std::env::var_os("YANSHI_TRACE_THUMB").is_some();
-    let _t0 = std::time::Instant::now();
     let _tmark = |tag: &str| {
-        if _tp {
             let _ = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open("/tmp/yanshi-thumb-trace.log")
                 .and_then(|mut f| {
                     use std::io::Write;
-                    writeln!(f, "THUMB {tag} {} ms", _t0.elapsed().as_millis())
                 });
         }
     };
     let region =
         target.unwrap_or_else(|| Bbox::new(0.0, 0.0, state.width as f64, state.height as f64));
     let render = renderer.render_region(state, store, region)?;
-    _tmark("render_region");
     let mut buffer = Buffer::new(0, 0, render.width, render.height);
     for y in 0..render.height {
         for x in 0..render.width {
@@ -386,9 +381,7 @@ pub fn render_thumbnail(
         }
     }
     let mut thumb = Thumb::new(kind);
-    _tmark("pixel_copy");
     thumb.update_full(&buffer, region);
-    _tmark("update_full");
     Ok(thumb)
 }
 
