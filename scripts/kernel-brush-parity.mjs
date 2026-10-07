@@ -59,13 +59,23 @@ const facade = (request) => {
   return out ? Uint8Array.from(out) : null;
 };
 
-await tool("create_layer", { layer_id: "L" });
+// **每个色用新图层**（第 206 轮）：判据原先在**同一画布**上累积落笔 ⇒
+// 从第二笔起底图**非空** ⇒ 吃画布的笔刷（smudge / watercolor 一类）服务端会读到它，
+// 而门面从空表面开始 ⇒ **两边输入不等价** ⇒ 389/796 次"差异"其实是判据的假设不成立。
+// 新图层 ⇒ 底图恒为空 ⇒ 两边输入真正等价 ✓。
 let allEqual = true;
 for (const brush of names) {
  for (const [colourName, colour] of colours) {
   const slug = `${brush.replace(/[^a-z0-9]/gi, "_")}_${colourName}`;
+  const layerId = `L_${slug}`;
+  const layer = await tool("create_layer", { layer_id: layerId });
+  if (!layer.ok) {
+    console.log(`  ${brush.padEnd(14)} 建图层被拒：${(layer.context || {}).detail?.slice(0, 60)}`);
+    allEqual = false;
+    continue;
+  }
   const made = await tool("brush_stroke", {
-    layer_id: "L", object_id: `o_${slug}`, brush,
+    layer_id: layerId, object_id: `o_${slug}`, brush,
     size, color: colour, points: pointList,
   });
   if (!made.ok) {
