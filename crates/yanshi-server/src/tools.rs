@@ -13625,7 +13625,24 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     // 位于**表达式位置**（`Ok((…))` ✓），语句插不进去 ✓（我为此失败两次 ✗）。
     // 这里量两段 ✓：① `export_project`（读日志 ＋ 收集 ＋ 组装 tar ✓）② `store.put`（入 CAS ✓）。
     let _probe_t0 = std::time::Instant::now();
+    // **导出第三轮分段探针（第 63 轮 ✓）**：`other_ms` ＝ 1254 ms ✗，而已知
+    // `export_project` 75 ms ✓ ＋ 存储 18 ms ✓ ⇒ **∴ ~1.16 s 未归属** ✓ ⇒ 必须量 ✓。
+    // **锚点纪律** ✗：每处都断言**唯一** ✓（第 382 轮我因锚点不唯一插错过位置 ✗）。
+    let _p3 = std::time::Instant::now();
+    let _p3_mark = |tag: &str| {
+        if std::env::var_os("YANSHI_TRACE_EXPORT3").is_some() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/yanshi-export3-trace.log")
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "EXPORT3 {tag} {} ms", _p3.elapsed().as_millis())
+                });
+        }
+    };
     let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+    _p3_mark("export_project");
     if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
         let _ = std::fs::OpenOptions::new()
             .create(true)
@@ -13697,8 +13714,10 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         // 缩略图从**刚填好的整幅缓存**里取 ✓ ⇒ 便宜 ✓（不是再来一次整幅渲染 ✗）。
         if let Ok(document) = ctx.workspace.document_mut(&doc_id) {
             let _ = document.thumbnail(yanshi_render::thumb::ThumbKind::Doc256, None);
+            _p3_mark("thumbnail_doc256");
         }
         let _ = ctx.workspace.cache_document_preview(&doc_id);
+        _p3_mark("cache_document_preview");
     }
     // **先落 `path`** ✓（老行为 ✓：写不进去要**响亮地失败** ✓，而不是回一个 URL 就当成功 ✓）。
     if let Some(path) = &path {
@@ -13718,6 +13737,7 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     // **∴ 已撤回** ✓ —— **不许**为了零收益去削弱持久性 ✗（那是**双输** ✓）。
     // **∴ 下一步若要省它** ✓：在 `FsBlobStore::put_inner` **内部分段记时** ✓（写字节／改名／同步 ✓）。
     let hash = ctx.workspace.store().put(&tar)?;
+    _p3_mark("store_put");
     if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
         let _ = std::fs::OpenOptions::new()
             .create(true)
