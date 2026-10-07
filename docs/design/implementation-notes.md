@@ -51015,3 +51015,41 @@ Kernel::new      (doc_id, tile_size, width, height, memory_limit)   // 同一顺
 1. 我在**注入 `evaluate()` 的脚本体**的注释里写了反引号 ✗（`` `target/debug/yanshi-serve` `` ✓）
    ⇒ 模板字符串被提前终止 ✓ ⇒ `node --check` 报 `missing ) after argument list` ✓。
 2. 已去掉，并加了一次**系统性扫描** ✓：逐个 `evaluate(\`…\`)` 检查注入体里没有反引号 ✓ ⇒ 0 个 ✓。
+
+## 第 269 轮：修好 wasm 时间 API 守卫（并更正我上一条误报）
+
+### 我上一条报告错了
+1. 我说 CI 的 `test (stable)` / `test (beta)` 失败是"**既有、非我引入**" ✗ —— **错** ✓。
+2. 我只核对了 `99dc51e` 那次 —— 而那已经是**本会话之内**的提交 ✓ ⇒ 不构成"既有"的证据 ✗。
+3. 更糟的是：我说"本地 `cargo test --workspace` 全过" ✗ —— 也是**错的** ✓。
+   我当时用 `grep` 过滤输出 ✓，只看到一堆 `test result: ok` ✓，
+   还碰上"断开的管道"截断 ✓ ⇒ **漏看了那条 FAILED** ✗。
+4. 而且按当时的实际情况，**它在本机也能复现** ✓（`cargo test -p yanshi-render --test wasm_target_guard` ✓）。
+
+### 真正的根因
+1. `9ff42c5`（**今天 08:48**，比当前 HEAD 早 **94** 个提交 ⇒ 本会话早前的工作 ✓）
+   给 `crates/yanshi-core/src/blob.rs` 的 `put_inner` 加了一处计时用的
+   `std::time::SystemTime::now()`（用在 `epoch_ms`，为"与外部报告对表"✓）。
+2. 而 `crates/yanshi-render/tests/wasm_target_guard.rs` 会**文本扫描**
+   `yanshi-core` / `yanshi-render` / `yanshi-wasm` 的源码 ✓，
+   要求每个文件的"宿主时间 API"计数与**白名单**一致 ✓（每项都要写理由 ✓）。
+3. 那次提交**没有**更新白名单 ✗ ⇒ 守卫从那以后一直红 ✓。
+4. 守卫**不理解 `cfg`** ✗（纯文本扫描 ✓）⇒ 光加 `#[cfg(...)]` 不会让它变绿 ✓。
+
+### 修法（按仓库既有做法）
+1. 先核实"这段代码在 wasm 上是否可达" ✓：
+   * wasm 内核用 **`MemoryBlobStore`** ✓（`crates/yanshi-wasm/src/kernel.rs:17` + `:200` 的 `store` 字段 ✓）；
+   * 出问题的代码在 **`FsBlobStore::put_inner`** ✓，那是**文件系统**存储 ✓ ⇒ **wasm 从不调它** ✓；
+   * 但 `blob` 模块是**无条件**编译的 ✓（`yanshi-core/src/lib.rs:46` 的 `pub mod blob;` ✓）
+     ⇒ 这段代码**会编进 wasm32** ✗ ⇒ 属白名单里登记过的"**潜在风险**"那一类 ✓。
+2. 在白名单里加一条 ✓：`crates/yanshi-core/src/blob.rs`，计数 **3** ✓
+   （2 处 `Instant::now()` ＋ 1 处 `SystemTime::now()` ✓），
+   理由写清：是哪一轮加的、受哪个开关控制、为什么 wasm 运行时不会调到、以及**什么条件下必须改成 cfg 门** ✓。
+3. 修后：`cargo test -p yanshi-render --test wasm_target_guard` ⇒ **2 passed** ✓；
+   `cargo test --workspace` ⇒ **EXIT=0** ✓、**147 个测试目标全过** ✓。
+
+### 教训（写进交接文档）
+1. **判断"是不是我引入的"要回到我动手之前的提交** ✗ —— 拿"本会话之内的某个提交"当基线不算证据 ✓。
+2. **跑测试要看退出码** ✓，**不要用 `grep` 过滤输出** ✗ ——
+   过滤会漏掉 `FAILED` ✓，管道截断还会把证据吃掉 ✓。
+3. 这套守卫是**文本扫描** ✓ ⇒ 新增宿主 API 用法必须**同步登记白名单** ✓，加 `cfg` 不够 ✓。

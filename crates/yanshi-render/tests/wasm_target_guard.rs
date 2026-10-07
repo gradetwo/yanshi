@@ -39,6 +39,18 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
              属于**潜在风险**：若内核将来调用 `now_ms()`，在 wasm32 上会 panic —— \
              scripts/wasm-smoke.sh 的写入路径用例就是为盯住这件事而存在",
         ),
+        (
+            "crates/yanshi-core/src/blob.rs",
+            3,
+            "第 1504／1611 轮的**存储写入分段计时**（`put_timing`，受 `YANSHI_OPEN_TIMING` 开关控制）：\
+             2 处 `Instant::now()` 与 1 处 `SystemTime::now()`（后者是 9ff42c5 为「与外部报告对表」加的 \
+             `epoch_ms`）。它们都在 **`FsBlobStore::put_inner`** 里 —— 那是**文件系统**存储。\
+             而 wasm 内核用的是 **`MemoryBlobStore`**（见 crates/yanshi-wasm/src/kernel.rs 的 `store` 字段），\
+             **从不调 `FsBlobStore`** ⇒ 运行时不会被调到。\
+             属于**潜在风险**：`blob` 模块是**无条件**编译的 ⇒ 这段代码**会编进 wasm32**；\
+             若将来门面也用文件系统存储，就必须先把它挪进 `#[cfg(not(target_arch = \"wasm32\"))]` 分支。\
+             scripts/wasm-smoke.sh 的写入路径用例是这件事的守卫",
+        ),
     ]
 }
 
