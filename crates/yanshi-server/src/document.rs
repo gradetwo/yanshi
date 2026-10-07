@@ -1305,7 +1305,27 @@ impl Document {
             return PreviewDirty::Unknown;
         };
         let mut dirty = PreviewDirty::Clean;
+        // 采样：每 1/4 打一次绝对时间戳（第 1510 轮）。它区分"每轮都均匀地慢"与"某几轮很慢"。
+        let trace = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
+        let total = head.saturating_sub(from) as usize;
+        let mut seen = 0usize;
         for atom in self.log.range_exclusive_inclusive(from, head) {
+            if trace {
+                if total > 0
+                    && (seen == 0
+                        || seen == total / 4
+                        || seen == total / 2
+                        || seen == (total * 3) / 4
+                        || seen + 1 == total)
+                {
+                    let epoch_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    eprintln!("dirty_since epoch_ms={epoch_ms} i={seen} of={total}");
+                }
+                seen += 1;
+            }
             let Ok(current) = folder.fold(&self.log, atom.seq) else {
                 return PreviewDirty::Unknown;
             };

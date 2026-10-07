@@ -48432,3 +48432,53 @@ fn dirty_since(&self, from: Seq) -> PreviewDirty {
 ### 下一步
 1. 我把脏区记录并入一次折叠。改 plan_dirty 的输入，让它吃两颗 atom 而不是两份状态。
 2. 改后用同一条判据证明回落。判据是 get_document 的墙钟，以及 dirty 的正确性测试。
+
+## 第 1525 轮：精确根因是 remember 的两次克隆
+
+### 采样数据
+```
+dirty_since epoch_ms=1791334722491 i=0     of=9739
+dirty_since epoch_ms=1791334734848 i=2434  of=9739
+dirty_since epoch_ms=1791334770016 i=4869  of=9739
+dirty_since epoch_ms=1791334827564 i=7304  of=9739
+dirty_since epoch_ms=1791334908491 i=9738  of=9739
+```
+1. 四段分别用时 12357、35168、57548、80927 毫秒。
+2. 每段 2434 轮。所以每轮是 5.1、14.4、23.6、33.2 毫秒。
+3. 每轮都慢，而且越往后越慢。
+4. 总用时 187000 毫秒，平均每轮 19.2 毫秒。
+5. 越往后越慢说明每轮的成本与状态大小成正比。状态随原子增多而变大。
+
+### 精确原因（seq.rs:714）
+```rust
+fn remember(&mut self, result: StateAt) -> StateAt {
+    if result.seq % RESUME_STRIDE == 0 {
+        self.stride.push_back((result.seq, result.clone()));   // 克隆 1
+        while self.stride.len() > STRIDE_CAPACITY { self.stride.pop_front(); }
+    }
+    self.last = Some(result.clone());                          // 克隆 2，每次都做
+    result
+}
+```
+1. 每次 fold 都必然克隆一次完整状态。那是 self.last。
+2. 每 RESUME_STRIDE 次再多一次。那是存进 stride。
+3. fold 的其它返回路径也有 clone。见 seq.rs 的 let result = last.clone()。
+
+### 成本模型
+1. 每轮至少一次完整状态克隆。
+2. 状态大小与对象数成正比。所以成本是 原子数 乘以 状态大小。
+3. 对 9742 原子与数百对象，就是上百秒。与实测 187 秒吻合。
+
+### 修法（两步，都要保住正确性）
+1. 第一步：把 last 与 stride 的存储改成共享句柄。例如 Arc。
+   收益：每轮从两次克隆降到一次。
+   代价：StateAt 的读写要多一次解引用。改动面在 seq.rs 内部。
+2. 第二步：dirty_since 不要每轮折一遍。
+   收益：去掉每轮那次必要的完整状态。
+   代价：要把脏区记录并入一次折叠。改动面在 document.rs 与 dirty.rs。
+3. 两步都不改精度。脏区结果不变。
+
+### 下一步
+1. 先做第一步。它小，且容易验证。
+2. 用已有的 dirty 正确性测试守住行为。
+3. 再用同一条判据证明 get_document 墙钟回落。
