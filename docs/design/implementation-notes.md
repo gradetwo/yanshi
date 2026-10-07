@@ -49960,3 +49960,30 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. 本轮只读源码与记录。产品代码没改。
+
+## 第 240 轮：读回被排除（9 支差异笔都不吃画布）
+
+### 推理
+1. 服务端只在 reads_canvas 为真时才读回 surface 取 before_pixels。
+2. reads_canvas = feed_base && brush_reads_the_canvas(&brush)。
+3. 而 9 支有差异的笔（8B_Pencil#1、chalk、irregular_ink、marker_*、Fountain_*、P-Shade）
+   都是**不吃画布**的 ⇒ reads_canvas 为假 ⇒ 服务端**不读回**。
+4. 所以"读回推进引擎状态"这个候选对本轮的差异**不适用**，排除。
+
+### 所以差异只能在别处
+| 候选 | 状态 |
+|---|---|
+| 服务端多算 seed_region | 待查。它只做几何计算，不应消耗随机 |
+| 颜色换算不同 | 已排除（两端都调 rgb_to_hsv，同一函数） |
+| 笔刷设置不同 | **待查**。内核 configure 设 4 个字段，服务端也设同一批 |
+| 内核多算 | 待查（内核的 paint 里只有 from_str、configure、stamp、read_back） |
+| 读回 surface | **本轮排除** |
+
+### 下一步（可红）
+1. 打印两端**最终**的笔刷设置（例如 Radius、Opaque、Hardness、ColorH/S/V 的 base_value）。
+2. 若某个字段不同 ⇒ 那就是根因。
+3. 若全部相同 ⇒ 差异在引擎内部状态，需要看 stroke_to 的调用次数。
+4. 做法：服务端已在 fed_base 上做过同类上报，可以照此加一个"笔刷设置摘要"。
+
+### 门禁
+1. 本轮只推理与记录。产品代码没改。
