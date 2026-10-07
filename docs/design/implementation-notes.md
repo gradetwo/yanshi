@@ -55868,3 +55868,29 @@ THUMB update_full  1192 ms    ← 缩到 256² **+34 ms** ✓
 
 ### 五、门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）；探针**保留** ✓（env 门控 ✓、零行为影响 ✓）。
+
+## 第 397 轮：🚨 **我把 wasm 目标的守卫测试弄红了** ✗ —— 已修 ✓（**仓库自己的规则救了我** ✓）
+
+### 一、失败（我上一轮**提交并推送**了它 ✗ ⇒ 必须立刻修 ✓）
+```
+test host_only_time_apis_are_explicitly_accounted_for ... FAILED
+crates/yanshi-render/tests/wasm_target_guard.rs:119
+assertion failed: wasm 目标代码里出现了未登记的宿主时间 API 用法。
+  left/right 的差异里出现 ("crates/yanshi-render/src/thumb.rs", N)
+```
+**真因** ✓：我的三段探针在 **`crates/yanshi-render/src/thumb.rs`** 里用了 **`std::time::Instant`** ✗
+—— 而 **`yanshi-render` 会编到 `wasm32`** ✓ ⇒ **∴ 该 crate 禁止宿主时间 API** ✓（仓库有守卫 ✓）。
+
+### 二、修法（**撤回，不白名单** ✓）
+* **撤掉 `thumb.rs` 里的探针** ✓（`git checkout` ✓）；
+* **⚠️ 为什么不登记进白名单** ✗：那条守卫反映的是**真实的 wasm 约束** ✓
+  —— 我加计时只是为了**一次性测量** ✓，而**数字已经拿到** ✓（第 396 轮 ✓）⇒ **∴ 撤回零损失** ✓。
+* **∴ 教训所属** ✓：**跨端 crate 里不许加宿主 API** ✓ —— 我要测时，应当
+  **改在宿主侧**（`yanshi-server` ✓）或用**已有的** `YANSHI_OPEN_TIMING`／`put_timing` 机制 ✓。
+
+### 三、∴ 这次失败**同时是好事** ✓
+它证明 **wasm 端的中立性是被机器守着的** ✓ —— 我这类"顺手加个 `Instant`"✗的行为**跑不掉** ✓
+⇒ **∴ 这比任何人工 review 都硬** ✓。
+
+### 四、门禁
+1. 撤回后：`wasm_target_guard` 绿 ✓；全量 `cargo test --workspace` 见输出 ✓。
