@@ -55652,3 +55652,37 @@ ctx.putImageData(new ImageData(bytes, w, h), …);   // ← 否则**无条件替
 
 ### 五、门禁
 1. 本轮**未改代码** ✓（只读码定位 ✓）；工作区提交后干净 ✓。
+
+## 第 391 轮：✅ 过期补丁护栏**在真浏览器里验证通过** ✓（`browser-stroke-refresh.mjs` EXIT=0 ✓）
+
+### 一、验证方式（**本机就有 chromium** ✓ ⇒ 可本地真跑 ✓）
+```bash
+chromium --headless=new --remote-debugging-port=9600 …            # CDP ✓（Chrome/153 ✓）
+curl -sf -X PUT "http://127.0.0.1:$CDP/json/new?$VIEWER_URL"      # 照 run-criteria.sh 的配方 ✓
+CDP_PORT=$CDP node scripts/browser-stroke-refresh.mjs "$V" "$P" "$TOK" "$CDP"
+```
+
+### 二、结果 ✓
+```
+EXIT=0 ✓
+inkSamples: [790, 790, 790, 790, 790, 790, 790, 790, 790]   ← **连续 9 次采样都保持 790** ✓
+                                                              （**没掉到 0** ⇒ **"闪一下"没发生** ✓✓）
+blankBlitsSkipped: 0
+screenshot: /tmp/yanshi-stroke-refresh/stroke-stable-after-commit.png
+```
+⇒ **∴ 修复有效** ✓（该判据判的正是用户症状 ②"落笔结束还是会闪一下"✓）。
+**⚠️ 如实** ✗：用户症状 ②"**下层 `.myb` 被盖白**" ✓ **没有**被这条判据**直接**覆盖 ✓ ——
+它走的是**同一个护栏** ✓（过期 ⇒ 不盖 ✓）⇒ **∴ 机理相同 ✓，但"盖白"这一具体形态仍建议你手工复核一次** ✓。
+
+### 三、本轮改动（`crates/yanshi-http/assets/viewer-app.js` ✓，19 行 ✓）
+```
+const patchSeq = Number(value.head_seq || 0);
+const knownSeq = Number(window.yanshiStats.serverHead || state.localSeq || 0);
+if (patchSeq > 0 && knownSeq > 0 && patchSeq < knownSeq) { 记日志; return 0; }   // 过期 ⇒ 不许盖 ✓
+```
+**∴ 不会让画面停旧** ✓：本次取图**由一次更新触发** ✓ ⇒ 更新的补丁随后会到 ✓；
+且**每次跳过都记进 `blitLog`／`staleBlitsSkipped`** ✓ ⇒ 万一还闪，可**从日志读出原因** ✓。
+
+### 四、门禁
+1. `node --check` ✓、`skipped-stale`／`staleBlitsSkipped` **grep 证实落地** ✓、`cargo fmt --check` ✓；
+2. 浏览器判据 `EXIT=0` ✓（**真实 CDP 浏览器 ✓**）。
