@@ -49072,3 +49072,33 @@ smudge  服务端拒绝：这一笔没落下任何像素 ⇒ 笔刷「smudge.myb
 
 ### 门禁
 1. 本轮只读代码与记录。产品代码没改。
+
+## 第 208 轮：喂底图的机制已看清
+
+### 服务端怎么喂底图（tools.rs:12605 起）
+1. 先判 reads_canvas = feed_base && brush_reads_the_canvas(&brush)。
+2. 若为真，调 ctx.workspace.render_region_raw 取底图。它回 (宽, 高, rgba)。
+3. 判尺寸：宽高必须等于 seed_region，且字节数至少 宽×高×4。不符就跳过，并打印原因。
+4. 尺寸对时，用 hokusai::TiledSurface 的 tile_request_start(tile_x, tile_y)。
+5. 按 64×64 的 tile 逐像素写入：document_x = tile_x * 64 + column，document_y = tile_y * 64 + row。
+6. 只写落在 seed_region 内的像素。
+7. 喂进去的底图要留着：读回时用它把"笔刷没碰过的像素"剔掉。
+
+### 所以给门面加底图要做什么
+1. 在 yanshi-wasm 的 PaintRequest 里加一个底图字段：宽、高、RGBA 字节。
+2. 在 paint() 里用同一段 tile 循环把它写进 surface。
+3. 判据先画一笔底色，读出那块区域，再把它传给门面。
+
+### 一个结构问题
+1. 那段 tile 循环现在只在服务端。它应当在共享处。
+2. 但 yanshi-render 目前不依赖 hokusai（它只有 yanshi-core、serde、serde_json、libm、flate2）。
+3. 而 yanshi-wasm 与 yanshi-server 都已依赖 hokusai。
+4. 所以把 tile 循环抽到 yanshi-render，要给 yanshi-render 加 hokusai 依赖。
+5. 按仓库约定要写明两面：
+   收益：一处真相。两端喂底图的语义必然一致，不再各写一份。
+   代价：yanshi-render 多一个依赖。但它已在依赖树里，所以零新增包。
+   代价：yanshi-render 是 wasm32 目标，而 hokusai 已在该目标上可用。
+6. 或者先把字段加上、两端各写一段，之后再收拢。这样先能测。
+
+### 门禁
+1. 本轮只读代码与记录。产品代码没改。
