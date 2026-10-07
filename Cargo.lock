@@ -709,6 +709,7 @@ name = "yanshi-server"
 version = "0.1.0"
 dependencies = [
  "hokusai",
+ "libm",
  "proptest",
  "serde",
  "serde_json",

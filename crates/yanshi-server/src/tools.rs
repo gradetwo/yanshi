@@ -12565,7 +12565,11 @@ fn paint_brush(
         //（我第一版猜了 `Float(..)` ✓ ⇒ 编译器当场指出 ✓）。
         brush.set(
             hokusai::BrushSetting::Radius,
-            hokusai::SettingValue::constant((diameter / 2.0).ln() as f32),
+            // **必须用 `libm::log`，不能用 `.ln()`**（第 200 轮）：
+            // `.ln()` 落到系统 libm（glibc）⇒ 与内核的 `libm::log` **差最后一位** ⇒
+            // 半径差一位 ⇒ 每枚 dab 形状不同 ⇒ 全量判据 389/796 次不同。
+            // 内核注释早记过这条教训（"这一层里也曾有 `.ln(` 与 `.powi(2)`"）。
+            hokusai::SettingValue::constant(libm::log(diameter / 2.0) as f32),
         );
     }
 
