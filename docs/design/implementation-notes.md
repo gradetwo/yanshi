@@ -48280,3 +48280,30 @@ put_timing bytes=1723 exists_hit=0ms
 2. service 侧的 mark 用相对差值。put_inner 用 eprintln。两者不在同一条时间线上。
 3. 下一步我在两边都打绝对时间戳。我用 Instant 的毫秒值。
 4. 这样能对齐两次记录，找出 188 秒到底在哪。
+
+## 第 1520 轮：矛盾的分析与下一步
+
+### 事实
+1. put_timing 只有 4 行。那是 2 次调用，每次 2 步。
+2. 两次都是 exists_hit。所以本次都不写盘。
+3. service 侧的分段说 after_render_restore 到 after_preview_put 是 188254 毫秒。
+4. 那一段只有一行 store.put(&png)。
+
+### 推理
+1. service 的 mark 在调用那一刻取 Instant。所以它的时间戳是准的。
+2. 两次 store.put 都走 FsBlobStore::put_inner。
+3. put_inner 说它 0 毫秒返回。
+4. 所以两边矛盾。
+
+### 可能的解释
+1. put_timing 的那两次调用不是 service 的那两次。但两边都指向同一个实现。
+2. service 的第二次调用可能不是 put。但我读过代码，它是 self.store.put(&png)。
+3. 还有第三种可能：打印顺序。put_inner 立即打印，mark 最后统一打印。
+   两边的行交错在一起，我可能读错了对应关系。
+
+### 下一步
+1. 我在两边都打绝对时间戳。基准是进程启动。
+2. 我在 put_inner 里加 elapsed_ms。它是从进程启动算起。
+3. 我在 service 的 mark 里也加 elapsed_ms。
+4. 这样两次记录能按同一时间线对齐。
+5. 我按时间戳排序阅读，不再靠行的先后。
