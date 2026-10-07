@@ -54230,3 +54230,53 @@ if !include_bitmaps {
 
 ### 三、门禁
 1. 本轮只做测量与记录 ✓（工作区 **0 处产品改动** ✓）；`fmt` ✓。
+
+## 第 349 轮：⚠️ 设计**更正** —— "顶层不透明"不是静态属性 ✗（必须先渲才算得出 ✓）
+
+### 一、合成循环的真相（`crates/yanshi-render/src/render.rs:683-717` ✓）
+```rust
+let mut accumulation = …背景／透明…;
+for layer in state.alive_layers() {                       // **自下而上** ✓
+    if let Some(only) = self.only_layer.as_deref() { … }  // 指定层 ⇒ 只画它 ✓
+    else if !layer.visible && !self.options.include_hidden_layers { continue; }
+    stats.layers += 1;
+    let mut layer_buffer = self.buffer_pool.acquire(…);   // 从池里取 ✓（注释：消灭 4K 每层 132.7 MB 重分配 ✓）
+    self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;   // ← **渲染该层**
+    apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
+    if layer.clipping_mask { layer_buffer.multiply_alpha_by(&accumulation); }
+    layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
+    let mode = BlendMode::from_name(&layer.blend_mode);
+    accumulation.composite(&layer_buffer, mode, 1.0);     // ← **合成**
+}
+```
+
+### 二、🎯 关键更正 ✗（我第 348 轮的设计缺一个前提 ✓）
+**"某层在区域内完全不透明"**不是静态属性** ✗** —— 它取决于**渲染出来的像素** ✓
+⇒ **∴ 不能靠读 `layer.opacity`／元数据就决定跳过** ✓（`opacity == 1.0` 只说明**图层不透明度**✓，
+**不说明像素不透明** ✗ —— 图层内容本身可能是半透明的 ✓）。
+⇒ **∴ 我第 348 轮写的"从最上面那层不透明的层开始"必须补一个前提** ✓：
+**先知道"该层在该区域内是否处处 alpha == 255"** ✓ —— 而这**只能渲染后才知道** ✗。
+
+### 三、∴ 正确的第一步：**按 tile 记下"不透明性"** ✓（小而可测 ✓）
+1. **做什么** ✓：为每个（层 × tile）维护一个**廉价的布尔簿记** ✓：
+   "**这一层的这个 tile 是否处处不透明**" ✓（渲染该 tile 时顺手算出 ✓，随 tile 缓存一起失效 ✓）。
+2. **为什么这样对** ✓：**它把"运行时属性"变成"可缓存的元数据"** ✓ ——
+   这正是 GIMP／Krita 实质上在做的事 ✓（它们靠分块的 alpha 簿记与 projection 判定"下面还要不要算" ✓）。
+3. **接既有设施** ✓：与 `TileCache`／`BitmapCache` **同一套失效** ✓（不新起一套 ✓）。
+4. **收益** ✓：有了它 ✓，"**从最上面那层不透明的层开始合成**"才**可判** ✓
+   ⇒ 才谈得上第 348 轮算出的 **~32×**（42 → ~1.3 ns/px ✓）。
+5. **代价两面** ✗：收益＝省掉看不见的下层合成 ✓；代价＝每个（层×tile）一个字节级的簿记 ✓
+   ＋ **必须与 tile 缓存同源失效** ✓（**簿记说"不透明"而像素其实变了 ⇒ 就是"撒谎" ✗** ⇒
+   这正是本仓头号病根 ✓ ⇒ **∴ 判据必须打在"簿记与像素一致"上** ✓，而不是打在耗时上 ✗）。
+6. **能红的判据 ＋ 变异** ✓：
+   * **①** "簿记说 tile 不透明 ⇒ 该 tile **确实**处处 alpha==255" ✓（**逐像素反查** ✓）
+     ⇒ **变异**：把簿记写成"恒为真" ⇒ 判据立刻红 ✓✓（这就是**撒谎** ✗ 的判据 ✓）。
+   * **②** "簿记说不透明 ⇒ 跳过下层 ⇒ 输出**逐字节相同**" ✓（变异：把条件放宽 ⇒ 输出变 ⇒ 红 ✓）。
+
+### 四、∴ 我为什么不在这轮动手 ✗（如实 ✓）
+上面的 ① 是**正确性判据** ✓，而实现它要先让"渲染 tile 时顺手算簿记" ✓ ＋ "失效与 tile 缓存同源" ✓
+—— 这是**两处以上协同改动** ✗，以本轮剩余上下文**无法安全完成** ✓
+⇒ **∴ 不做半成品** ✗（一个"簿记可能撒谎"的捷径 ✗ 比慢更糟 ✗ —— 它会静默画错 ✓）。
+
+### 门禁
+1. 本轮只做代码阅读与设计更正 ✓（工作区 **0 处产品改动** ✓）；`fmt` ✓。
