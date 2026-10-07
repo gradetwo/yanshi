@@ -49872,3 +49872,30 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. 本轮只跑判据与记录。产品代码没改。
+
+## 第 237 轮：surface 尺寸相同。排除它
+
+### 源码事实
+| 位置 | 建立方式 |
+|---|---|
+| 服务端 tools.rs:12340 | hokusai::tile_mem::MemSurface::new() |
+| 服务端 tools.rs:12586 | hokusai::tile_mem::MemSurface::new() |
+| 内核 brush.rs:262 | hokusai::tile_mem::MemSurface::new() |
+
+1. 两边**完全一样**。所以"surface 尺寸不同导致取样次数不同"**不成立**。
+2. tile_mem 只有 new()，没有可指定起止的构造。
+
+### 所以剩下的结构差异
+1. 服务端在落笔前调 read_surface_region（before_pixels），但那只是**读** surface，不消耗引擎随机。
+2. 服务端还要先算 seed_region。
+3. 第 201 轮我比对过内核的 stamp 与服务端的 stamp_stroke_from，结论是"结构相同"，
+   但**我只看了前 26 行**。后半段（stroke_to 的参数与顺序）我还没逐字比对。
+
+### 下一步
+1. 完整打印两段（内核 stamp 的循环体 与 服务端 stamp_stroke_from 的循环体）。
+2. 逐行比对 stroke_to 的每个实参：x, y, pressure 与两个 0.0 常量、STEP_SECONDS。
+3. 若参数相同 ⇒ 继续查两边"调用次数"（例如服务端可能对每个 dab 多调一次）。
+4. 若参数不同 ⇒ 那就是根因。
+
+### 门禁
+1. 本轮只读源码与记录。产品代码没改。
