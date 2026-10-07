@@ -3272,6 +3272,9 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         let (renders, full_canvas) = document.preview_render_counts();
         summary["preview_renders"] = json!(renders);
         summary["full_canvas_renders"] = json!(full_canvas);
+        // **缩略图渲染计数** ✓（第 69 轮 ✓）：结构性证据 ✓ ⇒ 判据可断言
+        // "**重复保存时没有再整幅渲染缩略图**" ✓（不看耗时 ✗）。
+        summary["thumbnail_renders"] = json!(document.thumbnail_render_count());
     }
     Ok(summary)
 }

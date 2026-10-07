@@ -1524,6 +1524,17 @@ impl Document {
         self.full_canvas_renders
     }
 
+    /// **缩略图渲染**的次数 ✓（第 69 轮 ✓）—— 结构性证据 ✓，与墙钟无关 ✓。
+    ///
+    /// **判据为什么需要它** ✗：保存点**无条件**调 `document.thumbnail(Doc256)` ✓，
+    /// 而它会**自己整幅渲染一遍** ✗（实测 **+1241 ms**／4K ✓，8K 更大 ✓）
+    /// ⇒ **∴ 它违反第 3 条**"缩略图按需生成" ✓。
+    /// **∴ 回归判据要问的是**："**重复保存时，这一次渲染有没有再跑一遍**" ✓
+    /// —— 而不是"花了多少毫秒" ✗。
+    pub fn thumbnail_render_count(&self) -> usize {
+        self.document_thumbnail_renders
+    }
+
     /// **文档级预览渲染**的次数 ✓（`render_document_preview` 真正渲染像素的次数 ✓；
     /// 判据用语义计数 ✓，不看墙钟 ✗）。
     ///
