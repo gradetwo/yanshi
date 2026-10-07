@@ -544,6 +544,8 @@ const effectResult = await evaluate(`(async () => {
   const name = document.getElementById("effectName");
   name.value = "invert";
   document.getElementById("effectParams").value = "{}";
+  // **点击之前再记一次当前层**（第 223 轮）：若它与列表里的层不同 ⇒ 选层的异步竞争确认 ✓。
+  const clickLayerId = layerSelect ? layerSelect.value : null;
   document.getElementById("effectApply").click();
   await new Promise((r) => setTimeout(r, 2500));
   // 等画布**不透明**（不透明像素数 = 总数）或超时：断言"不会停在透明态"。
@@ -556,7 +558,12 @@ const effectResult = await evaluate(`(async () => {
     if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
     await new Promise((r) => setTimeout(r, 200));
   }
-  return { list: document.getElementById("effectsList").textContent, fingerprint, selectedLayerId };
+  return {
+    list: document.getElementById("effectsList").textContent,
+    fingerprint,
+    selectedLayerId,
+    clickLayerId,
+  };
 })()`);
 const fingerprintAfterEffect = effectResult.fingerprint;
 // 撤销这次 invert：既验证"撤销也能撤掉效果"，也让后续用例回到白底。
