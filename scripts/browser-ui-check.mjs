@@ -527,6 +527,16 @@ const canvasFingerprint = `(() => {
 })()`;
 const fingerprintBeforeEffect = await evaluate(canvasFingerprint);
 const effectResult = await evaluate(`(async () => {
+  // **先显式选中一个确定的层**（第 222 轮）：effect 作用于**查看器当前选中的层**
+  // ⇒ 依赖隐含的 UI 状态就会**间歇**失败（实测 3 次里 1 次、2 次里 1 次 ✓）。
+  // 选中第一项 ⇒ 前提被**显式声明**，而不是靠运气 ✓。
+  const layerSelect = document.getElementById("layer");
+  if (layerSelect && layerSelect.options.length > 0) {
+    layerSelect.value = layerSelect.options[0].value;
+    layerSelect.dispatchEvent(new Event("change"));
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  const selectedLayerId = layerSelect ? layerSelect.value : null;
   const kind = document.getElementById("effectKind");
   kind.value = "adjustment";
   kind.dispatchEvent(new Event("change"));
@@ -546,7 +556,7 @@ const effectResult = await evaluate(`(async () => {
     if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
     await new Promise((r) => setTimeout(r, 200));
   }
-  return { list: document.getElementById("effectsList").textContent, fingerprint };
+  return { list: document.getElementById("effectsList").textContent, fingerprint, selectedLayerId };
 })()`);
 const fingerprintAfterEffect = effectResult.fingerprint;
 // 撤销这次 invert：既验证"撤销也能撤掉效果"，也让后续用例回到白底。

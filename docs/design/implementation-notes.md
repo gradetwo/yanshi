@@ -49417,3 +49417,19 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. 本轮只读代码与记录。产品代码没改。
+
+## 第 221 轮：effect 段显式选层
+
+### 改动（scripts/browser-ui-check.mjs）
+1. effect 段一开始就选中下拉里的第一项，并派发 change，等 400 毫秒。
+2. 把 selectedLayerId 一起返回，供失败诊断用。
+3. 理由：effect 作用于查看器当前选中的层。依赖隐含 UI 状态就会间歇失败。
+
+### 自证
+1. node --check 语法 OK。
+2. selectedLayerId 出现 2 处。
+
+### 待验证
+1. 跑两次浏览器判据，看 invert 项是否还间歇失败。
+2. 若不再失败 ⇒ 根因确认（隐含 UI 状态）。
+3. 若仍失败 ⇒ 再读 selectedLayerId，看它落在哪一层。
