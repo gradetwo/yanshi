@@ -155,7 +155,12 @@ pub(crate) fn stamp(
     // **运行时输入 dump**（第 249 轮）：把"我读代码得出的输入清单"换成"实际输入" ✓。
     // 受已有开关控制 ⇒ 默认不打 ✓。
     if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
-        eprintln!("stamp_input side=kernel points={points:?}");
+        let radius = brush.get(hokusai::BrushSetting::Radius).base_value;
+        let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+        let hard = brush.get(hokusai::BrushSetting::Hardness).base_value;
+        eprintln!(
+            "stamp_input side=kernel radius={radius:?} opaque={opaque:?} hardness={hard:?} points={points:?}"
+        );
     }
     let mut previous: Option<(f64, f64, f64)> = None;
     let mut steps = 0usize;

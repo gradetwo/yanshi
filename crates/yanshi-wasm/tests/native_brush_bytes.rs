@@ -29,6 +29,17 @@ fn native_brush_region_bytes() {
     let bytes = yanshi_wasm::paint_brush_bytes_for_test(&request.to_string())
         .expect("paint_brush 返回空 ⇒ 画不出来");
     assert_eq!(bytes.len(), 88 * 48 * 4, "字节数不符");
+    // **同进程连跑第二次**（第 250 轮）：判定引擎是否有**跨调用状态** ✓。
+    // 若两次不同 ⇒ 引擎保留了状态 ⇒ 而两端的历史不同 ⇒ 那正是 5757 字节差异的来源 ✓。
+    let again =
+        yanshi_wasm::paint_brush_bytes_for_test(&request.to_string()).expect("第二次 paint 返回空");
+    let same = again.len() == bytes.len() && again.iter().zip(bytes.iter()).all(|(a, b)| a == b);
+    let diff = bytes
+        .iter()
+        .zip(again.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    println!("NATIVE_BRUSH twice_same={same} diff={diff}");
     let out = std::env::var("YANSHI_NATIVE_BRUSH_OUT")
         .map_or_else(|_| PathBuf::from("/tmp/native_brush.bin"), PathBuf::from);
     std::fs::write(&out, &bytes).expect("写不出文件");

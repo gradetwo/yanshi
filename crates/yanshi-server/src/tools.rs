@@ -12729,7 +12729,12 @@ fn paint_brush(
         }
         None => {
             if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
-                eprintln!("stamp_input side=server points={points:?}");
+                let radius = brush.get(hokusai::BrushSetting::Radius).base_value;
+                let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+                let hard = brush.get(hokusai::BrushSetting::Hardness).base_value;
+                eprintln!(
+                    "stamp_input side=server radius={radius:?} opaque={opaque:?} hardness={hard:?} points={points:?}"
+                );
             }
             stamp_stroke(&brush, &mut state, &mut surface, points)
         }
