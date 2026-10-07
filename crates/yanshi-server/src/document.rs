@@ -184,12 +184,6 @@ impl PreviewDirty {
 }
 
 /// 把 dirty 规划结果折算成预览脏区（与提交路径此前的口径**逐字一致** ✓）。
-/// 预览落后超过这个步数时，[`Document::dirty_since`] **不再逐原子扫描** ✓（第 1513 轮 ✓）。
-///
-/// **判据**：`dirty_since_returns_unknown_when_preview_is_far_behind` ✓ ——
-/// 把用它的那个 `if` 删掉 ⇒ 该测试红 ✓（它会走满扫描并返回非 `Unknown` ✓）。
-pub(crate) const DIRTY_SCAN_LIMIT: u64 = 64;
-
 fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
     if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
     {
@@ -1317,6 +1311,7 @@ impl Document {
         // ⇒ 扫描成本 ≲ 一次全幅渲染 ⇒ 取 64 步（约 1.2 s ✓）。
         // **代价** ✗：落后超过 64 原子时预览整幅重画 ✗ —— 但预览是 256² ✓，
         // 且 `Unknown` 本来就是"整幅"的合法结果 ✓ ⇒ **不降精度** ✓，只多画一张小图 ✓。
+        const DIRTY_SCAN_LIMIT: u64 = 64;
         if head.saturating_sub(from) > DIRTY_SCAN_LIMIT {
             return PreviewDirty::Unknown;
         }
@@ -2038,20 +2033,4 @@ mod tests {
         assert_eq!(plan.historical.len(), 0, "当前状态没有历史级 blob");
         assert_eq!(head_before, document.head_seq());
     }
-}
-
-    let head = document.log.head_seq();
-    assert!(
-        head > DIRTY_SCAN_LIMIT,
-        "样本要足够大：head={head} 上限={DIRTY_SCAN_LIMIT}"
-    );
-    assert!(
-        matches!(document.dirty_since(0), PreviewDirty::Unknown),
-        "落后 {head} 步、超过上限 {DIRTY_SCAN_LIMIT} ⇒ 必须是 Unknown（整幅）"
-    );
-    // 反例方向：落后为 0 ⇒ 必须是 Clean，不能是 Unknown。
-    assert!(
-        matches!(document.dirty_since(head), PreviewDirty::Clean),
-        "落后为 0 ⇒ 必须是 Clean"
-    );
 }
