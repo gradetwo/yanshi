@@ -53623,3 +53623,39 @@ if let Some((seq, png)) = preview { let hash = store.put(&png)?; document.restor
 
 ### 门禁
 1. 本轮只做检索与记录 ✓（工作区 **0 处产品改动** ✓）。
+
+## 第 333 轮：保存点写"整幅渲染快照" ✓ —— **部分有效**（冷启动仍慢 ✗，如实记录）
+
+### 一、已实现 ✓（`crates/yanshi-server/src/tools.rs` 的 `write_export_project` ✓）
+保存工程时：①`render_watermark < head_seq` ⇒ **对整幅调一次 `render_region`** ✓
+（它内部自动 `save_render` ✓ ⇒ **无新管道** ✓）；②再补一次 `cache_document_preview` ✓。
+* **不把图放进包** ✓（尊重前任"`render.png` 分支已删"的决定 ✓）。
+* **已经最新就不重渲** ✓（水位比较 ✓）。
+
+### 二、实测：**写出来了** ✓，但**冷启动仍慢** ✗
+| 检查 | 结果 |
+|---|---|
+| 保存后磁盘上的 `render.png` ＋ `render.seq` | **都在** ✓（56 KB ＋ 1 B ✓） |
+| `export_project` 自身耗时（3 笔的轻文档 ✓） | **128 ms** ✓（`other_ms=125` ✓） |
+| **冷启动首次 `get_document`** | **1191 ms**（`preview_ms=1185.7` ✗）—— **几乎没变** ✗ |
+| 磁盘 PNG 个数 | **1**（`render.png` ✓）⇒ **`cache_document_preview` 这次没写出文件** ✗ |
+
+1. **∴ 整幅那份缓存已落盘** ✓ ⇒ **整幅请求**那条路受益 ✓（读侧 `restore_persisted_render` 会接它 ✓）。
+2. **∴ 但 `get_document` 走的不是"整幅请求"** ✗ —— 它走**文档预览**（`render_document_preview` ✓）
+   ⇒ 那份 **256²** 缓存这次**没写出来** ✗ ⇒ 冷启动仍整幅重渲 1.19 s ✗✓。
+3. **∴ 结论（下一轮）**：要治"打开慢"，必须让**文档预览那条路**也命中持久缓存 ✓ ——
+   待查两件事：①`cache_document_preview` 在"没有预览产出过"的文档上**为何不写** ✗；
+   ②`restore_persisted_preview` 接回来的 `preview_dirty` 是否让第一次预览**误判为整幅** ✗。
+
+### 三、正确性（不破默认行为 ✓，实测 ✓）
+| 检查 | 结果 |
+|---|---|
+| 默认笔触（不传 `preview`）仍**产出预览** ✓ | ok=true｜preview 有 ✓ |
+| 保存工程 ✓ | ok=true｜8704 B ✓ |
+| 取文档 ✓ | ok=true ✓ |
+
+### 四、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace` **147 目标全过／FAILED 0** ✓。
+2. **代价两面** ✗：收益＝保存后**整幅请求**有缓存 ✓、打开时**少一次整幅渲染**（若走那条路 ✓）；
+   代价＝保存时多一次整幅渲染（4K 有内容的工程约 **1~1.3 s** ✓）＋ 一份整幅 PNG 落盘（本例 56 KB ✓，
+   写实作品约 1~10 MB ✓）。

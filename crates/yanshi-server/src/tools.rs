@@ -13622,6 +13622,52 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+
+    // **保存工程时顺手把"整幅渲染"落成缓存** ✓（第 3 轮 ✓，"打开太慢"专题 ✓）。
+    //
+    // **为什么在这里做** ✓：读侧已经就绪 ✓ —— `Workspace::open` 会对持久化结果调
+    // `Document::restore_persisted_render` ✓（`service.rs:1112` ✓，注释记着"省掉实测 142 s 的重渲染" ✓）。
+    // 但**写侧从来没有写过"整幅"那一份** ✗：`save_render` 只在**整幅**渲染时调用 ✓
+    //（`service.rs:1742`，在 `if full_frame` 里 ✓），而绘画只产生**区域**渲染 ✗
+    // ⇒ 实测：4K 工程冷启动首次 `get_document` 要 **1.3~1.8 s**，**全部**花在 `preview_ms` ✗
+    //（整幅渲染 ＋ PNG 编码 ✓），而那 2 个落盘的 PNG 只是 **256² 的文档预览** ✓ ⇒ 救不了整幅请求 ✗。
+    //
+    // **两件事必须分开** ✓（尊重前任的决定 ✓）：**不把这张图放进工程包** ✗
+    //（`render.png` 分支早已删掉 ✓，包里本来就没有它 ✓）；只是**让这次渲染的结果落成缓存** ✓。
+    //
+    // **代价两面** ✗：收益＝保存之后任何一次冷启动打开都只需"读 PNG 头 ＋ 入 CAS" ✓；
+    // 代价＝保存时多一次整幅渲染（4K ≈ 1.3 s ✓）＋ 一份整幅 PNG 落盘（约 1~10 MB ✓）
+    // ⇒ **∴ 只在这一个显式点做** ✓，**绝不放进每一笔** ✓。
+    //
+    // **已经最新就不重渲** ✓（`render_watermark == head_seq` ⇒ 跳过 ✓），
+    // 而且**不牺牲精度** ✓：这是无损的显示缓存 ✓，真值仍是原子日志 ＋ 内容寻址 blob ✓
+    //（过期就重算 ✓、丢了就重算 ✓）。
+    {
+        let (behind, width, height) = {
+            let document = ctx.workspace.document(&doc_id).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("文档 {doc_id} 未打开 ⇒ 无法落渲染缓存")),
+                )
+            })?;
+            (
+                document.render_watermark() < document.head_seq(),
+                document.state().width,
+                document.state().height,
+            )
+        };
+        if behind {
+            let full = Bbox::new(0.0, 0.0, width as f64, height as f64);
+            // 整幅渲染 ⇒ 内部会自动 `save_render` ✓（`service.rs:1742` ✓）—— **不需要新管道** ✓。
+            let _ = ctx.workspace.render_region(&doc_id, full)?;
+        }
+        // **还要那份 256² 的"文档预览"** ✓ —— 实测为据 ✓：只写整幅那份时，冷启动首次
+        // `get_document` **仍是 1208 ms** ✗（`preview_ms=1202` ✓），因为 `get_document` 走的是
+        // **文档预览**那条路 ✓（`render_document_preview` ✓ ⇒ 它要的就是这份 256² 缩略图 ✓），
+        // 而"整幅渲染恢复"只喂了**区域缓存** ✗ ⇒ 救不了它 ✗。
+        // ⇒ **∴ 保存点两件都写** ✓（两份都无损 ✓、都只是显示缓存 ✓、都"过期就重算" ✓）。
+        let _ = ctx.workspace.cache_document_preview(&doc_id);
+    }
     // **先落 `path`** ✓（老行为 ✓：写不进去要**响亮地失败** ✓，而不是回一个 URL 就当成功 ✓）。
     if let Some(path) = &path {
         std::fs::write(path, &tar).map_err(|error| {
