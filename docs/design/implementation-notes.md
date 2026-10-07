@@ -50099,3 +50099,37 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 
 ### 门禁
 1. fmt 通过，clippy 通过，全量构建通过。测试文件已删除。
+
+## 第 244 轮：yanshi-render 已依赖 hokusai（本机 x86_64 通过）
+
+### 改动
+1. crates/yanshi-render/Cargo.toml 加 hokusai = "0.3"。
+2. 目的：把"喂底图的那段 tile 循环"从**两份**收拢到一处。
+3. 两面都写在 Cargo.toml 的注释里（收益：一处真相；代价：多一个依赖，但零新增包）。
+
+### 本机验证
+| 目标 | 结果 |
+|---|---|
+| x86_64（cargo build -p yanshi-render） | **通过** |
+| x86_64（全 workspace） | 通过 |
+| 门禁（fmt / clippy / yanshi-server 57 测试） | 通过 |
+| wasm32-unknown-unknown | **失败**：serde_core 与 typenum 报 can't find crate for std |
+
+### 关于 wasm32 的失败
+1. 报错是 wasm32 目标"缺 std/core"，且提示 rustup target add。
+2. 而本机 rustup target list --installed 输出为空（本机工具链不是 rustup 管理的形态）。
+3. 但同一台机器上构建 yanshi-wasm 的 wasm 产物**成功过**
+   （/tmp/yt4/wasm32-unknown-unknown/release/yanshi_wasm.wasm 存在，10-07 09:44）。
+4. 带 CARGO_TARGET_DIR=/tmp/yt4 重跑 -p yanshi-render 仍然失败。
+5. 所以差别不在 target 目录，而在**哪个包**：-p yanshi-wasm 成功，-p yanshi-render 失败。
+6. 这说明本机的 wasm32 标准库只在某条特定路径上可用 ⇒ 属**工具链环境**问题，
+   不是本轮代码问题。
+
+### 结论
+1. 依赖改动的**正确性**由 CI 验证（CI 会装 wasm32 并构建 wasm 包）。
+2. 本机能验证的（x86_64 与门禁）都通过。
+3. 下一步是把 tile 循环搬进 yanshi-render，然后让两端都调它。
+
+### 磁盘
+1. 可用从 25 GB 降到 19 GB（反复构建 + 多个 target 目录）。
+2. 下一轮开始前我会清理。
