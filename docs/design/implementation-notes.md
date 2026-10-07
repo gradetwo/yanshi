@@ -49819,3 +49819,27 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 1. 我加的"改进"本身成了新缺陷（建层使事件失效）。
 2. 是**对照法**找到的：橡皮段用同样的画法成功，差别只有建层。
 3. 所以当一段失败时，先找**已知成功**的同类段落，逐项对照差别。
+
+## 第 235 轮：hokusai 用 Knuth lagged-Fibonacci PRNG
+
+### 源码事实
+1. hokusai 的源码是单文件：hokusai-0.3.0/src/lib.rs。
+2. 它的 README 写明：Knuth lagged-Fibonacci PRNG（libmypaint 的移植）。
+3. 这类 PRNG 的状态会随**每次取样**推进。
+4. 所以只要**两端的取样次数或顺序**不同，后续所有随机都不同。
+
+### 与 9 支笔的差异吻合
+1. 带随机的 9 支笔（8B_Pencil#1、chalk、irregular_ink、marker_*、Fountain_*、P-Shade）不同。
+2. 不带随机的笔（100%_Opaque、2B_pencil）相同。
+3. 所以差异正是"PRNG 状态错位"。
+4. 而服务端与门面唯一的已知结构差异是：服务端在**整层 surface**上落笔，
+   门面在**新建的小 surface** 上落笔。
+5. 若引擎的 dab 处理顺序与 tile 有关，两边的取样顺序就会不同。
+
+### 下一步
+1. 读 lib.rs 里 PRNG 与 tile 的关系：它是否按 tile 播种，或按 dab 顺序取样。
+2. 若是按 tile ⇒ 让门面的 surface 起止与服务的区域一致，即可对齐。
+3. 若与 tile 无关 ⇒ 查两边"每 dab 取样次数"是否有差别（例如边界检查）。
+
+### 门禁
+1. 本轮只读源码与记录。产品代码没改。
