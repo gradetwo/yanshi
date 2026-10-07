@@ -585,23 +585,11 @@ if (readyLayer !== "present" && readyLayer !== "created") {
 //（不透明像素 36040/36040 ⇒ 画布有内容，指纹却完全不变 ⇒ 不是等待不够 ✓）。
 // 这里用**确定的颜色**画一笔，并**轮询**确认它出现，前置才成立 ✓。
 await evaluate(`(async () => {
-  // **先建一个全新的图层并选中它**（第 226 轮）：只在新层上作画 ⇒ 前置**绝对独立** ✓。
-  // 为什么必须新建：失败时的起始指纹（139391153）接近通过时的**结束**指纹（139044406）
-  // ⇒ 画布停在**上一轮 invert 之后**的状态 ⇒ 而末尾那次 undo **没有**总是生效 ✓
-  // ⇒ 于是本轮 invert 把它**反转回去** ⇒ 指纹与"之前"相同 ⇒ 误报"没有变化" ✓。
-  const layerId = "uicheck-invert-" + Date.now().toString(36);
-  await window.yanshiCallTool("create_layer", { layer_id: layerId, name: "invert case" });
-  // 等新层出现在下拉里，再选中它（处理器是异步的）。
-  const select = document.getElementById("layer");
-  for (let i = 0; i < 40; i++) {
-    if (select && [...select.options].some((o) => o.value === layerId)) break;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  if (select) {
-    select.value = layerId;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 400));
-  }
+  // **不建新层**（第 231 轮）：橡皮段用**同样**的画法在**它自己的文档**上成功 ✓，
+  // 而它的差别只有"**没有**先建层再选层" ✗ ⇒ 建层触发的面板刷新会让随后的指针事件
+  // 失效（或画布被重建）⇒ 实测两次都"那一笔没出现"（不透明 576000/576000 ＝ 纯白不变 ✓）。
+  // 默认层本来就存在（effect 列表一直报 @layer_default ✓），而且 invert **作用于当前层** ✓
+  // ⇒ 只要**当前层有内容**就会变 ⇒ 不需要新层 ✓。
   const board = document.getElementById("board");
   const rect = board.getBoundingClientRect();
   const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
