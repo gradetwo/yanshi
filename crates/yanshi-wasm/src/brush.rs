@@ -158,8 +158,16 @@ pub(crate) fn stamp(
         let radius = brush.get(hokusai::BrushSetting::Radius).base_value;
         let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
         let hard = brush.get(hokusai::BrushSetting::Hardness).base_value;
+        // **间距类设置**（第 278 轮）：服务端自己的错误信息点过名 ——
+        // `dabs_per_basic_radius == 0` ⇒ 间距趋于无穷 ⇒ **一枚印章都不落** ✓。
+        let dabs_basic = brush
+            .get(hokusai::BrushSetting::DabsPerBasicRadius)
+            .base_value;
+        let dabs_actual = brush
+            .get(hokusai::BrushSetting::DabsPerActualRadius)
+            .base_value;
         eprintln!(
-            "stamp_input side=kernel radius={radius:?} opaque={opaque:?} hardness={hard:?} points={points:?}"
+            "stamp_input side=kernel radius={radius:?} opaque={opaque:?} hardness={hard:?} dabs_basic={dabs_basic:?} dabs_actual={dabs_actual:?} points={points:?}"
         );
     }
     let mut previous: Option<(f64, f64, f64)> = None;

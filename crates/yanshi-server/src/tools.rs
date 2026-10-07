@@ -12756,8 +12756,14 @@ fn paint_brush(
                 let radius = brush.get(hokusai::BrushSetting::Radius).base_value;
                 let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
                 let hard = brush.get(hokusai::BrushSetting::Hardness).base_value;
+                let dabs_basic = brush
+                    .get(hokusai::BrushSetting::DabsPerBasicRadius)
+                    .base_value;
+                let dabs_actual = brush
+                    .get(hokusai::BrushSetting::DabsPerActualRadius)
+                    .base_value;
                 eprintln!(
-                    "stamp_input side=server radius={radius:?} opaque={opaque:?} hardness={hard:?} points={points:?}"
+                    "stamp_input side=server radius={radius:?} opaque={opaque:?} hardness={hard:?} dabs_basic={dabs_basic:?} dabs_actual={dabs_actual:?} points={points:?}"
                 );
             }
             {
