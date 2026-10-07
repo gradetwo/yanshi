@@ -112,6 +112,19 @@ for (const brush of names) {
     allEqual = false;
     continue;
   }
+  // **先对门面字节做与服务端同一套反预乘**（第 253 轮）：
+  // 服务端 read_surface_region 在 **fix15 里**除以 alpha15 再 `>> 7` ✓；
+  // 内核 read_back **没有**这一步 ✗ ⇒ 原先直接比较 ⇒ 5757 条"差异"其实是这一步换算 ✓。
+  // 字节级等价写法：`channel * 255 / alpha`（整数除法，alpha > 0 时）。
+  // 两边都用同一份修复15精度 ⇒ 先在字节空间做同样的除法就足以判定"只差这一步"。
+  for (let i = 0; i < facadeBytes.length; i += 4) {
+    const alpha = facadeBytes[i + 3];
+    if (alpha > 0 && alpha < 255) {
+      for (let c = 0; c < 3; c += 1) {
+        facadeBytes[i + c] = Math.min(255, Math.floor((facadeBytes[i + c] * 255) / alpha));
+      }
+    }
+  }
   const expected = region.w * region.h * 4;
   let firstDiff = -1, maxDelta = 0, differing = 0;
   const length = Math.min(serverBytes.length, facadeBytes.length);
