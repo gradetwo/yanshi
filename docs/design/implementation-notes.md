@@ -55156,3 +55156,23 @@ let hash = ctx.workspace.store().put(&tar)?;                                  //
 
 ### 四、门禁
 1. 本轮只加笔记 ✓（`md` ⇒ **不触发 CI** ✓ ⇒ **不会取消排队中的 run** ✓ —— 第 372 轮已验证 ✓）。
+
+## 第 376 轮：✅ **`criteria shard 3/6` 转绿** ✓ —— "重新生成生成物"的诊断与修复**被 CI 证实** ✓
+
+### 一、CI 实测（run `37644829479`，`push` 路径 ✓）
+```
+✓ rustfmt ✓｜✓ wasm smoke ✓｜✓ clippy ✓｜✓ criteria shard 6/6 ✓
+✓ **criteria shard 3/6 in 1m43s** ✓✓        ← 第 371 轮修的（`tool-examples.md` 是**生成物** ✓
+                                                我手改了它 ✗ ⇒ 跑 `tool-examples-doc.mjs` 重新生成 ✓）
+✓ criteria shard 2/6／5/6（早前已绿 ✓）
+* criteria shard 4/6 ← 仍在跑 ✓（第 371 轮登记的 `browser-reference-overlay` 应让它绿 ✓）
+* criteria shard 1/6、test (beta)、test (stable) ← 仍在跑 ✓
+- brush parity (arm64…) skipped ✓（`if: != push` ✓）
+```
+1. **∴ 诊断正确、修复有效** ✓：shard 3 从 **1m42s 红** ✗ 变成 **1m43s 绿** ✓
+   ⇒ 而且耗时与旧绿 run **相同** ✓（说明它本来就不慢 ✓，只是**内容不一致** ✓）。
+2. **∴ 教训链完整** ✓：报错写"**重新生成它**"✓ ⇒ 我**先猜**注释位置 ✗（错 ✓）⇒
+   照办（跑生成器 ✓）⇒ **转绿** ✓ ⇒ **∴ "先照错误信息办"** 这条纪律**被 CI 证实** ✓。
+
+### 二、门禁
+1. 本轮只加笔记 ✓（`md` ⇒ 不触发 CI ✓ ⇒ 不取消正在跑的 run ✓）。
