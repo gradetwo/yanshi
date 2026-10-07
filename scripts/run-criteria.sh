@@ -189,6 +189,9 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # **超时让整条判据失去结论** ✗（不是红，是没有结论 ✓）⇒ 单独给 420s ✓，其余仍是 180s ✓。
       to=180
       [ "$name" = "tool-example-acceptance.mjs" ] && to=420
+      # **这一条要自己的预算** ✓（第 288 轮 ✓）：它跑的是 **Rust 测试目标** ✓
+      # ⇒ 分片里要先**编译**那个目标 ✓ ⇒ 180 s 对冷编译偏紧 ✗（它自己实测几秒，但编译不是 ✗）。
+      [ "$name" = "tool-native-brush-determinism.mjs" ] && to=600
       timeout "$to" node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
