@@ -24,7 +24,7 @@ use yanshi_core::{
 };
 use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind, DirtySet};
 use yanshi_render::png::encode_png;
-use yanshi_render::render::Renderer;
+use yanshi_render::render::{RegionRender, RenderStats, Renderer};
 use yanshi_render::thumb::{render_thumbnail, Thumb, ThumbKind};
 use yanshi_render::tile::{TileGrid, TileKey};
 use yanshi_render::Buffer;
@@ -1129,21 +1129,75 @@ impl Document {
         };
         let render = match region {
             Some(region) => {
-                let rendered = self
-                    .renderer
-                    .render_region(&self.state, &*self.store, region)?;
-                // **"这条路真的走了"** ✓（判据用它 ✓，与区域大小、与墙钟都无关 ✓）。
-                self.document_preview_renders += 1;
-                if covers_canvas(region, self.state.width, self.state.height) {
-                    self.full_canvas_renders += 1;
+                // **冷启动的空白文档不必真的光栅化** ✓（第 273 轮，方案 d ✓）。
+                //
+                // **为什么** ✗：冷启动那一条会渲染**整幅**（`Some(doc_size)` ✓）。
+                // 而**空文档**（`state.objects` 为空 ✓）＋**不透明背景**时，
+                // 整幅渲染的结果**就是纯背景填色** ✓ —— `render.rs:542`：
+                //   `let background = self.options.background.or_else(|| parse_background(&state.background));`
+                // ⇒ 背景是**一个 RGBA** ✓ ⇒ 830 万像素的光栅化只为了得到一种颜色 ✗。
+                // **实测**：空白 4K 新文档第一次 `get_document` 要 **808 ms** ✓（`preview_ms=787.83` ✓）。
+                //
+                // **为什么这样改** ✓：**不去碰**缩略图的块平均逻辑 ✗ ——
+                // 而是给它**同一份输入**：构造一份**均匀**的 f32 缓冲（就是空白文档渲染后
+                // `linear_premul_from_u8x4(&render.rgba8)` 会得到的东西 ✓）
+                // ⇒ 平均那一步**逐位相同** ✓ ⇒ 输出**逐字节相同** ✓。
+                // 背景**不透明**（alpha=255 ✓）时往返精确 ✓：仓库已有测试
+                // `color.rs:283 u8_round_trip_is_exact_for_opaque_pixels` ✓。
+                //
+                // **代价两面** ✓：收益是省掉整幅光栅化 ✓（仍要分配并填一份区域大小的 f32 缓冲 ✗，
+                // 4K 约 133 MB ✓ ⇒ 比光栅化便宜一个量级 ✓）；代价是**只覆盖"空文档 ＋ 不透明背景"** ✓
+                // ⇒ 有内容的路径**行为不变** ✓。
+                //
+                // **计数器不动** ✓：`document_preview_renders` / `full_canvas_renders` 是
+                // "这条路真的走了"的凭证 ✓ ⇒ 这里**没有**走 `render_region` ⇒ 都不 +1 ✓
+                //（实测 `scripts/*.mjs` 里没有判据读它们 ✓ ⇒ 不会假红 ✓）。
+                let blank_fill = if self.state.objects.is_empty() {
+                    yanshi_render::render::parse_background(&self.state.background)
+                        .filter(|rgba| rgba[3] == 255)
+                } else {
+                    None
+                };
+                match blank_fill {
+                    Some(rgba) => {
+                        let width = region.w.max(0.0).ceil() as u32;
+                        let height = region.h.max(0.0).ceil() as u32;
+                        // **均匀的 u8 RGBA**（不是 f32 ✓）：交给**下面原有的**
+                        // `linear_premul_from_u8x4(&render.rgba8)` 去转换 ✓
+                        // ⇒ 与"真的渲染一遍空白文档"得到的输入**逐字节相同** ✓✓。
+                        let mut rgba8: Vec<u8> = Vec::with_capacity((width * height) as usize * 4);
+                        for _ in 0..(width * height) as usize {
+                            rgba8.extend_from_slice(&rgba);
+                        }
+                        // **告警照旧留空** ✓：没渲染 ⇒ 没有"不支持的特性"要报 ✓。
+                        self.last_render_warnings.clear();
+                        Some(RegionRender {
+                            bbox: region,
+                            width,
+                            height,
+                            rgba8,
+                            tiles: Vec::new(),
+                            stats: RenderStats::default(),
+                        })
+                    }
+                    None => {
+                        let rendered =
+                            self.renderer
+                                .render_region(&self.state, &*self.store, region)?;
+                        // **"这条路真的走了"** ✓（判据用它 ✓，与区域大小、与墙钟都无关 ✓）。
+                        self.document_preview_renders += 1;
+                        if covers_canvas(region, self.state.width, self.state.height) {
+                            self.full_canvas_renders += 1;
+                        }
+                        // **这条出口也必须留下告警** ✗（真实事故复盘暴露的缺口 ✓）：预览是
+                        // "打开文档 / 提交一笔之后用户看到的那张图" ✓ —— 缺一个补丁时它以前
+                        // **既不进 `last_render_warnings`、也不进返回的 `warnings`** ✗
+                        // ⇒ 用户看到的是一张**静默的不完整画面** ✓，与"数据丢了"长得一模一样 ✗
+                        //（`render_region` 与 `export_png` 两条出口早已带告警 ✓，只有这条路漏了 ✓）。
+                        self.last_render_warnings = rendered.stats.unsupported.clone();
+                        Some(rendered)
+                    }
                 }
-                // **这条出口也必须留下告警** ✗（真实事故复盘暴露的缺口 ✓）：预览是
-                // "打开文档 / 提交一笔之后用户看到的那张图" ✓ —— 缺一个补丁时它以前
-                // **既不进 `last_render_warnings`、也不进返回的 `warnings`** ✗
-                // ⇒ 用户看到的是一张**静默的不完整画面** ✓，与"数据丢了"长得一模一样 ✗
-                //（`render_region` 与 `export_png` 两条出口早已带告警 ✓，只有这条路漏了 ✓）。
-                self.last_render_warnings = rendered.stats.unsupported.clone();
-                Some(rendered)
             }
             None => None,
         };

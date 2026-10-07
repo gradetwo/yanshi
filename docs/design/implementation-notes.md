@@ -51214,3 +51214,46 @@ let region = match (self.document_thumb.is_some(), dirty) {
 
 ### 门禁
 1. 本轮**只改文档** ✓ ⇒ 不触发 CI ✓（`ci.yml` 的 `paths-ignore` 含 `docs/**` ✓）。
+
+## 第 273 轮：A④ 实现方案 d —— 空白文档的冷启动预览**不再整幅光栅化**
+
+### 改动（`crates/yanshi-server/src/document.rs` 的 `render_document_preview` ✓）
+1. 冷启动那一条（`region = Some(doc_size)` ✓）现在先判：
+   `self.state.objects.is_empty()` ✓ **且** `parse_background(&self.state.background)` 是**不透明**（`rgba[3] == 255` ✓）。
+2. 命中时**不调 `render_region`** ✗ → ✓，改为构造一份**均匀的 u8 RGBA**（区域尺寸 ✓），
+   再**交给原有的** `linear_premul_from_u8x4(&render.rgba8)` ⇒ `Buffer::from_f32` ⇒
+   `update_blocks_from_region` ✓ ⇒ **∴ 平均那一步的输入与"真的渲染一遍空白文档"逐字节相同** ✓✓。
+3. 背景**不是**不透明时**走老路** ✓（那时往返不保证精确 ✓ ⇒ 不冒险 ✓）。
+4. **计数器不动** ✓：`document_preview_renders` / `full_canvas_renders` 只在真的调了 `render_region` 时才 +1 ✓。
+5. 导入相应改为 `use yanshi_render::render::{RegionRender, RenderStats, Renderer};` ✓
+   （`parse_background` 在 `render` 模块 ✓，不在 `color` ✓ —— 我第一次写错，编译前就改对了 ✓）。
+
+### 实测（release，全新 4K 空白文档，先热身 ✓）
+| | 改之前 | 改之后 |
+|---|---|---|
+| 首次 `get_document` | **808 ms** | **141 ms** ✓（**5.7×**） |
+| `preview_ms` | 787.83 | 132.278 |
+| 缩略图 blob | `sha256:ccc6036bcde347260f07919006f28955afd9871f97ecba2c731b0483492c522f` | **同一个** ✓ |
+
+⇒ **∴ 逐字节相同** ✓✓（**旧的与新的二进制各取一次，两个 sha256 完全相同** ✓ —— 这是最强的一种验证 ✓）。
+剩下的 132 ms 是"分配并填 133 MB 的均匀缓冲 ＋ 转换 ＋ 块平均 ＋ PNG 编码" ✓ ⇒ 比整幅光栅化便宜一个量级 ✓。
+
+### 本轮**未完成**：这条优化**还没有能红的判据** ✗（如实报告）
+1. `tool-timing-attribution.mjs`（上一轮加的 ✓）判的是**归属**（`preview_ms > 0` ✓、残差占比 ✓）
+   ⇒ 它对"跳过光栅化"**不会变红** ✗（归属仍然正确 ✓）。
+2. 现有 `tool-thumbnail-cold.mjs` 用的是 **320×240** 文档 ✓ 且预算是**按渲染成本标定**的模型 ✓
+   ⇒ 在新路径上**过宽** ✗（4K 也照样通过 ✗）⇒ 它守不住这条优化 ✗。
+3. 那两个计数器 `document_preview_renders` / `full_canvas_renders` **是私有字段、且不进任何响应** ✗
+   （grep 确认 ✓）⇒ 判据**读不到**"到底有没有走光栅化" ✓ ⇒ 这是最干净的结构性判据 ✗ 但目前没有接口 ✓。
+4. **∴ 所以下一轮必须先给它们一个只读出口** ✓（例如放进 `get_state`／诊断包 ✓），
+   再写一条**结构性**判据："**空文档的冷启动预览 ⇒ `document_preview_renders` 不得增加**" ✓
+   ⇒ **变异检验**：把这次跳过改回去 ⇒ 计数器 +1 ⇒ **判据变红** ✓✓（比时间阈值稳 ✓ —— 与区域大小、与机器快慢都无关 ✓）。
+5. 我**没有**用"写死 141 ms"这种阈值 ✗ —— 那是"某次观测" ✓，而且会在慢机器上假红 ✓。
+
+### 一条经验（写进交接文档）
+1. **性能改动必须先有能红的判据再看数字** ✗：本轮数字很漂亮（5.7× ✓）但**判据缺口**是真实的 ✓
+   ⇒ 我如实把它记为"未完成" ✓，而不是拿数字当结论 ✓。
+2. 仓库既有做法是**结构性计数器**（"这条路真的走了" ✓）＋ 时间只作对照 ✓ —— 这正是我下一轮要补的 ✓。
+
+### 门禁
+1. fmt ✓、clippy ✓、`yanshi-server` 与 `yanshi-render` 库测试 ✓（全量交给 CI ✓）。
