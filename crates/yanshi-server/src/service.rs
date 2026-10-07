@@ -2414,6 +2414,20 @@ impl Workspace {
             ));
         };
         let dir = persist.doc_dir(doc_id);
+        let _e3_t0 = std::time::Instant::now();
+        let _e3 = |tag: &str| {
+            if std::env::var_os("YANSHI_TRACE_EXPORT4").is_some() {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/yanshi-export4-trace.log")
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "EXPORT4 {tag} {} ms", _e3_t0.elapsed().as_millis())
+                    });
+            }
+        };
+        _e3("start");
         let atoms_text = std::fs::read_to_string(dir.join("atoms.jsonl")).map_err(|error| {
             YanshiError::new(
                 ErrorCode::ReferenceNotFound,
@@ -2424,6 +2438,7 @@ impl Workspace {
         //
         // **同时记下"每个 blob 是被哪些净荷引用的"** ✓ —— 省略位图前必须问"引用它的每一条原子
         // 是不是都带着可重放的配方" ✓（只被一条没有配方的原子引用 ⇒ **必须装** ✗）。
+        _e3("read_atoms");
         let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut refs_by_blob: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
             std::collections::BTreeMap::new();
@@ -2457,6 +2472,7 @@ impl Workspace {
                 Err(_) => broken_lines += 1,
             }
         }
+        _e3("parse_and_collect");
         let mut entries = vec![crate::archive::TarEntry {
             path: "atoms.jsonl".to_owned(),
             bytes: atoms_text.into_bytes(),
@@ -2508,6 +2524,7 @@ impl Workspace {
         let mut kept_mismatch = 0usize;
         let mut kept_missing = 0usize;
         let mut missing: Vec<String> = Vec::new();
+        _e3("pack_headers");
         for hash_text in &wanted {
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(
