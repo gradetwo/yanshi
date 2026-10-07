@@ -106,6 +106,11 @@ for (const brush of names) {
     await fetch(`${base}/api/blob/${blobHash}?doc=${doc}&token=${token}`).then((r) => r.arrayBuffer()),
   );
   const myb = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
+  // **打印递给门面的请求关键字段**（第 258 轮）：门面输出为空 ⇒ 请求里必然有一处不同。
+  console.log(
+    `    门面请求：region=${JSON.stringify(region)} size=${JSON.stringify(size)}` +
+    ` myb_len=${myb.length} points=${JSON.stringify(pointList)}`,
+  );
   const facadeBytes = facade({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region });
   if (!facadeBytes) {
     console.log(`  ${brush.padEnd(14)} 门面返回 0 ⇒ 画不出来 ✗`);
