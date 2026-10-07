@@ -18,7 +18,9 @@ fn native_brush_region_bytes() {
         "myb": myb,
         "points": [[40.0, 40.0, 1.0], [80.0, 40.0, 1.0]],
         "size": 40.0,
-        "color": { "r": 180, "g": 40, "b": 40, "a": 255 },
+        // **用判据自己的 red**（scripts/kernel-brush-parity.mjs:42 的 colours[0]）
+        // ⇒ 才能与"wasm vs 服务端 = 5757"这个数直接比较 ✓。
+        "color": { "r": 255, "g": 0, "b": 0, "a": 255 },
         "opacity": null,
         "hardness": null,
         // 与服务端**实测报出**的 region 一致（第 246 轮实测：x=16 y=16 w=88 h=48）。
