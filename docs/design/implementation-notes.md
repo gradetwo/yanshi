@@ -48103,3 +48103,53 @@ before_meta=0ms after_meta=0ms restore_meta=0ms
 1. 在那一段内部再加四个点，把 186.5 秒分开。
 2. 我怀疑 store.put。它要哈希并写入 CAS。
 3. 我要读 store.put 的实现。
+
+## 第 1515 轮：186.5 秒落在 store.put 与 restore_persisted_render 之间
+
+### 行的位置（service.rs）
+```
+1050 mark loads_done
+1063 mark before_doc_open
+1065 Document::open
+1072 mark after_doc_open        差值 27ms
+1080 store.put(&png)            对象是 render.png
+1081 restore_persisted_render   只读 PNG 头
+1084 mark after_render_restore  差值 186498ms
+1090 store.put(&png)            对象是 preview.png
+1091 restore_persisted_preview
+```
+1. 1063 到 1072 的差值是 27 毫秒。那是 Document::open。
+2. 1072 到 1084 的差值是 186498 毫秒。那一段只有两件事：写 render.png 进 CAS，恢复整幅。
+3. 后面 preview 的写入与解码不在这个差值里。所以它们不是主因。
+
+### 真实文件大小
+| 文件 | 大小 |
+|---|---|
+| atoms.jsonl | 10706384 字节 |
+| render.png | 4349754 字节 |
+| preview.png | 1723 字节 |
+| meta.json | 113 字节 |
+
+1. atoms.jsonl 是 10.7 MB，而 load_atoms 只花 73 毫秒。所以这台机器很快。
+2. preview.png 只有 1723 字节。所以解码不可能是主因。
+3. render.png 是 4.35 MB。
+
+### put_inner 做了什么
+1. 算哈希。
+2. 查目标文件是否存在。
+3. 用 codec 编码。默认 codec 是 PlainCodec，所以不压缩。
+4. 写临时文件。
+5. 调 sync_or_degrade。那是 fsync。
+6. 改名。
+
+### 判断
+1. 哈希、编码、写 4.35 MB 都不该慢。
+2. 最可能是 fsync。它可能很慢。
+3. 源码注释记录了 fsync 的问题。9p 与某些网络挂载会返回 ENOTSUP。
+4. put_cache 会跳过 fsync。它是为可重建的缓存设计的。
+5. render.png 与 preview.png 都可重建。所以它们可以用 put_cache。
+
+### 下一步
+1. 在 put_inner 里加分点。位置是 hash、exists、encode、write、sync、rename。
+2. 这样能确定是不是 fsync。
+3. 若是，把这两个写入改用 put_cache，并用同一条判据验证。
