@@ -48383,3 +48383,23 @@ fn dirty_since(&self, from: Seq) -> PreviewDirty {
 1. 读 plan_dirty_with_log。看它是否扫描整个 log。
 2. 若是，让每次只处理这一颗 atom。
 3. 不能改成近似。那会降精度，违反目标里的禁止项。
+
+## 第 1523 轮：plan_dirty_with_log 不扫全 log
+
+### 它的实现（dirty.rs:259）
+1. 若 atom 是 Revert 或 Reapply，它查 log.get(target_id)。
+2. 那是哈希查找，不是扫描。
+3. 否则它调 plan_dirty(state, previous, atom)。
+4. 所以它不扫描整个 log。
+
+### 所以 O(n²) 来自别处
+1. 候选是 folder.fold(&self.log, atom.seq)。
+2. 循环里每个 atom 折一次。
+3. fold 的入口是 last.take()。若 last 为空，它走 full_fold。
+4. 若某次走了 full_fold，那一次就是全量。循环 n 次就是 O(n²)。
+5. 触发 full_fold 的条件包括区间里有 declare_head，或时间旅行。
+
+### 下一步
+1. 我在 dirty_since 的入口与出口打绝对时间戳。
+2. 我也在循环里打第一次与最后一次的时间戳。
+3. 这样能看出是循环慢，还是某一次 fold 慢。
