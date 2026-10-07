@@ -13666,6 +13666,18 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         // **文档预览**那条路 ✓（`render_document_preview` ✓ ⇒ 它要的就是这份 256² 缩略图 ✓），
         // 而"整幅渲染恢复"只喂了**区域缓存** ✗ ⇒ 救不了它 ✗。
         // ⇒ **∴ 保存点两件都写** ✓（两份都无损 ✓、都只是显示缓存 ✓、都"过期就重算" ✓）。
+        // **先要有那份 256² 缩略图** ✓ —— 实测为据 ✓：`cache_document_preview` 里有一道
+        // **尺寸检查** ✓（它要求 blob 的 PNG 是 `ThumbKind::Doc256.size()` ✗），而我上一步
+        // `render_region(整幅)` 留下的 `document_thumbnail` 是 **4096×3072** ✗
+        // ⇒ 尺寸不符 ⇒ **直接 `return Ok(())`** ✗ ⇒ 磁盘上那份 `preview.png` **从来没写出来** ✗
+        //（实测：磁盘只有 1 个 PNG ＝ `render.png` ✓，冷启动仍整幅重渲 **1191 ms** ✗）。
+        // **∴ 这一步是"lazy 打开"能否成立的最后一环** ✓：有了 256² 基座 ✓，
+        // 冷启动 `restore_persisted_preview` ✓ 才能算出 `(seq, HEAD]` 的脏区 ✓
+        // ⇒ 第一次预览**只重渲那一块** ✓（正是 GIMP/Krita 的 dirty-rect 复用法 ✓）。
+        // 缩略图从**刚填好的整幅缓存**里取 ✓ ⇒ 便宜 ✓（不是再来一次整幅渲染 ✗）。
+        if let Ok(document) = ctx.workspace.document_mut(&doc_id) {
+            let _ = document.thumbnail(yanshi_render::thumb::ThumbKind::Doc256, None);
+        }
         let _ = ctx.workspace.cache_document_preview(&doc_id);
     }
     // **先落 `path`** ✓（老行为 ✓：写不进去要**响亮地失败** ✓，而不是回一个 URL 就当成功 ✓）。
