@@ -50190,3 +50190,33 @@ Fount-offset#1/red 不同字节 4661｜首个 @40（通道 0）｜最大通道�
 1. clippy（全 workspace，-D warnings）通过。
 2. 测试与构建见下。
 3. 行为不变：同样的 64×64 tile 遍历、同样的 << 7 换算、同样的 region 裁剪。
+
+## 第 247 轮：回归确认。收拢重复实现没有改变行为
+
+### 实测（重建 wasm 包与服务端之后，全量判据）
+```
+判据 EXIT=1
+结论：存在差异 ✗｜吃了底图而未比对：345 条｜覆盖 199/199 支笔（100.0%｜全量）
+有差异: 41   逐字节相同: 510   吃了底图跳过: 346
+```
+| 项目 | 改前 | 改后 |
+|---|---|---|
+| 逐字节相同 | 510 | 510 |
+| 有差异 | 41 | 41 |
+| 吃了底图跳过 | 345 | 345 |
+| 退出码 | 1 | 1 |
+
+### 结论
+1. 三个计数**完全相同** ⇒ 收拢 feed_base **没有改变任何行为** ✓。
+2. 这是一次**行为保持的重构**，而判据证明了这一点。
+3. 判据自身的含义不变：可比范围内 510 相同、41 差异（9 支带随机的笔）；
+   345 条需要"整层合成"才可比。
+
+### 重建记录
+1. wasm 包：cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+   + wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg --no-typescript。
+   产物 1452010 字节（11:57）。
+2. 服务端：cargo build --release --bin yanshi-serve（1 分 28 秒）。
+
+### 门禁
+1. fmt 通过。clippy 通过。yanshi-server 57 通过。yanshi-render 249 通过。全量构建通过。
