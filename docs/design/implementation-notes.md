@@ -48714,3 +48714,39 @@ crates/yanshi-wasm/Cargo.toml:
 
 ### 门禁
 1. 本轮只读清单与记录。产品代码没改。
+
+## 第 198 轮：分岔是两份重复的设置代码
+
+### 修正上一轮的理解
+1. 上一轮我说服务端用 dashed_line，内核用 hokusai。那不准。
+2. render.rs:1459 那段是涂抹（smudge），不是 brush_stroke。
+3. brush_stroke 两端都用 hokusai。
+4. 内核 paint() 的注释也写着："服务端写的是 hokusai::BrushState::default()"。
+5. 所以两端共用同一个引擎与同一个默认种子 1000。
+
+### 真正的分岔
+| 位置 | 内容 |
+|---|---|
+| crates/yanshi-server/src/tools.rs:12522 起 | BrushSetting::Opaque / Hardness / ColorH / … |
+| crates/yanshi-wasm/src/brush.rs:86 起 | configure()，同样的设置 |
+
+1. 这是**两份实现**。
+2. 它们必须逐字等价，否则同一笔的输出不同。
+3. 389 次不同很可能就来自这里。
+
+### 修法（明确且小）
+1. 把 configure 移到 yanshi-render。例如 yanshi_render::brush::configure。
+2. 两端都调它。从而设置逐字一致。
+3. 收益：两端同源 ⇒ 判据 389 期望降到 0；同时消掉一份重复实现。
+4. 代价：yanshi-render 要依赖 hokusai。但 yanshi-wasm 与 yanshi-server 都已依赖它，
+   所以只是移动位置，不是新增依赖。而且 hokusai 在 wasm32 上已经可用，
+   因为 yanshi-wasm 正在用它。
+5. 不降精度。判据是 kernel-brush-parity.mjs 传 all。
+
+### 下一步
+1. 逐字段比对两份 configure，列出差异。
+2. 找出差异里哪些会造成 389 次不同。
+3. 再决定是移动它，还是先补上差异。
+
+### 门禁
+1. 本轮只读代码与记录。产品代码没改。
