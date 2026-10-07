@@ -180,6 +180,9 @@ for (const brush of names) {
   }
   console.log(
     `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（期望 ${expected} 字节）｜` +
+      (firstDiff >= 0
+        ? `｜首差像素 @${firstDiff - (firstDiff % 4)}：服务端 [${[0, 1, 2, 3].map((k) => serverBytes[firstDiff - (firstDiff % 4) + k])}]｜门面 [${[0, 1, 2, 3].map((k) => facadeBytes[firstDiff - (firstDiff % 4) + k])}]`
+        : "") +
       `服务端 ${serverBytes.length} vs 门面 ${facadeBytes.length}｜不同字节 ${differing}` +
       (firstDiff >= 0 ? `｜首个 @${firstDiff}（通道 ${firstDiff % 4}）｜最大通道差 ${maxDelta}` : "") +
       `｜${same ? "**逐字节相同** ✓" : "有差异 ✗"}`,
