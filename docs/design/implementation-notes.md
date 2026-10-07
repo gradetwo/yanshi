@@ -48072,3 +48072,34 @@ open_timing doc=parrot-4k-v10 atoms=9742 open=0ms load_atoms=72ms
 1. 我用了四个回合在 HTTP 上猜接口。
 2. 原因是我没有先照现成的脚本跑通。
 3. 我还用错了二进制。yanshi-serve 不是 MCP 入口。
+
+## 第 1514 轮：细分打点定位到 186.5 秒的那一段
+
+### 上一轮的标签错误
+1. 计时按相邻两点算差值。
+2. 我把 loads_done 与 restore_meta 之间的全部工作算进了 load_preview。
+3. 那一段其实包含 Document::open、两次 store.put、两次 restore、load_meta 与令牌恢复。
+4. 所以"load_preview 花 188 秒"是错的。这是我的打点标签错位。
+
+### 本轮细分数据（真实文档 15.1 MB，9742 原子）
+```
+open=0ms load_atoms=73ms load_render=27ms load_preview=0ms loads_done=0ms
+before_doc_open=463ms after_doc_open=27ms
+after_render_restore=186498ms
+before_meta=0ms after_meta=0ms restore_meta=0ms
+```
+1. Document::open 耗时 27 毫秒。所以折叠不是瓶颈。
+2. 恢复整幅与预览那一段耗时 186498 毫秒，即 186.5 秒。
+3. get_document 总墙钟是 187.7 秒。这一步占 99.4%。
+4. load_meta 与令牌恢复耗时 0 毫秒。
+
+### 那一段里有什么
+1. store.put(&png)，对象是 render.png。
+2. restore_persisted_render。它只读 PNG 头。
+3. store.put(&png)，对象是 preview.png。
+4. restore_persisted_preview。注释说 256 平方解码约 1 秒。
+
+### 下一步
+1. 在那一段内部再加四个点，把 186.5 秒分开。
+2. 我怀疑 store.put。它要哈希并写入 CAS。
+3. 我要读 store.put 的实现。

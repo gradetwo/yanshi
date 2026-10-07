@@ -1059,12 +1059,18 @@ impl Workspace {
                     ErrorContext::detail(format!("文档 {doc_id} 不存在")),
                 ));
             }
+            if timing {
+                mark("before_doc_open");
+            }
             let mut document = Document::open(
                 Arc::clone(&self.store),
                 doc_id,
                 atoms,
                 self.settings.clone(),
             )?;
+            if timing {
+                mark("after_doc_open");
+            }
             if let Some((seq, png)) = render {
                 // 打开即图片（14.5/6.2）：**复用持久化渲染**，不重放历史。
                 //
@@ -1073,6 +1079,9 @@ impl Workspace {
                 //（下一次整幅请求直接命中 ✓，省掉实测 142s 的重渲染 ✓）。
                 let hash = self.store.put(&png)?;
                 document.restore_persisted_render(seq, hash, &png);
+            }
+            if timing {
+                mark("after_render_restore");
             }
             if let Some((seq, png)) = preview {
                 // **小图才是增量预览的基座** ✓（256² 解码 ~1s ✓）：接回像素 ✓ + 算出脏区 ✓
@@ -1083,6 +1092,9 @@ impl Workspace {
             }
             // 恢复令牌（12.7）。
             if let Some(persist) = &self.persist {
+                if timing {
+                    mark("before_meta");
+                }
                 if let Some(meta) = persist.load_meta(doc_id)? {
                     for record in meta.tokens {
                         document.authority_mut().restore(
@@ -1095,6 +1107,9 @@ impl Workspace {
             }
             // 末尾也要打一个点 ✓：差值按相邻两点算 ⇒ 没有后继点的那一段**永远打不出来** ✗
             //（上一版就漏了 `restore_meta` ✓）。
+            if timing {
+                mark("after_meta");
+            }
             if timing {
                 mark("restore_meta");
                 mark("done");
