@@ -289,7 +289,13 @@ pub(crate) fn paint(request_json: &str) -> Result<Vec<u8>, String> {
             &base.rgba,
         );
     }
-    stamp(&brush, &mut state, &mut surface, &request.points);
+    let steps = stamp(&brush, &mut state, &mut surface, &request.points);
+    if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
+        eprintln!(
+            "stamp_steps side=kernel steps={steps} region=({},{},{},{})",
+            request.region.x, request.region.y, request.region.w, request.region.h
+        );
+    }
     Ok(read_back(&surface, &request.region))
 }
 
