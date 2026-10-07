@@ -74,6 +74,30 @@ for (const brush of names) {
     allEqual = false;
     continue;
   }
+  // **先铺一层同位置同尺寸的底图**（第 212 轮）：涂抹类笔刷靠抹开画布上已有的颜色 ✓
+  // ⇒ 没有底图时服务端**直接拒绝**（"这一笔没落下任何像素"✓），而门面若从空表面开始
+  // ⇒ 两边输入不等价 ✓（实测 386/796 条"差异" ✓）。这里把底图**显式**取出来，
+  // 既喂给门面，也保证两边的 region 与像素来源都是同一份。
+  const fillerId = `f_${slug}`;
+  const filler = await tool("brush_stroke", {
+    layer_id: layerId, object_id: fillerId, brush: "100%_Opaque",
+    size, color: colour, points: pointList,
+  });
+  let basePixels = null;
+  if (filler.ok) {
+    const fillerObj = await tool("get_object", { object_id: fillerId });
+    const fillerHash = fillerObj?.data?.bitmap?.blob_hash;
+    if (fillerHash) {
+      const raw = new Uint8Array(
+        await fetch(`${base}/api/blob/${fillerHash}?doc=${doc}&token=${token}`).then((r) => r.arrayBuffer()),
+      );
+      const fw = filler.region?.w ?? 0;
+      const fh = filler.region?.h ?? 0;
+      if (fw > 0 && fh > 0 && raw.length >= fw * fh * 4) {
+        basePixels = { width: fw, height: fh, rgba: Array.from(raw.subarray(0, fw * fh * 4)) };
+      }
+    }
+  }
   const made = await tool("brush_stroke", {
     layer_id: layerId, object_id: `o_${slug}`, brush,
     size, color: colour, points: pointList,
@@ -90,7 +114,14 @@ for (const brush of names) {
     await fetch(`${base}/api/blob/${blobHash}?doc=${doc}&token=${token}`).then((r) => r.arrayBuffer()),
   );
   const myb = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
-  const facadeBytes = facade({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region });
+  // 把同一份底图交给门面 ✓ ⇒ 两边的输入真正等价 ✓。
+  // 两边 region 不一致时**必须报出来** ✗，而不是静默比对 ✗。
+  let baseForFacade = basePixels;
+  if (basePixels && (basePixels.width !== region.w || basePixels.height !== region.h)) {
+    console.log(`  ${brush.padEnd(14)} 底图尺寸 ${basePixels.width}×${basePixels.height} 与 region ${region.w}×${region.h} 不一致 ⇒ 这次不喂底图`);
+    baseForFacade = null;
+  }
+  const facadeBytes = facade({ myb, points: pointList, size, color: colour, opacity: null, hardness: null, region, base: baseForFacade });
   if (!facadeBytes) {
     console.log(`  ${brush.padEnd(14)} 门面返回 0 ⇒ 画不出来 ✗`);
     allEqual = false;
