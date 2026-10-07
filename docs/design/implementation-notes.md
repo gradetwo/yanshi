@@ -48153,3 +48153,32 @@ before_meta=0ms after_meta=0ms restore_meta=0ms
 1. 在 put_inner 里加分点。位置是 hash、exists、encode、write、sync、rename。
 2. 这样能确定是不是 fsync。
 3. 若是，把这两个写入改用 put_cache，并用同一条判据验证。
+
+## 第 1516 轮：fsync 假设被否决
+
+### 实验
+1. 我直接在 /tmp 上测。文件系统是 btrfs。
+2. 写 4.35 MB 耗时 0.001 秒。
+3. fsync 耗时 0.028 秒。
+4. 连测 12 次。最小 0.025 秒，中位 0.029 秒，最大 0.035 秒。
+
+### 结论
+1. fsync 不是主因。它只要 28 毫秒。
+2. 哈希与编码也不是主因。它们是内存操作。
+3. 所以 186 秒不在这两项里。
+
+### 那 186 秒在哪里
+那段代码只有两行：
+```
+1080  let hash = self.store.put(&png)?;
+1081  document.restore_persisted_render(seq, hash, &png);
+```
+1. store.put 做了哈希、查存在、编码、写盘、fsync、改名。都不慢。
+2. restore_persisted_render 只读 PNG 头。
+3. 所以这一段不该花 186 秒。
+
+### 下一步
+1. 我在 put_inner 里加分点。我用环境变量开关加 eprintln。
+2. 分点是 hash、exists、encode、write、sync、rename。
+3. 这样能确定它在哪一步。
+4. 也要查 restore_persisted_render 里的那次 store.put 是不是同一个。
