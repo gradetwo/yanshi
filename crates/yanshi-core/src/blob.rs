@@ -685,13 +685,34 @@ impl BlobStore for FsBlobStore {
 impl FsBlobStore {
     /// **`put` 与 `put_cache` 的共同实现** ✓：`sync` 决定是否调 `sync_or_degrade` ✓。
     fn put_inner(&self, bytes: &[u8], sync: bool) -> Result<BlobHash> {
+        // 存储写入的分段计时（第 1504 轮）。外部报告显示一次 1723 字节的写入要 188 秒，
+        // 而 4.35 MB 的那次是 0 毫秒 ⇒ 必须看清是哪一步挂住（不是数据量问题）。
+        let trace = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
+        let t = std::time::Instant::now();
+        let mut last = t;
+        let mut step = |name: &str| {
+            if trace {
+                let now = std::time::Instant::now();
+                eprintln!(
+                    "put_timing bytes={} {}={}ms",
+                    bytes.len(),
+                    name,
+                    now.duration_since(last).as_millis()
+                );
+                last = now;
+            }
+        };
         let hash = BlobHash::from_bytes(bytes);
+        step("hash");
         let target = self.path_of(&hash);
         if target.exists() {
+            step("exists_hit");
             return Ok(hash);
         }
+        step("exists");
         let dir = target.parent().expect("CAS 路径必有父目录");
         fs::create_dir_all(dir).map_err(|error| io_error(dir, error))?;
+        step("create_dir");
         // 并发写入安全：先写唯一 .tmp，再 rename（同哈希并发时 rename 幂等）。
         static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let tmp = dir.join(format!(
@@ -703,8 +724,10 @@ impl FsBlobStore {
             let mut file = fs::File::create(&tmp).map_err(|error| io_error(&tmp, error))?;
             // **写入的是"编码后"的字节** ✓，而上面的哈希来自**明文** ✓ ⇒ 内容寻址语义不变 ✓。
             let stored = self.codec.encode(bytes);
+            step("encode");
             file.write_all(&stored)
                 .map_err(|error| io_error(&tmp, error))?;
+            step("write");
             // **`sync_all` 在部分文件系统上不被支持** ✓（真实用户报的第 2 条 ✓）：
             // 9p / 某些网络挂载上 fsync 返回 `ENOTSUP`（os error 95 ✓）✗
             // ⇒ 原来这一句让**任何写操作都失败** ✗（"CAS IO 失败 … Operation not supported" ✓）。
@@ -716,7 +739,9 @@ impl FsBlobStore {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        step("sync");
         fs::rename(&tmp, &target).map_err(|error| io_error(&target, error))?;
+        step("rename");
         Ok(hash)
     }
 }

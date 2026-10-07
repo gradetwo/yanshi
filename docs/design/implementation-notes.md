@@ -48250,3 +48250,33 @@ before_meta=0ms
 3. 第一次 put 与第二次 put 用的是同一个 store。差别只在哈希目录名。
 4. 下一步我在 put_inner 内部加 6 个点。位置是 hash、exists、create_dir、encode、write、sync、rename。
 5. 我用 eprintln 加同一个环境变量开关。这样能跨 crate 打点。
+
+## 第 1519 轮：出现了矛盾
+
+### put_inner 的分段数据
+```
+put_timing bytes=4349754 hash=27ms
+put_timing bytes=4349754 exists_hit=0ms
+put_timing bytes=1723 hash=0ms
+put_timing bytes=1723 exists_hit=0ms
+```
+1. 两次写入都命中 exists_hit。它们都在 0 毫秒返回。
+2. 所以 188 秒不在 put_inner 里。
+3. 两次写入的数据量正好对应 render.png 与 preview.png。
+
+### 矛盾
+1. service 侧的差值显示 after_render_restore 到 after_preview_put 是 188254 毫秒。
+2. 那一段只有一行 store.put(&png)。
+3. 但 put_inner 说那一行是 0 毫秒。
+4. 所以两边对不上。
+
+### 已排除的
+1. FsBlobStore 没有锁。只有 MemoryBlobStore 有 Mutex。
+2. 冷层迁移不在 put 路径里。
+3. 两次 put 都是 exists_hit，所以不写盘。
+
+### 结论
+1. 矛盾只能来自时间基准不同。
+2. service 侧的 mark 用相对差值。put_inner 用 eprintln。两者不在同一条时间线上。
+3. 下一步我在两边都打绝对时间戳。我用 Instant 的毫秒值。
+4. 这样能对齐两次记录，找出 188 秒到底在哪。
