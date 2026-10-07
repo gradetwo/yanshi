@@ -583,6 +583,60 @@ pub struct ExportStats {
     pub kept_mismatch: usize,
 }
 
+/// **导出"可重放证明"的进程内缓存** ✓（第 39 轮 ✓）。
+///
+/// **为什么进程内就够** ✓：缓存的键已**完整**涵盖重放的四个输入 ✓ ⇒ 只要进程还活着，
+/// 同一个键的结论**必然**仍然成立 ✓；进程退出 ⇒ 缓存消失 ⇒ **不需要任何磁盘失效逻辑** ✓
+///（**∴ 零"过期"风险** ✓ —— 与"渲染快照"那种要写盘的东西**不同** ✓）。
+static EXPORT_PROOF_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<(String, String, String, String)>>,
+> = std::sync::OnceLock::new();
+
+fn export_proof_cache(
+) -> &'static std::sync::Mutex<std::collections::HashSet<(String, String, String, String)>> {
+    EXPORT_PROOF_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// **键 ＝ 重放的四个输入** ✓（缺一不可 ✗）：`(crate 版本, 配方 canonical 串, 笔刷内容哈希, 目标哈希)` ✓。
+///
+/// **解析不出笔刷 ⇒ 返回 `None`** ✓（**保守回退** ⇒ 不缓存 ✓ ⇒ 照旧重放 ✓）。
+fn export_proof_key(
+    workspace: &Workspace,
+    source: &serde_json::Value,
+    hash: &yanshi_core::BlobHash,
+) -> Option<(String, String, String, String)> {
+    let brush_name = source.get("brush").and_then(serde_json::Value::as_str)?;
+    let file = if brush_name.ends_with(".myb") {
+        brush_name.to_owned()
+    } else {
+        format!("{brush_name}.myb")
+    };
+    let path = workspace.resolve_asset("brush", &file).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    let brush_hash = yanshi_core::BlobHash::from_bytes(&bytes);
+    Some((
+        env!("CARGO_PKG_VERSION").to_owned(),
+        serde_json::Value::to_string(source),
+        brush_hash.to_string(),
+        hash.to_string(),
+    ))
+}
+
+/// 查缓存 ✓（**只读**：命中即表示"该配方确实重放出该哈希" ✓）。
+fn export_proof_lookup(key: &(String, String, String, String)) -> bool {
+    export_proof_cache()
+        .lock()
+        .map(|guard| guard.contains(key))
+        .unwrap_or(false)
+}
+
+/// 记入缓存 ✓。
+fn export_proof_remember(key: &(String, String, String, String)) {
+    if let Ok(mut guard) = export_proof_cache().lock() {
+        guard.insert(key.clone());
+    }
+}
+
 impl Workspace {
     /// **开始一个变更集** ✓（设计 793 的 `begin_changeset` ✓）。
     ///
@@ -2455,9 +2509,33 @@ impl Workspace {
                 });
                 if all_replayable {
                     let source = refs_by_blob[hash_text][0]["source"].clone();
+                    // **证明记忆化** ✓（第 39 轮 ✓）：
+                    // 重放的输入只有四项 ✓（第 365 轮查明 ✓）：配方 ✓、**那个 `.myb` 的字节** ✓、
+                    // 引擎数学（crate 版本 ✓）、目标哈希 ✓ ⇒ **∴ 键就是这四项** ✓，缺一不可 ✗。
+                    //
+                    // ⚠️ **为什么键里必须有 `.myb` 的内容哈希** ✗：只含**名字**的话 ✓，
+                    // 磁盘上的 `.myb` 被替换（用户或构建 ✓）⇒ **旧证明会被错误复用** ✗
+                    // ⇒ 包**少装本该装的位图** ✗ ⇒ 打开缺图形 ✗ = **本仓头号病根** ✓。
+                    // **∴ 解析不出笔刷就"不缓存"** ✓（保守回退 ✓ ⇒ **绝不用不完整的键** ✗）。
+                    //
+                    // **代价两面** ✗：收益＝同一进程内重复保存时，720 次重放（实测 **2.62 s** ✗）
+                    // 直接命中 ⇒ **几十 ms** ✓；代价＝每个键几十字节的内存 ✓
+                    // ＋ **为每支笔刷读一次 `.myb` 并哈希**（~6 KB ✓，一次导出内按名去重 ✓）。
+                    // **边界** ✗：进程内缓存 ⇒ **服务端重启后第一次保存仍慢** ✓（磁盘持久化是下一步 ✓）。
+                    let proof_key = export_proof_key(self, &source, &hash);
+                    if let Some(key) = &proof_key {
+                        if export_proof_lookup(key) {
+                            // **命中 ⇒ 与"重放成功"完全同一条路** ✓（输出不受影响 ✓）。
+                            omitted += 1;
+                            continue;
+                        }
+                    }
                     let reproved = crate::tools::replay_brush_bitmap(self, doc_id, &source);
                     if let Ok(replayed) = reproved {
                         if yanshi_core::BlobHash::from_bytes(&replayed) == hash {
+                            if let Some(key) = &proof_key {
+                                export_proof_remember(key);
+                            }
                             omitted += 1;
                             continue;
                         }
