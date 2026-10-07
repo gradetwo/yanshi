@@ -13711,6 +13711,12 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     }
     // **再把同一份字节放进 CAS** ✓：`put` 是**内容寻址**的 ✓（同内容幂等去重 ✓），
     // 回的哈希就是 `yanshi://blob/<hash>` 里的那一个 ✓ ⇒ 取回来的**必然**是这份包 ✓。
+    // **⚠️ 已否证的假设（第 61 轮实测 ✓）**：曾把这里改成 `put_cache`（跳过 `fsync` ✓），
+    // 指望省下探针量到的 **~1.2 s** ✗ ⇒ **实测毫无变化** ✓（4K 2720/1255 ms ✓、8K 12187/9174 ms ✓，
+    // 与改前**逐个相同** ✓）⇒ **∴ 那 1.2 s **不是** fsync** ✗ ⇒ **∴ 它在 `put_inner` 里与 `sync` 无关的部分**
+    //（`.tmp` ＋ `rename` ＋ 写入路径 ✓）。
+    // **∴ 已撤回** ✓ —— **不许**为了零收益去削弱持久性 ✗（那是**双输** ✓）。
+    // **∴ 下一步若要省它** ✓：在 `FsBlobStore::put_inner` **内部分段记时** ✓（写字节／改名／同步 ✓）。
     let hash = ctx.workspace.store().put(&tar)?;
     if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
         let _ = std::fs::OpenOptions::new()
