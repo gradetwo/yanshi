@@ -82,7 +82,8 @@ kernel-brush-parity.mjs  # 类型：断言失败（**可本地复现的真差异
 #   x86-64 用 glibc ✓）⇒ 要消除就得让**两端调用同一套**（例如都走 `libm` ✓）。
 #   ⚠️ 注意：本条原先写着"`libm` 那一改**没有**消除它" ✓ —— 那是**在结构性分歧还在时**测得 ✓
 #   ⇒ **∴ 现在值得重测** ✓（41 条里大多数当时是结构性的 ✓）。
-tool-preview-decoupling.mjs  # **类型：待实现（P0 预览解耦）** ✓
+# **第 5 轮：已转绿 ⇒ 移出名单** ✓（`brush_stroke(preview:false)` 已实现 ✓；实测 preview_ms 121.35 → 71.46 ✓，且响应里不再有 `preview` ✓、job 仍 committed ✓）。
+# tool-preview-decoupling.mjs  # **类型：待实现（P0 预览解耦）** ✓
 # **为什么红** ✗（用户现场 ＋ 我复现 ✓）：连续作画时**每一笔**都编一张预览 PNG ✓
 #   ⇒ 单笔延迟里 **~130 ms** 在这里（4K、`Clouds.myb`、`size 180`、5 点长笔触；
 #     `preview_ms` 实测 **116~148 ms** ✓）；而 `batch(silent:true)` 在"不放行预览"时

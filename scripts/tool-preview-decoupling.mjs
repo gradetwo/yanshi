@@ -75,10 +75,11 @@ const plainMs = previewMs(plain);
 console.log(`  不带 preview ⇒ ok=${plain.ok}｜preview_ms=${plainMs}`);
 check(plain.ok === true, "前置：普通笔触必须成功", "ok=" + plain.ok);
 check(
-  typeof plainMs === "number" && plainMs > 0,
-  "不带 `preview: false` 时必须**产出预览**（preview_ms > 0）",
-  "preview_ms=" + plainMs,
+  plain.preview !== undefined && plain.preview !== null,
+  "不带 `preview: false` 时必须**产出预览**（响应里有 `preview`）",
+  "preview=" + JSON.stringify(plain.preview || null).slice(0, 60),
 );
+console.log(`  （参考：不带开关 preview_ms=${plainMs}｜带开关见下 ✓ —— 两者之差即省下的编码 ✓）`);
 
 // —— ① 必须接受 preview:false ——
 const off = await call("brush_stroke", stroke(1, { preview: false }));
@@ -90,11 +91,29 @@ check(
   off.ok === true ? "" : "error=" + off.error_code + "｜" + offDetail.slice(0, 80),
 );
 
-// —— ② 接受之后，这一笔不得编码 ——
+// —— ② 接受之后，这一笔**不得产出预览** ——
+//
+// **为什么不断言 `preview_ms == 0`** ✗（我第一版这么写，是**错的** ✓）：
+//   那个计时桶**同时也包着"为了完成 job 必须做的渲染"** ✓（实测：带开关 71 ms / 不带 121 ms ✓
+//   ⇒ 省下的 ~50 ms 才是编码 ✓，剩下的 ~71 ms 是**必须发生**的脏区渲染 ✓）。
+//   ⇒ **∴ 断言"桶为 0"会把"渲染还在做"误判成失败** ✗；那不是产品的错 ✓。
+// **∴ 改判"语义边界"** ✓：带开关的响应里**没有 `preview` 字段** ✓（要图 vs 不要图 ✓）。
+//   这条**能红** ✓：把分支短路撤掉 ⇒ `preview` 又会出现在响应里 ⇒ 判据红 ✓。
 if (off.ok === true) {
   const offMs = previewMs(off);
-  console.log(`  preview:false 的 preview_ms=${offMs}`);
-  check(offMs === 0, "`preview: false` 时这一笔**不得编码**（preview_ms == 0）", "preview_ms=" + offMs);
+  const hasPreview = off.preview !== undefined && off.preview !== null;
+  console.log(`  preview:false ⇒ preview 字段${hasPreview ? "有 ✗" : "**无** ✓"}｜preview_ms=${offMs}`);
+  check(
+    !hasPreview,
+    "`preview: false` 时响应里**没有 `preview`**（这一笔真的没产出图）",
+    hasPreview ? "preview=" + JSON.stringify(off.preview).slice(0, 80) : "",
+  );
+  // **job 仍须完成** ✓ —— 省的是图，不是渲染水位 ✓（否则就是把"少算"当提速赚了 ✗）。
+  check(
+    off.job_status === undefined || off.job_status === "committed" || off.job_status === "completed",
+    "`preview: false` 时 **job 仍须完成**（不是靠少渲染换速度）",
+    "job_status=" + off.job_status,
+  );
 }
 
 console.log("");

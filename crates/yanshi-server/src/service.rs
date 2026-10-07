@@ -1715,6 +1715,17 @@ impl Workspace {
         Ok(document.region_cache_stats())
     }
 
+    /// **渲染区域、完成 job，但既不编码也不落盘** ✓（第 5 轮 ✓，P0 预览解耦 ✓）。
+    ///
+    /// 给"调用方明确不要这一笔的预览图"的路用 ✓：**job 照旧完成** ✓（渲染水位不受影响 ✓），
+    /// 只是**不编那张 PNG** ✗（实测编码 88 ns/px ✓、4K 长笔触约 130 ms/笔 ✓）。
+    /// **不落盘 ⇒ 这条比 `render_region` 少两个副作用** ✓（也不更新 `last_render_blob`
+    /// 与文档缩略图 ✗）—— 那正是"不要图"的含义 ✓。
+    pub fn render_region_complete_jobs(&mut self, doc_id: &str, bbox: Bbox) -> Result<()> {
+        let document = self.document_mut(doc_id)?;
+        document.render_region_complete_jobs(bbox)
+    }
+
     /// 渲染区域、写入渲染缓存并返回可展示的预览（含 PNG blob 与取回地址）。
     pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
         let (preview, head, png, full_frame) = {

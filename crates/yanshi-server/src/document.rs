@@ -1060,6 +1060,52 @@ impl Document {
     /// 对应的 seq **正好等于 HEAD** ✓，直接把它当作本次结果返回 ✓ —— 不重渲染 ✗。
     /// 这是**纯缓存命中** ✓：同一份像素、同一个 blob ✓ ⇒ 输出逐字节相同 ✓。
     /// 落后一个 seq 都不许命中 ✗（那是"拿旧图冒充 HEAD" ✗）——见 `full_frame_render_seq` 比对。
+    /// **渲染该区域并完成 job，但不编码、不落盘** ✓（第 5 轮 ✓，P0 预览解耦 ✓）。
+    ///
+    /// **为什么要有它** ✗：连续作画时**每一笔**都要编一张预览 PNG ✓ ⇒ 单笔里 **~130 ms** 花在
+    /// `encode_png` 上（4K、`Clouds.myb`、`size 180`、5 点长笔触；实测 `preview_ms` 116~148 ms ✓）。
+    /// 而 `finish_mutation` 里"要不要渲染"与"要不要给调用方 PNG"是**两件事** ✓：
+    /// job 的完成（渲染水位 ✓）**必须**照旧 ✓，但那**不需要**一张 PNG ✓。
+    ///
+    /// **为什么不去掉 `finish_mutation` 的渲染** ✗（我试过，实测更差 ✓）：那样长笔触会掉进 job 分支
+    /// ⇒ 整幅 4K 预览 ⇒ **962 ms/笔** ✗（比原来的 264 ms 更差 ✓）。
+    /// **∴ 这条路复用同一条便宜的脏区渲染** ✓，**只省掉最后的编码与落盘** ✓。
+    ///
+    /// **代价两面** ✗：收益＝每笔省下编码（实测 88 ns/px ✓）与一次 CAS 写入 ✓；
+    /// 代价＝这一笔**不产出预览 blob** ⇒ `last_render_blob` / 文档缩略图**不更新** ✗
+    /// ⇒ 查看器要看到画面得等下一次"要预览"的调用（或 `export_png` / `get_document` ✓）。
+    /// **∴ 只在调用方明确不要图时才走这里** ✓（默认行为一个字节不变 ✓）。
+    pub fn render_region_complete_jobs(&mut self, bbox: Bbox) -> Result<()> {
+        let region = bbox;
+        // 整幅 + 缓存命中：与 `render_region` 一样**必须走完渲染收尾** ✓（否则漏掉 job 完成 ✗），
+        // 但这里**不需要**那份 PNG ✓ ⇒ 直接返回 ✓。
+        if covers_canvas(region, self.state.width, self.state.height)
+            && self.current_full_frame_preview()?.is_some()
+        {
+            self.complete_render_jobs()?;
+            return Ok(());
+        }
+        let full_canvas = covers_canvas(region, self.state.width, self.state.height);
+        // **同一条渲染** ✓（这才是"不换路"的意思 ✓）。
+        let rendered = self
+            .renderer
+            .render_region(&self.state, &*self.store, region)?;
+        if full_canvas {
+            self.full_canvas_renders += 1;
+        }
+        // **告警照旧留档** ✓（不因为"不要图"就静默 ✓）。
+        self.last_render_warnings = rendered.stats.unsupported.clone();
+        // **推进水位 + 完成 job** ✓（这两件事与"要不要 PNG"无关 ✓）。
+        self.render_watermark = self.log.head_seq();
+        self.complete_render_jobs()?;
+        // **不编码、不落盘、不淘汰** ✗：没有新 blob ⇒ 也就没有"被替换的旧预览" ✓。
+        Ok(())
+    }
+
+    /// 渲染区域、写入渲染缓存并返回可展示的预览（含 PNG blob 与取回地址）。
+    ///
+    /// **与 [`Self::render_region_complete_jobs`] 的区别** ✓：这条会**编码 PNG 并落盘** ✓，
+    /// 且会更新 `last_render_blob` / 文档缩略图 / 整幅缓存 ✓；那条只渲染并完成 job ✓。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
         let region = bbox;
         if covers_canvas(region, self.state.width, self.state.height) {

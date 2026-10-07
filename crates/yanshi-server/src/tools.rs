@@ -292,6 +292,13 @@ pub struct ToolContext<'a> {
     /// 一屏 500 笔 ⇒ **500 张预览** ✗ —— 而那些中间预览**没有人会看** ✗（批处理结束后画布就是最终状态 ✓）。
     /// **缺省 false** ✓：**不改变既有行为** ✓ —— 新开关一律缺省关闭 ✓，绝不偷偷改老调用方的观感与开销 ✗。
     pub silent: bool,
+    /// **这一笔要不要"给调用方的那张预览 PNG"** ✓（第 5 轮 ✓，P0 预览解耦 ✓）。
+    ///
+    /// **为什么不复用 `silent`** ✗：`silent` 已表示"不要把图放进响应"（省 JSON 与取回 ✓），
+    /// 实测它在长笔触上**仍然每笔编码** ✓（因为 `|| result.job_id.is_some()` 那句 ✓）。
+    /// **∴ 用语义更直白的字段** ✓：`false` = **这一笔不编码预览 PNG** ✓
+    ///（**job 照常完成** ✓ —— 渲染水位与"要不要图"是两件事 ✓）。
+    pub preview: bool,
     /// 等待预算（毫秒）。
     pub wait_budget_ms: u64,
     /// 当前时间。
@@ -336,6 +343,7 @@ impl<'a> ToolContext<'a> {
             role: crate::token::Role::Owner,
             wait_for_render: true,
             silent: false,
+            preview: true,
             wait_budget_ms: 500,
             now: yanshi_core::now_ms(),
             changeset: None,
@@ -1142,14 +1150,22 @@ fn finish_mutation(
             let w = bbox.w.max(1.0).min(width as f64 - x);
             let h = bbox.h.max(1.0).min(height as f64 - y);
             let region = Bbox::new(x, y, w.max(1.0), h.max(1.0));
-            let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
-            ctx.time(Phase::Preview, preview_started);
-            caller_render_done = true;
-            // **静默时不把图放进响应** ✓（用户 §五-5 的批量静默提交 ✓）——
-            // 但**已经渲过了** ✓：静默省的是"每次调用一份预览 JSON 与它的取回" ✓，
-            // 不是"不推进渲染水位" ✗（后者会削弱 `wait_for_render` 的承诺 ✗）。
-            if !ctx.silent {
+            // **按"要不要图"选路** ✓（第 5 轮 ✓，P0 ✓）—— **两条都走同一条脏区渲染** ✓：
+            //  * 要图 ⇒ 老路（渲染 ＋ **编码** ＋ 落盘 ✓）；
+            //  * 不要图 ⇒ 新路（渲染 ＋ **完成 job** ✓，**省掉编码与落盘** ✗）。
+            // **∴ 不换路** ✓ —— 我上一轮"去掉渲染条件"的尝试把长笔触推进了整幅 job 分支
+            // ⇒ 实测 **962 ms/笔** ✗（比 264 ms 更差 ✓），教训已记档 ✓。
+            if ctx.preview && !ctx.silent {
+                let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
+                ctx.time(Phase::Preview, preview_started);
+                caller_render_done = true;
                 preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
+            } else {
+                ctx.workspace
+                    .render_region_complete_jobs(&ctx.doc_id, region)?;
+                ctx.time(Phase::Preview, preview_started);
+                caller_render_done = true;
+                // 明确不产出预览 ✓（响应里 `preview` 为空 ✓ —— 调用方要的就是这个 ✓）。
             }
         }
     }
@@ -2765,6 +2781,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
+            // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
+            // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
+            param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!("layer_id", String, true, "目标图层"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!("points", Array, true, "[[x,y,pressure],…]，压力 0..1（可省，缺省 0.5）"),
@@ -12989,6 +13008,11 @@ fn apply_brush_style(
 }
 
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **预览开关** ✓（第 5 轮 ✓）：只影响"要不要编这张 PNG" ✓，不影响 job ✓。
+    if !optional_bool(args, "preview").unwrap_or(true) {
+        ctx.preview = false;
+    }
+
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
