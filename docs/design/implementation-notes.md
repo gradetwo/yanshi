@@ -55425,3 +55425,45 @@ let hash = ctx.workspace.store().put_cache(&tar)?;   // 契约允许：tar 可�
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace` **passed=927／failed=0** ✓
    （**927** ＝ 含第 382 轮新增的那条 `put_cache` 判据 ✓ —— **它仍然保留** ✓，
    因为**契约本身**依然值得守护 ✓：将来真有用到 `put_cache` 的地方 ✓）。
+
+## 第 384 轮：🎯 **仓库自带的探针**把 `store.put` 量成 **~18 ms** ✗ ⇒ 那 1.2 s **不在**存储里 ✓
+
+### 一、关键发现：探针**早就有** ✓（`put_inner` 第 1504 轮加的 ✓）
+```rust
+fn put_inner(&self, bytes: &[u8], sync: bool) -> Result<BlobHash> {
+    let trace = std::env::var_os("YANSHI_OPEN_TIMING").is_some();   // ← 已有 env 门控 ✓
+    let mut step = |name: &str| { … eprintln!("put_timing … {name}={}ms") … };
+    let hash = BlobHash::from_bytes(bytes);  step("hash");
+    … step("exists") / step("exists_hit") / step("create_dir") / step("encode")
+      step("write") / step("sync") / step("rename") …
+}
+```
+⇒ **∴ 我不必写任何新代码** ✗ ⇒ 只要 `YANSHI_OPEN_TIMING=1` 跑一次导出 ✓。
+
+### 二、实测（真实 4K 工程，724 KB 的 tar ✓）
+| 步骤 | 第 1 次 | 第 2 次 |
+|---|---|---|
+| `hash` | 5 ms | 5 ms |
+| `exists`／**`exists_hit`** | 0 ms | **0 ms**（**去重命中 ⇒ 直接返回** ✓） |
+| `create_dir` | 0 ms | — |
+| `encode` | 9 ms | — |
+| `write` | **0 ms** | — |
+| `sync` | **4 ms** ✗ | — |
+| `rename` | 0 ms | — |
+| **合计** | **~18 ms** ✓✓ | **~5 ms** ✓ |
+
+### 三、∴ 结论（**两条都推翻了我先前的判断** ✗）
+1. **∴ `store.put` 只要 18 ms** ✓ ⇒ **∴ 那 1.2 s **不在**存储层** ✗✓ ——
+   连 **`sync` 也只有 4 ms** ✗ ⇒ **∴ 第 380 轮"那 1.2 s 就是 fsync"错得更远** ✗（第 383 轮已否证 ✓，本轮彻底排除 ✓）。
+2. **∴ 我第 374 轮在调用侧量到的 `store_put = 1224／1247 ms` 是**误导**✗**
+   —— **同一个调用**本轮只有 **18／0 ms** ✓ ⇒ **∴ 我的调用侧探针当时测到了别的东西** ✗
+   （最可能：`_probe_t1` 与日志写出之间夹了其它工作 ✗，或那个 `Instant` 的取点不在我以为的位置 ✓）。
+3. **∴ 下一步（精确 ✓）** ✓：**在 `export_project` 内部**分段 ✓（读日志 ✓／收集 `wanted` ✓／
+   逐 blob 循环 ✓／**tar 组装 ✓**／返回 ✓）—— 而**不**再用"调用侧两段"那种粗糙口径 ✗
+   （它已经骗了我一次 ✓）。
+   **⚠️ 锚点纪律** ✗（第 382 轮教训 ✓）：`ExportStats {` 出现**两次** ✓ ⇒ 必须用**构造点独有**的字符串定位 ✓
+   （如 `blob_bytes_packed: packed_bytes,` ✓），并且**定位与替换用同一个计数断言** ✓。
+
+### 四、门禁
+1. 本轮**未改任何代码** ✓（只跑测量 ✓）；`fmt`／`clippy`／`cargo test --workspace` **927／0** ✓
+   （第 61 轮结束时已验 ✓）；工作区在提交后干净 ✓。
