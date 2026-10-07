@@ -1551,6 +1551,17 @@ impl Document {
         self.open_ms = ms;
     }
 
+    /// **文档级缩略图是否已经是最新** ✓（第 75 轮 ✓）—— 保存点据此**跳过**重复生成 ✓。
+    ///
+    /// **为什么需要它** ✗：保存点**无条件**调 `thumbnail(Doc256)` ✓，而它会**整幅渲染**
+    /// 一遍 ✗ ⇒ 实测（真实 4K ✓）**`thumbnail_renders` 每次导出 +1** ✓（1 → 2 → 3 ✓，
+    /// 而画面**零变化** ✗）⇒ 每次白付 **~1.07 s** ✗（8K ~9 s ✗）。
+    /// **∴ 判据** ✓："**无变化时重复导出 ⇒ `thumbnail_renders` 不得增长**" ✓（**今天红 ✓**）；
+    /// 配"**有变化之后必须更新**" ✓（否则可以用"永不更新"骗过前一条 ✓）。
+    pub fn doc_thumbnail_is_current(&self) -> bool {
+        self.document_thumbnail.is_some() && self.document_thumbnail_seq == self.render_watermark
+    }
+
     /// **文档级预览渲染**的次数 ✓（`render_document_preview` 真正渲染像素的次数 ✓；
     /// 判据用语义计数 ✓，不看墙钟 ✗）。
     ///

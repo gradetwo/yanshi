@@ -13719,7 +13719,11 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         // ⇒ 第一次预览**只重渲那一块** ✓（正是 GIMP/Krita 的 dirty-rect 复用法 ✓）。
         // 缩略图从**刚填好的整幅缓存**里取 ✓ ⇒ 便宜 ✓（不是再来一次整幅渲染 ✗）。
         if let Ok(document) = ctx.workspace.document_mut(&doc_id) {
-            let _ = document.thumbnail(yanshi_render::thumb::ThumbKind::Doc256, None);
+            // **按需生成** ✓（第 75 轮 ✓）：已最新就**跳过** ✗ —— 否则每次保存都白付一次整幅渲染 ✗
+            //（实测 4K ~1.07 s ✗／8K ~9 s ✗，而画面零变化 ✓）。
+            if !document.doc_thumbnail_is_current() {
+                let _ = document.thumbnail(yanshi_render::thumb::ThumbKind::Doc256, None);
+            }
             _p3_mark("thumbnail_doc256");
         }
         let _ = ctx.workspace.cache_document_preview(&doc_id);
