@@ -859,6 +859,28 @@ impl Workspace {
                 )
             })?;
         }
+        // **同步"钉住的 blob"** ✓（第 301 轮 ✓，A① 的收尾 ✓）：
+        // 参考图是**用 `render_region` 产出**的 ✓ ⇒ 它天然落在"预览缓存"的管理范围里 ✓
+        // ⇒ `evict_replaced_previews` 会在**下一次渲染**时把"被替换的旧预览"删掉 ✗
+        // ⇒ 而它**正是用户设的参考图** ✓（调用栈实测：`write_fill_region` →
+        //   `finish_mutation` → `render_region` → `evict_replaced_previews` → `remove` ✓）
+        // ⇒ 症状：`set_reference` 当场成功 ✓、**下一次落笔**就从磁盘消失 ✗
+        //   ⇒ `analyze_region` 报 `reference_not_found` ✓ —— **数据丢失**一类 ✓。
+        // **∴ 每次偏好变化后**（设 / 清参考图都走这里 ✓）把它发给**每个文档** ✓
+        //（参考图是**工作区级**的 ✓ ⇒ 哪个文档渲染都不许删它 ✓）。
+        let mut pinned = std::collections::BTreeSet::new();
+        if let Some(text) = self
+            .preferences
+            .get("reference.blob_hash")
+            .and_then(Value::as_str)
+        {
+            if let Ok(hash) = text.parse::<yanshi_core::BlobHash>() {
+                pinned.insert(hash);
+            }
+        }
+        for document in self.documents.values_mut() {
+            document.set_pinned_blobs(pinned.clone());
+        }
         Ok(self.preferences(None))
     }
 

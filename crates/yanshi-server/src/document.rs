@@ -279,6 +279,17 @@ pub struct Document {
     /// 复用持久化像素的全部价值就是让它**保持 0** ✓ ⇒ 一旦有人把某条路径改回整幅 ✗，
     /// 判据立刻变红 ✓，不需要在慢机器上等 140 秒 ✗。
     full_canvas_renders: usize,
+    /// **钉住的 blob** ✓（第 301 轮 ✓，A① 的收尾 ✓）：任何自动回收路径都**不许删**这些 ✓。
+    ///
+    /// **为什么需要** ✗（用**调用栈**实测定位 ✓）：
+    /// 参考图是**用 `render_region` 产出**的 ✓ ⇒ 它天然落在"预览缓存"的管理范围里 ✓
+    /// ⇒ `evict_replaced_previews` 在**下一次渲染**时会把"被替换掉的旧预览"删掉 ✗
+    /// ⇒ 而那个旧预览**已经被用户设成参考图** ✓ ⇒ **∴ 参考图从磁盘消失** ✓✓
+    /// （调用栈：`write_fill_region` → `finish_mutation` → `render_region` →
+    ///   `evict_replaced_previews` → `FsBlobStore::remove` ✓）。
+    /// ⇒ 症状正是"设了参考图 ✓、过一会儿就没了 ✗" —— **数据丢失**一类 ✓。
+    /// **谁填**：服务端在偏好变化时同步 ✓（参考图是**工作区级**的 ✓ ⇒ 每个文档都要记 ✓）。
+    pinned_blobs: std::collections::BTreeSet<yanshi_core::BlobHash>,
     /// **文档级预览渲染**（`render_document_preview` 真正渲染了像素）的次数 ✓（判据用语义计数 ✓）。
     ///
     /// **为什么单列一个计数** ✗：`full_canvas_renders` 只在"整幅"时 +1 ✓ ⇒ 暖文档上
@@ -402,6 +413,7 @@ impl Document {
             full_frame_render: None,
             full_frame_render_seq: 0,
             full_canvas_renders: 0,
+            pinned_blobs: std::collections::BTreeSet::new(),
             document_preview_renders: 0,
             last_thumb_blob: None,
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
@@ -1030,6 +1042,11 @@ impl Document {
         let keep = self.cached_preview_hashes();
         for old in previous {
             if keep.contains(old) {
+                continue;
+            }
+            // **钉住的 blob 不许删** ✓（第 301 轮 ✓）：参考图正是"曾被当成预览、后来被用户钉住"的 blob ✓
+            // ⇒ 少了这一条，用户设完参考图，**下一次落笔**就把它删掉 ✓（实测调用栈已证 ✓）。
+            if self.pinned_blobs.contains(old) {
                 continue;
             }
             // 删不掉也不影响正确性 ✓（它只是缓存 ✓）⇒ 不向上报错 ✓。
@@ -1698,7 +1715,9 @@ impl Document {
             &*self.store,
             &self.log,
             &manifest,
-            &Default::default(),
+            // **钉住的 blob 也是 GC 的根** ✓（第 301 轮 ✓）—— 与上面的 evict 是**两条**独立路径 ✓，
+            // 哪一条都不能删用户钉住的东西 ✓。
+            &self.pinned_blobs,
             now,
             self.settings.orphan_ttl_seconds,
         )
@@ -1715,11 +1734,20 @@ impl Document {
             &*self.store,
             &self.log,
             &manifest,
-            &Default::default(),
+            // **钉住的 blob 也是 GC 的根** ✓（第 301 轮 ✓）—— 与上面的 evict 是**两条**独立路径 ✓，
+            // 哪一条都不能删用户钉住的东西 ✓。
+            &self.pinned_blobs,
             now,
             self.settings.orphan_ttl_seconds,
         )?;
         Ok((report, plan))
+    }
+
+    /// **设置钉住的 blob** ✓（第 301 轮 ✓）：服务端在偏好变化时调用 ✓。
+    ///
+    /// 参考图是**工作区级**的 ✓ ⇒ 每个文档都要记 ✓（否则"另一个文档触发回收"也会删掉它 ✗）。
+    pub fn set_pinned_blobs(&mut self, pinned: std::collections::BTreeSet<yanshi_core::BlobHash>) {
+        self.pinned_blobs = pinned;
     }
 
     /// 提交时的 dirty 规划（供测试与工具层查询）。

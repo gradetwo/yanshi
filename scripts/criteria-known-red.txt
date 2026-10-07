@@ -15,7 +15,8 @@ tool-impasto-plateau.mjs  # **类型：断言失败（阈值）** ✓
 #    ⇒ CI 会红 ✓（我第 390 / 398 轮各埋过一次 ✗）。
 # ⚠️ **本行必须与说明同行** ✗：`run-criteria.sh:14` 用 `grep -qE "^$1[[:space:]]"` 匹配 ✓ ⇒
 #    裸文件名（行尾无空白）**不会被认作已知红** ✗ ⇒ CI 会红 ✓（我第 398 轮就这样埋过一次 ✗）。
-tool-reference-delta-e.mjs  # **类型：产品能力位置** ✓ —— `compare_with_reference` 声明并实现在 `gradient_fill`（会画画 ✗）而**不在** `analyze_region` 上 ⇒ 判据按 `analyze_region` 调必然被拒 ✗；**实测（2026-10-06）**：三次调用的返回都是 `invalid_argument`（报错**准确** ✓："analyze_region 不接受参数 compare_with_reference；可用参数：region" ✓）⇒ **不是因为"静默返回 0"✗** ⇒ 要修的是**产品侧能力位置**（或另加一个只读比较工具 ✓），属产品决策 ✓
+# **第 301 轮：已转绿 ⇒ 移出名单** ✓（A① 完成 ✓）—— 原因与修法见下面的历史说明 ✓。
+# tool-reference-delta-e.mjs  # **类型：产品能力位置** ✓ —— `compare_with_reference` 声明并实现在 `gradient_fill`（会画画 ✗）而**不在** `analyze_region` 上 ⇒ 判据按 `analyze_region` 调必然被拒 ✗；**实测（2026-10-06）**：三次调用的返回都是 `invalid_argument`（报错**准确** ✓："analyze_region 不接受参数 compare_with_reference；可用参数：region" ✓）⇒ **不是因为"静默返回 0"✗** ⇒ 要修的是**产品侧能力位置**（或另加一个只读比较工具 ✓），属产品决策 ✓
 #   而 `gradient_fill` 会画画 ⇒ 无法在不改画面的前提下问 ΔE ✗ ⇒ 需产品决策（挪能力或加只读工具）。
 #   **已验证**：产品报错 `analyze_region 不接受参数 compare_with_reference；可用参数：region` ✓
 #   ⇒ 这是**判据与产品能力位置不一致**，不是产品算错 ✓。
