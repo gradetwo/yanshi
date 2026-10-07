@@ -48222,3 +48222,31 @@ impl BlobCodec for RenderCodec {
 3. 下一步我直接测两件事。第一是 BlobHash::from_bytes 对 4.35 MB 的耗时。
    第二是 zlib_compress_best 对 4.35 MB 的耗时。
 4. 我用单测或小程序测。我用数据判断，不用推断。
+
+## 第 1518 轮：188 秒在一次 1723 字节的 put 上
+
+### 细分数据（真实文档）
+```
+after_doc_open=27ms
+after_render_put=0ms        render.png 的 put，4.35 MB
+after_render_restore=0ms   restore_persisted_render
+after_preview_put=188254ms preview.png 的 put，1723 字节
+before_meta=0ms
+```
+1. get_document 墙钟是 189.4 秒。
+2. render.png 的 put 是 4.35 MB。它花 0 毫秒。
+3. preview.png 的 put 是 1723 字节。它花 188254 毫秒。
+4. 数据量小的那次反而慢。所以耗时与数据量无关。
+
+### 点位已确认
+1. 我读了补丁后的代码。
+2. after_render_restore 在 preview 块之前。
+3. after_preview_put 紧跟 preview 的那次 store.put。
+4. 所以 188 秒就是那一次 put。
+
+### 结论
+1. 这不是数据量问题。1723 字节不该花 3 分钟。
+2. 所以是慢路径。可能是目录创建、存在性检查，或挂载点。
+3. 第一次 put 与第二次 put 用的是同一个 store。差别只在哈希目录名。
+4. 下一步我在 put_inner 内部加 6 个点。位置是 hash、exists、create_dir、encode、write、sync、rename。
+5. 我用 eprintln 加同一个环境变量开关。这样能跨 crate 打点。

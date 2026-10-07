@@ -1078,6 +1078,9 @@ impl Workspace {
                 // 它只从 PNG 头读尺寸 ✓，把"整幅、且与 HEAD 一致"的那份记成**整幅区域渲染的缓存** ✓
                 //（下一次整幅请求直接命中 ✓，省掉实测 142s 的重渲染 ✓）。
                 let hash = self.store.put(&png)?;
+                if timing {
+                    mark("after_render_put");
+                }
                 document.restore_persisted_render(seq, hash, &png);
             }
             if timing {
@@ -1088,6 +1091,9 @@ impl Workspace {
                 // ⇒ 第一个新连接的预览只重渲染 `(seq, HEAD]` ✓，而不是整幅 ✗
                 //（实测落后 9 个 atom 时整幅 122s ✓）。
                 let hash = self.store.put(&png)?;
+                if timing {
+                    mark("after_preview_put");
+                }
                 document.restore_persisted_preview(seq, hash, &png);
             }
             // 恢复令牌（12.7）。
