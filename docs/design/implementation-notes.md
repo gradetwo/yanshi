@@ -48334,3 +48334,52 @@ get_document 墙钟: 188.0s
 1. 在 open_timing 那一行里附带 epoch_ms。
 2. 这样与 put_timing 的 epoch 可直接比较。
 3. 然后我就能读出 188 秒落在两个 epoch 之间。
+
+## 第 1522 轮：定位到 dirty_since
+
+### 绝对时间戳对齐后的结果
+```
+1791334267318  open, load_atoms
+1791334267418  load_render
+1791334267434  before_doc_open, load_preview, loads_done
+1791334267888  after_doc_open
+1791334267916  after_preview_put, after_render_put, after_render_restore, put x4
+1791334455002  after_meta, before_meta, done, restore_meta
+```
+1. 前八行都在 1791334267916 之前。
+2. 最后四行在 1791334455002。
+3. 两组的差是 187086 毫秒。
+4. 所以 188 秒在 after_preview_put 与 before_meta 之间。
+5. 那一段只有一行：document.restore_persisted_preview(seq, hash, &png)。
+
+### restore_persisted_preview 内部做了什么
+1. 读 PNG 尺寸。
+2. 调 decode_png。preview.png 是 1723 字节，所以这很快。
+3. 建 Thumb。
+4. 调 self.dirty_since(seq)。
+
+### dirty_since 的实现（document.rs:1298）
+```rust
+fn dirty_since(&self, from: Seq) -> PreviewDirty {
+    let head = self.log.head_seq();
+    if from >= head { return PreviewDirty::Clean; }
+    let mut folder = IncrementalFolder::new();
+    let Ok(mut previous) = folder.fold(&self.log, from) else { return Unknown; };
+    for atom in self.log.range_exclusive_inclusive(from, head) {
+        let Ok(current) = folder.fold(&self.log, atom.seq) else { return Unknown; };
+        dirty = dirty.merged(planned_preview_dirty(&plan_dirty_with_log(
+            &current.state, Some(&previous.state), &self.log, atom)));
+        previous = current;
+    }
+    dirty
+}
+```
+1. 它对区间里的每个 atom 折一次。
+2. 每次还调 plan_dirty_with_log。它拿到整个 log。
+3. 若那个函数扫描整个 log，总共就是 O(n²)。
+4. 9742 个原子时，187 秒吻合。
+
+### 下一步
+1. 读 plan_dirty_with_log。看它是否扫描整个 log。
+2. 若是，让每次只处理这一颗 atom。
+3. 不能改成近似。那会降精度，违反目标里的禁止项。

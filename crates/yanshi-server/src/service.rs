@@ -1035,7 +1035,13 @@ impl Workspace {
             let mut marks: Vec<(&str, std::time::Instant)> = Vec::new();
             let mut mark = |name: &'static str| {
                 if timing {
-                    marks.push((name, std::time::Instant::now()));
+                    let now = std::time::Instant::now();
+                    let epoch_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    eprintln!("open_mark epoch_ms={epoch_ms} name={name}");
+                    marks.push((name, now));
                 }
             };
             mark("open");
