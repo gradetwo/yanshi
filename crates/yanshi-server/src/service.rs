@@ -588,12 +588,14 @@ pub struct ExportStats {
 /// **为什么进程内就够** ✓：缓存的键已**完整**涵盖重放的四个输入 ✓ ⇒ 只要进程还活着，
 /// 同一个键的结论**必然**仍然成立 ✓；进程退出 ⇒ 缓存消失 ⇒ **不需要任何磁盘失效逻辑** ✓
 ///（**∴ 零"过期"风险** ✓ —— 与"渲染快照"那种要写盘的东西**不同** ✓）。
-static EXPORT_PROOF_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashSet<(String, String, String, String)>>,
-> = std::sync::OnceLock::new();
+/// 键的四个分量 ✓（第 39 轮 ✓）：`(crate 版本, 配方 canonical 串, 笔刷内容哈希, 目标哈希)` ✓。
+type ExportProofKey = (String, String, String, String);
+/// 缓存的类型别名 ✓ —— **必须单独起名** ✗：直接把这一长串写进 `static`／返回值会被
+/// `clippy::type_complexity` 判为"类型太复杂" ✗（第 39 轮实测：CI 的 clippy **因此变红** ✓）。
+type ExportProofCache = std::sync::Mutex<std::collections::HashSet<ExportProofKey>>;
+static EXPORT_PROOF_CACHE: std::sync::OnceLock<ExportProofCache> = std::sync::OnceLock::new();
 
-fn export_proof_cache(
-) -> &'static std::sync::Mutex<std::collections::HashSet<(String, String, String, String)>> {
+fn export_proof_cache() -> &'static ExportProofCache {
     EXPORT_PROOF_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
@@ -604,7 +606,7 @@ fn export_proof_key(
     workspace: &Workspace,
     source: &serde_json::Value,
     hash: &yanshi_core::BlobHash,
-) -> Option<(String, String, String, String)> {
+) -> Option<ExportProofKey> {
     let brush_name = source.get("brush").and_then(serde_json::Value::as_str)?;
     let file = if brush_name.ends_with(".myb") {
         brush_name.to_owned()
@@ -623,7 +625,7 @@ fn export_proof_key(
 }
 
 /// 查缓存 ✓（**只读**：命中即表示"该配方确实重放出该哈希" ✓）。
-fn export_proof_lookup(key: &(String, String, String, String)) -> bool {
+fn export_proof_lookup(key: &ExportProofKey) -> bool {
     export_proof_cache()
         .lock()
         .map(|guard| guard.contains(key))
@@ -631,7 +633,7 @@ fn export_proof_lookup(key: &(String, String, String, String)) -> bool {
 }
 
 /// 记入缓存 ✓。
-fn export_proof_remember(key: &(String, String, String, String)) {
+fn export_proof_remember(key: &ExportProofKey) {
     if let Ok(mut guard) = export_proof_cache().lock() {
         guard.insert(key.clone());
     }
