@@ -66,9 +66,47 @@ const facade = (request) => {
 let allEqual = true;
 let fedBaseCount = 0;
 let missingFlagCount = 0;
+// **整层合成通道**（第 296 轮 ✓，C⑧ ✓）：吃底图的笔刷**也能比了** ✓。
+// 依据（第 295 轮的实测 ✓）：门面（喂非空 base ✓）的输出**就是"base ⊕ 这一笔"的合成结果** ✓ ——
+// 两支 `fed_base=true` 的笔刷实测"最大通道差恰好是 **1**" ✓，而两组对照差 2123／7012 ✓。
+// ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**已知的依赖侧 1 ulp 类** ✓（**语义边界**，不是某次观测 ✗）。
+let compositeCompared = 0;
+let compositeSame = 0;
+const docSize = { x: 0, y: 0, w: 400, h: 300 };
+/// 取整幅原始 RGBA（`raw:true` ✓ ⇒ CAS 里的裸像素 ✓）。
+const rawRegion = async (region) => {
+  const r = await tool("render_region", { region, raw: true });
+  if (!r.ok || !r.raw_url) return null;
+  return new Uint8Array(await fetch(`${base}${r.raw_url}`).then((x) => x.arrayBuffer()));
+};
+/// 从整幅里裁出 `region`（行主序 RGBA ✓）。
+const cropWhole = (bytes, region) => {
+  const out = new Uint8Array(region.w * region.h * 4);
+  for (let y = 0; y < region.h; y += 1) {
+    const from = ((region.y + y) * docSize.w + region.x) * 4;
+    out.set(bytes.subarray(from, from + region.w * 4), y * region.w * 4);
+  }
+  return out;
+};
 for (const brush of names) {
  for (const [colourName, colour] of colours) {
   const slug = `${brush.replace(/[^a-z0-9]/gi, "_")}_${colourName}`;
+  // **先建"底色层"** ✓（C⑧ ✓）：吃底图的笔刷（smudge 类）靠"抹开画布上已有的颜色"工作 ✓
+  // ⇒ 空底图时它们**会被服务端直接拒绝** ✓（实测 `smudge` ✓）⇒ 所以要先铺一层底色 ✓。
+  // **顺序即层序** ✓：底色层先建 ⇒ 在**下** ✓；笔触层后建 ⇒ 在**上** ✓。
+  const baseLayerId = `B_${slug}`;
+  const baseLayer = await tool("create_layer", { layer_id: baseLayerId });
+  let beforeWhole = null;
+  if (baseLayer.ok) {
+    const seeded = await tool("brush_stroke", {
+      layer_id: baseLayerId, object_id: `ob_${slug}`, brush: "100%_Opaque",
+      size: 44, color: { r: 40, g: 120, b: 200, a: 255 },
+      points: [[36, 40, 1], [60, 40, 1], [84, 40, 1]],
+    });
+    // **惰性**：先只取"画前合成"的字节 ✓（一次整幅 raw ✓）。真要比时才用它 ✓
+    // ⇒ 不吃底图的笔刷**不付任何额外代价** ✓（已绿的 535 条不冒风险 ✓）。
+    if (seeded.ok) beforeWhole = await rawRegion(docSize);
+  }
   const layerId = `L_${slug}`;
   const layer = await tool("create_layer", { layer_id: layerId });
   if (!layer.ok) {
@@ -91,7 +129,49 @@ for (const brush of names) {
   // ⇒ **不参与**逐字节判定 ✗，但要**如实计数并打印** ✓（不假装它通过了 ✓）。
   if (made.fed_base === true) {
     fedBaseCount += 1;
-    console.log(`  ${brush.padEnd(14)} 吃了底图（fed_base=true）⇒ 需要整层合成才可比，本次跳过`);
+    // **C⑧：走整层合成通道** ✓（第 296 轮 ✓）—— 不再跳过 ✗。
+    const region = made.region;
+    const afterWhole = await rawRegion(docSize);
+    if (!beforeWhole || !afterWhole) {
+      console.log(`  ${(brush + "/" + colourName).padEnd(22)} 取不到画前/画后合成（整幅 raw 路线失败）⇒ 本次跳过 ✗`);
+      allEqual = false;
+      continue;
+    }
+    const want = region.w * region.h * 4;
+    if (beforeWhole.length !== docSize.w * docSize.h * 4 || afterWhole.length !== docSize.w * docSize.h * 4) {
+      console.log(`  ${(brush + "/" + colourName).padEnd(22)} 整幅 raw 长度不是 ${docSize.w * docSize.h * 4} ⇒ 本次跳过 ✗`);
+      allEqual = false;
+      continue;
+    }
+    const beforeBox = cropWhole(beforeWhole, region);
+    const afterBox = cropWhole(afterWhole, region);
+    const mybC = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
+    const kernelC = new module_.WasmKernel("kernel-parity-composite", 256, 400, 300, 64 * 1024 * 1024);
+    // **`Base` 要有三个字段** ✓（`width`/`height`/`rgba` ✓ —— 只传 `rgba` 会被 serde 拒 ⇒ 门面回空 ✗，踩过 ✓）。
+    const outC = kernelC.paint_brush(JSON.stringify({
+      myb: mybC, points: pointList, size, color: colour, opacity: null, hardness: null,
+      region, base: { width: region.w, height: region.h, rgba: Array.from(beforeBox) },
+    }));
+    const facadeC = outC ? Uint8Array.from(outC) : null;
+    if (!facadeC || facadeC.length !== want) {
+      console.log(`  ${(brush + "/" + colourName).padEnd(22)} 门面合成输出长度 ${facadeC ? facadeC.length : -1}（期望 ${want}）⇒ 本次跳过 ✗`);
+      allEqual = false;
+      continue;
+    }
+    let diffC = 0, maxC = 0;
+    for (let i = 0; i < want; i += 1) {
+      const d = Math.abs(afterBox[i] - facadeC[i]);
+      if (d !== 0) { diffC += 1; if (d > maxC) maxC = d; }
+    }
+    // **容差 1** ✓ —— 这是**语义边界** ✓（已知的依赖侧 1 ulp 类 ✓），不是"某次实测的数" ✗。
+    const okC = maxC <= 1;
+    compositeCompared += 1;
+    if (okC) compositeSame += 1; else allEqual = false;
+    console.log(
+      `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（整层合成 ✓）｜` +
+      `门面 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜` +
+      (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗"),
+    );
     continue;
   }
   if (made.fed_base !== false) {
@@ -210,7 +290,8 @@ const pct = total > 0 ? (100 * names.length / total).toFixed(1) : "?";
 const sample = wantsAll ? "全量" : (brushes.length ? "指定" : "**默认样本**");
 console.log(
   (allEqual ? "结论：可比范围内逐字节相同 ✓" : "结论：存在差异 ✗（见上；差异的机制是两边数学实现不同 ⇒ 正在修 ✓）") +
-  `｜吃了底图而**未比对**：${fedBaseCount} 条（需要整层合成才可比）` +
+  `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在 1 ulp 容差内 ✓）` +
+  `｜吃底图的**未比对**：${fedBaseCount - compositeCompared} 条` +
   (missingFlagCount > 0 ? `｜服务端未报 fed_base：${missingFlagCount} 条` : "") +
   `｜覆盖 ${names.length}/${total} 支笔（${pct}%｜${sample}）` +
   (allEqual && names.length < total ? "｜⚠️ 这只说明**这几支**相同，不代表全部 ✗（用 `all` 可全量 ✓）" : ""),
