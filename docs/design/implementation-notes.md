@@ -54993,3 +54993,30 @@ fn load_brush(workspace: &Workspace, brush_name: &str) -> Result<(String, hokusa
 
 ### 五、门禁
 1. 本轮只改 CI 配置 ✓（产品代码 0 处改动 ✓）；`fmt` ✓；本地测试 passed=926／failed=0 ✓。
+
+## 第 371 轮：🎯 修好 shard 3 —— 真因是"**手改了生成物**" ✗（正确做法＝跑生成器 ✓）
+
+### 一、真因链条（本轮实测 ✓）
+```
+✗ criteria shard 3/6（1m42s）✗   ← 新出现的红（旧 run 里它是绿的 ✓）
+→ 本机逐条复跑该 shard 的 tool-* ⇒ **只有一条红** ✓：
+   ✗ tool-examples-doc-check.mjs｜❌ docs/design/tool-examples.md 与运行中的目录不一致（文档过期）⇒ 重新生成它
+```
+1. **∴ `docs/design/tool-examples.md` 是**生成物**✗**（头部自己写着："**这份文件是生成出来的**
+   （`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`" ✓）
+   ⇒ **∴ 手改它必然"过期"** ✓ —— 我在第 41 轮**手改**了它 ✗（还加了手写注释 ✗）。
+2. **∴ 报错原文就是处方** ✓（"⇒ **重新生成它**" ✓）—— 而我**先猜"注释位置"**✗ 猜错了 ✓
+   ⇒ **教训（又一次 ✓）**：**错误信息里写了怎么办，就先照办，别先猜** ✓。
+3. **修法** ✓：起服务端 ⇒ `node scripts/tool-examples-doc.mjs <base>` ⇒ 重新生成 ✓
+   ⇒ 复验 `tool-examples-doc-check.mjs` **EXIT=0** ✓（"✓ 文档与目录一致（142 个工具带示例）✓" ✓）
+   ⇒ 生成后的 `set_reference` 段是 `"blob_hash": "sha256:0000…"`（合法形状 ✓，手写注释已被覆盖 ✓）。
+
+### 二、本机复跑的正确姿势（记下来 ✓，我连踩两个坑 ✓）
+1. **不能用"带缩进的 basename"当路径** ✗ ⇒ `MODULE_NOT_FOUND` ✓（我第一次复跑全军覆没 ✗）；
+2. **`run-criteria.sh` 依赖 `./target/debug/yanshi-serve`** ✗ ⇒ 我把 `target/` 删过 ✓
+   ⇒ 本机复跑要**先补软链** ✓（`mkdir -p target/debug && ln -sf <release 二进制> target/debug/yanshi-serve` ✓）；
+3. **浏览器判据需要 CDP 浏览器** ✓ ⇒ 本机没有 ⇒ 它们必然"前置不成立" ✗（**不算通过** ✓，但也不是本次的真因 ✓）。
+
+### 三、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）、覆盖率守卫 ✓；
+2. 改动仅**生成物**（`docs/design/tool-examples.md` ✓ —— 由生成器写出 ✓）。
