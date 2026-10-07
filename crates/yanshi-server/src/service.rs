@@ -562,7 +562,9 @@ impl std::fmt::Debug for Workspace {
 /// `export_project` 原先只回 `Vec<u8>` ✗ ⇒ 调用方**只能看到整包体积** ✗
 /// ⇒ 而"被替代的位图有没有被回收"是**位图部分**的问题 ✓（**∴ 日志必然增长 ✗，位图不该 ✓**）
 /// ⇒ 所以把这三项**显式回出来** ✓ ⇒ 判据就能**断言对的东西** ✓（而不是断言整包体积 ✗）。
-#[derive(Debug, Clone, Copy, Default)]
+// **去掉了 `Copy`** ✓（第 70 轮 ✓）：加上"缺件清单"（`Vec<String>` ✓）之后它不再能 `Copy` ✗
+// —— 而 `Vec` 正是**必须报出来**的东西 ✓（静默跳过＝撒谎 ✓）⇒ **∴ 保留 `Clone`／`Default`，去掉 `Copy`** ✓。
+#[derive(Debug, Clone, Default)]
 pub struct ExportStats {
     /// 装进包里的位图个数 ✓（**∴ `include_bitmaps: false`✗ 时只装"无法证明可重放"✗ 的 ✓**）。
     pub blob_count: usize,
@@ -581,6 +583,15 @@ pub struct ExportStats {
     pub kept_no_recipe: usize,
     /// **有配方但重放对不上** ⇒ 照装 ✓ 的个数（宁可包大，也要能打开 ✓）。
     pub kept_mismatch: usize,
+    /// **引用了但存储里没有** ✗ ⇒ **跳过 ＋ 告警** ✓ 的个数（第 70 轮 ✓，真实用户报告 ✓）。
+    ///
+    /// **为什么不能整单失败** ✗：用户实测（15MB 真实文档 ✓）**导出直接报错退出** ✗ ——
+    /// 文档引用了那个 blob 2 次 ✓ ⇒ `store.get(&hash)?` 上抛 ⇒ **整包作废** ✗。
+    /// 而**渲染路径早有先例** ✓（`missing_blob_is_skipped_with_a_warning_not_fatal` ✓）
+    /// ⇒ **∴ export 对齐它** ✓：**降级而非整单失败** ✓；**但必须报出来** ✗（静默＝撒谎 ✓）。
+    pub kept_missing: usize,
+    /// **缺 blob 的具体清单** ✓（哪些位图没装进包 ✓）—— **必须报出来** ✗，静默就是撒谎 ✓。
+    pub missing: Vec<String>,
 }
 
 /// **导出"可重放证明"的进程内缓存** ✓（第 39 轮 ✓）。
@@ -2480,6 +2491,8 @@ impl Workspace {
         // ⇒ 把两个理由**分别**记进 `BUILD-INFO` ✓：判据才能钉住**判据本身** ✓）。
         let mut kept_no_recipe = 0usize;
         let mut kept_mismatch = 0usize;
+        let mut kept_missing = 0usize;
+        let mut missing: Vec<String> = Vec::new();
         for hash_text in &wanted {
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(
@@ -2548,7 +2561,23 @@ impl Workspace {
                 }
             }
             // 到这里才真的需要字节 ✓（下面要把它按十六进制路径放进 tar ✓）。
-            let bytes = store.get(&hash)?;
+            // **缺 blob ⇒ 降级** ✓（第 70 轮 ✓）：**跳过这一条 ＋ 记数 ＋ 告警** ✓，**不**让整包作废 ✗
+            //（用户实测：15MB 文档引用了一个不存在的 blob ⇒ 导出整个失败 ✗）。
+            let bytes = match store.get(&hash) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    kept_missing += 1;
+                    missing.push(format!(
+                        "位图 {hash} 在存储里不存在 ⇒ 这一条**没有**装进包（其余照装）: {}",
+                        error
+                            .context
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| "（无细节）".to_owned())
+                    ));
+                    continue;
+                }
+            };
             let hex = hash.hex();
             let packed = yanshi_render::png::zlib_compress_best(&bytes);
             plain_bytes += bytes.len();
@@ -2601,6 +2630,8 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 omitted,
                 kept_no_recipe,
                 kept_mismatch,
+                kept_missing,
+                missing,
             },
         ))
     }

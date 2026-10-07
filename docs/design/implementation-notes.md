@@ -55712,3 +55712,45 @@ if (patchSeq > 0 && knownSeq > 0 && patchSeq < knownSeq) { 记日志; return 0; 
 
 ### 四、门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）、真实请求验证字段出现 ✓。
+
+## 第 393 轮：🐞 **P0-3 修复** —— 缺 blob 不再让导出**整单失败** ✗ ⇒ **降级 ＋ 报出来** ✓
+
+### 一、缺陷（用户实测 ✓，15MB 真实文档 ✓）
+`export_project(parrot-4k-v10)` ⇒ `reference_not_found`：
+`blob sha256:000f497c… 不存在` ✓（被 `atoms.jsonl` 引用 **2 次** ✓，`blobs` 目录里没有 ✓）
+⇒ **∴ 整个导出失败** ✗（用户还试过"先全幅 render 再 export"✓ ⇒ 仍失败 ✗）。
+
+### 二、根因（`crates/yanshi-server/src/service.rs` ✓）
+```rust
+} else {
+    kept_no_recipe += 1;          // ← 无法重放 ⇒ **必须打进包** ✓
+}
+let bytes = store.get(&hash)?;    // ★ `?` ⇒ 缺 blob 直接上抛 ⇒ 整包作废 ✗★
+```
+**⚠️ 我头两次复现都"成功"** ✗ ⇒ **原因本身是情报** ✓：
+**普通 `brush_stroke` 的位图可以被配方重放** ✓ ⇒ 导出**根本不读原 blob** ✗（我删了也没事 ✓）
+⇒ **∴ 只有"没有可重放配方"的位图**（`kept_no_recipe` ✓，如 `import_image` 的像素 ✓）**才会去读** ✗
+⇒ **∴ 用户的 blob 必属此类** ✓。
+
+### 三、修法（**对齐仓库既有先例 ✓**）
+渲染路径早有 `missing_blob_is_skipped_with_a_warning_not_fatal` ✓ ⇒ **导出对齐它** ✓：
+```rust
+let bytes = match store.get(&hash) {
+    Ok(bytes) => bytes,
+    Err(error) => { kept_missing += 1; missing.push(…); continue; }   // 跳过 ＋ 记数 ＋ 告警 ✓
+};
+```
+* **`ExportStats` 加** `kept_missing: usize` ✓ **与** `missing: Vec<String>` ✓（**清单必须报出来** ✗：静默＝撒谎 ✓）；
+* **去掉了 `Copy`** ✗（加 `Vec` 后它不能 `Copy` ✓ ⇒ 保留 `Clone`／`Default` ✓）；
+* **响应加** `"kept_missing"` ✓ 与 `"missing"` ✓（调用方**看得见"包不完整"** ✓）。
+**∴ 严格更安全** ✓：从前**整包作废** ✗ ⇒ 现在**其余照装 ＋ 明说缺了什么** ✓。
+
+### 四、⚠️ 如实：**端到端复现尚未成立** ✗
+我两次复现**都没打中** ✓：第一次删的 blob **可重放** ✓（导出不读它 ✓）；
+第二次 `import_image` 的载荷**无效** ✗（`pixels_b64: ""` ✓）⇒ `blob_count=0` ✓ ⇒ **没有可打包的 blob** ✗
+⇒ **∴ 那次 `kept_missing=None` 是跑在旧二进制／无 blob 上** ✗ ⇒ **不算验证** ✓。
+**∴ 下一步** ✓：读 `/api/tools` 里 `import_image` 的**真实参数形状** ✓（**不猜** ✗）⇒ 造出**不可重放**的位图 ✓
+⇒ 删它 ⇒ 断言 **`ok=true` ＋ `kept_missing=1` ＋ `missing` 有内容** ✓（**变异**：把 `match` 改回 `?` ⇒ **必红** ✓）。
+
+### 五、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）；**grep 证实**三处改动落地 ✓（不信"编译通过"✗）。

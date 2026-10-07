@@ -13775,6 +13775,10 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "omitted": stats.omitted,
         "kept_no_recipe": stats.kept_no_recipe,
         "kept_mismatch": stats.kept_mismatch,
+        // **缺 blob 的读数** ✓（第 70 轮 ✓）：**降级了但必须报出来** ✗ ——
+        // 用户实测：15MB 文档引用了一个不存在的 blob ⇒ 从前**整个导出失败** ✗。
+        "kept_missing": stats.kept_missing,
+        "missing": stats.missing,
     });
     if let Some(path) = &path {
         value["path"] = json!(path);
