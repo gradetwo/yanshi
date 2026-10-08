@@ -1826,3 +1826,41 @@ console.log("[probe]", t, document.querySelectorAll('aside .card.collapsed').len
 　**∴ 那 4 处都不在建标签页里 ✗** ⇒ **∴ 可能**不是 `classList` ✗ ⇒ **∴ 而是字符串模板／`className` 赋值／
 　把**已经折叠的**卡**搬过去**✓（**即它在 `initDockers` 之前就已折叠 ✓ ⇒ **∴ 那 `applyWorkspace("paint")` 里
 　`preset.closed` **仍含"历史"**✗** ⇒ **∴ 我第 384 轮"移出 `closed`"可能**没成功**✗** ⇒ **∴ 必须先读 `DOCKER_PRESETS.paint` 的**当前实际内容**✓**）✓✓
+
+
+### 七十五、🎯 **读完 `setupRightTabs()`**：它不是折叠者；**搬卡后结构改变**（第 399 轮 ✓）
+
+#### 一、读到的代码 ✓（`viewer-app.js:4936-4990` ✓ —— **最后一段没读过的 ✓**）
+```js
+:4939  if (aside.dataset.tabsReady === "1") return;              // ★ **只跑一次** ✓
+:4937  for (const node of Array.from(aside.children)) {          // 遍历 `aside` 的**直接子节点** ✓
+:4939    if (!…contains("card") && node.tagName !== "DETAILS") continue;
+:4940    const key = panes.has(node.dataset.panel) ? node.dataset.panel : "diag";
+:4941    panes.get(key).appendChild(node);                        // ★★ **搬进 `.tab-pane`** ✗
+:4944  for (const pane of panes.values()) aside.appendChild(pane); // ⇒ **结构变成 `aside > .tab-pane > .card`** ✗
+:4980  const showTab = (key) => { for (const [n, pane] of panes) **pane.hidden** = n !== key; }  // ★ **只切 hidden ✗**
+```
+⇒ **∴ 结论一** ✓：**`setupRightTabs()`**只切 `pane.hidden` ✗ ⇒ **∴ 它**不碰 `collapsed` ✗** ⇒ **∴ 不是折叠者 ✓** ✓✓
+⇒ **∴ 结论二** ✓：**搬卡后结构是 `aside > .tab-pane > .card` ✓** ⇒ **∴ 而 `dockerCards()` ＝ `"aside .card"`（**后代 ✓**）⇒ **∴ 仍能匹配 ✓**（**与诊断 `asideCardCount: 18` 一致 ✓**）** ✓✓
+⇒ **∴ 结论三** ✓：**`data-panel="history"` 命中 **3** 个**（第 394 轮 ✓）⇒ **∴ 只有 1 个是 `aside` 里的卡 ✓ ⇒
+　**∴ 另 2 个是**别的容器**✗（**`viewer.rs` 里另有 `data-panel` 的用法 ✓**）** ✓✓
+
+#### 二、∴ 最后未测的一件事（**下一轮，唯一剩下的 ✓**）
+* **在 `applyCollapsed()` 里直接 `console.log`** ✓：
+```js
+function applyCollapsed(titles) {
+  const wanted = titles.map(normalizeTitle);
+  console.log("[collapsed]", JSON.stringify(titles), "wantedHistory=", wanted.some((t) => /历史/.test(t)));
+  for (const card of dockerCards()) { … }
+}
+```
+⇒ **∴ 若它**从未被调用**✗（**没有该行输出 ✓**）⇒ **∴ 折叠一定来自**别处 ✗**（**如 HTML 初始类 ✓／或 CSS ✓**）⇒
+　**∴ 那就去读 `viewer.rs` 里这张卡的全部标记 ✓**（**我只看过 `:408-411` ✓**）；
+⇒ **∴ 若它**被调用了且 `wantedHistory=false` ✗** ⇒ **∴ 那我的"跳过"就生效了 ✓ ⇒ **∴ 而我看到的折叠必是**加在别处 ✗**** ✓✓
+⇒ **∴ 且无论哪种 ⇒ **都在浏览器里可判 ✓**（**console 输出会被 harness 收进日志 ✓**）✓✓
+
+#### 三、⚠️ 诚实说明（**报告 ② 的现状 ✓**）
+* **已确证** ✓：**数据如实（21／36 ＝ 58% ✓）｜行文本与布局正常 ✓｜这张卡**确实折叠**✗**；
+* **未确证** ✗：**谁折叠它** —— **八个假设全部被否证 ✓**（`#seq`／重复 CSS／强制展开 ×2／`data-panel`／
+　时序／源头排除／`setupRightTabs` ✓）；
+* **∴ 而每一轮否证都**缩小了范围**✓ ⇒ **∴ 现在只剩"**在 `applyCollapsed` 里打印**✓"这一步 ✓** ✓✓
