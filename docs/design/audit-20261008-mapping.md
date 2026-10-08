@@ -1085,3 +1085,33 @@ scripts/browser-layout.mjs:4-5
 // 并断言：**要么 bottom ≤ innerHeight ✓，要么该元素可滚 ✓**（scrollHeight > clientHeight ＋ overflowY ∈ {auto, scroll}）
 // **变异** ✗：去掉 `aside { overflow-y: auto; max-height: … }` ⇒ bottom > innerHeight 且不可滚 ⇒ **必红 ✓**
 ```
+
+
+### 四十五、✅ **判据信号已找到**：`asideScrolls` 修好后 ＝ **242px**（第 349 轮 ✓）
+
+#### 一、实测 ✓（修好的代码上跑既有 harness ✓）
+```
+① 滚动：试着往下滚 0px（0 = 锁死 ✓）；文档多出 0px；**右栏内部可滚 242px** ✓
+**真实 EXIT = 0** ✓
+```
+⇒ **∴ 结论** ✓：**修好后 `aside.scrollHeight − aside.clientHeight` ＝ **242px > 0** ✓** ⇒
+　**∴ 而修前**（`aside` 被内容撑开 ✗）该值**应为 0 ✗** ⇒ **∴ 这**一个数字**就是判据的核心 ✓** ✓✓
+⇒ **∴ 但 `browser-layout.mjs` 现在只**打印**它 ✗（`:174` ✓）** ⇒ **∴ 补一条断言即可 ✓** ✓✓
+
+#### 二、⚠️ 我本轮补丁失败的原因（**如实 ✓，且已自动撤回 ✓**）
+* **我在**已经是模板字面量**的 `evaluate(\`…\`)` 里 ✗，又插入了**带反引号的字符串 ✗**（`console.error(\`…\`)` ✓）⇒
+　**∴ JS 语法检查失败 ⇒ `node --check` 报错 ⇒ 脚本**自动撤回 ✓**（**∴ 仓库未损坏 ✓**）** ✓✓
+* **∴ 正确写法** ✓：**在 `evaluate` 的模板里用**普通字符串拼接**✓（`'…' + x + '…'` ✓），**不要嵌套反引号 ✗**** ✓✓
+
+#### 三、∴ 下一轮（**两处小改 ✓**）
+```js
+// ① 在 evaluate 的返回对象里加（**用普通字符串 ✗，别嵌套反引号 ✓** 的地方只在断言里）
+asideClipped:    aside.getBoundingClientRect().bottom > window.innerHeight + 2,
+asideOverflowY:  getComputedStyle(aside).overflowY,
+// ② 在页面锁死断言之前加（**此处是顶层代码，反引号安全 ✓**）
+if (scroll.asideClipped && !(scroll.asideScrolls > 0 && ["auto","scroll"].includes(scroll.asideOverflowY))) {
+  console.error("❌ 右栏内容超出视口且不可滚 ⇒ 用户会「看不全，也不能滚动」✗");
+  process.exit(1);
+}
+```
+⇒ **∴ 判据（可红 ✓）＋ 变异** ✗：**删掉 `aside { overflow-y:auto; max-height:… }` ⇒ `asideClipped` 为真且不可滚 ⇒ **必红 ✓**** ✓✓
