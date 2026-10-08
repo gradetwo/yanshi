@@ -1886,24 +1886,14 @@ await strokeAt(0.4, 0.6, 41);
 const paintedAfterStroke = await paintedNow();
 const historyAfter = await historyRows();
 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
-// **★ 同类历史行必须能互相区分 ✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
-// **∴ 实测**：一个真实作品 **21／36 ＝ 58%** 的原子就是 `import_image` ✓（第 352 轮**解包数日志** ✓）⇒
-// 若行文本**全同** ⇒ 用户**看不出是哪一步**✗ ⇒ **∴ 断言：重复最多的那串文本占比 < 50% ✓**。
-// **变异** ✗：删掉 `viewer-app.js` 里 `+ " #" + String(atom.seq)` ⇒ 回到 58% ⇒ **必红 ✓**。
-{
-  const counts = new Map();
-  for (const row of historyAfter) counts.set(row, (counts.get(row) || 0) + 1);
-  const top = historyAfter.length ? Math.max(...counts.values()) : 0;
-  const ratio = historyAfter.length ? top / historyAfter.length : 0;
-  if (ratio >= 0.5) {
-    console.error(
-      "❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + historyAfter.length +
-        "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(historyAfter[0] || "").slice(0, 40) + "）",
-    );
-    process.exit(1);
-  }
-  console.log("  ✓ 历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + historyAfter.length + "）");
-}
+// **⚠️ 历史行"可区分性"判据**暂时不放在这里 ✗**（第 363 轮 ✓）：
+// 本 harness **从不导入工程** ✗（`grep import_project|upload|fixture` 无命中 ✓）⇒
+// 它一直在**新建的 5 行文档**上跑 ✓ ⇒ **∴ 一条"重复率 < 50%"的断言在这里**恒真**✗** ⇒
+// **∴ 恒真的判据比没有更糟 ✗**（**它会让名单显示"健康"✓** —— 本会话已两次栽在"读数 ≠ 真场景"✗）。
+// **∴ 正确做法** ✓：**先在本文件里加一段"导入一个作品"✗**（HTTP：`import?begin/upload/finish&doc_id` ✓
+// ⇒ 再让页面打开 `?doc=<id>` ✓ —— `viewer-app.js:42` ✓）⇒ **然后**把那段断言挪到其后 ✓；
+// **届时**：导入 36 原子的作品 ⇒ `import_image` 占 **58%** ✗ ⇒ 修好（行带 `#seq` ✓）后 **< 50% ⇒ 绿 ✓**，
+// **变异** ✗：删 `#seq` ⇒ 58% ⇒ **必红 ✓**。
 
 // 按类型筛选：只选 draw_stroke，列表应只含该类型。
 await evaluate(`(() => {
