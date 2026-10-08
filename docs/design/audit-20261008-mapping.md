@@ -1011,3 +1011,28 @@ node scripts/browser-layout.mjs "http://127.0.0.1:$P"      # **真实 EXIT = 0 �
 　（**∴ 与画布同一常数 96px ✓，即"工具条 ＋ 标签页"的高度 ✓** —— **∴ 不必引入新的魔数 ✗**）；
 3. **判据（可红 ✓）**：**"1280×757 下，右侧面板最底部元素可见或可滚动到 ✓"**（**变异** ✗：**去掉 `overflow-y` ⇒ 底部不可达 ⇒ 红 ✓**）；
 4. **且必须加进 `browser-layout.mjs`** ✓（**它今天通过 ✗ ⇒ 不加则回归会再漏 ✓**）✓✓
+
+
+### 四十二、✅ **用户报告 ① 真凶精确到元素**：`aside` ／ `.tab-pane` 没有高度约束（第 345 轮 ✓）
+
+#### 一、定位 ✓（**容器由 JS 动态建 ✓**）
+```js
+crates/yanshi-http/assets/viewer-app.js
+:4936-4940   const tabs = [ ["paint","绘制"], ["history","历史"], ["assets","素材"], …, ["diag","诊断"] ];
+:4947        const pane = document.createElement("div");
+:4948        pane.className = **"tab-pane"** ✓
+:4950        pane.hidden = key !== "paint";
+:4969        for (const pane of panes.values()) **aside.appendChild(pane)** ✓        ← **∴ 容器 ＝ `aside` ✓**
+:4972-4979   切换逻辑：`for (const [name, pane] of panes) pane.hidden = name !== key;`  ✓
+```
+⇒ **∴ 结论** ✓：**面板容器是 **`aside`**✓，各页是 **`.tab-pane`**✓** ⇒ **∴ 而 CSS 里 `aside` 只有**卡片／标签**规则 ✓（`:250` `aside .card > h2` ✓、`:260` `aside label` ✓、`:262` `aside label select/input` ✓）⇒ **∴ **没有** `height`／`max-height`／`overflow-y` ✗**** ✓✓
+⇒ **∴ 于是** ✓：**内容一多（`素材` 页 132 色块 ＋ 纹理 ✓）⇒ `aside` 被撑高到超出视口 ✗ ⇒ 被 `body{height:100%;overflow:hidden}`（`:24` ✓）裁掉 ⇒ **无滚动条 ✗** ⇒ **∴ 与用户症状**完全一致 ✓** ✓✓
+
+#### 二、∴ 修法（**一行 CSS ✓，下一轮先量再改 ✗**）
+```css
+/* ∴ 与画布同一常数（96px ＝ 工具条 ＋ 标签页 ✓）⇒ 不引入新魔数 ✓ */
+aside { overflow-y: auto; max-height: calc(100vh - 96px); }
+```
+⇒ **∴ 判据（可红 ✓）**：**"1280×757 下，`素材` 页最底部元素**可见或可滚动到**✓"**
+　⇒ **变异** ✗：**去掉 `overflow-y: auto` ⇒ 底部不可达 ⇒ 红 ✓**；
+⇒ **∴ 且必须加进 `browser-layout.mjs`** ✓（**它今天通过 ✗** ⇒ **∴ 不加则回归再漏 ✓**）✓✓
