@@ -1905,8 +1905,19 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
     });
     await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`, { method: "POST" });
+    // **★ 必须**切到"历史"标签**✗**（第 369 轮实测：不切 ⇒ 默认"绘制"页没有 `.row` ✗
+    // ⇒ `waitFor` 超时 ⇒ `rows` 为空 ⇒ 判据**又一次**假绿 ✗）。
+    // **★ 且测完必须**回到原文档**✗**（第 369 轮实测：不回去 ⇒ **后续段落 token 与文档不匹配 ✗
+    // ⇒ 失败数从 5 项涨到 10 项 ✗ —— **∴ 那是我的导入段造成的 ✗**）。
     await send("Page.navigate", { url: `${origin}/?doc=${histDoc}` });
-    await waitFor("!!document.querySelector('#history .row')", "导入后历史面板出现条目");
+    await waitFor("!!document.querySelector('#history')", "导入后历史面板容器出现");
+    await evaluate(`(() => {
+      const tab = Array.from(document.querySelectorAll("button, [role=tab]"))
+        .find((b) => (b.textContent || "").trim() === "历史");
+      if (tab) tab.click();
+      return !!tab;
+    })()`);
+    await waitFor("document.querySelectorAll('#history .row').length > 0", "切到历史标签后出现条目");
     const rows = await historyRows();
     const counts = new Map();
     for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
@@ -1925,6 +1936,9 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       process.exit(1);
     }
     console.log("  ✓ 导入后历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + rows.length + "）");
+    // **★ 回到原文档 ✓**（否则后续段落拿到的是新文档 ⇒ token／权限失败 ✗ —— 第 369 轮 ✓）
+    await send("Page.navigate", { url });
+    await waitFor("!!document.querySelector('#board')", "回到原文档");
   } else {
     console.log("  ⚠ 历史行判据跳过：夹具不可读（" + fixture + "）✗");
   }
