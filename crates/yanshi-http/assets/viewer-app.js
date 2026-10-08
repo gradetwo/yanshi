@@ -1241,7 +1241,6 @@ async function initWasm() {
     // （示例的画都是 `import_image` ✓）**一律空白** ✗ —— 用户看到的正是这个 ✓。
     // 现在：一旦内核不可用 ✓ ⇒ 永久标记 `needsServerPixels` ✓（缩放、重绘、脏区都跟着补画 ✓）。
     needsServerPixels = true;
-    heavyDocument = true;   // ★ 记住"含 heavy"供同步路径读 ✓（第 308 轮 ✓）
     queueServerBlit();
   }
 }
@@ -1270,6 +1269,11 @@ async function detectHeavyContent() {
     if (objects.some((object) => object.medium || object.type === "raster_patch" ||
                                  object.type === "retouch")) {
       needsServerPixels = true;
+      // **★ 这才是"文档含 heavy"的**唯一**写入点 ✓（第 318 轮修 ✗）**：
+      // 我此前把赋值放进了 `initWasm()` ✗（那是"内核不可用"的路径 ✗）
+      // ⇒ **∴ `heavyDocument` 对含 heavy 的正常文档**恒为 false ✗** ⇒ 自检早退不触发 ✗。
+      // **∴ 必须与 `needsServerPixels = true` 同处 ✓（同一条件 ✓）**。
+      heavyDocument = true;
       queueServerBlit();
     }
   } catch (error) { /* 扫描失败不阻塞加载 ✓ */ }
