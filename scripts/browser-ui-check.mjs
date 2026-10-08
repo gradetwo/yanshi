@@ -1993,6 +1993,14 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       };
     })()`);
     console.log("  [诊断] " + JSON.stringify(diag));
+    const both = await evaluate("(function () { var all = Array.from(document.querySelectorAll('aside .card'));" +
+      " var hist = all.filter(function (c) { var h = c.querySelector('h2');" +
+      "   return h && /\u5386\u53f2/.test(h.textContent || ''); });" +
+      " return { n: hist.length, diagField: null," +
+      "   collapsed: hist.map(function (c) { return c.classList.contains('collapsed'); })," +
+      "   cls: hist.map(function (c) { return c.className; })," +
+      "   parent: hist.map(function (c) { return c.parentNode && c.parentNode.tagName; }) }; })()").catch(function () { return null; });
+    console.log("  [对齐] " + JSON.stringify(both) + " ｜diagHeld=" + JSON.stringify(diag.histCollapsed));
     // **★ 看清那张卡的**真实标题 ✗**（第 406 轮答案：我的展开打在**别的元素**上 ✓）：
     // **∴ 只需打印 `aside .card` 里每一张的 `{标题, 折叠, data-panel}` 即可 ✓。**
     const cards = await evaluate(
