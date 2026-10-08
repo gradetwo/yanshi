@@ -13,6 +13,9 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 含义 ✓：只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓ ——
 // 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
 let needsServerPixels = false;
+// **文档是否含 heavy 内容** ✓（第 308 轮 ✓）：由 `detectHeavyContent()` 异步写入 ✓，
+// **∴ 供同步路径（落笔 `pointerdown` ✓）读取 ✓** —— **∵ 那里不能 await ✗**。
+let heavyDocument = false;
 
 // **开关的判定必须在这里** ✓ —— `needsServerPixels` 上面那句注释早就写着
 // "必须在任何启动路径之前声明" ✓，而我第一版把这两个定义放在了**导出按钮的接线块**里 ✗（≈4852 行 ✓）
@@ -1238,6 +1241,7 @@ async function initWasm() {
     // （示例的画都是 `import_image` ✓）**一律空白** ✗ —— 用户看到的正是这个 ✓。
     // 现在：一旦内核不可用 ✓ ⇒ 永久标记 `needsServerPixels` ✓（缩放、重绘、脏区都跟着补画 ✓）。
     needsServerPixels = true;
+    heavyDocument = true;   // ★ 记住"含 heavy"供同步路径读 ✓（第 308 轮 ✓）
     queueServerBlit();
   }
 }
@@ -6171,7 +6175,13 @@ board.addEventListener("pointerdown", (event) => {
   // 只有 pan/eyedropper 这类"不动内容"的工具才不清 ✓。
   if (state.tool && state.tool !== "pan" && state.tool !== "eyedropper" &&
       state.tool !== MOVE_TOOL && state.tool !== MOVE_LAYER_TOOL) {
-    needsServerPixels = false;
+    // **★ 含 heavy 的文档**不**把权威交还内核 ✗**（第 308 轮 ✓）：内核**表示不了 heavy 内容** ✗
+    // ⇒ 一旦交还 ⇒ 重同步／刷新时缺位图的帧盖上去 ⇒ **变白**✗（**审计 Y-01 ✓**）。
+    // **∴ 不含 heavy ⇒ 照旧交还 ✓（乐观笔迹归内核 ✓，行为完全不变 ✓）**。
+    // **代价** ✗：含 heavy 时，乐观笔迹可能被随后到达的服务端帧覆盖 ⇒ **观感上闪一下 ✗**。
+    if (!heavyDocument) {
+      needsServerPixels = false;
+    }
   }
   if (!event.altKey || !RETOUCH_TOOLS.has(state.tool)) return;
   const point = localPoint(event);
