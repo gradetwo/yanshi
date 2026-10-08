@@ -91,11 +91,16 @@
      两层分离的原因：此前预览与内容共用一个画布，重绘预览时会把内容一起清空，
      提交后画布变空白（刷新才恢复）。 */
   #board, #kernel { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 96px); touch-action: none; cursor: crosshair; background: #fff; image-rendering: pixelated; }
+  /* ★ 内核层必须**透明** ✓：它叠在 `#board` 之上 ✓ —— 若继承白底 ✗，
+     就是把一块**不透明的白布**盖在服务端像素上 ⇒ **画面全白**✗（**＝审计 Y-01 的现象** ✓）。
+     **∴ 白色只留给 `#board`** ✓（文档底色在那一层 ✓）。第 295 轮 ✓ */
+  #board { background: #fff; }
+  #kernel { background: transparent; }
   /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
      盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
      ⇒ 放大时给 `body` 加 `canvas-zoomed` ✓，把这两条上限放开 ✓ ⇒ 画布真的超出舞台 ✓、
      `.stage` 的 `overflow: auto` 才**有东西可滚** ✓（用户："画布是内部一个可以独立上下和左右滚动的"✓）。 */
-  body.canvas-zoomed #board, body.canvas-zoomed body.canvas-zoomed #board, body.canvas-zoomed #kernel, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
+  body.canvas-zoomed #board, body.canvas-zoomed #kernel, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
   #kernel, #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   /* **标注图钉层** ✓（设计 4.6 / 13.4 ✓）：用**独立的 DOM 层** ✓，不跟 `#overlay` 的笔迹预览抢画布 ✓，
      而且图钉**可点** ✓（点它跳到该标注 ✓）。 */
