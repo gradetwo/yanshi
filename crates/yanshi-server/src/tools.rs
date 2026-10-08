@@ -4371,6 +4371,59 @@ fn write_reorder_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     finish_mutation(ctx, &result, None)
 }
 
+/// **把一份大位图切成 256² 块并存好，返回索引哈希** ✓（第 170 轮 ✓）—— **(b1) 导入侧核心 ✓**。
+///
+/// **不撒谎** ✓：**任一步失败 ⇒ `None`** ⇒ 调用方**不写 `tiles`** ⇒ 渲染走原路（整幅 ✓）；
+/// **索引 blob 只在块全部存好后才写** ✓ ⇒ **绝不留下"半个索引"** ✗。
+fn build_bitmap_tile_index(
+    ctx: &ToolContext<'_>,
+    blob_hash: &str,
+    mime: &str,
+    width: u32,
+    height: u32,
+) -> Option<String> {
+    use yanshi_render::bitmap_tiles::{
+        split_into_tiles, BitmapIndex, BITMAP_INDEX_VERSION, BITMAP_TILE,
+    };
+    if blob_hash.is_empty() || width == 0 || height == 0 {
+        return None;
+    }
+    // **⚠️ `BlobHash` 走 `FromStr`** ✓（**不是** `parse()` 关联函数 ✗ —— 第 169 轮的错 ✓）。
+    let hash: yanshi_core::BlobHash = blob_hash.parse().ok()?;
+    let store = ctx.workspace.store();
+    let bytes = store.get(&hash).ok()?;
+    // **两种 MIME 都认** ✓：PNG 要解码 ✓；旧工程的 raw 已经是 RGBA8 ✓。
+    // **⚠️ 用字面量** ✓（**常量未在 crate 根重导出** ✗ —— 第 169 轮的错 ✓）。
+    let rgba8 = if mime == "image/png" {
+        let (w, h, px) = yanshi_render::png::decode_png(&bytes)?;
+        if w != width || h != height {
+            return None; // 声明尺寸与像素不符 ⇒ 不切 ✓（宁可走原路 ✓）
+        }
+        px
+    } else if mime == "image/x-yanshi-raw" {
+        bytes
+    } else {
+        return None;
+    };
+    let tiles = split_into_tiles(width, height, &rgba8)?;
+    let mut hashes = Vec::with_capacity(tiles.len());
+    for tile in &tiles {
+        hashes.push(store.put(tile).ok()?.to_string());
+    }
+    let index = BitmapIndex {
+        v: BITMAP_INDEX_VERSION,
+        tile: BITMAP_TILE,
+        width,
+        height,
+        tiles: hashes,
+    };
+    if !index.is_consistent() {
+        return None;
+    }
+    let encoded = serde_json::to_vec(&index).ok()?;
+    store.put(&encoded).ok().map(|h| h.to_string())
+}
+
 fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let bitmap = require_object(args, "bitmap")?.clone();
@@ -4413,6 +4466,30 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             payload["source"] = source.clone();
         }
     }
+    // **位图分块（(b1) 导入侧 ✓，第 170 轮 ✓）** —— 目标第 1 条"懒解码"的**落盘点** ✓。
+    //
+    // **为什么在这里** ✓：整体式 deflate 流**取任意一段都要先解整条** ✗ ⇒ 实测**为渲 64² 而解 265 MB**
+    //（**16200× 区域像素** ✗）⇒ **∴ 大位图在**导入时**切成 256² 块** ✓ ⇒ 渲染侧只解**覆盖请求区域**的块 ✓。
+    // **阈值** ✓：**只在 `max(width,height) ≥ 512` 时才切** ✓（小图整幅解码本就便宜 ✓，
+    // 切块反而多花 blob ＋ 索引开销 ✗ —— **两面** ✓）。
+    // **失败语义** ✓：**任一步失败 ⇒ 跳过** ⇒ **不写 `tiles` ⇒ 渲染走原路** ✓
+    //（**绝不阻断导入 ✗、绝不留半个索引 ✗**）。**渲染侧尚未消费 `tiles` ⇒ 本轮零行为变化** ✓。
+    if region.w.max(region.h) >= 512.0 {
+        let blob_hash = bitmap
+            .get("blob_hash")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let mime = bitmap
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(index_hash) =
+            build_bitmap_tile_index(ctx, blob_hash, mime, region.w as u32, region.h as u32)
+        {
+            payload["tiles"] = json!(index_hash);
+        }
+    }
+
     let result = ctx.commit(AtomKind::ImportImage, payload)?;
     let bbox = region_of(&result).or(Some(region));
     finish_mutation(ctx, &result, bbox)
