@@ -9526,3 +9526,17 @@ document.addEventListener("click", (event) => {
   location.search = url.search;
 });
 
+
+// TEMP CHECK (round 446, remove once the criterion is recorded). Defined on the
+// page so the harness can call it by bare name with no quoting, which is the
+// only pattern that survived four attempts at composing script text outside.
+window.__rowCheck = function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll("#history .row")).map(function (r) {
+    return r.textContent;
+  });
+  var imp = rows.filter(function (t) { return t.indexOf("import_image") >= 0; });
+  var bare = imp.filter(function (t) {
+    return t.replace(/[\s0-9#]|import_image|agent|mcp|详情|回到此处/g, "") === "";
+  });
+  return { total: rows.length, importRows: imp.length, bareRows: bare.length, samples: imp.slice(0, 3) };
+};
