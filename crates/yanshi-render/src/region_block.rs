@@ -225,6 +225,14 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{:?}", state.color_space).hash(&mut h);
     let mut layers: Vec<&yanshi_core::Layer> = state.alive_layers();
+    // **★ 排除**最上面那层** ✓ ★**（第 470 轮**决定性 ✓**）：**实测**（env 探针 ✓）
+    // `get #2 present=true same=false` ✗ ⇒ **∴ 条目在 ✓ 而版本变了 ✗** ——
+    // **∵ 指纹含**全部层**✗ 而"只改当前层"正是**画家最常走的路径**✓ ⇒ **∴ 指纹必然变 ⇒ 必然失效 ✗**。
+    // **∴ 与 below 缓存**同一切点**✓：**`alive_layers()` 按合成顺序（**底 → 顶 ✓**）⇒ **∴ 最后一个是最上层 ✓**。
+    // **∴ 而改动落在**下方任何层**⇒ 指纹变 ⇒ 失效 ✓**（**正确 ✓**）。
+    if layers.len() > 1 {
+        layers.pop();
+    }
     layers.sort_by(|a, b| a.id.cmp(&b.id));
     for l in layers {
         l.id.hash(&mut h);
