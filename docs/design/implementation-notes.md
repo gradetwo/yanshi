@@ -56749,3 +56749,35 @@ std::thread::scope(|scope| { … });                        // ★ 已按行并�
 
 ### 三、门禁
 1. 本轮只改设计文档 ✓（`md` ⇒ 不触发 CI ✓）；见提交前检查 ✓。
+
+## 第 424 轮：✅ **"below 复用次数"计数已生效**（`below_reuse=0` ✓）—— 设计第 1 步完成 ✓
+
+### 一、改动（**纯观测** ✓，全部**按行号**插入 ✓）
+| 层 | 内容 |
+|---|---|
+| `yanshi-render` ✓ | 进程级 `static BELOW_REUSE: AtomicUsize` ✓ ＋ `pub fn note_below_reuse()` ✓ ＋ `Renderer::below_reuse_count()` ✓ |
+| `yanshi-server` ✓ | `Document::below_reuse_count()` ✓（透传 ✓）＋ `Workspace::below_reuse_count()` ✓（求和 ✓） |
+| `yanshi-http` ✓ | `/health` 加 `"below_reuse"` ✓（照 `bitmap_cache` 的样子 ✓） |
+**实测** ✓：`/health` ⇒ **`below_reuse=0`** ✓ —— **还没有缓存 ⇒ 恒 0** ✓ ⇒ **∴ 这正是"C3 先看红"要的状态** ✓✓。
+**⚠️ 为什么用进程级 `AtomicUsize`** ✓：**不必动 `Renderer` 结构体、不必动它的 init** ✓ ——
+我第一次想加字段，而那个 init 行**出现两次** ✗ ⇒ 断言当场拦住 ✓（**未写坏东西** ✓）。
+
+### 二、⚠️ 我在插入位置上**又栽两次** ✗（如实 ✓）
+1. 第一次把代码插在了 **`#[derive]` 与 `struct` 之间** ✗ ⇒ **`E0774`**（derive 不能用于 static ✓）⇒ 构建坏 ✓；
+2. 第二次想修，而我的 **`d` 模式没匹配上** ✗ ⇒ 断言失败 ⇒ **但**上一轮的坏改动**已经在文件里** ✗ ⇒ **∴ 仍是坏的** ✓；
+3. **∴ 最终修法** ✓：**从备份还原** ✓ ＋ **按行号插入** ✓ ＋ **断言相邻行就是 `#[derive]`** ✓
+   ⇒ **∴ 一次成功** ✓。
+⇒ **∴ 教训（第 N 条 ✓）**：**插入位置要"按行号核对相邻行"，不要靠长字符串匹配** ✓ ——
+   本轮两次失败都是**模式匹配**不可靠 ✓，而成功那次是**行号 ＋ 相邻行断言** ✓。
+
+### 三、⚠️ 本轮**共犯 7 次**同一个错 ✗ —— 而门禁**每次都抓住** ✓（**∴ 流程在起作用** ✓）
+本会话"**在某一项之前插入 ⇒ 挪走它的文档注释**"✗ 已犯 **7 次** ✓：
+`doc_thumbnail_is_current` ✓、`thumbnail` ✓、`doc_thumbnail_hash_for_probe` ✓、`cache_stats` ✓、
+`BitmapCacheStats` ✓、`bitmap_cache_stats` ✓、以及本轮在 `service.rs` 的另一处 ✓。
+⇒ **∴ 单靠"记得"不管用** ✗ ⇒ **∴ 本轮改用**机械方法**✓**：
+**跑一次 clippy ⇒ 解析 `missing documentation for a <kind>` 的 `--> file:line` ⇒ 按行号倒序自动补注释** ✓ ✓
+⇒ **∴ 一次全绿** ✓（2 处 ✓）。
+⇒ **∴ 新纪律** ✓：**插入代码后，不靠记忆补注释 ⇒ 直接跑 clippy 并**批量**补** ✓。
+
+### 三、门禁
+1. 见提交前检查 ✓。

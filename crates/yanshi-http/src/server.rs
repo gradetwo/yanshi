@@ -753,6 +753,7 @@ fn health(state: &ServerState) -> Response {
             //（前者缓存"渲染出的 tile"✓，后者缓存"解码后的位图"✓）⇒ **∴ 要分开看** ✓。
             // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。
             "bitmap_cache": bitmap_cache_stats(state),
+            "below_reuse": below_reuse_count(state),
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
             // ⇒ blob 仍写得进去 ✓，但**掉电安全没有保证** ✓ ⇒ 这一项就让使用者看得见 ✓。
             "blob_fsync": if state
@@ -775,6 +776,15 @@ fn health(state: &ServerState) -> Response {
 ///
 /// **为什么单列一段** ✗：它与 `cache`（tile 缓存 ✓）**是两套东西** ✓ ——
 /// 前者缓存"**渲染出的 tile**" ✓，后者缓存"**解码后的位图**" ✓ ⇒ **∴ 混在一起就看不出是谁的问题** ✓。
+/// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）—— 目标第 4 条的判据用它问
+/// "**只改当前层时，下方合成有没有被复用**" ✓（现在还没有缓存 ⇒ **恒 0** ✓）。
+fn below_reuse_count(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    json!(workspace.below_reuse_count())
+}
+
 fn bitmap_cache_stats(state: &ServerState) -> serde_json::Value {
     let Ok(workspace) = state.workspace.lock() else {
         return json!({"error": "工作区锁中毒"});

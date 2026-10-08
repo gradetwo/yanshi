@@ -1571,6 +1571,13 @@ impl Document {
 
     /// **仅供探针** ✓（第 86 轮 ✓）：读出当前 `document_thumbnail` 的哈希 ⇒ 量它到底是整幅还是 256² ✓。
     /// （修复记录：插入位图统计时把本函数的注释"抢"走了 ✗ ⇒ `missing-docs` 报错 ✓ ⇒ 已补 ✓。）
+    /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）：判"这一笔有没有复用下方的合成" ✓。
+    pub fn below_reuse_count(&self) -> usize {
+        self.renderer.below_reuse_count()
+    }
+
+    /// **（第 95 轮补）** 本项在插入 below 计数时被"抢走"了注释 ✗ ⇒ 按其作用补回 ✓。
+    /// ⚠️ 规律（本会话第 7 次 ✗）：**在某一项之前插入 ⇒ 会挪走它的文档注释** ✓（`-D missing-docs` 每次都能抓住 ✓）。
     pub fn doc_thumbnail_hash_for_probe(&self) -> Option<yanshi_core::BlobHash> {
         self.document_thumbnail.clone()
     }

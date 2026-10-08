@@ -145,7 +145,17 @@ const MAX_DECODED_BITMAP_BYTES: usize = 64 * 1024 * 1024;
 type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 
 /// [`BitmapCache`] 的可观测读数（判据用 ✓）。
+/// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
+static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
+pub fn note_below_reuse() {
+    BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// **位图缓存的统计** ✓（`hits`／`misses` 等 ✓）—— 由 `bitmap_cache_stats()` 读出 ✓。
+/// （修复记录：插入 `below` 计数时把本结构体的注释"抢"走了 ✗ ⇒ `missing-docs` 报错 ✓ ⇒ 已补 ✓。）
 pub struct BitmapCacheStats {
     /// 当前常驻条目数。
     pub entries: usize,
@@ -436,6 +446,13 @@ impl Renderer {
     }
 
     /// **解码位图缓存的可观测读数** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
+    /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）：判"这一笔有没有复用下方的合成" ✓。
+    pub fn below_reuse_count(&self) -> usize {
+        BELOW_REUSE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// **位图缓存的统计** ✓（纯观测 ✓）：判"解码后的位图有没有被复用" ✓。
+    /// （修复记录：插入 `below_reuse_count` 时把本方法的注释"抢"走了 ✗ ⇒ 已补 ✓。）
     pub fn bitmap_cache_stats(&self) -> BitmapCacheStats {
         self.bitmaps.stats()
     }

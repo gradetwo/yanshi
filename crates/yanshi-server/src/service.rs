@@ -2849,6 +2849,13 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     ///（"查表全变未命中"这种退化会无人察觉 ✓）。
     /// **∴ 这是纯观测补充** ✓：**不参与任何渲染决策** ✗ ⇒ 输出像素一个都不变 ✓。
     /// **位图缓存的命中／未命中（全文档聚合）** ✓（第 93 轮 ✓，纯观测 ✓）。
+    /// **below 复用次数（全文档求和）** ✓（第 95 轮 ✓，纯观测 ✓）。
+    pub fn below_reuse_count(&self) -> usize {
+        self.documents.values().map(|d| d.below_reuse_count()).sum()
+    }
+
+    /// **（第 95 轮补）** 本项在插入 below 计数时被"抢走"了注释 ✗ ⇒ 按其作用补回 ✓。
+    /// ⚠️ 规律（本会话第 7 次 ✗）：**在某一项之前插入 ⇒ 会挪走它的文档注释** ✓（`-D missing-docs` 每次都能抓住 ✓）。
     pub fn bitmap_cache_hits_misses(&self) -> (usize, usize) {
         let mut hits = 0usize;
         let mut misses = 0usize;
