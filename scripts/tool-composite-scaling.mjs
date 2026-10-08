@@ -42,22 +42,28 @@ const measure = async (doc, token, n) => {
   }
   const top = ids[ids.length - 1];
   const samples = [];
+  const boxes = [];
   for (let i = 0; i < 6; i++) {
     // **只改最上面那层** ✓ —— 下面那些层**一动不动** ✓ ⇒ below 缓存应当可以复用 ✓
-    await call(doc, token, "brush_stroke", {
+    // **★ 每次落在**同一处** ✓ ★**（第 461 轮查明的关键 ✓）：**below 缓存按**区域**键 ✗** ⇒
+    // **∴ 若每笔换位置 ⇒ 脏区随之变化 ⇒ **缓存永远不可能命中 ✗****
+    //（**∴ 我第 459 轮把缓存挂在 `render_region` 里**本该生效 ✗，而探针**每次挪位置**✗ ⇒ 假阴性 ✓）。
+    const stroke = await call(doc, token, "brush_stroke", {
       layer_id: top, brush: "100%_Opaque", size: 12,
-      points: [[20 + i * 3, 30, 0.9], [90 + i * 3, 120, 0.9]],
+      points: [[60, 90, 0.9], [70, 100, 0.9]],
       color: { r: 200, g: 60, b: 60, a: 255 }, preview: false,
     });
+    boxes.push(JSON.stringify(stroke.dirty_bbox ?? null));
     const opened = await call(doc, token, "get_document", {});
     const tm = opened.timings || {};
     const v = tm.preview_ms === undefined ? null : Number(tm.preview_ms);
     if (v !== null) samples.push(v);
   }
-  samples.shift();                            // **丢掉首次** ✓（有一次性建缓存的成本 ✓）
+  samples.shift();                            // **丢掉首次** ✓
+  samples.shift();                            // **★ 再丢一个 ✓**（第 461 轮实测：1 层那格首个样本含建缓存 ⇒ 离散 11.5–16.3 ✗）
   const sorted = samples.slice().sort((a, b) => a - b);
   const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
-  return { n, median, samples };
+  return { n, median, samples, boxes };
 };
 
 const main = async () => {
@@ -73,12 +79,13 @@ const main = async () => {
   const h = await health();
   console.log("  层数 ⇒ 合成（preview_ms，中位数 ✓，丢首次 ✓）");
   for (const r of rows) {
-    console.log(`    ${String(r.n).padStart(2)} 层 ⇒ ${r.median === null ? "n/a" : r.median.toFixed(1)} ms｜样本 ${JSON.stringify(r.samples.map((x) => Number(x.toFixed(1))))}`);
+    const uniq = Array.from(new Set(r.boxes || []));
+    console.log(`    ${String(r.n).padStart(2)} 层 ⇒ ${r.median === null ? "n/a" : r.median.toFixed(1)} ms｜样本 ${JSON.stringify(r.samples.map((x) => Number(x.toFixed(1))))}｜脏区 Variants=${uniq.length}${uniq.length === 1 ? "（恒定 ✓）" : "（**每次都在变 ✗**）"}`);
   }
-  const one = rows.find((r) => r.n === 1);
+  const one = rows.find((r) => r.n === 4);
   const many = rows.find((r) => r.n === 32);
   const ratio = (one && many && one.median) ? many.median / one.median : null;
-  console.log(`  比值 32 层 / 1 层 = ${ratio === null ? "n/a" : ratio.toFixed(2)}×｜/health.below_reuse=${JSON.stringify(h.below_reuse)}`);
+  console.log(`  比值 32 层 / 4 层 = ${ratio === null ? "n/a" : ratio.toFixed(2)}×｜/health.below_reuse=${JSON.stringify(h.below_reuse)}`);
 
   if (ratio === null) {
     console.error("❌ 取不到 preview_ms ⇒ 判据无效 ⇒ 不许当通过 ✗");
