@@ -82,6 +82,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// **位图分块（(b1) 数据层 ✓）** —— 目标第 1 条"懒解码"的地基 ✓。
+pub mod bitmap_tiles;
 pub mod blend;
 pub mod brush;
 pub mod buffer;
