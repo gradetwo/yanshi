@@ -1912,7 +1912,14 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
     const top = rows.length ? Math.max(...counts.values()) : 0;
     const ratio = rows.length ? top / rows.length : 0;
-    if (rows.length >= 10 && ratio >= 0.5) {
+    // **★ 先守住"真的取到了行"✗**（第 368 轮实测：`rows` 为空 ⇒ 旧写法打印 `✓ 0%（0/0）`✗
+    // ＝ **又一次**假绿**✗** —— **∴ 取不到行**必须红 ✗，**不许**静默通过 ✗）。
+    if (rows.length < 10) {
+      console.error("❌ 导入后只取到 " + rows.length + " 行历史（应 ≥10）⇒ 判据无效 ⇒ 不许当通过 ✗" +
+        "（夹具 " + fixture + "｜文档 " + histDoc + "）");
+      process.exit(1);
+    }
+    if (ratio >= 0.5) {
       console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + rows.length +
         "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(rows[0] || "").slice(0, 40) + "）");
       process.exit(1);
