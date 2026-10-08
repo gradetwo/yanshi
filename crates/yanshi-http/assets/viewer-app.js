@@ -3721,6 +3721,14 @@ async function refreshHistory() {
   const atoms = value.atoms || [];
   historyAtoms = atoms;
   list.innerHTML = "";
+  // **★ 层名小表 ✓**（用户报告 2026-10-09 ✓／第 443 轮实测 ✓）：
+  // **`create_layer` 的 payload 自带 `name`** ✓（如 "Chamber Architecture" ✓）⇒
+  // **∴ 从**同一份 `atoms`**里收表 ✓ ⇒ **零额外请求 ✓、零新数据 ✓**。
+  const _layerNames = {};
+  for (const _a of atoms) {
+    const _p = _a.payload || {};
+    if (_a.kind === "create_layer" && _p.layer_id && _p.name) _layerNames[_p.layer_id] = _p.name;
+  }
   for (const atom of atoms) {
     const row = document.createElement("div");
     row.className = "row";
@@ -3738,7 +3746,7 @@ async function refreshHistory() {
     if (_pl && _pl.layer_id) {
       const layerLabel = document.createElement("span");
       layerLabel.className = "layer";
-      const _name = (state.layerNames && state.layerNames[_pl.layer_id]) || "";
+      const _name = _layerNames[_pl.layer_id] || (state.layerNames && state.layerNames[_pl.layer_id]) || "";
       layerLabel.textContent = _name || String(_pl.layer_id);
       row.appendChild(layerLabel);
     }
