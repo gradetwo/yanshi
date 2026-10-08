@@ -1891,3 +1891,40 @@ new MutationObserver((ms) => ms.forEach((m) => console.log("[who]", new Error().
   .observe(document.querySelector('aside'), { subtree: true, attributes: true, attributeFilter: ["class"] });
 ```
 ⇒ **∴ 第 3 条是**决定性**的 ✓**（**它能直接给出**调用栈 ✓ ⇒ **∴ 不必再猜 ✗**）** ✓✓
+
+
+### 七十七、🚨 **"第二个写者"假设也被否证** ⇒ 只剩"抓现行"（第 401 轮 ✓）
+
+#### 一、实测 ✓
+```
+grep -rln 'collapsed' crates/yanshi-http/assets/ crates/yanshi-http/src/
+  ⇒ **只有 2 个文件** ✓：`assets/viewer.css` ✓｜`assets/viewer-app.js` ✓
+grep -n 'function applyCollapsed' ⇒ **只有 1 处** ✓（`viewer-app.js:8514` ✓）
+grep -n 'collapsed' viewer.rs ⇒ **0** ✓
+```
+⇒ **∴ 结论** ✓：**没有第二个写者 ✗、没有第二份 `applyCollapsed` ✗、标记里也没有 ✗** ⇒
+　**∴ 于是**矛盾**坐实** ✗：**按代码，历史卡**应当**被展开 ✓**（**我的跳过逻辑 ＋ 三次延迟展开 ✓**）⇒
+　**∴ 而诊断在**两轮**（**第 394 ✓／第 398 ✓**）**都读到 `[true]` ✗**** ⇒ **∴ 只有一种解释 ✓**：
+　**∴ 我改的代码**在浏览器里**从来没被执行过 ✗**** —— **∴ 而第 394 轮我**核过产物**✓（`openHistoryCard` 命中 4 ✓）** ⇒
+　**∴ 产物里有它 ✓ 而行为不变 ✗** ⇒ **∴ 这说明**执行路径不在我以为的位置 ✗**** ✓✓
+
+#### 二、∴ 下一轮（**★ 抓现行 ★ —— 不再靠推断 ✓**）
+**在 harness 取证段加入 `MutationObserver`** ✓ ⇒ **∴ 它会直接报出**是谁把类加上去的（**含调用栈 ✓**）**：
+```js
+await evaluate(`(() => {
+  window.__cl = [];
+  const obs = new MutationObserver((ms) => {
+    for (const m of ms) {
+      if (m.type === "attributes" && m.attributeName === "class" &&
+          /collapsed/.test(m.target.className)) {
+        window.__cl.push({ cls: m.target.className, stack: String(new Error().stack).slice(0, 400) });
+      }
+    }
+  });
+  obs.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
+  return true;
+})()`);
+// ⇒ **再读 `window.__cl`** ✓ ⇒ **∴ 一次就抓到写者 ＋ 调用栈 ✓**
+```
+⇒ **∴ 且为了抓"加载期"的写 ✓** ⇒ **必须在页面**最早**注入 ✓**（**如 `Page.addScriptToEvaluateOnNewDocument` ✓）——
+　**∴ 或退一步：**打印 `applyCollapsed` 是否被调用 ✓**（**console 会被 harness 收进日志 ✓**）** ✓✓
