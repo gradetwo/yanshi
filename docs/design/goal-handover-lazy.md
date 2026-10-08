@@ -42,6 +42,21 @@
 | `split_into_tiles` ✓ | **行优先切 256² ✓，边缘块实际尺寸 ✓；往返恒等（变异验证 ✓）** |
 
 **待接线（两步，机械活 ✓）**：
+**接线点原文（第 167 轮读 ✓）**：
+```rust
+fn write_import_image(ctx, args) {
+    let bitmap = require_object(args, "bitmap")?.clone();   // 含 blob_hash ＋ mime_type ＋ size
+    let region = parse_bbox(…)?;
+    let mut payload = json!({ …, "bitmap": bitmap, "width": region.w, "height": region.h });
+    …                                                       // ← **切块 ＋ 索引 ＋ payload["tiles"] 插在这里**
+    let result = ctx.commit(AtomKind::ImportImage, payload)?;
+}
+```
+**阈值取舍（第 167 轮定 ✓）**：**只在 `max(width,height) ≥ 512` 时才切块** ✓
+（**收益**：小图整幅解码本来就便宜，切块反而多花 blob＋索引开销 ✗；
+**代价**：引入两条路径 ✓ ⇒ **由判据②"逐字节相同"守住 ✓**）。
+**失败语义** ✓：**任一步失败 ⇒ 跳过** ✓ ⇒ **不写 `tiles` ⇒ 渲染走原路** ✓（**不阻断导入 ✗、不留半个索引 ✗**）。
+
 1. **导入侧** ✓ `crates/yanshi-server/src/tools.rs:4374 write_import_image`：
    `store.get(blob_hash)` ⇒ 解码 ⇒ `split_into_tiles` ⇒ 逐块 `store.put` ⇒ 写**索引 blob** ⇒
    payload 增 **`"tiles": <index_hash>`** ✓（**旧读方忽略未知字段 ⇒ 兼容自动成立** ✓）；

@@ -57729,3 +57729,33 @@ fn write_import_image(ctx, args) -> Result<Value> {
 1. **立判据**（**先看红** ✓）：**"导入 8K 位图后，渲染 64² 只应解 ~1 块（≈256 KB）"** ✓（**语义计数 ✓**）；
 2. **实现**：`write_import_image`（切块 ＋ 索引 ✓）＋ `fetch_raster_patch`（按 `tiles` 取块 ✓）；
 3. **验收**：**① 转绿**（**16200× → ~30×** ✓）＋ **①′／② 仍绿** ＋ **930 全绿** ＋ **复测同材料** ✓。
+
+## 第 454 轮：🎯 **导入侧接线点已读到精确位置** ＋ 定下"只在足够大时才切"的取舍 ✓
+
+### 一、原文事实 ✓（`tools.rs:4374-4416` ✓）
+```rust
+fn write_import_image(ctx, args) {
+    let bitmap = require_object(args, "bitmap")?.clone();   // ← 含 blob_hash ＋ mime_type ＋ size ✓
+    let region = parse_bbox(require_object(args, "region")?)?;
+    let mut payload = json!({ …,"bitmap": bitmap, "width": region.w as u64, "height": region.h as u64 });
+    …                                                       // ← **接线点就在 `ctx.commit` 之前** ✓
+    let result = ctx.commit(AtomKind::ImportImage, payload)?;
+}
+```
+⇒ **∴ 接线序列** ✓（**只增不删** ✓）：取 `blob_hash`／`mime_type` ✓ ⇒ **阈值判定** ✓ ⇒
+`store.get` ⇒ 解码 ⇒ **`split_into_tiles`** ✓ ⇒ 逐块 `store.put` ✓ ⇒ 写**索引 blob** ✓ ⇒
+**`payload["tiles"] = index_hash`** ✓ ⇒ **任一步失败 ⇒ 跳过**（**不阻断导入 ✗、不留半个索引 ✗**）✓✓。
+
+### 二、∴ 阈值取舍（**两面** ✓）
+| 面 | 内容 |
+|---|---|
+| **收益** ✓ | **只有大位图（≥512²）值得切** ✓ —— 小图整幅解码便宜，切块**反而多花 blob＋索引开销** ✗ |
+| **代价** ✗ | **两套路径** ✓ ⇒ **∴ 由判据②"区域 ≡ 整幅逐字节"守住 ✓**（**已有 ✓**） |
+| **阈值** ✓ | **`max(width,height) ≥ 512`** ✓（8K／4K 全在其上 ✓；图标类小补丁不动 ✓） |
+
+### 三、∴ 下一轮 ✓
+**接线两步**（**按行号插入 ＋ 相邻行断言** ✓ —— 本会话最可靠的方法 ✓）：
+1. **导入侧**：`tools.rs` 的 `ctx.commit(…)` **之前** ✓；
+2. **渲染侧**：`render.rs:1854 fetch_raster_patch`（调用点 `:1315` ✓）⇒ 见 `tiles` ⇒ `tiles_for_rect` ⇒ 取块 ⇒
+   **`assemble_region`** ⇒ 填 `layer_buffer` ✓；**无 `tiles` ⇒ 原路整幅** ✓（**旧工程零改动** ✓）。
+⇒ **验收** ✓：**判据① 16200× → ~30×** ✓ ＋ **①′／② 仍绿** ✓ ＋ **937＋ 全绿** ✓ ＋ **同材料复测** ✓。
