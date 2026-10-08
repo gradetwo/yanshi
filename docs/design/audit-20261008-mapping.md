@@ -2119,3 +2119,33 @@ Array.from(document.querySelectorAll("aside .card")).map((c) => ({
 * **在页面里**做个**已知的**类变更 ✓（**如 `evaluate` 里 `card.classList.add("zz")` ✓**）⇒
 　**∴ 若 `[抓现行]` 里**没有** `cls:"card zz"` ✗ ⇒ **∴ 仪器**没在监听 ✗** ⇒ **∴ 那**所有"0 次加类"的结论**都无效 ✗**** ✓✓
 ⇒ **∴ 这是**先验证仪器**✓，而不是继续推断 ✓**（**本会话已因"仪器单向 ✗"误判一次 ✓**）** ✓✓
+
+
+### 八十五、🎯🎯🎯 **三面夹逼**：`collapsed` **不在 HTML ✗、不由变更加 ✗、无重建 ✗**（第 416／417 轮 ✓）
+
+#### 一、三面证据 ✓（**每一面都独立可核 ✓**）
+| # | 面 | 结论 | 证据 |
+|---|---|---|---|
+| **①** | **送出的页面 HTML** ✓ | **没有 `card collapsed`** ✗ | **`curl /` ⇒ 23 处命中**全部是 CSS 规则（`aside .card.collapsed` ✓）与 JS（`setCollapsed` ✓／`brush-area-collapsed` ✓）** |
+| **②** | **`class` 属性变更** ✓ | **0 次"加类"** ✗ | **仪器**自检通过 ✓：**`zzprobe 被抓到 = true`** ✓ ⇒ **∴ 它**有效 ✓ ⇒ **∴ 0 次加类**可信**✗** |
+| **③** | **重建卡片** ✓ | **无代码** ✗ | **`cloneNode` ✗／`replaceChild` ✗／`aside.innerHTML` ✗／`className` 整串赋值 ✗** |
+⇒ **∴ 三面互相矛盾 ✗** ⇒ **∴ 唯一剩下的可能** ✓：**`collapsed` 是**我自己的循环**写上去的 ✗**** ✓✓
+
+#### 二、∴ 而我的循环**本该**跳过它 ✓（`applyCollapsed` ✓）
+```js
+:8523  if (/历史/.test(cardTitle(card))) { card.classList.remove("collapsed"); continue; }   // ★ 应当命中 ✓
+:8527  card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));                 // 其它卡 ✓
+```
+⇒ **∴ `cardTitle(card)` ＝ `normalizeTitle(h2.textContent)`** ✓（`:8501／8493` ✓）⇒ **∴ 归一化**去空白 ＋ 全角折半角 ✓**
+　⇒ **∴ "历史（原子日志）" ⇒ "历史(原子日志)"** ✓ ⇒ **∴ 而 `/历史/` **仍然匹配**✓**** ✓✓
+⇒ **∴ 所以** ✓：**`if` **应当命中** ✗** ⇒ **∴ 除非** ✓：**执行时 `h2` 的内容**不是那句**✗** ——
+　**∴ 但 `[卡片]` 探针（**诊断时 ✓**）读到的就是它 ✓ ⇒ **∴ 那**执行时**可能不同 ✗（**如 `h2` 尚未填充 ✓**）** ✓✓
+
+#### 三、∴ 下一轮（**一行，决定性 ✓**）
+* **在 `applyCollapsed` 的 `for` 里加**：
+```js
+console.log("[ac] " + JSON.stringify(cardTitle(card)) + " want=" + wanted.includes(cardTitle(card)));
+```
+⇒ **∴ 一次输出就能看到**：**① 它被调用了没有 ✓｜② 每张卡的**归一化标题**是什么 ✓｜③ "历史"那张是否落入 `if` ✓****
+　⇒ **∴ 而若 `[ac]` **一次都没打印**✗ ⇒ **∴ 函数没被调用 ✓** ⇒ **∴ 那就是**唯一的加类者**不在这里 ✗** ⇒
+　**∴ 而那**与三面夹逼**共同指向**：**还有一处我看不到的写者**✗（**如 `viewer-app.js` 之外的资产 ✓ —— 但 `assets/` 只有 3 个文件 ✓**）** ✓✓
