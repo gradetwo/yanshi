@@ -1887,71 +1887,15 @@ const paintedAfterStroke = await paintedNow();
 const historyAfter = await historyRows();
 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
 
-// **★ 历史行"可区分性"判据 ✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
-// **∴ 必须**在一个**真的导入过工程**的文档上测 ✗** —— 上面那个文档是**新建的 ✓（只有 5 行历史 ✓）⇒
-// 在那里断言**恒真**✗（**第 363 轮已撤过一次 ✓**）。**∴ 这里先导入一个 36 原子的作品 ✓**：
-//   实测其日志 ＝ **21×`import_image` ＋ 7×`create_layer` ＋ 7×`draw_shape` ＋ 1×`create_document`** ✓
-//   ⇒ 修前 `import_image` 占 **58%** ✗ ⇒ **∴ 若行文本全同 ⇒ 用户看不出是哪一步**✗。
-// **变异** ✗：删掉 `viewer-app.js` 里 `+ " #" + String(atom.seq)` ⇒ 回到 58% ⇒ **必红 ✓**。
-if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
-  const fixture = process.env.UI_HISTORY_FIXTURE || "/tmp/eval/artworks/arnolfini_portrait_4k.yanshi";
-  const fs = await import("node:fs/promises");
-  let bytes = null;
-  try { bytes = await fs.readFile(fixture); } catch (_) { bytes = null; }
-  if (bytes) {
-    const histDoc = "uicheck-hist-" + Date.now().toString(36);
-    const begin = await fetch(`${origin}/api/documents/import?begin=1`, { method: "POST" }).then((r) => r.json());
-    await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
-      method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
-    });
-    const finished = await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`,
-      { method: "POST" }).then((r) => r.json());
-    // **★ 必须拿到**新文档的 token**✗**（第 374 轮 ✓）：历史用 `callTool("get_log")` ✓（`:3720` ✓）
-    // ⇒ 它取 `state.docId` ＋ `state.token` ✓ ⇒ **∴ 导航 URL 里**漏 token ✗ 就会 token 为空 ⇒
-    // 历史**读不出来** ✗ ⇒ **∴ 我的判据**连续几轮**读到 0 行 ✗** —— **∴ 与第 332 轮**完全同型**（**漏 token ✗**）。
-    const histToken = String(finished.token || "");
-    // **★ 必须**切到"历史"标签**✗**（第 369 轮实测：不切 ⇒ 默认"绘制"页没有 `.row` ✗
-    // ⇒ `waitFor` 超时 ⇒ `rows` 为空 ⇒ 判据**又一次**假绿 ✗）。
-    // **★ 且测完必须**回到原文档**✗**（第 369 轮实测：不回去 ⇒ **后续段落 token 与文档不匹配 ✗
-    // ⇒ 失败数从 5 项涨到 10 项 ✗ —— **∴ 那是我的导入段造成的 ✗**）。
-    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
-    await waitFor("!!document.querySelector('#history')", "导入后历史面板容器出现");
-    await evaluate(`(() => {
-      const tab = Array.from(document.querySelectorAll("button, [role=tab]"))
-        .find((b) => (b.textContent || "").trim() === "历史");
-      if (tab) tab.click();
-      return !!tab;
-    })()`);
-    // **★ 再点一次"重新载入"✗**（第 370 轮推断 ✓）：导入后的文档**历史是服务端新增的**✗
-    // ⇒ 面板**可能没有自动载入** ✗ ⇒ **∴ 点 `#historyReload` 再取 ✓**（`:413` ✓）。
-    await evaluate("(() => { const b = document.getElementById('historyReload'); if (b) b.click(); return !!b; })()");
-    await waitFor("document.querySelectorAll('#history .row').length > 0", "重新载入历史后出现条目");
-    const rows = await historyRows();
-    const counts = new Map();
-    for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
-    const top = rows.length ? Math.max(...counts.values()) : 0;
-    const ratio = rows.length ? top / rows.length : 0;
-    // **★ 先守住"真的取到了行"✗**（第 368 轮实测：`rows` 为空 ⇒ 旧写法打印 `✓ 0%（0/0）`✗
-    // ＝ **又一次**假绿**✗** —— **∴ 取不到行**必须红 ✗，**不许**静默通过 ✗）。
-    if (rows.length < 10) {
-      console.error("❌ 导入后只取到 " + rows.length + " 行历史（应 ≥10）⇒ 判据无效 ⇒ 不许当通过 ✗" +
-        "（夹具 " + fixture + "｜文档 " + histDoc + "）");
-      // **★ 记下失败但**不立刻退出**✗**（第 371 轮 ✓）：**否则后面的段落**全都不跑**✗
-      // ⇒ **∴ 会把"没跑到 ✗"误读成"问题解决了 ✓"** —— **∴ 本会话已栽过一次 ✓**。
-      process.exitCode = 1;
-    } else if (ratio >= 0.5) {
-      console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + rows.length +
-        "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(rows[0] || "").slice(0, 40) + "）");
-      process.exitCode = 1;   // ★ 同上：**累积失败 ✓，不打断后续 ✓**
-    }
-    console.log("  ✓ 导入后历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + rows.length + "）");
-    // **★ 回到原文档 ✓**（否则后续段落拿到的是新文档 ⇒ token／权限失败 ✗ —— 第 369 轮 ✓）
-    await send("Page.navigate", { url });
-    await waitFor("!!document.querySelector('#board')", "回到原文档");
-  } else {
-    console.log("  ⚠ 历史行判据跳过：夹具不可读（" + fixture + "）✗");
-  }
-}
+// **⚠️ 历史行"可区分性"判据**已撤回 ✗**（第 375 轮 ✓）—— **∵ 变异实测**不红**✗**：
+// 去掉行里的 `#序号` 之后，重复率**仍是 3%（1/36）✗** ⇒ **∴ 那条断言**恒绿 ✗**（**不是可红判据 ✗**）；
+// **∴ 且根因是我读漏了渲染代码** ✗：**历史面板每一行**本来就有
+// `#序号` ＋ `kind` ＋ `actor` ＋ 详情按钮 ✓（`viewer-app.js:3732-3740` ✓）⇒
+// **∴ "行文本全同"这个现象**从未存在 ✗** ⇒ **∴ 用户报告的真实内容应当是：
+// "**`kind` 这一列**在导入的作品里几乎全是 `import_image`** ✓（`21／36 ＝ 58%` ✓，**数据如实 ✓**）
+// ⇒ **∴ 需要的是**更有意义的列**（如层名／尺寸 ✓），**而不是再加一个序号 ✗** ⇒
+// **∴ 且此事**必须先与用户确认期望 ✗**（**他要的是"看出哪一步"✗ 还是"看出哪张图"✓**）。
+
 // **⚠️ 历史行"可区分性"判据**暂时不放在这里 ✗**（第 363 轮 ✓）：
 // 本 harness **从不导入工程** ✗（`grep import_project|upload|fixture` 无命中 ✓）⇒
 // 它一直在**新建的 5 行文档**上跑 ✓ ⇒ **∴ 一条"重复率 < 50%"的断言在这里**恒真**✗** ⇒

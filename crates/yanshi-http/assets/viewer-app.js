@@ -546,16 +546,11 @@ async function outboxPut(row) {
 /// 条目的**人话描述** ✓（日志与界面都用它 ✓，避免两处各写一套 ✓）。
 function outboxDescribe(row) {
   if (!row) return "?";
-  // **★ 补上序号 ✓**（用户报告 2026-10-09 ✓："导入一个工程后……其它名字都是 `import_image`"✗）：
-  // 一个真实作品里 **58%（21／36）的原子就是 `import_image`** ✓（第 352 轮**解包实测** ✓）⇒
-  // **∴ 历史里会出现 21 行**完全同名**的条目 ✗ ⇒ 用户**无从区分是哪一步**✗。
-  // **∴ 序号是**唯一**的 ✓（服务端 `list_atoms` 给出 `seq` ✓）⇒ **加一个 `#序号` 就能区分 ✓**；
-  // **⚠️ 但不假装那是原始操作 ✗** —— 原始笔触语义**已不在日志里** ✗（**∴ 改日志才是撒谎 ✓**）。
-  if (row.kind === "atom") {
-    const atom = row.atom || {};
-    const label = "原子 " + String(atom.kind || "?");
-    return atom.seq == null ? label : label + " #" + String(atom.seq);
-  }
+  // **⚠️ 不要在行文本里再加序号 ✗**（第 375 轮**变异实测** ✓）：**历史面板的每一行**本来就有
+  // `#序号` ＋ `kind` ＋ `actor` ＋ 详情按钮** ✓（`viewer-app.js:3732-3740` ✓）⇒
+  // **∴ 我第 353 轮加的 `#序号` **完全多余**✗（**且变异证明它**不改变可区分性**✗：
+  // 去掉它之后重复率**仍是 3%（1/36）✗**）⇒ **∴ 已撤回 ✓**。
+  if (row.kind === "atom") return "原子 " + String((row.atom && row.atom.kind) || "?");
   return "工具 " + String(row.tool || "?");
 }
 /// **入队结果 → 界面 + 返回给调用方的形状** ✓。
