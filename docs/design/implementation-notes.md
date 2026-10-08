@@ -57778,3 +57778,32 @@ fn write_import_image(ctx, args) {
   1. **查"字符串 → `BlobHash`"的既有路径** ✓（**先查再改 ✓**）；
   2. **改两处**（字面量 MIME ＋ 正确解析 ✓）⇒ **构建 ✓**；
   3. **渲染侧**（`fetch_raster_patch` ✓）⇒ **判据① 应从 16200× 转绿到 ~30×** ✓。
+
+## 第 456 轮：🎯 **渲染侧接线结构已确定**（**不必改 `fetch_raster_patch` 签名** ✓）
+
+### 一、读码事实 ✓
+```rust
+fn fetch_raster_patch(store, blob, mime_type, declared_width, declared_height, object_id, warnings)
+    -> Result<Option<(u32, u32, Vec<u8>)>>          // ← **返回整幅 RGBA8** ✓（调用方整块 blit ✓）
+```
+⇒ **∴ 按需取块会改变返回语义** ✗ ⇒ **∴ 分块路必须接在**调用侧**（`render.rs:1315` 一带 ✓）** ✓✓
+（**∴ 不改 `fetch_raster_patch`** ✓ —— 它继续只做"整幅解码" ✓，**旧路一字不动** ✓）。
+
+### 二、∴ 接线结构 ✓（**把既有几行包进 `else` ✓**）
+```rust
+if let Some(idx_hash) = object.data.get("tiles") {          // ← 字段读法同 `object.data.get("params")`（`:944` ✓）
+    // ① 取索引 blob ⇒ 解析 `BitmapIndex` ✓（**版本不符 ⇒ 落回 `else`** ✓）
+    // ② `tiles_for_rect(本块请求区域)` ✓ ⇒ **只取这些块** ✓
+    // ③ `assemble_region(...)` ✓ ⇒ **该区域的 RGBA8** ✓ ⇒ blit 到区域坐标 ✓
+} else {
+    let entry = bitmaps.get_or_decode(…)…;                   // **原路整幅** ✓（**旧工程零改动** ✓）
+    layer_buffer.blit_rgba8(offset…, entry.0, entry.1, &entry.2, opacity);   // 既有 ✓
+}
+```
+⇒ **∴ 关键** ✓：**区域坐标**（不是 `offset` 整块 ✓）；**索引解析失败／块缺失 ⇒ 落回 `else`** ✓（**不撒谎** ✓）。
+
+### 三、∴ 验收 ✓
+* **判据①**（"解码字节 ≤ K × 区域像素 × 4" ✓）⇒ **应从 16200× 转绿到 ~30×** ✓；
+* **①′／② 仍绿** ✓（**② 逐字节 ≡ 整幅 ✓ —— 这正是"分块不许改画面"的守卫 ✓**）；
+* **937＋ 全绿** ✓；**同材料复测**：**8K 短笔 474 ms → ?** ✓；
+* **端到端冒烟** ✓：**新导入一张 8K 位图 ⇒ 渲一小区域 ⇒ `missed_bytes` 应 ≈ 256 KB（1 块 ✓）**。
