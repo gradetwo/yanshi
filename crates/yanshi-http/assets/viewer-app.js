@@ -8518,8 +8518,8 @@ function applyCollapsed(titles) {
   try {
     var all = dockerCards();
     window.__ac = window.__ac || [];
-    window.__ac.push("n=" + all.length + " want=" + JSON.stringify(wanted) +
-      " titles=" + JSON.stringify(all.map(function (c) { return cardTitle(c); })));
+    window.__ac.push("raw=" + JSON.stringify(titles) + " n=" + all.length +
+      " want=" + JSON.stringify(wanted));
     console.log("[ac] n=" + all.length + " want=" + JSON.stringify(wanted));
   } catch (e) { window.__ac = (window.__ac || []).concat("err=" + String(e).slice(0, 60)); }
   // NOTE: a probe placed inside the loop below prints nothing when the card
@@ -8540,7 +8540,10 @@ function applyCollapsed(titles) {
         " collapsed=" + card.classList.contains("collapsed"));
     } catch (_) { /* ignore */ }
     if (/历史/.test(cardTitle(card))) {
+      window.__ac.push("HIT title=" + JSON.stringify(cardTitle(card)) +
+        " before=" + card.classList.contains("collapsed"));
       card.classList.remove("collapsed");
+      window.__ac.push("HIT after=" + card.classList.contains("collapsed"));
       continue;
     }
     card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));
