@@ -425,3 +425,36 @@ if (state.tool && state.tool !== "pan" && …) {
 #### 五、⚠️ 验收方式（**本会话的教训 ✓**）
 * **必须**看截图**（人眼 ✓）** ＋ **`browser-live-brush` 的墨计数 ✓**；
 * **∴ 不能只信"判据通过 ✓"** ✗ —— **∵ 判据直接读 `board` ✗，无法判定"像素在画布之间搬家"✗**（**第 304 轮已被两张截图否证过一次 ✓**）。
+
+
+### 十七、📋 **交接：A 半已落地（3 处小改 ✓），**判据 ① 待跑**（第 309～311 轮 ✓）
+
+#### 一、已落地 ✓（`34f337a` ✓）
+```js
+:19    let heavyDocument = false;                 // 异步写入（detectHeavyContent ✓）、同步读取（pointerdown ✓）
+:1245  heavyDocument = true;                      // 与 needsServerPixels = true 同条件 ✓
+:6183  if (state.tool && … ) { if (!heavyDocument) { needsServerPixels = false; } }   // ★ 只在"不含 heavy"时交还权威 ✓
+```
+* **收益** ✓：**含 heavy 的文档保持服务端权威 ⇒ 重同步／刷新不再变白 ✓**（**＝审计验收项 ✓**）；**不含 heavy 的文档行为**逐项一致 ✓**（**已实测 ✓**）；
+* **代价** ✗：**含 heavy 时乐观笔迹可能被随后到达的服务端帧覆盖 ⇒ 观感上闪一下 ✗**（**后续可按 region 细化 ✓**）。
+
+#### 二、✅ **判据 ② 已通过**（**不含 heavy ⇒ 行为不变 ✓**，第 309 轮 ✓）
+`browser-live-brush` **完整输出**（**不 grep ✗**）逐项与**基线一致** ✓：
+**拖动中 0 ⇒ 3778 ✓｜抬手后 3204 ✓｜④g 中途 1848 ⇒ 抬手后 0（**已清空** ✓）｜④d 重载后指纹 2917427980（＝最终 ✓）**。
+
+#### 三、⚠️ **判据 ① 待跑**（**含 heavy ⇒ 刷新不变白 ✓**）
+| 步 | 命令 |
+|---|---|
+| **1** | `chromium --headless=new --remote-debugging-port=9333 --no-sandbox --disable-gpu --user-data-dir=/tmp/cdp311 about:blank &` |
+| **2** | `yanshi-serve --bind 127.0.0.1:$P --root /tmp/r --assets-dir "$PWD/assets" --profile all &` |
+| **3** | **夹具** ✓：`/tmp/audit/yanshi-audit-20261008/reproduction/feature-fixture.yanshi`（**173 056 B ✓，含 heavy ✓**）—— **∴ 需先把它交给 harness ✓**（**当前无 harness 引用它 ✗**） |
+| **4** | `node scripts/browser-pixel-check.mjs "http://127.0.0.1:$P"` ✓（**它走"一致性自检"／`bitExact` 那条路 ✓**） |
+| **5** | **★ 看截图（人眼 ✓）★** —— **不能只看读数 ✗**（**第 304 轮已被两张截图否证过一次 ✓**） |
+| **6** | **⇒ 判据 ① 期望** ✓：**刷新后画面**不变白**；**判据 ②** ✓ 已过** |
+
+#### 四、⚠️ **两项既有失败**（**基线即有 ✓，非本线引入 ✗** ⇒ **应记入已知红或单独跟踪 ✓**）
+| # | 判据 | 现象 |
+|---|---|---|
+| **1** | `browser-live-brush` | **「这一笔变成了 NaN 个对象 ⇒ 中间帧没有被 supersede ✗（应当只有 1 个 ✓）」** —— **第 299／304／309 轮**均报同一句 ✓** |
+| **2** | `browser-no-stale-read` | **「✗ 第二次落笔失败 ⇒ 判据无效 ⇒ `capability token 必须是 64 位小写十六进制`」** —— **判据**自身**失效 ✗** |
+⇒ **∴ 二者都**不因本线改动而出现或消失** ✓（**回滚后仍报 ✓**）⇒ **∴ 如实记录，不在本线认领 ✓**。
