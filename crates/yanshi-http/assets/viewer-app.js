@@ -822,6 +822,8 @@ function syncOverlayGeometry() {
   overlay.style.top = Math.round(rect.top - stageRect.top) + "px";
   overlay.style.width = Math.round(rect.width) + "px";
   overlay.style.height = Math.round(rect.height) + "px";
+  kernel.style.width = Math.round(rect.width) + "px";
+  kernel.style.height = Math.round(rect.height) + "px";
 }
 
 /// 设定**视口**尺寸（内容画布与覆盖层同尺寸、同坐标系），并清空两层。
@@ -910,6 +912,8 @@ function applyDisplaySize() {
   board.style.height = height + "px";
   overlay.style.width = width + "px";
   overlay.style.height = height + "px";
+  kernel.style.width = width + "px";
+  kernel.style.height = height + "px";
   // **放大时就放开 CSS 上限** ✓（见 `#board` 那条注释 ✓）—— 一处开关、两个元素一起管 ✓。
   document.body.classList.toggle("canvas-zoomed", zoomedIn);
 }
