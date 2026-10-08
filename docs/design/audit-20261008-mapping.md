@@ -1205,3 +1205,35 @@ if (scroll.asideClipped && !(scroll.asideScrolls > 0 && ["auto","scroll"].includ
 　（**∴ 修前**：`import_image` 21／36 ＝ **58% ⇒ 红 ✗**｜**修后**：各带 `#seq` ⇒ **0% ⇒ 绿 ✓**）；
 * **变异** ✗：**去掉 `+ " #" + seq` ⇒ 重复率回到 58% ⇒ **必红 ✓**；
 * **且必须**看截图**✓**（**历史面板的图 ✓** —— **本会话已两次证明"读数 ≠ 用户所见 ✗"**）✓✓
+
+
+### 五十、✅ **用户报告 ② 的判据：插入点已精确到行**（第 356 轮 ✓）
+
+#### 一、harness 里现成的积木 ✓（`scripts/browser-ui-check.mjs` ✓）
+```js
+:125  const historyRows = async () =>
+:126    evaluate(`Array.from(document.querySelectorAll("#history .row")).map((row) => row.textContent)`);
+:1884 const historyBefore = await historyRows();      // ★ 已经在用 ✓
+:1887 const historyAfter  = await historyRows();
+:1888 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));   // ★ 已有断言范式 ✓
+:1892 const select = document.getElementById("historyKind");     // ★ 甚至按 kind 过滤 ✓
+```
+⇒ **∴ 结论** ✓：**判据所需的**取行 ✓、**已有断言风格 ✓、**数据齐备 ✓** ⇒ **∴ 只需在 `:1888` 之后**加一段约 8 行 ✓** ✓✓
+
+#### 二、∴ 要加的断言（**下一轮照抄 ✓**）
+```js
+// **★ 同类历史行必须能互相区分 ✓**（用户报告 2026-10-09 ✗："其它名字都是 `import_image`"✓）：
+// **∴ 一个真实作品有 21／36 ＝ 58% 的原子就是 `import_image`** ✓（第 352 轮**解包实测** ✓）⇒
+// 若行文本全同 ⇒ **用户看不出是哪一步**✗。**∴ 断言：重复最多的那串文本占比 < 50% ✓**。
+const counts = new Map();
+for (const row of historyAfter) counts.set(row, (counts.get(row) || 0) + 1);
+const top = Math.max(0, ...counts.values());
+const ratio = historyAfter.length ? top / historyAfter.length : 0;
+if (ratio >= 0.5) {
+  console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同 ⇒ 用户无法区分是哪一步 ✗");
+  process.exit(1);
+}
+```
+⇒ **∴ 修前** ✓（**无 `#seq`**）：`import_image` 21／36 ⇒ **58% ⇒ 红 ✗**｜**修后** ✓：各带 `#seq` ⇒ **0% ⇒ 绿 ✓**
+⇒ **∴ 变异** ✗：**删掉 `+ " #" + seq` ⇒ 回到 58% ⇒ **必红 ✓**
+⇒ **⚠️ 且仍要**看截图**✓**（**历史面板 ✓** —— **读数 ≠ 用户所见 ✗ 已被证明两次 ✓**）✓✓
