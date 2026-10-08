@@ -199,3 +199,9 @@ curl -sf -X PUT "http://127.0.0.1:9333/json/new?http://127.0.0.1:$P/" >/dev/null
 node scripts/browser-layout.mjs "http://127.0.0.1:$P"    # 自带导航 ✓
 node scripts/tool-criteria-coverage.mjs                  # 覆盖率守卫 ✓
 ```
+
+## 五、**报告 ② 的下一步（可自己做 ✓，不必等用户 ✓）**
+* **`browser-ui-check.mjs` 的导入段现在会存一张 `history-panel-imported.png`** ✓（第 378 轮加的 ✓）；
+* **∴ 跑一次（**先 `curl -X PUT /json/new` 预开页 ✓**）⇒ 去 `shotsDir` 看那张图 ✓** ⇒
+  **∴ 就能回答"用户在历史面板里到底看到什么 ✗"** —— **∴ 而**不必先问 ✓**（**若图上确实"满屏 `import_image`、看不出哪张图 ✗" ⇒ **∴ 需求确认 ✓ ⇒ 再给 `kind` 列补**层名／尺寸 ✓****）；
+* **⚠️ 且跑之前先看清 `shotsDir` 的值 ✓**（`grep shotsDir scripts/browser-ui-check.mjs` ✓）。
