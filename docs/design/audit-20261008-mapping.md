@@ -1737,3 +1737,28 @@ console.log("[probe] cards=", dockerCards().map((c) => cardTitle(c)),
 // ⇒ **∴ 一次输出就能分辨 ①（**含不含此卡 ✓**）／②（**有没有折叠 ✓**）／③（**之后又被折回 ✓**）
 ```
 ⇒ **∴ 且打印**时机**要说清 ✓**：**在**我那段之后**✓ 与在**页面 load 之后**✓ 各打一次 ✓ ⇒ **∴ 两次结果一比即知 ✓** ✓✓
+
+
+### 七十二、🎯 **时序假设不成立 ✗**；折叠类**始终存在**（第 395 轮 ✓）
+
+#### 一、实测 ✓
+```
+[诊断] histCollapsed: **[true]** ✗（**rAF ×2 ＋ `load` ✓ 三次展开都加了 ✓**）
+       byPanelClasses: ["card **collapsed**", "card", "card"] ✗
+```
+⇒ **∴ 结论一** ✓：**我加的"立即 ＋ 两帧后 ＋ load 后"三次展开 ✓，**诊断仍读到 `collapsed` ✗** ⇒
+　**∴ 所以不是"搬卡时折回一次 ✗"，而是**那个类**始终在**✗ ⇒ **∴ 它**在我读诊断之前**又被写过 ✗**** ✓✓
+⇒ **∴ 结论二** ✓：**CSS 机制明确 ✓**：**`aside .card.collapsed` ⇒ `display:none !important`（`:260` ✓）**
+　⇒ **∴ 只要该类在 ⇒ **卡片内容不显示 ✓（**与图一致 ✓**）** ✓✓
+⇒ **∴ 结论三** ✓：**写 `collapsed` 的只有 4 处 ✗**（第 391 轮 grep ✓）：**`applyCollapsed`（`:8514` ✓，被
+　`applyWorkspace:8527` 与 `initDockers:8552` 调用 ✓）｜点击（`:8539` ✓）｜**我的两段 ✓**** ⇒
+　**∴ 而 `initDockers` 只在 `:8698` 调用**一次 ✓**（第 391 轮 grep ✓）⇒ **∴ 所以**应当没有第二次调用 ✗**** ✓✓
+
+#### 二、∴ 下一轮（**把探针**放进展开函数里**✗** —— 这才能定位"何时被折回" ✓）
+```js
+// 在 openHistoryCard() 内部**读完立刻打印** ✓：
+console.log("[probe]", t, document.querySelectorAll('aside .card.collapsed').length,
+            Array.from(document.querySelectorAll('[data-panel="history"]')).map((c) => c.className));
+// 三个时刻各打一次：**立即 ✓／两帧后 ✓／load 后 ✓** ⇒ **∴ 若"立即"那次就已经是 collapsed ✗
+// ⇒ **∴ 说明**写类的人在我的调用**之前**✓（**即 `initDockers` 内部 ✓**）；
+// **∴ 若"立即"是干净的 ✓ 而"load 后"又脏了 ✗ ⇒ **∴ 有第三者 ✓** ✓✓
