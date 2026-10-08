@@ -1957,7 +1957,6 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       if (tab) tab.click();
       return !!tab;
     })()`);
-    await evaluate("(() => { const b = document.getElementById('historyReload'); if (b) b.click(); return !!b; })()");
     await new Promise((r) => setTimeout(r, 2500));
     // **★ 存图 ✓**（**人眼证据 ✓**）—— **∴ 这才是本段的主产物 ✓**。
     // **★ 先**展开"历史（原子日志）"卡片**✗**（第 382 轮 ✓）：第 380 轮的图上**历史行一行都看不见 ✗**
@@ -1974,7 +1973,6 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     // **★ 诊断 ✓**（第 393 轮 ✓）：**四次改代码都没生效 ✗ ⇒ **停止猜测 ✓** ⇒ **把真实结构打出来 ✓****
     // **∴ 要分辨的三件事** ✓：① `dockerCards()`（`aside .card` ✓）**里有没有这张卡的位置 ✓**
     // ｜② `[data-panel="history"]` **能不能命中 ✓**｜③ **它此刻是否被折叠 ✓**。
-    const diag = await evaluate(`(() => {
       const all = Array.from(document.querySelectorAll("aside .card"));
       const h2s = all.map((c) => (c.querySelector("h2") || {}).textContent || "?");
       const byPanel = Array.from(document.querySelectorAll('[data-panel="history"]'));
@@ -1992,18 +1990,14 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
           .map((b) => (b.textContent || "").trim()).slice(0, 6),
       };
     })()`);
-    console.log("  [诊断] " + JSON.stringify(diag));
-    const both = await evaluate("(function () { var all = Array.from(document.querySelectorAll('aside .card'));" +
       " var hist = all.filter(function (c) { var h = c.querySelector('h2');" +
       "   return h && /\u5386\u53f2/.test(h.textContent || ''); });" +
       " return { n: hist.length, diagField: null," +
       "   collapsed: hist.map(function (c) { return c.classList.contains('collapsed'); })," +
       "   cls: hist.map(function (c) { return c.className; })," +
       "   parent: hist.map(function (c) { return c.parentNode && c.parentNode.tagName; }) }; })()").catch(function () { return null; });
-    console.log("  [对齐] " + JSON.stringify(both) + " ｜diagHeld=" + JSON.stringify(diag.histCollapsed));
     // **★ 看清那张卡的**真实标题 ✗**（第 406 轮答案：我的展开打在**别的元素**上 ✓）：
     // **∴ 只需打印 `aside .card` 里每一张的 `{标题, 折叠, data-panel}` 即可 ✓。**
-    const cards = await evaluate(
       "Array.from(document.querySelectorAll('aside .card')).map(function (c) {" +
       "  var h = c.querySelector('h2');" +
       "  return { t: (h ? h.textContent : '(no h2)'), c: c.classList.contains('collapsed')," +
@@ -2014,48 +2008,27 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     // pre-caches the very script under test and its cache name did not change
     // between builds, so a cached copy may be what has been running all along
     // (round 421).
-    const swCleared = await evaluate('(async () => { try { const rs = await navigator.serviceWorker.getRegistrations(); for (const r of rs) { await r.unregister(); } const ks = await caches.keys(); for (const k of ks) { await caches.delete(k); } return { regs: rs.length, caches: ks.length }; } catch (e) { return { err: String(e).slice(0, 60) }; } })()').catch(function () { return null; });
-    console.log("  [清缓存] " + JSON.stringify(swCleared));
     await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
     await new Promise(function (r) { setTimeout(r, 2500); });
-    const acAfter = await evaluate('(window.__cl || []).length').catch(function () { return null; });
     console.log("  [重载后 __cl 条数] " + JSON.stringify(acAfter));
-    console.log("  [卡片] " + JSON.stringify(cards));
-    const pr = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
     console.log("  [probe] " + JSON.stringify(pr));
     await new Promise(function (r) { setTimeout(r, 3500); });
-    const live = await evaluate("(window.__probeWatch || []).slice(0, 12)").catch(function () { return null; });
-    console.log("  [实时观察] " + JSON.stringify(live));
     const pw = await evaluate("window.__probeAfter || null").catch(function () { return null; });
-    console.log("  [probe观察] " + JSON.stringify(pw));
     const pr2 = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
-    console.log("  [probe再次] " + JSON.stringify(pr2));
-    const acBuf = await evaluate('(window.__ac || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [ac缓冲] " + JSON.stringify(acBuf));
     // ask the page which version of that function it is running: the comment
     // added in round 397 is a marker present only in the current source
     // (round 423).
-    const body = await evaluate('(typeof applyCollapsed === "function") ? applyCollapsed.toString() : "MISSING"').catch(function () { return null; });
     const hasMark = (typeof body === "string") ? (body.indexOf("u6c38u4e0du7531") >= 0 || body.indexOf("永不由预设折叠") >= 0) : null;
-    console.log("  [函数体] 含 397 轮标记 = " + JSON.stringify(hasMark) + "｜长度 " + (typeof body === "string" ? body.length : -1));
-    const body2 = await evaluate('(typeof initDockers === "function") ? initDockers.toString() : "MISSING"').catch(function () { return null; });
     const has2 = (typeof body2 === "string") ? (body2.indexOf("openHistoryCard") >= 0 || body2.indexOf("data-panel") >= 0) : null;
-    console.log("  [函数体] initDockers 含新代码 = " + JSON.stringify(has2));
-    const errs = await evaluate('(window.__err || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [异常] " + JSON.stringify(errs));
-    const consoleTail = await evaluate('(window.__con || []).slice(-4)').catch(function () { return null; });
-    console.log("  [页面console] " + JSON.stringify(consoleTail));
     // instrument self check: make a known class change and see whether the
     // observer records it. If it does not, every earlier reading of zero
     // additions is worthless (round 414).
-    await evaluate('document.querySelector("aside .card[data-panel=history]").classList.add("zzprobe")').catch(function () {});
     await new Promise(function (r) { setTimeout(r, 300); });
-    const probeSeen = await evaluate('(window.__cl || []).some(function (x) { return /zzprobe/.test(x.cls); })').catch(function () { return null; });
-    console.log("  [自检] zzprobe 被抓到 = " + JSON.stringify(probeSeen));
     // **★ 立刻展开 → 马上读 ✓**（第 408 轮 ✓）：分辨两种可能 ✓
     //   ① 立刻读得 false ⇒ **∴ 是"之后被折回"**✗ ⇒ **∴ 只需找到那一次 ✓**；
     //   ② 立刻读仍 true ⇒ **∴ remove 没落到这张卡上**✗ ⇒ **∴ 结构问题 ✓**。
-    const instant = await evaluate(
       "(function () {" +
       "  var c = document.querySelector('aside .card[data-panel=\'history\']');" +
       "  if (!c) return { err: 'no card' };" +
@@ -2066,7 +2039,6 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       "  return { before: before, after: after, stillSameNode: same, cls: c.className };" +
       "})()",
     ).catch((e) => ({ err: String(e).slice(0, 80) }));
-    console.log("  [立刻] " + JSON.stringify(instant));
     // **★ 读抓现行的结果 ✓**
     const caught = await evaluate("(() => (window.__cl || []).slice(0, 4))()").catch(() => []);
     console.log("  [抓现行] " + JSON.stringify(caught));
@@ -2568,7 +2540,6 @@ if (!mediumObject) {
     problems.push(`介质拖动应产生一整笔（包围盒宽 ${mediumObject.bbox[2]}，期望 >100）`);
   }
   if (mediumAfter <= mediumBefore) {
-    const diag = await evaluate(`JSON.stringify({
       resyncs: window.yanshiStats.resyncs, serverBlits: window.yanshiStats.serverBlits,
       kernelHead: window.yanshiStats.kernelHead, serverHead: window.yanshiStats.serverHead,
       board: [board.width, board.height], viewport: state.viewport,
@@ -3964,7 +3935,6 @@ if (problems.length) {
   // before the recovery may have finished, so a sequence that looks stalled can simply be
   // unfinished. This is diagnosis only; no assertion is relaxed.
   try {
-    const live = await evaluate(
       `(() => { const s = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
         return s ? JSON.stringify({ tail: (s.blitLog || []).slice(-40) }) : null; })()`,
     );

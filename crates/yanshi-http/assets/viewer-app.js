@@ -8513,15 +8513,6 @@ function saveDockers() {
 
 function applyCollapsed(titles) {
   const wanted = titles.map(normalizeTitle);
-  // TEMP PROBE, KEPT UNTIL THE CAUSE IS KNOWN (round 424). Prints before the
-  // loop, and also reports whether a console buffer exists to read back.
-  try {
-    var all = dockerCards();
-    window.__ac = window.__ac || [];
-    window.__ac.push("raw=" + JSON.stringify(titles) + " n=" + all.length +
-      " want=" + JSON.stringify(wanted));
-    console.log("[ac] n=" + all.length + " want=" + JSON.stringify(wanted));
-  } catch (e) { window.__ac = (window.__ac || []).concat("err=" + String(e).slice(0, 60)); }
   // NOTE: a probe placed inside the loop below prints nothing when the card
   // collection is empty, so it proves nothing; a probe before the loop was
   // tried in round 422 and also never printed, which is recorded in the audit
@@ -8540,10 +8531,6 @@ function applyCollapsed(titles) {
         " collapsed=" + card.classList.contains("collapsed"));
     } catch (_) { /* ignore */ }
     if (/历史/.test(cardTitle(card))) {
-      window.__ac.push("HIT title=" + JSON.stringify(cardTitle(card)) +
-        " before=" + card.classList.contains("collapsed"));
-      card.classList.remove("collapsed");
-      window.__ac.push("HIT after=" + card.classList.contains("collapsed"));
       continue;
     }
     card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));
@@ -8753,56 +8740,6 @@ function initQuickPanel() {
   });
 }
 
-// TEMP PROBE (round 429, remove once the cause is known). Defined on the page so
-// that the harness can call it with a bare name and no quoting at all, which is
-// what broke three earlier attempts.
-window.__probe = function () {
-  var out = {};
-  // Select by the SAME rule the diagnostic uses (title contains the two
-  // characters) rather than the first panel marker, because three cards share
-  // that marker and moving cards changes their order (round 433).
-  var cards = Array.prototype.slice.call(document.querySelectorAll("aside .card"));
-  out.historyCards = cards.filter(function (c) {
-    var h = c.querySelector("h2");
-    return h && /历史/.test(h.textContent || "");
-  }).map(function (c) {
-    return { t: (c.querySelector("h2") || {}).textContent, c: c.classList.contains("collapsed"),
-             parent: c.parentNode && c.parentNode.tagName, panel: c.dataset && c.dataset.panel };
-  });
-  var card = cards.filter(function (c) {
-    var h = c.querySelector("h2");
-    return h && /历史/.test(h.textContent || "");
-  })[0];
-  out.found = !!card;
-  if (!card) return out;
-  out.before = card.classList.contains("collapsed");
-  card.classList.remove("collapsed");
-  out.afterRemove = card.classList.contains("collapsed");
-  out.sameNode = document.querySelector('aside .card[data-panel=history]') === card;
-  out.rawClass = card.className;
-  out.holderTag = card.parentNode && card.parentNode.tagName;
-  // Now watch the exact window between this probe and the diagnostic, which is
-  // where the fold must happen (round 430), and report who did it.
-  out.watch = [];
-  try {
-    var obs = new MutationObserver(function (ms) {
-      for (var i = 0; i < ms.length; i++) {
-        var m = ms[i];
-        if (m.type !== "attributes" || m.attributeName !== "class") continue;
-        out.watch.push({ cls: m.target.className, has: m.target.classList.contains("collapsed") });
-      }
-    });
-    obs.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
-    out.obs = true;
-    // Do NOT disconnect: the fold happens later than three seconds (round 435),
-    // so keep recording for the rest of the run and expose the log live.
-    window.__probeWatch = out.watch;
-    window.setTimeout(function () {
-      window.__probeAfter = out.watch.slice(0, 12);
-    }, 120000);
-  } catch (e) { out.obsErr = String(e).slice(0, 60); }
-  return out;
-};
 initDockers();
 // **图层面板接线** ✓（面板本身由 `refreshLayers()` 渲染 ✓；这里只接**一次**监听器 ✓ ——
 // 写在重画里会让点一次触发多次 ✗，本项目抓到过同类问题 ✓）。
