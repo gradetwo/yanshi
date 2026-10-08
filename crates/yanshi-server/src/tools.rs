@@ -3901,6 +3901,15 @@ fn read_get_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 "timestamp": atom.timestamp,
                 "heavy": atom.is_heavy(),
                 "state_effect": atom.kind.is_state_effect(),
+                // **★ 历史行需要 `payload` ✓**（用户报告 2026-10-09 ✓／第 449 轮 ✓）：
+                // **∴ 实测** ✓：**页面的历史面板走 `get_log`** ✓（`viewer-app.js:3720` ✓），
+                // 而它**此前不返回 `payload`** ✗ ⇒ **∴ 前端拿不到 `layer_id`／`width` ⇒
+                // **∴ 行里只能显示 `import_image` ✗**（**＝用户的原始抱怨 ✓**）。
+                // **⚠️ 两条接口**不同形**是本项调查最贵的教训 ✓**：**我实测的是 `/api/atoms`** ✓
+                //（**它含 `payload` ✓**）而改的是这条 ✗ ⇒ **∴ "测了 A 改了 B" ⇒ 判据误绿 ✓**。
+                // **∴ 代价**（两面 ✓）：**响应变大 ✗**，但 `payload` 里是**引用与尺寸**（**非像素 ✓**）
+                // ⇒ 体积小 ✓；且 `limit` 有上限 ✓。
+                "payload": atom.payload,
             })
         })
         .collect();
