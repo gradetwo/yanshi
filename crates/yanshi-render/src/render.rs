@@ -395,7 +395,7 @@ struct BelowCache {
     /// 命中的区域 ✓：用缓冲自己的 `bbox` ✓（**区域不同 ⇒ 不复用 ✓**）。
     bbox: yanshi_core::Bbox,
     /// 下方各层的 `(id, updated_by)` ✓。
-    sig: Vec<(String, Option<String>)>,
+    sig: Vec<String>,
     /// 下方的合成结果 ✓。
     buf: crate::buffer::Buffer,
 }
@@ -752,7 +752,7 @@ impl Renderer {
         probe.fill += probe_fill_stage.stop();
 
         // **★ below 复用判定 ✓**（目标第 4 条 ✓）：先算"可见层"的签名 ✓，再看缓存是否仍然有效 ✓。
-        let mut visible_ids: Vec<(String, Option<String>)> = Vec::new();
+        let mut visible_ids: Vec<String> = Vec::new();
         let mut clipping_seen = false;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
@@ -765,20 +765,47 @@ impl Renderer {
             if layer.clipping_mask {
                 clipping_seen = true;
             }
-            visible_ids.push((layer.id.clone(), layer.updated_by.clone()));
+            // **★ 内容指纹 ✓**（第 462 轮 ✓）：**`(id, updated_by)` 不足**✗** ——
+            // **① `create_layer` 建的层 `updated_by = None` ✗**（`fold.rs:790/830` ✓）；
+            // **② 而有测试**直接改 `state.objects` ⇒ 无原子记录 ⇒ 令牌不变而内容变了 ✗**（**4 个测试当场抓到 ✓**）。
+            // **∴ 改用该层**对象的 `(id, current_version, data)` 摘要**✓ —— **∴ 内容变 ⇒ 指纹必变 ✓**；
+            // **∴ 代价**（两面 ✓）：**每层每对象一次格式化 ✗**，但**对象数据是哈希与参数（**非像素 ✓**）⇒ 很小 ✓**。
+            let mut objs: Vec<String> = state
+                .objects
+                .values()
+                .filter(|o| o.layer_id == layer.id && o.deleted_by.is_none())
+                .map(|o| format!("{}:{:?}:{}", o.id, o.current_version, o.data))
+                .collect();
+            objs.sort();
+            visible_ids.push(format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                layer.id,
+                layer.updated_by.as_deref().unwrap_or("-"),
+                layer.opacity,
+                layer.blend_mode,
+                layer.visible,
+                layer.clipping_mask,
+                layer.mask_id.as_deref().unwrap_or("-"),
+                // **★ 蒙版内容也要进指纹 ✓**（第 462 轮**测试抓到** ✓）：**`state.masks` **不在 `objects` 里**✗**
+                // ⇒ **∴ 只指纹对象 ⇒ **改了蒙版而指纹不变 ⇒ 复用错的 below ⇒ 测试失败 ✗**
+                //（**`state.rs:504` 前任已写明"`mask_id`／`medium` 改了 below 也必须失效" ✓ —— 我正好踩了它 ✓**）。
+                layer
+                    .mask_id
+                    .as_deref()
+                    .and_then(|m| state.masks.get(m))
+                    .map(|s| format!("{s:?}"))
+                    .unwrap_or_default(),
+                objs.join(",")
+            ));
         }
         let split = visible_ids.len().saturating_sub(1); // **切点 ＝ 最上层以外 ✓**
-        let sig: Vec<(String, Option<String>)> = visible_ids.iter().take(split).cloned().collect();
+        let sig: Vec<String> = visible_ids.iter().take(split).cloned().collect();
         // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
         // **★ 可证明性守卫 ✓**（第 461 轮**测试抓住的正确性缺陷** ✓）：
         // **`updated_by` 为 `None` ⇒ **无法证明"这一层没变"**✗**（**如测试里的调整层／蒙版／液化对象 ✓**）
         // ⇒ **∴ 那时若仍复用 ⇒ **会拿旧的下方合成冒充 ⇒ 输出错 ✗**（**4 个既有测试当场抓到 ✓**）
         // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
-        let provable = visible_ids
-            .iter()
-            .take(split)
-            .all(|(_, updated)| updated.is_some());
-        let cacheable = split > 0 && !clipping_seen && provable;
+        let cacheable = split > 0 && !clipping_seen;
         let mut reused = false;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
