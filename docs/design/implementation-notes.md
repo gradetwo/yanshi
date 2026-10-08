@@ -57929,3 +57929,52 @@ Primitive::RasterPatch { blob, width, height, offset, mime_type } => { … }
 ### 四、∴ 下一轮 ✓
 **按上表四处改** ✓ ⇒ **构建 ✓**（**编译器应只报"分块路未接"类的预期项 ✓**）⇒ **clippy ✓** ⇒ **测试 ✓** ⇒ **提交** ⇒
 **然后接 `render.rs` 的分块分支 ＋ 端到端冒烟 ＋ 判据三件套** ✓（第 460 轮清单 ✓）。
+
+## 第 463 轮：🎯 **决定性简化 —— `layer_buffer.bbox()` 就是请求区域 ⇒ 不改签名** ✓
+
+### 一、读码事实 ✓
+```rust
+fn render_layer_objects(&self, state, store, layer, layer_buffer: &mut Buffer, track, bitmaps)
+    -> Result<()>            // ← **收不到"请求区域"** ✗
+```
+⇒ **∴ 起初以为要改签名 ＋ 所有调用点** ✗ ⇒ **但**：
+* **`layer_buffer` 自带 `bbox()`** ✓（**它就是这一层的目标区域** ✓）；
+* **`offset`（位图左上角）与 `bbox()` 同为文档坐标** ✓。
+⇒ **∴ 分块路的输入**全部齐备**：`tiles` ✓｜`store` ✓｜索引 blob ✓｜`layer_buffer.bbox()` ✓｜`offset` ✓｜`width`／`height` ✓** ✓✓
+⇒ **∴ blit 坐标 ＝ `offset` ∩ `bbox()`** ✓（**交集矩形 ✓，不是整块 `offset`** ✗）
+
+### 二、∴ 最后一步的分块路（**伪码，全部已知 ✓**）
+```rust
+if let Some(idx_hash) = tiles.as_deref() {                       // 字段已贯通 ✓（第 181 轮 ✓）
+    if let Some(rgba) = (|| {                                    // 闭包 ⇒ 任一步失败即落回 else ✓
+        let h: BlobHash = idx_hash.parse().ok()?;
+        let index: BitmapIndex = serde_json::from_slice(&store.get(&h).ok()?).ok()?;
+        if !index.is_consistent() { return None; }               // **防撒谎 ✓**
+        let d = layer_buffer.bbox();
+        let (x0,y0) = ((offset.0 as i64).max(d.x as i64), (offset.1 as i64).max(d.y as i64));
+        let (x1,y1) = (((offset.0 as i64)+width as i64).min((d.x+d.w) as i64),
+                       ((offset.1 as i64)+height as i64).min((d.y+d.h) as i64));
+        if x0 >= x1 || y0 >= y1 { return None; }
+        let (rw, rh) = ((x1-x0) as u32, (y1-y0) as u32);
+        let src_x = x0 - offset.0 as i64;  let src_y = y0 - offset.1 as i64;   // **位图内坐标 ✓**
+        let mut parts = Vec::new();
+        for t in index.tiles_for_rect(src_x, src_y, rw, rh) {    // **只取覆盖的块 ✓**
+            let th: BlobHash = index.tiles.get(t)?.parse().ok()?;
+            parts.push(store.get(&th).ok()?);
+        }
+        // **⚠️ 需按"块序"拼装** ⇒ 用 assemble_region ✓（它按索引算块序 ✓）
+        assemble_region(index.width, index.height, &parts, src_x, src_y, rw, rh)
+    })() {
+        layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);   // **区域坐标 ✓**
+        continue;
+    }
+}
+// **落回既有整幅路** ✓（**一字不动** ✓）
+```
+⇒ **⚠️ 两处待定** ✗（**下一轮读代码确认 ✓**）：
+1. **`assemble_region` 要求"完整块表"** ✓（`tiles.len()` 必须 ＝ 块数 ✓）⇒ **∴ 只取部分块时，要么取全部块（✗ 违背初衷），要么**给 `assemble_region` 加"稀疏块表"变体**** ✗ ⇒ **∴ 需在 `bitmap_tiles` 加一个"按需块 + 块索引表"的重载** ✓（**判据 7 的往返恒等已守住它 ✓**）；
+2. **`x0/y0/rw/rh` 需在闭包外可用** ✓（**Rust 闭包返回 `Option` ⇒ 变量要提到外面 ✓**）。
+
+### 三、∴ 下一轮 ✓
+1. **给 `bitmap_tiles` 加稀疏装配** ✓（**输入：块索引表 ＋ 已取到的块 ✓；输出：区域 RGBA8 ✓**）＋ **一条判据（与稠密版本逐字节相同 ✓）**；
+2. **再接 `render.rs` 的分支** ✓；3. **冒烟 ＋ 判据三件套 ＋ 同材料复测** ✓。
