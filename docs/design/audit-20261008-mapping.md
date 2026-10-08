@@ -2538,3 +2538,35 @@ var card = Array.prototype.slice.call(document.querySelectorAll("aside .card"))
 #### 二、∴ 最后一步（**两选一 ✓**）
 1. **把探针里观察器的 `disconnect()` 去掉** ✓（**或延长到 60 s ✓**）⇒ **∴ 一次抓到"诊断前那一次折叠" ✗**；
 2. **或**全文搜"点历史卡标题"的地方 ✓（**`:1494` 只是已找到的一处 ✓ —— **可能还有第二处 ✗**）✓✓
+
+
+### 一百、🎯🎯🎯 **最终读数**：运行期**零次**卡片类变更（第 436 轮 ✓）
+
+#### 一、实测 ✓
+```json
+[实时观察] [{"cls":"dot on","has":false}]      ← ★ **整个运行期**只有这一次类变更 ✗（**连接指示点 ✓**）
+诊断：histCollapsed: **[true]** ✗
+```
+⇒ **∴ 结论一（决定性 ✓）** ✓：**观察器（**一直挂着 ✓，**120 s ✓**）**在整轮运行里**只抓到一次类变更 ✗，
+　**且那与卡片无关 ✗**（`dot on` ✓）⇒ **∴ 卡片上的 `class` **从未被改过 ✗**** ✓✓
+⇒ **∴ 结论二** ✓：**∴ 那个 `collapsed` **从观察器挂上之前就在 ✗ —— **∴ 而观察器是**文档创建前注入的 ✗**
+　⇒ **∴ 那就是**解析期的 HTML ✗** ⇒ **∴ 而 `viewer.rs` 里**零处** `collapsed` ✗**（**第 400 轮 ✓**）⇒ **∴ 矛盾 ✗**** ✓✓
+⇒ **∴ 结论三（最尖锐 ✓）** ✓：**而我的探针（**同一判据 ✓**）**反复读到 `c:false` ✗** ⇒ **∴ 两处读数
+　**在同一时刻应当一致 ✗** ⇒ **∴ 除非** ✓：**它们**不是同一时刻／同一文档**✗**：
+　**∴ ① 探针在**导入的文档**上跑 ✓（`uicheck-hist-…` ✓）｜**② 而 `histCollapsed` 诊断**也在那里 ✓**
+　⇒ **∴ 同一文档 ✗** ⇒ **∴ 或** ✓：**`histCollapsed` 字段的值来自**`diag`**✗ ⇒ **∴ 而 `diag` 与探针
+　**在同一次 `evaluate` 序列里 ✓ ⇒ **∴ 中间只隔着几行 ✓** ⇒ **∴ 除非** ✓：**那几行**改变了它 ✗**
+　（**如 `capture()` ✓ —— **截图会触发重绘 ✓** 但**不改类 ✗**）** ✓✓
+
+#### 二、∴ 最后一步（**一次对齐 ✓**）
+* **在**同一个 `evaluate` 里**同时返回**两处的读数 ✗**：
+```js
+// harness
+const both = await evaluate("(function () { var all = Array.from(document.querySelectorAll('aside .card'));" +
+  " var hist = all.filter(function (c) { var h = c.querySelector('h2'); return h && /历史/.test(h.textContent || ''); });" +
+  " return { n: hist.length, collapsed: hist.map(function (c) { return c.classList.contains('collapsed'); })," +
+  "          cls: hist.map(function (c) { return c.className; }) }; })()");
+console.log("  [对齐] " + JSON.stringify(both));
+```
+⇒ **∴ 若它返回 `collapsed:[false]` ✗ 而 `diag.histCollapsed` 是 `[true]` ✗ ⇒ **∴ 那就是**我的诊断字段**有 bug ✗**
+　（**如筛法不同 ✓／`diag` 计算在**更早**的时刻 ✓**）⇒ **∴ 修 `diag` 即可 ✓** ✓✓
