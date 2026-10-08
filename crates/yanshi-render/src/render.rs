@@ -162,6 +162,11 @@ type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
 static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **below 缓存的槽数上限 ✓**（第 460 轮实测 ✓）：**同一笔会触发三种 bbox**
+/// （**小块 `(50,80,30,30)` ✓／整行条带 `(0,160,900,160)` ✓／另一条带 ✓**）
+/// ⇒ **∴ 至少 3 槽，取 4 ✓**；**超过 ⇒ 丢最旧 ✓**（**粗粒度 LRU ✓**；**∴ tile 粒度是下一步 ✓**）。
+const BELOW_SLOTS: usize = 4;
+
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -427,7 +432,7 @@ pub struct Renderer {
     bitmaps: BitmapCache,
 
     /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
-    below: std::sync::Mutex<Option<BelowCache>>,
+    below: std::sync::Mutex<Vec<BelowCache>>,
 }
 
 impl Renderer {
@@ -472,7 +477,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(None),
+            below: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -488,7 +493,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(None),
+            below: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -720,7 +725,7 @@ impl Renderer {
         track: &mut ObjectTrack,
         probe: &mut RenderProbe,
         bitmaps: &BitmapCache,
-        below: &std::sync::Mutex<Option<BelowCache>>,
+        below: &std::sync::Mutex<Vec<BelowCache>>,
     ) -> Result<Buffer> {
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -765,7 +770,15 @@ impl Renderer {
         let split = visible_ids.len().saturating_sub(1); // **切点 ＝ 最上层以外 ✓**
         let sig: Vec<(String, Option<String>)> = visible_ids.iter().take(split).cloned().collect();
         // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
-        let cacheable = split > 0 && !clipping_seen;
+        // **★ 可证明性守卫 ✓**（第 461 轮**测试抓住的正确性缺陷** ✓）：
+        // **`updated_by` 为 `None` ⇒ **无法证明"这一层没变"**✗**（**如测试里的调整层／蒙版／液化对象 ✓**）
+        // ⇒ **∴ 那时若仍复用 ⇒ **会拿旧的下方合成冒充 ⇒ 输出错 ✗**（**4 个既有测试当场抓到 ✓**）
+        // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
+        let provable = visible_ids
+            .iter()
+            .take(split)
+            .all(|(_, updated)| updated.is_some());
+        let cacheable = split > 0 && !clipping_seen && provable;
         let mut reused = false;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
@@ -773,17 +786,16 @@ impl Renderer {
         let probe_path = std::env::var("YANSHI_BELOW_PROBE").ok();
         if cacheable {
             let hit = match below.lock() {
-                Ok(guard) => match guard.as_ref() {
-                    Some(c) => c.sig == sig && c.bbox == want,
-                    None => false,
-                },
-                Err(_) => false, // **锁中毒 ⇒ 不复用 ✓**（宁慢勿错 ✓）
+                // **∴ `Vec` 有两个 `AsRef` 实现 ⇒ `as_ref()` 有歧义 ✗（`E0283` ✓）** ⇒ **∴ 直接给分支 ✓**。
+                Ok(guard) => guard.iter().any(|c| c.sig == sig && c.bbox == want),
+                Err(_) => false,
             };
             if hit {
-                let cached_buf = below
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.as_ref().map(|c| c.buf.clone()));
+                let cached_buf = below.lock().ok().and_then(|g| {
+                    g.iter()
+                        .find(|c| c.sig == sig && c.bbox == want)
+                        .map(|c| c.buf.clone())
+                });
                 if let Some(buf) = cached_buf {
                     // **∴ 下方合成直接搬进来 ⇒ 下方那些层不用再渲染 ✓**
                     accumulation = buf;
@@ -870,11 +882,22 @@ impl Renderer {
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
             if let Ok(mut guard) = below.lock() {
-                *guard = Some(BelowCache {
-                    bbox: accumulation.bbox(),
-                    sig,
-                    buf: accumulation.clone(),
-                });
+                // **★ 多槽 ✓**（第 460 轮实测 ✓）：**同一笔触发三种 bbox** ⇒ **∴ 单槽被轮流冲掉 ✗**
+                // ⇒ **∴ 按 bbox 键分槽 ✓；超过丢最旧 ✓**（**粗粒度 LRU ✓**）。
+                let want = accumulation.bbox();
+                if let Some(slot) = guard.iter_mut().find(|c| c.bbox == want) {
+                    slot.sig = sig;
+                    slot.buf = accumulation.clone();
+                } else {
+                    if guard.len() >= BELOW_SLOTS {
+                        guard.remove(0);
+                    }
+                    guard.push(BelowCache {
+                        bbox: want,
+                        sig,
+                        buf: accumulation.clone(),
+                    });
+                }
             }
         }
         Ok(accumulation)

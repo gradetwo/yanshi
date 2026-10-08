@@ -102,7 +102,7 @@ const main = async () => {
     process.exit(1);
   }
   if (ratio > 2.0) {
-    console.error(`❌ 只改当前层时合成成本随层数增长（32/1 = ${ratio.toFixed(2)}× > 2.0×）` +
+    console.error(`❌ 只改当前层时合成成本随层数增长（32/4 = ${ratio.toFixed(2)}× > 2.0×）` +
       ` ⇒ 下方合成**没有**被复用 ✗（below 缓存未实现 ✓）` +
       `（变异：让"只改当前层"也清空 below ⇒ 比值回到 ~2× ⇒ 必红 ✓）`);
     process.exit(1);
