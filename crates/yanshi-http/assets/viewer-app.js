@@ -1374,7 +1374,7 @@ function drawKernelRegion(x, y, w, h) {
   }
   const renderedAt = performance.now();
   // putImageData 不做 CSS 缩放：画布内部分辨率与视口文档像素一一对应。
-  kctx.putImageData(
+  ctx.putImageData(
     new ImageData(new Uint8ClampedArray(rgba), cw, ch),
     Math.round(x0 - vx),
     Math.round(y0 - vy)
@@ -1433,7 +1433,7 @@ function drawKernelBoxDirect(bbox) {
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
-  kctx.putImageData(
+  ctx.putImageData(
     new ImageData(new Uint8ClampedArray(rgba), w, h),
     Math.round(x0 - vx),
     Math.round(y0 - vy)
@@ -6650,7 +6650,7 @@ async function paintLiveFrame() {
     offscreen.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer), region.w, region.h), 0, 0);
     // **在飞的帧若发现这一笔已结束，就不许再贴** ✗（否则它会把本地那层盖回服务端像素之上 ✓）。
     if (liveStrokeClosed) return;
-    kctx.drawImage(offscreen, Math.round(region.x - state.viewport.x), Math.round(region.y - state.viewport.y));
+    ctx.drawImage(offscreen, Math.round(region.x - state.viewport.x), Math.round(region.y - state.viewport.y));
     // **记住本地覆盖过的那块 —— 而且是"整笔的并集"** ✗（第 74 轮修 ✓）：
     // 原来只记**最后一帧**的区域 ✓ ⇒ 若最后一帧落后于真实笔迹 ✓，露在区域外的一小截
     // 在提交后补画时清不掉 ✗ ⇒ 撤销之后画布上还剩墨 ✗（第 25 轮没踩到、第 73 轮踩到了 ⇒ **时序性** ✓）。
