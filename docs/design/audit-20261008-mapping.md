@@ -2222,3 +2222,36 @@ scripts/browser-ui-check.mjs:74    const consoleLines = [];          ← ★ **�
 2. **∴ 若是 ⇒ 在测试里**绕过它**✓**（**如改用**无 service worker 的端口**✓／`--user-data-dir` 全新 ✓（**我已用 ✓**）／
 　**或在 harness 里 `await evaluate("navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()))")` ✓**）⇒
 　**∴ 然后**重跑 ✓ ⇒ **∴ 若 `[ac]` 出现 ⇒ **∴ 答案确认 ✓**** ✓✓
+
+
+### 八十九、🎯🎯🎯 **根因（强证据）**：**service worker 缓存名落后于我的改动**（第 421 轮 ✓）
+
+#### 一、决定性读数 ✓
+```
+送出的 service-worker.js:236
+  const CACHE = "yanshi-shell-**c1da77e-dirty**";      ← ★ 缓存名里是**旧提交** ✗ ★
+当前 HEAD ＝ **aa9a066** ✗                              ← ★ **两者不一致 ✓** ★
+送出的 viewer-app.js 里仍残留 **1 处** `__BUILD_ID__` ✗   ← ★ **某一处未被替换 ✓** ★
+页面注册处：`viewer-app.js:7934  navigator.serviceWorker.register("/service-worker.js")` ✓
+预缓存清单：`:24 "/viewer.css"` ✓、**`:25 "/viewer-app.js"`** ✗ ★
+```
+⇒ **∴ 结论一** ✓：**service worker **预缓存了 `/viewer-app.js` ✗**** ⇒ **∴ 而缓存名随 `BUILD_ID` 变 ✓** ⇒
+　**∴ 只要 `BUILD_ID` 变 ⇒ 新缓存 ⇒ **自动更新 ✓**** ✓✓
+⇒ **∴ 结论二（关键 ✗）** ✓：**而 `BUILD_ID` 取的是**构建时的 git 描述**✗（`c1da77e-dirty` ✓）
+　⇒ **∴ 我**先改 JS ✓、再构建 ✓、**最后才提交 ✗** ⇒ **∴ 构建时 HEAD 还是 `c1da77e` ✗** ⇒
+　**∴ 于是**同一份缓存名**被反复使用 ✗** ⇒ **∴ 浏览器**每次都用缓存里的旧 `viewer-app.js` ✗**** ✓✓
+⇒ **∴ 结论三** ✓：**这**完美解释**了** ✓：**① 13 个假设全失败 ✗（**我改的代码从未被加载 ✓**）｜
+　**② "核产物"通过 ✓（**服务端那份是新的 ✓ —— **而浏览器用缓存那份 ✗**）｜
+　**③ `zzprobe` 被抓到 ✓（**运行时操作 ✓，与脚本版本无关 ✓**）｜**④ 无加载异常 ✓**** ✓✓
+
+#### 二、∴ 下一轮（**一次运行即可验证 ＋ 定案 ✓**）
+* **在 harness 里**注销 service worker 并清缓存**✓**，**再重跑** ✓：
+```js
+await evaluate('(async () => { const rs = await navigator.serviceWorker.getRegistrations();' +
+  ' for (const r of rs) await r.unregister();' +
+  ' const ks = await caches.keys(); for (const k of ks) await caches.delete(k);' +
+  ' return rs.length + "/" + ks.length; })()');
+```
+⇒ **∴ 若此后 `[ac]` **出现**✗ ⇒ **∴ 根因确认 ✓ ⇒ **∴ 而报告 ② 的**真正修法**是
+　**让缓存名可靠地随构建变化**✗（**如构建前提交 ✓／或把工作区哈希也算进去 ✓**）** ✓✓
+⇒ **∴ 这**同时是一条**产品缺陷**✓**：**用户**改完代码重构 ⇒ 若 BUILD_ID 未变 ⇒ **浏览器**长期用旧版 ✗**** ✓✓
