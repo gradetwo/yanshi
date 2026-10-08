@@ -302,3 +302,49 @@ for layer in state.alive_layers() {                     // ← **层在外层** 
 2. **∴ 应做的是"按区域声明的 `b` 选粒度"** ✓ —— 而这**已经在代码里**（`padding_for_region` ✓ 按区域收紧 ✓）
    ⇒ **∴ 只需让缓存粒度跟随它** ✓；
 3. **`b` 的出口已有** ✓（`filter_padding` ✓）⇒ **∴ 可观测 ⇒ 可立判据** ✓。
+
+---
+
+## 十二、✅ **插入点已定 ＋ 目标里那 33／133 MB 的最终解释** ✓（第 103 轮 ✓）
+
+### 12.1 读码事实 ✓（`render.rs:520-585` ✓）
+```rust
+render_region(bbox):
+  let region = clamp_region(state, &bbox)?;
+  let declared = self.padding_for_region(state, &region);      // ← 外扩**按区域收紧** ✓
+  let padding  = declared.min(self.options.max_filter_padding);
+  let workers  = parallel_impl::workers(self.max_workers);
+  let cropped  = if workers > 1 && region_pixels >= PARALLEL_MIN_PIXELS {
+      parallel_impl::render_region(self, state, store, &region, padding, background, workers)?   // ★ 按**行**分块 ★
+  } else { … render_accumulation(…) };
+```
+* **"行分块"已经存在** ✓ —— 注释写着"**两条路径算的是同一件事，区别只是谁算哪几行**" ✓；
+* **⇒ 但每个行块内部**各自完整走一遍层循环**✗**（**∴ 这就是可复用的空隙** ✓）；
+* **`padding` 已按区域收紧并传进 `render_accumulation`** ✓ ⇒ **∴ 块级一致性的机制早已就位** ✓
+  （**∴ 与 GEGL `needRect` 同构 ✓**）。
+
+### 12.2 🎯 ∴ 最小插入点 ✓
+**在 `render_accumulation` 的层循环之前查前缀缓存 ✓；每合成完一层之后写入** ✓。
+* **作用域天然 ＝ 「区域 ＋ 外扩」** ✓（与 `padding` 收紧一致 ✓，与行分块一致 ✓）；
+* **键** ✓：`(origin_x, origin_y, width, height, background, 前缀指纹元组)` ✓
+  —— **前缀指纹**用第 99 轮的 `layer_content_fingerprint` 按**运行前缀**累加 ✓；
+* **值** ✓：该前缀在该行块上的 `accumulation`（**f16 线性** ✓，与内存 tile 同格式 ✓）；
+* **命中** ✓：**直接把缓存里的 `accumulation` 装上，然后从第 k+1 层继续** ✓
+  ⇒ **∴ 跳过下面那些层的"渲染 ＋ 合成"** ✓ = **收益来源** ✓；
+* **命中时零额外渲染** ✓（**只用现成数据 ✓，不预渲 ✗** —— 第 358 轮真事故 ✓）；
+* **例外** ✓：**六类命中时整条不走缓存** ✓。
+
+### 12.3 🎯 **目标里"4K 每份 ~33 MB／8K ~133 MB"的最终解释** ✓
+行分块的**每个块**各自持一份前缀 ⇒ **全部分块加起来 ＝ 一整幅** ✓：
+| 文档 | 整幅（f16 ✓） | 与目标明文对照 ✓ |
+|---|---|---|
+| 4K | 3840 × 2160 × 4 B（f16 RGBA ＝ 8 B/px ÷ 2 ✓） ≈ **33 MB** ✓ | **完全对上** ✓ |
+| 8K | 7680 × 4320 × 4 B ≈ **133 MB** ✓ | **完全对上** ✓ |
+⇒ **∴ 目标那两个数 ＝ "整幅前缀（f16）的总量"** ✓ ⇒ **∴ 它就是 LRU 的预算口径** ✓✓
+⇒ **∴ 不是**"必须整幅一份"✗，也**不是**"块化白送"✗ —— **是"分块合计一幅、由 LRU 兜住"** ✓。
+
+### 12.4 ∴ 因此实现顺序（**最小改动优先** ✓）
+1. **在 `render_accumulation` 里加"前缀查／写"** ✓（**一个 LRU ＋ 一个键** ✓）⇒ **∴ C3 应转绿** ✓；
+2. **命中／未命中计数**并进既有统计 ✓（`below_reuse` ✓ 第 95 轮已备 ✓）；
+3. **按 `b` 选粒度** ✓（**b=0 ⇒ 可用小块 ✓；b 大 ⇒ 大块 ✓** —— 第十一节规则 ✓）；
+4. **立 C5／C6** ✓（六类例外 ✓、命中零额外渲染 ✓）。
