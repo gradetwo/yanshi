@@ -1932,6 +1932,28 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     })()`);
     await new Promise((r) => setTimeout(r, 1200));
     try { await capture("history-panel-imported"); } catch (_) {}
+    // **★ 诊断 ✓**（第 393 轮 ✓）：**四次改代码都没生效 ✗ ⇒ **停止猜测 ✓** ⇒ **把真实结构打出来 ✓****
+    // **∴ 要分辨的三件事** ✓：① `dockerCards()`（`aside .card` ✓）**里有没有这张卡的位置 ✓**
+    // ｜② `[data-panel="history"]` **能不能命中 ✓**｜③ **它此刻是否被折叠 ✓**。
+    const diag = await evaluate(`(() => {
+      const all = Array.from(document.querySelectorAll("aside .card"));
+      const h2s = all.map((c) => (c.querySelector("h2") || {}).textContent || "?");
+      const byPanel = Array.from(document.querySelectorAll('[data-panel="history"]'));
+      const hist = all.filter((c) => /历史/.test((c.querySelector("h2") || {}).textContent || ""));
+      return {
+        asideCardCount: all.length,
+        asideHasHistoryTitle: h2s.some((t) => /历史/.test(t)),
+        asideTitlesSample: h2s.slice(0, 8),
+        byPanelCount: byPanel.length,
+        byPanelClasses: byPanel.map((c) => c.className),
+        histInAsideCount: hist.length,
+        histCollapsed: hist.map((c) => c.classList.contains("collapsed")),
+        visibleTabs: Array.from(document.querySelectorAll("button, [role=tab]"))
+          .filter((b) => b.getAttribute("aria-pressed") === "true")
+          .map((b) => (b.textContent || "").trim()).slice(0, 6),
+      };
+    })()`);
+    console.log("  [诊断] " + JSON.stringify(diag));
     const rows = await historyRows();
     const kinds = new Map();
     for (const row of rows) {
