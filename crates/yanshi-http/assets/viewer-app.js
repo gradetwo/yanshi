@@ -8573,6 +8573,23 @@ function initDockers() {
   for (const card of dockerCards()) {
     if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
   }
+  // **★ 但必须**再展开一次 ✗**（第 394 轮**诊断实测**✓）：上面两段跑在 `initDockers()`（`:8698` ✓）里 ✓，
+  // **∴ 而**搬卡／建标签页**在其后 ✗ ⇒ **∴ 诊断给出** `histCollapsed: [true]` ✗
+  // （**即：我又展开过，它还是折叠的 ✓**）⇒ **∴ 那一步**把 `collapsed` 加回来了 ✗**。
+  // **∴ 所以这里**推迟到页面 settle 之后再展开一次 ✓**（**而且**不做任何别的改动 ✓**）。
+  const openHistoryCard = () => {
+    for (const card of document.querySelectorAll('[data-panel="history"]')) {
+      card.classList.remove("collapsed");
+    }
+    for (const card of dockerCards()) {
+      if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
+    }
+  };
+  openHistoryCard();
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(openHistoryCard));
+  }
+  window.addEventListener("load", openHistoryCard);
   const select = $("workspace");
   if (select) {
     select.addEventListener("change", () => applyWorkspace(select.value));
