@@ -57759,3 +57759,22 @@ fn write_import_image(ctx, args) {
 2. **渲染侧**：`render.rs:1854 fetch_raster_patch`（调用点 `:1315` ✓）⇒ 见 `tiles` ⇒ `tiles_for_rect` ⇒ 取块 ⇒
    **`assemble_region`** ⇒ 填 `layer_buffer` ✓；**无 `tiles` ⇒ 原路整幅** ✓（**旧工程零改动** ✓）。
 ⇒ **验收** ✓：**判据① 16200× → ~30×** ✓ ＋ **①′／② 仍绿** ✓ ＋ **937＋ 全绿** ✓ ＋ **同材料复测** ✓。
+
+## 第 455 轮：⚠️ **导入侧接线遇两个 API 阻塞 ⇒ 已撤回** ✓（**记下精确阻塞点 ✓**）
+
+### 一、本轮做到哪 ✓
+**按行号插入**了导入侧片段（`ctx.commit(AtomKind::ImportImage, …)` **之前** ✓）＋ 助手
+`build_bitmap_tile_index` ✓（**切块 ＋ 逐块 `put` ＋ 写索引 ✓；任一步失败 ⇒ `None` ⇒ 不写 `tiles` ✓**）。
+
+### 二、⚠️ 两个编译错误（**编译器精确指出 ✓**）
+| # | 错误 | 原因 | 修法 |
+|---|---|---|---|
+| 1 | `cannot find value PNG_MIME in crate yanshi_render` | **`PNG_MIME`／`RAW_RGBA_MIME` 未在 crate 根重导出** ✗ | **用字面量 `"image/png"`／`"image/x-yanshi-raw"`** ✓（零风险 ✓） |
+| 2 | **`No associated function named parse found for BlobHash`** | **`BlobHash` 没有"从 `sha256:…` 字符串解析"的关联函数** ✗（只有 `from_bytes` ✓ —— 那是**按内容**构造 ✗） | **∴ 需先找到既有"字符串 → `BlobHash`"的路径** ✓（**下一轮第一步：查 ✓** —— 可能是 `TryFrom<&str>`／serde `Deserialize`／`FromStr` ✓） |
+
+### 三、∴ 处置与下一轮 ✓
+* **撤回** ✓：`cp /tmp/t169.bak` ⇒ **树干净、构建 ✓、HEAD 未动** ✓（**不留红树 ✗**）；
+* **下一轮顺序** ✓：
+  1. **查"字符串 → `BlobHash`"的既有路径** ✓（**先查再改 ✓**）；
+  2. **改两处**（字面量 MIME ＋ 正确解析 ✓）⇒ **构建 ✓**；
+  3. **渲染侧**（`fetch_raster_patch` ✓）⇒ **判据① 应从 16200× 转绿到 ~30×** ✓。
