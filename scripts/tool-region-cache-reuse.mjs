@@ -11,6 +11,10 @@
 //     （`document.rs:943` ✓ ＋ `region_block.rs:116` ✓）⇒ **∴ 只要文档序号变（**哪怕只改最上层 ✓**）
 //     ⇒ **∴ 该块立即失效 ⇒ 每次都重渲 ✗**。
 //
+// **★ 必须带 `raw: true` ✓ ★**（第 469 轮**决定性发现 ✓**）：**`region_cache` 只在
+//   `raw: true` 的分支里被查**（`tools.rs` 的 `read_render_region` ✓：`if args["raw"] { … render_region_raw … }` ✓）
+//   ⇒ **∴ 不带 `raw` ⇒ 走另一条分支 ⇒ **永远不碰那个缓存 ✗****（**∴ 这解释了外部报告"子区域不命中 ✗"✓**）。
+//
 // **判据（可红 ✓）**：`t2 <= t1 / 5` ✓（**量级判据 ✓，不是绝对值 ✓ —— 绝对值依赖机器 ✗**）。
 // **今天的预期** ✗：**红 ✓**（**实测比值 ~1.5× ✗**）。
 // **转绿条件** ✓：**把 `version` 从**裸 `head_seq`**✗ 换成**影响该区域的内容指纹****
@@ -51,14 +55,14 @@ const main = async () => {
   await stroke("Rtop");
 
   const t0 = Date.now();
-  await call(doc, token, "render_region", { region });
+  await call(doc, token, "render_region", { region, raw: true });
   const t1 = Date.now() - t0;
 
   // **只改最上面那层** ✓ ⇒ 下方不变 ⇒ 子区域缓存**应当**仍然有效 ✓
   await stroke("Rtop");
 
   const t2s = Date.now();
-  await call(doc, token, "render_region", { region });
+  await call(doc, token, "render_region", { region, raw: true });
   const t2 = Date.now() - t2s;
 
   const h = await (await fetch(`${base}/health`)).json();
