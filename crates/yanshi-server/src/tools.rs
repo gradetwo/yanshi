@@ -1082,6 +1082,15 @@ fn document_state(ctx: &mut ToolContext<'_>) -> Result<DocumentState> {
         .map(|document| document.state().clone())
 }
 
+/// 保守白名单：该原子确定不会改像素（第 240 轮，详见实现笔记）。
+fn atom_cannot_change_pixels(kind: yanshi_core::atom::AtomKind) -> bool {
+    use yanshi_core::atom::AtomKind;
+    matches!(
+        kind,
+        AtomKind::CreateLayer | AtomKind::CreateCheckpoint | AtomKind::Comment | AtomKind::Suggest
+    )
+}
+
 /// 提交后的收尾：按 `wait_for_render` 决定是否等待渲染完成，并给出预览。
 ///
 /// ## 本轮（性能专题）的**契约澄清**：`wait_for_render` 等的是**这一笔的渲染**，不是缩略图
@@ -1137,6 +1146,21 @@ fn finish_mutation(
     //   ⇒ 保持既有行为：**一个像素都不渲染** ✗。
     //   这一条不能省 ✗：`silent` 的初衷正是"批量静默提交**不**产生额外 IO"✓
     //   （真实用户 §五-5 的原话 ✓）—— 在这里"顺手渲一下"就是把它反过来了 ✗。
+    // 元数据类原子不可能改像素，不需要渲染（第 240 轮）；拿不到或不在白名单则照渲。
+    let metadata_only = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .and_then(|document| {
+            document
+                .log()
+                .get(result.atom_id.as_str())
+                .map(|atom| atom.kind)
+        })
+        .map(atom_cannot_change_pixels)
+        .unwrap_or(false);
+    // 把区域收敛成 None ⇒ ① 不渲染 ✓；② 落到"没有脏区可渲染"分支 ⇒ 复用最近一次预览地址 ✓
+    //（契约要求响应带图，见 yanshi-mcp 的端到端测试；复用旧地址不撒谎：像素确实没变 ✓）
+    let preview_region = if metadata_only { None } else { preview_region };
     let caller_render_wanted = preview_region.is_some() && (!ctx.silent || result.job_id.is_some());
     let mut preview = None;
     let mut caller_render_done = false;
