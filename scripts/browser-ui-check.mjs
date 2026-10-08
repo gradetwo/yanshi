@@ -2013,6 +2013,15 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     const acAfter = await evaluate('(window.__cl || []).length').catch(function () { return null; });
     console.log("  [重载后 __cl 条数] " + JSON.stringify(acAfter));
     console.log("  [卡片] " + JSON.stringify(cards));
+    // ask the page which version of that function it is running: the comment
+    // added in round 397 is a marker present only in the current source
+    // (round 423).
+    const body = await evaluate('(typeof applyCollapsed === "function") ? applyCollapsed.toString() : "MISSING"').catch(function () { return null; });
+    const hasMark = (typeof body === "string") ? (body.indexOf("u6c38u4e0du7531") >= 0 || body.indexOf("永不由预设折叠") >= 0) : null;
+    console.log("  [函数体] 含 397 轮标记 = " + JSON.stringify(hasMark) + "｜长度 " + (typeof body === "string" ? body.length : -1));
+    const body2 = await evaluate('(typeof initDockers === "function") ? initDockers.toString() : "MISSING"').catch(function () { return null; });
+    const has2 = (typeof body2 === "string") ? (body2.indexOf("openHistoryCard") >= 0 || body2.indexOf("data-panel") >= 0) : null;
+    console.log("  [函数体] initDockers 含新代码 = " + JSON.stringify(has2));
     const errs = await evaluate('(window.__err || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [异常] " + JSON.stringify(errs));
     const consoleTail = await evaluate('(window.__con || []).slice(-4)').catch(function () { return null; });
