@@ -2597,3 +2597,35 @@ console.log("  [对齐] " + JSON.stringify(both));
 
 ⇒ **∴ 下一步（**收口 ✓**）** ✓：**撤掉所有临时探针** ✗（**`window.__probe` ＋ `__ac` ＋ harness 里的诊断段 ✓**）⇒
 　**∴ 并把"报告 ② = 可读性需求"写进顶层交接 ✓** ✓✓
+
+
+### 一百零二、🎯 **修法定稿**：`import_image` 的 `payload` 里有 `layer_id`（第 441 轮 ✓）
+
+#### 一、决定性发现 ✓（**解包实测 ✓**）
+```json
+import_image 的字段: ['actor','id','kind','payload','refs','schema_version','seq','session','timestamp']
+payload 键: ['bitmap','height','**layer_id**','object_id','region','type','width']     ← ★★★ 有 layer_id ✓ ★★★
+```
+⇒ **∴ 结论一** ✓：**每个 `import_image` 原子**自带 `payload.layer_id` ✗ ＋ `width`／`height` ✓** ⇒
+　**∴ 所以**"这是哪张图／哪个层"**根本不用新数据 ✗** ⇒ **∴ 只需**渲染出来 ✓**** ✓✓
+⇒ **∴ 结论二** ✓：**层名**可从 `state` 的层表映射 ✓（**`get_state` 给 `name` ✓ —— 第 343 轮见过
+　（`Chamber Architecture` 等 ✓）**）⇒ **∴ 于是可以显示**层名 ✓，回落到 `layer_id` ✓**** ✓✓
+⇒ **∴ 结论三（修法 ✓）** ✓：**在 `viewer-app.js` 的行渲染处**（`kindLabel.textContent = atom.kind` 之后 ✓）**补两个 span** ✓：
+```js
+const p = atom.payload || {};
+if (p.layer_id) {
+  const l = document.createElement("span");
+  l.className = "layer";
+  l.textContent = (state.layerNames && state.layerNames[p.layer_id]) || p.layer_id;
+  row.appendChild(l);
+}
+if (p.width) {
+  const sz = document.createElement("span");
+  sz.className = "size";
+  sz.textContent = p.width + "×" + p.height;
+  row.appendChild(sz);
+}
+```
+⇒ **∴ 判据（可红 ✓）** ✓：**"导入后，`import_image` 行**必须能看出它属于哪个层**✓（**行文本含层名或层 id ✓**）"**
+　⇒ **变异** ✗：**去掉该 span ⇒ 行只显示 `import_image` ⇒ **必红 ✓**** ✓✓
+⇒ **∴ 且这不加任何**假信息 ✓** —— **∴ 数据本来就在原子里 ✓**（**符合 lazy 总则第 3 条：**推迟到有人要 ✓，但不撒谎 ✓**）** ✓✓
