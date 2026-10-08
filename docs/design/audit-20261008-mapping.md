@@ -1762,3 +1762,38 @@ console.log("[probe]", t, document.querySelectorAll('aside .card.collapsed').len
 // 三个时刻各打一次：**立即 ✓／两帧后 ✓／load 后 ✓** ⇒ **∴ 若"立即"那次就已经是 collapsed ✗
 // ⇒ **∴ 说明**写类的人在我的调用**之前**✓（**即 `initDockers` 内部 ✓**）；
 // **∴ 若"立即"是干净的 ✓ 而"load 后"又脏了 ✗ ⇒ **∴ 有第三者 ✓** ✓✓
+
+
+### 七十三、🎯 **读完那 30 行后的新事实**：`applyWorkspace` 末尾会**回写**折叠集（第 396 轮 ✓）
+
+#### 一、读到的真代码 ✓（`viewer-app.js:8506-8564` ✓ —— **前五轮我只读了调用点，没读函数体 ✗**）
+```js
+:8514  function applyCollapsed(titles) {
+:8515    const wanted = titles.map(normalizeTitle);
+:8516    for (const card of dockerCards()) {
+:8517      card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));   // ★ 写得**很干脆** ✓
+:8518    }
+:8519  }
+:8521  function applyWorkspace(name) {
+:8525    for (const card of dockerCards()) card.classList.remove("collapsed");   // ① 先全展开 ✓
+:8527    applyCollapsed(preset.closed);                                          // ② 再折 closed ✓
+:8531    **saveDockers();**                                                        // ③ ★ **回写本地**✗ ★
+:8533  }
+:8534  function initDockers() {
+:8539-8543  h2 点击 ⇒ toggle ＋ saveDockers ＋ 清 WORKSPACE_STORE ✓
+:8546-8554  **三分支**：有 workspace ⇒ applyWorkspace ✓｜有 saved ⇒ applyCollapsed(saved) ✓｜否则 paint ✓
+:8564+      **我的两段展开 ＋ rAF ×2 ＋ load ✓**
+```
+⇒ **∴ 结论一（新 ✓）** ✓：**`applyWorkspace` 的第 ③ 步会**把当时的折叠集写回 `localStorage` ✗**** ——
+　**∴ 而第 ② 步刚把 `closed` 里的卡折上 ✓ ⇒ **∴ 于是 `localStorage` 里就记着"历史卡折叠"✗**** ✓✓
+⇒ **∴ 结论二** ✓：**我的展开在第 ③ 步**之后**✓ ⇒ **∴ 内存里它被打开了 ✓，**但 `localStorage` 里仍写着折叠 ✗** ⇒
+　**∴ 于是**下一次 `applyWorkspace`（**用户切工作区 ✓／或页面内任何一处 ✓**）**就会**又把它折回 ✗**** ✓✓
+⇒ **∴ 结论三（关键 ✗）** ✓：**而诊断读的是**内存里的类**✓ ⇒ **∴ 按这条链条，诊断应当读到 `false` ✗**
+　⇒ **∴ 所以**仍有一个环节没解释 ✗** ⇒ **∴ 唯一还没测的是**"我的代码到底有没有执行"**✗** ⇒
+　**∴ 这正是下一轮那个**函数内探针**要回答的 ✓（**三时刻各打一次 ✓**）** ✓✓
+
+#### 二、∴ 修法候选（**待探针确认后再定 ✓**）
+1. **我的展开之后**同步 `saveDockers()`**✓** ⇒ **∴ 让本地状态与内存一致 ✓**（**这样下次 `applyWorkspace` 不会再折回 ✓**）；
+2. **或**把"历史卡"从 `applyCollapsed` 的**作用范围里排除** ✓（**`wanted.includes` 前先过滤掉它 ✓**）；
+3. **或**把它的**折叠开关直接禁用** ✓（**`h2` 点击时不对它生效 ✓** —— **但这会夺走用户的手动控制 ✗**）。
+⇒ **∴ 三选一之前，先用探针确认**"我的代码执行了吗" ✗** ✓✓
