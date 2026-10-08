@@ -1640,6 +1640,11 @@ impl Document {
         Some(thumb)
     }
 
+    /// **生成（或刷新）指定种类的缩略图** ✓，并把结果登记进文档 ✓。
+    ///
+    /// **第 87 轮起** ✓：若是**文档级**且**没有指定 target** ✓，会先试"**由已有整幅图降采样**"的快路径 ✓
+    /// （省掉整幅重渲 ✗）；**快路径不适用时走原路渲染** ✓（**绝不跳过** ✗）。
+    /// （修复记录：插入助手时把本函数的注释"抢"走了 ✗ ⇒ `missing-docs` 报错 ✓ ⇒ 已补 ✓。）
     pub fn thumbnail(&mut self, kind: ThumbKind, target: Option<Bbox>) -> Result<RenderedPreview> {
         // **按需生成的计数** ✓（第 66 轮 ✓）：走到这里就说明**真的做了一次渲染** ✓。
         self.document_thumbnail_renders += 1;
