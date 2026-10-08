@@ -348,3 +348,60 @@ render_region(bbox):
 2. **命中／未命中计数**并进既有统计 ✓（`below_reuse` ✓ 第 95 轮已备 ✓）；
 3. **按 `b` 选粒度** ✓（**b=0 ⇒ 可用小块 ✓；b 大 ⇒ 大块 ✓** —— 第十一节规则 ✓）；
 4. **立 C5／C6** ✓（六类例外 ✓、命中零额外渲染 ✓）。
+
+---
+
+## 十三、🎯🎯 **修正第一刀：先做"逐层缓冲缓存"（per-node ✓），不是"前缀"** ✓（第 104 轮 ✓）
+
+### 13.1 读码事实 ✓（`render.rs:664-736` ✓）—— **两个成本分得很清** ✓
+```rust
+fn render_accumulation(…) -> Result<Buffer> {
+    let mut accumulation = …背景…;
+    for layer in state.alive_layers() {
+        let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
+        self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;   // ★ 600 ms ★
+        apply_layer_mask_warn(state, layer, &mut layer_buffer, …);
+        if layer.clipping_mask { layer_buffer.multiply_alpha_by(&accumulation); }             // ← clip 依赖 below ✓
+        layer_buffer.multiply_alpha(layer.opacity.clamp(0.0, 1.0) as f32);
+        let mode = BlendMode::from_name(&layer.blend_mode);
+        accumulation.composite(&layer_buffer, mode, 1.0);                                      // ★ 531 ms ★
+    }
+    Ok(accumulation)
+}
+```
+⇒ **∴ `render_layer_objects` ＝ 600 ms 的来源 ✓**（**逐层渲染 ✓**）；
+⇒ **∴ `composite` ＝ 531 ms 的来源 ✓**（**逐层合成 ✓**）⇒ **∴ 两者可用**不同**的机制各自省掉 ✓✓**。
+
+### 13.2 🎯 **GIMP／Krita 缓存的正是前者** ✓
+* **GEGL**：缓存**每个 node 的输出 tile** ✓；
+* **Krita**：缓存**每个 node 自己的 `projection()`** ✓；
+⇒ **∴ 即"某层渲染出来的像素"** ✓ —— **∴ 与 `render_layer_objects` 的输出**一一对应**✓**；
+⇒ **∴ 而我前几轮一直在设计**后者（前缀／below ✓）** —— **∴ 那是**第二阶段**✓**。
+
+### 13.3 🎯 ∴ **per-node 缓存的优势（比前缀干净得多 ✓）**
+| 维度 | **per-node（层缓冲 ✓）** | 前缀（below ✓） |
+|---|---|---|
+| **键** | **该层自己的指纹** ✓（**已有** ✓ `layer_content_fingerprint` ✓） | 下方所有层的指纹元组 ✗ |
+| **受几类例外影响** | **只有第 5 类**（**读画布类** ✓：smudge／watercolor ✓）✓ | **六类**（clip ✓／穿透组 ✓／组不透明度 ✓／非可分离 ✓／读画布 ✓／色彩 ✓） |
+| **为什么** | **它只缓存"渲染"阶段 ✓，而改层渲染**只依赖该层自己**（除读画布 ✗）** ✓ | **分段边界**会打破 ✓ |
+| **收益** | **省 `render_layer_objects` ⇒ 600 ms 的大头** ✓ | 省下方那些层的**渲染 ＋ 合成** ✓ |
+| **内存** | 一份层缓冲 ✓（区域＋外扩 ✓，4K f16 ≈ **33 MB** ✓）⇒ **LRU 兜住** ✓ | 同口径 ✓ |
+| **改动面** | **循环体内加"查／写" ＋ 一个 LRU** ✓ | 同 ＋ 需要前缀键 ✗ |
+
+⇒ **∴ 关键洞察** ✓：**例外的多数约束的是**合成分段**（below／above 的边界 ✓），
+   而 per-node 缓存缓存的是**渲染结果** ✓ ⇒ **∴ 它天然绕开那些例外 ✓**（**只留"读画布类"一条 ✗**）✓✓
+⇒ **∴ 这解释了为什么两家都从"节点输出缓存"起步** ✓。
+
+### 13.4 ∴ 第一刀的实现规格 ✓（**下一轮** ✓）
+* **位置** ✓：`render_accumulation` 的循环体内，`render_layer_objects` **之前查** ✓、**之后写** ✓；
+* **键** ✓：`(origin_x, origin_y, width, height, layer_id, 该层指纹, 该层属性(opacity／mask／medium／blend ✓), background, options 摘要)` ✓
+  —— **⚠️ 必须含 `opacity`／`mask_id`** ✗：因为**它们是在层缓冲**之后**才乘上去的** ✓
+  ⇒ **∴ 若键不含它们 ⇒ 改了不透明度会复用旧缓冲 ⇒ **放大错误**✗✓**（**这是能红判据的撒谎场景** ✓！）；
+* **值** ✓：`layer_buffer` 的**快照**（f16 ✓）—— **⚠️ 注意**：`layer_buffer` 随后会被 `multiply_alpha_by`／
+  `multiply_alpha` **就地修改** ✗ ⇒ **∴ 必须在"写缓存"时**先行拷贝，或在乘之前存 ✓**；
+* **例外** ✓：**`layer.medium.is_some()`（读画布类 ✓）⇒ 该层不缓存** ✓；**有 `clipping_mask` 的层**：
+  **它的渲染本身不受 below 影响 ✓**（剪贴发生在**合成**阶段 ✓ —— 上面读码已确认 ✓）⇒ **∴ 可缓存 ✓**；
+* **淘汰／统计** ✓：并进既有口径 ✓（`below_reuse` 计数改名或复用 ✓）；
+* **判据** ✓：**C3 换成／补上"只改当前层 ⇒ 其它层的 `layer_buffer` 复用次数增加"** ✓ ＋
+  **新判据「改某层的 `opacity` ⇒ 该层缓冲必须失效」** ✓（**变异**：把 `opacity` 从键里去掉 ⇒ 必红 ✓）；
+* **hit 时零额外渲染** ✓（**不预渲** ✗）。
