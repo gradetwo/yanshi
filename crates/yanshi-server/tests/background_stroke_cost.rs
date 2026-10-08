@@ -117,14 +117,6 @@ fn misses(workspace: &Workspace) -> usize {
         .misses
 }
 
-fn cached_bytes(workspace: &Workspace) -> usize {
-    workspace
-        .document("doc_bg")
-        .expect("文档应当在")
-        .bitmap_cache_stats()
-        .bytes
-}
-
 /// 未命中时**解出来的明文字节**之和 ✓（"这一笔到底重新解压了多大的东西" ✓）。
 fn missed_bytes(workspace: &Workspace) -> u64 {
     workspace
@@ -150,16 +142,15 @@ fn the_background_patch_is_decoded_once_not_per_stroke() {
         let mut workspace = workspace(&root, side);
         document_with_background(&mut workspace);
 
-        // 背景这一整幅补丁必须**已经常驻** ✓：`bytes` 至少装得下 side²×4 的明文 ✓。
-        let expected_background = (side * side * 4) as usize;
-        assert!(
-            cached_bytes(&workspace) >= expected_background,
-            "{side}²：背景补丁（{expected_background} 字节明文）应当在缓存里，实际 {} 字节",
-            cached_bytes(&workspace)
-        );
+        // **口径更新（第 197 轮 ✓）**：整幅明文不再必须常驻 `BitmapCache`（分块路不经它 ✓）。
 
         let mut previous = misses(&workspace);
-        assert!(previous >= 1, "{side}²：背景至少要被解码一次");
+        // **口径更新（第 197 轮 ✓）**：这里曾断言"背景**至少要被整幅解码一次**" ✓ ——
+        // 那是**旧实现**的必然细节 ✗（**为渲任意区域都要整幅解码背景** ✓）。
+        // **分块存储后**渲染只取**覆盖请求区域**的块 ✓ ⇒ **∴ 该前置删掉** ✓；
+        // **真正的守卫在下面**：**逐笔不得增加解码**（`now == previous` ✓）
+        // 与第二条测试的"**一笔明文 ＜ 背景字节**" ✓ —— **退回整幅解码时会红** ✗。
+        let _ = previous; // **下面仍要用它比较** ✓（此处仅保留已测量的基线 ✓）
         for index in 0..3 {
             let made = stroke(&mut workspace, index);
             assert_eq!(made["ok"], json!(true), "{made}");
@@ -198,10 +189,7 @@ fn a_warm_stroke_never_decodes_a_canvas_sized_blob() {
         document_with_background(&mut workspace);
 
         let background_bytes = (side * side * 4) as u64;
-        assert!(
-            cached_bytes(&workspace) as u64 >= background_bytes,
-            "{side}²：背景补丁（{background_bytes} 字节明文）应当在缓存里"
-        );
+        // **口径更新（第 197 轮 ✓）**：整幅明文不再必须常驻 `BitmapCache` ✓。
 
         let mut previous = missed_bytes(&workspace);
         for index in 0..3 {

@@ -1304,7 +1304,7 @@ impl Renderer {
                     height,
                     offset,
                     mime_type,
-                    tiles: _, // **分块路下一步接 ✓**（本轮惰性 ✓）
+                    tiles, // **分块路下一步接 ✓**（本轮惰性 ✓）
                 } => {
                     // **按 MIME 分派** ✓（体积专题，第 1056 轮）：
                     // 位图现在可以**存成 PNG** ✓（无损 ⇒ 渲染结果不变 ✓），
@@ -1327,6 +1327,48 @@ impl Renderer {
                     // 之后的每一笔、每一次预览都命中缓存 ✓（实测数字见 [`BitmapCache`] ✓）。
                     // 未命中时**在锁内解码**：并行分块下同一 blob 只读/解码一次 ✓，
                     // 否则多块会同时未命中 ⇒ 重复读盘/解码，缓存就白设了 ✓。
+                    // **分块路** ✓（第 187 轮 ✓）—— 只取并解码"覆盖请求区域"的块 ✓。
+                    // **不撒谎** ✓：索引缺失／版本不符／块取不到 ⇒ **落回下面的既有整幅路** ✓。
+                    // **旧工程没有 `tiles` ⇒ 行为一字不变** ✓。
+                    {
+                        let d = layer_buffer.bbox();
+                        let x0 = (offset.0 as i64).max(d.x as i64);
+                        let y0 = (offset.1 as i64).max(d.y as i64);
+                        let x1 = ((offset.0 as i64) + i64::from(width)).min((d.x + d.w) as i64);
+                        let y1 = ((offset.1 as i64) + i64::from(height)).min((d.y + d.h) as i64);
+                        if x0 < x1 && y0 < y1 {
+                            let (rw, rh) = ((x1 - x0) as u32, (y1 - y0) as u32);
+                            let (src_x, src_y) = (x0 - offset.0 as i64, y0 - offset.1 as i64);
+                            let stitched = (|| -> Option<Vec<u8>> {
+                                let hash: yanshi_core::atom::BlobHash =
+                                    tiles.as_deref()?.parse().ok()?;
+                                let index: crate::bitmap_tiles::BitmapIndex =
+                                    serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
+                                if !index.is_consistent() {
+                                    return None;
+                                }
+                                let slots = index.tiles_for_rect(src_x, src_y, rw, rh);
+                                let mut parts = Vec::with_capacity(slots.len());
+                                for slot in &slots {
+                                    let text = index.tiles.get(*slot)?;
+                                    let th: yanshi_core::atom::BlobHash = text.parse().ok()?;
+                                    parts.push(store.get(&th).ok()?);
+                                }
+                                crate::bitmap_tiles::assemble_region_sparse(
+                                    index.width,
+                                    index.height,
+                                    &slots,
+                                    &parts,
+                                    (src_x, src_y, rw, rh),
+                                )
+                            })();
+                            if let Some(rgba) = stitched {
+                                layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                continue;
+                            }
+                        }
+                    }
+
                     let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
                     let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
                         fetch_raster_patch(
