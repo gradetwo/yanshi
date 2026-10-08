@@ -1608,9 +1608,27 @@ impl Document {
         if target.is_some() || !kind.is_document_level() {
             return None;
         }
+        // **三段探针** ✓（第 89 轮 ✓，宿主侧 ⇒ 允许 `Instant` ✓）：
+        // 快路径 ~310 ms 到底是 **decode** ✗、**830 万次转换** ✗，还是 **缩放** ✗
+        // —— **∴ 若 decode 占大头 ⇒ "抽稀"无用** ✓（必须先量 ✓）。
+        let _ft0 = std::time::Instant::now();
+        let _ftmark = |tag: &str| {
+            if std::env::var_os("YANSHI_TRACE_FASTTHUMB").is_some() {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/yanshi-fastthumb-trace.log")
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "FASTTHUMB {tag} {} ms", _ft0.elapsed().as_millis())
+                    });
+            }
+        };
         let hash = self.document_thumbnail.clone()?;
         let bytes = self.store.get(&hash).ok()?;
+        _ftmark("store_get");
         let (w, h, rgba8) = yanshi_render::png::decode_png(&bytes)?;
+        _ftmark("decode_png");
         let side = kind.size();
         // **小于"目标的两倍"就不值得** ✓（原路更省 ✓，且避免无意义的重编码 ✓）。
         if w <= side * 2 || h <= side * 2 {
@@ -1635,8 +1653,10 @@ impl Document {
                 );
             }
         }
+        _ftmark("pixel_convert");
         let mut thumb = Thumb::new(kind);
         thumb.update_full(&buffer, Bbox::new(0.0, 0.0, w as f64, h as f64));
+        _ftmark("update_full");
         Some(thumb)
     }
 
