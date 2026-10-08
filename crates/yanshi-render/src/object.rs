@@ -93,6 +93,9 @@ pub enum Primitive {
         offset: (f64, f64),
         /// MIME 类型（内核目前只支持 `image/x-yanshi-raw`）。
         mime_type: String,
+        /// **分块索引哈希** ✓（第 181 轮 ✓）：有它 ⇒ 渲染**只解覆盖请求区域**的块 ✓
+        /// （**没有它 ⇒ 走原路整幅** ✓ —— 旧工程零改动 ✓）。
+        tiles: Option<String>,
     },
     /// 修图（clone_stamp）：从**同一图层已绘制内容**按偏移采样后盖回。
     ///
@@ -633,6 +636,7 @@ fn parse_raster_patch(data: &Value) -> Primitive {
         height,
         offset,
         mime_type,
+        tiles: data.get("tiles").and_then(Value::as_str).map(str::to_owned),
     }
 }
 
