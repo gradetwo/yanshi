@@ -1916,6 +1916,13 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       await send("Page.addScriptToEvaluateOnNewDocument", {
         source: `(() => {
           window.__cl = [];
+          window.__err = [];
+          window.addEventListener("error", function (e) {
+            window.__err.push(String((e && e.message) || e) + " @ " + String((e && e.filename) || "?") + ":" + String((e && e.lineno) || "?"));
+          });
+          window.addEventListener("unhandledrejection", function (e) {
+            window.__err.push("rejection: " + String((e && e.reason) || "?"));
+          });
           const rec = (ms) => {
             for (const m of ms) {
               if (m.type !== "attributes" || m.attributeName !== "class") continue;
@@ -1996,6 +2003,10 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       "}).filter(function (x) { return /\u5386\u53f2|history/.test(x.t + x.p); })",
     ).catch(() => []);
     console.log("  [卡片] " + JSON.stringify(cards));
+    const errs = await evaluate('(window.__err || []).slice(0, 6)').catch(function () { return null; });
+    console.log("  [异常] " + JSON.stringify(errs));
+    const consoleTail = await evaluate('(window.__con || []).slice(-4)').catch(function () { return null; });
+    console.log("  [页面console] " + JSON.stringify(consoleTail));
     // instrument self check: make a known class change and see whether the
     // observer records it. If it does not, every earlier reading of zero
     // additions is worthless (round 414).
