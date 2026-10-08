@@ -2848,6 +2848,20 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     /// ⇒ **∴ 命中率算不出来** ✓ ⇒ **∴ 无法为"缓存是否有效"立判据** ✗
     ///（"查表全变未命中"这种退化会无人察觉 ✓）。
     /// **∴ 这是纯观测补充** ✓：**不参与任何渲染决策** ✗ ⇒ 输出像素一个都不变 ✓。
+    /// **位图缓存的命中／未命中（全文档聚合）** ✓（第 93 轮 ✓，纯观测 ✓）。
+    pub fn bitmap_cache_hits_misses(&self) -> (usize, usize) {
+        let mut hits = 0usize;
+        let mut misses = 0usize;
+        for document in self.documents.values() {
+            let (h, m) = document.bitmap_cache_hits_misses();
+            hits += h;
+            misses += m;
+        }
+        (hits, misses)
+    }
+
+    /// **tile 缓存的统计（全文档聚合）** ✓：`(tiles, used_bytes, evictions, misses, hits)` ✓。
+    /// （修复记录：插入 `bitmap_cache_hits_misses` 时把本函数的注释"抢"走了 ✗ ⇒ 已补 ✓。）
     pub fn cache_stats(&self) -> (usize, usize, u64, u64, u64) {
         let mut tiles = 0usize;
         let mut used_bytes = 0usize;

@@ -1559,6 +1559,18 @@ impl Document {
     /// **∴ 判据** ✓："**无变化时重复导出 ⇒ `thumbnail_renders` 不得增长**" ✓（**今天红 ✓**）；
     /// 配"**有变化之后必须更新**" ✓（否则可以用"永不更新"骗过前一条 ✓）。
     /// **仅供探针** ✓（第 86 轮 ✓）：读出当前 `document_thumbnail` 的哈希 ⇒ 量它到底是整幅还是 256² ✓。
+    /// **位图缓存的命中／未命中** ✓（第 93 轮 ✓，**纯观测** ✓ —— 不参与任何渲染决策 ✓）。
+    ///
+    /// **为什么需要它** ✗：整幅渲染的 **600 ms** 花在 720 个对象的 `raster` 上 ✓
+    /// ⇒ **∴ 要判断"缓存是否已足够有效"** ⇒ 必须先看到**命中率** ✓
+    ///（**∴ 不许先改** ✗：若命中率已高 ⇒ 那 600 ms 是**对象光栅化的固有成本** ✓，改缓存无益 ✓）。
+    pub fn bitmap_cache_hits_misses(&self) -> (usize, usize) {
+        let stats = self.renderer.bitmap_cache_stats();
+        (stats.hits, stats.misses)
+    }
+
+    /// **仅供探针** ✓（第 86 轮 ✓）：读出当前 `document_thumbnail` 的哈希 ⇒ 量它到底是整幅还是 256² ✓。
+    /// （修复记录：插入位图统计时把本函数的注释"抢"走了 ✗ ⇒ `missing-docs` 报错 ✓ ⇒ 已补 ✓。）
     pub fn doc_thumbnail_hash_for_probe(&self) -> Option<yanshi_core::BlobHash> {
         self.document_thumbnail.clone()
     }

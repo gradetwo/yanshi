@@ -749,6 +749,10 @@ fn health(state: &ServerState) -> Response {
             "tools": state.registry.len(),
             "wasm": wasm_available(state),
             "cache": cache_stats(state),
+            // **位图缓存的命中率** ✓（第 93 轮 ✓，纯观测 ✓）—— tile 缓存与它**是两套** ✓
+            //（前者缓存"渲染出的 tile"✓，后者缓存"解码后的位图"✓）⇒ **∴ 要分开看** ✓。
+            // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。
+            "bitmap_cache": bitmap_cache_stats(state),
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
             // ⇒ blob 仍写得进去 ✓，但**掉电安全没有保证** ✓ ⇒ 这一项就让使用者看得见 ✓。
             "blob_fsync": if state
@@ -767,6 +771,18 @@ fn health(state: &ServerState) -> Response {
 }
 
 /// 渲染缓存与像素缓冲的可观测性（设计 1319 行：可观测性含缓存/生命周期指标）。
+/// **位图缓存的命中／未命中** ✓（第 93 轮 ✓）—— **纯观测** ✓，不参与任何渲染决策 ✓。
+///
+/// **为什么单列一段** ✗：它与 `cache`（tile 缓存 ✓）**是两套东西** ✓ ——
+/// 前者缓存"**渲染出的 tile**" ✓，后者缓存"**解码后的位图**" ✓ ⇒ **∴ 混在一起就看不出是谁的问题** ✓。
+fn bitmap_cache_stats(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    let (hits, misses) = workspace.bitmap_cache_hits_misses();
+    json!({"hits": hits, "misses": misses})
+}
+
 fn cache_stats(state: &ServerState) -> serde_json::Value {
     let Ok(workspace) = state.workspace.lock() else {
         return json!({"error": "工作区锁中毒"});
