@@ -1934,8 +1934,7 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       // **★ 记下失败但**不立刻退出**✗**（第 371 轮 ✓）：**否则后面的段落**全都不跑**✗
       // ⇒ **∴ 会把"没跑到 ✗"误读成"问题解决了 ✓"** —— **∴ 本会话已栽过一次 ✓**。
       process.exitCode = 1;
-    }
-    if (ratio >= 0.5) {
+    } else if (ratio >= 0.5) {
       console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + rows.length +
         "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(rows[0] || "").slice(0, 40) + "）");
       process.exitCode = 1;   // ★ 同上：**累积失败 ✓，不打断后续 ✓**
