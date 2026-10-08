@@ -370,6 +370,33 @@ impl RegionRender {
 
 /// 计算内核层的文档渲染器。
 #[derive(Debug)]
+/// **★ below 缓存 ✓**（目标第 4 条 ✓）：**最上面那层以下**的合成结果 ✓。
+///
+/// **切点为什么是"最上层以外"** ✗：画家反复改的是**当前层** ✓，而当前层通常在**最上面** ✓
+/// ⇒ **∴ "除最上层以外"是一个明确、可判定的切点 ✓**（**不猜"哪一层是活动的" ✗**）。
+///
+/// **有效性怎么判** ✓：签名 ＝ **下方各层的 `(id, updated_by)` 序列** ✓ ——
+/// `updated_by` 记的是**最后改动它的那个原子** ✓（`crates/yanshi-core/src/state.rs:141` ✓）⇒
+/// **∴ 任何下方层被改动 ⇒ 签名必变 ⇒ 失效 ✓**（**防撒谎 ✓ ＝ 设计 C4 ✓**）；
+/// **∴ 而只改最上层 ⇒ 签名不变 ⇒ 复用 ✓**（**＝ 设计 C3 ✓**）。
+///
+/// **⚠️ 已知代价（两面 ✓）**：**本版按**整幅区域**存一份 ✗**（**4K ~33 MB／8K ~133 MB ✓**）
+/// ⇒ **∴ 与目标"tile 粒度 ＋ LRU"还有差距 ✗ ⇒ 下一步是分块 ✓**；
+/// **本版只做**正确性 ＋ 语义计数**✓**（**∴ 让 `/health.below_reuse` 从 0 变正 ✓**）。
+///
+/// **六类例外（设计 §3 ✓）**：本版**最保守** —— **只要范围内任一层带**剪贴蒙版**✗ ⇒ **整片不走缓存 ✓**；
+/// 其余五类（`behind`／`erase`、穿透组、组不透明度、读画布类笔刷、色彩空间）**由 `updated_by` 签名兜住 ✓**。
+struct BelowCache {
+    /// 命中的区域 ✓：用缓冲自己的 `bbox` ✓（**区域不同 ⇒ 不复用 ✓**）。
+    bbox: yanshi_core::Bbox,
+    /// 下方各层的 `(id, updated_by)` ✓。
+    sig: Vec<(String, Option<String>)>,
+    /// 下方的合成结果 ✓。
+    buf: crate::buffer::Buffer,
+}
+
+/// **渲染器** ✓：把图层与对象渲染成像素 ✓，并持有各类**跨帧复用**的缓存 ✓
+///（图层缓冲池 ✓、位图补丁缓存 ✓、below 缓存 ✓）。
 pub struct Renderer {
     grid: TileGrid,
     cache: TileCache,
@@ -398,6 +425,9 @@ pub struct Renderer {
     /// 挂在这里缓存才能跨"这一笔"与"下一笔"存活 ✓ —— 而本案的病正是
     /// **每一笔都把整幅背景重新解压一遍** ✗（见 [`BitmapCache`] 的实测数字 ✓）。
     bitmaps: BitmapCache,
+
+    /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
+    below: std::sync::Mutex<Option<BelowCache>>,
 }
 
 impl Renderer {
@@ -442,6 +472,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -457,6 +488,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -614,6 +646,7 @@ impl Renderer {
                 &mut track,
                 &mut probe,
                 &self.bitmaps,
+                &self.below,
             )?;
             stats.absorb(&track);
             stats.parallel_workers = 1;
@@ -687,6 +720,7 @@ impl Renderer {
         track: &mut ObjectTrack,
         probe: &mut RenderProbe,
         bitmaps: &BitmapCache,
+        below: &std::sync::Mutex<Option<BelowCache>>,
     ) -> Result<Buffer> {
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -712,6 +746,88 @@ impl Renderer {
         };
         probe.fill += probe_fill_stage.stop();
 
+        // **★ below 复用判定 ✓**（目标第 4 条 ✓）：先算"可见层"的签名 ✓，再看缓存是否仍然有效 ✓。
+        let mut visible_ids: Vec<(String, Option<String>)> = Vec::new();
+        let mut clipping_seen = false;
+        for layer in state.alive_layers() {
+            if let Some(only) = self.only_layer.as_deref() {
+                if layer.id != only {
+                    continue;
+                }
+            } else if !layer.visible && !self.options.include_hidden_layers {
+                continue;
+            }
+            if layer.clipping_mask {
+                clipping_seen = true;
+            }
+            visible_ids.push((layer.id.clone(), layer.updated_by.clone()));
+        }
+        let split = visible_ids.len().saturating_sub(1); // **切点 ＝ 最上层以外 ✓**
+        let sig: Vec<(String, Option<String>)> = visible_ids.iter().take(split).cloned().collect();
+        // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
+        let cacheable = split > 0 && !clipping_seen;
+        let mut reused = false;
+        // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
+        // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
+        let want = accumulation.bbox();
+        let probe_path = std::env::var("YANSHI_BELOW_PROBE").ok();
+        if cacheable {
+            let hit = match below.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(c) => c.sig == sig && c.bbox == want,
+                    None => false,
+                },
+                Err(_) => false, // **锁中毒 ⇒ 不复用 ✓**（宁慢勿错 ✓）
+            };
+            if hit {
+                let cached_buf = below
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|c| c.buf.clone()));
+                if let Some(buf) = cached_buf {
+                    // **∴ 下方合成直接搬进来 ⇒ 下方那些层不用再渲染 ✓**
+                    accumulation = buf;
+                    note_below_reuse();
+                    reused = true;
+                }
+            }
+            if let Some(path) = probe_path.as_deref() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(
+                        f,
+                        "cacheable=1 split={} sig={} bbox=({},{},{},{}) hit={} reused={}",
+                        split,
+                        sig.len(),
+                        want.x,
+                        want.y,
+                        want.w,
+                        want.h,
+                        hit,
+                        reused
+                    );
+                }
+            }
+        } else if let Some(path) = probe_path.as_deref() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(
+                    f,
+                    "cacheable=0 split={} clipping_or_single=1 bbox=({},{},{},{})",
+                    split, want.x, want.y, want.w, want.h
+                );
+            }
+        }
+
+        let mut visited: usize = 0;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
                 // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
@@ -721,6 +837,11 @@ impl Renderer {
                 }
             } else if !layer.visible && !self.options.include_hidden_layers {
                 continue;
+            }
+            let index_here = visited;
+            visited += 1;
+            if reused && index_here < split {
+                continue; // **∴ 复用了下方 ⇒ 这些层不算已渲染 ✓**
             }
             stats.layers += 1;
             let mut probe_stage = stage_probe::Stage::start();
@@ -745,6 +866,16 @@ impl Renderer {
             let mut probe_stage = stage_probe::Stage::start();
             accumulation.composite(&layer_buffer, mode, 1.0);
             probe.composite += probe_stage.stop();
+        }
+        // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
+        if cacheable && !reused {
+            if let Ok(mut guard) = below.lock() {
+                *guard = Some(BelowCache {
+                    bbox: accumulation.bbox(),
+                    sig,
+                    buf: accumulation.clone(),
+                });
+            }
         }
         Ok(accumulation)
     }
@@ -2110,6 +2241,7 @@ mod parallel_impl {
                                 &mut track,
                                 &mut probe,
                                 bitmaps_ref,
+                                &renderer.below,
                             )?;
                             stats.absorb(&track);
                             // 只把本块对应的行拷回输出；外扩出来的行丢弃。
@@ -2250,6 +2382,7 @@ mod parallel_impl {
             &mut track,
             &mut probe,
             &renderer.bitmaps,
+            &renderer.below,
         )?;
         stats.absorb(&track);
         Ok((buffer.crop(region), stats, probe, 1))
