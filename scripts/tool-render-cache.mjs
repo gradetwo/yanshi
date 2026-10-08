@@ -127,6 +127,23 @@ check(sha(c) !== sa,
   "**改一层之后再渲染 ⇒ 字节必须变化**（防「缓存不失效」这个真正的撒谎 ✗）",
   `${sa.slice(0, 12)} → ${sha(c).slice(0, 12)}`);
 
+// **④ 改「下层」⇒ 输出必须变化** ✓（第 96 轮补 ✓；设计里的 **C4** ✓）：
+//   上一条改的是**上层**（新建 L2 ✓）；而 below 缓存怕的是**下方变了却不失效** ✗
+//   ⇒ **∴ 必须单独改**最下面那层**再验一次** ✓。
+const lowerStroke = await call("brush_stroke", {
+  layer_id: "L1", object_id: "r3", brush: "100%_Opaque", size: 30,
+  color: { r: 20, g: 220, b: 120, a: 255 }, preview: false,
+  points: [[40, 40, 1], [216, 40, 1]],
+});
+if (lowerStroke.ok !== true) {
+  console.error("✗ 前置不成立：下层笔触未成功 ⇒ " + JSON.stringify(lowerStroke).slice(0, 160));
+  process.exit(2);
+}
+const d = await rawBytes();
+check(sha(d) !== sha(c),
+  "**改最下面那层之后再渲染 ⇒ 字节必须变化**（below 缓存若「下方变了不失效」⇒ 这里会红 ✗）",
+  `${sha(c).slice(0, 12)} → ${sha(d).slice(0, 12)}`);
+
 console.log("");
 if (failures.length) {
   console.error(`结论：渲染缓存**不满足要求** ✗（${failures.length} 条）`);
