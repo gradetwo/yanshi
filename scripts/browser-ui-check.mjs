@@ -1904,12 +1904,17 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
       method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
     });
-    await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`, { method: "POST" });
+    const finished = await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`,
+      { method: "POST" }).then((r) => r.json());
+    // **★ 必须拿到**新文档的 token**✗**（第 374 轮 ✓）：历史用 `callTool("get_log")` ✓（`:3720` ✓）
+    // ⇒ 它取 `state.docId` ＋ `state.token` ✓ ⇒ **∴ 导航 URL 里**漏 token ✗ 就会 token 为空 ⇒
+    // 历史**读不出来** ✗ ⇒ **∴ 我的判据**连续几轮**读到 0 行 ✗** —— **∴ 与第 332 轮**完全同型**（**漏 token ✗**）。
+    const histToken = String(finished.token || "");
     // **★ 必须**切到"历史"标签**✗**（第 369 轮实测：不切 ⇒ 默认"绘制"页没有 `.row` ✗
     // ⇒ `waitFor` 超时 ⇒ `rows` 为空 ⇒ 判据**又一次**假绿 ✗）。
     // **★ 且测完必须**回到原文档**✗**（第 369 轮实测：不回去 ⇒ **后续段落 token 与文档不匹配 ✗
     // ⇒ 失败数从 5 项涨到 10 项 ✗ —— **∴ 那是我的导入段造成的 ✗**）。
-    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}` });
+    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
     await waitFor("!!document.querySelector('#history')", "导入后历史面板容器出现");
     await evaluate(`(() => {
       const tab = Array.from(document.querySelectorAll("button, [role=tab]"))

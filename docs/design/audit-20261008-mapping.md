@@ -1486,3 +1486,25 @@ token|权限|permission 命中 = **0** ✓                          ← ★ **�
 2. **对比** ✓：**新建文档**（**页面初次加载 ✓ ⇒ 读到 5 行 ✓**）vs **导入后导航**（**只换 URL 参数 ✓ ⇒ 0 行 ✗**）
 　⇒ **∴ 若 `refreshHistory` 依赖**页面初始化时的 doc**✗ ⇒ **∴ 导航到 `?doc=` 后必须**重新初始化**✗** ✓✓
 3. **∴ 而我的判据**可以**绕过 UI 导航**✓：**用 `?doc=<id>` 直接**新开一个标签页**✓（**`/json/new` ✓**）⇒ **∴ 那样就是**全新初始化**✓ ⇒ **∴ 历史应能读到 40 行 ✓**** ✓✓
+
+
+### 六十二、🎯 **根因：导航 URL 漏 `token`** ✗（第 374 轮 ✓ —— **与第 332 轮同型 ✓**）
+
+#### 一、读码 ✓
+```js
+crates/yanshi-http/assets/viewer-app.js
+:3720  const value = await callTool("get_log", args, { refresh: false });   // ★ 历史走 get_log ✓
+:3726  const atoms = value.atoms || [];
+:50-51 docId: params.get("doc") || "default"; token: params.get("token") || "";   // ★ 从 URL 取 ✓
+:3272  state.docId = docId;  state.token = token || "";
+```
+⇒ **∴ 结论** ✓：**历史面板用 `callTool("get_log")`**✓，**而它依赖 `state.token`**✓（**来自 URL 的 `&token=` ✓**）
+　⇒ **∴ 我的导入段**只写了 `?doc=uicheck-hist-…` ✗ ⇒ **token 为空** ✗ ⇒ **`get_log` 失败 ⇒ 历史 0 行** ✗**** ✓✓
+⇒ **∴ 这解释了我连续几轮**读 0 行**✗（**并两次假绿 ✗**）—— **∴ 根因一直是**我漏了 token ✗**** ✓✓
+⇒ **∴ 且与第 332 轮**完全同型**✓**（**那次 `browser-no-stale-read` 也是漏 `&token=` ✓ ⇒ **∴ 同一个错误犯了两次 ✗**）** ✓✓
+
+#### 二、∴ 修法（**两处 ✓，已落地 ✓**）
+1. **`finish=1` 的响应里取 `token`** ✓ ⇒ `const histToken = String(finished.token || "")` ✓；
+2. **导航 URL 带上它** ✓ ⇒ `${origin}/?doc=${histDoc}&token=${histToken}` ✓。
+⇒ **∴ 下一轮** ✓：**复跑** ⇒ **期望**：**`✓ 导入后历史行可区分：最高重复率 X%（N/N，N≥10）` ✓** ⇒ **且失败数应回到 5 项 ✓**
+　⇒ **然后**变异（删 `#seq` ✗）⇒ **期望 58% ⇒ 红 ✓** ⇒ **看历史面板截图 ✓** ✓✓
