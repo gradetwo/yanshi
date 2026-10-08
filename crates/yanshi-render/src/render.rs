@@ -809,6 +809,8 @@ impl Renderer {
                 .map(|o| format!("{}:{:?}:{}", o.id, o.current_version, o.data))
                 .collect();
             objs.sort();
+            // **∴ `clippy` 不许"`format!` 套在 `format!` 实参里" ✗（`format_in_format_args` ✓）⇒ 先算成局部变量 ✓。
+            let color_space = format!("{:?}", state.color_space);
             visible_ids.push(format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 layer.id,
@@ -825,7 +827,7 @@ impl Renderer {
                     .map(|s| format!("{s:?}"))
                     .unwrap_or_default(),
                 // **⑥ 色彩空间一致性 ✓**：**放进指纹 ⇒ 它一变 ⇒ 指纹变 ⇒ 失效 ✓**（**比"不一致就不缓存"更精确 ✓**）。
-                format!("{:?}", state.color_space),
+                color_space.clone(),
                 objs.join(",")
             ));
         }
