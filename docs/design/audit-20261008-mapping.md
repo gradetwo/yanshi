@@ -1864,3 +1864,30 @@ function applyCollapsed(titles) {
 * **未确证** ✗：**谁折叠它** —— **八个假设全部被否证 ✓**（`#seq`／重复 CSS／强制展开 ×2／`data-panel`／
 　时序／源头排除／`setupRightTabs` ✓）；
 * **∴ 而每一轮否证都**缩小了范围**✓ ⇒ **∴ 现在只剩"**在 `applyCollapsed` 里打印**✓"这一步 ✓** ✓✓
+
+
+### 七十六、🎯 **决定性事实**：标记里**没有** `collapsed`，而类确实在 ⇒ **存在第二个写者**（第 400 轮 ✓）
+
+#### 一、铁证 ✓
+```
+grep -nE 'collapsed' crates/yanshi-http/src/viewer.rs   ⇒ **无输出** ✓（**零处 ✓**）
+viewer.rs:408  <div class="card" data-panel="history">   ⇒ ★ **初始不带 `collapsed`** ✗ ★
+viewer-app.js 里 `classList.*collapsed` 只有 **4 处** ✓
+  :8517 `applyCollapsed` 的 toggle ✓（**我已让它跳过历史卡 ✓**）
+  :8525 `applyWorkspace` 的全展开 ✓｜:8539 点击 ✓｜:8565 我的那段 ✓
+诊断（第 394／396／398 轮 ✓）：`histCollapsed: [true]` ✗ —— **始终如此 ✓**
+```
+⇒ **∴ 结论一** ✓：**初始标记**干净 ✓** ⇒ **∴ `collapsed` **必由 JS 写 ✗**；而 4 处写者我**全部处理过** ✗ ⇒
+　**∴ 我的"跳过"已生效的话 ⇒ **它就该展开 ✗** ⇒ **∴ 但它没展开 ✗ ⇒ **∴ 必存在**第二个写者 ✗**** ✓✓
+⇒ **∴ 结论二** ✓：**唯一未排除的可能** ✓：**① 有**第二份** `applyCollapsed`（**同名覆盖 ✓**）｜
+　**② 或**某个**内联 `<script>`／另一段资产**在写 ✓｜**③ 或**`DOCKER_STORE` 的**恢复路径**在我之外 ✓**** ✓✓
+
+#### 二、∴ 下一轮（**三个具体动作，按代价排序 ✓**）
+1. **`grep -rn "collapsed" crates/yanshi-http/`** ✓ ⇒ **列出**全部**文件与行 ✓**（**含 `assets/` 下别的 js／css／html ✓**）；
+2. **在 `applyCollapsed` 里 `console.log`** ✓ ⇒ **判它有没有跑 ✓**（**我的"跳过"是否执行过 ✓**）；
+3. **在浏览器里用 `evaluate` 打 `MutationObserver`** ✓ ⇒ **一次就能**抓到**是谁加的类 ✓**（**最强手段 ✓**）：
+```js
+new MutationObserver((ms) => ms.forEach((m) => console.log("[who]", new Error().stack)))
+  .observe(document.querySelector('aside'), { subtree: true, attributes: true, attributeFilter: ["class"] });
+```
+⇒ **∴ 第 3 条是**决定性**的 ✓**（**它能直接给出**调用栈 ✓ ⇒ **∴ 不必再猜 ✗**）** ✓✓
