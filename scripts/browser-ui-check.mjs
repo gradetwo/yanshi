@@ -1886,6 +1886,24 @@ await strokeAt(0.4, 0.6, 41);
 const paintedAfterStroke = await paintedNow();
 const historyAfter = await historyRows();
 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
+// **★ 同类历史行必须能互相区分 ✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
+// **∴ 实测**：一个真实作品 **21／36 ＝ 58%** 的原子就是 `import_image` ✓（第 352 轮**解包数日志** ✓）⇒
+// 若行文本**全同** ⇒ 用户**看不出是哪一步**✗ ⇒ **∴ 断言：重复最多的那串文本占比 < 50% ✓**。
+// **变异** ✗：删掉 `viewer-app.js` 里 `+ " #" + String(atom.seq)` ⇒ 回到 58% ⇒ **必红 ✓**。
+{
+  const counts = new Map();
+  for (const row of historyAfter) counts.set(row, (counts.get(row) || 0) + 1);
+  const top = historyAfter.length ? Math.max(...counts.values()) : 0;
+  const ratio = historyAfter.length ? top / historyAfter.length : 0;
+  if (ratio >= 0.5) {
+    console.error(
+      "❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + historyAfter.length +
+        "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(historyAfter[0] || "").slice(0, 40) + "）",
+    );
+    process.exit(1);
+  }
+  console.log("  ✓ 历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + historyAfter.length + "）");
+}
 
 // 按类型筛选：只选 draw_stroke，列表应只含该类型。
 await evaluate(`(() => {
