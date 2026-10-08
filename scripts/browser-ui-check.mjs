@@ -1887,6 +1887,56 @@ const paintedAfterStroke = await paintedNow();
 const historyAfter = await historyRows();
 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
 
+// **★ 历史面板"可读性"取证段 ✓**（第 379 轮重建 ✓）—— **∴ 目的不是断言，而是**拿到人眼证据**✓**：
+// **∴ 本会话两次证明"读数 ≠ 用户所见"✗** ⇒ **∴ 该面板到底显示成什么样 ✗，只能看图 ✓**。
+// **∴ 且我第 376 轮的**切片删除**✗ 把上一版整段删掉了 ✓ ⇒ **∴ 这次写完必须 `grep` 复核 ✓**。
+// **⚠️ 本段**绝不 `process.exit` ✗**（**否则会掩盖它之后的全部回归 ✗** —— 第 370 轮实测 ✓）。
+if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
+  const fixture = process.env.UI_HISTORY_FIXTURE || "/tmp/eval/artworks/arnolfini_portrait_4k.yanshi";
+  const fs = await import("node:fs/promises");
+  let bytes = null;
+  try { bytes = await fs.readFile(fixture); } catch (_) { bytes = null; }
+  if (!bytes) {
+    console.log("  ⚠ 历史取证段跳过：夹具不可读（" + fixture + "）✗");   // **∴ 不假装通过 ✓**
+  } else {
+    const histDoc = "uicheck-hist-" + Date.now().toString(36);
+    const begin = await fetch(`${origin}/api/documents/import?begin=1`, { method: "POST" }).then((r) => r.json());
+    await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
+      method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
+    });
+    const finished = await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`,
+      { method: "POST" }).then((r) => r.json());
+    // **★ token 必须带上 ✗**（第 374 轮 ✓）：历史走 `callTool("get_log")` ✓ ⇒ 它读 `state.token` ✓
+    // ⇒ **∴ URL 里漏 `&token=` ⇒ token 空 ⇒ **读到 0 行 ✗**（**我为此连栽三轮 ✓**）。
+    const histToken = String(finished.token || "");
+    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
+    await waitFor("!!document.querySelector('#history')", "导入后历史容器出现");
+    // **★ 必须切到"历史"标签 ✗**（默认是"绘制"页 ⇒ 没有 `.row` ✗ —— 第 369 轮实测 ✓）。
+    await evaluate(`(() => {
+      const tab = Array.from(document.querySelectorAll("button, [role=tab]"))
+        .find((b) => (b.textContent || "").trim() === "历史");
+      if (tab) tab.click();
+      return !!tab;
+    })()`);
+    await evaluate("(() => { const b = document.getElementById('historyReload'); if (b) b.click(); return !!b; })()");
+    await new Promise((r) => setTimeout(r, 2500));
+    // **★ 存图 ✓**（**人眼证据 ✓**）—— **∴ 这才是本段的主产物 ✓**。
+    try { await capture("history-panel-imported"); } catch (_) {}
+    const rows = await historyRows();
+    const kinds = new Map();
+    for (const row of rows) {
+      const k = String(row).replace(/^#?\d+\s*/, "").split(/\s+/).slice(0, 2).join(" ");
+      kinds.set(k, (kinds.get(k) || 0) + 1);
+    }
+    const top = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    console.log("  历史取证：读了 " + rows.length + " 行｜最常见前 3 类：" +
+      top.map(([k, n]) => n + "×「" + String(k).slice(0, 24) + "」").join("｜"));
+    // **★ 回到原文档 ✓**（否则后续段落 token 不匹配 ✗ —— 第 369 轮实测：失败 5→10 项 ✗）。
+    await send("Page.navigate", { url });
+    await waitFor("!!document.querySelector('#board')", "回到原文档");
+  }
+}
+
 // **⚠️ 历史行"可区分性"判据**已撤回 ✗**（第 375 轮 ✓）—— **∵ 变异实测**不红**✗**：
 // 去掉行里的 `#序号` 之后，重复率**仍是 3%（1/36）✗** ⇒ **∴ 那条断言**恒绿 ✗**（**不是可红判据 ✗**）；
 // **∴ 且根因是我读漏了渲染代码** ✗：**历史面板每一行**本来就有
