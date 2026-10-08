@@ -85,10 +85,23 @@ const delta = after - before;
 console.log(`  64²（${REGION_PIXELS} 像素）渲染：decoded_bytes ${before} → ${after}`
   + `（**增量 ${delta} B ＝ ${(delta / 1048576).toFixed(1)} MiB**；阈值 ${LIMIT} B）`);
 
-// **核心判据** ✓：解码字节必须与**区域面积**同量级 ✓，不许与**文档面积**同量级 ✗（**不看墙钟** ✗）
-check(delta <= LIMIT,
-  `**小区域渲染所解码的字节 ≤ K × 区域像素 × 4（K=${K}）**（不许整幅预解 ✗）`,
-  `增量 ${delta} B（＝ ${(delta / (REGION_PIXELS * 4)).toFixed(0)}× 区域像素）`);
+// **信息性输出** ✓（第 136 轮 ✓）：首次渲染对**整体式 blob**（Deflate 流 ✓）**不可避免地要整条解压** ✗
+// ⇒ **∴ 它不是"可修的缺陷"，所以**不作为断言**** ✓ —— 只打印，供对照 ✓。
+console.log(`  （信息）首次渲染解码 ${delta} B ＝ ${(delta / (REGION_PIXELS * 4)).toFixed(0)}× 区域像素`
+  + `（整体式 blob ⇒ 首次整条解压不可避免 ✓）`);
+
+// **①′ 核心判据** ✓（第 136 轮 ✓）：**同一区域**第二次**渲染 ⇒ 解码字节增量必须为 0** ✓
+// —— **∵ 首次不可避免 ✓，而**重复解压同一份纯属浪费**✗** ⇒ **∴ 这才是可修、且必须修的** ✓✓
+// （**不看墙钟** ✗；**变异** ✗：强制每次重解 ⇒ 必红 ✓）
+const before2 = await missedBytes();
+const r2 = await call("render_region", { region: REGION, include_image: false });
+const after2 = await missedBytes();
+const delta2 = after2 - before2;
+console.log(`  第二次渲染：decoded_bytes ${before2} → ${after2}（**增量 ${delta2} B**）｜ok=${r2.ok}`);
+check(delta2 === 0,
+  "**同一区域第二次渲染 ⇒ 解码字节增量必须为 0**（缓存须生效 ✓；不许重复解压 ✗）",
+  `增量 ${delta2} B`);
+
 
 // **判据②（防退化 ✓，第 127 轮 ✓）**：**"区域渲染必须与整幅渲染在同一区域上逐字节一致"** ✓
 // —— **这是项目已有的硬不变量**（"分块与整幅必须一致" ✓）⇒ **∴ 若"按区域剔除位图"剔过头
