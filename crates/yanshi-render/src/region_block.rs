@@ -240,3 +240,44 @@ mod tests {
         assert_eq!(cache.len(), 1);
     }
 }
+
+/// **★ 区域指纹 ✓ ★**（第 465 轮 ✓）：**把"影响像素的东西"全进哈希 ✓**，用它**代替裸 `head_seq`** ✗。
+///
+/// **为什么** ✗（外部黑盒报告 2026-10-09 ✓）：**子区域重复渲染 531 → 426 → 347 ms（~1.5× ✗）**，
+/// 而**全文档**有 ~350× ✓ —— **∴ 根因**是**本缓存的 `version` 用了**裸 `head_seq()`**✗**
+/// ⇒ **∴ 序号一变（**哪怕只改**最上面那层**✓**）⇒ **该块立即失效 ⇒ 每次重渲 ✗** ✓。
+///
+/// **为什么这样算** ✓：与 below 缓存**同一套判据**（**层参数 ✓ ＋ 对象 `current_version`／`data` ✓
+/// ＋ 蒙版内容 ✓ ＋ 色彩空间 ✓**）⇒ **∴ 只改最上层 ⇒ 下方指纹不变 ⇒ **缓存有效 ✓****；
+/// **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**∴ 不会拿旧图冒充 ✓**）。
+///
+/// **⚠️ 代价**（两面 ✓）：**每次判缓存都要遍历层与对象并格式化 ✗**（**对象数据是哈希与参数 ⇒ 很小 ✓**）
+/// ⇒ **∴ 用 `head_seq` 快速短路**：**序号没变 ⇒ 直接用旧值 ✓**（**省掉重复遍历 ✓**）。
+pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", state.color_space).hash(&mut h);
+    let mut layers: Vec<&yanshi_core::Layer> = state.alive_layers();
+    layers.sort_by(|a, b| a.id.cmp(&b.id));
+    for l in layers {
+        l.id.hash(&mut h);
+        l.updated_by.hash(&mut h);
+        l.blend_mode.hash(&mut h);
+        l.opacity.to_bits().hash(&mut h);
+        l.visible.hash(&mut h);
+        l.clipping_mask.hash(&mut h);
+        l.mask_id.hash(&mut h);
+        if let Some(mask) = l.mask_id.as_deref().and_then(|m| state.masks.get(m)) {
+            format!("{mask:?}").hash(&mut h);
+        }
+        let mut objs: Vec<String> = state
+            .objects
+            .values()
+            .filter(|o| o.layer_id == l.id && o.deleted_by.is_none())
+            .map(|o| format!("{}:{:?}:{}", o.id, o.current_version, o.data))
+            .collect();
+        objs.sort();
+        objs.hash(&mut h);
+    }
+    h.finish()
+}

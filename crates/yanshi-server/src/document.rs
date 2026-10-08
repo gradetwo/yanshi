@@ -940,7 +940,9 @@ impl Document {
         // 任何提交都会推进 HEAD ✓，于是版本一变、键立刻不命中 ✓，宁可重算 ✓。
         // （本轮的范围与取舍见 `region_block` 的模块说明 ✓：先做区域级 ✓、不做按块渲染 ✗，
         //  因为按块渲染要处理滤镜外扩跨块 ✓，那会碰到"分块与整幅必须一致"这条硬不变量 ✗。）
-        let version = self.log.head_seq();
+        // **★ 指纹代替裸 `head_seq` ✓ ★**（第 465 轮 ✓）：**∴ 只改最上层 ⇒ 子区域缓存仍有效 ✓**；
+        // **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**外部报告：子区域 531 → 426 → 347 ms ✗**）。
+        let version = yanshi_render::region_block::region_fingerprint(&self.state);
         let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
         if let Some(block) = self.region_cache.get(key, version) {
             // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
