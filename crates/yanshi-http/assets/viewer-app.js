@@ -8513,6 +8513,15 @@ function saveDockers() {
 
 function applyCollapsed(titles) {
   const wanted = titles.map(normalizeTitle);
+  // TEMP PROBE, KEPT UNTIL THE CAUSE IS KNOWN (round 424). Prints before the
+  // loop, and also reports whether a console buffer exists to read back.
+  try {
+    var all = dockerCards();
+    window.__ac = window.__ac || [];
+    window.__ac.push("n=" + all.length + " want=" + JSON.stringify(wanted) +
+      " titles=" + JSON.stringify(all.map(function (c) { return cardTitle(c); })));
+    console.log("[ac] n=" + all.length + " want=" + JSON.stringify(wanted));
+  } catch (e) { window.__ac = (window.__ac || []).concat("err=" + String(e).slice(0, 60)); }
   // NOTE: a probe placed inside the loop below prints nothing when the card
   // collection is empty, so it proves nothing; a probe before the loop was
   // tried in round 422 and also never printed, which is recorded in the audit
