@@ -210,6 +210,23 @@ pub(crate) fn dirty_scan_steps() -> usize {
     DIRTY_SCAN_STEPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// **该原子**确定不会改变任何像素**吗** ✓（第 223 轮 ✓）—— **保守白名单** ✓。
+///
+/// **为什么要它** ✗：`planned_preview_dirty` 只见 `DirtyKind::Structure` ＋ 无 bbox ✓
+/// ⇒ **一律判 `Unknown` ⇒ 整幅重渲** ✗ ⇒ **实测"8K 新建空层"的 `preview_ms` ＝ 11093.968 ms** ✗✓
+///（**而建空层只改元数据 ✓，像素一个都没动 ✓**）。
+///
+/// **为什么用白名单而非新 `DirtyKind` 细分** ✓：细分要**每个原子**显式声明"是否影响像素" ✗
+/// ⇒ **漏标即撒谎** ✗；**白名单只列**确定安全**者 ✓ ⇒ **默认仍重渲** ✓
+/// ⇒ **∴ 收益是"省掉确定可省的" ✓，而**正确性不依赖它**** ✓✓。
+fn atom_cannot_change_pixels(kind: yanshi_core::atom::AtomKind) -> bool {
+    use yanshi_core::atom::AtomKind;
+    matches!(
+        kind,
+        AtomKind::CreateLayer | AtomKind::CreateCheckpoint | AtomKind::Comment | AtomKind::Suggest
+    )
+}
+
 fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
     if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
     {
@@ -760,7 +777,15 @@ impl Document {
         let dirty_tiles = self.renderer.apply_dirty(&self.state, &dirty);
         // **累积文档脏区** ✓：给"增量文档预览"用（性能专题，第 1040 轮）。
         // `Full`（求值起点跳变等）或"结构脏但没有 bbox" ⇒ 视为整幅 ✓（保守但正确 ✓）。
-        self.preview_dirty = self.preview_dirty.merged(planned_preview_dirty(&dirty));
+        // **元数据类原子 ⇒ 复用既有预览（只重组、不重画 ✓）** —— 第 223 轮 ✓
+        // **两道条件同时成立才复用** ✓：① **白名单命中**（确定不改像素 ✓）；
+        // ② **渲染器也认为没有 tile 脏**（`dirty_tiles` 为空 ✓）⇒ **双重保守 ✓，绝不撒谎 ✗**。
+        let preview_dirty = if dirty_tiles.is_empty() && atom_cannot_change_pixels(appended.kind) {
+            PreviewDirty::Clean
+        } else {
+            planned_preview_dirty(&dirty)
+        };
+        self.preview_dirty = self.preview_dirty.merged(preview_dirty);
         phases.dirty_us = phases
             .dirty_us
             .saturating_add(dirty_started.elapsed().as_micros() as u64);
