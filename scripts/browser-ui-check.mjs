@@ -2018,6 +2018,21 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     const top = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
     console.log("  历史取证：读了 " + rows.length + " 行｜最常见前 3 类：" +
       top.map(([k, n]) => n + "×「" + String(k).slice(0, 24) + "」").join("｜"));
+    // The criterion: an imported bitmap row must say more than its kind, since
+    // the atoms carry the layer and the size. The page side helper is called by
+    // bare name because composing script text from here broke the syntax five
+    // times. Mutation: removing those spans makes every row bare and turns this
+    // red.
+    const rowCheck = await evaluate("window.__rowCheck ? window.__rowCheck() : null").catch(() => null);
+    console.log("  [行检] " + JSON.stringify(rowCheck));
+    if (rowCheck && rowCheck.importRows >= 5 && rowCheck.bareRows === rowCheck.importRows) {
+      console.error("❌ " + rowCheck.importRows + " 条 import_image 行全都只有 kind ✗ ⇒ 看不出属于哪个层" +
+        "（变异：去掉层名／尺寸 span ⇒ 本判据必红 ✓）｜样例 " + JSON.stringify(rowCheck.samples));
+      process.exitCode = 1;
+    } else if (rowCheck) {
+      console.log("  ✓ import_image 行可辨识：共 " + rowCheck.importRows + " 条，其中仅含 kind 的 " +
+        rowCheck.bareRows + " 条｜样例 " + JSON.stringify(rowCheck.samples));
+    }
     // **★ 回到原文档 ✓**（否则后续段落 token 不匹配 ✗ —— 第 369 轮实测：失败 5→10 项 ✗）。
     await send("Page.navigate", { url });
     await waitFor("!!document.querySelector('#board')", "回到原文档");
