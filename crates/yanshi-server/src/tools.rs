@@ -12587,6 +12587,45 @@ pub(crate) fn brush_source_is_replayable(workspace: &Workspace, source: &Value) 
 /// * `smooth` 为真时仍要**再平滑一次** ✓（与落笔时一致 ✓）；
 /// * `feed_base = false` ✓ —— **调用方必须先**用 [`brush_source_is_replayable`] 确认这支笔刷
 ///   **不读画布** ✓；读画布的根本不该走到这里 ✗（走了也只会画出没有底图的错东西 ✗）。
+/// **导出结果缓存** ✓（第 82 轮 ✓）—— 与"重放证明记忆化"**同型** ✓（进程内 ✓、零过期风险 ✓）。
+///
+/// **为什么需要它** ✗（实测为据 ✓）：8K 导出的 **~600 ms** 全在 `export_project` 里
+/// 压缩 **96 MiB 明文** ✓（`blob_bytes_plain = 100 690 220` ✓，压缩比 **191×** ✓）。
+/// **∴ 换快级别**只能省 41% ✗ 且**包体积 2.4×** ✗；**∴ 真正的解是"内容没变就别重做"** ✓。
+/// **∴ 键里必须有 `head_seq`** ✗ ⇒ **内容一变 ⇒ 键变 ⇒ 必失效** ✓（**否则就是撒谎** ✗）。
+/// **∴ 护栏** ✓：`scripts/tool-export-idempotent.mjs` 的**第⑤条**
+///（"**改动之后导出的哈希必须改变**" ✓ —— 那条正是为**这个缓存**立的 ✓）。
+/// **代价** ✗：一个 tar ≈ **808 KiB** ✓（4K 724 KiB ✓）⇒ 很小 ✓。
+type ExportResultKey = (String, u64, bool);
+static EXPORT_RESULT_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<ExportResultKey, (Vec<u8>, crate::service::ExportStats)>,
+    >,
+> = std::sync::OnceLock::new();
+
+fn export_result_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<ExportResultKey, (Vec<u8>, crate::service::ExportStats)>,
+> {
+    EXPORT_RESULT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 命中即**整段跳过** `export_project` ✓（**这正是省下 600 ms 的地方** ✓）。
+fn export_result_lookup(key: &ExportResultKey) -> Option<(Vec<u8>, crate::service::ExportStats)> {
+    export_result_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(key).cloned())
+}
+
+/// 记住本次结果 ✓（**键含 `head_seq`** ✓ ⇒ 内容变 ⇒ 键变 ⇒ 自然失效 ✓）。
+fn export_result_remember(key: ExportResultKey, value: (Vec<u8>, crate::service::ExportStats)) {
+    if let Ok(mut guard) = export_result_cache().lock() {
+        // **只留最近一条** ✓（导出是"某一份文档的某一版"✓ ⇒ 多条无益 ✓，内存可控 ✓）。
+        guard.clear();
+        guard.insert(key, value);
+    }
+}
+
 pub(crate) fn replay_brush_bitmap(
     workspace: &mut Workspace,
     doc_id: &str,
@@ -13647,7 +13686,26 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                 });
         }
     };
-    let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+    // **导出结果缓存** ✓（第 82 轮 ✓）：键含 **`head_seq`** ✗ ⇒ 内容一变键就变 ✓
+    // ⇒ **∴ 不可能拿旧包当新包** ✓（护栏：`tool-export-idempotent` 第⑤条 ✓）。
+    let head_seq = ctx
+        .workspace
+        .document(&doc_id)
+        .map(|document| document.head_seq())
+        .unwrap_or(0);
+    let cache_key: ExportResultKey = (
+        env!("CARGO_PKG_VERSION").to_owned(),
+        head_seq,
+        include_bitmaps,
+    );
+    let (tar, stats) = match export_result_lookup(&cache_key) {
+        Some(hit) => hit,
+        None => {
+            let built = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+            export_result_remember(cache_key, built.clone());
+            built
+        }
+    };
     _p3_mark("export_project");
     if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
         let _ = std::fs::OpenOptions::new()
