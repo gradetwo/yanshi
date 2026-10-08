@@ -1983,6 +1983,14 @@ async function checkBitExact() {
     region: { x: 0, y: 0, w, h },
     raw: true,
   }, { refresh: false });
+  // 含 heavy 内容（位图／介质笔画）的文档上，内核**表示不了**它 ⇒ **bit-exact 比较不适用** ✓
+  // ⇒ **如实标注"不适用"** ✓，而不是报一个差异数 ✗（那会被读成"内核算错"✗ —— 审计 Y-01 的误导点 ✓）。
+  if (typeof needsServerPixels === "function" ? needsServerPixels() : false) {
+    window.yanshiStats.bitExact = null;   // **未知** ✓（不是 false ✗）
+    const box = $("bitExact");
+    if (box) box.textContent = "不适用（文档含 heavy 内容：内核表示不了位图／介质笔画）";
+    return;
+  }
   if (!server.raw_url) { log("服务端未返回原始像素，无法自检", "#c33"); return; }
   const response = await fetchOrLocal(api(server.raw_url.replace("yanshi://blob/", "/api/blob/")));
   const serverPixels = new Uint8Array(await response.arrayBuffer());
