@@ -1982,6 +1982,20 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       return { found: true, before: before, after: card.classList.contains("collapsed") };
     })()`);
     console.log("  [展开历史卡] " + JSON.stringify(expanded));
+    // The card sits at the very bottom of the column, so its rows stay below the
+    // fold even when it is open; scrolling it into view is what a person does by
+    // hand and what the picture needs (round 456).
+    const scrolled = await evaluate(`(() => {
+      const cards = Array.from(document.querySelectorAll("aside .card"));
+      const card = cards.find((c) => {
+        const h = c.querySelector("h2");
+        return h && /历史/.test(h.textContent || "");
+      });
+      if (!card || !card.scrollIntoView) return { scrolled: false };
+      card.scrollIntoView({ block: "start" });
+      return { scrolled: true };
+    })()`);
+    console.log("  [滚到历史卡] " + JSON.stringify(scrolled));
     await new Promise((r) => setTimeout(r, 1200));
     try { await capture("history-panel-imported"); } catch (_) {}
     // **★ 诊断 ✓**（第 393 轮 ✓）：**四次改代码都没生效 ✗ ⇒ **停止猜测 ✓** ⇒ **把真实结构打出来 ✓****
