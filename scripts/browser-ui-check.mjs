@@ -1920,7 +1920,8 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
             for (const m of ms) {
               if (m.type !== "attributes" || m.attributeName !== "class") continue;
               const t = m.target;
-              if (!t || !t.classList || !t.classList.contains("collapsed")) continue;
+              // record every class change, removals included (see round 403).
+              if (!t || !t.classList) continue;
               if (!/历史|history/.test((t.textContent || "") + (t.dataset ? t.dataset.panel : ""))) continue;
               window.__cl.push({ panel: t.dataset && t.dataset.panel, cls: t.className,
                                  stack: String(new Error().stack).split("\\n").slice(1, 6).join(" | ") });
