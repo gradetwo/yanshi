@@ -724,3 +724,21 @@ crates/yanshi-http/src/server.rs:1168  fn import_finish(...) -> Response {
 1. **文件式探针** ✓（**本会话的铁律 ✓**）⇒ **在 `import_project` 里按段计时**（**读包／存 blob／重放日志 ✓**）⇒ **写进 `/tmp` 文件 ✓**；
 2. **若发现某段远超其必要性** ✗（**如"逐个 blob 各开一次文件"✗ ⇒ 可批量 ✓**）** ⇒ **才改 ✓**；
 3. **判据** ✓：**"导入 8K ≤ 2 s ✓"**（**若可达 ✓**）＋ **成对守卫**：**"导入后首屏有图 ✓"**（**＝第 329 轮已入档 ✓**）。
+
+
+### 二十九、🚨 **更正第 323 轮（后半）**：`browser-no-stale-read` **不是坏了 ✗** —— 是我**少传了 `token` 参数**（第 332 轮 ✓）
+
+#### 一、事实 ✓
+```js
+scripts/browser-no-stale-read.mjs:13  // **用法：`<viewer-url> <base> <token> <cdp-port>` ✓** ⇒ argv[3] 是 BASE（完整 URL）✗
+                              :21  const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
+```
+⇒ **∴ 它**要求显式给出 token**✓**（**从 URL 的 `&token=` 里读 ✓**）⇒ **∴ 我先前只传了**不带 token 的 URL**✗ ⇒ `token` 为空 ⇒ 服务端回「**capability token 必须是 64 位小写十六进制**」✗** ✓✓
+⇒ **∴ 所以**不是判据自判无效 ✗，而是**我的调用方式不全 ✗** —— **∴ **如实更正 ✓**（**这是本会话**第 8 次**更正我自己的判断 ✓**）** ✓✓
+
+#### 二、∴ 正确调用 ✓（**下一轮照做 ✓**）
+```bash
+node scripts/browser-no-stale-read.mjs \
+  "http://127.0.0.1:$P/?doc=$DOC&token=$TOK"  "http://127.0.0.1:$P"  "$TOK"  9222
+```
+⇒ **∴ 且退出码必须**不接管道**取 ✓（**`${PIPESTATUS[0]}` ✓ 或直接 `$?` ✓ —— 第 324 轮 ✓**）✓✓
