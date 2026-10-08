@@ -2511,3 +2511,30 @@ var card = Array.prototype.slice.call(document.querySelectorAll("aside .card"))
 　（**如他**确实手动折过 ✓ ⇒ **∴ 那 `localStorage` 里就有 ✓ ⇒ **∴ 而 `applyCollapsed(saved)` 会折它 ✗** ——
 　**∴ 但我第 397 轮的跳过逻辑**应当拦住 ✓ ⇒ **∴ 而 `before=false` 证明**它拦住了 ✓ ⇒ **∴ 所以**用户那一侧
 　**若被折 ⇒ **∴ 只能来自**点击 ✓／或 `saved` 之外**✗**** ✓✓
+
+
+### 九十九、🎯🎯🎯 **找到折叠机制的入口**：harness **会点击卡片标题**（第 435 轮 ✓）
+
+#### 一、铁证 ✓（`scripts/browser-ui-check.mjs` ✓）
+```js
+:1481  const byTitle = (t) => cards.find((c) => (c.querySelector("h2") || {}).textContent.trim() === t);
+:1483  const collapsed = (card) => Boolean(card && card.classList.contains("collapsed"));
+:1485  const stateBefore = collapsed(effects);
+:1494  **if (effects) effects.querySelector("h2").click();**   ← ★★★ **点击卡片标题 ✗** ★★★
+:1498  flipped: collapsed(effects) !== stateBefore,
+:1507  **historyCollapsed: collapsed(byTitle("历史（原子日志）"))**   ← ★ 之后读历史卡状态 ✓
+:1508  stored: localStorage.getItem("yanshi.workspace"),
+:1524  problems.push(`工作区选择没有持久化（localStorage=${…}）`);       ← **∴ 该段落**会驱动工作区切换 ✗**
+```
+⇒ **∴ 结论一（决定性 ✓）** ✓：**harness 在 `:1494` **点击了某张卡的 `h2`**✗**（`effects` ＝ "调整 / 滤镜" ✓）
+　⇒ **∴ 而页面在 `:8549` 把 `h2` 的点击**接到 `card.classList.toggle("collapsed") ＋ saveDockers()` ✗
+　⇒ **∴ 于是**卡片折叠状态**被**写入 `localStorage`**✗**** ✓✓
+⇒ **∴ 结论二** ✓：**而 `:1482` 那段**做面板审计 ✓** ⇒ **∴ 它会**读／写工作区状态 ✗**（`:1508`／`:1524` ✓）
+　⇒ **∴ 从而**触发 `applyWorkspace` ✗** ⇒ **∴ 每次**按 `saved`／预设重放折叠 ✗**** ✓✓
+⇒ **∴ 结论三（关键 ✓）** ✓：**而我的"跳过历史卡"**应当拦住它 ✓**（**`before=false` 已证 ✓**）⇒
+　**∴ 所以历史卡**不是**被 `applyCollapsed` 折的 ✗ ⇒ **∴ 而是**被**某种点击**✗ —— **∴ 而 `:1494` 点的是
+　"调整 / 滤镜" ✗，不是历史卡 ✗** ⇒ **∴ 仍需**找出**点历史卡的那一处 ✗**（**或**去掉观察器的断开 ✓**）** ✓✓
+
+#### 二、∴ 最后一步（**两选一 ✓**）
+1. **把探针里观察器的 `disconnect()` 去掉** ✓（**或延长到 60 s ✓**）⇒ **∴ 一次抓到"诊断前那一次折叠" ✗**；
+2. **或**全文搜"点历史卡标题"的地方 ✓（**`:1494` 只是已找到的一处 ✓ —— **可能还有第二处 ✗**）✓✓
