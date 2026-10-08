@@ -855,6 +855,9 @@ function sizeBoards(width, height) {
     window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
     overlay.width = width;
     overlay.height = height;
+    // **内核像素层必须与另两层同尺寸** ✗（否则它是 300×150 默认值 ⇒ 绘制错位 ✓）—— 第 286 轮 ✓
+    kernel.width = width;
+    kernel.height = height;
     // 用**文档背景色**铺底而不是留透明：切换文档/等待内核期间画布不会出现透明空洞
     // （此前表现为「操作后画布空白」，且在冷启动的临时实例上间歇复现）。
     const background = state.backgroundCss || "#ffffff";
