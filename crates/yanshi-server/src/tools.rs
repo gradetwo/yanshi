@@ -12587,6 +12587,45 @@ pub(crate) fn brush_source_is_replayable(workspace: &Workspace, source: &Value) 
 /// * `smooth` 为真时仍要**再平滑一次** ✓（与落笔时一致 ✓）；
 /// * `feed_base = false` ✓ —— **调用方必须先**用 [`brush_source_is_replayable`] 确认这支笔刷
 ///   **不读画布** ✓；读画布的根本不该走到这里 ✗（走了也只会画出没有底图的错东西 ✗）。
+// **导出结果缓存** ✓（第 83 轮 ✓）—— 与"重放证明记忆化"同型（进程内、零过期风险）。
+//
+// **为什么需要它** ✗（实测为据）：8K 导出的 ~600 ms 全在压缩 **96 MiB 明文**上
+//（压缩比 191×）；换快级别只省 41% 且包体积 2.4×，所以正解是"内容没变就别重做"。
+//
+// **⚠️ 第 82 轮我因此栽过一次** ✗：当时键只含 `head_seq`，而
+// **两个测试直接改 blob 存储（不经过原子日志）** ⇒ `head_seq` 不变 ⇒ 返回旧包 ⇒ **测试当场否证** ✓。
+// **∴ 修正（可证明安全 ✓）**：**只在"没有任何 blob 被读出来打包"时才缓存** ✓
+//（`kept_no_recipe == kept_mismatch == kept_missing == 0`）。
+// **∴ 那时结果只依赖文档日志** ✓ ⇒ **∴ `head_seq` 键才是完备的** ✓；
+// 一旦需要打包（存储参与了 ✓）⇒ **不缓存** ✓ ⇒ **∴ 不可能返回旧包** ✓。
+// 代价：8K 有 70 个必须打包的 blob ⇒ 不缓存 ⇒ 保持 ~618 ms（**正确** ✓）。
+//
+// **护栏** ✓：`tool-export-idempotent.mjs` 的第⑤条（"改动之后哈希必须改变"）。
+type ExportResultKey = (String, u64, bool);
+type ExportResultValue = (Vec<u8>, crate::service::ExportStats);
+type ExportResultMap = std::collections::HashMap<ExportResultKey, ExportResultValue>;
+static EXPORT_RESULT_CACHE: std::sync::OnceLock<std::sync::Mutex<ExportResultMap>> =
+    std::sync::OnceLock::new();
+
+fn export_result_cache() -> &'static std::sync::Mutex<ExportResultMap> {
+    EXPORT_RESULT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn export_result_lookup(key: &ExportResultKey) -> Option<ExportResultValue> {
+    export_result_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(key).cloned())
+}
+
+/// 记住本次结果 —— **调用方必须先确认"没有任何 blob 被打包"** ✓（见上面的说明）。
+fn export_result_remember(key: ExportResultKey, value: ExportResultValue) {
+    if let Ok(mut guard) = export_result_cache().lock() {
+        guard.clear();
+        guard.insert(key, value);
+    }
+}
+
 pub(crate) fn replay_brush_bitmap(
     workspace: &mut Workspace,
     doc_id: &str,
@@ -13647,7 +13686,31 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                 });
         }
     };
-    let (tar, stats) = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+    // **导出结果缓存（方案 C ✓）**：查出 `head_seq` 作为键，命中即整段跳过。
+    let head_seq = ctx
+        .workspace
+        .document(&doc_id)
+        .map(|document| document.head_seq())
+        .unwrap_or(0);
+    let cache_key: ExportResultKey = (
+        env!("CARGO_PKG_VERSION").to_owned(),
+        head_seq,
+        include_bitmaps,
+    );
+    let (tar, stats) = match export_result_lookup(&cache_key) {
+        Some(hit) => hit,
+        None => {
+            let built = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+            // **只在"存储没有参与"时才记入** ✗ —— 这正是第 82 轮的漏洞所在 ✓。
+            if built.1.kept_no_recipe == 0
+                && built.1.kept_mismatch == 0
+                && built.1.kept_missing == 0
+            {
+                export_result_remember(cache_key, built.clone());
+            }
+            built
+        }
+    };
     _p3_mark("export_project");
     if std::env::var_os("YANSHI_TRACE_EXPORT2").is_some() {
         let _ = std::fs::OpenOptions::new()
