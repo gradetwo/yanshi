@@ -2970,3 +2970,31 @@ const c = /* 历史卡 */; if (c && c.scrollIntoView) c.scrollIntoView({ block: 
 | **★ 内容指纹 ＋ 蒙版内容 ★** | **257 passed / 0 failed ✓ ＋ `below_reuse = 60` ✓ ⇒ **两项同时满足 ✓**** |
 ⇒ **∴ 教训** ✓：**令牌必须覆盖**状态里一切影响像素的东西 ✓** ——
 　**∴ 而 `state.rs:504` 前任已写明「`mask_id`／`medium` 改了 below 也必须失效」✓ ⇒ **∴ 我正好踩了它一次 ✓**** ✓✓
+
+
+### 一百一十五、✅ **六类例外全部落地**（设计 §3 ✓）（第 464 轮 ✓）
+
+#### 一、实测 ✓
+```
+构建 ✓｜**测试 257 passed / 0 failed** ✓
+`tool-composite-scaling` **EXIT 0** ✓（`below_reuse = 60` ✓）｜`tool-below-reuse` **EXIT 0** ✓
+```
+⇒ **∴ 结论** ✓：**六条例外**全部实现 ✓，**且**没有误伤正常路径 ✓（**判据仍绿 ✓**）** ✓✓
+
+#### 二、逐条落点 ✓（**`crates/yanshi-render/src/render.rs` ✓**）
+| # | 例外 | 实现 ✓ |
+|---|---|---|
+| **①** | **非可分离混合** | `layer.blend_mode` 转小写 ∈ {`behind`, `erase`} ⇒ `except_seen = true` ✓ |
+| **②** | **穿透组** | `layer.parent_id.is_some()` 或 **层类型含 `group`** ⇒ `except_seen = true` ✓ |
+| **③** | **组不透明度 ≠ 1** | **是组且 `(opacity − 1).abs() > EPSILON`** ⇒ `except_seen = true` ✓ |
+| **④** | **剪贴蒙版** | `layer.clipping_mask` ⇒ `except_seen = true` ✓ |
+| **⑤** | **读画布类笔刷** | **该层任一未删对象的 `{data}{metadata}` 小写含** `smudge`／`watercolor`／`watercolour`／`oil`／`涂抹`／`水彩` ⇒ `except_seen = true` ✓ |
+| **⑥** | **色彩空间一致性** | **把 `state.color_space` 放进指纹** ✓（**比"不一致就不缓存"更精确 ✓**） |
+⇒ **∴ 变量也改名** ✓：**`clipping_seen` ⇒ `except_seen`** ✓（**它的含义已从"剪贴蒙版"扩成"任一例外" ✓**）** ✓✓
+
+#### 三、⚠️ 方法教训（**本轮真正修好的原因 ✓**）
+* **前三次失败** ✗：**都在**循环体里插片段**✗ ⇒ **多余 `}` ＋ 重复语句 ⇒ 花括号不匹配 ✓**；
+* **本轮成功** ✓：**先 `sed -n` 打印**整个循环块（含花括号 ✓）⇒ **用 python 按**花括号配平**定位 `i_start..i_end` ⇒ **一次性替换整块 ✓**；
+* **∴ 另一处**：**先用**枚举名**（`LayerType::Group` ✗）失败 ⇒ **∴ 改用 `format!("{:?}", …).contains("group")` ✓**
+　（**∴ 免去枚举变体名 ⇒ 不再被命名细节卡住 ✓**）；**实测真名是 `LayerGroup` ✓**（`state.rs:80` ✓）。
+* **∴ 教训** ✓：**改代码块要"打印整块 ⇒ 一次替换"✓；要"用语义匹配（**文本 ✓**）代替精确符号名 ✗"** ✓✓

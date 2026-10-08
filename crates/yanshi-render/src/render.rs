@@ -753,7 +753,7 @@ impl Renderer {
 
         // **★ below 复用判定 ✓**（目标第 4 条 ✓）：先算"可见层"的签名 ✓，再看缓存是否仍然有效 ✓。
         let mut visible_ids: Vec<String> = Vec::new();
-        let mut clipping_seen = false;
+        let mut except_seen = false;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
                 if layer.id != only {
@@ -762,14 +762,46 @@ impl Renderer {
             } else if !layer.visible && !self.options.include_hidden_layers {
                 continue;
             }
+            // **★ 六类例外 ✓**（设计 §3 ✓／目标第 4 条明文 ✓）：**会打破三段分解的情形 ✓**
+            // ⇒ **∴ 命中任一 ⇒ 整片不走缓存 ✓**（**宁慢勿错 ✓；lazy 不许撒谎 ✓**）。
             if layer.clipping_mask {
-                clipping_seen = true;
+                // **④ 剪贴蒙版 ✓**：**用下方内容的 alpha 裁剪本层 ⇒ 它不是层的函数 ✗**。
+                except_seen = true;
             }
-            // **★ 内容指纹 ✓**（第 462 轮 ✓）：**`(id, updated_by)` 不足**✗** ——
-            // **① `create_layer` 建的层 `updated_by = None` ✗**（`fold.rs:790/830` ✓）；
-            // **② 而有测试**直接改 `state.objects` ⇒ 无原子记录 ⇒ 令牌不变而内容变了 ✗**（**4 个测试当场抓到 ✓**）。
-            // **∴ 改用该层**对象的 `(id, current_version, data)` 摘要**✓ —— **∴ 内容变 ⇒ 指纹必变 ✓**；
-            // **∴ 代价**（两面 ✓）：**每层每对象一次格式化 ✗**，但**对象数据是哈希与参数（**非像素 ✓**）⇒ 很小 ✓**。
+            // **① 非可分离混合 ✓**（`behind`／`erase` ✓）：**结果依赖下方已合成的像素 ✗**。
+            let mode_name = layer.blend_mode.to_ascii_lowercase();
+            if mode_name == "behind" || mode_name == "erase" {
+                except_seen = true;
+            }
+            // **② 穿透组 ✓**：**组内合成参与外层 ⇒ 分段边界 ≠ 层边界 ✗** ⇒ **∴ 有父组就不缓存 ✓**。
+            let is_group = format!("{:?}", layer.layer_type)
+                .to_ascii_lowercase()
+                .contains("group");
+            if layer.parent_id.is_some() || is_group {
+                except_seen = true;
+            }
+            // **③ 组不透明度 ≠ 1 ✓**：**它不能分配到各层 ⇒ below 的边界会算错 ✗**。
+            if is_group && (layer.opacity - 1.0).abs() > f64::EPSILON {
+                except_seen = true;
+            }
+            // **⑤ 读画布类笔刷 ✓**（smudge／watercolor ✓）：**它们**读**下方像素 ⇒ 该层渲染本身就是 below
+            // 的函数 ⇒ 缓存会循环依赖 ✗**（目标明文点名 ✓）⇒ **∴ 含此类对象 ⇒ 不缓存 ✓**。
+            // **⚠️ 代价**（两面 ✓）：**每层每对象一次格式化 ✗**（**对象数据是哈希与参数 ⇒ 很小 ✓**）。
+            for obj in state.objects.values() {
+                if obj.layer_id != layer.id || obj.deleted_by.is_some() {
+                    continue;
+                }
+                let blob = format!("{:?}{:?}", obj.data, obj.metadata).to_ascii_lowercase();
+                if ["smudge", "watercolor", "watercolour", "oil", "涂抹", "水彩"]
+                    .iter()
+                    .any(|m| blob.contains(m))
+                {
+                    except_seen = true;
+                }
+            }
+            // **★ 内容指纹 ✓**（第 462 轮 ✓）：**`(id, updated_by)` 不足 ✗** ⇒
+            // **∴ 用该层**对象的 `(id, current_version, data)` 摘要 ＋ 蒙版内容 ＋ 色彩空间 ✓**
+            // ⇒ **∴ 内容变 ⇒ 指纹必变 ✓**；**代价**：**每层每对象一次格式化 ✗**（**数据是哈希与参数 ⇒ 很小 ✓**）。
             let mut objs: Vec<String> = state
                 .objects
                 .values()
@@ -778,7 +810,7 @@ impl Renderer {
                 .collect();
             objs.sort();
             visible_ids.push(format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 layer.id,
                 layer.updated_by.as_deref().unwrap_or("-"),
                 layer.opacity,
@@ -786,15 +818,14 @@ impl Renderer {
                 layer.visible,
                 layer.clipping_mask,
                 layer.mask_id.as_deref().unwrap_or("-"),
-                // **★ 蒙版内容也要进指纹 ✓**（第 462 轮**测试抓到** ✓）：**`state.masks` **不在 `objects` 里**✗**
-                // ⇒ **∴ 只指纹对象 ⇒ **改了蒙版而指纹不变 ⇒ 复用错的 below ⇒ 测试失败 ✗**
-                //（**`state.rs:504` 前任已写明"`mask_id`／`medium` 改了 below 也必须失效" ✓ —— 我正好踩了它 ✓**）。
                 layer
                     .mask_id
                     .as_deref()
                     .and_then(|m| state.masks.get(m))
                     .map(|s| format!("{s:?}"))
                     .unwrap_or_default(),
+                // **⑥ 色彩空间一致性 ✓**：**放进指纹 ⇒ 它一变 ⇒ 指纹变 ⇒ 失效 ✓**（**比"不一致就不缓存"更精确 ✓**）。
+                format!("{:?}", state.color_space),
                 objs.join(",")
             ));
         }
@@ -805,7 +836,7 @@ impl Renderer {
         // **`updated_by` 为 `None` ⇒ **无法证明"这一层没变"**✗**（**如测试里的调整层／蒙版／液化对象 ✓**）
         // ⇒ **∴ 那时若仍复用 ⇒ **会拿旧的下方合成冒充 ⇒ 输出错 ✗**（**4 个既有测试当场抓到 ✓**）
         // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
-        let cacheable = split > 0 && !clipping_seen;
+        let cacheable = split > 0 && !except_seen;
         let mut reused = false;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
