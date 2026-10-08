@@ -56350,3 +56350,36 @@ tool-thumbnail-on-demand EXIT=0 ✓（5 行 ✓）
 
 ### 四、门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）、两条判据 **EXIT=0** ✓。
+
+## 第 411 轮：🚨 **导出结果缓存被**测试**否证** ✗ ⇒ **已撤回** ✓（缓存键漏了"存储状态" ✓）
+
+### 一、失败（**我提交并推送了它** ✗ ⇒ 约束 4 被破坏了一轮 ✓）
+```
+✗ clippy：① `doc_lazy_continuation` ✗ ② **`very complex type`** ✗（**第 39 轮同一个 lint** ✗ —— 我重犯了 ✓）
+✗ `cargo test`：**2 个失败** ✓，都在 `crates/yanshi-server/tests/export_small.rs`：
+   * `a_package_with_a_missing_blob_still_opens_and_warns` ✗
+   * `a_canvas_reading_brush_blob_is_never_omitted` ✗
+```
+
+### 二、🎯 真因（**测试是对的，我的缓存是错的** ✓）
+这两个测试**直接改 blob 存储**（例如删掉一个 blob ✓）**而不经过原子日志** ✗
+⇒ **∴ `head_seq` 不变** ✗ ⇒ **∴ 我的缓存键**没变** ⇒ **第二次导出返回**旧包**✗✓**
+⇒ **∴ 这是一个**真实的正确性漏洞**✓**（正是"撒谎"里最隐蔽的那种 ✓）
+⇒ **∴ 那两个测试**本来就在守这件事** ✓ ⇒ **∴ 它们当场抓住 ✓** —— **可复用结论** ✓：
+   **「结果依赖存储状态时，缓存键只含文档序号是不够的」** ✗✓
+   ⇒ **∴ 正确的键**必须含**存储的状态**（例如一个 store epoch／指纹 ✓）**或**在**存储被写时就失效** ✓
+   ⇒ **∴ 或者**更保守 ✓：**当 `include_bitmaps` 会打包 blob 时，不缓存** ✓。
+
+### 三、处置：**撤回** ✓（与 `put_cache`／缓存上限**同一纪律** ✓）
+* **撤回方式** ✓：从**加缓存之前的备份**还原 ✓（`git checkout` 不行 ✗ —— 缓存**已提交** ✓，第 397 轮的教训 ✓）；
+* **复验** ✓：`export_result` 残留 **0** ✓、构建 ✓、**clippy ✓**、**`cargo 退出码: 0`｜passed=927／failed=0** ✓、
+  `export_small` **6 passed／0 failed** ✓（**那两个测试回到绿** ✓✓）。
+
+### 四、∴ 两条教训（都值得写下来 ✓）
+1. **`very complex type` 我重犯了** ✗（第 39 轮 ✓）⇒ **∴ 加静态／新类型时**一律先起 `type` 别名** ✓；
+2. **"结果依赖外部状态（存储 ✓）时，缓存键必须涵盖那个状态"** ✓ ——
+   我的键 `(crate_version, head_seq, include_bitmaps)` ✗ **只涵盖文档** ✓ ⇒ **∴ 不够** ✓。
+   **∴ 而"快 48×"并不值一个撒谎** ✗ ⇒ **∴ 撤回是唯一诚实的选择** ✓。
+
+### 五、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace` **927／0** ✓、`export_small` **6／0** ✓。
