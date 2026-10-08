@@ -908,3 +908,32 @@ zipfile.ZipFile("/tmp/eval/artworks/arnolfini_portrait_4k.yanshi")   ⇒ **BadZi
 * **判据** ✓：**"中位数 ≤150 ms ✓"**（**变异** ✗：**恢复某段固定开销 ⇒ 又 ≈400 ms ⇒ 红 ✓**）；
 * **成对守卫** ✓：**"导入后首屏有图 ✓"**（**不得用"不初始化"换速度 ✗ 而让文档不可用 ✓**）；
 * **报告** ✓：**必须同时给出**全体样本 ＋ 中位数**✓（**否则方差会被藏起来 ✗**）** ✓✓
+
+
+### 三十八、🐞 **用户报告（2026-10-09）**：导入后"除了前几个 `create_layer`，其余名字都是 `import_image`"（第 342～343 轮 ✓）
+
+#### 一、复现 ✓（**导入 `arnolfini_portrait_4k` ✓**）
+```
+get_state.layers ✓：
+  layer_default  ⇒  name=图层 1          ✓
+  layer_1        ⇒  name=图层 1          ✓
+  L1_chamber     ⇒  name=**Chamber Architecture**   ✓
+  L2_floor       ⇒  name=**Timber Floorboards**     ✓
+  L3_bed         ⇒  name=**Canopy Bed & Drapery**   ✓
+  L4_window      ⇒  name=**Window Light**           ✓
+  L5_figures     ⇒  name=**Arnolfini Couple**       ✓
+  L6_details     ⇒  name=**Masterpiece Details**    ✓
+  ⇒ **层数 8 ✓、名字都**正常**✓**
+```
+⇒ **∴ 结论一** ✓：**图层名**没有问题 ✗** ⇒ **∴ 用户说的"名字"**不是 `get_state` 的 `name` 字段**✗** ⇒
+　**∴ 它指的是**历史面板／原子列表里的**操作条目**✓**（**那些条目显示的是**原子种类**✓，如 `create_layer`／`import_image` ✓）** ✓✓
+
+#### 二、∴ 症状的准确描述 ✓（**待下一轮确认 ✗**）
+* **导入后**：**历史里先有几条 `create_layer` ✓，随后**大量** `import_image` ✗** —— **∴ 而工程里本有 8 个具名图层 ✓**
+　⇒ **∴ 说明**重放时把原来的操作语义（`draw_stroke`／`fill`／… ✓）**折叠成了 `import_image` ✗**；
+* **∴ 这可能是**导入位图的**设计选择**✓（**位图在重放里只能以 `import_image` 落地 ✓**）⇒ **∴ 但用户的观感是"历史坏了"✗** ⇒ **∴ 需要**在历史里保留可读的来源**（**如"导入的位图 N ✓"／保留原工具名 ✓**）** ✓✓
+
+#### 三、∴ 下一轮（**先查清显示源，再动手 ✗**）
+1. **查历史面板取什么字段** ✓：`viewer-app.js` 的历史渲染处（**第 3974 轮附近见过 `item.name || item.checkpoint_id` ✓**）＋ **可用的历史工具名** ✓（`GET /api/tools` ✓ 列出 `history` 组 ✓）；
+2. **复现用户视角** ✓：**截图**历史面板 ✓（**复用既有 harness ✓，不手写 CDP ✗** —— 第 314 轮 ✓）；
+3. **判据** ✓：**"导入后，历史中代表位图的条目**必须能看出它是位图**✓（**而非一律 `import_image` 而无可读区分 ✗**）"** ✓。
