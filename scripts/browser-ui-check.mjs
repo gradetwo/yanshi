@@ -2002,6 +2002,16 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       "           p: (c.dataset && c.dataset.panel) || '-' };" +
       "}).filter(function (x) { return /\u5386\u53f2|history/.test(x.t + x.p); })",
     ).catch(() => []);
+    // unregister the service worker and drop its caches, because the worker
+    // pre-caches the very script under test and its cache name did not change
+    // between builds, so a cached copy may be what has been running all along
+    // (round 421).
+    const swCleared = await evaluate('(async () => { try { const rs = await navigator.serviceWorker.getRegistrations(); for (const r of rs) { await r.unregister(); } const ks = await caches.keys(); for (const k of ks) { await caches.delete(k); } return { regs: rs.length, caches: ks.length }; } catch (e) { return { err: String(e).slice(0, 60) }; } })()').catch(function () { return null; });
+    console.log("  [清缓存] " + JSON.stringify(swCleared));
+    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
+    await new Promise(function (r) { setTimeout(r, 2500); });
+    const acAfter = await evaluate('(window.__cl || []).length').catch(function () { return null; });
+    console.log("  [重载后 __cl 条数] " + JSON.stringify(acAfter));
     console.log("  [卡片] " + JSON.stringify(cards));
     const errs = await evaluate('(window.__err || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [异常] " + JSON.stringify(errs));
