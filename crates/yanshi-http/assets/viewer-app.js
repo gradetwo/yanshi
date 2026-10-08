@@ -8794,10 +8794,12 @@ window.__probe = function () {
     });
     obs.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
     out.obs = true;
+    // Do NOT disconnect: the fold happens later than three seconds (round 435),
+    // so keep recording for the rest of the run and expose the log live.
+    window.__probeWatch = out.watch;
     window.setTimeout(function () {
-      try { obs.disconnect(); } catch (e) {}
-      window.__probeAfter = out.watch.slice(0, 8);
-    }, 3000);
+      window.__probeAfter = out.watch.slice(0, 12);
+    }, 120000);
   } catch (e) { out.obsErr = String(e).slice(0, 60); }
   return out;
 };

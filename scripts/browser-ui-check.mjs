@@ -2016,6 +2016,8 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     const pr = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
     console.log("  [probe] " + JSON.stringify(pr));
     await new Promise(function (r) { setTimeout(r, 3500); });
+    const live = await evaluate("(window.__probeWatch || []).slice(0, 12)").catch(function () { return null; });
+    console.log("  [实时观察] " + JSON.stringify(live));
     const pw = await evaluate("window.__probeAfter || null").catch(function () { return null; });
     console.log("  [probe观察] " + JSON.stringify(pw));
     const pr2 = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
