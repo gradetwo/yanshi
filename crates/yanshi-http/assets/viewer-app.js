@@ -8553,6 +8553,16 @@ function initDockers() {
   } else {
     applyWorkspace("paint");
   }
+  // **★ 历史卡必须**默认展开**✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
+  // **∴ 上面三个分支都会被**本地折叠列表**压过 ✗**（`DOCKER_STORE` ✓ —— 用户**只要折叠过任何一张卡**✓，
+  // `saveDockers()` 就会写进去 ✓ ⇒ **∴ 从此**预设永远不再适用 ✗** ⇒ **∴ 只改 `paint.open/closed` **看不见效果 ✗**
+  // —— 第 386 轮实测：改了预设 ＋ 重建 ✓，图上那张卡**仍旧折叠 ✗**）。
+  // **∴ 所以这里**强制**把它展开 ✓**（**在三分支**之后 ✓，**因此与本地状态无关 ✓**）——
+  // **∴ 因为实测**：导入的作品里 **36 行有 21 行以 `import_image` 开头** ✓，**而这张卡**默认折叠**✗
+  // ＋ 位于页面**最底部**✓** ⇒ **∴ 用户很可能**根本没看到那一列 ✓**（**图：第 383 轮 ✓**）。
+  for (const card of dockerCards()) {
+    if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
+  }
   const select = $("workspace");
   if (select) {
     select.addEventListener("change", () => applyWorkspace(select.value));
