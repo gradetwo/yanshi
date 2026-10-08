@@ -2629,3 +2629,37 @@ if (p.width) {
 ⇒ **∴ 判据（可红 ✓）** ✓：**"导入后，`import_image` 行**必须能看出它属于哪个层**✓（**行文本含层名或层 id ✓**）"**
 　⇒ **变异** ✗：**去掉该 span ⇒ 行只显示 `import_image` ⇒ **必红 ✓**** ✓✓
 ⇒ **∴ 且这不加任何**假信息 ✓** —— **∴ 数据本来就在原子里 ✓**（**符合 lazy 总则第 3 条：**推迟到有人要 ✓，但不撒谎 ✓**）** ✓✓
+
+
+### 一百零三、🎯🎯🎯 **前提确认**：21／21 条 `import_image` 都含 `layer_id`（第 443 轮 ✓）
+
+#### 一、API 实测 ✓
+```
+import_image   payload=['bitmap','height','**layer_id**','object_id','region','type','width']   ← ★ 有 ✓
+create_layer   payload=['layer_id','**name**']                                                  ← ★★ **自带层名 ✓** ★★
+create_document payload=['background','color_space','doc_id','height','width']
+draw_shape     payload=['data','layer_id','object_id']
+
+**import_image 共 21 条｜**含 layer_id 的 21 条** ✓✓**
+样例：`layer_id = 'L1_chamber'` ✓｜`width = 3000` ✓
+```
+⇒ **∴ 结论一（修法前提成立 ✓）** ✓：**API 返回的 21 条 `import_image`**全部**含 `layer_id` ✓（**＋ `width` ✓**）
+　⇒ **∴ 我第 442 轮的 span **一定会出现 ✓** ⇒ **∴ 那些行将显示**层 id（`L1_chamber` ✓）＋ 尺寸（`3000×…` ✓）**** ✓✓
+⇒ **∴ 结论二（更省 ✓）** ✓：**`create_layer` 的 payload **自带 `name` ✓**（**如 `"Chamber Architecture"` ✓**）
+　⇒ **∴ 所以层名**不必去问 `get_state` ✗** ⇒ **∴ 只需在渲染时**收一张
+　`layer_id ⇒ name` 的小表 ✓****（**从同一次 `get_log` 的 `create_layer` 行里取 ✓ —— **`atom.kind === "create_layer"` ⇒
+　`payload.layer_id` ＋ `payload.name` ✓**）⇒ **∴ 于是**全程只用一份数据 ✓，**零额外请求 ✓**** ✓✓
+⇒ **∴ 结论三** ✓：**∴ 用户报告 ② 的修法**已具备全部条件 ✓** ⇒ **∴ 只剩**看图复核 ＋ 判据 ＋ 变异 ✗**** ✓✓
+
+#### 二、∴ 下一轮（**两小步 ✓**）
+1. **在行渲染里建层名小表** ✓：
+```js
+const layerNames = {};
+for (const a of atoms) {
+  const p = a.payload || {};
+  if (a.kind === "create_layer" && p.layer_id && p.name) layerNames[p.layer_id] = p.name;
+}
+// ⇒ 渲染 import_image 行时用 layerNames[_pl.layer_id] || _pl.layer_id ✓
+```
+2. **∴ 然后**看图**✓（**截图 ✓**）⇒ **∴ 期望行里出现**`Chamber Architecture` 或 `L1_chamber` ＋ `3000×…`** ✓** ⇒
+　**∴ 判据（可红 ✓）**：**"导入后，`import_image` 行**至少有一个可读的层标识**✓"**（**变异 ✗：去掉小表 ⇒ 回落到层 id ⇒ **仍可读 ✓** ⇒ **∴ 判据应断言"**不是**只有 `import_image` ✗"✓**）** ✓✓
