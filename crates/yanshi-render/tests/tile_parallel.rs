@@ -19,12 +19,12 @@
 //! 每个判据都做过**变异演示**（改坏被测条件 ⇒ 判红 ⇒ 逐字改回），见专题报告。
 
 use serde_json::json;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use yanshi_core::atom::BlobHash;
 use yanshi_core::blob::{BlobEntry, BlobStore, MemoryBlobStore};
 use yanshi_core::{
-    DocumentState, Layer, LayerType, Object, ObjectType, Result, Selection, Transform,
+    Bbox, DocumentState, Layer, LayerType, Object, ObjectType, Result, Selection, Transform,
 };
 use yanshi_render::buffer_pool::{BufferPool, MAX_POOLED_BUFFERS, MIN_POOLED_BYTES};
 use yanshi_render::render::Renderer;
@@ -33,6 +33,8 @@ use yanshi_render::tile::{TileGrid, TileKey};
 /// 数 `get` 次数的存储包装 —— 用来证明"分块并行时同一份位图只读一次"（缓存真的生效）。
 struct CountingStore {
     inner: MemoryBlobStore,
+    /// **累计取用的字节数** ✓（第 203 轮 ✓）：判"只取覆盖区域的块"用 ✓。
+    bytes: AtomicU64,
     gets: AtomicUsize,
 }
 
@@ -41,13 +43,20 @@ impl CountingStore {
         Self {
             inner: MemoryBlobStore::new(),
             gets: AtomicUsize::new(0),
+            bytes: AtomicU64::new(0),
         }
     }
+    /// **累计取用字节** ✓（第 203 轮 ✓）—— **"只取覆盖区域的块"的度量** ✓。
+    fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::SeqCst)
+    }
+
     fn gets(&self) -> usize {
         self.gets.load(Ordering::SeqCst)
     }
     fn reset(&self) {
         self.gets.store(0, Ordering::SeqCst);
+        self.bytes.store(0, Ordering::SeqCst);
     }
 }
 
@@ -56,8 +65,10 @@ impl BlobStore for CountingStore {
         self.inner.put(bytes)
     }
     fn get(&self, hash: &BlobHash) -> Result<Vec<u8>> {
+        let bytes = self.inner.get(hash)?;
+        self.bytes.fetch_add(bytes.len() as u64, Ordering::SeqCst);
         self.gets.fetch_add(1, Ordering::SeqCst);
-        self.inner.get(hash)
+        Ok(bytes)
     }
     fn exists(&self, hash: &BlobHash) -> bool {
         self.inner.exists(hash)
@@ -1238,4 +1249,68 @@ fn to_rgba8_threshold_selects_the_serial_and_parallel_paths() {
     let (bytes, empty_blocks) = empty.to_rgba8_blocks(None, Some(4));
     assert!(bytes.is_empty());
     assert_eq!(empty_blocks, 0, "空缓冲不应分块");
+}
+
+/// **判据（第 206 轮 ✓）**：**小区域渲染只应取用"覆盖它的那些块"** ✓ ——
+/// **整幅路**：为渲 64² 要读**整幅**（`side²×4` ＝ 1 MiB ✓）✗；
+/// **分块路**：只读**覆盖的那 1 块**（256 KiB ✓）✓ ⇒ **∴ 上限取 512 KiB ⇒ 可红 ✓**。
+/// **变异** ✗：让分块路取全部块 ⇒ 必红 ✓。
+#[test]
+fn a_small_region_reads_only_the_tiles_it_needs() {
+    let side = 512u32;
+    let store = CountingStore::new();
+    let pixels: Vec<u8> = (0..(side as usize) * (side as usize) * 4)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let blob = yanshi_core::blob::stage_blob(&store, &pixels, "image/x-yanshi-raw").unwrap();
+    // **建分块索引** ✓（切块 ⇒ 逐块存 ⇒ 写索引 blob ✓）
+    let parts = yanshi_render::bitmap_tiles::split_into_tiles(side, side, &pixels).unwrap();
+    let mut hashes = Vec::with_capacity(parts.len());
+    for part in &parts {
+        hashes.push(
+            yanshi_core::blob::stage_blob(&store, part, "image/x-yanshi-raw")
+                .unwrap()
+                .blob_hash
+                .to_string(),
+        );
+    }
+    let index = yanshi_render::bitmap_tiles::BitmapIndex {
+        v: yanshi_render::bitmap_tiles::BITMAP_INDEX_VERSION,
+        tile: yanshi_render::bitmap_tiles::BITMAP_TILE,
+        width: side,
+        height: side,
+        tiles: hashes,
+    };
+    let index_blob = yanshi_core::blob::stage_blob(
+        &store,
+        &serde_json::to_vec(&index).unwrap(),
+        "application/json",
+    )
+    .unwrap();
+    let mut state = stress_document(side, false);
+    state.objects.insert(
+        "patch_tiles".to_owned(),
+        object(
+            "patch_tiles",
+            "layer_bottom",
+            ObjectType::RasterPatch,
+            4,
+            json!({"bitmap": blob, "width": side, "height": side,
+                   "region": {"x": 0, "y": 0, "w": side, "h": side},
+                   "tiles": index_blob.blob_hash.to_string()}),
+        ),
+    );
+    let grid = TileGrid::new(64, side, side).unwrap();
+    let mut renderer = Renderer::with_budget(grid, 64 * 1024 * 1024).with_max_workers(1);
+    store.reset();
+    let out = renderer
+        .render_region(&state, &store, Bbox::new(0.0, 0.0, 64.0, 64.0))
+        .unwrap();
+    let read = store.bytes();
+    assert!(!out.rgba8.is_empty(), "小区域必须渲出像素 ✓");
+    assert!(
+        read <= 512 * 1024,
+        "**小区域只应取用覆盖它的块**（1 块 ＝ 256 KiB ✓；实测取用 {read} 字节 —— \
+         若 ≥ 1 MiB 说明仍在读整幅 ✗）"
+    );
 }
