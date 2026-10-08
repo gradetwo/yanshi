@@ -110,6 +110,28 @@ impl RegionBlockCache {
     /// 取一块 ✓：**版本必须完全一致** ✓，否则视为未命中 ✓
     ///（版本不同 ⇒ 文档变过 ⇒ 缓存里的字节可能过期 ✗ —— 宁可重算 ✓，绝不给旧像素 ✗）。
     pub fn get(&mut self, key: BlockKey, version: u64) -> Option<&RegionBlock> {
+        // **★ 临时文件探针 ✓**（第 468 轮 ✓，**查明后删 ✓**）：**判据改了还红 ✗ ⇒ 先证明"这条路
+        // 有没有被走到"✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
+        if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let present = self.blocks.contains_key(&key);
+                let same = self
+                    .blocks
+                    .get(&key)
+                    .map(|b| b.version_atom == version)
+                    .unwrap_or(false);
+                let _ = writeln!(
+                    f,
+                    "get key=({},{},{},{}) version={} present={} same={}",
+                    key.x, key.y, key.w, key.h, version, present, same
+                );
+            }
+        }
         let fresh = self
             .blocks
             .get(&key)
@@ -130,6 +152,20 @@ impl RegionBlockCache {
 
     /// 放一块 ✓（超容量时按**版本最旧**淘汰 ✓）。
     pub fn put(&mut self, block: RegionBlock) {
+        if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "put key=({},{},{},{}) version={}",
+                    block.key.x, block.key.y, block.key.w, block.key.h, block.version_atom
+                );
+            }
+        }
         if self.blocks.len() >= self.capacity && !self.blocks.contains_key(&block.key) {
             // 淘汰版本锚最旧的一块 ✓（确定性：并列时按键序 ✓，不用 HashMap 的随机序 ✗）。
             let victim = self
