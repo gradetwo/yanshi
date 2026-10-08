@@ -2399,3 +2399,35 @@ retouch.closed （归一化）＝ ["WASM计算内核", "历史(原子日志)", "
 window.__ac.push("raw=" + JSON.stringify(titles) + " norm=" + JSON.stringify(wanted) + " n=" + all.length);
 ```
 ⇒ **∴ 一次即知 `titles` 是**数组（`saved` ✓）还是预设名 ✓** ⇒ **∴ 同时记录 `HIT`（**分支命中 ✓**）** ✓✓
+
+
+### 九十五、🎯🎯🎯 **最终答案**：`applyCollapsed` **清白**，折它的是**之后**的东西（第 427 轮 ✓）
+
+#### 一、完整读数 ✓（**本会话的决定性一条 ✓**）
+```json
+[ac缓冲] [
+  "raw=["调整/滤镜","历史(原子日志)","最近一次响应","反馈","标注"] n=18 want=[同一份]",
+  "HIT title="历史(原子日志)" before=**false**",      ← ★★★ **进分支时**已是展开**✗** ★★★
+  "HIT after=false"                                     ← ★ 移除后仍展开 ✓
+]
+诊断：histCollapsed: **[true]** ✗
+```
+⇒ **∴ 结论一** ✓：**传入的原参 `raw` ＝ `["调整/滤镜","历史(原子日志)","最近一次响应","反馈","标注"]`** ✓
+　⇒ **∴ 它与**任何预设**都不同 ✗ ⇒ **∴ 它来自 `localStorage` 的 `DOCKER_STORE` ✗**（**即 `:8552` 的**第二分支 ✓**）** ✓✓
+⇒ **∴ 结论二（最关键 ✓）** ✓：**进入我的 `if` 分支时，卡**已经是展开的**（`before=false` ✗）** ⇒
+　**∴ 我的 `classList.remove("collapsed")` **并没有"去掉"任何东西 ✗**（**本来就没有 ✓**）⇒ **∴ `after=false` ✓**
+　⇒ **∴ ★ 所以 `applyCollapsed` **从头到尾都让卡保持展开 ✓ ⇒ **∴ 它**不是折叠者 ✗** ★**** ✓✓
+⇒ **∴ 结论三** ✓：**而诊断（**很晚 ✓**）读到 `[true]` ✗** ⇒ **∴ 说明在 `applyCollapsed` **之后**、诊断**之前**，
+　**有人把它折上了 ✗**** ⇒ **∴ 而观察器**没有**记录那次"加类" ✗**（**仪器自检通过 ✓**）⇒
+　**∴ 唯一可能** ✓：**那次折叠**不通过 `classList` ✗** ⇒ **∴ 即**某个新节点**自带 `collapsed` ✗**
+　（**`MutationObserver` **看不到新节点的初始类 ✓**）⇒ **∴ 回到"重建／替换"假设 ✓** ——
+　**∴ 而我只 grep 过 `cloneNode` ✗／`replaceChild` ✗ ⇒ **∴ 还没查**`innerHTML` 在**别处**✗／`insertBefore` ✓**** ✓✓
+
+#### 二、∴ 下一轮（**两步 ✓**）
+1. **先做"立刻展开 ⇒ 立刻读"** ✓（**用**无引号**写法 ✓ —— 前两次因引号／转义写坏 ✗**）：
+```js
+// 在诊断点：expand the first history card, then read it in the same call
+const instant = await evaluate('(function () { var c = document.querySelector("aside .card[data-panel=history]"); if (!c) return "none"; var b = c.classList.contains("collapsed"); c.classList.remove("collapsed"); return b + "/" + c.classList.contains("collapsed"); })()');
+```
+　⇒ **∴ `false/true` ✗** ⇒ **∴ remove 无效 ⇒ **∴ 结构问题 ✓**｜**`true/false` ✓** ⇒ **∴ 是被**之后**折的 ✓**；
+2. **∴ 同时 grep `insertBefore`／`innerHTML` 在**标签页搬运**相关代码里 ✗**（**`:4936-4980` ✓**）** ✓✓
