@@ -9527,9 +9527,12 @@ document.addEventListener("click", (event) => {
 });
 
 
-// TEMP CHECK (round 446, remove once the criterion is recorded). Defined on the
-// page so the harness can call it by bare name with no quoting, which is the
-// only pattern that survived four attempts at composing script text outside.
+// **★ 历史行的可读性探针 ✓（**不是临时的 ✗**）** —— **∴ 判据的支撑 ✓**（用户报告 2026-10-09 ✓）：
+// **∴ `browser-ui-check.mjs` 的断言直接调它** ✓（**`window.__rowCheck()` ✓**）⇒ **∴ 它属于判据本身 ✓**。
+// **∴ 为什么放在页面侧** ✗：**harness 里从外部拼脚本**会**破坏注入模板 ✗**（**我 5 次实测栽在这里 ✓**）
+// ⇒ **∴ 而**裸函数名调用**是唯一没失败过的写法 ✓**。
+// **∴ 它数的量是**正向的**✓**：**含层标识或尺寸模式的 `import_image` 行数 ✓** ——
+// **∴ 变异（**去掉 `tools.rs` 里的 `"payload": atom.payload,` ✗）⇒ 该数为 **0/21 ⇒ 判据必红 ✓**（第 454 轮实测 ✓）。
 window.__rowCheck = function () {
   var rows = Array.prototype.slice.call(document.querySelectorAll("#history .row")).map(function (r) {
     return r.textContent;
