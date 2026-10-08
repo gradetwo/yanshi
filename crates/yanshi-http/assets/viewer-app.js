@@ -8520,6 +8520,12 @@ function applyCollapsed(titles) {
     // （**`applyWorkspace` 末尾的 `saveDockers()` 会**回写**✓，**而页面上还有别处会再调 `applyCollapsed` ✓**）。
     // **∴ 所以改成**从源头排除**✓**：**不论谁调用本函数 ✓，它都不会把历史卡折上 ✓** ——
     // **∴ 用户仍可**手动点击**折叠它 ✓**（**`h2` 的点击走 `:8539` ✓，不经过本函数 ✓**）。
+    // TEMP PROBE (round 417, remove once the writer is identified).
+    try {
+      console.log("[ac] title=" + JSON.stringify(cardTitle(card)) +
+        " want=" + wanted.includes(cardTitle(card)) +
+        " collapsed=" + card.classList.contains("collapsed"));
+    } catch (_) { /* ignore */ }
     if (/历史/.test(cardTitle(card))) {
       card.classList.remove("collapsed");
       continue;
