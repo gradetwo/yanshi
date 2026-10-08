@@ -2197,3 +2197,28 @@ scripts/browser-ui-check.mjs:74    const consoleLines = [];          ← ★ **�
 #### 二、∴ 下一轮（**一行，把异常暴露出来 ✓**）
 * **在 harness 里订阅 `Runtime.exceptionThrown`** ✓（**或**在页面里 `window.onerror` 收集到 `__err` ✓**）⇒
 　**∴ 一次就能看到**加载期**有没有异常 ✗** ⇒ **∴ 而那**正是唯一剩下的解释 ✓**** ✓✓
+
+
+### 八十八、🎯🎯🎯 **最可能的答案**：**service worker 缓存了旧的 JS**（第 420 轮 ✓）
+
+#### 一、实测 ✓
+```
+[异常] []            ← ★ **没有加载期异常 ✓** ⇒ **∴ `initDockers()` 确实执行 ✓**
+[ac] 0 条 ✗          ← **∴ 而 `applyCollapsed` **没被调用**✗**
+诊断：histCollapsed: [true] ✗
+```
+⇒ **∴ 推理** ✓：**`initDockers()` 执行 ✓** ＋ **无异常 ✓** ⇒ **∴ 它的三分支**必有一条**走到 `applyWorkspace`／`applyCollapsed` ✗**
+　（**三条都会 ✓**）⇒ **∴ 而 `[ac]` 为 0 ✗** ⇒ **∴ 矛盾 ✗** ⇒ **∴ 唯一剩下的解释 ✓**：
+　**∴ 浏览器执行的 JavaScript **不是我改的那份 ✗**** ✓✓
+⇒ **∴ 机制** ✓：**`crates/yanshi-http/assets/**service-worker.js**` ✓** ⇒ **∴ 若它是 **cache-first** ✗ ⇒
+　**∴ 它会**长期返回**缓存里的 `viewer-app.js` ✗** ⇒ **∴ 我改的代码**永不被加载 ✗**** ✓✓
+⇒ **∴ 而这**解释了 13 次失败 ✓**：**① 我"核产物"核的是**服务端**那份 ✓ ⇒ **∴ 对的 ✓**｜
+　**② 而浏览器用的是**缓存里那份 ✗** ⇒ **∴ 两者不同 ✗ ⇒ **∴ 于是我一直在**测旧代码 ✗**** ✓✓
+⇒ **∴ 且它**也解释** ✓：**`zzprobe` 被抓到 ✓**（**运行时操作 ✓，与 JS 版本无关 ✓**）｜
+　**`[诊断]`／`[卡片]` 都有效 ✓**（**它们是 harness 侧 ✓**）** ✓✓
+
+#### 二、∴ 下一轮（**两步，都很小 ✓**）
+1. **读 `service-worker.js` 的缓存策略** ✓ ⇒ **∴ 确认是否 cache-first ✗**；
+2. **∴ 若是 ⇒ 在测试里**绕过它**✓**（**如改用**无 service worker 的端口**✓／`--user-data-dir` 全新 ✓（**我已用 ✓**）／
+　**或在 harness 里 `await evaluate("navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()))")` ✓**）⇒
+　**∴ 然后**重跑 ✓ ⇒ **∴ 若 `[ac]` 出现 ⇒ **∴ 答案确认 ✓**** ✓✓
