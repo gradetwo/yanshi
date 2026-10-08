@@ -201,7 +201,14 @@ node scripts/tool-criteria-coverage.mjs                  # 覆盖率守卫 ✓
 ```
 
 ## 五、**报告 ② 的下一步（可自己做 ✓，不必等用户 ✓）**
-* **`browser-ui-check.mjs` 的导入段现在会存一张 `history-panel-imported.png`** ✓（第 378 轮加的 ✓）；
+* **⚠️ 更正 ✗**（第 378 轮 ✓）：**该 harness 现在**既没有导入段 ✗、也没有截图**✗**
+  —— **∴ 我第 376 轮撤回"历史行断言"时的**切片删除多删了导入段**✗**（`grep uicheck-hist-` ⇒ **0 ✓**）；
+  **∴ 我随后又两次试图给一段**不存在的代码**加截图 ✗ ⇒ **∴ 两次锚点都没匹配 ✓** ⇒
+  **∴ 而交接页却已写上"会存图 ✗" ⇒ **∴ 文档与代码不符 ✓（**本会话第 2 次 ✓**）**；
+* **∴ 要做的是**：**先重建导入段**（**照第 366 轮记下的 `:537`／`:544` 范例 ✓ ⇒
+  **三步导入 ✓ ＋ `finish` 取 `token` ✓ ＋ `Page.navigate` 带 `doc` 与 `token` ✓ ＋ 切"历史"标签 ✓ ＋
+  点 `#historyReload` ✓ ＋ `capture("history-panel-imported")` ✓ ＋ **累积失败而非 `exit` ✓**）⇒
+  **再跑 ⇒ 看那张图 ✓**；
 * **∴ 跑一次（**先 `curl -X PUT /json/new` 预开页 ✓**）⇒ 去 `shotsDir` 看那张图 ✓** ⇒
   **∴ 就能回答"用户在历史面板里到底看到什么 ✗"** —— **∴ 而**不必先问 ✓**（**若图上确实"满屏 `import_image`、看不出哪张图 ✗" ⇒ **∴ 需求确认 ✓ ⇒ 再给 `kind` 列补**层名／尺寸 ✓****）；
 * **⚠️ 且跑之前先看清 `shotsDir` 的值 ✓**（`grep shotsDir scripts/browser-ui-check.mjs` ✓）。
