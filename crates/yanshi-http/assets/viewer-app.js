@@ -822,6 +822,8 @@ function syncOverlayGeometry() {
   overlay.style.top = Math.round(rect.top - stageRect.top) + "px";
   overlay.style.width = Math.round(rect.width) + "px";
   overlay.style.height = Math.round(rect.height) + "px";
+  kernel.style.left = Math.round(rect.left - stageRect.left) + "px";
+  kernel.style.top = Math.round(rect.top - stageRect.top) + "px";
   kernel.style.width = Math.round(rect.width) + "px";
   kernel.style.height = Math.round(rect.height) + "px";
 }
