@@ -2290,3 +2290,25 @@ console.log("[ac-entry] n=" + dockerCards().length + " titles=" + JSON.stringify
 ⇒ **∴ 若 `n=0` ✗ ⇒ **∴ 集合为空 ⇒ **∴ `initDockers` 跑太早 ✓** ⇒ **∴ 而**真正修法**是
 　**在 `setupRightTabs()` 之后（**建完标签页 ✓**）再调 `initDockers()` ✗** ⇒ **∴ 而这与 `:4936` 的注释
 　"**必须在 `setupAssetDock()` 之前跑**✗"形成**顺序约束网 ✓** ⇒ **∴ 需理清三者的先后 ✓**** ✓✓
+
+
+### 九十一、🎯🎯🎯 **`applyCollapsed` 确实从未被调用**（第 422 轮 ✓）
+
+#### 一、实测 ✓
+```
+探针**移到循环之前**（`[ac-entry] n=… titles=…` ✓）⇒ **重建 ✓ ＋ 产物核 ✓（命中 2 ✓）**
+跑 ⇒ **[ac-entry] 条数 ＝ 0** ✗
+```
+⇒ **∴ 结论一（最终 ✓）** ✓：**探针在循环**之外**✗ ⇒ **∴ 空集合**不能**掩盖它 ✗ ⇒
+　**∴ `applyCollapsed` **确实从未被调用**✗**** ✓✓
+⇒ **∴ 结论二** ✓：**而 `initDockers();` 在 `:8734` **顶层**✓｜**页面**无加载异常**✓｜**它的三分支**
+　（`applyWorkspace` ✓／`applyCollapsed` ✓／`applyWorkspace("paint")` ✓）**都会调到 `applyCollapsed` ✗** ⇒
+　**∴ 四项事实**互相矛盾 ✗**** ✓✓
+⇒ **∴ 结论三（唯一剩下的方向 ✓）** ✓：**页面执行的 JS **不是我改的那份**✗** ⇒ **∴ 已排除** ✓：
+　**service worker 缓存 ✓（**已注销 ＋ 清 2 个缓存 ✓，无效 ✓**）｜HTTP 缓存 ✓（**每轮新 `--user-data-dir` ✓**）** ⇒
+　**∴ ★ 唯一没试的 ★** ✓：**在页面里**直接检查函数体**✗**：
+```js
+evaluate("applyCollapsed.toString().indexOf('ac-entry') >= 0")   // ⇒ false ⇒ **∴ 页面里是旧代码 ✓**
+```
+　**∴ 若为 `false` ✗ ⇒ **∴ 执行的确非新代码 ✓** ⇒ **∴ 下一步**用 `Network.clearBrowserCache`
+　＋ `Network.setCacheDisabled` ✓（**CDP 的 HTTP 缓存开关 ✓**）** ✓✓

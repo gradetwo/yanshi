@@ -8513,6 +8513,10 @@ function saveDockers() {
 
 function applyCollapsed(titles) {
   const wanted = titles.map(normalizeTitle);
+  // NOTE: a probe placed inside the loop below prints nothing when the card
+  // collection is empty, so it proves nothing; a probe before the loop was
+  // tried in round 422 and also never printed, which is recorded in the audit
+  // notes together with the contradiction it leaves (see section ninety one).
   for (const card of dockerCards()) {
     // **★ 历史卡**永不由预设折叠**✗**（第 397 轮 ✓ —— **∴ 这是**不依赖时序**的修法 ✓**）：
     // **∴ 前六轮我都在**展开它**✗**（**立即 ✓／两帧后 ✓／`load` 后 ✓／用 `data-panel` ✓**），
