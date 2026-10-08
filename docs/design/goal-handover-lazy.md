@@ -60,7 +60,22 @@ fn write_import_image(ctx, args) {
 1. **导入侧** ✓ `crates/yanshi-server/src/tools.rs:4374 write_import_image`：
    `store.get(blob_hash)` ⇒ 解码 ⇒ `split_into_tiles` ⇒ 逐块 `store.put` ⇒ 写**索引 blob** ⇒
    payload 增 **`"tiles": <index_hash>`** ✓（**旧读方忽略未知字段 ⇒ 兼容自动成立** ✓）；
-2. **渲染侧** ✓ `crates/yanshi-render/src/render.rs:1854 fetch_raster_patch`（调用点在 `:1315` ✓）：
+2. **渲染侧** ✓ —— **⚠️ 不要改 `fetch_raster_patch`** ✗：它返回**整幅** RGBA8（`-> Result<Option<(u32,u32,Vec<u8>)>>` ✓），
+   调用方**整块 blit** ✗ ⇒ **∴ 分块路接在**调用侧**（`render.rs:1315` 一带 ✓）**，把既有几行包进 `else` ✓：
+   ```rust
+   if let Some(idx_hash) = object.data.get("tiles") {      // 字段读法同 object.data.get("params")（:944 ✓）
+       // 取索引 blob ⇒ 解析 BitmapIndex（**版本不符 ⇒ 落回 else** ✓）
+       // ⇒ tiles_for_rect(本块请求区域) ⇒ 只取这些块 ⇒ assemble_region ⇒ 得**该区域**像素
+       // ⇒ blit 到**区域坐标**（⚠️ **不是整块 `offset`** ✗）
+   } else {
+       let entry = bitmaps.get_or_decode(…)?;              // **原路整幅，一字不动** ✓（旧工程零改动 ✓）
+       layer_buffer.blit_rgba8(offset…, entry.0, entry.1, &entry.2, opacity);
+   }
+   ```
+   **三条不许踩错** ✓：① **失败／缺块 ⇒ 落回 `else`** ✓（**绝不画半个 ✗**）；② **区域坐标** ✗（不是 `offset` ✓）；
+   ③ **`else` 分支原封不动** ✓。
+
+   原计划描述（仍是这一步 ✓）：2. **渲染侧** ✓ `crates/yanshi-render/src/render.rs:1854 fetch_raster_patch`（调用点在 `:1315` ✓）：
    payload 有 `tiles` ⇒ 取索引 ⇒ **`tiles_for_rect(请求区域)`** ⇒ 只取／解这些块 ⇒ **`assemble_region`** ⇒ 填 `layer_buffer` ✓；
    **无 `tiles` ⇒ 原路整幅** ✓（**不许改变旧工程行为** ✗）。
 
