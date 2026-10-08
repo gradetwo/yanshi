@@ -13785,6 +13785,23 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             // **按需生成** ✓（第 75 轮 ✓）：已最新就**跳过** ✗ —— 否则每次保存都白付一次整幅渲染 ✗
             //（实测 4K ~1.07 s ✗／8K ~9 s ✗，而画面零变化 ✓）。
             if !document.doc_thumbnail_is_current() {
+                // **量"缓存暖不暖"** ✓（第 90 轮 ✓）：B 路（`render_region(raw)` ✓）**只在暖时**才划算 ✓
+                //（暖 10.7 ms ✓／冷 1388 ms ✗ ⇒ **∴ 若这里显示整幅 tile 已在缓存 ⇒ B 成立** ✓）。
+                if std::env::var_os("YANSHI_TRACE_THUMBWARM").is_some() {
+                    let c = document.cache_stats();
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/yanshi-thumbwarm-trace.log")
+                        .and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(
+                                f,
+                                "THUMBWARM tiles={} used_bytes={} hits={} misses={} evictions={}",
+                                c.tiles, c.used_bytes, c.hits, c.misses, c.evictions
+                            )
+                        });
+                }
                 // **量前提** ✓（第 86 轮 ✓）：此刻 `document_thumbnail` 到底是**整幅**还是**已是 256²** ✗
                 // —— 这决定"由已有整幅降采样"这条路**是否成立** ✓（**不许在未证实的前提上盖楼** ✗）。
                 if std::env::var_os("YANSHI_TRACE_THUMBSRC").is_some() {
