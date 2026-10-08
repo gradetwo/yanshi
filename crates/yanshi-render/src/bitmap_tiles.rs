@@ -154,6 +154,38 @@ pub fn assemble_region(
     Some(out)
 }
 
+/// **把整幅 RGBA8 切成块** ✓（第 165 轮 ✓）—— **(b1) 导入侧的数据核心 ✓**（**纯函数 ✓**）。
+///
+/// **块序** ✓：**行优先**（与 [`BitmapIndex::tiles`] 一致 ✓）；**边缘块按实际宽高** ✓（**不补白边 ✗**）。
+///
+/// **`None` 的语义** ✓：**输入字节数与 `width×height×4` 不符 ⇒ `None`** ✓
+/// （**∴ 宁可失败，也不切出一堆错位的块 ✗**）。
+pub fn split_into_tiles(width: u32, height: u32, rgba8: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if rgba8.len() != (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    let (tx, ty) = BitmapIndex::grid(width, height);
+    let row_bytes = (width as usize) * 4;
+    let mut out = Vec::with_capacity((tx as usize) * (ty as usize));
+    for cy in 0..ty {
+        for cx in 0..tx {
+            let tile_w = (width - cx * BITMAP_TILE).min(BITMAP_TILE);
+            let tile_h = (height - cy * BITMAP_TILE).min(BITMAP_TILE);
+            let mut tile = Vec::with_capacity((tile_w * tile_h * 4) as usize);
+            for r in 0..tile_h {
+                let sy = (cy * BITMAP_TILE + r) as usize;
+                let start = sy * row_bytes + (cx * BITMAP_TILE) as usize * 4;
+                tile.extend_from_slice(&rgba8[start..start + (tile_w as usize) * 4]);
+            }
+            out.push(tile);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +285,29 @@ mod tests {
         let mut short = tiles.clone();
         short.pop();
         assert!(assemble_region(w, h, &short, x, y, rw, rh).is_none());
+    }
+    /// **判据 7（往返恒等 ✓，最强的一条 ✓）**：**切块后按整幅拼回 ⇒ 必须与原图逐字节一致** ✓✓
+    /// （**变异** ✗：丢掉每块最后一行 ⇒ 必红 ✓）。
+    #[test]
+    fn splitting_then_assembling_round_trips_exactly() {
+        let (w, h) = (600u32, 520u32); // **含边缘块** ✓
+        let whole: Vec<u8> = (0..(w as usize) * (h as usize))
+            .flat_map(|i| {
+                let px = (i / w as usize) as u32;
+                let py = (i % w as usize) as u32;
+                [
+                    ((px * 3) % 250) as u8,
+                    ((py * 5) % 252) as u8,
+                    ((px ^ py) % 255) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let tiles = split_into_tiles(w, h, &whole).expect("应能切块");
+        assert_eq!(tiles.len(), BitmapIndex::count(w, h));
+        let back = assemble_region(w, h, &tiles, 0, 0, w, h).expect("应能拼回");
+        assert_eq!(back, whole, "**切块后拼回必须与原图逐字节一致**");
+        // **字节数不符 ⇒ `None`** ✓（**不切出错位的块 ✗**）
+        assert!(split_into_tiles(w, h, &whole[..whole.len() - 4]).is_none());
     }
 }
