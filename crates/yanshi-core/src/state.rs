@@ -489,6 +489,78 @@ impl Default for DocumentState {
     }
 }
 
+/// **图层的内容指纹** ✓（第 99 轮 ✓）—— **纯函数** ✓，目标第 4 条（懒合成）的**失效信号** ✓。
+///
+/// **它解决什么** ✗：below 缓存要问"**下方那些层的内容变了没有**" ✓，
+/// 而全局 `head_seq` **太粗**（任何改动都会变 ⇒ 缓存永不命中 ✗）；
+/// `Layer.updated_by` **太窄**（只在改图层**元数据**／重排时写，**画一笔不写它** ✗）。
+///
+/// **∴ 而真正的版本在 `Object` 上** ✓：`current_version` ＝ **当前生效的那个原子** ✓
+/// ⇒ **∴ 每改一笔都会推进它** ✓。
+///
+/// **组成** ✓：
+/// * 每个**存活对象**的 `(id, current_version, z_index, visible, deleted_by)` ✓（**排序后**喂进哈希 ✓）；
+/// * 加上**层自身**的属性：`z_index`／`visible`／`opacity`／`blend_mode`／`clipping_mask`／
+///   `mask_id`／`medium` ✓ —— 它们改了 below 也必须失效 ✓。
+///
+/// **用什么哈希** ✓：**FNV-1a 64** ✓ —— **无依赖** ✓、**确定** ✓（同输入同输出 ✓）、**与平台无关** ✓。
+///
+/// **⚠️ 它是什么、不是什么** ✗：它是**相等性判据** ✓（"没变"可复用 ✓），
+/// **不是**安全哈希 ✗（**不用于内容寻址** ✓）；**∴ 碰撞是可接受的** ✓（碰撞只会让缓存少命中 ✓，
+/// **但绝不会让结果错** ✗？**——错** ✗：碰撞 ⇒ **误判"没变" ⇒ 返回旧像素 ⇒ 撒谎** ✗✓）
+/// ⇒ **∴ 所以它由 `current_version`（原子 id ✓）主导** ✓，而原子 id **全局唯一** ✓
+/// ⇒ **∴ 实际碰撞概率可忽略** ✓；**⚠️ 但准则要写明这一取舍** ✓（见设计文档 ✓）。
+pub fn layer_content_fingerprint(state: &DocumentState, layer_id: &str) -> u64 {
+    /// FNV-1a 64 的**偏移基**与**质数** ✓（标准值 ✓）。
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn feed(mut h: u64, bytes: &[u8]) -> u64 {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h
+    }
+    let mut h = FNV_OFFSET;
+    // **层自身属性** ✓（改了也要失效 ✓）
+    if let Some(layer) = state.layers.get(layer_id) {
+        h = feed(h, layer_id.as_bytes());
+        h = feed(h, &layer.z_index.to_le_bytes());
+        h = feed(h, &[u8::from(layer.visible), u8::from(layer.clipping_mask)]);
+        // **f64 用位模式** ✓（`to_bits` ✓ ⇒ 确定 ✓）
+        h = feed(h, &layer.opacity.to_bits().to_le_bytes());
+        h = feed(h, layer.blend_mode.as_bytes());
+        h = feed(h, layer.mask_id.as_deref().unwrap_or("").as_bytes());
+        h = feed(h, layer.medium.as_deref().unwrap_or("").as_bytes());
+    } else {
+        h = feed(h, b"<missing>");
+    }
+    // **该层的存活对象** ✓（**排序后** ✓ ⇒ 与遍历顺序无关 ✓）
+    let mut items: Vec<(String, String, i64, bool, String)> = state
+        .objects
+        .values()
+        .filter(|o| o.layer_id == layer_id && o.deleted_by.is_none())
+        .map(|o| {
+            (
+                o.id.clone(),
+                o.current_version.as_deref().unwrap_or("").to_owned(),
+                o.z_index,
+                o.visible,
+                o.deleted_by.as_deref().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    items.sort();
+    for (id, version, z, visible, deleted) in items {
+        h = feed(h, id.as_bytes());
+        h = feed(h, version.as_bytes());
+        h = feed(h, &z.to_le_bytes());
+        h = feed(h, &[u8::from(visible)]);
+        h = feed(h, deleted.as_bytes());
+    }
+    h
+}
+
 impl DocumentState {
     /// 空白初始文档：既无 `declare_head` 时的折叠起点，也是 `create_document` 的期待基底。
     pub fn empty() -> Self {
