@@ -57816,3 +57816,27 @@ if let Some(idx_hash) = object.data.get("tiles") {          // ← 字段读法�
 3. **blit 用**区域坐标**** ✓（**不是整块 `offset`** ✗）；**`else` 分支一字不动** ✓。
 ⇒ **∴ 至此接线只剩一次机械插入 ＋ 四项验收** ✓
 （**判据① 16200× → ~30×** ✓｜**①′／② 仍绿** ✓｜**937＋ 全绿** ✓｜**同材料复测 8K 短笔 474 ms → ?** ✓）。
+
+## 第 458 轮：🎯 **接线定位到文件 ＋ 行级**（`tiles` 需经 `Primitive` 带出 ⇒ **两处** ✓）
+
+### 一、读码事实 ✓
+```rust
+// crates/yanshi-render/src/object.rs —— 变体**定义**（**加 `tiles: Option<String>`** ✓）
+RasterPatch { blob: BlobHash, width: u32, height: u32, offset: (f64,f64), mime_type: String },
+
+// crates/yanshi-render/src/render.rs:1301-1315 —— **解构**（pattern 里加 `tiles` ✓）
+Primitive::RasterPatch { blob, width, height, offset, mime_type } => { … }
+```
+⇒ **∴ 接线共三小步** ✓：
+1. **`object.rs` 变体定义 ＋ 它的构造处** ✓：**加 `tiles: Option<String>`** ✓，**从 `object.data.get("tiles")` 取** ✓
+   （**读法同 `object.data.get("params")` ✓，`:944` ✓**）；**构造处下一轮 grep 一次即可定位** ✓；
+2. **`render.rs:1307` 起** ✓：**`if let Some(idx) = tiles { …分块路… } else { …既有整幅路，一字不动… }`** ✓；
+3. **分块路** ✓：取索引 blob ⇒ 解析 `BitmapIndex`（**版本不符 ⇒ 落回 `else`** ✓）⇒ `tiles_for_rect(...)` ✓
+   ⇒ 只取这些块 ⇒ **`assemble_region`** ✓ ⇒ **blit 到区域坐标** ✗（**不是整块 `offset`** ✗）。
+⇒ **∴ `width`／`height` 已在分支内 ✓ ⇒ 分块路参数齐备 ✓**（**∴ 它本身很短 ✓**）。
+
+### 二、∴ 下一轮顺序 ✓
+1. **grep 定位 `object.rs` 里的构造处** ✓ ⇒ **加 `tiles`** ✓；
+2. **`render.rs` 两处**（pattern ＋ 分支 ✓）；
+3. **构建 ✓／clippy ✓** ⇒ **端到端冒烟**（新导入 8K ⇒ 渲小区域 ⇒ `missed_bytes` ≈ 256 KB ✓）；
+4. **判据三件套 ＋ 同材料复测** ✓（**① 16200× → ~30×** ✓）。
