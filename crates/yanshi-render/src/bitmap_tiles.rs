@@ -186,6 +186,32 @@ pub fn split_into_tiles(width: u32, height: u32, rgba8: &[u8]) -> Option<Vec<Vec
     Some(out)
 }
 
+/// **稀疏装配** ✓（第 184 轮 ✓）：只给"**实际取到的块**" ⇒ **这是省解码的关键** ✓。
+///
+/// **输入**：`tile_indices[k]` ＝ `tiles[k]` 在索引里的块号（行优先）；其余同 [`assemble_region`]。
+/// **语义（与稠密版逐字节相同）**：用到的块缺失 ⇒ `None`；没用到的块缺失 ⇒ 照常出图。
+///
+/// **代价**：内部按块数建一张稠密表（未取到的块为空）⇒ 大区域下有一次克隆；
+/// 对 64²（只碰 1 块）无影响，大区域走原路整幅，阈值判别归调用方。
+pub fn assemble_region_sparse(
+    width: u32,
+    height: u32,
+    tile_indices: &[usize],
+    tiles: &[Vec<u8>],
+    rect: (i64, i64, u32, u32),
+) -> Option<Vec<u8>> {
+    let (x, y, w, h) = rect;
+    if tile_indices.len() != tiles.len() {
+        return None;
+    }
+    let mut dense: Vec<Vec<u8>> = vec![Vec::new(); BitmapIndex::count(width, height)];
+    for (slot, source) in tile_indices.iter().zip(tiles.iter()) {
+        let entry = dense.get_mut(*slot)?;
+        *entry = source.clone();
+    }
+    assemble_region(width, height, &dense, x, y, w, h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +335,45 @@ mod tests {
         assert_eq!(back, whole, "**切块后拼回必须与原图逐字节一致**");
         // **字节数不符 ⇒ `None`** ✓（**不切出错位的块 ✗**）
         assert!(split_into_tiles(w, h, &whole[..whole.len() - 4]).is_none());
+    }
+    /// **判据 8**：稀疏装配（只给它用到的块）必须与稠密装配逐字节相同。
+    #[test]
+    fn sparse_assembly_matches_dense_for_the_tiles_it_was_given() {
+        let (w, h) = (600u32, 520u32);
+        let whole: Vec<u8> = (0..(w as usize) * (h as usize))
+            .flat_map(|i| {
+                let px = (i / w as usize) as u32;
+                let py = (i % w as usize) as u32;
+                [
+                    ((px * 11) % 249) as u8,
+                    ((py * 17) % 247) as u8,
+                    ((px * py) % 255) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let dense = split_into_tiles(w, h, &whole).expect("应能切块");
+        let (x, y, rw, rh) = (250i64, 200i64, 300u32, 260u32);
+        let want = assemble_region(w, h, &dense, x, y, rw, rh).expect("稠密应能拼出");
+        let idx = BitmapIndex {
+            v: BITMAP_INDEX_VERSION,
+            tile: BITMAP_TILE,
+            width: w,
+            height: h,
+            tiles: vec![String::new(); dense.len()],
+        };
+        let needed = idx.tiles_for_rect(x, y, rw, rh);
+        assert!(needed.len() < dense.len());
+        let sparse: Vec<Vec<u8>> = needed.iter().map(|t| dense[*t].clone()).collect();
+        let got =
+            assemble_region_sparse(w, h, &needed, &sparse, (x, y, rw, rh)).expect("稀疏应能拼出");
+        assert_eq!(got, want, "稀疏装配必须与稠密装配逐字节相同");
+        let mut short = sparse.clone();
+        short.pop();
+        assert!(
+            assemble_region_sparse(w, h, &needed[..needed.len() - 1], &short, (x, y, rw, rh))
+                .is_none()
+        );
+        assert!(assemble_region_sparse(w, h, &needed, &short, (x, y, rw, rh)).is_none());
     }
 }
