@@ -95,6 +95,11 @@ const board = $("board");
 const overlay = $("overlay");
 const ctx = board.getContext("2d");
 const octx = overlay.getContext("2d");
+// **内核像素层**（审计 Y-01 的 A 半修法，第 281 轮 ✓）：**层序 board ＜ kernel ＜ overlay** ✓
+// —— **服务端权威像素在下（含 heavy ✓）✓、内核乐观笔迹在中 ✓、UI 装饰在上 ✓**
+// ⇒ **∴ 三者互不覆盖 ⇒ "先底图、后笔迹"的顺序问题消失 ✓**（**异步补画只画下层 ✓**）。
+// **本轮只建层、不改绘制归属** ⇒ **零行为变化 ✓**（**下一步才把内核绘制点迁过来 ✓**）。
+const kctx = kernel.getContext("2d");
 // 服务端渲染结果用离屏图像承载，**画进内容画布**（不再用覆盖 <img>，避免出现
 // 「看到的像素来自被拉伸的 img、点击落在下面的 canvas」这种几何不一致）。
 const preview = new Image();

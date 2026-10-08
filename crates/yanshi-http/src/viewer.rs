@@ -321,6 +321,7 @@ const PAGE_TAIL_A: &str = r##"</style>
   <nav id="tools" aria-label="工具"><!-- 由 TOOL_DEFS 在加载时填充 ✓ --></nav>
   <div class="stage">
     <canvas id="board"></canvas>
+    <canvas id="kernel"></canvas>
     <canvas id="overlay"></canvas>
     <div id="annotationPins"></div>
     <!-- 光标处快捷面板 ✓（借鉴 Krita 的 Pop-up Palette ✓）：介质 / 颜色 / 笔尖 + 我们的快捷动作 ✓。
