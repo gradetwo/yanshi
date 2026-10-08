@@ -1916,7 +1916,7 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       await send("Page.addScriptToEvaluateOnNewDocument", {
         source: `(() => {
           window.__cl = [];
-          const w = () => new MutationObserver((ms) => {
+          const rec = (ms) => {
             for (const m of ms) {
               if (m.type !== "attributes" || m.attributeName !== "class") continue;
               const t = m.target;
@@ -1926,9 +1926,18 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
               window.__cl.push({ panel: t.dataset && t.dataset.panel, cls: t.className,
                                  stack: String(new Error().stack).split("\\n").slice(1, 6).join(" | ") });
             }
-          }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
-          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", w);
-          else w();
+          };
+          // observe immediately on the document, which exists as soon as this runs, and
+          // additionally on documentElement once it appears, so changes during parsing
+          // are captured too (round 410 showed the addition precedes DOMContentLoaded).
+          try { new MutationObserver(rec).observe(document, { subtree: true, attributes: true,
+            attributeFilter: ["class"] }); } catch (e) {}
+          var iv = setInterval(function () {
+            if (!document.documentElement) return;
+            clearInterval(iv);
+            try { new MutationObserver(rec).observe(document.documentElement, { subtree: true,
+              attributes: true, attributeFilter: ["class"] }); } catch (e) {}
+          }, 0);
         })();`,
       });
     } catch (_) { /* 老版本 CDP 忽略 ✓ */ }
