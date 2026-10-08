@@ -1580,3 +1580,29 @@ crates/yanshi-http/assets/viewer-app.js
 　（**依据** ✓：`viewer-app.js:8474` 的 `paint: { open: ["图层","WASM 计算内核"], closed: […"历史（原子日志）"…] }` ✓）。
 ⇒ **∴ 判据（可红 ✓）**：**"导入后，历史面板首个 `import_image` 行**在 1280×813 下无需滚动即可见**✓"** 或
 　**"历史卡的 `kind` 与 `#seq` 之间有**可见分隔**（间距 ≥4px ✓）"** ⇒ **变异** ✗：**去掉分隔 ⇒ 红 ✓** ✓✓
+
+
+### 六十六、🚨 **同一个错误栽了第二次 ✗**：CSS 里本来就有的规则我又加了一遍（第 384 轮 ✓）
+
+#### 一、铁证 ✓
+```
+crates/yanshi-http/assets/viewer.css（**改动前就有 ✓**）：
+  :297  #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :299  #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
+  :300  #history .row { display: **flex**; gap: **8px**; align-items: center; padding: 4px 0; }   ★ 已有 ✓
+  :302  #history .seq { opacity: .6; min-width: **34px**; }                                      ★ 已有 ✓
+  :303  #history .kind { min-width: **86px**; }                                                  ★ 已有 ✓
+```
+⇒ **∴ 结论一** ✓：**历史行**本来就是** flex ＋ `gap: 8px` ＋ 各字段定宽 ＋ 省略号**✓ ⇒
+　**∴ 我加的 7 条规则**完全是重复 ✗** ⇒ **∴ 已撤回 ✓（`#history .row` 回到 2 条 ✓）** ✓✓
+⇒ **∴ 结论二（更要紧 ✗）** ✓：**第 380 轮我从 `textContent` 读出"`import_image` ＋ `agent:mcp` ＋ 按钮**没有分隔 ✗**"
+　**是**误读 ✓** —— **∴ `textContent` **不含布局信息**✗**（**DOM 里字段是**分开的 ✓，视觉上也是分开的 ✓**）⇒
+　**∴ 我把"文本拼接 ✗"当成了"视觉拼接 ✗"** ⇒ **∴ 这与第 376 轮**完全同型**✗**（**那次把"行文本"当成"用户所见 ✗"**）** ✓✓
+⇒ **∴ 结论三** ✓：**两次同型错误的共同点** ✗：**从**一处读数**（`textContent` ✗）推出**用户观感**✗，**而没有先读全相关代码 ✗**
+　⇒ **∴ 而两次都是**看图**✓（第 380／383 轮 ✓）才纠正过来 ✓ ⇒ **∴ "先读全代码 ＋ 再看图"缺一不可 ✓** ✓✓
+
+#### 二、∴ 本轮**真正的收获**（**保留 ✓**）
+* **② 可见性** ✓：**`paint` 工作区把「历史（原子日志）」从 `closed` 移到 `open`** ✓
+　（`viewer-app.js:8474` ✓ ⇒ 现为 `paint: { open: ["图层","WASM 计算内核","历史（原子日志）"], closed: ["标注","调整 / 滤镜",…] }` ✓）
+　⇒ **∴ 这解释了**"用户看不到 ✗"✓：**默认折叠 ＋ 位于页面最底部 ✓**；
+* **∴ 而布局分隔**✗**（我加的那 7 条）**已撤回 ✓** —— **∵ 本来就有 ✓**。

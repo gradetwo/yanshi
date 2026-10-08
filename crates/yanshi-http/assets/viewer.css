@@ -323,18 +323,3 @@
   #outboxBar[hidden] { display: none; }
   #outboxBar[data-state="failed"], #outboxBar[data-state="conflict"] { background: #ffe9e6; }
   #outboxBar #outboxText { flex: 1; }
-
-  /* **★ 历史行必须**可扫读**✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
-     实测（第 380 轮 ✓）**36 行里有 21 行**以 `import_image` 开头 ✓，且行文本是
-     **`kind` ＋ `actor` ＋ 两个按钮**拼在一起**、没有分隔 ✗** ⇒ **∴ 视觉上像一坨 ✗，
-     `import_image` 那半截最抢眼 ✓** ⇒ **∴ 用户的抱怨**属实 ✓，**而**区分信息本来就有 ✓**
-     （`#序号` ＋ `kind` ＋ `actor` ＋ 详情按钮 ✓，`viewer-app.js:3732-3740` ✓）
-     ⇒ **∴ 这里只补**分隔与列宽**✗，**不加任何信息 ✗**（**加信息才是撒谎 ✓**）。 */
-  #history .row { display: flex; align-items: center; gap: 8px; padding: 2px 0;
-                  border-bottom: 1px solid rgba(128,128,128,.18); }
-  #history .row > .seq { flex: 0 0 auto; min-width: 3.5em; opacity: .65;
-                         font-variant-numeric: tabular-nums; }
-  #history .row > .kind { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
-                          white-space: nowrap; }
-  #history .row > .actor { flex: 0 0 auto; max-width: 12em; opacity: .7; overflow: hidden;
-                           text-overflow: ellipsis; white-space: nowrap; }
