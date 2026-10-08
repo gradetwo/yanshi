@@ -6580,6 +6580,26 @@ function liveRegion(size) {
 // ⇒ 真正 `drawImage` 之前先看这个标记 ✓，结束了就**不许再画** ✓。
 let liveStrokeClosed = false;
 let livePaintBusy = false;
+/// **合成当前可见帧** ✓（第 302 轮 ✓）：`board`（服务端权威像素 ✓）＋ `kernel`（内核乐观笔迹 ✓）
+/// ＋ `overlay`（UI 装饰 ✓）—— **UI 不进合成** ✗（它不该出现在导出／取色里 ✓）。
+///
+/// **∴ 为什么需要** ✗：分层后，**从 `board` 读像素**的 3 处会**读不到内核墨**✗ ——
+/// 涂抹／仿制类笔刷的读数 ✓、吸管取色 ✓、`board.toBlob` 导出 ✓。
+/// **∴ 它们要改读本函数的结果** ✓，而不是直接读 `board` ✗。
+///
+/// **∴ 代价** ✗：每次调用多一张与画布同尺寸的临时画布 ＋ 两次 `drawImage` ✓
+///（**∴ 只在这 3 条路径上调用 ⇒ 不在绘制热路径 ✓**）。
+function compositeFrame() {
+  const output = document.createElement("canvas");
+  output.width = board.width;
+  output.height = board.height;
+  const context = output.getContext("2d");
+  context.drawImage(board, 0, 0);    // 服务端权威（下 ✓）
+  context.drawImage(kernel, 0, 0);   // 内核乐观笔迹（上 ✓）
+  return output;
+}
+
+
 async function paintLiveFrame() {
   const stats = window.yanshiStats;
   stats.localBrushCalls = (stats.localBrushCalls || 0) + 1;
