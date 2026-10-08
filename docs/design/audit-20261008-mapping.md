@@ -742,3 +742,24 @@ node scripts/browser-no-stale-read.mjs \
   "http://127.0.0.1:$P/?doc=$DOC&token=$TOK"  "http://127.0.0.1:$P"  "$TOK"  9222
 ```
 ⇒ **∴ 且退出码必须**不接管道**取 ✓（**`${PIPESTATUS[0]}` ✓ 或直接 `$?` ✓ —— 第 324 轮 ✓**）✓✓
+
+
+### 三十、✅ **`browser-no-stale-read` 的**精确用法**（第 332 轮 ✓）
+
+#### 一、它的自述 ✓（`scripts/browser-no-stale-read.mjs:16` ✓）
+```
+用法: node scripts/browser-no-stale-read.mjs <viewer-url> [cdpPort]
+```
+* **argv[2] ＝ viewer URL** ✓ —— **`doc`** 与 **`token`** 都必须**在 URL 里** ✓
+  （`:20 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");` ✓）；
+* **argv[3] ＝ 端口** ✗（**不是 base／不是 token ✗**）⇒ **默认 `process.env.CDP_PORT || "9333"` ✓**。
+
+#### 二、∴ 正确调用 ✓
+```bash
+node scripts/browser-no-stale-read.mjs "http://127.0.0.1:$P/?doc=$DOC&token=$TOK" 9333
+# ⇒ **退出码必须不接管道取 ✓**（`$?` 直接取 ✓ 或 `${PIPESTATUS[0]}` ✓ —— 第 324 轮 ✓）
+```
+⇒ **∴ 我先前只传 `?doc=` 而**漏了 `&token=`**✗ ⇒ token 空 ⇒ 服务端回「必须是 64 位小写十六进制」✗** ⇒ **∴ "判据自判无效 ✗"的结论**撤回 ✓** ✓✓
+
+#### 三、附带发现（**前人已修 ✓，与我这一线无关 ✓**）
+* **该文件注释记录**：第 408 轮修过"**`port` 从 `argv[3]` 取 ⇒ 拿到的是 URL ✗ ⇒ 拼出 `http://127.0.0.1:http://…` ✗ ⇒ **这两个离线判据一直取不到调试目标**✗"** ⇒ **∴ 现在端口**只从环境变量取 ✓** —— **∴ 这是**别人已修好**的问题 ✓，**如实记录来源 ✓** ✓✓
