@@ -92,6 +92,68 @@ impl BitmapIndex {
     }
 }
 
+/// **按区域从块拼出 RGBA8** ✓（第 164 轮 ✓）—— **(b2) 的数据侧另一半 ✓**（**纯函数 ✓，可判据 ✓**）。
+///
+/// **输入** ✓：位图宽高 ✓、**行优先的块像素表**（每块 `256×256×4` ✓，**边缘块按实际尺寸** ✓）、目标矩形 ✓；
+/// **输出** ✓：该矩形的 RGBA8 ✓（**必须逐字节等于整幅图上的同一区域 ✓**）。
+///
+/// **`None` 的语义** ✓：**块表长度与尺寸不吻合** ⇒ **宁可 `None`（调用方回退整幅 ✓），也不给半个图 ✗**。
+pub fn assemble_region(
+    width: u32,
+    height: u32,
+    tiles: &[Vec<u8>],
+    x: i64,
+    y: i64,
+    w: u32,
+    h: u32,
+) -> Option<Vec<u8>> {
+    let index = BitmapIndex {
+        v: BITMAP_INDEX_VERSION,
+        tile: BITMAP_TILE,
+        width,
+        height,
+        tiles: vec![String::new(); tiles.len()],
+    };
+    if !index.is_consistent() {
+        return None;
+    }
+    if w == 0 || h == 0 {
+        return Some(Vec::new());
+    }
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + i64::from(w)).min(i64::from(width));
+    let y1 = (y + i64::from(h)).min(i64::from(height));
+    if x0 >= x1 || y0 >= y1 {
+        return Some(Vec::new());
+    }
+    let out_w = (x1 - x0) as u32;
+    let out_h = (y1 - y0) as u32;
+    let mut out = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
+    let t = i64::from(BITMAP_TILE);
+    let (tx, _ty) = BitmapIndex::grid(width, height);
+    for row in 0..out_h {
+        let sy = y0 + i64::from(row);
+        let tile_cy = (sy / t) as u32;
+        let in_tile_y = (sy % t) as u32;
+        for col in 0..out_w {
+            let sx = x0 + i64::from(col);
+            let tile_cx = (sx / t) as u32;
+            let in_tile_x = (sx % t) as u32;
+            let ti = (tile_cy as usize) * (tx as usize) + (tile_cx as usize);
+            let tile = tiles.get(ti)?;
+            let tile_w = (width - tile_cx * BITMAP_TILE).min(BITMAP_TILE);
+            let src = ((in_tile_y * tile_w + in_tile_x) as usize) * 4;
+            let dst = ((row as usize) * (out_w as usize) + (col as usize)) * 4;
+            if src + 4 > tile.len() || dst + 4 > out.len() {
+                return None;
+            }
+            out[dst..dst + 4].copy_from_slice(&tile[src..src + 4]);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +209,49 @@ mod tests {
         assert!(idx.is_consistent());
         idx.tiles.pop();
         assert!(!idx.is_consistent());
+    }
+    /// **判据 6（等价核心 ✓）**：**由块拼出的区域必须与整幅图上的同一区域逐字节一致** ✓✓
+    /// （**变异** ✗：把 x/y 弄错 ⇒ 必红 ✓）。
+    #[test]
+    fn assembling_a_region_matches_the_whole_image() {
+        let (w, h) = (600u32, 520u32);
+        let whole: Vec<u8> = (0..(w as usize) * (h as usize))
+            .flat_map(|i| {
+                let px = (i / w as usize) as u32;
+                let py = (i % w as usize) as u32;
+                [
+                    ((px * 7) % 251) as u8,
+                    ((py * 13) % 253) as u8,
+                    ((px + py) % 255) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let (tx, ty) = BitmapIndex::grid(w, h);
+        let mut tiles: Vec<Vec<u8>> = Vec::new();
+        for cy in 0..ty {
+            for cx in 0..tx {
+                let tw = (w - cx * BITMAP_TILE).min(BITMAP_TILE);
+                let th = (h - cy * BITMAP_TILE).min(BITMAP_TILE);
+                let mut t = Vec::with_capacity((tw * th * 4) as usize);
+                for r in 0..th {
+                    let sy = cy * BITMAP_TILE + r;
+                    let start = ((sy as usize) * (w as usize) + (cx * BITMAP_TILE) as usize) * 4;
+                    t.extend_from_slice(&whole[start..start + (tw as usize) * 4]);
+                }
+                tiles.push(t);
+            }
+        }
+        let (x, y, rw, rh) = (250i64, 200i64, 300u32, 260u32);
+        let got = assemble_region(w, h, &tiles, x, y, rw, rh).expect("应能拼出");
+        let mut want = Vec::new();
+        for r in 0..rh {
+            let start = (((y as u32 + r) as usize) * (w as usize) + x as usize) * 4;
+            want.extend_from_slice(&whole[start..start + (rw as usize) * 4]);
+        }
+        assert_eq!(got, want, "**由块拼出的区域必须与整幅逐字节一致**");
+        let mut short = tiles.clone();
+        short.pop();
+        assert!(assemble_region(w, h, &short, x, y, rw, rh).is_none());
     }
 }
