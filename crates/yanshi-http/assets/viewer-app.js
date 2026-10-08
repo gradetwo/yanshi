@@ -1374,7 +1374,7 @@ function drawKernelRegion(x, y, w, h) {
   }
   const renderedAt = performance.now();
   // putImageData 不做 CSS 缩放：画布内部分辨率与视口文档像素一一对应。
-  kctx.putImageData(
+  ctx.putImageData(
     new ImageData(new Uint8ClampedArray(rgba), cw, ch),
     Math.round(x0 - vx),
     Math.round(y0 - vy)
@@ -1433,7 +1433,7 @@ function drawKernelBoxDirect(bbox) {
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
-  kctx.putImageData(
+  ctx.putImageData(
     new ImageData(new Uint8ClampedArray(rgba), w, h),
     Math.round(x0 - vx),
     Math.round(y0 - vy)
