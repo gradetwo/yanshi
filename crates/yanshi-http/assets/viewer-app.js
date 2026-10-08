@@ -3730,6 +3730,24 @@ async function refreshHistory() {
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
     kindLabel.textContent = atom.kind;
+    // **★ 让每一行能**看出它属于哪个层 ✗**（用户报告 2026-10-09 ✓）：
+    // **∴ 实测**（第 441 轮**解包 ✓**）：**`import_image` 的 `payload` 里**本来就有
+    // `layer_id` ＋ `width`／`height`** ✓ ⇒ **∴ 这里**只把已有数据渲染出来 ✗，
+    // **不加任何新信息 ✓**（**加信息才是撒谎 ✓**）。**∴ 且**取不到就**不加**✗**（**宁缺勿假 ✓**）。
+    const _pl = atom.payload || atom.args || {};
+    if (_pl && _pl.layer_id) {
+      const layerLabel = document.createElement("span");
+      layerLabel.className = "layer";
+      const _name = (state.layerNames && state.layerNames[_pl.layer_id]) || "";
+      layerLabel.textContent = _name || String(_pl.layer_id);
+      row.appendChild(layerLabel);
+    }
+    if (_pl && _pl.width && _pl.height) {
+      const sizeLabel = document.createElement("span");
+      sizeLabel.className = "size";
+      sizeLabel.textContent = String(_pl.width) + "×" + String(_pl.height);
+      row.appendChild(sizeLabel);
+    }
     const actorLabel = document.createElement("span");
     actorLabel.className = "actor";
     actorLabel.textContent = atom.actor;
