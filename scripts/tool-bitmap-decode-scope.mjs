@@ -64,23 +64,31 @@ const call = async (tool, args) =>
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(args || {}),
   })).json();
-const misses = async () => Number(((await (await fetch(`${base}/health`)).json()).bitmap_cache || {}).misses ?? -1);
+// **读"未命中字节"** ✓（第 134 轮 ✓）—— 它比"次数"更能说明"这一笔重新解压了多大的东西" ✓
+//（一次整幅 4K 背景 ＝ 33.2 MiB ✓，一枚小补丁几十 KiB ✓）。
+const missedBytes = async () => Number(((await (await fetch(`${base}/health`)).json()).bitmap_cache || {}).missed_bytes ?? -1);
 
 // **造一个带位图补丁的对象** ✓（这样位图缓存才会被触及 ✓）—— 用 1×1 的极简 raw 补丁 ✓。
-const before = await misses();
-const r = await call("render_region", { region: [0, 0, 64, 64], include_image: false });
+const REGION = [0, 0, 64, 64];
+const REGION_PIXELS = REGION[2] * REGION[3];
+// **阈值从面积推导** ✓（**不写死观测** ✗）：解码字节 ≤ K × 区域像素 × 4 B/px ✓
+const K = 4;
+const LIMIT = K * REGION_PIXELS * 4;
+const before = await missedBytes();
+const r = await call("render_region", { region: REGION, include_image: false });
 if (r.ok !== true) {
   console.error("✗ 前置不成立：小区域渲染失败 ⇒ " + JSON.stringify(r).slice(0, 160));
   process.exit(2);
 }
-const after = await misses();
+const after = await missedBytes();
 const delta = after - before;
-console.log(`  64²（1 个 tile）渲染：bitmap_cache.misses ${before} → ${after}（**增量 ${delta}**）`);
+console.log(`  64²（${REGION_PIXELS} 像素）渲染：decoded_bytes ${before} → ${after}`
+  + `（**增量 ${delta} B ＝ ${(delta / 1048576).toFixed(1)} MiB**；阈值 ${LIMIT} B）`);
 
-// **核心判据** ✓：区域只覆盖 1 个 tile ⇒ 增量必须 ≤ 1 ✓（**不看墙钟** ✗）
-check(delta <= 1,
-  "**小区域渲染前后，`bitmap_cache.misses` 增量 ≤ 该区域覆盖的位图数（取 1）**（不许整幅预解 ✗）",
-  `增量 ${delta}`);
+// **核心判据** ✓：解码字节必须与**区域面积**同量级 ✓，不许与**文档面积**同量级 ✗（**不看墙钟** ✗）
+check(delta <= LIMIT,
+  `**小区域渲染所解码的字节 ≤ K × 区域像素 × 4（K=${K}）**（不许整幅预解 ✗）`,
+  `增量 ${delta} B（＝ ${(delta / (REGION_PIXELS * 4)).toFixed(0)}× 区域像素）`);
 
 // **判据②（防退化 ✓，第 127 轮 ✓）**：**"区域渲染必须与整幅渲染在同一区域上逐字节一致"** ✓
 // —— **这是项目已有的硬不变量**（"分块与整幅必须一致" ✓）⇒ **∴ 若"按区域剔除位图"剔过头
