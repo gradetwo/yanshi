@@ -1569,6 +1569,13 @@ impl Document {
         (stats.hits, stats.misses)
     }
 
+    /// **位图缓存未命中时解出的明文字节之和** ✓（第 133 轮 ✓，**纯观测** ✓）。
+    /// **为什么它比"次数"有用** ✓：**一次整幅 4K 背景 ＝ 33.2 MiB** ✓，**一枚小补丁几十 KiB** ✓
+    /// ⇒ **∴ 判"小区域有没有整幅解码"要看**字节**，不是次数** ✓✓。
+    pub fn bitmap_cache_missed_bytes(&self) -> u64 {
+        self.renderer.bitmap_cache_stats().missed_bytes
+    }
+
     /// **仅供探针** ✓（第 86 轮 ✓）：读出当前 `document_thumbnail` 的哈希 ⇒ 量它到底是整幅还是 256² ✓。
     /// （修复记录：插入位图统计时把本函数的注释"抢"走了 ✗ ⇒ `missing-docs` 报错 ✓ ⇒ 已补 ✓。）
     /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）：判"这一笔有没有复用下方的合成" ✓。

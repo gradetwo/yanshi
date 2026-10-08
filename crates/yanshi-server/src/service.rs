@@ -2867,6 +2867,14 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         (hits, misses)
     }
 
+    /// **位图缓存未命中字节之和（全文档）** ✓（第 133 轮 ✓，纯观测 ✓）。
+    pub fn bitmap_cache_missed_bytes(&self) -> u64 {
+        self.documents
+            .values()
+            .map(|d| d.bitmap_cache_missed_bytes())
+            .sum()
+    }
+
     /// **tile 缓存的统计（全文档聚合）** ✓：`(tiles, used_bytes, evictions, misses, hits)` ✓。
     /// （修复记录：插入 `bitmap_cache_hits_misses` 时把本函数的注释"抢"走了 ✗ ⇒ 已补 ✓。）
     pub fn cache_stats(&self) -> (usize, usize, u64, u64, u64) {

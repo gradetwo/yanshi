@@ -790,7 +790,9 @@ fn bitmap_cache_stats(state: &ServerState) -> serde_json::Value {
         return json!({"error": "工作区锁中毒"});
     };
     let (hits, misses) = workspace.bitmap_cache_hits_misses();
-    json!({"hits": hits, "misses": misses})
+    // **未命中字节** ✓（第 133 轮 ✓）：判"小区域有没有整幅解码"看**字节** ✓，不是次数 ✓。
+    let missed_bytes = workspace.bitmap_cache_missed_bytes();
+    json!({"hits": hits, "misses": misses, "missed_bytes": missed_bytes})
 }
 
 fn cache_stats(state: &ServerState) -> serde_json::Value {
