@@ -2482,3 +2482,32 @@ var card = Array.prototype.slice.call(document.querySelectorAll("aside .card"))
   .filter(function (c) { var h = c.querySelector("h2"); return h && /历史/.test(h.textContent); })[0];
 ```
 2. **∴ 并**在诊断点**直接打印**每张"历史"卡的 `{title, collapsed, parent}`** ✓ ⇒ **∴ 一眼看清哪张折叠 ✓** ✓✓
+
+
+### 九十八、🎯🎯🎯 **最终答案**：`historyCards` **只有一张**，两次探针都展开（第 434 轮 ✓）
+
+#### 一、原行 ✓
+```json
+[probe]     {"historyCards":[{"t":"历史（原子日志）","c":**false**,"parent":"**ASIDE**","panel":"history"}],
+             "found":true,"before":false,"afterRemove":false,"sameNode":true,"rawClass":"card","holderTag":"ASIDE","watch":[],"obs":true}
+[probe再次] {"historyCards":[{"t":"历史（原子日志）","c":**false**,"parent":"**DIV**",  "panel":"history"}],
+             "found":true,"before":false,"afterRemove":false,"sameNode":true,"rawClass":"card","holderTag":"DIV","watch":[],"obs":true}
+诊断：histCollapsed: **[true]** ✗
+```
+⇒ **∴ 结论一（决定性 ✓）** ✓：**`historyCards` **只有 1 张**✗** ⇒ **∴ **没有"取错卡"**✗** ⇒
+　**∴ 我的探针与诊断**看的是同一张 ✓** ⇒ **∴ 而它在两次探针时**都是 `c:false`（**展开 ✓**）⇒ **∴ 而诊断时 `[true]` ✗**** ✓✓
+⇒ **∴ 结论二** ✓：**`parent` 从 `ASIDE` ⇒ `DIV` ✓** ⇒ **∴ 搬卡**确实发生过 ✗ ⇒ **∴ 而两次都是 `c:false` ✓
+　⇒ **∴ 搬卡**没有**折它 ✗**** ✓✓
+⇒ **∴ 结论三 ★★ 最终答案 ★★** ✓：**∴ 折叠发生在 `[probe再次]` **之后**、诊断**之前** ✗** ⇒ **∴ 而那段时间里** ✓：
+　**① `applyCollapsed` **不可能**又跑 ✗**（**∵ `window.__ac` 里**只有 1 条 `raw` ✓ ⇒ **∴ 只被调用**一次 ✓**）｜
+　**② 观察器**已断开 ✗**（**3000 ms 后 `disconnect()` ✓** ⇒ **∴ 之后的类变更**看不到 ✗**）⇒
+　**∴ ★ 所以最可能 ★** ✓：**harness 的**某个段落**点了那张卡的**标题**（`h2` ✓）⇒ **∴ 走 `:8549` 的
+　`card.classList.toggle("collapsed")` ＋ `saveDockers()` ✗ ⇒ **∴ 它被折上 ✓**** ✓✓
+
+#### 二、∴ 最后一步（**一行 ✓**）
+* **把探针里观察器的 `disconnect` 去掉** ✓（**或延到 60 s ✓**）⇒ **∴ 一次就能抓到"谁在诊断前折它" ✗**；
+* **∴ 或**更直接 ✓：**在 harness 里**禁止**点击任何卡标题**✗ ⇒ **∴ 再跑 ⇒ 若诊断变 `false` ⇒ **∴ 根因确认 ✓**** ✓✓
+⇒ **∴ 且**这意味着** ✓：**报告 ② 的"折叠"很可能是**测试自身**造成的 ✗** ⇒ **∴ 而用户看到的折叠**另有原因 ✗**
+　（**如他**确实手动折过 ✓ ⇒ **∴ 那 `localStorage` 里就有 ✓ ⇒ **∴ 而 `applyCollapsed(saved)` 会折它 ✗** ——
+　**∴ 但我第 397 轮的跳过逻辑**应当拦住 ✓ ⇒ **∴ 而 `before=false` 证明**它拦住了 ✓ ⇒ **∴ 所以**用户那一侧
+　**若被折 ⇒ **∴ 只能来自**点击 ✓／或 `saved` 之外**✗**** ✓✓
