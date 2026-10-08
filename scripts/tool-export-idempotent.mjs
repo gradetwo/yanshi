@@ -96,6 +96,27 @@ check(Number(first.omitted) > 0,
   "必须**真的跑过重放证明**（`omitted > 0`）—— 否则“完全不验证”也能让上面两条通过",
   "omitted=" + first.omitted);
 
+// ⑤ **改动之后，包必须随之变化** ✓（第 81 轮补 ✓）—— **这是"导出结果缓存"的护栏** ✗：
+//   缓存的核心风险不是"两次相同"✗（幂等判据已守 ✓），而是"**内容变了却仍给旧包**"✗
+//   —— 那种情况下**两次导出照样相同** ✓ ⇒ **∴ 幂等判据抓不到它** ✗✓ ⇒ **∴ 必须单独立这一条** ✓。
+if ((await call("create_layer", { layer_id: "L2" })).ok !== true) {
+  console.error("✗ 前置不成立：第二个图层建不出");
+  process.exit(2);
+}
+const changedStroke = await call("brush_stroke", {
+  layer_id: "L2", object_id: "e9", brush: "100%_Opaque", size: 50,
+  color: { r: 200, g: 40, b: 200, a: 255 }, preview: false,
+  points: [[60, 300, 1], [320, 300, 1]],
+});
+if (changedStroke.ok !== true) {
+  console.error("✗ 前置不成立：改动笔触未成功 ⇒ " + JSON.stringify(changedStroke).slice(0, 160));
+  process.exit(2);
+}
+const third = await call("export_project", {});
+check(String(third.blob_hash) !== String(second.blob_hash),
+  "**改动之后导出的内容寻址哈希必须改变**（不许把旧包当新包给 ✗ —— 缓存的护栏）",
+  `${String(second.blob_hash).slice(7, 23)} → ${String(third.blob_hash).slice(7, 23)}`);
+
 console.log("");
 if (failures.length) {
   console.error(`结论：导出不幂等 ✗（${failures.length} 条）`);
