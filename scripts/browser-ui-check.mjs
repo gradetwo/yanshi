@@ -1921,6 +1921,16 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     await evaluate("(() => { const b = document.getElementById('historyReload'); if (b) b.click(); return !!b; })()");
     await new Promise((r) => setTimeout(r, 2500));
     // **★ 存图 ✓**（**人眼证据 ✓**）—— **∴ 这才是本段的主产物 ✓**。
+    // **★ 先**展开"历史（原子日志）"卡片**✗**（第 382 轮 ✓）：第 380 轮的图上**历史行一行都看不见 ✗**
+    // —— **∴ 该卡片**默认折叠**✗ 且在**页面最底部**✓ ⇒ **∴ 用户很可能**根本没看到那一列 ✓**
+    // ⇒ **∴ 截图前必须展开它 ✓**，否则"用户视角"是**空的 ✗**（**第 3 次"读数 ≠ 所见"✗**）。
+    await evaluate(`(() => {
+      const marks = Array.from(document.querySelectorAll("summary, details > h2, details > summary, h2, button"));
+      const hit = marks.find((n) => /历史/.test(n.textContent || ""));
+      if (hit) hit.click();
+      return !!hit;
+    })()`);
+    await new Promise((r) => setTimeout(r, 1200));
     try { await capture("history-panel-imported"); } catch (_) {}
     const rows = await historyRows();
     const kinds = new Map();
