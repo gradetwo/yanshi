@@ -2696,7 +2696,7 @@ async function mediumStroke(name, points, options = {}) {
   canvas.height = height;
   const paint = canvas.getContext("2d");
   // 画布上已有像素（供混色取色 ✓）：用内容画布当前内容作为底 ✓。
-  const source = board.getContext("2d").getImageData(
+  const source = compositeFrame().getContext("2d").getImageData(
     Math.max(0, Math.min(board.width - width, Math.round(minX - state.viewport.x))),
     Math.max(0, Math.min(board.height - height, Math.round(minY - state.viewport.y))),
     Math.min(width, board.width), Math.min(height, board.height),
@@ -2997,7 +2997,7 @@ async function mediumDabInner(name, point) {
     const scale = board.width / Math.max(1, rect.width);
     const px = Math.min(board.width - 1, Math.max(0, Math.round(point.x * scale)));
     const py = Math.min(board.height - 1, Math.max(0, Math.round(point.y * scale)));
-    const dest = board.getContext("2d").getImageData(px, py, 1, 1).data;
+    const dest = compositeFrame().getContext("2d").getImageData(px, py, 1, 1).data;
     const wetness = (Number($("strength").value) || 40) / 100;
     input.set([tip[0], tip[1], tip[2], 1, dest[0] / 255, dest[1] / 255, dest[2] / 255, dest[3] / 255,
                1.0, wetness], 0);
@@ -8854,7 +8854,7 @@ $("exportPngView").addEventListener("click", async () => {
     return;
   }
   try {
-    const blob = await new Promise((resolve) => board.toBlob(resolve, "image/png"));
+    const blob = await new Promise((resolve) => compositeFrame().toBlob(resolve, "image/png"));
     if (!blob) throw new Error("board.toBlob 返回空");
     const href = URL.createObjectURL(blob);
     triggerPngDownload(href, state.docId, true);
