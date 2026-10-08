@@ -1909,6 +1909,28 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     // **★ token 必须带上 ✗**（第 374 轮 ✓）：历史走 `callTool("get_log")` ✓ ⇒ 它读 `state.token` ✓
     // ⇒ **∴ URL 里漏 `&token=` ⇒ token 空 ⇒ **读到 0 行 ✗**（**我为此连栽三轮 ✓**）。
     const histToken = String(finished.token || "");
+    // **★ 抓现行 ✓**（第 401 轮 ✓）：九个假设全被否证 ✗ ⇒ **∴ 不再推断 ✓** ⇒
+    // **∴ 用 `MutationObserver` 记录**谁把 `collapsed` 加到**历史卡**上（**含调用栈 ✓**）——
+    // **∴ 且必须在**导航之前**注入 ✓，**否则抓不到**加载期**那一次 ✗**（**第 400／401 轮 ✓**）。
+    try {
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+          window.__cl = [];
+          const w = () => new MutationObserver((ms) => {
+            for (const m of ms) {
+              if (m.type !== "attributes" || m.attributeName !== "class") continue;
+              const t = m.target;
+              if (!t || !t.classList || !t.classList.contains("collapsed")) continue;
+              if (!/历史|history/.test((t.textContent || "") + (t.dataset ? t.dataset.panel : ""))) continue;
+              window.__cl.push({ panel: t.dataset && t.dataset.panel, cls: t.className,
+                                 stack: String(new Error().stack).split("\\n").slice(1, 6).join(" | ") });
+            }
+          }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
+          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", w);
+          else w();
+        })();`,
+      });
+    } catch (_) { /* 老版本 CDP 忽略 ✓ */ }
     await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
     await waitFor("!!document.querySelector('#history')", "导入后历史容器出现");
     // **★ 必须切到"历史"标签 ✗**（默认是"绘制"页 ⇒ 没有 `.row` ✗ —— 第 369 轮实测 ✓）。
@@ -1954,6 +1976,9 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       };
     })()`);
     console.log("  [诊断] " + JSON.stringify(diag));
+    // **★ 读抓现行的结果 ✓**
+    const caught = await evaluate("(() => (window.__cl || []).slice(0, 4))()").catch(() => []);
+    console.log("  [抓现行] " + JSON.stringify(caught));
     const rows = await historyRows();
     const kinds = new Map();
     for (const row of rows) {
