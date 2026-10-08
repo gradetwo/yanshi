@@ -2025,13 +2025,22 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     // red.
     const rowCheck = await evaluate("window.__rowCheck ? window.__rowCheck() : null").catch(() => null);
     console.log("  [行检] " + JSON.stringify(rowCheck));
-    if (rowCheck && rowCheck.importRows >= 5 && rowCheck.bareRows === rowCheck.importRows) {
-      console.error("❌ " + rowCheck.importRows + " 条 import_image 行全都只有 kind ✗ ⇒ 看不出属于哪个层" +
-        "（变异：去掉层名／尺寸 span ⇒ 本判据必红 ✓）｜样例 " + JSON.stringify(rowCheck.samples));
-      process.exitCode = 1;
-    } else if (rowCheck) {
-      console.log("  ✓ import_image 行可辨识：共 " + rowCheck.importRows + " 条，其中仅含 kind 的 " +
-        rowCheck.bareRows + " 条｜样例 " + JSON.stringify(rowCheck.samples));
+    // Assert what MUST be present, not what must not remain: a negative test that
+    // cleans characters away passes as soon as one character survives, which is
+    // exactly what happened (a colon was forgotten), so the mutation could not
+    // move it. Here at least nine tenths of the bitmap rows must carry a layer
+    // identifier or a size pattern; removing the payload drives that to zero.
+    if (rowCheck && rowCheck.importRows >= 5) {
+      const withMark = rowCheck.samplesWithMark;
+      const need = Math.floor(rowCheck.importRows * 0.9);
+      if (typeof withMark === "number" && withMark < need) {
+        console.error("❌ 只有 " + withMark + "/" + rowCheck.importRows + " 条 import_image 行含层标识或尺寸" +
+          "（需 ≥" + need + "）⇒ 看不出属于哪个层 ✗｜样例 " + JSON.stringify(rowCheck.samples));
+        process.exitCode = 1;
+      } else {
+        console.log("  ✓ import_image 行可辨识：" + withMark + "/" + rowCheck.importRows +
+          " 条含层标识或尺寸｜样例 " + JSON.stringify(rowCheck.samples));
+      }
     }
     // **★ 回到原文档 ✓**（否则后续段落 token 不匹配 ✗ —— 第 369 轮实测：失败 5→10 项 ✗）。
     await send("Page.navigate", { url });

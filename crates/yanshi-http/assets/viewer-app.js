@@ -9538,5 +9538,8 @@ window.__rowCheck = function () {
   var bare = imp.filter(function (t) {
     return t.replace(/[\s0-9#]|import_image|agent|mcp|详情|回到此处/g, "") === "";
   });
-  return { total: rows.length, importRows: imp.length, bareRows: bare.length, samples: imp.slice(0, 3) };
+  // positive count: how many bitmap rows carry a layer id or a size pattern
+  var withMark = imp.filter(function (t) { return /L\w+_|\u00d7\d|\d{3,}\u00d7/.test(t); }).length;
+  return { total: rows.length, importRows: imp.length, bareRows: bare.length,
+           samplesWithMark: withMark, samples: imp.slice(0, 3) };
 };
