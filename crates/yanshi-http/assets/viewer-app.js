@@ -8767,6 +8767,24 @@ window.__probe = function () {
   out.sameNode = document.querySelector('aside .card[data-panel=history]') === card;
   out.rawClass = card.className;
   out.holderTag = card.parentNode && card.parentNode.tagName;
+  // Now watch the exact window between this probe and the diagnostic, which is
+  // where the fold must happen (round 430), and report who did it.
+  out.watch = [];
+  try {
+    var obs = new MutationObserver(function (ms) {
+      for (var i = 0; i < ms.length; i++) {
+        var m = ms[i];
+        if (m.type !== "attributes" || m.attributeName !== "class") continue;
+        out.watch.push({ cls: m.target.className, has: m.target.classList.contains("collapsed") });
+      }
+    });
+    obs.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    out.obs = true;
+    window.setTimeout(function () {
+      try { obs.disconnect(); } catch (e) {}
+      window.__probeAfter = out.watch.slice(0, 8);
+    }, 3000);
+  } catch (e) { out.obsErr = String(e).slice(0, 60); }
   return out;
 };
 initDockers();

@@ -2015,6 +2015,11 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     console.log("  [卡片] " + JSON.stringify(cards));
     const pr = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
     console.log("  [probe] " + JSON.stringify(pr));
+    await new Promise(function (r) { setTimeout(r, 3500); });
+    const pw = await evaluate("window.__probeAfter || null").catch(function () { return null; });
+    console.log("  [probe观察] " + JSON.stringify(pw));
+    const pr2 = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
+    console.log("  [probe再次] " + JSON.stringify(pr2));
     const acBuf = await evaluate('(window.__ac || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [ac缓冲] " + JSON.stringify(acBuf));
     // ask the page which version of that function it is running: the comment
