@@ -1987,6 +1987,21 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       "}).filter(function (x) { return /\u5386\u53f2|history/.test(x.t + x.p); })",
     ).catch(() => []);
     console.log("  [卡片] " + JSON.stringify(cards));
+    // **★ 立刻展开 → 马上读 ✓**（第 408 轮 ✓）：分辨两种可能 ✓
+    //   ① 立刻读得 false ⇒ **∴ 是"之后被折回"**✗ ⇒ **∴ 只需找到那一次 ✓**；
+    //   ② 立刻读仍 true ⇒ **∴ remove 没落到这张卡上**✗ ⇒ **∴ 结构问题 ✓**。
+    const instant = await evaluate(
+      "(function () {" +
+      "  var c = document.querySelector('aside .card[data-panel=\'history\']');" +
+      "  if (!c) return { err: 'no card' };" +
+      "  var before = c.classList.contains('collapsed');" +
+      "  c.classList.remove('collapsed');" +
+      "  var after = c.classList.contains('collapsed');" +
+      "  var same = document.querySelector('aside .card[data-panel=\'history\']') === c;" +
+      "  return { before: before, after: after, stillSameNode: same, cls: c.className };" +
+      "})()",
+    ).catch((e) => ({ err: String(e).slice(0, 80) }));
+    console.log("  [立刻] " + JSON.stringify(instant));
     // **★ 读抓现行的结果 ✓**
     const caught = await evaluate("(() => (window.__cl || []).slice(0, 4))()").catch(() => []);
     console.log("  [抓现行] " + JSON.stringify(caught));
