@@ -1314,3 +1314,65 @@ fn a_small_region_reads_only_the_tiles_it_needs() {
          若 ≥ 1 MiB 说明仍在读整幅 ✗）"
     );
 }
+
+/// **判据（第 208 轮 ✓）**：**同一批像素，存成分块（带索引 ✓）与存成整幅 ⇒ 渲染结果必须逐字节相同** ✓✓
+/// —— **∴ 这是"分块不许改画面"的硬守卫 ✓**（**变异** ✗：把区域坐标／块号弄错 ⇒ 必红 ✓）。
+#[test]
+fn tiled_and_plain_bitmaps_render_identically() {
+    let side = 512u32;
+    let pixels: Vec<u8> = (0..(side as usize) * (side as usize) * 4)
+        .map(|i| ((i * 7 + 13) % 251) as u8)
+        .collect();
+    let store = CountingStore::new();
+    // ① **整幅存的版本** ✓
+    let plain = yanshi_core::blob::stage_blob(&store, &pixels, "image/x-yanshi-raw").unwrap();
+    // ② **分块 ＋ 索引的版本** ✓（**同一批像素 ✓**）
+    let parts = yanshi_render::bitmap_tiles::split_into_tiles(side, side, &pixels).unwrap();
+    let mut hashes = Vec::with_capacity(parts.len());
+    for part in &parts {
+        hashes.push(
+            yanshi_core::blob::stage_blob(&store, part, "image/x-yanshi-raw")
+                .unwrap()
+                .blob_hash
+                .to_string(),
+        );
+    }
+    let index = yanshi_render::bitmap_tiles::BitmapIndex {
+        v: yanshi_render::bitmap_tiles::BITMAP_INDEX_VERSION,
+        tile: yanshi_render::bitmap_tiles::BITMAP_TILE,
+        width: side,
+        height: side,
+        tiles: hashes,
+    };
+    let index_blob = yanshi_core::blob::stage_blob(
+        &store,
+        &serde_json::to_vec(&index).unwrap(),
+        "application/json",
+    )
+    .unwrap();
+    // ③ **两份文档：除 bitmap 之外完全相同** ✓
+    let build = |data: serde_json::Value| {
+        let mut state = stress_document(side, false);
+        state.objects.insert(
+            "patch".to_owned(),
+            object("patch", "layer_bottom", ObjectType::RasterPatch, 4, data),
+        );
+        state
+    };
+    let plain_state = build(json!({"bitmap": plain, "width": side, "height": side,
+                                   "region": {"x": 0, "y": 0, "w": side, "h": side}}));
+    let tiled_state = build(
+        json!({"bitmap": plain.clone(), "width": side, "height": side,
+                                   "region": {"x": 0, "y": 0, "w": side, "h": side},
+                                   "tiles": index_blob.blob_hash.to_string()}),
+    );
+    let grid = || TileGrid::new(64, side, side).unwrap();
+    let mut r1 = Renderer::with_budget(grid(), 64 * 1024 * 1024).with_max_workers(1);
+    let mut r2 = Renderer::with_budget(grid(), 64 * 1024 * 1024).with_max_workers(1);
+    // ④ **跨块边界的区域** ✓（250,250,300,260 ⇒ 覆盖 2×2 块 ✓）
+    let region = Bbox::new(250.0, 250.0, 300.0, 260.0);
+    let a = r1.render_region(&plain_state, &store, region).unwrap();
+    let b = r2.render_region(&tiled_state, &store, region).unwrap();
+    assert_eq!(a.rgba8.len(), b.rgba8.len(), "尺寸必须相同");
+    assert!(a.rgba8 == b.rgba8, "**分块路径必须与整幅路径逐字节相同** ✗");
+}
