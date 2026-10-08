@@ -1917,7 +1917,10 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       if (tab) tab.click();
       return !!tab;
     })()`);
-    await waitFor("document.querySelectorAll('#history .row').length > 0", "切到历史标签后出现条目");
+    // **★ 再点一次"重新载入"✗**（第 370 轮推断 ✓）：导入后的文档**历史是服务端新增的**✗
+    // ⇒ 面板**可能没有自动载入** ✗ ⇒ **∴ 点 `#historyReload` 再取 ✓**（`:413` ✓）。
+    await evaluate("(() => { const b = document.getElementById('historyReload'); if (b) b.click(); return !!b; })()");
+    await waitFor("document.querySelectorAll('#history .row').length > 0", "重新载入历史后出现条目");
     const rows = await historyRows();
     const counts = new Map();
     for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
@@ -1928,12 +1931,14 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     if (rows.length < 10) {
       console.error("❌ 导入后只取到 " + rows.length + " 行历史（应 ≥10）⇒ 判据无效 ⇒ 不许当通过 ✗" +
         "（夹具 " + fixture + "｜文档 " + histDoc + "）");
-      process.exit(1);
+      // **★ 记下失败但**不立刻退出**✗**（第 371 轮 ✓）：**否则后面的段落**全都不跑**✗
+      // ⇒ **∴ 会把"没跑到 ✗"误读成"问题解决了 ✓"** —— **∴ 本会话已栽过一次 ✓**。
+      process.exitCode = 1;
     }
     if (ratio >= 0.5) {
       console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + rows.length +
         "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(rows[0] || "").slice(0, 40) + "）");
-      process.exit(1);
+      process.exitCode = 1;   // ★ 同上：**累积失败 ✓，不打断后续 ✓**
     }
     console.log("  ✓ 导入后历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + rows.length + "）");
     // **★ 回到原文档 ✓**（否则后续段落拿到的是新文档 ⇒ token／权限失败 ✗ —— 第 369 轮 ✓）
