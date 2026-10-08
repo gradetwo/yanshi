@@ -1886,6 +1886,42 @@ await strokeAt(0.4, 0.6, 41);
 const paintedAfterStroke = await paintedNow();
 const historyAfter = await historyRows();
 const hasStroke = historyAfter.some((row) => row.includes("draw_stroke"));
+
+// **★ 历史行"可区分性"判据 ✓**（用户报告 2026-10-09 ✗："导入一个工程后……其它名字都是 `import_image`"✓）：
+// **∴ 必须**在一个**真的导入过工程**的文档上测 ✗** —— 上面那个文档是**新建的 ✓（只有 5 行历史 ✓）⇒
+// 在那里断言**恒真**✗（**第 363 轮已撤过一次 ✓**）。**∴ 这里先导入一个 36 原子的作品 ✓**：
+//   实测其日志 ＝ **21×`import_image` ＋ 7×`create_layer` ＋ 7×`draw_shape` ＋ 1×`create_document`** ✓
+//   ⇒ 修前 `import_image` 占 **58%** ✗ ⇒ **∴ 若行文本全同 ⇒ 用户看不出是哪一步**✗。
+// **变异** ✗：删掉 `viewer-app.js` 里 `+ " #" + String(atom.seq)` ⇒ 回到 58% ⇒ **必红 ✓**。
+if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
+  const fixture = process.env.UI_HISTORY_FIXTURE || "/tmp/eval/artworks/arnolfini_portrait_4k.yanshi";
+  const fs = await import("node:fs/promises");
+  let bytes = null;
+  try { bytes = await fs.readFile(fixture); } catch (_) { bytes = null; }
+  if (bytes) {
+    const histDoc = "uicheck-hist-" + Date.now().toString(36);
+    const begin = await fetch(`${origin}/api/documents/import?begin=1`, { method: "POST" }).then((r) => r.json());
+    await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
+      method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
+    });
+    await fetch(`${origin}/api/documents/import?upload=${begin.upload_id}&finish=1&doc_id=${histDoc}`, { method: "POST" });
+    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}` });
+    await waitFor("!!document.querySelector('#history .row')", "导入后历史面板出现条目");
+    const rows = await historyRows();
+    const counts = new Map();
+    for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
+    const top = rows.length ? Math.max(...counts.values()) : 0;
+    const ratio = rows.length ? top / rows.length : 0;
+    if (rows.length >= 10 && ratio >= 0.5) {
+      console.error("❌ 历史里 " + Math.round(ratio * 100) + "% 的行文本完全相同（" + top + "/" + rows.length +
+        "）⇒ 用户无法区分是哪一步 ✗（样例：" + String(rows[0] || "").slice(0, 40) + "）");
+      process.exit(1);
+    }
+    console.log("  ✓ 导入后历史行可区分：最高重复率 " + Math.round(ratio * 100) + "%（" + top + "/" + rows.length + "）");
+  } else {
+    console.log("  ⚠ 历史行判据跳过：夹具不可读（" + fixture + "）✗");
+  }
+}
 // **⚠️ 历史行"可区分性"判据**暂时不放在这里 ✗**（第 363 轮 ✓）：
 // 本 harness **从不导入工程** ✗（`grep import_project|upload|fixture` 无命中 ✓）⇒
 // 它一直在**新建的 5 行文档**上跑 ✓ ⇒ **∴ 一条"重复率 < 50%"的断言在这里**恒真**✗** ⇒
