@@ -57216,3 +57216,45 @@ print("=> RESULT: Cache capacity deficit … causes unavoidable continuous thras
   （**很可能 `new_document` 后立即建层 ✓ ⇒ 无缓冲 ✓**）
 ⇒ **∴ 报告表格 4K 一栏的若干项**不可与真画布对比**✗** ⇒ **∴ 引用时须注明** ✓。
 （8K 那一栏 ✓：3136.7 ms／+571 MB ✓，与我实测 9632～9779 ms／+869 MB ✓ **同量级、我更差** ✓。）
+
+## 第 438 轮：🎯🎯 **每笔 `preview_ms` 的真身 ＝ `render_region(脏区)`** ✓ —— 与 **P1-1** 同一病 ✓
+
+### 一、定位过程（**四次修正，全部有实测** ✓）
+| 轮 | 假设 | 证伪方式 | 结果 |
+|---|---|---|---|
+| 报告 | TileCache 容量 ⇒ 全量重光栅化 | `raster_ms` 两边 **0.1 ms** | ✗ 否 |
+| 434 | 大位图解压重做 | 未直接证明 | ⚠️ |
+| 435 | 8K 缩略图每笔重算（4K 命中） | `seq == render_watermark` **必每笔推进** | ✗ 部分错 |
+| 436 | 走"整幅"分支（`document_thumb`／`preview_dirty`） | — | ⚠️ |
+| **438** | **`render_region(脏区)` 本身付近整幅代价** ✓ | **入口探针零输出 ⇒ `render_document_preview` **不在**每笔路径** ✓ | **✅ 成立** ✓ |
+
+### 二、🎯 决定性证据 ✓
+1. **探针机制先被排除** ✓（第 437 轮 ✓）：**写文件**探针有效 ✓（`THUMBSRC none` 1 行 ✓）；
+   **`eprintln!` 通路也有效** ✓（`/tmp/ver.log` 4 行 ✓）⇒ **∴ 零输出是**真的没执行**✓**；
+2. **入口探针零输出** ✓ ⇒ **∴ `render_document_preview` **不在**每笔路径上** ✓（我第 110／112／113 轮瞄错了 ✗）；
+3. **真身在 `tools.rs:1143+` 的写路径** ✓：
+```rust
+let preview_started = Instant::now();
+if ctx.preview && !ctx.silent {
+    let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;   // ★ 脏区渲染 ★
+    ctx.time(Phase::Preview, preview_started);                          // 1160
+}
+… render_region_complete_jobs(…)                                        // 广播
+ctx.time(Phase::Preview, preview_started);                              // 1166
+```
+
+### 三、∴ 结论 ✓（**接回目标第 2 条 ＋ P1-1** ✓）
+* **路径本身是对的** ✓：`region` 就是**脏区** ✓（**∴ 不是"忘了传脏区"** ✓）；
+* **但 `render_region(小脏区)` 仍付**近整幅**的代价** ✗ ⇒ **∴ 与 **P1-1**（"512px 与全幅同耗时" ✓，第 414 轮 ✓）**同一个病** ✓✓；
+* **∴ 而 8K／4K ≈ 255／88 ≈ 2.9×** ✓ ⇒ **∴ 接近**面积比 4×** ⇒ **∴ "8K 慢" 就是 "每次渲一整幅"** ✓
+  （**∴ 我此前的样本 106× 是内容差异 ✓，不是另一种机制** ✓）；
+* **∴ 修法方向** ✓：**让 `render_region` 真正只渲脏区** ✓（**目标第 2 条** ✓）——
+  **不是**扩 TileCache ✗（**两次实测均无支持** ✓）。
+
+### 四、∴ 下一步（**判据先行 ＋ 变异** ✓）
+1. **观测** ✓：把 `region` 的面积与 `render_region` 内部**实际渲染的 tile 数**一起打出 ✓
+   （**核心判别量** ✓：小脏区**应只渲几个 tile** ✓）；
+2. **判据** ✓：**"脏区面积 ≈ 1 个 tile 时，实渲 tile 数 ≤ 4"** ✓
+   （**结构性计数** ✓，**不看墙钟** ✗）；
+   **变异** ✗：把 `region` 换成整幅 ⇒ **必红** ✓；
+3. **然后才修** ✓ —— 且**修在 `render_region`**（**不是**在缩略图／TileCache ✓）。
