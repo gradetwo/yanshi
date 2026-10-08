@@ -2003,7 +2003,11 @@ async function checkBitExact() {
   }, { refresh: false });
   // 含 heavy 内容（位图／介质笔画）的文档上，内核**表示不了**它 ⇒ **bit-exact 比较不适用** ✓
   // ⇒ **如实标注"不适用"** ✓，而不是报一个差异数 ✗（那会被读成"内核算错"✗ —— 审计 Y-01 的误导点 ✓）。
-  if (needsServerPixels) {   // ★ 变量 ✗（不是函数 ✗）—— 第 313 轮修 ✓
+  // **★ 条件必须是"**文档含 heavy 内容**" ✓，**不是 `needsServerPixels` ✗**（第 317 轮修 ✗）：
+  // `needsServerPixels` 在**打开任意文档时都可能为真** ✗（内核未就绪／能力缺失 ✓ ＝ `:985`／`:1226` ✓）
+  // ⇒ 用它当条件会把**普通文档**也报成"不适用" ✗ ⇒ **假跳过 ⇒ 判据形同废弃 ✗**。
+  // **∴ 只用 `heavyDocument`** ✓（**它在 `detectHeavyContent()` 里被置真 ✓，第 309 轮 ✓**）。
+  if (heavyDocument) {
     window.yanshiStats.bitExact = null;   // **未知** ✓（不是 false ✗）
     const box = $("bitExact");
     if (box) box.textContent = "不适用（文档含 heavy 内容：内核表示不了位图／介质笔画）";
