@@ -8753,6 +8753,22 @@ function initQuickPanel() {
   });
 }
 
+// TEMP PROBE (round 429, remove once the cause is known). Defined on the page so
+// that the harness can call it with a bare name and no quoting at all, which is
+// what broke three earlier attempts.
+window.__probe = function () {
+  var out = {};
+  var card = document.querySelector('aside .card[data-panel=history]');
+  out.found = !!card;
+  if (!card) return out;
+  out.before = card.classList.contains("collapsed");
+  card.classList.remove("collapsed");
+  out.afterRemove = card.classList.contains("collapsed");
+  out.sameNode = document.querySelector('aside .card[data-panel=history]') === card;
+  out.rawClass = card.className;
+  out.holderTag = card.parentNode && card.parentNode.tagName;
+  return out;
+};
 initDockers();
 // **图层面板接线** ✓（面板本身由 `refreshLayers()` 渲染 ✓；这里只接**一次**监听器 ✓ ——
 // 写在重画里会让点一次触发多次 ✗，本项目抓到过同类问题 ✓）。

@@ -2013,6 +2013,8 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     const acAfter = await evaluate('(window.__cl || []).length').catch(function () { return null; });
     console.log("  [重载后 __cl 条数] " + JSON.stringify(acAfter));
     console.log("  [卡片] " + JSON.stringify(cards));
+    const pr = await evaluate("window.__probe ? window.__probe() : null").catch(function () { return null; });
+    console.log("  [probe] " + JSON.stringify(pr));
     const acBuf = await evaluate('(window.__ac || []).slice(0, 6)').catch(function () { return null; });
     console.log("  [ac缓冲] " + JSON.stringify(acBuf));
     // ask the page which version of that function it is running: the comment
