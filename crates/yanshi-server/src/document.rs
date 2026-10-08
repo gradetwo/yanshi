@@ -934,6 +934,22 @@ impl Document {
     /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
     /// 因为调用方要的是像素而不是可展示的产物。
     pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
+        // **★ 入口探针 ✓**（第 469 轮 ✓，**查明后删 ✓**）：**上一轮 `RegionBlockCache::get` 的探针
+        // 一次都没触发 ✗** ⇒ **∴ 必须先分清"这个函数**有没有被走到**✗"与"走到了但没查缓存 ✗"**。
+        if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "DOC.render_region_raw bbox=({},{},{},{})",
+                    bbox.x, bbox.y, bbox.w, bbox.h
+                );
+            }
+        }
         // **先查区域字节缓存** ✓（设计 §8.4 ✓）。
         //
         // **版本 = HEAD 序号** ✓ —— 这是"绝不给旧像素 ✗"的根据 ✓：

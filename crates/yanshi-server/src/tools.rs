@@ -3739,6 +3739,16 @@ fn read_analyze_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 }
 
 fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "TOOL.read_render_region called");
+        }
+    }
     // `raw: true`：额外把**原始 RGBA8** 存入 CAS 并返回取回地址，供客户端做逐像素比对
     // （哈希相等无法说明差多少；跨客户端/服务端路径的差异属于 D1 的 ±1 LSB）。
     if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
