@@ -1963,12 +1963,25 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
     // **★ 先**展开"历史（原子日志）"卡片**✗**（第 382 轮 ✓）：第 380 轮的图上**历史行一行都看不见 ✗**
     // —— **∴ 该卡片**默认折叠**✗ 且在**页面最底部**✓ ⇒ **∴ 用户很可能**根本没看到那一列 ✓**
     // ⇒ **∴ 截图前必须展开它 ✓**，否则"用户视角"是**空的 ✗**（**第 3 次"读数 ≠ 所见"✗**）。
-    await evaluate(`(() => {
-      const marks = Array.from(document.querySelectorAll("summary, details > h2, details > summary, h2, button"));
-      const hit = marks.find((n) => /历史/.test(n.textContent || ""));
-      if (hit) hit.click();
-      return !!hit;
+    // Expand the card itself, not the tab: the earlier attempt searched a broad
+    // set including buttons and clicked the first element whose text mentions
+    // history, which is the tab button, so the card stayed collapsed and the
+    // picture showed no rows. Target the card header inside the aside and, to be
+    // sure, clear the class directly as well.
+    const expanded = await evaluate(`(() => {
+      const cards = Array.from(document.querySelectorAll("aside .card"));
+      const card = cards.find((c) => {
+        const h = c.querySelector("h2");
+        return h && /历史/.test(h.textContent || "");
+      });
+      if (!card) return { found: false };
+      const before = card.classList.contains("collapsed");
+      const h2 = card.querySelector("h2");
+      if (h2) h2.click();
+      card.classList.remove("collapsed");
+      return { found: true, before: before, after: card.classList.contains("collapsed") };
     })()`);
+    console.log("  [展开历史卡] " + JSON.stringify(expanded));
     await new Promise((r) => setTimeout(r, 1200));
     try { await capture("history-panel-imported"); } catch (_) {}
     // **★ 诊断 ✓**（第 393 轮 ✓）：**四次改代码都没生效 ✗ ⇒ **停止猜测 ✓** ⇒ **把真实结构打出来 ✓****
