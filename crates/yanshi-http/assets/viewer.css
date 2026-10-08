@@ -95,7 +95,7 @@
      盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
      ⇒ 放大时给 `body` 加 `canvas-zoomed` ✓，把这两条上限放开 ✓ ⇒ 画布真的超出舞台 ✓、
      `.stage` 的 `overflow: auto` 才**有东西可滚** ✓（用户："画布是内部一个可以独立上下和左右滚动的"✓）。 */
-  body.canvas-zoomed #board, body.canvas-zoomed #kernel, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
+  body.canvas-zoomed #board, body.canvas-zoomed body.canvas-zoomed #board, body.canvas-zoomed #kernel, body.canvas-zoomed #overlay { max-width: none; max-height: none; }
   #kernel, #overlay { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
   /* **标注图钉层** ✓（设计 4.6 / 13.4 ✓）：用**独立的 DOM 层** ✓，不跟 `#overlay` 的笔迹预览抢画布 ✓，
      而且图钉**可点** ✓（点它跳到该标注 ✓）。 */
