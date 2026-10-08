@@ -137,6 +137,16 @@ struct BitmapCacheInner {
 /// 解码位图缓存能占用的**明文字节**上限（64 MiB ✓，理由见 [`BitmapCache`] 的说明 ✓）。
 const MAX_DECODED_BITMAP_BYTES: usize = 64 * 1024 * 1024;
 
+/// **位图缓存的预算** ✓（第 139 轮 ✓）：**至少 64 MiB，且至少能容纳两份"当前这一份"** ✓。
+///
+/// **为什么必须自适应** ✗（实测 ✓）：8K 整幅位图明文 ＝ **132.7 MiB** ✓ ⇒ 旧的**单一 64 MiB 常量**
+/// **既当"单份上限"又当"总预算"** ✗ ⇒ **8K 位图必然被拒 ⇒ 永不缓存** ✓
+/// ⇒ **∴ 每次渲染都重新解压 253 MiB** ✗（判据①′ 实测 ✓）。
+/// ⇒ **∴ 预算取 `max(64 MiB, 2 × 本份)`** ✓ ⇒ **8K ⇒ 265 MiB** ✓，**且**仍由既有 LRU 淘汰兜住** ✓（目标第 5 条 ✓）。
+fn bitmap_cache_budget(size: usize) -> usize {
+    MAX_DECODED_BITMAP_BYTES.max(size.saturating_mul(2))
+}
+
 /// **一份解码好的位图补丁** ✓：`(宽, 高, RGBA8 明文)` ✓。
 ///
 /// 用 `Arc` ✓ ⇒ 命中时只克隆一个指针 ✓，**绝不复制 33 MiB 的像素** ✗；
@@ -239,12 +249,13 @@ fn insert_locked(inner: &mut BitmapCacheInner, key: String, entry: DecodedBitmap
     // 否则下面那条淘汰循环会**把库里所有东西挤光** ✓ 然后仍然超预算 ✗ ——
     // "不把别人挤光"这句承诺必须由这一段兑现 ✓（8K 画布的一张全幅补丁 ≈ 126 MiB ✓，
     // 就属于这种单份超预算的情况 ✓）。
-    if size > MAX_DECODED_BITMAP_BYTES {
+    let budget = bitmap_cache_budget(size);
+    if size > budget {
         return;
     }
     // 淘汰到装得下为止 ✓。`key` 此刻不在 `order` 里 ✓（上面已判过不存在 ✓）
     // ⇒ 被淘汰的一定是别人 ✓，绝不会把刚放进去的这份挤掉 ✓。
-    while inner.bytes + size > MAX_DECODED_BITMAP_BYTES {
+    while inner.bytes + size > budget {
         let Some(oldest) = inner.order.pop_front() else {
             break;
         };
