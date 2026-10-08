@@ -8758,7 +8758,21 @@ function initQuickPanel() {
 // what broke three earlier attempts.
 window.__probe = function () {
   var out = {};
-  var card = document.querySelector('aside .card[data-panel=history]');
+  // Select by the SAME rule the diagnostic uses (title contains the two
+  // characters) rather than the first panel marker, because three cards share
+  // that marker and moving cards changes their order (round 433).
+  var cards = Array.prototype.slice.call(document.querySelectorAll("aside .card"));
+  out.historyCards = cards.filter(function (c) {
+    var h = c.querySelector("h2");
+    return h && /历史/.test(h.textContent || "");
+  }).map(function (c) {
+    return { t: (c.querySelector("h2") || {}).textContent, c: c.classList.contains("collapsed"),
+             parent: c.parentNode && c.parentNode.tagName, panel: c.dataset && c.dataset.panel };
+  });
+  var card = cards.filter(function (c) {
+    var h = c.querySelector("h2");
+    return h && /历史/.test(h.textContent || "");
+  })[0];
   out.found = !!card;
   if (!card) return out;
   out.before = card.classList.contains("collapsed");
