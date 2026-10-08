@@ -148,3 +148,47 @@ fn write_import_image(ctx, args) {
 5. **插入新函数必须插在目标函数的**文档块之上**✗**（**否则文档悬空 ⇒ clippy 报"列表项无缩进"✗**）；
 6. **中间成果落 `/tmp` 复用** ✓（**撤回不再等于白做 ✓**）；
 7. **锚点先数出现次数** ✓（**＞1 ⇒ 取函数内第一个或按行号 ✓**）—— 本会话栽了 11 次 ✗。
+
+---
+
+# ★ 顶层交接（第 364 轮时点 ✓）—— **先读这一页，再看 `audit-20261008-mapping.md` 的 57 节细节 ✓**
+
+## 一、一句话状态 ✓
+**性能线：已交付 16 项，全部有可跑判据 ＋ 变异 ✓。审计 P1 头号 Y-01：代码已修 ＋ 三条独立浏览器证据 ✓。
+用户报告 ①（面板不可滚）：**完全闭环 ✓**（修 ＋ 判据 ＋ 变异必红 ＋ 前后截图 ✓）。
+用户报告 ②（历史同名）：**已修 ✓（行加 `#seq`）＋ 产物核 ✓；判据**主动撤回 ✗**（**它在现有 harness 里恒真 ✗**）。**
+
+## 二、**下一步只做这两件**（**按价值降序 ✓**）
+1. **`scripts/browser-ui-check.mjs`：先加"导入一个作品"的一段，再把"历史行可区分"断言加回去** ✓
+   * **现状** ✗：该 harness **从不导入工程** ⇒ 永远只有 5 行历史 ⇒ **任何重复率断言**恒真**✗**；
+   * **夹具** ✓：`/tmp/audit/yanshi-audit-20261008/reproduction/feature-fixture.yanshi`（173 KB ✓）
+     **或** `/tmp/eval/artworks/arnolfini_portrait_4k.yanshi`（**36 原子 ＝ 21×`import_image` ＋ 7×`create_layer` ＋ 7×`draw_shape` ＋ 1×`create_document` ✓**）；
+   * **导入走 HTTP** ✓：`import?begin=1` ⇒ `import?upload=…&offset=0` ⇒ `import?…&finish=1&doc_id=<新 id>` ✓
+     ⇒ **再让页面打开 `?doc=<id>`** ✓（`viewer-app.js:42 searchParams.get("doc")` ✓）；
+   * **断言** ✓：**重复最多的行文本占比 < 50%**（**修前 58% ✗／修后 0% ✓**）；
+   * **变异** ✗：**删掉 `viewer-app.js:557` 的 `+ " #" + String(atom.seq)` ⇒ 58% ⇒ 必红 ✓**；
+   * **⚠️ 且必须**看历史面板截图**✓**（**本会话两次证明"读数 ≠ 用户所见"✗**）。
+2. **导入的稳态成本 ≈0.35 s（固定 ✗）＋ ≈1.1 s/MB** ⇒ **在最小工程上对 `import_project`（`service.rs:1872` ✓）逐段打点** ✓
+   * **实测依据** ✓：对照 0.08／1.32／5.58／4.42 MB ＋ 条目数 8／7／32／8 ✓ ⇒ **已排除"按条目计费 ✗"**；
+   * **判据** ✓：**稳态导入（多次取中位数 ✓，丢弃首次 ✓）≤ 150 ms** ＋ **守卫"导入后首屏有图"** ✓。
+
+## 三、**别踩的坑**（**本会话换来的 ✓**）
+| # | 坑 | 表现 |
+|---|---|---|
+| **1** | **`assets/*` 改了但**没重建**✗** | **CSS／JS 被 `include_str!` 编进二进制 ✓ ⇒ 验的是旧产物 ✗** |
+| **2** | **`cmd \| tail` 取 `$?`** ✗ | **拿到的是 `tail` 的 ⇒ 成功／失败静默对调 ✗** ⇒ **用 `${PIPESTATUS[0]}` ✓** |
+| **3** | **判据"能跑且通过"✗** | **可能**恒真**✗** ⇒ **必须问"它测的对象对吗"✓** |
+| **4** | **以**标志**为条件的判据 ✗** | **必须**正反两类文档各跑一遍**✓**（**本会话一条标志连错三处 ✗**） |
+| **5** | **`node scripts/browser-*.mjs …` 失败 ✗** | **先怀疑**调用方式**✗**（**三次：`token` ✗／预开页面 ✗／管道 ✗**） |
+| **6** | **手写 CDP ✗** | **挂起两次 ✗** ⇒ **一律复用既有 113 个 harness ✓** |
+| **7** | **插入新函数于目标函数的**文档块之下**✗** | **文档悬空 ⇒ clippy 报错 ✗** |
+
+## 四、**命令速查** ✓
+```bash
+export CARGO_TARGET_DIR=/tmp/yt4b && cargo build --release --bin yanshi-serve
+chromium --headless=new --remote-debugging-port=9333 --no-sandbox --disable-gpu --window-size=1280,900 --user-data-dir=/tmp/cdp0 about:blank &
+/tmp/yt4b/release/yanshi-serve --bind 127.0.0.1:$P --root /tmp/r --assets-dir "$PWD/assets" --profile all &
+curl -sf -X PUT "http://127.0.0.1:9333/json/new?http://127.0.0.1:$P/" >/dev/null   # ★ 需预开页面的 harness ✓
+node scripts/browser-layout.mjs "http://127.0.0.1:$P"    # 自带导航 ✓
+node scripts/tool-criteria-coverage.mjs                  # 覆盖率守卫 ✓
+```
