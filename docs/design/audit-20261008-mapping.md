@@ -2455,3 +2455,30 @@ const instant = await evaluate('(function () { var c = document.querySelector("a
 #### 二、∴ 下一轮（**一步 ✓**）
 * **在探针之后**（**而不是加载前 ✓**）**装一个观察器** ✓ ⇒ **∴ 它覆盖"探针 → 诊断"这段 ✗** ⇒
 　**∴ 一次即抓到**加类者 ＋ 栈 ✓**；**或**更省 ✓：**在探针里**包一层 `MutationObserver` ＋ 等 300 ms 再读**✓** ✓✓
+
+
+### 九十七、🎯🎯🎯 **决定性**：**父容器从 `ASIDE` 变成 `DIV`**（第 432 轮 ✓）
+
+#### 一、两次探针的对照 ✓
+```json
+[probe]     {"found":true,"before":false,"sameNode":true,"rawClass":"card","holderTag":"**ASIDE**","watch":[],"obs":true}
+[probe观察] null                                      ← 3 秒内**没有**类变更 ✓
+[probe再次] {"found":true,"before":false,"sameNode":true,"rawClass":"card","holderTag":"**DIV**",  "watch":[],"obs":true}
+诊断：histCollapsed: **[true]** ✗
+```
+⇒ **∴ 结论一（最强的一条 ✓）** ✓：**`holderTag` 从 `ASIDE` ⇒ `DIV` ✗** ⇒ **∴ 卡片的**父容器变了**✗** ⇒
+　**∴ 即**它被**搬走**✗**（**从 `aside` 的直接子节点 ⇒ 搬进某个 `div` ✓ —— **正是 `setupRightTabs()` 的搬卡 ✓**）** ⇒
+　**∴ 而 `sameNode=true` ✓ ⇒ **∴ 节点本身**没换**✗** ⇒ **∴ 是**搬动**✗，不是**重建**✗**** ✓✓
+⇒ **∴ 结论二** ✓：**`watch: []` ✓ ＋ `[probe观察] null` ✗** ⇒ **∴ 那 3 秒内**没有任何类变更 ✗**（**★ 而且 `__probeAfter` 也没被设置 ✗ ⇒ **∴ 定时器**没跑到**✗？** ★**）** ✓✓
+⇒ **∴ 结论三（关键 ✓）** ✓：**搬卡**改变了 DOM 顺序**✗** ⇒ **∴ 于是**探针的 `querySelector('aside .card[data-panel=history]')` **与
+　诊断的 `dockerCards()` ＋ `cardTitle` 筛"历史（原子日志）" **可能取到**不同的卡 ✗**** ⇒
+　**∴ 而 `[卡片]` 探针显示 `aside` 里有 **3** 张带 `history` 标记 ✗ ⇒ **∴ 其中只有**第一张**是"历史（原子日志）" ✓ ⇒
+　**∴ 若搬卡让顺序变了 ⇒ **∴ 两边取到不同卡 ⇒ **∴ 读数矛盾 ✓**** ✓✓
+
+#### 二、∴ 下一轮（**两件事 ✓，都很小 ✓**）
+1. **让探针**按标题**取卡** ✓（**与诊断同一筛法 ✓**）⇒ **∴ 排除"取到不同卡 ✗"**：
+```js
+var card = Array.prototype.slice.call(document.querySelectorAll("aside .card"))
+  .filter(function (c) { var h = c.querySelector("h2"); return h && /历史/.test(h.textContent); })[0];
+```
+2. **∴ 并**在诊断点**直接打印**每张"历史"卡的 `{title, collapsed, parent}`** ✓ ⇒ **∴ 一眼看清哪张折叠 ✓** ✓✓
