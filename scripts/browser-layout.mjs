@@ -167,6 +167,8 @@ const scroll = await evaluate(`(() => {
     pageScrollMoved: moved,
     docOverflow: document.documentElement.scrollHeight - window.innerHeight,
     asideScrolls: aside.scrollHeight - aside.clientHeight,
+    asideClipped: aside.getBoundingClientRect().bottom > window.innerHeight + 2,
+    asideOverflowY: getComputedStyle(aside).overflowY,
     stageOverflowX: stage ? stage.scrollWidth - stage.clientWidth : null,
   };
 })()`);
@@ -174,6 +176,15 @@ console.log(
   `  ① 滚动：试着往下滚 ${scroll.pageScrollMoved}px（0 = 锁死 ✓）；文档多出 ${scroll.docOverflow}px；` +
     `右栏内部可滚 ${scroll.asideScrolls}px`,
 );
+// **右栏内容不许溢出视口 ✗；若溢出则必须可滚 ✓**（用户报告 2026-10-09 ✓）
+// 变异：删掉 `aside { overflow-y: auto; max-height: … }` ⇒ 溢出且不可滚 ⇒ 红 ✓
+if (scroll.asideClipped && !(scroll.asideScrolls > 0 && ["auto", "scroll"].includes(scroll.asideOverflowY))) {
+  console.error(
+    "❌ 右栏内容超出视口且不可滚 ⇒ 用户会「看不全，也不能滚动」✗（asideScrolls=" +
+      scroll.asideScrolls + "px｜overflowY=" + scroll.asideOverflowY + "）",
+  );
+  process.exit(1);
+}
 if (scroll.pageScrollMoved !== 0 || scroll.docOverflow > 2) {
   console.error("❌ 整页还能滚 ⇒「垂直方向锁死」没做到 ✗");
   await capture("layout-page-scrolls");
