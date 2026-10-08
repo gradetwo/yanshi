@@ -2693,3 +2693,41 @@ if (hasLayer < impRows.length * 0.9) { … 红 … }
 2. **修法改用带 `payload` 的来源** ✓：**① 让 `get_log` 也返回 `payload` ✓（**服务端 ✓，最小 ✓**）｜
 　**② 或前端改用 `/api/atoms` ✓（**它已含 ✓ —— `viewer-app.js` 里已有调用 ✓**）** ✓✓
 ⇒ **∴ 且**这正是 lazy 总则的反面教材 ✓**：**我**假定**两个接口返回同形 ✓ ⇒ **∴ 而它们不同 ⇒ **∴ 于是 UI 拿不到 payload ✓**** ✓✓
+
+
+### 一百零五、🎯🎯🎯 **根因确认**：`get_log` **不返回 `payload`**（第 449 轮 ✓）
+
+#### 一、代码铁证 ✓（`crates/yanshi-server/src/tools.rs:3894-3902` ✓）
+```rust
+.map(|atom| {
+    json!({
+        "atom_id": atom.id,
+        "seq": atom.seq,
+        "kind": atom.kind,
+        "actor": atom.actor,
+        "session": atom.session,
+        "changeset_id": atom.changeset_id,
+        "timestamp": atom.timestamp,
+        "heavy": atom.is_heavy(),
+        "state_effect": atom.kind.is_state_effect(),
+    })        // ★★★ **没有 `payload`** ✗ ★★★
+})
+```
+⇒ **∴ 结论一（根因 ✓）** ✓：**`get_log` **不返回 `payload`**✗** ⇒ **∴ 前端 `atom.payload` **永远 undefined**✗
+　⇒ **∴ 我第 442 轮加的两个 span **永远不加 ⇒ **∴ 行里当然只有 kind ＋ actor ＋ 按钮 ✓**** ✓✓
+⇒ **∴ 结论二（为什么我"实测通过 ✗"）** ✓：**第 443 轮我实测的是**`/api/atoms`**✓（**它确实返回 `payload` ✓**）
+　⇒ **∴ 而页面用的是 **`callTool("get_log")`** ✓（`viewer-app.js:3720` ✓）⇒ **∴ 两个接口**不同形** ⇒
+　**∴ 于是我"测了 A ✓ 而改了 B ✗" ⇒ **∴ 实现无效 ✓**** ✓✓
+⇒ **∴ 结论三（修法，一行 ✓）** ✓：**在 `json!({…})` 里加**：
+```rust
+"payload": atom.payload,
+```
+　⇒ **∴ 前端即可拿到 `layer_id` ＋ `width` ⇒ **∴ span 出现 ✓**** ✓✓
+⇒ **∴ 且代价** ✗（**两面都写 ✓**）：**`get_log` 响应变大 ✗**（**`payload` 含 bitmap **引用**（**非像素 ✓**）
+　＋ 宽高 ＋ 层 id ✓ ⇒ **∴ 体积小 ✓**）｜**`limit` 默认 200 ✓ ⇒ **∴ 仍可控 ✓**｜**∴ 而收益** ✓：
+　**∴ 历史行**第一次能显示层与尺寸 ✓（**用户的原始诉求 ✓**）** ✓✓
+
+#### 二、∴ 下一轮（**三步 ✓**）
+1. **加 `"payload": atom.payload,`** ✓（**服务端一行 ✓**）；
+2. **判据加区分力** ✓：**查行里是否有**层 id 或尺寸模式**（`/L\w+_|×\d|\d{3,}×/` ✓）⇒ **∴ 修复前必红 ✓**（**已实测：当前 `samples` 里没有 ✓**）；
+3. **∴ 然后**看图 ✓ ⇒ **∴ 期望 `samples` 含 `L1_chamber`／`3000×…` ✓** ⇒ **★ 最后删临时检查 ✗ ★** ✓✓
