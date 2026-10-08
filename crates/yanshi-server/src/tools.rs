@@ -13785,6 +13785,30 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             // **按需生成** ✓（第 75 轮 ✓）：已最新就**跳过** ✗ —— 否则每次保存都白付一次整幅渲染 ✗
             //（实测 4K ~1.07 s ✗／8K ~9 s ✗，而画面零变化 ✓）。
             if !document.doc_thumbnail_is_current() {
+                // **量前提** ✓（第 86 轮 ✓）：此刻 `document_thumbnail` 到底是**整幅**还是**已是 256²** ✗
+                // —— 这决定"由已有整幅降采样"这条路**是否成立** ✓（**不许在未证实的前提上盖楼** ✗）。
+                if std::env::var_os("YANSHI_TRACE_THUMBSRC").is_some() {
+                    if let Some(hash) = document.doc_thumbnail_hash_for_probe() {
+                        let sz = document.store().size(&hash).unwrap_or(0);
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/yanshi-thumbsrc-trace.log")
+                            .and_then(|mut f| {
+                                use std::io::Write;
+                                writeln!(f, "THUMBSRC doc_thumbnail_bytes={sz}")
+                            });
+                    } else {
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/yanshi-thumbsrc-trace.log")
+                            .and_then(|mut f| {
+                                use std::io::Write;
+                                writeln!(f, "THUMBSRC none")
+                            });
+                    }
+                }
                 let _ = document.thumbnail(yanshi_render::thumb::ThumbKind::Doc256, None);
             }
             _p3_mark("thumbnail_doc256");

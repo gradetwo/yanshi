@@ -56482,3 +56482,31 @@ clippy -D warnings       ✓（**type 别名已就位** ⇒ 不再触发第 39�
 
 ### 五、门禁
 1. 本轮未改代码 ✓（只读码 ＋ 更正 ✓）；工作区提交后干净 ✓。
+
+## 第 415 轮：✅ **前提被证实** —— 保存点那份 `document_thumbnail` 就是**整幅 PNG（800 KiB）** ✓
+
+### 一、探针（`YANSHI_TRACE_THUMBSRC` ✓，宿主侧 ✓ ⇒ 允许用 `Instant`／IO ✓）
+在保存点的 `thumbnail(Doc256)` **之前**，读出此刻 `document_thumbnail` 的 blob 大小 ✓：
+```
+第 1 次导出（behind ✓）：THUMBSRC **none** ✗        ← 那一刻还没有缩略图 ✓（所以必须渲染 ✓）
+改动内容后那次：        THUMBSRC doc_thumbnail_bytes = **818 588**（＝**800 KiB** ✓）
+```
+**参照** ✓：**256² 的 PNG 只有 30–60 KB** ✓ ⇒ **∴ 818 588 B 必是**整幅** ✓**（4K 全画布 ✓）。
+
+### 二、∴ 前提成立 ✓ ⇒ 第 414 轮的方案**可用** ✓
+* **∴ 保存点那一刻，`document_thumbnail` 里就是"整幅渲染的 PNG"** ✓（800 KiB ✓）；
+* **∴ 而 `thumbnail(Doc256)` **丢弃**它 ✗、**从头再渲一遍整幅** ✗** ⇒ **∴ 这正是 1.07 s（4K）／~9 s（8K）的来源** ✓；
+* **∴ 修法** ✓：**解码这份 800 KiB 整幅 PNG ⇒ 降到 256² ⇒ 编码 ⇒ 按 `thumbnail()` 的方式登记** ✓
+  ⇒ **省掉整幅重渲** ✗ ⇒ **预期 4K 1.07 s → 几十 ms** ✓、**8K ~9 s → ~0.1 s** ✓。
+
+### 三、∴ 下一轮实现要点（**判据先行 ✓**）
+1. **等价性判据** ✓：新路径的 Doc256 **必须等于**"整幅渲染后降采样"（逐像素 ✓ 或 ≤1 LSB ✓）；
+   **变异** ✗：喂**错的源**（如 256² 自身 ✓）⇒ **必须红** ✓；
+2. **不许撒谎** ✓：新路径**必须照做**登记（`document_thumbnail` ✓、`document_thumbnail_seq` ✓、
+   `cache_document_preview` ✓、`publish_thumbnail` ✓），否则**破坏"打开快"** ✗
+   ⇒ 由**既有判据**守 ✓（`tool-open-fast`／`preview_renders == 0` ✓）；
+3. **幂等** ✓：`tool-thumbnail-on-demand` **4 条必须仍绿** ✓；
+4. **`behind == false` 且没有整幅 PNG 时**（第 1 次导出 ✓）⇒ **仍走原路渲染** ✓（**不许跳过** ✗ ⇒ 否则缩略图缺失 ✓）。
+
+### 四、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）；探针**保留** ✓（env 门控 ✓、宿主侧 ✓）。

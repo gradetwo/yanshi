@@ -1558,6 +1558,11 @@ impl Document {
     /// 而画面**零变化** ✗）⇒ 每次白付 **~1.07 s** ✗（8K ~9 s ✗）。
     /// **∴ 判据** ✓："**无变化时重复导出 ⇒ `thumbnail_renders` 不得增长**" ✓（**今天红 ✓**）；
     /// 配"**有变化之后必须更新**" ✓（否则可以用"永不更新"骗过前一条 ✓）。
+    /// **仅供探针** ✓（第 86 轮 ✓）：读出当前 `document_thumbnail` 的哈希 ⇒ 量它到底是整幅还是 256² ✓。
+    pub fn doc_thumbnail_hash_for_probe(&self) -> Option<yanshi_core::BlobHash> {
+        self.document_thumbnail.clone()
+    }
+
     pub fn doc_thumbnail_is_current(&self) -> bool {
         self.document_thumbnail.is_some() && self.document_thumbnail_seq == self.render_watermark
     }
