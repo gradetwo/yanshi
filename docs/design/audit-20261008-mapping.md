@@ -1323,3 +1323,31 @@ grep -nE "import_project|/api/documents/import|upload|\.yanshi|fixture" scripts/
 * **当前断言** ✓（**在 5 行历史的新建文档上 ✓**）：**通过 ✓、但**恒真**✗ ⇒ **∴ 是**空判据**✗**；
 * **∴ 一个恒真的判据**比没有更糟 ✗**（**它会让名单显示"健康"✓**）⇒ **∴ 这正是我这一会话反复遇到的那类坑 ✓** ⇒
 　**∴ 必须**先加导入步骤**✓，否则应当**撤掉该断言 ✗**（**两害相权 ✓**）✓✓
+
+
+### 五十五、✅ **加导入段所需的全部积木已就位**（第 366 轮 ✓）
+
+#### 一、harness 自带的 ✓（`scripts/browser-ui-check.mjs` ✓）
+```js
+:409  const parsedUrl = new URL(url);
+:411  const origin = parsedUrl.origin;                                    // ★ 服务器源 ✓
+:412  const token  = parsedUrl.searchParams.get("token");                // ★ 令牌 ✓
+:413  const docId  = parsedUrl.searchParams.get("doc") || "default";     // ★ 文档 ✓
+:537  const invertToken = await fetch(`${origin}/api/documents`, { … }); // ★ 已有 POST 范例 ✓
+```
+⇒ **∴ 结论** ✓：**导入段**不需要新机制 ✗** —— **∴ 照抄它自己的 `fetch(origin + "/api/documents/import?…")` 三步即可 ✓** ✓✓
+
+#### 二、∴ 下一轮的确切代码（**照抄 ✓，约 20 行 ✓**）
+```js
+// ① 读一个夹具（**Node 侧 ✓**）：/tmp/eval/artworks/arnolfini_portrait_4k.yanshi（36 原子 ✓）
+// ② 走 HTTP 三步导入 ✓（与 `:537` 同风格）：
+//    POST `${origin}/api/documents/import?begin=1`                        ⇒ upload_id
+//    POST `${origin}/api/documents/import?upload=${id}&offset=0`（body ＝ 字节 ✓）
+//    POST `${origin}/api/documents/import?upload=${id}&finish=1&doc_id=uiHist`
+// ③ **让页面打开它** ✓：`await send("Page.navigate", { url: `${origin}/?doc=uiHist` })`
+//    （**该 harness 已有 `send`／`evaluate` ✓，`browser-layout` 就是这么导航的 ✓**）
+// ④ **等历史就绪** ✓ ⇒ `const rows = await historyRows();` ✓（`:125` ✓）
+// ⑤ **断言** ✓：**重复最多的行文本占比 < 50%**（**修前 58% ✗／修后 0% ✓**）
+// **变异** ✗：删 `viewer-app.js:557` 的 `+ " #" + String(atom.seq)` ⇒ 58% ⇒ **必红 ✓**
+```
+⇒ **∴ 且必须**看历史面板截图 ✓**（**本会话两次证明"读数 ≠ 用户所见"✗**）✓✓
