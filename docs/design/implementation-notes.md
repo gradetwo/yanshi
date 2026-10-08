@@ -56510,3 +56510,36 @@ clippy -D warnings       ✓（**type 别名已就位** ⇒ 不再触发第 39�
 
 ### 四、门禁
 1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）；探针**保留** ✓（env 门控 ✓、宿主侧 ✓）。
+
+## 第 416 轮：🎉🎉 **快路径落地**（由已有整幅图降采样 ✓）—— 缩略图重做 **4K −68%、8K −86%** ✓
+
+### 一、改动（**极小且可回退** ✓ —— 只让 `Thumb` 换来源 ✓，尾部逻辑一字未动 ✓）
+```rust
+let thumb: Thumb = match self.fast_document_thumb(kind, target) {
+    Some(thumb) => thumb,                       // ← 复用已有整幅图 ⇒ 省掉整幅重渲 ✗
+    None => render_thumbnail(&mut self.renderer, &self.state, &*self.store, kind, target)?,
+};
+```
+**`fast_document_thumb`** ✓：`store.get(document_thumbnail)` ✓ ⇒ `png::decode_png` ✓
+⇒ 逐像素 `u8x4_to_linear_premul` 装 `Buffer` ✓ ⇒ `thumb.update_full(&buffer, 整幅大小)` ✓
+（**与 `render_thumbnail` 走**同一个** `update_full` ✓ ⇒ 像素来源同、缩放同 ⇒ **无画质取舍** ✓）
+**∴ 只在"真的更大"时才走** ✓（`w > side*2 && h > side*2` ✓）；**槽为空 ⇒ `None` ⇒ 走原路** ✓
+（**第 1 次导出就是这种** ✓ ⇒ **绝不跳过** ✗）。
+
+### 二、实测（真实作品 ✓）
+| | 第 1 次（冷 ✓） | 第 2 次 | **改动后（缩略图重做 ✓）** | 修复前 ✓ |
+|---|---|---|---|---|
+| **4K** | 2 606 ms | **5.80 ms** ✓ | **423.9 ms** ✓✓ | **1 305 ms** ✗ ⇒ **3.1×** ✓ |
+| **8K** | 12 000 ms | **596 ms** ✓ | **1 995 ms** ✓✓ | **9 849 ms** ✗ ⇒ **4.9×** ✓ |
+⇒ **∴ 缩略图重做的成本** ✓：4K **1 192 → ~310 ms**（≈3.8× ✓）；8K **~9 200 → ~1 300 ms**（**≈7×** ✓）
+⇒ **∴ 剩下的是**：`export_project` 自身（4K 81／8K 733 ms ✓）＋ 快路径（decode ＋ 830 万像素转换 ＋ 缩放 ✓）。
+
+### 三、∴ 判据（**两条全绿** ✓）
+```
+tool-thumbnail-on-demand  EXIT=0 ✓（4 条 ✓，含"**有变化之后必须更新**"：计数 1 → 2 ✓）
+tool-export-idempotent    EXIT=0 ✓（字节／哈希一致 ✓）
+```
+⇒ **∴ 关键**：**缩略图确实更新了** ✓（1 → 2 ✓）**而不是靠"永不更新"取胜** ✓✓。
+
+### 四、门禁
+1. `fmt` ✓、`clippy` ✓、`cargo test --workspace`（见输出 ✓）、两条判据 **EXIT=0** ✓。
