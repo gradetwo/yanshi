@@ -204,3 +204,22 @@ needsServerPixels = false;                              // 再让内核成权威
 　**服务端补画（`queueServerBlit` 的 `putImageData` ✓）保持 `board` ✓**；**UI 装饰保持 `overlay` ✓** —— **∴ 归层工作量可控 ✓**。
 ⇒ **∴ 成对判据（同第七节 ✓）**：**① 含 heavy ⇒ 刷新不变白 ✓**（**变异：内核画到 `board` ⇒ 红 ✓**）｜
 　**② 落笔后笔迹仍在 ✓**（**变异：服务端画到 `kernel` ⇒ 红 ✓**）｜**③（新）UI 选框不得被像素覆盖 ✓**（**变异：把内核层放到 `overlay` 之上 ⇒ 红 ✓**）✓✓
+
+### 九、A 半**第 2 步的完整清单**（第 284 轮 ✓，**只有 5 个函数要迁** ✓）
+
+| 绘制点 | 归属 | 处置 |
+|---|---|---|
+| **`:1370` `ctx.putImageData(…)`** | **`drawKernelRegion`（`:1337`）** | **⇒ `kctx` ✓** |
+| **`:1429` `ctx.putImageData(…)`** | **`redrawCanvasFromKernel`（`:1396`）／`drawKernelBoxDirect`（`:1412`）** | **⇒ `kctx` ✓** |
+| **`:1592` `ctx.putImageData(…)`** | **服务端补画**（**已带 `serverInk` ＋ `patchSeq` 两层守卫 ✓**） | **★ 保持 `ctx`（`board`）★** |
+| **`:6646` `ctx.drawImage(offscreen, …)`** | **区域重画** | **视像素来源而定 ✓（下一轮确认 ✗）** |
+
+**内核相关函数（全部 ✓）**：`kernelReady`（`:1159`）｜`verifyKernelSurface`（`:1183`）｜`loadKernel`（`:1265`）｜
+**`drawKernelRegion`（`:1337`）★**｜**`redrawCanvasFromKernel`（`:1396`）★**｜**`drawKernelBoxDirect`（`:1412`）★**｜
+**`drawKernelBox`（`:1733`）★**｜**`drawKernelDirty`（`:1743`）★**
+
+⇒ **∴ 结论** ✓：**"内核 → 画布"入口收敛在 **5 个函数**✓（**不是散落的几十处 ✗**）⇒ **∴ 第 2 步**有界**✓**：
+**把这 5 个函数里的 `ctx` 换成 `kctx` ✓；`:1592`（服务端底图 ✓）与 `overlay`（UI 装饰 ✓）**不动**✗** ✓
+⇒ **∴ 这正好落地审计要的"**服务端底图在下 ＋ 内核覆盖层在上**"✓** ✓✓
+⇒ **⚠️ 且必须保住的语义** ✗：**`redrawCanvasFromKernel`（内核整幅重画 ✓）若画到 `kctx` ⇒ **不得清掉 `board` 上的服务端 heavy 像素 ✗**；
+　**∴ 它应当**只清 `kctx`**✓（**`kctx.clearRect` ✓**），**而 `board` 由服务端补画负责 ✓** —— **∴ 这是第 2 步最容易写错的一点 ✗** ✓✓
