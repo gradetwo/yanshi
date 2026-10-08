@@ -8561,6 +8561,15 @@ function initDockers() {
   // ⇒ `cardTitle()` 归一化后仍含"历史"两字 ✓（`:8493／8501` ✓）⇒ **∴ 本正则能匹配 ✓**。
   // **⚠️ 改完必须**重建 ＋ 在送出的产物里 grep 到它**✗** —— **∴ 第 387 轮我漏了这步 ✓，
   // 结果用**旧二进制**的截图错判"无效 ✗"并误撤 ✓（**第 388 轮产物核抓出 ✓**）。
+  // **★ 用**稳定的 `data-panel` 钩子**✗**，**不按标题遍历 ✗**（第 391 轮读码 ✓）：
+  // `viewer-app.js:4935` 的注释说得很清楚 ✓：「**分组按标题反查** ✓（在标记里写 `data-panel` ✓）
+  // —— **不靠 JS 猜顺序** ✓」，而 `:4964` 提到**搬卡** ✓ ⇒ **∴ 卡片会被搬进标签页 ✓ ⇒
+  // **∴ 我先前"遍历 `aside .card` 并按标题匹配"**很可能取不到这张卡 ✗**（**三道条件齐备仍无效 ✓** —— 第 390 轮 ✓）。
+  // **∴ `data-panel="history"` 是页面自己给的稳定钩子 ✓**（`viewer.rs:408` ✓）⇒ **∴ 用它 ✓**。
+  for (const card of document.querySelectorAll('[data-panel="history"]')) {
+    card.classList.remove("collapsed");
+  }
+  // **∴ 且保险起见，把 `aside .card` 里标题含"历史"的也一起展开 ✓**（两种结构都覆盖 ✓）。
   for (const card of dockerCards()) {
     if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
   }
