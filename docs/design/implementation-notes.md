@@ -57144,3 +57144,32 @@ GEGL 缓存**每个 node 的输出 tile** ✓；Krita 缓存**每个 node 的 `p
    （**语义计数** ✓：5 笔后 `thumbnail_renders` 增幅 **≤ 1** ✓）；
    **变异** ✗：让每笔都失效 ⇒ **必红** ✓；
 3. 然后才修（**先查"为什么 8K 失效而 4K 不失效"** ✗ —— 同样的代码路径，**∴ 差异必在**尺寸相关的阈值**或**淘汰**✗**）✓。
+
+## 第 436 轮：⚠️ **更正第 435 轮的说法** ✓ ＋ **找到分支：便宜／昂贵路径的分界** ✓
+
+### 一、⚠️ 更正 ✓（如实 ✓）
+`doc_thumbnail_is_current()`（`document.rs:1587` ✓）＝ **`document_thumbnail.is_some() && seq == render_watermark`** ✓
+⇒ **∴ 每笔都会推进 `render_watermark` ⇒ 缩略图**必然"不最新"⇒ **4K 与 8K **都会重算**** ✓
+⇒ **∴ 我第 435 轮说"4K 命中、8K 每笔重算"**不成立**** ✗ —— **我是从"2.4 ms"反推"命中"的 ✗**（**推断过度** ✓）。
+⇒ **∴ 真差异 ＝ "**重算一次的代价**"** ✓：4K **2.4 ms** ✓ vs 8K **255 ms** ✗ ⇒ **100×，而面积只差 4×** ✗
+   ⇒ **∴ 8K 走的必是**另一条更贵的路**** ✓✓。
+
+### 二、🎯 分支找到了 ✓（`document.rs:1192` `render_document_preview` ✓）
+```rust
+let region = match (self.document_thumb.is_some(), self.preview_dirty) {
+    (true, Some(bbox)) => Some(expand_to_thumb_blocks(…, dirty, doc_size)),  // ← 只更新**脏块** ✓
+    _                  => Some(doc_size),                                    // ← **整幅** ✗
+};
+```
+⇒ **∴ 便宜路径的条件 ＝ `document_thumb.is_some() && preview_dirty.is_some()`** ✓
+⇒ **∴ 8K 那 255 ms ⇒ 必走 `Some(doc_size)`（整幅 ✓）** ⇒ **∴ 即 `document_thumb` 为 `None`**
+   **或** `preview_dirty` 为 `None`** ✓ ⇒ **∴ 而 `document_thumb` 是**内存对象** ⇒ **∴ 怀疑它被**尺寸相关的淘汰**丢掉了** ✓
+   ⇒ **∴ 与报告缺陷 2（8K 大对象进不了缓存 ✗）**同一族**✓✓**。
+
+### 三、∴ 下一步（**判据先行** ✓，且只差一个观测 ✓）
+1. **观测** ✓：把 `document_thumb.is_some()` 与 `preview_dirty.is_some()` 在**每次 `render_document_preview` 时**打出来 ✓
+   （**纯观测** ✓，宿主侧 ✓）⇒ **∴ 4K vs 8K 一比即知是哪一边为 `None`** ✓；
+2. **判据** ✓：**"4K 与 8K 在同样的 5 笔序列下，都应走**脏块**路径"** ✓
+   （**结构性计数** ✓：`region == doc_size` 的次数 **≤ 1** ✓）；
+   **变异** ✗：强制 `document_thumb = None` ⇒ **必红** ✓；
+3. **然后才修** ✓ —— 若确认是淘汰 ⇒ **∴ 修淘汰规则** ✓（**不是**扩 TileCache ✗）。
