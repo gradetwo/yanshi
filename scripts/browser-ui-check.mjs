@@ -1977,6 +1977,16 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       };
     })()`);
     console.log("  [诊断] " + JSON.stringify(diag));
+    // **★ 看清那张卡的**真实标题 ✗**（第 406 轮答案：我的展开打在**别的元素**上 ✓）：
+    // **∴ 只需打印 `aside .card` 里每一张的 `{标题, 折叠, data-panel}` 即可 ✓。**
+    const cards = await evaluate(
+      "Array.from(document.querySelectorAll('aside .card')).map(function (c) {" +
+      "  var h = c.querySelector('h2');" +
+      "  return { t: (h ? h.textContent : '(no h2)'), c: c.classList.contains('collapsed')," +
+      "           p: (c.dataset && c.dataset.panel) || '-' };" +
+      "}).filter(function (x) { return /\u5386\u53f2|history/.test(x.t + x.p); })",
+    ).catch(() => []);
+    console.log("  [卡片] " + JSON.stringify(cards));
     // **★ 读抓现行的结果 ✓**
     const caught = await evaluate("(() => (window.__cl || []).slice(0, 4))()").catch(() => []);
     console.log("  [抓现行] " + JSON.stringify(caught));
