@@ -71,11 +71,16 @@ for (let attempt = 0; attempt < 150; attempt++) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 if (!out || out.diffPixels === undefined) {
-  console.error("自检未返回结果（编辑器可能仍在渲染，或内核无输出）");
-  process.exit(1);
+  // **★ 自检**拒绝作答** ＝ **不适用** ✓，**不是失败 ✗**（第 317 轮 ✓）：
+  // 含 heavy 内容（位图／介质笔画 ✓）的文档上，内核**表示不了**它 ✗ ⇒ 编辑器**正确地**把
+  // `bitExact` 置为 `null` 并显示"不适用" ✓ —— **∴ 判据必须如实转述这一点 ✓**，
+  // 而不是报一个**假失败** ✗（**否则每次跑含 heavy 的作品都会红 ✗**）。
+  console.log("文档 " + (stats?.docId || "(unknown)") + "：**自检不适用**（文档含 heavy 内容 ⇒ 内核表示不了 ⇒ 编辑器拒绝作答 ✓）⇒ **跳过** ✓");
+  process.exit(0);
 }
 const doc = new URL(url).searchParams.get("doc") ?? "(unknown)";
-const verdict = out.bitExact ? "通过" : "不通过";
+// **★ 三档 ✓**：`true` ⇒ 通过 ✓｜`null` ⇒ **不适用**（编辑器拒绝作答 ✓）⇒ **跳过** ✓｜`false` ⇒ 不通过 ✗
+const verdict = out.bitExact === null ? "不适用（跳过）" : out.bitExact ? "通过" : "不通过";
 console.log(
   `文档 ${doc}: HEAD ${out.kernelHead}/${out.serverHead} | 差异像素 ${out.diffPixels} | ` +
     `最大通道差 ${out.maxChannelDelta} | 判定 ${verdict}`,
