@@ -1996,6 +1996,13 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
       "}).filter(function (x) { return /\u5386\u53f2|history/.test(x.t + x.p); })",
     ).catch(() => []);
     console.log("  [卡片] " + JSON.stringify(cards));
+    // instrument self check: make a known class change and see whether the
+    // observer records it. If it does not, every earlier reading of zero
+    // additions is worthless (round 414).
+    await evaluate('document.querySelector("aside .card[data-panel=history]").classList.add("zzprobe")').catch(function () {});
+    await new Promise(function (r) { setTimeout(r, 300); });
+    const probeSeen = await evaluate('(window.__cl || []).some(function (x) { return /zzprobe/.test(x.cls); })').catch(function () { return null; });
+    console.log("  [自检] zzprobe 被抓到 = " + JSON.stringify(probeSeen));
     // **★ 立刻展开 → 马上读 ✓**（第 408 轮 ✓）：分辨两种可能 ✓
     //   ① 立刻读得 false ⇒ **∴ 是"之后被折回"**✗ ⇒ **∴ 只需找到那一次 ✓**；
     //   ② 立刻读仍 true ⇒ **∴ remove 没落到这张卡上**✗ ⇒ **∴ 结构问题 ✓**。
