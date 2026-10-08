@@ -8514,6 +8514,16 @@ function saveDockers() {
 function applyCollapsed(titles) {
   const wanted = titles.map(normalizeTitle);
   for (const card of dockerCards()) {
+    // **★ 历史卡**永不由预设折叠**✗**（第 397 轮 ✓ —— **∴ 这是**不依赖时序**的修法 ✓**）：
+    // **∴ 前六轮我都在**展开它**✗**（**立即 ✓／两帧后 ✓／`load` 后 ✓／用 `data-panel` ✓**），
+    // **∴ 而诊断始终读到 `collapsed: [true]` ✗** ⇒ **∴ 说明**折叠动作**发生在**我那次执行**之后 ✗**
+    // （**`applyWorkspace` 末尾的 `saveDockers()` 会**回写**✓，**而页面上还有别处会再调 `applyCollapsed` ✓**）。
+    // **∴ 所以改成**从源头排除**✓**：**不论谁调用本函数 ✓，它都不会把历史卡折上 ✓** ——
+    // **∴ 用户仍可**手动点击**折叠它 ✓**（**`h2` 的点击走 `:8539` ✓，不经过本函数 ✓**）。
+    if (/历史/.test(cardTitle(card))) {
+      card.classList.remove("collapsed");
+      continue;
+    }
     card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));
   }
 }
