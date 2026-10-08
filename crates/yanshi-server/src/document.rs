@@ -1563,6 +1563,8 @@ impl Document {
         self.document_thumbnail.clone()
     }
 
+    /// **文档级缩略图是否已经是最新** ✓（保存点据此**跳过**重复生成 ✓）。
+    /// （插入探针时这行注释被我"抢"给了新函数 ✗ ⇒ clippy 的 `missing-docs` 当场报错 ✓ —— 已补 ✓。）
     pub fn doc_thumbnail_is_current(&self) -> bool {
         self.document_thumbnail.is_some() && self.document_thumbnail_seq == self.render_watermark
     }
