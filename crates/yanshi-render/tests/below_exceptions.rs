@@ -117,24 +117,6 @@ fn document(exception: Option<&str>) -> DocumentState {
     state
 }
 
-/// **渲染两次**，返回第二次之后 `below` 复用的**累计**次数 ✓。
-///
-/// **∴ 为什么要两次 ✗**：**第一次**没有可复用的东西 ✗** ⇒ **∴ 缓存**只能在
-/// **第二次**体现 ✓（**∴ 这正是"**懒合成**"的定义 ✓）** ✓✓
-fn reuse_after_two_renders(state: &DocumentState) -> usize {
-    let store = MemoryBlobStore::new();
-    let mut renderer = Renderer::new(TileGrid::new(64, state.width, state.height).unwrap());
-    renderer.render_document(state, &store).expect("首次渲染");
-    let first = renderer.below_reuse_count();
-    renderer.render_document(state, &store).expect("二次渲染");
-    let second = renderer.below_reuse_count();
-    assert!(
-        first == 0,
-        "首次渲染不可能复用 below（实测 {first}）⇒ 判据的前提不成立"
-    );
-    second
-}
-
 /// **★ C5：六类例外各自"不许走缓存" ✗ ★**（**一个测试内**顺序测量 ✓）。
 ///
 /// **∴ 为什么必须**合起来 ✗ ★**（第 950 轮实测 ✓）：
