@@ -359,6 +359,15 @@ pub struct Document {
     /// **为什么记在文档上** ✓：补的动作发生在 `Workspace::open_document` ✓，
     /// 而 `import_project` 要把"补了几条"写进响应 ✓ ⇒ 记在这里，两边不必各算一遍 ✓。
     replayed_blobs: usize,
+    /// **打开这一份文档时"**补不回来**"的位图数 ✗**（第 942 轮 ✓；**修静默丢弃 ✓）：
+    ///   **∴ 为什么必须记 ✗**：**补回时**要**比对哈希 ✗**（`service.rs:2179` ✓）——
+    ///     **∴ 不符就**不写**✗（**对的：绝不把另一张图塞进那个哈希 ✓）**；
+    ///     **∴ 而**那条**只在**导出侧**被计入 `kept_mismatch` ✗**
+    ///       ⇒ **∴ 导入侧**原来**一声不响 ✗** ⇒ **∴ 从导入者视角**这**不可见 ✓**
+    ///         ⇒ **∴ 于是**：**用户**只会看到"**少了一笔**"**✗，**而**不知道**为什么 ✓**** ✓✓
+    ///   **∴ 现在**：**它**在这里计数 ✗** ⇒ **∴ `import_project`** 把它**写进响应 ✓**
+    ///     ⇒ **∴ 打开一个包**立刻知道**有几笔没补回来 ✓**** ✓✓
+    unreplayable_blobs: usize,
     created_at: i64,
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
@@ -457,6 +466,7 @@ impl Document {
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
             last_render_warnings: Vec::new(),
             replayed_blobs: 0,
+            unreplayable_blobs: 0,
             created_at,
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
@@ -1114,6 +1124,16 @@ impl Document {
     /// 记下"打开时重放回来几条" ✓（由 `Workspace::open_document` 在补完之后写一次 ✓）。
     pub(crate) fn set_replayed_blobs(&mut self, count: usize) {
         self.replayed_blobs = count;
+    }
+
+    /// **"**补不回来**"的位图数 ✓**（第 942 轮 ✓）—— **∴ 必须**如实报出 ✗**
+    /// （**∴ 静默丢弃**是本仓头号病根 ✓）。
+    pub const fn unreplayable_blobs(&self) -> usize {
+        self.unreplayable_blobs
+    }
+
+    pub(crate) fn set_unreplayable_blobs(&mut self, count: usize) {
+        self.unreplayable_blobs = count;
     }
 
     /// 区域字节缓存的统计 ✓（设计要求可观测 ✓）。

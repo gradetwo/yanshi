@@ -1306,10 +1306,11 @@ impl Workspace {
             // **正常文档零成本** ✓：每个引用先问一次 `store.exists` ✓（几百次文件存在性检查 ✓），
             // 只有**真的缺**且**配方可重放**才落笔 ✓ ⇒ 平时的打开**一次重放都不做** ✓；
             // 补回来的会**写进本地 CAS** ✓ ⇒ 第二次打开就是普通的读 ✓（本地缓存 ✓）。
-            let replayed = self.materialize_pending_replayable_blobs(doc_id)?;
+            let (replayed, unreplayable) = self.materialize_pending_replayable_blobs(doc_id)?;
             if replayed > 0 {
                 if let Some(document) = self.documents.get_mut(doc_id) {
                     document.set_replayed_blobs(replayed);
+                    document.set_unreplayable_blobs(unreplayable);
                 }
             }
         }
@@ -2108,6 +2109,13 @@ impl Workspace {
             .document(&doc_id)
             .map(|document| document.replayed_blobs())
             .unwrap_or(0);
+        // **★ "补不回来"的条数必须**写进响应 ✗ ★**（第 942 轮 ✓）：
+        //   **∴ 为什么 ✗**：**静默丢弃**是**本仓头号病根 ✗** ⇒
+        //     **∴ 导入者**必须**一眼看到"**有几笔没补回来 ✓" ✓**** ✓✓
+        let unreplayable = self
+            .document(&doc_id)
+            .map(|document| document.unreplayable_blobs())
+            .unwrap_or(0);
         let atom_count = atoms_text
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -2117,6 +2125,7 @@ impl Workspace {
             "atoms": atom_count,
             "blobs": restored,
             "blobs_replayed": replayed,
+            "blobs_unreplayable": unreplayable,
             "entries": entries.len(),
             "had_render": render.is_some(),
             "hint": "已导入并打开 ⇒ 可用 get_document / render_region 核对；原文档未被触碰 ✓",
@@ -2139,12 +2148,13 @@ impl Workspace {
     ///
     /// **判据** ✓：`crates/yanshi-server/tests/export_small.rs` 的
     /// `a_package_restores_through_root_and_renders_identically`（变异：去掉这一步 ⇒ 红 ✓）。
-    fn materialize_pending_replayable_blobs(&mut self, doc_id: &str) -> Result<usize> {
+    /// **返回值**：`(补回来的条数, 补不回来的条数)` ✓（第 942 轮 ✓）。
+    fn materialize_pending_replayable_blobs(&mut self, doc_id: &str) -> Result<(usize, usize)> {
         let store = self.store();
         // **先收齐再落笔** ✗：下面要 `&mut self` 去重放 ✓，不能在遍历日志的同时持有它的借用 ✓。
         let pending: Vec<(yanshi_core::BlobHash, serde_json::Value)> = {
             let Some(document) = self.document(doc_id) else {
-                return Ok(0);
+                return Ok((0, 0));
             };
             let mut pending = Vec::new();
             for atom in document.log().iter() {
@@ -2174,15 +2184,28 @@ impl Workspace {
             pending
         };
         let mut replayed = 0usize;
+        // **★ "补不回来"必须**计数 ✗ ★**（第 942 轮 ✓；**修静默丢弃 ✓）：
+        //   **∴ 原来 ✗**：**哈希不符 ⇒ **既不写、也不报、也不计 ✗**
+        //     ⇒ **∴ 导入者**只看到"**少了一笔**"✗，**而**不知道**为什么 ✓**** ✓✓
+        //   **∴ 而**导出侧**对同一件事**有 `kept_mismatch` 计数 ✗**
+        //     ⇒ **∴ 同一条断言**应当**在两处都留下痕迹 ✓**（**第 941 轮的教训 ✓）** ✓✓
+        //   **∴ 现在**：**它**计入返回值 ✗** ⇒ **∴ 由 `import_project`** 写进响应 ✓**
+        //     ⇒ **∴ 打开一个包**立刻知道**有几笔没补回来 ✓**** ✓✓
+        //   **∴ 且**"**不写**"这个行为**不变 ✗**（**对的 ✓：**绝不把**另一张图
+        //     塞进那个哈希 ✓）—— **∴ 变的只是"**说出来**" ✓**** ✓✓
+        let mut unreplayable = 0usize;
         for (hash, source) in pending {
-            if let Ok(bytes) = crate::tools::replay_brush_bitmap(self, doc_id, &source) {
-                if yanshi_core::BlobHash::from_bytes(&bytes) == hash {
+            match crate::tools::replay_brush_bitmap(self, doc_id, &source) {
+                Ok(bytes) if yanshi_core::BlobHash::from_bytes(&bytes) == hash => {
                     store.put(&bytes)?;
                     replayed += 1;
                 }
+                // **∴ 两种情况都要数 ✗**：**重放失败**（`Err` ✓）**与**哈希不符 ✓**
+                //   ⇒ **∴ 它们**对调用方的含义**相同**：**这一笔**没补回来 ✓**** ✓✓
+                _ => unreplayable += 1,
             }
         }
-        Ok(replayed)
+        Ok((replayed, unreplayable))
     }
 
     /// **纹理缓存目录** ✓（`<root>/textures` ✓ —— **不入 git** ✗）。
