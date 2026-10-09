@@ -140,6 +140,11 @@ async function withKernel(doc, fn) {
       let mod = null;
       try {
         mod = await import("/wasm/yanshi_wasm.js");
+        // **★ 把模块挂出来 ✗ ★**（第 60 轮 ✓）：**∴ 内核的真值函数**
+        //   （**`quantize_reference_rgba` ✓）是**模块级自由函数**✗
+        //     ⇒ **∴ 它**不在 `WasmKernel` 实例上 ✓ ⇒ **∴ 页面侧**要**拿到模块**才行 ✓**** ✓✓
+        //   **∴ 而**判据要**与内核真值比**✗ ⇒ **∴ 于是**：**在这里挂一份 ✓**（**只读 ✓）** ✓✓
+        if (typeof window !== "undefined") window.__yanshiWasmModule = mod;
       } catch (err) {
         return json({ ok: false, error: "kernel_unavailable", endpoint: path,
                       reason: "kernel module /wasm/yanshi_wasm.js did not load",

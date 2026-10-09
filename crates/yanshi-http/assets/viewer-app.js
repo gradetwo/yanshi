@@ -9857,6 +9857,18 @@ function quantizeOnCpu(pixels) {
 //     ⇒ **∴ 于是**：**判据**能**在同一页、**同一份输入**上**量两条路 ✓**** ✓✓
 window.yanshiGpuQuantizeCpu = (pixels) => quantizeOnCpu(pixels);
 
+// **★ 内核真值入口 ✗ ★**（第 60 轮 ✓）：**∴ 若** wasm 包**导出了它**✗
+//   ⇒ **∴ 那**才是**判据应当比的**真值** ✗（**∴ 走**内核自己的 f16 ＋ 4097 项查表 ✓）**
+//   **∴ 若**没有（**∴ 如**包还没重建 ✓）⇒ **∴ 如实报 `null`**✗
+//     ⇒ **∴ 不**用**页面侧的近似**冒充 ✓**** ✓✓
+window.yanshiKernelQuantize = (() => {
+  // **∴ 它是**模块级自由函数**✗（**∴ 不在 `WasmKernel` 实例上 ✓）** ✓✓
+  const mod = (typeof window !== "undefined" && window.__yanshiWasmModule) || null;
+  const exported = mod && mod.quantize_reference_rgba;
+  if (typeof exported !== "function") return null;
+  return (pixels) => exported(pixels);
+})();
+
 /**
  * **★ 主入口（**生产路径 ✓）✗ ★**：**只返回字节 ＋ 后端**✗
  *   **∴ 不**默认算 CPU 参考**✗**（**∴ 那是判据的需要 ✓）⇒ **∴ 于是**：
@@ -9967,7 +9979,16 @@ window.yanshiGpuQuantize = async (pixels) => {
  */
 window.yanshiGpuQuantizeCompared = async (pixels) => {
   const gpu = await window.yanshiGpuQuantize(pixels);
-  const reference = quantizeOnCpu(pixels);
+  // **★ 优先用**内核真值**当参考 ✗ ★**（第 60 轮 ✓）：
+  //   **∴ 内核真值**＝ wasm 导出的 `quantize_reference_rgba`**✗
+  //     （**∴ 它**走**内核自己的** f16 ＋ 4097 项查表 ✓）
+  //     ⇒ **∴ 只有与它比**✗，"**GPU 与真值差多少 ✓"**才**是一句真话 ✓**** ✓✓
+  //   **∴ 没有它**（**如**包未重建 ✓）⇒ **∴ 退回**页面侧的 f16 公式**✗
+  //     ⇒ **∴ 而**调用方**能**从返回值里看出**用了哪一个 ✓**** ✓✓
+  const kernelTruth = typeof window.yanshiKernelQuantize === "function"
+    ? window.yanshiKernelQuantize
+    : null;
+  const reference = kernelTruth ? kernelTruth(pixels) : quantizeOnCpu(pixels);
   let maxChannelDelta = 0;
   let differing = 0;
   for (let i = 0; i < gpu.bytes.length; i += 1) {
@@ -9978,6 +9999,7 @@ window.yanshiGpuQuantizeCompared = async (pixels) => {
   return {
     bytes: gpu.bytes, backend: gpu.backend, maxChannelDelta,
     differingBytes: differing, totalBytes: gpu.bytes.length, reference,
+    referenceKind: kernelTruth ? "kernel_truth" : "page_f16_formula",
   };
 };
 

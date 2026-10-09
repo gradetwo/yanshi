@@ -233,6 +233,7 @@ if (!fact.adapter) {
       deterministic: same,
       bytes: Array.from(first.bytes),
       differingBytes: first.differingBytes,
+      referenceKind: first.referenceKind,
       referenceBytes: Array.from(first.reference),
       pixelCount: pixels.length / 4,
       deltas: Array.from(first.bytes).map((b, i) => Math.abs(b - first.reference[i])),
@@ -260,7 +261,9 @@ if (!fact.adapter) {
   if (out.threw) {
     check(false, "GPU 路径**抛错**（**∴ 真错在这里 ✓）", String(out.threw).slice(0, 220));
   }
-  console.log(`  GPU 结果：${JSON.stringify(out).slice(0, 400)}`);
+  console.log(`  参考种类：${out.referenceKind || "?"}`
+    + `（**kernel_truth ＝**wasm 真值 ✓；**page_f16_formula ＝**页面侧近似 ✓）`);
+  console.log(`  GPU 结果：${JSON.stringify(out).slice(0, 300)}`);
   if (out.threw) {
     check(false, "GPU 路径**抛错**（**∴ 真错就在这里 ✓）", String(out.threw).slice(0, 240));
   }

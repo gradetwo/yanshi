@@ -297,6 +297,32 @@ pub fn paint_brush_bytes_for_test(request_json: &str) -> Option<Vec<u8>> {
     crate::brush::paint(request_json).ok()
 }
 
+/// **★ 内核真值：把**线性预乘 f32 像素**量化成 u8 RGBA ✗ ★**（第 60 轮 ✓）。
+///
+/// **∴ 为什么它必须**由内核自己**给出 ✗ ★**（**∴ 我**自己的教训换来的 ✓）：
+///   **∴ 我**的 GPU 一致性判据**原来**用一个**页面侧重写**的参考**✗
+///     （**先**`Math.fround`（**f32⇒f32，**错 ✓）⇒ **∴ 于是**报出**0 差异**的**假象 ✓；
+///      **后**`Math.f16round`（**真 f16 ✓）⇒ **∴ 结论**翻转成 **1.5% 差 1** ✓）** ✓✓
+///     ⇒ **∴ 所以**：**"**与某个参考一致 ✓"**这个判据 ✗**
+///       ⇒ **∴ 必须**先证明**那个参考**就是**真值 ✓**** ✓✓
+///   **∴ 本函数**走的正是**内核自己的**那条路 ✗**
+///     （**`yanshi_render::Buffer::to_rgba8_quantized`**✗ ＝ **f16 往返 ＋ 4097 项查表 ✓）
+///     ⇒ **∴ 所以**：**GPU 与它比**才**有意义 ✓**** ✓✓
+///
+/// **∴ 形状 ✗**：**入参**是**线性预乘 f32 的 RGBA 平铺数组**✗
+///   （**`pixels.len() % 4 == 0` ✓）⇒ **∴ 返回**等长的 u8 RGBA ✓**
+#[wasm_bindgen]
+pub fn quantize_reference_rgba(pixels: &[f32]) -> Vec<u8> {
+    let count = pixels.len() / 4;
+    if count == 0 {
+        return Vec::new();
+    }
+    // **∴ 用一个**1×count 的缓冲**✗ ⇒ **∴ 走**与内核相同的量化 ✓**** ✓✓
+    let mut buffer = yanshi_render::Buffer::new(0, 0, count as u32, 1);
+    buffer.pixels_mut().copy_from_slice(&pixels[..count * 4]);
+    buffer.to_rgba8_quantized(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
