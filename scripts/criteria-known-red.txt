@@ -891,3 +891,27 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **∴ 若判据**没有输出**✗ ⇒ **∴ 先修判据的前置（**文档／建层 ✓**）** ✓✓
 #   **⚠️ 教训** ✓：**探针与判据必须**同一次运行**收集 ✗** ⇒ **∴ 否则会把**不同运行的读数**拼在一起 ✗**
 #     （**而这正是我这两轮做的事 ✓**）。
+# **★ 第 545 轮：🎯🎯🎯 **同一次运行**的决定性发现 —— `set` 与 `read` **不在同一处** ✗**
+#   **同一次运行的两组读数** ✓（**这轮不再跨轮拼 ✓**）：
+#     **判据** ✓：`① 传 active_layer=S2 ⇒ below_reused = false ✗`｜`② 不传 ⇒ true ✗`（**红 ✓**）
+#     **探针** ✓：`(split,sig) = (5,5) × 25` ✗（**∴ 连那一次传参的渲染**也是 `split=5` ✗**）
+#     **收到的值** ✓：`active_layer_received = None × 2` ＋ **`Some("S2") × 1` ✓**
+#   **∴ 结论（**决定性 ✓**）** ✓：
+#     **① 值确实到了 `Document::render_region_raw_active` ✓**（**`Some("S2")` ✓**）⇒
+#       **∴ 我加的 `set_active_layer` **被调到了** ✓**；
+#     **② 但**同一次运行里**`split` 从未变成 3 ✗** ⇒ **∴ 所以 `render_accumulation` 里
+#       **`self.options.active_layer` 读到的是 `None` ✗** ⇒
+#     **③ **唯一解释** ✓：**我们**设置的对象**与我们**读取的对象**不是同一个 ✗****
+#       —— **∴ 即**`Document::render_region_raw_active` 里的 `self.renderer` ✗
+#       与 `render_region_raw` → `render_region` → `render_accumulation` 用的那个 ✗
+#       **不是同一个 `Renderer` 实例 ✓**（**或**不是同一条代码路径 ✓**）** ✓✓
+#   **∴ 候选（**下一轮一步 ✓**）** ✓：
+#     **(a) `Document::render_region_raw` **内部**取了另一个 renderer ✗**（**如按需重建／clamp 时换 ✓**）；
+#     **(b) 或**并行 band 走的是**另一条**`render_accumulation` 调用 ✗**（**如 `parallel_impl` 里的副本 ✓**）；
+#     **(c) 或**`Renderer::render_region` 里**复制了 options**✗**（**如 `let opts = self.options.clone()` ✓**）** ✓✓
+#   **∴ 下一步（**一步 ✓**）** ✓：**在 `render_accumulation` 的 `:940` **紧邻处**打印
+#     **`self.options.active_layer`**✗** ⇒ **∴ 若为 `None` ⇒ **∴ 确认是"两个实例／两条路径" ✗**
+#       ⇒ **∴ 再顺着调用链找出那个副本 ✓**** ✓✓
+#   **⚠️ 代价回顾** ✓：**我为了看清这一点花了 6 轮 ✗** ⇒ **∴ 根因依次是**：
+#     **① 探针行被并发写撕开 ✗（**已修行原子 ✓**）**｜**② 我把跨轮读数拼在一起 ✗（**本轮已改同轮 ✓**）**
+#     ⇒ **∴ 而现在**同轮读数**一眼就给出了"`set` 与 `read` 分离"✗** ✓✓
