@@ -3743,6 +3743,9 @@ fn read_analyze_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 }
 
 fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **★ 可选 `active_layer` ✓ ★**（**目标第 4 条 ✓**；第 523 轮 ✓）：**∴ 让"改中间层"
+    // 只重渲该层 ✓**（**三段分解的切点 ✓**）；**∴ 不传 ⇒ 退回"最上层以外"✓**（**行为不变 ✓**）。
+    let active_layer = optional_str(args, "active_layer");
     if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -3757,7 +3760,9 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // （哈希相等无法说明差多少；跨客户端/服务端路径的差异属于 D1 的 ±1 LSB）。
     if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
         let region = parse_bbox(require_object(args, "region")?)?;
-        let (width, height, pixels) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+        let (width, height, pixels) =
+            ctx.workspace
+                .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())?;
         // **裸像素出口也必须带告警** ✗：它返回的是 `(宽, 高, RGBA)` ✓，没有地方带告警 ✓
         // ⇒ 缺一个补丁时**必须**在这里读一次并报出去 ✓，否则就是"静默的不完整画面" ✗
         //（`Document::last_render_warnings` 的说明 ✓）。
@@ -3832,7 +3837,7 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         let scaled_h = ((f64::from(preview.height) * ratio).round().max(1.0)) as u32;
         let scaled = ctx
             .workspace
-            .render_region_raw(&ctx.doc_id, region)
+            .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())
             .ok()
             .and_then(|(source_w, source_h, rgba)| {
                 yanshi_core::resample::resample_rgba(
