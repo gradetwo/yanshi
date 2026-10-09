@@ -480,6 +480,13 @@ struct BelowTiles {
     sig: Vec<String>,
     /// **文档坐标（**按 [`BELOW_TILE`] 对齐 ✓**）⇒ 该 tile 的下方合成 ✓**。
     tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
+    /// **★ 算过、且**确实为空**的 tile 键 ✗ ★**（第 771 轮 ✓；**目标第 4 条 ✓**）：
+    ///   **∴ 为什么需要它 ✗**：**写入侧**本来**跳过空 tile ✗**（**省内存 ✓），
+    ///   **而**读取侧要求**每个请求的 tile **都在 `tiles` 里**✗
+    ///   ⇒ **∴ 于是**：**只要请求区域含**任何空 tile ☐** ⇒ **∴ 该请求**永不命中 ✓****（**实测 ✓）
+    ///   ⇒ **∴ 现在**：**空 tile 的键**记在这里 ✗** ⇒ **∴ 读取判定**把它当作**"已缓存（内容为空）"✓**
+    ///     ⇒ **∴ 于是**：**既不占内存 ✗**，**也不破坏命中 ✓**** ✓✓
+    empty: std::collections::HashSet<(i64, i64)>,
 }
 
 // **★ `above` 与 `below` **共用同一个结构**✗ ★**（第 694 轮 ✓；**目标第 4 条 ✓**）：
@@ -1057,7 +1064,7 @@ impl Renderer {
                 Ok(guard) => match guard.as_ref() {
                     Some(c) if c.sig == sig => want_tiles
                         .iter()
-                        .all(|k| c.tiles.iter().any(|(t, _)| *t == *k)),
+                        .all(|k| c.tiles.iter().any(|(t, _)| *t == *k) || c.empty.contains(k)),
                     _ => false,
                 },
                 Err(_) => false,
@@ -1075,9 +1082,9 @@ impl Renderer {
                         Ok(g) => match g.as_ref() {
                             Some(c) => (
                                 c.sig == sig,
-                                want_tiles
-                                    .iter()
-                                    .all(|t| c.tiles.iter().any(|(k, _)| *k == *t)),
+                                want_tiles.iter().all(|t| {
+                                    c.tiles.iter().any(|(k, _)| *k == *t) || c.empty.contains(t)
+                                }),
                             ),
                             None => (false, false),
                         },
@@ -1368,6 +1375,8 @@ impl Renderer {
                     // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
                     let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
                     let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                    let mut fresh_empty: std::collections::HashSet<(i64, i64)> =
+                        std::collections::HashSet::new();
                     let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
                         let mut v = Vec::new();
                         for ty in y0..=y1 {
@@ -1383,6 +1392,9 @@ impl Renderer {
                                 let pb = piece.bbox();
                                 if pb.w > 0.0 && pb.h > 0.0 {
                                     v.push((key, piece));
+                                } else {
+                                    // **★ 空 tile ⇒ 只记键 ✗**（∴ 不存像素 ✓）
+                                    fresh_empty.insert(key);
                                 }
                             }
                         }
@@ -1420,7 +1432,11 @@ impl Renderer {
                         let drop = merged.len() - BELOW_TILE_BUDGET;
                         merged.drain(0..drop);
                     }
-                    *guard = Some(BelowTiles { sig, tiles: merged });
+                    *guard = Some(BelowTiles {
+                        sig,
+                        tiles: merged,
+                        empty: fresh_empty,
+                    });
                 }
             }
         }
@@ -1456,6 +1472,8 @@ impl Renderer {
                         // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
                         let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
                         let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        let mut fresh_empty: std::collections::HashSet<(i64, i64)> =
+                            std::collections::HashSet::new();
                         let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
                             let mut v = Vec::new();
                             for ty in y0..=y1 {
@@ -1471,6 +1489,9 @@ impl Renderer {
                                     let pb = piece.bbox();
                                     if pb.w > 0.0 && pb.h > 0.0 {
                                         v.push((key, piece));
+                                    } else {
+                                        // **★ 空 tile ⇒ 只记键 ✗**（∴ 不存像素 ✓）
+                                        fresh_empty.insert(key);
                                     }
                                 }
                             }
@@ -1511,6 +1532,7 @@ impl Renderer {
                         *guard = Some(BelowTiles {
                             sig: above_sig,
                             tiles: merged,
+                            empty: fresh_empty,
                         });
                     }
                 }
