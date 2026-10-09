@@ -26,6 +26,18 @@ import { deflateSync } from "node:zlib";
 
 const base = process.argv[2];
 const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yanshi";
+// **★ 可选：**造 fixture 用的另一个服务 ✓ ★**（第 43 轮 ✓）。
+//
+// **∴ 为什么需要它 ✗ ★**：**`missed_bytes`**是**进程级累加**✗ ⇒
+//   **∴ 若**在**判据所在的同一个进程**里**造 fixture** ⇒
+//     **∴ 笔触位图**在**创建时**就被解码（**实测 146944 字节 ✓）**
+//     ⇒ **∴ 判据的基线**已被污染 ⇒ **∴ 渲染期**看不出增量**✗
+//       ⇒ **★ 于是判据测不到东西 ✓ ★**** ✓✓
+//   ⇒ **∴ 做法 ✗**：**造用 A ✗、**判用 B ✓** ⇒ **∴ 于是**：**B 的基线是 0** ✓
+//     ⇒ **∴ 整幅渲染**必须解码 ⇒ **∴ 触发诊断**会看到 > 0 ✓**** ✓✓
+//
+// **∴ 用法 ✗**：`node scripts/tool-bitmap-decode-scope.mjs <判据base> [<工程>] [<造包base>]`
+const buildBase = process.argv[4] || base;
 if (!base) {
   console.error("用法: node scripts/tool-bitmap-decode-scope.mjs <base-url>");
   process.exit(2);
@@ -123,6 +135,19 @@ async function buildFixture(base, target) {
   })).json();
   const hash = put.hash || put.blob_hash;
   if (!hash) throw new Error("上传 blob 失败 ⇒ " + JSON.stringify(put).slice(0, 160));
+  // **★ 再加一笔**真笔触 ✗ ★**（第 43 轮 ✓）：**∴ 依据 ✗**：
+  //   **∴ 第 125 轮的原始工程有 **8 个位图**✗ ⇒ **∴ 而**它们的来源**不是**导入的 PNG**
+  //     （**∴ 实测**：**导入的 PNG**走**tiled 分支 ⇒ **`missed_bytes` 一动不动 ✓）
+  //     ⇒ **∴ 所以**：**整块位图**更可能来自**笔触**（**`brush_stroke`**✓）
+  //       ⇒ **∴ 于是**：**fixture**里**画一笔**✗ ⇒ **∴ 再看**触发诊断 ✓**** ✓✓
+  const stroke = await call("brush_stroke", {
+    layer_id: "bitmap_layer",
+    brush: "100%_Opaque.myb",
+    points: [[32, 32, 1], [120, 60, 1], [200, 140, 1]],
+    size: 48,
+    color: [0.9, 0.2, 0.3, 1],
+  });
+  console.log(`  · 笔触：ok=${stroke.ok}${stroke.ok ? "" : " ⇒ " + JSON.stringify(stroke).slice(0, 160)}`);
   const placed = await call("import_image", {
     layer_id: "bitmap_layer",
     object_id: "bitmap_object",
@@ -149,7 +174,12 @@ async function buildFixture(base, target) {
 // **导入真实工程** ✓（带位图 ✓ ⇒ 判据才有意义 ✓）。
 let selfBuilt = false;
 if (!existsSync(localProject)) {
-  await buildFixture(base, localProject);
+  await buildFixture(buildBase, localProject);
+  if (buildBase !== base) {
+    console.log("  · 造包用的是另一个服务 ⇒ 判据这边的位图缓存是冷的 ✓");
+  } else {
+    console.log("  ⚠️ 造包与判据在**同一个服务** ⇒ 位图创建时已被解码 ⇒ 判据可能测不到增量 ✓");
+  }
   // **∴ 记住"**这份是我造的 ✓"✗** ⇒ **∴ 后面**要**自检它**是否真的触发了判据 ✓**** ✓✓
   selfBuilt = true;
 }
