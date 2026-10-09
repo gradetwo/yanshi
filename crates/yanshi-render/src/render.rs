@@ -454,7 +454,7 @@ pub struct Renderer {
     bitmaps: BitmapCache,
 
     /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
-    below: std::sync::Mutex<Vec<BelowCache>>,
+    below: std::sync::Mutex<Option<BelowTiles>>,
 }
 
 impl Renderer {
@@ -499,7 +499,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(Vec::new()),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -515,7 +515,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(Vec::new()),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -747,7 +747,7 @@ impl Renderer {
         track: &mut ObjectTrack,
         probe: &mut RenderProbe,
         bitmaps: &BitmapCache,
-        below: &std::sync::Mutex<Vec<BelowCache>>,
+        below: &std::sync::Mutex<Option<BelowTiles>>,
     ) -> Result<Buffer> {
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -867,23 +867,71 @@ impl Renderer {
         let want = accumulation.bbox();
         let probe_path = std::env::var("YANSHI_BELOW_PROBE").ok();
         if cacheable {
-            let hit = match below.lock() {
-                // **∴ `Vec` 有两个 `AsRef` 实现 ⇒ `as_ref()` 有歧义 ✗（`E0283` ✓）** ⇒ **∴ 直接给分支 ✓**。
-                Ok(guard) => guard.iter().any(|c| c.sig == sig && c.bbox == want),
+            // **★ 区域覆盖的 tile（**文档坐标按 BELOW_TILE 对齐 ✓，规格 §6.2／6.3 ✓**）★**
+            let mut want_tiles: Vec<(i64, i64)> = Vec::new();
+            {
+                let x0 = (want.x.floor() as i64).div_euclid(BELOW_TILE);
+                let y0 = (want.y.floor() as i64).div_euclid(BELOW_TILE);
+                let x1 = ((want.x + want.w).ceil() as i64).div_euclid(BELOW_TILE);
+                let y1 = ((want.y + want.h).ceil() as i64).div_euclid(BELOW_TILE);
+                for ty in y0..=y1 {
+                    for tx in x0..=x1 {
+                        want_tiles.push((tx * BELOW_TILE, ty * BELOW_TILE));
+                    }
+                }
+            }
+            // **★ 全有或全无 ✓**：**sig 相同 ＋ 每个 tile 都在 ⇒ 才命中 ✓**（宁少勿错 ✓）。
+            let ready = match below.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(c) if c.sig == sig => want_tiles
+                        .iter()
+                        .all(|k| c.tiles.iter().any(|(t, _)| t == k)),
+                    _ => false,
+                },
                 Err(_) => false,
             };
-            if hit {
-                let cached_buf = below.lock().ok().and_then(|g| {
-                    g.iter()
-                        .find(|c| c.sig == sig && c.bbox == want)
-                        .map(|c| c.buf.clone())
-                });
-                if let Some(buf) = cached_buf {
-                    // **∴ 下方合成直接搬进来 ⇒ 下方那些层不用再渲染 ✓**
-                    accumulation = buf;
-                    note_below_reuse();
-                    reused = true;
-                }
+            let cached = if ready {
+                below.lock().ok().and_then(|g| {
+                    let c = g.as_ref()?;
+                    let mut out = accumulation.clone();
+                    for k in &want_tiles {
+                        let (_, buf) = c.tiles.iter().find(|(t, _)| t == k)?;
+                        let ob = out.bbox();
+                        let bb = buf.bbox();
+                        let ox = bb.x as i64 - ob.x as i64;
+                        let oy = bb.y as i64 - ob.y as i64;
+                        let ow = ob.w as i64;
+                        let oh = ob.h as i64;
+                        let bw = bb.w as i64;
+                        let bh = bb.h as i64;
+                        let dst = out.pixels_mut();
+                        let src = buf.as_f32();
+                        // **纯逐行拷贝 ✓**（**不用 `composite` ✗：那会引入混合 ✓**）。
+                        for row in 0..bh {
+                            let dy = oy + row;
+                            if dy < 0 || dy >= oh {
+                                continue;
+                            }
+                            for col in 0..bw {
+                                let dx = ox + col;
+                                if dx < 0 || dx >= ow {
+                                    continue;
+                                }
+                                let si = ((row * bw + col) * 4) as usize;
+                                let di = ((dy * ow + dx) * 4) as usize;
+                                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                            }
+                        }
+                    }
+                    Some(out)
+                })
+            } else {
+                None
+            };
+            if let Some(buf) = cached {
+                accumulation = buf;
+                note_below_reuse();
+                reused = true;
             }
             if let Some(path) = probe_path.as_deref() {
                 use std::io::Write;
@@ -901,7 +949,7 @@ impl Renderer {
                         want.y,
                         want.w,
                         want.h,
-                        hit,
+                        ready,
                         reused
                     );
                 }
@@ -964,22 +1012,31 @@ impl Renderer {
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
             if let Ok(mut guard) = below.lock() {
-                // **★ 多槽 ✓**（第 460 轮实测 ✓）：**同一笔触发三种 bbox** ⇒ **∴ 单槽被轮流冲掉 ✗**
-                // ⇒ **∴ 按 bbox 键分槽 ✓；超过丢最旧 ✓**（**粗粒度 LRU ✓**）。
-                let want = accumulation.bbox();
-                if let Some(slot) = guard.iter_mut().find(|c| c.bbox == want) {
-                    slot.sig = sig;
-                    slot.buf = accumulation.clone();
-                } else {
-                    if guard.len() >= BELOW_SLOTS {
-                        guard.remove(0);
+                // **★ 按 256 对齐切块写入 ✓**（规格 §6.4 ✓）：**并行时每个 band 各写自己那些 tile
+                // ⇒ **互补而非互相覆盖 ✓**** ⇒ **∴ 下次整块请求 ⇒ 全都在 ⇒ 命中 ✓**。
+                let origin = accumulation.bbox();
+                let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
+                let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
+                let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
+                let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
+                let mut tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                for ty in y0..=y1 {
+                    for tx in x0..=x1 {
+                        let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                        let bbox = yanshi_core::Bbox::new(
+                            key.0 as f64,
+                            key.1 as f64,
+                            BELOW_TILE as f64,
+                            BELOW_TILE as f64,
+                        );
+                        let piece = accumulation.crop(&bbox);
+                        let pb = piece.bbox();
+                        if pb.w > 0.0 && pb.h > 0.0 {
+                            tiles.push((key, piece));
+                        }
                     }
-                    guard.push(BelowCache {
-                        bbox: want,
-                        sig,
-                        buf: accumulation.clone(),
-                    });
                 }
+                *guard = Some(BelowTiles { sig, tiles });
             }
         }
         Ok(accumulation)
