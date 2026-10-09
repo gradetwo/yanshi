@@ -565,8 +565,10 @@ impl Renderer {
     /// **∴ 规则** ✓（设计 §6.10 ✓）：**凡"从干净状态开始"处 ⇒ 都调它 ✓**。
     pub fn clear_all_caches(&mut self) {
         self.cache.clear();
+        // **当前是 `Vec<BelowCache>`（**整块键版 ✓**）⇒ 用 `clear()` ✓**；
+        // **∴ 上 tile 版时再改成 `*guard = None` ✓**（**类型随之变 ✓**）。
         if let Ok(mut guard) = self.below.lock() {
-            *guard = None;
+            guard.clear();
         }
     }
 
