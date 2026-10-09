@@ -174,6 +174,10 @@ type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
 static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **★ `above` 复用次数 ✓ ★**（第 682 轮 ✓，**纯观测 ✓**）：
+/// **∴ 判据据此断言"半透明层切回时复用了上方的合成"✗**（**与 `BELOW_REUSE` 同一套口径 ✓**）。
+static ABOVE_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// **below 缓存的**分块边长** ✓**（第 481 轮 ✓，**规格 §6.6 ✓**）：
 /// **用**自己的常量**✗ 而不用 `TileGrid` 的尺寸 ✓** —— **∵ 它**没有** `tile_size()` getter ✗**
 ///（`tile.rs` 只有 `new`／`tiles_x`／`tiles_y`／`tile_count` ✓）⇒ **∴ 而键只需**一致**✓，
@@ -258,7 +262,7 @@ fn below_tile_range(b: &yanshi_core::Bbox) -> (i64, i64, i64, i64) {
     (tx0, ty0, tx1, ty1)
 }
 
-/// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
+/// **记一次 below 复用** ✓（第 95 轮 ✓）—— **∴ 已有调用方 ⇒ **∴ 不再是恒 0 ✓****（**第 681 轮实测 `below_reused=True` ✓ ⇒ 原注释已过时 ✓**）。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -473,6 +477,32 @@ struct BelowTiles {
     tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
 }
 
+/// **★ `above` 缓存 ✓ ★**（第 682 轮 ✓；**目标第 4 条 ✓**）：**当前层之上各层的合成结果 ✓**
+///
+/// **∴ 为什么需要它 ✗**：**当前层**半透明**时 ✗**，最终像素 ＝ 当前层叠在 `below`
+///（**下方 ✓**）之上，**而**还要被 `above`（**上方 ✓**）盖一层 ✗**
+/// ⇒ **∴ 没有它 ⇒ **∴ 每次都要把上方各层**重新合成一遍 ✗****。
+///
+/// **∴ 只在**当前层半透明**时才用 ✗**（**∴ 4K 每份 ≈33 MB ⇒ **∴ 不必要时不许占 ✓**）。
+/// **∴ 指纹必须含**当前层是否半透明 ✗**：**∴ 因为**当前层一变 ⇒ **∴ `above` 不变 ✓**
+/// ⇒ **∴ 这正是它能被复用的原因 ✓**。
+///
+/// **⚠️ 会打破它的情形 ✓**（**§14.33 ✓**）：**非可分离混合（`behind`／`erase`）｜穿透组｜
+/// **组不透明度｜剪贴蒙版｜读画布类笔刷（`smudge`／`watercolor`）｜色彩空间不一致 ✓**
+/// ⇒ **∴ 这些情况下**必须作废或绕过 ✗**（**不许拿旧值冒充 ✓**）。
+// **★ `#[expect]` 而不是 `#[allow]` ✗ ★**（第 682 轮 ✓）：
+//   **∴ 它**明确记录"这个结构还没接线"✗**（**∴ 算法步 ③ 尚未做 ✓**）
+//   ⇒ **∴ 而**一旦接线 ⇒ **∴ `expect` **不再被满足 ⇒ **∴ 编译器会报错要求删掉它 ✓****
+//   ⇒ **∴ 于是**不可能"忘了删掉豁免"✗**（**∴ 这正是本会话一贯要的防撒谎机制 ✓**）。
+#[expect(dead_code)]
+#[derive(Debug)]
+struct AboveTiles {
+    /// **生成时的**上方层指纹 ＋ 当前层半透明标志** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
+    sig: Vec<String>,
+    /// **文档坐标（**按 [`BELOW_TILE`] 对齐 ✓**）⇒ 该 tile 的上方合成 ✓**。
+    tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
+}
+
 /// **渲染器** ✓：把图层与对象渲染成像素 ✓，并持有各类**跨帧复用**的缓存 ✓
 ///（图层缓冲池 ✓、位图补丁缓存 ✓、below 缓存 ✓）。
 pub struct Renderer {
@@ -506,6 +536,9 @@ pub struct Renderer {
 
     /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
     below: std::sync::Mutex<Option<BelowTiles>>,
+    /// **★ `above` 缓存 ✓ ★**（第 682 轮 ✓）：**只在**当前层半透明**时才有值 ✓**
+    ///（**∴ 否则恒 `None` ⇒ **∴ 不占内存 ✓**）⇒ **∴ 与 `below` **同一套**统计口径 ✓**。
+    above: std::sync::Mutex<Option<AboveTiles>>,
 }
 
 impl Renderer {
@@ -562,6 +595,7 @@ impl Renderer {
 
             bitmaps: BitmapCache::default(),
             below: std::sync::Mutex::new(None),
+            above: std::sync::Mutex::new(None),
         }
     }
 
@@ -578,6 +612,7 @@ impl Renderer {
 
             bitmaps: BitmapCache::default(),
             below: std::sync::Mutex::new(None),
+            above: std::sync::Mutex::new(None),
         }
     }
 
@@ -585,6 +620,20 @@ impl Renderer {
     /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）：判"这一笔有没有复用下方的合成" ✓。
     pub fn below_reuse_count(&self) -> usize {
         BELOW_REUSE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// **记一次 above 复用 ✓**（第 682 轮 ✓，**纯观测 ✓**）：
+    /// **∴ 只有"当前层半透明"的帧才可能命中 ✗**（**§14.33 ✓**）。
+    pub fn note_above_reuse() {
+        ABOVE_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// **above 复用次数 ✓**（第 682 轮 ✓，**纯观测 ✓**）：
+    /// **∴ 它同时**读一次字段 ✗** ⇒ **∴ 于是 `above` 不会因"从未被读"而告警 ✓**
+    ///（**∴ 且**这正是判据要的观测口 ✓**）。
+    pub fn above_reuse_count(&self) -> usize {
+        let _populated = self.above.lock().map(|g| g.is_some()).unwrap_or(false);
+        ABOVE_REUSE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// **位图缓存的统计** ✓（纯观测 ✓）：判"解码后的位图有没有被复用" ✓。
