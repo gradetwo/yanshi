@@ -1226,20 +1226,20 @@ impl Renderer {
                     .append(true)
                     .open(path)
                 {
-                    let _ = writeln!(
-                        f,
-                        "req={} cacheable=1 split={} sig={} sigfull={} bbox=({},{},{},{}) hit={} reused={}",
+                    let line = format!(
+                        "req={} cacheable=1 split={} sig={} sigfull={} bbox=({},{},{},{}) hit={} reused={}\n",
                         req_id,
                         split,
                         sig.len(),
-                        sig.join(" ## "),
                         want.x,
                         want.y,
                         want.w,
                         want.h,
                         ready,
-                        reused
+                        ready,
+                        reused,
                     );
+                    let _ = f.write_all(line.as_bytes()); // ★ 行原子：一次 write_all ⇒ 不再交错 ★
                 }
             }
         } else if let Some(path) = probe_path.as_deref() {

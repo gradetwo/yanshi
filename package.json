@@ -3,5 +3,10 @@
   "name": "yanshi-tools",
   "private": true,
   "type": "module",
-  "description": "判据脚本的模块类型声明（不引入依赖）"
+  "description": "判据脚本的模块类型声明（不引入依赖）",
+  "scripts": {
+    "pwa:sync": "node scripts/pwa-sync-wasm.mjs && node scripts/pwa-sync-viewer.mjs",
+    "pwa:deploy": "npm run pwa:sync && wrangler deploy",
+    "pwa:dry-run": "npm run pwa:sync && wrangler deploy --dry-run --outdir /tmp/pwa-dist"
+  }
 }
