@@ -3324,14 +3324,49 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 首次不再同步渲染 ✗** ⇒ **∴ 响应立刻返回 ✓（**原来这里会花 ≈1 s ✗**）**；
     // **∴ 而**预览会在下一次提交收尾就绪 ✓**（**或超宽限期后由兜底就地生成 ✓**）。
     // **∴ 且**必须**如实报出 `pending` ✗**（**不许当成"没有图" ✗**）。
-    let preview_state = ctx.workspace.preview_state(&ctx.doc_id, size)?;
+    let mut preview_state = ctx.workspace.preview_state(&ctx.doc_id, size)?;
     match &preview_state {
         crate::service::PreviewState::Ready(url) => {
             summary["thumb_url"] = json!(url);
             summary["thumb_size"] = json!(size.kind().size());
         }
-        // **`Pending` ⇒ 只置状态，不置 `thumb_url` ✓**（**∴ 前端据此稍后再取 ✓**）。
-        crate::service::PreviewState::Pending => {}
+        // **★ `Pending` ⇒ 就地材料化 ✗ ★**（第 919 轮 ✓；**修"打开即图片" ✗**）：
+        //
+        // **∴ 依据（**设计文档自己的话 ✓）✗**：`tests/preview_wait_decoupled.rs` 的头部写着
+        // 「**文档级缩略图会滞后** ✗：它是一份**缓存** ✓，落后时
+        // `document_thumbnail_is_current()` 为 false ✓ ⇒ **谁要新鲜谁显式要** ✓：
+        // **`get_document`（`preview_size`）** ✓／`GET …/preview` ✓／`ensure_document_thumbnail` ✓
+        // —— **它们本来就写着"落后就重建"** ✓」
+        // ⇒ **∴ 所以**：**`get_document`** 属于**"要新鲜"**那一类 ✗ ⇒ **∴ 它**应当**给图 ✓**** ✓✓
+        //
+        // **∴ 而**第 595 轮让读路径**只回 `pending`** ✗（**不渲染 ✓）—— **∴ 那**与上面冲突 ✓
+        // ⇒ **∴ 且**承诺本身**兑不了 ✗**：它依赖「**下一次提交收尾**」✓，
+        // 而**纯读的冷开没有下一次提交** ✗ ⇒ **∴ `pending` 永远挂着 ✓**
+        //（**∴ 实测**：同一进程连取两次 `get_document` ⇒ **两次都没图** ✓、
+        // `thumbnail_renders` 恒 **0** ✓ ⇒ **∴ 不是"稍后就绪" ✗**）** ✓✓
+        //
+        // **∴ 修法 ✗**：**要图就在这一次给图** ✓ —— `ensure_document_thumbnail` **先查缓存** ✓
+        //（与 HEAD 一致直接返回地址 ✓）⇒ **∴ 不撒谎 ✓、不重复渲染 ✓**。
+        // **∴ 且**它**顺手把 256² 预览落盘** ✓ ⇒ **∴ 下一次冷开命中缓存 ✓**
+        //（**∴ 目标第 6 条「落渲染快照」＋ 第 2 条「冷开不重渲」由此成立 ✓）** ✓✓
+        //
+        // **∴ 两面 ✗**：**收益**＝**兑现"打开即图片" ✗**（**冷开第一眼就有图 ✓，
+        // **且**快照终于被写下来 ✓**）；**代价**＝**首次 `get_document`**回到**同步生成**
+        //（**4K 约 1 s ✓）—— **∴ 而**那**正是**设计文档接受的价 ✓**
+        //（**"**谁要新鲜谁显式要 ✓"**＝**要新鲜就付 ✓**），**且** `first_preview_ms` **如实报出 ✓**** ✓✓
+        //
+        // **∴ 为什么不影响判据 1 ✗**：那条守的是「**一笔没要求文档预览的笔触**不触发文档预览 ✓」
+        // ⇒ **∴ 它**说的是**写路径** ✗ ⇒ **∴ 本改动**只碰**读路径 ✓**** ✓✓
+        crate::service::PreviewState::Pending => {
+            let preview_started = std::time::Instant::now();
+            if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
+                summary["thumb_url"] = json!(url);
+                summary["thumb_size"] = json!(size.kind().size());
+                // **如实改报 `ready`** ✓（**∴ 我们**刚刚**真的生成了它 ✓**）。
+                preview_state = crate::service::PreviewState::Ready(url);
+            }
+            ctx.time(Phase::Preview, preview_started);
+        }
         crate::service::PreviewState::Unavailable => {}
     }
     ctx.time(Phase::Preview, preview_started);

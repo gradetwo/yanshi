@@ -9680,3 +9680,63 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 而**它们**各自**都有**测试**✗ ⇒ **∴ 于是**：**一份红、一份绿 ✗**
 #       ⇒ **∴ 那**说明**契约**本身**没有单一来源 ✓**** ✓✓
 #     ⇒ **∴ 教训**：**改之前**先**找出**"**谁在守另一份契约**" ✓**** ✓✓
+
+# **★ 第 919–920 轮：**修掉第二条既有红灯（`stdio`）＋ 暴露并归因第三条**★
+#   **★ ① 已修 ✗ ★**：**`yanshi-mcp --test stdio` 的 `stdio_handshake_draw_render_and_persist` ✓**
+#     **∴ 依据（**设计文档自己的话 ✓）★**：**`crates/yanshi-server/tests/preview_wait_decoupled.rs`
+#       **文件头明写 ✗**：
+#         「**文档级缩略图会滞后** ✗：它是一份**缓存** ✓，落后时
+#          `document_thumbnail_is_current()` 为 false ✓ ⇒ **谁要新鲜谁显式要** ✓：
+#          **`get_document`（`preview_size`）** ✓／`GET …/preview` ✓／`ensure_document_thumbnail` ✓
+#          —— **它们本来就写着"落后就重建"** ✓」
+#         ⇒ **∴ 所以**：**`get_document`** 属于**"要新鲜"**那一类 ✗ ⇒ **∴ 它**应当**给图 ✓**** ✓✓
+#       ⇒ **∴ 而**第 595 轮让读路径**只回 `pending`** ✗** ⇒ **∴ 那**与设计文档冲突 ✓**** ✓✓
+#       ⇒ **∴ 且**该承诺**兑不了 ✗**：**它依赖"**下一次提交收尾**"✓**，
+#         **而纯读的冷开没有下一次提交** ✗（**实测**：同一进程连取两次 `get_document`
+#         ⇒ **两次都没图** ✓、`thumbnail_renders` 恒 **0** ✓）** ✓✓
+#     **∴ 修法 ✗**：**`read_get_document` 的 `Pending` 分支就地材料化** ✓
+#       ```rust
+#       crate::service::PreviewState::Pending => {
+#           if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
+#               summary["thumb_url"] = json!(url);
+#               summary["thumb_size"] = json!(size.kind().size());
+#               preview_state = crate::service::PreviewState::Ready(url);   // 如实改报 ready
+#           }
+#       }
+#       ```
+#       ⇒ **∴ `ensure_document_thumbnail`** 先查缓存 ✗** ⇒ **∴ 不撒谎 ＋ 不重复渲染 ✓**** ✓✓
+#       ⇒ **∴ 且**它**顺手把 256² 预览落盘** ✗** ⇒ **∴ 下一次冷开命中缓存 ✓**
+#         （**★ 目标第 6 条「落渲染快照」＋ 第 2 条「冷开不重渲」**由此**才有源可复 ✓**）★** ✓✓
+#     **∴ 实证 ✗**：**`yanshi-mcp --test stdio` ⇒ 4 passed / 0 failed ✓**（**原 1 failed ✓）**
+#       ＋ **`preview_wait_decoupled` ⇒ 4 passed / 0 failed ✓**
+#         （**含 `a_stroke_that_did_not_ask_for_the_document_preview_never_runs_one` ✓**
+#          —— **∴ 所以**：**本改动**只碰**读路径 ✗**，**不影响**那条写路径判据 ✓）** ✓✓
+#     **∴ 两面 ✗**：**收益**＝**兑现"打开即图片" ✗**（**冷开第一眼有图 ✓，**且**快照终于落盘 ✓）**；
+#       **代价**＝**首次 `get_document`**回到**同步生成**（**4K 约 1 s ✓）——
+#         **∴ 而**那**正是**设计文档接受的价 ✓**（**"**谁要新鲜谁显式要**"＝要新鲜就付 ✓）**，
+#         **且** `first_preview_ms` **如实报出 ✓**** ✓✓
+#   **★ ② 新暴露的第三条红灯（**既有 ✗，**已实证归因 ✓）★**：
+#     **∴ 现象 ✗**：**`cargo test --workspace` ⇒ `passed=509 failed=1 ignored=15` ✗**
+#       ⇒ **∴ 唯一失败 ✗**：**`yanshi-render --test render_properties` 的
+#         `thumbnail_blocks_match_full_rebuild` ✓**
+#         ⇒ **∴ 反例固定 ✗**：**`seed = 2111827459963164, objects = 5` ✗**
+#           （**隔离连跑 3 次**完全一致 ⇒ **∴ 不是**偶发 ✓）** ✓✓
+#     **★ 为什么此前没看见 ✗ ★**：**前几轮 `--workspace`** 在**第一个**失败处**就停了** ✗**
+#       ⇒ **∴ 我**修好两条之后 ✗** ⇒ **∴ 测试**才**跑到 509 个** ✗** ⇒ **∴ 于是**它**浮现 ✓**** ✓✓
+#     **★ 决定性归因（**已做实验 ✓）★**：**把 `render.rs` 换回**我改动之前的版本 ✗**
+#       （**`git checkout df58ba72 -- crates/yanshi-render/src/render.rs` ✓）** ⇒
+#       **同一条测试以**完全相同的方式失败 ✓**（**`0 passed; 1 failed` ✓）**
+#       ⇒ **∴ 所以**：**它**早于我在 `render.rs` 的全部改动 ✗** ⇒ **∴ 不是我引入的 ✓**** ✓✓
+#       （**∴ 且** `git diff df58ba72..HEAD` 显示 ✗**：**除探针外**只有
+#        `get_or_decode` 的**双重检查锁改写** ✓ ⇒ **∴ 两者**都随这次回退**被排除 ✓）** ✓✓
+#     **∴ 它测什么 ✗**：**`render_thumbnail`（**`update_full` ✓）**与
+#       **"**手工重采样 `render_document` 输出**"**逐字节相等 ✓**
+#       （**`ThumbKind::Doc64`，96×96 文档 ✓）⇒ **∴ 即**：**缩略图**与**整幅重采样**必须一致 ✓** ✓✓
+#       ⇒ **∴ 而**那**正是**目标"**绝不许拿旧图冒充 ✗**"的近亲 ✓** ⇒ **∴ 值得修 ✓**** ✓✓
+#     **∴ 下一轮 ✗**：**修 `thumbnail_blocks_match_full_rebuild` ✗**
+#       ⇒ **∴ 先**定位**第一个不同的字节偏移 ✗**（**∴ 判断**是"**块边界**"还是"**重采样滤波器**" ✓）
+#         ⇒ **∴ 候选 ①**：**`update_full` 与手工重采样的**缩放算法**不同 ✗**
+#           （**∴ 如**盒式 vs 双线性 ✓）；**∴ 候选 ②**：**分块更新**时的**边界混色**不同 ✓**** ✓✓
+#   **∴ 门禁现状 ✗ ★**：**`fmt` ✅｜`clippy` ✅｜
+#     **`cargo test --workspace`：passed=509 failed=1 ignored=15 ✗**
+#     （**∴ 修前**是 `passed=199 failed=1` ✗ —— **∴ 净增 310 个通过 ✓，**只剩 1 条既有红灯 ✓）** ✓✓
