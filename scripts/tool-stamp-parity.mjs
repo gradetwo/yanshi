@@ -11,9 +11,10 @@
 //
 // **变异** ✗：**把测试改回 `cache_mut().clear()`** ⇒ **∴ N 次里应有失败 ⇒ 必红 ✓**。
 //
-// 用法：node scripts/tool-stamp-parity.mjs [次数，默认 3]
+// 用法：node scripts/tool-stamp-parity.mjs [次数，默认 10]
+// **∴ 默认 10 ✓**（**∵ 实测触发率约 1／10 ✓ ⇒ 跑 3 次**测不出**✗**）。
 import { execFileSync } from "node:child_process";
-const runs = Number(process.argv[2] ?? 3);
+const runs = Number(process.argv[2] ?? 10);
 const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? "/tmp/yt4b" };
 let failed = 0;
 const results = [];
