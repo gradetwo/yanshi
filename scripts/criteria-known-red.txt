@@ -1661,3 +1661,33 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **∴ 不许提交 ✓****）** ✓✓
 #   **⚠️ 不许拿它当借口** ✗：**"可能是环境 ✗"**不能**用来放过一次真实失败 ✗** ——
 #     **∴ 判据是**第二次的输出 ✗**（**有错 ⇒ 真错 ✓**）** ✓✓
+# **★ 第 585 轮：🎯 **第 ②③ 步的实现方案完备** ✓（**两处新代码 ＋ 零契约改动 ✓**）**
+#   **已核实的 API** ✓：
+#     * **`JobManager::submit(kind: impl Into<String>, session: impl Into<SessionId>, now: i64) -> JobId`**
+#       （`job.rs:129` ✓）；**`Job { id, kind, session, created_at, status, atom_id, error, ttl }`** ✓；
+#     * **`Document::jobs_mut(&mut self) -> &mut JobManager`**（`document.rs:518` ✓）
+#       ＋ **已有用例**：**`document.rs:802` `let job = self.jobs.submit(…);`** ✓；
+#     * **`Document::run_pending_jobs`（`:1893` ✓）**：**只要 `pending()` 非空 ⇒ 就
+#       `render_document_preview()`（`:1925` ✓）** ⇒ **∴ 所以**"排一个作业"就**等价于
+#       "下次提交收尾会渲预览"✗ ⇒ **∴ 完全复用现有机质 ✓**** ✓✓
+#   **∴ 方案（**两处 ✓**）** ✓：
+#     **① `Document::mark_preview_pending(session)` ✗** —— **内部 `jobs.submit("preview", session, now_ms())` ✓**；
+#       **∴ 且**要**去重 ✗**（**同一文档只入一次 ✓** ⇒ **∴ 检查已有 `pending()` 里有无
+#       `kind == "preview"` ✓，有则不再入队 ✓**）；
+#     **② `Workspace::preview_state(doc_id, size) -> PreviewState` ✗** ——
+#       **枚举**：**`Ready(String)`（**URL ✓**）｜`Pending` ✓｜`Unavailable`（**如 `Skip` ✓**）** ✓
+#       ⇒ **∴ 工具层改用它 ✓ ⇒ **∴ 而 `ensure_document_thumbnail` 保持**不动 ✓****
+#       （**∴ 它现在的 `Result<Option<String>>` 里 `None` 已被 `Skip` 占用 ✗ ⇒
+#       **∴ 扩展它会波及 2 个调用点 ✗ ⇒ **∴ 加新方法最小 ✓****）** ✓✓
+#   **∴ 契约** ✓：**完全不动 ✓** —— **`run_pending_jobs` 的渲染（`:1925` ✓）**原样保留 ✓** ⇒
+#     **∴ `completed == [job_id]` ✓ 与"渲染水位随提交推进"✓ 都成立 ✓**** ✓✓
+#   **∴ 验收（**下一轮 ✓**）** ✓：
+#     **① 首次 `get_document`** ⇒ **`preview_state="pending"` ＋ 墙钟 **< 50 ms** ✓
+#       ＋ `first_preview_ms ≈ 0` ✓**；
+#     **② 随后任一编辑（**触发提交 ✓**）⇒ 再取 ⇒ `preview_state="ready"` ＋ `thumb_url` ✓**；
+#     **③ 变异 ✗**：**恢复同步渲染（**即首次仍调 `render_document_preview` ✓**）⇒
+#       **∴ ① 回到 >1000 ms ⇒ 必红 ✓**** ✓✓
+#   **⚠️ 一条必须守住的细节** ✓：**"pending" 必须**真的会就绪 ✗** ——
+#     **∴ 若用户**只读不编辑**✗ ⇒ **∴ 提交收尾**不会发生**✗ ⇒ **∴ 就会**永远 pending ✗**** ⇒
+#     **∴ 所以**必须**再加一条**兜底**✗**：**在**读路径**上，若已 pending 超过一小段时间
+#       （**如 200 ms ✓**）或被第二次请求 ⇒ **∴ 就地同步生成 ✓**（**∴ 兼作"慢的仍然要算"✓ 目标总则 ✓**）** ✓✓
