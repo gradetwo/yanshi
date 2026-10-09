@@ -62,7 +62,14 @@ assets/mediums/*.wasm
 web/wasm/
 web/brushes/
 web/mediums/
-web/index.html
 web/viewer-app.js
 web/viewer.css
 web/service-worker.js
+
+
+# **★ `web/index.html` **故意重新入库** ✗ ★**（第 747 轮 ✓；**用户报告 404 ✓**）：
+#   **∴ 为什么 ✗**：**它是**唯一入口页**✗** ⇒ **∴ 若**它不在 ⇒ **∴ 任何 `wrangler deploy`
+#   **上传的目录里没有 index ⇒ **∴ Cloudflare 返回 **404 ✓****（**用户实测 ✓）。
+#   **∴ 代价**：**它会随导出变化 ⇒ **∴ 可能 dirty ✓**（**∴ 但**只有一个文件，
+#   **而**其余产物（**wasm／brushes／mediums／viewer 三件套 ✓）仍然忽略 ✓**）。
+#   **∴ 且**部署前**仍建议**跑 `npm run pwa:deploy` ✗**（**它**会重新生成它 ✓）**。
