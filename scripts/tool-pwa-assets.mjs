@@ -15,6 +15,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 
 const bad = [];
+// **★ 公共：剥离注释后再查代码 ✓ ★**（第 616 轮 ✓）——
+// **∴ 为什么必须剥离 ✗**：**本判据第一版曾在**注释**里命中 `/api/` ✗（**假阳性 ✓**），
+// 又曾在**注释**里命中 `preview_state` ✗（**假阴性 ✗，变异 ⑧ 实测没红 ✓**）
+// ⇒ **∴ 所以凡"查代码里有没有某个东西"✗ ⇒ 一律先剥离注释 ✓**。
+const stripCommentsForCheck = (text) =>
+  text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : null);
 const check = (cond, msg) => { if (!cond) bad.push(msg); };
 
@@ -97,7 +103,7 @@ if (store) {
   // **∴ 零耦合断言 ✗**：**持久化层不许碰服务端 API ✓**（**用户要求"不影响现有 WEB"✓**）。
   // **∴ 先剥离注释再查 ✗** —— **否则注释里提到该路径会造成**假阳性 ✗**
   //（**本判据第一版就踩了这个坑 ✓，实测抓到的是注释里的字样 ✓**）。
-  const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const stripComments = stripCommentsForCheck;
   const storeCode = stripComments(store);
   check(!/\/api\//.test(storeCode), "web/store.js 的**代码**里出现服务端接口调用 ⇒ **∴ 它依赖了服务器端 ✗**");
   // **★ 快照校验（**目标第 6 条 ✓**）**：**必须有**格式版本 ＋ 序号**✗** ⇒ **∴ 否则会拿旧图冒充 ✓**。
@@ -138,8 +144,9 @@ check(declared === actualImpl + 1 || declared === actualImpl,
 console.log(`  api-local：声明实现 ${declared} 个端点 ✓｜实现分支 ${actualImpl} 个 ✓`);
 check(/makeLocalApi/.test(api || ""), "web/api-local.js 未导出 makeLocalApi ⇒ **∴ 三个端点无法被接入 ✗**");
 check(/derived_from/.test(api || ""), "list_layers 未标明由原子推导 ⇒ **∴ 双份状态风险不可见 ✗**");
-check(/gpu_unavailable_reason/.test(api || ""), "api-local 未报 GPU 不可用原因 ⇒ **∴ 后端不可判 ✗**");
-check(/preview_state/.test(api || ""), "api-local 的 get_document 未报 preview_state ⇒ **∴ 有没有图不可判 ✗**");
+const apiCode = stripCommentsForCheck(api || "");
+check(/gpu_unavailable_reason/.test(apiCode), "api-local 的**代码**未报 GPU 不可用原因 ⇒ **∴ 后端不可判 ✗**");
+check(/preview_state:\s*"pending"/.test(apiCode), "api-local 的**代码**未在 get_document 里报 preview_state ✗ ⇒ **∴ 有没有图不可判 ✓**");
 
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
