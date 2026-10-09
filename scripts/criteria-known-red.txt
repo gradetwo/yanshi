@@ -2465,3 +2465,28 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **② 加**变异 ✗**：**让 `import_image` 不带 `type` ⇒ 渲染应当**不变** ⇒ **必红 ✓**** ✓✓
 #   **∴ 经验（**最有价值的一条 ✓**）** ✓：**"内核 ok ＋ 无警告"不等于"它理解你的输入"✗**
 #     ⇒ **∴ 必须**用权威样本逐字段对照 ✗**（**本会话靠它破案 5 次 ✓**）** ✓✓
+# **★ 第 666 轮：🎯 **用户报告的真问题** —— `assets/mediums/*.wasm` 是**构建产物**却在库里 ✗**
+#   **用户原话要点** ✓：**"这些东西是不是不应在版本库，不然每次编译都变化，打包都显示 dirty ✗"**
+#     ＋ 列出 6 个：`example-dab`／`marker`／`oil`／`pencil`／`pixel`／`watercolor` ✓** ✓✓
+#   **∴ 核实（**全部属实 ✓）** ✓：
+#     * **它们是 `crates/yanshi-medium-*`（**cdylib ✓）的编译产物 ✗**（6 个 crate ✓）；
+#     * **由 `scripts/package-release.sh:458-481` ✗** 从
+#       **`target/wasm32-unknown-unknown/release/yanshi_medium_*.wasm`** 拷成
+#       **`assets/mediums/{oil,watercolor,marker,pencil,pixel,example-dab}.wasm` ✗**；
+#     * **∴ 而**该脚本自己的注释写着「**它们提交在 `assets/mediums/` ✗**」⇒ **∴ 即**这是**设计遗留 ✓**；
+#     * **`.gitignore` **已忽略同类产物 ✗**（`crates/yanshi-wasm/pkg/` ✓／`assets/brush-module.wasm` ✓）
+#       ⇒ **∴ 唯独漏了它们 ✗**** ✓✓
+#   **∴ 本轮已做（**新增，无害且正确 ✓）** ✓：**① `.gitignore` 加 `assets/mediums/*.wasm` ✗**；
+#     **② 新增 `scripts/mediums-sync.mjs` ✗**（**从 `target/…/release` 拷 6 个 ✓，
+#     **缺产物时**明确报错并给出确切的 `cargo build` 命令 ✓**）** ✓✓
+#   **⚠️ 如实说明：**光加 `.gitignore` **不解决问题**✗**** —— **∴ 因为**它**不取消已跟踪文件 ✗**
+#     ⇒ **∴ 所以**用户的 `git status` 仍会显示那 6 个 `modified` ✓** ✓✓
+#   **∴ 下一步（**必须一起做 ✓，共四件 ✓**）** ✓：
+#     **① `git rm --cached assets/mediums/*.wasm` ✗**（**∴ 真正取消跟踪 ✓**）；
+#     **② 服务端启动时**明确提示**✗**（**∴ 缺这几个文件 ⇒ **∴ 说"跑 `node scripts/mediums-sync.mjs`"✗**
+#       ＋ **∴ 前端那 6 个笔刷会 404 ⇒ **∴ 说清楚 ✓****）；
+#     **③ `package-release.sh` 调 `mediums-sync.mjs` ✗**（**∴ 替掉它自己那 6 行 `cp_if_newer` ✓**）；
+#     **④ 判据断言"6 个文件存在且非空" ✗**（**∴ 缺失 ⇒ **∴ 报"先构建"✓**）＋ **CI 里构建后调同步 ✓**。
+#   **∴ 取舍（**两面 ✓**）** ✓：**收益** ✓：**仓库不再 dirty ✓｜`git status` 干净 ✓｜
+#     **∴ 且**与已忽略的两类产物**一致 ✓**；**代价** ✗：**clone 后**不能直接跑**✗**
+#     （**∴ 必须先构建 6 个 crate ✓**）⇒ **∴ 而这**正是**②③④**要补的 ✓** ✓✓

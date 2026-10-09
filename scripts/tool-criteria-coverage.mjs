@@ -47,6 +47,10 @@ const NOT_CRITERIA = [
   // **∴ `pwa-sync-viewer.mjs` ✓**（第 632 轮 ✓）：**它**改产物**✗（**把现有 viewer 同步到 `web/` ✓**）
   // ⇒ **∴ 本就不该当判据 ✓**；**而"两侧是否一致"由 `tool-pwa-assets.mjs` 判 ✓**（**逐字节比对 ✓**）**。
   "pwa-sync-viewer.mjs",
+  // **∴ `mediums-sync.mjs` ✓**（第 666 轮 ✓；**用户报告 ✓**）：**它**改产物**✗**
+  //（**把 6 个介质插件的编译产物从 `target/…/release` 拷进 `assets/mediums/` ✓**）
+  // ⇒ **∴ 本就不该当判据 ✓**；**而"产物是否齐"由**下面那条新判据守 ✗****。
+  "mediums-sync.mjs",
 ];
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [

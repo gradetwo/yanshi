@@ -36,3 +36,16 @@ assets/brush-module.wasm
 /x
 /demo
 /exports/
+
+# **★ 介质插件产物（构建生成）✓ ★**（第 666 轮 ✓；**用户报告 ✓**）：
+#   **∴ 它们由 `crates/yanshi-medium-*`（cdylib）编译而来 ✗**，
+#   再由 `scripts/package-release.sh`（`:458-481` ✓）从
+#   `target/wasm32-unknown-unknown/release/` 拷进 `assets/mediums/` ✓
+#   ⇒ **∴ 每次重建都会变 ⇒ **∴ 入库会让 `git status` 永远 dirty ✗****
+#   （**∴ 用户实测：`example-dab`／`marker`／`oil`／`pencil`／`pixel`／`watercolor` 全部 modified ✓**）
+#   ⇒ **∴ 与已忽略的 `crates/yanshi-wasm/pkg/`、`assets/brush-module.wasm` 同类 ✓**。
+#   **∴ 用法** ✓：`node scripts/mediums-sync.mjs`（**构建后拷入 ✓**）
+#   **⚠️ 注意** ✗：**`.gitignore` **不会**取消已跟踪文件 ✗** ⇒ **∴ 还需要
+#   `git rm --cached assets/mediums/*.wasm` ✗**（**∴ 那会改变"clone 即可跑" ⇒
+#   **∴ 服务端必须在缺文件时**明确提示**✗** —— **∴ 见下一步 ✓**）。
+assets/mediums/*.wasm
