@@ -233,6 +233,7 @@ if (!fact.adapter) {
       deterministic: same,
       bytes: Array.from(first.bytes),
       differingBytes: first.differingBytes,
+      referenceBytes: Array.from(first.reference),
       pixelCount: pixels.length / 4,
       deltas: Array.from(first.bytes).map((b, i) => Math.abs(b - first.reference[i])),
     });
@@ -269,7 +270,7 @@ if (!fact.adapter) {
     if (differing > 0) {
       const firstIndex = out.deltas.findIndex((d) => d !== 0);
       console.log(`  首个不同在第 ${firstIndex} 个字节`
-        + `（GPU=${out.bytes[firstIndex]} vs 参考=${out.bytes[firstIndex] - 0}）`);
+        + `（GPU=${out.bytes[firstIndex]} vs 参考=${out.referenceBytes ? out.referenceBytes[firstIndex] : "?"}）`);
     }
   }
   check(out.backend === "gpu", "**必须**报成 `gpu`（实际后端 ✗）", String(out.backend));

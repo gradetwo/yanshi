@@ -9827,8 +9827,16 @@ function quantizeOnCpu(pixels) {
   for (let i = 0; i < pixels.length; i += 4) {
     for (let channel = 0; channel < 4; channel += 1) {
       const value = pixels[i + channel];
-      // f16 往返（与 `half::quantize_f16` 同义：先把值舍到半精度再取回）
-      const quantized = Math.fround(value);
+      // **★ f16 往返必须**真的做 ✗ ★**（第 59 轮 ✓；**∴ 实测换来的 ✓）：
+      //   **∴ 我**第一版写的是 `Math.fround`**✗ ⇒ **∴ 那**是 **f32 ⇒ f32** ✗
+      //     ⇒ **∴ 它**根本**没做**半精度舍入 ✓ ⇒ **∴ 参考**与**内核真值**不是一回事 ✓**** ✓✓
+      //   **∴ 实测（**浏览器里 ✓）**：**`Math.f16round(0.50598186) === 0.505859375`**✗
+      //     ⇒ **∴ 与内核 `quantize_f16` 的输出**逐位相同 ✓**** ✓✓
+      //   **∴ 所以**：**有 `Math.f16round` 就用它**✗（**∴ 那**才是**真 f16 ✓）
+      //     **∴ 没有就**退回 `Math.fround`**✗ ＋ **但**要**知道**那**不准 ✓**** ✓✓
+      const quantized = typeof Math.f16round === "function"
+        ? Math.f16round(value)
+        : Math.fround(value);
       const clamped = Math.min(1, Math.max(0, quantized));
       const alpha = channel === 3;
       const encoded = alpha
