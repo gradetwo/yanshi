@@ -4819,3 +4819,22 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ```
 #     ⇒ **∴ 或**（**本轮之后 ✓）**：
 #       `YANSHI_SERVE_BIN=target/x86_64-unknown-linux-gnu/release/yanshi-serve npm run pwa:deploy` ✓**** ✓✓
+
+# **★ 第 754 轮：✅ **脚本现在优先用 `make release` 的产物 ✗**（**用户问题的根治 ✓**）**
+#   **∴ 改动 ✓**（`scripts/pwa-sync-viewer.mjs` ✓）**：
+#     **① 探测**带 triple 的目录 ✗**：**扫 `target/`（**或 `$CARGO_TARGET_DIR` ✓）下
+#       **形如 `*-unknown-*`／`*-apple-*`／`*-pc-*` 的子目录 ✗** ⇒ **∴ 取它们的 `release/` ✓**
+#       ⇒ **∴ 于是**：**`make release` 产出的二进制**会被**优先用上 ✓**** ✓✓
+#     **② 支持 `YANSHI_SERVE_BIN` ✗**：**显式指定**时**放在候选列表**最前 ✓**** ✓✓
+#     **③ 保留**逐个候选**真的试一次导出**✗** ＋ **全部失败时**打印重建命令 ✓**** ✓✓
+#   **∴ 实测 ✓**：
+#     * **`node scripts/pwa-sync-viewer.mjs`** ⇒ **`静态页导出用的二进制：target/debug/yanshi-serve ✓`**；
+#     * **`YANSHI_SERVE_BIN=$PWD/target/debug/yanshi-serve node …`** ⇒ **同一结果 ✓**（**∴ 说明**它被尊重 ✓）** ✓✓
+#   **∴ 一个插曲 ✓**：**`readdirSync` **重复导入**✗**（**∴ 因为**主 import 里**已有它**✓，
+#     **而**我又加了一条**独立 import ✓）⇒ **∴ `node --check` 立刻报
+#     **`Identifier 'readdirSync' has already been declared` ✗** ⇒ **∴ 删掉多余那条 ＋ 并进主 import ✓**
+#     ⇒ **∴ 教训**：**加导入前**先看**已有哪些**✗（**∴ 本会话第 6 次同类 ✓）** ✓✓
+#   **∴ 与目标的关系 ✓**：**目标第 7 条（**懒导出／懒诊断**✓）的**交付面**是"**部署可用 ✗**"
+#     ⇒ **∴ 而**"**部署脚本能不能找到正确的二进制**"**是它的**前置 ✗**
+#     ⇒ **∴ 这三轮**（**入口页入库 ✗｜探测 ＋ 报错 ✗｜triple 路径 ✓）把**用户报告的两个故障**
+#     **都收口了 ✓**** ✓✓

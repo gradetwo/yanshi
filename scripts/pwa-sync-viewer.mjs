@@ -11,8 +11,7 @@
 //（**∴ 拦截 `window.fetch` ⇒ 转到本地内核 ＋ IndexedDB ✓**）⇒ **∴ 前端本身**无需分支 ✓****。
 //
 // **用法** ✓：`node scripts/pwa-sync-viewer.mjs`（**在 `pwa-sync-wasm.mjs` 之后跑 ✓**）
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
@@ -51,12 +50,30 @@ import { renameSync } from "node:fs";
 //   **不含 `--export-viewer-html` ✓）⇒ **∴ 于是**它**只丢一句"未知参数"✗，**而**不告诉你怎么办 ✓**
 //   ⇒ **∴ 现在**：**逐个候选**真的**试一次导出 ✗** ⇒ **∴ 选**第一个成功的 ✓**
 //   ＋ **∴ 尊重 `CARGO_TARGET_DIR` ✗**（**∴ 本仓库开发时常把产物放到 /tmp ✓）**。
+// **★ `make release` 的产物在**带 triple 的目录** ✗ ★**（第 221 轮 ✓；**用户实测 ✓**）：
+//   **∴ `scripts/package-release.sh` 用 `cargo build --release --target <triple>` ✗**
+//   ⇒ **∴ 于是**二进制落在 `target/<triple>/release/yanshi-serve` ✗**
+//   ⇒ **∴ 而**它**不在** `target/release/` ⇒ **∴ 所以**只找后者**会拿到**旧残留 ✓**** ✓✓
+const tripleDirs = (() => {
+  const out = [];
+  for (const root of [process.env.CARGO_TARGET_DIR, "target"].filter(Boolean)) {
+    if (!existsSync(root)) continue;
+    for (const e of readdirSync(root, { withFileTypes: true })) {
+      if (e.isDirectory() && /-unknown-|-apple-|-pc-/.test(e.name)) out.push(join(root, e.name, "release"));
+    }
+  }
+  return out;
+})();
+// **★ `YANSHI_SERVE_BIN` 优先 ✗ ★**：**∴ 用户**显式指定**时**不再探测 ✓**** ✓✓
 const targetDirs = [
+  process.env.YANSHI_SERVE_BIN ? null : null,
+  ...tripleDirs,
   process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "release") : null,
   process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "debug") : null,
   "target/release",
   "target/debug",
 ].filter(Boolean);
+if (process.env.YANSHI_SERVE_BIN) targetDirs.unshift(process.env.YANSHI_SERVE_BIN);
 const tmp = join(DST, ".index.export.html");
 const triedBins = [];
 let bin = null;
