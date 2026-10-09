@@ -1,0 +1,7 @@
+{
+  "//": "★ 用途说明（第 618 轮 ✓）：仅为让 `web/*.js` 被 node 当作 ES module ✓（消除 MODULE_TYPELESS_PACKAGE_JSON 警告 ✓）。本仓库的判据脚本不依赖任何 npm 包 ✗（用 node 自带能力 ＋ CDP ✓）。",
+  "name": "yanshi-tools",
+  "private": true,
+  "type": "module",
+  "description": "判据脚本的模块类型声明（不引入依赖）"
+}

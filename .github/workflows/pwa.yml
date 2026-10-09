@@ -62,6 +62,14 @@ jobs:
         # **∴ 这条是**防撒谎判据 ✗**：**没有内核的 PWA 不许发布 ✓**（**`tool-pwa-assets.mjs` ✓**）。
         run: node scripts/tool-pwa-assets.mjs
 
+      - name: ★ 判据：PWA 本地 API **行为级**（在 node 里真调用）
+        # **∴ 它证明"三个端点真能用 ＋ 未实现端点真报 501"✗**（**不是查字符串 ✓**）
+        # ⇒ **∴ 与上一条（**静态 ✓**）合起来 ⇒ **∴ 部署前有两层证据 ✓**。
+        run: node scripts/tool-pwa-api-behaviour.mjs
+
+      - name: ★ 判据集合：覆盖率守卫（**不许有判据被静默跳过**）
+        run: node scripts/tool-criteria-coverage.mjs
+
       - name: 部署（或如实跳过）
         id: deploy
         env:
