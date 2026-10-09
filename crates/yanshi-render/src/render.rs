@@ -1075,6 +1075,16 @@ impl Renderer {
                         },
                         Err(_) => (false, false),
                     };
+                    // **★ 无条件 stderr ✗ ★**（第 732 轮 ✓）：**∴ 短标记 `PROBE_READ` ✗**
+                    //   ⇒ **∴ 于是**：**stderr 有 ⇒ 探针跑了 ✗**（**∴ 而**文件没写 ⇒ **∴ 就是写文件的问题 ✓）**；
+                    //   **∴ stderr 也没有 ⇒ **∴ 探针**根本没跑到 ✗**** ✓✓
+                    eprintln!(
+                        "PROBE_READ ready={} sig_eq={} tiles_ok={} n={}",
+                        ready,
+                        sig_eq,
+                        tiles_ok,
+                        want_tiles.len()
+                    );
                     let _ = writeln!(
                         f,
                         "READ ready={} sig_eq={} tiles_ok={} n_tiles={}",
