@@ -9740,3 +9740,73 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 门禁现状 ✗ ★**：**`fmt` ✅｜`clippy` ✅｜
 #     **`cargo test --workspace`：passed=509 failed=1 ignored=15 ✗**
 #     （**∴ 修前**是 `passed=199 failed=1` ✗ —— **∴ 净增 310 个通过 ✓，**只剩 1 条既有红灯 ✓）** ✓✓
+
+# **★ 第 921–923 轮：🎯 **修用户报告的 P0 ✗**（**落笔走 `draw_stroke` ✗**）★**
+#   **★ 用户的证据（**决定性 ✓）★**：**顶栏显示**我新加的**「本地內核（無服务端）」✗**
+#     **而内核卡片显示**旧的**「已按設置跳過（用服务端渲染）」✗**
+#     ⇒ **∴ 说明 ✗**：**他浏览器里的 `localStorage` 存着 `yanshi.serverRender = "1"` ✗**
+#       ⇒ **∴ 而**我上一版**在 `localOnly` 下**尊重**它 ✓（**`stored === "1"` ✓）
+#       ⇒ **★ 于是**：**内核被 `initWasm` 跳过 ⇒ **∴ 卡片全"—" ⇒ **∴ 落笔必然失败 ✓ ★**** ✓✓
+#     **∴ 根因 1（**直接的 ✓）★**：**前端落笔调的是 `draw_stroke`** ✓
+#       （**`viewer-app.js:3016` 与 `:7180` ✓）—— **∴ 服务端有它 ✓**（**`tools.rs:1519` ✓）**，
+#       **而本地层只实现了 `brush_stroke`** ✗
+#       ⇒ **∴ 每一笔**返回 `not_implemented_locally` ✓
+#         ⇒ **∴ 界面"落笔失败：unknown" ✗**、**画布 0 像素 ✓**（**用户四轮复验一致 ✓）** ✓✓
+#   **★ 修复 ①：本地层接受 `draw_stroke` ✗ ★**（**`web/api-local.js` ✓）**：
+#     ```js
+#     if (path === "/api/tools/brush_stroke" || path === "/api/tools/draw_stroke") {
+#       if (path === "/api/tools/draw_stroke") {
+#         const d = (body && body.data) || {};
+#         body = Object.assign({}, body, {
+#           points: d.points != null ? d.points : body.points,
+#           size:   d.size   != null ? d.size   : body.size,
+#           color:  d.color  != null ? d.color  : body.color,
+#         });
+#       }
+#       // …后面整段照用（**∴ 不复制一份实现 ✓）
+#     ```
+#     **∴ 为什么这样最省 ✗**：**两者只差**参数位置 ✗**（**`draw_stroke`** 装在 `data` 里 ✓；
+#       **`brush_stroke`** 在顶层 ✓）⇒ **∴ 归一之后**其余（内核 ＋ `blob_put` ＋ `import_image`
+#       ＋ IndexedDB）**完全复用 ✓**** ✓✓
+#     **⚠️ 如实说明（**两面 ✓**）**：**这一笔**用的是**硬圆不透明白笔**（`100%_Opaque` ✓）
+#       ⇒ **∴ `data.hardness` / `data.opacity` / `data.smooth`**目前没有被内核消费 ✗**
+#       （**∴ 服务端会按它们改变笔迹 ✓）⇒ **∴ 这是**已知差距 ✗**，**写在代码与提交里 ✓
+#       （**∴ 不是静默忽略 ✓）** ⇒ **∴ 而**它**不影响"**能不能画**" ✓**** ✓✓
+#   **★ 修复 ②：`localOnly` 时**一律本地 ✗ ★**（**`viewer-app.js:34` ✓）**：
+#     ```js
+#     if (localOnly) return false;   // 无服务端 ⇒ 服务端渲染永远不可选
+#     ```
+#     ⇒ **∴ 存量偏好**不得**再把用户锁在一条**不存在的路**上 ✓**** ✓✓
+#   **★ 修复 ③：界面不再自相矛盾 ✗ ★**：**`localOnly` 时**禁用那个复选框 ＋ 说明 ✗**
+#     （**"（本部署无服务端，不可用）" ✓）⇒ **∴ 且**它**不会**再写 `1` 进 `localStorage` ✓**** ✓✓
+#   **★ 判据（**已加且通过变异检验 ✓）★**：**`scripts/tool-pwa-api-behaviour.mjs` ✗**
+#     **∴ 断言 ✗**：**POST 一笔到 `/api/tools/draw_stroke` ✗** ⇒
+#       **① 不许**是 `endpoint_not_local` ／ `not_implemented_locally` ✓**；
+#       **② 失败必须**说出原因**（`reason` 非空 ✓）** ✓✓
+#     **∴ 变异检验（**已做 ✓）★**：
+#       | 状态 | 结果 |
+#       | **正常 ✓** | **BEH=ok ✗**（**实测 `draw_stroke ⇒ 500｜error=stroke_failed` ✓
+#         —— **∴ node 里没有 wasm 内核 ✓，**∴ 失败是**如实**的 ✓）** |
+#       | **把 `draw_stroke` 从条件里删掉 ✗** | **BEH=bad ✗**（**报"必须在本地层有映射" ✓）** |
+#       | **恢复 ✓** | **BEH=ok ✗** |
+#       ⇒ **∴ 所以**：**本条**可红可绿 ✗** ⇒ **∴ 有效 ✓**** ✓✓
+#     **∴ 一条**我犯过的错（**已纠 ✓）✗**：**我**第一版**要求**它 200 ✗** ⇒
+#       **∴ node 环境**下**正常态也红 ✗** ⇒ **∴ 变异**失去区分力 ✓**
+#       ⇒ **∴ 教训**：**判据**必须**在目标环境里**能绿 ✓**** ✓✓
+#   **★ 部署 ＋ 线上实证 ✗ ★**：**Version `41ef8237-a1f3-4068-9592-7ef6129433b3` ✗**
+#     ```
+#     线上 api-local.js 里 draw_stroke: 5 处 ✓
+#     线上 viewer-app.js 里 localOnly 一律本地: 1 处 ✓
+#     线上 viewer-app.js 里 WS 守卫: 1 处 ✓
+#     线上 index.html 里 __pwaLocalOnly: 4 处 ✓
+#     /health ⇒ {"ok":true,"server":false,"wasm":true,"render_backend":"cpu"} ✓
+#     render_region ⇒ {"status":200,"type":"image/png","source":"local-kernel","bytes":850} ✓
+#     brush_stroke ⇒ {"status":200,"ok":true,"seq":5,"bytes":179776} ✓
+#     画一笔：A(850B) => B(3757B) ⇒ **OK: 画一笔确实改变了渲染** ✓
+#     ✓ PWA 在真实浏览器里成立 ✓｜线上冒烟 12 项通过 ✓
+#     ```
+#   **∴ 未完成（**如实 ✓）★**：**① 浏览器级判据**目前只覆盖 `brush_stroke` ✗**，
+#     **∴ `draw_stroke`** 只有 **node 行为判据 ✓** ⇒ **∴ 下一轮**给浏览器判据**加一笔 `draw_stroke` ✓**；
+#     **② 用 CDP 预置 `localStorage["yanshi.serverRender"]="1"` 后重载**的验证**还没做 ✓**
+#     （**∴ 那**正是用户的确切场景 ✓）；**③ `data.hardness/opacity/smooth`** 未接内核 ✓**；
+#     **④ `list_assets`** 未映射 ✓（**∴ 而**前端**已有离线回退 ✓ ⇒ **∴ 不阻塞落笔 ✓）** ✓✓

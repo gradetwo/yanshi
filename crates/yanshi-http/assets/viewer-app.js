@@ -35,12 +35,22 @@ const serverRenderPreferred = () => {
   // A static deployment has no server, so trying one first only wastes a retry cycle and
   // leaves the toolbar reporting "disconnected". The injected sentinel sets the flag.
   const localOnly = typeof window !== "undefined" && window.__pwaLocalOnly === true;
+  // **★ `localOnly` 时**一律本地 ✗ ★**（**用户报告的 P0 ✓；**这一条是**回归修复 ✓**）：
+  //   **∴ 我上一版 ✗**：**`localOnly` 下**只让"**显式打开**"生效 ✓（**`stored === "1"` ✓）——
+  //     而**用户的浏览器里早就存着 `1`** ✗（**复选框默认勾上时就写进去了 ✓**）
+  //     ⇒ **∴ 于是**：**内核**被 `initWasm` **跳过 ✗**
+  //       （**卡片显示"已按设置跳过（用服务端渲染）" ✓）⇒ **∴ 没有内核
+  //       ⇒ **∴ 落笔必然失败 ✓**（**用户四轮复验：卡片全"—" ✓）** ✓✓
+  //   **∴ 所以 ✗**：**在无服务端的部署里**，"**用服务端渲染**"这个选项**永远不可选** ✓
+  //     ⇒ **∴ 存量偏好**不得**再把用户锁在一条**不存在的路**上 ✓**** ✓✓
+  //   **∴ 代价（**两面 ✓）**：**本地专用部署**里**没有**切换服务端的开关 ✓
+  //     ⇒ **∴ 而**那是**如实**的 ✗（**确实没有服务端 ✓）** ⇒ **∴ 且**界面**会说明** ✓**。
+  if (localOnly) return false;
   try {
     const stored = localStorage.getItem(SERVER_RENDER_KEY);
-    if (localOnly) return stored === "1"; // only an explicit opt in uses the server
     return stored === null ? true : stored === "1";
   } catch (error) {
-    return !localOnly;
+    return true;
   }
 };
 
@@ -5153,6 +5163,22 @@ function setupFileMenu() {
   const useServerRenderBox = $("useServerRender");
 if (useServerRenderBox) {
   useServerRenderBox.checked = serverRenderPreferred();
+  // **本地专用部署 ⇒ 禁用并说明 ✗**（用户报告的 P0 ✓）：这个复选框**永远不可能生效** ✓
+  //（**没有服务端 ✓**）⇒ **∴ 留着它可勾 ✗** ⇒ **∴ 界面**自相矛盾**
+  //（**顶栏"本地內核（無服务端）" vs 内核卡片"已按设置跳过（用服务端渲染）" ✓）** ✓✓
+  // **∴ 且**它**会写 `1`** ✗ ⇒ **∴ 下一代若**误信存量偏好**⇒ **∴ 又锁死一次 ✓**** ✓✓
+  if (typeof window !== "undefined" && window.__pwaLocalOnly === true) {
+    useServerRenderBox.checked = false;
+    useServerRenderBox.disabled = true;
+    const label = useServerRenderBox.closest("label") || useServerRenderBox.parentElement;
+    if (label) {
+      label.title = "本部署没有服务端 ⇒ 只能用本地内核；此开关不可用";
+      const text = label.querySelector("span") || label;
+      if (text && text.textContent && text.textContent.trim().length > 0) {
+        text.textContent = text.textContent.trim() + "（本部署无服务端，不可用）";
+      }
+    }
+  }
   useServerRenderBox.addEventListener("change", () => {
     try {
       // **★ 关掉时必须写 `"0"` ✓ ★**（第 541 轮 ✓）：**∴ 用 `removeItem` 会"清回默认值"✗，

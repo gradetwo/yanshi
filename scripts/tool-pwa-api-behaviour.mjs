@@ -224,5 +224,34 @@ check(LOCAL_IMPLEMENTED >= 5, `声明实现数应 ≥ 5 ✗（实测 ${LOCAL_IMP
 console.log(`  实际调用通过 ✓：创建 ✓｜原子 ${atoms.count} 条 ✓｜层 ${layers.count} 个 ✓｜`
   + `get_document ${gd.width}×${gd.height} pending ✓｜后端 ${gd.render_backend} ✓｜未实现端点 501 ✓`);
 console.log(`  LOCAL_IMPLEMENTED = ${LOCAL_IMPLEMENTED} ✓`);
+// **★ `draw_stroke` 必须在本地层有映射 ✗ ★**（用户报告的 P0 ✓）：
+//   **∴ 为什么 ✗**：**前端落笔调的是 `draw_stroke`** ✓（**`viewer-app.js` 的两处落笔 ✓**），
+//     而**本地层原来只认 `brush_stroke`** ✗ ⇒ **∴ 每一笔**返回
+//     `not_implemented_locally` ✓ ⇒ **∴ 界面"落笔失败：unknown" ✗**、**画布 0 像素 ✓**
+//     （**用户四轮真机复验一致 ✓）** ✓✓
+//   **∴ 判据 ✗**：**POST 一笔到 `/api/tools/draw_stroke` ✗** ⇒ **∴ 不许**是
+//     `endpoint_not_local` ✓（**∴ 且**要么 200 ✗，要么**如实** `kernel_unavailable` ✓）** ✓✓
+//   **∴ 变异（**手工 ✓）**：**把 `draw_stroke` 从分支条件里删掉 ⇒ **∴ 本条**必红 ✓**
+//     （**∴ 它**会退回 `endpoint_not_local` ✓）** ✓✓
+const strokeRes = await call("/api/tools/draw_stroke", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    layer_id: "L0",
+    data: { points: [[2, 2], [12, 12]], size: 8, color: [0, 0, 0, 1] },
+  }),
+});
+const strokeBody = await strokeRes.json().catch(() => ({}));
+const strokeErr = String((strokeBody && strokeBody.error) || "");
+check(strokeErr !== "endpoint_not_local" && strokeErr !== "not_implemented_locally",
+  "draw_stroke 必须在本地层有映射（否则前端每一笔都失败：用户报告的 P0；实测 error=" + strokeErr + "）");
+// **∴ 第二条只守"**失败必须说出原因 ✗**"**（**∴ 不**要求 200 ✗）：
+//   **∴ 因为**在 node 判据环境里**没有 wasm 内核** ✓ ⇒ **∴ 这一笔**只能失败 ✓
+//   ⇒ **∴ 若**要求 200 ✗** ⇒ **∴ 正常态**也红 ✗** ⇒ **∴ 变异**就**失去区分力 ✓**** ✓✓
+check(strokeRes.status === 200 || String((strokeBody && strokeBody.reason) || "").length > 0,
+  "draw_stroke 失败时必须说出原因（不许静默；实测 " + strokeRes.status + "／" +
+    JSON.stringify(strokeBody).slice(0, 120) + "）");
+console.log("  本地层 draw_stroke ⇒ " + strokeRes.status + "｜error=" + (strokeErr || "(无)"));
+
 if (bad.length) { console.error("❌ " + bad.join("｜")); process.exit(1); }
 console.log("  ✓ PWA 本地 API 在行为上成立（不是只看字符串 ✓）");

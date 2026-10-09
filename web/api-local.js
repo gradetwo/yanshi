@@ -97,7 +97,7 @@ async function withKernel(doc, fn) {
         __ct.indexOf("image/") >= 0 ||
         __ct.indexOf("octet-stream") >= 0 ||
         __ct.indexOf("application/pdf") >= 0;
-      const body =
+      let body =
         req.method === "POST" && !__binary
           ? await req.json().catch(() => ({}))
           : {};
@@ -260,7 +260,29 @@ async function withKernel(doc, fn) {
     // **∴ 它**不需要内核 ✗** —— **∴ 只需**把请求变成一条原子写进日志 ✗**
     // ⇒ **∴ 而**渲染时内核会**重放**它 ✓**（**∴ 于是"画一笔"就通了 ✓**）**。
     // **∴ 形态**与服务端一致 ✗**：**完整 8 字段封套 ＋ `payload` ✓**（**§14.12 ✓**）。
-    if (path === "/api/tools/brush_stroke") {
+    if (path === "/api/tools/brush_stroke" || path === "/api/tools/draw_stroke") {
+      // **★ `draw_stroke` 必须也走这条路 ✗ ★**（**用户报告的 P0 ✓**）：
+      //   **∴ 为什么 ✗**：**前端落笔调的是 `draw_stroke`** ✓（**`viewer-app.js` 的两处落笔 ✓**），
+      //     而**本地层原来只认 `brush_stroke`** ✗ ⇒ **∴ 每一笔**都返回
+      //     `not_implemented_locally` ✓ ⇒ **∴ 界面报"落笔失败：unknown" ✗**、
+      //     **画布 0 像素 ✓**（**用户四轮复验一致 ✓**）。
+      //   **∴ 两者的差别 ✗**：**服务端 `draw_stroke`** 是**纯几何矢量笔迹 ✓**
+      //     ⇒ **参数装在 `data` 里**（`{points,size,color,hardness,opacity,seed,smooth}` ✓）；
+      //     **`brush_stroke`** 的**参数在顶层** ✓ ⇒ **∴ 本分支其余部分**按后者写 ✗**
+      //     ⇒ **∴ 先归一 ✗**，**后面整段照用 ✓**（**∴ 不复制一份实现 ✓**）。
+      //   **⚠️ 如实说明（**两面 ✓**）**：**这一笔**用的是**硬圆不透明白笔**（`100%_Opaque` ✓）
+      //     ⇒ **∴ `data.hardness` / `data.opacity` / `data.smooth`
+      //     目前**没有被内核消费** ✗** —— **∴ 服务端会按它们改变笔迹 ✓**。
+      //     ⇒ **∴ 这是**已知差距 ✗**（**写在这里与提交里 ⇒ 不是静默忽略 ✓），
+      //     而**它**不影响"**能不能画**"✗** ⇒ **∴ 先修 P0 ✓**。
+      if (path === "/api/tools/draw_stroke") {
+        const d = (body && body.data) || {};
+        body = Object.assign({}, body, {
+          points: d.points != null ? d.points : body.points,
+          size: d.size != null ? d.size : body.size,
+          color: d.color != null ? d.color : body.color,
+        });
+      }
       // **★ 走内核渲染一笔 ⇒ 写 `import_image` 原子 ✗ ★**（第 653 轮 ✓；**步骤 ⑤ ✓**）：
       //   **∴ 为什么不能自造 `brush_stroke` 原子 ✗**（**第 646 轮实测 ✓**）：
       //   **∴ 服务端的笔触是**服务端渲染成位图**后的 `import_image` 原子 ✗**（**内核不认前者的 kind ✓**）。
