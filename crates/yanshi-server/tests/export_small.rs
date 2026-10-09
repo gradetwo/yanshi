@@ -312,19 +312,51 @@ fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
                 .expect("原文档二次渲染");
             eprintln!("DIFF 同文档两次渲染是否相同：{}", again == original);
         }
-        // **★ 诊断：**日志相同 ＋ 两侧各自确定 ✗，**而**彼此不同 ✓ ★**（第 29 轮 ✓）
-        //   ⇒ **∴ 差异**必在**不进 `log()` 的状态里 ✓**** ✓✓
-        //   **∴ 下一轮 ✗**：**用**`Workspace::document_mut(id)?.state_at(seq)?`**✗
-        //     （**`state_at` 在 `Document` 上 ✗，**不在 `Workspace` 上 ✓）
-        //     ⇒ **∴ 于是**：**能做**字段级状态 diff ✓**（**本轮**未完成 ✓，**如实 ✓）** ✓✓
+        // **★ 状态级 diff ✗ ★**（第 30 轮 ✓）：**用**折叠状态**定位那个非日志字段 ✓**
+        //   **∴ API（**上一轮走错过 ✓）**：**`state_at` 在 `Document` 上 ✗，**不在 `Workspace` 上 ✓**
+        //     ⇒ **∴ 走**`document_mut(id)?.state_at(seq)?.state` ✓**** ✓✓
+        //   **∴ 已知 ✗**：**日志逐条相同 ＋ 两侧各自确定 ✗，**而**彼此不同 ✓
+        //     ⇒ **∴ 差异**必在**不进 `log()` 的状态里 ✓**** ✓✓
+        {
+            let last = {
+                let doc = workspace.document("doc_small").expect("原文档");
+                doc.log().iter().map(|a| a.seq).max().unwrap_or(0)
+            };
+            let sa = workspace
+                .document_mut("doc_small")
+                .expect("原文档可写")
+                .state_at(last)
+                .expect("原状态折叠")
+                .state;
+            let sb = restored
+                .document_mut("doc_small")
+                .expect("重放文档可写")
+                .state_at(last)
+                .expect("重放状态折叠")
+                .state;
+            eprintln!("DIFF 折叠状态相等：{}", sa == sb);
+            if sa != sb {
+                let ja = serde_json::to_value(&sa).unwrap_or(json!(null));
+                let jb = serde_json::to_value(&sb).unwrap_or(json!(null));
+                if let (Some(ma), Some(mb)) = (ja.as_object(), jb.as_object()) {
+                    for k in ma.keys().chain(mb.keys()) {
+                        if ma.get(k) != mb.get(k) {
+                            let x = ma.get(k).map(|v| v.to_string()).unwrap_or_default();
+                            let y = mb.get(k).map(|v| v.to_string()).unwrap_or_default();
+                            eprintln!(
+                                "DIFF 状态键 {k}：原 {}｜重放 {}",
+                                &x[..x.len().min(220)],
+                                &y[..y.len().min(220)]
+                            );
+                        }
+                    }
+                }
+            }
+        }
         {
             let again = restored
                 .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
                 .expect("重放侧二次渲染");
-            let again2 = restored
-                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
-                .expect("重放侧三次渲染");
-            eprintln!("DIFF 重放侧两次是否相同：{}", again == again2);
             eprintln!("DIFF 重放侧与原图是否相同：{}", again == original);
         }
         let replayed = restored
