@@ -284,6 +284,49 @@ fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
             0,
             "有笔画的位图补不回来 ⇒ 打开后**必然缺图形**：{imported}"
         );
+        // **★ 输入侧 diff ✗ ★**（第 28 轮 ✓）：**像素不同时**先问「输入是否相同」 ✓
+        //   **∴ 写法上**不用下标** ✗**（**第 27 轮的教训：**`&AtomLog` 不能 `[k]` ✓）**
+        //     ⇒ **∴ 用**`iter().zip()`** ✗ ⇒ **∴ 一次编过 ✓**** ✓✓
+        {
+            let before = workspace.document("doc_small").expect("原文档");
+            let after = restored.document("doc_small").expect("重放文档");
+            let la: Vec<_> = before.log().iter().collect();
+            let lb: Vec<_> = after.log().iter().collect();
+            eprintln!("DIFF 原子数：原 {} vs 重放 {}", la.len(), lb.len());
+            for (k, (a, b)) in la.iter().zip(lb.iter()).enumerate() {
+                let ja = json!({"id": a.id, "seq": a.seq, "kind": a.kind,
+                                    "heavy": a.is_heavy(), "payload": a.payload});
+                let jb = json!({"id": b.id, "seq": b.seq, "kind": b.kind,
+                                    "heavy": b.is_heavy(), "payload": b.payload});
+                if ja != jb && k < 3 {
+                    eprintln!("DIFF 第 {k} 条：原 = {ja}｜重放 = {jb}");
+                }
+            }
+        }
+        // **★ 决定性问题：**同一文档渲染两次会不会不同 ✗ ★**（第 28 轮 ✓）
+        //   **∴ 若**不同 ⇒ **∴ 渲染本身**非确定 ✓**（**∴ 与包无关 ✓）**
+        //   **∴ 若**相同 ⇒ **∴ 差异**来自**两个工作区的状态差**✗（**且**不在原子日志里 ✓）** ✓✓
+        {
+            let again = workspace
+                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                .expect("原文档二次渲染");
+            eprintln!("DIFF 同文档两次渲染是否相同：{}", again == original);
+        }
+        // **★ 重放侧**自己**渲染两次 ✗ ★**（第 28 轮 ✓）
+        //   **∴ 为什么换成这个 ✗**：**`Document`**没有 `state()` 访问器**✗
+        //     ⇒ **∴ 直接 diff `DocumentState` 编不过 ✓ ⇒ **∴ 换个同样有力的问法 ✓**** ✓✓
+        //   **∴ 若**重放侧两次相同 ⇒ **∴ 重放侧**确定**✗ ⇒ **∴ 差异**确实**跨工作区 ✓**
+        //   **∴ 若**不同 ⇒ **∴ 重放侧**自己就不稳 ✗（**∴ 那**是另一条线索 ✓）** ✓✓
+        {
+            let again = restored
+                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                .expect("重放侧二次渲染");
+            let again2 = restored
+                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                .expect("重放侧三次渲染");
+            eprintln!("DIFF 重放侧两次是否相同：{}", again == again2);
+            eprintln!("DIFF 重放侧与原图是否相同：{}", again == original);
+        }
         let replayed = restored
             .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
             .expect("重放渲染");
