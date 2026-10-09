@@ -66,7 +66,15 @@ export async function putAtom(db, doc, atom) {
   const stored = { ...atom, seq };
   const rec = { id: `${doc}:${seq}`, doc, seq, atom: stored };
   await wrap(tx(db, "atoms", "readwrite").put(rec));
-  await wrap(tx(db, "docs", "readwrite").put({ ...meta, doc, seq, format: FORMAT_VERSION }));
+  // **★ 写原子时必须**清掉旧快照**✗ ★**（第 663 轮 ✓，**真缺陷 ✓**）：
+  //   **∴ 旧写法** `{ ...meta, doc, seq, format }` **保留了 `meta.snapshot` ✗**
+  //   ⇒ **∴ 于是**：**旧图 ✗ ＋ **新序号 ✗** ⇒ **∴ `readSnapshot` **恒命中**✗**
+  //   ⇒ **∴ 结果就是**"**拿旧图冒充**"✗** —— **∴ 正是目标第 6 条禁止的那件事 ✓**。
+  //   **∴ 修法** ✓：**写原子 ⇒ **快照显式失效 ✗**（`snapshot: null` ＋ 记下失效时刻 ✓）**。
+  const { snapshot: _stale, ...metaNoSnap } = meta;
+  await wrap(tx(db, "docs", "readwrite").put({
+    ...metaNoSnap, doc, seq, format: FORMAT_VERSION, snapshot: null,
+  }));
   return seq;
 }
 

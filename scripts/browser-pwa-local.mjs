@@ -233,7 +233,7 @@ if (!(strokeResp && strokeResp.body && strokeResp.body.ok === true)) {
   console.log("  WARN: brush_stroke 未成功（已知红）=> " + JSON.stringify(strokeResp).slice(0, 200));
 }
 if (imgA.sum === imgB.sum && imgA.bytes === imgB.bytes) {
-  console.log("  WARN: 画一笔前后渲染相同（已知红：内核取不到位图）");
+  console.log("  WARN: 画一笔前后渲染相同 ⇒ 待查：内核折叠 ok 但这一笔没进图（见 criteria-known-red.txt）");
 } else {
   console.log("  OK: 画一笔确实改变了渲染");
 }
