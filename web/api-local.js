@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 6;
+export const LOCAL_IMPLEMENTED = 7;
 
 /**
  * **★ 安装本地 API 层 ✓ ★**：**覆写 `window.fetch` ✗** ⇒ **∴ `/api/*` 走本地 ✓，
@@ -139,6 +139,29 @@ export async function makeLocalApi(db) {
     //   **∴ 过期／缺失 ⇒ **如实报 `needs_render` ＋ 原因 ✗**（**∴ 绝不返回一张旧图冒充 ✓**）。
     // **∴ 为什么不把它计入"完整实现" ✗**：**冷启动（**必然缺快照 ✓）它给不出图 ✗**
     //   ⇒ **∴ 那要等**本地内核渲染 ＋ 编码**✗（**下一批 ✓**）⇒ **∴ 计数保持 5 ✓，**不虚报 ✓**。
+    // **④b `/api/tools/brush_stroke`（**画一笔 ✓ ⇒ PWA 能编辑 ✗**）★**（第 644 轮 ✓）：
+    // **∴ 它**不需要内核 ✗** —— **∴ 只需**把请求变成一条原子写进日志 ✗**
+    // ⇒ **∴ 而**渲染时内核会**重放**它 ✓**（**∴ 于是"画一笔"就通了 ✓**）**。
+    // **∴ 形态**与服务端一致 ✗**：**完整 8 字段封套 ＋ `payload` ✓**（**§14.12 ✓**）。
+    if (url.pathname === "/api/tools/brush_stroke") {
+      const layerId = body.layer_id || (body.payload && body.payload.layer_id) || "L0";
+      const atom = {
+        actor: "human:web",
+        id: "01STROKE" + String(Date.now()).padStart(13, "0"),
+        kind: "brush_stroke",
+        payload: {
+          brush: body.brush, size: body.size, color: body.color,
+          layer_id: layerId, points: body.points,
+        },
+        schema_version: 1,
+        session: "session:web",
+        timestamp: Date.now(),
+      };
+      const seq = await putAtom(handle, doc, atom);
+      // **∴ 画了新内容 ⇒ **旧快照必须失效 ✗**（**∴ 否则会拿旧图冒充 ✓**）。
+      return json({ ok: true, seq, server: false, note: "已写入本地原子日志；渲染时内核会重放它" });
+    }
+
     if (url.pathname === "/api/tools/render_region") {
       const { readSnapshot } = await import("./store.js");
       // **★ 未给 `seq` 时用**当前 head**✗ ★**（第 630 轮 ✓）：**∴ 若默认 0 ✗**
