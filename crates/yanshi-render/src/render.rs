@@ -105,6 +105,17 @@ pub struct RenderStats {
     ///         ⇒ **∴ 读到的**永远是 0 ✓ ⇒ **∴ 那是**假读数 ✓ ★**** ✓✓
     ///   ⇒ **∴ 所以**：「**没测量**」**必须**与「**测量为 0**」**分开 ✓**** ✓✓
     pub below_tiles_measured: bool,
+    /// **★ 算 `want_tiles` 用的那个盒 ✗ ★**（第 7 轮 ✓；**纯观测 ✓）。
+    ///
+    /// **∴ 为什么必须有它 ✗**：**第 6 轮我**实测**"**512×256 的区域**却**想要 8 格 ✓"**✗
+    ///   ⇒ **∴ 当时**我**解释不了 ✓** ⇒ **∴ 读码后**才知：
+    ///     **`want_tiles`**不是**从 `region` 推的 ✗，**而是**从
+    ///     `accumulation.bbox()`**（**经**外扩与裁剪**的累积盒 ✓）** ✓**** ✓✓
+    ///   ⇒ **∴ 于是**：**不报这个盒 ✗** ⇒ **∴ 任何人**（**包括我 ✓）**都会
+    ///     **把"**想要几格 ✓"**误当成**region 的函数** ✓**** ✓✓
+    /// **∴ 与部分复用的关系 ✗**：**要复用**哪一组格**✗，**完全由它决定 ✓**
+    ///   ⇒ **∴ 所以**：**实现前**必须**能看见它 ✓**** ✓✓
+    pub below_want_bbox: (i64, i64, i64, i64),
     /// 本次为滤镜扩展的像素半径。
     pub filter_padding: u32,
     /// **本次渲染实际使用的并行 worker 数**（`1` ⇒ 串行路径）。
@@ -915,6 +926,7 @@ impl Renderer {
             stats.below_tiles_available = chunk_stats.below_tiles_available;
             stats.below_tiles_reused = chunk_stats.below_tiles_reused;
             stats.below_tiles_measured = chunk_stats.below_tiles_measured;
+            stats.below_want_bbox = chunk_stats.below_want_bbox;
             stats.unsupported.extend(chunk_stats.unsupported);
             stats.parallel_workers = chunks;
             stats.parallel_chunks = chunks;
@@ -1243,6 +1255,12 @@ impl Renderer {
             stats.below_tiles_available = available;
             // **∴ 到这里 ⇒ **∴ 这次渲染确实做过 below 判定 ✓** ⇒ **∴ 记下 ✓**** ✓✓
             stats.below_tiles_measured = true;
+            stats.below_want_bbox = (
+                want.x.floor() as i64,
+                want.y.floor() as i64,
+                want.w.ceil() as i64,
+                want.h.ceil() as i64,
+            );
             // **★ 拆开 `ready` 的两个条件 ✗ ★**（第 726 轮 ✓，**只读 ⇒ 零行为变化**）：
             //   **∴ 分清**是**指纹不符**（`sig_eq=false` ✓）还是**tile 缺失**（`tiles_ok=false` ✓）。
             if let Some(path) = probe_path.as_deref() {
@@ -3387,6 +3405,11 @@ mod parallel_impl {
             //   **∴ 注意（**判据要用比值 ✓）**：**不可缓存的块**贡献 0 ✗
             //     ⇒ **∴ 绝对数**会被**稀释**✗ ⇒ **∴ 判据**应当用 `reused / available` ✓**** ✓✓
             merged_stats.below_tiles_measured |= stats.below_tiles_measured;
+            // **∴ 累积盒**取**任一条带**的（**它们共享同一个 region ⇒ 盒相同 ✓）
+            //   ⇒ **∴ 只在**真测过时覆盖 ✗，**免得**被默认值 (0,0,0,0) 冲掉 ✓**** ✓✓
+            if stats.below_tiles_measured {
+                merged_stats.below_want_bbox = stats.below_want_bbox;
+            }
             merged_stats.below_tiles_wanted += stats.below_tiles_wanted;
             merged_stats.below_tiles_available += stats.below_tiles_available;
             merged_stats.below_tiles_reused += stats.below_tiles_reused;
