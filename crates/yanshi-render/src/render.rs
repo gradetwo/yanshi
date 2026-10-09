@@ -3014,6 +3014,33 @@ mod parallel_impl {
                     );
                     handles.push(scope.spawn(
                         move || -> Result<(RenderStats, ObjectTrack, RenderProbe)> {
+                            // **★ 并行性的**直接证据 ✗ ★**（第 869 轮 ✓；**目标第 8 条 ✓**）：
+                            //   **∴ 为什么需要它 ✗**：**时间**随**条带数**严格线性 ✗**（**380／709／1434 ms ✓）
+                            //     ⇒ **∴ 看起来**串行 ✗** ⇒ **∴ 而**我**改掉"**锁内解码**"**后**毫无变化 ✓**
+                            //   **∴ 本探针 ✗**：**打印**线程 ID ＋ 单调时钟 ✗** ⇒ **∴ 于是**：
+                            //     **∴ 若**4 个闭包**几乎同时**开始 ✗**（**同一时刻、不同线程 ✓）⇒ **∴ 真的并行 ✓**；
+                            //     **∴ 若**它们**依次相隔 ~370 ms ✗**（**或**同一个线程 ID ✓）⇒ **∴ 串行确证 ✓**** ✓✓
+                            let __t0 = std::time::Instant::now();
+                            if let Ok(path) = std::env::var("YANSHI_BELOW_PROBE") {
+                                use std::io::Write;
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(&path)
+                                {
+                                    let line = format!(
+                                        "BAND_START thread={:?} y={} rows={} t_ns={}\n",
+                                        std::thread::current().id(),
+                                        ry + row_start as i64,
+                                        rows,
+                                        std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.as_nanos())
+                                            .unwrap_or(0)
+                                    );
+                                    let _ = f.write_all(line.as_bytes());
+                                }
+                            }
                             let mut stats = RenderStats {
                                 filter_padding: padding,
                                 ..RenderStats::default()
