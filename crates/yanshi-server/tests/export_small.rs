@@ -312,21 +312,21 @@ fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
                 .expect("原文档二次渲染");
             eprintln!("DIFF 同文档两次渲染是否相同：{}", again == original);
         }
-        // **★ 重放侧**自己**渲染两次 ✗ ★**（第 28 轮 ✓）
-        //   **∴ 为什么换成这个 ✗**：**`Document`**没有 `state()` 访问器**✗
-        //     ⇒ **∴ 直接 diff `DocumentState` 编不过 ✓ ⇒ **∴ 换个同样有力的问法 ✓**** ✓✓
-        //   **∴ 若**重放侧两次相同 ⇒ **∴ 重放侧**确定**✗ ⇒ **∴ 差异**确实**跨工作区 ✓**
-        //   **∴ 若**不同 ⇒ **∴ 重放侧**自己就不稳 ✗（**∴ 那**是另一条线索 ✓）** ✓✓
-        {
-            let again = restored
-                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
-                .expect("重放侧二次渲染");
-            let again2 = restored
-                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
-                .expect("重放侧三次渲染");
-            eprintln!("DIFF 重放侧两次是否相同：{}", again == again2);
-            eprintln!("DIFF 重放侧与原图是否相同：{}", again == original);
-        }
+            // **★ 诊断：**日志相同 ＋ 两侧各自确定 ✗，**而**彼此不同 ✓ ★**（第 29 轮 ✓）
+            //   ⇒ **∴ 差异**必在**不进 `log()` 的状态里 ✓**** ✓✓
+            //   **∴ 下一轮 ✗**：**用**`Workspace::document_mut(id)?.state_at(seq)?`**✗
+            //     （**`state_at` 在 `Document` 上 ✗，**不在 `Workspace` 上 ✓）
+            //     ⇒ **∴ 于是**：**能做**字段级状态 diff ✓**（**本轮**未完成 ✓，**如实 ✓）** ✓✓
+            {
+                let again = restored
+                    .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                    .expect("重放侧二次渲染");
+                let again2 = restored
+                    .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                    .expect("重放侧三次渲染");
+                eprintln!("DIFF 重放侧两次是否相同：{}", again == again2);
+                eprintln!("DIFF 重放侧与原图是否相同：{}", again == original);
+            }
         let replayed = restored
             .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
             .expect("重放渲染");
