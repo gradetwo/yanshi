@@ -316,6 +316,16 @@ export async function makeLocalApi(db) {
                         kernel_info: (() => { try { return JSON.parse(info); } catch { return String(info).slice(0, 600); } })(),
                         server: false });
         }
+        // **★ `?probe=1` ⇒ 只回**诊断 ✗ ★**（第 658 轮 ✓）：**∴ 它一次给出两件事 ✗**
+        //   （**∴ 折叠信封 ✓ ＋ 渲染元信息（**含警告 ✓**）**）
+        //   ⇒ **∴ 于是**"这一笔为什么没进图"**不必再猜 ✓**。
+        if (q.get("probe")) {
+          let meta = "";
+          try { meta = k.render_region_info(box.x, box.y, box.w, box.h); } catch (e) { meta = "info 失败：" + e; }
+          return json({ ok: true, probe: true, fold: String(foldResult || "").slice(0, 300),
+                        info: String(meta).slice(0, 700),
+                        atom_count: atoms.length, region: box });
+        }
         // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
         const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
         await writeSnapshot(handle, doc, seqNow, { bytes: png });

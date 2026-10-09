@@ -237,6 +237,13 @@ if (imgA.sum === imgB.sum && imgA.bytes === imgB.bytes) {
 } else {
   console.log("  OK: 画一笔确实改变了渲染");
 }
+// **★ 探针（**第 658 轮 ✓**）：**折叠信封 ＋ 渲染警告 ✗** ★**
+const pr = await evaluate(`(async () => { const r = await fetch("/api/tools/render_region?doc=d1&probe=1", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ region: { x: 0, y: 0, w: 256, h: 256 } }) });
+  return { status: r.status, body: await r.json() }; })()`);
+console.log("  探针 => " + JSON.stringify(pr).slice(0, 620));
+
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
 
