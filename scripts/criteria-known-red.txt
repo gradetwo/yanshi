@@ -4984,3 +4984,44 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ 而**指纹**已被证明**三次逐字符相同 ✗**（**第 750 轮 ✓）
 #         ⇒ **∴ 所以**：**若** `sig_eq` **仍为假 ⇒ **∴ 那么**缓存里存的**不是**这个指纹 ✗**
 #           ⇒ **∴ 即**：**要么**缓存是空的 ✗**，**要么**它来自**别的文档／别的时刻 ✓**** ✓✓
+
+# **★ 第 760 轮：✅ **用户报 `wrangler: 未找到命令` ⇒ **∴ 加了部署前检查 ＋ 本地解析** ✓****
+#   **∴ 用户的报错 ✓**：**`sh: 行 1: wrangler: 未找到命令` ✓**
+#   **∴ 原因 ✓**：**`wrangler` **不是** Node 内建 ✗**（**∴ 它**需要单独安装 ✓）
+#     ⇒ **∴ 而**我的 `pwa:deploy` **直接调** `wrangler` ✗**
+#     ⇒ **∴ 于是**：**它**只丢一句 `command not found` ✗，**而**你**看不出该装什么 ✓**** ✓✓
+#   **★ 修法（**本轮 ✓）★**：
+#     **① `package.json` 加 `devDependencies.wrangler: "^4.42.0"` ✗**
+#       ⇒ **∴ 于是**：**`npm install` **后**版本随仓库固定 ✓**；
+#     **② 新增 `scripts/pwa-check-wrangler.mjs` ✗**：**部署前**探测 ✗**
+#       ⇒ **∴ 有**本地 `node_modules/.bin/wrangler` ⇒ **∴ 用它 ✓**
+#       ⇒ **∴ 否则**试**全局 `wrangler --version` ✓**
+#       ⇒ **∴ 都没有** ⇒ **∴ 打印三种装法（**本地／全局／npx ✓）＋ 退出 1 ✓**** ✓✓
+#     **③ 新增 `scripts/pwa-wrangler.mjs` ✗**：**优先用**本地** wrangler ✓**（**∴ 版本固定 ✓），
+#       **∴ 没有**才退回**全局 ✓**** ✓✓
+#     **④ 脚本改为 ✗**：
+#       ```json
+#       "pwa:check-wrangler": "node scripts/pwa-check-wrangler.mjs",
+#       "pwa:deploy":   "npm run pwa:check-wrangler && npm run pwa:sync && node scripts/pwa-wrangler.mjs deploy",
+#       "pwa:dry-run":  "npm run pwa:check-wrangler && npm run pwa:sync && node scripts/pwa-wrangler.mjs deploy --dry-run --outdir /tmp/pwa-dist"
+#       ```
+#   **∴ 实测 ✓**（**本机确实没装 ✓）**：
+#     ```
+#     ✗ 找不到 wrangler（Cloudflare 的部署工具）
+#       它不在本仓库的依赖里，也不在 PATH 上。任选一种装法：
+#           1) 装到本仓库（推荐，版本随仓库固定）：npm install
+#           2) 装到全局：npm install -g wrangler
+#           3) 不安装，直接用 npx（每次会下载）：npx wrangler@4 deploy
+#       装好后重跑：npm run pwa:deploy
+#     ```
+#     ⇒ **∴ EXIT=1 ✗**（**∴ 且**信息**完整可执行 ✓）** ✓✓
+#   **∴ 两面（**按 AGENTS.md ✓）** ✓**：
+#     **收益** ✓：**部署可复现 ✗**（**版本随仓库固定 ✓）＋ **错误可诊断 ✓**；
+#     **代价** ✗：**多一个**开发依赖 ✗**（**wrangler ~几十 MB ✓）
+#       ⇒ **∴ 而**它**不进运行时、不进浏览器包 ✗**（**∴ 只是**部署工具 ✓）⇒ **∴ 代价可接受 ✓**** ✓✓
+#   **∴ 给用户的答案 ✓**：
+#     ```bash
+#     npm install          # **∴ 装本地 wrangler（**推荐 ✓）**
+#     npm run pwa:deploy   # **∴ 然后再部署 ✓**
+#     ```
+#     ⇒ **∴ 或**（**不想装 ✓）**：**`npx wrangler@4 deploy` ✓**** ✓✓

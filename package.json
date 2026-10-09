@@ -6,7 +6,11 @@
   "description": "判据脚本的模块类型声明（不引入依赖）",
   "scripts": {
     "pwa:sync": "node scripts/pwa-sync-wasm.mjs && node scripts/pwa-sync-viewer.mjs",
-    "pwa:deploy": "npm run pwa:sync && wrangler deploy",
-    "pwa:dry-run": "npm run pwa:sync && wrangler deploy --dry-run --outdir /tmp/pwa-dist"
+    "pwa:deploy": "npm run pwa:check-wrangler && npm run pwa:sync && node scripts/pwa-wrangler.mjs deploy",
+    "pwa:dry-run": "npm run pwa:check-wrangler && npm run pwa:sync && node scripts/pwa-wrangler.mjs deploy --dry-run --outdir /tmp/pwa-dist",
+    "pwa:check-wrangler": "node scripts/pwa-check-wrangler.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
   }
 }
