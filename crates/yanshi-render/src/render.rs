@@ -2983,6 +2983,12 @@ mod parallel_impl {
                                 filter_padding: padding,
                                 ..RenderStats::default()
                             };
+                            // **★ 并行度也要上报 ✗ ★**（第 817 轮 ✓；**目标第 8 条 ✓**）：
+                            //   **∴ 为什么 ✗**：**上面用 `..default()` ✗** ⇒ **∴ `parallel_workers` 保持 0 ✗**
+                            //     ⇒ **∴ 于是**探针**读到 0 ✗**，**而**实际上**每块一个任务 ✓**
+                            //     ⇒ **∴ 所以**：**显式写上**（**∴ `chunks` 是外层变量 ⇒ **∴ 闭包能捕获 ✓）**。
+                            stats.parallel_workers = chunks;
+                            stats.parallel_chunks = chunks;
                             let mut track = ObjectTrack::default();
                             let mut probe = RenderProbe::default();
                             let buffer = renderer.render_accumulation(

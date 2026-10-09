@@ -6777,3 +6777,31 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 元收获（**本轮 ✓）★**：**"**字段为 0**"不等于"**没并行 ✗**"
 #     ⇒ **∴ 而**计数器**可能**只是**没在这条路上被赋值 ✓** ⇒ **∴ 教训**：
 #       **用**行为证据**（**12 次调用 ✓）**交叉验证**计数器 ✓**** ✓✓
+
+# **★ 第 817 轮：✅ **补全并行度上报 ✗**（**找到 0 的来源 ✓**）**
+#   **∴ 根因 ✓**（**`render.rs:2982` ✓）**：
+#     ```rust
+#     let mut stats = RenderStats {
+#         filter_padding: padding,
+#         ..RenderStats::default()          // **★ 其余全默认 ⇒ `parallel_workers: 0` ✗ ★**
+#     };
+#     let mut track = ObjectTrack::default();
+#     let mut probe = RenderProbe::default();
+#     let buffer = renderer.render_accumulation(state, store, &band, … &mut stats, …);
+#     ```
+#     ⇒ **∴ 所以**：**条带路**用 `..default()` ✗** ⇒ **∴ `parallel_workers` 保持 0 ✗**
+#       ⇒ **∴ 于是**：**我的探针**读到 0 ✗**，**而**实际**每块一个任务 ✓**** ✓✓
+#     ⇒ **∴ 修法 ✗**：**构造后显式赋值 ✗**：
+#       ```rust
+#       stats.parallel_workers = chunks;    // **∴ `chunks` 是外层变量 ⇒ **∴ 闭包能捕获 ✓**
+#       stats.parallel_chunks  = chunks;
+#       ```
+#   **∴ 门禁** ✓：**build ✓｜clippy ✓｜`yanshi-render --lib` 通过 ✓**** ✓✓
+#   **∴ 下一轮（**一次测量 ✓**）** ✓**：
+#     **① 重建 ＋ 4K 首帧 ✗** ⇒ **∴ 期望**：**`PARALLEL workers=<chunks> chunks=<chunks>` ✗**
+#       （**∴ 即** 12 ✓）⇒ **∴ 于是**证实**12 个任务 ✓**；
+#     **② 且**记录**本机 4 核**✗ ⇒ **∴ 于是**算出**理论时间 ✗**
+#       （**∴ 12 块 ÷ 4 核 × 单块 ≈ …** ✓）⇒ **∴ 与 1521 ms 对比 ✓**** ✓✓
+#   **∴ 元收获 ✓**：**"**默认值 0**"与"**没并行 ✗**"是两件事 ✗**
+#     ⇒ **∴ 而** `..default()` **是**默认值陷阱**的典型来源 ✓** ⇒ **∴ 教训**：
+#       **结构性默认**（**`..Default::default()` ✓）**要**逐个核对**关心的字段 ✓**** ✓✓
