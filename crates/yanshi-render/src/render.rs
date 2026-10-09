@@ -1054,6 +1054,37 @@ impl Renderer {
                 },
                 Err(_) => false,
             };
+            // **★ 拆开 `ready` 的两个条件 ✗ ★**（第 726 轮 ✓，**只读 ⇒ 零行为变化**）：
+            //   **∴ 分清**是**指纹不符**（`sig_eq=false` ✓）还是**tile 缺失**（`tiles_ok=false` ✓）。
+            if let Some(path) = probe_path.as_deref() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let (sig_eq, tiles_ok) = match below.lock() {
+                        Ok(g) => match g.as_ref() {
+                            Some(c) => (
+                                c.sig == sig,
+                                want_tiles
+                                    .iter()
+                                    .all(|t| c.tiles.iter().any(|(k, _)| *k == *t)),
+                            ),
+                            None => (false, false),
+                        },
+                        Err(_) => (false, false),
+                    };
+                    let _ = writeln!(
+                        f,
+                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={}",
+                        ready,
+                        sig_eq,
+                        tiles_ok,
+                        want_tiles.len()
+                    );
+                }
+            }
             // **★ `above` 的命中判断 ✗ ★**（第 711 轮 ✓）：**∴ 与 `ready` 同形 ✗**。
             above_ready = above_wanted
                 && match self.above.lock() {
