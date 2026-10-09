@@ -1231,11 +1231,11 @@ impl Renderer {
                         req_id,
                         split,
                         sig.len(),
+                        sig.join(" ## "),
                         want.x,
                         want.y,
                         want.w,
                         want.h,
-                        ready,
                         ready,
                         reused,
                     );
