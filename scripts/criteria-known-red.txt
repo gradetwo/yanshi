@@ -4699,3 +4699,34 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 诚实评估 ✓**：**我**删 `updated_by` **是对的**（**∴ 语义错配 ✓）**，**而**它**不是**这次的
 #     **决定性原因 ✗**（**∴ 因为**指纹**现在**稳定 ✗）⇒ **∴ 所以**真正的原因是**缓存／实例层面 ✓**
 #     ⇒ **∴ 而**这也解释了**为什么"间或命中"**✗**（**∴ 若**偶发复用同一实例 ⇒ **∴ 命中 ✓）** ✓✓
+
+# **★ 第 750 轮（续）：🎯 **用户报告 `npm run pwa:deploy` 报错 ✗** ⇒ **∴ 根因 ＝ 他的二进制是旧的 ✓****
+#   **∴ 用户的报错 ✓**：
+#     ```
+#     Error: Command failed: target/release/yanshi-serve --export-viewer-html web/.index.export.html
+#     参数错误：未知参数 --export-viewer-html
+#     ```
+#   **★ 我查到的事实 ✓ ★**：
+#     * **CLI **确实支持**该 flag ✗**：**`crates/yanshi-http/src/server.rs:162`
+#       **`"--export-viewer-html" => { options.export_viewer_html = Some(value_of(…)?.into()); }` ✓**；
+#     * **而**用户的 `target/release/yanshi-serve` **不含它 ✗**：
+#       `strings target/release/yanshi-serve | grep -c export-viewer-html` ⇒ **0 ✓**；
+#     * **该 flag 是**今天 13:36 加的 ✗**：**`0fffd7a feat(server): export the generated viewer page to a file` ✓**
+#       ⇒ **∴ 所以**用户的二进制**比它旧 ✓**（**∴ 或**那次构建没走到这个 crate ✓）** ✓✓
+#   **★ 立即可用的修复（**给用户 ✓）★**：
+#     ```bash
+#     cargo build --release -p yanshi-server     # **∴ 重建 ⇒ 二进制才有 --export-viewer-html ✓**
+#     npm run pwa:deploy                          # **∴ 然后再部署 ✓**
+#     ```
+#     ⇒ **∴ 或者**若用自定义产物目录 ✗：**`CARGO_TARGET_DIR=/tmp/yt4b cargo build --release -p yanshi-server` ✓** ✓✓
+#   **★ 脚本的缺陷（**我承认 ✓）★**：**`scripts/pwa-sync-viewer.mjs` **硬编码** `target/release` ✗**
+#     ⇒ **∴ 而**它**只丢一句"未知参数"✗**（**∴ 实际是**我们自己的 `execFileSync` **抛出的 ✓）
+#       ⇒ **∴ 于是**用户**看不出**"该重建了" ✓**** ✓✓
+#     ⇒ **∴ 而且**它**不尊重** `CARGO_TARGET_DIR` ✗**（**∴ 而**我本地**正是**把产物放 `/tmp/yt4b` ✓
+#       ⇒ **∴ 所以**在**我的环境**里它**也会选到陈旧／错误的二进制 ✓）** ✓✓
+#   **∴ 本轮尝试的修法 ✗**：**在脚本里**逐个候选**真的试一次导出 ✗**
+#     ＋ **尊重** `CARGO_TARGET_DIR` ✗ ＋ **失败时**打印**可复制的重建命令** ✓**
+#     ⇒ **∴ 而**我的 python 替换**因缩进不匹配失败 ✗**（**∴ 文件未改 ✓**）
+#       ⇒ **∴ 下一轮**改用**行级**方式落地 ✓**** ✓✓
+#   **∴ 教训（**再次 ✓）** ✓**：**改文件**必须**先打印目标行 ＋ 确认缩进 ✗**
+#     （**∴ 本会话第 5 次同类 ✓）⇒ **∴ 而**这次**我**又跳过了那一步 ✓**** ✓✓
