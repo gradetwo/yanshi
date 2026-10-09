@@ -1230,6 +1230,28 @@ fn finish_mutation(
             preview = Some(PreviewInfo::Cached(url));
         }
     }
+    // **还是没有地址** ✗：文档刚建、这是**第一个元数据原子**（`create_layer` 就是这种 ✓）
+    // ⇒ 上面那条"复用最近一次预览"**无从复用** ✓。
+    //
+    // **∴ 不能就这样返回一个没有图的响应 ✗**：上面第 1161 行写着契约
+    // ——「**契约要求响应带图，见 yanshi-mcp 的端到端测试**」✓ ——
+    // 而那条端到端测试正是断言 `create_layer` 的 `preview.thumb_url` 存在 ✓
+    //（**∴ 实测**：它在这里 `unwrap()` 一个 `None` 而崩 ✓ ⇒ **真实门禁红灯 ✓**）。
+    //
+    // **∴ 修法 ✗**：**当场产出一份文档级缩略图** ✓（`ensure_document_thumbnail` 会**先查缓存** ✓，
+    // 与 HEAD 一致就直接返回地址 ✗，不一致才渲染 ✓）⇒ 既不撒谎、也不重复渲染 ✓。
+    //
+    // **∴ 两面 ✗**：**收益**＝**契约成立 ✗**（新文档的第一次写操作**也带图** ✓，
+    // 客户端不必再补一次往返 ✓）；**代价**＝**这一次多渲一张 256² 缩略图 ✗**
+    //（**∴ 只在"无处可复用"时发生 ✓**，且结果进文档预览缓存 ⇒ **后续调用复用 ✓**）。
+    if ctx.wait_for_render && !ctx.silent && preview.is_none() {
+        let size = DocThumbSize::S256;
+        let preview_started = std::time::Instant::now();
+        if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
+            preview = Some(PreviewInfo::Cached(url));
+        }
+        ctx.time(Phase::Preview, preview_started);
+    }
     Ok(commit_response(
         result,
         preview.as_ref(),

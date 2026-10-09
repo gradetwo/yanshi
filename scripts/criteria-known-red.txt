@@ -9577,3 +9577,47 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 两面（**P2-4 修复 ✓）★**：**收益**＝**控制台噪音消失 ✗**（**∴ 而**噪音**盖住真报错 ✓）**；
 #     **代价**＝**本地专用模式下**连接指示**显示「本地内核（无服务端）」✗**，
 #       **而**不是「已连接」✓ ⇒ **∴ 那是**如实 ✓**** ✓✓
+
+# **★ 第 917 轮：**修掉一条既有红灯（`yanshi-mcp --lib`）＋ 归因另一条**★
+#   **★ ① 已修 ✗ ★**：**`tests::end_to_end_draw_render_and_poll`**（**`lib.rs:676` ✓）
+#     **∴ 根因 ✗**：**`create_layer`** 是**元数据原子 ✗**（**`atom_cannot_change_pixels` ✓）
+#       ⇒ **∴ `preview_region`** 被**收敛为 `None` ✗**（**`tools.rs:1163` ✓）
+#         ⇒ **∴ 落到"**复用最近一次预览地址**"分支 ✗**（**`tools.rs:1227` ✓）
+#           ⇒ **∴ 而**新文档**没有任何"上一次预览" ✗** ⇒ **∴ `preview`** 留空 ✓**** ✓✓
+#       ⇒ **∴ 于是**响应里**没有 `preview`** ✗ ⇒ **∴ 测试** `thumb_url.as_str().unwrap()` **崩 ✓**** ✓✓
+#     **∴ 而**同处注释**明写契约 ✗**：**"**契约要求响应带图，见 yanshi-mcp 的端到端测试**" ✓**
+#       ⇒ **∴ 所以**：**是我**没有**履行**那条契约 ✗**（**不是测试错了 ✓）** ✓✓
+#     **∴ 修法 ✗**：**无处可复用时**当场**产出一份文档级缩略图** ✓
+#       ```rust
+#       if ctx.wait_for_render && !ctx.silent && preview.is_none() {
+#           let size = DocThumbSize::S256;
+#           if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
+#               preview = Some(PreviewInfo::Cached(url));
+#           }
+#       }
+#       ```
+#       ⇒ **∴ `ensure_document_thumbnail`** 会**先查缓存 ✗**（**与 HEAD 一致直接返回 ✓）**
+#         ⇒ **∴ 所以**：**不撒谎 ＋ 不重复渲染 ✓**** ✓✓
+#     **∴ 实证 ✗**：**`tests::end_to_end_draw_render_and_poll ... ok` ✓**
+#       ⇒ **∴ 全量**：**`passed=199 failed=1`** ✗（**修前 195／1 ✓）⇒ **∴ 净增 4 个通过 ✓**** ✓✓
+#     **∴ 两面 ✗**：**收益**＝**契约成立 ✗**（**新文档的第一次写操作也带图 ✓）**；
+#       **代价**＝**这一次多渲一张 256² 缩略图 ✗**（**只在无处可复用时 ✓，且进缓存 ✓）** ✓✓
+#   **★ ② 另一条既有红灯（**已归因 ✗，**不是我引入的 ✓）★**：
+#     **∴ 现象 ✗**：**`cargo test -p yanshi-mcp --test stdio` ✗**
+#       **`stdio_handshake_draw_render_and_persist` panicked at `tests/stdio.rs:176` ✗**
+#       ```
+#       assert!(document["thumb_url"].as_str().is_some(), "打开即图片：渲染缓存可直接用（14.5）");
+#       ```
+#       ⇒ **∴ 即**：**重启进程后 ✗**，**`get_document`** 必须**能直接复用落盘的渲染快照 ✓**
+#         ⇒ **∴ 那是**目标第 6 条（**懒保存 ⇒ 冷开即图 ✓）的判据 ✓**** ✓✓
+#     **★ 决定性归因（**已做 ✓）★**：**`git stash` 掉我的 `tools.rs` 改动后 ✗**，
+#       **同一条测试在**原始代码上**以**完全相同的方式失败 ✓**
+#       ⇒ **∴ 所以**：**它**早于我的改动 ✗** ⇒ **∴ 不是**我引入的 ✓**** ✓✓
+#       ⇒ **∴ 且**它**此前**没被看见 ✗**：**上一轮 `--workspace`** 在
+#         **`yanshi-mcp --lib`** 失败后就**停了** ✗ ⇒ **∴ 没跑到** `tests/stdio.rs` ✓**** ✓✓
+#     **∴ 下一轮 ✗**：**追**"**重启后文档缩略图不可直接用**" ✗**
+#       ⇒ **∴ 候选**：**落盘快照的 `seq` 与 `head_seq` 不一致 ✗**
+#         （**`document_thumbnail_is_current()` 要求 `document_thumbnail_seq == head_seq()` ✓）
+#         ⇒ **∴ 或**者**落盘预览**没有被**读回 ✓**** ✓✓
+#   **∴ 门禁现状 ✗ ★**：**`fmt` ✅｜`clippy` ✅｜`yanshi-mcp --lib` ✅（**由红转绿 ✓）**｜
+#     **`yanshi-mcp --test stdio` 1 failed（**既有 ✓）｜**JS ✅｜ASSETS ✅｜BEH ✅**** ✓✓
