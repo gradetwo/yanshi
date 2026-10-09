@@ -7742,3 +7742,48 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 元收获 ★**：**用户给的**原始错误文本**（**含 `is not valid JSON` ✓）**
 #     **直接把我**推到**那一行 ✗** ⇒ **∴ 而**我**前面三轮**都是**从症状猜 ✓**** ✓✓
 #     ⇒ **∴ 再次验证**：**要证据，不要猜测 ✓****** ✓✓
+
+# **★ 第 854 轮：🎉 **`"... is not valid JSON"` 修好 ✗**（**改**源头**才有效 ✓）**
+#   **∴ 用户报错 ✓**：**`Uncaught (in promise) SyntaxError: Unexpected token '�', "�PNG … is not valid JSON` ✗**
+#     ⇒ **∴ 「… is not valid JSON」**是 **Chrome 的 `JSON.parse`** ⇒ **∴ 响应**真的**是一张 PNG ✓**** ✓✓
+#   **★ 根因 ✗ ★**：**`crates/yanshi-http/assets/viewer-app.js:3224` ✗**：
+#     ```js
+#     :3220    const upload = await fetchOrLocal(api("/api/blob"), {
+#     :3221      method: "POST",
+#     :3222      headers: { "content-type": "image/x-yanshi-raw" },
+#     :3223      body: bytes,
+#     :3224    }).then((response) => response.json());        // **★ 无 content-type 检查 ＋ 无 catch ✗ ★**
+#     ```
+#     ⇒ **∴ 对比 ✗**：**`:4193-4197`（**`seedSampleIfEmpty` ✓）**有 `.catch(() => ({}))` ✓**
+#       ⇒ **∴ 所以**：**只有"**用户手动导入图片**"（**`importLocalImage` ✓）会把拒绝**抛到全局 ✓**** ✓✓
+#   **★ 关键教训 ✗ ★**：**`web/` 是**生成的 ✗** ⇒ **∴ 改它**会在**下次同步时消失 ✓**
+#     **∴ 实测（**决定性 ✓）**：**我**先改了 `web/index.html`**✗ ⇒ **∴ 同步后** `not_json` **出现 0 次 ✗**
+#       ⇒ **∴ 于是**：**必须**改**源头 ✗**＝**`crates/yanshi-http/assets/viewer-app.js` ✓**** ✓✓
+#     **∴ 而**那一份**被 `include_str!` **嵌进二进制**✗ ⇒ **∴ 所以**：**改源码后**必须**重建二进制 ✗**
+#       ⇒ **∴ 否则** `--export-viewer-html` **导出的**还是**旧代码 ✓**（**∴ 我**踩过这个坑 ✓）** ✓✓
+#   **★ 第二个坑：并行构建踩坏 incremental ✗ ★**：
+#     **∴ 现象 ✗**：**`cargo build` 报
+#       **`failed to move dependency graph from …/dep-graph.part.` ✗**
+#       ⇒ **∴ 而** `fmt`／`clippy` **却过 ✗** ⇒ **∴ 极具误导性 ✓**（**看起来像代码错误 ✓）**
+#     **∴ 原因 ✗**：**我**同时跑了**`cargo test --workspace`（**后台 ✓）＋ `cargo build`**（**前台 ✓）**
+#       ⇒ **∴ 两者**争抢**同一 `target/debug/incremental/` **⇒ **∴ 文件被踩 ✓**** ✓✓
+#     **∴ 修法 ✗**：**`rm -rf target/debug/incremental` ＋ `CARGO_INCREMENTAL=0` ✗**
+#       ⇒ **∴ 实测**：**重建成功（**56.79 s ✓）＋ **二进制**时间更新到 **18:37 ✗** ✓**** ✓✓
+#     ⇒ **∴ 规则 ✗**：**同一 target 目录**不许**并行跑 cargo 命令**✗**
+#       （**∴ 尤其**后台任务与前台的交叉 ✓）** ✓✓
+#   **★ 修复内容 ✗ ★**：
+#     ```js
+#     }).then(async (response) => {
+#       const ct = String(response.headers.get("content-type") || "");
+#       if (ct.indexOf("json") < 0) {
+#         return { ok: false, error_code: "not_json",
+#                  context: { detail: "上传端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
+#       }
+#       return response.json();
+#     }).catch((err) => ({ ok: false, error_code: "network",
+#                           context: { detail: String((err && err.message) || err) } }));
+#     ```
+#     ⇒ **∴ 于是**：**非 JSON ⇒ 如实错误对象**✗（**被 `if (!upload.ok)` **接住 ⇒ **∴ 走**已有的降级路径 ✓）
+#       ＋ **∴ 网络失败**也不再**抛到全局 ✓**** ✓✓
+#   **∴ 门禁** ✓：**ASSETS ✓｜BEH ✓｜JS ✓｜工作流结构 ✓｜覆盖率 ✓**** ✓✓
+#   **∴ 线上冒烟** ✓：**10 项通过 ✓**｜**`web/index.html` 里 `not_json: 2` ✗**（**证明修复进了产物 ✓）** ✓✓

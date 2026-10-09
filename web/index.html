@@ -4272,7 +4272,24 @@ async function importLocalImage(file) {
     method: "POST",
     headers: { "content-type": "image/x-yanshi-raw" },
     body: bytes,
-  }).then((response) => response.json());
+  // **★ 上传端点必须先看 `content-type` ✗ ★**（第 854 轮 ✓；**用户报 `"... is not valid JSON"` ✓**）：
+  //   **∴ 原来的错 ✗**：**无条件 `response.json()` 且**没有 `.catch` ✗**
+  //     ⇒ **∴ 于是**：**若响应不是 JSON ✗** ⇒ **∴ `JSON.parse`** 抛
+  //       ⇒ **∴ 它**变成**未处理的 Promise 拒绝 ✓****（**正是用户看到的 ✓）** ✓✓
+  //   **∴ 现在**：**非 JSON 就**如实返回一个错误对象 ✗** ⇒ **∴ 于是**：
+  //     **∴ 它**被**后面的 `if (!upload.ok)`**接住 ⇒ **∴ 走**已有的降级路径 ✓**** ✓✓
+  //   **∴ 且**补 `.catch` ✗** ⇒ **∴ 网络失败**也不会**抛到全局 ✓**** ✓✓
+  //   **∴ 教训 ✗**：**`web/` 是生成的 ✗** ⇒ **∴ 改它**会在**下次同步时消失 ✓**
+  //     （**∴ 实测**：**我在 `web/index.html` 里改过 ⇒ **`not_json` 出现 0 次 ✓）** ✓✓
+  }).then(async (response) => {
+    const ct = String(response.headers.get("content-type") || "");
+    if (ct.indexOf("json") < 0) {
+      return { ok: false, error_code: "not_json",
+               context: { detail: "上传端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
+    }
+    return response.json();
+  }).catch((err) => ({ ok: false, error_code: "network",
+                        context: { detail: String((err && err.message) || err) } }));
   if (!upload.ok) {
     log("导入失败（上传）：" + (upload.error_code || upload.context?.detail || "unknown"), "#c33");
     return;
@@ -7644,7 +7661,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-4fbd62c6-dirty")
+      caches.open("yanshi-shell-ccda3b6c")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
