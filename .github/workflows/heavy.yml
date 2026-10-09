@@ -31,6 +31,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: heavy
+      - name: ★ 实测：渲染的**两本账**（墙钟 ＋ 进程 CPU ＋ 峰值驻留）
+        # 依据：用户第 594 轮要求 GPU 收益必须记「时间账 ＋ CPU 占用账」；
+        # 本机没有可用 GPU ⇒ 现在两行都是 CPU ⇒ 脚本会如实说明「没有两路可对比」。
+        # 它是重活（约 20 s）⇒ 按目标第 10 条放在 heavy 工作流里。
+        run: |
+          cargo build --release -p yanshi-http --bin yanshi-serve
+          node scripts/tool-render-cost-accounts.mjs --spawn --rounds 3 \
+            --compare "默认（--gpu off）=--gpu off" --compare "请求 GPU（--gpu on）=--gpu on"
       - name: Run every ignored test (fuzz + perf budgets + diagnostics)
         # 覆盖：10 万原子折叠 fuzz（Phase 0 出口条件）、服务端性能预算（14.10 各项）、
         # 4K 剖面、单效果成本、内核原生计时、tile 一致性等全部 `#[ignore]` 长任务。
