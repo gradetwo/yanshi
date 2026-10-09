@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- **★ YanShi Online（PWA）骨架 ✓ ★**（第 608 轮 ✓）
+     **∴ 本页**不连任何服务器端 API ✗**（**用户要求 ✓**）：**渲染全部在本地浏览器 ✓**。
+     **∴ 当前它是**可部署的最小骨架 ✗**；**下一步把现有 viewer 静态化后替换 ✓**（**部署矩阵 §9 ④ ✓**）。 -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>偃师 YanShi Online</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#161616" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #161616; color: #e8e8e8;
+                   font: 14px/1.6 system-ui, -apple-system, "Noto Sans SC", sans-serif; }
+      main { max-width: 720px; margin: 0 auto; padding: 24px; }
+      #state { font-family: ui-monospace, monospace; color: #9fd3ff; }
+      canvas { width: 100%; height: auto; background: #000; border: 1px solid #333; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>偃师 YanShi Online</h1>
+      <!-- **★ 后端状态必须如实报出 ✓ ★**：**本部署**没有服务端 ✗ ⇒ 这里报的是
+           **浏览器侧**的后端（**`webgpu` 或 `cpu` ✓**），**∴ 与 `/health` 那份不是一回事 ✓**。 -->
+      <p>后端：<span id="state">检测中…</span>　｜　服务器端：<span>无（纯离线客户端）</span></p>
+      <canvas id="canvas" width="1024" height="640"></canvas>
+      <p><small>本页不连接任何服务器端 API。渲染与编辑全部在本地浏览器完成。</small></p>
+    </main>
+    <script type="module">
+      // **① 如实探测浏览器侧后端 ✓**（**部署矩阵 §8.2／§8.3 ✓**）
+      const state = document.getElementById("state");
+      (async () => {
+        const hasGpu = !!(navigator.gpu && (await navigator.gpu.requestAdapter().catch(() => null)));
+        state.textContent = hasGpu ? "webgpu（GPU 优先 ✓）" : "cpu（无 WebGPU ⇒ fallback ✓）";
+      })();
+      // **② 加载内核 ✓**（**产物路径与现有 viewer 一致 ✓**：`pkg/` 被放到 `web/wasm/` ✓）
+      try {
+        const mod = await import("/wasm/yanshi_wasm.js");
+        window.yanshiKernel = mod;
+        console.log("内核已加载 ✓", Object.keys(mod).slice(0, 6));
+      } catch (err) {
+        console.warn("内核未加载 ✗（需先执行 scripts/pwa-sync-wasm.mjs ✓）", err);
+      }
+      // **③ 注册 service worker ✓**（**离线可用 ✓**）
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      }
+    </script>
+  </body>
+</html>

@@ -85,6 +85,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
   case "$name" in
     # **自足的静态检查** ✓（第 789 轮接线 ✓）：读内核源码、**不需要**服务端/浏览器 ✓ ⇒
     # 上限给 120s 就够（它只 readFileSync 几个文件 ✓）。
+    # **★ PWA 资源完整性 ✓ ★**（第 610 轮 ✓）：**只读文件系统 ✗**（**不联网、不需要 wrangler、
+    # 不需要浏览器 ✓**）⇒ **∴ 120s 足够 ✓**。**∴ 它守**"发布出去的 PWA 必须带着内核"✗**
+    #（**∴ 否则就是"假装能画"✗**）** ✓✓。
+    tool-pwa-assets.mjs)
+      timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
+
     kernel-wasm-allowlist.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;      build-warnings-check.sh)
         # **冷构建判据** ✗（(B)④）：它要 `cargo clean` 6 个 cdylib crate 再编 native 与 wasm32 ✗

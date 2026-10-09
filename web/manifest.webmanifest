@@ -1,0 +1,11 @@
+{
+  "name": "偃师 YanShi Online",
+  "short_name": "YanShi",
+  "description": "纯离线客户端的绘图工作台：渲染与编辑全部在本地浏览器完成。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#161616",
+  "theme_color": "#161616",
+  "icons": []
+}

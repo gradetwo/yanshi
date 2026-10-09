@@ -1,0 +1,24 @@
+# **★ Cloudflare Workers ＋ PWA 部署配置 ✓ ★**（第 608 轮 ✓；**部署矩阵 §7／§9 ✓**）
+#
+# **∴ 本部署**没有服务端计算 ✗**（**用户澄清 ✓**）：**Workers 只**托管静态资源**✗**
+# ⇒ **∴ 渲染与编辑**全部在浏览器**（**`web/wasm/yanshi_wasm.js` ＋ WebGPU ＋ IndexedDB ✓**）**。
+#
+# **∴ 部署** ✓：`npx wrangler deploy`（**CI 用仓库 secret 提供 API token ✓**）
+# **∴ 本地预览** ✓：`npx wrangler dev`
+# **∴ 域名** ✓：`yanshi-online.wangda.today`（**见下面的 `routes` ✓**）
+
+name = "yanshi-online"
+main = "worker/index.js"
+compatibility_date = "2025-01-01"
+
+# **★ 静态资源 ✓**：`web/` 里的一切都会以静态文件形式提供 ✓（**含 wasm 与 JS 胶水 ✓**）
+[assets]
+directory = "./web"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# **★ 自定义域名 ✓ ★**（**用户指定 ✓**）：部署后在 Cloudflare 侧把该子域指到本 Worker ✓。
+# **∴ 若域名尚未接入 Cloudflare ⇒ **∴ 先注释掉本段 ✓**（**用 `*.workers.dev` 验证 ✓**）。
+[[routes]]
+pattern = "yanshi-online.wangda.today"
+custom_domain = true

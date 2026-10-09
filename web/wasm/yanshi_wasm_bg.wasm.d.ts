@@ -1,0 +1,36 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_wasmkernel_free: (a: number, b: number) => void;
+export const wasmkernel_apply_atom_json: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_blob_get: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_blob_put: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_clear_preview: (a: number) => [number, number];
+export const wasmkernel_commit_preview: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_evict_outside_viewport: (a: number, b: number, c: number, d: number, e: number) => number;
+export const wasmkernel_extend_preview_stroke: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_has_preview: (a: number) => number;
+export const wasmkernel_head_seq: (a: number) => number;
+export const wasmkernel_last_dirty_tiles: (a: number) => [number, number];
+export const wasmkernel_load_atoms_json: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_memory_usage: (a: number) => number;
+export const wasmkernel_memory_watermark: (a: number) => number;
+export const wasmkernel_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const wasmkernel_paint_brush: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_paint_brush_error: (a: number) => [number, number];
+export const wasmkernel_render_region_direct_rgba: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const wasmkernel_render_region_info: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const wasmkernel_render_region_png: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const wasmkernel_render_region_rgba: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const wasmkernel_set_memory_limit: (a: number, b: number) => void;
+export const wasmkernel_set_preview_object: (a: number, b: number, c: number) => [number, number];
+export const wasmkernel_set_viewport: (a: number, b: number, c: number, d: number, e: number) => void;
+export const wasmkernel_state_json: (a: number) => [number, number];
+export const wasmkernel_stats_json: (a: number) => [number, number];
+export const wasmkernel_version: (a: number) => [number, number];
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
