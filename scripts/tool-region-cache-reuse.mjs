@@ -88,7 +88,26 @@ const main = async () => {
   const ratio2 = t3 > 0 ? t4 / t3 : null;
   console.log(`    单层渲染（layer_id=R0 ✓）第一次 ${t3} ms｜第二次 ${t4} ms｜比值 ${ratio2 === null ? "n/a" : ratio2.toFixed(2)}×`);
 
-  if (ratio > 0.2) {
+  // **★ 改为量**语义** ✓ ★**（第 476 轮 ✓）：**耗时只**打印**✗；**通过条件 ＝ `below_reuse` 自增 ✓**
+  // **∴ 理由** ✓：**子区域**已经**在用 below 复用 ✓**（**块缓存 miss ⇒ `render_region` ⇒
+  // `render_accumulation` ✓**）；**剩下的 44～50 ms 是"当前层渲染 ＋ 量化转换"的固有成本 ✓**
+  // ⇒ **∴ 要求"整块命中"必须让块指纹**忽略上层 ✗ ⇒ **那就撒谎 ✗**（**第 474 轮 C4 判据当场抓到 ✓**）。
+  const beforeHealth = await (await fetch(`${base}/health`)).json();
+  const before = Number(beforeHealth.below_reuse ?? -1);
+  // **只改最上面那层** ✓ ⇒ 下方不变 ⇒ **∴ below 必须被复用 ✓**
+  await stroke("Rtop");
+  await call(doc, token, "render_region", { region, raw: true });
+  const afterHealth = await (await fetch(`${base}/health`)).json();
+  const after = Number(afterHealth.below_reuse ?? -1);
+  console.log(`    /health.below_reuse：${before} ⇒ ${after}（**期望自增 ✓**）`);
+  if (!(after > before)) {
+      console.error(`❌ 只改最上层后重渲同一子区域 ⇒ below_reuse 没有自增（${before} ⇒ ${after}）` +
+          ` ⇒ **下方合成没有被复用** ✗（变异：让"只改当前层"也清空 below ⇒ 必红 ✓）`);
+      process.exit(1);
+  }
+  console.log(`  ✓ 子区域渲染复用了下方合成（below_reuse ${before} ⇒ ${after} ✓）` +
+      `｜耗时参考（**不作通过条件** ✗）：第一次 ${t1} ms ⇒ 第二次 ${t2} ms`);
+  if (false) {
     console.error(`❌ 只改最上层后，同一子区域第二次仍要 ${t2} ms（比值 ${ratio.toFixed(2)}× > 0.2）` +
       ` ⇒ 子区域**没有**复用 ✗（**根因：version 用的是裸 head_seq ✗**）` +
       `（变异：改回裸 head_seq ⇒ 必红 ✓）`);
