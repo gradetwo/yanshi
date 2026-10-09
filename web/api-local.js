@@ -148,10 +148,22 @@ export async function makeLocalApi(db) {
       //   **∴ 为什么不能自造 `brush_stroke` 原子 ✗**（**第 646 轮实测 ✓**）：
       //   **∴ 服务端的笔触是**服务端渲染成位图**后的 `import_image` 原子 ✗**（**内核不认前者的 kind ✓**）。
       try {
+        // **∴ `layerId` 与 `brushName` 在重写时被删掉了 ✗**（第 655 轮实测：`layerId is not defined` ✓）
+        // ⇒ **∴ 加回 ✓**（**∴ 这正是"失败必须说出原因"的价值 ✓**）。
+        const layerId = body.layer_id || (body.payload && body.payload.layer_id) || "L0";
         const mod = await import("/wasm/yanshi_wasm.js");
         if (typeof mod.default === "function") await mod.default();
-        const entryK = kernels.get(doc);
-        if (!entryK) throw new Error("内核实例尚未建立（先请求一次渲染）");
+        // **★ 没有内核就**自己建**✗ ★**（第 655 轮 ✓ —— **∴ 修掉第 654 轮那个错 ✓**）：
+        //   **∴ 落笔**不该依赖"先渲染过"✗** ⇒ **∴ 与 `render_region` 用**同一套参数**✗**
+        //   （**`tile 256` ＋ 从创建原子取 `w`/`h` ＋ **限额 256 MiB** ✓**）。
+        let entryK = kernels.get(doc);
+        if (!entryK) {
+          const c2 = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+          const w2 = (c2 && c2.atom.payload && c2.atom.payload.width) || (c2 && c2.atom.width) || 1024;
+          const h2 = (c2 && c2.atom.payload && c2.atom.payload.height) || (c2 && c2.atom.height) || 1024;
+          entryK = { k: new mod.WasmKernel(doc, 256, w2, h2, 256 * 1024 * 1024), w: w2, h: h2 };
+          kernels.set(doc, entryK);
+        }
         const { fetchBrushText, paintWithKernel } = await import("/brush-local.js");
         const brushName = body.brush || "100%_Opaque.myb";
         const myb = await fetchBrushText(brushName.endsWith(".myb") ? brushName : brushName + ".myb");

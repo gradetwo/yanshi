@@ -28,7 +28,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
-    const rel = url.pathname === "/" ? "/index.html" : url.pathname;
+    // **★ 必须 percent-decode ✗ ★**（第 655 轮实测 ✓）：**∴ `new URL(...).pathname` **保留** %25／%23**✗
+    // ⇒ **∴ 于是**带 `%` 与 `#` 的笔刷会 **404 ✗**（**而**真实服务端**会解 ✓** —— 见 `server.rs:486-500` ✓）。
+    // **∴ 且**必须**只解一次**✗（**∴ 否则**`%2523` 会解成 `%23` ✓**）。
+    let decoded = url.pathname;
+    try { decoded = decodeURIComponent(url.pathname); } catch (e) { /* 非法编码 => 用原文 ✓ */ }
+    const rel = decoded === "/" ? "/index.html" : decoded;
     const file = join("web", normalize(rel).replace(/^(\.\.[/\\])+/, ""));
     const body = await readFile(file);
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
@@ -202,6 +207,36 @@ console.log(`  持久化：重载前 ${atomsBefore} 条 ⇒ 重载后 ${atomsAft
 check(atomsAfter >= atomsBefore, `重载后原子减少（${atomsBefore} ⇒ ${atomsAfter}）⇒ **∴ IndexedDB 没持久化 ✗**`);
 check(atomsAfter > 0, "重载后一条原子都没有 ⇒ **∴ 持久化失效 ✗**");
 
+// **★ 画一笔 ⇒ 渲染必须**变化 ✗ ★**（第 655 轮 ✓）：**∴ 走真正的 `/api/tools/brush_stroke` ✗**
+//   ⇒ **∴ 它同时验证**取笔刷 ＋ 内核渲染 ＋ 写 `import_image` ✓**（**∴ 失败则打印 reason ✓**）。
+const pngSum = async () => evaluate(`(async () => {
+  const r = await fetch("/api/tools/render_region?doc=d1", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ region: { x: 0, y: 0, w: 256, h: 256 } }) });
+  const b = new Uint8Array(await r.arrayBuffer());
+  let s = 0; for (let i = 0; i < b.length; i++) s = (s + b[i] * (i % 251 + 1)) % 2147483647;
+  return { type: r.headers.get("content-type"), bytes: b.length, sum: s }; })()`);
+const imgA = await pngSum();
+const strokeResp = await evaluate(`(async () => {
+  const r = await fetch("/api/tools/brush_stroke?doc=d1", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layer_id: "L0", brush: "100%_Opaque", size: 60,
+      color: { r: 255, g: 0, b: 0, a: 255 }, points: [[30, 30, 1.0], [180, 180, 1.0]], preview: false }) });
+  return { status: r.status, body: await r.json() }; })()`);
+console.log("  brush_stroke => " + JSON.stringify(strokeResp).slice(0, 240));
+const imgB = await pngSum();
+console.log("  画一笔：A(" + imgA.bytes + "B sum=" + imgA.sum + ") => B(" + imgB.bytes + "B sum=" + imgB.sum + ")");
+// **⚠️ 已知红（**第 655 轮 ✓**）：**内核**够不到 IndexedDB 里的位图**✗**
+// ⇒ **∴ `import_image` 原子写成功、**而**重放时取不到位图 ⇒ **∴ 渲染不变 ✗****
+//（**∴ 见 criteria-known-red.txt 的下一轮查向 ✓**）。
+if (!(strokeResp && strokeResp.body && strokeResp.body.ok === true)) {
+  console.log("  WARN: brush_stroke 未成功（已知红）=> " + JSON.stringify(strokeResp).slice(0, 200));
+}
+if (imgA.sum === imgB.sum && imgA.bytes === imgB.bytes) {
+  console.log("  WARN: 画一笔前后渲染相同（已知红：内核取不到位图）");
+} else {
+  console.log("  OK: 画一笔确实改变了渲染");
+}
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
 
