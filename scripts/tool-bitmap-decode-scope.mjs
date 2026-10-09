@@ -37,7 +37,66 @@ const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yan
 //     ⇒ **∴ 整幅渲染**必须解码 ⇒ **∴ 触发诊断**会看到 > 0 ✓**** ✓✓
 //
 // **∴ 用法 ✗**：`node scripts/tool-bitmap-decode-scope.mjs <判据base> [<工程>] [<造包base>]`
-const buildBase = process.argv[4] || base;
+let buildBase = process.argv[4] || base;
+
+// **★ `--spawn` ✗ ★**（第 45 轮 ✓）：**自己起两个临时服务**✗ ⇒ **∴ 一条命令就能跑 ✓**。
+//
+// **∴ 为什么必须这样 ✗ ★**：**判据**需要**两个进程**✗（**造包用 A／判据用 B ✓，
+//   **∵ `missed_bytes` 是**进程级累加 ✓）⇒ **∴ 否则**要**手工**起两个服务**✗
+//     ⇒ **∴ 没人**会去跑它 ⇒ **∴ 判据**等于不存在 ✓**** ✓✓
+const spawnMode = process.argv.includes("--spawn");
+let spawned = [];
+if (spawnMode) {
+  const { spawn } = await import("node:child_process");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const candidates = [
+    "target/release/yanshi-serve",
+    "target/debug/yanshi-serve",
+  ];
+  const binary = candidates.find((path) => existsSync(path));
+  if (!binary) {
+    console.error("✗ --spawn 需要先构建一个 yanshi-serve（release 或 debug）");
+    process.exit(2);
+  }
+  const start = async (port) => {
+    const root = mkdtempSync(join(tmpdir(), "scope-root-"));
+    const child = spawn(binary, ["--root", root, "--bind", `127.0.0.1:${port}`], {
+      stdio: "ignore", detached: false,
+    });
+    for (let i = 0; i < 80; i += 1) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        if (res.ok) return child;
+      } catch { /* 还没起来 */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    child.kill();
+    throw new Error(`服务未在 127.0.0.1:${port} 起来`);
+  };
+  // **∴ 端口**避开常见占用 ✓**（**两个相邻高位端口 ✓）** ✓✓
+  const buildPort = 8781;
+  const judgePort = 8782;
+  spawned.push(await start(buildPort));
+  spawned.push(await start(judgePort));
+  // **∴ 退出时**必须收拾干净 ✗**（**∴ 否则**每跑一次**留两个服务 ✓）** ✓✓
+  //   **∴ 用 `exit` 钩子 ✗**：**无论**怎么退出（**正常／异常／退出码 ✓）都会走 ✓**** ✓✓
+  process.on("exit", () => {
+    for (const child of spawned) {
+      try { child.kill(); } catch { /* 已经没了 */ }
+    }
+  });
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => { process.exit(1); });
+  }
+  buildBase = `http://127.0.0.1:${buildPort}`;
+  const judge = `http://127.0.0.1:${judgePort}`;
+  console.log(`  · --spawn：造包 ${buildBase}｜判据 ${judge}｜二进制 ${binary}`);
+  // **∴ 把判据用的 base 换掉 ✗**（**∴ 参数**是 `const` ⇒ **∴ 用**变量替代 ✓）** ✓✓
+  process.env.__SCOPE_JUDGE_BASE = judge;
+}
+const judgeBase = process.env.__SCOPE_JUDGE_BASE || base;
 if (!base) {
   console.error("用法: node scripts/tool-bitmap-decode-scope.mjs <base-url>");
   process.exit(2);
@@ -191,15 +250,15 @@ try {
   console.error("   用法：node scripts/tool-bitmap-decode-scope.mjs <base-url> <local.yanshi>");
   process.exit(2);
 }
-const begin = await (await fetch(`${base}/api/documents/import?begin=1`, { method: "POST" })).json();
+const begin = await (await fetch(`${judgeBase}/api/documents/import?begin=1`, { method: "POST" })).json();
 if (!begin.upload_id) {
   console.error("✗ 前置不成立：入库未开始 ⇒ " + JSON.stringify(begin).slice(0, 160));
   process.exit(2);
 }
-await fetch(`${base}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
+await fetch(`${judgeBase}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
   method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes,
 });
-const fin = await (await fetch(`${base}/api/documents/import?upload=${begin.upload_id}&finish=1`, { method: "POST" })).json();
+const fin = await (await fetch(`${judgeBase}/api/documents/import?upload=${begin.upload_id}&finish=1`, { method: "POST" })).json();
 if (!fin.token) {
   console.error("✗ 前置不成立：入库未完成 ⇒ " + JSON.stringify(fin).slice(0, 160));
   process.exit(2);
@@ -208,13 +267,13 @@ const doc = fin.doc_id;
 const token = fin.token;
 console.log(`  已导入 ${localProject} ⇒ doc=${doc}`);
 const call = async (tool, args) =>
-  (await fetch(`${base}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${token}`, {
+  (await fetch(`${judgeBase}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${token}`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(args || {}),
   })).json();
 // **读"未命中字节"** ✓（第 134 轮 ✓）—— 它比"次数"更能说明"这一笔重新解压了多大的东西" ✓
 //（一次整幅 4K 背景 ＝ 33.2 MiB ✓，一枚小补丁几十 KiB ✓）。
-const missedBytes = async () => Number(((await (await fetch(`${base}/health`)).json()).bitmap_cache || {}).missed_bytes ?? -1);
+const missedBytes = async () => Number(((await (await fetch(`${judgeBase}/health`)).json()).bitmap_cache || {}).missed_bytes ?? -1);
 
 // **造一个带位图补丁的对象** ✓（这样位图缓存才会被触及 ✓）—— 用 1×1 的极简 raw 补丁 ✓。
 const REGION = [0, 0, 64, 64];
@@ -270,7 +329,7 @@ console.log(`  第二次渲染：decoded_bytes ${before2} → ${after2}（**增�
   //     **∴ 不是** ⇒ **∴ fixture**的内容没进去**✗ ⇒ **∴ 要修生成流程 ✓**** ✓✓
   const raw = await call("render_region", { region: [300, 300, 4, 4], raw: true });
   if (raw.raw_url) {
-    const res = await fetch(raw.raw_url.startsWith("http") ? raw.raw_url : base + raw.raw_url);
+    const res = await fetch(raw.raw_url.startsWith("http") ? raw.raw_url : judgeBase + raw.raw_url);
     const buf = Buffer.from(await res.arrayBuffer());
     console.log(`  内容诊断：放置区中心像素 = [${buf[0]}, ${buf[1]}, ${buf[2]}, ${buf[3]}]`
       + `（**期望接近** [200, 40, 90, 255] ✓）`);
@@ -295,7 +354,7 @@ console.log(`  第二次渲染：decoded_bytes ${before2} → ${after2}（**增�
   //   **∴ 正确的处置 ✗**：**未触发时**如实**报告两种可能**✗，
   //     **并**请**人工核对一次**（**∴ 因为**脚本**无法**只凭计数区分 ✓）
   //     ⇒ **∴ 退出码 0**✗（**∴ 未触发**不是判据失败 ✓）** ✓✓
-  if (!triggered) {
+  if (!triggered && failures.length === 0) {
     console.log("  ℹ️ 本次**没有观察到整块解码**（`missed_bytes` 增量 0）⇒ 两种可能：");
     console.log("     (a) **按需解码（tiled 路径 ✓）在起作用** ⇒ 这正是判据要守的结果 ✓");
     console.log("     (b) 这份 fixture 没有可解码的整块位图 ⇒ 判据本次没被触发 ✓");
@@ -318,7 +377,7 @@ const rawAt = async (region) => {
   let url = value.raw_url || value.thumb_url;
   if (!url) throw new Error("拿不到 raw_url ⇒ " + JSON.stringify(value).slice(0, 140));
   if (String(url).startsWith("yanshi://blob/")) {
-    url = `${base}/api/blob/${String(url).split("/").pop()}?doc=${encodeURIComponent(doc)}`;
+    url = `${judgeBase}/api/blob/${String(url).split("/").pop()}?doc=${encodeURIComponent(doc)}`;
   } else if (String(url).startsWith("/")) {
     url = base + url;
   }
@@ -329,7 +388,7 @@ const rawAt = async (region) => {
 
 // 取"整幅"尺寸以做对照 ✓（先问一次整幅；区域取左上 64² ✓ 以保证在画幅内 ✓）
 // **⚠️ 画幅要从文档列表取** ✗ —— 响应里的 `width`／`height` 是**请求区域**的尺寸 ✓（我第一版弄错了 ✗）。
-const listed = await (await fetch(`${base}/api/documents`)).json();
+const listed = await (await fetch(`${judgeBase}/api/documents`)).json();
 const info = (listed.documents || []).find((d) => d.doc_id === doc) || {};
 const W = Number(info.width), H = Number(info.height);
 if (!(W > 128 && H > 128)) {
