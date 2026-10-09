@@ -525,14 +525,17 @@ struct BelowTiles {
     ///     ⇒ **∴ 所以**先**并列 ✗** ⇒ **∴ 于是**：**每步**都能**回退 ✓**；**中期**再**清掉旧字段 ✓**** ✓✓
     ///   **∴ 代价（**如实 ✓）**：**同一份数据**可能**出现在两处**（**冗余 ✓）**
     ///     ⇒ **∴ 而**总格数**仍受** `BELOW_TILE_BUDGET` **与字节预算约束 ✓**** ✓✓
-    by_sig: std::collections::HashMap<
-        Vec<String>,
-        (
-            Vec<((i64, i64), crate::buffer::Buffer)>,
-            std::collections::HashSet<(i64, i64)>,
-        ),
-    >,
+    by_sig: std::collections::HashMap<Vec<String>, SigTiles>,
 }
+
+/// **★ 一组"**同 `sig`**"的格 ✗ ★**（第 975 轮 ✓）：**（**`tiles`, `empty` ✓）。
+///
+/// **∴ 为什么抽别名 ✗**：**clippy** 报 `very complex type` ✗**（**实测 ✓）⇒
+///   **∴ 而**它**确实**难读 ✓ ⇒ **∴ 于是**给它**一个名字 ✓**** ✓✓
+type SigTiles = (
+    Vec<((i64, i64), crate::buffer::Buffer)>,
+    std::collections::HashSet<(i64, i64)>,
+);
 
 // **★ `above` 与 `below` **共用同一个结构**✗ ★**（第 694 轮 ✓；**目标第 4 条 ✓**）：
 //   **∴ 两者字段**完全相同 ✗**（`sig: Vec<String>` ＋ `tiles: Vec<((i64,i64), Buffer)>` ✓）
@@ -1245,10 +1248,17 @@ impl Renderer {
                     //   **∴ 代价（**如实 ✓）**：**∴ 它**不再反映"**缓存里有多少格**"✗，
                     //     而只反映"**这次要的格里命中了几格 ✓**" ⇒ **∴ 而**那**正是判据要的 ✓** ✓✓
                     let line = format!(
-                        "want={} have={} missing={:?} want_tiles={:?}\n",
+                        "want={} have={} missing={:?} groups={} want_tiles={:?}\n",
                         want_tiles.len(),
                         want_tiles.len().saturating_sub(missing.len()),
                         missing,
+                        // **∴ 第 1 步**只是**让它被读**✗（**∴ 否则** clippy 报 `never read` ✓）：
+                        //   **∴ 而**它也**确实**是**有用的观测 ✓** —— **∴ "**有几组切点**" ✓**** ✓✓
+                        below
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|c| c.by_sig.len()))
+                            .unwrap_or(0),
                         want_tiles
                     );
                     let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
