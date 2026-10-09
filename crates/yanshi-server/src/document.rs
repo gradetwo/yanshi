@@ -272,6 +272,11 @@ pub struct Document {
     render_watermark: Seq,
     /// 最近一次任意渲染结果（可能只是 dirty 区域，10.1 `preview` 用它）。
     last_render_blob: Option<BlobHash>,
+    /// **★ 整幅缓存命中次数 ✗ ★**（第 796 轮 ✓；**目标第 4 条 ✓**）：
+    ///   **∴ 为什么要它 ✗**：**`full_frame_render` 命中时**根本不进渲染器 ✗**
+    ///   ⇒ **∴ 于是** **tile 级 `below_reused`／`above_reused`** 在那条路上**永远为假 ✓**
+    ///   ⇒ **∴ 这个计数**才是**用户实际走的快路径**的指标 ✓**（**∴ 判据**要用它 ✓）**。
+    full_frame_hits: u64,
     /// 文档级缩略图（覆盖整幅画布），6.2/7.3「打开即图片」用它。
     document_thumbnail: Option<BlobHash>,
     /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
@@ -435,6 +440,7 @@ impl Document {
             annotations: AnnotationStore::new(),
             render_watermark: 0,
             last_render_blob: None,
+            full_frame_hits: 0,
             document_thumbnail: None,
             document_thumbnail_seq: 0,
             document_thumb: None,
@@ -507,6 +513,12 @@ impl Document {
     /// 渲染水位。
     pub const fn render_watermark(&self) -> Seq {
         self.render_watermark
+    }
+
+    /// **★ 整幅缓存命中次数 ✗ ★**（第 796 轮 ✓）：**∴ 它是**用户实际走的快路径**的指标 ✓**
+    ///   （**∴ 而** tile 级 `below_reused` 在**那条路上**不会变 ✓）。
+    pub const fn full_frame_hits(&self) -> u64 {
+        self.full_frame_hits
     }
 
     /// Job 管理器（只读）。
@@ -1474,6 +1486,8 @@ impl Document {
         };
         self.render_watermark = head;
         self.last_render_blob = Some(blob.clone());
+        // **★ 记一次整幅缓存命中 ✗ ★**（∴ 这是**用户实际走的快路径**✓）
+        self.full_frame_hits += 1;
         self.document_thumbnail = Some(blob.clone());
         self.document_thumbnail_seq = head;
         Ok(Some(RenderedPreview {
