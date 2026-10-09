@@ -3504,3 +3504,34 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **然后**只补这两处**✗ ⇒ **∴ 编译 ＋ 判据 ＋ 变异 ✓**。
 #   **∴ 进展** ✓：**第 708／709 两轮卡在**块边界**✗，**而**本轮**位置对了**✗ ——
 #     **∴ 说明**"先量行号"这条规则**确实有效 ✓**（**∴ 只剩两个**新出现的**名字作用域问题 ✓）。**
+
+# **★ 第 711 轮：🎉🎉🎉 **`above` 的复用逻辑落地 ✗**（**目标第 4 条的核心行为 ✓**）**
+#   **∴ 七步全部写完 ✓**（`crates/yanshi-render/src/render.rs` ✓）**：
+#     **① 块前声明四个 ＋ `want_tiles` ✗**：**`above_wanted`／`above_acc`／`above_sig`／`above_ready`／
+#       **`let mut want_tiles: Vec<(i64,i64)> = Vec::new();` ✓**（**∴ 全部在 `if cacheable` **之前** ✓**）；**
+#     **② 块内**：**`want_tiles.clear();` ✗**（**∴ 之前是 `let mut …` ✓ ⇒ **∴ 搬到外面后改成清空 ✓）**
+#       ＋ **`above_ready = above_wanted && match self.above.lock() { … };` ✓**（**∴ 与 `ready` 同形 ✓**）；**
+#     **③ 循环里**：**`if above_ready && index_here > split { continue; }` ✗**
+#       （**∴ 与 `if reused && index_here < split { continue; }` **对称 ✓**）；**
+#     **④ 循环后**（**`Ok(accumulation)` 之前 ✓）**：**命中 ⇒ 把 `above` 的 tile 逐块 blit 进
+#       **`accumulation` ✗**（**∴ 不 clone ✓**）＋ **`Renderer::note_above_reuse();` ✓**** ✓✓
+#   **∴ 两个修好的错（**每个都很典型 ✓）** ✓**：
+#     **① `want_tiles` 在块内 ✗** ⇒ **∴ 修**：**声明提到块外 ✗，**块内改 `clear()` ✓**；
+#     **② `note_above_reuse` 不可见 ✗** ⇒ **∴ 因为**它是 **`impl Renderer` 的**关联函数**✗**
+#       （**`:611` `pub fn note_above_reuse()` 无 `self` ✓**）
+#       ⇒ **∴ 修**：**写全路径 `Renderer::note_above_reuse()` ✗**
+#       （**∴ 而** `note_below_reuse`（**`:266` ✓）是**自由函数** ⇒ **∴ 两者位置不同 ✓**）** ✓✓
+#   **∴ 途中我的一个自伤 ✓**：**用"行号大于 `let cacheable`"找块内那行 ✗**
+#     ⇒ **∴ 而**它**匹配到了我刚插的外层声明 ✗** ⇒ **∴ 于是**外层变成 `clear()` ✗、**块内仍是 `let mut` ✗**
+#     ⇒ **∴ 修**：**按"行号小 ＝ 外层、行号大 ＝ 块内"**交换**两行 ✓**（**∴ 不再重跑整个脚本 ✓**）** ✓✓
+#   **∴ 门禁** ✓：**build ✓｜clippy -D warnings ✓｜`yanshi-render --lib` **257 passed／0 failed ✓**｜
+#     **`yanshi-server --lib` 57 ✓｜fmt ✓｜JS ✓｜覆盖率 ✓｜工作流结构 ✓｜ASSETS ✓** ✓✓
+#     ⇒ **∴ 而**257 全绿**说明**现有测试**没覆盖"半透明层 ＋ 上方层"这一场景 ✗**
+#       ⇒ **∴ 所以**行为变化**未被测试抓到 ⇒ **∴ 而**这正是**判据必须补的 ✓**** ✓✓
+#   **∴ 下一轮（**最后一步 ✓**）** ✓：**加**可红判据 ＋ 变异** ✗**：
+#     **① 构造**一个半透明当前层 ＋ 上方有层**的文档 ✗**（**∴ 用 `active_layer` 切点 ✓**）；
+#     **② 渲染**两次 ✗** ⇒ **∴ 第二次应命中 `above` ⇒ 响应里 `above_reused` 为真 ✓**
+#       （**∴ 而**第一次必然未命中 ⇒ **∴ 于是**第二次的 `above_reused` 就是**复用证据 ✓**）；**
+#     **③ 变异** ✗**：**让 `above_ready` 恒 `false` ⇒ **∴ 第二次也 `above_reused = false` ⇒ **必红 ✓****；
+#     **④ 且**要确认**像素**不变 ✗**（**∴ 复用 ⇒ **∴ 结果必须与不缓存一致 ✓** ——
+#       **∴ 做法**：**同一文档渲两次 ⇒ PNG 逐字节相同 ✓**）** ✓✓

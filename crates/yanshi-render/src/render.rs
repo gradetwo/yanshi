@@ -1011,13 +1011,21 @@ impl Renderer {
         // ⇒ **∴ 那时若仍复用 ⇒ **会拿旧的下方合成冒充 ⇒ 输出错 ✗**（**4 个既有测试当场抓到 ✓**）
         // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
         let cacheable = split > 0 && !except_seen;
+        // **★ `above` 的全部声明 ✗ ★**（第 711 轮 ✓；**目标第 4 条 ✓**）：**∴ 必须在
+        //   **`if cacheable` 块**之前** ✓**（**∴ 块内赋值、**块后的循环与收尾都要用 ✓）。
+        let above_wanted = cacheable && visible_opacity.get(split).is_some_and(|o| *o < 1.0);
+        let mut above_acc: Option<crate::buffer::Buffer> = None;
+        let above_sig: Vec<String> = visible_ids.iter().skip(split + 1).cloned().collect();
+        let mut above_ready = false;
+        // **∴ `want_tiles` 也要在外面 ✗** —— **∴ 因为**循环后的叠加要用它 ✓。
+        let mut want_tiles: Vec<(i64, i64)> = Vec::new();
         let mut reused = false;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
         let want = accumulation.bbox();
         let probe_path = std::env::var("YANSHI_BELOW_PROBE").ok();
         if cacheable {
-            let mut want_tiles: Vec<(i64, i64)> = Vec::new();
+            want_tiles.clear();
             {
                 let x0 = (want.x.floor() as i64).div_euclid(BELOW_TILE);
                 let y0 = (want.y.floor() as i64).div_euclid(BELOW_TILE);
@@ -1039,6 +1047,20 @@ impl Renderer {
                 },
                 Err(_) => false,
             };
+            // **★ `above` 的命中判断 ✗ ★**（第 711 轮 ✓）：**∴ 与 `ready` 同形 ✗**。
+            above_ready = above_wanted
+                && match self.above.lock() {
+                    Ok(guard) => match guard.as_ref() {
+                        Some(c) => {
+                            c.sig == above_sig
+                                && want_tiles
+                                    .iter()
+                                    .all(|t| c.tiles.iter().any(|(k, _)| *k == *t))
+                        }
+                        None => false,
+                    },
+                    Err(_) => false,
+                };
             // **★ 探针：缺哪几块 ✓**（第 497 轮 ✓）：**∴ 一次确认"全有或全无 × 并行行带"这条假设 ✗**。
             if let Some(path) = probe_path.as_deref() {
                 use std::io::Write;
@@ -1177,12 +1199,6 @@ impl Renderer {
             }
         }
 
-        // **★ `above` 是否要做 ✗ ★**（第 692 轮 ✓）：**∴ 复用 `cacheable` ✗**
-        //   ⇒ **∴ §14.33 的六种打破情形**已被它挡掉 ✓**（**不必另写一遍 ✓**）。
-        let above_wanted = cacheable && visible_opacity.get(split).is_some_and(|o| *o < 1.0);
-        // **∴ `above` 的累积缓冲 ✗**：**从**空**开始 ✓**（**∴ 因为它**叠在当前结果之上**✓，
-        // **而**不是从背景开始 ✓ —— **∴ 与 `accumulation` 的初始不同 ✓**）。
-        let mut above_acc: Option<crate::buffer::Buffer> = None;
         let mut visited: usize = 0;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
@@ -1197,6 +1213,10 @@ impl Renderer {
             let index_here = visited;
             visited += 1;
             if reused && index_here < split {
+                // **★ 复用了 `above` ⇒ 跳过它覆盖的层 ✗ ★**（第 711 轮 ✓）：与上面那条对称 ✓。
+                if above_ready && index_here > split {
+                    continue;
+                }
                 continue; // **∴ 复用了下方 ⇒ 这些层不算已渲染 ✓**
             }
             stats.layers += 1;
@@ -1406,6 +1426,41 @@ impl Renderer {
                             tiles: merged,
                         });
                     }
+                }
+            }
+        }
+        // **★ 把 `above` 叠回去 ✗ ★**（第 711 轮 ✓）：**∴ 命中时那些层已被跳过 ⇒
+        //   **∴ 必须**把它们的合成叠到 `accumulation` 上 ✓**（**∴ 不需要 clone ✓**）。
+        if above_ready {
+            if let Ok(guard) = self.above.lock() {
+                if let Some(c) = guard.as_ref() {
+                    for t in &want_tiles {
+                        if let Some((_, buf)) = c.tiles.iter().find(|(k, _)| k == t) {
+                            let ob = accumulation.bbox();
+                            let bb = buf.bbox();
+                            let (ox, oy) = (bb.x as i64 - ob.x as i64, bb.y as i64 - ob.y as i64);
+                            let (ow, oh) = (ob.w as i64, ob.h as i64);
+                            let (bw, bh) = (bb.w as i64, bb.h as i64);
+                            let dst = accumulation.pixels_mut();
+                            let src = buf.as_f32();
+                            for row in 0..bh {
+                                let dy = oy + row;
+                                if dy < 0 || dy >= oh {
+                                    continue;
+                                }
+                                for col in 0..bw {
+                                    let dx = ox + col;
+                                    if dx < 0 || dx >= ow {
+                                        continue;
+                                    }
+                                    let si = ((row * bw + col) * 4) as usize;
+                                    let di = ((dy * ow + dx) * 4) as usize;
+                                    dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                                }
+                            }
+                        }
+                    }
+                    Renderer::note_above_reuse(); // ★ 关联函数 ⇒ 要全路径 ★
                 }
             }
         }
