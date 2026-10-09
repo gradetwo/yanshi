@@ -73,3 +73,7 @@ web/service-worker.js
 #   **∴ 代价**：**它会随导出变化 ⇒ **∴ 可能 dirty ✓**（**∴ 但**只有一个文件，
 #   **而**其余产物（**wasm／brushes／mediums／viewer 三件套 ✓）仍然忽略 ✓**）。
 #   **∴ 且**部署前**仍建议**跑 `npm run pwa:deploy` ✗**（**它**会重新生成它 ✓）**。
+
+# **★ 导出静态页时的**临时文件** ✗ ★**（第 221 轮 ✓）：**∴ 它**是 `--export-viewer-html` 的落点 ✗，
+#   **∴ 导出成功后**改名成 `web/index.html` ✗ ⇒ **∴ 中间态**不该入库 ✓**。
+web/.index.export.html
