@@ -16,8 +16,50 @@
 //!     `max_channel_delta` **必须是 `null`**✗（**不是 0 ✓）＋ **有说明字段 ✓**
 //!   **∴ ②③**：**同一区域**的 `raw` 渲染**逐字节相同** ✓**** ✓✓
 
-const a = process.argv[2] ?? "http://127.0.0.1:8471";
-const b = process.argv[3] ?? null;
+// **★ `--spawn` ✗ ★**（第 46 轮 ✓）：**自己起两个服务**✗
+//   ⇒ **∴ 于是**：**CI 里**一条命令就能跑 ✓**（**∴ 与 `tool-bitmap-decode-scope` 同款 ✓）** ✓✓
+const spawnMode = process.argv.includes("--spawn");
+let a = process.argv[2] ?? "http://127.0.0.1:8471";
+let b = process.argv[3] ?? null;
+let spawned = [];
+if (spawnMode) {
+  const { spawn } = await import("node:child_process");
+  const { mkdtempSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const binary = ["target/release/yanshi-serve", "target/debug/yanshi-serve"]
+    .find((path) => existsSync(path));
+  if (!binary) {
+    console.error("✗ --spawn 需要先构建一个 yanshi-serve（release 或 debug）");
+    process.exit(2);
+  }
+  const start = async (port, extra) => {
+    const root = mkdtempSync(join(tmpdir(), "gpu-report-"));
+    const child = spawn(binary, ["--root", root, "--bind", `127.0.0.1:${port}`, ...extra], {
+      stdio: "ignore",
+    });
+    for (let i = 0; i < 80; i += 1) {
+      try {
+        if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) return child;
+      } catch { /* 还没起来 */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    child.kill();
+    throw new Error(`服务未在 127.0.0.1:${port} 起来`);
+  };
+  // **∴ 一默认（**auto ✓）**一请求 GPU（**on ✓）✗ ⇒ **∴ 正是**§6.3 的 ②③ ✓**** ✓✓
+  spawned.push(await start(8791, []));
+  spawned.push(await start(8792, ["--gpu", "on"]));
+  a = "http://127.0.0.1:8791";
+  b = "http://127.0.0.1:8792";
+  process.on("exit", () => {
+    for (const child of spawned) {
+      try { child.kill(); } catch { /* 已经没了 */ }
+    }
+  });
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(1));
+  console.log(`  · --spawn：默认 ${a}｜请求 GPU ${b}｜二进制 ${binary}`);
+}
 
 const bad = [];
 
@@ -131,3 +173,7 @@ if (bad.length) {
   process.exit(1);
 }
 console.log("  ✓ §6.3 的 ②③④ 达标：后端如实上报 ＋ 无 GPU 时报 null ＋ 两条路径逐字节相同");
+// **★ 必须**显式退出 ✗ ★**（第 46 轮 ✓）：**∴ `--spawn` 起过子进程**✗
+//   ⇒ **∴ 父进程**的事件循环**不会被自动清空**✗ ⇒ **∴ 实测**退出码 **124**（**超时 ✓）**
+//   ⇒ **∴ 所以**：**结束处**显式 `exit`**✗ ⇒ **∴ 于是**：**exit 钩子**立刻杀子进程 ✓**** ✓✓
+process.exit(0);

@@ -71,6 +71,23 @@ jobs:
           node scripts/pwa-sync-viewer.mjs
           node scripts/pwa-sync-wasm.mjs
 
+      - name: ★ 实测：wasm 体积（只测出 ＋ 写摘要；不设硬门槛）
+        # 依据：目标第 10 条要求「体积／构建／wasm32 的实测交给 CI/CD」；
+        # 而第 6 条已裁定「接受体积增长」⇒ 所以这里不设门槛，
+        # 只测出并把数写进摘要 ⇒ 阶段二才有可比的前后数。
+        # 没有基线的「接受增长」是空话。
+        run: |
+          echo "## wasm 体积（部署件）" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 文件 | 字节 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for f in web/wasm/*.wasm; do
+            [ -f "$f" ] || continue
+            echo "| $f | $(wc -c < "$f") |" >> "$GITHUB_STEP_SUMMARY"
+            echo "wasm 体积：$f = $(wc -c < "$f") 字节"
+          done
+          echo "（无门槛：第 6 条已裁定接受体积增长 ⇒ 这里只留基线数）" >> "$GITHUB_STEP_SUMMARY"
+
       - name: ★ 判据：PWA 资源完整性（失败即停）
         # **∴ 这条是**防撒谎判据 ✗**：**没有内核的 PWA 不许发布 ✓**（**`tool-pwa-assets.mjs` ✓**）。
         run: node scripts/tool-pwa-assets.mjs
