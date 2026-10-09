@@ -82,6 +82,40 @@ export async function makeLocalApi(db) {
     if (url.pathname === "/list_brushes") {
       return json({ ok: true, brushes: [] });
     }
+// **★ `/api/blob` ✗ ★**（第 844 轮 ✓；**`seedSampleIfEmpty` 需要它 ✓**）：
+//   **∴ 为什么 ✗**：**新建文档**时前端**取示例 PNG ⇒ 转像素 ⇒ POST 这里 ⇒ 拿 `blob_hash` ✗**
+//     ⇒ **∴ 而**本地层**原来没有这个分支 ✗** ⇒ **∴ 501 ⇒ **∴ 上传失败 ⇒
+//       **∴ 新文档**没有画面 ⇒ **∴ 用户**感觉"**画不出来**" ✓**** ✓✓
+//   **∴ 实现照 `brush_stroke` 的四步抄 ✗**（**同一套内核 ＋ 同一套信封 ＋ 同一套 IndexedDB ✓）**：
+//     **① 每文档一个内核 ✗**（**从创建原子取宽高 ✓）**；
+//     **② `blob_put(bytes)` ⇒ **位图进内核 store ✗****（**∴ 而 `import_image` 重放时按**内核的 hash**取 ✓）**；
+//     **③ 解 `blob_put` 的**JSON 信封**✗**（**∴ 它**返回 `{"blob_hash":…,"ok":true}` ✓）**；
+//     **④ 同时写 IndexedDB ✗**（**∴ 刷新后重建内核时**再喂一遍 ✓）**。
+//   **∴ 字段与**服务端一致 ✗**：**`blob_hash`／`size`／`mime_type` ✗**
+//     （**∴ 前端 `index.html:4197` 正是读 `upload.blob_hash` 与 `upload.size` ✓）** ✓✓
+    if (url.pathname === "/api/blob") {
+      let entryK = kernels.get(doc);
+      if (!entryK) {
+        const c2 = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+        const w2 = (c2 && c2.atom.payload && c2.atom.payload.width) || (c2 && c2.atom.width) || 1024;
+        const h2 = (c2 && c2.atom.payload && c2.atom.payload.height) || (c2 && c2.atom.height) || 1024;
+        entryK = { k: new mod.WasmKernel(doc, 256, w2, h2, 256 * 1024 * 1024), w: w2, h: h2 };
+        kernels.set(doc, entryK);
+      }
+      const bytes = new Uint8Array(await req.arrayBuffer());
+      if (bytes.length === 0) throw new Error("blob body empty");
+      const kernelHash = entryK.k.blob_put(bytes);
+      const blobHash = (() => {
+        const raw = String(kernelHash || "");
+        try { const o = JSON.parse(raw); if (o && o.blob_hash) return String(o.blob_hash); } catch (e) {}
+        return raw;
+      })();
+      if (!blobHash) throw new Error("kernel returned no blob hash");
+      const storeMod = await import("/store.js");
+      await storeMod.putBlob(handle, blobHash, Array.from(bytes));
+      return json({ ok: true, blob_hash: blobHash, size: bytes.length,
+                    mime_type: "image/x-yanshi-raw", server: false });
+    }
     if (url.pathname === "/api/documents") {
       const docId = body.doc_id || `local-${Date.now().toString(36)}`;
       // **★ 必须写**完整 8 字段封套 ✗ ★**（第 630 轮 ✓，**靠 `fold_result` 一次定位 ✓**）：
