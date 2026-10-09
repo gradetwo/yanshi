@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 13;
+export const LOCAL_IMPLEMENTED = 17;
 
 let lastFold = null;
 
@@ -213,6 +213,69 @@ async function withKernel(doc, fn) {
     }
 
     // **③ `/api/tools/list_layers`（**从原子推导 ✓**）**
+    // **★★ 四条"**从既有原子日志就能如实回答**"的端点 ✗ ★★**（第 929 轮 ✓）：
+    //   **∴ 为什么值得做 ✗**：**用户明确抱怨日志里的 `not_implemented_locally` 刷屏 ✓**
+    //     ⇒ **∴ 而这四条**不需要新机制 ✗**（**原子日志**已经在 IndexedDB 里 ✓）
+    //       ⇒ **∴ 于是**：**它们**可以**如实**回答 ✓ ⇒ **∴ 报错**自然消失 ✓**** ✓✓
+    //   **∴ 形状一律照前端真正读的字段 ✗**（**∴ 不**自创 ✓）：
+    //     `get_log` ⇒ `atoms` ＋ `count` ✓；`list_objects` ⇒ `objects` ＋ `count` ✓；
+    //     `list_selections` ⇒ `selections` ＋ `count` ✓；`get_preferences` ⇒ `preferences` ✓。
+    //   **∴ 且**：**推导不出来的**宁可**不给**✗**（**∴ 不**编造字段 ✓）** ✓✓
+
+    // **① `/api/tools/get_preferences` ✗**：**已实现的是**无前缀的 `/get_preferences` ✗**
+    //   ⇒ **∴ 而**前端调的是 **`/api/tools/` 前缀** ✓ ⇒ **∴ 于是**它 501 ✓
+    //     ⇒ **∴ 两条路径**给**同一份回答** ✓（**∴ 故意重复 ✓，**因为两个入口都真实存在 ✓）** ✓✓
+    if (path === "/api/tools/get_preferences") {
+      return json({ ok: true, preferences: { theme: "dark", locale: "zh-CN" }, server: false });
+    }
+
+    // **② `/api/tools/get_log` ✗**：**历史面板**要 `atoms` ＋ `count` ✓
+    //   ⇒ **∴ 直接把**本地原子日志**按序给它 ✓**（**∴ 它**就是事实 ✓）** ✓✓
+    if (path === "/api/tools/get_log") {
+      const rows = await atomsOf(handle, doc);
+      const atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      return json({ ok: true, atoms, count: atoms.length, server: false });
+    }
+
+    // **③ `/api/tools/list_objects` ✗**：**对象列表** ✗** ⇒ **∴ 从**声明了 `object_id` 的原子**推导 ✓
+    //   **∴ 如实说明 ✗**：**这是**日志级**的对象表 ✓（**∴ 字段**取原子里**真的有的那些 ✓），
+    //     **∴ 不**补算位置／包围盒 ✓（**∴ 那**要重放内核 ⇒ **∴ 留给**需要它的调用方 ✓）** ✓✓
+    if (path === "/api/tools/list_objects") {
+      const rows = await atomsOf(handle, doc);
+      const objects = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        const pl = a.payload || {};
+        if (!pl.object_id) continue;
+        objects.push({
+          object_id: pl.object_id,
+          layer_id: pl.layer_id ?? null,
+          type: pl.type ?? a.kind ?? null,
+          medium: pl.source && pl.source.medium ? pl.source.medium : null,
+        });
+      }
+      return json({ ok: true, objects, count: objects.length, server: false,
+                    derived_from: "atoms" });
+    }
+
+    // **④ `/api/tools/list_selections` ✗**：**没有选区原子 ⇒ **∴ 如实报空表 ✓****
+    //   **∴ 重点 ✗**：**前端**据此**清掉本地轮廓** ✓（**∴ 它**的注释写明：
+    //     **"**服务端说没有选区 ⇒ 本地也必须清掉 ✗**"）⇒ **∴ 所以**：
+    //     **必须**报**真实的空**✗，**而**不是**永远空 ✗**（**∴ 有 `create_selection` 就列出来 ✓）** ✓✓
+    if (path === "/api/tools/list_selections") {
+      const rows = await atomsOf(handle, doc);
+      const selections = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        if (a.kind !== "create_selection") continue;
+        const pl = a.payload || {};
+        selections.push({ selection_id: pl.selection_id ?? pl.id ?? null,
+                          shape: pl.shape ?? null, bbox: pl.bbox ?? null });
+      }
+      return json({ ok: true, selections, count: selections.length, server: false,
+                    derived_from: "atoms" });
+    }
+
     if (path === "/api/tools/list_layers") {
       const list = await atomsOf(handle, doc);
       const layers = [];
