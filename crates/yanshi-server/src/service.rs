@@ -2959,6 +2959,16 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
             .unwrap_or(0)
     }
 
+    /// **★ 某一个文档的 `above` 复用计数 ✓ ★**（第 704 轮 ✓）：**只读转发 ✓**。
+    ///
+    /// **∴ 为什么需要它 ✗**：**全文档求和**算不出"**这次渲染**是否复用 ✗**
+    /// ⇒ **∴ 调用方**紧贴一次渲染读两次 ⇒ **差值 > 0 ⇔ 该次复用了上方合成 ✓****。
+    pub fn document_above_reuse_count(&self, doc_id: &str) -> usize {
+        self.document(doc_id)
+            .map(|d| d.above_reuse_count())
+            .unwrap_or(0)
+    }
+
     /// **（第 95 轮补）** 本项在插入 below 计数时被"抢走"了注释 ✗ ⇒ 按其作用补回 ✓。
     /// ⚠️ 规律（本会话第 7 次 ✗）：**在某一项之前插入 ⇒ 会挪走它的文档注释** ✓（`-D missing-docs` 每次都能抓住 ✓）。
     pub fn bitmap_cache_hits_misses(&self) -> (usize, usize) {
