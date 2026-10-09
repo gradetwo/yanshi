@@ -19,6 +19,10 @@ use crate::persist::{DocumentMeta, FileStore};
 use crate::timings::CommitPhases;
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
+/// **★ 等待预览的宽限期 ✓ ★**（毫秒 ✓）：**超过它仍未就绪 ⇒ **就地同步生成**✗**
+///（**∴ 兜底 ✓；∴ 值小 ⇒ 只读不编辑的调用方不会等太久 ✓**）。
+pub const PREVIEW_PENDING_GRACE_MS: i64 = 200;
+
 /// 确保存在文档级缩略图并返回它的地址（6.2「打开即图片」）。
 ///
 /// 已有缓存（渲染过全幅或从磁盘恢复）直接返回；否则按 `preview_size` 生成一张。
@@ -575,6 +579,10 @@ pub struct Workspace {
     /// **悬空变更集** ✓（设计 §12.4 ✓）。带 `FileStore` 时会落到 `<root>/stash/<id>.json` ✓ ——
     /// 离线窗口可能跨服务重启 ✓ ⇒ 只在内存里会**丢掉用户离线期间的工作** ✗。
     stashes: BTreeMap<String, Stash>,
+    /// **★ 预览"已入队等待"的起始时刻 ✓ ★**（第 594 轮 ✓；**异步预览设计 ④⑤ ✓**）：
+    /// **∴ 兜底依据 ✗**：**超过 `PREVIEW_PENDING_GRACE_MS` 仍未就绪 ⇒ 就地同步生成 ✓**
+    ///（**∴ 否则只读不编辑的调用方会**永远 pending ✗**）。
+    preview_pending_at: std::collections::BTreeMap<String, i64>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -993,6 +1001,7 @@ impl Workspace {
     /// 内存工作区（测试与嵌入式使用）。
     pub fn in_memory(settings: DocumentSettings) -> Self {
         Self {
+            preview_pending_at: std::collections::BTreeMap::new(),
             store: Arc::new(MemoryBlobStore::new()),
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
@@ -1022,6 +1031,7 @@ impl Workspace {
                 .with_codec(Arc::new(crate::blob_codec::RenderCodec)),
         );
         Ok(Self {
+            preview_pending_at: std::collections::BTreeMap::new(),
             store,
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
@@ -2760,9 +2770,29 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         if matches!(size, DocThumbSize::Skip) {
             return Ok(PreviewState::Unavailable);
         }
-        match self.ensure_document_thumbnail(doc_id, size)? {
-            Some(url) => Ok(PreviewState::Ready(url)),
-            None => Ok(PreviewState::Unavailable),
+        // **★ ④ 首次：入队 ＋ 返回 `Pending` ✓（**不渲染 ✗**）★**（第 594 轮 ✓）——
+        // **∴ 响应立刻返回 ✓**；**而**下一次提交收尾**的 `run_pending_jobs`（**只要 `pending()` 非空
+        // 就渲预览 ✓**）会把它渲出来 ✓（**∴ 契约不动 ✓**）。
+        let now = yanshi_core::now_ms();
+        match self.preview_pending_at.get(doc_id).copied() {
+            // **★ ⑤ 兜底 ✓**：**仍在宽限期内 ⇒ 继续等 ✓**（**不许当成"没有图" ✗**）。
+            Some(started) if now - started < PREVIEW_PENDING_GRACE_MS => Ok(PreviewState::Pending),
+            // **超时 ⇒ 就地同步生成 ✓**（**∴ 只读调用方也能拿到图 ✓；亦满足"慢的仍然要算"✓**）。
+            Some(_) => {
+                let url = self.ensure_document_thumbnail(doc_id, size)?;
+                self.preview_pending_at.remove(doc_id);
+                Ok(url
+                    .map(PreviewState::Ready)
+                    .unwrap_or(PreviewState::Unavailable))
+            }
+            // **首次 ⇒ 入队 ＋ 记时 ＋ 返回 `Pending` ✓**。
+            None => {
+                if let Some(doc) = self.documents.get_mut(doc_id) {
+                    doc.mark_preview_pending("server:preview".to_owned());
+                }
+                self.preview_pending_at.insert(doc_id.to_owned(), now);
+                Ok(PreviewState::Pending)
+            }
         }
     }
 
