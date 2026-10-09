@@ -142,6 +142,34 @@ check(blobOk || blobHonest,
 check(!(blobRes.status === 501 && blobBody.error === "endpoint_not_local"),
   "`/api/blob` 不能落到「未实现端点」分支 ⇒ 说明分支不存在（实测 " + JSON.stringify(blobBody).slice(0, 120) + "）");
 console.log("    `/api/blob` ⇒ " + (blobOk ? "内核可用 ⇒ 200 ＋ sha256 hash ✓" : "内核不可用 ⇒ 如实 501 ＋ 原因 ✓"));
+// **★ ⑧ 尾斜杠必须被接受 ✗ ★**（第 859 轮 ✓；**用户报"还是落笔失败" ✓**）：
+//   **∴ 根因（**实测 ✓）✗**：**落笔**把像素 **POST 到 `/api/blob/` ✗**（**带尾斜杠 ✓）**
+//     ⇒ **∴ 而**本地层**原来用 `url.pathname === "/api/blob"` 精确匹配 ✗**
+//       ⇒ **∴ 于是**：**它**落到"未实现端点" ⇒ **∴ 501 ⇒ **∴ 落笔失败 ✓**** ✓✓
+//   **∴ 修法 ✗**：**在 `local()` 里**归一化路径 ✗**（**去掉一个尾斜杠 ✓）
+//     ⇒ **∴ 于是**：**11 个分支**都**同时接受**两种写法 ✓**** ✓✓
+//   **∴ 判据 ✗**：**对**带尾斜杠**的 POST ✗** ⇒ **∴ 期望**：
+//     **∴ 它**必须**被**同一个分支**处理 ✗** ⇒ **∴ 即**：**可以**成功（**200 ✓）
+//       **或**如实报**内核不可用（**501 ＋ `kernel_unavailable` ✓）**
+//       ⇒ **★ 但**绝不可以**是 `endpoint_not_local` ✗**（**∴ 那**说明**归一化失效 ✓）** ✓✓
+//   **∴ 变异（**手工 ✓）**：**删掉那两行归一化 ⇒ **∴ `path` 不再定义／或**分支匹配不到**
+//     ⇒ **∴ 本断言**必红 ✓**** ✓✓
+const slashRes = await local(
+  new Request("https://x/api/blob/?doc=d1&token=local", {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: pngBytes,
+  }),
+);
+const slashBody = await slashRes.json();
+check(slashBody.error !== "endpoint_not_local",
+  "带尾斜杠的 /api/blob/ 必须被同一分支处理，而不是落到未实现（实测 " +
+  JSON.stringify(slashBody).slice(0, 120) + "）");
+check(slashRes.status === 200 || slashBody.error === "kernel_unavailable",
+  "带尾斜杠的 /api/blob/ 应成功或如实报内核不可用（实测 " + slashRes.status + "）");
+console.log("    `/api/blob/`（尾斜杠）⇒ " +
+  (slashRes.status === 200 ? "200 ＋ 已处理 ✓" : "501 ＋ " + slashBody.error + "（被同一分支处理 ✓）"));
+
 console.log("    `/api/blob` 二进制上传 ✓：" + JSON.stringify(blobBody).slice(0, 110));
 
 const un = await wrapped("https://x/api/effects?doc=d1", { method: "POST", body: "{}" });
