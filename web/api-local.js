@@ -42,6 +42,18 @@ export async function makeLocalApi(db) {
   const { putAtom, atomsOf, open, wrap, tx, writeSnapshot } = await import("./store.js");
   // **∴ 内核实例**按文档缓存**✗**（**`Map<doc, WasmKernel>` ✓**）。
   const kernels = new Map();
+
+// Serialise kernel calls per document: wasm-bindgen rejects a reentrant &mut self
+// borrow with the aliasing error the device log reported as needs_render, and the
+// warm-up and the preview can arrive at the same time for the same document.
+// Cost: one kernel call at a time per document, which was already true inside wasm.
+const __kernelChain = new Map();
+async function withKernel(doc, fn) {
+  const prev = __kernelChain.get(doc) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  __kernelChain.set(doc, run.then(() => {}, () => {}));
+  return run;
+}
   const handle = db || (await open());
 
   return async function local(req) {
@@ -370,80 +382,85 @@ export async function makeLocalApi(db) {
         // `Cannot read properties of undefined (reading '__wbindgen_malloc')` ✗**（**实测 ✓**）。
         if (typeof mod.default === "function") await mod.default();
         const meta2 = (await wrap(tx(handle, "docs", "readonly").get(doc))) || {};
-        let entry = kernels.get(doc);
-        if (!entry) {
-          const create = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
-          const w = (create && create.atom.width) || 1024;
-          const h = (create && create.atom.height) || 1024;
-          // **∴ 限额 256 MiB ✓**（**∴ 超限由内核自己淘汰 ✓**）。
-          const inst = new mod.WasmKernel(doc, 256, w, h, 256 * 1024 * 1024);
-          entry = { k: inst, w, h };
-          kernels.set(doc, entry);
-        }
-        const k = entry.k;
-        // **★ 坑：`load_atoms_json` 要的是**服务端 `get_log` 形态的数组**✗**
-        // ⇒ **∴ 而 `atomsOf` 返回 `{ id, doc, seq, atom }` ✗ ⇒ **∴ 必须映射成 `r.atom` ✓**。
-        const atoms = await atomsOf(handle, doc);
-        // **★ 折叠结果必须**可见 ✗ ★**（第 630 轮 ✓）：**∴ `load_atoms_json` 返回一个封套字符串 ✗**
-        // ⇒ **∴ 它写明**成功或失败原因 ✓** ⇒ **∴ 不许丢掉它 ✓**（**∴ 否则只剩"0×0"这种二手症状 ✗**）。
-        var foldResult = k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
-        lastFold = String(foldResult || "");
-        try { window.__lastFold = lastFold; } catch (e) { /* 非浏览器环境（node 判据）=> 忽略 ✓ */ }
-        // **★ 区域必须裁剪到画布内 ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真空图 ✗**）：
-        // **∴ 实测**：**默认区域给到 1024×1024 而文档只有 800×600 ✗**
-        // ⇒ **∴ 越界 ⇒ `render_region_png` 返回**空字节**✗** ⇒ **∴ 于是**前端会显示空白 ✓**。
-        const want = {
-          x: Number(q.get("x") ?? (body.region && body.region.x) ?? 0),
-          y: Number(q.get("y") ?? (body.region && body.region.y) ?? 0),
-          w: Number(q.get("w") ?? (body.region && body.region.w) ?? entry.w),
-          h: Number(q.get("h") ?? (body.region && body.region.h) ?? entry.h),
-        };
-        const box = {
-          x: Math.max(0, Math.min(want.x, entry.w)),
-          y: Math.max(0, Math.min(want.y, entry.h)),
-          w: Math.max(1, Math.min(want.w, entry.w - Math.max(0, want.x))),
-          h: Math.max(1, Math.min(want.h, entry.h - Math.max(0, want.y))),
-        };
-        const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
-        // **∴ 诊断：内核渲染元信息 ✗**（第 664 轮 ✓）：**∴ `k` 在此可见 ✓**。
-        try { window.__renderInfo = k.render_region_info(box.x, box.y, box.w, box.h); window.__renderAtoms = atoms.length; } catch (e) { window.__renderInfo = "info 失败：" + e; }
-        // **★ 绝不返回空图 ✗ ★**：**∴ 内核给不出字节 ⇒ **∴ 如实回落 `needs_render` ✓****
-        //（**∴ 而**不是发一个 0 字节的 `image/png` ⇒ **∴ 那会让前端显示空白却不报错 ✗**）。
-        // **∴ 诊断：内核渲染时的元信息 ✗**（第 664 轮 ✓，**语句级插入 ✓**）：
-        //   **∴ 它给 bbox／宽高／padding／**警告**／tile 数 ✗** ⇒ **∴ 于是**"这一笔为什么没进图"**有据可查 ✓**。
-        // （探针移到 k 可见处 —— 第 664 轮 ✓）
-        if (!png || png.length === 0) {
-          // **∴ 取**元信息里的警告**✗**（`render_region_info` ✓）—— **∴ 否则只能看到"未产出字节"✗**，
-          // **而**看不到原因 ✓**（**∴ 这正是我上一轮卡住的地方 ✓**）。
-          let info = "";
-          try { info = k.render_region_info(Math.floor(box.x), Math.floor(box.y),
-                                           Math.ceil(box.w), Math.ceil(box.h)); } catch (e) { info = "info 亦失败：" + e; }
-          return json({ ok: false, error: "needs_render", reason: "内核未产出字节",
-                        fold_result: String(foldResult || "").slice(0, 500),
-                        atom_count: atoms.length,
-                        // **∴ 解析后返回 ✗**（**否则判据只能看到**被转义的 JSON 字符串 ✓**）。
-                        kernel_info: (() => { try { return JSON.parse(info); } catch { return String(info).slice(0, 600); } })(),
-                        server: false });
-        }
-        // **★ `?probe=1` ⇒ 只回**诊断 ✗ ★**（第 658 轮 ✓）：**∴ 它一次给出两件事 ✗**
-        //   （**∴ 折叠信封 ✓ ＋ 渲染元信息（**含警告 ✓**）**）
-        //   ⇒ **∴ 于是**"这一笔为什么没进图"**不必再猜 ✓**。
-        if (q.get("probe")) {
-          let meta = "";
-          try { meta = k.render_region_info(box.x, box.y, box.w, box.h); } catch (e) { meta = "info 失败：" + e; }
-          return json({ ok: true, probe: true, fold: String(foldResult || "").slice(0, 300),
-                        info: String(meta).slice(0, 700),
-                        atom_count: atoms.length, region: box });
-        }
-        // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
-        const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
-        await writeSnapshot(handle, doc, seqNow, { bytes: png });
-        // **∴ 诊断：写快照时用的序号 ✗**（第 662 轮 ✓）。
-        try { window.__snapSeq = seqNow; window.__snapAt = Date.now(); } catch (e) {}
-        return new Response(png, {
-          status: 200,
-          headers: { "content-type": "image/png", "cache-control": "no-store",
-                     "x-yanshi-source": "local-kernel" },
+        // Everything below touches the wasm kernel, so it runs inside the per-document
+        // serial chain: the warm-up and the preview can otherwise overlap and trip the
+        // reentrant borrow check (device log: recursive use of an object ... aliasing).
+        return await withKernel(doc, async () => {
+          let entry = kernels.get(doc);
+          if (!entry) {
+            const create = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+            const w = (create && create.atom.width) || 1024;
+            const h = (create && create.atom.height) || 1024;
+            // **∴ 限额 256 MiB ✓**（**∴ 超限由内核自己淘汰 ✓**）。
+            const inst = new mod.WasmKernel(doc, 256, w, h, 256 * 1024 * 1024);
+            entry = { k: inst, w, h };
+            kernels.set(doc, entry);
+          }
+          const k = entry.k;
+          // **★ 坑：`load_atoms_json` 要的是**服务端 `get_log` 形态的数组**✗**
+          // ⇒ **∴ 而 `atomsOf` 返回 `{ id, doc, seq, atom }` ✗ ⇒ **∴ 必须映射成 `r.atom` ✓**。
+          const atoms = await atomsOf(handle, doc);
+          // **★ 折叠结果必须**可见 ✗ ★**（第 630 轮 ✓）：**∴ `load_atoms_json` 返回一个封套字符串 ✗**
+          // ⇒ **∴ 它写明**成功或失败原因 ✓** ⇒ **∴ 不许丢掉它 ✓**（**∴ 否则只剩"0×0"这种二手症状 ✗**）。
+          var foldResult = k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
+          lastFold = String(foldResult || "");
+          try { window.__lastFold = lastFold; } catch (e) { /* 非浏览器环境（node 判据）=> 忽略 ✓ */ }
+          // **★ 区域必须裁剪到画布内 ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真空图 ✗**）：
+          // **∴ 实测**：**默认区域给到 1024×1024 而文档只有 800×600 ✗**
+          // ⇒ **∴ 越界 ⇒ `render_region_png` 返回**空字节**✗** ⇒ **∴ 于是**前端会显示空白 ✓**。
+          const want = {
+            x: Number(q.get("x") ?? (body.region && body.region.x) ?? 0),
+            y: Number(q.get("y") ?? (body.region && body.region.y) ?? 0),
+            w: Number(q.get("w") ?? (body.region && body.region.w) ?? entry.w),
+            h: Number(q.get("h") ?? (body.region && body.region.h) ?? entry.h),
+          };
+          const box = {
+            x: Math.max(0, Math.min(want.x, entry.w)),
+            y: Math.max(0, Math.min(want.y, entry.h)),
+            w: Math.max(1, Math.min(want.w, entry.w - Math.max(0, want.x))),
+            h: Math.max(1, Math.min(want.h, entry.h - Math.max(0, want.y))),
+          };
+          const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
+          // **∴ 诊断：内核渲染元信息 ✗**（第 664 轮 ✓）：**∴ `k` 在此可见 ✓**。
+          try { window.__renderInfo = k.render_region_info(box.x, box.y, box.w, box.h); window.__renderAtoms = atoms.length; } catch (e) { window.__renderInfo = "info 失败：" + e; }
+          // **★ 绝不返回空图 ✗ ★**：**∴ 内核给不出字节 ⇒ **∴ 如实回落 `needs_render` ✓****
+          //（**∴ 而**不是发一个 0 字节的 `image/png` ⇒ **∴ 那会让前端显示空白却不报错 ✗**）。
+          // **∴ 诊断：内核渲染时的元信息 ✗**（第 664 轮 ✓，**语句级插入 ✓**）：
+          //   **∴ 它给 bbox／宽高／padding／**警告**／tile 数 ✗** ⇒ **∴ 于是**"这一笔为什么没进图"**有据可查 ✓**。
+          // （探针移到 k 可见处 —— 第 664 轮 ✓）
+          if (!png || png.length === 0) {
+            // **∴ 取**元信息里的警告**✗**（`render_region_info` ✓）—— **∴ 否则只能看到"未产出字节"✗**，
+            // **而**看不到原因 ✓**（**∴ 这正是我上一轮卡住的地方 ✓**）。
+            let info = "";
+            try { info = k.render_region_info(Math.floor(box.x), Math.floor(box.y),
+                                             Math.ceil(box.w), Math.ceil(box.h)); } catch (e) { info = "info 亦失败：" + e; }
+            return json({ ok: false, error: "needs_render", reason: "内核未产出字节",
+                          fold_result: String(foldResult || "").slice(0, 500),
+                          atom_count: atoms.length,
+                          // **∴ 解析后返回 ✗**（**否则判据只能看到**被转义的 JSON 字符串 ✓**）。
+                          kernel_info: (() => { try { return JSON.parse(info); } catch { return String(info).slice(0, 600); } })(),
+                          server: false });
+          }
+          // **★ `?probe=1` ⇒ 只回**诊断 ✗ ★**（第 658 轮 ✓）：**∴ 它一次给出两件事 ✗**
+          //   （**∴ 折叠信封 ✓ ＋ 渲染元信息（**含警告 ✓**）**）
+          //   ⇒ **∴ 于是**"这一笔为什么没进图"**不必再猜 ✓**。
+          if (q.get("probe")) {
+            let meta = "";
+            try { meta = k.render_region_info(box.x, box.y, box.w, box.h); } catch (e) { meta = "info 失败：" + e; }
+            return json({ ok: true, probe: true, fold: String(foldResult || "").slice(0, 300),
+                          info: String(meta).slice(0, 700),
+                          atom_count: atoms.length, region: box });
+          }
+          // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
+          const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
+          await writeSnapshot(handle, doc, seqNow, { bytes: png });
+          // **∴ 诊断：写快照时用的序号 ✗**（第 662 轮 ✓）。
+          try { window.__snapSeq = seqNow; window.__snapAt = Date.now(); } catch (e) {}
+          return new Response(png, {
+            status: 200,
+            headers: { "content-type": "image/png", "cache-control": "no-store",
+                       "x-yanshi-source": "local-kernel" },
+          });
         });
       } catch (err) {
         // **∴ 内核不可用（**如 node 里没有 DOM／wasm 未同步 ✓）⇒ **∴ 如实说该重算 ✗**。
