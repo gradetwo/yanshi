@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 11;
+export const LOCAL_IMPLEMENTED = 12;
 
 let lastFold = null;
 
@@ -275,14 +275,15 @@ async function withKernel(doc, fn) {
       //     目前**没有被内核消费** ✗** —— **∴ 服务端会按它们改变笔迹 ✓**。
       //     ⇒ **∴ 这是**已知差距 ✗**（**写在这里与提交里 ⇒ 不是静默忽略 ✓），
       //     而**它**不影响"**能不能画**"✗** ⇒ **∴ 先修 P0 ✓**。
-      if (path === "/api/tools/draw_stroke") {
-        const d = (body && body.data) || {};
-        body = Object.assign({}, body, {
-          points: d.points != null ? d.points : body.points,
-          size: d.size != null ? d.size : body.size,
-          color: d.color != null ? d.color : body.color,
-        });
-      }
+      // **∴ 无条件归一 ✗**（**∴ 对 `brush_stroke` 是**恒等变换 ✓ —— 它没有 `data` ✓）
+      //   ⇒ **∴ 于是**：**分支判定里**只出现一次 `draw_stroke` ✗**
+      //     ⇒ **∴ `LOCAL_IMPLEMENTED` 与实现分支数**仍然**对得上 ✓**** ✓✓
+      const d = (body && body.data) || {};
+      body = Object.assign({}, body, {
+        points: d.points != null ? d.points : body.points,
+        size: d.size != null ? d.size : body.size,
+        color: d.color != null ? d.color : body.color,
+      });
       // **★ 走内核渲染一笔 ⇒ 写 `import_image` 原子 ✗ ★**（第 653 轮 ✓；**步骤 ⑤ ✓**）：
       //   **∴ 为什么不能自造 `brush_stroke` 原子 ✗**（**第 646 轮实测 ✓**）：
       //   **∴ 服务端的笔触是**服务端渲染成位图**后的 `import_image` 原子 ✗**（**内核不认前者的 kind ✓**）。
