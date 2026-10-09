@@ -52,6 +52,18 @@ export async function makeLocalApi(db) {
 
     // **① `/api/documents`（**创建 ✓**）**：**∴ 与真实服务端一样返回 `token` ✗**
     //（**∴ 本部署没有鉴权 ✗ ⇒ **token 是**本地占位**✗，**而字段存在 ✓** ⇒ **∴ 前端无需分支 ✓**）。
+    // **★ 前端启动所需的非 `/api/` 端点 ⇒ 返回合理默认值 ✗ ★**（第 827 轮 ✓）
+    //   **∴ 为什么 ✗**：**它们**不在 `/api/` 下**✗ ⇒ **∴ 原来**打到网络 ⇒ **∴ 405 ✓**
+    //   ⇒ **∴ 现在**：**本地层**直接答**默认值 ✗** ⇒ **∴ 于是**启动路径**不再报错 ✓**
+    if (url.pathname === "/get_preferences") {
+      return json({ ok: true, preferences: { theme: "dark", locale: "zh-CN" } });
+    }
+    if (url.pathname === "/list_effects") {
+      return json({ ok: true, effects: [] });
+    }
+    if (url.pathname === "/list_brushes") {
+      return json({ ok: true, brushes: [] });
+    }
     if (url.pathname === "/api/documents") {
       const docId = body.doc_id || `local-${Date.now().toString(36)}`;
       // **★ 必须写**完整 8 字段封套 ✗ ★**（第 630 轮 ✓，**靠 `fold_result` 一次定位 ✓**）：
@@ -395,7 +407,15 @@ export function installLocalApi(deps) {
                     note: "本部署没有服务器端；渲染全部在本地浏览器完成" });
     }
     // **∴ 只拦 `/api/` ✓**（**静态资源与 `/wasm/` 保持原路 ✓**）。
-    if (!url.pathname.startsWith("/api/")) return original(input, init);
+    // **★ 非 `/api/` 的本地端点也要走本地层 ✗ ★**（第 827 轮 ✓；**用户报 405 ✓**）：
+    //   **∴ 为什么 ✗**：**`get_preferences`／`list_effects`／`list_brushes` 不在 `/api/` 下 ✗**
+    //   ⇒ **∴ 原来**它们**被放行到网络 ✗** ⇒ **∴ 静态托管**返回 405 ✓**
+    //   ⇒ **∴ 现在**：**它们也进 `local()` ✗** ⇒ **∴ 已实现**就正常答 ✗**；
+    //     **∴ 未实现**就**由 `local()` 末尾的 throw **转成 501 ✓**（**如实报错 ✓，**不是**405 ✓）**。
+    const LOCAL_EXTRA = ["/get_preferences", "/list_effects", "/list_brushes"];
+    const isLocalPath =
+      url.pathname.startsWith("/api/") || LOCAL_EXTRA.indexOf(url.pathname) >= 0;
+    if (!isLocalPath) return original(input, init);
     try {
       return await deps.local(req);
     } catch (err) {
