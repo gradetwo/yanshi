@@ -1214,13 +1214,33 @@ impl Renderer {
                         want_tiles.len()
                     );
                     let line = format!(
-                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={} cached={} emptyk={}\n",
+                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={} cached={} emptyk={} src={}\n",
                         ready,
                         sig_eq,
                         tiles_ok,
                         want_tiles.len(),
                         n_cached,
                         n_empty,
+                        // **★ 命中来源 ✗ ★**（第 981 轮 ✓；**查判据 ② 的撒谎 ✓）：
+                        //   **∴ 为什么需要它 ✗**：**判据 ②**（**不传活动层 ⇒ 期望不复用 ✓）
+                        //     **实测**复用 ✗** ⇒ **∴ 而**两种来源的含义**完全不同 ✓**：
+                        //       **`by_sig`** ⇒ **命中**按切点分组的那份 ✗**；
+                        //       **`legacy`** ⇒ **命中**旧的单份字段（**∴ 它**可能**不该被用 ✓）** ✓✓
+                        below
+                            .lock()
+                            .ok()
+                            .and_then(|g| {
+                                g.as_ref().map(|c| {
+                                    if c.by_sig.contains_key(&sig) {
+                                        "by_sig"
+                                    } else if c.sig == sig {
+                                        "legacy"
+                                    } else {
+                                        "none"
+                                    }
+                                })
+                            })
+                            .unwrap_or("none"),
                     );
                     let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
                 }
