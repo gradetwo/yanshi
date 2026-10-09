@@ -1179,16 +1179,26 @@ impl Renderer {
                     .append(true)
                     .open(path)
                 {
+                    // **★ 探针必须与 `ready` **同源** ✗ ★**（第 978 轮 ✓）：
+                    //   **∴ 为什么 ✗**：**第 977 轮**我把 `ready` 改成**看 `by_sig`**✗，
+                    //     **而**探针**仍读旧字段**✗ ⇒ **∴ 于是**：**读数**与判定**脱节 ✓**
+                    //       ⇒ **∴ 我**一度**误判**"改动没生效 ✓" ✓**** ✓✓
+                    //   **∴ 现在 ✗**：**两者**都用 `tiles_for_sig`**✗ ⇒ **∴ 读数**可信 ✓**** ✓✓
+                    //   **∴ `sig_eq` 的语义 ✗**：**"**这一组在不在 ✓"**
+                    //     （**∴ 与**原来的"**`c.sig == sig`**"**同义 ✓）** ✓✓
                     let (sig_eq, tiles_ok, n_cached, n_empty) = match below.lock() {
                         Ok(g) => match g.as_ref() {
-                            Some(c) => (
-                                c.sig == sig,
-                                want_tiles.iter().all(|t| {
-                                    c.tiles.iter().any(|(k, _)| *k == *t) || c.empty.contains(t)
-                                }),
-                                c.tiles.len(),
-                                c.empty.len(),
-                            ),
+                            Some(c) => match tiles_for_sig(c, &sig) {
+                                Some((tiles, empty)) => (
+                                    true,
+                                    want_tiles.iter().all(|t| {
+                                        tiles.iter().any(|(k, _)| *k == *t) || empty.contains(t)
+                                    }),
+                                    tiles.len(),
+                                    empty.len(),
+                                ),
+                                None => (false, false, 0, 0),
+                            },
                             None => (false, false, 0, 0),
                         },
                         Err(_) => (false, false, 0, 0),
