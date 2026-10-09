@@ -7672,3 +7672,31 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 元收获 ★**：**"**验证脚本**"也要**被验证 ✗**（**∴ 空集合静默通过 ✓）**
 #     ⇒ **∴ 规则**：**每个验证脚本**都**断言"**我检查了 N 项 ✗**"** ✓✓
 #     ⇒ **∴ 而**这条教训**来源于**我自己**的一次假通过 ✓**** ✓✓
+
+# **★ 第 851 轮：✅ **线上冒烟加"**无网跳过**"✗**（**三种情形都验证 ✓）**
+#   **∴ 为什么需要它 ✗**：**本判据**被 `run-criteria.sh` 的 glob **自动枚举 ✗**
+#     （**第 850 轮实测 ✓）⇒ **∴ 于是**它**会在 CI 里跑 ✓**
+#     ⇒ **∴ 而**它**需要**外网 ✗** ⇒ **∴ 断网时**"**判据红**"与"**环境无网**"**无法区分 ✓**** ✓✓
+#   **★ 实现 ✗ ★**：
+#     ```js
+#     const REQUIRE = process.env.YANSHI_LIVE_REQUIRE === "1";
+#     const isNetworkError = (err) => /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|network/i
+#       .test(String(err.message) + " " + String(err.cause && err.cause.code));
+#     try { await fetch(BASE + "/health", { cache: "no-store" }); }
+#     catch (err) {
+#       if (isNetworkError(err) && !REQUIRE) { console.log("SKIP …"); process.exit(0); }
+#       console.error("FAIL 网络不可用且要求联网"); process.exit(1);
+#     }
+#     ```
+#     ⇒ **∴ 关键 ✗**：**只有**明确的**网络类错误**才算**跳过 ✗** ⇒ **∴ 而**任何**断言不符**
+#       **仍然**退出 1 ✓****（**∴ 不许**用"跳过"掩盖真失败 ✓）** ✓✓
+#   **★ 三种情形**实测 ✗ ★**：
+#     | 情形 | 命令 | 结果 |
+#     | **有网 ✓** | `node scripts/tool-pwa-live-smoke.mjs` | **✅ 10 项通过｜EXIT 0 ✓** |
+#     | **无网 ✓** | `YANSHI_PWA_BASE=https://no-such-host-xyz.invalid` | **⏭ 跳过｜EXIT 0 ✓** |
+#     | **无网 ＋ 强制 ✓** | 同上 ＋ `YANSHI_LIVE_REQUIRE=1` | **❌ 失败｜EXIT 1 ✓** |
+#     ⇒ **∴ 三者**互不混淆 ✗** ⇒ **∴ 于是**：**CI 断网**不再**假红 ✓**** ✓✓
+#   **∴ 且**可用 `YANSHI_PWA_BASE` **指向**任意部署 ✗**（**∴ 如**预览环境 ✓）** ✓✓
+#   **∴ 元收获 ★**：**需要外部的判据**必须**区分三种结果 ✗**：
+#     **通过 ✗｜**真失败 ✗｜**环境不可用（**跳过 ✓）**
+#     ⇒ **∴ 只报"**通过／失败**"**会把**环境问题**伪装成**产品问题 ✓**** ✓✓

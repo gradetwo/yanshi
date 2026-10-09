@@ -23,6 +23,30 @@ const bust = "?t=" + Date.now();
 const fails = [];
 let checked = 0;
 
+// **★ 无网 ⇒ 跳过而不是失败 ✗ ★**（第 851 轮 ✓）：
+//   **∴ 为什么 ✗**：**本判据**被 `run-criteria.sh` 的 glob **自动枚举** ✗**
+//     （**第 850 轮实测 ✓）⇒ **∴ 于是**它**会在 CI 里跑 ✓**
+//     ⇒ **∴ 而**它**需要**外网 ✗** ⇒ **∴ 断网时**"**判据红**"与"**环境无网**"**无法区分 ✓**
+//   **∴ 现在**：**只把**明确的网络类错误**当作**跳过 ✗**（**退出 0 ＋ 显式打印 ✓）**
+//     ⇒ **∴ 而**任何**断言不符**仍然**退出 1 ✓****（**∴ 不许**用"跳过"掩盖真失败 ✓）** ✓✓
+//   **∴ 且**`YANSHI_LIVE_REQUIRE=1` 可以**强制**要求外网 ✗**（**∴ 那时**无网**就是**失败 ✓）** ✓✓
+const REQUIRE = process.env.YANSHI_LIVE_REQUIRE === "1";
+const isNetworkError = (err) => {
+  const m = String((err && err.message) || err) + " " + String((err && err.cause && err.cause.code) || "");
+  return /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|network/i.test(m);
+};
+try {
+  await fetch(BASE + "/health", { cache: "no-store" });
+} catch (err) {
+  if (isNetworkError(err) && !REQUIRE) {
+    console.log("  SKIP 无法访问 " + BASE + "（" + String((err && err.message) || err) + "）");
+    console.log("\n⏭  线上 PWA 冒烟跳过 ✓（无网；设 YANSHI_LIVE_REQUIRE=1 可强制要求网络）");
+    process.exit(0);
+  }
+  console.error("  FAIL 网络不可用且要求联网：" + String((err && err.message) || err));
+  process.exit(1);
+}
+
 const get = async (path) => {
   const res = await fetch(BASE + path, { cache: "no-store" });
   return { status: res.status, text: res.ok || res.status === 200 ? await res.text() : "" };
