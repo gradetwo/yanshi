@@ -2934,3 +2934,29 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ 门禁必绿 ＋ **`#[expect(dead_code)]` **自动失配 ⇒ 编译器提醒删掉 ✓**** ✓✓
 #   **∴ 下一轮** ✓：**写这五步 ✗**（**∴ 若**遇到未预料的结构 ⇒ **∴ 先打印再改 ✓**，
 #     **∴ 且**改完**立刻**跑 `cargo build -p yanshi-render` 看编译 ✓）。**
+# **★ 第 690 轮：🎉🎉 **`above` 的坐标**完备 ✗**（**`index_here` 就是当前层序号 ✓**）**
+#   **∴ 关键坐标 ✓**（`render.rs` ✓）**：
+#     ```rust
+#     :1191  let mut visited: usize = 0;
+#     :1192  for layer in state.alive_layers() {
+#     :1202      let index_here = visited;      // ★ 当前层的序号 ★
+#     :1203      visited += 1;
+#     …
+#     :1132  if let Some(buf) = cached { accumulation = buf; note_below_reuse(); reused = true; … }
+#     ```
+#     ⇒ **∴ 于是**三段分解在这个循环里就是**三个区间 ✗**：
+#       **`index_here <  split` ⇒ 属于 `below` ✓**（**∴ 已在缓存里 ⇒ **∴ 命中时整段跳过 ✓**）**；
+#       **`index_here == split` ⇒ **当前层 ✗**（**每次重画 ✓**）**；
+#       **`index_here >  split` ⇒ **属于 `above` ✗**（**∴ 今天**照常合成进 `accumulation` ✓**）** ✓✓
+#   **∴ 所以步骤 ① 的判定就是 ✗**：**`above_wanted && index_here > split` ✗**
+#     ⇒ **∴ 只需**在那些层上**额外**累积一份进 `above_acc ✗**** ✓✓
+#   **∴ 而** `:1132` 的 `cached` 分支正是**复用的样板 ✗**：
+#     **`if let Some(buf) = cached { accumulation = buf; note_below_reuse(); reused = true; }` ✗**
+#     ⇒ **∴ 步骤 ② 的 `above` 复用应当**同形 ✗**：**`if let Some(buf) = above_cached {
+#       **把它叠到 `accumulation` 上 ⇒ `note_above_reuse()` ✓ }` ✗**** ✓✓
+#   **∴ 下一轮** ✓：**写步骤 ① 五步 ✗**（**∴ 一切坐标都在手 ✓，**无未知 ✓**）
+#     ⇒ **∴ 改完立刻** `cargo build -p yanshi-render` 看编译 ✓**
+#     ⇒ **∴ 且**预期 **`#[expect(dead_code)]` 失配 ⇒ **∴ 删掉它 ✓****（**∴ 那是**正确信号 ✓**）** ✓✓
+#   **∴ 至此**在目标第 4 条上的侦察**全部结束 ✗** —— **∴ 共 9 轮**（**第 682–690 ✓**）**：
+#     **结构 ＋ 字段 ＋ 计数 ＋ 切点 ＋ 触发条件 ＋ 两个循环 ＋ `visited`／`index_here` ＋ 写入样板 ✓**
+#     ⇒ **∴ 下一轮起是**纯实现 ✗**，**不再需要探索 ✓**** ✓✓
