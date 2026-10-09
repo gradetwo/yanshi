@@ -244,6 +244,10 @@ const pr = await evaluate(`(async () => { const r = await fetch("/api/tools/rend
   return { status: r.status, body: await r.json() }; })()`);
 console.log("  探针 => " + JSON.stringify(pr).slice(0, 620));
 
+// **★ 诊断（**第 660 轮 ✓**）：**从 `/health` 读折叠信封 ✗** ★**
+const diag = await evaluate(`(async () => (await (await fetch("/health")).json()))()`);
+console.log("  诊断 /health => " + JSON.stringify(diag).slice(0, 400));
+
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
 
