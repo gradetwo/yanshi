@@ -84,6 +84,12 @@ check(gd.preview_state === "pending", `get_document 的 preview_state 应为 pen
 check(gd.render_backend === "cpu", `无 WebGPU 时后端应为 cpu ✗（实测 ${gd.render_backend}）`);
 check(gd.gpu_unavailable_reason === "host_has_no_webgpu", `应报 GPU 不可用原因 ✗（实测 ${gd.gpu_unavailable_reason}）`);
 
+// **⑥b 快照分支：**冷启动必缺快照 ⇒ 必须**如实**说"该重算"✗，**不许返回旧图 ✓**
+const rr = await (await call("/api/tools/render_region", { method: "POST" })).json();
+check(rr.ok === false && rr.error === "needs_render",
+  `缺快照时应如实报 needs_render ✗（实测 ${JSON.stringify(rr)}）`);
+check(/过期|缺失/.test(rr.reason || ""), "needs_render 应给出原因 ✗");
+
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
 const un = await wrapped("https://x/api/tools/render_region?doc=d1", { method: "POST", body: "{}" });

@@ -101,6 +101,33 @@ export async function makeLocalApi(db) {
       });
     }
 
+    // **⑤ `/api/tools/render_region`（**★ 只做**快照分支**✗ ⇒ **∴ 仍是**部分实现**✗ ★**）**
+    // **∴ 语义（**目标第 6 条 ✓**）**：**快照必须带序号 ＋ 格式版本 ✗**
+    //   ⇒ **∴ 命中（**序号与格式都对 ✓）⇒ 直接给图 ✓**；
+    //   **∴ 过期／缺失 ⇒ **如实报 `needs_render` ＋ 原因 ✗**（**∴ 绝不返回一张旧图冒充 ✓**）。
+    // **∴ 为什么不把它计入"完整实现" ✗**：**冷启动（**必然缺快照 ✓）它给不出图 ✗**
+    //   ⇒ **∴ 那要等**本地内核渲染 ＋ 编码**✗（**下一批 ✓**）⇒ **∴ 计数保持 5 ✓，**不虚报 ✓**。
+    if (url.pathname === "/api/tools/render_region") {
+      const { readSnapshot } = await import("./store.js");
+      const expected = Number(q.get("seq") || 0);
+      const snap = await readSnapshot(handle, doc, expected);
+      if (snap && snap.bytes) {
+        return new Response(snap.bytes, {
+          status: 200,
+          headers: { "content-type": "image/png", "cache-control": "no-store", "x-yanshi-source": "local-snapshot" },
+        });
+      }
+      // **∴ 没有可用快照 ⇒ **如实说明该重算 ✓**（**200 ＋ 明确字段 ✗ ⇒ **∴ 前端可分支 ✓**）。
+      return json({
+        ok: false,
+        error: "needs_render",
+        reason: "本地快照缺失或已过期（序号／格式不匹配）",
+        snapshot_seq: expected,
+        render_backend: await detectBackend(),
+        server: false,
+      });
+    }
+
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
     throw new Error(`endpoint_not_local: ${url.pathname}`);
   };
