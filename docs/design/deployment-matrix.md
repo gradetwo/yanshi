@@ -73,3 +73,48 @@
 3. **③ PWA 壳（**静态化 ＋ manifest ＋ service worker ✓**）⇒ 部署到 Workers ✓**；
 4. **④ IndexedDB 持久化层**（**∴ B／C 的主要工作量 ✗**）；
 5. **⑤ 内核 WebGPU**（**WebGPU 可用则用 ✓；**∴ 体积代价已由用户接受 ✓**）**。
+
+---
+
+## 七、B（Workers ＋ PWA）的**具体部署方式**（**用户指定 ✓，第 605 轮 ✓**）
+
+用户指示：
+> 这个 PWA 到时候 **wrangler 部署到 workers 上**，然后**加到 yanshi 的网站上去**，
+> 例如 **`yanshi-online.wangda.today`**。
+
+### 7.1 落地形态
+
+| 项 | 内容 |
+|---|---|
+| **工具** | **`wrangler`（**Cloudflare 官方 CLI ✓**）** ⇒ **`wrangler deploy` ✓** |
+| **产物** | **静态 PWA 资源（**HTML／JS／WASM／manifest／service worker ✓**）＋ Workers 入口脚本 ✓** |
+| **域名** | **`yanshi-online.wangda.today`** ✓（**Workers custom domain ✓，或在 yanshi 站点里加一条子域路由 ✓**） |
+| **与主站关系** | **"加到 yanshi 的网站上去"** ⇒ **∴ 主站（**`wangda.today` ✓**）上应有入口链接／子域指向 ✓** |
+| **服务器依赖** | **无 ✗**（**不连 `yanshi-serve` ✓**）⇒ **∴ 它必须自带持久化（**IndexedDB ✓**）** |
+
+### 7.2 需要新增的仓库内容
+
+| # | 文件／目录 | 作用 |
+|---|---|---|
+| **①** | **`worker/`** | **Workers 入口（**JS／TS ✓**）＋ 静态资源绑定（**`assets` ✓**）** |
+| **②** | **`wrangler.toml`** | **`name`／`main`／`assets`／`compatibility_date`／**custom domain（**`routes` ✓**）** |
+| **③** | **`web/`（**或复用现有 viewer 的静态壳 ✓**）** | **PWA：**`index.html` ＋ `manifest.webmanifest` ＋ `sw.js` ✓** |
+| **④** | **`wasm` 构建产物** | **`yanshi-wasm` 的 `wasm32-unknown-unknown` 输出（**现状零 DOM ⇒ 可直接上 ✓**）** |
+| **⑤** | **IndexedDB 层** | **替换服务端的 blob／原子日志（**B／C 的主要工作量 ✓**）** |
+| **⑥** | **CI 工作流** | **`wrangler deploy` 交给 GitHub Actions（**纪律：重活给 CI/CD ✓**；**密钥用仓库 secret ✓**）** |
+
+### 7.3 与 GPU 决定的接口（**重申 ✓**）
+
+**Workers 无 GPU ✗** ⇒ **∴ 该部署会**如实报 `render_backend: "cpu"` ＋ `gpu_unavailable_reason: "host_has_no_gpu"` ✓**
+⇒ **∴ 而**"GPU 优先"这条在它上面由**"**报出后端 ＋ 报出原因**"**来满足**✓（**∴ 不许假装有 GPU ✗**）；
+**∴ 若将来 Cloudflare 提供 GPU（**如 Workers AI 上的加速 ✓**）⇒ **∴ 那时才把这两行改成**从实际后端读**✓****。
+
+### 7.4 验收（**新增 ✓**）
+
+| # | 判据 | 期望 |
+|---|---|---|
+| **①** | **`wrangler deploy` 后访问 `https://yanshi-online.wangda.today`** | **PWA 可打开 ✓** |
+| **②** | **首次打开** | **`manifest` 被识别 ＋ service worker 注册成功 ✓** |
+| **③** | **断网后刷新** | **仍可打开并绘制 ✓** |
+| **④** | **其 `/health`（**若保留 ✓**）或诊断** | **`render_backend == "cpu"` ＋ 原因 ✓** |
+| **⑤** | **持久化** | **刷新后文档仍在（**IndexedDB ✓**）** |
