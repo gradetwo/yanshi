@@ -1078,17 +1078,19 @@ impl Renderer {
                     .append(true)
                     .open(path)
                 {
-                    let (sig_eq, tiles_ok) = match below.lock() {
+                    let (sig_eq, tiles_ok, n_cached, n_empty) = match below.lock() {
                         Ok(g) => match g.as_ref() {
                             Some(c) => (
                                 c.sig == sig,
                                 want_tiles.iter().all(|t| {
                                     c.tiles.iter().any(|(k, _)| *k == *t) || c.empty.contains(t)
                                 }),
+                                c.tiles.len(),
+                                c.empty.len(),
                             ),
-                            None => (false, false),
+                            None => (false, false, 0, 0),
                         },
-                        Err(_) => (false, false),
+                        Err(_) => (false, false, 0, 0),
                     };
                     // **★ 无条件 stderr ✗ ★**（第 732 轮 ✓）：**∴ 短标记 `PROBE_READ` ✗**
                     //   ⇒ **∴ 于是**：**stderr 有 ⇒ 探针跑了 ✗**（**∴ 而**文件没写 ⇒ **∴ 就是写文件的问题 ✓）**；
@@ -1101,11 +1103,13 @@ impl Renderer {
                         want_tiles.len()
                     );
                     let line = format!(
-                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={}\n",
+                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={} cached={} emptyk={}\n",
                         ready,
                         sig_eq,
                         tiles_ok,
-                        want_tiles.len()
+                        want_tiles.len(),
+                        n_cached,
+                        n_empty,
                     );
                     let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
                 }
