@@ -110,6 +110,15 @@ const unBody = await un.json();
 check(unBody.error === "not_implemented_locally", `未实现端点的 error 字段不对 ✗：${JSON.stringify(unBody)}`);
 check(!!unBody.endpoint && unBody.endpoint.includes("effects"), "未实现端点应报出端点名 ✗");
 check(!!unBody.reason, "未实现端点应报出原因 ✗");
+// **★ 快照**过期**必须返回 null ✗ ★**（第 641 轮 ✓；**目标第 6 条 ✓**）：
+//   **∴ 规则**：**快照带**序号 ＋ 格式版本**✗ ⇒ **∴ 二者任一不匹配 ⇒ **必须重算 ✗****
+//   ⇒ **∴ 绝不许**拿旧图冒充**✗**（**∴ 这是能红判据的重点 ✓**）。
+const { writeSnapshot, readSnapshot, FORMAT_VERSION } = await import(base + "store.js");
+const snapBytes = new Uint8Array([1, 2, 3, 4]);
+await writeSnapshot(db, "d1", 3, { bytes: snapBytes });
+check(!!(await readSnapshot(db, "d1", 3)), "序号匹配时应能读到快照 ✗");
+check((await readSnapshot(db, "d1", 4)) === null, "序号**不**匹配时**必须**返回 null ✗（**∴ 否则就是拿旧图冒充 ✗**）");
+console.log(`  快照：序号匹配 ⇒ 命中 ✓｜序号不匹配 ⇒ null ✓（format=${FORMAT_VERSION}）`);
 check(LOCAL_IMPLEMENTED >= 5, `声明实现数应 ≥ 5 ✗（实测 ${LOCAL_IMPLEMENTED}）`);
 
 console.log(`  实际调用通过 ✓：创建 ✓｜原子 ${atoms.count} 条 ✓｜层 ${layers.count} 个 ✓｜`
