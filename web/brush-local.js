@@ -27,7 +27,13 @@ export async function fetchBrushText(brush) {
   // **∴ 只编 `#` 与 `%` ✗**（**∴ `+` 必须保持字面 ✓** —— 与服务端用**路径版**解码器一致 ✓）。
   const encoded = name.replace(/%/g, "%25").replace(/#/g, "%23");
   const res = await fetch("/brushes/" + encoded);
-  if (!res.ok) throw new Error("笔刷取不到：" + name + " ⇒ HTTP " + res.status);
+  if (!res.ok) {
+    // Include the exact URL that failed: the reported name is the caller's input, while
+    // the request uses the encoded form, and without the url we cannot tell them apart.
+    throw new Error("笔刷取不到：" + name + " ⇒ HTTP " + res.status +
+                    "｜请求 URL ＝ " + String(res.url || "(未知)") +
+                    "｜base ＝ " + String(location.href));
+  }
   return res.text();
 }
 
