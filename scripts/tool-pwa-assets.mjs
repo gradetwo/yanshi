@@ -13,6 +13,7 @@
 // **变异** ✗：**删掉 `web/wasm/yanshi_wasm_bg.wasm`** ⇒ **∴ ① 报红 ✓**；
 //   **把域名从 `wrangler.toml` 去掉** ⇒ **∴ ② 报红 ✓**。
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 
 const bad = [];
 // **★ 公共：剥离注释后再查代码 ✓ ★**（第 616 轮 ✓）——
@@ -178,6 +179,16 @@ for (const f of PAIRS) {
 check(forkChecked >= 1, "没有任何 viewer 文件被副本化 ⇒ **∴ PWA 没有界面 ✗**");
 console.log(`  防分叉：${forkChecked} 个 viewer 文件与单一源逐字节相同 ✓`);
 
+// **★ 笔刷资源 ✓ ★**（第 651 轮 ✓）：**∴ 内核落笔要**笔刷文件全文**✗**
+//   （PaintRequest.myb）⇒ **∴ 无服务器部署必须自带这 199 个文件 ✓**。
+check(existsSync("web/brushes"), "web/brushes 缺失 ⇒ PWA 无法落笔");
+if (existsSync("web/brushes")) {
+  const bs = readdirSync("web/brushes").filter((f) => f.endsWith(".myb"));
+  check(bs.length >= 100, "笔刷数过少（" + bs.length + "）⇒ 同步不完整");
+  const hashed = bs.filter((f) => f.indexOf("#") >= 0);
+  check(hashed.length >= 1, "没有带井号的笔刷 ⇒ 无法验证 URL 解码");
+  console.log("  笔刷：" + bs.length + " 支 ✓（含 " + hashed.length + " 支带井号，用于验证解码 ✓）");
+}
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);

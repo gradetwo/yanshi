@@ -12,6 +12,7 @@
 //
 // **用法** ✓：`node scripts/pwa-sync-viewer.mjs`（**在 `pwa-sync-wasm.mjs` 之后跑 ✓**）
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
@@ -76,4 +77,24 @@ if (!bin) {
   writeFileSync(join(DST, "index.html"), injected);
   console.log(`✓ 已注入本地接管脚本 ⇒ web/index.html（注入 ${snippet.length} 字节 ✓）`);
   console.log(`✓ 静态页已由服务端导出 ⇒ web/index.html（${(size / 1024).toFixed(0)} KiB ✓）`);
+}
+
+// **★ 笔刷资源（`.myb`）同步 ✓ ★**（第 651 轮 ✓；**部署矩阵 §14.30 ✓**）：
+//   **∴ 内核的落笔要的是**笔刷文件全文**✗**（**PaintRequest.myb ✓**）
+//   ⇒ **∴ 无服务器部署必须自带这 199 个文件（**≈1.9 MB ✓**）⇒ **∴ 且**9 个文件名含 `#` ✗**
+//   ⇒ **∴ 前端编成 %23 ✓ ⇒ **∴ 静态服务器必须正确解码 ✓**（**见 server.rs:486-500 ✓**）。
+const BRUSH_SRC = "assets/brushes";
+const BRUSH_DST = join(DST, "brushes");
+if (!existsSync(BRUSH_SRC)) {
+  console.warn("  WARN: 找不到 assets/brushes ⇒ 跳过笔刷同步（笔触在 PWA 里会失败）");
+} else {
+  mkdirSync(BRUSH_DST, { recursive: true });
+  let n = 0;
+  for (const f of readdirSync(BRUSH_SRC)) {
+    if (!f.endsWith(".myb")) continue;
+    copyFileSync(join(BRUSH_SRC, f), join(BRUSH_DST, f));
+    n += 1;
+  }
+  if (n === 0) { console.error("ERROR: 一支笔刷都没同步 ⇒ PWA 无法落笔"); process.exit(1); }
+  console.log("OK: 已同步 " + n + " 支笔刷 ⇒ " + BRUSH_DST);
 }
