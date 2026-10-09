@@ -472,3 +472,21 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **∴ 而 30 次样本足以捕获它 ✓**（**这正是把默认次数提到 10、并在关键判断时跑 30 的原因 ✓**）。
 #   **⚠️ 本轮的方法教训** ✗：**变异锚点**两次失配** ✗**（**`cargo fmt` 会折行函数签名 ✓**）
 #     ⇒ **∴ 正确做法** ✓：**挑**唯一一行**（如调用处 ✓）做变异 ✓**，**而不是**整段签名 ✗**。
+# **★ 第 512 轮：`first_preview` 的**精确落点** ✓（**回应外部报告 §5.1 ✓**）**
+#   **外部报告** ✓：**新文档首次 `get_document` **1074 ms**（**后续 0.4～1.6 ms ✓**）⇒
+#     **建议"异步生成缩略图，或文档注明这是预期行为"✓**；**我第 465 轮判为**与既有基线同源**✓
+#     （**＝ 一次性生成缩略图 ＋ 预览 ✓，4K 冷启动 1.19 s 就是它 ✓**）** ⇒
+#     **∴ 最小且诚实的做法** ✓：**让调用方能**区分"慢一次"与"慢每次"**✓** —— **∴ 在响应里标 `first_preview` ✓**。
+#   **代码事实** ✓：
+#     * **`service.rs:2717`** `pub fn ensure_document_thumbnail(&self, doc_id, size) -> Result<Option<String>>` ✓
+#       —— **内部先问 `document.document_thumbnail_is_current()` ✓，若真 ⇒ 直接返回已存 URL ✓**；
+#     * **调用点两处** ✓：**`tools.rs:3287` ✓ 与 `tools.rs:3354` ✓**（**读路径与另一条 ✓**）；
+#     * **读路径里已有** ✓：`summary["thumb_url"]` ✓／`summary["preview_size"]` ✓／`summary["preview_renders"]` ✓。
+#   **∴ 最小改法（**两处 ✓**）** ✓：
+#     **① 在 `Workspace` 加一个**只读转调**✗**：`pub fn document_thumbnail_is_current(&self, doc_id: &str) -> bool`
+#       （**转调 `Document::document_thumbnail_is_current()` ✓**）⇒ **∴ 不动 `ensure_document_thumbnail` 的返回类型 ✓
+#       （**改返回类型会波及两个调用点 ✗**）**；
+#     **② 在 `read_get_document` 里加一行** ✓：`summary["first_preview"] = json!(!is_current);` ✓**
+#   **∴ 验收** ✓：**新文档首次 `get_document` ⇒ `first_preview == true` ✓；紧接着第二次 ⇒ `false` ✓** ——
+#     **∴ 判据** ✓：**「首次为 true、第二次为 false」✓**（**可红 ✓，且变异**：**恒 false ⇒ 必红 ✓**）。
+#   **⚠️ 它**不**改行为** ✗：**只是把"已经发生的一次性成本"**如实标出来 ✓**（**符合"绝不撒谎 ✓"**）** ✓✓
