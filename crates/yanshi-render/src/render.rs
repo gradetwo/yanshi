@@ -1392,14 +1392,14 @@ impl Renderer {
                 bounds.w.max(1.0) as u32,
                 bounds.h.max(1.0) as u32,
             );
-            buffer.blit_rgba8(
-                0,
-                0,
-                buffer.width(),
-                buffer.height(),
-                &tile.to_rgba8(None),
-                1.0,
-            );
+            // **★ 尺寸必须用 **tile 自己的边长** ✓ ★**（第 600 轮 ✓，**修真缺陷 ✗**）：
+            // **∴ `Tile::to_rgba8` **恒**返回 `size × size` ✗**（**`tile.rs` ✓，与它在文档里的
+            // 位置无关 ✓**），**∴ 而 `buffer` 的尺寸取自 `grid.bounds(key)` ✗** ⇒ **∴ 边缘 tile
+            // 比 `size` 小 ⇒ **∴ 若按 `buffer.width()` 读源 ⇒ **∴ 行错位 ⇒ **∴ 丢内容 ✗****
+            //（**∴ 这正是注释里那句"读改写 tile 的路径实测会让 tile 丢掉场景内容"✗。**）**
+            let rgba = tile.to_rgba8(None);
+            let side = ((rgba.len() / 4) as f64).sqrt().round() as u32;
+            buffer.blit_rgba8(0, 0, side, side, &rgba, 1.0);
             crate::brush::stamp_samples_from(&mut buffer, brush, &stamps, base_index);
             self.cache
                 .insert(tile_from_buffer(&buffer, &self.grid, *key));
@@ -3475,7 +3475,8 @@ mod tests {
     // **∴ 让它留在 CI 里偶发红 ⇒ **会掩盖真回归 ✗**** ⇒ **∴ 故标为 `ignore` ✓，
     // **并把"定位该缺陷"记为独立待办 ✓**（**见 `scripts/criteria-known-red.txt` ✓**）。
     // **∴ 恢复条件** ✓：**修复"增量盖章丢内容"后 ⇒ **删掉本 `ignore`**✗**（**它会立刻变成有用的红线 ✓**）。
-    #[ignore = "增量盖章路径已知会丢 tile 内容（见函数自身文档注释与 criteria-known-red.txt）；修复后应移除此标记"]
+    // **★ 已修复 ⇒ 移除 `#[ignore]` ✓ ★**（第 600 轮 ✓）：**∴ 它变回**真红线**✗**
+    //（**根因 ＝ `blit_rgba8` 用 `buffer.width()` 读 `size×size` 的源 ✗ ⇒ 边缘 tile 行错位 ✓**）。
     fn incremental_stamp_matches_full_tile_re_render() {
         let mut state = white_document();
         state.width = 128;
