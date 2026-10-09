@@ -1052,6 +1052,28 @@ function setStatus(patch) {
   if (patch.dirty !== undefined) $("dirty").textContent = patch.dirty;
 }
 
+// **★ 统一的 JSON 解析助手 ✗ ★**（第 857 轮 ✓；**用户报 `"… is not valid JSON"` ✓**）：
+//   **∴ 为什么需要它 ✗**：**`response.json()`** 对**非 JSON 响应**会**抛**✗**
+//     ⇒ **∴ 而**调用方**常常**没有 `.catch` ⇒ **∴ 于是**：**未处理的 Promise 拒绝 ✓**
+//       ⇒ **∴ 用户**看到 `Unexpected token '�', "�PNG … is not valid JSON" ✓**** ✓✓
+//   **∴ 现在**：**先看 `content-type` ✗** ⇒ **∴ 不是 JSON 就**如实返回一个错误对象**
+//     ⇒ **∴ 于是**：**它**被**调用方已有的 `if (!x.ok)` **接住 ⇒ **∴ 走**已有的降级路径 ✓**** ✓✓
+//     **∴ 且** `JSON.parse` 自身失败**也**被接住 ✗**（**∴ 不抛到全局 ✓）** ✓✓
+//   **∴ 为什么用助手而不是逐处写 ✗**：**逐处写**会**重复四遍**✗（**∴ 而**这正是**分叉的温床 ✓）
+async function jsonOrError(response) {
+  const ct = String((response && response.headers && response.headers.get("content-type")) || "");
+  if (ct.indexOf("json") < 0) {
+    return { ok: false, error_code: "not_json",
+             context: { detail: "端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
+  }
+  try {
+    return await response.json();
+  } catch (err) {
+    return { ok: false, error_code: "bad_json",
+             context: { detail: String((err && err.message) || err) } };
+  }
+}
+
 async function callTool(name, args, options = {}) {
   // **只读工具在注入的清单里** ✓（服务端按 `ToolSpec.mutating` 生成 ✓ ⇒ 权威、不漏 ✓）；
   // 不在清单里 = **改文档** ✓ ⇒ 网络失败时要进离线队列 ✓，不能丢 ✗。
@@ -1087,6 +1109,19 @@ async function callTool(name, args, options = {}) {
     }
     state.outboxOffline = true;
     return outboxQueuedResult(name, outcome, error && error.message);
+  }
+  // P0 fix (round 874, user report): the local PWA layer returns PNG bytes for
+  // render_region while the real server returns JSON, so an unconditional
+  // response.json() threw and aborted the whole init chain (kernel never loaded,
+  // canvas stuck at 300x150, strokes painted zero pixels).
+  // Now the content type decides: non JSON becomes a blob URL shaped like the
+  // existing raw_url contract, which the callers already understand.
+  const __ctype = String((response.headers && response.headers.get("content-type")) || "");
+  if (__ctype && __ctype.indexOf("json") < 0) {
+    const __blob = await response.blob();
+    const __url = URL.createObjectURL(__blob);
+    return { ok: true, raw: true, raw_url: __url, image_url: __url,
+             content_type: __ctype, bytes: __blob.size, source: "bytes" };
   }
   const value = await response.json();
   // **只有"真的走网"的成功才算连得上** ✓ —— 只读工具可能由**本地缓存**兜底返回 ✓，
@@ -2490,27 +2525,6 @@ async function importProjectFile(file) {
     const name = (($("projectImportName") || {}).value || "").trim();
     const finishUrl = "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&finish=1" +
       (name ? "&doc_id=" + encodeURIComponent(name) : "");
-// **★ 统一的 JSON 解析助手 ✗ ★**（第 857 轮 ✓；**用户报 `"… is not valid JSON"` ✓**）：
-//   **∴ 为什么需要它 ✗**：**`response.json()`** 对**非 JSON 响应**会**抛**✗**
-//     ⇒ **∴ 而**调用方**常常**没有 `.catch` ⇒ **∴ 于是**：**未处理的 Promise 拒绝 ✓**
-//       ⇒ **∴ 用户**看到 `Unexpected token '�', "�PNG … is not valid JSON" ✓**** ✓✓
-//   **∴ 现在**：**先看 `content-type` ✗** ⇒ **∴ 不是 JSON 就**如实返回一个错误对象**
-//     ⇒ **∴ 于是**：**它**被**调用方已有的 `if (!x.ok)` **接住 ⇒ **∴ 走**已有的降级路径 ✓**** ✓✓
-//     **∴ 且** `JSON.parse` 自身失败**也**被接住 ✗**（**∴ 不抛到全局 ✓）** ✓✓
-//   **∴ 为什么用助手而不是逐处写 ✗**：**逐处写**会**重复四遍**✗（**∴ 而**这正是**分叉的温床 ✓）
-async function jsonOrError(response) {
-  const ct = String((response && response.headers && response.headers.get("content-type")) || "");
-  if (ct.indexOf("json") < 0) {
-    return { ok: false, error_code: "not_json",
-             context: { detail: "端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
-  }
-  try {
-    return await response.json();
-  } catch (err) {
-    return { ok: false, error_code: "bad_json",
-             context: { detail: String((err && err.message) || err) } };
-  }
-}
 
     const done = await fetch(finishUrl, { method: "POST" }).then(jsonOrError);
     if (!done.ok) {

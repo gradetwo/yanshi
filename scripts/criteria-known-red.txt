@@ -8396,3 +8396,86 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 而**我**这次**跳过了**最便宜的那个核对**（**`strings` ✓）**
 #       ⇒ **∴ 于是**在**错误的方向**上**多花了两轮 ✓**** ✓✓
 #     ⇒ **∴ 规则 ✗**：**先**核对**工具链产物**✗**，**再**怀疑**代码逻辑 ✓**** ✓✓
+
+# **★ 第 874 轮：🎉 **修复用户报告的 P0-1 ＋ P1-1 ✗**（**他的报告极为精确 ✓）**
+#   **∴ 用户的 P0-1（**初始化链中断 ✓）✗**：
+#     **∴ 现象 ✗**：**`pageerror: Unexpected token '�', "�PNG\n..." is not valid JSON` ✗**
+#       ⇒ **∴ 调用链 ✗**：**`loadDocumentData` ⇒ `refreshLayers ✓ ⇒ `refreshThumb ✓**
+#         ⇒ **`refreshPreview` ✗ ⇒ THROW ✓** ⇒ **∴ 于是**：**`warmKernel()` **从未被调用 ✗**
+#         ⇒ **∴ wasm:false｜kernelHead:0｜doc:null｜`#board` 仍 300×150｜**落笔 0 像素 ✓**** ✓✓
+#     **∴ 根因 ✗**：**`callTool` 无条件 `await response.json()` ✗**（**`:1091` ✓）
+#       ⇒ **∴ 而** PWA 本地层的 `render_region` **直接返回 PNG 字节 ✗**（**`image/png` ✓）
+#         ⇒ **∴ 真服务端**返回 `{thumb_url,…}` JSON ✗** ⇒ **∴ 契约不一致 ✓**** ✓✓
+#   **★ 我的修法 ✗ ★**：
+#     **① `callTool` 按 `content-type` 分流 ✗**：
+#       ```js
+#       const __ctype = String((response.headers && response.headers.get("content-type")) || "");
+#       if (__ctype && __ctype.indexOf("json") < 0) {
+#         const __blob = await response.blob();
+#         const __url = URL.createObjectURL(__blob);
+#         return { ok: true, raw: true, raw_url: __url, image_url: __url,
+#                  content_type: __ctype, bytes: __blob.size, source: "bytes" };
+#       }
+#       ```
+#       ⇒ **∴ 于是**：**PNG ⇒ blob URL ✗** ⇒ **∴ 形如**前端既有的 `raw_url` 契约 ✓**
+#         ⇒ **∴ 所以**：**`refreshPreview` 与 `blitServerBox`（**P2-1 ✓）都**能接住 ✓**** ✓✓
+#     **② `jsonOrError` 移到**顶层作用域 ✗**（**用户的 P1-1 ✓）**：
+#       **∴ 原来 ✗**：**它**声明在 **`importProjectFile` 的 `try {}` 块内 ✗**（**块级作用域 ✓）
+#         ⇒ **∴ 而** `loadEffectCatalog` 在**块外**调用 ⇒ **∴ `ReferenceError ✓**** ✓✓
+#       **∴ 现在 ✗**：**整块（**注释 ＋ 函数 ✓）剪切到** `callTool` 之前 ✗**
+#         ⇒ **∴ 实测**：**顶层 `jsonOrError` 在 `:1063` ✗**，**callTool 在 `:1077` ✓**
+#           ⇒ **∴ 于是**：**前者**先出现**✗ ⇒ **∴ 顶层作用域 ✓**** ✓✓
+#       **∴ 而**这**正是**用户指出的**讽刺 ✗**：**`jsonOrError`**本是为**修**"…is not valid JSON"**而写 ✗**
+#         ⇒ **∴ 结果**它**自己**因**作用域**不可用 ✓**** ✓✓
+#   **∴ 门禁 ✗**：**`node --check` ✓**** ✓✓
+#   **∴ 下一轮 ✗**：**部署 ＋ 用**线上冒烟 ＋ **请用户复测 ✓**** ✓✓
+#   **∴ 用户报告的**其余项（**P2-2…P2-5 ✓）**待办 ✗**：
+#     **∴ P2-2 ✗**：**`brush-previews/index.json` 404 ✗**（**SPA fallback 返回 HTML ✓）
+#       ⇒ **∴ 需**同步 `assets/brush-previews/` ⇒ `web/` ✓**** ✓✓
+#     **∴ P2-3 ✗**：**缩略图裂图 ✗**（**∴ 可能**与 P0-1 同源 ✓）**；
+#     **∴ P2-4 ✗**：**WS 噪音 ✗**（**∴ 静态托管**预期 ✓）**；
+#     **∴ P2-5 ✗**：**`错误 undefined:` ✗**（**∴ 需**看原子日志面板的渲染 ✓）** ✓✓
+#   **∴ 元收获 ★**：**用户**用 Playwright ＋ **函数级插桩 ✗**给出的**调用链**✗**
+#     ⇒ **∴ 那**是**我**这一整轮**最缺的东西 ✗**（**∴ 我**一直在**猜路径 ✓）** ✓✓
+#     ⇒ **∴ 教训**：**能拿到**真实调用链**时 ✗**，**定位**是**几分钟的事 ✓**** ✓✓
+
+# **★ 第 875 轮：🎯🎯🎯 **用户真机确认 ＋ 两个根因 ✗****
+#   **∴ 用户的**真机证据（**极有价值 ✓）✗**：
+#     ```
+#     原子日志： `錯誤 undefined:`
+#     最近一次响应： {"ok":false,"error":"needs_render",
+#       "reason":"**本地內核不可用：recursive use of an object detected
+#                 which would lead to unsafe aliasing in rust**"}
+#     WASM 内核卡片：首笔／首帧／预热／bit-exact 全为 "—"（**warmKernel 从未成功 ✓）
+#     三个 canvas 无 width/height ⇒ 卡在 300×150
+#     两次拖拽 ⇒ **零像素变化** ⇒ 撤销／重做始终禁用
+#     ```
+#   **★ 根因 ①：`recursive use of an object … unsafe aliasing` ✗ ★**：
+#     **∴ 那**是 **wasm-bindgen** 的**经典错误 ✗** ⇒ **∴ 即**：
+#       **同一个 wasm 对象的 `&mut self` 方法**在**它自己的调用期间**被**再次进入 ✓**
+#     **∴ 实测 ✗**：**`crates/yanshi-wasm/src/lib.rs` 里 **15 处 `&mut self`** ✗**
+#       ⇒ **∴ 所以**：**任何**两个**并发**的内核调用**都会**触发它 ✓**** ✓✓
+#     **∴ 最可能的来源 ✗**：**`warmKernel()`（**viewer `:3433` ✓）**与**
+#       **`refreshPreview`／`blitServerBox`**同时**调用内核 ✓**
+#       ⇒ **∴ 而** `warmKernel` **预热时**会**跑渲染 ✗** ⇒ **∴ 若**此时**另一条也在跑**
+#         ⇒ **∴ 借用冲突 ✓**** ✓✓
+#     **∴ 修法（**标准 ✓）✗**：**在本地层给**每个 kernel **一个**串行队列 ✗**
+#       （**JS 侧的 mutex ✓：`entry.queue = entry.queue.then(() => call())` ✓）**
+#       ⇒ **∴ 于是**：**所有**内核调用**排队执行 ✗** ⇒ **∴ 不再**并发借用 ✓**** ✓✓
+#       ⇒ **∴ 代价**＝**失去**内核内的并行 ✗**（**∴ 而**内核**本来**就是单线程 ✓）** ✓✓
+#   **★ 根因 ②：两条部署**分叉 ✗ ★**：
+#     **∴ 判据报 ✗**：**"**viewer-app.js 的副本与现有 WEB 的源**不同** ⇒ 分叉了 ✗**"
+#       ⇒ **∴ 因为**我**只改了** `crates/yanshi-http/assets/viewer-app.js` ✗**
+#         ⇒ **∴ 而** `web/viewer-app.js` **是**同步产物 ✓（**∴ 应当**由同步脚本更新 ✓）** ✓✓
+#       ⇒ **∴ 所以**：**我**必须**同时**让两份**一致 ✗**
+#         ⇒ **∴ 那**正是**用户**的边界要求**✗**（**"**PWA 不要影响现有 WEB ✓）** ✓✓
+#       ⇒ **∴ 且**：**这说明**那份文件**是**两条部署共用的前端源 ✗**
+#         ⇒ **∴ 我的修复**对**两条部署**都**有益 ✓**** ✓✓
+#   **∴ 下一轮 ✗**：
+#     **① 同步两份 viewer-app.js ✗**（**∴ 让判据绿 ✓）**；
+#     **② 在本地层给 kernel 加串行队列 ✗**（**∴ 修 `recursive use` ✓）**；
+#     **③ 部署 ＋ 请用户复测 ✓**（**∴ 关注 warmKernel 是否成功 ✓）** ✓✓
+#   **∴ 元收获 ★**：**用户**的真机错误串（**`recursive use … unsafe aliasing` ✓）**
+#     ⇒ **∴ 它**直接**指向** wasm-bindgen 的借用模型 ✗**
+#     ⇒ **∴ 而**那**是**我**从 JS 侧永远**猜不到**的 ✓**** ✓✓
+#     ⇒ **∴ 教训**：**wasm 边界的错误**必须**由**真机日志**确认 ✓**** ✓✓
