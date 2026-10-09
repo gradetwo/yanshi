@@ -1234,7 +1234,8 @@ impl Renderer {
                         want_tiles.len()
                     );
                     let line = format!(
-                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={} cached={} emptyk={} src={}\n",
+                        "READ req={} ready={} sig_eq={} tiles_ok={} n_tiles={} cached={} emptyk={} src={}\n",
+                        req_id,
                         ready,
                         sig_eq,
                         tiles_ok,
@@ -1552,7 +1553,8 @@ impl Renderer {
                         .open(&probe)
                     {
                         let line = format!(
-                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}\n",
+                        "WRITE req={} below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}\n",
+                        req_id,
                         btx,
                         bty,
                         budget_ok,
