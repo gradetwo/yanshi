@@ -2714,6 +2714,19 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     /// 旧路径走 `thumbnail()` ✗ ⇒ 每次都 `render_thumbnail(…, None)` ⇒ **整幅全分辨率渲染** ✗
     /// ⇒ 实测 4K/318 对象 **122s**，而**每个新连接**都会走到这里 ✗（磁盘缓存的 seq 一落后就重来 ✓）。
     /// 其它尺寸（64/128）仍走原来的整幅缩略图路径 ✓（请求少见，行为保持不变 ✓）。
+    /// **★ 文档缩略图是否已是最新 ✓ ★**（第 514 轮 ✓）：**只读转发 ✓** ——
+    /// **∴ 不动 `ensure_document_thumbnail` 的返回类型 ✓**（**改它会波及两个调用点 ✗**）。
+    /// **∴ 用途** ✓：**`get_document` 据此标 `first_preview` ✓** ⇒ **∴ 让调用方能区分
+    /// "**慢一次**（**一次性生成缩略图 ＋ 预览 ✓**）"与"**慢每次**（**真回归 ✗**）"** ✓✓
+    pub fn document_thumbnail_is_current(&self, doc_id: &str) -> bool {
+        self.document(doc_id)
+            .map(|d| d.document_thumbnail_is_current())
+            .unwrap_or(false)
+    }
+
+    /// **确保文档缩略图存在 ✓**（**按需生成并落盘 ✓**；**已是最新 ⇒ 直接返回已存 URL ✓**）。
+    /// **⚠️ 返回值**：**`Option<String>` ＝ URL ✓｜`None` ＝ `Skip`（**调用方明确不要图 ✓**）** ——
+    /// **∴ 想知道"**本次是否真的生成了**✗"⇒ 请用 [`Self::document_thumbnail_is_current`] ✓**。
     pub fn ensure_document_thumbnail(
         &mut self,
         doc_id: &str,

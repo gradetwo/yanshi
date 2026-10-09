@@ -3283,6 +3283,9 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // `preview_ms` / `render_ms` / `raster_ms` / `png_ms` **全是 0** ✓、`other_ms=859.995` ✓
     // ⇒ 报告方只能从外部反推 ✓（正是 `timings.rs` 警告过的失败模式 ✓）。
     // 成本随文档像素数增长（320×240 → 26 ms；3840×2160 → 942 ms ✓）。
+    // **★ `first_preview` ✓ ★**（第 514 轮 ✓）：**本次是否需要**一次性生成**✓** ⇒
+    // **∴ 让调用方能区分"**慢一次 ✓**"与"**慢每次 ✗**"**（**外部报告 §5.1 的建议 ✓**）。
+    let first_preview = !ctx.workspace.document_thumbnail_is_current(&ctx.doc_id);
     let preview_started = std::time::Instant::now();
     if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
         summary["thumb_url"] = json!(url);
@@ -3290,6 +3293,7 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }
     ctx.time(Phase::Preview, preview_started);
     summary["preview_size"] = json!(size.kind().size());
+    summary["first_preview"] = json!(first_preview);
     // **预览渲染计数**（第 274 轮 ✓）：只读出口 ✓，让判据能断言"这条路真的走了没有" ✗。
     // 它是**结构性**的证据 ✓（与区域大小、与机器快慢、与墙钟都无关 ✓）。
     if let Some(document) = ctx.workspace.document(&ctx.doc_id) {
