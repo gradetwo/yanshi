@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 12;
+export const LOCAL_IMPLEMENTED = 13;
 
 let lastFold = null;
 
@@ -218,10 +218,46 @@ async function withKernel(doc, fn) {
       const layers = [];
       for (const r of list) {
         const a = r.atom || {};
-        if (a.kind === "create_layer" && a.layer_id) layers.push({ id: a.layer_id, name: a.name ?? a.layer_id });
+        // **★ 两个字段都错了 ✗ ★**（第 928 轮 ✓；**用户"**画不了画**"的根因之一 ✓）：
+        //   **① 位置 ✗**：**原子是 8 字段封套 ✓ ⇒ **∴ `layer_id`／`name` 在 `payload` 里 ✗**
+        //     ⇒ **∴ 原来读 `a.layer_id` ⇒ **永远 `undefined` ⇒ **∴ 条件恒假 ⇒ **∴ `layers` 永远空 ✓**** ✓✓
+        //   **② 名字 ✗**：**原来回 `{id, name}` ✗，**而前端读 `layer.layer_id` ✓**
+        //     （**`ensurePaintLayer` ✓）⇒ **∴ 即便有层也认不出 ✓**** ✓✓
+        //   ⇒ **∴ 合起来**：前端**永远以为"**文档里没有图层**"✗** ⇒ **∴ 它**去 `create_layer` ✓
+        //     ⇒ **∴ 而**那个端点**也未映射 ⇒ **∴ 落笔必然失败 ✓**（**用户四轮复现 ✓）** ✓✓
+        const pl = a.payload || {};
+        if (a.kind === "create_layer") {
+          const id = pl.layer_id || a.layer_id;
+          if (id) layers.push({ layer_id: id, name: pl.name ?? a.name ?? id });
+        }
       }
       return json({ ok: true, layers, count: layers.length, server: false,
                     derived_from: "atoms" });
+    }
+
+    // **★ `/api/tools/create_layer` ✗ ★**（第 928 轮 ✓；**用户"**画不了画**"的最后一环 ✓）：
+    //   **∴ 为什么 ✗**：**没有图层时**前端会**自动建一个 ✗**（`ensurePaintLayer` ✓）
+    //     ⇒ **∴ 而**本地层**没有这个端点 ⇒ **∴ 501 ⇒ **∴ `state.layerId` 永远为空 ✓**
+    //       ⇒ **∴ 于是**：**画布上拖拽**什么都不会发生 ✓（**实测 `applies:0` ✓）** ✓✓
+    //   **∴ 形状照**权威样本 ✗**（`kernel.rs` 的 `scene_atoms` ＋ `transport.rs` 的客户端原子 ✓）：
+    //     `{kind:"create_layer", payload:{layer_id,name}}` ✓ —— **∴ 不**自创字段 ✓**** ✓✓
+    if (path === "/api/tools/create_layer") {
+      const pl = (body && body.payload) || {};
+      const layerId = body.layer_id || pl.layer_id || "layer_" + String(Date.now());
+      const name = body.name || pl.name || layerId;
+      const atom = {
+        actor: "human:web",
+        id: "01LAYER" + String(Date.now()).padStart(13, "0"),
+        kind: "create_layer",
+        payload: { layer_id: layerId, name },
+        schema_version: 1,
+        seq: 0,
+        session: "session:web",
+        timestamp: Date.now(),
+      };
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, seq, server: false, layer_id: layerId, name,
+                    note: "已在本地原子日志写入 create_layer（内核重放时建层）" });
     }
 
     // **④ `/api/tools/get_document`（**从 IndexedDB ＋ 如实报后端 ✓**）**
@@ -556,10 +592,18 @@ return json({ ok: true, server: false, wasm: true,
       return await deps.local(req);
     } catch (err) {
       // **★ 未实现的端点必须**如实报错**✗**（**目标总则：lazy 不许变成撒谎 ✓**）。
+      // **∴ 端点名还要进 `detail` ✗ ★**（第 928 轮 ✓）：**∴ 前端**只打
+      //   `error_code` ＋ `detail` ✗（**实测：日志里只有"**错误 not_implemented_locally：
+      //   该端点…**" ✗，**看不出**是哪一条 ✓）⇒ **∴ 于是**只能靠猜 ✓
+      //   ⇒ **∴ 把端点名放进 `detail` ✗** ⇒ **∴ 日志**自己就会说是谁 ✓**** ✓✓
       return json({ ok: false, error: "not_implemented_locally",
                     endpoint: url.pathname,
-                    reason: "该端点在 PWA 里尚未映射到本地内核／IndexedDB" ,
-                    detail: String(err && err.message ? err.message : err) }, 501);
+                    // **★ 端点名必须在 `reason` 里 ✗ ★**（第 928 轮 ✓）：**∴ 前端**读的是
+                    //   `context.detail` **缺失时回落到 `reason`** ✓（**我修 P2-5 时加的顺序 ✓）
+                    //   ⇒ **∴ 而**本地层的错误是**扁平**的 ✗（**没有 `context` ✓）
+                    //     ⇒ **∴ 于是**日志**只显示兜底文案 ✗，**看不出**是哪一条 ✓**** ✓✓
+                    reason: url.pathname + "：该端点在 PWA 里尚未映射到本地内核／IndexedDB",
+                    detail: url.pathname + "：该端点在 PWA 里尚未映射到本地内核／IndexedDB" }, 501);
     }
   };
 }

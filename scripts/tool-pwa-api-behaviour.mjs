@@ -81,7 +81,14 @@ await call("/api/atoms", { method: "POST", body: JSON.stringify({ kind: "create_
 const atoms = await (await call("/api/atoms")).json();
 check(atoms.count >= 2, `原子写入后读回数量应 ≥ 2 ✗（实测 ${atoms.count}）`);
 const layers = await (await call("/api/tools/list_layers")).json();
-check(layers.layers.some((l) => l.id === "L0"), `list_layers 未从原子推导出 L0 ✗：${JSON.stringify(layers)}`);
+// **★ 必须断言**前端真正读的字段 ✗ ★**（第 928 轮 ✓）：**∴ 原来断言的是 `l.id` ✗**
+//   ⇒ **∴ 而**前端读的是 `layer.layer_id` ✓（**`ensurePaintLayer` ✓）
+//     ⇒ **∴ 那个错字段**让界面永远以为"**没有图层**" ✗ ⇒ **∴ 于是**它去建层 ⇒
+//       **∴ 而**建层端点**当时**也没映射 ⇒ **∴ 画不了画 ✓**
+//   ⇒ **∴ 所以**：**这条判据**改成断言 `layer_id` ✗** —— **∴ 它**更强 ✗**，
+//     **且**它**本来就能**抓住这个 bug ✓**** ✓✓
+check(layers.layers.some((l) => l.layer_id === "L0"),
+  `list_layers 未从前端读的字段（layer_id）给出 L0 ✗：${JSON.stringify(layers)}`);
 check(layers.derived_from === "atoms", "list_layers 未标明由原子推导 ✗");
 const gd = await (await call("/api/tools/get_document")).json();
 check(gd.width === 800 && gd.height === 600, `get_document 尺寸应取自创建原子 ✗（实测 ${gd.width}×${gd.height}）`);
