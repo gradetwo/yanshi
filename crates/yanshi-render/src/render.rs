@@ -1297,78 +1297,73 @@ impl Renderer {
             //     **∴ 报告**"**有几格可用 ✓"**✗，**而**不**假装"**全有 ✓" ✓**** ✓✓
             let mut available = 0usize;
             // **★ 缓存里**已有的格 ✗ ★**（第 10 轮 ✓；**部分复用**预填它们 ✓）。
-            let cached_tiles: Vec<((i64, i64), crate::buffer::Buffer)>;
+            let mut cached_tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+            // **∴ 缺的格 ✗**（**与 `available` **同一次取锁**得到 ✓ ⇒ **∴ 必然自洽 ✓）** ✓✓
+            let mut missing_tiles: Vec<(i64, i64)> = Vec::new();
+            // **★ 一次取锁，同时得到三个数 ✗ ★**（第 16 轮 ✓；**修观测的**自相矛盾** ✓）：
+            //   **∴ 原来的错 ✗**：**`available` 在这一次锁里算 ✗，
+            //     **而** `missing`／`cached_tiles` **在**之后又取了一次 ✓**
+            //     ⇒ **∴ 于是**：**两次快照**之间缓存**可能变了 ✓
+            //       ⇒ **★ 实测**：`available=20 < wanted=32` **而** `missing=0`**✗
+            //         （**∴ 两者**不可能同时真 ✓）★**** ✓✓
+            //   **∴ 且**原来在"**没有可用组 ✓"时**把 `missing` 报成 0**✗
+            //     ⇒ **∴ 那**等于说"**什么都不缺 ✓"✗ ⇒ **★ 那是**撒谎 ✓ ★**
+            //       （**∴ 正确**：**那种情况**是**全缺 ✓）** ✓✓
             let ready = match below.lock() {
                 Ok(guard) => match guard.as_ref() {
                     Some(c) => match tiles_for_sig(c, &sig) {
                         Some((tiles, empty)) => {
-                            available = want_tiles
-                                .iter()
-                                .filter(|k| {
-                                    tiles.iter().any(|(t, _)| *t == **k) || empty.contains(*k)
-                                })
-                                .count();
+                            for k in &want_tiles {
+                                match tiles.iter().find(|(t, _)| t == k) {
+                                    Some((_, b)) => {
+                                        available += 1;
+                                        cached_tiles.push((*k, b.clone()));
+                                    }
+                                    None => {
+                                        if empty.contains(k) {
+                                            available += 1;
+                                        } else {
+                                            missing_tiles.push(*k);
+                                        }
+                                    }
+                                }
+                            }
                             available == want_tiles.len()
                         }
-                        None => false,
+                        None => {
+                            missing_tiles = want_tiles.clone();
+                            false
+                        }
                     },
-                    _ => false,
+                    _ => {
+                        missing_tiles = want_tiles.clone();
+                        false
+                    }
                 },
-                Err(_) => false,
+                Err(_) => {
+                    missing_tiles = want_tiles.clone();
+                    false
+                }
             };
             stats.below_tiles_wanted = want_tiles.len();
             stats.below_tiles_available = available;
             // **∴ 到这里 ⇒ **∴ 这次渲染确实做过 below 判定 ✓** ⇒ **∴ 记下 ✓**** ✓✓
             stats.below_tiles_measured = true;
-            // **★ 缺格与"**该重算的盒 ✓" ✗ ★**（第 8 轮 ✓；**纯观测 ✓）：
-            //   **∴ 为什么在这里算 ✗**：**这一刻**我们**同时**持有
-            //     `want_tiles`（**想要 ✓）与缓存内容（**有哪些 ✓）✗
-            //     ⇒ **∴ 于是**：**缺哪几格**只有在这里**说得清 ✓**** ✓✓
-            //   **∴ 只读 ✗**：**它**不改变 `ready`／`cached`／`reused`** ✓
-            //     ⇒ **∴ 所以**：**四条既有判据**必须**仍然全绿 ✓**** ✓✓
-            {
-                let missing: Vec<(i64, i64)> = match below.lock() {
-                    Ok(guard) => match guard.as_ref() {
-                        Some(c) => match tiles_for_sig(c, &sig) {
-                            Some((tiles, empty)) => want_tiles
-                                .iter()
-                                .filter(|k| {
-                                    !tiles.iter().any(|(t, _)| *t == **k) && !empty.contains(*k)
-                                })
-                                .copied()
-                                .collect(),
-                            None => Vec::new(),
-                        },
-                        None => Vec::new(),
-                    },
-                    Err(_) => Vec::new(),
-                };
-                // **∴ 顺手把"**已有的格 ✓"拢出来 ✗**（**部分复用要**先预填**它们 ✓）** ✓✓
-                cached_tiles = match below.lock() {
-                    Ok(guard) => match guard.as_ref() {
-                        Some(c) => match tiles_for_sig(c, &sig) {
-                            Some((tiles, _)) => tiles
-                                .iter()
-                                .filter(|(k, _)| want_tiles.contains(k))
-                                .map(|(k, b)| (*k, b.clone()))
-                                .collect(),
-                            None => Vec::new(),
-                        },
-                        None => Vec::new(),
-                    },
-                    Err(_) => Vec::new(),
-                };
-                stats.below_tiles_missing = missing.len();
-                stats.below_recompute_bbox = if missing.is_empty() {
-                    None
-                } else {
-                    let x0 = missing.iter().map(|(x, _)| *x).min().unwrap_or(0);
-                    let y0 = missing.iter().map(|(_, y)| *y).min().unwrap_or(0);
-                    let x1 = missing.iter().map(|(x, _)| *x).max().unwrap_or(0) + BELOW_TILE;
-                    let y1 = missing.iter().map(|(_, y)| *y).max().unwrap_or(0) + BELOW_TILE;
-                    Some((x0, y0, x1 - x0, y1 - y0))
-                };
-            }
+            // **★ 缺格数 ＋ 该重算的盒 ✗ ★**（第 16 轮 ✓；**与 `available` **同一次取锁** ✓）：
+            //   **∴ 为什么必须有这一段 ✗**：**我**在合并取锁时**删掉了旧的独立块**✗
+            //     ⇒ **∴ 若不补 ⇒ **∴ `below_recompute_bbox` **恒为 None** ✗
+            //       ⇒ **★ 于是**：**部分复用**永不启用 ✗（**而**build 仍然通过 ✓）
+            //         ⇒ **∴ 那**正是"**改了不执行的代码 ✓"的翻版 ✓ ★**** ✓✓
+            stats.below_tiles_missing = missing_tiles.len();
+            stats.below_recompute_bbox = if missing_tiles.is_empty() {
+                None
+            } else {
+                let x0 = missing_tiles.iter().map(|(x, _)| *x).min().unwrap_or(0);
+                let y0 = missing_tiles.iter().map(|(_, y)| *y).min().unwrap_or(0);
+                let x1 = missing_tiles.iter().map(|(x, _)| *x).max().unwrap_or(0) + BELOW_TILE;
+                let y1 = missing_tiles.iter().map(|(_, y)| *y).max().unwrap_or(0) + BELOW_TILE;
+                Some((x0, y0, x1 - x0, y1 - y0))
+            };
             stats.below_want_bbox = (
                 want.x.floor() as i64,
                 want.y.floor() as i64,
