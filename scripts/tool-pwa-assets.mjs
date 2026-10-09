@@ -189,6 +189,17 @@ if (existsSync("web/brushes")) {
   check(hashed.length >= 1, "没有带井号的笔刷 ⇒ 无法验证 URL 解码");
   console.log("  笔刷：" + bs.length + " 支 ✓（含 " + hashed.length + " 支带井号，用于验证解码 ✓）");
 }
+// **★ 本地落笔模块 ✓ ★**（第 652 轮 ✓）：**∴ 它把"**取笔刷 ＋ 调内核 ＋ 报错**✗"收在一处 ✓**
+//   ⇒ **∴ 且**它是**纯新增**✗**（**不改现有路径 ✓**）⇒ **∴ 判据只断言它的**关键契约**存在 ✓**。
+const brushLib = read("web/brush-local.js");
+check(!!brushLib, "web/brush-local.js 缺失 ⇒ 无法本地落笔");
+if (brushLib) {
+  check(brushLib.indexOf("paint_brush") >= 0, "未调用内核的 paint_brush");
+  check(brushLib.indexOf("paint_brush_error") >= 0, "未用 paint_brush_error 取失败原因 ⇒ 会静默失败");
+  check(brushLib.indexOf("%23") >= 0, "未对井号做 URL 编码 ⇒ 带井号的笔刷取不到");
+  check(brushLib.indexOf("myb") >= 0, "未携带笔刷文件全文 ⇒ 内核会拒绝");
+  console.log("  brush-local.js：paint_brush ✓｜失败原因 ✓｜井号编码 ✓｜myb 全文 ✓");
+}
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
