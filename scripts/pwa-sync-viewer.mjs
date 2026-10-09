@@ -166,7 +166,12 @@ if (!existsSync(BRUSH_SRC)) {
   let n = 0;
   for (const f of readdirSync(BRUSH_SRC)) {
     if (!f.endsWith(".myb")) continue;
-    copyFileSync(join(BRUSH_SRC, f), join(BRUSH_DST, f));
+    // **★ 落盘名用**URI 编码形式** ✗ ★**（第 798 轮 ✓；**用户部署报错 ✓**）：
+    //   **∴ 为什么 ✗**：**Cloudflare 的 assets manifest **要求路径是 URI 编码形式 ✗**
+    //   ⇒ **∴ 原名（**`#`／`%` ✓）会被**拒收整个上传 ✗****（**错误码 10304 ✓）。
+    //   **∴ 而**前端已经**请求编码后的路径 ✗**（**`brush-local.js:28` ✓）⇒ **∴ 两侧一致 ✓**。
+        const dstName = f.replace(/%/g, "%25").replace(/#/g, "%23");
+        copyFileSync(join(BRUSH_SRC, f), join(BRUSH_DST, dstName));
     n += 1;
   }
   if (n === 0) { console.error("ERROR: 一支笔刷都没同步 ⇒ PWA 无法落笔"); process.exit(1); }
