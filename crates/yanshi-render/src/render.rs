@@ -3000,8 +3000,8 @@ mod parallel_impl {
         //（见 `BitmapCache` 的说明 ✓：这里若再新建一份局部缓存，就只在"本次渲染"内去重 ✗，
         //  下一笔又会把整幅背景重新解压一遍 ✓ —— 那正是本案要修的病 ✓）。
         let bitmaps = &renderer.bitmaps;
-        let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> =
-            std::thread::scope(|scope| {
+        let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> = std::thread::scope(
+            |scope| {
                 let mut handles = Vec::with_capacity(chunks);
                 // 传引用（不是把缓存 move 进第一个闭包）⇒ 各块共享同一份缓存。
                 let bitmaps_ref = bitmaps;
@@ -3029,10 +3029,11 @@ mod parallel_impl {
                                     .open(&path)
                                 {
                                     let line = format!(
-                                        "BAND_START thread={:?} y={} rows={} t_ns={}\n",
+                                        "BAND_START thread={:?} y={} rows={} t_ns={} region=({},{},{},{})\n",
                                         std::thread::current().id(),
                                         ry + row_start as i64,
                                         rows,
+                                                rx as i64, ry as i64, rw, rh,
                                         std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .map(|d| d.as_nanos())
@@ -3094,7 +3095,8 @@ mod parallel_impl {
                         )),
                     })
                     .collect()
-            });
+            },
+        );
 
         let mut merged_track = ObjectTrack::default();
         let mut merged_stats = empty_stats;
