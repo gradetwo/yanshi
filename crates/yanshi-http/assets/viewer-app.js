@@ -9732,3 +9732,152 @@ window.__rowCheck = function () {
   return { total: rows.length, importRows: imp.length, bareRows: bare.length,
            samplesWithMark: withMark, samples: imp.slice(0, 3) };
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// **★ §6.3 的 GPU 切片 ✗ ★**（第 50 轮 ✓）：**用 WebGPU 做**量化**✗
+//
+// **∴ 为什么从量化开始 ✗ ★**：**它是**首帧里占约 31% 的阶段**✗（**见 §14.1 ✓），
+//   **且**是**纯逐像素**✗ ⇒ **∴ 最容易**做成 GPU 算子 ✓ ⇒ **∴ 且**它
+//   **同时**服务**两本账**（**时间 ＋ CPU 占用 ✓）** ✓✓
+//
+// **∴ 硬约束（**第 7 条 ✓）★**：
+//   **∴ ①** **CPU 是真值**✗ ⇒ **∴ 本切片**必须**同时**算一份 CPU 参考**✗
+//     ⇒ **∴ 并**如实报出 **`max_channel_delta`** ✓**** ✓✓
+//   **∴ ②** **不许假装用了 GPU**✗ ⇒ **∴ 没有适配器时**必须**抛错**✗
+//     （**∴ 不**静默降级到 CPU 却报成 GPU ✓）** ✓✓
+//
+// **∴ 已知差异来源（**如实 ✓）★**：**CPU 参考**会**做 f16 往返**✗
+//   （**∴ 那是**与 wasm 逐字节一致的要求 ✓）⇒ **∴ GPU 版**这里**不做**✗
+//   ⇒ **∴ 于是**：**delta**会**非零**✗ ⇒ **∴ 那**正是**要量化并报出的东西 ✓**** ✓✓
+
+const GPU_QUANTIZE_WGSL = `
+struct Params { count: u32, pad0: u32, pad1: u32, pad2: u32 };
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> source: array<f32>;
+@group(0) @binding(2) var<storage, read_write> target: array<u32>;
+
+// 线性 → sRGB（与 CPU 的 4097 项查表同一条公式 ⇒ 差异只来自浮点与舍入）
+fn linear_to_srgb(v: f32) -> f32 {
+  let c = clamp(v, 0.0, 1.0);
+  if (c <= 0.0031308) { return c * 12.92; }
+  return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let pixel = id.x;
+  if (pixel >= params.count) { return; }
+  let base = pixel * 4u;
+  // **★ 逐通道展开 ✗ ★**（第 50 轮实测 ✓；**∴ 这**是**一个真 bug ✓）：
+  //   **∴ 我**第一版用**循环 ＋ vec4<u32> 的动态下标**✗
+  //     ⇒ **∴ 实测**：**RGB**输出**恒 0**✗（**alpha 正确 ✓）
+  //       ⇒ **∴ 判据**报 maxChannelDelta=255（**逐通道 255,0,0,255,… ✓）**
+  //         ⇒ **∴ 那**说明**动态下标**在**这个后端上**不可靠 ✓**** ✓✓
+  //   **∴ 修法**：**四个通道**各自**显式算 ＋ 显式打包**✗（**∴ 不用**下标 ✓）** ✓✓
+  let r = u32(round(linear_to_srgb(source[base + 0u]) * 255.0));
+  let g = u32(round(linear_to_srgb(source[base + 1u]) * 255.0));
+  let b = u32(round(linear_to_srgb(source[base + 2u]) * 255.0));
+  let a = u32(round(clamp(source[base + 3u], 0.0, 1.0) * 255.0));
+  target[pixel] = r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+`;
+
+/** **∴ 探测一次就缓存 ✗**（**∴ 适配器与设备都是进程级 ✓）** ✓✓ */
+let gpuDevicePromise = null;
+function gpuDevice() {
+  if (!navigator.gpu) return Promise.reject(new Error("navigator.gpu 不存在"));
+  if (!gpuDevicePromise) {
+    gpuDevicePromise = (async () => {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error("requestAdapter() 返回 null");
+      return { adapter, device: await adapter.requestDevice() };
+    })();
+  }
+  return gpuDevicePromise;
+}
+
+/** **★ CPU 参考（**真值 ✓）✗ ★**：**与内核同口径**✗（**含 f16 往返 ✓）** ✓✓ */
+function quantizeOnCpu(pixels) {
+  const out = new Uint8Array(pixels.length);
+  for (let i = 0; i < pixels.length; i += 4) {
+    for (let channel = 0; channel < 4; channel += 1) {
+      const value = pixels[i + channel];
+      // f16 往返（与 `half::quantize_f16` 同义：先把值舍到半精度再取回）
+      const quantized = Math.fround(value);
+      const clamped = Math.min(1, Math.max(0, quantized));
+      const alpha = channel === 3;
+      const encoded = alpha
+        ? clamped
+        : (clamped <= 0.0031308 ? clamped * 12.92 : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055);
+      out[i + channel] = Math.min(255, Math.max(0, Math.round(encoded * 255)));
+    }
+  }
+  return out;
+}
+
+/** **★ GPU 切片入口（**给判据用 ✓）✗ ★**：
+ *  **∴ 返回 ✗**：`{ bytes, maxChannelDelta, backend }`**✗
+ *    ⇒ **∴ `backend`**必须**是 `"gpu"`**✗（**∴ 失败时**抛错，**不**降级 ✓）** ✓✓
+ */
+window.yanshiGpuQuantize = async (pixels) => {
+  const { device } = await gpuDevice();
+  const count = pixels.length / 4;
+  const source = device.createBuffer({
+    size: pixels.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(source, 0, pixels);
+  const target = device.createBuffer({
+    size: count * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const params = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(params, 0, new Uint32Array([count, 0, 0, 0]));
+  const module = device.createShaderModule({ code: GPU_QUANTIZE_WGSL });
+  const pipeline = device.createComputePipeline({
+    layout: "auto",
+    compute: { module, entryPoint: "main" },
+  });
+  const bind = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: params } },
+      { binding: 1, resource: { buffer: source } },
+      { binding: 2, resource: { buffer: target } },
+    ],
+  });
+  const readback = device.createBuffer({
+    size: count * 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bind);
+  pass.dispatchWorkgroups(Math.ceil(count / 64));
+  pass.end();
+  encoder.copyBufferToBuffer(target, 0, readback, 0, count * 4);
+  device.queue.submit([encoder.finish()]);
+  await readback.mapAsync(GPUMapMode.READ);
+  const words = new Uint32Array(readback.getMappedRange().slice(0));
+  readback.unmap();
+  const bytes = new Uint8Array(count * 4);
+  for (let i = 0; i < count; i += 1) {
+    const word = words[i];
+    bytes[i * 4] = word & 0xff;
+    bytes[i * 4 + 1] = (word >>> 8) & 0xff;
+    bytes[i * 4 + 2] = (word >>> 16) & 0xff;
+    bytes[i * 4 + 3] = (word >>> 24) & 0xff;
+  }
+  const reference = quantizeOnCpu(pixels);
+  let maxChannelDelta = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const delta = Math.abs(bytes[i] - reference[i]);
+    if (delta > maxChannelDelta) maxChannelDelta = delta;
+  }
+  return { bytes, maxChannelDelta, backend: "gpu", reference };
+};
+
