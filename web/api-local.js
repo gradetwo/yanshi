@@ -94,6 +94,23 @@ export async function makeLocalApi(db) {
 //   **∴ 字段与**服务端一致 ✗**：**`blob_hash`／`size`／`mime_type` ✗**
 //     （**∴ 前端 `index.html:4197` 正是读 `upload.blob_hash` 与 `upload.size` ✓）** ✓✓
     if (url.pathname === "/api/blob") {
+      // **★ `mod` 必须自己导入 ✗ ★**（第 846 轮 ✓；**判据抓到的真 bug ✓**）：
+      //   **∴ 实测 ✗**：**判据报 `ReferenceError: mod is not defined` ✗**
+      //     （**`web/api-local.js:102` ✓）⇒ **∴ 因为** `mod` **是**那个分支里**局部导入的 ✗**
+      //       （**`:220`／`:339` 各有 `const mod = await import("/wasm/yanshi_wasm.js");` ✓）**
+      //     ⇒ **∴ 所以**：**本分支**也要**自己导一次 ✓**** ✓✓
+      //   **∴ 这正是"**判据抓到我自己的错**"的又一例 ✗**（**第 842 轮也是 ✓）** ✓✓
+      // Kernel import must be allowed to fail: without /wasm/ the bare import
+      // throws ERR_MODULE_NOT_FOUND outside any try, which the criterion caught.
+      // Now an unavailable kernel answers 501 with a reason instead of crashing.
+      let mod = null;
+      try {
+        mod = await import("/wasm/yanshi_wasm.js");
+      } catch (err) {
+        return json({ ok: false, error: "kernel_unavailable", endpoint: url.pathname,
+                      reason: "kernel module /wasm/yanshi_wasm.js did not load",
+                      detail: String((err && err.message) || err) }, 501);
+      }
       let entryK = kernels.get(doc);
       if (!entryK) {
         const c2 = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");

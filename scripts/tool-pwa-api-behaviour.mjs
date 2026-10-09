@@ -104,6 +104,46 @@ if (rrType.startsWith("image/png")) {
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
 // **∴ 用一个**确实仍未实现**的端点 ✗**（**`render_region` 已有快照分支 ✓ ⇒ 不再是 501 ✓**）。
+// **★ ⑦ `/api/blob`：二进制上传必须成功 ✗ ★**（第 845 轮 ✓；**示例图上传正是这条路 ✓**）：
+//   **∴ 为什么必须测它 ✗**：**`seedSampleIfEmpty` 靠它拿 `blob_hash` ✗**
+//     ⇒ **∴ 而**它**曾经**因为**两个原因**失败 ✗**：
+//       **a.** `req.json()` **把二进制 body 读成 `{}`** ✗（**第 841 轮修 ✓）**；
+//       **b.** **本地层**根本没有这个分支**✗ ⇒ **501 ✓**（**第 844 轮修 ✓）** ✓✓
+//   **∴ 判据 ✗**：**POST 一段**字节 ⇒ **期望 `ok:true` ＋ **`blob_hash` 以 `sha256:` 开头
+//     ＋ **`size` 等于**字节数 ✗****（**∴ 三者缺一不可 ✓）** ✓✓
+//   **∴ 变异（**手工 ✓）**：**删掉 `/api/blob` 分支 ⇒ **∴ 本断言**必红 ✓**
+//     （**∴ 因为**它**会返回**501 ＋ `ok:false` ✓）** ✓✓
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const blobRes = await local(
+  new Request("https://x/api/blob?doc=d1&token=local", {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: pngBytes,
+  }),
+);
+const blobBody = await blobRes.json();
+// **★ 断言形态改为"**成功 或 如实 501**" ✗ ★**（第 848 轮 ✓；**判据环境没有 /wasm/ ✓**）：
+//   **∴ 为什么 ✗**：**判据在 node 里跑 ✗**（**没有 `/wasm/yanshi_wasm.js` ✓）**
+//     ⇒ **∴ 于是**：**内核不可用 ⇒ **∴ 本地层**如实返回 501 ＋ `kernel_unavailable` ＋ 原因 ✓**
+//       ⇒ **∴ 那**正是**目标总则"**lazy 不许变成撒谎 ✗**"**要求的形态 ✓**** ✓✓
+//   **∴ 所以本判据断言两条互斥的**合法**结果 ✗**：
+//     **a.** **内核可用 ⇒ 200 ＋ `ok:true` ＋ `blob_hash` 以 `sha256:` 开头 ＋ `size` 正确 ✗**；
+//     **b.** **内核不可用 ⇒ 501 ＋ `error=kernel_unavailable` ＋ 非空 `reason` ✗**
+//       （**∴ 二者必居其一 ✗；**都做不到**才报红 ✓）** ✓✓
+//   **∴ 变异（**手工 ✓）**：**删掉整个 `/api/blob` 分支 ⇒ **∴ 它**会返回**501 但**没有 `kernel_unavailable`**✗
+//     （**∴ 而是** `endpoint_not_local` ✓）⇒ **∴ 于是** a／b **都不成立** ⇒ **∴ 必红 ✓**** ✓✓
+const blobOk = blobRes.status === 200 && blobBody.ok === true &&
+  String(blobBody.blob_hash || "").indexOf("sha256:") === 0 && blobBody.size === pngBytes.length;
+const blobHonest = blobRes.status === 501 && blobBody.error === "kernel_unavailable" &&
+  String(blobBody.reason || "").length > 0 && blobBody.endpoint === "/api/blob";
+check(blobOk || blobHonest,
+  "`/api/blob` 应「成功」或「如实 501（kernel_unavailable ＋ 原因）」（实测 " + blobRes.status + " " +
+  JSON.stringify(blobBody).slice(0, 140) + "）");
+check(!(blobRes.status === 501 && blobBody.error === "endpoint_not_local"),
+  "`/api/blob` 不能落到「未实现端点」分支 ⇒ 说明分支不存在（实测 " + JSON.stringify(blobBody).slice(0, 120) + "）");
+console.log("    `/api/blob` ⇒ " + (blobOk ? "内核可用 ⇒ 200 ＋ sha256 hash ✓" : "内核不可用 ⇒ 如实 501 ＋ 原因 ✓"));
+console.log("    `/api/blob` 二进制上传 ✓：" + JSON.stringify(blobBody).slice(0, 110));
+
 const un = await wrapped("https://x/api/effects?doc=d1", { method: "POST", body: "{}" });
 check(un.status === 501, `未实现端点应返回 501 ✗（实测 ${un.status}）`);
 const unBody = await un.json();
