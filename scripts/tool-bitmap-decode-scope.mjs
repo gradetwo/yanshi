@@ -147,8 +147,11 @@ async function buildFixture(base, target) {
 }
 
 // **导入真实工程** ✓（带位图 ✓ ⇒ 判据才有意义 ✓）。
+let selfBuilt = false;
 if (!existsSync(localProject)) {
   await buildFixture(base, localProject);
+  // **∴ 记住"**这份是我造的 ✓"✗** ⇒ **∴ 后面**要**自检它**是否真的触发了判据 ✓**** ✓✓
+  selfBuilt = true;
 }
 let bytes;
 try {
@@ -220,6 +223,46 @@ const r2 = await call("render_region", { region: REGION, include_image: false })
 const after2 = await missedBytes();
 const delta2 = after2 - before2;
 console.log(`  第二次渲染：decoded_bytes ${before2} → ${after2}（**增量 ${delta2} B**）｜ok=${r2.ok}`);
+// **★ 触发诊断 ✗ ★**（第 41 轮 ✓）：**∴ 小区域的增量是 0** ✗
+//   ⇒ **∴ 那**有两种可能 ✗：**（a）**判据要守的东西成立 ✓**；**（b）**这条 fixture
+//     **根本没走位图路径**✗（**∴ 那**判据就是**绿得没意义 ✓**）** ✓✓
+//   **∴ 分法 ✗**：**整幅渲一次**✗ ⇒ **∴ 若**它**会**解码位图 ⇒ **∴ 说明**路径是通的 ✓，
+//     **而**小区域不去碰它**正是判据要守的** ✓**** ✓✓
+//   **∴ 只打印 ⇒ **不参与断言**✗（**∴ 它**是**诊断 ✓）** ✓✓
+{
+  const b3 = await missedBytes();
+  const big = await call("render_region", { region: [0, 0, 2048, 2048], include_image: false });
+  const a3 = await missedBytes();
+  console.log(`  触发诊断：整幅渲染 decoded_bytes ${b3} → ${a3}（**增量 ${a3 - b3} B**）｜ok=${big.ok}`);
+  // **★ 再看那个色块**到底有没有进渲染 ✗ ★**（第 41 轮 ✓）：
+  //   **∴ 判法 ✗**：**取**放置区域中心的一个像素**✗ ⇒ **∴ 看**它**是不是**我上传的颜色 ✓**
+  //     **∴ 是** ⇒ **∴ 位图**进了渲染**✗，**而**没解码 ⇒ **∴ 缓存另有来源 ✓**
+  //     **∴ 不是** ⇒ **∴ fixture**的内容没进去**✗ ⇒ **∴ 要修生成流程 ✓**** ✓✓
+  const raw = await call("render_region", { region: [300, 300, 4, 4], raw: true });
+  if (raw.raw_url) {
+    const res = await fetch(raw.raw_url.startsWith("http") ? raw.raw_url : base + raw.raw_url);
+    const buf = Buffer.from(await res.arrayBuffer());
+    console.log(`  内容诊断：放置区中心像素 = [${buf[0]}, ${buf[1]}, ${buf[2]}, ${buf[3]}]`
+      + `（**期望接近** [200, 40, 90, 255] ✓）`);
+  } else {
+    console.log("  内容诊断：拿不到 raw_url ⇒ " + JSON.stringify(Object.keys(raw)));
+}
+  const triggered = a3 - b3 > 0;
+  console.log(`    ⇒ ${triggered
+    ? "位图路径**是通的** ✓ ⇒ ∴ 小区域增量 0 正是判据要守的结果 ✓"
+    : "**整幅也没有解码字节** ✗ ⇒ ∴ 这条 fixture **没走位图路径** ⇒ ∴ 判据绿得没意义 ✓"}`);
+  // **★ 护栏 ✗ ★**（第 41 轮 ✓）：**自造 fixture**若**触发不了**判据**✗**
+  //   ⇒ **∴ 必须**以非零退出**✗ ⇒ **∴ 不许**让"**全绿 ✓"**蒙住 CI ✓**** ✓✓
+  //   **∴ 为什么只对**自造**的管 ✗**：**调用方**给的工程**✗（**如**第 125 轮那份 ✓）
+  //     **∴ 我**无法**替它判断** ⇒ **∴ 只打印 ✓**** ✓✓
+  if (selfBuilt && !triggered) {
+    console.error("  ❌ 判据**未生效** ⇒ **本脚本自造的 fixture 不触发位图解码** ✗");
+    console.error("     ⇒ **∴ 结论**：这份 fixture 不能用来守这条判据 ✓");
+    console.error("     ⇒ **∴ 下一步**：换成**含笔触位图／raw 补丁**的工程（见第 125 轮的原始工程 ✓）");
+    process.exit(1);
+  }
+}
+
 check(delta2 === 0,
   "**同一区域第二次渲染 ⇒ 解码字节增量必须为 0**（缓存须生效 ✓；不许重复解压 ✗）",
   `增量 ${delta2} B`);
