@@ -209,6 +209,11 @@ const missingMediums = MEDIUMS.filter((f) => !existsSync("assets/mediums/" + f)
 check(missingMediums.length === 0,
   "缺少介质插件产物：" + missingMediums.join(" / ") + " => 先构建并跑 node scripts/mediums-sync.mjs");
 if (missingMediums.length === 0) console.log("  介质插件：6 个齐全 ✓（构建产物，已不入库 ✓）");
+// **★ PWA 也要有它们 ✗ ★**（第 673 轮 ✓）：**∴ 前端从 `/mediums/` 取 ✗**
+//   ⇒ **∴ 只拷 `assets/` 不够 ⇒ **∴ `web/mediums/` 也得有 ✓****。
+const webMissing = MEDIUMS.filter((f) => !existsSync("web/mediums/" + f));
+check(webMissing.length === 0,
+  "web/mediums 缺少：" + webMissing.join(" / ") + " => 跑 node scripts/pwa-sync-viewer.mjs");
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);

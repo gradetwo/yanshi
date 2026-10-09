@@ -98,3 +98,25 @@ if (!existsSync(BRUSH_SRC)) {
   if (n === 0) { console.error("ERROR: 一支笔刷都没同步 ⇒ PWA 无法落笔"); process.exit(1); }
   console.log("OK: 已同步 " + n + " 支笔刷 ⇒ " + BRUSH_DST);
 }
+
+// **★ 介质插件也要同步 ✗ ★**（第 673 轮 ✓）：**∴ 前端会 `fetch("/mediums/…")` ✗**
+//   （`viewer-app.js:2526` 的 `oil`／`watercolor`／`marker` 等 ✓）
+//   ⇒ **∴ 不拷 ⇒ **∴ 油画／水彩／马克笔在 PWA 里全 **404 ✗****
+//   ⇒ **∴ 而**笔刷早就拷了（199 支 ✓）⇒ **∴ 这是**同类资源漏了一半**✗**。
+//   **∴ 实测缺口** ✓：**`web/mediums` 原本是 **0 个文件 ✗****。
+// **∴ 插在文件末尾 ✗**（**∴ 无块边界问题 ✓，**且所需 import 都已在顶部 ✓**）。
+const MEDIUM_SRC = "assets/mediums";
+const MEDIUM_DST = join(DST, "mediums");
+if (existsSync(MEDIUM_SRC)) {
+  mkdirSync(MEDIUM_DST, { recursive: true });
+  let m = 0;
+  for (const f of readdirSync(MEDIUM_SRC)) {
+    if (!f.endsWith(".wasm")) continue;
+    copyFileSync(join(MEDIUM_SRC, f), join(MEDIUM_DST, f));
+    m += 1;
+  }
+  if (m === 0) { console.error("ERROR: 一个介质插件都没同步 => PWA 的油画与水彩会 404"); process.exit(1); }
+  console.log("OK: 已同步 " + m + " 个介质插件 => " + MEDIUM_DST);
+} else {
+  console.warn("WARN: 找不到 assets/mediums => 先跑 node scripts/mediums-sync.mjs");
+}

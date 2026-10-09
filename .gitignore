@@ -49,3 +49,20 @@ assets/brush-module.wasm
 #   `git rm --cached assets/mediums/*.wasm` ✗**（**∴ 那会改变"clone 即可跑" ⇒
 #   **∴ 服务端必须在缺文件时**明确提示**✗** —— **∴ 见下一步 ✓**）。
 assets/mediums/*.wasm
+
+# **★ PWA 静态站点的**生成物**（构建／同步产生）✓ ★**（第 673 轮 ✓；**与用户报告同源 ✓**）
+#   **∴ `web/` 里分两类 ✗**：
+#     * **手写源 ✓**（**要入库 ✓**）：`api-local.js`／`store.js`／`brush-local.js`／`pwa-inject.html` ✓；
+#     * **生成物 ✗**（**不入库 ✓**）：下面这些 ✓。
+#   **∴ 为什么 ✗**：**它们由 `scripts/pwa-sync-*.mjs` 生成 ✗**
+#     ⇒ **∴ 与 `assets/mediums/*.wasm` 同一类问题：**产物入库 ⇒ 落后 ＋ 每次生成都 dirty ✗****
+#     （**∴ 实测**：**`web/brushes/`（199 支）**已经在库里 ✗** ⇒ **∴ 与用户的报告同源 ✓**）。
+#   **∴ 而**部署不受影响 ✓**：**`pwa.yml` **先跑同步再 `wrangler deploy` ✗**
+#     ⇒ **∴ 于是**`web/` 在部署时**总是新鲜**✗****。
+web/wasm/
+web/brushes/
+web/mediums/
+web/index.html
+web/viewer-app.js
+web/viewer.css
+web/service-worker.js
