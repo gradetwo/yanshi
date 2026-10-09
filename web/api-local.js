@@ -209,12 +209,19 @@ export async function makeLocalApi(db) {
           id: "01STROKE" + String(Date.now()).padStart(13, "0"),
           kind: "import_image",
           payload: {
+            // **★ 必须带 `type` 与 `width` ✗ ★**（第 665 轮 ✓，**权威对照得到的 ✓**）：
+            //   **∴ 服务端的 payload 是** 7 个键 ✗**：
+            //     `bitmap`／`height`／`layer_id`／`object_id`／`region`／`source`／**`type`**／**`width`** ✓
+            //   ⇒ **∴ 而**我此前**缺 `type`（`"raster_patch"` ✓）与 `width` ✗**
+            //   ⇒ **∴ 内核**可能按 `type` 分派**✗ ⇒ **∴ 缺它 ⇒ **∴ 静默忽略 ✓****（**∴ 实测 `warnings:[]` ✓**）。
+            type: "raster_patch",
             bitmap: { blob_hash: hash, mime_type: "image/x-yanshi-raw", size: rgba.length },
-            height: region.h, layer_id: layerId,
+            width: region.w, height: region.h, layer_id: layerId,
             object_id: "obj_" + String(Date.now()),
             region: { h: region.h, w: region.w, x: region.x, y: region.y },
-            source: { brush: brushName, color: body.color ?? null, kind: "brush",
-                      points: pts, seed: 0, size: body.size ?? null },
+            source: { brush: brushName, color: body.color ?? null, color_to: null,
+                      hardness: null, kind: "brush", opacity: null, points: pts,
+                      seed: 0, size: body.size ?? null, smooth: null },
           },
           schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
         });
