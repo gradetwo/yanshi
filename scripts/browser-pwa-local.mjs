@@ -261,6 +261,47 @@ const ri = await evaluate("JSON.stringify({ info: window.__renderInfo || null, a
 console.log("  诊断 renderInfo => " + String(ri).slice(0, 700));
 console.log("  诊断 seq => " + String(seqs));
 
+// **★ `draw_stroke` 必须也走真路 ✗ ★**（用户报告的 P0 ✓）：
+//   **∴ 为什么 ✗**：**前端落笔调的是 `draw_stroke`** ✓，**而**本地层原来只认 `brush_stroke`**✗
+//     ⇒ **∴ 每一笔**返回 `not_implemented_locally` ✓ ⇒ **∴ 画布 0 像素 ✓**
+//     （**∴ 而**上面那条 `brush_stroke` 检查**从来不会**发现它 ✓）。
+//   **∴ 判据 ✗**：**POST 一笔到 `/api/tools/draw_stroke` ✗** ⇒ **∴ 必须 200 ＋ `ok:true` ✓**，
+//     **且**渲染必须**变化 ✓**（**∴ 只有状态码不够 —— 用户要的是"**画得上**" ✓）** ✓✓
+const drawBefore = await pngSum();
+const drawResp = await evaluate(`(async () => {
+  const r = await fetch("/api/tools/draw_stroke?doc=d1", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layer_id: "L0", data: { points: [[40, 200, 1.0], [200, 40, 1.0]], size: 20, color: [0, 0, 0, 1] } }) });
+  return { status: r.status, body: await r.json().catch(() => ({})) }; })()`);
+console.log("  draw_stroke => " + JSON.stringify(drawResp).slice(0, 220));
+const drawAfter = await pngSum();
+check(drawResp && drawResp.status === 200 && drawResp.body && drawResp.body.ok === true,
+  "draw_stroke 必须成功（前端落笔用的就是它）⇒ 实测 " + JSON.stringify(drawResp).slice(0, 200));
+check(drawBefore.sum !== drawAfter.sum || drawBefore.bytes !== drawAfter.bytes,
+  "draw_stroke 之后渲染必须变化（否则画布上仍然没有像素）");
+
+// **★ 过期的渲染偏好不得锁死内核 ✗ ★**（**用户的确切场景 ✓**）：
+//   **∴ 现象 ✗**：**顶栏说"本地內核（無服务端）"✗，**而**内核卡片说
+//     "已按設置跳過（用服务端渲染）" ✓** ⇒ **∴ 卡片全"—" ⇒ **∴ 落笔必然失败 ✓**** ✓✓
+//   **∴ 原因 ✗**：**`localStorage` 里存着 `yanshi.serverRender = "1"` ✗**
+//     （**∴ 早期版本把复选框默认勾上时就写进去了 ✓）**
+//   **∴ 判据 ✗**：**写 `"1"` ⇒ **重载 ⇒ **∴ 内核**仍必须**预热 ✓**** ✓✓
+const stalePref = await evaluate(`(() => { try {
+  localStorage.setItem("yanshi.serverRender", "1");
+  return localStorage.getItem("yanshi.serverRender");
+} catch (e) { return "ERR:" + e.message; } })()`);
+await send("Page.navigate", { url: base + "/" });
+for (let i = 0; i < 40; i++) {
+  if (await evaluate("!!(window.yanshiStats && window.yanshiStats.wasm === true)")) break;
+  await new Promise((r) => setTimeout(r, 250));
+}
+const wasmWithStalePref = await evaluate("!!(window.yanshiStats && window.yanshiStats.wasm === true)");
+console.log("  过期偏好 " + stalePref + " ⇒ 重载后内核已预热: " + wasmWithStalePref);
+check(wasmWithStalePref === true,
+  "存着 yanshi.serverRender=\"1\" 时内核仍必须预热（否则无服务端的部署永远画不了）");
+// **∴ 收尾清掉 ✗**：**它**是本判据留下的痕迹 ✓（**∴ 不留给后续步骤 ✓**）。
+await evaluate(`(() => { try { localStorage.setItem("yanshi.serverRender", "0"); } catch (e) {} })()`);
+
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
 
