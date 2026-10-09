@@ -77,3 +77,5 @@ web/service-worker.js
 # **★ 导出静态页时的**临时文件** ✗ ★**（第 221 轮 ✓）：**∴ 它**是 `--export-viewer-html` 的落点 ✗，
 #   **∴ 导出成功后**改名成 `web/index.html` ✗ ⇒ **∴ 中间态**不该入库 ✓**。
 web/.index.export.html
+# Local secrets / deploy credentials
+.env
