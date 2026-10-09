@@ -204,6 +204,28 @@ fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
         );
         assert_eq!(made["ok"], json!(true), "{made}");
     }
+    // **★ 决定性实验：**先渲一个小区域**会不会改变目标区域的输出 ✗ ★**（第 31 轮 ✓）
+    //   **∴ 若**会 ⇒ **∴ 进程级缓存**（**below／bitmap ✓）**能改变输出**✗
+    //     ⇒ **★ 那**就是 bug 的载体 ✓ ★**** ✓✓
+    {
+        let before = workspace
+            .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 64.0, 64.0))
+            .expect("小区域渲染");
+        let _ = before;
+        let probe_before = workspace
+            .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+            .expect("目标区域（污染前）");
+        let _ = workspace
+            .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 64.0, 64.0))
+            .expect("再次小区域");
+        let probe_after = workspace
+            .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+            .expect("目标区域（污染后）");
+        eprintln!(
+            "DIFF 小区域渲染是否改变目标输出：{}",
+            probe_before != probe_after
+        );
+    }
     let original = workspace
         .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
         .expect("原图渲染");
