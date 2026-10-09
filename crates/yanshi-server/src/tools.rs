@@ -3856,6 +3856,11 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   ⇒ **∴ 于是**判据可以断言"切到半透明层后 `above` 命中上升"✗**（**§14.33 ✓**）。
     let above_before = ctx.workspace.document_above_reuse_count(&ctx.doc_id);
     let active_layer = optional_str(args, "active_layer");
+    // **★ 归属读数 ✗ ★**（第 993 轮 ✓）：**∴ 渲染序号**的前后差值
+    //   ⇔ **"**本次请求**触发了几次渲染 ✓"**
+    //     ⇒ **∴ `0`** ⇒ **∴ 被缓存拦掉（**没进渲染器 ✓）**；**`≥1`** ⇒ **∴ 进了 ✓**
+    //       ⇒ **★ 于是**：**探针行**可以**按序号**归属到**这一次请求 ✓ ★**** ✓✓
+    let renders_before = yanshi_render::render::renders_done();
     // **★ 临时探针 ✓**（第 528 轮 ✓，**查明后删 ✓**）：**打印 `args` 的键 ✗** ⇒
     // **∴ 分清**"框架丢了未知键 ✗"与"`optional_str` 用法错 ✗"**（**症状相同 ✓**）**。
     if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
@@ -3968,6 +3973,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["frame_reused"] = json!(frame_after > frame_before);
     value["below_reused"] = json!(below_after > below_before);
     value["above_reused"] = json!(above_after > above_before);
+    // **∴ 归属字段 ✓**：**本次请求期间**发生了几次渲染 ✗（**进程内单调 ✓）**
+    //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓
+    value["renders_done"] =
+        json!(yanshi_render::render::renders_done().saturating_sub(renders_before));
     // 7.5：MCP 响应可选内嵌 image content ✓ —— **超限不再静默降级** ✗（第三方 MCP 实测报告 P0-1 ✓：
     // "画 50 笔之前看不到任何效果，只能盲画" ✗ ⇒ 调用方拿到 `yanshi://blob/…` 却**不知道为什么不给图** ✗）。
     // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。

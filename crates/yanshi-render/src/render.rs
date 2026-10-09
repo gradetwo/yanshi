@@ -179,6 +179,18 @@ static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// **∴ 因为**第 717／718 两轮我**配错了行**（**`tail` 取到别的渲染 ✓）⇒ **∴ 这一次**不再靠猜 ✓**。
 static RENDER_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **★ 已发生的渲染次数 ✗ ★**（第 993 轮 ✓；**给调用方做**归属**用 ✓）。
+///
+/// **∴ 为什么要它 ✗**：**探针**记"**发生了什么 ✓"**✗，**而**不记"**是谁触发的 ✓"**
+///   ⇒ **∴ 于是**：**我**无法**把一行 `READ`** 归属到**某个 HTTP 请求 ✓**
+///     ⇒ **★ 而**调用方**一收一发**读它两次 ✗** ⇒ **∴ 差值**就是
+///       **"**我这次触发了几次渲染 ✓"** ✗**
+///       ⇒ **∴ `0`** ⇒ **∴ 被缓存拦掉（**没进渲染器 ✓）**；**`≥1`** ⇒ **∴ 进了 ✓ ★**** ✓✓
+///   **∴ 单调递增 ✗**（**进程内 ✓）⇒ **∴ 并发下**也**只多不少 ✓**** ✓✓
+pub fn renders_done() -> usize {
+    RENDER_SEQ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// **★ `above` 复用次数 ✓ ★**（第 682 轮 ✓，**纯观测 ✓**）：
 /// **∴ 判据据此断言"半透明层切回时复用了上方的合成"✗**（**与 `BELOW_REUSE` 同一套口径 ✓**）。
 static ABOVE_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
