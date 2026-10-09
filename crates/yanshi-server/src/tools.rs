@@ -3311,6 +3311,16 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 本字段如实报出"本次为生成预览／缩略图花了多久"✗** ⇒ **∴ 于是**：
     //   **首次 ≈ 1091 ms ✓｜其后 ≈ 0 ✓** ⇒ **∴ 一眼分清"**一次成本**✓"与"**回归**✗"** ✓✓
     // **⚠️ 注意** ✓：**它是"本函数内为预览所花的墙钟"✗，**含缩略图生成 ✓、不含渲染之外的 IPC ✓**。
+    // **★ 缩略图状态 ✓ ★**（第 584 轮 ✓；**异步预览设计第 ① 步 ✓**）：
+    // **∴ 本步**只做**如实的两态** ✗**（**`ready` ✓／`unavailable`（**如 `Skip` ✓**）**）——
+    // **∴ 而 `pending`（**"稍后就绪"✗**）**留给第 ② 步 ✓**：
+    //   **∴ 现在**仍是同步生成 ✗ ⇒ **∴ 若此刻就报 `pending` ⇒ **∴ 那就是**撒谎 ✗**
+    //   （**因为其实已经就绪 ✓**）** ⇒ **∴ 先不报 ✓**。
+    summary["preview_state"] = json!(if summary.get("thumb_url").is_some() {
+        "ready"
+    } else {
+        "unavailable"
+    });
     summary["first_preview_ms"] = json!(preview_started
         .elapsed()
         .as_secs_f64()
