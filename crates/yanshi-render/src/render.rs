@@ -515,6 +515,17 @@ impl Renderer {
         std::mem::replace(&mut self.only_layer, layer)
     }
 
+    /// **★ 设置"当前层" ✓ ★**（**目标第 4 条 ✓**；第 519 轮 ✓）：**三段分解的切点 ✓**。
+    ///
+    /// **为什么是 setter 而不是每次传参** ✗：**与 [`Self::set_only_layer`] 同理 ✓** ——
+    /// **∴ 切点发生在**图层循环**里 ✗，而那条循环被多处共用 ✓** ⇒ **∴ 挂在这里只需改**一处 ✓**，
+    /// **不会出现"某个入口忘了传"✗**（**"两条路径漂移"是本仓库反复吃过的亏 ✓**）。
+    ///
+    /// **∴ 返回旧值 ✓**（**便于调用方还原 ✓**）。**∴ `None` ⇒ 退回"最上层以外"✓**。
+    pub fn set_active_layer(&mut self, layer: Option<String>) -> Option<String> {
+        std::mem::replace(&mut self.options.active_layer, layer)
+    }
+
     /// **覆盖并行度**（`1` ⇒ 强制串行；`0` 视为 `1`），返回原值。
     /// `None` 恢复自动（可用核数）。
     pub fn set_max_workers(&mut self, workers: Option<usize>) -> Option<usize> {
