@@ -189,3 +189,25 @@
 | **④** | **把 viewer 抽成**静态壳**（**manifest ＋ service worker ＋ 不依赖服务端注入 ✓**）** | **§4 ③ ✓** |
 | **⑤** | **IndexedDB 持久化层** | **§4 ④ ✓** |
 | **⑥** | **内核里的 WebGPU 后端 ＋ 报出 `webgpu`／`cpu`** | **§8.2 ✓（**GPU 的真实落点 ✓**）** |
+
+---
+
+## 十、CI 部署工作流（**第 611 轮 ✓**）
+
+**新增** [`.github/workflows/pwa.yml`](../../.github/workflows/pwa.yml) ✓，**8 步** ✓：
+**① checkout ｜② Rust ＋ `wasm32-unknown-unknown` ｜③ 构建 `yanshi-wasm` ｜④ 装匹配版本的 `wasm-bindgen-cli`
+｜⑤ `wasm-bindgen --target web` 生成 `pkg/` ｜⑥ `node scripts/pwa-sync-wasm.mjs`（**同步到 `web/wasm/` ✓**）
+｜⑦ **`node scripts/tool-pwa-assets.mjs`（**★ 判据：产物不完整就**失败即停**✗ ★**）｜⑧ `wrangler deploy` ✓**
+
+**触发时机** ✓（**按仓库约定：部署是重活 ⇒ 不阻塞每次 push ✓**）：
+**① 手动 `workflow_dispatch` ✓（**含 `dry_run` 选项 ✓**）｜② 打 `v*` tag 时 ✓（**发版顺带部署 ✓**）**
+
+**∴ 缺 secret 时的行为（**关键 ✓**）**：**未配置 `CLOUDFLARE_API_TOKEN` ⇒ **∴ 不失败 ✗，
+而是**跳过部署 ＋ 在 Step Summary 里**如实写明"未部署 ＋ 原因"**✗**（**∴ 不许假装部署成功 ✓**）** ✓✓
+
+### 10.1 代价与诚实说明（**两面 ✓**）
+
+| 面 | 内容 |
+|---|---|
+| **收益 ✓** | **部署**不需要本地装 wrangler ✗**（**本地实测也确认它未安装 ✓**）｜**发版即部署 ✓**｜**判据在部署前拦截"没有内核的 PWA"✗** |
+| **代价 ✗** | **① 我**没有**在真实 CI 上跑过它 ✗**（**∴ Step 的**每一步都在本地单独验证过 ✓，但**整条流水线未跑 ✓**）；**② 需要仓库 secret ✗**（**未配 ⇒ 只校验不部署 ✓**）；**③ `web/wasm/*.wasm`（**1.38 MiB ✓**）已入库 ✗ ⇒ **∴ 每次内核更新都要**提交一个二进制 ✗**（**∴ 好处是判据可离线验证 ＋ 新人 clone 即可跑 ✓**）** |

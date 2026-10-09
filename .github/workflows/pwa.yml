@@ -1,0 +1,91 @@
+# **★ 把 PWA 部署到 Cloudflare Workers ✓ ★**（第 611 轮 ✓；**部署矩阵 §7 ✓**）
+#
+# **∴ 为什么**不**放在 `ci.yml` 里 ✗**：**部署是**重活 ✗**（**构建 wasm ＋ 上传 ✓**），
+#   而本仓库的约定是「**重活交给 CI 且**不阻塞每次 push**✗**」（**见 `ci.yml` 头部 ✓**）。
+# **∴ 更重要的理由 ✗**：**每次 push 都部署 ⇒ **∴ 会把**未验证的版本**推给用户 ✗** ⇒
+#   **∴ 所以只在这两种时机跑 ✓**：
+#     **① 手动触发 ✓**（`workflow_dispatch` ✓ —— 想发就发 ✓）；
+#     **② 打版本 tag 时 ✓**（`v*` ✓ —— 发版顺带部署 ✓）。
+#
+# **∴ 前置（**必须由仓库管理员配置 ✓**）**：
+#   **`CLOUDFLARE_API_TOKEN`**（**Repository secret ✓**）＋ 可选的 **`CLOUDFLARE_ACCOUNT_ID`** ✓。
+#   **⚠️ 未配置时** ✗**：**本工作流**不会失败**✗**，**而是**跳过部署并在
+#   **Step Summary 里**如实写明"未部署 ＋ 原因"✗** —— **∴ 不许假装部署成功 ✓**。
+name: PWA (Cloudflare Workers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只校验产物、不真正部署（dry run）'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链（Rust + wasm32）
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo --version
+
+      - name: 构建内核（wasm）
+        run: cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+
+      - name: 安装 wasm-bindgen CLI
+        run: |
+          # **∴ 版本必须与 `Cargo.toml` 里的 `wasm-bindgen` 匹配 ✗**（**否则绑定不兼容 ✓**）。
+          VER=$(grep -m1 '^wasm-bindgen' crates/yanshi-wasm/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "wasm-bindgen = $VER"
+          cargo install wasm-bindgen-cli --version "$VER" --locked
+
+      - name: 生成绑定（pkg/）
+        run: |
+          wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
+            target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+
+      - name: 同步产物到静态目录
+        run: node scripts/pwa-sync-wasm.mjs
+
+      - name: ★ 判据：PWA 资源完整性（失败即停）
+        # **∴ 这条是**防撒谎判据 ✗**：**没有内核的 PWA 不许发布 ✓**（**`tool-pwa-assets.mjs` ✓**）。
+        run: node scripts/tool-pwa-assets.mjs
+
+      - name: 部署（或如实跳过）
+        id: deploy
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -u
+          if [ -z "${CF_TOKEN:-}" ]; then
+            {
+              echo "### ⚠️ 未部署：缺少仓库 secret \`CLOUDFLARE_API_TOKEN\`"
+              echo ""
+              echo "- 产物**已构建并通过判据** ✓（\`tool-pwa-assets.mjs\` 绿 ✓）"
+              echo "- 要真正部署，请在仓库 Settings → Secrets 里配置该 token 后重跑本工作流"
+              echo "- **本步骤**不会**谎报成功** ✗"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npx --yes wrangler deploy --dry-run --outdir /tmp/pwa-dist
+            echo "### ✅ dry run 通过（未真正部署）" >> "$GITHUB_STEP_SUMMARY"
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npx --yes wrangler deploy
+          echo "### ✅ 已部署到 yanshi-online.wangda.today" >> "$GITHUB_STEP_SUMMARY"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
