@@ -41,6 +41,16 @@ pub struct RenderOptions {
     pub expand_for_filters: bool,
     /// 滤镜 padding 上限（防止超大半径拖垮区域渲染）。
     pub max_filter_padding: u32,
+    /// **★ 当前层 ✓ ★**（**目标第 4 条 ✓**；第 517 轮 ✓）：**画家正在改的那一层** ✓。
+    ///
+    /// **为什么必须显式传入** ✗：**`DocumentState` 里**没有**"当前层"✗**（**第 516 轮 grep 确认 ✓**）
+    /// —— **∴ 它是**会话状态**✗（**客户端的选中项 ✓**）⇒ **∴ 由服务端传入最明确 ✓**。
+    ///
+    /// **∴ 用途** ✓：**三段分解的切点**（`composite(below, layer, above)` ✓）——
+    /// **∴ 切在**当前层**上 ⇒ **∴ 改它时 below 与 above **都能复用**✓**，
+    /// **而现在的切点是"最上层以外"✗ ⇒ **∴ 改**中间层**时要把它以上的层全部重渲 ✗**** ✓✓
+    /// **∴ 默认 `None` ⇒ 退回"最上层以外"✓（**行为不变 ✓**）** ✓✓
+    pub active_layer: Option<String>,
 }
 
 impl Default for RenderOptions {
@@ -51,6 +61,8 @@ impl Default for RenderOptions {
             expand_for_filters: true,
             // 与外扩上限保持一致：小于它会让声明了较大邻域的调用被静默截断。
             max_filter_padding: MAX_EFFECT_PADDING,
+            // **∴ 默认 `None` ⇒ 切点退回"最上层以外"✓ ⇒ **∴ 行为与今天完全一致 ✓****。
+            active_layer: None,
         }
     }
 }
