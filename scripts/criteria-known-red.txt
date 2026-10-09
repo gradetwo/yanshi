@@ -2649,3 +2649,25 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **∴ 且**本地开发**有一条命令 ✓**（`node scripts/pwa-sync-wasm.mjs && node scripts/pwa-sync-viewer.mjs` ✓）** ✓✓
 #   **∴ 诚实** ✓：**本轮提交的信息与实际改动**一致 ✓**（**`.gitignore` +17｜`pwa-sync-viewer.mjs` +22｜
 #     `tool-pwa-assets.mjs` +5 ✓，**已用 `git show --stat` 核对 ✓**）** ✓✓
+# **★ 第 674 轮：🎉 **整个 `web/` 生成目录已取消跟踪 ✗**（**214 ⇒ 6 个文件 ✓**）**
+#   **∴ 做法** ✓：**`git rm -r --cached web/brushes web/wasm` ✗**
+#     ＋ **`git rm --cached web/{index.html,.index.export.html,viewer-app.js,viewer.css,service-worker.js}` ✓** ✓✓
+#   **∴ 结果** ✓：**`git ls-files web/` ⇒ **214 ⇒ 6** ✗**，**只剩**手写源**✓**：
+#     `api-local.js`／`brush-local.js`／`manifest.webmanifest`／`pwa-inject.html`／`store.js`／`sw.js` ✓✓
+#   **∴ 且**文件**仍在盘上** ✓**（**`brushes` 199 ✓／`wasm` 4 ✓／`index.html` 587568 字节 ✓）
+#     ⇒ **∴ 于是**本地开发与服务**照常 ✓**（**∴ 只是**不再入库 ✓**）** ✓✓
+#   **∴ 门禁** ✓：**fmt ✓｜clippy ✓｜JS ✓｜覆盖率 ✓｜PWA 三判据全绿 ✓** ✓✓
+#   **∴ 与用户的报告合起来看 ✗**（**同一根因的三个层次 ✓**）** ✓：
+#     **① 用户点的 6 个 `assets/mediums/*.wasm` ✗**（**已解决 ✓**）；
+#     **② 同类的 `assets/mediums` 生成逻辑 ＋ CI 不重建 ✗**（**已修 ✓**）；
+#     **③ 整个 `web/` 生成目录（**214 文件／5.2 MB ✓，**含 199 支笔刷 ＋ 573 KB HTML ✓）**✗**
+#       ⇒ **∴ 本轮解决 ✓** ⇒ **∴ 于是**仓库**只剩**手写源**✗**（**∴ 与"产物不该入库"一致 ✓**）** ✓✓
+#   **∴ 部署不受影响 ✓**：**`pwa.yml` 在部署前跑 ✗**：
+#     **`node scripts/pwa-sync-wasm.mjs` ✗**（**拷 wasm 包 ✓**）
+#     ＋ **`node scripts/pwa-sync-viewer.mjs` ✗**（**拷 viewer ＋ 导出静态页 ＋ 拷笔刷 ＋ **现在也拷介质**✓**）
+#     ⇒ **∴ 于是**`web/` 在部署时**总是重新生成 ✗**** ✓✓
+#   **∴ 本地开发（**clone 之后 ✓）** ✓：**跑这两条同步命令即可 ✗**
+#     （**∴ 判据 `tool-pwa-assets.mjs` 会在缺文件时**给出确切提示 ✓**）** ✓✓
+#   **∴ 收益／代价（**两面 ✓）** ✓：**收益** ✓：**仓库体积显著下降（**≈5.2 MB 生成物移出 ✓）
+#     ＋ **不再有 199 支笔刷与两个大 HTML 入库 ✗**＋ **`git status` 不再被生成物污染 ✗**；
+#     **代价** ✗：**clone 后必须先跑同步 ✗**（**∴ 而 CI／`pwa.yml` 已自动化 ✓**）** ✓✓
