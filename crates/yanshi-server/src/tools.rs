@@ -3746,6 +3746,25 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **★ 可选 `active_layer` ✓ ★**（**目标第 4 条 ✓**；第 523 轮 ✓）：**∴ 让"改中间层"
     // 只重渲该层 ✓**（**三段分解的切点 ✓**）；**∴ 不传 ⇒ 退回"最上层以外"✓**（**行为不变 ✓**）。
     let active_layer = optional_str(args, "active_layer");
+    // **★ 临时探针 ✓**（第 528 轮 ✓，**查明后删 ✓**）：**打印 `args` 的键 ✗** ⇒
+    // **∴ 分清**"框架丢了未知键 ✗"与"`optional_str` 用法错 ✗"**（**症状相同 ✓**）**。
+    if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&probe)
+        {
+            let keys: Vec<String> = args
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default();
+            let _ = writeln!(
+                f,
+                "render_region args keys={keys:?} active={active_layer:?}"
+            );
+        }
+    }
     if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
