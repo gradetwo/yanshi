@@ -1338,7 +1338,7 @@ impl Renderer {
                 {
                     let _ = writeln!(
                         f,
-                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={}",
+                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}",
                         btx,
                         bty,
                         budget_ok,
@@ -1346,7 +1346,8 @@ impl Renderer {
                         ob.y,
                         ob.w,
                         ob.h,
-                        sig.len()
+                        sig.len(),
+                        self as *const Self as usize,
                     );
                 }
             }
