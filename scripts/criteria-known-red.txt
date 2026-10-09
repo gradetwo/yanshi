@@ -7304,3 +7304,44 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 静态一致性检查的结论（**更新 ✓）** ✓**：**21 个路径**全部**有归属 ✗**
 #     （**6 个本地层分支 ＋ 10 个走 `local()` ⇒ 501 ＋ 4 个静态 ＋ 1 个 `/health` ✓）**** ✓✓
 #   **∴ 下一步 ✓**：**部署 ＋ 验证 `/samples/sample-yanshi.png` ⇒ 期望 200 ✓**** ✓✓
+
+# **★ 第 834 轮：🎯🎯🎯 **画不出来的根因找到 ✗** —— **`new URL(Request)` 在 Safari 抛错 ✓****
+#   **∴ 用户的报告 ✓**：**"PWA 还是没法画 ✗；**原子操作报**错误 undefined ×10**；
+#     **落笔失败：unknown ×3 ✗；**console：**Unhandled Promise Rejection:
+#     **SyntaxError: The string did not match the expected pattern ✗**
+#     **（`createNamedDocument` ／ `:8002` ／ `:10194` ✓）"** ✓✓
+#   **★ 推理链 ✗ ★**：
+#     **① 三处报错行都是**`await` 调用 ✗**（**`:3212 switchDocument`／`:8002 commitShape`／
+#       **`:10194 refreshPreview` ✓）⇒ **∴ 所以**：**真正的抛错**在**被调函数内部 ✓**** ✓✓
+#     **② 共同点 ✗**：**三者**都**发请求 ＋ 解析响应 ✓**** ✓✓
+#     **③ 而错误文本是关键 ✗**：**「**The string did not match the expected pattern**」
+#       **不是** `JSON.parse` 的话 ✗**（**那**会说「**Unexpected token**」✓）
+#       ⇒ **∴ 它**是 **Safari／WebKit** 的 **`new URL()`**（**或 `atob` ✓）的报错 ✓**** ✓✓
+#   **★ 决定性证据 ✗ ★**：**`grep "new URL(" web/index.html" ✗`**：
+#     ```
+#     :  21  url = new URL(typeof input === "string" ? input : (input && input.url) || "", location.href);   ← **★ 我的哨兵，有 try/catch ＋ 正确取 .url ✓ ★**
+#     :1169  const parsed = new URL(url, location.href);     ← **★ 危险：`url` 可能是 Request ✗ ★**
+#     :1305  const parsed = new URL(url, location.href);     ← **★ 同上 ✗ ★**
+#     :1351  const probe = new URL(url, location.href);      ← **★ 同上 ✗ ★**
+#     :1366  console.warn("… " + new URL(url, location.href).pathname);   ← **★ 同上 ✗ ★**
+#     :4391  const url = new URL(location.href);            ← **∴ 安全 ✓**
+#     :10471 const fromUrl = new URL(location.href).searchParams.get("lang");  ← **∴ 安全 ✓**
+#     :10567 const url = new URL(location.href);            ← **∴ 安全 ✓**
+#     ```
+#     ⇒ **★ 关键 ✗ ★**：**`:1169`／`:1305`／`:1351`／`:1366`** 直接**把 `url` 交给 `new URL` ✗**
+#       ⇒ **∴ 而**在**service worker 的 `fetch` 处理器**里 ✗**，`url` **常常是**一个 `Request` 对象 ✓**
+#         ⇒ **∴ 于是**：**`new URL(request, base)` ✗**
+#           ⇒ **★ Chrome** 会**隐式把它转成字符串**✗（**∴ 于是**碰巧能跑 ✓）
+#           ⇒ **★ Safari** 则**抛 `SyntaxError: The string did not match the expected pattern` ✗ ★**** ✓✓
+#     ⇒ **∴ 所以**：**用户**用 Safari（**或** iOS 上的浏览器 ✓）就能看到 ✓**
+#       ⇒ **∴ 而这**解释了**"**Chrome 上好像正常／Safari 上完全不工作**" ✓**** ✓✓
+#   **★ 修法 ✗ ★**：**统一取字符串 ✗**：
+#     ```js
+#     const toUrl = (u) => new URL(typeof u === "string" ? u : u.url, location.href);
+#     ```
+#     ⇒ **∴ 然后**把 `:1169`／`:1305`／`:1351`／`:1366` 换成 **`toUrl(url)` ✗**
+#       ⇒ **∴ 于是**：**Request 对象**也能正确处理 ✓**** ✓✓
+#   **∴ 与"落笔失败：unknown"的关系 ✗**：**建文档失败 ⇒ **没有文档 ⇒ **∴ 落笔**必然失败 ✓**
+#     ⇒ **∴ 而** `refreshPreview` 失败 ⇒ **∴ 预览**也出不来 ✓**** ✓✓
+#   **∴ 元收获 ★**：**"**只在某些浏览器上坏**"⇒ **∴ 先找**浏览器差异 API**✗**
+#     （**∴ 这里**是 `new URL(Request)` 的隐式转换 ✓）** ✓✓
