@@ -55,12 +55,19 @@ const main = async () => {
   //   ⇒ **∴ 改 S2 **不在**指纹里 ⇒ **∴ 应为 `true` ✓****
   await stroke("S2", 9);
   await bump(30);
+  // **★ 先**预热**一次（**建立该区域的 below ✓**）⇒ 再**测量** ✗**（第 547 轮 ✓）：
+  // **∴ `bump` 本身是一次渲染 ✓ ⇒ **∴ 它把自己那份**小 bbox** 的 tile 存进 below ✗
+  // ⇒ **∴ 若直接测量 ⇒ 要的 tile 大多不在 ⇒ **∴ 恒 `false` ✗**（**与"切点没生效"无法区分 ✗**）
+  // ⇒ **∴ 必须先渲一次同区域 ⇒ **∴ 于是测量那一次才有意义 ✓****。
+  await render({ active_layer: "S2" });
   const r1 = await render({ active_layer: "S2" });
 
   // **② 改中间层 ＋ **不传**（**切点在"最上层以外"✓**）⇒ 指纹含 S2 ✓
   //   ⇒ **∴ 改它使其变 ⇒ **∴ 应为 `false` ✓**（**对照 ✓**）**
   await stroke("S2", 18);
   await bump(40);
+  // **∴ 同样先预热 ✓** —— **∴ 若①留下的组仍可命中 ⇒ **∴ 这次（**不传 ✓**）会 `true` ✗ ⇒ **∴ 那才是真问题 ✓****。
+  await render();
   const r2 = await render();
 
   console.log(`  ① 传 active_layer=S2 ⇒ below_reused = ${r1.below_reused}`);
