@@ -149,12 +149,14 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
         .expect("第二块渲染");
 
     eprintln!(
-        "第二次：bbox={:?} {}x{} tiles={}｜want_bbox={:?}",
+        "第二次：bbox={:?} {}x{} tiles={}｜want_bbox={:?}｜missing={} recompute={:?}",
         r.bbox,
         r.width,
         r.height,
         r.tiles.len(),
-        r.stats.below_want_bbox
+        r.stats.below_want_bbox,
+        r.stats.below_tiles_missing,
+        r.stats.below_recompute_bbox
     );
     let s = &r.stats;
     eprintln!(

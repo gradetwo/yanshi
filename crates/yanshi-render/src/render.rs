@@ -116,6 +116,19 @@ pub struct RenderStats {
     /// **∴ 与部分复用的关系 ✗**：**要复用**哪一组格**✗，**完全由它决定 ✓**
     ///   ⇒ **∴ 所以**：**实现前**必须**能看见它 ✓**** ✓✓
     pub below_want_bbox: (i64, i64, i64, i64),
+    /// **★ 想要但缓存里没有的格数 ✗ ★**（第 8 轮 ✓；**纯观测 ✓）。
+    ///
+    /// **∴ 为什么必须有它 ✗**：**部分复用**要**重算**的**正是这些格 ✗**
+    ///   ⇒ **∴ 而**"**想要几格 ✓／"**有几格 ✓"**两个数**推不出它们**是**哪几格 ✓**
+    ///     ⇒ **∴ 于是**：**把"**缺几格 ✓"单独报出 ✓**** ✓✓
+    pub below_tiles_missing: usize,
+    /// **★ 缺的那几格合起来覆盖的盒 ✗ ★**（第 8 轮 ✓；**纯观测 ✓）。
+    ///
+    /// **∴ 它就是**部分复用**将来**唯一**需要重算的范围 ✗** ⇒ **∴ 报出来**
+    ///   ⇒ **∴ 于是**：**下一轮**的改动**只需**把这个盒**交给下方层** ✓
+    ///     ⇒ **★ 而**现在**它**只是观测 ✗（**零行为变化 ✓）★**** ✓✓
+    /// **∴ 没有缺格时 ✗**：**为 `None`** ✗**（**∴ 不用** `(0,0,0,0)` 冒充 ✓）** ✓✓
+    pub below_recompute_bbox: Option<(i64, i64, i64, i64)>,
     /// 本次为滤镜扩展的像素半径。
     pub filter_padding: u32,
     /// **本次渲染实际使用的并行 worker 数**（`1` ⇒ 串行路径）。
@@ -927,6 +940,8 @@ impl Renderer {
             stats.below_tiles_reused = chunk_stats.below_tiles_reused;
             stats.below_tiles_measured = chunk_stats.below_tiles_measured;
             stats.below_want_bbox = chunk_stats.below_want_bbox;
+            stats.below_tiles_missing = chunk_stats.below_tiles_missing;
+            stats.below_recompute_bbox = chunk_stats.below_recompute_bbox;
             stats.unsupported.extend(chunk_stats.unsupported);
             stats.parallel_workers = chunks;
             stats.parallel_chunks = chunks;
@@ -1255,6 +1270,40 @@ impl Renderer {
             stats.below_tiles_available = available;
             // **∴ 到这里 ⇒ **∴ 这次渲染确实做过 below 判定 ✓** ⇒ **∴ 记下 ✓**** ✓✓
             stats.below_tiles_measured = true;
+            // **★ 缺格与"**该重算的盒 ✓" ✗ ★**（第 8 轮 ✓；**纯观测 ✓）：
+            //   **∴ 为什么在这里算 ✗**：**这一刻**我们**同时**持有
+            //     `want_tiles`（**想要 ✓）与缓存内容（**有哪些 ✓）✗
+            //     ⇒ **∴ 于是**：**缺哪几格**只有在这里**说得清 ✓**** ✓✓
+            //   **∴ 只读 ✗**：**它**不改变 `ready`／`cached`／`reused`** ✓
+            //     ⇒ **∴ 所以**：**四条既有判据**必须**仍然全绿 ✓**** ✓✓
+            {
+                let missing: Vec<(i64, i64)> = match below.lock() {
+                    Ok(guard) => match guard.as_ref() {
+                        Some(c) => match tiles_for_sig(c, &sig) {
+                            Some((tiles, empty)) => want_tiles
+                                .iter()
+                                .filter(|k| {
+                                    !tiles.iter().any(|(t, _)| *t == **k) && !empty.contains(*k)
+                                })
+                                .copied()
+                                .collect(),
+                            None => Vec::new(),
+                        },
+                        None => Vec::new(),
+                    },
+                    Err(_) => Vec::new(),
+                };
+                stats.below_tiles_missing = missing.len();
+                stats.below_recompute_bbox = if missing.is_empty() {
+                    None
+                } else {
+                    let x0 = missing.iter().map(|(x, _)| *x).min().unwrap_or(0);
+                    let y0 = missing.iter().map(|(_, y)| *y).min().unwrap_or(0);
+                    let x1 = missing.iter().map(|(x, _)| *x).max().unwrap_or(0) + BELOW_TILE;
+                    let y1 = missing.iter().map(|(_, y)| *y).max().unwrap_or(0) + BELOW_TILE;
+                    Some((x0, y0, x1 - x0, y1 - y0))
+                };
+            }
             stats.below_want_bbox = (
                 want.x.floor() as i64,
                 want.y.floor() as i64,
@@ -3413,6 +3462,20 @@ mod parallel_impl {
             merged_stats.below_tiles_wanted += stats.below_tiles_wanted;
             merged_stats.below_tiles_available += stats.below_tiles_available;
             merged_stats.below_tiles_reused += stats.below_tiles_reused;
+            merged_stats.below_tiles_missing += stats.below_tiles_missing;
+            // **∴ 该重算的盒**取**并集**✗（**各带各有自己的缺格 ✓）** ✓✓
+            if let Some(b) = stats.below_recompute_bbox {
+                merged_stats.below_recompute_bbox = Some(match merged_stats.below_recompute_bbox {
+                    None => b,
+                    Some(m) => {
+                        let x0 = m.0.min(b.0);
+                        let y0 = m.1.min(b.1);
+                        let x1 = (m.0 + m.2).max(b.0 + b.2);
+                        let y1 = (m.1 + m.3).max(b.1 + b.3);
+                        (x0, y0, x1 - x0, y1 - y0)
+                    }
+                });
+            }
             merged_track.merge(track);
             merged_probe.fill += probe.fill;
             merged_probe.render += probe.render;
