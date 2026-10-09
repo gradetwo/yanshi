@@ -250,6 +250,8 @@ console.log("  探针 => " + JSON.stringify(pr).slice(0, 620));
 const diag = await evaluate("window.__lastFold || null");
 console.log("  诊断 lastFold => " + String(diag).slice(0, 300));
 const seqs = await evaluate("JSON.stringify({ expected: window.__expectedSeq, head: window.__headSeq, snap: window.__snapSeq, fold: window.__lastFold ? 1 : 0 })");
+const ri = await evaluate("JSON.stringify({ info: window.__renderInfo || null, atoms: window.__renderAtoms || null })");
+console.log("  诊断 renderInfo => " + String(ri).slice(0, 700));
 console.log("  诊断 seq => " + String(seqs));
 
 try { socket.close(); } catch {}

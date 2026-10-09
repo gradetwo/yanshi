@@ -307,8 +307,13 @@ export async function makeLocalApi(db) {
           h: Math.max(1, Math.min(want.h, entry.h - Math.max(0, want.y))),
         };
         const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
+        // **∴ 诊断：内核渲染元信息 ✗**（第 664 轮 ✓）：**∴ `k` 在此可见 ✓**。
+        try { window.__renderInfo = k.render_region_info(box.x, box.y, box.w, box.h); window.__renderAtoms = atoms.length; } catch (e) { window.__renderInfo = "info 失败：" + e; }
         // **★ 绝不返回空图 ✗ ★**：**∴ 内核给不出字节 ⇒ **∴ 如实回落 `needs_render` ✓****
         //（**∴ 而**不是发一个 0 字节的 `image/png` ⇒ **∴ 那会让前端显示空白却不报错 ✗**）。
+        // **∴ 诊断：内核渲染时的元信息 ✗**（第 664 轮 ✓，**语句级插入 ✓**）：
+        //   **∴ 它给 bbox／宽高／padding／**警告**／tile 数 ✗** ⇒ **∴ 于是**"这一笔为什么没进图"**有据可查 ✓**。
+        // （探针移到 k 可见处 —— 第 664 轮 ✓）
         if (!png || png.length === 0) {
           // **∴ 取**元信息里的警告**✗**（`render_region_info` ✓）—— **∴ 否则只能看到"未产出字节"✗**，
           // **而**看不到原因 ✓**（**∴ 这正是我上一轮卡住的地方 ✓**）。
