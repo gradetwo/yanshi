@@ -251,6 +251,8 @@ export async function makeLocalApi(db) {
       // ⇒ **∴ 与存的快照 `seq` 永不相等 ⇒ **∴ 快照分支**永不命中 ✗****（**实测 ✓**）。
       const head = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
       const expected = Number(q.get("seq") ?? head);
+      // **∴ 诊断：读快照时用的期望序号 ✗**（第 662 轮 ✓）。
+      try { window.__expectedSeq = expected; window.__headSeq = head; } catch (e) {}
       const snap = await readSnapshot(handle, doc, expected);
       if (snap && snap.bytes) {
         return new Response(snap.bytes, {
@@ -333,6 +335,8 @@ export async function makeLocalApi(db) {
         // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
         const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
         await writeSnapshot(handle, doc, seqNow, { bytes: png });
+        // **∴ 诊断：写快照时用的序号 ✗**（第 662 轮 ✓）。
+        try { window.__snapSeq = seqNow; window.__snapAt = Date.now(); } catch (e) {}
         return new Response(png, {
           status: 200,
           headers: { "content-type": "image/png", "cache-control": "no-store",

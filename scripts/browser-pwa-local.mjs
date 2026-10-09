@@ -248,7 +248,9 @@ console.log("  探针 => " + JSON.stringify(pr).slice(0, 620));
 //   **∴ 为什么不走新端点 ✗**：**∴ 那要插进 `if` 链 ✗** ⇒ **∴ 而**本会话**对象内插入失败 6 次 ✗****
 //   ⇒ **∴ 改成**把折叠信封挂到 window ✗**（**语句级插入 ✓，从未失败 ✓**）。
 const diag = await evaluate("window.__lastFold || null");
-console.log("  诊断 lastFold => " + String(diag).slice(0, 400));
+console.log("  诊断 lastFold => " + String(diag).slice(0, 300));
+const seqs = await evaluate("JSON.stringify({ expected: window.__expectedSeq, head: window.__headSeq, snap: window.__snapSeq, fold: window.__lastFold ? 1 : 0 })");
+console.log("  诊断 seq => " + String(seqs));
 
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
