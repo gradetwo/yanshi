@@ -1794,6 +1794,17 @@ impl Workspace {
         self.document_mut(doc_id)?.render_region_raw(bbox)
     }
 
+    /// **★ 同上，但指定"当前层"作切点 ✓ ★**（第 521 轮 ✓）：**一行转调 ✓**。
+    pub fn render_region_raw_active(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        active_layer: Option<&str>,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_region_raw_active(bbox, active_layer)
+    }
+
     /// **区域字节缓存的统计** ✓（设计 §8.4 ✓；用于观测与测试 ✓）。
     pub fn region_cache_stats(
         &self,

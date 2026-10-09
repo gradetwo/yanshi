@@ -1000,6 +1000,30 @@ impl Document {
     /// ⇒ 一旦复用 ✓，就可能把**别的图层**的像素当成这一层的返回 ✓ ——
     /// 这正是"**缓存键少了一个维度**"的经典 bug ✓，而且它**只在缓存命中时**发作 ✓（最难查的一类 ✓）。
     /// **代价可以接受** ✓：逐层导出是**低频且刻意**的操作 ✓ ⇒ 直接算 ✓，不冒这个险 ✓。
+    /// **★ 渲染区域，并指定"当前层"作为三段分解的切点 ✓ ★**（**目标第 4 条 ✓**；第 521 轮 ✓）。
+    ///
+    /// **为什么要单独一个方法** ✗：**`render_region_raw` 有 7 处调用**✗** ⇒
+    /// **∴ 给它加参数会波及全部 ✗** ⇒ **∴ 用变体 ⇒ 只有需要它的那一处改 ✓**。
+    ///
+    /// **∴ 必然还原** ✓（**照 [`Self::render_region_raw_layer`] 的写法 ✓**）：
+    /// **∴ 否则"切点"会**泄漏**到之后的每一次渲染 ✗ ⇒ **∴ 那就等于**撒谎**✓**。
+    pub fn render_region_raw_active(
+        &mut self,
+        bbox: Bbox,
+        active_layer: Option<&str>,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let previous = self
+            .renderer
+            .set_active_layer(active_layer.map(|id| id.to_owned()));
+        let rendered = self.render_region_raw(bbox);
+        // **无论成败都要还原** ✓（**同 `render_region_raw_layer` ✓**）。
+        self.renderer.set_active_layer(previous);
+        rendered
+    }
+
+    /// **只渲染某一层 ✓**（**单图层导出 ✓**）：**临时把渲染器切成"只画一层"✓，
+    /// 渲染后**必然还原**✓**（**否则那个开关会泄漏到下一次渲染 ✗**）。
+    /// **⚠️ 返回值**：**`(宽, 高, 原始 RGBA8 ✓)`** —— **∴ 与 [`Self::render_region_raw`] 同形 ✓**。
     pub fn render_region_raw_layer(
         &mut self,
         bbox: Bbox,
