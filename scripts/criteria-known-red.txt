@@ -525,3 +525,23 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **③ 然后**切点 ＝ 该层 ✓；**above** 用同一套 tile 存储 ✓（**仅当该层**半透明时才需要 ✗ —— 目标明文 ✓**）** ✓✓
 #   **⚠️ 下一步** ✓：**先查 `DocumentState` 有没有"当前层"或层级的**序号**✗**（**一行 grep ✓**）
 #     ⇒ **∴ 有 ⇒ 用现成 ✓；无 ⇒ 加到 `RenderOptions` ✓**。
+# **★ 第 520 轮：把 `active_layer` 从服务端传到渲染器的**精确计划** ✓**
+#   **代码事实** ✓：
+#     * **`document.rs:1008`** 已有可照抄的模式 ✓：
+#       `let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));`
+#       `let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);`
+#       `self.renderer.set_only_layer(previous);` ⇒ **∴ **无论成败都还原**✓（**否则开关会泄漏到下一次渲染 ✗**）** ✓✓
+#     * **`service.rs:1793`** `Workspace::render_region_raw(&mut self, doc_id, bbox) -> …`
+#       **＝ 一行转调 `self.document_mut(doc_id)?.render_region_raw(bbox)` ✓**；
+#     * **`render_region_raw(&ctx.doc_id` 在 `tools.rs` 里有 **7 处** ✗** ⇒ **∴ 改签名会波及 7 处 ✗** ✓✓
+#   **∴ 决定** ✓：**不改签名 ✗，而加**新方法**✓**：
+#     **① `Document::render_region_raw_active(&mut self, bbox, active: Option<&str>)`** ✓
+#       —— **内部照抄 `:1008` 的模式：set ⇒ 渲 ⇒ 还原 ✓**（**`Document::render_region_raw` 本体不动 ✓**）；
+#     **② `Workspace::render_region_raw_active(doc_id, bbox, active)`** ✓ —— **一行转调 ✓**；
+#     **③ `read_render_region`（`tools.rs:14066` 附近 ✓）读可选参数 `active_layer` ✓ 并改用它 ✓** ——
+#       **其余 6 处调用不动 ✓**。
+#   **∴ 判据（**可红 ✓**）** ✓：**5 层文档 ⇒ 改**第 3 层**（**传 `active_layer` ✓**）⇒ 同一区域重渲 ⇒
+#     `below_reuse` **应自增**✓** —— **∴ 而**旧切点（**最上层以外 ✗**）下**它不会 ✓** ⇒ **∴ 这就是新能力的红判据 ✓**；
+#   **∴ 变异** ✗：**忽略 `active_layer`（**恒 `None` ✓**）⇒ **∴ 必红 ✓**。
+#   **⚠️ 另一条必须守的不变式** ✓：**渲染后**必须还原**✗**（**照 `:1008` 的注释 ✓**）⇒
+#     **∴ 否则"切点"会**泄漏**到后续所有渲染 ⇒ **∴ 不撒谎也做不到 ✗**。
