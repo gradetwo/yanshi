@@ -945,6 +945,25 @@ impl Renderer {
             None => visible_layer_ids.len().saturating_sub(1),
         };
         let sig: Vec<String> = visible_ids.iter().take(split).cloned().collect();
+        // **★ 临时探针 ✓**（第 531 轮 ✓，**查明后删 ✓**）：**打印层 id 列表与当前层**✗** ⇒
+        // **∴ 一眼看出**是**名字不同 ✗**（(a)／(c) ✓）还是**列表里没有 ✗**（(b) ✓）**。
+        if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&probe)
+            {
+                let _ = writeln!(
+                    f,
+                    "split_ids len={} active={:?} ids={:?} split={}",
+                    visible_layer_ids.len(),
+                    self.options.active_layer,
+                    visible_layer_ids,
+                    split
+                );
+            }
+        }
         // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
         // **★ 可证明性守卫 ✓**（第 461 轮**测试抓住的正确性缺陷** ✓）：
         // **`updated_by` 为 `None` ⇒ **无法证明"这一层没变"**✗**（**如测试里的调整层／蒙版／液化对象 ✓**）
