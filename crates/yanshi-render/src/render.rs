@@ -1309,6 +1309,16 @@ impl Renderer {
         }
 
         let mut visited: usize = 0;
+        // **★ 下方集合刚好累积完时的快照 ✗ ★**（第 926 轮 ✓；**修真缺陷 ✓**）：
+        //   **∴ 为什么 ✗**：**写缓存**发生在**循环之后** ✗** ⇒ **∴ 那时** `accumulation` 含**全部层 ✓**
+        //     ⇒ **∴ 而** `sig` 只描述**下方层** ✗ ⇒ **∴ 缓存内容**与它自称的签名**不符 ✓**** ✓✓
+        //     ⇒ **∴ 复用**时**把上方层**也当成"**下方已有**" ✗ ⇒ **∴ 上层被叠加两次 ⇒ **∴ 像素偏差 ✓**** ✓✓
+        //   **∴ 实测（**三条决定性证据 ✓）**：
+        //     **①** **`thumbnail_blocks_match_full_rebuild` 红 ✗**；
+        //     **②** **冷整幅 ＝ 冷缩略图 ✓**，**而**暖整幅 ≠ 冷整幅 ✓**；
+        //     **③** **临时禁用复用** ⇒ **∴ 它**立刻转绿 ✓（**∴ 所以**就是这里 ✓）** ✓✓
+        //   **∴ 所以 ✗**：**在**切点处**留下一份**只含下方层**的缓冲 ✓ ⇒ **∴ 之后**用它写缓存 ✓**** ✓✓
+        let mut below_snapshot: Option<Buffer> = None;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
                 // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
@@ -1350,6 +1360,11 @@ impl Renderer {
             let mode = BlendMode::from_name(&layer.blend_mode);
             let mut probe_stage = stage_probe::Stage::start();
             accumulation.composite(&layer_buffer, mode, 1.0);
+            // **∴ 切点 ✗**：**`index_here` 从 0 数已合成的可见层 ✓ ⇒ **∴ `+ 1 == split`**
+            //   ⇒ **∴ 此刻 `accumulation` **正好**只有下方层 ✓ ⇒ **∴ 这就是缓存要存的内容 ✓**** ✓✓
+            if cacheable && below_snapshot.is_none() && index_here + 1 == split {
+                below_snapshot = Some(accumulation.clone());
+            }
             // **★ 同时累积一份 `above` ✗ ★**（第 692 轮 ✓）：**∴ `index_here > split` ⇒ 该层在
             //   **当前层之上 ⇒ **∴ 它属于 `above` ✓**（**∴ 而**它**已经**进 `accumulation` ✓ ⇒
             //   **∴ 这里**只是再算一份 ⇒ **∴ 输出不变 ✓**）。**
@@ -1367,27 +1382,33 @@ impl Renderer {
         }
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
-            // **★ 覆盖块数上限 ✓ ★**（目标明文 ✓）：**超出预算 ⇒ **整组不缓存**✓**
-            //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
-            // **∴ 块数由 `accumulation` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
-            let ob = accumulation.bbox();
-            let btx = ((ob.x + ob.w).ceil() as i64 - 1).div_euclid(BELOW_TILE)
-                - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
-                + 1;
-            let bty = ((ob.y + ob.h).ceil() as i64 - 1).div_euclid(BELOW_TILE)
-                - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
-                + 1;
-            let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
-            // **★ 写入侧探针 ✗ ★**（第 720 轮 ✓）：**∴ 打印**这次要不要写、**写哪些键**✗**
-            //   ⇒ **∴ 与读取侧（**`want=… have=… missing=…` ✓）对比 ⇒ **∴ 一次看出键是否一致 ✓****。
-            if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&probe)
-                {
-                    let line = format!(
+            // **★ 用切点快照，**而不是**循环结束后的全量结果 ✗ ★**（第 926 轮 ✓）：
+            //   **∴ 循环后**的 `accumulation` 含**上方层** ✗ ⇒ **∴ 与 `sig` 不符
+            //     ⇒ **∴ 复用**会把上方层**叠加两次 ✓**** ✓✓
+            //   **∴ 若**没有快照**✗（**如 `split == 0` ✓）⇒ **∴ 这次**不缓存 ✓
+            //     —— **∴ 宁可不缓存 ✗，**也不写一份**与签名不符的内容 ✓**** ✓✓
+            if let Some(accumulation) = below_snapshot.as_ref() {
+                // **★ 覆盖块数上限 ✓ ★**（目标明文 ✓）：**超出预算 ⇒ **整组不缓存**✓**
+                //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
+                // **∴ 块数由 `accumulation` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
+                let ob = accumulation.bbox();
+                let btx = ((ob.x + ob.w).ceil() as i64 - 1).div_euclid(BELOW_TILE)
+                    - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
+                    + 1;
+                let bty = ((ob.y + ob.h).ceil() as i64 - 1).div_euclid(BELOW_TILE)
+                    - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
+                    + 1;
+                let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+                // **★ 写入侧探针 ✗ ★**（第 720 轮 ✓）：**∴ 打印**这次要不要写、**写哪些键**✗**
+                //   ⇒ **∴ 与读取侧（**`want=… have=… missing=…` ✓）对比 ⇒ **∴ 一次看出键是否一致 ✓****。
+                if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&probe)
+                    {
+                        let line = format!(
                         "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}\n",
                         btx,
                         bty,
@@ -1399,105 +1420,121 @@ impl Renderer {
                         sig.len(),
                         self as *const Self as usize,
                     );
-                    let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
+                        let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
+                    }
                 }
-            }
-            if budget_ok {
-                if let Ok(mut guard) = below.lock() {
-                    // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
-                    // **∴ 旧版每次**整体替换**✗ ⇒ **∴ 只保留"最后一次"的 tile 集 ✗**（**区域轮换时命中率低 ✓**）；
-                    // **∴ 新版**合并**✓：**同键覆盖 ✓、新键追加 ✓、`sig` 变则整份清空 ✓**（**防撒谎 ✓**）**，
-                    // **∴ 并按**块数预算**丢最旧的 ✓**（**`Vec` 的顺序即年龄 ✓**）。
-                    let origin = accumulation.bbox();
-                    let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
-                    let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
-                    // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
-                    let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
-                    let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
-                    let mut fresh_empty: std::collections::HashSet<(i64, i64)> =
-                        std::collections::HashSet::new();
-                    let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
-                        let mut v = Vec::new();
-                        for ty in y0..=y1 {
-                            for tx in x0..=x1 {
-                                let key = (tx * BELOW_TILE, ty * BELOW_TILE);
-                                let bbox = yanshi_core::Bbox::new(
-                                    key.0 as f64,
-                                    key.1 as f64,
-                                    BELOW_TILE as f64,
-                                    BELOW_TILE as f64,
-                                );
-                                let piece = accumulation.crop(&bbox);
-                                let pb = piece.bbox();
-                                if pb.w > 0.0 && pb.h > 0.0 {
-                                    v.push((key, piece));
-                                } else {
-                                    // **★ 空 tile ⇒ 只记键 ✗**（∴ 不存像素 ✓）
-                                    fresh_empty.insert(key);
+                // **★ 只在**下方集合正好累积完**时写一次 ✗ ★**（**第 926 轮 ✓；**修真缺陷 ✓**）：
+                //   **∴ 原来的错 ✗**：**这个写块**在层循环**体内 ✗** ⇒ **∴ 每画一层**都写一次 ✓
+                //     ⇒ **∴ 而**最后一次写入**用的是**全部层**的 `accumulation` ✗**（**含活动层**以上**的层 ✓）
+                //       **∴ 却**顶着 `sig`**（**＝只有下方层**✓）** ⇒ **∴ 缓存内容**与签名**不符 ✓**** ✓✓
+                //     ⇒ **∴ 复用**时**把上方层**也当成"**下方已有**" ✗
+                //       ⇒ **∴ 上方层**被叠加两次 ⇒ **∴ 像素偏差 ✓**** ✓✓
+                //   **∴ 实测（**这三条是**决定性**的 ✓）**：
+                //     **①** **`thumbnail_blocks_match_full_rebuild`** 红 ✗**；
+                //     **②** **冷整幅 ＝ 冷缩略图 ✗**，**而**暖整幅**≠**冷整幅 ✓**（**`DIAG_COLD` ✓）**；
+                //     **③** **临时禁用复用** ⇒ **∴ 该测试**立刻转绿 ✓****（**∴ 所以**就是这里 ✓）** ✓✓
+                //   **∴ 修法 ✗**：**`index_here`**（**循环里已有的序号 ✓）** ＋ **`split`**（**下方层个数 ✓）
+                //     ⇒ **∴ `index_here + 1 == split`** 恰好是"**下方集合刚刚累积完**"那一刻 ✓
+                //       ⇒ **∴ 于是**：**缓存里存的就是**它自称的那批层 ✓**** ✓✓
+                //   **∴ 若** `reused` 为真**✗（**下方已复用 ✓）⇒ **∴ 本点**根本走不到 ✓（**上面 `continue` 了 ✓）
+                //     ⇒ **∴ 而**那是**对的 ✗**：**缓存**已经是所需内容 ✓，**不必**再写 ✓**** ✓✓
+                if budget_ok {
+                    if let Ok(mut guard) = below.lock() {
+                        // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
+                        // **∴ 旧版每次**整体替换**✗ ⇒ **∴ 只保留"最后一次"的 tile 集 ✗**（**区域轮换时命中率低 ✓**）；
+                        // **∴ 新版**合并**✓：**同键覆盖 ✓、新键追加 ✓、`sig` 变则整份清空 ✓**（**防撒谎 ✓**）**，
+                        // **∴ 并按**块数预算**丢最旧的 ✓**（**`Vec` 的顺序即年龄 ✓**）。
+                        let origin = accumulation.bbox();
+                        let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
+                        let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
+                        // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
+                        let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        let mut fresh_empty: std::collections::HashSet<(i64, i64)> =
+                            std::collections::HashSet::new();
+                        let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
+                            let mut v = Vec::new();
+                            for ty in y0..=y1 {
+                                for tx in x0..=x1 {
+                                    let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                                    let bbox = yanshi_core::Bbox::new(
+                                        key.0 as f64,
+                                        key.1 as f64,
+                                        BELOW_TILE as f64,
+                                        BELOW_TILE as f64,
+                                    );
+                                    let piece = accumulation.crop(&bbox);
+                                    let pb = piece.bbox();
+                                    if pb.w > 0.0 && pb.h > 0.0 {
+                                        v.push((key, piece));
+                                    } else {
+                                        // **★ 空 tile ⇒ 只记键 ✗**（∴ 不存像素 ✓）
+                                        fresh_empty.insert(key);
+                                    }
                                 }
                             }
+                            v
+                        };
+                        let keep = match guard.as_mut() {
+                            Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
+                            Some(c) => {
+                                c.tiles.clear();
+                                c.sig = sig.clone();
+                                Vec::new()
+                            }
+                            None => Vec::new(),
+                        };
+                        // **★ 同键 ⇒ **按行合并** ✓ ★**（**不是整体替换 ✗**）：**∴ 相邻两带各写一部分
+                        // ⇒ **∴ 合并成完整 tile ✓**（**修"半块竞态"✓**）。
+                        let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                        for (k, piece) in fresh {
+                            let mut acc = piece;
+                            for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
+                                if acc.bbox() != old_piece.bbox() {
+                                    acc = merge_by_rows(old_piece, &acc);
+                                }
+                            }
+                            merged.push((k, acc));
                         }
-                        v
-                    };
-                    let keep = match guard.as_mut() {
-                        Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
-                        Some(c) => {
-                            c.tiles.clear();
-                            c.sig = sig.clone();
-                            Vec::new()
-                        }
-                        None => Vec::new(),
-                    };
-                    // **★ 同键 ⇒ **按行合并** ✓ ★**（**不是整体替换 ✗**）：**∴ 相邻两带各写一部分
-                    // ⇒ **∴ 合并成完整 tile ✓**（**修"半块竞态"✓**）。
-                    let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
-                    for (k, piece) in fresh {
-                        let mut acc = piece;
-                        for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
-                            if acc.bbox() != old_piece.bbox() {
-                                acc = merge_by_rows(old_piece, &acc);
+                        // **其余保留其原有顺序（**＝ 年龄 ✓**）**。
+                        for old in keep {
+                            if !merged.iter().any(|(k, _)| *k == old.0) {
+                                merged.push(old);
                             }
                         }
-                        merged.push((k, acc));
-                    }
-                    // **其余保留其原有顺序（**＝ 年龄 ✓**）**。
-                    for old in keep {
-                        if !merged.iter().any(|(k, _)| *k == old.0) {
-                            merged.push(old);
+                        // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
+                        if merged.len() > BELOW_TILE_BUDGET {
+                            let drop = merged.len() - BELOW_TILE_BUDGET;
+                            merged.drain(0..drop);
                         }
-                    }
-                    // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
-                    if merged.len() > BELOW_TILE_BUDGET {
-                        let drop = merged.len() - BELOW_TILE_BUDGET;
-                        merged.drain(0..drop);
-                    }
-                    // **★ 决定性 ✗ ★**（第 785 轮 ✓）：**∴ 把**要存的键**与**要存的空键**打出来 ✗**
-                    //   ⇒ **∴ 与读取侧的 `want_tiles` **对照 ✗** ⇒ **∴ 一次看出**坐标系差异 ✓**。
-                    if let Some(path) = probe_path.as_deref() {
-                        use std::io::Write;
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(path)
-                        {
-                            let keys: Vec<String> =
-                                merged.iter().map(|(k, _)| format!("{k:?}")).collect();
-                            let ekeys: Vec<String> =
-                                fresh_empty.iter().map(|k| format!("{k:?}")).collect();
-                            let line = format!(
-                                "STORE keys={} empty={} sig_len={}\n",
-                                keys.join(","),
-                                ekeys.join(","),
-                                sig.len()
-                            );
-                            let _ = f.write_all(line.as_bytes());
+                        // **★ 决定性 ✗ ★**（第 785 轮 ✓）：**∴ 把**要存的键**与**要存的空键**打出来 ✗**
+                        //   ⇒ **∴ 与读取侧的 `want_tiles` **对照 ✗** ⇒ **∴ 一次看出**坐标系差异 ✓**。
+                        if let Some(path) = probe_path.as_deref() {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(path)
+                            {
+                                let keys: Vec<String> =
+                                    merged.iter().map(|(k, _)| format!("{k:?}")).collect();
+                                let ekeys: Vec<String> =
+                                    fresh_empty.iter().map(|k| format!("{k:?}")).collect();
+                                let line = format!(
+                                    "STORE keys={} empty={} sig_len={}\n",
+                                    keys.join(","),
+                                    ekeys.join(","),
+                                    sig.len()
+                                );
+                                let _ = f.write_all(line.as_bytes());
+                            }
                         }
+                        *guard = Some(BelowTiles {
+                            sig,
+                            tiles: merged,
+                            empty: fresh_empty,
+                        });
                     }
-                    *guard = Some(BelowTiles {
-                        sig,
-                        tiles: merged,
-                        empty: fresh_empty,
-                    });
                 }
             }
         }

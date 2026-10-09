@@ -316,6 +316,30 @@ proptest! {
         }
         let mut manual = Thumb::new(ThumbKind::Doc64);
         manual.update_full(&buffer, Bbox::new(0.0, 0.0, 96.0, 96.0));
+        // 临时诊断 ④：冷 document 路径 —— 区分"冷路径错"与"暖路径被缓存毒化"。
+        {
+            let mut r_cold = Renderer::new(TileGrid::new(32, 96, 96).unwrap());
+            let render_cold = r_cold.render_document(&state, &store).unwrap();
+            let mut buf_cold =
+                yanshi_render::Buffer::new(0, 0, render_cold.width, render_cold.height);
+            for y in 0..render_cold.height {
+                for x in 0..render_cold.width {
+                    buf_cold.set_pixel(
+                        x,
+                        y,
+                        yanshi_render::u8x4_to_linear_premul(render_cold.pixel(x, y).unwrap()),
+                    );
+                }
+            }
+            let mut manual_cold = Thumb::new(ThumbKind::Doc64);
+            manual_cold.update_full(&buf_cold, Bbox::new(0.0, 0.0, 96.0, 96.0));
+            eprintln!(
+                "DIAG_COLD full==manual_cold {}｜manual_cold==manual {}｜full==manual {}",
+                full.rgba8 == manual_cold.rgba8,
+                manual_cold.rgba8 == manual.rgba8,
+                full.rgba8 == manual.rgba8
+            );
+        }
         prop_assert_eq!(full.rgba8.clone(), manual.rgba8.clone());
 
         // 只更新部分块：其它块保持原值（未更新的块不写入）。
