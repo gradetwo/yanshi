@@ -181,9 +181,17 @@ export async function makeLocalApi(db) {
           myb, points: pts, size: body.size, color: body.color, region,
         });
         // **∴ 存成 blob ✗**（**mime ＝ `image/x-yanshi-raw` ✓，与服务端一致 ✓**）。
+        // **★ 位图必须**存进内核自己的 blob store**✗ ★**（第 656 轮 ✓，**决定性 ✓**）：
+        //   **∴ 内核有 `blob_put(bytes) -> hash` 与 `blob_get(hash)` ✗**
+        //   （`crates/yanshi-wasm/src/lib.rs:269`／`:277` ✓）
+        //   ⇒ **∴ 而 `import_image` 重放时它按**自己的 hash**去取 ✗**
+        //   ⇒ **∴ 所以**光写 IndexedDB 不够 ✗**（**内核**够不到 ✗** —— **∴ 这正是第 655 轮的盲点 ✓**）
+        //   ⇒ **∴ 必须**用内核返回的 hash**✗**（**∴ 而我此前自己算 SHA-256 ⇒ **∴ 它当然取不到 ✓**）。
+        const kernelHash = entryK.k.blob_put(rgba);
+        const hash = String(kernelHash || "");
+        if (!hash) throw new Error("内核未返回 blob hash ⇒ 位图没能进内核");
+        // **∴ 同时**写 IndexedDB ✗**（**∴ 供刷新后重建内核时再喂一遍 ✓**）。
         const { putBlob } = await import("/store.js");
-        const sum = await crypto.subtle.digest("SHA-256", rgba);
-        const hash = "sha256:" + Array.from(new Uint8Array(sum)).map((b) => b.toString(16).padStart(2, "0")).join("");
         await putBlob(handle, hash, Array.from(rgba));
         // **∴ 写 `import_image` 原子 ✗**（**字段照第 646 轮的实测样本 ✓**）。
         const seq = await putAtom(handle, doc, {
