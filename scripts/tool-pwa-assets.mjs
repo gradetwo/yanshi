@@ -126,6 +126,19 @@ if (api) {
 check(!existsSync("web/viewer-app.js"),
   "web/viewer-app.js 存在 ⇒ **∴ 前端被复制成了第二份 ⇒ 会与现有 WEB 分叉 ✗**（应当只同步，不改 ✓）");
 
+// **★ 本地端点数必须**如实增长**✓ ★**（第 615 轮 ✓）：
+//   **∴ `LOCAL_IMPLEMENTED` 是"**我在 PWA 里真的实现了几个端点**✗"的**唯一计数 ✗**
+//   ⇒ **∴ 若它和实现脱节 ⇒ **∴ 那就是在**虚报能力 ✗****。
+const declared = Number((api || "").match(/LOCAL_IMPLEMENTED\s*=\s*(\d+)/)?.[1] ?? 0);
+const actualImpl = ((api || "").match(/url\.pathname === "\/api\/[^"]+"/g) || []).length;
+check(declared >= 4, `本地实现的端点数应 ≥ 4 ✗（实测声明 ${declared}）`);
+check(actualImpl >= 3, `本地实现分支应 ≥ 3 ✗（实测 ${actualImpl}）⇒ 声明与实现脱节`);
+check(declared === actualImpl + 1 || declared === actualImpl,
+  `声明的端点数（${declared}）与实现分支数（${actualImpl}）不一致 ⇒ **∴ 在虚报能力 ✗**`);
+console.log(`  api-local：声明实现 ${declared} 个端点 ✓｜实现分支 ${actualImpl} 个 ✓`);
+check(/makeLocalApi/.test(api || ""), "web/api-local.js 未导出 makeLocalApi ⇒ **∴ 三个端点无法被接入 ✗**");
+check(/derived_from/.test(api || ""), "list_layers 未标明由原子推导 ⇒ **∴ 双份状态风险不可见 ✗**");
+
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
