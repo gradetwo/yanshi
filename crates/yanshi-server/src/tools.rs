@@ -1244,7 +1244,19 @@ fn finish_mutation(
     // **∴ 两面 ✗**：**收益**＝**契约成立 ✗**（新文档的第一次写操作**也带图** ✓，
     // 客户端不必再补一次往返 ✓）；**代价**＝**这一次多渲一张 256² 缩略图 ✗**
     //（**∴ 只在"无处可复用"时发生 ✓**，且结果进文档预览缓存 ⇒ **后续调用复用 ✓**）。
-    if ctx.wait_for_render && !ctx.silent && preview.is_none() {
+    // **★ guard 必须是"**调用方要图**"✗ ★**（第 1003 轮 ✓；**修我自己引入的回归 ✓）：
+    //   **∴ 原来的错 ✗**：**guard 用 `ctx.wait_for_render`**✗**
+    //     ⇒ **∴ 于是**：**`preview: false` 的请求**（**只要 `wait_for_render = true` ✓）
+    //       **也会**走这段 ⇒ **∴ 产出图 ✓**
+    //         ⇒ **★ 违反规则 3「**只在真有消费者要图时才编码 PNG ✓」★**** ✓✓
+    //           （**实测**：`tool-preview-decoupling` 报
+    //            「**`preview: false` 时响应里**没有 `preview` ✓」**不成立 ✓）
+    //   **∴ 而且 ✗**：**它**还会**让**"**保存时生成缩略图 ✓"**被**抢先**✗**
+    //     （**∴ 因为**`ensure_document_thumbnail`**先查缓存**✗ ⇒ **∴ 后续**直接复用地址 ✓）
+    //       ⇒ **∴ 于是**：`tool-thumbnail-on-demand` 报 **`thumbnail_renders = 0`** ✓**** ✓✓
+    //   **∴ 修法 ✗**：**改成 `ctx.preview`** ✗**（**＝ 调用方**确实**要图 ✓）**
+    //     ⇒ **∴ 契约**（**要图的调用方**带图 ✓）**仍然成立 ✗**，**而**不要图的**不再**白渲 ✓**** ✓✓
+    if ctx.preview && ctx.wait_for_render && !ctx.silent && preview.is_none() {
         let size = DocThumbSize::S256;
         let preview_started = std::time::Instant::now();
         if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
