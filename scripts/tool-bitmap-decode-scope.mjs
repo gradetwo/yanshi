@@ -20,7 +20,9 @@
 // `bitmap_cache.misses` **恒 0** ⇒ 判据**永远 PASS** ✗ ⇒ **∴ 那样它守不住任何东西** ✓。
 // ⇒ **∴ 默认加载磁盘上的真实工程**（带位图 ✓），否则**明确报错退出**（**不许静默跳过** ✗）。
 
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { deflateSync } from "node:zlib";
 
 const base = process.argv[2];
 const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yanshi";
@@ -34,7 +36,120 @@ const check = (ok, label, detail) => {
   if (!ok) failures.push(label + (detail ? "：" + detail : ""));
 };
 
+// **★ 自备 fixture ✗ ★**（第 40 轮 ✓）：**缺工程时**用产品自身的接口造一份**✗。
+//
+// **∴ 为什么必须自备 ✗**：**判据**要求**带位图**✗（**∴ 空文档 ⇒ `missed_bytes` 恒 0 ⇒
+//   **∴ 判据**永远 PASS ⇒ **∴ 守不住任何东西 ✓）⇒ **∴ 而**一个**机器相关**的
+//   `/tmp` 文件**不能**进 CI ✓ ⇒ **∴ 于是**：**让脚本**自己造**✗（**造完就留 ✓）** ✓✓
+//
+// **∴ 造法（**全部走产品自己的接口 ✓）**：
+//   **①** 新建 4K 文档 ⇒ **②** 建图层 ⇒ **③** 上传一张小 PNG（**本地生成 ✓）
+//   ⇒ **④** `import_image`（**这才产生位图 ✓）⇒ **⑤** `export_project(path=…)` ✓**** ✓✓
+//
+// **∴ 两面 ✗**：**收益**＝判据能在任何机器上跑 ✓；**代价**＝**多了约 5 步准备 ＋
+//   依赖服务端能写 `path`（**同机时成立 ✓）** ✓✓
+
+/** **∴ 造一张 w×h 的纯色 PNG ✗**（**不引依赖 ✓：**deflateSync ＋ 手工 CRC32 ✓）** ✓✓ */
+function solidPng(w, h, [r, g, b]) {
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y += 1) {
+    const row = y * (w * 3 + 1);
+    raw[row] = 0; // filter: none
+    for (let x = 0; x < w; x += 1) {
+      raw[row + 1 + x * 3] = r;
+      raw[row + 2 + x * 3] = g;
+      raw[row + 3 + x * 3] = b;
+    }
+  }
+  const crcTable = [];
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc32 = (buf) => {
+    let c = 0xffffffff;
+    for (const byte of buf) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, tail]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/** **∴ 用产品接口造一份带位图的工程 ✗ ★** */
+async function buildFixture(base, target) {
+  console.log(`  · 缺工程 ⇒ 用产品接口现造一份 ⇒ ${target}`);
+  // **∴ 生成用的 id**必须与包里要导入的那个**不同**✗
+  //   ⇒ **∴ 否则**导入时**撞名**✗（**实测：**conflict ✓）** ✓✓
+  const docId = "bitmap_scope_fixture_src";
+  const created = await (await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docId, width: 2048, height: 2048 }),
+  })).json();
+  const token = created.token;
+  if (!token) throw new Error("建文档失败 ⇒ " + JSON.stringify(created).slice(0, 160));
+  const q = `doc=${docId}&token=${token}`;
+  const call = async (tool, args) =>
+    (await fetch(`${base}/api/tools/${tool}?${q}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args || {}),
+    })).json();
+  const layer = await call("create_layer", { layer_id: "bitmap_layer" });
+  if (layer.ok !== true) throw new Error("建图层失败 ⇒ " + JSON.stringify(layer).slice(0, 160));
+  const png = solidPng(512, 512, [200, 40, 90]);
+  const put = await (await fetch(`${base}/api/blob?${q}`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: png,
+  })).json();
+  const hash = put.hash || put.blob_hash;
+  if (!hash) throw new Error("上传 blob 失败 ⇒ " + JSON.stringify(put).slice(0, 160));
+  const placed = await call("import_image", {
+    layer_id: "bitmap_layer",
+    object_id: "bitmap_object",
+    bitmap: { blob_hash: hash, size: png.length, mime_type: "image/png" },
+    region: { x: 16, y: 16, width: 512, height: 512 },
+  });
+  if (placed.ok !== true) throw new Error("import_image 失败 ⇒ " + JSON.stringify(placed).slice(0, 160));
+  mkdirSync(dirname(target), { recursive: true });
+  const exported = await call("export_project", { path: target, include_bitmaps: true });
+  if (exported.ok !== true) throw new Error(
+    `export_project 失败（**⇒ 该服务端可能不能写 path ✓）⇒ ${JSON.stringify(exported).slice(0, 200)}`,
+  );
+  // **★ 生成完就把**源文档删掉 ✗ ★**（第 40 轮 ✓）：**∴ 因为**接下来**要**导入**同一个包**✗
+  //   ⇒ **∴ 若**源文档还在 ⇒ **∴ `import_project` **不会覆盖**同 id**✗
+  //     ⇒ **∴ 实测**报 `conflict`**✗（**∴ 我**第一次就撞上了 ✓）** ✓✓
+  const removed = await call("delete_document", { document_id: docId });
+  if (removed.ok !== true) {
+    // **∴ 不静默 ✗**：**删不掉**就可能撞名 ⇒ **∴ 说清楚 ✓**（**∴ 而不是**后面报一个看不懂的 conflict ✓）** ✓✓
+    console.error("  ⚠️ 源文档删不掉 ⇒ 稍后导入可能撞名 ⇒ " + JSON.stringify(removed).slice(0, 160));
+  }
+  console.log("  · fixture 已生成 ✓（**带位图 ✓）＋ 源文档已删 ✓");
+}
+
 // **导入真实工程** ✓（带位图 ✓ ⇒ 判据才有意义 ✓）。
+if (!existsSync(localProject)) {
+  await buildFixture(base, localProject);
+}
 let bytes;
 try {
   bytes = readFileSync(localProject);
