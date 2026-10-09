@@ -348,3 +348,37 @@ for (let i = 0; i < 40; i++) { await sleep(300); if (await evaluate('document.re
 |---|---|
 | **收益 ✓** | **PWA **真的能渲图**✗（**当前只有快照分支 ⇒ 冷启动给不出图 ✓**）｜**∴ 且**它**复用同一份内核 ✗**（**与服务端同源 ✓ ⇒ **∴ 像素级一致的前提还在 ✓**） |
 | **代价 ✗** | **① 首次渲染要**重放全部原子**✗**（**与服务端冷启动同性质 ⇒ **∴ 可接受 ✓**）；**② 内核实例常驻内存 ✗**（**4K 一份 ≈33 MB ⇒ **∴ 必须配 `set_memory_limit` ＋ `evict_outside_viewport` ✓**）；**③ 内核在**主线程**跑会阻塞 UI ✗** ⇒ **∴ 应放 **Web Worker**（**∴ 零 DOM 依赖正好支持 ✓**）** |
+
+### 14.4 精确签名（**实测 ✓，第 624 轮 ✓**）
+
+```rust
+#[wasm_bindgen(constructor)]
+pub fn new(doc_id: &str, tile_size: u32, width: u32, height: u32, memory_limit: f64)
+    -> Result<WasmKernel, JsValue>;                    // lib.rs:87
+
+/// view 模式批量装载：`json_array` 是**服务端 `get_log` 给出的原子数组** ✓。
+pub fn load_atoms_json(&mut self, json_array: &str) -> String;      // :110
+
+/// 渲染区域，返回 PNG 字节（**与服务端同一编码器，可直接比对哈希** ✓）。
+pub fn render_region_png(&mut self, x: f64, y: f64, w: f64, h: f64) -> Vec<u8>;  // :128
+
+/// 渲染区域并返回**完整元信息**（bbox／宽高／padding／**警告**／tile 数 ✓）。
+pub fn render_region_info(&mut self, …) -> String;                 // :136
+```
+
+### 14.5 接线配方（**下一轮照此写 ✓**）
+
+```js
+// **∴ 内核实例**按文档缓存 ✗**（**否则每次重放全部原子 ✓**）
+const k = new mod.WasmKernel(docId, 256 /* tile_size ✓ */, width, height, 256 * 1024 * 1024);
+// **∴ `load_atoms_json` 要的是**服务端 `get_log` 形态的数组**✗**
+// ⇒ **∴ 而 `store.js` 的 `atomsOf` 返回 `{ id, doc, seq, atom }` ✗ ⇒ **∴ 必须映射成 `r.atom` ✓**
+k.load_atoms_json(JSON.stringify((await atomsOf(db, docId)).map((r) => r.atom)));
+const png = k.render_region_png(x, y, w, h);            // **Uint8Array ✓**
+await writeSnapshot(db, docId, seq, { bytes: png });    // **∴ 带 seq ⇒ 下次命中快照分支 ✓**
+return new Response(png, { headers: { "content-type": "image/png" } });
+```
+
+**★ 同源证据（**重要 ✓**）**：**`render_region_png` 的注释写明"**与服务端同一编码器，
+可直接比对哈希**✗"** ⇒ **∴ 于是**PWA 与服务端的**像素一致性**有据可依 ✓
+（**∴ 这也是"**GPU 上不做真值**✗"这一分层原则的基石 ✓：**CPU 路径两处同源 ✓**）。
