@@ -143,7 +143,7 @@ async function withKernel(doc, fn) {
       }
       const bytes = new Uint8Array(await req.arrayBuffer());
       if (bytes.length === 0) throw new Error("blob body empty");
-      const kernelHash = entryK.k.blob_put(bytes);
+      const kernelHash = await withKernel(doc, () => entryK.k.blob_put(bytes));
       const blobHash = (() => {
         const raw = String(kernelHash || "");
         try { const o = JSON.parse(raw); if (o && o.blob_hash) return String(o.blob_hash); } catch (e) {}
@@ -282,9 +282,9 @@ async function withKernel(doc, fn) {
         const x1 = Math.min(entryK.w, Math.ceil(Math.max(...xs) + r));
         const y1 = Math.min(entryK.h, Math.ceil(Math.max(...ys) + r));
         const region = { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
-        const rgba = paintWithKernel(entryK.k, {
+        const rgba = await withKernel(doc, () => paintWithKernel(entryK.k, {
           myb, points: pts, size: body.size, color: body.color, region,
-        });
+        }));
         // **∴ 存成 blob ✗**（**mime ＝ `image/x-yanshi-raw` ✓，与服务端一致 ✓**）。
         // **★ 位图必须**存进内核自己的 blob store**✗ ★**（第 656 轮 ✓，**决定性 ✓**）：
         //   **∴ 内核有 `blob_put(bytes) -> hash` 与 `blob_get(hash)` ✗**
@@ -292,7 +292,7 @@ async function withKernel(doc, fn) {
         //   ⇒ **∴ 而 `import_image` 重放时它按**自己的 hash**去取 ✗**
         //   ⇒ **∴ 所以**光写 IndexedDB 不够 ✗**（**内核**够不到 ✗** —— **∴ 这正是第 655 轮的盲点 ✓**）
         //   ⇒ **∴ 必须**用内核返回的 hash**✗**（**∴ 而我此前自己算 SHA-256 ⇒ **∴ 它当然取不到 ✓**）。
-        const kernelHash = entryK.k.blob_put(rgba);
+        const kernelHash = await withKernel(doc, () => entryK.k.blob_put(rgba));
         // **★ `blob_put` 返回的是**JSON 信封**✗ ★**（第 657 轮实测 ✓，**决定性 ✓**）：
         //   **∴ 实测返回** `{"blob_hash":"sha256:55d5…","ok":true}` ✗**
         //   ⇒ **∴ 而**我此前把**整个 JSON 字符串**当 hash 写进原子 ✗**

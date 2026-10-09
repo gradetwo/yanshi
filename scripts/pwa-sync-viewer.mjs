@@ -177,6 +177,27 @@ if (headTag < 0) {
 //   **∴ 为什么 ✗**：**导出的页面**请求 `/samples/…` ✗** ⇒ **∴ 而**它**不在 `/api/` 下 ✗**
 //     ⇒ **∴ 本地层**放行 ✗** ⇒ **∴ 静态托管**找不到 ⇒ **∴ 405 ✓**** ✓✓
 //   **∴ 现在**：**整棵 `assets/samples/`**递归拷进 `web/samples/` ✗** ⇒ **∴ 于是**它可访问 ✓**** ✓✓
+// Brush preview index and images: the viewer requests /brush-previews/index.json and
+// falls back to it offline, but the static host never had the directory (P2-2, user
+// report), so the request fell through to the single page fallback and returned HTML.
+const BRUSHPREVIEW_SRC = "assets/brush-previews";
+const BRUSHPREVIEW_DST = join(DST, "brush-previews");
+if (existsSync(BRUSHPREVIEW_SRC)) {
+  rmSync(BRUSHPREVIEW_DST, { recursive: true, force: true });
+  cpSync(BRUSHPREVIEW_SRC, BRUSHPREVIEW_DST, { recursive: true });
+  let pn = 0;
+  const pwalk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) pwalk(join(dir, e.name));
+      else pn += 1;
+    }
+  };
+  pwalk(BRUSHPREVIEW_DST);
+  console.log("  OK: 已同步笔刷预览 " + pn + " 个 ⇒ " + BRUSHPREVIEW_DST);
+} else {
+  console.warn("  WARN: 找不到 assets/brush-previews ⇒ 跳过笔刷预览同步");
+}
+
 const SAMPLES_SRC = "assets/samples";
 const SAMPLES_DST = join(DST, "samples");
 if (existsSync(SAMPLES_SRC)) {
