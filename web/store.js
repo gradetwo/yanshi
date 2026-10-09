@@ -45,8 +45,8 @@ export function open() {
   });
 }
 
-const tx = (db, store, mode) => db.transaction(store, mode).objectStore(store);
-const wrap = (req) => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+export const tx = (db, store, mode) => db.transaction(store, mode).objectStore(store);
+export const wrap = (req) => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
 
 /** 写一条原子（**自动编号 ✓**）。 */
 export async function putAtom(db, doc, atom) {

@@ -16,7 +16,7 @@
 //   **∴ 绝不会假装成功 ✓**。
 
 /** **★ 本地已实现的端点数 ✓ ★**（**判据会断言它随实现增加 ✓**）。 */
-export const LOCAL_IMPLEMENTED = 4;
+export const LOCAL_IMPLEMENTED = 5;
 
 /**
  * **★ 安装本地 API 层 ✓ ★**：**覆写 `window.fetch` ✗** ⇒ **∴ `/api/*` 走本地 ✓，
@@ -74,6 +74,31 @@ export async function makeLocalApi(db) {
       }
       return json({ ok: true, layers, count: layers.length, server: false,
                     derived_from: "atoms" });
+    }
+
+    // **④ `/api/tools/get_document`（**从 IndexedDB ＋ 如实报后端 ✓**）**
+    // **∴ 它与目标第 8 条的接口一致 ✗**：**报 `width`／`height`／`head_seq` ✗
+    // ⇒ **∴ 并报 `preview_state` 与 `render_backend` ✓**（**∴ 前端一眼知道有没有图 ✓**）。
+    if (url.pathname === "/api/tools/get_document") {
+      const { wrap, tx } = await import("./store.js");
+      const meta = (await wrap(tx(handle, "docs", "readonly").get(doc))) || { doc, seq: 0 };
+      const backend = await detectBackend();
+      const create = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+      return json({
+        ok: true,
+        doc_id: doc,
+        width: create ? create.atom.width : 1024,
+        height: create ? create.atom.height : 1024,
+        head_seq: meta.seq ?? 0,
+        rendered_seq: meta.seq ?? 0,
+        // **∴ 没有服务器 ⇒ 缩略图必须由**本地内核**生成 ✗** ⇒ **∴ 在生成前如实报 pending ✓**
+        //（**∴ 不许报 ready 而给不出图 ✗**）。
+        preview_state: "pending",
+        preview_note: "缩略图需由本地内核生成（本部署无服务器端）",
+        server: false,
+        render_backend: backend,
+        gpu_unavailable_reason: backend === "webgpu" ? null : "host_has_no_webgpu",
+      });
     }
 
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
