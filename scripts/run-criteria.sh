@@ -91,6 +91,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     tool-pwa-assets.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
 
+    # **★ PWA 本地 API 的**行为级**判据 ✓ ★**（第 617 轮 ✓）：**在 node 里打桩 `window`／`indexedDB` ✗
+    # ⇒ **∴ 真的调用 `installLocalApi`／`makeLocalApi` ✗** ⇒ **∴ 断言**真实返回值 ✓**（**不是查字符串 ✓**）。
+    # **∴ 它证明的是**"三个端点真能用 ＋ 未实现端点真报 501"✗** ⇒ **∴ 120s 够 ✓**。
+    tool-pwa-api-behaviour.mjs)
+      timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;
+
     kernel-wasm-allowlist.mjs)
       timeout 120 node "$script" >"$ROOT_DIR/out.txt" 2>&1 ;;      build-warnings-check.sh)
         # **冷构建判据** ✗（(B)④）：它要 `cargo clean` 6 个 cdylib crate 再编 native 与 wasm32 ✗
