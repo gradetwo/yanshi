@@ -175,6 +175,52 @@ const BELOW_TILE: i64 = 256;
 /// **∴ 而 8K 整幅（**30 × 17 ＝ 510 块 ✗**）装不下 ⇒ **∴ 不缓存 ✓**（**宁可不缓存，也不占 133 MB ✗**）** ✓✓
 const BELOW_TILE_BUDGET: usize = 256;
 
+/// **★ 按行合并两块 ✓ ★**（第 509 轮 ✓，**修"半块竞态"✗**）：**并行时相邻两带会各 `crop` 出
+/// **同一 tile 的一部分**✗ ⇒ **∴ "同键整体替换"⇒ **∴ 后写覆盖先写 ⇒ **∴ 只剩一半 ⇒ **∴ 命中后像素错 ✓****。
+/// **∴ 修法** ✓：**取两者 bbox 的**并集**建新缓冲 ✓ ⇒ **先拷 `old` ✓、再用 `new` 覆盖它自己的框 ✓**
+/// ⇒ **∴ 多带各贡献自己的行 ⇒ **∴ 合成完整 ✓****。
+/// **⚠️ 不是"对齐"✗**：**区域原点由脏区决定 ✓，**不保证是 256 的倍数 ✗**（**注释里就有 (301,361) ✓**）
+/// ⇒ **∴ "把带边界吸附到 tile 边界"**做不到 ✗**（**实测 30／30 失败 ✓**）。
+fn merge_by_rows(
+    old: &crate::buffer::Buffer,
+    new: &crate::buffer::Buffer,
+) -> crate::buffer::Buffer {
+    let ob = old.bbox();
+    let nb = new.bbox();
+    let x0 = ob.x.min(nb.x);
+    let y0 = ob.y.min(nb.y);
+    let x1 = (ob.x + ob.w).max(nb.x + nb.w);
+    let y1 = (ob.y + ob.h).max(nb.y + nb.h);
+    let mut out =
+        crate::buffer::Buffer::new(x0 as i64, y0 as i64, (x1 - x0) as u32, (y1 - y0) as u32);
+    let oob = out.bbox();
+    for (src, dx, dy) in [(old, ob.x, ob.y), (new, nb.x, nb.y)] {
+        let sb = src.bbox();
+        let ox = (dx - oob.x) as i64;
+        let oy = (dy - oob.y) as i64;
+        let (ow, oh) = (oob.w as i64, oob.h as i64);
+        let (bw, bh) = (sb.w as i64, sb.h as i64);
+        let dst = out.pixels_mut();
+        let srcd = src.as_f32();
+        for row in 0..bh {
+            let dyi = oy + row;
+            if dyi < 0 || dyi >= oh {
+                continue;
+            }
+            for col in 0..bw {
+                let dxi = ox + col;
+                if dxi < 0 || dxi >= ow {
+                    continue;
+                }
+                let si = ((row * bw + col) * 4) as usize;
+                let di = ((dyi * ow + dxi) * 4) as usize;
+                dst[di..di + 4].copy_from_slice(&srcd[si..si + 4]);
+            }
+        }
+    }
+    out
+}
+
 /// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
 /// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
 ///
@@ -1124,8 +1170,19 @@ impl Renderer {
                         }
                         None => Vec::new(),
                     };
-                    // **合并 ✓**：**同键覆盖 ✓，其余保留其原有顺序（**＝ 年龄 ✓**）**。
-                    let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = fresh;
+                    // **★ 同键 ⇒ **按行合并** ✓ ★**（**不是整体替换 ✗**）：**∴ 相邻两带各写一部分
+                    // ⇒ **∴ 合并成完整 tile ✓**（**修"半块竞态"✓**）。
+                    let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                    for (k, piece) in fresh {
+                        let mut acc = piece;
+                        for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
+                            if acc.bbox() != old_piece.bbox() {
+                                acc = merge_by_rows(old_piece, &acc);
+                            }
+                        }
+                        merged.push((k, acc));
+                    }
+                    // **其余保留其原有顺序（**＝ 年龄 ✓**）**。
                     for old in keep {
                         if !merged.iter().any(|(k, _)| *k == old.0) {
                             merged.push(old);
