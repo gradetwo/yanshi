@@ -754,6 +754,13 @@ fn health(state: &ServerState) -> Response {
             // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。
             "bitmap_cache": bitmap_cache_stats(state),
             "below_reuse": below_reuse_count(state),
+            // **★ 渲染后端必须**如实报出** ✓ ★**（第 602 轮 ✓；**部署矩阵 ＋ GPU 优先决策 ✓**）：
+            // **∴ 现在**没有 GPU 后端 ✗**（**∴ 全部走 CPU ✓**）⇒ **∴ 这里如实写 `cpu` ＋ 原因 ✓**
+            //（**∴ 不许因为"用户要求 GPU 优先"就写成 `gpu` ✗** —— **∴ 那是撒谎 ✓**）。
+            // **∴ 将来加 GPU 后端时 ✓**：**把这两行改成**从实际后端读**✗**（**如 `renderer.backend()` ✓**），
+            // **并**在 `--gpu=off` 时仍报 `cpu` ✓****。
+            "render_backend": "cpu",
+            "gpu_unavailable_reason": "host_has_no_gpu",
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
             // ⇒ blob 仍写得进去 ✓，但**掉电安全没有保证** ✓ ⇒ 这一项就让使用者看得见 ✓。
             "blob_fsync": if state
