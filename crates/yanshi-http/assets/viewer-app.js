@@ -1142,7 +1142,13 @@ async function callTool(name, args, options = {}) {
       dirtyBox: value.dirty_bbox || null,
     });
   } else {
-    log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
+    // The journal printed "错误 undefined：" whenever the response carried no
+    // error_code, which is the normal shape for a queue entry or a network failure,
+    // so fall back through the other fields the codebase uses before giving up.
+    const __code = value.error_code || value.error || value.reason || "unknown";
+    const __detail =
+      (value.context && value.context.detail) || value.reason || value.message || "";
+    log("错误 " + __code + (__detail ? "：" + __detail : ""), "#c33");
   }
   return value;
 }
