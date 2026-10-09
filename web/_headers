@@ -1,0 +1,50 @@
+# **★ 缓存策略 ✗ ★**（第 832 轮 ✓；**用户报告"改了没生效" ✓**）：
+#   **∴ 为什么必须写它 ✗**：**Cloudflare 的资源托管**默认**给 HTML 较长缓存 ✗**
+#   ⇒ **∴ 而** `index.html` **恰好**是**唯一**每次生成都变的产物 ✗**
+#     ⇒ **∴ 于是**：**部署成功 ✗，**而**浏览器／边缘**仍拿旧版 ✓****（**实测：哨兵在 `:10569` ✗，**而**本地是 `:13` ✓）
+#   **∴ 所以 ✗**：**HTML ⇒ `no-cache` ✗**（**每次都回源校验 ✓）；
+#     **∴ 内容寻址的资源**（**笔刷／wasm／品牌图标 ✓）⇒ **长缓存 ＋ `immutable` ✓**。
+#   **∴ 两面 ✗**：**收益**＝**改了立刻可见 ✗**；**代价**＝**HTML 每次一次条件请求 ✓**（**很小 ✓）**。
+
+/*
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+
+/index.html
+  Cache-Control: no-cache
+
+/manifest.webmanifest
+  Cache-Control: no-cache
+
+/sw.js
+  Cache-Control: no-cache
+
+/api-local.js
+  Cache-Control: no-cache
+
+/store.js
+  Cache-Control: no-cache
+
+/brush-local.js
+  Cache-Control: no-cache
+
+/viewer-app.js
+  Cache-Control: no-cache
+
+/viewer.css
+  Cache-Control: no-cache
+
+/wasm/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/brushes/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/mediums/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/brand/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/icons/*
+  Cache-Control: public, max-age=31536000, immutable
