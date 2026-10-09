@@ -61,7 +61,10 @@ export const wrap = (req) => new Promise((res, rej) => { req.onsuccess = () => r
 export async function putAtom(db, doc, atom) {
   const meta = (await wrap(tx(db, "docs", "readonly").get(doc))) || { doc, seq: 0 };
   const seq = meta.seq + 1;
-  const rec = { id: `${doc}:${seq}`, doc, seq, atom };
+  // **★ 覆盖原子自己的 `seq` ✗ ★**（第 630 轮 ✓）：**∴ 内核按 `seq` 判重 ✗**
+  // ⇒ **∴ 两处都写 1 ⇒ **`seq 1 重复`✗**（**实测 ✓**）。
+  const stored = { ...atom, seq };
+  const rec = { id: `${doc}:${seq}`, doc, seq, atom: stored };
   await wrap(tx(db, "atoms", "readwrite").put(rec));
   await wrap(tx(db, "docs", "readwrite").put({ ...meta, doc, seq, format: FORMAT_VERSION }));
   return seq;

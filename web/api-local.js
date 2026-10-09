@@ -49,8 +49,25 @@ export async function makeLocalApi(db) {
     //（**∴ 本部署没有鉴权 ✗ ⇒ **token 是**本地占位**✗，**而字段存在 ✓** ⇒ **∴ 前端无需分支 ✓**）。
     if (url.pathname === "/api/documents") {
       const docId = body.doc_id || `local-${Date.now().toString(36)}`;
+      // **★ 必须写**完整 8 字段封套 ✗ ★**（第 630 轮 ✓，**靠 `fold_result` 一次定位 ✓**）：
+      // **∴ 实测**：**旧写法只写 `{kind, width, height}` ✗** ⇒ **∴ 内核在解析**整个数组**时
+      // 第一条就失败 ✗**（`missing field \`id\`` ✓）⇒ **∴ 于是**后面的原子全被丢弃 ⇒
+      // **∴ 文档停在 0×0 ✗**（**∴ 而**症状看起来像"渲染区域非法"✗ ⇒ **∴ 极易误判 ✓**）。
       await putAtom(handle, docId, {
-        kind: "create_document", width: body.width ?? 1024, height: body.height ?? 1024,
+        actor: "human:web",
+        id: "01LOCAL" + String(Date.now()).padStart(13, "0"),
+        kind: "create_document",
+        payload: {
+          background: { a: 255, b: 255, g: 255, r: 255 },
+          color_space: "srgb",
+          doc_id: docId,
+          height: body.height ?? 1024,
+          width: body.width ?? 1024,
+        },
+        schema_version: 1,
+        // **∴ `seq` 由下面的自增逻辑覆盖 ✗**（**第 630 轮 ✓：**写死 1 会与后续原子冲突 ✓**）。
+        session: "session:web",
+        timestamp: Date.now(),
       });
       return json({ ok: true, doc_id: docId, token: "local", server: false,
                     width: body.width ?? 1024, height: body.height ?? 1024 });
@@ -59,8 +76,17 @@ export async function makeLocalApi(db) {
     // **② `/api/atoms`（**读／写 ✓**）**
     if (url.pathname === "/api/atoms") {
       if (req.method === "POST") {
-        const seq = await putAtom(handle, doc, body);
-        return json({ ok: true, seq, server: false });
+        // **★ 接受 `{ atoms: [ … ] }` ✗ ★**（第 630 轮 ✓）：**∴ 与服务端同形 ✗**
+        //（**`tools.rs:1736`：`atoms` 是必填数组 ✓ ⇒ **∴ 直接 POST `{}` 会 400**✓）。
+        // **∴ 且**原子**原样存下 ✗**（**含完整 8 字段封套 ✓ ⇒ **∴ 内核能折叠 ✓**）。
+        const list = Array.isArray(body && body.atoms) ? body.atoms : [body];
+        let last = 0;
+        for (const atom of list) {
+          // **★ `seq` **由本地层自增**✗ ★**（第 630 轮 ✓）：**∴ 调用方给的 `seq` 一律忽略 ✗**
+          // ⇒ **∴ 否则**两处都写 1 ⇒ **∴ 内核报**`seq 1 重复`✗**（**实测 ✓**）⇒ **∴ 折叠整体失败 ✓**。
+          last = await putAtom(handle, doc, { ...atom, seq: undefined });
+        }
+        return json({ ok: true, seq: last, count: list.length, server: false });
       }
       const list = await atomsOf(handle, doc);
       return json({ ok: true, atoms: list.map((r) => r.atom), count: list.length, server: false });
@@ -89,8 +115,9 @@ export async function makeLocalApi(db) {
       return json({
         ok: true,
         doc_id: doc,
-        width: create ? create.atom.width : 1024,
-        height: create ? create.atom.height : 1024,
+        // **∴ 尺寸在 `payload` 里 ✗**（**第 630 轮 ✓：**原子是 8 字段封套 ✓**）。
+        width: create ? (create.atom.payload?.width ?? create.atom.width ?? 1024) : 1024,
+        height: create ? (create.atom.payload?.height ?? create.atom.height ?? 1024) : 1024,
         head_seq: meta.seq ?? 0,
         rendered_seq: meta.seq ?? 0,
         // **∴ 没有服务器 ⇒ 缩略图必须由**本地内核**生成 ✗** ⇒ **∴ 在生成前如实报 pending ✓**
@@ -111,7 +138,10 @@ export async function makeLocalApi(db) {
     //   ⇒ **∴ 那要等**本地内核渲染 ＋ 编码**✗（**下一批 ✓**）⇒ **∴ 计数保持 5 ✓，**不虚报 ✓**。
     if (url.pathname === "/api/tools/render_region") {
       const { readSnapshot } = await import("./store.js");
-      const expected = Number(q.get("seq") || 0);
+      // **★ 未给 `seq` 时用**当前 head**✗ ★**（第 630 轮 ✓）：**∴ 若默认 0 ✗**
+      // ⇒ **∴ 与存的快照 `seq` 永不相等 ⇒ **∴ 快照分支**永不命中 ✗****（**实测 ✓**）。
+      const head = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
+      const expected = Number(q.get("seq") ?? head);
       const snap = await readSnapshot(handle, doc, expected);
       if (snap && snap.bytes) {
         return new Response(snap.bytes, {
@@ -145,7 +175,9 @@ export async function makeLocalApi(db) {
         // **★ 坑：`load_atoms_json` 要的是**服务端 `get_log` 形态的数组**✗**
         // ⇒ **∴ 而 `atomsOf` 返回 `{ id, doc, seq, atom }` ✗ ⇒ **∴ 必须映射成 `r.atom` ✓**。
         const atoms = await atomsOf(handle, doc);
-        k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
+        // **★ 折叠结果必须**可见 ✗ ★**（第 630 轮 ✓）：**∴ `load_atoms_json` 返回一个封套字符串 ✗**
+        // ⇒ **∴ 它写明**成功或失败原因 ✓** ⇒ **∴ 不许丢掉它 ✓**（**∴ 否则只剩"0×0"这种二手症状 ✗**）。
+        var foldResult = k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
         // **★ 区域必须裁剪到画布内 ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真空图 ✗**）：
         // **∴ 实测**：**默认区域给到 1024×1024 而文档只有 800×600 ✗**
         // ⇒ **∴ 越界 ⇒ `render_region_png` 返回**空字节**✗** ⇒ **∴ 于是**前端会显示空白 ✓**。
@@ -171,6 +203,8 @@ export async function makeLocalApi(db) {
           try { info = k.render_region_info(Math.floor(box.x), Math.floor(box.y),
                                            Math.ceil(box.w), Math.ceil(box.h)); } catch (e) { info = "info 亦失败：" + e; }
           return json({ ok: false, error: "needs_render", reason: "内核未产出字节",
+                        fold_result: String(foldResult || "").slice(0, 500),
+                        atom_count: atoms.length,
                         // **∴ 解析后返回 ✗**（**否则判据只能看到**被转义的 JSON 字符串 ✓**）。
                         kernel_info: (() => { try { return JSON.parse(info); } catch { return String(info).slice(0, 600); } })(),
                         server: false });

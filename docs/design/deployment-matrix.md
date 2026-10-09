@@ -518,3 +518,26 @@ const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atom
 
 **∴ 且**PWA 侧也应存**同样完整**的原子 ✗**（**`api-local.js` 的 `/api/atoms` POST ✓**）
 ⇒ **∴ 否则**"本地能画"只在判据夹具上成立 ✗** ⇒ **∴ 而那会是**假证据 ✗** ⇒ **∴ 必须两边一起改 ✓**。
+
+### 14.14 🎉🎉🎉 **PWA 真的画出了图**（**第 630 轮 ✓，真实浏览器实测 ✓**）
+
+```
+render_region（首次）⇒ status 200 ｜ type image/png ｜ source **local-kernel** ｜ **850 字节** ✓
+render_region（第二次）⇒ status 200 ｜ source **local-snapshot** ✓
+fold_result ⇒ {"atoms":3,"head_seq":3,"ok":true} ✓
+✓ PWA 在真实浏览器里成立 ｜ EXIT = 0 ✓
+```
+
+**∴ 为了走到这一步，一共澄清了**五层**✗**（**每层都由**实测**而非推理得出 ✓**）：
+
+| # | 层 | 关键事实 |
+|---|---|---|
+| **①** | **能力** | **内核有 `render_region_png` ✓**（**与服务端同一编码器 ⇒ 可直接比对哈希 ✓**） |
+| **②** | **初始化** | **`--target web` 必须先 `await mod.default()` ✗**（**否则 `__wbindgen_malloc` undefined ✓**） |
+| **③** | **构造** | **`new WasmKernel(doc, 256, w, h, limit)` ✓** |
+| **④** | **原子形态** | **完整 **8 字段封套**✗**：`id`／`seq`／`kind`／`payload`／`schema_version`／`actor`／`session`／`timestamp`；**创建文档的 `payload` 还要 `doc_id`／`width`／`height`／`color_space`／`background` ✓** |
+| **⑤** | **序号** | **`seq` 必须**由本地层自增**✗**（**两处都写 1 ⇒ `seq 1 重复` ✓**）｜**快照的 `expected` 默认应为**当前 head**✗**（**默认 0 ⇒ 永不命中 ✓**） |
+
+**★ 而每一次突破都靠**把量打印出来**✗，**而不是靠推理 ✗**：
+`render_region_info`（**拿警告 ✓**）⇒ **解析 JSON（**拿 `与文档 0×0 不相交` ✓**）⇒
+`load_atoms_json` 的返回值（**拿 `missing field id` ＋ `seq 1 重复` ✓**）** ✓✓

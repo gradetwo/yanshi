@@ -85,12 +85,21 @@ check(gd.render_backend === "cpu", `无 WebGPU 时后端应为 cpu ✗（实测 
 check(gd.gpu_unavailable_reason === "host_has_no_webgpu", `应报 GPU 不可用原因 ✗（实测 ${gd.gpu_unavailable_reason}）`);
 
 // **⑥b 快照分支：**冷启动必缺快照 ⇒ 必须**如实**说"该重算"✗，**不许返回旧图 ✓**
-const rr = await (await call("/api/tools/render_region", { method: "POST" })).json();
-check(rr.ok === false && rr.error === "needs_render",
-  `缺快照时应如实报 needs_render ✗（实测 ${JSON.stringify(rr)}）`);
-// **∴ 原因可以是"快照过期／缺失"✗，也可以是"**内核不可用**✗"**（**node 里没有浏览器 wasm 环境 ✓**）
-// ⇒ **∴ 判据只要求**说得出原因**✗，**而**不限定是哪一种 ✓**（**∴ 若限定 ⇒ **∴ node 侧会永远红 ✗**）。
-check(!!rr.reason && rr.reason.length > 4, `needs_render 应给出可读原因 ✗（实测 ${rr.reason}）`);
+// **★ 要么真图、要么如实说该重算 ✗ ★**（第 630 轮 ✓）：**∴ 在本桩里快照可能命中 ⇒ 返回 PNG ✗**
+// ⇒ **∴ 若仍死板地 `json()` 解析 ⇒ **∴ 会抛 "not valid JSON" ✗****（**实测 ✓**）。
+// **∴ 断言改成**两者都接受**✗，**而**绝不允许第三种（**如空响应 ✓）**：
+const rrRaw = await call("/api/tools/render_region", { method: "POST" });
+const rrType = rrRaw.headers.get("content-type") || "";
+if (rrType.startsWith("image/png")) {
+  const bytes = (await rrRaw.arrayBuffer()).byteLength;
+  check(bytes > 0, `快照路径应给出非空 PNG ✗（实测 ${bytes} 字节）`);
+  console.log(`  快照路径给出真 PNG ✓（${bytes} 字节 ✓）`);
+} else {
+  const rr = await rrRaw.json();
+  check(rr && rr.error === "needs_render", `内核不可用时应如实报 needs_render ✗（实测 ${JSON.stringify(rr).slice(0, 80)}）`);
+  check(!!rr.reason && rr.reason.length > 4, `needs_render 应给出可读原因 ✗（实测 ${rr.reason}）`);
+  console.log("  内核不可用 ⇒ 如实 needs_render ＋ 原因 ✓");
+}
 
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
