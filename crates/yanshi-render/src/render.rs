@@ -162,16 +162,10 @@ type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
 static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// **below 缓存的槽数上限 ✓**（第 460 轮实测 ✓）：**同一笔会触发三种 bbox**
-/// （**小块 `(50,80,30,30)` ✓／整行条带 `(0,160,900,160)` ✓／另一条带 ✓**）
-/// ⇒ **∴ 至少 3 槽，取 4 ✓**；**超过 ⇒ 丢最旧 ✓**（**粗粒度 LRU ✓**；**∴ tile 粒度是下一步 ✓**）。
-const BELOW_SLOTS: usize = 4;
-
 /// **below 缓存的**分块边长** ✓**（第 481 轮 ✓，**规格 §6.6 ✓**）：
 /// **用**自己的常量**✗ 而不用 `TileGrid` 的尺寸 ✓** —— **∵ 它**没有** `tile_size()` getter ✗**
 ///（`tile.rs` 只有 `new`／`tiles_x`／`tiles_y`／`tile_count` ✓）⇒ **∴ 而键只需**一致**✓，
 /// **不必等于网格尺寸 ✓**（**∴ 行带／整块／并行 chunk 产生的键都相同 ✓**）。
-#[allow(dead_code)] // 第 2 步起使用 ✓（**这是"每步可编译"的中间态 ✓**）
 const BELOW_TILE: i64 = 256;
 
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
@@ -382,31 +376,6 @@ impl RegionRender {
 
 /// 计算内核层的文档渲染器。
 #[derive(Debug)]
-/// **★ below 缓存 ✓**（目标第 4 条 ✓）：**最上面那层以下**的合成结果 ✓。
-///
-/// **切点为什么是"最上层以外"** ✗：画家反复改的是**当前层** ✓，而当前层通常在**最上面** ✓
-/// ⇒ **∴ "除最上层以外"是一个明确、可判定的切点 ✓**（**不猜"哪一层是活动的" ✗**）。
-///
-/// **有效性怎么判** ✓：签名 ＝ **下方各层的 `(id, updated_by)` 序列** ✓ ——
-/// `updated_by` 记的是**最后改动它的那个原子** ✓（`crates/yanshi-core/src/state.rs:141` ✓）⇒
-/// **∴ 任何下方层被改动 ⇒ 签名必变 ⇒ 失效 ✓**（**防撒谎 ✓ ＝ 设计 C4 ✓**）；
-/// **∴ 而只改最上层 ⇒ 签名不变 ⇒ 复用 ✓**（**＝ 设计 C3 ✓**）。
-///
-/// **⚠️ 已知代价（两面 ✓）**：**本版按**整幅区域**存一份 ✗**（**4K ~33 MB／8K ~133 MB ✓**）
-/// ⇒ **∴ 与目标"tile 粒度 ＋ LRU"还有差距 ✗ ⇒ 下一步是分块 ✓**；
-/// **本版只做**正确性 ＋ 语义计数**✓**（**∴ 让 `/health.below_reuse` 从 0 变正 ✓**）。
-///
-/// **六类例外（设计 §3 ✓）**：本版**最保守** —— **只要范围内任一层带**剪贴蒙版**✗ ⇒ **整片不走缓存 ✓**；
-/// 其余五类（`behind`／`erase`、穿透组、组不透明度、读画布类笔刷、色彩空间）**由 `updated_by` 签名兜住 ✓**。
-struct BelowCache {
-    /// 命中的区域 ✓：用缓冲自己的 `bbox` ✓（**区域不同 ⇒ 不复用 ✓**）。
-    bbox: yanshi_core::Bbox,
-    /// 下方各层的 `(id, updated_by)` ✓。
-    sig: Vec<String>,
-    /// 下方的合成结果 ✓。
-    buf: crate::buffer::Buffer,
-}
-
 /// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
 /// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
 ///
@@ -414,7 +383,6 @@ struct BelowCache {
 /// ⇒ **每带一个 bbox ✗** ⇒ **而旧缓存按**整块 bbox**键 ⇒ **永不匹配 ✗****。
 ///
 /// **淘汰** ✓：**接既有口径 ✓**（**超过上限 ⇒ 丢最久未用 ✓**，规格 §6.2 ✓）。
-#[allow(dead_code)] // 第 2／3 步起使用 ✓
 struct BelowTiles {
     /// **生成这些 tile 时的**下方层指纹** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
     sig: Vec<String>,
@@ -454,7 +422,7 @@ pub struct Renderer {
     bitmaps: BitmapCache,
 
     /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
-    below: std::sync::Mutex<Vec<BelowCache>>,
+    below: std::sync::Mutex<Option<BelowTiles>>,
 }
 
 impl Renderer {
@@ -499,7 +467,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(Vec::new()),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -515,7 +483,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
-            below: std::sync::Mutex::new(Vec::new()),
+            below: std::sync::Mutex::new(None),
         }
     }
 
@@ -568,7 +536,7 @@ impl Renderer {
         // **当前是 `Vec<BelowCache>`（**整块键版 ✓**）⇒ 用 `clear()` ✓**；
         // **∴ 上 tile 版时再改成 `*guard = None` ✓**（**类型随之变 ✓**）。
         if let Ok(mut guard) = self.below.lock() {
-            guard.clear();
+            *guard = None;
         }
     }
 
@@ -762,7 +730,7 @@ impl Renderer {
         track: &mut ObjectTrack,
         probe: &mut RenderProbe,
         bitmaps: &BitmapCache,
-        below: &std::sync::Mutex<Vec<BelowCache>>,
+        below: &std::sync::Mutex<Option<BelowTiles>>,
     ) -> Result<Buffer> {
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -882,23 +850,68 @@ impl Renderer {
         let want = accumulation.bbox();
         let probe_path = std::env::var("YANSHI_BELOW_PROBE").ok();
         if cacheable {
-            let hit = match below.lock() {
-                // **∴ `Vec` 有两个 `AsRef` 实现 ⇒ `as_ref()` 有歧义 ✗（`E0283` ✓）** ⇒ **∴ 直接给分支 ✓**。
-                Ok(guard) => guard.iter().any(|c| c.sig == sig && c.bbox == want),
+            let mut want_tiles: Vec<(i64, i64)> = Vec::new();
+            {
+                let x0 = (want.x.floor() as i64).div_euclid(BELOW_TILE);
+                let y0 = (want.y.floor() as i64).div_euclid(BELOW_TILE);
+                let x1 = ((want.x + want.w).ceil() as i64).div_euclid(BELOW_TILE);
+                let y1 = ((want.y + want.h).ceil() as i64).div_euclid(BELOW_TILE);
+                for ty in y0..=y1 {
+                    for tx in x0..=x1 {
+                        want_tiles.push((tx * BELOW_TILE, ty * BELOW_TILE));
+                    }
+                }
+            }
+            let ready = match below.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(c) if c.sig == sig => want_tiles
+                        .iter()
+                        .all(|k| c.tiles.iter().any(|(t, _)| t == k)),
+                    _ => false,
+                },
                 Err(_) => false,
             };
-            if hit {
-                let cached_buf = below.lock().ok().and_then(|g| {
-                    g.iter()
-                        .find(|c| c.sig == sig && c.bbox == want)
-                        .map(|c| c.buf.clone())
-                });
-                if let Some(buf) = cached_buf {
-                    // **∴ 下方合成直接搬进来 ⇒ 下方那些层不用再渲染 ✓**
-                    accumulation = buf;
-                    note_below_reuse();
-                    reused = true;
-                }
+            let cached = if ready {
+                below.lock().ok().and_then(|g| {
+                    let c = g.as_ref()?;
+                    let mut out = accumulation.clone();
+                    for k in &want_tiles {
+                        let (_, buf) = c.tiles.iter().find(|(t, _)| t == k)?;
+                        let ob = out.bbox();
+                        let bb = buf.bbox();
+                        let ox = bb.x as i64 - ob.x as i64;
+                        let oy = bb.y as i64 - ob.y as i64;
+                        let ow = ob.w as i64;
+                        let oh = ob.h as i64;
+                        let bw = bb.w as i64;
+                        let bh = bb.h as i64;
+                        let dst = out.pixels_mut();
+                        let src = buf.as_f32();
+                        for row in 0..bh {
+                            let dy = oy + row;
+                            if dy < 0 || dy >= oh {
+                                continue;
+                            }
+                            for col in 0..bw {
+                                let dx = ox + col;
+                                if dx < 0 || dx >= ow {
+                                    continue;
+                                }
+                                let si = ((row * bw + col) * 4) as usize;
+                                let di = ((dy * ow + dx) * 4) as usize;
+                                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                            }
+                        }
+                    }
+                    Some(out)
+                })
+            } else {
+                None
+            };
+            if let Some(buf) = cached {
+                accumulation = buf;
+                note_below_reuse();
+                reused = true;
             }
             if let Some(path) = probe_path.as_deref() {
                 use std::io::Write;
@@ -916,7 +929,7 @@ impl Renderer {
                         want.y,
                         want.w,
                         want.h,
-                        hit,
+                        ready,
                         reused
                     );
                 }
@@ -979,22 +992,29 @@ impl Renderer {
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
             if let Ok(mut guard) = below.lock() {
-                // **★ 多槽 ✓**（第 460 轮实测 ✓）：**同一笔触发三种 bbox** ⇒ **∴ 单槽被轮流冲掉 ✗**
-                // ⇒ **∴ 按 bbox 键分槽 ✓；超过丢最旧 ✓**（**粗粒度 LRU ✓**）。
-                let want = accumulation.bbox();
-                if let Some(slot) = guard.iter_mut().find(|c| c.bbox == want) {
-                    slot.sig = sig;
-                    slot.buf = accumulation.clone();
-                } else {
-                    if guard.len() >= BELOW_SLOTS {
-                        guard.remove(0);
+                let origin = accumulation.bbox();
+                let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
+                let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
+                let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
+                let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
+                let mut tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                for ty in y0..=y1 {
+                    for tx in x0..=x1 {
+                        let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                        let bbox = yanshi_core::Bbox::new(
+                            key.0 as f64,
+                            key.1 as f64,
+                            BELOW_TILE as f64,
+                            BELOW_TILE as f64,
+                        );
+                        let piece = accumulation.crop(&bbox);
+                        let pb = piece.bbox();
+                        if pb.w > 0.0 && pb.h > 0.0 {
+                            tiles.push((key, piece));
+                        }
                     }
-                    guard.push(BelowCache {
-                        bbox: want,
-                        sig,
-                        buf: accumulation.clone(),
-                    });
                 }
+                *guard = Some(BelowTiles { sig, tiles });
             }
         }
         Ok(accumulation)
@@ -1044,7 +1064,7 @@ impl Renderer {
         //（`incremental_stamp_matches_full_tile_re_render` ✓，**2／5 次复现 ✓**）⇒
         // **∴ 规则** ✓：**凡改像素的入口 ⇒ 必须同时失效**所有**依赖像素的缓存 ✓**。
         if let Ok(mut guard) = self.below.lock() {
-            guard.clear();
+            *guard = None;
         }
         let Some(bbox) = geometry_bbox(geometry, brush.size) else {
             return Ok(Vec::new());
@@ -1070,7 +1090,7 @@ impl Renderer {
         //（`incremental_stamp_matches_full_tile_re_render` ✓，**2／5 次复现 ✓**）⇒
         // **∴ 规则** ✓：**凡改像素的入口 ⇒ 必须同时失效**所有**依赖像素的缓存 ✓**。
         if let Ok(mut guard) = self.below.lock() {
-            guard.clear();
+            *guard = None;
         }
         let Some(bbox) = geometry_bbox(geometry, brush.size) else {
             return Ok(Vec::new());
