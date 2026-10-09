@@ -446,3 +446,33 @@ return new Response(png, { headers: { "content-type": "image/png" } });
 ⇒ **∴ 一旦原子合法 ⇒ **∴ 内核文档会有正确尺寸 ⇒ **∴ 渲染应当产出真 PNG ✗****
 ⇒ **∴ 那时判据自动升级 ✗**（**本判据已写好那条分支 ✓**：**`img.type === "image/png"` 时
 断言 `local-kernel` ＋ 二次命中 `local-snapshot` ✓**）** ✓✓
+
+### 14.10 ★ **权威原子形态**（**第 628 轮 ✓，一条就够 ✓**）★
+
+**来源** ✓：**`crates/yanshi-server/src/tools.rs:1736`** ✓ 的参数声明 ——
+```rust
+params: &[param!("atoms", Array, true, "[{kind, payload, actor?, session?}] 离线期间追加的原子")],
+```
+
+⇒ **∴ 正确形态** ✓：**`{ kind, payload, actor?, session? }`** ——
+**∴ 而**我此前手写的是**字段铺平**✗**（`{ kind: "create_document", width, height }` ✓）
+⇒ **∴ 所以**内核**折叠不出来**✗ ⇒ **∴ 文档保持 0×0 ✓**（**∴ 与 §14.8 的观测一致 ✓**）** ✓✓
+
+**∴ 另外一条** ✓：**`/api/atoms` 的 POST 要 `{ atoms: [ … ] }` ✗**
+（**∴ 我实测直接 POST `{}` ⇒ **400 Bad Request**✓ —— **∴ 因为 `atoms` 是**必填**✓**）** ✓✓
+
+**∴ 前端也是这么用的** ✓：**`viewer-app.js:1313`** ✓
+```js
+const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
+```
+⇒ **∴ 它把服务端 `/api/atoms` 返回的数组**原样喂给内核 ✗** ⇒ **∴ 所以**那份数组**就是**内核真值形态**✗** ✓✓
+
+### 14.11 下一步（**一步 ✓**）
+
+**把 PWA 侧的原子改成**嵌套 `payload`**✗**：
+* **`api-local.js` 的 `/api/atoms`（**POST ✓**）**：**改为接受 `{ atoms: [ … ] }` ✗，
+  并把每条原子**原样存下**（**含 `payload` ✓**）；**
+* **`render_region` 的内核分支**：**`k.load_atoms_json(JSON.stringify(记录的原子))` ✗**
+  （**∴ 即**直接传原子 ✗，**不再包装成 `r.atom` 的自定义形状 ✓**）**；
+* **浏览器判据**：**造 `{ kind: "create_document", payload: { width: 256, height: 256, … } }` ✗**
+  ⇒ **∴ 于是**内核文档有正确尺寸 ⇒ **∴ 渲染应当产出真 PNG ✗** ⇒ **∴ 判据自动升级 ✓**（**§14.9 ✓**）** ✓✓
