@@ -48,30 +48,32 @@ const main = async () => {
   //   （**切点=2 ⇒ 指纹 S0..S1 ✓；切点=4 ⇒ 指纹 S0..S3 ✓**）⇒ **∴ 只顶掉外层 ✓**。
   const bump = async (dx) => { await stroke("S4", dx); };
 
-  // **① 改中间层（S2）＋ 传 `active_layer="S2"` ⇒ 切点=2 ⇒ 指纹 S0..S1 未变 ⇒ 应自增 ✓**
+  // **★ 语义依据 ✓ ★**（第 542 轮 ✓）：**读**该次渲染自己的 `below_reused`**✗** ——
+  //   **∴ 而不是全局计数 ✗**（**它会被笔触预览等其它渲染污染 ✓**）。
+  //
+  // **① 改中间层（S2）＋ 传 `active_layer="S2"` ⇒ 指纹 ＝ `layer_default,S0,S1` ✓
+  //   ⇒ **∴ 改 S2 **不在**指纹里 ⇒ **∴ 应为 `true` ✓****
   await stroke("S2", 9);
   await bump(30);
-  const b1 = await reuse();
-  await render({ active_layer: "S2" });
-  const a1 = await reuse();
+  const r1 = await render({ active_layer: "S2" });
 
-  // **② 改中间层 ＋ **不传**（**切点=4 ✓**）⇒ 指纹 S0..S3 **含 S2** ⇒ 应失效 ⇒ 不应自增 ✗（**对照 ✓**）**
+  // **② 改中间层 ＋ **不传**（**切点在"最上层以外"✓**）⇒ 指纹含 S2 ✓
+  //   ⇒ **∴ 改它使其变 ⇒ **∴ 应为 `false` ✓**（**对照 ✓**）**
   await stroke("S2", 18);
   await bump(40);
-  const b2 = await reuse();
-  await render();
-  const a2 = await reuse();
+  const r2 = await render();
 
-  console.log(`  ① 改中间层 ＋ 传 active_layer=S2 ⇒ below_reuse ${b1} ⇒ ${a1}`);
-  console.log(`  ② 改中间层 ＋ 不传（对照）      ⇒ below_reuse ${b2} ⇒ ${a2}`);
+  console.log(`  ① 传 active_layer=S2 ⇒ below_reused = ${r1.below_reused}`);
+  console.log(`  ② 不传（对照）      ⇒ below_reused = ${r2.below_reused}`);
   const bad = [];
-  if (!(a1 > b1)) bad.push(`① 传 active_layer 时应自增 ✗（实测 ${b1} ⇒ ${a1}）`);
-  if (a2 > b2) bad.push(`② 不传时**不应**自增 ✗（实测 ${b2} ⇒ ${a2} ⇒ 切点没退回"最上层以外" ✗）`);
+  if (r1.below_reused !== true) bad.push(`① 传 active_layer 时应为 true ✗（实测 ${r1.below_reused}）`);
+  if (r2.below_reused !== false) bad.push(`② 不传时应为 false ✗（实测 ${r2.below_reused}）`);
   if (bad.length) {
     console.error("❌ " + bad.join("｜") +
       "（变异：服务端忽略 active_layer ⇒ 断言 ① 必红 ✓）");
     process.exit(1);
   }
-  console.log("  ✓ 切点确实落在当前层：传参 ⇒ 复用下方；不传 ⇒ 退回旧行为（对照成立 ✓）");
+  console.log("  ✓ 语义依据成立：传参 ⇒ 复用下方（true ✓）；不传 ⇒ 不复用（false ✓）");
 };
+
 main().catch((e) => { console.error("❌ 运行失败：" + String(e)); process.exit(2); });
