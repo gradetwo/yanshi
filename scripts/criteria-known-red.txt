@@ -1965,3 +1965,18 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     （**两者不要混为一谈 ✓**）；**③ 验收 ④ 改为**浏览器侧后端 ✗**（**`webgpu`／`cpu` ＋ 原因 ✓**）** ✓✓
 #   **⚠️ 我的错误已入档** ✓：**把"Workers 无 GPU"当成 GPU 例外 ✗** ⇒ **∴ 根因是**我预设了
 #     "Workers 会跑计算 ✗"✗（**而用户的设计从来是**纯前端 ✓**）** ✓✓
+# **★ 第 607 轮：🎉 **PWA 前置条件核验 —— 几乎全具备 ✓****
+#   **实测** ✓：
+#     * **`rustup target list --installed` ⇒ **`wasm32-unknown-unknown` 已装 ✓****；
+#     * **`crates/yanshi-wasm` 是 workspace 成员 ✓**（`Cargo.toml:9` ✓）；
+#     * **★ `crates/yanshi-wasm/pkg/` **已存在** ✓ ★** ⇒ **∴ 已有 wasm-bindgen 产物 ✗
+#       （**无需从零搭构建链 ✓**）**；
+#     * **浏览器加载方式** ✓：**`await import("/wasm/yanshi_wasm.js")`**（`viewer-app.js:1235` ✓）
+#       ⇒ **∴ 服务端把 `pkg/` 挂在 `/wasm/` 下 ✓**；**且 `health.wasm` 是开关 ✓（**`--no-wasm` ✓**）**；
+#     * **零 DOM 依赖 ✓**（**第 601 轮 ✓**）⇒ **∴ 可在 Worker 线程／OffscreenCanvas 里跑 ✓**** ✓✓
+#   **∴ 结论** ✓：**前置条件**四条全具备 ✓** ⇒ **∴ 剩下的是**静态化（**不经服务端注入 ✓**）
+#     ＋ `wrangler.toml` ＋ `worker/`（**纯托管 ✓**）＋ PWA 壳 ＋ IndexedDB ＋ 内核 WebGPU ✓**** ✓✓
+#   **∴ 已把六步清单写入部署矩阵第九节 ✓**（**每步都标了依据 ✓**）** ✓✓
+#   **∴ 下一轮（**一步 ✓**）** ✓：**先做**②③**（**`wrangler.toml` ＋ 最小 `worker/` ✓**）
+#     ⇒ **∴ 因为**它们**不依赖 viewer 静态化 ✗（**可独立验证：**`wrangler dev` 能起 ✓／
+#     `wrangler deploy --dry-run` 能过 ✓**）⇒ **∴ 而**viewer 静态化是大工程 ✗，**放后面 ✓**** ✓✓
