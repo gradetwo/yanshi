@@ -596,3 +596,18 @@ fold_result ⇒ {"atoms":3,"head_seq":3,"ok":true} ✓
 **∴ 收益（**两面 ✓**）**：
 * **收益 ✓**：**PWA 有了**真界面**✗，**且与服务端**同一份模板**✗（**天然同源 ✓**）；
 * **代价 ✗**：**多一个 CLI 参数 ✗**（**∴ 而**它与现有参数同构 ✓）＋ **∴ 导出要在**构建时**跑一次 ✗**（**∴ 因此 `web/index.html` 会入库 ✗ ⇒ **∴ 与 wasm 同样处理 ✓**）** ✓✓
+
+### 14.20 插入点已全部定位（**第 635 轮 ✓，四处 ✓**）
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| **①** | **`pub struct HttpOptions {`（`:48` ✓）的字段区末尾** | **加 `pub export_viewer_html: Option<std::path::PathBuf>,` ✓** |
+| **②** | **`impl Default for HttpOptions`（`:84` ✓）**，**`assets_dir: Some(PathBuf::from("assets")),` 那一行之后** | **加 `export_viewer_html: None,` ✓** |
+| **③** | **`parse_args`（`:128` ✓）里，`"--gpu" => { … }` 分支**之前** | **加 `"--export-viewer-html" => { options.export_viewer_html = Some(value_of("--export-viewer-html")?.into()); }` ✓** |
+| **④** | **`Ok(options)`（`:193` ✓）之前** | **加早退：**若 `export_viewer_html` 有值 ⇒ `std::fs::write(path, viewer::page_with_read_tools())` ＋ **`return Ok(options)`／或直接退出 ✓** |
+
+**⚠️ 本轮我又踩了自己的坑 ✗**：**在 python 三引号里嵌了多行 Rust 字符串 ✗**
+⇒ **∴ `SyntaxError: unterminated triple-quoted string` ⇒ **∴ 脚本在写入前中止 ⇒ **树干净 ✓****
+⇒ **∴ 这已是本会话第 4 次同类 ✗** ⇒ **∴ 硬规则重申** ✓：
+**在 python 里给 Rust 插**多行内容**✗ ⇒ **只能**用单行字符串列表拼 `\n`**✗**，
+**绝不把多行内容写进三引号 ✗**** ✓✓
