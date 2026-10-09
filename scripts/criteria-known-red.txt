@@ -6175,3 +6175,43 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **② 加**可红判据 ✗**：**同区域渲两次 ⇒ 第二次 `frame_reused` 必须为真 ✓**；
 #     **③ 变异 ✗**：**让 `full_frame_hits` **不自增 ⇒ **∴ 判据**必红 ✓**** ✓✓
 #     **④ 文档 §14.35 ✗**：**四级缓存 ＋ 各自指标 ✓**✓
+
+# **★ 第 797 轮：🎯🎯🎯 **部署失败根因 ✗** —— **10 个笔刷文件名含 `#`／`%` ✓****
+#   **∴ 用户的请求 ✓**：**"我已经 wrangler 登陆好了，你可以直接部署 pwa 了" ✓**
+#   **∴ ① 登录验证 ✓**：**`npx --yes wrangler@4 whoami` ✗**
+#     ```
+#     👋 You are logged in with an User API Token, associated with the email gradetwo@gmail.com.
+#     ℹ️ The API Token is read from the CLOUDFLARE_API_TOKEN environment variable.
+#     │ Gradetwo@gmail.com's Account │ 9c2b401e166a23c08fbeb286962382e9 │
+#     ```
+#     ⇒ **∴ 所以**：**登录**有效**✓**（**∴ 而**本 shell **没有 wrangler ✗ ⇒ **∴ 用 npx ✓）** ✓✓
+#   **∴ ② 同步 ✓**：**`web/` 里 **220 个文件**（**199 笔刷 ＋ 11 根 ＋ 6 介质 ＋ 4 wasm ✓）** ✓✓
+#   **∴ ③ 部署失败 ✗**：
+#     ```
+#     ✨ Read 224 files from the assets directory /home/crow/yanshi/web
+#     ✘ ERROR: A request to the Cloudflare API (…/assets-upload-session) failed.
+#       Invalid manifest: Manifest path must be URI encoded.: invalid manifest file [code: 10304]
+#     ```
+#   **★ 根因 ✗ ★**：**扫描发现 **10 个文件名**含 `#` 或 `%` ✗**：
+#     ```
+#     web/brushes/100%_Opaque.myb      ← **★ `%` ✗ ★**
+#     web/brushes/8B_Pencil#1.myb      ← **★ `#` ✗ ★**
+#     web/brushes/Fan#1.myb ／ Flat2#1 ／ Fount-offset#1 ／ Fountain_SF#1 ／
+#     HalfTone#1 ／ HalfToneCMY#1 ／ Round#1 ／ arrow#1
+#     ```
+#     ⇒ **∴ 所以**：**`#` 与 `%`** 在 URL 里是**特殊字符 ✗**
+#       ⇒ **∴ 而** Cloudflare 的 assets manifest **要求**路径**是**URI 编码形式**✗**
+#         ⇒ **∴ 于是**它**拒绝了整个上传 ✓**** ✓✓
+#   **★ 修法 ✗ ★**：**在同步脚本里**把磁盘文件名**写成**URI 编码后的形式 ✗**
+#     （**∴ `%` ⇒ `%25` ✓｜`#` ⇒ `%23` ✓）⇒ **∴ 例如** `100%25_Opaque.myb` ／ `8B_Pencil%231.myb` ✓**
+#     ⇒ **∴ 而**客户端**（**`web/brush-local.js` 的 `fetchBrushText` ✓）**已经**做了同样的编码 ✗**
+#       （**∴ 我此前改过**：**`#`⇒`%23`，`%`⇒`%25` ✓）⇒ **∴ 于是**两侧**将一致 ✓**** ✓✓
+#     ⇒ **∴ 所以**：**不需要改客户端 ✗**，**只要**让磁盘上的名字**与请求的路径**一致 ✓**** ✓✓
+#   **∴ 下一轮（**实现 ＋ 重部署 ✓**）** ✓**：
+#     **① 在 `scripts/pwa-sync-viewer.mjs`（**或新的小脚本 ✓）里**对笔刷文件名**做
+#       **`encodeURIComponent` ✗** ⇒ **∴ 于是**落盘名为**编码形式 ✓**；
+#     **② 重新同步 ＋ `npx wrangler@4 deploy` ✗** ⇒ **∴ 期望**成功 ✓**；
+#     **③ 且**加一条判据 ✗**：**`web/` 下**不许出现**需编码的字符**✗**
+#       ⇒ **∴ 于是**这类失败**在提交前就被抓到 ✓**** ✓✓
+#   **∴ 元收获 ✓**：**静态托管的**文件命名**有约束 ✗**
+#     ⇒ **∴ 而**"**本地能用**"不等于"**CDN 能收**"✗ ⇒ **∴ 教训**：**路径**要**URL 安全 ✓**** ✓✓
