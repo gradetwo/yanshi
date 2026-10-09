@@ -79,6 +79,10 @@ pub struct HttpOptions {
     /// **⚠️ 这段注释原先写的是"内置纹理目录"** ✗ —— 字段改名成"资产根目录"之后注释没跟着改 ✓
     /// ⇒ 后来的人会以为这里**只**管纹理 ✓（实际它同时管 `brushes` / `palettes` ✓）。
     pub assets_dir: Option<PathBuf>,
+    /// **★ 导出静态页 ✓ ★**（第 636 轮 ✓；**部署矩阵 §14.18 ✓**）：**给了路径 ⇒ 把
+    /// `viewer::page_with_read_tools()` 生成的那一份 HTML 写进文件并退出 ✗**
+    /// ⇒ **∴ 于是**PWA 可以**同步同一份页面 ✗**（**不手写第二份 ⇒ 不分叉 ✓**）。
+    pub export_viewer_html: Option<std::path::PathBuf>,
 }
 
 impl Default for HttpOptions {
@@ -119,6 +123,7 @@ impl Default for HttpOptions {
             medium_dir: Some(PathBuf::from("assets/mediums")),
             // 门面是**构建产物** ✓（与 `crates/yanshi-wasm/pkg` 同一性质 ✓）⇒ 缺省指向 target 里那份 ✓。
             assets_dir: Some(PathBuf::from("assets")),
+            export_viewer_html: None,
         }
     }
 }
@@ -154,6 +159,9 @@ impl HttpOptions {
                 // auto（默认）⇒ GPU 优先 ＋ 不可用则 CPU ✓；on ⇒ 要求 GPU ✓；off ⇒ 人为强制 CPU ✓。
                 // **⚠️ 现状 ✗**：**还没有 GPU 后端 ⇒ 任何模式的实际后端都是 cpu ✓**；
                 // **∴ `/health` 会如实报出 `gpu_mode` 与 `render_backend` ✗ ⇒ 不撒谎 ✓**。
+                "--export-viewer-html" => {
+                    options.export_viewer_html = Some(value_of("--export-viewer-html")?.into());
+                }
                 "--gpu" => {
                     let mode = value_of("--gpu")?;
                     if !matches!(mode.as_str(), "auto" | "on" | "off") {
@@ -189,6 +197,13 @@ impl HttpOptions {
                 }
                 other => return Err(format!("未知参数 {other}")),
             }
+        }
+        // **★ 构建期导出路径 ✓ ★**（第 636 轮 ✓）：**∴ 它**不改服务端行为 ✗**
+        //（**∴ 只有显式给参数才走 ✓**）⇒ **∴ 写完即退出 ✓**，**不启动监听 ✓**。
+        if let Some(path) = options.export_viewer_html.as_ref() {
+            std::fs::write(path, crate::viewer::page_with_read_tools())
+                .map_err(|error| format!("写静态页失败 {path:?}：{error}"))?;
+            std::process::exit(0);
         }
         Ok(options)
     }
