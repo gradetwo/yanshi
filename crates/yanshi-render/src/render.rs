@@ -1194,7 +1194,7 @@ impl Renderer {
                     .append(true)
                     .open(path)
                 {
-                    let (have, missing) = match below.lock() {
+                    let (_have, missing) = match below.lock() {
                         Ok(g) => match g.as_ref() {
                             Some(c) if c.sig == sig => {
                                 let have = want_tiles
