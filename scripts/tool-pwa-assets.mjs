@@ -150,7 +150,12 @@ if (api) {
 //   **∴ `LOCAL_IMPLEMENTED` 是"**我在 PWA 里真的实现了几个端点**✗"的**唯一计数 ✗**
 //   ⇒ **∴ 若它和实现脱节 ⇒ **∴ 那就是在**虚报能力 ✗****。
 const declared = Number((api || "").match(/LOCAL_IMPLEMENTED\s*=\s*(\d+)/)?.[1] ?? 0);
-const actualImpl = ((api || "").match(/url\.pathname === "\/api\/[^"]+"/g) || []).length;
+// **★ 第 858 轮：判定改成**归一化后的 `path`** ✗ ★**：
+//   **∴ 为什么 ✗**：**`api-local.js` 现在**先把 `url.pathname` 归一化**（**去掉一个尾斜杠 ✓）
+//     ⇒ **∴ 于是**：**分支判定写成 `path === "…"` ✗**（**而**不再是 `url.pathname === "…"` ✓）**
+//       ⇒ **∴ 而**本判据**原来数 `url.pathname === "` ✗** ⇒ **∴ 实测 0 ⇒ **∴ 误报"在虚报能力" ✓**** ✓✓
+//   **∴ 现在**：**同时接受两种写法 ✗**（**∴ 于是**：**改名／重构不会再骗到它 ✓）** ✓✓
+const actualImpl = ((api || "").match(/(?:url\.pathname|path) === "/g) || []).length;
 check(declared >= 5, `本地实现的端点数应 ≥ 5 ✗（实测声明 ${declared}）`);
 check(actualImpl >= 4, `本地实现分支应 ≥ 4 ✗（实测 ${actualImpl}）⇒ 声明与实现脱节`);
 check(declared === actualImpl + 1 || declared === actualImpl,

@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 7;
+export const LOCAL_IMPLEMENTED = 11;
 
 let lastFold = null;
 
@@ -46,6 +46,16 @@ export async function makeLocalApi(db) {
 
   return async function local(req) {
     const url = new URL(req.url, location.origin);
+    // **★ 路径归一化：去掉**尾部斜杠** ✗ ★**（第 858 轮 ✓；**用户报"还是落笔失败" ✓**）：
+    //   **∴ 根因 ✗**：**落笔**把像素 **POST 到 `/api/blob/` ✗**（**带尾斜杠 ✓）
+    //     ⇒ **∴ 而**本地层**用 `=== "/api/blob"` 精确匹配 ✗** ⇒ **∴ 接不住 ✓**
+    //       ⇒ **∴ 于是**：**它会**落到"未实现端点" ⇒ **∴ 501 ⇒ **∴ 落笔失败 ✓**** ✓✓
+    //   **∴ 现在**：**统一归一化 ✗**（**去掉**一个尾斜杠 ✓，**而**根路径保留 ✓）
+    //     ⇒ **∴ 于是**：**所有分支**都**同时接受**带／不带尾斜杠 ✓**** ✓✓
+    //   **∴ 为什么改这里而不是逐个分支 ✗**：**逐个改**要改 11 处 ✗**
+    //     ⇒ **∴ 而**归一化**一处**就够 ✗** ⇒ **∴ 且**不会**漏掉将来的新分支 ✓**** ✓✓
+    const rawPath = url.pathname;
+    const path = rawPath.length > 1 && rawPath.endsWith("/") ? rawPath.slice(0, -1) : rawPath;
     const q = url.searchParams;
     const doc = q.get("doc") || "";
     // **★ 只在**确实是 JSON**时才按 JSON 读 body ✗ ★**（第 841 轮 ✓；**已确认的缺陷 ✓**）：
@@ -73,13 +83,13 @@ export async function makeLocalApi(db) {
     // **★ 前端启动所需的非 `/api/` 端点 ⇒ 返回合理默认值 ✗ ★**（第 827 轮 ✓）
     //   **∴ 为什么 ✗**：**它们**不在 `/api/` 下**✗ ⇒ **∴ 原来**打到网络 ⇒ **∴ 405 ✓**
     //   ⇒ **∴ 现在**：**本地层**直接答**默认值 ✗** ⇒ **∴ 于是**启动路径**不再报错 ✓**
-    if (url.pathname === "/get_preferences") {
+    if (path === "/get_preferences") {
       return json({ ok: true, preferences: { theme: "dark", locale: "zh-CN" } });
     }
-    if (url.pathname === "/list_effects") {
+    if (path === "/list_effects") {
       return json({ ok: true, effects: [] });
     }
-    if (url.pathname === "/list_brushes") {
+    if (path === "/list_brushes") {
       return json({ ok: true, brushes: [] });
     }
 // **★ `/api/blob` ✗ ★**（第 844 轮 ✓；**`seedSampleIfEmpty` 需要它 ✓**）：
@@ -93,7 +103,7 @@ export async function makeLocalApi(db) {
 //     **④ 同时写 IndexedDB ✗**（**∴ 刷新后重建内核时**再喂一遍 ✓）**。
 //   **∴ 字段与**服务端一致 ✗**：**`blob_hash`／`size`／`mime_type` ✗**
 //     （**∴ 前端 `index.html:4197` 正是读 `upload.blob_hash` 与 `upload.size` ✓）** ✓✓
-    if (url.pathname === "/api/blob") {
+    if (path === "/api/blob") {
       // **★ `mod` 必须自己导入 ✗ ★**（第 846 轮 ✓；**判据抓到的真 bug ✓**）：
       //   **∴ 实测 ✗**：**判据报 `ReferenceError: mod is not defined` ✗**
       //     （**`web/api-local.js:102` ✓）⇒ **∴ 因为** `mod` **是**那个分支里**局部导入的 ✗**
@@ -107,7 +117,7 @@ export async function makeLocalApi(db) {
       try {
         mod = await import("/wasm/yanshi_wasm.js");
       } catch (err) {
-        return json({ ok: false, error: "kernel_unavailable", endpoint: url.pathname,
+        return json({ ok: false, error: "kernel_unavailable", endpoint: path,
                       reason: "kernel module /wasm/yanshi_wasm.js did not load",
                       detail: String((err && err.message) || err) }, 501);
       }
@@ -133,7 +143,7 @@ export async function makeLocalApi(db) {
       return json({ ok: true, blob_hash: blobHash, size: bytes.length,
                     mime_type: "image/x-yanshi-raw", server: false });
     }
-    if (url.pathname === "/api/documents") {
+    if (path === "/api/documents") {
       const docId = body.doc_id || `local-${Date.now().toString(36)}`;
       // **★ 必须写**完整 8 字段封套 ✗ ★**（第 630 轮 ✓，**靠 `fold_result` 一次定位 ✓**）：
       // **∴ 实测**：**旧写法只写 `{kind, width, height}` ✗** ⇒ **∴ 内核在解析**整个数组**时
@@ -160,7 +170,7 @@ export async function makeLocalApi(db) {
     }
 
     // **② `/api/atoms`（**读／写 ✓**）**
-    if (url.pathname === "/api/atoms") {
+    if (path === "/api/atoms") {
       if (req.method === "POST") {
         // **★ 接受 `{ atoms: [ … ] }` ✗ ★**（第 630 轮 ✓）：**∴ 与服务端同形 ✗**
         //（**`tools.rs:1736`：`atoms` 是必填数组 ✓ ⇒ **∴ 直接 POST `{}` 会 400**✓）。
@@ -179,7 +189,7 @@ export async function makeLocalApi(db) {
     }
 
     // **③ `/api/tools/list_layers`（**从原子推导 ✓**）**
-    if (url.pathname === "/api/tools/list_layers") {
+    if (path === "/api/tools/list_layers") {
       const list = await atomsOf(handle, doc);
       const layers = [];
       for (const r of list) {
@@ -193,7 +203,7 @@ export async function makeLocalApi(db) {
     // **④ `/api/tools/get_document`（**从 IndexedDB ＋ 如实报后端 ✓**）**
     // **∴ 它与目标第 8 条的接口一致 ✗**：**报 `width`／`height`／`head_seq` ✗
     // ⇒ **∴ 并报 `preview_state` 与 `render_backend` ✓**（**∴ 前端一眼知道有没有图 ✓**）。
-    if (url.pathname === "/api/tools/get_document") {
+    if (path === "/api/tools/get_document") {
       const { wrap, tx } = await import("./store.js");
       const meta = (await wrap(tx(handle, "docs", "readonly").get(doc))) || { doc, seq: 0 };
       const backend = await detectBackend();
@@ -226,7 +236,7 @@ export async function makeLocalApi(db) {
     // **∴ 它**不需要内核 ✗** —— **∴ 只需**把请求变成一条原子写进日志 ✗**
     // ⇒ **∴ 而**渲染时内核会**重放**它 ✓**（**∴ 于是"画一笔"就通了 ✓**）**。
     // **∴ 形态**与服务端一致 ✗**：**完整 8 字段封套 ＋ `payload` ✓**（**§14.12 ✓**）。
-    if (url.pathname === "/api/tools/brush_stroke") {
+    if (path === "/api/tools/brush_stroke") {
       // **★ 走内核渲染一笔 ⇒ 写 `import_image` 原子 ✗ ★**（第 653 轮 ✓；**步骤 ⑤ ✓**）：
       //   **∴ 为什么不能自造 `brush_stroke` 原子 ✗**（**第 646 轮实测 ✓**）：
       //   **∴ 服务端的笔触是**服务端渲染成位图**后的 `import_image` 原子 ✗**（**内核不认前者的 kind ✓**）。
@@ -333,7 +343,7 @@ export async function makeLocalApi(db) {
       return json({ ok: true, seq, server: false, note: "已写入本地原子日志；渲染时内核会重放它" });
     }
 
-    if (url.pathname === "/api/tools/render_region") {
+    if (path === "/api/tools/render_region") {
       const { readSnapshot } = await import("./store.js");
       // **★ 未给 `seq` 时用**当前 head**✗ ★**（第 630 轮 ✓）：**∴ 若默认 0 ✗**
       // ⇒ **∴ 与存的快照 `seq` 永不相等 ⇒ **∴ 快照分支**永不命中 ✗****（**实测 ✓**）。
