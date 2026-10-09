@@ -1059,12 +1059,26 @@ impl Renderer {
                 // **★ 行原子 ✓**（第 533 轮 ✓）：**先 `format!` 成**一个字符串**✗，
                 // **再用**一次 `write_all`**✗ ⇒ **∴ `O_APPEND` 的单次小写是**原子追加**✓
                 // ⇒ **∴ 多线程不会再**把行撕开 ✗****（**实测：`writeln!` 会分多次写 ⇒ 行被拼接 ✓**）。
+                // **★ 指纹也要打印 ✗ ★**（第 960 轮 ✓）：**∴ 光看 `split` 不够 ✗** ——
+                //   **∴ 判据说"**切点=3 ⇒ 指纹不变 ⇒ 应命中 ✓"** ⇒ **∴ 那就**必须
+                //   **能看见 `sig`** ✗**（**∴ 否则**我**只能**猜 ✓）** ✓✓
+                let mut sig_hash: u64 = 0xcbf2_9ce4_8422_2325;
+                for item in &sig {
+                    for byte in item.as_bytes() {
+                        sig_hash ^= *byte as u64;
+                        sig_hash = sig_hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    sig_hash ^= 0xff;
+                    sig_hash = sig_hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
                 let line = format!(
-                    "split_ids len={} active={:?} ids={:?} split={}\n",
+                    "split_ids len={} active={:?} ids={:?} split={} sig_len={} sig_fnv={:016x}\n",
                     visible_layer_ids.len(),
                     self.options.active_layer,
                     visible_layer_ids,
-                    split
+                    split,
+                    sig.len(),
+                    sig_hash
                 );
                 let _ = f.write_all(line.as_bytes());
             }
