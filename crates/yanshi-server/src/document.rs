@@ -960,6 +960,23 @@ impl Document {
         // **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**外部报告：子区域 531 → 426 → 347 ms ✗**）。
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
         let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
+        // **★ 探针 ✓**（第 552 轮 ✓，**查明后删 ✓**）：**打印**是否命中外层 ＋ 键 ＋ 版本**✗** ⇒
+        // **∴ 一次看出**我的区域是否到了这里 ✗、命中与否 ✗、键是否漂移 ✗****。
+        if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let line = format!(
+                    "REGION key=({},{},{},{}) version={} hit={}\n",
+                    key.x,
+                    key.y,
+                    key.w,
+                    key.h,
+                    version,
+                    self.region_cache.get(key, version).is_some()
+                );
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
         if let Some(block) = self.region_cache.get(key, version) {
             // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
             // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
