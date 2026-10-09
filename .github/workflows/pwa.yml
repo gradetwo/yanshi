@@ -67,6 +67,19 @@ jobs:
         # ⇒ **∴ 与上一条（**静态 ✓**）合起来 ⇒ **∴ 部署前有两层证据 ✓**。
         run: node scripts/tool-pwa-api-behaviour.mjs
 
+      - name: 安装 chromium（供真实浏览器判据）
+        # **∴ runner 上不保证有 chromium ✗** ⇒ **∴ 用官方安装器 ✓**（**零 npm 依赖到仓库里 ✓**）。
+        # **⚠️ 本步骤**尚未在真实 runner 上跑过 ✗**（**本地已用系统 chromium 验过同一条判据 ✓**）。
+        run: npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/chrome"
+
+      - name: ★ 判据：PWA **真实浏览器**（内核加载 ＋ /health 如实 ＋ 501 ＋ needs_render）
+        # **∴ 与 node 行为判据互补 ✗**：**∴ 这条会**真的起 chromium ✗** ⇒ **∴ 它抓到过两个真缺陷 ✓**
+        #（**`/health` 判定顺序 ✓；**数组 keyPath 让 IndexedDB 挂住 ✓**）。
+        run: |
+          BIN=$(find "$RUNNER_TEMP/chrome" -type f -name chrome | head -1)
+          echo "CHROME_BIN=$BIN"
+          CHROME_BIN="$BIN" node scripts/browser-pwa-local.mjs
+
       - name: ★ 判据集合：覆盖率守卫（**不许有判据被静默跳过**）
         run: node scripts/tool-criteria-coverage.mjs
 
