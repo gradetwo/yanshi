@@ -48,10 +48,20 @@ fn an_atoms_payload_can_be_read_by_id() {
         let log = registry().call(&mut ctx, "get_log", &json!({ "kind": "comment" }));
         let atoms = log["atoms"].as_array().expect("应有 atoms");
         assert_eq!(atoms.len(), 1, "{log}");
-        // **元数据里没有净荷** ✓ —— 这正是要补它的理由 ✓。
-        assert!(
-            atoms[0].get("payload").is_none(),
-            "get_log 不应带净荷：{log}"
+        // **★ 契约已在第 449 轮**反转** ✗ ★**（第 26 轮 ✓；**判据跟不上实现 ✓）：
+        //   **∴ 原来的断言 ✗**：**"**`get_log` 不带 `payload` ✓"**✗
+        //     ⇒ **∴ 而**它**与**用户需求**冲突 ✗**：**历史面板**走 `get_log`**✗
+        //       （`viewer-app.js:3720` ✓）⇒ **∴ 没有 `payload` ⇒ **∴ 拿不到
+        //       `layer_id`／`width` ⇒ **∴ 行里只显示 `import_image`**✗
+        //         （**＝用户的原始抱怨 ✓，2026-10-09 ✓）**
+        //       ⇒ **★ 所以**：**实现加了 `payload` ✗，**而**这条断言**没跟着改 ✓ ★**** ✓✓
+        //   **∴ 现在的断言 ✗**：**净荷**在 `get_log` 里**必须有**✗
+        //     ＋ **正文**要**对得上 ✓**（**∴ 不是**只看"**有 `payload` 这个键 ✓）** ✓✓
+        //   **∴ 而**"**按 id 读回净荷 ✓"**这条主线**不变 ✗**（**下面 `get_atom` 继续验 ✓）** ✓✓
+        assert_eq!(
+            atoms[0]["payload"]["text"],
+            json!(text),
+            "get_log **必须**带 net payload ✗（**历史面板依赖它 ✓）；实测：{log}"
         );
         atoms[0]["atom_id"]
             .as_str()
