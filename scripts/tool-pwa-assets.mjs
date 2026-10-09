@@ -209,6 +209,34 @@ const missingMediums = MEDIUMS.filter((f) => !existsSync("assets/mediums/" + f)
 check(missingMediums.length === 0,
   "缺少介质插件产物：" + missingMediums.join(" / ") + " => 先构建并跑 node scripts/mediums-sync.mjs");
 if (missingMediums.length === 0) console.log("  介质插件：6 个齐全 ✓（构建产物，已不入库 ✓）");
+// **★ 产物新鲜度 ✗ ★**（第 678 轮 ✓）：**∴ 第 671 轮实测到**库里的介质产物落后于源码**✗**
+//   （**`b9adcff` 修了 dab 钳制，**而**字节仍是旧的 ✓**）⇒ **∴ 那正是**"拿旧图冒充"✗**在产物层的翻版 ✓**
+//   ⇒ **∴ 本判据**断言每个 `.wasm` **不比它 crate 的源码旧** ✗** ⇒ **∴ 旧了就报"先重建" ✓****。
+const MEDIUM_SRC_MAP = [
+  ["oil.wasm", "yanshi-medium-oil"], ["watercolor.wasm", "yanshi-medium-watercolor"],
+  ["marker.wasm", "yanshi-medium-marker"], ["pencil.wasm", "yanshi-medium-pencil"],
+  ["pixel.wasm", "yanshi-medium-pixel"], ["example-dab.wasm", "yanshi-medium-example"],
+];
+const stale = [];
+for (const [wasmName, crateName] of MEDIUM_SRC_MAP) {
+  const wf = "assets/mediums/" + wasmName;
+  const cd = "crates/" + crateName;
+  if (!existsSync(wf) || !existsSync(cd)) continue;
+  const wt = statSync(wf).mtimeMs;
+  let newest = 0;
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const f = dir + "/" + e.name;
+      if (e.isDirectory()) walk(f);
+      else if (f.endsWith(".rs") || f.endsWith(".toml")) newest = Math.max(newest, statSync(f).mtimeMs);
+    }
+  };
+  walk(cd);
+  if (newest > wt + 1000) stale.push(wasmName + "（源码新于产物）");
+}
+check(stale.length === 0,
+  "介质产物落后于源码：" + stale.join(" / ") + " => 重建并跑 node scripts/mediums-sync.mjs");
+if (stale.length === 0) console.log("  介质产物：6 个都不比源码旧 ✓");
 // **★ PWA 也要有它们 ✗ ★**（第 673 轮 ✓）：**∴ 前端从 `/mediums/` 取 ✗**
 //   ⇒ **∴ 只拷 `assets/` 不够 ⇒ **∴ `web/mediums/` 也得有 ✓****。
 const webMissing = MEDIUMS.filter((f) => !existsSync("web/mediums/" + f));
