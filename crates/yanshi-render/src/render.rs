@@ -1011,29 +1011,57 @@ impl Renderer {
             let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
             if budget_ok {
                 if let Ok(mut guard) = below.lock() {
+                    // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
+                    // **∴ 旧版每次**整体替换**✗ ⇒ **∴ 只保留"最后一次"的 tile 集 ✗**（**区域轮换时命中率低 ✓**）；
+                    // **∴ 新版**合并**✓：**同键覆盖 ✓、新键追加 ✓、`sig` 变则整份清空 ✓**（**防撒谎 ✓**）**，
+                    // **∴ 并按**块数预算**丢最旧的 ✓**（**`Vec` 的顺序即年龄 ✓**）。
                     let origin = accumulation.bbox();
                     let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
                     let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
                     let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
                     let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
-                    let mut tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
-                    for ty in y0..=y1 {
-                        for tx in x0..=x1 {
-                            let key = (tx * BELOW_TILE, ty * BELOW_TILE);
-                            let bbox = yanshi_core::Bbox::new(
-                                key.0 as f64,
-                                key.1 as f64,
-                                BELOW_TILE as f64,
-                                BELOW_TILE as f64,
-                            );
-                            let piece = accumulation.crop(&bbox);
-                            let pb = piece.bbox();
-                            if pb.w > 0.0 && pb.h > 0.0 {
-                                tiles.push((key, piece));
+                    let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
+                        let mut v = Vec::new();
+                        for ty in y0..=y1 {
+                            for tx in x0..=x1 {
+                                let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                                let bbox = yanshi_core::Bbox::new(
+                                    key.0 as f64,
+                                    key.1 as f64,
+                                    BELOW_TILE as f64,
+                                    BELOW_TILE as f64,
+                                );
+                                let piece = accumulation.crop(&bbox);
+                                let pb = piece.bbox();
+                                if pb.w > 0.0 && pb.h > 0.0 {
+                                    v.push((key, piece));
+                                }
                             }
                         }
+                        v
+                    };
+                    let keep = match guard.as_mut() {
+                        Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
+                        Some(c) => {
+                            c.tiles.clear();
+                            c.sig = sig.clone();
+                            Vec::new()
+                        }
+                        None => Vec::new(),
+                    };
+                    // **合并 ✓**：**同键覆盖 ✓，其余保留其原有顺序（**＝ 年龄 ✓**）**。
+                    let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = fresh;
+                    for old in keep {
+                        if !merged.iter().any(|(k, _)| *k == old.0) {
+                            merged.push(old);
+                        }
                     }
-                    *guard = Some(BelowTiles { sig, tiles });
+                    // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
+                    if merged.len() > BELOW_TILE_BUDGET {
+                        let drop = merged.len() - BELOW_TILE_BUDGET;
+                        merged.drain(0..drop);
+                    }
+                    *guard = Some(BelowTiles { sig, tiles: merged });
                 }
             }
         }
