@@ -3966,6 +3966,11 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             //     ⇒ **∴ 差**一眼可见 ✗**，**而不是**被藏起来 ✓**** ✓✓
             "below_reused": ctx.workspace.document_below_tiles(&ctx.doc_id).2 > 0,
             "below_reuse_noted": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
+            // **∴ §6.3 的 ④ 也要在渲染响应里 ✓**（**∴ 所有出口 ✓）**：
+            //   **∴ 没有 GPU ⇒ **没有比对 ⇒ **∴ 报 `null` ＋ 说明 ✓**（**不用 0 冒充 ✓）** ✓✓
+            "render_backend": "cpu",
+            "max_channel_delta": serde_json::Value::Null,
+            "max_channel_delta_note": "本机没有 GPU ⇒ 未做比对（§6.3）",
             // **★ below tile 账目也要在几乎所有出口出现 ✗ ★**（第 2 轮 ✓）：
             //   **∴ 为什么 ✗**：**上一轮**我**只加了一个出口**✗ ⇒ **∴ 于是**另一条路
             //     **看不到字段 ✓**（**`None` ✓，**第 993 轮实测 ✓）⇒ **∴ 这次**两个出口都加 ✓**** ✓✓
@@ -4020,6 +4025,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["below_tiles_available"] = json!(bt_available);
     value["below_tiles_reused"] = json!(bt_reused);
     value["below_tiles_missing"] = json!(bt_missing);
+    // **∴ 非 raw 出口同口径 ✗**（**∴ 所有出口 ✓）** ✓✓
+    value["render_backend"] = json!("cpu");
+    value["max_channel_delta"] = serde_json::Value::Null;
+    value["max_channel_delta_note"] = json!("本机没有 GPU ⇒ 未做比对（§6.3）");
     value["above_reused"] = json!(above_after > above_before);
     // **∴ 归属字段 ✓**：**本次请求期间**发生了几次渲染 ✗（**进程内单调 ✓）**
     //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓

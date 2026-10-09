@@ -792,6 +792,12 @@ fn health(state: &ServerState) -> Response {
             // **并**在 `--gpu=off` 时仍报 `cpu` ✓****。
             "render_backend": "cpu",
             "gpu_unavailable_reason": "host_has_no_gpu",
+            // **★ §6.3 的 ④ ✗ ★**（第 35 轮 ✓）：**必须报出**后端 ＋ 最大通道差**✗
+            //   **∴ 而**这里**没有 GPU** ✗ ⇒ **∴ 没有比较发生过 ✓**
+            //     ⇒ **★ 所以 `max_channel_delta` 报 `null` ✗**（**不是 0 ✓）**★**
+            //       **∴ 用 0**会**撒谎**✗（**它**读起来像"**比过且一致 ✓"）** ✓✓
+            "max_channel_delta": serde_json::Value::Null,
+            "max_channel_delta_note": "本机没有 GPU ⇒ 未做 GPU／CPU 比对（§6.3）",
             // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
             "gpu_mode": GPU_MODE.get().cloned().unwrap_or_else(|| "auto".to_owned()),
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
