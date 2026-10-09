@@ -5,6 +5,7 @@
 //! 因此这里手写位级转换（round-to-nearest-even），不依赖平台或第三方库。
 
 /// f32 → f16 位模式（round-to-nearest-even；溢出为 ±Inf，过小为 ±0）。
+#[inline]
 pub fn f32_to_f16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
@@ -61,6 +62,7 @@ pub fn f32_to_f16_bits(value: f32) -> u16 {
 }
 
 /// f16 位模式 → f32。
+#[inline]
 pub fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exponent = u32::from((bits >> 10) & 0x1F);
@@ -89,6 +91,7 @@ pub fn f16_bits_to_f32(bits: u16) -> f32 {
 }
 
 /// 便捷：f32 → f16 → 回到 f32（量化后的值）。
+#[inline]
 pub fn quantize_f16(value: f32) -> f32 {
     f16_bits_to_f32(f32_to_f16_bits(value))
 }
