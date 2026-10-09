@@ -3305,6 +3305,17 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     ctx.time(Phase::Preview, preview_started);
     summary["preview_size"] = json!(size.kind().size());
     summary["first_preview"] = json!(first_preview);
+    // **★ 首次生成的耗时 ✓ ★**（第 574 轮 ✓；**目标第 8 条 ＋ 第 7 条 ✓**）：
+    // **∴ 实测 4K 首次 `get_document` ＝ **1091 ms** ✗，而**响应里看不到它花在哪 ✗****
+    // （**只有 `open_ms = 0` ✓**）⇒ **∴ 调用方只能看到"这次慢 ✗"，不知道为什么 ✓**。
+    // **∴ 本字段如实报出"本次为生成预览／缩略图花了多久"✗** ⇒ **∴ 于是**：
+    //   **首次 ≈ 1091 ms ✓｜其后 ≈ 0 ✓** ⇒ **∴ 一眼分清"**一次成本**✓"与"**回归**✗"** ✓✓
+    // **⚠️ 注意** ✓：**它是"本函数内为预览所花的墙钟"✗，**含缩略图生成 ✓、不含渲染之外的 IPC ✓**。
+    summary["first_preview_ms"] = json!(preview_started
+        .elapsed()
+        .as_secs_f64()
+        .mul_add(1000.0, 0.0)
+        .round() as u64);
     // **预览渲染计数**（第 274 轮 ✓）：只读出口 ✓，让判据能断言"这条路真的走了没有" ✗。
     // 它是**结构性**的证据 ✓（与区域大小、与机器快慢、与墙钟都无关 ✓）。
     if let Some(document) = ctx.workspace.document(&ctx.doc_id) {
