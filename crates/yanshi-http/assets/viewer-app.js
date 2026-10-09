@@ -24,8 +24,18 @@ let heavyDocument = false;
 // ⇒ `state.wasm` 恒为 false ✗、状态停在"检测中…" ✗ —— 与实测症状**完全吻合** ✓。
 const SERVER_RENDER_KEY = "yanshi.serverRender";
 /// **是否强制走服务端渲染** ✓（(A)⑤ 的显式开关 ✓）。缺省 `false` = 照旧（客户端优先 ✓）。
+// **★ 默认 = 服务器渲染 ✓ ★**（第 540 轮 ✓，**用户决定 ✓**）：
+// **∴ 实测：离线（内核）渲染的延迟卡顿比服务器渲染更厉害 ✗ ⇒ 默认值先取服务器 ✓，
+//   以免体验太差 ✓**；**∴ 后续再评估如何降低离线操作的各种延迟 ✓**（见下 note ✓）。
+// **∴ 语义** ✓：**未设 ⇒ `true`（服务器 ✓）｜显式 `"1"` ⇒ `true` ✓｜显式 `"0"` ⇒ `false`（离线 ✓）**
+//   —— **∴ 所以"用户显式关掉"仍能生效 ✓**（**∴ 它不是一个写死的开关 ✗**）。
+// **⚠️ 代价（**两面 ✓**）**：**① 弱设备／无服务器时**会先尝试服务器 ✗ ⇒ **∴ 失败才回退**（**见调用点 ✓**）；
+//   **② 而代价可接受 ✓**：**∵ 服务器渲染是当前更快的路径 ✓**（**用户实测 ✓**）。
 const serverRenderPreferred = () => {
-  try { return localStorage.getItem(SERVER_RENDER_KEY) === "1"; } catch (error) { return false; }
+  try {
+    const stored = localStorage.getItem(SERVER_RENDER_KEY);
+    return stored === null ? true : stored === "1";
+  } catch (error) { return true; }
 };
 
 
