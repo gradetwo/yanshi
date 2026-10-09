@@ -3955,7 +3955,17 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             }),
             // **★ 该次渲染是否复用了下方合成 ✓ ★**（第 539 轮 ✓）：**∴ `raw` 出口也要标 ✗** ——
             // **∴ 就地读 ✓** —— **∴ 本分支在 `below_after` 之前 return ✗** ⇒ **∴ 不能引用它 ✓**。
-            "below_reused": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
+            // **★ `below_reused` 必须**由 tile 账目决定 ✗ ★**（第 4 轮 ✓；
+            //   借用 **GIMP `GimpProjection` 的口径**：**有效性是**tile 的属性**✗，
+            //   **不是**整幅的属性 ✓ ⇒ **∴ 报"**复用了 ✓"**必须意味着**至少一格**真的来自缓存 ✓）：
+            //   **∴ 为什么改 ✗**：**旧口径**读 `note_below_reuse()` 的**计数差**✗
+            //     ⇒ **∴ 而**那条计数**会被**别的渲染路径**加 ✓**（**第 3 轮实测：
+            //       `below_reused = true` **而** tile 账目 `available = 0, reused = 0` ✓）
+            //       ⇒ **★ 于是**"**语义计数**"**并不语义 ✗** ⇒ **∴ 那是**撒谎 ✓ ★**** ✓✓
+            //   **∴ 诚实做法 ✗**：**tile 为准 ✗**，**旧口径**另开一字段**并排报出 ✓**
+            //     ⇒ **∴ 差**一眼可见 ✗**，**而不是**被藏起来 ✓**** ✓✓
+            "below_reused": ctx.workspace.document_below_tiles(&ctx.doc_id).2 > 0,
+            "below_reuse_noted": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
             // **★ below tile 账目也要在几乎所有出口出现 ✗ ★**（第 2 轮 ✓）：
             //   **∴ 为什么 ✗**：**上一轮**我**只加了一个出口**✗ ⇒ **∴ 于是**另一条路
             //     **看不到字段 ✓**（**`None` ✓，**第 993 轮实测 ✓）⇒ **∴ 这次**两个出口都加 ✓**** ✓✓
@@ -3996,7 +4006,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let above_after = ctx.workspace.document_above_reuse_count(&ctx.doc_id);
     let frame_after = ctx.workspace.document_full_frame_hits(&ctx.doc_id);
     value["frame_reused"] = json!(frame_after > frame_before);
-    value["below_reused"] = json!(below_after > below_before);
+    // **∴ 非 raw 出口同口径 ✗**（**tile 为准 ＋ 并排报旧口径 ✓**）。
+    let bt_reused2 = ctx.workspace.document_below_tiles(&ctx.doc_id).2;
+    value["below_reused"] = json!(bt_reused2 > 0);
+    value["below_reuse_noted"] = json!(below_after > below_before);
     // **∴ 同一组账目在非 raw 出口也要有 ✓**（**∴ 否则**两条路读数不一致 ✓）。
     let (bt_wanted, bt_available, bt_reused) = ctx.workspace.document_below_tiles(&ctx.doc_id);
     value["below_tiles_wanted"] = json!(bt_wanted);

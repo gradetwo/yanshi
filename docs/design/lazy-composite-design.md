@@ -895,3 +895,45 @@ PROBE 区域=WxH@x,y 对象=N 裁掉=M 有背景=… 填充=… 图层=… 合�
 **而 tile 账目是** `available = 0, reused = 0`**（**一格都没有 ✓）**✗
 ⇒ **∴ 说明** `note_below_reuse()` **被**别的渲染路径**调用**✗
   ⇒ **★ 所以**「**语义计数**」**并不语义 ✓** —— **∴ 那**是**下一项**（**应改成**按 tile 账目判定 ✓）★**** ✓✓
+
+---
+
+## 十六、🔍 **借鉴 Krita／GIMP：机制对照与落点**（第 4 轮 ✓；**用户第 593 轮的常设要求 ✓**）
+
+### 16.1 ∴ **证据等级（**先说清我读到什么 ✗**）★**
+
+| 等级 | 内容 |
+|---|---|
+| **已核实（**文件位置 ✓）** | **GIMP**：[`app/core/gimpprojection.c`](https://gitlab.gnome.org/GNOME/gimp/-/blob/master/app/core/gimpprojection.c) ✓｜**Krita**：[`krita/image/kis_image.cc`](https://invent.kde.org/tusooaw/krita/-/blob/65a073d0811ac1fa717ba96a07a4590ec0b9a7a4/krita/image/kis_image.cc)、[`kis_layer_projection_plane.cpp`](https://gitcode.com/deepin-community/krita/blob/master/libs/image/kis_layer_projection_plane.cpp)、[`kis_change_profile_visitor.h`](https://invent.kde.org/matansh/krita/-/blob/65a073d0811ac1fa717ba96a07a4590ec0b9a7a4/krita/image/kis_change_profile_visitor.h) ✓ |
+| **未读到（**如实 ✓）** | **我**试着抓 Krita 的 `kis_update_info.h`**✗**，**两次 404** ✗ ⇒ **∴ 所以**：**下文凡涉及 Krita 具体实现细节的，**都标为「**我们的理解**」**✗**，**不是我读到的源码事实 ✓**** ✓✓ |
+| **本仓实测** | **§14／§14.1 的首帧分解**✗**、**§15 的 tile 账目**✗**、**§15.2 的口径矛盾 ✓**** ✓✓ |
+
+### 16.2 ∴ **机制 ⇒ 我们的落点（**每次改动都要点名的东西 ✓）**★**
+
+| 借鉴来源 | 它的机制 | 我们的现状 | **落点（**已做／待做 ✓）** |
+|---|---|---|---|
+| **GIMP** | **projection**：**合成结果单独缓存** ✗**，**不被图层改动整体作废 ✓** | **`below`／`above` 缓存 ✓** | **已做 ✓**（§12） |
+| **GIMP** | **★ 有效性属于 **tile** ✗ ★**（**invalid region 逐块记 ✓**） | **`ready` 是**整幅**判断 ✗**（**缺 1 格即全废 ✓**） | **★ 待做：**部分复用 ✓§12.4 ★；**本轮先做它的前提 ＋ 修口径 ✓** |
+| **GIMP** | **tile 有固定尺寸** ✗**，**按需换格式 ✓** | **`BELOW_TILE = 256`** ✓ | **已对齐 ✓** |
+| **Krita** | **per-node paint device**（**每层自己的画布 ✓**） | **每层各自渲染 ⇒ 已有 ✓** | **已做 ✓** |
+| **Krita** | **dirty rect 批处理**（**只重算脏矩形 ✓**） | **dirty set ＋ tile 计账 ✓** | **部分 ✓**（**∴ 待做：**按 tile 增量 ✓） |
+| **Krita** | **LoD**（**缩放显示分级 ✓**） | **未做 ✓** | **待做**（**∴ 与 GPU 阶段更相关 ✓） |
+| **Krita** | **颜色空间与转换边界**（**`kis_change_profile_visitor.h` 的存在说明它把**换色域**当成**显式事件 ✓**） | **量化（**release 31% ✓）在**渲染末端** ✓** | **待做：**§阶段一第 2 项 ✓ |
+
+### 16.3 ✅ **本轮据此做的两件事 ✗**
+
+**① 落地（**借 GIMP 的"**有效性属于 tile ✓"口径 ✓）★**：
+**`below_reused`**从**计数差**改成**以 tile 账目为准 ✗**（`below_tiles_reused > 0` ✓）；
+**旧口径**不删 ✗**，**另开 `below_reuse_noted` 并排报出 ✓**。
+
+**∴ 实测（**并排可见 ✓）**：
+```
+轮1: below_reused=False  noted=True  ｜tiles(w/a/r)=1/0/0
+轮2: below_reused=False  noted=True  ｜tiles(w/a/r)=1/0/0
+```
+⇒ **∴ 矛盾**不再被藏起来 ✗**：**tile 口径说"**没复用 ✓"**✗，**旧口径说"**复用了 ✓" ✓**** ✓✓
+
+**② 两面（**必须写的代价 ✓）★**：
+**∴ 收益 ✗**：**"**复用了 ✓"**现在**必须**意味着**至少一格真的来自缓存 ✓ ⇒ **∴ 客户端**不会被**假信号**误导 ✓**** ✓✓
+**∴ 代价 ✗**：**两个字段**并存**✗ ⇒ **∴ 调用方**要**知道用哪个 ✓**（**∴ 文档 ＋ 字段名 `_noted` 都在提示 ✓）
+  ⇒ **∴ 且**在**部分复用落地前** ✗**，`below_reused` **会比以前**更容易是 false** ✓**（**那是**实情 ✓）
