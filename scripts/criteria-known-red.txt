@@ -7345,3 +7345,31 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 而** `refreshPreview` 失败 ⇒ **∴ 预览**也出不来 ✓**** ✓✓
 #   **∴ 元收获 ★**：**"**只在某些浏览器上坏**"⇒ **∴ 先找**浏览器差异 API**✗**
 #     （**∴ 这里**是 `new URL(Request)` 的隐式转换 ✓）** ✓✓
+
+# **★ 第 835 轮：⚠️ **自我修正 ✗** —— **`new URL(Request)` **不会**抛错（**规范要求先 ToString ✓）** ✓****
+#   **∴ 我上一轮的推理 ✗**：**"**把 `Request` 交给 `new URL` ⇒ **Safari 抛 SyntaxError**" ✓**
+#     ⇒ **∴ 而**这条**不成立 ✗** ⇒ **∴ 因为**：**`new URL(input, base)`** 的第一步是
+#       **`ToString(input)` ✗** ⇒ **∴ 对 `Request` 对象**得到 `"[object Request]"` ✗**
+#         ⇒ **∴ 而**它**是**一个合法的相对路径 ✗**（**∴ 于是** `new URL("[object Request]", base)`
+#         **会**成功构造 ✗，**落在 base 目录下 ✓）⇒ **∴ 所以**：**那句**不会**抛
+#         **`SyntaxError: The string did not match the expected pattern` ✓**** ✓✓
+#   **∴ 同理** `new URL(undefined, base)` ⇒ **∴ 得到** `"undefined"` ⇒ **∴ 也**合法 ✓**** ✓✓
+#   **★ 所以真正的非法串**另有来源 ✗ ★**：
+#     **∴ 候选 ✓**：
+#       **(a) `base` 本身非法 ✗** —— **∴ 即** `location.href` **在一个**特殊情况**下为空／`about:blank` ✓**；
+#       **(b) 或** `input` **是一个**含非法字符的串 ✗**（**∴ 如**未编码的 `%` ✓ ——
+#         **★ 而那**正好**与**笔刷名里的 `%` **有关 ✗ ★**！）**；
+#       **(c) 或**别的 API（**`atob`／`decodeURIComponent` ✓）在**同一路径上**抛 ✓** ✓✓
+#     ⇒ **∴ (b) 最可疑 ✗ ★**：**`decodeURIComponent("%")`** 在 Safari 上**正是**报
+#       **「The string did not match the expected pattern」 ✗**（**Safari 的** URIError 文本 ✓）**
+#       ⇒ **∴ 而**我们**的路径里**确实**有 `%` ✗**（**笔刷名 `100%25_Opaque` ✓）** ✓✓
+#       ⇒ **∴ 所以**：**下一轮**应当查**所有 `decodeURIComponent`／`decodeURI` 的调用点** ✗**
+#         **＋** 在 Safari 上**打印**真实的**失败串 ✓**** ✓✓
+#   **∴ 教训（**重要 ✓）★**：**"**推测一个 API 会抛**"必须**先核对**规范的**转换步骤 ✗**
+#     ⇒ **∴ 我**这次**跳过了一步 ✗**（**`ToString` ✓）⇒ **∴ 于是**得出了**错误的候选 ✓**** ✓✓
+#     ⇒ **∴ 规则**：**先**用**规范／MDN**确认行为 ✗**，**再**写进结论 ✓**** ✓✓
+#   **∴ 下一轮（**基于事实 ✓**）** ✓**：
+#     **① grep** `decodeURIComponent|decodeURI|encodeURI` **在 `web/` 的全部调用点 ✗**；
+#     **② 且**在**哨兵里**加一个**全局 `unhandledrejection` 监听 ✗**（**打印真实错误 ＋ 串 ✓）**
+#       ⇒ **∴ 于是**：**用户**下次一刷新就**能看到**真正的失败点 ✓**** ✓✓
+#     **③ 然后**按证据修 ✓**** ✓✓
