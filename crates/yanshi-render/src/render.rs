@@ -1599,6 +1599,22 @@ impl Renderer {
                 }
             }
         }
+        // **★ 并行度探针 ✗ ★**（第 815 轮 ✓；**目标第 8 条 ✓**）：**∴ 4K 首帧的 1.5 s**
+        //   是**单核**还是**多核**✗ ⇒ **∴ 于是**决定**优化方向**（**并行度 vs 算法 ✓）** ✓✓
+        if let Ok(path) = std::env::var("YANSHI_BELOW_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let line = format!(
+                    "PARALLEL workers={} chunks={} inst={:x}\n",
+                    stats.parallel_workers, stats.parallel_chunks, self as *const Self as usize
+                );
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
         Ok(accumulation)
     }
 

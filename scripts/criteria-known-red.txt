@@ -6715,3 +6715,27 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       **∴ 若** `workers=16` ⇒ **∴ 那么**瓶颈在**单条带**✗ ⇒ **∴ 需要**算法层面 ✓**** ✓✓
 #   **∴ 元收获 ✓**：**接入新观测时**先问"**数据在哪一层 ✗**"
 #     ⇒ **∴ 而**"**换一条已有的观测通道（**探针 ✓）**"通常比"**改类型／接口**"便宜 ✓**** ✓✓
+
+# **★ 第 815 轮：✅ **并行度探针落地 ✗**（**修一个 clippy 错 ✓）**
+#   **∴ 改动 ✓**（**`crates/yanshi-render/src/render.rs` ✓）**：
+#     **∴ 在 `Ok(accumulation)`（**`:1602` ✓）**之前插一段探针 ✗**：
+#       ```rust
+#       if let Ok(path) = std::env::var("YANSHI_BELOW_PROBE") {
+#           …
+#           let line = format!("PARALLEL workers={} chunks={} inst={:x}\n",
+#               stats.parallel_workers, stats.parallel_chunks, self as *const Self as usize);
+#           let _ = f.write_all(line.as_bytes());
+#       }
+#       ```
+#       ⇒ **∴ 于是**：**4K 首帧**的**并行度**能被观测 ✗**
+#         ⇒ **∴ 若** `workers=1` ⇒ **∴ 那就是**1.5 s 的原因 ✗**（**串行 ✓）**；
+#         ⇒ **∴ 若** `workers=16` ⇒ **∴ 那么**瓶颈在**单条带**✗ ⇒ **∴ 需要**算法层面 ✓**** ✓✓
+#   **∴ 一个 clippy 错 ✗**（**已修 ✓）** ✓**：
+#     ```
+#     error: matching on `Some` with `ok()` is redundant
+#       --> crates/yanshi-render/src/render.rs:1604:9
+#       = note: `-D clippy::match-result-ok` implied by `-D warnings`
+#     ```
+#     ⇒ **∴ 修法**：**`if let Some(path) = ….ok()` ⇒ **`if let Ok(path) = …` ✓**
+#       ⇒ **∴ 且**这**不是**新问题 ✗**（**我**沿用了**旧探针的写法 ✓，
+#       **而**旧的那几处**可能**也是 `.ok()` ✓）⇒ **∴ 值得**以后统一 ✓**** ✓✓
