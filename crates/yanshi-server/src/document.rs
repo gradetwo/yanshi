@@ -1889,6 +1889,28 @@ impl Document {
         self.document_thumbnail_seq = seq.min(self.log.head_seq());
     }
 
+    /// **★ 标记「该文档需要生成预览」 ✓ ★**（第 586 轮 ✓；**异步预览设计第 ② 步 ✓**）。
+    ///
+    /// **做法** ✓：**在既有作业队列里排一个 `kind == "preview"` 的作业 ✗** ⇒
+    /// **∴ 于是**下一次**提交收尾**的 [`Self::run_pending_jobs`]（**它只要 `pending()` 非空
+    /// 就会调 `render_document_preview()` ✓**）**就会把预览渲出来 ✓** —— **∴ 完全复用现有机质 ✓，
+    /// 不新起一套 ✓**，**且**两条既有契约（**`completed == [job_id]` ✓；渲染水位随提交推进 ✓**）
+    /// **不受影响 ✓**（**∴ 因为收尾那行渲染**原样保留 ✓**）。
+    ///
+    /// **∴ 去重 ✓**：**已有未完成的 `preview` 作业 ⇒ 直接返回 `false` ✓，不重复入队 ✓**
+    /// （**∴ 避免同一文档排一堆作业 ✗**）。
+    ///
+    /// **⚠️ 何时调用** ✓：**只在**读路径**发现"首次需要缩略图"且**愿意等下一次提交**时 ✓**；
+    /// **∴ 而**若调用方**只读不编辑**✗ ⇒ **∴ 提交收尾**永不到来 ✗** ⇒ **∴ 调用方必须**自带兜底 ✗
+    /// （**如超过一小段时间后**就地同步生成 ✓**）** ⇒ **∴ 见设计文档第八节 ✓**。
+    pub fn mark_preview_pending(&mut self, session: yanshi_core::ids::SessionId) -> bool {
+        if self.jobs.pending().iter().any(|job| job.kind == "preview") {
+            return false;
+        }
+        self.jobs.submit("preview", session, yanshi_core::now_ms());
+        true
+    }
+
     /// 执行待处理的重型渲染 job，返回完成的 job。
     pub fn run_pending_jobs(&mut self) -> Result<Vec<JobId>> {
         let pending = self.jobs.pending();
