@@ -211,3 +211,38 @@
 |---|---|
 | **收益 ✓** | **部署**不需要本地装 wrangler ✗**（**本地实测也确认它未安装 ✓**）｜**发版即部署 ✓**｜**判据在部署前拦截"没有内核的 PWA"✗** |
 | **代价 ✗** | **① 我**没有**在真实 CI 上跑过它 ✗**（**∴ Step 的**每一步都在本地单独验证过 ✓，但**整条流水线未跑 ✓**）；**② 需要仓库 secret ✗**（**未配 ⇒ 只校验不部署 ✓**）；**③ `web/wasm/*.wasm`（**1.38 MiB ✓**）已入库 ✗ ⇒ **∴ 每次内核更新都要**提交一个二进制 ✗**（**∴ 好处是判据可离线验证 ＋ 新人 clone 即可跑 ✓**）** |
+
+---
+
+## 十一、★ **隔离边界**（**用户要求 ✓，第 612 轮 ✓**）：PWA **不得影响现有 WEB** ★
+
+用户指示：
+> **PWA 是新增的部署方式，不要影响现有的这套 WEB。**
+
+### 11.1 核验结果（**实测 ✓**）
+
+| 检查 | 结果 |
+|---|---|
+| **`web/` 是否与现有路径撞名** | **★ 没有 ✓ ★** —— 唯一命中是**无关字符串** `surface: "web"`（**诊断面的名字 ✓**） |
+| **现有 WEB 的资源目录** | **仍是 `assets/` ✓**（`server.rs:121` `assets_dir: Some(PathBuf::from("assets"))`）⇒ **未被 PWA 改 ✗** |
+| **现有内核 URL** | **`/wasm/yanshi_wasm.js`（`server.rs:591` 提供 ✓）** ⇒ **∴ 与 PWA 的 `/wasm/` **同名但不同宿主**✗**（**一个由 `yanshi-serve` 提供 ✓；一个由 Workers assets 提供 ✓**）⇒ **∴ 不冲突 ✓** |
+| **PWA 引入的改动** | **全部是**新增文件 ✗**：`wrangler.toml`／`worker/`／`web/`／`scripts/pwa-sync-wasm.mjs`／`scripts/tool-pwa-assets.mjs`／`.github/workflows/pwa.yml` ✓ |
+
+### 11.2 我碰过的**现有文件**（**4 个，全部是增量 ✓**）
+
+| 文件 | 改了什么 | 是否与 PWA 有关 |
+|---|---|---|
+| **`crates/yanshi-render/src/render.rs`** | **修 `blit` 尺寸缺陷（**增量盖章丢内容**）** | **无关 ✓（**目标本身的缺陷 ✓**）** |
+| **`crates/yanshi-http/src/server.rs`** | **加 `render_backend` 字段 ＋ `--gpu` 参数** | **无关 ✓（**GPU 决定 ✓**）** |
+| **`scripts/run-criteria.sh`** | **加一条 `tool-pwa-assets.mjs)` 分支** | **有关，但**只增不减 ✓** |
+| **`scripts/tool-criteria-coverage.mjs`** | **生成器列表加 `pwa-sync-wasm.mjs`** | **有关，但**只增不减 ✓** |
+
+### 11.3 固化（**可红判据 ✓**）
+
+`tool-pwa-assets.mjs` 新增**四条隔离断言** ✓：
+* **PWA 的静态目录**不许**是 `./assets` 或 `assets` ✗**（**∴ 否则会侵占现有 WEB 的资源目录 ✓**）；
+* **`worker/index.js` 不许出现渲染调用 ✗**（**`render_region`／`encode_png`／`Renderer`／`composite` ✓**）；
+* **`worker/index.js` 必须把请求交给静态资源绑定 ✗**（`env.ASSETS.fetch` ✓）；
+* **现有 viewer（`crates/yanshi-http/assets/viewer-app.js`）必须仍然存在 ✓**。
+
+**变异** ✗：**把 PWA 静态目录改成 `./assets` ⇒ **判据报红 ✓**（**已实测 ✓**）。

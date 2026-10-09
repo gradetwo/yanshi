@@ -71,6 +71,23 @@ if (html) {
   console.log("  index.html：无服务端 API 调用 ✓（纯离线客户端 ✓）");
 }
 
+// **★ 隔离断言 ✓ ★**（第 612 轮 ✓；**用户要求"PWA 不得影响现有 WEB" ✓**）：
+//   **∴ PWA 是**新增部署方式**✗ ⇒ **∴ 它**不许侵占**现有 WEB 的资源目录／路径 ✓****。
+const wranglerText = read("wrangler.toml") || "";
+check(!/directory\s*=\s*"\.\/assets"/.test(wranglerText),
+  "PWA 的静态目录指向了 ./assets ⇒ **∴ 会侵占现有 WEB 的资源目录 ✗**");
+check(!/directory\s*=\s*"assets"/.test(wranglerText),
+  "PWA 的静态目录指向了 assets ⇒ **∴ 会侵占现有 WEB 的资源目录 ✗**");
+const workerSrc = read("worker/index.js") || "";
+check(!/render_region|encode_png|Renderer|composite/i.test(workerSrc),
+  "worker/index.js 里出现渲染调用 ⇒ **∴ 与「Workers 不做渲染」✗ 矛盾**");
+check(/env\.ASSETS\.fetch/.test(workerSrc),
+  "worker/index.js 未把请求交给静态资源绑定 ⇒ **∴ 它可能在算别的东西 ✗**");
+// **∴ 现有 WEB 的入口仍须存在且未被 PWA 触碰 ✓**（**只读断言 ✓**）。
+check(existsSync("crates/yanshi-http/assets/viewer-app.js"),
+  "现有 viewer（crates/yanshi-http/assets/viewer-app.js）不存在 ⇒ **∴ PWA 影响了现有 WEB ✗**");
+console.log("  隔离：PWA 未占用 assets/ ⇒ 未影响现有 WEB ✓");
+
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
