@@ -6121,3 +6121,39 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #             ⇒ 并行条带（**4 个 / 1024×256 ✓**）⇒ STORE ✓
 #     ```
 #     ⇒ **∴ 所以**：**我在**最内层**测**最外层**的行为**✗ ⇒ **∴ 于是**永远 false ✓**** ✓✓
+
+# **★ 第 795 轮：🎉🎉🎉 **最终答案 ✗** —— **`document.rs:1232-1239` 的整幅缓存提前返回 ✓****
+#   **∴ 关键代码 ✓**（**`Document::render_region` ✓）**：
+#     ```rust
+#     :1230  pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
+#     :1231      let region = bbox;
+#     :1232      if covers_canvas(region, self.state.width, self.state.height) {
+#     :1233          if let Some(preview) = self.current_full_frame_preview()? {   // **★ 整幅缓存查表 ✗ ★**
+#     :1237              self.complete_render_jobs()?;                            // **∴ 收尾仍要跑 ✓**
+#     :1238              return Ok(preview);                                      // **★ 提前返回 ✗ ★**
+#     :1239          }
+#     :1240      }
+#     :1242      let rendered = self.renderer.render_region(&self.state, &*self.store, region)?;  // **★ tile 层 ✗ ★**
+#     ```
+#     ⇒ **★ 所以**：**整幅请求**（**`covers_canvas` ✓）**先查缓存 ✗**
+#       ⇒ **∴ 命中 ⇒ **`return Ok(preview)` ✗** ⇒ **∴ **不进 tile 层**✗**
+#         ⇒ **★ 于是** `below_reused`／`above_reused`**保持 false ✓ ★**** ✓✓
+#   **★ 三层缓存（**本轮全部量清 ✓）★**：
+#     | # | 字段 | 位置 | 语义 |
+#     |---|---|---|---|
+#     | **①** | **`full_frame_render` ＋ `full_frame_render_seq`** | **`:1262-1263`** | **★ 整幅结果 ✗（**本次请求命中的就是它 ✓）** |
+#     | **②** | **`last_render_blob` ＋ `render_watermark`** | **`:1254-1255`** | **任意区域的**最后结果 ✓ |
+#     | **③** | **`document_thumbnail` ＋ `_seq`** | **`:1258-1259`** | **256² 文档缩略图 ✓** |
+#     | **④** | **`below`／`above` tile 缓存** | **`render.rs`** | **★ 最内层 ✗（**我一直在测它 ✓）** |
+#   **∴ 所以**：**我**在最内层**测**最外层**的行为**✗ ⇒ **∴ 于是** 70+ 轮**都看到 false ✓**** ✓✓
+#   **∴ 正确的判据 ✗**：**应当**断言**`full_frame_render_seq == head_seq`**✗**
+#     （**或**暴露 **`current_full_frame_preview()` 是否命中**✓）
+#     ⇒ **∴ 而那**才是**用户的"第二次请求"**真正命中的缓存 ✓**** ✓✓
+#   **∴ 下一轮（**收尾 ✓**）** ✓**：
+#     **① 加 `frame_reused` 字段 ✗**（**快路径 true／主路径 false ✓）**；
+#     **② 加**可红判据 ✗**：**同区域渲两次 ⇒ 第二次 `frame_reused` 为真 ✓**；
+#     **③ 变异 ✗**：**让它恒 false ⇒ **∴ 判据**必红 ✓**** ✓✓
+#     **④ 文档 §14.35 ✗**：**四级缓存 ＋ 各自指标 ＋ 谁在什么条件下生效 ✓**✓
+#   **∴ 元收获（**最重要 ✓）★**：**"缓存不命中"的判据**必须**对准**用户实际走的路径**✗**
+#     ⇒ **∴ 而**我**从最内层**开始测 ✗** ⇒ **∴ 于是**把一个**健康的分层缓存**误读成"**从不命中**" ✓**** ✓✓
+#     ⇒ **∴ 教训**：**先**画调用链 ✗**（**从入口到最内层 ✓），**再**决定测哪一层 ✓**** ✓✓
