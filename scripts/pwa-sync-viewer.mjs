@@ -16,6 +16,22 @@ import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
 const DST = "web";
+// Rewrite the service worker cache name with a stamp derived from the files that
+// ship, so a deployment always gets a fresh cache and the previous one is deleted.
+// Without this the fixed name meant stale entries outlived every deploy.
+const stampSource = ["viewer-app.js", "viewer.css", "index.html"]
+  .map((f) => { try { return statSync(join(DST, f)).mtimeMs; } catch { return 0; } })
+  .join("-");
+const BUILD_STAMP = String(Math.round(Number(stampSource.split("-")[0] || 0))) || String(Date.now());
+try {
+  const swPath = join(DST, "sw.js");
+  const swText = readFileSync(swPath, "utf8").replace("__BUILD_STAMP__", BUILD_STAMP);
+  writeFileSync(swPath, swText);
+  console.log("  OK: service worker cache stamp ⇒ " + BUILD_STAMP);
+} catch (e) {
+  console.warn("  WARN: 未能写入 service worker 缓存戳：" + e.message);
+}
+
 const FILES = ["viewer-app.js", "viewer.css", "service-worker.js"];
 
 if (!existsSync(SRC)) {

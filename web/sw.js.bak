@@ -1,11 +1,7 @@
 // **★ Service Worker ✓ ★**（第 608 轮 ✓；**部署矩阵 §7.4 验收 ②③ ✓**）
 // **∴ 目标 ✗**：**断网后仍能打开并绘制 ✓** ⇒ **∴ 采用**缓存优先 ＋ 后台更新**✗**（**stale-while-revalidate ✓**）。
 // **∴ 注意 ✗**：**内核 wasm 与 JS 胶水**必须被缓存 ✓（**否则离线打不开 ✓**）。
-// The cache name must change whenever the assets change, otherwise entries survive
-// every deployment (the name was a fixed string, so stale files were served forever).
-// It is derived from a build stamp that the sync step rewrites, which also means the
-// old cache is dropped by the cleanup below instead of lingering next to the new one.
-const CACHE = "yanshi-online-1791545155969";
+const CACHE = "yanshi-online-v1";
 const CORE = ["/", "/index.html", "/manifest.webmanifest",
               "/wasm/yanshi_wasm.js", "/wasm/yanshi_wasm_bg.wasm"];
 
