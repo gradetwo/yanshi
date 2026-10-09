@@ -1965,7 +1965,22 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
     let Some(root) = state.options.assets_dir.as_ref() else {
         return crate::http::not_found("这一份服务端没有配置资产目录（--assets-dir）");
     };
-    let path = root.join("brushes").join(file);
+    // **★ 磁盘名兼容 ✗ ★**（第 803 轮 ✓；**用户部署驱动 ✓**）：
+    //   **∴ 背景 ✗**：**Cloudflare 的 assets manifest **要求路径是 URI 编码形式 ✗**
+    //   （**错误码 10304 ✓）⇒ **∴ 于是**同步脚本把**带 `#`／`%` 的笔刷**落盘成
+    //   **编码名（**`8B_Pencil%231.myb` ✓）⇒ **∴ 而**本函数**先做了**百分号解码 ✗**
+    //     ⇒ **∴ 于是**它**去找解码名（**`8B_Pencil#1.myb` ✓）⇒ **∴ 磁盘上没有 ⇒ **∴ 404 ✓****
+    //   ⇒ **∴ 现在**：**解码名不存在时，**按**同一规则**再编码一次**重试 ✗**
+    //     ⇒ **∴ 于是**：**本地（**磁盘编码名 ✓）与 CDN **同时可用 ✓**
+    //       ＋ **∴ 若**将来**磁盘还原成原名 ✗**，**第一条路径**又会命中 ✓**** ✓✓
+    let mut path = root.join("brushes").join(file);
+    if !path.exists() {
+        let encoded = file.replace('%', "%25").replace('#', "%23");
+        let alt = root.join("brushes").join(&encoded);
+        if alt.exists() {
+            path = alt;
+        }
+    }
 
     match std::fs::read(&path) {
         // `.myb` 就是 JSON ✓ ⇒ 报 `application/json` ✓（浏览器按文本读 ✓）。
