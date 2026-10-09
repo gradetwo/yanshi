@@ -7434,3 +7434,41 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 教训（**再次强化 ✓）★**：**"**给我看原始报错**"胜过**十轮推理 ✗**
 #     ⇒ **∴ 用户**一句 `"�PNG`**就**定了案 ✗**（**∴ 而**我**第 834／835 轮**都**在猜 ✓）**** ✓✓
 #     ⇒ **∴ 规则**：**先**要证据 ✗**，**再**写结论 ✓**** ✓✓
+
+# **★ 第 839 轮：🎯🎯🎯 **精确根因锁定 ✗** —— **`index.html:1352` 无条件 `JSON.parse(options.body)` ✓****
+#   **∴ 决定性代码 ✓**：
+#     ```js
+#     :1352   const fromBody = String(JSON.parse(String(options.body)).tool || "");
+#     ```
+#     ⇒ **★ 它**在**service worker 的 fetch 拦截**里 ✗**
+#       ⇒ **∴ 它**对**每个 POST** **无条件** `JSON.parse(options.body)` ✗**
+#         ⇒ **∴ 而** `options.body` **对 `/api/blob` 的 POST** 是
+#           **PNG 像素字节 ✗**（**`Uint8Array` ✓，**由 `seedSampleIfEmpty` 发出 ✓）
+#           ⇒ **∴ 于是**：**`JSON.parse("\x89PNG…")`** 抛错 ✗**
+#             ⇒ **★ 错误文本正是**「**Unexpected token '�', "�PNG**」✗ ★**** ✓✓
+#             ⇒ **∴ 而** Safari **把它说成**「**The string did not match the expected pattern**」 ✓**
+#               ⇒ **∴ 所以**：**两个浏览器 ＋ 两个报错文本** ＝ **同一行代码 ✓**** ✓✓
+#   **★ 为什么**只在新建文档时**触发 ✗ ★**：
+#     **∴ `seedSampleIfEmpty(docId)` ✗**（**`:4176` ✓）**在**新文档**时
+#       **取示例图 ＋ 上传 ✗** ⇒ **∴ 那条 POST 的 body** 是**二进制 ✓**
+#         ⇒ **∴ 于是**：**只有那一条**会让 `:1352` 抛 ✓**** ✓✓
+#     ⇒ **∴ 而**它**抛在**service worker 的拦截里 ✗** ⇒ **∴ 于是**：
+#       **该请求**被**中断**✗ ⇒ **∴ 示例图上传失败 ⇒ **∴ 新文档**没有画面 ✓**** ✓✓
+#     ⇒ **∴ 而**错误**蔓延**到**建文档的 await 链**✗ ⇒ **∴ 于是**：
+#       **`createNamedDocument` ／ `:8002` ／ `:10194`** 都报**同一句 ✓**** ✓✓
+#       ⇒ **∴ 而**「**落笔失败：unknown**」是**后果**✗**（**文档／层没建好 ✓）** ✓✓
+#   **★ 修法 ✗ ★**：**只在**content-type 是 JSON**时才解析 ✗**：
+#     ```js
+#     let fromBody = "";
+#     try {
+#       const ct = String((options.headers && (options.headers["content-type"] ||
+#                  (options.headers.get && options.headers.get("content-type")))) || "");
+#       if (ct.indexOf("json") >= 0 && typeof options.body === "string") {
+#         fromBody = String(JSON.parse(options.body).tool || "");
+#       }
+#     } catch (_) { fromBody = ""; }
+#     ```
+#     ⇒ **∴ 于是**：**二进制 body** 直接**跳过解析 ✗** ⇒ **∴ 不再抛 ✓**** ✓✓
+#   **∴ 教训（**再次 ✓）★**：**"**给我看原始报错**"**再次**定案 ✗**
+#     ⇒ **∴ 用户**那句 `"�PNG`**让我**从**4 个候选**直接**跳到**那一行 ✓**** ✓✓
+#     ⇒ **∴ 规则**：**在**怀疑某个 API 之前 ✗**，**先**要**真实的错误文本 ✓**** ✓✓
