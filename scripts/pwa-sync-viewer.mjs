@@ -147,7 +147,17 @@ if (!bin) {
     console.error("✗ 导出的页面里没有 </body> ⇒ **∴ 无法注入 ✗**");
     process.exit(1);
   }
-  const injected = html.replace("</body>", snippet + "\n</body>");
+// 第 829 轮：注入点必须在最前面（原来插在 </body> 之前 => 哨兵落在页面末尾）。
+//   实测：index.html 里哨兵在 10569 行，而第一个脚本在 559 行 => 早期请求全漏过 => 405。
+//   现在插到 <head> 之后 => 哨兵真的最先跑；安装块也提前（它是 defer，语义不变）。
+const headTag = html.indexOf("<head>");
+const injected =
+  headTag >= 0
+    ? html.slice(0, headTag + 6) + String.fromCharCode(10) + snippet + html.slice(headTag + 6)
+    : html.replace("</body>", snippet + String.fromCharCode(10) + "</body>");
+if (headTag < 0) {
+  console.warn("  WARN: page has no <head> tag, sentinel falls back to before </body>");
+}
   writeFileSync(join(DST, "index.html"), injected);
   console.log(`✓ 已注入本地接管脚本 ⇒ web/index.html（注入 ${snippet.length} 字节 ✓）`);
   console.log(`✓ 静态页已由服务端导出 ⇒ web/index.html（${(size / 1024).toFixed(0)} KiB ✓）`);
