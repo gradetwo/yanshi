@@ -3944,6 +3944,13 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             // **★ 该次渲染是否复用了下方合成 ✓ ★**（第 539 轮 ✓）：**∴ `raw` 出口也要标 ✗** ——
             // **∴ 就地读 ✓** —— **∴ 本分支在 `below_after` 之前 return ✗** ⇒ **∴ 不能引用它 ✓**。
             "below_reused": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
+            // **★ 归属字段也要在 `raw` 出口 ✗ ★**（第 994 轮 ✓；**补第 993 轮的半成品 ✓）：
+            //   **∴ 为什么 ✗**：**我**上一轮**只加在**非 raw 出口**✗ ⇒ **∴ 于是**：**`raw`
+            //     请求**看到的是 `None` ✓**（**实测 ✓）⇒ **∴ 无法**归属 ✓**** ✓✓
+            //   **∴ 语义 ✗**：**本次请求期间**发生了几次渲染 ✓**
+            //     ⇒ **∴ `0`** ⇒ **∴ 被缓存拦掉（**没进渲染器 ✓）**；**`≥1`** ⇒ **∴ 进了 ✓**** ✓✓
+            "renders_done": yanshi_render::render::renders_done()
+                .saturating_sub(renders_before),
             // **★ 快路径的指标 ✗ ★**：**∴ 命中整幅缓存 ⇒ 这里为真 ✓**
             "frame_reused": ctx.workspace.document_full_frame_hits(&ctx.doc_id) > frame_before,
             "above_reused": ctx.workspace.document_above_reuse_count(&ctx.doc_id) > above_before,
