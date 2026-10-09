@@ -175,6 +175,31 @@ const BELOW_TILE: i64 = 256;
 /// **∴ 而 8K 整幅（**30 × 17 ＝ 510 块 ✗**）装不下 ⇒ **∴ 不缓存 ✓**（**宁可不缓存，也不占 133 MB ✗**）** ✓✓
 const BELOW_TILE_BUDGET: usize = 256;
 
+/// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
+/// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
+///
+/// **为什么** ✗（第 477 轮实测 ✓）：**并行分支用 `split_bands` 把区域切成**行带**✗**
+/// ⇒ **每带一个 bbox ✗** ⇒ **而旧缓存按**整块 bbox**键 ⇒ **永不匹配 ✗****。
+///
+/// **淘汰** ✓：**接既有口径 ✓**（**超过上限 ⇒ 丢最久未用 ✓**，规格 §6.2 ✓）。
+/// **★ 一个包围盒覆盖的 tile 范围 ✓ ★**（**`want` 与 `store` 共用 ✓**）：
+/// 返回 `(tx0, ty0, tx1, ty1)`（**闭区间 ✓**）。
+///
+/// **它修的是什么** ✗：**原式 `((x + w).ceil()).div_euclid(TILE)` 在**右边界恰落在 tile 边界**上时
+/// **会进到**下一格**✗**（**实测 `x=0, w=256, TILE=256` ⇒ `256 div 256 = 1` ⇒ **∴ 要 2 块 ✗，
+/// 而实际只覆盖第 0 块 ✓**）⇒ **∴ `want` 多要一格、而 `store` 里那格 `crop` 返回**空**被跳过 ✗
+/// ⇒ **∴ `missing ≥ 1` ⇒ **永不命中 ✓**（**实测 `tool-below-retention` 只有 2／9 ✓**）。
+/// **∴ 修法** ✓：**末格用 `ceil() − 1`** ✓（**＝ 最后一个"被触碰"的格 ✓**）。
+/// **⚠️ 上限**：**`(x + w)` 必须 > `x`** ✓（**`w > 0` ⇒ 成立 ✓，否则上面已提前返回 ✓**）。
+#[allow(dead_code)] // **供 `want`／`store` 的注释引用 ✓；两处均已内联同一算式 ✓**
+fn below_tile_range(b: &yanshi_core::Bbox) -> (i64, i64, i64, i64) {
+    let tx0 = (b.x.floor() as i64).div_euclid(BELOW_TILE);
+    let ty0 = (b.y.floor() as i64).div_euclid(BELOW_TILE);
+    let tx1 = ((b.x + b.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+    let ty1 = ((b.y + b.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+    (tx0, ty0, tx1, ty1)
+}
+
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -383,13 +408,6 @@ impl RegionRender {
 
 /// 计算内核层的文档渲染器。
 #[derive(Debug)]
-/// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
-/// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
-///
-/// **为什么** ✗（第 477 轮实测 ✓）：**并行分支用 `split_bands` 把区域切成**行带**✗**
-/// ⇒ **每带一个 bbox ✗** ⇒ **而旧缓存按**整块 bbox**键 ⇒ **永不匹配 ✗****。
-///
-/// **淘汰** ✓：**接既有口径 ✓**（**超过上限 ⇒ 丢最久未用 ✓**，规格 §6.2 ✓）。
 struct BelowTiles {
     /// **生成这些 tile 时的**下方层指纹** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
     sig: Vec<String>,
@@ -861,8 +879,9 @@ impl Renderer {
             {
                 let x0 = (want.x.floor() as i64).div_euclid(BELOW_TILE);
                 let y0 = (want.y.floor() as i64).div_euclid(BELOW_TILE);
-                let x1 = ((want.x + want.w).ceil() as i64).div_euclid(BELOW_TILE);
-                let y1 = ((want.y + want.h).ceil() as i64).div_euclid(BELOW_TILE);
+                // **★ 末格 `− 1` ✓**（**否则右边界恰在 tile 边界时会多要一格 ✗**）。
+                let x1 = ((want.x + want.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                let y1 = ((want.y + want.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
                 for ty in y0..=y1 {
                     for tx in x0..=x1 {
                         want_tiles.push((tx * BELOW_TILE, ty * BELOW_TILE));
@@ -1057,10 +1076,10 @@ impl Renderer {
             //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
             // **∴ 块数由 `accumulation` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
             let ob = accumulation.bbox();
-            let btx = ((ob.x + ob.w).ceil() as i64).div_euclid(BELOW_TILE)
+            let btx = ((ob.x + ob.w).ceil() as i64 - 1).div_euclid(BELOW_TILE)
                 - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
                 + 1;
-            let bty = ((ob.y + ob.h).ceil() as i64).div_euclid(BELOW_TILE)
+            let bty = ((ob.y + ob.h).ceil() as i64 - 1).div_euclid(BELOW_TILE)
                 - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
                 + 1;
             let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
@@ -1073,8 +1092,9 @@ impl Renderer {
                     let origin = accumulation.bbox();
                     let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
                     let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
-                    let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
-                    let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
+                    // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
+                    let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                    let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
                     let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
                         let mut v = Vec::new();
                         for ty in y0..=y1 {
