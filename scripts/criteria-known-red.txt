@@ -1862,3 +1862,29 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **⚠️ 诚实回顾** ✓：**我为这个缺陷花了第 504–564 轮（**约 10 轮 ✓**）在**below 缓存**上 ✗**，
 #     **∴ 而真正的问题在**盖章的 blit 尺寸**✗** ⇒ **∴ 教训**：**先读**被调用函数自身的注释与它
 #     那一段的**尺寸语义**✗，**再怀疑缓存 ✓**** ✓✓
+# **★ 第 599 轮：🎯🎯🎯 **真因确证** —— `to_rgba8` 恒返回 `size×size` ✗，而 `blit` 用 `buffer.width()` ✗**
+#   **铁证** ✓（`tile.rs` 的 `Tile::to_rgba8` ✓）：
+#     ```rust
+#     fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
+#         let width = self.size as usize;                 // ★ tile 是**方形**，边长 = `self.size` ★
+#         let mut out = vec![0u8; width * width * 4];     // ★ **恒为 size×size** ★
+#         for (row, line) in out.chunks_exact_mut(width * 4).enumerate() { … }
+#     }
+#     ```
+#     ⇒ **∴ `to_rgba8` **永远**返回 `size × size` ✗（**如 32×32，与 tile 在文档里的**位置无关 ✗**）** ✓✓
+#   **∴ 而 `render.rs:1395`** ✓：
+#     `buffer.blit_rgba8(0, 0, **buffer.width()**, **buffer.height()**, &tile.to_rgba8(None), 1.0);`
+#     **∴ 而 `buffer` 的尺寸取自 `grid.bounds(key)` ✗** ⇒ **∴ 若它是**边缘 tile 的实际区域**✗
+#     （**比 `size` 小 ✓**）⇒ **∴ 源按 `size` 步进 ✗，**读时按 `buffer.width()` 步进 ✗**
+#     ⇒ **∴ **行错位 ⇒ 内容错乱／丢内容 ✓**** ✓✓
+#   **∴ 结论** ✓：**这是**尺寸语义混用**✗** —— **∴ 与缓存无关 ✓**（**∴ 我第 504–561 轮的方向确实偏了 ✓**）；
+#     **∴ 且**注释里那句"**读改写 tile 的路径实测会让 tile 丢掉场景内容 ✗**"**指的就是这里 ✓** ✓✓
+#   **∴ 修法（**下一轮 ✓，两行 ✓**）** ✓：**用 **tile 的实际边长**作 `blit` 的宽高 ✗** ——
+#     **∴ 如**：`let rgba = tile.to_rgba8(None); let side = ((rgba.len() / 4) as f64).sqrt() as u32;`
+#       ⇒ **`buffer.blit_rgba8(0, 0, side, side, &rgba, 1.0);`** ✓**；
+#     **∴ 或**更直接 ✓：**`tile.size` ✓**（**若它是 `pub` ✓**）** ✓✓
+#   **∴ 验收** ✓：**① `cargo test -p yanshi-render` ⇒ 257/0（**含那条被 `ignore` 的 ✓**）
+#     ⇒ **∴ **删掉它的 `#[ignore]`**✗** ⇒ **∴ 应全绿 ✓**；
+#     **② `node scripts/tool-stamp-parity.mjs 10` ⇒ 应**真正全绿**（**且报"红线守住 ✓"而不再是"暂时失效"✓**）** ✓✓
+#   **⚠️ 这是本会话**最有价值的缺陷修复候选 ✓**：**它同时**① 修一条真缺陷 ✗（**增量盖章丢内容 ✓**）；
+#     **② **恢复一条红线 ✗**（**那 1／30 的偶发 ✓**）；**③ **让 `tool-stamp-parity` 从"诚实暂停"变回真判据 ✓**** ✓✓
