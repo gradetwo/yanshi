@@ -38,14 +38,26 @@ const main = async () => {
   // **先填一次 below ✓**
   await render();
 
-  // **① 改中间层 ＋ 传 `active_layer` ⇒ 应自增 ✓**
+  // **★ 关键前置条件 ✓ ★**：**外层块缓存（`region_cache` ✓）的键含**全层指纹**✗**
+  //   ⇒ **∴ 只要文档有任何改动它就失效 ✓** ⇒ **∴ 但**笔触预览**也会改文档 ✓ ⇒
+  //   **∴ 若不显式顶掉它 ⇒ 我的 `render_region` 会**被外层命中**⇒ **∴ 根本进不到
+  //   `render_accumulation` ✗**（**实测：探针里 `bbox=(0,0,256,256)` 出现 0 次 ✗**）
+  //   ⇒ **∴ 于是判据测的是**外层缓存**✗，而不是切点 ✓**。
+  // **∴ 修法** ✓：**每次渲染前在**顶层（S4）**画一小笔 ✓** ——
+  //   **∴ 顶层改动在**两种切点**下都不影响各自的指纹 ✓**
+  //   （**切点=2 ⇒ 指纹 S0..S1 ✓；切点=4 ⇒ 指纹 S0..S3 ✓**）⇒ **∴ 只顶掉外层 ✓**。
+  const bump = async (dx) => { await stroke("S4", dx); };
+
+  // **① 改中间层（S2）＋ 传 `active_layer="S2"` ⇒ 切点=2 ⇒ 指纹 S0..S1 未变 ⇒ 应自增 ✓**
   await stroke("S2", 9);
+  await bump(30);
   const b1 = await reuse();
   await render({ active_layer: "S2" });
   const a1 = await reuse();
 
-  // **② 改中间层 ＋ **不传** ⇒ 不应自增 ✗（**对照 ✓**）**
+  // **② 改中间层 ＋ **不传**（**切点=4 ✓**）⇒ 指纹 S0..S3 **含 S2** ⇒ 应失效 ⇒ 不应自增 ✗（**对照 ✓**）**
   await stroke("S2", 18);
+  await bump(40);
   const b2 = await reuse();
   await render();
   const a2 = await reuse();
