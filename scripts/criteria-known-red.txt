@@ -6665,3 +6665,31 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 元收获 ✓**：**"**残差**"这个词**很重要 ✗**
 #     ⇒ **∴ 它**告诉我**某件事**没有被单独计时**✗，**而**不是**"有个叫 other 的阶段" ✓**** ✓✓
 #     ⇒ **∴ 教训**：**看到 `other_ms` 占满**时 ✗**，**先问**"**哪个子调用**没上报 ✓"** ✓✓
+
+# **★ 第 813 轮：🎯 **并行度的观测缺口 ＋ 条件量清 ✗** ✓****
+#   **∴ ① 观测缺口 ✗**：**`RenderStats` 有 `parallel_workers` ＋ `parallel_chunks` ✗**
+#     （**`render.rs:91` ✓，**注释说明**"**串行路径下两者分别是 `1`/`0` ✓" ✓）
+#     ⇒ **∴ 而**在 `tools.rs` 里**grep 它们**是空的 ✗** ⇒ **∴ 所以**：
+#       **它们**没有进工具响应 ✗** ⇒ **∴ 于是**我**看不到**4K 首帧**用了几核 ✓**** ✓✓
+#   **∴ ② 并行块的条件（**`render.rs:2881-2926` ✓）** ✓**：
+#     ```rust
+#     let workers = parallel_impl::workers(self.max_workers);
+#     let wanted  = workers.min(MAX_WORKERS);
+#     let by_rows = (rh / MIN_BAND_ROWS).max(1) as usize;
+#     let bands   = split_bands(rh, wanted.min(by_rows));
+#     ```
+#     ⇒ **∴ 并行度 ＝ `min(workers, MAX_WORKERS, rh / MIN_BAND_ROWS)` ✗**
+#       ⇒ **∴ 而**4K 文档 **3072 行**✗ ⇒ **∴ `rh / MIN_BAND_ROWS`** 很大 ✗**
+#         ⇒ **∴ 所以**：**行数不是限制 ✗** ⇒ **∴ 限制在** `workers`／`MAX_WORKERS` ✓**** ✓✓
+#   **∴ ③ 另一条路用**另一种切分 ✗**（**`render.rs:3053` ✓）** ✓**：
+#     ```rust
+#     let bands = split_bands(height as u32, workers.clamp(1, MAX_WORKERS));
+#     ```
+#     ⇒ **∴ 它**不带 `MIN_BAND_ROWS` 限制 ✗** ⇒ **∴ 所以**两条路的**并行策略不同 ✓**** ✓✓
+#   **∴ 下一轮（**接上观测 ＋ 定论 ✓**）** ✓**：
+#     **① 把 `parallel_workers`／`parallel_chunks` 接进 `render_region` 响应 ✗**
+#       （**∴ 一处小改 ✓）⇒ **∴ 于是**一眼看出**4K 首帧**是**单核还是多核 ✓**** ✓✓
+#     **② 若**是 1 ✗** ⇒ **∴ 那就是**1.5 s 的原因**✗（**∴ 因为**串行合成 4K ✓）**；
+#     **③ 若**是多核 ✗** ⇒ **∴ 那么**瓶颈在**单条带的合成**✗ ⇒ **∴ 需要**算法层面 ✓**** ✓✓
+#   **∴ 元收获 ✓**：**"**有字段**"与"**报出来**"是两件事 ✗**
+#     ⇒ **∴ 而** `parallel_workers` **早就存在 ✗**，**只是**没接到响应 ✓**** ✓✓
