@@ -76,17 +76,38 @@ const targetDirs = [
 if (process.env.YANSHI_SERVE_BIN) targetDirs.unshift(process.env.YANSHI_SERVE_BIN);
 const tmp = join(DST, ".index.export.html");
 const triedBins = [];
+const skippedBins = [];
 let bin = null;
 for (const dir of targetDirs) {
-  const cand = join(dir, "yanshi-serve");
-  if (!existsSync(cand)) continue;
+  // **∴ 候选**可能是目录 ✗（**∴ 拼 `yanshi-serve` ✓）**，**也**可能是**显式指定的文件**✗**（**`YANSHI_SERVE_BIN` ✓）** ✓✓
+  const cand = dir.endsWith("yanshi-serve") ? dir : join(dir, "yanshi-serve");
+  if (!existsSync(cand)) {
+    skippedBins.push(cand);
+    continue;
+  }
   try {
     execFileSync(cand, ["--export-viewer-html", tmp], { stdio: "pipe" });
     bin = cand;
     break;
   } catch (e) {
     const msg = `${e.stderr ?? ""}${e.stdout ?? ""}${e.message ?? ""}`;
-    triedBins.push({ cand, stale: /未知参数|unknown argument/i.test(msg) });
+    triedBins.push({
+      cand,
+      stale: /未知参数|unknown argument/i.test(msg),
+      // **∴ 保存**首行错误 ✗**（**∴ 便于**看到"bad CPU type"这类架构问题 ✓）** ✓✓
+      why: msg.split("\n").find((x) => x.trim()) ?? "",
+    });
+  }
+}
+// **★ 候选诊断 ✗ ★**（第 222 轮 ✓）：**∴ 一律可查 ✗** ——
+//   **∴ 平时**只在失败时打印 ✗**；**设 `YANSHI_SERVE_DEBUG=1` 则**总是打印 ✓**
+//   **∴ 于是**：**"它选了谁／试过谁／跳过了谁"**一目了然 ✗**（**∴ 不再需要猜 ✓）** ✓✓
+if (process.env.YANSHI_SERVE_DEBUG || !bin) {
+  console.log(`  候选二进制：共 ${targetDirs.length} 个`);
+  for (const s of skippedBins) console.log(`    · 跳过（不存在）${s}`);
+  for (const t of triedBins) {
+    console.log(`    · 试过${t.stale ? "（旧，不支持 --export-viewer-html）" : "（运行失败）"} ${t.cand}`);
+    if (t.why && !t.stale) console.log(`        原因：${t.why.slice(0, 120)}`);
   }
 }
 if (!bin && triedBins.length > 0) {
