@@ -954,14 +954,17 @@ impl Renderer {
                 .append(true)
                 .open(&probe)
             {
-                let _ = writeln!(
-                    f,
-                    "split_ids len={} active={:?} ids={:?} split={}",
+                // **★ 行原子 ✓**（第 533 轮 ✓）：**先 `format!` 成**一个字符串**✗，
+                // **再用**一次 `write_all`**✗ ⇒ **∴ `O_APPEND` 的单次小写是**原子追加**✓
+                // ⇒ **∴ 多线程不会再**把行撕开 ✗****（**实测：`writeln!` 会分多次写 ⇒ 行被拼接 ✓**）。
+                let line = format!(
+                    "split_ids len={} active={:?} ids={:?} split={}\n",
                     visible_layer_ids.len(),
                     self.options.active_layer,
                     visible_layer_ids,
                     split
                 );
+                let _ = f.write_all(line.as_bytes());
             }
         }
         // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
