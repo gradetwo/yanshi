@@ -188,7 +188,15 @@ export async function makeLocalApi(db) {
         //   ⇒ **∴ 所以**光写 IndexedDB 不够 ✗**（**内核**够不到 ✗** —— **∴ 这正是第 655 轮的盲点 ✓**）
         //   ⇒ **∴ 必须**用内核返回的 hash**✗**（**∴ 而我此前自己算 SHA-256 ⇒ **∴ 它当然取不到 ✓**）。
         const kernelHash = entryK.k.blob_put(rgba);
-        const hash = String(kernelHash || "");
+        // **★ `blob_put` 返回的是**JSON 信封**✗ ★**（第 657 轮实测 ✓，**决定性 ✓**）：
+        //   **∴ 实测返回** `{"blob_hash":"sha256:55d5…","ok":true}` ✗**
+        //   ⇒ **∴ 而**我此前把**整个 JSON 字符串**当 hash 写进原子 ✗**
+        //   ⇒ **∴ 于是**内核按一个**畸形的字符串**去查 ⇒ **∴ 取不到位图 ✓** —— **∴ 这就是渲染不变化的根因 ✓**。
+        const hash = (() => {
+          const raw = String(kernelHash || "");
+          try { const o = JSON.parse(raw); if (o && o.blob_hash) return String(o.blob_hash); } catch (e) { /* 不是 JSON => 按原样 ✓ */ }
+          return raw;
+        })();
         if (!hash) throw new Error("内核未返回 blob hash ⇒ 位图没能进内核");
         // **∴ 同时**写 IndexedDB ✗**（**∴ 供刷新后重建内核时再喂一遍 ✓**）。
         const { putBlob } = await import("/store.js");
@@ -208,7 +216,7 @@ export async function makeLocalApi(db) {
           },
           schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
         });
-        return json({ ok: true, seq, server: false, bytes: rgba.length,
+        return json({ ok: true, seq, server: false, bytes: rgba.length, blob_hash: hash,
                       note: "已由本地内核渲染并写入 import_image 原子" });
       } catch (err) {
         // **★ 失败必须**说出来 ✗**（**∴ 不许静默 —— **∴ 否则表现为"画了没反应"✗****）。**
