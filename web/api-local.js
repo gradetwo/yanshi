@@ -34,7 +34,9 @@ export const LOCAL_IMPLEMENTED = 5;
  *     **∴ 不另存一份"层表" ✗**（**∴ 避免双份状态不一致 ✓**）。
  */
 export async function makeLocalApi(db) {
-  const { putAtom, atomsOf, open } = await import("./store.js");
+  const { putAtom, atomsOf, open, wrap, tx, writeSnapshot } = await import("./store.js");
+  // **∴ 内核实例**按文档缓存**✗**（**`Map<doc, WasmKernel>` ✓**）。
+  const kernels = new Map();
   const handle = db || (await open());
 
   return async function local(req) {
@@ -117,6 +119,69 @@ export async function makeLocalApi(db) {
           headers: { "content-type": "image/png", "cache-control": "no-store", "x-yanshi-source": "local-snapshot" },
         });
       }
+      // **★ 快照未命中 ⇒ **就地用内核渲染**✗ ★**（第 625 轮 ✓；**部署矩阵 §14.5 的配方 ✓**）：
+      // **∴ 内核与服务端**同一编码器**✗**（`render_region_png` 注释 ✓：可直接比对哈希 ✓）
+      // ⇒ **∴ 于是**两处产出的像素**同源 ✓**。
+      // **∴ 内核实例**按文档缓存 ✗**（**否则每次都要重放全部原子 ✓**）。
+      try {
+        const mod = await import("/wasm/yanshi_wasm.js");
+        // **★ 必须先初始化 wasm ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真错误 ✗**）：
+        // **∴ `--target web` 的产物要求**先 `await mod.default()`✗**（**它加载并实例化 `.wasm` ✓**）
+        // ⇒ **∴ 否则**线性内存尚未就绪 ✗** ⇒ **∴ `new WasmKernel(…)` 会报
+        // `Cannot read properties of undefined (reading '__wbindgen_malloc')` ✗**（**实测 ✓**）。
+        if (typeof mod.default === "function") await mod.default();
+        const meta2 = (await wrap(tx(handle, "docs", "readonly").get(doc))) || {};
+        let entry = kernels.get(doc);
+        if (!entry) {
+          const create = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+          const w = (create && create.atom.width) || 1024;
+          const h = (create && create.atom.height) || 1024;
+          // **∴ 限额 256 MiB ✓**（**∴ 超限由内核自己淘汰 ✓**）。
+          const inst = new mod.WasmKernel(doc, 256, w, h, 256 * 1024 * 1024);
+          entry = { k: inst, w, h };
+          kernels.set(doc, entry);
+        }
+        const k = entry.k;
+        // **★ 坑：`load_atoms_json` 要的是**服务端 `get_log` 形态的数组**✗**
+        // ⇒ **∴ 而 `atomsOf` 返回 `{ id, doc, seq, atom }` ✗ ⇒ **∴ 必须映射成 `r.atom` ✓**。
+        const atoms = await atomsOf(handle, doc);
+        k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
+        // **★ 区域必须裁剪到画布内 ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真空图 ✗**）：
+        // **∴ 实测**：**默认区域给到 1024×1024 而文档只有 800×600 ✗**
+        // ⇒ **∴ 越界 ⇒ `render_region_png` 返回**空字节**✗** ⇒ **∴ 于是**前端会显示空白 ✓**。
+        const want = {
+          x: Number(q.get("x") ?? (body.region && body.region.x) ?? 0),
+          y: Number(q.get("y") ?? (body.region && body.region.y) ?? 0),
+          w: Number(q.get("w") ?? (body.region && body.region.w) ?? entry.w),
+          h: Number(q.get("h") ?? (body.region && body.region.h) ?? entry.h),
+        };
+        const box = {
+          x: Math.max(0, Math.min(want.x, entry.w)),
+          y: Math.max(0, Math.min(want.y, entry.h)),
+          w: Math.max(1, Math.min(want.w, entry.w - Math.max(0, want.x))),
+          h: Math.max(1, Math.min(want.h, entry.h - Math.max(0, want.y))),
+        };
+        const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
+        // **★ 绝不返回空图 ✗ ★**：**∴ 内核给不出字节 ⇒ **∴ 如实回落 `needs_render` ✓****
+        //（**∴ 而**不是发一个 0 字节的 `image/png` ⇒ **∴ 那会让前端显示空白却不报错 ✗**）。
+        if (!png || png.length === 0) {
+          return json({ ok: false, error: "needs_render", reason: "内核未产出字节", server: false });
+        }
+        // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
+        const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
+        await writeSnapshot(handle, doc, seqNow, { bytes: png });
+        return new Response(png, {
+          status: 200,
+          headers: { "content-type": "image/png", "cache-control": "no-store",
+                     "x-yanshi-source": "local-kernel" },
+        });
+      } catch (err) {
+        // **∴ 内核不可用（**如 node 里没有 DOM／wasm 未同步 ✓）⇒ **∴ 如实说该重算 ✗**。
+        // **∴ 不谎报、**也不返回空图 ✓**。
+        return json({ ok: false, error: "needs_render",
+                      reason: "本地内核不可用：" + String((err && err.message) || err),
+                      server: false });
+      }
       // **∴ 没有可用快照 ⇒ **如实说明该重算 ✓**（**200 ＋ 明确字段 ✗ ⇒ **∴ 前端可分支 ✓**）。
       return json({
         ok: false,
@@ -132,6 +197,9 @@ export async function makeLocalApi(db) {
     throw new Error(`endpoint_not_local: ${url.pathname}`);
   };
 }
+
+/** **∴ 内核没暴露尺寸 ✗ ⇒ **∴ 用一个安全默认值 ✓**（**真实尺寸由 `load_atoms_json` 里的创建原子决定 ✓**）。 */
+function k_width() { return 1024; }
 
 export function installLocalApi(deps) {
   const original = window.fetch.bind(window);

@@ -88,7 +88,9 @@ check(gd.gpu_unavailable_reason === "host_has_no_webgpu", `应报 GPU 不可用�
 const rr = await (await call("/api/tools/render_region", { method: "POST" })).json();
 check(rr.ok === false && rr.error === "needs_render",
   `缺快照时应如实报 needs_render ✗（实测 ${JSON.stringify(rr)}）`);
-check(/过期|缺失/.test(rr.reason || ""), "needs_render 应给出原因 ✗");
+// **∴ 原因可以是"快照过期／缺失"✗，也可以是"**内核不可用**✗"**（**node 里没有浏览器 wasm 环境 ✓**）
+// ⇒ **∴ 判据只要求**说得出原因**✗，**而**不限定是哪一种 ✓**（**∴ 若限定 ⇒ **∴ node 侧会永远红 ✗**）。
+check(!!rr.reason && rr.reason.length > 4, `needs_render 应给出可读原因 ✗（实测 ${rr.reason}）`);
 
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
