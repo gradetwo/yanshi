@@ -168,6 +168,13 @@ static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// **不必等于网格尺寸 ✓**（**∴ 行带／整块／并行 chunk 产生的键都相同 ✓**）。
 const BELOW_TILE: i64 = 256;
 
+/// **below 缓存的**覆盖块数上限** ✓**（目标明文 ✓：**4K 一份 ~33 MB／8K 一份 ~133 MB ✗ ⇒ 必须按需块 ✓**）。
+///
+/// **为什么是这个数** ✓：**256 块 × 256² × 4 B × 4（linear f32 每通道 ✓）≈ 64 MiB** ✓ ——
+/// **∴ 4K 整幅（**⌈3840/256⌉ × ⌈2160/256⌉ ＝ 15 × 9 ＝ 135 块 ✓**）能装下 ✓**；
+/// **∴ 而 8K 整幅（**30 × 17 ＝ 510 块 ✗**）装不下 ⇒ **∴ 不缓存 ✓**（**宁可不缓存，也不占 133 MB ✗**）** ✓✓
+const BELOW_TILE_BUDGET: usize = 256;
+
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -991,30 +998,43 @@ impl Renderer {
         }
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
-            if let Ok(mut guard) = below.lock() {
-                let origin = accumulation.bbox();
-                let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
-                let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
-                let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
-                let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
-                let mut tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
-                for ty in y0..=y1 {
-                    for tx in x0..=x1 {
-                        let key = (tx * BELOW_TILE, ty * BELOW_TILE);
-                        let bbox = yanshi_core::Bbox::new(
-                            key.0 as f64,
-                            key.1 as f64,
-                            BELOW_TILE as f64,
-                            BELOW_TILE as f64,
-                        );
-                        let piece = accumulation.crop(&bbox);
-                        let pb = piece.bbox();
-                        if pb.w > 0.0 && pb.h > 0.0 {
-                            tiles.push((key, piece));
+            // **★ 覆盖块数上限 ✓ ★**（目标明文 ✓）：**超出预算 ⇒ **整组不缓存**✓**
+            //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
+            // **∴ 块数由 `accumulation` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
+            let ob = accumulation.bbox();
+            let btx = ((ob.x + ob.w).ceil() as i64).div_euclid(BELOW_TILE)
+                - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
+                + 1;
+            let bty = ((ob.y + ob.h).ceil() as i64).div_euclid(BELOW_TILE)
+                - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
+                + 1;
+            let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+            if budget_ok {
+                if let Ok(mut guard) = below.lock() {
+                    let origin = accumulation.bbox();
+                    let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
+                    let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
+                    let x1 = ((origin.x + origin.w).ceil() as i64).div_euclid(BELOW_TILE);
+                    let y1 = ((origin.y + origin.h).ceil() as i64).div_euclid(BELOW_TILE);
+                    let mut tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                    for ty in y0..=y1 {
+                        for tx in x0..=x1 {
+                            let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                            let bbox = yanshi_core::Bbox::new(
+                                key.0 as f64,
+                                key.1 as f64,
+                                BELOW_TILE as f64,
+                                BELOW_TILE as f64,
+                            );
+                            let piece = accumulation.crop(&bbox);
+                            let pb = piece.bbox();
+                            if pb.w > 0.0 && pb.h > 0.0 {
+                                tiles.push((key, piece));
+                            }
                         }
                     }
+                    *guard = Some(BelowTiles { sig, tiles });
                 }
-                *guard = Some(BelowTiles { sig, tiles });
             }
         }
         Ok(accumulation)
