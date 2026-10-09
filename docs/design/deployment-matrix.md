@@ -873,3 +873,43 @@ check((await readSnapshot(db, "d1", 4)) === null,
 **③ 合成路径里**判断当前层是否半透明**✗** ⇒ **∴ 是**才用 above ✓**；
 **④ 接进**既有淘汰统计 ＋ 计数**✗**（**照 `note_below_reuse()` ✓**）；
 **⑤ 加**可红判据**✗**：**切到一个半透明层 ⇒ **above 命中数上升**✗**；**变异**：**让它永不命中 ⇒ 必红 ✓**** ✓✓
+
+### 14.34 **`above` 的**照抄模板**（**第 681 轮 ✓，为第 682 轮备 ✓**）
+
+**∴ 已核实的 `below` 实现（**原文要点 ✓，`crates/yanshi-render/src/render.rs` ✓）**：
+```rust
+/// 计算内核层的文档渲染器。
+#[derive(Debug)]
+struct BelowTiles {
+    /// **生成这些 tile 时的**下方层指纹**（**不匹配 ⇒ 整份作废**）。
+    sig: Vec<String>,
+    /// **文档坐标（按 `BELOW_TILE` 对齐）⇒ 该 tile 的下方合成**。
+    tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
+}
+
+pub struct Renderer {
+    …
+    /// **below 缓存**：**最上层以外**的合成结果。
+    below: std::sync::Mutex<Option<BelowTiles>>,     // ← 字段在 :508
+}
+// **两个构造点都要补**（本会话踩过两次的坑）：
+below: std::sync::Mutex::new(None),                  // ← :564
+below: std::sync::Mutex::new(None),                  // ← :580
+
+// **计数用**模块级原子**（纯观测 ✓）：
+static BELOW_REUSE: AtomicUsize = …;
+pub fn note_below_reuse() { BELOW_REUSE.fetch_add(1, Relaxed); }
+pub fn below_reuse_count(&self) -> usize { BELOW_REUSE.load(Relaxed) }
+```
+
+**★ 三条要点（**照抄时必须注意 ✓）★**：
+1. **`sig` 是**指纹**✗**（`Vec<String>` ✓）⇒ **∴ `above` 的指纹应当是**上方层 ＋ 当前层是否半透明**✗**
+   —— **∴ 因为**当前层一变 ⇒ **∴ `above` **不变**✗** ⇒ **∴ 这正是它能被缓存的原因 ✓**；
+2. **计数走**模块级 `AtomicUsize` ＋ `note_*()`／`*_count()` 一对 ✗**（**∴ 不许新起一套统计 ✓**）；
+3. **⚠️ 插新方法会**抢走**相邻的 `///` 文档注释 ✗** ⇒ **∴ `missing-docs` 报错 ✓**
+   —— **∴ 本会话已踩 **4 次**✗**（**∴ 注释里还有前任留下的同类修复记录 ✓**）
+   ⇒ **∴ 加 `above_*` 方法时**必须确认注释归属 ✗**。
+
+**∴ 另一处发现（**顺手 ✓）** ✓**：**`note_below_reuse()` 的注释写着
+「**现在还没有调用方 ⇒ 恒 0**」✗**，**而**我早前实测到 `below_reused=True` ✓**
+⇒ **∴ 说明**它**已经有调用方了 ✗** ⇒ **∴ 该注释**过时 ✗**（**∴ 下一轮可一并更正 ✓**）** ✓✓
