@@ -7,11 +7,27 @@ import { rmSync } from "node:fs";
 
 const __tempPaths = [];
 function trackTemp(path) { __tempPaths.push(path); return path; }
-process.on("exit", () => {
-  for (const path of __tempPaths) {
-    try { rmSync(path, { recursive: true, force: true }); } catch { /* 已经没了 */ }
+// **∴ 删除要**尽力而为 ＋ 重试 ✗ ★**（第 54 轮 ✓；**∴ 用户重启那次换来的 ✓）：
+//   **∴ 我**第一版**只删一次**✗ ⇒ **∴ 实测**仍有遗留 ✓
+//     （**∴ 因为**chromium**可能**还在写**那个 profile ⇒ **∴ rmSync**失败 ⇒ **∴ 被 catch 吞掉 ✓）**
+//   **∴ 所以**：**删三遍**✗（**每遍之间**同步等一会儿 ✓）
+//     ＋ **同步信号**（**`SIGINT`／`SIGTERM` ✓）也走**同一条清理 ✓**** ✓✓
+function __cleanupTemp() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let left = 0;
+    for (const path of __tempPaths) {
+      try { rmSync(path, { recursive: true, force: true }); }
+      catch { left += 1; }
+    }
+    if (left === 0) return;
+    // **∴ 同步等待 ✗**：**∴ 在 exit 钩子里不能用 await ✓** ✓✓
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } catch { /* 忽略 */ }
   }
-});
+}
+process.on("exit", __cleanupTemp);
+for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(__signal, () => { __cleanupTemp(); process.exit(1); });
+}
 //! **★ §6.3 的 ②③④：后端如实上报 ＋ 关掉 GPU 与基线逐字节相同 ✗ ★**（第 35 轮 ✓）。
 //!
 //! **∴ 依据 ✗**：`docs/design/gpu-webgpu-discussion.md` §6.3 的四条前置判据里，
