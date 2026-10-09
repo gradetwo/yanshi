@@ -4838,3 +4838,49 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 而**"**部署脚本能不能找到正确的二进制**"**是它的**前置 ✗**
 #     ⇒ **∴ 这三轮**（**入口页入库 ✗｜探测 ＋ 报错 ✗｜triple 路径 ✓）把**用户报告的两个故障**
 #     **都收口了 ✓**** ✓✓
+
+# **★ 第 755 轮：✅ **回答用户"是不是和 macOS 有关" ✗** ⇒ **∴ 有关、但不是 macOS 特有 ✓****
+#   **∴ 用户的问题 ✓**：**"我是 macOS 平台，会不会和这个有关" ✓**
+#   **★ 答案：有关 ✗，**但**不是 macOS 独有的问题**✓ ★**** ✓✓
+#   **∴ 证据 ①：正则对 macOS triple 的实测 ✓**：
+#     ```
+#     ✅  aarch64-apple-darwin          ← **∴ 你的 Mac（**Apple Silicon ✓）
+#     ✅  x86_64-apple-darwin           ← **∴ Intel Mac ✓**
+#     ✅  aarch64-apple-ios
+#     ✅  x86_64-unknown-linux-gnu
+#     ✅  aarch64-unknown-linux-gnu
+#     ✅  x86_64-pc-windows-msvc
+#     ✅  wasm32-unknown-unknown
+#     ✗ 漏  aarch64-linux-android       ← **∴ 只漏了 Android（**与本次无关 ✓）**
+#     ```
+#     ⇒ **∴ 所以**：**我第 754 轮加的三元组扫描**在 macOS 上**有效 ✓**
+#       ⇒ **∴ 于是**：**你 `make release` 的产物（**`target/aarch64-apple-darwin/release/` ✓）
+#       **会被自动找到 ✓**** ✓✓
+#   **∴ 证据 ②：`package-release.sh` 怎么取 triple ✓**：
+#     ```bash
+#     :59  host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+#     :60  target_triple="${host_triple}"     # **缺省＝当前平台 ✓**
+#     :133 --target) target_triple="$2" ;;    # **可交叉编译 ✓**
+#     ```
+#     ⇒ **∴ 所以**：**在 macOS 上**它**就是** `aarch64-apple-darwin` ✗**
+#       （**∴ 即** **`*-apple-darwin` ⇒ **∴ 命中我的正则 ✓****）
+#       ⇒ **∴ 于是**：**产物在 `target/aarch64-apple-darwin/release/` ✗**
+#         ⇒ **∴ 而**脚本**现在会扫到它 ✓**** ✓✓
+#     ⇒ **∴ 而这**与平台**无关 ✗**：**`make release` **在任何平台上**都用 `--target` ✗**
+#       ⇒ **∴ 所以**那个缺陷**是**平台无关**的 ✗**（**∴ 我在 Linux 上也复现了 ✓）**
+#       ⇒ **∴ 只是**你在 macOS 上**先撞到它** ✓**** ✓✓
+#   **★ 一个**真正的 macOS 特有风险 ✗ ★**：**若 `target/` 里**同时有**多个 apple triple ✗**
+#     （**∴ 如**你**既**在本机构建（`aarch64-apple-darwin` ✓）
+#     **又**交叉编过（`x86_64-apple-darwin` ✓）⇒ **∴ 那么**我的扫描**按目录枚举顺序**取第一个 ✗**
+#     ⇒ **∴ 若**它**是**另一架构**✗（**如** x86_64 而你机器是 arm64 ✓）
+#       ⇒ **∴ 执行会失败（**`bad CPU type in executable` ✓）
+#       ⇒ **∴ 而**我的逻辑**捕获异常后**继续下一个候选 ✓**
+#         ⇒ **∴ 所以**安全 ✗**（**∴ 只是**多花一次失败尝试 ✓）** ✓✓
+#   **★ 给你的**确定性做法 ✗ ★**：**用**环境变量**显式指定 ✗**
+#     ```bash
+#     YANSHI_SERVE_BIN="$(rustc -vV | sed -n 's/^host: //p' | xargs -I{} echo target/{}/release/yanshi-serve)" \
+#       npm run pwa:deploy
+#     ```
+#     ⇒ **∴ 或**更简单：**`make release` 后**直接指到你的包 ✗**（**若你从 `dist/` 装 ✓）** ✓✓
+#   **∴ 下一轮 ✓**：**给脚本加**候选诊断输出 ✗**（**∴ 打印"**选了哪个**＋**试过哪些**✓）
+#     ⇒ **∴ 于是**以后**一眼看出**它选了谁 ✓**** ✓✓
