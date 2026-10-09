@@ -174,6 +174,11 @@ type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
 static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **★ 渲染序号 ✓ ★**（第 723 轮 ✓，**纯观测 ✓**）：**∴ 给每次 `render_accumulation` 一个 id ✗**
+/// ⇒ **∴ 于是**探针的**多行输出**可以**按 id 配对**✗** ——
+/// **∴ 因为**第 717／718 两轮我**配错了行**（**`tail` 取到别的渲染 ✓）⇒ **∴ 这一次**不再靠猜 ✓**。
+static RENDER_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// **★ `above` 复用次数 ✓ ★**（第 682 轮 ✓，**纯观测 ✓**）：
 /// **∴ 判据据此断言"半透明层切回时复用了上方的合成"✗**（**与 `BELOW_REUSE` 同一套口径 ✓**）。
 static ABOVE_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1010,6 +1015,8 @@ impl Renderer {
         // **`updated_by` 为 `None` ⇒ **无法证明"这一层没变"**✗**（**如测试里的调整层／蒙版／液化对象 ✓**）
         // ⇒ **∴ 那时若仍复用 ⇒ **会拿旧的下方合成冒充 ⇒ 输出错 ✗**（**4 个既有测试当场抓到 ✓**）
         // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
+        // **∴ 本次渲染的 id ✗**（**∴ 探针按它配对 ✓**）。
+        let req_id = RENDER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let cacheable = split > 0 && !except_seen;
         // **★ `above` 的全部声明 ✗ ★**（第 711 轮 ✓；**目标第 4 条 ✓**）：**∴ 必须在
         //   **`if cacheable` 块**之前** ✓**（**∴ 块内赋值、**块后的循环与收尾都要用 ✓）。
@@ -1172,7 +1179,8 @@ impl Renderer {
                 {
                     let _ = writeln!(
                         f,
-                        "cacheable=1 split={} sig={} bbox=({},{},{},{}) hit={} reused={}",
+                        "req={} cacheable=1 split={} sig={} bbox=({},{},{},{}) hit={} reused={}",
+                        req_id,
                         split,
                         sig.len(),
                         want.x,
