@@ -141,3 +141,36 @@ AGENTS.md 要求逐项核对「收益量级／体积／**确定性**／平台支
   ⇒ **∴ 下一步**是**在**离线内核（**wasm ✓）里**接 WebGPU**✓
     **∴ 且**判据**已就位**✗：**②③**（**逐字节相同 ✓）＋ **④**（**后端如实上报 ＋ `max_channel_delta` ✓）
       ＋ **两本账**（**服务端 ✓ 与**浏览器 ✓ 各一套 ✓）** ✓✓
+
+---
+
+## ★ 第 49 轮：**离线内核如实上报 WebGPU 通路**（**已实测 ✓）
+
+**∴ 做了什么 ✗**：**在**内核启动路径**里**异步探测**✗
+  （**`navigator.gpu` ＋ `requestAdapter()` ✓）⇒ **∴ 结果写进**`window.yanshiStats.webgpu`
+    ＝ `{supported, adapter, reason}`**✗
+    ⇒ **∴ 与**服务端的 `render_backend` ＋ `gpu_unavailable_reason` **对称 ✓**** ✓✓
+  **∴ 位置 ✗**：`crates/yanshi-http/assets/viewer-app.js`**（**源头 ✓）⇒ **∴ 由同步脚本**同步到 `web/`** ✓**** ✓✓
+
+**∴ 判据（**防撒谎 ✓）★**：
+  **∴ ①** **`webgpu` 字段必须存在**✗（**∴ 不许**没有 ✓）
+  **∴ ②** **内核自报**必须与**脚本的独立探测**一致**✗（**∴ 两条独立的路 ✓）
+  **∴ ③** **没有适配器时**必须**给出原因**✗（**∴ 不许**留空 ✓）** ✓✓
+
+**∴ 实测（**release ＋ 本地静态服务 ✓）★**：
+
+| chromium 标志 | 内核自报 | 交叉核对 |
+|---|---|---|
+| **默认** | `{"supported":true,"adapter":false,"reason":"requestAdapter() 返回 null"}` | **一致 ✓** |
+| **`--gpu`（**Vulkan 标志 ✓）** | `{"supported":true,"adapter":true,"reason":null}` | **一致 ✓** |
+
+**∴ 我踩的坑（**如实 ✓；**这是本轮最贵的知识 ✓）★**：
+  **∴ `viewer-app.js` 是**`include_str!` 内嵌进二进制**的 ✗**
+    （**`crates/yanshi-http/src/viewer.rs:725` ✓）
+    ⇒ **∴ 改 assets**不会**影响**页面**✗ ⇒ **∴ 必须**：
+      **① 重新编译 `yanshi-serve`**✗（**∴ 而**同步脚本用的是 **`target/release`** ✓）
+      **② 再跑 `pwa-sync-viewer.mjs` 重新导出 `index.html`** ✓**** ✓✓
+    ⇒ **∴ 我**第一次验证失败**✗（**内核没上报 ✓）就是**因为**只编译了 debug ＋ 没重导出 ✓**** ✓✓
+  **∴ 另有一个干扰 ✗**：**PWA 的 **Service Worker**会把**旧副本**发回来**✗
+    ⇒ **∴ 测新代码时**必须**在导航前**注销 SW ＋ 清 `caches` ＋ `Network.setCacheDisabled(true)`
+      （**∴ 已做进脚本 ✓）** ✓✓
