@@ -49,7 +49,13 @@ try {
 
 const get = async (path) => {
   const res = await fetch(BASE + path, { cache: "no-store" });
-  return { status: res.status, text: res.ok || res.status === 200 ? await res.text() : "" };
+  const buf = new Uint8Array(await res.arrayBuffer());
+  return {
+    status: res.status,
+    bytes: buf.length,
+    ctype: String(res.headers.get("content-type") || ""),
+    text: new TextDecoder().decode(buf),
+  };
 };
 const check = (ok, msg) => { checked += 1; if (!ok) fails.push(msg); console.log(`  ${ok ? "OK  " : "FAIL"} ${msg}`); };
 
@@ -71,6 +77,15 @@ try {
     check(api.text.includes("__binary"), "二进制 body 不应被当 JSON 解析");
     check(api.text.includes("kernel_unavailable"), "内核不可用应如实 501");
   }
+  // A 200 is not enough: a name the host cannot resolve falls back to the page, which
+  // is also a 200 with an html content type. That is exactly how a broken brush path
+  // looked healthy, so assert the payload is a real file.
+  const brush = await get("/brushes/100_pct__Opaque.myb");
+  check(brush.status === 200 && brush.bytes > 1000 && brush.ctype.indexOf("html") < 0,
+    `笔刷必须是真文件而不是页面回退（status ${brush.status}｜${brush.bytes} 字节｜${brush.ctype}）`);
+  const brush2 = await get("/brushes/Round_n_1.myb");
+  check(brush2.status === 200 && brush2.bytes > 1000 && brush2.ctype.indexOf("html") < 0,
+    `第二个笔刷同样必须是真文件（${brush2.bytes} 字节｜${brush2.ctype}）`);
   for (const p of ["/brand/svg/icon-light.svg", "/icons/icon.svg", "/samples/sample-yanshi.png",
                    "/wasm/yanshi_wasm.js"]) {
     const r = await get(p);
