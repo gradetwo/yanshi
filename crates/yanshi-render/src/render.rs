@@ -1228,10 +1228,10 @@ impl Renderer {
                     //   **∴ 代价（**如实 ✓）**：**∴ 它**不再反映"**缓存里有多少格**"✗，
                     //     而只反映"**这次要的格里命中了几格 ✓**" ⇒ **∴ 而**那**正是判据要的 ✓** ✓✓
                     let line = format!(
-                        "want={} have={} missing={} want_tiles={:?}\n",
+                        "want={} have={} missing={:?} want_tiles={:?}\n",
                         want_tiles.len(),
                         want_tiles.len().saturating_sub(missing.len()),
-                        missing.len(),
+                        missing,
                         want_tiles
                     );
                     let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
