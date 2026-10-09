@@ -1348,6 +1348,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  （并回 scaled_from 记录原尺寸 ✓）；连缩小都失败才回 image_omitted + 原因 ✓。"
             ),
             param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 可读原因；想看图就把它调大"),
+            // **★ `active_layer` ✓ ★**（**目标第 4 条 ✓**；第 529 轮 ✓）：
+            // **∴ 三段合成的切点放在该层上 ⇒ 改它时只重渲该层，其下复用 ✓**；
+            // **∴ 不传 ⇒ 切在"最上层以外"✓（**与今天一致 ✓**）**。
+            // **⚠️ 它必须在这里声明 ✗** —— **∴ 未声明的键**进不了 `args` ✗**
+            //（**实测：`args` 键只有 `doc_id`／`raw`／`region` ✓，`active_layer` 被丢弃 ✓**）。
+            param!(
+                "active_layer",
+                String,
+                false,
+                "当前层 id（可选）：把三段合成的切点放在该层上 ⇒ 改它时只重渲该层、其下复用；不传则切在最上层以外"
+            ),
         ],
     },
     // **诊断包** ✓（P0 事故复盘：事发时柜台是空的 ✓）—— 见 `crate::diagnostics` ✓。
