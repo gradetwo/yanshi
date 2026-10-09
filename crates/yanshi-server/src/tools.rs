@@ -3298,9 +3298,19 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 让调用方能区分"**慢一次 ✓**"与"**慢每次 ✗**"**（**外部报告 §5.1 的建议 ✓**）。
     let first_preview = !ctx.workspace.document_thumbnail_is_current(&ctx.doc_id);
     let preview_started = std::time::Instant::now();
-    if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
-        summary["thumb_url"] = json!(url);
-        summary["thumb_size"] = json!(size.kind().size());
+    // **★ 改用三态 ✓ ★**（第 595 轮 ✓；**异步预览设计 ④⑤ 的读路径 ✓**）：
+    // **∴ 首次不再同步渲染 ✗** ⇒ **∴ 响应立刻返回 ✓（**原来这里会花 ≈1 s ✗**）**；
+    // **∴ 而**预览会在下一次提交收尾就绪 ✓**（**或超宽限期后由兜底就地生成 ✓**）。
+    // **∴ 且**必须**如实报出 `pending` ✗**（**不许当成"没有图" ✗**）。
+    let preview_state = ctx.workspace.preview_state(&ctx.doc_id, size)?;
+    match &preview_state {
+        crate::service::PreviewState::Ready(url) => {
+            summary["thumb_url"] = json!(url);
+            summary["thumb_size"] = json!(size.kind().size());
+        }
+        // **`Pending` ⇒ 只置状态，不置 `thumb_url` ✓**（**∴ 前端据此稍后再取 ✓**）。
+        crate::service::PreviewState::Pending => {}
+        crate::service::PreviewState::Unavailable => {}
     }
     ctx.time(Phase::Preview, preview_started);
     summary["preview_size"] = json!(size.kind().size());
@@ -3316,10 +3326,12 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 而 `pending`（**"稍后就绪"✗**）**留给第 ② 步 ✓**：
     //   **∴ 现在**仍是同步生成 ✗ ⇒ **∴ 若此刻就报 `pending` ⇒ **∴ 那就是**撒谎 ✗**
     //   （**因为其实已经就绪 ✓**）** ⇒ **∴ 先不报 ✓**。
-    summary["preview_state"] = json!(if summary.get("thumb_url").is_some() {
-        "ready"
-    } else {
-        "unavailable"
+    // **★ 据三态如实报出 ✓ ★**（第 595 轮 ✓）：**`ready` ✓／`pending`（**稍后就绪 ✓**）／
+    // `unavailable`（**如 `Skip` ✓**）** ⇒ **∴ 调用方永远不会看到"静默缺图" ✗****。
+    summary["preview_state"] = json!(match &preview_state {
+        crate::service::PreviewState::Ready(_) => "ready",
+        crate::service::PreviewState::Pending => "pending",
+        crate::service::PreviewState::Unavailable => "unavailable",
     });
     summary["first_preview_ms"] = json!(preview_started
         .elapsed()
