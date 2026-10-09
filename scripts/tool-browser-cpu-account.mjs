@@ -22,13 +22,27 @@
 
 import { spawn } from "node:child_process";
 
+// **★ 临时目录必须**自己收拾 ✗ ★**（第 53 轮 ✓；**∴ 用户报告 /tmp 被塞满 ✓）：
+//   **∴ 我**的浏览器脚本**每个**都建**chromium profile ＋ 临时 root**✗
+//     ⇒ **∴ 而**以前**从不删除**✗ ⇒ **∴ 跑几十次就**把 /tmp 塞满 ✓**** ✓✓
+//   **∴ 现在**：**注册 ＋ 退出时递归删除**✗ ⇒ **∴ 于是**：**跑多少次都**不积累 ✓**** ✓✓
+import { rmSync } from "node:fs";
+
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+process.on("exit", () => {
+  for (const path of __tempPaths) {
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* 已经没了 */ }
+  }
+});
+
 const argv = process.argv.slice(2);
 const wantGpu = argv.includes("--gpu");
 const base = String(argv.find((a) => !a.startsWith("--")) || "https://yanshi-online.wangda.today")
   .replace(/\/+$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cdpPort = 9700 + Math.floor(Math.random() * 200);
-const profile = `/tmp/browser-cpu-${cdpPort}`;
+const profile = trackTemp(`/tmp/browser-cpu-${cdpPort}`);
 
 const flags = [
   "--headless=new",

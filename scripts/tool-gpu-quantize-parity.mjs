@@ -15,13 +15,27 @@
 
 import { spawn } from "node:child_process";
 
+// **★ 临时目录必须**自己收拾 ✗ ★**（第 53 轮 ✓；**∴ 用户报告 /tmp 被塞满 ✓）：
+//   **∴ 我**的浏览器脚本**每个**都建**chromium profile ＋ 临时 root**✗
+//     ⇒ **∴ 而**以前**从不删除**✗ ⇒ **∴ 跑几十次就**把 /tmp 塞满 ✓**** ✓✓
+//   **∴ 现在**：**注册 ＋ 退出时递归删除**✗ ⇒ **∴ 于是**：**跑多少次都**不积累 ✓**** ✓✓
+import { rmSync } from "node:fs";
+
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+process.on("exit", () => {
+  for (const path of __tempPaths) {
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* 已经没了 */ }
+  }
+});
+
 const argv = process.argv.slice(2);
 const wantGpu = argv.includes("--gpu");
 const base = String(argv.find((a) => !a.startsWith("--")) || "http://127.0.0.1:8899")
   .replace(/\/+$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cdpPort = 9900 + Math.floor(Math.random() * 90);
-const profile = `/tmp/gpu-parity-${cdpPort}`;
+const profile = trackTemp(`/tmp/gpu-parity-${cdpPort}`);
 
 const flags = [
   "--headless=new",
@@ -104,12 +118,27 @@ const present = await evaluate("typeof window.yanshiGpuQuantize === 'function'")
 check(present === true, "页面必须暴露 `yanshiGpuQuantize`", `实测 ${present}`);
 
 // **∴ 一组**已知输入**✗：**纯色 ＋ 边界值 ＋ 半透明 ✓** ✓✓
-const CASES = [
-  { name: "不透明红", pixel: [1, 0, 0, 1] },
-  { name: "线性 0.5 灰", pixel: [0.5, 0.5, 0.5, 1] },
-  { name: "f16 敏感值", pixel: [0.50598186, 0.50598186, 0.50598186, 1] },
-  { name: "半透明蓝", pixel: [0.1, 0.2, 0.9, 0.5] },
-];
+// **★ 输入要**够大 ＋ 含边界 ✗ ★**（第 52 轮 ✓）：**∴ 4 个像素**不足以说
+//   "**逐字节相同 ✓"**✗ ⇒ **∴ 于是**：**边界值 ＋ 伪随机 ✗（**固定种子 ⇒ **∴ 可复现 ✓）**
+//     ＋ **报告**差异字节数 ✓（**∴ 不**只最大值 ✓）** ✓✓
+const BOUNDARY = [0, 1e-8, 0.0031308, 1 / 255, 0.5, 0.50598186, 1 - 1e-7, 1, 0.25, 0.75];
+function buildPixels() {
+  const pixels = [];
+  // **∴ ① 边界组合 ✗**：**每个边界的**单通道**＋ **全通道同值 ✓** ✓✓
+  for (const value of BOUNDARY) {
+    pixels.push(value, 0, 0, 1);
+    pixels.push(value, value, value, 1);
+    pixels.push(value, value, value, value);
+  }
+  // **∴ ② 伪随机（**固定种子 ✓）✗** ⇒ **∴ 覆盖**大片取值 ✓** ✓✓
+  let seed = 0x2f6e2b1;
+  const next = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let i = 0; i < 4096; i += 1) pixels.push(next(), next(), next(), next());
+  return pixels;
+}
 
 const gpuFact = await evaluate(`(async () => {
   const has = !!navigator.gpu;
@@ -139,10 +168,26 @@ if (!fact.adapter) {
     "**不许**在无适配器时返回结果", String(thrown).slice(0, 80));
 } else {
   // **★ ①②④ 有适配器 ⇒ 必须真跑 GPU ✗** ✓✓
+  // **★ 模板字符串内**不许**出现反引号**✗（**∴ 注释里也不行 ✓）★**
+  //   **∴ 我**为此**连踩三次**✗（**shader 一次／判据注释两次 ✓）
+  //   ⇒ **∴ 所以**：**本段表达式里**不写注释**✗，**要点写在模板外 ✓**** ✓✓
+  // **∴ 输入规模 ✗**：**10 个边界值 × 3 组 ＋ **4096 个伪随机像素**✗
+  //   ⇒ **∴ 于是**：**"**逐字节相同 ✓"**这个说法**才有分量 ✓**** ✓✓
   const result = await evaluate(`(async () => {
-    // **∴ 抛错要**变成字符串 ✗**（**∴ 否则 CDP 会给一个对象 ⇒ 只看得到 object Object ✓）** ✓✓
     try {
-    const pixels = new Float32Array(${JSON.stringify(CASES.flatMap((c) => c.pixel))});
+    const pixels = (() => {
+      const values = [0, 1e-8, 0.0031308, 1 / 255, 0.5, 0.50598186, 1 - 1e-7, 1, 0.25, 0.75];
+      const out = [];
+      for (const value of values) {
+        out.push(value, 0, 0, 1);
+        out.push(value, value, value, 1);
+        out.push(value, value, value, value);
+      }
+      let seed = 0x2f6e2b1;
+      const next = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      for (let i = 0; i < 4096; i += 1) out.push(next(), next(), next(), next());
+      return new Float32Array(out);
+    })();
     const first = await window.yanshiGpuQuantize(pixels);
     const second = await window.yanshiGpuQuantize(pixels);
     const same = first.bytes.length === second.bytes.length
@@ -153,6 +198,7 @@ if (!fact.adapter) {
       typeofDelta: typeof first.maxChannelDelta,
       deterministic: same,
       bytes: Array.from(first.bytes),
+      pixelCount: pixels.length / 4,
       deltas: Array.from(first.bytes).map((b, i) => Math.abs(b - first.reference[i])),
     });
     } catch (error) {
@@ -182,7 +228,15 @@ if (!fact.adapter) {
   if (out.threw) {
     check(false, "GPU 路径**抛错**（**∴ 真错就在这里 ✓）", String(out.threw).slice(0, 240));
   }
-  if (out.deltas) console.log(`  逐通道差异：${out.deltas.join(",")}`);
+  if (out.deltas) {
+    const differing = out.deltas.filter((d) => d !== 0).length;
+    console.log(`  逐通道差异：**不同字节 ${differing}／${out.deltas.length}**｜最大 ${out.maxChannelDelta}`);
+    if (differing > 0) {
+      const firstIndex = out.deltas.findIndex((d) => d !== 0);
+      console.log(`  首个不同在第 ${firstIndex} 个字节`
+        + `（GPU=${out.bytes[firstIndex]} vs 参考=${out.bytes[firstIndex] - 0}）`);
+    }
+  }
   check(out.backend === "gpu", "**必须**报成 `gpu`（实际后端 ✗）", String(out.backend));
   check(out.typeofDelta === "number",
     "**必须**报出数值型 `maxChannelDelta`（**不许**恒 0 冒充也**不许**缺 ✓）", out.typeofDelta);

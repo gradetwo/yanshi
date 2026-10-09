@@ -1,3 +1,17 @@
+
+// **★ 临时目录必须**自己收拾 ✗ ★**（第 53 轮 ✓；**∴ 用户报告 /tmp 被塞满 ✓）：
+//   **∴ 我**的浏览器脚本**每个**都建**chromium profile ＋ 临时 root**✗
+//     ⇒ **∴ 而**以前**从不删除**✗ ⇒ **∴ 跑几十次就**把 /tmp 塞满 ✓**** ✓✓
+//   **∴ 现在**：**注册 ＋ 退出时递归删除**✗ ⇒ **∴ 于是**：**跑多少次都**不积累 ✓**** ✓✓
+import { rmSync } from "node:fs";
+
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+process.on("exit", () => {
+  for (const path of __tempPaths) {
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* 已经没了 */ }
+  }
+});
 //! **★ §6.3 的 ②③④：后端如实上报 ＋ 关掉 GPU 与基线逐字节相同 ✗ ★**（第 35 轮 ✓）。
 //!
 //! **∴ 依据 ✗**：`docs/design/gpu-webgpu-discussion.md` §6.3 的四条前置判据里，
@@ -34,7 +48,7 @@ if (spawnMode) {
     process.exit(2);
   }
   const start = async (port, extra) => {
-    const root = mkdtempSync(join(tmpdir(), "gpu-report-"));
+    const root = trackTemp(mkdtempSync(join(tmpdir(), "gpu-report-")));
     const child = spawn(binary, ["--root", root, "--bind", `127.0.0.1:${port}`, ...extra], {
       stdio: "ignore",
     });
