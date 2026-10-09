@@ -7515,3 +7515,33 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ 那**是**唯一可靠**的事实来源 ✓**** ✓✓
 #   **∴ 教训 ★**：**三次错误推理的**共同点 ✗** ＝ **从**症状**猜**原因 ✓**
 #     ⇒ **∴ 规则（**硬性 ✓）✗**：**在**加诊断之前**不许再写"**就是它**" ✓**** ✓✓
+
+# **★ 第 843 轮：🎯 **`/api/blob` 分支的**完整蓝图**到手 ✗**（**照 `brush_stroke` 抄 ✓）**
+#   **∴ 为什么需要它 ✗**：**`seedSampleIfEmpty` ✗**（**`index.html:4176` ✓）**在**新文档**时
+#     **取示例 PNG ⇒ 转像素 ⇒ POST `/api/blob` ⇒ 拿 `blob_hash` ⇒ `import_image` ✓**
+#     ⇒ **∴ 而**本地层**没有 `/api/blob` 分支 ✗** ⇒ **∴ 于是**：**501 ⇒ **∴ 上传失败 ⇒
+#       **∴ 新文档**没有画面 ⇒ **∴ 用户**感觉"**画不出来**" ✓**** ✓✓
+#   **★ 但**本地层**已经有**整条流水线**✗ ★**（**在 `brush_stroke` 分支里 ✓）** ✓**：
+#     ```js
+#     :191   let entryK = kernels.get(doc);                      // **★ 内核缓存 ✗ ★**
+#     :192-198  if (!entryK) { …从创建原子取 w/h… entryK = { k: new mod.WasmKernel(doc, 256, w2, h2, 256*1024*1024), w, h }; kernels.set(doc, entryK); }
+#     :222   const kernelHash = entryK.k.blob_put(rgba);          // **★ 位图进内核 store ✗ ★**
+#     :229   const hash = (() => { const raw = String(kernelHash||"");
+#              try { const o = JSON.parse(raw); if (o && o.blob_hash) return String(o.blob_hash); } catch(e) {}
+#              return raw; })();                                 // **★ 解 JSON 信封 ✗ ★**
+#     :236   const { putBlob } = await import("/store.js");
+#            await putBlob(handle, hash, Array.from(rgba));      // **★ 同时写 IndexedDB ✗ ★**
+#     ```
+#     ⇒ **∴ 所以**：**`/api/blob` 分支**只要**照抄这四步 ✗** ⇒ **∴ 于是**上传**立刻可用 ✓**** ✓✓
+#   **★ 所以下一轮的实现（**照抄 ✓）★**：
+#     **① 位置 ✗**：**加在分派表里 ✗**（**在 `/api/documents` 之前或之后 ✓）**；
+#     **② 读二进制 ✗**：**`const bytes = new Uint8Array(await req.arrayBuffer());` ✗**
+#       （**∴ 而** `:51` 已经**对 `image/` 跳过 JSON 解析 ✓ ⇒ **∴ `req` 的 body** 仍可读 ✓**）**；
+#     **③ 进内核 ✗**：**`const kernelHash = entryK.k.blob_put(bytes);` ✗**
+#       ＋ **`:229` 的**同一个解信封**逻辑 ✓**** ✓✓
+#     **④ 写 IndexedDB ✗**：**`await putBlob(handle, hash, Array.from(bytes));` ✗**** ✓✓
+#     **⑤ 返回 ✗**：**`json({ ok: true, blob_hash: hash, size: bytes.length, mime_type: "image/x-yanshi-raw" })` ✗**
+#       （**∴ 字段与**服务端一致 ✓：**`index.html:4197` 读 `upload.blob_hash` ＋ `upload.size` ✓）** ✓✓
+#   **∴ 且**要**加可红判据 ✗**：**POST 一段 PNG 字节 ⇒ 期望 `ok` ＋ **`blob_hash` 以 `sha256:` 开头 ✓**** ✓✓
+#   **∴ 两面 ✗**：**收益**＝**示例图上传可用 ⇒ **∴ 新文档有画面 ⇒ **∴ 能画 ✓****；
+#     **代价**＝**每张示例图**多一次**IndexedDB 写 ✗**（**≈几十 KB ～ 几 MB ✓）⇒ **∴ 可接受 ✓**** ✓✓
