@@ -325,6 +325,13 @@ impl BitmapCache {
                     inner.order.push_back(moved);
                 }
             }
+            // **★ 只读探针（**命中 ✓）✗ ★**（第 946 轮 ✓；**照 `YANSHI_*_PROBE` 惯例 ✓）：
+            //   **∴ 为什么需要它 ✗**：**`export_small`** 那条**逐像素**判据
+            //     **矛盾未解 ✗**（**状态／位图数／设置／缓存／并行／实例**全排除 ✓）
+            //     ⇒ **∴ 排除法**到头了 ✓ ⇒ **∴ 换工具 ✗**：**让渲染器**自报
+            //       **它**到底读到了什么 ✓**** ✓✓
+            //   **∴ 未设变量 ⇒ 行为不变 ✗**（**∴ 只**多一次**环境变量查询 ✓）** ✓✓
+            bitmap_probe("hit", key, entry.0, entry.1, &entry.2);
             return Ok(Some(entry));
         }
         // **∴ 锁**在这里释放 ✗**（**`inner` 不再使用 ✓）⇒ **∴ 于是**下面的 `decode()` 在锁外 ✓**
@@ -332,6 +339,8 @@ impl BitmapCache {
         let Some((width, height, bytes)) = decode()? else {
             return Ok(None);
         };
+        // **∴ 解码路径**也记一条 ✗**（**∴ 于是**：**两边**的"**读到什么**"**可以逐项比对 ✓）
+        bitmap_probe("decode", key, width, height, &bytes);
         // **∴ 再拿锁写入 ✗**：**可能**另一个线程已经写好了 ⇒ **∴ 那时**直接用它的 ✓**
         let mut inner = self
             .inner
@@ -5245,5 +5254,34 @@ mod tests {
         assert_eq!(out.pixel(1, 1), Some([255, 255, 255, 255]));
         assert!(out.stats.unsupported.is_empty());
         assert!(state.is_consistent());
+    }
+}
+
+/// **★ 只读位图探针 ✓ ★**（第 946 轮 ✓；**`YANSHI_BITMAP_PROBE=<文件>` ✓**）：
+///   **∴ 记什么 ✗**：**哪条路径**（`hit`／`decode` ✓）、**缓存 key** ✓、
+///     **尺寸** ✓、**字节长度** ✓、**内容校验（**FNV-1a ✓）** ✓**** ✓✓
+///   **∴ 为什么用 FNV-1a ✗**：**自包含 ✗**（**∴ 不**引入新依赖 ✓）**，
+///     **且**足以**发现"**字节不同**" ✓（**∴ 我**要的是**相同／不同 ✓，**不是**抗碰撞 ✓）** ✓✓
+///   **∴ 未设变量 ⇒ 立刻返回 ✗**（**∴ 零**行为影响 ✓）** ✓✓
+pub fn bitmap_probe(kind: &str, key: &str, width: u32, height: u32, bytes: &[u8]) {
+    let Ok(path) = std::env::var("YANSHI_BITMAP_PROBE") else {
+        return;
+    };
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            file,
+            "BITMAP {kind} key={key} {width}x{height} len={} fnv={hash:016x}",
+            bytes.len()
+        );
     }
 }
