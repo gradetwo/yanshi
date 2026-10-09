@@ -1041,6 +1041,11 @@ impl Renderer {
             let cached = if ready {
                 below.lock().ok().and_then(|g| {
                     let c = g.as_ref()?;
+                    // **★ 签名必须相等 ✓ ★**（第 561 轮 ✓，**修真缺陷 ✗**）：**∴ 本分支原先只看 tile 在不在 ✗，
+                    // 不看它们属于哪个签名 ✗** ⇒ **∴ 不同 sig 的渲染会互相命中 ⇒ 错像素 ✗**（**宁慢勿错 ✓**）。
+                    if c.sig != sig {
+                        return None;
+                    }
                     let mut out = accumulation.clone();
                     for k in &want_tiles {
                         let (_, buf) = c.tiles.iter().find(|(t, _)| t == k)?;
