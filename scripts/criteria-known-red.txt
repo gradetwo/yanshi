@@ -3039,3 +3039,40 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **③ 再做**复用** ✗**：**命中 ⇒ **不重跑 `index_here > split` 的层**✗（**而是把 `above`
 #       **叠到 `accumulation` 上 ⇒ `note_above_reuse()` ✓**）⇒ **∴ 这一步**才改行为 ✓**
 #       ⇒ **∴ 要**判据 ＋ 变异 ✓**（**切到半透明层两次 ⇒ 命中数上升；**变异 ⇒ 永不命中 ⇒ 必红 ✓**）** ✓✓
+# **★ 第 693 轮：✅ `below` 的**完整写入样板**已到手 ✓ ⇒ **∴ 最干净做法 ＝ **抽函数 ＋ 两处调用**✗****
+#   **∴ 样板（`render.rs:1256-1332` ✓）** ✓**：
+#     ```rust
+#     if cacheable && !reused {
+#         let ob = accumulation.bbox();
+#         let btx = …div_euclid(BELOW_TILE)…;      // **tile 数 ✓**
+#         let bty = …;
+#         let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+#         if budget_ok {
+#             if let Ok(mut guard) = below.lock() {
+#                 let origin = accumulation.bbox();
+#                 let (x0,y0,x1,y1) = …按 BELOW_TILE 对齐…;
+#                 let fresh = …for ty/tx ⇒ accumulation.crop(&bbox) ⇒ 非空才 push…;
+#                 let keep = match guard.as_mut() {
+#                     Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
+#                     Some(c) => { c.tiles.clear(); c.sig = sig.clone(); Vec::new() }
+#                     None => Vec::new(),
+#                 };
+#                 let mut merged = …fresh 与 keep 同名者用 merge_by_rows 合并…;
+#                 for old in keep { if !merged.any(k) { merged.push(old) } }
+#                 if merged.len() > BELOW_TILE_BUDGET { merged.drain(0..drop); }   // **∴ 丢最旧 ✓**
+#                 …写回 guard…
+#             }
+#         }
+#     }
+#     ```
+#   **★ 关键设计决定（**下一轮 ✓）★**：**不**照抄这 80 行 ✗** ⇒ **∴ 而是**抽成一个函数 ✗**
+#     **（**如 `fn store_cache(slot: &Mutex<Option<Tiles>>, sig: &[String], source: &Buffer, budget: usize)` ✓**）**
+#     ⇒ **∴ 于是** `below` 与 `above` **共用同一份逻辑 ✗**
+#     ⇒ **∴ 且**这**正合目标第 4 条原话「**接进现有 tile 缓存与淘汰统计（不新起一套）**✗**」** ✓✓
+#     **∴ 而**为此需要**把两个 `struct { sig, tiles }` 统一 ✗**（**∴ 如**抽成 `struct TileCache<T>`
+#       **或**让 `AboveTiles` 与 `BelowTiles` 同形 ⇒ **∴ 用**一个泛型 `Tiles` 结构 ＋ 两个别名 ✓**）** ✓✓
+#   **∴ 下一轮（**三步 ✓**）** ✓：
+#     **① 把 `BelowTiles`／`AboveTiles` 统一为一个结构 ✗**（**∴ 字段完全相同：`sig` ＋ `tiles` ✓**）；
+#     **② 抽 `store_cache(…)` ✗**（**把 `:1256-1332` 那段搬进去 ✓）⇒ `below` 改调它 ✓**；
+#     **③ `above` 写完后 ⇒ **删掉 `#[expect(dead_code)]` ✗ ＋ **判据断言"半透明层两次 ⇒ 命中数上升"✗**。**
+#   **∴ 注意** ✓：**本轮**只读不写 ✗**（**∴ 因为**80 行照抄**风险高 ⇒ **∴ 抽函数更稳 ✓**）。**
