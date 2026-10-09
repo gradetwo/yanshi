@@ -873,11 +873,48 @@ impl Renderer {
                 Ok(guard) => match guard.as_ref() {
                     Some(c) if c.sig == sig => want_tiles
                         .iter()
-                        .all(|k| c.tiles.iter().any(|(t, _)| t == k)),
+                        .all(|k| c.tiles.iter().any(|(t, _)| *t == *k)),
                     _ => false,
                 },
                 Err(_) => false,
             };
+            // **★ 探针：缺哪几块 ✓**（第 497 轮 ✓）：**∴ 一次确认"全有或全无 × 并行行带"这条假设 ✗**。
+            if let Some(path) = probe_path.as_deref() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let (have, missing) = match below.lock() {
+                        Ok(g) => match g.as_ref() {
+                            Some(c) if c.sig == sig => {
+                                let have = want_tiles
+                                    .iter()
+                                    .filter(|k| c.tiles.iter().any(|(t, _)| *t == **k))
+                                    .count();
+                                let missing: Vec<String> = want_tiles
+                                    .iter()
+                                    .filter(|k| !c.tiles.iter().any(|(t, _)| *t == **k))
+                                    .map(|k| format!("{k:?}"))
+                                    .collect();
+                                (have, missing)
+                            }
+                            Some(_) => (0, vec!["sig-differs".to_owned()]),
+                            None => (0, vec!["empty".to_owned()]),
+                        },
+                        Err(_) => (0, vec!["lock-poisoned".to_owned()]),
+                    };
+                    let _ = writeln!(
+                        f,
+                        "want={} have={} missing={} want_tiles={:?}",
+                        want_tiles.len(),
+                        have,
+                        missing.len(),
+                        want_tiles
+                    );
+                }
+            }
             let cached = if ready {
                 below.lock().ok().and_then(|g| {
                     let c = g.as_ref()?;
