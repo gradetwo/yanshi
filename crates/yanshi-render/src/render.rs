@@ -1093,14 +1093,14 @@ impl Renderer {
                         tiles_ok,
                         want_tiles.len()
                     );
-                    let _ = writeln!(
-                        f,
-                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={}",
+                    let line = format!(
+                        "READ ready={} sig_eq={} tiles_ok={} n_tiles={}\n",
                         ready,
                         sig_eq,
                         tiles_ok,
                         want_tiles.len()
                     );
+                    let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
                 }
             }
             // **★ `above` 的命中判断 ✗ ★**（第 711 轮 ✓）：**∴ 与 `ready` 同形 ✗**。
@@ -1144,14 +1144,14 @@ impl Renderer {
                         },
                         Err(_) => (0, vec!["lock-poisoned".to_owned()]),
                     };
-                    let _ = writeln!(
-                        f,
-                        "want={} have={} missing={} want_tiles={:?}",
+                    let line = format!(
+                        "want={} have={} missing={} want_tiles={:?}\n",
                         want_tiles.len(),
                         have,
                         missing.len(),
                         want_tiles
                     );
+                    let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
                 }
             }
             let cached = if ready {
@@ -1249,11 +1249,11 @@ impl Renderer {
                 .append(true)
                 .open(path)
             {
-                let _ = writeln!(
-                    f,
-                    "cacheable=0 split={} clipping_or_single=1 bbox=({},{},{},{})",
+                let line = format!(
+                    "cacheable=0 split={} clipping_or_single=1 bbox=({},{},{},{})\n",
                     split, want.x, want.y, want.w, want.h
                 );
+                let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
             }
         }
 
@@ -1336,9 +1336,8 @@ impl Renderer {
                     .append(true)
                     .open(&probe)
                 {
-                    let _ = writeln!(
-                        f,
-                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}",
+                    let line = format!(
+                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={} inst={:x}\n",
                         btx,
                         bty,
                         budget_ok,
@@ -1349,6 +1348,7 @@ impl Renderer {
                         sig.len(),
                         self as *const Self as usize,
                     );
+                    let _ = f.write_all(line.as_bytes()); // ★ 行原子 ⇒ 不再交错 ★
                 }
             }
             if budget_ok {
