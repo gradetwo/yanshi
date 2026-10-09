@@ -94,10 +94,10 @@ jobs:
           CHROME_BIN="$BIN" node scripts/browser-pwa-local.mjs
 
       - name: ★ 判据集合：覆盖率守卫（**不许有判据被静默跳过**）
-        # **★ 工作流结构 ✓ ★**（第 677 轮 ✓）：**∴ 第 675 轮真出过"同一步骤两个 `run:` ✗
-        # ⇒ YAML 只保留最后一个 ⇒ **某一步从未执行**"✗** ⇒ **∴ 用这条判据守住 ✓**（**窄而准 ✓**）。
-        run: node scripts/tool-workflow-structure.mjs
         run: node scripts/tool-criteria-coverage.mjs
+
+      - name: 工作流结构判据（**无空 step ＋ 每步至多一个 run**）
+        run: node scripts/tool-workflow-structure.mjs
 
       - name: 部署（或如实跳过）
         id: deploy
