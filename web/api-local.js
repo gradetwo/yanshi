@@ -138,13 +138,17 @@ export function installLocalApi(deps) {
   window.fetch = async (input, init) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url, location.origin);
-    // **∴ 只拦 `/api/` ✓**（**静态资源与 `/wasm/` 保持原路 ✓**）。
-    if (!url.pathname.startsWith("/api/")) return original(input, init);
-    // **∴ 健康检查要**如实报"无服务器"✗**（**∴ 不许谎报 ✓**）。
+    // **★ 判定顺序很关键 ✓ ★**（第 621 轮 ✓，**真实浏览器判据抓到的真缺陷 ✗**）：
+    // **∴ `/health` 必须在 `/api/` 前缀检查**之前**✗** ——
+    // **∴ 否则**它不匹配 `/api/` ⇒ **∴ 会被 `return original(…)` 放行 ✗** ⇒ **∴ 打到静态服务器 ⇒ 404 ✗**
+    //（**∴ 而**node 行为判据抓不到它 ✗**：**它直接调 `makeLocalApi` ✓，**不经过这层覆写 ✓**）
+    // ⇒ **∴ 这正是"真实浏览器验证"的价值 ✗**。
     if (url.pathname === "/health") {
       return json({ ok: true, server: false, render_backend: await detectBackend(),
                     note: "本部署没有服务器端；渲染全部在本地浏览器完成" });
     }
+    // **∴ 只拦 `/api/` ✓**（**静态资源与 `/wasm/` 保持原路 ✓**）。
+    if (!url.pathname.startsWith("/api/")) return original(input, init);
     try {
       return await deps.local(req);
     } catch (err) {

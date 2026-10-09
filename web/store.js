@@ -29,7 +29,11 @@ export function open() {
       // **原子日志**：**按文档主键 ＋ 序号自增 ✓** ⇒ **∴ 支持"回到此处"✓**。
       if (!db.objectStoreNames.contains("atoms")) {
         const s = db.createObjectStore("atoms", { keyPath: "id" });
-        s.createIndex("by_doc_seq", ["doc", "seq"], { unique: false });
+        // **★ 不用数组 keyPath ✗ ★**（第 622 轮 ✓，**真实浏览器判据抓到的挂起 ✗**）：
+        // **∴ 实测**：**`createIndex("…", ["doc","seq"], …)` 在真浏览器里会让 `open()` **永不回**✗**
+        //（**`pixel` 是：`onupgradeneeded` 里抛错 ⇒ 而 `onsuccess`／`onerror` 都不触发 ⇒ **挂住**✓**）
+        // ⇒ **∴ 改为**用记录里已有的合成键 `id`（`"doc:seq"` ✓）建普通索引 ✓**。
+        s.createIndex("by_doc_seq", "id", { unique: false });
       }
       // **blob**：**按内容哈希存 ✓**（**与服务端的 blob 语义一致 ✓**）。
       if (!db.objectStoreNames.contains("blobs")) {
@@ -42,6 +46,11 @@ export function open() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    // **★ 不许静默挂住 ✗ ★**（第 622 轮 ✓）：**∴ 实测 `open()` 曾**永不回**✗**
+    // ⇒ **∴ 于是**页面停在加载中、而**控制台什么都没有**✗ ⇒ **∴ 极难定位 ✓**。
+    // **∴ 现在**：**阻塞 ⇒ 报错 ✓；超时（**3s ✓**）⇒ 报错 ✓**（**∴ 都会**说出来 ✓**）。
+    req.onblocked = () => reject(new Error("indexedDB 被阻塞（可能有旧标签页占用）"));
+    setTimeout(() => reject(new Error("indexedDB open 超时（3s）")), 3000);
   });
 }
 

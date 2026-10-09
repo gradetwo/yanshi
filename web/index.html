@@ -41,7 +41,30 @@
       } catch (err) {
         console.warn("内核未加载 ✗（需先执行 scripts/pwa-sync-wasm.mjs ✓）", err);
       }
-      // **③ 注册 service worker ✓**（**离线可用 ✓**）
+      // **③ ★ 安装本地 API 层 ✓ ★**（第 621 轮 ✓；**部署矩阵 §12 ✓**）：
+      // **∴ 它是"**同一份 viewer 两处都能跑**✗"的关键 ✗** ——
+      // **∴ 装上之后 `/api/*` 与 `/health` 都由**本地**应答 ✓**（**内核 ＋ IndexedDB ✓**），
+      // **∴ 而**静态资源与 `/wasm/` 仍走原路 ✓**（**∴ 互不干扰 ✓**）。
+      // **∴ 未实现的端点 ⇒ 如实 501 ✗**（**∴ 不静默失败 ✓**）。
+      window.__pwaStep = "before-import";
+      try {
+        const { installLocalApi, makeLocalApi } = await import("/api-local.js");
+        window.__pwaStep = "imported";
+        const { open } = await import("/store.js");
+        const __db = await open();
+        window.__pwaStep = "db-open";
+        installLocalApi({ local: await makeLocalApi(__db) });
+        window.__pwaStep = "installed";
+        window.__pwaInstalled = true;
+        console.log("本地 API 已安装 ✓（/api/* 与 /health 走本地）");
+      } catch (err) {
+        // **∴ 装不上必须**说出来 ✗**（**否则接口会打到静态服务器 ⇒ 404 ⇒ 看起来像"服务端坏了"✗**）。
+        window.__pwaInstallError = String((err && err.stack) || err);
+        console.error("本地 API 安装失败 ✗", err);
+        state.textContent += "（本地 API 安装失败 ✗）";
+      }
+
+      // **④ 注册 service worker ✓**（**离线可用 ✓**）
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js").catch(() => {});
       }
