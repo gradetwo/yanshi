@@ -1317,6 +1317,98 @@ impl Renderer {
                 }
             }
         }
+
+        // **★ `above` 的写入 ✗ ★**（第 700 轮 ✓；**目标第 4 条 ✓**）：**∴ 与 `below` **同一套**
+        //   **结构与淘汰统计**（**∴ 同一预算常量 ＋ 同一 `merge_by_rows` ✓ ⇒ **不新起一套 ✓**）。
+        //   **∴ 只在**当前层半透明**时需要 ✗**（**∴ 否则 `above_wanted` 为假 ⇒ 连切块都不做 ✓**）。
+        if above_wanted {
+            // **∴ 上方层（`split+1..` ✓）的指纹 ✗**（**∴ 与 `sig` 同形 ✓**）。
+            let above_sig: Vec<String> = visible_ids.iter().skip(split + 1).cloned().collect();
+            // **∴ 同名遮蔽 ⇒ 段内规则与 `below` 一致 ✓**（**∴ 少一套名字 ✓**）。
+            if let Some(above_acc) = above_acc.as_ref() {
+                // **★ 覆盖块数上限 ✓ ★**（目标明文 ✓）：**超出预算 ⇒ **整组不缓存**✓**
+                //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
+                // **∴ 块数由 `above_acc` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
+                let ob = above_acc.bbox();
+                let btx = ((ob.x + ob.w).ceil() as i64 - 1).div_euclid(BELOW_TILE)
+                    - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
+                    + 1;
+                let bty = ((ob.y + ob.h).ceil() as i64 - 1).div_euclid(BELOW_TILE)
+                    - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
+                    + 1;
+                let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+                if budget_ok {
+                    if let Ok(mut guard) = self.above.lock() {
+                        // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
+                        // **∴ 旧版每次**整体替换**✗ ⇒ **∴ 只保留"最后一次"的 tile 集 ✗**（**区域轮换时命中率低 ✓**）；
+                        // **∴ 新版**合并**✓：**同键覆盖 ✓、新键追加 ✓、`above_sig` 变则整份清空 ✓**（**防撒谎 ✓**）**，
+                        // **∴ 并按**块数预算**丢最旧的 ✓**（**`Vec` 的顺序即年龄 ✓**）。
+                        let origin = above_acc.bbox();
+                        let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
+                        let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
+                        // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
+                        let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
+                            let mut v = Vec::new();
+                            for ty in y0..=y1 {
+                                for tx in x0..=x1 {
+                                    let key = (tx * BELOW_TILE, ty * BELOW_TILE);
+                                    let bbox = yanshi_core::Bbox::new(
+                                        key.0 as f64,
+                                        key.1 as f64,
+                                        BELOW_TILE as f64,
+                                        BELOW_TILE as f64,
+                                    );
+                                    let piece = above_acc.crop(&bbox);
+                                    let pb = piece.bbox();
+                                    if pb.w > 0.0 && pb.h > 0.0 {
+                                        v.push((key, piece));
+                                    }
+                                }
+                            }
+                            v
+                        };
+                        let keep = match guard.as_mut() {
+                            Some(c) if c.sig == above_sig => std::mem::take(&mut c.tiles),
+                            Some(c) => {
+                                c.tiles.clear();
+                                c.sig = above_sig.clone();
+                                Vec::new()
+                            }
+                            None => Vec::new(),
+                        };
+                        // **★ 同键 ⇒ **按行合并** ✓ ★**（**不是整体替换 ✗**）：**∴ 相邻两带各写一部分
+                        // ⇒ **∴ 合并成完整 tile ✓**（**修"半块竞态"✓**）。
+                        let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                        for (k, piece) in fresh {
+                            let mut acc = piece;
+                            for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
+                                if acc.bbox() != old_piece.bbox() {
+                                    acc = merge_by_rows(old_piece, &acc);
+                                }
+                            }
+                            merged.push((k, acc));
+                        }
+                        // **其余保留其原有顺序（**＝ 年龄 ✓**）**。
+                        for old in keep {
+                            if !merged.iter().any(|(k, _)| *k == old.0) {
+                                merged.push(old);
+                            }
+                        }
+                        // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
+                        if merged.len() > BELOW_TILE_BUDGET {
+                            let drop = merged.len() - BELOW_TILE_BUDGET;
+                            merged.drain(0..drop);
+                        }
+                        *guard = Some(BelowTiles {
+                            sig: above_sig,
+                            tiles: merged,
+                        });
+                    }
+                }
+            }
+        }
         Ok(accumulation)
     }
 

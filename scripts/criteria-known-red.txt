@@ -3232,3 +3232,41 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **仍是"`accumulation` ⇒ `above_acc`"✓**（**∴ 无需第三套名字 ✓**）** ✓✓
 #   **∴ 下一轮（**一步 ✓**）** ✓：**写上面那段 ✗**（**备份 ✓｜先打印边界 ✓｜三类替换 ✓｜
 #     **编译看错 ✓**）⇒ **∴ 若绿** ⇒ **∴ 然后**步骤 ②（**复用 ＋ `note_above_reuse()` ✓）＋ 判据 ✓**。**
+
+# **★ 第 700 轮：🎉🎉🎉 **`above` 的写入路径落地 ✗**（**目标第 4 条的一大步 ✓**）**
+#   **∴ 做法** ✓：**照抄 `below` 的写入段（`:1240-1319`，80 行 ✓）⇒ **三类替换（**11 处 ✓）**：
+#     **`below` ⇒ `self.above`（1 处 ✓）｜`accumulation` ⇒ `above_acc`（4 处 ✓）｜`sig` ⇒ `above_sig`（6 处 ✓）**；
+#     **∴ 而** `BELOW_TILE`（12 ✓）／`BELOW_TILE_BUDGET`（3 ✓）／`merge_by_rows`（1 ✓）**保持 ✗**
+#     ⇒ **∴ 于是** `above` **与 `below` 共用**同一套结构与淘汰统计**✗**
+#     ⇒ **∴ 正合目标原话「接进现有 tile 缓存与淘汰统计（**不新起一套**）」✓**** ✓✓
+#   **∴ 结构** ✓**：
+#     ```rust
+#     if above_wanted {
+#         let above_sig: Vec<String> = visible_ids.iter().skip(split + 1).cloned().collect();
+#         if let Some(above_acc) = above_acc.as_ref() {   // **∴ 同名遮蔽 ⇒ 规则与 below 一致 ✓**
+#             … 照抄的 80 行（**换过名 ✓**）…
+#         }
+#     }
+#     ```
+#     ⇒ **∴ 插入点** ✓：**`below` 段收尾 `}` **之后**✗**（**∴ 即 `Ok(accumulation)` 之前 ✓）** ✓✓
+#   **★ 途中踩到并修好的三个编译错误（**每个都很具体 ✓）★**：
+#     **① `no field above_sig on type &mut BelowTiles`（2 处 ✓）**
+#       ⇒ **∴ 原因**：**我的 `\bsig\b` 把**字段访问 `c.sig`** 也替换了 ✗**
+#       ⇒ **∴ 修**：**`c.above_sig` ⇒ `c.sig` ✓**（**∴ 字段名没变 ✓**）；
+#     **② `struct BelowTiles has no field named above_sig`（1 处 ✓）**
+#       ⇒ **∴ 原因**：**我先把结构体字面量改成了独占的 `sig,` ✗**（**∴ 而**那**不对 ✓**）；
+#     **③ `use of moved value: sig`（`:1404` ✓）**
+#       ⇒ **∴ 原因**：**`:1316`（**below ✓）已把 `sig` move 进结构体 ✗**，
+#       **而** `:1404`（**above ✓）又用它 ✓**（**∴ `Vec<String>` 不是 `Copy` ✓**）
+#       ⇒ **★ 正确写法 ✗ ★**：**`BelowTiles { sig: above_sig, tiles: merged }` ✗**
+#       （**∴ 字段名是 `sig` ✗，**而**值必须是 `above_sig` ✗）**
+#       ⇒ **∴ 而**这**同时修好了**语义（**above 存上方层指纹 ✓）＋ move 错 ✓**** ✓✓
+#   **∴ 门禁** ✓：**build ✓｜clippy -D warnings ✓｜`yanshi-render --lib` **257 passed／0 failed ✓**｜
+#     **fmt ✓｜JS ✓｜覆盖率 ✓｜工作流结构 ✓｜ASSETS ✓** ✓✓
+#     ⇒ **★ 257 全绿 ⇒ **行为仍不变 ✗ ★**（**∴ 因为**复用还没做 ✓ ⇒ **∴ 现在 `above` **只被写、不被读**✗**）** ✓✓
+#   **∴ 下一轮（**步骤 ② ⑤ ✓**）** ✓**：
+#     **① 复用** ✗**：**`above_wanted` 且**指纹命中**时 ⇒ **不再重跑 `index_here > split` 的层 ✗**
+#       （**∴ 而是**把 `above` 的 tile 叠到 `accumulation` 上 ⇒ **`note_above_reuse()` ✓**）；
+#     **② 判据** ✗**：**切到半透明层两次 ⇒ `above_reuse_count()` 上升 ✓**；
+#       **变异**：**让它永不命中 ⇒ **必红 ✓****；
+#     **③ 并**接进 `RenderStats`／诊断输出 ✗**（**∴ 让服务端也能看到读数 ✓**）。**
