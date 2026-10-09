@@ -173,6 +173,28 @@ if (headTag < 0) {
 //     ⇒ **∴ 它**返回 405 ✓** ⇒ **∴ 图标**显示不出来 ✓**** ✓✓
 //   **∴ 现在**：**整棵 `assets/brand/`**递归拷进 `web/brand/` ✗**
 //     ⇒ **∴ 于是**网页引用的图标**全都在 ✓**** ✓✓
+// **★ 示例资源也要同步 ✗ ★**（第 833 轮 ✓；**静态一致性检查抓到 ✓**）：
+//   **∴ 为什么 ✗**：**导出的页面**请求 `/samples/…` ✗** ⇒ **∴ 而**它**不在 `/api/` 下 ✗**
+//     ⇒ **∴ 本地层**放行 ✗** ⇒ **∴ 静态托管**找不到 ⇒ **∴ 405 ✓**** ✓✓
+//   **∴ 现在**：**整棵 `assets/samples/`**递归拷进 `web/samples/` ✗** ⇒ **∴ 于是**它可访问 ✓**** ✓✓
+const SAMPLES_SRC = "assets/samples";
+const SAMPLES_DST = join(DST, "samples");
+if (existsSync(SAMPLES_SRC)) {
+  rmSync(SAMPLES_DST, { recursive: true, force: true });
+  cpSync(SAMPLES_SRC, SAMPLES_DST, { recursive: true });
+  let sn = 0;
+  const swalk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) swalk(join(dir, e.name));
+      else sn += 1;
+    }
+  };
+  swalk(SAMPLES_DST);
+  console.log("  OK: 已同步示例资源 " + sn + " 个 ⇒ " + SAMPLES_DST);
+} else {
+  console.warn("  WARN: 找不到 assets/samples ⇒ 跳过示例资源同步");
+}
+
 const BRAND_SRC = "assets/brand";
 const BRAND_DST = join(DST, "brand");
 if (existsSync(BRAND_SRC)) {
