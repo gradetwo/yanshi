@@ -841,6 +841,8 @@ impl Renderer {
 
         // **★ below 复用判定 ✓**（目标第 4 条 ✓）：先算"可见层"的签名 ✓，再看缓存是否仍然有效 ✓。
         let mut visible_ids: Vec<String> = Vec::new();
+        // **★ 同时记下**层 id 的顺序 ✓**（**指纹串里没有 id ✗**）⇒ **∴ 用它定位"当前层"✓**。
+        let mut visible_layer_ids: Vec<String> = Vec::new();
         let mut except_seen = false;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
@@ -899,6 +901,7 @@ impl Renderer {
             objs.sort();
             // **∴ `clippy` 不许"`format!` 套在 `format!` 实参里" ✗（`format_in_format_args` ✓）⇒ 先算成局部变量 ✓。
             let color_space = format!("{:?}", state.color_space);
+            visible_layer_ids.push(layer.id.clone());
             visible_ids.push(format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 layer.id,
@@ -919,7 +922,17 @@ impl Renderer {
                 objs.join(",")
             ));
         }
-        let split = visible_ids.len().saturating_sub(1); // **切点 ＝ 最上层以外 ✓**
+        // **★ 切点由 `active_layer` 决定 ✓ ★**（**目标第 4 条 ✓**；第 518 轮 ✓）：
+        // **∴ `None` ⇒ 退回"最上层以外"✓**（**行为与今天一致 ✓**）；
+        // **∴ `Some(id)` ⇒ 切在该层上 ✓** ⇒ **∴ 改它时**它以下**的指纹不变 ⇒ **∴ below 命中 ✓****
+        //（**而旧切点在改**中间层**时要把**它以上**全部重渲 ✗**）。
+        let split = match self.options.active_layer.as_ref() {
+            Some(active) => visible_layer_ids
+                .iter()
+                .position(|id| id == active)
+                .unwrap_or(visible_layer_ids.len().saturating_sub(1)),
+            None => visible_layer_ids.len().saturating_sub(1),
+        };
         let sig: Vec<String> = visible_ids.iter().take(split).cloned().collect();
         // **最保守的例外 ✓**：**任一层带剪贴蒙版 ⇒ 整片不走缓存 ✓**（设计 §3 第 4 类 ✓）。
         // **★ 可证明性守卫 ✓**（第 461 轮**测试抓住的正确性缺陷** ✓）：
