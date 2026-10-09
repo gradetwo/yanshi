@@ -79,3 +79,6 @@ web/service-worker.js
 web/.index.export.html
 # Local secrets / deploy credentials
 .env
+
+# 部署工具（wrangler）的本地缓存产物，不属于源码
+.wrangler/
