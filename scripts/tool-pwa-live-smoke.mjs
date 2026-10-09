@@ -80,6 +80,10 @@ try {
   // A 200 is not enough: a name the host cannot resolve falls back to the page, which
   // is also a 200 with an html content type. That is exactly how a broken brush path
   // looked healthy, so assert the payload is a real file.
+  // /health cannot be checked over plain http here: the static host answers unknown
+  // paths with the page, so only a browser with the fetch override sees the real
+  // response. That contract is guarded by the behaviour criterion and by the browser
+  // criterion, both of which install the override.
   const brush = await get("/brushes/100_pct__Opaque.myb");
   check(brush.status === 200 && brush.bytes > 1000 && brush.ctype.indexOf("html") < 0,
     `笔刷必须是真文件而不是页面回退（status ${brush.status}｜${brush.bytes} 字节｜${brush.ctype}）`);

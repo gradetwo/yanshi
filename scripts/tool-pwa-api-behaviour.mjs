@@ -49,7 +49,12 @@ const calls = [];
 const stub = (name, value) =>
   Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
 stub("indexedDB", makeIndexedDB());
-stub("location", { origin: "https://yanshi-online.wangda.today" });
+// The fetch override resolves relative paths against location.href, so the stub needs
+// it as well as origin (its absence surfaced as ERR_INVALID_URL on "[object Object]").
+stub("location", {
+  origin: "https://yanshi-online.wangda.today",
+  href: "https://yanshi-online.wangda.today/",
+});
 stub("navigator", { gpu: undefined });   // **∴ 模拟「无 WebGPU」⇒ 后端应为 cpu ✓**
 stub("window", {
   fetch: (input) => { calls.push(String(input.url ?? input)); return Promise.resolve(new Response("{}", { status: 200 })); },
@@ -104,6 +109,33 @@ if (rrType.startsWith("image/png")) {
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
 // **∴ 用一个**确实仍未实现**的端点 ✗**（**`render_region` 已有快照分支 ✓ ⇒ 不再是 501 ✓**）。
+// **★ ⑨ `/health` 必须声明 `wasm: true` ✗ ★**（第 911 轮 ✓；**用户从守卫反推出来的 ✓**）：
+//   **∴ 为什么 ✗**：**viewer 的 `initWasm`** 有**一道守卫 ✗**：
+//     ```js
+//     const health = await (await fetch("/health")).json();
+//     if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
+//     ```
+//     ⇒ **∴ 而**本地层**只**声明了 `server:false` ✗** ⇒ **∴ 于是**：
+//       **内核被**前端拒绝预热 ✗** ⇒ **∴ 整条本地路径**被跳过 ✓**** ✓✓
+//       ⇒ **∴ 而**每一次落笔**都**报"**未知原因**" ✗**，**而**内核**其实可用 ✓**** ✓✓
+//   **∴ 判据 ✗**：**`/health` 的响应**必须**含 `wasm: true` ✗**
+//     ⇒ **∴ 变异（**手工 ✓）**：**删掉那个字段 ⇒ **∴ 本条**必红 ✓**** ✓✓
+//   **∴ 它**守的是**契约字段** ✗**（**而不是**行为 ✗）⇒ **∴ 而**那**正是**这次断裂的地方 ✓**** ✓✓
+// /health is answered by the fetch override, not by the dispatcher, so call it the way
+// the page does (through the installed override) rather than through `local` directly.
+// An absolute url is required here: the override builds a Request from it, and node
+// (unlike a browser) rejects a relative one with ERR_INVALID_URL.
+const healthRes = await window.fetch("https://yanshi-online.wangda.today/health");
+const healthBody = await healthRes.json();
+check(healthBody.wasm === true,
+  "本地层 /health 必须声明 wasm:true（否则 viewer 的 initWasm 拒绝预热内核）（实测 " +
+  JSON.stringify(healthBody).slice(0, 140) + "）");
+check(healthBody.server === false,
+  "本地层 /health 必须声明 server:false（如实：本部署没有服务端）（实测 " +
+  String(healthBody.server) + "）");
+console.log("    `/health` ⇒ wasm=" + healthBody.wasm + "｜server=" + healthBody.server +
+  "｜backend=" + healthBody.render_backend);
+
 // **★ ⑦ `/api/blob`：二进制上传必须成功 ✗ ★**（第 845 轮 ✓；**示例图上传正是这条路 ✓**）：
 //   **∴ 为什么必须测它 ✗**：**`seedSampleIfEmpty` 靠它拿 `blob_hash` ✗**
 //     ⇒ **∴ 而**它**曾经**因为**两个原因**失败 ✗**：
