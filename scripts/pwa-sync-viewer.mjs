@@ -11,7 +11,7 @@
 //（**∴ 拦截 `window.fetch` ⇒ 转到本地内核 ＋ IndexedDB ✓**）⇒ **∴ 前端本身**无需分支 ✓****。
 //
 // **用法** ✓：`node scripts/pwa-sync-viewer.mjs`（**在 `pwa-sync-wasm.mjs` 之后跑 ✓**）
-import { copyFileSync, existsSync, readdirSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { rmSync, cpSync, copyFileSync, existsSync, readdirSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
@@ -157,6 +157,30 @@ if (!bin) {
 //   **∴ 内核的落笔要的是**笔刷文件全文**✗**（**PaintRequest.myb ✓**）
 //   ⇒ **∴ 无服务器部署必须自带这 199 个文件（**≈1.9 MB ✓**）⇒ **∴ 且**9 个文件名含 `#` ✗**
 //   ⇒ **∴ 前端编成 %23 ✓ ⇒ **∴ 静态服务器必须正确解码 ✓**（**见 server.rs:486-500 ✓**）。
+// **★ 品牌资产也要同步 ✗ ★**（第 829 轮 ✓；**用户报告 `/brand/svg/icon-light.svg` 缺失 ✓**）：
+//   **∴ 为什么 ✗**：**导出的页面**引用了 `/brand/svg/icon-light.svg` ✗**
+//   ⇒ **∴ 而**同步**原来只拷**笔刷与介质 ✗** ⇒ **∴ 于是**线上**没有 `web/brand/`**✗
+//     ⇒ **∴ 它**返回 405 ✓** ⇒ **∴ 图标**显示不出来 ✓**** ✓✓
+//   **∴ 现在**：**整棵 `assets/brand/`**递归拷进 `web/brand/` ✗**
+//     ⇒ **∴ 于是**网页引用的图标**全都在 ✓**** ✓✓
+const BRAND_SRC = "assets/brand";
+const BRAND_DST = join(DST, "brand");
+if (existsSync(BRAND_SRC)) {
+  rmSync(BRAND_DST, { recursive: true, force: true });
+  cpSync(BRAND_SRC, BRAND_DST, { recursive: true });
+  let bn = 0;
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(dir, e.name));
+      else bn += 1;
+    }
+  };
+  walk(BRAND_DST);
+  console.log("  OK: 已同步品牌资产 " + bn + " 个 ⇒ " + BRAND_DST);
+} else {
+  console.warn("  WARN: 找不到 assets/brand ⇒ 跳过品牌资产同步（页面图标会缺）");
+}
+
 const BRUSH_SRC = "assets/brushes";
 const BRUSH_DST = join(DST, "brushes");
 if (!existsSync(BRUSH_SRC)) {
