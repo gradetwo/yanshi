@@ -315,3 +315,36 @@ for (let i = 0; i < 40; i++) { await sleep(300); if (await evaluate('document.re
 
 **⚠️ 诚实** ✓：**本轮**没有**产出新判据 ✗**（**只取到骨架并确认其可复用 ✓**）⇒
 **∴ 而这一步有效的理由 ✗**：**它把"能不能做"变成"知道怎么写"✗**（**64 行、零依赖、本机可跑 ✓**）** ✓✓
+
+---
+
+## 十四、PWA「真能画图」只差**接线**（**内核已备 ✓，第 623 轮 ✓**）
+
+### 14.1 内核已暴露的能力（**实测 ✓**）
+
+| 内核方法 | 位置 | 用途 |
+|---|---|---|
+| **★ `render_region_png(x, y, w, h) -> Vec<u8>` ★** | `lib.rs:128` | **★ 直接返回 **PNG** ★** ⇒ **∴ `render_region` 的本地实现**几乎不用写 ✗** |
+| **`render_region_rgba`** | `:120` | **原始 RGBA（**客户端自己上屏 ✓**）** |
+| **`render_region_direct_rgba`** | `:159` | **直通（**不经缓存 ✓**）** |
+| **`load_atoms_json`** | `:110` | **重放整份原子日志 ✓** |
+| **`apply_atom_json`** | `:115` | **应用单条原子 ✓** |
+| **`new(...)`／`version`／`set_viewport`／`memory_usage`／`evict_outside_viewport`** | `:87` 起 | **生命周期 ＋ 内存预算 ✓** |
+| **`set_preview_object`／`extend_preview_stroke`／`commit_preview`／`clear_preview`／`has_preview`** | `:173` 起 | **乐观预览（**笔触实时 ✓**）** |
+
+### 14.2 `render_region` 的本地实现（**下一轮，约 30 行 ✓**）
+
+**∴ 步骤** ✓：
+1. **从 IndexedDB 取该文档的原子**（`atomsOf` ✓）⇒ **`kernel.load_atoms_json(JSON.stringify(atoms))` ✓**；
+2. **`const png = kernel.render_region_png(x, y, w, h)` ✓**；
+3. **`return new Response(png, { headers: { "content-type": "image/png" } })` ✓**；
+4. **★ 并把结果写进快照（**带当前 `seq` ＋ `FORMAT_VERSION` ✓**）★**
+   ⇒ **∴ 于是**下一次同区域请求**直接命中快照分支 ✓**（**第 617 轮已写 ✓**）；
+5. **∴ 内核实例要**缓存 ✗**（**同一文档一个 ✓**）⇒ **∴ 否则每次重建 ⇒ **`load_atoms_json` 重放全部原子 ✗****。
+
+### 14.3 代价与两面（**必须写明 ✓**）
+
+| 面 | 内容 |
+|---|---|
+| **收益 ✓** | **PWA **真的能渲图**✗（**当前只有快照分支 ⇒ 冷启动给不出图 ✓**）｜**∴ 且**它**复用同一份内核 ✗**（**与服务端同源 ✓ ⇒ **∴ 像素级一致的前提还在 ✓**） |
+| **代价 ✗** | **① 首次渲染要**重放全部原子**✗**（**与服务端冷启动同性质 ⇒ **∴ 可接受 ✓**）；**② 内核实例常驻内存 ✗**（**4K 一份 ≈33 MB ⇒ **∴ 必须配 `set_memory_limit` ＋ `evict_outside_viewport` ✓**）；**③ 内核在**主线程**跑会阻塞 UI ✗** ⇒ **∴ 应放 **Web Worker**（**∴ 零 DOM 依赖正好支持 ✓**）** |
