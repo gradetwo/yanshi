@@ -7849,3 +7849,31 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 而**我**有两个**互相矛盾的读数（**`grep` 说 0 ✗，**`sha256` 说相等 ✓）**
 #       ⇒ **∴ 更可靠的那个**（**内容哈希 ✓）**赢了 ✓**** ✓✓
 #     ⇒ **∴ 规则**：**两个读数冲突时 ✗**，**先怀疑**自己的工具 ✓**** ✓✓
+
+# **★ 第 857 轮：✅ **三处裸 `.json()` 全部收口 ✗**（**用一个共用助手 ✓）**
+#   **∴ 改动 ✗**：**`crates/yanshi-http/assets/viewer-app.js` ✓**：
+#     **∴ 新增助手 ✗**：
+#       ```js
+#       async function jsonOrError(response) {
+#         const ct = String((response && response.headers && response.headers.get("content-type")) || "");
+#         if (ct.indexOf("json") < 0) {
+#           return { ok: false, error_code: "not_json",
+#                    context: { detail: "端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
+#         }
+#         try { return await response.json(); }
+#         catch (err) { return { ok: false, error_code: "bad_json",
+#                                context: { detail: String((err && err.message) || err) } }; }
+#       }
+#       ```
+#       ⇒ **∴ 于是**：**非 JSON ⇒ 如实错误对象 ✗**（**被调用方已有的 `if (!x.ok)` 接住 ✓）
+#         ＋ **∴ `JSON.parse` 失败**也被接住 ⇒ **∴ 不再**抛到全局 ✓**** ✓✓
+#     **∴ 替换 3 处 ✗**：**原行 `2493`／`3185`／`3510` ✗**
+#       ⇒ **∴ `}).then((response) => response.json());` ⇒ `}).then(jsonOrError);` ✓**
+#       ⇒ **∴ 实测**：**`jsonOrError` 出现 **4 次 ✗**（**1 定义 ＋ 3 调用 ✓）**
+#         ＋ **`裸 .json() 还剩: 0` ✗** ✓**** ✓✓
+#   **∴ 为什么用**共用助手**而不是逐处写 ✗**：**逐处写**会**重复四遍**✗**
+#     ⇒ **∴ 而**重复**正是**分叉的温床 ✓**（**∴ 我**这次**只修了一处**就是**因为这个 ✓）** ✓✓
+#   **∴ 门禁** ✓：**ASSETS ✓｜BEH ✓｜JS ✓｜工作流结构 ✓｜覆盖率 ✓**** ✓✓
+#   **∴ 产物验证 ✗**：**`web/index.html: jsonOrError=4 次｜裸 .json()＝0 处` ✓**** ✓✓
+#   **∴ 元收获 ★**：**同一个模式出现 4 次时 ✗**，**先抽一个助手再改 ✗**
+#     ⇒ **∴ 否则**必然**漏掉几处 ✓****（**∴ 而**我**第一次**就漏了 3 处 ✓）** ✓✓

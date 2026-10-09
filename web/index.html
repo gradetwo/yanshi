@@ -3541,7 +3541,29 @@ async function importProjectFile(file) {
     const name = (($("projectImportName") || {}).value || "").trim();
     const finishUrl = "/api/documents/import?upload=" + encodeURIComponent(uploadId) + "&finish=1" +
       (name ? "&doc_id=" + encodeURIComponent(name) : "");
-    const done = await fetch(finishUrl, { method: "POST" }).then((response) => response.json());
+// **★ 统一的 JSON 解析助手 ✗ ★**（第 857 轮 ✓；**用户报 `"… is not valid JSON"` ✓**）：
+//   **∴ 为什么需要它 ✗**：**`response.json()`** 对**非 JSON 响应**会**抛**✗**
+//     ⇒ **∴ 而**调用方**常常**没有 `.catch` ⇒ **∴ 于是**：**未处理的 Promise 拒绝 ✓**
+//       ⇒ **∴ 用户**看到 `Unexpected token '�', "�PNG … is not valid JSON" ✓**** ✓✓
+//   **∴ 现在**：**先看 `content-type` ✗** ⇒ **∴ 不是 JSON 就**如实返回一个错误对象**
+//     ⇒ **∴ 于是**：**它**被**调用方已有的 `if (!x.ok)` **接住 ⇒ **∴ 走**已有的降级路径 ✓**** ✓✓
+//     **∴ 且** `JSON.parse` 自身失败**也**被接住 ✗**（**∴ 不抛到全局 ✓）** ✓✓
+//   **∴ 为什么用助手而不是逐处写 ✗**：**逐处写**会**重复四遍**✗（**∴ 而**这正是**分叉的温床 ✓）
+async function jsonOrError(response) {
+  const ct = String((response && response.headers && response.headers.get("content-type")) || "");
+  if (ct.indexOf("json") < 0) {
+    return { ok: false, error_code: "not_json",
+             context: { detail: "端点返回了 " + (ct || "(无 content-type)") + " 而不是 JSON" } };
+  }
+  try {
+    return await response.json();
+  } catch (err) {
+    return { ok: false, error_code: "bad_json",
+             context: { detail: String((err && err.message) || err) } };
+  }
+}
+
+    const done = await fetch(finishUrl, { method: "POST" }).then(jsonOrError);
     if (!done.ok) {
       // **冲突要给出路** ✓：包里记的 id 已经存在时导入**不覆盖** ✓ ⇒ 直接告诉用户改个名字 ✓。
       say("导入被拒绝：" + describeFailure(done) + "（可在「导入为」里写一个新 id 再试）");
@@ -4233,7 +4255,7 @@ async function importPsdFile(file) {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
     body: bytes,
-  }).then((response) => response.json());
+  }).then(jsonOrError);
   if (!upload.ok) {
     log("导入 PSD 失败（上传）：" + (upload.error_code || (upload.context && upload.context.detail) || "unknown"), "#c33");
     return;
@@ -4558,7 +4580,7 @@ async function loadEffectCatalog() {
   const value = await fetchOrLocal(api("/api/effects"), {
     method: "GET",
     headers: { "content-type": "application/json" },
-  }).then((response) => response.json());
+  }).then(jsonOrError);
   effectCatalog = { adjustment: value.adjustments || [], filter: value.filters || [] };
   fillEffectNames();
 }
@@ -7661,7 +7683,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-ccda3b6c")
+      caches.open("yanshi-shell-f587a93b-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
