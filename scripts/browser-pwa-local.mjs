@@ -42,7 +42,14 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
-const base = `http://127.0.0.1:${port}`;
+// YANSHI_PWA_EXTERNAL=1 makes this criterion test a real deployment instead of a
+// local copy: without it the script always starts its own static server and
+// ignores the url it was given, so a run could pass while the site was broken.
+// When external, the caller passes the site base (default: the live host).
+const __external = process.env.YANSHI_PWA_EXTERNAL === "1";
+const base = __external
+  ? String(process.argv[2] || "https://yanshi-online.wangda.today").replace(/\/+$/, "")
+  : `http://127.0.0.1:${port}`;
 console.log(`  静态服务器 ✓ ${base}`);
 
 // **② 起 chromium ✓**（**headless ＋ 调试端口 ✓**）
