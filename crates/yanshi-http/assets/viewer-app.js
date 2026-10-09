@@ -32,10 +32,16 @@ const SERVER_RENDER_KEY = "yanshi.serverRender";
 // **⚠️ 代价（**两面 ✓**）**：**① 弱设备／无服务器时**会先尝试服务器 ✗ ⇒ **∴ 失败才回退**（**见调用点 ✓**）；
 //   **② 而代价可接受 ✓**：**∵ 服务器渲染是当前更快的路径 ✓**（**用户实测 ✓**）。
 const serverRenderPreferred = () => {
+  // A static deployment has no server, so trying one first only wastes a retry cycle and
+  // leaves the toolbar reporting "disconnected". The injected sentinel sets the flag.
+  const localOnly = typeof window !== "undefined" && window.__pwaLocalOnly === true;
   try {
     const stored = localStorage.getItem(SERVER_RENDER_KEY);
+    if (localOnly) return stored === "1"; // only an explicit opt in uses the server
     return stored === null ? true : stored === "1";
-  } catch (error) { return true; }
+  } catch (error) {
+    return !localOnly;
+  }
 };
 
 

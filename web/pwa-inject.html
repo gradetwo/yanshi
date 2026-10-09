@@ -8,6 +8,10 @@
 <script>
   (function () {
     if (window.__pwaSentinel) return;
+    // This deployment has no server at all: say so up front, because the viewer default
+    // is to try server rendering first, which here means dialling a server that does not
+    // exist, retrying, and giving up. Local kernel is the only working path.
+    window.__pwaLocalOnly = true;
     var LOCAL_PATHS = ["/health", "/get_preferences", "/list_effects", "/list_brushes"];
     window.__pwaSentinel = { queue: [] };
     var original = window.fetch.bind(window);
