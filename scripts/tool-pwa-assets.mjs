@@ -88,6 +88,25 @@ check(existsSync("crates/yanshi-http/assets/viewer-app.js"),
   "现有 viewer（crates/yanshi-http/assets/viewer-app.js）不存在 ⇒ **∴ PWA 影响了现有 WEB ✗**");
 console.log("  隔离：PWA 未占用 assets/ ⇒ 未影响现有 WEB ✓");
 
+// **★ 持久化层（IndexedDB）✓ ★**（第 613 轮 ✓；**部署矩阵 §4 ④ ✓**）：
+//   **∴ PWA 没有服务器端 ✗ ⇒ **∴ 工程持久化必须由浏览器自己扛 ✓** ⇒ **∴ 它必须存在 ✗**。
+const store = read("web/store.js");
+check(!!store, "web/store.js 缺失 ⇒ **∴ PWA 没有持久化层 ✗**（**刷新即丢 ✓**）");
+if (store) {
+  check(/indexedDB/.test(store), "web/store.js 未使用 indexedDB ✗");
+  // **∴ 零耦合断言 ✗**：**持久化层不许碰服务端 API ✓**（**用户要求"不影响现有 WEB"✓**）。
+  // **∴ 先剥离注释再查 ✗** —— **否则注释里提到该路径会造成**假阳性 ✗**
+  //（**本判据第一版就踩了这个坑 ✓，实测抓到的是注释里的字样 ✓**）。
+  const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const storeCode = stripComments(store);
+  check(!/\/api\//.test(storeCode), "web/store.js 的**代码**里出现服务端接口调用 ⇒ **∴ 它依赖了服务器端 ✗**");
+  // **★ 快照校验（**目标第 6 条 ✓**）**：**必须有**格式版本 ＋ 序号**✗** ⇒ **∴ 否则会拿旧图冒充 ✓**。
+  check(/FORMAT_VERSION/.test(store), "web/store.js 缺少 FORMAT_VERSION ⇒ **∴ 无法判断快照是否过期 ✗**");
+  check(/meta\.format !== FORMAT_VERSION/.test(store), "web/store.js 未校验快照格式版本 ⇒ **∴ 会拿旧图冒充 ✗**");
+  check(/meta\.seq !== expectedSeq/.test(store), "web/store.js 未校验快照序号 ⇒ **∴ 会拿旧图冒充 ✗**");
+  console.log("  store.js：indexedDB ✓｜零 /api/ ✓｜快照校验（format+seq）✓");
+}
+
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
