@@ -55,7 +55,6 @@ jobs:
           wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
 
-      - name: 同步产物到静态目录
 
       - name: 同步 viewer ＋ 导出静态页（与服务端同一份）
         # **★ 必须在这里做 ✗ ★**（第 640 轮 ✓）：**∴ `web/index.html` 是**服务端生成的那一份**✗**
@@ -63,8 +62,14 @@ jobs:
         # 会用**过期的**页面 ✗**（**∴ 与"逐字节相同"判据不一致 ✓**）。
         # **∴ 它同时做三件事 ✗**：**① 同步 viewer 的 JS／CSS／SW ✓｜② 调 `--export-viewer-html` ✓**
         # **｜③ 注入 `web/pwa-inject.html` 并写出 `web/index.html` ✓**。
-        run: node scripts/pwa-sync-viewer.mjs
-        run: node scripts/pwa-sync-wasm.mjs
+        # **★ 必须写成**一个**多行 `run` ✗ ★**（第 675 轮 ✓，**修一个真 bug ✓**）：
+        #   **∴ 原写法是**两个 `run:` ✗** ⇒ **∴ YAML **只保留最后一个**✗**
+        #   ⇒ **∴ 于是 `pwa-sync-viewer.mjs` **从未在 CI 里执行**✗**
+        #   ⇒ **∴ CI 构建的 PWA 用的是**过期的 `web/index.html` ✗**
+        #   （**∴ 讽刺的是**上面那段注释正写着"必须在这里做" ✓ —— **∴ 而 YAML 把它吃掉了 ✓**）。
+        run: |
+          node scripts/pwa-sync-viewer.mjs
+          node scripts/pwa-sync-wasm.mjs
 
       - name: ★ 判据：PWA 资源完整性（失败即停）
         # **∴ 这条是**防撒谎判据 ✗**：**没有内核的 PWA 不许发布 ✓**（**`tool-pwa-assets.mjs` ✓**）。
