@@ -11,6 +11,10 @@
 <script>
   (function () {
     if (window.__pwaSentinel) return;
+    // This deployment has no server at all: say so up front, because the viewer default
+    // is to try server rendering first, which here means dialling a server that does not
+    // exist, retrying, and giving up. Local kernel is the only working path.
+    window.__pwaLocalOnly = true;
     var LOCAL_PATHS = ["/health", "/get_preferences", "/list_effects", "/list_brushes"];
     window.__pwaSentinel = { queue: [] };
     var original = window.fetch.bind(window);
@@ -2193,7 +2197,13 @@ async function callTool(name, args, options = {}) {
       dirtyBox: value.dirty_bbox || null,
     });
   } else {
-    log("错误 " + value.error_code + "：" + ((value.context && value.context.detail) || ""), "#c33");
+    // The journal printed "错误 undefined：" whenever the response carried no
+    // error_code, which is the normal shape for a queue entry or a network failure,
+    // so fall back through the other fields the codebase uses before giving up.
+    const __code = value.error_code || value.error || value.reason || "unknown";
+    const __detail =
+      (value.context && value.context.detail) || value.reason || value.message || "";
+    log("错误 " + __code + (__detail ? "：" + __detail : ""), "#c33");
   }
   return value;
 }
@@ -7697,7 +7707,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-a84b6a51")
+      caches.open("yanshi-shell-3f994052-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
