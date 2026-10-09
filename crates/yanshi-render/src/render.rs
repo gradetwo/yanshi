@@ -1390,7 +1390,12 @@ impl Renderer {
             //     ⇒ **∴ 于是**：**既有四条判据**在默认下**必须仍然全绿 ✓**** ✓✓
             //   **∴ 下一轮 ✗**：**用这个开关**定位像素差异的**位置与形状** ✓
             //     ⇒ **∴ 修好后**去掉开关 ＋ 让判据转绿 ✓**** ✓✓
-            let partial_enabled = std::env::var_os("YANSHI_PARTIAL_BELOW").is_some();
+            // **★ 现在**默认打开 ✗ ★**（第 13 轮 ✓）：**错位修好之后**✗，
+            //   **∴ 像素**与"**完整重算 ✓"**逐字节相同 ✓**（**判据已绿 ✓）
+            //     ⇒ **∴ 于是**：**目标态**就是**默认打开 ✓**** ✓✓
+            //   **∴ 关掉的方式 ✗**：`YANSHI_NO_PARTIAL_BELOW=1`** ✗**（**排查用 ✓）**
+            //     ⇒ **∴ 于是**：**要对照"**旧行为 ✓"**时**不用改代码 ✓**** ✓✓
+            let partial_enabled = std::env::var_os("YANSHI_NO_PARTIAL_BELOW").is_none();
             partial_below = if partial_enabled && cacheable && !ready && available > 0 {
                 stats.below_recompute_bbox.map(|(x, y, w, h)| {
                     yanshi_core::Bbox::new(x as f64, y as f64, w as f64, h as f64)
@@ -1402,26 +1407,44 @@ impl Renderer {
                 // **∴ 预填：**把已有的格**原样铺进 `accumulation`** ✓**（**纯像素搬运 ✓）** ✓✓
                 let acc_box = accumulation.bbox();
                 let acc_w = acc_box.w as usize;
-                for (key, tile) in &cached_tiles {
+                let acc_box_w = acc_box.w as usize;
+                let acc_box_h = acc_box.h as usize;
+                for (_key, tile) in &cached_tiles {
                     let tb = tile.bbox();
-                    let dx = (tb.x as i64 - acc_box.x as i64).max(0) as usize;
-                    let dy = (tb.y as i64 - acc_box.y as i64).max(0) as usize;
                     let tw = tb.w as usize;
                     let th = tb.h as usize;
-                    if dx + tw > acc_w {
+                    // **★ 关键在于**有符号偏移 ✗ ★**（第 13 轮 ✓；**修第 12 轮定位的错位 ✓）：
+                    //   **∴ 原来的错 ✗**：**把两个方向的偏移都**夹到 ≥ 0**✗
+                    //     ⇒ **∴ 于是**：**带顶在 tile 内部时**✗（**∴ 如**带 y=192、
+                    //       **而** tile 从 y=0 开始 ✓）**⇒ **∴ `dy` 变成 0**✗
+                    //         **而**源**仍从 tile 的第 0 行取 ✓**
+                    //           ⇒ **∴ 行错位 ✓** ⇒ **★ 实测首差异**正落在**第 2 条带的起点 (8,64)** ✓ ★**** ✓✓
+                    //   **∴ 正确做法 ✗**：**偏移为负 ⇒ **∴ 从 tile 内部**跳过那些行**✗；
+                    //     **为正 ⇒ **∴ 在目标里**留出那些行 ✓**** ✓✓
+                    let off_x = tb.x as i64 - acc_box.x as i64;
+                    let off_y = tb.y as i64 - acc_box.y as i64;
+                    let src_x0 = (-off_x).max(0) as usize;
+                    let src_y0 = (-off_y).max(0) as usize;
+                    let dst_x0 = off_x.max(0) as usize;
+                    let dst_y0 = off_y.max(0) as usize;
+                    if src_x0 >= tw || src_y0 >= th {
+                        continue;
+                    }
+                    let cols = (tw - src_x0).min(acc_box_w.saturating_sub(dst_x0));
+                    let rows = (th - src_y0).min(acc_box_h.saturating_sub(dst_y0));
+                    if cols == 0 || rows == 0 {
                         continue;
                     }
                     let tile_pixels = tile.as_f32();
                     let acc_pixels = accumulation.pixels_mut();
-                    for y in 0..th {
-                        let d0 = ((dy + y) * acc_w + dx) * 4;
-                        let s0 = y * tw * 4;
-                        if d0 + tw * 4 <= acc_pixels.len() && s0 + tw * 4 <= tile_pixels.len() {
-                            acc_pixels[d0..d0 + tw * 4]
-                                .copy_from_slice(&tile_pixels[s0..s0 + tw * 4]);
+                    for y in 0..rows {
+                        let d0 = ((dst_y0 + y) * acc_box_w + dst_x0) * 4;
+                        let s0 = ((src_y0 + y) * tw + src_x0) * 4;
+                        if d0 + cols * 4 <= acc_pixels.len() && s0 + cols * 4 <= tile_pixels.len() {
+                            acc_pixels[d0..d0 + cols * 4]
+                                .copy_from_slice(&tile_pixels[s0..s0 + cols * 4]);
                         }
                     }
-                    let _ = key;
                 }
                 stats.below_tiles_reused = available;
             }
