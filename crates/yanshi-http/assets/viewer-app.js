@@ -9754,7 +9754,7 @@ const GPU_QUANTIZE_WGSL = `
 struct Params { count: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> source: array<f32>;
-@group(0) @binding(2) var<storage, read_write> target: array<u32>;
+@group(0) @binding(2) var<storage, read_write> destination: array<u32>;
 
 // 线性 → sRGB（与 CPU 的 4097 项查表同一条公式 ⇒ 差异只来自浮点与舍入）
 fn linear_to_srgb(v: f32) -> f32 {
@@ -9778,7 +9778,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let g = u32(round(linear_to_srgb(source[base + 1u]) * 255.0));
   let b = u32(round(linear_to_srgb(source[base + 2u]) * 255.0));
   let a = u32(round(clamp(source[base + 3u], 0.0, 1.0) * 255.0));
-  target[pixel] = r | (g << 8u) | (b << 16u) | (a << 24u);
+  destination[pixel] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
 `;
 
@@ -9790,7 +9790,14 @@ function gpuDevice() {
     gpuDevicePromise = (async () => {
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) throw new Error("requestAdapter() 返回 null");
-      return { adapter, device: await adapter.requestDevice() };
+      const device = await adapter.requestDevice();
+      // **★ 把 GPU 的错误**浮现出来 ✗ ★**（第 51 轮 ✓）：**∴ 我**第一版
+      //   **没有**这个监听**✗ ⇒ **∴ 于是**：**输出全 0 而**页面**一声不响 ✓**
+      //   ⇒ **∴ 那**正是**"**静默失败 ✓"**的温床 ✓**** ✓✓
+      device.addEventListener("uncapturederror", (event) => {
+        console.error("WebGPU 未捕获错误：", event.error && event.error.message);
+      });
+      return { adapter, device };
     })();
   }
   return gpuDevicePromise;
@@ -9827,7 +9834,7 @@ window.yanshiGpuQuantize = async (pixels) => {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   device.queue.writeBuffer(source, 0, pixels);
-  const target = device.createBuffer({
+  const destination = device.createBuffer({
     size: count * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
@@ -9837,6 +9844,21 @@ window.yanshiGpuQuantize = async (pixels) => {
   });
   device.queue.writeBuffer(params, 0, new Uint32Array([count, 0, 0, 0]));
   const module = device.createShaderModule({ code: GPU_QUANTIZE_WGSL });
+  // **★ shader 编译错必须**立刻抛出 ✗ ★**（第 51 轮 ✓；**∴ 这是**我踩的真坑 ✓）：
+  //   **∴ 症状 ✗**：**我的 WGSL 用了保留字 `target`**✗
+  //     （**∴ 报** `error: 'target' is a reserved keyword` ✓）
+  //     ⇒ **∴ 而** WebGPU **不抛异常**✗ ⇒ **∴ pipeline**无效 ⇒ **∴ 输出**全 0 ✓**** ✓✓
+  //     ⇒ **∴ 于是**：**判据**只看到"**全 0 ✓"**✗，**看不到**原因 ✓**** ✓✓
+  //   **∴ 所以**：**每次**建 module **都要**查编译信息**✗
+  //     ⇒ **∴ 有 error 就**抛错 ✓（**∴ 不许**静默 ✓）** ✓✓
+  {
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((message) => message.type === "error");
+    if (errors.length) {
+      throw new Error("量化 shader 编译失败：" + errors
+        .map((message) => `${message.message} @${message.lineNum}`).join("；"));
+    }
+  }
   const pipeline = device.createComputePipeline({
     layout: "auto",
     compute: { module, entryPoint: "main" },
@@ -9846,7 +9868,7 @@ window.yanshiGpuQuantize = async (pixels) => {
     entries: [
       { binding: 0, resource: { buffer: params } },
       { binding: 1, resource: { buffer: source } },
-      { binding: 2, resource: { buffer: target } },
+      { binding: 2, resource: { buffer: destination } },
     ],
   });
   const readback = device.createBuffer({
@@ -9859,8 +9881,12 @@ window.yanshiGpuQuantize = async (pixels) => {
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(count / 64));
   pass.end();
-  encoder.copyBufferToBuffer(target, 0, readback, 0, count * 4);
+  encoder.copyBufferToBuffer(destination, 0, readback, 0, count * 4);
   device.queue.submit([encoder.finish()]);
+  // **★ 必须**等提交完成 ✗ ★**（第 51 轮 ✓）：**∴ 最小例子**里有这一步**✗，
+  //   **而**我**第一版**漏了 ✓ ⇒ **∴ 实测**：**读回的缓冲**全是 0 ✓**
+  //   （**∴ 即**：**在** GPU 写之前**就读了 ✓）⇒ **∴ 那**是**根因 ✓**** ✓✓
+  await device.queue.onSubmittedWorkDone();
   await readback.mapAsync(GPUMapMode.READ);
   const words = new Uint32Array(readback.getMappedRange().slice(0));
   readback.unmap();

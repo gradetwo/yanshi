@@ -140,6 +140,8 @@ if (!fact.adapter) {
 } else {
   // **★ ①②④ 有适配器 ⇒ 必须真跑 GPU ✗** ✓✓
   const result = await evaluate(`(async () => {
+    // **∴ 抛错要**变成字符串 ✗**（**∴ 否则 CDP 会给一个对象 ⇒ 只看得到 object Object ✓）** ✓✓
+    try {
     const pixels = new Float32Array(${JSON.stringify(CASES.flatMap((c) => c.pixel))});
     const first = await window.yanshiGpuQuantize(pixels);
     const second = await window.yanshiGpuQuantize(pixels);
@@ -153,11 +155,34 @@ if (!fact.adapter) {
       bytes: Array.from(first.bytes),
       deltas: Array.from(first.bytes).map((b, i) => Math.abs(b - first.reference[i])),
     });
+    } catch (error) {
+      return JSON.stringify({ threw: String((error && error.message) || error) });
+    }
   })()`);
-  const out = JSON.parse(result);
-  console.log(`  GPU 结果：backend=${out.backend}｜maxChannelDelta=${out.maxChannelDelta}`
-    + `（${out.typeofDelta}）｜确定性=${out.deterministic}`);
-  console.log(`  逐通道差异：${out.deltas.join(",")}`);
+  // **∴ 结果可能**不是 JSON ✗**（**∴ 如**页面**抛了异常 ✓）⇒ **∴ 必须**原样打印 ✗
+  //   ⇒ **∴ 否则**：**JSON.parse**报一个**看不懂的错**✗，**而**真原因**被吞掉 ✓**** ✓✓
+  let out = null;
+  try {
+    out = JSON.parse(result);
+  } catch {
+    check(false, "GPU 路径必须返回结果对象（**实测**抛了异常或返回了非 JSON ✓）",
+      String(result).slice(0, 200));
+  }
+  if (!out) {
+    socket.close();
+    chrome.kill();
+    console.error("");
+    console.error(`  结论：GPU 量化切片**未达标** ✗（页面侧原值：${String(result).slice(0, 300)}）`);
+    process.exit(1);
+  }
+  if (out.threw) {
+    check(false, "GPU 路径**抛错**（**∴ 真错在这里 ✓）", String(out.threw).slice(0, 220));
+  }
+  console.log(`  GPU 结果：${JSON.stringify(out).slice(0, 400)}`);
+  if (out.threw) {
+    check(false, "GPU 路径**抛错**（**∴ 真错就在这里 ✓）", String(out.threw).slice(0, 240));
+  }
+  if (out.deltas) console.log(`  逐通道差异：${out.deltas.join(",")}`);
   check(out.backend === "gpu", "**必须**报成 `gpu`（实际后端 ✗）", String(out.backend));
   check(out.typeofDelta === "number",
     "**必须**报出数值型 `maxChannelDelta`（**不许**恒 0 冒充也**不许**缺 ✓）", out.typeofDelta);
