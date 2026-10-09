@@ -45,10 +45,10 @@ if (failed > 0) {
 }
 if (skipped > 0) {
   // **∴ 红线**暂时失效**✗ —— **∴ 必须**明说**✓，**绝不许说"守住" ✗****。
-  console.log(`  ⚠️ ${runs} 次里 0 失败 ✓，**但有 ${skipped} 处被 `ignore` 跳过 ✗**`);
+  console.log(`  ⚠️ ${runs} 次里 0 失败 ✓，**但有 ${skipped} 处被 ignore 跳过 ✗**`);
   console.log("  ⚠️ **红线暂时失效**：被测路径因**已知缺陷**被 `ignore`（见 `scripts/criteria-known-red.txt`）");
-  console.log("  ⚠️ **∴ 本条判据现在只能证明"没崩"，不能证明"增量与整段相同"✗**");
-  console.log("  ⚠️ **∴ 恢复**：修好"增量盖章丢 tile 内容"后删掉该 `ignore` ⇒ **∴ 本条会自动变回真红线 ✓**");
+  console.log("  ⚠️ **∴ 本条判据现在只能证明「没崩」，不能证明「增量与整段相同」✗**");
+  console.log("  ⚠️ **∴ 恢复**：修好「增量盖章丢 tile 内容」后删掉该 `ignore` ⇒ **∴ 本条会自动变回真红线 ✓**");
 } else {
   console.log(`  ✓ ${runs} 次全绿 ⇒ **增量与整段逐字节相同 ✓**（红线守住 ✓）`);
 }
