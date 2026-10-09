@@ -46,11 +46,47 @@ console.log(`✓ 已同步 ${copied} 个文件 ⇒ ${DST}（viewer-app.js ${(sta
 //   **∴ 若二进制不存在 ✗**（**如纯前端开发 ✓**）⇒ **∴ 跳过并**说明原因 ✗**（**不静默 ✓**）。
 import { execFileSync } from "node:child_process";
 import { renameSync } from "node:fs";
-const BINS = ["target/release/yanshi-serve", "target/debug/yanshi-serve"];
-const bin = BINS.find((b) => existsSync(b));
+// **★ 找**能用的**二进制 ✗ ★**（第 220 轮 ✓；**用户实测报错 ✓**）：
+//   **∴ 为什么探测 ✗**：**`target/release/yanshi-serve` **可能是旧的**✗**（**如**用户的那个：
+//   **不含 `--export-viewer-html` ✓）⇒ **∴ 于是**它**只丢一句"未知参数"✗，**而**不告诉你怎么办 ✓**
+//   ⇒ **∴ 现在**：**逐个候选**真的**试一次导出 ✗** ⇒ **∴ 选**第一个成功的 ✓**
+//   ＋ **∴ 尊重 `CARGO_TARGET_DIR` ✗**（**∴ 本仓库开发时常把产物放到 /tmp ✓）**。
+const targetDirs = [
+  process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "release") : null,
+  process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "debug") : null,
+  "target/release",
+  "target/debug",
+].filter(Boolean);
+const tmp = join(DST, ".index.export.html");
+const triedBins = [];
+let bin = null;
+for (const dir of targetDirs) {
+  const cand = join(dir, "yanshi-serve");
+  if (!existsSync(cand)) continue;
+  try {
+    execFileSync(cand, ["--export-viewer-html", tmp], { stdio: "pipe" });
+    bin = cand;
+    break;
+  } catch (e) {
+    const msg = `${e.stderr ?? ""}${e.stdout ?? ""}${e.message ?? ""}`;
+    triedBins.push({ cand, stale: /未知参数|unknown argument/i.test(msg) });
+  }
+}
+if (!bin && triedBins.length > 0) {
+  console.error("✗ 找不到能导出静态页的 yanshi-serve");
+  for (const t of triedBins) {
+    console.error(`   试过 ${t.cand}${t.stale ? "（**不支持 --export-viewer-html ⇒ 是旧的**）" : ""}`);
+  }
+  if (triedBins.some((t) => t.stale)) {
+    console.error("  修复：先重建二进制，再跑本步骤：");
+    console.error("      cargo build --release -p yanshi-server");
+  }
+  process.exit(1);
+}
 if (!bin) {
   console.warn("  ⚠️ 未找到 yanshi-serve ⇒ 跳过静态页导出 ✗（web/index.html 保持现状 ✓）");
 } else {
+  console.log(`  静态页导出用的二进制：${bin} ✓`);
   const tmp = join(DST, ".index.export.html");
   execFileSync(bin, ["--export-viewer-html", tmp], { stdio: "pipe" });
   const size = statSync(tmp).size;
