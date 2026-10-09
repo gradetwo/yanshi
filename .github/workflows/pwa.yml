@@ -56,6 +56,14 @@ jobs:
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
 
       - name: 同步产物到静态目录
+
+      - name: 同步 viewer ＋ 导出静态页（与服务端同一份）
+        # **★ 必须在这里做 ✗ ★**（第 640 轮 ✓）：**∴ `web/index.html` 是**服务端生成的那一份**✗**
+        #（**导出 ＋ 在 </body> 前注入本地接管片段 ✓**）⇒ **∴ 若跳过此步 ⇒ **∴ CI 构建的 PWA
+        # 会用**过期的**页面 ✗**（**∴ 与"逐字节相同"判据不一致 ✓**）。
+        # **∴ 它同时做三件事 ✗**：**① 同步 viewer 的 JS／CSS／SW ✓｜② 调 `--export-viewer-html` ✓**
+        # **｜③ 注入 `web/pwa-inject.html` 并写出 `web/index.html` ✓**。
+        run: node scripts/pwa-sync-viewer.mjs
         run: node scripts/pwa-sync-wasm.mjs
 
       - name: ★ 判据：PWA 资源完整性（失败即停）
