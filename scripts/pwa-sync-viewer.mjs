@@ -37,3 +37,26 @@ if (!existsSync(main) || statSync(main).size === 0) {
   process.exit(1);
 }
 console.log(`✓ 已同步 ${copied} 个文件 ⇒ ${DST}（viewer-app.js ${(statSync(main).size / 1024).toFixed(0)} KiB ✓）`);
+
+
+// **★ ② 导出并写入静态页 ✗ ★**（第 637 轮 ✓；**部署矩阵 §14.19 ✓**）：
+//   **∴ `web/index.html` **必须是服务端生成的那一份**✗**
+//   （**∴ 而不是手写第二份 ⇒ 那会分叉 ✓**）⇒ **∴ 本步**调 `--export-viewer-html` 导出 ＋ 拷入 ✗**。
+//   **∴ 若二进制不存在 ✗**（**如纯前端开发 ✓**）⇒ **∴ 跳过并**说明原因 ✗**（**不静默 ✓**）。
+import { execFileSync } from "node:child_process";
+import { renameSync } from "node:fs";
+const BINS = ["target/release/yanshi-serve", "target/debug/yanshi-serve"];
+const bin = BINS.find((b) => existsSync(b));
+if (!bin) {
+  console.warn("  ⚠️ 未找到 yanshi-serve ⇒ 跳过静态页导出 ✗（web/index.html 保持现状 ✓）");
+} else {
+  const tmp = join(DST, ".index.export.html");
+  execFileSync(bin, ["--export-viewer-html", tmp], { stdio: "pipe" });
+  const size = statSync(tmp).size;
+  if (size < 1000) {
+    console.error(`✗ 导出的页面只有 ${size} 字节 ⇒ **∴ 疑似失败 ✗**`);
+    process.exit(1);
+  }
+  renameSync(tmp, join(DST, "index.html"));
+  console.log(`✓ 静态页已由服务端导出 ⇒ web/index.html（${(size / 1024).toFixed(0)} KiB ✓）`);
+}
