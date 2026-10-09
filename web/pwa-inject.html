@@ -35,6 +35,26 @@
       return q.length;
     };
   })();
+    // **★ 诊断哨兵 ✗ ★**（第 836 轮 ✓；**我连猜两次都错 ⇒ 必须拿事实 ✓**）：
+    //   **∴ 它**捕获**未处理的 Promise 拒绝 ＋ 全局错误 ✗**
+    //     ⇒ **∴ 把**真实原因 ＋ 栈首行**记进** `window.__pwaErr`**✗** ＋ **打到控制台 ✓**
+    //     ⇒ **∴ 于是**：**刷新一次**就能看到**真正的失败点 ✗**（**∴ 而不是**我的推测 ✓）**。
+    window.__pwaErr = [];
+    function __pwaDiag(kind, msg, extra) {
+      var rec = { kind: kind, msg: String(msg), extra: String(extra || "") };
+      window.__pwaErr.push(rec);
+      try { console.error("[yanshi-diag] " + kind + " | " + rec.msg + " | " + rec.extra); } catch (e) {}
+    }
+    window.addEventListener("unhandledrejection", function (ev) {
+      var r = ev && ev.reason;
+      var msg = r && r.message ? r.message : r;
+      var st = r && r.stack ? String(r.stack).split(String.fromCharCode(10)).slice(0, 2).join(" <- ") : "";
+      __pwaDiag("unhandledrejection", msg, st);
+    });
+    window.addEventListener("error", function (ev) {
+      __pwaDiag("error", (ev && ev.message) || "",
+                (ev && ev.filename ? ev.filename + ":" + ev.lineno : ""));
+    });
 </script>
 
 <!-- **★ PWA 本地接管注入片段 ✓ ★**（第 638 轮 ✓；**部署矩阵 §14.21 ✓**）
