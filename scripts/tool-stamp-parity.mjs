@@ -30,13 +30,25 @@ for (let i = 1; i <= runs; i++) {
     out = String((e && e.stdout) || "") + String((e && e.stderr) || "");
   }
   const line = (out.split("\n").find((l) => l.startsWith("test result")) ?? "").trim();
-  results.push({ i, ok, line });
+  // **★ 必须同时看 `ignored` ✓ ★**（第 566 轮 ✓）：**∴ 一个"数失败数"的判据**分不清
+  // "通过 ✓"与"没跑 ✗"** ⇒ **∴ 若不看它 ⇒ **∴ 就会把"红线被关闭"说成"红线守住" ✗****。
+  const ignored = Number((line.match(/(\d+) ignored/) ?? [0, "0"])[1]);
+  results.push({ i, ok, line, ignored });
   if (!ok) failed++;
 }
 for (const r of results) console.log(`  第 ${r.i} 次: ${r.line}${r.ok ? " ✓" : " ✗"}`);
+const skipped = results.reduce((a, r) => a + (r.ignored || 0), 0);
 if (failed > 0) {
   console.error(`❌ ${runs} 次里有 ${failed} 次失败 ⇒ **增量与整段不一致 ⇒ 缓存**撒谎了** ✗**` +
     `（常见根因：参照组只清了 tile 缓存 ⇒ 请改用 \`clear_all_caches()\` ✓）`);
   process.exit(1);
 }
-console.log(`  ✓ ${runs} 次全绿 ⇒ **增量与整段逐字节相同 ✓**（红线守住 ✓）`);
+if (skipped > 0) {
+  // **∴ 红线**暂时失效**✗ —— **∴ 必须**明说**✓，**绝不许说"守住" ✗****。
+  console.log(`  ⚠️ ${runs} 次里 0 失败 ✓，**但有 ${skipped} 处被 `ignore` 跳过 ✗**`);
+  console.log("  ⚠️ **红线暂时失效**：被测路径因**已知缺陷**被 `ignore`（见 `scripts/criteria-known-red.txt`）");
+  console.log("  ⚠️ **∴ 本条判据现在只能证明"没崩"，不能证明"增量与整段相同"✗**");
+  console.log("  ⚠️ **∴ 恢复**：修好"增量盖章丢 tile 内容"后删掉该 `ignore` ⇒ **∴ 本条会自动变回真红线 ✓**");
+} else {
+  console.log(`  ✓ ${runs} 次全绿 ⇒ **增量与整段逐字节相同 ✓**（红线守住 ✓）`);
+}
