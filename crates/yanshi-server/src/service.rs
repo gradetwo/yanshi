@@ -2988,10 +2988,10 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     ///
     /// **∴ 为什么要它 ✗**：**"**命中 ✓／"未命中 ✓"**说不清**"**差几格 ✓"**✗
     ///   ⇒ **∴ 而**部分复用要修的**正是那个差 ✓ ⇒ **∴ 判据**需要这三个数 ✓**** ✓✓
-    pub fn document_below_tiles(&self, doc_id: &str) -> (usize, usize, usize) {
+    pub fn document_below_tiles(&self, doc_id: &str) -> (usize, usize, usize, usize) {
         self.document(doc_id)
             .map(|d| d.below_tiles())
-            .unwrap_or((0, 0, 0))
+            .unwrap_or((0, 0, 0, 0))
     }
 
     /// **某一个文档的**下方合成复用计数** ✗**（**语义计数 ✓，见 `below_tiles` 的三元账目 ✓）**。

@@ -361,7 +361,14 @@ pub struct Document {
     ///   ⇒ **∴ 而**"**部分复用**"要修的**正是那个差 ✓ ⇒ **∴ 先把差**量出来 ✓**** ✓✓
     /// **∴ 不撒谎 ✗**：**每次**渲染都**覆盖**它 ✗**（**不保留旧值 ✓）**
     ///   ⇒ **∴ 于是**读它的人**不会**看到**上一次的数 ✓**** ✓✓
-    last_below_tiles: (usize, usize, usize),
+    /// **★ 最近一次 below 账目的**原子快照** ✗ ★**（第 24 轮 ✓）：
+    /// `(想要, 已有, 用上, 缺)` —— **∴ 四个数**必须**来自**同一次渲染**✗
+    ///   ⇒ **∴ 于是**：**读的人**不会**看到"**三数来自不同渲染 ✓"的混合 ✓**** ✓✓
+    /// **∴ 为什么把 `missing` 也放进来 ✗**：**实测**（**第 15／16 轮 ✓）出现
+    ///   `available=10 < wanted=16` **而** `missing=0`**✗ ⇒ **∴ 追查发现**
+    ///   **`missing`**根本**没被暴露**✗ ⇒ **∴ 脚本**读 `?? 0` ⇒ **∴ 恒 0 ✓
+    ///     ⇒ **★ 所以**：**"**矛盾 ✓"**是**我自己造的假象 ✓ ★**** ✓✓
+    last_below_tiles: (usize, usize, usize, usize),
     /// **打开这一份文档时重放回来的位图数** ✓（`export_project` 省掉的那些 ✓）。
     ///
     /// **为什么记在文档上** ✓：补的动作发生在 `Workspace::open_document` ✓，
@@ -473,7 +480,7 @@ impl Document {
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
             last_render_warnings: Vec::new(),
-            last_below_tiles: (0, 0, 0),
+            last_below_tiles: (0, 0, 0, 0),
             replayed_blobs: 0,
             unreplayable_blobs: 0,
             created_at,
@@ -1140,12 +1147,13 @@ impl Document {
                 stats.below_tiles_wanted,
                 stats.below_tiles_available,
                 stats.below_tiles_reused,
+                stats.below_tiles_missing,
             );
         }
     }
 
     /// **★ 最近一次渲染的 below tile 账目 ✗ ★**：`(想要, 已有, 用上)` ✓。
-    pub fn below_tiles(&self) -> (usize, usize, usize) {
+    pub fn below_tiles(&self) -> (usize, usize, usize, usize) {
         self.last_below_tiles
     }
 

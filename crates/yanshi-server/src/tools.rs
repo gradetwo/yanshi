@@ -3972,6 +3972,9 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "below_tiles_wanted": ctx.workspace.document_below_tiles(&ctx.doc_id).0,
             "below_tiles_available": ctx.workspace.document_below_tiles(&ctx.doc_id).1,
             "below_tiles_reused": ctx.workspace.document_below_tiles(&ctx.doc_id).2,
+            // **★ 缺格数也要报 ✗ ★**（第 24 轮 ✓）：**∴ 少了它** ⇒ **∴ 读的人**
+            //   **只能看到 `available < wanted`**✗ ⇒ **∴ 于是**误以为"**矛盾 ✓" ✓**** ✓✓
+            "below_tiles_missing": ctx.workspace.document_below_tiles(&ctx.doc_id).3,
             // **★ 归属字段也要在 `raw` 出口 ✗ ★**（第 994 轮 ✓；**补第 993 轮的半成品 ✓）：
             //   **∴ 为什么 ✗**：**我**上一轮**只加在**非 raw 出口**✗ ⇒ **∴ 于是**：**`raw`
             //     请求**看到的是 `None` ✓**（**实测 ✓）⇒ **∴ 无法**归属 ✓**** ✓✓
@@ -4011,10 +4014,12 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["below_reused"] = json!(bt_reused2 > 0);
     value["below_reuse_noted"] = json!(below_after > below_before);
     // **∴ 同一组账目在非 raw 出口也要有 ✓**（**∴ 否则**两条路读数不一致 ✓）。
-    let (bt_wanted, bt_available, bt_reused) = ctx.workspace.document_below_tiles(&ctx.doc_id);
+    let (bt_wanted, bt_available, bt_reused, bt_missing) =
+        ctx.workspace.document_below_tiles(&ctx.doc_id);
     value["below_tiles_wanted"] = json!(bt_wanted);
     value["below_tiles_available"] = json!(bt_available);
     value["below_tiles_reused"] = json!(bt_reused);
+    value["below_tiles_missing"] = json!(bt_missing);
     value["above_reused"] = json!(above_after > above_before);
     // **∴ 归属字段 ✓**：**本次请求期间**发生了几次渲染 ✗（**进程内单调 ✓）**
     //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓

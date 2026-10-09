@@ -96,6 +96,20 @@ console.log(
 );
 
 // **∴ 判读 ✗**：**必须有**部分命中**✗，**否则**这次测量**不成立 ✓** ✓✓
+// **★ 不变式：`available + missing == wanted` ✗ ★**（第 24 轮 ✓）：
+//   **∴ 为什么必须有它 ✗**：**我**曾连续两轮**被"**`available < wanted` 而 `missing = 0` ✓"**误导**✗
+//     ⇒ **∴ 真相**是**`missing`**根本没被暴露**✗ ⇒ **∴ 脚本**读 `?? 0` ⇒ **∴ 恒 0 ✓**
+//       ⇒ **★ 所以**：**自检里**必须显式断言这条不变式 ✗**
+//         ⇒ **∴ 于是**：**字段缺失**或**跨渲染混合**都会**当场暴露 ✓ ★**** ✓✓
+for (const [i, r] of rows.entries()) {
+  if (r.available + r.missing !== r.wanted) {
+    console.error(
+      `  ❌ 第 ${i + 1} 轮四数不自洽：available(${r.available}) + missing(${r.missing}) != wanted(${r.wanted})`,
+    );
+    console.error("     ⇒ **∴ 要么**字段缺失 ✓，**要么**它们**来自不同的渲染 ✓");
+    process.exit(1);
+  }
+}
 if (sum("missing") === 0) {
   console.error(
     "  ❌ 这次一条缺格都没有 ⇒ **∴ 场景**没生效 ✓（**∴ 不是**「部分复用没用 ✓」）",
