@@ -6330,3 +6330,45 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **② 7 处替换 ✗** ⇒ **∴ 编译 ＋ 门禁 ✓**；
 #     **③ 起本地服务 ＋ 请求 `/brushes/8B_Pencil%231.myb` ✗** ⇒ **∴ 期望 200 ✓**** ✓✓
 #   **∴ 线上不受影响 ✓**：**已验证 5 个路径**全部 200 ✓**** ✓✓
+
+# **★ 第 802 轮：🎯 **最小回退点找到 ✗** ⇒ **∴ 修法具体到一行 ✓****
+#   **∴ 实测 ✓**（**两个代表性 handler ✓）**：
+#     ```rust
+#     :1961  fn brush_text_asset(state: &ServerState, file: &str) -> Response {
+#     :1962      if file.contains("..") || file.contains('/') || … || !file.ends_with(".myb") { … }
+#     :1965      let Some(root) = state.options.assets_dir.as_ref() else { … };
+#     :1968      let path = root.join("brushes").join(file);      // **★ 算路径 ✗ ★**
+#     :1970      match std::fs::read(&path) {                     // **★ 读磁盘 ✗ ★**
+#     ```
+#     ＋ **`wasm_asset`（**`:1906` ✓）形态相同**（**`:1922` `let path = dir.join(file);` ✓）** ✓✓
+#   **★ 所以最小回退 ✗ ★**：**在 `fs::read` **失败之后**✗（**不是**成功之后 ✓）
+#     **用**原样段**再算一个路径 ＋ 重试 ✓** ⇒ **∴ 于是**：
+#       **∴ 磁盘存编码名 ⇒ 原样段就是编码名 ⇒ **∴ 命中 ✓**** ✓✓
+#       **∴ 磁盘存原名（**未来若还原 ✓）⇒ 解码名命中 ⇒ **∴ 也命中 ✓**** ✓✓
+#     ⇒ **∴ 而**这样一来**两端都能工作 ✗**，**且** CDN **只**收到**编码名 ✓**** ✓✓
+#   **∴ 为避免 7 处重复 ✗**：**抽一个辅助 ✗**：
+#     ```rust
+#     /// ★ 读资产：先试**解码名**，读不到再试**原样段**（见 decode_asset_segment 的注释）。
+#     fn read_asset(root: &Path, kind: &str, decoded: &str, raw: &str) -> std::io::Result<Vec<u8>> {
+#         match std::fs::read(root.join(kind).join(decoded)) {
+#             Ok(b) => Ok(b),
+#             Err(e) if decoded != raw => std::fs::read(root.join(kind).join(raw)).or(Err(e)),
+#             Err(e) => Err(e),
+#         }
+#     }
+#     ```
+#     ⇒ **∴ 于是**：**7 处**各改**一行 ✗**（**把 `fs::read(&path)` 换成 `read_asset(…)` ✓）**
+#       ⇒ **∴ 且**需要**保留 `raw` 段 ✗**（**现在被 `let file = decode_asset_segment(file);` 覆盖了 ✓）
+#         ⇒ **∴ 最小做法**：**改那 7 行为 ✗**
+#           ```rust
+#           let raw = file;
+#           let file = decode_asset_segment(file);
+#           ```
+#           ⇒ **∴ 然后**在 handler 里用 `(&file, raw)` ✓**** ✓✓
+#   **∴ 下一轮（**实现 ＋ 验证 ✓**）** ✓**：
+#     **① 加 `read_asset` ✗**（**＋ 7 处的 `raw` 保留 ✓）**；
+#     **② 编译 ＋ 门禁 ✗**；
+#     **③ 起本地服务 ＋ 请求 `/brushes/8B_Pencil%231.myb` ✗** ⇒ **∴ 期望 200 ✓**** ✓✓
+#   **∴ 线上不受影响 ✓**（**已验证 200 ✓）⇒ **∴ 且**这个修复**只让本地重新可用 ✓**** ✓✓
+#   **∴ 元收获 ✓**：**"**算路径 ＋ 读**"这个两行模式**在 7 处重复 ✗**
+#     ⇒ **∴ 它**是**加回退的天然位置 ✗** ⇒ **∴ 教训**：**找"**重复模式**"比"**找抽象**"更省 ✓**** ✓✓
