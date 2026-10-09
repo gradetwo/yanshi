@@ -2124,3 +2124,32 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       **`bitmap`／`height`／`layer_id`／`object_id`／`region`／`source` ✓**）** ✓✓
 #   **∴ 验收** ✓：**恢复那条"**画一笔 ⇒ 渲染变化**"的断言 ✗ ＋ **变异**（**不写原子 ⇒ 两次相同 ⇒ 必红 ✓**）
 #     ＋ **真实浏览器跑通 ✓**** ✓✓
+# **★ 第 648 轮：🎯 **`PaintRequest` 完整契约到手 ✓ ＋ 一条关键新发现 ✗****
+#   **契约** ✓（`crates/yanshi-wasm/src/brush.rs:59-79` ✓）：
+#     ```rust
+#     pub(crate) struct PaintRequest {
+#         myb: String,              // ★ `.myb` 的**全文** ✗（**笔刷文件内容，不是名字 ✓**）
+#         points: Vec<[f64; 3]>,    // `[[x, y, pressure], …]` ✓（与服务端同形 ✓）
+#         size: Option<f64>,        // 直径（服务端叫 `size` ✓）
+#         color: Option<Colour>,    // `{r,g,b,a}` ✓（默认不透明 ✓）
+#         opacity: Option<f64>,
+#         hardness: Option<f64>,
+#         region: Region,           // ★ 要**读回**的文档区域 ✗（输出 ＝ 这块的 `w*h*4` 字节 ✓）
+#         base: Option<Base>,       // **底图**：目标区域现有像素（**行优先 RGBA8** ✓）
+#     }
+#     pub(crate) struct Base { width: i32, height: i32, rgba: Vec<u8> }
+#     ```
+#   **★ 关键新发现 ✗ ★**：**`myb` 是**笔刷文件的全文**✗**（**而服务端的 `source.brush` 只写名字
+#     `100%_Opaque.myb` ✓**）⇒ **∴ 所以**PWA 要落笔 ✗ ⇒ **∴ 必须**先同步笔刷资源到 `web/` ✗**
+#     （**∴ 即**把 `assets/` 里的 `.myb` 也纳入同步 ✓**）⇒ **∴ 这是**之前没看到的一层依赖 ✓**** ✓✓
+#   **∴ 另一条要点** ✓：**`base`（**底图**）对**涂抹／混合类笔刷是必需的 ✗**
+#     （**注释实测：没有底图时 `smudge` 会被服务端拒绝 ✓，而有底图但不逐字一致时出现 386/796 差异 ✓**）
+#     ⇒ **∴ 所以**离线要复现**涂抹类**✗ ⇒ **∴ 必须**先 `render_region_raw` 取底图喂进 `base` ✗**
+#     （**∴ 按 64×64 tile 写，`<< 7` 把 0..255 映回 fix15 ✓**）** ✓✓
+#   **∴ 实现路线（**下一轮起 ✓，共六步 ✓**）** ✓：
+#     **① 同步笔刷资源 ✗**（**`assets/**/*.myb` ⇒ `web/brushes/` ✓**，**并加判据断言存在 ✓**）；
+#     **② `brush_stroke` 里**：**取 `myb` 全文 ⇒ 组 `PaintRequest`（**含 `region` ✓**）⇒ `paint_brush` ✓**；
+#     **③ 涂抹类**：**先用 `render_region_png`／`render_region_rgba` 取**底图**✗ ⇒ **填 `base` ✓**；
+#     **④ 空返回 ⇒ 用 `paint_brush_error()` 报原因 ✗**（**不静默 ✓**）；
+#     **⑤ 把 RGBA8 存 blob ⇒ 写 `import_image` 原子 ✓**（**字段照第 646 轮样本 ✓**）；
+#     **⑥ 验收** ✓：**恢复"**画一笔 ⇒ 渲染变化**"断言 ＋ 变异（**不写原子 ⇒ 必红**）＋ 真实浏览器 ✓**** ✓✓
