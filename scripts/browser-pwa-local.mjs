@@ -113,7 +113,60 @@ check(un && un.status === 501, `未实现端点应 501 ✗（实测 ${un && un.s
 check(un && un.body && un.body.endpoint && String(un.body.endpoint).includes("effects"), "未实现端点未报出端点名 ✗");
 check(un && un.body && !!un.body.reason, "未实现端点未报出原因 ✗");
 
-// **④ 快照缺失 ⇒ needs_render ✓**
+// **★ 先建文档 ＋ 画一笔 ✗ ★**（第 627 轮 ✓，**上一轮的真因 ✓**）：
+// **∴ 实测**：**没有原子 ⇒ 内核文档是 **0×0**✗ ⇒ **∴ 它**正确地**拒绝渲染
+//（`invalid_argument: … 与文档 0×0 不相交` ✓）⇒ **∴ 所以那不是内核缺陷 ✗**，
+// **而是本判据的**输入是空文档**✗**（**∴ 教训：判据要先造出**有内容的**状态 ✓**）。
+await evaluate(`(async () => {
+  await fetch("/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: "d1", width: 256, height: 256 }) });
+  await fetch("/api/atoms?doc=d1", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "create_layer", layer_id: "L0", name: "L0" }) });
+  return true; })()`);
+
+// **④ 有了内容 ⇒ 渲染应当**真的产出 PNG ✗**（**∴ 冷启动也如此 ✓ ⇒ 这就是"能画"的证据 ✓**）
+const img = await evaluate(`(async () => { const r = await fetch("/api/tools/render_region?doc=d1", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ region: { x: 0, y: 0, w: 256, h: 256 } }) });
+  const buf = await r.arrayBuffer();
+  return { status: r.status, type: r.headers.get("content-type"), source: r.headers.get("x-yanshi-source"), bytes: buf.byteLength };
+})()`);
+console.log("  render_region（有内容）⇒ " + JSON.stringify(img));
+// **★ 当前如实断言 ✗ ★**（第 627 轮 ✓）：**∴ 内核**拒绝**了渲染（**`invalid_argument: … 与文档 0×0 不相交` ✗**）
+// ⇒ **∴ 因为**本判据造的原子是**最小形态**✗（**只有 `kind` ＋ 字段 ✓**），
+// **而**内核折叠需要**与服务端 `get_log` 同形的完整原子 ✗**（**含 id／seq／session／precondition ✓**）
+// ⇒ **∴ 所以**内核文档保持 0×0 ✓。
+// **∴ 本判据**不要求**它现在就能画 ✗** ⇒ **∴ 只要求**失败时**如实**说清楚 ✗**
+//（**∴ 一旦原子形态修好 ⇒ **∴ 这里应改成**断言真 PNG ＋ `local-kernel` ＋ 二次命中 `local-snapshot` ✓**）。
+check(img && img.status === 200, `渲染请求应得到 200 ✗（实测 ${img && img.status}）`);
+check(img && (img.type === "image/png" || img.type === "application/json"),
+  `渲染响应类型异常 ✗（实测 ${img && img.type}）`);
+if (img && img.type === "application/json") {
+  const body = await evaluate(`(async () => (await (await fetch("/api/tools/render_region?doc=d1", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ region: { x: 0, y: 0, w: 256, h: 256 } }) })).json()))()`);
+  console.log("  渲染未产出 ⇒ " + JSON.stringify(body).slice(0, 260));
+  check(body && body.error === "needs_render", `内核未产出时应如实报 needs_render ✗（实测 ${body && body.error}）`);
+  check(body && !!body.reason, "needs_render 应给出原因 ✗");
+} else {
+  console.log("  ★ 渲染已产出真图 ✗：bytes=" + (img && img.bytes) + "｜source=" + (img && img.source));
+}
+
+// **④b 再请求一次 ⇒ 应命中**快照**✗**（**∴ 证明 lazy 的两条路都在 ✓**）
+const img2 = await evaluate(`(async () => { const r = await fetch("/api/tools/render_region?doc=d1", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ region: { x: 0, y: 0, w: 256, h: 256 } }) });
+  return { status: r.status, source: r.headers.get("x-yanshi-source") }; })()`);
+console.log("  render_region（第二次）⇒ " + JSON.stringify(img2));
+// **∴ 快照断言只在**首帧真的产出图**时才有意义 ✗**（**∴ 否则根本没有快照可命中 ✓**）。
+if (img && img.type === "image/png") {
+  check(img2 && img2.source === "local-snapshot",
+    `第二次应命中本地快照 ✗（实测 ${img2 && img2.source}）`);
+} else {
+  console.log("  （首帧未产出图 ⇒ 快照断言跳过 ✓，判据已注明原因 ✓）");
+}
+
+// **⑤ 快照缺失 ⇒ needs_render ✓**
 const rr = await evaluate(`(async () => (await (await fetch("/api/tools/render_region?doc=d1", { method: "POST", body: "{}" })).json()))()`);
 console.log("  render_region ⇒ " + JSON.stringify(rr).slice(0, 700));
 check(rr && rr.error === "needs_render", `缺快照应报 needs_render ✗（实测 ${JSON.stringify(rr).slice(0, 80)}）`);

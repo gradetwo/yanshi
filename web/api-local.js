@@ -171,7 +171,9 @@ export async function makeLocalApi(db) {
           try { info = k.render_region_info(Math.floor(box.x), Math.floor(box.y),
                                            Math.ceil(box.w), Math.ceil(box.h)); } catch (e) { info = "info 亦失败：" + e; }
           return json({ ok: false, error: "needs_render", reason: "内核未产出字节",
-                        kernel_info: String(info).slice(0, 600), server: false });
+                        // **∴ 解析后返回 ✗**（**否则判据只能看到**被转义的 JSON 字符串 ✓**）。
+                        kernel_info: (() => { try { return JSON.parse(info); } catch { return String(info).slice(0, 600); } })(),
+                        server: false });
         }
         // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
         const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
