@@ -3033,7 +3033,7 @@ mod parallel_impl {
                                         std::thread::current().id(),
                                         ry + row_start as i64,
                                         rows,
-                                                rx as i64, ry as i64, rw, rh,
+                                                rx, ry, rw, rh,
                                         std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .map(|d| d.as_nanos())

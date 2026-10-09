@@ -946,11 +946,6 @@ impl Document {
     /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
     /// 因为调用方要的是像素而不是可展示的产物。
     pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
-        // Tag which entry point this render came through so a repeated rectangle can be
-        // attributed to a path (round 895). Inside the body, so no expression is broken.
-        eprintln!("CALLER render_region_raw");
-        // **★ 入口探针 ✓**（第 469 轮 ✓，**查明后删 ✓**）：**上一轮 `RegionBlockCache::get` 的探针
-        // 一次都没触发 ✗** ⇒ **∴ 必须先分清"这个函数**有没有被走到**✗"与"走到了但没查缓存 ✗"**。
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1084,9 +1079,6 @@ impl Document {
         bbox: Bbox,
         layer_id: &str,
     ) -> Result<(u32, u32, Vec<u8>)> {
-        // Tag which entry point this render came through so a repeated rectangle can be
-        // attributed to a path (round 895). Inside the body, so no expression is broken.
-        eprintln!("CALLER render_region_raw_layer");
         let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
         let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
         // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
@@ -1215,9 +1207,6 @@ impl Document {
     /// ⇒ 查看器要看到画面得等下一次"要预览"的调用（或 `export_png` / `get_document` ✓）。
     /// **∴ 只在调用方明确不要图时才走这里** ✓（默认行为一个字节不变 ✓）。
     pub fn render_region_complete_jobs(&mut self, bbox: Bbox) -> Result<()> {
-        // Tag which entry point this render came through so a repeated rectangle can be
-        // attributed to a path (round 895). Inside the body, so no expression is broken.
-        eprintln!("CALLER render_region_complete_jobs");
         let region = bbox;
         // 整幅 + 缓存命中：与 `render_region` 一样**必须走完渲染收尾** ✓（否则漏掉 job 完成 ✗），
         // 但这里**不需要**那份 PNG ✓ ⇒ 直接返回 ✓。
@@ -1249,9 +1238,6 @@ impl Document {
     /// **与 [`Self::render_region_complete_jobs`] 的区别** ✓：这条会**编码 PNG 并落盘** ✓，
     /// 且会更新 `last_render_blob` / 文档缩略图 / 整幅缓存 ✓；那条只渲染并完成 job ✓。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
-        // Tag which entry point this render came through so a repeated rectangle can be
-        // attributed to a path (round 895). Inside the body, so no expression is broken.
-        eprintln!("CALLER render_region");
         let region = bbox;
         if covers_canvas(region, self.state.width, self.state.height) {
             if let Some(preview) = self.current_full_frame_preview()? {
