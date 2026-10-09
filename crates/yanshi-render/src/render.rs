@@ -919,6 +919,24 @@ impl Renderer {
                 accumulation = buf;
                 note_below_reuse();
                 reused = true;
+                // **★ 命中 ⇒ 把用到的 tile **移到尾部** ✓ ★**（＝ **最近使用** ✓，第 495 轮 ✓）：
+                // **∴ 否则"丢最旧"只是 **FIFO** ✗**（**∵ 年龄从不刷新 ✓**）⇒ **∴ 而被反复用到的 tile
+                // 可能被丢掉 ✗** ⇒ **∴ 命中率低于真正 LRU ✓**。
+                if let Ok(mut guard) = below.lock() {
+                    if let Some(c) = guard.as_mut() {
+                        let mut recent = Vec::new();
+                        let mut rest = Vec::new();
+                        for t in c.tiles.drain(..) {
+                            if want_tiles.contains(&t.0) {
+                                recent.push(t);
+                            } else {
+                                rest.push(t);
+                            }
+                        }
+                        rest.extend(recent); // **∴ 刚用过的排到尾部 ⇒ 下次先丢别人 ✓**
+                        c.tiles = rest;
+                    }
+                }
             }
             if let Some(path) = probe_path.as_deref() {
                 use std::io::Write;
