@@ -73,9 +73,19 @@ const main = async () => {
   //   ⇒ **∴ 指纹不同 ⇒ **∴ 外层跳过时**必然 miss below ⇒ `false` ✓ ⇒ **∴ 这才是对照 ✓****。
   const r2 = await render();
 
-  console.log(`  ① 传 active_layer=S2 ⇒ below_reused = ${r1.below_reused}`);
-  console.log(`  ② 不传（对照）      ⇒ below_reused = ${r2.below_reused}`);
+  console.log(`  ① 传 active_layer=S2 ⇒ below_reused = ${r1.below_reused}｜frame_reused = ${r1.frame_reused}`);
+  console.log(`  ② 不传（对照）      ⇒ below_reused = ${r2.below_reused}｜frame_reused = ${r2.frame_reused}`);
   const bad = [];
+  // **★ 先要一个**有效样本 ✗ ★**（第 959 轮 ✓）：**∴ 一个布尔字段的"**假**"**有**多种成因**✗**
+  //   （**没复用 ✓／**根本没渲染 ✓／**没命中 ✓）** ⇒ **∴ 必须先排除"**没渲染 ✓"** ✓**** ✓✓
+  //   **∴ 依据 ✗**：`tools.rs:3941` 把 `below_reused` 定义成
+  //     "**本次渲染**是否让 below 复用计数**增加** ✓" ⇒ **∴ 而**整幅命中时**渲染器不跑**✗**
+  //       ⇒ **∴ 计数不动 ⇒ `below_reused=false`**✓**（**`document.rs:277` 的注释写明"**永远为假 ✓"）**
+  //         ⇒ **★ 若不排除它 ✗**，**就会把"**没渲染**"**读成"**没复用 ✓" ✓ ★**** ✓✓
+  if (r1.frame_reused === true) {
+    bad.push("① 的样本无效：整幅缓存命中（`frame_reused=true`）⇒ 渲染器没跑 ⇒ " +
+      "**∴ `below_reused=false` 说明的是「没渲染」✗，而不是「没复用」✓**");
+  }
   if (r1.below_reused !== true) bad.push(`① 传 active_layer 时应为 true ✗（实测 ${r1.below_reused}）`);
   if (r2.below_reused !== false) bad.push(`② 不传时应为 false ✗（实测 ${r2.below_reused}）`);
   if (bad.length) {
