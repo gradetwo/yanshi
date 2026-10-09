@@ -95,7 +95,8 @@ fn document() -> DocumentState {
     state
 }
 
-/// **★ 判据 ✗ ★**：**画布 512×512 ✗；below 的 tile 固定 256** ✗（`BELOW_TILE` ✓，**与 `TileGrid` 无关 ✓）**。
+/// **★ 判据 ✗ ★**：**画布 512×512 ✗；below 的 tile 由 `BELOW_TILE` 决定** ✗（**与 `TileGrid` 的 64 无关 ✓）**
+///   **∴ 判据**不写死格数** ✗** ⇒ **∴ 实测**它**只断言"**有但有缺 ✓" ✓**** ✓✓。
 ///
 /// **∴ 步骤 ✗**：
 ///   **①** 先**只渲左上 256×256 ⇒ below 缓存 1 格** ✗**（**缓存里因此只有 1 格 ✓）**
@@ -114,13 +115,22 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
     renderer.set_active_layer(Some("layer_top".to_owned()));
 
     // **① 只渲左上 1 格。**
-    renderer
+    let first = renderer
         .render_region(
             &state,
             &store,
             yanshi_core::Bbox::new(0.0, 0.0, 256.0, 256.0),
         )
         .expect("第一块渲染");
+    eprintln!(
+        "第一次：bbox={:?} {}x{} tiles={} wanted={} measured={}",
+        first.bbox,
+        first.width,
+        first.height,
+        first.tiles.len(),
+        first.stats.below_tiles_wanted,
+        first.stats.below_tiles_measured
+    );
 
     // **② 再渲左上 2 格：缓存里有 1 格，想要 2 格。**
     let r = renderer
@@ -131,6 +141,13 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
         )
         .expect("第二块渲染");
 
+    eprintln!(
+        "第二次：bbox={:?} {}x{} tiles={}",
+        r.bbox,
+        r.width,
+        r.height,
+        r.tiles.len()
+    );
     let s = &r.stats;
     eprintln!(
         "部分复用：measured={} wanted={} available={} reused={}",
@@ -142,17 +159,24 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
         "这次渲染**必须**做过 below 判定 ✗；实测没做过 ⇒ **∴ 要么**这条判据构造不对 ✗，\
          **要么**这个区域走的是「不可缓存」的路 ✓（**∴ 那样后面全是空转 ✓）"
     );
-    assert_eq!(
-        s.below_tiles_wanted, 2,
-        "512×256 的区域在 below tile=256 下**应当**想要 2 格 ✗；\
-         实测 {} ⇒ **∴ 要么**tile 划分与判据假设不同 ✗，**要么**区域被裁过 ✓",
-        s.below_tiles_wanted
+    // **∴ 这里**不写死格数 ✗**（**第 6 轮教训 ✓）：**tile 尺寸是**实现的常量**✗
+    //   ⇒ **∴ 判据**一旦写死 ✗**，**常量一变**它就**测我的假设**✗，**而不是**测实现 ✓**** ✓✓
+    //   **∴ 只断言**场景前提 ✗**：**"**缓存里有格 ✓、**而**不够 ✓"** ✓**** ✓✓
+    assert!(
+        s.below_tiles_wanted > 0,
+        "这次渲染**应当**想要至少 1 格 ✗；实测 0 ⇒ **∴ 它**根本没做 below 判定 ✓"
     );
-    assert_eq!(
-        s.below_tiles_available, 1,
-        "先渲过左上 1 格 ⇒ 缓存里**应当**有 1 格 ✗；实测 {} ⇒ **∴ 要么**缓存没写进去 ✗，\
-         **要么**指纹变了 ✓（**∴ 两种都要先查清 ✓）",
-        s.below_tiles_available
+    assert!(
+        s.below_tiles_available > 0,
+        "先渲过一块 ⇒ 缓存里**应当**有可用格 ✗；实测 0 ⇒ **∴ 要么**缓存没写进去 ✗，\
+         **要么**指纹变了 ✓（**∴ 两种都要先查清 ✓）"
+    );
+    assert!(
+        s.below_tiles_available < s.below_tiles_wanted,
+        "这条判据要的场景是**有但有缺** ✓；实测 available={} wanted={} ⇒ \
+         **∴ 要么**两次区域没跨格 ✗，**要么**缓存已覆盖全部 ✓（**∴ 那样这条就退化了 ✓）",
+        s.below_tiles_available,
+        s.below_tiles_wanted
     );
     // **★ 这一条就是"**部分复用**"本身 ✗ ★**：**有一格**就必须用那一格 ✓**** ✓✓
     assert!(

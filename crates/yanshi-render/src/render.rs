@@ -903,6 +903,18 @@ impl Renderer {
             stats.objects_culled = chunk_stats.objects_culled;
             stats.layer_buffers_allocated = chunk_stats.layer_buffers_allocated;
             stats.layer_buffers_reused = chunk_stats.layer_buffers_reused;
+            // **★ below tile 账目也必须**跨这条分派** ✗ ★**（第 6 轮 ✓；
+            //   **∴ 为什么漏 ✗**：**这里是**白名单式抄字段**✗ ——
+            //     **∴ 只有被点名的字段**才活下来 ✓**
+            //     ⇒ **∴ 于是**：**并行路径（**大区域 ✓）**里我的四个字段**全丢** ✓**
+            //       ⇒ **★ 实测**：`measured=false`（**看起来像"**没做过判定 ✓"**✗
+            //         ⇒ **∴ 又是一种**假读数 ✓）★**** ✓✓
+            //   **∴ 与上一轮同源 ✗**：**第 3 轮**我漏的是**归并循环**✗；
+            //     **这一轮**漏的是**分派白名单**✗ ⇒ **∴ 两处**都是**"**新字段没跟上 ✓"** ✓**** ✓✓
+            stats.below_tiles_wanted = chunk_stats.below_tiles_wanted;
+            stats.below_tiles_available = chunk_stats.below_tiles_available;
+            stats.below_tiles_reused = chunk_stats.below_tiles_reused;
+            stats.below_tiles_measured = chunk_stats.below_tiles_measured;
             stats.unsupported.extend(chunk_stats.unsupported);
             stats.parallel_workers = chunks;
             stats.parallel_chunks = chunks;
