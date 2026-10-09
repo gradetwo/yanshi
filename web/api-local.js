@@ -21,6 +21,8 @@
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
 export const LOCAL_IMPLEMENTED = 7;
 
+let lastFold = null;
+
 /**
  * **★ 安装本地 API 层 ✓ ★**：**覆写 `window.fetch` ✗** ⇒ **∴ `/api/*` 走本地 ✓，
  * 其余（**静态资源 ✓**）走原 `fetch` ✓**。
@@ -285,6 +287,8 @@ export async function makeLocalApi(db) {
         // **★ 折叠结果必须**可见 ✗ ★**（第 630 轮 ✓）：**∴ `load_atoms_json` 返回一个封套字符串 ✗**
         // ⇒ **∴ 它写明**成功或失败原因 ✓** ⇒ **∴ 不许丢掉它 ✓**（**∴ 否则只剩"0×0"这种二手症状 ✗**）。
         var foldResult = k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom)));
+        lastFold = String(foldResult || "");
+        try { window.__lastFold = lastFold; } catch (e) { /* 非浏览器环境（node 判据）=> 忽略 ✓ */ }
         // **★ 区域必须裁剪到画布内 ✗ ★**（第 625 轮 ✓，**真实浏览器判据抓到的真空图 ✗**）：
         // **∴ 实测**：**默认区域给到 1024×1024 而文档只有 800×600 ✗**
         // ⇒ **∴ 越界 ⇒ `render_region_png` 返回**空字节**✗** ⇒ **∴ 于是**前端会显示空白 ✓**。

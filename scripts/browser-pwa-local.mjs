@@ -244,9 +244,11 @@ const pr = await evaluate(`(async () => { const r = await fetch("/api/tools/rend
   return { status: r.status, body: await r.json() }; })()`);
 console.log("  探针 => " + JSON.stringify(pr).slice(0, 620));
 
-// **★ 诊断（**第 660 轮 ✓**）：**从 `/health` 读折叠信封 ✗** ★**
-const diag = await evaluate(`(async () => (await (await fetch("/health")).json()))()`);
-console.log("  诊断 /health => " + JSON.stringify(diag).slice(0, 400));
+// **★ 诊断（**第 661 轮 ✓**）：**直接读 `window.__lastFold` ✗**（**∴ 由 `api-local.js` 写入 ✓**）★**
+//   **∴ 为什么不走新端点 ✗**：**∴ 那要插进 `if` 链 ✗** ⇒ **∴ 而**本会话**对象内插入失败 6 次 ✗****
+//   ⇒ **∴ 改成**把折叠信封挂到 window ✗**（**语句级插入 ✓，从未失败 ✓**）。
+const diag = await evaluate("window.__lastFold || null");
+console.log("  诊断 lastFold => " + String(diag).slice(0, 400));
 
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
