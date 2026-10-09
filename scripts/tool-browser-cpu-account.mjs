@@ -97,6 +97,29 @@ const diffMs = (before, after, name) =>
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Performance.enable");
+// **★ 必须**绕开 Service Worker 缓存 ✗ ★**（第 49 轮 ✓；**∴ 我**踩到了 ✓）：
+//   **∴ 症状 ✗**：**本地已同步的新 `viewer-app.js`**✗，**页面**却**跑的是旧代码**
+//     （**∴ 内核没上报 `yanshiStats.webgpu` ✓）⇒ **∴ 因为**PWA 的 SW
+//       **把**上一次**的副本**发回来了 ✓**** ✓✓
+//   **∴ 这正是**缓存戳**要解决的那类问题（**第 34 轮 ✓）✗ ⇒ **∴ 而**测新代码时**必须**先绕开 ✓**** ✓✓
+await send("Network.enable");
+await send("Network.setCacheDisabled", { cacheDisabled: true });
+// **∴ 导航前**清掉已注册的 SW ✗**（**∴ 第一次导航时**还没有 ✓，**但**第二次**就有了 ✓）** ✓✓
+await send("Page.navigate", { url: "about:blank" });
+await send("Runtime.evaluate", {
+  expression: `(async () => {
+    if (navigator.serviceWorker) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) await reg.unregister();
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      for (const key of keys) await caches.delete(key);
+    }
+  })()`,
+  awaitPromise: true,
+  returnByValue: true,
+});
 
 console.log(`  目标：${base}`);
 console.log(`  chromium 标志：${wantGpu ? "**请求 GPU**" : "**默认（不去掉 GPU ✓）**"}`);
@@ -189,9 +212,42 @@ console.log(`  | ② 内核预热 | ${warmMs.toFixed(1)} | — |`);
 console.log(`  | ③ 真鼠标一笔 ＋ 渲染 | ${strokeMs === null ? "（没有画布）" : strokeMs.toFixed(1)} | — |`);
 console.log("");
 console.log(`  内在核预热状态：${warm ? JSON.stringify(warm) : "（拿不到）"}`);
+// **∴ 诊断（**第 49 轮 ✓）：**把**字段名**也打出来**✗
+//   ⇒ **∴ 于是**：**"**没接上 ✓"**与"**接了但字段名不同 ✓"**能**一眼分开 ✓**** ✓✓
+{
+  const keys = await send("Runtime.evaluate", {
+    expression: "JSON.stringify(Object.keys(window.yanshiStats || {}))",
+    returnByValue: true,
+  });
+  console.log(`  yanshiStats 的键：${keys.result ? keys.result.value : "?"}`);
+}
 console.log(`  WebGPU：navigator.gpu=${gpuFact ? gpuFact.has : "?"}｜`
   + `adapter=${gpuFact ? gpuFact.adapter : "?"}`
   + `${gpuFact && gpuFact.reason ? `｜原因=${gpuFact.reason}` : ""}`);
+
+// **★ 交叉核对 ✗ ★**（第 49 轮 ✓）：**内核自报的 `yanshiStats.webgpu`
+//   **必须**与**本脚本独立探测**的结果一致 ✗
+//     ⇒ **∴ 二者**是**两条独立的路**✗（**页面里的内核代码 vs CDP 里的探测 ✓）
+//       ⇒ **∴ 若**不一致 ⇒ **∴ 说明**其中一条**没生效**✗（**∴ 而不是**"**环境不同 ✓）** ✓✓
+const reported = warm && warm.webgpu ? warm.webgpu : null;
+console.log("");
+if (!reported) {
+  console.error("  ✗ 内核**没有**上报 `yanshiStats.webgpu` ⇒ **∴ 探测**没接上 ✓");
+  process.exitCode = 1;
+} else {
+  console.log(`  内核自报 webgpu：${JSON.stringify(reported)}`);
+  const agree = !!reported.adapter === !!gpuFact.adapter;
+  console.log(`  交叉核对（**内核 vs 脚本独立探测 ✓）：${agree ? "一致 ✓" : "★ 不一致 ✗ ★"}`);
+  if (!agree) {
+    console.error("  ✗ 内核自报与独立探测不一致 ⇒ **∴ 不许**二选一采信 ✓");
+    process.exitCode = 1;
+  }
+  // **∴ 且**：**没有适配器时**必须**给出原因 ✗**（**∴ 不许**留空 ✓）** ✓✓
+  if (!reported.adapter && !reported.reason) {
+    console.error("  ✗ 没有适配器却**没写原因** ⇒ **∴ 那**等于没说 ✓");
+    process.exitCode = 1;
+  }
+}
 
 // **★ 如实结论 ✗ ★**：**没有适配器时**不许**说得像"**GPU 已就绪 ✓"** ✓✓
 if (!gpuFact || !gpuFact.adapter) {

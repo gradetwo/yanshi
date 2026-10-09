@@ -63,7 +63,38 @@ window.yanshiStats = {
   firstStrokeMs: null, firstPaintMs: null, kernelWarmMs: null,
   lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
   bitExact: null, resyncs: 0,
+    // **★ WebGPU 通路（**阶段二的前置事实 ✓）✗ ★**（第 49 轮 ✓）：
+    //   **∴ 依据 ✗**：**用户第 594 轮**要求 GPU 的收益记**两本账**✗
+    //     ⇒ **∴ 而**离线内核**要用 GPU**✗，**第一步**是**如实知道**这台浏览器
+    //       **有没有**可用的适配器 ✓**** ✓✓
+    //   **∴ 硬约束（**第 7 条 ✓）**：**不许假装用了 GPU ✓**
+    //     ⇒ **∴ 所以**这里**必须是**探测结果**✗，**不许**写常量 ✓**** ✓✓
+    //   **∴ 形状 ✗**：`{ supported, adapter, reason }` ⇒ **∴ 与**服务端的
+    //     `render_backend` ＋ `gpu_unavailable_reason` **对称 ✓**** ✓✓
+    webgpu: { supported: false, adapter: false, reason: "尚未探测" },
 };
+
+  // **∴ 异步探测 ✗**（**∴ `requestAdapter()` 是 Promise ✓）** ✓✓
+  //   **∴ 失败也要写原因 ✗**（**∴ 空字符串**会**让人以为**没查过 ✓）** ✓✓
+  (async () => {
+    try {
+      if (!navigator.gpu) {
+        window.yanshiStats.webgpu = {
+          supported: false, adapter: false, reason: "navigator.gpu 不存在",
+        };
+        return;
+      }
+      const adapter = await navigator.gpu.requestAdapter();
+      window.yanshiStats.webgpu = adapter
+        ? { supported: true, adapter: true, reason: null }
+        : { supported: true, adapter: false, reason: "requestAdapter() 返回 null" };
+    } catch (error) {
+      window.yanshiStats.webgpu = {
+        supported: !!navigator.gpu, adapter: false,
+        reason: "requestAdapter() 抛错：" + String((error && error.message) || error),
+      };
+    }
+  })();
 
 const params = new URLSearchParams(location.search);
 window.yanshiStats.docId = params.get("doc");
