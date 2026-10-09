@@ -282,3 +282,36 @@
 
 **变异实测** ✓：**造一份 `web/viewer-app.js` ⇒ 判据**报红 ✓**；删除 ⇒ 恢复绿 ✓**
 （**∴ 于是"不影响现有 WEB"从**口头承诺**变成**可红判据**✗**）
+
+---
+
+## 十三、真实浏览器验证的**三要素**（**骨架已取得 ✓，第 619 轮 ✓**）
+
+**∴ 现状** ✗**：**PWA 有两层证据（**静态 ✓ ＋ node 行为级 ✓**），但**没有真实浏览器证据 ✗****。
+**∴ 已确认可行 ✗**：**仓库有 14 个 `browser-*.mjs` 判据 ✗**，**用 **CDP**（**零依赖 ✓**）⇒
+**∴ 且本机有 `chromium`（`/usr/bin/chromium` ✓）⇒ **∴ 本地就能验 ✓**** ✓✓
+
+**∴ 骨架** ✓（取自 `browser-undo-disabled.mjs`，**64 行 ✓**）：
+```js
+const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const page = targets.find((t) => t.type === "page");
+const socket = new WebSocket(page.webSocketDebuggerUrl);   // **node 有全局 WebSocket ✓**
+const send = (method, params) => …;                        // **id ＋ pending map ✓**
+const evaluate = async (expr) => (await send("Runtime.evaluate",
+  { expression: expr, returnByValue: true, awaitPromise: true })).result.result.value;
+await send("Page.navigate", { url });
+for (let i = 0; i < 40; i++) { await sleep(300); if (await evaluate('document.readyState === "complete"')) break; }
+```
+
+### 13.1 写它所需要的**三件事**（**下一轮 ✓**）
+
+| # | 要素 | 为什么 |
+|---|---|---|
+| **①** | **自起静态服务器**（`node:http` 提供 `web/` ✓） | **∴ `file://` 下 ES module 与 `import()` 会被 CORS 拒 ✗** ⇒ **∴ 必须走 http ✓** |
+| **②** | **自起 chromium**（`--headless=new --remote-debugging-port=…` ✓） | **∴ 现有 `browser-*.mjs` 假定调试端口**已被别处启动**✗**（**`CDP_PORT` 由外部传入 ✓**）⇒ **∴ PWA 判据要自己起 ✓** |
+| **③** | **四条断言** | **① `/health` 报 `server:false` ＋ `render_backend` ✗**；**② 内核加载成功（`window.yanshiKernel` 存在 ✓）**；**③ 未实现端点 ⇒ 501 ＋ `endpoint` ＋ `reason` ✓**；**④ 快照缺失的 `render_region` ⇒ `needs_render` ✓** |
+
+**∴ 变异** ✗：**把 `api-local.js` 的 501 分支去掉 ⇒ ③ 必红 ✓**（**与 node 行为级判据同源的变异 ✓**）。
+
+**⚠️ 诚实** ✓：**本轮**没有**产出新判据 ✗**（**只取到骨架并确认其可复用 ✓**）⇒
+**∴ 而这一步有效的理由 ✗**：**它把"能不能做"变成"知道怎么写"✗**（**64 行、零依赖、本机可跑 ✓**）** ✓✓
