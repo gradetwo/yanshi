@@ -958,13 +958,19 @@ impl Document {
         //  因为按块渲染要处理滤镜外扩跨块 ✓，那会碰到"分块与整幅必须一致"这条硬不变量 ✗。）
         // **★ 指纹代替裸 `head_seq` ✓ ★**（第 465 轮 ✓）：**∴ 只改最上层 ⇒ 子区域缓存仍有效 ✓**；
         // **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**外部报告：子区域 531 → 426 → 347 ms ✗**）。
+        // **★ 诊断开关变量 ✓ ★**（第 554 轮 ✓）：**未设 ⇒ `false` ⇒ 行为不变 ✓**。
+        let skip_region_cache = std::env::var("YANSHI_SKIP_REGION_CACHE").is_ok();
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
         let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
         // **★ 探针 ✓**（第 552 轮 ✓，**查明后删 ✓**）：**打印**是否命中外层 ＋ 键 ＋ 版本**✗** ⇒
         // **∴ 一次看出**我的区域是否到了这里 ✗、命中与否 ✗、键是否漂移 ✗****。
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
                 let line = format!(
                     "REGION key=({},{},{},{}) version={} hit={}\n",
                     key.x,
@@ -977,14 +983,19 @@ impl Document {
                 let _ = f.write_all(line.as_bytes());
             }
         }
-        if let Some(block) = self.region_cache.get(key, version) {
-            // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
-            // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
-            //
-            // **缓存命中 ⇒ 上次没有跳过任何东西** ✓：带告警的渲染**从不进缓存** ✗
-            //（见下面 `if rendered.stats.unsupported.is_empty()` ✓）⇒ 命中就等价于"完整" ✓。
-            self.last_render_warnings.clear();
-            return Ok((block.key.w, block.key.h, block.data.clone()));
+        // **★ 诊断开关 ✓ ★**（第 554 轮 ✓）：**跳过外层区域块缓存 ✓** ——
+        // **∴ `YANSHI_SKIP_REGION_CACHE=1` ⇒ get 与 put 都跳 ⇒ **∴ 每次渲染都进 below ✓**；
+        // **∴ 未设 ⇒ 行为完全不变 ✓**。**∴ 用途** ✓：**验证 below 的复用 ✓**（**判据需要它 ✗**）。
+        if !skip_region_cache {
+            if let Some(block) = self.region_cache.get(key, version) {
+                // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
+                // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
+                //
+                // **缓存命中 ⇒ 上次没有跳过任何东西** ✓：带告警的渲染**从不进缓存** ✗
+                //（见下面 `if rendered.stats.unsupported.is_empty()` ✓）⇒ 命中就等价于"完整" ✓。
+                self.last_render_warnings.clear();
+                return Ok((block.key.w, block.key.h, block.data.clone()));
+            }
         }
         let rendered = self
             .renderer
@@ -995,7 +1006,7 @@ impl Document {
         // **不完整的画面绝不进缓存** ✗：缓存里没有"告警"这一维 ✓ ⇒ 一旦缓存了 ✓，
         // 之后**命中**就会把同一张缺块的图**当成完整的**发出去 ✓（而且没有任何提示 ✗）。
         // 缺块本身应当是**罕见**的 ✓ ⇒ 放弃这一次缓存**不影响**正常路径的性能 ✓。
-        if rendered.stats.unsupported.is_empty() {
+        if !skip_region_cache && rendered.stats.unsupported.is_empty() {
             self.region_cache
                 .put(yanshi_render::region_block::RegionBlock {
                     // **用"请求的键"存** ✓（不是渲染后的尺寸 ✗）：查的时候用的是请求键 ✓，
