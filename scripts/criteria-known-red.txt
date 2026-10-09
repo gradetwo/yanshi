@@ -749,3 +749,20 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     而且能让**任何**调用方看到"我这次渲染有没有吃到缓存" ✓✓
 #   **⚠️ 待清理** ✓：**我加的临时探针（`split_ids` ✓／`args keys` ✓／`active_layer_received` ✓）
 #     都是**环境变量控制**✓ ⇒ **∴ 未设时零开销 ✓**；**∴ 但查明后应按承诺**删掉或降级为正式可观测性 ✓**。
+# **★ 第 535 轮：✅ 单文档计数口已落地 ✓；工具侧的**锚点已取到** ✓（**响应写点待取 ✗**）**
+#   **已完成** ✓：**`Workspace::document_below_reuse_count(doc_id)` ✓**（**只读转发 ✓**；
+#     **∴ 为什么需要它 ✓**：**既有 `below_reuse_count()` 把**所有文档**加起来 ✗ ⇒ 算不出"这次是否复用 ✓**）
+#     —— **∴ 提交 `380f3f2` ✓（**已推送 ✓，本地＝远端 ✓**）**。
+#   **工具侧的真实原文** ✓（**`cargo fmt` 重排过 ✓，我已取到行号 ✓**）：
+#     * **`:3759`** `let active_layer = optional_str(args, "active_layer");` ✓；
+#     * **`:3793-3795`**
+#       `let (width, height, pixels) = ctx.workspace` ✓
+#       `.render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())?;` ✓。
+#   **∴ 待办** ✓：**在 `:3759` 之后加 `below_before` ✓；在 `:3795` 之后加 `below_after` ✓；
+#     并把 `below_reused = below_after > below_before` **放进响应 ✓****。
+#   **∴ 但**响应写点没找到**✗**：**`read_render_region`（**范围 `3756..3915`✓**）里**没有** `summary[` 出现 ✗**
+#     ⇒ **∴ 说明它**直接 `json!({…})` 返回 ✗**（**与 `read_get_document` 不同 ✓**）
+#     ⇒ **∴ 下一轮**先打印它的**返回表达式**✗（**`grep -n "Ok(json!" 或函数尾部 ✓**）⇒ **∴ 再插字段 ✓**。
+#   **⚠️ 教训（**重复出现 ✓**）** ✓：**`cargo fmt` 会重排我插入的代码 ✗** ⇒ **∴ 任何后续以文本为锚点的
+#     替换**都必须先取行号 ✗** —— **∴ 我本轮在 `optional_str` 上又踩了一次（`n=0` ✓），
+#     但**断言前置**⇒ 无损失 ✓（**这个习惯值得保持 ✓**）**。
