@@ -5717,6 +5717,18 @@ function refreshContactLink() {
 }
 
 function connect() {
+  // A static deployment has no server at all, so a WebSocket to /ws can only fail its
+  // handshake and fill the console with connection errors (the user reported the noise).
+  // The injected sentinel marks such a deployment; report the state honestly and do not
+  // dial. This sits in the single entry point, so every caller is covered.
+  if (typeof window !== "undefined" && window.__pwaLocalOnly === true) {
+    state.socket = null;
+    const dot = $("conn");
+    if (dot) dot.className = "dot";
+    const text = $("connText");
+    if (text) text.textContent = "本地内核（无服务端）";
+    return;
+  }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(scheme + "//" + location.host + "/ws?doc=" + state.docId + "&token=" + state.token);
   state.socket = socket;

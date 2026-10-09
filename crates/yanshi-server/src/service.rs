@@ -233,6 +233,13 @@ pub fn resolve_assets_dir(
             candidates.push(bin_dir.join("assets"));
             // 开发时：`target/release/yanshi-serve` ⇒ `<repo>/assets` ✓。
             candidates.push(bin_dir.join("../../assets"));
+            // 测试二进制与 `cargo` 的中间产物比可执行文件**再深一级** ✗：
+            // `target/debug/deps/yanshi_mcp-<hash>` ⇒ 需要 `../../../assets` ✓。
+            // **∴ 不补这一条 ✗**：`yanshi-mcp` 的端到端测试**找不到资产** ✗
+            // ⇒ **∴ `create_layer` 的预览没有缩略图** ⇒ **∴ `thumb_url` 是 `None` ✗**
+            // ⇒ **∴ 测试在 `unwrap()` 上崩 ✓**（真实门禁红灯 ✓，实测 ✓）。
+            // **∴ 放在最后 ✗**：**不遮蔽**上面四条已文档化的布局 ✓。
+            candidates.push(bin_dir.join("../../../assets"));
         }
     }
     for candidate in &candidates {
