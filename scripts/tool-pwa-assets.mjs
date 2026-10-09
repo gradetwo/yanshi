@@ -199,13 +199,13 @@ if (existsSync("web/brushes")) {
 //     ⇒ **∴ 本判据**改成断言**新的真实情况 ✗**：
 //       **a.** **磁盘上**有**编码名 ✗**（**∴ 至少一支含 `%23` ✓）**；
 //       **b.** **且**没有**裸 `#` 的残留 ✗**（**∴ 否则** CDN 会拒 ✓）**。
-check(bs.some((n) => n.indexOf("%23") >= 0),
-  "磁盘上没有 %23 形式的笔刷名 ⇒ URL 编码约定丢失（见 pwa-sync-viewer.mjs 的落盘重命名）");
+check(bs.some((n) => n.indexOf("_n_") >= 0),
+  "磁盘上没有 _n_ 形式的笔刷名 ⇒ URL 编码约定丢失（见 pwa-sync-viewer.mjs 的落盘重命名）");
 check(!bs.some((n) => n.indexOf("#") >= 0),
   "磁盘上仍有裸 # 的笔刷名 ⇒ Cloudflare 会以 10304 拒收（必须在同步时编码）");
 // **∴ 读数：**编码名几支 ＋ **裸 `#` 应为 0 ✗**（**∴ 两个数**一起看 ✓）**
-const encodedCount = bs.filter((n) => n.indexOf("%23") >= 0).length;
-console.log("  笔刷：" + bs.length + " 支 ✓（含 " + encodedCount + " 支 %23 编码名 ✓｜裸 # 0 支 ✓）");
+const encodedCount = bs.filter((n) => n.indexOf("_n_") >= 0).length;
+console.log("  笔刷：" + bs.length + " 支 ✓（含 " + encodedCount + " 支 _pct_/_n_ 安全名 ✓｜裸 # 0 支 ✓）");
 }
 // **★ 本地落笔模块 ✓ ★**（第 652 轮 ✓）：**∴ 它把"**取笔刷 ＋ 调内核 ＋ 报错**✗"收在一处 ✓**
 //   ⇒ **∴ 且**它是**纯新增**✗**（**不改现有路径 ✓**）⇒ **∴ 判据只断言它的**关键契约**存在 ✓**。

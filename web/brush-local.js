@@ -25,7 +25,9 @@
 export async function fetchBrushText(brush) {
   const name = String(brush || "100%_Opaque.myb");
   // **∴ 只编 `#` 与 `%` ✗**（**∴ `+` 必须保持字面 ✓** —— 与服务端用**路径版**解码器一致 ✓）。
-  const encoded = name.replace(/%/g, "%25").replace(/#/g, "%23");
+  // Same map as the sync step: percent and hash become ASCII substitutes because
+  // the encoded forms could not be addressed reliably through the static host.
+  const encoded = name.replace(/%/g, "_pct_").replace(/#/g, "_n_");
   const res = await fetch("/brushes/" + encoded);
   if (!res.ok) {
     // Include the exact URL that failed: the reported name is the caller's input, while
