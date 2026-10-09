@@ -117,11 +117,16 @@ check(un && un.body && !!un.body.reason, "未实现端点未报出原因 ✗");
 // **∴ 实测**：**没有原子 ⇒ 内核文档是 **0×0**✗ ⇒ **∴ 它**正确地**拒绝渲染
 //（`invalid_argument: … 与文档 0×0 不相交` ✓）⇒ **∴ 所以那不是内核缺陷 ✗**，
 // **而是本判据的**输入是空文档**✗**（**∴ 教训：判据要先造出**有内容的**状态 ✓**）。
+// **★ 原子必须用**嵌套 `payload`**✗ ★**（第 629 轮 ✓，**部署矩阵 §14.10 ✓**）：
+// **∴ 权威形态**（`tools.rs:1736` ✓）：**`{ kind, payload, actor?, session? }`** ——
+// **∴ 而我此前字段铺平 ✗** ⇒ **∴ 内核折叠不出来 ⇒ **文档 0×0**✗**（**实测 ✓**）。
 await evaluate(`(async () => {
   await fetch("/api/documents", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc_id: "d1", width: 256, height: 256 }) });
   await fetch("/api/atoms?doc=d1", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind: "create_layer", layer_id: "L0", name: "L0" }) });
+    body: JSON.stringify({ kind: "create_document", payload: { width: 256, height: 256 } }) });
+  await fetch("/api/atoms?doc=d1", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "create_layer", payload: { layer_id: "L0", name: "L0" } }) });
   return true; })()`);
 
 // **④ 有了内容 ⇒ 渲染应当**真的产出 PNG ✗**（**∴ 冷启动也如此 ✓ ⇒ 这就是"能画"的证据 ✓**）

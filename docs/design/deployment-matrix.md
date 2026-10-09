@@ -476,3 +476,45 @@ const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atom
   （**∴ 即**直接传原子 ✗，**不再包装成 `r.atom` 的自定义形状 ✓**）**；
 * **浏览器判据**：**造 `{ kind: "create_document", payload: { width: 256, height: 256, … } }` ✗**
   ⇒ **∴ 于是**内核文档有正确尺寸 ⇒ **∴ 渲染应当产出真 PNG ✗** ⇒ **∴ 判据自动升级 ✓**（**§14.9 ✓**）** ✓✓
+
+### 14.12 ★★ **权威原子样本**（**第 629 轮 ✓，实测自 `/api/atoms` ✓**）★★
+
+**请求** ✓：**`GET /api/atoms?doc=…&token=…`** ⇒ **键 ＝ `{ atoms, count, doc_id, head_seq, ok, since }`** ✓
+（**∴ 而 `/api/tools/get_log` 是 **POST**（**GET ⇒ 405** ✓）**）** ✓✓
+
+**`atoms[0]` 的全部字段** ✓（**8 个 ✓**）：
+```json
+{
+  "actor": "human:web",
+  "id": "01M4FJ06KTR82YTZ6Y8DD90000",
+  "kind": "create_document",
+  "payload": {
+    "background": { "a": 255, "b": 255, "g": 255, "r": 255 },
+    "color_space": "srgb",
+    "doc_id": "s_1791523560",
+    "height": 256,
+    "width": 256
+  },
+  "schema_version": 1,
+  "seq": 1,
+  "session": "session:web",
+  "timestamp": 1791523560058
+}
+```
+
+**∴ 所以内核要求的**最小合法原子**✗ ＝ **`id` ＋ `seq` ＋ `kind` ＋ `payload` ＋
+`schema_version` ＋ `actor` ＋ `session` ＋ `timestamp`** ✓
+—— **∴ 而**`payload` 里**创建文档**还需要 **`doc_id` ＋ `width` ＋ `height` ＋ `color_space` ＋ `background` ✓**** ✓✓
+
+**∴ 这解释了**§14.10 之后仍然 0×0 的原因 ✗**：
+**∴ 我补齐了 `payload` 这一层 ✓，**但**仍缺 `id`／`seq`／`schema_version`／`actor`／`session`／`timestamp` ✗**
+（**∴ 且**`payload` 里缺 `doc_id`／`color_space`／`background` ✓）⇒ **∴ 折叠仍被拒 ✗** ✓✓
+
+### 14.13 下一步（**最后一步 ✓**）
+
+**把 §14.12 的**完整样本**抄进浏览器判据的夹具 ✗**（**8 个字段 ＋ 完整 `payload` ✓**）
+⇒ **∴ 于是**内核文档尺寸正确 ⇒ **∴ `render_region` 应产出真 PNG ✗**
+⇒ **∴ 判据**自动升级 ✓**（**§14.9 ✓**：**断言 `local-kernel` ＋ 二次命中 `local-snapshot` ✓**）** ✓✓
+
+**∴ 且**PWA 侧也应存**同样完整**的原子 ✗**（**`api-local.js` 的 `/api/atoms` POST ✓**）
+⇒ **∴ 否则**"本地能画"只在判据夹具上成立 ✗** ⇒ **∴ 而那会是**假证据 ✗** ⇒ **∴ 必须两边一起改 ✓**。
