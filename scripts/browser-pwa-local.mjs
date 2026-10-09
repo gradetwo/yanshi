@@ -184,7 +184,26 @@ const rr = await evaluate(`(async () => (await (await fetch("/api/tools/render_r
 console.log("  render_region ⇒ " + JSON.stringify(rr).slice(0, 700));
 // **∴ 旧断言已删 ✓**：**首帧真渲染 ＋ 二次命中快照** 已取代它 ✓（**第 630 轮 ✓**）。
 
+// **★ 持久化（**IndexedDB ✓）✗ ★**（第 643 轮 ✓；**目标第 6 条 ✓**）：
+//   **∴ 无服务器部署的最后一道保证 ✗**：**刷新后文档仍在 ✗** ⇒
+//   **∴ 做法**：**追加一条原子 ⇒ **重载页面**✗ ⇒ **再读 `/api/atoms` ⇒ 条数不减 ✓**。
+//   **∴ 注意插入点 ✗**：**必须在**所有前置变量之后 ＋ **清理之前**✗**（**第 642 轮两次踩过 ✓**）。
+const atomsBefore = await evaluate(`(async () => (await (await fetch("/api/atoms?doc=d1")).json()).count)()`);
+await evaluate(`(async () => { await fetch("/api/atoms?doc=d1", { method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ atoms: [{ actor: "human:web", id: "01PERSIST000000000000000001",
+    kind: "create_layer", payload: { layer_id: "L1", name: "L1" },
+    schema_version: 1, seq: 99, session: "session:web", timestamp: Date.now() }] }) }); return true; })()`);
+await send("Page.navigate", { url: base + "/?debug=1" });
+for (let i = 0; i < 60; i++) { await sleep(300); if (await evaluate('document.readyState === "complete"')) break; }
+for (let i = 0; i < 24; i++) { if (await evaluate("window.__pwaInstalled === true || !!window.__pwaInstallError || !!window.yanshiKernel")) break; await sleep(250); }
+const atomsAfter = await evaluate(`(async () => (await (await fetch("/api/atoms?doc=d1")).json()).count)()`);
+console.log(`  持久化：重载前 ${atomsBefore} 条 ⇒ 重载后 ${atomsAfter} 条`);
+check(atomsAfter >= atomsBefore, `重载后原子减少（${atomsBefore} ⇒ ${atomsAfter}）⇒ **∴ IndexedDB 没持久化 ✗**`);
+check(atomsAfter > 0, "重载后一条原子都没有 ⇒ **∴ 持久化失效 ✗**");
+
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
+
 if (failures.length) { console.error("❌ " + failures.join("｜")); process.exit(1); }
 console.log("  ✓ PWA 在真实浏览器里成立：内核加载 ✓｜/health 如实 ✓｜未实现端点 501 ✓｜缺快照 needs_render ✓");
