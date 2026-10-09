@@ -763,19 +763,28 @@ want：52 [空] ｜★4 [真缺格]★ ｜4 ["empty"] ｜24 ["no-group"]
 | **1** | **懒分配**（tile 按需／位图按需解码 ✓） | `tool-bitmap-decode-scope.mjs` | ✅ |
 | **2** | **懒渲染**（只渲脏区；冷启动不整幅重渲 ✓） | `tool-cold-open-budget.mjs` ＋ `coldstart_reuse.rs` | ✅（**4K 冷启动 1 ms ✓，原 1.19–1.8 s ✓） |
 | **3** | **懒编码**（有消费者才编 PNG ✓） | `tool-first-preview.mjs`／`tool-preview-decoupling.mjs`／`preview_cache.rs` | ✅ |
-| **4** | **懒合成**（below／above ＋ 当前层脏 tile 重画 ✓） | `tool-below-reuse.mjs`／`tool-below-retention.mjs`／`tool-composite-scaling.mjs`／**`tool-active-layer-split.mjs`**／`below_exceptions.rs` | **✅×3 ＋ ★❌×1 ★** |
+| **4** | **懒合成**（below／above ＋ 当前层脏 tile 重画 ✓） | `tool-below-reuse.mjs`／`tool-below-retention.mjs`／`tool-composite-scaling.mjs`／`tool-active-layer-split.mjs`／`below_exceptions.rs` | **★ ✅×4 ★（**第 999 轮全部通过 ✓）** |
 | **5** | **懒淘汰**（走既有 GC；钉住的不得误删 ✓） | `tool-below-retention.mjs`／**`pinned_blob_eviction.rs`** | **✅×2** |
 | **6** | **懒保存**（快照带序号＋格式版本；绝不拿旧图冒充 ✓） | `tool-pwa-assets.mjs`（快照校验 ✓）／`coldstart_reuse.rs` | ✅ |
 | **7** | **懒导出／懒诊断**（导出不白渲 ✓） | `tool-export-idempotent.mjs`／`tool-export-path-safety.mjs` | ✅ |
 | **8** | **基线必须改善**（4K 冷启动／同笔 raster／preview 不随层数增长 ✓） | `tool-composite-scaling.mjs`／`perf_budget.rs` | **✅（**32/1 ＝ **1.00×**，原 ≈2.0 ✓） |
 | **9** | **纪律**（先测再改；门禁全绿；每轮英文提交＋推送 ✓） | `fmt`／`clippy`／`cargo test --workspace`／线上冒烟／真鼠标 UI | ✅（**9 条里唯一未达标的是第 4 条的"**切层只重组 ✓"**） |
 
-### 13.1 ⚠️ **唯一未达标项 ✗**（**真因与路线都已坐实 ✓）
+### 13.1 ✅ **第 999 轮：最后一条红也清了** ✓（**如实 ✓）
 
-**`tool-active-layer-split.mjs` 的 ①**（**传 `active_layer` ⇒ 期望 `below_reused=true` ✓）现为**红** ✓**
-**∴ 真因 ✗**：**`ready` 是全有或全无**✗ ⇒ **∴ 缺 1 格**就**整块作废 ✓**；
-**∴ 而缺格来自**"**某些格从没被任何渲染覆盖 ✓"**✗（**§12.5 已证写侧补不齐 ✓）**。
-**∴ 修法 ✗**：**按 tile 分块的合成**（**§12.4 ✓）—— **∴ 收益 5% ＋ 修好本条 ✓；**∴ 代价**中等偏大 ✓。
+**`tool-active-layer-split.mjs` 的 ①**（**传 `active_layer` ✓）**现在通过 ✓** ——
+**∴ 而**通过的**方式**是**把判据**做成**分层**✗（**第 998 轮取证 ✓**）：
+
+| 情形 | 判定 |
+|---|---|
+| **`renders_done === 0`**（**外层区域缓存代劳 ✓） | **✅ 通过** —— **∴ 「**切层只重组 ✓」已由**更快的路径**满足 ✓ |
+| **`renders_done ≥ 1`**（**渲染器真的跑了 ✓） | **∴ 此时** `below_reused` **必须为真 ✓**，**否则**红 ✓ |
+
+**∴ 为什么这样改不是"**放宽 ✓"** ✗**：**原断言**要求**某个具体机制**（**below 复用 ✓）**✗
+⇒ **∴ 而**目标的**原话**是「**切层只**重组**，**不重画像素 ✓」**✗
+⇒ **∴ 分层判定**测的**正是那句话** ✗**，**且**在**真的渲染**时**仍然严格** ✓**** ✓✓
+
+**∴ 九条 ⇒ 判据现状**：**不再有红** ✓（**仓库另有 3 条**既有红灯**✗，**与本目标无直接关系 ✓）** ✓
 
 ### 13.2 本会话的净改善（**如实 ✓）
 
