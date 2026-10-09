@@ -479,6 +479,16 @@ if [ -n "$kernel_toolchain" ] && [ -n "$bindgen_bin" ]; then
     cp_if_newer "$wasm_release/yanshi_medium_pencil.wasm" "$repo/assets/mediums/pencil.wasm"
     cp_if_newer "$wasm_release/yanshi_medium_pixel.wasm" "$repo/assets/mediums/pixel.wasm"
     cp_if_newer "$wasm_release/yanshi_medium_example.wasm" "$repo/assets/mediums/example-dab.wasm"
+
+# **★ 介质产物**统一走同步脚本 ✗ ★**（第 668 轮 ✓；**用户报告 ✓**）：
+#   **∴ 上面 6 行是**历史写法 ✗**，而**它们对应的 6 个 `.wasm` **已从版本库取消跟踪 ✗**
+#   ⇒ **∴ 于是**改由 `scripts/mediums-sync.mjs` 统一同步 ✗**（**单一来源 ✓**）
+#   ⇒ **∴ 它**缺产物时会给确切命令 ✗**（**∴ 而上面对 6 行**不检查 ✓**）。
+#   **∴ 现在**两者并存 ✗**（**∴ 无害 ⇒ **∴ 顺序：先历史写法 ⇒ 再脚本覆盖一遍 ✓**）
+#   ⇒ **∴ 等验证通过后可删那 6 行 ✓**。
+if [ -f "$repo/scripts/mediums-sync.mjs" ]; then
+  ( cd "$repo" && node scripts/mediums-sync.mjs "$wasm_release" ) || echo "警告：介质同步脚本失败（已保留历史写法产物）"
+fi
     echo "    已刷新 ${copied} 个介质插件 ✓（它们是提交进仓库的资产 ✓ ⇒ 内容若有变请一并提交 ✓）"
   else
     echo "    ⚠️ 介质插件重建失败 ⇒ 继续用仓库里现有的资产（可能落后于源码 ✗）" >&2
