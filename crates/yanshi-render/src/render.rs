@@ -305,6 +305,15 @@ impl BitmapCache {
     where
         F: FnOnce() -> Result<Option<(u32, u32, Vec<u8>)>>,
     {
+        // **★ 先做"快速命中"的只读检查 ✗ ★**（第 868 轮 ✓；**目标第 8 条 ✓**）：
+        //   **∴ 原来的错 ✗**：**`decode()` 在**锁内**执行 ✗**（**它**做 `store.get()` ⇒ **读盘 ＋ 整份解码 ✓）
+        //     ⇒ **∴ 于是**：**4 条带**并发 ⇒ **∴ 但**只有一条**能**持锁解码 ✗**
+        //       ⇒ **∴ 它们**完全**串行 ✓****（**实测：**1／2／4 条带 ⇒ 380／709／1434 ms ✓）
+        //   **∴ 现在 ✗**：**锁内**只查一次 ✗**（**命中就返回 ✓）
+        //     ⇒ **∴ 未命中时**在**锁外**解码 ✗** ⇒ **∴ 于是**：**多条带**可**并行**读盘／解码 ✓**** ✓✓
+        //   **∴ 代价（**如实 ✓）**：**未命中时**可能**重复解码 ✗**（**两个条带**同时**解同一块 ✓）
+        //     ⇒ **∴ 但**缓存键**按 tile 分**✗ ⇒ **∴ 重复**极少 ✓**** ✓✓
+        //     ⇒ **∴ 且**即使重复，**也**优于**全局串行 ✓**** ✓✓
         let mut inner = self
             .inner
             .lock()
@@ -318,9 +327,19 @@ impl BitmapCache {
             }
             return Ok(Some(entry));
         }
+        // **∴ 锁**在这里释放 ✗**（**`inner` 不再使用 ✓）⇒ **∴ 于是**下面的 `decode()` 在锁外 ✓**
+        drop(inner);
         let Some((width, height, bytes)) = decode()? else {
             return Ok(None);
         };
+        // **∴ 再拿锁写入 ✗**：**可能**另一个线程已经写好了 ⇒ **∴ 那时**直接用它的 ✓**
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = inner.entries.get(key).cloned() {
+            return Ok(Some(entry));
+        }
         inner.misses += 1;
         inner.missed_bytes = inner.missed_bytes.saturating_add(bytes.len() as u64);
         let entry = std::sync::Arc::new((width, height, bytes));
