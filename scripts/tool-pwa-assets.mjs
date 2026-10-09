@@ -200,6 +200,15 @@ if (brushLib) {
   check(brushLib.indexOf("myb") >= 0, "未携带笔刷文件全文 ⇒ 内核会拒绝");
   console.log("  brush-local.js：paint_brush ✓｜失败原因 ✓｜井号编码 ✓｜myb 全文 ✓");
 }
+// **★ 介质插件产物 ✓ ★**（第 667 轮 ✓；**用户报告 ✓**）：**∴ 它们是**构建产物**✗**
+//   （**`crates/yanshi-medium-*` ✓**）⇒ **∴ 已从版本库**取消跟踪 ✗**
+//   ⇒ **∴ 所以**必须**存在**✗**（**否则服务端 `/mediums/*.wasm` 会 404 ✓**）。
+const MEDIUMS = ["oil.wasm", "watercolor.wasm", "marker.wasm", "pencil.wasm", "pixel.wasm", "example-dab.wasm"];
+const missingMediums = MEDIUMS.filter((f) => !existsSync("assets/mediums/" + f)
+  || statSync("assets/mediums/" + f).size === 0);
+check(missingMediums.length === 0,
+  "缺少介质插件产物：" + missingMediums.join(" / ") + " => 先构建并跑 node scripts/mediums-sync.mjs");
+if (missingMediums.length === 0) console.log("  介质插件：6 个齐全 ✓（构建产物，已不入库 ✓）");
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
