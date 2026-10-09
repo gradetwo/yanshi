@@ -3006,3 +3006,36 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     （**∴ 那是**正确信号 ✗，**而**不是错误 ✓**）** ✓✓
 #   **∴ 下一轮** ✓：**写出①②③ ⇒ `cargo build -p yanshi-render` ⇒ 门禁 ⇒ 提交 ✗**。
 #   **∴ 目标第 4 条的侦察阶段**正式结束 ✗**（**第 682–691 轮，共 10 轮 ✓**）。**
+# **★ 第 692 轮：🎉 **步骤 ① 落地 ✗** —— **`above` 的**计算与累积**（**输出不变 ✓**）**
+#   **∴ 五处插入 ✓**（`crates/yanshi-render/src/render.rs` ✓）**：
+#     **① `let mut visible_opacity: Vec<f64> = Vec::new();` ✗**（**与 `visible_layer_ids` 同序 ✓**）；
+#     **② `visible_opacity.push(layer.opacity);` ✗**（**在 `visible_layer_ids.push` 之后 ✓**）；
+#     **③ `let above_wanted = cacheable && visible_opacity.get(split).is_some_and(|o| *o < 1.0);` ✗**
+#       （**∴ 复用 `cacheable` ⇒ **∴ §14.33 的六种情形**自动排除 ✓**）；
+#     **④ `let mut above_acc: Option<crate::buffer::Buffer> = None;` ✗**
+#       （**∴ 从**空**开始 ✓** —— **∴ 因为**它**叠在当前结果之上**✓，**而**不是从背景开始 ✓**）；
+#     **⑤ 在 `accumulation.composite(&layer_buffer, mode, 1.0);` 之后 ✗**：
+#       ```rust
+#       if above_wanted && index_here > split {
+#           match above_acc.as_mut() {
+#               Some(acc) => acc.composite(&layer_buffer, mode, 1.0),
+#               None => {
+#                   let mut b = crate::buffer::Buffer::new(origin_x, origin_y, width, height);
+#                   b.composite(&layer_buffer, mode, 1.0);
+#                   above_acc = Some(b);
+#               }
+#           }
+#       }
+#       ```
+#       ⇒ **∴ `index_here > split` ＝ "该层在当前层之上" ✗**（**∴ `index_here` 由 `:1202` 提供 ✓**）** ✓✓
+#   **∴ 门禁** ✓：**`fmt` ✓｜`clippy -D warnings` ✓｜`yanshi-render --lib` **257 passed／0 failed** ✗**
+#     ⇒ **★ 257 全绿 ＝ 输出真的没变 ✗ ★**（**∴ 正是步骤 ① 的目标 ✓：**只多算一份，不改任何像素 ✓**）** ✓✓
+#   **∴ 而** `#[expect(dead_code)]` **仍被满足 ✓**（**∴ 因为** `self.above` **还没被写 ✗**）
+#     ⇒ **∴ 预期之内 ✓** ⇒ **∴ 步骤 ③ 写入时它会**自动失配 ⇒ 提醒删掉 ✓**** ✓✓
+#   **∴ 下一轮（**步骤 ② ③ ✓**）** ✓：
+#     **① 把 `above_acc` 按 `BELOW_TILE` 切 tile ⇒ 写进 `self.above` ✗**（**指纹 ＝
+#       **上方层签名 ＋ `opacity<1.0` 标志 ✓，**照 `below` 的 `sig` ＋ **LRU 重排 ✓**）；**
+#     **② 删掉 `#[expect(dead_code)]` ✗**（**∴ 编译器会提醒 ✓**）；
+#     **③ 再做**复用** ✗**：**命中 ⇒ **不重跑 `index_here > split` 的层**✗（**而是把 `above`
+#       **叠到 `accumulation` 上 ⇒ `note_above_reuse()` ✓**）⇒ **∴ 这一步**才改行为 ✓**
+#       ⇒ **∴ 要**判据 ＋ 变异 ✓**（**切到半透明层两次 ⇒ 命中数上升；**变异 ⇒ 永不命中 ⇒ 必红 ✓**）** ✓✓

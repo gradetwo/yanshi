@@ -903,6 +903,10 @@ impl Renderer {
         let mut visible_ids: Vec<String> = Vec::new();
         // **★ 同时记下**层 id 的顺序 ✓**（**指纹串里没有 id ✗**）⇒ **∴ 用它定位"当前层"✓**。
         let mut visible_layer_ids: Vec<String> = Vec::new();
+        // **★ `above` 需要知道"当前层透不透"✗ ★**（第 692 轮 ✓；**目标第 4 条 ✓**）：
+        //   **∴ 层的 `opacity` 决定**上方各层会不会透出来 ✗** ⇒ **∴ 只在 `< 1.0` 时才做 `above` ✓**
+        //   ⇒ **∴ 这里**顺手收一份 ✗**（**∴ 与 `visible_layer_ids` 同序 ✓**）。
+        let mut visible_opacity: Vec<f64> = Vec::new();
         let mut except_seen = false;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
@@ -962,6 +966,7 @@ impl Renderer {
             // **∴ `clippy` 不许"`format!` 套在 `format!` 实参里" ✗（`format_in_format_args` ✓）⇒ 先算成局部变量 ✓。
             let color_space = format!("{:?}", state.color_space);
             visible_layer_ids.push(layer.id.clone());
+            visible_opacity.push(layer.opacity);
             visible_ids.push(format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 layer.id,
@@ -1188,6 +1193,12 @@ impl Renderer {
             }
         }
 
+        // **★ `above` 是否要做 ✗ ★**（第 692 轮 ✓）：**∴ 复用 `cacheable` ✗**
+        //   ⇒ **∴ §14.33 的六种打破情形**已被它挡掉 ✓**（**不必另写一遍 ✓**）。
+        let above_wanted = cacheable && visible_opacity.get(split).is_some_and(|o| *o < 1.0);
+        // **∴ `above` 的累积缓冲 ✗**：**从**空**开始 ✓**（**∴ 因为它**叠在当前结果之上**✓，
+        // **而**不是从背景开始 ✓ —— **∴ 与 `accumulation` 的初始不同 ✓**）。
+        let mut above_acc: Option<crate::buffer::Buffer> = None;
         let mut visited: usize = 0;
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
@@ -1226,6 +1237,19 @@ impl Renderer {
             let mode = BlendMode::from_name(&layer.blend_mode);
             let mut probe_stage = stage_probe::Stage::start();
             accumulation.composite(&layer_buffer, mode, 1.0);
+            // **★ 同时累积一份 `above` ✗ ★**（第 692 轮 ✓）：**∴ `index_here > split` ⇒ 该层在
+            //   **当前层之上 ⇒ **∴ 它属于 `above` ✓**（**∴ 而**它**已经**进 `accumulation` ✓ ⇒
+            //   **∴ 这里**只是再算一份 ⇒ **∴ 输出不变 ✓**）。**
+            if above_wanted && index_here > split {
+                match above_acc.as_mut() {
+                    Some(acc) => acc.composite(&layer_buffer, mode, 1.0),
+                    None => {
+                        let mut b = crate::buffer::Buffer::new(origin_x, origin_y, width, height);
+                        b.composite(&layer_buffer, mode, 1.0);
+                        above_acc = Some(b);
+                    }
+                }
+            }
             probe.composite += probe_stage.stop();
         }
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
