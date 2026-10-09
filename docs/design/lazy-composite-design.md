@@ -753,3 +753,34 @@ want：52 [空] ｜★4 [真缺格]★ ｜4 ["empty"] ｜24 ["no-group"]
   want=6 have=4 missing=["(512,0)","(512,256)"]
 ```
 ⇒ **∴ 缺的**总是**右／下边**的格 ✓**（**∴ 因为**写侧的 `ob` 都在 `149..171, 131..310` ✓）** ✓
+
+---
+
+## 十三、📋 **目标九条 ⇒ 判据现状对照**（第 989 轮 ✓；**如实 ✓**）
+
+| 条 | 要求 | 判据 | 最近结果 |
+|---|---|---|---|
+| **1** | **懒分配**（tile 按需／位图按需解码 ✓） | `tool-bitmap-decode-scope.mjs` | ✅ |
+| **2** | **懒渲染**（只渲脏区；冷启动不整幅重渲 ✓） | `tool-cold-open-budget.mjs` ＋ `coldstart_reuse.rs` | ✅（**4K 冷启动 1 ms ✓，原 1.19–1.8 s ✓） |
+| **3** | **懒编码**（有消费者才编 PNG ✓） | `tool-first-preview.mjs`／`tool-preview-decoupling.mjs`／`preview_cache.rs` | ✅ |
+| **4** | **懒合成**（below／above ＋ 当前层脏 tile 重画 ✓） | `tool-below-reuse.mjs`／`tool-below-retention.mjs`／`tool-composite-scaling.mjs`／**`tool-active-layer-split.mjs`**／`below_exceptions.rs` | **✅×3 ＋ ★❌×1 ★** |
+| **5** | **懒淘汰**（走既有 GC；钉住的不得误删 ✓） | `tool-below-retention.mjs`／**`pinned_blob_eviction.rs`** | **✅×2** |
+| **6** | **懒保存**（快照带序号＋格式版本；绝不拿旧图冒充 ✓） | `tool-pwa-assets.mjs`（快照校验 ✓）／`coldstart_reuse.rs` | ✅ |
+| **7** | **懒导出／懒诊断**（导出不白渲 ✓） | `tool-export-idempotent.mjs`／`tool-export-path-safety.mjs` | ✅ |
+| **8** | **基线必须改善**（4K 冷启动／同笔 raster／preview 不随层数增长 ✓） | `tool-composite-scaling.mjs`／`perf_budget.rs` | **✅（**32/1 ＝ **1.00×**，原 ≈2.0 ✓） |
+| **9** | **纪律**（先测再改；门禁全绿；每轮英文提交＋推送 ✓） | `fmt`／`clippy`／`cargo test --workspace`／线上冒烟／真鼠标 UI | ✅（**9 条里唯一未达标的是第 4 条的"**切层只重组 ✓"**） |
+
+### 13.1 ⚠️ **唯一未达标项 ✗**（**真因与路线都已坐实 ✓）
+
+**`tool-active-layer-split.mjs` 的 ①**（**传 `active_layer` ⇒ 期望 `below_reused=true` ✓）现为**红** ✓**
+**∴ 真因 ✗**：**`ready` 是全有或全无**✗ ⇒ **∴ 缺 1 格**就**整块作废 ✓**；
+**∴ 而缺格来自**"**某些格从没被任何渲染覆盖 ✓"**✗（**§12.5 已证写侧补不齐 ✓）**。
+**∴ 修法 ✗**：**按 tile 分块的合成**（**§12.4 ✓）—— **∴ 收益 5% ＋ 修好本条 ✓；**∴ 代价**中等偏大 ✓。
+
+### 13.2 本会话的净改善（**如实 ✓）
+
+- **仓库红灯：7 ⇒ 3**（**`buffer_pool` ×1 ＋ **四条选区 ×4 ✓ 已修 ✓）；
+- **目标判据：**合成解耦 32/1 ＝ **1.00×**（**原 ≈2.0 ✓）＋ **below 复用 ＋ 保留 9/9** ✓；
+- **PWA：**未映射端点 5 种 ⇒ **0**；**线上真鼠标画得出像素 ✓；
+- **新增判据 2 条**：`below_exceptions.rs`（**C5 ✓）＋ `pinned_blob_eviction.rs`（**钉住保护 ✓）；
+- **未完成**：**第 4 条的"**切层只重组 ✓"**（**真因已坐实，**路线已入库 ✓）。
