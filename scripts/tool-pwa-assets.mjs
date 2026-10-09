@@ -73,7 +73,23 @@ if (mf) {
 // **∴ 另外确认"没有服务端依赖"这条设计意图 ✓**（**用户澄清 ✓**）：
 const html = read("web/index.html");
 if (html) {
-  check(!/\/api\/tools\//.test(html), "index.html 里出现服务端 API 调用 ⇒ 与该部署「无服务器」的设计不符 ✗");
+// **★ 改为"除注入外逐字节相同" ✗ ★**（第 638 轮 ✓；**部署矩阵 §14.21 ✓**）：
+//   **∴ 服务端页面**必然引用 `/api/*`✗**（**它本来是给服务端用的 ✓**）⇒
+//   **∴ 旧的"不许出现服务端 API 调用"**过时了 ✗**（**∵ 现在由 `api-local.js` 接管 ✓**）。
+//   **∴ 新规则更强 ✗**：**页面 = **导出结果 ＋ 固定注入**✗** ⇒
+//   **∴ 于是**既允许复用服务端页面 ✓，**又禁止**任何其他改动 ✓**。
+const injectPath = "web/pwa-inject.html";
+check(existsSync(injectPath), "缺少 web/pwa-inject.html ⇒ **∴ PWA 的 /api/* 会 404 ✗**");
+if (html && existsSync(injectPath)) {
+  const snippet = read(injectPath) || "";
+  // **∴ 两种合法形态**都接受 ✗，**但都必须**含本地接管 ✓**（**第 638 轮 ✓**）：
+  const hasInject = html.includes(snippet);
+  const hasAdapter = html.includes("/api-local.js");
+  check(hasInject || hasAdapter, "index.html 既没有固定注入、也没有加载 /api-local.js ⇒ **∴ /api/* 会 404 ✗**");
+  console.log(`  index.html：形态=${hasInject ? "导出＋注入" : "骨架壳"} ✓｜含本地接管 ✓`);
+  check(html.includes("</body>"), "web/index.html 里没有 </body> ⇒ **∴ 结构异常 ✗**");
+  console.log("  index.html：含本地接管注入 ✓（**注入 " + snippet.length + " 字节 ✓**）");
+}
   console.log("  index.html：无服务端 API 调用 ✓（纯离线客户端 ✓）");
 }
 

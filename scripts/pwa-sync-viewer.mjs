@@ -11,7 +11,7 @@
 //（**∴ 拦截 `window.fetch` ⇒ 转到本地内核 ＋ IndexedDB ✓**）⇒ **∴ 前端本身**无需分支 ✓****。
 //
 // **用法** ✓：`node scripts/pwa-sync-viewer.mjs`（**在 `pwa-sync-wasm.mjs` 之后跑 ✓**）
-import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
@@ -57,6 +57,23 @@ if (!bin) {
     console.error(`✗ 导出的页面只有 ${size} 字节 ⇒ **∴ 疑似失败 ✗**`);
     process.exit(1);
   }
-  renameSync(tmp, join(DST, "index.html"));
+  const html = readFileSync(tmp, "utf8");
+  // **★ 注入本地接管脚本 ✗ ★**（第 638 轮 ✓；**部署矩阵 §14.21 ✓**）：
+  // **∴ 服务端页面**必然引用 `/api/*`✗**（**它本来是给服务端用的 ✓**）
+  // ⇒ **∴ PWA 里必须**用 `api-local.js` 接管它们 ✗** ⇒ **∴ 否则**会打到静态服务器 ⇒ 404 ✓**。
+  // **∴ 注入内容是**固定**的 ✗ ⇒ **∴ 判据可以"**除注入外逐字节相同**"✓**。
+  const INJECT = join(DST, "pwa-inject.html");
+  if (!existsSync(INJECT)) {
+    console.error("✗ 缺少注入片段 web/pwa-inject.html ⇒ **∴ PWA 的 /api/* 会 404 ✗**");
+    process.exit(1);
+  }
+  const snippet = readFileSync(INJECT, "utf8");
+  if (!html.includes("</body>")) {
+    console.error("✗ 导出的页面里没有 </body> ⇒ **∴ 无法注入 ✗**");
+    process.exit(1);
+  }
+  const injected = html.replace("</body>", snippet + "\n</body>");
+  writeFileSync(join(DST, "index.html"), injected);
+  console.log(`✓ 已注入本地接管脚本 ⇒ web/index.html（注入 ${snippet.length} 字节 ✓）`);
   console.log(`✓ 静态页已由服务端导出 ⇒ web/index.html（${(size / 1024).toFixed(0)} KiB ✓）`);
 }
