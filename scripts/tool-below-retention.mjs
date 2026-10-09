@@ -45,6 +45,10 @@ const main = async () => {
   const rounds = [];
   for (let r = 0; r < 3; r++) {
     for (const region of regions) {
+      // **★ 每轮先在**顶层**画一笔 ✓ ★**：**∴ 顶掉**外层块缓存**✗**（**它的键含**全层指纹**✓ ⇒ 任何改动都失效 ✓**），
+      // **而 below 的签名只覆盖"**最上层以外**"✓ ⇒ **∴ 不变 ⇒ 仍应命中 ✓****。
+      // **∴ 没有这一步 ⇒ 外层先命中 ⇒ 根本测不到 below ✗**（**实测：`missing=0` 多次而计数不涨 ✓**）。
+      await stroke("Ttop", 3 + r * 2 + regions.indexOf(region));
       const before = await reuse();
       await call(doc, token, "render_region", { region, raw: true });
       const after = await reuse();
@@ -57,14 +61,12 @@ const main = async () => {
   }
   const grew = rounds.filter((x) => x.grew).length;
   console.log(`  ⇒ 自增 ${grew}/${rounds.length} 次`);
-  if (grew === 0) {
-    console.error("❌ 轮换多次却**一次都没自增** ✗ ⇒ 跨渲染保留没生效 " +
-      "（变异：把存储块改回「每次整体替换」⇒ 必红 ✓）");
+  if (grew < rounds.length) {
+    console.error(`❌ 只有 ${grew}/${rounds.length} 次自增 ⇒ **并非每次都命中** ✗ ` +
+      "（每轮已先在顶层画一笔 ⇒ 外层块缓存必 miss ⇒ **∴ 这一定是 below 缓存的问题 ✓**）" +
+      "（变异：把存储块改回「每次整体替换」或去掉 LRU 年龄刷新 ⇒ 必红 ✓）");
     process.exit(1);
   }
-  console.log(`  ✓ 跨渲染保留生效（${grew}/${rounds.length} 次自增 ✓）`);
-  if (grew < rounds.length) {
-    console.log(`  ⚠️ 但并非每次都自增（${grew}/${rounds.length}）⇒ **∴ 值得下一轮查「为什么有些没命中」✗**`);
-  }
+  console.log(`  ✓ 每轮都命中（${grew}/${rounds.length} ✓）⇒ **∴ tile 缓存 ＋ 跨渲染保留 ＋ LRU 全部生效 ✓**`);
 };
 main().catch((e) => { console.error("❌ 运行失败：" + String(e)); process.exit(2); });
