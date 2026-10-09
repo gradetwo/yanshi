@@ -1012,6 +1012,18 @@ impl Document {
         bbox: Bbox,
         active_layer: Option<&str>,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        // **★ 临时探针 ✓**（第 527 轮 ✓，**查明后删 ✓**）：**打印**收到的 `active_layer`**✗** ⇒
+        // **∴ 分清**"工具层没传到 ✗"与"`set_active_layer` 没生效 ✗"**（**两者症状相同 ✓**）**。
+        if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&probe)
+            {
+                let _ = writeln!(f, "active_layer_received={:?}", active_layer);
+            }
+        }
         let previous = self
             .renderer
             .set_active_layer(active_layer.map(|id| id.to_owned()));
