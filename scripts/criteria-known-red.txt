@@ -3395,3 +3395,40 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ 这一步**才改行为 ⇒ **∴ 且**会让 `above_reuse_count()` **真的开始增长 ✓**；
 #     **② 判据 ＋ 变异** ✗**：**切到半透明层两次 ⇒ 响应里 `above_reused` 为真 ✓**；
 #       **变异**：**让它永不命中 ⇒ 必红 ✓**。**
+
+# **★ 第 707 轮：✅ `below` 的**命中分支**完整到手 ✗ ⇒ **∴ `above` 的复用方案已完整 ✓**（**下一步写 ✓**）**
+#   **∴ `below` 的命中代码 ✓**（`render.rs` ✓）**：
+#     ```rust
+#     :1079  let cached = if ready {
+#     :1080      below.lock().ok().and_then(|g| {
+#     :1081          let c = g.as_ref()?;
+#     :1084          if c.sig != sig { return None; }          // **∴ 指纹不符 ⇒ 未命中 ✓**
+#     :1087          let mut out = accumulation.clone();        // **★ 从当前 accumulation 开始 ★**
+#     :1088          for k in &want_tiles { … 把缓存的 tile **覆盖**上去 … }
+#     :1116          Some(out)
+#     :1117      })
+#     :1118  } else { None };
+#     :1121  if let Some(buf) = cached {
+#     :1122      accumulation = buf;
+#     :1123      note_below_reuse();                          // **★ 计数 ★**
+#     :1124      reused = true;                               // **★ ⇒ 循环里 `index_here < split` 被 `continue` 跳过 ★**
+#     … **LRU 重排**（`:1128-1143` ✓）…
+#     }
+#     ```
+#   **★ `above` 的复用方案（**对称，但有一处**关键差别**✗）★**：
+#     **∴ `below` 可以在**循环之前**复用 ✗**（**∴ 因为它代表**循环开始时**的状态 ✓）；
+#     **∴ 而 `above` **必须在循环之后** ✗**（**∴ 因为**它代表**当前层之上**的层 ⇒
+#       **∴ 当前层还没画 ⇒ **∴ 顺序不对 ✓****）
+#     ⇒ **∴ 所以三步 ✗**：
+#       **① 循环前算 `above_ready` ✗**（**照 `:1044-1051` 的 `ready` 写法 ✓，
+#         **用 `self.above` ＋ `above_sig` ＋ `want_tiles` ✓**）；
+#       **② 循环里加 `above_reused` 标志 ✗** ⇒ **∴ 命中时**`if above_reused && index_here > split { continue; }` ✓**
+#         （**照 `:1204` 的 `if reused && index_here < split { continue; }` ✓**）；
+#       **③ 循环后**（**`Ok(accumulation)` 之前 ✓）把 `above` 的 tile 叠到 `accumulation` 上 ✗**
+#         ＋ **`note_above_reuse()` ✓**（**∴ 复用块照 `:1079-1143` 抄 ⇒ 只是**不克隆**✗ ——
+#         **∴ 因为**已经画完 ✓，**∴ 直接覆盖即可 ✓**）** ✓✓
+#   **∴ 一个简化（**比 `below` 简单 ✓）** ✓**：**`above` 命中时**不需要 `accumulation.clone()` ✗**
+#     ⇒ **∴ 因为**没有后续的层要跳过（**∴ 当前层已画完 ✓）⇒ **∴ 直接 blit 进 `accumulation` ✓**** ✓✓
+#   **∴ 下一轮** ✓：**写这三步 ✗**（**备份 ✓｜先打印插入点 ✓｜然后编译 ＋ 判据 ＋ 变异 ✓**）
+#     ⇒ **∴ 判据**：**切到半透明层两次 ⇒ 响应里 `above_reused` 为真 ✓**；
+#     **变异**：**永不命中 ⇒ 必红 ✓**。**
