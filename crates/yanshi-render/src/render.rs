@@ -3762,6 +3762,35 @@ pub fn layer_selections(
     out
 }
 
+/// **★ 只读位图探针 ✓ ★**（第 946 轮 ✓；**`YANSHI_BITMAP_PROBE=<文件>` ✓**）：
+///   **∴ 记什么 ✗**：**哪条路径**（`hit`／`decode` ✓）、**缓存 key** ✓、
+///     **尺寸** ✓、**字节长度** ✓、**内容校验（**FNV-1a ✓）** ✓**** ✓✓
+///   **∴ 为什么用 FNV-1a ✗**：**自包含 ✗**（**∴ 不**引入新依赖 ✓）**，
+///     **且**足以**发现"**字节不同**" ✓（**∴ 我**要的是**相同／不同 ✓，**不是**抗碰撞 ✓）** ✓✓
+///   **∴ 未设变量 ⇒ 立刻返回 ✗**（**∴ 零**行为影响 ✓）** ✓✓
+pub fn bitmap_probe(kind: &str, key: &str, width: u32, height: u32, bytes: &[u8]) {
+    let Ok(path) = std::env::var("YANSHI_BITMAP_PROBE") else {
+        return;
+    };
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            file,
+            "BITMAP {kind} key={key} {width}x{height} len={} fnv={hash:016x}",
+            bytes.len()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5254,34 +5283,5 @@ mod tests {
         assert_eq!(out.pixel(1, 1), Some([255, 255, 255, 255]));
         assert!(out.stats.unsupported.is_empty());
         assert!(state.is_consistent());
-    }
-}
-
-/// **★ 只读位图探针 ✓ ★**（第 946 轮 ✓；**`YANSHI_BITMAP_PROBE=<文件>` ✓**）：
-///   **∴ 记什么 ✗**：**哪条路径**（`hit`／`decode` ✓）、**缓存 key** ✓、
-///     **尺寸** ✓、**字节长度** ✓、**内容校验（**FNV-1a ✓）** ✓**** ✓✓
-///   **∴ 为什么用 FNV-1a ✗**：**自包含 ✗**（**∴ 不**引入新依赖 ✓）**，
-///     **且**足以**发现"**字节不同**" ✓（**∴ 我**要的是**相同／不同 ✓，**不是**抗碰撞 ✓）** ✓✓
-///   **∴ 未设变量 ⇒ 立刻返回 ✗**（**∴ 零**行为影响 ✓）** ✓✓
-pub fn bitmap_probe(kind: &str, key: &str, width: u32, height: u32, bytes: &[u8]) {
-    let Ok(path) = std::env::var("YANSHI_BITMAP_PROBE") else {
-        return;
-    };
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        use std::io::Write;
-        let _ = writeln!(
-            file,
-            "BITMAP {kind} key={key} {width}x{height} len={} fnv={hash:016x}",
-            bytes.len()
-        );
     }
 }
