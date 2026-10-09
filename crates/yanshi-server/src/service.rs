@@ -2878,6 +2878,17 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         self.documents.values().map(|d| d.below_reuse_count()).sum()
     }
 
+    /// **★ 某一个文档的 below 复用计数 ✓ ★**（第 535 轮 ✓）：**只读转发 ✓**。
+    ///
+    /// **为什么不能只用上面那个** ✗：**`below_reuse_count()` 把**所有文档**加起来 ✗**，
+    /// **∴ 那样就算不出"**这次渲染**是否复用 ✗**（**其它文档的计数会混进来 ✓**）。
+    /// **∴ 用途** ✓：**调用方紧贴一次渲染读两次 ⇒ **差值 > 0 ⇔ 该次复用 ✓****。
+    pub fn document_below_reuse_count(&self, doc_id: &str) -> usize {
+        self.document(doc_id)
+            .map(|d| d.below_reuse_count())
+            .unwrap_or(0)
+    }
+
     /// **（第 95 轮补）** 本项在插入 below 计数时被"抢走"了注释 ✗ ⇒ 按其作用补回 ✓。
     /// ⚠️ 规律（本会话第 7 次 ✗）：**在某一项之前插入 ⇒ 会挪走它的文档注释** ✓（`-D missing-docs` 每次都能抓住 ✓）。
     pub fn bitmap_cache_hits_misses(&self) -> (usize, usize) {
