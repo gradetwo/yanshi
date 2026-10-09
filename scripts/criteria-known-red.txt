@@ -3103,3 +3103,28 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ `below` 改调它 ⇒ **∴ 门禁应绿 ✓**（**重构不改行为 ✓**）；**
 #     **② `above` 也调它 ✗**（**source ＝ `above_acc` ✓，**sig ＝ 上方层签名 ✓** ⇒ **∴ 这就接上了 ✓**）；
 #     **③ 判据** ✗**：**半透明层切两次 ⇒ `above_reuse_count()` 上升 ✓**；**变异 ⇒ 永不命中 ⇒ 必红 ✓**。**
+# **★ 第 695 轮：✅ **抽函数所需的**精确边界**已确认 ✓**（**下一轮可一次做完 ✓**）**
+#   **∴ 边界** ✓（**注意**：**行号因我前面的插入**下移了 ✗**）** ✓**：
+#     * **`:1240`** `if cacheable && !reused {` ✓ ← **这是**调用条件**✗，**不属于函数体 ✓**；
+#     * **`:1241-1319`** ✓ ← **∴ 这才是**要搬的函数体**✗**（**含 budget 检查／切 tile／sig 匹配／
+#       **`merge_by_rows` 合并／超预算丢最旧／写回 `*guard = Some(BelowTiles { sig, tiles: merged })` ✓**）；
+#     * **`:1320`** `Ok(accumulation)` ✓；**`:1324`** 下一个函数 `render_tile` ✓** ✓✓
+#   **∴ 目标函数签名（**下一轮 ✓**）** ✓**：
+#     ```rust
+#     /// **★ 把一份合成结果**按 tile 存进缓存 ✗ ★**（**`below` 与 `above` **共用**✓）
+#     fn store_cache(
+#         slot: &std::sync::Mutex<Option<BelowTiles>>,   // **∴ `above` 传 `&self.above` ✓**（**同型 ✓**）
+#         sig: Vec<String>,                              // **∴ 指纹 ✓**
+#         source: &crate::buffer::Buffer,                // **∴ `accumulation`／`above_acc` ✓**
+#         budget: usize,                                 // **∴ `BELOW_TILE_BUDGET` ✓**
+#     )
+#     ```
+#     ⇒ **∴ 依赖** ✓：**`BELOW_TILE` ✓｜`BELOW_TILE_BUDGET` ✓｜`merge_by_rows` ✓（**都已在作用域内 ✓**）** ✓✓
+#     ⇒ **∴ 调用点** ✓：**`below` ⇒ `store_cache(below, sig, &accumulation, BELOW_TILE_BUDGET)` ✗**；
+#       **`above` ⇒ `store_cache(&self.above, above_sig, acc, BELOW_TILE_BUDGET)` ✗**** ✓✓
+#   **∴ 注意事项 ✓**：**① 它是**自由函数**还是 `impl Renderer` 的方法 ✗？**
+#     ⇒ **∴ 选**自由函数 ✗**（**∴ 因为**它不用 `self` 的任何东西 ✓，**而** `below` 是**参数 ✓**）；
+#     **② `sig` 的类型**：**现在 `below` 那段的 `sig` 是 `Vec<String>` ✗** ⇒ **∴ 照抄 ✓**；
+#     **③ 搬完 `below` 改调它 ⇒ **∴ 门禁应**完全绿 ✗**（**重构零行为变化 ✓**）⇒ **∴ 那**是**关键验证点 ✓**** ✓✓
+#   **∴ 下一轮** ✓：**搬 `:1241-1319` ⇒ 新函数 ⇒ `below` 改调 ⇒ 门禁 ⇒ 提交 ✗**（**不改行为 ✓**）。
+#     **∴ 然后**再让 `above` 调它 ＋ 写判据 ✓。**
