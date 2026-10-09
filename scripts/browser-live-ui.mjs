@@ -203,6 +203,27 @@ const ui = await evaluate(`JSON.stringify({
 })`);
 console.log("  ⑦ 界面状态 " + String(ui));
 
+// **★ 资产与调色板必须**真的可用 ✗ ★**（第 930 轮 ✓；**用户报的 `list_assets` ✓）：
+//   **∴ 只看"**不再 501**"不够 ✗** ⇒ **∴ 必须**列得出资产 ✗，**且**调色板**读得出颜色 ✓**
+//     （**∴ 只做一半 ⇒ "**下拉有名字、点进去空的**" ⇒ **∴ 那**更差 ✓）** ✓✓
+const assetProbe = await evaluate(`(async () => {
+  const out = {};
+  for (const kind of ["palette", "texture"]) {
+    const r = await fetch("/api/tools/list_assets?doc=d1", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ kind }) });
+    const j = await r.json().catch(() => ({}));
+    out[kind] = { status: r.status, count: (j.assets || []).length, error: j.error || null };
+  }
+  const pr = await fetch("/api/tools/list_palette_colors?doc=d1", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ palette: "open-color.json", limit: 8 }) });
+  const pj = await pr.json().catch(() => ({}));
+  out.paletteColors = { status: pr.status, count: (pj.colors || []).length,
+    first: (pj.colors || [])[0] ? (pj.colors[0].hex || null) : null, error: pj.error || null };
+  return JSON.stringify(out);
+})()`);
+console.log("  ⑨ 资产探测 " + String(assetProbe));
+
 const failures = [];
 const check = (cond, msg) => { if (!cond) failures.push(msg); };
 check(exceptions.length === 0, `有未捕获异常 ${exceptions.length} 条：` + exceptions.slice(0, 3).join(" ｜ "));
@@ -212,6 +233,17 @@ check(warm === true, "内核没有预热（window.yanshiStats.wasm !== true）�
 check(drew, "画布不可见或太小 ⇒ 没能派发鼠标拖拽");
 check(before !== after, `鼠标拖拽之后画布像素**没有变化**（${before} ⇒ ${after}）⇒ **∴ 画不上**`);
 check(localOnly === true, "页面没有 __pwaLocalOnly ⇒ **∴ 它可能仍在走服务端渲染**");
+try {
+  const ap = JSON.parse(String(assetProbe));
+  check(ap.palette && ap.palette.count > 0,
+    `list_assets(palette) 必须列出资产（实测 ${JSON.stringify(ap.palette)}）`);
+  check(ap.texture && ap.texture.count > 0,
+    `list_assets(texture) 必须列出资产（实测 ${JSON.stringify(ap.texture)}）`);
+  check(ap.paletteColors && ap.paletteColors.count > 0 && ap.paletteColors.first,
+    `list_palette_colors 必须读出颜色（实测 ${JSON.stringify(ap.paletteColors)}）`);
+} catch (e) {
+  check(false, "资产探测结果解析失败：" + String(e));
+}
 
 if (notImplemented.length) {
   console.log("  ⚠️ 未实现端点（501）：" + notImplemented.slice(0, 6).join(" ｜ "));

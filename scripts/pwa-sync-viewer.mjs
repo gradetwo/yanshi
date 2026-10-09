@@ -294,3 +294,42 @@ if (existsSync(MEDIUM_SRC)) {
 } else {
   console.warn("WARN: 找不到 assets/mediums => 先跑 node scripts/mediums-sync.mjs");
 }
+// **★ 调色板与纹理也要部署 ＋ 生成索引 ✗ ★**（第 930 轮 ✓；**用户报的 `/api/tools/list_assets` ✓**）：
+//   **∴ 为什么 ✗**：**静态托管没有目录列表 ✗** ⇒ **∴ 前端要问"**有哪些资产**"**
+//     只能**读一份索引 ✓** ⇒ **∴ 而**这两类资产**从来没进过 `web/` ✓**
+//     ⇒ **∴ 于是**：**调色板与纹理面板**永远 501 ✓（**实测 ✓）** ✓✓
+//   **∴ 两面（**如实 ✓）★**：**收益**＝**两类资产面板可用 ✗**；
+//     **代价**＝**部署体积 ＋13 M ✗**（**纹理 ✓）——
+//       **∴ 而**静态托管**按需取 ✗ ⇒ **∴ 运行时不付代价 ✓**
+//         （**∴ 只有**真的用到纹理时**才下载 ✓）** ✓✓
+const PALETTE_SRC = "assets/palettes";
+const PALETTE_DST = join(DST, "palettes");
+const TEXTURE_SRC = "assets/textures";
+const TEXTURE_DST = join(DST, "textures");
+const assetIndex = { palette: [], texture: [], brush: [], medium: [] };
+const copyKind = (src, dst, key) => {
+  if (!existsSync(src)) { console.warn("  WARN: 找不到 " + src + " => 跳过"); return; }
+  rmSync(dst, { recursive: true, force: true });
+  cpSync(src, dst, { recursive: true });
+  for (const f of readdirSync(dst)) {
+    const full = join(dst, f);
+    try { if (!statSync(full).isFile()) continue; } catch { continue; }
+    assetIndex[key].push({ name: f, bytes: statSync(full).size });
+  }
+  console.log("  OK: 已同步 " + key + " 资产 " + assetIndex[key].length + " 个 => " + dst);
+};
+copyKind(PALETTE_SRC, PALETTE_DST, "palette");
+copyKind(TEXTURE_SRC, TEXTURE_DST, "texture");
+// 笔刷与介质前面已经同步过 => 这里只登记名字（**索引要覆盖前端会问的四类**）。
+for (const [src, key] of [[join(DST, "brushes"), "brush"], [join(DST, "mediums"), "medium"]]) {
+  if (!existsSync(src)) continue;
+  for (const f of readdirSync(src)) {
+    const full = join(src, f);
+    try { if (!statSync(full).isFile()) continue; } catch { continue; }
+    assetIndex[key].push({ name: f, bytes: statSync(full).size });
+  }
+}
+writeFileSync(join(DST, "assets-index.json"), JSON.stringify(assetIndex));
+console.log("  OK: 资产索引 => " + join(DST, "assets-index.json") +
+  "（palette " + assetIndex.palette.length + "｜texture " + assetIndex.texture.length +
+  "｜brush " + assetIndex.brush.length + "｜medium " + assetIndex.medium.length + "）");

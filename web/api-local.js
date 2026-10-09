@@ -19,7 +19,7 @@
 // **★ 计数已升到 6 ✗ ★**（第 631 轮 ✓）：**∴ `render_region` 不再只是快照分支 ✗** ——
 // **∴ 它现在**真的调用本地内核渲出 PNG ✗**（**真实浏览器实测 850 字节 ✓**）
 // ⇒ **∴ 于是**它从"部分实现"升级为**完整实现 ✓**（**判据会核对声明与实现是否一致 ✓**）。
-export const LOCAL_IMPLEMENTED = 17;
+export const LOCAL_IMPLEMENTED = 19;
 
 let lastFold = null;
 
@@ -274,6 +274,76 @@ async function withKernel(doc, fn) {
       }
       return json({ ok: true, selections, count: selections.length, server: false,
                     derived_from: "atoms" });
+    }
+
+    // **★ `/api/tools/list_assets` ✗ ★**（第 930 轮 ✓；**用户报的未映射端点 ✓**）：
+    //   **∴ 为什么以前做不到 ✗**：**静态托管没有目录列表 ✗** ⇒ **∴ 前端要问"**有哪些资产**"**
+    //     只能**读一份索引 ✓** ⇒ **∴ 而**索引**此前不存在 ✗**（**∴ 调色板与纹理**也从未部署 ✓）
+    //     ⇒ **∴ 现在**：**同步脚本**部署两类资产 ＋ 写出 `/assets-index.json` ✓
+    //       ⇒ **∴ 于是**：**本端点**如实**照索引回答 ✓**** ✓✓
+    //   **∴ 形状照**服务端与前端 ✗**：**返回键是 `assets` ✗**（**∴ 前端读 `palettes.assets` ✓，
+    //     **不是** `items` ✓）**；**每项含 `name`／`bytes`／`source`／`format`／`category`／`usable` ✓** ✓✓
+    //   **∴ 如实 ✗**：**索引缺失 ⇒ **∴ 501 ＋ 原因 ✓**（**∴ 不**报空表冒充"没有资产" ✓）** ✓✓
+    if (path === "/api/tools/list_assets") {
+      const kind = String(body.kind || "brush");
+      // **∴ 取索引**绝不能抛出去 ✗**（**∴ 抛出去会被外层兜成 `not_implemented_locally` ✗**
+      //   ⇒ **∴ 那是**误导 ✓：**端点**其实**实现了 ✗，**只是**索引没部署 ✓）** ✓✓
+      let idx = null;
+      try {
+        const idxRes = await fetch("/assets-index.json", { cache: "no-store" });
+        if (idxRes.ok) idx = await idxRes.json();
+      } catch (e) { idx = null; }
+      if (!idx) {
+        return json({ ok: false, error: "index_missing", server: false,
+                      reason: "本部署没有可读的 /assets-index.json ⇒ 跑一次 scripts/pwa-sync-viewer.mjs" }, 501);
+      }
+      const list = Array.isArray(idx[kind]) ? idx[kind] : [];
+      const USABLE = {
+        palette: [".gpl", ".kpl", ".json"],
+        texture: [".png", ".jpg", ".jpeg", ".webp"],
+      };
+      const assets = list.map((it) => {
+        const dot = String(it.name).lastIndexOf(".");
+        const format = dot >= 0 ? String(it.name).slice(dot + 1).toLowerCase() : "";
+        const allow = USABLE[kind];
+        const usable = allow ? allow.indexOf("." + format) >= 0 : true;
+        const item = { name: it.name, bytes: it.bytes, source: "bundled", format,
+                       category: null, usable };
+        // **∴ 不能用的**必须说出原因 ✗**（**∴ 不**静默让界面显示一个点了没反应的项 ✓）**。
+        if (!usable) item.reason = "本部署还不支持这个格式（." + format + "）";
+        return item;
+      });
+      return json({ ok: true, kind, count: assets.length, assets, can_import: false,
+                    hint: "本部署只列出随包发布的资产（source=bundled）", server: false });
+    }
+
+    // **★ `/api/tools/list_palette_colors` ✗ ★**（第 930 轮 ✓）：
+    //   **∴ 为什么必须**一起做 ✗**：**只做 `list_assets` ⇒ **∴ 下拉里**有名字 ✗，
+    //     **而**点进去**读不出颜色 ✓** ⇒ **∴ 那**比 501 ＋ 离线回退**更差 ✓**（**∴ 我**上一轮
+    //     记过这条判断 ✓）⇒ **∴ 所以**：**两个一起 ✓**** ✓✓
+    //   **∴ 解析在**浏览器侧 ✗**（**∴ 格式与服务端口径一致：
+    //     `.gpl`／`.kpl` 文本 ✓、`.json`（**键 ⇒ 十六进制串 或 串数组 ✓）** ✓）** ✓✓
+    if (path === "/api/tools/list_palette_colors") {
+      const name = String(body.palette || "");
+      if (!name) return json({ ok: false, error: "missing_palette", server: false }, 400);
+      // **∴ 同理 ✗**：**取文件失败**必须报**它自己**的原因 ✗**（**∴ 不**能被兜成"**未实现**" ✓）** ✓✓
+      let text = null;
+      try {
+        const res = await fetch("/palettes/" + encodeURIComponent(name), { cache: "no-store" });
+        text = res.ok ? await res.text() : null;
+        if (text === null) {
+          return json({ ok: false, error: "palette_not_found", server: false,
+                        reason: name + " ⇒ HTTP " + res.status }, 404);
+        }
+      } catch (e) {
+        return json({ ok: false, error: "palette_not_found", server: false,
+                      reason: name + " ⇒ " + String((e && e.message) || e) }, 404);
+      }
+      const colors = parsePaletteText(text, name);
+      const limit = Number(body.limit) > 0 ? Number(body.limit) : 256;
+      return json({ ok: true, palette: name, colors: colors.slice(0, limit),
+                    count: Math.min(colors.length, limit), total: colors.length,
+                    truncated: colors.length > limit, server: false });
     }
 
     if (path === "/api/tools/list_layers") {
@@ -684,4 +754,48 @@ function json(body, status = 200) {
     status,
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
+}
+
+/** **★ 解析调色板文本 ✓ ★**（第 930 轮 ✓；**口径与服务端 `service.rs` 的解析器一致 ✓**）：
+ *  **∴ `.gpl`／`.kpl`**：`R G B [名字]` 一行一色 ✗**；`#` 与表头（`GIMP Palette`／`Name:`／`Columns:`）跳过 ✓**；
+ *  **∴ `.json`**：**键 ⇒ 十六进制串** ，或**键 ⇒ 串数组**（**`open-color.json` 正是后者 ✓）** ✓✓
+ *  **∴ 取不到名字就留空 ✗**（**∴ 不**编造 ✓）**。
+ *  @param {string} text 文件全文
+ *  @param {string} name 文件名（**用来决定按哪种格式解析 ✓**）
+ *  @returns {Array<{hex:string,name:string}>}
+ */
+function parsePaletteText(text, name) {
+  const out = [];
+  const push = (hex, label) => {
+    const h = String(hex || "").trim();
+    if (!/^#?[0-9a-fA-F]{6}$/.test(h)) return;
+    out.push({ hex: h.startsWith("#") ? h.toLowerCase() : "#" + h.toLowerCase(),
+               name: String(label || "") });
+  };
+  if (/\.json$/i.test(name)) {
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { return out; }
+    const walk = (value, key) => {
+      if (typeof value === "string") { push(value, key); return; }
+      if (Array.isArray(value)) { for (const v of value) walk(v, key); return; }
+      if (value && typeof value === "object") {
+        for (const k of Object.keys(value)) walk(value[k], k);
+      }
+    };
+    walk(data, "");
+    return out;
+  }
+  // `.gpl` / `.kpl`：**一行一色**，前三列是 R G B，第四列起是名字。
+  for (const line of String(text).split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    if (/^(GIMP Palette|Name:|Columns:|Krita|#)/i.test(t)) continue;
+    const m = t.match(/^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})\s*(.*)$/);
+    if (!m) continue;
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if ([r, g, b].some((v) => v > 255)) continue;
+    const hex = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+    out.push({ hex, name: String(m[4] || "").trim() });
+  }
+  return out;
 }
