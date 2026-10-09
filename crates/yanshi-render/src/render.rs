@@ -1436,6 +1436,28 @@ impl Renderer {
                         let drop = merged.len() - BELOW_TILE_BUDGET;
                         merged.drain(0..drop);
                     }
+                    // **★ 决定性 ✗ ★**（第 785 轮 ✓）：**∴ 把**要存的键**与**要存的空键**打出来 ✗**
+                    //   ⇒ **∴ 与读取侧的 `want_tiles` **对照 ✗** ⇒ **∴ 一次看出**坐标系差异 ✓**。
+                    if let Some(path) = probe_path.as_deref() {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                        {
+                            let keys: Vec<String> =
+                                merged.iter().map(|(k, _)| format!("{k:?}")).collect();
+                            let ekeys: Vec<String> =
+                                fresh_empty.iter().map(|k| format!("{k:?}")).collect();
+                            let line = format!(
+                                "STORE keys={} empty={} sig_len={}\n",
+                                keys.join(","),
+                                ekeys.join(","),
+                                sig.len()
+                            );
+                            let _ = f.write_all(line.as_bytes());
+                        }
+                    }
                     *guard = Some(BelowTiles {
                         sig,
                         tiles: merged,
