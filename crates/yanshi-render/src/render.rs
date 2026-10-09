@@ -167,6 +167,13 @@ static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// ⇒ **∴ 至少 3 槽，取 4 ✓**；**超过 ⇒ 丢最旧 ✓**（**粗粒度 LRU ✓**；**∴ tile 粒度是下一步 ✓**）。
 const BELOW_SLOTS: usize = 4;
 
+/// **below 缓存的**分块边长** ✓**（第 481 轮 ✓，**规格 §6.6 ✓**）：
+/// **用**自己的常量**✗ 而不用 `TileGrid` 的尺寸 ✓** —— **∵ 它**没有** `tile_size()` getter ✗**
+///（`tile.rs` 只有 `new`／`tiles_x`／`tiles_y`／`tile_count` ✓）⇒ **∴ 而键只需**一致**✓，
+/// **不必等于网格尺寸 ✓**（**∴ 行带／整块／并行 chunk 产生的键都相同 ✓**）。
+#[allow(dead_code)] // 第 2 步起使用 ✓（**这是"每步可编译"的中间态 ✓**）
+const BELOW_TILE: i64 = 256;
+
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— 现在还没有调用方 ✓ ⇒ 恒 0 ✓。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -398,6 +405,21 @@ struct BelowCache {
     sig: Vec<String>,
     /// 下方的合成结果 ✓。
     buf: crate::buffer::Buffer,
+}
+
+/// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
+/// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
+///
+/// **为什么** ✗（第 477 轮实测 ✓）：**并行分支用 `split_bands` 把区域切成**行带**✗**
+/// ⇒ **每带一个 bbox ✗** ⇒ **而旧缓存按**整块 bbox**键 ⇒ **永不匹配 ✗****。
+///
+/// **淘汰** ✓：**接既有口径 ✓**（**超过上限 ⇒ 丢最久未用 ✓**，规格 §6.2 ✓）。
+#[allow(dead_code)] // 第 2／3 步起使用 ✓
+struct BelowTiles {
+    /// **生成这些 tile 时的**下方层指纹** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
+    sig: Vec<String>,
+    /// **文档坐标（**按 [`BELOW_TILE`] 对齐 ✓**）⇒ 该 tile 的下方合成 ✓**。
+    tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
 }
 
 /// **渲染器** ✓：把图层与对象渲染成像素 ✓，并持有各类**跨帧复用**的缓存 ✓
