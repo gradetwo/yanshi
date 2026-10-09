@@ -9246,3 +9246,57 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **∴ 诚实账 ✗**：**我**在这个问题上**错了四次 ✗**
 #       （**并行无效 → 51% 重复 → 链式插入 → 9% 重复 ✓）**
 #       ⇒ **∴ 而**根因**都是**同一个 ✗**：**我**从**不完整的观测量**下结论 ✓**** ✓✓
+
+# **★ 第 898 轮：🎯🎯🎯🎯🎯 **找到单位成本的机制 ✗**（**逐像素调用 ✓）**
+#   **∴ 决定性代码 ✓**（**`crates/yanshi-render/src/buffer.rs:218` ✓）★**：
+#     ```rust
+#     pub fn composite(&mut self, source: &Buffer, mode: BlendMode, opacity: f32) {
+#         let factor = opacity.clamp(0.0, 1.0);
+#         for y in 0..source.height {
+#             for x in 0..source.width {
+#                 let pixel = source.pixel(x, y);                       // **★ ① 逐像素访问器 ✗ ★**
+#                 let scaled = [pixel[0] * factor, …];
+#                 if scaled[3] <= 0.0 && mode == BlendMode::Normal { continue; }
+#                 let document_x = source.origin_x + x as i64;
+#                 let document_y = source.origin_y + y as i64;
+#                 let local_x = document_x - self.origin_x;
+#                 let local_y = document_y - self.origin_y;
+#                 if local_x < 0 || local_y < 0 { continue; }           // **★ ② 逐像素边界检查 ✗ ★**
+#                 let (local_x, local_y) = (local_x as u32, local_y as u32);
+#                 if local_x >= self.width || local_y >= self.height { continue; }
+#                 self.blend_mode(local_x, local_y, scaled, mode);      // **★ ③ 逐像素方法调用 ✗ ★**
+#             }
+#         }
+#     }
+#     ```
+#     ⇒ **★ 所以 ✗ ★**：**每像素**有
+#       **① 一次 `source.pixel(x, y)` 调用 ✗**（**∴ 含**边界检查 ✓）**；
+#       **② 一次 `self.blend_mode(x, y, …)` 调用 ✗**（**∴ 含**边界检查 ＋ **`mode` 分派 ✓）**；
+#       **③ 六次**坐标运算**✗**（**∴ 而**它们在**整个循环里**是**仿射的 ✓）
+#       ⇒ **∴ 于是**：**113 ms／M 像素**就有了**合理来源 ✓**** ✓✓
+#     ⇒ **∴ 而**渲染路径**确实**走这里 ✗**（**`render.rs:1352／1358／1361` ✓）**：
+#       ```rust
+#       accumulation.composite(&layer_buffer, mode, 1.0);
+#       ```
+#       ⇒ **∴ 每层一次 ✗**（**4 层 ⇒ 4 次 ✓）⇒ **∴ 而**每次**都是**逐像素** ✓**** ✓✓
+#   **★ 而且**作者**已经有**阶段计时 ✗ ★**：
+#     ```rust
+#     struct RenderProbe { fill: Duration, render: Duration, composite: Duration }
+#     ```
+#     ⇒ **∴ 约定**：**`YANSHI_RENDER_PROBE=1` ✗**（**注释 ✓：**"**各阶段耗时（**诊断用 ✓）"）**
+#       ⇒ **∴ 所以**：**下一步**只要**开它 ✗** ⇒ **∴ 就能**看到 `composite` 占比 ✓**** ✓✓
+#       **∴ 不必**加新探针 ✓**** ✓✓
+#   **★ 修法（**标准 ✓）★**：
+#     **① 按行处理 ✗**：**外层**取**整个行切片**✗（**`source.row(y)` ＋ `self.row_mut(y)` ✓）**
+#       ⇒ **∴ 内层**用**索引**✗**（**∴ 且**边界**只在行层面**检查一次 ✓）**；
+#     **② 内联混合 ✗**：**把 `mode` 分派**提到**行外／层外**✗**
+#       ⇒ **∴ 于是**：**热循环**里**没有**分派 ✓**** ✓✓
+#     **③ 用** `BlendMode::Normal` **的**专用快路径 ✗**（**∴ 那是**绝大多数 ✓）
+#       ⇒ **∴ 且**保留**通用慢路径**作为**回退 ✓**** ✓✓
+#     **∴ 收益**（**预计 ✓）✗**：**3–10×** ⇒ **∴ 首次 4K** 从 **1492 ms ⇒ 150–500 ms ✓**
+#     **∴ 代价 ✗**：**重构一个热循环 ✗** ⇒ **∴ 而**它**必须**逐字节等价 ✓**** ✓✓
+#     **∴ 判据 ✗**：**输出逐字节相同 ✗**（**现有 257 个渲染测试 ＋ `tile_parallel` 覆盖 ✓）
+#       ＋ **一个**性能判据**✗**（**∴ 同一区域**两次渲染**都在预算内 ✓）** ✓✓
+#   **∴ 元收获 ★**：**"**逐像素方法调用**"**是**Rust 热循环的经典陷阱 ✗**
+#     ⇒ **∴ 而**它**往往**被**边界检查**伪装 ✗**（**编译器**不敢省略 ✓）**
+#       ⇒ **∴ 所以**：**热循环**要**按行切片 ＋ 直接索引 ✓**** ✓✓
