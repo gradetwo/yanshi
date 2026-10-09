@@ -1220,10 +1220,11 @@ impl Renderer {
                 {
                     let _ = writeln!(
                         f,
-                        "req={} cacheable=1 split={} sig={} bbox=({},{},{},{}) hit={} reused={}",
+                        "req={} cacheable=1 split={} sig={} sig0={} bbox=({},{},{},{}) hit={} reused={}",
                         req_id,
                         split,
                         sig.len(),
+                        sig.first().map(|x| x.as_str()).unwrap_or("-"),
                         want.x,
                         want.y,
                         want.w,
