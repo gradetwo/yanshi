@@ -165,7 +165,13 @@ export async function makeLocalApi(db) {
         // **★ 绝不返回空图 ✗ ★**：**∴ 内核给不出字节 ⇒ **∴ 如实回落 `needs_render` ✓****
         //（**∴ 而**不是发一个 0 字节的 `image/png` ⇒ **∴ 那会让前端显示空白却不报错 ✗**）。
         if (!png || png.length === 0) {
-          return json({ ok: false, error: "needs_render", reason: "内核未产出字节", server: false });
+          // **∴ 取**元信息里的警告**✗**（`render_region_info` ✓）—— **∴ 否则只能看到"未产出字节"✗**，
+          // **而**看不到原因 ✓**（**∴ 这正是我上一轮卡住的地方 ✓**）。
+          let info = "";
+          try { info = k.render_region_info(Math.floor(box.x), Math.floor(box.y),
+                                           Math.ceil(box.w), Math.ceil(box.h)); } catch (e) { info = "info 亦失败：" + e; }
+          return json({ ok: false, error: "needs_render", reason: "内核未产出字节",
+                        kernel_info: String(info).slice(0, 600), server: false });
         }
         // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
         const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;

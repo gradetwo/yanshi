@@ -115,7 +115,7 @@ check(un && un.body && !!un.body.reason, "未实现端点未报出原因 ✗");
 
 // **④ 快照缺失 ⇒ needs_render ✓**
 const rr = await evaluate(`(async () => (await (await fetch("/api/tools/render_region?doc=d1", { method: "POST", body: "{}" })).json()))()`);
-console.log("  render_region ⇒ " + JSON.stringify(rr).slice(0, 120));
+console.log("  render_region ⇒ " + JSON.stringify(rr).slice(0, 700));
 check(rr && rr.error === "needs_render", `缺快照应报 needs_render ✗（实测 ${JSON.stringify(rr).slice(0, 80)}）`);
 
 try { socket.close(); } catch {}
