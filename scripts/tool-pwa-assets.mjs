@@ -107,6 +107,25 @@ if (store) {
   console.log("  store.js：indexedDB ✓｜零 /api/ ✓｜快照校验（format+seq）✓");
 }
 
+// **★ 本地 API 适配层 ✓ ★**（第 614 轮 ✓；**用户"不影响现有 WEB" ✓**）：
+//   **∴ 它让**同一份 viewer**（`crates/yanshi-http/assets/viewer-app.js` ✓）两处都能跑 ✗
+//   ⇒ **∴ 现有 WEB 一个字节都不用改 ✓**（**判据断言下面这条"共享"关系 ✓**）。
+const api = read("web/api-local.js");
+check(!!api, "web/api-local.js 缺失 ⇒ **∴ PWA 无法复用现有前端 ⇒ 只能分叉 ✗**");
+if (api) {
+  check(/window\.fetch\s*=/.test(api), "web/api-local.js 未覆写 window.fetch ⇒ **∴ 拦截不了 /api/* ✗**");
+  check(/not_implemented_locally/.test(api), "web/api-local.js 未对未实现端点如实报错 ⇒ **∴ 会静默失败（= 撒谎）✗**");
+  check(/501/.test(api), "web/api-local.js 未用 501 表示未实现 ⇒ **∴ 状态不可判 ✗**");
+  console.log("  api-local.js：覆写 fetch ✓｜未实现端点如实 501 ✓");
+}
+
+// **★ 防分叉断言 ✓ ★**（第 614 轮 ✓）：
+//   **∴ 单一源必须是**现有 WEB**✗**（`crates/yanshi-http/assets/viewer-app.js` ✓）⇒
+//   **∴ 若哪天有人把 `web/` 里也放一份**改过的**同名文件 ✗ ⇒ **∴ 两条部署就分叉了 ✗**。
+//   **∴ 所以**这里禁止 `web/viewer-app.js` 存在 ✗**（**它必须由同步脚本从单一源拷入 ✓**）。
+check(!existsSync("web/viewer-app.js"),
+  "web/viewer-app.js 存在 ⇒ **∴ 前端被复制成了第二份 ⇒ 会与现有 WEB 分叉 ✗**（应当只同步，不改 ✓）");
+
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
