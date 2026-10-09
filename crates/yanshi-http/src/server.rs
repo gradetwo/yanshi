@@ -38,6 +38,11 @@ use crate::http::{Request, Response};
 use crate::viewer;
 use crate::ws::{accept_key, is_valid_client_key, read_message, write_frame, Frame, OpCode};
 
+/// **★ 本次进程的 GPU 模式 ✓ ★**（第 606 轮 ✓）：**auto（默认）｜on｜off**。
+/// **∴ 它只记录请求的模式 ✗**；**实际后端见 `/health` 的 `render_backend`** ✓。
+/// **∴ 二者分离 ⇒ "要求 GPU 但实际用 CPU" 一眼可见 ✗，不会被掩盖 ✓**。
+static GPU_MODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// HTTP 服务选项。
 #[derive(Debug, Clone)]
 pub struct HttpOptions {
@@ -145,6 +150,17 @@ impl HttpOptions {
                 "--no-mediums" => options.medium_dir = None,
                 "--no-brand" => options.brand_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
+                // **★ GPU 模式 ✓ ★**（第 606 轮 ✓；**部署矩阵 ＋ GPU 优先决策 ✓**）：
+                // auto（默认）⇒ GPU 优先 ＋ 不可用则 CPU ✓；on ⇒ 要求 GPU ✓；off ⇒ 人为强制 CPU ✓。
+                // **⚠️ 现状 ✗**：**还没有 GPU 后端 ⇒ 任何模式的实际后端都是 cpu ✓**；
+                // **∴ `/health` 会如实报出 `gpu_mode` 与 `render_backend` ✗ ⇒ 不撒谎 ✓**。
+                "--gpu" => {
+                    let mode = value_of("--gpu")?;
+                    if !matches!(mode.as_str(), "auto" | "on" | "off") {
+                        return Err(format!("--gpu 只接受 auto／on／off（收到 {mode}）"));
+                    }
+                    let _ = GPU_MODE.set(mode);
+                }
                 "--doc" => options.doc_id = value_of("--doc")?,
                 "--width" => {
                     options.width = value_of("--width")?
@@ -761,6 +777,8 @@ fn health(state: &ServerState) -> Response {
             // **并**在 `--gpu=off` 时仍报 `cpu` ✓****。
             "render_backend": "cpu",
             "gpu_unavailable_reason": "host_has_no_gpu",
+            // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
+            "gpu_mode": GPU_MODE.get().cloned().unwrap_or_else(|| "auto".to_owned()),
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
             // ⇒ blob 仍写得进去 ✓，但**掉电安全没有保证** ✓ ⇒ 这一项就让使用者看得见 ✓。
             "blob_fsync": if state
