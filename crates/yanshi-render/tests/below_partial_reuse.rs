@@ -215,6 +215,45 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
         f.rgba8.len(),
         "两次渲染的像素数**必须**相同 ✓"
     );
+    // **★ 差异的形状（**先报出来再断言 ✓）★**（第 11 轮 ✓）：
+    //   **∴ 为什么先报 ✗**：**"**不一致 ✓"**这三个字**定位不了任何东西 ✓**
+    //     ⇒ **∴ 至少要**差异数 ＋ 首像素 ＋ **按 tile 的分布 ✓**** ✓✓
+    // **∴ 从渲染结果里拿不到缓存内部 ✗ ⇒ **∴ 用公开的 want_bbox 反推覆盖 ✓**（**第 11 轮 ✓）** ✓✓
+    let acc_debug = r.stats.below_want_bbox;
+    if r.rgba8 != f.rgba8 {
+        let w = r.width as usize;
+        let diff_bytes = r
+            .rgba8
+            .iter()
+            .zip(f.rgba8.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        let first = r
+            .rgba8
+            .iter()
+            .zip(f.rgba8.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(0);
+        let (px, py) = ((first / 4) % w, (first / 4) / w);
+        eprintln!(
+            "像素差异：{} 字节｜首差异在像素 ({px},{py})｜图 {}x{}",
+            diff_bytes, r.width, r.height
+        );
+        // **∴ 按 tile 统计 ✗**（**tile = 256 ⇒ 看**哪些块错了 ✓）** ✓✓
+        let mut by_tile: std::collections::BTreeMap<(usize, usize), usize> =
+            std::collections::BTreeMap::new();
+        for i in 0..(r.rgba8.len() / 4) {
+            if r.rgba8[i * 4..i * 4 + 4] != f.rgba8[i * 4..i * 4 + 4] {
+                let (x, y) = (i % w, i / w);
+                *by_tile.entry((x / 256, y / 256)).or_insert(0) += 1;
+            }
+        }
+        // **∴ 缓存 tile 的**实际覆盖**也要看 ✗**（**∴ 若**它比 256 小 ⇒ **∴ 预填会**留下没人算的格 ✓）** ✓✓
+        eprintln!("  accumulation 盒 = {:?}", acc_debug);
+        for (k, n) in &by_tile {
+            eprintln!("  错块 tile({},{}) ⇒ {} 像素", k.0, k.1, n);
+        }
+    }
     assert_eq!(
         r.rgba8, f.rgba8,
         "**部分复用**只能省计算 ✗，**绝不许**改变像素 ✓（**∴ 与 CPU 真值逐字节一致 ✓）"
