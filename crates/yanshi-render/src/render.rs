@@ -557,6 +557,19 @@ impl Renderer {
         &mut self.cache
     }
 
+    /// **★ 清空**所有**渲染缓存 ✓ ★**（第 487 轮教训 ✓）：**新增缓存必须纳入这里 ✗**
+    /// —— **∴ 否则调用方（**测试 ✓／保存 ✓／切文档 ✓／导入 ✓**）**控制不住它 ✗**
+    /// ⇒ **∴ 会拿旧合成冒充 ✗**（**实测：`incremental_stamp_matches_full_tile_re_render`
+    /// 因 `cache_mut().clear()` **清不到 below** ✗ 而差 **37.5%** ✓）。
+    ///
+    /// **∴ 规则** ✓（设计 §6.10 ✓）：**凡"从干净状态开始"处 ⇒ 都调它 ✓**。
+    pub fn clear_all_caches(&mut self) {
+        self.cache.clear();
+        if let Ok(mut guard) = self.below.lock() {
+            *guard = None;
+        }
+    }
+
     /// 失效指定 tile（配合 [`crate::dirty`] 使用）。
     pub fn invalidate_tiles(&mut self, keys: &[TileKey]) -> usize {
         self.cache.invalidate(keys)
