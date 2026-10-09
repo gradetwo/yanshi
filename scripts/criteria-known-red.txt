@@ -6396,3 +6396,22 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 下一步 ✓**：**起本地服务 ＋ 请求 `/brushes/8B_Pencil%231.myb` ✗**
 #     ⇒ **∴ 期望 200 ✓**（**∴ 修复前是 404 ✓）** ✓✓
 #   **∴ 线上状态 ✓**：**不受影响 ✓**（**已验证 5 个路径 200 ✓）** ✓✓
+
+# **★ 第 804 轮：✅ **`frame_reused` 接进响应 ✗**（**目标第 4 条的判据基座 ✓）**
+#   **∴ 改动（**3 处 ＋ 1 个转发 ✓）** ✓**：
+#     **① `service.rs` ✗**：**加 `document_full_frame_hits(doc_id) -> u64` ✗**
+#       （**∴ 与 `document_below_reuse_count` 同形 ✓，**只读转发 ✓）**；
+#     **② `tools.rs` 快照 ✗**：**`let frame_before = ctx.workspace.document_full_frame_hits(&ctx.doc_id);`**
+#       （**∴ 紧邻 `below_before` ✓）**；
+#     **③ 提前返回分支（**就地读 ✓）✗**：
+#       **`"frame_reused": … document_full_frame_hits(…) > frame_before,` ✓**；
+#     **④ 主路径 ✗**：**`let frame_after = …; value["frame_reused"] = json!(frame_after > frame_before);` ✓**
+#   **∴ 为什么这是**正确的指标 ✗**（**第 795 轮的结论 ✓）** ✓**：
+#     **∴ 整幅请求**命中 `full_frame_render` 时**根本不进渲染器 ✗**
+#     ⇒ **∴ 于是** **tile 级计数**不动 ✗ ⇒ **∴ 只有 `frame_reused`** 能反映**用户实际路径** ✓**** ✓✓
+#   **∴ 门禁** ✓：**build ✓｜clippy -D warnings ✓｜`yanshi-server --lib` 通过 ✓**** ✓✓
+#   **∴ 下一轮（**判据 ＋ 变异 ＋ 文档 ✓**）** ✓**：
+#     **① 实测 ✗**：**同区域渲两次 ⇒ 第二次 `frame_reused` 必须为真 ✓**；
+#     **② 加**可红判据 ✗**（**∴ 进 `scripts/` 或 Rust 测试 ✓）**；
+#     **③ 变异 ✗**：**让 `full_frame_hits` **不自增 ⇒ **∴ 判据**必红 ✓**** ✓✓
+#     **④ 文档 §14.35 ✗**：**四级缓存 ＋ 各自指标 ＋ 谁在什么条件下生效 ✓**✓

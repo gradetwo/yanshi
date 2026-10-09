@@ -2959,6 +2959,16 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
             .unwrap_or(0)
     }
 
+    /// **★ 某一个文档的**整幅缓存命中计数** ✗ ★**（第 804 轮 ✓；**目标第 4 条 ✓**）：
+    ///   **∴ 为什么需要它 ✗**：**整幅请求**命中 `full_frame_render` 时**根本不进渲染器 ✗**
+    ///   ⇒ **∴ 于是** **tile 级 `below_reused`／`above_reused`** 在那条路上**永远为假 ✓**
+    ///   ⇒ **∴ 只有这个计数**能证明"**用户实际走的快路径**"命中了 ✓**（**∴ 判据要用它 ✓）**。
+    pub fn document_full_frame_hits(&self, doc_id: &str) -> u64 {
+        self.document(doc_id)
+            .map(|d| d.full_frame_hits())
+            .unwrap_or(0)
+    }
+
     /// **★ 某一个文档的 `above` 复用计数 ✓ ★**（第 704 轮 ✓）：**只读转发 ✓**。
     ///
     /// **∴ 为什么需要它 ✗**：**全文档求和**算不出"**这次渲染**是否复用 ✗**
