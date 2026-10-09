@@ -528,6 +528,26 @@ struct BelowTiles {
     by_sig: std::collections::HashMap<Vec<String>, SigTiles>,
 }
 
+/// **★ 按 `sig` 取这一组格 ✗ ★**（第 977 轮 ✓；**第 3 步 ✓**）：
+///   **∴ 优先 `by_sig` ✗**（**按切点分组 ✓）**，**再**回落旧字段 ✓**（**兼容 ✓）**。
+///   **∴ 返回 `None`` ⇒ **∴ 调用方**应当**判定为"**不命中 ✓"** ✓✓
+#[allow(clippy::type_complexity)]
+fn tiles_for_sig<'a>(
+    cache: &'a BelowTiles,
+    sig: &[String],
+) -> Option<(
+    &'a [((i64, i64), crate::buffer::Buffer)],
+    &'a std::collections::HashSet<(i64, i64)>,
+)> {
+    if let Some((tiles, empty)) = cache.by_sig.get(sig) {
+        return Some((tiles.as_slice(), empty));
+    }
+    if cache.sig == sig {
+        return Some((cache.tiles.as_slice(), &cache.empty));
+    }
+    None
+}
+
 /// **★ 一组"**同 `sig`**"的格 ✗ ★**（第 975 轮 ✓）：**（**`tiles`, `empty` ✓）。
 ///
 /// **∴ 为什么抽别名 ✗**：**clippy** 报 `very complex type` ✗**（**实测 ✓）⇒
@@ -1140,9 +1160,12 @@ impl Renderer {
             }
             let ready = match below.lock() {
                 Ok(guard) => match guard.as_ref() {
-                    Some(c) if c.sig == sig => want_tiles
-                        .iter()
-                        .all(|k| c.tiles.iter().any(|(t, _)| *t == *k) || c.empty.contains(k)),
+                    Some(c) => match tiles_for_sig(c, &sig) {
+                        Some((tiles, empty)) => want_tiles
+                            .iter()
+                            .all(|k| tiles.iter().any(|(t, _)| *t == *k) || empty.contains(k)),
+                        None => false,
+                    },
                     _ => false,
                 },
                 Err(_) => false,
