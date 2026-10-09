@@ -49,9 +49,21 @@ export async function makeLocalApi(db) {
 // Cost: one kernel call at a time per document, which was already true inside wasm.
 const __kernelChain = new Map();
 async function withKernel(doc, fn) {
+  // Count live kernel calls to prove whether two ever overlap: the aliasing error can
+  // come from concurrency (this counter exceeds one) or from a reentrant borrow inside
+  // one call (counter stays at one). Without the counter both look identical.
+  try {
+    const st = (window.__kernelStats = window.__kernelStats || { live: 0, max: 0, calls: 0 });
+    st.live += 1; st.calls += 1;
+    if (st.live > st.max) st.max = st.live;
+  } catch (e) { /* 非浏览器环境（node 判据）=> 忽略 */ }
   const prev = __kernelChain.get(doc) || Promise.resolve();
   const run = prev.then(fn, fn);
   __kernelChain.set(doc, run.then(() => {}, () => {}));
+  try {
+    const st = window.__kernelStats;
+    run.then(() => { st.live -= 1; }, () => { st.live -= 1; });
+  } catch (e) { /* 同上 */ }
   return run;
 }
   const handle = db || (await open());
@@ -499,7 +511,12 @@ export function installLocalApi(deps) {
     //（**∴ 而**node 行为判据抓不到它 ✗**：**它直接调 `makeLocalApi` ✓，**不经过这层覆写 ✓**）
     // ⇒ **∴ 这正是"真实浏览器验证"的价值 ✗**。
     if (url.pathname === "/health") {
-      return json({ ok: true, server: false, render_backend: await detectBackend(),
+      // The viewer refuses to warm the kernel unless health reports wasm:true, and this
+// deployment *is* the wasm kernel, so say so. Without the field the whole local path
+// was skipped and every stroke failed with an unknown reason even though the kernel
+// was present and working.
+return json({ ok: true, server: false, wasm: true,
+                    render_backend: await detectBackend(),
                     note: "本部署没有服务器端；渲染全部在本地浏览器完成" });
     }
     // **∴ 只拦 `/api/` ✓**（**静态资源与 `/wasm/` 保持原路 ✓**）。
