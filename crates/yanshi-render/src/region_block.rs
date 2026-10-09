@@ -225,14 +225,12 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{:?}", state.color_space).hash(&mut h);
     let mut layers: Vec<&yanshi_core::Layer> = state.alive_layers();
-    // **★ 排除**最上面那层** ✓ ★**（第 470 轮**决定性 ✓**）：**实测**（env 探针 ✓）
-    // `get #2 present=true same=false` ✗ ⇒ **∴ 条目在 ✓ 而版本变了 ✗** ——
-    // **∵ 指纹含**全部层**✗ 而"只改当前层"正是**画家最常走的路径**✓ ⇒ **∴ 指纹必然变 ⇒ 必然失效 ✗**。
-    // **∴ 与 below 缓存**同一切点**✓：**`alive_layers()` 按合成顺序（**底 → 顶 ✓**）⇒ **∴ 最后一个是最上层 ✓**。
-    // **∴ 而改动落在**下方任何层**⇒ 指纹变 ⇒ 失效 ✓**（**正确 ✓**）。
-    if layers.len() > 1 {
-        layers.pop();
-    }
+    // **★ 必须覆盖**全部层** ✓ ★**（第 474 轮 **C4 判据当场抓住 ✓**）：
+    // **∴ 我曾让这里**排除最上层**✗（**为了让"只改当前层"命中 ✓**）⇒ **∴ 而 `region_cache` 存的是
+    // **整块渲染结果**（**含所有层 ✓**）⇒ **∴ 排除上层 ⇒ 改上层后**返回旧块 ✗ ⇒ **＝ 撒谎 ✓**
+    //（**实测**：`h3 == h4` ✗ —— **改最上层后 `raw_url` 哈希没变 ✓**）。
+    // **∴ 正解** ✓：**块指纹**必须覆盖全部层 ✓**；**要"只重画当前层" ⇒ **应当把 **below 缓存
+    // 接进块渲染 ✓**（**分段复用 ✓**），**而**不是**让块指纹忽略上层 ✗**。
     layers.sort_by(|a, b| a.id.cmp(&b.id));
     for l in layers {
         l.id.hash(&mut h);
