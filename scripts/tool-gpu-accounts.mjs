@@ -217,7 +217,7 @@ console.log(`  | CPU | ${cpu.wallMs?.toFixed(1)} | ${cpu.taskMs?.toFixed(1)} | `
   + `${cpu.ok ? "✓" : "✗ " + String(cpu.detail?.error || "").slice(0, 60)} |`);
 if (gpu) {
   console.log(`  | GPU | ${gpu.wallMs?.toFixed(1)} | ${gpu.taskMs?.toFixed(1)} | `
-    + `${gpu.ok ? `✓ maxChannelDelta=${gpu.detail.maxChannelDelta}` : "✗ " + String(gpu.detail?.error || "").slice(0, 60)} |`);
+    + `${gpu.ok ? `✓（**主入口**不算 delta ✗ ⇒ **∴ 差异**由判据量 ✓）` : "✗ " + String(gpu.detail?.error || "").slice(0, 60)} |`);
 }
 
 // **★ 必须**两本账都明说 ✗ ★**（**∴ 不许**只报好看的那本 ✓）** ✓✓

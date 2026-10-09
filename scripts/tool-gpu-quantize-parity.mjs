@@ -204,8 +204,8 @@ if (!fact.adapter) {
       for (let i = 0; i < 4096; i += 1) out.push(next(), next(), next(), next());
       return new Float32Array(out);
     })();
-    const first = await window.yanshiGpuQuantize(pixels);
-    const second = await window.yanshiGpuQuantize(pixels);
+    const first = await window.yanshiGpuQuantizeCompared(pixels);
+    const second = await window.yanshiGpuQuantizeCompared(pixels);
     const same = first.bytes.length === second.bytes.length
       && first.bytes.every((b, i) => b === second.bytes[i]);
     return JSON.stringify({
@@ -214,6 +214,7 @@ if (!fact.adapter) {
       typeofDelta: typeof first.maxChannelDelta,
       deterministic: same,
       bytes: Array.from(first.bytes),
+      differingBytes: first.differingBytes,
       pixelCount: pixels.length / 4,
       deltas: Array.from(first.bytes).map((b, i) => Math.abs(b - first.reference[i])),
     });
