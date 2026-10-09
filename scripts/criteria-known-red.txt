@@ -4789,3 +4789,33 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       ⇒ **∴ 于是**"产物漂移"**会在提交前被抓到 ✓**** ✓✓
 #   **∴ 另 ✓**：**我本轮**误把 `web/.index.export.html`（**临时文件 ✓）提交了 ✗**
 #     ⇒ **∴ 已**取消跟踪 ＋ 删除 ＋ 加进 `.gitignore` ✓**** ✓✓
+
+# **★ 第 753 轮：🎉🎉🎉 **真相 ✗** —— **`make release` 用 `--target <triple>` ⇒ 产物在**另一个目录** ✓****
+#   **∴ 用户的问题 ✓**：**"我每次都是 `make release` 更新程序，难道这个没用？" ✓**
+#   **★ 答案：有用 ✗，**但**它和 `npm run pwa:deploy` 看的**不是同一个文件**✓ ★**** ✓✓
+#   **∴ 证据 ✓**（`scripts/package-release.sh:290` ✓）**：
+#     ```bash
+#     cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp
+#     ```
+#     ⇒ **★ `--target "${target_triple}"` ✗ ★** ⇒ **∴ 于是**产物落在
+#       **`target/<triple>/release/yanshi-serve` ✗**（**如** `target/x86_64-unknown-linux-gnu/release/` ✓）
+#       ⇒ **∴ 而** `scripts/pwa-sync-viewer.mjs` **（**修改前 ✓）找的是 `target/release/yanshi-serve` ✗**
+#         ⇒ **∴ 所以**：**两者**不是同一个文件 ✗**** ✓✓
+#     ⇒ **∴ 而** `make release` **同时**把可发布的包**组装到 `$(OUT)`（**默认 `dist/` ✓）** ✗**
+#       ⇒ **∴ 所以**用户**装的是**新的**✗，**而**脚本**用的是 `target/release` 里那个**旧残留** ✓**** ✓✓
+#   **∴ 为什么会有旧残留 ✗**：**某次**不带 `--target` 的构建**✗**（**如**我早前的
+#     **`cargo build --release -p yanshi-server -p yanshi-http` ✓）**留在 `target/release/` ✗
+#     ⇒ **∴ 而**它**比 `0fffd7a`（**加 flag 那次 ✓）旧 ⇒ **∴ 所以**不含该 flag ✓**** ✓✓
+#   **★ 修法（**下一轮 ✓）★**：
+#     **① 脚本**探测 `target/<triple>/release/yanshi-serve` ✗**（**★ 这是**最关键的遗漏**★**）
+#       ⇒ **∴ 于是** `make release` **的产物**会被直接用上 ✓**；
+#     **② 且**支持 **`YANSHI_SERVE_BIN` 环境变量** ✗**（**∴ 用户**可以显式指定 ✓）**；
+#     **③ 且**在**全部候选都不支持**该 flag 时**打印**可复制的重建命令 ✗**
+#       （**∴ 我第 751 轮**已做了一半 ⇒ **∴ 再补 triple 路径 ✓）** ✓✓
+#   **∴ 给用户的**立即可用绕法 ✓**：
+#     ```bash
+#     cargo build --release -p yanshi-http      # **∴ 让 `target/release` 也变新 ✓**
+#     npm run pwa:deploy
+#     ```
+#     ⇒ **∴ 或**（**本轮之后 ✓）**：
+#       `YANSHI_SERVE_BIN=target/x86_64-unknown-linux-gnu/release/yanshi-serve npm run pwa:deploy` ✓**** ✓✓
