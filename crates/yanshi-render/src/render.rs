@@ -1038,6 +1038,14 @@ impl Renderer {
         brush: &crate::brush::BrushSpec,
         geometry: &crate::brush::StrokeGeometry,
     ) -> Result<Vec<TileKey>> {
+        // **★ 盖章会**改像素** ✓ ⇒ **必须同时失效 below 缓存 ✗** ★**（第 488／489 轮 ✓）：
+        // **实测** ✓：**只失效 tile 缓存 ✗ ⇒ **∴ "盖章后再 `render_region`"复用了**盖章前**的
+        // 下方合成 ✗ ⇒ **∴ 与从头渲染差 **24576／65536 ＝ 37.5%** ✓**
+        //（`incremental_stamp_matches_full_tile_re_render` ✓，**2／5 次复现 ✓**）⇒
+        // **∴ 规则** ✓：**凡改像素的入口 ⇒ 必须同时失效**所有**依赖像素的缓存 ✓**。
+        if let Ok(mut guard) = self.below.lock() {
+            guard.clear();
+        }
         let Some(bbox) = geometry_bbox(geometry, brush.size) else {
             return Ok(Vec::new());
         };
@@ -1056,6 +1064,14 @@ impl Renderer {
         geometry: &crate::brush::StrokeGeometry,
         cursor: &mut crate::geometry::StrokeCursor,
     ) -> Result<Vec<TileKey>> {
+        // **★ 盖章会**改像素** ✓ ⇒ **必须同时失效 below 缓存 ✗** ★**（第 488／489 轮 ✓）：
+        // **实测** ✓：**只失效 tile 缓存 ✗ ⇒ **∴ "盖章后再 `render_region`"复用了**盖章前**的
+        // 下方合成 ✗ ⇒ **∴ 与从头渲染差 **24576／65536 ＝ 37.5%** ✓**
+        //（`incremental_stamp_matches_full_tile_re_render` ✓，**2／5 次复现 ✓**）⇒
+        // **∴ 规则** ✓：**凡改像素的入口 ⇒ 必须同时失效**所有**依赖像素的缓存 ✓**。
+        if let Ok(mut guard) = self.below.lock() {
+            guard.clear();
+        }
         let Some(bbox) = geometry_bbox(geometry, brush.size) else {
             return Ok(Vec::new());
         };
