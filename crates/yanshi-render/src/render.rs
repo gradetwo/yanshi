@@ -3460,7 +3460,10 @@ mod parallel_impl {
         // **告诉缓冲池本轮的真实并发块数**：池的字节预算 = 并发数 × 每块工作集
         // （下界 `MIN_POOLED_BYTES`），这样 8K/4 worker 那种"每块 126.56 MiB、合计 506 MiB"
         // 的工作集才留得住（写死 192 MiB 时只留得下 1 块，其余每层重新分配）。
-        renderer.buffer_pool.begin_render(chunks);
+        // **★ 告诉池「每并发两块」 ✗ ★**（第 22 轮 ✓）：
+        //   **∴ 依据 ✗**：**每条带**同时持有「**累积缓冲 ✓」与「**当前层缓冲 ✓」
+        //     ⇒ **∴ 预算**要**容下两者 ✓ ⇒ **∴ 否则**池**反复丢缓冲**（**§21 实测 ✓）** ✓✓
+        renderer.buffer_pool.begin_render_with(chunks, 2);
 
         let mut out = Buffer::new(rx, ry, rw, rh);
         let stride = rw as usize * 4;

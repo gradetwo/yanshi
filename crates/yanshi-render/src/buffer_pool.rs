@@ -140,6 +140,15 @@ pub struct BufferPool {
     /// **本轮渲染的并发 worker（分块）数**，由 [`Self::begin_render`] 设置，恒在
     /// `1..=MAX_POOLED_BUFFERS`。它乘上本轮最大单块工作集就是保留字节预算。
     concurrency: AtomicUsize,
+    /// **★ 每个并发 worker 同时在借几块 ✗ ★**（第 22 轮 ✓；**修预算少算的因子 ✓）。
+    ///
+    /// **∴ 为什么必须有它 ✗**：**实测**（§21 ✓）**4 带 4 层**时**池**反复丢缓冲 ✗
+    ///   ⇒ **∴ 页错 +31%／VmHWM +36%／CPU +83%** ✗，**而**墙钟**反而比 2 带更慢 ✓**
+    ///     ⇒ **∴ 根因 ✗**：**预算 ＝ 并发数 × **一块**带缓冲**✗
+    ///       **而**实际工作集 ＝ 并发数 × **一块**带缓冲 × **每块的缓冲数** ✓**** ✓✓
+    ///         ⇒ **★ 所以**：**少算的那一维**必须**显式告诉池 ✓ ★**** ✓✓
+    /// **∴ 默认 1 ✗**：**∴ 不调用者**（**如**单元测试 ✓）**行为**完全不变 ✓**** ✓✓
+    buffers_per_worker: AtomicUsize,
     /// `false` ⇒ 每次取用都新建、归还即丢弃（**等价于改造前的行为**）。
     ///
     /// 存在的意义是**可判定性**：同一次构建、同一份文档，可以跑"池化"与"强制新分配"
@@ -178,6 +187,7 @@ impl BufferPool {
                 min_bytes,
             },
             concurrency: AtomicUsize::new(1),
+            buffers_per_worker: AtomicUsize::new(1),
             enabled: AtomicBool::new(true),
         }
     }
@@ -202,8 +212,19 @@ impl BufferPool {
     /// `workers` 会被夹到 `1..=max_buffers`（并发数不可能超过池愿意保留的个数上限）。
     /// 不在渲染路径上的直接取用方（例如单元测试）不调用它 ⇒ 并发数保持默认 `1`。
     pub fn begin_render(&self, workers: usize) {
+        // **∴ 旧签名保留 ✗**：**默认"**每并发一块 ✓"**✗ ⇒ **∴ 既有的调用方／判据**零改动 ✓**** ✓✓
+        self.begin_render_with(workers, 1);
+    }
+
+    /// **★ 显式告诉池：**每并发同时在借几块** ✗ ★**（第 22 轮 ✓）。
+    ///
+    /// **∴ 取值 ✗**：**渲染时**每条带**至少同时持有**「**累积缓冲 ✓」与
+    ///   「**当前层缓冲 ✓」两块 ⇒ **∴ 调用方**传 **2** ✓**** ✓✓
+    pub fn begin_render_with(&self, workers: usize, buffers_per_worker: usize) {
         let clamped = workers.clamp(1, self.limits.max_buffers.max(1));
         self.concurrency.store(clamped, Ordering::SeqCst);
+        self.buffers_per_worker
+            .store(buffers_per_worker.max(1), Ordering::SeqCst);
         let mut inner = self
             .inner
             .lock()
@@ -229,9 +250,14 @@ impl BufferPool {
     /// 预算公式（调用方已持有锁）。
     fn byte_budget(&self, inner: &PoolInner) -> usize {
         let concurrency = self.concurrency.load(Ordering::SeqCst).max(1);
-        self.limits
-            .min_bytes
-            .max(inner.max_request_bytes.saturating_mul(concurrency))
+        // **★ 少算的那一维 ✗ ★**（第 22 轮 ✓）：**每并发**同时在借几块** ✓
+        let per_worker = self.buffers_per_worker.load(Ordering::SeqCst).max(1);
+        self.limits.min_bytes.max(
+            inner
+                .max_request_bytes
+                .saturating_mul(concurrency)
+                .saturating_mul(per_worker),
+        )
     }
 
     /// 取得一块 `width × height`、原点为 `(origin_x, origin_y)` 的**全零**缓冲。
