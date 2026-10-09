@@ -3839,6 +3839,9 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 }
                 warnings
             }),
+            // **★ 该次渲染是否复用了下方合成 ✓ ★**（第 539 轮 ✓）：**∴ `raw` 出口也要标 ✗** ——
+            // **∴ 就地读 ✓** —— **∴ 本分支在 `below_after` 之前 return ✗** ⇒ **∴ 不能引用它 ✓**。
+            "below_reused": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
