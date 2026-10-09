@@ -1306,10 +1306,6 @@ impl Renderer {
                             },
                             // **★ 决定性：**把缓存里**存的 `sig` 打出来 ✗ ★**（第 764 轮 ✓）
                             //   **∴ 于是**：**一眼看出**存的**是**哪个层列表**✗**（**∴ 如**是不是另一个文档／时刻 ✓）** ✓✓
-                            Some(c) => (
-                                0,
-                                vec![format!("sig-differs stored={}", c.sig.join(" ## "))],
-                            ),
                             None => (0, vec!["empty".to_owned()]),
                         },
                         Err(_) => (0, vec!["lock-poisoned".to_owned()]),
