@@ -144,6 +144,59 @@ export async function makeLocalApi(db) {
     // ⇒ **∴ 而**渲染时内核会**重放**它 ✓**（**∴ 于是"画一笔"就通了 ✓**）**。
     // **∴ 形态**与服务端一致 ✗**：**完整 8 字段封套 ＋ `payload` ✓**（**§14.12 ✓**）。
     if (url.pathname === "/api/tools/brush_stroke") {
+      // **★ 走内核渲染一笔 ⇒ 写 `import_image` 原子 ✗ ★**（第 653 轮 ✓；**步骤 ⑤ ✓**）：
+      //   **∴ 为什么不能自造 `brush_stroke` 原子 ✗**（**第 646 轮实测 ✓**）：
+      //   **∴ 服务端的笔触是**服务端渲染成位图**后的 `import_image` 原子 ✗**（**内核不认前者的 kind ✓**）。
+      try {
+        const mod = await import("/wasm/yanshi_wasm.js");
+        if (typeof mod.default === "function") await mod.default();
+        const entryK = kernels.get(doc);
+        if (!entryK) throw new Error("内核实例尚未建立（先请求一次渲染）");
+        const { fetchBrushText, paintWithKernel } = await import("/brush-local.js");
+        const brushName = body.brush || "100%_Opaque.myb";
+        const myb = await fetchBrushText(brushName.endsWith(".myb") ? brushName : brushName + ".myb");
+        // **∴ 区域 ＝ 点列包围盒 ＋ 笔刷半径 ＋ 余量 ✗**（**∴ 并裁剪到画布内 ✓**）。
+        const pts = Array.isArray(body.points) ? body.points : [];
+        if (pts.length === 0) throw new Error("points 为空 ⇒ 没有可落的笔");
+        const r = Math.ceil((Number(body.size) || 20) / 2) + 2;
+        const xs = pts.map((q) => Number(q[0])), ys = pts.map((q) => Number(q[1]));
+        const x0 = Math.max(0, Math.floor(Math.min(...xs) - r));
+        const y0 = Math.max(0, Math.floor(Math.min(...ys) - r));
+        const x1 = Math.min(entryK.w, Math.ceil(Math.max(...xs) + r));
+        const y1 = Math.min(entryK.h, Math.ceil(Math.max(...ys) + r));
+        const region = { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+        const rgba = paintWithKernel(entryK.k, {
+          myb, points: pts, size: body.size, color: body.color, region,
+        });
+        // **∴ 存成 blob ✗**（**mime ＝ `image/x-yanshi-raw` ✓，与服务端一致 ✓**）。
+        const { putBlob } = await import("/store.js");
+        const sum = await crypto.subtle.digest("SHA-256", rgba);
+        const hash = "sha256:" + Array.from(new Uint8Array(sum)).map((b) => b.toString(16).padStart(2, "0")).join("");
+        await putBlob(handle, hash, Array.from(rgba));
+        // **∴ 写 `import_image` 原子 ✗**（**字段照第 646 轮的实测样本 ✓**）。
+        const seq = await putAtom(handle, doc, {
+          actor: "human:web",
+          id: "01STROKE" + String(Date.now()).padStart(13, "0"),
+          kind: "import_image",
+          payload: {
+            bitmap: { blob_hash: hash, mime_type: "image/x-yanshi-raw", size: rgba.length },
+            height: region.h, layer_id: layerId,
+            object_id: "obj_" + String(Date.now()),
+            region: { h: region.h, w: region.w, x: region.x, y: region.y },
+            source: { brush: brushName, color: body.color ?? null, kind: "brush",
+                      points: pts, seed: 0, size: body.size ?? null },
+          },
+          schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
+        });
+        return json({ ok: true, seq, server: false, bytes: rgba.length,
+                      note: "已由本地内核渲染并写入 import_image 原子" });
+      } catch (err) {
+        // **★ 失败必须**说出来 ✗**（**∴ 不许静默 —— **∴ 否则表现为"画了没反应"✗****）。**
+        return json({ ok: false, error: "stroke_failed",
+                      reason: String((err && err.message) || err), server: false }, 500);
+      }
+    }
+    if (false) {
       const layerId = body.layer_id || (body.payload && body.payload.layer_id) || "L0";
       const atom = {
         actor: "human:web",
