@@ -130,6 +130,12 @@ for (let i = 0; i < 120; i += 1) {
   await sleep(250);
   if (await evaluate("document.readyState === 'complete' && typeof window.yanshiGpuQuantize === 'function'")) break;
 }
+// **⚠️ 本判据的**参照物**要说清 ✗ ★**（第 58 轮 ✓）：
+//   **∴ 内核真值**＝ `quantize_f16`（**f16 往返 ✓）＋ **4097 项查表** ✓
+//   **∴ 本判据用的参考**＝ 页面里**独立重写**的 `quantizeOnCpu`**✗
+//     （**`Math.fround` ＋ 同一条 sRGB 公式 ✓）⇒ **∴ 两者**不是同一个东西 ✓**** ✓✓
+//   ⇒ **∴ 所以**：**"**逐字节相同 ✓"**的含义**是"**与这个独立参考相同 ✓" ✗**
+//     ⇒ **∴ 而**要**接进主渲染路径**✗，**必须**改成**与内核真值对比 ✓**** ✓✓
 const present = await evaluate("typeof window.yanshiGpuQuantize === 'function'");
 check(present === true, "页面必须暴露 `yanshiGpuQuantize`", `实测 ${present}`);
 
@@ -201,7 +207,19 @@ if (!fact.adapter) {
       }
       let seed = 0x2f6e2b1;
       const next = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-      for (let i = 0; i < 4096; i += 1) out.push(next(), next(), next(), next());
+      // **★ 系统扫描 ✗ ★**（第 58 轮 ✓）：**∴ 4096 个随机像素**不足以说
+      //   "**GPU 与 CPU 逐字节相同 ✓"**✗ ⇒ **∴ 于是**：
+      //     **①** **把 [0,1] 均匀切成 4096 段**✗，**每段取中点**（**∴ 覆盖整个值域 ✓）**
+      //     **②** **再**加 65536 个伪随机**✗ ⇒ **∴ 合计**约 **17 万像素 ✓（**≈ 70 万字节 ✓）**
+      //     **③** **并**抽查**段边界两侧**（**∴ 那是**查表进位**最敏感处 ✓）** ✓✓
+      const N = 4096;
+      for (let i = 0; i < N; i += 1) {
+        const mid = (i + 0.5) / N;
+        out.push(mid, mid, mid, 1);
+        const edge = (i + 0.5) / N + 1e-6;
+        out.push(edge, edge, edge, 1);
+      }
+      for (let i = 0; i < 65536; i += 1) out.push(next(), next(), next(), next());
       return new Float32Array(out);
     })();
     const first = await window.yanshiGpuQuantizeCompared(pixels);
