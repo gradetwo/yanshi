@@ -18,11 +18,14 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
     vec![
         (
             "crates/yanshi-render/src/render.rs",
-            7,
-            "（1）`stage_probe` 模块里的 `Instant::now()`（1 处代码 + 1 处说明注释），\
-             代码那处位于 `#[cfg(not(target_arch = \"wasm32\"))]` 分支，wasm32 走编译期空操作；\
-             （2）`#[cfg(test)]` 测试模块里的 5 处 `Instant::now()`（液化成本探针与三个微基准）—— \
-             测试代码不参与 wasm 构建，永不编译进客户端",
+            9,
+            "（1）stage_probe 模块里的 Instant::now()：1 处代码 + 1 处说明注释，代码那处位于
+             #[cfg(not(target_arch = wasm32))] 分支，wasm32 走编译期空操作；
+             （2）#[cfg(test)] 测试模块里的 5 处 Instant::now()（液化成本探针与三个微基准）——
+             测试代码不参与 wasm 构建，永不编译进客户端；
+             （3）并行分带的直接证据探针（第 869 轮）：1 处 Instant::now() 与 1 处
+             SystemTime::now()，只在 YANSHI_PARALLEL_PROBE 打开时执行，且位于
+             #[cfg(not(target_arch = wasm32))] 的并行路径内 —— wasm32 上那条路径整体不参与编译",
         ),
         (
             "crates/yanshi-render/src/geometry.rs",
