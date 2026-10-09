@@ -1406,7 +1406,6 @@ impl Renderer {
             if partial_below.is_some() {
                 // **∴ 预填：**把已有的格**原样铺进 `accumulation`** ✓**（**纯像素搬运 ✓）** ✓✓
                 let acc_box = accumulation.bbox();
-                let acc_w = acc_box.w as usize;
                 let acc_box_w = acc_box.w as usize;
                 let acc_box_h = acc_box.h as usize;
                 for (_key, tile) in &cached_tiles {
