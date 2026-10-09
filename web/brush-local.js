@@ -36,7 +36,20 @@ export async function fetchBrushText(brush) {
                     "｜请求 URL ＝ " + String(res.url || "(未知)") +
                     "｜base ＝ " + String(location.href));
   }
-  return res.text();
+  const text = await res.text();
+  // **★ 防御：SPA fallback 会返回 200 + HTML**（本地测试验证 ✓）：
+  //   `/brushes/*.myb` 缺失时，静态托管的 SPA fallback 返回 `index.html`
+  //   （HTTP 200，`res.ok` 为真）⇒ 若不检查，HTML 会被当成笔刷文本
+  //   ⇒ `hokusai::myb::from_str` 解析失败 ⇒ "内核未产出像素"。
+  //   笔刷文件是 JSON（`{"comment": "MyPaint brush file", ...}`），首字符不是 `{` 就一定是拿错了。
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("{")) {
+    throw new Error("笔刷取到错误内容：" + name + " ⇒ 首字符為 " +
+                    JSON.stringify(trimmed.slice(0, 60)) +
+                    "（期望 JSON 笔刷定义，可能是 SPA fallback 的 HTML）" +
+                    "｜请求 URL ＝ " + String(res.url || "(未知)"));
+  }
+  return text;
 }
 
 /**

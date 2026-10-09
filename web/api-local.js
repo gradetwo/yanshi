@@ -536,8 +536,12 @@ async function withKernel(doc, fn) {
                       note: "已由本地内核渲染并写入 import_image 原子" });
       } catch (err) {
         // **★ 失败必须**说出来 ✗**（**∴ 不许静默 —— **∴ 否则表现为"画了没反应"✗****）。**
-        return json({ ok: false, error: "stroke_failed",
-                      reason: String((err && err.message) || err), server: false }, 500);
+        // **★ `error_code` 必须与前端 `callToolChecked` 对齐**（本地测试验证 ✓）：
+        //   前端读的是 `result.error_code`，之前只给了 `error` ⇒ 永遠顯示 "unknown"
+        const reason = String((err && err.message) || err);
+        return json({ ok: false, error: "stroke_failed", error_code: "stroke_failed",
+                      reason, server: false,
+                      context: { detail: reason.slice(0, 200) } }, 500);
       }
     }
     if (false) {

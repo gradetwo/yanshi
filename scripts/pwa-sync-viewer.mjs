@@ -19,10 +19,18 @@ const DST = "web";
 // Rewrite the service worker cache name with a stamp derived from the files that
 // ship, so a deployment always gets a fresh cache and the previous one is deleted.
 // Without this the fixed name meant stale entries outlived every deploy.
-const stampSource = ["viewer-app.js", "viewer.css", "index.html"]
+// **★ 緩存戳必須覆蓋所有會影響運行的文件**（定位 ✓）：
+//   之前只跟蹤 viewer-app.js/viewer.css/index.html，
+//   WASM 重建但 viewer-app.js 未變時，戳不變 ⇒ 瀏覽器繼續用舊 WASM ⇒ MyPaint 筆刷零像素。
+const stampSource = [
+  "viewer-app.js", "viewer.css", "index.html",
+  "api-local.js", "brush-local.js", "store.js",
+  "wasm/yanshi_wasm.js", "wasm/yanshi_wasm_bg.wasm",
+]
   .map((f) => { try { return statSync(join(DST, f)).mtimeMs; } catch { return 0; } })
   .join("-");
-const BUILD_STAMP = String(Math.round(Number(stampSource.split("-")[0] || 0))) || String(Date.now());
+// 用所有文件的 mtime 拼接做戳，而不是只取第一個
+const BUILD_STAMP = stampSource.replace(/[^0-9]/g, "").slice(-13) || String(Date.now());
 try {
   const swPath = join(DST, "sw.js");
   const swText = readFileSync(swPath, "utf8").replace("__BUILD_STAMP__", BUILD_STAMP);

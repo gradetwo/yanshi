@@ -119,7 +119,15 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const api = (path) => path + (path.includes("?") ? "&" : "?") + "doc=" + state.docId + "&token=" + state.token;
+// **★ blob: URL 不能加 query 參數**（定位 ✓）：
+//   `render_region` 返回 PNG 字節時轉成 blob URL（第 1139 行），
+//   而 `api()` 會給任何路徑追加 `?doc=..&token=..` ⇒
+//   得到 `blob:...?doc=..&token=..` 這種無效 URL ⇒ 瀏覽器畫畫時報一堆錯。
+//   **∴ blob: 直接返回**，不加參數。
+const api = (path) => {
+  if (typeof path === "string" && path.startsWith("blob:")) return path;
+  return path + (path.includes("?") ? "&" : "?") + "doc=" + state.docId + "&token=" + state.token;
+};
 const board = $("board");
 const overlay = $("overlay");
 const ctx = board.getContext("2d");
@@ -4780,7 +4788,11 @@ async function callToolChecked(name, args, what) {
   if (result && result.offline) return result;
   if (!result || !result.ok) {
     const code = (result && result.error_code) || "unknown";
-    const detail = (result && result.context && result.context.detail) || "";
+    // **★ `reason` 也要顯示**（本地测试验证 ✓）：本地層返回的 `reason`
+    //   带着内核给出的具体失败原因（如 "内核未产出像素：不是能解析的 .myb：…"），
+    //   而之前只读 `context.detail` ⇒ 真因被吞掉。
+    const detail = (result && result.context && result.context.detail) ||
+                   (result && result.reason) || "";
     log(what + "失败：" + code + (detail ? " " + detail : ""), "#c33");
   }
   return result;
@@ -7181,6 +7193,34 @@ async function commitShape() {
         } else {
           log("离线：这一笔**已经记入本地队列** ✓，但本地没能画出来 ⇒ 联网补交后就能看到", "#c93");
         }
+        return;
+      }
+      // **★ SW 路徑失敗 ⇒ 兜底到頁面直連內核**（本地测试验证 ✓）：
+      //   **∴ 為什麼**：SW 上下文中的 `paint_brush` 可能因各種原因失敗
+      //     （WASM 實例狀態、緩存、初始化時序等），
+      //     而頁面直連的 `state.kernel` 已驗證可用（預熱成功）。
+      //   **∴ 做法**：`brush_stroke` 返回 `stroke_failed` 時，不直接報錯，
+      //     改用 `paintBrushOffline`（頁面內核）重畫這一筆。
+      //   **∴ 兩面**：收益＝筆刷可用；代價＝多一次內核調用（僅失敗時）。
+      if (result && !result.ok && result.error_code === "stroke_failed") {
+        log("SW 落笔失败 ⇒ 改用本地内核重画", "#c93");
+        const painted = await paintBrushOffline({
+          brush: brushName,
+          layerId: state.layerId,
+          points: controlPoints,
+          size: size,
+          color: color,
+          smooth: smooth,
+          colorTo: duo ? colorToCss() : null,
+        });
+        liveLastRegion = null;
+        if (painted) {
+          log("本地内核已画出这一笔 ✓", "#6c3");
+        } else {
+          const why = (result && result.reason) || (result && result.context && result.context.detail) || "";
+          log("本地内核也未能画出 ⇒ " + why, "#c33");
+        }
+        await refreshPreview();
         return;
       }
       // **提交之后按"本地覆盖过的那块"从服务端补画一次**（第 67 轮定：否则画布上留的是本地那层，
