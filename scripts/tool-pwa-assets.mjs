@@ -125,13 +125,9 @@ if (api) {
   console.log("  api-local.js：覆写 fetch ✓｜未实现端点如实 501 ✓");
 }
 
-// **★ 防分叉断言 ✓ ★**（第 614 轮 ✓）：
-//   **∴ 单一源必须是**现有 WEB**✗**（`crates/yanshi-http/assets/viewer-app.js` ✓）⇒
-//   **∴ 若哪天有人把 `web/` 里也放一份**改过的**同名文件 ✗ ⇒ **∴ 两条部署就分叉了 ✗**。
-//   **∴ 所以**这里禁止 `web/viewer-app.js` 存在 ✗**（**它必须由同步脚本从单一源拷入 ✓**）。
-check(!existsSync("web/viewer-app.js"),
-  "web/viewer-app.js 存在 ⇒ **∴ 前端被复制成了第二份 ⇒ 会与现有 WEB 分叉 ✗**（应当只同步，不改 ✓）");
-
+// **∴ 旧的"`web/viewer-app.js` 不许存在"断言已**删除 ✗**（第 632 轮 ✓）：
+// **∴ 它被**更强**的一条取代 —— **两侧必须**逐字节相同 ✗**（**见下面的防分叉检查 ✓**）⇒
+// **∴ 于是**既允许"同步一份副本"（**PWA 需要 ✓**），**又禁止"改副本"**（**分叉 ✓**）** ✓✓。
 // **★ 本地端点数必须**如实增长**✓ ★**（第 615 轮 ✓）：
 //   **∴ `LOCAL_IMPLEMENTED` 是"**我在 PWA 里真的实现了几个端点**✗"的**唯一计数 ✗**
 //   ⇒ **∴ 若它和实现脱节 ⇒ **∴ 那就是在**虚报能力 ✗****。
@@ -147,6 +143,24 @@ check(/derived_from/.test(api || ""), "list_layers 未标明由原子推导 ⇒ 
 const apiCode = stripCommentsForCheck(api || "");
 check(/gpu_unavailable_reason/.test(apiCode), "api-local 的**代码**未报 GPU 不可用原因 ⇒ **∴ 后端不可判 ✗**");
 check(/preview_state:\s*"pending"/.test(apiCode), "api-local 的**代码**未在 get_document 里报 preview_state ✗ ⇒ **∴ 有没有图不可判 ✓**");
+
+// **★ 防分叉（**逐字节相同）✗ ★**（第 632 轮 ✓；**用户要求"不影响现有 WEB" ✓**）：
+//   **∴ 单一源永远是 `crates/yanshi-http/assets/` ✗** ⇒ **∴ `web/` 里那三份必须是**它的副本 ✗**
+//   ⇒ **∴ 若有人**改了副本**✗ ⇒ **∴ 两条部署就**分叉**✗** ⇒ **∴ 用户会在两处看到不同行为 ✓**。
+//   **∴ 而**这正是**最隐蔽的分叉**✗**（**∴ 单看一边完全正常 ✓**）。
+import { readFileSync as readBytes } from "node:fs";
+const PAIRS = ["viewer-app.js", "viewer.css", "service-worker.js"];
+let forkChecked = 0;
+for (const f of PAIRS) {
+  const src = `crates/yanshi-http/assets/${f}`;
+  const dst = `web/${f}`;
+  if (!existsSync(src) || !existsSync(dst)) continue;
+  const same = readBytes(src).equals(readBytes(dst));
+  check(same, `${f} 的副本与现有 WEB 的源**不同** ⇒ **∴ 两条部署分叉了 ✗**（应当只同步，不改 ✓）`);
+  forkChecked += 1;
+}
+check(forkChecked >= 1, "没有任何 viewer 文件被副本化 ⇒ **∴ PWA 没有界面 ✗**");
+console.log(`  防分叉：${forkChecked} 个 viewer 文件与单一源逐字节相同 ✓`);
 
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));

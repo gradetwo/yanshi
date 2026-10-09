@@ -44,6 +44,9 @@ const NOT_CRITERIA = [
   // 拷到 `web/wasm/` ✓**）⇒ **∴ 本就不该当判据 ✓**；**∴ 而"产物是否完整"由
   // `tool-pwa-assets.mjs` 判 ✓**（**它断言 wasm 存在且非空 ✓**）** ✓✓。
   "pwa-sync-wasm.mjs",
+  // **∴ `pwa-sync-viewer.mjs` ✓**（第 632 轮 ✓）：**它**改产物**✗（**把现有 viewer 同步到 `web/` ✓**）
+  // ⇒ **∴ 本就不该当判据 ✓**；**而"两侧是否一致"由 `tool-pwa-assets.mjs` 判 ✓**（**逐字节比对 ✓**）**。
+  "pwa-sync-viewer.mjs",
 ];
 // **尚未接线** ✗：已知缺口 ✓ —— **每一条都必须写清"为什么还没接"** ✓（不许留空话 ✗）。
 const NOT_WIRED = [
