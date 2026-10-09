@@ -10557,6 +10557,45 @@ window.__rowCheck = function () {
   </div>
   <div id="assetDockBody"></div>
 </div>
+<!-- **★ 早期请求哨兵 ✗ ★**（第 824 轮 ✓；**用户报告 405 ✓**）：
+     **∴ 为什么需要它 ✗**：**下面的安装块是 `type="module"` ✗** ⇒ **∴ 默认 defer ✗**
+     ⇒ **∴ 它在**所有普通脚本之后**执行 ✗** ⇒ **∴ 而**前面的脚本**早已 fetch `/api/…` ✗**
+     ⇒ **∴ 那些请求**到达静态托管 ⇒ **∴ 405 ✓**（**用户实测 ✓）。
+     **∴ 本哨兵是**内联同步脚本 ✗** ⇒ **∴ 它在**任何脚本之前**跑 ✗**
+     ⇒ **∴ 把**本地端点**的请求**排进队列 ✗** ⇒ **∴ 等真层装好后**统一 flush ✓**
+     **∴ 为什么必须内联 ✗**：**外链 `<script src>` 仍可能 defer ✗** ⇒ **∴ 只有内联同步才可靠 ✓**。 -->
+<script>
+  (function () {
+    if (window.__pwaSentinel) return;
+    var LOCAL_PATHS = ["/health", "/get_preferences", "/list_effects", "/list_brushes"];
+    window.__pwaSentinel = { queue: [] };
+    var original = window.fetch.bind(window);
+    window.__pwaOriginalFetch = original;
+    window.fetch = function (input, init) {
+      var url;
+      try {
+        url = new URL(typeof input === "string" ? input : (input && input.url) || "", location.href);
+      } catch (e) {
+        return original(input, init);
+      }
+      var isLocal = url.pathname.indexOf("/api/") === 0 || LOCAL_PATHS.indexOf(url.pathname) >= 0;
+      if (!isLocal || window.__pwaInstalled) return original(input, init);
+      // **∴ 还没装好 ⇒ 排队 ✗**（**∴ 返回一个**永不自行 resolve 的 Promise ⇒ **∴ 由 flush 兑现 ✓）**
+      return new Promise(function (resolve, reject) {
+        window.__pwaSentinel.queue.push({ input: input, init: init, resolve: resolve, reject: reject });
+      });
+    };
+    // **∴ 由安装块在装好后调用 ✗**：**把排队的请求**按当时的 `window.fetch` 重放 ✓**
+    window.__pwaFlushSentinel = function () {
+      var q = window.__pwaSentinel.queue.splice(0);
+      for (var i = 0; i < q.length; i += 1) {
+        window.fetch(q[i].input, q[i].init).then(q[i].resolve, q[i].reject);
+      }
+      return q.length;
+    };
+  })();
+</script>
+
 <!-- **★ PWA 本地接管注入片段 ✓ ★**（第 638 轮 ✓；**部署矩阵 §14.21 ✓**）
      **∴ 为什么需要它 ✗**：**导出的页面是**服务端的**✗**（**它引用 `/api/*` ✓**）⇒
      **∴ 无服务器部署里那些请求必须由**本地层**接管 ✗** ⇒ **∴ 本片段就是那一步 ✓**。
@@ -10568,6 +10607,12 @@ window.__rowCheck = function () {
     const { open } = await import("/store.js");
     installLocalApi({ local: await makeLocalApi(await open()) });
     window.__pwaInstalled = true;
+    // **★ 兑现早到队列 ✗ ★**（第 824 轮 ✓；**用户报告 405 ✓**）：**∴ 哨兵**在真层装好前
+    //   排下的请求**现在重放 ✗** ⇒ **∴ 于是**：**既不丢请求 ✗**，**也不早发 ✓**** ✓✓
+    if (window.__pwaFlushSentinel) {
+      const flushed = window.__pwaFlushSentinel();
+      if (flushed > 0) console.log("PWA 早到请求已重放 ✓：" + flushed + " 条");
+    }
     console.log("PWA 本地 API 已安装 ✓");
   } catch (err) {
     // **∴ 装不上必须**说出来 ✗**（**否则表现为"服务端坏了"✗**）。

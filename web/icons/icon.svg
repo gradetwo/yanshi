@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="YanShi">
+  <rect width="512" height="512" rx="96" fill="#161616"/>
+  <path d="M132 372 L300 132 q26 -36 62 -14 q34 22 10 60 L204 418 q-16 22 -44 20 l-60 -6 q-18 -2 -12 -18 z"
+        fill="#f2f2f2"/>
+  <circle cx="352" cy="352" r="52" fill="#e0533a"/>
+  <path d="M96 440 h320" stroke="#4a4a4a" stroke-width="14" stroke-linecap="round"/>
+</svg>
