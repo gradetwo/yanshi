@@ -356,7 +356,7 @@ const PAGE_TAIL_A: &str = r##"</style>
   <button id="exportPngView">导出当前视图</button>
   <!-- **显式渲染开关** ✓（(A)⑤）：勾上就走**服务端像素**那条 ✓（= 弱设备回退 ✓）。
        改了会**重载页面** ✓ —— 比热切换简单，也不会有"半客户端半服务端"的中间状态 ✓。 -->
-  <label style="display:block;margin-top:8px;font-size:12px"><input type="checkbox" id="useServerRender" /> 用服务端渲染（弱设备回退）</label>
+  <label style="display:block;margin-top:8px;font-size:12px"><input type="checkbox" id="useServerRender" /> 用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）</label>
   <button id="zoomFit">适配</button>
   <button id="zoomActual">1:1</button>
       </div>

@@ -5090,8 +5090,10 @@ if (useServerRenderBox) {
   useServerRenderBox.checked = serverRenderPreferred();
   useServerRenderBox.addEventListener("change", () => {
     try {
+      // **★ 关掉时必须写 `"0"` ✓ ★**（第 541 轮 ✓）：**∴ 用 `removeItem` 会"清回默认值"✗，
+      // 而默认值现在是 `true` ⇒ **∴ 用户一取消勾选、重载后又变回服务器渲染 ✗ ⇒ **∴ 开关失效 ✗****。
       if (useServerRenderBox.checked) localStorage.setItem(SERVER_RENDER_KEY, "1");
-      else localStorage.removeItem(SERVER_RENDER_KEY);
+      else localStorage.setItem(SERVER_RENDER_KEY, "0");
     } catch (error) { /* 存不了就算了 ✓ */ }
     // **重载** ✓：让渲染路径从**干净状态**重新开始 ✓（不做热切换 ✓）
     location.reload();
