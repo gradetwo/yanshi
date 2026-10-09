@@ -6091,3 +6091,33 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **④ 且**更新**文档矩阵 ✗**（**§14.35：**两级缓存 ＋ 各自指标 ✓）** ✓✓
 #   **∴ 元收获 ✓**：**"**找到快路径**"比"**分析慢路径**"更省时间 ✗**
 #     ⇒ **∴ 因为**快路径**决定了**大多数请求的行为**✗ ⇒ **∴ 而**我**从**慢路径**入手 ✓**** ✓✓
+
+# **★ 第 794 轮：🎯 **定位到 `Document::render_region` ✗**（**服务层只是转调 ✓）**
+#   **∴ 实测 ✓**（**`crates/yanshi-server/src/service.rs` ✓）**：
+#     ```rust
+#     :1872  pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
+#     :1874      let document = self.document_mut(doc_id)?;
+#     :1876      let preview = document.render_region(bbox)?;      // **★ 转调 ✗ ★**
+#     :1878-1879 let covers = bbox.x <= 0.0 && … && bbox.h >= height;   // **∴ 是否整幅 ✓**
+#     :1882      if full_frame { … persist.save_render(doc_id, head, &png); }
+#     :1887      Ok(preview)
+#     ```
+#     ⇒ **★ 所以**：**服务层**只做**（**a ✓**）**转调 `Document::render_region` ✗**
+#       ＋ **（**b ✓**）**整幅时**落盘（**`save_render` ✓）★**** ✓✓
+#       ⇒ **∴ 于是**：**缓存逻辑**在 **`Document::render_region`** ✗**** ✓✓
+#     ⇒ **∴ 而**我第 240 轮看的 `tools.rs:13950-13988`**是**保存点**✗**
+#       ⇒ **∴ 它**调的是**同一个 `render_region`**✗ ⇒ **∴ 所以**两者**汇合在文档层 ✓**** ✓✓
+#   **∴ 下一轮（**最终收口 ✓**）** ✓**：
+#     **① 读 `Document::render_region` ✗**（**`document.rs` ✓）⇒ **∴ 找**它的提前返回 ＋ `last_render_blob` 的使用 ✓**；
+#     **② 然后**加 `frame_reused` 字段 ✗**（**快路径 true／主路径 false ✓）**；
+#     **③ 加**可红判据 ＋ 变异 ✗**（**同区域渲两次 ⇒ 第二次 `frame_reused` 为真 ✓）** ✓✓
+#     **④ 且**写**文档 §14.35：**两级缓存 ＋ 各自指标 ✗**（**整幅 `last_render_blob` ／ tile `below`／`above` ✓）** ✓✓
+#   **∴ 70+ 轮的路径图（**现已完整 ✓）** ✓**：
+#     ```
+#     tools.rs read_render_region
+#       ⇒ service.rs:1872 render_region        （**转调 ＋ 整幅落盘 ✓**）
+#         ⇒ document.rs Document::render_region （**★ 缓存在这里 ✗ ★**）
+#           ⇒ render.rs render_accumulation     （**tile 级 below／above ✓**）
+#             ⇒ 并行条带（**4 个 / 1024×256 ✓**）⇒ STORE ✓
+#     ```
+#     ⇒ **∴ 所以**：**我在**最内层**测**最外层**的行为**✗ ⇒ **∴ 于是**永远 false ✓**** ✓✓
