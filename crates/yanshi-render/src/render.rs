@@ -3421,7 +3421,11 @@ mod tests {
 
         // 参考：把同一笔迹一次性盖到干净的缓存上（等价于整块重绘的像素）。
         let mut reference = Renderer::with_budget(grid.clone(), 8 * 1024 * 1024);
-        reference.cache_mut().clear();
+        // **★ 必须用 `clear_all_caches()` ✓ ★**（第 502 轮 ✓）：**`cache_mut().clear()`
+        // **只清 tile 缓存 ✗** ⇒ **∴ 清不到 below ✗** ⇒ **∴ 参照组会继承**盖章前**的下方合成
+        // ⇒ **∴ 与增量组差 18.75% ✗（**实测 1／10 次复现 ✓**）⇒ **∴ 这正是第 487 轮的结论 ✓：
+        // **凡"从干净状态开始"处 ⇒ 都要调 `clear_all_caches()` ✓****。
+        reference.clear_all_caches();
         reference
             .render_region(&state, &store, Bbox::new(0.0, 0.0, 128.0, 128.0))
             .unwrap();
