@@ -1218,10 +1218,19 @@ impl Renderer {
                         },
                         Err(_) => (0, vec!["lock-poisoned".to_owned()]),
                     };
+                    // **★ `have` 必须**由同一次快照**推得 ✗ ★**（第 966 轮 ✓；
+                    //   **修探针自己的竞态 ✓**）：**∴ 原来**打印的是**另一次取锁**算的 `have`**
+                    //     ⇒ **∴ 于是**它与这行的 `missing`／`want` **可能矛盾**✗
+                    //       （**实测**：`have=0` 而 `missing=1`、**而 `want=4` ✓ ⇒ **∴ 三者不自洽 ✓）**
+                    //       ⇒ **★ 那**是**探针生产出来的**假矛盾 ✗** ⇒ **∴ 我差点去追它 ✓ ★**** ✓✓
+                    //   **∴ 现在 ✗**：**由同一个 `missing` 反推 ✓** ⇒ **∴ `have + missing == want`
+                    //     必然成立 ✓** ⇒ **∴ 数字**自洽 ✓**** ✓✓
+                    //   **∴ 代价（**如实 ✓）**：**∴ 它**不再反映"**缓存里有多少格**"✗，
+                    //     而只反映"**这次要的格里命中了几格 ✓**" ⇒ **∴ 而**那**正是判据要的 ✓** ✓✓
                     let line = format!(
                         "want={} have={} missing={} want_tiles={:?}\n",
                         want_tiles.len(),
-                        have,
+                        want_tiles.len().saturating_sub(missing.len()),
                         missing.len(),
                         want_tiles
                     );
