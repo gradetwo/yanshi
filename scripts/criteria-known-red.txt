@@ -3369,3 +3369,29 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **③ 且**`tools.rs` 的**读数**才是判据要用的 ✓**（**∴ 所以**聚合版**其实可以不要 ✗** ——
 #       **∴ 因为**判据用**按文档**那个更准 ✓）⇒ **∴ 决策**：**只补**按文档的用法**✗，
 #       **而**聚合版**若无用就**删掉意图**✗（**∴ 不留死代码 ✓**）。**
+
+# **★ 第 706 轮：🎉 **步骤 ③（暴露链）完成 ✗** —— `above` 的复用读数已能报给调用方 ✓**
+#   **∴ 照抄 `below` 的三处读数 ✗**（`tools.rs` ✓）**：
+#     * **`:3797`** `let above_before = ctx.workspace.document_above_reuse_count(&ctx.doc_id);` ✓
+#       （**∴ 紧贴这一次渲染读**前**✗**）；
+#     * **`:3882`** `"above_reused": ctx.workspace.document_above_reuse_count(&ctx.doc_id) > above_before,` ✓
+#       （**∴ 就地读 ✗** —— **∴ 因为**那个分支**在 `below_after` 之前 return ✓ ⇒ **∴ 不能引用后读值 ✓**）；
+#     * **`:3904`** `let above_after = …;` ＋ **`:3906`** `value["above_reused"] = json!(above_after > above_before);` ✓
+#       （**∴ 读**后**并向响应写入 ✓**）** ✓✓
+#   **∴ 一个**决策**（**第 705 轮提出 ✓，现已执行 ✓）** ✓**：**不补 `Workspace::above_reuse_count` 聚合版 ✗**
+#     ⇒ **∴ 因为**：**① 判据要用的是**按文档**那个 ✗**（**全文档求和算不出"这次渲染"✓**）；
+#     **② 而**聚合版**无人调用**✗ ⇒ **∴ 补了就是**死代码**✗**；
+#     **③ 且**编译**已证明**按文档那条链**完整可用 ✓**** ✓✓
+#     ⇒ **∴ 于是**第 705 轮那条"疑似缺失"**有了结论**：**不是漏做 ✗，**而是**不需要 ✓**（**沿 `below` 对称性看**像**两处，**而**实际只有一处被用 ✓**）** ✓✓
+#   **∴ 门禁** ✓：**build ✓｜clippy ✓｜`yanshi-server --lib` **57 passed ✓**｜`yanshi-render --lib` 257 ✓｜
+#     **fmt ✓｜JS ✓｜覆盖率 ✓｜工作流结构 ✓｜ASSETS ✓** ✓✓
+#   **∴ 现在的完整暴露链 ✓**（**5 环 ✓）** ✓**：
+#     **`Renderer::above_reuse_count`（**`:618` ✓）⇒ `Document::above_reuse_count`（**`:1695` ✓）
+#     **⇒ `Workspace::document_above_reuse_count`（**`:2966` ✓）⇒ `tools.rs` 读前后差值（**`:3797`／`:3904` ✓）
+#     **⇒ 响应字段 `above_reused`（**`:3882`／`:3906` ✓）** ✓✓
+#   **∴ 下一轮（**最后两步 ✓**）** ✓**：
+#     **① 复用逻辑** ✗**：**`above_wanted` 且 `above` **命中** ⇒ **不再重跑 `index_here > split` 的层 ✗**
+#       （**∴ 而是**把 `above` 的 tile 叠到 `accumulation` 上 ⇒ **`note_above_reuse()` ✓**）
+#       ⇒ **∴ 这一步**才改行为 ⇒ **∴ 且**会让 `above_reuse_count()` **真的开始增长 ✓**；
+#     **② 判据 ＋ 变异** ✗**：**切到半透明层两次 ⇒ 响应里 `above_reused` 为真 ✓**；
+#       **变异**：**让它永不命中 ⇒ 必红 ✓**。**

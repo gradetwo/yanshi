@@ -3791,6 +3791,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // 只重渲该层 ✓**（**三段分解的切点 ✓**）；**∴ 不传 ⇒ 退回"最上层以外"✓**（**行为不变 ✓**）。
     // **★ 紧贴这一次渲染读两次计数 ✓ ★**（第 537 轮 ✓）：**∴ 差值 > 0 ⇔ 本次复用了 below ✓**
     let below_before = ctx.workspace.document_below_reuse_count(&ctx.doc_id);
+    // **★ `above` 的同一套读数 ✗ ★**（第 706 轮 ✓；**目标第 4 条 ✓**）：
+    //   **∴ 与 `below` **前后各读一次**✗ ⇒ **∴ 差值 > 0 ⇔ 本次复用了上方合成 ✓**
+    //   ⇒ **∴ 于是**判据可以断言"切到半透明层后 `above` 命中上升"✗**（**§14.33 ✓**）。
+    let above_before = ctx.workspace.document_above_reuse_count(&ctx.doc_id);
     let active_layer = optional_str(args, "active_layer");
     // **★ 临时探针 ✓**（第 528 轮 ✓，**查明后删 ✓**）：**打印 `args` 的键 ✗** ⇒
     // **∴ 分清**"框架丢了未知键 ✗"与"`optional_str` 用法错 ✗"**（**症状相同 ✓**）**。
@@ -3875,6 +3879,7 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             // **★ 该次渲染是否复用了下方合成 ✓ ★**（第 539 轮 ✓）：**∴ `raw` 出口也要标 ✗** ——
             // **∴ 就地读 ✓** —— **∴ 本分支在 `below_after` 之前 return ✗** ⇒ **∴ 不能引用它 ✓**。
             "below_reused": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
+            "above_reused": ctx.workspace.document_above_reuse_count(&ctx.doc_id) > above_before,
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
@@ -3896,7 +3901,9 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // ⇒ **∴ 不受笔触预览等其它渲染影响 ✓**（**目标第 7 条"懒诊断" ✓**）。
     // **∴ `after` 就地读 ✓** —— **∴ 与 `value` 同作用域 ✗**（**放到渲染那行后面会**跨作用域 ⇒ 编译失败 ✓**）。
     let below_after = ctx.workspace.document_below_reuse_count(&ctx.doc_id);
+    let above_after = ctx.workspace.document_above_reuse_count(&ctx.doc_id);
     value["below_reused"] = json!(below_after > below_before);
+    value["above_reused"] = json!(above_after > above_before);
     // 7.5：MCP 响应可选内嵌 image content ✓ —— **超限不再静默降级** ✗（第三方 MCP 实测报告 P0-1 ✓：
     // "画 50 笔之前看不到任何效果，只能盲画" ✗ ⇒ 调用方拿到 `yanshi://blob/…` 却**不知道为什么不给图** ✗）。
     // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。
