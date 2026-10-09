@@ -48,7 +48,25 @@ export async function makeLocalApi(db) {
     const url = new URL(req.url, location.origin);
     const q = url.searchParams;
     const doc = q.get("doc") || "";
-    const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+    // **★ 只在**确实是 JSON**时才按 JSON 读 body ✗ ★**（第 841 轮 ✓；**已确认的缺陷 ✓**）：
+    //   **∴ 原来的错 ✗**：**对**每个 POST** 都 `await req.json()` ✗**
+    //     ⇒ **∴ 而** `/api/blob` 的 body** 是**二进制像素 ✗** ⇒ **∴ `req.json()` 失败 ✗**
+    //       ⇒ **∴ `.catch(() => ({}))`** 把它**变成 `{}`**✗ ⇒ **∴ 静默失败 ✓****（**示例图上传不上 ✓）
+    //   **∴ 现状**：**只有**明确的二进制类型**才跳过解析 ✗** ⇒ **∴ 其余**一律**尝试 JSON ＋ 失败退回 `{}` ✓**** ✓✓
+    const __ct = String((req.headers && req.headers.get && req.headers.get("content-type")) || "");
+      // **★ 白名单改为**排除二进制** ✗ ★**（第 842 轮 ✓；**判据抓到我的回归 ✓**）：
+      //   **∴ 上一版太严 ✗**：**它要求 `content-type` 含 `json` ✗**
+      //     ⇒ **∴ 而**调用方**常常**不带该头 ✗**（**实测：判据里的 `fetch` 没有 header ✓）**
+      //       ⇒ **∴ 于是** body 被读成 `{}` ✗** ⇒ **∴ 原子**写不进去 ✓****（**判据实测：数量 1 而非 ≥2 ✓）
+      //   ⇒ **∴ 现在**：**只有**明确的二进制类型**才跳过解析 ✗** ⇒ **∴ 其余**一律**尝试 JSON ＋ 失败退回 `{}` ✓**** ✓✓
+      const __binary =
+        __ct.indexOf("image/") >= 0 ||
+        __ct.indexOf("octet-stream") >= 0 ||
+        __ct.indexOf("application/pdf") >= 0;
+      const body =
+        req.method === "POST" && !__binary
+          ? await req.json().catch(() => ({}))
+          : {};
 
     // **① `/api/documents`（**创建 ✓**）**：**∴ 与真实服务端一样返回 `token` ✗**
     //（**∴ 本部署没有鉴权 ✗ ⇒ **token 是**本地占位**✗，**而字段存在 ✓** ⇒ **∴ 前端无需分支 ✓**）。
