@@ -75,6 +75,19 @@ const main = async () => {
     console.error("❌ 第一次太快 ⇒ 量不出复用 ⇒ 判据无效 ⇒ 不许当通过 ✗（换更大的区域／更多层 ✓）");
     process.exit(1);
   }
+  // **★ 场景二：单层渲染（带 `layer_id` ✓）★** —— **∴ 走 `render_region_raw_layer` ✓**
+  //（`tools.rs`：`match optional_str(args, "layer_id") { Some => render_region_raw_layer ✓ }`）
+  // **∴ 它今天**没有任何缓存 ✗**（`set_only_layer` ⇒ `render_region` ⇒ 还原 ✓）⇒ **∴ 这是画家
+  // "只看当前层"的路 ✓** ⇒ **∴ 本判据要量它有没有复用 ✓**。
+  const t3s = Date.now();
+  await call(doc, token, "render_region", { region, raw: true, layer_id: "R0" });
+  const t3 = Date.now() - t3s;
+  const t4s = Date.now();
+  await call(doc, token, "render_region", { region, raw: true, layer_id: "R0" });
+  const t4 = Date.now() - t4s;
+  const ratio2 = t3 > 0 ? t4 / t3 : null;
+  console.log(`    单层渲染（layer_id=R0 ✓）第一次 ${t3} ms｜第二次 ${t4} ms｜比值 ${ratio2 === null ? "n/a" : ratio2.toFixed(2)}×`);
+
   if (ratio > 0.2) {
     console.error(`❌ 只改最上层后，同一子区域第二次仍要 ${t2} ms（比值 ${ratio.toFixed(2)}× > 0.2）` +
       ` ⇒ 子区域**没有**复用 ✗（**根因：version 用的是裸 head_seq ✗**）` +
@@ -82,6 +95,20 @@ const main = async () => {
     process.exit(1);
   }
   console.log(`  ✓ 子区域复用生效（比值 ${ratio.toFixed(2)}× ≤ 0.2）`);
+  // **★ 最小耗时守卫 ✓ ★**（第 473 轮**实测 ✓**）：**单层渲染只要 **1～2 ms** ✗** ⇒
+  // **∴ 在这个绝对值上比值是**噪声**✗**（**实测 1 → 2 ms ⇒ 2.00× ✓，**不是"没命中"✗**）
+  // ⇒ **∴ 必须先有足够的绝对耗时，比值才有意义 ✓**（**否则判据会**随机红 ✗**）。
+  if (t3 < 20) {
+    console.log(`  ⏭ 单层渲染只要 ${t3} ms ⇒ **绝对值太小 ⇒ 比值无意义 ⇒ 本场景不适用** ✓` +
+      `（**∴ 实测：单层渲染不慢 ⇒ **不给它加缓存**✓**）`);
+  } else if (ratio2 !== null && ratio2 > 0.2) {
+    console.error(`❌ 单层渲染第二次仍要 ${t4} ms（比值 ${ratio2.toFixed(2)}× > 0.2）` +
+      ` ⇒ **单层渲染没有复用** ✗（**它今天不走任何缓存 ✓**）` +
+      `（转绿条件：把已建好的指纹 ＋ region_cache 接进 render_region_raw_layer ✓）`);
+    process.exit(1);
+  } else {
+    console.log(`  ✓ 单层渲染也复用（比值 ${ratio2 === null ? "n/a" : ratio2.toFixed(2)}× ≤ 0.2）`);
+  }
 };
 
 main().catch((e) => { console.error("❌ 运行失败：" + String(e)); process.exit(2); });
