@@ -173,6 +173,10 @@ jobs:
         run: |
           cargo build --workspace
           cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+          cargo build --release --target wasm32-unknown-unknown \
+            -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
+            -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example
+          node scripts/mediums-sync.mjs
           wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
       - name: Start a server and compare every brush
@@ -238,6 +242,10 @@ jobs:
           echo "::endgroup::"
           echo "::group::wasm build + bindgen $(date -u +%T)"
           cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release
+          cargo build --release --target wasm32-unknown-unknown \
+            -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
+            -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example
+          node scripts/mediums-sync.mjs
           wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
       - name: Run criteria
