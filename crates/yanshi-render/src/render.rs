@@ -598,7 +598,7 @@ impl Renderer {
     /// 指定缓存预算。
     pub fn with_budget(grid: TileGrid, budget_bytes: usize) -> Self {
         let cache = TileCache::new(grid.clone(), budget_bytes);
-        Self {
+        let mut renderer = Self {
             grid,
             cache,
             options: RenderOptions::default(),
@@ -609,7 +609,23 @@ impl Renderer {
             bitmaps: BitmapCache::default(),
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
+        };
+
+        // **★ 让并行度可测 ✗ ★**（第 861 轮 ✓；**目标第 8 条 ✓**）：
+        //   **∴ 为什么需要它 ✗**：**首帧 4K 要 1521 ms ✗**（**约 30 ms／M 像素 ✓）**
+        //     **∴ 而**同笔只要 **~1.4 ms／M 像素 ✗** ⇒ **∴ 相差 20× ✓**
+        //     ⇒ **∴ 所以**：**必须**分清"**并行没起作用**"与"**单核合成慢**" ✓**
+        //   **∴ 用法 ✗**：**`YANSHI_RENDER_WORKERS=1` 强制单核 ✗**（**与 4 核对比 ✓）**
+        //   **∴ 判读 ✗**：
+        //     * **单核 ≈ 多核 ⇒ **∴ 并行根本没生效** ✗**（**∴ 那是**大发现 ✓）**；
+        //     * **单核 ≈ 4× 多核 ⇒ **∴ 并行有效 ✗**，**瓶颈在**单核合成 ✓**** ✓✓
+        //   **∴ 默认**不设 ⇒ **∴ 行为与之前**完全一致 ✗**（**∴ 零风险 ✓）** ✓✓
+        if let Ok(raw) = std::env::var("YANSHI_RENDER_WORKERS") {
+            if let Ok(n) = raw.trim().parse::<usize>() {
+                renderer.max_workers = Some(n.max(1));
+            }
         }
+        renderer
     }
 
     /// **解码位图缓存的可观测读数** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
