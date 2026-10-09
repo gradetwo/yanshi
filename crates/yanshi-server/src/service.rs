@@ -19,6 +19,34 @@ use crate::persist::{DocumentMeta, FileStore};
 use crate::timings::CommitPhases;
 use crate::token::{CapabilityToken, Principal, Role, TransportKind};
 
+/// 确保存在文档级缩略图并返回它的地址（6.2「打开即图片」）。
+///
+/// 已有缓存（渲染过全幅或从磁盘恢复）直接返回；否则按 `preview_size` 生成一张。
+///
+/// **默认 256² 走增量预览** ✓（冷启动复用专题）：`render_document_preview` 只需要重渲染
+/// `(持久化 seq, HEAD]` 的脏区 ✓（像素基座由打开时的 `restore_persisted_render` 恢复 ✓）。
+/// 旧路径走 `thumbnail()` ✗ ⇒ 每次都 `render_thumbnail(…, None)` ⇒ **整幅全分辨率渲染** ✗
+/// ⇒ 实测 4K/318 对象 **122s**，而**每个新连接**都会走到这里 ✗（磁盘缓存的 seq 一落后就重来 ✓）。
+/// 其它尺寸（64/128）仍走原来的整幅缩略图路径 ✓（请求少见，行为保持不变 ✓）。
+/// **★ 文档缩略图是否已是最新 ✓ ★**（第 514 轮 ✓）：**只读转发 ✓** ——
+/// **∴ 不动 `ensure_document_thumbnail` 的返回类型 ✓**（**改它会波及两个调用点 ✗**）。
+/// **∴ 用途** ✓：**`get_document` 据此标 `first_preview` ✓** ⇒ **∴ 让调用方能区分
+/// "**慢一次**（**一次性生成缩略图 ＋ 预览 ✓**）"与"**慢每次**（**真回归 ✗**）"** ✓✓
+/// **★ 缩略图／预览的三态 ✓ ★**（第 589 轮 ✓；**异步预览设计第 ③ 步 ✓**）。
+///
+/// **为什么需要它** ✗：**`ensure_document_thumbnail` 的 `Result<Option<String>>` 里
+/// `None` 已表示 `Skip`** ✗ ⇒ **∴ 无法表达"**还在生成**✗"** ⇒ **∴ 于是**另起一个类型 ✓，
+/// **∴ 而 `ensure_document_thumbnail` 保持不动 ✓**（**改它会波及 2 个调用点 ✗**）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewState {
+    /// **已就绪 ✓**：**URL 可直接取图 ✓**。
+    Ready(String),
+    /// **正在生成 ✗**：**调用方应稍后再取 ✓**（**∴ 不许当成"没有图"✗**）。
+    Pending,
+    /// **明确不提供 ✓**：**如调用方要求 `Skip` ✓**。
+    Unavailable,
+}
+
 /// **工程包里 `blobs/` 的编码** ✓ —— 写进 `blobs.encoding` ✓，导入端据此解码 ✓。
 ///
 /// 目前只有一种：`zlib` ✓（与本地 CAS 同一个编解码器 ✓，**逐字节可逆** ✓）。
@@ -2716,19 +2744,31 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         Ok(preview)
     }
 
-    /// 确保存在文档级缩略图并返回它的地址（6.2「打开即图片」）。
+    /// **★ 查询某文档的预览状态 ✓ ★**（第 589 轮 ✓）。
     ///
-    /// 已有缓存（渲染过全幅或从磁盘恢复）直接返回；否则按 `preview_size` 生成一张。
-    ///
-    /// **默认 256² 走增量预览** ✓（冷启动复用专题）：`render_document_preview` 只需要重渲染
-    /// `(持久化 seq, HEAD]` 的脏区 ✓（像素基座由打开时的 `restore_persisted_render` 恢复 ✓）。
-    /// 旧路径走 `thumbnail()` ✗ ⇒ 每次都 `render_thumbnail(…, None)` ⇒ **整幅全分辨率渲染** ✗
-    /// ⇒ 实测 4K/318 对象 **122s**，而**每个新连接**都会走到这里 ✗（磁盘缓存的 seq 一落后就重来 ✓）。
-    /// 其它尺寸（64/128）仍走原来的整幅缩略图路径 ✓（请求少见，行为保持不变 ✓）。
-    /// **★ 文档缩略图是否已是最新 ✓ ★**（第 514 轮 ✓）：**只读转发 ✓** ——
-    /// **∴ 不动 `ensure_document_thumbnail` 的返回类型 ✓**（**改它会波及两个调用点 ✗**）。
-    /// **∴ 用途** ✓：**`get_document` 据此标 `first_preview` ✓** ⇒ **∴ 让调用方能区分
-    /// "**慢一次**（**一次性生成缩略图 ＋ 预览 ✓**）"与"**慢每次**（**真回归 ✗**）"** ✓✓
+    /// **⚠️ 本步**不改行为**✗**：**它等价于现有逻辑 ✓，只是把"已就绪／不可用"**显式化 ✓**
+    /// ⇒ **∴ 下一轮**把"未就绪"那一段换成**入队 ＋ 返回 `Pending`**✗（**设计文档第九节 ✓**）。
+    pub fn preview_state(&mut self, doc_id: &str, size: DocThumbSize) -> Result<PreviewState> {
+        if self.document_thumbnail_is_current(doc_id) {
+            if let Some(url) = self
+                .document(doc_id)
+                .and_then(|d| d.document_thumbnail_url())
+            {
+                return Ok(PreviewState::Ready(url));
+            }
+        }
+        if matches!(size, DocThumbSize::Skip) {
+            return Ok(PreviewState::Unavailable);
+        }
+        match self.ensure_document_thumbnail(doc_id, size)? {
+            Some(url) => Ok(PreviewState::Ready(url)),
+            None => Ok(PreviewState::Unavailable),
+        }
+    }
+
+    /// **文档缩略图是否已是最新 ✓**（**只读转发 ✓**）：**已是最新 ⇒ 可直接返回已存 URL ✓**；
+    /// **∴ 否则**说明需要生成 ✓**（**调用方据此判断"要不要等" ✓**）。
+    /// **⚠️ 它**不生成**任何东西 ✗** —— **∴ 想"确保有图"请用 [`Self::ensure_document_thumbnail`] ✓**。
     pub fn document_thumbnail_is_current(&self, doc_id: &str) -> bool {
         self.document(doc_id)
             .map(|d| d.document_thumbnail_is_current())
