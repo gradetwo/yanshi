@@ -9826,6 +9826,11 @@ function quantizeOnCpu(pixels) {
  *  **∴ 返回 ✗**：`{ bytes, maxChannelDelta, backend }`**✗
  *    ⇒ **∴ `backend`**必须**是 `"gpu"`**✗（**∴ 失败时**抛错，**不**降级 ✓）** ✓✓
  */
+// **★ 把 CPU 参考也**公开**出来 ✗ ★**（第 55 轮 ✓）：**∴ 两本账**要**公平**✗
+//   ⇒ **∴ 只**公开 GPU**✗ ⇒ **∴ 无法**比"**同样的活**谁做** ✓
+//     ⇒ **∴ 于是**：**判据**能**在同一页、**同一份输入**上**量两条路 ✓**** ✓✓
+window.yanshiGpuQuantizeCpu = (pixels) => quantizeOnCpu(pixels);
+
 window.yanshiGpuQuantize = async (pixels) => {
   const { device } = await gpuDevice();
   const count = pixels.length / 4;
@@ -9888,16 +9893,19 @@ window.yanshiGpuQuantize = async (pixels) => {
   //   （**∴ 即**：**在** GPU 写之前**就读了 ✓）⇒ **∴ 那**是**根因 ✓**** ✓✓
   await device.queue.onSubmittedWorkDone();
   await readback.mapAsync(GPUMapMode.READ);
-  const words = new Uint32Array(readback.getMappedRange().slice(0));
+  // **★ 不要再**逐字节解包 ✗ ★**（第 55 轮 ✓；**∴ 两本账量出来的 ✓）：
+  //   **∴ 我**第一版**在 JS 里**逐字节拆 u32**✗
+  //     ⇒ **∴ 实测（**262144 像素 ✓）**：**主线程 TaskDuration** 从 **68 ms 涨到 751 ms** ✗
+  //       （**∴ 即** **多 10 倍** ✓）⇒ **∴ 那**是**我自己**制造的**主线程负担 ✓**** ✓✓
+  //   **∴ 关键事实 ✗**：**shader**打包的顺序是
+  //     `r | (g << 8) | (b << 16) | (a << 24)`**✗
+  //     ⇒ **∴ 在小端机器上**它**就是**字节序 `[r, g, b, a]`**✗
+  //       ⇒ **∴ 所以**：**把同一块内存**当 `Uint8Array` 读**就是**正确结果 ✓**** ✓✓
+  //   **∴ 收益（**待量 ✓）**：**省掉**每像素 4 次位运算 ＋ 4 次写入 ✓** ✓✓
+  const mapped = readback.getMappedRange();
+  // **∴ 复制一份 ✗**（**∴ `unmap` 之后**那块内存**不再有效 ✓）** ✓✓
+  const bytes = new Uint8Array(mapped.slice(0));
   readback.unmap();
-  const bytes = new Uint8Array(count * 4);
-  for (let i = 0; i < count; i += 1) {
-    const word = words[i];
-    bytes[i * 4] = word & 0xff;
-    bytes[i * 4 + 1] = (word >>> 8) & 0xff;
-    bytes[i * 4 + 2] = (word >>> 16) & 0xff;
-    bytes[i * 4 + 3] = (word >>> 24) & 0xff;
-  }
   const reference = quantizeOnCpu(pixels);
   let maxChannelDelta = 0;
   for (let i = 0; i < bytes.length; i += 1) {
