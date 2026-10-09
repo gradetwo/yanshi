@@ -6295,3 +6295,38 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     **`brushes/100%25_Opaque.myb`／`wasm/…` ✓）⇒ **∴ 用户可用 ✓**** ✓✓
 #   **∴ 元收获 ✓**：**一个**文件名**同时受**三端**约束（**磁盘／本地服务器／CDN ✗）
 #     ⇒ **∴ 改任何一端**都要**核对另两端 ✓** ⇒ **∴ 而我**只核对了两端（**前端 ＋ CDN ✓）** ✓✓
+
+# **★ 第 801 轮：🎯 **7 处调用点量清 ✗** ⇒ **∴ 修法确定 ✓****
+#   **∴ 实测 ✓**（**`crates/yanshi-http/src/server.rs` ✓）**：
+#     ```
+#     :606  if let Some(file) = path.strip_prefix("/wasm/") {
+#     :607      let file = decode_asset_segment(file);
+#     :609      "GET" => wasm_asset(state, &file),
+#     …
+#     :616  /samples/        ⇒ sample_asset
+#     :625  /textures/       ⇒ texture_asset
+#     :633  /mediums/        ⇒ medium_asset
+#     :641  /brush-previews/ ⇒ brush_preview_asset
+#     :649  /brushes/        ⇒ brush_text_asset
+#     :656  /brand/          ⇒ brand_asset
+#     ```
+#     ⇒ **★ 7 处**形态完全一致 ✗**：**`let file = decode_asset_segment(file);` ✓ ★**** ✓✓
+#   **★ 修法（**集中 ✓）★**：**引入一个辅助 ✗**：
+#     ```rust
+#     /// ★ 资源段解析：先试**解码名**（历史用法：磁盘存原名），
+#     ///   不存在再试**原样段**（新用法：磁盘存编码名，便于 CDN 接收）。
+#     fn resolve_asset_segment(state: &ServerState, seg: &str) -> String { … }
+#     ```
+#     ⇒ **∴ 然后**把 7 处的 `decode_asset_segment(file)` 换成
+#       **`resolve_asset_segment(state, file)` ✗** ⇒ **∴ 于是**：
+#       **∴ 本地（**磁盘编码名 ✓）与**未来若还原原名**都能命中 ✓**
+#         ⇒ **∴ 且** Cloudflare **只**收到**编码名**（**∴ 不会被 10304 拒 ✓）** ✓✓
+#   **∴ 为什么选它 ✗**（**而非**"磁盘放两份"✓）** ✓**：
+#     **∴ 若**磁盘放两份 ✗** ⇒ **∴ Cloudflare** 会**收到**原名**✗ ⇒ **∴ 再次** 10304**✗**
+#       ⇒ **∴ 除非**用 `.assetsignore` 排除 ✗** ⇒ **∴ 而**那**又**删了本地需要的 ✓**
+#     ⇒ **∴ 所以**：**在服务器侧**加**解析回退**是**唯一能同时满足三端**的做法 ✓**** ✓✓
+#   **∴ 下一轮（**实现 ＋ 验证 ✓**）** ✓**：
+#     **① 加 `resolve_asset_segment` ✗**（**∴ 需要**拿到**磁盘路径 ✓ —— **∴ 各 `*_asset` 有它 ✓**）；
+#     **② 7 处替换 ✗** ⇒ **∴ 编译 ＋ 门禁 ✓**；
+#     **③ 起本地服务 ＋ 请求 `/brushes/8B_Pencil%231.myb` ✗** ⇒ **∴ 期望 200 ✓**** ✓✓
+#   **∴ 线上不受影响 ✓**：**已验证 5 个路径**全部 200 ✓**** ✓✓
