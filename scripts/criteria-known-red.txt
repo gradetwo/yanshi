@@ -7700,3 +7700,45 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 元收获 ★**：**需要外部的判据**必须**区分三种结果 ✗**：
 #     **通过 ✗｜**真失败 ✗｜**环境不可用（**跳过 ✓）**
 #     ⇒ **∴ 只报"**通过／失败**"**会把**环境问题**伪装成**产品问题 ✓**** ✓✓
+
+# **★ 第 852 轮：🎯🎯🎯 **精确位置锁定 ✗**（**用户新报错带关键文本 ✓）**
+#   **∴ 用户的新报错 ✓**：
+#     ```
+#     Uncaught (in promise) SyntaxError: Unexpected token '�', "�PNG
+#      "... is not valid JSON
+#     ```
+#     ⇒ **★ 新信息 ✗ ★**：**「**… is not valid JSON**」** ⇒ **∴ 那**是 **Chrome 的 `JSON.parse`** ✓**
+#       ⇒ **∴ 而**输入**以** PNG 魔数开头 ✗** ⇒ **∴ 所以**：**响应**真的是一张 **PNG** ✓**** ✓✓
+#   **∴ 我查到的**唯一**无 `catch` 的 `/api/blob` 调用 ✗** ✓**：
+#     ```js
+#     :4255  async function importLocalImage(file) {          // **★ 用户导入图片 ✗ ★**
+#     :4271    const upload = await fetchOrLocal(api("/api/blob"), {
+#     :4272      method: "POST",
+#     :4273      headers: { "content-type": "image/x-yanshi-raw" },
+#     :4274      body: bytes,
+#     :4275    }).then((response) => response.json());        // **★ 没有 .catch ✗ ★**
+#     ```
+#     ⇒ **∴ 对比 ✗**：**`:4193-4197`（**`seedSampleIfEmpty` ✓）**有** `.catch(() => ({}))` ✓**
+#       ⇒ **∴ 所以**：**只有"**用户手动导入图片**"这条路**会把拒绝**抛到全局 ✓**** ✓✓
+#     ⇒ **∴ 而这**解释了**为什么** `:4197` 修了之后**仍报错** ✗**（**那是**另一条路 ✓）** ✓✓
+#   **∴ 全文件统计 ✗**：**`.json()` 后面**没有 catch **的有 **19 处 ✗**
+#     ⇒ **∴ 其中**涉及 `/api/blob` 的**只有 `:4275`**✗（**其余是**文本 JSON 接口 ✓）** ✓✓
+#     ⇒ **∴ 所以**：**修 `:4275`** 就能**消除这条** ✗** ⇒ **∴ 且**值得**加一条通用防线 ✓**** ✓✓
+#   **∴ 下一轮修法（**两条 ✓）★**：
+#     **① 就地修 ✗**：**在 `.json()` 之前**检查 `content-type` ✗**：
+#       ```js
+#       const upload = await fetchOrLocal(api("/api/blob"), { … }).then(async (response) => {
+#         const ct = response.headers.get("content-type") || "";
+#         if (ct.indexOf("json") < 0) {
+#           return { ok: false, error_code: "not_json",
+#                    context: { detail: "上传端点返回了 " + ct + " 而不是 JSON" } };
+#         }
+#         return response.json();
+#       }).catch((err) => ({ ok: false, error_code: "network", context: { detail: String(err) } }));
+#       ```
+#       ⇒ **∴ 于是**：**它**不再**抛到全局 ✗**，**而**且**如实报出**"**返回了 PNG**" ✓**** ✓✓
+#     **② 且**查 `fetchOrLocal`／`api()` ✗**：**为什么** `/api/blob` 的响应**会是 PNG ✓**
+#       ⇒ **∴ 候选**：**service worker**缓存了**一个**图片响应**✗**（**`SHELL` 预缓存 ✓）** ✓✓
+#   **∴ 元收获 ★**：**用户给的**原始错误文本**（**含 `is not valid JSON` ✓）**
+#     **直接把我**推到**那一行 ✗** ⇒ **∴ 而**我**前面三轮**都是**从症状猜 ✓**** ✓✓
+#     ⇒ **∴ 再次验证**：**要证据，不要猜测 ✓****** ✓✓
