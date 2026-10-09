@@ -273,6 +273,26 @@ try {
 check(indexTracked,
   "web/index.html 没被 git 跟踪 => 部署后必定 404（详见 .gitignore 的说明）");
 if (indexTracked) console.log("  部署入口页：web/index.html 已被 git 跟踪 ✓");
+// 本地专用部署不得去拨 WebSocket：静态部署没有服务端，拨 /ws 只能握手失败并把控制台刷满，
+// 而噪音会盖住真报错（用户报告的 P2-4）。守卫必须在 connect() 入口内，才覆盖全部调用点。
+// 变异：删掉那段守卫 ⇒ 本条必红（已实测）。
+const viewerText = read("web/viewer-app.js");
+check(viewerText !== null, "web/viewer-app.js 读取不到 ⇒ 无法核对本地专用 WebSocket 守卫");
+if (viewerText !== null) {
+  const connectAt = viewerText.indexOf("function connect() {");
+  const guardAt = viewerText.indexOf("本地内核（无服务端）");
+  check(connectAt >= 0, "viewer-app.js 里找不到 connect() ⇒ 无法核对本地专用守卫");
+  check(guardAt >= 0,
+    "connect() 缺少本地专用守卫 ⇒ 静态部署会去拨 /ws 并刷满握手失败（P2-4）");
+  if (connectAt >= 0 && guardAt >= 0) {
+    check(guardAt >= connectAt && guardAt <= connectAt + 1200,
+      "本地专用守卫不在 connect() 入口内 ⇒ 覆盖不到全部调用点");
+    if (guardAt >= connectAt && guardAt <= connectAt + 1200) {
+      console.log("  本地专用部署不去拨 WebSocket ✓（守卫在 connect() 内 ✓）");
+    }
+  }
+}
+
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
