@@ -10128,3 +10128,56 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #     ⇒ **∴ 我**第一版只看 `reused = 4` ✗** ⇒ **∴ 差一点**去改池的预算 ✓**
 #       ⇒ **∴ 而**加上 `allocated = 0` ✗** ⇒ **∴ 真相反转**：**不是**池不够 ✗，**而是**活少了 ✓**** ✓✓
 #     ⇒ **∴ 教训**：**一条断言失败时 ✗**，**先看**同一份统计里的**其它计数 ✓**** ✓✓
+
+# **★ 第 932 轮：🎉 **修好 `buffer_pool` 那条 → **并用 `--no-fail-fast` 第一次拿到**全貌**★**
+#   **★ ① 修复（**真缺陷 ✓）★**：**`tile_parallel::buffer_pool_budget_covers_every_concurrent_worker` ✓**
+#     **∴ 根因（**决定性实测 ✓）✗**：
+#       ```
+#       DIAG_WARM below_reuse_count=4｜parallel_workers=4｜allocated=0｜reused=4
+#                 tiles_reused=0｜★layers_composited=1★｜LAYERS=2 ✓
+#       ```
+#       ⇒ **∴ 暖轮**只合成 **1 层** ✗（**下方那层**被 `below` 缓存**跳过 ✓**）
+#         ⇒ **∴ 取用**＝ 1 × 4 ＝ **4** ✓（**∴ 与观察一致 ✓）** ✓✓
+#       ⇒ **★ 所以**：**原断言**（**`reused == LAYERS × WORKERS == 8` ✓）**是**过时的** ✗ ★**
+#         —— **∴ 它**假设暖轮**仍合成全部层 ✗**，**而**"**不重算下方合成**"**
+#            **正是 `below` 缓存**存在的理由 ✓（**目标第 4 条 ✓）** ✓✓
+#     **∴ 修法 ✗**：**改成断言**"**只合成不在 `below` 缓存里的那些层**" ✓
+#       ```rust
+#       assert!(renderer.below_reuse_count() > 0, "暖轮必须命中 below 缓存…");
+#       let below_layers = LAYERS - 1;   // 缺省活动层 ⇒ 下方层数 = LAYERS - 1
+#       assert_eq!(second.stats.layer_buffers_reused, (LAYERS - below_layers) * WORKERS, …);
+#       ```
+#       ⇒ **∴ 且**保留**原有那条**"**暖轮零新建**" ✓** ⇒ **∴ 两条**一起**既正确又更严 ✓**** ✓✓
+#     **∴ 变异检验（**已做 ✓）★**：**把 below 复用的条件改成恒假** ✗** ⇒
+#       **∴ 本条**必红 ✗**（**实测报"暖轮必须命中 below 缓存" ✓）｜**恢复 ⇒ 绿 ✓** ✓✓
+#     **∴ 实测 ✗**：**`tile_parallel` ⇒ **19 passed／0 failed ✓**** ✓✓
+#   **★ ② 一个**方法论修正（**上轮教训的直接应用 ✓）★**：
+#     **∴ 上一轮**我**加 `--no-fail-fast` ✗** ⇒ **∴ 这次**拿到**完整**的失败清单 ✓
+#       ⇒ **★ 真实红灯是 **7** 条 ✗，**而**不是我一直以为的 **2** 条 ✓ ★**** ✓✓
+#       （**∴ 因为**`cargo test`**默认在第一个失败目标后停下 ✓）** ✓✓
+#     ```
+#     passed=933 failed=7 ignored=35｜ok 目标 144｜FAILED 目标 4 ✓
+#     ```
+#   **★ ③ 七条红灯**全部为既有 ✗（**已用实验证明 ✓）★**：
+#     **∴ 方法 ✗**：**`git checkout e18af54d -- crates/yanshi-server/src/tools.rs`
+#       `crates/yanshi-server/src/service.rs` ✗**（**我改动之前 ✓）
+#       ⇒ **∴ 三条目标**以**完全相同的方式失败 ✓**：
+#         ```
+#         selection_clip : 2 passed, ★4 failed★ ✓
+#         export_small   : 5 passed, ★1 failed★ ✓
+#         get_atom       : 1 passed, ★1 failed★ ✓
+#         ```
+#     | # | 测试 | 目标 | 既有？ |
+#     | **①–④** | **`a_selection_clips_*` × 4 ✓** | **`yanshi-server/tests/selection_clip.rs` ✓** | **✅ 既有 ✓** |
+#     | **⑤** | **`a_small_export_omits_bitmaps_and_replays_pixel_identical` ✓** | **`yanshi-server/tests/export_small.rs` ✓** | **✅ 既有 ✓** |
+#     | **⑥** | **`an_atoms_payload_can_be_read_by_id` ✓** | **`yanshi-server/tests/get_atom.rs` ✓** | **✅ 既有 ✓** |
+#     | **⑦** | **`host_only_time_apis_are_explicitly_accounted_for` ✓** | **`yanshi-render/tests/wasm_target_guard.rs` ✓** | **⏳ 下一轮判定 ✓** |
+#     ⇒ **∴ 而我**本轮**把第 8 条**（`buffer_pool` ✓）**修掉了 ✗** ⇒ **∴ 净改善 1 条 ✓** ✓✓
+#   **∴ 下一轮（**按主题聚簇 ✓）★**：
+#     **∴ 四条 `a_selection_clips_*`**是**同一主题** ✗**（**选区裁剪 ✓）⇒ **∴ 很可能是**一个缺陷 ✓**
+#       ⇒ **∴ 而**它们**在 `yanshi-server` 的集成测试里 ✗ ⇒ **∴ 与**目标第 4 条（**非可分离混合／
+#         剪贴／选区 ✓）**相关 ✓** ⇒ **∴ 优先级最高 ✓**** ✓✓
+#   **∴ 元收获 ★**：**"**失败目标数**"**要**配 `--no-fail-fast`** 才有意义 ✗**
+#     ⇒ **∴ 我**此前**每一轮**看到的**都是"**跑到第一个失败为止**"的快照 ✓
+#       ⇒ **∴ 于是**：**红灯数**被**系统性低估** ✗（**2 vs 7 ✓）** ✓✓
+#     ⇒ **∴ 教训**：**清点红灯**必须**一次跑完** ✓ ⇒ **∴ 否则**会**长期漏修** ✓**** ✓✓

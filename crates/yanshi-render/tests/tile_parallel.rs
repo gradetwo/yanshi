@@ -974,7 +974,36 @@ fn buffer_pool_budget_covers_every_concurrent_worker() {
         second.stats.layer_buffers_allocated,
         second.stats.layer_buffers_reused
     );
-    assert_eq!(second.stats.layer_buffers_reused, LAYERS * WORKERS);
+    // **★ 暖轮**必须命中 `below` 缓存 ✗ ★**（第 932 轮 ✓；**修一条**过时的期望 ✓**）：
+    //   **∴ 原来的断言错在哪 ✗**：**它要求**暖轮**复用 `LAYERS × WORKERS` ＝ 8 次** ✗
+    //     ⇒ **∴ 那**假设暖轮**仍合成全部层** ✓ —— **∴ 而**"**不重算下方合成**"**
+    //       正是 `below` 缓存**存在的理由** ✓（**目标第 4 条 ✓）** ✓✓
+    //   **∴ 实测（**决定性 ✓）**：
+    //     ```
+    //     DIAG_WARM below_reuse_count=4｜parallel_workers=4｜allocated=0｜reused=4
+    //               layers_composited=★1★｜LAYERS=2 ✓
+    //     ```
+    //     ⇒ **∴ 暖轮**只合成 **1 层** ✗（**下方那层**被 `below` 缓存**跳过 ✓）**
+    //       ⇒ **∴ 取用**＝ 1 × 4 ＝ **4** ✓（**∴ 与观察一致 ✓）** ✓✓
+    //   **∴ 所以 ✗**：**改成断言**"**只合成不在 `below` 缓存里的那些层**" ✓
+    //     ⇒ **∴ 缺省活动层 ⇒ 下方层数 ＝ `LAYERS − 1` ✓ ⇒ **∴ 期望**＝ `(LAYERS − (LAYERS − 1)) × WORKERS` ＝ 4 ✓**** ✓✓
+    //   **∴ 变异 ✗**：**让 `below` 缓存不命中**（**如**改 `sig`／清缓存 ✓）
+    //     ⇒ **∴ 暖轮取用**回到 8 ✗** ⇒ **∴ 本条**必红 ✓（**∴ 且**下面那条 `below_reuse_count > 0` 也会红 ✓）** ✓✓
+    assert!(
+        renderer.below_reuse_count() > 0,
+        "暖轮必须命中 below 缓存（否则下方合成被白算一遍）"
+    );
+    let below_layers = LAYERS - 1; // 缺省活动层 ⇒ 下方层数 = LAYERS - 1
+    assert_eq!(
+        second.stats.layer_buffers_reused,
+        (LAYERS - below_layers) * WORKERS,
+        "暖轮只应合成**不在 below 缓存里**的层：期望 {} × {} = {}，实测 分配/复用 = {}/{}",
+        LAYERS - below_layers,
+        WORKERS,
+        (LAYERS - below_layers) * WORKERS,
+        second.stats.layer_buffers_allocated,
+        second.stats.layer_buffers_reused
+    );
 
     // **有界**（判据 2 的大画布版本）：预算由并发推导，但它仍是一个上界——
     // N 块并发缓冲之和就是整幅 ⇒ 池留不下超过"一次渲染的工作集"。
