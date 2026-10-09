@@ -13,6 +13,7 @@
 // **变异** ✗：**删掉 `web/wasm/yanshi_wasm_bg.wasm`** ⇒ **∴ ① 报红 ✓**；
 //   **把域名从 `wrangler.toml` 去掉** ⇒ **∴ ② 报红 ✓**。
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 
 const bad = [];
@@ -242,6 +243,19 @@ if (stale.length === 0) console.log("  介质产物：6 个都不比源码旧 �
 const webMissing = MEDIUMS.filter((f) => !existsSync("web/mediums/" + f));
 check(webMissing.length === 0,
   "web/mediums 缺少：" + webMissing.join(" / ") + " => 跑 node scripts/pwa-sync-viewer.mjs");
+// **★ 部署可用性：入口页必须**被 git 跟踪** ✗ ★**（第 748 轮 ✓；**用户报告 404 ✓**）：
+//   **∴ 为什么 ✗**：**`wrangler.toml` 的 `[assets] directory = "./web"` ✗**
+//   ⇒ **∴ 若** `web/index.html` **不在版本库里 ⇒ **∴ fresh clone／别的机器部署时**
+//   **上传的目录**没有入口页 ⇒ **∴ Cloudflare 返回 **404 ✓****（**用户实测 ✓）。
+//   **∴ 本判据**直接问 git「**它被跟踪吗**」✗ ⇒ **∴ 于是**这类 404**在提交前就会被抓到 ✓**。
+let indexTracked = false;
+try {
+  execFileSync("git", ["ls-files", "--error-unmatch", "web/index.html"], { stdio: "pipe" });
+  indexTracked = true;
+} catch (e) { indexTracked = false; }
+check(indexTracked,
+  "web/index.html 没被 git 跟踪 => 部署后必定 404（详见 .gitignore 的说明）");
+if (indexTracked) console.log("  部署入口页：web/index.html 已被 git 跟踪 ✓");
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
   process.exit(1);
