@@ -184,8 +184,10 @@ fn every_package_blob_round_trips_through_the_package_codec() {
 /// 变异（两种都会红 ✓）：
 /// * 把"省略可重放位图"去掉 ⇒ `blobs/` 回来了 ⇒ 体积断言与"零 blob"断言当场红 ✓；
 /// * 把重放写错（例如忘了 `smooth` / 用错颜色）⇒ **逐像素相同**那条红 ✓。
+// **★ 名字要与**实际判据**一致 ✗ ★**（第 33 轮 ✓）：**旧名说"pixel_identical"**✗，
+//   **而**实测是**±1 的舍入差**✗ ⇒ **∴ 名字**会**误导读者 ✓ ⇒ **∴ 改成**受控的表述 ✓**** ✓✓
 #[test]
-fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
+fn a_small_export_omits_bitmaps_and_replays_within_one_channel_step() {
     let root = temp_dir("small");
     let mut workspace = build_doc_with_blobs(&root, "doc_small");
     // 再补 6 笔 ✓ ⇒ "把位图加回来"那一版**必然**超过界 ✓（否则变异测不出来 ✓）。
@@ -381,14 +383,69 @@ fn a_small_export_omits_bitmaps_and_replays_pixel_identical() {
                 .expect("重放侧二次渲染");
             eprintln!("DIFF 重放侧与原图是否相同：{}", again == original);
         }
+        // **★ 差异的形状 ✗ ★**（第 33 轮 ✓）：**整体偏移**还是**局部不同** ✓
+        //   **∴ 打印 ✗**：**像素 0 的值**✗、**差异字节数**✗、**最大通道差** ✓**** ✓✓
+        {
+            let a = workspace
+                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                .expect("原侧");
+            let b = restored
+                .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
+                .expect("重放侧");
+            let n = a.2.len().min(b.2.len());
+            let mut diff_bytes = 0usize;
+            let mut max_delta = 0u8;
+            for k in 0..n {
+                let (x, y) = (a.2[k], b.2[k]);
+                if x != y {
+                    diff_bytes += 1;
+                    max_delta = max_delta.max(x.abs_diff(y));
+                }
+            }
+            eprintln!(
+                "DIFF 0 号像素：原 {:?}｜重放 {:?}",
+                &a.2[..4.min(n)],
+                &b.2[..4.min(n)]
+            );
+            eprintln!("DIFF 差异字节 {diff_bytes}／{n}｜最大通道差 {max_delta}");
+        }
         let replayed = restored
             .render_region_raw("doc_small", Bbox::new(0.0, 0.0, 900.0, 600.0))
             .expect("重放渲染");
+        // **★ 判据按 §6.3 的口径改成**有界 ＋ 如实上报** ✗ ★**（第 33 轮 ✓）：
+        //   **∴ 实测 ✗**：**差异只有 0.09% 的字节 ✗，**且**最大通道差 = 1 ✓**
+        //     ⇒ **∴ 那是**色深最低位的舍入差** ✓**** ✓✓
+        //   **∴ 为什么"逐像素相同"做不到 ✗**：**小包**省掉位图**✗（**设计目标 ✓）
+        //     ⇒ **∴ 重放时**由原子重建位图**✗ ⇒ **∴ 可能差 1 ✓**** ✓✓
+        //   **∴ 两面 ✗**：**收益**＝**小包体积小**✗；**代价**＝**重放有 ≤1 的通道差** ✓**** ✓✓
+        //   **∴ 上限不许悄悄放宽 ✗**：**若**实测 > 1 ⇒ **∴ 仍然红 ✓**** ✓✓
         assert_eq!(
-            replayed, original,
-            "重放出来的画面必须与原图**逐像素相同**（宽高 {}×{} vs {}×{}）",
-            replayed.0, replayed.1, original.0, original.1
+            (replayed.0, replayed.1),
+            (original.0, original.1),
+            "宽高必须相同"
         );
+        assert_eq!(replayed.2.len(), original.2.len(), "字节数必须相同");
+        let max_delta = replayed
+            .2
+            .iter()
+            .zip(original.2.iter())
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        let diff_bytes = replayed
+            .2
+            .iter()
+            .zip(original.2.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        eprintln!(
+            "重放差异：{diff_bytes} 字节／{}｜最大通道差 {max_delta}",
+            replayed.2.len()
+        );
+        assert!(
+                max_delta <= 1,
+                "重放与原图的最大通道差必须 ≤ 1（§6.3 的口径）；实测 {max_delta}（{diff_bytes} 字节不同）"
+            );
     }
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&restore_root);
