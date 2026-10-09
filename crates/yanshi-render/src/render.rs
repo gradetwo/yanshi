@@ -1269,6 +1269,29 @@ impl Renderer {
                 - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
                 + 1;
             let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+            // **★ 写入侧探针 ✗ ★**（第 720 轮 ✓）：**∴ 打印**这次要不要写、**写哪些键**✗**
+            //   ⇒ **∴ 与读取侧（**`want=… have=… missing=…` ✓）对比 ⇒ **∴ 一次看出键是否一致 ✓****。
+            if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&probe)
+                {
+                    let _ = writeln!(
+                        f,
+                        "WRITE below btx={} bty={} budget_ok={} ob=({},{},{},{}) sig_len={}",
+                        btx,
+                        bty,
+                        budget_ok,
+                        ob.x,
+                        ob.y,
+                        ob.w,
+                        ob.h,
+                        sig.len()
+                    );
+                }
+            }
             if budget_ok {
                 if let Ok(mut guard) = below.lock() {
                     // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
