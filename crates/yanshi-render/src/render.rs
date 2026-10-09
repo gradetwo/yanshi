@@ -1275,20 +1275,35 @@ impl Renderer {
                     .append(true)
                     .open(path)
                 {
+                    // **★ 这一行也必须**与判定同源** ✗ ★**（第 986 轮 ✓）：
+                    //   **∴ 为什么 ✗**：**`READ` 行**第 978 轮已对齐 `tiles_for_sig` ✓
+                    //     **而**这一行**仍读旧字段**✗ ⇒ **∴ 于是**：**两份读数**可能矛盾 ✓**
+                    //       （**实测**：`READ` 行报 4 条"**有组但缺格**"✗，
+                    //        **而**这一行**只报 `["empty"]`／`sig-differs` ✓）
+                    //       ⇒ **★ 那**会让**我**误判"**缺格**"的成因 ✓ ★**** ✓✓
+                    //   **∴ 现在 ✗**：**两者**都用 `tiles_for_sig` ✓ ⇒ **∴ 读数**自洽 ✓**** ✓✓
+                    //   **∴ 且**：**`missing` 里**不再用 `"empty"` 混淆两件事 ✗**
+                    //     ⇒ **∴ `by_sig` 里没有这一组** ⇒ **∴ 明说 `no-group` ✓**** ✓✓
                     let (_have, missing) = match below.lock() {
                         Ok(g) => match g.as_ref() {
-                            Some(c) if c.sig == sig => {
-                                let have = want_tiles
-                                    .iter()
-                                    .filter(|k| c.tiles.iter().any(|(t, _)| *t == **k))
-                                    .count();
-                                let missing: Vec<String> = want_tiles
-                                    .iter()
-                                    .filter(|k| !c.tiles.iter().any(|(t, _)| *t == **k))
-                                    .map(|k| format!("{k:?}"))
-                                    .collect();
-                                (have, missing)
-                            }
+                            Some(c) => match tiles_for_sig(c, &sig) {
+                                Some((tiles, empty)) => {
+                                    let have = want_tiles
+                                        .iter()
+                                        .filter(|k| tiles.iter().any(|(t, _)| *t == **k))
+                                        .count();
+                                    let missing: Vec<String> = want_tiles
+                                        .iter()
+                                        .filter(|k| {
+                                            !tiles.iter().any(|(t, _)| *t == **k)
+                                                && !empty.contains(*k)
+                                        })
+                                        .map(|k| format!("{k:?}"))
+                                        .collect();
+                                    (have, missing)
+                                }
+                                None => (0, vec!["no-group".to_owned()]),
+                            },
                             // **★ 决定性：**把缓存里**存的 `sig` 打出来 ✗ ★**（第 764 轮 ✓）
                             //   **∴ 于是**：**一眼看出**存的**是**哪个层列表**✗**（**∴ 如**是不是另一个文档／时刻 ✓）** ✓✓
                             Some(c) => (
