@@ -92,11 +92,12 @@ check(/过期|缺失/.test(rr.reason || ""), "needs_render 应给出原因 ✗")
 
 // **⑦ 未实现端点 ⇒ 501 ＋ 原因 ✓**（**这是"不撒谎"的核心 ✓**）
 const wrapped = (() => { installLocalApi({ local }); return window.fetch; })();
-const un = await wrapped("https://x/api/tools/render_region?doc=d1", { method: "POST", body: "{}" });
+// **∴ 用一个**确实仍未实现**的端点 ✗**（**`render_region` 已有快照分支 ✓ ⇒ 不再是 501 ✓**）。
+const un = await wrapped("https://x/api/effects?doc=d1", { method: "POST", body: "{}" });
 check(un.status === 501, `未实现端点应返回 501 ✗（实测 ${un.status}）`);
 const unBody = await un.json();
 check(unBody.error === "not_implemented_locally", `未实现端点的 error 字段不对 ✗：${JSON.stringify(unBody)}`);
-check(!!unBody.endpoint && unBody.endpoint.includes("render_region"), "未实现端点应报出端点名 ✗");
+check(!!unBody.endpoint && unBody.endpoint.includes("effects"), "未实现端点应报出端点名 ✗");
 check(!!unBody.reason, "未实现端点应报出原因 ✗");
 check(LOCAL_IMPLEMENTED >= 5, `声明实现数应 ≥ 5 ✗（实测 ${LOCAL_IMPLEMENTED}）`);
 
