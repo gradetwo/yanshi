@@ -3956,6 +3956,12 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             // **★ 该次渲染是否复用了下方合成 ✓ ★**（第 539 轮 ✓）：**∴ `raw` 出口也要标 ✗** ——
             // **∴ 就地读 ✓** —— **∴ 本分支在 `below_after` 之前 return ✗** ⇒ **∴ 不能引用它 ✓**。
             "below_reused": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
+            // **★ below tile 账目也要在几乎所有出口出现 ✗ ★**（第 2 轮 ✓）：
+            //   **∴ 为什么 ✗**：**上一轮**我**只加了一个出口**✗ ⇒ **∴ 于是**另一条路
+            //     **看不到字段 ✓**（**`None` ✓，**第 993 轮实测 ✓）⇒ **∴ 这次**两个出口都加 ✓**** ✓✓
+            "below_tiles_wanted": ctx.workspace.document_below_tiles(&ctx.doc_id).0,
+            "below_tiles_available": ctx.workspace.document_below_tiles(&ctx.doc_id).1,
+            "below_tiles_reused": ctx.workspace.document_below_tiles(&ctx.doc_id).2,
             // **★ 归属字段也要在 `raw` 出口 ✗ ★**（第 994 轮 ✓；**补第 993 轮的半成品 ✓）：
             //   **∴ 为什么 ✗**：**我**上一轮**只加在**非 raw 出口**✗ ⇒ **∴ 于是**：**`raw`
             //     请求**看到的是 `None` ✓**（**实测 ✓）⇒ **∴ 无法**归属 ✓**** ✓✓
@@ -3991,6 +3997,11 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let frame_after = ctx.workspace.document_full_frame_hits(&ctx.doc_id);
     value["frame_reused"] = json!(frame_after > frame_before);
     value["below_reused"] = json!(below_after > below_before);
+    // **∴ 同一组账目在非 raw 出口也要有 ✓**（**∴ 否则**两条路读数不一致 ✓）。
+    let (bt_wanted, bt_available, bt_reused) = ctx.workspace.document_below_tiles(&ctx.doc_id);
+    value["below_tiles_wanted"] = json!(bt_wanted);
+    value["below_tiles_available"] = json!(bt_available);
+    value["below_tiles_reused"] = json!(bt_reused);
     value["above_reused"] = json!(above_after > above_before);
     // **∴ 归属字段 ✓**：**本次请求期间**发生了几次渲染 ✗（**进程内单调 ✓）**
     //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓

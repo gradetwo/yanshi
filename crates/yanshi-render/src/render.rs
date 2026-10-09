@@ -82,6 +82,29 @@ pub struct RenderStats {
     pub tiles_rendered: usize,
     /// 复用缓存的 tile 数。
     pub tiles_reused: usize,
+    /// **★ 本次渲染**想要几个 below tile ✗ ★**（第 2 轮 ✓；**纯观测 ✓）。
+    ///
+    /// **∴ 为什么要它 ✗**：**"**复用了几格 ✓"**只有在**知道**"**想要几格 ✓"之后**
+    ///   才有意义 ✓ ⇒ **∴ 只报**"命中 ✓／"未命中 ✓"**✗ 会**丢掉**"**差几格 ✓" ✓**** ✓✓
+    pub below_tiles_wanted: usize,
+    /// **★ 其中**缓存里已有几个 ✗ ★**（**含"**算过且为空 ✓"的格 ✓）。
+    ///
+    /// **∴ 与 `below_tiles_reused` 的区别 ✗**：**"**有 ✓"**不等于**"**用上了 ✓"**✗**
+    ///   ⇒ **∴ 当前**全有或全无**✗ ⇒ **∴ 于是**：`available = 3/4` 时 `reused = 0` ✓**
+    ///     ⇒ **★ 那个差正是**部分复用**要消掉的东西 ✓ ★**** ✓✓
+    pub below_tiles_available: usize,
+    /// **★ 实际**从缓存消费了几个 ✗ ★**（**当前策略：要么全要，要么一个不要 ✓）。
+    pub below_tiles_reused: usize,
+    /// **★ 这次渲染**到底有没有做过 below 判定 ✗ ★**（第 2 轮 ✓；**关键 ✓）。
+    ///
+    /// **∴ 为什么必须有它 ✗**：**同一请求里**可能有**多次渲染**✗
+    ///   （**∴ 如**区域缓存命中后的预览 ✓、**只画一层**的出口 ✓）
+    ///   ⇒ **∴ 那些渲染**不算 below 账目**✗ ⇒ **∴ 于是**：
+    ///     **若**它们也写 `0`**✗ ⇒ **∴ 就会把**上一次的真账目**覆盖掉 ✓**
+    ///       ⇒ **★ 实测**：`TILEWRITE wanted=1` 之后紧跟 `TILEWRITE wanted=0` ✗
+    ///         ⇒ **∴ 读到的**永远是 0 ✓ ⇒ **∴ 那是**假读数 ✓ ★**** ✓✓
+    ///   ⇒ **∴ 所以**：「**没测量**」**必须**与「**测量为 0**」**分开 ✓**** ✓✓
+    pub below_tiles_measured: bool,
     /// 本次为滤镜扩展的像素半径。
     pub filter_padding: u32,
     /// **本次渲染实际使用的并行 worker 数**（`1` ⇒ 串行路径）。
@@ -1178,18 +1201,36 @@ impl Renderer {
                     }
                 }
             }
+            // **★ 从"**早退 `all`**"改成"**一次计数**" ✗ ★**（第 2 轮 ✓；**阶段一第 1 项第 ① 步 ✓）：
+            //   **∴ 为什么 ✗**：**部分复用**需要知道**"**想要几格、**已有几格 ✓"**✗
+            //     ⇒ **∴ 而** `all` **只给**是/否**✗ ⇒ **∴ 于是**：**先**把计数算出来 ✓**** ✓✓
+            //   **∴ 行为不变 ✗**：`ready` **仍等价于** `available == want_tiles.len()` ✓**
+            //     ⇒ **∴ `want_tiles` 只有 1–6 格 ✓ ⇒ **∴ 这点多算**可忽略 ✓**** ✓✓
+            //   **∴ 且 ✗**：**这一处正是"**懒不许撒谎 ✓"的落点 ——
+            //     **∴ 报告**"**有几格可用 ✓"**✗，**而**不**假装"**全有 ✓" ✓**** ✓✓
+            let mut available = 0usize;
             let ready = match below.lock() {
                 Ok(guard) => match guard.as_ref() {
                     Some(c) => match tiles_for_sig(c, &sig) {
-                        Some((tiles, empty)) => want_tiles
-                            .iter()
-                            .all(|k| tiles.iter().any(|(t, _)| *t == *k) || empty.contains(k)),
+                        Some((tiles, empty)) => {
+                            available = want_tiles
+                                .iter()
+                                .filter(|k| {
+                                    tiles.iter().any(|(t, _)| *t == **k) || empty.contains(*k)
+                                })
+                                .count();
+                            available == want_tiles.len()
+                        }
                         None => false,
                     },
                     _ => false,
                 },
                 Err(_) => false,
             };
+            stats.below_tiles_wanted = want_tiles.len();
+            stats.below_tiles_available = available;
+            // **∴ 到这里 ⇒ **∴ 这次渲染确实做过 below 判定 ✓** ⇒ **∴ 记下 ✓**** ✓✓
+            stats.below_tiles_measured = true;
             // **★ 拆开 `ready` 的两个条件 ✗ ★**（第 726 轮 ✓，**只读 ⇒ 零行为变化**）：
             //   **∴ 分清**是**指纹不符**（`sig_eq=false` ✓）还是**tile 缺失**（`tiles_ok=false` ✓）。
             if let Some(path) = probe_path.as_deref() {
@@ -1395,6 +1436,12 @@ impl Renderer {
                 accumulation = buf;
                 note_below_reuse();
                 reused = true;
+                // **★ 记录**真正消费了几格 ✗ ★**（第 2 轮 ✓）：
+                //   **∴ 当前策略是**全有或全无**✗ ⇒ **∴ 走到这里 ⇒ **∴ 想要的格**
+                //     **全部**来自缓存 ✓ ⇒ **∴ 记 `wanted` ✓**** ✓✓
+                //   **∴ 将来**部分复用**落地时 ✗**，**这里**要改成
+                //     **"**真正从缓存拿的那几格 ✓"**✗ ⇒ **∴ 才会 < `wanted` ✓**** ✓✓
+                stats.below_tiles_reused = stats.below_tiles_wanted;
                 // **★ 命中 ⇒ 把用到的 tile **移到尾部** ✓ ★**（＝ **最近使用** ✓，第 495 轮 ✓）：
                 // **∴ 否则"丢最旧"只是 **FIFO** ✗**（**∵ 年龄从不刷新 ✓**）⇒ **∴ 而被反复用到的 tile
                 // 可能被丢掉 ✗** ⇒ **∴ 命中率低于真正 LRU ✓**。
@@ -3318,6 +3365,19 @@ mod parallel_impl {
             // 缓冲取用计数**按块求和**（每块各自从池里取用；它跟 `layers` 不同，不是去重口径）。
             merged_stats.layer_buffers_allocated += stats.layer_buffers_allocated;
             merged_stats.layer_buffers_reused += stats.layer_buffers_reused;
+            // **★ below tile 账目必须**一起归并 ✗ ★**（第 2 轮 ✓；**我第一版漏了 ⇒ 全是 0 ✓）：
+            //   **∴ 为什么先漏 ✗**：**渲染按条带并行**✗ ⇒ **∴ 每条带**各有 `stats`**
+            //     ⇒ **∴ 最终返回的是**归并后的那份 ✓**
+            //       ⇒ **∴ 不并 ⇒ **∴ 我的三格**留在 `empty_stats`（0 ✓）
+            //         ⇒ **★ 于是**观测**看起来"**从来没复用 ✓"**✗ —— **∴ 那**正是**假的读数 ✓ ★**** ✓✓
+            //   **∴ 语义 ✗**：**三者**都是"**块内格数 ✓"**✗ ⇒ **∴ 与 `layer_buffers_*`
+            //     同口径 ⇒ **∴ 按块求和 ✓**** ✓✓
+            //   **∴ 注意（**判据要用比值 ✓）**：**不可缓存的块**贡献 0 ✗
+            //     ⇒ **∴ 绝对数**会被**稀释**✗ ⇒ **∴ 判据**应当用 `reused / available` ✓**** ✓✓
+            merged_stats.below_tiles_measured |= stats.below_tiles_measured;
+            merged_stats.below_tiles_wanted += stats.below_tiles_wanted;
+            merged_stats.below_tiles_available += stats.below_tiles_available;
+            merged_stats.below_tiles_reused += stats.below_tiles_reused;
             merged_track.merge(track);
             merged_probe.fill += probe.fill;
             merged_probe.render += probe.render;

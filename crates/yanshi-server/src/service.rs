@@ -2983,6 +2983,18 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     /// **为什么不能只用上面那个** ✗：**`below_reuse_count()` 把**所有文档**加起来 ✗**，
     /// **∴ 那样就算不出"**这次渲染**是否复用 ✗**（**其它文档的计数会混进来 ✓**）。
     /// **∴ 用途** ✓：**调用方紧贴一次渲染读两次 ⇒ **差值 > 0 ⇔ 该次复用 ✓****。
+    /// **★ 某一个文档**最近一次渲染的 below tile 账目 ✗ ★**（第 2 轮 ✓）：
+    /// `(想要几格, 缓存里已有几格, 实际用上几格)` ✓；**文档不存在时归零 ✓**。
+    ///
+    /// **∴ 为什么要它 ✗**：**"**命中 ✓／"未命中 ✓"**说不清**"**差几格 ✓"**✗
+    ///   ⇒ **∴ 而**部分复用要修的**正是那个差 ✓ ⇒ **∴ 判据**需要这三个数 ✓**** ✓✓
+    pub fn document_below_tiles(&self, doc_id: &str) -> (usize, usize, usize) {
+        self.document(doc_id)
+            .map(|d| d.below_tiles())
+            .unwrap_or((0, 0, 0))
+    }
+
+    /// **某一个文档的**下方合成复用计数** ✗**（**语义计数 ✓，见 `below_tiles` 的三元账目 ✓）**。
     pub fn document_below_reuse_count(&self, doc_id: &str) -> usize {
         self.document(doc_id)
             .map(|d| d.below_reuse_count())

@@ -354,6 +354,14 @@ pub struct Document {
     /// —— 那正是不能接受的那一种 ✓。⇒ 把告警**挂在文档上** ✓，
     /// 裸像素出口的调用方渲染完读一次即可 ✓（[`Document::last_render_warnings`] ✓）。
     last_render_warnings: Vec<String>,
+    /// **★ 最近一次渲染的 below tile 账目 ✗ ★**（第 2 轮 ✓；**纯观测 ✓）：
+    /// `(想要几格, 缓存里已有几格, 实际用上几格)` ✓。
+    ///
+    /// **∴ 为什么要它 ✗**：**"**命中 ✓／"未命中 ✓"**说不清**"**差几格 ✓"**✗
+    ///   ⇒ **∴ 而**"**部分复用**"要修的**正是那个差 ✓ ⇒ **∴ 先把差**量出来 ✓**** ✓✓
+    /// **∴ 不撒谎 ✗**：**每次**渲染都**覆盖**它 ✗**（**不保留旧值 ✓）**
+    ///   ⇒ **∴ 于是**读它的人**不会**看到**上一次的数 ✓**** ✓✓
+    last_below_tiles: (usize, usize, usize),
     /// **打开这一份文档时重放回来的位图数** ✓（`export_project` 省掉的那些 ✓）。
     ///
     /// **为什么记在文档上** ✓：补的动作发生在 `Workspace::open_document` ✓，
@@ -465,6 +473,7 @@ impl Document {
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
             last_render_warnings: Vec::new(),
+            last_below_tiles: (0, 0, 0),
             replayed_blobs: 0,
             unreplayable_blobs: 0,
             created_at,
@@ -1021,7 +1030,7 @@ impl Document {
             .renderer
             .render_region(&self.state, &*self.store, bbox)?;
         // **跳过的东西必须留下痕迹** ✗（否则裸像素出口 = 静默的不完整画面 ✗）。
-        self.last_render_warnings = rendered.stats.unsupported.clone();
+        self.note_render_stats(&rendered.stats);
         let data = rendered.rgba8.clone();
         // **不完整的画面绝不进缓存** ✗：缓存里没有"告警"这一维 ✓ ⇒ 一旦缓存了 ✓，
         // 之后**命中**就会把同一张缺块的图**当成完整的**发出去 ✓（而且没有任何提示 ✗）。
@@ -1103,7 +1112,7 @@ impl Document {
             ));
         }
         // **这条出口也带告警** ✓（它同样返回裸像素 ✓）。
-        self.last_render_warnings = rendered.stats.unsupported.clone();
+        self.note_render_stats(&rendered.stats);
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
@@ -1112,6 +1121,35 @@ impl Document {
     /// **为什么不是一个 `Result`** ✗：缺一个补丁**不该**让整幅渲染失败 ✓
     ///（一条丢了的笔触不该让整张画都出不来 ✓）⇒ 像素照给 ✓、告警挂在这里 ✓、
     /// 由调用方一起报给用户 ✓（`render_region` 那条路本来就把告警放进 `warnings` ✓）。
+    /// **★ 把一次渲染的账目**就地记下** ✗ ★**（第 2 轮 ✓）。
+    ///
+    /// **∴ 为什么收成一个函数 ✗**：**告警 ＋ tile 账目**必须**同时更新**✗
+    ///   ⇒ **∴ 若**各出口**各写各的**✗ ⇒ **∴ 迟早**漏掉一处 ⇒ **∴ 那一处就会**报旧值** ✓**
+    ///     ⇒ **★ 那正是"**lazy 变成撒谎 ✓"的经典形态 ✓ ★**** ✓✓
+    fn note_render_stats(&mut self, stats: &RenderStats) {
+        self.last_render_warnings = stats.unsupported.clone();
+        // **★ 只有"**真的做过 below 判定**"的渲染**才能写这三格 ✗ ★**（第 2 轮 ✓）：
+        //   **∴ 为什么 ✗**：**同一请求里**可能渲染**多次**✗
+        //     ⇒ **∴ 后一次**（**如**只画一层／整幅命中 ✓）**没有账目**✗
+        //       ⇒ **∴ 若**它写 `(0,0,0)`**✗ ⇒ **∴ 就把**真账目抹掉 ✓**
+        //         ⇒ **★ 实测**：写两次，读到的**永远是 0 ✓ ★**** ✓✓
+        //   **∴ 于是**：**"**没测量 ✓"**保留**上一次的**真读数**✗
+        //     ⇒ **∴ 而**告警**仍然**每次都更新 ✓**（**∴ 那**是对的 ✓）** ✓✓
+        if stats.below_tiles_measured {
+            self.last_below_tiles = (
+                stats.below_tiles_wanted,
+                stats.below_tiles_available,
+                stats.below_tiles_reused,
+            );
+        }
+    }
+
+    /// **★ 最近一次渲染的 below tile 账目 ✗ ★**：`(想要, 已有, 用上)` ✓。
+    pub fn below_tiles(&self) -> (usize, usize, usize) {
+        self.last_below_tiles
+    }
+
+    /// **最近一次渲染里被跳过的东西** ✓（**裸像素出口的告警通道 ✓，见字段说明 ✓**）。
     pub fn last_render_warnings(&self) -> &[String] {
         &self.last_render_warnings
     }
@@ -1245,7 +1283,7 @@ impl Document {
             self.full_canvas_renders += 1;
         }
         // **告警照旧留档** ✓（不因为"不要图"就静默 ✓）。
-        self.last_render_warnings = rendered.stats.unsupported.clone();
+        self.note_render_stats(&rendered.stats);
         // **推进水位 + 完成 job** ✓（这两件事与"要不要 PNG"无关 ✓）。
         self.render_watermark = self.log.head_seq();
         self.complete_render_jobs()?;
@@ -1278,7 +1316,7 @@ impl Document {
         let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
         // **与裸像素出口共用同一个告警槽** ✓（两条出口对同一件事给同一个答案 ✓）。
-        self.last_render_warnings = rendered.stats.unsupported.clone();
+        self.note_render_stats(&rendered.stats);
         let previous = self.cached_preview_hashes();
         let blob_hash = self.store.put(&png)?;
         self.render_watermark = self.log.head_seq();
@@ -1420,7 +1458,7 @@ impl Document {
                         // **既不进 `last_render_warnings`、也不进返回的 `warnings`** ✗
                         // ⇒ 用户看到的是一张**静默的不完整画面** ✓，与"数据丢了"长得一模一样 ✗
                         //（`render_region` 与 `export_png` 两条出口早已带告警 ✓，只有这条路漏了 ✓）。
-                        self.last_render_warnings = rendered.stats.unsupported.clone();
+                        self.note_render_stats(&rendered.stats);
                         Some(rendered)
                     }
                 }
