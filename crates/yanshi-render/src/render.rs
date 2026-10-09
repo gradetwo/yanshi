@@ -1588,13 +1588,30 @@ impl Renderer {
                                 let _ = f.write_all(line.as_bytes());
                             }
                         }
+                        // **★ 第 2 步：把这一次的格**按 `sig` 分组存一份 ✗ ★**（第 976 轮 ✓）：
+                        //   **∴ 为什么 ✗**：**旧的三个字段**是**一份** ⇒ **∴ 换切点**就**丢格 ✓**
+                        //     ⇒ **∴ 而**把这次的结果**另存一份**（**按 `sig` 归类 ✓）
+                        //       ⇒ **∴ 于是**：**另一种切点的格**还在 ✓** ⇒ **∴ 不再互相作废 ✓**** ✓✓
+                        //   **∴ 为什么**先克隆 ✗**：**`merged`／`fresh_empty`**下面**要被**移动**
+                        //     （**`tiles: merged` ✓）⇒ **∴ 所以**先克隆一份给 `by_sig` ✓**** ✓✓
+                        //   **∴ 代价（**如实 ✓）**：**这次的内存**翻倍 ✗**（**旧字段 ＋ `by_sig` ✓）**
+                        //     ⇒ **∴ 而**第 4 步会让**淘汰**把两边**一起算 ✓**（**中期**再清掉旧字段 ✓）** ✓✓
+                        // **★ 必须**带过去 ✗ ★**（第 976 轮 ✓，**我第一版就在这里错了 ✓）：
+                        //   **∴ 我**第一版**先写进旧的 `by_sig` ✗**，**再**整份覆盖
+                        //     （**`*guard = Some(BelowTiles { … by_sig: HashMap::new() })` ✓）
+                        //     ⇒ **∴ 于是**刚写的**立刻被丢掉 ✗** ⇒ **∴ 白写 ✓**** ✓✓
+                        //   **∴ 正解 ✗**：**先把旧的 `by_sig` **取出来**✗**（**克隆 ✓）**，
+                        //     **把这次的格**并进去**✗，**再**放进新结构 ✓**** ✓✓
+                        let mut carried =
+                            guard.as_ref().map(|c| c.by_sig.clone()).unwrap_or_default();
+                        carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
                         *guard = Some(BelowTiles {
                             sig,
                             tiles: merged,
                             empty: fresh_empty,
                             // **∴ 第 1 步：**先只初始化 ✗**（**行为不变 ✓）** —— **∴ 第 2／3 步**
                             //   再让读写**真的**用它 ✓**** ✓✓
-                            by_sig: std::collections::HashMap::new(),
+                            by_sig: carried,
                         });
                     }
                 }
