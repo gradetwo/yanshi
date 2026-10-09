@@ -1297,7 +1297,7 @@ impl Renderer {
             //     **∴ 报告**"**有几格可用 ✓"**✗，**而**不**假装"**全有 ✓" ✓**** ✓✓
             let mut available = 0usize;
             // **★ 缓存里**已有的格 ✗ ★**（第 10 轮 ✓；**部分复用**预填它们 ✓）。
-            let mut cached_tiles: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+            let cached_tiles: Vec<((i64, i64), crate::buffer::Buffer)>;
             let ready = match below.lock() {
                 Ok(guard) => match guard.as_ref() {
                     Some(c) => match tiles_for_sig(c, &sig) {
