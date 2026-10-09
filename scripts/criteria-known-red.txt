@@ -2100,3 +2100,27 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #   **∴ 下一轮（**一步 ✓**）** ✓：**在 `api-local.js` 的 `brush_stroke` 里改用内核 ✗**
 #     （**`kernel.paint_brush(request_json)` 返回 RGBA8 ✓ ⇒ **∴ 存成 blob ＋ 写 `import_image` 原子 ✗**）
 #     ⇒ **∴ 并按 `source` 的字段填 ✓**（**`points`／`color`／`size`／`brush`／`seed` ✓**）** ✓✓
+# **★ 第 647 轮：✅ 内核 `paint_brush` 契约已定清 ✓（**下一轮照此实现 ✗**）**
+#   **已确认** ✓（`crates/yanshi-wasm/src/lib.rs` ✓）：
+#     * **`pub fn paint_brush(&self, request_json: &str) -> Vec<u8>`** ✓
+#       ⇒ **∴ 成功回**RGBA8 字节**✗**；**∴ 失败回**空 Vec**✗****；
+#     * **`pub fn paint_brush_error(&self) -> String`** ✓
+#       ⇒ **∴ 它给**上一次失败的原因**✗（**成功时为空串，取走即清 ✓**）**
+#       ⇒ **★ 这是取失败原因的**正路**✗**（**∴ 比猜 payload 强 ✓** —— **∴ 与"读内核自己的报错"同一条纪律 ✓**）；
+#     * **`pub fn smooth_stroke_json(&self, points_json: &str) -> String`** ✓
+#       ⇒ **∴ 收 `[[x,y,pressure],…]` ✗，**回 `{"ok":true,"points":[…]}` ✓****
+#       ⇒ **∴ 且**它与服务端 **`brush_stroke.smooth` 是**同一条实现 ✗**（**`catmull_rom_smooth` ＋ 同一细分数 ✓**）
+#       ⇒ **∴ 而**服务端是**先平滑 ⇒ 再算区域 ⇒ 再落笔 ✗** ⇒ **∴ 离线要复现**同一笔**✗，
+#       **必须走同一个平滑 ✓**** ✓✓
+#     * **请求的 JSON 形态**在 **`crates/yanshi-wasm/src/brush.rs` 的 `paint(…)` ✗**
+#       ⇒ **∴ 下一轮**读它 ✓**（**∴ 而不是猜 ✓**）。**
+#   **∴ 实现路线（**下一轮 ✓**）** ✓：
+#     **① 读 `brush.rs::paint` 的请求字段 ✓**（**与服务端 `source` 的字段对照 ✓**）；
+#     **② 在 `api-local.js` 的 `brush_stroke` 里 ✗**：
+#       **`await mod.default()` ⇒ `kernel.smooth_stroke_json(points)` ⇒ `kernel.paint_brush(req)` ✓**
+#       ⇒ **∴ 若返回空 ⇒ **用 `paint_brush_error()` 报出原因 ✗**（**∴ 不静默 ✓**）；
+#     **③ 把 RGBA8 存成 **blob**✗**（**mime `image/x-yanshi-raw` ✓**）⇒ **∴ 用 `putBlob(hash, bytes)` ✓**；
+#     **④ 写一条 **`import_image`** 原子 ✗**（**字段照 §14.12 ＋ 第 646 轮的样本 ✓**：
+#       **`bitmap`／`height`／`layer_id`／`object_id`／`region`／`source` ✓**）** ✓✓
+#   **∴ 验收** ✓：**恢复那条"**画一笔 ⇒ 渲染变化**"的断言 ✗ ＋ **变异**（**不写原子 ⇒ 两次相同 ⇒ 必红 ✓**）
+#     ＋ **真实浏览器跑通 ✓**** ✓✓
