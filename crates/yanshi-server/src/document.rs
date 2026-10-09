@@ -1690,6 +1690,12 @@ impl Document {
         self.renderer.below_reuse_count()
     }
 
+    /// **★ `above` 复用次数 ✓ ★**（第 702 轮 ✓，**纯观测 ✓**）：**∴ 与 `below` 同一条链 ✓**
+    /// ⇒ **∴ 判据据此断言"半透明层的上方合成被复用了"✗**（**目标第 4 条 ✓**）。
+    pub fn above_reuse_count(&self) -> usize {
+        self.renderer.above_reuse_count()
+    }
+
     /// **（第 95 轮补）** 本项在插入 below 计数时被"抢走"了注释 ✗ ⇒ 按其作用补回 ✓。
     /// ⚠️ 规律（本会话第 7 次 ✗）：**在某一项之前插入 ⇒ 会挪走它的文档注释** ✓（`-D missing-docs` 每次都能抓住 ✓）。
     pub fn doc_thumbnail_hash_for_probe(&self) -> Option<yanshi_core::BlobHash> {
