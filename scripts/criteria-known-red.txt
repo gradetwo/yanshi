@@ -1828,3 +1828,37 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       自身注释已声明"暂勿用于产品路径 ✗、待缺陷定位 ✓"**）⇒ **∴ 修好后删掉那个 `#[ignore]`
 #       ⇒ **∴ 红线**自动恢复 ✓**** ✓✓
 #   **∴ GPU** ✓：**按用户指示**仍在暂停 ✓**（**决定 ＋ 有界判据已入档 ✓**）** ✓✓
+# **★ 第 598 轮：🎯🎯🎯 **缺陷定位** —— `stamp_samples_into_tiles` 的 `blit_rgba8` 尺寸用错 ✗**
+#   **代码** ✓（`render.rs:1380-1406` ✓）：
+#     ```rust
+#     for key in &keys {
+#         if self.cache.get(*key).is_none() {
+#             self.render_tile(state, store, *key)?;       // :1383 **缺失 ⇒ 先整块渲 ✓（好 ✓）**
+#         }
+#         let Some(tile) = self.cache.get(*key).cloned() else { continue; };   // :1385
+#         let bounds = self.grid.bounds(*key);
+#         let mut buffer = Buffer::new(bounds.x as i64, bounds.y as i64,
+#                                      bounds.w.max(1.0) as u32, bounds.h.max(1.0) as u32);  // :1389
+#         buffer.blit_rgba8(0, 0, buffer.width(), buffer.height(),
+#                           &tile.to_rgba8(None), 1.0);    // ★ :1395 **← 最可疑 ✗** ★
+#         crate::brush::stamp_samples_from(&mut buffer, brush, &stamps, base_index);  // :1403
+#         self.cache.insert(tile_from_buffer(&buffer, &self.grid, *key));   // :1405
+#     }
+#     ```
+#   **∴ 分析** ✓（**逐条 ✓**）：
+#     **① `:1383` 缺失先整块渲 ✓ ⇒ **∴ 逻辑正确 ✓**；**
+#     **② `:1389` `buffer` 的尺寸取自 `grid.bounds(key)` ✓（**＝ 该 tile 的**标准**尺寸 ✓**）；**
+#     **③ ★ `:1395` 的 `blit_rgba8` 用了 `buffer.width()/height()` 作为**拷贝尺寸**✗，
+#       **而源是 `tile.to_rgba8(None)` ✗** ⇒ **∴ 若两者的尺寸**不一致**✗
+#       （**如边缘 tile 更小／更窄 ✓，或 `to_rgba8` 只给有效区域 ✓**）
+#       ⇒ **∴ 就是**按目标宽高去读源**✗ ⇒ **∴ 越界读／错位 ⇒ **∴ 内容丢 ✗**** ✓✓
+#   **∴ 结论** ✓：**最可能是**尺寸语义不一致**✗** ⇒ **∴ 而不是"缓存命中逻辑错"✗**
+#     （**∴ 与我第 504–561 轮怀疑的 below 缓存**无关 ✓** ⇒ **∴ 那几轮的方向偏了 ✓；
+#     **∴ 而第 564 轮找到的"函数自身注释已声明此路径有缺陷"才是对的 ✓**）** ✓✓
+#   **∴ 下一步（**一步 ✓**）** ✓：**读 `tile_from_buffer` 与 `Tile::to_rgba8` 的**尺寸语义**✗**
+#     （**∴ 即**：**`to_rgba8` 返回的是**整块**还是**有效区域**✗；**`bounds()` 是否含 padding ✗**）
+#     ⇒ **∴ 然后**把 `blit` 的宽高改成**tile 的实际尺寸**（**或取 `min` ✓**）⇒
+#     **∴ 验收**：**跑 `tool-stamp-parity`（**变异：去掉 `#[ignore]` ⇒ 应全绿 ✓**）** ✓✓
+#   **⚠️ 诚实回顾** ✓：**我为这个缺陷花了第 504–564 轮（**约 10 轮 ✓**）在**below 缓存**上 ✗**，
+#     **∴ 而真正的问题在**盖章的 blit 尺寸**✗** ⇒ **∴ 教训**：**先读**被调用函数自身的注释与它
+#     那一段的**尺寸语义**✗，**再怀疑缓存 ✓**** ✓✓
