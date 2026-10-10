@@ -156,14 +156,34 @@ pub fn ellipse_coverage_clipped(bbox: Bbox, supersample: u32, clip: &Bbox) -> Co
     let ry = bbox.h / 2.0;
     let ss = supersample.max(1);
     let samples = (ss * ss) as f32;
+    // **★ 子样本偏移**提到循环外 ✗ ★**（第 208 轮 ✓；**CPU 成本调查 ✓）。
+    //
+    // **∴ 为什么 ✗**：**实测**（**第 207 轮 ✓）证明**✗**：
+    //   **∴ `primitive:Shape` **2.5 µs／像素**✗
+    //     ⇒ **∴ 而**量化是 **59 ns／像素** ⇒ **∴ 慢 **42 倍**** ✓
+    //   **∴ 而**这段内层循环**每子样本做**4 次浮点除法**✗
+    //     ⇒ **∴ 16 个子样本（**`ss = 4` ✓）⇒ **∴ 64 次除法／像素** ✓
+    //       ⇒ **∴ 那**正是**那 2.5 µs 的来源** ✓**** ✓✓
+    //
+    // **★ 改法 ✗ ★**：**`(sx + 0.5) / ss` **与 `px` **无关**** ✗
+    //   ⇒ **∴ 与 `py` **同理** ✓
+    //   ⇒ **∴ 提到循环外**预计算** ✓**** ✓✓
+    //
+    // **★ 为什么不改结果 ✗ ★**：**表达式**逐字相同**✗（**同一个浮点除法的**同一个值 ✓）
+    //   ⇒ **∴ 逐位**必然**相同** ✓（**∴ 判据**会验证 ✓）
+    //   **∴ 而**我**没有**把 `/ rx` 改成 `* (1/rx)`**✗ —— **∴ 那**会**改浮点结果** ✓
+    //     ⇒ **∴ 本轮**不做** ✓（**∴ 要做**必须先证明**逐位一致 ✓）** ✓✓
+    let offs: Vec<f64> = (0..ss)
+        .map(|i| (f64::from(i) + 0.5) / f64::from(ss))
+        .collect();
     let mut data = Vec::with_capacity((width * height) as usize);
     for py in 0..height {
         for px in 0..width {
             let mut hits = 0.0f32;
             for sy in 0..ss {
                 for sx in 0..ss {
-                    let x = x0 as f64 + px as f64 + (sx as f64 + 0.5) / ss as f64;
-                    let y = y0 as f64 + py as f64 + (sy as f64 + 0.5) / ss as f64;
+                    let x = x0 as f64 + px as f64 + offs[sx as usize];
+                    let y = y0 as f64 + py as f64 + offs[sy as usize];
                     let nx = (x - cx) / rx;
                     let ny = (y - cy) / ry;
                     if nx * nx + ny * ny <= 1.0 {
