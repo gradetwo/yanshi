@@ -22,8 +22,16 @@
  * 见 `crates/yanshi-http/src/server.rs:486-500` 的说明 ✓）。
  * @param {string} brush **如 `100%_Opaque.myb` 或 `8B_Pencil#1.myb` ✓**
  */
+// **★ 笔刷文本内存缓存 ✓**（PWA spray 测试 ✓）：
+//   **∴ 症状 ✗**：每画一笔就 GET 一次 `/brushes/spray.myb` ✓
+//   ⇒ **∴ 而**笔刷文件是静态的 ✓、**一笔内**不会变 ✓
+//   ⇒ **∴ 所以**内存里留一份 ✓，**同名**直接返回 ✓（**页面级**缓存 ✓，刷新重取 ✓）。
+const brushTextCache = new Map();
+
 export async function fetchBrushText(brush) {
   const name = String(brush || "100%_Opaque.myb");
+  // **★ 内存缓存命中 ⇒ 不发请求 ✓**
+  if (brushTextCache.has(name)) return brushTextCache.get(name);
   // **∴ 只编 `#` 与 `%` ✗**（**∴ `+` 必须保持字面 ✓** —— 与服务端用**路径版**解码器一致 ✓）。
   // Same map as the sync step: percent and hash become ASCII substitutes because
   // the encoded forms could not be addressed reliably through the static host.
@@ -49,6 +57,8 @@ export async function fetchBrushText(brush) {
                     "（期望 JSON 笔刷定义，可能是 SPA fallback 的 HTML）" +
                     "｜请求 URL ＝ " + String(res.url || "(未知)"));
   }
+  // **★ 写内存缓存 ✓**
+  brushTextCache.set(name, text);
   return text;
 }
 

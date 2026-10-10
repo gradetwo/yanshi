@@ -1600,6 +1600,46 @@ async function detectHeavyContent() {
   } catch (error) { /* 扫描失败不阻塞加载 ✓ */ }
 }
 
+/// **★ 把 IndexedDB 里的 blob 喂回新内核 ✗ ★**（PWA spray 测试 ✓）。
+///
+/// **为什么需要它** ✗：`import_image` 原子只存 blob hash ✗，位图本身在内核的 blob store 里 ✓。
+/// 内核重建（`loadKernel(0)`）时新内核的 store 是空的 ✗ ⇒ 必须从 IndexedDB 喂回去 ✓。
+/// **不喂 ⇒ spray 这类位图笔触在新建图层后消失** ✗（`load_atoms_json` 取不到位图 ✓）。
+async function repopulateKernelBlobs(kernel, atoms) {
+  // **收集所有 `import_image` 原子的 blob hash** ✓
+  const hashes = new Set();
+  for (const atom of atoms || []) {
+    const a = atom && atom.atom ? atom.atom : atom;
+    if (!a || a.kind !== "import_image") continue;
+    const hash = a.payload && a.payload.bitmap && a.payload.bitmap.blob_hash;
+    if (hash) hashes.add(hash);
+  }
+  if (hashes.size === 0) return;
+  // **从 IndexedDB 取回并喂进内核** ✓
+  try {
+    const { open, getBlob } = await import("/store.js");
+    const db = await open();
+    let fed = 0;
+    for (const hash of hashes) {
+      try {
+        const bytes = await getBlob(db, hash);
+        if (!bytes) continue;
+        // **∴ `blob_put` 要的是**字节数组**✓**（**∴ IndexedDB 存的是 `Array.from(rgba)` ✓**）。
+        const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        kernel.blob_put(arr);
+        fed += 1;
+      } catch (e) {
+        // **单个 blob 失败不阻断** ✓ —— `load_atoms_json` 会报缺失，比整个重建失败好 ✓。
+        console.warn("喂回 blob 失败 " + hash + ": " + e);
+      }
+    }
+    if (fed > 0) console.log("内核重建：喂回 " + fed + " 个 blob ✓");
+  } catch (e) {
+    // **IndexedDB 不可用 ⇒ 如实记录** ✓，不阻断重建 ✓。
+    console.warn("喂回 blob 时 IndexedDB 不可用：" + e);
+  }
+}
+
 async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
@@ -1617,6 +1657,14 @@ async function loadKernel(since = 0) {
     if (new URLSearchParams(location.search).has("debug")) window.yanshiKernel = state.kernel;
     verifyKernelSurface(state.kernel);
     window.yanshiKernelReady = true;
+    // **★ 重建内核必须先喂回 blob ✗ ★**（PWA spray 测试 ✓）：
+    //   **∴ 症状 ✗**：spray 笔触（`import_image` 原子 ＋ blob 引用）在**新建图层**后消失 ✓
+    //   ⇒ **∴ 而**新建图层调 `resync()` ⇒ `loadKernel(0)` ⇒ **新内核** ✓
+    //   ⇒ **∴ 而**新内核的 blob store 是**空的** ✗（**∴ blob 只在**旧内核内存**＋ IndexedDB ✓**）
+    //   ⇒ **∴ 于是** `load_atoms_json` 重放 `import_image` 时**取不到位图** ✗ ⇒ 笔触消失 ✓。
+    //   **∴ 修法 ✗**：从原子里收集 blob hash ⇒ IndexedDB 取回 ⇒ `blob_put` 喂进新内核 ✓
+    //   （**∴ hash 是**内容寻址**✓ ⇒ 喂回相同字节 ⇒ 相同 hash ✓ ⇒ 原子引用有效 ✓**）。
+    await repopulateKernelBlobs(state.kernel, atoms.atoms);
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
     // 装载完成后立刻重绘：此前只有"内核就绪"的状态变化，没有触发重绘 ✗ ——
     // 打开已有作品时画面会是白布，直到用户落笔（用户报告的现象）。
