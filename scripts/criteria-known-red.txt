@@ -25405,3 +25405,85 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ⬜ 乙：默认背景改透明** ✗（**∴ 用户可见 ⇒ **必须先问** ✓）
 #     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
 #     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
+
+# **★ 第 458 轮：★★★★★★★ **CPU 合成公式已完全取出 —— 可以精确写 WGSL（**甲方案可执行 ✓）**** ★★★★★★★
+#   **★★★ 现有着色器（**`crates/yanshi-gpu/src/quantize.wgsl` ✓）★★★**：
+#     ```wgsl
+#     struct Params { pixels: u32, lut_len: u32 };
+#     @group(0) @binding(3) var<uniform> params: Params;
+#     …
+#     @compute @workgroup_size(64)
+#     fn main(…) {
+#         let a = clamp(x3, 0.0, 1.0);
+#         if (a <= 0.0) { dst[i] = 0u; return; }      ← ★ 无背景合成 ★
+#         let r = byte_of(x0 / a); … let al = u32(clamp(floor(a * 255.0 + 0.5), …));
+#     }
+#     ```
+#     ⇒ **∴ 它**只实现**「**无背景**」那条**✗
+#       ⇒ **∴ 而** `background.is_none()` **才允许 GPU** ✓
+#         ⇒ **★ 所以**：**要**加**背景参数 ＋ 合成** ✓ ★**** ✓✓
+#   **★★★ CPU 真值公式（**`crates/yanshi-render/src/color.rs` ✓；**精确 ✓）★★★**：
+#     **∴ ① `composite_over_linear_with(table, pixel, bg)` ✗**（**`:174` ✓）：
+#       ```rust
+#       let one_minus_alpha = 1.0 - pixel[3];
+#       linear_premul_to_u8x4_with(table, [
+#           pixel[0] + bg[0] * one_minus_alpha,
+#           pixel[1] + bg[1] * one_minus_alpha,
+#           pixel[2] + bg[2] * one_minus_alpha,
+#           pixel[3] + bg[3] * one_minus_alpha,      ← ★ alpha 也合成 ★
+#       ])
+#       ```
+#     **∴ ② `linear_premul_to_u8x4_with(table, pixel)` ✗**（**`:151` ✓）：
+#       ```rust
+#       let alpha = pixel[3].clamp(0.0, 1.0);
+#       if alpha <= 0.0 { return [0, 0, 0, 0]; }
+#       let byte = |v: f32| (encode_with_table(table, v) * 255.0 + 0.5)
+#                              .floor().clamp(0.0, 255.0) as u8;
+#       [ byte(pixel[0] / alpha), byte(pixel[1] / alpha), byte(pixel[2] / alpha),
+#         (alpha * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8 ]
+#       ```
+#       ⇒ **∴ 而** `rows.rs:116` 的 `encode_quantized_rows` **先做** f16 量化**✗
+#         ＋ **∴ 再**按 `bg_linear` **有无**选**上面两条** ✓（**∴ 与着色器的 `q16` 对应 ✓）★**** ✓✓
+#   **★★★ 所以甲方案的**精确改法（**可直接执行 ✓）★★★**：
+#     **∴ ① `quantize.wgsl` ✗**：
+#       ```wgsl
+#       struct Params { pixels: u32, lut_len: u32, has_bg: u32, _pad: u32,
+#                       bg: vec4<f32> };      ← ★ 加背景 ＋ 对齐 ★
+#       …
+#       var c = vec4<f32>(x0, x1, x2, x3);
+#       if (params.has_bg == 1u) {
+#           let oma = 1.0 - x3;
+#           c = vec4<f32>(x0 + params.bg.x * oma, x1 + params.bg.y * oma,
+#                         x2 + params.bg.z * oma, x3 + params.bg.w * oma);
+#       }
+#       let a = clamp(c.w, 0.0, 1.0);
+#       if (a <= 0.0) { dst[i] = 0u; return; }
+#       … byte_of(c.x / a) …         ← ★ 注意：**用 c 而不是 x ★
+#       ```
+#     **∴ ② Rust 侧 ✗**：
+#       **∴ `Quantizer::quantize` **加一个** `background: Option<LinearRgba>`** 参数**✗
+#         ⇒ **∴ 并**把**它**写进 uniform buffer** ✓ ★**** ✓✓
+#     **∴ ③ 调用侧 ✗**：
+#       **∴ `buffer.rs:492` **去掉** `if background.is_none()`**✗
+#         ⇒ **∴ 改成**把 `background` **传下去** ✓ ★**** ✓✓
+#   **★★★ 两面（**AGENTS.md 第 3 条 ✓）★★★**：
+#     **∴ 收益 ✗**：**默认白底的渲染**也能用 GPU**✗
+#       ⇒ **∴ 于是**：**目标第 8 条的「**两本账收益**」**第一次**可能成立** ✓ ★**** ✓✓
+#     **∴ 代价 ✗**：**WGSL**要多一个分支**✗ ＋ **uniform**要重排（**对齐 ✓）
+#       ＋ **∴ 且**：**逐位一致**要**重验**✗（**∴ 那条**是**硬约束** ✓）
+#         ⇒ **∴ 即**：**`tool-gpu-quantize-parity.mjs`** ＋
+#           **∴ 新判据**：**带背景的渲染**在 `--gpu on`/`--gpu off` 下**逐字节相同** ✓ ★**** ✓✓
+#     **∴ 借鉴来源 ✗**：**Krita**的颜色空间边界**（**合成在**显示空间前**完成 ✓）
+#       ＋ **∴ GEGL**同理：**格式转换在**边界**上做** ✓ ★**** ✓✓
+#   **★★★ 可验证的一步 ✗ ★★★**：
+#     **∴ 改哪里 ✗**：**`quantize.wgsl` ＋ `yanshi-gpu/src/lib.rs` 的 `quantize`／uniform**＋
+#       **`yanshi-render/src/buffer.rs:492`** ✓
+#     **∴ 判据 ✗**：**`node scripts/tool-gpu-quantize-parity.mjs <url>`**✗（**逐位一致 ✓）
+#       ＋ **∴ 新判据 ✗**：**带背景渲染在 `--gpu on`／`--gpu off` 下**逐字节相同** ✓
+#     **∴ 变异点 ✗**：**把 `has_bg` **恒置 0**✗ ⇒ **∴ 带背景的渲染会**不合成** ⇒ **∴ 判据**必红** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ CPU 真值公式**已精确取出**✗（**`color.rs:151／174` ✓）
+#     **∴ ✅ 改法**已写到可执行粒度** ✓
+#     **∴ ⬜ 实施甲**（**改 WGSL ＋ uniform ＋ 调用侧 ✓）
+#     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
+#     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
