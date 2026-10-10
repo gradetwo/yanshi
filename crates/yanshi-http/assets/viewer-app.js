@@ -1606,13 +1606,44 @@ async function detectHeavyContent() {
 /// 内核重建（`loadKernel(0)`）时新内核的 store 是空的 ✗ ⇒ 必须从 IndexedDB 喂回去 ✓。
 /// **不喂 ⇒ spray 这类位图笔触在新建图层后消失** ✗（`load_atoms_json` 取不到位图 ✓）。
 async function repopulateKernelBlobs(kernel, atoms) {
-  // **收集所有 `import_image` 原子的 blob hash** ✓
+  // **★ 递归收集**任何** `blob_hash`**✗ ★**（第 346 轮 ✓；**本机复现换来的 ✓）：
+  //   **∴ 原来只收 `kind === "import_image"`**✗ ⇒ **∴ 那是**不完整的** ✓
+  //     **∴ 证据（**第 345 轮本机实测 ✓）**：
+  //       **∴ 先用 spray 画一笔 ⇒ 画布墨 4251** ✓
+  //         **∴ 新建图层后 ⇒ **0**** ✗
+  //           ＋ **∴ 而**修复的日志「**内核重建：喂回 N 个 blob**」**不出现** ✓
+  //             ⇒ **∴ 即**：**`hashes` **为空**✗ ⇒ **∴ 直接** `return` ✓
+  //               ⇒ **★ 所以**：**spray 笔触产生的原子**不是** `import_image`** ✓
+  //                 （**∴ 很可能是** `draw_stroke`**✗ —— `crates/yanshi-core/src/atom.rs:291` ✓）★**** ✓✓
+  //     **∴ 而**服务端**早就**是递归收集**✗（**`atom.rs:148` ✓**：
+  //       **「**从 payload 递归收集：识别 `blob_hash`、`*_id` 与 `{type, id}` 引用对」** ✓）
+  //         ⇒ **∴ 所以**这里**照它做** ✓ ★**** ✓✓
+  //   **∴ 两面（**AGENTS.md 第 3 条 ✓）**：
+  //     **∴ 收益**：**任何带 blob 的原子**（**`import_image`／`draw_stroke`／… ✓）都能喂回** ✓
+  //     **∴ 代价**：**递归扫描**比一次过滤**慢**✗
+  //       （**∴ 但**它**只在**内核重建时跑一次**✗ ＋ **原子数有限** ⇒ **∴ 可忽略 ✓）** ✓**** ✓✓
   const hashes = new Set();
+  const collect = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      // **∴ 只认 `blob_hash` 这个**键名**✗ ⇒ **∴ 与**服务端**同一口径** ✓
+      if (key === "blob_hash" && typeof item === "string" && item) {
+        hashes.add(item);
+        continue;
+      }
+      collect(item);
+    }
+  };
   for (const atom of atoms || []) {
     const a = atom && atom.atom ? atom.atom : atom;
-    if (!a || a.kind !== "import_image") continue;
-    const hash = a.payload && a.payload.bitmap && a.payload.bitmap.blob_hash;
-    if (hash) hashes.add(hash);
+    if (!a) continue;
+    collect(a.payload);
+    // **∴ 也**扫顶层的 `blob_hash`**✗（**∴ 有的原子**把它放在那里 ✓）** ✓
+    collect({ blob_hash: a.blob_hash });
   }
   if (hashes.size === 0) return;
   // **从 IndexedDB 取回并喂进内核** ✓
