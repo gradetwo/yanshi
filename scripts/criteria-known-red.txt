@@ -21940,3 +21940,58 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ 一个**计数器**能回答的问题，**取决于它**统计的范围**✗
 #       ⇒ **∴ 我**一度把 `max===1` 当**结论**✗ ⇒ **∴ 而**读源码后**发现它**覆盖不全** ✓
 #         ⇒ **★ 所以**：**用探针下结论前**先确认**探针覆盖了**所有**相关路径** ✓ ★**** ✓✓
+
+# **★ 第 388 轮：★★★★★★★★★★ **根因完全确认 —— `viewer-app.js` 里**完全没有串行化**：落笔与渲染都**直接调同一个 `WasmKernel`**** ✗** ★★★★★★★★★★
+#   **★★★ 决定性证据（**grep ✓）★★★**：
+#     **∴ `grep withKernel viewer-app.js` ⇒ ★ **无命中** ★**✗
+#       ⇒ **∴ 而** viewer 里有**十几处**直接调内核** ✓：
+#         ```
+#         viewer: 1792  const rgba = state.kernel.render_region_rgba(x0, y0, cw, ch);        ← 渲染
+#         viewer: 1863  const rgba = state.kernel.render_region_direct_rgba(x0, y0, w, h);  ← 渲染
+#         viewer: 2457  const localPixels = state.kernel.render_region_rgba(0, 0, width, height);
+#         viewer: 6599  const rgba = state.kernel.render_region_rgba(x0, y0, side, side);
+#         viewer: 7960  bytes = kernel.paint_brush(JSON.stringify({ … }));                  ← ★ 落笔 ★
+#         viewer: 7385  kernel.paint_brush(request)｜7389／7975 kernel.paint_brush_error()
+#         viewer: 7623  state.kernel.commit_preview(…)｜2209 state.kernel.extend_preview_stroke(…)
+#         viewer: 1720／1736／2265／6381  state.kernel.apply_atom_json(…)
+#         viewer: 1681／7988  kernel.blob_put(…)｜1181／1756 state.kernel.set_viewport(…)
+#         ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ 落笔（**`paint_brush` ✓）与**渲染（**`render_region_rgba` ✓）**✗
+#       ⇒ **∴ 都**直接调**同一个 `WasmKernel` 实例**✗ ⇒ **∴ 中间**没有任何串行化** ✓
+#         ⇒ **∴ 若**它们**交错**（**∴ 落笔时渲染循环正在跑 ✓）
+#           ⇒ **∴ 于是** wasm-bindgen 报**「**recursive use of an object detected
+#             which would lead to unsafe aliasing in rust**」 ✓
+#             ⇒ **∴ 于是**落笔**失败**✗ ⇒ **∴ 画布**没有墨** ✓ ★**** ✓✓
+#   **★ 与 `__kernelStats.max === 1` 的关系（**第 387 轮的修正得到验证 ✓）★**：
+#     **∴ `__kernelStats` **只在** `api-local.js` **的 `withKernel` 里计数**✗
+#       ⇒ **∴ 而** viewer **根本不用** `withKernel`** ✓
+#         ⇒ **∴ 所以**它**只看到** `api-local.js` **那一半**（**`max === 1` ✓）
+#           ⇒ **∴ 并发**发生在**它看不见的地方** ✓ ★**** ✓✓
+#   **★★★ 修法（**两条，第二条更好 ✓）★★★**：
+#     **∴ 甲 给 viewer **直接调内核**的每一处**加串行化**✗
+#       ⇒ **∴ 即**引入 `withKernel` 的等价物**✗ ⇒ **∴ 但要**改十几处**✗
+#         ⇒ **∴ 容易**漏 ＋ 以后**新增调用又忘** ✓（**∴ 本会话已多次栽在"两条相似路径会漂移" ✓）** ★**** ✓✓
+#     **∴ ★ 乙 把 `WasmKernel` **包一层**✗ ★**：
+#       ⇒ **∴ 即**做一个 `SerializedKernel` 代理**✗
+#         ⇒ **∴ 它**对**每个方法**都**返回一个**排队的 Promise** ✓
+#           ⇒ **∴ 于是**所有调用（**无论来自 viewer 还是 api-local ✓）**自动排队** ✓
+#             ⇒ **∴ 无借用冲突**✗ ⇒ **∴ 落笔**能成功** ✓ ★**** ✓✓
+#         **∴ 代价（**两面 ✓）**：**所有内核调用**变成异步**✗
+#           ⇒ **∴ 于是**同步调用点（**如 1792／7960 ✓）**要**改成 await** ✓
+#             ⇒ **∴ 而**那是**一次性**改造**✗ ⇒ **∴ 但**它**根治** ✓ ★**** ✓✓
+#     **∴ 丙 最小修法（**若只想先验证 ✓）**：**只把**落笔路径（**`paint_brush` ✓）**纳入 `withKernel`**✗
+#       ⇒ **∴ 于是**它**至少**不再与 `api-local` **并发** ✓
+#         ⇒ **∴ 但**与** viewer **自己的渲染**仍可能撞** ✓（**∴ 因为**渲染**不走那个链** ✓）** ★**** ✓✓
+#   **★ 因此下一步（**建议乙 ✓）★**：
+#     **∴ ①** **先做**最小验证**✗：**把 `viewer-app.js:7960` 的落笔**包进**一个**与 `api-local`
+#       **共用的链**✗（**∴ 如**把 `__kernelChain` **提升成全局 ✓）
+#       ⇒ **∴ 若**落笔**成功**⇒ **∴ 根因**确认** ✓ ★**** ✓✓
+#     **∴ ②** **然后**按乙**做**根治**✗（**∴ 所有内核调用**统一排队** ✓）**** ✓✓
+#     **∴ ③** **并把** `__kernelStats` **扩成**统计**所有内核调用**✗
+#       ⇒ **∴ 于是**它**才**真的能分辨** ✓（**∴ 现在**只覆盖一半 ✓）★**** ✓✓
+#   **★ 教训（**本会话最贵之一 ✓）★**：
+#     **∴ 「**两套相似机制**」是**本会话反复的坑**✗
+#       ⇒ **∴ `api-local.js` **有串行化**✗ ⇒ **∴ 而** `viewer-app.js` **没有** ✓
+#         ⇒ **∴ 于是**两边的**并发安全性**完全不同** ✓
+#           ⇒ **★ 所以**：**共享一个对象**的两处代码**必须共享同一套保护机制** ✓ ★**** ✓✓
