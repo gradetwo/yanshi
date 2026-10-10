@@ -966,7 +966,13 @@ async function withKernel(doc, fn) {
     //   ⇒ **∴ 直接把**本地原子日志**按序给它 ✓**（**∴ 它**就是事实 ✓）** ✓✓
     if (path === "/api/tools/get_log") {
       const rows = await atomsOf(handle, doc);
-      const atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      // **★ `order` 也要从 POST body 读 ✗ ★**（PWA 鹦鹉测试 code review ✓）：
+      //   **∴ 前端 `callTool("get_log", {order:"desc"})` 走 POST body ✗**（`callToolLocal` 的实现 ✓）
+      //   ⇒ **∴ 只读 `q`（URL 参数）⇒ 本地层永远拿不到 `order` ✗** ⇒ 历史排序在 PWA 下仍是旧→新 ✗。
+      const order = (q && q.get("order")) || (body && body.order) || "";
+      const newestFirst = order === "desc" || order === "newest_first";
+      let atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      if (newestFirst) atoms = atoms.slice().reverse();
       return json({ ok: true, atoms, count: atoms.length, server: false });
     }
 

@@ -1242,7 +1242,19 @@ async function callToolLocal(name, args, options = {}) {
     let value;
     try {
       const response = await local(req);
-      value = await response.json();
+      // **★ 非 JSON 响应不能走 `response.json()` ✗ ★**（PWA 鹦鹉测试 code review ✓）：
+      //   **∴ 本地 `render_region` 返回 `image/png` 二进制 ✗** ⇒ `json()` 抛 SyntaxError ✗
+      //   ⇒ **∴ 被 catch 吃掉后误报 `endpoint_not_local` ✗** ⇒ `queueServerBlit` 拿不到图 ✗
+      //   ⇒ **∴ 撤销/重做后画布不刷新 ✗**。与服务端路径（`callTool` 的 P0 fix）同形处理 ✓。
+      const __ctype = String((response.headers && response.headers.get("content-type")) || "");
+      if (__ctype && __ctype.indexOf("json") < 0) {
+        const __blob = await response.blob();
+        const __url = URL.createObjectURL(__blob);
+        value = { ok: true, raw: true, raw_url: __url, image_url: __url,
+                  content_type: __ctype, bytes: __blob.size, source: "bytes" };
+      } else {
+        value = await response.json();
+      }
     } catch (error) {
       value = {
         ok: false,
