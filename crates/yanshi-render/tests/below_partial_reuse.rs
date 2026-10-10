@@ -164,6 +164,28 @@ fn partial_below_cache_reuses_the_tiles_it_has() {
         s.below_tiles_measured, s.below_tiles_wanted, s.below_tiles_available, s.below_tiles_reused
     );
 
+    // **★ 三数**自洽性**：恒等式 `available + missing == wanted` ✗ ★**（第 180 轮 ✓）：
+    //   **∴ 为什么它必然成立 ✗**：**实现**对**每一个想要的格**✗
+    //     ⇒ **∴ 恰好**给 `available`**✗、**或**给 `missing`**✗ **加一** ✓**** ✓✓
+    //       （**∴ 在 `tiles` 里 ⇒ available ✓；**在 `empty` 里 ⇒ available ✓；
+    //        **两者都不在 ⇒ missing ✓）** ✓✓
+    //     ⇒ **★ 所以**：**它是**实现的**不变量**✗，**不是**某个场景的巧合 ✓ ★**** ✓✓
+    //   **∴ 为什么必须有它 ✗**：**目标里记着一个**旧读数**✗
+    //     ⇒ `available=20 < wanted=32` **而** `missing=0`**✗
+    //       ⇒ **∴ 20+0 ≠ 32** ✗ ⇒ **★ 那个读数**违反本恒等式** ✓ ★**** ✓✓
+    //         ⇒ **∴ 所以**：**它**只能来自**两次取锁**的旧实现 ✓（**第 16 轮已修 ✓）** ✓✓
+    //   **∴ 它**不写死格数**✗ ⇒ **∴ tile 常量一变**它**照样**有意义 ✓ ★**** ✓✓
+    assert_eq!(
+        s.below_tiles_available + s.below_tiles_missing,
+        s.below_tiles_wanted,
+        "三数**必须**自洽 ✗：available({}) + missing({}) **必须**等于 wanted({}) —— \
+         **∴ 因为**实现**对每个想要的格**恰好**给 available 或 missing 加一 ✓；\
+         **∴ 不等**说明**三数来自**不同的快照** ✗（**第 16 轮的错 ✓）",
+        s.below_tiles_available,
+        s.below_tiles_missing,
+        s.below_tiles_wanted
+    );
+
     assert!(
         s.below_tiles_measured,
         "这次渲染**必须**做过 below 判定 ✗；实测没做过 ⇒ **∴ 要么**这条判据构造不对 ✗，\
