@@ -1304,6 +1304,14 @@ impl Document {
     /// **与 [`Self::render_region_complete_jobs`] 的区别** ✓：这条会**编码 PNG 并落盘** ✓，
     /// 且会更新 `last_render_blob` / 文档缩略图 / 整幅缓存 ✓；那条只渲染并完成 job ✓。
     pub fn render_region(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
+        // **★ 每次渲染**开头**重置后端记录 ✗ ★**（**第 465 轮 ✓；**目标第 7 条 ✓）：
+        //   **∴ 为什么 ✗**：**第 456 轮**把 `Gpu` 粘住**✗
+        //     ⇒ **∴ 于是** `render_backend` **变成**「**曾经用过**」** ✓
+        //       ⇒ **∴ 症状 ✗**：**`--gpu off` 那条**也显示 `gpu`** ✓
+        //     ⇒ **∴ 现在**：**本函数是**渲染入口**✗
+        //       ⇒ **∴ 在这里**重置**✗
+        //         ⇒ **∴ 于是**：**`render_backend` ＝ **最近一次渲染**的后端** ✓ ★**** ✓✓
+        yanshi_render::begin_render();
         let region = bbox;
         if covers_canvas(region, self.state.width, self.state.height) {
             if let Some(preview) = self.current_full_frame_preview()? {
