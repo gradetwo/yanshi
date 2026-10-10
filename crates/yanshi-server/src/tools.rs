@@ -4770,6 +4770,28 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         "layer_id": layer_id,
         "type": "raster_patch",
         "bitmap": bitmap,
+        // **★ 登记**结构化的 blob 引用** ✗ ★**（第 227 轮 ✓；**∴ 导出丢位图的修复 ✓）。
+        //
+        // **∴ 为什么必须写 ✗**：**实测**（**第 226 轮 ✓）**✗**：
+        //   **∴ `import_image` 的净荷里**没有 `refs`**** ✗
+        //     ⇒ **∴ 而** `service.rs:2547` **读的正是 `payload.refs.blobs`** ✓
+        //       ⇒ **∴ 于是** `refs_by_blob` **空** ⇒ **∴ 导出时**任何 blob**都不装** ✓
+        //         ⇒ **∴ 包**14 KiB、`blobs/` ＝ **0 条** ✓
+        //           ⇒ **★ 那**就是 `tool-export-bitmaps.mjs` 的红灯 ✓ ★**** ✓✓
+        //   **∴ 而**本文件第 4749 行附近的注释**早已点出**：
+        //     「**`all_blob_refs` 的净荷扫描**找不到 blob** ⇒ **∴ 校验与保留**都会出错** ✓」
+        //     ⇒ **∴ 全仓**却**没有一处**写 `refs`** ✗ ⇒ **∴ 所以那个约定**从未实现** ✓**** ✓✓
+        //
+        // **∴ 写法 ✗**：**与读取方一致**（**`refs.blobs` ＝ **哈希字符串数组** ✓）
+        // **∴ 好处（**两面 ✓）**：
+        //   **∴ ①** 导出**能收到**位图** ⇒ **∴ 工程包**可独立重建** ✓
+        //   **∴ ②** GC／校验**也能看见**这个引用** ✓
+        // **∴ 代价**：**净荷多一个数组**（**∴ 一个哈希字符串 ✓，**可忽略 ✓）** ✓✓
+        "bitmap": bitmap,
+        "refs": {"blobs": [bitmap
+            .get("blob_hash")
+            .and_then(Value::as_str)
+            .unwrap_or_default()]},
         "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
         "width": region.w as u64,
         "height": region.h as u64,
