@@ -2860,6 +2860,9 @@ impl Renderer {
                             let stitched = (|| -> Option<Vec<u8>> {
                                 let hash: yanshi_core::atom::BlobHash =
                                     tiles.as_deref()?.parse().ok()?;
+                                if std::env::var_os("YANSHI_TRACE_CACHE_KEY").is_some() {
+                                    eprintln!("TILE_PATH {hash}");
+                                }
                                 let index: crate::bitmap_tiles::BitmapIndex =
                                     serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
                                 if !index.is_consistent() {
@@ -2887,6 +2890,10 @@ impl Renderer {
                         }
                     }
 
+                    // **★ 临时诊断 ✗ ★**（第 235 轮 ✓；**∴ 区分两个候选 ✓）
+                    if std::env::var_os("YANSHI_TRACE_CACHE_KEY").is_some() {
+                        eprintln!("CACHE_KEY {blob}|{width}x{height}|{mime_type}");
+                    }
                     let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
                     let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
                         fetch_raster_patch(
