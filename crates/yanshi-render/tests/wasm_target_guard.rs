@@ -16,6 +16,21 @@ use std::path::{Path, PathBuf};
 /// 允许出现的宿主时间 API 用法（文件 → 次数 → 理由）。
 fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
     vec![
+        // **★ 第 184 轮新增 ✓**：**阶段一第 2 条的**成本调查**探针 ✓。
+        // **∴ 它**做什么 ✗**：**分别**计时「**f16 往返**」**与「**整条逐像素路**」✗
+        //   ⇒ **∴ 于是**得出「**f16 占 22.6%（**上界 ✓）」** ✓
+        //     ⇒ **★ 而**那个数**否掉了**「**引入 wide／手写 SIMD ✓」**这个方向 ✓ ★**
+        // **∴ 为什么它**可以在这里**✗**：**它**位于
+        //   `#[cfg(all(test, not(target_arch = wasm32)))]` **里** ✓
+        //   ⇒ **∴ 即**：**测试**代码**不参与** wasm 构建**✗** ⇒ **∴ 永不**编译进客户端 ✓
+        // **∴ 与** `geometry.rs` **那条**同理由 ✓**（**那里**也是** `#[cfg(test)]` **的微基准 ✓）**
+        (
+            "crates/yanshi-render/src/rows.rs",
+            2,
+            "`#[cfg(all(test, not(target_arch = wasm32)))]` 测试模块 split_probe 里的 2 处 \
+             `Instant::now()`（分别计时 f16 往返与整条逐像素路，用于定要不要 SIMD）：\
+             测试代码不参与 wasm 构建，永不编译进客户端",
+        ),
         (
             "crates/yanshi-render/src/render.rs",
             9,
