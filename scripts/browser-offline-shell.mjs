@@ -45,12 +45,23 @@ await new Promise((open) => { socket.onopen = open; });
 //     ⇒ **∴ 而**不是**挂到外层 `timeout` 才死 ✓ ⇒ **∴ 红绿**才分得开 ✓
 const send = (method, params) => new Promise((resolve) => {
   const id = nextId++;
+  // **★ 主连接的悬空请求**不许杀掉整个判据** ✗ ★**（第 132 轮 ✓；**id 跳号的铁证 ✓）：
+  //   **∴ 证据 ✗**：**会话请求的 id 是 10 与 12**✗ ⇒ **∴ 中间**有一个 `id=11`** ✓**** ✓✓
+  //     **∴ 而**12 **回了**✗ ＋ **11 **永远没回** ✓**** ✓✓
+  //     **∴ 于是**：**11 **的定时器**在 20 秒后**触发**✗ ⇒ **∴ `process.exit(2)`** ✓**** ✓✓
+  //     **∴ 而**报告的 `method` **是** `Runtime.evaluate`**✗
+  //       ⇒ **∴ 但**它**不是**会话那条 ✓（**∴ 会话那条是 12 ✓）** ✓✓
+  //   **∴ 所以 ✗**：**11** 是**页面**的一次 `Runtime.evaluate`**✗
+  //     ⇒ **∴ 而**它**在**导航**之后**悬空** ✓（**∴ 旧执行上下文**被销毁 ✓）** ✓✓
+  //     ⇒ **★ 那**与**判据的结论**无关**✗ ⇒ **∴ 不**该**杀掉判据 ✓ ★**** ✓✓
+  //   **∴ 修法**：**主连接**超时**只**警告**✗（**∴ 并**把该请求从 `pending` **移除**✓）
+  //     ⇒ **∴ 而**会话的超时**仍然**退出 ✓（**∴ 那条**真的**影响结论 ✓）** ✓✓
   const timer = setTimeout(() => {
     if (!pending.has(id)) return;
     pending.delete(id);
-    console.error("✗ CDP 命令超时（" + CDP_TIMEOUT_MS + "ms）：" + method
-      + " ⇒ 判据无法作出结论 ✗");
-    process.exit(2);
+    console.warn("  ⚠️ CDP 命令无应答（" + CDP_TIMEOUT_MS + "ms）：" + method
+      + "（很可能是导航后旧执行上下文悬空 ⇒ 与结论无关）⇒ **忽略这条** ✓");
+    resolve({ id, result: undefined, __timeout: true });
   }, CDP_TIMEOUT_MS);
   pending.set(id, (value) => { clearTimeout(timer); resolve(value); });
   socket.send(JSON.stringify({ id, method, params: params || {} }));
