@@ -1365,6 +1365,25 @@ impl Renderer {
                                         let need_x1 = cell_x1.min(want.x + want.w);
                                         let need_y1 = cell_y1.min(want.y + want.h);
                                         let bb = b.bbox();
+                                        // **★ 临时探针（**第 317 轮 ✓；**查明后删 ✓）★**：
+                                        //   **∴ 目的 ✗**：**看**读侧最终选中的那个 piece 有多大** ✓
+                                        //     ⇒ **∴ 因为第 316 轮**：**即使 128×128 的 piece 存在**✗
+                                        //       ⇒ **∴ `covers = true` 仍不改变结果** ✓
+                                        //         ⇒ **∴ 说明**读侧选的**不是它** ✓**** ✓✓
+                                        if let Some(path) = probe_path.as_deref() {
+                                            use std::io::Write;
+                                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                                .create(true)
+                                                .append(true)
+                                                .open(path)
+                                            {
+                                                let line = format!(
+                                                    "READPICK key={k:?} bw={} bh={} need=({need_x0},{need_y0},{need_x1},{need_y1})\n",
+                                                    bb.w, bb.h
+                                                );
+                                                let _ = f.write_all(line.as_bytes());
+                                            }
+                                        }
                                         let covers = need_x1 > need_x0
                                             && need_y1 > need_y0
                                             && bb.x <= need_x0 + 1.0
