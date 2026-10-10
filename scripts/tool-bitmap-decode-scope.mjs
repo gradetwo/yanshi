@@ -330,7 +330,23 @@ const REGION = [0, 0, 64, 64];
 const REGION_PIXELS = REGION[2] * REGION[3];
 // **阈值从面积推导** ✓（**不写死观测** ✗）：解码字节 ≤ K × 区域像素 × 4 B/px ✓
 const K = 4;
-const LIMIT = K * REGION_PIXELS * 4;
+// **★ 阈值按块网格向上取整** ✗ ★**（第 220 轮 ✓；**用户裁决 2 的收口 ✓）。
+// **∴ 为什么 ✗**：**实测**（**第 219 轮 ✓）：**64² 请求**解码 **146,944 B**✗
+//   ⇒ **∴ ÷4 ＝ **36,736 像素**** ✗ ⇒ **∴ 远非**整幅（**4K ＝ 8.3 M ✓）
+//     ⇒ **∴ 而是**碰到了块** ✓**** ✓✓
+// **∴ 根因 ✗**：**`BITMAP_TILE = 256`**（`bitmap_tiles.rs:17` ✓）
+//   ⇒ **∴ 一块 ＝ **65,536 像素**** ✗
+//     ⇒ **∴ 而**旧阈值 **65,536 B ＝ 16,384 像素 ＝ **1/4 块**** ✗
+//       ⇒ **★ 所以**：**任何请求**天然**要碰 1 整块** ⇒ **∴ 旧口径**不可能满足** ✓ ★**** ✓✓
+// **∴ 新口径 ✗**：**先**向上取整到块网格**✗ ⇒ **∴ 再**乘 K** ✓
+//   ⇒ **∴ 64² ⇒ 覆盖 1 块 ⇒ 阈值 ＝ 4 × 65,536 × 4 ＝ **1,048,576 B**** ✓**** ✓✓
+// **★ 仍守得住 ✗ ★**：**整幅预解**（**4K ＝ 33.2 MB ✓）**✗
+//   ⇒ **∴ 远超** 1 MB ⇒ **∴ 判据**必红** ✓**** ✓✓
+// **∴ 变异点 ✗**：**强制整幅预解**（**关掉分块路 ✓）⇒ **∴ 仍必红** ✓
+const BITMAP_TILE = 256; // **∴ 与 `bitmap_tiles.rs` 的 `BITMAP_TILE` 一致 ✓**
+const COVERED_PIXELS =
+  Math.ceil(REGION[2] / BITMAP_TILE) * BITMAP_TILE * (Math.ceil(REGION[3] / BITMAP_TILE) * BITMAP_TILE);
+const LIMIT = K * COVERED_PIXELS * 4;
 const before = await missedBytes();
 const r = await call("render_region", { region: REGION, include_image: false });
 if (r.ok !== true) {
