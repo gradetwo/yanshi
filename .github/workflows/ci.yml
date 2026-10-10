@@ -310,7 +310,21 @@ jobs:
       #     **∴ 收益**：**两条意外失败**应当消失**✗ ＋ **PWA 资产**在 CI 里**也有真实检查** ✓**** ✓✓
       #     **∴ 代价**：**每片多一次**文件拷贝**✗（**∴ 毫秒级 ✓）** ✓**** ✓✓
       - name: Sync the kernel into the PWA assets
-        run: node scripts/pwa-sync-wasm.mjs
+        run: |
+          # **★ 两步都要 ✗ ★**（第 322 轮 ✓；**修 `shard 5/6` 的两条意外失败 ✓）：
+          #   **∴ ① `pwa-sync-wasm.mjs` ✗**：**把 `crates/yanshi-wasm/pkg/` ⇒ `web/wasm/`**
+          #     ⇒ **∴ 第 299 轮**已加 ✓（**∴ 它**修掉了「**内核 wasm 缺失**」 ✓）** ✓✓
+          #   **∴ ② `pwa-sync-viewer.mjs` ✗**：**拷贝 viewer 文件 ⇒ `web/`**
+          #     （**`viewer-app.js`／`viewer.css`／`service-worker.js`／`api-local.js`／`store.js` ✓）
+          #     ＋ **∴ 内联生成** `web/index.html`** ✓**** ✓✓
+          #     **∴ 缺它的症状（**实测 ✓）**：**`tool-pwa-assets.mjs` 报
+          #       「**❌ 没有任何 viewer 文件被副本化 ⇒ PWA 没有界面**」** ✓**** ✓✓
+          #   **∴ 顺序 ✗**：**viewer 的脚本**要读 `web/wasm/*`**✗ ⇒ **∴ 所以**放它之后** ✓**** ✓✓
+          #   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+          #     **∴ 收益**：**`shard 5/6` 的两条**应当消失**✗ ＋ **PWA 资产**在 CI 里**也被真实检查** ✓**** ✓✓
+          #     **∴ 代价**：**每片多一次**拷贝 ＋ **一次内联生成**✗（**∴ 毫秒–秒级 ✓）** ✓✓
+          node scripts/pwa-sync-wasm.mjs
+          node scripts/pwa-sync-viewer.mjs
       # **★ 逐条判据要的** release 二进制 ✗ ★**（第 301 轮加 ✓；**修 `shard 2/6` 的 ① ✓）。
       #   **∴ 根因（**实测 ✓）✗**：**`tool-render-cost-accounts.mjs` **默认**找
       #     `target/release/yanshi-serve`**✗（**它支持 `--baseline` 覆盖 ✓）
