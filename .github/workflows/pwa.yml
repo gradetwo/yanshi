@@ -40,8 +40,31 @@ jobs:
           rustup target add wasm32-unknown-unknown
           cargo --version
 
-      - name: 构建内核（wasm）
-        run: cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+      - name: 构建（**服务端 ＋ 内核 ＋ 六个介质插件 ✓）
+        # **★ 原来只构建内核 ⇒ **三个后果**✗ ★**（**第 492 轮实测 ✓）：
+        #   **∴ ①** **六个介质插件**没构建**✗
+        #     ⇒ **∴ 于是**：`pwa-sync-viewer.mjs` 报
+        #       `ERROR: 一个介质插件都没同步 => PWA 的油画与水彩会 404`**✗
+        #       ⇒ **∴ 整个 job**在「同步 viewer」那一步**失败** ✓
+        #         ⇒ **∴ 部署**根本没跑到** ✓ ★**** ✓✓
+        #   **∴ ②** **没有 `yanshi-serve`**✗
+        #     ⇒ **∴ 于是**：**静态页导出被**跳过**✗
+        #       ⇒ **∴ `web/index.html` **保持旧的** ✓（**∴ 线上页面**会变旧 ✓）
+        #         ＋ **∴ 而**当时那只是一条**警告****✗ ⇒ **★ 那是**静默降级**** ✓ ★**** ✓✓
+        #   **∴ ③** 所以本步骤**照 `ci.yml` 的「Build server and wasm package」抄**✓
+        #     ⇒ **∴ 唯一差别 ✗**：**服务端只要 **debug****✗
+        #       （**∴ 导出静态页**不需要优化 ⇒ **∴ 省钱 ✓）★**** ✓✓
+        run: |
+          # **∴ ① 服务端（**debug 够 ✓；**它只用来导出静态页 ✓）
+          cargo build -p yanshi-http --bin yanshi-serve
+          # **∴ ② 内核 ✓**
+          cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+          # **∴ ③ 六个介质插件（**缺了 ⇒ 油画／水彩在 PWA 上 404 ✓）
+          cargo build --release --target wasm32-unknown-unknown \
+            -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
+            -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example
+          # **∴ ④ 同步插件到 assets/mediums ＋ web/ ✓**
+          node scripts/mediums-sync.mjs
 
       - name: 安装 wasm-bindgen CLI
         run: |

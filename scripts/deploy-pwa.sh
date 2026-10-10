@@ -75,7 +75,20 @@ if [ "${SKIP_BUILD}" = 0 ]; then
   echo "  ✓ 已装"
 
   say "② 构建 wasm 内核"
+  # **★ 服务端（**debug 够 ✓）＋ 六个介质插件 ✗ ★**（**第 492 轮 ✓）
+  #   **∴ 为什么必须有 ✗**（**`pwa.yml` 在这两处**真失败过** ✓）：
+  #     **∴ ①** **没有 `yanshi-serve`**✗ ⇒ **∴ 静态页导出**被跳过** ✓
+  #       ⇒ **∴ 于是**：**`web/index.html` **保持旧的** ⇒ **∴ 线上页面**变旧** ✓
+  #         ＋ **∴ 而**新版本**已把它改成**硬错误** ⇒ **∴ 不补就会**直接失败** ✓ ★**** ✓✓
+  #     **∴ ②** **六个插件**没构建**✗ ⇒ **∴ `pwa-sync-viewer.mjs` 报
+  #       `ERROR: 一个介质插件都没同步`**✗ ⇒ **∴ 油画／水彩在 PWA 上**404** ✓ ★**** ✓✓
+  say "② 服务端（**导出静态页用 ✓）＋ 内核 ＋ 六个介质插件"
+  cargo build -p yanshi-http --bin yanshi-serve
   cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+  cargo build --release --target wasm32-unknown-unknown \
+    -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \
+    -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example
+  node scripts/mediums-sync.mjs
 
   say "③ 装 wasm-bindgen CLI（**版本来自 Cargo.lock ✓）"
   VER="$(scripts/wasm-bindgen-version.sh)"

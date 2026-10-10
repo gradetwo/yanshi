@@ -215,7 +215,22 @@ if (!bin && triedBins.length > 0) {
   process.exit(1);
 }
 if (!bin) {
-  console.warn("  ⚠️ 未找到 yanshi-serve ⇒ 跳过静态页导出 ✗（web/index.html 保持现状 ✓）");
+  // **★ 不许静默跳过 ✗ ★**（**第 492 轮 ✓）：
+  //   **∴ 原来 ✗**：**只 `console.warn` 然后继续**✗
+  //     ⇒ **∴ 于是**：**`web/index.html` **保持旧的**✗
+  //       ＋ **∴ 而**CI **照样绿** ✓
+  //         ⇒ **★ 那是**静默降级**✗ ⇒ **∴ 线上页面**会悄悄变旧** ✓ ★**** ✓✓
+  //   **∴ 现在 ✗**：**缺服务端二进制 ⇒ **非零退出 ＋ 说清怎么办**** ✓
+  //     ＋ **∴ 逃生开关 ✗**：`--allow-missing-server`**✗
+  //       （**∴ 本地只想同步 viewer 时用 ✓；**CI 不许用 ✓）★**** ✓✓
+  if (!process.argv.includes("--allow-missing-server")) {
+    console.error("✗ 未找到 yanshi-serve ⇒ **无法导出静态页**（**不许静默跳过** ✗）");
+    console.error("   ⇒ 修：cargo build -p yanshi-http --bin yanshi-serve");
+    console.error("   ⇒ 或：只想同步 viewer 时加 --allow-missing-server（**本地用 ✓）");
+    process.exit(1);
+  } else {
+    console.warn("  ⚠️ 未找到 yanshi-serve ⇒ 跳过静态页导出 ✗（web/index.html 保持现状 ✓）");
+  }
 } else {
   console.log(`  静态页导出用的二进制：${bin} ✓`);
   const tmp = join(DST, ".index.export.html");
