@@ -111,7 +111,9 @@ pub(crate) fn for_each_band_mut(
 ///
 /// 每像素只由它自己那 4 个 f32 决定（没有跨行状态、没有浮点规约）⇒ 行区间怎么切都不改变
 /// 任何字节（顺序无关性的根据见本模块文档）。
-pub(crate) fn encode_quantized_rows(
+/// **∴ 第 308 轮**放宽为 `pub`**✗ ⇒ **∴ 于是**：**判据**可以**直接调**它**当作**CPU 真值**** ✓
+///   （**∴ 而**主路径**用的**就是它**✗ ⇒ **∴ 不是**另写一套 ✓）** ✓✓
+pub fn encode_quantized_rows(
     source: &[f32],
     destination: &mut [u8],
     row_start: usize,

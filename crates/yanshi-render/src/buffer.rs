@@ -15,7 +15,8 @@ pub struct Buffer {
     origin_y: i64,
     width: u32,
     height: u32,
-    pixels: Vec<f32>,
+    /// **∴ 第 308 轮**放宽为 `pub`**✗（**判据要用它当输入 ✓）
+    pub pixels: Vec<f32>,
 }
 
 impl Buffer {

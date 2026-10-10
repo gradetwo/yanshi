@@ -105,7 +105,9 @@ pub mod prng;
 pub mod psd;
 pub mod region_block;
 pub mod render;
-mod rows;
+/// **∴ 第 308 轮**放宽为 `pub`**✗ ⇒ **∴ 于是**：**判据**可以直接调**它**当作**CPU 真值**** ✓
+///   （**∴ 而**主路径**用的**就是它**✗ ⇒ **∴ 不是**另写一套 ✓）** ✓✓
+pub mod rows;
 pub mod selection;
 pub mod thumb;
 pub mod tile;
