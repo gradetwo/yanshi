@@ -18869,3 +18869,39 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #   **∴ clippy 拦下了一处 ✗**：`manual_range_contains`（**`parallel_gets >= 1 && … <= 4` ✓）
 #     ⇒ **∴ 修法**：`(1..=4).contains(&parallel_gets)` ✓
 #     ⇒ **★ 那**证明**门禁**真的在挡** ✓（**∴ 而**我**上一轮**正是**没挡**才报错了绿 ✓）★**** ✓✓
+
+# **★ 第 238 轮：★★★★★★★ **合并 PWA 补丁（**两处 ✓）＋ **找到一个**同步清单缺口**** ✗**（**已提交 `8ce34ae3` ✓）★★★★★★★**
+#   **★ 补丁的两处（**前提都已核实 ✓）★**：
+#     **∴ ① `viewer-app.js` ✗**：**本地响应**非 JSON 时**✗
+#       ⇒ **∴ 原来**直接 `response.json()`**✗
+#         ⇒ **∴ 而**本地 `render_region` **返回 `image/png` 二进制** ✓
+#           ⇒ **∴ 于是**抛 SyntaxError ⇒ **∴ 被 catch 吃掉 ⇒ **误报 `endpoint_not_local`**** ✓
+#             ⇒ **∴ 而** `queueServerBlit` **拿不到图 ⇒ **撤销/重做后画布不刷新** ✓**** ✓✓
+#       **∴ 修法 ✗**：**看 `content-type`**✗ ⇒ **∴ 非 json** ⇒ **∴ 转成 blob ＋ `raw_url`** ✓**** ✓✓
+#       **∴ 前提核实 ✗**：
+#         **∴ `callToolLocal`（`viewer-app.js:1215` ✓）**：`method:"POST"` ＋ `body: JSON.stringify(args)`** ✓
+#         **∴ 本地 `render_region` **确实**编码 PNG**（`URL.createObjectURL(new Blob([png], {type:"image/png"}))` ✓）** ✓✓
+#         **∴ 且**第 1233 行的注释**早已写明**「**`api-local.js` **故意**抛 `endpoint_not_local`**」 ✓
+#           ⇒ **★ 所以**：**那**正是**我未完成的 `endpoint_not_local` 的**根因**** ✓ ★**** ✓✓
+#     **∴ ② `api-local.js` ✗**：**`get_log` **也要从 POST body 读 `order`**** ✗
+#       ⇒ **∴ 原来**只读 `q`（**URL 参数 ✓）**✗
+#         ⇒ **∴ 而**前端走 **POST body** ✓ ⇒ **∴ 于是**本地层**永远拿不到 `order`** ✓
+#       **∴ 前提核实 ✗**：**`api-local.js` **本来就从 `body` 读参数**（如 `p2CheckRegionArgs(body, …)` ✓）** ✓✓
+#   **★ 合并结果 ✗ ★**：**干跑干净**✗ ⇒ **∴ 应用 ＋ `node --check` 两个文件都过** ✓**** ✓✓
+#     **∴ 重建（**16:37:50 ✓）⇒ 同步 ⇒ web/ 与源头**逐一核对**：
+#       **`newestFirst`：源头 2 ／ web 2** ✓
+#       **`__ctype`：源头 6 ／ web 6 ／ index.html 6** ✓**** ✓✓
+#     **∴ 门禁（**联合 ✓）**：fmt ✓｜clippy ✓｜js-syntax ✓｜pwa-assets ✓｜workspace-test ✓** ✓**** ✓✓
+#   **★ 新发现（**真实隐患 ✓）★**：**`scripts/pwa-sync-viewer.mjs` 的 `FILES` **不含 `api-local.js`**** ✗
+#     **∴ 它只拷 3 个 ✗**：`viewer-app.js`／`viewer.css`／`service-worker.js` ✓**** ✓✓
+#     **∴ 而**第 26–27 行**另有**一个 7 项的清单**（**含 `api-local.js` ✓）** ✗
+#       ⇒ **∴ 两个清单**不一致** ✓**** ✓✓
+#     **∴ 且**：**源头与 web 的 `api-local.js` **MD5 不同**✗（**294377 vs 294781 B ✓）
+#       ⇒ **∴ 那**是**长期存在**的差异** ✓（**∴ 不是**本次引入 ✓）**** ✓✓
+#     **⇒ ★ 所以**：**web/api-local.js **靠**别的路径**维护**✗
+#       ⇒ **∴ 或**者**它是**手工同步**的** ✓ ⇒ **∴ 那是**一个**隐患**（**容易忘 ✓）★**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **核对** `pwa-sync-viewer.mjs` **的两个清单**✗
+#       ⇒ **∴ 若**第 26–27 行**才是**权威**✗ ⇒ **∴ 让** `FILES` **与它一致** ✓**** ✓✓
+#     **∴ ②** **并**加一条判据**✗：**源头与 web 的同名前端文件**必须**一致** ✓
+#       **∴ 变异点**：**改源头不改 web** ⇒ **∴ 判据必红** ✓**** ✓✓
