@@ -22638,3 +22638,67 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       **`canvasSig` 也快**（**本轮 ✓）｜**判据已有超时 ＋ 重试**（**本轮 ✓）｜
 #       **`{}` 与「三次超时 ⇒ undefined」矛盾**（**本轮 ✓）｜
 #       **「换什么笔都一样」**有已知成因**（**待立判据 ✓）** ★**** ✓✓
+
+# **★ 第 402 轮：★★★★★★★★★★ **根因找到并修好 —— 判据的 `evaluate` 缺 `awaitPromise: true` ⇒ 所有 async 求值返回 `{}`**** ✗** ★★★★★★★★★★
+#   **★★★ 原始值调试（**决定性 ✓）★★★**：
+#     ```
+#     ★ 调试：typeof strokeRaw = object｜isArray = false｜keys = []｜raw = {} ★
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：**`strokeRaw` **是**一个真正的空对象**✗（**不是** undefined ✓）
+#       ⇒ **∴ 而** `evaluate` **返回** `message.result?.result?.value`**✗
+#         ⇒ **∴ 那个 value **就是 `{}`** ✓ ★**** ✓✓
+#   **★★★ 根因（**一行 ✓）★★★**：
+#     **∴ 判据的 `evaluate` 原来只有** `returnByValue: true`**✗**：
+#       ```js
+#       const message = await send("Runtime.evaluate", { expression, returnByValue: true });
+#       ```
+#       ⇒ **∴ 而**落笔表达式是**一个 async 函数**✗ ⇒ **∴ 它**返回 **Promise** ✓
+#         ⇒ **∴ CDP** 无法把 Promise 序列化成值**✗ ⇒ **∴ 于是**给出 `{}`** ✓ ★**** ✓✓
+#     **∴ 对照 ✗**：**我**的诊断脚本**传了** `awaitPromise: true`**✗ ⇒ **∴ 全部成功** ✓
+#       （**∴ 11 步全通 ＋ 整条事件＋提交路径全通 ＋ 三连胜 ✓）
+#         ⇒ **∴ 差别**就在这一个开关** ✓ ★**** ✓✓
+#   **★★★ 修法 ✗ ★★★**：
+#     ```js
+#     const message = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+#     ```
+#     **∴ 且 ✗**：**它对**非 Promise 的表达式**无害**✗
+#       ⇒ **∴ 所以**同一个 helper 可以两用** ✓ ★**** ✓✓
+#   **★★★ 实测（**修后 ✓）★★★**：
+#     ```
+#     ★★★ 退出码: 1 ★★★（**只剩负对照 ✓）
+#     ★ 离线落笔 = {"result":"dispatched","tool":"brush","pointsAtDown":1,"draggingAtDown":true,
+#        "pointsAtMove":13,"stateKeys":26,"toolNow":"brush","draggingNow":1,"sizeNow":6,
+#        "brushNow":null,"strokeState":{"points":1,"dragging":1}}
+#        ｜ ★ 非背景像素 0 => 220 ★
+#     ✗ 离线外壳未达成：负对照失败：断网后未缓存的 /api/__offline_negative_control__ 仍然成功
+#        （{"failed":false,"why":"sw-evaluate-returned-nothing"}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：
+#       **∴ ①** **落笔**完全成功**✗（**`pointsAtDown: 1`｜`draggingAtDown: true`｜
+#         `pointsAtMove: 13`｜**墨 0 ⇒ 220** ✓）★**** ✓✓
+#       **∴ ②** **唯一剩下的失败**是**负对照**✗
+#         ⇒ **∴ 那**是**本会话早先查明的**已知 CDP 限制** ✓
+#           （**∴ 「**CDP 的页面级 offline 管不到 SW 上下文发出的 fetch**」 ✓）
+#           ＋ **∴ 且**判据**自己标了**「**判据作废（VOID）**」 ✓ ★**** ✓✓
+#         ⇒ **∴ 所以**：**「**事件没进状态机**」的误报**根除了** ✓ ★**** ✓✓
+#   **★ 影响面（**重要 ✓）★**：
+#     **∴ 凡**用** async 表达式**调 `evaluate` **的判据**✗
+#       ⇒ **∴ 都会**静默得到 `{}`**✗ ⇒ **∴ 于是**误判** ✓
+#         ⇒ **∴ 所以**要**普查**所有判据的 `evaluate` helper** ✓ ★**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **grep** 所有判据的 `Runtime.evaluate`**✗
+#       ⇒ **∴ 凡**缺 `awaitPromise: true` 且**会传 async 表达式**的**✗
+#         ⇒ **∴ 都要**补上** ✓ ★**** ✓✓
+#     **∴ ②** **并**：**把**这一条**写进 `AGENTS.md`**✗
+#       ⇒ **∴ 于是**以后**新判据不会再踩** ✓ ★**** ✓✓
+#     **∴ ③** **且**：**给**判据的 `evaluate` **加**「**结果为空对象即自身失败**」**✗
+#       ⇒ **∴ 于是**同类问题**立刻暴露** ✓ ★**** ✓✓
+#   **★ 本会话修复汇总（**六修 ＋ 十定性 ✓）★**：
+#     **∴ 修复（**产品 ✓）**✗**：**`/brush-local.js` 路由**（**`9fd839f8` ✓）｜**boot rethrow**（**`8abd8c74` ✓）｜
+#       **借用视图拷贝**（**`4f6b8942` ✓）｜**`?render=client`**（**`53afc892` ✓）｜
+#       **全局内核链**（**`096c3073` ✓）** ✓**** ✓✓
+#     **∴ 修复（**判据 ✓）**✗**：**求值失败**不再伪装成产品症状**（**`ef8410f7`／`85728c71` ✓）｜
+#       **★ `awaitPromise: true`**（**本轮 ✓）** ★**** ✓✓
+#     **∴ 定性 ✗**：**内核路径**已好**（**三连胜 ＋ 逐位一致 ✓）｜**事件路径 ＋ 提交路径**全通** ✓｜
+#       **离线模拟无害**｜**`canvasSig` 也快**｜**判据的 `evaluate` 缺 `awaitPromise`**（**本轮 ✓）｜
+#       **负对照是已知 CDP 限制**（**判据标 VOID ✓）** ✓**** ✓✓

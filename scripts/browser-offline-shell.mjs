@@ -95,7 +95,18 @@ const send = (method, params) => new Promise((resolve) => {
 //       ⇒ **∴ 不**需要 `awaitPromise`**✗ ⇒ **∴ 也**不会**挂死 ✓ ★**** ✓✓
 const evaluate = async (expression) => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const message = await send("Runtime.evaluate", { expression, returnByValue: true });
+    // **★ 必须 `awaitPromise: true` ✗ ★**（第 402 轮 ✓；**实测根因 ✓）：
+    //   **∴ 症状 ✗**：**判据的落笔求值**返回一个**真正的空对象** `{}`**✗
+    //     （**∴ 调试实测：`typeof = object`｜`keys = []`｜`raw = {}` ✓）
+    //       ⇒ **∴ 于是**判据**误判「**事件没进状态机**」 ✓ ★**** ✓✓
+    //   **∴ 根因 ✗**：**原来的调用**只有 `returnByValue: true`**✗
+    //     ⇒ **∴ 而**落笔表达式是一个 **async 函数**✗ ⇒ **∴ 它**返回 **Promise** ✓
+    //       ⇒ **∴ CDP** 无法把 Promise 序列化成值**✗ ⇒ **∴ 于是**给出 `{}`** ✓ ★**** ✓✓
+    //   **∴ 对照 ✗**：**我的诊断脚本**传了** `awaitPromise: true`**✗ ⇒ **∴ 全部成功** ✓
+    //     （**∴ 11 步全通 ＋ 整条提交路径全通 ＋ 三连胜 ✓）** ⇒ **∴ 差别就在这一个开关** ✓ ★**** ✓✓
+    //   **∴ 且 ✗**：**它对**非 Promise 的表达式**无害**✗
+    //     ⇒ **∴ 所以**同一个 helper 可以两用** ✓ ★**** ✓✓
+    const message = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     if (!message || !message.__timeout) return message.result?.result?.value;
     console.warn("    ↳ 第 " + (attempt + 1) + " 次读到页面状态无应答 ⇒ **重发** ✓");
   }
@@ -605,6 +616,12 @@ const strokeRaw = await evaluate(`Promise.race([(async () => {
       + "（已知限制：CDP 页面级 offline 管不到 SW 上下文的 fetch）" }), 8000))])`);
 const strokeResult = strokeRaw;
 // **★ 求值失败**不许**伪装成产品症状 ✗ ★**（第 395 轮 ✓）：**∴ 空对象／缺字段**都算**硬失败** ✓
+// **★ 原始值**必须打出来 ✗ ★**（第 402 轮 ✓）：**∴ 不然分不清** `undefined` 与 `{}`** ✓
+const rawJson = (() => { try { return JSON.stringify(strokeRaw); } catch (e) { return "stringify失败:" + e; } })();
+console.error("  · 调试：typeof strokeRaw = " + typeof strokeRaw
+  + "｜isArray = " + Array.isArray(strokeRaw)
+  + "｜keys = " + (strokeRaw && typeof strokeRaw === "object" ? JSON.stringify(Object.keys(strokeRaw)) : "n/a")
+  + "｜raw = " + String(rawJson).slice(0, 300));
 const emptyResult = !strokeResult || (typeof strokeResult === "object"
   && Object.keys(strokeResult).length === 0);
 if (emptyResult || typeof strokeResult !== "object"
