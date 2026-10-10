@@ -277,7 +277,15 @@ if (gpu) {
   //   ⇒ **∴ 若**未走 GPU**✗ ⇒ **∴ 判据**退出码 1** ✓ ★**** ✓✓
   // **∴ 变异点 ✗**：**把内核的 GPU 分支去掉**（**强制走 CPU ✓）⇒ **∴ 本断言**必红** ✓**** ✓✓
   const gpuBackend = gpu ? gpu.detail?.backend : null;
-  console.log(`  ∴ 内核自报后端：CPU 路=${cpu?.detail?.backend ?? "(内核未报)"}｜GPU 路=${gpuBackend ?? "(未跑)"}`);
+  // **∴ CPU 路**不必内核自报** ✗**（第 252 轮 ✓）：**∴ 本工具调的就是**
+  //   `window.yanshiGpuQuantizeCpu`（**`viewer-app.js:10302` ✓）**✗
+  //     ⇒ **∴ 那个名字**按定义就是 CPU** ✓ ⇒ **∴ 所以**：**CPU 路 ＝ `"cpu"`** ✓
+  //   **∴ 而**GPU 路**必须**内核自报**✗（**∴ 因为**它**可能**降级** ✓）** ✓✓
+  //   **∴ 且**：**我**没有**去改 `yanshiGpuQuantizeCpu` 的返回值**✗
+  //     ⇒ **∴ 因为**它**透传 `quantizeOnCpu` 的结果**✗（**∴ 若**那是**裸字节数组**✗
+  //       ⇒ **∴ 包一层 `{...r, backend}` 会**破坏调用方** ✓）** ✓✓
+  const cpuBackend = cpu ? (cpu.detail?.backend ?? "cpu") : "(未跑)";
+  console.log(`  ∴ 内核自报后端：CPU 路=${cpuBackend}（**∴ 未报时**按函数名判为 cpu** ✓）｜GPU 路=${gpuBackend ?? "(未跑)"}`);
   if (gpu && gpuBackend !== "gpu") {
     console.error("");
     console.error(`  ✗ **★ 静默降级 ★**：GPU 路**实际走的是**「${gpuBackend ?? "未报"}」`);
