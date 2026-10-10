@@ -1129,7 +1129,56 @@ async function jsonOrError(response) {
   }
 }
 
+/**
+ * **★ C/S 本地渲染模式的工具分发**（"关闭服务器渲染"时走这里）。
+ * 复用 PWA 的 `api-local.js`（`makeLocalApi`），不重写 148 个端点的映射逻辑。
+ * 懒加载：第一次调用时才 import，避免服务器渲染模式多下载 286KB。
+ */
+let __csLocalApiPromise = null;
+async function callToolLocal(name, args, options = {}) {
+  if (!__csLocalApiPromise) {
+    __csLocalApiPromise = (async () => {
+      const { makeLocalApi } = await import("/api-local.js");
+      return await makeLocalApi();
+    })();
+  }
+  const local = await __csLocalApiPromise;
+  const url = api("/api/tools/" + name);
+  const req = new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(args || {}),
+  });
+  const response = await local(req);
+  const value = await response.json();
+  // 本地模式也走同样的后处理：状态显示、变更追踪、画布刷新。
+  // （与服务端路径保持一致，避免两套行为分叉。）
+  $("last").textContent = JSON.stringify(value).slice(0, 600);
+  if (value.ok) {
+    if (value.head !== undefined) window.yanshiStats.serverHead = value.head;
+    if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
+    const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+    afterMutation(trackable, {
+      skipRefresh: options.refresh === false,
+      dirtyBox: value.dirty_bbox || null,
+    });
+  } else {
+    const __code = value.error_code || value.error || value.reason || "unknown";
+    const __detail =
+      (value.context && value.context.detail) || value.reason || value.message || "";
+    log("错误 " + __code + (__detail ? "：" + __detail : ""), "#c33");
+  }
+  return value;
+}
+
 async function callTool(name, args, options = {}) {
+  // **★ 服务器渲染开关**（用户显式二选一，默认开）：
+  //   开 → 走服务端 POST（原有行为，不变）；
+  //   关 → 走本地 WASM 内核（复用 PWA 的 api-local.js 映射逻辑，不重写）。
+  //   注意：本地模式写 IndexedDB，与服务端文档状态可能分叉，切换回服务端模式时以服务端为准。
+  if (!serverRenderPreferred()) {
+    return await callToolLocal(name, args, options);
+  }
   // **只读工具在注入的清单里** ✓（服务端按 `ToolSpec.mutating` 生成 ✓ ⇒ 权威、不漏 ✓）；
   // 不在清单里 = **改文档** ✓ ⇒ 网络失败时要进离线队列 ✓，不能丢 ✗。
   const mutating = !LOCAL_READ_TOOLS.includes(name);

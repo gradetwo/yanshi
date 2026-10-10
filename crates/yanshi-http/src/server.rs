@@ -696,6 +696,29 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // **★ C/S 本地渲染模式**：`api-local.js` + `store.js` 是 PWA 本地 API 的实现，
+    //   C/S 前端在"关闭服务器渲染"时复用它们（`callTool` 走本地 WASM）。
+    //   与 `viewer-app.js` 同样内嵌，保證单二进制部署。
+    if path == "/api-local.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                include_str!("../assets/api-local.js").as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/store.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                include_str!("../assets/store.js").as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if path == "/manifest.webmanifest" {
         return match method {
             "GET" => Response::bytes(
