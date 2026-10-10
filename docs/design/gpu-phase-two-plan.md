@@ -1396,3 +1396,55 @@ test result: ok. 1 passed; finished in 1.30s
 | **分流阈值** | **★ 完成 ★**（**30 000，有牙 ✓） |
 | **★ 接进服务端 ✗** | **★ 未完成 ★**（**∴ 现在**只在 `tests/` 里 ✓） |
 | **CI 测体积／构建时间** | **★ 未完成 ★**（**目标第 10 条 ✓）** |
+
+---
+
+# 三十三、★★★ **CI 接管体积与构建（目标第 10 条）：新增 `gpu-feature` job**（第 290 轮）★★★
+
+## 一、★ 现状（**我查过的 ✓**）★
+
+**∴ `.github/workflows/` 有 4 个 ✗**：`ci.yml`／`heavy.yml`／`pwa.yml`／`release.yml`
+**∴ `ci.yml` 原有的 job ✗**：`fmt`／`clippy`（**默认 ✓）／`test`／`wasm-smoke`／`parity-arm64`／`criteria` ✓
+**⇒ ★ 缺的正是目标第 10 条要的 ✗ ★**：**`--features gpu` 的**构建与体积** ✓ ★**** ✓✓
+
+## 二、★ 新增 `gpu-feature` job（**6 步 ✓**）★
+
+| 步 | 内容 |
+|---|---|
+| **① checkout** | — |
+| **② toolchain** | **stable** |
+| **③ rust-cache** | **∴ 缓存依赖 ✓ |
+| **④ ★ 构建 ＋ 报体积 ✗ ★** | **`cargo build --release --features gpu`**✗ ⇒ **∴ 写进 `GITHUB_STEP_SUMMARY`** ✗：**构建时间／二进制字节／编译包数／默认编译包数**（**对照 ✓）** ✓ |
+| **⑤ `clippy --features gpu`** | **∴ 那是**另一个编译配置**✓ ⇒ **∴ 必须**单独过** ✓ |
+| **⑥ 五个 GPU 判据** | **∴ 无适配器就**自行跳过**✗ ⇒ **∴ CI 的 runner**不会误红** ✓ |
+
+## 三、★ 两面（**AGENTS.md 第 5 条 ✓**）★
+
+| 面 | 内容 |
+|---|---|
+| **收益** | **每次 push 都能看到 `gpu` feature 的**体积与编译时间**✗ ⇒ **∴ 目标第 10 条**「交 CI」被满足 ✓ |
+| **代价** | **CI 时间增加**（**∴ 首次约几十秒 ＋ 依赖缓存 ✓）** |
+| **∴ 且** | **CI 的 runner 没有 GPU**✗ ⇒ **∴ 那五个判据在那里**只验证**能编译能启动** ✓（**∴ 真值验证仍在有 GPU 的机器上 ✓）** ✓ |
+
+## 四、★ 本地预演（**照 CI 的两步 ✓**）★
+
+```
+jobs: ['fmt', 'clippy', 'test', ★ 'gpu-feature' ★, 'wasm-smoke', 'parity-arm64', 'criteria']
+gpu-feature steps = 6
+
+clippy（--features gpu）✓
+gpu_f16_roundtrip ✓｜gpu_quantize_parity ✓｜gpu_chunked_quantize ✓
+gpu_scale_sweep ✓｜gpu_batch_submit ✓
+⇒ 全部 ✓
+```
+
+## 五、★ 阶段二收口表（**更新 ✓**）★
+
+| 项 | 状态 |
+|---|---|
+| **可计算的 GPU 量化** | **★ 完成 ★**（**五步 ＋ 逐位 0 ✓） |
+| **批量 ＋ 分块** | **★ 完成 ★** |
+| **两本账** | **★ 完成 ★**（**4K：−99.2%／−99.7% ✓） |
+| **分流阈值** | **★ 完成 ★**（**30 000，有牙 ✓） |
+| **★ CI 体积／构建 ✗** | **★ 本轮完成 ★**（**`gpu-feature` job ✓） |
+| **★ 接进服务端渲染路径 ✗** | **★ 未完成 ★**（**∴ 现在**只在 `tests/` 里**✗ ⇒ **∴ `render_backend` 仍是 `cpu` ✓ —— **∴ 那是**诚实的** ✓） |

@@ -89,6 +89,55 @@ jobs:
         # 不含 `--ignored`：长任务在 heavy.yml。
         run: cargo test --workspace
 
+  # **★ `--features gpu` 的**构建与体积** ✗ ★**（第 290 轮 ✓；**目标第 10 条 ✓）：
+  #   **∴ 为什么必须交给 CI ✗**：
+  #     **∴ 本地实测**（**第 260–262 轮 ✓）**✗**：
+  #       **∴ `--features gpu` ⇒ 编译面 **45 → 92** 个包** ✓（**+47 ✓）
+  #       **∴ dev profile** **34.89 s** ✓（**∴ release** 会更久 ✓）
+  #     ⇒ **∴ 而**本机**不适合**反复跑 release 全量** ✓（**∴ 目标第 10 条**明确交 CI ✓）** ✓✓
+  #   **∴ 且**：**GitHub 的 runner **没有 GPU**** ✗
+  #     ⇒ **∴ 三个 GPU 判据**会**自行跳过**（**∴ 它们**找不到适配器就 `return`** ✓）
+  #       ⇒ **∴ 而**本 job 的价值在「**构建通过 ＋ 体积有数**」 ✓**** ✓✓
+  #   **∴ 两面（**AGENTS.md 第 5 条 ✓）★**：
+  #     **∴ 收益**：**每次 push 都能看到 `gpu` feature 的体积与编译时间** ✓
+  #     **∴ 代价**：**CI 时间增加**（**∴ 首次约几十秒 ＋ 依赖缓存 ✓）** ✓✓
+  gpu-feature:
+    name: GPU feature (build and size)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # **∴ 体积与时间都**记下来**✗ ⇒ **∴ 写进 job summary** ✓
+      - name: Build with the gpu feature and report the size
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo build --release -p yanshi-http --bin yanshi-serve --features gpu
+          end=$(date +%s)
+          plain=$(stat -c %s target/release/yanshi-serve)
+          {
+            echo "## GPU feature build"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 构建时间 | $((end - start)) s |"
+            echo "| 二进制 | $((plain / 1048576)) MiB ($plain B) |"
+            echo "| 编译包数 | $(cargo tree -p yanshi-http -e normal --features gpu --prefix none | sed 's/ (.*//' | sort -u | wc -l) |"
+            echo "| 默认编译包数 | $(cargo tree -p yanshi-http -e normal --prefix none | sed 's/ (.*//' | sort -u | wc -l) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # **∴ `clippy` 也要在**这个配置**下过**✗（**∴ 它是**另一个编译配置** ✓）
+      - name: Clippy with the gpu feature
+        run: cargo clippy -p yanshi-http --features gpu --all-targets -- -D warnings
+      # **∴ GPU 判据：**无适配器就**自行跳过**✗ ⇒ **∴ 不会**误红** ✓
+      - name: GPU criteria (they skip when there is no adapter)
+        run: |
+          cargo test -p yanshi-http --features gpu --test gpu_f16_roundtrip
+          cargo test -p yanshi-http --features gpu --test gpu_quantize_parity
+          cargo test -p yanshi-http --features gpu --test gpu_chunked_quantize
+          cargo test -p yanshi-http --features gpu --test gpu_scale_sweep
+          cargo test -p yanshi-http --features gpu --test gpu_batch_submit
+
   wasm-smoke:
     name: wasm smoke (node)
     runs-on: ubuntu-latest
