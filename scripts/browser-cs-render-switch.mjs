@@ -270,9 +270,22 @@ async function drawStroke() {
   const wallMs = Date.now() - t0;
   const task1 = await taskDuration();
   const afterSig = await signature();
+  // **★ 分段端到端延迟 ✗ ★**（第 75 轮 ✓；**用户第 8 条要求"**墙钟 ＋ **端到端延迟 ✓" ✓）：
+  //   **∴ 页面**本来就**暴露了**这几段**✗（**∴ 我**不必**新加计时 ✓）
+  //     ⇒ **∴ 于是**：**两本账**再多四列**✗ ⇒ **∴ 那**才**是**端到端 ✓**** ✓✓
+  const stagesRaw = await evaluate(`JSON.stringify({
+    firstStrokeMs: (window.yanshiStats||{}).firstStrokeMs,
+    lastApplyMs: (window.yanshiStats||{}).lastApplyMs,
+    lastRenderMs: (window.yanshiStats||{}).lastRenderMs,
+    lastPutMs: (window.yanshiStats||{}).lastPutMs,
+    kernelWarmMs: (window.yanshiStats||{}).kernelWarmMs,
+  })`);
+  let stages = null;
+  try { stages = JSON.parse(stagesRaw); } catch { stages = null; }
   return {
     wallMs,
     taskMs: task0 !== null && task1 !== null ? (task1 - task0) * 1000 : null,
+    stages,
     changed: beforeSig !== afterSig,
     beforeSig, afterSig, ignored: before,
   };
@@ -338,16 +351,41 @@ check(localDeltaB >= 1 && serverDeltaB === 0,
 // **★ ④ 两本账（**用户第 8 条 ✓）✗ ★**
 console.log("");
 console.log("  ★ 两本账（**同一条笔画场景 ✓）★");
-console.log("  | 模式 | ① 墙钟 ms | ② 主线程 TaskDuration ms | 画布变化 |");
-console.log("  |---|---|---|---|");
-console.log(`  | 服务器渲染 | ${strokeA?.wallMs} | ${strokeA?.taskMs?.toFixed(1)} | ${strokeA?.changed} |`);
-console.log(`  | 本地渲染 | ${strokeB?.wallMs} | ${strokeB?.taskMs?.toFixed(1)} | ${strokeB?.changed} |`);
+const fmt = (v, digits = 1) => (typeof v === "number" && isFinite(v) ? v.toFixed(digits) : "—");
+console.log("  | 模式 | ① 墙钟 ms | ② 主线程 TaskDuration ms | 端到端：apply ms | render ms | put ms | 内核预热 ms | 画布变化 |");
+console.log("  |---|---|---|---|---|---|---|---|");
+for (const [label, s] of [["服务器渲染", strokeA], ["本地渲染", strokeB]]) {
+  const g = s?.stages || {};
+  console.log(`  | ${label} | ${s?.wallMs} | ${fmt(s?.taskMs)} | ${fmt(g.lastApplyMs)}`
+    + ` | ${fmt(g.lastRenderMs)} | ${fmt(g.lastPutMs)} | ${fmt(g.kernelWarmMs, 0)} | ${s?.changed} |`);
+}
 if (strokeA && strokeB && strokeA.taskMs && strokeB.taskMs) {
   const d = (1 - strokeB.taskMs / strokeA.taskMs) * 100;
   console.log(`  ∴ CPU 占用账：本地渲染的主线程时间 ${d > 0 ? "少" : "多"} ${Math.abs(d).toFixed(1)}%`);
   const w = (1 - strokeB.wallMs / strokeA.wallMs) * 100;
   console.log(`  ∴ 时间账：本地渲染 ${w > 0 ? "快" : "慢"} ${Math.abs(w).toFixed(1)}%`);
   if (d < 0 && w > 0) console.log("  ⚠️ **只有墙钟变好而 CPU 占用更差** ⇒ **∴ 按第 8 条必须明说** ✓");
+}
+// **★ 端到端分段的**覆盖面**必须**如实说明** ✗ ★**（第 75 轮 ✓）：
+//   **∴ 实测 ✗**：**服务器渲染模式**那几段全是 `—`**✗
+//     ⇒ **∴ 因为** `lastApplyMs`／`lastRenderMs`／`lastPutMs` **只在**本地路径**里被写 ✓
+//       ⇒ **★ 所以**：**"**端到端延迟 ✓"**现在只有**本地那一半**✗
+//         ⇒ **∴ 要**两边可比**✗ ⇒ **∴ 必须**给**服务端路径**也加同样的计时 ✓ ★**** ✓✓
+//   **∴ 我**不**用 0 或空字符串**填充**✗ ⇒ **∴ 用 `—`** ✗
+//     ⇒ **∴ 因为**填空值**读起来像"**很快 ✓" ✓**** ✓✓
+{
+  const gA = strokeA?.stages || {};
+  const hasA = typeof gA.lastApplyMs === "number";
+  if (!hasA) {
+    console.log("  ⚠️ **服务器渲染模式没有端到端分段**（**那几段只在本地路径写**）"
+      + " ⇒ **∴ 两本账的『**端到端 ✓』目前只有一半** ✗");
+    console.log("     ⇒ **∴ 待办**：给服务端路径也加 `lastApplyMs`／`lastRenderMs`／`lastPutMs` ✓");
+  }
+  const gB = strokeB?.stages || {};
+  if (typeof gB.kernelWarmMs === "number") {
+    console.log(`  ∴ 本地渲染的**内核预热** ${gB.kernelWarmMs.toFixed(0)} ms`
+      + "（**首次才有 ✗ ⇒ **∴ 它**是**一次性成本 ✓）");
+  }
 }
 
 socket.close();
