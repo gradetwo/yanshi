@@ -16087,3 +16087,34 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 而** `node --check` **只**看语法**✗
 #         ⇒ **∴ 所以**：**替换**整块**后 ✗
 #           ⇒ **∴ 要**立刻**跑一次**✗ ⇒ **∴ 别**等到**端到端**才**发现 ✓ ★**** ✓✓
+
+# **★ 第 129 轮：★★ **`attachToTarget` ＋ `sessionId` **完全可行** ✗**（**∴ 差别在 `awaitPromise` ✓）★★**
+#   **★ 我**写了一个**决定性的探针** ✗ ★**（**attach ＋ 用 `sessionId` 发命令 ＋ 收事件 ✓）**：
+#     **∴ 实测 ✗**：
+#       `SW 目标 = 0.0.1:9923/service-worker.js｜id=A0286A7D…` ✓**** ✓✓
+#       `attach ⇒ sessionId = 8F93FBAAD2B2…` ✓**** ✓✓
+#       **`Runtime.enable ⇒ **有应答**`** ✓**** ✓✓
+#       **`Runtime.evaluate ⇒ **2**** ✓（**∴ 成功了 ✓）★**** ✓✓
+#       `会话内事件（去重）= ["Inspector.workerScriptLoaded",`
+#         `"Runtime.executionContextCreated","Runtime.consoleAPICalled"]` ✓**** ✓✓
+#     ⇒ **★ 所以**：**`attachToTarget` ＋ `sessionId` **完全可行** ✓ ★**** ✓✓
+#   **★ 而**判据**仍然超时** ✗ ★**（**同一个目标 ＋ 同一条命令 ✓）
+#     ⇒ **∴ 所以**：**差别**在**参数** ✓**** ✓✓
+#       **∴ 判据**用 ✗**：
+#         `targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })` ✓**** ✓✓
+#       **∴ 探针**用 ✗**：
+#         `ssend("Runtime.evaluate", { expression: "1+1", returnByValue: true })` ✓
+#         ⇒ **★★ 没有 `awaitPromise` ★★** ✓**** ✓✓
+#       ⇒ **★ 所以**：**`awaitPromise: true`**很可能**就是原因 ✓ ★**** ✓✓
+#         （**∴ 它**可能要** worker **支持** `Runtime.awaitPromise`**✗
+#           ⇒ **∴ 而**它**可能**挂住** ✓）** ✓✓
+#   **★ 下一步（**明确 ✓）★**：**把** `awaitPromise` **去掉**✗
+#     ⇒ **∴ 改成**在** JS 里**自己**等**（**如**返回一个 Promise 由**多次**轮询 ✓）** ✓✓
+#     **∴ 或**者**：**保留 `awaitPromise` 但**加**一个**更短的**超时 ＋ **回退 ✓**** ✓✓
+#   **∴ 元收获（**本轮最贵 ✓）★**：
+#     **∴ 同一个**目标 ＋ **同一条**命令**✗
+#       ⇒ **∴ 一个**成功**✗ ＋ **一个**超时** ✓**** ✓✓
+#       ⇒ **∴ 那**说明**差别**只**在**参数** ✓**** ✓✓
+#     ⇒ **★ 所以**：**两个**调用不一致**时 ✗**
+#       ⇒ **∴ 要**把**参数**并排写出来**✗
+#         ⇒ **∴ 一眼**就能看出**哪一个字段**不同 ✓ ★**** ✓✓
