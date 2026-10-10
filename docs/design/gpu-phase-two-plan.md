@@ -1786,3 +1786,52 @@ check（yanshi-gpu）退出码: 0
    - **∴ ②** **在独显上重测**两本账**✗ ⇒ **∴ 于是**：
      **核显的数（**−99.2%／−99.7% ✓）**会被**真 GPU 的数**取代或印证** ✓**** ✓✓
    - **∴ ③** **`wasm` 树守判据**在那边**同样适用** ✓（**∴ 它**是**平台无关**的 ✓）** ✓✓
+
+---
+
+# 四十一、★★★ **远端 L4 连通了：CUDA 13.0 ＋ 12 线程 ＋ 52 GB**（第 308 轮）★★★
+
+## 一、★ 连通实测（**`echo "cmd" | colab console -s dawang` ✓**）★
+
+```
+REMOTE_OK
+9ed3d1f95b22                      ← hostname
+12                                ← nproc（**与用户说的 12 线程一致 ✓）
+Mem: 52 GB total                  ← **高内存 ✓
+/usr/local/cuda/bin/nvcc          ← **CUDA 工具链在 ✓
+
+★ NVIDIA-SMI 580.82.07｜Driver Version 580.82.07｜CUDA Version 13.0 ★
+CPU(s): 12
+工具：python3 ✓／pip3 ✓／curl ✓／git ✓／gcc ✓
+```
+
+**∴ 而** `Connection closed.` **不是故障**✗ ⇒ **∴ 那**只是**命令跑完后**它**退出了 tmux** ✓
+（**∴ 所以**用户说的「**能连上**」得到证实 ✓）
+
+## 二、★★★ 为什么这很重要 ★★★
+
+**∴ 本机是**Intel HD Graphics 5000 核显**** ✗（**∴ Vulkan 不完整 ✓ ⇒ **后端 `Gl` ✓）
+**∴ 而**远端是**真 NVIDIA L4**✗ ⇒ **∴ 于是**：
+1. **★ `SHADER_F16` **很可能为 `true`**** ✗（**NVIDIA 支持 ✓）
+   ⇒ **∴ 可以**把**手写的 f16 换成**原生 `f16`** ✓（**∴ 并用**同一条逐位判据**守住 ✓）** ✓✓
+2. **∴ 两本账**要在**独显**上重测**✗ ⇒ **∴ 于是**：
+   **核显的数（**4K −99.2%／−99.7% ✓）**会被**真 GPU 的数**取代或印证** ✓ ★**** ✓✓
+3. **∴ 且**：**`wasm` 树守判据**平台无关**✗ ⇒ **∴ 那边**同样适用** ✓**** ✓✓
+
+## 三、★ 传代码到远端的两条路 ★
+
+| 路 | 做法 | 备注 |
+|---|---|---|
+| **① ★ 最省事 ✗ ★** | **远端 `git clone`（**仓库已推送 ✓）** | **∴ 不需要**传文件** ✓ |
+| **② 传本地改动** | **`scp -o ProxyCommand="colab ssh --proxy-mode -s dawang"`** ✓ | **∴ 用** `--proxy-mode` 当普通 ssh** ✓ |
+
+## 四、★ 下一步（**在 L4 上 ✓**）★
+
+1. **远端 `git clone` ＋ 装 Rust 工具链**（**∴ `rustup` 一条命令 ✓）
+2. **`cargo build --features gpu`** ⇒ **∴ 于是**：**CI 那个 `gpu-feature` job 的**体积与时间**在**真 GPU 机器**上也有数** ✓
+3. **跑那几条 GPU 判据**（**`gpu_f16_roundtrip`／`gpu_quantize_parity`／`gpu_chunked_quantize`／
+   `gpu_scale_sweep`／`gpu_batch_submit`／`gpu_4k_two_accounts`／`gpu_quantize_dispatch` ✓）
+   ⇒ **∴ 并**记录**：
+     **∴ ①** **适配器名**（**∴ 应当是 `Vulkan` ＋ `DiscreteGpu` ✓）
+     **∴ ②** **`SHADER_F16` 是否为 `true`** ✓
+     **∴ ③** **两本账**（**时间 ＋ CPU 占用 ✓）—— **必须**与核显的数**分开报** ✓**** ✓✓
