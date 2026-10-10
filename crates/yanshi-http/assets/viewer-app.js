@@ -7404,26 +7404,82 @@ const localBrushText = new Map();
 //（服务端按**路径段**解码 ✓ ⇒ `%2B` 还原成 `+` ✓，而不是空格 ✓）。
 const brushAssetUrl = (name) => "/brushes/" + encodeURIComponent(name) + ".myb";
 
+// **★ PWA 静态目录里的笔刷是**安全名**，与源目录**不同名** ✗ ★**（**第 493 轮 ✓）
+//
+// **∴ 症状（**本机 ＋ CI 都复现 ✓）✗**：**PWA 上**根本画不了**✗
+//   ```
+//   draw_stroke   ⇒ 500 stroke_failed
+//     reason: 笔刷取不到：100%_Opaque.myb ⇒ HTTP 404
+//   brush_stroke  ⇒ 同上（**判据里标为「已知红」✓，**但根因一直没定位 ✓）
+//   ```
+//
+// **∴ 根因 ✗**：**两边的磁盘用的是**不同的名字**✓
+//   **∴ ① 源目录（**服务端读 ✓）✗**：`assets/brushes/100%_Opaque.myb`（**原名 ✓）
+//     ⇒ **∴ 请求** `/brushes/100%25_Opaque.myb` ⇒ **∴ 服务端**percent-decode ⇒ **命中 ✓** ★**** ✓✓
+//   **∴ ② PWA 静态目录 ✗**：**`pwa-sync-viewer.mjs:360` 落盘时**改名**✓
+//     ```js
+//     const dstName = f.replace(/%/g, "_pct_").replace(/#/g, "_n_");
+//     ```
+//     ⇒ **∴ 磁盘上是 `100_pct__Opaque.myb`**✗
+//       ⇒ **∴ 而**请求仍是 `100%_Opaque.myb`**✗ ⇒ **★ 404 ★** ✓ ★**** ✓✓
+//
+// **∴ 为什么落盘要改名 ✗**：**裸 `%`／`#` 在**静态托管**上不可靠**✗
+//   ⇒ **∴ 所以**落盘改名是**对**的 ✓ ⇒ **∴ 错的是**请求侧不知道这件事** ✓ ★**** ✓✓
+//
+// **∴ 修法 ✗**：**先按原名试**✗（**服务端命中 ✓）
+//   ＋ **∴ 404 时**再按安全名试** ✓（**PWA 命中 ✓）
+//     ⇒ **∴ 代价 ✗**：**只有含 `%`／`#` 的 **10 支**会多一次 404** ✓
+//       ＋ **∴ 而**笔刷文本**有缓存**（`localBrushText` ✓）⇒ **∴ 每支最多一次** ✓ ★**** ✓✓
+const brushAssetSafeName = (name) => name.replace(/%/g, "_pct_").replace(/#/g, "_n_");
+const brushAssetUrlSafe = (name) =>
+  "/brushes/" + encodeURIComponent(brushAssetSafeName(name)) + ".myb";
+
+/**
+ * **∴ 取笔刷文本 ✗**：**先原名，再安全名** ✓
+ * @returns {Promise<{text: string, url: string}>} **∴ 连同**真正命中的 URL**一起回 ✓
+ *   ⇒ **∴ 缓存键**必须用真正命中的那个** ✓（**∴ 否则离线缓存**永远查不到 ✓）★
+ */
+async function fetchBrushText(name) {
+  const first = brushAssetUrl(name);
+  let response = await fetch(first);
+  // **∴ 服务端顺带告诉我们的那件事 ✗**（**第 68 轮定的头 ✓）：
+  //   **∴ 会读画布的笔刷**不能**本地预览** ✓（**∴ 判定是**服务端**算的，**这里只读 ✓）
+  const readsCanvasOf = (r) => r.headers.get("X-Yanshi-Brush-Reads-Canvas") === "1";
+  if (response.ok) {
+    return { text: await response.text(), url: first, readsCanvas: readsCanvasOf(response) };
+  }
+  const status = response.status;
+  const safe = brushAssetUrlSafe(name);
+  // **∴ 名字本来就安全 ⇒ 不必再试** ✓（**∴ 省一次往返 ✓）
+  if (safe !== first) {
+    response = await fetch(safe);
+    if (response.ok) {
+      return { text: await response.text(), url: safe, readsCanvas: readsCanvasOf(response) };
+    }
+  }
+  throw new Error("笔刷文本 HTTP " + status);
+}
+
 async function loadLocalBrushText(name) {
   if (localBrushText.has(name)) return localBrushText.get(name);
-  const response = await fetch(brushAssetUrl(name));
-  if (!response.ok) throw new Error("笔刷文本 HTTP " + response.status);
-  const text = await response.text();
+  const { text, url: hitUrl, readsCanvas } = await fetchBrushText(name);
   // **笔刷文本也写进同一个缓存**（**按需**：只有真正用到的笔刷才进缓存，199 支不会全下）。
   // **缓存键与请求 URL 必须逐字相同** ✗：SW 的离线回退按 `request.url` 查缓存 ✓
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
+      // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
       caches.open("yanshi-shell-__BUILD_ID__")
-        .then((cache) => cache.put(brushAssetUrl(name),
+        .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
-        .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
+        .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
     }
   } catch (error) { /* 缓存失败不影响这次预览 */ }
 
   // **服务端顺带告诉我们的那件事** ✓（第 68 轮定的头 ✓）：会读画布的笔刷**不能**本地预览 ✓
   //（门面没有 base 输入 ⇒ 两边起点不同 ⇒ 预览会漂 ✗）。判定是**服务端那一处**算的 ✓，这里只读 ✓。
-  const readsCanvas = response.headers.get("X-Yanshi-Brush-Reads-Canvas") === "1";
+  // **★ 这个标志必须**随 `fetchBrushText` 一起返回**✗ ★**（**第 493 轮 ✓）：
+  //   **∴ 因为**改动后**不再持有 `response`** ✓ ⇒ **∴ 不能**在这里读 header** ✓
   const entry = { text, readsCanvas };
   localBrushText.set(name, entry);
   return entry;

@@ -56,13 +56,46 @@ export async function fetchBrushText(brush) {
   //     ＋ **∴ 代价 ✗**：**无**✗（**∴ `encodeURIComponent` **是标准做法** ＋
   //       **∴ 且**它**与** SW 清单**已经一致** ✓）** ★**** ✓✓
   const encoded = encodeURIComponent(name);
-  const res = await fetch("/brushes/" + encoded);
+  let res = await fetch("/brushes/" + encoded);
+  // **★ 两套部署的磁盘名字**不同** ⇒ 404 时再试**安全名** ✗ ★**（**第 493 轮 ✓）
+  //
+  // **∴ 为什么必须两边都试 ✗**（**两处都实测过 ✓）**：
+  //   **∴ ① 服务端（**上面那段注释量的就是这个 ✓）✗**
+  //     ⇒ **∴ 磁盘 ＝ `100%_Opaque.myb`**（**原名 ✓）
+  //       ＋ **∴ 实测**：**原名 200｜`%25` 200｜`_pct_` **404**** ✓ ★**** ✓✓
+  //   **∴ ② PWA 静态目录（**Cloudflare ✓）✗**
+  //     ⇒ **∴ 磁盘 ＝ `100_pct__Opaque.myb`**（**`pwa-sync-viewer.mjs:360` 落盘改名 ✓）
+  //       ＋ **∴ 于是**：**原名 404｜`%25` 404｜`_pct_` **200**** ✓ —— **∴ 与①**恰好相反** ✓ ★**** ✓✓
+  //   **∴ 所以 ✗**：**任何**单一**写法都必在其中一边 404** ✗
+  //     ⇒ **∴ 于是**：**先按当前部署的习惯名取**✗ ＋ **∴ 404 时**再试另一种** ✓
+  //       ⇒ **∴ 代价 ✗**：**只有含 `%`／`#` 的 **10 支**会多一次 404** ✓
+  //         （**∴ 且**笔刷文本**有缓存** ⇒ **∴ 每支最多一次** ✓）★**** ✓✓
+  //   **∴ 而**这个修法**同时**让「**离线的另一半**」也活了 ✗：
+  //     ⇒ **∴ SW 的 `SHELL` 清单里写的是**编码后的名字** ✓
+  //       ＋ **∴ 而**命中时用的 URL 与它**逐字相同** ⇒ **∴ 离线**也能命中** ✓ ★**** ✓✓
   if (!res.ok) {
-    // Include the exact URL that failed: the reported name is the caller's input, while
-    // the request uses the encoded form, and without the url we cannot tell them apart.
-    throw new Error("笔刷取不到：" + name + " ⇒ HTTP " + res.status +
-                    "｜请求 URL ＝ " + String(res.url || "(未知)") +
-                    "｜base ＝ " + String(location.href));
+    const status = res.status;
+    const failedUrl = res.url;
+    const safeName = name.replace(/%/g, "_pct_").replace(/#/g, "_n_");
+    const safeEncoded = encodeURIComponent(safeName);
+    if (safeEncoded !== encoded) {
+      const alt = await fetch("/brushes/" + safeEncoded);
+      if (alt.ok) {
+        res = alt;
+      } else {
+        // Include the exact URLs that failed: the reported name is the caller's input,
+        // while the request uses the encoded form, and without the urls we cannot tell
+        // which deployment layout was in front of us.
+        throw new Error("笔刷取不到：" + name + " ⇒ HTTP " + status +
+                        "｜请求 URL ＝ " + String(failedUrl || "(未知)") +
+                        "｜也试过 ＝ " + String(alt.url || safeEncoded) +
+                        "｜base ＝ " + String(location.href));
+      }
+    } else {
+      throw new Error("笔刷取不到：" + name + " ⇒ HTTP " + status +
+                      "｜请求 URL ＝ " + String(failedUrl || "(未知)") +
+                      "｜base ＝ " + String(location.href));
+    }
   }
   const text = await res.text();
   // **★ 防御：SPA fallback 会返回 200 + HTML**（本地测试验证 ✓）：
