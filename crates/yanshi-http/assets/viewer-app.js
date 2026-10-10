@@ -5061,11 +5061,23 @@ async function ensurePaintLayer() {
 }
 
 async function refreshLayers() {
-  const value = await fetchOrLocal(api("/api/tools/list_layers"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }).then((r) => r.json());
+  // **★ 本地化取图层也必须**有界** ✗ ★**（第 177 轮 ✓；**离线卡点 ✓）：
+  //   **∴ 实测 ✗**：**`boot:before-refreshLayers`**出现**✗
+  //     ＋ **`boot:refreshLayers-ok`**没有** ✓（**∴ 本函数**永不返回 ✓）**
+  //   **∴ 所以 ✗**：**给**本行**留痕**✗ ⇒ **∴ 一眼**看出**卡在**取图层**还是**别的** ✓**
+  (window.__appMarks = window.__appMarks || []).push("rl:before-fetch");
+  let value;
+  try {
+    value = await fetchOrLocal(api("/api/tools/list_layers"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then((r) => r.json());
+    (window.__appMarks = window.__appMarks || []).push("rl:fetch-ok");
+  } catch (error) {
+    (window.__appMarks = window.__appMarks || []).push("rl:fetch!" + String(error && error.message || error).slice(0, 40));
+    throw error;
+  }
   const select = $("layer");
   select.innerHTML = "";
   for (const layer of value.layers || []) {

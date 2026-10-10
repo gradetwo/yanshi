@@ -6135,11 +6135,23 @@ async function ensurePaintLayer() {
 }
 
 async function refreshLayers() {
-  const value = await fetchOrLocal(api("/api/tools/list_layers"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }).then((r) => r.json());
+  // **★ 本地化取图层也必须**有界** ✗ ★**（第 177 轮 ✓；**离线卡点 ✓）：
+  //   **∴ 实测 ✗**：**`boot:before-refreshLayers`**出现**✗
+  //     ＋ **`boot:refreshLayers-ok`**没有** ✓（**∴ 本函数**永不返回 ✓）**
+  //   **∴ 所以 ✗**：**给**本行**留痕**✗ ⇒ **∴ 一眼**看出**卡在**取图层**还是**别的** ✓**
+  (window.__appMarks = window.__appMarks || []).push("rl:before-fetch");
+  let value;
+  try {
+    value = await fetchOrLocal(api("/api/tools/list_layers"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then((r) => r.json());
+    (window.__appMarks = window.__appMarks || []).push("rl:fetch-ok");
+  } catch (error) {
+    (window.__appMarks = window.__appMarks || []).push("rl:fetch!" + String(error && error.message || error).slice(0, 40));
+    throw error;
+  }
   const select = $("layer");
   select.innerHTML = "";
   for (const layer of value.layers || []) {
@@ -8022,7 +8034,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-71c1e457-dirty")
+      caches.open("yanshi-shell-d6fd3397-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
