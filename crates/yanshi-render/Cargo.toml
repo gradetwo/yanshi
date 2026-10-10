@@ -25,6 +25,11 @@ libm.workspace = true
 # **deflate**：`flate2` + `zlib-rs`（纯 Rust ✓，wasm32 可用 ✓）——
 # 它**本来就在依赖树里** ✓（`zip` 带进来的 ✓）⇒ 本轮**零新增包** ✓（代价与收益见 `png.rs` 文件头 ✓）。
 flate2.workspace = true
+yanshi-gpu = { version = "0.1.0", path = "../yanshi-gpu", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
+
+[features]
+gpu = ["dep:yanshi-gpu"]
+# **∴ `cargo add --optional` **自动生成的那条**与 `gpu` 重复**✗ ⇒ **∴ 删掉它** ✓

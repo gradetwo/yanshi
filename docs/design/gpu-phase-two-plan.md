@@ -1639,3 +1639,53 @@ check（yanshi-gpu）退出码: 0
 2. **把 `gpu_policy::selfcheck` 的本地实现**换成**调用 `yanshi_gpu::Quantizer`** ✓（**∴ 消除重复 ✓）
 3. **然后**才谈**在 `yanshi-render` 里加分派**（**∴ 那**需要 `yanshi-render` 可选依赖 `yanshi-gpu` ✓）
    ⇒ **∴ 而那时**：**wasm 树守判据会**立刻检查** ✓（**∴ 只要**它是可选依赖 ＋ `yanshi-wasm` 不开它 ✓）
+
+---
+
+# 三十七、★★★ **`yanshi-render` 新增可选 `gpu` feature：默认 0 个 wgpu，开了才 5 个**（第 303 轮）★★★
+
+## 一、★ 我第 302 轮怎么失败的 ＋ 怎么改的 ★
+
+**∴ 失败 ✗**：**用 python 把 `yanshi-gpu = { … }` **追加到 `Cargo.toml` 末尾**** ✗
+⇒ **∴ 那**落在**别的 section 里**✗ ⇒ **∴ manifest**非法** ✓
+**∴ 那**正是**第 298 轮**犯过的**同一个错** ✓
+
+**∴ 修正后的做法（**三查 ✓）★**：
+1. **`cargo add yanshi-gpu --path … --optional -p yanshi-render`** ⇒ **∴ 它**写进**正确的 `[dependencies]`** ✓
+2. **立刻 `cargo metadata`** ⇒ **∴ manifest 非法时**当场报错** ✓
+3. **幂等的 python**（**先判断 `[features]` 是否存在 ✓ ＋ **精确插到锚点之前** ✓）
+   ⇒ **∴ 并**去掉 `cargo add` **自动生成的**重复 feature（`yanshi-gpu = ["dep:yanshi-gpu"]` ✓）
+
+## 二、★★★ 实测（**两边都对 ✓**）★★★
+
+| 检查 | 结果 |
+|---|---|
+| **`cargo check -p yanshi-render`** | **0** ✓ |
+| **`cargo check -p yanshi-render --features gpu`** | **0** ✓ |
+| **`cargo check -p yanshi-wasm`** | **0** ✓ |
+| **★ `tool-wasm-tree-no-wgpu.mjs` ★** | **★ 退出码 0 ★**（**37 包，`wgpu` 家族 **0 个** ✓） |
+| **`yanshi-render` 的树（**默认 ✓）** | **★ `wgpu` 包数 **0** ★** |
+| **`yanshi-render` 的树（**`--features gpu` ✓）** | **★ `wgpu` 包数 **5** ★** |
+
+## 三、★ 意义 ★
+
+**⇒ ★ 所以 ✗ ★**：
+- **`yanshi-render` **有了可选的 GPU 能力****✗ ⇒ **∴ 默认**0 个 `wgpu`**✗、**开了 5 个** ✓
+- **★ 而** `yanshi-wasm` **的树仍然 0 个** ✗ ⇒ **∴ 判据**绿** ✓ ⇒ **∴ 内核**不受影响** ✓ ★**** ✓✓
+- **★ 那**正是目标第 6／7 条要的：**服务端可选加速 ＋ **内核零代价**** ✓ ★**** ✓✓
+
+## 四、★ 借鉴来源（**用户第 593 轮 ✓**）★
+
+| 来源 | 借鉴什么 | **我们与它的差别** |
+|---|---|---|
+| **Krita 的**颜色空间边界**＋ per-node paint device** | **把重能力**按需**接上** | **Krita**按节点**✗；**我们**按 feature** ✗ ⇒ **∴ 且**真值恒在 CPU** ✓ |
+| **GIMP 的 `GeglBuffer` 按需换格式** | **默认不加载重格式** | **GIMP**按格式**✗；**我们**按 feature** ✓ |
+
+**∴ 落到可验证一步 ✗**：**默认 0 个 `wgpu` ＋ **开了才 5 个** ＋ **wasm 恒 0** ✓
+**∴ 变异点 ✗**：**把 `optional = true` 去掉** ⇒ **∴ wasm 树守判据**必红** ✓**** ✓✓
+
+## 五、★ 下一步（**只剩最后一步 ✓**）★
+
+**∴ 在 `yanshi-render` 的量化处**加分派**✗（**`#[cfg(feature = "gpu")]` ＋ 规模阈值 ＋ 适配器可用 ✓）
+⇒ **∴ 然后**：**`render_backend` 可以**如实报 `gpu` 或 `cpu`** ✓
+⇒ **∴ 于是**：**目标第 7／8 条**在**渲染路径**上**闭环** ✓**** ✓✓
