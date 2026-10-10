@@ -25953,3 +25953,72 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ⚠️ 内核异步化**第二步**：**已尝试 ＋ 已回退**✗
 #       ⇒ **∴ 根因 ＋ 两个正确做法**已写清** ✓
 #     **∴ ⬜ 按**甲或乙**重做第二步** ✓
+
+# **★ 第 471 轮：★★★★★★★★★★★★★★ **方案甲成功 —— `quantize` 也是异步核心 ＋ 两个薄入口（**端到端全绿 ✓）**** ★★★★★★★★★★★★★★
+#   **★★★ 本轮改动（**按第 470 轮的方案甲 ✓）★★★**：
+#     **∴ ① `OnceSignal` **自带推进**✗ ★**：
+#       ```rust
+#       struct OnceSignal {
+#           device: wgpu::Device,                      // ★ 拥有一个 Device 克隆 ★
+#           waker: std::sync::Mutex<Option<std::task::Waker>>,
+#           ready: std::sync::atomic::AtomicBool,
+#       }
+#       async fn wait(&self) {
+#           std::future::poll_fn(|cx| {
+#               if ready { return Ready(()); }
+#               let _ = self.device.poll(wgpu::PollType::Poll);   // ★ 每轮推进一次 ★
+#               *waker = Some(cx.waker().clone());
+#               Pending
+#           }).await;
+#       }
+#       ```
+#       ⇒ **★ 那是第 470 轮失败的直接修法 ✗**
+#         ⇒ **∴ 因为**：**`block_on` **只 poll 我们的 future**✗
+#           ＋ **∴ 而**它**不推进 `wgpu` 的内部队列** ✓
+#             ⇒ **∴ 所以**：**由本 future **自己推进**** ✓ ★**** ✓✓
+#     **∴ ② 用 `Arc<OnceSignal>` ✗**：
+#       ⇒ **∴ 因为** `map_async` 的回调**要 `'static`**✗
+#         ⇒ **∴ 而** `wgpu::Device` **内部是 Arc**✗ ⇒ **∴ 克隆很便宜** ✓ ★**** ✓✓
+#     **∴ ③ `quantize` ⇒ `quantize_async_inner` ＋ 两个薄入口 ✗**：
+#       **∴ 同步 ✗**：`block_on(self.quantize_async_inner(…))` ＋ **平台守卫** ✓
+#         ＋ **∴ 异步 ✗**：`pub async fn quantize_async(…)` ✓ ★**** ✓✓
+#     **∴ ④ 两个等待点 ⇒ 非阻塞 ✗**：
+#       **∴ `poll(Wait)` ⇒ `poll(Poll)`**✗（**两处 ✓）
+#         ＋ **∴ `mpsc::recv()` ⇒ `signal.wait().await`** ✓ ★**** ✓✓
+#   **★★★ 端到端实测（**这次是**先确认能应答** ✓）★★★**：
+#     ```
+#     ★ /health = 200（**等了 1 秒 ✓；**∴ `000` 就是死锁 ✓）
+#     ★ 渲染后：backend = gpu ｜delta = 0      ← ★ 逐位一致保持 ★
+#     · tool-gpu-backend-report      0 ✓
+#     · tool-gpu-fallback-parity     0 ✓
+#     · tool-gpu-modes               0 ✓
+#     · tool-gpu-probe-honesty       0 ✓
+#     · tool-gpu-quantize-parity     0 ✓
+#     · tool-gpu-accounts            0 ✓
+#     ⇒ **判据全绿 ＝ ok** ✓
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ ① 死锁**已解**✗（**`/health` 200 ✓）
+#     **∴ ② 逐位一致**保持**✗（**`delta ＝ 0` ✓）
+#     **∴ ③ 6／6 GPU 判据**全绿** ✓
+#     **∴ ④ 内核异步化**第二步**完成**✗（**`quantize` ✓）★**** ✓✓
+#   **★★★ 三要素（**目标第 11／12／13 条 ✓）★★★**：
+#     **∴ 借鉴来源 ✗**：**Krita**的异步 GPU 后端**（**等待必须让出事件循环 ✓）
+#       ＋ **∴ GEGL**同理**✗：**不阻塞主循环** ✓ ★**** ✓✓
+#     **∴ 与它们的差别 ✗**：**我们**自实现 oneshot**✗（**不引 `futures` ✓）
+#       ＋ **∴ 而**且：**同一条核心**服务**同步 ＋ 异步**两个平台** ✓ ★**** ✓✓
+#     **∴ 两面 ✗**：
+#       **∴ 收益 ✗**：**wasm 侧**可以**真的 await**✗
+#         ⇒ **∴ 于是**：**内核**能接 WebGPU** ✓ ★**** ✓✓
+#       **∴ 代价 ✗**：**多一个 `OnceSignal`（**约 40 行 ✓）
+#         ＋ **∴ 且**：**每次等待**会**多一次 `poll(Poll)`**✗（**∴ 开销极小 ✓）
+#           ＋ **∴ 而** `Device` **克隆**✗（**∴ 内部 Arc ⇒ 便宜 ✓）★**** ✓✓
+#     **∴ 可验证的一步 ✗**：**起服务 ⇒ 先看 `/health` 是否 200**✗
+#       ⇒ **∴ 再看** `render_backend ＝ gpu` ＋ `delta ＝ 0`** ✓
+#         ＋ **∴ 6 条判据**全绿** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧**全部完成**（**含第 9 条 ✓）
+#     **∴ ✅ 内核异步化**第一步**（**`new` ✓；**第 468 轮 ✓）
+#     **∴ ✅ ★ 内核异步化**第二步**（**`quantize` ✓；**第 471 轮 ✓）
+#     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`**（**wasm 导出 ＋ 前端 await ✓）
+#     **∴ ⬜ 体积／构建／wasm32 交给 CI/CD**（**目标第 10 条 ✓）

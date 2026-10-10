@@ -270,7 +270,39 @@ impl Quantizer {
     ///   ⇒ **∴ `None`**：**不做合成**（**与原来一致 ✓）
     ///     ＋ **∴ `Some(bg)`**：**逐像素 `c = x + bg * (1 - x3)`**✓
     ///       ⇒ **∴ 与** CPU 的 `composite_over_linear_with` **同一口径** ✓ ★**** ✓✓
+    /// **★ 同步量化（**薄包装 ✓）✗ ★**（**第 471 轮 ✓）
+    ///
+    /// # Errors
+    /// **∴ 平台不支持／量化或映射失败** ⇒ **∴ 返回 `Err`** ✓
     pub fn quantize(
+        &self,
+        pixels: &[f32],
+        count: usize,
+        background: Option<[f32; 4]>,
+    ) -> Result<Vec<u8>, String> {
+        if !supports_sync_init() {
+            return Err("sync_wait_unsupported_on_wasm32：本平台是单线程事件循环，\
+                        同步等待会死锁 ⇒ 请用 quantize_async 或回退 CPU"
+                .to_owned());
+        }
+        block_on(self.quantize_async_inner(pixels, count, background))
+    }
+
+    /// **★ 异步量化 ✗ ★**（**wasm 侧用它 ✓）（**第 471 轮 ✓）
+    ///
+    /// # Errors
+    /// **∴ 量化或映射失败** ⇒ **∴ 返回 `Err`** ✓
+    pub async fn quantize_async(
+        &self,
+        pixels: &[f32],
+        count: usize,
+        background: Option<[f32; 4]>,
+    ) -> Result<Vec<u8>, String> {
+        self.quantize_async_inner(pixels, count, background).await
+    }
+
+    /// **★ 唯一的异步量化实现 ✗ ★**（**第 471 轮 ✓）
+    async fn quantize_async_inner(
         &self,
         pixels: &[f32],
         count: usize,
@@ -372,19 +404,19 @@ impl Quantizer {
         }
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
         self.queue.submit(Some(enc.finish()));
-        let _ = self.device.poll(wgpu::PollType::Wait);
+        // **★ 不阻塞 ✗ ★**（**第 471 轮 ✓）：**真正的同步在下面 `map_async` 的 await ✓
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         let mut out: Vec<u8> = Vec::with_capacity(count * 4);
         for (back, _take) in &backs {
             let slice = back.slice(..);
-            let (tx, rx) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| {
-                let _ = tx.send(r);
+            let signal = std::sync::Arc::new(OnceSignal::new(&self.device));
+            let signal_in_cb = std::sync::Arc::clone(&signal);
+            slice.map_async(wgpu::MapMode::Read, move |_r| {
+                signal_in_cb.signal();
             });
-            let _ = self.device.poll(wgpu::PollType::Wait);
-            if rx.recv().is_err() {
-                return Err("map_channel:closed".to_owned());
-            }
+            let _ = self.device.poll(wgpu::PollType::Poll);
+            signal.wait().await;
 
             let mapped = slice.get_mapped_range();
             out.extend_from_slice(&mapped);
@@ -433,6 +465,63 @@ fn u32s_to_bytes(v: &[u32]) -> Vec<u8> {
 
 /// **∴ 五步量化（**与 CPU 真值同一套 ✓）✗** —— **∴ 与 `yanshi-http` 的共享文件**同一份** ✓
 const SHADER: &str = include_str!("quantize.wgsl");
+
+/// **★ 极简 oneshot（**自带推进 ✓）✗ ★**（**第 471 轮 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**`map_async` 的回调**在**别的线程／微任务**里跑**✗
+///   ⇒ **∴ 而**同步版**原来用 `mpsc::recv()` 阻塞等** ✓
+///     ⇒ **∴ 而在 wasm 上**阻塞**会**卡住事件循环** ✓
+///
+/// **★ 关键（**第 470 轮的教训 ✓）★**：**`device.poll(PollType::Poll)` **不阻塞**✗
+///   ⇒ **∴ 所以**：**必须有东西**反复推进** ✓
+///     ⇒ **∴ 而** `block_on` **只 poll 我们的 future**✗
+///       ⇒ **∴ 它**不推进 `wgpu` 的内部队列** ✓
+///         ⇒ **★ 因此**：**本 future **每被 poll 一次**就**推进一次 `device`**** ✓
+///           ⇒ **∴ 于是**：**两平台**都能工作** ✓
+///             （**∴ 同步：**`block_on` 反复 poll ✓；**wasm：**事件循环唤醒 ✓）★**** ✓✓
+struct OnceSignal {
+    /// **∴ 拥有一个 `Device` 克隆 ✗**（**∴ `wgpu::Device` 内部是 Arc ⇒ 克隆很便宜 ✓）
+    ///   ⇒ **∴ 于是**：**回调闭包**可以**'static** ✗（**∴ 不借用 self ✓）★**** ✓✓
+    device: wgpu::Device,
+    waker: std::sync::Mutex<Option<std::task::Waker>>,
+    ready: std::sync::atomic::AtomicBool,
+}
+
+impl OnceSignal {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            device: device.clone(),
+            waker: std::sync::Mutex::new(None),
+            ready: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// **∴ 由回调调用 ✗**（**∴ 置位 ＋ 唤醒 ✓）
+    fn signal(&self) {
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
+        if let Ok(mut slot) = self.waker.lock() {
+            if let Some(waker) = slot.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// **★ 等它被唤醒（**并且自己推进 device ✓）✗ ★**
+    async fn wait(&self) {
+        std::future::poll_fn(|cx| {
+            if self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                return std::task::Poll::Ready(());
+            }
+            // **★ 每轮都推进一次 ✗ ★**（**第 471 轮 ✓；**∴ 那是**本 future**的职责** ✓）
+            let _ = self.device.poll(wgpu::PollType::Poll);
+            if let Ok(mut slot) = self.waker.lock() {
+                *slot = Some(cx.waker().clone());
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+    }
+}
 
 #[cfg(test)]
 mod tests {
