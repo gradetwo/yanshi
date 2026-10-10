@@ -216,6 +216,11 @@ impl HttpOptions {
                     if !matches!(mode.as_str(), "auto" | "on" | "off") {
                         return Err(format!("--gpu 只接受 auto／on／off（收到 {mode}）"));
                     }
+                    // **★ 同步告知渲染层 ✗ ★**（**第 461 轮 ✓；**目标第 7 条 ✓）：
+                    //   **∴ 为什么 ✗**：**`GPU_MODE` **只在本 crate 内被读**✗
+                    //     ⇒ **∴ 而**渲染在 `yanshi-render`** ✓
+                    //       ⇒ **∴ 所以**：**`--gpu off` **必须**同时告诉它** ✓ ★**** ✓✓
+                    yanshi_render::set_gpu_disabled(mode == "off");
                     let _ = GPU_MODE.set(mode);
                 }
                 "--doc" => options.doc_id = value_of("--doc")?,

@@ -441,6 +441,13 @@ impl Buffer {
         //   **∴ 因为**后面任何一步失败**都会**回退 CPU**✗
         //     ⇒ **∴ 只有**走到最后并逐位通过**才改成 `Gpu`** ✓**** ✓✓
         Self::note_backend(crate::Backend::Cpu);
+        // **★ 先查 `--gpu off` ✗ ★**（**第 461 轮 ✓；**目标第 7 条 ✓）：
+        //   **∴ 为什么 ✗**：**原来**渲染路**不查模式**✗
+        //     ⇒ **∴ 于是**：**`--gpu off` **照样用 GPU** ✓
+        //       ⇒ **★ 所以**：**那个参数**说了假话** ✓ ★**** ✓✓
+        if crate::gpu_disabled() {
+            return None;
+        }
         let lut = crate::color::srgb_encode_table();
         let quantizer = match yanshi_gpu::Quantizer::new(lut) {
             Ok(q) => q,

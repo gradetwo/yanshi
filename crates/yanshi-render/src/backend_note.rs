@@ -94,3 +94,32 @@ pub fn render_delta() -> Option<u32> {
         v => u32::try_from(v).ok(),
     }
 }
+
+/// **★ 进程级 GPU 开关 ✗ ★**（**第 461 轮 ✓；**目标第 7 条 ✓）
+///
+/// **∴ 为什么需要它（**实测缺陷 ✓）★**：
+///   **∴ 症状 ✗**：**`--gpu off` **只影响诊断**✗
+///     ⇒ **∴ 因为** `GPU_MODE` **只在 `yanshi-http` 里被读** ✓
+///       （**`server.rs:964` 上报 ＋ `:1130` 的 `gpu_probe` ✓）
+///         ＋ **∴ 而** `yanshi-render` **不引用它** ✓
+///           ⇒ **∴ 于是**：**渲染路**照样建 `Quantizer` 并用 GPU** ✓
+///             ⇒ **★ 所以**：**`--gpu off` **说了假话****✗
+///               ⇒ **∴ 而**那**违反**目标第 7 条** ✓ ★**** ✓✓
+///   **∴ 现在 ✗**：**加一个**同类的进程级原子量**✗
+///     ⇒ **∴ `server.rs` 在解析 `--gpu` 时**同时设置它** ✓
+///       ＋ **∴ `try_quantize_on_gpu` **先查它** ✓
+///         ⇒ **∴ `off` ⇒ **直接不试 GPU**** ✓ ★**** ✓✓
+///
+/// **∴ 语义 ✗**：**`0` ＝ 允许**（**默认／`auto`／`on` ✓）；**`1` ＝ 禁止**（**`off` ✓）
+static GPU_DISABLED: AtomicU8 = AtomicU8::new(0);
+
+/// **∴ 设置「**禁止用 GPU**」✗**（**由服务端的 `--gpu off` 调用 ✓）
+pub fn set_gpu_disabled(disabled: bool) {
+    GPU_DISABLED.store(u8::from(disabled), Ordering::Relaxed);
+}
+
+/// **∴ 本进程是否**禁止用 GPU**✗**（**渲染路查它 ✓）
+#[must_use]
+pub fn gpu_disabled() -> bool {
+    GPU_DISABLED.load(Ordering::Relaxed) == 1
+}
