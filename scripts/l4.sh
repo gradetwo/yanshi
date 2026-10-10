@@ -165,9 +165,14 @@ cmd_run() {
 
 cmd_sync() {
   # **∴ 走 GitHub ✗** ⇒ **∴ 不依赖 scp／rsync**，且**用已推送的提交** ✓
-  local head
-  head="$(git rev-parse --short HEAD)"
-  local remote_head
+  local head remote_head
+  # **★ 两侧必须用**同一个长度** ✗ ★**（**第 495 轮实测 ✓）：
+  #   **∴ 原来的 bug ✗**：**左边 `git rev-parse --short` 给**8**字符（`69286a00` ✓）**✗
+  #     ＋ **∴ 右边 `cut -c1-7` 给**7**字符（`69286a0` ✓）** ✓
+  #       ⇒ **∴ 于是**：**永远判「不一致 ⇒ 先 push」** ✓
+  #         ＋ **∴ 而**代码**明明已经推送了** ✓ ⇒ **∴ 那**是**假警报** ✓ ★**** ✓✓
+  #   **∴ 现在 ✗**：**两侧都取 7 字符** ✓（**∴ 与 GitHub 的短哈希一致 ✓）★**** ✓✓
+  head="$(git rev-parse --short=7 HEAD)"
   remote_head="$(timeout 60 git ls-remote origin -h refs/heads/main 2>/dev/null | cut -f1 | cut -c1-7)"
   [ "${head}" = "${remote_head}" ] || die "本地 HEAD（${head}）与远端（${remote_head}）不一致 ⇒ 先 push（**不许**测一份未推送的代码 ✓）" 2
   l4_ssh "cd ${L4_DIR} && git fetch -q origin && git reset -q --hard origin/main && git log --oneline -1 && echo '工作区：'\$(git status --porcelain | wc -l)' 项'" 2>&1 | sed 's/^/  /'
@@ -226,16 +231,28 @@ echo \$! > ${L4_JOBS}/${name}.pid
 echo started-${name}" 2>&1 | sed 's/^/  /'
 }
 
+# **★ 列作业 ＋ 退出码 ✗ ★**
+#
+# **∴ 写法教训（**第 495 轮实测 ✓）✗**：**∴ 第一版把远端脚本写在**双引号**里**✗
+#   ＋ **∴ 到处用 `\\$`／`\\"` 转义** ✗
+#     ⇒ **∴ 于是**：**远端拿到的字符串**与预期不符** ✓
+#       ⇒ **∴ 症状 ✗**：**一个已经写完 `.rc` 的作业，`jobs` 仍显示「运行中」** ✓
+#         （**∴ 而**同一条 rc 用 `rc <名字>` **读得到** ✓）★**** ✓✓
+#   **∴ 现在 ✗**：**远端脚本用**单引号**包起来**✗（**∴ 本地不展开 `$` ✓）
+#     ⇒ **∴ 与能正常工作的 `cmd_status` 同风格 ✓ ★**** ✓✓
 cmd_jobs() {
-  l4_ssh_retry "cd ${L4_JOBS} 2>/dev/null || { echo '  （还没有作业目录）'; exit 0; }
-printf '  %-14s %-8s %-10s %s\n' 名字 状态 退出码 日志
+  l4_ssh_retry 'cd '"${L4_JOBS}"' 2>/dev/null || { echo "  （还没有作业目录）"; exit 0; }
+printf "  %-14s %-8s %-8s %s\n" 名字 状态 退出码 日志行数
 for f in *.log; do
-  [ -e \"\$f\" ] || continue
-  n=\${f%.log}
-  rc=\$(cat \"\$n.rc\" 2>/dev/null || echo '')
-  if [ -n \"\$rc\" ]; then st=已完成; else st=运行中; fi
-  printf '  %-14s %-8s %-10s %s 行\n' \"\$n\" \"\$st\" \"\${rc:-—}\" \"\$(wc -l < \"\$f\")\"
-done" 2>&1 | sed 's/^/  /'
+  [ -e "$f" ] || continue
+  n="${f%.log}"
+  if [ -f "$n.rc" ]; then
+    st=已完成; rc="$(cat "$n.rc")"
+  else
+    st=运行中; rc=—
+  fi
+  printf "  %-14s %-8s %-8s %s\n" "$n" "$st" "$rc" "$(wc -l < "$f")"
+done' 2>&1 | sed 's/^/  /'
 }
 
 cmd_tail() {
