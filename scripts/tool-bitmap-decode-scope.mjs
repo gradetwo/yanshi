@@ -219,7 +219,15 @@ async function buildFixture(base, target) {
   console.log(`  · 缺工程 ⇒ 用产品接口现造一份 ⇒ ${target}`);
   // **∴ 生成用的 id**必须与包里要导入的那个**不同**✗
   //   ⇒ **∴ 否则**导入时**撞名**✗（**实测：**conflict ✓）** ✓✓
-  const docId = "bitmap_scope_fixture_src";
+  // **★ 每次用**唯一的 doc_id** ✗ ★**（第 232 轮 ✓；**∴ 判据自己的清理问题 ✓）
+//   **∴ 症状 ✗**：**实测**（**第 231 轮 ✓）**✗**：
+//     **∴ 第 1 跑**造 fixture**✗ ⇒ **∴ 源文档**留在 root 里** ✓（**`--root` ⇒ 持久化 ✓）
+//       ⇒ **∴ 第 2 跑**再用同一个 `doc_id`**✗
+//         ⇒ **∴ 于是**：「**已经存在 ⇒ **不会覆盖**」 ⇒ **∴ 前置不成立**（**退出码 2 ✓）** ✓✓
+//   **∴ 改法 ✗**：**带上**时间戳**✗ ⇒ **∴ 于是**每次**都是新文档** ✓
+//     ⇒ **∴ 判据**可以**反复跑** ✓（**∴ 而**固定 fixture **仍然被复用** ✓）** ✓✓
+//   **∴ 代价**：**root 里会留一些源文档**✗（**∴ 那是**测试垃圾 ✓，**可接受 ✓）** ✓✓
+const docId = `bitmap_scope_fixture_src_${Date.now().toString(36)}`;
   const created = await (await fetch(`${base}/api/documents`, {
     method: "POST",
     headers: { "content-type": "application/json" },
