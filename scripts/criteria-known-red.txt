@@ -25239,3 +25239,55 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ⬜ 让**两本账**的两行**真的有区别**✗（**∴ 即**：**让工具的渲染路径**也走 GPU ✓）
 #     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
 #     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
+
+# **★ 第 455 轮：★★★★★★★ **决定性推断 —— `last_backend` 与 `max_channel_delta` 是**同一个 bug 模式**** ✗** ★★★★★★★
+#   **★★★ 读码事实（**调用链 ✓）★★★**：
+#     ```
+#     scripts/tool-render-cost-accounts.mjs
+#     :153  const out = await scenario.call("render_region", {
+#     :154    region: { x: 0, y: 0, w: 3840, h: 2160 },     ← ★ 4K ✓
+#     :155    include_image: false, });
+#
+#     crates/yanshi-render/src/render.rs
+#     :1115  let rgba8 = parallel_impl::quantize_to_rgba8(&cropped, background, workers);
+#     :3904  pub fn quantize_to_rgba8(buffer, background, workers) -> Vec<u8> {
+#     :3913      （**第 449 轮我加的 GPU 尝试** —— ★ **无条件** ★）
+#
+#     crates/yanshi-render/src/buffer.rs
+#     :437   Self::note_backend(crate::Backend::Cpu);   ← ★ 先悲观记 CPU ★
+#     :478   Self::note_backend(crate::Backend::Gpu);   ← ★ 逐位通过才改 ★
+#     ```
+#     ⇒ **★ 所以 ✗ ★**：**4K 的量化**确实经过**我加的 GPU 尝试** ✓
+#       ⇒ **∴ 而** GPU 那行**报 `cpu`** ✓
+#         ⇒ **★ 所以**：**最可能**是**GPU **真的跑了**✗
+#           ⇒ **∴ 但** `last_backend` **被**后续的 CPU 量化**覆盖** ✓ ★**** ✓✓
+#   **★★★ 为什么这与 `max_channel_delta` **同一个模式** ✗ ★★★**：
+#     **∴ 第 451／452 轮 ✗**：**`max_channel_delta` **被**后面的 CPU 路清成 `None`** ✓
+#       ⇒ **∴ 修法**是**只在真的比过时才写** ✓
+#       ＋ **∴ 现在 ✗**：**`last_backend` **有同一个弱点**✗
+#         ⇒ **∴ 即**：**`note_backend(Cpu)` **在 CPU 路上**无条件写** ✓
+#           ⇒ **∴ 于是**：**后一次 CPU 量化**会把前一次 GPU **擦掉** ✓ ★**** ✓✓
+#   **★★★ 所以两处要同一修法（**对齐 ✓）★★★**：
+#     **∴ 甲 ✗**：**`note_backend(Cpu)` **只在**真的尝试过 GPU 且失败时**写** ✓
+#       ⇒ **∴ 或**者**：**它**只在**从未记过 `Gpu`** 时写** ✓ ★**** ✓✓
+#     **∴ 乙（**更简单 ＋ 与 `render_delta` 一致 ✓）✗**：
+#       **∴ `last_backend` **改成**「**曾经用过 GPU**」**✗
+#         ⇒ **∴ 即**：**`Gpu` **一旦记上就不被覆盖** ✓
+#           ⇒ **∴ 语义 ✗**：**它**变成**「**本进程用过 GPU 吗**」**✗
+#             ⇒ **∴ 而**那**仍**满足目标第 7 条**✗（**不许假装 ✓）★**** ✓✓
+#     **∴ 代价（**如实 ✓）✗**：**`render_backend` **不再是**「**最近一次**」**✗
+#       ⇒ **∴ 而是**「**最近一次是 GPU 还是从未**」 ✓
+#         ⇒ **∴ 若**要**精确**「**最近一次**」**✗ ⇒ **∴ 应**加**一个**自增序号**（**渲染轮次 ✓）＋ **只写更新的** ✓ ★**** ✓✓
+#   **★★★ 可验证的一步 ✗ ★★★**：
+#     **∴ 用**带 `--features gpu` 的服务端**✗
+#       ＋ **∴ 一次 4K `render_region`**✗
+#         ⇒ **∴ 读** `/health` 的 `render_backend`**✗
+#           ⇒ **∴ 若**是 `gpu` ✗ ⇒ **∴ 那**修法生效** ✓
+#             ＋ **∴ 若**是 `cpu` ✗ ⇒ **∴ 那**GPU 尝试**真的失败了** ✓（**∴ 要**看失败日志 ✓）★**** ✓✓
+#     **∴ 变异 ✗**：**把 `note_backend(Cpu)` 调到 GPU 尝试**之后**⇒ **∴ 必红** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端 GPU **在判据路径上生效**✗（**1024² 实测 ✓）
+#     **∴ ⬜ 让 `last_backend` **不被覆盖**✗（**∴ 修法已写明 ✓）
+#     **∴ ⬜ 让两本账的两行**真有区别** ✗（**∴ 依赖上一项 ✓）
+#     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
+#     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
