@@ -9514,16 +9514,30 @@ $("importFile").addEventListener("change", async (event) => {
     await ensureDocument();
   } else {
     $("identity").textContent = state.docId;
-    await refreshLayers();
-    await refreshThumb();
-    await loadEffectCatalog();
-    await refreshEffects();
-    await refreshHistory();
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshLayers");
+      try { await refreshLayers(); (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshThumb");
+      try { await refreshThumb(); (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-loadEffectCatalog");
+      try { await loadEffectCatalog(); (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshEffects");
+      try { await refreshEffects(); (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshHistory");
+      try { await refreshHistory(); (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory!" + String(error && error.message || error).slice(0, 40)); throw error; }
     window.yanshiStats.bootAt = performance.now();
-    await refreshPreview();
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshPreview");
+      try { await refreshPreview(); (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview!" + String(error && error.message || error).slice(0, 40)); throw error; }
     connect();
     refreshContactLink();
-    void warmKernel();
+      (window.__appMarks = window.__appMarks || []).push("boot:warmKernel");
+      void warmKernel();
+      (window.__appMarks = window.__appMarks || []).push("boot:warmKernel-called");
   }
   // **开机就把本地队列读回来** ✓ —— 刷新/重开页面之后未补交的改动必须还在 ✓、且立刻可见 ✓
   //（这就是"离线优先"里"不丢"的那一半 ✓；只留在内存里的队列是没有意义的 ✗）。
