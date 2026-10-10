@@ -52,6 +52,19 @@ for (const t of targets) {
     // **★ 关键：对所有**新文档**生效 ✗ ★**（**∴ 于是**判据自己导航时也带上 ✓）
     const r = await send("Page.addScriptToEvaluateOnNewDocument", { source });
     if (!r || !r.error) seeded += 1;
+    // **★ 双保险（**第 379 轮 ✓）：**再对**当前页面**直接设一次 ✗ ★**
+    //   **∴ 为什么 ✗**：**实测（**第 379 轮 ✓）**：**`addScriptToEvaluateOnNewDocument`
+    //     **对**之后的新文档**生效**✗（**∴ 单独测过：`seedProbe` = "yes" ✓）
+    //       ⇒ **∴ 但**判据跑时**内核仍 false** ✓
+    //         ⇒ **∴ 所以**怀疑**判据那一刻**当前页面**没被覆盖** ✓
+    //           ⇒ **∴ 加这一步**代价极小**✗ ⇒ **∴ 而**它**覆盖**「**当前文档**」这一路 ✓ ★**** ✓✓
+    //   **∴ 先导航到 about:blank 之外的页面才有效 ✗**：**`about:blank` **没有** localStorage** ✓
+    //     ⇒ **∴ 所以**这一步**在**空页面**上**会失败**✗ ⇒ **∴ 用 try 包住** ＋ **不报错** ✓
+    try {
+      await send("Runtime.evaluate", { expression: source, returnByValue: true });
+    } catch (error) {
+      // **∴ 当前页面没有 localStorage（**如 about:blank ✓）⇒ **∴ 无害** ✓
+    }
     ws.close();
   } catch (error) {
     console.error(`  · 某个目标注入失败（不影响其它）：${String(error).slice(0, 80)}`);
