@@ -27252,3 +27252,93 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ 补丁**已合并 ＋ 已验证 ＋ 已同步 PWA 副本** ✓
 #     **∴ ⚠️ `tool-pwa-assets` 既有红**（**根因已查明 ✓）✗ ⇒ **∴ 待选甲／乙** ✓
 #     **∴ ⚠️ 它另一条 `api-local 未报 GPU 不可用原因`**✗ ⇒ **∴ 也是**独立问题** ✓
+
+# **★ 第 492 轮：★★★★★★★★★★ **PWA 部署 CI 的真因 ＋ L4 环境打通 ＋ 三个脚本**** ★★★★★★★★★★
+#   **★★★ 一、用户问「PWA 部署发布了吗」⇒ **答案是**没有** ★★★**：
+#     **∴ 线上实测 ✗**：`https://yanshi-online.wangda.today/viewer-app.js` ＝ 200／584852B
+#       ⇒ **∴ 修复标记** `putBlob(db, hash` ＝ **0 处**✗
+#         ＋ **∴ 症状注释** ＝ 0 处**✗
+#           ＋ **∴ 缓存名**仍是 `yanshi-shell-1657714024465`（**旧的 ✓）★**** ✓✓
+#     **∴ 为什么没自动部署 ✗**：**`pwa.yml` 的 `on.push` **只对 tag `v*`**✗
+#       ```
+#       on:
+#         workflow_dispatch:
+#         push:
+#           tags: ['v*']        ← ★ 推 main **不触发** ★
+#       ```
+#       ⇒ **∴ 所以**：**我推的 `13086373` **没有触发**任何部署** ✓ ★**** ✓✓
+#   **★★★ 二、手动触发后**暴露了 CI 的真 bug**（**不是 secret ✓）★★★**：
+#     **∴ 运行 38093747349 ✗**：**`deploy` job 在「安装 wasm-bindgen CLI」**失败** ✓
+#       ```
+#       VER=$(grep -m1 '^wasm-bindgen' crates/yanshi-wasm/Cargo.toml | sed …)  ⇒ 取到 "0.2"
+#       cargo install wasm-bindgen-cli --version "0.2" --locked
+#       ✗ error: invalid value '0.2' for '--version': unexpected end of input
+#           tip: if you want to specify SemVer range, add an explicit qualifier, like '^0.2'
+#       ```
+#       **∴ 根因 ✗**：**`crates/yanshi-wasm/Cargo.toml` 写的是**范围** `wasm-bindgen = "0.2"`**✗
+#         ＋ **∴ 而**CI 把它当**精确版本**用** ✓
+#           ⇒ **∴ 于是**：**那一步**必失败**✗ ⇒ **∴ 后面的「生成绑定」**从不执行** ✓
+#             ⇒ **★ 所以**：**部署步骤**根本没跑到** ✗
+#               ⇒ **∴ 而**用户以为**是缺 secret** ✓ —— **∴ 但**真因**不是** ✓ ★**** ✓✓
+#     **∴ 修法 ✗**：**新增 `scripts/wasm-bindgen-version.sh`**✗
+#       ⇒ **∴ 它**只从 `Cargo.lock` 取**精确版本**（**0.2.129 ✓）
+#         ＋ **∴ 取不到就**响亮失败**✗ ⇒ **∴ 不回退写死版** ✓
+#           ＋ **∴ 而** `package-release.sh` 早就用同一条思路** ✓ ★**** ✓✓
+#     **∴ 顺手修掉**我自己上一轮引入的隐患 ✗**：
+#       ⇒ **`ci.yml` 的 `--version 0.2.104 --locked || true`**✗
+#         ⇒ **∴ 两处错**：**① 版本**过时**（**crate 是 0.2.129 ✓）
+#           ＋ **②** `|| true` **吞掉失败** ✓
+#             ⇒ **∴ 于是**：**报错**指向错的地方** ✓ ★**** ✓✓
+#     **∴ 统一范围 ✗**：**6 个安装点**（**ci.yml 4／pwa.yml 1／release.yml 1 ✓）
+#       ⇒ **∴ 全部**改成 `VER="$(scripts/wasm-bindgen-version.sh)"`** ✓
+#         ＋ **∴ 且**：**去掉所有 `|| true`** ✓ ★**** ✓✓
+#     **∴ 新判据 ✗**：**`scripts/tool-workflow-wasm-bindgen-pin.mjs`** ✓
+#       ⇒ **∴ 四项**：**① 脚本输出 ＝ lock ✗｜② 必须用脚本 ＋ 不许字面版本
+#         **｜③ 不许 `|| true`｜④ 至少一个安装点（**防空转 ✓）★**** ✓✓
+#       ＋ **∴ 变异（**3 项全红 ✓）**：**写死版本 ⇒ 1｜加 `|| true` ⇒ 1｜脚本输出假版本 ⇒ 1** ✓ ★**** ✓✓
+#   **★★★ 三、L4 环境打通（**用户开了新 L4 ＋ 给了 colab CLI ✓）★★★**：
+#     **∴ 会话 ✗**：`[dawang] gpu-l4-s-kkb-ass1b0-q7b8p14gs555`｜Hardware **L4** ✓
+#       ＋ **∴ 连接配方（**实测 ✓）**：
+#         ```
+#         ssh -o ProxyCommand="colab ssh --proxy-mode -s dawang --identity ~/.ssh/id_ecdsa" \
+#             … root@colab-runtime        ← ★ 抽象主机名，**必须是 root@** ★
+#         ```
+#         （**∴ `colab` 在 `~/.local/bin`，**不在默认 PATH** ✓）★**** ✓✓
+#     **∴ ★ 复现了第 318 轮的坑 ✗ ★**：
+#       ⇒ **∴ 新实例的 `/usr/share/vulkan/icd.d/` **不存在****✗
+#         ⇒ **∴ 直接跑 wgpu**会回退 `llvmpipe`**（**软件渲染 ⇒ 会被当成 L4 ✓）★**** ✓✓
+#       ＋ **∴ 修法 ✗**：`apt-get install -y libnvidia-gl-580 vulkan-tools`** ✓
+#         ⇒ **∴ 实测** `vulkaninfo --summary`**✗**：
+#           ```
+#           apiVersion  = 1.4.312
+#           deviceName  = ★ NVIDIA L4 ★
+#           driverName  = NVIDIA
+#           driverInfo  = ★ 580.82.07 ★   ← 与内核模块**完全一致** ✓
+#           ```
+#           ⇒ **★ 所以**：**真 L4 ＋ Vulkan**成立** ✓ ★**** ✓✓
+#     ＋ **∴ 环境 ✗**：Ubuntu 24.04.4｜kernel 6.6.122+｜**/** 236G 余 194G
+#       ＋ **∴ 装好 ✗**：**Rust（**cargo 1.99.0 ✓）＋ **clone（**HTTPS ✓ —— L4 上**没有 GitHub 密钥** ✓）
+#         ＋ **∴ 构建 ✗**：`--features gpu` ⇒ **1m25s** ⇒ `yanshi-serve` 12.18 MB ✓ ★**** ✓✓
+#   **★★★ 四、三个脚本（**用户要求「做成脚本 ✓」）★★★**：
+#     **∴ ① `scripts/wasm-bindgen-version.sh` ✗**：**版本的**唯一来源** ✓
+#     **∴ ② `scripts/l4.sh` ✗**：**`status`／`up`／`wait-build`／`run`／`sync`／`accounts`／`down`／`sh`** ✓
+#       ⇒ **∴ 且**：**把三个坑固化进去**✗：
+#         ⇒ **∴ ①** 适配器名**必须打印** ✓
+#           ＋ **∴ ②** 一律用 `pkill -x`**（**不用 `-f`：**会**匹配到自己所在的 ssh 命令 ⇒ **远端 shell 自杀**✗
+#             ⇒ **∴ 症状**输出全空** ✓ —— **∴ 本轮**真踩了一次 ✓）
+#             ＋ **∴ ③** **colab 的 ssh 通道**一次只允许一个连接**✗
+#               ⇒ **∴ 症状**：`Already-active SSH session (HTTP 429)`** ✓
+#                 ＋ **∴ 所以**：**远端检查**合并成一次 ssh**✗ ＋ **∴ 加重试** ✓
+#                   ⇒ **★ 而**重试在实测中**当场生效**（**429 ⇒ 等 3 秒 ⇒ 成功 ✓）★**** ✓✓
+#     **∴ ③ `scripts/deploy-pwa.sh` ✗**：**本地一键部署**（**照 CI 的同一套步骤 ✓）
+#       ⇒ **∴ 为什么需要 ✗**：**线上只在**打 tag**或**手动跑 workflow**时部署** ✓
+#         ＋ **∴ 且** CI 依赖仓库 secret** ✓
+#           ⇒ **∴ 于是**：**本地用 `.env` 里的 token**直接部署 ⇒ **∴ 迭代更快** ✓
+#             ＋ **∴ 且**：**本机没 `wasm32` 目标时**响亮失败并给命令** ✓（**已实测 ✓）★**** ✓✓
+#       ＋ **∴ 凭据 ✗**：**只打印 token 长度，**绝不回显内容** ✓ ★**** ✓✓
+#   **★★★ 五、secret 的真相（**用户问的 ✓）★★★**：
+#     **∴ `pwa.yml` 用到的 ✗**：`secrets.CLOUDFLARE_API_TOKEN`（**必需 ✓）
+#       ＋ `secrets.CLOUDFLARE_ACCOUNT_ID`（**只在 `env:` 声明，**命令里没用** ⇒ **可选** ✓）★**** ✓✓
+#     **∴ 现状 ✗**：`gh secret list` **为空** ⇒ **∴ 确实**没配** ✓
+#       ＋ **∴ 但**当前失败**不是**它造成的** ✓ ⇒ **∴ 而**修完 wasm-bindgen 后**才会遇到它** ✓ ★**** ✓✓
+#     ＋ **∴ 本机 `.env` 里有 `CLOUDFLARE_API_TOKEN`**（**长度 53 ✓）⇒ **∴ 可以直接复用** ✓ ★**** ✓✓
