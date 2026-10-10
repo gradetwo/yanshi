@@ -176,11 +176,20 @@ impl WasmKernel {
             "webgpu_in_page": in_page,
             // **∴ 我们用了 GPU 吗 ✗**：**恒 false** ✓（**∴ 如实 ✓）
             "webgpu_used_by_kernel": false,
-            // **∴ 为什么没用 ✗**：**∴ 说清原因**（**∴ 不许**含糊 ✓）
-            "webgpu_unused_reason": if in_page {
-                "kernel_webgpu_not_wired_yet"
-            } else {
+            // **★ 为什么没用（**三种情形要分开 ✓）✗ ★**（**第 482 轮 ✓）：
+            //   **∴ ①** 页面**没有** `navigator.gpu`**✗ ⇒ **∴ 那是**页面的能力问题** ✓
+            //   **∴ ②** **本次内核构建**没有 `gpu` feature**✗
+            //     ⇒ **∴ 那是**产物问题**✗（**∴ 第 480 轮**加了那个 feature ✓）
+            //       ⇒ **∴ 而**它**是**默认状态** ✓ ★**** ✓✓
+            //   **∴ ③** 有 feature**✗ ⇒ **∴ 那就**不是「**没接**」了**✗
+            //     ⇒ **∴ 而是**「**导出了，但前端还没调它**」 ✓
+            //       ⇒ **∴ 两者**绝不许混为一谈** ✓（**∴ 否则**又是含糊 ✓）★**** ✓✓
+            "webgpu_unused_reason": if !in_page {
                 "navigator_gpu_absent"
+            } else if !cfg!(feature = "gpu") {
+                "kernel_built_without_gpu_feature"
+            } else {
+                "gpu_exported_but_frontend_does_not_call_it_yet"
             },
         })
         .to_string()

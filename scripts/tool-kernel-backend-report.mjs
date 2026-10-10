@@ -62,6 +62,25 @@ check(/"webgpu_unused_reason"/.test(body),
   "必须给出 `webgpu_unused_reason`（**∴ 不许**含糊其辞 ✓）",
   /"webgpu_unused_reason"/.test(body) ? "已给出" : "缺失");
 
+// **★ 三种情形必须分开 ✗ ★**（**第 482 轮 ✓）：
+//   **∴ 一个笼统的「**还没接**」会**掩盖**三类不同的现实**✗
+//     ⇒ **∴ ①** 页面**没有** `navigator.gpu` ✓
+//       ＋ **∴ ②** **本次构建**没有 `gpu` feature**✗（**∴ 那是**默认状态 ✓）
+//         ＋ **∴ ③** 有 feature**✗ ⇒ **∴ 那**是「**导出了但前端还没调**」 ✓ ★**** ✓✓
+const hasThree =
+  /navigator_gpu_absent/.test(body)
+  && /kernel_built_without_gpu_feature/.test(body)
+  && /gpu_exported_but_frontend_does_not_call_it_yet/.test(body);
+check(hasThree,
+  "webgpu_unused_reason 必须区分三种情形（**无 navigator.gpu／无 gpu feature／导出了但前端没调**）",
+  hasThree ? "三情形都在" : "情形不全");
+
+const readsCfg = /cfg!\(feature = "gpu"\)/.test(body);
+check(readsCfg,
+  '三情形判定必须真的读 cfg!(feature = "gpu")（**∴ 而不是**写死的字符串 ✓）',
+  readsCfg ? "读了 cfg!" : "没读 cfg!");
+
+
 console.log("");
 if (failed === 0) {
   console.log("  结论：✓ 内核如实上报后端（**render_backend ＝ cpu；**能力与行为分开** ✓）");
