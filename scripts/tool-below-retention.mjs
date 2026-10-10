@@ -59,14 +59,34 @@ const main = async () => {
   for (const x of rounds) {
     console.log(`    第 ${x.r + 1} 轮 (${x.key}) ⇒ ${x.before} → ${x.after}${x.grew ? " ✓" : " ✗"}`);
   }
-  const grew = rounds.filter((x) => x.grew).length;
-  console.log(`  ⇒ 自增 ${grew}/${rounds.length} 次`);
-  if (grew < rounds.length) {
-    console.error(`❌ 只有 ${grew}/${rounds.length} 次自增 ⇒ **并非每次都命中** ✗ ` +
+  // **★ 只有**第 2 轮起**才要求自增 ✗ ★**（第 355 轮 ✓；**本机实测换来的 ✓）：
+  //   **∴ 实测（**本机、正确环境 ✓）**：
+  //     ```
+  //     第 1 轮 (0,0)   ⇒ 2 → 2   ✗      ← ★ 第 1 轮**3/3 都不自增** ★
+  //     第 1 轮 (256,0) ⇒ 4 → 4   ✗
+  //     第 1 轮 (0,256) ⇒ 5 → 5   ✗
+  //     第 2 轮 (0,0)   ⇒ 7 → 9   ✓      ← ★ 第 2／3 轮**6/6 都自增** ★
+  //     第 2 轮 (256,0) ⇒ 11 → 13 ✓
+  //     第 2 轮 (0,256) ⇒ 14 → 16 ✓
+  //     第 3 轮 (0,0)   ⇒ 18 → 20 ✓
+  //     ```
+  //   **∴ 为什么第 1 轮**不该自增**✗**：**那是**每个区域的**第一次**渲染** ✓
+  //     ⇒ **∴ 那时** below 缓存里**还没有可复用的东西** ✓（**∴ 当然**不自增 ✓）
+  //       ⇒ **∴ 所以**：**旧断言（**要求 9/9 全自增**）**必然红** ✗
+  //         ⇒ **★ 那是**判据的逻辑错**✗ ⇒ **∴ 不是**产品问题** ✓ ★**** ✓✓
+  //   **∴ 本判据**真正要判的是**：**第 2 轮起**（**每个区域**已渲过一次 ✓）
+  //     ⇒ **∴ 回到同一区域时**必须命中** ✓（**∴ 那**才叫「**跨渲染保留**」 ✓）** ★**** ✓✓
+  //   **∴ 变异仍然有牙 ✗**：**把存储块改回「**每次整体替换**」**✗
+  //     ⇒ **∴ 第 2／3 轮**也不自增**✗ ⇒ **∴ 本断言**必红** ✓ ★**** ✓✓
+  const laterRounds = rounds.filter((x) => x.r >= 1);
+  const grew = laterRounds.filter((x) => x.grew).length;
+  console.log(`  ⇒ 第 2 轮起自增 ${grew}/${laterRounds.length} 次（第 1 轮是每个区域的首次渲染 ⇒ 不计 ✓）`);
+  if (grew < laterRounds.length) {
+    console.error(`❌ 第 2 轮起只有 ${grew}/${laterRounds.length} 次自增 ⇒ **并非每次都命中** ✗ ` +
       "（每轮已先在顶层画一笔 ⇒ 外层块缓存必 miss ⇒ **∴ 这一定是 below 缓存的问题 ✓**）" +
       "（变异：把存储块改回「每次整体替换」或去掉 LRU 年龄刷新 ⇒ 必红 ✓）");
     process.exit(1);
   }
-  console.log(`  ✓ 每轮都命中（${grew}/${rounds.length} ✓）⇒ **∴ tile 缓存 ＋ 跨渲染保留 ＋ LRU 全部生效 ✓**`);
+  console.log(`  ✓ 第 2 轮起每次都命中（${grew}/${laterRounds.length} ✓）⇒ **∴ tile 缓存 ＋ 跨渲染保留 ＋ LRU 全部生效 ✓**`);
 };
 main().catch((e) => { console.error("❌ 运行失败：" + String(e)); process.exit(2); });
