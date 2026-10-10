@@ -20973,3 +20973,48 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ①** **继续跑剩下的判据**✗ ⇒ **∴ 完成**三类划分** ✓**** ✓✓
 #     **∴ ②** **对**甲类**✗（**本机绿 ✓）⇒ **∴ 在 CI 里**加等待／重试** ✓**** ✓✓
 #     **∴ ③** **对**丙类**✗ ⇒ **∴ 逐个**读失败行** ✓**** ✓✓
+
+# **★ 第 357 轮：★★★★★★★ **离线三条红灯的上游 —— `yanshiKernelReady === false`（**连在线都不就绪**）**** ✗** ★★★★★★★
+#   **★ 诊断脚本（**`/tmp/offkern.mjs` ✓）★**：**在线装一次 ⇒ 杀服务端 ⇒ 刷新 ⇒ 读内核状态 ✓**
+#     **∴ 实测 ✗**：
+#       ```
+#       在线：kernelReady = false｜state.wasm = undefined｜blits = 1
+#       ★ 离线：kernelReady = false｜state.wasm = undefined ★
+#       离线 console 尾 5 行：
+#         · [yanshi] 缓存落空：boot|/api/tools/get_preferences…|tool:get_preferences
+#         · [yanshi] 缓存落空：boot|/api/tools/render_region…|tool:render_region|args:2
+#         · [yanshi] 缓存落空：boot|/api/effects?doc=boot…|json
+#       ```
+#     **⇒ ★ 关键 ✗ ★**：**`kernelReady = false` **连在线都成立****
+#       ⇒ **∴ 所以**：**本机内核**从来没起来过**✗ ⇒ **∴ 与**离线无关** ✓ ★**** ✓✓
+#   **★ 服务端侧是**正常的**✗**（**本轮查明 ✓）**：
+#     ```
+#     /health: 200
+#     ★ wasm = true ★｜★ render_backend = "cpu" ★
+#     （全部键含 below_missing／below_wanted／gpu_mode／max_channel_delta 等 ✓）
+#     ```
+#     **∴ 且**：**`crates/yanshi-wasm/pkg` **4 文件** ✗（含 `yanshi_wasm_bg.wasm` ✓）
+#       ＋ **`web/wasm` **4 文件** ✓｜**服务端缺省 `wasm_dir = crates/yanshi-wasm/pkg`** ✓**** ✓✓
+#       ⇒ **∴ 所以**：**产物与声明**都对**✗ ⇒ **∴ 问题在**浏览器侧** ✓ ★**** ✓✓
+#   **★ 权威读法（**我一度读错 ✓）★**：
+#     **∴ 判据用的是 ✗**：**`window.yanshiKernelReady === true`**✗（**`browser-offline-journal.mjs:135` ✓）** ★**** ✓✓
+#     **∴ 而**我**诊断脚本读的是 `window.yanshi.state().wasm`**✗ ⇒ **∴ 得到 `undefined`** ✓
+#       ⇒ **∴ 因为** `kernelReady()`（**`viewer-app.js:1472` ✓）用的是**模块内 `state`**✗
+#         （**`return !!(state.kernel && state.wasm);` ✓）
+#           ⇒ **∴ 而** `window.yanshi.state` **是**另一个包装**✗ ⇒ **∴ 它**未必含 `wasm`** ✓
+#             ⇒ **★ 所以**：**那不是**产品缺陷**✗ ⇒ **∴ 而是**我**读错了字段** ✓ ★**** ✓✓
+#   **★ 三条离线红灯的**共同上游（**本轮缩小 ✓）★**：
+#     **∴ `yanshiKernelReady === false`**✗ ⇒ **∴ 于是**：
+#       **∴ ①** **`browser-offline-journal`**：**直接报**「**WASM 内核必须就绪**」 ✗**** ✓✓
+#       **∴ ②** **`browser-offline-shell`**：**诊断说**「**`refreshBrushOptions` 从未被进入 ⇒ 上游（`setupBrushLibrary`）失败**」 ✓
+#       **∴ ③** **`browser-offline-draw`**：**离线这一笔增量 0** ✓**** ✓✓
+#     **⇒ ∴ 所以**：**修好**「**内核就绪**」**可能**一次点亮三条** ✓ ★**** ✓✓
+#   **★ 下一步（**精确 ✓）★**：
+#     **∴ ①** **用** CDP 读 **`window.yanshi.state()` 的全部键**✗
+#       ⇒ **∴ 看**它**有没有 `kernel`／`wasm`**✗ ⇒ **∴ 若有** ⇒ **∴ 就能**直接看到**是哪一个为假** ✓**** ✓✓
+#     **∴ ②** **看** `viewer-app.js` 的**内核初始化路径**✗
+#       ⇒ **∴ 即** `initWasm()`（**它第一句是 `await fetch("/health")` ✓）
+#         ⇒ **∴ 若**它在**浏览器里失败**✗ ⇒ **∴ 那**就是根因** ✓（**∴ 而**服务端说 `wasm: true` ✓）
+#     **∴ ③** **并**：**注意**那个「**缓存落空**」日志**✗
+#       ⇒ **∴ 它**说明**有些 `/api/tools/*` 请求**离线时无处可取** ✓
+#         ⇒ **∴ 而**若**内核初始化**依赖其中之一**✗ ⇒ **∴ 那**也是**根因候选** ✓ ★**** ✓✓
