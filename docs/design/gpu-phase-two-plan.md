@@ -1926,3 +1926,52 @@ Connection closed.
 1. **确认** `RUST_OK` ＋ `BUILD_OK`（**∴ 或**者**走 `scp --proxy-mode` 传本机代码** ✓）
 2. **跑 7 条 GPU 判据** ⇒ **∴ 记录**：**适配器名（**应为 `Vulkan` ＋ `DiscreteGpu` ✓）＋ **`SHADER_F16`** ＋ **两本账** ✓
 3. **∴ 而**若 `SHADER_F16 == true`**✗ ⇒ **∴ 可以把**手写 f16 换成原生 `f16`** ✓（**∴ 用**同一条逐位判据**守住 ✓）** ✓✓
+
+---
+
+# 四十四、★★★ **远端 L4 的可用通道（**已验证 ✓）**（第 311 轮）★★★
+
+## 一、★ 已验证可用的命令（**照抄即可 ✓**）★
+
+```bash
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ProxyCommand="/home/crow/.local/bin/colab ssh --proxy-mode -s dawang" \
+    root@dawang '你的命令'
+```
+**∴ 实测输出 ✗**：**`SSH_OK` ＋ `hostname = 9ed3d1f95b22` ＋ `/content/yanshi` 存在** ✓
+**⇒ ★ 所以 ✗ ★**：**`--proxy-mode` **真的**把 colab 变成了**普通 ssh 目标**** ✓
+**⇒ ∴ 于是**：**`scp`／`rsync`／`ssh` **全都能用**** ✓（**∴ 正是**用户说的用法 ✓）** ★**** ✓✓
+
+## 二、★ 我踩的坑（**如实 ✓**）★
+
+| 坑 | 现象 | 修法 |
+|---|---|---|
+| **① `exit` 关掉了 tmux** | **`colab console` **立刻** `Connection closed.`** | **∴ 用 `--proxy-mode` 走 ssh** ✓（**∴ 不需要** tmux ✓） |
+| **② `SSH` shell 变量带空格** | **`unknown option -- -`** | **∴ 直接写完整命令**（**∴ 或用** ssh config ✓） |
+| **③ 写 `~/.ssh/config` 漏 `IdentityFile`** | **`Connection timed out during banner exchange`** | **∴ 显式写完整命令**更稳** ✓（**∴ 或**记得加 `-i ~/.ssh/id_ecdsa` ✓）** |
+
+## 三、★ 远端当前状态（**部分未知，如实 ✓**）★
+
+| 项 | 状态 |
+|---|---|
+| **`/tmp/setup.log`** | **★ **不存在** ★** ⇒ **∴ 我那次** `nohup` 后台启动**没有真的执行** ✓（**∴ 因为**console 在**写脚本时就断了** ✓） |
+| **`/content/yanshi`** | **★ **存在** ★** ⇒ **∴ 内容**待查**（**∴ 可能**是之前 clone 的 ✓，**也**可能是空 ✓） |
+| **`cargo`** | **★ 未知 ★**（**∴ 第一次** rustup **在下载中被切断** ✓） |
+| **硬件** | **★ L4｜CUDA 13.0｜12 线程｜52 GB ★**（**已确认 ✓） |
+
+## 四、★ 下一步（**用已验证的通道 ✓**）★
+
+**∴ ①** **查状态**（**用上面那条 ssh 命令** ✓）：
+```bash
+ls -A /content/yanshi | wc -l          # 有没有代码
+. $HOME/.cargo/env; cargo --version    # 有没有 Rust
+```
+**∴ ②** **传代码**（**本机已打好包：`/tmp/yanshi-src.tgz` ＝ **2.26 MiB** ✓**）：
+```bash
+scp -o ProxyCommand="/home/crow/.local/bin/colab ssh --proxy-mode -s dawang" \
+    /tmp/yanshi-src.tgz root@dawang:/content/
+ssh … 'cd /content && tar xzf yanshi-src.tgz'
+```
+**⇒ ★ 好处 ✗ ★**：**不依赖** GitHub 凭据**（**∴ 仓库是私有的 ✓）** ★**** ✓✓
+**∴ ③** **装 Rust ＋ 后台 build**（**∴ 一定 `nohup` ＋ 写日志 ✓）**
+**∴ ④** **跑 7 条 GPU 判据** ⇒ **记录**适配器名 ＋ `SHADER_F16` ＋ **两本账** ✓
