@@ -110,12 +110,39 @@ const firstDiff = (left, right) => {
   //       ⇒ **∴ 于是**判据**误判产品** ✓
   //         **∴ 实测（**第 406 轮 ✓）**：**缓存里**确实有 `brush-local.js`**（**200／4491 ✓）** ✓
   //           ⇒ **★ 所以**：**断网前**要**显式等它**✗（**最多 20 秒 ✓）** ✓
+  // **★ 必须同时等「SW 已接管页面」✗ ★**（第 410 轮 ✓；**实测根因 ✓）：
+  //   **∴ 实测（**决定性 ✓）**✗**：
+  //     ```
+  //     ① 缓存命中 = true
+  //     ★ ② controller = false｜SW scope = 无 ★     ← ★ SW 还没接管页面 ★
+  //     ③ 在线 fetch = {ok:true, status:200, len:5454}
+  //     ★ ④ 离线 fetch(/brush-local.js) = {ok:true, status:200, len:5454} ★
+  //     ★ ⑤ 离线 import(/brush-local.js) = "OK:baseFromKernel,fetchBrushText,paintWithKernel" ★
+  //     ```
+  //     **⇒ ★ 所以 ✗ ★**：**缓存**命中**✗ ＋ **离线 `import` **也能成功**** ✓
+  //       ⇒ **∴ 而**那一刻 `controller === false`**✗
+  //         ⇒ **∴ 所以**：**请求**没有经过 SW**✗ ⇒ **∴ 走的是**网络 ＋ HTTP 缓存** ✓
+  //           ⇒ **∴ 于是**：**HTTP 缓存命中**就成功**✗、**没命中**就失败** ✓
+  //             ⇒ **∴ 那**正是「**有时成功有时失败**」的来源** ✓ ★**** ✓✓
+  //   **∴ 修法 ✗**：**等到** `navigator.serviceWorker.controller` **为真**✗
+  //     ⇒ **∴ 于是**判据**在**真正受控**之后**才断网** ✓ ★**** ✓✓
+  //   **∴ 两面 ✗**：**收益**：**判据测的是**真正的 SW 离线能力** ✓
+  //     ＋ **∴ 代价 ✗**：**多等一点时间**（**上限 20 秒 ✓）★**** ✓✓
   const waitForPrecache = async (path, timeoutMs = 20000) => {
-    const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return !!r; } catch (e) { return false; } })()`;
+    const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return { hit: !!r, controlled: !!navigator.serviceWorker.controller }; } catch (e) { return { hit: false, controlled: false }; } })()`;
     const started = Date.now();
     for (;;) {
-      const hit = await evaluate(probe);
-      if (hit === true) { console.log("     · 离线资产已进缓存：" + path); return true; }
+      const state = await evaluate(probe);
+      const hit = state && state.hit === true;
+      const controlled = state && state.controlled === true;
+      if (hit && controlled) {
+        console.log("     · 离线资产已进缓存 ＋ SW 已接管页面：" + path);
+        return true;
+      }
+      if (hit && !controlled && Date.now() - started > timeoutMs) {
+        console.warn("     ⚠️ 缓存已命中但 SW 一直没接管页面（controller 仍为假）⇒ 离线结论可能不成立");
+        return false;
+      }
       if (Date.now() - started > timeoutMs) {
         console.warn("     ⚠️ 等 " + path + " 进缓存超时（" + timeoutMs + "ms）⇒ 离线结论可能不成立");
         return false;
