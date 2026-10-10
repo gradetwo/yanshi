@@ -14,8 +14,9 @@
 // **⚠️ 现状** ✗**：**这是**最小可用实现 ✗**（**库表 ＋ 读写 ＋ 序号校验 ✓**），
 //   **∴ 尚未接进 `web/index.html` 的界面流程 ✗**（**那一步在 viewer 静态化之后 ✓**）。
 
-/** **★ 库表结构版本 ✓ ★**：**改动结构必须**同时**改它 ✗**（**否则会静默读到旧结构 ✓**）。 */
-export const DB_VERSION = 1;
+/** **★ 库表结构版本 ✓ ★**：**改动结构必须**同时**改它 ✗**（**否则会静默读到旧结构 ✓**）。
+ *  **v2 新增 `prefs` 表**（**P1 `set_preferences`／`get_preferences` 用 ✓**）。 */
+export const DB_VERSION = 2;
 /** **★ 快照格式版本 ✓ ★**：**渲染快照与它不匹配 ⇒ 必须重算 ✗**（**目标第 6 条 ✓**）。 */
 export const FORMAT_VERSION = 1;
 const DB_NAME = "yanshi-online";
@@ -42,6 +43,10 @@ export function open() {
       // **文档元数据**：**含 `seq` 与 `format` ✓** ⇒ **∴ 快照是否过期可判 ✓**。
       if (!db.objectStoreNames.contains("docs")) {
         db.createObjectStore("docs", { keyPath: "doc" });
+      }
+      // **偏好**：**`set_preferences` 的合并写入落这里 ✓**（**键值对 ✓，**与文档无关 ✓**）。
+      if (!db.objectStoreNames.contains("prefs")) {
+        db.createObjectStore("prefs", { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);

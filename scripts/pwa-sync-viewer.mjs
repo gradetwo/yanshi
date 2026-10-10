@@ -33,7 +33,13 @@ const stampSource = [
 const BUILD_STAMP = stampSource.replace(/[^0-9]/g, "").slice(-13) || String(Date.now());
 try {
   const swPath = join(DST, "sw.js");
-  const swText = readFileSync(swPath, "utf8").replace("__BUILD_STAMP__", BUILD_STAMP);
+  // **★ 戳替换必须幂等**（定位 ✓）：`web/sw.js` 是 git 跟踪文件，
+  //   占位符 `__BUILD_STAMP__` 在第一次运行时就被替换并提交了，
+  //   之后每次跑脚本 `replace("__BUILD_STAMP__")` 找不到目标 ⇒ 静默无操作 ⇒ 戳永不更新。
+  //   **∴ 改用正则**：占位符和旧戳都能换掉。
+  const swText = readFileSync(swPath, "utf8")
+    .replace("__BUILD_STAMP__", BUILD_STAMP)
+    .replace(/yanshi-online-\d+/, "yanshi-online-" + BUILD_STAMP);
   writeFileSync(swPath, swText);
   console.log("  OK: service worker cache stamp ⇒ " + BUILD_STAMP);
 } catch (e) {
