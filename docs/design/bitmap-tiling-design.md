@@ -65,3 +65,53 @@
 3. **改**写侧（**编码时切块 ✓）**
 4. **跑判据** ⇒ **∴ 期望**第一条**转绿**✗ ＋ **其余三条**保持绿 ✓
 5. **变异检验** ✓
+
+---
+
+# 六、★ **更新（第 217 轮）：分块路**已经实现了**** ★
+
+## 一、★ 代码事实（**读到实际那一行 ✓**）★
+
+**`crates/yanshi-render/src/render.rs` 的 `Primitive::RasterPatch` 分支** ✗**：
+```rust
+let index: crate::bitmap_tiles::BitmapIndex =
+    serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
+if !index.is_consistent() { … }
+let slots = index.tiles_for_rect(src_x, src_y, rw, rh);   // ★ 只取覆盖的块 ★
+let mut parts = Vec::with_capacity(slots.len());
+for slot in &slots {
+    let th: BlobHash = index.tiles.get(*slot)?.parse().ok()?;
+    parts.push(store.get(&th).ok()?);                      // ★ 每块一次 store.get ★
+}
+crate::bitmap_tiles::assemble_region_sparse(…)
+```
+
+**∴ 且**注释写明 ✗**：
+- **「**分块路（**第 187 轮 ✓）—— 只取并解码"覆盖请求区域"的块** ✓」** ✓✓
+- **「**不撒谎 ✓：索引缺失／版本不符／块取不到 ⇒ **落回既有整幅路** ✓」** ✓✓
+- **`BitmapCache`** ✗：**键**＝ blob ＋ 声明尺寸 ＋ MIME**✗
+  ⇒ **∴ 缓存**已解码的字节**✗；**上限 **64 MiB**** ✓**** ✓✓
+
+## 二、★ 所以**裁决 2 的状态** ★
+
+| 裁决 2 的要求 | 现状 |
+|---|---|
+| **位图按 tile 切块存储** | **★ 已有 `BitmapIndex` ＋ `tiles` ★** ✓ |
+| **解码只碰覆盖请求区域的块** | **★ `tiles_for_rect` ★** ✓ |
+| **区域渲染与整幅逐字节一致** | **判据在守**（**`tool-bitmap-decode-scope` ✓）** ✓ |
+
+**⇒ ★ 所以：**分块存储已经落地** ✗ ⇒ **∴ 它**不需要**再实现** ✓ ★**** ✓✓
+
+## 三、★ 那 4.5 ms／块**剩下什么**（**第 216 轮的推算 ✓**）★
+
+| 候选 | 备注 |
+|---|---|
+| **① 每次解析 `BitmapIndex` JSON** | **`serde_json::from_slice`** ✓（**∴ 若**索引含很多块 ⇒ **∴ JSON**可能很大 ✓）** |
+| **② 逐块 `store.get`** | **∴ 每块一次**（**∴ 文件存储**要**读盘 ✓）** ✓ |
+| **③ 缓存未命中** | **∴ 而** 4.37 M px × 4 B ＝ **17.5 MB** ⇒ **∴ 64 MiB 应当装得下** ✓ |
+
+## 四、★ 下一步（**分段计时 ✓**）★
+
+**∴ 改哪里 ✗**：**在该分支里**分开计时**✗**：**解析索引**／**取块**／**装配**／**blit** ✓
+**∴ 判据 ✗**：**四段之和 ≈ 该对象 `ObjectTimings`**（**±10% ✓）
+**∴ 变异点**：**把某段清零** ⇒ **∴ 判据必红** ✓**** ✓✓
