@@ -88,7 +88,26 @@
     console.error("PWA 本地 API 安装失败 ✗", err);
   }
   // **∴ ② 注册 service worker ✗**（**离线可用 ✓**）
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  // **★ 静态部署**只许注册**一个** SW** ✗ ★**（第 125 轮 ✓；**双 SW 是实测出来的真缺陷 ✓）：
+    //   **∴ 实测（**三量同时读 ✓）✗**：**静态部署**里**两个** SW **都注册**✗**：
+    //     **∴ ①** **本行**注册 `/sw.js`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-online-<mtime 戳>`
+    //         ＋ **它**的缓存**只有 **23 条**✗
+    //         ＋ **它**返回的外壳**里**没有** `viewer-app.js`** ✗**** ✓✓
+    //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
+    //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
+    //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-__BUILD_ID__`**✗
+    //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
+    //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
+    //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
+    //         ⇒ **∴ 两个**都注册 ⇒ **∴ `sw.js`**胜出**✗
+    //           ⇒ **∴ 于是**页面**拿不到**正确的**外壳 ✓**** ✓✓
+    //   **∴ 修法**：**去掉本行**✗ ⇒ **∴ 只留** `viewer-app.js` **注册的**
+    //     `/service-worker.js` ✓**** ✓✓
+    //   **∴ 而** `web/sw.js` **仍**留在磁盘**✗
+    //     ⇒ **∴ 因为** `tool-pwa-assets` **检查它**存在 ✓（**∴ 它**是**预缓存清单的**载体 ✓）** ✓✓
+    if ("serviceWorker" in navigator && false) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>
 
 <meta charset="utf-8" />
