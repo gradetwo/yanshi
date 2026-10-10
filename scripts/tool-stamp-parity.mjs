@@ -14,7 +14,13 @@
 // 用法：node scripts/tool-stamp-parity.mjs [次数，默认 10]
 // **∴ 默认 10 ✓**（**∵ 实测触发率约 1／10 ✓ ⇒ 跑 3 次**测不出**✗**）。
 import { execFileSync } from "node:child_process";
-const runs = Number(process.argv[2] ?? 10);
+// **★ 数字参数必须**校验** ✗ ★**（第 88 轮 ✓；**CI 的崩溃换来的 ✓）：
+//   **∴ 为什么 ✗**：编排（`run-criteria.sh:228` ✓）给 `tool-*` 的 `argv[3]` 是**文档名**✗
+//     ⇒ **∴ `Number("crit_…")` ＝ NaN**✗
+//       ⇒ **∴ 于是**：**循环**不跑／**等待**异常**✗ ⇒ **∴ 判据**崩溃或**误报 ✓**** ✓✓
+//   **∴ 修法**：**不是有限正整数就**用默认值 ✓**** ✓✓
+const __rawRuns = Number(process.argv[2]);
+const runs = Number.isFinite(__rawRuns) && __rawRuns > 0 ? Math.floor(__rawRuns) : 10;
 const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? "/tmp/yt4b" };
 let failed = 0;
 const results = [];

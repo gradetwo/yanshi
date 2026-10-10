@@ -30,7 +30,13 @@ const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
 // ⇒ 起点已经很慢 ⇒ 前后两段趋同 ⇒ 比值回落到预算内 ⇒ 判据**看不出**它要测的东西** ✗ ✓
 //（实测：同一台机器 **12 笔 ⇒ 1.67×** ✓、**200 笔 ⇒ 通过** ✗）。
 // ⇒ ⇒ **取 30** ✓：前 1/3 约 10 个对象 ✓ ⇒ **增长可见 ✓，而总时长仍在可接受范围 ✓**。
-const STROKES = Number(process.argv[2] || process.env.PAINT_STROKES || 30);
+// **★ 数字参数必须**校验** ✗ ★**（第 88 轮 ✓；**CI 的崩溃换来的 ✓）：
+//   **∴ 为什么 ✗**：编排（`run-criteria.sh:228` ✓）给 `tool-*` 的 `argv[3]` 是**文档名**✗
+//     ⇒ **∴ `Number("crit_…")` ＝ NaN**✗
+//       ⇒ **∴ 于是**：**循环**不跑／**等待**异常**✗ ⇒ **∴ 判据**崩溃或**误报 ✓**** ✓✓
+//   **∴ 修法**：**不是有限正整数就**用默认值 ✓**** ✓✓
+const __rawStrokes = Number(process.argv[2] || process.env.PAINT_STROKES);
+const STROKES = Number.isFinite(__rawStrokes) && __rawStrokes > 0 ? Math.floor(__rawStrokes) : 30;
 // **端口要挑空闲的** ✗（第 829 轮实测 ✓）：固定端口一旦被上一次泄漏的实例占着 ✓，
 // 服务端就静默起不来 ✓ ⇒ 判据只报 `ENOENT: /proc/<pid>/status` ✗（**症状与真因相距很远** ✓）。
 const pickPort = (start) => {

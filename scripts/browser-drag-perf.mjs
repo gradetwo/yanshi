@@ -9,7 +9,13 @@
 //   node scripts/browser-drag-perf.mjs "http://127.0.0.1:8110/?doc=myDoc&token=..." [段数]
 
 const url = process.argv[2];
-const segments = Number(process.argv[3] || 20);
+// **★ 数字参数必须**校验** ✗ ★**（第 88 轮 ✓；**CI 的崩溃换来的 ✓）：
+//   **∴ 为什么 ✗**：编排（`run-criteria.sh:228` ✓）给 `tool-*` 的 `argv[3]` 是**文档名**✗
+//     ⇒ **∴ `Number("crit_…")` ＝ NaN**✗
+//       ⇒ **∴ 于是**：**循环**不跑／**等待**异常**✗ ⇒ **∴ 判据**崩溃或**误报 ✓**** ✓✓
+//   **∴ 修法**：**不是有限正整数就**用默认值 ✓**** ✓✓
+const __rawSeg = Number(process.argv[3]);
+const segments = Number.isFinite(__rawSeg) && __rawSeg > 0 ? Math.floor(__rawSeg) : 20;
 // **`Number(...)` 必须包在 `${}` 里** ✓：它在**普通字符串**里只是字面文本 ✗ ⇒ 拼出来的 URL 是
 // `http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/list` ✗ ⇒ 取目标列表必失败 ✓
 //（这是我早先"去掉硬编码端口"时留下的 ✗ —— **改完必须看拼出来的东西** ✓）。

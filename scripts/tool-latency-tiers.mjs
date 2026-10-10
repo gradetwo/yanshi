@@ -13,7 +13,15 @@
 //
 // 用法：node scripts/tool-latency-tiers.mjs <base-url> [采样数=5]
 const base = process.argv[2];
-const runs = Number(process.argv[3] ?? 5);
+// **★ `argv[3]` 不是**数字**时必须有**安全默认值 ✗ ★**（第 88 轮 ✓）：
+//   **∴ 症状（**本地复现 ✓）✗**：`TypeError: Cannot read properties of undefined (reading 'toFixed')`
+//     ⇒ **∴ 因为**编排（`run-criteria.sh:228` ✓）**给 `argv[3]` 的是**文档名**✗
+//       （`crit_toollatencytiersmjs` ✓）⇒ **∴ `Number(…)` ＝ **NaN**✗
+//         ⇒ **∴ 于是**：**循环**不跑 ⇒ **`hot` 为空 ⇒ **`med([])` ＝ undefined**
+//           ⇒ **∴ `h.toFixed` 崩 ✓**** ✓✓
+//   **∴ 修法 ✗**：**校验**✗ ⇒ **∴ 不是**正整数**就用默认 **5** ✓**** ✓✓
+const runsArg = Number(process.argv[3]);
+const runs = Number.isFinite(runsArg) && runsArg > 0 ? Math.floor(runsArg) : 5;
 if (!base) { console.error("用法: node scripts/tool-latency-tiers.mjs <base-url> [采样数]"); process.exit(2); }
 const post = async (path, body, doc, tok) => (await (await fetch(`${base}${path}?doc=${doc}&token=${tok}`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}),

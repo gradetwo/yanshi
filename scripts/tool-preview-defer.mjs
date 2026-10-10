@@ -10,7 +10,13 @@
 //
 // 用法：node scripts/tool-preview-defer.mjs <base-url> [宽限等待毫秒=500]
 const base = process.argv[2];
-const waitMs = Number(process.argv[3] ?? 500);
+// **★ 数字参数必须**校验** ✗ ★**（第 88 轮 ✓；**CI 的崩溃换来的 ✓）：
+//   **∴ 为什么 ✗**：编排（`run-criteria.sh:228` ✓）给 `tool-*` 的 `argv[3]` 是**文档名**✗
+//     ⇒ **∴ `Number("crit_…")` ＝ NaN**✗
+//       ⇒ **∴ 于是**：**循环**不跑／**等待**异常**✗ ⇒ **∴ 判据**崩溃或**误报 ✓**** ✓✓
+//   **∴ 修法**：**不是有限正整数就**用默认值 ✓**** ✓✓
+const __rawWait = Number(process.argv[3]);
+const waitMs = Number.isFinite(__rawWait) && __rawWait > 0 ? Math.floor(__rawWait) : 500;
 if (!base) { console.error("用法: node scripts/tool-preview-defer.mjs <base-url> [等待毫秒]"); process.exit(2); }
 const post = async (path, body, doc, tok) => (await (await fetch(`${base}${path}?doc=${doc}&token=${tok}`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}),
