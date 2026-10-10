@@ -13,6 +13,24 @@
 # 用法：`scripts/package-release.sh [--out dist] [--skip-build] [--dynamic]`
 #       或直接 `make release`（推荐 ✓：它就是这条命令 ✓）
 #
+# **★ `--gpu` ／ `--no-gpu` ／ `--kernel-gpu` ✗ ★**（**第 490 轮 ✓）
+#
+# **∴ 缺省**带 GPU**✗**（**∴ `--gpu` 是默认 ✓）：
+#   **∴ 为什么 ✗**：`wgpu` **默认就含 `metal`／`dx12`／`vulkan`**✗
+#     ＋ **∴ 而**本仓库**没有任何**按操作系统的门控** ✓
+#       ⇒ **∴ 于是**：**不带上这个 feature**✗
+#         ⇒ **∴ macOS／Windows 用户**拿到的包**一行 GPU 代码都没有** ✓
+#           ⇒ **∴ 所以**：**缺省带上它** ✓ ★**** ✓✓
+#   **∴ 代价 ✗**：**二进制**明显变大**✗（**`wgpu` 家族约 ＋120 个包 ✓）
+#     ⇒ **∴ 需要小包时**用 **`--no-gpu`** ✓
+#       ＋ **∴ 若**GPU 构建失败**✗ ⇒ **∴ 脚本**响亮失败**✗
+#         （**∴ 打印**改打纯 CPU 包的**确切命令 ✓）⇒ **∴ 不静默降级** ✓ ★**** ✓✓
+#
+# **∴ 内核缺省**不带**✗**（**`--kernel-gpu` 才开 ✓）：
+#   **∴ 因为**开它会让内核依赖树 **67 ⇒ 198 包**✗
+#     ＋ **∴ 而**且：**内核现在只有 `checkBitExact` **一处**调用点**走异步 GPU 路** ✓
+#       ⇒ **∴ 所以**：**加了也**几乎无感** ✓ ⇒ **∴ 等**调用点补齐**再默认开** ✓ ★**** ✓✓
+#
 # **静态是默认** ✓（真实用户报告 ✓）：动态版会继承构建机的 glibc ✗
 #（实测要求 **2.43** ✓，只因 `atan2f` 一个符号 ✓），到 Debian 12（2.36 ✓）**一运行就崩** ✗
 # ⇒ 默认静态 ✓，让包**在任何发行版上都能跑** ✓；确实需要动态链接时才用 `--dynamic` ✓。
@@ -60,6 +78,28 @@ host_triple="$(rustc -vV | sed -n 's/^host: //p')"
 target_triple="${host_triple}"          # 缺省＝当前平台 ✓；`--target` 可改 ✓
 all_targets=0
 list_targets=0
+# **★ GPU 开关 ✗ ★**（**第 490 轮 ✓；**用户要求「让 macOS 能受益」✓）
+#
+# **∴ 为什么服务端**默认带 GPU**✗**：
+#   **∴ 因为** wgpu **默认就含 metal**✗（**26.0.1 的 default 里就有 ✓）
+#     ＋ **∴ 而**本仓库**没有任何**按操作系统的门控** ✓
+#       ⇒ **∴ 于是**：**只要**构建时带上 feature**✗
+#         ⇒ **∴ macOS／Windows 用户**就能用到 Metal／DX12** ✓
+#           ＋ **∴ 而**在此之前**发布脚本不带它**✗
+#             ⇒ **∴ 所以**：**macOS 用户拿到的包**一行 GPU 代码都没有** ✓ ★**** ✓✓
+#
+# **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+#   **∴ 收益 ✗**：**独显与 Apple Silicon**真的能用上加速**✗
+#     ＋ **∴ 且**：**CPU 仍是真值**✗（**∴ 逐位核对 ＋ 不一致就回退 ✓）★**** ✓✓
+#   **∴ 代价 ✗**：**二进制**明显变大**✗（**wgpu 家族约 ＋120 个包 ✓）
+#     ＋ **∴ 且**：**构建时间**变长** ✓
+#       ⇒ **∴ 所以**：**保留 --no-gpu**✗ ⇒ **∴ 需要小包时**显式关掉** ✓ ★**** ✓✓
+gpu_server=1
+# **∴ 内核**默认不带 ✗**（**如实 ✓）：
+#   **∴ 因为**开它会让内核依赖树 **67 ⇒ 198 包**✗
+#     ＋ **∴ 而**且：**内核现在只有 checkBitExact **一处**调用点**走异步 GPU 路** ✓
+#       ⇒ **∴ 所以**：**加了也**几乎无感**✗ ⇒ **∴ 等**调用点补齐**再默认开** ✓ ★**** ✓✓
+gpu_kernel=0
 # **允许环境变量覆盖** ✓：这样"macOS 那条分支"能在 Linux 上被验收 ✓
 #（否则只能等真的有一台 macOS ✗ —— 那等于**不测** ✓）。按目标平台覆盖 ✓。
 target_os_override="${YANSHI_TARGET_OS:-${YANSHI_HOST_OS:-}}"
@@ -131,9 +171,12 @@ while [ $# -gt 0 ]; do
     --static) static_build=1; shift ;;   # 已是默认 ✓，保留是为了让脚本可读 ✓
     --dynamic) static_build=0; shift ;;  # **退出开关** ✓：确实需要动态链接时才用 ✓
     --target) target_triple="$2"; shift 2 ;;        # **指定目标平台** ✓（交叉编译 ✓）
+    --gpu) gpu_server=1; shift ;;                   # **服务端带 GPU** ✓（已是默认 ✓）
+    --no-gpu) gpu_server=0; shift ;;                # **纯 CPU 包** ✓（体积小 ✓）
+    --kernel-gpu) gpu_kernel=1; shift ;;            # **内核也带 GPU** ✓（+131 包 ✓）
     --all-targets|--all) all_targets=1; shift ;;    # **全平台** ✓（逐个试 ✓，没装的跳过 ✓）
     --list-targets) list_targets=1; shift ;;        # 看看本机装了哪些目标 ✓
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -178,6 +221,8 @@ if [ "${all_targets}" = 1 ]; then
     echo ""
     echo "--> 目标 ${candidate}"
     if bash "${BASH_SOURCE[0]}" --target "${candidate}" --out "${out}" \
+         $([ "${gpu_server}" = 1 ] && printf '%s' '--gpu' || printf '%s' '--no-gpu') \
+         $([ "${gpu_kernel}" = 1 ] && printf '%s' '--kernel-gpu') \
          $([ "${skip_build}" = 1 ] && printf '%s' '--skip-build') \
          $([ "${static_build}" = 1 ] && printf '%s' '--static' || printf '%s' '--dynamic'); then
       ok_list="${ok_list} ${candidate}"
@@ -284,13 +329,42 @@ if [ "${target_triple}" != "${host_triple}" ] && [ "${ti_status}" -ne 0 ]; then
   exit 1
 fi
 if [ "$skip_build" = 0 ]; then
+  # **★ 服务端：**要不要带 GPU ✗ ★**（**第 490 轮 ✓）
+  #   **∴ 为什么分开两步构建 ✗**：**--features 与多个 -p 一起用时**
+  #     ⇒ **∴ 特性解析**容易含糊**✗（**yanshi-mcp 没有 gpu ✓）
+  #       ＋ **∴ 而**分开写**✗ ⇒ **∴ 意图**无歧义** ✓ ★**** ✓✓
   if [ "$static_build" = 1 ]; then
-    echo "--> 构建**静态** release 二进制（带 --target ✓，否则 proc-macro 会一起被静态化 ✗）"
-    (cd "$repo" && RUSTFLAGS="-C target-feature=+crt-static" \
-      cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp)
+    echo "--> 构建静态 release 二进制（带 --target ✓）"
   else
     echo "--> 构建 release 二进制（yanshi-serve / yanshi-mcp）"
-    (cd "$repo" && cargo build --release --target "${target_triple}" -p yanshi-http -p yanshi-mcp)
+  fi
+  if [ "${gpu_server}" = 1 ]; then
+    echo "    GPU：★ 开 ★（服务端带 --features gpu ⇒ macOS 走 Metal／Windows 走 DX12 ✓）"
+  else
+    echo "    GPU：关（--no-gpu ⇒ 纯 CPU 包，体积更小 ✓）"
+  fi
+  rustflags=""
+  [ "$static_build" = 1 ] && rustflags="-C target-feature=+crt-static"
+  # **∴ 先编服务端**（**∴ 它是**唯一带 gpu 的那个 ✓）
+  if ! (cd "$repo" && RUSTFLAGS="${rustflags}" \
+        cargo build --release --target "${target_triple}" -p yanshi-http \
+          $([ "${gpu_server}" = 1 ] && printf '%s' '--features gpu')); then
+    echo "" >&2
+    echo "✗ yanshi-http 构建失败" >&2
+    if [ "${gpu_server}" = 1 ]; then
+      # **★ 响亮失败，不静默降级 ✗ ★**（**目标第 7 条 ✓）
+      echo "  ⇒ 若失败来自 GPU 依赖（该目标不支持 wgpu／交叉编译缺系统库 ✓）" >&2
+      echo "     请显式改打纯 CPU 包（不静默降级 ✓）：" >&2
+      echo "       scripts/package-release.sh --no-gpu --target ${target_triple} --out ${out}" >&2
+      echo "     或：make release-cpu TARGET=${target_triple}" >&2
+    fi
+    exit 1
+  fi
+  # **∴ 再编 MCP**（**∴ 它**不带 GPU ✓）
+  if ! (cd "$repo" && RUSTFLAGS="${rustflags}" \
+        cargo build --release --target "${target_triple}" -p yanshi-mcp); then
+    echo "✗ yanshi-mcp 构建失败" >&2
+    exit 1
   fi
 fi
 
@@ -412,9 +486,14 @@ if [ -n "${kernel_toolchain}" ] && [ -n "${bindgen_bin}" ]; then
     echo "       ⇒ 绑定生成会失败 ✓ ⇒ 修：cargo install wasm-bindgen-cli --version ${bindgen_lock} --locked"
   fi
   kernel_log="$(mktemp)"
+    # **★ 内核的 GPU 开关 ✗ ★**（**第 490 轮 ✓）：默认关 ✓，--kernel-gpu 打开 ✓
+    if [ "${gpu_kernel}" = 1 ]; then
+      echo "    内核 GPU：★ 开 ★（+131 包 ⇒ 体积会明显增长 ✓）"
+    fi
   if PATH="${kernel_toolchain}bin:$PATH" "${kernel_toolchain}bin/cargo" build \
        --manifest-path "$repo/Cargo.toml" --release \
-       --target wasm32-unknown-unknown -p yanshi-wasm >"${kernel_log}" 2>&1 \
+         --target wasm32-unknown-unknown -p yanshi-wasm \
+         $([ "${gpu_kernel}" = 1 ] && printf '%s' '--features gpu') >"${kernel_log}" 2>&1 \
      && "${bindgen_bin}" --target web \
        --out-dir "$repo/crates/yanshi-wasm/pkg" \
        "$repo/target/wasm32-unknown-unknown/release/yanshi_wasm.wasm" >>"${kernel_log}" 2>&1; then
