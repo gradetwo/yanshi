@@ -18864,3 +18864,8 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #   **★ 本轮留下的诊断（**临时 ✓）★**：
 #     **∴ `YANSHI_TRACE_CACHE_KEY=1`**✗ ⇒ **∴ 打印** `CACHE_KEY` 与 `TILE_PATH`** ✓
 #       ⇒ **∴ 未设变量 ⇒ **行为不变** ✓ ⇒ **∴ 可**保留**（**与 `YANSHI_*_PROBE` 惯例一致 ✓）** ✓✓
+
+# **★ 第 236 轮（续）：**门禁全绿后提交**** ✗**（**workspace 0 ＋ fmt ok ＋ clippy ok ＋ 单条绿 ✓）**
+#   **∴ clippy 拦下了一处 ✗**：`manual_range_contains`（**`parallel_gets >= 1 && … <= 4` ✓）
+#     ⇒ **∴ 修法**：`(1..=4).contains(&parallel_gets)` ✓
+#     ⇒ **★ 那**证明**门禁**真的在挡** ✓（**∴ 而**我**上一轮**正是**没挡**才报错了绿 ✓）★**** ✓✓
