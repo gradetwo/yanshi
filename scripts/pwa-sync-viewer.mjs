@@ -59,7 +59,33 @@ try {
   console.warn("  WARN: 未能写入 service worker 缓存戳：" + e.message);
 }
 
-const FILES = ["viewer-app.js", "viewer.css", "service-worker.js"];
+// **★ 拷贝清单必须覆盖**所有会影响运行的前端文件** ✗ ★**（第 240 轮 ✓；**∴ 用户第 593 轮「**单一真源** ✓）。
+//
+// **∴ 症状 ✗**（**实测第 239 轮 ✓）**✗**：
+//   **∴ `api-local.js` **在 `stampSource` 里**✗（**∴ 戳跟着它变 ✓）
+//     ⇒ **∴ 而**它**不在 `FILES` 里** ✓
+//       ⇒ **∴ 于是**：**web/api-local.js **永远不被自动覆盖** ✓
+//         ⇒ **∴ 所以**：**源头与 web 的它**长期不同** ✓（**实测 diff 12 行 ✓）**
+//           ⇒ **★ 那**正是**「**手工维护**」的来源** ✓ ★**** ✓✓
+//     ＋ **∴ `brush-local.js`／`store.js` **同理** ✓**** ✓✓
+//
+// **∴ 改法 ✗**：**把三个 `.js` **也纳入拷贝**✗
+//   ⇒ **∴ 于是**：**源头（`crates/yanshi-http/assets` ✓）成为**唯一真源** ✓ ★**** ✓✓
+// **∴ 判据 ✗**：`scripts/tool-web-assets-parity.mjs`（**第 240 轮新增 ✓）
+//   ⇒ **∴ 它**逐个比对**源头与 web 的同名前端文件**✓（**∴ 变异点：**改源头不改 web ⇒ 必红 ✓）** ✓✓
+const FILES = [
+  "viewer-app.js",
+  "viewer.css",
+  "service-worker.js",
+  // **∴ 第 240 轮补上 ✗**（**∴ 之前它们**只在 `stampSource` 里 ✓）
+  //   **∴ `brush-local.js` **不在这里** ✗ ★**（**∴ 实测第 240 轮 ✓）**：
+  //     **∴ 源头 `crates/yanshi-http/assets/` **没有它** ✓
+  //       ⇒ **∴ 它**是**web 独有**的前端文件** ✓
+  //         ⇒ **∴ 所以**：**它**只能**手工维护** ✓
+  //           ⇒ **∴ 而**判据（`tool-web-assets-parity.mjs` ✓）**要**排除 web 独有项** ✓**** ✓✓
+  "api-local.js",
+  "store.js",
+];
 
 if (!existsSync(SRC)) {
   console.error(`✗ 找不到现有 viewer 的源 ${SRC} ⇒ **∴ 不许**另造一份 ✗**`);
