@@ -420,6 +420,14 @@ console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
     bodyLen: document.body ? document.body.innerText.length : -1,
     scriptCount: document.scripts.length,
     appJsLoaded: Array.from(document.scripts).some((x) => String(x.src).includes("viewer-app.js")),
+    // **★ 内核状态那一行**必须读出来** ✗ ★**（第 150 轮 ✓）：
+    //   **∴ 为什么 ✗**：**`#wasmState` 的文字**直接**说出**内核走到了哪一步 ✓**** ✓✓
+    //     **∴ 如**"**已加载 ✓"／"**不可用 ✓"／"**已按设置跳过 ✓"／**还**停在**初始值 ✓** ✓✓
+    //   ⇒ **∴ 于是**：**失败时**一眼**知道**是**哪一步** ✓**** ✓✓
+    wasmState: (function () { const e = document.getElementById("wasmState"); return e ? e.textContent : "（无元素）"; })(),
+    statsWasm: (window.yanshiStats && window.yanshiStats.wasm) === true,
+    wasmModule: typeof window.__yanshiWasmModule,
+    abortTimeout: (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") ? "支持" : "不支持",
   }))()`);
   console.log(`  · 三信号 = ${JSON.stringify(marksProbe)}`);
   const marks = marksProbe ? marksProbe.marks : null;
