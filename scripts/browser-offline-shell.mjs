@@ -430,6 +430,23 @@ console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
     abortTimeout: (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") ? "支持" : "不支持",
   }))()`);
   console.log(`  · 三信号 = ${JSON.stringify(marksProbe)}`);
+  // **★ 页面用的脚本**是不是我改的那一份** ✗ ★**（第 168 轮 ✓；**证明离线页面来源 ✓）：
+  //   **∴ 为什么 ✗**：**离线时**页面**可能**来自**SW 缓存** ✗**
+  //     ⇒ **∴ 而**我在源码里加的新标记**若**不在那份里**✗
+  //       ⇒ **∴ 那些标记**永远**不会出现** ✓**** ✓✓
+  //   **∴ 做法**：**取**页面实际引用的 viewer-app.js**✗
+  //     ⇒ **∴ 看**它**有没有**那两个新标记**✗ ＋ **看**它的**字节数** ✓**** ✓✓
+  const scriptInfo = await evaluateAsync(`(async () => {
+    const tag = Array.from(document.scripts).find((x) => String(x.src).includes("viewer-app.js"));
+    if (!tag) return { found: false };
+    try {
+      const text = await (await fetch(tag.src, { cache: "no-store" })).text();
+      return { found: true, url: String(tag.src).slice(-34), bytes: text.length,
+               hasBrushMark: text.includes("setupBrushLibrary:before"),
+               hasObjectMark: text.includes("yanshi-object:before") };
+    } catch (error) { return { found: true, error: String(error).slice(0, 80) }; }
+  })()`);
+  console.log("  · 页面脚本 = " + JSON.stringify(scriptInfo));
   const marks = marksProbe ? marksProbe.marks : null;
 console.log(`  · 脚本执行标记 = ${JSON.stringify(marks)}`);
 // **先打开笔刷库面板再断言**（第 1076 轮）：`refreshBrushOptions()` 可能只在面板打开时调用，
