@@ -324,12 +324,30 @@ const rendered = await evaluate(`(() => ({
 // ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-const controlProbe = await evaluateAsync(`(async () => {
-  try {
-    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-  } catch (error) { return { failed: true, error: String(error) }; }
-})()`);
+  // **★ 那个探测**必须自带超时** ✗ ★**（第 141 轮 ✓；**实测换来的 ✓）：
+  //   **∴ 为什么 ✗**：**断网时**那一次 `fetch` **既不**成功**✗、**也**不**失败** ✗
+  //     ⇒ **∴ 它**永远**挂着** ✓（**实测：**`done: false`** 一直不变 ✓）** ✓✓
+  //     ⇒ **∴ 于是**：**`controlProbe`**永远**拿不到值** ⇒ **∴ 而**判据
+  //       **把 `undefined` **当成**"**仍然成功 ✓"** ⇒ **∴ 报** VOID ✓**** ✓✓
+  //   **∴ 修法**：**`Promise.race` ＋ 3 秒超时**✗
+  //     ⇒ **∴ 于是**三种结果**✗**：
+  //       **∴ ①** **reject ⇒ `failed: true` ⇒ **负对照**成立 ✓**** ✓✓
+  //       **∴ ②** **成功 ⇒ `failed: false` ⇒ **网络**真的**没断** ⇒ **∴ 才**该 VOID ✓**** ✓✓
+  //       **∴ ③** **超时 ⇒ `hanging: true` ⇒ **那**也**是断网的证据**✗
+  //         ⇒ **∴ 应当**算**负对照**成立 ✓（**∴ 只是**形式不同 ✓）★**** ✓✓
+  const controlProbe = await evaluateAsync(`(async () => {
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ hanging: true }), 3000);
+    });
+    const attempt = fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" })
+      .then(async (response) => ({ failed: false, status: response.status,
+                                  bytes: (await response.arrayBuffer()).byteLength }))
+      .catch((error) => ({ failed: true, error: String(error) }));
+    const result = await Promise.race([attempt, timeout]);
+    clearTimeout(timer);
+    return result;
+  })()`);
 console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
 // **★ 「**没有答案**」不等于「**成功了**」 ✗ ★**（第 133 轮 ✓；**VOID 误报换来的 ✓）：
@@ -524,7 +542,7 @@ if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
 if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页面没有内容");
 // **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
-if (!(controlProbe && controlProbe.failed)) {
+if (!(controlProbe && (controlProbe.failed || controlProbe.hanging))) {
   failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
 }
 // **收尾：把 SW 的网络恢复** ✓（页面网络已在上面恢复 ✓；别把这个浏览器实例弄成半残 ✓）。
