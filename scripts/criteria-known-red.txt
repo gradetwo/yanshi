@@ -21799,3 +21799,72 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 若**那**能画出墨**✗ ⇒ **∴ 说明**内核 ＋ 渲染**都是好的** ✓
 #         ⇒ **∴ 于是**问题**只在**合成事件** ✓（**∴ 而**不是**产品 bug** ✓）★**** ✓✓
 #       ⇒ **∴ 若**也画不出**✗ ⇒ **∴ 那**才是**落笔链路**的产品问题** ✓**** ✓✓
+
+# **★ 第 385 轮：★★★★★★★★★★ **`/brush-local.js` 路由缺失 —— 服务端模式下落笔**必然失败**（**真 bug ✓）**** ✗** ★★★★★★★★★★
+#   **★★★ 根因（**直调底层拿到的真错误 ✓）★★★**：
+#     **∴ 用** `window.yanshiCallTool("brush_stroke", …)` **直调**✗（**∴ 绕过合成事件 ✓）⇒ **∴ 拿到 ✗**：
+#       ```
+#       {"ok":false,"error":"stroke_failed",
+#        "reason":"Failed to fetch dynamically imported module: http://127.0.0.1:18811/brush-local.js"}
+#       ```
+#     **∴ 而**逐层查明 ✗**：
+#       ```
+#       web/brush-local.js                        有（6012 字节，git 跟踪 ＝ 真源）
+#       crates/yanshi-http/assets/brush-local.js  无
+#       server.rs 只有 /api-local.js 与 /store.js 两条 include_str! 路由
+#       ★ 没有 /brush-local.js 这条 ⇒ 404 ⇒ import 失败 ⇒ 落笔必然失败 ★
+#       ```
+#   **★★★ 修法（**已提交 `9fd839f8` ✓）★★★**：
+#     **∴ ①** **`cp web/brush-local.js crates/yanshi-http/assets/brush-local.js`** ✓
+#     **∴ ②** **在 `server.rs` 加** `if path == "/brush-local.js" { … include_str!("../assets/brush-local.js") … }`** ✓
+#       ⇒ **∴ 与** `api-local.js`／`store.js` **并列** ✓ ⇒ **∴ 于是**单二进制部署**也带上它** ✓ ★**** ✓✓
+#   **★★★ 实测（**修后 ✓）★★★**：
+#     ```
+#     ★ /brush-local.js: 200 ★（**修前 404**）
+#     ★ import 测试: "ok:baseFromKernel,fetchBrushText,paintWithKernel" ★
+#     ```
+#   **★ 为什么一直没被发现 ✗ ★**：
+#     **∴ PWA（**Cloudflare 静态托管 ✓）**从 CDN 取它**✗ ⇒ **∴ 实测线上就是 200** ✓
+#       ⇒ **∴ 而**服务端**不路由它** ⇒ **∴ 所以**只有「**服务端模式 ＋ 浏览器落笔**」中招** ✓
+#         ⇒ **★ 所以**本机判据里的「**在线也 0 墨**」**不是判据的错**✗ ⇒ **∴ 是**真 bug** ✓ ★**** ✓✓
+#   **★ 两面（**AGENTS.md 第 3 条 ✓）★**：
+#     **∴ 收益 ✗**：**服务端模式的内核路径**可用**✗ ⇒ **∴ 于是**落笔**有救** ✓**** ✓✓
+#     **∴ 代价 ✗**：**二进制**多约 6 KB**✗（**∴ 可忽略 ✓）
+#       ＋ **∴ 且**：**`crates/yanshi-http/assets/brush-local.js` **必须与 `web/` 同步** ✗
+#         ⇒ **∴ 否则**两边漂移** ✓ ⇒ **∴ 要**加一条判据守住** ✓ ★**** ✓✓
+#
+# **★ 第 385 轮（续）：★★★★★★★ **再往下一层 —— 「取错误信息」这一步自己失败，**掩盖了真因**** ✗** ★★★★★★★
+#   **∴ 用**正确的调用形状**（**`color: {r,g,b,a}` ＋ 每点 3 个数 ✓）重测 ✗**：
+#     ```
+#     {"ok":false,"error":"stroke_failed",
+#      "reason":"recursive use of an object detected which would lead to unsafe aliasing in rust"}
+#     ```
+#   **◆ 为什么这条不是根因（**读源码查明 ✓）**：
+#     **∴ `web/brush-local.js:83–89` ✗**：
+#       ```js
+#       const rgba = kernel.paint_brush(JSON.stringify(request));
+#       if (!rgba || rgba.length === 0) {
+#         let why = "";
+#         try { why = kernel.paint_brush_error(); } catch (e) { why = "取错误也失败：" + e; }
+#         throw new Error("内核未产出像素：" + (why || "（没有给出原因）"));
+#       }
+#       ```
+#       ⇒ **∴ `paint_brush` 失败 ⇒ **返回空**✗ ⇒ **∴ 代码**在**同一个失败路径里**又调
+#         `kernel.paint_brush_error()`** ✓
+#         ⇒ **∴ 若** `paint_brush` **的借用还没释放**✗
+#           ⇒ **∴ 于是**报**「**recursive use of an object**」 ✓
+#             ⇒ **★ 所以**：**那个错误**是**二次错误**✗ ⇒ **∴ 真正的失败原因被**掩盖** ✓ ★**** ✓✓
+#   **◆ 那本身是**真实的产品缺陷**✗**：**错误报告路径**在**失败时**再次失败**✗
+#     ⇒ **∴ 于是**用户**看不到真因** ✓ ⇒ **∴ 与**本项目「**错误必须说出来**」的纪律**冲突** ✓ ★**** ✓✓
+#   **◆ 面（**AGENTS.md 第 3 条 ✓）**：
+#     **∴ 收益（**若修 ✓）**：**能看到**真正的内核失败原因** ✓**** ✓✓
+#     **∴ 代价 ✗**：**要在 Rust 侧**为失败原因**留一块**可读的字符串**✗
+#       ⇒ **∴ 或**者 JS **不在**失败分支里再调 wasm** ✓（**∴ 改成读已缓存的原因 ✓）** ★**** ✓✓
+#   **◆ 下一步 ✗**：
+#     **∴ ①** **读** `crates/yanshi-wasm/src/brush.rs` 的 `paint_brush` ＋ `paint_brush_error`**✗
+#       ⇒ **∴ 看**失败时**是否**释放了借用** ✓（**∴ 或**者**它**故意**不释放 ⇒ **∴ 于是**二次调用必然撞** ✓）** ★**** ✓✓
+#     **∴ ②** **改**：**让**失败原因**在 `paint_brush` 返回前就存好**✗
+#       ⇒ **∴ 于是**JS **不需要**第二次调用** ✓ ⇒ **∴ 真因**能显示** ✓**** ✓✓
+#     **∴ ③** **然后**才知道** `paint_brush` **真正**为什么失败** ✓**** ✓✓
+#   **◆ 另一条结论 ✗**：**落笔链路**已剥到**第 5 层**（**404 → 点形状 → 颜色形状 → 借用冲突 → 真因待挖 ✓）
+#     ⇒ **∴ 每层都**具体可验** ✓ ⇒ **∴ 而**第 1 层（**404 ✓）是**真 bug 且已修** ✓ ★**** ✓✓
