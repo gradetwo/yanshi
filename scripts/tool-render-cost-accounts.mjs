@@ -168,6 +168,22 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+// **★ 离散度 ✗ ★**（**第 495 轮 ✓；**目标第 2 条要求「**多轮 ＋ 报 min/median/max**」✓）
+//
+// **∴ 为什么只报中位数不够 ✗**（**本会话实测 ✓）**：
+//   **∴ 同一配置**重复测**✗ ⇒ **∴ 结果**同一台机器上两次就能**反转** ✓
+//     （**∴ 实测**：**GPU 有时 +13.5% 更慢 ✗ 、**有时 −52% 更快** ✓）
+//       ⇒ **∴ 只给一个中位数**⇒ **∴ 读者**无法判断**这是噪声还是真差异** ✓ ★**** ✓✓
+//   **∴ 所以 ✗**：**三个数一起给**✗ ＋ **∴ 且**给出**逐轮原始值** ✓
+//     ⇒ **∴ 于是**：**min／max 的**差距**本身就是一个**可读的指标** ✓ ★**** ✓✓
+function spread(values) {
+  const v = values.filter((x) => typeof x === "number" && Number.isFinite(x));
+  if (v.length === 0) return { min: NaN, median: NaN, max: NaN, n: 0 };
+  return { min: Math.min(...v), median: median(v), max: Math.max(...v), n: v.length };
+}
+const fmtSpread = (sp) =>
+  sp.n === 0 ? "—" : `${sp.min.toFixed(0)}／${sp.median.toFixed(0)}／${sp.max.toFixed(0)}`;
+
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, existsSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
@@ -248,17 +264,35 @@ for (const spec of compareSpecs) {
     hwmMb: Math.max(...samples.map((s) => s.hwmKb)) / 1024,
     ok: samples.every((s) => s.ok === true),
     warmMs: samples[0].wallMs,
+    // **∴ 离散度 ＋ 逐轮原始值 ✗**（**目标第 2 条 ✓）
+    wallSpread: spread(usable.map((s) => s.wallMs)),
+    cpuSpread: spread(usable.map((s) => s.cpuMs)),
+    ratioSpread: spread(usable.map((s) => s.ratio)),
+    rounds: usable.map((s) => ({
+      wallMs: Number(s.wallMs.toFixed(1)),
+      cpuMs: Number(Number(s.cpuMs).toFixed(1)),
+      ratio: Number(Number(s.ratio).toFixed(2)),
+    })),
   });
   if (child) child.kill();
 }
 
 console.log("");
-console.log("  ★ 两本账（4K 整幅，中位数；第一轮为预热，已从统计里剔除）★");
-console.log("  | 配置 | 后端 | ① 墙钟 ms | ② CPU ms | CPU÷墙钟 | 峰值 RSS MB | 预热墙钟 ms |");
-console.log("  |---|---|---|---|---|---|---|");
+// **★ 离散度必须在表里 ✗ ★**（**第 495 轮 ✓；**目标第 2 条 ✓）
+console.log("  ★ 两本账（4K 整幅；第一轮为预热，已从统计里剔除）★");
+console.log("  | 配置 | 后端 | ① 墙钟 ms（min／中位／max） | ② CPU ms（min／中位／max） | CPU÷墙钟 | 峰值 RSS MB | 预热墙钟 ms | 有效轮数 |");
+console.log("  |---|---|---|---|---|---|---|---|");
 for (const row of rows) {
-  console.log(`  | ${row.label} | ${row.backend}（--gpu ${row.gpuMode}） | ${row.wallMs.toFixed(1)} `
-    + `| ${row.cpuMs.toFixed(1)} | ${row.ratio.toFixed(2)}× | ${row.hwmMb.toFixed(0)} | ${row.warmMs.toFixed(1)} |`);
+  console.log(`  | ${row.label} | ${row.backend}（--gpu ${row.gpuMode}） `
+    + `| ${fmtSpread(row.wallSpread)} | ${fmtSpread(row.cpuSpread)} `
+    + `| ${row.ratio.toFixed(2)}× | ${row.hwmMb.toFixed(0)} | ${row.warmMs.toFixed(1)} | ${row.wallSpread.n} |`);
+}
+// **∴ 逐轮原始值 ✗**：**∴ 便于看出**方差有多大** ✓（**∴ 只看中位数会掩盖它 ✓）
+console.log("");
+console.log("  ★ 逐轮原始值（**同一配置的多轮差异就是噪声水位** ✓）★");
+for (const row of rows) {
+  const rs = row.rounds.map((r) => `#${r.wallMs}ms/${r.cpuMs}cpu`).join("  ");
+  console.log(`  · ${row.label}：${rs}`);
 }
 
 // **★ 如实结论 ✗ ★**：**∴ 若**所有行的后端**相同**✗ ⇒ **∴ 明说**"**本机没有两路可对比 ✓"** ✓✓
