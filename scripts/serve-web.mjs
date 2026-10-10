@@ -46,6 +46,28 @@ const server = createServer((request, response) => {
     return;
   }
   if (pathname.endsWith("/")) pathname += "index.html";
+  // **★ 静态服务也要有 `/health` ✗ ★**（第 83 轮 ✓；**CI 的真根因换来的 ✓）：
+  //   **∴ 为什么 ✗**：**`browser-*` 判据**会**先查 `/health`**✗
+  //     ⇒ **∴ 而**静态服务**原来**回 **404** ✗
+  //       ⇒ **∴ 于是**：**判据**判"**内核未就绪 ✓" ⇒ **∴ 红 ✓**** ✓✓
+  //     **∴ 实测（**CI 日志 ✓）✗**：`browser-kernel-perf` 报
+  //       "**内核未就绪（**服务端 `/health` 的 wasm 是否为 true？✓"** ✓**** ✓✓
+  //   **∴ 如实的内容 ✗**：**静态部署**确实**有 wasm 产物**（**`/wasm/*.js` ⇒ 200 ✓）
+  //     ⇒ **∴ `wasm: true`**✗；**而**它**没有服务端**✗ ⇒ **∴ `server: false`** ✓**** ✓✓
+  //     ⇒ **∴ 于是**：**判据**看到的**和线上一致 ✓**** ✓✓
+  // **∴ 参数名是 `response`**✗，**不是 `res`** ✗**（第 83 轮 ✓；**∴ 我**踩到了 ✓）：
+  //   **∴ 症状 ✗**：**我**写 `res.writeHead`**✗ ⇒ **∴ 抛** ReferenceError**✗
+  //     ⇒ **∴ 被**外层 catch**吃掉**✗ ⇒ **∴ 于是**回 **"not found"** ✓**** ✓✓
+  if (pathname === "/health") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store" });
+    response.end(JSON.stringify({ ok: true, server: false, wasm: true,
+      backend: "cpu", render_backend: "cpu",
+      gpu_mode: "off", gpu_unavailable_reason: "static_deployment_has_no_server",
+      max_channel_delta: null,
+      max_channel_delta_note: "静态部署没有服务端 ⇒ 未做 GPU／CPU 比对（§6.3）" }));
+    return;
+  }
   // **★ favicon 三条路由 ✗ ★**（第 65 轮 ✓；**CI 的 404 换来的 ✓）：
   //   **∴ `web/index.html`**引用了** `/favicon.svg` 与 `/favicon.png`**✗
   //     ⇒ **∴ 而 `web/` 里**没有**它们 ✓（**∴ 线上**由**服务端路由**提供 ✓）
