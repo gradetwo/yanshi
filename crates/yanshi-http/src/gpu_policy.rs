@@ -26,10 +26,22 @@
 //!
 //! **∴ 变异点 ✗**：**把阈值改成 0**（**一律走 GPU ✓）⇒ **∴ 判据**必红** ✓
 
-/// **∴ 低于它就走 CPU ✗**（**单位：像素 ✓）。
+/// **★ 阈值现在住在 `yanshi-gpu` ✗ ★**（第 304 轮 ✓）：
+///   **∴ 为什么搬 ✗**：**`yanshi-render` **也要**用它**✗（**∴ 分派点在那里 ✓）
+///     ⇒ **∴ 若**两边各存一份**✗ ⇒ **∴ 会**不一致** ✓
+///       ⇒ **∴ 所以**：**单一来源 ＝ `yanshi_gpu::GPU_MIN_PIXELS`** ✓**** ✓✓
+#[cfg(feature = "gpu")]
+pub use yanshi_gpu::GPU_MIN_PIXELS;
+
+#[cfg(feature = "gpu")]
+pub use yanshi_gpu::should_use_gpu;
+
+/// **∴ 没有 feature 时的**同一条口径**** ✓（**∴ 于是**判据在任何配置下都能跑 ✓）
+#[cfg(not(feature = "gpu"))]
 pub const GPU_MIN_PIXELS: usize = 30_000;
 
-/// **★ 这个规模该不该走 GPU ✗ ★**（**纯函数 ⇒ 可单测 ✓）。
+/// **∴ 没有 feature 时的**同一条口径**** ✓
+#[cfg(not(feature = "gpu"))]
 #[must_use]
 pub const fn should_use_gpu(pixels: usize) -> bool {
     pixels >= GPU_MIN_PIXELS
