@@ -432,7 +432,11 @@ impl Buffer {
     #[cfg(feature = "gpu")]
     /// **★ 提升为 `pub(crate)` ✗ ★**（**第 449 轮 ✓）：**并行路也要能试 GPU** ✓
     ///   （**∴ 因为它**以前**只在**串行小图路**上被调用 ✓）
-    pub(crate) fn try_quantize_on_gpu(&self, count: usize) -> Option<Vec<u8>> {
+    pub(crate) fn try_quantize_on_gpu(
+        &self,
+        count: usize,
+        background: Option<[u8; 4]>,
+    ) -> Option<Vec<u8>> {
         // **★ 先**悲观地记成 CPU ✗ ★**（第 323 轮 ✓）：
         //   **∴ 因为**后面任何一步失败**都会**回退 CPU**✗
         //     ⇒ **∴ 只有**走到最后并逐位通过**才改成 `Gpu`** ✓**** ✓✓
@@ -452,7 +456,11 @@ impl Buffer {
         if !yanshi_gpu::should_use_gpu_on(quantizer.device_class(), count) {
             return None;
         }
-        let gpu = match quantizer.quantize(&self.pixels, count) {
+        // **★ 背景也要**交给 GPU** ✗ ★**（**第 459 轮 ✓；**目标第 8 条 ✓）：
+        //   **∴ 因为**服务端**默认白底**✗（**`document.rs:58` ✓）
+        //     ⇒ **∴ 若不传**✗ ⇒ **∴ 那**主路径**永远用不上 GPU** ✓ **** ✓✓
+        let bg_linear = background.map(crate::color::background_linear_premul);
+        let gpu = match quantizer.quantize(&self.pixels, count, bg_linear) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("GPU 量化失败 ⇒ 回退 CPU：{e}");
@@ -462,7 +470,10 @@ impl Buffer {
         // **★ 逐位核对（**∴ 与 CPU 真值比 ✓）★**
         let (width, height) = (self.width as usize, self.height as usize);
         let mut want = vec![0u8; width * height * 4];
-        crate::rows::encode_quantized_rows(&self.pixels, &mut want, 0, height, width, None);
+        // **★ CPU 对照**必须用**同一个背景** ✗ ★**（**第 459 轮 ✓）：
+        //   **∴ 否则**：**GPU 合成过、CPU 没合成**✗ ⇒ **∴ 两者**必然不同**
+        //     ⇒ **∴ 于是**：**永远**回退 CPU** ✓（**∴ 那个 bug 会**静默吃掉 GPU**）★**** ✓✓
+        crate::rows::encode_quantized_rows(&self.pixels, &mut want, 0, height, width, bg_linear);
         if want.len() != gpu.len() {
             eprintln!("GPU 结果长度不符 ⇒ 回退 CPU");
             return None;
@@ -493,15 +504,21 @@ impl Buffer {
         // **★ GPU 分派 ✗ ★**（第 306 轮 ✓；**目标第 7／8 条 ✓）：
         //   **∴ 三条都满足才走 GPU ✗**：**① feature 开 ✓ ② 规模够 ✓ ③ 适配器可用 ✓**
         //   **∴ 否则**：**一律**走原来的 CPU 路** ✓（**∴ 真值恒在 CPU ✓）** ✓✓
+        // **★ 去掉「**只在无背景时试 GPU**」的限制 ✗ ★**（**第 459 轮 ✓；**目标第 8 条 ✓）：
+        //   **∴ 原来 ✗**：**`if background.is_none()`**✗
+        //     ⇒ **∴ 而**服务端**默认白底** ✓ ⇒ **∴ 于是** GPU **永远用不上** ✓
+        //       （**∴ 第 457 轮实测：**两本账两行**都是 `cpu`** ✓）
+        //   **∴ 现在 ✗**：**背景也传下去**✗
+        //     ⇒ **∴ 于是**：**主路径**也能用 GPU** ✓ ★**** ✓✓
         #[cfg(feature = "gpu")]
-        if background.is_none() {
+        {
             let count = (self.width as usize) * (self.height as usize);
             // **∴ 规模判断**移进 `try_quantize_on_gpu`** ✗（**第 322 轮 ✓）：
             //   **∴ 因为**阈值**要**先知道适配器等级**✗ ⇒ **∴ 而**那**建了 `Quantizer` 才知道** ✓
             //     **∴ 代价 ✗**：**小图也会建一次 `Quantizer`**✗
             //       ⇒ **∴ 那**是**一次设备获取**✗ ⇒ **∴ 但**只在 `--features gpu` 的构建里** ✓
             //         **∴ 且**：**它**不读回数据**✗ ⇒ **∴ 成本**远低于**一次量化** ✓**** ✓✓
-            if let Some(out) = self.try_quantize_on_gpu(count) {
+            if let Some(out) = self.try_quantize_on_gpu(count, background) {
                 return out;
             }
         }

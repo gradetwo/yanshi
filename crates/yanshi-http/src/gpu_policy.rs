@@ -157,7 +157,11 @@ pub mod selfcheck {
             let f = |k: u32| ((s >> (k * 5)) & 0x1F) as f32 / 31.0;
             pixels.extend_from_slice(&[f(0) * a, f(1) * a, f(2) * a, a]);
         }
-        let got = quantizer.quantize(&pixels, n)?;
+        // **★ 自检**不做背景合成 ✗ ★**（**第 459 轮 ✓）：
+        //   **∴ 因为**自检的用途是**验证 GPU／CPU **同一口径**✗
+        //     ⇒ **∴ 它**与 CPU 对照用**同一个 `None`** ✓（**∴ 于是**两边一致 ✓）
+        //       ＋ **∴ 而**背景合一那条**已由**渲染路＋自检**各自覆盖** ✓ ★**** ✓✓
+        let got = quantizer.quantize(&pixels, n, None)?;
 
         // **∴ CPU 真值（**同一实现 ✓）
         let mut b = yanshi_render::buffer::Buffer::new(0, 0, n as u32, 1);

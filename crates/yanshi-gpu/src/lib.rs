@@ -232,7 +232,18 @@ impl Quantizer {
     ///
     /// # Errors
     /// **∴ 映射失败** ⇒ **∴ 返回 `Err`** ✓
-    pub fn quantize(&self, pixels: &[f32], count: usize) -> Result<Vec<u8>, String> {
+    /// **★ 量化 ＋ 编码 ✗ ★**（**第 459 轮：**加背景合成 ✓）
+    ///
+    /// **∴ `background` ✗**：**线性预乘的 `[r,g,b,a]`**✗
+    ///   ⇒ **∴ `None`**：**不做合成**（**与原来一致 ✓）
+    ///     ＋ **∴ `Some(bg)`**：**逐像素 `c = x + bg * (1 - x3)`**✓
+    ///       ⇒ **∴ 与** CPU 的 `composite_over_linear_with` **同一口径** ✓ ★**** ✓✓
+    pub fn quantize(
+        &self,
+        pixels: &[f32],
+        count: usize,
+        background: Option<[f32; 4]>,
+    ) -> Result<Vec<u8>, String> {
         let per_chunk = CHUNK_BYTES / BYTES_PER_PIXEL;
         let layout = self.pipeline.get_bind_group_layout(0);
         let mut enc = self
@@ -256,10 +267,31 @@ impl Quantizer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
-            let params: [u32; 4] = [take as u32, self.lut_len() as u32, 0, 0];
+            // **★ uniform 必须** 32 字节** ✗ ★**（**第 459 轮 ✓）：
+            //   **∴ 布局 ✗**：**4×u32（16 B）＋ `vec4<f32>`（16 B，**偏移 16 ✓）
+            //     ⇒ **∴ 与** WGSL 的 `struct Params` **逐字段对应** ✓ ★**** ✓✓
+            let mut params_bytes = u32s_to_bytes(&[
+                take as u32,
+                self.lut_len() as u32,
+                u32::from(background.is_some()),
+                0, // **∴ 对齐填充 ✓**
+            ]);
+            match background {
+                Some(bg) => params_bytes.extend_from_slice(&f32s_to_bytes(&bg)),
+                None => params_bytes.extend_from_slice(&f32s_to_bytes(&[0.0, 0.0, 0.0, 0.0])),
+            }
+            debug_assert_eq!(params_bytes.len(), 32);
+            // **★ uniform 尺寸必须** 32 字节** ✗ ★**（**第 459 轮修正 ✓）：
+            //   **∴ 症状（**实测 ✓）✗**：**`Queue::write_buffer` 报
+            //     「**Copy of 0..32 would end up overrunning the bounds of the
+            //       Destination buffer of size 16**」**✗
+            //     ⇒ **∴ 因为**加了 `vec4<f32>` 后**要 32 字节**✗
+            //       ⇒ **∴ 而**分配还是 16** ✓
+            //         ⇒ **∴ 于是**：**服务端**启动即崩** ✓ ★**** ✓✓
+            //   **∴ 现在 ✗**：**与** WGSL 的 `struct Params`（**4×u32 ＋ vec4<f32> ✓）一致** ✓ ★**** ✓✓
             let pb = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: 16,
+                size: 32,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -270,7 +302,7 @@ impl Quantizer {
                 mapped_at_creation: false,
             });
             self.queue.write_buffer(&src, 0, &src_bytes);
-            self.queue.write_buffer(&pb, 0, &u32s_to_bytes(&params));
+            self.queue.write_buffer(&pb, 0, &params_bytes);
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &layout,

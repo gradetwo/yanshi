@@ -1,4 +1,11 @@
-struct Params { pixels: u32, lut_len: u32 };
+// **★ 加背景合成参数 ✗ ★**（**第 459 轮 ✓；**目标第 8 条 ✓）：
+//   **∴ 为什么 ✗**：**原来**只实现「**无背景**」**✗
+//     ⇒ **∴ 而**服务端**默认白底**✗ ⇒ **∴ 于是** GPU **永远用不上** ✓
+//       （**∴ 第 457 轮实测 ✓）
+//     ⇒ **∴ 现在**：**把**背景**传进来**✗ ⇒ **∴ 就**能覆盖**主路径** ✓
+//   **∴ 布局 ✗**：**4×u32（16 B）＋ vec4<f32>（16 B，**偏移 16 ⇒ 对齐满足 ✓）
+//     ＝ **32 B** ✓ ★**** ✓✓
+struct Params { pixels: u32, lut_len: u32, has_bg: u32, _pad: u32, bg: vec4<f32> };
 @group(0) @binding(0) var<storage, read> src: array<f32>;
 @group(0) @binding(1) var<storage, read_write> dst: array<u32>;
 @group(0) @binding(2) var<storage, read> lut: array<f32>;
@@ -87,11 +94,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x1 = q16(src[b + 1u]);
     let x2 = q16(src[b + 2u]);
     let x3 = q16(src[b + 3u]);
-    let a = clamp(x3, 0.0, 1.0);
+    // **★ 按背景合成 ✗ ★**（**第 459 轮 ✓；**∴ 与 `color.rs:174` **逐行对应** ✓）：
+    //   **∴ CPU 真值 ✗**：**`composite_over_linear_with` 做**：
+    //     `c[k] = x[k] + bg[k] * (1.0 - x3)`**✗（**∴ 含 alpha ✓）
+    //       ＋ **∴ 然后**走 `linear_premul_to_u8x4_with`** ✓
+    //         （**∴ 即**「**除以 alpha ⇒ 查表 ⇒ ×255 + 0.5 ⇒ floor ⇒ clamp**」 ✓）★**** ✓✓
+    var c = vec4<f32>(x0, x1, x2, x3);
+    if (params.has_bg == 1u) {
+        let one_minus_alpha = 1.0 - x3;
+        c = vec4<f32>(
+            x0 + params.bg.x * one_minus_alpha,
+            x1 + params.bg.y * one_minus_alpha,
+            x2 + params.bg.z * one_minus_alpha,
+            x3 + params.bg.w * one_minus_alpha,
+        );
+    }
+    let a = clamp(c.w, 0.0, 1.0);
     if (a <= 0.0) { dst[i] = 0u; return; }
-    let r = byte_of(x0 / a);
-    let g = byte_of(x1 / a);
-    let bl = byte_of(x2 / a);
+    let r = byte_of(c.x / a);
+    let g = byte_of(c.y / a);
+    let bl = byte_of(c.z / a);
     let al = u32(clamp(floor(a * 255.0 + 0.5), 0.0, 255.0));
     dst[i] = r | (g << 8u) | (bl << 16u) | (al << 24u);
 }

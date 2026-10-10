@@ -3933,7 +3933,7 @@ mod parallel_impl {
         //         ＋ **∴ 且**：**逐位比对**仍**必须保留**✗ ⇒ **∴ 不通过**就回退** ✓ ★**** ✓✓
         #[cfg(feature = "gpu")]
         {
-            if let Some(gpu) = buffer.try_quantize_on_gpu(width * height) {
+            if let Some(gpu) = buffer.try_quantize_on_gpu(width * height, background) {
                 return gpu;
             }
         }
