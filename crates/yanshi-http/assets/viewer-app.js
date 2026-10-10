@@ -3827,6 +3827,11 @@ async function undoOnce() {
   }
   // **数字以服务端为准** ✓。
   state.remainingUndo = value.remaining_gestures;
+  // **对称更新** ✓：撤销掉的笔变为可重做 ✓（C/S 实测：不写这行重做按钮永远禁用 ✗）。
+  if (value.undone_count) {
+    state.remainingRedo = (typeof state.remainingRedo === "number" ? state.remainingRedo : 0) +
+      (value.gestures_undone || value.undone_count || 0);
+  }
   updateUndoStatus();
   await refreshAfterHistoryStep();
 }
@@ -3845,6 +3850,11 @@ async function redoOnce() {
     log("已重做 " + value.gestures_redone + " 笔（" + value.redone_count + " 条原子）✓", "#2a2");
   }
   state.remainingRedo = value.remaining_gestures;
+  // **对称更新** ✓：重做回来的笔变为可撤销 ✓。
+  if (value.redone_count) {
+    state.remainingUndo = (typeof state.remainingUndo === "number" ? state.remainingUndo : 0) +
+      (value.gestures_redone || value.redone_count || 0);
+  }
   updateUndoStatus();
   await refreshAfterHistoryStep();
 }
