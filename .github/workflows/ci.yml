@@ -126,6 +126,50 @@ jobs:
             echo "| 编译包数 | $(cargo tree -p yanshi-http -e normal --features gpu --prefix none | sed 's/ (.*//' | sort -u | wc -l) |"
             echo "| 默认编译包数 | $(cargo tree -p yanshi-http -e normal --prefix none | sed 's/ (.*//' | sort -u | wc -l) |"
           } >> "$GITHUB_STEP_SUMMARY"
+      # **★ 内核的 `--features gpu` 体积（**目标第 10 条 ✓）✗ ★**（**第 484 轮 ✓）
+      #   **∴ 为什么 ✗**：**第 480 轮**给内核加了可选的 `gpu` feature**✗
+      #     ⇒ **∴ 而**它的代价**是**依赖树从 67 包 ⇒ 198 包** ✓（**∴ 本机实测 ✓）
+      #       ⇒ **∴ 于是**：**wasm 产物的体积**必须**在 CI 上量** ✓
+      #         ＋ **∴ 判据** `tool-wasm-tree-no-wgpu.mjs` **守住** ≤ 6 MiB** ✓ ★**** ✓✓
+      #   **∴ 注意（**如实 ✓）✗**：**本步**只**测出并写摘要**✗
+      #     ⇒ **∴ 不设**硬门槛**✗（**∴ 因为**第 591 轮裁定**接受体积增长** ✓）
+      #       ＋ **∴ 而**真正的门槛**在** `tool-wasm-tree-no-wgpu.mjs`** ✓ ★**** ✓✓
+      - name: Add the wasm32 target for the kernel size probe
+        run: rustup target add wasm32-unknown-unknown
+      - name: Kernel size without and with the gpu feature
+        run: |
+          set -euo pipefail
+          # **∴ ① 默认（**无 gpu ✓）**✗
+          cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+          plain=$(stat -c %s target/wasm32-unknown-unknown/release/yanshi_wasm.wasm 2>/dev/null || echo 0)
+          plain_pkgs=$(cargo tree -p yanshi-wasm -e normal --prefix none | sed 's/ (.*//' | sort -u | wc -l)
+          # **∴ ② 带 gpu ✗**
+          cargo build -p yanshi-wasm --release --features gpu --target wasm32-unknown-unknown
+          gpu=$(stat -c %s target/wasm32-unknown-unknown/release/yanshi_wasm.wasm 2>/dev/null || echo 0)
+          gpu_pkgs=$(cargo tree -p yanshi-wasm --features gpu -e normal --prefix none | sed 's/ (.*//' | sort -u | wc -l)
+          {
+            echo ""
+            echo "## Kernel (wasm) size: default vs gpu"
+            echo ""
+            echo "| 配置 | .wasm 字节 | .wasm MiB | 编译包数 |"
+            echo "|---|---|---|---|"
+            echo "| 默认（**无 gpu ✓） | $plain | $((plain / 1048576)) | $plain_pkgs |"
+            echo "| `--features gpu` | $gpu | $((gpu / 1048576)) | $gpu_pkgs |"
+            echo ""
+            echo "⇒ **∴ 上限判据 ✗**：\`scripts/tool-wasm-tree-no-wgpu.mjs\`（**≤ 6 MiB ✓）"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # **∴ 让**默认产物的 pkg/ **可被判据读到**✗（**判据要那个文件 ✓）
+      - name: Regenerate the default pkg for the size criterion
+        run: |
+          set -euo pipefail
+          cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.104 --locked || true
+          wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
+            target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
+      - name: Criterion - the kernel artifact stays under the limit
+        run: node scripts/tool-wasm-tree-no-wgpu.mjs
+      - name: Criterion - the kernel async gpu path is real
+        run: node scripts/tool-kernel-gpu-async.mjs
       # **∴ `clippy` 也要在**这个配置**下过**✗（**∴ 它是**另一个编译配置** ✓）
       - name: Clippy with the gpu feature
         run: cargo clippy -p yanshi-http --features gpu --all-targets -- -D warnings
