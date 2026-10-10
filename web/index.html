@@ -4907,6 +4907,11 @@ async function undoOnce() {
   }
   // **数字以服务端为准** ✓。
   state.remainingUndo = value.remaining_gestures;
+  // **对称更新** ✓：撤销掉的笔变为可重做 ✓（C/S 实测：不写这行重做按钮永远禁用 ✗）。
+  if (value.undone_count) {
+    state.remainingRedo = (typeof state.remainingRedo === "number" ? state.remainingRedo : 0) +
+      (value.gestures_undone || value.undone_count || 0);
+  }
   updateUndoStatus();
   await refreshAfterHistoryStep();
 }
@@ -4925,6 +4930,11 @@ async function redoOnce() {
     log("已重做 " + value.gestures_redone + " 笔（" + value.redone_count + " 条原子）✓", "#2a2");
   }
   state.remainingRedo = value.remaining_gestures;
+  // **对称更新** ✓：重做回来的笔变为可撤销 ✓。
+  if (value.redone_count) {
+    state.remainingUndo = (typeof state.remainingUndo === "number" ? state.remainingUndo : 0) +
+      (value.gestures_redone || value.redone_count || 0);
+  }
   updateUndoStatus();
   await refreshAfterHistoryStep();
 }
@@ -8190,7 +8200,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-fbc2ce5d-dirty")
+      caches.open("yanshi-shell-aab41680")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
