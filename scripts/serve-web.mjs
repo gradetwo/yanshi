@@ -16,7 +16,7 @@
 
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { basename, extname, join, normalize, resolve } from "node:path";
 
 const port = Number(process.argv[2] || 8899);
 const root = resolve(process.argv[3] || "web");
@@ -92,7 +92,25 @@ const server = createServer((request, response) => {
     // **∴ 判据**不希望被缓存**✗（**∴ 我**们自己**管 SW 的戳 ✓）** ✓✓
     "cache-control": "no-store",
   });
-  response.end(readFileSync(file));
+// **★ 静态部署必须**替换 SW 的构建占位符** ✗ ★**（第 165 轮 ✓；**离线旧页面换来的 ✓）：
+    //   **∴ 症状 ✗**：**静态部署**里**缓存名**恒为 `yanshi-shell-__BUILD_ID__`**✗
+    //     ⇒ **∴ 因为**本服务器**从不**替换它** ✓（**实测：**出现 0 次 ✓）** ✓✓
+    //     ⇒ **★ 于是**：**SW 缓存**永不失效** ✗**
+    //       ⇒ **∴ 用户**离线时**永远**拿到**第一次那份** ✗**** ✓✓
+    //       ⇒ **∴ 老用户**要**手工清缓存**才能更新** ✓ ★**** ✓✓
+    //   **∴ 而**真实的服务端**早就**替换它**✗（**`BUILD_ID_TEXT` ✓）
+    //     ⇒ **∴ 所以**本修法**只是**让**静态部署与它对齐** ✓**** ✓✓
+    //   **∴ 做法**：**用** `viewer-app.js` **的 mtime** 当构建戳**✗
+    //     ⇒ **∴ 于是**：**每次部署**（**文件变了 ✓）**缓存名**都变** ✓
+    //       ＋ **∴ 同一个构建内**恒定**（**∴ 不**反复失效 ✓）** ✓✓
+    const body = readFileSync(file);
+    if (basename(file) === "service-worker.js") {
+      let stamp = "0";
+      try { stamp = String(Math.floor(statSync(join(root, "viewer-app.js")).mtimeMs)); } catch { /* 用默认 */ }
+      response.end(Buffer.from(body.toString("utf8").replaceAll("__BUILD_ID__", stamp), "utf8"));
+      return;
+    }
+    response.end(body);
 });
 
 server.listen(port, "127.0.0.1", () => {
