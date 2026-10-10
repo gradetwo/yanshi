@@ -2450,3 +2450,16 @@ vulkaninfo --summary：deviceName = NVIDIA L4｜driverName = NVIDIA｜driverInfo
 **∴ ③ 时间账的**如实表述**✗**：
   ⇒ **∴ 不能写「GPU 更快 5.9%」**✗ ⇒ **∴ 因为**两侧区间仍**重叠**（**CPU min 1194 vs GPU-skip min 1327 ✓）
     ⇒ **∴ 正确写法**：**「**跳过核对时，GPU 的**中位数**比 CPU 略快，**但单轮最好成绩仍是 CPU 更快**」** ✓
+### **∴ 逐位一致在 L4 上**直接验过** ✗**（**本轮 ✓）
+
+**∴ 做法 ✗**：**在 L4 上起带 `--gpu on` 的服务**✗ ⇒ **3840×2160 渲染一次** ⇒ **读 `/health`** ✓
+
+**∴ 结果 ✗**：
+```
+render_backend    = gpu
+max_channel_delta = 0      ★ 逐位一致成立 ★
+gpu_adapter_note  = adapter:Vulkan:DiscreteGpu:NVIDIA L4:device=true
+gpu_mode          = on
+```
+**⇒ ∴ 所以 ✗**：**「**CPU 是真值 ＋ GPU 逐位一致 ＋ 名字打印**」三条**在真独显 L4 上**同时成立** ✓
+  ＋ **∴ 而**「**时间账有优势**」这一条**不成立**（**见上 ✓）⇒ **∴ 两者**必须**分开说** ✓ ★
