@@ -4116,6 +4116,15 @@ async function refreshHistory() {
   const kind = $("historyKind").value;
   const actor = $("historyActor").value;
   const args = { limit: 200 };
+  // **★ 排序交给**服务端／本地层** ✗ ★**（第 187 轮 ✓；**PWA 实测 P2-4 ✓）：
+  //   **∴ 原来这里**只做 `.slice().reverse()`**✗
+  //     ⇒ **∴ 那**顶多得到**"**最早的 200 条里的倒序 ✓"**✗
+  //       ⇒ **∴ 而**不是**"**最新的 200 条 ✓" ✓**** ✓✓
+  //   **∴ 现在 ✗**：**要** `order: "desc"`**✗
+  //     ⇒ **∴ 服务端**回**最新的 200 条 ＋ 从新到旧** ✓**** ✓✓
+  //     ＋ **∴ 本地层（**`api-local.js` ✓）**支持**同一个 `order`** ✓
+  //       ⇒ **★ 所以**：**两边**语义一致 ✓ ★**** ✓✓
+  args.order = "desc";
   if (kind) args.kind = kind;
   if (actor) args.actor = actor;
   const value = await callTool("get_log", args, { refresh: false });
@@ -4127,7 +4136,9 @@ async function refreshHistory() {
   // **从新到旧** ✓（用户要求 ✓／PWA 实测 P2 ✓）：`get_log` 按 seq 升序返回 ✓ ⇒ 这里反转 ✓。
   // 注意 `limit: 200` 的含义是"最早的 200 条"里的倒序 ✓ —— 超过 200 条的文档
   // 要拿"最新的 200 条"需服务端支持倒序（`get_log` 加 `order` 参数，见 README ✓）。
-  const atoms = (value.atoms || []).slice().reverse();
+  // **★ 不再自行反转 ✗ ★**（第 187 轮 ✓）：**排序已由**服务端／本地层**按 `order` 做好** ✓
+  //   ⇒ **∴ 这里**再反转**会把降序**又翻回升序** ✗ ✓
+  const atoms = value.atoms || [];
   historyAtoms = atoms;
   list.innerHTML = "";
   // **★ 层名小表 ✓**（用户报告 2026-10-09 ✓／第 443 轮实测 ✓）：

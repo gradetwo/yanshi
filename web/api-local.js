@@ -966,7 +966,17 @@ async function withKernel(doc, fn) {
     //   ⇒ **∴ 直接把**本地原子日志**按序给它 ✓**（**∴ 它**就是事实 ✓）** ✓✓
     if (path === "/api/tools/get_log") {
       const rows = await atomsOf(handle, doc);
-      const atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      // **★ 与服务端**同一个 `order` 语义** ✗ ★**（第 187 轮 ✓；**PWA 实测 P2-4 ✓）：
+      //   **∴ 为什么必须在这里也做 ✗**：**前端**要**传 `order: "desc"`**✗
+      //     ⇒ **∴ 若**本地层**忽略它**✗ ⇒ **∴ 于是**同一条前端代码**✗
+      //       ⇒ **∴ 在**服务端**得到**降序**✗、**在**本地层**得到**升序** ✓（**∴ 行为分叉 ✓）** ✓✓
+      //     ⇒ **★ 所以**：**两边**必须**同一个语义 ✓ ★**** ✓✓
+      // **∴ 本文件的查询参数变量叫 `q` ✗**（第 476 行 `const q = url.searchParams;` ✓）——
+      //   **∴ 我**第一版写了 `query`**✗ ⇒ **∴ 那**会**抛 ReferenceError** ✓（**∴ 已核实并修正 ✓）**
+      const order = (q && q.get("order")) || "";
+      const newestFirst = order === "desc" || order === "newest_first";
+      let atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      if (newestFirst) atoms = atoms.slice().reverse();
       return json({ ok: true, atoms, count: atoms.length, server: false });
     }
 

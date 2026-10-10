@@ -2169,6 +2169,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("limit", Integer, false, "最多返回条数"),
             param!("kind", String, false, "按原子类型过滤"),
             param!("actor", String, false, "按操作者过滤"),
+            // **★ 必须在这里声明 ✗ ★**（第 187 轮 ✓）：**未声明的键**进不了 `args` ✗**
+            //   ⇒ **∴ 只读 `args["order"]` **不**够 ✓（**上一轮 `layer_id` 踩过 ✓）** ✓✓
+            param!(
+                "order",
+                String,
+                false,
+                "排序：缺省**升序**（最早的 N 条，行为与从前一致）；\n\
+                 `desc` ⇒ **最新的 N 条**且**从新到旧**（历史面板要这个）。"
+            ),
         ],
     },
     // ---- Job ----
@@ -4135,9 +4144,29 @@ fn read_get_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
         )
     })?;
-    let atoms: Vec<Value> = document
-        .log()
-        .iter()
+    // **★ `order`：**最新的 N 条**且**从新到旧** ✗ ★**（第 187 轮 ✓；**PWA 实测 P2-4 ✓）：
+    //   **∴ 为什么需要它 ✗**：**原来的 `.take(limit)` 跑在**升序**迭代器上**✗
+    //     ⇒ **∴ 于是** `limit: 200` 取的是**最早的 200 条** ✓
+    //       ⇒ **∴ 而**用户在界面上**要的是**最新的 200 条** ✓**** ✓✓
+    //       ⇒ **∴ 而**前端**只**做 `.slice().reverse()`**✗
+    //         ⇒ **∴ 那**顶多得到**"**最早 200 条里的倒序 ✓"**✗
+    //           ⇒ **∴ 而**不是**"**最新 200 条 ✓" ✓（**∴ 上游 README **也**承认这是半修 ✓）** ✓✓
+    //   **∴ 做法 ✗**：**按**索引序**取 ✗（**∴ 升序： `0..n` ✗；**降序： `(0..n).rev()` ✓）**
+    //     ⇒ **∴ 于是** `take(limit)` **先**截断**✗
+    //       ⇒ **∴ 昂贵的那段 `map(json!)` **只**跑 `limit` 次 ✓ ★**** ✓✓
+    let log = document.log();
+    let log_len = log.atoms().len();
+    let newest_first = matches!(
+        optional_str(args, "order").as_deref(),
+        Some("desc") | Some("newest_first")
+    );
+    let order_indices: Box<dyn Iterator<Item = usize>> = if newest_first {
+        Box::new((0..log_len).rev())
+    } else {
+        Box::new(0..log_len)
+    };
+    let atoms: Vec<Value> = order_indices
+        .map(|index| &log.atoms()[index])
         .filter(|atom| atom.seq > since)
         .filter(|atom| {
             kind_filter
