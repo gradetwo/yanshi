@@ -887,6 +887,50 @@ fn below_reuse_count(state: &ServerState) -> serde_json::Value {
 ///     ⇒ **∴ 所以**：**本探测**只能说**"看起来有"**✗ ⇒ **∴ 不能**承诺**能用** ✓
 ///       ⇒ **∴ 因此**：**真正接入 GPU 计算时**必须**再用 `wgpu` 的 `request_adapter()` 复核** ✓
 ///         （**∴ 那**是**候选 ②**✗，**见第 256 轮评估 ✓）** ✓✓
+/// **★ 适配器级探测（**`--features gpu` 时可用 ✓）✗ ★**（第 266 轮 ✓；**目标第 7 条 ✓）。
+///
+/// **∴ 两面（**AGENTS.md 第 5 条 ✓）★**：
+///   **∴ 收益 ✗**：**结论**来自**真实枚举**✗ ⇒ **∴ 不再**靠设备节点推断** ✓
+///   **∴ 代价 ✗**：**要起 `wgpu::Instance`**（**∴ 首次**可能几百 ms ✓）
+///     ＋ **∴ 它**只在 `--features gpu` 下编译** ⇒ **∴ 默认构建**不受影响** ✓（**45 包／6.62 MiB ✓）** ✓✓
+/// **∴ 不新增依赖 ✗**：**future**用**手写 `block_on`** ✓（**∴ `pollster`**不值一个包** ✓）** ✓✓
+#[cfg(feature = "gpu")]
+fn gpu_adapter_probe() -> (bool, String) {
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        use std::task::{Context, Poll};
+        // **∴ 用标准库的 no-op waker ✗**（**第 266 轮 ✓；**clippy `manual_noop_waker` ✓）：
+        //   **∴ 我**原来手写了一个 `Wake` 实现**✗ ⇒ **∴ 而** `Waker::noop()` **已足够** ✓**** ✓✓
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut fut = Box::pin(fut);
+        loop {
+            if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+                return v;
+            }
+            std::thread::yield_now();
+        }
+    }
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    match block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
+        Ok(a) => {
+            let info = a.get_info();
+            // **∴ 报出**真实设备名**✗ ⇒ **∴ 人能核对** ✓
+            (
+                true,
+                format!(
+                    "adapter:{:?}:{:?}:{}",
+                    info.backend, info.device_type, info.name
+                ),
+            )
+        }
+        Err(e) => (false, format!("no_adapter:{e:?}")),
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn gpu_adapter_probe() -> (bool, String) {
+    (false, "feature_gpu_not_enabled".to_owned())
+}
 fn gpu_probe() -> (bool, String) {
     // **∴ ① `--gpu off` ✗**：**用户明确关掉** ⇒ **∴ `cpu` 是**正确的**✗，**而**原因**必须**说明是关掉的** ✓
     let mode = GPU_MODE.get().map(String::as_str).unwrap_or("auto");
@@ -917,16 +961,17 @@ fn gpu_probe() -> (bool, String) {
             }
         }
     }
+    let (adapter_ok, adapter_reason) = gpu_adapter_probe();
+    if adapter_reason != "feature_gpu_not_enabled" {
+        return (adapter_ok, adapter_reason);
+    }
     if has_render_node {
-        // **∴ 有设备 ⇒ 但**不承诺能用** ✓（**∴ 真正用之前要用 `wgpu` 复核 ✓）
-        (
-            true,
-            if has_bound_driver {
-                "render_node_present".to_owned()
-            } else {
-                "render_node_without_bound_driver".to_owned()
-            },
-        )
+        let reason = if has_bound_driver {
+            "render_node_present".to_owned()
+        } else {
+            "render_node_without_bound_driver".to_owned()
+        };
+        (true, reason)
     } else {
         (false, "host_has_no_render_node".to_owned())
     }
