@@ -1425,8 +1425,29 @@ async function initWasm() {
     return;
   }
   try {
-    const health = await (await fetch("/health")).json();
-    if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
+      // **★ `/health` **只是信息** ⇒ **拿不到也要继续** ✗ ★**（第 149 轮 ✓；**离线根因 ✓）：
+      //   **∴ 症状 ✗**：**静态部署**（**PWA ✓）离线时**✗
+      //     **∴ 本行的 `fetch` **永远挂着** ✓（**实测：`done: false` 不变 ✓）** ✓✓
+      //       ⇒ **∴ 于是**下面的 `import("/wasm/yanshi_wasm.js")`**永远**不执行** ✗
+      //         ⇒ **∴ 内核**起不来** ✗（`kernelStats()` 为 null ✓）** ✓✓
+      //       ⇒ **∴ 而**离线时**那条 `fetch` 的行为**与**在线不同**✗
+      //         ⇒ **∴ 它**既不**成功**✗、**也**不**失败** ✓（**实测 ✓）** ✓✓
+      //   **∴ 而**我的探针**证明了**✗**：**同样离线**✗
+      //     **∴ 手动** `import("/wasm/yanshi_wasm.js")` ＋ `default()`**✗
+      //       ⇒ **∴ 成功**（`init: "OK"` ✓）** ✓✓
+      //     ⇒ **★ 所以**：**卡点**就是本行** ✓ ★**** ✓✓
+      //   **∴ 修法**：**把 `/health` 当成**可选信息**✗
+      //     ⇒ **∴ 加** 3 秒超时**✗ ＋ **`catch` 后**继续** ✓**** ✓✓
+      //     **∴ 且**：**只在**真的**拿到**且**说 wasm 没启用**时才抛 ✓**** ✓✓
+      //   **∴ 与**下面那处**一致**✗：**它**早就**写成了**"**拿不到就算了 ✓"** ✓（**∴ 那**是对的 ✓）** ✓✓
+      let health = null;
+      try {
+        health = await (await fetch("/health", { signal: AbortSignal.timeout(3000) })).json();
+      } catch (error) {
+        // **∴ 离线／取不到 ⇒ **继续** ✓**（**∴ 不**因它放弃内核 ✓）
+        log("取不到 /health（" + String(error && error.message || error).slice(0, 60) + "）⇒ 继续加载内核", "#a60");
+      }
+      if (health && !health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
     // 动态 import：不需要打包器，直接吃 wasm-bindgen --target web 的输出。
     const module = await import("/wasm/yanshi_wasm.js");
     await module.default();
