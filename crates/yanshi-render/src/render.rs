@@ -3975,7 +3975,10 @@ fn object_probe_label(object: &Object, primitive: &Primitive) -> String {
         Primitive::Stroke { .. } => "stroke".to_owned(),
         Primitive::RasterPatch { .. } => "raster_patch".to_owned(),
         Primitive::Unsupported { reason } => {
-            format!("unsupported:{}", reason.split('：').next().unwrap_or(reason).trim())
+            format!(
+                "unsupported:{}",
+                reason.split('：').next().unwrap_or(reason).trim()
+            )
         }
         // **∴ 其余一律**用**变体名**✗ ⇒ **∴ 于是**：**不必**逐个列举**✗
         //   ⇒ **∴ 且**：**新增变体**时**自动**有名字 ✓（**∴ 不**会**过时** ✓）** ✓✓
@@ -3983,7 +3986,7 @@ fn object_probe_label(object: &Object, primitive: &Primitive) -> String {
     };
     // **∴ 有 `kind` 就用它**✗（**∴ 它**是**文档里的**真类型** ✓）；**没有**就**用** primitive 名 ✓。
     match kind {
-        Some(kind) => format!("{kind}"),
+        Some(kind) => kind.to_owned(),
         None => label,
     }
 }
