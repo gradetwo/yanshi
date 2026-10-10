@@ -20841,3 +20841,36 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       `./target/release/yanshi-serve --bind 127.0.0.1:18811 --assets-dir web`** ✓ ★**** ✓✓
 #       （**∴ 取代**上一轮的 `crates/yanshi-http/assets` ✓ —— **∴ 那**让 5 类资产 404 ✓）** ✓**** ✓✓
 #     **∴ ③** **然后**重跑那几条曾在 CI 红的判据**✗ ⇒ **∴ 看**有几条**因此转绿** ✓**** ✓✓
+
+# **★ 第 353 轮：★★★★ **更正上一轮 —— CI 的 `--assets-dir` **是对的**；**空目录**是我本机用错了**** ✗** ★★★★
+#   **★ 决定性数据 ✗ ★**：
+#     ```
+#     assets                       textures=11｜brush-previews=200｜samples=7｜mediums=7   ← ★ 齐全 ★
+#     crates/yanshi-http/assets    textures=0 ｜brush-previews=0  ｜samples=0｜mediums=0   ← ★ 空 ★
+#     web                          textures=11｜brush-previews=200｜samples=7｜mediums=6
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ ①** **CI 的 `run-criteria.sh:34／158` 用 `--assets-dir "$ROOT/assets"`**✗
+#       ⇒ **∴ 而**仓库根的 `assets/` **是**齐全的**（**textures=11 ✓）
+#         ⇒ **★ 所以**那一行**是对的** ✗ ⇒ **∴ 第 352 轮的「**重大发现**」**对 CI **不适用** ✓ ★**** ✓✓
+#     **∴ ②** **★ 真正的错是**我本机**✗**：**我**用了 `crates/yanshi-http/assets`**✗
+#       ⇒ **∴ 而**它**只有** viewer 那几个文件**✗（**textures=0 ✓）
+#         ⇒ **∴ 于是**所有 `/textures/` `/brush-previews/` 都 **404** ✓
+#           ⇒ **∴ 而**那**不是**产品／CI 的问题 ✓ ★**** ✓✓
+#   **★ 更正后的本机配方（**与 CI 一致 ✓）★**：
+#     ```
+#     ./target/release/yanshi-serve --bind 127.0.0.1:18811 --root /tmp/yanshi-work \
+#         --doc boot --width 320 --height 240 --assets-dir assets
+#     ```
+#     **∴ 即**：**`--assets-dir assets`**✗（**∴ 仓库根 ✓ —— **与 `run-criteria.sh` 一致 ✓）** ★**** ✓✓
+#   **★ 教训（**本轮最贵 ✓）★**：
+#     **∴ 我**看到 `--assets-dir` 有两个候选目录**✗
+#       ⇒ **∴ 我**选了 `crates/yanshi-http/assets`**✗（**∴ 因为**它**名字里带 http ✓ ⇒ **∴ 看起来**更像**服务端资产 ✓）
+#         ⇒ **∴ 而**它**其实是**空的** ✓ ⇒ **∴ 于是**我**得出了**错误结论** ✓ ★**** ✓✓
+#     **⇒ ★ 所以 ✗ ★**：**换环境参数前**必须**先 `ls` 目标目录**✗
+#       ⇒ **∴ 那**一条命令**就能**避免**整个误判 ✓ ★**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **用** `--assets-dir assets` **重跑**那几条曾在 CI 红的判据** ✓**** ✓✓
+#       ⇒ **∴ 于是**：**看到**真实的失败原因**✗ ⇒ **∴ 而**不是**我环境造成的假红** ✓ ★**** ✓✓
+#     **∴ ②** **且**：**第 352 轮那条台账**已**自相矛盾**✗
+#       ⇒ **∴ 本条**为**更正**✗ ⇒ **∴ 以本条为准** ✓**** ✓✓
