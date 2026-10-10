@@ -115,22 +115,68 @@ for (let i = 0; i < 24; i++) {
 
 // **∴ 先看两件事 ✗**：**静态资源能否取到 ✓** ＋ **页面里的安装错误 ✓**
 //（**∴ 否则只能看到"接口返回 {}"✗ ⇒ 无法定位 ✓**）。
+//
+// **★ 必须查**内容**，不能只看状态码 ✗ ★**（**第 493 轮 ✓；**补一个真实盲区 ✓）
+//   **∴ 为什么 ✗**：**本判据的静态服务器有**SPA fallback**✗
+//     （**∴ 路径不存在时**返回 `index.html` ＋ **HTTP 200** ✓）
+//     ＋ **∴ 于是**：**只查 `r.status` ⇒ **任何缺失文件都显示 200**** ✓
+//       ⇒ **∴ 那个"可达性 ⇒ 全 200"**是**假绿** ✓ ★**** ✓✓
+//   **∴ 而实测的后果（**第 493 轮 ✓）✗**：
+//     ⇒ **∴ 症状 ✗**：`draw_stroke ⇒ 500 stroke_failed`
+//       ＋ **∴ reason ✗**：`Failed to fetch dynamically imported module: …/wasm/yanshi_wasm.js`
+//         ⇒ **∴ 而**当时的「可达性」显示 `/wasm/yanshi_wasm.js: 200`**✗
+//           ⇒ **∴ 于是**：**我**花了很久才排除"文件不存在"** ✓
+//             ＋ **∴ 且真正 fetch 的 `yanshi_wasm_bg.wasm` **当时**根本没被检查** ✓ ★**** ✓✓
+//   **∴ 现在 ✗**：**逐项查**状态 ＋ `content-type` ＋ **前 4 字节的 magic**** ✓
+//     ⇒ **∴ 内核 wasm 的 magic 是 `\0asm`**✗ ⇒ **∴ 拿不到就说明**这不是 wasm** ✓
+//       （**∴ 典型的**SPA fallback 的 HTML**：首字节是 `<` ✓）★**** ✓✓
 const reach = await evaluate(`(async () => {
   const out = {};
-  for (const p of ["/api-local.js", "/store.js", "/wasm/yanshi_wasm.js", "/manifest.webmanifest"]) {
-    const r = await fetch(p); out[p] = r.status;
+  const probes = [
+    { p: "/api-local.js", magic: null },
+    { p: "/store.js", magic: null },
+    { p: "/wasm/yanshi_wasm.js", magic: null },
+    { p: "/manifest.webmanifest", magic: null },
+    // **★ 真正被 fetch 的那个文件 ✗ ★**（**∴ 原来**漏了它** ✓）
+    { p: "/wasm/yanshi_wasm_bg.wasm", magic: "\\\\0asm" },
+  ];
+  for (const { p, magic } of probes) {
+    const r = await fetch(p);
+    let head8 = "";
+    if (magic) {
+      // **∴ 只读**前 8 字节**✗ ⇒ **∴ 不把 1.5 MB 都读进来** ✓
+      const buf = new Uint8Array(await r.clone().arrayBuffer()).slice(0, 8);
+      head8 = Array.from(buf).map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    }
+    out[p] = { status: r.status, type: r.headers.get("content-type"), head8 };
   }
   out.installError = window.__pwaInstallError || null;
   out.pwaInstalled = window.__pwaInstalled === true;
   out.pwaStep = window.__pwaStep || null;
-  out.fetchHead = String(window.fetch).replace(/\s+/g, " ").slice(0, 70);
+  out.fetchHead = String(window.fetch).replace(/\\s+/g, " ").slice(0, 70);
   out.hasFetchOverride = !!window.fetch && String(window.fetch).includes("native code") === false;
   return out;
 })()`);
 console.log("  可达性 ⇒ " + JSON.stringify(reach));
-
 const failures = [];
 const check = (c, m) => { if (!c) failures.push(m); };
+// **∴ 逐项判红 ✗**（**∴ 状态 200 不够 ⇒ **还要**内容对** ✓）
+for (const [p, info] of Object.entries(reach)) {
+  if (!info || typeof info !== "object" || info.status === undefined) continue;
+  check(info.status === 200, `${p} 必须 200（实测 ${info.status}）`);
+}
+// **★ 内核 wasm 必须**真的是 wasm**✗ ★**（**∴ 防 SPA fallback 伪装的 200 ✓）
+const bg = reach["/wasm/yanshi_wasm_bg.wasm"];
+if (bg && bg.status === 200) {
+  check(
+    /application\/wasm/.test(String(bg.type || "")),
+    `yanshi_wasm_bg.wasm 的 content-type 必须是 application/wasm（实测 ${bg.type}）`,
+  );
+  check(
+    String(bg.head8 || "").startsWith("00 61 73 6d"),
+    `yanshi_wasm_bg.wasm 的前 4 字节必须是 00 61 73 6d（\\0asm）（实测 ${bg.head8}）—— 不像 wasm ⇒ 多半是 SPA fallback 的 HTML`,
+  );
+}
 console.log(`  内核加载 window.yanshiKernel = ${kernelLoaded}`);
 if (!kernelLoaded) console.log("  （调试全局 yanshiKernel 未挂 ✓ —— 它只在 ?debug=1 且服务端 viewer 初始化后存在 ✓，不代表内核没加载 ✓；内核的证据见下面的渲染断言 ✓）");
 
