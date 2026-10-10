@@ -25838,3 +25838,65 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ⬜ 内核异步化**第二步**（**`quantize` ＋ `map_async` ⇒ await ✓）
 #     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`**（**wasm 导出 ✓）
 #     **∴ ⬜ 体积／构建／wasm32 交给 CI/CD**（**目标第 10 条 ✓）
+
+# **★ 第 469 轮：★★★★★★★ **精确发现 —— `quantize` **不用 `block_on`**，而用 **`device.poll(PollType::Wait)`**** ★★★★★★★
+#   **★★★ 读码事实（**`crates/yanshi-gpu/src/lib.rs:381` 附近 ✓）★★★**：
+#     ```rust
+#     // **∴ 一次提交 ＋ 一次等待 ✗**（**∴ 第 284 轮：**快 88.6% ✓）
+#     self.queue.submit(Some(enc.finish()));
+#     let _ = self.device.poll(wgpu::PollType::Wait);        ← ★ 阻塞式等待 ★
+#     let mut out: Vec<u8> = Vec::with_capacity(count * 4);
+#     for (back, _take) in &backs {
+#         let slice = back.slice(..);
+#         let (tx, rx) = std::sync::mpsc::channel();
+#         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+#         let _ = self.device.poll(wgpu::PollType::Wait);    ← ★ 又一次 ★
+#         if rx.recv().is_err() { return Err("map_channel:closed".to_owned()); }
+#         let mapped = slice.get_mapped_range();
+#         out.extend_from_slice(&mapped);
+#         drop(mapped);
+#         back.unmap();
+#     }
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ ①** **`quantize` **没有用 `block_on`****✗
+#       ⇒ **∴ 它**用的是 **`device.poll(PollType::Wait)`** ✓
+#         ⇒ **∴ 而**那**在 wasm 上**会阻塞事件循环**✗（**∴ 因为** wasm 单线程 ✓）
+#           ⇒ **★ 所以**：**真正的异步化**要**把 `poll(Wait)` 换成**一个 `await` 点** ✓ ★**** ✓✓
+#     **∴ ②** **`map_async` 的回调**＋ `mpsc::recv()`**✗
+#       ⇒ **∴ 那**是**同步等待**✗ ⇒ **∴ 要**换成**一个 oneshot ＋ `await`** ✓ ★**** ✓✓
+#     **∴ ③** **`wgpu` **在 wasm 上**用的是**浏览器 `mapAsync` 的 Promise****✗
+#       ⇒ **∴ 它**要求**让出**给事件循环** ✓
+#         ⇒ **∴ 所以**：**必须**真的 await**✗ ⇒ **∴ 不许**忙等** ✓ ★**** ✓✓
+#   **★★★ 对第 445 轮方案的**修正（**如实 ✓）★★★**：
+#     **∴ 当时我写 ✗**：**「**`block_on` ＋ `map_async` 轮询**」** ✓
+#       ⇒ **∴ 实际 ✗**：**`poll(PollType::Wait)` ＋ `map_async` 回调** ✓
+#         ⇒ **∴ 而**方案**仍然成立**✗（**∴ 两者**都要**变成 `await` ✓）
+#           ＋ **∴ 而**精确的改法**现在**更清楚** ✓ ★**** ✓✓
+#   **★★★ 第二步的**精确改法（**可直接执行 ✓）★★★**：
+#     **∴ ① 抽核心 ✗**：
+#       ```rust
+#       - pub fn quantize(&self, pixels: &[f32], count: usize, background: Option<[f32; 4]>) -> Result<Vec<u8>, String> {
+#       + async fn quantize_async_inner(&self, pixels: &[f32], count: usize, background: Option<[f32; 4]>) -> Result<Vec<u8>, String> {
+#       ```
+#     **∴ ② 两个等待点 ✗**：
+#       **∴ `poll(Wait)` ⇒ **先 `poll(Poll)`**✗
+#         ＋ **∴ 若**没完成 ⇒ **`await` 一个**由 `wgpu` 回调唤醒的 future** ✓
+#       **∴ `rx.recv()` ⇒ **`.await` 那个 oneshot** ✓
+#     **∴ ③ 薄包装 ✗**：
+#       **∴ 同步版**仍 `block_on(Self::quantize_async_inner(…))`** ✓
+#         ＋ **∴ 异步版**`pub async fn quantize_async(…)`** ✓ ★**** ✓✓
+#     **∴ ④ 自实现的 oneshot ✗**（**∴ 不引 `futures` ✓）：
+#       ⇒ **∴ 要**写一个**最小的 future**✗（**`Waker` 存在 `Mutex<Option<Waker>>` ＋ 回调里 `wake()` ✓）
+#         ⇒ **∴ 与**本 crate**已有的 `block_on`（**自实现 ✓）**同一风格** ✓ ★**** ✓✓
+#   **★★★ 两面 ✗ ★★★**：
+#     **∴ 收益 ✗**：**wasm 侧**可以**真的 await**✗ ⇒ **∴ 内核**能接 WebGPU** ✓ ★**** ✓✓
+#     **∴ 代价 ✗**：**要**写一个 oneshot future**✗ ＋ **两次等待**都要改**
+#       ＋ **∴ 且**：**必须**重验**逐位一致**（**∴ 6 条 GPU 判据 ＋ 内核体积 ✓）★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧**全部完成**（**含第 9 条 CPU 判据仍绿 ✓）
+#     **∴ ✅ 内核异步化**第一步**（**`new` ✓；**第 468 轮 ✓）
+#     **∴ ★ 本轮 ✗**：**查清**第二步的精确形状**（**`poll(Wait)` ＋ `map_async` ⇒ await ✓）
+#     **∴ ⬜ 内核异步化**第二步**（**`quantize` ＋ oneshot future ✓）
+#     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`**（**wasm 导出 ✓）
+#     **∴ ⬜ 体积／构建／wasm32 交给 CI/CD**（**目标第 10 条 ✓）
