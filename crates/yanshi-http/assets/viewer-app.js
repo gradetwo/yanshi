@@ -337,6 +337,20 @@ function bodyDigest(body) {
 
 /// 这三个端点走"**本地优先**" ✓；**其余一律原样转发** ✓（不改变任何别处的行为 ✓）。
 async function fetchOrLocal(url, options) {
+  // **★ 每个真实 `fetch` 都必须**有界** ✗ ★**（第 179 轮 ✓；**离线根因 ✓）：
+  //   **∴ 为什么 ✗**：**实测**（**第 177 轮 ✓）**：**断网时**那一次 `fetch`**✗
+  //     **∴ 既不**成功**✗、**也**不**失败** ✗ ⇒ **∴ 它**永远**挂着** ✓**
+  //     ⇒ **∴ 于是**：**凡**走到它的**初始化步骤**都**永不返回** ✓**
+  //     ⇒ **∴ 实测**：`rl:before-fetch`**出现** ＋ `rl:fetch-ok`**没有** ✓**
+  //   **∴ 而**"**网络优先 ✓"**这条设计**✗（**第 171 轮 ✓）**
+  //     ⇒ **∴ 让**第一件事**就是**等网络** ⇒ **∴ 所以必须**配上限 ✓**
+  const boundedOptions = (rawOptions) => {
+    const out = Object.assign({}, rawOptions || {});
+    if (!out.signal && typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+      out.signal = AbortSignal.timeout(8000);
+    }
+    return out;
+  };
   const method = (options && options.method) || "GET";
   let cacheable = false;
   let binary = false;
@@ -391,7 +405,7 @@ async function fetchOrLocal(url, options) {
       const probe = new URL(url, location.href);
       if (probe.pathname.endsWith("/api/tools/render_region") || probe.pathname === "/api/tools/render_region") {
         try {
-          return await fetch(url, options);
+          return await fetch(url, boundedOptions(options));
         } catch (error) {
           return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
         }
@@ -442,7 +456,7 @@ async function fetchOrLocal(url, options) {
       return new Response(localBytes, { status: 200, headers: { "content-type": "application/octet-stream" } });
     }
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, boundedOptions(options));
       try {
         if (response && response.ok) await localBytesPut(key, await response.clone().arrayBuffer());
       } catch (error) {
@@ -464,7 +478,7 @@ async function fetchOrLocal(url, options) {
   // **不可变**资源（`/brush-module.wasm` ✓、**按内容哈希命名**的 `/api/blob/…` ✓）才用 `cacheFirst` ✓
   // —— 这也是 **(A)⑥"SW 升级不脏读"** 的同一条原则 ✓。
   try {
-    const response = await fetch(url, options);
+    const response = await fetch(url, boundedOptions(options));
     try {
       if (response && response.ok) {
         const text = await response.clone().text();
