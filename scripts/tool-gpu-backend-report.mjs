@@ -56,9 +56,31 @@ for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 //   **∴ 正确写法**：**先切掉那两个**✗ ⇒ **∴ 用** `slice(2).length === 0` ✓**** ✓✓
 //   **∴ 参照**：`tool-render-cost-accounts.mjs` **本来就**切过了**✗
 //     ⇒ **∴ 所以**它**一次就改对了 ✓**** ✓✓
-const spawnMode = process.argv.includes("--spawn") || process.argv.slice(2).length === 0;
-let a = process.argv[2] ?? "http://127.0.0.1:8471";
-let b = process.argv[3] ?? null;
+const looksLikeUrl = (value) =>
+  typeof value === "string" && /^https?:\/\//.test(value);
+// **★ 两个地址必须**都给、**且都像 URL ✗ ★**（第 82 轮 ✓）：
+//   **∴ 因为**编排**永远给三个参数**✗（`"$BASE" "$doc" "$tok"` ✓）
+//     ⇒ **∴ 于是**：**"**只给一个 URL ✓"**这个情形**不存在** ✓**** ✓✓
+//     ⇒ **∴ 所以**：**要么**两个都是 URL**✗（**显式指定 ✓）
+//       ⇒ **∴ 要么**自己起两个** ✓**** ✓✓
+//   **∴ 我**第一版只判了 `argv[2]`**✗
+//     ⇒ **∴ 于是**：**`argv[2]` 真 URL ＋ **`argv[3]` 文档名**✗
+//       ⇒ **∴ `spawnMode` 为 false ＋ **`b` 为 null**✗ ⇒ **∴ 判据**仍然**不成立 ✓**** ✓✓
+const bothUrls = looksLikeUrl(process.argv[2]) && looksLikeUrl(process.argv[3]);
+let a = bothUrls ? process.argv[2] : "http://127.0.0.1:8471";
+let b = bothUrls ? process.argv[3] : null;
+const spawnMode = process.argv.includes("--spawn")
+  || process.argv.slice(2).length === 0
+  || !bothUrls;
+// **★ 参数**看起来像 URL**才采用 ✗ ★**（第 82 轮 ✓；**CI 的 `ERR_INVALID_URL` 换来的 ✓）：
+//   **∴ 症状（**CI 实测 ✓）✗**：`ERR_INVALID_URL`，`input: 'crit_toolgpubackendreportmjs/health'`
+//     ⇒ **∴ 因为** `run-criteria.sh:228` **给通用 `tool-*` 传三个参数**✗：
+//       `"$BASE" "$doc" "$tok"` ✓**** ✓✓
+//     ⇒ **∴ 于是** `argv[3]`**是**文档名**✗，**不是** base URL**✗
+//       ⇒ **∴ 而**本判据**把 `argv[3]` 当成**第二个服务**的地址**✗
+//         ⇒ **∴ 于是**：**B 的 base** ＝ **文档名** ⇒ **∴ URL**解析失败 ✓**** ✓✓
+//   **∴ 修法**：**只接受** `http://` 或 `https://` 开头的参数**✗
+//     ⇒ **∴ 于是**：**编排传文档名时**✗ ⇒ **∴ 两者都是 null ⇒ **∴ 走 spawn ✓**** ✓✓
 let spawned = [];
 if (spawnMode) {
   const { spawn } = await import("node:child_process");
