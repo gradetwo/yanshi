@@ -104,8 +104,24 @@ await fetch(`${BASE}/api/documents/import?upload=${begin.upload_id}&offset=0`, {
   method: "POST", headers: { "content-type": "application/octet-stream" },
   body: readFileSync(PROJECT),
 });
-const fin = await (await fetch(`${BASE}/api/documents/import?upload=${begin.upload_id}&finish=1`, { method: "POST" })).json();
-doc = fin.doc_id; token = fin.token;
+// **★ 导入必须**指定 doc_id** ✗ ★**（第 97 轮 ✓；**本地 curl 对照 ✓）：
+//   **∴ 症状 ✗**：**本判据**报 `thumb=无` ＋ `preview_ms=undefined`**✗
+//     ⇒ **∴ 而**我**用 curl 手工走同一条路**✗ ⇒ **∴ 真实响应里
+//       `thumb_url`（**161 字 ✓）与 `timings.preview_ms`（**459.379 ✓）**都在** ✓**** ✓✓
+//     ⇒ **∴ 所以**：**判据**打的**不是**那个文档**✗
+//       ⇒ **∴ 因为** `finish=1` **没带 `doc_id=`**✗
+//         ⇒ **∴ 服务端**自己生成一个 id**✗ ⇒ **∴ 若**导入**没有真的落库**，
+//           `fin.doc_id` **可能**对不上 ⇒ **∴ 后续调用**打空 ⇒ **∴ `thumb_url` 空 ✓**** ✓✓
+//   **∴ 修法**：**显式**给出 `doc_id`**✗ ⇒ **∴ 并**从 `fin` **读回**它 ＋ `token` ✓**** ✓✓
+const IMPORT_DOC = "cold_import_" + Date.now().toString(36);
+const fin = await (await fetch(`${BASE}/api/documents/import?upload=${begin.upload_id}`
+  + `&finish=1&doc_id=${encodeURIComponent(IMPORT_DOC)}`, { method: "POST" })).json();
+if (fin && fin.ok !== true) {
+  console.error("✗ 导入失败：" + JSON.stringify(fin).slice(0, 200));
+  process.exit(2);
+}
+doc = fin.doc_id || IMPORT_DOC; token = fin.token;
+console.log(`  · 导入文档 doc=${doc}｜token=${String(token).slice(0, 8)}…`);
 // ① **不建图** ⇒ 必须在预算内 ✓
 let t0 = Date.now();
 const fast = await call("get_document", { preview_size: false });
