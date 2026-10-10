@@ -273,6 +273,38 @@ async function drawStroke() {
   // **★ 分段端到端延迟 ✗ ★**（第 75 轮 ✓；**用户第 8 条要求"**墙钟 ＋ **端到端延迟 ✓" ✓）：
   //   **∴ 页面**本来就**暴露了**这几段**✗（**∴ 我**不必**新加计时 ✓）
   //     ⇒ **∴ 于是**：**两本账**再多四列**✗ ⇒ **∴ 那**才**是**端到端 ✓**** ✓✓
+  // **★ 细分三段**不用改内核 ✗ ★**（第 80 轮 ✓）：
+  //   **∴ 页面**本来就在 `blitLog` 里**记了四个时刻** ✗：
+  //     `call render_region` ⇒ `got region url` ⇒ `downloading bytes` ⇒ `bytes downloaded` ✓
+  //   ⇒ **∴ 于是**可以**从日志算出**：
+  //     **apply** ＝ got − call；**render** ＝ downloaded − got；**put** ＝ 整段 − 上面两段 ✓**** ✓✓
+  //   ⇒ **∴ 那**不必**动内核**✗ ⇒ **∴ 只**在判据里读 ✓★**** ✓✓
+  const blitRaw = await evaluate(`(() => {
+    const log = ((window.yanshiStats||{}).blitLog) || [];
+    const at = (needle) => {
+      for (let i = log.length - 1; i >= 0; i -= 1) {
+        if (String(log[i].reason || "").startsWith(needle)) return log[i].at;
+      }
+      return null;
+    };
+    const call = at("fetch: call render_region");
+    const got = at("fetch: got region url");
+    const down = at("fetch: downloading bytes");
+    const bytes = at("fetch: bytes downloaded");
+    const span = (window.yanshiStats||{}).lastServerMs
+      ?? (window.yanshiStats||{}).lastApplyMs ?? null;
+    return JSON.stringify({ call, got, down, bytes, span });
+  })()`);
+  let blit = null;
+  try { blit = JSON.parse(blitRaw); } catch { blit = null; }
+  const stagesFromLog = (blit && typeof blit.call === "number" && typeof blit.bytes === "number")
+    ? {
+      applyMs: blit.got !== null ? blit.got - blit.call : null,
+      renderMs: blit.down !== null && blit.got !== null ? blit.down - blit.got : null,
+      downloadMs: blit.bytes !== null && blit.down !== null ? blit.bytes - blit.down : null,
+      putMs: typeof blit.span === "number" ? blit.span - (blit.bytes - blit.call) : null,
+    }
+    : null;
   const stagesRaw = await evaluate(`JSON.stringify({
     firstStrokeMs: (window.yanshiStats||{}).firstStrokeMs,
     lastApplyMs: (window.yanshiStats||{}).lastApplyMs,
@@ -286,6 +318,7 @@ async function drawStroke() {
     wallMs,
     taskMs: task0 !== null && task1 !== null ? (task1 - task0) * 1000 : null,
     stages,
+    stagesFromLog,
     changed: beforeSig !== afterSig,
     beforeSig, afterSig, ignored: before,
   };
@@ -356,8 +389,13 @@ console.log("  | 模式 | ① 墙钟 ms | ② 主线程 TaskDuration ms | 端到
 console.log("  |---|---|---|---|---|---|---|---|");
 for (const [label, s] of [["服务器渲染", strokeA], ["本地渲染", strokeB]]) {
   const g = s?.stages || {};
-  console.log(`  | ${label} | ${s?.wallMs} | ${fmt(s?.taskMs)} | ${fmt(g.lastApplyMs)}`
-    + ` | ${fmt(g.lastRenderMs)} | ${fmt(g.lastPutMs)} | ${fmt(g.kernelWarmMs, 0)} | ${s?.changed} |`);
+  const lg = s?.stagesFromLog || {};
+  // **∴ 服务端的细分**从日志算**✗（**本地**从计时读 ✓）⇒ **∴ 两边**都填得上 ✓**** ✓✓
+  const apply = g.lastApplyMs ?? lg.applyMs ?? null;
+  const render = g.lastRenderMs ?? lg.renderMs ?? null;
+  const put = g.lastPutMs ?? lg.putMs ?? null;
+  console.log(`  | ${label} | ${s?.wallMs} | ${fmt(s?.taskMs)} | ${fmt(apply)}`
+    + ` | ${fmt(render)} | ${fmt(put)} | ${fmt(g.kernelWarmMs, 0)} | ${s?.changed} |`);
 }
 if (strokeA && strokeB && strokeA.taskMs && strokeB.taskMs) {
   const d = (1 - strokeB.taskMs / strokeA.taskMs) * 100;
@@ -381,10 +419,20 @@ if (strokeA && strokeB && strokeA.taskMs && strokeB.taskMs) {
   //   ⇒ **∴ 而** `render`／`put` **两列**仍然空**✗
   //     ⇒ **∴ 因为**我**只量了**整段**✗（**与本地路径**同一口径 ✓）** ✓✓
   //   ⇒ **∴ 所以**提醒**改成**说清**哪些可比、**哪些缺** ✓**** ✓✓
-  if (hasA && typeof gA.lastRenderMs !== "number") {
-    console.log(`  ℹ️ 服务端的**端到端（**整段 apply ✓）现在有了：`
-      + ` ${Number(gA.lastApplyMs).toFixed(1)} ms`
-      + `（**与本地同口径 ✓）；**细分 render／put 仍缺 ✓`);
+  // **★ 第 80 轮的更新 ✗ ★**：**服务端的**细分三段**现在**从 `blitLog` 算出来了**✗
+  //   （**∴ 我**不必**动内核 ✓ ⇒ **∴ 日志里本来就有四个时刻 ✓）** ✓✓
+  //   **∴ 而要**如实标注两件事**✗**：
+  //     **∴ ①** `apply`**是**整段**✗（**含** `settleFrames` 的等待 ✓）
+  //       ⇒ **∴ 它**不是**纯渲染时间 ✓**** ✓✓
+  //     **∴ ②** `render`**可能**接近 0**✗（**∴ 因为**本地服务**瞬间返回 ✓）
+  //       ⇒ **∴ 那**是**正常的 ✗，**不是**缺失 ✓**** ✓✓
+  if (hasA) {
+    const lgA = strokeA?.stagesFromLog || {};
+    console.log(`  ℹ️ 服务端细分（**从 blitLog 算 ✓）：`
+      + ` apply ${Number(gA.lastApplyMs).toFixed(1)} ms`
+      + `（**含等待布局稳定 ✗ ⇒ **∴ 不是纯渲染 ✓）`
+      + `｜render ${fmt(lgA.renderMs)}｜put ${fmt(lgA.putMs)}`
+      + ` ⇒ **∴ 两边**现在都可比 ✓`);
   }
   if (!hasA) {
     console.log("  ⚠️ **服务器渲染模式没有端到端分段**（**那几段只在本地路径写**）"
