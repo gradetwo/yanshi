@@ -61,17 +61,44 @@ if (wantGpu) {
 }
 flags.push("about:blank");
 
-const chrome = spawn(process.env.CHROME_BIN || "chromium", flags, { stdio: "ignore" });
-let targets = null;
-for (let i = 0; i < 80; i += 1) {
-  await sleep(300);
-  try {
-    targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-    if (targets && targets.length) break;
-  } catch { /* 还没起来 */ }
-}
+  // **★ 失败必须**可诊断** ✗ ★**（第 92 轮 ✓；**CI 的 `EXIT=2` 换来的 ✓）：
+  //   **∴ 症状 ✗**：**CI 里**报「**chromium 未就绪 ⇒ 本次实测无效**」**✗
+  //     ⇒ **∴ 而**它**原来**用 `stdio: "ignore"`**✗
+  //       ⇒ **★ 于是**：**看不到** chromium **为什么**没起来 ✓ ★**** ✓✓
+  //   **∴ 修法（**不猜原因 ✓）★**：**① 捕获 stderr ＋ 失败时打印**✗；
+  //     **② 等待**从 24 s 延长到 60 s**✗（**∴ CI runner**比本机慢 ✓）** ✓✓
+  const chrome = spawn(process.env.CHROME_BIN || "chromium", flags,
+    { stdio: ["ignore", "ignore", "pipe"] });
+  // **★ `spawn` 必须挂 `error` 处理 ✗ ★**（第 92 轮 ✓）：
+  //   **∴ 否则** `ENOENT`（**二进制不存在 ✓）会**抛未处理的 error 事件**✗
+  //     ⇒ **∴ 于是**：**退出码 1 ＋ 一堆栈**✗
+  //       ⇒ **∴ 而**不是我们要的「**实测无效 ✓」＋ 诊断 ✓**** ✓✓
+  chrome.on("error", (error) => {
+    console.error("❌ 起 chromium 失败 ⇒ 本次实测无效");
+    const chromeBin = process.env.CHROME_BIN || "chromium";
+    console.error("   ∴ 二进制：" + chromeBin + "｜"
+      + String((error && error.message) || error));
+    process.exit(2);
+  });
+  let chromeStderr = "";
+  if (chrome.stderr) {
+    chrome.stderr.on("data", (chunk) => {
+      chromeStderr = (chromeStderr + chunk.toString()).slice(-2000);
+    });
+  }
+  let targets = null;
+  for (let i = 0; i < 200; i += 1) {
+    await sleep(300);
+    try {
+      targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+      if (targets && targets.length) break;
+    } catch { /* 还没起来 */ }
+    if (chrome.exitCode !== null) break;
+  }
 if (!targets || !targets.length) {
   console.error("❌ chromium 未就绪 ⇒ 本次实测无效");
+  console.error(`   ∴ 二进制：${process.env.CHROME_BIN || "chromium"}｜CDP 端口 ${cdpPort}`
+    + `｜退出码 ${chrome.exitCode}｜stderr：${chromeStderr.slice(-400) || "（空）"}`);
   chrome.kill();
   process.exit(2);
 }
