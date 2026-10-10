@@ -137,7 +137,7 @@ await send("Network.setCacheDisabled", { cacheDisabled: true });
 // **∴ 导航前**清掉已注册的 SW ✗**（**∴ 第一次导航时**还没有 ✓，**但**第二次**就有了 ✓）** ✓✓
 await send("Page.navigate", { url: "about:blank" });
 await send("Runtime.evaluate", {
-  expression: `(async () => {
+  awaitPromise: true, expression: `(async () => {
     if (navigator.serviceWorker) {
       const regs = await navigator.serviceWorker.getRegistrations();
       for (const reg of regs) await reg.unregister();
@@ -161,7 +161,7 @@ for (let i = 0; i < 120; i += 1) {
   await sleep(250);
   const ready = await send("Runtime.evaluate", {
     expression: "document.readyState === 'complete' && !!document.getElementById('board')",
-    returnByValue: true,
+    returnByValue: true, awaitPromise: true,
   });
   if (ready.result && ready.result.value === true) break;
 }
@@ -174,7 +174,7 @@ let warm = null;
 for (let i = 0; i < 120; i += 1) {
   const stats = await send("Runtime.evaluate", {
     expression: "JSON.stringify(window.yanshiStats || null)",
-    returnByValue: true,
+    returnByValue: true, awaitPromise: true,
   });
   try {
     warm = JSON.parse(stats.result.value);
@@ -188,7 +188,7 @@ const warmMs = diffMs(before, after, "TaskDuration");
 // **★ 阶段 ③：真鼠标画一笔 ✗ ★**
 before = await metrics();
 const box = await send("Runtime.evaluate", {
-  expression: `(() => { const b = document.getElementById("board");
+  awaitPromise: true, expression: `(() => { const b = document.getElementById("board");
     if (!b) return null; const r = b.getBoundingClientRect();
     return JSON.stringify({x: r.x, y: r.y, w: r.width, h: r.height}); })()`,
   returnByValue: true,
@@ -215,7 +215,7 @@ strokeMs = diffMs(before, after, "TaskDuration");
 
 // **★ WebGPU 前置事实（**如实 ✓）✗ ★**
 const gpu = await send("Runtime.evaluate", {
-  expression: `(async () => {
+  awaitPromise: true, expression: `(async () => {
     const has = !!navigator.gpu;
     let adapter = null, reason = null;
     if (has) {
@@ -246,7 +246,7 @@ console.log(`  内在核预热状态：${warm ? JSON.stringify(warm) : "（拿�
 //   ⇒ **∴ 于是**：**"**没接上 ✓"**与"**接了但字段名不同 ✓"**能**一眼分开 ✓**** ✓✓
 {
   const keys = await send("Runtime.evaluate", {
-    expression: "JSON.stringify(Object.keys(window.yanshiStats || {}))",
+    awaitPromise: true, expression: "JSON.stringify(Object.keys(window.yanshiStats || {}))",
     returnByValue: true,
   });
   console.log(`  yanshiStats 的键：${keys.result ? keys.result.value : "?"}`);

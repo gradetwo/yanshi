@@ -194,7 +194,7 @@ const evaluateAsync = async (expression) => {
     //   **∴ 修法**：**去掉**它**✗ —— **∴ 而**本判据用的表达式
     //     （`self.fetch` 的替换 ✓）**都是**同步 IIFE**✗ ⇒ **∴ 不**需要它 ✓**** ✓✓
     const targetEvaluate = async (expression) => {
-      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
+      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
       const result = message.result || {};
       return result.result ? result.result.value : undefined;
     };

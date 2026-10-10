@@ -442,7 +442,7 @@ if (swTarget) {
   });
   await swSend("Runtime.enable");
   const stubbed = (await swSend("Runtime.evaluate", {
-    expression: `(() => { if (!self.__yanshiRealFetch) self.__yanshiRealFetch = self.fetch;
+    awaitPromise: true, expression: `(() => { if (!self.__yanshiRealFetch) self.__yanshiRealFetch = self.fetch;
       self.fetch = () => Promise.reject(new TypeError("yanshi-offline-stub")); return typeof self.fetch; })()`,
     returnByValue: true,
   })).result?.result?.value;

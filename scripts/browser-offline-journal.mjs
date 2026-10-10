@@ -231,7 +231,7 @@ const firstDiff = (left, right) => {
   // 当基线，多一次 CDP 往返会改变它何时被后台更新），所以让这个必然失败的请求**与入队那一步并发**，
   // 结论稍后再取 ✓（请求仍然真的由页面发出 ✓）。
   const controlPending = send("Runtime.evaluate", {
-    expression: `(async () => {
+    awaitPromise: true, expression: `(async () => {
       // **★ 诊断（**第 331 轮加 ✓）★**：**∴ 看** CDP 的 offline **是否生效** ＋ **SW 是否接管**
       //   ⇒ **∴ 于是**：**下次 CI** 一次就能分辨**「**offline 没生效**」与「**SW 绕过**」 ✓
       const onLine = navigator.onLine;
