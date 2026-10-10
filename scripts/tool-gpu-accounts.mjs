@@ -265,7 +265,9 @@ if (warmGpu) {
 //   **∴ 收益**：**结论**不再由**一次运气**决定** ✓
 //   **∴ 代价**：**总时间** × RUNS**（**每次都要重新分配像素 ＋ 跑两路 ✓）
 // **∴ 与阶段一同一条原则 ✗**：`tool-cpu-cost-repeated.mjs` **也是**剔除热身 ＋ 取中位数** ✓**** ✓✓
-const RUNS = Number(process.env.YANSHI_GPU_RUNS || 3);
+// **∴ 缺省 5 ✗**（第 255 轮 ✓）：**实测**（**第 254 轮 ✓）**GPU 墙钟极差 **53.4%**** ✗
+//   ⇒ **∴ 3 次太少**✗ ⇒ **∴ 于是**：**中位数**可能**被离群值影响** ✓**** ✓✓
+const RUNS = Number(process.env.YANSHI_GPU_RUNS || 5);
 const med = (xs) => {
   const s = [...xs].filter((v) => typeof v === "number").sort((a, b) => a - b);
   return s.length === 0 ? null : s[Math.floor(s.length / 2)];
@@ -304,8 +306,8 @@ console.log("");
 console.log("  ★ 两本账（浏览器内核）★");
 console.log("  | 路径 | ① 墙钟 ms | ② 主线程 TaskDuration ms | 结果 |");
 console.log("  |---|---|---|---|");
-console.log(`  | CPU | ${cpu.wallMs?.toFixed(1)} | ${cpu.taskMs?.toFixed(1)} | `
-  + `${cpu.ok ? "✓" : "✗ " + String(cpu.detail?.error || "").slice(0, 60)} |`);
+  console.log(`  | CPU | ${cpu.wallMs?.toFixed(1)} | ${cpu.taskMs?.toFixed(1)} | `
+    + `${cpuRuns.every((r) => r.ok) ? "✓" : "✗ " + String(cpuRuns.find((r) => !r.ok)?.detail?.error || "").slice(0, 60)} |`);
 if (gpu) {
   console.log(`  | GPU | ${gpu.wallMs?.toFixed(1)} | ${gpu.taskMs?.toFixed(1)} | `
     + `${gpu.ok ? `✓（**主入口**不算 delta ✗ ⇒ **∴ 差异**由判据量 ✓）` : "✗ " + String(gpu.detail?.error || "").slice(0, 60)} |`);
