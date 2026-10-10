@@ -35,7 +35,19 @@ const ALLOWED = new Set([
     //     ⇒ **∴ 它**一直**红着**✗ ⇒ **★ 而我直到这一轮才看到 ✓ ★**
     //   **∴ 且**：**我在第 43 轮**把探针输出**误存成顶层的文件 `1`**✗（**`> 1` 的笔误 ✓）
     //     ⇒ **∴ 那**也是**这条判据报出来的 ✓ ⇒ **∴ 已删 ✓**
-    "package.json", "wrangler.toml", "worker", "web",
+    //
+    // **★ `package-lock.json` 加进白名单 ✗ ★**（第 324 轮 ✓）：
+    //   **∴ 为什么它**该被允许**✗**：**`package.json` 声明了 `devDependencies: { wrangler }`** ✓
+    //     ⇒ **∴ 而** `package-lock.json` **正是它的锁文件** ✓
+    //       ⇒ **∴ 所以**：**它**是有意的顶层条目** ✓ ★**** ✓✓
+    //   **∴ 证据 ✗**：**它的提交是** `0cb47092 chore: keep build scratch and dependencies out of the tree`** ✓
+    //     ⇒ **∴ 即**：**一次**有意的提交**✗（**∴ 只是**当时忘了加白名单 ✓）** ✓✓
+    //   **∴ 而**它**此前**没被报出**✗ ⇒ **∴ 因为**……**它**一直在** ✓（**∴ 所以**本判据**在 CI 里**一直是红的**✗
+    //     ⇒ **∴ 只是**被别的红灯**掩盖了 ✓）** ✓✓
+    //   **∴ 两面（AGENTS.md 第 3 条 ✓）★**：
+    //     **∴ 收益**：**本判据**在 CI 里**不再误报** ✓**** ✓✓
+    //     **∴ 代价**：**白名单多一项**✗ ⇒ **∴ 而**它**有**明确理由**（**上面的注释 ✓）** ✓✓
+    "package.json", "package-lock.json", "wrangler.toml", "worker", "web",
 ]);
 
 const entries = readdirSync(root).filter((name) => name !== ".git");

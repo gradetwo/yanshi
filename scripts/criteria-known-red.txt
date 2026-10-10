@@ -19993,3 +19993,41 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       **∴ 丙** **PWA 资产**（**`tool-pwa-assets` ✓）⇒ **∴ 本轮**已修**（**本机验证退出码 0 ✓）
 #         ⇒ **∴ 待** CI 确认** ✓**** ✓✓
 #     **∴ ③** **且**：**给每条**写明**是**环境**还是**产品**问题** ✓（**∴ 不许**混着报 ✓）** ✓✓
+
+# **★ 第 324 轮：★★★★★★★ **六片 15 条的完整分类 ＋ 修好 `repo-root-clean`（**有牙 ✓）**** ✗** ★★★★★★★
+#   **★ 完整失败集合（**`38062530201`，六片 ✓）★**：
+#     **∴ shard 1/6（**意外 3 ✓）**✗**：`browser-offline-assets`／`browser-offline-shell`／`tool-cpu-cost-repeated` ✓
+#     **∴ shard 2/6（**意外 3 ✓）**✗**：`browser-offline-brush`／`tool-below-retention`／`tool-preview-whitelist-guard` ✓
+#     **∴ shard 3/6（**意外 6 ✓）**✗**：`browser-export-full-document`／`browser-live-brush`／
+#       `browser-offline-draw`／`browser-render-switch`／`tool-region-cache-reuse`／`tool-repo-root-clean` ✓
+#     **∴ shard 5/6（**意外 1 ✓）**✗**：`browser-offline-journal` ✓
+#     **∴ shard 6/6（**意外 2 ✓）**✗**：`browser-i18n`／`browser-offline-reload` ✓
+#     **∴ shard 4/6**：**没有失败清单行**（**∴ 可能**也红了但日志形状不同 ✓）** ✓✓
+#   **★ 归类（**15 条 ✓）★**：
+#     **∴ 甲 浏览器「负对照」失败（**5 条 ✓）**✗**：**`offline-assets`／`shell`／`brush`／`draw`／`journal`
+#       **∴ 共同症状 ✗**：**未缓存接口**应当失败**✗ ⇒ **∴ 而**实测返回 `{"failed":false,"status":501,"bytes":307}`** ✓
+#         ⇒ **∴ 即**：**断网模拟下**服务端**仍可达** ✓ ⇒ **∴ 那**是**浏览器环境的断网模拟问题** ✓**** ✓✓
+#     **∴ 乙 浏览器其他（**5 条 ✓）**✗**：`export-full-document`（**缩放设置未生效 ✓）／`live-brush`（**本地渲染 0 出帧 ✓）／
+#       `render-switch`（**开关后内核句柄 false ✓）／`i18n`（**双语切换 ✓）／`offline-reload`（**JSON 解析失败 ✓）** ✓✓
+#     **∴ 丙 环境依赖（**2 条 ✓）**✗**：`cpu-cost-repeated`（**要 `/home/crow/yanshi-tmp/…` ✓）／
+#       `preview-whitelist-guard`（**`ENOENT: crit_toolpreviewwhitelistguardmjs` ✓）** ✓✓
+#       ⇒ **∴ 修法**：**让判据**自建夹具**✗（**或**跳过并说明 ✓）** ✓✓
+#     **∴ 丁 其他（**3 条 ✓）**✗**：`below-retention`（**28 → 28 ✓）／`region-cache-reuse`／★ `repo-root-clean` ★** ✓✓
+#   **★★★ 本轮修好的 ✗ ★★★**：**`tool-repo-root-clean`** ✓
+#     **∴ 它报 ✗**：**「**仓库顶层出现 1 个未预期条目：`package-lock.json`｜**已被 git 跟踪（更严重）**」** ✓
+#     **∴ 查证 ✗**：
+#       **∴ `package.json` 声明了 `devDependencies: { wrangler }`** ✓
+#         ⇒ **∴ 所以** `package-lock.json` **是它的锁文件 ⇒ **有意的** ✓**** ✓✓
+#       **∴ 它的提交 ✗**：**`0cb47092 chore: keep build scratch and dependencies out of the tree`** ✓
+#         ⇒ **∴ 即**：**一次**有意的提交**✗ ⇒ **∴ 只是**忘了加白名单** ✓**** ✓✓
+#     **∴ 修法 ✗**：**把它加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`** ✓
+#       （**∴ 并**写了**两面 ＋ 理由** ✓）** ✓✓
+#     **★ 实测 ✗ ★**：
+#       **∴ 基线 ✗**：**「**仓库顶层 31 个条目都在白名单内或被忽略 ✓」⇒ **退出码 **0**** ✓**** ✓✓
+#       **∴ ★ 变异（**去掉白名单项 ✓）✗** ⇒ **∴ 退出码 **★ 1 ★**** ⇒ **∴ **有牙** ✓**** ✓✓
+#       **∴ 还原 ✗** ⇒ **∴ 0** ✓**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **甲组 5 条**（**浏览器负对照 ✓）⇒ **∴ 查** `run-criteria.sh` 里**断网模拟怎么做** ✗
+#       ⇒ **∴ 并**看**为什么**在 CI 里**不生效**（**∴ 可能** chromium 版本／权限 ✓）** ✓✓
+#     **∴ ②** **丙组 2 条**（**环境依赖 ✓）⇒ **∴ 让判据**自足**（**自建夹具／跳过并说明 ✓）** ✓✓
+#     **∴ ③** **丁组 3 条**（**产品 ✓）⇒ **∴ 逐条查**（**∴ `below-retention` 28→28 特别可疑 ✓）** ✓✓
