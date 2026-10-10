@@ -112,6 +112,23 @@ const swTarget = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json
   .find((target) => target.type === "service_worker");
 const swControl = swTarget ? await connectTarget(swTarget) : null;
 if (swControl) await swControl.send("Runtime.enable");
+// **★ 顺序：先等内核就绪，**再**切断 SW 的网络** ✗ ★**（第 113 轮 ✓；**探针证据 ✓）：
+//   **∴ 原来**顺序反了 ✗**：**先**切断 SW 的 fetch**✗ ⇒ **∴ 再**等内核 ✓**** ✓✓
+//     ⇒ **∴ 而**内核装载**正要**用 SW 走 `/api/atoms`**✗
+//       ⇒ **★ 于是**内核**永远就绪不了** ✗
+//         ⇒ **∴ 判据**报**"**断网前内核 = null（**在线都没就绪 ✓）" ✓ ★**** ✓✓
+//   **∴ 证据（**30 行 CDP 探针 ✓）★**：**不切网络时**✗
+//     **∴ 静态 PWA** 上 `kernelReady=true`／`kernelStats` **有**／`boardW=1024` ✓
+//       ⇒ **∴ 所以**：**内核**本来**是好的**✗ ⇒ **∴ 问题**只在**顺序 ✓ ★**** ✓✓
+// **断网前先让内核装载完** ✗ —— 离线重载要靠**本地缓存**里的 `/api/atoms` 才建得起内核 ✓；
+// 在线这趟没装完就断网 ⇒ 离线内核是 null ⇒ 后面量到的"画不出墨"是**前提不成立** ✗，
+// 而不是"离线不会画" ✓（本机高负载时实测踩到过：`readyState` 完成 ≠ 内核装载完成 ✓）。
+let onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+for (let attempt = 0; attempt < 80 && !onlineKernel; attempt += 1) {
+  await sleep(250);
+  onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
+}
+console.log(`  · 断网前内核 = ${onlineKernel ? JSON.stringify({ head_seq: onlineKernel.head_seq }) : "null（在线都没就绪）"}`);
 const setServiceWorkerFetch = async (broken) => {
   if (!swControl) return false;
   const value = await swControl.evaluate(
@@ -129,15 +146,6 @@ if (!(await setServiceWorkerFetch(true))) {
   process.exit(1);
 }
 
-// **断网前先让内核装载完** ✗ —— 离线重载要靠**本地缓存**里的 `/api/atoms` 才建得起内核 ✓；
-// 在线这趟没装完就断网 ⇒ 离线内核是 null ⇒ 后面量到的"画不出墨"是**前提不成立** ✗，
-// 而不是"离线不会画" ✓（本机高负载时实测踩到过：`readyState` 完成 ≠ 内核装载完成 ✓）。
-let onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
-for (let attempt = 0; attempt < 80 && !onlineKernel; attempt += 1) {
-  await sleep(250);
-  onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
-}
-console.log(`  · 断网前内核 = ${onlineKernel ? JSON.stringify({ head_seq: onlineKernel.head_seq }) : "null（在线都没就绪）"}`);
 
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 await send("Page.reload", { ignoreCache: false });
