@@ -2546,6 +2546,14 @@ impl Renderer {
             // 变换次序 ✓：master 自身的 `transform` → `master_ref.local_transform` → 实例自己的 `transform` ✓
             //（与 `transform_primitive` 逐层施加等价 ✓，见 `compose_transform` 的说明 ✓）。
             // **裁剪必须用带状态口径** ✓：实例的几何要靠 master 解析 ✓（见 `object_bbox_in` ✓）。
+            // **★ 逐对象的**前置工作**也要计时 ✗ ★**（第 199 轮 ✓；**离线／真实画作的成本调查 ✓）：
+            //   **∴ 为什么 ✗**：**实测**（**第 198 轮 ✓）证明**✗**：
+            //     **∴ 图层 1597 ms**✗ 而 **`ObjectTimings` 只解释 **270 ms（17%）**** ✓
+            //     ⇒ **∴ 其余 ≈1330 ms** 在**每对象的**前置工作**里** ✓
+            //     ⇒ **∴ 468 个对象 ⇒ **≈2.8 ms／对象** ✓**** ✓✓
+            //   **∴ 而**这里正是**那段**✗（**parse／transform／bbox ✓）**
+            //     ⇒ **∴ 加上计时**⇒ **∴ 报告里**直接**看得出**是**哪一步** ✓ ★**** ✓✓
+            let mut probe_prep = stage_probe::Stage::start();
             let primitive = if object.object_type == yanshi_core::ObjectType::Instance {
                 match crate::object::resolve_instance(state, object) {
                     Some((master_primitive, transform)) => {
@@ -2560,12 +2568,14 @@ impl Renderer {
             } else {
                 crate::object::transform_primitive(parse_object(object), &object.transform)
             };
+            probe_objects.record("prep:parse+transform", probe_prep.stop());
             let affects_whole_layer = matches!(
                 primitive,
                 Primitive::Adjustment { .. }
                     | Primitive::Filter { .. }
                     | Primitive::Unsupported { .. }
             );
+            let mut probe_bbox = stage_probe::Stage::start();
             if !affects_whole_layer {
                 // **实例的包围盒必须解析 master** ✓（否则实例会被当成空盒子裁掉 ✗，
                 // 实测："实例应在 local_transform 指定的位置画出 master（实测 0）" ✓）。
@@ -2574,6 +2584,10 @@ impl Renderer {
                         bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
                     })
                     .unwrap_or(false);
+                // **★ 必须**先记再判 ✗ ★**（第 199 轮 ✓）：**∴ 记录点**若放在 `if !intersects` **之后**✗
+                //   ⇒ **∴ 被裁掉的对象**就**不记** ✓（**实测：**只记了 73 次，**而对象 468 ✓）**
+                //     ⇒ **∴ 于是**裁剪成本**全被漏掉** ✓ ⇒ **★ 那**正是要找的那一块 ✓ ★**
+                probe_objects.record("prep:bbox", probe_bbox.stop());
                 if !intersects {
                     track.culled.insert(object.id.clone());
                     continue;
