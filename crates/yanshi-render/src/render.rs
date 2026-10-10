@@ -3933,7 +3933,13 @@ mod parallel_impl {
         //         ＋ **∴ 且**：**逐位比对**仍**必须保留**✗ ⇒ **∴ 不通过**就回退** ✓ ★**** ✓✓
         #[cfg(feature = "gpu")]
         {
-            if let Some(gpu) = buffer.try_quantize_on_gpu(width * height, background) {
+            if let Some(gpu) = // **∴ 这里**拿不到 blob 哈希**✗（**第 475 轮查明 ✓）：
+                //   **∴ 因为**并行路只收到一个 `Buffer`**✗
+                //     ⇒ **∴ 所以**：**方案甲**需要**一次接口扩展**✗
+                //       ⇒ **∴ 即**：**把 blob 哈希**从渲染层**传到量化层** ✓
+                //         ＋ **∴ 而**本轮**先传 `None`**✗ ⇒ **∴ 行为**与原来**一字不差** ✓ ★**** ✓✓
+                buffer.try_quantize_on_gpu_keyed(width * height, background, None)
+            {
                 return gpu;
             }
         }

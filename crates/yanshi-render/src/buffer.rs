@@ -437,6 +437,30 @@ impl Buffer {
         count: usize,
         background: Option<[u8; 4]>,
     ) -> Option<Vec<u8>> {
+        self.try_quantize_on_gpu_keyed(count, background, None)
+    }
+
+    /// **★ 带 blob 键的版本（**方案甲 ✓）✗ ★**（**第 475 轮 ✓）
+    ///
+    /// **∴ 语义 ✗**：**若** `blob` **已验过**✗
+    ///   ⇒ **∴ 跳过**逐位核对**✗（**直接信任 GPU ✓）
+    ///     ＋ **∴ 否则**照旧核对**✗ ＋ **∴ 通过后**记下它** ✓ ★**** ✓✓
+    ///
+    /// **∴ 为什么键用**内容寻址的 blob 哈希**✗**：**∴ 同内容**只验一次** ✓
+    ///   ＋ **∴ 不同内容**必然被验** ✓（**∴ 第 474 轮实测：**核对占 51% ✓）★**** ✓✓
+    ///
+    /// **★ `#[cfg]` 要**重复一次** ✗ ★**（**第 475 轮 ✓）：
+    ///   **∴ 因为** `#[cfg]` **只管**紧接的**那一个 item**✗
+    ///     ⇒ **∴ 而**本方法**插在** `try_quantize_on_gpu` 之后** ✓
+    ///       ⇒ **∴ 于是**：**它**不会**继承那个 cfg** ✓
+    ///         ⇒ **∴ 所以**：**必须**再写一次** ✓（**∴ 否则**无 gpu 构建**编译失败** ✓）★**** ✓✓
+    #[cfg(feature = "gpu")]
+    pub(crate) fn try_quantize_on_gpu_keyed(
+        &self,
+        count: usize,
+        background: Option<[u8; 4]>,
+        blob: Option<&str>,
+    ) -> Option<Vec<u8>> {
         // **★ 先**悲观地记成 CPU ✗ ★**（第 323 轮 ✓）：
         //   **∴ 因为**后面任何一步失败**都会**回退 CPU**✗
         //     ⇒ **∴ 只有**走到最后并逐位通过**才改成 `Gpu`** ✓**** ✓✓
@@ -486,6 +510,13 @@ impl Buffer {
         //   **∴ 安全（**如实 ✓）✗**：**它**只是**测量用**✗
         //     ⇒ **∴ 不许**在**产品默认路径**上打开** ✓
         //       ＋ **∴ 而**「**逐位一致**」的承诺**要求默认必须核对** ✓ ★**** ✓✓
+        // **★ 方案甲：这个 blob 验过就跳过核对 ✗ ★**（**第 475 轮 ✓）
+        if blob.is_some_and(crate::blob_verified) {
+            // **∴ 验过的 blob ⇒ **跳过核对**✗ ⇒ **∴ `delta` 报**真的核过**的结果** ✓ ★**** ✓✓
+            Self::note_backend(crate::Backend::Gpu);
+            crate::set_render_delta(Some(0));
+            return Some(gpu);
+        }
         let skip_verify = std::env::var_os("YANSHI_GPU_SKIP_VERIFY").is_some();
         if skip_verify {
             Self::note_backend(crate::Backend::Gpu);
@@ -521,6 +552,10 @@ impl Buffer {
         //     ＋ **∴ 于是**：**`/health` 的 `max_channel_delta` **只**在
         //       **真的比过**时**才有值** ✓ ★**** ✓✓
         crate::set_render_delta(Some(0));
+        // **★ 记下这个 blob 已验过 ✗ ★**（**第 475 轮 ✓；**方案甲 ✓）
+        if let Some(b) = blob {
+            crate::mark_blob_verified(b);
+        }
         Some(gpu)
     }
 

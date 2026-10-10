@@ -143,3 +143,39 @@ pub fn begin_render() {
     // **∴ 并**清掉上一次的渲染路差值**✗ ⇒ **∴ 没比过 ⇒ `null`** ✓
     RENDER_DELTA.store(-1, Ordering::Relaxed);
 }
+
+/// **★ 已经**逐位核对通过**的位图 blob ✗ ★**（**第 475 轮 ✓；**方案甲 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**第 474 轮实测**✗**：
+///   **∴ 逐位核对占 **51%** 的时间**✗（**`1686 ms` vs `825 ms` ✓）
+///     ⇒ **∴ 于是**：**GPU 的**时间收益**被它吃掉** ✓
+///       ＋ **∴ 而**不核对时**GPU **比 CPU 快 53%** ✓
+///         ⇒ **★ 所以**：**甲方案（**每个 blob 只验一次 ✓）
+///           ⇒ **∴ 稳态**下 GPU 才有**真实收益** ✓ ★**** ✓✓
+///
+/// **∴ 安全（**如实 ✓）★**：
+///   **∴ 键是**内容寻址的 blob 哈希**✗
+///     ⇒ **∴ 同一个 blob**（**同内容 ✓）**只验一次** ✓
+///       ＋ **∴ 于是**：**不同内容**必然**被验** ✓
+///         ＋ **∴ 代价 ✗**：**若**某个 blob 的 GPU 结果**在某次运行时出错**✗
+///           ⇒ **∴ 只有**首次能发现** ✓ ★**** ✓✓
+static VERIFIED_BLOBS: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// **∴ 这个 blob 验过了吗 ✗**
+#[must_use]
+pub fn blob_verified(blob: &str) -> bool {
+    match VERIFIED_BLOBS.lock() {
+        Ok(guard) => guard.as_ref().is_some_and(|set| set.contains(blob)),
+        Err(_) => false,
+    }
+}
+
+/// **∴ 记下这个 blob 已验过 ✗**
+pub fn mark_blob_verified(blob: &str) {
+    if let Ok(mut guard) = VERIFIED_BLOBS.lock() {
+        guard
+            .get_or_insert_with(std::collections::HashSet::new)
+            .insert(blob.to_owned());
+    }
+}

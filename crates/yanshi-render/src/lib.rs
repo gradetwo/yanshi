@@ -85,8 +85,8 @@
 /// **★ 「最近一次量化用了哪个后端」的记录点 ✗ ★**（第 323 轮 ✓；**目标第 7 条 ✓）。
 pub mod backend_note;
 pub use backend_note::{
-    begin_render, gpu_disabled, last_backend, render_delta, set_gpu_disabled, set_last_backend,
-    set_render_delta, Backend,
+    begin_render, blob_verified, gpu_disabled, last_backend, mark_blob_verified, render_delta,
+    set_gpu_disabled, set_last_backend, set_render_delta, Backend,
 };
 
 /// **位图分块（(b1) 数据层 ✓）** —— 目标第 1 条"懒解码"的地基 ✓。

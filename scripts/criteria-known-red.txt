@@ -26174,3 +26174,57 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ 不核对时的 GPU 收益**已量化**✗（**比 CPU 快 53% ✓）
 #     **∴ ⬜ 选甲／乙／丙**（**∴ 现在**有硬数据支撑** ✓）
 #     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`** ✓
+
+# **★ 第 475 轮：★★★★★★★ **方案甲**的骨架已落地（**键控核对 ✓）—— 而**接口还差一次扩展**** ★★★★★★★
+#   **★★★ 本轮改动（**如实 ✓）★★★**：
+#     **∴ ① `backend_note.rs` ✗**：**加**已验 blob 集合**✗
+#       ```rust
+#       static VERIFIED_BLOBS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+#       pub fn blob_verified(blob: &str) -> bool { … }
+#       pub fn mark_blob_verified(blob: &str) { … }
+#       ```
+#     **∴ ② `lib.rs`**：**导出**那两个函数** ✓
+#     **∴ ③ `buffer.rs` ✗**：**加**带键的入口**✗
+#       ```rust
+#       pub(crate) fn try_quantize_on_gpu(&self, count, background) -> Option<Vec<u8>> {
+#           self.try_quantize_on_gpu_keyed(count, background, None)   // ★ 不带键 ⇒ 每次核对 ★
+#       }
+#       #[cfg(feature = "gpu")]                                      // ★ cfg 必须重复 ★
+#       pub(crate) fn try_quantize_on_gpu_keyed(&self, count, background, blob: Option<&str>) -> … {
+#           if blob.is_some_and(crate::blob_verified) {              // ★ 验过 ⇒ 跳过核对 ★
+#               Self::note_backend(Gpu); set_render_delta(Some(0)); return Some(gpu);
+#           }
+#           …
+#           mark_blob_verified(b)                                    // ★ 通过后记下 ★
+#       }
+#       ```
+#     **∴ ④ `render.rs` ✗**：**并行路**拿不到 blob 哈希**✗
+#       ⇒ **∴ 所以**：**本轮传 `None`**✗ ⇒ **∴ 行为**与原来**一字不差** ✓ ★**** ✓✓
+#   **★★★ 实测（**行为不变 ✓）★★★**：
+#     ```
+#     /health = 200
+#     ★ 渲染后：backend = gpu ｜delta = 0
+#     · 6／6 GPU 判据**全绿** ✓
+#     ```
+#     ＋ **∴ 门禁 ✗**：**fmt ✓｜clippy ✓｜clippy(gpu) ✓** ✓ ★**** ✓✓
+#   **★★★ 途中修的两个真错（**如实 ✓）★★★**：
+#     **∴ 错一 ✗**：**`render.rs` 里没有 `blob` 变量**✗
+#       ⇒ **∴ 因为**并行路只收到一个 `Buffer`** ✓
+#         ⇒ **∴ 已改成**传 `None`** ✓ ★**** ✓✓
+#     **∴ 错二 ✗**：**新的方法**没有 `#[cfg(feature = "gpu")]`**✗
+#       ⇒ **∴ 因为** `#[cfg]` **只管**紧接的一个 item** ✓
+#         ⇒ **∴ 于是**：**无 gpu 构建**编译失败**（**`cannot find yanshi_gpu` ✓）
+#           ⇒ **∴ 已补** ✓ ★**** ✓✓
+#   **★★★ 所以甲方案**还差一步（**精确 ✓）★★★**：
+#     **∴ 要把 blob 哈希**从渲染层**传到量化层**✗
+#       ⇒ **∴ 即**：**`quantize_to_rgba8` **加一个** blob 参数**✗
+#         ＋ **∴ 而**它的**调用方**（**`render_region` 一带 ✓）**有那个哈希** ✓
+#           ⇒ **∴ 于是**：**主路径**首次核对 ＋ 之后跳过** ✓
+#             ⇒ **∴ 稳态 **825 ms**（**比 CPU 快 53% ✓）** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧 ＋ 内核异步化**两步** ✓
+#     **∴ ✅ 逐位核对成本**已量化**（**861 ms／51% ✓）
+#     **∴ ✅ 不核对时收益**已量化**（**比 CPU 快 53% ✓）
+#     **∴ ◑ 方案甲**骨架已落地**✗（**键控 ＋ 判定 ＋ 记账 ✓）
+#       ⇒ **∴ 只剩**把 blob 传进量化层** ✓ ★**** ✓✓
+#     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`** ✓
