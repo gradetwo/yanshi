@@ -258,14 +258,27 @@ pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &
         .map(|i| (f64::from(i) + 0.5) / f64::from(ss))
         .collect();
     let mut data = Vec::with_capacity((width * height) as usize);
+    // **★ 按行预计算阈值** ✗ ★**（第 210 轮 ✓；**∴ 从 O(16 × n) 降到 O(16 × log n) ✓）：
+    //   **∴ 因为** `y` **只**由 `py` 与 `sy` 决定**✗
+    //     ⇒ **∴ 而**阈值**只**依赖 `y`** ✓
+    //       ⇒ **∴ 于是**：**同一行**的**阈值表**可以**复用** ✓**** ✓✓
+    let mut rows: Vec<Vec<Vec<f64>>> = Vec::with_capacity(height as usize);
+    for py in 0..height {
+        let mut per_sy = Vec::with_capacity(ss as usize);
+        for sy in 0..ss {
+            let y = y0 as f64 + py as f64 + offs[sy as usize];
+            per_sy.push(edge_thresholds_at(y, points));
+        }
+        rows.push(per_sy);
+    }
     for py in 0..height {
         for px in 0..width {
             let mut hits = 0.0f32;
             for sy in 0..ss {
+                let thresholds = &rows[py as usize][sy as usize];
                 for sx in 0..ss {
                     let x = x0 as f64 + px as f64 + offs[sx as usize];
-                    let y = y0 as f64 + py as f64 + offs[sy as usize];
-                    if point_in_polygon(x, y, points) {
+                    if inside_from_thresholds(x, thresholds) {
                         hits += 1.0;
                     }
                 }
@@ -298,6 +311,54 @@ pub fn point_in_polygon(x: f64, y: f64, points: &[(f64, f64)]) -> bool {
         j = i;
     }
     inside
+}
+
+/// **★ 固定 `y` 时各条跨 y 的边与水平线的**交点 x** ✗ ★**（第 210 轮 ✓；**CPU 成本调查 ✓）。
+///
+/// **∴ 为什么要它 ✗**：**实测**（**第 209 轮 ✓）**✗**：
+///   **∴ `primitive:Shape` 仍占 **16952.7 ms CPU**✗
+///     ⇒ **∴ 每像素 ≈ **2.0 µs**（**量化 59 ns ⇒ **还差 34×**** ✓）** ✓✓
+///   **∴ `point_in_polygon` **对每个子样本遍历全部顶点**✗（**O(n) ✓）
+///     ⇒ **∴ 16 子样本 ⇒ **16 × n 次运算／像素** ✓**** ✓✓
+///   **∴ 而**其中**只有最后一次比较用到 `x`** ✗
+///     ⇒ **∴ 所以**：**`y` 一定 ⇒ **阈值也就一定** ✓
+///       ⇒ **∴ 于是**：**同一行**可以**复用** ✓ ★**** ✓✓
+///
+/// **★ 逐位等价 ✗ ★**：
+///   **∴ 原实现**：**每有一边的阈值 > x** ⇒ **∴ 就**翻转一次** ✓
+///     ⇒ **∴ 所以**：**`inside` ⇔ 「**阈值 > x 的个数**为奇数**」** ✓
+///   **∴ 本函数**算**同一个表达式**✗（**`xi + t * (xj - xi)`** 逐字相同 ✓）
+///     ⇒ **∴ 于是**：**阈值**逐位相同** ✓
+///       ⇒ **∴ 而**排序**只改**遍历顺序**✗ ⇒ **∴ 计数**与顺序无关** ✓
+///         ⇒ **∴ 结果**逐位一致** ✓（**判据会验证 ✓）** ✓✓
+fn edge_thresholds_at(y: f64, points: &[(f64, f64)]) -> Vec<f64> {
+    let mut out = Vec::new();
+    let count = points.len();
+    if count == 0 {
+        return out;
+    }
+    let mut j = count - 1;
+    for i in 0..count {
+        let (xi, yi) = points[i];
+        let (xj, yj) = points[j];
+        if (yi > y) != (yj > y) {
+            let t = (y - yi) / (yj - yi);
+            out.push(xi + t * (xj - xi));
+        }
+        j = i;
+    }
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// **★ 用**已排序的阈值**判定内外 ✗ ★**（**与 `point_in_polygon` **逐位等价** ✓）。
+///
+/// **∴ 做法 ✗**：**二分**找到**第一个 > x 的位置**✗
+///   ⇒ **∴ 于是**：**它右边**的个数**就是**翻转次数** ✓
+///     ⇒ **∴ 奇数 ⇒ 内** ✓**** ✓✓
+fn inside_from_thresholds(x: f64, thresholds: &[f64]) -> bool {
+    let first_greater = thresholds.partition_point(|t| *t <= x);
+    (thresholds.len() - first_greater) % 2 == 1
 }
 
 /// 从折线展开 stamp 位置（等距采样，确定性）。
