@@ -351,6 +351,13 @@ async function fetchOrLocal(url, options) {
     }
     return out;
   };
+    // **★ `fetchOrLocal` 内部**逐点留痕** ✗ ★**（第 188 轮 ✓；**离线卡点 ✓）
+    //   **∴ 为什么 ✗**：**上一轮**证明**卡在这里**✗（`rl:before-fetch` 出现、`rl:fetch-ok` 没有 ✓）
+    //   **∴ 而**本函数**内部**有**好几个 `await`**✗ ⇒ **∴ 需要**逐点**定位 ✓**
+    const folMark = (name) => {
+      (window.__appMarks = window.__appMarks || []).push("fol:" + name);
+    };
+    folMark("enter");
   const method = (options && options.method) || "GET";
   let cacheable = false;
   let binary = false;
@@ -478,12 +485,14 @@ async function fetchOrLocal(url, options) {
   // **不可变**资源（`/brush-module.wasm` ✓、**按内容哈希命名**的 `/api/blob/…` ✓）才用 `cacheFirst` ✓
   // —— 这也是 **(A)⑥"SW 升级不脏读"** 的同一条原则 ✓。
   try {
+    folMark("网络优先-发起");
     const response = await fetch(url, boundedOptions(options));
     try {
       if (response && response.ok) {
         const text = await response.clone().text();
         await localJsonPut(key, text);
       }
+    folMark("fetch-ok");
     } catch (error) {
       console.warn("[yanshi] 缓存写入失败（不影响主流程）：", error);
     }
@@ -493,7 +502,9 @@ async function fetchOrLocal(url, options) {
     //（实测：我第一版只在**开头**查了一次缓存 ✗ ⇒ 那时缓存还没写进去 ✗ ⇒
     //  `refreshLayers` 直接抛 `TypeError: Failed to fetch` ✓ ⇒ 查看器进不了正常状态 ✓，
     //  画布停在 `<canvas>` 的默认 **300×150** ✓ —— 这个尺寸就是线索 ✓。）
+    folMark("catch-进入-取本地");
     const fallback = await localJsonGet(key);
+    folMark("localJsonGet-ok");
     if (fallback !== null) {
       return new Response(fallback, { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -502,6 +513,7 @@ async function fetchOrLocal(url, options) {
     // ⇒ 那份清单**不再等于"缓存没命中"** ✗（第 174 轮实测踩到的解读陷阱 ✓）。
     // 真正要找的是：**回落也空了的那一次** ✓（`key` 里带 token ✓ ⇒ 打出来才能看出键对不对 ✓）。
     console.warn("[yanshi] 缓存落空：", key);
+    folMark("落空-抛");
     throw error;
   }
 }
