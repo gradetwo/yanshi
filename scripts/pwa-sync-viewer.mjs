@@ -41,26 +41,19 @@ try {
     .replace("__BUILD_STAMP__", BUILD_STAMP)
     .replace(/yanshi-online-\d+/, "yanshi-online-" + BUILD_STAMP);
   writeFileSync(swPath, swText);
-  // **★ `service-worker.js` 也有一个**没人替换**的占位符 ✗ ★**（第 84 轮 ✓）：
-  //   **∴ 实测 ✗**：**离线判据**报出的缓存键是
-  //     `yanshi-shell-__BUILD_ID__`**✗ ⇒ **∴ 字面量**占位符**原样留在里面 ✓**** ✓✓
-  //   **∴ 后果 ✗**：**任何版本**都用**同一个缓存名**✗
-  //     ⇒ **∴ 于是**：**新版本**可能**读到**旧缓存** ✓**** ✓✓
-  //   **∴ 而**它**与**第 61 轮**修过的 `sw.js` 的 `__BUILD_STAMP__` **是**同一类 bug**✗
-  //     ⇒ **∴ 所以**：**同样要**幂等替换**✗（**∴ 即**占位符**和**旧值**都换 ✓）** ✓✓
-  // **∴ 两份都要替换 ✗**（第 84 轮 ✓；**∴ 否则** `tool-pwa-assets` 会**发现**不一致 ✓）：
-  //   **∴ 因为**同步方向是 `assets ⇒ web`**✗
-  //     ⇒ **∴ 只改 `web/`** ⇒ **∴ 下一次同步**会用**未替换的 assets**覆盖它 ✓**** ✓✓
-  const workerPaths = [join(DST, "service-worker.js"),
-    join(SRC, "service-worker.js")].filter((path) => existsSync(path));
-  for (const workerPath of workerPaths) {
-    const workerText = readFileSync(workerPath, "utf8")
-      .replace("__BUILD_ID__", BUILD_STAMP)
-      .replace(/yanshi-shell-\d+/, "yanshi-shell-" + BUILD_STAMP);
-    writeFileSync(workerPath, workerText);
-    console.log("  OK: service worker shell cache ⇒ yanshi-shell-" + BUILD_STAMP
-      + "（" + workerPath + "）");
-  }
+  // **★ 占位符必须**保留** ✗ ★**（第 104 轮 ✓；**`cargo test --workspace` 抓到的 ✓）：
+  //   **∴ 我**第 84 轮**加了**一段"**替换 `__BUILD_ID__`**"**✗
+  //     ⇒ **∴ 而**它**让两个 Rust 测试红**✗**：
+  //       **∴ ①** `the_page_and_the_service_worker_agree_on_the_shell_cache_name`
+  //         ⇒ **∴ 页面**期望 `29d392b8`（**构建号 ✓）**✗
+  //           **∴ 而**SW **被我**换成了 `1535263715002`（**mtime 戳 ✓）⇒ `left != right` ✓**** ✓✓
+  //       **∴ ②** `the_service_worker_is_a_separate_packable_asset`
+  //         ⇒ **★ 它**断言"**SW 必须**保留 `__BUILD_ID__` 占位**"**✗
+  //           **∴ 即**：**那个占位符**是**设计的一部分 ✓（**服务端**在请求时替换它 ✓）★**** ✓✓
+  //     ⇒ **★ 所以**：**"**我看到 `yanshi-shell-__BUILD_ID__` ⇒ 以为**没替换**⇒ 是 bug**"**
+  //       ⇒ **∴ 那个判断**错了 ✓ ★**** ✓✓
+  //       **∴ 它**正是**新构建**自动作废旧外壳的机制 ✓**** ✓✓
+  //   **∴ 修法**：**删除那段替换**✗ ⇒ **∴ 让占位符**原样留在两份里 ✓**** ✓✓
   console.log("  OK: service worker cache stamp ⇒ " + BUILD_STAMP);
 } catch (e) {
   console.warn("  WARN: 未能写入 service worker 缓存戳：" + e.message);

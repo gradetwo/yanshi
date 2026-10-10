@@ -233,7 +233,7 @@ const SHELL = [
 // **缓存名里带上构建标识** ✓（(A)⑥「SW 升级不脏读」的正主 ✓）：
 // 名字一变 ⇒ 下面那句"删掉所有名字不同的缓存"✓ 就自动作废**整份旧外壳** ✓
 // ⇒ 这正是第 210 轮查到的真因 ✓（旧 js + 新 wasm ⇒ 内核预览失败 ✓）。
-const CACHE = "yanshi-shell-1535263715002";
+const CACHE = "yanshi-shell-__BUILD_ID__";
 // **取证报告单独一个缓存**（固定名，不随 BUILD_ID 变）—— 它要跨版本可读，
 // 否则 `activate` 删旧缓存时会把报告一起删掉（2026-10-06 实测：判据读到 null）。
 const REPORT_CACHE = "yanshi-sw-report";
