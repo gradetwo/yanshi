@@ -634,7 +634,7 @@ fn composite_within(
 
 /// 各阶段耗时（`YANSHI_RENDER_PROBE=1` 诊断用；并行时是各块之和）。wasm32 上恒为零。
 #[derive(Debug, Clone, Copy, Default)]
-struct RenderProbe {
+pub struct RenderProbe {
     /// 铺底/分配。
     fill: std::time::Duration,
     /// 逐层渲染对象。
@@ -3656,7 +3656,7 @@ fn clamp_region(state: &DocumentState, bbox: &Bbox) -> Result<Bbox> {
 /// wasm32 上没有共享内存线程：该目标的 [`workers`] 恒为 1，且真正的线程代码**不参与编译**
 /// （`#[cfg]`），由 `scripts/wasm-smoke.sh` 在 node 里真跑一次渲染兜底。
 #[cfg(not(target_arch = "wasm32"))]
-mod parallel_impl {
+pub(crate) mod parallel_impl {
     use super::*;
     // 分带切法与并发上限与 `Buffer::to_rgba8` 共用同一套（见 `crate::rows` 的说明）。
     use crate::rows::{split_bands, MAX_WORKERS, MIN_BAND_ROWS};
@@ -3979,7 +3979,7 @@ mod parallel_impl {
 ///
 /// 这里**不引用**任何 `std::thread` 内容 ⇒ 线程代码不参与 wasm 构建（`cfg` 掉的是整条并行路径）。
 #[cfg(target_arch = "wasm32")]
-mod parallel_impl {
+pub(crate) mod parallel_impl {
     use super::*;
 
     /// wasm：永远串行。
@@ -4590,6 +4590,32 @@ pub fn bitmap_probe(kind: &str, key: &str, width: u32, height: u32, bytes: &[u8]
             bytes.len()
         );
     }
+}
+
+/// **★ 渲染但不量化 ✗ ★**（**第 486 轮 ✓；**目标第 6 条 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**渲染层**早就把**未量化的 `Buffer`**暴露出来了**✗
+///   （**`parallel_impl::render_region` ⇒ `Result<(Buffer, …)>` ✓）
+///     ＋ **∴ 而**它**是**私有模块** ✓
+///       ⇒ **∴ 所以**：**本函数**只做**一层公开转发** ✓ ★**** ✓✓
+///
+/// **∴ 谁用它 ✗**：**浏览器内核的**异步 GPU 量化路**✗
+///   ⇒ **∴ 它**：**渲染 ⇒ 拿 Buffer ⇒ `quantize_async` ⇒ 返回 RGBA8** ✓
+///     ＋ **∴ 失败 ⇒ 回退** `Buffer::to_rgba8_quantized`** ✓
+///       ⇒ **∴ 于是**：**与纯 CPU 路**逐字节相同** ✓ ★**** ✓✓
+///
+/// # Errors
+/// **∴ 区域越界／存储读取失败** ⇒ **∴ 返回 `Err`** ✓
+pub fn render_region_unquantized(
+    renderer: &Renderer,
+    state: &DocumentState,
+    store: &dyn BlobStore,
+    region: &Bbox,
+    padding: u32,
+    background: Option<[u8; 4]>,
+    workers: usize,
+) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+    parallel_impl::render_region(renderer, state, store, region, padding, background, workers)
 }
 
 #[cfg(test)]

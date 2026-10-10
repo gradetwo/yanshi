@@ -26839,3 +26839,73 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ 目标第 10 条**（**CI 已量内核体积 ✓）
 #     **∴ ◑ 第 6 条后半 ✗**：**路径已精确到四步**✗
 #       ⇒ **∴ 只剩**三个小核实 ＋ 一个导出 ＋ 一个前端调用点** ✓ ★**** ✓✓
+
+# **★ 第 486 轮（续）：★★★★★★★★★★ **最后一步的**完整精确路径**已查明（**含确切函数与签名**）**** ★★★★★★★★★★
+#   **★★★ 已完成的进展（**本轮 ✓）★★★**：
+#     **∴ ① `render.rs` 的两个 `parallel_impl` ✗**：`mod` ⇒ **`pub(crate) mod`** ✓
+#     **∴ ② 加公开包装 ✗**：
+#       ```rust
+#       pub fn render_region_unquantized(
+#           renderer: &Renderer, state: &DocumentState, store: &dyn BlobStore,
+#           region: &Bbox, padding: u32, background: Option<[u8; 4]>, workers: usize,
+#       ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+#           parallel_impl::render_region(renderer, state, store, region, padding, background, workers)
+#       }
+#       ```
+#       ＋ **∴ `lib.rs` 已导出** ✓
+#         ＋ **∴ 实测 ✗**：**`render --features gpu` ✓｜`render` 默认 ✓** ★**** ✓✓
+#   **★★★ 完整路径（**读码得出 ✓）★★★**：
+#     **∴ 链路 ✗**：
+#       ```
+#       wasm: render_region_rgba(x,y,w,h)               ← 导出（**同步 ✓）
+#         ⇒ Kernel::render_region(region)               ← kernel.rs:194 的 tile 组合路
+#           或 Kernel::render_region_direct_rgba(…)     ← kernel.rs:703（**scratch 直绘 ✓）
+#             ⇒ self.renderer.render_region(&self.state, &self.store, bbox)
+#               ⇒ render.rs:987 Renderer::render_region(…)  → Result<RegionRender>
+#                 ⇒ render.rs:1115 parallel_impl::quantize_to_rgba8(&cropped, background, workers)
+#                                    ← ★ 量化就在这一步 ★
+#       ```
+#     **∴ 所以 ✗**：**要**在内核侧走 GPU**✗
+#       ⇒ **∴ 必须**给 `Renderer` 加一条**不量化的中段**✗
+#         ⇒ **∴ 即 ✗**：
+#           ```rust
+#           // render.rs 的 impl Renderer 内
+#           pub fn render_region_buffer(
+#               &mut self, state: &DocumentState, store: &dyn BlobStore, bbox: Bbox,
+#           ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+#               // ★ 与 :987 的前半段相同，只是**不调** quantize_to_rgba8 ★
+#           }
+#           ```
+#           ＋ **∴ 然后** `kernel.rs` 加一个**异步方法**✗
+#             ```rust
+#             pub async fn render_region_rgba_async(&mut self, …) -> Vec<u8> {
+#                 match self.renderer.render_region_buffer(&self.state, &self.store, bbox) {
+#                     Ok((buffer, ..)) => {
+#                         // ★ 试 GPU ⇒ 失败 ⇒ 回退（**逐字节相同 ✓）★
+#                         if let Ok(q) = Quantizer::new_async(&lut[..]).await {
+#                             if let Ok(out) = q.quantize_async(buffer.as_f32(), n, bg).await {
+#                                 return out;
+#                             }
+#                         }
+#                         buffer.to_rgba8_quantized(bg)
+#                     }
+#                     Err(_) => Vec::new(),
+#                 }
+#             }
+#             ```
+#             ＋ **∴ 而** `lib.rs` 加 `#[wasm_bindgen] pub async fn render_region_rgba_async(…)` ✓
+#               ＋ **∴ 前端**在一个调用点**改用异步版** ✓ ★**** ✓✓
+#   **★★★ 所以规模（**再次修正 ✓）★★★**：
+#     **∴ 第 485 轮 ✗**：**「**跨三层 ＋ 4 个导出 ＋ 前端**」 ✓
+#       ＋ **∴ 第 486 轮上 ✗**：**「**一个导出 ＋ 四步**」 ✓
+#         ⇒ **★ 现在 ✗ ★**：**「**一处 `Renderer` 中段 ＋ 一处 `Kernel` 异步方法 ＋ 一处导出 ＋ 一处前端**」 ✗**
+#           ⇒ **∴ 即**：**四个精确落点**✗ ⇒ **∴ 每个**都很小** ✓ ★**** ✓✓
+#     **∴ 仍需核实（**如实 ✓）★**：
+#       **∴ ①** **:987 的前半段**能否**独立成函数**✗（**∴ 它**用了 `stage_probe` ✓）
+#       **∴ ②** **背景色**（**`parse_background(&state.background)` ✓）＋ **padding** 的**取值要与现有路一致** ✓
+#       **∴ ③** **`Quantizer::new_async` **每次调用**都建一次设备**✗
+#         ⇒ **∴ 那**很贵**✗ ⇒ **∴ 应**缓存量化器** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧 ＋ 内核侧**全部前置**（**含方案甲 ⇒ 稳态快 55% ✓）
+#     **∴ ✅ ◑ 最后一步 ✗**：**公开包装已落地**（**编译两面都过 ✓）
+#       ⇒ **∴ 剩下**四个精确落点** ✓（**路径已写清到函数签名级 ✓）
