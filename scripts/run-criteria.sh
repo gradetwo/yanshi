@@ -212,7 +212,15 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # ⇒ 那时"跑得快"是假象 ✓（覆盖面缩水 ✓）。修好后它**合法地**更久 ✓ ⇒
       # 240 秒只剩不到 1.5 分钟余量 ✗，而 CI 机器比本机慢 ✗ ⇒ **超时成了独立于产品的不稳定源** ✓
       # ⇒ 上限放宽到 420 秒 ✓（**判据本身一条断言都没放松** ✓ —— 只是不再赌它跑得够快 ✓）。
-      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **★ 浏览器判据要的是**真正的查看器** ✗ ★**（第 84 轮 ✓；**CI 的共同根因 ✓）：
+      #   **∴ 症状（**CI 日志 ✓）✗**：`browser-kernel-perf` 报"**内核未就绪 ✓"**✗；
+      #     `browser-layout` 报 `board.width=320`**✗（**∴ 那**正是**服务端的 `--width 320` ✓）** ✓✓
+      #     ⇒ **∴ 因为**编排**给的是**服务端 base**✗（**∴ 一个 320×240 的文档 ✓）** ✓✓
+      #   **∴ 修法**：**有静态 PWA 就用它**✗（**＋ `doc`／`token`／`debug=1` ✓）
+      #     ＋ **仍把服务端 base 当第 2 个参数**✗（**∴ 需要服务端的判据**照样能用 ✓）** ✓✓
+      VIEWER_BASE="${YANSHI_LIVE_UI_URL:-$BASE}"
+      VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1"
+      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$VIEWER_URL" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。

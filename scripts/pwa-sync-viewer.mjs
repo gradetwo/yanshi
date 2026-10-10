@@ -41,6 +41,26 @@ try {
     .replace("__BUILD_STAMP__", BUILD_STAMP)
     .replace(/yanshi-online-\d+/, "yanshi-online-" + BUILD_STAMP);
   writeFileSync(swPath, swText);
+  // **★ `service-worker.js` 也有一个**没人替换**的占位符 ✗ ★**（第 84 轮 ✓）：
+  //   **∴ 实测 ✗**：**离线判据**报出的缓存键是
+  //     `yanshi-shell-__BUILD_ID__`**✗ ⇒ **∴ 字面量**占位符**原样留在里面 ✓**** ✓✓
+  //   **∴ 后果 ✗**：**任何版本**都用**同一个缓存名**✗
+  //     ⇒ **∴ 于是**：**新版本**可能**读到**旧缓存** ✓**** ✓✓
+  //   **∴ 而**它**与**第 61 轮**修过的 `sw.js` 的 `__BUILD_STAMP__` **是**同一类 bug**✗
+  //     ⇒ **∴ 所以**：**同样要**幂等替换**✗（**∴ 即**占位符**和**旧值**都换 ✓）** ✓✓
+  // **∴ 两份都要替换 ✗**（第 84 轮 ✓；**∴ 否则** `tool-pwa-assets` 会**发现**不一致 ✓）：
+  //   **∴ 因为**同步方向是 `assets ⇒ web`**✗
+  //     ⇒ **∴ 只改 `web/`** ⇒ **∴ 下一次同步**会用**未替换的 assets**覆盖它 ✓**** ✓✓
+  const workerPaths = [join(DST, "service-worker.js"),
+    join(SRC, "service-worker.js")].filter((path) => existsSync(path));
+  for (const workerPath of workerPaths) {
+    const workerText = readFileSync(workerPath, "utf8")
+      .replace("__BUILD_ID__", BUILD_STAMP)
+      .replace(/yanshi-shell-\d+/, "yanshi-shell-" + BUILD_STAMP);
+    writeFileSync(workerPath, workerText);
+    console.log("  OK: service worker shell cache ⇒ yanshi-shell-" + BUILD_STAMP
+      + "（" + workerPath + "）");
+  }
   console.log("  OK: service worker cache stamp ⇒ " + BUILD_STAMP);
 } catch (e) {
   console.warn("  WARN: 未能写入 service worker 缓存戳：" + e.message);
