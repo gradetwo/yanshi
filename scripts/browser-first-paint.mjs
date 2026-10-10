@@ -76,7 +76,7 @@ for (let attempt = 0; attempt < 120; attempt++) {
 
 // 2) 内核预热：完成后才真正可交互。
 let stats = null;
-for (let attempt = 0; attempt < 160; attempt++) {
+for (let attempt = 0; attempt < 40; attempt++) {
   stats = await evaluate("window.yanshiStats");
   if (stats?.wasm && typeof stats.kernelWarmMs === "number") break;
   await new Promise((resolve) => setTimeout(resolve, 250));
@@ -84,14 +84,31 @@ for (let attempt = 0; attempt < 160; attempt++) {
 
 const doc = new URL(url).searchParams.get("doc") ?? "(unknown)";
 const paintOk = typeof firstPaint === "number";
-const warmOk = stats && typeof stats.kernelWarmMs === "number";
+// **★ 服务端优先模式下**没有内核预热** ✗ ★**（第 105 轮 ✓；**同 `browser-layout` 的发现 ✓）：
+//   **∴ 症状 ✗**：**全新 profile ＋ 服务端 URL**✗
+//     ⇒ **∴ 页面**走**服务端优先**（`serverRenderPreferred()` 缺省 true ✓）
+//       ⇒ **∴ `initWasm()`**被跳过**✗ ⇒ **∴ `wasm=false`／`kernelWarmMs=null`** ✓**** ✓✓
+//     ⇒ **∴ 于是**：**本判据**死等**内核✗（40 秒 ✓）⇒ **∴ 然后**判**"**预热未记录 ✓"** ⇒ **∴ 红 ✓**** ✓✓
+//   **∴ 修法**：**服务端优先时**"**内核预热**"这一项**不适用**✗
+//     ⇒ **∴ 它**的可交互标志**是**"**服务端铺过底**" ✓（**`serverBlits > 0` ✓）** ✓✓
+//     **∴ 而**首帧那条**已经在量**服务端铺底**（`firstPaintMs` ✓）⇒ **∴ 仍然有效 ✓**** ✓✓
+const serverMode = await evaluate(`(() => {
+  try {
+    if (typeof window !== "undefined" && window.__pwaLocalOnly === true) return false;
+    const stored = localStorage.getItem("yanshi.serverRender");
+    return stored === null ? true : stored === "1";
+  } catch (error) { return true; }
+})()`);
+const warmOk = serverMode === true
+  ? Number(stats?.serverBlits || 0) > 0
+  : Boolean(stats && typeof stats.kernelWarmMs === "number");
 console.log(`文档 ${doc}:`);
 console.log(
   `  首帧（服务端铺底）: ${paintOk ? firstPaint.toFixed(0) + "ms" : "未记录"}` +
     `｜预算 < ${paintBudget}ms（14.10：view < 100ms / edit < 1s）`,
 );
 console.log(
-  `  内核预热（可交互）: ${warmOk ? stats.kernelWarmMs.toFixed(0) + "ms" : "未记录"}` +
+  `  ${serverMode ? "服务端铺底（可交互）: serverBlits=" + (stats?.serverBlits ?? 0) : "内核预热（可交互）: " + (warmOk ? stats.kernelWarmMs.toFixed(0) + "ms" : "未记录")}` +
     `｜预算 < ${warmBudget}ms｜HEAD ${stats?.kernelHead ?? "?"}/${stats?.serverHead ?? "?"}`,
 );
 if (errors.length > 0) {
@@ -100,7 +117,8 @@ if (errors.length > 0) {
 
 let failed = false;
 if (!paintOk || firstPaint > paintBudget) failed = true;
-if (!warmOk || stats.kernelWarmMs > warmBudget) failed = true;
+if (!warmOk) failed = true;
+if (!serverMode && stats.kernelWarmMs > warmBudget) failed = true;
 if (errors.length > 0) failed = true;
 console.log(failed ? "❌ 首帧/预热预算未通过" : "✅ 首帧与可交互时间均在预算内");
 ws.close();
