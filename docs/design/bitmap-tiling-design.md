@@ -115,3 +115,48 @@ crate::bitmap_tiles::assemble_region_sparse(…)
 **∴ 改哪里 ✗**：**在该分支里**分开计时**✗**：**解析索引**／**取块**／**装配**／**blit** ✓
 **∴ 判据 ✗**：**四段之和 ≈ 该对象 `ObjectTimings`**（**±10% ✓）
 **∴ 变异点**：**把某段清零** ⇒ **∴ 判据必红** ✓**** ✓✓
+
+---
+
+# 七、★ **更正附六：`import_image` **确实**建分块索引**（第 218 轮）★
+
+## 一、★ 我上一轮的推断**错了**（**如实** ✓）★
+
+**∴ 我上一轮说 ✗**：**「**`BitmapIndex` 只在 `tools.rs:4735` 被构造 ⇒ **∴ 而 `import_image` 里没有** ✓」**
+**⇒ ∴ 于是**推断**：**通过 `import_image` 造的画作**全都没有索引** ⇒ **∴ 落回整幅路** ✓**** ✓✓
+
+**★ 而**下一行代码就否掉了它 ✗ ★**：
+```rust
+// crates/yanshi-server/src/tools.rs:4809，write_import_image 内
+build_bitmap_tile_index(ctx, blob_hash, mime, region.w as u32, region.h as u32)
+```
+**⇒ ★ 所以：**`import_image` **确实会**建分块索引** ✗ ⇒ **∴ 我的推断**错的** ✓ ★**** ✓✓
+
+## 二、★ 而且那条注释**过时了** ★
+
+**∴ `tools.rs` 里写着 ✗**：
+> 「**失败语义**：**任一步失败 ⇒ 跳过 ⇒ 不写 `tiles` ⇒ 渲染走原路**
+> （**绝不阻断导入、绝不留半个索引）。**渲染侧尚未消费 `tiles` ⇒ **本轮零行为变化**」
+
+**★ 而**渲染侧**已经在消费了** ✗ ★**：
+```rust
+// crates/yanshi-render/src/render.rs:2863
+let index: crate::bitmap_tiles::BitmapIndex = serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
+let slots = index.tiles_for_rect(src_x, src_y, rw, rh);
+```
+**⇒ ∴ 所以**：**「**渲染侧尚未消费**」**已不成立** ✓ ⇒ **∴ 那条注释**应当**更新** ✓**** ✓✓
+
+## 三、★ 所以**链路是全通的** ★
+
+| 环节 | 位置 | 状态 |
+|---|---|---|
+| **建索引** | `tools.rs:4809`（**`import_image` 内 ✓）** | **✓ 有** |
+| **存索引** | `payload["tiles"] = json!(index_hash)` | **✓ 有** |
+| **消费索引** | `render.rs:2863`（**`tiles_for_rect` ✓）** | **✓ 有** |
+| **落回整幅路** | **索引缺失／版本不符／块取不到** | **✓ 有（**不撒谎 ✓）** |
+
+**⇒ ★ 所以 `tool-bitmap-decode-scope` 红灯的**真原因**还没找到** ✓
+**∴ 候选（**下一轮查 ✓）**：
+1. **索引 `is_consistent()` **失败**✗（**∴ 如**声明尺寸与 region 不符 ✓）
+2. **`BITMAP_INDEX_VERSION` **不匹配** ✓
+3. **`decoded_bytes` **计的是**别的东西**✗（**∴ 如**别的路径的解码 ✓）** ✓✓
