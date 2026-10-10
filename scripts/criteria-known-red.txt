@@ -20031,3 +20031,37 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 并**看**为什么**在 CI 里**不生效**（**∴ 可能** chromium 版本／权限 ✓）** ✓✓
 #     **∴ ②** **丙组 2 条**（**环境依赖 ✓）⇒ **∴ 让判据**自足**（**自建夹具／跳过并说明 ✓）** ✓✓
 #     **∴ ③** **丁组 3 条**（**产品 ✓）⇒ **∴ 逐条查**（**∴ `below-retention` 28→28 特别可疑 ✓）** ✓✓
+
+# **★ 第 325 轮：**丙组第 2 条的**根因查明**（`tool-preview-whitelist-guard`）**** ✗**（**如实 ✓）★**
+#   **★ 症状（**CI ✓）✗**：**`Error: ENOENT: no such file or directory, open 'crit_toolpreviewwhitelistguardmjs'`** ✓
+#   **★ 根因（**本轮查明 ✓）★**：
+#     **∴ ① `crit_…` 的来源 ✗**：**`scripts/run-criteria.sh:95`**
+#       ```bash
+#       doc="crit_$(echo "$name" | tr -cd 'a-z0-9')"
+#       ```
+#       ⇒ **∴ 那**是**为每个判据生成的**文档 id** ✓（**∴ 如** `crit_toolpreviewwhitelistguardmjs` ✓）** ✓✓
+#     **∴ ② 判据的用法 ✗**：**`scripts/tool-preview-whitelist-guard.mjs`**
+#       **∴ 第 3 行 ✗**：**`const [, , BASE, PROJECT] = process.argv;`** ✓
+#       **∴ 第 36 行 ✗**：**`body: readFileSync(PROJECT)`** ✗
+#         ⇒ **★ 即**：**它把第二个参数**当成**一个真实文件路径** ✓ ★**** ✓✓
+#     **∴ ③ 于是 ✗**：**CI 里传给 `PROJECT` 的**不是文件路径**✗
+#       ⇒ **∴ 而是**那个**文档 id**（**`crit_…` ✓）** ✓**** ✓✓
+#         ⇒ **∴ `readFileSync("crit_…")` ⇒ ENOENT** ✓ ★**** ✓✓
+#     **∴ ④ 为什么 runner 会传错 ✗**：**`run-criteria.sh` 里**没有**显式调用这条判据**
+#       （**∴ 本轮 grep 无结果 ✓）⇒ **∴ 它**由**自动扫描**（**通配 `tool-*.mjs` ✓）跑**
+#         ⇒ **∴ 于是**：**需要两个参数的判据**拿到了**通用参数**（**`BASE` ＋ `doc` ✓）** ✓**** ✓✓
+#   **★ 修法（**两个选项 ✓）★**：
+#     **∴ 甲 改 runner ✗**：**在 `run-criteria.sh` 里**为这条判据**显式传一个真实项目文件**
+#       （**∴ 如** `eval/artworks/*.yanshi` 之类 ✓）⇒ **∴ 于是** `readFileSync` **成功** ✓**** ✓✓
+#     **∴ 乙 改判据 ✗**：**让它**自建一个最小项目**（**∴ 如**写一个临时 `.yanshi` ✓）
+#       ⇒ **∴ 于是**它**自足**✗ ⇒ **∴ 不依赖**外部文件** ✓ ★**** ✓✓
+#     **∴ 我**倾向**乙**✗ ⇒ **∴ 因为**判据**自足**是**本仓库的既有原则**
+#       （**∴ 见** `tool-render-cost-accounts.mjs` 的注释：**「**判据必须自足**」 ✓）** ✓✓
+#   **★ 而同组的另一条 ✗ ★**：**`tool-cpu-cost-repeated.mjs`**
+#     **∴ 报 ✗**：**`ENOENT: /home/crow/yanshi-tmp/real-cold/docs/art_60301188_4k_monet_sunris…`** ✓
+#       ⇒ **∴ 它**依赖**我早期在本机建的**重建 root**✗ ⇒ **∴ 而** CI 里**不存在** ✓**** ✓✓
+#       ⇒ **∴ 修法**同样是**自足**✗（**∴ 自建夹具**✗ 或**明确跳过并说明** ✓）** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **改 `tool-preview-whitelist-guard.mjs`**✗ ⇒ **∴ 自建最小项目** ✓**** ✓✓
+#     **∴ ②** **改 `tool-cpu-cost-repeated.mjs`**✗ ⇒ **∴ 自建夹具／或跳过并写明原因** ✓**** ✓✓
+#     **∴ ③** **且**：**跑它们 ＋ 变异检验**（**∴ 判据要**有牙** ✓）** ✓✓
