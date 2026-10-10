@@ -173,17 +173,55 @@ check(/preview_state:\s*"pending"/.test(apiCode), "api-local 的**代码**未在
 //   **∴ 而**这正是**最隐蔽的分叉**✗**（**∴ 单看一边完全正常 ✓**）。
 import { readFileSync as readBytes } from "node:fs";
 const PAIRS = ["viewer-app.js", "viewer.css", "service-worker.js"];
+// **★ 缓存戳是**唯一允许**的差异 ✗ ★**（**第 493 轮 ✓）
+//
+// **∴ 为什么不能要求**逐字节相同**✗**（**2026-10-11 实测 ✓）**：
+//   **∴ `pwa-sync-viewer.mjs` 复制之后**会给 `web/` 打缓存戳**✗
+//     ⇒ **∴ 实测 ✗**：`yanshi-shell-__BUILD_ID__`（源）vs `yanshi-shell-1657714024465`（副本）
+//       ⇒ **∴ 于是**：**「**逐字节相同**」**永远不可能成立** ✓
+//         ⇒ **∴ 而**那条断言**在 CI 里**长期为红** ✗
+//           ⇒ **∴ 且**它**把**真正的分叉**掩盖了** ✓ ★**** ✓✓
+//
+// **∴ 为什么不干脆**不打戳**✗**（**∴ 我**评估过并**否决** ✓）：
+//   **∴ 因为** PWA 是**静态托管**（**Cloudflare ✓）⇒ **∴ 没有服务端**能改写缓存名** ✓
+//     ⇒ **∴ 若**不打戳**✗ ⇒ **∴ SW 的缓存名**永不变化** ✓
+//       ⇒ **∴ 于是**：**发布新版本后**用户**拿不到新代码** ✓（**∴ 比判据变红严重得多 ✓）★**** ✓✓
+//
+// **∴ 所以 ✗**：**归一化后比较**✗ ⇒ **∴ 保留**打戳（**cache 失效 ✓）
+//   ＋ **∴ 而**判据**仍然**能抓住**除戳以外的任何差异** ✓ ★**** ✓✓
+const STAMP_KEYS = [
+  [/yanshi-shell-[A-Za-z0-9_-]+/g, "yanshi-shell-__BUILD_ID__"],
+  [/yanshi-online-[A-Za-z0-9_-]+/g, "yanshi-online-__BUILD_STAMP__"],
+];
+const normalizeStamp = (buf) => {
+  let out = buf.toString("utf8");
+  for (const [re, rep] of STAMP_KEYS) out = out.replace(re, rep);
+  return out;
+};
 let forkChecked = 0;
+const forkBad = [];
 for (const f of PAIRS) {
   const src = `crates/yanshi-http/assets/${f}`;
   const dst = `web/${f}`;
   if (!existsSync(src) || !existsSync(dst)) continue;
-  const same = readBytes(src).equals(readBytes(dst));
-  check(same, `${f} 的副本与现有 WEB 的源**不同** ⇒ **∴ 两条部署分叉了 ✗**（应当只同步，不改 ✓）`);
+  // **∴ 比的是**内容**✗ ⇒ **∴ 只把缓存戳**归一化掉** ✓
+  const same = normalizeStamp(readBytes(src)) === normalizeStamp(readBytes(dst));
+  check(
+    same,
+    `${f} 的副本与现有 WEB 的源**不同**（**除缓存戳外**）⇒ **∴ 两条部署分叉了 ✗**`,
+  );
+  if (!same) forkBad.push(f);
   forkChecked += 1;
 }
 check(forkChecked >= 1, "没有任何 viewer 文件被副本化 ⇒ **∴ PWA 没有界面 ✗**");
-console.log(`  防分叉：${forkChecked} 个 viewer 文件与单一源逐字节相同 ✓`);
+// **★ 只在**真绿**时打印 ✓**（**∴ 原来**无条件打印「逐字节相同 ✓」✗
+//   ⇒ **∴ 于是**：**即使检查是红的**，日志也说「相同」 ✓
+//     ⇒ **★ 那是**一个谎**✗ ⇒ **∴ 已修 ✓）★**** ✓✓
+if (forkBad.length === 0) {
+  console.log(`  防分叉：${forkChecked} 个 viewer 文件与单一源相同（**只允许缓存戳不同** ✓）`);
+} else {
+  console.log(`  ✗ 防分叉：${forkBad.join("／")} 与单一源不同（**除戳外**）`);
+}
 
 // **★ 笔刷资源 ✓ ★**（第 651 轮 ✓）：**∴ 内核落笔要**笔刷文件全文**✗**
 //   （PaintRequest.myb）⇒ **∴ 无服务器部署必须自带这 199 个文件 ✓**。

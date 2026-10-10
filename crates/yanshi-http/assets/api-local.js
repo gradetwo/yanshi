@@ -3636,6 +3636,16 @@ async function withKernel(doc, fn) {
         preview_note: "缩略图需由本地内核生成（本部署无服务器端）",
         server: false,
         render_backend: backend,
+        // **★ 字段名必须与 `/health` 一致 ✗ ★**（**第 493 轮 ✓）
+        //   **∴ 为什么 ✗**：**服务端与内核**都用 `gpu_adapter_note`**✗
+        //     （**第 463 轮改名 ✓；**第 466 轮**旧名已删 ✓）
+        //     ＋ **∴ 而**本文件**还在用旧名**✗
+        //       ⇒ **∴ 于是**：**判据**报「**后端不可判**」 ✓
+        //         ＋ **∴ 那**是**改名时的遗漏** ✓ ★**** ✓✓
+        //   **∴ 语义（**本部署无服务端 ✓）✗**：**webgpu ⇒ 没有"不可用原因"（`null` ✓）**
+        //     ＋ **∴ 否则**如实说 `host_has_no_webgpu` ✓ ★**** ✓✓
+        gpu_adapter_note: backend === "webgpu" ? null : "host_has_no_webgpu",
+        // **∴ 旧名保留为**弃用别名**✗**（**∴ 兼容**外部读者** ✓）★**** ✓✓
         gpu_unavailable_reason: backend === "webgpu" ? null : "host_has_no_webgpu",
       });
     }
