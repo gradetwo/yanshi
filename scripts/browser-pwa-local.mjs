@@ -15,6 +15,30 @@
 //
 // **变异** ✗：**把 `api-local.js` 的 501 分支去掉 ⇒ ③ 必红 ✓**（**与 node 行为级判据同源 ✓**）。
 import { createServer } from "node:http";
+
+// **★ 临时 profile 必须**自己收拾 ✗ ★**（第 64 轮 ✓；**用户那次 /tmp 满 ＋ 一堆 chromium ✓）：
+//   **∴ 实测**：**本脚本跑一次**留下 **42 MB** 的 `/tmp/pwa-chrome-*` ✗
+//     ⇒ **∴ 跑几十次**就**把 /tmp（**tmpfs ✓）撑满 ✓
+//       ⇒ **∴ 后果**由**用户**承担（**重启机器 ✓）** ✓✓
+//   **∴ 做法 ✗**：**注册路径 ＋ 退出时**递归删三遍**✗（**每遍等 200 ms ✓）
+//     ＋ **信号**（**INT／TERM／HUP ✓）也走同一条 ✓**** ✓✓
+import { rmSync } from "node:fs";
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+function __cleanupTemp() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let left = 0;
+    for (const path of __tempPaths) {
+      try { rmSync(path, { recursive: true, force: true }); } catch { left += 1; }
+    }
+    if (left === 0) return;
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } catch { /* 忽略 */ }
+  }
+}
+process.on("exit", __cleanupTemp);
+for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(__signal, () => { __cleanupTemp(); process.exit(1); });
+}
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
@@ -58,6 +82,8 @@ const chrome = spawn(process.env.CHROME_BIN || "chromium",
   ["--headless=new", `--remote-debugging-port=${cdpPort}`, "--no-sandbox", "--disable-gpu",
    "--disable-dev-shm-usage", "--user-data-dir=/tmp/pwa-chrome-" + cdpPort, "about:blank"],
   { stdio: "ignore" });
+// **∴ 把这个 profile 路径**登记进来 ✗** ⇒ **∴ 退出时**会被删掉 ✓** ✓✓
+trackTemp("/tmp/pwa-chrome-" + cdpPort);
 let targets = null;
 for (let i = 0; i < 60; i++) {
   await sleep(300);

@@ -20,10 +20,35 @@
 //   **⑥ 无**服务端渲染**误选 ✗**（**`__pwaLocalOnly` ⇒ **∴ 内核**不得被跳过 ✓）** ✓✓
 import { spawn } from "node:child_process";
 
+// **★ 临时 profile 必须**自己收拾 ✗ ★**（第 64 轮 ✓；**用户那次 /tmp 满 ＋ 一堆 chromium ✓）：
+//   **∴ 实测**：**本脚本跑一次**留下 **23–56 MB** 的 `/tmp/live-ui-*`／`/tmp/pwa-chrome-*` ✗
+//     ⇒ **∴ 跑几十次**就**把 /tmp（**tmpfs ✓）撑满 ✓**
+//       ⇒ **∴ 后果**由**用户**承担（**重启机器 ✓）⇒ **∴ 那**是不可接受的 ✓**** ✓✓
+//   **∴ 做法 ✗**：**注册 ＋ 退出时**递归删三遍 ✗**（**每遍等 200 ms ✓）
+//     ＋ **信号**（**INT／TERM／HUP ✓）也走同一条 ✓
+//     ＋ **`chrome.kill()` 之后**等一会儿**再退 ✓**（**∴ 它**还在写时会 `rmSync` 失败 ✓）** ✓✓
+import { rmSync } from "node:fs";
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+function __cleanupTemp() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let left = 0;
+    for (const path of __tempPaths) {
+      try { rmSync(path, { recursive: true, force: true }); } catch { left += 1; }
+    }
+    if (left === 0) return;
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } catch { /* 忽略 */ }
+  }
+}
+process.on("exit", __cleanupTemp);
+for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(__signal, () => { __cleanupTemp(); process.exit(1); });
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const base = String(process.argv[2] || "https://yanshi-online.wangda.today").replace(/\/+$/, "");
 const cdpPort = 9500 + Math.floor(Math.random() * 200);
-const profile = `/tmp/live-ui-${cdpPort}`;
+const profile = trackTemp(`/tmp/live-ui-${cdpPort}`);
 
 const chrome = spawn(process.env.CHROME_BIN || "chromium",
   ["--headless=new", `--remote-debugging-port=${cdpPort}`, "--no-sandbox", "--disable-gpu",
@@ -41,6 +66,7 @@ for (let i = 0; i < 80; i++) {
 if (!targets || !targets.length) {
   console.error("❌ chromium 未就绪 ⇒ 本次实测无效");
   chrome.kill();
+await sleep(400); // **∴ 给它时间退出 ⇒ **∴ 否则 profile 删不掉 ✓
   process.exit(1);
 }
 const page = targets.find((t) => t.type === "page") || targets[0];
@@ -254,6 +280,8 @@ if (logEntries.length) {
 
 try { socket.close(); } catch {}
 chrome.kill();
+// **∴ 等 chromium 真正退出 ✗**（**∴ 否则** profile 还在写 ⇒ **∴ `rmSync` 失败 ⇒ **∴ 删不掉 ✓）** ✓✓
+await sleep(400);
 
 if (failures.length) {
   console.error("❌ 线上 UI 实测不通过：\n  - " + failures.join("\n  - "));
