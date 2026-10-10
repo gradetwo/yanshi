@@ -14,9 +14,31 @@ categories.workspace = true
 name = "yanshi-serve"
 path = "src/main.rs"
 
+# **★ GPU 后端：**可选依赖 ＋ feature 门控** ✗ ★**（第 261 轮 ✓；**目标第 6／7 条 ＋ AGENTS.md 第 5 条 ✓）。
+#
+# **∴ 为什么门控 ✗**：**实测**（**第 260 轮 ✓）**✗**：
+#   **∴ `cargo add wgpu` ⇒ 包数 **89 → 187**（**+98，**+110% ✓）** ✓
+#     ＋ **∴ 新增里含**平台特定包**✗（`android_system_properties`／`core-foundation`／
+#       `core-graphics-types`／`ash`／`naga` 系 ✓）
+#       ⇒ **∴ 审计面**扩大一倍** ✓**** ✓✓
+#   **∴ 而**收益**目前只有**内核侧**的实测**✗（**量化 **时间 −95.9%／主线程 −98.7% ✓）
+#     ⇒ **∴ 服务端**收益**未知** ✓（**∴ 而且**服务端**没有那 16 MB 上传**
+#       ⇒ **∴ 它的收益**可能更小** ✓）**** ✓✓
+#   **⇒ ★ 所以 ✗ ★**：**默认**不开**✗
+#     ⇒ **∴ 于是**：**依赖树**仍是 89** ✓ ⇒ **∴ 而**要测／要用时**才开 `--features gpu`** ✓ ★**** ✓✓
+#
+# **∴ 反面（**照实说 ✓）★**：**开了之后**构建要装 98 个新包** ✓
+#   ⇒ **∴ 所以**：**CI 里**单独测它**✗（**体积／构建时间 ✓，**目标第 10 条 ✓）
+[features]
+default = []
+# **∴ `gpu` ✗**：**打开后**才有 `wgpu`** ✓ ⇒ **∴ 默认**依赖树不变** ✓
+gpu = ["dep:wgpu"]
+
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
 yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
 yanshi-server = { path = "../yanshi-server", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
+# **∴ 可选：**只有 `--features gpu` 时才进依赖树** ✓（**第 261 轮 ✓）
+wgpu = { version = "26.0.1", optional = true }
