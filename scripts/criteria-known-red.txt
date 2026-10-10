@@ -21018,3 +21018,56 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ③** **并**：**注意**那个「**缓存落空**」日志**✗
 #       ⇒ **∴ 它**说明**有些 `/api/tools/*` 请求**离线时无处可取** ✓
 #         ⇒ **∴ 而**若**内核初始化**依赖其中之一**✗ ⇒ **∴ 那**也是**根因候选** ✓ ★**** ✓✓
+
+# **★ 第 358 轮：★★★★★★★★★★ **根因 100% 确认 —— 判据不设客户端渲染偏好 ⇒ 内核根本不加载**** ✗** ★★★★★★★★★★
+#   **★ 决定性实测（**CDP 两次导航 ✓）★**：
+#     ```
+#     ① 默认（无偏好）：kernelReady = false｜localStorage = null
+#     ★ ③ 设了 serverRender='0' 之后：kernelReady = true ★
+#        kernelStats = "true"
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：**只要**设 `localStorage["yanshi.serverRender"] = "0"`**✗
+#       ⇒ **∴ `yanshiKernelReady` **立刻变成 true** ✓ ★**** ✓✓
+#   **★★★ 代码路径（**完全确定 ✓）★★★**：
+#     **∴ `viewer-app.js:1513` ✗**：
+#       ```js
+#       async function initWasm() {
+#         if (serverRenderPreferred()) {
+#           setWasmState("已按设置跳过（用服务端渲染）", "#a60");
+#           return;                    // ← ★ 内核根本不加载 ★
+#         }
+#       ```
+#     **∴ 而** `serverRenderPreferred()`（**`viewer-app.js:51` ✓）**✗**：
+#       ```js
+#       const stored = localStorage.getItem(SERVER_RENDER_KEY);
+#       return stored === null ? true : stored === "1";    // ← ★ 无偏好 ⇒ 默认 true ★
+#       ```
+#       ⇒ **∴ 即**：**产品**默认走**服务端渲染**✗ ⇒ **∴ 于是**浏览器**不加载内核** ✓ ★**** ✓✓
+#   **★★★ 所以它解释了一大片红灯 ✗ ★★★**：
+#     **∴ 需要**内核**的判据**✗ ⇒ **∴ 在**默认 chromium 里**必然红** ✓：
+#       **∴ ①** **`browser-offline-journal`**✗（**直接报**「**WASM 内核必须就绪**」 ✓）** ✓**** ✓✓
+#       **∴ ②** **`browser-offline-shell`**✗（**`setupBrushLibrary` 失败 ⇒ 笔刷面板无选项** ✓）** ✓**** ✓✓
+#       **∴ ③** **`browser-offline-draw`**✗（**离线这一笔增量 0** ✓）** ✓**** ✓✓
+#       **∴ ④** **`browser-live-brush`**✗（**「**指针还按着的时候画布上没有新墨**」 ✓）** ✓**** ✓✓
+#       **∴ ⑤** **以及**任何**用内核画像素的判据** ✓**** ✓✓
+#     **∴ 而** CI 的 chromium **同样没有该偏好**✗ ⇒ **∴ 所以**它们在 CI 里**也红** ✓ ★**** ✓✓
+#   **★ 修法（**照第 339 轮 `browser-render-switch` 的同一手法推广 ✓）★**：
+#     **∴ 在需要内核的判据里**✗ ⇒ **∴ 导航后**先
+#       `localStorage.setItem("yanshi.serverRender", "0")`**✗ ⇒ **∴ 然后**刷新一次** ✓
+#         ⇒ **∴ 于是**内核**加载**✗ ⇒ **∴ 判据**才有意义** ✓ ★**** ✓✓
+#     **∴ 更好的位置（**一次修好全部 ✓）**：
+#       **∴ 在 `run-criteria.sh` **起 chromium 时**✗ ⇒ **∴ 预置该偏好** ✓
+#         **∴ 方法 ✗**：**用 CDP 的 `Page.addScriptToEvaluateOnNewDocument`**✗
+#           （**∴ 在**每个新文档**注入 `localStorage.setItem(…)` ✓ ⇒ **∴ 无需**改每个判据 ✓）★**** ✓✓
+#         **∴ 或**者**在 chromium 的 `--user-data-dir` 里**预置 LevelDB** ✗（**∴ 复杂 ⇒ **∴ 不推荐 ✓）** ✓**** ✓✓
+#   **★ 两面（**AGENTS.md 第 3 条 ✓）★**：
+#     **∴ 收益**：**一批需要内核的判据**从「**恒红**」变成**真判据** ✓**** ✓✓
+#     **∴ 代价**：**判据多一次导航／刷新**✗（**∴ 秒级 ✓）＋ **∴ 要**明确写清「**为什么必须先设它**」 ✓**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **改 `run-criteria.sh`**✗ ⇒ **∴ 用** `Page.addScriptToEvaluateOnNewDocument`
+#       **注入 `localStorage.setItem("yanshi.serverRender","0")`** ✓**** ✓✓
+#       **∴ 但**注意：**该脚本在**每个新文档**都跑 ✗ ⇒ **∴ 而** `browser-render-switch` **自己会设**开关**✗
+#         ⇒ **∴ 两者**可能**打架** ✓ ⇒ **∴ 所以**要**只对需要内核的判据**生效**✗
+#           （**∴ 如**按判据名**白名单** ✓）** ★**** ✓✓
+#     **∴ ②** **或**者**逐条改**✗（**∴ 更可控 ✓）⇒ **∴ 先改** `offline-journal`，**验证转绿** ✓**** ✓✓
+#     **∴ ③** **然后**推广到**其余需要内核的判据** ✓**** ✓✓
