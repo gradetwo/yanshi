@@ -24,6 +24,56 @@ fn run(command: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+/// **算 `assets/` 的内容指纹** ✓（第 408 轮 ✓；**零依赖 ✓，只用 `std` ✓）。
+///
+/// **∴ 为什么需要它 ✗**：**SW 的缓存名是** `yanshi-shell-<BUILD_ID>`** ✓
+///   ⇒ **∴ 而 `BUILD_ID` **原来只有 commit** ✓
+///     ⇒ **∴ 于是**：**同一个 commit 内改资产**（**`viewer-app.js`／`brush-local.js`／
+///       `service-worker.js` ✓）**不会换缓存名** ✓
+///       ⇒ **∴ 浏览器**继续用**旧外壳**✗ ⇒ **∴ 改了代码却看不出变化** ✓ ★**** ✓✓
+///
+/// **∴ 做法 ✗**：**递归**列出 `assets/` 下的文件**✗
+///   ⇒ **∴ 按**相对路径**排序**（**∴ 保证**顺序稳定 ✓）
+///     ⇒ **∴ 把**路径 ＋ 长度 ＋ 内容**喂进 `DefaultHasher`** ✓
+///       ⇒ **∴ 输出** 8 位十六进制** ✓ ★**** ✓✓
+///   **∴ 任何**内容变化**都会**改变它** ✓ ⇒ **∴ 缓存名**随之改变** ✓
+fn assets_fingerprint(dir: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::path::{Path, PathBuf};
+
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(dir);
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    // **按相对路径排序** ✓ ⇒ **∴ 与文件系统顺序无关** ✓
+    files.sort_by_key(|p| p.strip_prefix(root).unwrap_or(p).to_path_buf());
+
+    let mut hasher = DefaultHasher::new();
+    for path in &files {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        rel.to_string_lossy().hash(&mut hasher);
+        if let Ok(bytes) = std::fs::read(path) {
+            bytes.len().hash(&mut hasher);
+            bytes.hash(&mut hasher);
+        }
+    }
+    format!("{:08x}", hasher.finish() as u32)
+}
+
 fn main() {
     // **commit** ✓：短 hash + 脏标记 ✓
     let commit = match run("git", &["rev-parse", "--short", "HEAD"]) {
@@ -39,10 +89,38 @@ fn main() {
         }
         None => "unknown".to_owned(),
     };
+    // **★ 资产内容也必须进 `BUILD_ID` ✗ ★**（第 408 轮 ✓；**用户实测指出的缺口 ✓）：
+    //   **∴ 症状 ✗**：**只改 `assets/*.js`（**`viewer-app.js`／`brush-local.js`／`service-worker.js` ✓）
+    //     而不改 commit**
+    //     ⇒ **∴ 于是** `BUILD_ID` **不变** ⇒ **∴ 缓存名 `yanshi-shell-<BUILD_ID>` **不变****
+    //       ⇒ **∴ 浏览器**继续用**旧外壳**✗（**即使服务端送的是新文件 ✓）
+    //         ⇒ **∴ 表现**：**改了代码却看不出变化** ✓ ⇒ **∴ 最贵的一类困惑** ✓ ★**** ✓✓
+    //   **∴ 实测铁证（**本轮 ✓）**：
+    //     ```
+    //     const CACHE = "yanshi-shell-927f61a9-dirty"   ← 服务端实际送的
+    //     HEAD = 927f61a9｜改动文件数 = 4 ⇒ ★ 缓存名一个字都没变 ★
+    //     ```
+    //   **∴ 修法**：**把 `assets/` 目录的**内容哈希**并进 `BUILD_ID`** ＋ **watch `assets/`**
+    //     ⇒ **∴ 于是**任何资产改动**都换缓存名 ⇒ **旧外壳自动作废** ✓ ★**** ✓✓
+    //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+    //     **∴ 收益**：**开发时**看得见自己的改动** ✓（**∴ 不再**怀疑"我是不是没重启" ✓）
+    //     **∴ 代价**：**每次改资产**都要**重编 crate**（**约 50 秒 ✓）
+    //       ＋ **∴ 哈希**只在**构建期**算**⇒ **运行期**零开销** ✓
+    //       ＋ **∴ 且**：**缓存名变了**⇒ **客户端**要**重新预缓存一次外壳** ✓
+    //         （**∴ 那本来就该发生 —— **内容变了 ✓）** ★**** ✓✓
+    //   **∴ 零依赖**：**只用 `std`**（**`DefaultHasher` ＋ `fs::read_dir` ✓）
+    //     ⇒ **∴ 与本文件**「零依赖做法」的既有风格一致** ✓ ★**** ✓✓
+    let fingerprint = assets_fingerprint("assets");
+    let commit = format!("{commit}-{fingerprint}");
     // **构建时间** ✓（UTC ✓）
     let built = run("date", &["-u", "+%Y-%m-%d %H:%M UTC"]).unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=YANSHI_COMMIT={commit}");
     println!("cargo:rustc-env=YANSHI_BUILD_TIME={built}");
+    // **★ 改资产必须重跑本脚本 ✗ ★**（第 408 轮 ✓）：
+    //   **∴ 否则 ✗**：**`cargo build` 会重编 crate**（**∴ 因为** `include_str!` 追踪了文件 ✓）
+    //     ⇒ **∴ 但 `build.rs` **不重跑** ⇒ **∴ `YANSHI_COMMIT` **还是旧的****
+    //       ⇒ **∴ 于是**缓存名**不变** ⇒ **∴ 那**正是上面的缺口** ✓ ★**** ✓✓
+    println!("cargo:rerun-if-changed=assets");
     // **commit 变了要重编** ✓（否则改了代码却还报旧 hash ✗）。
     //
     // **⚠️ 这里原来只 watch 了 `.git/HEAD`，那是错的** ✗（真实用户报告 ✓）：

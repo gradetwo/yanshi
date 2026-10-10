@@ -43,6 +43,31 @@ use crate::ws::{accept_key, is_valid_client_key, read_message, write_frame, Fram
 /// **∴ 二者分离 ⇒ "要求 GPU 但实际用 CPU" 一眼可见 ✗，不会被掩盖 ✓**。
 static GPU_MODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// **★ `--cache-bust` 的运行时后缀 ✗ ★**（第 408 轮 ✓；**用户提的测试手段 ✓）。
+///
+/// **∴ 为什么用 `OnceLock` ✗**：**SW 路由**拿不到 `HttpOptions`**✗
+///   ⇒ **∴ 所以**在 `serve()` 里**存一次**✗ ⇒ **∴ 路由**读它** ✓
+///     （**∴ 与** `GPU_MODE` **同一套写法** ✓）
+static CACHE_BUST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// **算 SW 缓存名里的后缀** ✓（**空 = 不加后缀** ✓）。
+///
+/// **∴ 空串的含义 ✗**：**用户传了 `--cache-bust` **但没给值**✗
+///   ⇒ **∴ 于是**取**当前时间**当后缀**✗ ⇒ **∴ 每次启动**都不同** ✓ ★**** ✓✓
+fn cache_bust_suffix() -> String {
+    match CACHE_BUST.get() {
+        None => String::new(),
+        Some(token) if token.is_empty() => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            format!("-bust{now}")
+        }
+        Some(token) => format!("-bust{token}"),
+    }
+}
+
 /// HTTP 服务选项。
 #[derive(Debug, Clone)]
 pub struct HttpOptions {
@@ -82,6 +107,20 @@ pub struct HttpOptions {
     /// **★ 导出静态页 ✓ ★**（第 636 轮 ✓；**部署矩阵 §14.18 ✓**）：**给了路径 ⇒ 把
     /// `viewer::page_with_read_tools()` 生成的那一份 HTML 写进文件并退出 ✗**
     /// ⇒ **∴ 于是**PWA 可以**同步同一份页面 ✗**（**不手写第二份 ⇒ 不分叉 ✓**）。
+    /// **★ 一传就让所有缓存失效 ✗ ★**（第 408 轮 ✓；**用户提的测试手段 ✓）：
+    ///
+    /// **∴ 用途 ✗**：**定位「**改了代码却看不出变化**」这类问题** ✓ ——
+    ///   **∴ 传 `--cache-bust`（**不带值 ✓）⇒ 服务端**每次启动**生成一个**唯一后缀** ✓
+    ///     ⇒ **∴ 于是** SW 的缓存名 `yanshi-shell-<BUILD_ID>-<后缀>` **每次都不同** ✓
+    ///       ⇒ **∴ 浏览器**必然**重新预缓存 ⇒ **看到的一定是新代码** ✓ ★**** ✓✓
+    ///   **∴ 传 `--cache-bust=<token>` ✗** ⇒ **用**你给的那个 token** ✓
+    ///     （**∴ 便于**多次运行**复用同一个** ✓）
+    ///
+    /// **∴ 代价（**两面 ✓）★**：**每次启动**都重装外壳**✗ ⇒ **∴ 首次加载**变慢** ✓
+    ///   ⇒ **∴ 所以**它**只该用于**开发／排查**✗，**不该**进生产** ✓
+    pub cache_bust: Option<String>,
+    /// **把 `viewer::page_with_read_tools()` 生成的那一份 HTML 写进文件并退出** ✓
+    /// ⇒ **∴ 于是** PWA 可以**同步同一份页面**（**不手写第二份 ⇒ 不分叉 ✓**）。
     pub export_viewer_html: Option<std::path::PathBuf>,
 }
 
@@ -123,6 +162,7 @@ impl Default for HttpOptions {
             medium_dir: Some(PathBuf::from("assets/mediums")),
             // 门面是**构建产物** ✓（与 `crates/yanshi-wasm/pkg` 同一性质 ✓）⇒ 缺省指向 target 里那份 ✓。
             assets_dir: Some(PathBuf::from("assets")),
+            cache_bust: None,
             export_viewer_html: None,
         }
     }
@@ -161,6 +201,15 @@ impl HttpOptions {
                 // **∴ `/health` 会如实报出 `gpu_mode` 与 `render_backend` ✗ ⇒ 不撒谎 ✓**。
                 "--export-viewer-html" => {
                     options.export_viewer_html = Some(value_of("--export-viewer-html")?.into());
+                }
+                // **★ `--cache-bust` ✗ ★**（第 408 轮 ✓）：**一传 ⇒ 全部缓存失效** ✓
+                //   **∴ 两种写法都支持 ✗**：`--cache-bust`（**自动用时间戳 ✓）
+                //     ＋ `--cache-bust=<token>`（**用你给的 ✓）
+                "--cache-bust" => {
+                    options.cache_bust = Some(String::new()); // 空串 ⇒ 启动时补时间戳
+                }
+                other if other.starts_with("--cache-bust=") => {
+                    options.cache_bust = Some(other["--cache-bust=".len()..].to_owned());
                 }
                 "--gpu" => {
                     let mode = value_of("--gpu")?;
@@ -228,6 +277,8 @@ impl HttpOptions {
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
            --brand-dir <dir>  品牌资源目录（缺省 assets/brand）\n\
            --no-brand         不提供品牌资源（favicon/logo）\n\
+           ★ --cache-bust [<token>] ★ 附一个唯一后缀到 SW 缓存名 ⇒ 客户端必然重装外壳 ⇒
+                              「改了代码却看不出变化」不再可能（不给 token ⇒ 用启动时间；测试用）
            --help             显示帮助\n\
          \n\
          打开 http://127.0.0.1:8080/ 使用最小 Web 查看器（URL 中的 token 即文档 capability）。\n"
@@ -341,6 +392,18 @@ pub fn build_short() -> String {
 
 /// 启动服务（`bind` 支持端口 0，便于测试）。
 pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
+    // **★ 存下 `--cache-bust` ✗ ★**（第 408 轮 ✓）：**SW 路由**拿不到 options**✗
+    //   ⇒ **∴ 所以**在这里**存一次**✗ ⇒ **∴ 于是**路由能算缓存名后缀** ✓
+    //     **∴ 空串 ⇒ **启动时**取时间戳** ✗ ⇒ **∴ 每次运行**都换缓存名** ✓ ★**** ✓✓
+    // **∴ 只有**真的传了**才设置 ✗**（第 409 轮 ✓ 实测修 ✓）：
+    //   **∴ 原来的写法 ✗**：`unwrap_or_default()` ⇒ **∴ `None` **也变成**空串**✗
+    //     ⇒ **∴ 于是** `cache_bust_suffix()` **以为**用户传了 `--cache-bust`** ✓
+    //       ⇒ **∴ 于是**「**不带参数**」也带上时间戳**✗ ⇒ **∴ 默认行为**被改变** ✓ ★**** ✓✓
+    //   **∴ 修法 ✗**：**只在 `Some` 时设置**✗ ⇒ **∴ 于是** `CACHE_BUST.get()` **返回 `None`** ✓
+    //     ⇒ **∴ 默认（**不传 ✓）**缓存名**不加后缀** ✓ ★**** ✓✓
+    if let Some(token) = options.cache_bust.clone() {
+        let _ = CACHE_BUST.set(token);
+    }
     let settings = DocumentSettings::default();
     let workspace = match &options.root {
         Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
@@ -667,7 +730,11 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         return match method {
             "GET" => {
                 // **注入构建标识** ✓（`build.rs` 已把 commit 编进来 ✓ ⇒ 新构建 ⇒ 新缓存名 ✓）。
-                let body = SERVICE_WORKER_JS.replace("__BUILD_ID__", BUILD_ID);
+                // **★ 后缀来自 `--cache-bust` ✗ ★**（第 408 轮 ✓）：
+                //   **∴ 传了它 ✗** ⇒ **∴ 缓存名**带唯一后缀** ⇒ **∴ 浏览器**必然重装外壳** ✓
+                //     ⇒ **∴ 于是**「**改了代码却看不出变化**」**不再可能** ✓ ★**** ✓✓
+                let build_id = format!("{BUILD_ID}{}", cache_bust_suffix());
+                let body = SERVICE_WORKER_JS.replace("__BUILD_ID__", &build_id);
                 Response::bytes(200, "text/javascript; charset=utf-8", body.into_bytes())
                     .with_header("Cache-Control", "no-cache")
             }

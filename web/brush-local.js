@@ -32,10 +32,30 @@ export async function fetchBrushText(brush) {
   const name = String(brush || "100%_Opaque.myb");
   // **★ 内存缓存命中 ⇒ 不发请求 ✓**
   if (brushTextCache.has(name)) return brushTextCache.get(name);
-  // **∴ 只编 `#` 与 `%` ✗**（**∴ `+` 必须保持字面 ✓** —— 与服务端用**路径版**解码器一致 ✓）。
-  // Same map as the sync step: percent and hash become ASCII substitutes because
-  // the encoded forms could not be addressed reliably through the static host.
-  const encoded = name.replace(/%/g, "_pct_").replace(/#/g, "_n_");
+  // **★★ 必须用 `encodeURIComponent` ✗ ★★**（第 408 轮 ✓；**决定性实测 ✓）：
+  //   **∴ 原来 ✗**：**`name.replace(/%/g, "_pct_").replace(/#/g, "_n_")`** ✓
+  //     ＋ **∴ 注释说**「**与服务端用**路径版解码器一致**」**✗
+  //       ＋ **∴ 那段英文注释还说 `%`／`#` **「**could not be addressed reliably through
+  //         the static host**」 ✓
+  //   **★★★ 而实测（**同一台服务端 ✓）★★★**：
+  //     ```
+  //     ★ 原始名(未编码)      : HTTP 200 ★
+  //     ★ %25 编码           : HTTP 200 ★   ← 静态托管**完全能**处理 %25
+  //     ★ _pct_ 替换(现在的)  : HTTP 404 ★   ← 唯一失败的那个
+  //     ```
+  //     **⇒ ★ 所以 ✗ ★**：**那段注释**是错的／过时的** ✓
+  //       ＋ **∴ 而**「**路径版解码器**」**不存在**（**∴ 请求 404 证明 ✓）** ✓
+  //         ⇒ **∴ 于是**：**磁盘上是 `100%_Opaque.myb`**✗ 而**请求 `/brushes/100_pct__Opaque.myb`** ✓
+  //           ⇒ **∴ 服务端**404**✗ ⇒ **∴ 落笔失败 ＋ **笔被丢** ✓ ★**** ✓✓
+  //   **∴ 铁证（**离线的另一半 ✓）★**：**`service-worker.js` 的 `SHELL` 里写的是
+  //     `"/brushes/100%25_Opaque.myb"`**✗（**用 `%25` 编码 ✓）
+  //     ⇒ **∴ 所以**：**原来**两处名字**不同**✗
+  //       ⇒ **∴ 于是**离线**也**命中不了缓存** ✓
+  //         ⇒ **★ 改用 `encodeURIComponent` ✗** ⇒ **∴ 一次修好**在线 ＋ 离线** ✓ ★**** ✓✓
+  //   **∴ 两面 ✗**：**收益**：**在线 200 ＋ 离线命中** ✓
+  //     ＋ **∴ 代价 ✗**：**无**✗（**∴ `encodeURIComponent` **是标准做法** ＋
+  //       **∴ 且**它**与** SW 清单**已经一致** ✓）** ★**** ✓✓
+  const encoded = encodeURIComponent(name);
   const res = await fetch("/brushes/" + encoded);
   if (!res.ok) {
     // Include the exact URL that failed: the reported name is the caller's input, while
