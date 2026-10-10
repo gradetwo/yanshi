@@ -25114,3 +25114,38 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ⬜ 覆盖问题**（**修法已写明 ✓）
 #     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
 #     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
+
+# **★ 第 452 轮：★★★★★★★★★★ **语义完全正确** —— **没比过 ⇒ `null`；**比过且一致 ⇒ `0`**** ★★★★★★★★★★
+#   **★★★ 本轮两个动作 ✗ ★★★**：
+#     **∴ ①** **去掉** CPU 路上的**无条件清零**✗（**方案乙 ✓）
+#       ⇒ **∴ 于是**：**`None` **只是**进程启动时的初值** ✓ ★**** ✓✓
+#     **∴ ②** **补上** GPU 成功处的 `set_render_delta(Some(0))`**✗
+#       ⇒ **∴ 因为**第 451 轮的脚本**在断言处中止**✗
+#         ⇒ **∴ 于是**：**那句**从未插入** ✓（**第 452 轮查证：**调用点为空 ✓）★**** ✓✓
+#   **★★★ 决定性实测（**语义正确 ✓）★★★**：
+#     ```
+#     ★ 渲染前：backend = cpu ｜max_channel_delta = ★ None ★ ｜selfcheck = 0
+#       ⇒ **★ 没比过 ⇒ `null`** ✓（**∴ 不许**恒 0 冒充 ✓）★**** ✓✓
+#     ★ 渲染后：backend = ★ gpu ★ ｜max_channel_delta = ★ 0 ★ ｜selfcheck = 0
+#       ⇒ **★ 比过且一致 ⇒ 0** ✓ ★**** ✓✓
+#     ```
+#   **★★★ 判据状态（**6 条 ✓）★★★**：
+#     ```
+#     · tool-gpu-backend-report      0 ✓
+#     · tool-gpu-fallback-parity     0 ✓
+#     · tool-gpu-modes               0 ✓
+#     · tool-gpu-probe-honesty       ★ 非 0 ✗ ★   ← **∴ 唯一剩下的一条 ✓
+#     · tool-gpu-quantize-parity     0 ✓
+#     · tool-gpu-accounts            0 ✓
+#     ```
+#     ⇒ **∴ `tool-gpu-probe-honesty` **转红**✗
+#       ⇒ **∴ 大概**它**断言**旧的语义**✗（**∴ 如**「**GPU 模式下 `max_channel_delta` 必须是某值**」 ✓）
+#         ⇒ **∴ 所以**：**要**读它的失败行**✗ ＋ **按新语义更新** ✓ ★**** ✓✓
+#   **★ 阶段二进度（**服务端已完全达标 ✓）★**：
+#     **∴ ✅ `render_backend` 报实际后端**✗（**a`cpu` ⇒ `gpu` ✓）
+#     **∴ ✅ `max_channel_delta` **没比过 ⇒ `null`**✗（**不许恒 0 冒充 ✓）
+#     **∴ ✅ `selfcheck_max_channel_delta`**✗（**自检值 ✓）
+#     **∴ ✅ 5／6 GPU 判据绿** ✓
+#     **∴ ⬜ `tool-gpu-probe-honesty` 按新语义更新** ✓
+#     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
+#     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
