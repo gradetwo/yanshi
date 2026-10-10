@@ -8396,7 +8396,19 @@ window.__appMarks.push("before-self-init");
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => setupBrushLibrary());
 } else {
-  setupBrushLibrary();
+  // **★ 这一句是**顶层卡点**的候选** ✗ ★**（第 163 轮 ✓；**二分结果 ✓）：
+  //   **∴ 为什么 ✗**：**二分**已证明**脚本**在** 8395 **与** 8560 **之间**停住**✗
+  //     ⇒ **∴ 而那 165 行里**唯一**会**立即执行的复杂调用**✗
+  //       ⇒ **∴ 就是**本行 ✓**** ✓✓
+  //   **∴ 做法**：**前后**各留标记 ＋ **接住异常** ✓（**∴ 异常也要**记下来 ✓）** ✓✓
+  window.__appMarks.push("setupBrushLibrary:before");
+  try {
+    setupBrushLibrary();
+    window.__appMarks.push("setupBrushLibrary:ok");
+  } catch (error) {
+    window.__appMarks.push("setupBrushLibrary!" + String(error && error.message || error).slice(0, 60));
+    throw error;
+  }
 }
 
 /// **预览的防抖** ✓（用户：拖粗细 / 改颜色时预览**不会跟着变** ✗）——
