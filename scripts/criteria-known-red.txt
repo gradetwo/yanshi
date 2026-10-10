@@ -21868,3 +21868,40 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ③** **然后**才知道** `paint_brush` **真正**为什么失败** ✓**** ✓✓
 #   **◆ 另一条结论 ✗**：**落笔链路**已剥到**第 5 层**（**404 → 点形状 → 颜色形状 → 借用冲突 → 真因待挖 ✓）
 #     ⇒ **∴ 每层都**具体可验** ✓ ⇒ **∴ 而**第 1 层（**404 ✓）是**真 bug 且已修** ✓ ★**** ✓✓
+
+# **★ 第 386 轮：★★★★★★★★★★ **找到作者预留的诊断钩子 `window.__kernelStats` —— 一次就能分辨并发 vs 单次内重入**** ✗** ★★★★★★★★★★
+#   **★ 调用链（**本轮查明 ✓）★**：
+#     **∴ viewer（**`viewer-app.js` ✓）**里**没有 `paintWithKernel`**✗
+#       ⇒ **∴ 而是** viewer → `api-local.js` → `brush-local.js`** ✓ ★**** ✓✓
+#     **∴ `api-local.js:1304–1306` ✗**：
+#       ```js
+#       const myb = await fetchBrushText(brushName.endsWith(".myb") ? brushName : brushName + ".myb");
+#       const rgba = await withKernel(doc, () => paintWithKernel(entryK.k, {
+#         myb, points: localPts, size, color: body.color ?? null, region, … }));
+#       ```
+#   **★★★ `withKernel`（**`api-local.js:243–264` ✓）★★★**：
+#     **∴ 它**已经有**串行化链**✗（**`__kernelChain.get(doc)` ＋ `prev.then(fn, fn)` ✓）
+#       ＋ **∴ 甚至**有**并发计数器** ✗（**`window.__kernelStats = { live, max, calls }` ✓）
+#         ＋ **★ 而**注释**自己写明了分辨方法**✗ ★**：
+#           ```
+#           Count live kernel calls to prove whether two ever overlap: the aliasing error can
+#           come from concurrency (this counter exceeds one) or from a reentrant borrow inside
+#           one call (counter stays at one). Without the counter both look identical.
+#           ```
+#   **★★★ 所以 ✗ ★★★**：**读 `window.__kernelStats`**✗ ⇒ **∴ 一次就能分辨**：
+#     **∴ `max > 1` ✗** ⇒ **∴ 并发**✗（**∴ 串行化链**失效** ✓）** ★**** ✓✓
+#     **∴ `max === 1` ✗** ⇒ **∴ 单次调用**内部**重入借用**✗
+#       ⇒ **∴ 即**内核**在 `paint_brush` 里**回调了 JS** ✓（**∴ 于是**触发借用冲突 ✓）★**** ✓✓
+#   **★ 也是本轮的重要观察 ✗ ★**：
+#     **∴ 内核对象**没有暴露到 `window`**✗ ⇒ **∴ 我**从外部**无法直接调 `paint_brush`** ✓
+#       （**∴ 实测 `no-kernel-object` ✓）
+#         ⇒ **∴ 所以**要用**作者预留的 `__kernelStats` 钩子** ✓ ⇒ **∴ 不**改产品** ✓ ★**** ✓✓
+#     **∴ 且**：**服务端侧的 `brush_stroke` **是好的**✗
+#       （**`browser-export-full-document` 用 `post("brush_stroke", …)` 能成功 ✓）
+#         ⇒ **★ 所以**：**差别**在** wasm 内核路径**（浏览器内）** ✓
+#           ⇒ **∴ 与**用户报的「**浏览器里笔不生效**」吻合** ✓ ★**** ✓✓
+#   **★ 下一步（**一次定位 ✓）★**：
+#     **∴ ①** **跑一次落笔（**`brush_stroke` 走内核 ✓）⇒ **∴ 失败后**读 `window.__kernelStats`** ✓**** ✓✓
+#     **∴ ②** **按** `max` 的值**分流**（**>1 ⇒ 查链；===1 ⇒ 查内核重入 ✓）** ✓**** ✓✓
+#     **∴ ③** **并**：**把** `__kernelStats` **打进判据的输出**✗
+#       ⇒ **∴ 于是**以后**任何**内核失败**都**自带这个证据** ✓ ★**** ✓✓
