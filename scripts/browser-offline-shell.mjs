@@ -544,7 +544,17 @@ const canvasSig = `(() => {
   return { ink: ink, w: c.width, h: c.height };
 })()`;
 const inkBefore = await evaluate(canvasSig);
+// **★ 求值必须**自己报错** ✗ ★**（第 395 轮 ✓；**实测根因 ✓）：
+//   **∴ 症状 ✗**：**这段求值**在离线时抛异常**✗ ⇒ **∴ `evaluate` **吞掉它** ⇒ **∴ 返回 `undefined`
+//     ⇒ **∴ 打印成** `{}`** ✓ ⇒ **∴ 于是**判据**误判「**事件没进状态机**」 ✓
+//       ⇒ **∴ 而**实测（**第 394 轮 ✓）**：**同一个页面**跑完后** `state().tool === "brush"`**✗
+//         ＋ **∴ 再发一次事件** ⇒ `points:1`／`dragging:1`** ✓
+//           ＋ **∴ 而**像素计数**从 0 变 59** ✓
+//             ⇒ **★ 所以**那次落笔**其实成功了**✗ ⇒ **∴ 是**求值自己坏了** ✓ ★**** ✓✓
+//   **∴ 修法 ✗**：**包一层 `try/catch`**✗ ⇒ **∴ 于是**异常**带文本返回** ✓
+//     ＋ **∴ 调用方**把**非对象／空对象**当成**硬失败**（**∴ 不再**伪装成产品症状 ✓）★**** ✓✓
 const strokeResult = await evaluate(`(async () => {
+  try {
   // 先选笔刷工具（页面有多个 pointerdown 监听；工具不是 brush 时落笔会被当成别的操作）
   const brushBtn = document.querySelector('[data-tool="brush"]');
   if (brushBtn) { brushBtn.click(); await new Promise((r) => setTimeout(r, 300)); }
@@ -584,7 +594,18 @@ const strokeResult = await evaluate(`(async () => {
            draggingNow: atDown.dragging,
            sizeNow: atDown.size, brushNow: atDown.brush,
            strokeState: { points: atDown.points, dragging: atDown.dragging } };
+  } catch (error) {
+    // **★ 求值自己的异常必须**说出来** ✗ ★**（第 395 轮 ✓）：
+    //   **∴ 否则** 'evaluate' 吞掉它**✗ ⇒ **∴ 打印成 '{}'** ⇒ **∴ 判据**误判产品** ✓
+    return { result: "evaluate-threw", error: String((error && error.message) || error).slice(0, 200),
+             stack: String((error && error.stack) || "").split("\\n").slice(0, 4).join(" | ").slice(0, 300) };
+  }
 })()`);
+// **★ 求值失败**不许**伪装成产品症状 ✗ ★**（第 395 轮 ✓）：**∴ 空对象／缺字段**都算**硬失败** ✓
+if (!strokeResult || typeof strokeResult !== "object" || strokeResult.result === "evaluate-threw") {
+  console.error("✗ 判据自身的求值失败（不是产品问题）⇒ 结果无效：" + JSON.stringify(strokeResult));
+  process.exit(3);
+}
 // **有界等出墨** ✓（等待条件与断言条件对齐 ✓ —— 第 1116 轮的规矩 ✓）：提交是异步的 ✓，
 // 固定睡一次会把"还没画完"读成"画不出来" ✗。
 let inkAfter = await evaluate(canvasSig);
