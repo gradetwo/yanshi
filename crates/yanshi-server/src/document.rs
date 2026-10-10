@@ -1498,11 +1498,18 @@ impl Document {
                         }
                         // **告警照旧留空** ✓：没渲染 ⇒ 没有"不支持的特性"要报 ✓。
                         self.last_render_warnings.clear();
+                        // **★ 纯填充路 ⇒ 未量化 buffer 给 `None` ✗ ★**（**第 487 轮 ✓）：
+                        //   **∴ 为什么 ✗**：**这条路**只有**显示空间的 u8**✗
+                        //     ⇒ **∴ 而** `Buffer` **要求**线性 f32** ✓
+                        //       ⇒ **∴ 反推**有精度风险** ✓
+                        //         ＋ **∴ 所以**：**给 `None`**✗
+                        //           ⇒ **∴ 异步路**会用 `rgba8`** ✓（**∴ 已经正确 ✓）★**** ✓✓
                         Some(RegionRender {
                             bbox: region,
                             width,
                             height,
                             rgba8,
+                            buffer: None,
                             tiles: Vec::new(),
                             stats: RenderStats::default(),
                         })

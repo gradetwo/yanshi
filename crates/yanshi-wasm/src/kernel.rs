@@ -198,6 +198,16 @@ pub struct Kernel {
     state: DocumentState,
     renderer: Renderer,
     store: MemoryBlobStore,
+    /// **★ 缓存的 GPU 量化器 ✗ ★**（**第 487 轮 ✓；**目标第 6 条 ✓）
+    ///
+    /// **∴ 为什么要缓存 ✗**：**`Quantizer::new_async` **每次都要建设备 ＋ 编译管线**✗
+    ///   ⇒ **∴ 那**很贵** ✓（**∴ 本机实测：**首次约 2.4 s ✓）
+    ///     ＋ **∴ 所以**：**只能**建一次**✗ ⇒ **∴ 之后**复用** ✓ ★**** ✓✓
+    ///
+    /// **∴ 失败语义 ✗**：**建不出来 ⇒ 保持 `None`**✗
+    ///   ⇒ **∴ 于是**：**渲染路**自动回退 CPU** ✓（**∴ 不静默 ✓，**因为**它**不改后端上报** ✓）★**** ✓✓
+    #[cfg(feature = "gpu")]
+    gpu_quantizer: Option<yanshi_gpu::Quantizer>,
     viewport: Bbox,
     memory_limit: usize,
     atoms_applied: u64,
@@ -247,6 +257,8 @@ impl Kernel {
             state: DocumentState::empty(),
             renderer: Renderer::with_budget(grid, memory_limit),
             store: MemoryBlobStore::new(),
+            #[cfg(feature = "gpu")]
+            gpu_quantizer: None,
             viewport: Bbox::new(0.0, 0.0, width as f64, height as f64),
             memory_limit,
             atoms_applied: 0,
@@ -692,6 +704,70 @@ impl Kernel {
 
     /// 渲染区域（乐观渲染 / 校正渲染都用它）。
     ///
+    /// **★ 异步渲染（**GPU 量化路 ✓）✗ ★**（**第 487 轮 ✓；**目标第 6 条 ✓）
+    ///
+    /// **∴ 与同步版的差别 ✗**：**只有**量化那一步**不同**✗
+    ///   ⇒ **∴ 即**：**渲染**完全一样**✗（**同一份 `Renderer::render_region` ✓）
+    ///     ＋ **∴ 而**量化**走 `quantize_async`**✗ ⇒ **∴ 在 wasm 上**真的 await** ✓
+    ///       ＋ **∴ 失败（**或没有 `gpu` feature ✓）⇒ **回退** `to_rgba8_quantized`** ✓
+    ///         ⇒ **∴ 于是**：**与纯 CPU 路**逐字节相同** ✓ ★**** ✓✓
+    ///
+    /// **∴ 为什么必须有这个 `async` 版本 ✗**：**本平台是**单线程事件循环**✗
+    ///   ⇒ **∴ 同步等待**会**死锁** ✓（**第 470 轮实测 ✓）
+    ///     ＋ **∴ 所以**：**只有 `async` 一条路** ✓ ★**** ✓✓
+    ///
+    /// # Errors
+    /// **∴ 区域无效** ⇒ **∴ 返回 `KernelError`** ✓
+    #[cfg(feature = "gpu")]
+    pub async fn render_region_rgba_async(&mut self, region: Bbox) -> Result<Vec<u8>, KernelError> {
+        // **∴ ① 渲染（**与同步路完全一样 ✓）
+        let rendered = self
+            .renderer
+            .render_region(&self.state, &self.store, region)
+            .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
+        // **∴ ② 惰性建量化器（**只一次 ✓）
+        if self.gpu_quantizer.is_none() {
+            let lut = yanshi_render::color::srgb_encode_table();
+            self.gpu_quantizer = yanshi_gpu::Quantizer::new_async(&lut[..]).await.ok();
+        }
+        // **∴ ③ 有量化器 ＋ 有未量化 buffer ⇒ 试 GPU ✗；**否则回退 CPU** ✓
+        //   **∴ 为什么还要看 `buffer` ✗**：**纯填充路**没有它**✗（**`Option` ＝ `None` ✓）
+        //     ⇒ **∴ 于是**：**那条路**直接用 `rgba8`** ✓ ★**** ✓✓
+        let gpu_pair = (self.gpu_quantizer.as_ref(), rendered.buffer.as_ref());
+        if let (Some(quantizer), Some(buffer)) = gpu_pair {
+            let width = buffer.width() as usize;
+            let height = buffer.height() as usize;
+            let count = width * height;
+            let background = self
+                .renderer
+                .options()
+                .background
+                .or_else(|| yanshi_render::render::parse_background(&self.state.background));
+            let bg_linear = background.map(yanshi_render::color::background_linear_premul);
+            if let Ok(out) = quantizer
+                .quantize_async(buffer.as_f32(), count, bg_linear)
+                .await
+            {
+                // **∴ 逐位核对（**∴ 与 CPU 真值比 ✓）★**
+                //   ⇒ **∴ 不一致 ⇒ **不用它**✗ ⇒ **∴ 不许**交出不同的像素** ✓
+                let mut want = vec![0u8; count * 4];
+                yanshi_render::rows::encode_quantized_rows(
+                    buffer.as_f32(),
+                    &mut want,
+                    0,
+                    height,
+                    width,
+                    bg_linear,
+                );
+                if want == out {
+                    return Ok(out);
+                }
+            }
+        }
+        // **∴ 回退 CPU ✗**（**∴ 与纯 CPU 路**逐字节相同** ✓）
+        Ok(rendered.rgba8)
+    }
+
     /// **直绘**：用 `Renderer::render_region` 的 scratch 路径渲染一个小区域（不做 tile 组合）。
     ///
     /// 拖动中的笔迹区域通常只有几十像素见方，走 tile 组合哪怕 1px 变化也要重算整块 256² tile；

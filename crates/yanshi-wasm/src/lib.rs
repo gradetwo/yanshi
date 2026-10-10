@@ -213,6 +213,27 @@ impl WasmKernel {
             .unwrap_or_default()
     }
 
+    /// **★ 异步渲染区域（**GPU 量化路 ✓）✗ ★**（**第 487 轮 ✓；**目标第 6 条 ✓）
+    ///
+    /// **∴ 为什么必须是 `async` ✗**：**本平台是**单线程事件循环**✗
+    ///   ⇒ **∴ 同步等待**会**死锁** ✓（**第 470 轮实测 ✓）
+    ///     ＋ **∴ 所以**：**只有 `async` 一条路** ✓ ★**** ✓✓
+    ///
+    /// **∴ 与同步版的关系 ✗**：**渲染**完全一样**✗（**同一份 `Renderer::render_region` ✓）
+    ///   ＋ **∴ 只有**量化那一步**不同** ✓
+    ///     ＋ **∴ 失败 ⇒ 回退 CPU**✗ ⇒ **∴ 与纯 CPU 路**逐字节相同** ✓ ★**** ✓✓
+    ///
+    /// **∴ 只在 `gpu` feature 下导出 ✗**：**默认产物**没有它** ✓
+    ///   ⇒ **∴ 前端**必须先查 `typeof`** ✓（**∴ 与 `gpu_probe_async` 同一约定 ✓）★**** ✓✓
+    #[cfg(feature = "gpu")]
+    #[wasm_bindgen]
+    pub async fn render_region_rgba_async(&mut self, x: f64, y: f64, w: f64, h: f64) -> Vec<u8> {
+        self.inner
+            .render_region_rgba_async(parse_bbox(x, y, w, h))
+            .await
+            .unwrap_or_default()
+    }
+
     /// 渲染区域，返回 PNG 字节（与服务端同一编码器，可直接比对哈希）。
     pub fn render_region_png(&mut self, x: f64, y: f64, w: f64, h: f64) -> Vec<u8> {
         self.inner
