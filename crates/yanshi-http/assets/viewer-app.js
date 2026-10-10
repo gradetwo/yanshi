@@ -9508,6 +9508,16 @@ const I18N_EN_TEXT = {
   "操作": "Actions",
   "一致性自检": "Consistency check",
   "＋ 图层": "＋ Layer",
+  // **★ `browser-i18n` 报到的那一条**漏翻 ✗ ★**（第 89 轮 ✓）：
+  //   **∴ 症状 ✗**：`browser-i18n` 的「**整页**」统计里有 **1 条**中文**✗
+  //     （**∴ 在 `<label>` 里 ✓）：
+  //       "**用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）✓"** ✓**** ✓✓
+  //     ⇒ **∴ 而**它是**服务端导出的 HTML 里**的**静态文案**✗
+  //       ⇒ **∴ 运行时词典**没有它** ⇒ **∴ 于是**英文模式下**原样显示 ✓**** ✓✓
+  //   **∴ 修法**：**加一条词条**✗（**∴ 不必**改 HTML 或 Rust ✓）
+  //     ⇒ **∴ 因为** `I18N_EN_TEXT`**是**运行时**替换的 ✓**** ✓✓
+  "用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）":
+    "Render on the server (on by default; clear the box to use the offline kernel instead)",
   "用服务端渲染（弱设备回退）": "Use server rendering (fallback for weak devices)",
   "适配": "Fit",
   "调整 / 滤镜": "Adjustments / filters",
