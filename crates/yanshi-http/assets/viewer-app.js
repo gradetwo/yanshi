@@ -3562,11 +3562,35 @@ async function switchDocument(docId, token, size) {
   // ⇒ 收藏的链接、程序化打开（子 agent 的脚本 ✓）都只会得到一个**空文档** ✓，
   // 而那看起来就像"示例是坏的" ✗（我自己的探针就这样误判过一次 ✓：按 id 切过去 ⇒ 墨 0 ✗）。
   // `seedSampleIfEmpty` 只在"是已知示例 **且** 文档为空"时才动作 ✓ ⇒ 用户改过的示例绝不被覆盖 ✓。
-  if (await seedSampleIfEmpty(state.docId)) {
-    await resync();
-    await refreshPreview();
-    await refreshLayers();
-  }
+    // **★ 可选步骤必须**有界** ✗ ★**（第 155 轮 ✓；**离线根因链换来的 ✓）：
+    //   **∴ 症状 ✗**：**离线**✗ ⇒ **∴ `seedSampleIfEmpty()`**里一个**未缓存资源**的
+    //     `fetch`（**如** `/samples/<id>.png` ✓）**永远**挂着** ✗**** ✓✓
+    //     ⇒ **∴ 于是**：**本行**永不返回**✗
+    //       ⇒ **∴ 整条 `switchDocument()` 链**停住** ✗**** ✓✓
+    //       ⇒ **∴ 后面五步**（`ensurePaintLayer` 等 ✓）＋ `void warmKernel()`
+    //         **全部**不执行** ✗**** ✓✓
+    //         ⇒ **∴ 而** `initWasm()`**没跑**✗ ⇒ **∴ 内核**起不来** ✓**** ✓✓
+    //         ⇒ **∴ 实测**：`marks` **只到** `before-self-init`**✗
+    //           ＋ **`wasmState`**停在**「**检测中…**」** ✓**** ✓✓
+    //   **∴ 修法**：**给它** 5 秒上限**✗
+    //     ⇒ **∴ 超过就**当没种**✗ ⇒ **∴ 链**照常**往下走 ✓**** ✓✓
+    //   **∴ 为什么是**这里**✗**：**一处**就**保证**"**任何**可选步骤**✗
+    //     **∴ 都**不能**阻塞**核心初始化** ✓ ★**** ✓✓
+    let seeded = false;
+    try {
+      seeded = await Promise.race([
+        seedSampleIfEmpty(state.docId),
+        new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+      ]);
+    } catch (error) {
+      log("示例种入失败（" + String(error && error.message || error).slice(0, 60) + "）⇒ 跳过 ✓", "#a60");
+      seeded = false;
+    }
+    if (seeded) {
+      await resync();
+      await refreshPreview();
+      await refreshLayers();
+    }
   // **打开就保证有图层可画** ✓（见 `ensurePaintLayer` 的说明 ✓）：
   // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
     // **★ 初始化链必须**逐步留痕** ✗ ★**（第 154 轮 ✓；**离线卡点定位 ✓）：
