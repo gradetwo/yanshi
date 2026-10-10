@@ -97,7 +97,6 @@ mod tests {
 pub mod selfcheck {
     use std::sync::OnceLock;
 
-    /// **∴ 自检结果 ✗**：**`(max_channel_delta, 说明 ✓)**
     /// **∴ 一次自检的结果 ✗**（**∴ 与 CPU 真值逐位对比 ✓）
     #[derive(Debug, Clone)]
     pub struct Report {
@@ -125,144 +124,42 @@ pub mod selfcheck {
             .clone()
     }
 
-    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-        use std::task::{Context, Poll};
-        let waker = std::task::Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut fut = Box::pin(fut);
-        loop {
-            if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
-                return v;
-            }
-            std::thread::yield_now();
-        }
-    }
-
-    // **∴ 与 `tests/gpu_quantize_parity.rs` **同一份**五步实现** ✓（**∴ 不是另写一套 ✓）
-    const WGSL: &str = include_str!("gpu_quantize.wgsl");
-
+    /// **★ 委托给**独立 crate** ✗ ★**（第 301 轮 ✓）：
+    ///   **∴ 第 300 轮**把 GPU 层单独成 `yanshi-gpu`**✗
+    ///     ⇒ **∴ 所以这里**不再**自己建管线、**也不**再带一份 WGSL** ✓
+    ///       ⇒ **∴ 于是**：**只有一份五步实现** ✓（**∴ 与**测试**同一份 ✓）** ✓✓
     fn try_run() -> Result<Option<Report>, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let Ok(adapter) =
-            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        else {
-            return Ok(None); // **∴ 没有适配器**不是错误**✗ ⇒ **∴ 如实返回 None** ✓
+        let lut = yanshi_render::color::srgb_encode_table();
+        let quantizer = match yanshi_gpu::Quantizer::new(lut) {
+            Ok(q) => q,
+            // **∴ 没有适配器**不是错误**✗ ⇒ **∴ 如实返回 None** ✓
+            Err(e) if e.starts_with("no_adapter") => return Ok(None),
+            Err(e) => return Err(e),
         };
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .map_err(|e| format!("拿不到设备：{e:?}"))?;
-
         let n: usize = 4096;
         let mut s: u32 = 0x51ED_2701;
-        let pix: Vec<[f32; 4]> = (0..n)
-            .map(|_| {
-                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let a = ((s >> 20) & 0xFF) as f32 / 255.0;
-                let f = |k: u32| ((s >> (k * 5)) & 0x1F) as f32 / 31.0;
-                [f(0) * a, f(1) * a, f(2) * a, a]
-            })
-            .collect();
-        let flat: Vec<f32> = pix.iter().flat_map(|p| p.iter().copied()).collect();
-        let lut = yanshi_render::color::srgb_encode_table();
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("selfcheck"),
-            source: wgpu::ShaderSource::Wgsl(WGSL.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("selfcheck"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let layout = pipeline.get_bind_group_layout(0);
-        let ab = |bytes: &[u8], usage: wgpu::BufferUsages| {
-            let b = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: bytes.len() as u64,
-                usage,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&b, 0, bytes);
-            b
-        };
-        let src = ab(
-            &f32s_to_bytes(&flat),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
-        let dst = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (n * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let lut_buf = ab(
-            &f32s_to_bytes(lut),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
-        let params: [u32; 4] = [n as u32, lut.len() as u32, 0, 0];
-        let pb = ab(
-            &u32s_to_bytes(&params),
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        );
-        let back = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (n * 4) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: src.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: dst.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: lut_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: pb.as_entire_binding(),
-                },
-            ],
-        });
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind, &[]);
-            pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
+        let mut pixels: Vec<f32> = Vec::with_capacity(n * 4);
+        for _ in 0..n {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let a = ((s >> 20) & 0xFF) as f32 / 255.0;
+            let f = |k: u32| ((s >> (k * 5)) & 0x1F) as f32 / 31.0;
+            pixels.extend_from_slice(&[f(0) * a, f(1) * a, f(2) * a, a]);
         }
-        enc.copy_buffer_to_buffer(&dst, 0, &back, 0, (n * 4) as u64);
-        queue.submit(Some(enc.finish()));
-        let slice = back.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        let _ = device.poll(wgpu::PollType::Wait);
-        let _ = rx.recv();
-        let mapped = slice.get_mapped_range();
-        let got: Vec<u8> = mapped.to_vec();
-        drop(mapped);
-        back.unmap();
+        let got = quantizer.quantize(&pixels, n)?;
 
         // **∴ CPU 真值（**同一实现 ✓）
         let mut b = yanshi_render::buffer::Buffer::new(0, 0, n as u32, 1);
-        for (i, p) in pix.iter().enumerate() {
-            b.set_pixel(i as u32, 0, *p);
+        for i in 0..n {
+            b.set_pixel(
+                i as u32,
+                0,
+                [
+                    pixels[i * 4],
+                    pixels[i * 4 + 1],
+                    pixels[i * 4 + 2],
+                    pixels[i * 4 + 3],
+                ],
+            );
         }
         let want = b.to_rgba8_quantized(None);
         let mut max_delta = 0u32;
@@ -272,27 +169,10 @@ pub mod selfcheck {
         Ok(Some(Report {
             max_channel_delta: max_delta,
             pixels: n,
-            note: "GPU 量化自检（与 CPU 真值逐位对比）".to_owned(),
+            note: format!(
+                "GPU 量化自检（与 CPU 真值逐位对比）｜{}",
+                quantizer.adapter_note()
+            ),
         }))
-    }
-
-    /// **★ 安全字节转换 ✗ ★**（第 291 轮 ✓）：**∴ 本 crate**禁止 `unsafe`**✗
-    ///   （**`lib.rs` 的 `#![forbid(unsafe_code)]` ✓）⇒ **∴ 所以**逐元素转换** ✓**** ✓✓
-    /// **∴ 代价 ✗**：**多一次拷贝**✗ ⇒ **∴ 而**自检只有 4096 像素** ⇒ **∴ 可忽略** ✓**** ✓✓
-    fn f32s_to_bytes(v: &[f32]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(v.len() * 4);
-        for x in v {
-            out.extend_from_slice(&x.to_le_bytes());
-        }
-        out
-    }
-
-    /// **∴ `u32` 版 ✗**（**∴ 给 uniform 用 ✓）
-    fn u32s_to_bytes(v: &[u32]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(v.len() * 4);
-        for x in v {
-            out.extend_from_slice(&x.to_le_bytes());
-        }
-        out
     }
 }

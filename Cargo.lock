@@ -1592,6 +1592,7 @@ dependencies = [
  "serde_json",
  "wgpu",
  "yanshi-core",
+ "yanshi-gpu",
  "yanshi-render",
  "yanshi-server",
 ]

@@ -32,7 +32,10 @@ path = "src/main.rs"
 [features]
 default = []
 # **∴ `gpu` ✗**：**打开后**才有 `wgpu`** ✓ ⇒ **∴ 默认**依赖树不变** ✓
-gpu = ["dep:wgpu"]
+# **★ `gpu` 现在也带上**独立 crate `yanshi-gpu`** ✗ ★**（第 301 轮 ✓）：
+#   **∴ 为什么 ✗**：**第 300 轮**把 GPU 层单独成 crate**✗ ⇒ **∴ 于是**这里**委托它**✗
+#     ⇒ **∴ 不再**在本 crate 里**重复一份 WGSL 与实现** ✓**** ✓✓
+gpu = ["dep:wgpu", "dep:yanshi-gpu"]
 
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
@@ -42,3 +45,6 @@ serde.workspace = true
 serde_json.workspace = true
 # **∴ 可选：**只有 `--features gpu` 时才进依赖树** ✓（**第 261 轮 ✓）
 wgpu = { version = "26.0.1", optional = true }
+# **★ 可选：**GPU 加速层** ✗ ★**（**∴ 只在 `--features gpu` 时进依赖树 ✓）
+#   **∴ 而** `yanshi-wasm` **不**依赖它** ✗ ⇒ **∴ 判据** `tool-wasm-tree-no-wgpu.mjs` **守住它** ✓
+yanshi-gpu = { path = "../yanshi-gpu", optional = true }
