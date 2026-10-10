@@ -250,8 +250,55 @@ if (warmGpu) {
     + `；**∴ 只作诊断，**不计入结论** ✓）`);
 }
 
-const cpu = await measure("cpu");
-const gpu = fact.adapter ? await measure("gpu") : null;
+// **★ 多次取中位数 ＋ 报极差** ✗ ★**（第 254 轮 ✓；**用户第 594 轮 ✓）。
+//
+// **∴ 为什么必须 ✗**：**实测**（**第 252／253 轮 ✓）**✗**：
+//   **∴ 同一份代码、**三次都真的走了 GPU**（**内核自报 `backend=gpu` ✓）✗
+//     ⇒ **∴ 而**两条账的组合**每次不同**：
+//       **∴ 快 57.4%／少 57.5%**｜**慢 2.8%／多 1.6%**｜**快 69.0%／少 3.2%** ✓**** ✓✓
+//       ⇒ **★ 所以**：**单次读数**不能判 GPU 的收益** ✓ ★**** ✓✓
+//   **∴ 且**：**CPU 占用账**与**时间账**在同一次跑里**同向** ✓
+//     ⇒ **∴ 两者**受同一噪声** ⇒ **∴ 只跑一次**两本账会**一起错** ✓**** ✓✓
+//
+// **∴ 改法 ✗**：**跑 `RUNS` 次**✗ ⇒ **∴ 取**中位数**✗ ⇒ **∴ 并**报**极差** ✓
+// **∴ 两面（**按要求 ✓）**：
+//   **∴ 收益**：**结论**不再由**一次运气**决定** ✓
+//   **∴ 代价**：**总时间** × RUNS**（**每次都要重新分配像素 ＋ 跑两路 ✓）
+// **∴ 与阶段一同一条原则 ✗**：`tool-cpu-cost-repeated.mjs` **也是**剔除热身 ＋ 取中位数** ✓**** ✓✓
+const RUNS = Number(process.env.YANSHI_GPU_RUNS || 3);
+const med = (xs) => {
+  const s = [...xs].filter((v) => typeof v === "number").sort((a, b) => a - b);
+  return s.length === 0 ? null : s[Math.floor(s.length / 2)];
+};
+const spread = (xs) => {
+  const s = [...xs].filter((v) => typeof v === "number");
+  if (s.length === 0) return null;
+  const m = med(s);
+  return m ? ((Math.max(...s) - Math.min(...s)) / m) * 100 : 0;
+};
+const cpuRuns = [];
+const gpuRuns = [];
+for (let i = 0; i < RUNS; i += 1) {
+  cpuRuns.push(await measure("cpu"));
+  if (fact.adapter) gpuRuns.push(await measure("gpu"));
+}
+const cpu = {
+  wallMs: med(cpuRuns.map((r) => r.wallMs)),
+  taskMs: med(cpuRuns.map((r) => r.taskMs)),
+  wallSpread: spread(cpuRuns.map((r) => r.wallMs)),
+  detail: cpuRuns[0]?.detail,
+};
+const gpu = fact.adapter
+  ? {
+      wallMs: med(gpuRuns.map((r) => r.wallMs)),
+      taskMs: med(gpuRuns.map((r) => r.taskMs)),
+      wallSpread: spread(gpuRuns.map((r) => r.wallMs)),
+      detail: gpuRuns[0]?.detail,
+      ok: gpuRuns.every((r) => r.ok),
+    }
+  : null;
+console.log(`  （${RUNS} 次取中位数｜CPU 墙钟极差 ${cpu.wallSpread?.toFixed(1)}%`
+  + `${gpu ? `｜GPU 墙钟极差 ${gpu.wallSpread?.toFixed(1)}%` : ""}）`);
 
 console.log("");
 console.log("  ★ 两本账（浏览器内核）★");
