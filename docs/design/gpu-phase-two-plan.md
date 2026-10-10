@@ -725,3 +725,44 @@ wgpu = { version = "26.0.1", optional = true }   # ★ **可选** ★
 2. **接 `requestAdapter()` 复核**✗ ⇒ **∴ 只有它成功**才允许** `render_backend = "gpu"`** ✓
 3. **两本账**（**时间 ＋ CPU 占用 ✓）＋ **`max_channel_delta`** 真实值** ✓
 4. **CI 里测**体积／构建时间**（**目标第 10 条 ✓）
+
+---
+
+# 二十、★ **`--features gpu` 编译成功：**34.89 s****（第 262 轮）★
+
+## 一、★ 关键未知已解决（**三个 ✓**）★
+
+```
+$ cargo check -p yanshi-http --features gpu
+    Compiling wgpu-core v26.0.1
+    Compiling wgpu v26.0.1
+    Compiling yanshi-http v0.1.0
+    Finished `dev` profile [unoptimized + debuginfo] in ★ 34.89s ★
+⇒ 退出码 0
+```
+
+| 未知 | 答案 |
+|---|---|
+| **`wgpu` **能不能编**（**98 个新包 ✓）** | **★ 能 ★**（**`wgpu-core` ＋ `wgpu` 都编过 ✓） |
+| **构建时间代价** | **★ dev profile **34.89 s**★**（**∴ release 会更久 ⇒ **交 CI** ✓） |
+| **默认是否零代价** | **★ 是 ★**（**第 261 轮：**编译面 45 包 ＋ **二进制 6.62 MiB** 不变 ✓） |
+
+## 二、★ 现在关于 `wgpu` 的完整账（**两面 ✓**）★
+
+| 项 | 默认 | `--features gpu` |
+|---|---|---|
+| **`Cargo.lock` 条目** | **187**（**记录了 ✓） | **187** |
+| **实际编译包数** | **45** | **92**（**+47 ✓） |
+| **`yanshi-serve` 二进制** | **6.62 MiB** | **未测**（**∴ 交 CI ✓） |
+| **编译时间（dev）** | **基线** | **+34.89 s** |
+| **`render_backend`** | **`cpu`** | **仍然是 `cpu`** ✓（**∴ 因为**GPU 路径**还没实现 ✓） |
+
+## 三、★ 下一步（**明确 ✓**）★
+
+1. **用 `wgpu` **真的枚举适配器**✗（`Instance::request_adapter()` ✓）
+   ⇒ **∴ 成功**才**允许** `render_backend = "gpu"`** ✓
+     ⇒ **∴ 而**失败时**必须**报**真实原因**（**∴ 如 `no_adapter`／`device_lost` ✓）** ✓✓
+2. **`gpu_probe` 分两级 ✗**：
+   **∴ ① 文件系统级 ✗**（**已实现，**默认可用 ✓）
+   **∴ ② 适配器级 ✗**（**`--features gpu` 时可用，**更可信 ✓）**** ✓✓
+3. **然后**才是**量化／合成的 GPU 实现**✗ ⇒ **∴ 并且**必须有**逐位对比判据**（**`max_channel_delta` ✓）
