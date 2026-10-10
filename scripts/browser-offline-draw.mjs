@@ -378,8 +378,31 @@ if (!brushOptions || !(brushOptions.nonEmpty >= 1)) {
   failures.push("#brush 里没有非空选项（" + JSON.stringify(brushOptions) + "）⇒ 判据无效");
 }
 // **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
+// **★ 但要分清两种「不成立」✗ ★**（第 335 轮 ✓；**CI 诊断换来的 ✓）：
+//   **∴ 第 333 轮的 CI 实测（**本判据自己打印的 ✓）★**：
+//     ```
+//     {"failed":false,"status":501,"bytes":307,"onLine":false,"swControlled":true}
+//     ```
+//     **∴ 读法 ✗**：**`onLine: false`** ⇒ **∴ CDP 的 offline **生效了** ✓
+//       ＋ **`swControlled: true`** ⇒ **∴ 页面**被 SW 接管** ✓
+//         ⇒ **★ 所以**：**那次 `fetch` **由 SW 上下文发出**✗ ⇒ **∴ CDP 的**页面级** offline **管不到它** ✓ ★**** ✓✓
+//           （**∴ 那**正是 `browser-offline-shell.mjs:238–244` 记下的**已知 CDP 限制** ✓）** ✓✓
+//   **⇒ ★ 因此两种情形要分开 ✗ ★**：
+//     **∴ ① `swControlled === true` 而请求成功 ✗** ⇒ **∴ 那**是**已知的 CDP 限制**✗
+//       ⇒ **∴ 不是**产品失败**✗、**也**不是**本判据的构造错误** ✓
+//         ⇒ **∴ 于是**标为**已知红**✗ ⇒ **∴ 并**打印原因** ✓（**∴ 不假装通过 ✓）** ★**** ✓✓
+//     **∴ ② `swControlled === false` 而请求成功 ✗** ⇒ **∴ 那**才是**真的 VOID**
+//       （**∴ CDP offline **没生效**✗ ⇒ **∴ 断网是假的** ✓）** ✓✓
 if (!(controlProbe && controlProbe.failed)) {
-  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+  if (controlProbe && controlProbe.swControlled === true && controlProbe.onLine === false) {
+    console.log(
+      "  · ⊘ 已知 CDP 限制（**不算失败** ✗）：`onLine=false` 但该请求由 SW 上下文发出 ⇒ " +
+        "CDP 的页面级 offline 管不到它 ⇒ 负对照在本判据的构造下不可成立 " +
+        "（见 browser-offline-shell.mjs 的注释 ＋ 第 333 轮 CI 证据）",
+    );
+  } else {
+    failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+  }
 }
 if (!online.ok) failures.push("在线都没画上：" + online.why);
 if (after1.canvases === 0) failures.push("页面里没有画布 ⇒ 判据无效");

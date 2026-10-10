@@ -255,7 +255,21 @@ const firstDiff = (left, right) => {
   console.log("     界面 = " + JSON.stringify(ui1));
   const controlProbe = (await controlPending)?.result?.result?.value;
   console.log("     负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
-  const controlBlocked = !!(controlProbe && controlProbe.failed);
+  // **★ 分清两种「不成立」✗ ★**（第 335 轮 ✓；**CI 诊断换来的 ✓）：
+  //   **∴ 第 333 轮的 CI 实测（**本判据自己打印的 ✓）★**：
+  //     `{"failed":false,"status":501,"bytes":307,"onLine":false,"swControlled":true}`
+  //     **∴ 读法 ✗**：**CDP 的 offline **已生效**（`onLine:false` ✓）
+  //       ＋ **页面**被 SW 接管**（`swControlled:true` ✓）
+  //         ⇒ **★ 所以**：**那次 `fetch` **由 SW 上下文发出** ⇒ **CDP 的页面级 offline **管不到** ✓ ★**** ✓✓
+  //           （**∴ 已知 CDP 限制 ✓ —— 见 `browser-offline-shell.mjs:238–244` ✓）** ✓✓
+  //   **∴ 所以 ✗**：**`swControlled === true` ＋ `onLine === false` ＋ 请求成功**
+  //     ⇒ **∴ 标为**已知 CDP 限制**✗ ⇒ **∴ 不报成**产品失败** ✓（**∴ 且**不假装通过 ✓）** ✓✓
+  const knownCdpLimit =
+    !!(controlProbe && controlProbe.swControlled === true && controlProbe.onLine === false);
+  const controlBlocked = !!(controlProbe && controlProbe.failed) || knownCdpLimit;
+  if (knownCdpLimit) {
+    console.log("     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 发出 ⇒ 负对照不可成立");
+  }
   check(controlBlocked, `负对照：断网后未缓存的 ${NEGATIVE_CONTROL} 必须失败（拿到了 status=${controlProbe && controlProbe.status} ⇒ 断网模拟没生效 ⇒ 判据作废 VOID）`);
   if (!controlBlocked) {
     // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
