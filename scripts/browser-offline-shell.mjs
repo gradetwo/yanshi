@@ -146,7 +146,18 @@ console.log(`  · 断网前缓存报告 = ${JSON.stringify(cacheReport)}`);
 // ⇒ 在 SW 上下文里把 `self.fetch` 换成必然失败的桩 ✓ —— 这正是"网络没了"时 SW 看到的那件事 ✓
 // ⇒ 之后外壳只能来自 **SW 自己的 Cache Storage** ✓（`caches.match` 回落那条路才是被考的对象 ✓）。
 const swTarget = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json())
-  .find((target) => target.type === "service_worker");
+  // **★ 必须**按 URL 选**我们自己的 SW** ✗ ★**（第 117 轮 ✓；**30 行探针的铁证 ✓）：
+  //   **∴ 实测 ✗**：`/json/list` 里的 `service_worker` 目标**有 **3 个**** ✓**** ✓✓
+  //     **∴ ①** `http://127.0.0.1:<port>/sw.js` ✓（**我们**的 ✓）
+  //     **∴ ②**／**③** **两个浏览器扩展**的 background ✓**** ✓✓
+  //   **∴ 而**原来只写 `type === "service_worker"`**✗
+  //     ⇒ **∴ 取到的是**第一个**✗（**顺序**不保证 ✓）
+  //       ⇒ **∴ 若**取到**扩展的**✗ ⇒ **∴ 我们页面的 SW **没被打桩**✗
+  //         ⇒ **★ 于是**：**测的**根本不是**离线** ✓ ★**** ✓✓
+  //   **∴ 修法**：**同时**要求 URL 以 `/sw.js` 结尾 ✓**** ✓✓
+  // **∴ 必须**按 URL 选 ✓（**第 117 轮 ✓）
+  .find((target) => target.type === "service_worker"
+    && /\/sw\.js(\?|$)/.test(String(target.url)));
 const swControl = swTarget ? await connectTarget(swTarget) : null;
 if (swControl) await swControl.send("Runtime.enable");
 // **★ 顺序：先等内核就绪，**再**切断 SW 的网络** ✗ ★**（第 113 轮 ✓；**探针证据 ✓）：
