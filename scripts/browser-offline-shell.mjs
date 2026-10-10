@@ -358,20 +358,32 @@ const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now()
   //       **∴ ②** **成功 ⇒ `failed: false` ⇒ **网络**真的**没断** ⇒ **∴ 才**该 VOID ✓**** ✓✓
   //       **∴ ③** **超时 ⇒ `hanging: true` ⇒ **那**也**是断网的证据**✗
   //         ⇒ **∴ 应当**算**负对照**成立 ✓（**∴ 只是**形式不同 ✓）★**** ✓✓
-  const controlProbe = await evaluateAsync(`(async () => {
-    let timer = null;
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ hanging: true }), 3000);
-    });
-    const attempt = fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" })
-      .then(async (response) => ({ failed: false, status: response.status,
-                                  bytes: (await response.arrayBuffer()).byteLength }))
-      .catch((error) => ({ failed: true, error: String(error) }));
-    const result = await Promise.race([attempt, timeout]);
-    clearTimeout(timer);
-    return result;
-  })()`);
-console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+  // **★ 负对照（**第 328 轮改成验 SW 桩 ✓）★**：
+//   **∴ 为什么改 ✗**（**实测 ＋ 读码换来的 ✓）★**：
+//     **∴ 本判据**故意不设 CDP offline**（**见 306–323 行的论证 ✓）
+//       ⇒ **∴ 于是**：**页面仍在**在线状态**✗ ⇒ **∴ 它的 `fetch` **会真的发出去** ✓**** ✓✓
+//         ⇒ **★ 所以**旧版的负对照**永远**拿到 `{failed:false,status:501}`** ✗
+//           ⇒ **∴ 于是**判据**永远 VOID** ✗（**∴ 而** VOID **等价于红** ✓）** ★**** ✓✓
+//     **∴ 正确的是 ✗**：**负对照要验**本判据**实际使用的离线机制**✗
+//       ⇒ **∴ 即**：**SW 上的 `self.fetch` **必须已经是桩** ✓（**∴ 见 `setServiceWorkerFetch` ✓）** ✓✓
+//       **∴ 且**：**桩必须**真的 reject**（**∴ 直接叫一次看结果 ✓）** ✓**** ✓✓
+//   **∴ 三段结果（**与旧的语义对齐 ✓）**：
+//     **∴ ①** **桩在 ＋ 调用 reject ⇒ `failed: true` ⇒ **负对照**成立 ✓**** ✓✓
+//     **∴ ②** **桩不在 ⇒ `failed: false` ⇒ **离线机制**没生效** ⇒ **∴ 才**该 VOID ✓**** ✓✓
+//     **∴ ③** **桩在但调用**没 reject**✗ ⇒ **∴ 那**也是**机制错** ⇒ **∴ VOID** ✓**** ✓✓
+const controlProbe = swControl
+  ? await swControl.evaluate(`(async () => {
+      const isStub = self.fetch !== self.__yanshiRealFetch;
+      if (!isStub) return { failed: false, why: "sw-fetch-is-not-stubbed" };
+      try {
+        await self.fetch("${NEGATIVE_CONTROL}");
+        return { failed: false, why: "stub-did-not-reject" };
+      } catch (error) {
+        return { failed: true, error: String(error) };
+      }
+    })()`)
+  : { failed: false, why: "no-sw-control-target" };
+console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));
 // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
 // **★ 「**没有答案**」不等于「**成功了**」 ✗ ★**（第 133 轮 ✓；**VOID 误报换来的 ✓）：
   //   **∴ 症状 ✗**：**那一次 evaluate 悬空**✗ ⇒ **∴ 结果**是 `undefined`** ✗
