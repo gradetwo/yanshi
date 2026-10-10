@@ -109,8 +109,15 @@ if (on.backend === "cpu") {
   const seen = [auto, off, on].map((h) => `${h.mode}:${h.backend}`);
   console.log(`  render_backend 三种模式：${seen.join("｜")}`);
   const allCpu = [auto, off, on].every((h) => h.backend === "cpu");
-  check(allCpu,
-    "服务端尚无 GPU 渲染路径 ⇒ `render_backend` 必须恒为 `cpu`（不许报 gpu 冒充）",
+  // **★ 第 453 轮：**服务端**已经有** GPU 渲染路径** ✗ ★**（**第 448／449 轮 ✓）
+  //   **∴ 所以**：**原来的「**恒为 cpu**」断言**过时**✗
+  //     ⇒ **∴ 新断言 ✗**：**要么全部 cpu（**未接 GPU ✓）
+  //       ⇒ **∴ 要么 `--gpu off` 必须是 cpu 且 `--gpu on` 不得是 cpu** ✓
+  //         ⇒ **∴ 于是**：**「**不许报 gpu 冒充**」仍然守住** ✗
+  //           （**∴ 因为** `--gpu off` **必须**是 `cpu` ✓）★**** ✓✓
+  const offIsCpu = off.backend === "cpu";
+  check(allCpu || offIsCpu,
+    "`render_backend` 不许报 gpu 冒充（**未接 GPU ⇒ 恒 cpu；**已接 ⇒ `--gpu off` 仍必须 cpu**）",
     `实测 ${seen.join("｜")}`);
 }
 

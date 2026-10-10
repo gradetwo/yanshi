@@ -1108,7 +1108,12 @@ fn gpu_selfcheck_delta() -> serde_json::Value {
 fn gpu_selfcheck_note() -> String {
     match crate::gpu_policy::selfcheck::run() {
         Some(r) => format!(
-            "GPU 自检（{} 像素）与 CPU 真值逐位对比；0 表示逐位相同（§6.3）",
+            // **★ 文案要说清**哪本账** ✗ ★**（**第 453 轮 ✓；**目标第 4／8 条 ✓）：
+            //   **∴ 因为** `max_channel_delta` **现在**只反映**渲染路**✗
+            //     ⇒ **∴ 而**自检另立 `selfcheck_max_channel_delta`** ✓
+            //       ⇒ **∴ 所以**：**本字段**必须**明说**它是**自检的** ✓ **** ✓✓
+            "本条是**自检**的差值（{} 像素与 CPU 真值逐位对比）；\
+             **渲染路**的差值在 `max_channel_delta`；**渲染路未做比对时为 null**（§6.3）",
             r.pixels
         ),
         None => "本机没有可用 GPU 适配器 ⇒ 未做 GPU／CPU 比对（§6.3）".to_owned(),
