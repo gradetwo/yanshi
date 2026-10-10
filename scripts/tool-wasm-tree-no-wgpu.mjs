@@ -1,32 +1,49 @@
 #!/usr/bin/env node
-// **★ `yanshi-wasm` 的依赖树里**不得**出现 `wgpu` ✗ ★**（第 297 轮 ✓；**目标第 6／7 条 ✓）。
+// **★ 内核产物的**体积上限** ＋ **依赖树里必须含内核本体** ✗ ★**
+//   （第 297 轮立「**不得有 `wgpu`**」✓；**第 442 轮按用户裁定改写 ✓**）
 //
-// **∴ 为什么必须有这条 ✗**：**第 295／296 轮**的架构决定**（**如实 ✓）**✗**：
-//   **∴ 我**权衡过「**把 `wgpu` 放进 `yanshi-render`**」**✗
-//     ⇒ **∴ 发现**：**`yanshi-render` **也被 `yanshi-wasm` 依赖**** ✓
-//       ⇒ **★ 所以**：**那**会让 `wgpu` **进入 wasm 的依赖图** ✓ ★**** ✓✓
-//   **∴ 而**AGENTS.md 第 6 条 ＋ 目标第 6 条都说：
-//     **"**`yanshi-wasm`（**浏览器内核 ✓）的体积与确定性**权重更高** ✓
-//     ⇒ **∴ 所以**：**那条路**代价更大** ✓**** ✓✓
-//   **⇒ ★ 因此**：**wasm 的依赖树**必须**干净** ✗
-//     ⇒ **∴ 本判据**守住它** ✓ ★**** ✓✓
+// **∴ 为什么改写（**用户裁定 ✓）✗ ★**：
+//   **∴ 第 297 轮的写法 ✗**：**「**`yanshi-wasm` 的依赖树里**不得**出现 `wgpu`**」 ✓
+//     ⇒ **∴ 依据**：**AGENTS.md 第 6 条「**内核体积与确定性**权重更高**」 ✓
+//   **∴ 而**第 591 轮**用户裁定**（**`docs/design/gpu-webgpu-discussion.md` §6 ✓）**✗**：
+//     ```
+//     :68  > 支持 fallback CPU，且参数支持关闭 GPU。做不到一致就牺牲点一致性，
+//           ★ wasm 体积也是该牺牲就牺牲。★
+//     :80  | 体积 | ★ 接受 `wgpu` 带来的体积增长（**含 wasm 内核**）★
+//     ```
+//     ＋ **`docs/design/deployment-matrix.md:75`**：**⑤ 内核 WebGPU**（**WebGPU 可用则用；
+//       **∴ 体积代价已由用户接受** ✓）** ✓ ★**** ✓✓
+//   **★ 所以 ✗ ★**：**字面禁令**与新裁定**冲突** ✓
+//     ⇒ **∴ 于是**：**本条**改成**守住**它**真正要守的东西**✗
+//       ⇒ **∴ 即**：**「**体积**必须**受控**」** ✓（**∴ 不是**「**不许有 wgpu**」 ✓）★**** ✓✓
+//   **★ 两面（**AGENTS.md 第 3 条 ✓）★**：
+//     **∴ 收益 ✗**：**内核**可以按裁定**接入 WebGPU**✗（**∴ 离线内核的加速路**打开** ✓）
+//     **∴ 代价 ✗**：**体积**会增长**✗（**∴ 已由用户接受 ✓）
+//       ⇒ **∴ 而**本条判据**仍挡住**「**失控的增长**」 ✓ ★**** ✓✓
 //
-// **∴ 变异点 ✗**：**把 `wgpu` 加成 `yanshi-render`（**或 `yanshi-wasm` ✓）的**非可选依赖**✗
-//   ⇒ **∴ 树里**立刻出现 `wgpu`**✗ ⇒ **∴ 必红** ✓**** ✓✓
+// **∴ 判据（两条 ✓）★**：
+//   **∴ ①** **内核产物 `crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm` 的大小 ≤ `LIMIT_BYTES`** ✓
+//     （**∴ 缺产物时**明确记为**不可判（退出码 3）**✗ ⇒ **∴ 不许**静默通过** ✓）★**** ✓✓
+//   **∴ ②** **`yanshi-wasm` 的依赖树里**必须**含 `yanshi-render`** ✓
+//     （**∴ 它**防「**测错了目标**」✗ —— **第 298 轮的教训 ✓）★**** ✓✓
+//
+// **∴ 变异点 ✗**：**把产物换成一份更大的**（**或**把 `LIMIT_BYTES` 调小**）⇒ **∴ 必红** ✓
 //
 // 用法：node scripts/tool-wasm-tree-no-wgpu.mjs
-
 import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 
-// **∴ 禁词 ✗**：**`wgpu` 家族 ＋ 它带进来的图形栈** ✓
-const BANNED = ["wgpu", "wgpu-core", "wgpu-hal", "wgpu-types", "naga", "ash", "d3d12", "metal"];
+// **∴ 体积上限 ✗**：**6 MiB** ✓
+//   **∴ 来源 ✗**：**第 442 轮实测**（**当时的产物 ＝ 1,519,384 字节 ＝ 1.45 MiB ✓）
+//     ＋ **∴ 给** `wgpu` 接入**留出**余量**✗（**∴ 按裁定**接受增长 ✓）
+//       ＋ **∴ 而**上限**挡住**失控** ✓ ★**** ✓✓
+const LIMIT_BYTES = 6 * 1024 * 1024;
+const WASM_ARTIFACT = "crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm";
 
 // **★ 先**强制解析**一次 ✗ ★**（第 298 轮 ✓；**∴ 由变异检验逼出来 ✓）：
 //   **∴ 症状 ✗**：**只改 `Cargo.toml` ＋ **不**跑解析**✗
-//     ⇒ **∴ `cargo tree` **用了**旧的依赖图**✗ ⇒ **∴ 于是**：**变异（**加 `wgpu` ✓）**没被看见** ✓
+//     ⇒ **∴ `cargo tree` **用了**旧的依赖图**✗ ⇒ **∴ 于是**：**变异**没被看见** ✓
 //       ⇒ **★ 所以**：**判据会**误绿** ✓ ★**** ✓✓
-//   **∴ 修法 ✗**：**先跑 `cargo metadata`**✗（**∴ 它**会**按当前 `Cargo.toml` 解析 ✓）
-//     ⇒ **∴ 然后** `cargo tree` **才反映真实依赖** ✓**** ✓✓
 spawnSync("cargo", ["metadata", "--format-version", "1"], {
   encoding: "utf8",
   maxBuffer: 1 << 28,
@@ -45,10 +62,9 @@ if (r.status !== 0) {
 }
 // **★ 解析要**取包名本身** ✗ ★**（第 298 轮 ✓；**∴ 由第二条断言逼出来 ✓）：
 //   **∴ 实测的输出形 ✗**：**`yanshi-render v0.1.0 (/home/crow/yanshi/crates/yanshi-render)`** ✓
-//     ⇒ **∴ 而**我原来**用整行去匹配包名**✗ ⇒ **∴ 于是** `includes("yanshi-render")` **是 false** ✓
-//       ⇒ **★ 所以**：**第二条断言**（**树里必须有 `yanshi-render`** ✓）**当场红了** ✓ ★**** ✓✓
-//     **⇒ ∴ 教训**：**「**必须有**」那条断言**防住了「**测错了目标**」** ✓**** ✓✓
-//   **∴ 现在**：**每行取**第一个词**✗ ⇒ **∴ 并**去掉重行标记 `(*)`** ✓**** ✓✓
+//     ⇒ **∴ 而**原来**用整行去匹配包名**✗ ⇒ **∴ 于是** `includes("yanshi-render")` **是 false** ✓
+//       ⇒ **★ 所以**：**第二条断言**（**树里必须有内核本体** ✓）**当场红了** ✓
+//     **⇒ ∴ 教训**：**「**必须有**」那条断言**防住了「**测错了目标**」** ✓
 const pkgs = [...new Set(
   (r.stdout || "")
     .split("\n")
@@ -58,26 +74,52 @@ const pkgs = [...new Set(
 )];
 console.log(`  yanshi-wasm 的依赖树：${pkgs.length} 个包`);
 
-const hits = pkgs.filter((p) => BANNED.some((b) => p === b || p.startsWith(b + "-")));
-for (const h of hits) {
-  console.log(`    ✗ ${h}`);
-}
-
 let failed = 0;
 const check = (ok, name, detail) => {
-  console.log(`  ${ok ? "✓" : "✗"} **${name}**${detail ? `（${detail}）` : ""}`);
-  if (!ok) failed += 1;
+  if (ok) {
+    console.log(`  ✓ ${name}（${detail}）`);
+  } else {
+    console.error(`  ✗ ${name}（${detail}）`);
+    failed += 1;
+  }
 };
-check(hits.length === 0,
-  "`yanshi-wasm` 的依赖树里不得出现 `wgpu` 家族（**内核体积权重更高**）",
-  `实测 ${hits.length} 个：${hits.slice(0, 6).join(", ") || "无"}`);
 
-// **∴ 顺带：树里必须有 `yanshi-render`** ✓（**∴ 否则**这个判据**测错了目标** ✓）
-check(pkgs.includes("yanshi-render"),
-  "树里必须**确实**包含 `yanshi-render`（**∴ 否则**本判据**没测到该测的东西** ✓）",
-  `实测 ${pkgs.includes("yanshi-render") ? "有" : "无"}`);
+// **∴ 断言 ① ✗**：**内核产物体积 ≤ 上限** ✓
+if (!existsSync(WASM_ARTIFACT)) {
+  console.error(`  ⊘ 不可判：找不到内核产物 ${WASM_ARTIFACT}`);
+  console.error("    ⇒ **∴ 明说**不可判**✗ ⇒ **∴ 不许**静默通过** ✓（**∴ 先**构建 wasm 内核** ✓）");
+  process.exit(3);
+}
+const size = statSync(WASM_ARTIFACT).size;
+const mib = (n) => `${(n / 1048576).toFixed(2)} MiB`;
+console.log(`  内核产物：${WASM_ARTIFACT} ⇒ ${size} B（${mib(size)}）｜上限 ${mib(LIMIT_BYTES)}`);
+check(
+  size <= LIMIT_BYTES,
+  `内核产物的体积 ≤ 上限（**${mib(LIMIT_BYTES)}**；**∴ 体积代价按第 591 轮裁定接受，但**不许失控** ✗**）`,
+  `实测 ${size} B ＝ ${mib(size)}`
+);
+
+// **∴ 断言 ② ✗**：**树里必须有内核本体**（**防「**测错了目标**」 ✓）
+check(
+  pkgs.includes("yanshi-render"),
+  "依赖树里必须确实包含 `yanshi-render`（**∴ 否则**本判据**没测到该测的东西** ✓）",
+  pkgs.includes("yanshi-render") ? "有" : "无"
+);
+
+// **∴ 如实记录 ✗**：**`wgpu` **现在**允许**出现**✗ ⇒ **∴ 若**在 ⇒ **∴ 只**记录 ＋ **报出体积** ✓
+const gpuPkgs = pkgs.filter((p) => p === "wgpu" || p.startsWith("wgpu-") || p === "naga");
+if (gpuPkgs.length) {
+  console.log(`  ℹ️ GPU 家族在树里（**按第 591 轮裁定**允许** ✓）：${gpuPkgs.join("／")}`);
+  console.log("     ⇒ **∴ 代价**已写进体积**✗ ⇒ **∴ 上限**仍守住** ✓");
+} else {
+  console.log("  ℹ️ GPU 家族**不在**树里（**∴ 尚未**接入离线内核** ✓）");
+}
 
 console.log("");
-if (failed === 0) { console.log("  结论：✓ wasm 的依赖树与 GPU 无关"); process.exit(0); }
-console.error(`  结论：✗ ${failed} 条 ⇒ **∴ GPU 泄漏进内核依赖图** ✗ ⇒ **∴ 内核体积会涨** ✓`);
-process.exit(1);
+if (failed === 0) {
+  console.log(`  结论：✓ 内核体积受控（上限 ${mib(LIMIT_BYTES)}）`);
+  process.exit(0);
+} else {
+  console.error(`  结论：✗ 内核体积判据未过（${failed} 条）`);
+  process.exit(1);
+}
