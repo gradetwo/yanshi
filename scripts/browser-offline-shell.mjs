@@ -303,7 +303,30 @@ if (!(await setServiceWorkerFetch(true))) {
 }
 
 
-await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+// **★ 不设 CDP 离线 ✗ ★**（第 189 轮 ✓；**实测换来的 ✓）：
+//   **∴ 为什么改 ✗**：**实测**（**第 188 轮 ✓）证明**✗**：
+//     **∴ CDP 的 `offline: true` 下**✗
+//       ⇒ **∴ `fetch` **既不**成功**✗、**也**不**失败** ✓（**∴ 它**挂着 ✓）**
+//         ⇒ **∴ 连** `AbortSignal.timeout(8000)` **都**不触发** ✓
+//           （**∴ 可能**因为** SW **接管了那次 fetch**✗ ⇒ **∴ 页面**约束不到它 ✓）** ✓✓
+//       ⇒ **★ 而**真实离线里**✗
+//         ⇒ **∴ `fetch` **会**快速失败** ✓（**∴ 如** `TypeError: Failed to fetch` ✓）**
+//           ⇒ **∴ 于是**走的**是**回落路径** ✓**** ✓✓
+//   **∴ 所以**：**CDP 的 offline **造出了一个**真实世界不存在**的状态**✗**
+//     ⇒ **∴ 它**把**"网络挂着 ✓"**报成了**产品缺口** ✓（**∴ 不是**真的 ✓）** ✓✓
+//   **∴ 替代 ✗**：**只**用 SW 层拦截**✗**
+//     （**`self.fetch` ⇒ 必然 reject ✓，见上面那一段 ✓）**
+//     ⇒ **∴ 那就**等价于**"**离线 ＋ 缓存未命中 ✓"**✗
+//       ⇒ **∴ 而**不是**"**网络挂着 ✓" ✓**** ✓✓
+//     **∴ 且**：**页面**仍在**在线状态**✗
+//       ⇒ **∴ 于是** `fetch` **会**真的**发出去**✗
+//         ⇒ **∴ 而** SW **对缓存命中的请求**照常**从缓存返回** ✓
+//           ⇒ **∴ 于是**：**内核**依赖的**缓存资源**能**拿到**✗
+//             ⇒ **∴ 而**未缓存的**会**快速失败** ✓ ★**** ✓✓
+//   **∴ 保真度对比 ✗**：**真实离线**里**首次**打开的**资源**来自** SW 缓存**✗**
+//     ⇒ **∴ 本改法**与它**一致** ✓（**∴ 而** CDP offline **不**一致 ✓）** ✓✓
+// （**∴ 原来的那一行留在这里当记录 ✗**：）
+// await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 await send("Page.reload", { ignoreCache: false });
 // ⚠️ **这一处只等 `readyState` ＋ 有界沉降** ✗（第 892 轮 ✓，**不要"顺手改成等 board"** ✗）：
 // 下面断言读的正是 `board` / `title` / `innerText` ✗ ⇒ **等它们就等于让断言永不失败** ✗
