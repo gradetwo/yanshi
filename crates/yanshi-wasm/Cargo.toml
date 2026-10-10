@@ -35,7 +35,7 @@ default = []
 gpu = [
     "yanshi-render/gpu",
     "dep:yanshi-gpu",
-    # **∴ `#[wasm_bindgen] async fn` 的展开**要它**✗（**第 480 轮实测 ✓）
+    # **∴ 异步导出的展开**要它**✗（**第 480 轮实测 ✓）
     "dep:wasm-bindgen-futures",
 ]
 
