@@ -28,27 +28,40 @@ const BUDGET_MS = Number.isFinite(__b) && __b > 0 ? __b : 50;
 let PROJECT = PROJECT_ARG;
 if (!PROJECT || !existsSync(PROJECT)) {
   const tmp = join(mkdtempSync(join(tmpdir(), "cold-open-")), "p.yanshi.json");
+  // **∴ `doc_id` 由**我**生成 ✗**（第 95 轮 ✓；**∴ 本地实测 ✓）：
+  //   **∴ 症状 ✗**：**我**原来用 `made.doc_id`**✗
+  //     ⇒ **∴ 而** `/api/documents` **的响应里**没有 `doc_id`**✗
+  //       ⇒ **∴ 于是** `madeDoc` ＝ `undefined`**✗
+  //         ⇒ **∴ `/api/blob/<hash>?doc=undefined` ⇒ **400 ＋ 103 B 的错误 JSON**
+  //           ⇒ **∴ 我**一直**把**那 103 B **当成了**工程包 ✓**** ✓✓
+  //   **∴ 证据（**本地 curl ✓）✗**：**带 query ⇒ **200／7680 B**✗；
+  //     **不带 query ⇒ **400／103 B** ✓**** ✓✓
+  //   **∴ 修法**：**用**我**自己**生成的那个 id ✓**** ✓✓
+  const madeDoc = "cold_" + Date.now().toString(36);
   const made = await (await fetch(`${BASE}/api/documents`, { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: "cold_" + Date.now().toString(36),
-      width: 256, height: 256 }) })).json();
-  const madeToken = made.token, madeDoc = made.doc_id;
-  await fetch(`${BASE}/api/tools/create_layer`, { method: "POST",
+    body: JSON.stringify({ doc_id: madeDoc, width: 256, height: 256 }) })).json();
+  const madeToken = made.token;
+  await fetch(`${BASE}/api/tools/create_layer?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`, { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: madeDoc, token: madeToken, layer_id: "L0", name: "L0" }) });
+    body: JSON.stringify({ layer_id: "L0", name: "L0" }) });
   // **∴ 空文档导出的包只有 102 B**✗ ⇒ **∴ 导进去 ⇒ **没有图可给** ✓**（第 93 轮实测 ✓）
   //   ⇒ **∴ 所以**：**先**画一笔**✗ ⇒ **∴ 于是**包里有原子 ⇒ **∴ 判据**测的是**真的冷启动 ✓**
-  await fetch(`${BASE}/api/tools/brush_stroke`, { method: "POST",
+  await fetch(`${BASE}/api/tools/brush_stroke?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`, { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: madeDoc, token: madeToken, layer_id: "L0",
+    body: JSON.stringify({ layer_id: "L0",
       brush: "100%_Opaque", size: 40, color: { r: 200, g: 100, b: 50, a: 255 },
       points: [[20, 20, 1.0], [120, 120, 1.0]] }) });
-  const exported = await (await fetch(`${BASE}/api/tools/export_project`, { method: "POST",
+  const exported = await (await fetch(`${BASE}/api/tools/export_project?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`, { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: madeDoc, token: madeToken }) })).json();
+    body: JSON.stringify({}) })).json();
   // **∴ 导出回的是 `blob_hash`**✗，**不是 `url`** ✗**（第 93 轮 ✓；**本地实测 ✓）⇒ **∴ 去 `/api/blob/<hash>` 取字节 ✓**
   const blobUrl = `${BASE}/api/blob/` + encodeURIComponent(exported.blob_hash) + `?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`;
   const bytes = new Uint8Array(await (await fetch(blobUrl)).arrayBuffer());
+  // **∴ 自造包必须**自证** ✗**（第 94 轮 ✓）：**∴ 打印**导出报的字节数、blob 哈希
+  //   ＋ **实际取到的字节数**✗ ⇒ **∴ 三者**不一致时一眼看出 ✓**** ✓✓
+  console.log("  · 自造包：export_project 报 bytes=" + exported.bytes
+    + "｜blob=" + String(exported.blob_hash).slice(0, 20) + "…｜实取 " + bytes.length + " B");
   writeFileSync(tmp, bytes);
   PROJECT = tmp;
   console.log(`  ⊘ 未给工程包 ⇒ 自己造了一个：${tmp}（${bytes.length} B）`);
