@@ -126,6 +126,22 @@ try {
   fact(after !== probe.hash, "负对照：多画一笔后哈希必须变化（**∴ 不变**说明这套比较没有分辨力）");
 
   console.log("  ── ④ 后端诚实性 ──");
+  // **★ 必须**在渲染之后**重读 `/health` ✗ ★**（**第 462 轮 ✓；**实测缺陷 ✓）：
+  //   **∴ 原来的错 ✗**：**`s.health` **取自**服务启动时**✗（**`:55` ✓）
+  //     ⇒ **∴ 而**那**是**渲染前**的初值** ✓
+  //       ⇒ **∴ 于是**：**本判据**测的是**没渲染过的进程** ✓
+  //         ⇒ **★ 所以**：**它**当前**误绿**✗
+  //           ⇒ **∴ 因为**初值**恒是 `cpu`** ✓
+  //             ＋ **∴ 而**「**`--gpu off` **是否真关掉 GPU**」**恰恰**没被验证** ✓ ★**** ✓✓
+  //   **∴ 现在 ✗**：**渲染完成后再读一次**✗
+  //     ⇒ **∴ 于是**：**它**会**真的**验证**渲染后的后端** ✓ ★**** ✓✓
+  for (const s of servers) {
+    try {
+      s.health = await (await fetch(`http://127.0.0.1:${s.port}/health`)).json();
+    } catch (error) {
+      console.warn(`    ⚠️ ${s.mode}：渲染后读 /health 失败（沿用旧快照）：${String(error).slice(0, 60)}`);
+    }
+  }
   for (const s of servers) {
     const h = s.health;
     fact(h.render_backend === "cpu" || h.render_backend === "gpu", `--gpu ${s.mode}：render_backend 必须是真值之一（实测 ${h.render_backend}）`);
