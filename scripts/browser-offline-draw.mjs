@@ -213,11 +213,20 @@ await sleep(800);
 // ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
+// **★ 诊断（**第 331 轮加 ✓）★**：
+//   **∴ 为什么 ✗**：**CI 里这条负对照**一直失败**✗（`{"failed":false,"status":501}` ✓）
+//     ⇒ **∴ 而第 330 轮**已排除「**没调 `Network.enable`**」** ✗（**第 66 行**确实调了 ✓）
+//       ⇒ **∴ 剩下的假设 ✗**：**①** SW 绕过 ✗｜**②** chromium 差异 ✗｜**③** 目标未就绪 ✓
+//   **∴ 加上 `onLine` 与 SW 状态后 ✗** ⇒ **∴ 下次 CI 一次就能分辨** ✓：
+//     **∴ 若** `onLine === true`**✗ ⇒ **∴ CDP 的 offline **根本没生效** ✓（**∴ 假设 ② 或 ③** ✓）
+//     **∴ 若** `onLine === false` **而请求仍成功**✗ ⇒ **∴ 那**是** SW 绕过** ✓（**∴ 假设 ①** ✓）★**** ✓✓
 const controlProbe = await evaluate(`(async () => {
+  const onLine = navigator.onLine;
+  const swControlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
   try {
     const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-  } catch (error) { return { failed: true, error: String(error) }; }
+    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength, onLine, swControlled };
+  } catch (error) { return { failed: true, error: String(error), onLine, swControlled }; }
 })()`);
 console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 const before2 = await evaluate(INK);

@@ -232,10 +232,14 @@ const firstDiff = (left, right) => {
   // 结论稍后再取 ✓（请求仍然真的由页面发出 ✓）。
   const controlPending = send("Runtime.evaluate", {
     expression: `(async () => {
+      // **★ 诊断（**第 331 轮加 ✓）★**：**∴ 看** CDP 的 offline **是否生效** ＋ **SW 是否接管**
+      //   ⇒ **∴ 于是**：**下次 CI** 一次就能分辨**「**offline 没生效**」与「**SW 绕过**」 ✓
+      const onLine = navigator.onLine;
+      const swControlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
       try {
         const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-        return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-      } catch (error) { return { failed: true, error: String(error) }; }
+        return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength, onLine, swControlled };
+      } catch (error) { return { failed: true, error: String(error), onLine, swControlled }; }
     })()`,
     returnByValue: true, awaitPromise: true,
   });
