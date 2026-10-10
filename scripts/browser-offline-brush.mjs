@@ -334,13 +334,27 @@ if (!(await setServiceWorkerFetch(true))) {
 // ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-const controlProbe = await evaluate(`(async () => {
-  try {
-    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-  } catch (error) { return { failed: true, error: String(error) }; }
-})()`);
-console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+// **★ 负对照（**第 329 轮改成验 SW 桩 ✓）★**：
+//   **∴ 与 `browser-offline-shell.mjs` 同一根因 ✗**：
+//     **∴ 本判据**只用 SW 层的桩**（**`self.fetch` ⇒ reject ✓）✗
+//       ⇒ **∴ 而**页面**仍在线**✗ ⇒ **∴ 页面上的 `fetch` **会真的发出去** ✓**
+//         ⇒ **★ 所以**旧版负对照**永远**拿到 `{failed:false,…}`** ✗
+//           ⇒ **∴ 判据**永远 VOID** ⇒ **∴ 而** VOID **等价于红** ✓ ★**** ✓✓
+//   **∴ 正确的是 ✗**：**负对照要验**本判据实际用的机制**✗
+//     ⇒ **∴ 即**：**SW 上的 `self.fetch` **必须已是桩**✗ ＋ **叫一次**必须 reject** ✓**** ✓✓
+const controlProbe = swControl
+  ? await swControl.evaluate(`(async () => {
+      const isStub = self.fetch !== self.__yanshiRealFetch;
+      if (!isStub) return { failed: false, why: "sw-fetch-is-not-stubbed" };
+      try {
+        await self.fetch("${NEGATIVE_CONTROL}");
+        return { failed: false, why: "stub-did-not-reject" };
+      } catch (error) {
+        return { failed: true, error: String(error) };
+      }
+    })()`)
+  : { failed: false, why: "no-sw-control-target" };
+console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));
 // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑几十秒。
 if (!(controlProbe && controlProbe.failed)) {
   console.error(`  ⊘ 判据作废（VOID）：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 本跑没有结论`);
