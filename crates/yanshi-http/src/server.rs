@@ -943,7 +943,20 @@ fn health(state: &ServerState) -> Response {
                 "available": gpu_probe().0,
                 "reason": gpu_probe().1,
             },
-            "gpu_unavailable_reason": gpu_probe().1,
+            // **★ 名字要说实话 ✗ ★**（**第 463 轮 ✓；**第 446 轮发现 ✓）：
+            //   **∴ 原来的错 ✗**：**字段名叫 `gpu_unavailable_reason`**✗
+            //     ⇒ **∴ 而**它在**GPU **可用时**也写内容** ✓
+            //       （**∴ 如** `adapter:Gl:IntegratedGpu:…:device=true` ✓）
+            //         ⇒ **∴ 于是**：**读者**会**误以为 GPU 不可用** ✓ ★**** ✓✓
+            //   **∴ 现在 ✗**：**新增 `gpu_adapter_note`**✗（**它**是**能力描述** ✓）
+            //     ＋ **∴ 并**保留 `gpu_unavailable_reason` **作为**同值别名**✗
+            //       ⇒ **∴ 因为**本仓库有 **6 个脚本**在读旧名** ✓
+            //         ⇒ **∴ 于是**：**判据**全绿 ＋ **新读者**用新名** ✓ ★**** ✓✓
+            //     ＋ **∴ 两面 ✗**：**收益**：**语义清楚**（**能力 vs 原因 ✓）
+            //       ＋ **∴ 代价 ✗**：**字段**暂时重复**✗
+            //         ⇒ **∴ 应**在**所有脚本迁完后**删旧名** ✓ ★**** ✓✓
+            "gpu_adapter_note": gpu_probe().1,
+            "gpu_unavailable_reason": gpu_probe().1, // **∴ 已弃用别名（**兼容 6 个脚本 ✓）
             // **★ §6.3 的 ④ ✗ ★**（第 35 轮 ✓）：**必须报出**后端 ＋ 最大通道差**✗
             //   **∴ 而**这里**没有 GPU** ✗ ⇒ **∴ 没有比较发生过 ✓**
             //     ⇒ **★ 所以 `max_channel_delta` 报 `null` ✗**（**不是 0 ✓）**★**
