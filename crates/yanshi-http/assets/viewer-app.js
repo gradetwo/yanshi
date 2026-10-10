@@ -63,6 +63,14 @@ window.yanshiStats = {
   firstStrokeMs: null, firstPaintMs: null, kernelWarmMs: null,
   lastApplyMs: null, lastRenderMs: null, lastPutMs: null, lastArea: 0, applies: 0,
   bitExact: null, resyncs: 0,
+    // **★ 两条分发路径的**调用计数** ✗ ★**（第 71 轮 ✓）：
+    //   **∴ 为什么需要它 ✗**：**"**开关是否改变了工具分派 ✓"**这个问题 ✗
+    //     ⇒ **∴ 用**服务端原子数**问不清**✗
+    //       （**∴ 本地渲染后**页面**会把本地原子**同步到服务端 ✓
+    //        ⇒ **∴ 于是**"**服务端有原子 ✓"**与"**走了服务端 ✓"**不是一回事 ✓）** ✓✓
+    //     ⇒ **★ 所以**：**要一个**只受被测行为影响**的度量**✗
+    //       ⇒ **∴ 就是**这两个计数 ✓ ★**
+    localCalls: 0, serverCalls: 0,
     // **★ WebGPU 通路（**阶段二的前置事实 ✓）✗ ★**（第 49 轮 ✓）：
     //   **∴ 依据 ✗**：**用户第 594 轮**要求 GPU 的收益记**两本账**✗
     //     ⇒ **∴ 而**离线内核**要用 GPU**✗，**第一步**是**如实知道**这台浏览器
@@ -1136,6 +1144,7 @@ async function jsonOrError(response) {
  */
 let __csLocalApiPromise = null;
 async function callToolLocal(name, args, options = {}) {
+    if (window.yanshiStats) window.yanshiStats.localCalls += 1;
   if (!__csLocalApiPromise) {
     __csLocalApiPromise = (async () => {
       const { makeLocalApi } = await import("/api-local.js");
@@ -1200,6 +1209,7 @@ async function callTool(name, args, options = {}) {
   if (!serverRenderPreferred()) {
     return await callToolLocal(name, args, options);
   }
+    if (window.yanshiStats) window.yanshiStats.serverCalls += 1;
   // **只读工具在注入的清单里** ✓（服务端按 `ToolSpec.mutating` 生成 ✓ ⇒ 权威、不漏 ✓）；
   // 不在清单里 = **改文档** ✓ ⇒ 网络失败时要进离线队列 ✓，不能丢 ✗。
   const mutating = !LOCAL_READ_TOOLS.includes(name);

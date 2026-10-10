@@ -185,6 +185,18 @@ async function load() {
 }
 
 /** **∴ 服务端的原子数 ✗**（**∴ 用**权威接口 ✓）** ✓✓ */
+/** **★ 取两条分发路径的**调用计数** ✗ ★**（第 71 轮 ✓）：
+ *   **∴ 为什么换度量 ✗**：**服务端原子数**分不清
+ *     "**真的走了服务端 ✓"与"**本地渲染 ＋ 后台同步 ✓" ✓
+ *     ⇒ **∴ 而**这两个计数**只受**被测行为**影响 ✓**** ✓✓
+ */
+async function dispatchCounts() {
+  const raw = await evaluate(
+    "JSON.stringify({ local: (window.yanshiStats||{}).localCalls||0,"
+    + " server: (window.yanshiStats||{}).serverCalls||0 })");
+  try { return JSON.parse(raw); } catch { return { local: -1, server: -1 }; }
+}
+
 /** **★ 取服务端的**原子种类** ✗ ★**（第 69 轮 ✓；**∴ 我**踩到了 ✓）：
  *   **∴ 我**第一版数"**原子总数**"✗ ⇒ **∴ 而**模式 B 里**页面重载**时
  *     **∴ 自己**会写原子**✗（**∴ 如**创建／同步 ✓）⇒ **∴ 于是**"**总数不增 ✓"**不成立 ✓**
@@ -271,6 +283,8 @@ await load();
 const modeA = await evaluate("localStorage.getItem('yanshi.serverRender')");
 console.log(`  模式 A：localStorage 偏好 = ${modeA === null ? "（未设 ⇒ 默认服务器渲染 ✓）" : modeA}`);
 const kindsBeforeA = await serverAtomKinds();
+// **∴ 取数必须在**画之前 ✗**（**∴ 我**第一版放在之后 ⇒ **∴ 增量恒 0 ✓）** ✓✓
+const countsBeforeA = await dispatchCounts();
 const strokeA = await drawStroke();
 const kindsAfterA = await serverAtomKinds();
 const strokesA = strokeCount(kindsAfterA) - strokeCount(kindsBeforeA);
@@ -280,9 +294,14 @@ console.log(`  A 服务端 draw_stroke：${strokeCount(kindsBeforeA)} ⇒ ${stro
   + `｜画布变化 ${strokeA?.changed}`);
 check(strokeA !== null && strokeA.changed === true,
   "**服务器渲染模式下**画布必须有变化（**真鼠标画得上 ✓）", String(strokeA?.changed));
-check(strokesA >= 1,
-  "**服务器渲染模式下**必须出现一条 `draw_stroke`（**证明落笔走了服务端 ✓）",
-  `新增 ${strokesA} 条`);
+const countsAfterA = await dispatchCounts();
+const serverDeltaA = countsAfterA.server - countsBeforeA.server;
+const localDeltaA = countsAfterA.local - countsBeforeA.local;
+console.log(`  A 分发计数：server ${countsBeforeA.server} ⇒ ${countsAfterA.server}`
+  + `（+${serverDeltaA}）｜local ${countsBeforeA.local} ⇒ ${countsAfterA.local}（+${localDeltaA}）`);
+check(serverDeltaA >= 1 && localDeltaA === 0,
+  "**服务器渲染模式下**必须**只走服务端**（**serverCalls 增 ＋ localCalls 不动 ✓）",
+  `server +${serverDeltaA}｜local +${localDeltaA}`);
 
 // **★ ② 本地渲染模式（**关掉开关 ✓）✗ ★**
 await evaluate("localStorage.setItem('yanshi.serverRender', '0')");
@@ -297,6 +316,7 @@ if (pageLog.length) {
 // **∴ 再**等一会儿 ✗（**∴ 内核**可能在**页面就绪之后**才完成预热 ✓）** ✓✓
 await sleep(2500);
 const kindsBeforeB = await serverAtomKinds();
+const countsBeforeB = await dispatchCounts();
 const strokeB = await drawStroke();
 const kindsAfterB = await serverAtomKinds();
 const strokesB = strokeCount(kindsAfterB) - strokeCount(kindsBeforeB);
@@ -306,9 +326,14 @@ console.log(`  B 服务端 draw_stroke：${strokeCount(kindsBeforeB)} ⇒ ${stro
   + `｜画布变化 ${strokeB?.changed}`);
 check(strokeB !== null && strokeB.changed === true,
   "**本地渲染模式下**画布必须有变化（**关掉服务端也必须画得上 ✓）", String(strokeB?.changed));
-check(strokesB === 0,
-  "**本地渲染模式下**服务端**不许出现** `draw_stroke`（**证明落笔走了本地 ✓）",
-  `新增 ${strokesB} 条`);
+const countsAfterB = await dispatchCounts();
+const serverDeltaB = countsAfterB.server - countsBeforeB.server;
+const localDeltaB = countsAfterB.local - countsBeforeB.local;
+console.log(`  B 分发计数：server ${countsBeforeB.server} ⇒ ${countsAfterB.server}`
+  + `（+${serverDeltaB}）｜local ${countsBeforeB.local} ⇒ ${countsAfterB.local}（+${localDeltaB}）`);
+check(localDeltaB >= 1 && serverDeltaB === 0,
+  "**本地渲染模式下**必须**只走本地**（**localCalls 增 ＋ serverCalls 不动 ✓）",
+  `local +${localDeltaB}｜server +${serverDeltaB}`);
 
 // **★ ④ 两本账（**用户第 8 条 ✓）✗ ★**
 console.log("");
