@@ -23248,3 +23248,48 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #         ＋ **∴ 按需解码**（**73× ⇒ 目标 ≤ 4× ✓）** ★**** ✓✓
 #     **∴ ✅ 第 4 条**（**§6.3 ②③④ ✓）⇒ **∴ 上一轮**完成** ✓**** ✓✓
 #     **∴ ✅ 第 5 条**（**CPU 四元组 ✓）⇒ **∴ 上上轮**完成** ✓**** ✓✓
+
+# **★ 第 412 轮：**阶段一第 3 条的「3 条既有红灯」**已经**全部清零**（**实测 9 passed／0 failed ✓）★**
+#   **★ 位置 ✗**：**它们在 `crates/yanshi-server/tests/`**✗（**∴ 不是** `scripts/` 下的工具 ✓）**：
+#     ```
+#     crates/yanshi-server/tests/export_small.rs
+#     crates/yanshi-server/tests/get_atom.rs
+#     crates/yanshi-server/tests/wasm_target_guard.rs
+#     ```
+#   **★★★ 实测（**本轮 ✓）★★★**：
+#     ```
+#     ★ export_small ═══ running 6 tests ★
+#       test a_blob_whose_recorded_recipe_does_not_reproduce_it_is_kept ......... ok
+#       test a_canvas_reading_brush_blob_is_never_omitted ....................... ok
+#       test a_package_with_a_missing_blob_still_opens_and_warns ................ ok
+#       test every_package_blob_round_trips_through_the_package_codec ........... ok
+#       test a_package_restores_through_root_and_renders_identically ............ ok
+#       test ★ a_small_export_omits_bitmaps_and_replays_within_one_channel_step ★  ok
+#       test result: ok. 6 passed; 0 failed
+#     ★ get_atom ═══ running 2 tests ★
+#       test an_unknown_atom_id_is_refused ...................................... ok
+#       test an_atoms_payload_can_be_read_by_id ................................. ok
+#       test result: ok. 2 passed; 0 failed
+#     ★ wasm_target_guard ═══ ★
+#       test wasm_target_is_always_serial ....................................... ok
+#       test result: ok. 1 passed; 0 failed
+#     ```
+#     **⇒ ★ 合计 ✗ ★**：**9 passed／0 failed** ✓
+#       ⇒ **∴ 所以**：**目标列的**3 条既有红灯**✗ ⇒ **∴ 已经**全部清零** ✓ ★**** ✓✓
+#         **∴ 而**那份清单**是**旧的**✗（**台账里早就写着 `wasm_target_guard` ⇒ 2 passed, 0 failed ✓）
+#           ⇒ **∴ 教训 ✗**：**要**跑一遍**✗ ⇒ **∴ 不要**照抄旧清单** ✓ ★**** ✓✓
+#   **★ 阶段一第 3 条的**剩余**（**只有一个 ✓）★**：
+#     **∴ `tool-bitmap-decode-scope` 的**按需解码****✗（**∴ 判据**能跑 ✓）
+#       ⇒ **∴ 实测 ✗**：**解码 1195520 B ＝ **73× 区域像素****✗
+#         ⇒ **∴ 判据阈值 ✗**：**≤ K × 区域像素 × 4（K=4）** ✓
+#           ⇒ **∴ 所以**：**要**实现分块／按需解码**✗（**∴ 把 73× 降到 ≤ 4× ✓）★**** ✓✓
+#   **★★★ 阶段一最终进度 ✗ ★★★**：
+#     **∴ ✅ 第 1 条**：**部分复用**✗（**`below_reuse` 0→3｜区域复用 18⇒26｜三数自洽 4+12=16 ✓）
+#       **∴ 剩**：**目标那条 `available=20 < wanted=32 且 missing=0` 复现不出** ✓ ★**** ✓✓
+#     **∴ ◑ 第 2 条**：**量化成本**已量（**量化 491／合成 349／裁剪+存tile 216／填充 58 ms ✓）
+#       **∴ 剩**：**做成本调查 ＋ 若必须牺牲则两面都写** ✓ ★**** ✓✓
+#     **∴ ◑ 第 3 条**：**`tool-bitmap-decode-scope` **能跑**✗ ⇒ **∴ 一半完成** ✓
+#       **∴ 三条既有红灯**⇒ **∴ 本轮实测**已全部清零** ✓
+#         **∴ 剩**：**按需解码**（**73× ⇒ ≤ 4× ✓）** ✓ ★**** ✓✓
+#     **∴ ✅ 第 4 条**（**§6.3 ②③④ ✓）** ✓**** ✓✓
+#     **∴ ✅ 第 5 条**（**CPU 四元组 ✓）** ✓**** ✓✓
