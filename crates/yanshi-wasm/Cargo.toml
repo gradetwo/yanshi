@@ -13,6 +13,27 @@ categories.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# **★ 离线内核的 GPU 开关 ✗ ★**（**第 479 轮 ✓；**目标第 6／10 条 ✓）
+#
+# **∴ 为什么**默认关**✗**：**引入 `wgpu` 会让内核的依赖树**从 67 包 ⇒ 约 190 包**✓
+#   ⇒ **∴ 于是**：**内核产物**会**明显变大** ✓
+#     ＋ **∴ 而**第 591 轮**用户裁定**：**「**接受 `wgpu` 带来的体积增长（**含 wasm 内核**）**」** ✓
+#       ⇒ **∴ 所以**：**它**是**允许**的**✗ ⇒ **∴ 但**仍**默认关** ✓
+#         ⇒ **∴ 理由 ✗**：**① 体积有代价 ✓ ② 离线 GPU 路**还没接完** ✓
+#           ＋ **∴ 等**接完后**再评估**是否**默认开** ✓ ★**** ✓✓
+#
+# **∴ 用法 ✗**：`cargo build -p yanshi-wasm --features gpu --target wasm32-unknown-unknown`
+#
+# **∴ 本机不可判（**如实 ✓）★**：**本机**没有 `wasm32-unknown-unknown` 目标**✗
+#   ⇒ **∴ 所以**：**体积的实测**交给 **CI/CD** ✓（**目标第 10 条 ✓）
+#     ＋ **∴ 而**判据 `scripts/tool-wasm-tree-no-wgpu.mjs`**✗
+#       ⇒ **∴ 守住**「**内核产物 ≤ 6 MiB**」** ✓
+#         ⇒ **∴ 若**开了 gpu 后**超限**✗ ⇒ **∴ 那**就要**重新评估** ✓ ★**** ✓✓
+[features]
+default = []
+# **∴ 只**委托**渲染层**的 `gpu`**✗（**∴ 不在本 crate 里**重复一份 ✓）
+gpu = ["yanshi-render/gpu"]
+
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
 yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
