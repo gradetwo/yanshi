@@ -20,4 +20,3 @@ yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
 yanshi-server = { path = "../yanshi-server", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
-wgpu = "26.0.1"
