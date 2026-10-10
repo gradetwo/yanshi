@@ -8557,6 +8557,7 @@ if (outboxDiscardButton) outboxDiscardButton.addEventListener("click", async () 
   await outboxDiscardDoc(state.docId);
 });
 
+window.__appMarks.push("yanshi-object:before");
 window.yanshi = {
     /// **离线写队列的状态** ✓（可断言 ✓）—— 判据读它 ✓；
     /// 界面上的红/黄字读的是同一份数据（`#outbox` 的 `data-state` / 文本 ✓）。
@@ -8845,6 +8846,7 @@ window.yanshi = {
       return true;
     },
   };
+window.__appMarks.push("yanshi-object:after");
   applyPanels();
 }
 // **★ 同步初始化**也要**留痕** ✗ ★**（第 158 轮 ✓；**离线入口没跑 ✓）：
