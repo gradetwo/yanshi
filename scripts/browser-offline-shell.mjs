@@ -24,6 +24,8 @@ const url = process.env.YANSHI_VIEWER_URL || process.argv[2];
 const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-offline-shell.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// **∴ CDP 命令的**统一超时** ✗**（第 115 轮 ✓）
+const CDP_TIMEOUT_MS = 20000;
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const page = targets.find((t) => t.type === "page");
 if (!page) { console.error("没有页面目标 ⇒ 判据无效（不是通过 ✗）"); process.exit(1); }
@@ -31,7 +33,23 @@ const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map();
 socket.onmessage = (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
 await new Promise((open) => { socket.onopen = open; });
-const send = (method, params) => new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
+// **★ CDP 命令必须**有超时** ✗ ★**（第 115 轮 ✓；**本判据**挂死换来的 ✓）：
+//   **∴ 原来**没有超时 ✗ ⇒ **∴ 若**一条命令**没有响应**
+//     ⇒ **∴ Promise**永不解决 ⇒ **∴ 判据**挂死 ✓（实测：只打印 2 行就没有第三行 ✓）
+//   **∴ 修法**：**超时**按「**无法作出结论 ✓」退出（**EXIT=2 ✓）
+//     ⇒ **∴ 而**不是**挂到外层 `timeout` 才死 ✓ ⇒ **∴ 红绿**才分得开 ✓
+const send = (method, params) => new Promise((resolve) => {
+  const id = nextId++;
+  const timer = setTimeout(() => {
+    if (!pending.has(id)) return;
+    pending.delete(id);
+    console.error("✗ CDP 命令超时（" + CDP_TIMEOUT_MS + "ms）：" + method
+      + " ⇒ 判据无法作出结论 ✗");
+    process.exit(2);
+  }, CDP_TIMEOUT_MS);
+  pending.set(id, (value) => { clearTimeout(timer); resolve(value); });
+  socket.send(JSON.stringify({ id, method, params: params || {} }));
+});
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
 // **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
 // 把 `self.fetch` 换成必然失败的桩 ✓（与 `browser-offline-assets.mjs` 同一招 ✓）。
@@ -46,11 +64,30 @@ const connectTarget = async (target) => {
       targetPending.delete(message.id);
     }
   };
-  await new Promise((open) => { targetSocket.onopen = open; });
-  const targetSend = (method, params) =>
-    new Promise((resolve) => {
+  // **★ 等 SW 目标的连接也要**有超时** ✗ ★**（第 116 轮 ✓；**上一轮的超时没触发换来的 ✓）：
+    //   **∴ 上一轮**我给两条 `send` 加了超时**✗ ⇒ **∴ 而**判据**仍然挂死** ✗
+    //     ⇒ **∴ 所以**卡点**不在 `send`**✗ ⇒ **∴ 而在**这段**没有超时的等待 ✓**** ✓✓
+    //   **∴ 修法**：**超时**按「**无法作出结论 ✓」退出（**EXIT=2 ✓）** ✓✓
+    await new Promise((open, fail) => {
+      const timer = setTimeout(() => {
+        console.error("✗ 连不上 service worker 调试目标（" + CDP_TIMEOUT_MS + "ms）"
+          + " ⇒ 判据无法作出结论 ✗");
+        fail(new Error("sw-target-timeout"));
+      }, CDP_TIMEOUT_MS);
+      targetSocket.onopen = () => { clearTimeout(timer); open(); };
+      targetSocket.onerror = () => { clearTimeout(timer); fail(new Error("sw-target-error")); };
+    }).catch(() => { process.exit(2); });
+// **★ 这条**SW 连接**也要超时** ✗ ★**（第 115 轮 ✓；**同一个理由 ✓）
+    const targetSend = (method, params) => new Promise((resolve) => {
       const id = targetNextId++;
-      targetPending.set(id, resolve);
+      const timer = setTimeout(() => {
+        if (!targetPending.has(id)) return;
+        targetPending.delete(id);
+        console.error("✗ CDP 命令超时（" + CDP_TIMEOUT_MS + "ms）：" + method
+          + "（service worker 目标）⇒ 判据无法作出结论 ✗");
+        process.exit(2);
+      }, CDP_TIMEOUT_MS);
+      targetPending.set(id, (value) => { clearTimeout(timer); resolve(value); });
       targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
     });
   const targetEvaluate = async (expression) => {
