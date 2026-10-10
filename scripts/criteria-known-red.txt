@@ -24182,3 +24182,54 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #         **判据自己的 `call()` 助手** ✓）★**** ✓✓
 #   **★ 阶段一进度（**不变 ✓）★**：**✅ 1／2／4／5** ＋ **◑ 3**
 #     （**剩**：**找出 `build_bitmap_tile_index` 对那个 PNG 为何返回 `None`**✗）
+
+# **★ 第 432 轮：**候选 ① 被排除 —— `Bbox::from_value` **两种字段名都认**** ★**
+#   **★★★ 读码事实（**`crates/yanshi-core/src/conflict.rs:88` ✓）★★★**：
+#     ```rust
+#     pub fn from_value(value: &Value) -> Option<Self> {
+#         let object = value.as_object()?;
+#         let x = object.get("x")?.as_f64()?;
+#         let y = object.get("y")?.as_f64()?;
+#         let w = object.get("w").or_else(|| object.get("width"))?.as_f64()?;    ← ★ 两种都认 ★
+#         let h = object.get("h").or_else(|| object.get("height"))?.as_f64()?;   ← ★ 两种都认 ★
+#         Some(Self::new(x, y, w, h))
+#     }
+#     ```
+#     ＋ **∴ 而** `parse_bbox` **先试它**✗（**`tools.rs:1060` ✓）
+#       ⇒ **∴ 所以**：**判据传 `{x,y,width,height}` **完全合法** ✓
+#         ⇒ **∴ 于是** `region.w ＝ 512`／`region.h ＝ 512` **是对的** ✓ ★**** ✓✓
+#   **★★★ 所以候选 ① 被排除 ✗ ★★★**：
+#     **∴ `width == 0`／`height == 0` 不会发生**✗
+#       ⇒ **∴ 因为** `from_value` **要求 `x/y/w/h` 全部取到 `as_f64`**✗
+#         ⇒ **∴ 否则** `parse_bbox` **会**返回 `Err`**✗
+#           ⇒ **∴ 而**判据的 `placed.ok === true`**✗ ⇒ **∴ 所以** `region` **解析成功** ✓ ★**** ✓✓
+#     **∴ 于是**：**`build_bitmap_tile_index` 返回 `None` 的原因**只剩两条**：
+#       **∴ ② 尺寸不符 ✗**：**`decode_png(&bytes)` 的 `w/h` **≠** `region.w/h`**
+#         ⇒ **∴ 那**会**走 `return None`** ✓（**`tools.rs:4721-4723` ✓）★**** ✓✓
+#       **∴ ③ `is_consistent()` 假／`split_into_tiles` 返回 `None`** ✓ ★**** ✓✓
+#   **★★★ 而且候选 ② 有一个**很强的嫌疑**（**新线索 ✓）★★★**：
+#     **∴ `build_bitmap_tile_index` 用的是 `region.w as u32, region.h as u32`**✗
+#       ⇒ **∴ 而**它**从 `store.get(&hash)` 取字节**✗
+#         ⇒ **∴ 然后** `decode_png` **解出真实 `w/h`** ✓
+#           ⇒ **∴ 若**判据的 PNG **是 512×512**✗ ⇒ **∴ 两者**一致** ✓ ⇒ **∴ 不**是这条** ✓★**** ✓✓
+#     **∴ 那**就**剩候选 ③**✗ ⇒ **∴ 而**它**最可能**是**：
+#       **∴ `index.is_consistent()` **为假****✗
+#         ⇒ **∴ 定义 ✗**（**`bitmap_tiles.rs:53` ✓）：**`self.tile == BITMAP_TILE` ＋
+#           **`tiles.len() == count(width, height)`** ✓
+#           ⇒ **∴ 若** `width=512, height=512` ⇒ **`count = (2, 2) ⇒ 4 块`** ✓
+#             ⇒ **∴ 而** `split_into_tiles` **应当**给 **4 块** ✓
+#               ⇒ **∴ 所以** `is_consistent` **应当**为真** ✓ ★**** ✓✓
+#   **★★★ 所以下一步（**决定性 ✓）★★★**：
+#     **∴ 直接**读**那一条落盘的 `import_image` 原子**✗
+#       ⇒ **∴ 看**它**有没有 `tiles` 字段** ✓
+#         ⇒ **∴ 方法 ✗**：**用**判据自己的调用助手**✗
+#           （**∴ 它**已处理**上传 ＋ 调用 ✓ —— **∴ 别**自己拼 HTTP ✓）★**** ✓✓
+#     **∴ 或**者：**给 `build_bitmap_tile_index` **加一条诊断**✗
+#       （**∴ 如** `YANSHI_TILE_INDEX_PROBE` ✓）⇒ **∴ 打印**它在哪一步 `return None`** ✓
+#         ⇒ **∴ 那**会**一次定位** ✓ ★**** ✓✓
+#     **∴ 或**者**更便宜 ✗**：**看**服务端日志里**有没有** `TILE_PATH` **对应**索引 blob**✗
+#       ⇒ **∴ 而**判据那个 PNG **的 blob ＝** `8a8f78bc…`** ✓
+#         ⇒ **∴ 若**原子里有 `tiles` ⇒ **∴ 那**读侧**应当**用它** ✓
+#           ⇒ **∴ 所以**：**若原子有 `tiles` 而读侧没用**✗ ⇒ **∴ 那**是**读侧 bug** ✓ ★**** ✓✓
+#   **★ 阶段一进度（**不变 ✓）★**：**✅ 1／2／4／5** ＋ **◑ 3**
+#     （**剩**：**读那条原子看 `tiles`**✗ ⇒ **∴ 候选**已从 3 个缩到 2 个 ✓）
