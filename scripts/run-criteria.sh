@@ -57,6 +57,17 @@ if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
     --user-data-dir="$PROFILE" about:blank >"$ROOT_DIR/chrome.log" 2>&1 &
   CHROME_PID=$!
   for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break; sleep 0.5; done
+  # **★ 给浏览器判据预置「客户端渲染」偏好 ✗ ★**（第 359 轮 ✓；**一大批红灯的根因 ✓）：
+  #   **∴ 产品的默认值是**服务端渲染**✗**（`crates/yanshi-http/assets/viewer-app.js:51` ✓）
+  #     ⇒ **∴ 而** `initWasm()`（**第 1513 行 ✓）**第一句就 `if (serverRenderPreferred()) { return; }`**
+  #       ⇒ **∴ 于是**：**无偏好时**内核**根本不加载** ✓
+  #         ⇒ **∴ 而**所有**需要内核**的判据**必然红** ✓（**第 358 轮实测：设了 "0" ⇒ kernelReady 立刻 true ✓）
+  #   **∴ 本工具只在**键不存在时**设 "0"**✗
+  #     ⇒ **∴ 于是** `browser-render-switch`（**它自己设 "1" 测服务端模式 ✓）**不受影响** ✓ ★**** ✓✓
+  #   **∴ 没有 CDP 时它**静默跳过**✗ ⇒ **∴ 不会**让任何判据因此失败 ✓
+  if command -v node >/dev/null 2>&1; then
+    CDP_PORT="$CDP_PORT" node "$ROOT/scripts/cdp-seed-client-render.mjs" 2>&1 | sed 's/^/  /' || true
+  fi
   # **连不上就快速失败** ✓：以前会**逐条各等 15 分钟** ✗ ⇒ 一小时内什么都拿不到 ✓。
   if ! curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
     echo "  ⚠️ 浏览器起来了但 CDP 连不上 ⇒ **跳过全部浏览器判据**（不干等 ✓）"
