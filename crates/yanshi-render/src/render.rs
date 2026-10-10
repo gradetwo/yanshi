@@ -238,6 +238,28 @@ pub fn renders_done() -> usize {
     RENDER_SEQ.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// **★ 已盖的**印章总数** ✗ ★**（第 204 轮 ✓；**CPU 成本调查 ✓）。
+///
+/// **∴ 为什么要它 ✗**：**实测**（**第 202 轮 ✓）发现**✗**：
+///   **∴ 461 个 `import_image` 贴图** ✗
+///     ⇒ **∴ 只有 **4.4 M 像素**（**不到半幅 4K ✓）** ✗
+///     ⇒ **∴ 而**花掉 **11856.8 ms CPU**（**2.7 µs／像素 ⇒ **比量化慢 45×**** ✓）** ✓✓
+///   **∴ 而**要判**「**章太多 ✓」还是「**每章太贵 ✓」**✗
+///     ⇒ **∴ 必须**先**数章数** ✓（**∴ 不再猜 ✓）** ✓✓
+///
+/// **∴ 口径 ✗**：**单调递增**（**进程内 ✓）⇒ **∴ 判据**取**前后差值** ✓。
+static STAMPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 记一笔印章 ✗**（`stamp_stroke` 的返回值 ＝ **画了几个章 ✓）**。
+pub fn note_stamps(count: usize) {
+    STAMPS.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **∴ 已盖印章总数 ✗**（**判据**取前后差值 ✓）。
+pub fn stamps_done() -> usize {
+    STAMPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// **★ `above` 复用次数 ✓ ★**（第 682 轮 ✓，**纯观测 ✓**）：
 /// **∴ 判据据此断言"半透明层切回时复用了上方的合成"✗**（**与 `BELOW_REUSE` 同一套口径 ✓**）。
 static ABOVE_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2620,13 +2642,19 @@ impl Renderer {
                     let coverage_ref = coverage
                         .as_ref()
                         .map(|closure| closure as &dyn Fn(f64, f64) -> f32);
-                    crate::brush::stamp_stroke_configured(
+                    // **★ 真正的**贴图／笔触**调用点就在这里** ✗ ★**（第 204 轮 ✓）：
+                    //   **∴ 我**第一版把计数器装到了**另一个**调用点**（`None => stamp_stroke` ✓）
+                    //     ⇒ **∴ 于是**：**印章累计**恒为 **0** ✓（**实测 ✓）**
+                    //       ⇒ **∴ 那**说明：**461 个 `import_image`** 走的是**这一条** ✓
+                    //         ⇒ **★ 所以**：**计数必须装在这里** ✓ ★**** ✓✓
+                    let drawn = crate::brush::stamp_stroke_configured(
                         layer_buffer,
                         &brush,
                         &geometry,
                         Some(&appearance),
                         coverage_ref,
                     );
+                    note_stamps(drawn);
                 }
                 Primitive::Shape {
                     kind,
@@ -2696,7 +2724,11 @@ impl Renderer {
                                     );
                                 }
                                 None => {
-                                    stamp_stroke(layer_buffer, &brush, &geometry);
+                                    // **★ 记下**盖了几个章** ✗ ★**（第 204 轮 ✓）：
+                                    //   **∴ `stamp_stroke` 的返回值**是 `drawn`** ✓
+                                    //     ⇒ **∴ 于是**：**判据**能算**"每章多少时间 ✓"** ✓✓
+                                    let drawn = stamp_stroke(layer_buffer, &brush, &geometry);
+                                    note_stamps(drawn);
                                 }
                             }
                         }
@@ -3903,8 +3935,10 @@ mod stage_probe {
             // 它对应的是"dirty 小区" ✗ 还是"全幅" ✓ —— 而这两者的修法完全不同 ✓。
             eprintln!(
                 "PROBE 区域={}x{}@{},{} 对象={} 裁掉={} 有背景={has_background} \
-                 填充={fill:?} 图层={layers:?} 合成={composite:?} 裁剪+存tile={crop:?} 量化={quantize:?}",
-                scope.2, scope.3, scope.0, scope.1, scope.4, scope.5
+                 填充={fill:?} 图层={layers:?} 合成={composite:?} 裁剪+存tile={crop:?} 量化={quantize:?} \
+                 印章累计={}",
+                scope.2, scope.3, scope.0, scope.1, scope.4, scope.5,
+                crate::render::stamps_done()
             );
         }
     }
@@ -3980,9 +4014,24 @@ fn object_probe_label(object: &Object, primitive: &Primitive) -> String {
                 reason.split('：').next().unwrap_or(reason).trim()
             )
         }
-        // **∴ 其余一律**用**变体名**✗ ⇒ **∴ 于是**：**不必**逐个列举**✗
-        //   ⇒ **∴ 且**：**新增变体**时**自动**有名字 ✓（**∴ 不**会**过时** ✓）** ✓✓
-        other => format!("primitive:{other:?}"),
+        // **★ 其余只取**变体名** ✗ ★**（第 204 轮 ✓；**∴ 我**踩过这个坑 ✓）：
+        //   **∴ 症状 ✗**：**我**原来写 `format!("primitive:{other:?}")`** ✗
+        //     ⇒ **∴ 于是**：**标签里带上了**整个内部结构**✗（**`Stroke { geometry: … }` ✓）**
+        //       ⇒ **∴ 而**它**含空格**✗
+        //         ⇒ **∴ 于是**：**我的**分析脚本**把它**切断了** ✓
+        //           ⇒ **∴ 我**误判**成 `Primitive::Stroke`**✗
+        //             ⇒ **∴ 而**实测**印章累计 ＝ 0** ⇒ **∴ 证明**它**根本不是** Stroke ✓
+        //   **∴ 修法 ✗**：**只取**变体名**✗（**到第一个空格或 `{` 为止 ✓）** ✓✓
+        //     ⇒ **∴ 于是**：**标签**短、**无空格**、**可解析** ✓ ★**** ✓✓
+        other => {
+            let name = format!("{other:?}");
+            let short = name
+                .split([' ', '{'])
+                .next()
+                .unwrap_or(name.as_str())
+                .to_owned();
+            format!("primitive:{short}")
+        }
     };
     // **∴ 有 `kind` 就用它**✗（**∴ 它**是**文档里的**真类型** ✓）；**没有**就**用** primitive 名 ✓。
     match kind {
