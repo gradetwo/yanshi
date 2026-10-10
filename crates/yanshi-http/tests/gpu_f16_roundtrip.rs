@@ -210,6 +210,25 @@ fn gpu_f16_roundtrip_matches_cpu_bit_for_bit() {
             return;
         }
     };
+
+    // **★ 适配器能力（**第 316 轮 ✓）✗ ★**：**∴ 打印它才能在**两种 GPU** 上对比** ✓
+    //   **∴ 尤其 `SHADER_F16` ✗**：**∴ 若**为 `true` ⇒ **∴ 可以**把手写 f16 换成原生 `f16`** ✓
+    //     ⇒ **∴ 而**核显上是 `false`✗ ⇒ **∴ 所以**现在**必须**手写** ✓**** ✓✓
+    {
+        let info = adapter.get_info();
+        let f = adapter.features();
+        println!(
+            "  ★ 适配器：{:?}｜{:?}｜{}｜driver={} {:?}",
+            info.backend, info.device_type, info.name, info.driver, info.driver_info
+        );
+        println!(
+            "  ★ 能力：SHADER_F16={}｜TIMESTAMP_QUERY={}｜max_storage_buffer_binding_size={} MiB",
+            f.contains(wgpu::Features::SHADER_F16),
+            f.contains(wgpu::Features::TIMESTAMP_QUERY),
+            adapter.limits().max_storage_buffer_binding_size / 1048576,
+        );
+    }
+
     let (device, queue) = match block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
     {
         Ok(d) => d,
