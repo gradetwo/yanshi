@@ -156,8 +156,20 @@ const swTarget = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json
   //         ⇒ **★ 于是**：**测的**根本不是**离线** ✓ ★**** ✓✓
   //   **∴ 修法**：**同时**要求 URL 以 `/sw.js` 结尾 ✓**** ✓✓
   // **∴ 必须**按 URL 选 ✓（**第 117 轮 ✓）
-  .find((target) => target.type === "service_worker"
-    && /\/sw\.js(\?|$)/.test(String(target.url)));
+  // **★ 必须**同时接受两个 SW 路径** ✗ ★**（第 126 轮 ✓；**双 SW 修好后换来的 ✓）：
+  //   **∴ 我**上一轮**只写了 `/sw.js`**✗
+  //     ⇒ **∴ 而**修好双 SW 之后**✗ ⇒ **∴ 现在**真正生效的是
+  //       `/service-worker.js`**✗（**Rust** 内嵌的那个 ✓）** ✓✓
+  //     ⇒ **∴ 于是**找不到目标 ⇒ **∴ 判据**报**"**切不断 SW 的网络 ✓" ✓**** ✓✓
+  //   **∴ 修法**：**接受 `/sw.js` 或 `/service-worker.js`**✗
+  //     ＋ **必须**排除**扩展**✗（`chrome-extension://…/background.js` ✓）** ✓✓
+  //       ⇒ **∴ 因为**本机有两个**扩展的 SW**✗（**第 117 轮实测 ✓）** ✓✓
+  .find((target) => {
+    if (target.type !== "service_worker") return false;
+    const url = String(target.url);
+    if (!/^https?:\/\//.test(url)) return false;
+    return /\/(sw|service-worker)\.js(\?|$)/.test(url);
+  });
 const swControl = swTarget ? await connectTarget(swTarget) : null;
 if (swControl) await swControl.send("Runtime.enable");
 // **★ 顺序：先等内核就绪，**再**切断 SW 的网络** ✗ ★**（第 113 轮 ✓；**探针证据 ✓）：
