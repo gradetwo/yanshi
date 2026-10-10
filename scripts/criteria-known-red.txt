@@ -17737,3 +17737,58 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 而**我**差点**以为**已经**修好了** ✓**** ✓✓
 #     ⇒ **★ 所以**：**每个 patch**之后**✗
 #       ⇒ **∴ 必须**立刻**确认**文件里**真的有它** ✓ ★**** ✓✓
+
+# **★ 第 173 轮：★★★★★★★ **工具链缺陷修好：候选二进制**按 mtime 排序**** ✗**（**∴ 判据结果**从此可信 ✓）★★★★★★★**
+#   **★ 修法 ✗ ★**：**在** `scripts/pwa-sync-viewer.mjs` **第 119 行之后插入**✗**：
+#     ```js
+#     const binMtime = (dir) => {
+#       const cand = dir.endsWith("yanshi-serve") ? dir : join(dir, "yanshi-serve");
+#       try { return statSync(cand).mtimeMs; } catch { return -1; }
+#     };
+#     const explicitBin = process.env.YANSHI_SERVE_BIN;
+#     {
+#       const auto = targetDirs.filter((d) => d !== explicitBin);
+#       auto.sort((a, b) => binMtime(b) - binMtime(a));
+#       targetDirs.length = 0;
+#       if (explicitBin) targetDirs.push(explicitBin);
+#       targetDirs.push(...auto);
+#     }
+#     ```
+#     ⇒ **∴ 理由 ✗**：**原来**的顺序**是**✗**
+#       `tripleDirs` ⇒ `CARGO_TARGET_DIR/release` ⇒ `CARGO_TARGET_DIR/debug`
+#       ⇒ `target/release` ⇒ `target/debug` ✓**** ✓✓
+#       ＋ **∴ 循环在**第一个成功**处 `break`** ✓**** ✓✓
+#       ⇒ **∴ 于是**旧的 release **总是赢** ✓**** ✓✓
+#     ⇒ **∴ 实测（**修前 ✓）★**：
+#       `target/release` **07:58:52** ✓
+#       `target/x86_64-unknown-linux-gnu/release` **09:21:06** ✓
+#       `target/debug` **11:51:41**（**∴ 最新 ✓）** ✓✓
+#       ⇒ **∴ 而**修前**选中的是**三目标 release（**09:21 ✓）** ✓✓
+#   **★ 修后实测 ✗ ★**：
+#     `静态页导出用的二进制：**target/debug/yanshi-serve** ✓`（**∴ 最新 ✓）** ✓✓
+#     **∴ 而** `web/index.html` **里**✗**：
+#       `setupBrushLibrary:before` ⇒ **1** ✓
+#       `yanshi-object:before` ⇒ **1** ✓
+#       `boot:before-refreshLayers` ⇒ **1** ✓**** ✓✓
+#       ⇒ **★★ 所以**：**我的标记**第一次**真的**进到**页面里** ✓ ★★**** ✓✓
+#   **★ 那是**本轮最重要的成果 ✗ ★**：
+#     **∴ 从**这一轮**开始**✗**
+#       ⇒ **∴ 判据**关于离线内核的**结论**
+#         ⇒ **∴ 才**第一次**可信** ✓ ★**** ✓✓
+#     **∴ 而**在此之前**✗
+#       ⇒ **∴ 判据**一直在**测**一份**冻结在 07:58／09:21 的旧代码** ✓**** ✓✓
+#       ⇒ **∴ 于是**：**我**前面**二十几轮**的**每一步"**缩小范围 ✓"**
+#         ⇒ **∴ 都**基于**那一份** ✓**** ✓✓
+#         ⇒ **∴ 而**它们**报告的**"**卡点在 8399 ✓"**之类**
+#           ⇒ **∴ 是**旧代码**里**某处**的**表现** ✓（**∴ 未必**是新代码的 ✓）** ✓✓
+#   **★ 下一步（**明确 ✓）★**：**重跑** `browser-offline-shell`**✗**
+#     ⇒ **∴ 现在**它的标记**会**真的**出现 ✓**** ✓✓
+#     ⇒ **∴ 于是**第一次**看到**真正的卡点** ✓ ★**** ✓✓
+#   **∴ 元收获（**本轮最贵 ✓）★**：
+#     **∴ 一个**静默的工具链缺陷**✗
+#       ⇒ **∴ 让**二十几轮**实验**✗
+#         ⇒ **∴ 全部**测的是**同一份旧代码** ✓**** ✓✓
+#       ⇒ **∴ 而**每一步**看上去**都**合理** ✓**** ✓✓
+#     ⇒ **★ 所以**：**"**改了 ✓"**之后**✗
+#       ⇒ **∴ 第一件事**是**验证**"**产物里有它 ✓"**✗**
+#         ⇒ **∴ 而**不是**开始实验 ✓ ★**** ✓✓

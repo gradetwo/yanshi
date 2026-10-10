@@ -117,6 +117,30 @@ const targetDirs = [
   "target/debug",
 ].filter(Boolean);
 if (process.env.YANSHI_SERVE_BIN) targetDirs.unshift(process.env.YANSHI_SERVE_BIN);
+  // **★ 候选必须**按新旧排序** ✗ ★**（第 173 轮 ✓；**二十几轮徒劳换来的 ✓）：
+  //   **∴ 症状 ✗**：**`tripleDirs` ⇒ `target/release` ⇒ `target/debug`**✗
+  //     ＋ **∴ 循环在**第一个成功**处 `break`** ✓**** ✓✓
+  //     ⇒ **∴ 于是**：**旧的 release 二进制**总是赢** ✓**** ✓✓
+  //       ⇒ **∴ 实测 ✗**：`target/release` **07:58** ✓
+  //         ＋ `target/x86_64-unknown-linux-gnu/release` **09:21** ✓
+  //         ＋ **而** `target/debug` **11:51**（**∴ 最新 ✓）** ✓✓
+  //       ⇒ **∴ 而**二进制**内嵌** `viewer-app.js`**✗
+  //         ⇒ **∴ 于是**导出的 `web/index.html`**永远是旧的** ✓**** ✓✓
+  //         ⇒ **∴ 而**它**仍然**打印**"**✓ 已同步 ✓"** ✓（**∴ 静默 ✓）** ✓✓
+  //   **∴ 修法**：**按 mtime 降序排**✗（**∴ 最新的**在前 ✓）** ✓✓
+  //     ＋ **∴ `YANSHI_SERVE_BIN` **仍然**最优先** ✓（**∴ 显式**胜过**自动 ✓）** ✓✓
+  const binMtime = (dir) => {
+    const cand = dir.endsWith("yanshi-serve") ? dir : join(dir, "yanshi-serve");
+    try { return statSync(cand).mtimeMs; } catch { return -1; }
+  };
+  const explicitBin = process.env.YANSHI_SERVE_BIN;
+  {
+    const auto = targetDirs.filter((d) => d !== explicitBin);
+    auto.sort((a, b) => binMtime(b) - binMtime(a));
+    targetDirs.length = 0;
+    if (explicitBin) targetDirs.push(explicitBin);
+    targetDirs.push(...auto);
+  }
 const tmp = join(DST, ".index.export.html");
 const triedBins = [];
 const skippedBins = [];

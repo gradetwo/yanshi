@@ -2158,6 +2158,18 @@ function renderViewport() {
     //  而笔画**其实已经提交**了 ✓ —— 历史里有 ✓、服务端渲染也有 ✓，只是画布不动 ✗）。
     // 介质笔之所以看起来正常 ✓，是因为介质那条路会**自己**触发服务端补画 ✓
     //（提交后立刻按 region 补一次 ✓）⇒ 于是"介质能画、普通笔不能" ✓ 这个奇怪现象由此而来 ✓。
+    // **★ 尺寸必须**也设** ✗ ★**（第 103 轮 ✓；**`browser-layout` 的铁证 ✓）：
+    //   **∴ 症状 ✗**：**服务端优先模式**（`kernelReady()=false` ✓）下
+    //     **∴ 缩放 400% ⇒ **画布仍是 961px**✗（**判据实测 ✓）** ✓✓
+    //   **∴ 根因 ✗**：**本分支**原来**只**排队一次补画**✗ ⇒ **∴ 然后** return**✗
+    //     ⇒ **∴ `sizeBoards(w, h)`**永远不会**被调用**✗
+    //       （**∴ 它**在**内核分支里 ✓）⇒ **∴ 画布尺寸**不会**因缩放而变 ✓** ✓✓
+    //   **∴ 修法**：**这里**也**调用它**✗（**∴ 它**与内核**无关 ✓ ——
+    //     **∴ 只设 `board.width/height`**✗ ＋ **有"**只在真的变了才碰**"的守卫 ✓）** ✓✓
+    //   **∴ 代价（**两面 ✓）**：**改尺寸**会**重建 backing store ⇒ 清空画布**✗
+    //     ⇒ **∴ 而**紧接着**排队的补画**会**把它补回来 ✓** ✓✓
+    const __rv = state.viewport;
+    sizeBoards(__rv.w, __rv.h);
     needsServerPixels = true;
     queueServerBlit();
     return;
@@ -2487,8 +2499,29 @@ async function initWasm() {
     return;
   }
   try {
-    const health = await (await fetch("/health")).json();
-    if (!health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
+      // **★ `/health` **只是信息** ⇒ **拿不到也要继续** ✗ ★**（第 149 轮 ✓；**离线根因 ✓）：
+      //   **∴ 症状 ✗**：**静态部署**（**PWA ✓）离线时**✗
+      //     **∴ 本行的 `fetch` **永远挂着** ✓（**实测：`done: false` 不变 ✓）** ✓✓
+      //       ⇒ **∴ 于是**下面的 `import("/wasm/yanshi_wasm.js")`**永远**不执行** ✗
+      //         ⇒ **∴ 内核**起不来** ✗（`kernelStats()` 为 null ✓）** ✓✓
+      //       ⇒ **∴ 而**离线时**那条 `fetch` 的行为**与**在线不同**✗
+      //         ⇒ **∴ 它**既不**成功**✗、**也**不**失败** ✓（**实测 ✓）** ✓✓
+      //   **∴ 而**我的探针**证明了**✗**：**同样离线**✗
+      //     **∴ 手动** `import("/wasm/yanshi_wasm.js")` ＋ `default()`**✗
+      //       ⇒ **∴ 成功**（`init: "OK"` ✓）** ✓✓
+      //     ⇒ **★ 所以**：**卡点**就是本行** ✓ ★**** ✓✓
+      //   **∴ 修法**：**把 `/health` 当成**可选信息**✗
+      //     ⇒ **∴ 加** 3 秒超时**✗ ＋ **`catch` 后**继续** ✓**** ✓✓
+      //     **∴ 且**：**只在**真的**拿到**且**说 wasm 没启用**时才抛 ✓**** ✓✓
+      //   **∴ 与**下面那处**一致**✗：**它**早就**写成了**"**拿不到就算了 ✓"** ✓（**∴ 那**是对的 ✓）** ✓✓
+      let health = null;
+      try {
+        health = await (await fetch("/health", { signal: AbortSignal.timeout(3000) })).json();
+      } catch (error) {
+        // **∴ 离线／取不到 ⇒ **继续** ✓**（**∴ 不**因它放弃内核 ✓）
+        log("取不到 /health（" + String(error && error.message || error).slice(0, 60) + "）⇒ 继续加载内核", "#a60");
+      }
+      if (health && !health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
     // 动态 import：不需要打包器，直接吃 wasm-bindgen --target web 的输出。
     const module = await import("/wasm/yanshi_wasm.js");
     await module.default();
@@ -4581,9 +4614,27 @@ async function switchDocument(docId, token, size) {
   state.viewport = { x: 0, y: 0, w: 1024, h: 1024 };
   sizeBoards(1024, 1024);
   if (state.token) {
-    await loadDocumentData();
+    // **★ 这两条是**核心装载**✗ ⇒ **∴ 必须**留痕** ✗ ★**（第 156 轮 ✓；**离线根因链 ✓）
+    //   **∴ 为什么 ✗**：**入口**（**第 9474 行 ✓）带 token**✗
+    //     ⇒ **∴ 走**下面第一条 ✓ ⇒ **∴ 而**它**若挂住**✗
+    //       ⇒ **∴ 后面**全部**不执行** ✓（**∴ 含** `void warmKernel()` ✓）**
+    (window.__appMarks = window.__appMarks || []).push("switch:before-loadDocumentData");
+    try {
+      await loadDocumentData();
+      (window.__appMarks = window.__appMarks || []).push("switch:loadDocumentData-ok");
+    } catch (error) {
+      (window.__appMarks = window.__appMarks || []).push("switch:loadDocumentData!" + String(error && error.message || error).slice(0, 40));
+      throw error;
+    }
   } else {
-    await ensureDocument();
+    (window.__appMarks = window.__appMarks || []).push("switch:before-ensureDocument");
+    try {
+      await ensureDocument();
+      (window.__appMarks = window.__appMarks || []).push("switch:ensureDocument-ok");
+    } catch (error) {
+      (window.__appMarks = window.__appMarks || []).push("switch:ensureDocument!" + String(error && error.message || error).slice(0, 40));
+      throw error;
+    }
   }
   // **装载之后必须按"文档自己的尺寸"重设画板**（真正修的那一处）：
   // 上面两行无条件把画板设成 1024²，而**只有 else 分支**会带着尺寸去创建文档；
@@ -4603,20 +4654,57 @@ async function switchDocument(docId, token, size) {
   // ⇒ 收藏的链接、程序化打开（子 agent 的脚本 ✓）都只会得到一个**空文档** ✓，
   // 而那看起来就像"示例是坏的" ✗（我自己的探针就这样误判过一次 ✓：按 id 切过去 ⇒ 墨 0 ✗）。
   // `seedSampleIfEmpty` 只在"是已知示例 **且** 文档为空"时才动作 ✓ ⇒ 用户改过的示例绝不被覆盖 ✓。
-  if (await seedSampleIfEmpty(state.docId)) {
-    await resync();
-    await refreshPreview();
-    await refreshLayers();
-  }
+    // **★ 可选步骤必须**有界** ✗ ★**（第 155 轮 ✓；**离线根因链换来的 ✓）：
+    //   **∴ 症状 ✗**：**离线**✗ ⇒ **∴ `seedSampleIfEmpty()`**里一个**未缓存资源**的
+    //     `fetch`（**如** `/samples/<id>.png` ✓）**永远**挂着** ✗**** ✓✓
+    //     ⇒ **∴ 于是**：**本行**永不返回**✗
+    //       ⇒ **∴ 整条 `switchDocument()` 链**停住** ✗**** ✓✓
+    //       ⇒ **∴ 后面五步**（`ensurePaintLayer` 等 ✓）＋ `void warmKernel()`
+    //         **全部**不执行** ✗**** ✓✓
+    //         ⇒ **∴ 而** `initWasm()`**没跑**✗ ⇒ **∴ 内核**起不来** ✓**** ✓✓
+    //         ⇒ **∴ 实测**：`marks` **只到** `before-self-init`**✗
+    //           ＋ **`wasmState`**停在**「**检测中…**」** ✓**** ✓✓
+    //   **∴ 修法**：**给它** 5 秒上限**✗
+    //     ⇒ **∴ 超过就**当没种**✗ ⇒ **∴ 链**照常**往下走 ✓**** ✓✓
+    //   **∴ 为什么是**这里**✗**：**一处**就**保证**"**任何**可选步骤**✗
+    //     **∴ 都**不能**阻塞**核心初始化** ✓ ★**** ✓✓
+    let seeded = false;
+    try {
+      seeded = await Promise.race([
+        seedSampleIfEmpty(state.docId),
+        new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+      ]);
+    } catch (error) {
+      log("示例种入失败（" + String(error && error.message || error).slice(0, 60) + "）⇒ 跳过 ✓", "#a60");
+      seeded = false;
+    }
+    if (seeded) {
+      await resync();
+      await refreshPreview();
+      await refreshLayers();
+    }
   // **打开就保证有图层可画** ✓（见 `ensurePaintLayer` 的说明 ✓）：
   // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
-  await ensurePaintLayer();
-  await refreshLayers();
-  // **打开文档就拉一次标注与对象** ✓（面板立刻正确 ✓）。
-  await refreshAnnotations();
-  await refreshObjects();
-  // **换文档就把队列徽标重算一次** ✓（它是**按文档**分区的 ✓ —— 别的文档的条目不能显示成本文档的 ✓）。
-  await refreshOutboxBadge();
+    // **★ 初始化链必须**逐步留痕** ✗ ★**（第 154 轮 ✓；**离线卡点定位 ✓）：
+    //   **∴ 为什么 ✗**：**离线时**整页初始化**中断**✗
+    //     ⇒ **∴ 而**看不到**挂在哪一步** ✓**** ✓✓
+    //   **∴ 做法**：**每一步**后 push 一个标记**✗
+    //     ⇒ **∴ 判据**读 `__appMarks` **就能**直接说出**卡点 ✓**** ✓✓
+    //   **∴ 纯诊断 ✗**：**不**改任何行为 ✓**** ✓✓
+    const markStep = (name) => {
+      (window.__appMarks = window.__appMarks || []).push("open:" + name);
+    };
+    markStep("start");
+    try { await ensurePaintLayer(); markStep("ensurePaintLayer"); }
+    catch (error) { markStep("ensurePaintLayer!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshLayers(); markStep("refreshLayers#1"); }
+    catch (error) { markStep("refreshLayers#1!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshAnnotations(); markStep("refreshAnnotations"); }
+    catch (error) { markStep("refreshAnnotations!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshObjects(); markStep("refreshObjects"); }
+    catch (error) { markStep("refreshObjects!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshOutboxBadge(); markStep("refreshOutboxBadge"); }
+    catch (error) { markStep("refreshOutboxBadge!" + String(error && error.message || error).slice(0, 40)); throw error; }
   if (outboxPendingCount > 0) scheduleOutboxFlush(300);
 }
 
@@ -7911,7 +7999,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-9714d31c")
+      caches.open("yanshi-shell-dba22e8a-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
@@ -9382,7 +9470,19 @@ window.__appMarks.push("before-self-init");
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => setupBrushLibrary());
 } else {
-  setupBrushLibrary();
+  // **★ 这一句是**顶层卡点**的候选** ✗ ★**（第 163 轮 ✓；**二分结果 ✓）：
+  //   **∴ 为什么 ✗**：**二分**已证明**脚本**在** 8395 **与** 8560 **之间**停住**✗
+  //     ⇒ **∴ 而那 165 行里**唯一**会**立即执行的复杂调用**✗
+  //       ⇒ **∴ 就是**本行 ✓**** ✓✓
+  //   **∴ 做法**：**前后**各留标记 ＋ **接住异常** ✓（**∴ 异常也要**记下来 ✓）** ✓✓
+  window.__appMarks.push("setupBrushLibrary:before");
+  try {
+    setupBrushLibrary();
+    window.__appMarks.push("setupBrushLibrary:ok");
+  } catch (error) {
+    window.__appMarks.push("setupBrushLibrary!" + String(error && error.message || error).slice(0, 60));
+    throw error;
+  }
 }
 
 /// **预览的防抖** ✓（用户：拖粗细 / 改颜色时预览**不会跟着变** ✗）——
@@ -9543,6 +9643,7 @@ if (outboxDiscardButton) outboxDiscardButton.addEventListener("click", async () 
   await outboxDiscardDoc(state.docId);
 });
 
+window.__appMarks.push("yanshi-object:before");
 window.yanshi = {
     /// **离线写队列的状态** ✓（可断言 ✓）—— 判据读它 ✓；
     /// 界面上的红/黄字读的是同一份数据（`#outbox` 的 `data-state` / 文本 ✓）。
@@ -9831,9 +9932,23 @@ window.yanshi = {
       return true;
     },
   };
+window.__appMarks.push("yanshi-object:after");
   applyPanels();
 }
-setupPanels();
+// **★ 同步初始化**也要**留痕** ✗ ★**（第 158 轮 ✓；**离线入口没跑 ✓）：
+//   **∴ 为什么 ✗**：**本行**是**同步调用**✗
+//     ⇒ **∴ 若**它**内部**抛异常**✗ ⇒ **∴ 顶层**中断**✗
+//       ⇒ **∴ 后面**的入口 IIFE（**9502 ✓）**永远**不执行 ✓**** ✓✓
+//     ⇒ **∴ 而那**正是**离线内核起不来**的路径 ✓**** ✓✓
+//   **∴ 所以**：**前后**各留一个标记 ✓（**∴ 抛了就停在 before ✓）** ✓✓
+window.__appMarks.push("setupPanels:before");
+try {
+  setupPanels();
+  window.__appMarks.push("setupPanels:ok");
+} catch (error) {
+  window.__appMarks.push("setupPanels!" + String(error && error.message || error).slice(0, 50));
+  throw error;
+}
 
 // 快捷键 ✓：与工具提示一致 ✓ —— 输入框里打字时不受影响 ✓。
 const TOOL_BY_KEY = new Map(TOOL_DEFS.filter((d) => d.key).map((d) => [d.key, d]));
@@ -10500,16 +10615,30 @@ $("importFile").addEventListener("change", async (event) => {
     await ensureDocument();
   } else {
     $("identity").textContent = state.docId;
-    await refreshLayers();
-    await refreshThumb();
-    await loadEffectCatalog();
-    await refreshEffects();
-    await refreshHistory();
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshLayers");
+      try { await refreshLayers(); (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshThumb");
+      try { await refreshThumb(); (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-loadEffectCatalog");
+      try { await loadEffectCatalog(); (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshEffects");
+      try { await refreshEffects(); (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshHistory");
+      try { await refreshHistory(); (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory!" + String(error && error.message || error).slice(0, 40)); throw error; }
     window.yanshiStats.bootAt = performance.now();
-    await refreshPreview();
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshPreview");
+      try { await refreshPreview(); (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview!" + String(error && error.message || error).slice(0, 40)); throw error; }
     connect();
     refreshContactLink();
-    void warmKernel();
+      (window.__appMarks = window.__appMarks || []).push("boot:warmKernel");
+      void warmKernel();
+      (window.__appMarks = window.__appMarks || []).push("boot:warmKernel-called");
   }
   // **开机就把本地队列读回来** ✓ —— 刷新/重开页面之后未补交的改动必须还在 ✓、且立刻可见 ✓
   //（这就是"离线优先"里"不丢"的那一半 ✓；只留在内存里的队列是没有意义的 ✗）。
@@ -10582,6 +10711,16 @@ const I18N_EN_TEXT = {
   "操作": "Actions",
   "一致性自检": "Consistency check",
   "＋ 图层": "＋ Layer",
+  // **★ `browser-i18n` 报到的那一条**漏翻 ✗ ★**（第 89 轮 ✓）：
+  //   **∴ 症状 ✗**：`browser-i18n` 的「**整页**」统计里有 **1 条**中文**✗
+  //     （**∴ 在 `<label>` 里 ✓）：
+  //       "**用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）✓"** ✓**** ✓✓
+  //     ⇒ **∴ 而**它是**服务端导出的 HTML 里**的**静态文案**✗
+  //       ⇒ **∴ 运行时词典**没有它** ⇒ **∴ 于是**英文模式下**原样显示 ✓**** ✓✓
+  //   **∴ 修法**：**加一条词条**✗（**∴ 不必**改 HTML 或 Rust ✓）
+  //     ⇒ **∴ 因为** `I18N_EN_TEXT`**是**运行时**替换的 ✓**** ✓✓
+  "用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）":
+    "Render on the server (on by default; clear the box to use the offline kernel instead)",
   "用服务端渲染（弱设备回退）": "Use server rendering (fallback for weak devices)",
   "适配": "Fit",
   "调整 / 滤镜": "Adjustments / filters",
