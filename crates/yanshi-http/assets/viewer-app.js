@@ -8201,6 +8201,26 @@ async function paintBrushOffline(request) {
     log("离线：本地落笔失败：" + JSON.stringify(committed).slice(0, 160), "#c33");
     return false;
   }
+  // **★ 持久化原子与 blob 到 IndexedDB ✗ ★**（2026-10-11 复定位 ✓）：
+  //   **∴ 症状 ✗**：SW 失败兜底的 spray 笔触在**新建图层后消失** ✓
+  //     （用户 Safari/Chrome 无痕模式实测 ✓，`repopulateKernelBlobs` 修了也没用 ✓）
+  //   **∴ 根因 ✗**：本函数只 `kernel.commit_preview()` 进**内核内存** ✗
+  //     ⇒ **∴ 既没 `putBlob` 写 blob ✗**，**也没 `putAtom` 写原子 ✗**
+  //     ⇒ **∴ 新建图层 → `resync()` → `loadKernel(0)` → 从 IndexedDB 读原子** ✗
+  //       ⇒ **∴ spray 的原子根本不在** ✗ ⇒ **∴ 重放时直接丢了** ✓
+  //   **∴ 而**内置画笔走 `pendingStroke` 路 ✗（`submitAtom` 持久化 ✓）
+  //     ⇒ **∴ 所以**内置的不丢、spray 的丢 ✓ —— **∴ 与观测一致** ✓
+  //   **∴ 修法 ✗**：照 `api-local.js` 的 `brush_stroke` 分支 ✗
+  //     ⇒ **∴ `putBlob` ＋ `putAtom` 都写一遍** ✓
+  //     （**∴ SW 挂了才走这条路 ✗ ⇒ **∴ 直接写 IndexedDB 是对的** ✓，不经过 SW ✓）。
+  try {
+    const { open, putBlob, putAtom } = await import("/store.js");
+    const db = await open();
+    await putBlob(db, hash, Array.from(pixels));
+    await putAtom(db, state.docId, atom);
+  } catch (e) {
+    log("离线：持久化失败（下次重建内核可能丢笔）：" + String(e).slice(0, 120), "#c93");
+  }
   state.localSeq = committed.seq;
   stats.kernelHead = committed.seq;
   stats.offlineBrushPaints = (stats.offlineBrushPaints || 0) + 1;
