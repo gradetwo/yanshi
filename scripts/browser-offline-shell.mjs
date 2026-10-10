@@ -372,16 +372,26 @@ const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now()
 //     **∴ ②** **桩不在 ⇒ `failed: false` ⇒ **离线机制**没生效** ⇒ **∴ 才**该 VOID ✓**** ✓✓
 //     **∴ ③** **桩在但调用**没 reject**✗ ⇒ **∴ 那**也是**机制错** ⇒ **∴ VOID** ✓**** ✓✓
 const controlProbe = swControl
-  ? await swControl.evaluate(`(async () => {
-      const isStub = self.fetch !== self.__yanshiRealFetch;
-      if (!isStub) return { failed: false, why: "sw-fetch-is-not-stubbed" };
-      try {
-        await self.fetch("${NEGATIVE_CONTROL}");
-        return { failed: false, why: "stub-did-not-reject" };
-      } catch (error) {
-        return { failed: true, error: String(error) };
-      }
-    })()`)
+  ? (await swControl.send("Runtime.evaluate", {
+      // **★ 必须显式 `returnByValue` ＋ `awaitPromise` ✗ ★**（第 334 轮 ✓；**实测换来的 ✓）：
+      //   **∴ 第 333 轮的 CI 显示 ✗**：**`负对照 … = {}`** ✓
+      //     ⇒ **∴ 即**：**`swControl.evaluate` **没把对象取回来**✗（**∴ 只拿到空对象 ✓）
+      //       ⇒ **∴ 所以**：**这里**改用**原始 `Runtime.evaluate`**✗
+      //         ＋ **`returnByValue: true`**（**对象要按值回传 ✓）
+      //         ＋ **`awaitPromise: true`**（**async IIFE 要等 ✓）** ✓✓
+      expression: `(async () => {
+        const isStub = self.fetch !== self.__yanshiRealFetch;
+        if (!isStub) return { failed: false, why: "sw-fetch-is-not-stubbed" };
+        try {
+          await self.fetch("${NEGATIVE_CONTROL}");
+          return { failed: false, why: "stub-did-not-reject" };
+        } catch (error) {
+          return { failed: true, error: String(error) };
+        }
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    })).result?.value ?? { failed: false, why: "sw-evaluate-returned-nothing" }
   : { failed: false, why: "no-sw-control-target" };
 console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));
 // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
