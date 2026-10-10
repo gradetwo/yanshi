@@ -14,6 +14,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// **★ GPU 分流策略（**第 281 轮 ✓）★**
+pub mod gpu_policy;
 pub mod http;
 pub mod server;
 pub mod sha1;
