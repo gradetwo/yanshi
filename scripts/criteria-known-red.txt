@@ -21341,3 +21341,62 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 看**哪一层该加捕获** ✓（**∴ 原则**：**可选取数失败不该中断初始化** ✓）** ★**** ✓✓
 #     **∴ ②** **修完**重跑**三条离线判据**✗ ⇒ **∴ 看**是否转绿** ✓**** ✓✓
 #     **∴ ③** **且**：**给这条**立判据**✗（**∴ 如**「**离线时页面初始化必须完成到内核就绪**」 ✓）** ✓**** ✓✓
+
+# **★ 第 366 轮：★★★★★★★ **修正上轮 ＋ 找到真正的卡点 —— `refreshLayers` 里的 `fetchOrLocal` 让初始化**停在那里**，`void warmKernel()` 走不到**** ✗** ★★★★★★★
+#   **★★★ 修正（**上轮的推断错了 ✓）★★★**：
+#     **∴ 我**上一轮说「**`loadEffectCatalog` 抛未捕获异常 ⇒ 中断初始化**」**✗
+#       ⇒ **∴ 而**实测代码**（**`viewer-app.js:9836–9838` ✓）**✗**：
+#         ```js
+#         push("boot:before-loadEffectCatalog");
+#         try { await loadEffectCatalog(); push("boot:loadEffectCatalog-ok"); }
+#         catch (error) { push("boot:loadEffectCatalog!" + …); }
+#         ```
+#         ⇒ **∴ 它**已经**被 try/catch 包住** ✗ ⇒ **∴ 不会**中断初始化** ✓ ★**** ✓✓
+#   **★★★ 真正的卡点（**boot 序列 ＋ boot 标记 ✓）★★★**：
+#     **∴ boot 序列（**`viewer-app.js:3837–3848` ✓）**✗**：
+#       ```js
+#       await refreshLayers();
+#       await refreshThumb();
+#       …
+#       await refreshPreview();
+#       …
+#       connect(); refreshContactLink();
+#       ★ void warmKernel(); ★          // ← 内核预热**不 await** ⇒ 后台跑 ✓
+#       ```
+#     **∴ `warmKernel()`（**第 3851 行 ✓）**✗**：`await initWasm();`** ← **内核在这里加载** ✓**** ✓✓
+#     **∴ 判据打印的 boot 标记（**实际 ✓）**✗**：
+#       ```
+#       ["script-start","setupPanels:before","before-self-init","yanshi-object:before",
+#        "yanshi-object:after","setupPanels:ok","boot:before-refreshLayers",
+#        "rl:before-fetch","fol:enter","fol:网络优先-发起",
+#        "setup-entered","fol:enter","fol:网络优先-发起…"]
+#       ```
+#       **⇒ ★ 停在 `boot:before-refreshLayers` 之后的 `fol:`（＝`fetchOrLocal`）** ✓
+#         ⇒ **∴ 即**：**`await refreshLayers()` **永远不返回**✗
+#           ⇒ **∴ 代码**走不到** `void warmKernel()`** ✓
+#             ⇒ **∴ 内核**永远不加载** ✓ ★**** ✓✓
+#   **★ `fetchOrLocal` 里**已经有超时**✗**（**`viewer-app.js:339` ✓）**：
+#     ```js
+#     const boundedOptions = (rawOptions) => {
+#       const out = Object.assign({}, rawOptions || {});
+#       if (!out.signal && typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+#         out.signal = AbortSignal.timeout(8000);      // ← ★ 8 秒上限 ★
+#       }
+#       return out;
+#     };
+#     ```
+#     **∴ 且**注释（**第 340–348 行 ✓）**已经写明**✗**：
+#       **「**实测：`rl:before-fetch` 出现 ＋ `rl:fetch-ok` 没有**」**
+#         ＋ **「**断网时那一次 `fetch` 既不成功、也不失败 ⇒ 永远挂着**」** ✓**** ✓✓
+#   **★★★ 所以两种可能（**下一步要分辨 ✓）★★★**：
+#     **∴ 甲** **`AbortSignal.timeout` 在 headless chromium 里**不可用**✗
+#       ⇒ **∴ 于是** `out.signal` **没设**✗ ⇒ **∴ fetch**永远挂着** ✓ ★**** ✓✓
+#     **∴ 乙** **或**者**它可用，8 秒后确实 abort**✗
+#       ⇒ **∴ 而**判据**等的时间**不够** ✓（**∴ 如**它只等 15 秒而 `refreshLayers` ＋ `refreshThumb`
+#         ＋ `refreshPreview` 各 8 秒 ⇒ **∴ 累计**可能 24 秒** ✓）** ★**** ✓✓
+#   **★ 下一步（**精确 ✓）★**：
+#     **∴ ①** **在页面里**直接测 `typeof AbortSignal.timeout`**✗ ⇒ **∴ 一条命令分辨甲乙** ✓**** ✓✓
+#     **∴ ②** **若**是乙**✗ ⇒ **∴ 修法**：**判据**等更久**✗（**∴ 或**者**把关键取数的超时**从 8 秒降到 3 秒 ✓）** ✓**** ✓✓
+#     **∴ ③** **若**是甲**✗ ⇒ **∴ 修法**：**加一个**手写 `AbortController` ＋ `setTimeout`** 的回退** ✓
+#       （**∴ 那**是**产品侧的真修复** ✓ ⇒ **∴ 它**让**离线初始化**有界** ✓）** ★**** ✓✓
+#     **∴ ④** **无论甲乙**✗ ⇒ **∴ 都值得**让「**初始化能跑到底**」变成**一条判据** ✓**** ✓✓
