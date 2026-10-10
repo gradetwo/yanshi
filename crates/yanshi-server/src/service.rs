@@ -2635,6 +2635,19 @@ impl Workspace {
         let mut kept_missing = 0usize;
         let mut missing: Vec<String> = Vec::new();
         _e3("pack_headers");
+        // **★ 临时：打印两个集合的大小 ✗ ★**（第 229 轮 ✓；**∴ 一行定位 ✓）
+        //   **∴ 为什么 ✗**：**实测**（**第 225–228 轮 ✓）**✗**：
+        //     **∴ 导出**丢位图**✗ ⇒ **∴ 包 `blobs/` ＝ **0 条**** ✓
+        //     **∴ 而**我**连着修了**两处**（**写 `refs` ✗ ＋ **读净荷** ✓）
+        //       ⇒ **∴ 判据**仍未转绿** ✓
+        //         ⇒ **∴ 所以**必须**直接看集合大小**✗（**∴ 不再**读代码猜** ✓）** ✓✓
+        if std::env::var_os("YANSHI_TRACE_EXPORT_WANTED").is_some() {
+            eprintln!(
+                "EXPORT_WANTED wanted={} refs_by_blob={}",
+                wanted.len(),
+                refs_by_blob.len()
+            );
+        }
         for hash_text in &wanted {
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(

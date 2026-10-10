@@ -82,7 +82,13 @@ try {
 
   // **∴ 查包里的 blobs/ 条目 ✓**
   const list = spawnSync("tar", ["-tzf", path], { encoding: "utf8" }).stdout || "";
-  const blobEntries = list.split("\n").filter((l) => l.startsWith("blobs/"));
+  // **★ 路径匹配要**容忍前缀** ✗ ★**（第 229 轮 ✓；**∴ 判据自己的 bug ✓）：
+  //   **∴ 症状 ✗**：**`tar -tzf` **的输出可能带 `./` 前缀**✗
+  //     ⇒ **∴ 于是** `startsWith("blobs/")` **匹配不到** ✓
+  //       ⇒ **∴ 而**产品**其实已经把位图装进去了** ✓
+  //         （**实测 `BUILD-INFO`：`blobs: 1`、`blob_bytes_plain: 16384` ✓）
+  //           ⇒ **★ 所以**：**拿 `includes` 代替 `startsWith`** ✓ ★**** ✓✓
+  const blobEntries = list.split("\n").filter((l) => l.includes("blobs/"));
   console.log(`  包内 blobs/ 条目数 ＝ ${blobEntries.length}`);
   check(blobEntries.length > 0,
     "导出 `include_bitmaps: true` 时，包内必须有 blobs/（不可重放的位图必须照装）",
