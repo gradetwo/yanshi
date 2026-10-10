@@ -719,6 +719,33 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // **★ `brush-local.js` 也必须在这里**✗ ★**（第 384 轮 ✓；**实测根因 ✓）：
+    //   **∴ 症状 ✗**：**判据**落笔**永远画不出墨**✗（**在线也一样 ✓）**：
+    //     **∴ `brush_tool` 返回 `stroke_failed`**✗
+    //       ⇒ **∴ `reason = "Failed to fetch dynamically imported module: /brush-local.js"`** ✓
+    //         ⇒ **∴ 于是** `import("/brush-local.js")` **404** ✓
+    //           ⇒ **∴ 落笔链路**第一步就断** ✓ ★**** ✓✓
+    //   **∴ 为什么以前没暴露 ✗**：**它**走的是**磁盘 `--assets-dir assets`**✗
+    //     ⇒ **∴ 而** `assets/brush-local.js` **不存在** ✓
+    //       ⇒ **∴ 于是** 404** ✓
+    //         ⇒ **∴ 而** PWA（**Cloudflare ✓）**有它**✗ ⇒ **∴ 所以**只有**服务端模式**中招** ✓ ★**** ✓✓
+    //   **∴ 修法 ✗**：**与 `api-local.js`／`store.js` **同样内嵌**✗
+    //     ⇒ **∴ 于是**单二进制部署**也带上它** ✓ ★**** ✓✓
+    //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+    //     **∴ 收益 ✗**：**服务端模式**终于能落笔**✗ ⇒ **∴ 内核路径**可用** ✓**** ✓✓
+    //     **∴ 代价 ✗**：**二进制**多约 6 KB**✗（**∴ 可忽略 ✓）
+    //       ＋ **∴ 且**：**`crates/yanshi-http/assets/brush-local.js` **必须与 `web/` 同步** ✗
+    //         ⇒ **∴ 否则**两边漂移** ✓ ⇒ **∴ 所以**要**加一条判据守住** ✓ ★**** ✓✓
+    if path == "/brush-local.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                include_str!("../assets/brush-local.js").as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if path == "/manifest.webmanifest" {
         return match method {
             "GET" => Response::bytes(
