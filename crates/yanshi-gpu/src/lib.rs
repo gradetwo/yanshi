@@ -126,12 +126,38 @@ const CHUNK_BYTES: usize = 4 * 1024 * 1024;
 /// **∴ 每像素 16 字节（**4 × f32 ✓）
 const BYTES_PER_PIXEL: usize = 16;
 
+/// **★ 本平台能不能用**同步**的 `Quantizer::new` ✗ ★**（**第 443 轮 ✓）
+///
+/// **∴ 为什么需要这条 ✗**：**本 crate**用自实现的 `block_on`**✗（**∴ 不引入 `pollster` ✓）
+///   ⇒ **∴ 而** `block_on` **只能在**多线程 ＋ 不依赖外部事件循环**的平台上工作** ✓
+///     ⇒ **∴ 在 `wasm32` 上 ✗**：**单线程 ＋ 事件循环**✗
+///       ⇒ **∴ `request_adapter` 的完成**要**靠**外部的微任务**✗
+///         ⇒ **★ 所以**：**`block_on` **永远等不到它** ⇒ **∴ 会**死锁** ✓ ★**** ✓✓
+///
+/// **∴ 这条函数的作用 ✗**：**让调用方**先问一句**✗
+///   ⇒ **∴ 于是**：**在 wasm 上**不去建同步 `Quantizer`**✗
+///     ⇒ **∴ 而是**走**异步路**（**将来 ✓）或**直接回退 CPU** ✓
+///       ⇒ **★ 那**守住了**目标第 7 条**：**不许假装用了 GPU ✗ ＋ **不许静默降级** ✓ ★**** ✓✓
+///
+/// **∴ 返回值 ✗**：**`true` ＝ 本平台支持同步初始化**（**桌面 ✓）；
+///   **`false` ＝ 必须走异步路**（**`wasm32` ✓）** ✓
+#[must_use]
+pub const fn supports_sync_init() -> bool {
+    !cfg!(target_arch = "wasm32")
+}
+
 impl Quantizer {
     /// **★ 建一个量化器 ✗ ★**（**∴ 成功 ⇒ GPU 可用 ✓）
     ///
     /// # Errors
     /// **∴ 没有适配器或设备** ⇒ **∴ 返回 `Err`**（**∴ 调用方回退 CPU ✓）
     pub fn new(lut: &[f32]) -> Result<Self, String> {
+        // **∴ 平台守卫 ✗**（第 443 轮 ✓）：**wasm32 上**不尝试同步初始化** ✓（**∴ 不死锁 ✓）
+        if !supports_sync_init() {
+            return Err("sync_init_unsupported_on_wasm32：本平台是单线程事件循环，\
+                        同步 block_on 会死锁 ⇒ 请走异步路或回退 CPU"
+                .to_owned());
+        }
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .map_err(|e| format!("no_adapter:{e:?}"))?;
