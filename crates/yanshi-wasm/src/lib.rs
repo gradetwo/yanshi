@@ -40,6 +40,47 @@ fn envelope(result: Result<Value, KernelError>) -> String {
     }
 }
 
+/// **★ 页面里有没有 `navigator.gpu` ✗ ★**（**第 444 轮 ✓；**零新依赖 ✓）
+///
+/// **∴ 为什么这样写 ✗**：**要读 `navigator.gpu`**✗
+///   ⇒ **∴ 而**引入 `web-sys`／`js-sys` **会**增大内核体积** ✓
+///     ⇒ **∴ 所以**：**用 `extern "C"` **直接声明**那两个**最小的接口** ✓
+///       ⇒ **∴ 于是**：**零新依赖**✗ ＋ **体积**几乎不增** ✓ ★**** ✓✓
+///
+/// **∴ 两面 ✗**：
+///   **∴ 收益 ✗**：**不引入 `web-sys`**✗（**∴ 那个 crate**很大 ✓）
+///   **∴ 代价 ✗**：**手写绑定**✗ ⇒ **∴ 要**自己保证签名正确** ✓
+///     ⇒ **∴ 而**范围**极小**✗（**∴ 只**读一个属性 ✓）★**** ✓✓
+///
+/// **∴ 失败**不假装** ✗**：**任何一步拿不到** ⇒ **∴ 返回 `false`** ✓
+///   （**∴ 那是**「**页面没有 WebGPU**」的**安全默认** ✓）
+fn page_has_webgpu() -> bool {
+    js_page_has_webgpu()
+}
+
+/// **★ 内联一小段 JS ✗ ★**（**第 444 轮 ✓；**零新 crate ✓）
+///
+/// **∴ 为什么用 `inline_js` ✗**：**要读 `navigator.gpu`**✗
+///   ⇒ **∴ 而** `wasm-bindgen` **本身**不做**属性访问** ✓
+///     ⇒ **∴ 两条路 ✗**：
+///       **∴ 甲**：**引 `js-sys`／`web-sys`**✗ ⇒ **∴ 体积**增加** ✓
+///       **∴ 乙（**选它 ✓）✗**：**内联一行 JS** ✗ ⇒ **∴ 零新 crate** ✓
+///     ⇒ **★ 所以**：**选乙**✗ ⇒ **∴ 代价**是**一小段 JS**会**打进产物** ✓（**∴ 极小 ✓）★**** ✓✓
+#[wasm_bindgen(inline_js = r#"
+export function __yanshi_page_has_webgpu() {
+  try {
+    return typeof navigator !== "undefined" && !!navigator.gpu;
+  } catch (_) {
+    return false;
+  }
+}
+"#)]
+extern "C" {
+    /// **∴ 页面有没有 WebGPU ✗**（**∴ 失败 ⇒ `false` ✓）
+    #[wasm_bindgen(js_name = __yanshi_page_has_webgpu)]
+    fn js_page_has_webgpu() -> bool;
+}
+
 /// 浏览器端的计算内核句柄。
 #[wasm_bindgen]
 pub struct WasmKernel {
@@ -104,6 +145,45 @@ impl WasmKernel {
     /// 本地日志版本号（与服务端 5.7 错误里的 version 对照）。
     pub fn version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_owned()
+    }
+
+    /// **★ 如实上报本内核用了**哪个渲染后端** ✗ ★**（**第 444 轮 ✓；**目标第 7 条 ✓）
+    ///
+    /// **∴ 为什么必须有它 ✗**：**目标第 7 条**说**「**`render_backend` 必须报**实际**后端**」 ✓
+    ///   ⇒ **∴ 而**服务端早就有**这条**✗（**`/health` 的 `render_backend` ✓）
+    ///     ⇒ **∴ 而**浏览器内核**此前**完全没有能力上报** ✓（**第 444 轮实测：0 处引用 ✓）
+    ///       ⇒ **∴ 于是**：「**不许假装用了 GPU**」这条**在浏览器侧**无从校验** ✓
+    ///         ⇒ **★ 所以**：**本函数**补上它** ✓ ★**** ✓✓
+    ///
+    /// **∴ 现在的如实答案 ✗**：**`"cpu"`** ✓
+    ///   **∴ 因为**内核**尚未**接 WebGPU**✗（**∴ 三个硬阻塞见
+    ///     **`yanshi-gpu::supports_sync_init` 的文档 ✓）
+    ///     ⇒ **∴ 所以**：**`webgpu_used_by_kernel` **恒 `false`**** ✓（**∴ 如实 ✓）★**** ✓✓
+    ///
+    /// **∴ 与 `webgpu_in_page` 的区别（**关键 ✓）★**：
+    ///   **∴ `webgpu_in_page` ✗**：**页面**有没有 `navigator.gpu`**✗（**∴ 那是**浏览器的能力** ✓）
+    ///   **∴ `render_backend` ✗**：**本内核**实际**用了什么**✗（**∴ 那是**我们的行为** ✓）
+    ///   ⇒ **★ 两者**绝不许混淆** ✗ ⇒ **∴ 否则**就是**假装** ✓ ★**** ✓✓
+    pub fn backend_report_json(&self) -> String {
+        // **∴ 探测 `navigator.gpu` ✗**（**∴ 零新依赖 ✓）：
+        //   **∴ 用** `extern "C"` 声明**✗ ⇒ **∴ 不引入 `js-sys`／`web-sys`** ✓
+        //     ⇒ **∴ 于是**：**内核体积**几乎不受影响** ✓（**∴ 按第 591 轮裁定 ✓）★**** ✓✓
+        let in_page = page_has_webgpu();
+        json!({
+            // **∴ 实际后端 ✗**：**内核现在**就是 CPU** ✓（**∴ 不谎报 ✓）
+            "render_backend": "cpu",
+            // **∴ 页面能力 ✗**：**与「**我们用了什么**」分开 ✓
+            "webgpu_in_page": in_page,
+            // **∴ 我们用了 GPU 吗 ✗**：**恒 false** ✓（**∴ 如实 ✓）
+            "webgpu_used_by_kernel": false,
+            // **∴ 为什么没用 ✗**：**∴ 说清原因**（**∴ 不许**含糊 ✓）
+            "webgpu_unused_reason": if in_page {
+                "kernel_webgpu_not_wired_yet"
+            } else {
+                "navigator_gpu_absent"
+            },
+        })
+        .to_string()
     }
 
     /// view 模式批量装载：`json_array` 是服务端 `get_log` 给出的原子数组。
