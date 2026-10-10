@@ -268,7 +268,25 @@ const scopeProbe = await evaluate(`(() => ({
   wasm: typeof window.yanshi,
 }))()`);
 console.log(`  · 作用域探测 = ${JSON.stringify(scopeProbe)}`);
-const marks = await evaluate(`(() => window.__appMarks || null)()`);
+// **★ 三个信号必须**一起读** ✗ ★**（第 119 轮 ✓；**探针与判据不一致换来的 ✓）：
+  //   **∴ 背景 ✗**：**离线探针**看到 `window.yanshi` 是 **object**／正文 **625**／
+  //     **标题正常**／**资源都请求了** ⇒ **∴ 页面**是活的 ✓**** ✓✓
+  //     **∴ 而**本判据**读到** `__appMarks` 是 **null**✗
+  //       ⇒ **∴ 于是**它**报**"**脚本没执行 ✓"一类** ✓**** ✓✓
+  //   **∴ 所以**：**两个观察**不一致**✗ ⇒ **∴ 必须**在**同一处**把
+  //     `__appMarks`／`window.yanshi`／`document.title` **一起读** ✓**** ✓✓
+  //     ⇒ **∴ 于是**：**一眼**分出**是**时机／上下文／别的页面 ✓**** ✓✓
+  const marksProbe = await evaluate(`(() => ({
+    marks: window.__appMarks || null,
+    yanshi: typeof window.yanshi,
+    kernelStats: (window.yanshi && window.yanshi.kernelStats) ? (window.yanshi.kernelStats() ? "ready" : "null") : "no-hook",
+    title: document.title || "",
+    bodyLen: document.body ? document.body.innerText.length : -1,
+    scriptCount: document.scripts.length,
+    appJsLoaded: Array.from(document.scripts).some((x) => String(x.src).includes("viewer-app.js")),
+  }))()`);
+  console.log(`  · 三信号 = ${JSON.stringify(marksProbe)}`);
+  const marks = marksProbe ? marksProbe.marks : null;
 console.log(`  · 脚本执行标记 = ${JSON.stringify(marks)}`);
 // **先打开笔刷库面板再断言**（第 1076 轮）：`refreshBrushOptions()` 可能只在面板打开时调用，
 // 此前判据从未打开面板 ⇒ 选项停在"内置 1 项" ⇒ 可能把**设计**当成了缺陷。
