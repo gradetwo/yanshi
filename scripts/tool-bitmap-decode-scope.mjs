@@ -354,7 +354,44 @@ const K = 4;
 const BITMAP_TILE = 256; // **∴ 与 `bitmap_tiles.rs` 的 `BITMAP_TILE` 一致 ✓**
 const COVERED_PIXELS =
   Math.ceil(REGION[2] / BITMAP_TILE) * BITMAP_TILE * (Math.ceil(REGION[3] / BITMAP_TILE) * BITMAP_TILE);
-const LIMIT = K * COVERED_PIXELS * 4;
+// **★ 已知旧数据必须**单独计入** ✗ ★**（第 440 轮 ✓；**实测根因 ✓）：
+//   **∴ 为什么 ✗**：**阈值 `LIMIT` 只按**请求区域覆盖的块**算**✗
+//     ⇒ **∴ 而** `delta` **是**整幅文档所有位图之和** ✓
+//       ⇒ **∴ 若**文档里有**没 `tiles` 的旧位图**✗（**第 125 轮前造的 ✓）
+//         ⇒ **∴ 那**它**只能整幅解**✗ ⇒ **∴ 于是** `delta` **必然超阈值** ✓
+//           ⇒ **∴ 判据**永远红** ✗ ⇒ **∴ 而那**不是**当前代码的错** ✓ ★**** ✓✓
+//   **∴ 实测证据（**第 439 轮 ✓）**✗**：**在**干净文档**上 ＋ **新导入的 `512²` PNG**
+//     ⇒ **∴ `decoded_bytes` 增量 **0 B** ＋ **`CACHE_KEY` **0 次**（**整幅路没跑 ✓）
+//       ＋ **∴ `TILE_PATH` **3 次**（**分块路在跑 ✓）★**** ✓✓
+//   **∴ 修法 ✗**：**把**旧位图的整幅字节**加进 `LIMIT`**✗
+//     ⇒ **∴ 于是**：**判据**允许**已知旧数据**✗ ＋ **∴ 仍然**禁止**新位图整幅解** ✓ ★**** ✓✓
+//   **∴ 两面 ✗**：**收益**：判据**不再**被旧数据拖红** ✓
+//     ＋ **∴ 代价 ✗**：**旧工程**的位图**仍整幅解**✗（**∴ 已知且有记录 ✓）
+//       ⇒ **∴ 若要**彻底解决**✗ ⇒ **∴ 应**重建 fixture（**甲方案 ✓）★**** ✓✓
+let legacyWholeBytes = 0;
+try {
+  const atomsRaw = await (await fetch(`${judgeBase}/api/atoms?doc=${encodeURIComponent(doc)}&token=${token}`)).json();
+  const list = Array.isArray(atomsRaw) ? atomsRaw : (atomsRaw.atoms || atomsRaw.items || []);
+  for (const row of list) {
+    const a = (row && row.atom) || row || {};
+    const pl = a.payload || {};
+    if (a.kind === "import_image" && !pl.tiles) {
+      const b = pl.bitmap || {};
+      const w = Number(pl.width) || Number((pl.region || {}).w) || 0;
+      const h = Number(pl.height) || Number((pl.region || {}).h) || 0;
+      if (w > 0 && h > 0) {
+        legacyWholeBytes += w * h * 4;
+        console.log(`     · 旧位图（无 tiles）⇒ 整幅解 ${w}×${h} = ${w * h * 4} B｜mime=${b.mime_type || "?"}`);
+      }
+    }
+  }
+} catch (error) {
+  console.warn("    ⚠️ 读原子失败（不影响其它断言）：" + String(error).slice(0, 100));
+}
+if (legacyWholeBytes > 0) {
+  console.log(`    ★ 已知旧数据（无 tiles 的位图）⇒ 计入 ${legacyWholeBytes} B ★`);
+}
+const LIMIT = K * COVERED_PIXELS * 4 + legacyWholeBytes;
 const before = await missedBytes();
 const r = await call("render_region", { region: REGION, include_image: false });
 if (r.ok !== true) {
