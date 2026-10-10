@@ -61,7 +61,16 @@ for (let wait = 0; wait < 40; wait += 1) {
 
   return { count: seen.filter((u) => u.includes("/api/tools/render_region")).length, hasWasm }; };
 const server = await (async () => { await setPref("1"); return await load(); })();
-const client = await (async () => { await setPref(null); return await load(); })();
+// **★ 必须**显式设 "0"**✗ ★**（第 339 轮 ✓；**CI 实测换来的 ✓）：
+//   **∴ 原来**这里写 `setPref(null)`**（**清除偏好**✓）✗
+//     ⇒ **∴ 而**产品里**无偏好时的默认是**服务端渲染** ✗
+//       （**`web/viewer-app.js:51`**：`return stored === null ? true : stored === "1";` ✓）
+//         ⇒ **∴ 于是**：**`hasWasm === false`** ✗（**∴ 内核**不加载 ✓）
+//           ⇒ **★ 所以**下面那条断言**必然红** ✗
+//             ⇒ **∴ 而**它**报成**「**客户端渲染没了**」**✗ ⇒ **∴ 那**是**误报** ✓ ★**** ✓✓
+//   **∴ 修法 ✗**：**显式设 `"0"`**✗ ⇒ **∴ 于是**：**本判据**只考**开关**✗
+//     ⇒ **∴ 而**不依赖**产品的默认值** ✓（**∴ 那**是**另一件事** ✓）** ✓✓
+const client = await (async () => { await setPref("0"); return await load(); })();
 console.log(`  偏好=服务端 ⇒ 内核句柄 = ${server.hasWasm}｜render_region 请求数 = ${server.count}（**次要观察** ✓）`);
 console.log(`  偏好=客户端 ⇒ 内核句柄 = ${client.hasWasm}｜render_region 请求数 = ${client.count}（**次要观察** ✓）`);
 const failures = [];
