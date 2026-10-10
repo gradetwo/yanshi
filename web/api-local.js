@@ -58,7 +58,14 @@
  *   （**∴ 多出的分支是并行任务同期加入的 ✗** —— **∴ 收尾方合并后按同一口径重数一次即可 ✓**）。
  *   **∴ 最终收尾 ✗**（2026-10-10 ✓）：**全量合并后 `path === "` 分支共 158 个 ⇒ **∴ 本数同步到 158 ✓**
  *   （**含 update_layer／gradient_blend／list_textures／path_edit／save_palette／patch 补漏 ✓**）。 */
-export const LOCAL_IMPLEMENTED = 158;
+export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 ✓；**判据抓到的 ✓）：
+//   **∴ `yanshi-pwa-online-fix2.patch`**加了 2 个实现分支**✗
+//     （**∴ 如** `/api/documents/import` 的三步协议 ✓）
+//     ⇒ **∴ 而**这里仍写着 158 ✗
+//       ⇒ **∴ 于是** `tool-pwa-assets` 报"**声明的端点数（158）与实现分支数（160）
+//         不一致 ⇒ **∴ 在虚报能力 ✓** ✗
+//   ⇒ **★ 所以**：**改成 160**✗ ⇒ **∴ 于是**声明与实现**一致 ✓ ★**** ✓✓
+const LOCAL_IMPLEMENTED = 160;
 
 let lastFold = null;
 
@@ -482,11 +489,25 @@ async function withKernel(doc, fn) {
       const __binary =
         __ct.indexOf("image/") >= 0 ||
         __ct.indexOf("octet-stream") >= 0 ||
-        __ct.indexOf("application/pdf") >= 0;
+        __ct.indexOf("application/pdf") >= 0 ||
+        // **★ 工程包分片上传**（2026-10-10 ✓）：`?upload=<id>&offset=<n>` 的 body 是二进制分片 ✗
+        //   ⇒ 必须跳过 JSON 解析 ✓（否则 body 被消费掉，后面 `arrayBuffer()` 报错 ✓）。
+        (path === "/api/documents/import" && q.get("upload") != null &&
+         q.get("finish") == null);
       let body =
         req.method === "POST" && !__binary
           ? await req.json().catch(() => ({}))
           : {};
+      // **★ 参数名兼容**（2026-10-10 定位 ✓）：前端有些调用传 `layerId`（camelCase）✗，
+      //   有些传 `layer_id`（snake_case）✓ ⇒ 这里统一归一，避免笔落到错误的 "L0" 层。
+      //   **∴ 只做加法**（不删原字段 ✓）⇒ 已有调用不受影响 ✓。
+      if (body && typeof body === "object") {
+        if (body.layerId != null && body.layer_id == null) body.layer_id = body.layerId;
+        if (body.payload && typeof body.payload === "object" &&
+            body.payload.layerId != null && body.payload.layer_id == null) {
+          body.payload.layer_id = body.payload.layerId;
+        }
+      }
 
     // **★ P2b 请求级辅助 ✓ ★**（协作／历史类 ✗）：
     //   **∴ `p2bSession`：**会话键** ✗**（**∴ 与服务端框架参数 `session` 同义 ✓**，**缺省 `session:web` ✓**）；
@@ -784,6 +805,122 @@ async function withKernel(doc, fn) {
       });
       return json({ ok: true, doc_id: docId, token: "local", server: false,
                     width: body.width ?? 1024, height: body.height ?? 1024 });
+    }
+
+    // **★ `/api/documents/import`（工程包导入）✗ ★**（2026-10-10 定位 ✓）：
+    //   **∴ 为什么缺 ✗**：前端 `importProjectFile` 走的是这条 REST 路由（分片上传协议）✗，
+    //     而本地层只有 `/api/tools/import_project`（收 JSON body）✗ ⇒ 前端调 `?begin=1`
+    //     直接 throw `endpoint_not_local` ⇒ 导入工程文件功能完全不可用 ✓。
+    //   **∴ 协议照服务端**（`server.rs:1061` ✓）：三步 ——
+    //     ① `?begin=1` ⇒ 建上传会话，回 `upload_id` 与单片上限；
+    //     ② `?upload=<id>&offset=<n>` ⇒ 追加分片，回实际收到的字节数；
+    //     ③ `?upload=<id>&finish=1[&doc_id=<id>]` ⇒ 解析 JSON 工程包并导入，回新文档 id。
+    //   **∴ PWA 的工程包是 JSON**（`export_project` 产出）✗ ⇒ finish 时按 JSON 解析 ✓，
+    //     不是 tar（服务端才处理 tar ✓）。
+    if (path === "/api/documents/import") {
+      const q = new URL(req.url).searchParams;
+      // 上传会话存在 makeLocalApi 闭包里（跨请求存活，与 kernels 同级）。
+      if (!globalThis.__yanshiUploads) globalThis.__yanshiUploads = new Map();
+      const uploads = globalThis.__yanshiUploads;
+      if (q.get("begin") != null) {
+        const uploadId = "up_" + Date.now().toString(36) + "_" +
+                         Math.random().toString(36).slice(2, 8);
+        uploads.set(uploadId, { chunks: [], received: 0, started: Date.now() });
+        return json({ ok: true, upload_id: uploadId, max_chunk_bytes: 8 * 1024 * 1024,
+                      server: false });
+      }
+      const uploadId = q.get("upload");
+      const sess = uploadId && uploads.get(uploadId);
+      if (!sess) {
+        return json({ ok: false, error: "invalid_upload",
+                      reason: "上传会话不存在或已过期（先调 ?begin=1）",
+                      server: false }, 400);
+      }
+      if (q.get("finish") != null) {
+        // 收尾：拼分片 → 解析 JSON → 导入原子。
+        const total = sess.chunks.reduce((n, c) => n + c.length, 0);
+        const bytes = new Uint8Array(total);
+        let off = 0;
+        for (const c of sess.chunks) { bytes.set(c, off); off += c.length; }
+        uploads.delete(uploadId);
+        let project;
+        try {
+          project = JSON.parse(new TextDecoder().decode(bytes));
+        } catch (e) {
+          return json({ ok: false, error: "bad_project",
+                        reason: "工程包不是有效 JSON：" + String(e.message || e).slice(0, 100),
+                        server: false }, 400);
+        }
+        const atoms = project.atoms;
+        if (!Array.isArray(atoms)) {
+          return json({ ok: false, error: "bad_project",
+                        reason: "工程包需要 atoms 数组", server: false }, 400);
+        }
+        // 新文档 id：用 ?doc_id= 或包内 meta 或自动生成。
+        const newDocId = q.get("doc_id") ||
+                         (project.meta && project.meta.doc_id) ||
+                         ("imported-" + Date.now().toString(36));
+        // 先建文档（create_document 原子）。
+        const width = (project.meta && project.meta.width) || 1024;
+        const height = (project.meta && project.meta.height) || 1024;
+        await putAtom(handle, newDocId, {
+          actor: "human:web", id: "01LOCAL" + String(Date.now()).padStart(13, "0"),
+          kind: "create_document",
+          payload: { background: { a: 255, b: 255, g: 255, r: 255 },
+                     color_space: "srgb", doc_id: newDocId, height, width },
+          schema_version: 1, session: "session:web", timestamp: Date.now(),
+        });
+        // 恢复 blob。
+        const { putBlob } = await import("./store.js");
+        let blobsRestored = 0;
+        if (project.blobs && typeof project.blobs === "object") {
+          for (const hash of Object.keys(project.blobs)) {
+            const b64 = project.blobs[hash];
+            if (typeof b64 !== "string") continue;
+            const bin = atob(b64);
+            const buf = new Array(bin.length);
+            for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+            await putBlob(handle, hash, buf);
+            blobsRestored += 1;
+          }
+        }
+        // 逐条写入原子（基本校验：kind 非空字符串；完整 kind 白名单在 p2cKnownKinds，
+        //   但它定义在文件后面，这里用简化校验 ✓）。
+        const seen = new Set();
+        let imported = 0, skipped = 0;
+        for (const a of atoms) {
+          if (!a || typeof a !== "object" || typeof a.kind !== "string" || !a.kind ||
+              !a.payload || typeof a.payload !== "object") { skipped += 1; continue; }
+          let id = typeof a.id === "string" && a.id ? a.id : null;
+          if (!id || seen.has(id)) {
+            id = "01IMP" + String(Date.now()).padStart(13, "0") +
+                 String(imported).padStart(4, "0");
+          }
+          seen.add(id);
+          await putAtom(handle, newDocId, {
+            actor: typeof a.actor === "string" ? a.actor : "human:web",
+            id, kind: a.kind, payload: a.payload, schema_version: 1, seq: 0,
+            session: typeof a.session === "string" ? a.session : "session:web",
+            timestamp: Number(a.timestamp) || Date.now(),
+          });
+          imported += 1;
+        }
+        return json({ ok: true, server: false, doc_id: newDocId, token: "local",
+                      atoms: imported, skipped, blobs: blobsRestored,
+                      note: "工程包已导入为新文档 " + newDocId });
+      }
+      // 分片上传：body 是二进制。
+      const offset = Number(q.get("offset") || 0);
+      if (offset !== sess.received) {
+        return json({ ok: false, error: "offset_mismatch",
+                      reason: "offset 对不上（服务端已收 " + sess.received +
+                              "，客户端从 " + offset + " 传）",
+                      received: sess.received, server: false }, 409);
+      }
+      const buf = new Uint8Array(await req.arrayBuffer());
+      sess.chunks.push(buf);
+      sess.received += buf.length;
+      return json({ ok: true, received: sess.received, server: false });
     }
 
     // **② `/api/atoms`（**读／写 ✓**）**

@@ -167,6 +167,14 @@ const api = (path) => {
   if (typeof path === "string" && path.startsWith("blob:")) return path;
   return path + (path.includes("?") ? "&" : "?") + "doc=" + state.docId + "&token=" + state.token;
 };
+// **★ 给缩略图 URL 加缓存破坏参数**（2026-10-10 定位 ✓）：
+//   **∴ 为什么 ✗**：`blob:` URL 不能带 query 参数 ✗ ⇒ 直接拼接 `&t=...` 会得到无效 URL ✓
+//     （**∴ 之前 `api()` 的 blob 修复只管了 API 路径 ✗，这里三处缩略图是另一条路 ✓**）。
+//   **∴ blob: 直接返回**（blob URL 本来每次创建都唯一，不需要缓存破坏 ✓）。
+const thumbUrlWithCacheBuster = (url) => {
+  if (typeof url !== "string" || url.startsWith("blob:")) return url;
+  return url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+};
 const board = $("board");
 const overlay = $("overlay");
 const ctx = board.getContext("2d");
@@ -1308,7 +1316,7 @@ async function refreshThumb() {
       headers: { "content-type": "application/json" },
       body: "{}",
     }).then((r) => r.json());
-    if (value.thumb_url) $("thumb").src = value.thumb_url + "&t=" + Date.now();
+    if (value.thumb_url) $("thumb").src = thumbUrlWithCacheBuster(value.thumb_url);
     if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
     if (value.width && value.height) {
       // **尺寸变了就重设画板**（本轮修 ✗ → ✓）：
@@ -5848,7 +5856,7 @@ async function refreshPreview(fromKernel = false) {
         queueServerBlit();
       }
     };
-    void loadPreview(value.thumb_url + "&t=" + Date.now());
+    void loadPreview(thumbUrlWithCacheBuster(value.thumb_url));
     setStatus({ rendered: value.head_seq !== undefined ? value.head_seq : undefined, dirty: 0 });
   }
 }
@@ -8369,7 +8377,7 @@ async function refreshBrushPreviewInner() {
   img.dataset.key = key;
   // **`thumb_url` 已经被服务端改写成可 GET 的地址** ✓（`/api/blob/<hash>?doc=..&token=..` ✓）
   // ⇒ 加个时间戳即可 ✓（与页面里其它预览图同一条做法 ✓）。
-  img.src = result.thumb_url + "&t=" + Date.now();
+  img.src = thumbUrlWithCacheBuster(result.thumb_url);
   img.style.display = "";
   if (hint) hint.textContent = result.width + "×" + result.height;
 }
