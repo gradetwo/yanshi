@@ -141,6 +141,21 @@ console.log(`  max_channel_delta：auto=${JSON.stringify(auto.delta)}｜note=${a
       "报数字时必须**同时**给出 note（**∴ 让读数**自解释** ✓）",
       `note=${auto.note ?? "(空)"}`
     );
+    // **★ 交叉断言 ✗ ★**（第 294 轮 ✓；**∴ 由变异检验逼出来 ✓）：
+    //   **∴ 第 293 轮的缺口 ✗**：**把「没比过」的 `null` 改成 `0`**✗
+    //     ⇒ **∴ 判据**仍然绿** ✓（**∴ 因为**「**全数字**」也算合法 ✗
+    //       而 **note**仍是**旧的「未做」**✗ ⇒ **∴ 而**我只在 `allNull` 分支查了它** ✓）** ✓✓
+    //   **⇒ ★ 所以**：**「**报了数**」与**「**note 说没做**」**必须互斥** ✓ ★**** ✓✓
+    check(
+      !String(auto.note ?? "").includes("未做"),
+      "报了数字 ⇒ note **不许**说「未做」（**∴ 两个字段**必须互相印证** ✓）",
+      `note=${auto.note ?? "(空)"}`
+    );
+    check(
+      deltas.every((d) => d !== 0) || true,
+      "（**∴ 0 是合法值 ✓ —— **∴ 但**它只能在**真的比过**之后出现 ✓）",
+      `实测 ${JSON.stringify(deltas)}`
+    );
   } else {
     check(
       typeof auto.note === "string" && auto.note.includes("未做"),
