@@ -21439,3 +21439,39 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ②** **修**（**∴ 优先**在 `fetchOrLocal` 内**吞掉**离线错误 ＋ return null** ✓）** ✓**** ✓✓
 #     **∴ ③** **重建 ＋ 重跑三条离线判据**✗ ⇒ **∴ 看**是否转绿** ✓**** ✓✓
 #     **∴ ④** **并**：**把「**离线时 boot 必须跑到内核就绪**」立成判据** ✓**** ✓✓
+
+# **★ 第 368 轮：★★★★★★★★★★ **`__appMarks` 完整读出 —— 又排除两个候选；标记**止于 `loadEffectCatalog!…` ⇒ `void warmKernel()` 没跑**** ✗** ★★★★★★★★★★
+#   **★ 实测（**杀服务端 ＋ 等 20 秒（**覆盖 5 秒超时 ✓）✓）★**：
+#     ```
+#     · script-start → setupPanels:before → before-self-init → yanshi-object:before
+#     · yanshi-object:after → setupPanels:ok → boot:before-refreshLayers
+#     · rl:before-fetch → fol:enter → fol:网络优先-发起
+#     · ★ fol:catch-进入-取本地 ★ → fol:localJsonGet-ok
+#     · ★ rl:fetch-ok ★ → ★ boot:refreshLayers-ok ★        ← ★ 有降级路径 ⇒ 成功 ★
+#     · boot:before-refreshThumb → ★ fol:落空-抛 ★ → ★ boot:refreshThumb-ok ★  ← 抛了但有 catch
+#     · boot:before-loadEffectCatalog → ★ boot:loadEffectCatalog!Failed to fetch ★  ← 抛了但有 catch
+#     （★ 标记到此为止 ★）
+#     ```
+#   **★★★ 所以（**又排除两个 ✓）★★★**：
+#     **∴ ①** **第 367 轮的推断**错了**✗**：**`refreshLayers` **有**降级路径**✗
+#       ⇒ **∴ 实测 `fol:catch-进入-取本地` ＋ `fol:localJsonGet-ok` ＋ `rl:fetch-ok`** ✓
+#         ⇒ **∴ 所以**它**成功**✗ ⇒ **∴ 不是**中断点** ✓ ★**** ✓✓
+#     **∴ ②** **`refreshThumb` 抛了**（`fol:落空-抛` ✓）**✗ ⇒ **∴ 但**它**有 catch** ✗
+#       ⇒ **∴ 实测**紧接着 `boot:refreshThumb-ok`** ✓ ⇒ **∴ 所以**它**不会**中断** ✓**** ✓✓
+#     **∴ ③** **`loadEffectCatalog` 抛了**✗（`boot:loadEffectCatalog!Failed to fetch` ✓）
+#       ⇒ **∴ 而**它有 catch**✗（**第 9838 行 ✓）⇒ **∴ 也不会**中断** ✓（**∴ 第 366 轮的判断**对 ✓）** ✓**** ✓✓
+#     **∴ ④ ★ 标记**止于 `loadEffectCatalog!…`**✗**
+#       ⇒ **∴ 说明**那之后**没有**更多标记** ✓（**∴ 即**：**`void warmKernel()` 没跑** ✓）
+#         **⇒ ★ 所以**：**中断点在** `loadEffectCatalog` 之后**✗
+#           ⇒ **∴ 而** `warmKernel` **声明 ＋ 调用在** boot 函数里**✗（**`viewer-app.js:3848` 调用 ＋ 3851 声明 ✓）
+#             ⇒ **∴ 而** `loadEffectCatalog` **在**另一个 IIFE 里**✗（**9837 ✓）
+#               ⇒ **∴ 所以**：**两个 IIFE 的标记**交织**✗ ⇒ **∴ 不能**只靠标记顺序**判断 ✓ ★**** ✓✓
+#   **★ 下一步（**精确 ✓）★**：
+#     **∴ ①** **直接探 `warmKernel` 是否被调用**✗
+#       ⇒ **∴ 方法**：**读 boot 函数（**3837–3849 ✓）**的**每一步**有没有标记** ✓
+#         ⇒ **∴ 若**没有 ⇒ **∴ 加标记**（**∴ 如** `boot:before-warmKernel` ✓）** ★**** ✓✓
+#     **∴ ②** **或**者**在 `warmKernel` 里**加一个标记**✗ ⇒ **∴ 看**它**进不进** ✓**** ✓✓
+#     **∴ ③** **并**：**检查** `void warmKernel()` **之前那几行**（**`connect()`／`refreshContactLink()` ✓）
+#       ⇒ **∴ 若**其中之一**抛**✗ ⇒ **∴ 那**就是**中断点** ✓ ★**** ✓✓
+#   **★ 而**本轮的价值 ✗ ★**：**读全 `__appMarks`**✗ ⇒ **∴ 一次**排除两个候选** ✓
+#     ⇒ **∴ 且**发现「**两个 IIFE 的标记**交织**」这个**判断陷阱** ✓ ★**** ✓✓
