@@ -3540,9 +3540,27 @@ async function switchDocument(docId, token, size) {
   state.viewport = { x: 0, y: 0, w: 1024, h: 1024 };
   sizeBoards(1024, 1024);
   if (state.token) {
-    await loadDocumentData();
+    // **★ 这两条是**核心装载**✗ ⇒ **∴ 必须**留痕** ✗ ★**（第 156 轮 ✓；**离线根因链 ✓）
+    //   **∴ 为什么 ✗**：**入口**（**第 9474 行 ✓）带 token**✗
+    //     ⇒ **∴ 走**下面第一条 ✓ ⇒ **∴ 而**它**若挂住**✗
+    //       ⇒ **∴ 后面**全部**不执行** ✓（**∴ 含** `void warmKernel()` ✓）**
+    (window.__appMarks = window.__appMarks || []).push("switch:before-loadDocumentData");
+    try {
+      await loadDocumentData();
+      (window.__appMarks = window.__appMarks || []).push("switch:loadDocumentData-ok");
+    } catch (error) {
+      (window.__appMarks = window.__appMarks || []).push("switch:loadDocumentData!" + String(error && error.message || error).slice(0, 40));
+      throw error;
+    }
   } else {
-    await ensureDocument();
+    (window.__appMarks = window.__appMarks || []).push("switch:before-ensureDocument");
+    try {
+      await ensureDocument();
+      (window.__appMarks = window.__appMarks || []).push("switch:ensureDocument-ok");
+    } catch (error) {
+      (window.__appMarks = window.__appMarks || []).push("switch:ensureDocument!" + String(error && error.message || error).slice(0, 40));
+      throw error;
+    }
   }
   // **装载之后必须按"文档自己的尺寸"重设画板**（真正修的那一处）：
   // 上面两行无条件把画板设成 1024²，而**只有 else 分支**会带着尺寸去创建文档；
