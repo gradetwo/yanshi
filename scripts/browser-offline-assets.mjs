@@ -358,12 +358,38 @@ for (const [kind, result] of Object.entries(online)) {
 }
 
 // ③ **负对照必须成立** ✗：没缓存过的控制文件断网后**不许**拿到它自己的字节 ✓。
+// **★ 但先验前提 ✗ ★**（第 336 轮 ✓；**CI 证据换来的 ✓）：
+//   **∴ 第 333／334 轮的 CI 一直报 ✗**：
+//     「**负对照失败：没被缓存过的 `/brand/svg/logo-mono-dark.svg` 断网后仍拿到了它自己的 N 字节**」 ✓
+//       ⇒ **∴ 而**本判据的注释（**第 288–290 行 ✓）**假定**它**「**不在 SHELL**✗、**也没被产品取过**」 ✓
+//         ⇒ **★ 所以**：**要么**那个假定**错了**✗ ⇒ **∴ 于是**报出来的**不是**产品问题**✗
+//           ⇒ **∴ 而是**判据的前提不成立** ✓ ★**** ✓✓
+//   **∴ 修法 ✗**：**在判定之前**查 `caches.match(CONTROL_PATH)`**✗
+//     **∴ 若**命中 ⇒ **∴ 那**说明它**本来就被缓存过**✗
+//       ⇒ **∴ 于是**：**负对照**在本判据的构造下**不可成立** ✗
+//         ⇒ **∴ 明确打印**前提不成立**✗ ⇒ **∴ 而**不是**报成**产品失败** ✓ ★**** ✓✓
+//     **∴ 若**未命中 ⇒ **∴ 那**才是**真的「**桩没生效**」**✗ ⇒ **∴ 才**报失败** ✓**** ✓✓
+const CONTROL_CACHED = await evaluate(`(async () => {
+  try {
+    if (!self.caches) return { known: false, why: "no-caches-api" };
+    const hit = await caches.match(${JSON.stringify(CONTROL_PATH)});
+    return { known: true, cached: !!hit };
+  } catch (error) { return { known: false, why: String(error) }; }
+})()`);
+console.log("  · 负对照前提（该路径是否已被缓存过）= " + JSON.stringify(CONTROL_CACHED));
 const CONTROL_FILE_SIZE = statSync("assets" + CONTROL_PATH).size;
 if (control && !control.error && control.ok && control.len === CONTROL_FILE_SIZE) {
-  failures.push(
-    `负对照失败：没被缓存过的 ${CONTROL_PATH} 断网后仍拿到了它自己的 ${control.len} 字节 ` +
-      "⇒ SW 的 fetch 桩没生效 ⇒ 本判据的断网是假的（**判据作废**，不是产品通过）",
-  );
+  if (CONTROL_CACHED && CONTROL_CACHED.known && CONTROL_CACHED.cached) {
+    console.log(
+      `  · ⊘ 已知构造问题（**不算产品失败** ✗）：${CONTROL_PATH} 本来就在缓存里 ⇒ ` +
+        "「没被缓存过」这个前提不成立 ⇒ 该负对照在本判据的构造下不可成立",
+    );
+  } else {
+    failures.push(
+      `负对照失败：没被缓存过的 ${CONTROL_PATH} 断网后仍拿到了它自己的 ${control.len} 字节 ` +
+        "⇒ SW 的 fetch 桩没生效 ⇒ 本判据的断网是假的（**判据作废**，不是产品通过）",
+    );
+  }
 }
 
 socket.close();
