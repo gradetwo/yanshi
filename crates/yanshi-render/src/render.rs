@@ -1994,11 +1994,23 @@ impl Renderer {
                                     merged.iter().map(|(k, _)| format!("{k:?}")).collect();
                                 let ekeys: Vec<String> =
                                     fresh_empty.iter().map(|k| format!("{k:?}")).collect();
+                                // **★ 临时探针（**第 314 轮 ✓；**查明后删 ✓）★**：
+                                //   **∴ 目的 ✗**：**看 below piece 的**实际尺寸**** ✓
+                                //     ⇒ **∴ 若**有 `< 256` 的**✗ ⇒ **∴ `covers` 就有**为假的可能** ✓
+                                //       ⇒ **∴ 于是**判据**可写** ✓**** ✓✓
+                                let sizes: Vec<String> = merged
+                                    .iter()
+                                    .map(|(_, b)| {
+                                        let bb = b.bbox();
+                                        format!("{}x{}", bb.w as i64, bb.h as i64)
+                                    })
+                                    .collect();
                                 let line = format!(
-                                    "STORE keys={} empty={} sig_len={}\n",
+                                    "STORE keys={} empty={} sig_len={} sizes={}\n",
                                     keys.join(","),
                                     ekeys.join(","),
-                                    sig.len()
+                                    sig.len(),
+                                    sizes.join(",")
                                 );
                                 let _ = f.write_all(line.as_bytes());
                             }
