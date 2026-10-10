@@ -254,7 +254,15 @@ const firstDiff = (left, right) => {
   const DRAW_ARGS = {
     layer_id: LAYER,
     object_id: OBJECT,
-    data: { points: [[12, 16], [48, 40], [92, 84]], size: 7, color: { r: 10, g: 20, b: 30, a: 255 }, hardness: 0.7, smooth: true },
+    // **★ 每个点**必须 3 个数** ✗ ★**（第 411 轮 ✓；**实测根因 ✓）：
+    //   **∴ 症状 ✗**：**入队返回**报**
+    //     `内核未产出像素：请求不是合法 JSON：invalid length 2, expected an array of length 3`** ✓
+    //     ⇒ **∴ 而**那不是**产品缺陷**✗ ⇒ **∴ 而是**本判据**少给了一个分量** ✓ ★**** ✓✓
+    //   **∴ 形状 ✗**：`[x, y, pressure]`**✗（**第三个数是**压力 ✓）
+    //     ⇒ **∴ 权威样例**见 `scripts/browser-export-full-document.mjs`** ✓ ★**** ✓✓
+    //   **∴ 教训 ✗**：**同一个参数形状**在**多处**出现**✗ ⇒ **∴ 一处改对**不代表**别处也对** ✓
+    //     ⇒ **∴ 所以**：**新增判据**要**抄权威样例**✗（**不凭记忆 ✓）** ★**** ✓✓
+    data: { points: [[12, 16, 0.5], [48, 40, 0.8], [92, 84, 0.9]], size: 7, color: { r: 10, g: 20, b: 30, a: 255 }, hardness: 0.7, smooth: true },
   };
   const createLayerArgs = (id, name) => ({ layer_id: id, name: name });
 
