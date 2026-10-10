@@ -11137,26 +11137,9 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             }
         })?;
     // **新文档自带一个默认图层**（业界惯例：新建图像都有一层）——
-    // 注意**不能**走 `write_create_layer` ✗：它经 `ctx.commit` 作用于**会话文档**（此刻还是老文档），
-    // 会把图层建到老文档上。这里用**带 doc_id** 的 `Workspace::commit`，明确建在**新文档**里。
-    let default_layer = "layer_1";
-    // 真 API（编译器纠正的 ✓）：`Atom::new(kind, actor, session, payload)`（4 参 ✓）。
-    let atom = Atom::new(
-        AtomKind::CreateLayer,
-        ctx.actor.clone(),
-        ctx.session.clone(),
-        json!({"layer_id": default_layer, "name": "图层 1"}),
-    );
-    ctx.workspace
-        .commit(&doc_id, atom, &ctx.actor, ctx.owner)
-        .map_err(|error| {
-            YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(format!(
-                    "文档 {doc_id} 建好了，但默认图层没建成 ⇒ {error}（可以显式调 create_layer 补上）"
-                )),
-            )
-        })?;
+    // `fold.rs` 在文档初始状态里**已经**放了一个 `layer_default`（z=-1，不额外产生原子 ✓）——
+    // 这里**不再**显式建 `layer_1` ✗（否则新文档会有两个都叫"图层 1"的层 ✗，实测确认 ✓）。
+    let default_layer = "layer_default";
     Ok(json!({
         "doc_id": doc_id,
         // **新建与打开必须能一眼分开** ✓（真实缺陷 ✓ 2026-10-06 ✓）：这条分支原先**没有**

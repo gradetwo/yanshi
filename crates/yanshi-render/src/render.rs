@@ -1348,8 +1348,36 @@ impl Renderer {
                             for k in &want_tiles {
                                 match tiles.iter().find(|(t, _)| t == k) {
                                     Some((_, b)) => {
-                                        available += 1;
-                                        cached_tiles.push((*k, b.clone()));
+                                        // **★ 部分 piece 不能算"可用"**（stale tile bug 根因，2026-10-10）：
+                                        //   below tile 按 256 格存，但 piece 可能只覆盖格内部分区域
+                                        //   （如并行分块或脏区渲染的 piece）。
+                                        //   若按整格复用 ⇒ 未覆盖区域被当成透明 ⇒ 同 tile 内先画层内容被抹掉
+                                        //   （实测：L5 脏区 y=417–457 的 piece 被 R1 全画布复用，
+                                        //    黄带 y=256–283 丢失）。
+                                        //   判定：piece 必须**覆盖**"tile 格 ∩ 本次 wanted 区域"。
+                                        //   （piece 可以更大 —— 如整文档的 piece 用于 strip 渲染 ✓）
+                                        let cell_x0 = k.0 as f64;
+                                        let cell_y0 = k.1 as f64;
+                                        let cell_x1 = cell_x0 + BELOW_TILE as f64;
+                                        let cell_y1 = cell_y0 + BELOW_TILE as f64;
+                                        let need_x0 = cell_x0.max(want.x);
+                                        let need_y0 = cell_y0.max(want.y);
+                                        let need_x1 = cell_x1.min(want.x + want.w);
+                                        let need_y1 = cell_y1.min(want.y + want.h);
+                                        let bb = b.bbox();
+                                        let covers = need_x1 > need_x0
+                                            && need_y1 > need_y0
+                                            && bb.x <= need_x0 + 1.0
+                                            && bb.y <= need_y0 + 1.0
+                                            && bb.x + bb.w >= need_x1 - 1.0
+                                            && bb.y + bb.h >= need_y1 - 1.0;
+                                        if covers {
+                                            available += 1;
+                                            cached_tiles.push((*k, b.clone()));
+                                        } else {
+                                            // 部分覆盖 ⇒ 按缺失处理（后续重算，宁慢勿错）
+                                            missing_tiles.push(*k);
+                                        }
                                     }
                                     None => {
                                         if empty.contains(k) {
