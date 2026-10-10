@@ -230,8 +230,25 @@ if (!ready) {
 }
 
 // **∴ 预热 ✗**（**∴ 冷启动**会**污染第一轮 ✓）** ✓✓
+// **★ 热身**必须跑两次** ✗ ★**（第 248 轮 ✓；**∴ 实测换来的 ✓）。
+//
+// **∴ 为什么从 1 次加到 2 次 ✗**：**实测**（**第 245 轮 vs 第 247 轮 ✓）**✗**：
+//   **∴ 同为 1 M 像素 ✗**：
+//     **∴ 第 245 轮**：CPU **580.0**｜GPU **570.0** ⇒ **∴ 只快 **1.7%**** ✓
+//     **∴ 第 247 轮**：CPU **575.0**｜GPU **31.3** ⇒ **∴ 快 **94.6%**** ✓
+//   **⇒ ★ 所以**：**第 245 轮的 GPU 路径**没真正走 GPU** ✗
+//     **∴ 最可能**：**首次创建 `GPUDevice`／适配器初始化的开销被算进了那一跑** ✓
+//       ⇒ **∴ 而那**在那个大小的输入上**占了大头** ✓**** ✓✓
+//   **∴ 一次热身**不足以**把它挤出去** ✓（**∴ 第 245 轮确实热了一次 ✓）**
+//     ⇒ **★ 所以**：**热两次** ✓ ＋ **并把热身值**打出来**✗（**∴ 那**证明是否收敛 ✓）★**** ✓✓
+const warmCpu = await measure("cpu");
+const warmGpu = fact.adapter ? await measure("gpu") : null;
 await measure("cpu");
 if (fact.adapter) await measure("gpu");
+if (warmGpu) {
+  console.log(`  （热身：CPU ${warmCpu.wallMs?.toFixed(1)} ⇒ GPU ${warmGpu.wallMs?.toFixed(1)} ms`
+    + `；**∴ 只作诊断，**不计入结论** ✓）`);
+}
 
 const cpu = await measure("cpu");
 const gpu = fact.adapter ? await measure("gpu") : null;
