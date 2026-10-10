@@ -76,12 +76,53 @@ const send = (method, params) => new Promise((resolve) => {
 //       ⇒ **∴ 就能**拿到真的答案 ✓**** ✓✓
 //   **∴ 且 ✗**：**三次都拿不到**时**返回** `undefined`**✗
 //     ⇒ **∴ 而**调用方**必须**自己**判**"**没有答案 ✓"**✗（**∴ 见负对照那一段 ✓）** ✓✓
+// **★ `evaluate` 必须**重试** ✗ ★**（第 133 轮 ✓；**悬空请求换来的 ✓）：
+//   **∴ 为什么 ✗**：**导航**（**如 `Page.reload` ✓）会**销毁旧执行上下文** ✗
+//     ⇒ **∴ 于是在**那一刻发的 `Runtime.evaluate` **永远**没有回包 ✓**** ✓✓
+//   **∴ 修法**：**`__timeout` 时**重发**（**最多 3 次 ✓）** ✓✓
+// **★★ 而**异步表达式**必须走**两段式** ✗ ★★**（第 139 轮 ✓；**探针的铁证 ✓）：
+//   **∴ 陷阱 ✗**：**不带 `awaitPromise`** 时**✗
+//     **∴ 一个**返回 Promise** 的表达式**✗
+//       ⇒ **∴ 返回**一个**未等待的 Promise 对象** ✗**** ✓✓
+//         ⇒ **∴ 而 CDP **把它**序列化成 `{}`** ✗**** ✓✓
+//         ⇒ **★ 于是**：**`{}` **不是**"**空对象 ✓"**✗，**而是**"**没有等到 ✓" ✓ ★**** ✓✓
+//   **∴ 而**带 `awaitPromise: true`**✗ ⇒ **∴ 在**这个目标上**挂死** ✓（**实测 20 秒**超时 ✓）** ✓✓
+//   **∴ 所以**：**两者**都**不能用**✗ ⇒ **∴ 必须**两段式 ✓**** ✓✓
+//     **∴ ①** **发起**：一个**同步**表达式**✗
+//       ⇒ **∴ 它**把**异步结果**写到 `window.__e…`** ✓**** ✓✓
+//     **∴ ②** **轮询**：**同步**读它**✗ ⇒ **∴ 直到** `done` ✓**** ✓✓
+//     ⇒ **∴ 于是**：**每一步**都是**同步**✗
+//       ⇒ **∴ 不**需要 `awaitPromise`**✗ ⇒ **∴ 也**不会**挂死 ✓ ★**** ✓✓
 const evaluate = async (expression) => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    // **∴ 与探针一致：**不带 `awaitPromise`** ✗（第 133 轮 ✓）
     const message = await send("Runtime.evaluate", { expression, returnByValue: true });
     if (!message || !message.__timeout) return message.result?.result?.value;
     console.warn("    ↳ 第 " + (attempt + 1) + " 次读到页面状态无应答 ⇒ **重发** ✓");
+  }
+  return undefined;
+};
+
+/// **★ 两段式**求值 ✗**（第 139 轮 ✓）：**发起 ＋ 轮询，**每一步都是同步 ✓**。
+const evaluateAsync = async (expression) => {
+  const key = "__ea" + Math.floor(Math.random() * 1e9);
+  await evaluate("window." + key + " = { done: false, value: null, error: null };\n"
+    + "(async () => { try { window." + key + ".value = await (" + expression + "); }"
+    + " catch (error) { window." + key + ".error = String(error); }"
+    + " window." + key + ".done = true; })();\n\"started\"");
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const raw = await evaluate("window." + key + " ? JSON.stringify({ done: window." + key
+      + ".done, value: window." + key + ".value, error: window." + key + ".error }) : null");
+    if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.done) {
+          await evaluate("delete window." + key + "; \"cleaned\"");
+          if (parsed.error) { console.warn("    ↳ 两段式求值失败：" + parsed.error.slice(0, 90)); return undefined; }
+          return parsed.value;
+        }
+      } catch (error) { /* 还没好 ⇒ 继续等 */ }
+    }
+    await sleep(250);
   }
   return undefined;
 };
@@ -153,7 +194,7 @@ for (let i = 0; i < 40; i++) {
   try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }
 }
 // ① SW 必须注册并**激活**（缓存只有在 activated 后才会被用 ✓）
-const ready = await evaluate(`(async () => {
+const ready = await evaluateAsync(`(async () => {
   if (!("serviceWorker" in navigator)) return "no-api";
   try {
     const registration = await Promise.race([
@@ -166,7 +207,7 @@ const ready = await evaluate(`(async () => {
 console.log(`  ① Service Worker 状态：${ready}`);
 // ② 切离线 ⇒ 重载 ⇒ 页面必须仍能渲染
 // **断网前先取证**：SW 是否接管、缓存里到底有什么（页面的"新旧"由这里判定）。
-const cacheReport = await evaluate(`(async () => {
+const cacheReport = await evaluateAsync(`(async () => {
   const reg = await navigator.serviceWorker.getRegistration();
   const keys = await caches.keys();
   const out = { controller: !!navigator.serviceWorker.controller, keys, caches: {} };
@@ -274,7 +315,7 @@ const rendered = await evaluate(`(() => ({
 // ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-const controlProbe = await evaluate(`(async () => {
+const controlProbe = await evaluateAsync(`(async () => {
   try {
     const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
     return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
