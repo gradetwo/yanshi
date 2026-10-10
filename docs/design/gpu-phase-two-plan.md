@@ -816,3 +816,56 @@ gpu_mode       = auto
    ⇒ **∴ 必须**逐位对比 CPU 结果**✗ ⇒ **∴ 并**报出 `max_channel_delta`** ✓**** ✓✓
 2. **只有**当 GPU 真的参与渲染**✗ ⇒ **∴ 才**允许 `render_backend = "gpu"`** ✓（**判据 ④ 的放宽条件 ✓）** ✓✓
 3. **CI 测** release 体积／构建时间**（**目标第 10 条 ✓）
+
+---
+
+# 二十二、★★★ **GPU 计算跑通：`max_channel_delta = 0`（逐位相同）**（第 271 轮）★★★
+
+## 一、★ 判据（**新增 ✓**）★
+
+**∴ `crates/yanshi-http/tests/gpu_compute_smoke.rs`**（**167 行 ✓，**`#![cfg(feature = "gpu")]` ✓）：
+1. **`request_adapter()`** ⇒ **适配器** ✓
+2. **`request_device()`** ⇒ **设备 ＋ 队列** ✓
+3. **★ dispatch 一个 compute shader（**精确算子 `dst[i] = src[i] + 7` ✓）
+   ⇒ **与 CPU 结果**逐位对比** ⇒ **断言 `max_channel_delta == 0`** ★**** ✓✓
+
+**∴ 不新增依赖 ✗**：**手写 `block_on` ＋ **手写字节转换**（**∴ 连 `bytemuck` 都不加 ✓）** ✓✓
+**∴ 变异点 ✗**：**把 shader 的 `+ 7` 改成 `+ 1`** ⇒ **∴ 断言**必红** ✓**** ✓✓
+
+## 二、★ 实测（**退出码 0 ✓**）★
+
+```
+running 1 test
+MESA-INTEL: warning: Haswell Vulkan support is incomplete
+test gpu_compute_matches_cpu_bit_for_bit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; finished in 0.33s
+```
+
+**⇒ ★ 所以 ✗ ★**：**三层证据**齐了** ✗**：
+| 层 | 证据 |
+|---|---|
+| **① 适配器** | **`adapter:Gl:IntegratedGpu:Mesa Intel(R) HD Graphics 5000 (HSW GT3)`** ✓ |
+| **② 设备** | **`device=true`** ✓ |
+| **③ ★ 计算 ★** | **★ compute dispatch 成功 ＋ `max_channel_delta = 0` ★** ✓ |
+
+## 三、★ 一个**重要发现**（**影响后续 ✓**）★
+
+**∴ 日志 ✗**：**`MESA-INTEL: warning: Haswell Vulkan support is incomplete`** ✓
+**∴ 与第 266 轮一致 ✗**：**适配器报的后端是 **`Gl`**（**OpenGL ✓）✗，**不是 Vulkan** ✓**
+**⇒ ★ 所以 ✗ ★**：**本机的 Vulkan **不完整****✗ ⇒ **∴ 实际走的是** OpenGL 路径** ✓
+**⇒ ∴ 因此**：**服务端的 GPU 收益**必须**单独实测**✗ ⇒ **∴ 不许**从内核（Vulkan 系）**推断** ✓ ★**** ✓✓
+
+## 四、★ 状态 ★
+
+| 项 | 值 |
+|---|---|
+| **探测三级** | **文件系统 → 适配器 → **设备** ＋ **计算**（**逐位 0 ✓）** |
+| **`render_backend`** | **仍然是 `cpu`** ✓（**∴ 因为**真正的量化路径**还没接 ✓） |
+| **`max_channel_delta`** | **仍是 `null`** ✓（**∴ 对 —— 服务端**没比过** ✗ ⇒ **∴ 而**本测试**证明了**能比** ✓） |
+
+## 五、★ 下一步 ★
+
+1. **把 `+ 7` 换成**真正的量化**（**`f32 → rgba8` 的舍入规则 ✓）✗
+   ⇒ **∴ 与 `yanshi-render` 的 CPU 量化**逐位对比** ✓**** ✓✓
+2. **只有**当服务端真的用 GPU 量化**✗ ⇒ **∴ 才**允许 `render_backend = "gpu"`** ✓
+3. **两本账**（**时间 ＋ CPU 占用 ✓）＋ **`max_channel_delta`** 真实值** ✓
