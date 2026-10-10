@@ -3913,6 +3913,30 @@ mod parallel_impl {
         if width == 0 || height == 0 || workers <= 1 || width * height < PARALLEL_MIN_PIXELS {
             return buffer.to_rgba8_quantized(background);
         }
+        // **★★★ 大图也要**先试一次 GPU** ✗ ★★★**（**第 449 轮 ✓；**实测根因 ✓）：
+        //   **∴ 原来的错 ✗**：**GPU 尝试**只在**上面那条**小图分支里**✗
+        //     （**∴ 即** `Buffer::to_rgba8_quantized` ✓）
+        //     ⇒ **∴ 而**大图（**宽×高 ≥ PARALLEL_MIN_PIXELS ✓）**走进本函数的下半段** ✓
+        //       ⇒ **∴ 而**下半段**是**纯 CPU 的并行循环**✗ ⇒ **∴ 不含**任何 GPU 调用** ✓
+        //         ⇒ **★ 所以**：**`render_backend` **永远是 `cpu`****✗
+        //           ⇒ **∴ 于是**：**GPU **永远用不上**✗ ＋ **两本账**永远只有一行** ✓ ★**** ✓✓
+        //   **∴ 修法 ✗**：**在**起并行循环之前**先试一次 GPU** ✓
+        //     ⇒ **∴ 逐位通过**（**`try_quantize_on_gpu` 内部已比对 ✓）⇒ **∴ 直接**返回** ✓
+        //       ＋ **∴ 不成 ✗** ⇒ **∴ 落回**下面的并行循环（**一字不变 ✓）★**** ✓✓
+        //   **∴ 借鉴来源 ✗**：**Krita 的 OpenGL 后端**把加速接在**合成主路**上**✗
+        //     （**∴ 不是**小图分支 ✓）＋ **∴ GEGL**同理：**加速应在**主投影路** ✓
+        //       **∴ 与本仓库一样 ✗**：**逐位一致**必须**在**同一路**上守住** ✓ ★**** ✓✓
+        //   **∴ 两面 ✗**：**收益**：**大图**第一次**有机会用 GPU**✗
+        //       ⇒ **∴ `render_backend` **才会如实**✗ ＋ **两本账**才出第二行** ✓
+        //     ＋ **∴ 代价 ✗**：**多一次**GPU 尝试**✗（**∴ 未命中时有开销 ✓）
+        //       ⇒ **∴ 所以**：**规模阈值**（**`should_use_gpu_on` ✓）**已在内部挡住小输入** ✓
+        //         ＋ **∴ 且**：**逐位比对**仍**必须保留**✗ ⇒ **∴ 不通过**就回退** ✓ ★**** ✓✓
+        #[cfg(feature = "gpu")]
+        {
+            if let Some(gpu) = buffer.try_quantize_on_gpu(width * height) {
+                return gpu;
+            }
+        }
         let mut out = vec![0u8; width * height * 4];
         let source = buffer.as_f32();
         let bg_linear = background.map(crate::color::background_linear_premul);

@@ -430,7 +430,9 @@ impl Buffer {
     /// **∴ CPU 真值 ✗**：**直接调** `rows::encode_quantized_rows`
     ///   ⇒ **∴ 与**主路径**同一函数** ✓（**∴ 不是**另写一套 ✓）
     #[cfg(feature = "gpu")]
-    fn try_quantize_on_gpu(&self, count: usize) -> Option<Vec<u8>> {
+    /// **★ 提升为 `pub(crate)` ✗ ★**（**第 449 轮 ✓）：**并行路也要能试 GPU** ✓
+    ///   （**∴ 因为它**以前**只在**串行小图路**上被调用 ✓）
+    pub(crate) fn try_quantize_on_gpu(&self, count: usize) -> Option<Vec<u8>> {
         // **★ 先**悲观地记成 CPU ✗ ★**（第 323 轮 ✓）：
         //   **∴ 因为**后面任何一步失败**都会**回退 CPU**✗
         //     ⇒ **∴ 只有**走到最后并逐位通过**才改成 `Gpu`** ✓**** ✓✓
