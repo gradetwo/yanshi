@@ -837,8 +837,14 @@ fn health(state: &ServerState) -> Response {
             //   **∴ 而**这里**没有 GPU** ✗ ⇒ **∴ 没有比较发生过 ✓**
             //     ⇒ **★ 所以 `max_channel_delta` 报 `null` ✗**（**不是 0 ✓）**★**
             //       **∴ 用 0**会**撒谎**✗（**它**读起来像"**比过且一致 ✓"）** ✓✓
-            "max_channel_delta": serde_json::Value::Null,
-            "max_channel_delta_note": "本机没有 GPU ⇒ 未做 GPU／CPU 比对（§6.3）",
+            // **★ §6.3 的 ④：**报出后端 ＋ `max_channel_delta`** ✗ ★**（第 292 轮 ✓）：
+            //   **∴ 以前**恒为 `null`**✗（**∴ 对 —— **因为**从没比过** ✓）
+            //     ⇒ **∴ 现在**：**`--features gpu` ＋ 有适配器时**真的跑一次自检**✓
+            //       ⇒ **∴ 于是**：**报出**真实的通道差**（**∴ 0 表示逐位相同 ✓）** ✓✓
+            //   **∴ 而**没有 feature 时 ⇒ **∴ 仍然 `null`** ✗
+            //     ⇒ **∴ 那**是**诚实的**（**∴ 因为**确实没比过 ✓）** ✓✓
+            "max_channel_delta": gpu_selfcheck_delta(),
+            "max_channel_delta_note": gpu_selfcheck_note(),
             // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
             "gpu_mode": GPU_MODE.get().cloned().unwrap_or_else(|| "auto".to_owned()),
             // **降级要可见** ✓（真实用户报的第 2 条 ✓）：9p/NFS 上 fsync 不被支持 ✓
@@ -936,6 +942,41 @@ fn gpu_adapter_probe() -> (bool, String) {
 fn gpu_adapter_probe() -> (bool, String) {
     (false, "feature_gpu_not_enabled".to_owned())
 }
+
+/// **★ 自检的通道差（**`--features gpu` 时才有实数 ✓）✗ ★**（第 292 轮 ✓；**§6.3 ④ ✓）。
+///
+/// **∴ 为什么返回 `Value` 而不是数字 ✗**：**没有 feature ⇒ **没有比过**✗
+///   ⇒ **∴ 那时**必须报 `null`**✗ ⇒ **∴ 不许**用 `0` 冒充** ✓（**∴ 用 0**会读成「**比过且一致**」✓）** ✓✓
+#[cfg(feature = "gpu")]
+fn gpu_selfcheck_delta() -> serde_json::Value {
+    match crate::gpu_policy::selfcheck::run() {
+        Some(r) => serde_json::json!(r.max_channel_delta),
+        None => serde_json::Value::Null,
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn gpu_selfcheck_delta() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+/// **∴ 与差值配套的说明 ✗**（**∴ 让读数**自解释** ✓）
+#[cfg(feature = "gpu")]
+fn gpu_selfcheck_note() -> String {
+    match crate::gpu_policy::selfcheck::run() {
+        Some(r) => format!(
+            "GPU 自检（{} 像素）与 CPU 真值逐位对比；0 表示逐位相同（§6.3）",
+            r.pixels
+        ),
+        None => "本机没有可用 GPU 适配器 ⇒ 未做 GPU／CPU 比对（§6.3）".to_owned(),
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn gpu_selfcheck_note() -> String {
+    "构建未开启 gpu feature ⇒ 未做 GPU／CPU 比对（§6.3）".to_owned()
+}
+
 fn gpu_probe() -> (bool, String) {
     // **∴ ① `--gpu off` ✗**：**用户明确关掉** ⇒ **∴ `cpu` 是**正确的**✗，**而**原因**必须**说明是关掉的** ✓
     let mode = GPU_MODE.get().map(String::as_str).unwrap_or("auto");
