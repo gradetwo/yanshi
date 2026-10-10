@@ -404,7 +404,69 @@ impl Buffer {
     /// `wasm32` 与桌面都可用（本函数不按目标门控），并且恒为串行：wasm 上没有线程，
     /// 桌面上并行版由 `render::parallel_impl::quantize_to_rgba8` 在更大的图上调用
     /// [`crate::rows::encode_quantized_rows`] 分带完成。
+    /// **★ 试一次 GPU 量化 ✗ ★**（第 306 轮 ✓；**只在 `--features gpu` 时编译 ✓）。
+    ///
+    /// **∴ 它自己做**逐位核对** ✗**：**拿 GPU 结果与 CPU 真值比** ✓
+    ///   ⇒ **∴ 若**有任何**字节不同** ⇒ **∴ 返回 `None`** ⇒ **∴ 调用方**回退 CPU** ✓
+    ///     ⇒ **★ 所以**：**不许**把**不同的像素**交出去**（**目标第 7 条**）★**
+    ///
+    /// **∴ 失败**不静默** ✗**：**无适配器／量化失败／长度不符／字节不符**
+    ///   ⇒ **∴ 一律** `eprintln` ＋ **回退 CPU** ✓
+    ///
+    /// **∴ CPU 真值 ✗**：**直接调** `rows::encode_quantized_rows`
+    ///   ⇒ **∴ 与**主路径**同一函数** ✓（**∴ 不是**另写一套 ✓）
+    #[cfg(feature = "gpu")]
+    fn try_quantize_on_gpu(&self, count: usize) -> Option<Vec<u8>> {
+        let lut = crate::color::srgb_encode_table();
+        let quantizer = match yanshi_gpu::Quantizer::new(lut) {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("GPU 不可用 ⇒ 回退 CPU：{e}");
+                return None;
+            }
+        };
+        let gpu = match quantizer.quantize(&self.pixels, count) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("GPU 量化失败 ⇒ 回退 CPU：{e}");
+                return None;
+            }
+        };
+        // **★ 逐位核对（**∴ 与 CPU 真值比 ✓）★**
+        let (width, height) = (self.width as usize, self.height as usize);
+        let mut want = vec![0u8; width * height * 4];
+        crate::rows::encode_quantized_rows(&self.pixels, &mut want, 0, height, width, None);
+        if want.len() != gpu.len() {
+            eprintln!("GPU 结果长度不符 ⇒ 回退 CPU");
+            return None;
+        }
+        let bad = (0..want.len()).filter(|&i| want[i] != gpu[i]).count();
+        if bad > 0 {
+            eprintln!("GPU 与 CPU 有 {bad} 个字节不符 ⇒ 回退 CPU（**∴ 不许**交出不同的像素**）");
+            return None;
+        }
+        Some(gpu)
+    }
+
+    /// **输出量化 ＋ sRGB 编码 ✗**（**与 `Buffer::to_rgba8` 逐位等价 ✓）。
+    ///
+    /// **∴ 分派 ✗**：**`--features gpu` ＋ 规模够 ＋ 适配器可用 ⇒ 走 GPU** ✗
+    /// ⇒ **∴ 而** GPU 结果**必须与 CPU 逐位相同** ✗ ⇒ **∴ 否则**回退 CPU** ✓
+    #[must_use]
     pub fn to_rgba8_quantized(&self, background: Option<[u8; 4]>) -> Vec<u8> {
+        // **★ GPU 分派 ✗ ★**（第 306 轮 ✓；**目标第 7／8 条 ✓）：
+        //   **∴ 三条都满足才走 GPU ✗**：**① feature 开 ✓ ② 规模够 ✓ ③ 适配器可用 ✓**
+        //   **∴ 否则**：**一律**走原来的 CPU 路** ✓（**∴ 真值恒在 CPU ✓）** ✓✓
+        #[cfg(feature = "gpu")]
+        if background.is_none() {
+            let count = (self.width as usize) * (self.height as usize);
+            if yanshi_gpu::should_use_gpu(count) {
+                if let Some(out) = self.try_quantize_on_gpu(count) {
+                    return out;
+                }
+            }
+        }
+
         let width = self.width as usize;
         let height = self.height as usize;
         let mut out = vec![0u8; width * height * 4];
