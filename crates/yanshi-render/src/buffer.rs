@@ -405,6 +405,19 @@ impl Buffer {
     /// `wasm32` 与桌面都可用（本函数不按目标门控），并且恒为串行：wasm 上没有线程，
     /// 桌面上并行版由 `render::parallel_impl::quantize_to_rgba8` 在更大的图上调用
     /// [`crate::rows::encode_quantized_rows`] 分带完成。
+    /// **★ 最近一次量化实际用的后端 ✗ ★**（第 323 轮 ✓；**目标第 7 条 ✓）。
+    ///
+    /// **∴ 为什么用进程级原子量 ✗**：**渲染发生在 `yanshi-render`**✗
+    ///   ⇒ **∴ 而** `/health` **在 `yanshi-http`** ✓
+    ///     ⇒ **∴ 所以**：**用**一个进程级记录点**把「**实际用了哪条路**」传出去** ✓**** ✓✓
+    /// **∴ 诚实性 ✗**：**它**只在**真的走了 GPU**（**且逐位核对通过 ✓）时才被设成 `Gpu`** ✓
+    ///   ⇒ **∴ 于是**：**`/health` 报的 `render_backend` **不可能**假装** ✓ ★**** ✓✓
+    /// **∴ 代价（**如实 ✓）**：**多一个全局原子量**✗ ⇒ **∴ 而**它**只有**一个 `u8`** ✓**** ✓✓
+    #[cfg(feature = "gpu")]
+    fn note_backend(backend: crate::Backend) {
+        crate::set_last_backend(backend);
+    }
+
     /// **★ 试一次 GPU 量化 ✗ ★**（第 306 轮 ✓；**只在 `--features gpu` 时编译 ✓）。
     ///
     /// **∴ 它自己做**逐位核对** ✗**：**拿 GPU 结果与 CPU 真值比** ✓
@@ -418,6 +431,10 @@ impl Buffer {
     ///   ⇒ **∴ 与**主路径**同一函数** ✓（**∴ 不是**另写一套 ✓）
     #[cfg(feature = "gpu")]
     fn try_quantize_on_gpu(&self, count: usize) -> Option<Vec<u8>> {
+        // **★ 先**悲观地记成 CPU ✗ ★**（第 323 轮 ✓）：
+        //   **∴ 因为**后面任何一步失败**都会**回退 CPU**✗
+        //     ⇒ **∴ 只有**走到最后并逐位通过**才改成 `Gpu`** ✓**** ✓✓
+        Self::note_backend(crate::Backend::Cpu);
         let lut = crate::color::srgb_encode_table();
         let quantizer = match yanshi_gpu::Quantizer::new(lut) {
             Ok(q) => q,
@@ -453,6 +470,10 @@ impl Buffer {
             eprintln!("GPU 与 CPU 有 {bad} 个字节不符 ⇒ 回退 CPU（**∴ 不许**交出不同的像素**）");
             return None;
         }
+        // **★ 只有**走到这里**（**逐位通过 ✓）才记成 GPU**✗ ★**（第 323 轮 ✓）：
+        //   ⇒ **∴ 于是**：**`/health` 报 `gpu` 时**一定是**真的用了 GPU** ✓
+        //     ⇒ **∴ 且**：**结果**与 CPU **逐位相同** ✓（**∴ 上面刚验过 ✓）** ✓✓
+        Self::note_backend(crate::Backend::Gpu);
         Some(gpu)
     }
 

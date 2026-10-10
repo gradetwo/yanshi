@@ -827,7 +827,15 @@ fn health(state: &ServerState) -> Response {
             //     ⇒ **∴ 现在**只有 CPU** ⇒ **∴ 必须**恒为 `cpu`** ✓（**∴ 直到**GPU 后端真的接上 ✓）** ✓✓
             //   **∴ `gpu_probe` ✗**：**环境**有没有 GPU**✗（**∴ 那**是**探测结果** ✓）
             //     ⇒ **∴ 与 `render_backend` **分开报** ✓**** ✓✓
-            "render_backend": "cpu",
+            // **★ 第 323 轮：**改成**动态读取** ✗ ★**（**目标第 7 条 ✓）：
+            //   **∴ 它**读的是 `yanshi-render` 的**进程级记录点**✗
+            //     ⇒ **∴ 而**那个记录点**只在**真的走完 GPU 路 ＋ 逐位核对通过**后才被设成 `gpu`** ✓
+            //       ⇒ **★ 所以**：**`render_backend` **不可能**假装** ✓ ★**** ✓✓
+            //   **∴ 没有 `gpu` feature 时 ✗**：**记录点**恒为 `cpu`** ✓
+            //     ⇒ **∴ 于是**：**默认构建**仍报 `cpu`** ✓（**∴ 与**引入 GPU 前**一致 ✓）** ✓✓
+            //   **∴ 小输入时 ✗**：**规模不够 ⇒ 走 CPU**✗ ⇒ **∴ 记录点**也是 `cpu`** ✓
+            //     ⇒ **∴ 于是**：**它**如实反映**这一次**实际用了什么** ✓**** ✓✓
+            "render_backend": yanshi_render::last_backend().as_str(),
             "gpu_probe": {
                 "available": gpu_probe().0,
                 "reason": gpu_probe().1,
