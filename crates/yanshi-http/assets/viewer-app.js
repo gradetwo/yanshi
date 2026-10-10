@@ -1834,6 +1834,35 @@ async function loadKernel(since = 0) {
 }
 
 /// 渲染文档坐标区域 `(x,y,w,h)` 并画进画布（画布坐标 = 文档坐标 − 视口原点）。
+/// **★ 内核渲染（**有异步 GPU 路就用它 ✓）✗ ★**（**第 488 轮 ✓；**目标第 6 条 ✓）
+///
+/// **∴ 为什么需要这个包装 ✗**：**第 487 轮**给内核加了 `render_region_rgba_async`**✗
+///   ⇒ **∴ 而**它**只在 `--features gpu` 的产物里存在** ✓
+///     ＋ **∴ 所以**：**调用方**必须先查 `typeof`** ✓
+///       ＋ **∴ 且**：**没有它时**要**回退同步版** ✗（**∴ 不许**报错 ✓）
+///         ⇒ **∴ 于是**：**一个**统一的 Promise 接口**✗
+///           ＋ **∴ 调用方**只需 `await`** ✓ ★**** ✓✓
+///
+/// **∴ 诚实性 ✗**：**用了异步路**也**不改 `render_backend`**✗
+///   ⇒ **∴ 因为**内核的上报**由**它自己**给出** ✓
+///     ＋ **∴ 而**这里**只选**调用方式** ✓ ★**** ✓✓
+///
+/// **∴ 两面 ✗**：
+///   **∴ 收益 ✗**：**内核**有机会走 GPU 量化**✗ ＋ **没有 feature 时**一字不变** ✓
+///   **∴ 代价 ✗**：**异步路**多一次 `await`**✗（**∴ 且**失败会**回退** ✓）★**** ✓✓
+async function kernelRenderRgba(x, y, w, h) {
+  const kernel = state.kernel;
+  if (kernel && typeof kernel.render_region_rgba_async === "function") {
+    try {
+      return await kernel.render_region_rgba_async(x, y, w, h);
+    } catch (error) {
+      // **∴ 异步路出错 ⇒ 回退同步**（**∴ 不许**让一次 GPU 失败打断渲染 ✓）
+      console.warn("内核异步渲染失败，回退同步路：" + String(error).slice(0, 120));
+    }
+  }
+  return kernel ? kernel.render_region_rgba(x, y, w, h) : null;
+}
+
 function drawKernelRegion(x, y, w, h) {
   // 含 heavy 内容的文档里 ✓，内核那份像素是**空白**的 ✓ ⇒ 内核落笔之后用**服务端像素**补画 ✓
   //（整块绘制、脏区绘制、缩放重绘都走这里 ✓，WS 的 tiles 事件也不例外 ✓）。
@@ -2557,7 +2586,11 @@ async function checkBitExact() {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
-  const localView = state.kernel.render_region_rgba(0, 0, width, height);
+  // **★ 用统一包装 ⇒ 有 GPU 异步路就用它 ✗ ★**（**第 488 轮 ✓）
+  //   **∴ 为什么这里最合适 ✗**：**本函数**本来就是 `async`**✗
+  //     ＋ **∴ 而**且：**它**正是「**逐位一致**」的检查** ✓
+  //       ⇒ **∴ 于是**：**GPU 路的输出**也被同一条判据检查** ✓ ★**** ✓✓
+  const localView = await kernelRenderRgba(0, 0, width, height);
   const localPixels = localView ? Uint8Array.from(localView) : localView;
   if (localPixels.length === 0) {
     // 内核没产出像素（未就绪 / 文档尺寸不符 / 内核处于错误状态）：明确报出来，

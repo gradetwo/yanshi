@@ -138,6 +138,27 @@ check(
   "前端不许因为探测成功就**声称**在用 GPU（**∴ 那是谎报 ✓）",
 );
 
+console.log("  ── ⑦ 渲染路也接上了（**否则只探测不渲染**）──");
+// **∴ 为什么 ✗**：**只探测不渲染**等于**没用上** ✓
+//   ⇒ **∴ 必须**有**调用方**真的**走异步渲染** ✓ ★**** ✓✓
+check(/async function kernelRenderRgba/.test(viewer), "viewer-app.js 必须有 async function kernelRenderRgba");
+check(
+  /typeof kernel\.render_region_rgba_async === "function"/.test(viewer),
+  "必须查 render_region_rgba_async 是否存在（**∴ 默认产物没有它 ✓）",
+);
+check(
+  /await kernel\.render_region_rgba_async\(/.test(viewer),
+  "必须 await render_region_rgba_async（**∴ 不许**只拿 Promise ✓）",
+);
+check(
+  /kernel\.render_region_rgba\(/.test(viewer),
+  "必须保留同步回退 kernel.render_region_rgba（**∴ 没有 feature 时要能工作 ✓）",
+);
+check(
+  /await kernelRenderRgba\(/.test(viewer),
+  "至少有一个调用点真的 await 了这个包装（**∴ 否则渲染路没接上 ✓）",
+);
+
 console.log("");
 if (failed > 0) {
   console.error(`  ✗ 内核异步 GPU 路有 ${failed} 项不达标（**∴ 那会让浏览器内核**死锁**或**体积失控**）`);
