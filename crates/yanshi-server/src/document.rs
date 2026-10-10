@@ -1815,6 +1815,16 @@ impl Document {
         self.renderer.below_reuse_count()
     }
 
+    /// **below 缓存累计缺了几格**（第 342 轮，纯观测）：只读转发。
+    pub fn below_missing_count(&self) -> usize {
+        self.renderer.below_missing_count()
+    }
+
+    /// **below 缓存累计想要几格**（第 342 轮，纯观测）：只读转发。
+    pub fn below_wanted_count(&self) -> usize {
+        self.renderer.below_wanted_count()
+    }
+
     /// **★ `above` 复用次数 ✓ ★**（第 702 轮 ✓，**纯观测 ✓**）：**∴ 与 `below` 同一条链 ✓**
     /// ⇒ **∴ 判据据此断言"半透明层的上方合成被复用了"✗**（**目标第 4 条 ✓**）。
     pub fn above_reuse_count(&self) -> usize {

@@ -3022,6 +3022,22 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         self.documents.values().map(|d| d.below_reuse_count()).sum()
     }
 
+    /// **below 缓存累计缺了几格（全文档求和）**（第 342 轮，纯观测）。
+    pub fn below_missing_count(&self) -> usize {
+        self.documents
+            .values()
+            .map(|d| d.below_missing_count())
+            .sum()
+    }
+
+    /// **below 缓存累计想要几格（全文档求和）**（第 342 轮，纯观测）。
+    pub fn below_wanted_count(&self) -> usize {
+        self.documents
+            .values()
+            .map(|d| d.below_wanted_count())
+            .sum()
+    }
+
     /// **★ 某一个文档的 below 复用计数 ✓ ★**（第 535 轮 ✓）：**只读转发 ✓**。
     ///
     /// **为什么不能只用上面那个** ✗：**`below_reuse_count()` 把**所有文档**加起来 ✗**，

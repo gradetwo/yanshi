@@ -808,6 +808,10 @@ fn health(state: &ServerState) -> Response {
             // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。
             "bitmap_cache": bitmap_cache_stats(state),
             "below_reuse": below_reuse_count(state),
+            // below 的另外两个累计读数（第 342 轮，纯观测）：只有 below_reuse 时，
+            // 判据分不清「真的没命中」与「没走 below 路径」。
+            "below_missing": below_missing_count(state),
+            "below_wanted": below_wanted_count(state),
             // **★ 渲染后端必须**如实报出** ✓ ★**（第 602 轮 ✓；**部署矩阵 ＋ GPU 优先决策 ✓**）：
             // **∴ 现在**没有 GPU 后端 ✗**（**∴ 全部走 CPU ✓**）⇒ **∴ 这里**永远**如实写 `cpu` ✓**
             // **★ 而**"**环境有没有 GPU**"**是另一个问题**✗ ⇒ **∴ 见下面的 `gpu_probe` ✓ ★**
@@ -884,6 +888,22 @@ fn below_reuse_count(state: &ServerState) -> serde_json::Value {
         return json!({"error": "工作区锁中毒"});
     };
     json!(workspace.below_reuse_count())
+}
+
+/// **below 缓存累计缺了几格**（第 342 轮，纯观测）—— 照 `below_reuse_count` 的写法。
+fn below_missing_count(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    json!(workspace.below_missing_count())
+}
+
+/// **below 缓存累计想要几格**（第 342 轮，纯观测）—— 照 `below_reuse_count` 的写法。
+fn below_wanted_count(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    json!(workspace.below_wanted_count())
 }
 
 /// **★ GPU 探测：**真的去看**，而不是写死** ✗ ★**（第 258 轮 ✓；**目标第 7 条 ✓**）。
