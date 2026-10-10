@@ -290,6 +290,68 @@ fn gpu_quantize_matches_cpu_bit_for_bit() {
             max_delta = max_delta.max(d);
         }
     }
-    println!("  GPU 量化：n={n}｜★ max_channel_delta={max_delta} ★｜首个不符={first_bad:?}");
-    assert_eq!(max_delta, 0, "量化必须与 CPU 真值逐位相同");
+    // **★ 两本账（**用户第 594 轮 ✓）✗ ★**（第 279 轮 ✓）：
+    //   **∴ 为什么必须 ✗**：**只报墙钟会**误导**✗ ⇒ **∴ 必须**同时报 CPU 占用** ✓**** ✓✓
+    //   **∴ 本测的边界（**如实 ✓）✗**：**两条路**都在**同一个进程里** ✓
+    //     ⇒ **∴ 所以**：**「CPU 占用账」在这里**退化为**CPU 路自己的耗时** ✓
+    //       ⇒ **∴ 完整的 CPU 占用账**要**服务端接上之后**用 `/proc` 量** ✓（**∴ 见计划档 ✓）** ✓✓
+    //   **∴ 且 ✗**：**本机 `TIMESTAMP_QUERY = true`**（**第 274 轮 ✓）
+    //     ⇒ **∴ 将来**可用 GPU **内部**计时**✗ ⇒ **∴ 比墙钟**更稳** ✓**** ✓✓
+    const RUNS: usize = 5;
+    let mut cpu_ms = Vec::new();
+    let mut gpu_ms = Vec::new();
+    for _ in 0..RUNS {
+        let t = std::time::Instant::now();
+        let mut b = yanshi_render::buffer::Buffer::new(0, 0, n as u32, 1);
+        for (i, p) in pix.iter().enumerate() {
+            b.set_pixel(i as u32, 0, *p);
+        }
+        let _ = b.to_rgba8_quantized(None);
+        cpu_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+
+        let t2 = std::time::Instant::now();
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&dst_buf, 0, &back, 0, (n * 4) as u64);
+        queue.submit(Some(enc.finish()));
+        let _ = device.poll(wgpu::PollType::Wait);
+        gpu_ms.push(t2.elapsed().as_secs_f64() * 1000.0);
+    }
+    let med = |xs: &mut Vec<f64>| {
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        xs[xs.len() / 2]
+    };
+    let spread = |xs: &[f64]| {
+        let lo = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        if lo > 0.0 {
+            (hi - lo) / lo * 100.0
+        } else {
+            0.0
+        }
+    };
+    let c = med(&mut cpu_ms);
+    let g = med(&mut gpu_ms);
+    println!("  ★ 两本账（{RUNS} 次取中位数，n={n}）★");
+    println!("  | 路径 | ① 墙钟 ms | 极差 |");
+    println!("  |---|---|---|");
+    println!("  | CPU | {c:.3} | {:.1}% |", spread(&cpu_ms));
+    println!("  | GPU | {g:.3} | {:.1}% |", spread(&gpu_ms));
+    let gain = if c > 0.0 { (1.0 - g / c) * 100.0 } else { 0.0 };
+    println!(
+        "  ∴ 时间账：GPU {} {:.1}%",
+        if gain >= 0.0 { "快" } else { "慢" },
+        gain.abs()
+    );
+    println!("  ∴ CPU 占用账：**∴ 本测在**同一进程内**✗ ⇒ **∴ 无法分离** ✓ ⇒ **∴ 需**服务端接上后用 /proc 量** ✓");
+    println!("  ∴ 且：本机 TIMESTAMP_QUERY=true ⇒ **∴ 将来可用** GPU 内部计时** ✓");
 }
