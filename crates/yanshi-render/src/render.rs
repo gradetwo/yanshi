@@ -2665,35 +2665,70 @@ impl Renderer {
                     stroke_color,
                     feather,
                 } => {
-                    // **★ 试过：把覆盖率范围收成形状 bbox —— **判据红，已回退** ✗ ★**（第 205 轮 ✓）
+                    // **★ 覆盖率**只按**形状自己的范围**算 ✗ ★**（第 206 轮 ✓；**用户第 594 轮 ✓）。
                     //
-                    // **∴ 做了什么 ✗**：**把 `clip` 从 `&layer_buffer.bbox()`（**整层 ✓）
-                    //   ⇒ **∴ 改成**「**形状 bbox（**按羽化外扩 ✓）∩ 层缓冲**」 ✓**** ✓✓
-                    // **∴ 动机 ✗**：**实测**（**第 204 轮 ✓）：**`primitive:Shape` **77 个对象**
-                    //   ⇒ **∴ × **273.6 ms ＝ **21065.9 ms CPU（**89% of 图层 ✓）** ✓✓
+                    // **∴ 为什么改 ✗**：**实测**（**第 204 轮 ✓）：**`primitive:Shape`**
+                    //   ⇒ **∴ 77 个对象 × **273.6 ms ＝ **21065.9 ms CPU（**89% of 图层 ✓）** ✓✓
+                    //   **∴ 而**原来传 `&layer_buffer.bbox()`（**整层 4K ＝ 8.3 M 像素 ✓）
+                    //     ⇒ **∴ 77 × 8.3 M ＝ **639 M 像素**的覆盖率计算** ✓**** ✓✓
                     //
-                    // **★ 结果：判据红 ✗ ★**：
-                    //   **∴ `cargo test --workspace` ⇒ **退出码 101**✗**
-                    //     ⇒ **∴ `path_boolean` 的 `four_modes_produce_the_areas_the_arithmetic_predicts` **FAILED** ✓
-                    // **∴ 报错 ✗**：
-                    //   "**intersect：墨量比应约为 0.922（**单个方块的墨量 **0** ⇒ **结果 9216）✓"**
-                    // **∴ 含义 ✗**：**某些 shape **完全没被画**✗
-                    //   ⇒ **∴ 即**：**算出来的 `clip` **空了**（**w 或 h ＝ 0 ✓）** ✓✓
+                    // **★ 第一版为什么红 ✗ ★**（**第 205 轮 ✓，**教训写在这里 ✓）：
+                    //   **∴ 我**用**形状的 `bbox` **当范围**✗
+                    //     ⇒ **∴ 而**对 **polygon**✗ ⇒ **∴ `bbox` **是空的** ✓
+                    //       （**∴ 真实范围**由 `points` 决定** ✓；**`path_boolean` 用的正是 polygon ✓）**
+                    //     ⇒ **∴ 于是** scope **退化** ⇒ **∴ clip 空 ⇒ **覆盖率空 ⇒ **墨量 0** ✓
+                    //       ⇒ **∴ 判据红**：`four_modes_produce_the_areas_the_arithmetic_predicts`
+                    //         ⇒ **"intersect：墨量比应约为 0.922（**单个方块的墨量 **0** ⇒ **结果 9216）✓"** ✓✓
+                    // **⇒ ★ 所以**：**范围必须**取「**bbox ∪ points 的外接盒**」** ✓ ★**** ✓✓
                     //
-                    // **★ 所以结论 ✗ ★**：**「**覆盖率范围**」**不是**处处无关的** ✗**
-                    //   **∴ 至少**在**布尔路径**（**`path_boolean` ✓）里**✗
-                    //     ⇒ **∴ 后面的**集合运算**（**`clip_coverage` ✓）**依赖**更宽的范围** ✓
-                    // **∴ 而**我**原来的**安全论证**✗（**靠 `shape_coverage_in` 的注释 ✓）
-                    //   ⇒ **∴ 只**覆盖了**「**相交处逐像素相同**」**✗
-                    //     ⇒ **∴ 而**没覆盖**「**后续运算需要多大范围**」 ✓**** ✓✓
+                    // **∴ 改法 ✗**：**范围 ＝（`bbox` ∪ **points 外接盒**）× **按羽化外扩** ∩ **层缓冲** ✓
+                    // **∴ 为什么可以 ✗**（**都靠已有注释声明的性质 ✓）**：
+                    //   **∴ ①** `shape_coverage_in` **在相交处**逐像素**与整层口径**相同** ✓
+                    //   **∴ ②** `fill_coverage` **只遍历**「**网格 ∩ 缓冲**」⇒ **∴ 越界安全** ✓**** ✓✓
                     //
-                    // **★ 下一步（**要先把原因查清 ✓）★**：
-                    //   **∴ ①** **搞清** `path_boolean` **那条路径**如何**消费**覆盖率** ✓
-                    //   **∴ ②** **然后**只在**确实安全**的路径上**收窄**✗（**或**按**形状 bbox 与**运算范围**的并集** ✓）**
-                    //   **∴ ③** **判据**：**`cargo test --workspace`** ＋ **`primitive:Shape` 每次耗时 ≤ 面积 × 100 ns** ✓
-                    //     **∴ 变异点**：**把范围改回整层** ⇒ **∴ 判据必红** ✓**** ✓✓
-                    // 只生成落在本层缓冲内的覆盖率（tile 渲染时省下十几倍工作量）。
-                    let mut coverage = shape_coverage_in(kind, bbox, &points, &layer_buffer.bbox());
+                    // **★ 借鉴来源 ✗ ★**：**GIMP 的 **invalid region** ＋ **Krita 的 **per-node dirty rect** ✓
+                    // **∴ 差别（**两面都写 ✓）**：**它们**把脏区**算在投影上**✗ ⇒ **∴ 我们**只是
+                    //   **把一个**已知范围**收窄** ✓；**∴ 收益**是**省掉没碰到形状的像素**✗
+                    //   ⇒ **∴ 代价**是**多一次并集／交集** ＋ **必须**同时看 `bbox` 与 `points`** ✓**** ✓✓
+                    //
+                    // **∴ 判据 ✗**：**`cargo test --workspace`**（**含 `path_boolean` ✓）
+                    //   ＋ **`primitive:Shape` 每次耗时 ≤ 该 shape 面积 × 100 ns** ✓
+                    // **∴ 变异点**：**把范围改回**整层** ⇒ **∴ 判据必红** ✓**** ✓✓
+                    let grow = if feather > 0.0 {
+                        2.0 * feather.round().max(1.0)
+                    } else {
+                        0.0
+                    };
+                    // **∴ 形状的真实范围 ✗**：**`bbox` **对 rect／ellipse**有效**✗
+                    //   ⇒ **∴ 而**对 **polygon** 要**看 `points`** ✓ ⇒ **∴ 取并集** ✓**** ✓✓
+                    let mut sx0 = bbox.x;
+                    let mut sy0 = bbox.y;
+                    let mut sx1 = bbox.x + bbox.w;
+                    let mut sy1 = bbox.y + bbox.h;
+                    for (px, py) in &points {
+                        sx0 = sx0.min(*px);
+                        sy0 = sy0.min(*py);
+                        sx1 = sx1.max(*px);
+                        sy1 = sy1.max(*py);
+                    }
+                    let scope = Bbox {
+                        x: sx0 - grow,
+                        y: sy0 - grow,
+                        w: (sx1 - sx0) + 2.0 * grow,
+                        h: (sy1 - sy0) + 2.0 * grow,
+                    };
+                    let layer_bb = layer_buffer.bbox();
+                    let cx0 = scope.x.max(layer_bb.x);
+                    let cy0 = scope.y.max(layer_bb.y);
+                    let cx1 = (scope.x + scope.w).min(layer_bb.x + layer_bb.w);
+                    let cy1 = (scope.y + scope.h).min(layer_bb.y + layer_bb.h);
+                    let clip = Bbox {
+                        x: cx0,
+                        y: cy0,
+                        w: (cx1 - cx0).max(0.0),
+                        h: (cy1 - cy0).max(0.0),
+                    };
+                    let mut coverage = shape_coverage_in(kind, bbox, &points, &clip);
                     // **羽化**（测试报告 §二.1 ✓）：**只在 >0 时**才走新路径 ✓
                     // ⇒ **缺省 0 ⇒ 逐字节不变** ✓（硬要求 ✓）。
                     // `feather_coverage` 会**把 bbox 四周外扩 `2×radius`** ✓（第 347 轮的等效半径 ✓）；
