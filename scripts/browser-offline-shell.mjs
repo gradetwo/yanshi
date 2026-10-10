@@ -109,9 +109,17 @@ const evaluateAsync = async (expression) => {
     + "(async () => { try { window." + key + ".value = await (" + expression + "); }"
     + " catch (error) { window." + key + ".error = String(error); }"
     + " window." + key + ".done = true; })();\n\"started\"");
+  // **★ 两段式失败时**必须能看出卡在哪** ✗ ★**（第 140 轮 ✓）：
+  //   **∴ 为什么 ✗**：**负对照**在**断网后**仍然拿到 `undefined`**✗
+  //     ⇒ **∴ 而** `evaluateAsync` **自己不**说**哪一步**失败 ✓**** ✓✓
+  //   **∴ 做法**：**第 1 次**与**最后 1 次**轮询各**打印一次**✗
+  //     ⇒ **∴ 于是**：**发起**失败**与**轮询**失败**就**分得开 ✓**** ✓✓
+  let lastRaw = null;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const raw = await evaluate("window." + key + " ? JSON.stringify({ done: window." + key
       + ".done, value: window." + key + ".value, error: window." + key + ".error }) : null");
+    lastRaw = raw;
+    if (attempt === 0) console.log("    ↳ 两段式第 1 次轮询 = " + String(raw).slice(0, 120));
     if (typeof raw === "string") {
       try {
         const parsed = JSON.parse(raw);
@@ -124,6 +132,7 @@ const evaluateAsync = async (expression) => {
     }
     await sleep(250);
   }
+  console.error("    ↳ 两段式轮询 15 秒未完成（最后一次读数 = " + String(lastRaw).slice(0, 160) + "）");
   return undefined;
 };
 // **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
