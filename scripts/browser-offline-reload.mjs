@@ -35,10 +35,30 @@ if (!url) { console.error("用法: node scripts/browser-offline-reload.mjs <view
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const parsed = new URL(url);
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
-const post = async (tool, args) => (await fetch(`${parsed.origin}/api/tools?doc=${doc}&token=${token}`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ tool, arguments: args }),
-})).json();
+// **★ 诊断先行 ✗ ★**（第 338 轮 ✓；**与 `browser-offline-export.mjs` 同一修法 ✓）：
+//   **∴ CI 报 ✗**：**`SyntaxError: Unexpected token 'o', "not found" is not valid JSON`** ✓
+//     ⇒ **∴ 而** `not found` **是服务端的 404 正文** ✓
+//       ⇒ **∴ 即**：**旧写法**对 404 直接调 `.json()`**✗
+//         ⇒ **∴ 于是**丢掉了 **URL ＋ 状态 ＋ 正文** ✓**** ✓✓
+//   **∴ 修法 ✗**：**先读文本**✗ ⇒ **∴ 不是 JSON ⇒ **打印诊断再抛** ✓ ★**** ✓✓
+const post = async (tool, args) => {
+  const url = `${parsed.origin}/api/tools?doc=${doc}&token=${token}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool, arguments: args }),
+  });
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    console.error(
+      `  ✗ ${tool} 的响应不是 JSON｜URL=${url}｜status=${response.status}｜` +
+        `前 80 字节=${JSON.stringify(text.slice(0, 80))}`,
+    );
+    throw error;
+  }
+};
 
 // 页面里"数深色像素"的取样器 ✓ —— 用**离屏 2D 画布 drawImage** ✓，这样 canvas 是 2D 还是 WebGL 都能量 ✓。
 const SAMPLER = `(() => {

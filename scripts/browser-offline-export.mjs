@@ -52,8 +52,31 @@ await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir
 // ① 在线开一次（把外壳/状态缓存起来 ✓）+ 画一笔 ✓（要有东西可导 ✓）
 const parsed = new URL(url);
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
-const post = async (tool, args) => (await fetch(`${parsed.origin}/api/tools?doc=${doc}&token=${token}`, {
-  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, arguments: args }) })).json();
+// **★ 诊断先行 ✗ ★**（第 338 轮 ✓；**CI 的 `SyntaxError` 换来的 ✓）：
+//   **∴ 第 337 轮查明 ✗**：**CI 报** `SyntaxError: Unexpected token 'o', "not found" is not valid JSON`** ✓
+//     ⇒ **∴ 而** `not found` **正是服务端的 404 正文** ✓
+//       ⇒ **∴ 即**：**旧写法**对一个 404 响应**直接调了 `.json()`** ✗
+//         ⇒ **∴ 而**它**丢掉了**「**哪个 URL ＋ 什么状态 ＋ 正文是什么**」 ✓**** ✓✓
+//   **∴ 修法 ✗**：**先读文本**✗ ⇒ **∴ 不是 JSON ⇒ **打印诊断再抛** ✓
+//     ⇒ **∴ 于是**：**下次 CI** 直接给出 **URL ＋ 状态 ＋ 正文** ✓ ★**** ✓✓
+const post = async (tool, args) => {
+  const url = `${parsed.origin}/api/tools?doc=${doc}&token=${token}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool, arguments: args }),
+  });
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    console.error(
+      `  ✗ ${tool} 的响应不是 JSON｜URL=${url}｜status=${response.status}｜` +
+        `前 80 字节=${JSON.stringify(text.slice(0, 80))}`,
+    );
+    throw error;
+  }
+};
 await post("create_layer", { layer_id: "layer_default", name: "l" });
 await post("brush_stroke", { layer_id: "layer_default", brush: "classic-brush", size: 24, color: { r: 10, g: 10, b: 10, a: 255 }, points: [[60, 80, 0.8], [140, 80, 0.8]] });
 await send("Page.navigate", { url });
