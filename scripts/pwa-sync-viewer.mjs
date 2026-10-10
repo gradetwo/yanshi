@@ -12,6 +12,7 @@
 //
 // **用法** ✓：`node scripts/pwa-sync-viewer.mjs`（**在 `pwa-sync-wasm.mjs` 之后跑 ✓**）
 import { rmSync, cpSync, copyFileSync, existsSync, readdirSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
@@ -22,15 +23,61 @@ const DST = "web";
 // **★ 緩存戳必須覆蓋所有會影響運行的文件**（定位 ✓）：
 //   之前只跟蹤 viewer-app.js/viewer.css/index.html，
 //   WASM 重建但 viewer-app.js 未變時，戳不變 ⇒ 瀏覽器繼續用舊 WASM ⇒ MyPaint 筆刷零像素。
-const stampSource = [
+// **★ 戳必须由**内容**决定，不能由 mtime 决定 ✗ ★**（**第 493 轮 ✓；**实测踩到 ✓）
+//
+// **∴ 原来的写法（**已修 ✓）✗**：
+//   ```js
+//   const stampSource = [...].map((f) => statSync(...).mtimeMs).join("-");
+//   const BUILD_STAMP = stampSource.replace(/[^0-9]/g, "").slice(-13);
+//   ```
+//   **∴ 它**只看**拼接串的**最后 13 位**✗
+//     ⇒ **∴ 那**实际只反映**数组里**最后一个文件（`yanshi_wasm_bg.wasm` ✓）的 mtime** ✓
+//       ⇒ **∴ 于是**：**我改了 `viewer-app.js`／`brush-local.js`**✗
+//         ＋ **∴ 而** wasm **没变** ⇒ **∴ 戳**纹丝不动** ✓ ★**** ✓✓
+//   **∴ 实测后果（**真发生 ✓）✗**：
+//     ⇒ **∴ 我**部署了新内容**✗ ⇒ **∴ 而**线上戳仍是 `yanshi-shell-1657714024465`** ✓
+//       ⇒ **∴ 于是**：**老用户的 Service Worker **不会重新预缓存**** ✓
+//         ⇒ **★ 他们**看不到这次修复**✗ ⇒ **∴ 「部署成功」**≠「用户看到」** ✓ ★**** ✓✓
+//
+// **∴ 现在 ✗**：**对全部文件的**内容**做 sha256**✗
+//   ⇒ **∴ 任何文件**内容变 ⇒ **∴ 戳**必变** ✓
+//     ＋ **∴ 且**它**不受 mtime 影响**✗ ⇒ **∴ CI 上**可复现** ✓
+//       （**∴ 原来**CI 与本地**会算出**不同**的戳 ✓）★**** ✓✓
+//
+// **∴ 为什么仍要**纯数字**✗**：**下游有 `yanshi-online-\d+` 的正则** ✓
+//   ＋ **∴ 且** `tool-sw-stamp-idempotent.mjs` **按数字戳断言** ✓
+//     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓ ★**** ✓✓
+const stampFiles = [
   "viewer-app.js", "viewer.css", "index.html",
   "api-local.js", "brush-local.js", "store.js",
   "wasm/yanshi_wasm.js", "wasm/yanshi_wasm_bg.wasm",
-]
-  .map((f) => { try { return statSync(join(DST, f)).mtimeMs; } catch { return 0; } })
-  .join("-");
-// 用所有文件的 mtime 拼接做戳，而不是只取第一個
-const BUILD_STAMP = stampSource.replace(/[^0-9]/g, "").slice(-13) || String(Date.now());
+];
+const BUILD_STAMP = (() => {
+  const h = createHash("sha256");
+  for (const f of stampFiles) {
+    // **∴ 文件缺失也要**参与哈希**✗ ⇒ **∴ 否则**「从有到无」不会改戳** ✓
+    try {
+      h.update(f + "\u0000" + readFileSync(join(DST, f), "utf8")
+        // **★ 算哈希前必须把**戳本身**归一化掉 ✗ ★**（**第 493 轮实测 ✓）
+        //   **∴ 为什么 ✗**：**`index.html` 里**写着上一次的戳**✗
+        //     （**∴ 本脚本会打印**「index.html 的 yanshi-shell- 戳 ⇒ …」✓）
+        //     ⇒ **∴ 若**直接哈希原文**✗ ⇒ **∴ 戳进哈希、哈希出戳** ✓
+        //       ⇒ **∴ 于是**：**每次跑都算出**不同的戳**✗ ⇒ **∴ 永不幂等** ✓
+        //         ⇒ **∴ 实测 ✗**：**第一次 4009077182629｜第二次 9495148370993** ✓ ★**** ✓✓
+        //   **∴ 现在 ✗**：**先把 `yanshi-shell-*`／`yanshi-online-*` 换成**占位符**✗
+        //     ⇒ **∴ 于是**：**戳**不影响自己** ✓
+        //       ＋ **∴ 而**任何**真实内容**变化**仍然会改戳** ✓ ★**** ✓✓
+        .replace(/yanshi-shell-[A-Za-z0-9_-]+/g, "yanshi-shell-__BUILD_ID__")
+        .replace(/yanshi-online-[A-Za-z0-9_-]+/g, "yanshi-online-__BUILD_STAMP__"));
+    } catch {
+      h.update(f + "\u0000missing");
+    }
+  }
+  // **∴ 折成 13 位十进制 ✗**（**取前 12 个十六进制字符 ＝ 48 位 ✓）
+  const hex = h.digest("hex").slice(0, 12);
+  const n = BigInt("0x" + hex) % 10000000000000n;
+  return n.toString().padStart(13, "0");
+})();
 try {
   const swPath = join(DST, "sw.js");
   // **★ 戳替换必须幂等**（定位 ✓）：`web/sw.js` 是 git 跟踪文件，
