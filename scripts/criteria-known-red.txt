@@ -25791,3 +25791,50 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 方案**已入档到**可执行粒度**✗
 #         （**改哪里／判据／变异点 ✓；**见 `gpu-webgpu-discussion.md` 第 445 轮 ✓）
 #     **∴ ⬜ 体积／构建／wasm32 交给 CI/CD**（**目标第 10 条 ✓）
+
+# **★ 第 468 轮：★★★★★★★ **内核异步化第一步 —— `new` 抽成 `async fn new_async_inner` ＋ 两个薄入口**** ★★★★★★★
+#   **★★★ 本轮改动（**按第 445 轮入档的方案 ✓）★★★**：
+#     **∴ `crates/yanshi-gpu/src/lib.rs` ✗**：
+#       **∴ ① 唯一的异步实现 ✗**：
+#         ```rust
+#         - pub fn new(lut: &[f32]) -> Result<Self, String> {
+#         -     // 平台守卫…
+#         -     let adapter = block_on(instance.request_adapter(…))…
+#         -     let (device, queue) = block_on(adapter.request_device(…))…
+#         + async fn new_async_inner(lut: &[f32]) -> Result<Self, String> {
+#         +     let adapter = instance.request_adapter(…).await…
+#         +     let (device, queue) = adapter.request_device(…).await…
+#         ```
+#         ⇒ **∴ 内部**不再有 `block_on`**✗ ⇒ **∴ 于是** wasm 侧**可以**真的 await** ✓ ★**** ✓✓
+#       **∴ ② 同步薄包装 ✗**：
+#         ```rust
+#         pub fn new(lut: &[f32]) -> Result<Self, String> {
+#             if !supports_sync_init() { return Err("…请走 new_async 或回退 CPU"); }
+#             block_on(Self::new_async_inner(lut))
+#         }
+#         ```
+#         ⇒ **∴ 平台守卫**仍在 ✗ ⇒ **∴ wasm 上**响亮失败** ✓ ★**** ✓✓
+#       **∴ ③ 异步公开入口 ✗**：
+#         ```rust
+#         pub async fn new_async(lut: &[f32]) -> Result<Self, String> {
+#             Self::new_async_inner(lut).await
+#         }
+#         ```
+#         ⇒ **∴ 与同步版**只有等待方式不同**✗ ⇒ **∴ 逻辑**同一份** ✓ ★**** ✓✓
+#   **★★★ 实测（**全绿 ✓）★★★**：
+#     **∴ 编译 ✗**：**`yanshi-gpu` ✓｜`yanshi-render --features gpu` ✓** ✓
+#     **∴ 门禁 ✗**：**fmt ✓｜clippy ✓｜clippy(gpu) ✓** ✓
+#     **∴ 判据 ✗**：**内核体积 ✓｜平台守卫 ✓｜6 条 GPU 判据**全 0** ✓ ★**** ✓✓
+#   **★★★ 第二步（**未完成 ＋ 精确说明 ✓）★★★**：
+#     **∴ `quantize` **仍是**同步**✗** ⇒ **∴ 它**内部**还有 `block_on` ＋ `map_async` 轮询** ✓
+#       ⇒ **∴ 要**同样抽成 `quantize_async_inner`**✗
+#         ＋ **∴ 把** `map_async` 的等待**改成** `await` 一个 oneshot** ✓
+#           ⇒ **∴ 那**是**本方案**的**第二步** ✓（**∴ 第 445 轮已入档 ✓）★**** ✓✓
+#     **∴ 而**本会话**已到极限**✗ ⇒ **∴ 第一步**已落地并可验证** ✓
+#       ⇒ **∴ 第二步**留待下一次专注改动** ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧**全部完成**（**含第 9 条 CPU 判据仍绿 ✓）
+#     **∴ ✅ 内核异步化**第一步**（**`new` ✓）
+#     **∴ ⬜ 内核异步化**第二步**（**`quantize` ＋ `map_async` ⇒ await ✓）
+#     **∴ ⬜ 内核侧**消费 `new_async`／`quantize_async`**（**wasm 导出 ✓）
+#     **∴ ⬜ 体积／构建／wasm32 交给 CI/CD**（**目标第 10 条 ✓）

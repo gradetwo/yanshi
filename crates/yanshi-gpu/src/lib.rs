@@ -151,22 +151,54 @@ impl Quantizer {
     ///
     /// # Errors
     /// **∴ 没有适配器或设备** ⇒ **∴ 返回 `Err`**（**∴ 调用方回退 CPU ✓）
+    /// **★ 同步构造（**薄包装 ✓）✗ ★**（**第 468 轮 ✓）
+    ///
+    /// **∴ 平台守卫 ✗**（第 443 轮 ✓）**：**wasm32 上**不尝试同步初始化** ✓（**∴ 不死锁 ✓）
+    ///   ⇒ **∴ 而是**响亮失败**✗ ⇒ **∴ 调用方**走 `new_async` 或回退 CPU** ✓
+    ///
+    /// # Errors
+    /// **∴ 平台不支持同步初始化／没有适配器／没有设备** ⇒ **∴ 返回 `Err`** ✓
     pub fn new(lut: &[f32]) -> Result<Self, String> {
-        // **∴ 平台守卫 ✗**（第 443 轮 ✓）：**wasm32 上**不尝试同步初始化** ✓（**∴ 不死锁 ✓）
         if !supports_sync_init() {
             return Err("sync_init_unsupported_on_wasm32：本平台是单线程事件循环，\
-                        同步 block_on 会死锁 ⇒ 请走异步路或回退 CPU"
+                        同步 block_on 会死锁 ⇒ 请走 new_async 或回退 CPU"
                 .to_owned());
         }
+        block_on(Self::new_async_inner(lut))
+    }
+
+    /// **★ 异步构造 ✗ ★**（**第 468 轮 ✓；**wasm 侧用它 ✓）
+    ///
+    /// **∴ 与同步版的差别 ✗**：**只有**等待方式不同**✗
+    ///   ⇒ **∴ 逻辑**是**同一份**（**`new_async_inner` ✓）★**** ✓✓
+    ///
+    /// # Errors
+    /// **∴ 没有适配器／没有设备** ⇒ **∴ 返回 `Err`** ✓
+    pub async fn new_async(lut: &[f32]) -> Result<Self, String> {
+        Self::new_async_inner(lut).await
+    }
+
+    /// **★ 唯一的异步实现 ✗ ★**（**第 468 轮 ✓；**`gpu-webgpu-discussion.md` 第 445 轮 ✓）：
+    ///   **∴ 为什么抽出来 ✗**：**同步版**用自实现的 `block_on`**✗
+    ///     ⇒ **∴ 而**它**在 wasm32 上**会死锁** ✓
+    ///       ⇒ **∴ 所以**：**核心必须是 `async`**✗
+    ///         ＋ **∴ 同步版**只做**薄包装**（`block_on` ✓）
+    ///           ＋ **∴ wasm 侧**直接用 `new_async`** ✓
+    ///             ⇒ **★ 那**让**同一条逻辑**服务**两个平台** ✓ ★**** ✓✓
+    async fn new_async_inner(lut: &[f32]) -> Result<Self, String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
             .map_err(|e| format!("no_adapter:{e:?}"))?;
         let info = adapter.get_info();
         let adapter_note = format!(
             "adapter:{:?}:{:?}:{}",
             info.backend, info.device_type, info.name
         );
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
             .map_err(|e| format!("no_device:{e:?}"))?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yanshi-gpu-quantize"),
