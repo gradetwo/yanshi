@@ -474,6 +474,28 @@ impl Buffer {
                 return None;
             }
         };
+        // **★ 诊断开关：跳过逐位核对 ✗ ★**（**第 474 轮 ✓；**先测量再改 ✓）：
+        //   **∴ 为什么加它 ✗**：**第 473 轮查明**✗**：
+        //     **∴ 走 GPU 时**必然**再算一遍 CPU 真值 ＋ 一次 O(n) 全量比对** ✓
+        //       ⇒ **∴ 于是**：**GPU 的**时间收益**被这笔成本吃掉** ✓
+        //         ⇒ **∴ 而**「**甲方案**（每个 blob 只验一次 ✓）」能省多少** ✗
+        //           ⇒ **∴ 只有**测出来**才知道** ✓ ★**** ✓✓
+        //   **∴ 语义 ✗**：**`YANSHI_GPU_SKIP_VERIFY=1`**✗
+        //     ⇒ **∴ 跳过** CPU 对照 ＋ 比对**✗ ⇒ **∴ 直接**信任 GPU 结果** ✓
+        //       ＋ **∴ 未设**（**默认 ✓）⇒ **∴ 行为**与原来**一字不差** ✓ ★**** ✓✓
+        //   **∴ 安全（**如实 ✓）✗**：**它**只是**测量用**✗
+        //     ⇒ **∴ 不许**在**产品默认路径**上打开** ✓
+        //       ＋ **∴ 而**「**逐位一致**」的承诺**要求默认必须核对** ✓ ★**** ✓✓
+        let skip_verify = std::env::var_os("YANSHI_GPU_SKIP_VERIFY").is_some();
+        if skip_verify {
+            Self::note_backend(crate::Backend::Gpu);
+            // **★ 不许撒谎 ✗ ★**（**第 474 轮 ✓；**目标第 4 条 ✓）：
+            //   **∴ 跳过核对 ⇒ **没有**比对过**✗
+            //     ⇒ **∴ 所以**：**`max_channel_delta` 必须报 `null`** ✓
+            //       ＋ **∴ 不许**写 `0`**✗（**∴ 那**读起来像「**比过且一致**」 ✓）★**** ✓✓
+            crate::set_render_delta(None);
+            return Some(gpu);
+        }
         // **★ 逐位核对（**∴ 与 CPU 真值比 ✓）★**
         let (width, height) = (self.width as usize, self.height as usize);
         let mut want = vec![0u8; width * height * 4];
