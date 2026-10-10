@@ -1364,6 +1364,53 @@ impl Document {
         })
     }
 
+    /// **★ 单层缩略图预览 ✗ ★**（第 185 轮 ✓；**PWA 实测 P1-2 的后端一半 ✓**）。
+    ///
+    /// **∴ 为什么不复用 [`Self::render_region`] ✗ ★**：**那条路会**更新文档级状态**✗**
+    /// （`last_render_blob` ✓／`document_thumbnail` ✓／`full_frame_render` ✓）
+    /// ⇒ **∴ 于是**一张「**只有一层**」的图会被**当成**文档缩略图** ✗（**污染** ✓）
+    ///   ⇒ **★ 所以**：**它**不是**「**一行级**」**的改动**✓（**∴ 与**上游补丁 README **的说法不同 ✓）**。
+    ///
+    /// **∴ 本方法只做四件事 ✗**：**隔离一层 ⇒ 渲染 ⇒ 编码 PNG ⇒ 存 CAS** ✓
+    ///   ⇒ **∴ 而****不碰**任何**文档级指针** ✓（**∴ 因为**它是**附属信息** ✓）。
+    ///
+    /// **∴ 且**：**不调 `note_render_stats`** ✗ —— **∴ 因为**那个槽**承载的是**"**这一次请求**"**的账目**✗
+    ///   （**`below_tiles_*` 等 ✓）⇒ **∴ 若**每张缩略图都去记一笔 ✗ ⇒
+    ///     **∴ 就会**污染**那些**账目**✗ ⇒ **∴ 而**好几条判据**正**读它们 ✓**** ✓✓
+    ///   ⇒ **∴ 替代**：**告警**直接**从 `stats.unsupported` **取 ✓（**∴ 不**经共享槽 ✓）** ✓✓
+    pub fn render_region_layer_preview(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<RenderedPreview> {
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
+        // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
+            .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
+        let blob_hash = self.store.put(&png)?;
+        Ok(RenderedPreview {
+            bbox: [
+                rendered.bbox.x,
+                rendered.bbox.y,
+                rendered.bbox.w,
+                rendered.bbox.h,
+            ],
+            width: rendered.width,
+            height: rendered.height,
+            blob_hash: blob_hash.clone(),
+            url: preview_url(&blob_hash),
+            mime_type: "image/png".to_owned(),
+            bytes: png.len(),
+            tiles: rendered.tiles.len(),
+            thumb_kind: None,
+            filter_padding: rendered.stats.filter_padding,
+            warnings: rendered.stats.unsupported,
+        })
+    }
+
     /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
     ///
     /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。

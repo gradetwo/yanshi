@@ -1895,6 +1895,21 @@ impl Workspace {
         Ok(preview)
     }
 
+    /// **★ 单层缩略图预览（不污染文档级缓存）✗ ★**（第 185 轮 ✓）。
+    ///
+    /// **∴ 与 [`Self::render_region`] 的差别 ✗**：**它**只**渲染**被隔离的**那一层**✗
+    ///   ⇒ **∴ 而**不更新 `document_thumbnail` / `full_frame_render` / `last_render_blob` ✓。
+    ///   ⇒ **★ 所以**：**一张单层小图**不会**冒充**文档缩略图** ✓ ★**** ✓✓
+    pub fn render_region_layer(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<RenderedPreview> {
+        let document = self.document_mut(doc_id)?;
+        document.render_region_layer_preview(bbox, layer_id)
+    }
+
     /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见
     /// `Document::last_render_warnings` 的说明 ✓）。
     ///

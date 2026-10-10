@@ -1387,6 +1387,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **∴ 不传 ⇒ 切在"最上层以外"✓（**与今天一致 ✓**）**。
             // **⚠️ 它必须在这里声明 ✗** —— **∴ 未声明的键**进不了 `args` ✗**
             //（**实测：`args` 键只有 `doc_id`／`raw`／`region` ✓，`active_layer` 被丢弃 ✓**）。
+            // **★ `layer_id`：只渲染**指定的一层** ✗ ★**（第 185 轮 ✓；**PWA 实测 P1-2 ✓）**：
+            //   **∴ 为什么必须有它 ✗**：**图层面板**要给**每一行**一张缩略图**✗
+            //     ⇒ **∴ 那**必须能**单独渲染一层** ✓**** ✓✓
+            //   **⚠️ 与上面 `active_layer` **同一个坑** ✗**：**未声明的键**进不了 `args` ✗**
+            //     ⇒ **∴ 我**第一版**只**读了 `args["layer_id"]`**✗
+            //       ⇒ **∴ 而**实测**回了**：**
+            //         `render_region 不接受参数 layer_id（拼写错误？）`** ✓**** ✓✓
+            //       ⇒ **★ 所以**：**读参数**与**声明参数**是**两件事** ✓ ★**** ✓✓
+            //   **∴ 与** `active_layer` 的**差别 ✗**：**那个**切三段合成**✗；**这个**只画一层 ✓**
+            //     ⇒ **∴ 语义**不同**✗ ⇒ **∴ 不能**互相代替 ✓**** ✓✓
+            param!(
+                "layer_id",
+                String,
+                false,
+                "只渲染**指定的一层**（单层缩略图用）⇒ 返回该层单独的 PNG；\\n\
+                 不传 ⇒ 行为与从前完全一致。**与 `active_layer` 不同**：那个切三段合成，这个只画一层。"
+            ),
             param!(
                 "active_layer",
                 String,
@@ -3868,6 +3885,16 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   ⇒ **∴ 于是**判据可以断言"切到半透明层后 `above` 命中上升"✗**（**§14.33 ✓**）。
     let above_before = ctx.workspace.document_above_reuse_count(&ctx.doc_id);
     let active_layer = optional_str(args, "active_layer");
+    // **★ `layer_id`：只渲染**指定的一层** ✗ ★**（第 185 轮 ✓；**PWA 实测 P1-2 ✓）：
+    //   **∴ 为什么 ✗**：**图层面板**要给**每一行**一张缩略图 ✓
+    //     ⇒ **∴ 那**必须能**单独渲染一层** ✓
+    //   **∴ 而**后端**早就**有** `render_region_raw_layer`（`set_only_layer` ✓）✗
+    //     ⇒ **∴ 只是**工具层**没**透传 ✓（**∴ 上游补丁 README 点到了这一半 ✓）** ✓✓
+    //   **★ 但**预览路径**不能**复用 `Document::render_region`**✗
+    //     ⇒ **∴ 因为**它**会**更新文档级缓存**✗（`document_thumbnail` / `full_frame_render` ✓）
+    //       ⇒ **∴ 于是**单层小图**会**冒充**文档缩略图 ✓ ★**** ✓✓
+    //     ⇒ **∴ 所以**走**新方法** `render_region_layer`（**不碰**那些指针 ✓）** ✓✓
+    let layer_id = optional_str(args, "layer_id");
     // **★ 归属读数 ✗ ★**（第 993 轮 ✓）：**∴ 渲染序号**的前后差值
     //   ⇔ **"**本次请求**触发了几次渲染 ✓"**
     //     ⇒ **∴ `0`** ⇒ **∴ 被缓存拦掉（**没进渲染器 ✓）**；**`≥1`** ⇒ **∴ 进了 ✓**
@@ -3994,7 +4021,11 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let region = parse_bbox(require_object(args, "region")?)?;
     let include_image = optional_bool(args, "include_image").unwrap_or(false);
-    let preview = ctx.workspace.render_region(&ctx.doc_id, region)?;
+    // **∴ 有 `layer_id` ⇒ **只渲那一层**✗；**没有 ⇒ **行为完全不变 ✓**。
+    let preview = match layer_id.as_deref() {
+        Some(id) => ctx.workspace.render_region_layer(&ctx.doc_id, region, id)?,
+        None => ctx.workspace.render_region(&ctx.doc_id, region)?,
+    };
     let mut value = json!({
         "region": preview.bbox,
         "width": preview.width,

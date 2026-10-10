@@ -295,12 +295,18 @@
   .doc-row .doc-actions { display: flex; gap: 4px; align-items: center; flex: none; }
   .doc-row .doc-actions button { padding: 0 8px; font-size: 11px; }
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* **历史行 kind 列** ✓（PWA 实测 P2 ✓）：给它弹性 ✓，有空间时不再被按钮挤成 "create_docu…" ✗ */
+  #history .kind { flex: 1 1 auto; min-width: 0; }
   #log { overflow-x: hidden; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
   #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
   #history .row button { padding: 0 8px; font-size: 11px; }
   #history .seq { opacity: .6; min-width: 34px; }
   #history .kind { min-width: 86px; }
+  /* **图层缩略图** ✓（PWA 实测 P1 ✓）：40px 方块 ✓，等比 contain ✓，取不到时隐藏 ✓ */
+  #layerList .layer-thumb { width: 40px; height: 40px; flex: none; object-fit: contain;
+    border: 1px solid var(--line); border-radius: 4px; background:
+    repeating-conic-gradient(#8882 0% 25%, transparent 0% 50%) 0 0 / 12px 12px; }
   #history .actor { opacity: .75; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px; }
   .card h2 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }

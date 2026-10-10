@@ -413,12 +413,18 @@
   .doc-row .doc-actions { display: flex; gap: 4px; align-items: center; flex: none; }
   .doc-row .doc-actions button { padding: 0 8px; font-size: 11px; }
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* **历史行 kind 列** ✓（PWA 实测 P2 ✓）：给它弹性 ✓，有空间时不再被按钮挤成 "create_docu…" ✗ */
+  #history .kind { flex: 1 1 auto; min-width: 0; }
   #log { overflow-x: hidden; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
   #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
   #history .row button { padding: 0 8px; font-size: 11px; }
   #history .seq { opacity: .6; min-width: 34px; }
   #history .kind { min-width: 86px; }
+  /* **图层缩略图** ✓（PWA 实测 P1 ✓）：40px 方块 ✓，等比 contain ✓，取不到时隐藏 ✓ */
+  #layerList .layer-thumb { width: 40px; height: 40px; flex: none; object-fit: contain;
+    border: 1px solid var(--line); border-radius: 4px; background:
+    repeating-conic-gradient(#8882 0% 25%, transparent 0% 50%) 0 0 / 12px 12px; }
   #history .actor { opacity: .75; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px; }
   .card h2 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
@@ -2439,7 +2445,36 @@ async function refreshThumb() {
       headers: { "content-type": "application/json" },
       body: "{}",
     }).then((r) => r.json());
-    if (value.thumb_url) $("thumb").src = thumbUrlWithCacheBuster(value.thumb_url);
+// **★ 手工移植补丁的 Hunk #1 ✗ ★**（第 185 轮 ✓；**PWA 实测 P2-7 的破图 ✓）：
+    //   **∴ 为什么手工 ✗**：**补丁的上下文**是**旧写法**✗
+    //     （`$("thumb").src = value.thumb_url + "&t=" + Date.now()` ✓）
+    //     ⇒ **∴ 而**本仓**已**抽出 `thumbUrlWithCacheBuster()`** ✓
+    //       ⇒ **∴ 所以**按**本仓的助手**移植**✗，**而**不**硬套旧行 ✓**** ✓✓
+    //   **∴ 症状 ✗**：**无服务部署**里本地 `get_document` **如实**报
+    //     `preview_state: "pending"` 且**没有** `thumb_url` ✓
+    //     ⇒ **∴ 而**原代码**只处理**"**有 thumb_url ✓"**那个分支** ✗
+    //       ⇒ **∴ 于是** `<img id="thumb">` **留着旧/空 src** ✗ ⇒ **∴ 破图 ✓**** ✓✓
+    //   **∴ 修法 ✗**：**有图 ⇒ 显示 ✗；**无图 ⇒ 隐藏 img ＋ 给一行说明 ✓**（**∴ 用**本地层给的 `preview_note` ✓）** ✓✓
+    const thumbImg = $("thumb");
+    if (value.thumb_url) {
+      thumbImg.src = thumbUrlWithCacheBuster(value.thumb_url);
+      thumbImg.style.display = "";
+      thumbImg.alt = "";
+    } else {
+      thumbImg.removeAttribute("src");
+      thumbImg.style.display = "none";
+      const note = $("thumbNote");
+      if (note) {
+        note.textContent = value.preview_note || "缩略图不可用（本部署无服务端渲染）";
+        note.style.display = "";
+      } else if (thumbImg.parentElement) {
+        const hint = document.createElement("div");
+        hint.id = "thumbNote";
+        hint.className = "hint";
+        hint.textContent = value.preview_note || "缩略图不可用（本部署无服务端渲染）";
+        thumbImg.parentElement.appendChild(hint);
+      }
+    }
     if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
     if (value.width && value.height) {
       // **尺寸变了就重设画板**（本轮修 ✗ → ✓）：
@@ -4811,6 +4846,38 @@ async function warmKernel() {
 /// ⇒ 两个毛病 ✓：**(1)** 粒度是**一个原子** ✓（一笔若由多条原子组成 ⇒ 只撤掉一半 ✗）；
 /// **(2)** 本地栈**会与事实漂移** ✓（刷新页面、或另一个客户端改了文档 ⇒ 栈里还记着旧东西 ✗
 /// ⇒ 界面上"可撤销 3 步" ✓、实际一步都没有 ✗）。
+/// **历史步进（撤销 / 重做 / 回到此处）后的画布刷新** ✓
+///
+/// **为什么不能复用"提交后"那套刷新** ✗：`undo_last` / `redo_last` / `revert_to`
+/// 是**服务端（或本地层）的状态变更** ✓，而 `refreshPreview()` 在内核就绪时走
+/// **本地乐观路径** ✓（`renderViewport()` 直接重画**本地**内核的像素 ✓）
+/// ⇒ 本地内核**没见过**刚追加的 Revert / Reapply 原子 ✗
+/// ⇒ 画出来的是**步进前**的画面 ✗ ⇒ "点了撤销、画布没变化" ✗（PWA 实测 ✓）。
+///
+/// `resync()` 的增量续传也救不了 ✓：无服务端部署里，本地层的 seq 是**自增**的 ✗
+/// （与查看器内核的编号是**两套** ✓），且 `GET /api/atoms` **忽略 `since`** ✗
+/// ⇒ `apply_atom_json` 极易报 `out_of_order` ✓ ⇒ 内核被回收、只能整量重建 ✓；
+/// 而整量重建后的 `renderViewport()` 对 heavy 文档画的是**空白补丁** ✗
+/// （内核表示不了 `raster_patch` 的像素 ✓，见 `afterMutation` 处的注释 ✓）。
+///
+/// **∴ 结论** ✓：历史步进后，画布的权威是**服务端/本地渲染** ✓（不是内核 ✓）。
+/// 顺序：① 内核整量重建跟上（后台一致性 ✓）；② 整视口**服务端补画**盖掉画布 ✓
+/// （`queueServerBlit` 经 `settleFrames` 等布局稳定 ✓，不会拿到刚提交时的旧图 ✓）；
+/// ③ 缩略图/历史走服务端路径刷新 ✓。
+async function refreshAfterHistoryStep() {
+  if (state.wasm) {
+    // 整量重建（增量在编号分歧下不可靠 ✗）。注意它内部成功时会调一次
+    // `renderViewport()` —— heavy 文档下那是空白补丁 ✗，下一步的服务端补画会盖掉它 ✓。
+    await loadKernel(0);
+  }
+  // 画布权威 = 服务端像素 ✓（内核对 heavy 文档只能给出空白补丁 ✗）。
+  needsServerPixels = true;
+  await queueServerBlit(null);
+  await refreshPreview(true); // 缩略图走服务端路径（跳过内核乐观分支 ✓）
+  scheduleThumbRefresh();
+  void refreshHistory();
+}
+
 /// ⇒ 现在只问服务端 ✓：`undo_last` 是**整笔**的 ✓，并**回报还剩几笔** ✓ ⇒ 界面照它显示 ✓。
 async function undoOnce() {
   const value = await callTool("undo_last", {}, { refresh: false });
@@ -4829,8 +4896,7 @@ async function undoOnce() {
   // **数字以服务端为准** ✓。
   state.remainingUndo = value.remaining_gestures;
   updateUndoStatus();
-  await refreshPreview();
-  await resync();
+  await refreshAfterHistoryStep();
 }
 
 /// **重做一笔** ✓（`undo_last` 的对称面 ✓，同样以服务端为准 ✓）。
@@ -4848,8 +4914,7 @@ async function redoOnce() {
   }
   state.remainingRedo = value.remaining_gestures;
   updateUndoStatus();
-  await refreshPreview();
-  await resync();
+  await refreshAfterHistoryStep();
 }
 
 /// **显示"还剩几笔"** ✓ —— **数字来自服务端** ✓，不是本地栈 ✗。
@@ -5139,7 +5204,10 @@ async function refreshHistory() {
     list.textContent = "读取失败：" + (value.error_code || "unknown");
     return;
   }
-  const atoms = value.atoms || [];
+  // **从新到旧** ✓（用户要求 ✓／PWA 实测 P2 ✓）：`get_log` 按 seq 升序返回 ✓ ⇒ 这里反转 ✓。
+  // 注意 `limit: 200` 的含义是"最早的 200 条"里的倒序 ✓ —— 超过 200 条的文档
+  // 要拿"最新的 200 条"需服务端支持倒序（`get_log` 加 `order` 参数，见 README ✓）。
+  const atoms = (value.atoms || []).slice().reverse();
   historyAtoms = atoms;
   list.innerHTML = "";
   // **★ 层名小表 ✓**（用户报告 2026-10-09 ✓／第 443 轮实测 ✓）：
@@ -5159,6 +5227,7 @@ async function refreshHistory() {
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
     kindLabel.textContent = atom.kind;
+    kindLabel.title = atom.kind; // 空间不够被省略时，悬停看全名 ✓
     // **★ 让每一行能**看出它属于哪个层 ✗**（用户报告 2026-10-09 ✓）：
     // **∴ 实测**（第 441 轮**解包 ✓**）：**`import_image` 的 `payload` 里**本来就有
     // `layer_id` ＋ `width`／`height`** ✓ ⇒ **∴ 这里**只把已有数据渲染出来 ✗，
@@ -5180,6 +5249,7 @@ async function refreshHistory() {
     const actorLabel = document.createElement("span");
     actorLabel.className = "actor";
     actorLabel.textContent = atom.actor;
+    actorLabel.title = atom.actor;
     // **详情** ✓（本轮补 ✓）：`get_atom` 把这一条的**净荷**取回来 ✓ ⇒ 才知道它改了什么 ✓。
     const detail = document.createElement("button");
     detail.type = "button";
@@ -5207,8 +5277,7 @@ async function refreshHistory() {
       state.redoStack = [];
       updateUndoStatus();
       log("已回到 #" + atom.seq + "（可点撤销回到跳转前）");
-      await refreshPreview();
-      await refreshHistory();
+      await refreshAfterHistoryStep();
     });
     // **别忘了把它挂上去** ✓ —— 我第一版只**创建**了「详情」按钮 ✗、没加进 `append` ✓
     // ⇒ 真机验收里按钮文字只有「回到此处」✗ ⇒ **创建了不等于挂上了** ✓
@@ -6213,6 +6282,15 @@ function renderLayerPanel(layers) {
     row.dataset.layerId = layer.layer_id;
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", String(layer.layer_id === state.layerId));
+    // **图层缩略图** ✓（PWA 实测 P1 ✓）：`render_region {layer_id}` 逐层取图 ✓
+    //（需服务端把 `layer_id` 接到 `render_region` 工具上 ✓ —— 后端
+    // `render_region_raw_layer` 已有 ✓，只差工具层透传 ✓，见 README ✓）。
+    // 取不到（老服务端 / 无服务部署）⇒ 藏起 img ✓，不留破图 ✗。
+    const thumb = document.createElement("img");
+    thumb.className = "layer-thumb";
+    thumb.alt = "";
+    thumb.dataset.layerId = layer.layer_id;
+    thumb.style.display = "none";
     const eye = document.createElement("button");
     eye.type = "button";
     eye.className = "layer-flag" + (layer.visible ? "" : " off");
@@ -6229,9 +6307,44 @@ function renderLayerPanel(layers) {
     name.className = "layer-name";
     name.textContent = layer.name + (layer.medium ? " · " + layer.medium : "");
     name.title = layer.layer_id;
-    row.append(eye, lock, name);
+    row.append(thumb, eye, lock, name);
     list.appendChild(row);
   }
+  // 面板重画后按需补缩略图 ✓（去抖：连续刷新只跑最后一次 ✓）。
+  void refreshLayerThumbs();
+}
+
+/// **图层缩略图** ✓ —— 逐层 `render_region {layer_id}` 取小图 ✓。
+///
+/// **为什么在这里** ✗：缩略图是**附属信息** ✓ ⇒ 失败**静默** ✓（记一行日志 ✓），
+/// 绝不能打断图层面板本身 ✗。无服务部署（本地层未实现单层渲染）⇒ 直接跳过 ✓。
+let layerThumbTimer = null;
+async function refreshLayerThumbs() {
+  if (layerThumbTimer) return;
+  layerThumbTimer = setTimeout(async () => {
+    layerThumbTimer = null;
+    try {
+      const rows = Array.from(document.querySelectorAll("#layerList .layer-row"));
+      if (rows.length === 0) return;
+      const { w, h } = state.docSize || { w: 1024, h: 1024 };
+      for (const row of rows) {
+        const img = row.querySelector("img.layer-thumb");
+        if (!img || img.dataset.done) continue;
+        const layerId = row.dataset.layerId;
+        try {
+          const value = await callTool("render_region", {
+            region: { x: 0, y: 0, w, h },
+            layer_id: layerId,
+          }, { refresh: false });
+          if (value && value.thumb_url) {
+            img.src = thumbUrlWithCacheBuster(value.thumb_url);
+            img.style.display = "";
+            img.dataset.done = "1";
+          }
+        } catch (_) { /* 单层缩略图失败 ⇒ 保持隐藏 ✓，不留破图 ✗ */ }
+      }
+    } catch (_) { /* 面板级失败静默 ✓ */ }
+  }, 500);
 }
 
 // 面板按钮**只接一次线** ✓（见上面第 ③ 条 ✓）。
@@ -6721,8 +6834,14 @@ async function setupAssetPanels() {
     }
   }
   if (palettePick) {
-    palettePick.addEventListener("change", () => { void loadPalette(); });
+    const syncPaletteTitle = () => {
+      // **下拉名被截断时悬停看全名** ✓（PWA 实测 P2 ✓）
+      const opt = palettePick.selectedOptions && palettePick.selectedOptions[0];
+      palettePick.title = opt ? opt.textContent : "";
+    };
+    palettePick.addEventListener("change", () => { syncPaletteTitle(); void loadPalette(); });
     if (palettePick.options.length > 0) void loadPalette();
+    syncPaletteTitle();
   }
 
   // **工程包：导出 / 导入** ✓（目标 ⑧ ✓）。
@@ -8048,7 +8167,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-cee927ca-dirty")
+      caches.open("yanshi-shell-7bf468d7-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
