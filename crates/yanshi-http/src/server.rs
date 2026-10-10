@@ -809,12 +809,30 @@ fn health(state: &ServerState) -> Response {
             "bitmap_cache": bitmap_cache_stats(state),
             "below_reuse": below_reuse_count(state),
             // **★ 渲染后端必须**如实报出** ✓ ★**（第 602 轮 ✓；**部署矩阵 ＋ GPU 优先决策 ✓**）：
-            // **∴ 现在**没有 GPU 后端 ✗**（**∴ 全部走 CPU ✓**）⇒ **∴ 这里如实写 `cpu` ＋ 原因 ✓**
+            // **∴ 现在**没有 GPU 后端 ✗**（**∴ 全部走 CPU ✓**）⇒ **∴ 这里**永远**如实写 `cpu` ✓**
+            // **★ 而**"**环境有没有 GPU**"**是另一个问题**✗ ⇒ **∴ 见下面的 `gpu_probe` ✓ ★**
             //（**∴ 不许因为"用户要求 GPU 优先"就写成 `gpu` ✗** —— **∴ 那是撒谎 ✓**）。
             // **∴ 将来加 GPU 后端时 ✓**：**把这两行改成**从实际后端读**✗**（**如 `renderer.backend()` ✓**），
             // **并**在 `--gpu=off` 时仍报 `cpu` ✓****。
+            // **★★ 第 258 轮我犯的错（**如实记 ✓）★★**：
+            //   **∴ 我**把这两行**改成**由 `gpu_probe()` 决定**✗
+            //     ⇒ **∴ 于是**：`render_backend` **报了 `gpu`** ✓
+            //       ⇒ **★ 而**渲染**实际仍然**是纯 CPU** ✗ ⇒ **∴ 那**是**一个新的撒谎** ✓ ★**** ✓✓
+            //         （**∴ 目标第 7 条：**不许假装用了 GPU** ✓）
+            //   ⇒ **★ 所以**：**我**把「**假的没有**」换成了「**假的有**」**✗
+            //     ⇒ **∴ 已**改回**：**`render_backend` **只报**真实后端** ✓ ★**** ✓✓
+            //
+            // **∴ 正确的分工 ✗ ★**：
+            //   **∴ `render_backend` ✗**：**渲染**真的用了什么**✗
+            //     ⇒ **∴ 现在**只有 CPU** ⇒ **∴ 必须**恒为 `cpu`** ✓（**∴ 直到**GPU 后端真的接上 ✓）** ✓✓
+            //   **∴ `gpu_probe` ✗**：**环境**有没有 GPU**✗（**∴ 那**是**探测结果** ✓）
+            //     ⇒ **∴ 与 `render_backend` **分开报** ✓**** ✓✓
             "render_backend": "cpu",
-            "gpu_unavailable_reason": "host_has_no_gpu",
+            "gpu_probe": {
+                "available": gpu_probe().0,
+                "reason": gpu_probe().1,
+            },
+            "gpu_unavailable_reason": gpu_probe().1,
             // **★ §6.3 的 ④ ✗ ★**（第 35 轮 ✓）：**必须报出**后端 ＋ 最大通道差**✗
             //   **∴ 而**这里**没有 GPU** ✗ ⇒ **∴ 没有比较发生过 ✓**
             //     ⇒ **★ 所以 `max_channel_delta` 报 `null` ✗**（**不是 0 ✓）**★**
@@ -852,6 +870,66 @@ fn below_reuse_count(state: &ServerState) -> serde_json::Value {
         return json!({"error": "工作区锁中毒"});
     };
     json!(workspace.below_reuse_count())
+}
+
+/// **★ GPU 探测：**真的去看**，而不是写死** ✗ ★**（第 258 轮 ✓；**目标第 7 条 ✓**）。
+///
+/// **∴ 为什么 ✗**：**实测**（**第 256／257 轮 ✓）**✗**：
+///   **∴ 本机有**渲染设备**✗**：`/dev/dri/card1` ＋ **`/dev/dri/renderD128`** ✓
+///   **∴ 而**服务端**写死** `gpu_unavailable_reason = "host_has_no_gpu"`** ✓
+///     ⇒ **∴ 于是**：**判据** `tool-gpu-probe-honesty.mjs` **当场抓住它**（**退出码 1 ✓）** ✓✓
+///   **⇒ ★ 所以**：**硬编码的"没有"**与**硬编码的"有"**一样是**撒谎** ✓ ★**** ✓✓
+///
+/// **∴ 两面（**AGENTS.md 第 5 条 ✓）★**：
+///   **∴ 收益 ✗**：**不引入任何新依赖**✗（**∴ 因此**体积 6.6 MiB、89 包、构建时间**都不变** ✓）
+///     ⇒ **∴ 且**：**报出的原因**第一次**来自环境** ✓**** ✓✓
+///   **∴ 代价 ✗**：**设备节点**不等于**可用驱动**✗
+///     ⇒ **∴ 所以**：**本探测**只能说**"看起来有"**✗ ⇒ **∴ 不能**承诺**能用** ✓
+///       ⇒ **∴ 因此**：**真正接入 GPU 计算时**必须**再用 `wgpu` 的 `request_adapter()` 复核** ✓
+///         （**∴ 那**是**候选 ②**✗，**见第 256 轮评估 ✓）** ✓✓
+fn gpu_probe() -> (bool, String) {
+    // **∴ ① `--gpu off` ✗**：**用户明确关掉** ⇒ **∴ `cpu` 是**正确的**✗，**而**原因**必须**说明是关掉的** ✓
+    let mode = GPU_MODE.get().map(String::as_str).unwrap_or("auto");
+    if mode == "off" {
+        return (false, "disabled_by_flag".to_owned());
+    }
+    // **∴ ② 找渲染节点 ✗**：`/dev/dri/renderD*` ✓
+    let mut has_render_node = false;
+    if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("renderD") {
+                has_render_node = true;
+                break;
+            }
+        }
+    }
+    // **∴ ③ 找已绑驱动的卡 ✗**：`/sys/class/drm/card*/device/driver` ✓
+    let mut has_bound_driver = false;
+    if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("card")
+                && !name.contains('-')
+                && std::fs::metadata(entry.path().join("device/driver")).is_ok()
+            {
+                has_bound_driver = true;
+                break;
+            }
+        }
+    }
+    if has_render_node {
+        // **∴ 有设备 ⇒ 但**不承诺能用** ✓（**∴ 真正用之前要用 `wgpu` 复核 ✓）
+        (
+            true,
+            if has_bound_driver {
+                "render_node_present".to_owned()
+            } else {
+                "render_node_without_bound_driver".to_owned()
+            },
+        )
+    } else {
+        (false, "host_has_no_render_node".to_owned())
+    }
 }
 
 fn bitmap_cache_stats(state: &ServerState) -> serde_json::Value {
