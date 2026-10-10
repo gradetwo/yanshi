@@ -82,8 +82,18 @@ const evaluate = async (expression) => (await send("Runtime.evaluate", { express
       pending.set(id, (message) => { clearTimeout(timer); resolve(message); });
       socket.send(JSON.stringify({ id, method, params: params || {}, sessionId }));
     });
+    // **★ worker 会话上**不许带 `awaitPromise`** ✗ ★**（第 130 轮 ✓；**探针与判据的差别 ✓）：
+    //   **∴ 证据 ✗**：**同一个**目标 ＋ **同一条**命令**✗**：
+    //     **∴ 探针**（**不带 `awaitPromise` ✓）⇒ **8 秒内有应答**✗
+    //       ⇒ **∴ 实测** `Runtime.evaluate ⇒ 2` ✓**** ✓✓
+    //     **∴ 判据**（**带 `awaitPromise: true` ✓）⇒ **20 秒**超时** ✓**** ✓✓
+    //   ⇒ **∴ 所以**：**差别**就是这个字段 ✓**** ✓✓
+    //     **∴ 它**可能要** worker **支持 `Runtime.awaitPromise`**✗
+    //       ⇒ **∴ 而在**这个目标上**它**挂住 ✓**** ✓✓
+    //   **∴ 修法**：**去掉**它**✗ —— **∴ 而**本判据用的表达式
+    //     （`self.fetch` 的替换 ✓）**都是**同步 IIFE**✗ ⇒ **∴ 不**需要它 ✓**** ✓✓
     const targetEvaluate = async (expression) => {
-      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
       const result = message.result || {};
       return result.result ? result.result.value : undefined;
     };
