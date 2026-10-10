@@ -2680,6 +2680,77 @@ async function detectHeavyContent() {
   } catch (error) { /* 扫描失败不阻塞加载 ✓ */ }
 }
 
+/// **★ 把 IndexedDB 里的 blob 喂回新内核 ✗ ★**（PWA spray 测试 ✓）。
+///
+/// **为什么需要它** ✗：`import_image` 原子只存 blob hash ✗，位图本身在内核的 blob store 里 ✓。
+/// 内核重建（`loadKernel(0)`）时新内核的 store 是空的 ✗ ⇒ 必须从 IndexedDB 喂回去 ✓。
+/// **不喂 ⇒ spray 这类位图笔触在新建图层后消失** ✗（`load_atoms_json` 取不到位图 ✓）。
+async function repopulateKernelBlobs(kernel, atoms) {
+  // **★ 递归收集**任何** `blob_hash`**✗ ★**（第 346 轮 ✓；**本机复现换来的 ✓）：
+  //   **∴ 原来只收 `kind === "import_image"`**✗ ⇒ **∴ 那是**不完整的** ✓
+  //     **∴ 证据（**第 345 轮本机实测 ✓）**：
+  //       **∴ 先用 spray 画一笔 ⇒ 画布墨 4251** ✓
+  //         **∴ 新建图层后 ⇒ **0**** ✗
+  //           ＋ **∴ 而**修复的日志「**内核重建：喂回 N 个 blob**」**不出现** ✓
+  //             ⇒ **∴ 即**：**`hashes` **为空**✗ ⇒ **∴ 直接** `return` ✓
+  //               ⇒ **★ 所以**：**spray 笔触产生的原子**不是** `import_image`** ✓
+  //                 （**∴ 很可能是** `draw_stroke`**✗ —— `crates/yanshi-core/src/atom.rs:291` ✓）★**** ✓✓
+  //     **∴ 而**服务端**早就**是递归收集**✗（**`atom.rs:148` ✓**：
+  //       **「**从 payload 递归收集：识别 `blob_hash`、`*_id` 与 `{type, id}` 引用对」** ✓）
+  //         ⇒ **∴ 所以**这里**照它做** ✓ ★**** ✓✓
+  //   **∴ 两面（**AGENTS.md 第 3 条 ✓）**：
+  //     **∴ 收益**：**任何带 blob 的原子**（**`import_image`／`draw_stroke`／… ✓）都能喂回** ✓
+  //     **∴ 代价**：**递归扫描**比一次过滤**慢**✗
+  //       （**∴ 但**它**只在**内核重建时跑一次**✗ ＋ **原子数有限** ⇒ **∴ 可忽略 ✓）** ✓**** ✓✓
+  const hashes = new Set();
+  const collect = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      // **∴ 只认 `blob_hash` 这个**键名**✗ ⇒ **∴ 与**服务端**同一口径** ✓
+      if (key === "blob_hash" && typeof item === "string" && item) {
+        hashes.add(item);
+        continue;
+      }
+      collect(item);
+    }
+  };
+  for (const atom of atoms || []) {
+    const a = atom && atom.atom ? atom.atom : atom;
+    if (!a) continue;
+    collect(a.payload);
+    // **∴ 也**扫顶层的 `blob_hash`**✗（**∴ 有的原子**把它放在那里 ✓）** ✓
+    collect({ blob_hash: a.blob_hash });
+  }
+  if (hashes.size === 0) return;
+  // **从 IndexedDB 取回并喂进内核** ✓
+  try {
+    const { open, getBlob } = await import("/store.js");
+    const db = await open();
+    let fed = 0;
+    for (const hash of hashes) {
+      try {
+        const bytes = await getBlob(db, hash);
+        if (!bytes) continue;
+        // **∴ `blob_put` 要的是**字节数组**✓**（**∴ IndexedDB 存的是 `Array.from(rgba)` ✓**）。
+        const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        kernel.blob_put(arr);
+        fed += 1;
+      } catch (e) {
+        // **单个 blob 失败不阻断** ✓ —— `load_atoms_json` 会报缺失，比整个重建失败好 ✓。
+        console.warn("喂回 blob 失败 " + hash + ": " + e);
+      }
+    }
+    if (fed > 0) console.log("内核重建：喂回 " + fed + " 个 blob ✓");
+  } catch (e) {
+    // **IndexedDB 不可用 ⇒ 如实记录** ✓，不阻断重建 ✓。
+    console.warn("喂回 blob 时 IndexedDB 不可用：" + e);
+  }
+}
+
 async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
@@ -2697,6 +2768,14 @@ async function loadKernel(since = 0) {
     if (new URLSearchParams(location.search).has("debug")) window.yanshiKernel = state.kernel;
     verifyKernelSurface(state.kernel);
     window.yanshiKernelReady = true;
+    // **★ 重建内核必须先喂回 blob ✗ ★**（PWA spray 测试 ✓）：
+    //   **∴ 症状 ✗**：spray 笔触（`import_image` 原子 ＋ blob 引用）在**新建图层**后消失 ✓
+    //   ⇒ **∴ 而**新建图层调 `resync()` ⇒ `loadKernel(0)` ⇒ **新内核** ✓
+    //   ⇒ **∴ 而**新内核的 blob store 是**空的** ✗（**∴ blob 只在**旧内核内存**＋ IndexedDB ✓**）
+    //   ⇒ **∴ 于是** `load_atoms_json` 重放 `import_image` 时**取不到位图** ✗ ⇒ 笔触消失 ✓。
+    //   **∴ 修法 ✗**：从原子里收集 blob hash ⇒ IndexedDB 取回 ⇒ `blob_put` 喂进新内核 ✓
+    //   （**∴ hash 是**内容寻址**✓ ⇒ 喂回相同字节 ⇒ 相同 hash ✓ ⇒ 原子引用有效 ✓**）。
+    await repopulateKernelBlobs(state.kernel, atoms.atoms);
     const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
     // 装载完成后立刻重绘：此前只有"内核就绪"的状态变化，没有触发重绘 ✗ ——
     // 打开已有作品时画面会是白布，直到用户落笔（用户报告的现象）。
@@ -8212,7 +8291,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-c8403709-dirty")
+      caches.open("yanshi-shell-46b30902-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
