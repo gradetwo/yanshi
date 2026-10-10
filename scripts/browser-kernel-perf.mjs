@@ -12,7 +12,12 @@
 // —— 因为给**全体**浏览器判据加 `debug=1` 会改变页面的 SW/离线行为 ✗（第 338 轮实测：
 // 9 条本来绿的判据开始报 `undici:15270` ✗）。原先这里只是**报错退出** ✗ ⇒ 这条判据在 CI 里
 // **永远红** ✗（`EXIT=2` ✓，而"意外失败"还被算成 0 ✗ —— 第 412 轮才修好那个计数 ✓）。
-const rawUrl = process.argv[2];
+// **★ 优先用**查看器地址** ✗ ★**（第 87 轮 ✓）：
+//   **∴ 为什么 ✗**：**本判据**要的是**真正的查看器**✗（**∴ 那里 `wasm` 才可用 ✓）
+//     ⇒ **∴ 而**编排的 `argv[2]`**是**服务端 URL**✗（**∴ 一个 320×240 的文档 ✓）
+//       ⇒ **∴ 于是**：**它**会报"**内核未就绪 ✓" ✓**** ✓✓
+//   **∴ 所以**：**优先** `YANSHI_VIEWER_URL`**✗ ⇒ **∴ 找不到**才回退 `argv[2]` ✓**** ✓✓
+const rawUrl = process.env.YANSHI_VIEWER_URL || process.argv[2];
 const url = rawUrl && !rawUrl.includes("debug=1")
   ? `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}debug=1`
   : rawUrl;

@@ -219,8 +219,17 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       #   **∴ 修法**：**有静态 PWA 就用它**✗（**＋ `doc`／`token`／`debug=1` ✓）
       #     ＋ **仍把服务端 base 当第 2 个参数**✗（**∴ 需要服务端的判据**照样能用 ✓）** ✓✓
       VIEWER_BASE="${YANSHI_LIVE_UI_URL:-$BASE}"
-      VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1"
-      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$VIEWER_URL" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1"
+      # **★ `argv[2]` **恢复**成**服务端 URL** ✗ ★**（第 87 轮 ✓；**上一轮一刀切错了 ✓）：
+      #   **∴ 证据 ✗**：`browser-no-stale-read`／`browser-offline-reload` 报
+      #     `SyntaxError: Unexpected token 'o', "not found" is not valid JSON`**✗
+      #     ⇒ **∴ 它们**请求了**服务端 API**✗ ⇒ **∴ 而**静态服务**回**明文 **"not found"** ✓**** ✓✓
+      #     ＋ `browser-first-paint` 报"**首帧（**服务端铺底 ✓）: 未记录**"** ✓**** ✓✓
+      #   **∴ 所以**：**判据**分两类**✗**：**需要服务端**的／**需要查看器**的** ✓**** ✓✓
+      #     ⇒ **∴ 编排**不能**替它们决定**✗
+      #       ⇒ **∴ 而是**：`argv[2]` 给服务端**✗ ＋ **另导出 `YANSHI_VIEWER_URL`**✗
+      #         ⇒ **∴ 需要查看器的判据**自己读它 ✓**** ✓✓
+      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
