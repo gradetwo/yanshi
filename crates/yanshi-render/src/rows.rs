@@ -144,3 +144,75 @@ pub(crate) fn encode_quantized_rows(
         }
     }
 }
+
+/// **★ 「量化」这一段的**内部分布**✗ ★**（第 182 轮 ✓；**阶段一第 2 条的成本调查 ✓）。
+///
+/// **∴ 为什么需要它 ✗**：**量化**是首帧的**第一或第二大项** ✓
+/// （**本次实测** 945.6 ms ＝ **49.5%** ✗；**文档 §14.1 的另一个场景** 658.6 ms ＝ **31.0%** ✓）。
+/// **∴ 而**要不要**引入 SIMD**（**如 `wide` ✓）**✗ ⇒ **∴ 完全取决于**——
+/// **∴ f16 往返**（`quantize_f16` ✓）**占它多少** ✓。
+///
+/// **∴ 逐像素做两件事 ✗**：
+/// **∴ ①** **4 × `quantize_f16`** ✗（**RGBA 各一次 ✓**；**f32 → f16 → f32 往返 ✓**）
+/// **∴ ②** **颜色表转换 ＋ 写 4 字节** ✓
+/// ⇒ **∴ 若** ① 占大头**✗ ⇒ **∴ SIMD** 有明确收益 ✓；
+/// **∴ 若** ② 占大头**✗ ⇒ **∴ `wide` 帮不上** ✓ ⇒ **∴ 该查**内存带宽 ✓（**与「裁剪+存 tile 20%」同类 ✓）** ✓✓
+///
+/// **∴ 口径（**如实 ✓）★**：**这是**单线程**的**比例**✗ ⇒ **∴ 比例**与**并行时相同** ✓
+/// （**∴ 因为**两条路**都是**逐像素独立**的 ✓）；**∴ 而**绝对时间**不许**跨机器比较 ✓**。
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod split_probe {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[test]
+    fn f16_share_of_the_quantize_stage() {
+        // **∴ 规模**取 1024² ✗ ⇒ **∴ 419 万次** `quantize_f16` ✓（**∴ 比例**与 4K 同 ✓，**而**测试很快 ✓）
+        let width = 1024usize;
+        let rows = 1024usize;
+        let pixels = width * rows;
+        let source: Vec<f32> = (0..pixels * 4)
+            .map(|i| ((i % 977) as f32) / 977.0)
+            .collect();
+        let mut destination = vec![0u8; pixels * 4];
+        let bg: Option<crate::color::LinearRgba> = None;
+
+        // **∴ 热身 ✗**：`srgb_encode_table()` **是**懒构建**✗ ⇒ **∴ 不热身**会**把建表算进第一次** ✓
+        encode_quantized_rows(&source, &mut destination, 0, rows, width, bg);
+
+        // **∴ ① 只测 f16 往返 ✗**（**与热循环**同样的 4 次调用 ✓）
+        let t0 = Instant::now();
+        let mut sink = 0.0f32;
+        for pixel in source.chunks_exact(4) {
+            sink += crate::half::quantize_f16(black_box(pixel[0]));
+            sink += crate::half::quantize_f16(black_box(pixel[1]));
+            sink += crate::half::quantize_f16(black_box(pixel[2]));
+            sink += crate::half::quantize_f16(black_box(pixel[3]));
+        }
+        let f16_only = t0.elapsed();
+        black_box(sink);
+
+        // **∴ ② 测整条逐像素路 ✗**（**f16 ＋ 颜色表 ＋ 写 ✓）
+        let t1 = Instant::now();
+        encode_quantized_rows(&source, &mut destination, 0, rows, width, bg);
+        let whole = t1.elapsed();
+        black_box(&destination);
+
+        let share = f16_only.as_secs_f64() / whole.as_secs_f64();
+        println!(
+            "SPLIT 像素={pixels} f16往返={:.3}ms 整条={:.3}ms ⇒ f16占={:.1}%",
+            f16_only.as_secs_f64() * 1000.0,
+            whole.as_secs_f64() * 1000.0,
+            share * 100.0
+        );
+        // **★ 只断言**测量真的发生了** ✗ ★**：**∴ 若**循环被优化掉**✗ ⇒ **∴ `f16_only` 会是 0** ✓
+        //   ⇒ **∴ 那**正是这个测试**唯一**要防的失败模式 ✓（**∴ 不**断言具体比例 ✓ —— **∴ 那**会因机器而抖 ✓）。
+        assert!(
+            (0.05..0.95).contains(&share),
+            "f16 往返占整条的 {:.1}% ⇒ **∴ 不在** 5%–95%**✗ ⇒ **∴ 要么**测量被优化掉了 ✗，\
+             **要么**两条路的规模不一致 ✓（**∴ 两者**都要先查清 ✓）",
+            share * 100.0
+        );
+    }
+}
