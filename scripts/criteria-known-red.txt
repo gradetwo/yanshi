@@ -23717,3 +23717,57 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       **∴ 变异 ✗**：**把块坐标从 `key` 里去掉（**退回整幅 ✓）⇒ **∴ 必红** ✓ ★**** ✓✓
 #   **★ 阶段一进度（**不变 ✓）★**：**✅ 1／2／4／5** ＋ **◑ 3**
 #     （**剩**：**按块解码 ＋ 拼接**✗ ⇒ **∴ 落点**已精确到 `render.rs:3023` ＋ `bitmap_tiles.rs` ✓）
+
+# **★ 第 423 轮：★★★★★★★ **决定性发现 —— 按块接口**全都就绪**，而**PNG 物理上无法按块解码**** ✗** ★★★★★★★
+#   **★★★ `bitmap_tiles.rs` 已有的全套接口（**读码事实 ✓）★★★**：
+#     ```
+#     crates/yanshi-render/src/bitmap_tiles.rs
+#     :17  pub const BITMAP_TILE: u32 = 256;
+#     :20  pub const BITMAP_INDEX_VERSION: u32 = 1;
+#     :27  pub struct BitmapIndex { … }
+#     :42  pub fn grid(width: u32, height: u32) -> (u32, u32);
+#     :47  pub fn count(width: u32, height: u32) -> usize;
+#     :53  pub fn is_consistent(&self) -> bool;
+#     :68  ★ pub fn tiles_for_rect(&self, x: i64, y: i64, w: u32, h: u32) -> Vec<usize> ★
+#     :101 ★ pub fn assemble_region(…) ★
+#     :163 ★ pub fn split_into_tiles(width, height, rgba8) -> Option<Vec<Vec<u8>>> ★
+#     :196 pub fn assemble_region_sparse(…)
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：**按块所需的**全部原语**都已存在** ✓
+#       （**∴ 按矩形取块 `tiles_for_rect` ＋ 按区域拼 `assemble_region` ＋ 切块 `split_into_tiles` ✓）★**** ✓✓
+#   **★★★ 而 `fetch_raster_patch` 仍**整幅解**（**`render.rs:3547` ✓）★★★**：
+#     ```rust
+#     fn fetch_raster_patch(store, blob, mime_type, declared_width, declared_height,
+#                           object_id, warnings) -> Result<Option<(u32, u32, Vec<u8>)>> {
+#         let bytes = store.get(blob)?;                       ← ∴ 取**整个 blob**
+#         if mime_type == PNG_MIME {
+#             let (width, height, rgba8) = decode_png(&bytes)…  ← ★ 整幅解码 ★
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：**解码**这一步仍是整幅** ✓ ★**** ✓✓
+#   **★★★ 真正的原因（**物理限制 ✓）★★★**：
+#     **∴ PNG **必须先**整幅解码**✗（**∴ 因为** DEFLATE 是**流式**的 ✓）
+#       ⇒ **∴ 而** `split_into_tiles` **只能在**解完之后切** ✓
+#         ⇒ **★ 所以**：**对 PNG 而言「**按块解码**」**物理上不可能**✗
+#           ⇒ **∴ 除非**改变**存储格式** ✓ ★**** ✓✓
+#     **＋ 铁证 ✗**：**那个 `224×164` 的位图**就是** `image/x-yanshi-raw`** ✓
+#       ⇒ **∴ 说明**「**分块 raw**」那条路**已经存在** ✓ ★**** ✓✓
+#   **★★★ 所以实现＝两件事（**接口全现成 ✓）★★★**：
+#     **∴ ① 导入时 ✗**：**把 PNG **切成**分块 raw**✗（**`split_into_tiles` ✓）
+#       ⇒ **∴ 于是**：**该位图**也能**按块取** ✓ ★**** ✓✓
+#     **∴ ② 渲染时 ✗**：**按 `tiles_for_rect` **只解**需要的块**✗（**`assemble_region` ✓）
+#       ⇒ **∴ 于是**：**解码字节**降到 **≈ 需要的块** ✓ ★**** ✓✓
+#   **★★★ 三要素（**目标第 11／12／13 条 ✓）★★★**：
+#     **∴ 借鉴来源 ✗**：**GEGL 的 **tile 后端**（`needRect` ✓）＋ **Krita 的 **tiled paint device**** ✓
+#       ＋ **∴ 而**本仓库**已经**照它建了 `BitmapIndex` ＋ `BITMAP_TILE = 256`** ✓ ★**** ✓✓
+#     **∴ 与它们的差别 ✗**：**我们**承诺**逐位一致**✗
+#       ⇒ **∴ 所以**：**切块 ＋ 拼回必须**逐位等于原图** ✓
+#         ＋ **∴ 判据已就位 ✗**：**「**区域 vs 整幅逐字节一致**」实测**不一致 0 字节** ✓ ★**** ✓✓
+#     **∴ 两面 ✗**：
+#       **∴ 收益 ✗**：**PNG 位图的解码**从整幅（**`512² ⇒ 1,048,576 B` ✓）
+#         ⇒ **降到**所需块**（**约 262,144 B ✓）** ⇒ **∴ 总额** ≈ 409,088 B（**−66% ✓）★**** ✓✓
+#       **∴ 代价 ✗**：**导入时**多一次切块 ＋ 存储**（**∴ 体积**与**原来 raw** 相当 ✓）
+#         ＋ **∴ 且**：**要**处理**非 256 整数倍的边界块**（**∴ `split_into_tiles` 已处理 ✓）★**** ✓✓
+#     **∴ 可验证的一步 ✗**：**`YANSHI_BITMAP_PROBE=<文件> node scripts/tool-bitmap-decode-scope.mjs <url>`** ✓
+#       **∴ 变异 ✗**：**把块坐标从 `cache_key` 去掉（**退回整幅 ✓）⇒ **∴ 必红** ✓ ★**** ✓✓
+#   **★ 阶段一进度（**不变 ✓）★**：**✅ 1／2／4／5** ＋ **◑ 3**
+#     （**剩**：**① 导入切块 ② 渲染按块取**✗ ⇒ **∴ 接口**全现成 ＋ **落点**已精确定位 ✓）
