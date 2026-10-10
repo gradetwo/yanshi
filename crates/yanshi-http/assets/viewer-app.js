@@ -8847,7 +8847,20 @@ window.yanshi = {
   };
   applyPanels();
 }
-setupPanels();
+// **★ 同步初始化**也要**留痕** ✗ ★**（第 158 轮 ✓；**离线入口没跑 ✓）：
+//   **∴ 为什么 ✗**：**本行**是**同步调用**✗
+//     ⇒ **∴ 若**它**内部**抛异常**✗ ⇒ **∴ 顶层**中断**✗
+//       ⇒ **∴ 后面**的入口 IIFE（**9502 ✓）**永远**不执行 ✓**** ✓✓
+//     ⇒ **∴ 而那**正是**离线内核起不来**的路径 ✓**** ✓✓
+//   **∴ 所以**：**前后**各留一个标记 ✓（**∴ 抛了就停在 before ✓）** ✓✓
+window.__appMarks.push("setupPanels:before");
+try {
+  setupPanels();
+  window.__appMarks.push("setupPanels:ok");
+} catch (error) {
+  window.__appMarks.push("setupPanels!" + String(error && error.message || error).slice(0, 50));
+  throw error;
+}
 
 // 快捷键 ✓：与工具提示一致 ✓ —— 输入框里打字时不受影响 ✓。
 const TOOL_BY_KEY = new Map(TOOL_DEFS.filter((d) => d.key).map((d) => [d.key, d]));
