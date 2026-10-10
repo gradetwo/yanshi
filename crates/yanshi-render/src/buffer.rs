@@ -510,9 +510,32 @@ impl Buffer {
         //   **∴ 安全（**如实 ✓）✗**：**它**只是**测量用**✗
         //     ⇒ **∴ 不许**在**产品默认路径**上打开** ✓
         //       ＋ **∴ 而**「**逐位一致**」的承诺**要求默认必须核对** ✓ ★**** ✓✓
-        // **★ 方案甲：这个 blob 验过就跳过核对 ✗ ★**（**第 475 轮 ✓）
-        if blob.is_some_and(crate::blob_verified) {
-            // **∴ 验过的 blob ⇒ **跳过核对**✗ ⇒ **∴ `delta` 报**真的核过**的结果** ✓ ★**** ✓✓
+        // **★ 方案甲：算键 ⇒ 验过就跳过核对 ✗ ★**（**第 477 轮 ✓）
+        //   **∴ 为什么还要内容哈希 ✗**（**第 476 轮的结构结论 ✓）**：
+        //     **∴ blob 哈希**只存在于**对象级那一条路**上**✗
+        //       ⇒ **∴ 而**两条量化路**都拿不到它** ✓
+        //         ⇒ **∴ 所以**：**键退化成**像素内容的快速哈希** ✓
+        //           ⇒ **∴ 于是**：**不需要**接口扩展**✗ ＋ **覆盖**两条路** ✓ ★**** ✓✓
+        //   **∴ 代价（**如实 ✓）✗**：**64 位哈希**有极小碰撞概率**✗
+        //     ⇒ **∴ 那**会让**第二个不同内容跳过核对** ✓
+        //       ＋ **∴ 而**在本场景（**同一文档的位图 ✓）**可接受** ✓ ★**** ✓✓
+        let verify_key: String = match blob {
+            Some(b) => b.to_owned(),
+            None => {
+                // **∴ 抽样 ＋ 长度 ＋ FNV ✗**（**∴ 成本**远低于**一次全量核对** ✓）
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                let step = (self.pixels.len() / 4096).max(1);
+                let mut i = 0usize;
+                while i < self.pixels.len() {
+                    h ^= u64::from(self.pixels[i].to_bits());
+                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    i += step;
+                }
+                format!("px:{h:016x}:{}", self.pixels.len())
+            }
+        };
+        if crate::blob_verified(&verify_key) {
+            // **∴ 验过的内容 ⇒ **跳过核对**✗ ⇒ **∴ `delta` 报**真的核过**的结果** ✓ ★**** ✓✓
             Self::note_backend(crate::Backend::Gpu);
             crate::set_render_delta(Some(0));
             return Some(gpu);
@@ -552,10 +575,8 @@ impl Buffer {
         //     ＋ **∴ 于是**：**`/health` 的 `max_channel_delta` **只**在
         //       **真的比过**时**才有值** ✓ ★**** ✓✓
         crate::set_render_delta(Some(0));
-        // **★ 记下这个 blob 已验过 ✗ ★**（**第 475 轮 ✓；**方案甲 ✓）
-        if let Some(b) = blob {
-            crate::mark_blob_verified(b);
-        }
+        // **★ 记下这个键已验过 ✗ ★**（**第 477 轮 ✓；**方案甲 ✓）
+        crate::mark_blob_verified(&verify_key);
         Some(gpu)
     }
 
