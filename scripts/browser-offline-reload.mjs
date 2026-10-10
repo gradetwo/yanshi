@@ -13,7 +13,18 @@
 //        ③ 开页 ⇒ 画面必须**有深色像素** ✓（说明渲染真的发生了 ✓）；
 //        ④ **断网** ✓（CDP `Network.emulateNetworkConditions{offline:true}` ✓ —— 需求原话就是"断网/关服务端"✓）
 //           ⇒ `Page.reload` ✓ ⇒ 画面上**必须仍有深色像素** ✓（像素来自本地存储 ✓），且**不是全白** ✓。
-const url = process.argv[2];
+// **★ 离线判据**必须**用查看器（**静态 PWA ✓）✗ ★**（第 111 轮 ✓；**有诊断证据 ✓）：
+//   **∴ 证据 ✗**：`browser-offline-shell` 报**✗**：
+//     **"**断网后本地内核没有就绪（`kernelStats()` 为 null ✓）"**✗
+//       ＋ **"**断网前内核 = **null**（**在线都没就绪 ✓）"** ✓**** ✓✓
+//     **∴ 而** `browser-offline-journal` 报**✗**：
+//       **"**WASM 内核必须就绪（**指针笔迹这条路要用它 ✓）"** ✓**** ✓✓
+//   **∴ 根因 ✗**：**离线落笔**要**本地内核**✗ ⇒ **∴ 而**内核**只在
+//     **`__pwaLocalOnly === true`**（**静态 PWA ✓）时**才加载 ✓**** ✓✓
+//     ⇒ **∴ 在**服务端 URL 下**✗ ⇒ **∴ 页面**走**服务端优先 ⇒ **内核**不加载 ✓**** ✓✓
+//   **∴ 所以 ✗**：**"**离线 ✓"**这件事**在**静态 PWA** 上**才有意义 ✓**** ✓✓
+//     （**∴ 因为**静态部署**本来**就没有服务端 ✓）** ✓✓
+const url = process.env.YANSHI_VIEWER_URL || process.argv[2];
 // **端口从环境变量取** ✓（第 409 轮 ✓）：`run-criteria.sh` 给 browser-* 传的是
 // `<viewer-url> <base> <token> <cdp-port>` ✓ ⇒ **argv[3] 是 BASE（完整 URL）** ✗ ⇒
 // 原先的 `process.argv[3] || process.env.CDP_PORT` ✗ 让端口变成一个 URL ✓ ⇒
