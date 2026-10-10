@@ -7,14 +7,48 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
+// **★ 二进制与 base 都**不许硬编码** ✗ ★**（第 85 轮 ✓；**CI 的 `ENOENT` 换来的 ✓）：
+//   **∴ 原样 ✗**：**`BIN`**写死成 **`/tmp/yt4b/release/yanshi-serve`**✗
+//     （**∴ 某个**临时构建目录 ✓，**早已不存在 ✓）
+//     ⇒ **∴ 于是**：**`spawn`**抛 `ENOENT`**✗ ⇒ **∴ 未处理 ⇒ **整个判据**崩掉 ✓**** ✓✓
+//       **∴ CI 实测 ✗**：`Error: spawn /tmp/yt4b/release/yanshi-serve ENOENT` ✓**** ✓✓
+//   **∴ 且**：**它**总是**自己起服务**✗
+//     ⇒ **∴ 而**编排（`run-criteria.sh:228` ✓）**已经**给了 base**✗
+//       ⇒ **∴ 于是**：**两个服务**可能**打架** ✓**** ✓✓
+//   **∴ 修法（**三条 ✓）★**：
+//     **∴ ①** **二进制**按**与其它判据一致**的顺序发现**✗（**release ⇒ debug ✓）
+//     **∴ ②** **若 `argv[2]` **像 URL**✗ ⇒ **∴ 用它 ＋ **不**自己起服务 ✓**** ✓✓
+//     **∴ ③** **`spawn` 必须**挂 `error` 处理**✗
+//       ⇒ **∴ 否则**未处理的 error 事件**会**杀掉进程 ✓**** ✓✓
+import { existsSync } from "node:fs";
+const looksLikeUrl = (value) =>
+  typeof value === "string" && /^https?:\/\//.test(value);
 const PORT = 26290;
-const BIN = process.env.YANSHI_SERVE ?? "/tmp/yt4b/release/yanshi-serve";
-const BASE = `http://127.0.0.1:${PORT}`;
+const FOUND_BIN = ["target/release/yanshi-serve", "target/debug/yanshi-serve"]
+  .find((path) => existsSync(path));
+const BIN = process.env.YANSHI_SERVE ?? FOUND_BIN;
+const BASE = looksLikeUrl(process.argv[2]) ? process.argv[2].replace(/\/+$/, "")
+  : `http://127.0.0.1:${PORT}`;
+const OWNS_SERVER = !looksLikeUrl(process.argv[2]);
 let fails = 0;
 const check = (ok, msg) => { console.log(`  ${ok ? "OK  " : "FAIL"} ${msg}`); if (!ok) fails += 1; };
 
-const srv = spawn(BIN, ["--bind", `127.0.0.1:${PORT}`, "--root", "/tmp/yt-frame-reuse",
-  "--assets-dir", `${process.cwd()}/assets`, "--profile", "all"], { stdio: "ignore" });
+let srv = null;
+if (OWNS_SERVER) {
+  if (!BIN) {
+    console.error("✗ 找不到 yanshi-serve（release 或 debug）⇒ 先构建");
+    process.exit(2);
+  }
+  srv = spawn(BIN, ["--bind", `127.0.0.1:${PORT}`, "--root", "/tmp/yt-frame-reuse",
+    "--assets-dir", `${process.cwd()}/assets`, "--profile", "all"], { stdio: "ignore" });
+  // **∴ 必须挂 error 处理 ✗**（**∴ 否则**未处理的 error 事件会杀进程 ✓）** ✓✓
+  srv.on("error", (error) => {
+    console.error("✗ 起服务失败：" + String(error && error.message || error));
+    process.exit(2);
+  });
+} else {
+  console.log(`  ⊘ 用调用方给的 base：${BASE}（**∴ 不**自己起服务 ✓）`);
+}
 const post = async (path, body) => {
   const r = await fetch(BASE + path, { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(body) });
@@ -40,7 +74,8 @@ try {
   check(a.below_reused === false && b.below_reused === false,
     "两次 below_reused 都为假（分层记录：整幅命中的路上不进 tile 层）");
 } finally {
-  srv.kill("SIGKILL");
+  // **∴ `srv` 可能为 null ✗**（**∴ 用调用方的 base 时 ✓）⇒ **∴ 必须**先判 ✓** ✓✓
+  if (srv) srv.kill("SIGKILL");
 }
 console.log(fails === 0 ? "\n✅ 整幅缓存复用判据通过 ✓" : `\n❌ ${fails} 项失败 ✗`);
 process.exit(fails === 0 ? 0 : 1);
