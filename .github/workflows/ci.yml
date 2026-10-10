@@ -311,6 +311,21 @@ jobs:
       #     **∴ 代价**：**每片多一次**文件拷贝**✗（**∴ 毫秒级 ✓）** ✓**** ✓✓
       - name: Sync the kernel into the PWA assets
         run: node scripts/pwa-sync-wasm.mjs
+      # **★ 逐条判据要的** release 二进制 ✗ ★**（第 301 轮加 ✓；**修 `shard 2/6` 的 ① ✓）。
+      #   **∴ 根因（**实测 ✓）✗**：**`tool-render-cost-accounts.mjs` **默认**找
+      #     `target/release/yanshi-serve`**✗（**它支持 `--baseline` 覆盖 ✓）
+      #       ⇒ **∴ 而**本 job **只** `cargo build --workspace`（**debug ✓）** ✓
+      #         ⇒ **★ 所以**它报「**--spawn 需要二进制：target/release/yanshi-serve**」** ✓ ★**** ✓✓
+      #   **∴ 为什么不用 `--baseline target/debug/…` ✗ ★**：**那是一条**性能判据**
+      #     ⇒ **∴ 用 debug 会**改变被测对象**✗（**优化等级不同 ✓）⇒ **∴ 性能数**不可信** ✓**** ✓✓
+      #   **∴ 为什么只 build 一个包 ✗**：**`--release --workspace` 会让本 job **翻倍**
+      #     ⇒ **∴ 而**只需要**那一个二进制**✗ ⇒ **∴ 所以**用 `-p yanshi-http --bin yanshi-serve` ✓**** ✓✓
+      #   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      #     **∴ 收益**：**①** 转绿**✗ ＋ **性能判据**测的是**真 release** ✓**** ✓✓
+      #     **∴ 代价**：**每片多一次** release 构建**✗
+      #       ⇒ **∴ 而** rust-cache **命中后**只有增量**✗ ⇒ **∴ 实测**待 CI 报** ✓**** ✓✓
+      - name: Build the release server for cost criteria
+        run: cargo build --release -p yanshi-http --bin yanshi-serve
       - name: Run criteria
         # 已知红名单在 scripts/criteria-known-red.txt：仍会运行、结果照印，但不阻塞 CI。
         run: |
