@@ -66,7 +66,25 @@ const send = (method, params) => new Promise((resolve) => {
   pending.set(id, (value) => { clearTimeout(timer); resolve(value); });
   socket.send(JSON.stringify({ id, method, params: params || {} }));
 });
-const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
+// **★ `evaluate` 必须**重试** ✗ ★**（第 133 轮 ✓；**悬空请求换来的 ✓）：
+//   **∴ 为什么 ✗**：**导航**（**如 `Page.reload` ✓）会**销毁旧执行上下文** ✗
+//     ⇒ **∴ 于是在**那一刻发的 `Runtime.evaluate` **永远**没有回包 ✓**** ✓✓
+//       ⇒ **∴ 而**本判据**在**断网重载**后**马上**要读页面状态 ✓**** ✓✓
+//         ⇒ **∴ 第一次**必然**悬空 ✓**** ✓✓
+//   **∴ 修法**：**`__timeout` 时**重发**✗（**最多 3 次 ✓）** ✓✓
+//     ⇒ **∴ 于是**：**第二次**落在**新的**执行上下文上**✗
+//       ⇒ **∴ 就能**拿到真的答案 ✓**** ✓✓
+//   **∴ 且 ✗**：**三次都拿不到**时**返回** `undefined`**✗
+//     ⇒ **∴ 而**调用方**必须**自己**判**"**没有答案 ✓"**✗（**∴ 见负对照那一段 ✓）** ✓✓
+const evaluate = async (expression) => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    // **∴ 与探针一致：**不带 `awaitPromise`** ✗（第 133 轮 ✓）
+    const message = await send("Runtime.evaluate", { expression, returnByValue: true });
+    if (!message || !message.__timeout) return message.result?.result?.value;
+    console.warn("    ↳ 第 " + (attempt + 1) + " 次读到页面状态无应答 ⇒ **重发** ✓");
+  }
+  return undefined;
+};
 // **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
 // 把 `self.fetch` 换成必然失败的桩 ✓（与 `browser-offline-assets.mjs` 同一招 ✓）。
 // **★ 连 worker 目标必须用** `Target.attachToTarget`** ✗ ★**（第 128 轮 ✓；**CDP 探针的铁证 ✓）：
@@ -264,7 +282,17 @@ const controlProbe = await evaluate(`(async () => {
 })()`);
 console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
-if (!(controlProbe && controlProbe.failed)) {
+// **★ 「**没有答案**」不等于「**成功了**」 ✗ ★**（第 133 轮 ✓；**VOID 误报换来的 ✓）：
+  //   **∴ 症状 ✗**：**那一次 evaluate 悬空**✗ ⇒ **∴ 结果**是 `undefined`** ✗
+  //     ⇒ **∴ 而**判据**读 `controlProbe.failed`**✗ ⇒ **∴ 得到 `undefined`** ✓**** ✓✓
+  //       ⇒ **∴ 于是**：**它**把**"**没有答案 ✓"**当成了**"**仍然成功 ✓"**✗
+  //         ⇒ **∴ 报**"**断网模拟没有生效 ⇒ 判据作废（VOID）" ✓**** ✓✓
+  //         ⇒ **★ 那是**一个**假结论** ✓ ★**** ✓✓
+  //   **∴ 修法**：**分成三种情况**✗**：
+  //     **∴ ①** `undefined`／没有结果 ⇒ **∴ 报**"**无法判断（**evaluate 三次都不回 ✓）" ✓**** ✓✓
+  //     **∴ ②** `failed !== true` ⇒ **∴ 报**"**真的**仍然成功 ⇒ **断网模拟**没有**生效 ✓" ✓**** ✓✓
+  //     **∴ ③** `failed === true` ⇒ **∴ 负对照**成立 ✓
+  if (!controlProbe || (controlProbe && controlProbe.__timeout)) {
   console.error(`  ⊘ 判据作废（VOID）：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 本跑没有结论`);
   await setServiceWorkerFetch(false);
   if (swControl) swControl.socket.close();
