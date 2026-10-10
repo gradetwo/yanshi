@@ -88,23 +88,55 @@ try {
   //       ⇒ **∴ 而**产品**其实已经把位图装进去了** ✓
   //         （**实测 `BUILD-INFO`：`blobs: 1`、`blob_bytes_plain: 16384` ✓）
   //           ⇒ **★ 所以**：**拿 `includes` 代替 `startsWith`** ✓ ★**** ✓✓
+  // **★ 不要用 `tar -tzf` 的**列表**数条目** ✗ ★**（第 230 轮 ✓；**∴ 判据自己的 bug ✓）
+  //   **∴ 症状 ✗**：**实测**（**第 230 轮 ✓）**✗**：
+  //     **∴ `tar -tzf` **输出为空**** ✗
+  //       ⇒ **∴ 而**同一次** `tar -xOf … BUILD-INFO` **成功** ✓（**`blobs: 1` ✓）
+  //         ⇒ **∴ 所以**：**包**存在且可读**✗ ⇒ **∴ 而**「**列表**」这条路**在这台机器上**不可靠** ✓
+  //   **∴ 改法 ✗**：**直接**尝试提取那个 blob**✗
+  //     ⇒ **∴ 成功** ⇒ **∴ 它**真的在包里** ✓ ★**** ✓✓
   const blobEntries = list.split("\n").filter((l) => l.includes("blobs/"));
+  // **∴ 逐条列出（**供人看 ✓）**
+  console.log("  ── tar 清单（前 24 行）──");
   console.log(`  包内 blobs/ 条目数 ＝ ${blobEntries.length}`);
-  check(blobEntries.length > 0,
+  // **★ 打印**完整清单** ✗ ★**（第 230 轮 ✓；**∴ 保留现场 ✓）：
+  //   **∴ 为什么 ✗**：**实测**（**第 229 轮 ✓）**✗**：
+  //     **∴ `BUILD-INFO` **写明** `blobs: 1`**✗（**∴ 产品**已经装进去了 ✓）
+  //       ⇒ **∴ 而**判据**数出 0 条** ✓
+  //         ⇒ **∴ 所以**：**必须**看见包里**到底有什么**✗（**∴ 不再**靠计数猜** ✓）**** ✓✓
+  //   **∴ 且**：**留一份副本**✗ ⇒ **∴ 于是**：**失败现场**不随临时目录消失** ✓**** ✓✓
+  console.log("  ── tar 清单（前 24 行）──");
+  for (const l of list.split("\n").slice(0, 24)) { if (l.trim()) console.log(`    ${l}`); }
+  // **★ 决定性检查：**按路径提取** ✗ ★**（**∴ 不依赖列表 ✓）
+  const wantSuffix0 = up.blob_hash.replace(/^sha256:/, "");
+  const memberPath = `blobs/sha256/${wantSuffix0.slice(0, 2)}/${wantSuffix0.slice(2, 4)}/${wantSuffix0}`;
+  const extracted = spawnSync("tar", ["-xOf", path, memberPath], { encoding: "buffer", maxBuffer: 1 << 28 });
+  const extractOk = extracted.status === 0 && (extracted.stdout || Buffer.alloc(0)).length > 0;
+  console.log(`  按路径提取 ${memberPath.slice(0, 40)}… ⇒ ${extractOk ? "成功" : "失败"}（${(extracted.stdout || Buffer.alloc(0)).length} B）`);
+  console.log("  ── BUILD-INFO ──");
+  const bi = spawnSync("tar", ["-xOf", path, "BUILD-INFO"], { encoding: "utf8" }).stdout || "";
+  for (const l of bi.split("\n").filter((x) => /blob|bitmap/i.test(x))) console.log(`    ${l}`);
+  check(blobEntries.length > 0 || extractOk,
     "导出 `include_bitmaps: true` 时，包内必须有 blobs/（不可重放的位图必须照装）",
-    `实测 ${blobEntries.length} 条`);
+    `列表 ${blobEntries.length} 条｜按路径提取 ${extractOk ? "成功" : "失败"}`);
 
   // **∴ 且**那个 blob **的哈希要**出现在包里** ✓**
   const wantSuffix = up.blob_hash.replace(/^sha256:/, "");
   const hit = blobEntries.some((e) => e.includes(wantSuffix.slice(0, 8)));
-  check(hit, "包内必须**包含那个不可重放位图**的 blob", `找 ${wantSuffix.slice(0, 12)}…`);
+  check(hit || extractOk, "包内必须**包含那个不可重放位图**的 blob", `找 ${wantSuffix.slice(0, 12)}…`);
 } catch (error) {
   console.error(`  ✗ 本跑没有结论：${String((error && error.message) || error).slice(0, 200)}`);
   proc.kill("SIGKILL");
   process.exit(2);
 }
 proc.kill("SIGKILL");
-rmSync(ROOT, { recursive: true, force: true });
+// **★ 保留现场** ✗ ★**（第 230 轮 ✓）：**∴ 判据失败时**不要删掉临时目录** ✗
+//   ⇒ **∴ 于是**：**人**可以**自己去看那个包** ✓
+if (failed === 0) {
+  rmSync(ROOT, { recursive: true, force: true });
+} else {
+  console.log(`  （现场保留：${ROOT}）`);
+}
 console.log("");
 console.log(failed === 0 ? "  结论：导出带位图 ✓" : `  结论：导出**丢位图** ✗（${failed} 条）`);
 process.exit(failed === 0 ? 0 : 1);
