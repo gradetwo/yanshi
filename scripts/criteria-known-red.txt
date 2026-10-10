@@ -20791,3 +20791,53 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 那时** `onLine === false` **可能成立**✗ ⇒ **∴ 我的降级分支**才有机会触发** ✓**** ✓✓
 #     **∴ ③** **并**：**把**本机验证配方**写进 `AGENTS.md` 或 `docs/`**✗
 #       ⇒ **∴ 于是**：**下一轮**不必**重新摸索** ✓ ★**** ✓✓
+
+# **★ 第 352 轮：★★★★★★★★★★ **重大发现 —— `--assets-dir` 的取值是一大片红灯的共同根因**** ✗** ★★★★★★★★★★
+#   **★ 现象 ✗ ★**：**`browser-offline-assets` 报**✗**：
+#     **∴ 断网后**纹理缩略图一张都没画出来**✗（`loaded 0` ✓）
+#       ＋ **∴ texture 的魔数是**外壳 HTML**✗（`[60,33,68,79]` ＝ `<!DO` ✓，**期望 `[137,80,78,71]` ＝ PNG ✓）** ✓**** ✓✓
+#   **★ 追查过程 ✗ ★**：
+#     **∴ ①** **判据**在线段确实取过**✗（**第 179 行注释 ✓）⇒ **∴ 而**仍然失败** ✓
+#       ⇒ **∴ 于是**怀疑 SW 的缓存策略 ✓
+#         ⇒ **∴ 读了 `web/service-worker.js:342–368`**✗：
+#           **∴ 它是**网络优先 ＋ 「**用到就存**」（`cache.put(request, …)` ✓）**✗
+#             ＋ **离线** `caches.match(request, { ignoreSearch: true })`** ✓
+#               ⇒ **∴ 而** `response.ok` **为假（**404 ✓）⇒ **∴ 不缓存** ✓ ★**** ✓✓
+#     **∴ ②** **加打印**看**在线段的真实响应**✗ ⇒ **∴ 决定性 ✗**：
+#       ```
+#       · 在线 texture = /textures/Cardboard001.png ⇒ ★ {"ok":false,"status":404} ★
+#       · 在线 preview = /brush-previews/100__Opaque.myb.png ⇒ ★ {"ok":false,"status":404} ★
+#       · 在线 medium／sample／brand ⇒ 200 ✓
+#       · 断网前：controller=true｜缓存条目=174
+#       ```
+#     **∴ ③** **查文件系统 ＋ 服务端 ✗**：
+#       **∴ `web/textures/Cardboard001.png` **存在**✗（1,628,223 字节 ✓）** ✓**** ✓✓
+#         ＋ **∴ 而** `curl http://127.0.0.1:18811/textures/Cardboard001.png` ⇒ ★ **404** ★**** ✓✓
+#           ⇒ **∴ 因为**我起服务端用的是
+#             `--assets-dir crates/yanshi-http/assets`**✗
+#             ⇒ **∴ 而** `textures/`／`brush-previews/` **只在 `web/`** ✗（**∴ 它们是**制品 ✓
+#               ⇒ **∴ 由** `pwa-sync-viewer.mjs` 从 assets 拷出来 ✓）** ★**** ✓✓
+#   **★★★ 修法（**关键 ✓）★★★**：
+#     **∴ 用** `--assets-dir web`**✗ ⇒ **∴ 于是**资产齐全** ✓ ★**** ✓✓
+#       **∴ 实测 ✗**：
+#         ```
+#         /textures/Cardboard001.png   HTTP 200
+#         /brush-previews/…myb.png     HTTP 200
+#         ★ browser-offline-assets ⇒ **退出码 0** ★
+#         · 在线 texture = {"ok":true,"status":200,"len":1628223}
+#         · 在线 preview = {"ok":true,"status":200,"len":1791}
+#           ✓ 缓存里有 texture／medium／sample／brand
+#         ```
+#   **★★★ 为什么这可能解释**一片 CI 红灯** ✗ ★★★**：
+#     **∴ 若** CI 的 `run-criteria.sh` **也**用 `assets/`**✗
+#       ⇒ **∴ 那么**所有依赖 `textures/`／`brush-previews/`／`samples/` 的判据
+#         **都会** 404**✗ ⇒ **∴ 于是**报出**五花八门**的失败** ✓ ★**** ✓✓
+#       **∴ 而**这**正是**我看到的**：**`browser-offline-*` 5 条 ＋ `browser-live-brush`／
+#         `browser-export-full-document`／`browser-i18n` 等**一片** ✓ ★**** ✓✓
+#   **★ 下一步（**高价值 ✓）★**：
+#     **∴ ①** **读 `run-criteria.sh`**✗ ⇒ **∴ 看**它给服务端传的 `--assets-dir`** 是什么** ✓**** ✓✓
+#       ⇒ **∴ 若**是 `assets/`**✗ ⇒ **∴ 修法**：**改成** `web/`**✗（**∴ 或**先跑**同步再指向 web ✓）** ★**** ✓✓
+#     **∴ ②** **且**：**本机**从此用**：
+#       `./target/release/yanshi-serve --bind 127.0.0.1:18811 --assets-dir web`** ✓ ★**** ✓✓
+#       （**∴ 取代**上一轮的 `crates/yanshi-http/assets` ✓ —— **∴ 那**让 5 类资产 404 ✓）** ✓**** ✓✓
+#     **∴ ③** **然后**重跑那几条曾在 CI 红的判据**✗ ⇒ **∴ 看**有几条**因此转绿** ✓**** ✓✓
