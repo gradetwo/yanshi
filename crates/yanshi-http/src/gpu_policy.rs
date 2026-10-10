@@ -38,7 +38,7 @@ pub use yanshi_gpu::should_use_gpu;
 
 /// **∴ 没有 feature 时的**同一条口径**** ✓（**∴ 于是**判据在任何配置下都能跑 ✓）
 #[cfg(not(feature = "gpu"))]
-pub const GPU_MIN_PIXELS: usize = 10_000;
+pub const GPU_MIN_PIXELS: usize = 30_000;
 
 /// **∴ 没有 feature 时的**同一条口径**** ✓
 #[cfg(not(feature = "gpu"))]
@@ -63,7 +63,7 @@ mod tests {
             "n=520 实测 GPU 慢 1944.8% ⇒ **∴ 必须**走 CPU**"
         );
         assert!(
-            !should_use_gpu(10_000 - 1),
+            !should_use_gpu(30_000 - 1),
             "n<10k 落在实测平衡点以下 ⇒ **∴ 必须**走 CPU**"
         );
         // **∴ 大输入 ✗**
@@ -86,7 +86,7 @@ mod tests {
         //   **⇒ ★ 所以**：**必须有一条**直接说阈值是多少**的断言** ✓ ★**** ✓✓
         //   **∴ 而**它的**变异点**：**改阈值** ⇒ **∴ 必红** ✓**** ✓✓
         assert_eq!(
-            GPU_MIN_PIXELS, 10_000,
+            GPU_MIN_PIXELS, 30_000,
             "阈值必须钉在第 285 轮八档实测的平衡点之上（3 倍余量）；**∴ 改它要**同时改实测依据**"
         );
     }
