@@ -1835,3 +1835,44 @@ CPU(s): 12
      **∴ ①** **适配器名**（**∴ 应当是 `Vulkan` ＋ `DiscreteGpu` ✓）
      **∴ ②** **`SHADER_F16` 是否为 `true`** ✓
      **∴ ③** **两本账**（**时间 ＋ CPU 占用 ✓）—— **必须**与核显的数**分开报** ✓**** ✓✓
+
+---
+
+# 四十二、★ **远端长命令必须**后台跑**（console 有超时）**（第 309 轮）★
+
+## 一、★ 踩到的坑（**如实 ✓**）★
+
+**∴ 我**把**整个 setup 脚本**直接**pipe 给 `colab console`** ✗
+⇒ **∴ rustup 开始下载**（**`info: downloading installer` ✓）✗
+⇒ **★ 然后 `Connection closed.` ★** ✗ ⇒ **∴ 脚本**被**切断** ✓
+**⇒ ∴ 原因 ✗**：**`colab console` **的连接有超时****✗ ⇒ **∴ 长命令**跑不完** ✓**** ✓✓
+
+## 二、★ 正确做法（**已用 ✓**）★
+
+```bash
+# **∴ 把脚本**写到远端**✗ ⇒ **∴ 然后** nohup 后台跑 ＋ 日志** ✓
+cat > /tmp/setup.sh <<'EOS'
+…装 rustup ＋ clone ＋ build…
+EOS
+rm -f /tmp/setup.log
+nohup bash /tmp/setup.sh > /tmp/setup.log 2>&1 &
+```
+**⇒ ∴ 于是**：**连接断开**不影响它**✗ ⇒ **∴ 而**下次连接**读** `tail /tmp/setup.log`** 即可** ✓**** ✓✓
+
+## 三、★ setup 脚本做了什么（**幂等 ✓**）★
+
+| 步 | 内容 |
+|---|---|
+| **①** | **若无 `cargo` ⇒ **装 rustup**（**`--profile minimal` ✓，**省时间 ✓） |
+| **②** | **`git clone --depth 1` 公开 HTTPS** ⇒ **∴ 若**私有导致失败 ⇒ **∴ 打印** `CLONE_NEED_CREDENTIALS`** ✓ |
+| **③** | **`CARGO_TARGET_DIR=/content/target` ＋ `cargo build --release -p yanshi-http --features gpu`** ⇒ **∴ 打印** `BUILD_OK`** ✓ |
+| **④** | **末尾** `echo SETUP_DONE`** ✗ ⇒ **∴ 用来**判断跑完 ✓** ✓ |
+
+## 四、★ 下一步（**读日志 ✓**）★
+
+**∴ 用同一句 ✗**：**`tail -30 /tmp/setup.log`**（**∴ 直到**看见 `SETUP_DONE` ✓）
+**⇒ ∴ 然后**：
+1. **确认** `RUST_OK` ＋ `BUILD_OK`（**∴ 或**者**看到需要凭据** ✓）
+2. **跑那 7 条 GPU 判据**✗ ⇒ **∴ 并**记录**适配器名 ＋ `SHADER_F16` ＋ 两本账** ✓
+3. **∴ 而**若**需要凭据**✗ ⇒ **∴ 改用**
+   **`scp -o ProxyCommand="colab ssh --proxy-mode -s dawang"`** 把本机目录传上去** ✓**** ✓✓
