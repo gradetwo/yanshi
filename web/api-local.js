@@ -966,14 +966,10 @@ async function withKernel(doc, fn) {
     //   ⇒ **∴ 直接把**本地原子日志**按序给它 ✓**（**∴ 它**就是事实 ✓）** ✓✓
     if (path === "/api/tools/get_log") {
       const rows = await atomsOf(handle, doc);
-      // **★ 与服务端**同一个 `order` 语义** ✗ ★**（第 187 轮 ✓；**PWA 实测 P2-4 ✓）：
-      //   **∴ 为什么必须在这里也做 ✗**：**前端**要**传 `order: "desc"`**✗
-      //     ⇒ **∴ 若**本地层**忽略它**✗ ⇒ **∴ 于是**同一条前端代码**✗
-      //       ⇒ **∴ 在**服务端**得到**降序**✗、**在**本地层**得到**升序** ✓（**∴ 行为分叉 ✓）** ✓✓
-      //     ⇒ **★ 所以**：**两边**必须**同一个语义 ✓ ★**** ✓✓
-      // **∴ 本文件的查询参数变量叫 `q` ✗**（第 476 行 `const q = url.searchParams;` ✓）——
-      //   **∴ 我**第一版写了 `query`**✗ ⇒ **∴ 那**会**抛 ReferenceError** ✓（**∴ 已核实并修正 ✓）**
-      const order = (q && q.get("order")) || "";
+      // **★ `order` 也要从 POST body 读 ✗ ★**（PWA 鹦鹉测试 code review ✓）：
+      //   **∴ 前端 `callTool("get_log", {order:"desc"})` 走 POST body ✗**（`callToolLocal` 的实现 ✓）
+      //   ⇒ **∴ 只读 `q`（URL 参数）⇒ 本地层永远拿不到 `order` ✗** ⇒ 历史排序在 PWA 下仍是旧→新 ✗。
+      const order = (q && q.get("order")) || (body && body.order) || "";
       const newestFirst = order === "desc" || order === "newest_first";
       let atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
       if (newestFirst) atoms = atoms.slice().reverse();
