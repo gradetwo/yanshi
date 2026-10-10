@@ -221,6 +221,21 @@ type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
 static BELOW_REUSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **★ below 缓存「**缺了几格**」的**累计**计数 ✗ ★**（第 341 轮 ✓，**纯观测 ✓）：
+///   **∴ 为什么需要它 ✗**：**`tool-below-retention`（**`28 → 28` ✓）**分不清两件事** ✓：
+///     **∴ ①** **真的**没命中**✗（**保留失效 ⇒ 产品问题 ✓）
+///     **∴ ②** **那一次 `render_region` **没走 below 路径**✗（**∴ 外层先命中 ✓）**
+///       ⇒ **∴ 两者**都表现为**「**`below_reuse` 没自增**」** ✓ ⇒ **∴ 于是**判据**无法分辨** ✓
+///   **∴ 加上这个计数 ✗**：**`missing > 0` ⇒ ①**✗、**`missing == 0` ⇒ ②** ✓
+///     ⇒ **∴ 于是**判据**能分辨** ✓（**∴ 且**它**正是**阶段一第 1 条的「**观测三数**」 ✓）★**** ✓✓
+static BELOW_MISSING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **★ below 缓存「**想要几格**」的**累计**计数 ✗ ★**（第 341 轮 ✓，**纯观测 ✓）：
+///   **∴ 与 `BELOW_MISSING` 配对 ✗**：**判据**能算**自洽性**
+///     （**∴ 如** `available + missing == wanted` ✓ —— **∴ 而** `tool-partial-reuse-benefit.mjs:105`
+///       **正是**这条不变式** ✓ ⇒ **∴ 它**此前**只能**从**单次 stats** 拿 ✓ ⇒ **∴ 现在**有**累计**口径** ✓）★**** ✓✓
+static BELOW_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// **★ 渲染序号 ✓ ★**（第 723 轮 ✓，**纯观测 ✓**）：**∴ 给每次 `render_accumulation` 一个 id ✗**
 /// ⇒ **∴ 于是**探针的**多行输出**可以**按 id 配对**✗** ——
 /// **∴ 因为**第 717／718 两轮我**配错了行**（**`tail` 取到别的渲染 ✓）⇒ **∴ 这一次**不再靠猜 ✓**。
@@ -369,6 +384,22 @@ fn below_tile_range(b: &yanshi_core::Bbox) -> (i64, i64, i64, i64) {
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— **∴ 已有调用方 ⇒ **∴ 不再是恒 0 ✓****（**第 681 轮实测 `below_reused=True` ✓ ⇒ 原注释已过时 ✓**）。
 pub fn note_below_reuse() {
     BELOW_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **累计记下「**below 缓存缺了几格**」** ✓（第 341 轮 ✓，**纯观测 ✓）。
+///
+/// **∴ 与 `note_below_reuse` 的分工 ✗**：**那个**记**命中**✗、**本函数**记**缺失** ✓
+/// ⇒ **∴ 于是**判据**能分辨**「**真的没命中**」与「**没走 below 路径**」 ✓（**见 `BELOW_MISSING` 的文档 ✓**）。
+pub fn note_below_missing(count: usize) {
+    BELOW_MISSING.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **累计记下「**below 缓存想要几格**」** ✓（第 341 轮 ✓，**纯观测 ✓）。
+///
+/// **∴ 与 `note_below_missing` 配对 ✗**：**判据**据此算**自洽性**
+/// （**∴ 如** `available + missing == wanted` ✓ —— **∴ 与 `tool-partial-reuse-benefit.mjs:105` 同一条不变式 ✓**） ✓。
+pub fn note_below_wanted(count: usize) {
+    BELOW_WANTED.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -844,6 +875,22 @@ impl Renderer {
     /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）：判"这一笔有没有复用下方的合成" ✓。
     pub fn below_reuse_count(&self) -> usize {
         BELOW_REUSE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// **below 缓存**累计缺了几格** ✓**（第 341 轮 ✓，**纯观测 ✓）。
+    ///
+    /// **∴ 判据怎么用 ✗**（**`tool-below-retention.mjs` ✓**）：
+    ///   **∴ `missing` 涨了而 `below_reuse` 没涨** ⇒ **∴ 那**是**真的没命中**（**保留失效 ✓**）
+    ///   **∴ `missing` 没涨而 `below_reuse` 也没涨** ⇒ **∴ 那**是**没走 below 路径**（**判据构造 ✓**）✓
+    pub fn below_missing_count(&self) -> usize {
+        BELOW_MISSING.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// **below 缓存**累计想要几格** ✓**（第 341 轮 ✓，**纯观测 ✓）。
+    ///
+    /// **∴ 自洽性 ✗**：**`available + missing == wanted`**（**与 `tool-partial-reuse-benefit.mjs:105` 同一条 ✓**） ✓。
+    pub fn below_wanted_count(&self) -> usize {
+        BELOW_WANTED.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// **记一次 above 复用 ✓**（第 682 轮 ✓，**纯观测 ✓**）：
@@ -1438,6 +1485,13 @@ impl Renderer {
             };
             stats.below_tiles_wanted = want_tiles.len();
             stats.below_tiles_available = available;
+            // **★ 累计记下 wanted／missing ✗ ★**（第 341 轮 ✓，**纯观测 ✓）：
+            //   **∴ 为什么 ✗**：**`/health` 此前**只有** `below_reuse`**✗
+            //     ⇒ **∴ 于是**：**`tool-below-retention`（**`28 → 28` ✓）**分不清**
+            //       「**真的没命中**」与「**没走 below 路径**」 ✓
+            //     ⇒ **∴ 加上这两个累计 ✗** ⇒ **∴ 判据**能分辨** ✓
+            note_below_wanted(want_tiles.len());
+            note_below_missing(missing_tiles.len());
             // **∴ 到这里 ⇒ **∴ 这次渲染确实做过 below 判定 ✓** ⇒ **∴ 记下 ✓**** ✓✓
             stats.below_tiles_measured = true;
             // **★ 缺格数 ＋ 该重算的盒 ✗ ★**（第 16 轮 ✓；**与 `available` **同一次取锁** ✓）：
