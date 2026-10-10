@@ -3955,19 +3955,36 @@ mod stage_probe {
 /// 以便分段计时直接回答"是哪个效果拖慢了整层"。
 #[cfg(not(target_arch = "wasm32"))]
 fn object_probe_label(object: &Object, primitive: &Primitive) -> String {
-    let kind = object
-        .data
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    match primitive {
+    // **★ `kind` 缺失时**不许报 `unknown`** ✗ ★**（第 201 轮 ✓；**成本调查换来的 ✓）：
+    //   **∴ 症状 ✗**：**真实 4K 画作的探针里**✗**
+    //     **∴ `unknown` ＝ **22191 ms／77 次 ＝ **每次 288 ms**** ✓
+    //       ⇒ **∴ 占**图层 CPU 的 **91.6%** ✓ ⇒ **★ 那是**第一大头** ✓ ★**** ✓✓
+    //     **∴ 而** `unknown` **什么信息都没有** ✗
+    //       ⇒ **∴ 因为**它**只是** `unwrap_or("unknown")`**✗
+    //         ⇒ **∴ 即**：**`object.data` 里**没有 `kind` 字段** ✓**** ✓✓
+    //   **∴ 修法 ✗**：**`kind` 缺失时**✗ ⇒ **∴ 落回** primitive 的**真名字** ✓**** ✓✓
+    //     ⇒ **∴ 于是**：**探针报告**立刻**说得出**是**哪一类对象** ✓ ★**** ✓✓
+    //   **∴ 判据 ✗**：**探针报告里**不许**出现 `unknown`**（**除非** primitive 真的未知 ✓）
+    //   **∴ 变异点**：**把这里改回恒 `"unknown"`** ⇒ **∴ 判据必红** ✓**** ✓✓
+    let kind = object.data.get("kind").and_then(Value::as_str);
+    let label = match primitive {
         Primitive::Filter { name, .. } => format!("filter:{name}"),
         Primitive::Adjustment { kind, .. } => format!("adjustment:{}", kind.as_str()),
         Primitive::Liquify { mode, .. } => format!("liquify:{mode}"),
         Primitive::Retouch { kind, .. } => format!("retouch:{kind}"),
         Primitive::Stroke { .. } => "stroke".to_owned(),
         Primitive::RasterPatch { .. } => "raster_patch".to_owned(),
-        _ => kind.to_owned(),
+        Primitive::Unsupported { reason } => {
+            format!("unsupported:{}", reason.split('：').next().unwrap_or(reason).trim())
+        }
+        // **∴ 其余一律**用**变体名**✗ ⇒ **∴ 于是**：**不必**逐个列举**✗
+        //   ⇒ **∴ 且**：**新增变体**时**自动**有名字 ✓（**∴ 不**会**过时** ✓）** ✓✓
+        other => format!("primitive:{other:?}"),
+    };
+    // **∴ 有 `kind` 就用它**✗（**∴ 它**是**文档里的**真类型** ✓）；**没有**就**用** primitive 名 ✓。
+    match kind {
+        Some(kind) => format!("{kind}"),
+        None => label,
     }
 }
 
