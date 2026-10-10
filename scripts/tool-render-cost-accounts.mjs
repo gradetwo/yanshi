@@ -223,11 +223,25 @@ for (const spec of compareSpecs) {
   }
   // **∴ 丢掉预热那一轮 ✗**（**∴ 冷页缓存**会**主导第一次 ✓）** ✓✓
   const usable = samples.length > 1 ? samples.slice(1) : samples;
+    // **★ 必须**在渲染之后**重读 `/health` ✗ ★**（**第 460 轮 ✓；**实测根因 ✓）：
+    //   **∴ 原来的错 ✗**：**`backend` **取自**渲染前的快照**✗（**`:218` ✓）
+    //     ⇒ **∴ 而**那**是**进程刚起**时的初值** ✓
+    //       ⇒ **∴ 于是**：**它**永远显示 `cpu`** ✓
+    //         ⇒ **∴ 症状（**实测 ✓）✗**：**两行都是 `cpu`**✗
+    //           ＋ **∴ 而**数字**却明显不同**（**−42% ✓）** ✓ ★**** ✓✓
+    //   **∴ 现在 ✗**：**渲染后再读一次**✗
+    //     ⇒ **∴ 于是** `backend` **反映**真实走过的路** ✓ ★**** ✓✓
+    let after = health;
+    try {
+      after = await (await fetch(`${base}/health`)).json();
+    } catch (error) {
+      console.warn(`    ⚠️ 渲染后读 /health 失败（沿用旧快照）：${String(error).slice(0, 80)}`);
+    }
   rows.push({
     label: spec.label,
-    backend: health.render_backend,
-    gpuMode: health.gpu_mode,
-    reason: health.gpu_unavailable_reason,
+    backend: after.render_backend,
+    gpuMode: after.gpu_mode,
+    reason: after.gpu_unavailable_reason,
     wallMs: median(usable.map((s) => s.wallMs)),
     cpuMs: median(usable.map((s) => s.cpuMs)),
     ratio: median(usable.map((s) => s.ratio)),
