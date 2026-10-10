@@ -66,7 +66,13 @@ const rounds = Number(option("--rounds", argv.length === 0 ? "1" : "3"));
 // **★ 判据必须**自足** ✗ ★**（第 77 轮 ✓）：**没有**任何参数时**默认 `--spawn`**✗
 //   **∴ 且**：**默认轮数**改成 **1** ✗
 //     ⇒ **∴ 因为**它在**分片里**也会被跑到**✗ ⇒ **∴ 不该**在那里跑**3 轮重活 ✓**** ✓✓
-const spawnMode = argv.includes("--spawn") || argv.length === 0;
+// **★ 编排给的是 `<base> <doc> <token>`**✗ ⇒ **∴ 本判据**必须能**自己起服务** ✗ ★**（第 98 轮 ✓）：
+//   **∴ 症状（**本地复现 ✓）✗**：`✗ 需要 --spawn，或同时给出 --base 与 --pid` ⇒ **`EXIT=2`** ✓**** ✓✓
+//     ⇒ **∴ 因为**编排（`run-criteria.sh:228` ✓）**给三个位置参数**✗
+//       ⇒ **∴ `argv.length === 0` 永远不成立** ✓**** ✓✓
+//   **∴ 修法**：**没有 `--pid` 就没法测外部进程**✗
+//     ⇒ **∴ 那就**自己 spawn 一个**✗ ⇒ **∴ 于是**它测的是**它自己起的那个服务 ✓**** ✓✓
+const spawnMode = argv.includes("--spawn") || argv.length === 0 || !option("--pid");
 const baseline = option("--baseline", "target/release/yanshi-serve");
 
 /** **∴ 一组对照：**名字 ＝ 额外的服务参数 ✓**（**∴ 用 `=` 分隔 ✓）** ✓✓ */
