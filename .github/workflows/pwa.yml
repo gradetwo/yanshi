@@ -45,9 +45,18 @@ jobs:
 
       - name: 安装 wasm-bindgen CLI
         run: |
-          # **∴ 版本必须与 `Cargo.toml` 里的 `wasm-bindgen` 匹配 ✗**（**否则绑定不兼容 ✓**）。
-          VER=$(grep -m1 '^wasm-bindgen' crates/yanshi-wasm/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          echo "wasm-bindgen = $VER"
+          # **★ 版本只能来自 `Cargo.lock` ✗ ★**（**第 492 轮 ✓）
+          #   **∴ 原来 ✗**：**从 `crates/yanshi-wasm/Cargo.toml` 取**✗
+          #     ⇒ **∴ 而**那里是**范围** `"0.2"`** ✓
+          #       ⇒ **∴ 于是**：`cargo install --version "0.2"` **被 cargo 拒绝**
+          #         （`unexpected end of input` ✓）
+          #         ⇒ **∴ 那一步**必失败**✗ ⇒ **∴ 后面的绑定生成**从不执行** ✓
+          #           ⇒ **★ 所以 PWA 的部署**根本没跑到** ✓ ★**** ✓✓
+          #   **∴ 现在 ✗**：**用 `scripts/wasm-bindgen-version.sh`**✗
+          #     ⇒ **∴ 它**只从 `Cargo.lock` 取**精确版本**✗
+          #       ＋ **∴ 取不到就**响亮失败**（**∴ 不回退写死版 ✓）★**** ✓✓
+          VER="$(scripts/wasm-bindgen-version.sh)"
+          echo "wasm-bindgen（Cargo.lock）= $VER"
           cargo install wasm-bindgen-cli --version "$VER" --locked
 
       - name: 生成绑定（pkg/）

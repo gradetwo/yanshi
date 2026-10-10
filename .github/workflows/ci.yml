@@ -163,7 +163,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown
-          cargo install wasm-bindgen-cli --version 0.2.104 --locked || true
+          # **★ 版本来自 `Cargo.lock`，且**不许吞失败**✗ ★**（**第 492 轮 ✓）
+          #   **∴ 原来 ✗**：`--version 0.2.104 --locked || true`**✗
+          #     ⇒ **∴ 两处错**：**① 版本**过时**（**crate 是 0.2.129 ✓）
+          #       ＋ **②** `|| true` **把失败吞掉** ✓
+          #         ⇒ **∴ 于是**：**下一步 `wasm-bindgen`**会报 schema 版本不符** ✓
+          VER="$(scripts/wasm-bindgen-version.sh)"
+          echo "wasm-bindgen（Cargo.lock）= $VER"
+          cargo install wasm-bindgen-cli --version "$VER" --locked
           wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg \
             target/wasm32-unknown-unknown/release/yanshi_wasm.wasm
       - name: Criterion - the kernel artifact stays under the limit
@@ -207,7 +214,9 @@ jobs:
         # 版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水与 .wasm 不兼容。
         run: |
           if ! command -v wasm-bindgen >/dev/null 2>&1; then
-            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+            # **∴ 版本来自 Cargo.lock（**不许写死 ✓）**
+            VER="$(scripts/wasm-bindgen-version.sh)"
+            cargo install wasm-bindgen-cli --version "$VER" --locked
           fi
       - name: Run wasm runtime smoke check
         # 这是唯一能抓住「原生全绿、浏览器/内核全崩」那类回归的检查
@@ -260,7 +269,9 @@ jobs:
         # 版本必须与 `wasm-bindgen` crate 匹配，否则生成的胶水与 .wasm 不兼容。
         run: |
           if ! command -v wasm-bindgen >/dev/null 2>&1; then
-            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+            # **∴ 版本来自 Cargo.lock（**不许写死 ✓）**
+            VER="$(scripts/wasm-bindgen-version.sh)"
+            cargo install wasm-bindgen-cli --version "$VER" --locked
           fi
       - name: Build server and wasm package
         run: |
@@ -317,7 +328,9 @@ jobs:
         run: |
           echo "::group::wasm-bindgen-cli install $(date -u +%T)"
           if ! command -v wasm-bindgen >/dev/null 2>&1; then
-            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+            # **∴ 版本来自 Cargo.lock（**不许写死 ✓）**
+            VER="$(scripts/wasm-bindgen-version.sh)"
+            cargo install wasm-bindgen-cli --version "$VER" --locked
           fi
       - name: Install chromium
         uses: browser-actions/setup-chrome@v1

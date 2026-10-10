@@ -71,7 +71,9 @@ jobs:
       - name: Install wasm-bindgen-cli (pinned)
         run: |
           if ! command -v wasm-bindgen >/dev/null 2>&1; then
-            cargo install wasm-bindgen-cli --version 0.2.129 --locked
+            # **∴ 版本来自 Cargo.lock（**不许写死 ✓）**
+            VER="$(scripts/wasm-bindgen-version.sh)"
+            cargo install wasm-bindgen-cli --version "$VER" --locked
           fi
           wasm-bindgen --version
 
