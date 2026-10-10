@@ -24393,3 +24393,47 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       **∴ 写侧 ✗**：**新导入的 PNG **确实写了 `tiles`** ✓（**第 433 轮实测 ✓）
 #       **∴ 读侧 ✗**：**分块路**存在 ＋ **在别处跑过**（**`TILE_PATH` 6 次 ✓）
 #       **∴ 而**这条渲染**却**两图整幅**✗ ⇒ **∴ 所以**：**还差**一次「**为什么没走分块**」的定位** ✓
+
+# **★ 第 436 轮：**定位到最后一跳 —— `RasterPatch.tiles` → `render_layer_objects` 的 `tiles` 变量** ★**
+#   **★★★ 读码事实（**`object.rs:610–640` ✓）★★★**：
+#     ```rust
+#     let mime_type = data.get("mime_type")…;
+#     let region  = data.get("region").and_then(Bbox::from_value);
+#     let width   = data.get("width")…;      ← ★ 顶层 ✓
+#     let height  = data.get("height")…;     ← ★ 顶层 ✓
+#     if width == 0 || height == 0 {
+#         return Primitive::Unsupported {
+#             reason: "raster_patch 缺少位图尺寸（width/height 或 region）",
+#         };                                 ← ★ 它读 width/height ✓
+#     }
+#     Primitive::RasterPatch {
+#         blob, width, height, offset, mime_type,
+#         ★ tiles: data.get("tiles").and_then(Value::as_str).map(str::to_owned) ★,
+#     }
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ `data` **就是**原子净荷的顶层****✗
+#       ⇒ **∴ 因为** `width`／`height`／`region`／`mime_type` **都从它取**✗
+#         ＋ **∴ 而**它们**都在顶层** ✓（**第 433 轮实测的 payload keys ✓）
+#         ⇒ **★ 所以**：**`data.get("tiles")` **应当命中**** ✓ ★**** ✓✓
+#   **★★★ 所以矛盾只剩两种可能 ✗ ★★★**：
+#     **∴ ① `data` **不是**顶层**✗
+#       ⇒ **∴ 即**：**折叠器给的是**别的形状** ✓
+#         （**∴ 如** `{"data": {…}}` 包了一层 ⇒ **∴ 那** `data.get("width")` **就取不到** ✗
+#           ⇒ **∴ 而**它会**返回 `Unsupported`**✗ ⇒ **∴ 但**渲染**没报"缺少尺寸"** ✓
+#             ⇒ **∴ 所以**：**`data` **确实是**顶层** ✓）★**** ✓✓
+#     **∴ ② `RasterPatch.tiles` **没被**传到** `render_layer_objects` 的 `tiles` 变量**✗**
+#       ⇒ **∴ 即**：**中间某一跳**丢了它** ✓
+#         ⇒ **★ 所以**：**整个链路**只剩最后一跳**** ✓ ★**** ✓✓
+#   **★★★ 所以下一步（**一次就能定案 ✓）★★★**：
+#     **∴ 查 `RasterPatch.tiles` **怎么到** `render_layer_objects` 的 `tiles` 变量****✗
+#       ⇒ **∴ 方法 ✗**：**grep** `RasterPatch` **的使用点**✗
+#         ⇒ **∴ 看**解构时**有没有把 `tiles` **带出来** ✓ ★**** ✓✓
+#       **∴ 若**解构写成 `Primitive::RasterPatch { blob, width, height, mime_type, .. }`**✗**
+#         ⇒ **∴ 那** `tiles` **被 `..` **吞掉了**** ✓ ⇒ **∴ 于是**渲染侧**永远拿不到** ✓ ★**** ✓✓
+#           ⇒ **★ 那**就是一个**一行修法**（**把 `tiles` 加进解构 ✓）★**** ✓✓
+#   **★ 阶段一进度（**第 3 条只剩最后一步 ✓）★**：
+#     **∴ ✅ 1／2／4／5** ＋ **∴ 3（**差最后一跳 ✓）**：
+#       **∴ 写侧 ✗**：**`import_image` **确实**写 `tiles`**（**第 433 轮实测 ✓）
+#       **∴ 解析侧 ✗**：**`object.rs:639` **确实**读 `data["tiles"]`** ✓
+#       **∴ 只剩 ✗**：**`RasterPatch.tiles` → 渲染侧的 `tiles`** ✓
