@@ -104,6 +104,25 @@ const firstDiff = (left, right) => {
   };
   const offline = () => send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   const online = () => send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  // **★ 等一个离线资产进 SW 缓存 ✗ ★**（第 407 轮 ✓）：
+  //   **∴ 为什么 ✗**：**SW 的预缓存是**异步**的**✗
+  //     ⇒ **∴ 若**页面刚加载就断网**✗ ⇒ **∴ `import` **可能失败** ✓
+  //       ⇒ **∴ 于是**判据**误判产品** ✓
+  //         **∴ 实测（**第 406 轮 ✓）**：**缓存里**确实有 `brush-local.js`**（**200／4491 ✓）** ✓
+  //           ⇒ **★ 所以**：**断网前**要**显式等它**✗（**最多 20 秒 ✓）** ✓
+  const waitForPrecache = async (path, timeoutMs = 20000) => {
+    const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return !!r; } catch (e) { return false; } })()`;
+    const started = Date.now();
+    for (;;) {
+      const hit = await evaluate(probe);
+      if (hit === true) { console.log("     · 离线资产已进缓存：" + path); return true; }
+      if (Date.now() - started > timeoutMs) {
+        console.warn("     ⚠️ 等 " + path + " 进缓存超时（" + timeoutMs + "ms）⇒ 离线结论可能不成立");
+        return false;
+      }
+      await sleep(250);
+    }
+  };
 
   await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
   // **禁用 HTTP 缓存**（第 1113 轮定案）：SW 的 SHELL 只缓存 /viewer.css 与 /viewer-app.js，
@@ -219,6 +238,15 @@ const firstDiff = (left, right) => {
 
   // ① 断网 ⇒ 一次改文档的工具调用必须进队列
   section("① 断网：改文档的调用进队列，界面显示「排队」而不是「已保存」");
+  // **★ 断网前必须**确认离线资产已进缓存** ✗ ★**（第 407 轮 ✓；**实测根因 ✓）：
+  //   **∴ 为什么 ✗**：**离线落笔要 `import("/brush-local.js")`** ✗
+  //     ＋ **∴ 它**由 SW **预缓存** ✓
+  //       ⇒ **∴ 若**在**预缓存完成之前**就断网**✗
+  //         ⇒ **∴ 于是** import **必然失败**✗（**`Failed to fetch dynamically imported module` ✓）
+  //           ⇒ **∴ 于是**判据**误报「**产品把笔丢了**」 ✓
+  //             **∴ 而**实测（**第 406 轮 ✓）**：**缓存里**确实有它**（**命中 200／4491 字节 ✓）** ✓
+  //               ⇒ **★ 所以**：**先等它进缓存**✗ ⇒ **∴ 于是**判据测的是**真正的离线能力** ✓ ★**** ✓✓
+  await waitForPrecache("/brush-local.js");
   await offline();
   await sleep(300);
   // **负对照**（本次审计加的 ✓）：断网后页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒

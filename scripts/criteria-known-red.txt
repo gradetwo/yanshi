@@ -22889,3 +22889,61 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ 文档 ✗**：**`AGENTS.md`**「**CDP evaluate 必须成对用两个开关**」 ✓**** ✓✓
 #     **∴ 定性 ✗**：**内核／事件／提交路径**全好**｜**离线模拟无害**｜**`canvasSig` 快**｜
 #       **`brush-local.js` **已在缓存**｜**`/sw.js` 是 404（**正确路径 `/service-worker.js` ✓）** ★**** ✓✓
+
+# **★ 第 407 轮：★★★★★★★★★★ **链式突破 —— 修好 `brush-local.js` 后暴露出**下一个缺口：笔刷文件名转义错误**（`%` → `_pct_`）**** ✗** ★★★★★★★★★★
+#   **★ 本轮改动（**判据侧 ✓）★**：
+#     **∴ 加 `waitForPrecache(path, timeoutMs = 20000)`**✗（**`browser-offline-journal.mjs` ✓）**：
+#       ```js
+#       const waitForPrecache = async (path, timeoutMs = 20000) => {
+#         const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return !!r; } catch (e) { return false; } })()`;
+#         const started = Date.now();
+#         for (;;) {
+#           const hit = await evaluate(probe);
+#           if (hit === true) { console.log("     · 离线资产已进缓存：" + path); return true; }
+#           if (Date.now() - started > timeoutMs) { console.warn("     ⚠️ 等 " + path + " 进缓存超时…"); return false; }
+#           await sleep(250);
+#         }
+#       };
+#       ```
+#       **∴ 并在**断网前调用**✗：**`await waitForPrecache("/brush-local.js"); await offline();`** ✓ **** ✓✓
+#       **∴ 为什么 ✗**：**SW 的预缓存是**异步**的**✗
+#         ⇒ **∴ 若**页面刚加载就断网**✗ ⇒ **∴ `import` **可能失败** ✓
+#           ⇒ **∴ 于是**判据**误判产品** ✓ ★**** ✓✓
+#   **★★★ 实测（**决定性 ✓）★★★**：
+#     ```
+#     · ★ 离线资产已进缓存：/brush-local.js ★        ← ★ 助手生效 ✓
+#     ★ 入队返回 = {"ok":false,"error":"stroke_failed","error_code":"stroke_failed",
+#        "reason":"笔刷取不到：100%_Opaque.myb ⇒ HTTP 404｜
+#        请求 URL ＝ http://127.0.0.1:18811/brushes/100_pct__Opa…"} ★
+#     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 发出 ⇒ 负对照不可成立
+#     ✗ 队列里恰好 1 条（拿到了 0）
+#     ✗ 第一条是 draw_stroke 的工具调用
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ ①** **`brush-local.js` 的问题**彻底解决**✗（**已进缓存 ✓）** ✓**** ✓✓
+#       ⇒ **∴ 于是**它**暴露了**下一个缺口** ✓（**∴ 那**正是**链式排查**的价值 ✓）★**** ✓✓
+#     **∴ ②** **下一个缺口（**真实产品缺陷 ✓）**✗**：
+#       **∴ 请求 `100%_Opaque.myb`**✗
+#         ⇒ **∴ 而**实际 URL 是 `/brushes/100_pct__Opa…`**✗
+#           ⇒ **∴ 即**：**`%` **被**错误转义成 `_pct_`** ✓
+#             ⇒ **∴ 于是**文件名**不匹配**✗ ⇒ **∴ 服务端**404** ✓
+#               ⇒ **∴ 而那**导致**落笔失败 ＋ 笔被丢** ✓ ★**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **查**笔刷名的**转义逻辑**✗
+#       （**∴ 如** `encodeURIComponent` **被**误用**✓，或**某处**把 `%` **替换成** `_pct_`** ✓）★**** ✓✓
+#     **∴ ②** **并**：**确认**服务端 `brushes/` 目录里**真实**有哪些文件名**✗
+#       （**∴ 有** `100%_Opaque.myb` **吗**？**∴ 或**者**只有** `100_pct__Opaque.myb`**？）★**** ✓✓
+#         ⇒ **∴ 若**两者都存在**✗ ⇒ **∴ 那**就是**纯客户端转义 bug** ✓
+#           ⇒ **∴ 若**只有转义后的**✗ ⇒ **∴ 那**是**清单与磁盘不一致** ✓ ★**** ✓✓
+#     **∴ ③** **且**：**把**这一条**也加进 `waitForPrecache` 的守护**✗
+#       ⇒ **∴ 即**：**断网前**等**用到的笔刷文件**也进缓存** ✓ ★**** ✓✓
+#   **★ 本会话修复汇总（**七修 ＋ 十四性 ✓）★**：
+#     **∴ 修复（**产品 ✓）**✗**：**`/brush-local.js` 服务端路由**（**`9fd839f8` ✓）｜
+#       **boot rethrow**（**`8abd8c74` ✓）｜**借用视图拷贝**（**`4f6b8942` ✓）｜
+#       **`?render=client`**（**`53afc892` ✓）｜**全局内核链**（**`096c3073` ✓）｜
+#       **SW SHELL 加 `brush-local.js`**（**`059c4c83` ✓ —— ★ 实测已生效 ★）** ✓**** ✓✓
+#     **∴ 修复（**判据 ✓）**✗**：**求值失败不伪装成产品症状**｜**`awaitPromise: true`**（**三处提交 ✓）｜
+#       **★ `waitForPrecache`**（**本轮 ✓）** ★**** ✓✓
+#     **∴ 文档 ✗**：**`AGENTS.md`**「**CDP evaluate 必须成对用两个开关**」 ✓**** ✓✓
+#     **∴ 定性 ✗**：**内核／事件／提交路径**全好**｜**离线模拟无害**｜**`canvasSig` 快**｜
+#       **`brush-local.js` **已进缓存 ＋ 已生效**｜**★ 下一个缺口是**笔刷名转义**（**`%`→`_pct_` ✓）★** ★**** ✓✓
