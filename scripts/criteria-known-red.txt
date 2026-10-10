@@ -21221,3 +21221,42 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ①** **列全 `pointerdown` 监听器**✗ ＋ **看每个的**末尾**（`stopPropagation`／捕获 ✓）** ✓**** ✓✓
 #     **∴ ②** **在判据里**再打一个诊断**✗：**`state().tool` 的实际值 ＋ `heavyDocument` ＋ `needsServerPixels`** ✓**** ✓✓
 #       ⇒ **∴ 于是**：**下次**就能**看到**那一刻的真实状态** ✓**** ✓✓
+
+# **★ 第 363 轮：★★★★★★★ **`browser-offline-shell` 的落笔被吞 —— 缩小到 `7059` 的**分支判定**（最可能是 `text`）**** ✗** ★★★★★★★
+#   **★ 四个 `pointerdown` 监听器（**全部列出 ✓）★**：
+#     **∴ 6841**✗：**`board` ＋ **捕获**（`true` ✓）**✗
+#       ⇒ **∴ 只在**`event.altKey && RETOUCH_TOOLS.has(state.tool)`**时才
+#         `preventDefault()` ＋ **`stopPropagation()`** ✓
+#         ⇒ **∴ 判据**没按 alt** ⇒ **∴ 不阻止传播** ✓ ★**** ✓✓
+#     **∴ 6955**✗：**平移**✗ ⇒ **∴ `if (!wantsPanEvent(event)) return;`** ⇒ **∴ 已证伪** ✓**** ✓✓
+#     **∴ 7059**✗：**★ 落笔 ★**✗ ⇒ **∴ 本轮重点** ✓**** ✓✓
+#     **∴ 9448**✗：**`document` 级** ✓ ⇒ **∴ 位次**在 board 之后（**冒泡 ✓）⇒ **∴ 影响不到 board 的监听** ✓**** ✓✓
+#   **★★★ `7059` 的分支结构（**本轮读出 ✓）★★★**：
+#     ```js
+#     if (wantsPanEvent(event)) return;                          // 假（已证）
+#     if (state.tool === "text") { event.preventDefault(); commitText(…); return; }
+#     if (state.tool === "medium_dab") { …; state.points = [point]; …; return; }
+#     if (state.tool === MOVE_LAYER_TOOL) { …; state.points = [start]; …; return; }
+#     if (state.tool === MOVE_TOOL) { … }
+#     …（brush 走到最后 ＝ 真正的落笔）
+#     ```
+#   **★★★ 所以 ✗ ★★★**：
+#     **∴ `medium_dab`／`MOVE_LAYER_TOOL`／`MOVE_TOOL` 都会**设 `state.points`**✗
+#       ⇒ **∴ 若**工具是它们**✗ ⇒ **∴ `pointsAtDown` **应当 > 0** ✓ ⇒ **∴ 判据不会红** ✓**** ✓✓
+#     **∴ 而** `text` **分支**不设 `state.points`**✗（**∴ 它**只 `commitText` ＋ return ✓）
+#       ⇒ **★ 所以**：**最可能是** `state.tool === "text"`** ✓
+#         ⇒ **∴ 于是** `pointsAtDown = 0`**✗ ⇒ **∴ 判据红** ✓ ★**** ✓✓
+#     **∴ 而**若**真如此**✗ ⇒ **∴ 那**是**判据的**前置**问题**✗（**∴ 它**以为选了 brush ✓）
+#       ⇒ **∴ 因为**判据**点了** `[data-tool="brush"]`**✗
+#         ⇒ **∴ 若**那个选择器**不存在／没生效**✗ ⇒ **∴ 工具**没切** ✓**** ✓✓
+#         **∴ 而** `state.tool` **默认是 `"brush"`**✗（**`viewer-app.js:117` ✓）⇒ **∴ 矛盾** ✓
+#           ⇒ **∴ 除非**判据**之前**的步骤**把工具切成了 text** ✓（**∴ 如**它先测过导入／文本 ✓）★**** ✓✓
+#   **★ 下一步（**精确 ＋ 便宜 ✓）★**：
+#     **∴ ①** **在判据里**打印那一刻的 `window.yanshi.state().tool`**✗
+#       ＋ **`heavyDocument`／`needsServerPixels`** ✓（**∴ 一行诊断，一次运行就知道 ✓）** ★**** ✓✓
+#     **∴ ②** **若**是 `text`**✗ ⇒ **∴ 修法**：**判据**先**显式切回 brush**（**∴ 如**调用 `window.yanshi.setTool("brush")` ✓
+#       ⇒ **∴ 或**点对的选择器 ✓）** ✓**** ✓✓
+#     **∴ ③** **若**是 brush 而**仍不设 points**✗ ⇒ **∴ 那**才**是**产品 bug** ✓
+#       ⇒ **∴ 要**读 `7098` 之后的**真正落笔段** ✓**** ✓✓
+#   **★ 而**本会话的**模式（**第 5 次 ✓）★**：**判据的**前置／读法**问题**✗
+#     ⇒ **∴ 而**它**表现为**「**产品 bug**」 ✓ ⇒ **∴ 所以**：**先验前置**✗ ⇒ **∴ 再**谈产品** ✓ ★**** ✓✓
