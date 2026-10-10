@@ -82,3 +82,7 @@ web/.index.export.html
 
 # 部署工具（wrangler）的本地缓存产物，不属于源码
 .wrangler/
+
+# **★ `patch` 留下的备份/拒绝文件 ✗ ★**（第 186 轮 ✓；**∴ 误提交过一次 ✓）
+*.orig
+*.rej
