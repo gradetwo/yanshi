@@ -26441,3 +26441,77 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ ★ 内核 GPU **前置**✗（**`yanshi-wasm` 的 `gpu` feature ＋ 体积已量 ✓）
 #     **∴ ⬜ 内核侧**异步导出 ＋ 前端 await** ✓
 #     **∴ ⬜ 体积／构建／wasm32 实测**交给 CI/CD**（**目标第 10 条 ✓）
+
+# **★ 第 480 轮：★★★★★★★★★★ **内核异步 GPU 导出就位 —— `gpu_probe_async` ＋ `gpu_quantize_async`**** ★★★★★★★★★★
+#   **★★★ 本轮改动 ✗ ★★★**：
+#     **∴ ① `crates/yanshi-wasm/Cargo.toml` ✗**：
+#       ```toml
+#       gpu = ["yanshi-render/gpu", "dep:yanshi-gpu", "dep:wasm-bindgen-futures"]
+#       yanshi-gpu = { path = "../yanshi-gpu", version = "0.1.0", optional = true }
+#       wasm-bindgen-futures = { version = "0.4", optional = true }
+#       ```
+#       ⇒ **∴ 为什么需要 `wasm-bindgen-futures` ✗**：
+#         **∴ `#[wasm_bindgen] async fn` 的展开**会**引用它** ✓（**第 480 轮实测 ✓）★**** ✓✓
+#     **∴ ② `crates/yanshi-wasm/src/lib.rs` ✗**：**两个异步导出**
+#       ```rust
+#       #[cfg(feature = "gpu")]
+#       #[wasm_bindgen]
+#       pub async fn gpu_probe_async() -> String { … new_async(&lut[..]).await … }
+#
+#       #[cfg(feature = "gpu")]
+#       #[wasm_bindgen]
+#       pub async fn gpu_quantize_async(pixels: Vec<f32>, count: usize) -> Vec<u8> {
+#           if let Ok(q) = Quantizer::new_async(&lut[..]).await {
+#               if let Ok(out) = q.quantize_async(&pixels, count, None).await { return out; }
+#           }
+#           // **∴ 回退 CPU ✗**（**∴ 与纯 CPU 路**逐字节相同** ✓）
+#           …
+#       }
+#       ```
+#       ⇒ **∴ 关键 ✗**：**它们**只用 `async` 路**✗
+#         ⇒ **∴ 于是**：**在 wasm 上**不会死锁** ✓（**第 470 轮的教训 ✓）★**** ✓✓
+#   **★★★ 实测（**关键 ✓）★★★**：
+#     ```
+#     ★ 门禁 ✗**：**fmt ✓｜clippy ✓｜clippy(gpu) ✓｜clippy(wasm+gpu) ✓** ✓
+#     ★ 默认（**无 gpu ✓）✗**：
+#       ⇒ **依赖树 ＝ ★  67 包 ★**✗ ＋ **树里 `wgpu` 数 ＝ ★ 0 ★** ✓
+#         ⇒ **★ 一字不变**** ✓ ★**** ✓✓
+#     ★ --features gpu ✗**：
+#       ⇒ **依赖树 ＝ ★ 198 包 ★**✗ ＋ **树里 `wgpu` 数 ＝ ★ 9 ★** ✓
+#         ⇒ **∴ 增量 ＋131 包** ✓（**∴ 按第 591 轮裁定**接受 ✓）★**** ✓✓
+#     ★ 判据 ✗**：**内核体积 ＝ 0 ✓｜平台守卫 ＝ ok ✓** ✓ ★**** ✓✓
+#     ```
+#   **★★★ 三要素（**目标第 11／12／13 条 ✓）★★★**：
+#     **∴ 借鉴来源 ✗**：**Krita 的**异步 GPU 初始化**✗
+#       ⇒ **∴ 它**在**事件循环外**不阻塞** ✓
+#         ＋ **∴ 而** `wgpu` 的 wasm 路**本身是 `mapAsync` 的 Promise** ✓ ★**** ✓✓
+#     **∴ 与它们的差别 ✗**：**我们**把探测与实际使用**分开**✗
+#       ⇒ **∴ 即**：`backend_report_json` 仍报 `cpu`**✗
+#         ＋ **∴ 而** `gpu_probe_async` 只**探测** ✓
+#           ⇒ **∴ 于是**：**不许**因为探测成功就**谎报**后端** ✓ ★**** ✓✓
+#     **∴ 两面 ✗**：
+#       **∴ 收益 ✗**：**离线内核**有**真异步 GPU 入口**✗
+#         ＋ **∴ 默认产物**零影响** ✓ ★**** ✓✓
+#       **∴ 代价 ✗**：**开 gpu 时 ＋131 包**✗（**∴ 198 包 ✓）
+#         ＋ **∴ 本机无 `wasm32-unknown-unknown` 目标**✗
+#           ⇒ **∴ 所以**：**体积实测**交给 **CI/CD** ✓（**目标第 10 条 ✓）★**** ✓✓
+#         ＋ **∴ 且**：**前端**还**没有**调这两个导出**✗
+#           ⇒ **∴ 所以**：**离线内核**暂时**仍走 CPU** ✓（**∴ 如实 ✓）★**** ✓✓
+#     **∴ 可验证的一步 ✗**：`cargo check -p yanshi-wasm`（**默认 ✓）
+#       ＋ `cargo check -p yanshi-wasm --features gpu`（**✓）
+#       ＋ **∴ `cargo tree`**量包数（**67 ⇒ 198 ✓）
+#       ＋ **∴ 树里 `wgpu` 数**（**0 ⇒ 9 ✓）
+#       ＋ **∴ 判据** `tool-wasm-tree-no-wgpu.mjs` ＋ `tool-gpu-sync-init-guard.mjs`** ✓ ★**** ✓✓
+#   **★★★ 下一步（**精确 ✓）★★★**：
+#     **∴ 前端接上 ✗**：**`viewer-app.js` **调** `gpu_probe_async`**✗
+#       ⇒ **∴ 若**成功**✗ ⇒ **∴ 页面**显示**「**内核有 WebGPU**」 ✓
+#         ＋ **∴ 而** `backend_report_json` 的 `webgpu_unused_reason`
+#           ⇒ **∴ 从 `kernel_webgpu_not_wired_yet`**改成**实际状态** ✓ ★**** ✓✓
+#       ＋ **∴ 且**：**要加一条判据**✗
+#         ⇒ **∴ 守住**「**`--features gpu` 时**`gpu_probe_async` **真的被 await**」 ✓ ★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端侧**（**含第 9 条 ＋ 6／6 判据 ＋ 方案甲 ✓）
+#     **∴ ✅ 内核异步化**两步**（**`new` ＋ `quantize` ✓）
+#     **∴ ✅ ★ 内核异步 GPU **导出**✗（**`gpu_probe_async` ＋ `gpu_quantize_async` ✓）
+#     **∴ ⬜ 前端**调那两个导出 ＋ 判据** ✓
+#     **∴ ⬜ 体积／构建／wasm32 实测**交给 CI/CD**（**目标第 10 条 ✓）

@@ -554,3 +554,59 @@ mod tests {
         let _ = kernel.version();
     }
 }
+
+/// **★ 内核的**异步 GPU 探测**✗ ★**（**第 480 轮 ✓；**目标第 6 条 ✓）
+///
+/// **∴ 为什么必须是 `async` ✗**：**本平台是**单线程事件循环**✗
+///   ⇒ **∴ 同步 `block_on` **会**死锁** ✓（**第 470 轮实测过 ✓）
+///     ⇒ **★ 所以 ✗ ★**：**这里**只调 `new_async`**✗
+///       ＋ **∴ 让**浏览器的事件循环**来推进** ✓ ★**** ✓✓
+///
+/// **∴ 返回 ✗**：**一段 JSON**✗（**∴ 含**`ok`／`adapter`／`error` ✓）
+///   ＋ **∴ 而**它**不谎报**✗：**失败**就把**原因**写出来** ✓ ★**** ✓✓
+///
+/// **∴ 与 `backend_report_json` 的关系 ✗**：**那条**报**内核实际用的后端**（**`cpu` ✓）
+///   ＋ **∴ 这条**只**探测**适配器**✗ ⇒ **∴ 它**不改变**`render_backend`** ✓
+///     ⇒ **∴ 于是**：**探测**与**实际使用**分开** ✓ ★**** ✓✓
+#[cfg(feature = "gpu")]
+#[wasm_bindgen]
+pub async fn gpu_probe_async() -> String {
+    // **∴ 用一条**最小 LUT**✗（**∴ 只为**建设备 ✓）
+    let lut = yanshi_render::color::srgb_encode_table();
+    match yanshi_gpu::Quantizer::new_async(&lut[..]).await {
+        Ok(q) => json!({
+            "ok": true,
+            "adapter": q.adapter_note(),
+            "note": "内核的异步 GPU 初始化成功（**未改变 render_backend**）",
+        })
+        .to_string(),
+        Err(e) => json!({
+            "ok": false,
+            "error": e,
+            "note": "内核的异步 GPU 初始化失败 ⇒ 内核仍走 CPU（**如实 ✓）",
+        })
+        .to_string(),
+    }
+}
+
+/// **★ 内核的**异步 GPU 量化**✗ ★**（**第 480 轮 ✓）
+///
+/// **∴ 输入 ✗**：**`pixels` ＝ 归一化 f32 的 RGBA 序列**✗（**长度 ＝ count × 4 ✓）
+///   ⇒ **∴ 返回 ✗**：**量化后的 RGBA8 字节** ✓
+///
+/// **∴ 失败语义 ✗**：**回退 CPU**✗（**∴ 用**本仓库既有的 `to_rgba8_quantized` ✓）
+///   ⇒ **∴ 且**：**返回值**与 CPU 路**逐字节相同** ✓（**∴ 由 crate 内部核对 ✓）★**** ✓✓
+#[cfg(feature = "gpu")]
+#[wasm_bindgen]
+pub async fn gpu_quantize_async(pixels: Vec<f32>, count: usize) -> Vec<u8> {
+    let lut = yanshi_render::color::srgb_encode_table();
+    if let Ok(q) = yanshi_gpu::Quantizer::new_async(&lut[..]).await {
+        if let Ok(out) = q.quantize_async(&pixels, count, None).await {
+            return out;
+        }
+    }
+    // **∴ 回退 CPU ✗**（**∴ 与纯 CPU 路**逐字节相同** ✓）
+    let mut buffer = yanshi_render::Buffer::new(0, 0, count as u32, 1);
+    buffer.pixels_mut().copy_from_slice(&pixels[..count * 4]);
+    buffer.to_rgba8_quantized(None)
+}

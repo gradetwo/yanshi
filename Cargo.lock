@@ -1684,7 +1684,9 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "yanshi-core",
+ "yanshi-gpu",
  "yanshi-render",
 ]
 
