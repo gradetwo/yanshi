@@ -18,7 +18,13 @@
 //   **∴ 关 ✗**：**同一次**是 `0`** ✓ ⇒ **∴ 两者**必须**不同**✗
 //     ⇒ **∴ 若**相同 ⇒ **★ 场景没生效 ✗（**第 14 轮的教训 ✓）★**** ✓✓
 
-const base = process.argv[2] ?? "http://127.0.0.1:8471";
+// **★ `argv[2]` **可能是一个标志**✗**（第 91 轮 ✓；**本地复现：`input: '--spawn/api/documents'` ✓**）：
+//   **∴ 症状 ✗**：**我**跑 `node scripts/tool-partial-reuse-benefit.mjs --spawn`**✗
+//     ⇒ **∴ `base` ＝ `"--spawn"`**✗ ⇒ **∴ 于是**：**URL**解析失败 ⇒ **`ERR_INVALID_URL` ✓**** ✓✓
+//   **∴ 修法**：**跳过**以 `--` 开头的参数**✗
+//     ⇒ **∴ 取**第一个**看起来像 URL** 的参数 ✓**** ✓✓
+const __urlArg = process.argv.slice(2).find((a) => /^https?:\/\//.test(a));
+const base = __urlArg ?? "http://127.0.0.1:8471";
 const CANVAS = 4096;
 // **∴ below 的 tile 是 256 ✗**（`BELOW_TILE` ✓）⇒ **∴ 区域要**跨 256 边界 ✓** ✓✓
 // **★ 大区域必须**明显更大** ✗ ★**（第 15 轮实测 ✓）：**小区域的 `want` 含**外扩
