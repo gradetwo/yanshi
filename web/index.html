@@ -1481,7 +1481,30 @@ async function fetchOrLocal(url, options) {
     } catch (error) {
       console.warn("[yanshi] 未缓存即转发（URL 解析不了）");
     }
-    return fetch(url, options);
+// **★ 「未缓存即转发」必须**有界** ✗ ★**（第 176 轮 ✓；**离线根因 ✓）：
+      //   **∴ 症状 ✗**：**断网时**本行**既不**成功**✗、**也**不**失败** ✗**
+      //     ⇒ **∴ 它**永远**挂着** ✓（**实测：**`done: false` 一直不变 ✓）** ✓✓
+      //     ⇒ **∴ 于是**：**任何**走到这里的**初始化步骤**✗
+      //       ⇒ **∴ 都**永不返回** ✓**** ✓✓
+      //       ⇒ **∴ 实测**：**`boot:before-refreshLayers`**出现**✗
+      //         ＋ **`boot:refreshLayers-ok`**没有** ✓**** ✓✓
+      //         ⇒ **∴ 因为** `refreshLayers()` **第一步**就是**本函数** ✓**** ✓✓
+      //         ⇒ **∴ 而**它是**入口 IIFE **的第一步**✗
+      //           ⇒ **∴ 于是** `void warmKernel()` **永远**到不了** ✓**** ✓✓
+      //   **∴ 修法**：**给真实 `fetch` 一个**上限**✗**
+      //     ⇒ **∴ 用** `AbortSignal.timeout(5000)`**✗
+      //       ＋ **∴ 若**调用方**自己带了 `signal`**✗
+      //         ⇒ **∴ 用**它的（**∴ 尊重**调用方 ✓）** ✓✓
+      //     ⇒ **∴ 于是**：**5 秒后**抛**✗
+      //       ⇒ **∴ 调用方**按它**本来就有的**降级路径**走 ✓**** ✓✓
+      //   **∴ 为什么是**这里**✗**：**所有**未本地化的请求**都**经过本行** ✓ ★**** ✓✓
+      const forwardOptions = Object.assign({}, options || {});
+      if (!forwardOptions.signal) {
+        forwardOptions.signal = (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
+          ? AbortSignal.timeout(5000)
+          : undefined;
+      }
+      return fetch(url, forwardOptions);
   }
   const key = localKey(url) + (toolName ? "|tool:" + toolName : "") +
     (options && options.body ? "|args:" + bodyDigest(options.body) : "") +
@@ -7999,7 +8022,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-dba22e8a-dirty")
+      caches.open("yanshi-shell-71c1e457-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
