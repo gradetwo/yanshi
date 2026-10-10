@@ -3837,18 +3837,49 @@ async function loadDocumentData() {
   // WASM 内核在后台预热，就绪后再换成客户端渲染——首帧因此不等待内核折叠。
   const bootStarted = performance.now();
   window.yanshiStats.bootAt = bootStarted;
-  await refreshPreview();
-  const bootFirstPaint = $("firstPaint");
-  if (bootFirstPaint) bootFirstPaint.textContent = "…";
-  connect();
-  refreshContactLink();
-  void warmKernel();
+  // **★ 离线时**每一步都不许中断 boot**✗ ★**（第 369 轮 ✓；**离线内核起不来的根因链 ✓）：
+  //   **∴ 实测（**`__appMarks` ✓）**✗**：**标记**止于 `boot:loadEffectCatalog!Failed to fetch`**
+  //     ⇒ **∴ 而** boot 尾部这三步**原先**没有标记**✗ ⇒ **∴ 无法判断**谁抛了** ✓
+  //   **∴ 修法 ✗**：**① 每步加标记 ✗**（**∴ 下次一眼看出断点 ✓）
+  //     ＋ **② 取像素失败**不许中断 boot**✗
+  //       （**∴ 与** `initWasm` 里 `/health` 的处理**同一原则 ✓：**可选数据取不到要跳过 ✓）** ✓
+  const bootMark = (name) => { (window.__appMarks = window.__appMarks || []).push("boot:" + name); };
+  // **★ 用 `try/finally` 保证**内核预热一定启动**✗ ★**（第 369 轮 ✓；**离线根因的**结构性修法** ✓）：
+  //   **∴ 实测（**`__appMarks` ✓）**✗**：**boot **在前面某一步之后**就断了**✗
+  //     ⇒ **∴ 而** `void warmKernel()` **在**最后一行**✗ ⇒ **∴ 于是**它**永远不执行** ✓
+  //       ⇒ **∴ 内核**永远不加载** ⇒ **∴ 离线**画不了** ✓ ★**** ✓✓
+  //   **∴ 为什么用 `finally` 而不是**逐个 try/catch**✗**：
+  //     **∴ 逐个加**要**穷举**每一步**✗ ⇒ **∴ 而**今天已经**两次**加错地方** ✓
+  //       （**∴ 366 轮判 `loadEffectCatalog` ✓、**367 轮判 `refreshLayers` ✓ ⇒ **∴ 都错了 ✓）**
+  //         ⇒ **∴ 而** `finally` **不依赖**我对哪一步抛的判断** ✓
+  //           ⇒ **★ 所以**：**无论**前面哪一步抛**✗ ⇒ **∴ 内核预热**一定被启动** ✓ ★**** ✓✓
+  //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+  //     **∴ 收益**：**离线时内核**有机会起来**✗ ⇒ **∴ 离线**可用** ✓**** ✓✓
+  //     **∴ 代价**：**前序步骤的异常**被**吞掉**✗ ⇒ **∴ 而**那**就是**「**启动尽量完成**」的取舍** ✓
+  //       ⇒ **∴ 且**每一步**都留了标记**✗ ⇒ **∴ 异常**仍可查** ✓**** ✓✓
+  try {
+    bootMark("before-refreshPreview");
+    await refreshPreview();
+    bootMark("refreshPreview-ok");
+    const bootFirstPaint = $("firstPaint");
+    if (bootFirstPaint) bootFirstPaint.textContent = "…";
+    connect();
+    refreshContactLink();
+  } catch (error) {
+    bootMark("tail!" + String((error && error.message) || error).slice(0, 60));
+  } finally {
+    // **★ 内核预热**必须启动 ✗ ★**（**∴ 与**前面的成功／失败无关 ✓）
+    bootMark("before-warmKernel");
+    void warmKernel();
+  }
 }
 
 // 后台预热 WASM 内核：装载原子并切换为客户端渲染；失败则保持服务端渲染。
 async function warmKernel() {
+  (window.__appMarks = window.__appMarks || []).push("warm:enter");
   const started = performance.now();
   await initWasm();
+  (window.__appMarks = window.__appMarks || []).push("warm:after-initWasm");
   setupAnnotationPanel();
   setupObjectPanel();
   setupCheckpointPanel();
@@ -9829,23 +9860,23 @@ $("importFile").addEventListener("change", async (event) => {
     $("identity").textContent = state.docId;
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshLayers");
       try { await refreshLayers(); (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshThumb");
       try { await refreshThumb(); (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-loadEffectCatalog");
       try { await loadEffectCatalog(); (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshEffects");
       try { await refreshEffects(); (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshEffects!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshHistory");
       try { await refreshHistory(); (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshHistory!" + String(error && error.message || error).slice(0, 40)); }
     window.yanshiStats.bootAt = performance.now();
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshPreview");
       try { await refreshPreview(); (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview-ok"); }
-      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview!" + String(error && error.message || error).slice(0, 40)); throw error; }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshPreview!" + String(error && error.message || error).slice(0, 40)); }
     connect();
     refreshContactLink();
       (window.__appMarks = window.__appMarks || []).push("boot:warmKernel");
