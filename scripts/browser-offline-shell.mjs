@@ -553,7 +553,7 @@ const inkBefore = await evaluate(canvasSig);
 //             ⇒ **★ 所以**那次落笔**其实成功了**✗ ⇒ **∴ 是**求值自己坏了** ✓ ★**** ✓✓
 //   **∴ 修法 ✗**：**包一层 `try/catch`**✗ ⇒ **∴ 于是**异常**带文本返回** ✓
 //     ＋ **∴ 调用方**把**非对象／空对象**当成**硬失败**（**∴ 不再**伪装成产品症状 ✓）★**** ✓✓
-const strokeResult = await evaluate(`(async () => {
+const strokeRaw = await evaluate(`Promise.race([(async () => {
   try {
   // 先选笔刷工具（页面有多个 pointerdown 监听；工具不是 brush 时落笔会被当成别的操作）
   const brushBtn = document.querySelector('[data-tool="brush"]');
@@ -600,9 +600,15 @@ const strokeResult = await evaluate(`(async () => {
     return { result: "evaluate-threw", error: String((error && error.message) || error).slice(0, 200),
              stack: String((error && error.stack) || "").split("\\n").slice(0, 4).join(" | ").slice(0, 300) };
   }
-})()`);
+})(), new Promise((r) => setTimeout(() => r({ result: "evaluate-timeout",
+    where: "判据的落笔求值在 8 秒内没有返回 ⇒ 多半是某个 await 挂在离线网络上"
+      + "（已知限制：CDP 页面级 offline 管不到 SW 上下文的 fetch）" }), 8000))])`);
+const strokeResult = strokeRaw;
 // **★ 求值失败**不许**伪装成产品症状 ✗ ★**（第 395 轮 ✓）：**∴ 空对象／缺字段**都算**硬失败** ✓
-if (!strokeResult || typeof strokeResult !== "object" || strokeResult.result === "evaluate-threw") {
+const emptyResult = !strokeResult || (typeof strokeResult === "object"
+  && Object.keys(strokeResult).length === 0);
+if (emptyResult || typeof strokeResult !== "object"
+    || strokeResult.result === "evaluate-threw" || strokeResult.result === "evaluate-timeout") {
   console.error("✗ 判据自身的求值失败（不是产品问题）⇒ 结果无效：" + JSON.stringify(strokeResult));
   process.exit(3);
 }
