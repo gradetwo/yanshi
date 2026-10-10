@@ -31,7 +31,12 @@ const page = targets.find((t) => t.type === "page");
 if (!page) { console.error("没有页面目标 ⇒ 判据无效（不是通过 ✗）"); process.exit(1); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map();
-socket.onmessage = (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
+socket.onmessage = (event) => {
+  const m = JSON.parse(event.data);
+  // **★ 带 `sessionId` 的消息必须**可见** ✗ ★**（第 131 轮 ✓）
+  if (m.sessionId && m.id) console.log("  · 会话回包 id=" + m.id + "（sessionId " + String(m.sessionId).slice(0, 8) + "…）");
+  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+};
 await new Promise((open) => { socket.onopen = open; });
 // **★ CDP 命令必须**有超时** ✗ ★**（第 115 轮 ✓；**本判据**挂死换来的 ✓）：
 //   **∴ 原来**没有超时 ✗ ⇒ **∴ 若**一条命令**没有响应**
@@ -79,7 +84,13 @@ const evaluate = async (expression) => (await send("Runtime.evaluate", { express
           + "（worker 会话）⇒ 判据无法作出结论 ✗");
         process.exit(2);
       }, CDP_TIMEOUT_MS);
+      // **★ 每条会话消息都要**留下痕迹** ✗ ★**（第 131 轮 ✓；**∵ 超时原因不明 ✓）：
+      //   **∴ 为什么 ✗**：**`Runtime.enable` 有应答**✗ ＋ **`Runtime.evaluate` 超时** ✓**** ✓✓
+      //     ⇒ **∴ 而**同样写法**在探针里**两条都成功 ✓**** ✓✓
+      //     ⇒ **∴ 所以**：**必须**看到**实际**收到了什么 ✓**** ✓✓
       pending.set(id, (message) => { clearTimeout(timer); resolve(message); });
+      console.log("  · 会话命令 " + method + "（sessionId " + String(sessionId).slice(0, 8)
+        + "…｜请求 id " + id + "）");
       socket.send(JSON.stringify({ id, method, params: params || {}, sessionId }));
     });
     // **★ worker 会话上**不许带 `awaitPromise`** ✗ ★**（第 130 轮 ✓；**探针与判据的差别 ✓）：
