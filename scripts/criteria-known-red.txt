@@ -20408,3 +20408,36 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ③** **且**：**这一条**正是**阶段一第 1 条**的遗留项** ✗**：
 #       **「**观测三数（**`wanted`／`available`／`missing` ✓）**自洽性**待查」** ✓
 #         ⇒ **∴ 所以**：**修它能**同时推进**两件事** ✓ ★**** ✓✓
+
+# **★ 第 342 轮：**用户补丁（`yanshi-spray-2bugs.patch`）**合并完成 ＋ bug ② 立了有牙判据**** ✗** ★
+#   **★ 补丁合并（**`f2a13e3a` ✓）★**：
+#     **∴ `git apply` ⇒ 退出码 0** ✓｜**`node scripts/pwa-sync-viewer.mjs`（**assets ⇒ web ✓）** ✓**** ✓✓
+#     **∴ 门禁 ✗**：**fmt ✓｜clippy ✓｜js-syntax ✓｜tool-pwa-assets ✓**** ✓✓
+#     **∴ 提交内容 ✗**：**`crates/yanshi-http/assets/viewer-app.js`（+48 ✓）｜`web/brush-local.js`（+10 ✓）｜`web/index.html`（**同步带来的 ✓）** ✓**** ✓✓
+#   **★ 澄清（**我一度以为同步失败 ✓）★**：
+#     **∴ `web/viewer-app.js` **未被 git 跟踪**✗（`.gitignore:65` ✓）⇒ **∴ 它是**制品**** ✓**** ✓✓
+#       ⇒ **∴ 所以**：**`git status` **不显示它**✗ ⇒ **∴ 而**它**其实**已被同步 ✓
+#         （**`diff -q assets/viewer-app.js web/viewer-app.js` ⇒ **一致** ✓）** ✓**** ✓✓
+#     **∴ 服务端 serve 的是** `assets/`**✗（`server.rs:125`：`assets_dir: Some(PathBuf::from("assets"))` ✓）** ✓**** ✓✓
+#       ⇒ **∴ 所以**：**补丁**两条路径都生效** ✓（**服务端 ＋ PWA ✓）** ★**** ✓✓
+#   **★★★ 新增判据 ✗ ★★★**：**`scripts/tool-brush-text-cache.mjs`** ✓
+#     **∴ 它守的 bug ✗**：**用户报告**「**每画一笔就 GET 一次 `/brushes/spray.myb`**」 ✓
+#       ⇒ **∴ 修法**：**`web/brush-local.js` 的 `brushTextCache`** ✓**** ✓✓
+#     **∴ 它怎么判 ✗**：**桩掉全局 `fetch` ＋ `location`**✗
+#       ⇒ **∴ 在 node 里**直接 import `../web/brush-local.js`**✗
+#         ⇒ **∴ 同名调两次 `fetchBrushText`**✗ ⇒ **∴ 断言 `fetch` **只发一次** ✓ ★**** ✓✓
+#       **∴ 为什么可行 ✗**：**本模块**不依赖 DOM**✗（**∴ 只调 `fetch` ＋ 读 `location.href` ✓）
+#         ⇒ **∴ 于是**：**判据**快 ＋ 稳 ＋ 无 flake** ✓（**∴ 不占浏览器 ✓）** ★**** ✓✓
+#     **★ 实测 ✗ ★**：
+#       **∴ 基线 ✗**：**`fetch 调用次数 = 1` ⇒ **退出码 0** ✓**** ✓✓
+#       **∴ ★ 变异（**去掉 `has` 与 `set` 两句 ✓）✗** ⇒ **∴ `调用次数 = 2` ⇒ **退出码 1** ★** ⇒ **∴ 有牙** ✓**** ✓✓
+#       **∴ 还原 ✗** ⇒ **∴ 退出码 0** ✓**** ✓✓
+#   **★ 还缺的守护（**bug ① ✓）★**：
+#     **∴ `repopulateKernelBlobs`（**新建内核时喂回 IndexedDB 的 blob ✓）**✗
+#       ⇒ **∴ 症状**：**spray 笔触在**新建图层**后消失** ✓**** ✓✓
+#       **∴ 现有覆盖 ✗**：**没有判据点名它**✗
+#         ⇒ **∴ 而**有 4 条提到「**新建图层**」✗（`browser-canvas-handfeel`／`browser-stroke-refresh`／
+#           `browser-ui-check`／`tool-thumbnail-on-demand` ✓）⇒ **∴ 要**逐条看**是否真测这一点** ✓**** ✓✓
+#       **∴ 要做 ✗**：**判据**：**新建图层 ⇒ 位图笔触仍在**✗
+#         ⇒ **∴ 变异**：**注释掉 `await repopulateKernelBlobs(…)` ⇒ **必红** ✓**** ✓✓
+#         **∴ 它**需要**浏览器 ＋ 内核**✗ ⇒ **∴ 属**重判据** ✓（**∴ 可**在 CI 跑 ✓）** ★**** ✓✓
