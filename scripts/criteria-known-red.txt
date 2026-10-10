@@ -16044,3 +16044,46 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     ⇒ **★ 所以**：**探针**必须**分清**"**应答 ✓"**与**"**事件 ✓"** ✗**
 #       ⇒ **∴ 而**只**收到事件**时**✗
 #         ⇒ **∴ 那**条**命令**其实**没有**被**处理 ✓ ★**** ✓✓
+
+# **★ 第 128 轮：🔧 **改用 `Target.attachToTarget`** ✗**（**attach 成功；**卡点更精确 ✓）★**
+#   **★ 修法 ✗ ★**：**重写** `connectTarget`**✗（**第 56–98 行 ✓）**：
+#     ```js
+#     const attached = await send("Target.attachToTarget", { targetId: target.id, flatten: true });
+#     const sessionId = attached && attached.result && attached.result.sessionId;
+#     if (!sessionId) throw new Error("attachToTarget-failed");
+#     // 之后所有命令都带上 sessionId ✓
+#     ```
+#     **∴ 而**接口**保持** `{ socket, send, evaluate }`**✗
+#       ⇒ **∴ 因为**调用处**只用这三样 ✓（`socket.close()` ✓）** ✓✓
+#       ⇒ **∴ 而** `close()` **改成**发 `Target.detachFromTarget` ✓**** ✓✓
+#   **★ 我**路上踩了两个坑 ✗ ★**：
+#     **∴ ①** **替换整块时**少删了一行**✗（**残留 `};` ✓）
+#       ⇒ **∴ 于是** `SyntaxError: Unexpected token '}'` ✓**** ✓✓
+#       ⇒ **∴ 修法**：**按行号**删掉那一行 ✓**** ✓✓
+#     **∴ ②** **`send` 回的是**整条消息**✗（`{id, result}` ✓）
+#       ⇒ **∴ 而**我**写的是** `attached.sessionId`**✗
+#         ⇒ **∴ 于是** `attachToTarget-failed` ✓**** ✓✓
+#       ⇒ **∴ 修法**：**取** `attached.result.sessionId` ✓**** ✓✓
+#   **★ 修后实测 ✗ ★**：
+#     `① Service Worker 状态：active` ✓**** ✓✓
+#     `· 断网前缓存报告 = {…,"count":198,"hasAppJs":true,…}` ✓**** ✓✓
+#     `· 断网前内核 = {"head_seq":1}` ✓**** ✓✓
+#     `✗ CDP 命令超时（20000ms）：**Runtime.evaluate** ⇒ 判据无法作出结论 ✗` ✓**** ✓✓
+#     ⇒ **★ 所以 ✗ ★**：**`attachToTarget`**成功了** ✗
+#       **∴ 因为**它**没有**抛 `attachToTarget-failed`** ✓**** ✓✓
+#       **∴ 而** `Runtime.enable` **也**成功了**✗
+#         ⇒ **∴ 因为**报的**不是它** ✓**** ✓✓
+#       **∴ 只有** `Runtime.evaluate` **超时** ✓**** ✓✓
+#       ⇒ **★ 所以**：**卡点**又**精确了一层** ✓ ★**** ✓✓
+#   **★ 下一步 ✗ ★**：**worker 上的** `Runtime.evaluate` **为什么**不回**✗**：
+#     **∴ ①** **可能**需要** `contextId`** ✓**** ✓✓
+#     **∴ ②** **可能**要先**等** `Runtime.executionContextCreated`** ✓**** ✓✓
+#     **∴ ③** **可能**要**先**发 `Runtime.runIfWaitingForDebugger`** ✓**** ✓✓
+#     **∴ 而**探针**（**第 127 轮 ✓）**只**看到**事件**✗
+#       ⇒ **∴ 所以**我可以**先**在**探针里**收** 20 秒的**全部消息**✗
+#         ⇒ **∴ 看**有没有** `executionContextCreated`** ✓ ★**** ✓✓
+#   **∴ 元收获（**本轮最贵 ✓）★**：
+#     **∴ 一个**大替换**✗ ⇒ **∴ 容易**多删一行**或少删一行** ✓**** ✓✓
+#       ⇒ **∴ 而** `node --check` **只**看语法**✗
+#         ⇒ **∴ 所以**：**替换**整块**后 ✗
+#           ⇒ **∴ 要**立刻**跑一次**✗ ⇒ **∴ 别**等到**端到端**才**发现 ✓ ★**** ✓✓

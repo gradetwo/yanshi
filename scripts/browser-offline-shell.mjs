@@ -53,50 +53,46 @@ const send = (method, params) => new Promise((resolve) => {
 const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.result?.value;
 // **另开一条连到 service worker 自己的调试目标** ✓（本次审计加的 ✓）：下面要在 SW 上下文里
 // 把 `self.fetch` 换成必然失败的桩 ✓（与 `browser-offline-assets.mjs` 同一招 ✓）。
-const connectTarget = async (target) => {
-  const targetSocket = new WebSocket(target.webSocketDebuggerUrl);
-  let targetNextId = 1;
-  const targetPending = new Map();
-  targetSocket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id && targetPending.has(message.id)) {
-      targetPending.get(message.id)(message);
-      targetPending.delete(message.id);
-    }
-  };
-  // **★ 等 SW 目标的连接也要**有超时** ✗ ★**（第 116 轮 ✓；**上一轮的超时没触发换来的 ✓）：
-    //   **∴ 上一轮**我给两条 `send` 加了超时**✗ ⇒ **∴ 而**判据**仍然挂死** ✗
-    //     ⇒ **∴ 所以**卡点**不在 `send`**✗ ⇒ **∴ 而在**这段**没有超时的等待 ✓**** ✓✓
-    //   **∴ 修法**：**超时**按「**无法作出结论 ✓」退出（**EXIT=2 ✓）** ✓✓
-    await new Promise((open, fail) => {
-      const timer = setTimeout(() => {
-        console.error("✗ 连不上 service worker 调试目标（" + CDP_TIMEOUT_MS + "ms）"
-          + " ⇒ 判据无法作出结论 ✗");
-        fail(new Error("sw-target-timeout"));
-      }, CDP_TIMEOUT_MS);
-      targetSocket.onopen = () => { clearTimeout(timer); open(); };
-      targetSocket.onerror = () => { clearTimeout(timer); fail(new Error("sw-target-error")); };
-    }).catch(() => { process.exit(2); });
-// **★ 这条**SW 连接**也要超时** ✗ ★**（第 115 轮 ✓；**同一个理由 ✓）
+// **★ 连 worker 目标必须用** `Target.attachToTarget`** ✗ ★**（第 128 轮 ✓；**CDP 探针的铁证 ✓）：
+  //   **∴ 症状 ✗**：**直接**连 `webSocketDebuggerUrl`**✗
+  //     ⇒ **∴ 它**只**推**事件**✗（实测：`{"method":"Inspector.workerScriptLoaded"}` ✓）
+  //       ⇒ **∴ 而**对**命令**（`Runtime.enable` ✓）**不**回**应答** ✓**** ✓✓
+  //     ⇒ **∴ 而**本判据的 `send` **只认** `m.id`**✗
+  //       ⇒ **∴ 于是**等满 **20 秒** ⇒ **∴ 报**"**CDP 命令超时**" ✓**** ✓✓
+  //   **∴ 修法**：**从**主连接**用 `Target.attachToTarget`**✗
+  //     ⇒ **∴ 它**给出** `sessionId`**✗
+  //       ⇒ **∴ 然后**所有命令**带上**它 ✓**** ✓✓
+  //     ⇒ **∴ 于是**：**真的**得到**应答 ✓（**标准** CDP 做法 ✓）** ✓✓
+  //   **∴ 接口**保持 `{ socket, send, evaluate }`**✗
+  //     ⇒ **∴ 因为**调用处**只用这三样 ✓（`socket.close()` ✓）** ✓✓
+  const connectTarget = async (target) => {
+    const attached = await send("Target.attachToTarget", { targetId: target.id, flatten: true });
+    // **∴ `send` 回的是**整条消息**✗ ⇒ **∴ 会话号在 `result` 里** ✓（第 128 轮 ✓）
+    const sessionId = attached && attached.result && attached.result.sessionId;
+    if (!sessionId) throw new Error("attachToTarget-failed");
     const targetSend = (method, params) => new Promise((resolve) => {
-      const id = targetNextId++;
+      const id = nextId++;
       const timer = setTimeout(() => {
-        if (!targetPending.has(id)) return;
-        targetPending.delete(id);
+        if (!pending.has(id)) return;
+        pending.delete(id);
         console.error("✗ CDP 命令超时（" + CDP_TIMEOUT_MS + "ms）：" + method
-          + "（service worker 目标）⇒ 判据无法作出结论 ✗");
+          + "（worker 会话）⇒ 判据无法作出结论 ✗");
         process.exit(2);
       }, CDP_TIMEOUT_MS);
-      targetPending.set(id, (value) => { clearTimeout(timer); resolve(value); });
-      targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
+      pending.set(id, (message) => { clearTimeout(timer); resolve(message); });
+      socket.send(JSON.stringify({ id, method, params: params || {}, sessionId }));
     });
-  const targetEvaluate = async (expression) => {
-    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
-    const result = message.result || {};
-    return result.result ? result.result.value : undefined;
+    const targetEvaluate = async (expression) => {
+      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      const result = message.result || {};
+      return result.result ? result.result.value : undefined;
+    };
+    return {
+      socket: { close: () => { void send("Target.detachFromTarget", { sessionId }).catch(() => undefined); } },
+      send: targetSend,
+      evaluate: targetEvaluate,
+    };
   };
-  return { socket: targetSocket, send: targetSend, evaluate: targetEvaluate };
-};
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
 await send("Page.navigate", { url });
 // **只等"页面就绪"** ✓（第 892 轮 ✓）：原来固定睡 3 秒 ✗ ⇒ 纯猜测 ✗ ——
