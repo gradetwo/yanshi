@@ -62,8 +62,11 @@ function option(name, fallback = null) {
   return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
 }
 
-const rounds = Number(option("--rounds", "3"));
-const spawnMode = argv.includes("--spawn");
+const rounds = Number(option("--rounds", argv.length === 0 ? "1" : "3"));
+// **★ 判据必须**自足** ✗ ★**（第 77 轮 ✓）：**没有**任何参数时**默认 `--spawn`**✗
+//   **∴ 且**：**默认轮数**改成 **1** ✗
+//     ⇒ **∴ 因为**它在**分片里**也会被跑到**✗ ⇒ **∴ 不该**在那里跑**3 轮重活 ✓**** ✓✓
+const spawnMode = argv.includes("--spawn") || argv.length === 0;
 const baseline = option("--baseline", "target/release/yanshi-serve");
 
 /** **∴ 一组对照：**名字 ＝ 额外的服务参数 ✓**（**∴ 用 `=` 分隔 ✓）** ✓✓ */

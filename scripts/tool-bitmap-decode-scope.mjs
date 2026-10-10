@@ -74,7 +74,13 @@ let buildBase = process.argv[4] || base;
 // **∴ 为什么必须这样 ✗ ★**：**判据**需要**两个进程**✗（**造包用 A／判据用 B ✓，
 //   **∵ `missed_bytes` 是**进程级累加 ✓）⇒ **∴ 否则**要**手工**起两个服务**✗
 //     ⇒ **∴ 没人**会去跑它 ⇒ **∴ 判据**等于不存在 ✓**** ✓✓
-const spawnMode = process.argv.includes("--spawn");
+// **★ 判据必须**自足** ✗ ★**（第 77 轮 ✓；**CI 的分片枚举换来的 ✓）：
+//   **∴ 症状 ✗**：`run-criteria.sh:81`**用 `ls scripts/tool-*.mjs` **枚举判据**✗
+//     ⇒ **∴ 而**本判据**原来**只在**给了 `--spawn` 时才自起服务**✗
+//       ⇒ **∴ 分片里**不给参数 ⇒ **∴ 于是** `exit(2)`** ⇒ **★ 永远红 ✓ ★**** ✓✓
+//   **∴ 修法**：**没有**任何参数时**默认 `--spawn`**✗
+//     ⇒ **∴ 于是**：**它在**分片里**也能自己跑起来 ✓**** ✓✓
+const spawnMode = process.argv.includes("--spawn") || process.argv.length === 0;
 let spawned = [];
 if (spawnMode) {
   const { spawn } = await import("node:child_process");
@@ -110,6 +116,9 @@ if (spawnMode) {
   const judgePort = 8782;
   spawned.push(await start(buildPort));
   spawned.push(await start(judgePort));
+    // **∴ 自起之后**把地址填上 ✗**（**∴ 于是**无参也能跑 ✓）** ✓✓
+    if (!base) base = `http://127.0.0.1:${judgePort}`;
+    if (!buildBase) buildBase = `http://127.0.0.1:${buildPort}`;
   // **∴ 退出时**必须收拾干净 ✗**（**∴ 否则**每跑一次**留两个服务 ✓）** ✓✓
   //   **∴ 用 `exit` 钩子 ✗**：**无论**怎么退出（**正常／异常／退出码 ✓）都会走 ✓**** ✓✓
   process.on("exit", () => {
@@ -127,7 +136,9 @@ if (spawnMode) {
   process.env.__SCOPE_JUDGE_BASE = judge;
 }
 const judgeBase = process.env.__SCOPE_JUDGE_BASE || base;
-if (!base) {
+  // **∴ 要检查的是**会被真正用到**的那个变量 ✗**（第 77 轮 ✓）：`--spawn` 把地址写进了
+  //   `process.env.__SCOPE_JUDGE_BASE`**✗ ⇒ **∴ 查 `base` 就会**误报用法 ＋ `exit(2)` ✓** ✓✓
+  if (!judgeBase) {
   console.error("用法: node scripts/tool-bitmap-decode-scope.mjs <base-url>");
   process.exit(2);
 }

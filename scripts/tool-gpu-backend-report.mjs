@@ -48,7 +48,15 @@ for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 
 // **★ `--spawn` ✗ ★**（第 46 轮 ✓）：**自己起两个服务**✗
 //   ⇒ **∴ 于是**：**CI 里**一条命令就能跑 ✓**（**∴ 与 `tool-bitmap-decode-scope` 同款 ✓）** ✓✓
-const spawnMode = process.argv.includes("--spawn");
+// **★ 判据必须**自足** ✗ ★**（第 77 轮 ✓）：**没有**任何参数时**默认 `--spawn`**✗
+//   **∴ 理由**：`run-criteria.sh` **无参枚举**本文件 ⇒ **∴ 否则**它会 `exit(2)`** ✓**
+// **★ 我第一版写错了 ✗ ★**（第 77 轮 ✓）：**`process.argv.length` 永远 ≥ 2**✗
+//   （**Node 总有 `argv[0]`＝node ＋ `argv[1]`＝脚本 ✓）
+//   ⇒ **∴ 所以** `=== 0` **永远为假**✗ ⇒ **∴ 修法**没生效 ✓
+//   **∴ 正确写法**：**先切掉那两个**✗ ⇒ **∴ 用** `slice(2).length === 0` ✓**** ✓✓
+//   **∴ 参照**：`tool-render-cost-accounts.mjs` **本来就**切过了**✗
+//     ⇒ **∴ 所以**它**一次就改对了 ✓**** ✓✓
+const spawnMode = process.argv.includes("--spawn") || process.argv.slice(2).length === 0;
 let a = process.argv[2] ?? "http://127.0.0.1:8471";
 let b = process.argv[3] ?? null;
 let spawned = [];
