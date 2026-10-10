@@ -92,6 +92,10 @@ jobs:
         # **∴ 这条是**防撒谎判据 ✗**：**没有内核的 PWA 不许发布 ✓**（**`tool-pwa-assets.mjs` ✓**）。
         run: node scripts/tool-pwa-assets.mjs
 
+      - name: ★ 判据：服务 worker 缓存戳**幂等**（**用户补丁换来的 ✓）
+        # 守的 bug：`web/sw.js` 是 git 跟踪文件 ⇒ 占位符第一次运行后就被替换，
+        # 此后只替换占位符的写法会静默无操作 ⇒ 戳永不更新 ⇒ 浏览器永远用旧缓存。
+        run: node scripts/tool-sw-stamp-idempotent.mjs
       - name: ★ 判据：PWA 本地 API **行为级**（在 node 里真调用）
         # **∴ 它证明"三个端点真能用 ＋ 未实现端点真报 501"✗**（**不是查字符串 ✓**）
         # ⇒ **∴ 与上一条（**静态 ✓**）合起来 ⇒ **∴ 部署前有两层证据 ✓**。
