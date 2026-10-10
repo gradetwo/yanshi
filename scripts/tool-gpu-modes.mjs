@@ -19,7 +19,7 @@
 //!   **∴ ⑤** **`max_channel_delta` 在**没有比对**时**必须**是 `null`**✗
 //!     ⇒ **∴ 不许**用 `0` 冒充**✗（**∴ `0`**读起来像"**比过且一致 ✓）** ✓✓
 //!
-//! **∴ 变异（**可验证 ✓）★**：**把** `gpu_unavailable_reason` **删掉**
+//! **∴ 变异（**可验证 ✓）★**：**把** `gpu_adapter_note` **删掉**
 //!   ⇒ **∴ ③** 必红 ✓（**∴ 那**正是"**静默降级 ✓" ✓）
 //!
 //! **∴ 用法 ✗**：`node scripts/tool-gpu-modes.mjs`
@@ -108,7 +108,7 @@ for (const [mode, body] of [["auto", auto], ["on", on], ["off", off]]) {
 /** **∴ 原因字段可以是这几者之一 ✗**（**∴ 只要**有一个非空 ✓）** ✓✓
  *  **∴ 不写死字段名**✗ —— **∴ 因为**将来可能改名 ✓ ⇒ **∴ 只要求"**有一个能读的原因 ✓** ✓✓
  */
-const REASON_KEYS = ["gpu_unavailable_reason", "render_backend_note", "gpu_note",
+const REASON_KEYS = ["gpu_adapter_note", "render_backend_note", "gpu_note",
   "render_backend_reason", "backend_note"];
 
 function reasonOf(body) {

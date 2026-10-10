@@ -63,7 +63,7 @@ const server = createServer((request, response) => {
       "cache-control": "no-store" });
     response.end(JSON.stringify({ ok: true, server: false, wasm: true,
       backend: "cpu", render_backend: "cpu",
-      gpu_mode: "off", gpu_unavailable_reason: "static_deployment_has_no_server",
+      gpu_mode: "off", gpu_adapter_note: "static_deployment_has_no_server",
       max_channel_delta: null,
       max_channel_delta_note: "静态部署没有服务端 ⇒ 未做 GPU／CPU 比对（§6.3）" }));
     return;

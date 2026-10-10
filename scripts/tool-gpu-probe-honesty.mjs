@@ -6,7 +6,7 @@
 //     `/dev/dri/card1` ＋ **`/dev/dri/renderD128`** ✓
 //   **∴ 而**服务端**硬编码**✗**（`server.rs:816–817` ✓）：
 //     `"render_backend": "cpu"`
-//     `"gpu_unavailable_reason": "host_has_no_gpu"` ✓
+//     `"gpu_adapter_note": "host_has_no_gpu"` ✓
 //     ⇒ **★ 所以**：**那个理由是**一个假设**✗，**不是**探测结果** ✓ ★**** ✓✓
 //   **⇒ ∴ 而**那**正是目标第 7 条**禁止的**：
 //     **"**`render_backend` 必须报**实际**后端**"** ✓
@@ -14,7 +14,7 @@
 //
 // **∴ 本判据 ✗**：**分两级**✗
 //   **∴ ① 环境级 ✗**：**读 `/dev/dri/`**✗ ⇒ **∴ 若**有 `renderD*`**✗
-//     ⇒ **∴ 断言**：**`gpu_unavailable_reason` **不得**是 `host_has_no_gpu`** ✓
+//     ⇒ **∴ 断言**：**`gpu_adapter_note` **不得**是 `host_has_no_gpu`** ✓
 //   **∴ ② 一致性 ✗**：**`render_backend` **必须**与 `gpu_mode` 及原因**自洽*** ✓
 //     ⇒ **∴ 如** `--gpu off` ⇒ **∴ `render_backend` 必须 `cpu`** ✓
 //       ＋ **∴ 而** `--gpu on` **而** `render_backend=cpu`**✗
@@ -60,7 +60,7 @@ const readHealth = async (args) => {
     return {
       backend: h.render_backend,
       mode: h.gpu_mode,
-      reason: h.gpu_unavailable_reason,
+      reason: h.gpu_adapter_note,
       delta: h.max_channel_delta,
       note: h.max_channel_delta_note,
     };
@@ -73,7 +73,7 @@ console.log(`  --gpu auto ⇒ render_backend=${auto.backend}｜gpu_mode=${auto.m
 // **∴ ① ✗**：**有渲染设备时**，不许说 `host_has_no_gpu`** ✓
 if (hasRenderNode) {
   check(auto.reason !== "host_has_no_gpu",
-    "本机有 /dev/dri/renderD* ⇒ `gpu_unavailable_reason` 不得是 `host_has_no_gpu`",
+    "本机有 /dev/dri/renderD* ⇒ `gpu_adapter_note` 不得是 `host_has_no_gpu`",
     `实测 reason=${auto.reason}`);
 }
 
@@ -87,7 +87,7 @@ const on = await readHealth(["--gpu", "on"]);
 console.log(`  --gpu on ⇒ render_backend=${on.backend}｜gpu_mode=${on.mode}｜reason=${on.reason}`);
 if (on.backend === "cpu") {
   check(typeof on.reason === "string" && on.reason.length > 0,
-    "`--gpu on` 而实际 cpu ⇒ 必须有**非空**的 `gpu_unavailable_reason`（不许沉默降级）",
+    "`--gpu on` 而实际 cpu ⇒ 必须有**非空**的 `gpu_adapter_note`（不许沉默降级）",
     `实测 reason=${on.reason}`);
 }
 

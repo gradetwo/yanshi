@@ -147,7 +147,7 @@ try {
     fact(h.render_backend === "cpu" || h.render_backend === "gpu", `--gpu ${s.mode}：render_backend 必须是真值之一（实测 ${h.render_backend}）`);
     if (s.mode === "off") fact(h.render_backend === "cpu", `--gpu off：render_backend 必须**恰好**是 cpu（实测 ${h.render_backend}）`);
     if (s.mode === "on" && h.render_backend !== "gpu") {
-      fact(typeof h.gpu_unavailable_reason === "string" && h.gpu_unavailable_reason.length > 0,
+      fact(typeof h.gpu_adapter_note === "string" && h.gpu_adapter_note.length > 0,
         `--gpu on 而实际不是 gpu ⇒ **必须**给出原因（**∴ 否则**是静默降级）`);
     }
     fact(h.gpu_mode === s.mode, `--gpu ${s.mode}：gpu_mode 必须回报请求的模式（实测 ${h.gpu_mode}）`);

@@ -188,7 +188,7 @@ const ha = await health(a);
 console.log("  A 的 /health：", JSON.stringify({
   render_backend: ha.render_backend,
   gpu_mode: ha.gpu_mode,
-  gpu_unavailable_reason: ha.gpu_unavailable_reason,
+  gpu_adapter_note: ha.gpu_adapter_note,
   max_channel_delta: ha.max_channel_delta,
 }));
 
@@ -196,8 +196,8 @@ console.log("  A 的 /health：", JSON.stringify({
 if (ha.render_backend !== "cpu" && ha.render_backend !== "gpu") {
   bad.push(`render_backend 必须是 cpu 或 gpu ✗（实测 ${ha.render_backend}）`);
 }
-if (ha.render_backend === "cpu" && !ha.gpu_unavailable_reason) {
-  bad.push("走了 CPU ⇒ 必须给出 gpu_unavailable_reason ✗（不许静默降级）");
+if (ha.render_backend === "cpu" && !ha.gpu_adapter_note) {
+  bad.push("走了 CPU ⇒ 必须给出 gpu_adapter_note ✗（不许静默降级）");
 }
 if (!("max_channel_delta" in ha)) {
   bad.push("诊断里必须报 max_channel_delta ✗（§6.3 的 ④）");
@@ -214,7 +214,7 @@ if (b) {
   console.log("  B 的 /health：", JSON.stringify({
     render_backend: hb.render_backend,
     gpu_mode: hb.gpu_mode,
-    gpu_unavailable_reason: hb.gpu_unavailable_reason,
+    gpu_adapter_note: hb.gpu_adapter_note,
     max_channel_delta: hb.max_channel_delta,
   }));
   const ra = await renderSame(a, "a");

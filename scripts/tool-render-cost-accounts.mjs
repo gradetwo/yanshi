@@ -241,7 +241,7 @@ for (const spec of compareSpecs) {
     label: spec.label,
     backend: after.render_backend,
     gpuMode: after.gpu_mode,
-    reason: after.gpu_unavailable_reason,
+    reason: after.gpu_adapter_note,
     wallMs: median(usable.map((s) => s.wallMs)),
     cpuMs: median(usable.map((s) => s.cpuMs)),
     ratio: median(usable.map((s) => s.ratio)),

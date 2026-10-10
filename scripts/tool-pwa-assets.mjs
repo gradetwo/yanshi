@@ -164,7 +164,7 @@ console.log(`  api-local：声明实现 ${declared} 个端点 ✓｜实现分支
 check(/makeLocalApi/.test(api || ""), "web/api-local.js 未导出 makeLocalApi ⇒ **∴ 三个端点无法被接入 ✗**");
 check(/derived_from/.test(api || ""), "list_layers 未标明由原子推导 ⇒ **∴ 双份状态风险不可见 ✗**");
 const apiCode = stripCommentsForCheck(api || "");
-check(/gpu_unavailable_reason/.test(apiCode), "api-local 的**代码**未报 GPU 不可用原因 ⇒ **∴ 后端不可判 ✗**");
+check(/gpu_adapter_note/.test(apiCode), "api-local 的**代码**未报 GPU 不可用原因 ⇒ **∴ 后端不可判 ✗**");
 check(/preview_state:\s*"pending"/.test(apiCode), "api-local 的**代码**未在 get_document 里报 preview_state ✗ ⇒ **∴ 有没有图不可判 ✓**");
 
 // **★ 防分叉（**逐字节相同）✗ ★**（第 632 轮 ✓；**用户要求"不影响现有 WEB" ✓**）：

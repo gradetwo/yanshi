@@ -94,7 +94,7 @@ const gd = await (await call("/api/tools/get_document")).json();
 check(gd.width === 800 && gd.height === 600, `get_document 尺寸应取自创建原子 ✗（实测 ${gd.width}×${gd.height}）`);
 check(gd.preview_state === "pending", `get_document 的 preview_state 应为 pending ✗（实测 ${gd.preview_state}）`);
 check(gd.render_backend === "cpu", `无 WebGPU 时后端应为 cpu ✗（实测 ${gd.render_backend}）`);
-check(gd.gpu_unavailable_reason === "host_has_no_webgpu", `应报 GPU 不可用原因 ✗（实测 ${gd.gpu_unavailable_reason}）`);
+check(gd.gpu_adapter_note === "host_has_no_webgpu", `应报 GPU 不可用原因 ✗（实测 ${gd.gpu_adapter_note}）`);
 
 // **⑥b 快照分支：**冷启动必缺快照 ⇒ 必须**如实**说"该重算"✗，**不许返回旧图 ✓**
 // **★ 要么真图、要么如实说该重算 ✗ ★**（第 630 轮 ✓）：**∴ 在本桩里快照可能命中 ⇒ 返回 PNG ✗**
