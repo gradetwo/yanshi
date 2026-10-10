@@ -114,7 +114,25 @@ if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window
 //      与"贴了个 0 面积" ✗ 这两种**现象一样**的空白画布 ✓。
 // **判据仍然能红** ✓：内核恒不画（`lastArea`/计数停在 0 ✓）⇒ 这里超时退出 ✓；
 // `board.width` 停在默认 300 ✓、或尺寸小于显示宽度的一半 ✓ ⇒ 第一层就退出 ✓。
-const serverRenderOn = `(() => { try { return localStorage.getItem("yanshi.serverRender") === "1"; } catch (error) { return false; } })()`;
+// **★ 必须与产品**同一套语义** ✗ ★**（第 101 轮 ✓；**本地实测 ✓）：
+//   **∴ 我**原来只读 `localStorage === "1"`**✗
+//     ⇒ **∴ 而**页面的 `serverRenderPreferred()`（`viewer-app.js:34` ✓）**是**复合的**✗**：
+//       **∴ `localOnly ⇒ false`**✗（**∴ 静态 PWA 一律本地 ✓）** ✓✓
+//       **∴ `stored === null ? true : stored === "1"`**✗
+//         ⇒ **★ 即**"**没有任何偏好 ⇒ **服务端优先**" ✓ ★**** ✓✓
+//     ⇒ **∴ 于是**：**全新 profile 下**✗
+//       **∴ 页面**走**服务端优先**（`initWasm` 被跳过 ⇒ `wasm=false` ✓，**那是设计 ✓）** ✓✓
+//       **∴ 而**判据**按**客户端优先**算**✗ ⇒ **∴ 它**要求**内核** ⇒ **∴ 红 ✓**** ✓✓
+//       **∴ 且**它**同时**打印出 `serverBlits=3`**✗（**∴ 服务端**明明铺过底 ✓）
+//         ⇒ **★ 那**就是**两个信号矛盾**的来源 ✓ ★**** ✓✓
+//   **∴ 修法**：**照抄产品那套判断** ✓**** ✓✓
+const serverRenderOn = `(() => {
+  try {
+    if (typeof window !== "undefined" && window.__pwaLocalOnly === true) return false;
+    const stored = localStorage.getItem("yanshi.serverRender");
+    return stored === null ? true : stored === "1";
+  } catch (error) { return true; }
+})()`;
 if (!(await waitFor(
   `(() => {
      const b = document.getElementById("board");
