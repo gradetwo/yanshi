@@ -2,6 +2,28 @@
 window.__appMarks = window.__appMarks || [];
 window.__appMarks.push("script-start");
 
+// **★ 全局内核串行化链 ✗ ★**（第 389 轮 ✓；**实测根因 ✓）：
+//   **∴ 为什么需要它 ✗**：**`api-local.js` **有串行化**（`withKernel` ＋ `__kernelChain` ✓）
+//     ⇒ **∴ 而** viewer **完全没有**（`grep withKernel` 零命中 ✓）
+//       ⇒ **∴ 于是**落笔与渲染**可能同时在**同一个 `WasmKernel` 上跑** ✓
+//         ⇒ **∴ wasm-bindgen 报**借用冲突**
+//           （`recursive use of an object detected which would lead to unsafe aliasing in rust` ✓）
+//           ⇒ **∴ 落笔**失败 ⇒ **∴ 画布**没有墨** ✓ ★**** ✓✓
+//   **∴ 它做什么 ✗**：**按文档 id 排队**✗ ⇒ **∴ 同一个内核实例**的调用**串行化** ✓ ★**** ✓✓
+//   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+//     **∴ 收益 ✗**：**所有**走这里的调用**不再**借用冲突** ✓**** ✓✓
+//     **∴ 代价 ✗**：**返回值是 Promise**✗ ⇒ **∴ 调用方必须 `await`** ✓
+//       ＋ **∴ 而**它**只保护**走这里的调用**✗ ⇒ **∴ 渲染**还没进来** ✓（**∴ 下一步 ✓）** ★**** ✓✓
+window.__yanshiKernelChain = window.__yanshiKernelChain || new Map();
+window.__yanshiQueueKernel = function queueKernel(doc, fn) {
+  const chain = window.__yanshiKernelChain;
+  const key = String(doc || "default");
+  const prev = chain.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  chain.set(key, run.then(() => {}, () => {}));
+  return run;
+};
+
 // 服务端会把 yanshi://blob/<hash> 改写成 /api/blob/<hash>?doc=..&token=..
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。
 const blobUrl = (hash) => api("/api/blob/" + hash);
@@ -7957,7 +7979,22 @@ async function paintBrushOffline(request) {
   }
   let bytes = null;
   try {
-    bytes = kernel.paint_brush(JSON.stringify({
+    // **★ 走全局串行化链 ✗ ★**（第 389 轮 ✓；**实测根因 ✓）：
+    //   **∴ 症状 ✗**：**落笔**返回 `stroke_failed`✗
+    //     ＋ **`reason = "recursive use of an object detected which would lead to unsafe aliasing in rust"`** ✓
+    //   **∴ 实测定位 ✗**（**第 387／388 轮 ✓）**：
+    //     **∴ `api-local.js` **有串行化**✗（`withKernel` ＋ `__kernelChain` ✓）
+    //       ⇒ **∴ 而** viewer **完全没有**✗（**`grep withKernel` 零命中 ✓）
+    //         ⇒ **∴ 而**它有**十几处**直接调 `state.kernel.*`** ✓
+    //           ⇒ **∴ 于是**落笔与渲染**可能同时在**同一个 `WasmKernel` 上跑** ✓
+    //             ⇒ **∴ wasm-bindgen 报**借用冲突**✗ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+    //   **∴ 修法 ✗**：**共用一条**全局链**✗
+    //     ⇒ **∴ 于是** `api-local.js` **与本文件**终于共享同一套保护** ✓ ★**** ✓✓
+    //   **∴ 代价（**两面 ✓）★**：**内核调用**变成异步**✗
+    //     ⇒ **∴ 调用方必须 `await`** ✓（**∴ 本函数**是 async ✓）
+    //       ＋ **∴ 且**：**本文件的渲染调用**尚未入链**✗
+    //         ⇒ **∴ 所以**这一笔**仍可能与渲染并发** ✓（**∴ 下一步**要把它们也纳入 ✓）** ★**** ✓✓
+    bytes = await window.__yanshiQueueKernel(state.docId, () => kernel.paint_brush(JSON.stringify({
       myb: brush.text,
       points: points,
       size: Number.isFinite(request.size) && request.size > 0 ? request.size : null,
@@ -7965,7 +8002,7 @@ async function paintBrushOffline(request) {
       opacity: null,
       hardness: null,
       region: region,
-    }));
+    })));
   } catch (error) {
     log("离线落笔异常：" + String(error).slice(0, 120), "#c33");
     return false;

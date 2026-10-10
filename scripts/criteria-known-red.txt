@@ -21995,3 +21995,62 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ `api-local.js` **有串行化**✗ ⇒ **∴ 而** `viewer-app.js` **没有** ✓
 #         ⇒ **∴ 于是**两边的**并发安全性**完全不同** ✓
 #           ⇒ **★ 所以**：**共享一个对象**的两处代码**必须共享同一套保护机制** ✓ ★**** ✓✓
+
+# **★ 第 389 轮：★★★★★★★★★★ **加了全局串行化链 —— **仍然失败** ⇒ **∴ 排除**并发**，确认是**单次调用内重入**** ✗** ★★★★★★★★★★
+#   **★ 本轮改动（**保留 ✓；**它**排除了并发 ＋ 是**正确的结构改进 ✓）**✗**：
+#     **∴ ①** **在 `viewer-app.js` 顶部**加**全局链**✗：
+#       ```js
+#       window.__yanshiKernelChain = window.__yanshiKernelChain || new Map();
+#       window.__yanshiQueueKernel = function queueKernel(doc, fn) {
+#         const chain = window.__yanshiKernelChain;
+#         const key = String(doc || "default");
+#         const prev = chain.get(key) || Promise.resolve();
+#         const run = prev.then(fn, fn);
+#         chain.set(key, run.then(() => {}, () => {}));
+#         return run;
+#       };
+#       ```
+#       **∴ 放在全局 ✗** ⇒ **∴ 于是** `api-local.js` **的 `withKernel` **也**可以用它** ✓ ★**** ✓✓
+#     **∴ ②** **落笔走链**✗（**`viewer-app.js` 的 `paintBrushOffline` ✓ 是 async ⇒ `await` 可用 ✓）**：
+#       ```js
+#       bytes = await window.__yanshiQueueKernel(state.docId, () => kernel.paint_brush(JSON.stringify({ … })));
+#       ```
+#     **∴ 实测 ✗**：`__yanshiQueueKernel = function` ✓（**链**已生效 ✓）＋ **语法 ✓ ＋ 重建 ✓** ★**** ✓✓
+#   **★★★ 但结果（**决定性 ✓）★★★**：
+#     ```
+#     kernelReady = true｜__yanshiQueueKernel = function
+#     落笔返回 = {"ok":false,"reason":"recursive use of an object detected which would lead to unsafe aliasing in rust"}
+#     ★★★ 落笔后墨 = {"dark":0} ★★★
+#     ```
+#     **⇒ ★ 所以 ✗ ★**：**串行化**没有让落笔成功**✗
+#       ⇒ **∴ 于是**「**recursive use**」**不是**并发引起的** ✓
+#         ⇒ **∴ 而**它是**单次调用内部**重入** ✓（**∴ 与** `max === 1` **一致** ✓）★**** ✓✓
+#   **★★★ 排除清单（**本轮扩到很干净 ✓）★★★**：
+#     **∴ ①** **`brush.rs` 的 PRNG **是自实现**（**种子 1000 ✓）⇒ **∴ 不调** `getrandom`** ✓**** ✓✓
+#     **∴ ②** **`hokusai` 三件**✗（**0.3.0 ✓）⇒ **∴ 全库**无 `getrandom`／`rand`／`js_sys`／
+#       `web_sys`／`wasm_bindgen`** ✓ ⇒ **∴ 纯 Rust** ✓**** ✓✓
+#     **∴ ③** **`yanshi-wasm`**✗：**无 panic hook**（**无 `console_error_panic_hook`／`set_panic_hook` ✓）
+#       ＋ **无 `js_sys`／`web_sys`／`console_log`／`getrandom`** ✓
+#       ＋ **依赖只有** `yanshi-core`／`yanshi-render`／`hokusai`／`serde*`／`wasm-bindgen`** ✓**** ✓✓
+#     **∴ ④** **`yanshi-render`／`yanshi-core`**✗：**都不依赖 `rand`／`getrandom`** ✓
+#       ＋ **∴ 源码里**无随机／JS 调用** ✓**** ✓✓
+#     **⇒ ★ 所以 ✗ ★**：**整个 wasm 侧**没有任何**回调 JS 的代码** ✓
+#       ⇒ **∴ 那**「**recursive use**」**只能来自** `wasm-bindgen` **的**借用语义本身** ✓ ★**** ✓✓
+#   **★★★ 新假设（**下一步验证 ✓）★★★**：
+#     **∴ `wasm-bindgen` **返回借用视图**时**✗（**∴ 如** `render_region_rgba` **返回 `Uint8Array`** ✓
+#       —— **∴ 它**指向 wasm 线性内存** ＋ **持有对内核的借用 ✓）
+#       ⇒ **∴ 若** JS **在同一 tick** 里**又调内核**✗ ⇒ **∴ 于是**借用冲突** ✓ ★**** ✓✓
+#     **∴ 已知 ✗**：**`brush-local.js:102` **已经** `Array.from(rgba)` **拷出** ✓（**∴ 好 ✓）
+#       ⇒ **∴ 但** viewer **的渲染路径**（**1792／1863／2457／6599 ✓）**可能**没拷** ✓
+#         ⇒ **∴ 于是**它**一直占着借用** ✓ ⇒ **∴ 落笔**撞上** ✓ ★**** ✓✓
+#   **★ 下一步 ✗**：
+#     **∴ ①** **读** viewer **渲染处**拿到 `rgba` **之后**怎么用**✗
+#       ⇒ **∴ 若**它**把**视图**存进**长期变量**✗ ⇒ **∴ 那**就是**借用未释放** ✓ ★**** ✓✓
+#     **∴ ②** **修法 ✗**：**所有**内核返回值**一律**拷出**✗
+#       ⇒ **∴ 如** `Array.from(…)`／`.slice()` ✓ ⇒ **∴ 于是**不持有借用** ✓**** ✓✓
+#     **∴ ③** **或**者**更稳 ✗**：**在** `WasmKernel` **外包一层**✗
+#       ⇒ **∴ 它**对**每个方法**都**返回**已拷贝的普通 JS 值** ✓ ⇒ **∴ 借用**立刻释放** ✓ ★**** ✓✓
+#   **★ 保留与否 ✗ ★**：**∴ 本轮**全局链**✗ ⇒ **∴ 保留** ✓
+#     **∴ 因为 ✗**：**它**排除了**并发**这一整类原因**✗
+#       ＋ **∴ 它**是**正确的结构改进**✗（**∴ 让 viewer 与 api-local 共享同一套保护 ✓）
+#         ＋ **∴ 且**：**它**为**后续**真修法**铺好了路** ✓ ★**** ✓✓
