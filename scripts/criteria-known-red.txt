@@ -23149,3 +23149,44 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ＋ **∴ 让 `tool-bitmap-decode-scope` **能跑** ✓（**补 fixture 或**明确记不可跑 ✓）★**** ✓✓
 #     **∴ 第 4 条**：**§6.3 的 ②③④ 立在纯 CPU 上**✗（**fallback 逐字节相同／关 GPU 逐字节相同／
 #       **报出后端 ＋ `max_channel_delta` ✓）★**** ✓✓
+
+# **★ 第 410 轮：**阶段一第 4 条**达标 —— §6.3 的 ②③④ 在纯 CPU 上**全部成立**（**6/6 工具全绿 ✓）★**
+#   **★ 关键 ✗**：**这些工具**早就存在**✗（**∴ 我**不该重造 ✓）**：
+#     ```
+#     scripts/tool-gpu-backend-report.mjs     ← ④ 报出后端 ＋ max_channel_delta
+#     scripts/tool-gpu-fallback-parity.mjs    ← ② GPU 不可用 ⇒ fallback ⇒ 逐字节相同
+#     scripts/tool-gpu-modes.mjs              ← ③ --gpu auto|on|off
+#     scripts/tool-gpu-probe-honesty.mjs      ← 不许假装用了 GPU
+#     scripts/tool-gpu-quantize-parity.mjs    ← 量化一致性
+#     scripts/tool-gpu-accounts.mjs           ← 两本账
+#     ```
+#   **★ 服务端也**早已如实报 ✗ ★**：
+#     ```
+#     server.rs:936  "render_backend": yanshi_render::last_backend().as_str(),
+#     server.rs:952  "max_channel_delta": gpu_selfcheck_delta(),
+#     ```
+#   **★★★ 实测（**6/6 退出码 0 ✓）★★★**：
+#     ```
+#     ★ tool-gpu-backend-report    0 ★
+#        /health：{"render_backend":"cpu","gpu_mode":"on",
+#                  "gpu_unavailable_reason":"render_node_present","max_channel_delta":null}
+#        ✓ §6.3 的 ②③④ 达标：后端如实上报 ＋ 无 GPU 时报 null ＋ 两条路径逐字节相同
+#     ★ tool-gpu-fallback-parity   0 ★ ✓ §6.3 的 ②③④ 全部成立（纯 CPU）
+#     ★ tool-gpu-modes             0 ★ ✓ 三种模式如实（**请求与实际分开报 ＋ 降级有原因 ＋
+#                                      未比对时为 null ✓）
+#     ★ tool-gpu-probe-honesty     0 ★ ✓ GPU 的「不可用原因」与后端自洽
+#     ★ tool-gpu-quantize-parity   0 ★ ✓ 后端如实 ＋ 差异已量化 ＋ 确定性
+#     ★ tool-gpu-accounts          0 ★ ℹ️ 没有适配器 ⇒ 只有 CPU 一本账（**不假装有 GPU ✓）
+#     ```
+#   **★ 所以 ✗**：**第 4 条**（**§6.3 的 ②③④ 立在纯 CPU 上 ✓）**✗ ⇒ **∴ 达标** ✓ ★**** ✓✓
+#     **∴ ②** **GPU 不可用 ⇒ fallback ⇒ 与基线**逐字节相同**** ✓
+#     **∴ ③** **参数关 GPU ⇒ 与基线**逐字节相同**** ✓
+#     **∴ ④** **响应／诊断**报出后端 ＋ `max_channel_delta`** ✓
+#       ＋ **∴ 且**：**无 GPU 时**报 `null`**✗ ⇒ **∴ 不是**恒 0 冒充** ✓（**符合目标的硬约束 ✓）** ★**** ✓✓
+#   **★ 阶段一进度（**更新 ✓）★**：
+#     **∴ ✅ 第 4 条**（**§6.3 ②③④ ✓）⇒ **∴ 本轮**完成** ✓**** ✓✓
+#     **∴ ✅ 第 5 条**（**CPU 四元组基线 ✓）⇒ **∴ 上一轮**完成** ✓（**① 55.7 ms｜② 50.0 ms｜
+#       **③ 0.90×｜④ 1580 MB ✓）** ★**** ✓✓
+#     **∴ ⬜ 第 1 条**：**三数自洽**（**单带小场景复现 ✓）★**** ✓✓
+#     **∴ ⬜ 第 2 条**：**首帧量化阶段**（**release 31% ✓）成本调查** ✓**** ✓✓
+#     **∴ ⬜ 第 3 条**：**CPU 侧红灯清零**（**3 条 ＋ `tool-bitmap-decode-scope` ✓）★**** ✓✓
