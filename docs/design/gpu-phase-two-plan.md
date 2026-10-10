@@ -1975,3 +1975,67 @@ ssh … 'cd /content && tar xzf yanshi-src.tgz'
 **⇒ ★ 好处 ✗ ★**：**不依赖** GitHub 凭据**（**∴ 仓库是私有的 ✓）** ★**** ✓✓
 **∴ ③** **装 Rust ＋ 后台 build**（**∴ 一定 `nohup` ＋ 写日志 ✓）**
 **∴ ④** **跑 7 条 GPU 判据** ⇒ **记录**适配器名 ＋ `SHADER_F16` ＋ **两本账** ✓
+
+---
+
+# 四十五、★★★ **远端 L4 **已就绪**：仓库 clone 好 ＋ Rust 装好 ＋ build 已后台启动**（第 312 轮）★★★
+
+## 一、★ 远端状态（**实测 ✓**）★
+
+```
+--- yanshi ---
+.git  .github  .gitignore  AGENTS.md  CONTRIBUTING.md  Cargo.lock …
+★ 文件数: 24 ★                    ← **clone 成功（完整仓库）✓
+--- rust ---
+★ cargo 1.99.0 (5f94df478 2026-08-27) ★   ← **Rust 已装好 ✓
+--- disk ---
+overlay 236G｜44G used｜★ 193G free ★      ← 空间充足 ✓
+--- git ---
+★ 50540b0 ★ "docs: record the reachable l4 runtime…"｜分支 main
+判据文件 ★ 28 个 ★                 ← **含全部 GPU 判据 ✓（incl. `gpu_quantize_dispatch.rs` ✓）
+```
+
+**⇒ ★ 所以 ✗ ★**：**我早先那次 setup **其实跑成功了**** ✓（**rustup ＋ clone ✓）
+**∴ 只是**日志文件没留下**（**∴ 因为**我当时以为它被切断了 ✓）** ✓✓
+
+## 二、★ 代码版本核对（**重要 ✓**）★
+
+| 提交 | 远端有吗 |
+|---|---|
+| **`50540b0`**（**远端 HEAD ✓）** | **★ 有 ★** |
+| **`f0307202`**（**渲染分派 ＋ 端到端判据 ✓）** | **★ 有 ★**（**∴ 它**在 `50540b0` **之前** ✓） |
+| **`cc5b5212`／`6dd8f551`／`da18baf0`** | **∴ 只是** docs 提交**✗ ⇒ **∴ 与判据无关** ✓**** ✓✓
+
+**⇒ ∴ 所以**：**远端**已经**有所有**关键的 GPU 判据** ✓**** ✓✓
+
+## 三、★ 已在远端后台启动的作业（**第 312 轮 ✓**）★
+
+```bash
+nohup bash /tmp/build.sh > /tmp/build.log 2>&1 &     # PID 11114
+```
+**`/tmp/build.sh` 做三件事 ✗**：
+1. **`cargo build --release -p yanshi-http --bin yanshi-serve --features gpu`**（**∴ 92 个包 ✓）⇒ **∴ 打印** `BUILD_RC=`**
+2. **`cargo test -p yanshi-render --features gpu --test gpu_quantize_dispatch -- --nocapture`** ⇒ **∴ 打印** `TEST_RC=`**
+3. **末尾** `echo BUILD_DONE`** ✓
+
+## 四、★ 可复用的通道（**已验证 ✓**）★
+
+**∴ 本机已放好包装脚本 `/tmp/l4` ✗**：
+```bash
+#!/bin/bash
+exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  -o ProxyCommand="/home/crow/.local/bin/colab ssh --proxy-mode -s dawang" \
+  -o ConnectTimeout=60 -o ServerAliveInterval=30 \
+  "root@dawang" "$@"
+```
+**⇒ ∴ 用法 ✗**：**`/tmp/l4 '命令'`** ✓ ⇒ **∴ 于是**：**它**就像**普通远程服务器** ✓
+**∴ 传文件 ✗**：**`scp -o ProxyCommand="…" <本地> root@dawang:/content/`** ✓
+
+## 五、★ 下一步（**读 build 日志 ✓**）★
+
+1. **`/tmp/l4 'tail -30 /tmp/build.log'`** ⇒ **∴ 直到**看见 `BUILD_DONE`**
+2. **∴ 记录**：**`BUILD_RC`**（**∴ release ＋ gpu 的编译是否成功 ✓）＋ **`TEST_RC`**（**∴ 真 GPU 上的逐位判据 ✓）**
+3. **∴ 然后**在远端跑**其余 6 条判据**✗ ⇒ **∴ 并记录**：
+   - **适配器名**（**∴ 应为 `Vulkan` ＋ `DiscreteGpu` ＋ `NVIDIA L4` ✓）
+   - **★ `SHADER_F16` 是否为 `true`**✗（**∴ 若** true ⇒ **∴ 可以**把手写 f16 换成原生 `f16`** ✓）★**** ✓✓
+   - **★ 两本账 ✗**（**时间 ＋ CPU 占用 ✓）—— **∴ 必须**与核显的数**分开报** ✓ ★**** ✓✓
