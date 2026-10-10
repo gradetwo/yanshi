@@ -3569,13 +3569,26 @@ async function switchDocument(docId, token, size) {
   }
   // **打开就保证有图层可画** ✓（见 `ensurePaintLayer` 的说明 ✓）：
   // 否则普通笔刷会被静默拒绝 ✗ —— 用户只会看到"点了没反应" ✗。
-  await ensurePaintLayer();
-  await refreshLayers();
-  // **打开文档就拉一次标注与对象** ✓（面板立刻正确 ✓）。
-  await refreshAnnotations();
-  await refreshObjects();
-  // **换文档就把队列徽标重算一次** ✓（它是**按文档**分区的 ✓ —— 别的文档的条目不能显示成本文档的 ✓）。
-  await refreshOutboxBadge();
+    // **★ 初始化链必须**逐步留痕** ✗ ★**（第 154 轮 ✓；**离线卡点定位 ✓）：
+    //   **∴ 为什么 ✗**：**离线时**整页初始化**中断**✗
+    //     ⇒ **∴ 而**看不到**挂在哪一步** ✓**** ✓✓
+    //   **∴ 做法**：**每一步**后 push 一个标记**✗
+    //     ⇒ **∴ 判据**读 `__appMarks` **就能**直接说出**卡点 ✓**** ✓✓
+    //   **∴ 纯诊断 ✗**：**不**改任何行为 ✓**** ✓✓
+    const markStep = (name) => {
+      (window.__appMarks = window.__appMarks || []).push("open:" + name);
+    };
+    markStep("start");
+    try { await ensurePaintLayer(); markStep("ensurePaintLayer"); }
+    catch (error) { markStep("ensurePaintLayer!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshLayers(); markStep("refreshLayers#1"); }
+    catch (error) { markStep("refreshLayers#1!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshAnnotations(); markStep("refreshAnnotations"); }
+    catch (error) { markStep("refreshAnnotations!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshObjects(); markStep("refreshObjects"); }
+    catch (error) { markStep("refreshObjects!" + String(error && error.message || error).slice(0, 40)); throw error; }
+    try { await refreshOutboxBadge(); markStep("refreshOutboxBadge"); }
+    catch (error) { markStep("refreshOutboxBadge!" + String(error && error.message || error).slice(0, 40)); throw error; }
   if (outboxPendingCount > 0) scheduleOutboxFlush(300);
 }
 
