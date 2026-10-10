@@ -54,7 +54,11 @@ for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 import { dirname } from "node:path";
 import { deflateSync } from "node:zlib";
 
-const base = process.argv[2];
+// **★ `base` 必须是 `let`** ✗**（第 78 轮 ✓；**∴ 我**前两次改**都没落地 ✓）：
+//   **∴ `--spawn` 块**在**服务起来之后**把它填成本地地址**✗
+//     ⇒ **∴ 若**它是 `const`**✗ ⇒ **∴ 赋值**抛 `TypeError: Assignment to constant variable`
+//       ⇒ **∴ 服务**起来了**✗，**而**判据**崩掉 ✓**** ✓✓
+let base = process.argv[2];
 const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yanshi";
 // **★ 可选：**造 fixture 用的另一个服务 ✓ ★**（第 43 轮 ✓）。
 //
@@ -80,7 +84,12 @@ let buildBase = process.argv[4] || base;
 //       ⇒ **∴ 分片里**不给参数 ⇒ **∴ 于是** `exit(2)`** ⇒ **★ 永远红 ✓ ★**** ✓✓
 //   **∴ 修法**：**没有**任何参数时**默认 `--spawn`**✗
 //     ⇒ **∴ 于是**：**它在**分片里**也能自己跑起来 ✓**** ✓✓
-const spawnMode = process.argv.includes("--spawn") || process.argv.length === 0;
+// **★ `process.argv.length` 永远 ≥ 2** ✗**（第 78 轮 ✓；**∴ 我**上一轮**改漏了这一处 ✓）：
+//   **∴ Node** 总有 `argv[0]`＝node ＋ `argv[1]`＝脚本**✗
+//     ⇒ **∴ `=== 0`**永远为假 ⇒ **∴ `spawnMode` 恒 false** ✗
+//       ⇒ **∴ spawn 块**不执行 ⇒ **∴ `base` undefined ⇒ **∴ 报用法 ＋ `exit(2)` ✓**** ✓✓
+//   **∴ 正确写法**：**先切掉那两个**✗ ⇒ **∴ 用** `slice(2).length === 0` ✓**** ✓✓
+const spawnMode = process.argv.includes("--spawn") || process.argv.slice(2).length === 0;
 let spawned = [];
 if (spawnMode) {
   const { spawn } = await import("node:child_process");
