@@ -1811,7 +1811,21 @@ function drawKernelRegion(x, y, w, h) {
   const cw = Math.round(x1 - x0);
   const ch = Math.round(y1 - y0);
   const started = performance.now();
-  const rgba = state.kernel.render_region_rgba(x0, y0, cw, ch);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaView = state.kernel.render_region_rgba(x0, y0, cw, ch);
+  const rgba = rgbaView ? Uint8Array.from(rgbaView) : rgbaView;
   if (!rgba || rgba.length < cw * ch * 4) {
     // **内核给不出这一块像素 ⇒ 用服务端像素补画** ✓ —— 这就是"重新打开含介质的文档是白板"的根因 ✓：
     // heavy 原子（`import_image` = 每一笔介质 ✓、液化…）客户端内核折叠不出来 ✓，
@@ -1882,7 +1896,21 @@ function drawKernelBoxDirect(bbox) {
   const w = Math.round(x1 - x0);
   const h = Math.round(y1 - y0);
   if (x1 <= x0 || y1 <= y0 || w <= 0 || h <= 0) return;
-  const rgba = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaViewD = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+  const rgba = rgbaViewD ? Uint8Array.from(rgbaViewD) : rgbaViewD;
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
@@ -2476,7 +2504,21 @@ async function checkBitExact() {
   // 用服务端实际渲染的尺寸请求本地像素，避免双方尺寸口径不同。
   const width = server.width || w;
   const height = server.height || h;
-  const localPixels = state.kernel.render_region_rgba(0, 0, width, height);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const localView = state.kernel.render_region_rgba(0, 0, width, height);
+  const localPixels = localView ? Uint8Array.from(localView) : localView;
   if (localPixels.length === 0) {
     // 内核没产出像素（未就绪 / 文档尺寸不符 / 内核处于错误状态）：明确报出来，
     // 不要伪装成「尺寸不一致」，否则会误导排查方向。
@@ -6618,7 +6660,21 @@ function pickColorAt(event) {
   const side = 3;
   const x0 = Math.max(0, Math.min(state.docSize.w - side, x - 1));
   const y0 = Math.max(0, Math.min(state.docSize.h - side, y - 1));
-  const rgba = state.kernel.render_region_rgba(x0, y0, side, side);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaSideView = state.kernel.render_region_rgba(x0, y0, side, side);
+  const rgba = rgbaSideView ? Uint8Array.from(rgbaSideView) : rgbaSideView;
   if (!rgba || rgba.length < side * side * 4) {
     log("吸管失败：内核没有返回像素（len=" + (rgba ? rgba.length : "null") + "）", "#c33");
     return;
@@ -9647,7 +9703,17 @@ function composeFullDocumentCanvas(tile = 512) {
       for (let x = 0; x < w; x += tile) {
         const cw = Math.min(tile, w - x);
         const ch = Math.min(tile, h - y);
-        const rgba = state.kernel.render_region_rgba(x, y, cw, ch);
+        // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+        //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+        //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+        //       ＋ **持有对内核的借用** ✓ ⇒ **∴ 只要**视图还活着**✗
+        //         ⇒ **∴ 下一个**内核调用**就报「**recursive use of an object …**」 ✓
+        //           ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+        //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 借用**立即释放** ✓）
+        //   **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+        //     ⇒ **∴ 而**那是**必需的**✗（**∴ wasm-bindgen 的借用**不允许视图跨调用存活** ✓）
+        const rgbaTileView = state.kernel.render_region_rgba(x, y, cw, ch);
+        const rgba = rgbaTileView ? Uint8Array.from(rgbaTileView) : rgbaTileView;
         if (!rgba || rgba.length < cw * ch * 4) continue;
         c2d.putImageData(new ImageData(new Uint8ClampedArray(rgba), cw, ch), x, y);
         tiles += 1;

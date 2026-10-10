@@ -1082,6 +1082,28 @@
 window.__appMarks = window.__appMarks || [];
 window.__appMarks.push("script-start");
 
+// **★ 全局内核串行化链 ✗ ★**（第 389 轮 ✓；**实测根因 ✓）：
+//   **∴ 为什么需要它 ✗**：**`api-local.js` **有串行化**（`withKernel` ＋ `__kernelChain` ✓）
+//     ⇒ **∴ 而** viewer **完全没有**（`grep withKernel` 零命中 ✓）
+//       ⇒ **∴ 于是**落笔与渲染**可能同时在**同一个 `WasmKernel` 上跑** ✓
+//         ⇒ **∴ wasm-bindgen 报**借用冲突**
+//           （`recursive use of an object detected which would lead to unsafe aliasing in rust` ✓）
+//           ⇒ **∴ 落笔**失败 ⇒ **∴ 画布**没有墨** ✓ ★**** ✓✓
+//   **∴ 它做什么 ✗**：**按文档 id 排队**✗ ⇒ **∴ 同一个内核实例**的调用**串行化** ✓ ★**** ✓✓
+//   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+//     **∴ 收益 ✗**：**所有**走这里的调用**不再**借用冲突** ✓**** ✓✓
+//     **∴ 代价 ✗**：**返回值是 Promise**✗ ⇒ **∴ 调用方必须 `await`** ✓
+//       ＋ **∴ 而**它**只保护**走这里的调用**✗ ⇒ **∴ 渲染**还没进来** ✓（**∴ 下一步 ✓）** ★**** ✓✓
+window.__yanshiKernelChain = window.__yanshiKernelChain || new Map();
+window.__yanshiQueueKernel = function queueKernel(doc, fn) {
+  const chain = window.__yanshiKernelChain;
+  const key = String(doc || "default");
+  const prev = chain.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  chain.set(key, run.then(() => {}, () => {}));
+  return run;
+};
+
 // 服务端会把 yanshi://blob/<hash> 改写成 /api/blob/<hash>?doc=..&token=..
 // 这里保留一个显式助手，便于直接用 CAS 哈希取回 PNG。
 const blobUrl = (hash) => api("/api/blob/" + hash);
@@ -2869,7 +2891,21 @@ function drawKernelRegion(x, y, w, h) {
   const cw = Math.round(x1 - x0);
   const ch = Math.round(y1 - y0);
   const started = performance.now();
-  const rgba = state.kernel.render_region_rgba(x0, y0, cw, ch);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaView = state.kernel.render_region_rgba(x0, y0, cw, ch);
+  const rgba = rgbaView ? Uint8Array.from(rgbaView) : rgbaView;
   if (!rgba || rgba.length < cw * ch * 4) {
     // **内核给不出这一块像素 ⇒ 用服务端像素补画** ✓ —— 这就是"重新打开含介质的文档是白板"的根因 ✓：
     // heavy 原子（`import_image` = 每一笔介质 ✓、液化…）客户端内核折叠不出来 ✓，
@@ -2940,7 +2976,21 @@ function drawKernelBoxDirect(bbox) {
   const w = Math.round(x1 - x0);
   const h = Math.round(y1 - y0);
   if (x1 <= x0 || y1 <= y0 || w <= 0 || h <= 0) return;
-  const rgba = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaViewD = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+  const rgba = rgbaViewD ? Uint8Array.from(rgbaViewD) : rgbaViewD;
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
   const renderedAt = performance.now();
@@ -3534,7 +3584,21 @@ async function checkBitExact() {
   // 用服务端实际渲染的尺寸请求本地像素，避免双方尺寸口径不同。
   const width = server.width || w;
   const height = server.height || h;
-  const localPixels = state.kernel.render_region_rgba(0, 0, width, height);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const localView = state.kernel.render_region_rgba(0, 0, width, height);
+  const localPixels = localView ? Uint8Array.from(localView) : localView;
   if (localPixels.length === 0) {
     // 内核没产出像素（未就绪 / 文档尺寸不符 / 内核处于错误状态）：明确报出来，
     // 不要伪装成「尺寸不一致」，否则会误导排查方向。
@@ -7676,7 +7740,21 @@ function pickColorAt(event) {
   const side = 3;
   const x0 = Math.max(0, Math.min(state.docSize.w - side, x - 1));
   const y0 = Math.max(0, Math.min(state.docSize.h - side, y - 1));
-  const rgba = state.kernel.render_region_rgba(x0, y0, side, side);
+      // **★ 必须立刻**拷出** ✗ ★**（第 391 轮 ✓；**实测根因 ✓）：
+      //   **∴ `lib.rs:12` 自己写着 ✗**：**「**像素以 `Vec<u8>` 返回 → wasm-bindgen
+      //     **直接给 `Uint8Array`**」 ✓ ⇒ **∴ 那个视图**直接指向 wasm 线性内存**
+      //       ＋ **持有对内核的借用** ✓
+      //         ⇒ **∴ 只要**视图还活着**✗ ⇒ **∴ 下一个**内核调用**就报
+      //           **「**recursive use of an object detected which would lead to
+      //             unsafe aliasing in rust**」 ✓ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+      //   **∴ 修法 ✗**：**拿到视图**立刻拷成普通数组**✗（**∴ 于是**借用**立即释放** ✓）
+      //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+      //     **∴ 收益 ✗**：**不会再**占着借用**✗ ⇒ **∴ 落笔**能成功** ✓
+      //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
+      //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
+      //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  const rgbaSideView = state.kernel.render_region_rgba(x0, y0, side, side);
+  const rgba = rgbaSideView ? Uint8Array.from(rgbaSideView) : rgbaSideView;
   if (!rgba || rgba.length < side * side * 4) {
     log("吸管失败：内核没有返回像素（len=" + (rgba ? rgba.length : "null") + "）", "#c33");
     return;
@@ -8343,7 +8421,7 @@ async function loadLocalBrushText(name) {
   // ⇒ 两边都用编码后的同一个 URL ✓（否则 `+`/`%`/`#` 这些名字永远命中不了离线缓存 ✓）。
   try {
     if (window.caches) {
-      caches.open("yanshi-shell-b62862a5-dirty")
+      caches.open("yanshi-shell-3e3fbae2-dirty")
         .then((cache) => cache.put(brushAssetUrl(name),
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + brushAssetUrl(name) + "（离线将没有本地预览）：" + error));
@@ -9037,7 +9115,22 @@ async function paintBrushOffline(request) {
   }
   let bytes = null;
   try {
-    bytes = kernel.paint_brush(JSON.stringify({
+    // **★ 走全局串行化链 ✗ ★**（第 389 轮 ✓；**实测根因 ✓）：
+    //   **∴ 症状 ✗**：**落笔**返回 `stroke_failed`✗
+    //     ＋ **`reason = "recursive use of an object detected which would lead to unsafe aliasing in rust"`** ✓
+    //   **∴ 实测定位 ✗**（**第 387／388 轮 ✓）**：
+    //     **∴ `api-local.js` **有串行化**✗（`withKernel` ＋ `__kernelChain` ✓）
+    //       ⇒ **∴ 而** viewer **完全没有**✗（**`grep withKernel` 零命中 ✓）
+    //         ⇒ **∴ 而**它有**十几处**直接调 `state.kernel.*`** ✓
+    //           ⇒ **∴ 于是**落笔与渲染**可能同时在**同一个 `WasmKernel` 上跑** ✓
+    //             ⇒ **∴ wasm-bindgen 报**借用冲突**✗ ⇒ **∴ 落笔**失败** ✓ ★**** ✓✓
+    //   **∴ 修法 ✗**：**共用一条**全局链**✗
+    //     ⇒ **∴ 于是** `api-local.js` **与本文件**终于共享同一套保护** ✓ ★**** ✓✓
+    //   **∴ 代价（**两面 ✓）★**：**内核调用**变成异步**✗
+    //     ⇒ **∴ 调用方必须 `await`** ✓（**∴ 本函数**是 async ✓）
+    //       ＋ **∴ 且**：**本文件的渲染调用**尚未入链**✗
+    //         ⇒ **∴ 所以**这一笔**仍可能与渲染并发** ✓（**∴ 下一步**要把它们也纳入 ✓）** ★**** ✓✓
+    bytes = await window.__yanshiQueueKernel(state.docId, () => kernel.paint_brush(JSON.stringify({
       myb: brush.text,
       points: points,
       size: Number.isFinite(request.size) && request.size > 0 ? request.size : null,
@@ -9045,7 +9138,7 @@ async function paintBrushOffline(request) {
       opacity: null,
       hardness: null,
       region: region,
-    }));
+    })));
   } catch (error) {
     log("离线落笔异常：" + String(error).slice(0, 120), "#c33");
     return false;
