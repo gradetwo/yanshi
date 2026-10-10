@@ -410,3 +410,41 @@ writeFileSync(join(DST, "assets-index.json"), JSON.stringify(assetIndex));
 console.log("  OK: 资产索引 => " + join(DST, "assets-index.json") +
   "（palette " + assetIndex.palette.length + "｜texture " + assetIndex.texture.length +
   "｜brush " + assetIndex.brush.length + "｜medium " + assetIndex.medium.length + "）");
+
+
+// **★ 打戳必须在**所有拷贝之后** ✗ ★**（第 413 轮 ✓ 实测修 ✓）：
+//   **∴ 原来的位置 ✗**：**打戳在**中间**✗ ⇒ **∴ 而**后面**又有一次**拷贝**
+//     ⇒ **∴ 于是**占位符**被覆盖回来** ✓ ⇒ **∴ 验证时**三处仍是 `__BUILD_ID__`** ✓
+//       ⇒ **∴ 所以**：**移到脚本末尾**✗ ⇒ **∴ 于是**拷完之后才打戳** ✓ ★**** ✓✓
+  // **★★ `yanshi-shell-` 的名字必须**三处同戳** ✗ ★★**（第 413 轮 ✓；**用户实测指出的缺口 ✓）：
+  //   **∴ 症状 ✗**：**线上** `const CACHE = "yanshi-shell-__BUILD_ID__"`**✗
+  //     ⇒ **∴ 即**：**占位符**根本没被替换** ✓
+  //       ⇒ **∴ 于是**线上缓存名**恒定**✗ ⇒ **∴ 浏览器**永远用旧外壳** ✓ ★**** ✓✓
+  //   **∴ 为什么只改 SW 不行（**第 84 轮踩过 ✓）★**：
+  //     **∴ 页面里**也有这个名字**✗（**`viewer-app.js` 的 `caches.open(…)` ✓）
+  //       ＋ **∴ Rust 侧**由 `viewer.rs:24` **同时替换**两处** ✓
+  //         ⇒ **∴ 而**那条**守护测试**要求两者**一致**✗
+  //           （**`the_page_and_the_service_worker_agree_on_the_shell_cache_name` ✓）
+  //           ⇒ **∴ 所以**：**只改 SW** ⇒ **不一致 ⇒ 测试红** ✓（**第 84 轮就是这样被回退的 ✓）** ★**** ✓✓
+  //   **∴ 修法 ✗**：**静态侧**也**三处同戳**✗：
+  //     **∴ ①** `service-worker.js` 的 `yanshi-shell-__BUILD_ID__`** ✓
+  //     **∴ ②** `viewer-app.js` 的 `yanshi-shell-__BUILD_ID__`** ✓
+  //     **∴ ③** `index.html` 里**上一次**替换出来的旧戳**（**`yanshi-shell-<旧>` ✓）** ✓
+  //       ⇒ **∴ 于是**：**页面与 SW **一致**✗ ⇒ **∴ Rust 测试**照旧绿** ✓
+  //         ＋ **∴ 而**线上缓存名**会变** ✓ ⇒ **∴ 旧外壳**自动作废** ✓ ★**** ✓✓
+  //   **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
+  //     **∴ 收益 ✗**：**线上**终于会失效缓存**✗ ⇒ **∴ 用户**看得到新代码** ✓
+  //     **∴ 代价 ✗**：**每次发布**客户端**重装一次外壳**（**∵ 内容变了 ⇒ 本来就该 ✓）** ★**** ✓✓
+  for (const file of ["service-worker.js", "viewer-app.js", "index.html"]) {
+    try {
+      const target = join(DST, file);
+      let text = readFileSync(target, "utf8");
+      text = text
+        .replaceAll("yanshi-shell-__BUILD_ID__", "yanshi-shell-" + BUILD_STAMP)
+        .replace(/yanshi-shell-((?:__BUILD_ID__)|[0-9a-f-]+)/g, "yanshi-shell-" + BUILD_STAMP);
+      writeFileSync(target, text);
+      console.log("  OK: " + file + " 的 yanshi-shell- 戳 ⇒ " + BUILD_STAMP);
+    } catch (e) {
+      console.warn("  WARN: 未能给 " + file + " 打 yanshi-shell- 戳：" + e.message);
+    }
+  }
