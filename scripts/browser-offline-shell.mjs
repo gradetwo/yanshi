@@ -383,7 +383,7 @@ const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now()
 //     **∴ ②** **桩不在 ⇒ `failed: false` ⇒ **离线机制**没生效** ⇒ **∴ 才**该 VOID ✓**** ✓✓
 //     **∴ ③** **桩在但调用**没 reject**✗ ⇒ **∴ 那**也是**机制错** ⇒ **∴ VOID** ✓**** ✓✓
 const controlProbe = swControl
-  ? (await swControl.send("Runtime.evaluate", {
+  ? (await swControl.send("Runtime.evaluate", { awaitPromise: true,
       // **★ 必须显式 `returnByValue` ＋ `awaitPromise` ✗ ★**（第 334 轮 ✓；**实测换来的 ✓）：
       //   **∴ 第 333 轮的 CI 显示 ✗**：**`负对照 … = {}`** ✓
       //     ⇒ **∴ 即**：**`swControl.evaluate` **没把对象取回来**✗（**∴ 只拿到空对象 ✓）
