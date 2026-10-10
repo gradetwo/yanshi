@@ -17,6 +17,10 @@
 #   scripts/l4.sh sync                # 把**已推送的**本地 HEAD 同步到 L4（走 GitHub ✓）
 #   scripts/l4.sh accounts [--rounds N] [--width W] [--height H]   # 在 L4 上量两本账
 #   scripts/l4.sh down                # 停掉会话（释放配额 ✓）
+#   scripts/l4.sh bg <名字> '<命令>'    # 起一个**脱离连接**的作业（写 log／rc／pid ✓）
+#   scripts/l4.sh jobs                # 列作业 ＋ 各自退出码（**机器可读 ⇒ 能判红绿 ✓）
+#   scripts/l4.sh tail <名字> [行数]    # 看作业输出
+#   scripts/l4.sh rc <名字>            # 只看退出码（**0 才是绿 ✓）
 #   scripts/l4.sh sh                  # 交互式 shell（需要 TTY ✓）
 #
 # **∴ 环境变量 ✗**：`L4_SESSION`（缺省 `dawang`）／`L4_DIR`（缺省 `/content/yanshi`）
@@ -177,6 +181,75 @@ cmd_accounts() {
   l4_ssh "cd ${L4_DIR} && pkill -9 -x yanshi-serve 2>/dev/null; sleep 1; node --version >/dev/null 2>&1 || { echo '  ✗ L4 上没有 node ⇒ 装：apt-get install -y nodejs npm'; exit 1; }; timeout 1500 node scripts/tool-render-cost-accounts.mjs --spawn --rounds ${rounds} --baseline target/release/yanshi-serve --compare 'CPU=--gpu off' --compare 'GPU=--gpu on' 2>&1 | tail -18" 2>&1 | sed 's/^/  /'
 }
 
+# **★ 远端作业账（**机器可读 ✓）✗ ★**（**第 494 轮 ✓；**用户问「tmux 是不是更方便」换来 ✓）
+#
+# **∴ 为什么不用 tmux 收账 ✗**（**两边都写 ✓）**：
+#   **∴ tmux 的**收益**：**一个 ssh 连接里**并行多窗口**✗（**∴ 绕开 colab 的
+#     「**一次只允许一个连接**（HTTP 429 ✓）」限制 ✓）＋ **∴ 交互式看进度 ✓
+#   **∴ tmux 的**代价（**决定性的 ✓）**：**`tmux capture-pane` 给的是**屏幕文本**✗
+#     ⇒ **∴ 拿不到**退出码**✗ ⇒ **∴ 判据里**红／绿**就丢了** ✓
+#       ＋ **∴ 且** ANSI 转义与折行会**污染输出** ✓
+#         ⇒ **★ 所以 ✗ ★**：**「人肉看」用 tmux**✗ 、**「机器收账」用
+#           **`log` ＋ `rc` 文件**** ✓
+#           ⇒ **∴ 本组子命令就是后者 ✓：
+#             **`bg <名字> <命令>`**（**起作业 ＋ 写 log／rc／pid ✓）
+#             ＋ **`jobs`**（**列作业 ＋ 各自退出码 ✓）
+#             ＋ **`tail <名字> [行数]`** ＋ **`rc <名字>`** ✓ ★**** ✓✓
+L4_JOBS="${L4_JOBS:-/root/l4jobs}"
+
+# **★ 起一个**脱离连接**的作业 ✗ ★**
+#
+# **∴ 三样都写 ✗**：stdout／stderr ⇒ `.log`｜**退出码 ⇒ `.rc`**｜pid ⇒ `.pid` ✓
+#   ⇒ **∴ 于是**：**下一轮回来能**判红绿****✗ ，**不靠屏幕文本** ✓
+#
+# **★ 必须**外层再包一层**才能拿到退出码 ✗ ★**（**第 494 轮实测 ✓）：
+#   **∴ 原来的写法 ✗**：`bash -c "<命令>; echo $? > rc"`
+#     ⇒ **∴ 若**命令自己 `exit N`**✗ ⇒ **∴ 内层 shell**立刻退出** ✓
+#       ⇒ **∴ 于是**：**那句 `echo` **永远不执行**✗ ⇒ **∴ `.rc` **不存在** ✓
+#         ＋ **∴ 而** `jobs` **只会显示「运行中」**✗
+#           ⇒ **★ 判据永远拿不到红绿 ★** ✓
+#             （**∴ 实测**：一个 `… ; exit 7` 的作业**打印完了 `done`，rc 仍是「还在跑」** ✓）★**** ✓✓
+#   **∴ 现在 ✗**：**内层随便 `exit`** ＋ **外层捕获它的退出码** ✓
+#     ＋ **∴ 且**外层命令用 `printf %q` **引用**内层命令**✗
+#       ⇒ **∴ 于是**：**内层里的引号／分号都**不会被外层吃掉** ✓ ★**** ✓✓
+cmd_bg() {
+  local name="${1:-}" cmd="${2:-}"
+  [ -n "${name}" ] && [ -n "${cmd}" ] || die "用法：scripts/l4.sh bg <名字> <命令>" 2
+  # **∴ 命令串里**只放命令**✗ ⇒ **∴ 注释一律写在引号外** ✓
+  #   （**∴ 教训**：**上一次我把注释塞进双引号里 ⇒ 里面的引号把整串**拆坏了** ✓）
+  local quoted
+  quoted="$(printf '%q' "${cmd}")"
+  l4_ssh_retry "mkdir -p ${L4_JOBS}; cd ${L4_JOBS}
+rm -f ${name}.log ${name}.rc ${name}.pid
+setsid nohup bash -c 'bash -c ${quoted}; echo \$? > ${L4_JOBS}/${name}.rc' > ${L4_JOBS}/${name}.log 2>&1 < /dev/null &
+echo \$! > ${L4_JOBS}/${name}.pid
+echo started-${name}" 2>&1 | sed 's/^/  /'
+}
+
+cmd_jobs() {
+  l4_ssh_retry "cd ${L4_JOBS} 2>/dev/null || { echo '  （还没有作业目录）'; exit 0; }
+printf '  %-14s %-8s %-10s %s\n' 名字 状态 退出码 日志
+for f in *.log; do
+  [ -e \"\$f\" ] || continue
+  n=\${f%.log}
+  rc=\$(cat \"\$n.rc\" 2>/dev/null || echo '')
+  if [ -n \"\$rc\" ]; then st=已完成; else st=运行中; fi
+  printf '  %-14s %-8s %-10s %s 行\n' \"\$n\" \"\$st\" \"\${rc:-—}\" \"\$(wc -l < \"\$f\")\"
+done" 2>&1 | sed 's/^/  /'
+}
+
+cmd_tail() {
+  local name="${1:-}" n="${2:-20}"
+  [ -n "${name}" ] || die "用法：scripts/l4.sh tail <名字> [行数]" 2
+  l4_ssh_retry "tail -n ${n} ${L4_JOBS}/${name}.log 2>/dev/null || echo '  （没有这个作业的日志）'" 2>&1 | sed 's/^/  /'
+}
+
+cmd_rc() {
+  local name="${1:-}"
+  [ -n "${name}" ] || die "用法：scripts/l4.sh rc <名字>" 2
+  l4_ssh_retry "if [ -f ${L4_JOBS}/${name}.rc ]; then echo \"  ${name} 退出码 = \$(cat ${L4_JOBS}/${name}.rc)（**0 才是绿 ✓）\"; else echo '  ${name} 还在跑（没有 rc 文件 ✓）'; fi" 2>&1 | sed 's/^/  /'
+}
+
 cmd_down() {
   echo "== 停掉会话 ${SESSION}（释放配额 ✓）=="
   colab stop -s "${SESSION}" 2>&1 | tail -3 | sed 's/^/  /'
@@ -194,6 +267,11 @@ case "${1:-}" in
   run)         shift; cmd_run "$@" ;;
   sync)        shift; cmd_sync "$@" ;;
   accounts)    shift; cmd_accounts "$@" ;;
+  # **∴ 作业账（**机器可读 ✓）**：**bg／jobs／tail／rc** ✓
+  bg)          shift; cmd_bg "$@" ;;
+  jobs)        shift; cmd_jobs "$@" ;;
+  tail)        shift; cmd_tail "$@" ;;
+  rc)          shift; cmd_rc "$@" ;;
   down)        shift; cmd_down "$@" ;;
   sh|shell)    shift; cmd_sh "$@" ;;
   ""|-h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
