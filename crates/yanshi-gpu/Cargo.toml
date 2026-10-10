@@ -1,0 +1,19 @@
+[package]
+name = "yanshi-gpu"
+description = "偃师 Yanshi 的可选 GPU 加速层（量化）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# **★ 本 crate 就是 GPU 层 ✗ ★**（第 300 轮 ✓；**目标第 6／7 条 ✓）：
+#   **∴ 它**只被**服务端**（`yanshi-http` ✓）**可选依赖**✗
+#     ⇒ **★ 而 `yanshi-wasm` **不**依赖它** ✗ ⇒ **∴ 于是** wasm 的依赖树里**没有 `wgpu`** ✓ ★**** ✓✓
+#   **∴ 判据 ✗**：`scripts/tool-wasm-tree-no-wgpu.mjs`（**有牙 ✓，第 299 轮 ✓）
+#     ⇒ **∴ 它**会在**谁**把它接进 `yanshi-render`／`yanshi-wasm` 时**立刻红** ✓**** ✓✓
+[dependencies]
+wgpu = "26.0.1"

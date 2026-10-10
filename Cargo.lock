@@ -1578,6 +1578,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "yanshi-gpu"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
+]
+
+[[package]]
 name = "yanshi-http"
 version = "0.1.0"
 dependencies = [

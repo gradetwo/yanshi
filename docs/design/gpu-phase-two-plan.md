@@ -1587,3 +1587,55 @@ grep -rn 'quantize_to_rgba8|to_rgba8_quantized' crates/yanshi-server/src/*.rs
 | **诚实上报（**§6.3 ④ ✓）** | **★ 完成 ★** |
 | **CI 体积** | **★ 完成 ★**（**`gpu-feature` job ✓） |
 | **★ 接进渲染路径 ✗** | **★ 未完成 ★** ⇒ **∴ 按本节的**折中方案**做：新建 `yanshi-gpu` ＋ `yanshi-render` 的 `gpu` feature ✓** |
+
+---
+
+# 三十六、★★★ **新建 `yanshi-gpu`：GPU 加速层独立成 crate**（第 300 轮）★★★
+
+## 一、★ 为什么单独一个 crate（**第 295／296 轮的结论 ✓**）★
+
+**∴ 我**权衡过**把 `wgpu` 放进 `yanshi-render`**（**路 A ✓）✗
+⇒ **∴ 而** `yanshi-render` **也被 `yanshi-wasm` 依赖** ✓
+⇒ **∴ 那**会让 `wgpu` **进入内核的依赖图** ✓
+⇒ **★ 而** AGENTS.md 第 6 条 ＋ 目标第 6 条：**内核的体积与确定性**权重更高** ✓ ★**** ✓✓
+**⇒ ★ 所以 ✗ ★**：**放进**独立 crate**✗ ⇒ **∴ 只**服务端**可选依赖它** ✓
+
+## 二、★ 新 crate 的内容 ★
+
+| 项 | 内容 |
+|---|---|
+| **`crates/yanshi-gpu/Cargo.toml`** | **依赖 `wgpu`（**它**就是 GPU 层 ✓）** |
+| **`src/quantize.wgsl`** | **五步量化（**与 `yanshi-http` 的共享文件**同一份** ✓） |
+| **`src/lib.rs`** | **`Quantizer::new(lut)`** ＋ **`quantize(pixels, count)`** ⇒ **分块 ＋ 批量 ＋ 一次 `Wait`** ✓ |
+
+**∴ 本 crate 的边界（**如实 ✓）★**：
+- **∴ 它**不决定**该不该用 GPU**✗ ⇒ **∴ 那**由调用方按**规模阈值**决定** ✓
+- **∴ 它**不承诺**逐位一致**✗ ⇒ **∴ 那**由调用方**用 CPU 结果核对** ✓（**∴ 见自检 ✓）** ✓✓
+
+## 三、★ 实测（**两个门禁都过 ✓**）★
+
+```
+✅ 已注册到 workspace
+check（yanshi-gpu）退出码: 0
+★ wasm 树守判据 退出码 0 ★（**∴ 新 crate **没有**进 wasm 的树 ✓）
+```
+
+**⇒ ★ 所以 ✗ ★**：**新 crate**现在**没人依赖**✗ ⇒ **∴ 于是** wasm 的树**当然干净** ✓
+**∴ 而**下一个动作才是**关键**✗：**让 `yanshi-http` 在 `gpu` feature 下**可选依赖它** ✓**** ✓✓
+
+## 四、★ 借鉴来源（**用户第 593 轮 ✓**）★
+
+| 来源 | 借鉴什么 | **我们与它的差别** |
+|---|---|---|
+| **Krita 的**颜色空间边界**＋ per-node paint device** | **把**重能力**隔离在一层** | **Krita**按**节点**分**✗；**我们**按**crate ＋ feature** 分** ✓ |
+| **GIMP 的 `GeglBuffer` 按需换格式** | **按需**加载** | **GIMP**按**格式**✗；**我们**按**feature ＋ 规模** ✓ |
+
+**∴ 落到可验证一步 ✗**：**新 crate **不得**出现在 wasm 的依赖树里** ✓（**∴ 判据已绿 ✓）
+**∴ 变异点 ✗**：**把 `yanshi-gpu` 加成 `yanshi-render` 的依赖**✗ ⇒ **∴ 判据**必红** ✓**** ✓✓
+
+## 五、★ 下一步（**明确 ✓**）★
+
+1. **`yanshi-http` 的 `gpu` feature** ⇒ **改为 `gpu = ["dep:wgpu", "dep:yanshi-gpu"]`** ✓
+2. **把 `gpu_policy::selfcheck` 的本地实现**换成**调用 `yanshi_gpu::Quantizer`** ✓（**∴ 消除重复 ✓）
+3. **然后**才谈**在 `yanshi-render` 里加分派**（**∴ 那**需要 `yanshi-render` 可选依赖 `yanshi-gpu` ✓）
+   ⇒ **∴ 而那时**：**wasm 树守判据会**立刻检查** ✓（**∴ 只要**它是可选依赖 ＋ `yanshi-wasm` 不开它 ✓）
