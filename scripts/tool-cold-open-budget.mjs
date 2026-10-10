@@ -54,9 +54,25 @@ if (!PROJECT || !existsSync(PROJECT)) {
       points: [[20, 20, 1.0], [120, 120, 1.0]] }) });
   const exported = await (await fetch(`${BASE}/api/tools/export_project?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`, { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({}) })).json();
+    // **∴ 为了让导入后**真的有图可给**✗ ⇒ **∴ 导出时必须**带上位图** ✓**（第 96 轮 ✓）：
+//   **∴ 实测（**本地 ✓）✗**：**默认导出 ⇒ **导入后 `thumb=无` ＋ `preview_ms=undefined`**
+//     ⇒ **∴ 而**那**可能**只是**因为**包里**没有位图**✗（**∴ `blob_count: 0` ✓）
+//       ⇒ **∴ 所以**：**先**把位图带进包**✗ ⇒ **∴ 再**判**"**冷启动是否真的不给图 ✓" ✓**** ✓✓
+body: JSON.stringify({ include_bitmaps: true }) })).json();
   // **∴ 导出回的是 `blob_hash`**✗，**不是 `url`** ✗**（第 93 轮 ✓；**本地实测 ✓）⇒ **∴ 去 `/api/blob/<hash>` 取字节 ✓**
-  const blobUrl = `${BASE}/api/blob/` + encodeURIComponent(exported.blob_hash) + `?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`;
+  // **★ `blob_hash` **不能**整体 `encodeURIComponent`** ✗ ★**（第 96 轮 ✓；**本地实测 ✓）：
+//   **∴ 症状 ✗**：**我**原来用 `encodeURIComponent(exported.blob_hash)`**✗
+//     ⇒ **∴ 于是** `sha256:` **的**冒号**变成 `%3A`**✗
+//       ⇒ **∴ 而**服务端**按**字面 `sha256:` **匹配路由**✗
+//         ⇒ **∴ 400 ＋ 103 B 的错误 JSON**✗
+//           ⇒ **∴ 我**一直**把它当成**工程包 ✓**** ✓✓
+//   **∴ 证据（**本地 curl ✓）✗**：**未编码 ⇒ **200／7680 B**✗；
+//     **编码成 %3A ⇒ **400／103 B** ✓**** ✓✓
+//   **∴ 修法**：**原样拼接**✗（**∴ `sha256:` ＋ 十六进制**不需要编码 ✓）** ✓✓
+const blobUrl = `${BASE}/api/blob/` + exported.blob_hash + `?doc=${encodeURIComponent(madeDoc)}&token=${encodeURIComponent(madeToken)}`;
+  // **∴ URL 本身也要**打出来** ✗**（第 96 轮 ✓）：**∴ 102 B**时，
+  //   **∴ 一眼**看出是**哪个参数**成了 undefined ✓**** ✓✓
+  console.log("  · blobUrl=" + blobUrl.replace(/token=[^&]*/, "token=…"));
   const bytes = new Uint8Array(await (await fetch(blobUrl)).arrayBuffer());
   // **∴ 自造包必须**自证** ✗**（第 94 轮 ✓）：**∴ 打印**导出报的字节数、blob 哈希
   //   ＋ **实际取到的字节数**✗ ⇒ **∴ 三者**不一致时一眼看出 ✓**** ✓✓
