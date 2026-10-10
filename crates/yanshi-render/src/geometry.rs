@@ -236,14 +236,35 @@ pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &
     let height = (y1 - y0).max(0) as u32;
     let ss = supersample.max(1);
     let samples = (ss * ss) as f32;
+    // **★ 子样本偏移**提到循环外 ✗ ★**（第 209 轮 ✓；**与 `ellipse_coverage_clipped` 同一招 ✓）。
+    //
+    // **∴ 为什么 ✗**：**实测**（**第 208 轮 ✓）**✗**：
+    //   **∴ 对 ellipse 做同样的提升**⇒ **∴ `primitive:Shape` 合计 **−7.5%**** ✓
+    //     ⇒ **∴ 而**画作里**真正大量走的是**这一条（**polygon ✓）** ✓✓
+    //   **∴ 原来**每子样本**2 次除法**（**`(sx+0.5)/ss` ＋ `(sy+0.5)/ss` ✓）
+    //     ⇒ **∴ × **16 子样本 ⇒ **32 次除法／像素** ✓**** ✓✓
+    //
+    // **★ 为什么逐位不变 ✗ ★**：**表达式**逐字相同**✗ ⇒ **∴ 同一个浮点除法的**同一个值** ✓
+    //
+    // **★ 而**更大的成本**还没动 ✗ ★**：
+    //   **∴ `point_in_polygon` 对**每个子样本**遍历**全部顶点**✗（**O(n) ✓）
+    //     ⇒ **∴ 而**它**内部**每边**还有**一次除法**（**`t = (y - yi) / (yj - yi)` ✓）** ✓✓
+    //   **∴ 所以**总成本 ≈ **16 × n 次除法／像素** ✓
+    //   **∴ 下一步（**下一轮 ✓）**：**按行预计算**✗
+    //     ⇒ **∴ 因为** `y` **只**由 `py` 与 `sy` 决定**✗
+    //       ⇒ **∴ 于是**：**同一行**的**边判定**与**交点**可以**复用** ✓
+    //     **∴ 而**那**需要**重构 ✗ ⇒ **∴ 所以**本轮**只做**这个最小步** ✓**** ✓✓
+    let offs: Vec<f64> = (0..ss)
+        .map(|i| (f64::from(i) + 0.5) / f64::from(ss))
+        .collect();
     let mut data = Vec::with_capacity((width * height) as usize);
     for py in 0..height {
         for px in 0..width {
             let mut hits = 0.0f32;
             for sy in 0..ss {
                 for sx in 0..ss {
-                    let x = x0 as f64 + px as f64 + (sx as f64 + 0.5) / ss as f64;
-                    let y = y0 as f64 + py as f64 + (sy as f64 + 0.5) / ss as f64;
+                    let x = x0 as f64 + px as f64 + offs[sx as usize];
+                    let y = y0 as f64 + py as f64 + offs[sy as usize];
                     if point_in_polygon(x, y, points) {
                         hits += 1.0;
                     }
