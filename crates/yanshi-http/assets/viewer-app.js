@@ -1899,6 +1899,14 @@ function queueServerBlit(bbox = null) {
     serverBlitPending = true;
     return serverBlitChain;
   }
+  // **★ 服务端补画也要有**分段计时** ✗ ★**（第 79 轮 ✓；**用户第 8 条 ✓）：
+  //   **∴ 原来**只有**本地路径**写 `lastApplyMs`／`lastRenderMs`／`lastPutMs`**✗
+  //     ⇒ **∴ 于是**：**两本账的『**端到端 ✓』只有一半** ✓
+  //       （**∴ 判据**会**打印那条提醒 ✓）**** ✓✓
+  //   **∴ 修法**：**在**这条补画链的**起止处**量**总时长**✗
+  //     ⇒ **∴ 写进** `lastApplyMs`**✗（**与本地路径**同一口径** ＝ **整段 ✓）
+  //       ⇒ **∴ 于是**：**两边**可比 ✓**** ✓✓
+  const __blitStarted = performance.now();
   serverBlitBusy = true;
   serverBlitChain = blitServerViewport()
     .catch((error) => {
@@ -1912,6 +1920,8 @@ function queueServerBlit(bbox = null) {
       window.yanshiStats.blitErrors = (window.yanshiStats.blitErrors || 0) + 1;
     })
     .finally(() => {
+    window.yanshiStats.lastApplyMs = performance.now() - __blitStarted;
+    window.yanshiStats.lastServerMs = performance.now() - __blitStarted;
     serverBlitBusy = false;
     if (serverBlitPending) { serverBlitPending = false; queueServerBlit(); }
   });

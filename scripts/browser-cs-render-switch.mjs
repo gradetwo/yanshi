@@ -376,6 +376,16 @@ if (strokeA && strokeB && strokeA.taskMs && strokeB.taskMs) {
 {
   const gA = strokeA?.stages || {};
   const hasA = typeof gA.lastApplyMs === "number";
+  // **★ 第 79 轮的更新 ✗ ★**：**服务端现在**有 `apply`**了**✗
+  //   （**∴ 我**在**补画链的起止处**量了整段 ✓）
+  //   ⇒ **∴ 而** `render`／`put` **两列**仍然空**✗
+  //     ⇒ **∴ 因为**我**只量了**整段**✗（**与本地路径**同一口径 ✓）** ✓✓
+  //   ⇒ **∴ 所以**提醒**改成**说清**哪些可比、**哪些缺** ✓**** ✓✓
+  if (hasA && typeof gA.lastRenderMs !== "number") {
+    console.log(`  ℹ️ 服务端的**端到端（**整段 apply ✓）现在有了：`
+      + ` ${Number(gA.lastApplyMs).toFixed(1)} ms`
+      + `（**与本地同口径 ✓）；**细分 render／put 仍缺 ✓`);
+  }
   if (!hasA) {
     console.log("  ⚠️ **服务器渲染模式没有端到端分段**（**那几段只在本地路径写**）"
       + " ⇒ **∴ 两本账的『**端到端 ✓』目前只有一半** ✗");
