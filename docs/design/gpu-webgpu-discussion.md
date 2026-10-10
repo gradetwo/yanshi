@@ -288,3 +288,71 @@ AGENTS.md 要求逐项核对「收益量级／体积／**确定性**／平台支
       ⇒ **∴ 而**它**还没接进**内核的渲染路径 ✓**** ✓✓
     ⇒ **∴ 且**：**内核真值导出**（`quantize_reference_rgba` ✓）**已就位**✗
       ⇒ **∴ 于**是**：**接进去之后**判据**能**直接**与**真值比** ✓**** ✓✓
+
+---
+
+## ★ 第 445 轮：**离线内核接 WebGPU 的**三个硬阻塞**与**重构方案**（**待裁定 ✓）
+
+**∴ 测量结论（**第 442 轮实测 ✓）★**：**服务端侧**已经**完整可用**（**`yanshi-gpu` 390 行 ＋
+**`wgpu 26.0.1` ＋ `Quantizer` ＋ `buffer.rs:433 try_quantize_on_gpu` ＋ feature `gpu` ✓）**；
+**剩余的唯一大工程是**浏览器内核**（**`yanshi-wasm` ✓）。
+
+### 一、三个硬阻塞（**读码事实 ✓）
+
+| # | 位置 | 事实 | 后果 |
+|---|---|---|---|
+| **①** | `yanshi-gpu/src/lib.rs:313` | **自实现的 `block_on`** | **wasm 是单线程 ＋ 事件循环 ⇒ **永远等不到** `request_adapter` 完成** |
+| **②** | `yanshi-gpu/src/lib.rs:291` | **`slice.map_async(…)`** | **wasm 上**必须 `await` 那个 Promise** |
+| **③** | `yanshi-render/src/buffer.rs:433` | **`try_quantize_on_gpu` 是同步签名** | **wasm 侧**必须 async** |
+
+**∴ ① 已处置**（**第 443 轮 ✓）**：**加平台守卫 `supports_sync_init()`** ＋ **`new` 开头明确报错**
+（**`sync_init_unsupported_on_wasm32` ✓）⇒ **∴ wasm 上**不再死锁**✗ ⇒ **∴ 而是**响亮失败** ✓
+**∴ 判据**：`scripts/tool-gpu-sync-init-guard.mjs`（**三条 ＋ 两变异 ✓）**
+
+### 二、重构方案（**核心 async ＋ 同步是薄包装 ✓）
+
+**∴ 原则 ✗**：**同步与异步**必须共用**同一份核心逻辑**✗ ⇒ **∴ 不许**两套实现** ✓
+
+```
+yanshi-gpu/src/lib.rs（**目标形状 ✓）
+  ├─ async fn new_async_inner(lut) -> Result<Self, String>   ← ★ 唯一实现 ★
+  ├─ async fn quantize_async_inner(&self, pixels, count)      ← ★ 唯一实现 ★
+  ├─ pub fn new(lut)      -> { block_on(new_async_inner(lut)) }         ← 服务端
+  ├─ pub fn quantize(...) -> { block_on(quantize_async_inner(...)) }    ← 服务端
+  ├─ pub async fn new_async(lut)      -> new_async_inner(lut)           ← 内核
+  └─ pub async fn quantize_async(...) -> quantize_async_inner(...)      ← 内核
+```
+
+**∴ 具体改动（**三处 ✓）★**：
+1. **`new` 的函数体**改名为 **`new_async_inner`**✗ ＋ **加 `async`** ✓
+2. **`quantize` 的函数体**改名为 **`quantize_async_inner`**✗ ＋ **加 `async`** ✓
+   ＋ **∴ `map_async` 的等待**从**回调 ＋ 轮询**改为 **`await` 一个 oneshot** ✓
+3. **新增四个薄公开函数**（**两个同步 ＋ 两个 async ✓）★**
+
+### 三、两面（**AGENTS.md 第 3 条 ✓）
+
+| 面 | 内容 |
+|---|---|
+| **收益** | **内核**可接 WebGPU**✗ ⇒ **离线加速路**打开** ✓<br>**＋ 同步与异步**共用核心**✗ ⇒ **不产生两套行为** ✓<br>**＋ 体积**按第 591 轮裁定**接受增长** ✓ |
+| **代价** | **`yanshi-gpu`**多一层包装**✗（**∴ 被测**：判据要**同时**覆盖同步与异步 ✓）<br>**＋ 内核**要加 `wasm-bindgen-futures`**✗（**或用 `wasm-bindgen` 的 `future` 支持 ✓）<br>**＋ 调用方**要 `await`**✗ ⇒ **前端**（`brush-local.js`）要配合** ✓<br>**＋ ∴ 且**：**逐位一致**仍**只在 CPU 上承诺**✗ ⇒ **∴ GPU 结果**必须**与 CPU 逐位比对后才记成 `Gpu`** ✓ |
+
+### 四、可验证的一步（**目标第 13 条 ✓）
+
+**∴ 改哪里 ✗**：**`crates/yanshi-gpu/src/lib.rs`**（**三处 ✓）＋ **`crates/yanshi-wasm/src/lib.rs`**（**异步导出 ✓）
+**∴ 用什么判据守住 ✗**：
+- **`scripts/tool-gpu-sync-init-guard.mjs`**（**同步路仍守 ✓）
+- **`scripts/tool-kernel-backend-report.mjs`**（**内核**如实上报** ✓）
+- **`scripts/tool-gpu-fallback-parity.mjs`** ＋ **`tool-gpu-quantize-parity.mjs`**（**逐位一致 ✓）
+- **`scripts/tool-wasm-tree-no-wgpu.mjs`**（**内核体积 ≤ 6 MiB ✓）
+**∴ 变异点 ✗**：
+- **把异步核心与同步包装**分成两套** ⇒ **∴ 两条路会漂移** ⇒ **∴ 判据要**比对两者对同一输入的输出** ✓
+- **把 `render_backend` 改成 `"gpu"` 而没逐位通过** ⇒ **∴ `tool-kernel-backend-report` 必红** ✓
+
+### 五、∴ 待裁定（**用户 ✓）
+
+**∴ 甲**：**给 `yanshi-gpu` 加异步 API**（**保留同步那套给服务端**）
+**∴ 乙**：**内核侧**先同步探测 WebGPU**（**有则异步、无则 CPU**）—— **∴ 第 444 轮已为它铺路**
+（**`backend_report_json` 已把「**能力**」与「**行为**」分开 ✓）
+**∴ 丙**：**两者都做**（**最稳，工作量最大**）
+
+**∴ 建议 ✗**：**先乙后甲** ✓（**∴ 乙**不动共享 API 的结构**✗ ＋ **能立刻验证两条硬约束** ✓）
