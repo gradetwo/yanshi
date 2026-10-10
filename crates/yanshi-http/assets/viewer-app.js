@@ -1149,8 +1149,29 @@ async function callToolLocal(name, args, options = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(args || {}),
   });
-  const response = await local(req);
-  const value = await response.json();
+    // **★ 本地端点缺失必须**如实降级成一次工具失败 ✗ ★**（第 69 轮 ✓）：
+    //   **∴ 症状（**真浏览器实测 ✓）✗**：**关掉"**服务器渲染 ✓"后 ✗**
+    //     **∴ 页面**初始化**会**调 `/api/tools/list_effects`**✗
+    //       ⇒ **∴ 而 `api-local.js`**故意**抛 `endpoint_not_local`**✗
+    //         （**∴ 那**符合仓内"**未实现端点如实报错 ✓"的规矩 ✓）** ✓✓
+    //         ⇒ **∴ 而**原来**这个异常**一路抛穿**✗
+    //           ⇒ **★ 于是**：**整页初始化中断 ⇒ **∴ `initWasm()`**没跑到
+    //             ⇒ **∴ 内核**没加载（`wasm=false`）⇒ **∴ 落笔**画不上 ✓ ★**
+    //   **∴ 修法 ✗**：**接住它**✗ ⇒ **∴ 返回**一个**与服务端同形**的失败对象**
+    //     （`{ok:false, error_code, reason}` ✓）⇒ **∴ 于是**：
+    //       **已有的 `!value.ok` 分支**会**如实 log**✗
+    //         ⇒ **∴ 一个不支持的端点**只让**那一次调用失败 ✓** ✓✓
+    let value;
+    try {
+      const response = await local(req);
+      value = await response.json();
+    } catch (error) {
+      value = {
+        ok: false,
+        error_code: "endpoint_not_local",
+        reason: String((error && error.message) || error),
+      };
+    }
   // 本地模式也走同样的后处理：状态显示、变更追踪、画布刷新。
   // （与服务端路径保持一致，避免两套行为分叉。）
   $("last").textContent = JSON.stringify(value).slice(0, 600);

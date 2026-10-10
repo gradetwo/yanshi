@@ -119,6 +119,28 @@ const taskDuration = async () => {
 
 await send("Runtime.enable");
 await send("Page.enable");
+// **★ 必须收集**页面侧的日志与异常 ✗ ★**（第 69 轮 ✓；**∴ 我**要查 `wasm=false` 的真因 ✓）：
+//   **∴ 为什么 ✗**：**`initWasm()`**在**加载失败**时会**静默**（**∴ 只**设一个状态文本 ✓）
+//     ⇒ **∴ 光看 `wasm=false`**分不清**"**被跳过 ✓"与"**加载失败 ✓" ✓**** ✓✓
+const pageLog = [];
+socket.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
+  if (message.method === "Runtime.consoleAPICalled") {
+    const kind = message.params.type;
+    const text = (message.params.args || [])
+      .map((a) => a.value ?? a.description ?? "").join(" ");
+    pageLog.push(`[${kind}] ${text}`);
+  }
+  if (message.method === "Runtime.exceptionThrown") {
+    const d = message.params.exceptionDetails || {};
+    pageLog.push(`[exception] ${d.text} ${d.exception?.description || ""}`);
+  }
+  if (message.method === "Log.entryAdded") {
+    const e = message.params.entry || {};
+    pageLog.push(`[${e.level}] ${e.text}`);
+  }
+});
+await send("Log.enable");
 await send("Network.enable");
 await send("Network.setCacheDisabled", { cacheDisabled: true });
 await send("Performance.enable");
@@ -163,7 +185,13 @@ async function load() {
 }
 
 /** **∴ 服务端的原子数 ✗**（**∴ 用**权威接口 ✓）** ✓✓ */
-async function serverAtomCount() {
+/** **★ 取服务端的**原子种类** ✗ ★**（第 69 轮 ✓；**∴ 我**踩到了 ✓）：
+ *   **∴ 我**第一版数"**原子总数**"✗ ⇒ **∴ 而**模式 B 里**页面重载**时
+ *     **∴ 自己**会写原子**✗（**∴ 如**创建／同步 ✓）⇒ **∴ 于是**"**总数不增 ✓"**不成立 ✓**
+ *       ⇒ **★ 所以**：**要**看**那个原子的**种类**✗（`kind` ✓）
+ *         ⇒ **∴ 只有** `draw_stroke` **才**证明"**落笔走了服务端 ✓" ✓ ★**** ✓✓
+ */
+async function serverAtomKinds() {
   // **★ 必须走**页面自己的 `get_log`** ✗ ★**（第 68 轮 ✓；**∴ 我**第一版踩到了 ✓）：
   //   **∴ 我**原来直接 `fetch("/api/atoms")`**✗** ⇒ **∴ 它**需要 `doc` 与 `token`**✗
   //     ⇒ **∴ 于是**返回 **-1** ⇒ **∴ 两条断言**都废了 ✓（**∴ 一条**假红 ＋ **一条**假绿 ✓）** ✓✓
@@ -177,12 +205,18 @@ async function serverAtomCount() {
       const res = await fetch(url, { method: "POST",
         headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
       const body = await res.json();
-      if (!body || body.ok !== true) return -2;
-      return Array.isArray(body.atoms) ? body.atoms.length : -3;
-    } catch (error) { return -4; }
+      if (!body || body.ok !== true) return JSON.stringify({ error: body });
+      return JSON.stringify({ kinds: (body.atoms || []).map((a) => a.kind) });
+    } catch (error) { return JSON.stringify({ error: String(error) }); }
   })()`);
-  return typeof raw === "number" ? raw : -5;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.kinds) ? parsed.kinds : [];
+  } catch { return []; }
 }
+
+/** **∴ 落笔原子出现了几条 ✗**（`draw_stroke` ✓）** ✓✓ */
+const strokeCount = (kinds) => kinds.filter((k) => k === "draw_stroke").length;
 
 /** **∴ 真鼠标画一笔 ✗**（**∴ 并**量**墙钟 ＋ TaskDuration ✓）** ✓✓ */
 async function drawStroke() {
@@ -236,16 +270,19 @@ async function drawStroke() {
 await load();
 const modeA = await evaluate("localStorage.getItem('yanshi.serverRender')");
 console.log(`  模式 A：localStorage 偏好 = ${modeA === null ? "（未设 ⇒ 默认服务器渲染 ✓）" : modeA}`);
-const atomsBeforeA = await serverAtomCount();
+const kindsBeforeA = await serverAtomKinds();
 const strokeA = await drawStroke();
-const atomsAfterA = await serverAtomCount();
-console.log(`  A 服务端原子：${atomsBeforeA} ⇒ ${atomsAfterA}｜墙钟 ${strokeA?.wallMs} ms`
-  + `｜TaskDuration ${strokeA?.taskMs?.toFixed(1)} ms｜画布变化 ${strokeA?.changed}`);
+const kindsAfterA = await serverAtomKinds();
+const strokesA = strokeCount(kindsAfterA) - strokeCount(kindsBeforeA);
+console.log(`  A 服务端 draw_stroke：${strokeCount(kindsBeforeA)} ⇒ ${strokeCount(kindsAfterA)}`
+  + `（**其它原子 ${kindsAfterA.length - strokeCount(kindsAfterA)} 条 ✓）`
+  + `｜墙钟 ${strokeA?.wallMs} ms｜TaskDuration ${strokeA?.taskMs?.toFixed(1)} ms`
+  + `｜画布变化 ${strokeA?.changed}`);
 check(strokeA !== null && strokeA.changed === true,
   "**服务器渲染模式下**画布必须有变化（**真鼠标画得上 ✓）", String(strokeA?.changed));
-check(atomsAfterA > atomsBeforeA,
-  "**服务器渲染模式下**服务端原子必须增加（**证明走服务端 ✓）",
-  `${atomsBeforeA} ⇒ ${atomsAfterA}`);
+check(strokesA >= 1,
+  "**服务器渲染模式下**必须出现一条 `draw_stroke`（**证明落笔走了服务端 ✓）",
+  `新增 ${strokesA} 条`);
 
 // **★ ② 本地渲染模式（**关掉开关 ✓）✗ ★**
 await evaluate("localStorage.setItem('yanshi.serverRender', '0')");
@@ -253,18 +290,25 @@ await load();
 // **∴ 本地模式**先看清内核状态 ✗（**∴ 它**是本地渲染的前提 ✓）** ✓✓
 const localStats = await evaluate("JSON.stringify(window.yanshiStats || {})");
 console.log(`  模式 B 内核状态：${String(localStats).slice(0, 200)}`);
+if (pageLog.length) {
+  console.log(`  页面日志 ${pageLog.length} 条，最后 6 条：`);
+  for (const line of pageLog.slice(-6)) console.log(`     ${String(line).slice(0, 150)}`);
+}
 // **∴ 再**等一会儿 ✗（**∴ 内核**可能在**页面就绪之后**才完成预热 ✓）** ✓✓
 await sleep(2500);
-const atomsBeforeB = await serverAtomCount();
+const kindsBeforeB = await serverAtomKinds();
 const strokeB = await drawStroke();
-const atomsAfterB = await serverAtomCount();
-console.log(`  B 服务端原子：${atomsBeforeB} ⇒ ${atomsAfterB}｜墙钟 ${strokeB?.wallMs} ms`
-  + `｜TaskDuration ${strokeB?.taskMs?.toFixed(1)} ms｜画布变化 ${strokeB?.changed}`);
+const kindsAfterB = await serverAtomKinds();
+const strokesB = strokeCount(kindsAfterB) - strokeCount(kindsBeforeB);
+console.log(`  B 服务端 draw_stroke：${strokeCount(kindsBeforeB)} ⇒ ${strokeCount(kindsAfterB)}`
+  + `（**其它原子 ${kindsAfterB.length - strokeCount(kindsAfterB)} 条 ✓）`
+  + `｜墙钟 ${strokeB?.wallMs} ms｜TaskDuration ${strokeB?.taskMs?.toFixed(1)} ms`
+  + `｜画布变化 ${strokeB?.changed}`);
 check(strokeB !== null && strokeB.changed === true,
   "**本地渲染模式下**画布必须有变化（**关掉服务端也必须画得上 ✓）", String(strokeB?.changed));
-check(atomsAfterB === atomsBeforeB,
-  "**本地渲染模式下**服务端原子**不许增加**（**证明走本地 ✓）",
-  `${atomsBeforeB} ⇒ ${atomsAfterB}`);
+check(strokesB === 0,
+  "**本地渲染模式下**服务端**不许出现** `draw_stroke`（**证明落笔走了本地 ✓）",
+  `新增 ${strokesB} 条`);
 
 // **★ ④ 两本账（**用户第 8 条 ✓）✗ ★**
 console.log("");
