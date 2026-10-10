@@ -26,6 +26,16 @@ const ALLOWED = new Set([
   "AGENTS.md", "CONTRIBUTING.md", "LICENSE", "Makefile", "README.md", "README.zh-CN.md",
   "SECURITY.md", "Cargo.toml", "Cargo.lock", "rustfmt.toml", "rust-toolchain.toml",
   "assets", "crates", "deploy", "docs", "scripts", "target",
+    // **★ PWA 部署的四件套 ✗ ★**（第 66 轮 ✓；**∴ 它们都是**有意提交的 ✓）：
+    //   **∴ `wrangler.toml`／`worker/`**✗：**638025e2 feat(pwa): add the workers configuration…** ✓
+    //   **∴ `package.json`**✗：**a29d7ede chore(pwa): check for wrangler before deploying…** ✓
+    //   **∴ `web/`**✗：**PWA 的产物目录**✗（**∴ 用户补丁改的 `web/api-local.js` 就在里面 ✓）
+    //     ⇒ **∴ 它**是 Cloudflare Workers 的静态发布目录 ✓
+    //   **∴ 为什么以前没红 ✗**：**∴ 白名单**是在**这套 PWA 目录出现之前写的** ✓
+    //     ⇒ **∴ 它**一直**红着**✗ ⇒ **★ 而我直到这一轮才看到 ✓ ★**
+    //   **∴ 且**：**我在第 43 轮**把探针输出**误存成顶层的文件 `1`**✗（**`> 1` 的笔误 ✓）
+    //     ⇒ **∴ 那**也是**这条判据报出来的 ✓ ⇒ **∴ 已删 ✓**
+    "package.json", "wrangler.toml", "worker", "web",
 ]);
 
 const entries = readdirSync(root).filter((name) => name !== ".git");

@@ -13,7 +13,11 @@
 // 说明：探测的是编辑器自身的自检结果（window.yanshiStats），因此它验证的是**真实用户路径**
 // （WASM 内核 + 服务端渲染 + 浏览器合成），不是另写一套比对逻辑。
 
-const url = process.argv[2];
+// **∴ 与 `browser-live-ui.mjs` 同一约定 ✗**（第 65 轮 ✓）：
+//   **∴ 编排**给 `browser-*` 的是**API 服务 base**✗
+//     ⇒ **∴ 而**本判据**需要一个**真正的查看器**✗（**∴ 那里 `wasm=true` ✓）
+//       ⇒ **∴ 于是**：**除 `argv[2]` 外**还认 `YANSHI_LIVE_UI_URL` ✓**** ✓✓
+const url = process.env.YANSHI_LIVE_UI_URL || process.argv[2];
 const debugPort = process.env.CDP_PORT || "9333";
 if (!url) {
   console.error("用法: node scripts/browser-pixel-check.mjs <viewer-url>");

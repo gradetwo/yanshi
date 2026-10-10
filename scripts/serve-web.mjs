@@ -46,6 +46,18 @@ const server = createServer((request, response) => {
     return;
   }
   if (pathname.endsWith("/")) pathname += "index.html";
+  // **★ favicon 三条路由 ✗ ★**（第 65 轮 ✓；**CI 的 404 换来的 ✓）：
+  //   **∴ `web/index.html`**引用了** `/favicon.svg` 与 `/favicon.png`**✗
+  //     ⇒ **∴ 而 `web/` 里**没有**它们 ✓（**∴ 线上**由**服务端路由**提供 ✓）
+  //       ⇒ **∴ 于是**：**本地静态服务**会 **404** ✗
+  //         ⇒ **∴ 判据**报"**有 4xx／5xx ✓" ⇒ **∴ 失败 ✓**** ✓✓
+  //   **∴ 映射**照抄 `server.rs:710-713`**✗ ⇒ **∴ 于是**本地与线上**行为一致 ✓**** ✓✓
+  const FAVICON = {
+    "/favicon.svg": "brand/svg/icon-light.svg",
+    "/favicon.png": "brand/png/favicon-32.png",
+    "/favicon.ico": "brand/png/favicon.ico",
+  };
+  if (FAVICON[pathname]) pathname = "/" + FAVICON[pathname];
   const file = resolve(join(root, normalize(pathname)));
   // **∴ 越界检查 ✗**：**解析后的绝对路径**必须**仍在 root 下** ✓**** ✓✓
   if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {

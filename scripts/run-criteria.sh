@@ -17,6 +17,7 @@ KNOWN="$ROOT/scripts/criteria-known-red.txt"
 is_known_red() { [ -f "$KNOWN" ] && grep -qE "^$1[[:space:]]" "$KNOWN"; }
 
 cleanup() {
+  [ -n "${STATIC_PID:-}" ] && kill "$STATIC_PID" 2>/dev/null
   [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null
   [ -n "${CHROME_PID:-}" ] && kill "$CHROME_PID" 2>/dev/null
   rm -rf "$ROOT_DIR" "$PROFILE"
@@ -37,6 +38,19 @@ esac
 BASE="http://127.0.0.1:$PORT"
 # 让判据能核对落盘产物（render.png 等）；不设则相关检查自行跳过并打印 ✓。
 export YANSHI_WORKSPACE="$ROOT_DIR/work"
+
+# **★ 给 `browser-live-ui.mjs` 一个**真正的查看器** ✗ ★**（第 65 轮 ✓）：
+#   **∴ 它**需要**静态 PWA**✗，**而**下面统一给 `browser-*` 的是**API 服务 base** ✗
+#     ⇒ **∴ 于是**：**它**会**拿到 API base ⇒ **∴ 页面没有内核 ⇒ **∴ 失败 ✓**** ✓✓
+#   **∴ 做法 ✗**：**另起一个**静态服务**（**`scripts/serve-web.mjs` ✓）⇒ **∴ 并**导出它的 URL ✓**** ✓✓
+STATIC_PORT=$((PORT + 1000))
+if [ "${SKIP_BROWSER:-0}" != "1" ] && [ -f web/index.html ]; then
+  node scripts/serve-web.mjs "$STATIC_PORT" web >"$ROOT_DIR/static.log" 2>&1 &
+  STATIC_PID=$!
+  export YANSHI_LIVE_UI_URL="http://127.0.0.1:$STATIC_PORT"
+  echo "  静态 PWA ⇒ $YANSHI_LIVE_UI_URL"
+fi
+
 
 if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
   chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CDP_PORT" \

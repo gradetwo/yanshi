@@ -46,7 +46,19 @@ for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const base = String(process.argv[2] || "https://yanshi-online.wangda.today").replace(/\/+$/, "");
+// **★ base 的优先级 ✗ ★**（第 65 轮 ✓；**CI 的 `criteria shard` 换来的 ✓）：
+//   **∴ 症状 ✗**：**在 CI 的编排里**✗（`run-criteria.sh` ✓）**本判据拿到的是**API 服务 base**✗
+//     ⇒ **∴ 而**它**需要**一个**真正的查看器**✗（**静态 PWA ✓）
+//       ⇒ **∴ 于是**：**页面 `wasm=false` ＋ **画布 300×150（**默认尺寸 ✓）
+//         ⇒ **∴ 它**报 `list_assets 404` ⇒ **∴ 失败 ✓**** ✓✓
+//   **∴ 修法 ✗**：**除了 `argv[2]`**✗，**还认**环境变量 `YANSHI_LIVE_UI_URL`**✗
+//     ⇒ **∴ 于是**：**编排**可以**给它**一个**本地静态 PWA 的 URL**✓
+//       **∴ 而**默认（**什么都不给 ✓）**仍然**是**线上 ✓**** ✓✓
+const base = String(
+  process.env.YANSHI_LIVE_UI_URL
+  || process.argv[2]
+  || "https://yanshi-online.wangda.today",
+).replace(/\/+$/, "");
 const cdpPort = 9500 + Math.floor(Math.random() * 200);
 const profile = trackTemp(`/tmp/live-ui-${cdpPort}`);
 
