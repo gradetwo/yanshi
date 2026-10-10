@@ -577,7 +577,13 @@ const strokeResult = await evaluate(`(async () => {
   c.dispatchEvent(new PointerEvent("pointerup", Object.assign(o(x0 + 72, y0 + 48), { buttons: 0 })));
   await new Promise((res) => setTimeout(res, 1200));
   return { result: "dispatched", tool: atDown.tool, pointsAtDown: pointsAtDown,
-           draggingAtDown: draggingAtDown, pointsAtMove: atMove.points };
+           draggingAtDown: draggingAtDown, pointsAtMove: atMove.points,
+           // **★ 诊断（**第 364 轮 ✓）：那一刻的真实状态 ✗** ⇒ **∴ 一次运行就能定位 ✓**
+           stateKeys: Object.keys(atDown).length,
+           toolNow: atDown.tool,
+           draggingNow: atDown.dragging,
+           sizeNow: atDown.size, brushNow: atDown.brush,
+           strokeState: { points: atDown.points, dragging: atDown.dragging } };
 })()`);
 // **有界等出墨** ✓（等待条件与断言条件对齐 ✓ —— 第 1116 轮的规矩 ✓）：提交是异步的 ✓，
 // 固定睡一次会把"还没画完"读成"画不出来" ✗。
