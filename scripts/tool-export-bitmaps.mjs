@@ -41,6 +41,10 @@ const pick = () => {
   return c[0];
 };
 const BIN = pick();
+// **★ 打印选中的二进制 ✗ ★**（第 228 轮 ✓；**∴ 我踩过**旧二进制静默顶替** ✓）
+//   **∴ 为什么 ✗**：**第 173 轮实测**：**旧的 `target/release` **静默顶替**了新构建** ✗
+//     ⇒ **∴ 于是**：**判据**跑在旧代码上** ⇒ **∴ 修了也**不转绿** ✓**** ✓✓
+console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}）`);
 const port = 18700 + Math.floor(Math.random() * 120);
 const ROOT = mkdtempSync(join(tmpdir(), "expbm-"));
 const base = `http://127.0.0.1:${port}`;

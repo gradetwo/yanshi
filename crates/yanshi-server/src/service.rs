@@ -2543,8 +2543,24 @@ impl Workspace {
             }
             match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(atom) => {
+                    // **★ `refs.blobs` **两处都看** ✗ ★**（第 228 轮 ✓；**∴ 导出丢位图的修复 ✓）。
+                    //
+                    // **∴ 为什么 ✗**：**实测**（**第 226／227 轮 ✓）**✗**：
+                    //   **∴ 原来只读**原子顶层**的 `refs`**✗（`atom.get("refs")` ✓）
+                    //     ⇒ **∴ 而** `import_image` **写的是**净荷里**的 `refs`** ✓
+                    //       ⇒ **∴ 位置**不匹配** ⇒ **∴ `wanted` **空**** ✓
+                    //         ⇒ **∴ 导出时**一个 blob**都不装** ✓
+                    //           ⇒ **∴ 包**14 KiB、`blobs/` ＝ **0 条** ✓
+                    //             ⇒ **★ 那**就是 `tool-export-bitmaps.mjs` 的红灯 ✓ ★**** ✓✓
+                    //
+                    // **∴ 改法 ✗**：**顶层**没有**✗ ⇒ **∴ 再**看净荷里** ✓
+                    //   ⇒ **∴ 于是**：**两种写法**都能被收到** ✓（**向后兼容 ✓）** ✓✓
+                    // **∴ 代价**：**多一次 `get`**（**∴ 可忽略 ✓）** ✓✓
+                    // **∴ 判据 ✗**：`scripts/tool-export-bitmaps.mjs` ✓
+                    // **∴ 变异点**：**把净荷那一路去掉** ⇒ **∴ 判据必红** ✓**** ✓✓
                     if let Some(blobs) = atom
                         .get("refs")
+                        .or_else(|| atom.get("payload").and_then(|payload| payload.get("refs")))
                         .and_then(|refs| refs.get("blobs"))
                         .and_then(serde_json::Value::as_array)
                     {
