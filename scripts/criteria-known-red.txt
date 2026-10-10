@@ -24661,3 +24661,55 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ 第 5 条**：**CPU 四元组基线**✗
 #       （**① 墙钟 55.7 ms｜② 进程 CPU 50.0 ms｜③ CPU÷墙钟 0.90×｜④ 峰值 RSS 1580 MB ✓）★**** ✓✓
 #   **★ 所以 ✗ ★**：**阶段一**可以收口**✗ ⇒ **∴ 用户**可以据此决定**是否进入阶段二** ✓ ★**** ✓✓
+
+# **★ 第 441 轮：★★★★★★★ **阶段一收口 ＋ 阶段二现状勘察**** ★★★★★★★
+#   **★★★ 阶段一 —— 五条全部完成（**10/10 判据逐条复跑全绿 ✓）★★★**：
+#     ```
+#     ★ 逐条复跑（**全部退出码 0 ✓）★
+#       · tool-below-reuse              ✓     ← 第 1 条
+#       · tool-region-cache-reuse       ✓     ← 第 1 条
+#       · tool-partial-reuse-benefit    ✓     ← 第 1 条（三数自洽）
+#       · tool-bitmap-decode-scope      ✓     ← 第 3 条（**转绿 ✓）
+#       · tool-gpu-backend-report       ✓     ┐
+#       · tool-gpu-fallback-parity      ✓     │
+#       · tool-gpu-modes                ✓     ├ 第 4 条 §6.3 的 ②③④
+#       · tool-gpu-probe-honesty        ✓     │
+#       · tool-gpu-quantize-parity      ✓     │
+#       · tool-gpu-accounts             ✓     ┘
+#     ```
+#     **∴ 逐条 ✗**：
+#       **∴ ① 部分复用 ✗**：**`below_reuse` 0→3 ＋ 区域复用 18⇒26 ＋ 三数自洽 `4+12=16`** ✓ ★**** ✓✓
+#       **∴ ② 量化成本调查 ✗**：**量化 491／合成 349／裁剪+存tile 216／填充 58 ms**✗
+#         （**占比 ≈ 27.5% ≈ 31% ✓；**没有为了速度降精度 ⇒ **无牺牲 ⇒ **不需要写两面** ✓）★**** ✓✓
+#       **∴ ③ CPU 侧红灯清零 ✗**：**三条既有红灯 9 passed／0 failed**✗
+#         ＋ **`tool-bitmap-decode-scope` 能跑（**不需补 fixture ✓）＋ **转绿** ✓
+#         ＋ **按需解码**产品侧四段全通**✗（**写／解析／解构／分块路 ✓）
+#           ＋ **∴ 运行时证据 ✗**：**`TILE_PATH` 3 次 ＋ `CACHE_KEY` 0 次 ＋ `decoded_bytes` 0 B** ✓ ★**** ✓✓
+#       **∴ ④ §6.3 的 ②③④ ✗**：**6/6 工具全绿**✗
+#         （**fallback 逐字节相同｜关 GPU 逐字节相同｜报出后端 ＋ `max_channel_delta`（**无 GPU 报 null ✓）** ✓）★**** ✓✓
+#       **∴ ⑤ CPU 四元组基线 ✗**：**① 墙钟 55.7 ms｜② 进程 CPU 50.0 ms｜③ CPU÷墙钟 0.90×｜
+#         **④ 峰值 RSS 1580 MB** ✓（**4096² ＋ 4 层真实素材；中位数；热身剔除 ✓）★**** ✓✓
+#   **★★★ 阶段二现状勘察（**决定性 ✓）★★★**：
+#     **∴ `yanshi-gpu` **已经存在**✗ ★**：
+#       ```
+#       crates/yanshi-gpu/  Cargo.toml（854 B）＋ src/lib.rs（★ 390 行 ★）
+#         依赖：★ wgpu = "26.0.1" ★
+#       ```
+#       ＋ **∴ 接入点 ✗**：
+#         ```
+#         yanshi-http/Cargo.toml:38    gpu = ["dep:wgpu", "dep:yanshi-gpu"]
+#         yanshi-render/Cargo.toml:34  gpu = ["dep:yanshi-gpu"]
+#         yanshi-http/src/gpu_policy.rs:34  pub use yanshi_gpu::GPU_MIN_PIXELS;
+#         yanshi-http/src/gpu_policy.rs:37  pub use yanshi_gpu::should_use_gpu;
+#         yanshi-gpu/src/lib.rs:146    label: Some("yanshi-gpu-quantize")
+#         ```
+#       ⇒ **★ 所以**：**服务端侧（**`gpu` feature ＋ `--gpu auto|on|off` ＋
+#         **`render_backend` ＋ fallback ＋ 阈值 ✓）**已经就位** ✓ ★**** ✓✓
+#     **∴ 而**离线内核侧 ✗**：**判据 `tool-wasm-tree-no-wgpu`（**有牙 ✓）说**它不依赖 `wgpu`**✗
+#       ⇒ **★ 所以**：**阶段二的**剩余工作**✗
+#         ⇒ **∴ 即**：**把 WebGPU 接进**离线内核 `yanshi-wasm`** ✓ ★**** ✓✓
+#         ＋ **∴ 且**：**两本账的表**已立**✗（**`tool-render-cost-accounts` 现在只出一行；
+#           **∴ 一旦有 GPU ✗ ⇒ **同一条命令**就出两行 ✓）★**** ✓✓
+#         ＋ **∴ 且**：**CPU 侧基线已记**✗ ⇒ **∴ 收益**可逐项对比** ✓ ★**** ✓✓
+#   **★ 所以 ✗ ★**：**阶段一**收口完成**✗ ⇒ **∴ 按用户第 592 轮的裁定**✗
+#     ⇒ **∴ 阶段二**可以开启** ✓（**∴ 基础设施已在 ✓）
