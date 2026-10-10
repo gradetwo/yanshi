@@ -426,6 +426,13 @@ impl Buffer {
                 return None;
             }
         };
+        // **★ 按**适配器等级**判规模 ✗ ★**（第 322 轮 ✓）：
+        //   **∴ 独显 10 000／集成·虚拟·**CPU 软件渲染** 30 000** ✓（**第 320 轮 ✓）
+        //   **∴ 若**不够大**✗ ⇒ **∴ 返回 `None`**✗ ⇒ **∴ 于是**走 CPU** ✓（**∴ 而不是**静默 ✓）**
+        //   **∴ 且**：**软件渲染（**`Cpu` ✓）**永远**用保守档** ✓（**∴ 第 318 轮的教训 ✓）**
+        if !yanshi_gpu::should_use_gpu_on(quantizer.device_class(), count) {
+            return None;
+        }
         let gpu = match quantizer.quantize(&self.pixels, count) {
             Ok(v) => v,
             Err(e) => {
@@ -461,10 +468,13 @@ impl Buffer {
         #[cfg(feature = "gpu")]
         if background.is_none() {
             let count = (self.width as usize) * (self.height as usize);
-            if yanshi_gpu::should_use_gpu(count) {
-                if let Some(out) = self.try_quantize_on_gpu(count) {
-                    return out;
-                }
+            // **∴ 规模判断**移进 `try_quantize_on_gpu`** ✗（**第 322 轮 ✓）：
+            //   **∴ 因为**阈值**要**先知道适配器等级**✗ ⇒ **∴ 而**那**建了 `Quantizer` 才知道** ✓
+            //     **∴ 代价 ✗**：**小图也会建一次 `Quantizer`**✗
+            //       ⇒ **∴ 那**是**一次设备获取**✗ ⇒ **∴ 但**只在 `--features gpu` 的构建里** ✓
+            //         **∴ 且**：**它**不读回数据**✗ ⇒ **∴ 成本**远低于**一次量化** ✓**** ✓✓
+            if let Some(out) = self.try_quantize_on_gpu(count) {
+                return out;
             }
         }
 

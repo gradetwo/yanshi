@@ -37,6 +37,8 @@ pub struct Quantizer {
     pipeline: wgpu::ComputePipeline,
     lut_buf: wgpu::Buffer,
     adapter_note: String,
+    /// **★ 适配器等级 ✗ ★**（**∴ 供**分档阈值**用 ✓ —— **第 322 轮 ✓）。
+    device_class: DeviceClass,
 }
 
 /// **★ 低于它就走 CPU ✗ ★**（第 304 轮 ✓；**∴ 从 `yanshi-http` **移过来**** ✓）。
@@ -160,12 +162,22 @@ impl Quantizer {
             mapped_at_creation: false,
         });
         queue.write_buffer(&lut_buf, 0, &lut_bytes);
+        // **★ 把 `wgpu::DeviceType` **映射**到本 crate 的 `DeviceClass`** ✗ ★**（第 322 轮 ✓）：
+        //   ⇒ **∴ 于是**：**阈值**由**适配器等级**决定** ✓（**∴ 第 320 轮 ✓）
+        let device_class = match info.device_type {
+            wgpu::DeviceType::DiscreteGpu => DeviceClass::Discrete,
+            wgpu::DeviceType::IntegratedGpu => DeviceClass::Integrated,
+            wgpu::DeviceType::VirtualGpu => DeviceClass::Virtual,
+            wgpu::DeviceType::Cpu => DeviceClass::Cpu,
+            wgpu::DeviceType::Other => DeviceClass::Other,
+        };
         Ok(Self {
             device,
             queue,
             pipeline,
             lut_buf,
             adapter_note,
+            device_class,
         })
     }
 
@@ -173,6 +185,15 @@ impl Quantizer {
     #[must_use]
     pub fn adapter_note(&self) -> &str {
         &self.adapter_note
+    }
+
+    /// **★ 适配器等级 ✗ ★**（第 322 轮 ✓；**∴ 供**分档阈值**用 ✓）。
+    ///
+    /// **∴ 为什么存下来而不是现查 ✗**：**`Adapter` **没有**留在 `Quantizer` 里**✗
+    ///   ⇒ **∴ 所以**：**建的时候**映射一次并存下** ✓**** ✓✓
+    #[must_use]
+    pub fn device_class(&self) -> DeviceClass {
+        self.device_class
     }
 
     /// **∴ 单绑定的上限（**字节 ✓）✗**（**∴ 供调用方**自己核对分块 ✓）
