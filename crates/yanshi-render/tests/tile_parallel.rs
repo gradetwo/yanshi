@@ -572,7 +572,18 @@ fn thread_code_is_cfg_gated_out_of_wasm() {
     let mut wasm_ranges = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     for (index, line) in lines.iter().enumerate() {
-        if line.trim() != "mod parallel_impl {" {
+        // **★ 接受可见性前缀 ✗ ★**（**第 489 轮 ✓）：
+        //   **∴ 原来 ✗**：**只认**裸 `mod parallel_impl {`**✗
+        //     ⇒ **∴ 而**第 486 轮**把模块改成** `pub(crate) mod`** ✓
+        //       （**∴ 因为**内核的异步 GPU 量化路**要**取渲染层的**未量化 Buffer** ✓）
+        //         ⇒ **∴ 于是**：**本条断言**误报** ✗
+        //           ⇒ **∴ 修法 ✗**：**用**后缀匹配**✗
+        //             ＋ **∴ 且**：**仍**要求**是模块声明** ✓ ★**** ✓✓
+        let trimmed = line.trim();
+        if !(trimmed == "mod parallel_impl {"
+            || trimmed == "pub(crate) mod parallel_impl {"
+            || trimmed == "pub mod parallel_impl {")
+        {
             continue;
         }
         // 向上找最近的属性行。

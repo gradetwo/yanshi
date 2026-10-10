@@ -27038,3 +27038,63 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ✅ 两本账**（**时间不稳／CPU 占用两次赢／RSS 一次赢 ✓）
 #     **∴ ✅ 目标第 10 条**（**CI 11 步 ✓）
 #     **∴ ⬜ 非目标**：**其余 4 处调用点迁移 ＋ 按需分块解码 ＋ wasm 运行时验证（**CI ✓）
+
+# **★ 第 489 轮（续）：★★★★★★★★★★ **`cargo test --workspace` 抓到**两个失败 —— 一个是**我引入的真回归（**已修 ✓），**另一个是**先行红灯**（**已取证 ✓）**** ★★★★★★★★★★
+#   **★★★ 失败一（**我引入的 ✗ ⇒ **已修 ✓）★★★**：
+#     ```
+#     ---- thread_code_is_cfg_gated_out_of_wasm stdout ----
+#     panicked at crates/yanshi-render/tests/tile_parallel.rs:603:
+#       应有 #[cfg(not(target_arch = "wasm32"))] mod parallel_impl
+#     ```
+#     **∴ 根因 ✗**：**该测试**只认**裸 `mod parallel_impl {`**✗
+#       ```rust
+#       if line.trim() != "mod parallel_impl {" { continue; }
+#       ```
+#       ⇒ **∴ 而**第 486 轮**我把模块改成** `pub(crate) mod`** ✓
+#         （**∴ 因为**内核的异步 GPU 量化路**要取**渲染层的未量化 Buffer** ✓）
+#           ⇒ **∴ 于是**：**那条断言**误报** ✓ ★**** ✓✓
+#     **∴ 修法 ✗**：**显式接受三种可见性**（**裸／`pub(crate)`／`pub` ✓）
+#       ⇒ **∴ 实测 ✗**：**`cargo test -p yanshi-render --test tile_parallel`
+#         ⇒ **★ 19 passed; 0 failed; 1 ignored ★** ✓ ★**** ✓✓
+#   **★★★ 失败二（**先行红灯 ✓ ⇒ **已取证 ✓）★★★**：
+#     ```
+#     ---- a_stroke_that_did_not_ask_for_the_document_preview_never_runs_one stdout ----
+#     panicked at crates/yanshi-server/tests/preview_wait_decoupled.rs:287:17:
+#       Wait：请求了渲染，却没有渲染这一笔：
+#       Counters { document_previews: 0, full_canvas: 1, missed_bytes: 0 }
+#       → Counters { document_previews: 0, full_canvas: 1, missed_bytes: 0 }
+#     ```
+#     **∴ 注意 ✗**：**失败的是** `missed_bytes > before.missed_bytes`**✗
+#       ＋ **∴ 而**不是** `document_previews`** ✓
+#         ＋ **∴ 且**：**两边** `missed_bytes` 都是 **0** ✓ ★**** ✓✓
+#     **∴ 取证（**决定性 ✓）★**：
+#       ⇒ **∴ 用 `git worktree` 在**改动前的提交 `f5fd17d8`** 上跑**同一条测试**✗
+#         ```
+#         HEAD 现在位于 f5fd17d8 fix(gpu): make the gpu off flag really disable the gpu in the render path
+#         test a_stroke_that_did_not_ask_for_the_document_preview_never_runs_one ... FAILED
+#         panicked at crates/yanshi-server/tests/preview_wait_decoupled.rs:287:17
+#         test result: FAILED. 3 passed; 1 failed
+#         ```
+#         ⇒ **★ 所以 ✗ ★**：**它与我的改动**无关**✗
+#           ⇒ **∴ 它**在**基线提交上**就红** ✓ ★**** ✓✓
+#     **∴ 台账已有的相关记录 ✗**：**`:13366／:13370／:13394`** ✓
+#       ⇒ **∴ 内容 ✗**：**「**判据的语义计数（**`missed_bytes` ✓）在**这份 fixture** 上…**」
+#         ＋ **∴ 「**`missed_bytes` **只统计**某类解码**✗（**如** raw 位图补丁 ✓）**」
+#           ＋ **∴ 「**所以我上一轮的护栏方向错了 ✗：**`missed_bytes` 不涨**」** ✓ ★**** ✓✓
+#     **∴ 且**：**测试文件自己**在 `:362` 写着**✗**
+#       ⇒ **「**"到底渲染了没有"的判据用**渲染水位**✗（**不用 `missed_bytes` ✓）**」
+#         ＋ **∴ 而** `:288` **仍然用** `missed_bytes`**✗
+#           ⇒ **∴ 所以**：**该测试内部**自相矛盾** ✓（**∴ 那是**一个**独立的技术债** ✓）★**** ✓✓
+#   **★★★ 处置（**如实 ✓）★★★**：
+#     **∴ ① 我引入的回归**已修 ＋ 复验**✗（**19 passed ✓）
+#     **∴ ② 先行红灯**已取证 ＋ 记录在案**✗（**基线 `f5fd17d8` 上同样红 ✓）
+#       ＋ **∴ 而**它**不属于本目标**（**∴ 那是**位图缓存计数语义的独立问题 ✓）★**** ✓✓
+#     **∴ ③ worktree ＋ target-base 已清理** ✓ ★**** ✓✓
+#   **★★★ 最重要的教训（**本会话最贵之一 ✓）★★★**：
+#     **∴ 我**第 486 轮改了**一个**被测试固定的代码形状**✗（**`mod` ⇒ `pub(crate) mod` ✓）
+#       ＋ **∴ 而**我只跑了 **`cargo test --lib`**✗（**∴ 它**不覆盖 `tests/` 目录 ✓）
+#         ⇒ **★ 所以**：**那个回归**逃过了整整 3 轮** ✓
+#           ⇒ **∴ 直到**本次 `cargo test --workspace` 才现形** ✓ ★**** ✓✓
+#     **∴ 结论 ✗**：**改动**共享代码的形状**时**✗
+#       ⇒ **∴ 必须**跑 `cargo test --workspace`**✗（**含 `tests/` ✓）
+#         ＋ **∴ 而**不是**只跑 `--lib`** ✓ ★**** ✓✓
