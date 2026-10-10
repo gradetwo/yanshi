@@ -84,7 +84,7 @@
 
 /// **★ 「最近一次量化用了哪个后端」的记录点 ✗ ★**（第 323 轮 ✓；**目标第 7 条 ✓）。
 pub mod backend_note;
-pub use backend_note::{last_backend, set_last_backend, Backend};
+pub use backend_note::{last_backend, render_delta, set_last_backend, set_render_delta, Backend};
 
 /// **位图分块（(b1) 数据层 ✓）** —— 目标第 1 条"懒解码"的地基 ✓。
 pub mod bitmap_tiles;

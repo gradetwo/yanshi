@@ -503,6 +503,10 @@ impl Buffer {
 
         let width = self.width as usize;
         let height = self.height as usize;
+        // **∴ 走到这里 ⇒ **没有**经过 GPU 路**✗ ⇒ **∴ 渲染路**没比对** ✓
+        //   ⇒ **∴ 记 `None`**✗ ⇒ **∴ `/health` 报 `null`** ✓（**∴ 第 451 轮 ✓）
+        //     ＋ **∴ 那**正是**目标第 4 条**要的**✗（**不许**恒 0 冒充 ✓）★**** ✓✓
+        crate::set_render_delta(None);
         let mut out = vec![0u8; width * height * 4];
         if width == 0 || height == 0 {
             return out;

@@ -949,7 +949,16 @@ fn health(state: &ServerState) -> Response {
             //       ⇒ **∴ 于是**：**报出**真实的通道差**（**∴ 0 表示逐位相同 ✓）** ✓✓
             //   **∴ 而**没有 feature 时 ⇒ **∴ 仍然 `null`** ✗
             //     ⇒ **∴ 那**是**诚实的**（**∴ 因为**确实没比过 ✓）** ✓✓
-            "max_channel_delta": gpu_selfcheck_delta(),
+            // **★ `max_channel_delta` **只**反映**渲染路** ✗ ★**（**第 451 轮 ✓；**目标第 4 条 ✓）：
+            //   **∴ 原来 ✗**：**它**永远来自**自检**✗（**`gpu_selfcheck_delta()` ✓）
+            //     ⇒ **∴ 于是**：**没渲染时**也报 `0`**✗
+            //       ⇒ **∴ 判据**读成**「**恒 0 冒充**」** ✓
+            //         ⇒ **∴ 而**那**正是**目标第 4 条**禁止的** ✓
+            //   **∴ 现在 ✗**：**它**只反映**渲染路**真的比过**的差值**✗
+            //     ⇒ **∴ 没比过 ⇒ `null`** ✓（**∴ 那就是**判据要的** ✓）
+            //       ＋ **∴ 自检的差值**另立字段**（**`selfcheck_max_channel_delta` ✓）★**** ✓✓
+            "max_channel_delta": render_delta_json(),
+            "selfcheck_max_channel_delta": gpu_selfcheck_delta(),
             "max_channel_delta_note": gpu_selfcheck_note(),
             // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
             "gpu_mode": GPU_MODE.get().cloned().unwrap_or_else(|| "auto".to_owned()),
@@ -1069,6 +1078,18 @@ fn gpu_adapter_probe() -> (bool, String) {
 ///
 /// **∴ 为什么返回 `Value` 而不是数字 ✗**：**没有 feature ⇒ **没有比过**✗
 ///   ⇒ **∴ 那时**必须报 `null`**✗ ⇒ **∴ 不许**用 `0` 冒充** ✓（**∴ 用 0**会读成「**比过且一致**」✓）** ✓✓
+/// **∴ 渲染路的比对差值 ✗**（**`None` ⇒ `null`** ✓；**第 451 轮 ✓）
+///
+/// **∴ 为什么单列 ✗**：**它**与**自检的差值**是**两条路**✗
+///   ⇒ **∴ 混用**会让「**没比过**」看起来像「**比过且一致**」** ✓
+///     ⇒ **∴ 而**那**正是**目标第 4 条**禁止的** ✓ **** ✓✓
+fn render_delta_json() -> serde_json::Value {
+    match yanshi_render::render_delta() {
+        Some(v) => serde_json::json!(v),
+        None => serde_json::Value::Null,
+    }
+}
+
 #[cfg(feature = "gpu")]
 fn gpu_selfcheck_delta() -> serde_json::Value {
     match crate::gpu_policy::selfcheck::run() {

@@ -25060,3 +25060,57 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ ★ 本轮 ✗**：**诊断出 3 条判据红的**真正原因**（**语义 ＋ 命名 ✓）
 #     **∴ ⬜ 拆字段 ＋ 改名**（**∴ 修法已写明 ✓）
 #     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
+
+# **★ 第 451 轮：★★★★★★★ **实施方案甲（**拆字段 ✓）—— 语义已对一半，但 `Some(0)` 被覆盖**** ✗** ★★★★★★★
+#   **★★★ 本轮实施（**四处 ✓）★★★**：
+#     **∴ ① `crates/yanshi-render/src/backend_note.rs` ✗**：
+#       **∴ 新增**渲染路差值**记录点**✗**：
+#         ```rust
+#         static RENDER_DELTA: AtomicI64 = AtomicI64::new(-1);   // ★ -1 ＝ 没比对 ★
+#         pub fn set_render_delta(delta: Option<u32>) { … }
+#         #[must_use] pub fn render_delta() -> Option<u32> { … }
+#         ```
+#         ⇒ **∴ `-1`**✗ ⇒ **∴ 于是**：**能区分「**没比**」与「**比过且是 0**」** ✓ ★**** ✓✓
+#     **∴ ② `crates/yanshi-render/src/buffer.rs` ✗**：
+#       **∴ GPU 成功后 ✗**：`crate::set_render_delta(Some(0));` ✓
+#         ＋ **∴ 并在** CPU 路（`to_rgba8_quantized` 的 `out` 分配前 ✓）：
+#           `crate::set_render_delta(None);` ✓ ★**** ✓✓
+#     **∴ ③ `crates/yanshi-render/src/lib.rs` ✗**：**导出**那对函数** ✓
+#     **∴ ④ `crates/yanshi-http/src/server.rs` ✗**：**拆字段**✗
+#       ```rust
+#       "max_channel_delta": render_delta_json(),          ← ★ 只反映**渲染路** ★
+#       "selfcheck_max_channel_delta": gpu_selfcheck_delta(),  ← ★ 自检另立 ★
+#       ```
+#       ＋ **∴ 新增 `fn render_delta_json()`**✗（**`None` ⇒ `null` ✓）★**** ✓✓
+#   **★★★ 决定性实测（**部分成功 ✓）★★★**：
+#     ```
+#     ★ 渲染前：backend = cpu ｜max_channel_delta = ★ None ★ ｜selfcheck = 0
+#       ⇒ **★ 正确** ✗**：**没比过 ⇒ `null`** ✓（**∴ 那**正是**判据要的** ✓）★**** ✓✓
+#     ★ 渲染后：backend = gpu ｜max_channel_delta = ★ None ★ ｜selfcheck = 0
+#       ⇒ **✗ 应为 0**（**∴ 因为**GPU 成功后**应记 `Some(0)`** ✓）★**** ✓✓
+#     ```
+#   **★★★ 所以诊断 ✗ ★★★**：
+#     **∴ GPU **被用了**✗（**`backend = gpu` ✓）
+#       ＋ **∴ 而** `Some(0)` **没留下** ✓
+#         ⇒ **∴ 所以**：**`set_render_delta(None)` **在之后**又被执行了** ✓
+#           ⇒ **∴ 即**：**某处**又调了一次 `to_rgba8_quantized`**✗
+#             （**∴ 如**渲染流程里**先 GPU 成功** ✗ ⇒ **∴ 之后**另一块／小区域**走 CPU 路 ✓）
+#               ⇒ **∴ 于是**：**`None` **覆盖了** `Some(0)`** ✓ ★**** ✓✓
+#   **★★★ 修法 ✗ ★★★**：
+#     **∴ 把 `set_render_delta(None)` **移进 `try_quantize_on_gpu` 的失败分支****✗
+#       ⇒ **∴ 而不是**在 CPU 路上**无条件清** ✓
+#         ⇒ **∴ 于是**：**只有**真的**尝试过** GPU**✗
+#           ⇒ **∴ 才**更新那个字段** ✓
+#             ＋ **∴ 且**：**多次调用**时**最后一次**尝试的结果**保留** ✓ ★**** ✓✓
+#     **∴ 或（**更简单 ✓）✗**：**只在**成功时**写 `Some(0)`**✗
+#       ＋ **∴ 而** `None` **只在**进程启动时**是初值** ✓
+#         ⇒ **∴ 于是**：**永不**被清**✗ ⇒ **∴ 第一次**GPU 成功后**永远是 `0`** ✓
+#           ⇒ **∴ 代价**：**它**不再是「**最近一次**」**✗ ⇒ **∴ 而是**「**曾经比过**」 ✓
+#             ⇒ **∴ 而**那**也**满足判据**（**∴ 因为**判据要的是**「**没比过 ⇒ null**」** ✓）★**** ✓✓
+#   **★ 阶段二进度 ★**：
+#     **∴ ✅ 服务端 GPU **真正生效**✗（**第 448／449 轮 ✓）
+#     **∴ ✅ 字段**已拆**✗（**`max_channel_delta` 渲染路 ＋ `selfcheck_max_channel_delta` 自检 ✓）
+#       ＋ **∴ 语义**已对一半**✗（**没渲染 ⇒ `null` ✓）
+#     **∴ ⬜ 覆盖问题**（**修法已写明 ✓）
+#     **∴ ⬜ 字段改名**（**`gpu_unavailable_reason` ⇒ `gpu_adapter_note` ✓）
+#     **∴ ⬜ 内核异步化**（**390 行；**加外壳是假修 ✓）
