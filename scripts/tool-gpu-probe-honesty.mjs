@@ -57,7 +57,13 @@ const readHealth = async (args) => {
       await sleep(250);
     }
     const h = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
-    return { backend: h.render_backend, mode: h.gpu_mode, reason: h.gpu_unavailable_reason };
+    return {
+      backend: h.render_backend,
+      mode: h.gpu_mode,
+      reason: h.gpu_unavailable_reason,
+      delta: h.max_channel_delta,
+      note: h.max_channel_delta_note,
+    };
   } finally { proc.kill("SIGKILL"); await sleep(200); }
 };
 
@@ -106,6 +112,42 @@ if (on.backend === "cpu") {
   check(allCpu,
     "服务端尚无 GPU 渲染路径 ⇒ `render_backend` 必须恒为 `cpu`（不许报 gpu 冒充）",
     `实测 ${seen.join("｜")}`);
+}
+
+// **★ §6.3 的 ④：`max_channel_delta` 必须**诚实** ✗ ★**（第 293 轮 ✓）：
+//   **∴ 规则 ✗**：**没比过 ⇒ **必须 `null`**✗ ⇒ **∴ 不许**报 `0`** ✓
+//     （**∴ 因为** `0` 读起来像「**比过且逐位相同**」⇒ **∴ 那是**撒谎** ✓）** ✓✓
+//   **∴ 而**比过 ⇒ **必须是**数字**（**`0` 表示逐位相同 ✓）** ✓✓
+//   **∴ 变异点 ✗**：**无 feature 时返回 `0`**✗ ⇒ **∴ 本断言**必红** ✓**** ✓✓
+console.log("");
+console.log(`  max_channel_delta：auto=${JSON.stringify(auto.delta)}｜note=${auto.note ?? "(无)"}`);
+{
+  const deltas = [auto, off, on].map((h) => h.delta);
+  const allNull = deltas.every((d) => d === null);
+  const allNum = deltas.every((d) => typeof d === "number");
+  check(
+    allNull || allNum,
+    "`max_channel_delta` 必须**要么全是 null（**没比过 ✓）、要么全是数字（**比过 ✓）**—— **不许**混**",
+    `实测 ${JSON.stringify(deltas)}`
+  );
+  if (allNum) {
+    check(
+      deltas.every((d) => d >= 0 && d <= 255),
+      "若报数字 ⇒ 必须落在 [0, 255]（**通道差的合法范围 ✓）",
+      `实测 ${JSON.stringify(deltas)}`
+    );
+    check(
+      typeof auto.note === "string" && auto.note.length > 0,
+      "报数字时必须**同时**给出 note（**∴ 让读数**自解释** ✓）",
+      `note=${auto.note ?? "(空)"}`
+    );
+  } else {
+    check(
+      typeof auto.note === "string" && auto.note.includes("未做"),
+      "报 `null` 时 note 必须**明说**没做比对",
+      `note=${auto.note ?? "(空)"}`
+    );
+  }
 }
 
 console.log("");
