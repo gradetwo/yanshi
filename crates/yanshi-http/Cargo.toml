@@ -35,7 +35,26 @@ default = []
 # **★ `gpu` 现在也带上**独立 crate `yanshi-gpu`** ✗ ★**（第 301 轮 ✓）：
 #   **∴ 为什么 ✗**：**第 300 轮**把 GPU 层单独成 crate**✗ ⇒ **∴ 于是**这里**委托它**✗
 #     ⇒ **∴ 不再**在本 crate 里**重复一份 WGSL 与实现** ✓**** ✓✓
-gpu = ["dep:wgpu", "dep:yanshi-gpu"]
+# **★★★ 必须**同时打开 `yanshi-render/gpu` ✗ ★★★**（**第 448 轮 ✓；**实测根因 ✓）：
+#   **∴ 症状 ✗**：**带 `--features gpu` 构建服务端**✗
+#     ＋ **∴ 拿得到**真实适配器**✗（**`adapter:Gl:IntegratedGpu:Mesa Intel(R) HD Graphics 5000` ✓）
+#       ＋ **∴ 自检**逐位一致**（**`max_channel_delta ＝ 0` ✓）
+#         ⇒ **★ 而** `render_backend` **永远**是 `cpu`**✗
+#           ＋ **∴ 且** GPU 相关日志**零命中** ✓ ★**** ✓✓
+#   **∴ 根因 ✗**：**`try_quantize_on_gpu` **整段**被
+#     **`#[cfg(feature = "gpu")]` **拿掉****✗（**`yanshi-render/src/buffer.rs:432` ✓）
+#     ⇒ **∴ 因为** `yanshi-http` 的 `gpu` **只**加了 `dep:wgpu` ＋ `dep:yanshi-gpu`**✗
+#       ⇒ **∴ 而** `yanshi-render` **自己的 `gpu` feature **始终为假**** ✓
+#         ⇒ **∴ 于是**：**渲染路**连**试 GPU 的代码**都**没编进去** ✓
+#           ⇒ **∴ 所以**：**它**只留下**先悲观记 `Cpu`** 那句** ✓ ★**** ✓✓
+#   **∴ 为什么自检**还能用 GPU ✗**：**它**直接调 `yanshi_gpu::Quantizer`**✗
+#     （**`crates/yanshi-http/src/gpu_policy.rs` ✓）⇒ **∴ 不经过**那条 `cfg`** ✓
+#       ⇒ **★ 所以**：**两条路**一开一关** ✓ ⇒ **∴ 那**正是**读数矛盾**的来源** ✓ ★**** ✓✓
+#   **∴ 修法 ✗**：**本 feature **也**打开 `yanshi-render/gpu`** ✓
+#     ⇒ **∴ 于是**：**渲染路**真正**试 GPU**✗ ⇒ **∴ `render_backend` **才会**如实** ✓ ★**** ✓✓
+#   **∴ 代价 ✗**：**开 `gpu` 时** `yanshi-render` **也**编入 GPU 路** ✓
+#     （**∴ 那**正是**本 feature 的意图** ✓；**∴ 默认关 ⇒ **依赖树**不变 ✓）★**** ✓✓
+gpu = ["dep:wgpu", "dep:yanshi-gpu", "yanshi-render/gpu"]
 
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
