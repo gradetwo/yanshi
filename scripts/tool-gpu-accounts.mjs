@@ -263,6 +263,30 @@ if (gpu) {
   console.log(`  | GPU | ${gpu.wallMs?.toFixed(1)} | ${gpu.taskMs?.toFixed(1)} | `
     + `${gpu.ok ? `✓（**主入口**不算 delta ✗ ⇒ **∴ 差异**由判据量 ✓）` : "✗ " + String(gpu.detail?.error || "").slice(0, 60)} |`);
 }
+  // **★ 必须报出**实际后端** ✗ ★**（第 251 轮 ✓；**目标第 7 条 ✓）。
+  //
+  // **∴ 为什么 ✗**：**实测**（**第 249 轮 ✓）**✗**：
+  //   **∴ 同一份代码跑 4 次（**1 M 像素 ✓）**✗**：
+  //     **∴ GPU 墙钟**两个簇**✗：**≈30 ms**（**2 次 ✓）与 **≈556–606 ms**（**2 次 ✓）** ✓✓
+  //       ⇒ **∴ 即**：**一半的次数**退回了 CPU** ✓
+  //         ⇒ **★ 而**调用方**看不出来** ✓ ★**** ✓✓
+  //   **∴ 而**内核**本来就报 `backend`**✗（`api-local.js` 的 `yanshiGpuQuantize` ✓）
+  //     ⇒ **∴ 但**本工具**只把它塞进对象里**✗ **从未打印、从未断言** ✓
+  //       ⇒ **∴ 于是**：**「**静默降级**」**被漏掉** ✓**** ✓✓
+  // **∴ 修法 ✗**：**打印 ＋ 断言 `backend === "gpu"`** ✗
+  //   ⇒ **∴ 若**未走 GPU**✗ ⇒ **∴ 判据**退出码 1** ✓ ★**** ✓✓
+  // **∴ 变异点 ✗**：**把内核的 GPU 分支去掉**（**强制走 CPU ✓）⇒ **∴ 本断言**必红** ✓**** ✓✓
+  const gpuBackend = gpu ? gpu.detail?.backend : null;
+  console.log(`  ∴ 内核自报后端：CPU 路=${cpu?.detail?.backend ?? "(内核未报)"}｜GPU 路=${gpuBackend ?? "(未跑)"}`);
+  if (gpu && gpuBackend !== "gpu") {
+    console.error("");
+    console.error(`  ✗ **★ 静默降级 ★**：GPU 路**实际走的是**「${gpuBackend ?? "未报"}」`);
+    console.error("     目标第 7 条：**不许静默降级** ✓；内核的 `yanshiGpuQuantize` 必须报 `backend: \"gpu\"`");
+    socket.close();
+    chrome.kill();
+    await sleep(300);
+    process.exit(1);
+  }
 
 // **★ 必须**两本账都明说 ✗ ★**（**∴ 不许**只报好看的那本 ✓）** ✓✓
 if (!gpu) {
