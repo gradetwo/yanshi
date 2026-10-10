@@ -21302,3 +21302,42 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       （**∴ 用**同样的 CDP：**杀服务端后**在页面里读 `caches` ✓）** ★**** ✓✓
 #     **∴ ③** **若** `/health` **不在缓存**✗ ⇒ **∴ 修法**：**在 SHELL 的 install 里**显式 `cache.addAll` 它** ✓
 #       （**∴ 而**不是**等**首次 fetch** ✓）** ★**** ✓✓
+
+# **★ 第 365 轮：★★★★★★★★★★ **真正的根因 —— `loadEffectCatalog()` 在离线时抛未捕获异常，中断初始化 ⇒ 内核起不来**** ✗** ★★★★★★★★★★
+#   **★ 决定性实测（**在线装 ⇒ 杀服务端 ⇒ 刷新 ✓）★**：
+#     ```
+#     在线 caches.match：{"/health":true, "/wasm/yanshi_wasm.js":true, "/wasm/yanshi_wasm_bg.wasm":true}
+#     ★ 离线 caches.match：{"/health":200, "/wasm/yanshi_wasm.js":200, "/wasm/yanshi_wasm_bg.wasm":200} ★
+#     ★ 离线：kernelReady = false ★
+#     ★ 离线错误 ★：
+#       ! TypeError: Failed to fetch
+#            at fetchOrLocal (…:1460:28)
+#            at loadEffectCatalog (…)
+#       ! [error] Failed to load resource: net::ERR_CONNECTION_REFUSED   ×3
+#       ! TypeError: Failed to fetch at fetchOrLocal …
+#       ! [error] Failed to load resource: net::ERR_FAILED
+#     ```
+#   **★★★ 所以（**两条关键事实 ✓）★★★**：
+#     **∴ ① ★ 内核的三件资产**离线时**都能从缓存拿到**✗
+#       ⇒ **∴ 实测 `200`（**不是 null ✓）⇒ **∴ 所以**内核**不该**起不来** ✓ ★**** ✓✓
+#         **∴ 即**：**SW 的预缓存**工作正常**✗（**`/health` ＋ `/wasm/*` ✓）⇒ **∴ 排除**缓存缺失** ✓**** ✓✓
+#     **∴ ② ★ 真根因 ✗**：**`loadEffectCatalog()` **在离线时抛未捕获异常**✗
+#       ⇒ **∴ 因为** `fetchOrLocal`（**第 1460 行 ✓）**对 `/api/effects` 的 fetch 失败** ✓
+#         （**∴ `net::ERR_CONNECTION_REFUSED` ✓ ⇒ **`TypeError: Failed to fetch`** ✓）
+#           ⇒ **∴ 而**它**没有被捕获** ✗
+#             ⇒ **∴ 于是**页面初始化**中断** ⇒ **∴ `initWasm()` **没跑到** ✓
+#               ⇒ **★ 所以**内核**永远起不来** ✓ ⇒ **∴ 于是**离线画不了** ✓ ★**** ✓✓
+#   **★ 修法（**与 `initWasm` 里 `/health` 的处理同一模式 ✓）★**：
+#     **∴ `loadEffectCatalog`（**或 `fetchOrLocal` ✓）应当**捕获失败并继续**✗
+#       ⇒ **∴ 道理 ✗**：**效果目录是**可选资源**✗（**∴ 它**缺失**不该**让整页初始化失败 ✓）
+#         ⇒ **∴ 而那**正是**第 1518–1531 行**对 `/health` 已经做过的** ✓（**「**拿不到就算了**」✓）
+#           ⇒ **★ 所以**：**同一条原则要**一致地应用**到所有初始化期的可选取数** ✓ ★**** ✓✓
+#     **∴ 且**：**日志里那三条「**缓存落空**」**✗（**`/api/tools/get_preferences`／`render_region`／`effects` ✓）
+#       ⇒ **∴ 它们**都是**离线取不到的**✗ ⇒ **∴ 而**取不到**不该抛** ✓**** ✓✓
+#   **★ 预期效果 ✗ ★**：**修好后**内核**应当能起来**✗
+#     ⇒ **∴ 于是** `browser-offline-shell`／`journal`／`live-brush` **都有望**推进或转绿** ✓ ★**** ✓✓
+#   **★ 下一步 ✗ ★**：
+#     **∴ ①** **读 `loadEffectCatalog` ＋ `fetchOrLocal`（**第 1460 行 ✓）**✗
+#       ⇒ **∴ 看**哪一层该加捕获** ✓（**∴ 原则**：**可选取数失败不该中断初始化** ✓）** ★**** ✓✓
+#     **∴ ②** **修完**重跑**三条离线判据**✗ ⇒ **∴ 看**是否转绿** ✓**** ✓✓
+#     **∴ ③** **且**：**给这条**立判据**✗（**∴ 如**「**离线时页面初始化必须完成到内核就绪**」 ✓）** ✓**** ✓✓
