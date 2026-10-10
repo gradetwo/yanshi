@@ -154,7 +154,24 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     # 传 `<viewer-url> <cdpPort>` ✓（端口走 argv[3] ✓，与 browser-* 那一族不同 ✗）。
     # 本机实测：✓ 控件高度统一（26px×2 checkbox / 28px×84 button ✓）。
     ui-control-heights.mjs)
-      timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **★ 需要内核的判据**必须显式要求客户端渲染 ✗ ★**（第 381 轮 ✓）：
+      #   **∴ 为什么 ✗**：**产品的缺省是**服务端渲染**✗（`viewer-app.js` 的 `serverRenderPreferred`
+      #     未设偏好时返回 `true` ✓）⇒ **∴ 于是** `initWasm()` **第一句就 return** ✗
+      #       ⇒ **∴ 内核**不加载** ✓ ⇒ **∴ 凡**用内核画像素的判据**都**拿不到内核** ✓
+      #         ⇒ **∴ 它们**恒红**，而真正要测的东西**根本没被测** ✓ ★**** ✓✓
+      #   **∴ 为什么用 URL 参数而不是 CDP 注入 ✗**：**实测（**第 380 轮 ✓）**✗
+      #     **∴ `Page.addScriptToEvaluateOnNewDocument` 的注册**绑定在**发起它的 CDP 会话**上** ✗
+      #       ⇒ **∴ 会话一断**（种子工具 `ws.close()` ✓）⇒ **∴ 注册**失效** ✓
+      #         ⇒ **∴ 于是**判据导航时**根本没有注入** ✓（**实测 `serverRender = null` ✓）** ★**** ✓✓
+      #   **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／`browser-cs-render-switch`
+      #     会**自己设偏好**来对比两种模式**✗ ⇒ **∴ 给它们加参数**会**把开关钉死** ✓
+      #     ⇒ **∴ 所以**这两条**不加** `render=client` ✓（**∴ 它们靠自己的显式设置 ✓）** ★**** ✓✓
+      case "$name" in
+        browser-render-switch.mjs|browser-cs-render-switch.mjs)
+          timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+        *)
+          timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      esac ;;
     # **令牌策略** ✓（第 796 轮接线 ✓）：**两半段都要跑** ✓ ——
     #   allow  ⇒ 跑在本分片已有的**回环**服务端上 ✓；
     #   refuse ⇒ **另起一个「对外」实例** ✓（`--bind 0.0.0.0` ✓、**故意不配** YANSHI_API_KEY ✓）。

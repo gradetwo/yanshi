@@ -46,6 +46,27 @@ const serverRenderPreferred = () => {
   //   **∴ 代价（**两面 ✓）**：**本地专用部署**里**没有**切换服务端的开关 ✓
   //     ⇒ **∴ 而**那是**如实**的 ✗（**确实没有服务端 ✓）** ⇒ **∴ 且**界面**会说明** ✓**。
   if (localOnly) return false;
+  // **★ URL 参数**最高优先**✗ ★**（第 381 轮 ✓）：**`?render=client` ⇒ 强制客户端内核** ✓、
+  //   **`?render=server` ⇒ 强制服务端** ✓。**其他值／缺省** ⇒ 走下面的偏好逻辑 ✓。
+  //   **∴ 为什么需要它 ✗**（**实测 ✓**）：**自动化判据**要测**需要内核**的路径**✗
+  //     ⇒ **∴ 而**产品的缺省是**服务端渲染**✗ ⇒ **∴ 于是**判据**拿不到内核** ✓
+  //       ⇒ **∴ 我**试过用 CDP 的 `Page.addScriptToEvaluateOnNewDocument` **注入偏好**✗
+  //         ⇒ **∴ 但**实测（**第 380 轮 ✓）**：**该注册**绑定在**发起它的 CDP 会话**上**✗
+  //           ⇒ **∴ 会话一断**（种子工具 `ws.close()` ✓）⇒ **∴ 注册**失效** ✓
+  //             ⇒ **∴ 于是**判据导航时**根本没有注入** ✓（**实测 `serverRender = null` ✓）** ★**** ✓✓
+  //   **∴ 所以改用**URL 参数**✗**：**∴ 它**不依赖**任何 CDP 会话状态** ✗
+  //     ＋ **∴ 它**对用户也有用**✗（**∴ 可以**分享一个「**用客户端内核渲染**」的链接** ✓）★**** ✓✓
+  //   **∴ 代价（**两面 ✓）★**：**多一个**入口参数**✗ ⇒ **∴ 需要**文档 ＋ 判据守住它** ✓
+  //     ＋ **∴ 它**只改**这一个函数**✗ ⇒ **∴ 于是**所有调用点（**含 `initWasm` ✓）**自动受益** ✓
+  try {
+    if (typeof location !== "undefined" && location.search) {
+      const want = new URLSearchParams(location.search).get("render");
+      if (want === "client") return false;
+      if (want === "server") return true;
+    }
+  } catch (error) {
+    // URL 解析不了 ⇒ 按原逻辑继续 ✓
+  }
   try {
     const stored = localStorage.getItem(SERVER_RENDER_KEY);
     return stored === null ? true : stored === "1";
