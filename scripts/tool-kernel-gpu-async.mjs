@@ -110,6 +110,34 @@ console.log("  ── ⑤ 默认 feature 不许含 gpu（**体积**）──");
 const defLine = (toml.match(/^default\s*=\s*\[[^\]]*\]/m) || [""])[0];
 check(!defLine.includes("gpu"), `default feature 不许含 gpu（实测：${defLine.trim() || "缺 default 行"}）`);
 
+console.log("  ── ⑥ 前端真的调它（**否则导出悬空**）──");
+// **∴ 为什么 ✗**：**导出了但没人调**✗ ⇒ **∴ 那**等于没接** ✓
+//   ⇒ **∴ 所以**：**判据要**同时看**导出端 ＋ 调用端** ✓ ★**** ✓✓
+const VIEWER = join(ROOT, "crates/yanshi-http/assets/viewer-app.js");
+if (!existsSync(VIEWER)) {
+  console.error(`  ✗ 判据自身的输入缺失（不是产品问题）：${VIEWER}`);
+  process.exit(3);
+}
+const viewer = readFileSync(VIEWER, "utf8");
+check(/module\.gpu_probe_async/.test(viewer), "viewer-app.js 必须调 module.gpu_probe_async");
+check(
+  /typeof module\.gpu_probe_async === "function"/.test(viewer),
+  "调用前必须查 typeof（**∴ 默认产物**没有它 ⇒ **∴ 不许**直接调 ✓）",
+);
+check(
+  /await module\.gpu_probe_async\(\)/.test(viewer),
+  "必须 await 它（**∴ 不许**只拿 Promise 不看结果 ✓）",
+);
+check(
+  /__yanshiKernelGpu/.test(viewer),
+  "探测结果要落到 window.__yanshiKernelGpu（**∴ 可被判据读取 ✓）",
+);
+// **∴ 诚实性 ✗**：**探测**不许**写成「**正在用 GPU**」 ✓
+check(
+  !/render_backend\s*=\s*["']gpu["']/.test(viewer) && !/webgpu_used_by_kernel\s*[:=]\s*true/.test(viewer),
+  "前端不许因为探测成功就**声称**在用 GPU（**∴ 那是谎报 ✓）",
+);
+
 console.log("");
 if (failed > 0) {
   console.error(`  ✗ 内核异步 GPU 路有 ${failed} 项不达标（**∴ 那会让浏览器内核**死锁**或**体积失控**）`);

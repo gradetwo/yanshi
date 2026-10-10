@@ -1586,6 +1586,46 @@ async function initWasm() {
     await module.default();
     state.wasm = module;
     window.yanshiStats.wasm = true;
+    // **★ 离线内核的 GPU 探测 ✗ ★**（**第 483 轮 ✓；**目标第 6 条 ✓）
+    //
+    // **∴ 为什么在这里 ✗**：**第 480 轮**给内核加了两个**异步导出**✗
+    //   （**`gpu_probe_async`／`gpu_quantize_async` ✓）
+    //     ⇒ **∴ 而**默认产物**没有 `gpu` feature**✗
+    //       ⇒ **∴ 于是**：**这两个函数**不存在** ✓
+    //         ⇒ **∴ 所以**：**必须先查 `typeof`**✗
+    //           ＋ **∴ 不许**因为「**有 navigator.gpu**」就**以为**内核能用** ✓ ★**** ✓✓
+    //
+    // **∴ 它做什么 ✗**：**只**探测**（**不改变渲染后端 ✓）
+    //   ⇒ **∴ 结果**记在 `window.__yanshiKernelGpu`**✗
+    //     ＋ **∴ 且**：**写一行日志**（**∴ 排查用 ✓）★**** ✓✓
+    //
+    // **∴ 诚实性 ✗**：**探测成功**也**不许**说「**正在用 GPU**」✗
+    //   ⇒ **∴ 因为**内核的渲染路**还没接它** ✓
+    //     ＋ **∴ 所以**：**日志只说**「**具备**」✗ ＋ **`used` 恒 false** ✓ ★**** ✓✓
+    try {
+      if (typeof module.gpu_probe_async === "function") {
+        const probe = await module.gpu_probe_async();
+        let parsed = null;
+        try { parsed = JSON.parse(probe); } catch (_) { parsed = null; }
+        window.__yanshiKernelGpu = { probed: true, ...(parsed || {}) };
+        if (parsed && parsed.ok) {
+          log("内核具备 WebGPU（**后台探测 ✓）：" + String(parsed.adapter || "").slice(0, 80));
+        } else {
+          log("内核的 WebGPU 探测失败，内核仍走 CPU：" + String((parsed && parsed.error) || "未知"), "#c33");
+        }
+      } else {
+        // **∴ 默认产物**就是这个分支**✗ ⇒ **∴ 如实说明**（**∴ 不谎报能力 ✓）
+        window.__yanshiKernelGpu = {
+          probed: false,
+          reason: "kernel_built_without_gpu_feature",
+        };
+        log("内核产物未启用 GPU（**`--features gpu` 可开启 ✓）⇒ 内核走 CPU");
+      }
+    } catch (error) {
+      // **∴ 探测失败**不影响**使用**✗ ⇒ **∴ 只记录** ✓
+      window.__yanshiKernelGpu = { probed: false, reason: "probe_threw", error: String(error).slice(0, 120) };
+      log("内核的 WebGPU 探测抛错，内核仍走 CPU：" + String(error).slice(0, 80), "#c33");
+    }
     setWasmState("已加载", "#2a2");
     log("WASM 计算内核已加载：" + module.WasmKernel.name);
   // **把"这一版是哪一版"写进日志** ✓（用户提的排查建议 ✓）：出问题时先看这一行 ✓。
