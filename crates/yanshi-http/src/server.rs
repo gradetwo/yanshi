@@ -914,14 +914,19 @@ fn gpu_adapter_probe() -> (bool, String) {
     match block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(a) => {
             let info = a.get_info();
-            // **∴ 报出**真实设备名**✗ ⇒ **∴ 人能核对** ✓
-            (
-                true,
-                format!(
-                    "adapter:{:?}:{:?}:{}",
-                    info.backend, info.device_type, info.name
-                ),
-            )
+            // **★ 再要一个**设备** ✗ ★**（第 270 轮 ✓）：
+            //   **∴ 为什么 ✗**：**adapter** 只说明**有可用 GPU** ✗
+            //     ⇒ **∴ 而**要**真的能算**✗ ⇒ **∴ 必须**拿到 `Device` ＋ `Queue`** ✓**** ✓✓
+            //   **∴ 代价 ✗**：**多一次**初始化**（**∴ 首次**几十 ms ✓）
+            //     ＋ **∴ 它**同样只在 `--features gpu` 下编译** ✓**** ✓✓
+            let device_ok = block_on(a.request_device(&wgpu::DeviceDescriptor::default()))
+                .map(|(_, _)| true)
+                .unwrap_or(false);
+            let detail = format!(
+                "adapter:{:?}:{:?}:{}:device={}",
+                info.backend, info.device_type, info.name, device_ok
+            );
+            (true, detail)
         }
         Err(e) => (false, format!("no_adapter:{e:?}")),
     }
