@@ -2330,6 +2330,31 @@ async function updatePreviewOverlayInner(pending, started) {
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
   if (window.yanshiStats.tracePaints) log("盖章返回 dirty_bbox=" + JSON.stringify(response.dirty_bbox) + " keys=" + Object.keys(response).join(","));
   drawKernelBoxDirect(response.dirty_bbox);
+  // **★★★ 目标第 8 条（**乙：异步结果 ＋ 回调触发重绘 ✓）的真实缺口 ✗ ★★★**（**第 590 轮 ✓）
+  //   **∴ 缺口 ✗**：**本函数**只调 `drawKernelBoxDirect(response.dirty_bbox)`**✗
+  //     ＋ **∴ 而**它**只画**内核那份像素** ✓
+  //       ⇒ **∴ 于是**：**含 heavy 内容的文档里，内核那份像素是**空白**的**
+  //         ⇒ **★ 所以：**拖动中的笔迹区域会**空白****
+  //           ＋ **∴ 而**那**正是** `queueServerBlit` 存在的理由** ✓ ★
+  //   **∴ 为什么这是"第 8 条" ✗**：**目标要求把 4 处调用点迁移到**异步 GPU 路**
+  //     ＋ **∴ 实测（**第 590 轮 ✓）✗**：
+  //       **∴ `drawKernelRegion`** 已有 `queueServerBlit`**（**1871／1908 ✓）
+  //         ＋ **∴ `pickColorAt`／`composeFullDocumentCanvas`** 已是 `async` 且有 `await`** ✓
+  //           ⇒ **★ 所以：**唯一缺的就是**这一处**** ✓ ★
+  //   **∴ 修法（**遵循既有异步模式 ✓）✗**：
+  //     **∴ 先** `drawKernelBoxDirect(…)`（**即时反馈：内核像素 ✓）
+  //       ＋ **∴ 再** `await queueServerBlit(bbox)`（**服务端像素 ✓）
+  //         ⇒ **∴ 从而**：**两者都到位 ＋ 不改变同步语义**（**本函数本来就 `async` ✓）★
+  //   **∴ 两面（**AGENTS.md ✓）★**：
+  //     **∴ 收益 ✗**：**heavy 文档里拖动笔迹**不再空白**** ✓
+  //     **∴ 代价 ✗**：**每段拖动**多一次补画等待**✗
+  //       ＋ **∴ 而**它因 `queueServerBlit` 的**串行／去重**（`serverBlitBusy`／`serverBlitPending` ✓）
+  //         **∴ 不会**堆积** ✓（**失败也会 `.catch` 返回 ⇒ 等待有界 ✓）★
+  //   **★ 改文件的教训（**第 590 轮 ✓）✗ ★**：
+  //     **∴ 内核 JS 的**源**在 `crates/yanshi-http/assets/viewer-app.js`**✗
+  //       ＋ **∴ 而** `web/viewer-app.js` **是**构建产物**（**.gitignore:65 ✓）
+  //         ⇒ **∴ 改产物 ⇒ **不入库 ＋ 下次构建被覆盖**** ✓ ★
+  await queueServerBlit(response.dirty_bbox);
   const elapsed = performance.now() - started;
   window.yanshiStats.lastOverlayMs = elapsed;
   window.yanshiStats.overlayApplies = (window.yanshiStats.overlayApplies || 0) + 1;
