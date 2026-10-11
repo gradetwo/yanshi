@@ -476,6 +476,53 @@ impl Buffer {
     ///       ⇒ **∴ 于是**：**它**不会**继承那个 cfg** ✓
     ///         ⇒ **∴ 所以**：**必须**再写一次** ✓（**∴ 否则**无 gpu 构建**编译失败** ✓）★**** ✓✓
     #[cfg(feature = "gpu")]
+    /// **★ 核对键 ✗ ★**（**第 543 轮抽出 ⇒ 判据可直测 ✓；目标第 7 条 ✓）
+    ///
+    /// **∴ 两条来源 ✗**：
+    ///   ⇒ **∴ ① 有 blob 哈希 ⇒ 直接用它** ✓（**∴ 那是 128 位以上 ✓）
+    ///     ＋ **∴ ② 否则 ⇒ **兜底键**** ✓（**∴ 原为**抽样 FNV-1a 64 位** ✓）
+    ///       ⇒ **∴ 而**抽样的弱点（**下一轮修 ✓）✗**：
+    ///         **step ＝ len/4096 ⇒ **改一个没被抽到的像素 ⇒ 键不变****
+    ///           ⇒ **∴ 于是**：**误跳过核对 ＋ `delta` 假装为 0** ✓ ★
+    ///
+    /// **∴ 抽出它的唯一目的 ✗**：**让判据能**直接喂 Buffer**✗（**不碰 GPU ✓）★
+    pub(crate) fn verify_key_with(&self, blob: Option<&str>) -> String {
+        match blob {
+            Some(b) => b.to_owned(),
+            None => {
+                // **★★★ 全量 128 位 FNV-1a ✗ ★★★**（**第 543 轮 ✓；目标第 7 条 ✓）
+                //
+                // **∴ 原实现的两个缺陷（**判据已证实 ✓）✗**：
+                //   ⇒ **∴ ① 抽样 ✗**：**`step ＝ len/4096`**✗
+                //     ⇒ **∴ 4K ⇒ step ＝ 8064**✗ ⇒ **∴ 只看到约 4096 个 f32 中的第 0 个**
+                //       ⇒ **∴ 于是**：**改一个**没被抽到的像素 ⇒ **∴ 键**不变** ✓
+                //         ⇒ **★ 后果 ✗**：**第二个不同内容**误判为"已核对"
+                //           ⇒ **∴ 跳过核对 ＋ `delta` 假装 0**（**假绿 ✓）★
+                //   ⇒ **∴ ② 64 位 ✗**：**碰撞概率 2⁻⁶⁴**✗
+                //     ⇒ **∴ 而**抽样把有效抗碰撞强度**进一步**大幅削弱** ✓ ★
+                //
+                // **∴ 现在 ✗**：**遍历**每个像素**✗（**不抽样 ✓）
+                //   ＋ **∴ 用**128 位 FNV-1a**✗（**u128 ＋ 官方 128 位素数 ✓）
+                //     ⇒ **∴ 所以**：**碰撞概率 ~2⁻¹²⁸** ✗
+                //       ＋ **∴ 且**长度也进键（**∴ 防**截断／补零 ✓）★
+                //
+                // **∴ 两面（**如实 ✓）✗**：
+                //   ⇒ **∴ 收益 ✗**：**消除抽样盲区 ＋ 抗碰撞强度 2⁻⁶⁴ ⇒ 2⁻¹²⁸** ✓
+                //     ＋ **∴ 代价 ✗**：**现在要**遍历全部像素**✗
+                //       （**∴ 4K ⇒ 8.29 M 次 xor ＋ 乘 ⇒ **∴ 单线程估计数毫秒 ✓）
+                //         ⇒ **∴ 而**全量核对是**逐字节比对 ＋ 上传／读回** ⇒ **∴ 比它贵得多** ✓ ★
+                const FNV128_OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+                const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+                let mut h: u128 = FNV128_OFFSET;
+                for value in &self.pixels {
+                    h ^= u128::from(value.to_bits());
+                    h = h.wrapping_mul(FNV128_PRIME);
+                }
+                format!("px128:{h:032x}:{}", self.pixels.len())
+            }
+        }
+    }
+
     pub(crate) fn try_quantize_on_gpu_keyed(
         &self,
         count: usize,
@@ -571,21 +618,7 @@ impl Buffer {
         //   **∴ 代价（**如实 ✓）✗**：**64 位哈希**有极小碰撞概率**✗
         //     ⇒ **∴ 那**会让**第二个不同内容跳过核对** ✓
         //       ＋ **∴ 而**在本场景（**同一文档的位图 ✓）**可接受** ✓ ★**** ✓✓
-        let verify_key: String = match blob {
-            Some(b) => b.to_owned(),
-            None => {
-                // **∴ 抽样 ＋ 长度 ＋ FNV ✗**（**∴ 成本**远低于**一次全量核对** ✓）
-                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                let step = (self.pixels.len() / 4096).max(1);
-                let mut i = 0usize;
-                while i < self.pixels.len() {
-                    h ^= u64::from(self.pixels[i].to_bits());
-                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    i += step;
-                }
-                format!("px:{h:016x}:{}", self.pixels.len())
-            }
-        };
+        let verify_key: String = self.verify_key_with(blob.as_deref());
         if crate::blob_verified(&verify_key) {
             // **∴ 验过的内容 ⇒ **跳过核对**✗ ⇒ **∴ `delta` 报**真的核过**的结果** ✓ ★**** ✓✓
             Self::note_backend(crate::Backend::Gpu);
@@ -935,5 +968,51 @@ mod quantize_parallel_tests {
                 "背景 {bg:?}：并行与串行有 {diff} 个字节不同 ⇒ **并行改变了像素**"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod verify_key_tests {
+    // **★ 核对键必须**分辨只差一个像素的内容**✗ ★**（**第 543 轮 ✓；目标第 7 条 ✓）
+    //
+    // **∴ 为什么 ✗**：**兜底键是**抽样 FNV-1a 64 位**（`step = len/4096` ✓）
+    //   ⇒ **∴ 4K ⇒ step ＝ 8064**✗ ⇒ **∴ 只抽到约 4096 个 f32 中的第 0 个**
+    //     ⇒ **∴ 于是**：**改一个**没被抽到的像素**✗ ⇒ **∴ 键**不变** ✓
+    //       ⇒ **★ 后果 ✗**：**第二个不同内容**误判成"已核对过"
+    //         ⇒ **∴ 于是**它**跳过核对**✗ 而 `delta` 仍报 **0**（**假绿**）★
+    //
+    // **∴ 判据 ✗**：**两个只差一个像素的输入 ⇒ 键必须**不同**** ✓ ★
+    use super::*;
+
+    impl Buffer {
+        fn verify_key_for_tests(&self) -> String {
+            self.verify_key_with(None)
+        }
+    }
+
+    fn buffer_with(len: usize, mutate_at: Option<usize>) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, (len / 4) as u32, 1);
+        buffer.pixels = vec![0.25f32; len];
+        if let Some(index) = mutate_at {
+            buffer.pixels[index] = 0.75;
+        }
+        buffer
+    }
+
+    #[test]
+    fn the_verify_key_distinguishes_a_single_changed_pixel() {
+        // **∴ 4K 量级 ⇒ 抽样步长 > 1**（**∴ 那**正是弱点所在 ✓）
+        let len = 4 * 1024 * 1024;
+        let base = buffer_with(len, None);
+        let a = base.verify_key_for_tests();
+        // **∴ 挑一个**不在抽样点上**的索引 ✗**：step ＝ len/4096 ⇒ 索引 1 一定不被抽到 ✓
+        let mutated = buffer_with(len, Some(1));
+        let b = mutated.verify_key_for_tests();
+        assert_ne!(
+            a, b,
+            "只差一个像素（索引 1）的输入必须有**不同的核对键** ⇒ 否则会**误跳过核对**并误报 delta=0"
+        );
+        // **∴ 同内容 ⇒ 同键**（**∴ 确定性 ✓）
+        assert_eq!(a, buffer_with(len, None).verify_key_for_tests());
     }
 }
