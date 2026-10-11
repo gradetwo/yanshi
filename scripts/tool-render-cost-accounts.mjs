@@ -322,6 +322,15 @@ for (const spec of compareSpecs) {
     backend: after.render_backend,
     gpuMode: after.gpu_mode,
     reason: after.gpu_adapter_note,
+    // **★ 逐位一致：必须从**渲染后**的快照取 ✗ ★**（**第 580 轮 ✓；**目标第 2 条 ✓）
+    //   **∴ 为什么必须显式取 ✗**：**默认**不核对**✗
+    //     ⇒ **∴ 于是** `max_channel_delta` **报 `null`**（**刻意的诚实设计 ✓）
+    //       ⇒ **∴ 只有**设 `YANSHI_GPU_VERIFY=1`** 才会真的比对 ✓
+    //         ＋ **∴ 而**它**必须在**渲染之后**读**✗
+    //           ⇒ **∴ 否则** `null`（**没比过 ✓）★
+    channelDelta: after.max_channel_delta,
+    verifiedBlobs: after.verified_blobs,
+    adapter: after.gpu_adapter_note,
     wallMs: median(usable.map((s) => s.wallMs)),
     cpuMs: median(usable.map((s) => s.cpuMs)),
     ratio: median(usable.map((s) => s.ratio)),
@@ -360,6 +369,26 @@ for (const row of rows) {
 }
 
 // **★ 如实结论 ✗ ★**：**∴ 若**所有行的后端**相同**✗ ⇒ **∴ 明说**"**本机没有两路可对比 ✓"** ✓✓
+// **★ 逐位一致汇总 ✗ ★**（**第 580 轮 ✓；**目标第 2 条 ✓）
+//   **∴ 目标 ✗**：**GPU 路与 CPU 路**逐字节相同 ⇒ `max_channel_delta` ＝ **0** ✓
+//     ＋ **∴ 若**报了非 0 ⇒ **∴ 那就是**真差异**✗（**必须回退 ✓）★
+//   **∴ 若**全为 `null` ⇒ **∴ 说明**本次**没核对**✗（**默认不核对 ✓）
+//     ⇒ **∴ 那就**必须设 `YANSHI_GPU_VERIFY=1` 重跑** ✓ ★
+{
+  const deltas = rows.map((r) => r.channelDelta);
+  const verified = rows.map((r) => r.verifiedBlobs);
+  const adapter = rows.map((r) => r.adapter).filter(Boolean);
+  console.log("  ★ 逐位一致（`/health.max_channel_delta`；**从渲染后的快照取** ✓）★");
+  console.log(`    max_channel_delta ＝ ${JSON.stringify(deltas)}｜verified_blobs ＝ ${JSON.stringify(verified)}`);
+  if (adapter.length) console.log(`    适配器 ＝ ${adapter[0]}`);
+  if (deltas.every((d) => d === null || d === undefined)) {
+    console.log("    ⚠️ 全是 null ⇒ **本次没有核对**（默认不核对）⇒ 设 `YANSHI_GPU_VERIFY=1` 重跑 ✓");
+  } else if (deltas.every((d) => d === 0)) {
+    console.log("    ✓ 全部为 0 ⇒ **GPU 路与 CPU 路逐字节相同** ✓");
+  } else {
+    console.log("    ✗ 出现非 0 ⇒ **逐位一致被打破**（必须回退）✗");
+  }
+}
 const backends = new Set(rows.map((r) => r.backend));
 if (backends.size === 1) {
   console.log("");
