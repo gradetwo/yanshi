@@ -9835,3 +9835,50 @@ grep `100 ns` ⇒ **只有** crates/yanshi-render/src/render.rs:2932 一处
 
 ### **∴ 门禁 ✗**：**改了 `render.rs`（**探针 ＋ take(16) ✓）⇒ **∴ 需**跑全量门禁确认** ✓ ｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 673 轮：**★★★ 根因 ＝ `cargo check` **不产出二进制**（**工具跑的是旧 release**）；修正后拿到**决定性分解**** ★★★
+
+### **★★★ 根因（**流程缺陷，代价一轮 ✓）★★★**
+```
+scripts/tool-render-cost-accounts.mjs:81
+  const baseline = option("--baseline", "target/release/yanshi-serve");
+⇒ ★ 工具跑的是 **target/release/yanshi-serve** ★
+  ＋ **∴ 而**我**一直用 `cargo check` 验证**✗（**∴ 它**只做类型检查，**不产出二进制** ✓）
+    ⇒ **∴ 于是**探针**从未进入实际运行的二进制** ✓
+      ⇒ **★ 所以 `shape:*` 三项**完全不出现** ✓ ★
+  ＋ **∴ 修法 ✗**：**`cargo build --release -p yanshi-http --bin yanshi-serve`** ✓（**本次 1m25s ✓）
+    ＋ **∴ 然后**重跑 ⇒ **∴ 立刻**拿到分解** ✓ ★
+  ⇒ **★ 教训（**重要 ✓）★**：**改动**被运行的代码**后，**必须** `cargo build` 而**不是** `cargo check`**✗
+    ＋ **∴ 因为** `check` **只做类型检查** ✓
+      ＋ **∴ 而**本会话**前面**（**第 671 轮的 `shape_scope_scaling` 判据 ✓）用的是 `cargo test`**✗
+        ⇒ **∴ 那**会**真正编译** ✓ ⇒ **∴ 所以**那条结论**仍然有效** ✓ ★
+
+### **★★★ 决定性分解（**修正后 ✓）★★★**
+```
+对象耗时: primitive:Shape=29.95 ms×1｜★ shape:fill=16.45 ms ★｜★ shape:coverage=13.49 ms ★｜shape:clip=734 ns
+对象耗时: primitive:Shape=25.93 ms×1｜shape:coverage=15.78 ms｜shape:fill=10.14 ms｜shape:clip=789 ns
+对象耗时: primitive:Shape=15.33 ms×1｜shape:fill=9.49 ms｜shape:coverage=5.83 ms｜shape:clip=1.06 µs
+```
+  ⇒ **∴ 构成 ✗**：
+    **∴ ① `shape:coverage`（**`shape_coverage_in` ✓）＝ **5.8–15.8 ms**✗ ⇒ **占约 50–60%** ✓
+      ＋ **∴ ② `shape:fill`（**`fill_coverage` ✓）＝ **9.5–16.4 ms**✗ ⇒ **占约 35–50%** ✓
+        ＋ **∴ ③ `shape:clip` ＝ **0.7–1.1 µs**✗ ⇒ **∴ 可忽略 ⇒ 候选**被排除** ✓
+          ＋ **∴ ④ prep（**parse／bbox ✓）＝ **几微秒**✗ ⇒ **∴ 可忽略** ✓ ★
+
+### **★★★ 修正第 671 轮的结论 ✗** ★★★
+  ⇒ **∴ 那时我测 `shape_coverage_in` 单次 ＝ **0.13 ms****✗
+    ＋ **∴ 而现在真实是 **13.5 ms****✗ ⇒ **∴ 差 **100×**** ✓
+      ＋ **∴ 原因 ✗**：**我**用了 **`Rect` ＋ **空 `points`****✗
+        ＋ **∴ 而**真实 shape **是 **Polygon ＋ 很多 points**** ✓
+          ⇒ **★ 所以 ✗**：**`shape_coverage_in` 的成本**取决于 shape 类型与 points 数**✗
+            ＋ **∴ 而**不是** clip 面积** ✓（**∴ 与**实测比值 1.00× 一致 ✓）★
+  ⇒ **∴ 教训 ✗**：**函数级基准必须用**真实的输入分布**✗（**∴ 如** Polygon ＋ 真实点数 ✓）
+    ＋ **∴ 否则**会得到**差 100× 的误导结论** ✓ ★
+
+### **★★★ 优化方向（**据实测占比 ✓）★★★**
+  ⇒ **∴ ① `shape_coverage_in`（**50–60% ✓）✗** ⇒ **∴ 可**考虑 GPU 光栅化** ✓
+  ⇒ **∴ ② `fill_coverage`（**35–50% ✓）✗** ⇒ **∴ 可**考虑批量混合** ✓（**∴ 而**本会话**已有合成内核可复用 ✓）★
+
+### **∴ 门禁 ✗**：**改了 `render.rs`（**探针 ＋ take(16) ✓）＋ 已 `cargo build --release`** ✓ ｜已推 `l4-sync`** ✓ ★
+
