@@ -3164,3 +3164,53 @@ other_ms       945.999   →     0.026     ← 残差从 99.9998% 降到 0.003%
   ⇒ **∴ 乙：本地／工作站跑**重版**✗**：**用 apple2011 上的**真工程**✗
     ⇒ **∴ 量**两本账 ＋ 离散度**（**∴ 与目标第 10 条「重活交给 CI/CD 且不阻塞每次 push」的精神一致 ✓）★
   ＋ **∴ 素材不进仓库 ✗**：**判据**接受路径（**环境变量 ✓）⇒ **∴ 没有就 `exit 3`**（**判据自身跑不了 ✓）★
+
+---
+
+## 第 506 轮：**★ 真 4K／8K 工程可用 —— 前置条件全部摸清 ★**
+
+### **∴ 用户给的基准在哪 ✗**（**`apple2011`，`192.168.100.102` ✓）★
+
+**∴ `/home/crow/work/agy/painting/artworks/masterpieces/` ✗**：**真 4K／8K 工程（`.yanshi` ✓）
+  ⇒ **∴ 例 ✗**：`art_60301188_4k_monet_sunrise.yanshi`（5.93 MB ✓）｜
+    `art_60301188_8k_friedrich_wanderer.yanshi`（0.80 MB ✓）｜**…10+ 个 ✓
+**＋ ∴ `/home/crow/work/agy/high-res/` ✗**：**4 张高分辨率源素材**（**最大 17.2 MB ✓）
+**＋ ∴ `/home/crow/work/agy/custom_eval_suite/` ✗**：**测试脚本**（**多数属于 `groove` ✓）
+
+### **∴ `.yanshi` 的格式（**实测 ✓）✗**
+
+⇒ **∴ 它**是一个 **tar 包**✗**：
+  ⇒ **∴ 头部 ✗**：**`atoms.jsonl`**✗ ＋ **`\0` 填充** ＋ **标准 tar 头**（**八进制 mode／uid／gid／size／mtime ✓）★
+
+### **∴ 载入方式（**实测走通 ✓）★**
+
+**∴ ① 端点／工具 ✗**：**MCP 工具 **`import_project`**✗
+  ＋ **∴ HTTP ✗**：`POST /api/tools/import_project?doc=<占位文档>&token=<token>`** ✓
+    ⇒ **∴ 参数 ✗**：`{ "path": "<工作区内的 .yanshi 路径>", "doc_id": "<新文档 id>" }`** ✓
+**∴ ② ★ 前置条件（**踩过 ✓）✗ ★**：**`path` **必须在服务端 `--root` 工作区**之内**** ✓
+  ⇒ **∴ 我**第一次给 `/tmp/bench/…`（**工作区外 ✓）⇒ **HTTP 403 Forbidden** ✓
+    ⇒ **∴ 修法 ✗**：**把 `.yanshi` 拷进 root ＋ **用工作区内路径** ✓ ★**** ✓✓
+**∴ ③ 返回 ✗**：`{ ok, doc_id, atoms, blobs, blobs_replayed, blobs_unreplayable, entries, had_render, timings }`** ✓
+  ＋ **∴ 而**它**自己也说**「已导入并打开 ⇒ 可用 `get_document` / `render_region` 核对」** ✓ ★
+
+### **∴ 真 4K 工程的导入实测 ✗**（**本轮 ✓）★**
+
+```
+atoms 474｜blobs 423｜blobs_replayed 38｜blobs_unreplayable 0｜entries 429｜had_render true
+★ timings：total_ms 857.241｜other_ms 857.231（**全在残差 ✓）｜prep_ms 0.01｜其余 0
+```
+**⇒ ∴ 两点 ✗**：
+  ⇒ **∴ ① 导入可用 ✗**：**474 原子 ＋ 423 blob**无不可重放**（`blobs_unreplayable = 0` ✓）★
+    ＋ **∴ ② ★ 导入路**没有分相埋点**✗ ★**：**857 ms 全落残差** ✓
+      ⇒ **∴ 与渲染路**同一种失败模式**（**第 505 轮刚修 ✓）⇒ **∴ 待补** ✓ ★**** ✓✓
+
+### **∴ 本轮**未完成**（如实 ✓）✗**
+
+**∴ 我**想把两本账**直接量在真工程上**✗**，**但**预算用尽** ✓
+  ⇒ **∴ 已知的下一步（**无未知 ✓）✗**：
+    ⇒ **∴ ①** **起服务（**root 内含 `.yanshi` ✓）
+      ＋ **∴ ②** `import_project` ⇒ **拿 `doc_id`** ✓
+        ＋ **∴ ③** **直接 `render_region`（**区域用 4K 3840×2160 ／ 8K ✓）
+          ⇒ **∴ 不**依赖 `get_document`** ✓（**∴ 它**对导入的文档返回 403 ✓**）
+**＋ ∴ 素材不进仓库 ✗**：**`.yanshi` 0.8–6 MB／源图 17.2 MB** ✓
+  ⇒ **∴ 判据**接受路径（**环境变量 ✓）＋ **没有就 `exit 3`** ✓ ★**** ✓✓
