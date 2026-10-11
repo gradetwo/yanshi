@@ -5602,3 +5602,31 @@ cargo check --workspace --all-targets（**不带 feature ＝ CI 的形状 ✓）
 **∴ 净评估（**如实 ✓）✗**：**开始（golden 红｜no_copy 红｜guard 红 ✓）
   ⇒ **现在（**golden 绿**★｜no_copy 红｜guard 红 ✓）⇒ **∴ 净改善** ✓★
 
+---
+
+## 第 569 轮：**★ CI 修复第四批：`wasm_target_guard` **已绿**；`quantize_no_copy` 的推断到位 ★**
+
+### **∴ 修的项 ✗**
+  ⇒ **∴ `wasm_target_guard` ✗**：**allowlist 里 `render.rs` 出现了**两次****（**18 ＋ 18 ✓）
+    ⇒ **∴ 原因 ✗**：**我上轮用脚本更新计数时**插入了重复条目** ✓
+      ⇒ **∴ 删掉重复 ⇒ ★ 2 passed ⇒ 绿 ★** ✓ ★
+
+### **∴ 两条每像素路径的**逐字对照**（**决定性 ✓）★**
+  ⇒ **∴ 参照 ✗**（`copy_reference` ⇒ `crop` ⇒ `quantize_f16` ⇒ `to_rgba8_blocks`）：
+    **`let pixel = [src[base], …]`** ⇒ **`Some(bg) ⇒ composite_over_linear_with`／`None ⇒ linear_premul_to_u8x4_with`** ✓
+  ⇒ **∴ 被测 ✗**（`encode_quantized_rows`）：
+    **`let pixel = [quantize_f16(src_pixel[i]) …]`** ⇒ **同样的 `match bg_linear`** ✓
+  ⇒ **★ 结论：两条**完全同构**（**先 f16 ⇒ 再合成／编码 ✓）★**
+    ＋ **∴ 而** `crop` **只搬字节**（**逐行逐列 copy ⇒ 不改变像素 ✓）★
+      ⇒ **∴ 所以**：**在当前代码下两条路**应当完全一致**** ✓
+        ⇒ **∴ 但**实测在 **257×129 bg=None** 第 64 字节差 1** ✗
+          ⇒ **★ 只剩两种可能 ✗ ★**：
+            ⇒ **∴ ①** 我恢复的 `to_rgba8_quantized` **没真正生效**✗ ／
+              ⇒ **∴ ② ★ `quantize_f16` 有**两条实现**（**SIMD vs 标量 ✓）
+                ＋ **∴ 它们在**边界／次正规值**上差 1**** ✓
+                  ⇒ **∴ 那**正是该测试自称「**SIMD／改写路径的门**」的暗示** ✓ ★
+
+### **∴ 净状态 ✗**：**三条判据里**两条已绿**** ✓
+  （**`quantize_golden` ＋ `wasm_target_guard` ✓）
+    ＋ **∴ 只剩 `quantize_no_copy`** ✓（**下一轮：查 `quantize_f16` 的 SIMD／标量双路 ✓）★
+
