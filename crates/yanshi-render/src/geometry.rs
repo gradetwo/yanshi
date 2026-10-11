@@ -124,6 +124,22 @@ pub fn rect_coverage_clipped(bbox: Bbox, clip: &Bbox) -> Coverage {
     //   **∴ 逐位不变（**关键 ✓）✗**：**表达式**逐字相同**✗
     //     ＋ **∴ 所以**同一个 `f64` 值** ⇒ **∴ 结果**逐位相同** ✓
     //       ＋ **∴ 判据**：**既有全量渲染测试（**逐位一致 ✓）★
+    // **★★★ 同会话 A/B ✗ ★★★**（**第 684 轮 ✓；**第 679／680 轮的方法论要求 ✓）
+    //   **∴ 为什么 ✗**：**跨轮 / 跨会话的数字**不可比**✗
+    //     ＋ **∴ 而**第 682 轮证明**本画作 52／52 都是 Rect**✗
+    //       ⇒ **∴ 所以**这里的收益**必然**体现在端到端** ✓
+    //         ＋ **∴ 做法 ✗**：**在同一次调用里**再跑一遍**旧路**✗ ＋ **∴ 打印**两个耗时** ✓ ★
+    //   **∴ 计时用**门控时钟**✗ ★**（**∴ 第 681 轮的教训 ✓）：
+    //     **∴ `geometry.rs` **会编译到 wasm**✗
+    //       ＋ **∴ 而** wasm 判据**禁止未登记的**宿主时间 API** ✓
+    //         ⇒ **∴ 所以**用 `crate::probe::ProbeClock`** ✓ ★
+    let ab_first = std::env::var_os("YANSHI_RENDER_PROBE").is_some()
+        && !AB_DONE.swap(true, std::sync::atomic::Ordering::Relaxed);
+    let ab_clock = if ab_first {
+        Some(crate::probe::ProbeClock::now())
+    } else {
+        None
+    };
     let overlap_xs: Vec<f64> = (0..width)
         .map(|px| {
             let left = (x0 + px as i64) as f64;
@@ -137,6 +153,64 @@ pub fn rect_coverage_clipped(bbox: Bbox, clip: &Bbox) -> Coverage {
         let overlap_y = (bottom.min(bbox.y + bbox.h) - top.max(bbox.y)).clamp(0.0, 1.0);
         for px in 0..width {
             data.push((overlap_xs[px as usize] * overlap_y) as f32);
+        }
+    }
+    let fast = Coverage {
+        bbox: Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64),
+        width,
+        height,
+        data,
+    };
+    if let Some(t0) = ab_clock {
+        let d_fast = t0.elapsed();
+        let t_slow = crate::probe::ProbeClock::now();
+        let slow = rect_coverage_clipped_slow(bbox, clip);
+        let d_slow = t_slow.elapsed();
+        let same = fast.data.len() == slow.data.len()
+            && fast
+                .data
+                .iter()
+                .zip(slow.data.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        eprintln!(
+            "PROBE Rect 覆盖率 A/B：快={:.3}ms 慢={:.3}ms 比={:.2}× 逐位一致={}",
+            d_fast.as_secs_f64() * 1000.0,
+            d_slow.as_secs_f64() * 1000.0,
+            d_slow.as_secs_f64() / d_fast.as_secs_f64().max(f64::MIN_POSITIVE),
+            same
+        );
+        std::hint::black_box(&slow);
+    }
+    fast
+}
+
+/// **∴ A/B 只做一次 ✗**（**∴ 避免探针把 52 次调用都变成双倍 ✓）★
+static AB_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// **★ 旧路副本（**仅供探针 A/B ✓）✗ ★**（**第 684 轮 ✓）
+///
+/// **∴ 与快路的唯一差别 ✗**：**`overlap_x` **每像素重算** ✗（**∴ 不做预计算 ✓）
+///   ＋ **∴ 两者必须**逐位一致**✗ ⇒ **∴ 由 `rect_coverage_parity` 判据对拍** ✓ ★
+#[must_use]
+fn rect_coverage_clipped_slow(bbox: Bbox, clip: &Bbox) -> Coverage {
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return Coverage::empty();
+    }
+    let Some((x0, y0, x1, y1)) = clipped_grid(bbox, clip) else {
+        return Coverage::empty();
+    };
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for py in 0..height {
+        let top = (y0 + py as i64) as f64;
+        let bottom = top + 1.0;
+        let overlap_y = (bottom.min(bbox.y + bbox.h) - top.max(bbox.y)).clamp(0.0, 1.0);
+        for px in 0..width {
+            let left = (x0 + px as i64) as f64;
+            let right = left + 1.0;
+            let overlap_x = (right.min(bbox.x + bbox.w) - left.max(bbox.x)).clamp(0.0, 1.0);
+            data.push((overlap_x * overlap_y) as f32);
         }
     }
     Coverage {
