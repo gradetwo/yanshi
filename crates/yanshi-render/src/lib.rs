@@ -178,3 +178,4 @@ pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u32) {
     }
 }
 pub use crate::backend_note::verified_blobs_len;
+pub use yanshi_core::probe;

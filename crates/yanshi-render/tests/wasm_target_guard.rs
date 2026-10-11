@@ -33,7 +33,7 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
         ),
         (
             "crates/yanshi-render/src/render.rs",
-            18,
+            2,
             "（1）stage_probe 模块里的 Instant::now()：1 处代码 + 1 处说明注释，代码那处位于
              #[cfg(not(target_arch = wasm32))] 分支，wasm32 走编译期空操作；
              （2）#[cfg(test)] 测试模块里的 5 处 Instant::now()（液化成本探针与三个微基准）——
@@ -51,24 +51,17 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
         // **∴ 判据为什么仍要记账 ✗**：**本判据数的是**源码文本**✗
         //   ⇒ **∴ 加 cfg **不会**改变计数** ✓ ⇒ **∴ 必须**显式登记 ＋ 写明理由** ✓ ★
         (
-            "crates/yanshi-render/src/png.rs",
-            2,
-            "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：只用于量 PNG 编码与\n             质量档的耗时（本会话第 533 轮起）。wasm 构建里它们不参与编译。",
+            "crates/yanshi-core/src/probe.rs",
+            4,
+            "★ 唯一**真正使用 `Instant` 的地方**（第 592 轮）★：\n             非 wasm 那半边用 `Instant::now()`／`elapsed()`／`duration_since()`（2 处 now ＋ 2 处 elapsed/duration_since），\n             wasm 那半边是**哑类型**（零字段 ⇒ 绝不触碰 `Instant`）。\n             它存在的理由：`wasm smoke` 连续 6 次因 `<Instant>::now` 在 wasm 上 panic 而失败，\n             本判据只数源码文本、防不住运行时 panic ⇒ 用类型层面隔离。",
         ),
         (
             "crates/yanshi-render/src/buffer.rs",
-            2,
+            1,
             "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：\
              只用于量「GPU 结果与 CPU 真值逐字节比对」这一步的起止耗时（第 498 轮），\
              据此得出核对占 GPU 路 81.6%，运行时核对因此被移出默认路。\
              wasm 构建里这两条语句不参与编译，且 wasm 上本来不走这条 GPU 验证路",
-        ),
-        (
-            "crates/yanshi-render/src/geometry.rs",
-            2,
-            "`#[cfg(test)]` 测试模块 `blur_work_does_not_grow_with_radius` 里的 2 处 `Instant::now()`：\
-             同一张图分别用 radius 8 与 radius 128 计时、用**同一次运行的比值**判「每像素 O(1)」\
-             —— 测试代码不参与 wasm 构建，永不编译进客户端",
         ),
         (
             "crates/yanshi-core/src/ids.rs",
@@ -80,7 +73,7 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
         ),
         (
             "crates/yanshi-core/src/blob.rs",
-            3,
+            1,
             "第 1504／1611 轮的**存储写入分段计时**（`put_timing`，受 `YANSHI_OPEN_TIMING` 开关控制）：\
              2 处 `Instant::now()` 与 1 处 `SystemTime::now()`（后者是 9ff42c5 为「与外部报告对表」加的 \
              `epoch_ms`）。它们都在 **`FsBlobStore::put_inner`** 里 —— 那是**文件系统**存储。\

@@ -764,7 +764,7 @@ mod png_bench {
                 zlib_compress_best as fn(&[u8]) -> Vec<u8>,
             ),
         ] {
-            let t = std::time::Instant::now();
+            let t = crate::probe::ProbeClock::now();
             let out = f(&rgba);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             println!(
@@ -774,7 +774,7 @@ mod png_bench {
             );
         }
         // **∴ 完整编码（**含逐行组装 ＋ 三个 chunk ✓）
-        let t = std::time::Instant::now();
+        let t = crate::probe::ProbeClock::now();
         let full = encode_png(w, h, &rgba).expect("应当成功");
         println!(
             "  · 完整 encode_png（**含组装 ＋ chunk ✓）      {:8.1} ms｜体积 {} B",

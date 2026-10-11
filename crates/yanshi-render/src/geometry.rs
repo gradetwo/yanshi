@@ -934,10 +934,10 @@ mod feather_blur_tests {
         let mut best_small = f64::MAX;
         let mut best_large = f64::MAX;
         for _ in 0..3 {
-            let started = std::time::Instant::now();
+            let started = crate::probe::ProbeClock::now();
             std::hint::black_box(box_blur_2d(&data, w, h, 8));
             best_small = best_small.min(started.elapsed().as_secs_f64());
-            let started = std::time::Instant::now();
+            let started = crate::probe::ProbeClock::now();
             std::hint::black_box(box_blur_2d(&data, w, h, 128));
             best_large = best_large.min(started.elapsed().as_secs_f64());
         }

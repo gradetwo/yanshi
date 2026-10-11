@@ -1011,7 +1011,7 @@ impl Renderer {
     ) -> Result<RegionRender> {
         // **★ 门控计时（第 537 轮）★**：Drop 守卫 ⇒ 无论哪条出口都打印整体耗时（零生产开销）
         struct TotalTimer {
-            started: std::time::Instant,
+            started: crate::probe::ProbeClock,
             label: String,
             on: bool,
         }
@@ -1026,7 +1026,7 @@ impl Renderer {
                 }
             }
         }
-        let t_reg_start = std::time::Instant::now();
+        let t_reg_start = crate::probe::ProbeClock::now();
         let probe_on_reg = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
         let _total = TotalTimer {
             started: t_reg_start,
@@ -1222,7 +1222,7 @@ impl Renderer {
         //       ⇒ **∴ 剩下的就是**band 内探针之外的耗时**** ✓
         //         ＋ **∴ 而**它**不改变任何行为**（只在于探针开时打印 ✓）★
         struct AccTimer {
-            started: std::time::Instant,
+            started: crate::probe::ProbeClock,
             label: String,
             on: bool,
         }
@@ -1238,7 +1238,7 @@ impl Renderer {
             }
         }
         let _acc_timer = AccTimer {
-            started: std::time::Instant::now(),
+            started: crate::probe::ProbeClock::now(),
             label: format!("{}x{}", region.w as u32, region.h as u32),
             on: std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
         };
@@ -1431,7 +1431,7 @@ impl Renderer {
         //   **∴ 为什么声明在这一层 ✗**：**层循环在**更深的作用域**里也要用它 ✓**** ✓✓
         // **★ 门控计时（第 551 轮）★**：band 内 ~1650 ms 未归入 ⇒ 先量 below 判定＋取用
         let probe_below_on = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
-        let t_below = std::time::Instant::now();
+        let t_below = crate::probe::ProbeClock::now();
         let mut partial_below: Option<yanshi_core::Bbox> = None;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
@@ -1978,10 +1978,10 @@ impl Renderer {
             // 132.7 MB 的重新分配 + 首次触碰（4K 5 层每帧约 663 MB）。
             // 租约在本次迭代结束时 Drop ⇒ 本层的渲染与合成都用它，之后才归还。
             // **★ 每层三处门控计时（第 553 轮）★**：后半段未归入 ~1650 ms 的嫌疑
-            let t_layer = std::time::Instant::now();
+            let t_layer = crate::probe::ProbeClock::now();
             let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
             let d_acquire = t_layer.elapsed();
-            let t_objects = std::time::Instant::now();
+            let t_objects = crate::probe::ProbeClock::now();
             if layer_buffer.was_reused() {
                 stats.layer_buffers_reused += 1;
             } else {
@@ -1990,7 +1990,7 @@ impl Renderer {
             self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;
 
             let d_objects = t_objects.elapsed();
-            let t_mask = std::time::Instant::now();
+            let t_mask = crate::probe::ProbeClock::now();
             apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
 
             let d_mask = t_mask.elapsed();
@@ -3835,7 +3835,7 @@ pub(crate) mod parallel_impl {
         //     ⇒ **∴ 预算**要**容下两者 ✓ ⇒ **∴ 否则**池**反复丢缓冲**（**§21 实测 ✓）** ✓✓
         // **★ 门控计时（第 539 轮）★**：把 band 之外的 668 ms 切开（缓冲池 vs 线程）
         let probe_on_par = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
-        let t_pool = std::time::Instant::now();
+        let t_pool = crate::probe::ProbeClock::now();
         renderer.buffer_pool.begin_render_with(chunks, 2);
         if probe_on_par {
             eprintln!(
@@ -3847,7 +3847,7 @@ pub(crate) mod parallel_impl {
             );
         }
 
-        let t_alloc = std::time::Instant::now();
+        let t_alloc = crate::probe::ProbeClock::now();
         let mut out = Buffer::new(rx, ry, rw, rh);
         if probe_on_par {
             eprintln!(
@@ -3874,7 +3874,7 @@ pub(crate) mod parallel_impl {
         //（见 `BitmapCache` 的说明 ✓：这里若再新建一份局部缓存，就只在"本次渲染"内去重 ✗，
         //  下一笔又会把整幅背景重新解压一遍 ✓ —— 那正是本案要修的病 ✓）。
         let bitmaps = &renderer.bitmaps;
-        let t_scope = std::time::Instant::now();
+        let t_scope = crate::probe::ProbeClock::now();
         let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> = std::thread::scope(
             |scope| {
                 let mut handles = Vec::with_capacity(chunks);
@@ -3904,7 +3904,7 @@ pub(crate) mod parallel_impl {
                             //   **∴ 本探针 ✗**：**打印**线程 ID ＋ 单调时钟 ✗** ⇒ **∴ 于是**：
                             //     **∴ 若**4 个闭包**几乎同时**开始 ✗**（**同一时刻、不同线程 ✓）⇒ **∴ 真的并行 ✓**；
                             //     **∴ 若**它们**依次相隔 ~370 ms ✗**（**或**同一个线程 ID ✓）⇒ **∴ 串行确证 ✓**** ✓✓
-                            let __t0 = std::time::Instant::now();
+                            let __t0 = crate::probe::ProbeClock::now();
                             if let Ok(path) = std::env::var("YANSHI_BELOW_PROBE") {
                                 use std::io::Write;
                                 if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -4188,7 +4188,7 @@ pub(crate) use parallel_impl::workers;
 
 /// 渲染阶段计时探针（诊断用）。
 ///
-/// **wasm32 上必须是空操作**：`std::time::Instant::now()` 在 `wasm32-unknown-unknown`
+/// **wasm32 上必须是空操作**：`crate::probe::ProbeClock::now()` 在 `wasm32-unknown-unknown`
 /// 上不支持，会直接 panic（曾因此让浏览器端每次渲染都崩，而原生测试全绿 ——
 /// 教训：原生通过不等于浏览器通过，探针一定要按目标平台分派）。
 #[cfg(not(target_arch = "wasm32"))]
@@ -5520,7 +5520,7 @@ mod tests {
             buffer.fill([0.4, 0.5, 0.6, 1.0]);
             let mut best = std::time::Duration::MAX;
             for _ in 0..3 {
-                let started = std::time::Instant::now();
+                let started = crate::probe::ProbeClock::now();
                 let clone = buffer.clone();
                 std::hint::black_box(&clone);
                 best = best.min(started.elapsed());
@@ -5545,7 +5545,7 @@ mod tests {
         // 4 次 get + 1 次 set，模拟一次双线性采样并写回。
         let mut best = std::time::Duration::MAX;
         for _ in 0..3 {
-            let started = std::time::Instant::now();
+            let started = crate::probe::ProbeClock::now();
             let mut acc = 0.0f32;
             for index in 0..samples {
                 let x = (index % 1000) as u32;
@@ -5590,7 +5590,7 @@ mod tests {
         let affected = 160_000usize;
         let mut best = std::time::Duration::MAX;
         for _ in 0..3 {
-            let started = std::time::Instant::now();
+            let started = crate::probe::ProbeClock::now();
             let mut acc = 0.0f32;
             for index in 0..affected {
                 let x = (index % 400) as u32 + 312;
@@ -5682,14 +5682,14 @@ mod tests {
             let mut renderer = renderer();
             let mut baseline = std::time::Duration::MAX;
             for _ in 0..5 {
-                let started = std::time::Instant::now();
+                let started = crate::probe::ProbeClock::now();
                 let _ = renderer.render_document(&state, &store).unwrap();
                 baseline = baseline.min(started.elapsed());
             }
             state.objects.insert("liquify".to_owned(), without);
             let mut with_liquify = std::time::Duration::MAX;
             for _ in 0..5 {
-                let started = std::time::Instant::now();
+                let started = crate::probe::ProbeClock::now();
                 let _ = renderer.render_document(&state, &store).unwrap();
                 with_liquify = with_liquify.min(started.elapsed());
             }

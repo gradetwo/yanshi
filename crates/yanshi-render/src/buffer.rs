@@ -688,7 +688,7 @@ impl Buffer {
         //     ⇒ **∴ 而是**用 `#[cfg(not(target_arch = "wasm32"))]` **真的把它排除在 wasm 之外** ✓
         //       （**∴ wasm 上**本来就不走这条 GPU 验证路** ✓）★
         #[cfg(not(target_arch = "wasm32"))]
-        let t_verify = std::time::Instant::now();
+        let t_verify = crate::probe::ProbeClock::now();
         let (width, height) = (self.width as usize, self.height as usize);
         let mut want = vec![0u8; width * height * 4];
         // **★ CPU 对照**必须用**同一个背景** ✗ ★**（**第 459 轮 ✓）：

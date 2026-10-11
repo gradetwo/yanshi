@@ -688,11 +688,11 @@ impl FsBlobStore {
         // 存储写入的分段计时（第 1504 轮）。外部报告显示一次 1723 字节的写入要 188 秒，
         // 而 4.35 MB 的那次是 0 毫秒 ⇒ 必须看清是哪一步挂住（不是数据量问题）。
         let trace = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
-        let t = std::time::Instant::now();
+        let t = crate::probe::ProbeClock::now();
         let mut last = t;
         let mut step = |name: &str| {
             if trace {
-                let now = std::time::Instant::now();
+                let now = crate::probe::ProbeClock::now();
                 let epoch_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis())

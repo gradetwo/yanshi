@@ -50,6 +50,7 @@ pub mod error;
 pub mod fold;
 pub mod ids;
 pub mod log;
+pub mod probe;
 pub mod resample;
 pub mod seq;
 pub mod snapshot;
