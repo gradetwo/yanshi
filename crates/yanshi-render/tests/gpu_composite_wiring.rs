@@ -19,6 +19,7 @@
 //
 // **★★★ 变异检验 ✗**：**尺寸低于阈值 ⇒ **计数必须为 0**** ✓ ★
 #![cfg(feature = "gpu")]
+use std::time::Instant;
 use yanshi_render::blend::BlendMode;
 use yanshi_render::buffer::{
     gpu_composite_calls, init_gpu_quantizer, reset_gpu_composite_calls, Buffer,
@@ -62,6 +63,8 @@ fn cpu_three_steps(
 
 #[test]
 fn gpu_layer_composite_is_actually_taken_and_u8_exact() {
+    // **∴ 需要显式开关 ✗**（**∴ 默认关闭 ✓ —— 第 691 轮实测 GPU 合成更慢 ✓）★
+    std::env::set_var("YANSHI_GPU_COMPOSITE", "1");
     let (w, h) = (256u32, 256u32); // ★ 65536 像素 ＞ 阈值 30000 ★
     if let Err(e) = init_gpu_quantizer(srgb_encode_table().to_vec()) {
         eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过 GPU 路径验证（**不是通过**）：{e}");
@@ -160,4 +163,60 @@ fn below_the_threshold_the_gpu_path_is_not_taken() {
     let calls = gpu_composite_calls();
     println!("  ★ 低于阈值时 GPU 采用次数 ＝ {calls}（应为 0）");
     assert_eq!(calls, 0, "低于阈值时不应走 GPU（calls={calls}）");
+}
+
+/// **★★★ A/B：GPU 合成相对 CPU 三步的**性能收益** ✗ ★★★**（**第 691 轮 ✓）
+///
+/// **∴ 为什么量它 ✗**：**目标第 11 条的价值全在**性能**✗
+///   ＋ **∴ 而** 4K 上合成／图层占 **66.6%** ✓
+///     ＋ **∴ 所以**必须先知道**收益有多大** ✓ ★
+///
+/// **∴ 方法学 ✗**：**各跑 5 次取 **最小值****✗（**∴ 对性能最稳 ✓）
+///   ＋ **∴ `black_box` 在**停表之后****✗（**∴ 第 661 轮的修正 ✓）★
+#[test]
+fn gpu_composite_throughput_versus_cpu() {
+    // **∴ 必须设开关 ✗ ★**（**∴ 第 691 轮实测：**接线默认关闭** ✓）
+    //   ＋ **∴ 否则**两路**都是 CPU**✗ ⇒ **∴ 得到的是**假 A/B** ✓（**∴ 本轮就踩了这个坑 ✓）★
+    std::env::set_var("YANSHI_GPU_COMPOSITE", "1");
+    if init_gpu_quantizer(srgb_encode_table().to_vec()).is_err() {
+        eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过（**不是通过**）");
+        return;
+    }
+    for (label, w, h) in [("256x256", 256u32, 256u32), ("1920x1080", 1920, 1080)] {
+        let mut layer = Buffer::new(0, 0, w, h);
+        fill(&mut layer, 0xC0FF_EE01);
+        let time_of = |via_gpu: bool| {
+            let mut best = f64::INFINITY;
+            for _ in 0..5 {
+                let mut acc = Buffer::new(0, 0, w, h);
+                fill(&mut acc, 0x5EED_0001);
+                let t = Instant::now();
+                if via_gpu {
+                    acc.composite_with_layer(&layer, BlendMode::Normal, 1.0);
+                } else {
+                    let cpu = cpu_three_steps(&layer, BlendMode::Normal, 1.0, w, h, 0x5EED_0001);
+                    acc = cpu;
+                }
+                let d = t.elapsed().as_secs_f64() * 1000.0;
+                std::hint::black_box(&acc);
+                if d < best {
+                    best = d;
+                }
+            }
+            best
+        };
+        reset_gpu_composite_calls();
+        let gpu = time_of(true);
+        let calls = gpu_composite_calls();
+        let cpu = time_of(false);
+        println!(
+            "  ★ {label}：GPU min {gpu:.2} ms（**采用 {calls} 次）｜CPU 三步 min {cpu:.2} ms｜提速 {:.2}×",
+            cpu / gpu
+        );
+        // **★ 从根上防止**假 A/B** ✗ ★**（**∴ 第 691 轮教训 ✓）
+        assert!(
+            calls > 0,
+            "{label}：GPU 路的采用次数为 0 ⇒ 这个 A/B **测的不是 GPU**（请检查开关）"
+        );
+    }
 }

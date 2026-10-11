@@ -1268,10 +1268,22 @@ impl Buffer {
         //       ＋ **∴ GPU 编码 ✗**：0 Normal 1 Multiply 2 Screen **3 ColorDodge** 4 Overlay …
         //         ⇒ **∴ 两者**顺序不同**✗ ⇒ **∴ 用 `as u32` **会把 Overlay 当成 ColorDodge** ✓
         //           ＋ **∴ 所以**必须有**显式表** ✓（**∴ 第 636 轮的警告 ✓）★
+        // **★★★ 默认**关闭** ✗ ★★★**（**第 691 轮实测 ✓）
+        //   **∴ 为什么默认关闭 ✗**：**实测 GPU 合成**比 CPU 三步**慢**✗：
+        //     **∴ 256×256 ⇒ **0.24×**（**慢 4.2× ✓）｜**1920×1080 ⇒ **0.80×**（**慢 25% ✓）
+        //       ＋ **∴ 原因 ✗**：**每次调用**要**上传 src ＋ dst ＋ 下载结果**✗
+        //         （**∴ `Vec<f32>` 新分配 ⇒ **无池化** ✓）
+        //           ＋ **∴ 而** CPU **只在内存里跑 ⇒ **无传输** ✓
+        //             ⇒ **∴ 所以**：**传输是瓶颈**✓（**∴ 与第 662 轮量化的结论一致 ✓）
+        //               ＋ **★ 所以 ✗**：**默认**走 CPU**✗
+        //                 ＋ **∴ 只有**显式设 `YANSHI_GPU_COMPOSITE=1`**才走 GPU ✓
+        //                   ＋ **∴ 而**真正的 GPU 收益**需要**层缓冲**驻留显存**✗ ⇒ **∴ 那**是**大架构改动** ✓ ★
         #[cfg(feature = "gpu")]
-        if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
-            self.pixels.copy_from_slice(&out);
-            return;
+        if std::env::var_os("YANSHI_GPU_COMPOSITE").is_some() {
+            if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
+                self.pixels.copy_from_slice(&out);
+                return;
+            }
         }
         let factor = opacity.clamp(0.0, 1.0);
         for y in 0..layer.height {
