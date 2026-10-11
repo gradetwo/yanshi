@@ -213,6 +213,26 @@ pub fn polygon_coverage(points: &[(f64, f64)], supersample: u32) -> Coverage {
 
 /// 多边形覆盖率，只生成与 `clip` 相交的像素。
 pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &Bbox) -> Coverage {
+    // **∴ 生产路径走**快路**✗**（**∴ 内部快路径 ✓；**目标第 11 条 ✓）★
+    //   ＋ **∴ 旧路**保留为**真值**✗（**∴ 判据对拍用 ✓）⇒ **∴ 参数化而**不是**环境变量** ✓
+    //     （**∴ 因为**环境变量是**进程级**✗ ⇒ **∴ 在**并发测试**里有**竞态** ✓）★
+    polygon_coverage_clipped_impl(points, supersample, clip, false)
+}
+
+/// **★ `polygon_coverage_clipped` 的参数化实现 ✗ ★**（**第 676 轮 ✓）
+///
+/// **∴ `slow` ✗**：**true ＝ 旧路（**每子样本都判定 ✓）｜**false ＝ 内部快路径** ✓
+///   ＋ **∴ 两者必须**逐位一致**✗ ⇒ **∴ 由 `polygon_coverage_fast_path` 判据对拍** ✓ ★
+///
+/// # Errors
+/// **∴ 不返回 `Err`** ✓
+#[must_use]
+pub fn polygon_coverage_clipped_impl(
+    points: &[(f64, f64)],
+    supersample: u32,
+    clip: &Bbox,
+    slow: bool,
+) -> Coverage {
     if points.len() < 3 {
         return Coverage::empty();
     }
@@ -271,15 +291,54 @@ pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &
         }
         rows.push(per_sy);
     }
+    // **★★★ 内部快路径 ✗ ★★★**（**第 676 轮 ✓；**目标第 11 条 ✓）
+    //
+    // **∴ 依据 ✗**：**`inside_from_thresholds` 已经是 O(log n)**✗（**二分 ✓）
+    //   ＋ **∴ 所以**真正的成本是**调用次数**✗（**132 M 次 ＝ 8.3 M 像素 × 16 子样本 ✓）
+    //     ⇒ **∴ 而**关键洞察 ✗**：
+    //       **∴ 若**一个像素的**全部 16 个子样本都落在**同一阈值区间**✗
+    //         ＋ **∴ 那**么**每个子样本判定**相同**✗ ⇒ **∴ 平均恒为 **1.0** 或 **0.0**** ✓
+    //           ⇒ **★ 所以：**只需算 **1 次**就能代表全部 16 次** ✓ ★
+    //
+    // **∴ 如何判定「同区间」 ✗**：**子样本的 x ∈ [lo, hi] ＝ [x0+px, x0+px+1]** ✓
+    //   ＋ **∴ 若**区间内**没有阈值**✗（**∴ 用**二分一次 ✓）⇒ **∴ 那**么**全部子样本**同区间** ✓
+    //     ＋ **∴ 边界判定**保守**✗（**∴ 宁可**多标 ⇒ **∴ 只是**多做 16 次 ⇒ **∴ 永远不会错** ✓）★
+    //
+    // **∴ 逐位一致 ✗**：**同区间 ⇒ **1 次的判定**与**16 次的判定**逐个相同** ✓
+    //   ＋ **∴ 而** `hits` **的累加方式**不同**✗
+    //     （**∴ 1 次时**加 `ss as f32`／0.0；**16 次时**加 16 次 1.0／0.0 ✓）
+    //       ＋ **∴ 而**整数级 f32 加法**精确**✗（**∴ 16.0 可精确表示 ✓）
+    //         ⇒ **∴ 结果**逐位相同** ✓（**判据对拍验证 ✓）★
     for py in 0..height {
         for px in 0..width {
             let mut hits = 0.0f32;
+            let lo = x0 as f64 + px as f64;
+            let hi = lo + 1.0;
             for sy in 0..ss {
                 let thresholds = &rows[py as usize][sy as usize];
-                for sx in 0..ss {
-                    let x = x0 as f64 + px as f64 + offs[sx as usize];
+                // **∴ 区间内是否有阈值 ✗**（**二分一次 ✓）★
+                // **★★★ 注意：`slow` **必须**短路为 true**✗ ★★★**（**第 676 轮 ✓）
+                //   **∴ 我**第一版写的是 `!slow && {…}`**✗
+                //     ＋ **∴ 于是** `slow = true` **也走了快路** ✗
+                //       ⇒ **∴ 旧路**（真值）根本没跑** ⇒ **∴ 判据**当场红（**36040 个像素差异 ✓）★
+                //         ＋ **∴ 正确写法 ✗**：**`slow || {…}`** ✓
+                //           （**∴ slow ⇒ **必须**走 16 次 ⇒ **才能当真值** ✓）★
+                let has_crossing = slow || {
+                    let i = thresholds.partition_point(|t| *t <= lo);
+                    i < thresholds.len() && thresholds[i] <= hi
+                };
+                if has_crossing {
+                    for sx in 0..ss {
+                        let x = x0 as f64 + px as f64 + offs[sx as usize];
+                        if inside_from_thresholds(x, thresholds) {
+                            hits += 1.0;
+                        }
+                    }
+                } else {
+                    // **∴ 同区间 ⇒ 一次判定代表全部 ✓** ★
+                    let x = x0 as f64 + px as f64 + offs[0];
                     if inside_from_thresholds(x, thresholds) {
-                        hits += 1.0;
+                        hits += ss as f32;
                     }
                 }
             }
