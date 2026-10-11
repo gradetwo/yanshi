@@ -4772,3 +4772,48 @@ Caused by:
       ⇒ **∴ 即**：**那些构建**没有真的重编**✗ ⇒ **∴ 不能**把"Finished"当作"改动生效"的证据** ✓ ★
         ＋ **∴ 正确做法 ✗**：**看**时间戳**＋ **看**产物 mtime**✗（**∴ 或**至少对可疑的快构建**存疑** ✓）★
 
+---
+
+## 第 548 轮：**★★★ 目标第 8 条的**影响面测绘** ＋ 一条**能红的判据**** ★★★
+
+### **∴ 测绘结果（**实测 ✓）★**
+  ⇒ **∴ 那 4 处**不是 Rust ✗**，**而是 **JS 函数**✗，在
+    **`crates/yanshi-http/assets/viewer-app.js`** ✓（**＋ `web/index.html` 旧副本 ✓）：
+```
+  · drawKernelRegion          (1866)   调用点 3
+  · drawKernelBoxDirect       (1955)   调用点 1
+  · pickColorAt               (6727)   调用点 1   ← ★ 事件处理器 ⇒ 变 async 会改返回语义 ★
+  · composeFullDocumentCanvas (9840)   调用点 1
+```
+  ⇒ **★ 所以工程量 ＝ **4 个函数变 `async` ＋ 6 个调用点加 `await`**** ✓ ★
+
+### **∴ 本机**不能编译 wasm**（**实测 ✓）★**
+  ⇒ **∴ `/usr/lib/rustlib`**只有 `x86_64-unknown-linux-gnu`**✗
+    ＋ **∴ 而且**没有 `rustup`**✗（`rustup target add` 无法运行 ✓）
+      ⇒ **∴ 所以**：**第 8 条**在本机不可编译验证** ✓ ★
+  ⇒ **∴ 而 CI **已经在构建 wasm** ✗**（`ci.yml` ✓）：
+    ⇒ **∴ `:138` `rustup target add wasm32-unknown-unknown`** ✓
+      ＋ **∴ `:143` `cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown`** ✓
+        ＋ **∴ `:147` 同一条 ＋ **`--features gpu`**** ✓ ⇒ **∴ 两种配置都编 ✓**
+          ＋ **∴ `:165／:202` 判据里再用 ✓** ★
+    ⇒ **★ 所以：CI **是这条路的可信编译反馈渠道**** ✓（**∴ 第 13 条的价值在此 ✓）★
+
+### **∴ 本轮交付 ✗**：**判据 `scripts/tool-kernel-async-sites.mjs`** ✓
+  ⇒ **∴ 它断言 ✗**：**① 四个函数都必须是 `async`** ✓
+    ＋ **∴ ② 它们的调用点必须 `await`（**注释不算 ✓）
+      ＋ **∴ ③ 自我检查 ✗**：**文件存在／四个函数都在／每个至少一个调用点**
+        ⇒ **∴ 否则**判据自己坏了 ⇒ **`exit 3`**✗（**与产品缺陷区分 ✓）★
+  ⇒ **∴ 自检 ✗**：**3 例｜判红 2｜不符合期望 0** ✓
+    ＋ **∴ 含变异 ✗**：**去掉 `await` ⇒ 报「没有 await」** ✓ ★
+  ⇒ **∴ 实测（**现在 ⇒ 红 ✓）✗**：
+```
+★ 内核 4 个调用点的异步状态（目标第 8 条）★
+· drawKernelRegion           同步 ✗｜调用点 3（未 await 3）
+· drawKernelBoxDirect        同步 ✗｜调用点 1（未 await 1）
+· pickColorAt                同步 ✗｜调用点 1（未 await 1）
+· composeFullDocumentCanvas  同步 ✗｜调用点 1（未 await 1）
+⇒ 退出码 1
+```
+  ⇒ **★ 意义 ✗**：**第 8 条的"完成条件"现在**机器可判**✗
+    ⇒ **∴ 改完 ⇒ **红→绿**✗ ⇒ **∴ 且** CI **兜编译** ✓ ★
+
