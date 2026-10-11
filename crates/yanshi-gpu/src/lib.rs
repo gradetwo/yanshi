@@ -215,6 +215,10 @@ const BYTES_PER_PIXEL: usize = 16;
 static STAGE_UPLOAD_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STAGE_SUBMIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STAGE_READBACK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// **★ GPU 自己算的时间（**纳秒，时间戳 ✓）✗ ★**（**第 546 轮 ✓；目标第 9 条 ✓）
+///   ⇒ **∴ 只在**门控满足时**才被写**✗（**`should_time_gpu` ✓）
+///     ＋ **∴ 未测时**保持 0 ⇒ **∴ 与「量到 0」可区分**（**∴ 若**要区分，可看探针是否开着 ✓）★
+static STAGE_GPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// **★ 读最近一次的分段计时 ✗ ★**
@@ -489,6 +493,33 @@ impl Quantizer {
         let mut upload_ns = 0u64;
         let mut submit_ns = 0u64;
         let mut readback_ns = 0u64;
+        // **★ GPU 侧时间戳（**门控 ✓）✗ ★**（**第 546 轮 ✓；目标第 9 条 ✓）
+        //   ⇒ **∴ 门控 ⇒ **生产路零开销**✗（`should_time_gpu` ✓）
+        //     ＋ **∴ 只量**第一块**✗（**∴ 两个索引会被后续块覆盖 ✓）
+        //       ⇒ **∴ 那**是**代表性的一块** ✓ ★
+        let time_gpu = should_time_gpu(
+            self.device.features(),
+            std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
+        );
+        let (ts_query, ts_resolve) = if time_gpu {
+            let query = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("yanshi-gpu-time"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            });
+            // **∴ 16 字节 ＝ 两个 u64 纳秒 ✓**（**∴ 且**用途必须含 QUERY_RESOLVE ＋ MAP_READ ✓）
+            let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("yanshi-gpu-time-resolve"),
+                size: 16,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            (Some(query), Some(resolve))
+        } else {
+            (None, None)
+        };
         while done < count {
             let take = per_chunk.min(count - done);
             // **★ 不要再拷一份 `Vec<f32>` ✗ ★**（**第 496 轮 ✓）
@@ -575,7 +606,18 @@ impl Quantizer {
             {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: None,
-                    timestamp_writes: None,
+                    // **★ 只量第一块 ✗ ★**（**∴ 索引会被后续块覆盖 ⇒ **∴ 量多次无意义** ✓）
+                    timestamp_writes: if done == 0 {
+                        ts_query
+                            .as_ref()
+                            .map(|query| wgpu::ComputePassTimestampWrites {
+                                query_set: query,
+                                beginning_of_pass_write_index: Some(0),
+                                end_of_pass_write_index: Some(1),
+                            })
+                    } else {
+                        None
+                    },
                 });
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &bind, &[]);
@@ -588,6 +630,10 @@ impl Quantizer {
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
         // **∴ 分段②：提交（**submit ＋ 一次 poll ✓）★
         let t_sub = Instant::now();
+        // **∴ resolve 必须在**提交之前**✗（**∴ 它**也是编码命令 ✓）★
+        if let (Some(query), Some(resolve)) = (ts_query.as_ref(), ts_resolve.as_ref()) {
+            enc.resolve_query_set(query, 0..2, resolve, 0);
+        }
         self.queue.submit(Some(enc.finish()));
         // **★ 不阻塞 ✗ ★**（**第 471 轮 ✓）：**真正的同步在下面 `map_async` 的 await ✓
         let _ = self.device.poll(wgpu::PollType::Poll);
@@ -616,6 +662,32 @@ impl Quantizer {
         STAGE_UPLOAD_NS.store(upload_ns, std::sync::atomic::Ordering::Relaxed);
         STAGE_SUBMIT_NS.store(submit_ns, std::sync::atomic::Ordering::Relaxed);
         STAGE_READBACK_NS.store(readback_ns, std::sync::atomic::Ordering::Relaxed);
+        // **★ 读回 GPU 侧纳秒 ✗ ★**（**∴ wgpu 26 没有 `get_results` ⇒ **resolve → map** ✓）
+        if let Some(resolve) = ts_resolve.as_ref() {
+            let slice = resolve.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+            let _ = self.device.poll(wgpu::PollType::Wait);
+            if rx.recv().is_ok() {
+                let data = slice.get_mapped_range();
+                if data.len() >= 16 {
+                    let start = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                    let end = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                    let ns = end.saturating_sub(start);
+                    STAGE_GPU_NS.store(ns, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!(
+                        "PROBE GPU 算：{:.3} ms（**时间戳 ✓）｜host 侧提交 {:.3} ms ⇒ 驱动开销 {:.3} ms",
+                        ns as f64 / 1e6,
+                        submit_ns as f64 / 1e6,
+                        (submit_ns.saturating_sub(ns)) as f64 / 1e6
+                    );
+                }
+                drop(data);
+                resolve.unmap();
+            }
+        }
         STAGE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(out)
     }
@@ -852,6 +924,31 @@ mod chunk_cap_tests {
     }
 }
 
+/// **★ 要不要量 **GPU 自己的时间**** ✗ ★**（**第 546 轮 ✓；目标第 9 条 ✓）
+///
+/// **∴ 为什么需要单独一个纯函数 ✗**：**时间戳查询有三项成本**✗：
+///   ⇒ **∴ ① 需要一个 `QuerySet` ＋ 一个 `resolve` 目标 buffer** ✓
+///     ＋ **∴ ② 每次提交后要**多一次 `map` 等待**** ✓
+///       ＋ **∴ ③ 而** wgpu 26 **没有 `get_results`**✗ ⇒ **∴ 读回要
+///         **resolve → buffer → map** 三步** ✓
+///           ⇒ **∴ 所以**：**它**绝不能进生产路**✗ ⇒ **∴ 必须**门控** ✓ ★
+///
+/// **∴ 两个条件缺一不可 ✗**：
+///   ⇒ **∴ ① 适配器**支持 `TIMESTAMP_QUERY`**✗（**本机核显实测 = true ✓）
+///     ＋ **∴ ② 探针**开着**✗（`YANSHI_RENDER_PROBE` ✓）
+///       ⇒ **∴ 于是**：**生产路**零开销** ✓ ★
+///
+/// **∴ 它回答什么 ✗**：**第 9 条的问题 ——
+///   **「传输贵」还是「算得贵」**** ✓
+///   ⇒ **∴ 而** host 侧数据（**第 545 轮 ✓）已给出**上下界**✗：
+///     **传输 77% vs 提交 23%** ✓
+///       ⇒ **∴ 时间戳把 `submit` 里的
+///         **驱动开销**与**真算**分开** ✓ ★
+#[must_use]
+pub const fn should_time_gpu(features: wgpu::Features, probe_on: bool) -> bool {
+    probe_on && features.contains(wgpu::Features::TIMESTAMP_QUERY)
+}
+
 #[cfg(test)]
 mod f16_path_tests {
     // **★ 选路必须**跟随 `SHADER_F16`**✗ ★**（**第 544 轮 ✓；目标第 10 条 ✓）
@@ -878,6 +975,32 @@ mod f16_path_tests {
         assert_ne!(
             f16_path_name(F16Path::Native),
             f16_path_name(F16Path::Emulated)
+        );
+    }
+}
+
+#[cfg(test)]
+mod gpu_timestamp_gate_tests {
+    // **★ 时间戳查询必须**双条件门控**✗ ★**（**第 546 轮 ✓；目标第 9 条 ✓）
+    //   **∴ 为什么 ✗**：**它每次提交要多一次 resolve ＋ map 等待** ✓
+    //     ⇒ **∴ 若**进了生产路 ⇒ **∴ 那**就是**白给的开销** ✓
+    //       ＋ **∴ 而**不支持该特性的适配器上**根本不能建 `QuerySet`** ✓ ★
+    use super::*;
+
+    #[test]
+    fn the_gpu_timestamp_gate_needs_both_conditions() {
+        let has = wgpu::Features::TIMESTAMP_QUERY;
+        assert!(
+            !should_time_gpu(has, false),
+            "探针没开 ⇒ **不许**量（生产路零开销）"
+        );
+        assert!(
+            !should_time_gpu(wgpu::Features::empty(), true),
+            "适配器不支持 TIMESTAMP_QUERY ⇒ **不许**量（否则建不了 QuerySet）"
+        );
+        assert!(
+            should_time_gpu(has, true),
+            "两个条件都满足 ⇒ **应当**量（本机核显就是这种情形）"
         );
     }
 }
