@@ -259,6 +259,28 @@ async function renderAndHash(base, tag) {
     for (const b of shapeBad) console.error(`     ${b}`);
     process.exit(2);
   }
+  // **★ 混合模式也要覆盖 ✗ ★**（**第 518 轮 ✓）
+  //   **∴ 为什么 ✗**：**原场景**只覆盖 `Normal`（**source-over ✓）✗
+  //     ⇒ **∴ 而**合成搬 GPU 时**最容易错的就是**非 Normal 的混合** ✓
+  //       ⇒ **∴ 所以**：**先把模式加进场景 ⇒ **∴ 那样**逐位一致就**顺带覆盖**它们 ✓ ★
+  //   **∴ 用 `update_layer` ✗**（**它用 `BlendMode::parse` 校验 ✓）
+  const modes = { L1: "multiply", L2: "screen" };
+  for (const [layer, mode] of Object.entries(modes)) {
+    // **★ 必须**检查返回 ✗ ★**（**第 518 轮实测 ✓）
+    //   **∴ 为什么 ✗**：**第一版**直接用 `call(...)` 不看返回**✗
+    //     ⇒ **∴ 而**它**静默失败**（**参数名不对 ✓）
+    //       ⇒ **∴ 于是**：**判据还是绿的**✗ ，**而**混合模式**根本没生效** ✓
+    //         ⇒ **∴ 那**正是**判据空转**（**∴ 与第 504 轮同一类错误 ✓）★
+    //   **∴ 现在 ✗**：**任一模式没设上 ⇒ **判据以 exit 2 报"判据自身坏了"** ✓ ★
+    const res = await call("update_layer", { layer_id: layer, patch: { blend_mode: mode } });
+    if (!res || res.ok !== true) {
+      console.error(
+        `  ✗ 判据自身的准备失败（不是产品问题）：update_layer(${layer}, ${mode}) ⇒ ` +
+          JSON.stringify(res).slice(0, 220),
+      );
+      process.exit(2);
+    }
+  }
   for (const sh of shapes) {
     await call("fill", {
       layer_id: `L${sh.i}`,
