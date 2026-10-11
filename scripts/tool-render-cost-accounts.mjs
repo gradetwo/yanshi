@@ -64,6 +64,10 @@ function option(name, fallback = null) {
 }
 
 const rounds = Number(option("--rounds", argv.length === 0 ? "1" : "3"));
+// **★ `--region WxH` ✗ ★**（**第 563 轮 ✓）：**默认 3840x2160 ⇒ 与改动前一致** ✓
+const regionArg = option("--region", "3840x2160");
+const RENDER_W = Number(regionArg.split("x")[0]) || 3840;
+const RENDER_H = Number(regionArg.split("x")[1]) || 2160;
 // **★ 判据必须**自足** ✗ ★**（第 77 轮 ✓）：**没有**任何参数时**默认 `--spawn`**✗
 //   **∴ 且**：**默认轮数**改成 **1** ✗
 //     ⇒ **∴ 因为**它在**分片里**也会被跑到**✗ ⇒ **∴ 不该**在那里跑**3 轮重活 ✓**** ✓✓
@@ -207,7 +211,11 @@ async function measureRound({ base, pid, scenario, warm, round }) {
   const before = await readProcess(pid);
   const t0 = process.hrtime.bigint();
   const out = await scenario.call("render_region", {
-    region: { x: 0, y: 0, w: 3840, h: 2160 },
+    // **★ `--region WxH`（**默认 3840x2160 ⇒ 行为不变 ✓）★**（**第 563 轮 ✓；目标第 2 条 ✓）
+    //   **∴ 为什么需要 ✗**：**原来区域**硬编码 4K**✗ ⇒ **∴ 于是**：
+    //     **"8K 工程"其实也只在**4K 区域**上渲染**（**第 562 轮实测 ✓）
+    //       ⇒ **∴ 测不出**真 8K 分辨率**✗ ⇒ **∴ 规模曲线缺**端点** ✓ ★
+    region: { x: 0, y: 0, w: RENDER_W, h: RENDER_H },
     include_image: false,
   });
   const t1 = process.hrtime.bigint();
