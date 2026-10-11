@@ -688,18 +688,39 @@ impl Quantizer {
         //       `min_storage_buffer_offset_alignment`（**≤ 256 ✓）
         //       ＋ **∴ 而** `pb` 用 **256** 的倍数 ⇒ **∴ 满足**
         //         `min_uniform_buffer_offset_alignment` ✓ ★
-        let chunk_bytes4 = (per_chunk * 4) as u64;
+        // **★★★ 量纲修正 ✗ ★★★**（**第 614 轮实测 ✓）★
+        //   **∴ 坑 ✗**：**`pixels` 的索引是**按字节**的**✗
+        //     ＋ **∴ 因为**切片写成 `pixels[done * 4..(done + take) * 4]`**✗
+        //       ⇒ **∴ 每块取的是** `take * 4` 个 `f32`**✗
+        //         ＋ **∴ 而**每块的总字节 ＝ **`take * 16`** ✓
+        //   **∴ 症状（**实测 ✓）✗**：
+        //     「**Copy of 0..4194304 would end up overrunning the bounds of the
+        //       Destination buffer of size 1048576**」**✗
+        //     ⇒ **∴ 因为**我只按 `per_chunk * 4` 分配** ✓
+        //   **∴ 教训 ✗**：**改了 GPU 路径就**必须在本机跑
+        //     `-p yanshi-http --test gpu_4k_two_accounts`**✗
+        //     ＋ **∴ 它**是**最快的真验证**（**∴ 比上 L4 快一个数量级 ✓）★
+        // **∴ 分配**全部块的总量**✗（**coalescing 的本意 ＝ 一张大 buffer 装所有块 ✓）★
+        //   **∴ 坑 ✗**：**第一版只按**单块**分配**✗
+        //     ＋ **∴ 症状 ✗**：「**Copy of 4194304..8388608 would end up overrunning
+        //       the bounds of the Destination buffer of size 4194304**」 ✓
+        //       ⇒ **∴ 因为**第二块的偏移已经**超出**单块大小** ✓ ★
+        //   **∴ 内存两面 ✗**：**总量 ＝ 全部块**✗
+        //     ＋ **∴ 而**原来**也是**所有块在唯一那次提交前**都活着** ✓
+        //       ⇒ **∴ 所以**：**峰值 VRAM **不变**** ✓ ★
+        let src_total = (count * 16) as u64;
+        let dst_total = (count * 4) as u64;
         let pb_stride: u64 = 256;
         let chunks_total = count.div_ceil(per_chunk);
         let src_all = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("yanshi-gpu-src-all"),
-            size: chunk_bytes4,
+            size: src_total,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let dst_all = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("yanshi-gpu-dst-all"),
-            size: chunk_bytes4,
+            size: dst_total,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -712,7 +733,14 @@ impl Quantizer {
         let mut chunk_index: u64 = 0;
         while done < count {
             let take = per_chunk.min(count - done);
-            let src_off = (done * 4) as u64;
+            // **★ 两个偏移的**量纲不同** ✗ ★**（**第 614 轮实测 ✓）
+            //   **∴ src ✗**：**输入切片按字节索引 ⇒ `take * 4` 个 `f32` ⇒ **`done * 16` 字节**** ✓
+            //     ＋ **∴ dst ✗**：**输出是每像素 4 字节 ⇒ **`done * 4` 字节**** ✓
+            //       ⇒ **∴ 混用会报 ✗**：
+            //         「**The bound range … of Buffer with 'yanshi-gpu-dst-all'
+            //           label overflows its size**」 ✓ ★
+            let src_off = (done * 16) as u64;
+            let dst_off = (done * 4) as u64;
             let pb_off = chunk_index * pb_stride;
             chunk_index += 1;
             // **★ 不要再拷一份 `Vec<f32>` ✗ ★**（**第 496 轮 ✓）
@@ -764,14 +792,14 @@ impl Quantizer {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &src_all,
                             offset: src_off,
-                            size: wgpu::BufferSize::new((take * 4) as u64),
+                            size: wgpu::BufferSize::new((take * 16) as u64),
                         }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &dst_all,
-                            offset: src_off,
+                            offset: dst_off,
                             size: wgpu::BufferSize::new((take * 4) as u64),
                         }),
                     },
