@@ -360,9 +360,25 @@ cmd_ping() {
   if printf '%s' "${out}" | grep -q PONG; then
     echo "  ✓ 会话在线：$(printf '%s' "${out}" | grep -v PONG | head -1)"
   else
-    echo "  ✗ **会话可能已被回收**（**拿不到 PONG ✓）⇒ 用 \`scripts/l4.sh up\` 重建 ✓"
+    # **★★★ 分类，而不是一句"可能已被回收" ✗ ★★★**（**第 647 轮实测 ✓）
+    #   **∴ 为什么 ✗**：**原来**唯一 else ⇒ **∴ 于是**把 **429（**被占用 ✓）**和 **404（**已回收 ✓）
+    #     **混为一谈**✗ ⇒ **∴ 而**两者**对策相反** ✓
+    #       ＋ **∴ 429** ⇒ **会话**活着**✗ 只是**别人连着**（**如 `up` 残留 ✓）⇒ **∴ 等**即可 ✓
+    #         ＋ **∴ 404／not found** ⇒ **真的**被回收**✗ ⇒ **∴ 必须**重建** ✓ ★
+    if printf '%s' "${out}" | grep -qE '429|Already-active'; then
+      echo "  ⏳ 会话**在线，但被另一个 colab ssh 占用**（**429 ✓）"
+      echo "     ⇒ **稍后重试**；并可用 \`scripts/l4.sh up-state\` 看 \`up\` 是否仍在跑 ✓"
+      printf '%s\n' "${out}" | head -2 | sed 's/^/    /'
+      return 5
+    fi
+    if printf '%s' "${out}" | grep -qiE 'not found|404|does not expose'; then
+      echo "  ✗ **会话已被回收**（**404／not found ✓）⇒ 用 \`scripts/l4.sh up\` 重建 ✓"
+      printf '%s\n' "${out}" | head -3 | sed 's/^/    /'
+      return 4
+    fi
+    echo "  ⚠ **未知错误**（**既没有 PONG，也没有 429／404 ✓）—— 请**人工判断** ✓"
     printf '%s\n' "${out}" | head -3 | sed 's/^/    /'
-    return 4
+    return 6
   fi
 }
 
