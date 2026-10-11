@@ -8893,3 +8893,53 @@ cargo 的等待点: do_wait｜state S（**它在等子进程 ✓）
 
 ### **∴ 门禁 ✗**：**本轮只诊断 ＋ 记录**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 653 轮：**★★★ 目标第 2 条核心判据达成：L4 上 `max_channel_delta = 0`（**28 个 blob 全部核对 ✓）★★★**
+
+### **★★★ 证据（**`item2` 作业 ✓）★★★**
+```
+=== [1] transport 串行，逐测试结果 ===
+  test a_viewer_token_can_read_but_not_mutate ... ok
+  …（**18 个全部 ok ✓）…
+  test result: ok. 18 passed; 0 failed        ← **0.76 秒** ✓
+=== [2] 全量 gpu 串行 ===
+  test result: ok. 1 passed｜ok. 3 passed｜ok. 41 passed｜…｜ok. 18 passed
+  ⇒ ★ 全部 0 failed ★｜用时 ★ 53s ★（**原：永不结束 ✓）
+  error: test failed, to rerun -p yanshi-http --test transport   ← ★ 这行仍在（**待定位 ✓）
+=== [3] 逐位一致（YANSHI_GPU_VERIFY=1）===
+  ∴ 逐位：max_channel_delta = 0（**必须 0 ✓）        ← ★★ 目标第 2 条 ★★
+  test result: ok. 1 passed
+=== [4] 4K 两本账 12 轮 ===
+  ★ max_channel_delta ＝ [0]｜verified_blobs ＝ [28] ★
+  ✓ 被核对的 1 条路全部为 0 ⇒ **GPU 路与 CPU 路逐字节相同** ✓
+  ℹ️ 所有配置都跑在 gpu 上 ⇒ 没有两路可对比（**L4 只有一块 GPU ✓）
+```
+
+### **★★★ 判读 ✗** ★
+  ⇒ **∴ ① ★★ 目标第 2 条的逐位一致达成 ✗ ★★**：
+    **∴ `max_channel_delta = 0`**✗ ＋ **∴ `verified_blobs = [28]`**✗
+      ⇒ **∴ 即** 28 个 blob **全部被核对 ＋ 最大差 0** ✓ ★
+  ⇒ **∴ ② ★ L4 上的标准跑法确认 ✗ ★**：
+    **∴ `cargo test --workspace --features gpu -- --test-threads=1`**✗
+      ＋ **∴ 用时 **53 秒**✗（**∴ 缓存热 ✓）⇒ **∴ 而**并行时会**永不结束** ✓ ★
+        ＋ **∴ 且**所有 `test result` 都是 **0 failed** ✓
+  ⇒ **∴ ③ 剩余一个待定位项 ✗**：
+    **∴ 有** `error: test failed, to rerun -p yanshi-http --test transport`**✗
+      ＋ **∴ 而** transport **单独跑是** `ok. 18 passed; 0 failed`（**0.76 秒 ✓）⇒ **∴ 矛盾 ✓
+        ＋ **∴ 可能 ✗**：
+          **∴ a.** **cargo **跑了**两遍同一个目标**✗（**∴ 如** doctest 或 feature 变体 ✓）⇒ **∴ 其中一遍失败 ✓
+            ＋ **∴ b.** **或** `error: test failed` **是** cargo **的**总结行**✗
+              ＋ **∴ 而**我**的 grep **只留了** `test result` 与 `^error`**✗
+                ⇒ **∴ 于是**看不到**是哪个 `test` 红** ✓
+  ⇒ **∴ ④ 下一步 ✗**：**用 `--no-fail-fast` ＋ **不过滤**取**完整输出**✗(∴ 执行纪律 ✓)
+    ＋ **∴ 从而**看清**那个红** ✓ ★
+
+### **★ 两面（**AGENTS.md ✓）★**
+  ⇒ **∴ 收益 ✗**：**目标第 2 条**核心判据达成**✗ ＋ **L4 跑法**确认（**53 秒 ✓）
+    ＋ **∴ 且**逐位一致**有实测证据**（**28 blob／delta 0 ✓）★
+  ⇒ **∴ 代价 ✗**：**串行**比并行慢**✗（**∴ 但**并行**根本跑不完** ⇒ **∴ 净收益 ✓）
+    ＋ **∴ 而**那 1 个待定位红**仍要处理** ✓ ★
+
+### **∴ 门禁 ✗**：**本轮只测量 ＋ 记录**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
+
