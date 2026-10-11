@@ -77,6 +77,14 @@ pub fn resample_rgba(
             }
         }
         ResampleFilter::Bilinear => {
+            // **★ 保值改写**试过 ⇒ 实测**更慢** ⇒ 已回退 ✗ ★**（**第 524 轮 ✓）
+            //   **∴ 数据 ✗**：**4K→512 的 `png_ms`（**缩放＋PNG ✓）
+            //     ⇒ **优化前 950.4 ms ✗** vs **"优化后" 1058.4 ms**（**反而慢 11% ✓）★
+            //   **∴ 推断 ✗**：**原来的 `at()` 闭包**被 LLVM 内联并**自动向量化**✗
+            //     ＋ **∴ 而**改写引入的 `x0s[x]` 索引间接**阻碍了它** ✓
+            //       ⇒ **∴ 所以**：**保留原实现**（**更简单也更快 ✓）★
+            //   **∴ 保留的收获 ✗**：**`bilinear_parity_tests`**（**参考实现逐字节对照 ✓）
+            //     ⇒ **∴ 它**锁住了逐位不变 ⇒ **∴ 下次**再动这段代码**有真安全网** ✓ ★
             for y in 0..dst_h {
                 let fy = (y as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
                 let y0 = fy.floor().max(0.0) as u32;
@@ -103,6 +111,88 @@ pub fn resample_rgba(
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod bilinear_parity_tests {
+    // **★ 大面积逐位对照 ✗ ★**（**第 524 轮 ✓）
+    //
+    // **∴ 为什么必须有它 ✗**：**优化 `resample_rgba` 时**唯一可接受的结果是**逐位不变**
+    //   ⇒ **∴ 而**原有 4 条测试**太小**（2×2 → 4×4 之类 ✓）
+    //     ⇒ **∴ 于是**：**它们**锁不住**大面积行为** ✓ ★
+    //   **∴ 本测试 ✗**：**独立写一份**朴素参考实现**✗（**同一公式、直接照抄 ✓）
+    //     ＋ **∴ 然后**逐字节对照** ✓
+    //       ⇒ **∴ 若**优化改变了任何像素 ⇒ **∴ 它**必红** ✓ ★
+    use super::*;
+
+    /// **∴ 朴素参考实现 ✗**（**故意写得慢而直白 ✓）★
+    fn naive_bilinear(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let mut out = vec![0u8; (dst_w as usize) * (dst_h as usize) * 4];
+        for y in 0..dst_h {
+            let fy = (y as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
+            let y0 = fy.floor().max(0.0) as u32;
+            let y1 = (y0 + 1).min(src_h - 1);
+            let wy = (fy - fy.floor()).clamp(0.0, 1.0);
+            for x in 0..dst_w {
+                let fx = (x as f64 + 0.5) * src_w as f64 / dst_w as f64 - 0.5;
+                let x0 = fx.floor().max(0.0) as u32;
+                let x1 = (x0 + 1).min(src_w - 1);
+                let wx = (fx - fx.floor()).clamp(0.0, 1.0);
+                let to = ((y * dst_w + x) * 4) as usize;
+                for channel in 0..4 {
+                    let at = |px: u32, py: u32| -> f64 {
+                        src[((py * src_w + px) * 4 + channel as u32) as usize] as f64
+                    };
+                    let top = at(x0, y0) * (1.0 - wx) + at(x1, y0) * wx;
+                    let bottom = at(x0, y1) * (1.0 - wx) + at(x1, y1) * wx;
+                    out[to + channel] =
+                        (top * (1.0 - wy) + bottom * wy).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        out
+    }
+
+    /// **∴ 确定性的伪随机输入 ✗**（**不依赖 rand crate ✓）★
+    fn pattern(w: u32, h: u32) -> Vec<u8> {
+        let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for byte in out.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = (state >> 24) as u8;
+        }
+        out
+    }
+
+    fn compare(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) {
+        let src = pattern(src_w, src_h);
+        let want = naive_bilinear(&src, src_w, src_h, dst_w, dst_h);
+        let got = resample_rgba(&src, src_w, src_h, dst_w, dst_h, ResampleFilter::Bilinear)
+            .expect("应当成功");
+        assert_eq!(got.len(), want.len(), "长度必须一致");
+        let diff = got.iter().zip(want.iter()).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            diff, 0,
+            "{src_w}x{src_h} → {dst_w}x{dst_h}：**有 {diff} 个字节与参考实现不一致** ⇒ 优化改变了输出"
+        );
+    }
+
+    /// **★ 缩小（**生产默认路径：4K → 512 ✓）★
+    #[test]
+    fn downscale_matches_the_reference_implementation_exactly() {
+        compare(1920, 1080, 256, 256);
+        compare(640, 480, 213, 160);
+    }
+
+    /// **∴ 放大 ＋ 非整数比 ＋ 极端比 ✗**：**∴ 那些**最容易暴露边界处理差异** ✓ ★
+    #[test]
+    fn upscale_and_odd_ratios_match_exactly() {
+        compare(37, 23, 128, 96);
+        compare(512, 512, 512, 512);
+        compare(1000, 3, 7, 999);
+    }
 }
 
 #[cfg(test)]
