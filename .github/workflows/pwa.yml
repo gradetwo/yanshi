@@ -173,6 +173,23 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -u
+          # **★ secret 必须**导出成 wrangler 认的名字**** ★**（**第 502 轮实测 ✓）
+          #   **∴ 原来的缺陷（**真 bug ✓）✗**：**`secrets.CLOUDFLARE_API_TOKEN`
+          #     只被读进**步骤内的 `CF_TOKEN`**✗
+          #     ＋ **∴ 而** wrangler **只认**环境变量 `CLOUDFLARE_API_TOKEN`** ✓
+          #       ⇒ **∴ 于是**：**部署报**「In a non-interactive environment,
+          #         it's necessary to set a CLOUDFLARE_API_TOKEN environment
+          #         variable for wrangler to work.」** ✓
+          #         ⇒ **∴ 而**那句**看起来像**secret 没配**✗
+          #           ⇒ **★ 其实**用户的 secret 是好的**（**日志里 `CF_TOKEN: ***` ✓）★**** ✓✓
+          #   **∴ 现在 ✗**：**显式导出** ✓
+          #     ＋ **∴ 且** `CLOUDFLARE_ACCOUNT_ID` **有就一起导出** ✓（**可选 ✓）★**** ✓✓
+          #   **∴ 先例 ✗**：**本地 `scripts/deploy-pwa.sh` 一直这么做** ✓
+          #     ⇒ **∴ 所以**：**两边口径终于一致** ✓ ★**** ✓✓
+          export CLOUDFLARE_API_TOKEN="${CF_TOKEN}"
+          if [ -n "${CF_ACCOUNT:-}" ]; then
+            export CLOUDFLARE_ACCOUNT_ID="${CF_ACCOUNT}"
+          fi
           if [ -z "${CF_TOKEN:-}" ]; then
             {
               echo "### ⚠️ 未部署：缺少仓库 secret \`CLOUDFLARE_API_TOKEN\`"
