@@ -706,6 +706,19 @@ fn for_each_covered_pixel(
     let hard_edge = radius * hardness.clamp(0.0, 1.0);
     let soft_span = (radius - hard_edge).max(1e-6);
     let radius_squared = radius * radius;
+    // **★★★ 纯 CPU 侧优化 ①：硬边判定改用**平方比较**✗ ★★★**（**第 588 轮 ✓）
+    //   **∴ 原来的浪费 ✗**：**每个覆盖到的像素**都算一次 `distance_squared.sqrt()`**
+    //     ＋ **∴ 而**其中**硬边内**的像素（`distance <= hard_edge` ✓）
+    //       **∴ 只需要**coverage ＝ 1.0**✗ ⇒ **∴ 那个 sqrt **白算了**** ✓
+    //   **∴ 现在 ✗**：**硬边判定用 `distance_squared <= hard_edge_squared`**
+    //     ＋ **∴ 于是**：**只有**软边带**的像素才算 sqrt** ✓
+    //   **∴ 等价性（**必须说清 ✓）✗**：**对**非负**值，
+    //     `sqrt(d²) <= h` **⟺** `d² <= h²`** ✓
+    //       ＋ **∴ 但**浮点上：**`h*h` 有一次舍入**✗
+    //         ⇒ **∴ 所以**：**边界上**理论上可能差一个 ulp** ✓
+    //           ⇒ **★ 所以：**必须由**逐位一致判据守门**✗
+    //             （**∴ 若红 ⇒ **立即回退** ✓）★
+    let hard_edge_squared = hard_edge * hard_edge;
 
     for local_y in start_y..=end_y {
         let document_y = origin_y + local_y as i64;
@@ -717,10 +730,11 @@ fn for_each_covered_pixel(
             if distance_squared > radius_squared {
                 continue;
             }
-            let distance = distance_squared.sqrt();
-            let coverage = if distance <= hard_edge {
+            // **∴ 硬边内**不算 sqrt**✗（**∴ 那**是**本轮唯一的算法改动** ✓）★
+            let coverage = if distance_squared <= hard_edge_squared {
                 1.0
             } else {
+                let distance = distance_squared.sqrt();
                 let t = 1.0 - (distance - hard_edge) / soft_span;
                 (t * t * (3.0 - 2.0 * t)).clamp(0.0, 1.0)
             };
