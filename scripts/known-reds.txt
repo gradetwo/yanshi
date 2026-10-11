@@ -9,4 +9,3 @@
 # **∴ 当前唯一项 ✗**（**第 644 轮实测 ✓）：
 #   **∴ `dollar_variables_never_touch_non_ascii_text`** ✗
 #     ＋ **∴ 用 `git stash` 对照 ⇒ **改动前后都失败** ⇒ **∴ 与渲染／GPU 改动无关** ✓ ★
-dollar_variables_never_touch_non_ascii_text

@@ -339,7 +339,7 @@ cmd_up_state() {
   local log="${L4_UP_LOG:-/tmp/l4up.log}"
   local quiet="${L4_UP_QUIET:-120}"
   if [ ! -f "$log" ]; then
-    echo "  （没有日志 $log）"
+    echo "  （没有日志 ${log}）"
     return 4
   fi
   # **★★★ 看**最新活动**，而不是只看主日志 ✗ ★★★**（**第 642 轮实测修正 ✓）
@@ -352,7 +352,7 @@ cmd_up_state() {
     newest=/tmp/build-gpu.log
   fi
   local age=$(( $(date +%s) - $(stat -c %Y "$newest") ))
-  echo "  （最新活动日志：$newest）"
+  echo "  （最新活动日志：${newest}）"
   if pgrep -f '[l]4.sh up' >/dev/null 2>&1 || [ "$age" -lt "$quiet" ]; then
     echo "  ⏳ up 可能仍在运行（日志静止 ${age}s）"
     return 0
