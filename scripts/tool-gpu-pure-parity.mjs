@@ -67,6 +67,20 @@ export function checkParity({ cpu, gpu }) {
       "纯 GPU 路报 max_channel_delta=0 ⇒ **运行时偷偷核对了**（用户裁定：不要混用；默认应为 null）",
     );
   }
+  // **★ 两个口径必须一致 ✗ ★**（**第 500 轮 ✓）：**`/health` 与**渲染响应** ✗
+  for (const [name, c] of [["纯 CPU", cpu], ["纯 GPU", gpu]]) {
+    if (typeof c.respBackend === "string" && c.respBackend !== c.backend) {
+      bad.push(
+        `${name}：/health 报 ${c.backend} 而**渲染响应**报 ${c.respBackend} ⇒ **同一事实两个口径**（疑似硬编码）`,
+      );
+    }
+  }
+  // **∴ note 不许声称硬件有无 ✗**（**∴ 它**永远无法在渲染响应里判断 ✓）★
+  for (const [name, c] of [["纯 CPU", cpu], ["纯 GPU", gpu]]) {
+    if (typeof c.respNote === "string" && /本机没有 GPU/.test(c.respNote)) {
+      bad.push(`${name}：note 声称「本机没有 GPU」 ⇒ **渲染响应无法知道这件事**（不许猜硬件）`);
+    }
+  }
   if (cpu.hash !== gpu.hash) {
     // **∴ 找出**首个不同的像素**✗ ⇒ **∴ 便于定位是**哪个通道／哪一行** ✓
     let where = "";
@@ -97,6 +111,8 @@ if (has("--self-test")) {
     { name: "off 却不是 cpu", args: { cpu: { backend: "gpu", delta: null, hash: h }, gpu: { backend: "gpu", delta: null, hash: h } }, wantRed: true },
     { name: "on 降级且无解释", args: { cpu: { backend: "cpu", delta: null, hash: h }, gpu: { backend: "cpu", delta: null, hash: h } }, wantRed: true },
     { name: "on 降级但有解释", args: { cpu: { backend: "cpu", delta: null, hash: h }, gpu: { backend: "cpu", delta: null, hash: h, note: "adapter_lacks_device" } }, wantRed: false },
+    { name: "★ 两个口径不一致（**health=gpu 响应=cpu ✓）", args: { cpu: { backend: "cpu", delta: null, hash: h, respBackend: "cpu" }, gpu: { backend: "gpu", delta: null, hash: h, respBackend: "cpu" } }, wantRed: true },
+    { name: "note 猜硬件（**「本机没有 GPU」✓）", args: { cpu: { backend: "cpu", delta: null, hash: h, respNote: "本机没有 GPU ⇒ 未做比对" }, gpu: { backend: "gpu", delta: null, hash: h } }, wantRed: true },
   ];
   let wrong = 0;
   let red = 0;
@@ -218,6 +234,13 @@ async function renderAndHash(base, tag) {
     pngBytes: bytes.length,
     bytes: bytes.length,
     backend: health.render_backend,
+    // **★ 渲染响应**自己**报的后端 ✗ ★**（**第 500 轮 ✓）
+    //   **∴ 为什么必须看它 ✗**：**实测抓到**两处**硬编码 `"cpu"`**✗
+    //     ⇒ **∴ 于是**：**GPU 在跑（**`gpu_stage_calls` 递增 ✓）
+    //       而**渲染响应报 `cpu`** ✓（**∴ 同一事实**两个口径** ✓）★
+    //     ＋ **∴ 而**判据原来**只看 `/health`**✗ ⇒ **∴ 所以**漏掉了它 ✓ ★**** ✓✓
+    respBackend: body?.render_backend,
+    respNote: body?.max_channel_delta_note,
     delta: health.max_channel_delta,
     note: health.gpu_adapter_note ?? health.gpu_unavailable_reason,
     adapter: health.gpu_adapter_note,

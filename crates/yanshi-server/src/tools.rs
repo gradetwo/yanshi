@@ -4004,9 +4004,15 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "below_reuse_noted": ctx.workspace.document_below_reuse_count(&ctx.doc_id) > below_before,
             // **∴ §6.3 的 ④ 也要在渲染响应里 ✓**（**∴ 所有出口 ✓）**：
             //   **∴ 没有 GPU ⇒ **没有比对 ⇒ **∴ 报 `null` ＋ 说明 ✓**（**不用 0 冒充 ✓）** ✓✓
-            "render_backend": "cpu",
+            // **★★★ 必须报**实际后端**✗ ★★★**（**第 500 轮实测抓到 ✓）
+            //   **∴ 原来的缺陷 ✗**：**这里**硬编码 `"cpu"`**✗
+            //     ＋ **∴ 而**实测：**`/health` 报 `gpu`（**`gpu_stage_calls` 从 0 → 3 ✓）
+            //       而**同一个渲染的响应**报 `cpu`** ✓
+            //         ⇒ **∴ 于是**：**同一个事实**两个口径**✗ ⇒ **∴ 违反**
+            //           「**`render_backend` 必须报实际后端**」** ✓ ★**** ✓✓
+            "render_backend": backend_label(),
             "max_channel_delta": serde_json::Value::Null,
-            "max_channel_delta_note": "本机没有 GPU ⇒ 未做比对（§6.3）",
+            "max_channel_delta_note": delta_note(),
             // **★ below tile 账目也要在几乎所有出口出现 ✗ ★**（第 2 轮 ✓）：
             //   **∴ 为什么 ✗**：**上一轮**我**只加了一个出口**✗ ⇒ **∴ 于是**另一条路
             //     **看不到字段 ✓**（**`None` ✓，**第 993 轮实测 ✓）⇒ **∴ 这次**两个出口都加 ✓**** ✓✓
@@ -4066,9 +4072,10 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["below_tiles_reused"] = json!(bt_reused);
     value["below_tiles_missing"] = json!(bt_missing);
     // **∴ 非 raw 出口同口径 ✗**（**∴ 所有出口 ✓）** ✓✓
-    value["render_backend"] = json!("cpu");
+    // **∴ 同上：**报实际后端 ＋ 诚实的说明**✗**（**第 500 轮 ✓）★
+    value["render_backend"] = json!(backend_label());
     value["max_channel_delta"] = serde_json::Value::Null;
-    value["max_channel_delta_note"] = json!("本机没有 GPU ⇒ 未做比对（§6.3）");
+    value["max_channel_delta_note"] = json!(delta_note());
     value["above_reused"] = json!(above_after > above_before);
     // **∴ 归属字段 ✓**：**本次请求期间**发生了几次渲染 ✗（**进程内单调 ✓）**
     //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓
@@ -15913,5 +15920,34 @@ mod colour_parsing_tests {
         assert_eq!(parse_hex_colour("#12345"), None);
         assert_eq!(parse_hex_colour("#gggggg"), None);
         assert_eq!(parse_hex_colour(""), None);
+    }
+}
+
+/// **★ 实际渲染后端的标签 ✗ ★**（**第 500 轮 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**两个渲染出口原来**硬编码 `"cpu"`**✗
+///   ⇒ **∴ 而**实测：**GPU 路在跑（**`gpu_stage_calls` 递增 ✓）时**响应仍报 `cpu`** ✓
+///     ⇒ **∴ 于是**：**同一事实**两个口径** ✓
+///       ⇒ **★ 所以 ✗ ★**：**统一读**`yanshi_render::last_backend()`** ✓ ★**** ✓✓
+#[must_use]
+fn backend_label() -> &'static str {
+    match yanshi_render::last_backend() {
+        yanshi_render::Backend::Gpu => "gpu",
+        _ => "cpu",
+    }
+}
+
+/// **★ `max_channel_delta` 为 `null` 时的说明 ✗ ★**（**第 500 轮 ✓）
+///
+/// **∴ 两条都必须**永远为真**✗（**∴ 不许**声称硬件有无 ✓）**：
+///   ⇒ **∴ 走了 GPU 路 ✗**：**纯 GPU 路**不做运行时核对**✓（**用户第 499 轮裁定：不混用 ✓）
+///     ＋ **∴ 走了 CPU 路 ✗**：**本次就是 CPU 算的 ⇒ **没有可比的两条路** ✓
+///       ＋ **∴ 并指出**逐位一致的证据在哪 ✗**（**离线判据 ✓）★**** ✓✓
+#[must_use]
+fn delta_note() -> &'static str {
+    if backend_label() == "gpu" {
+        "纯 GPU 路不做运行时核对（用户裁定：纯路线不混用）⇒ 未比对；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
+    } else {
+        "本次走纯 CPU 路 ⇒ 没有可比的两条路；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
     }
 }
