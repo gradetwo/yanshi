@@ -3809,9 +3809,30 @@ pub(crate) mod parallel_impl {
         // **★ 告诉池「每并发两块」 ✗ ★**（第 22 轮 ✓）：
         //   **∴ 依据 ✗**：**每条带**同时持有「**累积缓冲 ✓」与「**当前层缓冲 ✓」
         //     ⇒ **∴ 预算**要**容下两者 ✓ ⇒ **∴ 否则**池**反复丢缓冲**（**§21 实测 ✓）** ✓✓
+        // **★ 门控计时（第 539 轮）★**：把 band 之外的 668 ms 切开（缓冲池 vs 线程）
+        let probe_on_par = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let t_pool = std::time::Instant::now();
         renderer.buffer_pool.begin_render_with(chunks, 2);
+        if probe_on_par {
+            eprintln!(
+                "PROBE 缓冲池 区域={}x{} chunks={} 总={:?}",
+                rw,
+                rh,
+                chunks,
+                t_pool.elapsed()
+            );
+        }
 
+        let t_alloc = std::time::Instant::now();
         let mut out = Buffer::new(rx, ry, rw, rh);
+        if probe_on_par {
+            eprintln!(
+                "PROBE 输出分配 区域={}x{} 总={:?}",
+                rw,
+                rh,
+                t_alloc.elapsed()
+            );
+        }
         let stride = rw as usize * 4;
         // 把输出按行切成互不重叠的可变切片：这是"块之间没有共享像素"的机器保证。
         let mut slices: Vec<(&mut [f32], (u32, u32))> = Vec::with_capacity(chunks);
@@ -3829,6 +3850,7 @@ pub(crate) mod parallel_impl {
         //（见 `BitmapCache` 的说明 ✓：这里若再新建一份局部缓存，就只在"本次渲染"内去重 ✗，
         //  下一笔又会把整幅背景重新解压一遍 ✓ —— 那正是本案要修的病 ✓）。
         let bitmaps = &renderer.bitmaps;
+        let t_scope = std::time::Instant::now();
         let results: Vec<Result<(RenderStats, ObjectTrack, RenderProbe)>> = std::thread::scope(
             |scope| {
                 let mut handles = Vec::with_capacity(chunks);
@@ -3841,6 +3863,15 @@ pub(crate) mod parallel_impl {
                         rw as f64,
                         rows as f64,
                     );
+                    if probe_on_par {
+                        eprintln!(
+                            "PROBE 线程段 区域={}x{} chunks={} 总={:?}",
+                            rw,
+                            rh,
+                            chunks,
+                            t_scope.elapsed()
+                        );
+                    }
                     handles.push(scope.spawn(
                         move || -> Result<(RenderStats, ObjectTrack, RenderProbe)> {
                             // **★ 并行性的**直接证据 ✗ ★**（第 869 轮 ✓；**目标第 8 条 ✓**）：
