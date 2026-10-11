@@ -27,6 +27,10 @@
 //
 // **∴ 用法 ✗**：
 //   node scripts/tool-macos-gpu-benefit.mjs --binary target/release/yanshi-serve --rounds 3
+//   node scripts/tool-macos-gpu-benefit.mjs --binary <bin> --scenarios fill,strokes --sizes 1080p,4k
+//   **∴ 场景（**逗号分隔 ✓）：`fill`（4 层填充，基线 ✓）｜`strokes`（100 笔 brush_stroke ✓）｜
+//     `blend`（混合模式 multiply/screen/overlay ✓）｜`dense`（500 笔高密度 ✓）
+//   **∴ 尺寸（**逗号分隔 ✓）：`1080p`（1920×1080 ✓）｜`4k`（3840×2160 ✓）｜`8k`（7680×4320 ✓）
 //   **∴ 在非 macOS 上开发本脚本 ✗**：`YANSHI_ALLOW_NON_MACOS=1 node …` ✓
 //     （**∴ 那时**跳过「必须含 metal」那一条**✗ ，**其余照跑** ✓）
 //   **∴ 自检（**证明判据有牙 ✓）**：`--self-test` ✓
@@ -56,6 +60,16 @@ const outPath = opt("--out", "target/macos-gpu-benefit.md");
 const jsonPath = opt("--json", "target/macos-gpu-benefit.json");
 const basePort = Number(opt("--port", "8811"));
 const keepTemp = has("--keep-temp");
+// **★ 多场景 ✗ ★**（**2026-10-11 用户要求 ✓）：默认跑全部，逗号分隔可子集 ✓
+const scenarioList = opt("--scenarios", "fill,strokes,blend,dense").split(",").map((s) => s.trim()).filter(Boolean);
+const sizeList = opt("--sizes", "1080p,4k,8k").split(",").map((s) => s.trim()).filter(Boolean);
+
+// **★ 尺寸表 ✗ ★**
+const SIZES = {
+  "1080p": { w: 1920, h: 1080, label: "1080p" },
+  "4k": { w: 3840, h: 2160, label: "4K" },
+  "8k": { w: 7680, h: 4320, label: "8K" },
+};
 
 const isMac = process.platform === "darwin";
 const allowNonMac = process.env.YANSHI_ALLOW_NON_MACOS === "1";
@@ -225,15 +239,15 @@ if (has("--self-test")) {
 }
 
 // ─────────────────────── 起服务 ＋ 建场景 ───────────────────────
-async function startServer(mode, tag) {
+async function startServer(mode, tag, w, h, portOffset) {
   const root = mkdtempSync(join(tmpdir(), `macosgpu-${tag}-`));
-  const port = basePort + (mode === "on" ? 1 : 0);
+  const port = basePort + portOffset;
   const args = [
     "--root", root,
     "--bind", `127.0.0.1:${port}`,
     "--doc", "boot",
-    "--width", String(width),
-    "--height", String(height),
+    "--width", String(w),
+    "--height", String(h),
     "--assets-dir", "assets",
     "--gpu", mode,
   ];
@@ -257,12 +271,163 @@ async function startServer(mode, tag) {
   return { mode, tag, base, child, health, log, root };
 }
 
-async function buildScenario(srv) {
-  const docId = `macosgpu_${srv.mode}`;
+// **★ 场景定义 ✗ ★**（**2026-10-11 真实场景 ✓）：每个场景有 `build`（建内容）和 `churn`（每轮改一处，破缓存 ✓）
+const SCENARIOS = {
+  // **基线**：4 层纯色填充（**原有场景 ✓）
+  fill: {
+    label: "4层填充",
+    async build(ctx) {
+      const { call, w, h } = ctx;
+      for (const id of ["L0", "L1", "L2", "L3"]) await call("create_layer", { layer_id: id });
+      for (let i = 0; i < 4; i += 1) {
+        await call("fill", {
+          layer_id: `L${i}`,
+          object_id: `o${i}`,
+          data: {
+            color: { r: 30 + i * 40, g: 120, b: 200, a: 255 },
+            region: { x: i * 200, y: i * 150, width: Math.round(w * 0.6), height: Math.round(h * 0.6) },
+          },
+        });
+      }
+    },
+    async churn(ctx, round) {
+      const { call, w, h } = ctx;
+      await call("fill", {
+        layer_id: "L0",
+        object_id: "o_churn",
+        data: {
+          color: { r: 200, g: 30, b: 60, a: 255 },
+          region: { x: round * 3, y: round * 2, width: Math.round(w * 0.3), height: Math.round(h * 0.4) },
+        },
+      });
+    },
+  },
+  // **笔触场景**：100 笔 brush_stroke，模拟真实绘画 ✓
+  strokes: {
+    label: "100笔触",
+    async build(ctx) {
+      const { call, w, h } = ctx;
+      await call("create_layer", { layer_id: "L0" });
+      // **∴ 用最简单的 opaque 笔刷**（**避免 .myb 加载失败 ✓）
+      for (let i = 0; i < 100; i += 1) {
+        const x0 = (i * 97) % w;
+        const y0 = (i * 57) % h;
+        const points = [];
+        for (let j = 0; j < 8; j += 1) {
+          points.push([x0 + j * 12, y0 + j * 7, 0.3 + (j % 4) * 0.2]);
+        }
+        await call("brush_stroke", {
+          layer_id: "L0",
+          brush: "100%_Opaque.myb",
+          points,
+          size: 24,
+          color: { r: (i * 37) % 256, g: (i * 91) % 256, b: 200, a: 255 },
+          preview: false,
+        });
+      }
+    },
+    async churn(ctx, round) {
+      const { call, w, h } = ctx;
+      const x0 = (round * 131) % w;
+      const y0 = (round * 79) % h;
+      const points = [];
+      for (let j = 0; j < 8; j += 1) {
+        points.push([x0 + j * 12, y0 + j * 7, 0.5]);
+      }
+      await call("brush_stroke", {
+        layer_id: "L0",
+        brush: "100%_Opaque.myb",
+        points,
+        size: 24,
+        color: { r: 200, g: 30, b: 60, a: 255 },
+        preview: false,
+      });
+    },
+  },
+  // **混合模式场景**：4 层 × multiply/screen/overlay，大面积重叠 ✓
+  blend: {
+    label: "混合模式",
+    async build(ctx) {
+      const { call, w, h } = ctx;
+      const modes = ["multiply", "screen", "overlay", "darken"];
+      for (let i = 0; i < 4; i += 1) {
+        const id = `L${i}`;
+        await call("create_layer", { layer_id: id });
+        await call("set_layer_blend", { layer_id: id, mode: modes[i] });
+        await call("fill", {
+          layer_id: id,
+          object_id: `o${i}`,
+          data: {
+            color: { r: 60 + i * 50, g: 100 + i * 30, b: 180, a: 220 },
+            // **∴ 大面积重叠** ⇒ **混合计算量大 ✓**
+            region: { x: Math.round(w * 0.1), y: Math.round(h * 0.1), width: Math.round(w * 0.8), height: Math.round(h * 0.8) },
+          },
+        });
+      }
+    },
+    async churn(ctx, round) {
+      const { call, w, h } = ctx;
+      await call("fill", {
+        layer_id: "L0",
+        object_id: "o_churn",
+        data: {
+          color: { r: 200, g: 30, b: 60, a: 255 },
+          region: { x: round * 5, y: round * 3, width: Math.round(w * 0.3), height: Math.round(h * 0.4) },
+        },
+      });
+    },
+  },
+  // **高密度场景**：500 笔，看 GPU 在高负载下的表现 ✓
+  dense: {
+    label: "500笔触",
+    async build(ctx) {
+      const { call, w, h } = ctx;
+      await call("create_layer", { layer_id: "L0" });
+      for (let i = 0; i < 500; i += 1) {
+        const x0 = (i * 97) % w;
+        const y0 = (i * 57) % h;
+        const points = [];
+        for (let j = 0; j < 6; j += 1) {
+          points.push([x0 + j * 10, y0 + j * 6, 0.3 + (j % 3) * 0.25]);
+        }
+        await call("brush_stroke", {
+          layer_id: "L0",
+          brush: "100%_Opaque.myb",
+          points,
+          size: 18,
+          color: { r: (i * 37) % 256, g: (i * 91) % 256, b: (i * 53) % 256, a: 255 },
+          preview: false,
+        });
+        // **∴ 每 100 笔让出事件循环**，避免请求堆积超时 ✓
+        if (i % 100 === 99) await sleep(50);
+      }
+    },
+    async churn(ctx, round) {
+      const { call, w, h } = ctx;
+      const x0 = (round * 131) % w;
+      const y0 = (round * 79) % h;
+      const points = [];
+      for (let j = 0; j < 6; j += 1) {
+        points.push([x0 + j * 10, y0 + j * 6, 0.5]);
+      }
+      await call("brush_stroke", {
+        layer_id: "L0",
+        brush: "100%_Opaque.myb",
+        points,
+        size: 18,
+        color: { r: 200, g: 30, b: 60, a: 255 },
+        preview: false,
+      });
+    },
+  },
+};
+
+async function buildScenario(srv, scenarioName, w, h) {
+  const docId = `macosgpu_${srv.mode}_${scenarioName}_${w}x${h}`;
   const created = await (await fetch(`${srv.base}/api/documents`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: docId, width, height }),
+    body: JSON.stringify({ doc_id: docId, width: w, height: h }),
   })).json();
   const q = `doc=${docId}&token=${created.token}`;
   const call = async (tool, args) =>
@@ -271,18 +436,11 @@ async function buildScenario(srv) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(args || {}),
     })).json();
-  for (const id of ["L0", "L1", "L2", "L3"]) await call("create_layer", { layer_id: id });
-  for (let i = 0; i < 4; i += 1) {
-    await call("fill", {
-      layer_id: `L${i}`,
-      object_id: `o${i}`,
-      data: {
-        color: { r: 30 + i * 40, g: 120, b: 200, a: 255 },
-        region: { x: i * 200, y: i * 150, width: Math.round(width * 0.6), height: Math.round(height * 0.6) },
-      },
-    });
-  }
-  return { q, call };
+  const ctx = { call, w, h, q };
+  const sc = SCENARIOS[scenarioName];
+  if (!sc) throw new Error(`未知场景：${scenarioName}`);
+  await sc.build(ctx);
+  return { q, call, ctx, scenario: sc };
 }
 
 // **∴ 一次渲染：**量墙钟 ＋ CPU 时间 ＋ 常驻内存 ✓
@@ -292,22 +450,16 @@ async function buildScenario(srv) {
 //     ⇒ **∴ 那样量的是**缓存**✗ ，**不是渲染** ✓
 //       ＋ **∴ 于是**：**两本账**全是噪声** ✓ ★**** ✓✓
 //   **∴ 做法 ✗**：**每轮**挪动一个填充的 region**✗ ⇒ **∴ 内容变 ⇒ **∴ 缓存失效 ✓ ★**** ✓✓
-async function measureRound(srv, scenario, { round, warm }) {
-  const { q, call } = scenario;
-  await call("fill", {
-    layer_id: "L0",
-    object_id: "o_churn",
-    data: {
-      color: { r: 200, g: 30, b: 60, a: 255 },
-      region: { x: round * 3, y: round * 2, width: Math.round(width * 0.3), height: Math.round(height * 0.4) },
-    },
-  });
+async function measureRound(srv, scenario, { round, warm, w, h }) {
+  // **∴ 每轮先按场景 churn 一处** ⇒ **破缓存 ✓**（**第 47 轮的坑 ✓）
+  await scenario.scenario.churn(scenario.ctx, round);
+  const { q } = scenario;
   const before = await readProc(srv.child.pid);
   const t0 = process.hrtime.bigint();
   const res = await fetch(`${srv.base}/api/tools/render_region?${q}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ region: [0, 0, width, height], include_image: false }),
+    body: JSON.stringify({ region: [0, 0, w, h], include_image: false }),
   });
   const ok = res.ok;
   await res.arrayBuffer().catch(() => null);
@@ -323,45 +475,61 @@ async function measureRound(srv, scenario, { round, warm }) {
   };
 }
 
-// ─────────────────────── 主流程 ───────────────────────
+// ─────────────────────── 主流程（**尺寸 × 场景矩阵 ✓） ───────────────────────
 const servers = [];
 let exitCode = 0;
-try {
-  console.log("");
-  console.log("  ★ macOS GPU 收益实测（两本账）★");
-  console.log(`  平台 = ${process.platform}｜二进制 = ${binary}｜场景 = ${width}×${height}×4 层｜轮数 = ${rounds}`);
-  if (!isMac) console.log("  ⚠️ 不在 macOS 上（YANSHI_ALLOW_NON_MACOS=1）⇒ 跳过「适配器必须含 metal」那一条");
 
-  for (const mode of ["off", "on"]) {
-    servers.push(await startServer(mode, mode));
+// **★ 校验场景和尺寸名 ✗ ★**（**早报错 ⇒ 不浪费一次构建 ✓）
+for (const s of scenarioList) {
+  if (!SCENARIOS[s]) {
+    console.error(`  ✗ 未知场景：${s}（可选：${Object.keys(SCENARIOS).join(", ")}）`);
+    process.exit(2);
   }
-  for (const s of servers) {
+}
+for (const s of sizeList) {
+  if (!SIZES[s]) {
+    console.error(`  ✗ 未知尺寸：${s}（可选：${Object.keys(SIZES).join(", ")}）`);
+    process.exit(2);
+  }
+}
+// **∴ 兼容老用法**：`--width/--height` 显式给出且 `--sizes` 是默认值时，用显式尺寸跑单场景矩阵 ✓
+const useCustomSize = process.argv.includes("--width") || process.argv.includes("--height");
+
+const pct = (a, b) => (a > 0 ? ((b - a) / a) * 100 : NaN);
+const fmt = (x, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : "—");
+
+/** **★ 跑一个（尺寸，场景）组合 ✗ ★**：起 2 个服务 → 建场景 → 量轮数 → 返回行数据 */
+async function runCombo(sizeKey, scenarioName, portBase) {
+  const { w, h, label: sizeLabel } = SIZES[sizeKey];
+  const scLabel = SCENARIOS[scenarioName].label;
+  console.log("");
+  console.log(`  ── ${sizeLabel}（${w}×${h}）× ${scLabel} ──`);
+  const comboServers = [];
+  for (const mode of ["off", "on"]) {
+    const s = await startServer(mode, `${sizeKey}-${scenarioName}-${mode}`, w, h, portBase + (mode === "on" ? 1 : 0));
+    comboServers.push(s);
+    servers.push(s); // **∴ 统一在 finally 里杀 ✓**
+  }
+  for (const s of comboServers) {
     if (!s.health) {
-      console.error(`  ✗ --gpu ${s.mode}：服务没起来（60 次重试都失败）`);
+      console.error(`  ✗ [${sizeKey}/${scenarioName}] --gpu ${s.mode}：服务没起来`);
       console.error(`     日志尾部：${s.log.slice(-400)}`);
       process.exit(2);
     }
   }
-
-  // **∴ 启动时先看一眼（**只作参考 ✓）★**
-  for (const s of servers) {
-    console.log(`  · --gpu ${s.mode}（启动时）⇒ render_backend=${s.health.render_backend}｜gpu_mode=${s.health.gpu_mode}`);
-    console.log(`      适配器：${String(s.health.gpu_adapter_note ?? s.health.gpu_unavailable_reason ?? "（空）").slice(0, 110)}`);
+  for (const s of comboServers) {
+    console.log(`  · --gpu ${s.mode} ⇒ render_backend=${s.health.render_backend}｜${String(s.health.gpu_adapter_note ?? s.health.gpu_unavailable_reason ?? "").slice(0, 80)}`);
   }
-  for (const s of servers) s.scenario = await buildScenario(s);
+  for (const s of comboServers) s.scenario = await buildScenario(s, scenarioName, w, h);
 
-  // **∴ 测量：**第一轮丢弃（**冷页缓存 ✓）★**
   const rows = [];
-  for (const s of servers) {
+  for (const s of comboServers) {
     const samples = [];
     for (let i = 0; i < rounds; i += 1) {
-      samples.push(await measureRound(s, s.scenario, { round: i + 1, warm: i === 0 }));
+      samples.push(await measureRound(s, s.scenario, { round: i + 1, warm: i === 0, w, h }));
     }
     const usable = samples.length > 1 ? samples.slice(1) : samples;
-    // **★ 必须在渲染之后重读 `/health` ✗ ★**（**第 460／462 轮的同一个错 ✓）：
-    //   **∴ 渲染前** `render_backend` 还是初值 `cpu`**✗
-    //     ⇒ **∴ 于是**：**GPU 那行会**显示成 `cpu`** ✓
-    //       ＋ **∴ 而那**会让本脚本**误判** ✓ ★**** ✓✓
+    // **★ 必须在渲染之后重读 `/health` ✗ ★**（**第 460／462 轮的同一个错 ✓）
     try {
       s.post = await (await fetch(`${s.base}/health`)).json();
     } catch {
@@ -383,55 +551,120 @@ try {
     });
   }
 
-  // **∴ 两张表都要出 ✗**（**∴ 不许**只报好看的那本 ✓）
-  // **∴ 诚实性断言（**渲染后 ✓）★**
-  const badAll = [];
-  for (const s of servers) {
-    const bad = checkHealth({ mode: s.mode, health: s.post, isMac });
-    for (const b of bad) badAll.push(`--gpu ${s.mode}：${b}`);
+  const bad = [];
+  for (const s of comboServers) {
+    for (const b of checkHealth({ mode: s.mode, health: s.post, isMac })) {
+      bad.push(`[${sizeKey}/${scenarioName}] --gpu ${s.mode}：${b}`);
+    }
     if (s.mode === "on" && s.post.render_backend !== "gpu") {
       console.log(`  ⚠️ --gpu on 渲染后仍是 cpu ⇒ 原因：${String(s.post.gpu_adapter_note ?? "（空）").slice(0, 100)}`);
     }
   }
+  return { sizeKey, sizeLabel, w, h, scenarioName, scLabel, rows, bad };
+}
 
+/** **★ 一个组合的 markdown 表格 ✗ ★** */
+function comboReport(combo) {
+  const { sizeLabel, w, h, scLabel, rows, scenarioName, sizeKey } = combo;
   const [cpu, gpu] = rows;
-  const pct = (a, b) => (a > 0 ? ((b - a) / a) * 100 : NaN);
-  const fmt = (x, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : "—");
-
-  const lines = [];
-  lines.push("## macOS GPU 收益实测（两本账）");
-  lines.push("");
-  lines.push(`- 平台：\`${process.platform}\`｜二进制：\`${binary}\``);
-  lines.push(`- 场景：${width}×${height}，4 层填充｜轮数：${rounds}（第一轮为预热，已剔除）`);
-  lines.push(`- 适配器（GPU 行）：\`${gpu.adapter || "（空）"}\``);
-  lines.push("");
-  lines.push("| 配置 | 后端 | ① 墙钟 ms | ② 进程 CPU ms | CPU÷墙钟 | 采样峰值 RSS MB | 预热墙钟 ms |");
-  lines.push("|---|---|---|---|---|---|---|");
+  const L = [];
+  L.push(`### ${sizeLabel} × ${scLabel}`);
+  L.push("");
+  L.push(`- 场景：${w}×${h}，${scLabel}｜轮数：${rounds}（第一轮为预热，已剔除）`);
+  L.push(`- 适配器（GPU 行）：\`${gpu.adapter || "（空）"}\``);
+  L.push("");
+  L.push("| 配置 | 后端 | ① 墙钟 ms | ② 进程 CPU ms | CPU÷墙钟 | 采样峰值 RSS MB | 预热墙钟 ms |");
+  L.push("|---|---|---|---|---|---|---|");
   for (const r of rows) {
-    lines.push(`| ${r.label}（--gpu ${r.mode}） | ${r.backend} | ${fmt(r.wall)} | ${fmt(r.cpu)} | ${fmt(r.ratio, 2)}× | ${fmt(r.rssMb, 0)} | ${fmt(r.warmWall)} |`);
+    L.push(`| ${r.label}（--gpu ${r.mode}） | ${r.backend} | ${fmt(r.wall)} | ${fmt(r.cpu)} | ${fmt(r.ratio, 2)}× | ${fmt(r.rssMb, 0)} | ${fmt(r.warmWall)} |`);
   }
-  lines.push("");
-  lines.push("### 两本账（**逐项对照**）");
-  lines.push("");
-  lines.push(`- **① 时间账**：CPU ${fmt(cpu.wall)} ms ⇒ GPU ${fmt(gpu.wall)} ms，**${fmt(-pct(cpu.wall, gpu.wall))}%**（正数＝GPU 更快）`);
-  lines.push(`- **② CPU 占用账**：CPU ${fmt(cpu.cpu)} ms ⇒ GPU ${fmt(gpu.cpu)} ms，**${fmt(-pct(cpu.cpu, gpu.cpu))}%**（正数＝GPU 更省）`);
-  lines.push(`- **③ 峰值 RSS**：${fmt(cpu.rssMb, 0)} ⇒ ${fmt(gpu.rssMb, 0)} MB（**采样峰值**，非内核 HWM）`);
-  // **★ 必须声明分辨率 ✗ ★**（**否则读者会以为这个数**精确到毫秒** ✓）
+  L.push("");
+  L.push(`- **① 时间账**：CPU ${fmt(cpu.wall)} ms ⇒ GPU ${fmt(gpu.wall)} ms，**${fmt(-pct(cpu.wall, gpu.wall))}%**（正数＝GPU 更快）`);
+  L.push(`- **② CPU 占用账**：CPU ${fmt(cpu.cpu)} ms ⇒ GPU ${fmt(gpu.cpu)} ms，**${fmt(-pct(cpu.cpu, gpu.cpu))}%**（正数＝GPU 更省）`);
+  L.push(`- **③ 峰值 RSS**：${fmt(cpu.rssMb, 0)} ⇒ ${fmt(gpu.rssMb, 0)} MB（**采样峰值**，非内核 HWM）`);
   const resMs = Math.max(...rows.map((r) => r.resMs ?? 0)) || null;
-  lines.push(`- **CPU 时间分辨率**：${resMs == null ? "未知" : `±${resMs} ms（本平台）`}`);
+  L.push(`- **CPU 时间分辨率**：${resMs == null ? "未知" : `±${resMs} ms（本平台）`}`);
   if (resMs != null && cpu.cpu > 0 && cpu.cpu < resMs * 10) {
-    lines.push(`  - ⚠️ **CPU 账的绝对量偏小**（${fmt(cpu.cpu)} ms ＜ 10×分辨率）⇒ **这一列只宜看趋势，不宜看小数位**。`);
+    L.push(`  - ⚠️ **CPU 账的绝对量偏小**（${fmt(cpu.cpu)} ms ＜ 10×分辨率）⇒ **这一列只宜看趋势，不宜看小数位**。`);
   }
-  lines.push(`- **④ 逐位一致**：GPU 行 \`max_channel_delta = ${JSON.stringify(gpu.delta)}\``);
-  lines.push("");
+  L.push(`- **④ 逐位一致**：GPU 行 \`max_channel_delta = ${JSON.stringify(gpu.delta)}\``);
+  L.push("");
   const timeBetter = gpu.wall < cpu.wall;
   const cpuBetter = gpu.cpu <= cpu.cpu;
-  lines.push("### 结论（**如实**）");
+  if (timeBetter && cpuBetter) L.push("- ✅ 两本账都变好。");
+  else if (!timeBetter && !cpuBetter) L.push("- ❌ 两本账都变差 ⇒ **不要默认开**。（如实报告，不挑好看的报）");
+  else if (!timeBetter) L.push(`- ⚠️ **时间账**变差（GPU 慢 ${fmt(pct(cpu.wall, gpu.wall))}%），**而 CPU 占用账**${cpuBetter ? "变好" : "也变差"} ⇒ **不能说「GPU 更快」**。`);
+  else L.push(`- ⚠️ **时间账**变好，**而 CPU 占用账**变差 ⇒ **按用户第 594 轮的要求必须明说**。`);
+  L.push("");
+  // **∴ 给 JSON 用的机器可读结论 ✓**
+  combo.verdict = timeBetter && cpuBetter ? "both-better" : (!timeBetter && !cpuBetter ? "both-worse" : "mixed");
+  return L;
+}
+
+try {
+  console.log("");
+  console.log("  ★ macOS GPU 收益实测（两本账 × 多场景）★");
+  console.log(`  平台 = ${process.platform}｜二进制 = ${binary}｜轮数 = ${rounds}`);
+  console.log(`  场景 = ${scenarioList.join(", ")}｜尺寸 = ${sizeList.join(", ")}`);
+  if (!isMac) console.log("  ⚠️ 不在 macOS 上（YANSHI_ALLOW_NON_MACOS=1）⇒ 跳过「适配器必须含 metal」那一条");
+
+  // **∴ 自定义尺寸**：只跑一个尺寸 × 全部场景 ✓
+  const activeSizes = useCustomSize ? ["__custom"] : sizeList;
+  if (useCustomSize) SIZES["__custom"] = { w: width, h: height, label: `${width}×${height}` };
+
+  const combos = [];
+  const badAll = [];
+  let portBase = 0;
+  const total = activeSizes.length * scenarioList.length;
+  let done = 0;
+  for (const sizeKey of activeSizes) {
+    for (const scenarioName of scenarioList) {
+      done += 1;
+      console.log(`  [${done}/${total}]`);
+      const combo = await runCombo(sizeKey, scenarioName, portBase);
+      portBase += 2;
+      combos.push(combo);
+      badAll.push(...combo.bad);
+    }
+  }
+
+  // ── 报告 ──
+  const lines = [];
+  lines.push("## macOS GPU 收益实测（两本账 × 多场景）");
   lines.push("");
-  if (timeBetter && cpuBetter) lines.push("- ✅ 两本账都变好。");
-  else if (!timeBetter && !cpuBetter) lines.push("- ❌ 两本账都变差 ⇒ **不要默认开**。（如实报告，不挑好看的报）");
-  else if (!timeBetter) lines.push(`- ⚠️ **时间账**变差（GPU 慢 ${fmt(pct(cpu.wall, gpu.wall))}%），**而 CPU 占用账**${cpuBetter ? "变好" : "也变差"} ⇒ **不能说「GPU 更快」**。`);
-  else lines.push(`- ⚠️ **时间账**变好，**而 CPU 占用账**变差 ⇒ **按用户第 594 轮的要求必须明说**。`);
+  lines.push(`- 平台：\`${process.platform}\`｜二进制：\`${binary}\``);
+  lines.push(`- 轮数：${rounds}（第一轮为预热，已剔除）｜场景：${scenarioList.join("、")}｜尺寸：${activeSizes.map((k) => SIZES[k].label).join("、")}`);
+  lines.push("");
+  // **∴ 汇总表**：一眼看全矩阵 ✓
+  lines.push("### 汇总（**时间账**：正数＝GPU 更快）");
+  lines.push("");
+  const sizeLabels = activeSizes.map((k) => SIZES[k].label);
+  lines.push(`| 场景 ＼ 尺寸 | ${sizeLabels.join(" | ")} |`);
+  lines.push(`|---|${sizeLabels.map(() => "---").join("|")}|`);
+  for (const scenarioName of scenarioList) {
+    const cells = activeSizes.map((sizeKey) => {
+      const c = combos.find((x) => x.sizeKey === sizeKey && x.scenarioName === scenarioName);
+      const [cpu, gpu] = c.rows;
+      const v = -pct(cpu.wall, gpu.wall);
+      const mark = c.verdict === "both-better" ? "✅" : c.verdict === "both-worse" ? "❌" : "⚠️";
+      return `${mark} ${fmt(v)}%`;
+    });
+    lines.push(`| ${SCENARIOS[scenarioName].label} | ${cells.join(" | ")} |`);
+  }
+  lines.push("");
+  for (const combo of combos) {
+    lines.push(...comboReport(combo));
+  }
+
+  // **∴ 总结论**：数变好的组合 ✓
+  const better = combos.filter((c) => c.verdict === "both-better").length;
+  const worse = combos.filter((c) => c.verdict === "both-worse").length;
+  lines.push("### 总结论（**如实**）");
+  lines.push("");
+  lines.push(`- ${combos.length} 个组合中：${better} 个两本账都变好，${worse} 个两本账都变差，${combos.length - better - worse} 个喜忧参半。`);
+  if (better === combos.length) lines.push("- ✅ 所有组合 GPU 都有收益。");
+  else if (worse === combos.length) lines.push("- ❌ 所有组合 GPU 都没收益 ⇒ **不要默认开**。");
+  else lines.push("- ⚠️ 收益与场景/尺寸有关 ⇒ **建议按组合设阈值，而不是一刀切**。");
 
   const text = lines.join("\n");
   console.log("");
@@ -449,7 +682,15 @@ try {
 
   try {
     writeFileSync(outPath, text + "\n");
-    writeFileSync(jsonPath, JSON.stringify({ platform: process.platform, width, height, rounds, rows, failures: badAll }, null, 2));
+    writeFileSync(jsonPath, JSON.stringify({
+      platform: process.platform, rounds,
+      scenarios: scenarioList, sizes: activeSizes.map((k) => ({ key: k, ...SIZES[k] })),
+      combos: combos.map((c) => ({
+        size: c.sizeKey, scenario: c.scenarioName, verdict: c.verdict,
+        rows: c.rows,
+      })),
+      failures: badAll,
+    }, null, 2));
     console.log(`  · 报告已写：${outPath}｜${jsonPath}`);
   } catch (e) {
     console.error(`  ⚠️ 写报告失败（不影响结论）：${String(e).slice(0, 120)}`);

@@ -845,8 +845,9 @@ if [ -z "${reported}" ]; then
 else
   reported_commit="$(printf '%s' "$reported" | grep -oE 'commit [^,)]+' | sed 's/commit //')"
   # 包名里的 commit 可能带 `-dirty` ✓（构建时工作区有未提交改动 ✓）⇒ 比较时去掉它 ✓。
-  baked="$(printf '%s' "$commit" | sed 's/-dirty$//')"
-  seen="$(printf '%s' "$reported_commit" | sed 's/-dirty$//')"
+  # 二进制里的 commit 还带 `-{8位指纹}` ✓（build.rs 把 assets/ 内容哈希并进去了 ✓）⇒ 也要去掉 ✓。
+  baked="$(printf '%s' "$commit" | sed -E 's/-dirty$//; s/-[0-9a-f]{8}$//')"
+  seen="$(printf '%s' "$reported_commit" | sed -E 's/-dirty$//; s/-[0-9a-f]{8}$//')"
   if [ "$seen" != "$baked" ]; then
     echo "    ✗ **包名与二进制内的 commit 不一致** ⇒ 打包失败" >&2
     echo "      包名:     ${baked} ✓" >&2

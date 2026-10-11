@@ -10,7 +10,7 @@ SHELL := /usr/bin/env bash
 # 便于 `make OUT=… release` ✓
 OUT ?= dist
 
-.PHONY: help release release-all release-cpu release-all-cpu release-kernel-gpu release-dynamic macos-benefit macos-benefit-selftest test test-heavy fmt clippy check dev clean
+.PHONY: help release release-all release-cpu release-all-cpu release-kernel-gpu release-dynamic macos-benefit macos-benefit-selftest macos-quantize-bench macos-quantize-bench-selftest test test-heavy fmt clippy check dev clean
 
 help:  ## 显示这份清单
 	@echo "偃师 Yanshi —— 常用入口："
@@ -58,6 +58,12 @@ macos-benefit:  ## 在 macOS 上量 GPU 的两本账（需先构建带 gpu 的�
 
 macos-benefit-selftest:  ## 自检：证明 macOS 收益判据能红也能绿
 	node scripts/tool-macos-gpu-benefit.mjs --self-test
+
+macos-quantize-bench:  ## 在 macOS 上跑 GPU 量化微基准（8 档规模，与 L4 同口径）
+	node scripts/tool-macos-gpu-quantize-bench.mjs --binary target/release/gpu_quantize_bench --runs 5
+
+macos-quantize-bench-selftest:  ## 自检：量化微基准脚本的参数与表格渲染
+	node scripts/tool-macos-gpu-quantize-bench.mjs --self-test
 
 targets:  ## 看看本机装了哪些发布目标（以及缺哪个要 rustup target add）
 	scripts/package-release.sh --list-targets

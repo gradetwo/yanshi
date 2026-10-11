@@ -180,11 +180,42 @@ fn brush_urls_are_percent_encoded_on_both_sides() {
         !app.contains("\"/brushes/\" + name"),
         "查看器里不该再有未编码的 \"/brushes/\" + name（fetch 与 cache.put 都必须走 brushAssetUrl）"
     );
+    // **★ 断言的**意图**必须保住 ✗ ★**（**第 497 轮修 ✓）
+    //   **∴ 原来数的是**出现次数 ≥ 2****✗（**fetch 一次 ＋ `cache.put` 一次 ✓）
+    //     ⇒ **∴ 而**第 493 轮把缓存键改成 **真正命中的 URL**（`hitUrl` ✓）
+    //       ⇒ **∴ 于是**：**`brushAssetUrl(` 只剩**一次** ⇒ **∴ 这条**红** ✓
+    //         ＋ **∴ 而**它的**意图**（**请求与缓存键逐字相同 ⇒ 离线回退能命中 ✓）
+    //           ⇒ **∴ 其实**被满足得**更彻底** ✓（**因为**缓存键就是那个请求 URL）★**** ✓✓
+    //   **∴ 现在 ✗**：**查**意图**，不查次数** ✓ ★
+    //     ⇒ **∴ ①** 拼 URL 的入口**至少用一次**（**∴ 不许**绕过它 ✓）
+    //       ＋ **∴ ②** 缓存键必须用 `hitUrl`（**来自 `fetchBrushText` 的返回 ✓）
+    //         ⇒ **∴ 而** `hitUrl` **就是**真正命中的那个 URL** ✓ ★**** ✓✓
     assert!(
-        app.matches("brushAssetUrl(").count() >= 2,
-        "brushAssetUrl 应被 fetch 与 cache.put 各调用一次（实际 {} 次）",
+        app.matches("brushAssetUrl(").count() >= 1,
+        "brushAssetUrl 必须被用到（它是唯一拼笔刷 URL 的入口）：实际 {} 次",
         app.matches("brushAssetUrl(").count()
     );
+    assert!(
+        app.contains("cache.put(hitUrl"),
+        "缓存键必须用**真正命中的那个 URL**（`hitUrl`）⇒ 才能与请求逐字相同（离线回退才命中）"
+    );
+    // **∴ 两条候选 URL 都必须编码 ✗**（**∴ 现在有两个构造器 ✓）★
+    // **∴ 定义可能跨行 ✗**（**第 497 轮实测踩到 ✓）：
+    //   ⇒ **∴ `const brushAssetUrlSafe = (name) =>`**在一行**✗
+    //     ＋ **∴ `"/brushes/" + encodeURIComponent(...)`**在下一行** ✓
+    //       ⇒ **∴ 所以**：**要**连下一行一起看** ✓ ★**** ✓✓
+    let lines: Vec<&str> = app.lines().collect();
+    for builder in ["const brushAssetUrl =", "const brushAssetUrlSafe ="] {
+        let idx = lines
+            .iter()
+            .position(|l| l.contains(builder))
+            .unwrap_or_else(|| panic!("缺少 {builder}"));
+        let window = format!("{} {}", lines[idx], lines.get(idx + 1).unwrap_or(&""));
+        assert!(
+            window.contains("encodeURIComponent"),
+            "{builder} 必须用 encodeURIComponent（含下一行）：{window}"
+        );
+    }
 
     // ② SW：SHELL 里的 `/brushes/` 条目必须不含 `#`，且解码回磁盘上真实文件。
     let start = sw.find("const SHELL = [").expect("SW 应有 SHELL 清单");

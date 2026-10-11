@@ -54,7 +54,7 @@ default = []
 #     ⇒ **∴ 于是**：**渲染路**真正**试 GPU**✗ ⇒ **∴ `render_backend` **才会**如实** ✓ ★**** ✓✓
 #   **∴ 代价 ✗**：**开 `gpu` 时** `yanshi-render` **也**编入 GPU 路** ✓
 #     （**∴ 那**正是**本 feature 的意图** ✓；**∴ 默认关 ⇒ **依赖树**不变 ✓）★**** ✓✓
-gpu = ["dep:wgpu", "dep:yanshi-gpu", "yanshi-render/gpu"]
+gpu = ["dep:wgpu", "dep:yanshi-gpu", "yanshi-render/gpu", "dep:libc"]
 
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.1.0" }
@@ -67,3 +67,18 @@ wgpu = { version = "26.0.1", optional = true }
 # **★ 可选：**GPU 加速层** ✗ ★**（**∴ 只在 `--features gpu` 时进依赖树 ✓）
 #   **∴ 而** `yanshi-wasm` **不**依赖它** ✗ ⇒ **∴ 判据** `tool-wasm-tree-no-wgpu.mjs` **守住它** ✓
 yanshi-gpu = { path = "../yanshi-gpu", optional = true }
+# **∴ 微基准的 CPU 时间口径** ✓（`gpu_quantize_bench` 用 `getrusage` ✓，macOS/Linux 通用 ✓）
+libc = { version = "0.2", optional = true }
+
+# **★ 微基准只在 gpu 特性下有 main ✗ ★**（**第 497 轮实测 ✓）
+#   **∴ 为什么必须声明 ✗**：**那个文件头是 `#![cfg(feature = "gpu")]`**✗
+#     ⇒ **∴ 无 gpu 时 ⇒ **整个 crate 是空的 ⇒ **没有 `main`**** ✓
+#       ⇒ **∴ `cargo test --workspace`（**不带 feature ✓）报
+#         `E0601: main function not found`** ✓
+#         ⇒ **∴ 而** `clippy --features gpu` **抓不到** ✓（**∴ 那条路**有 main ✓）★**** ✓✓
+#   **∴ 现在 ✗**：**声明 `required-features`**✗
+#     ⇒ **∴ 无 gpu 时**根本不编译它** ✓ ＋ **∴ 有 gpu 时**照常 ✓ ★**** ✓✓
+[[bin]]
+name = "gpu_quantize_bench"
+path = "src/bin/gpu_quantize_bench.rs"
+required-features = ["gpu"]
