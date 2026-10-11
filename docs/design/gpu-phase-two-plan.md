@@ -10043,3 +10043,73 @@ else { if inside_from_thresholds(lo + offs[0], thresholds) { hits += ss as f32 }
 
 ### **∴ 门禁 ✗**：**`cargo test -p yanshi-render` ✓｜`tool-gate --quick` ✓（**新红 0｜已知红 0**）｜已推 `70b20ac`** ✓ ★
 
+---
+
+## 第 677 轮：**★★★ `fill_coverage` 的优化点已定位（**改用 `blend_at` ⇒ 省 2 次边界检查 ＋ 2 次索引**）＋ **发现一个必须验证的等价性风险（−0.0）**** ★★★
+
+### **★★★ 实读 `fill_coverage`（`buffer.rs:199` ✓）★★★**
+```rust
+pub fn fill_coverage(&mut self, coverage, color, mode, opacity) {
+    let base = [clamped color];
+    // 算「覆盖率网格 ∩ 本缓冲」的范围
+    for y in start_y..end_y { let row = y * coverage.width;
+        for x in start_x..end_x {
+            let coverage_value = coverage.data[row + x];
+            if coverage_value <= 0.0 { continue; }        ← ★ 已有空像素跳过 ✓
+            let alpha = base[3] * coverage_value * opacity;
+            let source = premultiply([base[0], base[1], base[2], alpha]);
+            self.blend_mode(local_x, local_y, source, mode);   ← ★ 逐像素调用 ✓
+        }
+    }
+}
+```
+
+### **★★★ 实测两层的开销 ✗** ★★★
+```
+162:  blend(x, y, source)  ⇒  backdrop = self.pixel(x, y)      ← ★ 边界检查 ＋ 索引 ✓
+                           ＋ self.set_pixel(x, y, over(…))    ← ★ 又一次边界检查 ＋ 索引 ✓
+187:  blend_at(x, y, source) ⇒ debug_assert（**只在 debug ✓）＋ 一次索引 ＋ 4 通道直接写 ✓
+⇒ ★ 所以 `blend` 每像素**两次**边界检查 ＋ **两次**索引计算**✗
+  ＋ **∴ 而** `blend_at` **只有一次索引** ✓
+    ⇒ ★★ 所以改用 `blend_at` ⇒ **每像素省 2 次边界检查 ＋ 2 次索引** ★★
+```
+
+### **★★★ 但发现一个**必须验证的等价性风险** ✗** ★★★
+```rust
+blend.rs:180  over(source, backdrop)：
+    if alpha_s <= 0.0 { return backdrop; }    ← ★ 分支①
+    if alpha_s >= 1.0 { return source; }      ← ★ 分支②
+    source[i] + backdrop[i] * inverse          ← ★ 分支③
+buffer.rs:187  blend_at：只有分支③（**没有 ①②**）
+```
+  ⇒ **∴ 所以两者**不等价**✗**（**∴ 分支①②**被跳过 ✓）★
+  ⇒ **∴ 理论分析 ✗**：
+    **∴ 当 alpha ＝ 0 ⇒ **`over`**返回 `backdrop`**✗
+      ＋ **∴ 而**预乘表示下 alpha ＝ 0 ⇒ **RGB 必为 0**✗ ⇒ **∴ `blend_at`**算** `0 + backdrop*1` ＝ `backdrop`** ✓
+    **∴ 当 alpha ＝ 1 ⇒ **`over`**返回 `source`**✗
+      ＋ **∴ 而** `blend_at`**算** `source + backdrop*0.0`**✗
+        ＋ **∴ 即** `source + (−0.0)`**✗（**∴ 若** backdrop 是 −0.0 ✓）
+          ⇒ **∴ 而** IEEE 加法下 `x + (−0.0)` **对** x ＝ ±0.0 **仍为 −0.0** ✓
+            ⇒ **∴ 所以**与 `over` **返回 source **逐位相同** ✓ ★
+  ⇒ **★ 但 ✗ ★**：**那**依赖** IEEE 的加法语义**✗
+    ＋ **∴ 所以**不能只靠推理**✗ ⇒ **∴ 必须**逐位对拍验证** ✓ ★
+
+### **★★★ 优化方案（**待判据验证后实施 ✓）★★★**
+  ⇒ **∴ ① `mode == Normal` ⇒ 用 `blend_at(local_x, local_y, source)`**✗
+    ＋ **∴ 坐标**安全性 ✗**：** `fill_coverage` **已把 start／end **按缓冲裁剪**✗
+      ＋ **∴ 所以** `local_x`／`local_y` **必然在范围内** ✓（**∴ `blend_at` 的前提满足 ✓）★
+  ⇒ **∴ ② 非 Normal ⇒ 保持 `blend_mode`**（**∴ 它**需要 backdrop ＋ blend_pixel ✓）★
+  ⇒ **∴ ③ 判据 ✗**：
+    **∴ a.** **逐位对拍**✗：**同一份 coverage／color／mode，新旧两路 `to_bits()` 比 ✓
+      ＋ **∴ b.** **变异检验**✗：**把 `blend_at` 的 inverse **写错** ⇒ **∴ 判据**必红** ✓
+        ＋ **∴ c.** **既有全量测试**✗（**∴ 渲染逐位一致 ✓）★
+
+### **∴ 两面（**AGENTS.md ✓）★**
+  ⇒ **∴ 收益 ✗**：**`fill_coverage` **占对象渲染 35–50%**✗
+    ＋ **∴ 而**省掉每像素 2 次边界检查 ＋ 2 次索引**✗
+      ⇒ **∴ 预期** 20–35%**（**∴ 因为**剩下的**算术是大头** ✓）★
+  ⇒ **∴ 代价 ✗**：**一个**分支 ＋ **一个判据**✗（**∴ 小 ✓）
+    ＋ **∴ 风险 ✗**：**−0.0 的等价性**✗ ⇒ **∴ 必须**由判据确认** ✓ ★
+
+### **∴ 门禁 ✗**：**本轮只读码 ＋ 分析**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
+
