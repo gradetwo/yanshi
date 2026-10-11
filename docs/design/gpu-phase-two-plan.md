@@ -5630,3 +5630,35 @@ cargo check --workspace --all-targets（**不带 feature ＝ CI 的形状 ✓）
   （**`quantize_golden` ＋ `wasm_target_guard` ✓）
     ＋ **∴ 只剩 `quantize_no_copy`** ✓（**下一轮：查 `quantize_f16` 的 SIMD／标量双路 ✓）★
 
+---
+
+## 第 570 轮：**★★★ `quantize_no_copy` 的差异**锁定在 `crop`**（**它走 `set_pixel`／`pixel` ✓）★★★
+
+### **∴ 排除法（**三步 ✓）★**
+  ⇒ **∴ ① `quantize_f16` **只有一条实现**** ✗
+    （**`f16_bits_to_f32(f32_to_f16_bits(v))` ✓，**无 SIMD 分支 ✓）
+      ⇒ **∴ 假设"SIMD／标量双路"**被推翻** ✓ ★
+  ⇒ **∴ ② `to_rgba8_quantized` **确实是恢复后的版本**** ✗
+    （**函数体 2608 字符 ＝ 旧版 ✓；**含 `encode_quantized_rows` ✓）
+      ⇒ **∴ 假设"恢复没生效"**被推翻** ✓ ★
+  ⇒ **∴ ③ ★ `crop` **不是**逐字节拷贝 ✗ ★**：
+```rust
+pub fn crop(&self, bbox: &Bbox) -> Buffer {
+    … let mut out = Buffer::new(x0, y0, width, height);
+    for y in 0..height { for x in 0..width {
+        out.set_pixel(x, y, self.pixel(source_x, source_y));   // ★ 经 set_pixel／pixel ★
+    } }
+}
+```
+    ⇒ **★ 所以：参照路（`crop ⇒ f16 ⇒ to_rgba8`）与**被测路**（**直接 encode ✓）
+      **在**某些像素**上不同**** ✓
+        ＋ **∴ 而** 257×129 **是**奇数宽度**✗ ⇒ **∴ 方向对**（**边界／对齐 ✓）
+          ⇒ **∴ 只是**机制不是字节拷贝** ✓ ★
+
+### **∴ 下一轮 ✗**：**读 `set_pixel`／`pixel`**（**∴ 它们**是否**夹紧／丢弃**像素 ✓）
+  ⇒ **∴ 那**应是 **1／255 差异**的最后一环** ✓
+    ＋ **∴ 然后**决定：**修 `crop`（**保字节 ✓）／修参照（**判据 ✓）／或**两者对齐** ✓ ★
+
+**∴ 净状态 ✗**：**CI 三条判据里**两条已绿****（`quantize_golden` ＋ `wasm_target_guard` ✓）
+  ＋ **∴ 只剩 `quantize_no_copy`**✗ ，**根因已缩到**一个函数（`crop` ✓）★
+
