@@ -337,6 +337,10 @@ for (const spec of compareSpecs) {
     stageSubmitUs: after.gpu_stage_submit_us,
     stageReadbackUs: after.gpu_stage_readback_us,
     stageCalls: after.gpu_stage_calls,
+    // **★ GPU 自己量的时间 ✗ ★**（**第 602 轮 ✓；目标第 9 条后半 ✓）
+    //   **∴ 语义 ✗**：**它不是 host 墙钟**✗ ⇒ **∴ 而**是 GPU 时间戳的差**（**需探针开 ✓）
+    //     ＋ **∴ 若**未探针／不支持 ⇒ **如实为 0** ✓ ★
+    stageGpuUs: after.gpu_stage_gpu_us,
     verifiedBlobs: after.verified_blobs,
     adapter: after.gpu_adapter_note,
     wallMs: median(usable.map((s) => s.wallMs)),
@@ -394,7 +398,7 @@ for (const row of rows) {
   for (const a of adapter) console.log(`    适配器 ＝ ${a}`);
   console.log("  ★ GPU 阶段分段（**微秒；**传输 vs 计算 ✓）★");
   for (const r of rows) {
-    console.log(`    ${r.label}：calls ＝ ${r.stageCalls}｜upload ＝ ${r.stageUploadUs}｜submit ＝ ${r.stageSubmitUs}｜readback ＝ ${r.stageReadbackUs}`);
+    console.log(`    ${r.label}：calls ＝ ${r.stageCalls}｜upload ＝ ${r.stageUploadUs}｜submit ＝ ${r.stageSubmitUs}｜readback ＝ ${r.stageReadbackUs}｜★gpu ＝ ${r.stageGpuUs}★`);
   }
   // **★ 判据必须**忽略 null**✗ ★**（**第 581 轮实测 ✓）
   //   **∴ 为什么 ✗**：**CPU 路**不与 GPU 比对 ⇒ **∴ 它**正确地报 `null`**

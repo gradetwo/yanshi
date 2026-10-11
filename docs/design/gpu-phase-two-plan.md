@@ -6757,3 +6757,41 @@ web/（产物）：
       ⇒ **∴ 登记为**下一轮**（**：build --release ⇒ 探针跑一次 ⇒ 读该字段 ✓
         ＋ **∴ 然后**在 L4 上量** ⇒ **∴ 从而**分清「**传输贵**」还是「**算得贵**」 ✓）★
 
+---
+
+## 第 602 轮：**★★★ GPU 侧计时的**真障碍找到了：buffer 用法仍非法（**wgpu validation ⇒ 直接 panic**）★★★**
+
+### **∴ 试图读 `gpu_stage_gpu_us` ⇒ 渲染**失败**（**1.4 ms ✓）★**
+```
+| 开启 GPU | undefined（--gpu undefined） | 1／1／1 ms | 预热 2.4 ms |
+✗ 有 1 个配置的渲染没有成功
+⇒ ★ 而**服务端 stderr **真的 panic 了**★：
+   …T | QUERY_RESOLVE)   thread '<unnamed>' panicked at
+   …/wgpu-26.0.1/src/backend/wgpu_core.rs:1436:18: ★ wgpu error: Validation … ★
+```
+
+### **★★★ 根因（**与第 84 轮的旧错**同一个**）★★★**
+  ⇒ **∴ 那句 `T | QUERY_RESOLVE)` ✗** 正是会话早期的
+    「**`MAP usage can only be combined with the opposite COPY,
+      requested BufferUsages(MAP_READ | COPY_DST | QUERY_RESOLVE)`**」 ✓
+    ＋ **∴ 所以**：**那个用法错误**仍然存在**** ✗
+      （**∴ 我**以为改成 `QUERY_RESOLVE | MAP_READ` 已修 ✗
+        ⇒ **∴ 但**错误文本里**仍含 `COPY_DST`** ⇒ **∴ 说明**某张 buffer 的 usage **仍带三者** ✓）★
+  ⇒ **∴ 正确的用法（**下一轮执行 ✓）✗**：
+    **∴ ① `resolve` 目标** ⇒ **只用** `QUERY_RESOLVE | COPY_DST`** ✓
+      ＋ **∴ ② map 的那张** ⇒ **只用** `MAP_READ | COPY_DST`** ✓
+        ＋ **∴ ③ 两者**不能是同一张** ✓ ★
+
+### **★★★ 新知识（**重要 ✓）★★★**
+  ⇒ **∴ wgpu 的 validation 错误**直接 panic**✗（`wgpu_core.rs:1436` ✓）
+    ⇒ **∴ 所以**：**`map_err` **拦不住**它** ✓
+      ＋ **∴ 教训 ✗**：**不能靠错误处理兜住非法用法 ⇒ **必须把用法改对**** ✓ ★
+
+### **∴ 本轮的安全交付（**已验证 ✓）★**
+  ⇒ **∴ ① feature 按探针门控 ✗**：**生产路径 `Features::empty()` ⇒ 行为与改动前**逐字节相同**** ✓
+    ＋ **∴ ② GPU 纳秒已接到 `/health`**（**`gpu_stage_gpu_us` ✓）✗
+      ＋ **∴ ③ 全部门禁全绿 ✗**（**fmt 0｜plain／gpu clippy ✓｜plain／gpu test ✓）
+        ＋ **∴ ④ 工具已能打印 `gpu` 段**（`stageGpuUs` ✓）★
+  ⇒ **∴ 而** GPU 侧计时**在核显上**暂不可用**✗
+    ⇒ **∴ 因为**上面那个用法错误 ⇒ **∴ 登记为**下一轮第一件事** ✓ ★
+
