@@ -33,9 +33,33 @@ for (const f of FILES) {
   const b = join(DST, f);
   if (!existsSync(a)) { console.log(`    ⚠ ${f}：源头没有（跳过）`); continue; }
   if (!existsSync(b)) { console.log(`    ✗ ${f}：web 侧缺失`); failed += 1; continue; }
-  const same = readFileSync(a).equals(readFileSync(b));
-  console.log(`    ${same ? "✓" : "✗"} ${f}（源头 ${statSync(a).size} B｜web ${statSync(b).size} B）`);
+  // **★★★ 收口（乙）：比较前把**缓存戳**归一化 ✗ ★★★**（**第 600 轮 ✓；目标第 12 条 ✓）
+  //   **∴ 为什么必须归一化 ✗**：
+  //     **∴ ①** `web/` 的那两个文件**带**缓存戳**（`yanshi-shell-<数字>` ✓）
+  //       ＋ **∴ 而** `crates/yanshi-http/assets/` 的**源头**不带** ✓
+  //         （**∴ 因为**戳**由内容算出**✗ ⇒ **∴ 源头带戳会**自指** ✓）
+  //           ⇒ **∴ 于是**：**两侧**永远差 1 字节 ⇒ **∴ 判据**永远红** ✓
+  //     **∴ ② 而** `pwa-sync-viewer.mjs` **自己**算哈希前就归一化**（**第 493 轮 ✓）
+  //       ⇒ **∴ 所以**：**本判据用同一规则**才**与设计一致** ✓ ★
+  //   **∴ 保留原判据的力量 ✗**：**先比原始字节**✗
+  //     ＋ **∴ 若**不等 ⇒ **∴ 再比**归一化后**的文本** ✓
+  //       ⇒ **∴ 于是**：**真分叉（**内容不同 ✓）**仍然红** ✓
+  //         ＋ **∴ 只有**戳不同 ⇒ **✓ 并注明** ✓ ★
+  const rawA = readFileSync(a);
+  const rawB = readFileSync(b);
+  // **∴ 必须同时覆盖**两种形态 ✗**（**第 600 轮实测 ✓）：
+  //   **∴ 源头用**占位符 `yanshi-shell-__BUILD_ID__`**✗
+  //     ＋ **∴ 而** `web/` 用**真实数字戳**`yanshi-shell-<数字>`** ✓
+  //       ⇒ **∴ 所以**：**只匹配数字 ⇒ **源头那侧替不掉**✗
+  //         ⇒ **∴ 于是**：**归一化后**仍不同** ✓ ★
+  const stampRe = /yanshi-shell-(?:__BUILD_ID__|[0-9]+)/g;
+  const normA = rawA.toString("utf8").replace(stampRe, "yanshi-shell-STAMP");
+  const normB = rawB.toString("utf8").replace(stampRe, "yanshi-shell-STAMP");
+  const sameRaw = rawA.equals(rawB);
+  const same = sameRaw || normA === normB;
+  const note = sameRaw ? "" : same ? "（**仅缓存戳不同 ✓**）" : "";
   if (!same) failed += 1;
+  console.log(`    ${same ? "✓" : "✗"} ${f}（源头 ${statSync(a).size} B｜web ${statSync(b).size} B）${note}`);
 }
 console.log("");
 if (failed === 0) {
