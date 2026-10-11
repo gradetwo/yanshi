@@ -247,7 +247,15 @@ cmd_tnew() {
   #   **∴ 修法 ✗**：**把 `cd` 放进**写到远端的那份脚本**里**✗
   #     ⇒ **∴ 从而**与**外层 cwd 无关** ✓ ★
   b64_cmd="$(printf '%s' "${cmd}" | base64 -w0)"
-  b64_pre="$(printf 'cd %s || exit 9\n' "${L4_DIR}" | base64 -w0)"
+  # **★★★ 第四条硬规矩：补 `XDG_RUNTIME_DIR` ✗ ★★★**（**第 612 轮实测 ✓）
+  #   **∴ 症状 ✗**：**在 tmux 作业里跑 GPU 测试**报
+  #     「**XDG_RUNTIME_DIR is invalid or not set in the environment**」**✗
+  #     ＋ **∴ 而**看代码毫无问题**（**∴ 本机与 CI 都过 ✓）
+  #       ⇒ **∴ 根因 ✗**：**tmux 起的是**登录 shell 但**没有**桌面会话的环境**✗
+  #         ＋ **∴ 而** wgpu 的 Vulkan 后端**要它** ✓
+  #           ⇒ **∴ 于是**：**测试**全红**✗ 而**产品没坏** ✓（**∴ 正是第 402 轮那类"判据自己坏了" ✓）★
+  #   **∴ 修法 ✗**：**所有 tmux 作业都先**导出**它**（**∴ 固化 ⇒ 以后不必记 ✓）★
+  b64_pre="$(printf 'cd %s || exit 9\nexport XDG_RUNTIME_DIR=/tmp/xdg-%s\nmkdir -p "$XDG_RUNTIME_DIR"\nchmod 700 "$XDG_RUNTIME_DIR"\n' "${L4_DIR}" "${name}" | base64 -w0)"
   l4_ssh "printf '%s' '${b64_pre}' | base64 -d > /tmp/${name}.sh; printf '%s' '${b64_cmd}' | base64 -d >> /tmp/${name}.sh" >/dev/null 2>&1
   l4_ssh "tmux has-session -t ${name} 2>/dev/null && { echo '  ✗ 已有同名作业 ⇒ 先 tkill ${name}'; exit 3; }; tmux new-session -d -s ${name} 'bash /tmp/${name}.sh > /tmp/${name}.log 2>&1; echo EXIT=\$? >> /tmp/${name}.log'; sleep 1; tmux ls 2>/dev/null | sed 's/^/  /'" 2>&1 | tail -4
 }
