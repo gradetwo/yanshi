@@ -1009,6 +1009,30 @@ impl Renderer {
         store: &dyn BlobStore,
         bbox: Bbox,
     ) -> Result<RegionRender> {
+        // **★ 门控计时（第 537 轮）★**：Drop 守卫 ⇒ 无论哪条出口都打印整体耗时（零生产开销）
+        struct TotalTimer {
+            started: std::time::Instant,
+            label: String,
+            on: bool,
+        }
+        impl Drop for TotalTimer {
+            fn drop(&mut self) {
+                if self.on {
+                    eprintln!(
+                        "PROBE 整体 区域={} 总={:?}",
+                        self.label,
+                        self.started.elapsed()
+                    );
+                }
+            }
+        }
+        let t_reg_start = std::time::Instant::now();
+        let probe_on_reg = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let _total = TotalTimer {
+            started: t_reg_start,
+            label: format!("{}x{}", bbox.w as u32, bbox.h as u32),
+            on: probe_on_reg,
+        };
         let region = clamp_region(state, &bbox)?;
         stage_probe::enter((
             region.x as i64,
@@ -1060,6 +1084,14 @@ impl Renderer {
         let workers = parallel_impl::workers(self.max_workers);
         let region_pixels =
             (region.w.ceil().max(0.0) as usize).saturating_mul(region.h.ceil().max(0.0) as usize);
+        if probe_on_reg {
+            eprintln!(
+                "PROBE 分派前 区域={}x{} 总={:?}",
+                bbox.w as u32,
+                bbox.h as u32,
+                t_reg_start.elapsed()
+            );
+        }
         let cropped = if workers > 1 && region_pixels >= PARALLEL_MIN_PIXELS {
             // 区域足够大且核数 > 1：按行分块并行。**顺序无关性**见 `parallel_impl` 的说明。
             let (buffer, chunk_stats, chunk_probe, chunks) = parallel_impl::render_region(
