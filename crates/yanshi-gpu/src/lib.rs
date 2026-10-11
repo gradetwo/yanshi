@@ -71,7 +71,12 @@ pub const fn should_use_gpu(pixels: usize) -> bool {
 /// **★ 按适配器等级取阈值 ✗ ★**（第 320 轮 ✓；**用户第 317 轮**以 L4 为准** ⇒ **∴ 但**核显也要照顾** ✓）。
 ///
 /// **∴ 两个平台实测的平衡点 ✗（**都来自八档 + 5 次中位数 ✓）★**：
-///   **∴ 真 L4（**`Vulkan｜DiscreteGpu` ✓）✗**：**1 000 快 25.8%**✗ ⇒ **∴ 平衡点 **≤ 1 000**** ✓
+///   **★ 已被第 584 轮的**真 L4 实测推翻**✗ ★**（**∴ 保留历史 ＋ 标注推翻 ✓）：
+///     **∴ 旧记录 ✗**：**1 000 快 25.8%** ⇒ **∴ 平衡点 ≤ 1 000** ✓
+///       ＋ **∴ 而**第 584 轮实测 ✗**：**10 000 未触发｜22 500 持平｜50 176 快 22%**
+///         ⇒ **∴ 平衡点 ≈ 22 500** ✓
+///           ⇒ **★ 所以：**旧数字（**≤1 000 ✓）不再采用**✗
+///             ＋ **∴ 原因不确知**（**∴ 可能**是旧实例／旧场景／旧量法 ✓）⇒ **∴ 如实记录** ✓ ★
 ///     ⇒ **∴ 取 **10 000****（**∴ 留** 10 倍余量** ✓）** ✓✓
 ///   **∴ 核显（**`Gl｜IntegratedGpu` ✓）✗**：**3 000 慢 77.4%／10 000 快 46.3%**** ✓
 ///     ⇒ **∴ 平衡点在 **3 k–10 k**** ✓ ⇒ **∴ 取 **30 000****（**∴ 留** 3 倍余量** ✓）** ✓✓
@@ -87,7 +92,20 @@ pub const fn should_use_gpu(pixels: usize) -> bool {
 #[must_use]
 pub const fn threshold_for(device_type: DeviceClass) -> usize {
     match device_type {
-        DeviceClass::Discrete => 10_000,
+        // **★★★ 第 584 轮：真 L4 上**实测重定** ⇒ 10 000 ⇒ **22 500**** ★★★
+        //   **∴ 依据（**L4 ＋ 3 轮 ＋ 不核对 ✓）✗**：
+        //     **∴ 10 000 px**：后端**仍是 `cpu`**（**阈值未触发 ✓）
+        //       ⇒ **∴ 所以**判定是**严格大于** ✓
+        //     **∴ 22 500 px**：CPU 中位 170｜GPU 中位 169 ⇒ **★ 持平（**平衡点在此附近 ✓）★
+        //     **∴ 50 176 px**：CPU 中位 193｜GPU 中位 151 ⇒ **★ GPU 快 22% ★**
+        //       ⇒ **∴ 于是**：**10 000–22 500 px 之间
+        //         **GPU 会被选中但**更慢****（**10 000 px 时慢 28% ✓）
+        //         ⇒ **★ 所以：**旧值 10 000 **偏低约 2.25×**** ✓ ★
+        //   **∴ 代价（**两面都写 ✓）✗**：**22 500–50 176 px 之间**仍会选 GPU**✗
+        //     ＋ **∴ 而**那**区间**可能**无收益** ✓
+        //       ⇒ **∴ 所以**：**22 500 是**保守**选择**✗
+        //         ⇒ **∴ 若要**更保守 ⇒ **∴ 需要**更多轮数据** ✓ ★
+        DeviceClass::Discrete => 22_500,
         // **∴ 集成／虚拟／CPU 软件渲染 ⇒ **一律保守**** ✓
         DeviceClass::Integrated | DeviceClass::Virtual | DeviceClass::Cpu | DeviceClass::Other => {
             GPU_MIN_PIXELS
@@ -800,8 +818,8 @@ mod tests {
     fn thresholds_follow_the_adapter_class() {
         assert_eq!(
             threshold_for(DeviceClass::Discrete),
-            10_000,
-            "独显按 L4 的平衡点"
+            22_500,
+            "独显按 L4 实测的平衡点（第 584 轮重定）"
         );
         assert_eq!(threshold_for(DeviceClass::Integrated), GPU_MIN_PIXELS);
         assert_eq!(threshold_for(DeviceClass::Virtual), GPU_MIN_PIXELS);
@@ -819,8 +837,12 @@ mod tests {
     /// **∴ 边界是闭的 ✗**（**∴ 与**旧判据同一形状 ✓）
     #[test]
     fn boundaries_are_closed() {
-        assert!(should_use_gpu_on(DeviceClass::Discrete, 10_000));
-        assert!(!should_use_gpu_on(DeviceClass::Discrete, 9_999));
+        // **★ 第 584 轮重定 ✗ ★**：**独显那档改到 22 500**
+        //   ＋ **∴ 所以**边界断言也要跟着走** ✓
+        assert!(should_use_gpu_on(DeviceClass::Discrete, 22_500));
+        assert!(!should_use_gpu_on(DeviceClass::Discrete, 22_499));
+        // **∴ 而**旧的 10 000 ✗ 现在**不该**再触发独显（**实测那时 GPU 慢 28% ✓）
+        assert!(!should_use_gpu_on(DeviceClass::Discrete, 10_000));
         assert!(should_use_gpu_on(DeviceClass::Integrated, GPU_MIN_PIXELS));
         assert!(!should_use_gpu_on(
             DeviceClass::Integrated,
@@ -829,8 +851,11 @@ mod tests {
         // **∴ 而在** 30 000 附近，独显与集显**结论不同**✗ ⇒ **∴ 那**正是分档的意义** ✓
         assert!(should_use_gpu_on(DeviceClass::Discrete, 30_000));
         assert!(should_use_gpu_on(DeviceClass::Integrated, 30_000));
-        assert!(should_use_gpu_on(DeviceClass::Discrete, 12_000));
+        assert!(!should_use_gpu_on(DeviceClass::Discrete, 12_000));
         assert!(!should_use_gpu_on(DeviceClass::Integrated, 12_000));
+        // **∴ 分档的意义 ✗**：**23 000 px** 上独显走 GPU、集显**不走** ✓
+        assert!(should_use_gpu_on(DeviceClass::Discrete, 23_000));
+        assert!(!should_use_gpu_on(DeviceClass::Integrated, 23_000));
     }
 }
 
