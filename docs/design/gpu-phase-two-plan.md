@@ -4731,3 +4731,44 @@ let verify_key: String = match blob {
   ⇒ **∴ 并**把 `gpu_ns` 接进 `/health`**（**∴ 本轮只到 `STAGE_GPU_NS` ＋ 打印 ✓）
     ⇒ **∴ 如实 ✗**：**getter 与 `/health` 字段**尚未接线**** ✓ ★
 
+---
+
+## 第 547 轮：**★★★ 查明两个真原因 ⇒ 按纪律回退 ⇒ 登记为**待在真 L4 上做**** ★★★
+
+### **∴ 原因① ✗**：**`request_device(&DeviceDescriptor::default())`**✗
+  ⇒ **∴ 即**什么特性都没请求**✗
+    ⇒ **∴ 于是**：**`device.features()` **里没有 `TIMESTAMP_QUERY`**
+      （**∴ 即使**适配器支持它 —— **第 49 轮查的是 `adapter.features()` ✓）
+        ⇒ **∴ 于是**：**`should_time_gpu` **恒为假** ⇒ **门控打印**一次都不出现**** ✓ ★
+  ⇒ **∴ 我改了它 ✗**：**只在探针开启时**请求 `TIMESTAMP_QUERY`** ✓
+    ⇒ **★ 然后**服务崩了**** ✓ ★
+
+### **∴ 原因② ✗**（**抓到了 panic 原文 ✓）★**
+```
+thread '<unnamed>' panicked at wgpu-26.0.1/src/backend/wgpu_core.rs:1436:18:
+wgpu error: Validation Error
+Caused by:
+  In Device::create_buffer, label = 'yanshi-gpu-time-resolve'
+    `MAP` usage can only be combined with the opposite `COPY`,
+    requested BufferUsages(MAP_READ | COPY_DST | QUERY_RESOLVE)
+```
+  ⇒ **∴ 我的 resolve buffer 用途组合**非法**✗**：
+    **`MAP_READ` 只能与**对向的 `COPY`** 搭配** ✓
+      ⇒ **∴ 修法 ✗**：**去掉 `COPY_DST`**✗（**∵ 我用 `resolve_query_set` **直接写它** ✓）
+        ⇒ **∴ 正确组合 ＝ `QUERY_RESOLVE | MAP_READ`** ✓ ★
+  ⇒ **∴ 而**改完**仍然崩**✗（**∴ 第二个原因 × 我把日志删了 ⇒ **∴ 没看到** ✓）★
+
+### **★★★ 决定（**按纪律，如实 ✓）★★★**
+  ⇒ **∴ 回退**特性请求**✗ ⇒ **∴ 时间戳接线留在代码里**但**不可达**** ✓
+    ＋ **∴ 验证服务恢复 ✗**：**渲染成功 ✓｜`render_backend = gpu`｜`gpu_stage_calls = 2`｜进程活着** ✓ ★
+  ⇒ **∴ 登记为**待在真 L4 上做**✗ ，**三条理由 ✗**：
+    ⇒ **∴ ①** 本机核显上**它**两次崩溃**⇒ **∴ 需要**更多调试** ✓
+    ⇒ **∴ ②** host 侧数据**已经**回答了第 9 条的问题**（**传输 77% vs 算 23% ✓）★
+    ⇒ **∴ ③** 它的**真正价值在**独显**上**（**∴ 那里**传输占比可能完全不同** ✓）★
+
+### **∴ 一条教训（**如实 ✓）✗**
+  ⇒ **∴ 回退后的重建花了 **1m41s****✗
+    ⇒ **∴ 所以**：**之前那些「Finished in 0.16s／0.08s」是**缓存命中**** ✓
+      ⇒ **∴ 即**：**那些构建**没有真的重编**✗ ⇒ **∴ 不能**把"Finished"当作"改动生效"的证据** ✓ ★
+        ＋ **∴ 正确做法 ✗**：**看**时间戳**＋ **看**产物 mtime**✗（**∴ 或**至少对可疑的快构建**存疑** ✓）★
+
