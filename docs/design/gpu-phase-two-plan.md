@@ -6194,3 +6194,52 @@ fmt = 0 ✓｜plain clippy ✓｜plain test ✓ 全绿｜gpu test ✓ 全绿
 已提交 0cfa8f1 ✓ 已推送 ✓
 ```
 
+---
+
+## 第 585 轮：**★★★ 纯 GPU 侧落地：**读回批量化**（N 次往返 ⇒ 1 次）★★★**
+
+### **∴ 原来的形状（**读码得出 ✓）★**
+```rust
+// 每块（32 块）建 4 个 buffer：src／dst／pb／back
+let back = create_buffer(size = take*4, COPY_DST | MAP_READ);   // ★ 每块一张 ★
+enc.copy_buffer_to_buffer(&dst, 0, &back, 0, take*4);
+backs.push((back, take));
+…
+// 读回：★ 逐块 map_async ＋ poll ＋ wait ★
+for (back, _take) in &backs {
+    slice.map_async(Read, …); poll(Poll); signal.wait().await;   // ★ N 次同步往返 ★
+    let mapped = slice.get_mapped_range();
+    out.extend_from_slice(&mapped);                              // ★ 还要拷一遍 ★
+    back.unmap();
+}
+```
+  ⇒ **∴ 成本 ✗**：**N 块 ⇒ **N 次同步往返 ＋ N 次 memcpy**** ✓
+    （**∴ 而**传输占 GPU 阶段 **77%** ✓；**第 68 轮实测 ✓）★
+
+### **★★★ 改后（**本轮 ✓）★★★**
+  ⇒ **∴ ① 一张大 staging buffer ✗**：`size ＝ count*4`｜`COPY_DST | MAP_READ`** ✓
+  ⇒ **∴ ② 每块拷到**各自偏移**✗**：
+    `enc.copy_buffer_to_buffer(&dst, 0, &readback, (done*4) as u64, (take*4) as u64)` ✓
+  ⇒ **∴ ③ 读回**一次 map ＋ 一次等待 ＋ 一次拷贝** ✗
+    ⇒ **★ 所以：**往返 N ⇒ 1**✗ ＋ **memcpy N ⇒ 1**** ✓ ★
+  ⇒ **∴ 并**删掉**每块的 `back` 与 `backs`**✗（**∴ 于是**每块少建 1 个 buffer ✓）★
+
+### **∴ 验证 ✗**
+```
+① cargo check -p yanshi-gpu ⇒ Finished in 0.87s ✓
+② cargo check --workspace --all-targets --features gpu ⇒ Finished in 16.34s ✓
+   （**∴ 都是**真实编译时间**✗ ⇒ **∴ 不是** 0.0s 的假 Finished ✓）
+③ fmt = 0 ✓｜plain test ✓ 全绿｜★ gpu test ✓ 全绿（**逐位一致仍成立 ✓）★
+```
+  ⇒ **★ 所以：**读回批量化**没有破坏任何判据**** ✓ ★
+
+### **∴ 两面都写 ✗**
+  ⇒ **∴ 收益 ✗**：**往返 N ⇒ 1 ＋ memcpy N ⇒ 1**（**∴ 而**传输是 GPU 阶段的大头 ✓）
+  ⇒ **∴ 代价 ✗**：**峰值多一张 `count*4` 字节的映射缓冲**
+    （**4K ⇒ **33 MB** ✓）＋ **∴ 而**它**必须整张驻留** ✓
+      ⇒ **∴ 所以**：**显存／内存换往返** ✓ ★
+
+### **∴ 尚未做（**如实 ✓）✗**
+  ⇒ **∴ 收益**还没实测**✗（**∴ 需要**读 `gpu_stage_readback_us` 改前／改后对比 ✓）
+    ⇒ **∴ 登记为**下一轮** ✓ ★
+
