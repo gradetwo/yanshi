@@ -6795,3 +6795,40 @@ web/（产物）：
   ⇒ **∴ 而** GPU 侧计时**在核显上**暂不可用**✗
     ⇒ **∴ 因为**上面那个用法错误 ⇒ **∴ 登记为**下一轮第一件事** ✓ ★
 
+---
+
+## 第 603 轮（**目标恢复后的第 1 轮 ✓**）：**★★★ 第 9 条后半：GPU 侧计时**机制打通**（**三次迭代修 buffer 用法**）★★★**
+
+### **∴ 目标被误删 ⇒ 已按**原措辞逐字恢复**** ✓
+  ⇒ **∴ 新 id ✗**：`goal-df2f5487-…`（**`maxGoalRounds ＝ 999` ✓；**`active`／`armed` ✓）
+    ＋ **∴ 唯一不可恢复 ✗**：**旧轮次计数（**约 103 轮）⇒ **∴ 新目标从 0 开始** ✓
+      ＋ **∴ 而**工作**一点没丢**（**提交历史 ＋ 本文档 ✓）★
+
+### **★★★ 修 buffer 用法（**三次迭代，每次都看到新错误 ✓）★★★**
+  ⇒ **∴ ① 第一次错 ✗**：**`ts_resolve` 带 `QUERY_RESOLVE | COPY_DST | MAP_READ`**✗
+    ⇒ **∴ 错文 ✗**：`MAP usage can only be combined with the opposite COPY,
+      requested BufferUsages(MAP_READ | COPY_DST | QUERY_RESOLVE)` ✓
+      ＋ **∴ 修法 ✗**：**去掉 `MAP_READ`**✗
+        ＋ **∴ 并**新增 16 字节中转 `ts_read`（`COPY_DST | MAP_READ` ✓）
+          ＋ **∴ 且**在提交前编码 `copy_buffer_to_buffer(resolve → read, 16)`** ✓ ★
+  ⇒ **∴ ② 第二次错 ✗**：`Usage flags BufferUsages(COPY_DST | QUERY_RESOLVE)`（**In a CommandEncoder ✓）
+    ⇒ **★ 我漏了 `COPY_SRC` ✗ ★**：**它**是那次拷贝的**源** ⇒ **∴ 必须带 `COPY_SRC`** ✓
+      ＋ **∴ 修法 ✗**：**改成 `QUERY_RESOLVE | COPY_SRC`**（**去掉不需要的 `COPY_DST` ✓）★
+  ⇒ **∴ ③ 现在 ✗**：**`render ok ＝ true`** ✓（**不再 panic ✓）
+    ＋ **∴ `/health` 有 `gpu_stage_gpu_us`** ✓（**1024×1024 时 ＝ 1 ✓）
+      ＋ **∴ 探针打印 ✗**：`PROBE GPU 算：0.00…` ✓ ★
+
+### **★★★ 验证 ✗**：**fmt 0 ✓｜plain／gpu clippy ✓｜plain／gpu test ★ 全绿 ★｜已推送 `db03991`** ✓
+
+### **★ 但读数还是 0（**如实 ✓）★**
+```
+4K 探针：calls ＝ 9｜upload ＝ 90 484｜submit ＝ 29 559｜readback ＝ 24 217｜★gpu ＝ 0★
+```
+  ⇒ **∴ 时间戳**读到了，但值**是 0**** ✓
+    ＋ **∴ 可能 ✗**：**①** `timestamp_writes` **只加在第一块**✗
+      ＋ **∴ 而** resolve 读 **0..2** ⇒ **∴ 索引／写入**不匹配** ✓
+        ＋ **∴ ② 或**者**时间戳根本没被写入** ✓
+          ＋ **∴ ③ 或**者**需要按 `timestamp_period` 换算**（**∴ 而那**不会把非零变 0 ✓）★
+  ⇒ **∴ 结论（**诚实 ✓）✗**：**本轮交付 ＝ **不再 panic ＋ 字段端到端打通**** ✓
+    ＋ **∴ 而**数字**还不可信** ⇒ **∴ 登记为**下一轮** ✓ ★
+
