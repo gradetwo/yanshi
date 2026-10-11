@@ -7255,3 +7255,51 @@ CHUNK_BYTES=16 777 216⇒ calls 11｜upload 29 276｜submit   242｜readback  77
       ＋ **∴ 下一轮 ✗**：**按上面 5 条坑清单**一次修对**✗ ＋ **跑 4K 测试验证 ✓
         ＋ **∴ 然后**才上 L4 测 upload 的收益** ✓ ★
 
+---
+
+## 第 615 轮：**★★★ 把「不过滤取值第一个真错误」**工具化**：`device.on_uncaptured_error` ★★★**
+
+### **★★★ 动机（**来自第 614 轮的教训 ✓）★★★**
+  ⇒ **∴ 本会话反复只看到**次生错误**** ✗：
+    **∴ 如** `Encoder is invalid`（**被前面的验证失败带坏 ✓）
+      ⇒ **∴ 于是**：**每次**都要**反复猜** ✓ ★
+
+### **∴ 实现（**两行 ✓）★**
+```rust
+device.on_uncaptured_error(Box::new(|e| {
+    eprintln!("PROBE WGPU 真错误：{e:?}");   // ★ 必须 Debug ✗ ★
+}));
+```
+  ⇒ **∴ 为什么必须 Debug ✗**：**Display 只给一行**（如「Validation Error」✓）
+    ＋ **∴ 而** `Caused by`／`source` **只在 Debug 里** ✓（**第 615 轮实测 ✓）★
+
+### **★★★ 实测价值（**立刻见效 ✓）★★★**
+  ⇒ **∴ 它**把次生错误****：
+    **`Encoder is invalid`** ✓
+      **∴ 换成了**真错误的结构****：
+        **`ComputePass(ComputePassError { scope: Pass, inner: EncoderState(Invalid) })`** ✓
+        ⇒ **★ 定位**从「pass 之后」精确到「**pass 之内**」** ✓ ★
+  ⇒ **∴ 两面（**AGENTS.md ✓）★**：
+    **∴ 收益 ✗**：**第一个真错误**直接可见**✗ ⇒ **∴ 排查**从多轮猜测变成一眼** ✓
+    **∴ 代价 ✗**：**多一个闭包**（**只在出错时跑 ✓）⇒ **∴ 可忽略** ✓ ★
+
+### **∴ coalescing 的现状（**如实 ✓）★**
+  ⇒ **∴ 4 条修复都已就位 ✓**（**从 `l4-coalesce-wip` 取回 ✓）：
+    **∴ ①** `per_chunk` 对齐到 64 像素（256 字节 ✓）
+    **∴ ②** `src_total ＝ count*16`｜`dst_total ＝ count*4`（**总量 ✓）
+    **∴ ③** `src` 绑定 size ＝ `take*16` ✓
+    **∴ ④** `dst_off ＝ done*4` ✓
+      ⇒ **∴ 尺寸类错误**全部消失**** ✓（**∴ 三个 `overrunning`／`overflows` 都没了 ✓）★
+  ⇒ **∴ 但还剩一个 ✗**：**`ComputePass(… EncoderState(Invalid))`**（**在 pass 之内 ✓）
+    ＋ **∴ 高嫌疑（**下一轮先查 ✓）✗**：
+      **∴ ① `timestamp_writes` ✗**：**每块**都建 pass**✗ 而**只有第一块**写时间戳** ✓
+        ⇒ **∴ 最省力的定位法 ✗**：**关掉探针**（**不建 QuerySet ＋ 不写时间戳 ✓）
+          ⇒ **∴ 若**通过 ⇒ **∴ 就**是时间戳** ✓ ★
+      **∴ ②** storage binding 的对齐／最小尺寸 ✓ ★
+  ⇒ **∴ 决定 ✗**：**coalescing 再次搁置**✗ ＋ **回到 `l4-sync` 的**已验证状态**** ✓
+    ＋ **∴ 而**保留 **`on_uncaptured_error`**（**∴ 它对**未来所有 wgpu 排查**都有价值 ✓）★
+
+### **∴ 验证 ✗**：**`cargo check` ✓｜★ 4K GPU 测试 `ok. 1 passed` ★
+  ＋ **∴ 且**正常路径下**没有** `PROBE WGPU` 输出 ⇒ **∴ 勾子**不破坏产品** ✓
+  ＋ **∴ `fmt = 0` ✓｜已推 `l4-sync`** ✓ ★
+
