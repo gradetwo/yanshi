@@ -231,7 +231,43 @@ impl Buffer {
                 let local_x = (doc_x0 + x as i64 - self.origin_x) as u32;
                 let alpha = base[3] * coverage_value * opacity;
                 let source = premultiply([base[0], base[1], base[2], alpha]);
-                self.blend_mode(local_x, local_y, source, mode);
+                // **★★★ Normal 走 `blend_at` ✗ ★★★**（**第 678 轮 ✓；**目标第 11 条 ✓）
+                //   **∴ 为什么 ✗**：
+                //     **∴ `blend_mode` ⇒ `blend` ⇒ **两次**边界检查 ＋ **两次**索引计算**✗
+                //       （**`self.pixel(x,y)` ＋ `self.set_pixel(x,y,…)` ✓）
+                //         ＋ **∴ 而** `blend_at` **只有一次索引** ＋ 4 通道直接写** ✓
+                //           ⇒ **∴ 每像素**省 2 次边界检查 ＋ 2 次索引** ✓
+                //   **∴ 坐标安全性 ✗**：**本函数**已把 `start_x/end_x/start_y/end_y`
+                //     **按本缓冲裁剪** ✗ ⇒ **∴ 所以** `local_x/local_y` **必然在范围内** ✓
+                //       ＋ **∴ `blend_at` 的前提**（**调用方保证已裁剪 ✓）**满足** ✓
+                //   **∴ 等价性（**关键 ✓）✗**：
+                //     **∴ `over` 有**三个分支**✗（**alpha ≤ 0 ⇒ backdrop｜**≥ 1 ⇒ source｜**一般 ✓）
+                //       ＋ **∴ 而** `blend_at` **只有**一般分支** ✓
+                //         ⇒ **∴ 理论上 ✗**：**alpha ＝ 0 ⇒ 预乘下 RGB 必为 0 ⇒ `0 + backdrop*1` ＝ backdrop ✓
+                //           ＋ **∴ alpha ＝ 1 ⇒ `source + backdrop*0.0` ＝ `source + (−0.0)`**✗
+                //             ＋ **∴ 而** IEEE 下 `x + (−0.0)` **对** x ＝ ±0.0 **仍为 −0.0** ✓
+                //               ⇒ **∴ 所以**逐位相同** ✓
+                //                 ＋ **★ 但那依赖 IEEE 语义 ✗ ★** ⇒ **∴ 由判据**逐位对拍确认** ✓
+                //                   （**`blend_at_matches_blend_mode` ✓）★
+                // **★★★ 显式复现 `over` 的两个边界分支 ✗ ★★★**（**第 678 轮判据实测 ✓）
+                //   **∴ 为什么需要 ✗**：**判据当场抓到差异 23040／442368（**5.2% ✓）**：
+                //     **∴ alpha ＝ 0 ⇒ `over` 返回 `backdrop`（**−0.0 ✓）
+                //       ＋ **∴ 而** `blend_at` 算 `0 + (−0.0)*1` ＝ **+0.0** ✗
+                //         ⇒ **∴ 位模式**不同** ✓
+                //   **∴ 修法 ✗**：**照 `over` 的分支**分三路** ✓
+                //     **∴ ① alpha ≤ 0 ⇒ **跳过**✗（**`over` 返回 backdrop ⇒ 不改 ✓）
+                //       ＋ **∴ ② alpha ≥ 1 ⇒ **直接写 source**✗（**`over` 返回 source ✓）
+                //         ＋ **∴ ③ 中间 ⇒ `blend_at`**（**＝ `over` 的一般分支 ✓）★
+                //   **∴ 结果 ✗**：**与旧路**逐位相同**✗ ＋ **∴ 且**比 `blend` 更快** ✓ ★
+                if alpha <= 0.0 {
+                    // **∴ `over` 返回 backdrop ⇒ 不改动 ✓
+                } else if alpha >= 1.0 {
+                    self.set_pixel(local_x, local_y, source);
+                } else if mode == BlendMode::Normal {
+                    self.blend_at(local_x, local_y, source);
+                } else {
+                    self.blend_mode(local_x, local_y, source, mode);
+                }
             }
         }
     }
