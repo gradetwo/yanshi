@@ -103,6 +103,20 @@ jobs:
           node scripts/pwa-sync-viewer.mjs
           node scripts/pwa-sync-wasm.mjs
 
+      - name: ★ 判据：内核包的引用完整性（**子目录不许漏** ✓）
+        # **★★★ 它守的是一个**已发生的真 bug**** ★★★**（**第 502 轮 ✓）：
+        #   **∴ 症状 ✗**：**本步骤之后的浏览器判据报
+        #     `Failed to fetch dynamically imported module: /wasm/yanshi_wasm.js`** ✓
+        #     ＋ **∴ 而**文件在、MIME 对、magic 也对 ⇒ **∴ 排查了很久** ✓
+        #   **∴ 真因 ✗**：**`wasm-bindgen` 还会生成 `snippets/<crate>-<hash>/inline0.js`** ✓
+        #     ＋ **∴ 而** `yanshi_wasm.js` **内部**import 它** ✓
+        #       ＋ **∴ 而**同步脚本原来**硬编码 4 个文件名**✗ ⇒ **∴ 子文件**从不进 web/wasm/** ✓
+        #         ⇒ **∴ 浏览器**import 主文件时**内部 404** ⇒ **∴ 整个模块**求值失败** ✓
+        #           ⇒ **∴ 而 Chrome**报的却是**主文件** ✓ ★**** ✓✓
+        #   **∴ 本判据 ✗**：**① 扫描内核 JS 的**相对引用 ⇒ **断言**都在 web/wasm/** ✓
+        #     ＋ **∴ ② 断言**同步脚本是**递归**的**（**不许再有硬编码清单 ✓）★**** ✓✓
+        run: node scripts/tool-wasm-pkg-refs.mjs
+
       - name: ★ 实测：wasm 体积（只测出 ＋ 写摘要；不设硬门槛）
         # 依据：目标第 10 条要求「体积／构建／wasm32 的实测交给 CI/CD」；
         # 而第 6 条已裁定「接受体积增长」⇒ 所以这里不设门槛，
