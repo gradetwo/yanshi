@@ -523,6 +523,18 @@ impl Buffer {
         }
     }
 
+    // **★★★ 必须门控 gpu feature ✗ ★★★**（**第 565 轮 ✓）
+    //   **∴ 为什么 ✗**：**这个函数**整段依赖 `yanshi_gpu`**✗
+    //     （`Quantizer::new`／`should_use_gpu_on` ✓）
+    //     ＋ **∴ 且**它调用 `Self::note_backend` 与 `quantizer_cache()`**✗
+    //       ⇒ **∴ 而**那两者**都在 `#[cfg(feature = "gpu")]` 下** ✓
+    //         ⇒ **∴ 于是**：**无 feature 构建**8 个错误**✗
+    //           （**E0433 `yanshi_gpu`／E0425 `quantizer_cache`／E0599 `note_backend` ✓）
+    //             ⇒ **★ 症状 ✗**：**CI 的 `criteria` 分片**连续失败 6＋ 次**** ✓ ★
+    //   **∴ 教训（**如实 ✓）✗**：**我第 46–48 轮只跑了 `--features gpu`**
+    //     ⇒ **∴ 漏了**plain 构建**✗ ⇒ **∴ 所以**：**每轮必须先跑
+    //       `cargo check --workspace --all-targets`（**不带 feature ✓）★
+    #[cfg(feature = "gpu")]
     pub(crate) fn try_quantize_on_gpu_keyed(
         &self,
         count: usize,
@@ -984,6 +996,8 @@ mod verify_key_tests {
     // **∴ 判据 ✗**：**两个只差一个像素的输入 ⇒ 键必须**不同**** ✓ ★
     use super::*;
 
+    // **∴ 该钩子依赖 gpu 专属的 `verify_key_with` ✗ ⇒ **∴ 必须同样门控** ✓（**第 565 轮 ✓）
+    #[cfg(feature = "gpu")]
     impl Buffer {
         fn verify_key_for_tests(&self) -> String {
             self.verify_key_with(None)
@@ -1000,6 +1014,7 @@ mod verify_key_tests {
     }
 
     #[test]
+    #[cfg(feature = "gpu")]
     fn the_verify_key_distinguishes_a_single_changed_pixel() {
         // **∴ 4K 量级 ⇒ 抽样步长 > 1**（**∴ 那**正是弱点所在 ✓）
         let len = 4 * 1024 * 1024;
