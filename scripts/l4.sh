@@ -233,14 +233,22 @@ cmd_tnew() {
   local name="${1:-}"; shift || true
   [ -n "${name}" ] || die "用法：scripts/l4.sh tnew <名字> '<命令>'" 2
   [ $# -ge 1 ] || die "用法：scripts/l4.sh tnew <名字> '<命令>'" 2
-  local cmd="$*" b64
+  local cmd="$*" b64_cmd b64_pre
   # **★★★ 两条硬规矩（**都是实测换来的 ✓）★★★**（**第 608 轮 ✓）
   #   **∴ ① 内容走 `base64` ✗**：**否则要经本机→ssh→tmux→bash 四层转义** ✓
   #   **∴ ② 日志用**重定向**✗（`> f 2>&1`）**：**绝不嵌 `| tee`**✗
   #     ＋ **∴ 因为**管道要经引号 ⇒ **∴ 那**正是第一版**会话秒退**的原因** ✓
   #       （**∴ 手动验证过：`> /tmp/t1.log 2>&1` **完全可用** ✓）★
-  b64="$(printf '%s' "${cmd}" | base64 -w0)"
-  l4_ssh "printf '%s' '${b64}' | base64 -d > /tmp/${name}.sh" >/dev/null 2>&1
+  # **★★★ 第三条硬规矩：`cd` 必须写进**脚本本身** ✗ ★★★**（**第 610 轮实测 ✓）
+  #   **∴ 原来的坑 ✗**：**`cd ${L4_DIR}` 只出现在 tmux 命令的外层**✗
+  #     ＋ **∴ 而** tmux 起的是**登录 shell** ⇒ **∴ 于是**：**作业的 cwd 是 `/root`** ✓
+  #       ⇒ **∴ 症状 ✗**：**`cargo build` 报
+  #         「could not find `Cargo.toml` in `/root` or any parent directory」** ✓ ★
+  #   **∴ 修法 ✗**：**把 `cd` 放进**写到远端的那份脚本**里**✗
+  #     ⇒ **∴ 从而**与**外层 cwd 无关** ✓ ★
+  b64_cmd="$(printf '%s' "${cmd}" | base64 -w0)"
+  b64_pre="$(printf 'cd %s || exit 9\n' "${L4_DIR}" | base64 -w0)"
+  l4_ssh "printf '%s' '${b64_pre}' | base64 -d > /tmp/${name}.sh; printf '%s' '${b64_cmd}' | base64 -d >> /tmp/${name}.sh" >/dev/null 2>&1
   l4_ssh "tmux has-session -t ${name} 2>/dev/null && { echo '  ✗ 已有同名作业 ⇒ 先 tkill ${name}'; exit 3; }; tmux new-session -d -s ${name} 'bash /tmp/${name}.sh > /tmp/${name}.log 2>&1; echo EXIT=\$? >> /tmp/${name}.log'; sleep 1; tmux ls 2>/dev/null | sed 's/^/  /'" 2>&1 | tail -4
 }
 # **★ 向作业的窗口发命令 ✗ ★**（**第 608 轮 ✓；**用户提示「窗口输入输出都方便」 ✓）
