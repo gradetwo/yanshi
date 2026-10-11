@@ -223,42 +223,30 @@ impl Buffer {
         for y in start_y..end_y as u32 {
             let local_y = (doc_y0 + y as i64 - self.origin_y) as u32;
             let row = (y * coverage.width) as usize;
-            for x in start_x..end_x as u32 {
-                let coverage_value = coverage.data[row + x as usize];
+            // **★★★ 索引递增 ＋ 切片迭代 ✗ ★★★**（**第 686 轮 ✓；**目标第 11 条 ✓）
+            //   **∴ 为什么 ✗**：**原来每像素都要**✗：
+            //     **∴ ① `coverage.data[row + x as usize]`**✗（**∴ 一次加 ＋ 一次边界检查 ✓）
+            //       ＋ **∴ ② `local_x = (doc_x0 + x as i64 - self.origin_x) as u32`**✗
+            //         （**∴ 一次减法 ＋ 一次转 u32 ✓）
+            //           ⇒ **∴ 而**两者**都只随 `x` **线性变化**✗ ⇒ **∴ 可以**递增／迭代** ✓
+            //   **∴ 改法 ✗**：
+            //     **∴ ① 用**切片迭代**✗（**∴ 省掉 `row + x` ＋ 边界检查 ✓）
+            //       ＋ **∴ ② `local_x` **按 `dx` 递增**✗（**∴ 省掉减法 ＋ 转 u32 ✓）
+            //   **∴ 逐位一致（**关键 ✓）✗**：**算术表达式**逐字不变**✗
+            //     ＋ **∴ 只**改了**取覆盖率与算 `local_x` 的方式** ✓
+            //       ＋ **∴ `local_x` 的初值与步长**与原来**完全等价** ✓
+            //         （**∴ `doc_x0 + x - origin_x` ⇒ `dx` 从 0 起，**初值 ＝ start_x 处** ✓）★
+            let row_start = row + start_x as usize;
+            let row_end = row + end_x as usize;
+            let local_x0 = (doc_x0 + start_x as i64 - self.origin_x) as u32;
+            for (dx, &coverage_value) in coverage.data[row_start..row_end].iter().enumerate() {
                 if coverage_value <= 0.0 {
                     continue;
                 }
-                let local_x = (doc_x0 + x as i64 - self.origin_x) as u32;
+                let local_x = local_x0 + dx as u32;
                 let alpha = base[3] * coverage_value * opacity;
                 let source = premultiply([base[0], base[1], base[2], alpha]);
-                // **★★★ Normal 走 `blend_at` ✗ ★★★**（**第 678 轮 ✓；**目标第 11 条 ✓）
-                //   **∴ 为什么 ✗**：
-                //     **∴ `blend_mode` ⇒ `blend` ⇒ **两次**边界检查 ＋ **两次**索引计算**✗
-                //       （**`self.pixel(x,y)` ＋ `self.set_pixel(x,y,…)` ✓）
-                //         ＋ **∴ 而** `blend_at` **只有一次索引** ＋ 4 通道直接写** ✓
-                //           ⇒ **∴ 每像素**省 2 次边界检查 ＋ 2 次索引** ✓
-                //   **∴ 坐标安全性 ✗**：**本函数**已把 `start_x/end_x/start_y/end_y`
-                //     **按本缓冲裁剪** ✗ ⇒ **∴ 所以** `local_x/local_y` **必然在范围内** ✓
-                //       ＋ **∴ `blend_at` 的前提**（**调用方保证已裁剪 ✓）**满足** ✓
-                //   **∴ 等价性（**关键 ✓）✗**：
-                //     **∴ `over` 有**三个分支**✗（**alpha ≤ 0 ⇒ backdrop｜**≥ 1 ⇒ source｜**一般 ✓）
-                //       ＋ **∴ 而** `blend_at` **只有**一般分支** ✓
-                //         ⇒ **∴ 理论上 ✗**：**alpha ＝ 0 ⇒ 预乘下 RGB 必为 0 ⇒ `0 + backdrop*1` ＝ backdrop ✓
-                //           ＋ **∴ alpha ＝ 1 ⇒ `source + backdrop*0.0` ＝ `source + (−0.0)`**✗
-                //             ＋ **∴ 而** IEEE 下 `x + (−0.0)` **对** x ＝ ±0.0 **仍为 −0.0** ✓
-                //               ⇒ **∴ 所以**逐位相同** ✓
-                //                 ＋ **★ 但那依赖 IEEE 语义 ✗ ★** ⇒ **∴ 由判据**逐位对拍确认** ✓
-                //                   （**`blend_at_matches_blend_mode` ✓）★
                 // **★★★ 显式复现 `over` 的两个边界分支 ✗ ★★★**（**第 678 轮判据实测 ✓）
-                //   **∴ 为什么需要 ✗**：**判据当场抓到差异 23040／442368（**5.2% ✓）**：
-                //     **∴ alpha ＝ 0 ⇒ `over` 返回 `backdrop`（**−0.0 ✓）
-                //       ＋ **∴ 而** `blend_at` 算 `0 + (−0.0)*1` ＝ **+0.0** ✗
-                //         ⇒ **∴ 位模式**不同** ✓
-                //   **∴ 修法 ✗**：**照 `over` 的分支**分三路** ✓
-                //     **∴ ① alpha ≤ 0 ⇒ **跳过**✗（**`over` 返回 backdrop ⇒ 不改 ✓）
-                //       ＋ **∴ ② alpha ≥ 1 ⇒ **直接写 source**✗（**`over` 返回 source ✓）
-                //         ＋ **∴ ③ 中间 ⇒ `blend_at`**（**＝ `over` 的一般分支 ✓）★
-                //   **∴ 结果 ✗**：**与旧路**逐位相同**✗ ＋ **∴ 且**比 `blend` 更快** ✓ ★
                 if alpha <= 0.0 {
                     // **∴ `over` 返回 backdrop ⇒ 不改动 ✓
                 } else if alpha >= 1.0 {
