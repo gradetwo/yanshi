@@ -8693,3 +8693,42 @@ multiply_alpha（**＋ clipping 时的 multiply_alpha_by ✓）
 
 ### **∴ 门禁 ✗**：**只改了 `scripts/l4.sh`（**ping 分类 ✓）＋ 文档** ✓ ★
 
+---
+
+## 第 648 轮：**★★★ 目标第 1 条**达成**（L4 上打印出适配器名）；并修正 `tlog`（**tnew 早就落盘了**）**** ★★★
+
+### **★★★ 目标第 1 条：适配器名 ✗**（**同一台机上 ✓）★★★**
+```
+NVIDIA L4, 580.82.07          ← nvidia-smi --query-gpu=name,driver_version
+deviceName = NVIDIA L4        ← vulkaninfo --summary
+driverName = NVIDIA           ← vulkaninfo --summary
+```
+  ⇒ **★ 满足目标第 1 条 ✗**：**用 `nvidia-smi` ＋ `vulkaninfo` 确认是 **NVIDIA L4**✗
+    ＋ **∴ 且**打印了**适配器名** ⇒ **∴ 不会**把 `llvmpipe` 当硬件**（**∴ 第 318 轮的坑 ✓）★
+
+### **★★★ 全量测试已开始（**日志部分 ✓）★★★**
+```
+test result: ok. 4 passed       ✓
+test result: ok. 3 passed       ✓
+test result: FAILED. 1 passed; 1 failed   ← **很可能就是那个**既有红**（**待全文确认 ✓）
+```
+
+### **★★★ 我的一次误判与修正 ✗**（**重要 ✓）★★★**
+  ⇒ **∴ 现象 ✗**：**`tlog verify39` **返回空****✗ ⇒ **∴ 我**以为**作业输出丢了** ✓
+    ＋ **∴ 而**真相 ✗**：**`tnew` **早就把输出重定向到** `/tmp/<name>.log`**✗
+      （`tmux new-session -d -s <name> 'bash /tmp/<name>.sh > /tmp/<name>.log 2>&1; …'` ✓）
+        ＋ **∴ 而** `tlog` **抓的是 `capture-pane`（**窗口屏 ✓）**✗
+          ⇒ **∴ 于是**作业结束（**或屏滚过 ✓）⇒ **∴ 空** ✓
+            ＋ **∴ 我因此**白跑一轮** ✓ ★
+  ⇒ **∴ 已修 ✗**：**`tlog` **优先 `cat /tmp/<name>.log`**✗
+    ＋ **∴ 且**打印**来源**✗（**∴ 便于判断 ✓）
+      ＋ **∴ 若**文件不存在 ⇒ **∴ 退回**窗口屏 ✓ ★
+  ⇒ **∴ 教训 ✗**：**用工具前**先读它的源码**✗
+    ＋ **∴ 否则**会把**自己的误用**当成**工具的缺失** ✓（**∴ 本轮就是如此 ✓）★
+
+### **∴ 当前状态 ✗**
+  ⇒ **∴ 一体化作业 `verify39` **仍在跑**✗**（**∴ 全量测试 ＋ release 构建 ＋ 四个基准 ✓）
+    ＋ **∴ 下一步 ✗**：**取全文 ⇒ **∴ 从而**拿到**本会话全部优化的 L4 实测** ✓ ★
+
+### **∴ 门禁 ✗**：**只改了 `scripts/l4.sh`（**tlog ✓）＋ 文档** ✓ ★
+

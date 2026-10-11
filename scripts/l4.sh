@@ -294,12 +294,19 @@ cmd_twin() {
   l4_ssh "printf '%s' '${b64}' | base64 -d > /tmp/${name}_${win}.sh; tmux new-window -t ${name} -n ${win} 'bash /tmp/${name}_${win}.sh 2>&1 | tee /tmp/${name}_${win}.log'; sleep 1; tmux list-windows -t ${name} 2>/dev/null | sed 's/^/  /'" 2>&1 | tail -5
 }
 cmd_tlog() {
-  local name="${1:-}"; local lines="${2:-25}"
-  [ -n "${name}" ] || die "用法：scripts/l4.sh tlog <名字> [行数]" 2
-  # **∴ 先抓屏（**最省 ⇒ 不读文件 ✓）✗ ⇒ **∴ 若**会话已结束 ⇒ **∴ 退回**读日志** ✓
-  l4_ssh "if tmux has-session -t ${name%%:*} 2>/dev/null; then tmux capture-pane -p -t ${name} | grep -v '^$' | tail -n ${lines}; else echo '（作业 ${name} 已结束 ⇒ 读日志尾部）'; tail -n ${lines} /tmp/${name}.log 2>/dev/null || echo '  ✗ 没有该作业的记录'; fi" 2>&1 | tail -n $((lines + 3))
+  # **★★★ 优先读**日志文件**，而不是窗口屏 ✗ ★★★**（**第 648 轮实测 ✓）
+  #   **∴ 为什么 ✗**：**`tnew` **早已把输出重定向到** `/tmp/<name>.log`**✗
+  #     （`tmux new-session -d -s <name> 'bash /tmp/<name>.sh > /tmp/<name>.log 2>&1; …'` ✓）
+  #       ＋ **∴ 而**原来 `tlog` **抓的是 `capture-pane`（**窗口屏 ✓）**✗
+  #         ⇒ **∴ 于是**作业**一旦结束**（**或屏已滚过 ✓）⇒ **∴ 它**返回空** ✓
+  #           ＋ **∴ 我因此**白跑了一轮**（**以为输出丢了 ✓）★
+  #   **∴ 现在 ✗**：**先 `cat /tmp/<name>.log`**✗
+  #     ＋ **∴ 若**该文件不存在 ⇒ **∴ 再**退回窗口屏 ✓ ★
+  local name="$1"
+  local lines="${2:-40}"
+  [ -n "$name" ] || { die "用法：scripts/l4.sh tlog <名字> [行数]" 2; }
+  l4_ssh "if [ -f /tmp/${name}.log ]; then echo '  （来源：/tmp/${name}.log）'; tail -n ${lines} /tmp/${name}.log; else echo '  （没有 /tmp/${name}.log ⇒ 退回窗口屏）'; tmux capture-pane -p -t ${name} 2>/dev/null | grep -v '^$' | tail -n ${lines}; fi" 2>&1
 }
-
 cmd_tls() {
   l4_ssh "tmux ls 2>/dev/null || echo '  （没有 tmux 作业）'" 2>&1 | tail -n 12
 }
