@@ -6401,3 +6401,53 @@ let coverage = if distance_squared <= hard_edge_squared { 1.0 }
       ⇒ **∴ 按新口径（**时间成本可控 ✓）✗**：
         **∴ 值得**试一个**更大但等价**的改动** ✓（**∴ 如** `dx` 增量法 —— **有 ulp 风险 ⇒ 逐位判据守门 ✓）★
 
+---
+
+## 第 590 轮：**★★★ 目标第 8 条（**乙 ✓）的真实缺口已修 ＋ 一个重要的工程教训 ★★★**
+
+### **∴ 侦察结论（**逐处核实 ✓）★**
+```
+drawKernelRegion(1866)   ⇒ ★ 已有 `queueServerBlit`（1871／1908）★
+drawKernelBoxDirect(1955)⇒ 本体**不含**补画（只画内核像素）
+pickColorAt(6727)        ⇒ ★ 已是 `async` ＋ `await callTool`／`await refreshPreview` ★
+composeFullDocumentCanvas(9840) ⇒ ★ 已是 `async` ＋ `await requestFullDocumentRender` ★
+总真实调用点：6 个（**而非 157 个函数 —— **∴ 那**是甲路线全量 async 化的闭包 ✓）★
+```
+  ⇒ **★ 所以 ✗**：**目标第 8 条的**4 处里，3 处已在异步路**✗
+    ＋ **∴ 唯一缺口 ✗**：**`drawKernelBoxDirect` 的调用点
+      （**`updatePreviewOverlayInner` ✓）**不触发服务端补画**** ✓ ★
+
+### **★★★ 缺口的真实后果（**为什么是真缺陷 ✓）★★★**
+  ⇒ **∴ `drawKernelBoxDirect`**只画**内核那份像素**** ✓
+    ＋ **∴ 而**含 heavy 内容的文档里，**内核那份是**空白**的**（**见 `drawKernelRegion` 注释 ✓）
+      ⇒ **★ 所以：**拖动中的笔迹区域会**空白**** ✓ ★
+
+### **∴ 修法（**遵循既有异步模式 ✓）★**
+```javascript
+drawKernelBoxDirect(response.dirty_bbox);        // 即时反馈：内核像素
+await queueServerBlit(response.dirty_bbox);      // 新增：服务端像素（异步补画）
+```
+  ⇒ **∴ 安全性 ✗**：**本函数**本来就是 `async`** ✓
+    ＋ **∴ 且** `queueServerBlit` **已返回 promise**（第 1447 轮 ✓）
+      ＋ **∴ 且**它**自带串行／去重**（`serverBlitBusy`／`serverBlitPending` ✓）
+        ⇒ **∴ 所以**：**不会堆积 ＋ 等待有界**（**失败也 `.catch` 返回 ✓）★
+
+### **★★★ 教训（**我本轮先改错了文件 ✓）★★★**
+  ⇒ **∴ 症状 ✗**：**改完 JS 后 `git commit` 报「无文件要提交，工作区干净」**✗
+    ＋ **∴ 但**python 报 ok ＋ `node --check` 通过 ⇒ **∴ 文件**确实改了** ✓
+      ⇒ **∴ 根因（**用 `git check-ignore -v` 查出 ✓）✗**：
+        **`.gitignore:65: web/viewer-app.js`** ✗
+          ⇒ **★ 所以 ✗**：**内核 JS 的**源**在
+            `crates/yanshi-http/assets/viewer-app.js`**✗
+            ＋ **∴ 而** `web/viewer-app.js` **是**构建产物**（**`web/wasm/`／`web/brushes/`／
+              `web/mediums/`／`viewer.css`／`service-worker.js` 同理 ✓）★
+              ⇒ **★ 改产物 ⇒ **不入库 ＋ 下次构建被覆盖**** ✓ ★
+  ⇒ **∴ 已修 ✗**：**把同样的改动应用到**源**✗ ＋ **∴ 源语法 ✓ ＋ git 认到 `M`** ✓ ★
+
+### **∴ 验证 ✗**
+```
+js-syntax ✓｜coverage ✓｜plain test ✓ 全绿｜fmt = 0 ✓
+已提交 eb59072 ✓ 已推送 ✓
+```
+  ＋ **∴ 而** wasm 构建**只能靠 CI**（**本机无 wasm32 目标 ✓）⇒ **∴ 如实说明 ✓ ★
+
