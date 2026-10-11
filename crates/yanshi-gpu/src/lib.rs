@@ -508,8 +508,21 @@ impl Quantizer {
         let quarter_bytes = (count.saturating_mul(BYTES_PER_PIXEL) / 4) as u64;
         let budget = budget.min(quarter_bytes.max(CHUNK_BYTES_MIN as u64));
         let pixels = (budget as usize) / BYTES_PER_PIXEL;
+        // **★★★ 必须**对齐到 64 像素（＝256 字节）✗ ★★★**（**第 614 轮 ✓）
+        //   **∴ 为什么 ✗**：**coalescing（**三张大 buffer ＋ 每块偏移 ✓）要求
+        //     每个块的偏移满足 `min_storage_buffer_offset_alignment`**✗
+        //     ＋ **∴ 而** wgpu 保证它是 **≤ 256** ✓
+        //       ＋ **∴ 64 像素 × 4 字节 ＝ **256 字节**** ⇒ **∴ 从而**：
+        //         **所有块偏移**天然对齐** ✓
+        //   **∴ 不这么做的后果（**第 612 轮实测 ✓）✗**：
+        //     **服务端在渲染时**崩溃**✗（**∴ 客户端只见 `fetch failed` ✓）
+        //       ＋ **∴ 而**块大小不是 64 倍数时就会发生** ✓ ★
+        //   **∴ 代价（**两面 ✓）✗**：**每块最多**浪费 63 像素**✗
+        //     ⇒ **∴ 对 4 MiB 的块 ＝ **0.006%**** ⇒ **∴ 可忽略** ✓ ★
+        const CHUNK_ALIGN_PIXELS: usize = 64;
+        let aligned = (pixels / CHUNK_ALIGN_PIXELS) * CHUNK_ALIGN_PIXELS;
         // **∴ 防御：**永不为 0**✗**（**∴ 否则**死循环** ✓）
-        pixels.max(1)
+        aligned.max(CHUNK_ALIGN_PIXELS)
     }
 
     /// **★ 量化一批像素 ✗ ★**（**∴ 分块 ＋ 批量 ＋ 一次 `Wait`** ✓）
