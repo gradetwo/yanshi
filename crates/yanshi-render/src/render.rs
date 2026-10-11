@@ -1182,6 +1182,34 @@ impl Renderer {
         bitmaps: &BitmapCache,
         below: &std::sync::Mutex<Option<BelowTiles>>,
     ) -> Result<Buffer> {
+        // **★ Drop 计时守卫（**门控 ✓）✗ ★**（**第 535 轮 ✓）
+        //   **∴ 为什么用守卫 ✗**：**这个函数**有多个出口**✗
+        //     ⇒ **∴ 只有 Drop 才能**无论走哪条出口都打印** ✓ ★
+        //   **∴ 它量什么 ✗**：**每个 band 的**总时间**✗
+        //     ⇒ **∴ 减去五个探针（**fill／layers／composite／crop／quantize ✓）
+        //       ⇒ **∴ 剩下的就是**band 内探针之外的耗时**** ✓
+        //         ＋ **∴ 而**它**不改变任何行为**（只在于探针开时打印 ✓）★
+        struct AccTimer {
+            started: std::time::Instant,
+            label: String,
+            on: bool,
+        }
+        impl Drop for AccTimer {
+            fn drop(&mut self) {
+                if self.on {
+                    eprintln!(
+                        "PROBE 累计 区域={} 总={:?}",
+                        self.label,
+                        self.started.elapsed()
+                    );
+                }
+            }
+        }
+        let _acc_timer = AccTimer {
+            started: std::time::Instant::now(),
+            label: format!("{}x{}", region.w as u32, region.h as u32),
+            on: std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
+        };
         let padded = Bbox::new(
             region.x - padding as f64,
             region.y - padding as f64,
