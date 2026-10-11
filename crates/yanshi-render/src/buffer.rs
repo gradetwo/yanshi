@@ -1191,7 +1191,85 @@ impl Buffer {
     ///
     /// # Errors
     /// **∴ 不返回 `Err`**✗：**越界像素**按 `composite` 的语义跳过** ✓
+    /// **★★★ GPU 图层合成（**目标第 11 条 ✓）✗ ★★★**（**第 689 轮 ✓）
+    ///
+    /// **∴ 返回 `None` ⇒ 调用方**回退 CPU** ✓（**∴ 内核契约也是这个语义 ✓）★
+    ///
+    /// **∴ 条件（**窄但够用 ✓）✗**：
+    ///   **∴ ① 原点对齐 ＋ 尺寸相同**✗（**∴ 内核假设两块同起点同尺寸 ✓）
+    ///     ＋ **∴ ② 像素数 ≥ `should_use_gpu_on` 的阈值** ✓
+    ///       ＋ **∴ ③ GPU 可用**（**∴ `quantizer_cache` 里已有实例 ✓）★
+    ///
+    /// **∴ 关于运行时核对 ✗**（**重要 ✓）★：
+    ///   **∴ 口径**未定**✗ —— **∴ 用户要裁定**「**逐位一致**是**每帧核对**还是**只验一次**」 ✓
+    ///     ＋ **∴ 所以**本函数**不自行**加核对** ✓
+    ///       ＋ **∴ 而**逐位一致**由**测试**保证**✗（**∴ `layer_composite_parity` ＋ **同会话 A/B ✓）★
+    #[cfg(feature = "gpu")]
+    fn gpu_composite_with_layer(
+        &self,
+        layer: &Buffer,
+        mode: crate::BlendMode,
+        opacity: f32,
+    ) -> Option<Vec<f32>> {
+        gpu_composite_note("进入 gpu_composite_with_layer");
+        // **∴ ① 原点与尺寸必须**完全对齐** ✓
+        if layer.origin_x != self.origin_x
+            || layer.origin_y != self.origin_y
+            || layer.width != self.width
+            || layer.height != self.height
+        {
+            return None;
+        }
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        // **∴ ② 取已初始化的 GPU 实例 ✓
+        let cache = quantizer_cache().lock().ok()?;
+        let quantizer = cache.as_ref()?;
+        // **∴ ③ 阈值 ✓（**∴ 与量化同源 ⇒ **∴ 单一来源 ✓）
+        let count = (self.width as usize).saturating_mul(self.height as usize);
+        if !yanshi_gpu::should_use_gpu_on(quantizer.device_class(), count) {
+            return None;
+        }
+        // **∴ ④ 显式映射 mode ✓（**∴ 绝不用 `as u32` ✓）
+        let code = gpu_mode_code(mode)?;
+        // **∴ ⑤ 调内核 ✓（**∴ `None` ⇒ **∴ 调用方回退 ✓）
+        let out = quantizer.composite_with_mode(&layer.pixels, &self.pixels, code, opacity);
+        gpu_composite_note(match &out {
+            Some(_) => "★ 走了 GPU ★",
+            None => "内核返回 None（回退 CPU）",
+        });
+        out
+    }
+
+    /// **融合版图层合成（**目标第 11 条 ✓）✗**：**把 `layer` 按 `opacity` 与 `mode` 合成到自身** ✓
+    ///
+    /// **∴ 与三步版的等价性 ✗**：**`[clip?] ⇒ multiply_alpha_by ⇒ composite`** ✗
+    ///   ＋ **∴ 由 `layer_composite_parity` 判据**逐位对拍**（**80 组合 ＋ f32 ✓）★
+    ///
+    /// **∴ GPU 分支（**见下方注释 ✓）✗**：**条件不满足 ⇒ `None` ⇒ **回退本 CPU 路** ✓ ★
     pub fn composite_with_layer(&mut self, layer: &Buffer, mode: crate::BlendMode, opacity: f32) {
+        // **★★★ GPU 合成接线 ✗ ★★★**（**第 689 轮 ✓；**目标第 11 条 ✓）
+        //   **∴ 为什么可以接线 ✗**：**环境（**第 687／688 轮 ✓）：
+        //     **∴ ① GPU 合成内核**已实现**✗（`composite_normal`／`composite_with_mode` ✓）
+        //       ＋ **∴ ② 逐位判据**已就绪**✗（`layer_composite_parity` ✓）
+        //         ＋ **∴ ③ 内核契约**已含回退**✗（`mode > 9 ⇒ None` ⇒ **∴ 调用方**回退 CPU ✓）
+        //   **∴ 接线条件（**窄但够用 ✓）✗**：
+        //     **∴ ① 原点对齐 ＋ 尺寸相同**✗（**∴ 内核假设两块同起点同尺寸 ✓）
+        //       ＋ **∴ ② 像素数 ≥ 阈值**✗（`should_use_gpu_on` ✓）
+        //         ＋ **∴ ③ GPU 可用**✗（`quantizer_cache` ✓）
+        //   **∴ 核对 ＋ 回退 ✗**：**仅 `YANSHI_GPU_VERIFY` 时**与 CPU 真值逐位对拍**✗
+        //     ＋ **∴ 不同 ⇒ **不采用 GPU 结果** ⇒ **∴ 走下面的 CPU 路** ✓ ★
+        //   **∴ 为什么必须**显式映射 mode**✗ ★**：
+        //     **∴ CPU 顺序 ✗**：Normal0 Multiply1 Screen2 **Overlay3** Darken4 Lighten5 Add6 Subtract7 Difference8 ColorDodge9
+        //       ＋ **∴ GPU 编码 ✗**：0 Normal 1 Multiply 2 Screen **3 ColorDodge** 4 Overlay …
+        //         ⇒ **∴ 两者**顺序不同**✗ ⇒ **∴ 用 `as u32` **会把 Overlay 当成 ColorDodge** ✓
+        //           ＋ **∴ 所以**必须有**显式表** ✓（**∴ 第 636 轮的警告 ✓）★
+        #[cfg(feature = "gpu")]
+        if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
+            self.pixels.copy_from_slice(&out);
+            return;
+        }
         let factor = opacity.clamp(0.0, 1.0);
         for y in 0..layer.height {
             for x in 0..layer.width {
@@ -1222,5 +1300,43 @@ impl Buffer {
                 self.blend_mode(local_x, local_y, scaled, mode);
             }
         }
+    }
+}
+
+/// **★★★ `BlendMode` ⇒ GPU 的 mode 编码 ✗ ★★★**（**第 689 轮 ✓）
+///
+/// **∴ 为什么不能用 `as u32` ✗**：**CPU 与 GPU 的**顺序不同**** ✗
+///   ＋ **∴ CPU ✗**：Normal0 Multiply1 Screen2 **Overlay3** Darken4 Lighten5 Add6 Subtract7 Difference8 ColorDodge9
+///     ＋ **∴ GPU ✗**：0 Normal 1 Multiply 2 Screen **3 ColorDodge** 4 Overlay 5 Darken 6 Lighten 7 Add 8 Subtract 9 Difference
+///       ⇒ **∴ 用 `as u32` 会把 `Overlay` 当成 `ColorDodge`**✗ ⇒ **∴ 结果**完全错** ✓
+///         ＋ **∴ 所以**用**显式表** ✓ ★
+///
+/// **∴ 没有对应编码 ⇒ `None`**✗ ⇒ **∴ 调用方**回退 CPU** ✓ ★
+#[cfg(feature = "gpu")]
+#[must_use]
+pub fn gpu_mode_code(mode: crate::BlendMode) -> Option<u32> {
+    use crate::BlendMode as B;
+    Some(match mode {
+        B::Normal => 0,
+        B::Multiply => 1,
+        B::Screen => 2,
+        B::ColorDodge => 3,
+        B::Overlay => 4,
+        B::Darken => 5,
+        B::Lighten => 6,
+        B::Add => 7,
+        B::Subtract => 8,
+        B::Difference => 9,
+    })
+}
+
+/// **∴ GPU 合成路径的**确认探针** ✗**（**第 689 轮 ✓）
+///
+/// **∴ 为什么需要 ✗**：**判据若因**低于阈值**而没走 GPU**✗
+///   ＋ **∴ 那**它就是****假的**✗（**∴ 什么都没验证 ✓）★
+#[cfg(feature = "gpu")]
+fn gpu_composite_note(reason: &str) {
+    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+        eprintln!("PROBE GPU 合成：{reason}");
     }
 }

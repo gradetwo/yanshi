@@ -10634,3 +10634,60 @@ pub fn composite_with_layer(&mut self, layer: &Buffer, mode, opacity) {
 
 ### **∴ 门禁 ✗**：**本轮只读码 ＋ 设计**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 689 轮：**★★★ 接线已实现；但**确认探针**当场证明：现有合成判据**根本没走 GPU**（**尺寸 6144 ＜ 阈值 30000**）**** ★★★
+
+### **★★★ 实现（`buffer.rs` ✓）★★★**
+  ⇒ **∴ ① 接线 ✗**：**在 `composite_with_layer` 开头**✗：
+```rust
+#[cfg(feature = "gpu")]
+if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
+    self.pixels.copy_from_slice(&out);
+    return;
+}
+```
+  ⇒ **∴ ② `gpu_composite_with_layer` ✗**（**新增 ✓）⇒ **∴ 条件 ✗**：
+    **∴ a.** **原点对齐 ＋ 尺寸相同** ✓
+      ＋ **∴ b.** **像素数 ≥ `should_use_gpu_on` 的阈值** ✓
+        ＋ **∴ c.** **GPU 可用**（**`quantizer_cache` ✓）
+          ⇒ **∴ 而**任一不满足 ⇒ **∴ `None` ⇒ **回退 CPU** ✓ ★
+  ⇒ **∴ ③ ★ `gpu_mode_code` 显式映射 ✗ ★**（**第 636 轮警告的坑 ✓）：
+    **∴ CPU ✗**：Normal0 Multiply1 Screen2 **Overlay3** Darken4 Lighten5 Add6 Subtract7 Difference8 ColorDodge9
+      ＋ **∴ GPU ✗**：0 Normal 1 Multiply 2 Screen **3 ColorDodge** 4 Overlay 5 Darken 6 Lighten 7 Add 8 Subtract 9 Difference
+        ⇒ **∴ 用 `as u32` 会把 `Overlay` 当成 `ColorDodge`**✗ ⇒ **∴ 结果**完全错** ✓
+          ＋ **∴ 所以**用**显式表** ✓ ★
+  ⇒ **∴ ④ 关于**运行时核对**✗**（**重要 ✓）：
+    **∴ 口径**未定**✗（**∴ 用户要裁定**「**每帧核对 vs 只验一次**」 ✓）
+      ＋ **∴ 所以**我****不自行**加核对** ✓
+        ＋ **∴ 而**逐位一致**由**测试**保证** ✓ ★
+
+### **★★★ 编译与既有判据 ✗** ★★★
+```
+★ 无 gpu feature ⇒ Finished ✓（**wasm 路径不受影响 ✓）
+★ 含 gpu feature ＋ tests ⇒ Finished ✓
+★ layer_composite_parity（**含 gpu ✓）⇒ test result: ok. 1 passed ✓
+★ composite_parity（**含 gpu ✓）⇒ u8 最大差 ＝ **0** ⇒ 逐位一致 ✓
+```
+
+### **★★★ 但**确认探针**当场证明判据是**假的**（**本轮的元价值 ✓）★★★**
+  ⇒ **∴ 我加了**确认探针**✗**（**`gpu_composite_note` ＋ `YANSHI_RENDER_PROBE` ✓）
+    ＋ **∴ 实测 ✗**：**80 次「进入 `gpu_composite_with_layer`」**✗
+      ＋ **∴ 而**「★ 走了 GPU ★」**0 次** ✓
+        ⇒ **∴ 于是**查尺寸 ✗**：
+          **∴ `layer_composite_parity.rs:28` ⇒ `let (w, h) = (96u32, 64u32)`**✗
+            ＋ **∴ 即** 96×64 ＝ **6144 像素** ✗
+              ＋ **∴ 而**阈值 ＝ **30000**✗ ⇒ **∴ 6144 ＜ 30000 ⇒ **∴ 返回 `None` ⇒ **走 CPU**** ✓
+                ＋ **∴ 且**该测试**没有初始化 GPU** ✓
+                  ⇒ **★★ 所以：**那些判据验证的是 CPU 路**✗ ⇒ **∴ 对"验证接线"这个目的**它们是**假的**** ✓ ★★
+
+### **★★★ 教训（**再次 ✓）★★★**
+  ⇒ **∴ 「**判据通过**」**不等于**「**被测路径真的被走到**」✗ ★
+    ＋ **∴ 所以**：**任何"接线验证"必须**先确认路径被走到**✗（**∴ 探针 ／ 计数 ／ 断言 ✓）
+      ＋ **∴ 而那**正是第 75 轮我**预见的风险**✗ ⇒ **∴ 探针**当场证实了它** ✓ ★
+
+### **∴ 下一步 ✗**：**① 写**新判据**✗**（**∴ 尺寸 ＞ 30000（**如 256×256 ✓）＋ **初始化 GPU ✓）
+  ＋ **∴ ② 从而**真正验证 GPU 路**✗ ＋ **∴ ③ 并**加一个**断言**✗（**∴ 「必须走了 GPU」⇒ **∴ 否则**判据自己红 ✓）★
+
+### **∴ 门禁 ✗**：**改了 `buffer.rs`（**接线 ＋ 探针 ✓）⇒ **∴ 已跑 render 合成判据 ✓ ｜已推 `l4-sync`** ✓ ★
+
