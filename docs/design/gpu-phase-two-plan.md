@@ -7128,3 +7128,54 @@ CHUNK_BYTES=16 777 216⇒ calls 11｜upload 29 276｜submit   242｜readback  77
       ＋ **∴ 需要**「**按块索引**的池**」或**「**把多块合并成一次大上传**」 ✓
         ＋ **∴ 后者**更符合官方"coalescing"**的建议** ✓ ★
 
+---
+
+## 第 612 轮：**★★★ 按官方指引做 buffer coalescing ⇒ 服务端**崩了** ⇒ **如实回退**（并定位到最可疑点）★★★**
+
+### **∴ 做的事（**有官方依据 ✓）★**
+  ⇒ **∴ 依据 ✗**：**wgpu 官方「**Don't: create many resources per frame**」**
+    ＋ **∴ 原文 ✗**：「**…puts pressure on the WebGPU **memory allocator and tracker**.
+      Prefer coalescing smaller resources into larger ones.
+      For buffers, you can create a large buffer and use different parts of it**」 ✓
+  ⇒ **∴ 实现 ✗**：**三张大 buffer**（`src_all`／`dst_all`／`pb_all` ✓）
+    ＋ **∴ 每块只**写自己的偏移**（`src_off ＝ done*4`｜`pb_off ＝ 块序号*256` ✓）
+      ＋ **∴ 绑定用**显式的 `BindingResource::Buffer`**＋ **`wgpu::BufferSize::new(…)`** ✓
+        （**∴ 注 ✗**：**`BufferSlice` **没有** `as_entire_binding`**✗
+          ＋ **∴ 而** `size` 要 **`NonZero<u64>`**（即 `BufferSize` ✓）——
+            **∴ 那**两个 API 细节**都是编译器教的** ✓）★
+
+### **★★★ 结果：**服务端崩溃** ✗ ★★★**
+  ⇒ **∴ 症状（**L4 ✓）✗**：
+    **Node 报 `TypeError: fetch failed` ＋ `cause: SocketError: other side closed`**
+      ＋ **∴ 而**栈指向 `tool-render-cost-accounts.mjs:175`（**`fetch` ✓）
+        ⇒ **∴ 所以**：**服务端在请求进行中**断开**（**即崩 ✓）★
+  ⇒ **∴ 而**服务端自己的 stderr **没取到**（**∴ 因为**探针输出**被 `grep` 过滤掉了**✗
+    ⇒ **∴ 教训 ✗**：**排查时**不要过滤**✗ ⇒ **∴ 先**拿全量**再挑 ✓）★
+
+### **★★★ 决定：**回退** ✗ ★★★**
+  ⇒ **∴ 理由（**工程判断 ✓）✗**：**不能留一个**会让服务端崩的改动**✗
+    ＋ **∴ 即使**它**理论上有官方背书** ✓
+      ＋ **∴ 所以**：**`git revert` 只回退那一个提交**✗
+        ＋ **∴ 而**保留**同轮里有价值的 `XDG_RUNTIME_DIR` 修复** ✓ ★
+
+### **★★★ 最可疑点（**下一轮先查它 ✓）★★★**
+  ⇒ **∴ ① ★ `src_off` 的**对齐**** ✗ ★**：
+    **∴ 我**假设**「块字节数 ≥ 4 MiB ⇒ 天然满足
+      `min_storage_buffer_offset_alignment`（≤256 ✓）」**✗
+      ＋ **∴ 但** `per_chunk*4` **不保证是** 256 的倍数**✗
+        ⇒ **∴ 例如**：**独显 cap ＝ 32 MiB ＋ 4K ＝ 33 MB ⇒ **每块≈8.3 MB**
+          ⇒ **∴ 那个数**未必**对齐** ✓ ★
+        ⇒ **∴ 修法 ✗**：**把 `src_off` **向上取整**到 256 的倍数**✗
+          ＋ **∴ 并**同步调整**每块的容量**（**或**直接把 `per_chunk` 取整到对齐 ✓）★
+  ⇒ **∴ ② 次要嫌疑 ✗**：**`dst` 的切片**用了 `src_off`**✗
+    （**∴ 那**是对的 ⇒ **∴ 因为**两者同布局 ✓）＋ **`pb` 的 256 对齐**（**已做 ✓）★
+
+### **★★★ 顺带发现（**已固化 ✓）★★★**
+  ⇒ **∴ `XDG_RUNTIME_DIR` ✗**：**在 tmux 作业里跑 GPU 测试**报
+    「**XDG_RUNTIME_DIR is invalid or not set in the environment**」**✗
+    ＋ **∴ 而**代码毫无问题（**本机／CI 有桌面会话 ⇒ 都过 ✓）
+      ⇒ **∴ 所以**：**那是**「判据自己坏了」那一类**（**同第 402 轮的教训 ✓）
+        ＋ **∴ 修法 ✗**：**所有 tmux 作业**先导出它**（**固化进 `l4.sh` ⇒ 以后不必记 ✓）★
+
+### **∴ 门禁 ✗**：**`git revert` 后 `cargo check` ✓｜`cargo test -p yanshi-gpu` ✓｜已推 `l4-sync`（`ae231a7` ✓）★
+
