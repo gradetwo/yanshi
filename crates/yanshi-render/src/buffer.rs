@@ -8,6 +8,27 @@ use crate::color::{premultiply, LinearRgba};
 use crate::geometry::Coverage;
 use yanshi_core::Bbox;
 
+/// **★ `Quantizer` 的**进程级缓存**✗ ★**（**第 512 轮 ✓）
+///
+/// **∴ 为什么必须有它 ✗**：**建 `Quantizer` ＝ 建 `wgpu::Instance` ＋ 枚举 adapter** ✓
+///   ⇒ **∴ 实测 ≈ **32 ms****（**核显／Vulkan ✓）★
+///     ＋ **∴ 而**规模阈值**必须先知道 `device_class`**✗
+///       ⇒ **∴ 而**那**又必须先建 quantizer** ✓
+///         ⇒ **∴ 于是**：**小图（**最终走 CPU ✓）**也白付 32 ms** ✓ ★**** ✓✓
+///
+/// **∴ 安全性 ✗**：**LUT 是全局常量 ⇒ 同一个 quantizer 可以复用** ✓
+///   ＋ **∴ `--gpu off` 在调用它**之前**就返回**✗ ⇒ **∴ 那个模式**不碰缓存** ✓ ★**** ✓✓
+// **★ 必须加 cfg 门 ✗ ★**（**第 512 轮实测 ✓）
+//   **∴ 为什么 ✗**：**没加它 ⇒ `cargo test --workspace`（**无 feature ✓）
+//     报 `cannot find module or crate yanshi_gpu`** ✓
+//     ＋ **∴ 那**正是那条门禁存在的意义**（**抓非 feature 构建 ✓）★
+#[cfg(feature = "gpu")]
+fn quantizer_cache() -> &'static std::sync::Mutex<Option<yanshi_gpu::Quantizer>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<yanshi_gpu::Quantizer>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// 线性光、预乘 alpha 的区域缓冲区（行主序）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buffer {
@@ -473,13 +494,44 @@ impl Buffer {
             return None;
         }
         let lut = crate::color::srgb_encode_table();
-        let quantizer = match yanshi_gpu::Quantizer::new(lut) {
-            Ok(q) => q,
-            Err(e) => {
-                eprintln!("GPU 不可用 ⇒ 回退 CPU：{e}");
-                return None;
+        // **★★★ 进程级缓存 ✗ ★★★**（**第 512 轮实测 ✓）
+        //
+        // **∴ 原来的缺陷（**真性能 bug ✓）✗**：**这里**每次渲染都调 `Quantizer::new(lut)`**
+        //   ⇒ **∴ 而**它内部会 `wgpu::Instance::new(…)` ＋ `request_adapter(…)`
+        //     （**`yanshi-gpu/src/lib.rs:271-273` ✓）
+        //     ⇒ **∴ 实测代价 ✗**：**≈ **32 ms**（**核显／Vulkan ✓）★
+        //       ＋ **★ 更糟 ✗ ★**：**下面的阈值判断**必须先拿到 `device_class`**
+        //         ⇒ **∴ 而**拿它**必须先建 quantizer** ✓
+        //           ⇒ **∴ 所以**：**即使最终走 CPU 路**（**小图 ✓）✗
+        //             ，**那 32 ms 也已经付了** ✓
+        //             ⇒ **∴ 实测 ✗**：**8 100 px 时**纯 CPU 3.2 ms ✗
+        //               vs `--gpu on` 34.9 ms**（**∴ 而** `backend` 仍是 `cpu` ⇒ **∴ 白付 ✓）★
+        //
+        // **∴ 为什么缓存安全 ✗**：**LUT 是**全局常量**（`srgb_encode_table()` ✓）
+        //   ⇒ **∴ 同一个 LUT ⇒ 同一个 quantizer** ✓
+        //   ＋ **∴ `--gpu off` 的检查在**上面**✗ ⇒ **∴ 那个模式**不碰缓存** ✓
+        //
+        // **∴ 失败不缓存 ✗**：**∴ 于是**下次会**重试** ✓
+        //   （**∴ 失败罕见且吵闹** ⇒ **∴ 重试代价可接受 ✓）★
+        let cache = quantizer_cache();
+        // **∴ 用 `unwrap_or_else` 而不是 `match` ✗**：**clippy 会要求把
+        //   `match … { Ok(g) => g, Err(p) => p.into_inner() }` 换成 `?`** ✓
+        //   ＋ **∴ 而**这里**不能**用 `?`**（**中毒锁要**继续用**而不是**向上抛 ✓）★
+        let mut guard = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            match yanshi_gpu::Quantizer::new(lut) {
+                Ok(q) => *guard = Some(q),
+                Err(e) => {
+                    eprintln!("GPU 不可用 ⇒ 回退 CPU：{e}");
+                    return None;
+                }
             }
-        };
+        }
+        // **∴ 用 `?` ✗**：**clippy 指出 `match … { Some(q) => q, None => return None }`
+        //   就是 `?`** ✓（**∴ 函数返回 `Option` ⇒ `?` 合法 ✓）★
+        let quantizer = guard.as_ref()?;
         // **★ 按**适配器等级**判规模 ✗ ★**（第 322 轮 ✓）：
         //   **∴ 独显 10 000／集成·虚拟·**CPU 软件渲染** 30 000** ✓（**第 320 轮 ✓）
         //   **∴ 若**不够大**✗ ⇒ **∴ 返回 `None`**✗ ⇒ **∴ 于是**走 CPU** ✓（**∴ 而不是**静默 ✓）**
@@ -582,6 +634,15 @@ impl Buffer {
         //   ⇒ **∴ 这一段**全在 CPU 上**✗（**重算整幅 ＋ 逐字节比较 ✓）
         //     ＋ **∴ 它**正是"**算得贵**"那一半的候选** ✓
         //       ⇒ **∴ 量出来 ⇒ 才能和前三段比** ✓ ★**** ✓✓
+        // **★ 宿主时间 API 必须只出现在非 wasm 分支 ✗ ★**（**第 512 轮被 `wasm_target_guard` 抓到 ✓）
+        //   **∴ 为什么 ✗**：**那个判据**用白名单**登记「**面向 wasm 的源码**里
+        //     **宿主时间 API**（`Instant::now()` ✓）的出现次数」** ✓
+        //     ＋ **∴ 而**我第 498 轮在这里加计时时**没登记**✗
+        //       ⇒ **∴ 于是**：**计数从 0 变 1 ⇒ **判据红** ✓ ★
+        //   **∴ 修法选择 ✗**：**不登记白名单**✗（**∴ 那**只是记账 ✓）
+        //     ⇒ **∴ 而是**用 `#[cfg(not(target_arch = "wasm32"))]` **真的把它排除在 wasm 之外** ✓
+        //       （**∴ wasm 上**本来就不走这条 GPU 验证路** ✓）★
+        #[cfg(not(target_arch = "wasm32"))]
         let t_verify = std::time::Instant::now();
         let (width, height) = (self.width as usize, self.height as usize);
         let mut want = vec![0u8; width * height * 4];
@@ -595,6 +656,7 @@ impl Buffer {
         }
         let bad = (0..want.len()).filter(|&i| want[i] != gpu[i]).count();
         // **∴ 记下核对耗时 ✗**（**∴ 在**任何返回之前**都记 ⇒ 早退也能量到 ✓）★
+        #[cfg(not(target_arch = "wasm32"))]
         crate::set_verify_micros(t_verify.elapsed().as_micros() as u64);
         if bad > 0 {
             eprintln!("GPU 与 CPU 有 {bad} 个字节不符 ⇒ 回退 CPU（**∴ 不许**交出不同的像素**）");

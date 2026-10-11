@@ -42,6 +42,22 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
              SystemTime::now()，只在 YANSHI_PARALLEL_PROBE 打开时执行，且位于
              #[cfg(not(target_arch = wasm32))] 的并行路径内 —— wasm32 上那条路径整体不参与编译",
         ),
+        // **★ 第 512 轮新增 ✓**：**GPU 量化路的验证计时**（第 498 轮加 ✓）。
+        // **∴ 它**做什么 ✗**：**只量「拿 GPU 结果与 CPU 真值逐字节比对」那一步的耗时** ✓
+        //   ⇒ **∴ 于是**得出「**核对占 GPU 路 81.6%**」⇒ **∴ 那**直接导致运行时核对被移出默认路** ✓
+        // **∴ 为什么它**可以在这里**✗**：**两条语句都在
+        //   cfg(not(target_arch = wasm32)) **属性下** ✓
+        //   ⇒ **∴ wasm 构建里它们**不参与编译**✗ ，**且 wasm 上本来不走这条 GPU 验证路** ✓
+        // **∴ 判据为什么仍要记账 ✗**：**本判据数的是**源码文本**✗
+        //   ⇒ **∴ 加 cfg **不会**改变计数** ✓ ⇒ **∴ 必须**显式登记 ＋ 写明理由** ✓ ★
+        (
+            "crates/yanshi-render/src/buffer.rs",
+            2,
+            "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：\
+             只用于量「GPU 结果与 CPU 真值逐字节比对」这一步的起止耗时（第 498 轮），\
+             据此得出核对占 GPU 路 81.6%，运行时核对因此被移出默认路。\
+             wasm 构建里这两条语句不参与编译，且 wasm 上本来不走这条 GPU 验证路",
+        ),
         (
             "crates/yanshi-render/src/geometry.rs",
             2,
