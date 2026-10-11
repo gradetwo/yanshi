@@ -6451,3 +6451,35 @@ js-syntax ✓｜coverage ✓｜plain test ✓ 全绿｜fmt = 0 ✓
 ```
   ＋ **∴ 而** wasm 构建**只能靠 CI**（**本机无 wasm32 目标 ✓）⇒ **∴ 如实说明 ✓ ★
 
+---
+
+## 第 591 轮：**★★★ 合并用户 patch ＋ 查明 `wasm smoke` 是**既有红**（连续 6 次失败）★★★**
+
+### **∴ ① 用户 patch 已合并（**`5607ed8` ✓）★**
+  ⇒ **∴ 目标文件 ✗**：**`crates/yanshi-http/assets/viewer-app.js`**（**源 ✓）
+    ＋ **∴ 改动 ✗**：**图片上传后**守卫空的 `blob_hash`**✗
+      ＋ **∴ 并在**为空时报明确错误**（**而不是**让 `import_image` 报晦涩的 `missing_blob_hash` ✓）★
+  ⇒ **∴ 应用方式 ✗**：**`git apply --check` 先验证**✗（**∴ 块 #1**成功应用于 3823，**偏移 25 行 ✓）
+    ＋ **∴ 语法 ✓ ＋ `git status` 认到 `M`** ✓
+      ＋ **∴ 门禁 ✗**：**js-syntax ✓｜coverage ✓｜plain test 全绿 ✓｜fmt = 0 ✓** ★
+
+### **★★★ ② 独立印证了「改错文件」的教训 ✗ ★★★**
+  ⇒ **∴ patch 位置的上下文注释（**第 854 轮 ✓）**已经写着**：
+    「**∴ 教训 ✗**：**`web/` 是生成的 ✗** ⇒ **∴ 改它**会在**下次同步时消失 ✓**
+      （**∴ 实测**：我在 `web/index.html` 里改过 ⇒ `not_json` 出现 **0** 次 ✓）」
+        ⇒ **★ 所以 ✗**：**那**与我第 590 轮用 `.gitignore` 实验**独立查出的结论**一致**** ✓
+          ＋ **∴ 两处印证 ⇒ **该教训确凿** ✓ ★
+
+### **★★★ ③ `wasm smoke (node)` 是**既有红**（**决定性证据 ✓）★★★**
+```
+38130698052  wasm smoke = failure   fix(viewer): blit server pixels after the kernel pre…
+38129971173  wasm smoke = failure   perf(brush): compare squared distances before taking…
+38129049067  wasm smoke = failure   test(tools): print the gpu stage segment timings
+38128965129  wasm smoke = failure   perf(gpu): batch the device to host readback into on…
+38128142068  wasm smoke = failure   perf(gpu): raise the discrete threshold to the measu…
+38126268376  wasm smoke = failure   fix(tools): ignore null channel deltas in the parity…
+```
+  ⇒ **∴ 连续 6 次失败（**跨越多个不相关的提交 ✓）****
+    ⇒ **★ 所以：**它是既有红**✗ ，**与本轮／本会话的改动无关**** ✓
+      ＋ **∴ 登记为**下一轮的调查对象**（**∴ 而** CI 的 `criteria shard` 也仍红 ✓）★
+
