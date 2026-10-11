@@ -8942,6 +8942,29 @@ function setupBrushLibrary() {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(() => undefined);
 
+  // **★ SW 静默升级 ★**：浏览器默认 24h 才检查一次 SW 更新 ⇒ 紧急修复要等很久 ✗。
+  //   ∴ 每 30 分钟主动 `registration.update()` 一次 ✓。
+  //   ∴ **静默**：不打扰用户，下次加载自动用新版 ✓。
+  //   ∴ **离线时必须静默失败** ✗ —— `update()` 在无网络时抛错 ⇒ 必须 catch 掉 ✗，
+  //     ∴ 不能影响正常离线使用 ✓。
+  const checkSwUpdate = async () => {
+    try {
+      if (typeof navigator.onLine !== "undefined" && !navigator.onLine) return;
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) return;
+      await reg.update();
+      // 静默：不通知用户，新版下次加载自动生效
+      // （SW 里已有 skipWaiting + clients.claim，新 SW 会尽快接管）
+    } catch (e) {
+      // 静默：离线/网络错误都不能打扰用户
+    }
+  };
+  setTimeout(() => {
+    checkSwUpdate();
+    setInterval(checkSwUpdate, 30 * 60 * 1000);
+  }, 5 * 60 * 1000);
+  window.__checkSwUpdate = checkSwUpdate;
+
 // **预热门面** ✓（第 52 轮定 ✓）：现在它只在 `pointerdown` 才异步加载 ✗ ⇒
 // **离线**时即使走缓存也有延迟 ⇒ 那一笔的前几帧会白丢 ✓（实测：同一脚本两跑 +1060 ✓ / +8 ✗）。
 // 页面初始化后就加载 ⇒ 落笔时**已在内存** ✓，顺带也让它进 SW 缓存 ✓（离线可用 ✓）。

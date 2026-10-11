@@ -7179,3 +7179,25 @@ CHUNK_BYTES=16 777 216⇒ calls 11｜upload 29 276｜submit   242｜readback  77
 
 ### **∴ 门禁 ✗**：**`git revert` 后 `cargo check` ✓｜`cargo test -p yanshi-gpu` ✓｜已推 `l4-sync`（`ae231a7` ✓）★
 
+---
+
+## 第 613 轮：**合并用户 patch：**SW 静默升级**（**每 30 分钟主动检查 ✓）★**
+
+### **∴ patch ✗**：`/tmp/yanshi-sw-silent-update.patch`（**改**源**：`crates/yanshi-http/assets/viewer-app.js` ✓）
+  ⇒ **∴ 内容 ✗**：**在 `serviceWorker.register` 之后加**静默升级** ✗**：
+    **∴ ①** **每 **30 分钟**主动 `registration.update()`**（**∴ 因为**浏览器默认 24h 才检查一次 ⇒ **∴ 紧急修复要等很久 ✓）
+      ＋ **∴ ②** **静默**：**不打扰用户**✗（**∴ 新版**下次加载自动生效 ✓）
+        ＋ **∴ ③ ★ 离线必须静默失败 ✗ ★**：**`update()` 在无网络时**抛错**✗
+          ⇒ **∴ 必须 catch 掉 ⇒ **∴ 不能影响正常离线使用** ✓（**∴ 那**是**关键正确性点 ✓）
+          ＋ **∴ ④** **启动延迟 5 分钟**✗ ＋ **暴露 `window.__checkSwUpdate`**（**∴ 供判据调用 ✓）★
+
+### **∴ 合并流程（**用了本会话新造的工具 ✓）★**
+  ⇒ **∴ ① 先判"该不该改" ✗**：**`tool-which-source.mjs` ⇒ 确认 patch 改的是**源**而非产物** ✓
+    ＋ **∴ ② `git apply --check` 先验 ✓**（**∴ 通过后再 apply ✓）
+      ＋ **∴ ③ 应用后**必须跑 `npm run pwa:sync`**✗（**∴ 因为**源改了 ⇒ **∴ 产物要重新生成 ✓）
+        ＋ **∴ ④ 跑相关判据 ✗**：**四个全绿 ✓** ★
+```
+✓ tool-js-syntax｜✓ tool-web-assets-parity｜✓ tool-pwa-assets｜✓ tool-sw-stamp-idempotent
+```
+  ⇒ **★ 其中 `tool-web-assets-parity` 能绿，正是第 600 轮**戳归一化**的功劳** ✓ ★
+
