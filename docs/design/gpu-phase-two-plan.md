@@ -2922,3 +2922,74 @@ adapter:Metal:IntegratedGpu:Apple M2 Max:device=true
           ＋ **∴ ②** **本机（**用旧 pkg ✓）**判据绿**✗ 、**CI（**新构建 ✓）**红** ✓
 **∴ 验证方法 ✗**：**在 CI 里列出 `crates/yanshi-wasm/pkg/` 的全部内容** ✓
   （**∴ 若**有 `snippets/` ⇒ **∴ 修 `pwa-sync-wasm.mjs` 递归同步 ✓）★
+
+---
+
+## 第 502 轮：**★★★ CI 完整跑通并成功部署 —— 根因是 `snippets/` ★★★**
+
+### **∴ 症状与真因 ✗**
+
+**∴ 症状 ✗**：**PWA 真实浏览器判据报
+  `Failed to fetch dynamically imported module: /wasm/yanshi_wasm.js`** ✓
+  ＋ **∴ 而**我第 493 轮加的探测显示：**该文件 **200｜text/javascript**✗
+    ＋ **∴ `_bg.wasm` **200｜application/wasm｜magic 也对**** ✓
+      ⇒ **∴ 于是**：**排除法用尽**✗ ⇒ **∴ 排查了三轮** ✓ ★
+
+**∴ 真因 ✗**：**`wasm-bindgen --target web` 还会生成
+  **`snippets/<crate>-<hash>/inline0.js`**** ✓
+  ＋ **∴ 而** `yanshi_wasm.js` **内部**写着
+    `from "./snippets/yanshi-wasm-d89ba59e34bc9dd1/inline0.js"`** ✓
+    ＋ **∴ 而** `pwa-sync-wasm.mjs` 原来**硬编码 4 个文件名**✗
+      ⇒ **∴ 那个子文件**从不进 `web/wasm/`** ✓
+        ⇒ **∴ 浏览器**import 主文件 ⇒ **∴ 它内部 import 子文件 ⇒ 404** ✓
+          ⇒ **∴ 整个模块**求值失败**✗
+            ⇒ **★ 而 Chrome 报的却是**主文件**✗ ⇒ **∴ 指向了错的地方** ✓ ★**** ✓✓
+
+**∴ 为什么它能解释全部观测 ✗**：
+  ⇒ **∴ ①** **本机判据绿**✗**：**`web/wasm/` 用的是**旧 pkg（**无 snippets ✓）**
+    ＋ **∴ ②** **CI 判据红**✗**：**CI 用**新构建的 pkg（**有 snippets ✓）**
+      ＋ **∴ ③** **主文件／MIME／magic 全正常**✗**：**缺的**不是它们** ✓ ★**** ✓✓
+
+### **∴ 修法（**三件 ✓）★**
+
+**∴ ① `pwa-sync-wasm.mjs` 改成**递归同步**✗**（**不再硬编码文件名 ✓）★
+  ＋ **∴ ② 新判据 `scripts/tool-wasm-pkg-refs.mjs` ✗**：
+    ⇒ **∴ 扫描 `yanshi_wasm.js` 的**相对引用**✗（`from "./x"`／`import("./x")`／`new URL("./x")` ✓）
+      ＋ **∴ 断言**每个目标**都在 `web/wasm/`** ✓
+        ＋ **∴ 且**断言**同步脚本是**递归**的**（**不许再有硬编码清单 ✓）★
+          ＋ **∴ 自检 ✗**：**7 例｜判红 4｜不符合期望 0** ✓｜**变异**（删 snippets）⇒ **红** ✓ ★
+**∴ ③ 接进 `pwa.yml` ✗**（**在同步之后 ✓）★
+
+### **∴ 路上还修了两个**真 bug****
+
+**∴ ① 覆盖率守卫抓到**一个漏接**✗**（**`cdp-seed-client-render.mjs` ✓）：
+  ⇒ **∴ 它**是**浏览器判据的前置工具**✗（**`run-criteria.sh:69` 已调它 ✓）
+    ⇒ **∴ 而**覆盖率清单里**没有它** ✓ ⇒ **∴ 于是**：**守卫报**它会静默永不运行** ✓
+      ⇒ **∴ 修法 ✗**：**加进 `NOT_CRITERIA` ＋ **写明理由**** ✓（**变异**：删掉 ⇒ 红 ✓）★
+    ＋ **∴ 它**以前**从没暴露**✗ —— **∴ 因为**前面的判据一直红 ⇒ **∴ 流程**提前退出** ✓ ★
+
+**∴ ② 部署步骤**导出错了环境变量名**✗**（**真 bug ✓）：
+  ⇒ **∴ 工作流把 secret 读进**`CF_TOKEN`**✗ ，**没导出 `CLOUDFLARE_API_TOKEN`** ✓
+    ⇒ **∴ 而** wrangler **只认后者** ✓
+      ⇒ **∴ 报**「In a non-interactive environment, it's necessary to set a
+        CLOUDFLARE_API_TOKEN environment variable」** ✓
+        ⇒ **★ 那**看起来像**secret 没配**✗ ⇒ **∴ 其实**用户的 secret 是好的** ✓ ★**** ✓✓
+    ＋ **∴ 修法 ✗**：**在 `set -u` 之后**显式导出** ✓（**＋ 可选导出 `CLOUDFLARE_ACCOUNT_ID` ✓）
+      ＋ **∴ 先例 ✗**：**本地 `scripts/deploy-pwa.sh` 一直这么做** ⇒ **∴ 两边口径终于一致** ✓ ★
+
+### **★★★ 结果：CI 第一次**完整跑通 ＋ 真部署**** ★★★
+
+```
+✓ 16 步全绿（含真实浏览器判据｜覆盖率守卫｜工作流结构）
+✓ 部署：✨ Success! Uploaded 10 files｜Deployed yanshi-online triggers
+  ⇒ yanshi-online.wangda.today｜Version ID ce505c93-…
+```
+**∴ 线上验证 ✗**：
+```
+/wasm/yanshi_wasm.js                                  ⇒ 200   26 622 B
+/wasm/yanshi_wasm_bg.wasm                             ⇒ 200 1 533 387 B
+/wasm/snippets/yanshi-wasm-…/inline0.js               ⇒ 200      158 B   ★ 以前 404 ★
+线上 viewer 戳 = yanshi-shell-0748649279894（**变了 ⇒ 会重新预缓存 ✓）
+线上冒烟 ✓ 12 项
+```
+**⇒ ∴ 目标第 13 条**完成**：**CI/CD 第一次真跑 ＋ 部署成功 ✓** ★
