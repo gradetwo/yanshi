@@ -7631,3 +7631,60 @@ tile 组装：render.rs:1155 store_tiles(&cropped) ⇒ 176.8 ms（**第 520 轮 
   ⇒ **∴ 只做**读码 ＋ 定计划** ✗（**∴ 且**已修正第 11 条的描述 ✓）★
   ⇒ **∴ 门禁 ✗**：**无代码改动**｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 624 轮：**★★★ 阶段 1 的前置研究：**混合数学**没有 transcendental ⇒ **逐位一致理论上可行**** ★★★**
+
+### **★★★ 目标第 11 条的「**先立判据**」要求 ✗** ⇒ **∴ 先搞清**位精确性**能否成立 ✓ ★
+
+### **★★★ 读到的数学（**全部 ✓）★★★**
+```
+Buffer::composite(source, mode, opacity)  （buffer.rs:240）
+  ⇒ pixel × opacity.clamp(0,1)  ⇒ 跳过全透明（**仅 Normal ✓）
+    ⇒ 文档坐标对齐 ⇒ 裁剪到自身 ⇒ blend_mode(local_x, local_y, scaled, mode)
+
+blend_mode（buffer.rs）
+  ⇒ Normal ⇒ self.blend() ⇒ ★ blend_at：4 个乘加（`src[c] + dst[c]*(1-a)`）★
+  ⇒ 其它   ⇒ blend_pixel(mode, source, backdrop)
+
+blend_pixel（blend.rs）
+  ⇒ Normal ⇒ over()（**4 乘加 ＋ α 的 <=0／>=1 快路径 ✓）
+  ⇒ 其它   ⇒ clamp ＋ unpremultiply（**除法 ✓）＋ blend_channel ＋ 乘加
+
+★ blend_channel（**关键 ✓）★
+  Normal => cs｜Multiply => cb*cs｜Screen => cb+cs-cb*cs
+  ColorDodge => cb/(1-cs)（**除法 ＋ clamp ✓）
+  Overlay => 分支（cb<=0.5）＋ 2*cb*cs 或 1-2*(1-cb)*(1-cs)
+  Darken => min｜Lighten => max｜Add => (cb+cs).min(1)
+  Subtract => (cb-cs).max(0)｜Difference => (cb-cs).abs()
+  ⇒ ★ **全部是加减乘除 ＋ min／max／abs／clamp ＋ 一个分支**✗
+    ＋ **★ 没有 `powf`／`sqrt`／任何 transcendental ★**
+      （**∴ `grep` 报「transcendental 次数: 1」是**注释里的词**✗ ⇒ **∴ 不是**实际调用 ✓）★
+```
+
+### **★★★ 结论（**乐观 ✓）★★★**
+  ⇒ **∴ ① 这些运算在 **IEEE 754** 下**都是**精确确定的**** ✓
+    ＋ **∴ 而** GPU（**Vulkan SPIR-V ✓）**也遵守 IEEE 754** ✗
+      （**∴ 除** FMA 融合 ＋ 快数学开关（fast-math ✓））
+        ⇒ **★ 所以：**逐位一致**理论上**可行**** ✓ ★
+  ⇒ **∴ ② ★ 唯一的风险是 **FMA 融合**** ✗ ★**：
+    **∴ `a*b + c` 在 GPU 上可能**融合**成一条 fma**✗ ⇒ **∴ 舍入**不同 ⇒ **∴ 不一致** ✓
+      ＋ **∴ 而** WGSL **没有 `precise` 限定符**✗ ⇒ **∴ 不能**强制不融合** ✓ ★
+  ⇒ **∴ ③ 对策（**按优先 ✓）✗**：
+    **∴ a.** **先**实现 ＋ 测逐位**✗（**∴ 可能**本来就一致 ✓）
+      ＋ **∴ b. 若**不一致 ⇒ **∴ 让 CPU 侧也用 `f32::mul_add`**✗
+        ⇒ **∴ 两边**都 fma ⇒ **∴ 从而**逐位一致** ✓
+          ＋ **∴ 代价 ✗**：**会改 CPU 真值**✗ ⇒ **∴ 而**它**是基准**✗
+            ⇒ **∴ 所以**：**必须**先把偏差测出来 ＋ **且**跑既有判据确认无害** ✓ ★
+      ＋ **∴ c.** **最后手段**：**明确容差**（**如** ≤1 LSB ✓）＋ **保留 CPU 真值对照** ✓ ★
+
+### **★★★ 实现顺序（**阶段 1 细化 ✓）★★★**
+  ⇒ **∴ 第 1 步 ✗**：**WGSL 合成内核**（**`Normal` ＋ 其余 9 种 mode ✓）
+    ＋ **∴ 判据 ✗**：**逐位一致**（**`max_channel_delta == 0` ✓）★
+  ⇒ **∴ 第 2 步 ✗**：**GPU 侧图层合成 ＋ 不透明度**（**`multiply_alpha` ＋ `composite_over_linear_with ✓）★
+  ⇒ **∴ 第 3 步 ✗**：**消除 tile 组装的多余拷贝**（**176.8 ms ✓）★
+  ⇒ **∴ 第 4 步 ✗**：**一次上传 ＋ 一次读回**（**∴ 把 109 ms 的传输压到最小 ✓）★
+  ⇒ **∴ 第 5 步 ✗**：**全部做完再测量**（**∴ 用户指示 ✓）★
+
+### **∴ 门禁 ✗**：**本轮只读码 ＋ 定判据**（**无代码改动 ✓）｜已推 `l4-sync`** ✓ ★
+
