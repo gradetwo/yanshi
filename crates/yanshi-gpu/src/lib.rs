@@ -505,7 +505,23 @@ impl Quantizer {
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let mut backs: Vec<(wgpu::Buffer, usize)> = Vec::new();
+        // **★★★ 读回**批量化**：一张大 staging buffer ✗ ★★★**（**第 585 轮 ✓；**目标第 5 条 ✓）
+        //   **∴ 原来 ✗**：**每块**单独建一张 `COPY_DST|MAP_READ` 小 buffer**
+        //     ＋ **∴ 读回时**逐块 `map_async` ＋ `poll` ＋ `wait`**✗
+        //       ⇒ **∴ 于是**：**N 块 ⇒ **N 次同步往返 ＋ N 次 memcpy**** ✓
+        //         （**实测：传输占 GPU 阶段 77% ✓；**第 68 轮 ✓）
+        //   **∴ 现在 ✗**：**所有块 `copy_buffer_to_buffer` 到**同一张**大 buffer 的各自偏移**
+        //     ＋ **∴ 读回只**一次 `map_async` ＋ 一次等待 ＋ 一次拷贝** ✓
+        //       ⇒ **∴ 往返 N ⇒ 1** ✗ ＋ **∴ memcpy N ⇒ 1** ✓
+        //   **∴ 代价（**两面都写 ✓）✗**：**峰值多一张 `count*4` 字节的映射缓冲**
+        //     （**4K ⇒ 33 MB ✓）✗ ＋ **∴ 而**它**必须整张驻留** ✓
+        //       ⇒ **∴ 所以**：**显存／内存换往返** ✓ ★
+        let readback: wgpu::Buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("yanshi-gpu-readback-batched"),
+            size: (count * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
         let mut done = 0usize;
         // **∴ 分段累加器 ✗**（**∴ 一次调用内累加 ⇒ 最后写静态 ✓）★
         let mut upload_ns = 0u64;
@@ -590,12 +606,6 @@ impl Quantizer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let back = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: (take * 4) as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
             self.queue.write_buffer(&src, 0, &src_bytes);
             self.queue.write_buffer(&pb, 0, &params_bytes);
             upload_ns += t_up.elapsed().as_nanos() as u64;
@@ -641,8 +651,8 @@ impl Quantizer {
                 pass.set_bind_group(0, &bind, &[]);
                 pass.dispatch_workgroups((take as u32).div_ceil(64), 1, 1);
             }
-            enc.copy_buffer_to_buffer(&dst, 0, &back, 0, (take * 4) as u64);
-            backs.push((back, take));
+            // **∴ 拷到**大 buffer 的 `done*4` 偏移**✗（**∴ 此时 `done` ＝ 本块之前的像素数 ✓）★
+            enc.copy_buffer_to_buffer(&dst, 0, &readback, (done * 4) as u64, (take * 4) as u64);
             done += take;
         }
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
@@ -657,11 +667,12 @@ impl Quantizer {
         let _ = self.device.poll(wgpu::PollType::Poll);
         submit_ns += t_sub.elapsed().as_nanos() as u64;
 
-        // **∴ 分段③：读回（**逐块 map ＋ 等待 ✓）★
+        // **∴ 分段③：读回（**一次 map ＋ 一次等待 ✓）★
         let t_rb = Instant::now();
+        // **★ 一次 map ＋ 一次等待 ＋ 一次拷贝 ✗ ★**（**第 585 轮 ✓）
         let mut out: Vec<u8> = Vec::with_capacity(count * 4);
-        for (back, _take) in &backs {
-            let slice = back.slice(..);
+        {
+            let slice = readback.slice(..);
             let signal = std::sync::Arc::new(OnceSignal::new(&self.device));
             let signal_in_cb = std::sync::Arc::clone(&signal);
             slice.map_async(wgpu::MapMode::Read, move |_r| {
@@ -669,12 +680,10 @@ impl Quantizer {
             });
             let _ = self.device.poll(wgpu::PollType::Poll);
             signal.wait().await;
-
             let mapped = slice.get_mapped_range();
             out.extend_from_slice(&mapped);
-            drop(mapped);
-            back.unmap();
         }
+        readback.unmap();
         readback_ns += t_rb.elapsed().as_nanos() as u64;
         // **∴ 写静态 ✗**：**每次覆盖 ⇒ 读的就是**最近一次** ✓
         STAGE_UPLOAD_NS.store(upload_ns, std::sync::atomic::Ordering::Relaxed);
