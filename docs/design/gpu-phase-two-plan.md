@@ -4438,3 +4438,39 @@ render_region 2329.9 ＝ 分派前 3.0 ＋ band 1658.7 ＋ ★ 未归入 668.2 �
 
 **∴ 门禁 ✗**：`fmt` = 0 ✓｜`clippy(gpu)` = 0 ✓｜**工作区干净** ✓ ★
 
+---
+
+## 第 538 轮：**★ band 拼装是**零拷贝** ⇒ 假说被否；668 ms 缩到**缓冲池／线程开销**** ★
+
+**∴ 动机 ✗**：上轮把 668 ms 缩小到 **"band 之后"**✗ ⇒ **∴ 于是**怀疑**逐 band 拷贝进最终 Buffer** ✓
+
+**∴ 读代码（`render.rs:3772`，`mod parallel_impl` 内 ✓）✗**：
+```rust
+let mut out = Buffer::new(rx, ry, rw, rh);
+let mut slices: Vec<(&mut [f32], (u32, u32))> = Vec::with_capacity(chunks);
+let mut rest: &mut [f32] = out.pixels_mut();
+for &band in &bands {
+    let len = band.1 as usize * stride;
+    let (head, tail) = rest.split_at_mut(len);   // ★ 直接按行切片 ★
+    slices.push((head, band));
+}
+// 然后 thread::scope 里每个线程写自己的 slice
+```
+
+**⇒ ★★★ 结论 ✗ ★★★**：**拼装**是零拷贝**** ✓
+  ⇒ **∴ 它**用 `split_at_mut` **直接给每个 band 切出最终 Buffer 的一段**✗
+    ＋ **∴ 并行安全**（**行段互不重叠 ✓）
+      ⇒ **★ 所以：**"66 MB 拼装拷贝"假说**被否**** ✓ ★
+
+**⇒ ∴ 那 668 ms 只能来自 band 循环之外的机制 ✗**（**候选按嫌疑排序 ✓）★**：
+  ⇒ **∴ ① `renderer.buffer_pool.begin_render_with(chunks, 2)`** ← **最大嫌疑**（**池的准备／清零 ✓）
+    ＋ **∴ ② `thread::scope` 的 spawn／join ＋ `BitmapCache` 共享** ✓
+      ＋ **∴ ③ `Buffer::new(rw, rh)`**（**分配 ＋ 清零 33 MB ⇒ 单线程 ≈10–20 ms ⇒ **不够 668** ✓）
+        ＋ **∴ ④ 每 band 的结果收集（`results` ✓）★
+
+**∴ 下一轮 ✗**：**在 `thread::scope` 前后 ＋ `buffer_pool.begin_render_with` 前后加门控计时** ✓
+  ⇒ **∴ 那样**就能**把 668 ms 切出来** ✓ ★
+
+**∴ 本轮**价值（**如实 ✓）✗**：**用代码证据**否掉一个假说**✗
+  ⇒ **∴ 防止**盲改一个**不存在的问题**** ✓（**∴ 与第 524 轮同一纪律 ✓）★
+
