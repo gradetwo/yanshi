@@ -7849,3 +7849,57 @@ blend_pixel（blend.rs）
 
 ### **∴ 门禁 ✗**：**判据绿 ✓｜变异红 ✓｜`fmt = 0 ✓`｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 628 轮：**★★★ 阶段 1 核心完成：**全部 10 种 blend mode ＋ opacity ⇒ GPU 与 CPU **30 组全部 u8 逐位一致**** ★★★
+
+### **★★★ 内核扩展 ✗**：`composite.wgsl` 129 行 ✓ ★
+  ⇒ **∴ 新增 ✗**：
+    **∴ ① `blend_channel(mode, base, source)` ✗**：**10 种算式的**逐一照抄** ✓
+      ＋ **∴ 而**顺序与分支**与 CPU 完全对齐** ✓
+    **∴ ② `unpremul(p)` ✗**：**与 `color.rs:237` 的 `unpremultiply` 逐行对应**
+      ＋ **★ 关键 ✗ ★**：**分母是**传入的 alpha**（**未 clamp ✓）⇒ **∴ 必须**照抄 ✓ ★
+    **∴ ③ `blend_one(mode, src, dst)` ✗**：**与 `blend_pixel` 逐句对应**✗
+      ＋ **∴ 而**它**保留了**两套 alpha 处理**：
+        **∴ Normal ⇒ 用**未 clamp 的 `src.w`**✗（**∴ CPU 的 `over` 就是这样 ✓）
+          ＋ **∴ 非 Normal ⇒ 用**clamp 过的 alpha_s／alpha_b** ✓ ★
+    **∴ ④ `main` ✗**：**加 `opacity`（**`params.extra.x` ✓）⇒ **∴ 与 CPU 一样**逐通道相乘** ✓
+  ⇒ **∴ Rust 侧 ✗**：**新增 `composite_with_mode(&src, &dst, mode, opacity)`** ✓
+    ＋ **∴ 而** `composite_normal` **变成**它的薄包装** ✓
+      ＋ **∴ mode > 9 ⇒ `None`**（**∴ 调用方**回退 CPU ✓）★
+
+### **★★★ 判据扩展 ⇒ **30 组全部逐位一致**** ★★★
+```
+共测 30 组（10 mode × 3 opacity）｜失败 0 组 ⇒ test result: ok. 2 passed
+```
+  ⇒ **∴ 所以 ✗**：**不只是 Normal**✗ —— **全部 10 种 mode ＋ 3 种 opacity
+    ⇒ **GPU 与 CPU 在 u8 空间**完全逐位一致**** ✓
+      ＋ **∴ 无需任何容差** ✓ ★
+
+### **★★★ 避开的陷阱：**枚举顺序 ≠ match 顺序****（**重要 ✓）★★★**
+  ⇒ **∴ 事实 ✗**：**`BlendMode` 的**枚举顺序**✗
+    （**Normal／Multiply／Screen／**Overlay**／Darken／Lighten／Add／Subtract／Difference／**ColorDodge** ✓）
+      ＋ **∴ 而** `blend_channel` 的 **match 顺序是** ColorDodge 在 Overlay 之前**** ✓
+        ⇒ **★ 所以：**绝不能**依赖 `mode as u32`**✗
+          ⇒ **∴ 判据里用**显式配对表**✗（`[(0, Normal), (1, Multiply), (2, Screen), (3, ColorDodge), …]` ✓）
+            ＋ **∴ 且**内核侧**也按同一张表** ✓ ★
+
+### **★★★ 变异检验（**目标纪律 ✓）★★★**
+  ⇒ **∴ 变异 ✗**：**把 `Multiply` 的 `cb * cs` 改成 `cb + cs`** ✓
+    ⇒ **★ 判据立刻红 ★**：
+      **∴ mode 1（Multiply）opacity 1 ⇒ u8 差 **3865** 字节** ✓
+        ＋ **∴ mode 1 opacity 0.5 ⇒ **3468** 字节** ✓
+          ＋ **∴ 共 30 组 ⇒ 失败 2 组** ✓
+            ＋ **∴ 恢复 ⇒ **绿**（`ok. 2 passed` ✓）★
+      ＋ **∴ 而**其它 28 组**不受影响**✗ ⇒ **∴ 说明**判据的**定位**很准** ✓ ★
+
+### **★★★ 门禁 ✗**：**fmt = 0 ✓｜plain test ✓｜gpu test ✓｜gpu clippy ✓｜已推 `l4-sync`** ✓ ★
+
+### **∴ 阶段 1 的进度 ✗**
+  ⇒ **∴ 已完成 ✗**：**合成内核（**10 mode ＋ opacity ✓）＋ 判据（**30 组 ＋ 变异验证 ✓）★
+    ＋ **∴ 剩余 ✗**：
+      **∴ ① 图层合成 ✗**（**`multiply_alpha` ＋ 图层不透明度 ✓）
+        ＋ **∴ ② 接**渲染主流程**✗（**∴ 图层缓冲**留在 GPU ✓）
+          ＋ **∴ ③ 消除 tile 组装的多余拷贝** ✗（**176.8 ms ✓）
+            ＋ **∴ ④ 全部做完后**一次性测量** ✗（**∴ 用户指示 ✓）★
+

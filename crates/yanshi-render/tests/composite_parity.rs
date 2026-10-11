@@ -157,3 +157,90 @@ fn max_abs_diff_u8(a: &[u8], b: &[u8]) -> u8 {
         .max()
         .unwrap_or(0)
 }
+
+// **★★★ 全部 10 种 mode 的逐位判据 ✗ ★★★**（**第 628 轮 ✓）
+//
+// **∴ 核心纪律 ✗**：**比较口径**沿用 **u8**（**第 627 轮定案 ✓）
+//   ＋ **∴ 因为** f32 空间的 fma ULP 差**在量化后**消失** ✓
+//
+// **★ 必须用**显式映射表** ✗ ★**：**`BlendMode` 的**枚举顺序**与
+//   `blend_channel` 的 **match 顺序不同**✗
+//     ⇒ **∴ 所以**：**绝不能**依赖 `as u32`**✗ ⇒ **∴ 显式配对** ✓ ★
+#[test]
+fn gpu_composite_matches_cpu_for_all_modes() {
+    use yanshi_render::blend::BlendMode;
+    // **∴ (GPU 编码, BlendMode) ✗**：**与内核的 `blend_channel` 分支一一对应 ✓
+    let table: [(u32, BlendMode); 10] = [
+        (0, BlendMode::Normal),
+        (1, BlendMode::Multiply),
+        (2, BlendMode::Screen),
+        (3, BlendMode::ColorDodge),
+        (4, BlendMode::Overlay),
+        (5, BlendMode::Darken),
+        (6, BlendMode::Lighten),
+        (7, BlendMode::Add),
+        (8, BlendMode::Subtract),
+        (9, BlendMode::Difference),
+    ];
+    let n = 2048;
+    let src = pixels(0x0bad_f00d, n);
+    let dst = pixels(0xfeed_face, n);
+    let lut = yanshi_render::color::srgb_encode_table();
+    let quantizer = match yanshi_gpu::Quantizer::new(lut) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("  判据自身的求值失败（不是产品问题）：没有 GPU 适配器 ⇒ {e}");
+            std::process::exit(3);
+        }
+    };
+    let to_u8 = |v: &[f32]| -> Vec<u8> {
+        v.chunks_exact(4)
+            .flat_map(|c| {
+                yanshi_render::color::linear_premul_to_u8x4_with(lut, [c[0], c[1], c[2], c[3]])
+            })
+            .collect()
+    };
+    let mut failures = Vec::new();
+    for opacity in [1.0f32, 0.5, 0.0] {
+        for (code, mode) in table {
+            let gpu = match quantizer.composite_with_mode(&src, &dst, code, opacity) {
+                Some(v) => v,
+                None => {
+                    failures.push(format!("mode {code} opacity {opacity}：GPU 返回 None"));
+                    continue;
+                }
+            };
+            // **∴ CPU 真值 ✗**：**照 `Buffer::composite` 的语义**先乘 opacity** ✓
+            let mut cpu = Vec::with_capacity(src.len());
+            for i in 0..n {
+                let factor = opacity.clamp(0.0, 1.0);
+                let scaled = [
+                    src[i * 4] * factor,
+                    src[i * 4 + 1] * factor,
+                    src[i * 4 + 2] * factor,
+                    src[i * 4 + 3] * factor,
+                ];
+                let d = [dst[i * 4], dst[i * 4 + 1], dst[i * 4 + 2], dst[i * 4 + 3]];
+                cpu.extend_from_slice(&yanshi_render::blend::blend_pixel(mode, scaled, d));
+            }
+            let mism = count_mismatch_u8(&to_u8(&gpu), &to_u8(&cpu));
+            if mism != 0 {
+                failures.push(format!(
+                    "mode {code}（{mode:?}）opacity {opacity}：u8 差 {mism} 字节"
+                ));
+            }
+        }
+    }
+    for f in &failures {
+        println!("  ✗ {f}");
+    }
+    println!(
+        "  共测 {} 组（10 mode × 3 opacity）｜失败 {} 组",
+        table.len() * 3,
+        failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "全部 mode／opacity 的 u8 输出必须与 CPU 逐位一致"
+    );
+}

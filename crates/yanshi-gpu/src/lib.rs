@@ -1254,11 +1254,40 @@ impl Quantizer {
     ///   ＋ **∴ 因为**调用方的契约**就是**「**None ⇒ 走 CPU**」** ✓ ★
     #[must_use]
     pub fn composite_normal(&self, src: &[f32], dst: &[f32]) -> Option<Vec<f32>> {
-        block_on(self.composite_normal_async(src, dst))
+        self.composite_with_mode(src, dst, 0, 1.0)
+    }
+
+    /// **★ 指定 mode ＋ opacity 的合成 ✗ ★**（**第 628 轮 ✓）
+    ///
+    /// **∴ `mode` 编码 ✗**：**0 ＝ Normal**✗（**与 CPU 的 `BlendMode` 顺序一致 ✓）
+    ///   ＋ **∴ 1 ＝ Multiply｜2 ＝ Screen｜3 ＝ ColorDodge｜4 ＝ Overlay ✓
+    ///     ＋ **∴ 5 ＝ Darken｜6 ＝ Lighten｜7 ＝ Add｜8 ＝ Subtract｜9 ＝ Difference** ✓
+    ///       ＋ **∴ 其余** ⇒ **`None`**（**∴ 调用方**回退 CPU ✓）★
+    ///
+    /// # Errors
+    /// **∴ 不返回 `Err`**✗：**任何失败**映射成 `None`** ✓
+    #[must_use]
+    pub fn composite_with_mode(
+        &self,
+        src: &[f32],
+        dst: &[f32],
+        mode: u32,
+        opacity: f32,
+    ) -> Option<Vec<f32>> {
+        if mode > 9 {
+            return None;
+        }
+        block_on(self.composite_async(src, dst, mode, opacity.clamp(0.0, 1.0)))
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn composite_normal_async(&self, src: &[f32], dst: &[f32]) -> Option<Vec<f32>> {
+    async fn composite_async(
+        &self,
+        src: &[f32],
+        dst: &[f32],
+        mode: u32,
+        opacity: f32,
+    ) -> Option<Vec<f32>> {
         let pixels = src.len() / 4;
         if pixels == 0 || dst.len() != src.len() {
             return None;
@@ -1344,7 +1373,10 @@ impl Quantizer {
             .write_buffer(&b_src, 0, f32s_to_bytes(src).as_slice());
         self.queue
             .write_buffer(&b_dst, 0, f32s_to_bytes(dst).as_slice());
-        let params = u32s_to_bytes(&[pixels as u32, 0, 0, 0]);
+        // **∴ uniform ＝ 4×u32 ＋ vec4<f32> ＝ 32 B ✓**（**与 `Params` 逐字段对应 ✓）★
+        let mut params = u32s_to_bytes(&[pixels as u32, mode, 0, 0]);
+        params.extend_from_slice(&f32s_to_bytes(&[opacity, 0.0, 0.0, 0.0]));
+        debug_assert_eq!(params.len(), 32);
         self.queue.write_buffer(&b_params, 0, &params);
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
