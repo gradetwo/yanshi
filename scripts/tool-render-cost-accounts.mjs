@@ -242,11 +242,76 @@ function median(values) {
 //     ⇒ **∴ 于是**：**min／max 的**差距**本身就是一个**可读的指标** ✓ ★**** ✓✓
 function spread(values) {
   const v = values.filter((x) => typeof x === "number" && Number.isFinite(x));
-  if (v.length === 0) return { min: NaN, median: NaN, max: NaN, n: 0 };
-  return { min: Math.min(...v), median: median(v), max: Math.max(...v), n: v.length };
+  if (v.length === 0) {
+    return { min: NaN, median: NaN, max: NaN, mad: NaN, ciLow: NaN, ciHigh: NaN, n: 0 };
+  }
+  const ci = medianCI(v);
+  return {
+    min: Math.min(...v),
+    median: median(v),
+    max: Math.max(...v),
+    mad: mad(v),
+    ciLow: ci.low,
+    ciHigh: ci.high,
+    n: v.length,
+  };
 }
+
+// **★★★ MAD（**中位绝对偏差 ✓）✗ ★★★**（**第 621 轮 ✓）
+//   **∴ 为什么不用标准差 ✗**：**样本少（**如 4–20 ✓）＋ **可能有离群点**✗
+//     ＋ **∴ 而**标准差**被极值主导** ✓ ⇒ **∴ 所以**：**MAD 更稳** ✓ ★
+function mad(values) {
+  const m = median(values);
+  return median(values.map((x) => Math.abs(x - m)));
+}
+
+// **★★★ 中位数的**自助置信区间** ✗ ★★★**（**第 621 轮 ✓；**目标第 2 条 ✓）
+//   **∴ 为什么需要 ✗**：**本会话的核心困难是**噪声 ≈ ±10%**** ✗
+//     ＋ **∴ 而**只给 min／median／max**✗ ⇒ **∴ 读者**无法判断
+//       「两臂之差是**真差异**还是**噪声**」 ✓
+//         ⇒ **∴ 所以**：**给中位数的 95% 区间**✗
+//           ＋ **∴ 而**两臂的区间**不重叠** ⇒ **∴ 才是**显著差异** ✓ ★
+//   **∴ 实现 ✗**：**自助法（**bootstrap ✓）✗ ⇒ **∴ 重采样 ＋ 取 2.5%／97.5% 分位** ✓
+//     ＋ **★ 必须**确定性** ✗ ★**：**用**固定种子**的 PRNG**✗
+//       ⇒ **∴ 从而**：**同一输入**⇒ 同一区间** ✓（**AGENTS.md 的确定性要求 ✓）★
+function medianCI(values, resamples = 2000) {
+  const v = values.filter((x) => typeof x === "number" && Number.isFinite(x));
+  if (v.length < 3) return { low: NaN, high: NaN, resamples: 0 };
+  // **∴ mulberry32 ✗**：**小而确定的 PRNG**（**∴ 不用 Math.random ⇒ **可复现** ✓）★
+  let state = 0x9e3779b9;
+  const rnd = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const meds = [];
+  for (let r = 0; r < resamples; r += 1) {
+    const pick = [];
+    for (let i = 0; i < v.length; i += 1) pick.push(v[Math.floor(rnd() * v.length)]);
+    meds.push(median(pick));
+  }
+  meds.sort((a, b) => a - b);
+  const at = (q) => meds[Math.min(meds.length - 1, Math.max(0, Math.floor(q * meds.length)))];
+  return { low: at(0.025), high: at(0.975), resamples };
+}
+
+// **∴ 两臂是否**显著不同** ✗**（**∴ 中位数区间不重叠 ⇒ 显著 ✓）★
+function significant(a, b) {
+  if (!Number.isFinite(a?.ciLow) || !Number.isFinite(b?.ciLow)) return null;
+  if (a.median < b.median) return a.ciHigh < b.ciLow;
+  return b.ciHigh < a.ciLow;
+}
+
 const fmtSpread = (sp) =>
   sp.n === 0 ? "—" : `${sp.min.toFixed(0)}／${sp.median.toFixed(0)}／${sp.max.toFixed(0)}`;
+const fmtCI = (sp) =>
+  !Number.isFinite(sp?.ciLow) ? "—" : `[${sp.ciLow.toFixed(0)}, ${sp.ciHigh.toFixed(0)}]`;
+// **∴ 表格里的紧凑形式 ✗**（**∴ 宽度可控 ✓）★
+const fmtCIPad = (sp) =>
+  !Number.isFinite(sp?.ciLow) ? "—" : `[${sp.ciLow.toFixed(0)}–${sp.ciHigh.toFixed(0)}]`;
+const fmtMad = (sp) => (Number.isFinite(sp?.mad) ? sp.mad.toFixed(0) : "—");
 
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, existsSync } = await import("node:fs");
@@ -365,11 +430,11 @@ for (const spec of compareSpecs) {
 console.log("");
 // **★ 离散度必须在表里 ✗ ★**（**第 495 轮 ✓；**目标第 2 条 ✓）
 console.log("  ★ 两本账（4K 整幅；第一轮为预热，已从统计里剔除）★");
-console.log("  | 配置 | 后端 | ① 墙钟 ms（min／中位／max） | ② CPU ms（min／中位／max） | CPU÷墙钟 | 峰值 RSS MB | 预热墙钟 ms | 有效轮数 |");
+console.log("  | 配置 | 后端 | ① 墙钟 ms（min／中位／max） | ★中位 95% CI★ | ★MAD★ | ② CPU ms（min／中位／max） | CPU÷墙钟 | 峰值 RSS MB | 预热墙钟 ms | 有效轮数 |");
 console.log("  |---|---|---|---|---|---|---|---|");
 for (const row of rows) {
   console.log(`  | ${row.label} | ${row.backend}（--gpu ${row.gpuMode}） `
-    + `| ${fmtSpread(row.wallSpread)} | ${fmtSpread(row.cpuSpread)} `
+    + `| ${fmtSpread(row.wallSpread)} | ${fmtCIPad(row.wallSpread)} | ${fmtMad(row.wallSpread)} | ${fmtSpread(row.cpuSpread)} `
     + `| ${row.ratio.toFixed(2)}× | ${row.hwmMb.toFixed(0)} | ${row.warmMs.toFixed(1)} | ${row.wallSpread.n} |`);
 }
 // **∴ 逐轮原始值 ✗**：**∴ 便于看出**方差有多大** ✓（**∴ 只看中位数会掩盖它 ✓）
