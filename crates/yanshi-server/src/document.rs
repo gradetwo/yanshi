@@ -1343,12 +1343,26 @@ impl Document {
         if full_canvas {
             self.full_canvas_renders += 1;
         }
+        // **★ 门控计时（**第 532 轮 ✓）：**探针之外的**整幅 PNG 编码 ＋ blob 落盘**★
+        let probe_on = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let t_png = std::time::Instant::now();
         let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
         // **与裸像素出口共用同一个告警槽** ✓（两条出口对同一件事给同一个答案 ✓）。
         self.note_render_stats(&rendered.stats);
         let previous = self.cached_preview_hashes();
+        let t_put = std::time::Instant::now();
         let blob_hash = self.store.put(&png)?;
+        if probe_on {
+            eprintln!(
+                "PROBE 输出组装 区域={}x{} ★png={:?}★ ★store.put={:?}★ 字节={}",
+                rendered.width,
+                rendered.height,
+                t_png.elapsed(),
+                t_put.elapsed(),
+                png.len()
+            );
+        }
         self.render_watermark = self.log.head_seq();
         self.last_render_blob = Some(blob_hash.clone());
         // 只有覆盖整幅画布的渲染才是「文档级」预览（7.3），局部 dirty 渲染不算。
