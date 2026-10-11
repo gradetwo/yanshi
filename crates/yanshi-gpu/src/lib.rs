@@ -652,56 +652,8 @@ impl Quantizer {
         } else {
             (None, None, None)
         };
-        // **★★★ 官方 coalescing：三张大 buffer ＋ 每块用**自己的偏移** ✗ ★★★**（**第 612 轮 ✓）
-        //   **∴ 依据（**wgpu 官方 best-practices ✓）✗**：
-        //     「**Don't: create many resources (buffers or textures) per frame**
-        //       —— This puts pressure on the WebGPU **memory allocator and tracker**.
-        //         Prefer coalescing smaller resources into larger ones.
-        //         For buffers, you can create a large buffer and use different parts of it**」
-        //       ⇒ **∴ 原来 ✗**：**每块建 4 个 buffer ＋ 2 次 `write_buffer`**✗
-        //         ＋ **∴ 而**实测 `upload ＝ **31 725 µs / 15 次****
-        //           ＋ **∴ 且**那个值**不随块大小变** ⇒ **∴ 所以**：**它**不是带宽**✗
-        //             ⇒ **∴ 正是**官方说的**分配器／tracker 压力** ✓ ★
-        //   **∴ 现在 ✗**：**三张大 buffer**（`src`／`dst`／`pb` ✓）
-        //     ＋ **∴ 每块只**写自己的偏移** ＋ **绑定**自己的切片** ✓
-        //       ⇒ **∴ 从而**：**无论多少块 ⇒ **创建数恒为 3**（**原来 4×块数 ✓）★
-        //   **★ 两面（**AGENTS.md ✓）★**：
-        //     **∴ 收益 ✗**：**消除分配器／tracker 压力**（**官方点名的模式 ✓）
-        //     **∴ 代价 ✗**：**峰值 VRAM **不变****
-        //       ＋ **∴ 因为**原来**也是**所有块在唯一那次提交前**都活着** ✓
-        //         ⇒ **∴ 所以**：**这是**近乎零代价**的改动** ✓ ★
-        //   **∴ 对齐 ✗**：**`src`／`dst` 的偏移是**块字节数的倍数****
-        //     ＋ **∴ 而**块字节数 ≥ 4 MiB ⇒ **∴ 天然满足**
-        //       `min_storage_buffer_offset_alignment`（**≤ 256 ✓）
-        //       ＋ **∴ 而** `pb` 用 **256** 的倍数 ⇒ **∴ 满足**
-        //         `min_uniform_buffer_offset_alignment` ✓ ★
-        let chunk_bytes4 = (per_chunk * 4) as u64;
-        let pb_stride: u64 = 256;
-        let chunks_total = count.div_ceil(per_chunk);
-        let src_all = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("yanshi-gpu-src-all"),
-            size: chunk_bytes4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let dst_all = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("yanshi-gpu-dst-all"),
-            size: chunk_bytes4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let pb_all = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("yanshi-gpu-params-all"),
-            size: pb_stride * chunks_total as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut chunk_index: u64 = 0;
         while done < count {
             let take = per_chunk.min(count - done);
-            let src_off = (done * 4) as u64;
-            let pb_off = chunk_index * pb_stride;
-            chunk_index += 1;
             // **★ 不要再拷一份 `Vec<f32>` ✗ ★**（**第 496 轮 ✓）
             //   **∴ 原来 ✗**：`let chunk = pixels[…].to_vec();` ＋ `f32s_to_bytes(&chunk)`
             //     ⇒ **∴ 于是**：**同一段像素**存在**两份**（f32 一份 ＋ bytes 一份 ✓）
@@ -712,6 +664,18 @@ impl Quantizer {
             let src_bytes = f32s_to_bytes(&pixels[done * 4..(done + take) * 4]);
             // **∴ 分段①：上行（**建 buffer ＋ 写 buffer ✓）★
             let t_up = Instant::now();
+            let src = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: src_bytes.len() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let dst = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (take * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
             // **★ uniform 必须** 32 字节** ✗ ★**（**第 459 轮 ✓）：
             //   **∴ 布局 ✗**：**4×u32（16 B）＋ `vec4<f32>`（16 B，**偏移 16 ✓）
             //     ⇒ **∴ 与** WGSL 的 `struct Params` **逐字段对应** ✓ ★**** ✓✓
@@ -734,12 +698,14 @@ impl Quantizer {
             //       ⇒ **∴ 而**分配还是 16** ✓
             //         ⇒ **∴ 于是**：**服务端**启动即崩** ✓ ★**** ✓✓
             //   **∴ 现在 ✗**：**与** WGSL 的 `struct Params`（**4×u32 ＋ vec4<f32> ✓）一致** ✓ ★**** ✓✓
-            // **∴ 只写自己的偏移 ✗**（**∴ 不再建 buffer ✓）★
-            self.queue.write_buffer(&src_all, src_off, &src_bytes);
-            self.queue.write_buffer(&pb_all, pb_off, &params_bytes);
-            // **∴ 绑定用**偏移切片**（**官方"use different parts of it" ✓）★
-            //   **∴ 注 ✗**：**`BufferSlice` **没有** `as_entire_binding`**✗
-            //     ⇒ **∴ 所以**：**下面用**显式的 `BindingResource::Buffer`** ✓ ★
+            let pb = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&src, 0, &src_bytes);
+            self.queue.write_buffer(&pb, 0, &params_bytes);
             upload_ns += t_up.elapsed().as_nanos() as u64;
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -747,20 +713,11 @@ impl Quantizer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        // **∴ 切片要**显式构造**（**`BufferSlice` 没有 `as_entire_binding` ✓）★
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &src_all,
-                            offset: src_off,
-                            size: wgpu::BufferSize::new((take * 4) as u64),
-                        }),
+                        resource: src.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &dst_all,
-                            offset: src_off,
-                            size: wgpu::BufferSize::new((take * 4) as u64),
-                        }),
+                        resource: dst.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -768,11 +725,7 @@ impl Quantizer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &pb_all,
-                            offset: pb_off,
-                            size: wgpu::BufferSize::new(32),
-                        }),
+                        resource: pb.as_entire_binding(),
                     },
                 ],
             });
@@ -797,13 +750,7 @@ impl Quantizer {
                 pass.dispatch_workgroups((take as u32).div_ceil(64), 1, 1);
             }
             // **∴ 拷到**大 buffer 的 `done*4` 偏移**✗（**∴ 此时 `done` ＝ 本块之前的像素数 ✓）★
-            enc.copy_buffer_to_buffer(
-                &dst_all,
-                src_off,
-                &readback,
-                (done * 4) as u64,
-                (take * 4) as u64,
-            );
+            enc.copy_buffer_to_buffer(&dst, 0, &readback, (done * 4) as u64, (take * 4) as u64);
             done += take;
         }
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
