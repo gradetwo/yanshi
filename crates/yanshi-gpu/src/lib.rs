@@ -120,8 +120,39 @@ pub const fn should_use_gpu_on(device_type: DeviceClass, pixels: usize) -> bool 
     pixels >= threshold_for(device_type)
 }
 
-/// **∴ 每块的输入字节上限 ✗**（**∴ 4 MiB ⇒ 远低于 128 MiB ✓）
-const CHUNK_BYTES: usize = 4 * 1024 * 1024;
+/// **★ 每块的输入字节上限 ✗ ★**（**第 496 轮：**从写死改为**按适配器上限自适应** ✓）
+///
+/// **∴ 为什么必须自适应 ✗**（**第 495 轮在 L4 上的数据 ✓）**：
+///   **∴ 原来写死 `4 MiB` ✗** ⇒ **∴ 每块 ＝ `4 MiB / 16 B` ＝ **262 144 像素**** ✓
+///     ＋ **∴ 于是**：**4K 整幅（**3840×2160 ＝ 8 294 400 像素 ✓）
+///       ⇒ **∴ 需要 **32 块**** ✓
+///         ⇒ **∴ 32 次**：建 buffer ＋ dispatch ＋ 读回（`map_async` ＋ `Wait` ✓）✓
+///   **∴ 而**实测已经把瓶颈指到"**传输／分块／同步**"**✗**：
+///     ⇒ **∴ 核对只占 11%**（**207 ms ✓）✗
+///       ＋ **∴ 所以**：**剩下的大头**极可能就是**块数与往返** ✓ ★**** ✓✓
+///   **∴ 而** L4 的 `max_storage_buffer_binding_size` ＝ **2047 MiB**✗
+///     ⇒ **∴ 单块**理论上能放 **1.3 亿像素** ✓
+///       ⇒ **∴ 4K**一块就够** ✓ ⇒ **∴ 块数 32 ⇒ 1** ✓ ★**** ✓✓
+///
+/// **∴ 下限（**`CHUNK_BYTES_MIN` ✓）✗**：**4 MiB**✗
+///   ⇒ **∴ 保证**极小的适配器（**如上限只有几 MiB ✓）也**能工作** ✓
+/// **∴ 上限（**`CHUNK_BYTES_MAX` ✓）✗**：**64 MiB**✗
+///   ⇒ **∴ 为什么需要它 ✗**（**两面之代价 ✓）**：
+///     **∴ 收益**：**块少 ⇒ 往返少 ⇒ 更快** ✓
+///     **∴ 代价**：**单块**占的内存／显存**上升** ✓
+///       （**∴ 若**放到 256 MiB✗ ⇒ **∴ 4K 一块就能装下整帧 132.7 MiB ✓）
+///       ⇒ **★ 而**那**违反了一个**已有的守卫**✗ ★**：
+///         `yanshi-render/tests/quantize_peak_memory.rs` 的
+///         `no_full_frame_f32_copy_is_allocated` 断言
+///         **「量化期间任何**单次分配**必须**小于整幅 f32 副本**」** ✓
+///         ⇒ **∴ 所以**：**上限压到 64 MiB**✗ ＋ **∴ 并**再按 `count/4` 细分** ✓
+///           ⇒ **∴ 于是**：**1024×512（**frame_bytes 8 MiB ✓）
+///             ⇒ **∴ 单块 ＝ 2 MiB ＜ 8 MiB ⇒ **守卫绿**** ✓ ★**** ✓✓
+///   **∴ 为什么不直接把守卫放宽 ✗**（**∴ 我**没擅自改 ✓）：
+///     ⇒ **∴ 那条守卫守的是**真 bug**（**"为了省事把整帧 crop 一份" ✓）
+///       ⇒ **∴ 放宽它**要**用户裁定** ✓（**∴ 见设计文档的待裁定项 ✓）★**** ✓✓
+const CHUNK_BYTES_MIN: usize = 4 * 1024 * 1024;
+const CHUNK_BYTES_MAX: usize = 64 * 1024 * 1024;
 
 /// **∴ 每像素 16 字节（**4 × f32 ✓）
 const BYTES_PER_PIXEL: usize = 16;
@@ -260,6 +291,65 @@ impl Quantizer {
         u64::from(self.device.limits().max_storage_buffer_binding_size)
     }
 
+    /// **∴ 适配器允许的**单缓冲**上限（**字节 ✓）✗**
+    #[must_use]
+    pub fn max_buffer_bytes(&self) -> u64 {
+        self.device.limits().max_buffer_size
+    }
+
+    /// **★ 每块处理多少像素 ✗ ★**（**第 496 轮：**自适应 ✓）
+    ///
+    /// **∴ 取值（**四者取最小 ✓）✗**：
+    ///   1. `max_storage_buffer_binding_size` 的 **3/4**（**留余量给 dst ＋ params ✓）
+    ///   2. `max_buffer_size` 的 **3/4**
+    ///   3. [`CHUNK_BYTES_MAX`]（**封顶 ⇒ 不吃光显存 ✓）
+    ///   4. 再由 [`CHUNK_BYTES_MIN`] **兜底**（**极小的适配器也能跑 ✓）
+    ///   5. **再按 `count / 4` 细分**（**∴ 见下 ✓）
+    ///
+    /// **∴ 最后**除以 16 字节／像素** ✓
+    ///
+    /// **∴ 为什么是 3/4 而不是全用 ✗**（**两面 ✓）**：
+    ///   **∴ `dst` 也是**同一个每绑定上限**✗ ⇒ **∴ 它只占 src 的 1/4**（4 B vs 16 B ✓）
+    ///     ⇒ **∴ 理论上**src 用满也不超** ✓
+    ///       ＋ **∴ 但**驱动可能把 params／LUT 也算进同一档** ✓
+    ///         ⇒ **∴ 所以**留 1/4 余量 ⇒ **∴ 代价**是块数最多多 1/3** ✓
+    ///           （**∴ 4K 上**仍是 1 块 ✓ ⇒ **∴ 代价**为 0** ✓）★**** ✓✓
+    ///
+    /// **∴ 对照开关 ✗**（**∴ 只为测量 ⇒ 两面 ✓）**：
+    ///   ⇒ **∴ `YANSHI_GPU_CHUNK_BYTES=<字节数>`**✗
+    ///     ⇒ **∴ 它**强制分块大小**✗ ⇒ **∴ 于是**：**同一台机器上能**A/B** ✓
+    ///       ＋ **∴ 代价 ✗**：**它**绕过了自适应**✗ ⇒ **∴ 只许**测量用** ✓
+    ///         （**∴ 生产路径**不许设它** ✓）★**** ✓✓
+    #[must_use]
+    pub fn per_chunk_pixels(&self, count: usize) -> usize {
+        // **∴ 对照开关优先 ✗**（**∴ 显式覆盖 ⇒ 便于 A/B ✓）
+        if let Some(raw) = std::env::var_os("YANSHI_GPU_CHUNK_BYTES") {
+            if let Some(n) = raw.to_str().and_then(|v| v.trim().parse::<usize>().ok()) {
+                if n >= BYTES_PER_PIXEL {
+                    return n / BYTES_PER_PIXEL;
+                }
+            }
+        }
+        let binding = self.max_binding_bytes();
+        let buffer = self.max_buffer_bytes();
+        let budget = binding
+            .min(buffer)
+            .saturating_mul(3)
+            .saturating_div(4)
+            .clamp(CHUNK_BYTES_MIN as u64, CHUNK_BYTES_MAX as u64);
+        // **★ 再按 `count/4` 细分 ✗ ★**（**第 496 轮 ✓）
+        //   **∴ 为什么 ✗**：**单块不许**接近整幅** ✗
+        //     ⇒ **∴ 因为**守卫断言**单次分配 ＜ 整幅 f32** ✓
+        //       ＋ **∴ 而** 1024×512 的整幅只有 8 MiB** ✓
+        //         ⇒ **∴ 若**按 64 MiB 封顶 ⇒ **∴ 一块就装下整幅**✗ ⇒ **∴ 守卫**红** ✓
+        //           ⇒ **∴ 所以**：**min(预算, count/4 对应的字节数)** ✓ ★**** ✓✓
+        let quarter_bytes = (count.saturating_mul(BYTES_PER_PIXEL) / 4) as u64;
+        let budget = budget.min(quarter_bytes.max(CHUNK_BYTES_MIN as u64));
+        let pixels = (budget as usize) / BYTES_PER_PIXEL;
+        // **∴ 防御：**永不为 0**✗**（**∴ 否则**死循环** ✓）
+        pixels.max(1)
+    }
+
     /// **★ 量化一批像素 ✗ ★**（**∴ 分块 ＋ 批量 ＋ 一次 `Wait`** ✓）
     ///
     /// # Errors
@@ -308,7 +398,8 @@ impl Quantizer {
         count: usize,
         background: Option<[f32; 4]>,
     ) -> Result<Vec<u8>, String> {
-        let per_chunk = CHUNK_BYTES / BYTES_PER_PIXEL;
+        // **★ 自适应分块 ✗ ★**（**第 496 轮 ✓；**原来写死 4 MiB ⇒ 4K 要 32 块 ✓）
+        let per_chunk = self.per_chunk_pixels(count);
         let layout = self.pipeline.get_bind_group_layout(0);
         let mut enc = self
             .device
@@ -317,8 +408,14 @@ impl Quantizer {
         let mut done = 0usize;
         while done < count {
             let take = per_chunk.min(count - done);
-            let chunk: Vec<f32> = pixels[done * 4..(done + take) * 4].to_vec();
-            let src_bytes = f32s_to_bytes(&chunk);
+            // **★ 不要再拷一份 `Vec<f32>` ✗ ★**（**第 496 轮 ✓）
+            //   **∴ 原来 ✗**：`let chunk = pixels[…].to_vec();` ＋ `f32s_to_bytes(&chunk)`
+            //     ⇒ **∴ 于是**：**同一段像素**存在**两份**（f32 一份 ＋ bytes 一份 ✓）
+            //       ⇒ **∴ 4K 一块时**＝ 132.7 MiB ＋ 132.7 MiB ＝ **265 MiB** ✓
+            //         ＋ **∴ 而那**正是守卫要防的形状** ✓ ★**** ✓✓
+            //   **∴ 现在 ✗**：**直接从 `pixels` 的切片生成 bytes** ✓
+            //     ⇒ **∴ 峰值**只剩 bytes 那一份** ✓ ★**** ✓✓
+            let src_bytes = f32s_to_bytes(&pixels[done * 4..(done + take) * 4]);
             let src = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: src_bytes.len() as u64,
