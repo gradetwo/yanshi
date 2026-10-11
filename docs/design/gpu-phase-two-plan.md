@@ -6635,3 +6635,47 @@ error[E0277]: ★ `RefCell<wgpu::backend::webgpu::WebBufferMapState>` cannot be 
 ### **∴ 验证 ✗**：**plain 编译 ✓｜gpu 编译 ✓｜plain clippy ✓｜gpu clippy ✓｜plain test 全绿 ✓｜gpu test 全绿 ✓｜fmt = 0 ✓**
   ＋ **∴ 已推送 `9db6add`** ✓ ⇒ **∴ 下一轮**看 CI 是否把该作业转绿 ✓ ★
 
+---
+
+## 第 599 轮：**★★★ 本地跑 `criteria shard 4/6` ⇒ **4 个意外失败**，原因全部查明**（其中一个正是目标第 12 条）★★★**
+
+### **∴ shard 4 的结果 ✗**
+```
+—— 通过 21｜★ 意外失败 4 ★｜已知红 2｜跳过 0
+✗ browser-offline-export.mjs（EXIT=1）
+✗ tool-macos-gpu-quantize-bench.mjs（EXIT=3）
+✗ tool-pwa-assets.mjs（EXIT=1）
+✗ tool-web-assets-parity.mjs（EXIT=1）
+```
+
+### **★★★ 逐个原因（**精确 ✓）★★★**
+  ⇒ **∴ ① `browser-offline-export` ✗**：
+    **`create_layer` 的响应不是 JSON**✗ ⇒ **∴ 头显示 `not found`** ✓（**∴ 待查 ✓）
+  ⇒ **∴ ② `tool-macos-gpu-quantize-bench`（EXIT=3）✗**：
+    **它自己说**：「★ 本判据只在 macOS 上有意义（**不是产品缺陷**）★」
+      ⇒ **∴ 所以**：**它在 Linux 上**本就该跳过**✗
+        ＋ **∴ 而** `run-criteria.sh` **把它当**意外失败**** ✓
+          ⇒ **∴ 修法 ✗**：**让它返回"跳过"码 ⇒ 由脚本识别**（**或登记 ✓）★
+  ⇒ **∴ ③ 与 ④ ★ 同一个根因 ✗ ★**（**＝ 目标第 12 条 ✓）：
+    **∴ `tool-web-assets-parity` 给出**逐字节**证据 ✗**：
+      **`viewer-app.js`（**源头 596 382 B｜web 596 383 B ✓）✗
+        ＋ **`service-worker.js`（**源头 17 805 B｜web 17 806 B ✓）**
+          ⇒ **★ 差 **1 字节** ＝ 缓存戳**** ✓
+            ＋ **∴ 而** `tool-pwa-assets` 的结论是**同一件事**：
+              「**防分叉：viewer-app.js 与单一源不同（**除戳外**）**」 ✓ ★
+
+### **∴ 本轮做的（**部分修复 ✓）★**
+  ⇒ **∴ 跑了 `npm run pwa:sync` ✗**（**∴ 它**同步笔刷／介质／资产／品牌 ＋ **给三个文件打戳** ✓）
+    ⇒ **∴ 结果 ✗**：
+      **∴ `tool-pwa-assets` ⇒ ★ 通过 ★** ✓（**∴ 一个意外失败已消除 ✓）
+        ＋ **∴ 而 `tool-web-assets-parity` **仍红**✗ —— **∴ 只剩 `service-worker.js`**（**差 1 字节 ✓）★
+
+### **★★★ 关键认识（**为什么这还不够 ✓）★★★**
+  ⇒ **∴ `web/` 是**构建产物**（**.gitignore ✓）✗**
+    ⇒ **∴ 我**跑 sync **只改了**本地产物**** ✗
+      ⇒ **∴ CI 上会**重新生成 ⇒ **仍红**** ✓
+        ⇒ **★ 所以：**真正的修复在**同步脚本**
+          （`scripts/pwa-sync-wasm.mjs` ＋ `scripts/pwa-sync-viewer.mjs` ✓）★
+          ＋ **∴ 那**正是**目标第 12 条**要求的**收口**（**按甲或乙 ✓）★
+            ⇒ **∴ 登记为**下一轮的第一件事** ✓ ★
+
