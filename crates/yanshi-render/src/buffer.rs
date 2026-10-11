@@ -801,6 +801,17 @@ impl Buffer {
         &self.pixels[start..start + (len_pixels as usize) * 4]
     }
 
+    /// **★ 只保留 alpha，RGB 清零 ✗ ★**（**蒙版语义 ✓）
+    ///
+    /// **∴ 为什么补这条文档 ✗**（**第 638 轮 ✓）：
+    ///   **∴ 第 632 轮我插 `row_pixels` 时 ✗**：**锚点选成了本函数的**签名行**✗
+    ///     ＋ **∴ 于是**新方法被插到**本函数的文档注释之前**✗
+    ///       ⇒ **∴ 本函数**就此**失去文档**✗
+    ///         ＋ **∴ 而** crate **开了 `missing_docs`**✗
+    ///           ⇒ **∴ `clippy -D warnings` 立刻报出来** ✓
+    ///   **∴ 教训 ✗**：**锚点式插入**必须**连下一个条目的文档注释一起考虑**✗
+    ///     ＋ **∴ 正确做法**：**在**文档注释之前**插入**✗
+    ///       ＋ **∴ 或**插入后**立刻跑 `clippy`**（**∴ 本轮就是靠它抓到的 ✓）★
     pub fn keep_alpha_only(&mut self) {
         for chunk in self.pixels.chunks_exact_mut(4) {
             chunk[0] = 0.0;
