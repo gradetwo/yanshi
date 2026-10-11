@@ -47,7 +47,8 @@ for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 //!
 //! **∴ 用法 ✗**：
 //!   `node scripts/tool-render-cost-accounts.mjs --spawn`
-//!   `node scripts/tool-render-cost-accounts.mjs --spawn --compare "默认=--gpu off" "--请求 GPU=--gpu on"`
+//!   `node scripts/tool-render-cost-accounts.mjs --spawn --compare "默认=--gpu off" "请求 GPU=--gpu on"`
+//!   **或**（等价）：`--compare "默认=--gpu off" --compare "请求 GPU=--gpu on"`
 //!     ⇒ **∴ 于是**：**两本账**按**后端**并排 ✓**** ✓✓
 //!
 //! **∴ 如实说明 ✗**：**本机**没有可用 GPU**✗（**服务端报 `host_has_no_gpu` ✓）
@@ -78,13 +79,28 @@ const baseline = option("--baseline", "target/release/yanshi-serve");
 /** **∴ 一组对照：**名字 ＝ 额外的服务参数 ✓**（**∴ 用 `=` 分隔 ✓）** ✓✓ */
 // **∴ 写法 ✗**：**`--compare "名字=参数…"`**✗，**可以重复** ✓
 //   **∴ 我**第一版写复杂了**✗ ⇒ **∴ 只**解析出第一项** ✓（**∴ 实测只出一行 ✓）** ✓✓
+// **★ 宽容解析：**`--compare` 之后的每一个 `值=参数…` 都算一个配置**** ✗ ★**（**第 558 轮 ✓）
+//   **∴ 原来的缺陷（**实测 ✓）✗**：**只吃 `--compare` 之后的**第一个**值**✗
+//     ＋ **∴ 而**文档示例（**第 50 行 ✓）写的是
+//       `--compare "A=…" "B=…"`** ✗（**第二个值**被静默丢掉** ✓）
+//       ⇒ **★ 症状 ✗**：**两行配置**跑同一个后端**✗
+//         （**实测**：`--gpu on` 那行也报 `cpu`／`disabled_by_flag` ✓）★
+//   **∴ 现在 ✗**：**两种写法都支持**✗
+//     ⇒ **∴ 即**：**重复 `--compare`**✗（**注释原本的写法 ✓）
+//       ＋ **∴ 或**：**一个 `--compare` 后面跟多个 `值=参数…`** ✓
+//         ⇒ **∴ 且**遇到下一个**以 `--` 开头的真选项就停** ✓ ★
 const compareSpecs = [];
 for (let i = 0; i < argv.length; i += 1) {
   if (argv[i] !== "--compare") continue;
-  const raw = argv[i + 1] || "";
-  const [label, ...rest] = raw.split("=");
-  compareSpecs.push({ label, extra: rest.join("=").split(" ").filter(Boolean) });
-  i += 1;
+  // **∴ 吃后续所有**不是选项**的值** ✓
+  for (let j = i + 1; j < argv.length; j += 1) {
+    const raw = argv[j];
+    if (raw === "--compare" || (raw.startsWith("--") && !raw.includes("="))) break;
+    if (!raw.includes("=")) break;
+    const [label, ...rest] = raw.split("=");
+    compareSpecs.push({ label, extra: rest.join("=").split(" ").filter(Boolean) });
+    i = j;
+  }
 }
 if (!compareSpecs.length) compareSpecs.push({ label: "默认", extra: [] });
 
