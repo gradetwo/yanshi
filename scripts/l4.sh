@@ -142,7 +142,17 @@ if [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then echo "   Vulkan：ICD �
   apt-get install -y libnvidia-gl-580 vulkan-tools >/tmp/apt-vulkan.log 2>&1 && echo "   Vulkan：已装（$(ls /usr/share/vulkan/icd.d/)）" || { echo "   ✗ Vulkan 装失败 ⇒ 看 /tmp/apt-vulkan.log"; tail -5 /tmp/apt-vulkan.log; }
 fi
 timeout 120 vulkaninfo --summary 2>/dev/null | grep -aE "deviceName|driverInfo" | sed "s/^/   /"
-# **∴ ③ 仓库（**HTTPS ✓ —— L4 上没有 GitHub 密钥 ✓）
+# **∴ ③ node（**测量工具要用 ✓）✗**（**第 501 轮 ✓）
+  #   **∴ 为什么 ✗**：**colab 的镜像**不保证带 node** ✓
+  #     ⇒ **∴ 实测 ✗**：**新实例**没有 ⇒ `node: command not found`** ✓
+  #       ＋ **∴ 而** `tool-render-cost-accounts.mjs` 等**都靠 node** ✓
+  #         ⇒ **∴ 所以**：**在这里**装上**✗ ⇒ **∴ 下次重建**自动带上** ✓ ★**** ✓✓
+  #   **∴ 必须带 `-y` ✗**：**否则 apt 会**等交互确认**✗
+  #     ⇒ **∴ 我**上轮**漏了它**✗ ⇒ **∴ 作业**永远显示"运行中"** ✓（**实测 ✓）★**** ✓✓
+  if command -v node >/dev/null 2>&1; then echo "   node：已有 $(node --version)"; else
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs >/tmp/node-i.log 2>&1 && echo "   node：装好 $(node --version)" || { echo "   ✗ node 装失败 ⇒ 看 /tmp/node-i.log"; tail -3 /tmp/node-i.log; }
+  fi
+  # **∴ ④ 仓库（**HTTPS ✓ —— L4 上没有 GitHub 密钥 ✓）
 if [ -d '"${L4_DIR}"'/.git ]; then cd '"${L4_DIR}"' && git fetch -q origin && git reset -q --hard origin/main && echo "   仓库：$(git log --oneline -1)"; else
   git clone -q https://github.com/'"${REPO_SLUG}"'.git '"${L4_DIR}"' && cd '"${L4_DIR}"' && echo "   仓库：$(git log --oneline -1)"
 fi' 2>&1 | sed 's/^/  /'
