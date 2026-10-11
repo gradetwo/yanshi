@@ -22,7 +22,7 @@ use yanshi_core::Bbox;
 //   **∴ 为什么 ✗**：**没加它 ⇒ `cargo test --workspace`（**无 feature ✓）
 //     报 `cannot find module or crate yanshi_gpu`** ✓
 //     ＋ **∴ 那**正是那条门禁存在的意义**（**抓非 feature 构建 ✓）★
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 fn quantizer_cache() -> &'static std::sync::Mutex<Option<yanshi_gpu::Quantizer>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<yanshi_gpu::Quantizer>>> =
         std::sync::OnceLock::new();
@@ -450,7 +450,7 @@ impl Buffer {
     ///
     /// **∴ CPU 真值 ✗**：**直接调** `rows::encode_quantized_rows`
     ///   ⇒ **∴ 与**主路径**同一函数** ✓（**∴ 不是**另写一套 ✓）
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     /// **★ 提升为 `pub(crate)` ✗ ★**（**第 449 轮 ✓）：**并行路也要能试 GPU** ✓
     ///   （**∴ 因为它**以前**只在**串行小图路**上被调用 ✓）
     pub(crate) fn try_quantize_on_gpu(
@@ -534,7 +534,7 @@ impl Buffer {
     //   **∴ 教训（**如实 ✓）✗**：**我第 46–48 轮只跑了 `--features gpu`**
     //     ⇒ **∴ 漏了**plain 构建**✗ ⇒ **∴ 所以**：**每轮必须先跑
     //       `cargo check --workspace --all-targets`（**不带 feature ✓）★
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     pub(crate) fn try_quantize_on_gpu_keyed(
         &self,
         count: usize,
@@ -736,7 +736,7 @@ impl Buffer {
         //       （**∴ 第 457 轮实测：**两本账两行**都是 `cpu`** ✓）
         //   **∴ 现在 ✗**：**背景也传下去**✗
         //     ⇒ **∴ 于是**：**主路径**也能用 GPU** ✓ ★**** ✓✓
-        #[cfg(feature = "gpu")]
+        #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
         {
             let count = (self.width as usize) * (self.height as usize);
             // **∴ 规模判断**移进 `try_quantize_on_gpu`** ✗（**第 322 轮 ✓）：
