@@ -3823,6 +3823,12 @@ async function importLocalImage(file) {
     log("导入失败（上传）：" + (upload.error_code || upload.context?.detail || "unknown"), "#c33");
     return;
   }
+  // **★ blob_hash 必须非空 ✗ ★**：本地模式下 /api/blob 可能返回 ok:true 但 blob_hash 为空
+  //   （WASM 内核未加载时）⇒ 此时调 import_image 必报 missing_blob_hash ✗。
+  if (!upload.blob_hash) {
+    log("导入失败（上传）：服务端未返回 blob_hash（" + (upload.error_code || "unknown") + "）", "#c33");
+    return;
+  }
 
   const layerId = "import_" + ulid();
   const created = await callTool("create_layer", { layer_id: layerId, name: file.name || "import" }, { refresh: false });
