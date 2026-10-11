@@ -206,10 +206,27 @@ fi' 2>&1 | sed 's/^/  /'
 }
 
 cmd_wait_build() {
-  echo "== 等构建完成（**最多 40 分钟 ✓）=="
-  l4_ssh 'for i in $(seq 1 240); do if pgrep -x cargo >/dev/null; then sleep 10; else break; fi; done; tail -3 /tmp/build-gpu.log; ls -la '"${L4_DIR}"'/target/release/yanshi-serve 2>/dev/null || echo "  ✗ 没有产物 ⇒ 看 /tmp/build-gpu.log"' 2>&1 | sed 's/^/  /'
+  # **★★★ 为什么改成**短查询 ＋ 本地循环** ✗ ★★★**（**第 639 轮，用户提问驱动 ✓）
+  #   **∴ 原来 ✗**：**一次 ssh 里跑**最多 40 分钟的前台轮询**✗
+  #     ＋ **∴ 于是**：**它自己**长时间持有 ssh 会话**✗
+  #       ＋ **∴ 而** colab-cli 同一 runtime **只允许一个 ssh 会话**✗
+  #         ⇒ **∴ 结果**：**期间**其它 `l4.sh` 命令全部 `HTTP 429`** ✓
+  #           ＋ **∴ 而**我上轮**误判成** `up` **持有**✗（**∴ 其实 `up` 的构建走 `nohup &` ⇒ 早就 detach ✓）★
+  #   **∴ 现在 ✗**：**每次只发一次**亚秒级查询**✗ ＋ **本地 `sleep`** ✓
+  #     ＋ **∴ 从而**：**既不长时间占用会话，也能等完构建** ✓ ★
+  local rounds="${L4_WAIT_ROUNDS:-80}"
+  local gap="${L4_WAIT_GAP:-30}"
+  echo "== 等构建完成（最多 $((rounds*gap/60)) 分钟；每 $gap 秒一次短查询）=="
+  local i
+  for i in $(seq 1 "$rounds"); do
+    if ! l4_ssh 'pgrep -x cargo >/dev/null' >/dev/null 2>&1; then
+      echo "  ✓ 构建已结束（第 ${i} 次查询）"
+      break
+    fi
+    sleep "$gap"
+  done
+  l4_ssh 'tail -3 /tmp/build-gpu.log 2>/dev/null; ls -la '"${L4_DIR}"'/target/release/yanshi-serve 2>/dev/null | tail -1' 2>&1 | sed 's/^/  /'
 }
-
 cmd_run() {
   [ $# -ge 1 ] || die "用法：scripts/l4.sh run '<命令>'" 2
   l4_ssh "$@"
