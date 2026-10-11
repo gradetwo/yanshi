@@ -4101,6 +4101,13 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         let ratio = max_px / f64::from(preview.width.max(preview.height));
         let scaled_w = ((f64::from(preview.width) * ratio).round().max(1.0)) as u32;
         let scaled_h = ((f64::from(preview.height) * ratio).round().max(1.0)) as u32;
+        // **★ 埋点：缩放 ＋ PNG 编码 ✗ ★**（**第 521 轮 ✓）
+        //   **∴ 为什么 ✗**：**实测（4K，`include_image: true`）**比不带图多花 **≈989 ms**✗
+        //     ＋ **∴ 而** `/timings` 的 `png_ms` **报 0.0** ✓
+        //       ⇒ **∴ 于是**：**那笔钱**完全没被记账**（与 `render_ms` 曾是残差同类 ✓）★
+        //   **∴ 说明 ✗**：**这段包含**两件事**✗ ：**`resample_rgba`（缩放 ✓）
+        //     ＋ **`encode_png`** ✓ ⇒ **∴ 所以** `png_ms` 报的是**两者之和** ✓（**如实 ✓）★
+        let png_started = std::time::Instant::now();
         let scaled = ctx
             .workspace
             .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())
@@ -4116,6 +4123,8 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 )
             })
             .and_then(|small| yanshi_render::png::encode_png(scaled_w, scaled_h, &small));
+        // **∴ 记进 `Phase::Png` ✗**：**∴ 于是** `/timings` 的 `png_ms` **第一次有实数** ✓ ★
+        ctx.time(Phase::Png, png_started);
         if let Some(png) = scaled {
             value["image"] = json!({
                 "mime_type": "image/png",
