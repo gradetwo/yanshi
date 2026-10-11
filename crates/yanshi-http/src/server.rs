@@ -982,6 +982,7 @@ fn health(state: &ServerState) -> Response {
             "gpu_stage_submit_us": stage_timing_json()["submit_us"].clone(),
             "gpu_stage_readback_us": stage_timing_json()["readback_us"].clone(),
             "gpu_stage_verify_us": stage_timing_json()["verify_us"].clone(),
+            "gpu_stage_gpu_us": stage_timing_json()["gpu_us"].clone(),
             "gpu_stage_calls": stage_timing_json()["calls"].clone(),
         "verified_blobs": stage_timing_len(),
             "selfcheck_max_channel_delta": gpu_selfcheck_delta(),
@@ -1130,12 +1131,16 @@ fn render_delta_json() -> serde_json::Value {
 /// **∴ 五段合一 ✗**：**上行／提交／读回／核对 ＋ 次数** ✓
 ///   ⇒ **∴ `calls` ＝ 0 ⇒ **其余四个都不可读**** ✓ ★
 fn stage_timing_json() -> serde_json::Value {
-    let (upload, submit, readback, verify, calls) = yanshi_render::gpu_stage_timing();
+    let (upload, submit, readback, verify, gpu, calls) = yanshi_render::gpu_stage_timing();
     serde_json::json!({
         "upload_us": upload,
         "submit_us": submit,
         "readback_us": readback,
         "verify_us": verify,
+        // **★ 目标第 9 条后半：GPU 自己量的时间（**微秒 ✓）★**（**第 601 轮 ✓）
+        //   **∴ 语义 ✗**：**它不是 host 墙钟**✗ ⇒ **∴ 而**是 GPU 时间戳的差** ✓
+        //     ＋ **∴ 只有**探针开启 ＋ 适配器支持**才有值**✗ ⇒ **∴ 否则**如实为 0** ✓ ★
+        "gpu_us": gpu,
         "calls": calls,
     })
 }

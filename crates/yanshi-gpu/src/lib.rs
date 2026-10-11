@@ -256,12 +256,18 @@ static STAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 /// **∴ 返回 `(上行微秒, 提交微秒, 读回微秒, 次数)` ✗**：
 ///   ⇒ **∴ 次数 ＝ 0 ⇒ **三段都不可读**** ✓（**∴ 不许**当成 0 ✓）★
 #[must_use]
-pub fn last_stage_timing() -> (u64, u64, u64, u32) {
+pub fn last_stage_timing() -> (u64, u64, u64, u64, u32) {
     let us = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed) / 1000;
     (
         us(&STAGE_UPLOAD_NS),
         us(&STAGE_SUBMIT_NS),
         us(&STAGE_READBACK_NS),
+        // **★ 目标第 9 条后半：GPU 自己量的纳秒（**微秒输出 ✓）★**（**第 601 轮 ✓）
+        //   **∴ 语义 ✗**：**它**不是 host 侧的墙钟**✗
+        //     ＋ **∴ 而**是 GPU 时间戳的差**（`resolve → buffer → map` 读回 ✓）
+        //       ⇒ **∴ 所以**：**只有**探针开启 ＋ 适配器支持**时才有值** ✓
+        //         ＋ **∴ 否则**恒为 **0**（**∴ 那**是**如实**的 0 ✓）★
+        us(&STAGE_GPU_NS),
         STAGE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
@@ -336,8 +342,32 @@ impl Quantizer {
             "adapter:{:?}:{:?}:{}",
             info.backend, info.device_type, info.name
         );
+        // **★★★ 目标第 9 条后半：GPU 侧计时**按探针门控请求 feature ✗ ★★★**（**第 601 轮 ✓）
+        //   **∴ 为什么必须门控 ✗**：**`TIMESTAMP_QUERY` 的读回要走
+        //     `resolve → buffer → map` 三步**✗
+        //     ＋ **∴ 而** wgpu 26 **没有 `get_results`** ✓
+        //       ⇒ **∴ 它**绝不能进生产路** ✓
+        //         ＋ **∴ 且**本会话早期**直接请求它**曾让**服务端启动即崩**✗
+        //           ⇒ **∴ 所以**：**只在 `YANSHI_RENDER_PROBE=1` 时才请求** ✓
+        //             ⇒ **∴ 从而**：**生产路径 `required_features` 为空
+        //               ⇒ **与改动前**逐字节相同的行为** ✓ ★
+        //   **∴ 两面（**AGENTS.md ✓）★**：
+        //     **∴ 收益 ✗**：**能分清「**传输贵**」还是「**算得贵**」**✗
+        //       （**∴ 而** host 侧数据**只能给上下界** ✓）
+        //     **∴ 代价 ✗**：**诊断路径**多一个 feature 请求**✗
+        //       ＋ **∴ 若**适配器不支持 ⇒ **`should_time_gpu` 返回 false ⇒ 优雅降级** ✓ ★
+        let probe_wants_timestamps = std::env::var_os("YANSHI_RENDER_PROBE").is_some()
+            && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let required_features = if probe_wants_timestamps {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features,
+                ..Default::default()
+            })
             .await
             .map_err(|e| format!("no_device:{e:?}"))?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

@@ -166,15 +166,15 @@ pub use tile::{
 ///   **∴ 代价**：**它量的是**主机视角**✗ ⇒ **∴ 不区分**"GPU 在算"与"GPU 在等"** ✓
 ///     ⇒ **∴ 那**要靠 GPU 时间戳**（**∴ 现在被两条 wgpu 规则挡着 ✓）★**** ✓✓
 #[must_use]
-pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u32) {
+pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u64, u32) {
     #[cfg(feature = "gpu")]
     {
-        let (up, sub, rb, calls) = yanshi_gpu::last_stage_timing();
-        (up, sub, rb, verify_micros(), calls)
+        let (up, sub, rb, gpu, calls) = yanshi_gpu::last_stage_timing();
+        (up, sub, rb, verify_micros(), gpu, calls)
     }
     #[cfg(not(feature = "gpu"))]
     {
-        (0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0)
     }
 }
 pub use crate::backend_note::verified_blobs_len;
