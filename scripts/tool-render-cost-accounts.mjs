@@ -314,6 +314,14 @@ const fmtCIPad = (sp) =>
 const fmtMad = (sp) => (Number.isFinite(sp?.mad) ? sp.mad.toFixed(0) : "—");
 
 const { spawn } = await import("node:child_process");
+// **★★★ 把服务端 stderr 落盘 ✗ ★★★**（**第 667 轮 ✓）
+//   **∴ 原因 ✗**：**原来 `stdio: "ignore"` **丢弃**服务端 stderr**✗
+//     ＋ **∴ 于是** `YANSHI_RENDER_PROBE` **等探针的输出**全部看不到** ✓
+//       ＋ **∴ 现在 ✗**：**落到 `/tmp/render-probe.log`**✗
+//         ＋ **∴ 从而**既不干扰表格输出，又能事后分析** ✓ ★
+const { openSync } = await import("node:fs");
+const probeLog = process.env.YANSHI_PROBE_LOG || "/tmp/render-probe.log";
+const probeFd = openSync(probeLog, "a");
 const { mkdtempSync, existsSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
@@ -343,7 +351,7 @@ for (const spec of compareSpecs) {
   if (spawnMode) {
     const root = trackTemp(mkdtempSync(join(tmpdir(), "accounts-")));
     child = spawn(baseline, ["--root", root, "--bind", `127.0.0.1:${port}`, ...spec.extra], {
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", probeFd],
     });
     spawned.push(child);
     base = `http://127.0.0.1:${port}`;
