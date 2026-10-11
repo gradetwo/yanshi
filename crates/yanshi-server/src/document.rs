@@ -142,6 +142,20 @@ pub struct RenderedPreview {
     pub bytes: usize,
     /// 涉及的 tile 数。
     pub tiles: usize,
+    /// **★ 显示空间 u8 RGBA（**行主序 ✓）✗ ★**（**第 528 轮 ✓；目标第 11 条 ✓）
+    ///
+    /// **∴ 为什么必须带上它 ✗**：**它**在 `Document::render_region` 里**本来就在手**✗
+    ///   （**紧挨着 `encode_png(…, &rendered.rgba8)` ✓）
+    ///   ＋ **∴ 而**原来**返回时把它丢了** ✓
+    ///     ⇒ **∴ 于是**：**`read_render_region` 为了拿像素做缩略图**✗
+    ///       **又调了一次 `render_region_raw_active`** ✓
+    ///         ⇒ **★ 实测：一个带图请求把 4K 区域**渲染了 2 次**** ✓
+    ///           ＋ **∴ 而** `png_ms ≈ 1012 ms` ＝ **那第 2 次** ✓（**占该请求 ~47% ✓）★
+    /// **∴ 为什么是 `Option` ✗**：**另外 4 个构造点**手上没有像素** ✓
+    ///   ⇒ **∴ 填 `None` ⇒ **∴ 不改变它们的语义** ✓
+    ///     ＋ **∴ 且** `#[serde(skip)]` ⇒ **∴ 它**不进 JSON**（**∴ 不污染对外契约 ✓）★
+    #[serde(skip)]
+    pub rgba8: Option<Vec<u8>>,
     /// 缩略图类型（缩略图预览时填写）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumb_kind: Option<ThumbKind>,
@@ -1353,6 +1367,7 @@ impl Document {
         //（测试实测：两次渲染后 CAS 里 1 → 2 份 ✗）。放到这里 ✓，旧 blob 才真的"无人引用" ✓。
         self.evict_replaced_previews(&previous);
         Ok(RenderedPreview {
+            rgba8: Some(rendered.rgba8),
             bbox: [
                 rendered.bbox.x,
                 rendered.bbox.y,
@@ -1400,6 +1415,7 @@ impl Document {
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
         let blob_hash = self.store.put(&png)?;
         Ok(RenderedPreview {
+            rgba8: None,
             bbox: [
                 rendered.bbox.x,
                 rendered.bbox.y,
@@ -1579,6 +1595,7 @@ impl Document {
             .map(|rendered| rendered.stats.unsupported.clone())
             .unwrap_or_default();
         Ok(RenderedPreview {
+            rgba8: None,
             bbox: [0.0, 0.0, self.state.width as f64, self.state.height as f64],
             width: thumb_size,
             height: thumb_size,
@@ -1617,6 +1634,7 @@ impl Document {
         self.document_thumbnail = Some(blob.clone());
         self.document_thumbnail_seq = head;
         Ok(Some(RenderedPreview {
+            rgba8: None,
             bbox: [0.0, 0.0, self.state.width as f64, self.state.height as f64],
             width: self.state.width,
             height: self.state.height,
@@ -1979,6 +1997,7 @@ impl Document {
         self.evict_replaced_previews(&previous);
         self.broadcaster.publish_thumbnail(kind);
         Ok(RenderedPreview {
+            rgba8: None,
             bbox: target
                 .map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h])
                 .unwrap_or([0.0, 0.0, self.state.width as f64, self.state.height as f64]),

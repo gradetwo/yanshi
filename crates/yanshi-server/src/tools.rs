@@ -4108,32 +4108,47 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         //   **∴ 说明 ✗**：**这段包含**两件事**✗ ：**`resample_rgba`（缩放 ✓）
         //     ＋ **`encode_png`** ✓ ⇒ **∴ 所以** `png_ms` 报的是**两者之和** ✓（**如实 ✓）★
         let png_started = std::time::Instant::now();
-        // **★★★ 这里为了缩略图**又渲染了一遍**✗ ★★★**（**第 526 轮实测 ✓）
-        //   **∴ 证据（**PROBE ✓）✗**：**一个带图请求把 4K 区域**渲染了 3 次**** ✓
-        //     ＋ **∴ 而** `png_ms` 实测 **≈1062 ms**（**＝ 一次完整渲染 ＋ 缩放 16.6 ms ✓）
-        //       ⇒ **★ 所以：那 ≈1035 ms 是**重复工作**（**占该请求 **47%**** ✓）★
-        //   **∴ 修法（**已试，**编译不过 ⇒ 回退** ✓）✗**：
-        //     ⇒ **∴ 想**直接复用已经渲好的像素 ⇒ **∴ 但**服务端类型 `RenderedPreview`
-        //       **不带 `rgba8`**✗（**只有 url／blob_hash／宽高 ✓）
-        //       ＋ **∴ 而** `yanshi_render::RegionRender` **是带的**（**第 487 轮 ✓）★
-        //         ⇒ **∴ 所以**：**要省掉这次重复渲染 ⇒ **必须**把渲染后的像素
-        //           从 `Workspace::render_region` **带出来**✗（**接口扩展 ✓）★
-        //   **∴ 归属 ✗**：**那**属于目标第 11 条那一类（**需要动接口 ✓）★
-        let scaled = ctx
-            .workspace
-            .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())
-            .ok()
-            .and_then(|(source_w, source_h, rgba)| {
-                yanshi_core::resample::resample_rgba(
-                    &rgba,
-                    source_w,
-                    source_h,
-                    scaled_w,
-                    scaled_h,
-                    yanshi_core::resample::ResampleFilter::Bilinear,
-                )
-            })
-            .and_then(|small| yanshi_render::png::encode_png(scaled_w, scaled_h, &small));
+        // **★★★ 先试**复用已经渲好的像素**✗ ★★★**（**第 528 轮 ✓）
+        //   **∴ 为什么 ✗**：**`Document::render_region` 内部本来就持有 `rendered.rgba8`**✗
+        //     （**紧挨着 `encode_png(…, &rendered.rgba8)` ✓）
+        //     ＋ **∴ 而**它**原来返回时丢了它** ✓
+        //       ⇒ **∴ 于是**：**这里为了缩略图**又完整渲染一遍** ✓
+        //         ⇒ **★ 实测：一个带图请求把 4K 区域**渲染了 2 次**** ✓
+        //           ＋ **∴ 而** `png_ms ≈ 1012 ms` ＝ 那一次 ✓（**占该请求 ~47% ✓）★
+        //   **∴ 现在 ✗**：**优先用 `preview.rgba8`**✗
+        //     ＋ **∴ 万一**它没有（**别的出口 ✓）⇒ **∴ 才**回退到 raw 路** ✓
+        //       ⇒ **∴ 所以**：**行为对旧出口**完全不变** ✓ ★
+        //   **∴ 正确性 ✗**：**同一区域、同一显示空间 RGBA** ✓
+        //     ＋ **∴ 判据 ✗**：`tool-render-count.mjs`（**渲染次数 ≤ 1 ✓）
+        //       ＋ **∴ 且**改前存了 PNG 哈希 ⇒ **∴ 要求**逐位相同** ✓ ★
+        let scaled = match preview.rgba8.as_deref() {
+            // **∴ 快路 ✗**：**已经渲好的像素 ⇒ **∴ 不再渲染第二遍** ✓ ★
+            Some(rgba) => yanshi_core::resample::resample_rgba(
+                rgba,
+                preview.width,
+                preview.height,
+                scaled_w,
+                scaled_h,
+                yanshi_core::resample::ResampleFilter::Bilinear,
+            ),
+            // **∴ 慢路（**旧出口的兜底 ✓）✗**：**它**会**再渲染一遍**✗
+            //   ＋ **∴ 保留它 ⇒ **∴ 行为对没有像素的出口**完全不变** ✓ ★
+            None => ctx
+                .workspace
+                .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())
+                .ok()
+                .and_then(|(source_w, source_h, rgba)| {
+                    yanshi_core::resample::resample_rgba(
+                        &rgba,
+                        source_w,
+                        source_h,
+                        scaled_w,
+                        scaled_h,
+                        yanshi_core::resample::ResampleFilter::Bilinear,
+                    )
+                }),
+        }
+        .and_then(|small| yanshi_render::png::encode_png(scaled_w, scaled_h, &small));
         // **∴ 记进 `Phase::Png` ✗**：**∴ 于是** `/timings` 的 `png_ms` **第一次有实数** ✓ ★
         ctx.time(Phase::Png, png_started);
         if let Some(png) = scaled {
