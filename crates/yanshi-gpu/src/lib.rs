@@ -37,6 +37,23 @@ pub struct Quantizer {
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     lut_buf: wgpu::Buffer,
+    /// **★★★ 读回用的 staging buffer**池 ✗ ★★★**（**第 605 轮 ✓；目标第 5 条 ✓）
+    ///
+    /// **∴ 为什么需要 ✗**：**L4 实测 `readback ＝ 77 295 µs`（**最大头 ✓）**
+    ///   ＋ **∴ 而**每次调用都**新建一张 33 MB（4K）的映射 buffer**✗
+    ///     ⇒ **∴ 于是**：**9 次调用 ⇒ 9 次大分配（含驱动触页 ✓）
+    ///       ＋ **∴ 而**实测带宽只有 **≈3.8 GB/s**（**远低于 PCIe x16 的 ~12 GB/s ✓）
+    ///         ⇒ **★ 所以：**按大小复用**能省掉重复分配与触页** ✓ ★
+    ///
+    /// **∴ 两面（**AGENTS.md ✓）★**：
+    ///   **∴ 收益 ✗**：**不再每次重分配**（**suspect 的大头 ✓）
+    ///   **∴ 代价 ✗**：**常驻一张**最大用过的 staging buffer**✗
+    ///     ＋ **∴ 且**要 `Mutex`（**∵ `quantize` 是 `&self` ✓）
+    ///       ⇒ **∴ 而**它是**实例字段**（**不是静态量 ✓）
+    ///         ⇒ **∴ 所以**：**不会触发**本会话踩过的「wasm ＋ gpu 静态量非 `Sync`」坑** ✓ ★
+    ///
+    /// **∴ 开关 ✗**：`YANSHI_GPU_POOL_READBACK=0` **关掉**（**供 A/B ✓）★
+    readback_pool: std::sync::Mutex<Option<(u64, wgpu::Buffer)>>,
     adapter_note: String,
     /// **★ 适配器等级 ✗ ★**（**∴ 供**分档阈值**用 ✓ —— **第 322 轮 ✓）。
     device_class: DeviceClass,
@@ -404,6 +421,8 @@ impl Quantizer {
             queue,
             pipeline,
             lut_buf,
+            // **∴ 池初始为空 ✗**（**∴ 第一次调用时按需建 ✓）★
+            readback_pool: std::sync::Mutex::new(None),
             adapter_note,
             device_class,
         })
@@ -558,12 +577,29 @@ impl Quantizer {
         //   **∴ 代价（**两面都写 ✓）✗**：**峰值多一张 `count*4` 字节的映射缓冲**
         //     （**4K ⇒ 33 MB ✓）✗ ＋ **∴ 而**它**必须整张驻留** ✓
         //       ⇒ **∴ 所以**：**显存／内存换往返** ✓ ★
-        let readback: wgpu::Buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("yanshi-gpu-readback-batched"),
-            size: (count * 4) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // **★ 先试池 ✗ ★**（**∴ 按字节数匹配 ✓；`YANSHI_GPU_POOL_READBACK=0` 关 ✓）
+        let want = (count * 4) as u64;
+        let pool_on = std::env::var_os("YANSHI_GPU_POOL_READBACK").is_none_or(|v| v != "0");
+        let pooled = if pool_on {
+            self.readback_pool
+                .lock()
+                .ok()
+                .and_then(|mut slot| match slot.as_ref() {
+                    Some((size, _)) if *size == want => slot.take().map(|(_, b)| b),
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        let readback: wgpu::Buffer = match pooled {
+            Some(b) => b,
+            None => self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("yanshi-gpu-readback-batched"),
+                size: want,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        };
         let mut done = 0usize;
         // **∴ 分段累加器 ✗**（**∴ 一次调用内累加 ⇒ 最后写静态 ✓）★
         let mut upload_ns = 0u64;
@@ -750,6 +786,12 @@ impl Quantizer {
             out.extend_from_slice(&mapped);
         }
         readback.unmap();
+        // **∴ 放回池 ✗**（**∴ 数据已拷进 `out` ⇒ **复用安全** ✓）★
+        if pool_on {
+            if let Ok(mut slot) = self.readback_pool.lock() {
+                *slot = Some((want, readback));
+            }
+        }
         readback_ns += t_rb.elapsed().as_nanos() as u64;
         // **∴ 写静态 ✗**：**每次覆盖 ⇒ 读的就是**最近一次** ✓
         STAGE_UPLOAD_NS.store(upload_ns, std::sync::atomic::Ordering::Relaxed);
