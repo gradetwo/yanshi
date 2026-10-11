@@ -1235,10 +1235,13 @@ impl Buffer {
         let code = gpu_mode_code(mode)?;
         // **∴ ⑤ 调内核 ✓（**∴ `None` ⇒ **∴ 调用方回退 ✓）
         let out = quantizer.composite_with_mode(&layer.pixels, &self.pixels, code, opacity);
-        gpu_composite_note(match &out {
-            Some(_) => "★ 走了 GPU ★",
-            None => "内核返回 None（回退 CPU）",
-        });
+        match &out {
+            Some(_) => {
+                GPU_COMPOSITE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                gpu_composite_note("★ 走了 GPU ★");
+            }
+            None => gpu_composite_note("内核返回 None（回退 CPU）"),
+        }
         out
     }
 
@@ -1339,4 +1342,47 @@ fn gpu_composite_note(reason: &str) {
     if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
         eprintln!("PROBE GPU 合成：{reason}");
     }
+}
+
+/// **∴ GPU 合成**实际被采用**的次数 ✗**（**第 690 轮 ✓）★
+///
+/// **∴ 为什么需要 ✗**：**第 689 轮实测 —— 现有合成判据**根本没走 GPU**✗
+///   ＋ **∴ 因为**尺寸 6144 ＜ 阈值 30000** ✓
+///     ＋ **∴ 所以**：**判据必须能**断言「真的走了 GPU」**✗
+///       ＋ **∴ 否则**它**验证的是 CPU 路** ✓ ★
+#[cfg(feature = "gpu")]
+static GPU_COMPOSITE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 读取 GPU 合成被采用的次数 ✗**（**仅 `gpu` feature ✓）★
+#[cfg(feature = "gpu")]
+#[must_use]
+pub fn gpu_composite_calls() -> usize {
+    GPU_COMPOSITE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清零 GPU 合成计数 ✗**（**判据用 ✓）★
+#[cfg(feature = "gpu")]
+pub fn reset_gpu_composite_calls() {
+    GPU_COMPOSITE_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **∴ 显式初始化 GPU（**供测试与启动路径用 ✓）✗**（**第 690 轮 ✓）★
+///
+/// **∴ 为什么需要 ✗**：**`quantizer_cache` 只在**量化路径**被惰性填充**✗
+///   ＋ **∴ 所以**纯合成测试里**缓存是空的**✗ ⇒ **∴ 于是**合成总是**回退 CPU** ✓
+///     ＋ **∴ 而**那不是**接线有问题**✗ 而是**没初始化** ✓ ★
+///
+/// # Errors
+/// **∴ 返回 `Err` ✗**：**GPU 不可用时**返回错误文本**（**调用方决定是否回退 ✓）★
+#[cfg(feature = "gpu")]
+pub fn init_gpu_quantizer(lut: Vec<f32>) -> Result<(), String> {
+    let cache = quantizer_cache();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        // **∴ 用 `?` ✗**（**clippy 要求 ✓）：**`Err(e) => return Err(e)` 正是 `?`** ✓ ★
+        *guard = Some(yanshi_gpu::Quantizer::new(&lut)?);
+    }
+    Ok(())
 }
