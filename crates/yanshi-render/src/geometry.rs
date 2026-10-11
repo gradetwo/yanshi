@@ -116,15 +116,27 @@ pub fn rect_coverage_clipped(bbox: Bbox, clip: &Bbox) -> Coverage {
     let width = (x1 - x0).max(0) as u32;
     let height = (y1 - y0).max(0) as u32;
     let mut data = Vec::with_capacity((width * height) as usize);
+    // **★★★ 预计算 `overlap_x` ✗ ★★★**（**第 683 轮 ✓；**目标第 11 条 ✓）
+    //   **∴ 为什么 ✗**：**`overlap_x` **只依赖 `px`**✗（**∴ 与 `py` 无关 ✓）
+    //     ＋ **∴ 而**原来它**在**内层循环**里**✗
+    //       ⇒ **∴ 于是**：**同一列**被重复计算 **height 次** ✓
+    //         ＋ **∴ 4K 上**约 **2160 次 × width** ✓
+    //   **∴ 逐位不变（**关键 ✓）✗**：**表达式**逐字相同**✗
+    //     ＋ **∴ 所以**同一个 `f64` 值** ⇒ **∴ 结果**逐位相同** ✓
+    //       ＋ **∴ 判据**：**既有全量渲染测试（**逐位一致 ✓）★
+    let overlap_xs: Vec<f64> = (0..width)
+        .map(|px| {
+            let left = (x0 + px as i64) as f64;
+            let right = left + 1.0;
+            (right.min(bbox.x + bbox.w) - left.max(bbox.x)).clamp(0.0, 1.0)
+        })
+        .collect();
     for py in 0..height {
         let top = (y0 + py as i64) as f64;
         let bottom = top + 1.0;
         let overlap_y = (bottom.min(bbox.y + bbox.h) - top.max(bbox.y)).clamp(0.0, 1.0);
         for px in 0..width {
-            let left = (x0 + px as i64) as f64;
-            let right = left + 1.0;
-            let overlap_x = (right.min(bbox.x + bbox.w) - left.max(bbox.x)).clamp(0.0, 1.0);
-            data.push((overlap_x * overlap_y) as f32);
+            data.push((overlap_xs[px as usize] * overlap_y) as f32);
         }
     }
     Coverage {
