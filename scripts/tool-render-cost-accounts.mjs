@@ -3,7 +3,7 @@
 //   **∴ 我**的浏览器脚本**每个**都建**chromium profile ＋ 临时 root**✗
 //     ⇒ **∴ 而**以前**从不删除**✗ ⇒ **∴ 跑几十次就**把 /tmp 塞满 ✓**** ✓✓
 //   **∴ 现在**：**注册 ＋ 退出时递归删除**✗ ⇒ **∴ 于是**：**跑多少次都**不积累 ✓**** ✓✓
-import { rmSync } from "node:fs";
+import { rmSync, readFileSync } from "node:fs";
 
 const __tempPaths = [];
 function trackTemp(path) { __tempPaths.push(path); return path; }
@@ -118,7 +118,47 @@ async function readProcess(pid) {
 }
 
 /** **∴ 在某个服务上把 4K 场景搭好 ✗**（**∴ 与 §20 的基线同构 ✓）** ✓✓ */
+// **★ `--project <包路径>` ✗ ★**（**第 561 轮 ✓；目标第 2 条 ✓）
+//   **∴ 为什么需要 ✗**：**原来的 `buildScenario` 建的是**合成文档**✗
+//     （`accounts_<tag>` ＋ 四层填充 ✓）⇒ **∴ 它**测不出**真工程** ✓
+//       ＋ **∴ 而**目标第 2 条要的是**真工程的两本账 ＋ 离散度** ✓ ★
+//   **∴ 做法 ✗**：**走**三步导入****（**与手工流程一致 ✓）：
+//     `import?begin=1` → `import?upload=<id>&offset=0`（原始字节 ✓）→ `import?finish=1`
+//       ⇒ **∴ 从 `finish` 的响应取 `token` 与 `doc_id`** ✓
+//         ＋ **∴ 图层名 ✗**：**真工程的图层名不是 `L0`**✗
+//           ⇒ **∴ 于是**：**从包内 `atoms.jsonl` 里扫第一个 `layer_id`** ✓
+//             ＋ **∴ 可被 `--layer` 覆盖** ✓ ★
+const projectPath = option("--project", "");
+const layerOverride = option("--layer", "");
+let projectBytes = null;
+if (projectPath) {
+  try { projectBytes = readFileSync(projectPath); } catch { projectBytes = null; }
+}
+
 async function buildScenario(base, tag) {
+  if (projectBytes) {
+    // **∴ 三步导入 ✓
+    const begin = await (await fetch(`${base}/api/documents/import?begin=1`, { method: "POST" })).json();
+    const uid = begin.upload_id || begin.uploadId;
+    await fetch(`${base}/api/documents/import?upload=${uid}&offset=0`, { method: "POST", body: projectBytes });
+    const fin = await (await fetch(`${base}/api/documents/import?upload=${uid}&finish=1`, { method: "POST" })).json();
+    const token = fin.token;
+    const docId = fin.doc_id || fin.docId;
+    const q = `doc=${docId}&token=${token}`;
+    const call = async (tool, args) =>
+      (await fetch(`${base}/api/tools/${tool}?${q}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args || {}),
+      })).json();
+    // **∴ 图层名：优先 `--layer`，否则从包内扫第一个 `layer_id` ✓
+    let layer = layerOverride;
+    if (!layer) {
+      const m = /"layer_id"\s*:\s*"([^"]+)"/.exec(projectBytes.toString("latin1"));
+      layer = m ? m[1] : "L0";
+    }
+    return { docId, token, call, layer, real: true };
+  }
   const docId = `accounts_${tag}`;
   const created = await (await fetch(`${base}/api/documents`, {
     method: "POST",
@@ -146,7 +186,7 @@ async function buildScenario(base, tag) {
       },
     });
   }
-  return { docId, q, call };
+  return { docId, q, token, call, layer: "L0", real: false };
 }
 
 /** **∴ 量一轮横跨两个进程的账 ✗**（**∴ 服务端 CPU 才是要看的 ✓）** ✓✓ */
@@ -157,7 +197,7 @@ async function measureRound({ base, pid, scenario, warm, round }) {
   //   **∴ 所以**：**测首帧成本**必须**让每次渲染都真的重算**✗
   //     ⇒ **∴ 做法**：**每轮**挪动一个填充的 region**✗（**∴ 内容变 ⇒ **∴ 缓存失效 ✓）** ✓✓
   await scenario.call("fill", {
-    layer_id: "L0",
+    layer_id: scenario.layer || "L0",
     object_id: "o_churn",
     data: {
       color: { r: 200, g: 30, b: 60, a: 255 },
