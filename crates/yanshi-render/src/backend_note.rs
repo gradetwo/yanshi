@@ -179,3 +179,24 @@ pub fn mark_blob_verified(blob: &str) {
             .insert(blob.to_owned());
     }
 }
+
+/// **★ 最近一次**逐位核对**的耗时（**微秒 ✓）✗ ★**（**第 498 轮 ✓）
+///
+/// **∴ 它补上分段计时的第四段 ✗**：
+///   ⇒ **∴ 前三段（**上行／提交／读回 ✓）在 `yanshi-gpu` 里量** ✓
+///     ＋ **∴ 这一段**在渲染层量**✗（**∴ 因为**核对用的是 CPU 真值 ✓）
+///       ⇒ **∴ 四段相加 ⇒ 就能看出**时间花在哪** ✓ ★**** ✓✓
+/// **∴ 语义 ✗**：**0 ⇒ **没量到**（**没走核对路 ✓）**✗
+///   ⇒ **∴ 读者**必须配合 `gpu_timed_calls` 看** ✓（**∴ 不许**当成 0 微秒 ✓）★
+static VERIFY_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// **∴ 记下核对的耗时 ✗**（**只在真的比过时调用 ✓）★
+pub fn set_verify_micros(micros: u64) {
+    VERIFY_MICROS.store(micros, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **∴ 读核对耗时（**微秒 ✓）✗**
+#[must_use]
+pub fn verify_micros() -> u64 {
+    VERIFY_MICROS.load(std::sync::atomic::Ordering::Relaxed)
+}

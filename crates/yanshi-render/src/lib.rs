@@ -86,7 +86,8 @@
 pub mod backend_note;
 pub use backend_note::{
     begin_render, blob_verified, gpu_disabled, last_backend, mark_blob_verified, render_delta,
-    set_gpu_disabled, set_last_backend, set_render_delta, Backend,
+    set_gpu_disabled, set_last_backend, set_render_delta, set_verify_micros, verify_micros,
+    Backend,
 };
 
 /// **位图分块（(b1) 数据层 ✓）** —— 目标第 1 条"懒解码"的地基 ✓。
@@ -154,3 +155,25 @@ pub use thumb::{render_thumbnail, Thumb, ThumbKind, ThumbStats, THUMB_BLOCK};
 pub use tile::{
     Tile, TileCache, TileCacheStats, TileGrid, TileKey, ALLOWED_TILE_SIZES, DEFAULT_TILE_SIZE,
 };
+
+/// **★ 主机侧分段计时（**四段 ✓）✗ ★**（**第 498 轮 ✓）
+///
+/// **∴ 返回 `(上行微秒, 提交微秒, 读回微秒, 核对微秒, 次数)` ✗**：
+///   ⇒ **∴ 次数 ＝ 0 ⇒ **前三段不可读**** ✓（**∴ 不许**当成 0 ✓）★
+///
+/// **∴ 两面 ✗**：**收益**：**不用任何 wgpu feature ⇒ **零风险**✗
+///   ＋ **∴ 且**一次就能看出**四段各占多少** ✓
+///   **∴ 代价**：**它量的是**主机视角**✗ ⇒ **∴ 不区分**"GPU 在算"与"GPU 在等"** ✓
+///     ⇒ **∴ 那**要靠 GPU 时间戳**（**∴ 现在被两条 wgpu 规则挡着 ✓）★**** ✓✓
+#[must_use]
+pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u32) {
+    #[cfg(feature = "gpu")]
+    {
+        let (up, sub, rb, calls) = yanshi_gpu::last_stage_timing();
+        (up, sub, rb, verify_micros(), calls)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        (0, 0, 0, 0, 0)
+    }
+}

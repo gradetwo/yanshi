@@ -551,6 +551,12 @@ impl Buffer {
             return Some(gpu);
         }
         // **★ 逐位核对（**∴ 与 CPU 真值比 ✓）★**
+        //
+        // **∴ 分段④计时 ✗ ★**（**第 498 轮 ✓）：
+        //   ⇒ **∴ 这一段**全在 CPU 上**✗（**重算整幅 ＋ 逐字节比较 ✓）
+        //     ＋ **∴ 它**正是"**算得贵**"那一半的候选** ✓
+        //       ⇒ **∴ 量出来 ⇒ 才能和前三段比** ✓ ★**** ✓✓
+        let t_verify = std::time::Instant::now();
         let (width, height) = (self.width as usize, self.height as usize);
         let mut want = vec![0u8; width * height * 4];
         // **★ CPU 对照**必须用**同一个背景** ✗ ★**（**第 459 轮 ✓）：
@@ -562,6 +568,8 @@ impl Buffer {
             return None;
         }
         let bad = (0..want.len()).filter(|&i| want[i] != gpu[i]).count();
+        // **∴ 记下核对耗时 ✗**（**∴ 在**任何返回之前**都记 ⇒ 早退也能量到 ✓）★
+        crate::set_verify_micros(t_verify.elapsed().as_micros() as u64);
         if bad > 0 {
             eprintln!("GPU 与 CPU 有 {bad} 个字节不符 ⇒ 回退 CPU（**∴ 不许**交出不同的像素**）");
             return None;

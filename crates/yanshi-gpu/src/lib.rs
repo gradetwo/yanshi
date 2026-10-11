@@ -14,9 +14,10 @@
 //!
 //! **∴ 边界（**如实 ✓）★**：**本 crate**不**决定**该不该用 GPU**✗
 //!   ⇒ **∴ 那**由**调用方**按**规模阈值**决定** ✓（**`yanshi-http::gpu_policy` ✓）** ✓✓
-
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+use std::time::Instant;
 
 /// **★ 分块 ＋ 批量**的 GPU 量化 ✗ ★**（**∴ 只**这一条对外接口 ✓）。
 ///
@@ -169,6 +170,43 @@ const CHUNK_BYTES_MAX: usize = 4 * 1024 * 1024;
 
 /// **∴ 每像素 16 字节（**4 × f32 ✓）
 const BYTES_PER_PIXEL: usize = 16;
+
+/// **★ 主机侧分段计时 ✗ ★**（**第 498 轮 ✓）
+///
+/// **∴ 为什么不用 GPU 时间戳 ✗**（**第 497 轮的教训 ✓）**：
+///   **∴ 我**想用 `TIMESTAMP_QUERY` 量 GPU 自己的时间**✗
+///     ⇒ **∴ 连撞两条 wgpu 规则**✗ ⇒ **∴ 服务**僵死** ✓（**已记档 ✓）**
+///       ＋ **∴ 而**即使量到，**GPU 时间**也解释不了**主机的等待** ✓
+///         ⇒ **★ 所以 ✗ ★**：**先量**主机侧的三段**✗**
+///           ⇒ **∴ 它**不用任何 feature**✗ ⇒ **∴ 零风险** ✓
+///             ＋ **∴ 且**足以定位**：**是**上行贵**✗ 、**提交换**✗ 、**还是**读回贵** ✓ ★**** ✓✓
+///
+/// **∴ 三段（**都在本 crate ✓）✗**：
+///   ⇒ **∴ ① `upload` ✗**：**每块建 4 个 buffer ＋ 2 次 `write_buffer`**（**含 `f32→u8` 构造 ✓）
+///     ＋ **∴ ② `submit` ✗**：**`queue.submit` ＋ 一次 `poll`** ✓
+///       ＋ **∴ ③ `readback` ✗**：**逐块的 `map_async` ＋ 等待** ✓
+///         ＋ **∴ 第四段（**逐位核对 ✓）在 `yanshi-render`** ✗ ⇒ **∴ 那边单独量** ✓ ★**** ✓✓
+///
+/// **∴ 单位 ✗**：**纳秒存 ⇒ 微秒读** ✓（**∴ `u64` 纳秒：4K 也才 10^9 量级 ⇒ 不溢出 ✓）★
+static STAGE_UPLOAD_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE_SUBMIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE_READBACK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// **★ 读最近一次的分段计时 ✗ ★**
+///
+/// **∴ 返回 `(上行微秒, 提交微秒, 读回微秒, 次数)` ✗**：
+///   ⇒ **∴ 次数 ＝ 0 ⇒ **三段都不可读**** ✓（**∴ 不许**当成 0 ✓）★
+#[must_use]
+pub fn last_stage_timing() -> (u64, u64, u64, u32) {
+    let us = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed) / 1000;
+    (
+        us(&STAGE_UPLOAD_NS),
+        us(&STAGE_SUBMIT_NS),
+        us(&STAGE_READBACK_NS),
+        STAGE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
 
 /// **★ 本平台能不能用**同步**的 `Quantizer::new` ✗ ★**（**第 443 轮 ✓）
 ///
@@ -419,6 +457,10 @@ impl Quantizer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let mut backs: Vec<(wgpu::Buffer, usize)> = Vec::new();
         let mut done = 0usize;
+        // **∴ 分段累加器 ✗**（**∴ 一次调用内累加 ⇒ 最后写静态 ✓）★
+        let mut upload_ns = 0u64;
+        let mut submit_ns = 0u64;
+        let mut readback_ns = 0u64;
         while done < count {
             let take = per_chunk.min(count - done);
             // **★ 不要再拷一份 `Vec<f32>` ✗ ★**（**第 496 轮 ✓）
@@ -429,6 +471,8 @@ impl Quantizer {
             //   **∴ 现在 ✗**：**直接从 `pixels` 的切片生成 bytes** ✓
             //     ⇒ **∴ 峰值**只剩 bytes 那一份** ✓ ★**** ✓✓
             let src_bytes = f32s_to_bytes(&pixels[done * 4..(done + take) * 4]);
+            // **∴ 分段①：上行（**建 buffer ＋ 写 buffer ✓）★
+            let t_up = Instant::now();
             let src = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: src_bytes.len() as u64,
@@ -477,6 +521,7 @@ impl Quantizer {
             });
             self.queue.write_buffer(&src, 0, &src_bytes);
             self.queue.write_buffer(&pb, 0, &params_bytes);
+            upload_ns += t_up.elapsed().as_nanos() as u64;
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &layout,
@@ -513,10 +558,15 @@ impl Quantizer {
             done += take;
         }
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
+        // **∴ 分段②：提交（**submit ＋ 一次 poll ✓）★
+        let t_sub = Instant::now();
         self.queue.submit(Some(enc.finish()));
         // **★ 不阻塞 ✗ ★**（**第 471 轮 ✓）：**真正的同步在下面 `map_async` 的 await ✓
         let _ = self.device.poll(wgpu::PollType::Poll);
+        submit_ns += t_sub.elapsed().as_nanos() as u64;
 
+        // **∴ 分段③：读回（**逐块 map ＋ 等待 ✓）★
+        let t_rb = Instant::now();
         let mut out: Vec<u8> = Vec::with_capacity(count * 4);
         for (back, _take) in &backs {
             let slice = back.slice(..);
@@ -533,6 +583,12 @@ impl Quantizer {
             drop(mapped);
             back.unmap();
         }
+        readback_ns += t_rb.elapsed().as_nanos() as u64;
+        // **∴ 写静态 ✗**：**每次覆盖 ⇒ 读的就是**最近一次** ✓
+        STAGE_UPLOAD_NS.store(upload_ns, std::sync::atomic::Ordering::Relaxed);
+        STAGE_SUBMIT_NS.store(submit_ns, std::sync::atomic::Ordering::Relaxed);
+        STAGE_READBACK_NS.store(readback_ns, std::sync::atomic::Ordering::Relaxed);
+        STAGE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(out)
     }
 

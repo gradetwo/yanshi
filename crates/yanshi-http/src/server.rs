@@ -974,6 +974,15 @@ fn health(state: &ServerState) -> Response {
             //     ⇒ **∴ 没比过 ⇒ `null`** ✓（**∴ 那就是**判据要的** ✓）
             //       ＋ **∴ 自检的差值**另立字段**（**`selfcheck_max_channel_delta` ✓）★**** ✓✓
             "max_channel_delta": render_delta_json(),
+            // **★ 主机侧分段计时 ✗ ★**（**第 498 轮 ✓）
+            //   **∴ 为什么放这里 ✗**：**判据与测量工具**只用 REST** ✓
+            //   **∴ 语义 ✗**：**`gpu_stage_calls` ＝ 0 ⇒ **四个数都不可读**** ✓
+            //     （**∴ 不许**把 0 当成"没花时间" ✓）★
+            "gpu_stage_upload_us": stage_timing_json()["upload_us"].clone(),
+            "gpu_stage_submit_us": stage_timing_json()["submit_us"].clone(),
+            "gpu_stage_readback_us": stage_timing_json()["readback_us"].clone(),
+            "gpu_stage_verify_us": stage_timing_json()["verify_us"].clone(),
+            "gpu_stage_calls": stage_timing_json()["calls"].clone(),
             "selfcheck_max_channel_delta": gpu_selfcheck_delta(),
             "max_channel_delta_note": gpu_selfcheck_note(),
             // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
@@ -1104,6 +1113,21 @@ fn render_delta_json() -> serde_json::Value {
         Some(v) => serde_json::json!(v),
         None => serde_json::Value::Null,
     }
+}
+
+/// **★ 主机侧分段计时 ⇒ JSON ✗ ★**（**第 498 轮 ✓）
+///
+/// **∴ 五段合一 ✗**：**上行／提交／读回／核对 ＋ 次数** ✓
+///   ⇒ **∴ `calls` ＝ 0 ⇒ **其余四个都不可读**** ✓ ★
+fn stage_timing_json() -> serde_json::Value {
+    let (upload, submit, readback, verify, calls) = yanshi_render::gpu_stage_timing();
+    serde_json::json!({
+        "upload_us": upload,
+        "submit_us": submit,
+        "readback_us": readback,
+        "verify_us": verify,
+        "calls": calls,
+    })
 }
 
 #[cfg(feature = "gpu")]
