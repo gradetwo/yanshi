@@ -403,6 +403,17 @@ impl Quantizer {
         device.on_uncaptured_error(Box::new(|e| {
             eprintln!("PROBE WGPU 真错误：{e:?}");
         }));
+        // **★★★ 捕获第一个**真** wgpu 错误 ✗ ★★★**（**第 615–616 轮 ✓）
+        //   **∴ 为什么需要 ✗**：**本会话**反复只看到**次生错误**✗
+        //     ＋ **∴ 如** `Encoder is invalid` ✓
+        //       ⇒ **∴ 于是**：**每次**都要**反复猜** ✓
+        //   **∴ 必须用 Debug ✗**：**Display 只给一行**（「Validation Error ✓）
+        //     ＋ **∴ 而 `Caused by`／`source` **只在 Debug 里** ✓（**实测 ✓）★
+        //   **∴ 实测价值 ✗**：**它**把定位**从「pass 之后」**精确到「**pass 之内**」** ✓ ★
+        //   **∴ 代价（**两面 ✓）✗**：**多一个闭包**（**只在出错时跑 ✓）★
+        device.on_uncaptured_error(Box::new(|e| {
+            eprintln!("PROBE WGPU 真错误：{e:?}");
+        }));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yanshi-gpu-quantize"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
