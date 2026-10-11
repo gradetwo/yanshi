@@ -227,6 +227,11 @@ fn gpu_f16_roundtrip_matches_cpu_bit_for_bit() {
             f.contains(wgpu::Features::TIMESTAMP_QUERY),
             adapter.limits().max_storage_buffer_binding_size / 1048576,
         );
+        // **★ 目标第 10 条 ✗ ★**：**能力要**报成选定的路**（**∴ 否则"支持与否"看不出后果 ✓）
+        println!(
+            "  ★ f16 选路：{}",
+            yanshi_gpu::f16_path_name(yanshi_gpu::f16_path(f))
+        );
     }
 
     let (device, queue) = match block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))

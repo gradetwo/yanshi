@@ -762,6 +762,53 @@ mod tests {
     }
 }
 
+/// **★ `f16` 的两条路 ✗ ★**（**第 544 轮 ✓；目标第 10 条 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**WGSL 的原生 `f16` 需要适配器支持
+///   `Features::SHADER_F16`** ✓
+///   ＋ **∴ 而**本机核显与 L4 上它**都是 `false`**✗（**第 316／275 轮实测 ✓）
+///     ⇒ **∴ 所以**：**现在恒走**手写位操作** ✓
+///       ⇒ **∴ 而**生产代码**原来**完全没查询**这个特性**✗
+///         ⇒ **∴ 于是**：**将来遇到支持它的适配器时**静默继续用手写** ✓ ★
+///
+/// **∴ 它做什么 ✗**：**把"能力"变成**显式的选择**** ✓
+///   ⇒ **∴ 好处 ✗**：
+///     ⇒ **∴ ① 可见 ✗**：**能力打印里能报出**选定的路** ✓
+///     ⇒ **∴ ② 可判据 ✗**：**纯函数 ⇒ **单测能直接断言**✗（**不碰 GPU ✓）★
+///     ⇒ **∴ ③ 为原生路留口 ✗**：**将来支持时**只需补一条 WGSL** ✓ ★
+///
+/// **∴ 如实（**两面 ✓）✗**：
+///   ⇒ **∴ 收益 ✗**：**选路显式化 ＋ 可被判据守住 ＋ 不再静默** ✓
+///     ＋ **∴ 代价 ✗**：**`Native` 分支**目前**没有对应的 WGSL**✗
+///       ⇒ **∴ 所以**：**它**现在只用于**报告 ＋ 断言**✗
+///         ＋ **∴ 若**某天适配器支持它 ⇒ **∴ 判据会**要求补原生 shader** ✓ ★
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum F16Path {
+    /// **∴ 原生 WGSL `f16`** ✓（**需要 `SHADER_F16` ✓）—— **∴ 尚未实现** ✓
+    Native,
+    /// **∴ 手写位操作**（**当前唯一实现的路 ✓）★
+    Emulated,
+}
+
+/// **★ 按适配器能力选 `f16` 的路 ✗ ★**（**纯函数 ⇒ 可单测 ✓）
+#[must_use]
+pub const fn f16_path(features: wgpu::Features) -> F16Path {
+    if features.contains(wgpu::Features::SHADER_F16) {
+        F16Path::Native
+    } else {
+        F16Path::Emulated
+    }
+}
+
+/// **∴ 把选定的路报给人看 ✗**（**能力打印用 ✓）
+#[must_use]
+pub const fn f16_path_name(path: F16Path) -> &'static str {
+    match path {
+        F16Path::Native => "native-f16（**尚未实现 ⇒ 会回退手写 ✓）",
+        F16Path::Emulated => "emulated-f16（手写位操作 ✓）",
+    }
+}
+
 #[cfg(test)]
 mod chunk_cap_tests {
     // **★ 分块上限必须**跟随适配器等级**✗ ★**（**第 540 轮 ✓；目标第 4 条 ✓）
@@ -801,6 +848,36 @@ mod chunk_cap_tests {
         assert!(
             discrete <= 64 * 1024 * 1024,
             "独显上限不许过大（{discrete}）⇒ 要留显存余量给 dst 与参数"
+        );
+    }
+}
+
+#[cfg(test)]
+mod f16_path_tests {
+    // **★ 选路必须**跟随 `SHADER_F16`**✗ ★**（**第 544 轮 ✓；目标第 10 条 ✓）
+    //   **∴ 为什么必须 ✗**：**本机与 L4 上 `SHADER_F16` 都是 `false`** ✓
+    //     ⇒ **∴ 所以**：**必须选**手写路** ✓
+    //       ＋ **∴ 而**若选路**恒为某一个值**✗ ⇒ **∴ 那**它**就不是选路** ✓ ★
+    use super::*;
+
+    #[test]
+    fn the_f16_path_follows_the_adapter_capability() {
+        // **∴ 本机实测：没有 `SHADER_F16`** ✓ ⇒ **∴ 必须走手写** ✓ ★
+        assert_eq!(
+            f16_path(wgpu::Features::empty()),
+            F16Path::Emulated,
+            "不支持 SHADER_F16 ⇒ 必须选手写路"
+        );
+        // **∴ 支持时 ⇒ 选原生** ✓（**∴ 虽然原生 WGSL 还没写 ⇒ **∴ 判据会提醒 ✓）
+        assert_eq!(
+            f16_path(wgpu::Features::SHADER_F16),
+            F16Path::Native,
+            "支持 SHADER_F16 ⇒ 应当选原生路（**∴ 并补上原生 WGSL ✓）"
+        );
+        // **∴ 两条路的名字必须不同**（**∴ 可见性 ✓）
+        assert_ne!(
+            f16_path_name(F16Path::Native),
+            f16_path_name(F16Path::Emulated)
         );
     }
 }

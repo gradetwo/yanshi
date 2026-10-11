@@ -4614,3 +4614,43 @@ let verify_key: String = match blob {
 ### **∴ 判据 ✗**：`the_verify_key_distinguishes_a_single_changed_pixel`（**能红 ✓：抽样版 FAILED／全量版 ok ✓）★
   ＋ **∴ 顺便把键的构造抽成 `verify_key_with`**✗（**∴ 判据可直测，**不碰 GPU ✓）★
 
+---
+
+## 第 544 轮：**★★★ 目标第 10 条完成：`f16` 选路显式化 ＋ 实测打印 ★★★**
+
+### **∴ 现状（**先测量 ✓）★**
+  ⇒ **∴ 生产代码里**完全没有查询 `SHADER_F16`**✗
+    ⇒ **∴ 唯一出现的地方是**测试**✗（`crates/yanshi-http/tests/gpu_f16_roundtrip.rs` ✓）
+      ⇒ **∴ 于是**：**将来遇到支持它的适配器时**会静默继续用手写** ✓ ★
+
+### **∴ 交付 ✗**（**纯新增 ⇒ 不改变任何渲染输出 ✓）★**
+  ⇒ **∴ ① `F16Path` 枚举 ✗**：`Native`（**尚未实现 ✓）／`Emulated`（**手写 ✓）
+  ⇒ **∴ ② `f16_path(features)` ✗**：**纯 `const fn`** ⇒ **∴ 单测**不需要 GPU** ✓
+  ⇒ **∴ ③ `f16_path_name(path)` ✗**：**给能力打印用 ✓
+  ⇒ **∴ ④ 接进 `gpu_f16_roundtrip` 的能力打印 ✗** ⇒ **∴ 支持与否**看得出后果** ✓ ★
+
+### **∴ 新判据 ✗**：`the_f16_path_follows_the_adapter_capability`** ✓
+  ⇒ **∴ 断言 ✗**：**无 `SHADER_F16` ⇒ 必须选 `Emulated`** ✓
+    ＋ **∴ 有 ⇒ 必须选 `Native`**✗（**∴ 并**提醒要补原生 WGSL** ✓）
+      ＋ **∴ 两条路的名字必须不同** ✓ ★
+  ⇒ **∴ 变异检验 ✗**：**选路恒为 `Emulated` ⇒ **FAILED**** ✓（**消息：
+    「支持 SHADER_F16 ⇒ 应当选原生路」 ✓）⇒ **∴ 复原 ⇒ 绿** ✓ ★
+
+### **∴ 实测（本机核显，**全部打印 ✓）★**
+```
+★ 适配器：Gl｜IntegratedGpu｜Mesa Intel(R) HD Graphics 5000 (HSW GT3)｜driver= "4.6 (Core Profile) Mesa 26.2.4-arch3.1"
+★ 能力：SHADER_F16=false｜TIMESTAMP_QUERY=true｜max_storage_buffer_binding_size=128 MiB
+★ f16 选路：emulated-f16（手写位操作）
+⇒ test result: ok（**max_delta 逐位一致 ✓）
+```
+
+**⇒ ★ 两个附带发现 ✗ ★**：
+  ⇒ **∴ ① `TIMESTAMP_QUERY=true`**✗（**∴ **第 9 条**（GPU 侧计时 ✓）在本机**可做**** ✓ ★
+  ⇒ **∴ ② `max_storage_buffer_binding_size` ＝ **128 MiB****✗（**∴ 不是小值 ✓）
+    ⇒ **∴ 所以**：**第 496 轮的"放大分块更慢"是关于**分块大小**的**✗
+      ＋ **∴ 而**不是关于**适配器上限** ✓ ⇒ **∴ 两者要分开说** ✓ ★
+
+**∴ 如实 ✗**：**`Native` 分支**还没有对应的原生 WGSL**** ✓
+  ⇒ **∴ 它**现在只用于**报告 ＋ 断言**✗
+    ＋ **∴ 若**某天适配器支持 ⇒ **∴ 判据会**要求补它** ✓ ★
+
