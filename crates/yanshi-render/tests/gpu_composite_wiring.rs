@@ -182,7 +182,15 @@ fn gpu_composite_throughput_versus_cpu() {
         eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过（**不是通过**）");
         return;
     }
-    for (label, w, h) in [("256x256", 256u32, 256u32), ("1920x1080", 1920, 1080)] {
+    // **∴ 加 4K ✗**（**第 692 轮 ✓；**目标第 11 条 ✓）
+    //   **∴ 注意 ✗**：**本机是**核显**（**共享内存 ✓）
+    //     ＋ **∴ 而** 4K 的 src＋dst＋out ≈ **400 MB**✗
+    //       ⇒ **∴ 结果**未必代表 L4**（**∴ 独显有独立显存 ✓）★
+    for (label, w, h) in [
+        ("256x256", 256u32, 256u32),
+        ("1920x1080", 1920, 1080),
+        ("3840x2160", 3840, 2160),
+    ] {
         let mut layer = Buffer::new(0, 0, w, h);
         fill(&mut layer, 0xC0FF_EE01);
         let time_of = |via_gpu: bool| {
