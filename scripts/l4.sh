@@ -335,7 +335,17 @@ cmd_up_state() {
     echo "  （没有日志 $log）"
     return 4
   fi
-  local age=$(( $(date +%s) - $(stat -c %Y "$log") ))
+  # **★★★ 看**最新活动**，而不是只看主日志 ✗ ★★★**（**第 642 轮实测修正 ✓）
+  #   **∴ 为什么 ✗**：**`up` 把**构建输出**重定向到** `/tmp/build-gpu.log`**✗
+  #     ＋ **∴ 于是**主日志**静止**✗ 而**进程**还活着**
+  #       ⇒ **∴ 只看主日志 ⇒ **误报"已结束"或"仍在跑"** ✓
+  #         ＋ **∴ 正确判据 ✗**：**取**两者中更新的那个** ✓ ★
+  local newest="$log"
+  if [ -f /tmp/build-gpu.log ] && [ /tmp/build-gpu.log -nt "$newest" ]; then
+    newest=/tmp/build-gpu.log
+  fi
+  local age=$(( $(date +%s) - $(stat -c %Y "$newest") ))
+  echo "  （最新活动日志：$newest）"
   if pgrep -f '[l]4.sh up' >/dev/null 2>&1 || [ "$age" -lt "$quiet" ]; then
     echo "  ⏳ up 可能仍在运行（日志静止 ${age}s）"
     return 0
