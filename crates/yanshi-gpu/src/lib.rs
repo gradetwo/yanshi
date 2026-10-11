@@ -577,24 +577,44 @@ impl Quantizer {
             self.device.features(),
             std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
         );
-        let (ts_query, ts_resolve) = if time_gpu {
+        // **★★★ 两张 buffer：resolve 目标 ＋ 可映射的中转 ✗ ★★★**（**第 603 轮 ✓；目标第 9 条后半 ✓）
+        //   **∴ 原来的错（**实测 panic ✓）✗**：
+        //     `MAP usage can only be combined with the opposite COPY,
+        //      requested BufferUsages(MAP_READ | COPY_DST | QUERY_RESOLVE)`
+        //       ⇒ **∴ 因为**同一张 buffer **同时**带 `MAP_READ` 与 `QUERY_RESOLVE`** ✗
+        //         ＋ **∴ 而** wgpu 只允许 `MAP_READ` 与**对向的 COPY**（`COPY_DST`）组合** ✓
+        //           ⇒ **∴ 于是**：**服务端在渲染时**直接 panic**（**`wgpu_core.rs:1436` ✓）
+        //             ＋ **∴ 而** validation 错误**不走 `Result`**✗ ⇒ **∴ `map_err` **拦不住** ✓ ★
+        //   **∴ 现在（**与 wgpu 的加法一致 ✓）✗**：
+        //     **∴ ① `resolve` ✗**：**只用** `QUERY_RESOLVE | COPY_DST`**（**写时间戳 ＋ 可被拷出 ✓）
+        //       ＋ **∴ ② `read` ✗**：**16 字节的**中转**✗
+        //         ＋ **∴ 只用** `COPY_DST | MAP_READ`**（**收拷贝 ＋ 可映射 ✓）
+        //           ＋ **∴ ③** 提交前把 `resolve` **拷进** `read` ⇒ **∴ 然后**只 map `read`** ✓ ★
+        let (ts_query, ts_resolve, ts_read) = if time_gpu {
             let query = self.device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("yanshi-gpu-time"),
                 ty: wgpu::QueryType::Timestamp,
                 count: 2,
             });
-            // **∴ 16 字节 ＝ 两个 u64 纳秒 ✓**（**∴ 且**用途必须含 QUERY_RESOLVE ＋ MAP_READ ✓）
             let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("yanshi-gpu-time-resolve"),
                 size: 16,
-                usage: wgpu::BufferUsages::QUERY_RESOLVE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::MAP_READ,
+                // **★ 必须带 `COPY_SRC` ✗ ★**（**第 603 轮实测 ✓）：**它**要被
+                //   `copy_buffer_to_buffer` **当作源**拷进中转那张** ✓
+                //   ＋ **∴ 而** `COPY_DST` **不需要**（**它**不被写入 ✓）
+                //     ＋ **∴ 且**绝不能加 `MAP_*`（**∴ 那**是第 84 轮和本轮两次 panic 的根因 ✓）★
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
-            (Some(query), Some(resolve))
+            let read = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("yanshi-gpu-time-read"),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            (Some(query), Some(resolve), Some(read))
         } else {
-            (None, None)
+            (None, None, None)
         };
         while done < count {
             let take = per_chunk.min(count - done);
@@ -701,8 +721,12 @@ impl Quantizer {
         // **∴ 分段②：提交（**submit ＋ 一次 poll ✓）★
         let t_sub = Instant::now();
         // **∴ resolve 必须在**提交之前**✗（**∴ 它**也是编码命令 ✓）★
-        if let (Some(query), Some(resolve)) = (ts_query.as_ref(), ts_resolve.as_ref()) {
+        if let (Some(query), Some(resolve), Some(read)) =
+            (ts_query.as_ref(), ts_resolve.as_ref(), ts_read.as_ref())
+        {
             enc.resolve_query_set(query, 0..2, resolve, 0);
+            // **∴ 再拷进可映射的那张 ✗**（**∴ 因为** `resolve` **不能**同时可映射 ✓）★
+            enc.copy_buffer_to_buffer(resolve, 0, read, 0, 16);
         }
         self.queue.submit(Some(enc.finish()));
         // **★ 不阻塞 ✗ ★**（**第 471 轮 ✓）：**真正的同步在下面 `map_async` 的 await ✓
@@ -732,8 +756,8 @@ impl Quantizer {
         STAGE_SUBMIT_NS.store(submit_ns, std::sync::atomic::Ordering::Relaxed);
         STAGE_READBACK_NS.store(readback_ns, std::sync::atomic::Ordering::Relaxed);
         // **★ 读回 GPU 侧纳秒 ✗ ★**（**∴ wgpu 26 没有 `get_results` ⇒ **resolve → map** ✓）
-        if let Some(resolve) = ts_resolve.as_ref() {
-            let slice = resolve.slice(..);
+        if let Some(read) = ts_read.as_ref() {
+            let slice = read.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
@@ -754,7 +778,7 @@ impl Quantizer {
                     );
                 }
                 drop(data);
-                resolve.unmap();
+                read.unmap();
             }
         }
         STAGE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
