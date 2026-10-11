@@ -121,11 +121,40 @@ echo "-- 仓库与产物："; cd '"${L4_DIR}"' 2>/dev/null && { git log --onelin
 
 cmd_up() {
   echo "== 1/5 会话 =="
-  colab sessions 2>&1 | grep -a "${SESSION}" >/dev/null || {
+  # **★★★ 会话必须**真的是 GPU 变体**✗ ★★★**（**第 578 轮实测 ✓；**用户提示 ✓）
+  #   **∴ 两个坑叠加 ✗**：
+  #     **∴ ①** `colab new … --gpu L4` **只在会话**不存在**时才跑**✗
+  #       ⇒ **∴ 于是**：**同名会话一旦存在（**哪怕是旧的 CPU 会话 ✓）
+  #         ⇒ **∴ `--gpu L4` **静默不生效**** ✓（**第 576 轮实测 ✓）
+  #     **∴ ②** **L4 空闲会被**回收**✗ ⇒ **∴ 回收后 `colab` **自动重建为 CPU 实例**** ✓
+  #       ⇒ **∴ 症状 ✗**：**`Hardware: CPU | Variant: DEFAULT`**✗
+  #         ＋ **∴ 而**它**仍然装了 `nvidia_icd.json`** ✗
+  #           ⇒ **∴ 于是**：**wgpu**回退 `llvmpipe`**✗
+  #             ⇒ **★ 若不检查，就会把**软件渲染**当成 L4**** ✓（**第 318 轮的坑 ✓）★
+  #   **∴ 所以 ✗**：**每次 `up` 都**校验 `Variant: GPU`**✗
+  #     ⇒ **∴ 不是 GPU ⇒ **停掉 ＋ 用 `--gpu L4` 重建**** ✓ ★
+  local line
+  line="$(colab sessions 2>&1 | grep -a "${SESSION}" | head -1 || true)"
+  if [ -z "$line" ] || ! printf '%s' "$line" | grep -aq 'Variant: GPU'; then
+    if [ -n "$line" ]; then
+      echo "  ★ 现有会话不是 GPU 变体 ⇒ 停掉重建"
+      echo "    ${line}"
+      colab stop -s "${SESSION}" >/dev/null 2>&1 || true
+      sleep 4
+    else
+      echo "  没有会话 ⇒ 新建"
+    fi
     echo "  创建会话 ${SESSION}（--gpu L4）"
     colab new -s "${SESSION}" --gpu L4 2>&1 | tail -3
+    sleep 5
+  fi
+  colab sessions 2>&1 | grep -a "${SESSION}" | sed 's/^/  /' || true
+  # **★ 硬校验：拿不到 GPU 变体就**直接失败**（**不许拿 llvmpipe 凑数 ✓）★**
+  colab sessions 2>&1 | grep -a "${SESSION}" | grep -aq 'Variant: GPU' || {
+    echo "  ✗ 会话 ${SESSION} 不是 GPU 变体（Hardware/Variant 见上）" >&2
+    echo "    ⇒ 不继续。请检查配额，或换 --gpu 变体（T4／L4／G4／H100／A100）" >&2
+    return 1
   }
-  colab sessions 2>&1 | grep -a "${SESSION}" | sed 's/^/  /'
 
   # **★ 步骤 2–4 **合并成一次 ssh**✗ ★**（**第 492 轮实测：**分次会被 429 拒 ✓）
   echo "== 2/3 Rust ＋ Vulkan ＋ 仓库（**一次 ssh ✓）=="
