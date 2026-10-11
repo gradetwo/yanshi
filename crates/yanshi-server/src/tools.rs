@@ -4037,10 +4037,19 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let region = parse_bbox(require_object(args, "region")?)?;
     let include_image = optional_bool(args, "include_image").unwrap_or(false);
     // **∴ 有 `layer_id` ⇒ **只渲那一层**✗；**没有 ⇒ **行为完全不变 ✓**。
+    // **★ 埋点：渲染本体 ✗ ★**（**第 505 轮 ✓）
+    //   **∴ 为什么 ✗**：**第 503 轮的标度实验说「**80% 是与像素成正比的计算**」 ✗
+    //     ＋ **∴ 而** `timings` 里 `render_ms`／`raster_ms` **全是 0** ✓
+    //       ⇒ **∴ 于是**：**报告方只能从外部反推** ✓（**`tools.rs:3352` 早就写明 ✓）
+    //     ＋ **∴ 所以**：**这里补最要紧的一处 —— 渲染本体** ✓
+    //       ⇒ **∴ 它是**图层合成 ＋ tile 管理的总入口** ✓ ★**** ✓✓
+    let render_started = std::time::Instant::now();
     let preview = match layer_id.as_deref() {
         Some(id) => ctx.workspace.render_region_layer(&ctx.doc_id, region, id)?,
         None => ctx.workspace.render_region(&ctx.doc_id, region)?,
     };
+    // **∴ 记进 `Phase::Render` ✗**：**∴ 于是** `/timings` 的 `render_ms` **第一次有实数** ✓ ★
+    ctx.time(Phase::Render, render_started);
     let mut value = json!({
         "region": preview.bbox,
         "width": preview.width,
