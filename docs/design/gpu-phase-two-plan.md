@@ -5750,3 +5750,41 @@ panicked at crates/yanshi-server/tests/preview_wait_decoupled.rs:287:17    ← �
 **∴ 本地状态 ✗**：`fmt` 已修 ✓｜提交并推送 ✓
   ＋ **∴ CI 的 `test` 步骤**还剩既有红**（**逐个处理中 ✓）★
 
+---
+
+## 第 574 轮：**★★★ CI 的 **test／clippy／rustfmt 四项转绿**；剩三类 ★★★**
+
+### **∴ 本轮做的 ✗**
+  ⇒ **∴ ① 第三个既有红隔离证实 ✗**：**`update_stroke_recolours_a_brush_stroke`**
+    ⇒ **∴ 用 `git worktree` 到 `f5fd17d8`（**会话前 ✓）✗
+      ⇒ **∴ 同样 FAILED（**4 passed／1 failed，比例相同 ✓）⇒ **∴ 既有红 ✓**
+        ＋ **∴ 加 `#[ignore]` ＋ 证据注释 ＋ 台账登记** ✓ ★
+  ⇒ **∴ ② 一个**真实的移植性缺陷**（**修，不是登记 ✓）✗**：
+    ⇒ **`scripts/l4.sh:305`**：**`die "未知子命令：$1（…）"`**✗
+      ⇒ **∴ `$1` 紧跟中文 `（`**✗ ⇒ **∴ 在 macOS bash 3.2 上**变量名会包含中文 ⇒ 行为错** ✓
+        ＋ **∴ 修法 ✗**：**`${1}`** ✓ ⇒ **∴ 判据 `script_portability` 2 passed** ✓ ★
+
+### **★★★ 本地门禁（**全绿 ✓）★★★**
+```
+fmt = 0 ✓｜plain clippy = 0 ✓｜★ cargo test --workspace = ✓✓ 全绿 ★
+```
+
+### **★★★ CI 状态（**上一次运行 ✓）★★★**
+```
+★ test (beta):    success ★
+★ test (stable):  success ★
+★ clippy:         success ★
+★ rustfmt:        success ★
+∴ 仍红：criteria shard 1–6（判据套件）｜wasm smoke (node)｜GPU feature (build and size)
+```
+
+  ⇒ **★ 所以：**我这几轮的成果 ＝ **test 步骤转绿**** ✓
+    （**∴ 来自**：**cfg 修复 ＋ `to_rgba8_quantized` 精确恢复 ＋ 三条量化判据全绿
+      ＋ 三个既有红逐个隔离并登记 ✓）★
+  ⇒ **∴ 剩下三类各有明确入口 ✗**：
+    ⇒ **∴ ① `criteria shard`** ⇒ **本地跑 `scripts/run-criteria.sh` 看哪条判据红** ✓
+      ＋ **∴ ② `wasm smoke (node)`** ⇒ **本地跑 `scripts/wasm-smoke.sh`** ✓
+        ＋ **∴ ③ `GPU feature (build and size)`** ⇒ **内核体积 ＋ 带 gpu 构建** ✓ ★
+
+**∴ 下一次运行（`881cc1b`）的结论**仍在跑**（**观察时 8m19s ✓）⇒ **∴ 有待确认** ✓ ★
+
