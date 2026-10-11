@@ -297,6 +297,26 @@ cmd_tkill() {
 #   **∴ 为什么 ✗**：**本机跑 cargo 慢**（**≈2–4 分钟起 ✓）
 #     ＋ **∴ 而** L4 有 **12 线程**（**实测 clippy 24 s／test 2m33s，并行度 4.1× ✓）
 #       ⇒ **∴ 所以**：**重量级一律放 L4** ⇒ **∴ 而**这条子命令**把常用序列封起来** ✓ ★
+# **★★★ 廉价健康检查 ✗ ★★★**（**第 618 轮 ✓；**用户「造工具」方法论 ✓）
+#   **∴ 为什么需要 ✗**：**L4 会话会**悄悄失效**** ✗：
+#     **∴ 症状 ✗**：**`l4.sh run '<命令>'` **不报错、「输出为空」**✗
+#       ＋ **∴ 或**者**测量只报 `TypeError: fetch failed` ＋ `SocketError: other side closed`** ✓
+#         ⇒ **∴ 于是**：**我**误以为是**产品 bug**✗ ⇒ **∴ 白白排查了好几轮** ✓ ★
+#   **∴ 它做什么 ✗**：**一次极短的 ssh**（**只 `echo PONG` ＋ 报 GPU 名** ✓）
+#     ＋ **∴ 若**拿不到 PONG ⇒ **∴ 明确说「会话可能已被回收 ⇒ 用 `l4.sh up` 重建」** ✓ ★
+#   **∴ 代价 ✗**：**一次 ssh**（**~1–2 秒 ✓）★
+cmd_ping() {
+  local out
+  out="$(l4_ssh 'echo PONG; nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1' 2>&1 | tr -d "\r")"
+  if printf '%s' "${out}" | grep -q PONG; then
+    echo "  ✓ 会话在线：$(printf '%s' "${out}" | grep -v PONG | head -1)"
+  else
+    echo "  ✗ **会话可能已被回收**（**拿不到 PONG ✓）⇒ 用 \`scripts/l4.sh up\` 重建 ✓"
+    printf '%s\n' "${out}" | head -3 | sed 's/^/    /'
+    return 4
+  fi
+}
+
 cmd_gate() {
   local which="${1:-all}"
   l4_ssh "cd ${L4_DIR} && export PATH=\$HOME/.cargo/bin:\$PATH
@@ -462,6 +482,7 @@ case "${1:-}" in
     echo "  环境变量：L4_SESSION（缺省 dawang）｜L4_DIR（缺省 /content/yanshi）｜L4_BRANCH（缺省 l4-sync）"
     exit 0 ;;
   sync)        shift; cmd_sync "$@" ;;
+  ping)        shift; cmd_ping "$@" ;;
   gate)        shift; cmd_gate "$@" ;;
   clean)       shift; cmd_clean "$@" ;;
   push)        shift; cmd_push "$@" ;;
