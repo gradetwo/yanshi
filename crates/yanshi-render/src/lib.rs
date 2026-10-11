@@ -177,3 +177,4 @@ pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u32) {
         (0, 0, 0, 0, 0)
     }
 }
+pub use crate::backend_note::verified_blobs_len;

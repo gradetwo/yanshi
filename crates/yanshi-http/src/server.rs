@@ -983,6 +983,7 @@ fn health(state: &ServerState) -> Response {
             "gpu_stage_readback_us": stage_timing_json()["readback_us"].clone(),
             "gpu_stage_verify_us": stage_timing_json()["verify_us"].clone(),
             "gpu_stage_calls": stage_timing_json()["calls"].clone(),
+        "verified_blobs": stage_timing_len(),
             "selfcheck_max_channel_delta": gpu_selfcheck_delta(),
             "max_channel_delta_note": gpu_selfcheck_note(),
             // **∴ `gpu_mode` ＝ 请求的模式 ✗；`render_backend` ＝ 实际后端 ✓**（分开报 ✓）。
@@ -1108,6 +1109,15 @@ fn gpu_adapter_probe() -> (bool, String) {
 /// **∴ 为什么单列 ✗**：**它**与**自检的差值**是**两条路**✗
 ///   ⇒ **∴ 混用**会让「**没比过**」看起来像「**比过且一致**」** ✓
 ///     ⇒ **∴ 而**那**正是**目标第 4 条**禁止的** ✓ **** ✓✓
+/// **∴ 已验证 blob 的**缓存条目数**✗**（**第 513 轮 ✓；目标第 6 条 ✓）
+///
+/// **∴ 为什么暴露它 ✗**：**那个集合原来**只增不减**✗
+///   ⇒ **∴ 现在**有上限（**默认 4096 ✓ ／ `YANSHI_VERIFIED_BLOBS_MAX` 可覆盖 ✓）
+///     ＋ **∴ 于是**：**它在 `/health` 里**可见** ⇒ **∴ 无界增长**不会再**悄悄发生** ✓ ★**
+fn stage_timing_len() -> usize {
+    yanshi_render::verified_blobs_len()
+}
+
 fn render_delta_json() -> serde_json::Value {
     match yanshi_render::render_delta() {
         Some(v) => serde_json::json!(v),

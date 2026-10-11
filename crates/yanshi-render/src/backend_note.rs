@@ -159,24 +159,121 @@ pub fn begin_render() {
 ///       ＋ **∴ 于是**：**不同内容**必然**被验** ✓
 ///         ＋ **∴ 代价 ✗**：**若**某个 blob 的 GPU 结果**在某次运行时出错**✗
 ///           ⇒ **∴ 只有**首次能发现** ✓ ★**** ✓✓
-static VERIFIED_BLOBS: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
-    std::sync::Mutex::new(None);
+// **★★★ 有界 LRU ✗ ★★★**（**第 513 轮 ✓；目标第 6 条 ✓）
+//
+// **∴ 原来的缺陷（**真内存缺陷 ✓）✗**：**这里是一个**只增不减**的 `HashSet`**
+//   ⇒ **∴ 于是**：**长跑／多文档／多版本的服务会**缓慢增长** ✓
+//     ＋ **∴ 而**键是 `sha256:…`（**71 字符 ✓）⇒ **∴ 每个条目 ≈ 90 B** ✓
+//       ⇒ **∴ 100 万个 blob ⇒ ≈ 90 MB**（**∴ 且**永不释放 ✓）★
+//
+// **∴ 为什么上限可以很低 ✗**：**这个集合的语义**不是"正确性"**✗**
+//   ⇒ **∴ 而是**「**同一个 blob 只核对一次**」的**省时**记录** ✓
+//     ＋ **∴ 所以**：**淘汰只是**多核对一次**✗ ⇒ **∴ 不损失正确性** ✓ ★
+//       （**∴ 代价 ✗**：**被淘汰的 blob**下次会重验 ⇒ **∴ 最坏退化到"每次都验" ✓）★
+//
+// **∴ 实现选择 ✗**：**手写 `HashSet ＋ VecDeque`** ✓（**≈ 30 行 ✓）
+//   ⇒ **∴ 为什么不用 `lru` crate ✗**：**这个规模**不值得**多一个依赖** ✓
+//     （**∴ 按仓库约定**要写两面** ✗ ：**收益**是**零新依赖**✗ ；
+//       **代价**是**手写 ≈ 30 行要自己保证正确 ⇒ **∴ 所以**配了单元测试 ✓）★
+//
+// **∴ 上限 ✗**：**默认 4096**（**≈ 370 KB ✓）✗
+//   ＋ **∴ 可用 `YANSHI_VERIFIED_BLOBS_MAX` 覆盖**（**∴ 供测量与测试 ✓）★
 
-/// **∴ 这个 blob 验过了吗 ✗**
+/// **∴ LRU 的默认上限（**条目数 ✓）✗**（**4096 × ≈90 B ≈ 370 KB ✓）★
+const VERIFIED_BLOBS_DEFAULT_MAX: usize = 4096;
+
+/// **∴ 上限（**可被环境变量覆盖 ✓）✗**：**0 ⇒ **不记录**（**每次都验 ✓）★
+#[must_use]
+fn verified_blobs_max() -> usize {
+    match std::env::var("YANSHI_VERIFIED_BLOBS_MAX") {
+        Ok(text) => text
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(VERIFIED_BLOBS_DEFAULT_MAX),
+        Err(_) => VERIFIED_BLOBS_DEFAULT_MAX,
+    }
+}
+
+/// **∴ 有界 LRU ✗**：**集合 ＋ 使用顺序**（**队首最久未用 ✓）★
+#[derive(Default)]
+struct VerifiedBlobs {
+    /// **∴ 谁在里面 ✗**（**语义：验过 ✓）★
+    set: std::collections::HashSet<String>,
+    /// **∴ 使用顺序 ✗**：**队首**最久未用**✗ ，**队尾**最近用过** ✓
+    order: std::collections::VecDeque<String>,
+}
+
+impl VerifiedBlobs {
+    /// **∴ 查询 ＋ **触碰**（**∴ LRU 的"用" ✓）★
+    fn touch(&mut self, blob: &str) -> bool {
+        if !self.set.contains(blob) {
+            return false;
+        }
+        // **∴ 移到队尾 ✗**：**∴ 那**就是"最近用过" ✓
+        if let Some(pos) = self.order.iter().position(|x| x == blob) {
+            if let Some(item) = self.order.remove(pos) {
+                self.order.push_back(item);
+            }
+        }
+        true
+    }
+
+    /// **∴ 插入 ＋ 按上限淘汰 ✗**（**∴ 淘汰**队首 ✓）★
+    fn insert(&mut self, blob: &str, max: usize) {
+        if max == 0 {
+            // **∴ 0 ⇒ **不记录**✗ ⇒ **∴ 于是**每次都验** ✓（**∴ 供对照测量 ✓）★
+            self.set.clear();
+            self.order.clear();
+            return;
+        }
+        if self.set.insert(blob.to_owned()) {
+            self.order.push_back(blob.to_owned());
+        } else if let Some(pos) = self.order.iter().position(|x| x == blob) {
+            if let Some(item) = self.order.remove(pos) {
+                self.order.push_back(item);
+            }
+        }
+        // **★ 淘汰 ✗ ★**：**∴ 直到**不超过上限** ✓
+        while self.order.len() > max {
+            if let Some(evicted) = self.order.pop_front() {
+                self.set.remove(&evicted);
+            }
+        }
+    }
+
+    /// **∴ 当前条目数 ✗**（**供判据断言 ✓）★
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+}
+
+static VERIFIED_BLOBS: std::sync::Mutex<Option<VerifiedBlobs>> = std::sync::Mutex::new(None);
+
+/// **∴ 这个 blob 验过了吗 ✗**（**∴ 顺带**触碰它 ⇒ **∴ 它**不会**成为下一个被淘汰的** ✓）★
 #[must_use]
 pub fn blob_verified(blob: &str) -> bool {
     match VERIFIED_BLOBS.lock() {
-        Ok(guard) => guard.as_ref().is_some_and(|set| set.contains(blob)),
+        Ok(mut guard) => guard.as_mut().is_some_and(|state| state.touch(blob)),
         Err(_) => false,
     }
 }
 
-/// **∴ 记下这个 blob 已验过 ✗**
+/// **∴ 记下这个 blob 已验过 ✗**（**∴ 超过上限就淘汰**最久未用** ✓）★
 pub fn mark_blob_verified(blob: &str) {
     if let Ok(mut guard) = VERIFIED_BLOBS.lock() {
+        let max = verified_blobs_max();
         guard
-            .get_or_insert_with(std::collections::HashSet::new)
-            .insert(blob.to_owned());
+            .get_or_insert_with(VerifiedBlobs::default)
+            .insert(blob, max);
+    }
+}
+
+/// **∴ 当前记录了多少个已验证的 blob ✗**（**供判据与诊断 ✓）★
+#[must_use]
+pub fn verified_blobs_len() -> usize {
+    match VERIFIED_BLOBS.lock() {
+        Ok(guard) => guard.as_ref().map_or(0, VerifiedBlobs::len),
+        Err(_) => 0,
     }
 }
 
@@ -199,4 +296,64 @@ pub fn set_verify_micros(micros: u64) {
 #[must_use]
 pub fn verify_micros() -> u64 {
     VERIFY_MICROS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod verified_blobs_lru_tests {
+    // **★ 直接测**纯结构**，不用全局也不用环境变量 ✗ ★**（**第 513 轮 ✓）
+    //   **∴ 为什么 ✗**：**第一版测试**改了全局 ＋ 用 `YANSHI_VERIFIED_BLOBS_MAX`**✗
+    //     ⇒ **∴ 而**测试**并行**执行**✗ ⇒ **∴ 于是**它们**互相干扰**✗
+    //       ⇒ **∴ 实测**两条红**（**∴ 而**产品代码是好的 ✓）★
+    //     ＋ **∴ 所以**：**把上限**当参数传**✗ ⇒ **∴ 于是**测试**无共享状态** ✓ ★**** ✓✓
+    use super::*;
+
+    /// **★ ① 插入超过上限 ⇒ 条目数不得超过上限 ✗ ★**（**目标第 6 条的核心 ✓）
+    #[test]
+    fn inserting_more_than_the_cap_does_not_grow_without_bound() {
+        let mut lru = VerifiedBlobs::default();
+        for i in 0..50 {
+            lru.insert(&format!("sha256:cap-{i}"), 8);
+        }
+        assert!(
+            lru.len() <= 8,
+            "条目数必须 ≤ 上限 8，实测 {} ⇒ **无界增长回来了**",
+            lru.len()
+        );
+        assert_eq!(lru.len(), 8, "恰好装满上限时应当正好 8 条");
+    }
+
+    /// **★ ② 淘汰的是**最久未用**的 ✗ ★**：**最近**触碰过的必须还在** ✓
+    #[test]
+    fn the_least_recently_used_entry_is_the_one_evicted() {
+        let mut lru = VerifiedBlobs::default();
+        lru.insert("sha256:lru-a", 3);
+        lru.insert("sha256:lru-b", 3);
+        lru.insert("sha256:lru-c", 3);
+        // **∴ 触碰 a ⇒ **∴ 于是**最久未用的变成 b** ✓
+        assert!(lru.touch("sha256:lru-a"), "a 应该在");
+        lru.insert("sha256:lru-d", 3);
+        assert!(lru.touch("sha256:lru-a"), "a 刚用过 ⇒ **不许被淘汰**");
+        assert!(lru.touch("sha256:lru-d"), "d 刚插入 ⇒ 应该在");
+        assert!(!lru.touch("sha256:lru-b"), "b 是最久未用 ⇒ **必须被淘汰**");
+        assert_eq!(lru.len(), 3);
+    }
+
+    /// **∴ 上限 0 ⇒ **不记录**✗ ⇒ **∴ 于是**每次都验** ✓
+    #[test]
+    fn a_cap_of_zero_records_nothing() {
+        let mut lru = VerifiedBlobs::default();
+        lru.insert("sha256:zero", 0);
+        assert!(!lru.touch("sha256:zero"), "上限 0 ⇒ 不该记住任何东西");
+        assert_eq!(lru.len(), 0);
+    }
+
+    /// **∴ 重复插入**同一个 blob ⇒ **∴ 不重复计数** ✓
+    #[test]
+    fn inserting_the_same_blob_twice_keeps_one_entry() {
+        let mut lru = VerifiedBlobs::default();
+        lru.insert("sha256:dup", 8);
+        lru.insert("sha256:dup", 8);
+        assert_eq!(lru.len(), 1);
+        assert!(lru.touch("sha256:dup"));
+    }
 }
