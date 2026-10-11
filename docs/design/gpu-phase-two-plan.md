@@ -6570,3 +6570,33 @@ fmt = 0 ✓｜plain clippy ✓（**修了两处 doc 缩进 lint ✓）｜plain t
     ＋ **∴ 而**本机**无 wasm32 ⇒ **不能本地复现**✗（**∴ 只能等 CI 日志 ✓）★
       ⇒ **∴ 登记为**下一轮** ✓ ★
 
+---
+
+## 第 597 轮：**★★★ CI 五项绿（**test ×2 也转绿 ✓）＋ 修正一处**过时注释**** ★★★
+
+### **★★★ CI 进展（**run 38132702583 ✓）★★★**
+```
+★ success ★：clippy｜rustfmt｜★ test (stable) ★｜★ test (beta) ★｜★ wasm smoke (node) ★
+failure   ：GPU feature (build and size)   ← **日志要等整轮完成**（**criteria shard 仍在跑 ✓）
+未结论    ：criteria shard 1／2／3／4／6
+```
+  ⇒ **★ 所以 ✗**：**五项绿**✗（**∴ 而**其中 **test ×2** 是本会话**新转绿**的 ✓）
+    ＋ **∴ 而** `wasm smoke` **从连续 6 次 failure ⇒ success**（**第 592／593 轮 ✓）★
+      ⇒ **∴ 目标第 13 条**实质性达成** ✓ ★
+
+### **∴ 修正的过时注释（`crates/yanshi-gpu/src/lib.rs` ✓）★**
+  ⇒ **∴ 原文 ✗**：**「★ 上限（**`CHUNK_BYTES_MAX` ✓）✗ ★**：**4 MiB**✗」**
+    ＋ **∴ 而**那个常量**已在第 566 轮**删除**✗（**∵ clippy 报"从未使用" ✓）
+      ⇒ **∴ 于是**：**注释**误导后人** ✓
+  ⇒ **∴ 改为（**现状 ＋ 为什么 ✗）★**：
+    **∴ 上限**由 `chunk_bytes_cap(设备类别)` 决定**✗
+      ⇒ **∴ 核显／虚拟／CPU／其它 ⇒ **4 MiB****（**与 A/B 结论一致 ✓）
+        ⇒ **∴ ★ 独显 ⇒ **32 MiB** ★**（**为 L4 那样的适配器留余量 ✓）
+          ＋ **∴ 但**那**只是上限**✗ ⇒ **∴ 实际**仍按 `count/4` 细分**✗
+            ＋ **∴ 且**再被 `max_storage_buffer_binding_size` 与 `CHUNK_BYTES_MIN` 夹** ✓
+              ⇒ **★ 所以 ✗**：**4K 上的**块数**与 4 MiB 时**相同****
+                ⇒ **∴ 与**第 496 轮那组 A/B 实测**不冲突**（**∴ 那**比的是**每块大小** ✓）★
+
+### **∴ 验证 ✗**：**fmt = 0 ✓｜`cargo check -p yanshi-gpu` Finished ✓｜`cargo test -p yanshi-gpu` 5 passed ✓**
+  ＋ **∴ 已推送 `db9fb3f`** ✓ ★
+
