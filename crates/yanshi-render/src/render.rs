@@ -1977,14 +1977,32 @@ impl Renderer {
             // **从池里取图层缓冲**（见 `crate::buffer_pool`）：归还即复用，消灭每层
             // 132.7 MB 的重新分配 + 首次触碰（4K 5 层每帧约 663 MB）。
             // 租约在本次迭代结束时 Drop ⇒ 本层的渲染与合成都用它，之后才归还。
+            // **★ 每层三处门控计时（第 553 轮）★**：后半段未归入 ~1650 ms 的嫌疑
+            let t_layer = std::time::Instant::now();
             let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
+            let d_acquire = t_layer.elapsed();
+            let t_objects = std::time::Instant::now();
             if layer_buffer.was_reused() {
                 stats.layer_buffers_reused += 1;
             } else {
                 stats.layer_buffers_allocated += 1;
             }
             self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;
+
+            let d_objects = t_objects.elapsed();
+            let t_mask = std::time::Instant::now();
             apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
+
+            let d_mask = t_mask.elapsed();
+            if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                eprintln!(
+                    "PROBE 每层 acquire={:?} 对象={:?} 蒙版={:?} 复用={}",
+                    d_acquire,
+                    d_objects,
+                    d_mask,
+                    layer_buffer.was_reused()
+                );
+            }
             probe.render += probe_stage.stop();
             if layer.clipping_mask {
                 // 剪贴蒙版：用下方内容的 alpha 裁剪本层。
