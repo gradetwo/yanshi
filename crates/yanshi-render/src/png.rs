@@ -719,3 +719,67 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod png_bench {
+    // **★ PNG 编码的**级别—时间—体积**三角 ✗ ★**（**第 533 轮 ✓）
+    //
+    // **∴ 动机 ✗**：**实测真 4K 工程的 `encode_png` ＝ **705 ms ＝ render_ms 的 26.4%****
+    //   ＋ **∴ 而** `store.put` 又花 **146 ms**（3.98 MB ✓）
+    //     ⇒ **∴ 所以**：**在动编码器之前，先把**级别**的取舍量出来** ✓ ★
+    // **∴ 用法 ✗**：`cargo test -p yanshi-render --release --lib png_bench -- --ignored --nocapture`
+    use super::*;
+
+    fn pattern(w: u32, h: u32) -> Vec<u8> {
+        // **∴ 造**有结构的图**✗**：**渐变 ＋ 条纹 ⇒ **∴ 比纯噪声更接近真实画作** ✓ ★
+        let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let i = (y * w as usize + x) * 4;
+                let stripe = if (x / 17 + y / 13) % 2 == 0 { 40 } else { 0 };
+                out[i] = ((x * 255 / w as usize) as u8).wrapping_add(stripe);
+                out[i + 1] = ((y * 255 / h as usize) as u8).wrapping_add(stripe);
+                out[i + 2] =
+                    (((x + y) * 255 / (w as usize + h as usize)) as u8).wrapping_add(stripe);
+                out[i + 3] = 255;
+            }
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "微基准：用 --ignored --nocapture 手动跑"]
+    fn level_time_and_size() {
+        let (w, h) = (3840u32, 2160u32);
+        let rgba = pattern(w, h);
+        println!();
+        println!("  ★ {w}x{h} 的 PNG 编码（**级别—时间—体积 ✓）★");
+        for (label, f) in [
+            (
+                "生产：zlib_compress（DEFLATE_LEVEL）",
+                zlib_compress as fn(&[u8]) -> Vec<u8>,
+            ),
+            (
+                "更高级：zlib_compress_best",
+                zlib_compress_best as fn(&[u8]) -> Vec<u8>,
+            ),
+        ] {
+            let t = std::time::Instant::now();
+            let out = f(&rgba);
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "  · {label:<34} {ms:8.1} ms｜体积 {:>9} B（{:.2} MB）",
+                out.len(),
+                out.len() as f64 / 1048576.0
+            );
+        }
+        // **∴ 完整编码（**含逐行组装 ＋ 三个 chunk ✓）
+        let t = std::time::Instant::now();
+        let full = encode_png(w, h, &rgba).expect("应当成功");
+        println!(
+            "  · 完整 encode_png（**含组装 ＋ chunk ✓）      {:8.1} ms｜体积 {} B",
+            t.elapsed().as_secs_f64() * 1000.0,
+            full.len()
+        );
+    }
+}

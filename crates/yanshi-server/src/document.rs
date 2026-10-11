@@ -1350,18 +1350,22 @@ impl Document {
             .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
         // **与裸像素出口共用同一个告警槽** ✓（两条出口对同一件事给同一个答案 ✓）。
         self.note_render_stats(&rendered.stats);
+        let t_stats = std::time::Instant::now();
         let previous = self.cached_preview_hashes();
+        let t_hashes = std::time::Instant::now();
         let t_put = std::time::Instant::now();
         let blob_hash = self.store.put(&png)?;
         if probe_on {
             eprintln!(
-                "PROBE 输出组装 区域={}x{} ★png={:?}★ ★store.put={:?}★ 字节={}",
+                "PROBE 输出组装 区域={}x{} 编码+统计={:?} 缓存哈希={:?} store.put={:?} 总={:?} 字节={}",
                 rendered.width,
                 rendered.height,
-                t_png.elapsed(),
+                t_stats.duration_since(t_png),
+                t_hashes.duration_since(t_stats),
                 t_put.elapsed(),
+                t_png.elapsed(),
                 png.len()
-            );
+            )
         }
         self.render_watermark = self.log.head_seq();
         self.last_render_blob = Some(blob_hash.clone());
