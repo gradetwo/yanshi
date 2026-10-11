@@ -2983,7 +2983,10 @@ impl Renderer {
                     } else {
                         clip
                     };
+                    // **∴ 细粒度探针（**第 672 轮 ✓）★
+                    let mut t_shape_cov = stage_probe::Stage::start();
                     let mut coverage = shape_coverage_in(kind, bbox, &points, &clip);
+                    let d_shape_cov = t_shape_cov.stop();
                     // **羽化**（测试报告 §二.1 ✓）：**只在 >0 时**才走新路径 ✓
                     // ⇒ **缺省 0 ⇒ 逐字节不变** ✓（硬要求 ✓）。
                     // `feather_coverage` 会**把 bbox 四周外扩 `2×radius`** ✓（第 347 轮的等效半径 ✓）；
@@ -2992,11 +2995,17 @@ impl Renderer {
                         coverage = crate::geometry::feather_coverage(&coverage, feather);
                     }
                     // 选区「约束落笔」：**逐像素**乘进覆盖率 ✓（从不触碰选区外 ✓）。
+                    let mut t_shape_clip = stage_probe::Stage::start();
                     let shape_clip = object_clip(state, &layer.id, object);
                     if let Some(clip) = &shape_clip {
                         clip_coverage(&mut coverage, clip);
                     }
+                    probe_objects.record("shape:clip", t_shape_clip.stop());
+                    probe_objects.record("shape:coverage", d_shape_cov);
+                    let mut t_shape_fill = stage_probe::Stage::start();
                     layer_buffer.fill_coverage(&coverage, color, BlendMode::Normal, opacity);
+                    probe_objects.record("shape:fill", t_shape_fill.stop());
+                    // **∴ outline 不单独插桩 ✗**（**第 672 轮 ✓）：**用「**其余 ＝ primitive:Shape − coverage − fill**」推断** ✓
                     if stroke_width > 0.0 {
                         let outline = shape_outline(kind, bbox, &points);
                         if outline.len() >= 2 {
@@ -4298,7 +4307,9 @@ mod stage_probe {
             let mut entries = self.entries.clone();
             entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             let mut line = String::from("  对象耗时:");
-            for (label, total, count) in entries.iter().take(8) {
+            // **∴ 从 8 提到 16 ✗**（**第 672 轮 ✓）：**细粒度探针（**shape:… ✓）可能**排在后面** ✗
+            //   ＋ **∴ 若**仍看不到 ⇒ **∴ 说明**它们**确实**很小** ✓ ★
+            for (label, total, count) in entries.iter().take(16) {
                 line.push_str(&format!(" {label}={total:?}×{count}"));
             }
             eprintln!("{line}");
