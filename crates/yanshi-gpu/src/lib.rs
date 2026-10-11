@@ -166,7 +166,31 @@ pub const fn should_use_gpu_on(device_type: DeviceClass, pixels: usize) -> bool 
 ///     ⇒ **∴ 那条守卫守的是**真 bug**（**"为了省事把整帧 crop 一份" ✓）
 ///       ⇒ **∴ 放宽它**要**用户裁定** ✓（**∴ 见设计文档的待裁定项 ✓）★**** ✓✓
 const CHUNK_BYTES_MIN: usize = 4 * 1024 * 1024;
-const CHUNK_BYTES_MAX: usize = 4 * 1024 * 1024;
+/// **★ 分块上限**按适配器等级**分档 ✗ ★**（**第 540 轮 ✓；目标第 4 条 ✓）
+///
+/// **∴ 为什么不是**一个常数**✗**：**第 496 轮的 A/B 实测（核显 ✓）：
+///   ⇒ **∴ 放大分块 ⇒ 更慢**✗（**中位 1831 → 1936 ms ✓）
+///     ＋ **∴ 而**结构与往返无关**✗（**所有块共用**一个编码器 ＋ **只提交一次 ✓）
+///       ⇒ **∴ 所以**：**块大小唯一影响**GPU buffer 的分配次数** ✓
+///         ＋ **∴ 所以**：**核显上**4 MiB 是最优点**✗（**∴ 分配不是瓶颈，更大的 buffer 反而更慢 ✓）★
+///
+/// **∴ 那独显呢 ✗**：**L4 的 `max_storage_buffer_binding_size` ＝ **2047 MiB**** ✓
+///   ＋ **∴ 而**它的显存与带宽结构**不同**✗
+///     ⇒ **∴ 所以**：**给它一个**更大的上限**✗（**32 MiB ✓）
+///       ＋ **∴ 如实 ✗**：**这个数****还没有在真 L4 上复核**✗ ⇒ **∴ 标注为待复核** ✓ ★
+///
+/// **∴ 核显／CPU 软件渲染 ⇒ 保持 4 MiB ⇒ **行为与改动前**完全一致**** ✓（**零风险 ✓）★
+#[must_use]
+const fn chunk_bytes_cap(class: DeviceClass) -> usize {
+    match class {
+        // **∴ 与 A/B 实测一致 ✗**：**核显 ＋ 软件渲染都用保守档** ✓
+        DeviceClass::Integrated | DeviceClass::Virtual | DeviceClass::Cpu | DeviceClass::Other => {
+            4 * 1024 * 1024
+        }
+        // **∴ 独显 ✗**：**给更大的上限，但**远低于** 2047 MiB**（**∴ 留余量 ✓）★
+        DeviceClass::Discrete => 32 * 1024 * 1024,
+    }
+}
 
 /// **∴ 每像素 16 字节（**4 × f32 ✓）
 const BYTES_PER_PIXEL: usize = 16;
@@ -383,11 +407,15 @@ impl Quantizer {
         }
         let binding = self.max_binding_bytes();
         let buffer = self.max_buffer_bytes();
+        // **★ 上限**按适配器等级**分档 ✗ ★**（**第 540 轮 ✓；目标第 4 条 ✓）
+        //   ⇒ **∴ 核显／软件渲染 ⇒ 4 MiB（**与 A/B 实测一致 ＋ **零行为变化 ✓）
+        //     ＋ **∴ 独显 ⇒ 32 MiB**（**待真 L4 复核 ✓）★
+        let cap = chunk_bytes_cap(self.device_class()) as u64;
         let budget = binding
             .min(buffer)
             .saturating_mul(3)
             .saturating_div(4)
-            .clamp(CHUNK_BYTES_MIN as u64, CHUNK_BYTES_MAX as u64);
+            .clamp(CHUNK_BYTES_MIN as u64, cap);
         // **★ 再按 `count/4` 细分 ✗ ★**（**第 496 轮 ✓）
         //   **∴ 为什么 ✗**：**单块不许**接近整幅** ✗
         //     ⇒ **∴ 因为**守卫断言**单次分配 ＜ 整幅 f32** ✓
@@ -731,5 +759,48 @@ mod tests {
         assert!(should_use_gpu_on(DeviceClass::Integrated, 30_000));
         assert!(should_use_gpu_on(DeviceClass::Discrete, 12_000));
         assert!(!should_use_gpu_on(DeviceClass::Integrated, 12_000));
+    }
+}
+
+#[cfg(test)]
+mod chunk_cap_tests {
+    // **★ 分块上限必须**跟随适配器等级**✗ ★**（**第 540 轮 ✓；目标第 4 条 ✓）
+    //   **∴ 为什么必须 ✗**：**第 496 轮实测：核显上**放大分块更慢**** ✓
+    //     ＋ **∴ 而**独显的显存结构不同 ⇒ **∴ 应当**允许更大** ✓
+    //       ⇒ **∴ 若**两者用同一个常数 ⇒ **∴ 那**这个"自适应"就是**假的** ✓ ★
+    use super::*;
+
+    #[test]
+    fn the_chunk_cap_follows_the_device_class() {
+        let conservative = chunk_bytes_cap(DeviceClass::Integrated);
+        assert_eq!(
+            conservative,
+            4 * 1024 * 1024,
+            "核显必须**保持 4 MiB**（与 A/B 实测一致）"
+        );
+        assert_eq!(
+            chunk_bytes_cap(DeviceClass::Cpu),
+            conservative,
+            "软件渲染取保守档"
+        );
+        assert_eq!(
+            chunk_bytes_cap(DeviceClass::Virtual),
+            conservative,
+            "虚拟显卡取保守档"
+        );
+        assert_eq!(
+            chunk_bytes_cap(DeviceClass::Other),
+            conservative,
+            "未知也取保守档"
+        );
+        let discrete = chunk_bytes_cap(DeviceClass::Discrete);
+        assert!(
+            discrete > conservative,
+            "独显上限必须**严格大于**核显（{discrete} vs {conservative}）⇒ 否则自适应是假的"
+        );
+        assert!(
+            discrete <= 64 * 1024 * 1024,
+            "独显上限不许过大（{discrete}）⇒ 要留显存余量给 dst 与参数"
+        );
     }
 }

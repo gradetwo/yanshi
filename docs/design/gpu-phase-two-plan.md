@@ -4503,3 +4503,42 @@ W=2（并行）：同样只有旧的几行 ⇒ ★ 三处新探针**仍不打印
 **∴ 本轮**价值 ✗**：**三处探针无害**（**门控 ＋ 不可达 ⇒ 零影响 ✓）
   ＋ **∴ 而**数据仍确认了：**串行不走并行模块**✗ ＋ **630 ms 仍未切开** ✓ ★
 
+---
+
+## 第 540／541 轮：**★ 目标第 4 条（分块自适应）落地 ＋ 发现一个**既有红**** ★
+
+### **∴ 第 4 条的**真实状态**（先测量 ✓）★**
+```rust
+fn max_binding_bytes(&self) { self.device.limits().max_storage_buffer_binding_size }  // ★ 早就读了 ★
+let budget = binding.min(buffer)*3/4
+    .clamp(CHUNK_BYTES_MIN as u64, CHUNK_BYTES_MAX as u64);   // ★ 而 [MIN,MAX] ＝ [4 MiB,4 MiB] ★
+```
+  ⇒ **∴ 结论 ✗**：**"自适应"**早就实现了**✗ ，**但**上下限都钉在 4 MiB ⇒ **∴ 于是**恒为 4 MiB** ✓ ★
+
+**∴ 而结构与往返无关（**关键 ✓）✗**：
+```rust
+let per_chunk = self.per_chunk_pixels(count);
+let mut enc = create_command_encoder(…);      // ★ 一个编码器（循环外）★
+while done < count { … create_buffer ×2 … }    // ★ 每块分配 2 个 buffer ★
+… submit …                                     // ★ 只提交一次 ★
+```
+  ⇒ **∴ 所以**：**块大小唯一影响**GPU buffer 的分配次数** ✓
+    ＋ **∴ 而**第 496 轮实测：**放大分块 ⇒ 更慢**（**核显 1831 → 1936 ms ✓）
+      ⇒ **★ 所以：核显上 4 MiB 就是最优点**** ✓ ★
+
+### **∴ 第 4 条的交付（**零风险 ✓）★**
+  ⇒ **∴ `chunk_bytes_cap(class)` ✗**：**核显／虚拟／CPU／未知 ⇒ **4 MiB**（**行为与改动前完全一致 ✓）✗
+    ＋ **∴ 独显 ⇒ **32 MiB****（**远低于 2047 MiB，留显存余量 ✓）
+      ＋ **∴ 如实标注 ✗**：**32 MiB **尚未在真 L4 上复核**** ⇒ **∴ 待复核** ✓ ★
+  ＋ **∴ 新判据 ✗**：`the_chunk_cap_follows_the_device_class`** ✓
+    （**断言核显＝4 MiB ＋ 各保守档相等 ＋ 独显**严格更大**＋ 独显 ≤ 64 MiB ✓）
+    ＋ **∴ 变异检验 ✗**：**把独显也设为 4 MiB ⇒ **测试 FAILED**** ✓ ⇒ **∴ 复原 ⇒ 绿** ✓ ★
+
+### **★ 顺带发现一个**既有红**（**已隔离证实 ✓）★**
+  ⇒ **∴ `render::tests::partial_region_render_preserves_untouched_tile_pixels` FAILED**
+    ⇒ **∴ 症状 ✗**：**tile 局部渲染与整幅渲染差 **±1****
+      （`left [137,137,138,255]` vs `right [136,136,138,255]` ✓）
+    ⇒ **∴ 隔离证据 ✗**：**`git stash` 掉本轮改动后 ⇒ **同一失败、同一对数字**** ✓
+      ⇒ **★ 所以：**与第 4 条无关**，**是一个既有红**（**渲染正确性**）★
+        ＋ **∴ 已登入** `scripts/criteria-known-red.txt`** ✓（**不静默跳过 ✓）★
+
