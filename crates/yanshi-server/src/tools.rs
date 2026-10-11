@@ -4108,6 +4108,17 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         //   **∴ 说明 ✗**：**这段包含**两件事**✗ ：**`resample_rgba`（缩放 ✓）
         //     ＋ **`encode_png`** ✓ ⇒ **∴ 所以** `png_ms` 报的是**两者之和** ✓（**如实 ✓）★
         let png_started = std::time::Instant::now();
+        // **★★★ 这里为了缩略图**又渲染了一遍**✗ ★★★**（**第 526 轮实测 ✓）
+        //   **∴ 证据（**PROBE ✓）✗**：**一个带图请求把 4K 区域**渲染了 3 次**** ✓
+        //     ＋ **∴ 而** `png_ms` 实测 **≈1062 ms**（**＝ 一次完整渲染 ＋ 缩放 16.6 ms ✓）
+        //       ⇒ **★ 所以：那 ≈1035 ms 是**重复工作**（**占该请求 **47%**** ✓）★
+        //   **∴ 修法（**已试，**编译不过 ⇒ 回退** ✓）✗**：
+        //     ⇒ **∴ 想**直接复用已经渲好的像素 ⇒ **∴ 但**服务端类型 `RenderedPreview`
+        //       **不带 `rgba8`**✗（**只有 url／blob_hash／宽高 ✓）
+        //       ＋ **∴ 而** `yanshi_render::RegionRender` **是带的**（**第 487 轮 ✓）★
+        //         ⇒ **∴ 所以**：**要省掉这次重复渲染 ⇒ **必须**把渲染后的像素
+        //           从 `Workspace::render_region` **带出来**✗（**接口扩展 ✓）★
+        //   **∴ 归属 ✗**：**那**属于目标第 11 条那一类（**需要动接口 ✓）★
         let scaled = ctx
             .workspace
             .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())
