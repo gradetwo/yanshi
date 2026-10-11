@@ -1429,6 +1429,9 @@ impl Renderer {
         let mut reused = false;
         // **★ 部分复用的"**只重算这一块 ✓" ✗ ★**（第 10 轮 ✓）：
         //   **∴ 为什么声明在这一层 ✗**：**层循环在**更深的作用域**里也要用它 ✓**** ✓✓
+        // **★ 门控计时（第 551 轮）★**：band 内 ~1650 ms 未归入 ⇒ 先量 below 判定＋取用
+        let probe_below_on = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let t_below = std::time::Instant::now();
         let mut partial_below: Option<yanshi_core::Bbox> = None;
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
@@ -1590,6 +1593,9 @@ impl Renderer {
                 let y1 = missing_tiles.iter().map(|(_, y)| *y).max().unwrap_or(0) + BELOW_TILE;
                 Some((x0, y0, x1 - x0, y1 - y0))
             };
+            if probe_below_on {
+                eprintln!("PROBE below 判定＋取用 总={:?}", t_below.elapsed());
+            }
             stats.below_want_bbox = (
                 want.x.floor() as i64,
                 want.y.floor() as i64,
