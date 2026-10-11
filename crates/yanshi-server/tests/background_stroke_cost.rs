@@ -42,7 +42,28 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
-fn temp_dir(name: &str) -> std::path::PathBuf {
+/// **★ 临时目录的**守卫**✗ ★**（**第 529 轮 ✓）
+///
+/// **∴ 原来的缺陷（**真缺陷 ✓）✗**：**`temp_dir` 只在**建之前**清理** ✓
+///   ＋ **∴ 建完从不删**✗ ⇒ **∴ 于是**：**跑一次测试就留一个目录** ✓
+///     ⇒ **∴ 实测 ✗**：**累积到 **245 个**以 `yanshi_` 开头的目录**（**每个 ~1.2 MB ✓）★
+/// **∴ 修法 ✗**：**返回一个 Drop 守卫**✗（**∴ 不引依赖 ✓）
+///   ⇒ **∴ 测试结束（**含 panic ✓）时**自动删除** ✓ ★
+struct TempRoot(std::path::PathBuf);
+
+impl TempRoot {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(name: &str) -> TempRoot {
     let path = std::env::temp_dir().join(format!(
         "yanshi_bgcost_{}_{}_{}",
         name,
@@ -54,7 +75,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
             .unwrap_or(0)
     ));
     let _ = std::fs::remove_dir_all(&path);
-    path
+    TempRoot(path)
 }
 
 fn workspace(root: &std::path::Path, side: u32) -> Workspace {
@@ -139,7 +160,8 @@ fn missed_bytes(workspace: &Workspace) -> u64 {
 fn the_background_patch_is_decoded_once_not_per_stroke() {
     for side in [256u32, 512u32] {
         let root = temp_dir(&format!("decode{side}"));
-        let mut workspace = workspace(&root, side);
+        let root = root;
+        let mut workspace = workspace(root.path(), side);
         document_with_background(&mut workspace);
 
         // **口径更新（第 197 轮 ✓）**：整幅明文不再必须常驻 `BitmapCache`（分块路不经它 ✓）。
@@ -185,7 +207,7 @@ fn the_background_patch_is_decoded_once_not_per_stroke() {
 fn a_warm_stroke_never_decodes_a_canvas_sized_blob() {
     for side in [256u32, 512u32] {
         let root = temp_dir(&format!("bytes{side}"));
-        let mut workspace = workspace(&root, side);
+        let mut workspace = workspace(root.path(), side);
         document_with_background(&mut workspace);
 
         let background_bytes = (side * side * 4) as u64;
@@ -215,7 +237,7 @@ fn a_warm_stroke_never_decodes_a_canvas_sized_blob() {
 #[test]
 fn a_background_stroke_populates_the_preview_phase() {
     let root = temp_dir("phases");
-    let mut workspace = workspace(&root, 256);
+    let mut workspace = workspace(root.path(), 256);
     document_with_background(&mut workspace);
     let made = stroke(&mut workspace, 0);
     assert_eq!(made["ok"], json!(true), "{made}");
