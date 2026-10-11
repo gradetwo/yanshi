@@ -137,6 +137,59 @@ if (missing.length > 0) {
   process.exit(3);
 }
 const found = problems(source);
+// **★ 传递闭包规模（**第 556 轮 ✓）★**：**「级联到调用方」到底有多大**
+//   ⇒ **∴ 为什么必须报它 ✗**：**实测 ＝ **148 个函数****（**79 变 async ＋ 69 加 await ✓）
+//     ＋ **∴ 而那**远超"4 处调用点"的表述**✗
+//       ⇒ **∴ 所以**：**决策时需要一眼看到它** ✓ ★
+function asyncClosure(src) {
+  const lines = src.split("\n");
+  const defs = new Map();
+  const reFn = /^\s*(async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
+  const reArrow = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?\(/;
+  for (let i = 0; i < lines.length; i += 1) {
+    let m = reFn.exec(lines[i]);
+    if (m) { defs.set(m[2], { line: i + 1, async: !!m[1] }); continue; }
+    m = reArrow.exec(lines[i]);
+    if (m && !defs.has(m[1])) defs.set(m[1], { line: i + 1, async: !!m[2] });
+  }
+  const enclosing = (idx) => {
+    for (let k = idx; k >= 0; k -= 1) {
+      const m = reFn.exec(lines[k]) || reArrow.exec(lines[k]);
+      if (m) return m[2] || m[1];
+    }
+    return null;
+  };
+  const callersOf = (name) => {
+    const out = new Set();
+    const def = defs.get(name);
+    for (let i = 0; i < lines.length; i += 1) {
+      const t = lines[i].trim();
+      if (t.startsWith("//") || t.startsWith("*")) continue;
+      if (def && i + 1 === def.line) continue;
+      if (new RegExp(`(^|[^\\w.])${name}\\s*\\(`).test(lines[i])) {
+        const e = enclosing(i);
+        if (e && e !== name) out.add(e);
+      }
+    }
+    return out;
+  };
+  const need = new Set();
+  const frontier = [...SITES];
+  while (frontier.length > 0) {
+    const f = frontier.pop();
+    for (const c of callersOf(f)) {
+      if (!need.has(c)) { need.add(c); frontier.push(c); }
+    }
+  }
+  let toAsync = 0;
+  let toAwait = 0;
+  for (const f of [...need, ...SITES]) {
+    const d = defs.get(f);
+    if (d && d.async) toAwait += 1; else toAsync += 1;
+  }
+  return { total: need.size + SITES.length, toAsync, toAwait };
+}
+const closure = asyncClosure(source);
 console.log("");
 console.log("  ★ 内核 4 个调用点的异步状态（目标第 8 条）★");
 for (const name of SITES) {
@@ -146,6 +199,9 @@ for (const name of SITES) {
   );
 }
 console.log("");
+console.log(
+  `  ★ 「级联到调用方」的传递闭包 ＝ ${closure.total} 个函数（要变 async ${closure.toAsync} ＋ 只加 await ${closure.toAwait}）★`,
+);
 if (found.length > 0) {
   for (const m of found) console.error(`  ✗ ${m}`);
   console.error("");
