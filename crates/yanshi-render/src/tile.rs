@@ -100,6 +100,38 @@ impl Tile {
         }
     }
 
+    /// **★★★ 逐行批量写入（**无边界检查 ⇒ 批量转换 ✓）✗ ★★★**（**第 632 轮 ✓）
+    ///
+    /// **∴ 为什么需要它 ✗**：**`set`（**上面 ✓）每像素要**做**：
+    ///   **∴ ①** **两次边界检查**（**内层 ✓ ＋ **调用方 `pixel()` 里的 ✓）
+    ///     ＋ **∴ ②** **一次 `base` 乘法** ✓
+    ///       ＋ **∴ ③** **4 次 `f32_to_f16_bits` 调用**（**循环 4 轮 ✓）★
+    ///         ⇒ **∴ 4K 上那是**9.4 M 次转换 ＋ **冗余检查**✗
+    ///           ⇒ **∴ 而**本方法**把整行**一次转换**✗
+    ///             ＋ **∴ 从而**：**让 LLVM **可能向量化** ✓ ★
+    ///
+    /// **∴ 契约（**调用方负责 ✓）✗**：
+    ///   **∴ ①** `y < self.size` ✓
+    ///     ＋ **∴ ②** `x0 + src.len()/4 <= self.size` ✓
+    ///       ＋ **∴ ③** `src.len()` 是 4 的倍数** ✓
+    ///         ＋ **∴ 越界不检查**（**∴ 与 `set` 不同 ⇒ **∴ 所以**只在**内部热点**用 ✓）★
+    ///
+    /// **∴ 逐位一致 ✗**：**`f32_to_f16_bits` 不变 ＋ **写入顺序不变** ✓
+    ///   ⇒ **∴ 所以**：**输出**逐字节相同** ✓ ★
+    pub fn write_row_f32(&mut self, y: u32, x0: u32, src: &[f32]) {
+        debug_assert!(y < self.size, "write_row_f32: y 越界");
+        debug_assert!(
+            x0 + (src.len() / 4) as u32 <= self.size,
+            "write_row_f32: 行越界"
+        );
+        debug_assert_eq!(src.len() % 4, 0, "write_row_f32: 长度必须是 4 的倍数");
+        let base = ((y * self.size + x0) * 4) as usize;
+        // **∴ 一次 `map` ⇒ **批量**（**同 `from_f32` ✓）★
+        for (offset, value) in self.pixels[base..base + src.len()].iter_mut().zip(src) {
+            *offset = f32_to_f16_bits(*value);
+        }
+    }
+
     /// 以 source-over 叠加像素。
     pub fn blend_over(&mut self, x: u32, y: u32, source: LinearRgba) {
         let backdrop = self.get(x, y);

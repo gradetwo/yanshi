@@ -784,6 +784,23 @@ impl Buffer {
     }
 
     /// 仅保留 alpha 通道，颜色置零（用于裁剪 / 蒙版测试）。
+    /// **★★★ 一行像素的切片（**供批量转换 ✓）✗ ★★★**（**第 632 轮 ✓）
+    ///
+    /// **∴ 为什么需要它 ✗**：**`tile_from_buffer_preserving` 原来**逐像素**
+    ///   `tile.set(x, y, buffer.pixel(bx, by))`**✗
+    ///     ＋ **∴ 而**那**每像素要**两次边界检查 ＋ **4 次 f16 转换** ✓
+    ///       ＋ **∴ 4K 上 ＝ **9.4 M 次转换**** ✓
+    ///         ⇒ **∴ 所以**：**给一个**行级**访问器 ⇒ **调用方能**批量转换** ✓ ★
+    ///
+    /// **∴ 契约 ✗**：**调用方**必须已确认** `x0 + len <= self.width` 与 `y < self.height`** ✓
+    ///   ＋ **∴ 越界不检查**（**∴ 内部热点用 ✓）★
+    #[must_use]
+    pub fn row_pixels(&self, y: u32, x0: u32, len_pixels: u32) -> &[f32] {
+        let width = self.width as usize;
+        let start = (y as usize) * width * 4 + (x0 as usize) * 4;
+        &self.pixels[start..start + (len_pixels as usize) * 4]
+    }
+
     pub fn keep_alpha_only(&mut self) {
         for chunk in self.pixels.chunks_exact_mut(4) {
             chunk[0] = 0.0;

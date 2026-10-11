@@ -4613,26 +4613,44 @@ pub fn tile_from_buffer_preserving(
         Some(previous) if previous.size() == size => previous,
         _ => Tile::new(key, size),
     };
+    // **★★★ 逐行批量（**第 632 轮 ✓）★★★**
+    //   **∴ 原来 ✗**：**逐像素** `tile.set(x, y, buffer.pixel(…))`**✗
+    //     ＋ **∴ 而**那**每像素**两次边界检查 ＋ **4 次 `f32_to_f16_bits` 调用** ✓
+    //       ＋ **∴ 4K 上 ⇒ **9.4 M 次转换**** ✓
+    //   **∴ 现在 ✗**：**每行**只算一次区间**✗ ＋ **一次批量转换** ✓
+    //
+    //   **★★★ 等价性推导（**三个 `continue` 条件 ⇒ 一个区间 ✓）★★★**
+    //     **∴ 原来每像素跳过的条件 ✗**：
+    //       **∴ ① `document_x >= grid.width()` ⇒ **`origin_x + x < grid.width()`** ✓
+    //         ＋ **∴ ② `buffer_x < 0` ⇒ **`origin_x + x >= buffer_origin_x`** ✓
+    //           ＋ **∴ ③ `buffer_x >= buffer.width()` ⇒ **`origin_x + x − buffer_origin_x < buffer.width()`** ✓
+    //       ⇒ **∴ 合并 ✗**：
+    //         `x ∈ [max(0, buffer_origin_x − origin_x),
+    //                min(size, grid.width() − origin_x,
+    //                    buffer_origin_x + buffer.width() − origin_x))` ✓
+    //       ＋ **∴ y 的三条同理** ✓ ⇒ **∴ 所以**：**逐行版本**逐字节等价** ✓ ★
     let origin_x = bounds.x as i64;
     let origin_y = bounds.y as i64;
     let (buffer_origin_x, buffer_origin_y) = buffer.origin();
-    for y in 0..size {
-        for x in 0..size {
-            let document_x = origin_x + x as i64;
+    let x_lo = (buffer_origin_x - origin_x).max(0);
+    let x_hi = (size as i64)
+        .min(grid.width() as i64 - origin_x)
+        .min(buffer_origin_x + buffer.width() as i64 - origin_x);
+    if x_hi > x_lo {
+        let n = (x_hi - x_lo) as u32;
+        let x0 = x_lo as u32;
+        let src_x = (origin_x + x_lo - buffer_origin_x) as u32;
+        for y in 0..size {
             let document_y = origin_y + y as i64;
-            if document_x >= grid.width() as i64 || document_y >= grid.height() as i64 {
+            if document_y >= grid.height() as i64 {
                 continue;
             }
-            let buffer_x = document_x - buffer_origin_x;
             let buffer_y = document_y - buffer_origin_y;
-            if buffer_x < 0 || buffer_y < 0 {
+            if buffer_y < 0 || buffer_y >= buffer.height() as i64 {
                 continue;
             }
-            let (buffer_x, buffer_y) = (buffer_x as u32, buffer_y as u32);
-            if buffer_x >= buffer.width() || buffer_y >= buffer.height() {
-                continue;
-            }
-            tile.set(x, y, buffer.pixel(buffer_x, buffer_y));
+            let src = buffer.row_pixels(buffer_y as u32, src_x, n);
+            tile.write_row_f32(y, x0, src);
         }
     }
     tile
