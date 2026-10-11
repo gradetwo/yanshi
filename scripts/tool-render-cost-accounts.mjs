@@ -380,11 +380,21 @@ for (const row of rows) {
   const adapter = rows.map((r) => r.adapter).filter(Boolean);
   console.log("  ★ 逐位一致（`/health.max_channel_delta`；**从渲染后的快照取** ✓）★");
   console.log(`    max_channel_delta ＝ ${JSON.stringify(deltas)}｜verified_blobs ＝ ${JSON.stringify(verified)}`);
-  if (adapter.length) console.log(`    适配器 ＝ ${adapter[0]}`);
-  if (deltas.every((d) => d === null || d === undefined)) {
+  // **★ 适配器要**全部打印**✗ ★**（**第 581 轮 ✓）：**只打第一个会**误导**
+  //   （**∴ 实测**：第一个是 `disabled_by_flag`（`--gpu off` 那台）
+  //     ⇒ **∴ 于是**看不到 GPU 那台的 `NVIDIA L4` ✓）
+  for (const a of adapter) console.log(`    适配器 ＝ ${a}`);
+  // **★ 判据必须**忽略 null**✗ ★**（**第 581 轮实测 ✓）
+  //   **∴ 为什么 ✗**：**CPU 路**不与 GPU 比对 ⇒ **∴ 它**正确地报 `null`**
+  //     ＋ **∴ 而**我的第一版只处理了「全 null」与「全 0」✗
+  //       ⇒ **∴ 于是**：**`[null, 0]` 落到 else ⇒ **误报「逐位一致被打破」**** ✓
+  //         ＋ **∴ 那**是**判据自身的 bug**（**不是产品问题 ✓）★
+  const real = deltas.filter((d) => d !== null && d !== undefined);
+  if (real.length === 0) {
     console.log("    ⚠️ 全是 null ⇒ **本次没有核对**（默认不核对）⇒ 设 `YANSHI_GPU_VERIFY=1` 重跑 ✓");
-  } else if (deltas.every((d) => d === 0)) {
-    console.log("    ✓ 全部为 0 ⇒ **GPU 路与 CPU 路逐字节相同** ✓");
+  } else if (real.every((d) => d === 0)) {
+    console.log(`    ✓ 被核对的 ${real.length} 条路全部为 0 ⇒ **GPU 路与 CPU 路逐字节相同** ✓`
+      + (real.length < deltas.length ? `（另 ${deltas.length - real.length} 条为 null ＝ 未核对，正常）` : ""));
   } else {
     console.log("    ✗ 出现非 0 ⇒ **逐位一致被打破**（必须回退）✗");
   }
