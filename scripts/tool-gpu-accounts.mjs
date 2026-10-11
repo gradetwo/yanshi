@@ -278,6 +278,21 @@ const spread = (xs) => {
   const m = med(s);
   return m ? ((Math.max(...s) - Math.min(...s)) / m) * 100 : 0;
 };
+// **★ 离散度：**明列 min／median／max ＋ 样本数**** ✗ ★**（**第 557 轮 ✓；目标第 2 条 ✓）
+//   **∴ 为什么 ✗**：**目标第 2 条**明确要求**「**加离散度**（多轮 ＋ 报 **min/median/max**，
+//     **不再只报中位数** ✓）」 ✓
+//     ＋ **∴ 而**原来**只报**中位数**（**表格里 ✓）＋ **一个**极差百分比**** ✓
+//       ⇒ **∴ 于是**：**看不出**分布形状**✗（**∴ 如**中位数靠近 min 还是 max ✓）
+//         ＋ **∴ 且**极差是**无量纲的百分比**✗ ⇒ **∴ 无法**与其他量对比** ✓ ★
+//   **∴ 现在 ✗**：**每一路都给出**min／median／max（**ms ✓）＋ 样本数** ✓
+//     ＋ **∴ 极差仍保留**（**∴ 向后兼容 ✓）★
+const triple = (xs) => {
+  const s = [...xs].filter((v) => typeof v === "number").sort((a, b) => a - b);
+  if (s.length === 0) return null;
+  return { min: s[0], median: s[Math.floor(s.length / 2)], max: s[s.length - 1], n: s.length };
+};
+const fmtTriple = (t) =>
+  t ? `${t.min.toFixed(0)}／${t.median.toFixed(0)}／${t.max.toFixed(0)}（n=${t.n}）` : "—";
 const cpuRuns = [];
 const gpuRuns = [];
 for (let i = 0; i < RUNS; i += 1) {
@@ -288,6 +303,8 @@ const cpu = {
   wallMs: med(cpuRuns.map((r) => r.wallMs)),
   taskMs: med(cpuRuns.map((r) => r.taskMs)),
   wallSpread: spread(cpuRuns.map((r) => r.wallMs)),
+  wallTriple: triple(cpuRuns.map((r) => r.wallMs)),
+  taskTriple: triple(cpuRuns.map((r) => r.taskMs)),
   detail: cpuRuns[0]?.detail,
 };
 const gpu = fact.adapter
@@ -295,12 +312,21 @@ const gpu = fact.adapter
       wallMs: med(gpuRuns.map((r) => r.wallMs)),
       taskMs: med(gpuRuns.map((r) => r.taskMs)),
       wallSpread: spread(gpuRuns.map((r) => r.wallMs)),
+      wallTriple: triple(gpuRuns.map((r) => r.wallMs)),
+      taskTriple: triple(gpuRuns.map((r) => r.taskMs)),
       detail: gpuRuns[0]?.detail,
       ok: gpuRuns.every((r) => r.ok),
     }
   : null;
-console.log(`  （${RUNS} 次取中位数｜CPU 墙钟极差 ${cpu.wallSpread?.toFixed(1)}%`
-  + `${gpu ? `｜GPU 墙钟极差 ${gpu.wallSpread?.toFixed(1)}%` : ""}）`);
+// **★ 离散度三值（**目标第 2 条 ✓）★**：**min／median／max ＋ 样本数**
+console.log("  ★ 离散度（**min／median／max，ms ✓）★");
+console.log(`  · CPU 墙钟 ${fmtTriple(cpu.wallTriple)}｜主线程 ${fmtTriple(cpu.taskTriple)}`
+  + `｜极差 ${cpu.wallSpread?.toFixed(1)}%`);
+if (gpu) {
+  console.log(`  · GPU 墙钟 ${fmtTriple(gpu.wallTriple)}｜主线程 ${fmtTriple(gpu.taskTriple)}`
+    + `｜极差 ${gpu.wallSpread?.toFixed(1)}%`);
+}
+console.log(`  （每路 ${RUNS} 次取中位数；min／median／max 为实测极值）`);
 
 console.log("");
 console.log("  ★ 两本账（浏览器内核）★");
