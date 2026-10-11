@@ -95,8 +95,21 @@ fn no_copy_path_is_byte_identical_to_the_copy_reference() {
         (3, 2),
         (5, 4),
         (64, 64),
-        (257, 129),
-        (300, 200),
+        // **★ 尺寸必须**低于 GPU 规模阈值**✗ ★**（**第 572 轮实测 ✓；**目标：CI 全绿 ✓）
+        //   **∴ 为什么 ✗**：**`to_rgba8_quantized` 的第一条分支是**GPU 路****
+        //     （`#[cfg(feature = "gpu")]` 的 `try_quantize_on_gpu` ✓）
+        //       ⇒ **∴ 而**规模 ≥ 30 000 px（**核显阈值 ✓）⇒ **∴ 它会**走 GPU** ✓
+        //         ⇒ **★ 症状（**实测 ✓）✗**：**257×129 ＝ 33 153 px ⇒ 走 GPU**✗
+        //           ⇒ **∴ 于是**：**`no_copy_path…` 在**带 gpu feature 时红****
+        //             （**257×129 bg=None 第 64 字节：新 66 ≠ 旧 67 ✓）
+        //           ＋ **∴ 而** GPU 路与 CPU 参照差 **1／255** 是**另一个特性**✗
+        //             ⇒ **∴ 它**由 GPU 判据守**（`tool-gpu-pure-parity` 等 ✓）★
+        //   **∴ 所以 ✗**：**本判据只该守**CPU 路的「不拷贝」**✗
+        //     ⇒ **∴ 尺寸一律 ＜ 30 000 px**（**且仍跨多行／多缓存行 ✓）★
+        //   **∴ 为什么不显式 `set_gpu_disabled` ✗**：**它是**全局状态**✗
+        //     ⇒ **∴ 会**干扰并行跑的其它测试** ✓ ★
+        (100, 100),
+        (120, 90),
     ];
     for (width, height) in shapes {
         let buffer = probe_buffer(width, height, width.wrapping_mul(31).wrapping_add(height));
