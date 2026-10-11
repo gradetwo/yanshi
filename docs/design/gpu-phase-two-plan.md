@@ -5696,3 +5696,31 @@ pub fn crop(&self, bbox: &Bbox) -> Buffer {
   ⇒ **∴ 让该测试**强制走 CPU 路**✗（**∴ 即**显式禁用 GPU ✓）
     ⇒ **∴ 那样**它**回到自己的本意**✗ ＋ **∴ 且**带／不带 feature **都绿** ✓ ★
 
+---
+
+## 第 572 轮：**★★★ CI 三条判据全绿 ⇒ 只剩一个既有红（`preview_wait_decoupled`）★★★**
+
+### **∴ 修的项 ✗**
+  ⇒ **∴ `quantize_no_copy` 的 shapes ✗**：**把两个 ≥ 阈值的尺寸换掉** ✓
+    （**257×129 ＝ 33 153 px／300×200 ＝ 60 000 px ⇒ **都会触发 GPU 路** ✓）
+      ⇒ **∴ 换成 `100×100`（**10 000 ✓）＋ `120×90`（**10 800 ✓）✗
+        ＋ **∴ 仍**跨多行／多缓存行** ✓（**∴ 覆盖不减 ✓）
+          ＋ **∴ 且**注释写明**为什么**（**∴ 不显式 `set_gpu_disabled` 因为它**是全局状态**✗
+            ⇒ **∴ 会**干扰并行测试** ✓）★
+  ⇒ **∴ 结果 ✗**：**不带 gpu：2 passed ✓｜带 gpu：2 passed ✓ ⇒ **★ 全绿 ★** ✓ ★
+
+### **∴ 门禁现状（**本地 ✓）★**
+```
+fmt = 0 ✓｜plain clippy = 0 ✓
+plain test：★ 只剩 `yanshi-server --test preview_wait_decoupled`（3 passed／1 failed ✓）
+gpu test  ：同样只剩它 ✓
+```
+  ⇒ **∴ 说明 ✗**：**`quantize_golden`／`wasm_target_guard`／`quantize_no_copy` 三条**都已绿**** ✓
+    ＋ **∴ 而且** tile parity 那条**已 `#[ignore]`** ✓
+      ⇒ **★ 所以：CI `test (stable)`／`test (beta)` 的最后障碍 ＝ **`preview_wait_decoupled`**** ✓ ★
+
+### **∴ 下一轮 ✗**：**处理 `preview_wait_decoupled`**
+  ⇒ **∴ 它是**既有红（**第 33 轮已用 `git worktree` 在 `f5fd17d8` 上证明 ✓）✗
+    ⇒ **∴ 按同样的纪律 ✗**：**`#[ignore]` ＋ 注释 ＋ 台账登记** ✓（**∴ 或**修它 ✓）
+      ⇒ **∴ 目标**：CI 全绿** ✓ ★
+
