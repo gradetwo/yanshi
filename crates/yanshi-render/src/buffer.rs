@@ -618,7 +618,7 @@ impl Buffer {
         //   **∴ 代价（**如实 ✓）✗**：**64 位哈希**有极小碰撞概率**✗
         //     ⇒ **∴ 那**会让**第二个不同内容跳过核对** ✓
         //       ＋ **∴ 而**在本场景（**同一文档的位图 ✓）**可接受** ✓ ★**** ✓✓
-        let verify_key: String = self.verify_key_with(blob.as_deref());
+        let verify_key: String = self.verify_key_with(blob);
         if crate::blob_verified(&verify_key) {
             // **∴ 验过的内容 ⇒ **跳过核对**✗ ⇒ **∴ `delta` 报**真的核过**的结果** ✓ ★**** ✓✓
             Self::note_backend(crate::Backend::Gpu);
