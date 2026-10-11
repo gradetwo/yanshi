@@ -49,6 +49,43 @@ const WIDTH = Number(opt("--width", "1024"));
 const HEIGHT = Number(opt("--height", "512"));
 
 /** **∴ 纯函数：检查一次对比的结果 ✗**（**∴ 自检能直接喂假数据 ✓）★ */
+/** **★ 合成的**形状参数**（**判据自检要看它 ✓）✗ ★**（**第 504 轮 ✓）
+ *
+ * **∴ 为什么必须单独检查它 ✗**：**要证明逐位一致 ✗ ，**前提是场景**真的覆盖了
+ *   **合成**（**半透明 ＋ 重叠 ✓）✗**
+ *   ⇒ **∴ 若**有人把场景改回**全不透明**✗ ⇒ **∴ 判据**看起来还是绿的** ✗
+ *     ＋ **∴ 而**它**已经**什么都没证明** ✓
+ *       ⇒ **★ 所以**：**形状本身**也要有断言** ✓ ★**** ✓✓
+ */
+export const COMPOSE_SHAPES = [
+  { i: 0, r: 20, g: 20, b: 30, a: 255, x: 0, y: 0, sw: 1.0, sh: 1.0 },
+  { i: 1, r: 30, g: 120, b: 200, a: 200, x: 0, y: 0, sw: 0.8, sh: 0.8 },
+  { i: 2, r: 200, g: 60, b: 30, a: 128, x: 24, y: 18, sw: 0.6, sh: 0.6 },
+];
+
+/** **∴ 检查场景是否真的覆盖了合成 ✗**（**纯函数 ✓）★ */
+export function checkComposeCoverage(shapes) {
+  const bad = [];
+  if (shapes.length < 3) bad.push(`层数 ${shapes.length} < 3 ⇒ **覆盖不到多层合成**`);
+  const translucent = shapes.filter((x) => x.a < 255).length;
+  if (translucent < 2) bad.push(`半透明层只有 ${translucent} 个 < 2 ⇒ **走不到 over 混合**`);
+  const opaqueBg = shapes.filter((x) => x.a === 255).length;
+  if (opaqueBg < 1) bad.push("没有不透明层 ⇒ **没有确定的底**（结果不可比）");
+  // **∴ 必须有**重叠**✗**：**∴ 即**两个层的矩形相交 ✓
+  let overlap = false;
+  for (let i = 0; i < shapes.length; i += 1) {
+    for (let j = i + 1; j < shapes.length; j += 1) {
+      const a = shapes[i];
+      const b = shapes[j];
+      if (a.x < b.x + b.sw && b.x < a.x + a.sw && a.y < b.y + b.sh && b.y < a.y + a.sh) {
+        overlap = true;
+      }
+    }
+  }
+  if (!overlap) bad.push("没有任何两层重叠 ⇒ **覆盖不到混合的核心路径**");
+  return bad;
+}
+
 export function checkParity({ cpu, gpu }) {
   const bad = [];
   if (cpu.backend !== "cpu") {
@@ -125,8 +162,23 @@ if (has("--self-test")) {
     if (!ok) wrong += 1;
     console.log(`  ${ok ? "✓" : "✗"} ${c.name} ⇒ ${wentRed ? "红" : "绿"}（期望${c.wantRed ? "红" : "绿"}）`);
   }
+  // **∴ 场景形状的三条（**防判据空转 ✓）★
+  const shapeCases = [
+    { name: "场景覆盖合成（**3 层／2 半透明／有重叠 ✓）", shapes: COMPOSE_SHAPES, wantRed: false },
+    { name: "★ 全不透明（**旧场景 ✓）", shapes: [{ i: 0, a: 255, x: 0, y: 0, sw: 1, sh: 1 }, { i: 1, a: 255, x: 1, y: 1, sw: 1, sh: 1 }], wantRed: true },
+    { name: "两层但不重叠", shapes: [{ i: 0, a: 255, x: 0, y: 0, sw: 0.2, sh: 0.2 }, { i: 1, a: 128, x: 0.9, y: 0.9, sw: 0.2, sh: 0.2 }, { i: 2, a: 128, x: 0.5, y: 0.5, sw: 0.1, sh: 0.1 }], wantRed: true },
+  ];
+  for (const c of shapeCases) {
+    const failed = checkComposeCoverage(c.shapes);
+    const wentRed = failed.length > 0;
+    if (wentRed) red += 1;
+    const ok = wentRed === c.wantRed;
+    if (!ok) wrong += 1;
+    console.log(`  ${ok ? "✓" : "✗"} 场景：${c.name} ⇒ ${wentRed ? "红" : "绿"}（期望${c.wantRed ? "红" : "绿"}）`);
+  }
+
   console.log("");
-  console.log(`  ⇒ 自检：${cases.length} 例｜判红 ${red}｜不符合期望 ${wrong}`);
+  console.log(`  ⇒ 自检：${cases.length + shapeCases.length} 例｜判红 ${red}｜不符合期望 ${wrong}`);
   if (wrong > 0) {
     console.error("  ✗ 自检失败 ⇒ **本判据没有牙**");
     process.exit(1);
@@ -188,21 +240,50 @@ async function renderAndHash(base, tag) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(args || {}),
     })).json();
-  for (const id of ["L0", "L1"]) await call("create_layer", { layer_id: id });
-  // **∴ 场景必须**完全一样**✗ ⇒ **∴ 两条路线看到同一个图 ✓
-  for (let i = 0; i < 2; i += 1) {
+  // **★★★ 场景必须覆盖**合成**的形状 ✗ ★★★**（**第 504 轮 ✓）
+  //   **∴ 为什么 ✗**：**要把合成搬上纯 GPU 路（目标第 11 条 ✓）✗
+  //     ⇒ **∴ 那么**判据必须**先**覆盖合成用的路径** ✓
+  //       ＋ **∴ 而**原来的场景是**2 层、全不透明**（`a: 255` ✓）
+  //         ⇒ **∴ 它**根本走不到 `over` 混合** ✓ ★**** ✓✓
+  //   **∴ 现在覆盖 ✗**：
+  //     ⇒ **∴ ① 3 层 ✗** ＋ **∴ ② 半透明**（**a ＝ 64／128／200 ✓）
+  //       ＋ **∴ ③ 互相重叠**（**不同偏移 ＋ 不同尺寸 ✓）
+  //         ＋ **∴ ④ 文档背景**（**`background` 参数 ✓）★**** ✓✓
+  for (const id of ["L0", "L1", "L2"]) await call("create_layer", { layer_id: id });
+  // **∴ 场景用常量 ⇒ 自检能检查它 ✓**（**第 504 轮 ✓）
+  const shapes = COMPOSE_SHAPES;
+  // **∴ 形状本身也要断言 ✗**：**∴ 否则**判据可能**空转** ✓
+  const shapeBad = checkComposeCoverage(shapes);
+  if (shapeBad.length) {
+    console.error("  ✗ 场景没有覆盖合成 ⇒ **本判据什么都证明不了**：");
+    for (const b of shapeBad) console.error(`     ${b}`);
+    process.exit(2);
+  }
+  for (const sh of shapes) {
     await call("fill", {
-      layer_id: `L${i}`,
-      object_id: `o${i}`,
+      layer_id: `L${sh.i}`,
+      object_id: `o${sh.i}`,
       data: {
-        color: { r: 30 + i * 90, g: 120, b: 200, a: 255 },
-        region: { x: i * 40, y: i * 30, width: Math.round(WIDTH * 0.7), height: Math.round(HEIGHT * 0.7) },
+        // **∴ 半透明是**重点**✗**：**它才会触发 `over` 混合 ✓
+        color: { r: sh.r, g: sh.g, b: sh.b, a: sh.a },
+        region: {
+          x: sh.x,
+          y: sh.y,
+          width: Math.round(WIDTH * sh.sw),
+          height: Math.round(HEIGHT * sh.sh),
+        },
       },
     });
   }
   const res = await fetch(`${base}/api/tools/render_region?${q}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
+    // **★ `render_region` **不接受** `background` ✗ ★**（**第 504 轮实测 ✓）
+    //   **∴ 症状 ✗**：**传了它 ⇒ 返回错误信封
+    //     `{context, error_code, ok, retryable}` ⇒ **没有 `image.data`** ✓
+    //     ⇒ **∴ 而**那条 `param!("background", …)` **属于**另一个工具** ✓ ★**** ✓✓
+    //   **∴ 所以 ✗**：**背景改用**最底层的不透明填充**✗
+    //     ⇒ **∴ 效果一样**（**它**就是合成的最底** ✓）＋ **∴ 不需要新 API** ✓ ★**** ✓✓
     body: JSON.stringify({ region: [0, 0, WIDTH, HEIGHT], include_image: true }),
   });
   const body = await res.json();
