@@ -7071,3 +7071,60 @@ c 零拷贝 cast ＋ to_vec（**bytemuck ✓）: 0.394 ms/次   ⇒ 快 4.0 倍
 
 ### **∴ 门禁 ✗**：`fmt = 0 ✓`｜`cargo check` ✓｜已推 `l4-sync`（`d50af3c` ✓）★
 
+---
+
+## 第 611 轮：**★★★ 用户指示「查主流做法」⇒ wgpu **官方指引直接命中**，并解释了那个棘手现象 ★★★**
+
+### **★ 用户的新方法论 ✗ ★**：**「遇到棘手问题，要查主流软件和别人怎么解决 ⇒ 多借鉴，避免闭门造车」** ✓
+
+### **∴ 先做的**零代码实验**（**块大小扫描，L4，4K，各 3 轮 ✓）★**
+```
+CHUNK_BYTES=  262 144 ⇒ calls 11｜upload 30 753｜submit 1 955｜readback 127 823｜gpu 119
+CHUNK_BYTES=1 048 576 ⇒ calls 11｜upload 29 970｜submit   579｜readback  89 686｜gpu 223
+CHUNK_BYTES=4 194 304 ⇒ calls 11｜upload 34 261｜submit   303｜readback  81 422｜gpu 723
+CHUNK_BYTES=16 777 216⇒ calls 11｜upload 29 276｜submit   242｜readback  77 708｜gpu 2 480
+```
+  ⇒ **∴ ① ★ `upload` **基本不随块大小变****（**29–34 ms，波动内 ✓）
+    ⇒ **∴ 所以**：**既**不是**固定开销**✗ 也**不是**简单带宽** ⇒ **∴ 那**是个**真"棘手问题"** ✓ ★
+  ⇒ **∴ ② ★ `readback` 随块大小**剧烈变化****（**256 KiB ⇒ 127.8 ms｜16 MiB ⇒ 77.7 ms ✓）
+    ＋ **∴ 而** GPU 真算**量到的值**随块增大**（**119 → 2 480 ✓）
+      ⇒ **∴ 因为**块大 ⇒ **时间戳**覆盖更多真算**（**∴ 小块的 GPU 时间**被读回掩盖 ✓）
+        ⇒ **∴ 所以**：**块大小**不是主要杠杆**（**4 MiB 已接近最优 ✓）★
+
+### **★★★ 查主流做法（**用户指示 ✓）★★★**
+  ⇒ **∴ 来源 ✗**：**wgpu 官方 best-practices
+    [dos and don'ts](https://wgpu.rs/doc/wgpu/documentation/best_practices/dos_and_donts/index.html)** ✓
+  ⇒ **∴ 三条原文与本项目的关系 ✗**：
+```
+★ "Don't: create many resources (buffers or textures) per frame"
+    —— "This puts pressure on the WebGPU ★memory allocator and tracker★.
+        Prefer coalescing smaller resources into larger ones.
+        For buffers, you can create a large buffer and use different parts of it"
+  ⇒ ★ 正是本项目的第 ② 项：**每块建 4 张 buffer（src／dst／pb）**★
+★ "Don't: create temporary mapped buffers when updating data"
+    —— 用 Queue::write_buffer；"…it may be more efficient to
+        ★recycle staging buffers in a pool★"
+  ⇒ ★ 官方明确建议**上传也用池**（**本项目只给**读回**做了池** ✓）★
+★ "Don't: submit many times per frame"（1–5 次）
+  ⇒ 本项目已是一次提交 ✓
+```
+  ⇒ **★★★ 而且它**解释了那个棘手现象** ✗ ★★★**：
+    **∴ `upload` **不随块大小变**✗ ⇒ **∴ 因为**它主要是
+      **每块建 4 张 buffer 的**分配器／tracker 压力**** ✓
+        ＋ **∴ 正是**官方说的
+          「**puts pressure on the WebGPU **memory allocator and tracker**」** ✓ ★
+  ⇒ **∴ 另一种主流思路 ✗**：
+    **[VMAFx digest 0091](https://raw.githubusercontent.com/VMAFx/vmafx/2b34b5191c8b80ff1dd2afb51f39daf6d371f795/docs/research/0091-vulkan-gpu-reduction-perf-analysis.md)
+      的「per-WG accumulator readback bottleneck」⇒ **用两级归约减小读回量** ✓
+      ＋ **∴ 那**对应**目标第 11 条**（**减少传输量本身 ✓）★
+
+### **∴ 下一轮的实施计划（**有权威依据 ✓）★**
+  ⇒ **∴ ① 合并／复用每块的 `src`／`dst`／`pb` ✗**
+    ＋ **∴ 依据 ✗**：**官方"不要每帧建很多资源"＋"用一张大 buffer 的不同部分"** ✓
+  ⇒ **∴ ② 上传也用池 ✗**
+    ＋ **∴ 依据 ✗**：**官方"recycle staging buffers in a pool"** ✓
+  ⇒ **∴ 而**困难点（**如实 ✓）✗**：
+    **∴ 块之间**是**流水线**的**✗ ⇒ **∴ 所以**：**块内不能复用**✗
+      ＋ **∴ 需要**「**按块索引**的池**」或**「**把多块合并成一次大上传**」 ✓
+        ＋ **∴ 后者**更符合官方"coalescing"**的建议** ✓ ★
+
