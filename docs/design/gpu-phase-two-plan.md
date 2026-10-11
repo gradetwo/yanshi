@@ -8210,3 +8210,54 @@ Tile 用 Vec<u16>（f16）⇒ 每块 256×256×4×2 ＝ 512 KB
 
 ### **∴ 门禁 ✗**：**本轮只读码 ＋ 诊断**（**无代码改动 ✓）｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 636 轮：**★★★ 找到「未归类 426 ms」的**最可能主因**：`probe.render` **漏掉两次整层逐像素乘法**** ★★★
+
+### **★★★ 读到的精确边界（**render.rs:1976–2013 ✓）★★★**
+```rust
+1976:  let mut probe_stage = stage_probe::Stage::start();      // ★ probe.render 开始
+1981:  let mut layer_buffer = self.buffer_pool.acquire(…);     // 被覆盖 ✓
+1990:  self.render_layer_objects(…);                          // ★ 对象渲染 ⇒ 被覆盖 ✓
+1994:  apply_layer_mask_warn(…);                              // ★ 蒙版 ⇒ 被覆盖 ✓
+2006:  probe.render += probe_stage.stop();                     // ★ probe.render 结束
+2007:  if layer.clipping_mask { layer_buffer.multiply_alpha_by(&accumulation); }  ← ★ 不在任何分段 ★
+2008:  layer_buffer.multiply_alpha(layer.opacity.clamp(0,1));                    ← ★ 不在任何分段 ★
+2009:  let mode = BlendMode::from_name(&layer.blend_mode);                       ← ★ 不在 ★
+2010:  let mut probe_stage = stage_probe::Stage::start();       // ★ probe.composite 开始
+2013:  … match partial_below … composite / composite_within …  // ⇒ 被 probe.composite 覆盖 ✓
+```
+  ⇒ **★ 所以「未归类」的确切范围 ＝ 2007–2009（**clipping ＋ opacity ＋ mode 取名 ✓）★**
+
+### **★★★ 量化（**为什么它可能就是那 426 ms ✓）★★★**
+```
+4K 图层 ＝ 3840×2160×4 ＝ ★ 33.2 M 个 f32 ★（132.7 MB）
+multiply_alpha（**＋ clipping 时的 multiply_alpha_by ✓）
+   ⇒ 每次都是**整层逐像素乘法**
+   ⇒ 内存流量 ≈ 132.7 MB 读 ＋ 132.7 MB 写 ≈ ★ 265 MB／次 ★
+   ⇒ 按 ~10 GB/s ⇒ ★ ~27 ms／次 ★
+   ⇒ 若 5 层（**每层 clipping ＋ opacity 各一次 ✓）＝ 10 次 ⇒ ★ ~270 ms ★
+⇒ ★ 非常接近第 520 轮那未归类的 426 ms ★
+```
+
+### **★★★ 两条优化路（**都与已有合成内核天然契合 ✓）★★★**
+  ⇒ **∴ ① 合并两次乘法 ✗**：**clipping ＋ opacity ⇒ **一次遍历** ✓ ⇒ **∴ 省一半 ✓
+  ⇒ **∴ ② ★ 更彻底：融进**合成**✗ ★**：
+    **∴ 在合成内核里**同时**乘 opacity ＋ 应用 clipping** ✗
+      ⇒ **∴ 从而**：**完全省掉那一遍整层遍历** ✓
+        ＋ **∴ 而**我**已有的 `composite_with_mode(src, dst, mode, opacity)` **正好做前一半** ✓
+          ⇒ **∴ 只差** clipping 的语义（**用 accumulation 的 alpha 裁剪本层 ✓）★
+
+### **★★★ 两面 ✗ ★★★**
+  ⇒ **∴ 收益 ✗**：**若**那 270 ms 成立 ⇒ **∴ 省掉它 ⇒ **端到端 ~20%**** ✓（**∴ 远大于**噪声水位 ⇒ **∴ 可测 ✓）
+  ⇒ **∴ 代价 ✗**：**①** 改合成语义 ⇒ **∴ 必须**保持**逐位一致**（**∴ 用**已有的 u8 判据 ✓）
+    ＋ **∴ ② 而** `multiply_alpha_by` **依赖** `accumulation`**✗ ⇒ **∴ 融进合成时要**保持顺序**（**clipping 先、opacity 后 ✓）
+      ＋ **∴ ③ 且** `BlendMode::from_name` **是**字符串解析**✗ ⇒ **∴ 可**预先算成 u32** ✓（**∴ 小项 ✓）★
+
+### **∴ 下一步（**下一轮 ✓）★**
+  ⇒ **∴ ① 先**测**确认（**∴ 用** `PROBE 每层` 的输出 ＋ **函数级基准 ✓）——
+    **∴ 而** L4 **正在构建 ⇒ **∴ 等它就绪 ✓
+  ⇒ **∴ ② 然后**实现两条优化之一（**优先 ②：融进合成 ✓）⇒ **∴ 用** u8 判据验证** ✓ ★
+
+### **∴ 门禁 ✗**：**本轮只读码 ＋ 定位**（**无代码改动 ✓）｜已推 `l4-sync`** ✓ ★
+
