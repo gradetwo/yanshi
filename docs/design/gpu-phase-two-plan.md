@@ -10254,3 +10254,79 @@ if alpha <= 0.0 {
 
 ### **∴ 门禁 ✗**：**本轮只设计 ＋ 记录**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 681 轮：**★★★ 同会话 A/B 已实现，但它**没触发** ⇒ 发现测试画作里的 shape **可能不是 Polygon**（**∴ 第 676 轮的优化对端到端**可能无效**）** ★★★
+
+### **★★★ 实现（`polygon_coverage_clipped` 的双测 ✓）★★★**
+```rust
+if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+    let t_fast = Instant::now();
+    let fast = polygon_coverage_clipped_impl(points, supersample, clip, false);
+    let d_fast = t_fast.elapsed();
+    let t_slow = Instant::now();
+    let slow = polygon_coverage_clipped_impl(points, supersample, clip, true);
+    let d_slow = t_slow.elapsed();
+    let same = /* 逐位一致检查 */;
+    eprintln!("PROBE 覆盖率 A/B：快={:.3}ms 慢={:.3}ms 比={:.2}× 逐位一致={}", …);
+    return fast;
+}
+```
+  ⇒ **∴ 优点 ✗**：**调用点**无需改动**✗ ＋ **∴ 同进程 ＋ 同输入** ✓
+    ＋ **∴ 且**它**顺带**检查逐位一致**✗（**∴ 防止 A/B 本身说谎 ✓）★
+
+### **★★★ 而结果 ✗** ★★★
+```
+★ A/B 日志行数：** 0 **（**`grep '覆盖率 A/B'` 空 ✓）
+★ 但其它 PROBE 行**存在**（**每层 acquire／线程段／累计／输出组装… ✓）
+  ⇒ **∴ 所以** `YANSHI_RENDER_PROBE` **确实传到了服务** ✓
+★ 而 `shape:coverage` **有值**（**8.45／7.61 ms ✓）
+  ⇒ **∴ 说明** `shape_coverage_in` **被调用了** ✓
+⇒ ★★ 唯一解释 ✗ ★★ ：**那些 shape **走的是 `Rect`／`Ellipse` 分支**✗
+  ＋ **∴ 因为** `shape_coverage_in` **对 `Polygon` **要求 `points.len() >= 3`**✗
+    ＋ **∴ 否则**退化**走 `rect_coverage_clipped`** ✓ ★
+```
+
+### **★★★ 意义（**关键 ✓）★★★**
+  ⇒ **∴ ① 第 676 轮优化的** `polygon_coverage_clipped`（**2.02× ✓）
+    ＋ **∴ 对**这个测试画作**可能**没有效果**✗（**∴ 因为**它没被走到 ✓）★
+  ⇒ **∴ ② 而**函数级 A/B **是**真的**✗（**∴ 那个 300 点星形**确实是 Polygon ✓）
+    ＋ **∴ 所以**：**优化本身有效**✗ ⇒ **∴ 但**适用面**取决于**画作里的 shape 类型分布** ✓ ★
+  ⇒ **∴ ③ ★ 而那**必须先量**✗ ★**：
+    **∴ 即**：**探针打印** shape `kind`**✗（**∴ 以及 points 数 ✓）
+      ＋ **∴ 从而**知道**分布 ⇒ **∴ 再**决定**优化方向** ✓ ★
+
+### **★★★ 两面（**AGENTS.md ✓）★★★**
+  ⇒ **∴ 收益 ✗**：**实现了**同会话 A/B 机制**✗（**∴ 可复用 ＋ **自带一致性检查** ✓）
+    ＋ **∴ 且**它**立刻揭示**了一个**适用面问题** ✓ ★
+  ⇒ **∴ 代价 ✗**：**探针模式下**双倍计算**✗（**∴ 生产零影响 ✓）
+    ＋ **∴ 而**本轮**仍**没有**可信的端到端数字**✗（**∴ 如实说明 ✓）★
+
+### **∴ 下一步 ✗**：**① 探针打印** shape 类型分布**✗
+  ＋ **∴ ② 据分布**决定**是否继续优化 Polygon 路**（**∴ 或**转向 Rect／Ellipse ✓）
+    ＋ **∴ ③ 再**完成 `fill_coverage` 的双测** ✓ ★
+
+### **∴ 门禁 ✗**：**改了 `geometry.rs`（**探针双测 ✓）⇒ **∴ 需**跑门禁** ✓ ｜已推 `l4-sync`** ✓ ★
+
+### **★★★ 补记：**判据当场抓住的第四个错误**（**本轮的元价值 ✓）★★★**
+```
+★ cargo test -p yanshi-render 失败 ✗ ：
+  test host_only_time_apis_are_explicitly_accounted_for ... FAILED
+  「wasm 目标代码里出现了未登记的宿主时间 API 用法。」（wasm_target_guard.rs:151）
+⇒ ★ 根因 ✗ ：**我在 `geometry.rs` 里用了**裸 `std::time::Instant::now()`**✗
+   ＋ **∴ 而** `geometry.rs` **会编译到 wasm**✗ ⇒ **∴ 于是** wasm 内核**会带上**宿主时间 API** ✓
+     ⇒ **∴ 而**那个判据**正是**为此存在的**✗ ⇒ **∴ 它**当场抓住了我** ✓ ★
+```
+  ⇒ **∴ 修法 ✗**：**用仓库**既有的门控时钟**✗（`crate::probe::ProbeClock::now()` ✓）
+    ＋ **∴ 同形 ✗**：`now()` ＋ `.elapsed().as_secs_f64()`** ✓
+      ＋ **∴ 且**它**已在 wasm 白名单里**✗（**∴ 而**同文件的 1031／1034 行**本来就在用它 ✓）★
+        ⇒ **∴ 复跑 ✗**：**`cargo test -p yanshi-render` ✓ 全绿** ✓ ★
+  ⇒ **★ 教训 ✗ ★**：**改一个文件前，先看它**已有的惯例**✗
+    ＋ **∴ 本文件**本来就用 `ProbeClock`**✗ ⇒ **∴ 而**我**引入了**新的宿主 API** ✓
+      ＋ **∴ 所以**：**「**就地惯例**」优先于「**我的习惯**」** ✓ ★
+  ⇒ **∴ 本会话的判据抓错记录（**四次 ✓）✗**：
+    **∴ ① 第 676 轮 ✗**：**`!slow` vs `slow`**（**真值路径被短路 ✓）
+      ＋ **∴ ② 第 678 轮 ✗**：**−0.0 的位模式差异**（**代数等价 ≠ 逐位等价 ✓）
+        ＋ **∴ ③ `black_box` 在计时内**（**内存基准偏差 2–3× ✓）
+          ＋ **∴ ④ 本轮 ✗**：**wasm 的宿主时间 API** ✓ ★
+

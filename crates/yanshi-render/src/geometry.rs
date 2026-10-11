@@ -216,6 +216,48 @@ pub fn polygon_coverage_clipped(points: &[(f64, f64)], supersample: u32, clip: &
     // **∴ 生产路径走**快路**✗**（**∴ 内部快路径 ✓；**目标第 11 条 ✓）★
     //   ＋ **∴ 旧路**保留为**真值**✗（**∴ 判据对拍用 ✓）⇒ **∴ 参数化而**不是**环境变量** ✓
     //     （**∴ 因为**环境变量是**进程级**✗ ⇒ **∴ 在**并发测试**里有**竞态** ✓）★
+    //
+    // **★★★ 同会话 A/B ✗ ★★★**（**第 681 轮 ✓；**第 679／680 轮的方法论要求 ✓）：
+    //   **∴ 为什么需要 ✗**：**跨轮探针数字**不可比**✗
+    //     （**∴ 因为**输入分布 ＋ 机器状态 ＋ 探针开销都在变 ✓）
+    //       ＋ **∴ 而**环境变量**跑两次 ＝ **两个会话**✗ ⇒ **∴ 依旧是**跨会话对比** ✓
+    //         ⇒ **★ 所以：**在**同一次渲染里**双测**✗ ★
+    //           ＋ **∴ 即**：**先跑快路（**结果送入渲染 ✓）⇒ **∴ 再**跑一次慢路**✗
+    //             ＋ **∴ 丢弃它的结果**✗（**∴ 仅作对照 ✓）
+    //               ＋ **∴ 打印**两个耗时** ✓
+    //                 ⇒ **∴ 从而**：**同进程 ＋ 同输入 ＋ 同机器状态** ⇒ **结论可信** ✓ ★
+    //   **∴ 代价 ✗**：**探针模式下**双倍计算**✗ ⇒ **∴ 但**生产路径**零影响** ✓ ★
+    // **∴ 计时必须用**门控时钟**✗ ★**（**第 681 轮判据抓出 ✓）：
+    //   **∴ 我**原来用**裸 `std::time::Instant`**✗
+    //     ＋ **∴ 而** `geometry.rs` **会编译到 wasm**✗
+    //       ⇒ **∴ 于是** `wasm_target_guard` **判据**当场红** ✓
+    //         ＋ **∴ 修法 ✗**：**用仓库既有的** `crate::probe::ProbeClock`** ✓
+    //           （**∴ 同形：`now()` ＋ `.elapsed().as_secs_f64()` ✓；
+    //             **∴ 它**已在 wasm 白名单里 ✓）★
+    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+        let t_fast = crate::probe::ProbeClock::now();
+        let fast = polygon_coverage_clipped_impl(points, supersample, clip, false);
+        let d_fast = t_fast.elapsed();
+        let t_slow = crate::probe::ProbeClock::now();
+        let slow = polygon_coverage_clipped_impl(points, supersample, clip, true);
+        let d_slow = t_slow.elapsed();
+        // **∴ 先确认两条路**逐位一致**✗（**∴ 防止 A/B 本身说谎 ✓）★
+        let same = fast.data.len() == slow.data.len()
+            && fast
+                .data
+                .iter()
+                .zip(slow.data.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        eprintln!(
+            "PROBE 覆盖率 A/B：快={:.3}ms 慢={:.3}ms 比={:.2}× 逐位一致={}",
+            d_fast.as_secs_f64() * 1000.0,
+            d_slow.as_secs_f64() * 1000.0,
+            d_slow.as_secs_f64() / d_fast.as_secs_f64().max(f64::MIN_POSITIVE),
+            same
+        );
+        std::hint::black_box(&slow);
+        return fast;
+    }
     polygon_coverage_clipped_impl(points, supersample, clip, false)
 }
 
