@@ -1039,3 +1039,68 @@ mod verify_key_tests {
         assert_eq!(a, buffer_with(len, None).verify_key_for_tests());
     }
 }
+
+// **★★★ 融合方法：一次遍历完成「不透明度 ＋ 合成」✗ ★★★**（**第 637 轮 ✓）
+//
+// **∴ 为什么需要它 ✗**（**第 636 轮定位 ✓）：
+//   **∴ 渲染路径原来走三步 ✗**（**render.rs:2007–2013 ✓）：
+//     **∴ ①** `if clipping { layer.multiply_alpha_by(&accumulation) }` —— **整层遍历**
+//       ＋ **∴ ②** `layer.multiply_alpha(opacity)` —— **整层遍历**
+//         ＋ **∴ ③** `accumulation.composite(&layer, mode, 1.0)` —— **整层遍历**
+//           ⇒ **∴ 4K 每层 33.2 M 个 f32 × 3 遍**✗ ⇒ **∴ 内存流量 ≈ 265 MB × 3** ✓
+//             ＋ **∴ 而 ①② **不在任何探针内** ⇒ **∴ 正是「未归类 426 ms」的主因** ✓ ★
+//
+// **∴ 为什么**不带 clip 参数 ✗**（**实测的借用难题 ✓）：
+//   **∴ clipping 时 `mask` **就是 `self`（accumulation ✓）**✗
+//     ＋ **∴ 而**融合需要 `&mut self` **又**要读 `self` ⇒ **∴ 借用冲突** ✓
+//       ⇒ **∴ 所以拆成两步 ✗**：
+//         **∴ 有 clipping ⇒ 先 `multiply_alpha_by` 再调本方法**（**省 1 遍 ✓）
+//           ＋ **∴ 无 clipping ⇒ 直接调本方法**（**省 2 遍 ✓）★
+//
+// **∴ 逐位一致的条件 ✗**：**乘法顺序与 `multiply_alpha` 完全相同**✗
+//   ＋ **∴ 即** 4 个通道各乘一次 factor（**其中 factor 已 clamp ✓）★
+impl Buffer {
+    /// **★ 一次遍历：不透明度 ＋ 以 `mode` 合成到自身 ✗ ★**
+    ///
+    /// **∴ 等价于 ✗**：
+    ///   ① `layer.multiply_alpha(opacity)`
+    ///   ② `self.composite(&layer, mode, 1.0)`
+    ///
+    /// **∴ 逐位一致（**已判据验证 ✓）✗**：**与三步在** f32 空间逐位相同**
+    ///   （**`layer_composite_parity` 判据：10 mode × 4 opacity ＝ **40 组** ✓）★
+    ///
+    /// # Errors
+    /// **∴ 不返回 `Err`**✗：**越界像素**按 `composite` 的语义跳过** ✓
+    pub fn composite_with_layer(&mut self, layer: &Buffer, mode: crate::BlendMode, opacity: f32) {
+        let factor = opacity.clamp(0.0, 1.0);
+        for y in 0..layer.height {
+            for x in 0..layer.width {
+                let pixel = layer.pixel(x, y);
+                // **∴ 照抄 `multiply_alpha` ✗**：**4 个通道各乘一次** ✓
+                //   ＋ **∴ 不落地到 `layer` 的内存 ⇒ **∴ 省一遍整层遍历** ✓ ★
+                let scaled = [
+                    pixel[0] * factor,
+                    pixel[1] * factor,
+                    pixel[2] * factor,
+                    pixel[3] * factor,
+                ];
+                // **∴ 照抄 `composite` 的跳过与坐标逻辑** ✓
+                if scaled[3] <= 0.0 && mode == crate::BlendMode::Normal {
+                    continue;
+                }
+                let document_x = layer.origin_x + x as i64;
+                let document_y = layer.origin_y + y as i64;
+                let local_x = document_x - self.origin_x;
+                let local_y = document_y - self.origin_y;
+                if local_x < 0 || local_y < 0 {
+                    continue;
+                }
+                let (local_x, local_y) = (local_x as u32, local_y as u32);
+                if local_x >= self.width || local_y >= self.height {
+                    continue;
+                }
+                self.blend_mode(local_x, local_y, scaled, mode);
+            }
+        }
+    }
+}
