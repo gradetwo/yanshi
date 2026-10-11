@@ -6600,3 +6600,38 @@ failure   ：GPU feature (build and size)   ← **日志要等整轮完成**（*
 ### **∴ 验证 ✗**：**fmt = 0 ✓｜`cargo check -p yanshi-gpu` Finished ✓｜`cargo test -p yanshi-gpu` 5 passed ✓**
   ＋ **∴ 已推送 `db9fb3f`** ✓ ★
 
+---
+
+## 第 598 轮：**★★★ 找到 `GPU feature (build and size)` 红的真根因 ⇒ 修好**（**wasm ＋ gpu 的静态量非 `Sync`**）★★★**
+
+### **★★★ 根因（**CI 日志的错误块 ✓）★★★**
+```
+error[E0277]: ★ `RefCell<wgpu::backend::webgpu::WebBufferMapState>` cannot be shared between threads safely ★
+  --> crates/yanshi-render/src/buffer.rs:27:19
+  27 |     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Quantizer>>>
+     = note: required because it appears within the type `Quantizer`
+     = note: ★ shared static variables must have a type that is `Sync` ★
+```
+  ⇒ **∴ 即 ✗**：**进程级量化器缓存**（**`CACHE` ✓）里放着**含 wgpu 类型的 `Quantizer`**** ✗
+    ＋ **∴ 而** wasm32 的 WebGPU 后端用 **`RefCell`** ⇒ **非 `Sync`** ✓
+      ⇒ **∴ 于是**：**带 `gpu` feature 的**wasm 构建**不合法** ✓ ★
+  ⇒ **∴ 而**那是**我第 46 轮加的缓存**✗ ⇒ **∴ 它**只加了 `#[cfg(feature = "gpu")]`**✗
+    ⇒ **∴ 缺** target 门** ✓ ★
+
+### **∴ 修法 ✗**
+  ⇒ **∴ 把 4 处（**25／453／537／739 ✓）的 cfg 改成
+    `#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]`** ✓
+    ⇒ **∴ 而**另外两处**保持原样是正确的 ✗**：
+      **∴ ①** **437 `note_backend`**：**只设一个后端标记（**无 wgpu 类型 ✓）
+        ＋ **∴ ②** **478 `verify_key_with`**：**核对键（**纯哈希／字符串 ✓）
+          ⇒ **∴ 它们**在 wasm 上**合法** ✓ ★
+
+### **★★★ 一个重要的事实（**为什么本机看不见 ✓）★★★**
+  ⇒ **∴ 本机是 x86_64 ⇒ `Quantizer: Sync` ⇒ **编译通过**** ✗
+    ⇒ **∴ 而** wasm32 ＋ gpu feature ⇒ **`RefCell` ⇒ 非 `Sync` ⇒ 报错** ✓
+      ⇒ **★ 所以 ✗**：**只有 CI 的「wasm ＋ gpu feature」**才暴露它****
+        ＋ **∴ 那**正是**目标第 13 条**（**本机没有 wasm32 ⇒ 只能靠 CI ✓）的存在理由** ✓ ★
+
+### **∴ 验证 ✗**：**plain 编译 ✓｜gpu 编译 ✓｜plain clippy ✓｜gpu clippy ✓｜plain test 全绿 ✓｜gpu test 全绿 ✓｜fmt = 0 ✓**
+  ＋ **∴ 已推送 `9db6add`** ✓ ⇒ **∴ 下一轮**看 CI 是否把该作业转绿 ✓ ★
+
