@@ -23,7 +23,7 @@
 #   scripts/l4.sh rc <名字>            # 只看退出码（**0 才是绿 ✓）
 #   scripts/l4.sh sh                  # 交互式 shell（需要 TTY ✓）
 #
-# **∴ 环境变量 ✗**：`L4_SESSION`（缺省 `dawang`）／`L4_DIR`（缺省 `/content/yanshi`）
+# **∴ 环境变量 ✗**：`L4_SESSION`（缺省 `dawang`）／`L4_DIR`（缺省 `/content/yanshi`）／**`L4_BRANCH`（缺省 `l4-sync` ✓）**
 #
 # **∴ 两面（**AGENTS.md 第 3 条 ✓）★**：
 #   **∴ 收益 ✗**：**一条命令**从零到能测**✗
@@ -38,6 +38,12 @@ set -uo pipefail
 
 SESSION="${L4_SESSION:-dawang}"
 L4_DIR="${L4_DIR:-/content/yanshi}"
+# **★ 专用同步分支 ✗ ★**（**第 606 轮 ✓；**用户建议 ✓）：**L4 只拉这个分支**✗
+#   **∴ 为什么 ✗**：**原来**必须推 `main` 才能同步**✗
+#     ⇒ **∴ 于是**：**实验代码**会进 main** ＋ **每轮都要等 main 的 CI** ✓
+#       ＋ **∴ 现在 ✗**：**L4 侧只要 `git pull`（**不换分支 ✓）**
+#         ＋ **∴ 而** main **保持干净**（**∴ 验证通过后再合并 ✓）★
+L4_BRANCH="${L4_BRANCH:-l4-sync}"
 REPO_SLUG="gradetwo/yanshi"
 
 # **∴ colab CLI 在 `~/.local/bin` ✗** ⇒ **∴ 它**常常不在 PATH 里** ✓（**本轮实测 ✓）
@@ -182,8 +188,8 @@ timeout 120 vulkaninfo --summary 2>/dev/null | grep -aE "deviceName|driverInfo" 
     DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs >/tmp/node-i.log 2>&1 && echo "   node：装好 $(node --version)" || { echo "   ✗ node 装失败 ⇒ 看 /tmp/node-i.log"; tail -3 /tmp/node-i.log; }
   fi
   # **∴ ④ 仓库（**HTTPS ✓ —— L4 上没有 GitHub 密钥 ✓）
-if [ -d '"${L4_DIR}"'/.git ]; then cd '"${L4_DIR}"' && git fetch -q origin && git reset -q --hard origin/main && echo "   仓库：$(git log --oneline -1)"; else
-  git clone -q https://github.com/'"${REPO_SLUG}"'.git '"${L4_DIR}"' && cd '"${L4_DIR}"' && echo "   仓库：$(git log --oneline -1)"
+if [ -d '"${L4_DIR}"'/.git ]; then cd '"${L4_DIR}"' && git fetch -q origin && git reset -q --hard origin/'"${L4_BRANCH}"' && echo "   仓库：$(git log --oneline -1)"; else
+  git clone -q https://github.com/'"${REPO_SLUG}"'.git '"${L4_DIR}"' && cd '"${L4_DIR}"' && { git checkout -q '"${L4_BRANCH}"' 2>/dev/null || echo "   （${L4_BRANCH} 不存在 ⇒ 留在缺省分支）"; } && echo "   仓库：$(git log --oneline -1)"
 fi' 2>&1 | sed 's/^/  /'
 
   echo "== 3/3 构建（**--features gpu ✓，后台 ✓）=="
@@ -214,7 +220,7 @@ cmd_sync() {
   head="$(git rev-parse --short=7 HEAD)"
   remote_head="$(timeout 60 git ls-remote origin -h refs/heads/main 2>/dev/null | cut -f1 | cut -c1-7)"
   [ "${head}" = "${remote_head}" ] || die "本地 HEAD（${head}）与远端（${remote_head}）不一致 ⇒ 先 push（**不许**测一份未推送的代码 ✓）" 2
-  l4_ssh "cd ${L4_DIR} && git fetch -q origin && git reset -q --hard origin/main && git log --oneline -1 && echo '工作区：'\$(git status --porcelain | wc -l)' 项'" 2>&1 | sed 's/^/  /'
+  l4_ssh "cd ${L4_DIR} && git fetch -q origin && git checkout -q ${L4_BRANCH} 2>/dev/null || true; git reset -q --hard origin/${L4_BRANCH} && git log --oneline -1 && echo '分支：'\$(git branch --show-current)'｜工作区：'\$(git status --porcelain | wc -l)' 项'" 2>&1 | sed 's/^/  /'
 }
 
 cmd_accounts() {
