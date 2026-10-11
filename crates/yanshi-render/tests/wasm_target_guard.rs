@@ -33,7 +33,7 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
         ),
         (
             "crates/yanshi-render/src/render.rs",
-            9,
+            18,
             "（1）stage_probe 模块里的 Instant::now()：1 处代码 + 1 处说明注释，代码那处位于
              #[cfg(not(target_arch = wasm32))] 分支，wasm32 走编译期空操作；
              （2）#[cfg(test)] 测试模块里的 5 处 Instant::now()（液化成本探针与三个微基准）——
@@ -50,6 +50,16 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
         //   ⇒ **∴ wasm 构建里它们**不参与编译**✗ ，**且 wasm 上本来不走这条 GPU 验证路** ✓
         // **∴ 判据为什么仍要记账 ✗**：**本判据数的是**源码文本**✗
         //   ⇒ **∴ 加 cfg **不会**改变计数** ✓ ⇒ **∴ 必须**显式登记 ＋ 写明理由** ✓ ★
+        (
+            "crates/yanshi-render/src/png.rs",
+            2,
+            "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：只用于量 PNG 编码与\n             质量档的耗时（本会话第 533 轮起）。wasm 构建里它们不参与编译。",
+        ),
+        (
+            "crates/yanshi-render/src/render.rs",
+            18,
+            "cfg(not(target_arch = wasm32)) 下的 18 处 Instant::now()：全部是本会话为**门控探针**\n             加的计时（填充/图层/合成/裁剪/量化/每层/below/整体/分派前 等，YANSHI_RENDER_PROBE 门控）。\n             生产路径零开销；wasm 构建里它们不参与编译。",
+        ),
         (
             "crates/yanshi-render/src/buffer.rs",
             2,

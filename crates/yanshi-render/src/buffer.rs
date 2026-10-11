@@ -768,26 +768,19 @@ impl Buffer {
         //     ⇒ **∴ 而是**「**曾经比过**」** ✓
         //       ＋ **∴ 若要**恢复「**最近一次**」✗ ⇒ **∴ 应**把清零点**移进
         //         **`try_quantize_on_gpu` 的**失败分支**（**方案甲 ✓）★**** ✓✓
+        let mut out = vec![0u8; width * height * 4];
         if width == 0 || height == 0 {
-            return vec![0u8; width * height * 4];
+            return out;
         }
-        // **★★★ CPU 兜底改用**并行路**✗ ★★★**（**第 530 轮 ✓）
-        //   **∴ 原来的缺陷 ✗**：**这里直接调 `rows::encode_quantized_rows`**✗
-        //     ⇒ **∴ 它**是**单线程** ✓
-        //       ＋ **∴ 而**同文件里的 `to_rgba8_blocks` **有**按行并行** ✓（`buffer.rs:355`）
-        //         ⇒ **∴ 于是**：**渲染主路在多核机器上**只用了一个核** ✓
-        //           ⇒ **★ 实测（**4K 探针 ✓）：**量化 461 ms ＝ 该请求的 **47%**★
-        //             ＋ **∴ 而**它**本可按核数提速**（**本机 4 核 ⇒ 期望 3–4 倍 ✓）★
-        //   **∴ 为什么换它是安全的 ✗**：**两条路用**同一个 `encode` 闭包**✗
-        //     ⇒ **∴ 逐像素运算完全相同** ✓
-        //       ＋ **∴ 而且** `to_rgba8_blocks` 自己的注释写着
-        //         「**与并行版逐字节相同**」 ✓
-        //         ＋ **∴ 且**它**自带**阈值保护**（`PARALLEL_MIN_PIXELS` ＋ **行数够切 ✓）
-        //           ⇒ **∴ 小图／单行图**自动**走串行 ⇒ **∴ 与原来完全一样** ✓ ★
-        //   **∴ 判据 ✗**：**新加的单元测试
-        //     `parallel_and_serial_quantization_are_bit_identical`（**能红 ✓）
-        //     ＋ **∴ 以及** `tool-gpu-pure-parity`（**像素级 ✓）★
-        self.to_rgba8_blocks(background, None).0
+        crate::rows::encode_quantized_rows(
+            &self.pixels,
+            &mut out,
+            0,
+            height,
+            width,
+            background.map(crate::color::background_linear_premul),
+        );
+        out
     }
 
     /// 仅保留 alpha 通道，颜色置零（用于裁剪 / 蒙版测试）。
