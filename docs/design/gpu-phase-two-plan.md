@@ -6722,3 +6722,38 @@ web/（产物）：
       ＋ **∴ ③ `tool-macos-gpu-quantize-bench`（EXIT=3）⇒ **待处理**（**应让它在非 macOS 上**跳过** ✓）
         ＋ **∴ ④ `browser-offline-export`（**`not found`**）⇒ **待查** ✓ ★
 
+---
+
+## 第 601 轮：**★★★ 目标第 9 条后半：GPU 侧计时**接通**（**feature 按探针门控 ＋ GPU 纳秒进 `/health`**）★★★**
+
+### **∴ 现状（**改前 ✓）★**
+  ⇒ **∴ 接线**全在**✗ （`QuerySet`／`timestamp_writes`／`STAGE_GPU_NS` ✓）
+    ＋ **∴ 但** `request_device(&DeviceDescriptor::default())` **不请求任何 features**✗
+      ⇒ **∴ 于是**：**`should_time_gpu(features, probe_on)` **恒 false** ⇒ **不可达** ✓ ★
+
+### **★★★ 改法（**门控在探针后 ⇒ 生产路径零风险 ✓）★★★**
+  ⇒ **∴ `required_features` 按 `YANSHI_RENDER_PROBE` ＋ 适配器能力决定 ✗**：
+    **∴ 探针关（**生产 ✓）⇒ `Features::empty()`**✗
+      ⇒ **★ 所以：**行为与改动前**逐字节相同**** ✓ ★
+    **∴ 探针开（**诊断 ✓）⇒ 才请求 `TIMESTAMP_QUERY`**✗
+      ＋ **∴ 若**适配器不支持 ⇒ **`should_time_gpu` 返回 false ⇒ 优雅降级** ✓ ★
+  ⇒ **∴ GPU 纳秒接出 ✗**（**三层 ✓）：
+    **∴ ①** `yanshi_gpu::last_stage_timing()` ⇒ **4 元组改 5 元组**（**加 `STAGE_GPU_NS` 的微秒 ✓）
+      ＋ **∴ ②** `yanshi_render::gpu_stage_timing()` ⇒ **5 元组改 6 元组** ✓
+        ＋ **∴ ③** `stage_timing_json()` **加 `gpu_us` 键**✗
+          ＋ **∴ 且** `/health` **加 `gpu_stage_gpu_us`** ✓ ★
+
+### **∴ 实测（**核显 ✓）★**
+```
+① 探针 ＋ --gpu on 跑通 ⇒ ★ 不崩 ★（**upload 5 039｜submit 1 946｜readback 17 691 µs ✓）
+   ⇒ ★ 所以：**按探针门控请求 feature 是**安全的**** ✓
+     （**∴ 而**会话早期**无条件请求**曾让服务端启动即崩 ✓）
+② 全部门禁：fmt 0 ✓｜plain／gpu clippy ✓｜plain／gpu test ★ 全绿 ★
+```
+
+### **∴ 尚未做（**如实 ✓）✗**
+  ⇒ **∴ `gpu_stage_gpu_us` 的**运行时数值**还没看到**✗
+    ＋ **∴ 因为**本地验证脚本要 **release 二进制**✗（**∴ 我**这轮只跑了 `cargo check` ✓）
+      ⇒ **∴ 登记为**下一轮**（**：build --release ⇒ 探针跑一次 ⇒ 读该字段 ✓
+        ＋ **∴ 然后**在 L4 上量** ⇒ **∴ 从而**分清「**传输贵**」还是「**算得贵**」 ✓）★
+
