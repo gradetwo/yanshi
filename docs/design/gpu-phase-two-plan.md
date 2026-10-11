@@ -7659,7 +7659,13 @@ blend_pixel（blend.rs）
   Subtract => (cb-cs).max(0)｜Difference => (cb-cs).abs()
   ⇒ ★ **全部是加减乘除 ＋ min／max／abs／clamp ＋ 一个分支**✗
     ＋ **★ 没有 `powf`／`sqrt`／任何 transcendental ★**
-      （**∴ `grep` 报「transcendental 次数: 1」是**注释里的词**✗ ⇒ **∴ 不是**实际调用 ✓）★
+      （**★★★ 已核实（**第 624 轮 ✓）✗ ★★★**：**
+        `grep` 报「transcendental 次数: 1」⇒ **∴ 唯一命中是第 264 行的**测试函数名**** ✗
+          `fn multiply_and_screen_have_expected_identities()`
+            ＋ **∴ 而**我的 grep 用了**裸 `exp`**✗ ⇒ **∴ 于是**它**匹配到名字里的
+              ★ `e_exp_ected` ★** ✓
+              ⇒ **★ 所以：**没有任何**数学调用**✗
+                ＋ **∴ 而**我**第一次**把它说成「注释里的词」**✗ ⇒ **∴ 已改正**（**∴ 不留**不准确的断言 ✓）★
 ```
 
 ### **★★★ 结论（**乐观 ✓）★★★**
