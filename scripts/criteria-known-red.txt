@@ -19320,7 +19320,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       **★ `❌ 内核 wasm 缺失：web/wasm/yanshi_wasm_bg.wasm` ✗** ✓
 #         ＋ **"内核 JS 胶水缺失"** ✓
 #         ＋ **提示**：**跑 `node scripts/pwa-sync-wasm.mjs`** ✓**** ✓✓
-#     **∴ ② `browser-offline-journal.mjs` ✗**：
+browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗**：
 #       **★ "Service Worker 必须已激活（否则断网判据不成立）" ★** ✓
 #         ⇒ **∴ 它**依赖 wasm／SW 资产**✓ ⇒ **∴ 与 ① 同源** ✓**** ✓✓
 #     **∴ 统计 ✗**：**"通过 19｜意外失败 2｜已知红 3｜跳过 0"** ✓**** ✓✓
@@ -20997,7 +20997,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ＋ **`web/wasm` **4 文件** ✓｜**服务端缺省 `wasm_dir = crates/yanshi-wasm/pkg`** ✓**** ✓✓
 #       ⇒ **∴ 所以**：**产物与声明**都对**✗ ⇒ **∴ 问题在**浏览器侧** ✓ ★**** ✓✓
 #   **★ 权威读法（**我一度读错 ✓）★**：
-#     **∴ 判据用的是 ✗**：**`window.yanshiKernelReady === true`**✗（**`browser-offline-journal.mjs:135` ✓）** ★**** ✓✓
+# #     **∴ 判据用的是 ✗**：**`window.yanshiKernelReady === true`**✗（**`browser-offline-journal.mjs:135` ✓）** ★**** ✓✓
 #     **∴ 而**我**诊断脚本读的是 `window.yanshi.state().wasm`**✗ ⇒ **∴ 得到 `undefined`** ✓
 #       ⇒ **∴ 因为** `kernelReady()`（**`viewer-app.js:1472` ✓）用的是**模块内 `state`**✗
 #         （**`return !!(state.kernel && state.wasm);` ✓）
@@ -21741,7 +21741,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #        browser-offline-shell.mjs        1
 #          ✗ 离线外壳未达成：落笔事件没有进入笔画状态机（tool=undefined｜points@down=undefined｜
 #            dragging@down=undefined）⇒ 事件被平移那条吃掉了
-#        browser-offline-journal.mjs      1
+# #        browser-offline-journal.mjs      1
 #          ✗ 队列里恰好 1 条（拿到了 0）
 #     ```
 #   **★ 所以 ✗ ★**：**`?render=client` **确实点亮了两条**✗
@@ -22177,7 +22177,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #        browser-offline-shell.mjs         1   ← 落笔事件没有进入笔画状态机
 #        browser-offline-reload.mjs        1   ← 在线时画布上只有 0 个深色像素
 #        browser-live-brush.mjs            1   ← 残留非服务端像素
-#        browser-offline-journal.mjs       1   ← 队列里恰好 1 条（拿到了 0）
+# #        browser-offline-journal.mjs       1   ← 队列里恰好 1 条（拿到了 0）
 #        browser-export-full-document.mjs  1
 #     ```
 #   **★★★ 关键观察 ✗ ★★★**：
@@ -22245,7 +22245,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ⇒ **∴ 而**在**我的独立测试里**它**进去了** ✓
 #         ⇒ **∴ 所以**：**那不是**产品 bug**✗ ⇒ **∴ 而是**判据的构造问题** ✓ ★**** ✓✓
 #         **∴ 最可能的差别 ✗**：**判据**开头会**清旧外壳**✗
-#           （**`browser-offline-journal.mjs` 的 `清旧外壳 = {"workers":1,"caches":2}` ✓）
+# #           （**`browser-offline-journal.mjs` 的 `清旧外壳 = {"workers":1,"caches":2}` ✓）
 #           ⇒ **∴ 那**可能**清掉**工具偏好／IndexedDB**✗
 #             ⇒ **∴ 于是**页面**重新初始化**✗ ⇒ **∴ `state.tool` **变成别的值** ✓
 #               （**∴ 或**工具**没恢复** ✓）** ★**** ✓✓
@@ -22708,7 +22708,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #     **∴ 原缺口 ✗**（**13 处 ✓）**：
 #       ```
 #       ★ browser-export-full-document.mjs : 444
-#         browser-offline-journal.mjs      : 233
+# #         browser-offline-journal.mjs      : 233
 #         browser-offline-shell.mjs        : 52 / 54 / 71 / 178 / 197
 #         tool-browser-cpu-account.mjs     : 139 / 162 / 175 / 190 / 217 / 248
 #       ```
@@ -22722,7 +22722,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #   **★★★ 重跑（**补丁后 ✓）★★★**：
 #     ```
 #     ★ browser-offline-draw.mjs           退出码 0 ★   ← ★ 转绿（**之前 1）★
-#        browser-offline-journal.mjs        1   ← 队列里恰好 1 条（拿到了 0）
+# #        browser-offline-journal.mjs        1   ← 队列里恰好 1 条（拿到了 0）
 #        browser-live-brush.mjs             1   ← 残留非服务端像素
 #        browser-offline-shell.mjs          1   ← ★ 只剩**负对照**（**已知 CDP 限制 ✓）★
 #        browser-export-full-document.mjs   1
@@ -22775,7 +22775,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 #       ＋ **∴ 收益 ✗**：**离线**真的能画** ✓ ★**** ✓✓
 #   **★ 但实测**仍未生效（**如实 ✓）★**：
 #     ```
-#     ★ browser-offline-journal.mjs   退出码 1
+# #     ★ browser-offline-journal.mjs   退出码 1
 #        入队返回 = {…"reason":"Failed to fetch … brush-local.js"}   ← ★ 仍 404 ★
 #        ✗ 队列里恰好 1 条（拿到了 0）
 #     ★ browser-offline-draw.mjs      退出码 0   ← 保持绿
@@ -22892,7 +22892,7 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 
 # **★ 第 407 轮：★★★★★★★★★★ **链式突破 —— 修好 `brush-local.js` 后暴露出**下一个缺口：笔刷文件名转义错误**（`%` → `_pct_`）**** ✗** ★★★★★★★★★★
 #   **★ 本轮改动（**判据侧 ✓）★**：
-#     **∴ 加 `waitForPrecache(path, timeoutMs = 20000)`**✗（**`browser-offline-journal.mjs` ✓）**：
+# #     **∴ 加 `waitForPrecache(path, timeoutMs = 20000)`**✗（**`browser-offline-journal.mjs` ✓）**：
 #       ```js
 #       const waitForPrecache = async (path, timeoutMs = 20000) => {
 #         const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return !!r; } catch (e) { return false; } })()`;
