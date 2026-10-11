@@ -6483,3 +6483,54 @@ js-syntax ✓｜coverage ✓｜plain test ✓ 全绿｜fmt = 0 ✓
     ⇒ **★ 所以：**它是既有红**✗ ，**与本轮／本会话的改动无关**** ✓
       ＋ **∴ 登记为**下一轮的调查对象**（**∴ 而** CI 的 `criteria shard` 也仍红 ✓）★
 
+---
+
+## 第 592 轮：**★★★ 找到 `wasm smoke` 连续 6 次失败的真根因（**`Instant::now()` 在 wasm32 上 panic ✓）并用类型层面隔离修复 ★★★**
+
+### **★★★ 根因（**CI 日志的失败栈 ✓）★★★**
+```
+RuntimeError: unreachable
+  at … __rust_abort → __rust_start_panic → rust_panic → std::panicking::panic_with_hook
+  at ★ <std::time::Instant>::now ★                        ← ★ 罪魁 ★
+  at ★ <yanshi_render::render::Renderer>::render_region ★  ← ★ 调用点 ★
+```
+  ⇒ **∴ 而** `wasm-smoke.sh` **头部第 5–6 行**正写着这个**先例**✗ ：
+    「曾经有一个**诊断探针**在 wasm32 上调用了 `std::time::Instant::now()`
+      （**该目标不支持，直接 panic**），原生测试毫无反应，浏览器端却**每次渲染都崩**」
+    ⇒ **★ 所以 ✗**：**我本会话加的门控探针计时**正是同一个错误的重演**** ✓ ★
+
+### **∴ 为什么判据没挡住 ✗**
+  ⇒ **∴ `wasm_target_guard` **只数源码文本**** ✗
+    ＋ **∴ 它**不能**防运行时 panic** ✓
+      ⇒ **★ 所以：**必须在**类型层面**让 wasm 根本不构造 `Instant`**** ✓ ★
+
+### **★★★ 修法（**类型层面隔离 ＋ 接口相同 ✓）★★★**
+  ⇒ **∴ 新增 `crates/yanshi-core/src/probe.rs` ✗**：
+    **∴ 非 wasm ✗**：`ProbeClock` **包一个 `Instant`**（`now()`／`elapsed()`／`duration_since()` ✓）
+    **∴ wasm32 ✗**：`ProbeClock` **是无字段的哑类型**✗
+      ＋ **∴ `now()`** 只返回它自己**✗ ＋ **∴ `elapsed()`／`duration_since()`** 恒为 `Duration::ZERO` ✓
+        ⇒ **∴ 于是**：**既有调用点**几乎零改动**✗
+          ＋ **∴ 且**与既有注释「**wasm32 上恒为零**」**一致** ✓ ★
+  ⇒ **∴ 全量替换 23 处 ✗**（`render.rs` 16｜`png.rs` 2｜`buffer.rs` 1｜`blob.rs` 2｜`geometry.rs` 2 ✓）
+    ＋ **∴ 并**把两个探针 Drop guard 的字段类型改成 `ProbeClock`** ✓ ★
+
+### **★★★ 效果（**判据的数字说话 ✓）★★★**
+```
+wasm_target_guard 的实测对比：
+  render.rs   ：★ 18 ⇒ 2 ★      ← ★ 16 处已换成 ProbeClock ★
+  png.rs      ：★ 2 ⇒ 0 ★
+  geometry.rs ：★ 2 ⇒ 0 ★
+  buffer.rs   ：2 ⇒ 1
+  blob.rs     ：3 ⇒ 1
+  probe.rs    ：★ 0 ⇒ 4（新增）★  ← ★ 唯一真正用 Instant 的地方 ★
+```
+  ⇒ **∴ 然后 ✗**：**更新 allowlist 到实测值**✗（**归零的两条**已删 ✓ ＋ **`probe.rs` 新增带理由条目 ✓）
+    ⇒ **∴ `wasm_target_guard` ⇒ ★ 2 passed ★** ✓ ★
+
+### **∴ 门禁（**全绿 ✓）★**
+```
+fmt = 0 ✓｜plain clippy ✓（**修了两处 doc 缩进 lint ✓）｜plain test ✓ 全绿｜gpu test ✓ 全绿
+```
+  ＋ **∴ 已推送 `7cf3781` ✗ ＋ **∴ CI 已触发**（**观察时 1m37s ✓）★
+    ⇒ **∴ 关键待确认 ✗**：**`wasm smoke` 是否转绿**（**∴ 那**是**目标第 13 条 ✓）★
+
