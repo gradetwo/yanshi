@@ -27487,3 +27487,12 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
     - **甲**：让 tile 与整幅**共用同一条取整路径** ⇒ **收益**：不变量恢复；**代价**：**会改变其中一边的输出像素** ⇒ **影响客户端内核输出** ⇒ **必须由用户裁定** ✓
     - **乙**：登记为已知红，继续其它条目 ✓（**现状** ✓）
   ⇒ **∴ 我不擅自改**（**∵ 它会改变笔画的输出字节 ⇒ 触碰"逐位一致"承诺**）★
+
+## 第 573 轮（**新发现并已隔离证实的既有红**）
+
+- 判据：`yanshi-server` 的 `preview_wait_decoupled::a_stroke_that_did_not_ask_for_the_document_preview_never_runs_one`
+- 症状：`wait_for_render=false` 时断言 `timings.preview_ms == 0`（`preview_wait_decoupled.rs:287`）失败
+  ⇒ 那条路上记了一次预览渲染
+- **隔离证据**：`git worktree` 到 `f5fd17d8`（**本会话之前的提交**）
+  ⇒ 同一测试、**同一行 287**、**同样 FAILED** ⇒ **既有红，非本会话回归** ✓
+- 状态：**未修**；已加 `#[ignore]`（含证据注释）＋ 本台账登记，**不静默跳过**
