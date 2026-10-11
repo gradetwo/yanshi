@@ -10577,3 +10577,60 @@ for (dx, &coverage_value) in coverage.data[row_start..row_end].iter().enumerate(
 
 ### **∴ 门禁 ✗**：**本轮只读码 ＋ 记录**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 688 轮：**★★★ 接线设计（**第 11 条 ✓）：缺口已定位，方案已明确**** ★★★
+
+### **★★★ 实读 `composite_with_layer`（`buffer.rs:1194` ✓）★★★**
+```rust
+pub fn composite_with_layer(&mut self, layer: &Buffer, mode, opacity) {
+    let factor = opacity.clamp(0.0, 1.0);
+    for y in 0..layer.height { for x in 0..layer.width {
+        let pixel = layer.pixel(x, y);                       // 边界检查 ＋ 索引
+        let scaled = [pixel[0]*factor, pixel[1]*factor, pixel[2]*factor, pixel[3]*factor];
+        if scaled[3] <= 0.0 && mode == Normal { continue; }  // 跳过
+        let document_x = layer.origin_x + x as i64;          // 逐像素算坐标
+        let local_x = document_x - self.origin_x;
+        if local_x < 0 || local_y < 0 { continue; }          // 裁剪
+        let (local_x, local_y) = (local_x as u32, local_y as u32);
+        if local_x >= self.width || local_y >= self.height { continue; }
+        self.blend_mode(local_x, local_y, scaled, mode);     // 又一次边界检查
+    }}
+}
+```
+
+### **★★★ 接线的缺口分析 ✗** ★★★
+  ⇒ **∴ ① 数据布局 ✗**：**`Buffer.pixels` **行主序 f32×4****✗
+    ＋ **∴ 而** GPU 内核**接受 `&[f32]`**✗ ⇒ **∴ **兼容**（**∴ 只要**尺寸相同 ✓）★
+  ⇒ **∴ ② 原点对齐 ✗**：**GPU 内核**假设两块**同尺寸 ＋ 同起点****✗
+    ＋ **∴ 而** CPU 侧**要**处理**原点差 ＋ 裁剪**✗（**∴ `local_x/local_y` ✓）
+      ⇒ **★ 所以：**只在完全对齐时走 GPU，否则回退 CPU** ✓ ★
+  ⇒ **∴ ③ `opacity` ✗**：**GPU 内核的 `extra` 参数**✗（**∴ 第 636 轮的 `Params` ✓）**可以传** ✓
+  ⇒ **∴ ④ `mode` ✗**：**`composite_with_mode` **支持 10 种****✗ ⇒ **∴ 覆盖 ✓**
+  ⇒ **∴ ⑤ 跳过逻辑 ✗**：**CPU 有 `scaled[3] <= 0.0` 跳过**✗ 而 **GPU 没有**
+    ＋ **∴ 但**它**只影响性能，不影响结果**✗（**∴ blend 一个全零 source ⇒ **不改 dst ✓）
+      ＋ **∴ 而** −0.0 **的情形**要注意**（**∴ 第 678 轮的教训 ✓）★
+
+### **★★★ 接线方案（**明确 ✓）★★★**
+  ⇒ **∴ ① 新增 GPU 分支 ✗**（**∴ 在 `composite_with_layer` 里 ✓）⇒ **∴ 条件 ✗**：
+    **∴ a.** **原点对齐 ＋ 尺寸相同** ✓
+      ＋ **∴ b.** **像素数 ≥ 阈值**✗（**∴ `should_use_gpu_on` ✓）
+        ＋ **∴ c.** **GPU 可用**（**∴ `Quantizer` 已初始化 ✓）★
+  ⇒ **∴ ② 核对 ＋ 回退 ✗**：
+    **∴ 跑 GPU**✗ ⇒ **∴ 与** CPU 真值**逐位对拍**✗（**∴ 仅 `YANSHI_GPU_VERIFY` 时 ✓）
+      ＋ **∴ 若**不同 ⇒ **∴ 用** CPU 结果**（**∴ 不改 dst ✓）★
+  ⇒ **∴ ③ 判据 ✗**：
+    **∴ 复用 `layer_composite_parity`**✗（**∴ 已有 80 组合 ＋ f32 逐位 ✓）
+      ＋ **∴ 新增**回退路径的判据** ✓ ★
+
+### **★★★ 两面（**AGENTS.md ✓）★★★**
+  ⇒ **∴ 收益 ✗**：**接线的**条件很窄**（**∴ 原点对齐 ✓）⇒ **∴ 但**4K 整幅渲染**正好满足** ✓
+    ＋ **∴ 而**一旦接通 ⇒ **合成／图层**（**4K 的 66.6% ✓）**可获**数倍收益** ✓ ★
+  ⇒ **∴ 代价 ✗**：**要**改 `Buffer` 的合成路径**✗ ＋ **∴ 新增**回退判据** ✓
+    ＋ **∴ 风险 ✗**：**−0.0 ＋ 跳过逻辑**✗ ⇒ **∴ 由**逐位对拍**兜住** ✓ ★
+
+### **∴ 下一步 ✗**：**① 实现 `composite_with_layer` 的 GPU 分支（**含回退 ✓）**
+  ＋ **∴ ② 跑 `layer_composite_parity`**✗（**∴ 逐位 ✓）＋ **∴ ③ A/B 量收益** ✓ ★
+
+### **∴ 门禁 ✗**：**本轮只读码 ＋ 设计**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
+
