@@ -18,6 +18,13 @@
 #   scripts/l4.sh accounts [--rounds N] [--width W] [--height H]   # 在 L4 上量两本账
 #   scripts/l4.sh down                # 停掉会话（释放配额 ✓）
 #   scripts/l4.sh bg <名字> '<命令>'    # 起一个**脱离连接**的作业（写 log／rc／pid ✓）
+#   scripts/l4.sh tnew <名字> '<命令>'  # **tmux 作业**（**推荐 ✓**：一次起 ⇒ 之后 tlog 抓输出 ✓）
+#   scripts/l4.sh tlog <名字> [行数]     # 抓该作业的屏幕尾部（**短 ssh ⇒ 不阻塞 ✓**）
+#   scripts/l4.sh tls                    # 列出所有 tmux 作业
+#   scripts/l4.sh tkill <名字>           # 结束并销毁该作业
+#   scripts/l4.sh tsend <名字> '<命令>'  # **向该作业的窗口**发命令**（**不必重连 ✓）
+#   scripts/l4.sh twin <会话> <窗口名> '<命令>'  # **同一会话开新窗口**（**每项工作一个窗口 ⇒ 互不干扰 ✓）
+#   scripts/l4.sh tlog <名字>[:<窗口>] [行数]    # 抓某一窗口的屏幕（**短 ssh ✓）
 #   scripts/l4.sh jobs                # 列作业 ＋ 各自退出码（**机器可读 ⇒ 能判红绿 ✓）
 #   scripts/l4.sh tail <名字> [行数]    # 看作业输出
 #   scripts/l4.sh rc <名字>            # 只看退出码（**0 才是绿 ✓）
@@ -208,6 +215,106 @@ cmd_run() {
   l4_ssh "$@"
 }
 
+# **★★★ tmux 作业：一次起 ⇒ 之后只用**短 ssh 抓输出** ✗ ★★★**（**第 608 轮 ✓；**用户建议 ✓）
+#   **∴ 为什么需要 ✗**：**原来只有 `l4.sh run '<命令>'`**✗
+#     ⇒ **∴ 于是**：**①** 换一项工作就要**重发 ssh**（**还容易撞 `HTTP 429`** ✓）
+#       ＋ **∴ ②** 长任务**阻塞**调用（**靠 timeout ✓）
+#         ＋ **∴ ③** 多项工作**不能并发** ✓
+#   **∴ 现在 ✗**：**在 L4 上用 `tmux` 起**脱离连接的作业**
+#     ＋ **∴ 输出**落在 `/tmp/<名字>.log`（**且可用 `capture-pane` 直接抓屏 ✓）
+#       ⇒ **∴ 从而**：**不阻塞 ＋ 不互扰 ＋ 少撞 429** ✓ ★
+#   **∴ 子命令 ✗**：
+#     `l4.sh tnew <名字> '<命令>'`   起一个后台作业（**已存在则报错 ✓）
+#     `l4.sh tlog <名字> [行数]`     抓它的屏幕尾部（**短 ssh ✓）
+#     `l4.sh tls`                    列出所有作业
+#     `l4.sh tkill <名字>`           结束并销毁该作业
+#   **∴ 代价（**两面 ✓）✗**：**要记名字**✗ ＋ **∴ 且**作业**不随 ssh 结束而自动清理**（**∴ 用 `tkill` 或 `down` ✓）★
+cmd_tnew() {
+  local name="${1:-}"; shift || true
+  [ -n "${name}" ] || die "用法：scripts/l4.sh tnew <名字> '<命令>'" 2
+  [ $# -ge 1 ] || die "用法：scripts/l4.sh tnew <名字> '<命令>'" 2
+  local cmd="$*" b64
+  # **★★★ 两条硬规矩（**都是实测换来的 ✓）★★★**（**第 608 轮 ✓）
+  #   **∴ ① 内容走 `base64` ✗**：**否则要经本机→ssh→tmux→bash 四层转义** ✓
+  #   **∴ ② 日志用**重定向**✗（`> f 2>&1`）**：**绝不嵌 `| tee`**✗
+  #     ＋ **∴ 因为**管道要经引号 ⇒ **∴ 那**正是第一版**会话秒退**的原因** ✓
+  #       （**∴ 手动验证过：`> /tmp/t1.log 2>&1` **完全可用** ✓）★
+  b64="$(printf '%s' "${cmd}" | base64 -w0)"
+  l4_ssh "printf '%s' '${b64}' | base64 -d > /tmp/${name}.sh" >/dev/null 2>&1
+  l4_ssh "tmux has-session -t ${name} 2>/dev/null && { echo '  ✗ 已有同名作业 ⇒ 先 tkill ${name}'; exit 3; }; tmux new-session -d -s ${name} 'bash /tmp/${name}.sh > /tmp/${name}.log 2>&1; echo EXIT=\$? >> /tmp/${name}.log'; sleep 1; tmux ls 2>/dev/null | sed 's/^/  /'" 2>&1 | tail -4
+}
+# **★ 向作业的窗口发命令 ✗ ★**（**第 608 轮 ✓；**用户提示「窗口输入输出都方便」 ✓）
+#   **∴ 用途 ✗**：**不必重连**✗ ⇒ **∴ 直接**把新命令送进那个窗口** ✓
+#     ＋ **∴ 与 `tlog` 配对 ✗**：**发完 ⇒ 抓屏**（**∴ 全程短 ssh ✓）★
+cmd_tsend() {
+  local name="${1:-}"; shift || true
+  [ -n "${name}" ] || die "用法：scripts/l4.sh tsend <名字> '<命令>'" 2
+  [ $# -ge 1 ] || die "用法：scripts/l4.sh tsend <名字> '<命令>'" 2
+  l4_ssh "tmux send-keys -t ${name} $(printf '%q' "$*") Enter && echo '  ✓ 已送进 ${name}'" 2>&1 | tail -2
+}
+
+# **★ 在同一会话里**开新窗口** ✗ ★**（**∴ 每项工作一个窗口 ⇒ 互不干扰 ✓）★
+cmd_twin() {
+  local name="${1:-}"; local win="${2:-}"; shift 2 || true
+  [ -n "${name}" ] && [ -n "${win}" ] && [ $# -ge 1 ] || die "用法：scripts/l4.sh twin <会话> <窗口名> '<命令>'" 2
+  local b64; b64="$(printf '%s' "$*" | base64 -w0)"
+  l4_ssh "printf '%s' '${b64}' | base64 -d > /tmp/${name}_${win}.sh; tmux new-window -t ${name} -n ${win} 'bash /tmp/${name}_${win}.sh 2>&1 | tee /tmp/${name}_${win}.log'; sleep 1; tmux list-windows -t ${name} 2>/dev/null | sed 's/^/  /'" 2>&1 | tail -5
+}
+cmd_tlog() {
+  local name="${1:-}"; local lines="${2:-25}"
+  [ -n "${name}" ] || die "用法：scripts/l4.sh tlog <名字> [行数]" 2
+  # **∴ 先抓屏（**最省 ⇒ 不读文件 ✓）✗ ⇒ **∴ 若**会话已结束 ⇒ **∴ 退回**读日志** ✓
+  l4_ssh "if tmux has-session -t ${name%%:*} 2>/dev/null; then tmux capture-pane -p -t ${name} | grep -v '^$' | tail -n ${lines}; else echo '（作业 ${name} 已结束 ⇒ 读日志尾部）'; tail -n ${lines} /tmp/${name}.log 2>/dev/null || echo '  ✗ 没有该作业的记录'; fi" 2>&1 | tail -n $((lines + 3))
+}
+
+cmd_tls() {
+  l4_ssh "tmux ls 2>/dev/null || echo '  （没有 tmux 作业）'" 2>&1 | tail -n 12
+}
+
+cmd_tkill() {
+  local name="${1:-}"
+  [ -n "${name}" ] || die "用法：scripts/l4.sh tkill <名字>" 2
+  l4_ssh "tmux kill-session -t ${name} 2>/dev/null && echo '  ✓ 已结束 ${name}' || echo '  （没有该作业）'" 2>&1 | tail -2
+}
+
+# **★★★ 在 L4 上跑**全量门禁**并回摘要 ✗ ★★★**（**第 608 轮 ✓；**用户要求「优化到脚本里」 ✓）
+#   **∴ 为什么 ✗**：**本机跑 cargo 慢**（**≈2–4 分钟起 ✓）
+#     ＋ **∴ 而** L4 有 **12 线程**（**实测 clippy 24 s／test 2m33s，并行度 4.1× ✓）
+#       ⇒ **∴ 所以**：**重量级一律放 L4** ⇒ **∴ 而**这条子命令**把常用序列封起来** ✓ ★
+cmd_gate() {
+  local which="${1:-all}"
+  l4_ssh "cd ${L4_DIR} && export PATH=\$HOME/.cargo/bin:\$PATH
+    echo '── fmt ──'; cargo fmt --all -- --check >/dev/null 2>&1 && echo '  ✓' || echo '  ★ 红'
+    if [ '${which}' = all ] || [ '${which}' = clippy ]; then
+      echo '── clippy（plain）──'; cargo clippy --workspace --all-targets -- -D warnings 2>&1 | grep -aE '^error' | head -3 || echo '  ✓'
+      echo '── clippy（gpu）──'; cargo clippy --workspace --all-targets --features gpu -- -D warnings 2>&1 | grep -aE '^error' | head -3 || echo '  ✓'
+    fi
+    if [ '${which}' = all ] || [ '${which}' = test ]; then
+      echo '── test（plain）──'; cargo test --workspace 2>&1 | grep -aE 'test result: FAILED|^error' | head -3 || echo '  ✓'
+      echo '── test（gpu）──'; cargo test --workspace --features gpu 2>&1 | grep -aE 'test result: FAILED|^error' | head -3 || echo '  ✓'
+    fi
+    echo '（**无 ★ 行 ⇒ 全绿 ✓）'" 2>&1 | tail -n 24
+}
+
+# **★★★ 清 L4 上的作业与临时文件 ✗ ★★★**（**用完即清 ⇒ 不占资源 ✓；**配合「用完销毁」的纪律 ✓）★
+cmd_clean() {
+  l4_ssh "tmux kill-server 2>/dev/null; rm -f /tmp/*.log /tmp/*.sh 2>/dev/null; echo '  ✓ 已清 L4 的 tmux 作业与临时文件'" 2>&1 | tail -2
+}
+
+# **★★★ 推送并校验同步分支 ✗ ★★★**（**把「推 l4-sync ＋ 校验远端一致」封成一条 ✓）★
+#   **∴ 为什么 ✗**：**`cmd_sync` 有**一致守卫**（**∴ 不一致就拒 ✓）
+#     ＋ **∴ 而**忘了推就会**白等一轮** ✓ ⇒ **∴ 所以**：**先 push 再校验** ✓ ★
+cmd_push() {
+  local br; br="$(git branch --show-current)"
+  echo "  当前分支：${br}（**同步分支 ${L4_BRANCH} ✓）"
+  git push -q origin "HEAD:${L4_BRANCH}" 2>&1 | tail -2
+  local head remote
+  head="$(git rev-parse --short=7 HEAD)"
+  remote="$(git ls-remote origin -h "refs/heads/${L4_BRANCH}" 2>/dev/null | cut -c1-7)"
+  if [ "${head}" = "${remote}" ]; then echo "  ✓ 已同步（${head} ✓）"; else echo "  ★ 不一致：本地 ${head}｜远端 ${remote}"; fi
+  [ "${br}" = "${L4_BRANCH}" ] || echo "  （**注意**：当前不在 ${L4_BRANCH} ⇒ 推的是 HEAD ✓）"
+}
+
 cmd_sync() {
   # **∴ 走 GitHub ✗** ⇒ **∴ 不依赖 scp／rsync**，且**用已推送的提交** ✓
   local head remote_head
@@ -327,7 +434,27 @@ case "${1:-}" in
   up)          shift; cmd_up "$@" ;;
   wait-build)  shift; cmd_wait_build "$@" ;;
   run)         shift; cmd_run "$@" ;;
+  help|-h|--help)
+    # **★ 从**本文件自己的 case 分发**生成用法 ✗ ★**（**第 609 轮 ✓；**用户要求「简化操作」 ✓）
+    #   **∴ 为什么从文件生成 ✗**：**手写列表**会过时**✗
+    #     ＋ **∴ 而**分发是**唯一真相**（**∴ 谁**加了分支 ⇒ **∴ 立刻**出现在 help 里 ✓）★
+    echo "  用法：scripts/l4.sh <子命令> [参数…]"
+    echo ""
+    echo "  子命令（**从本脚本的分发自动生成 ✓）："
+    grep -oE '^  [a-z|-]+\).*' "$0" | sed 's/) */)  /' | grep -v '^  help' | sed 's/^/   /'
+    echo ""
+    echo "  环境变量：L4_SESSION（缺省 dawang）｜L4_DIR（缺省 /content/yanshi）｜L4_BRANCH（缺省 l4-sync）"
+    exit 0 ;;
   sync)        shift; cmd_sync "$@" ;;
+  gate)        shift; cmd_gate "$@" ;;
+  clean)       shift; cmd_clean "$@" ;;
+  push)        shift; cmd_push "$@" ;;
+  tnew)        shift; cmd_tnew "$@" ;;
+  tsend)       shift; cmd_tsend "$@" ;;
+  twin)        shift; cmd_twin "$@" ;;
+  tlog)        shift; cmd_tlog "$@" ;;
+  tls)         shift; cmd_tls "$@" ;;
+  tkill)       shift; cmd_tkill "$@" ;;
   accounts)    shift; cmd_accounts "$@" ;;
   # **∴ 作业账（**机器可读 ✓）**：**bg／jobs／tail／rc** ✓
   bg)          shift; cmd_bg "$@" ;;
