@@ -329,6 +329,14 @@ for (const spec of compareSpecs) {
     //         ＋ **∴ 而**它**必须在**渲染之后**读**✗
     //           ⇒ **∴ 否则** `null`（**没比过 ✓）★
     channelDelta: after.max_channel_delta,
+    // **★ GPU 阶段的三个分段 ✗ ★**（**第 586 轮 ✓；**目标第 5／9 条 ✓）
+    //   **∴ 为什么要它 ✗**：**传输是 GPU 阶段的大头**✗
+    //     （**第 68 轮实测：**upload 59% ＋ readback 18% ＝ **77%**** ✓）
+    //     ＋ **∴ 所以**：**「减少往返」的收益**必须用这三个数对比才可信** ✓ ★
+    stageUploadUs: after.gpu_stage_upload_us,
+    stageSubmitUs: after.gpu_stage_submit_us,
+    stageReadbackUs: after.gpu_stage_readback_us,
+    stageCalls: after.gpu_stage_calls,
     verifiedBlobs: after.verified_blobs,
     adapter: after.gpu_adapter_note,
     wallMs: median(usable.map((s) => s.wallMs)),
@@ -384,6 +392,10 @@ for (const row of rows) {
   //   （**∴ 实测**：第一个是 `disabled_by_flag`（`--gpu off` 那台）
   //     ⇒ **∴ 于是**看不到 GPU 那台的 `NVIDIA L4` ✓）
   for (const a of adapter) console.log(`    适配器 ＝ ${a}`);
+  console.log("  ★ GPU 阶段分段（**微秒；**传输 vs 计算 ✓）★");
+  for (const r of rows) {
+    console.log(`    ${r.label}：calls ＝ ${r.stageCalls}｜upload ＝ ${r.stageUploadUs}｜submit ＝ ${r.stageSubmitUs}｜readback ＝ ${r.stageReadbackUs}`);
+  }
   // **★ 判据必须**忽略 null**✗ ★**（**第 581 轮实测 ✓）
   //   **∴ 为什么 ✗**：**CPU 路**不与 GPU 比对 ⇒ **∴ 它**正确地报 `null`**
   //     ＋ **∴ 而**我的第一版只处理了「全 null」与「全 0」✗
