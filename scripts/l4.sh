@@ -218,8 +218,8 @@ cmd_sync() {
   #         ＋ **∴ 而**代码**明明已经推送了** ✓ ⇒ **∴ 那**是**假警报** ✓ ★**** ✓✓
   #   **∴ 现在 ✗**：**两侧都取 7 字符** ✓（**∴ 与 GitHub 的短哈希一致 ✓）★**** ✓✓
   head="$(git rev-parse --short=7 HEAD)"
-  remote_head="$(timeout 60 git ls-remote origin -h refs/heads/main 2>/dev/null | cut -f1 | cut -c1-7)"
-  [ "${head}" = "${remote_head}" ] || die "本地 HEAD（${head}）与远端（${remote_head}）不一致 ⇒ 先 push（**不许**测一份未推送的代码 ✓）" 2
+  remote_head="$(git ls-remote origin -h refs/heads/${L4_BRANCH} 2>/dev/null | cut -c1-7)"
+  [ "${head}" = "${remote_head}" ] || die "本地 HEAD（${head}）与远端 ${L4_BRANCH}（${remote_head}）不一致 ⇒ 先 push（**不许**测一份未推送的代码 ✓）" 2
   l4_ssh "cd ${L4_DIR} && git fetch -q origin && git checkout -q ${L4_BRANCH} 2>/dev/null || true; git reset -q --hard origin/${L4_BRANCH} && git log --oneline -1 && echo '分支：'\$(git branch --show-current)'｜工作区：'\$(git status --porcelain | wc -l)' 项'" 2>&1 | sed 's/^/  /'
 }
 
