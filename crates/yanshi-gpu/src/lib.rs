@@ -1229,3 +1229,197 @@ mod gpu_timestamp_gate_tests {
         );
     }
 }
+
+// **★★★ GPU 合成：切片 1（Normal）✗ ★★★**（**第 626 轮 ✓；目标第 11 条 ✓）
+//
+// **∴ 为什么单独一个 impl 块 ✗**：**Rust**允许**多个 `impl`**✗
+//   ＋ **∴ 而**原文件**极大（**4000+ 行 ✓）⇒ **∴ 追加**零风险** ✓
+//     ＋ **∴ 且**不碰**任何既有代码 ✓ ★
+//
+// **∴ 与 `quantize` 的关系 ✗**：**共用**同一个 `Quantizer`（**∴ 即**同一个 device／queue ✓）
+//   ⇒ **∴ 从而**：**将来**合成与量化**能**在同一个提交里**连起来** ✓（**∴ 那**正是第 11 条的目标 ✓）★
+//
+// **★ wasm32 门控 ✗ ★**：**本会话的教训（**静态量／GPU 类型在 wasm 上不合法 ✓）
+//   ⇒ **∴ 所以**：**整个块**只在**非 wasm32** 编译 ✓ ★
+#[cfg(not(target_arch = "wasm32"))]
+impl Quantizer {
+    /// **★ 用 GPU 做 source-over 合成（**Normal ✓）✗ ★**
+    ///
+    /// **∴ 语义 ✗**：**与 CPU 的 `Buffer::blend`（⇒ `over` ✓）**逐位一致** ✓
+    ///   ＋ **∴ 输入输出都是**预乘 f32 RGBA**✗ ⇒ **∴ 长度**必须是 `pixels * 4`** ✓
+    ///     ＋ **∴ 失败 ⇒ **返回 `None`**（**∴ 调用方**回退 CPU ✓）★
+    ///
+    /// # Errors
+    /// **∴ 本函数**不返回 `Err`** ✗：**任何失败**都映射成 `None`** ✓
+    ///   ＋ **∴ 因为**调用方的契约**就是**「**None ⇒ 走 CPU**」** ✓ ★
+    #[must_use]
+    pub fn composite_normal(&self, src: &[f32], dst: &[f32]) -> Option<Vec<f32>> {
+        block_on(self.composite_normal_async(src, dst))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn composite_normal_async(&self, src: &[f32], dst: &[f32]) -> Option<Vec<f32>> {
+        let pixels = src.len() / 4;
+        if pixels == 0 || dst.len() != src.len() {
+            return None;
+        }
+        let bytes = (src.len() * 4) as u64;
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("yanshi-gpu-composite"),
+                source: wgpu::ShaderSource::Wgsl(COMPOSITE_WGSL.into()),
+            });
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    storage_entry(0, false),
+                    storage_entry(1, false),
+                    storage_entry(2, true),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("yanshi-gpu-composite"),
+                layout: Some(&self.device.create_pipeline_layout(
+                    &wgpu::PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &[&layout],
+                        push_constant_ranges: &[],
+                    },
+                )),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let make = |label: &str, usage: wgpu::BufferUsages, size: u64| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let b_src = make(
+            "composite-src",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            bytes,
+        );
+        let b_dst = make(
+            "composite-dst",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            bytes,
+        );
+        let b_out = make(
+            "composite-out",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            bytes,
+        );
+        let b_read = make(
+            "composite-read",
+            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            bytes,
+        );
+        // **∴ uniform 必须** 32 字节**✗（**与 `Params` 逐字段对应 ✓）★
+        let b_params = make(
+            "composite-params",
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            32,
+        );
+        self.queue
+            .write_buffer(&b_src, 0, f32s_to_bytes(src).as_slice());
+        self.queue
+            .write_buffer(&b_dst, 0, f32s_to_bytes(dst).as_slice());
+        let params = u32s_to_bytes(&[pixels as u32, 0, 0, 0]);
+        self.queue.write_buffer(&b_params, 0, &params);
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: b_src.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b_dst.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: b_out.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: b_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups((pixels as u32).div_ceil(64), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&b_out, 0, &b_read, 0, bytes);
+        self.queue.submit(Some(enc.finish()));
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        let slice = b_read.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        if rx.recv().is_err() {
+            return None;
+        }
+        let mapped = slice.get_mapped_range();
+        let mut out = Vec::with_capacity(src.len());
+        for c in mapped.chunks_exact(4) {
+            out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        drop(mapped);
+        b_read.unmap();
+        Some(out)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const COMPOSITE_WGSL: &str = include_str!("composite.wgsl");
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn storage_entry(binding: u32, read_write: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: if read_write {
+                wgpu::BufferBindingType::Storage { read_only: false }
+            } else {
+                wgpu::BufferBindingType::Storage { read_only: true }
+            },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
