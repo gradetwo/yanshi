@@ -2890,3 +2890,35 @@ adapter:Metal:IntegratedGpu:Apple M2 Max:device=true
 **∴ 纯 CPU 路的**方差都很大****：**iGPU ±43%**✗ 、**L4（**1191–1939 ✓）** ✓
   ⇒ **∴ 说明**它有**自己的不稳定来源**（**候选**：tile 缓存状态／线程调度 ✓）
     ⇒ **∴ 那**是**纯 CPU 路**自己的优化点** ✓（**符合用户"两边各自优化"的裁定 ✓）★
+
+### **∴ CI 最后一条判据（**第 501 轮的新证据 ✓）★**
+
+**∴ 用户自己的修复 ✗**（`e646b680` ✓）：**`pwa-sync-wasm.mjs` 只检查 `_bg.wasm`**✗
+  ⇒ **∴ 于是**：**`yanshi_wasm.js` 缺失／为空时**静默通过** ✓
+    ＋ **∴ 修复**补上了对 `yanshi_wasm.js` 的检查 ✓ ★
+
+**∴ 但重跑后**判据仍然红 ✗**，**而且原因**没变** ✓：
+```
+❌ draw_stroke 必须成功 ⇒ {"status":500,"error":"stroke_failed",
+   "reason":"Failed to fetch dynamically imported module: http://127.0.0.1:33771/wasm/yanshi_wasm.js"}
+过期偏好 1 ⇒ 重载后内核已预热: false
+```
+
+**∴ 决定性排除 ✗**：**我第 493 轮加的**wasm 载荷探测**在 CI 里**全部正常** ✓：
+```
+/wasm/yanshi_wasm.js       ⇒ 200｜text/javascript
+/wasm/yanshi_wasm_bg.wasm  ⇒ 200｜application/wasm｜magic 00 61 73 6d
+```
+⇒ **∴ 所以 ✗**：**文件**在**✗ 、**MIME**对 ✗ 、**magic**对** ✓ ⇒ **∴ 失败**不在这些** ✓ ★
+
+**∴ 新假说（**下一轮验证 ✓）★**：
+  ⇒ **∴ `pwa-sync-wasm.mjs` 只同步 **4 个文件****✗
+    （`yanshi_wasm.js`／`yanshi_wasm_bg.wasm`／两个 `.d.ts` ✓）
+    ＋ **∴ 而** `wasm-bindgen --target web` **可能还生成**`snippets/` 目录**✗
+      （**∴ 当** wasm 侧用 `inline_js` 时 ✓）
+      ⇒ **∴ 若**有 ⇒ **∴ 没同步 ⇒ **动态 import 内部**404**** ✓
+        ⇒ **★ 与另两个观测吻合 ✗ ★**：
+          **∴ ①** CI 的 wasm ＝ 1 533 387 B vs 本机 1 519 384 B（**差 14 KB ✓）
+          ＋ **∴ ②** **本机（**用旧 pkg ✓）**判据绿**✗ 、**CI（**新构建 ✓）**红** ✓
+**∴ 验证方法 ✗**：**在 CI 里列出 `crates/yanshi-wasm/pkg/` 的全部内容** ✓
+  （**∴ 若**有 `snippets/` ⇒ **∴ 修 `pwa-sync-wasm.mjs` 递归同步 ✓）★
