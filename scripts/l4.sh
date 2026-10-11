@@ -322,6 +322,28 @@ cmd_tkill() {
 #   **∴ 它做什么 ✗**：**一次极短的 ssh**（**只 `echo PONG` ＋ 报 GPU 名** ✓）
 #     ＋ **∴ 若**拿不到 PONG ⇒ **∴ 明确说「会话可能已被回收 ⇒ 用 `l4.sh up` 重建」** ✓ ★
 #   **∴ 代价 ✗**：**一次 ssh**（**~1–2 秒 ✓）★
+# **★★★ up-state：判断 `up` 是否仍在运行 ✗ ★★★**（**第 641 轮 ✓）
+#   **∴ 为什么需要它 ✗**：**`pgrep -f 'l4.sh up'` 会**自匹配**✗
+#     ＋ **∴ 因为**我自己的检查命令文本里也含这串 ⇒ **∴ 它**永远报"在跑"** ✓
+#       ＋ **∴ 代价**：**我因此白等了 4 轮** ✓
+#   **∴ 判据改成日志时间戳 ✗**：**静止 ＞ N 秒 ⇒ 认为已结束 ✓
+#     ＋ **∴ 并**用 `[l]4.sh` 字符类避自匹配** ✓ ★
+cmd_up_state() {
+  local log="${L4_UP_LOG:-/tmp/l4up.log}"
+  local quiet="${L4_UP_QUIET:-120}"
+  if [ ! -f "$log" ]; then
+    echo "  （没有日志 $log）"
+    return 4
+  fi
+  local age=$(( $(date +%s) - $(stat -c %Y "$log") ))
+  if pgrep -f '[l]4.sh up' >/dev/null 2>&1 || [ "$age" -lt "$quiet" ]; then
+    echo "  ⏳ up 可能仍在运行（日志静止 ${age}s）"
+    return 0
+  fi
+  echo "  ✓ up 已结束（日志静止 ${age}s）"
+  return 1
+}
+
 cmd_ping() {
   local out
   out="$(l4_ssh 'echo PONG; nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1' 2>&1 | tr -d "\r")"
@@ -499,6 +521,7 @@ case "${1:-}" in
     echo "  环境变量：L4_SESSION（缺省 dawang）｜L4_DIR（缺省 /content/yanshi）｜L4_BRANCH（缺省 l4-sync）"
     exit 0 ;;
   sync)        shift; cmd_sync "$@" ;;
+  up-state) cmd_up_state "$@" ;;
   ping)        shift; cmd_ping "$@" ;;
   gate)        shift; cmd_gate "$@" ;;
   clean)       shift; cmd_clean "$@" ;;
