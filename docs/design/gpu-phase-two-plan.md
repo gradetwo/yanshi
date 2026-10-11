@@ -5452,3 +5452,51 @@ async function buildScenario(base, tag) {
     **HTTP ＋ fill 开销占比不可忽略** ✓
       ⇒ **∴ 但**两侧用**同一脚本、同一流程** ⇒ **∴ 可比** ⇒ **∴ 方向**可信** ✓ ★
 
+---
+
+## 第 565 轮：**★★★ 发现 CI 已连续失败 6＋ 次（**纪律违反 ✓）⇒ 查明根因并修复 ★★★
+
+### **∴ 怎么发现的 ✗**：**本轮先按纪律查 CI**✗（**`gh run list` ✓）★
+```
+completed failure  feat(tools): add a region option and record the true 8k scale point   CI main  1m26s
+completed failure  feat(tools): measure the real project with the accounts script …       CI main  1m29s
+completed failure  fix(tools): accept several compare specs and record the real 4k …      CI main  1m25s
+completed failure  test(gpu): report min median max dispersion in the two account run     CI main  1m21s
+completed failure  test(kernel): report the transitive async closure of the four call …   CI main  1m20s
+completed failure  test(gpu): add the composite on gpu baseline criterion                 CI main  1m36s
+```
+  ⇒ **★ 这是**纪律违反**✗**：**目标要求「CI 全绿」✗
+    ＋ **∴ 而**我**从第 49 轮之后**再没检查过** ✗ ⇒ **∴ 连续 6＋ 次失败** ✓ ★
+
+### **∴ 根因（**本地复现 ✓）★**
+```
+cargo check --workspace --all-targets（**不带 feature ＝ CI 的形状 ✓）
+⇒ error[E0433] cannot find module `yanshi_gpu`        → buffer.rs:571／586
+  error[E0425] cannot find function `quantizer_cache`  → buffer.rs:563
+  error[E0599] no associated function `note_backend`   → buffer.rs:535
+```
+  ⇒ **∴ 是 `try_quantize_on_gpu_keyed`（**526 行 ✓）✗**：
+    **整段依赖 `yanshi_gpu`**✗
+      ＋ **∴ 而**它**没有 `#[cfg(feature = "gpu")]`** ✓
+        ⇒ **∴ 于是**：**无 feature 构建**8 个错误** ✓
+          ＋ **∴ 而**CI 的 `criteria` 分片**恰好跑**plain 构建** ✓ ★
+  ⇒ **∴ 为什么我漏了 ✗**：**第 46–48 轮改 `quantizer_cache`／`verify_key_with` 时
+    **只跑了 `--features gpu`**✗ ⇒ **∴ 从未跑过**plain 构建** ✓ ★
+
+### **∴ 修复 ✗**（**两处 ✓）★
+  ⇒ **∴ ① 给 `try_quantize_on_gpu_keyed` 加 `#[cfg(feature = "gpu")]`** ✓
+    ⇒ **∴ 一次消掉 8 个错误中的 7 个** ✓
+  ⇒ **∴ ② 给测试钩子 `verify_key_for_tests` ＋ 那条测试加同样的 cfg** ✓
+    （**∴ 因为** `verify_key_with` 也在 gpu 门控的 `impl` 里 ✓）
+  ⇒ **∴ 本地复核 ✗**：**plain check ✓ 通过｜gpu check ✓ 通过｜fmt ✓** ★
+
+### **★★★ 教训（**写进纪律 ✓）★★★**
+  ⇒ **∴ 每轮必须先跑**`cargo check --workspace --all-targets`（**不带 feature ✓）****
+    ＋ **∴ 而不是只跑** `--features gpu`** ✗
+      ⇒ **∴ 且**推送后**必须**用 `gh run list` 确认 CI**✗
+        ＋ **∴ 确认结果**再收尾** ✓ ★
+
+**∴ 状态 ✗**：**已修复并推送（**`4c2c52c` ✓）✗
+  ＋ **∴ 新 CI 运行**在进行中**（**观察时已 7m39s**✗
+    ⇒ **∴ 远长于之前 1m20s 的快速失败 ⇒ **∴ 说明**它越过了之前失败的步骤** ✓）★
+
