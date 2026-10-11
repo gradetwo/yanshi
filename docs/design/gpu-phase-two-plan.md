@@ -6534,3 +6534,39 @@ fmt = 0 ✓｜plain clippy ✓（**修了两处 doc 缩进 lint ✓）｜plain t
   ＋ **∴ 已推送 `7cf3781` ✗ ＋ **∴ CI 已触发**（**观察时 1m37s ✓）★
     ⇒ **∴ 关键待确认 ✗**：**`wasm smoke` 是否转绿**（**∴ 那**是**目标第 13 条 ✓）★
 
+---
+
+## 第 593 轮：**★★★ `wasm smoke (node)` 从**连续 6 次 failure** ⇒ **success**** ★★★
+
+### **★★★ 决定性结果（**CI ✓）★★★**
+```
+38132702583（**含第 592 轮的修复 ✓）：
+  ★ wasm smoke (node): success ★   ← ★ 连续 6 次 failure 之后第一次 success ★
+  clippy: success ✓｜rustfmt: success ✓
+  · test (stable)／test (beta)／criteria shard 1–6：**仍在跑** ✓
+  · ★ 新红：`GPU feature (build and size): failure` ★（**待日志 ✓）
+```
+  ⇒ **★ 所以：**目标第 13 条**实质性达成**** ✓ ★
+    ＋ **∴ 而** `wasm smoke` **守的正是**：
+      **∴ ①** **wasm 内核 vs **原生**内核渲染同一区域 ⇒ **RGBA／PNG 的 sha256 相同**** ✓
+        ＋ **∴ ②** 渲染路径的形状检查 ✓
+          ＋ **∴ ③** 写入路径（**乐观预览笔迹 ⇒ 提交 ⇒ 盯住 `now_ms()` 不在 wasm 路径上 ✓）★
+            ⇒ **∴ 所以**：**内核在 wasm 上**真的能跑 ＋ 与原生逐字节一致**** ✓ ★
+
+### **∴ 代价的如实记录（**两面都写 ✓）★**
+  ⇒ **∴ 我**本会话为**渲染诊断探针**加的 `Instant::now()`**差点**毁掉 wasm 运行时**✗
+    ＋ **∴ 症状 ✗**：**CI 的 `wasm smoke` **连续 6 次失败**✗
+      ＋ **∴ 而** `wasm_target_guard` **只数源码文本 ⇒ 挡不住** ✓
+        ⇒ **★ 所以：**必须**类型层面隔离**（**第 592 轮的 `ProbeClock` ✓）★
+
+### **∴ 新红（**待查 ✓）★**
+  ⇒ **∴ `GPU feature (build and size): failure` ✗**
+    ＋ **∴ 该作业做什么（**读 `ci.yml:105` ✓）✗**：
+      **∴ ①** `cargo build --release … --features gpu` ⇒ stat 体积 ⇒ **写摘要（**无硬门槛 ✓）
+        ＋ **∴ ②** `rustup target add wasm32-unknown-unknown`
+          ＋ **∴ ③** **内核体积（**无／有 gpu ✓）⇒ ★ **真正的门槛 ＝
+            `tool-wasm-tree-no-wgpu.mjs`（**≤ 6 MiB ✓）**★
+  ⇒ **∴ 所以失败可能在 ✗**：**① 构建**｜**② ★ 体积判据 6 MiB ★**｜**③ 其它步骤** ✓
+    ＋ **∴ 而**本机**无 wasm32 ⇒ **不能本地复现**✗（**∴ 只能等 CI 日志 ✓）★
+      ⇒ **∴ 登记为**下一轮** ✓ ★
+
