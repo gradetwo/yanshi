@@ -302,5 +302,5 @@ case "${1:-}" in
   down)        shift; cmd_down "$@" ;;
   sh|shell)    shift; cmd_sh "$@" ;;
   ""|-h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *) die "未知子命令：$1（用 --help 看用法）" 2 ;;
+  *) die "未知子命令：${1}（用 --help 看用法）" 2 ;;
 esac
