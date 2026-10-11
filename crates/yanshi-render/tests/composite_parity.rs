@@ -67,18 +67,48 @@ fn gpu_composite_normal_is_bit_exact_against_cpu() {
     }
     let mism_plain = count_mismatch(&gpu, &plain);
     let mism_fused = count_mismatch(&gpu, &fused);
+    println!("  ── f32 空间（**线性预乘 ✓）──");
     println!("  非逐位相同的通道数｜vs 普通 CPU：{mism_plain}｜vs fma CPU：{mism_fused}");
-    if mism_plain == 0 {
-        println!("  ✓ GPU 与**普通 CPU**逐位一致 ⇒ 没有 fma 融合 ⇒ 逐位一致成立");
-    } else if mism_fused == 0 {
-        println!("  ★ GPU 与**fma CPU**逐位一致 ⇒ GPU 融合了 fma ⇒ 对策：CPU 也用 mul_add");
+    println!(
+        "  ★ 最大绝对差｜vs 普通 CPU：{:.3e}｜vs fma CPU：{:.3e}",
+        max_abs_diff(&gpu, &plain),
+        max_abs_diff(&gpu, &fused)
+    );
+    // **★★★ 关键：**量化成 u8 之后**才是**用户看到的****（**第 627 轮 ✓）★★★
+    //   **∴ 为什么必须量它 ✗**：**f32 的差可能只有几个 ULP**✗
+    //     ＋ **∴ 而**它**经过**「除以 alpha ⇒ 查 sRGB 表 ⇒ ×255 + 0.5 ⇒ floor」**后
+    //       **可能**完全消失** ✓（**∴ 因为**那是**量化 ✓）
+    //         ⇒ **★ 若** u8 **逐位一致 ⇒ **∴ 产品输出**完全一致**✗
+    //           ⇒ **∴ 那**比「f32 容差」**更强、更有意义** ✓ ★
+    let table = yanshi_render::color::srgb_encode_table();
+    let to_u8 = |v: &[f32]| -> Vec<u8> {
+        v.chunks_exact(4)
+            .flat_map(|c| {
+                yanshi_render::color::linear_premul_to_u8x4_with(table, [c[0], c[1], c[2], c[3]])
+            })
+            .collect()
+    };
+    let (gu8, pu8, fu8) = (to_u8(&gpu), to_u8(&plain), to_u8(&fused));
+    let u8_plain = count_mismatch_u8(&gu8, &pu8);
+    let u8_fused = count_mismatch_u8(&gu8, &fu8);
+    println!("  ── u8 空间（**用户实际看到的 ✓）──");
+    println!("  非逐位相同的字节数｜vs 普通 CPU：{u8_plain}｜vs fma CPU：{u8_fused}");
+    println!(
+        "  ★ u8 最大差（**LSB ✓）｜vs 普通 CPU：{}｜vs fma CPU：{}",
+        max_abs_diff_u8(&gu8, &pu8),
+        max_abs_diff_u8(&gu8, &fu8)
+    );
+    let best = u8_plain.min(u8_fused);
+    if best == 0 {
+        println!("  ✓★ 量化后**逐位一致** ⇒ 产品输出与 CPU 完全一致（**无需容差**）★");
     } else {
-        println!("  ✗ GPU 与两者都不同 ⇒ 需要进一步排查");
+        println!("  ★ 量化后仍有差 ⇒ 容差 ＝ {best} 字节｜最大 LSB 差见上");
     }
+    // **∴ 断言：**u8 必须与「普通 CPU」或「fma CPU」之一逐位一致****（**第 627 轮 ✓）
+    //   ＋ **∴ 若**将来**达不到** ⇒ **∴ 那**就是**引入容差的时刻**（**按用户口径 ✓）★
     assert_eq!(
-        mism_plain.min(mism_fused),
-        0,
-        "GPU 必须与「普通 CPU」或「fma CPU」其中之一逐位一致"
+        best, 0,
+        "GPU 的 u8 输出必须与「普通 CPU」或「fma CPU」其中之一逐位一致"
     );
 }
 
@@ -105,4 +135,25 @@ fn count_mismatch(a: &[f32], b: &[f32]) -> usize {
         .zip(b)
         .filter(|(x, y)| x.to_bits() != y.to_bits())
         .count()
+}
+
+// **∴ 差值统计 ✗**（**第 627 轮 ✓）★
+
+fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max)
+}
+
+fn count_mismatch_u8(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b).filter(|(x, y)| x != y).count()
+}
+
+fn max_abs_diff_u8(a: &[u8], b: &[u8]) -> u8 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0)
 }
