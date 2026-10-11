@@ -4478,6 +4478,34 @@ pub fn shape_coverage_in(
     points: &[(f64, f64)],
     clip: &Bbox,
 ) -> Coverage {
+    // **★★★ 类型分布探针 ✗ ★★★**（**第 682 轮 ✓；**第 681 轮的疑问 ✓）
+    //   **∴ 为什么需要 ✗**：**第 681 轮的同会话 A/B **没触发**✗
+    //     ＋ **∴ 说明**实际走的是 `Rect`／`Ellipse`**✗ 而**不是 `Polygon`** ✓
+    //       ⇒ **∴ 于是**：**第 676 轮的 `polygon_coverage_clipped` 优化**可能**对端到端无效** ✓
+    //         ＋ **∴ 所以**必须**先量类型分布**✗ ⇒ **∴ 再**决定优化哪条路** ✓ ★
+    //   **∴ 做法 ✗**：**每次调用**打印一行**✗（**∴ 仅探针模式 ✓）
+    //     ＋ **∴ 然后用** `sort | uniq -c` **统计** ✓ ★
+    //   **∴ 为什么不用计时 API ✗**：**`render.rs` **会编译到 wasm**✗
+    //     ＋ **∴ 而** `wasm_target_guard` **禁止**未登记的宿主时间 API** ✓
+    //       ＋ **∴ 所以**这里**只用 `eprintln!`** ✓ ★
+    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+        let (tag, covered) = match kind {
+            ShapeKind::Rect => ("Rect", "rect"),
+            ShapeKind::Ellipse => ("Ellipse", "ellipse"),
+            ShapeKind::Polygon => {
+                if points.len() >= 3 {
+                    ("Polygon", "polygon")
+                } else {
+                    ("Polygon<3", "rect")
+                }
+            }
+        };
+        eprintln!(
+            "PROBE shape 类型：{tag} 实际={covered} points={} 面积={:.0}",
+            points.len(),
+            (bbox.w * bbox.h).max(0.0)
+        );
+    }
     match kind {
         ShapeKind::Rect => rect_coverage_clipped(bbox, clip),
         ShapeKind::Ellipse => ellipse_coverage_clipped(bbox, 4, clip),
