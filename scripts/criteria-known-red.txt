@@ -27496,3 +27496,12 @@ tool-preview-defer.mjs  # **类型：P0 预览解耦未落地（**首次预览�
 - **隔离证据**：`git worktree` 到 `f5fd17d8`（**本会话之前的提交**）
   ⇒ 同一测试、**同一行 287**、**同样 FAILED** ⇒ **既有红，非本会话回归** ✓
 - 状态：**未修**；已加 `#[ignore]`（含证据注释）＋ 本台账登记，**不静默跳过**
+
+## 第 574 轮（**第三个既有红，已隔离证实**）
+
+- 判据：`yanshi-server` 的 `update_stroke::update_stroke_recolours_a_brush_stroke`
+- 症状：`update_stroke.rs:250` 断言失败（**4 passed／1 failed**）
+- **隔离证据**：`git worktree` 到 `f5fd17d8`（**本会话之前**）⇒ **同样 FAILED，比例相同**
+  ⇒ **既有红，非本会话回归** ✓
+- 状态：**未修**；已加 `#[ignore]`（含证据注释）＋ 本台账登记
+
