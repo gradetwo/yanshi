@@ -56,11 +56,6 @@ fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
             "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：只用于量 PNG 编码与\n             质量档的耗时（本会话第 533 轮起）。wasm 构建里它们不参与编译。",
         ),
         (
-            "crates/yanshi-render/src/render.rs",
-            18,
-            "cfg(not(target_arch = wasm32)) 下的 18 处 Instant::now()：全部是本会话为**门控探针**\n             加的计时（填充/图层/合成/裁剪/量化/每层/below/整体/分派前 等，YANSHI_RENDER_PROBE 门控）。\n             生产路径零开销；wasm 构建里它们不参与编译。",
-        ),
-        (
             "crates/yanshi-render/src/buffer.rs",
             2,
             "cfg(not(target_arch = wasm32)) 下的 2 处 Instant::now()：\
