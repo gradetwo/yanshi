@@ -983,7 +983,7 @@ mod quantize_parallel_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpu"))]
 mod verify_key_tests {
     // **★ 核对键必须**分辨只差一个像素的内容**✗ ★**（**第 543 轮 ✓；目标第 7 条 ✓）
     //
@@ -997,7 +997,6 @@ mod verify_key_tests {
     use super::*;
 
     // **∴ 该钩子依赖 gpu 专属的 `verify_key_with` ✗ ⇒ **∴ 必须同样门控** ✓（**第 565 轮 ✓）
-    #[cfg(feature = "gpu")]
     impl Buffer {
         fn verify_key_for_tests(&self) -> String {
             self.verify_key_with(None)
@@ -1014,7 +1013,6 @@ mod verify_key_tests {
     }
 
     #[test]
-    #[cfg(feature = "gpu")]
     fn the_verify_key_distinguishes_a_single_changed_pixel() {
         // **∴ 4K 量级 ⇒ 抽样步长 > 1**（**∴ 那**正是弱点所在 ✓）
         let len = 4 * 1024 * 1024;
