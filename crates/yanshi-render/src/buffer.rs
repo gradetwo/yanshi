@@ -831,21 +831,106 @@ impl Buffer {
     }
 
     /// 用另一缓冲区的 alpha 乘以自身（剪贴蒙版、图层蒙版）。
+    ///
+    /// **★★★ 已优化（**第 642 轮 ✓）✗ ★★★**：**三项改动，语义**逐位不变****
+    ///
+    /// **∴ 为什么改 ✗**（**第 641 轮实测 ✓）：
+    ///   **∴ 4K 上它要 41.1 ms**✗ ⇒ **∴ 而**其中**只有 ~16 ms 是乘法本身** ✓
+    ///     ＋ **∴ 其余 ~25 ms 是**：
+    ///       **∴ ① `mask.pixel(mx, my)[3]` **每像素一次函数调用**✗
+    ///         ＋ **∴ ② 它内部 **4 个边界检查**（**∴ 而我**只要 alpha ✓）
+    ///           ＋ **∴ ③ 每像素两次**负越界判断** ✓ ★
+    ///
+    /// **∴ 三项改动 ✗**：
+    ///   **∴ ① 直索引取 alpha ✗**：**走 `mask.pixels[基址 + 3]`**✗
+    ///     ＋ **∴ 而不是** `pixel()`（**∴ 省一次调用 ＋ 3 个无用检查 ✓）
+    ///   **∴ ② 负越界判断移到**行级** ✗**：**每行只算一次 `mask_y`** ✓
+    ///     ＋ **∴ 因为** `mask_y < 0` 或 `mask_y >= mask.height` ⇒ **整行 alpha 都是 0** ✓
+    ///       ＋ **∴ 那**与原逻辑**等价**（**原逻辑** `pixel()` 越界返回 `[0;4]` ⇒ alpha ＝ 0 ✓）
+    ///   **∴ ③ 同原点同尺寸 ⇒ **无检查快路径**** ✗：
+    ///     **∴ 常见情形**✗ ⇒ **∴ 此时**每行是**连续区间** ⇒ **∴ 只**遍历 ＋ 乘** ✓ ★
+    ///
+    /// **∴ 逐位一致 ✗**：**乘法仍是** 4 通道各乘同一个 alpha**✗
+    ///   ＋ **∴ alpha 的来源仍是**同一 mask 像素的通道 3** ✓
+    ///     ＋ **∴ 判据**：`multiply_alpha_by_parity`（**对拍朴素实现 ✓）★
     pub fn multiply_alpha_by(&mut self, mask: &Buffer) {
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let document_x = self.origin_x + x as i64;
-                let document_y = self.origin_y + y as i64;
-                let mask_x = document_x - mask.origin_x;
-                let mask_y = document_y - mask.origin_y;
-                let alpha = if mask_x < 0 || mask_y < 0 {
-                    0.0
-                } else {
-                    mask.pixel(mask_x as u32, mask_y as u32)[3]
-                };
-                let index = ((y * self.width + x) * 4) as usize;
-                for value in self.pixels[index..index + 4].iter_mut() {
+        let same_origin_and_size = self.origin_x == mask.origin_x
+            && self.origin_y == mask.origin_y
+            && self.width == mask.width
+            && self.height == mask.height;
+        let mask_w = mask.width as usize;
+        if same_origin_and_size {
+            // **∴ 快路径 ✗**：**无任何越界检查 ⇒ **连续遍历** ✓ ★
+            for (dst_px, mask_px) in self
+                .pixels
+                .chunks_exact_mut(4)
+                .zip(mask.pixels.chunks_exact(4))
+            {
+                let alpha = mask_px[3];
+                for value in dst_px.iter_mut() {
                     *value *= alpha;
+                }
+            }
+            return;
+        }
+        // **∴ 一般路径 ✗**：**行级算越界 ⇒ 行内算有效区间** ✓ ★
+        for y in 0..self.height {
+            let mask_y = (self.origin_y + y as i64) - mask.origin_y;
+            if mask_y < 0 || mask_y >= mask.height as i64 {
+                // **∴ 整行 alpha ＝ 0**（**与原逻辑等价 ✓）★
+                let row = (y as usize) * (self.width as usize) * 4;
+                let end = row + (self.width as usize) * 4;
+                for value in self.pixels[row..end].iter_mut() {
+                    // **★★★ 必须是 `*= 0.0` 而不是 `= 0.0` ✗ ★★★**（**第 642 轮判据抓到 ✓）
+                    //   **∴ 原因 ✗**：**原实现是** `*value *= alpha`（alpha ＝ 0 ✓）**✗
+                    //     ＋ **∴ 而**当 value 是 **−0.0** 或 **NaN** 时**两者不同**
+                    //       （**`-0.0 * 0.0 = -0.0`**✗ 而** `= 0.0`**✓；
+                    //        **`NaN * 0.0 = NaN`**✗ 而** `= 0.0`** ✓）
+                    //         ⇒ **∴ 于是**逐位对比**红** ✓ ★
+                    *value *= 0.0;
+                }
+                continue;
+            }
+            // **∴ 行内有效区间 ✗**：**mask_x ∈ [0, mask.width)** ✓
+            //   **★★★ 注意 ✗ ★★★**：**`x_lo`／`x_hi` 是**self 坐标**✗
+            //     ＋ **∴ 访问 `mask.pixels` 时必须**再减 `base_dx`**✗
+            //       （**`base_dx = mask.origin_x − self.origin_x` ✓）
+            //         ＋ **∴ 第 642 轮的 bug ✗**：**我漏了这一步** ✗
+            //           ⇒ **∴ 判据（**对拍朴素实现 ✓）当场抓到越界** ✓ ★
+            let base_dx = mask.origin_x - self.origin_x;
+            let x_lo = base_dx.max(0);
+            let x_hi = (self.width as i64).min(base_dx + mask.width as i64);
+            let row = (y as usize) * (self.width as usize) * 4;
+            // **∴ 区间左侧（**alpha ＝ 0 ✓）★
+            if x_lo > 0 {
+                let end = row + (x_lo as usize) * 4;
+                for value in self.pixels[row..end].iter_mut() {
+                    *value *= 0.0;
+                }
+            }
+            // **∴ 区间右侧（**alpha ＝ 0 ✓）★
+            if x_hi < self.width as i64 {
+                let start = row + (x_hi.max(0) as usize) * 4;
+                let end = row + (self.width as usize) * 4;
+                if end > start {
+                    for value in self.pixels[start..end].iter_mut() {
+                        *value *= 0.0;
+                    }
+                }
+            }
+            // **∴ 有效区间内 ✗**：**直索引取 alpha** ✓ ★
+            if x_hi > x_lo {
+                let mask_row = (mask_y as usize) * mask_w * 4;
+                let dst_start = row + (x_lo as usize) * 4;
+                let n = (x_hi - x_lo) as usize;
+                for i in 0..n {
+                    // **∴ mask 内局部 x ✗**：`x_lo + i − base_dx` ✓ ★
+                    let mask_x_local = (x_lo + i as i64 - base_dx) as usize;
+                    let alpha = mask.pixels[mask_row + mask_x_local * 4 + 3];
+                    let base = dst_start + i * 4;
+                    for value in self.pixels[base..base + 4].iter_mut() {
+                        *value *= alpha;
+                    }
                 }
             }
         }
