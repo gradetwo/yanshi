@@ -51,6 +51,21 @@ await send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dir })
 await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true }).catch(() => undefined);
 // ① 在线开一次（把外壳/状态缓存起来 ✓）+ 画一笔 ✓（要有东西可导 ✓）
 const parsed = new URL(url);
+// **★★★ API 请求必须发到**服务端**，不是查看器 ✗ ★★★**（**第 779 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：
+//     `✗ create_layer 的响应不是 JSON｜URL=http://127.0.0.1:14990/api/tools?doc=…
+//      ｜★status=404★｜前 80 字节="not found"`
+//   **∴ 根因 ✗**：**本判据**同时**用两个 URL**✗：
+//     ＋ **∴ ① `YANSHI_VIEWER_URL`（**上文的 `url` ✓）—— **∴ 用来**导航页面** ✓
+//       ＋ **∴ ② `argv[3]`** —— **∴ 运行器给的**服务端 base** ✓（**见上文注释：「argv[3] 是 BASE」✓）
+//         ＋ **∴ 而**旧代码**对 API 请求用了 `parsed.origin`**✗ ⇒ **∴ 那**是**查看器的 origin** ✓
+//           ＋ **∴ 而**有静态 PWA 时**✗ ⇒ **∴ `YANSHI_VIEWER_URL` 指向**静态服务** ✓
+//             ＋ **∴ 于是**：**`/api/tools` **发到了静态服务**✗
+//               ⇒ **∴ 而**静态服务**对未知路径回**明文 `not found`**（**404 ✓）✓ ★★
+//   **∴ 修法 ✗**：**API 用 `serverBase`**✗（**`argv[3]` 优先 ✓）＋ **∴ 页面导航**仍用 `url`** ✓ ★
+//     ＋ **∴ 为什么**回退是安全的 ✗**：**只用 viewer URL 调用时（**无 argv[3] ✓）⇒ **∴ 行为不变** ✓ ★
+const serverBase = process.argv[3] || parsed.origin;
+
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
 // **★ 诊断先行 ✗ ★**（第 338 轮 ✓；**CI 的 `SyntaxError` 换来的 ✓）：
 //   **∴ 第 337 轮查明 ✗**：**CI 报** `SyntaxError: Unexpected token 'o', "not found" is not valid JSON`** ✓
@@ -60,7 +75,7 @@ const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("tok
 //   **∴ 修法 ✗**：**先读文本**✗ ⇒ **∴ 不是 JSON ⇒ **打印诊断再抛** ✓
 //     ⇒ **∴ 于是**：**下次 CI** 直接给出 **URL ＋ 状态 ＋ 正文** ✓ ★**** ✓✓
 const post = async (tool, args) => {
-  const url = `${parsed.origin}/api/tools?doc=${doc}&token=${token}`;
+  const url = `${serverBase}/api/tools?doc=${doc}&token=${token}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
