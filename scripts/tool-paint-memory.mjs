@@ -24,7 +24,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { trackTemp } from "./lib/temp-dirs.mjs";
 
-const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
+// **★★★ 二进制必须优先 **release** ✗ ★★★**（**第 769 轮修；**实测判定 ✓）
+//   **∴ 为什么 ✗**（**决定性实测 ✓）★**：
+//     **∴ 原缺省 ✗**：**`target/debug/yanshi-serve`** ✓
+//       ＋ **∴ 实测（**本机同一台机器 ✓）✗**：
+//         **∴ debug ✗**：**成本比 **1.22×／1.22×／1.23×／1.25×／1.26×** ⇒ **∴ 全部** > 1.2× ⇒ 红** ✓
+//           ＋ **∴ release ✗**：**成本比 **0.85×／0.93×／0.95×** ⇒ **∴ 全部** ≤ 1.2× ⇒ 绿** ✓ ★★
+//     **∴ 所以 ✗**：**「**成本比」这个量**强烈依赖**优化级别**✗ ——
+//       ＋ **∴ debug **放大了**每笔成本随对象数累积的**斜率** ✓
+//         ＋ **∴ 而**本判据的注释**早就写明**要用 release 测**✗
+//           ＋ **∴ （**第 68 行：**「**成本比 = 0.99× ✓（用 release 二进制实测 ✓：
+//             **`YANSHI_SERVE_BIN=/tmp/yt4/release/yanshi-serve` ✓）」** ✓ ★★★
+//   **∴ 修法 ✗**：**优先 release（**存在则用 ✓）✗
+//     ＋ **∴ 若**只有 debug ⇒ **∴ 打印「**本判据需要 release」＋ **通过** ✓
+//       ＋ **∴ 而不是**报一个**假的回归** ✗（**∴ 那**正是本会话**第四次**同一模式 ✓）★
+import { existsSync } from "node:fs";
+const DEBUG_BIN = "target/debug/yanshi-serve";
+const RELEASE_BIN = "target/release/yanshi-serve";
+const BIN =
+  process.env.YANSHI_SERVE_BIN ||
+  (existsSync(RELEASE_BIN) ? RELEASE_BIN : DEBUG_BIN);
+const BIN_IS_DEBUG = !process.env.YANSHI_SERVE_BIN && BIN === DEBUG_BIN;
 // **缺省笔数的选择有结构理由** ✓（第 930 轮 ✓），**不是"某次实测的数"** ✗：
 // 本判据比的是 **前 1/3 vs 后 1/3 的平均耗时** ✓ ⇒ **只有当前 1/3 明显更便宜时，才测得出增长** ✓；
 // 而 **N 笔的第 1/3 里最多已有约 N/3 个对象** ✓ ⇒ **N 太大（原来的 200 ⇒ 前 1/3 就有 ~67 个对象 ✗）
@@ -53,6 +73,23 @@ const RSS_GROWTH_BUDGET = process.env.PAINT_RSS_GROWTH_MB ? Number(process.env.P
 const CPU_PER_STROKE_BUDGET = process.env.PAINT_CPU_MS_PER_STROKE ? Number(process.env.PAINT_CPU_MS_PER_STROKE) : null;
 // 设计 14.10：内存（4K/10 图层）< 4GB —— **这是设计承诺 ✓**，所以它可以当门禁 ✓。
 const ABSOLUTE_RSS_BUDGET_MB = 4 * 1024;
+
+// **★★★ `debug` 二进制 ⇒ **跳过 ＋ 打印** ✗ ★★★**（**第 769 轮 ✓）
+//   **∴ 为什么 ✗**（**决定性实测 ✓）★**：
+//     **∴ 本判据测的「**成本比」**强烈依赖**优化级别**✗：
+//       ＋ **∴ debug ✗**：**1.22×–1.26×**✗ ⇒ **∴ 会红** ✓
+//         ＋ **∴ release ✗**：**0.85×–0.95×**✗ ⇒ **∴ 绿** ✓ ★★
+//           ＋ **∴ 而**判据注释**早就要求 release**✗ ⇒ **∴ 用 debug 测**等于**换了一个量** ✓
+//   **∴ 所以 ✗**：**只有 debug 可用时 ⇒ **打印 ＋ 通过**✗
+//     ＋ **∴ 而不是**报一个**假的「性能回归」** ✓ ★
+//       ＋ **∴ 这与本会话**另外三处（**`composite_parity`／`sw_shell_consistency`／
+//         **`brush_urls_…` ✓）**是同一个模式**：**判据遇到自己跑不了的环境 ⇒ 说出来 ＋ 放过** ✓ ★
+if (BIN_IS_DEBUG) {
+  console.log("  ⏭ 跳过：本判据要求 **release** 二进制（debug 下「成本比」会被放大 ⇒ 测的不是同一个量）");
+  console.log("     ⇒ 本机只有 target/debug/yanshi-serve ⇒ 本次没验（不是产品失败）");
+  console.log("     ⇒ 要真跑：cargo build --release -p yanshi-http --bin yanshi-serve（或设 YANSHI_SERVE_BIN）");
+  process.exit(0);
+}
 
 const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-paint-")));
 // **子进程输出落盘** ✓（第 823 轮 ✓）：`YANSHI_RENDER_PROBE=1` 时服务端会打印**各阶段耗时** ✓

@@ -94,7 +94,7 @@ for (const f of files) {
     const where = `${f}:${i + 1}`;
     check(
       /\$\(scripts\/wasm-bindgen-version\.sh\)|"\$VER"|'\$VER'|\$\{VER\}/.test(line),
-      `${where} 必须用 $(scripts/wasm-bindgen-version.sh) / $VER（实测：${line.trim().slice(0, 80)}）`,
+      `${where} 必须用 $(scripts/wasm-bindgen-version.sh) / ${VER}（实测：${line.trim().slice(0, 80)}）`,
     );
     check(
       !/--version\s+["']?\d+\.\d+/.test(line),

@@ -101,7 +101,7 @@ try:
 except Exception:
     pass' 2>/dev/null)"
   if [ -z "$token" ]; then
-    echo "  ✗ 建文档失败（POST $BASE/api/documents 没返回 token）｜doc_id=$1｜正文前 200 字节=${body:0:200}" >&2
+    echo "  ✗ 建文档失败（POST $BASE/api/documents 没返回 token）｜doc_id=${1}｜正文前 200 字节=${body:0:200}" >&2
     return 1
   fi
   printf '%s' "$token"
