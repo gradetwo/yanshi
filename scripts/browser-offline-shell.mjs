@@ -782,6 +782,36 @@ if (!(inkAfter && inkBefore && inkAfter.ink > inkBefore.ink)) {
   } catch (e) {
     console.error("     ↳ 诊断求值失败：" + e);
   }
+  // **★★★ 渲染侧诊断 ✗ ★★★**（**第 747 轮 ✓；**∴ 预缓存已 0 失败**⇒** ∴ 问题在**渲染本身** ✓）
+  //   **∴ 为什么加它 ✗**（**第 746 轮 CI 的新事实 ✓）★**：
+  //     **∴ 预缓存**从 10 个失败 ⇒ **0**✗ ＋ **∴ 而**「**离线画不出墨**」**仍在** ✓
+  //       ＋ **∴ 且**输出里**不再有**「**资源加载失败**」**✗ ⇒ **∴ 所以**：**资源**不是原因** ✓ ★
+  //         ＋ **∴ 因此**要问的是 ✗**：**落笔之后**渲染**到底**走了哪条路**✗ ／ **画布**收到了什么** ✓ ★
+  //   **∴ 打四样 ✗**：**① `yanshiStats`（**wasm／local／server 计数 ✓）
+  //     ＋ **② `kernelStats()` 的 `head_seq` ＋ `blobs`**（**∴ 内核**有没有**收到笔 ✓）
+  //       ＋ **③ 画布前 4 个像素的 RGBA**（**∴ 看**到底画了什么 ✓）
+  //         ＋ **④ 缓存的键数 ＋ 控制器状态**（**∴ 确认**离线外壳是否真的在服务** ✓）★
+  try {
+    const render = await evaluate(`(() => {
+        const w = window;
+        const out = {};
+        out.stats = w.yanshiStats ? JSON.parse(JSON.stringify(w.yanshiStats)) : null;
+        try { out.kernel = w.yanshi && w.yanshi.kernelStats ? w.yanshi.kernelStats() : null; }
+        catch (e) { out.kernelError = String(e); }
+        const c = document.getElementById("board");
+        if (c) {
+          const g = c.getContext("2d");
+          const d = g.getImageData(0, 0, 4, 1).data;
+          out.firstPixels = Array.from(d.slice(0, 16));
+          out.size = [c.width, c.height];
+        } else { out.canvas = "missing"; }
+        out.scroll = (() => { const s = document.getElementById("boardScroll"); return s ? [s.scrollLeft, s.scrollTop] : null; })();
+        return out;
+      })()`);
+    console.error("     ↳ 诊断（渲染侧）：" + JSON.stringify(render).slice(0, 900));
+  } catch (e) {
+    console.error("     ↳ 渲染侧诊断求值失败：" + e);
+  }
 }
 // 判据对象必须是"打开面板之后"的选项数：面板**懒加载**（不点开就不填充）**是设计**。
 const panelOptions = afterOpen ? afterOpen.options : -1;
