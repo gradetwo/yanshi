@@ -75,7 +75,9 @@ for (const side of sides) {
   //       ＋ **∴ 而**那**看起来像**适配器名**✗ ⇒ **∴ 若**直接打印它** ✓
   //         ＋ **∴ 读的人**会以为**有硬件**✗ ⇒ **∴ 于是**所有结论都错** ✓ ★★
   //           ＋ **∴ 所以 ✗**：**它**必须被识别为**「**没有真名**」** ✗ 而**不是**一个名字** ✓ ★
-  const NOT_A_NAME = new Set(["render_node_present", "none", "null", "unknown", "software"]);
+  const NOT_A_NAME = new Set(["render_node_present", "none", "null", "unknown", "software",
+    // **∴ 本仓 CPU 路的字段值 ✗**（**第 792 轮 L4 实测 ✓）：**它**不是适配器名** ✓
+    "disabled_by_flag"]);
   for (const m of out.matchAll(/适配器\s*＝\s*(.+)/g)) {
     const value = m[1].trim();
     if (NOT_A_NAME.has(value)) {
@@ -84,17 +86,33 @@ for (const side of sides) {
     }
     if (!adapterSeen) adapterSeen = value;
   }
-  // **∴ 抓「后端」那一行的两本账 ✓
-  //   **∴ 行形如 ✗**：**`| 配置 | gpu | ① 12.3（min／中位／max） | … | ② 45.6（…） |`
-  //     ＋ **∴ 而**本机**无 GPU 时**只有 cpu 行**✓ ⇒ **∴ 那**正是 exit 3 的情形** ✓ ★
-  const gpu = /gpu[^|]*\|\s*([\d.]+)\s*（/.exec(out);
-  const cpu = /cpu[^|]*\|\s*([\d.]+)\s*（/.exec(out);
+  // **★★★ 按**实际表格式**抓两本账 ✗ ★★★**（**第 792 轮修；**L4 实测 ✓）
+  //   **∴ 症状 ✗**（**L4 实测 ✓）★**：**10 个尺寸**全部报**「**本尺寸没拿到两路**」**
+  //     ＋ **∴ 而**同一份输出里**两路**明明都在**✗（**∴ 见**下一行注释 ✓）★
+  //   **∴ 根因 ✗**：**正则**按旧表格式写**✗**：
+  //     `gpu[^|]*\|\s*([\d.]+)\s*（`** —— **∴ 它**要求**「gpu…|」之后**紧跟数字**
+  //       ＋ **∴ 而**实际表**多了**「后端」列**✗ ⇒ **∴ 那一格是** `gpu（--gpu on）`** ✓
+  //         ⇒ **∴ 于是**「gpu（--gpu on）」之后是 ` | `**✗ 而**不是数字** ⇒ **∴ 正则**永不匹配** ✓ ★★
+  //   **∴ 实际行形如 ✗**（**L4 实测原文 ✓）**：
+  //     `| GPU | gpu（--gpu on） | 1295／1452／1665 | [1295–1665] | 129 | 1610／1780／2000 | 1.23× | 3334 | 1418.9 | 4 |`
+  //   **∴ 修法 ✗**：**匹配 `| 配置 | 后端 |` 之后**第一格数字组**（**min／中位／max ✓）★
+  //     ＋ **∴ 并**同时兼容**旧表的 `① 12.3（…）` 形（**∴ 不**丢掉兼容 ✓）★
+  const arm = (label) => {
+    // ① 新表：`| GPU | gpu（…） | 1295／1452／1665 |`
+    const m2 = new RegExp(`\\|\\s*${label}\\s*\\|[^|]*\\|\\s*([\\d.]+)\\s*[／/]`, "i").exec(out);
+    if (m2) return Number(m2[1]);
+    // ② 旧表：`| gpu | ① 12.3（min／中位／max） |`
+    const m1 = new RegExp(`${label}[^|]*\\|\\s*(?:①\\s*)?([\\d.]+)\\s*（`, "i").exec(out);
+    return m1 ? Number(m1[1]) : null;
+  };
+  const gpuMs = arm("GPU");
+  const cpuMs = arm("CPU");
+  const gpu = gpuMs !== null, cpu = cpuMs !== null;
   const wall = /中位[^|]*?([\d.]+)/.exec(out);
   const row = {
     side,
     px,
-    gpuMs: gpu ? Number(gpu[1]) : null,
-    cpuMs: cpu ? Number(cpu[1]) : null,
+    gpuMs, cpuMs,
     wall: wall ? Number(wall[1]) : null,
   };
   rows.push(row);
