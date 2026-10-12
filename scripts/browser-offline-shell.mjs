@@ -368,6 +368,31 @@ for (let attempt = 0; attempt < 80 && !onlineKernel; attempt += 1) {
   onlineKernel = await evaluate(`(() => (window.yanshi.kernelStats ? window.yanshi.kernelStats() : null))()`);
 }
 console.log(`  · 断网前内核 = ${onlineKernel ? JSON.stringify({ head_seq: onlineKernel.head_seq }) : "null（在线都没就绪）"}`);
+// **★★★ 对照探针：**在线**阶段打**同一组指标** ✗ ★★★**（**第 749 轮 ✓）
+//   **∴ 为什么必须对照 ✗**（**第 748 轮我犯的错 ✓）★**：
+//     **∴ 我**看到离线的 `brushNow: null`**✗ 就**断定它是根因** ✓
+//       ＋ **∴ 而**判据**从不选笔**✗（**∴ 只** `brushBtn.click()` **打开面板 ✓）
+//         ＋ **∴ 所以**：**在线阶段**大概也是 `null`**✗ ⇒ **∴ 它**很可能**不是**离线特有** ✓ ★★
+//   **∴ 正确做法 ✗**：**同一组字段**在**两个时刻**各打一次**✗
+//     ＋ **∴ 只有**离线特有**的指标才是根因** ✓ ★
+//   **∴ 打四样（**与离线那份完全相同 ✓）✗**：
+//     **∴ ① `brushNow`／`toolNow`／`sizeNow`**✗ ／ **② `applies`／`lastArea`**
+//       ＋ **③ `localCalls`／`serverCalls`**✗ ／ **④ `lastRenderMs`** ✓ ★
+try {
+  const onlineProbe = await evaluate(`(() => {
+      const w = window;
+      const s = (w.yanshi && w.yanshi.state) ? w.yanshi.state() : null;
+      const st = w.yanshiStats || {};
+      return { brushNow: s ? (s.brush === undefined ? null : s.brush) : "no-state",
+               toolNow: s ? (s.tool === undefined ? null : s.tool) : null,
+               sizeNow: s ? (s.size === undefined ? null : s.size) : null,
+               applies: st.applies, lastArea: st.lastArea, lastRenderMs: st.lastRenderMs,
+               localCalls: st.localCalls, serverCalls: st.serverCalls };
+    })()`);
+  console.log("  前│  · 在线（断网前）对照 = " + JSON.stringify(onlineProbe));
+} catch (e) {
+  console.log("  前│  · 在线对照探针失败：" + e);
+}
 const setServiceWorkerFetch = async (broken) => {
   if (!swControl) return false;
   const value = await swControl.evaluate(
