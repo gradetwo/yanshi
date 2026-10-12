@@ -104,9 +104,23 @@ const paintOk = typeof firstPaint === "number";
 //   **∴ 修法**：**服务端优先时**"**内核预热**"这一项**不适用**✗
 //     ⇒ **∴ 它**的可交互标志**是**"**服务端铺过底**" ✓（**`serverBlits > 0` ✓）** ✓✓
 //     **∴ 而**首帧那条**已经在量**服务端铺底**（`firstPaintMs` ✓）⇒ **∴ 仍然有效 ✓**** ✓✓
+// **★★★ 模式判定必须**包含 URL 参数那一档 ✗ ★★★**（**第 785 轮修；**与 `browser-layout` 同因 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：**本判据报「**首帧/预热预算未通过」**✗
+//     ＋ **∴ 而**它与 `browser-layout` **完全同形**✗：**都**只读 `localStorage`** ✓ ★★
+//   **∴ 根因 ✗**：**产品的 `serverRenderPreferred()`（**`viewer-app.js:56` ✓）**有**三档**✗**：
+//     ⇒ **∴ ① ★ URL 参数**最高优先**✗ ★**：** `?render=client` ⇒ **强制客户端内核** ✓（**页面第 71 行 ✓）
+//       ⇒ **∴ ②** `localStorage["yanshi.serverRender"]` ✓
+//         ⇒ **∴ ③** `__pwaLocalOnly`／缺省 ✓
+//           ＋ **∴ 于是**：**URL 里有 `?render=client`**✗ 而**本判据**只看第 ② 档**
+//             ⇒ **∴ 它**把客户端模式**误判成服务端** ✗
+//               ⇒ **∴ 而**服务端模式下它**要求 `serverBlits > 0`**✗ ⇒ **∴ 客户端下恒为 0** ⇒ **∴ 必然红** ✓ ★★★
+//   **∴ 修法 ✗**：**把第 ① 档加回**✗ ＋ **∴ 三档顺序**与产品一致** ✓ ★
 const serverMode = await evaluate(`(() => {
   try {
     if (typeof window !== "undefined" && window.__pwaLocalOnly === true) return false;
+    const param = new URLSearchParams(location.search).get("render");
+    if (param === "client") return false;
+    if (param === "server") return true;
     const stored = localStorage.getItem("yanshi.serverRender");
     return stored === null ? true : stored === "1";
   } catch (error) { return true; }
