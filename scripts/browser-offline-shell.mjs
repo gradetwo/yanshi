@@ -219,6 +219,33 @@ const evaluateAsync = async (expression) => {
     };
   };
 await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
+// **★★★ 在**页面脚本之前**装一个**错误收集器** ✗ ★★★**（**第 738 轮 ✓）
+//   **∴ 为什么必须用 `addScriptToEvaluateOnNewDocument` ✗**（**而不是直接 evaluate ✓）★**：
+//     **∴ 因为判据**中途会** `Page.reload`**✗（**∴ 断网重载 ✓）
+//       ＋ **∴ 而**直接 evaluate 装的收集器**会在**重载后丢失** ✓
+//         ＋ **∴ 于是**：**断网后**那段**的**错误**就**收不到** ✗ ⇒ **∴ 诊断**永远为空** ✓ ★
+//   **∴ 它收什么 ✗**：**① `error` 事件**✗（**∴ 如**脚本加载失败 ✓）
+//     ＋ **② `unhandledrejection`**✗（**∴ 如** fetch 被桩后**未处理的 Promise 拒绝 ✓）★
+//       ＋ **∴ ③ `console.error`**（**∴ 兜底 ✓）★
+//   **∴ 用途 ✗**：**当**「**离线画不出墨**」发生时**✗ ⇒ **∴ 把**这些**打出来** ✓
+//     ＋ **∴ 从而**看到**真正的原因**✗ 而**不是**猜** ✓ ★
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: `(() => {
+    const bag = (window.__offlineDiag = { errs: [], rejected: [] });
+    const note = (kind, text) => { bag.errs.push(kind + ": " + String(text).slice(0, 200)); if (bag.errs.length > 40) bag.errs.shift(); };
+    window.addEventListener("error", (e) => {
+      const t = e && e.target;
+      note("error", (t && (t.src || t.href)) ? ("资源加载失败 " + (t.src || t.href)) : ((e && e.message) || "unknown"));
+    }, true);
+    window.addEventListener("unhandledrejection", (e) => {
+      const r = e && e.reason;
+      bag.rejected.push(String((r && (r.message || r)) || "unknown").slice(0, 200));
+      if (bag.rejected.length > 40) bag.rejected.shift();
+    });
+    const origErr = console.error.bind(console);
+    console.error = (...a) => { note("console.error", a.join(" ")); origErr(...a); };
+  })()`,
+});
 await send("Page.navigate", { url });
 // **只等"页面就绪"** ✓（第 892 轮 ✓）：原来固定睡 3 秒 ✗ ⇒ 纯猜测 ✗ ——
 // 而紧接着的 `navigator.serviceWorker.ready` **自己就有 12 秒超时的等待** ✓
@@ -703,6 +730,27 @@ if (!strokeResult || typeof strokeResult !== "object" || strokeResult.pointsAtDo
 // ② **画布上真的多了墨** ✓。
 if (!(inkAfter && inkBefore && inkAfter.ink > inkBefore.ink)) {
   failures.push(`离线画不出墨：非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+  // **★★★ 诊断：说出**为什么**画不上 ✗ ★★★**（**第 738 轮 ✓；**∴ 沿用上次奏效的办法：不猜 ✓）
+  //   **∴ 为什么需要 ✗**（**已确认的事实 ✓）★**：
+  //     **∴ ① 读数**正确**✗**（**∴ 历史注释记着**第 394 轮曾看到 **0 => 59** ✓）
+  //       ＋ **∴ ② SW **已激活**✗ ＋ **∴ 内核**有内容**（`head_seq:1` ✓）＋ **∴ 落笔**进了状态机** ✓
+  //         ＋ **∴ ③ 而**判据自己写着**一条**已知限制**✗：
+  //           「**CDP **页面级 offline **管不到** SW **上下文的 fetch**」** ✓
+  //           ＋ **∴ 于是**它**改桩** SW **的 `self.fetch`**✗（**∴ 负对照**证明桩**生效** ✓）★
+  //             ＋ **∴ 所以**：**渲染**若要**某个**网络资源**✗ ⇒ **∴ 它**就被**桩掉了** ✓
+  //   **∴ 现在 ✗**：**把**离线期间的**页面错误 ＋ 失败请求**打出来** ✓ ★
+  try {
+    const errs = await evaluate(`(() => {
+        const w = window;
+        const bag = (w.__offlineDiag = w.__offlineDiag || { errs: [], rejected: [] });
+        return { errs: bag.errs.slice(-8), rejected: bag.rejected.slice(-8),
+                 kernel: !!(w.yanshiStats && w.yanshiStats.wasm),
+                 tool: (w.yanshi && w.yanshi.state && w.yanshi.state().tool) || null };
+      })()`);
+    console.error("     ↳ 诊断（离线期间）：" + JSON.stringify(errs));
+  } catch (e) {
+    console.error("     ↳ 诊断求值失败：" + e);
+  }
 }
 // 判据对象必须是"打开面板之后"的选项数：面板**懒加载**（不点开就不填充）**是设计**。
 const panelOptions = afterOpen ? afterOpen.options : -1;
