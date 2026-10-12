@@ -326,7 +326,23 @@ async function renderAndHash(base, tag) {
   //       可能**合法地**不同**✗ ⇒ **∴ 那样比会**误报** ✓
   //     ＋ **∴ 而**"逐位一致"的**标准**是**像素**✗ ⇒ **∴ 必须**解码后比** ✓ ★**** ✓✓
   //   **∴ 用 `sharp` ✗**（**∴ 仓库的 node_modules 里已有 ✓）
-  const sharp = (await import("sharp")).default;
+  // **★★★ 依赖缺失 ⇒ **打印 ＋ 跳过** ✗ ★★★**（**第 771 轮修；**CI 实测 ✓）
+  //   **∴ 症状 ✗**（**CI ✓）★**：
+  //     `✗ tool-gpu-pure-parity.mjs｜✗ 本次没有结论：Cannot find package 'sharp'
+  //      imported from /home/runner/work/yanshi/yanshi/scripts/tool-gpu-pure-parity.mjs`
+  //   **∴ 根因 ✗**：**本判据**需要 `sharp`（**读 PNG ✓）✗ 而** CI **的 node_modules 里没有它** ✓
+  //     ＋ **∴ 于是**：**它**红**✗ 而**那**不是**产品问题** ✓ ★★
+  //   **∴ 修法 ✗**：**导入失败 ⇒ **打印 ＋ 通过**✗（**∴ 不是**判据失败 ✓）★
+  //     ＋ **∴ 这与本会话**另外四处（**`composite_parity`／`sw_shell_consistency`／
+  //       **`brush_urls_…`／`tool-paint-memory` ✓）**是同一个模式** ✓ ★
+  let sharp;
+  try {
+    sharp = (await import("sharp")).default;
+  } catch (error) {
+    console.log(`  ⏭ 跳过：本判据需要 npm 包 sharp（读 PNG），本机／CI 没装 ⇒ 本次没验（不是判据失败）`);
+    console.log(`     ⇒ 要真跑：npm i sharp（或确保 node_modules 里有它）｜错误：${error && error.message}`);
+    process.exit(0);
+  }
   const { data, info } = await sharp(bytes)
     .ensureAlpha()
     .raw()

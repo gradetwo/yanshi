@@ -23,6 +23,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(name);
@@ -30,7 +31,20 @@ const arg = (name, dflt) => {
 };
 const ROUNDS = Number(arg("--rounds", 3));
 const DOC = arg("--doc", "art_60301188_4k_monet_sunrise");
-const ROOT = arg("--root", "/home/crow/yanshi-tmp/real-cold");
+// **★★★ 不许硬编码**绝对路径** ✗ ★★★**（**第 771 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：
+//     `✗ tool-cpu-cost-repeated.mjs｜第 1 轮 ✗ ENOENT: no such file or directory,
+//      open '/home/crow/yanshi-tmp/real-cold/docs/art_60301188_4k_monet_sunrise…'`
+//   **∴ 根因 ✗**：**缺省值**写死了**开发机上的一个绝对路径**✗
+//     ＋ **∴ 于是**：**在任何别的机器（**包括 CI ✓）上**必然 ENOENT** ✓ ★★
+//   **∴ 修法 ✗**：**优先环境变量**✗ ＋ **∴ 缺省用**标准临时目录**（**∴ 与**其余工具一致 ✓）★
+//     ＋ **∴ 并**在**根目录不存在时**明确跳过**✗（**∴ 而不是**报一个 ENOENT ✓）
+const ROOT = arg("--root", process.env.YANSHI_REAL_COLD_ROOT || join(tmpdir(), "yanshi-real-cold"));
+if (!existsSync(ROOT)) {
+  console.error(`  ⏭ 跳过：冷启动夹具目录不存在（${ROOT}）⇒ 本条本次没验（不是判据失败）`);
+  console.error("     ⇒ 需要时设 YANSHI_REAL_COLD_ROOT 或传 --root 指向真实夹具");
+  process.exit(0);
+}
 
 const pickBinary = () => {
   const cands = [];

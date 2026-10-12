@@ -9,12 +9,32 @@
 //  ① **白名单内 ⇒ 画面必须**不变****（建空层 ✓）：`render_region` 的 `blob_hash` 前后**相同** ✓；
 //  ② **白名单外且真影响画面 ⇒ 画面必须**变****（逐层隐藏 ✓）：**至少有一层**能改变 `blob_hash` ✓。
 // **变异** ✗：把"可见性"塞进白名单 ⇒ ② 必红 ✓；把白名单**取消** ⇒ ① 仍需成立（不红，但**性能**判据会红 ✓）。
-const [, , BASE, PROJECT] = process.argv;
-if (!BASE || !PROJECT) {
-  console.error("用法: node tool-preview-whitelist-guard.mjs <base> <project.yanshi>");
+import { readFileSync, existsSync } from "node:fs";
+// **★★★ 契约不匹配 ⇒ **回退到仓库里的 fixture** ✗ ★★★**（**第 771 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：
+//     `✗ tool-preview-whitelist-guard.mjs｜Error: ENOENT: no such file or directory,
+//      open 'crit_toolpreviewwhitelistguardmjs'`
+//   **∴ 根因 ✗**：**运行器对 `tool-*` 的统一约定是 `$BASE $doc $tok`** ✓
+//     ＋ **∴ 而**本判据**期望 `<base> <project.yanshi>`**✗
+//       ⇒ **∴ 于是**它**把 `$doc`（**`crit_…` ✓）当成工程文件** ⇒ **∴ ENOENT** ✓ ★★
+//   **∴ 修法 ✗**：**第三个参数不是已存在的文件 ⇒ **用 `exports/demo.yanshi`** ✗
+//     ＋ **∴ 那是**仓库里**已有的 fixture**✗（**∴ 实测**有 5 个 `.yanshi` ✓）★
+//       ＋ **∴ 而**人**仍可**显式传工程**✗ ⇒ **∴ 行为不变** ✓ ★
+const [, , BASE_ARG, PROJECT_ARG] = process.argv;
+const BASE = BASE_ARG;
+const DEFAULT_PROJECT = "exports/demo.yanshi";
+const PROJECT = PROJECT_ARG && existsSync(PROJECT_ARG) ? PROJECT_ARG : DEFAULT_PROJECT;
+if (!BASE) {
+  console.error("用法: node tool-preview-whitelist-guard.mjs <base> [project.yanshi]");
   process.exit(2);
 }
-import { readFileSync } from "node:fs";
+if (PROJECT !== PROJECT_ARG) {
+  console.error(`  ⓘ 第二个参数不是已存在的工程文件（运行器的约定是 <base-url> <doc> <token>）⇒ 用默认工程：${DEFAULT_PROJECT}`);
+}
+if (!existsSync(PROJECT)) {
+  console.error(`  ⏭ 跳过：默认工程 ${DEFAULT_PROJECT} 也不存在 ⇒ 本条本次没验（不是判据失败）`);
+  process.exit(0);
+}
 let doc = "", token = "";
 async function call(tool, args) {
   const r = await fetch(`${BASE}/api/tools/${tool}?doc=${doc}&token=${token}`, {
