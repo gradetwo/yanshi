@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 const require = createRequire(import.meta.url);
 
 const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
@@ -26,7 +27,7 @@ const pickPort = (start) => {
 };
 const PORT = Number(process.env.SAMPLE_PORT || pickPort(15800));
 const BASE = "http://127.0.0.1:" + PORT;
-const work = mkdtempSync(join(tmpdir(), "yanshi-sample-"));
+const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-sample-")));
 const child = spawn(BIN, ["--bind", "127.0.0.1:" + PORT, "--root", work, "--doc", "boot",
   "--width", "256", "--height", "256", "--assets-dir", "assets"], { stdio: ["ignore", "pipe", "pipe"] });
 const log = [];

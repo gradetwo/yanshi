@@ -37,6 +37,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -198,7 +199,7 @@ if (!existsSync(binary)) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function startServer(mode, port) {
-  const work = mkdtempSync(join(tmpdir(), `pure-${mode}-`));
+  const work = trackTemp(mkdtempSync(join(tmpdir(), `pure-${mode}-`)));
   const child = spawn(
     binary,
     [

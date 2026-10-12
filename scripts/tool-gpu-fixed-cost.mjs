@@ -31,6 +31,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => {
@@ -94,7 +95,7 @@ if (!existsSync(binary)) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function start(mode, port) {
-  const work = mkdtempSync(join(tmpdir(), `fixcost-${mode}-`));
+  const work = trackTemp(mkdtempSync(join(tmpdir(), `fixcost-${mode}-`)));
   const child = spawn(
     binary,
     ["--bind", `127.0.0.1:${port}`, "--root", join(work, "w"), "--doc", "boot",

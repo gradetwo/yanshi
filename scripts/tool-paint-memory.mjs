@@ -22,6 +22,7 @@ const require = createRequire(import.meta.url);
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
 // **缺省笔数的选择有结构理由** ✓（第 930 轮 ✓），**不是"某次实测的数"** ✗：
@@ -53,7 +54,7 @@ const CPU_PER_STROKE_BUDGET = process.env.PAINT_CPU_MS_PER_STROKE ? Number(proce
 // 设计 14.10：内存（4K/10 图层）< 4GB —— **这是设计承诺 ✓**，所以它可以当门禁 ✓。
 const ABSOLUTE_RSS_BUDGET_MB = 4 * 1024;
 
-const work = mkdtempSync(join(tmpdir(), "yanshi-paint-"));
+const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-paint-")));
 // **子进程输出落盘** ✓（第 823 轮 ✓）：`YANSHI_RENDER_PROBE=1` 时服务端会打印**各阶段耗时** ✓
 // ⇒ 那正是"各个操作的占比" ✓ ⇒ 不能只在失败时才看它 ✓。
 const CHILD_LOG = process.env.PAINT_CHILD_LOG || "/tmp/yanshi-paint-child.log";

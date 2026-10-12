@@ -27,6 +27,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pick = () => {
@@ -46,7 +47,7 @@ const BIN = pick();
 //     ⇒ **∴ 于是**：**判据**跑在旧代码上** ⇒ **∴ 修了也**不转绿** ✓**** ✓✓
 console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}）`);
 const port = 18700 + Math.floor(Math.random() * 120);
-const ROOT = mkdtempSync(join(tmpdir(), "expbm-"));
+const ROOT = trackTemp(mkdtempSync(join(tmpdir(), "expbm-")));
 const base = `http://127.0.0.1:${port}`;
 const proc = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port}`], { stdio: "ignore" });
 let failed = 0;

@@ -23,6 +23,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -142,7 +143,7 @@ if (!base) {
     process.exit(3);
   }
   const port = Number(opt("--port", "19501"));
-  work = mkdtempSync(join(tmpdir(), "stage-acc-"));
+  work = trackTemp(mkdtempSync(join(tmpdir(), "stage-acc-")));
   child = spawn(
     binary,
     [

@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => {
@@ -106,7 +107,7 @@ if (!existsSync(binary)) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const work = mkdtempSync(join(tmpdir(), "rendercount-"));
+const work = trackTemp(mkdtempSync(join(tmpdir(), "rendercount-")));
 const logPath = join(work, "server.log");
 let child;
 let code = 0;

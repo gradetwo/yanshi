@@ -27,7 +27,7 @@ const BUDGET_MS = Number.isFinite(__b) && __b > 0 ? __b : 50;
 //     ⇒ **∴ 于是**：**判据**不依赖外部文件** ✓ ⇒ **∴ 自足 ✓**
 let PROJECT = PROJECT_ARG;
 if (!PROJECT || !existsSync(PROJECT)) {
-  const tmp = join(mkdtempSync(join(tmpdir(), "cold-open-")), "p.yanshi.json");
+  const tmp = join(trackTemp(mkdtempSync(join(tmpdir(), "cold-open-"))), "p.yanshi.json");
   // **∴ `doc_id` 由**我**生成 ✗**（第 95 轮 ✓；**∴ 本地实测 ✓）：
   //   **∴ 症状 ✗**：**我**原来用 `made.doc_id`**✗
   //     ⇒ **∴ 而** `/api/documents` **的响应里**没有 `doc_id`**✗
@@ -87,6 +87,7 @@ if (!BASE || !PROJECT) {
   process.exit(2);
 }
 import { readFileSync } from "node:fs";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 const budget = Number(BUDGET_MS);
 let doc = "", token = "";
 async function call(tool, args) {

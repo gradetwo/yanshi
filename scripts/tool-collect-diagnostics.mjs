@@ -22,6 +22,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const base = (process.argv[2] || "").replace(/\/+$/, "");
 const doc = process.argv[3] || "diag_judge";
@@ -46,7 +47,7 @@ const REQUIRED = [
   "stderr.log", "stderr.meta.json", "thumbnail.json", "thumbnail.bin", "privacy.json",
 ];
 
-const work = mkdtempSync(join(tmpdir(), "yanshi-diag-"));
+const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-diag-")));
 const PY_LIST = [
   "import json,sys,zipfile",
   "z=zipfile.ZipFile(sys.argv[1])",

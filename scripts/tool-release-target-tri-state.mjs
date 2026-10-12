@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 // **用判据自身的位置解析仓库根** ✗（第 1128 轮）：原来用相对路径 `scripts/package-release.sh`，
 // 于是 cwd 不同（runner 可能在别处跑，或把脚本复制走）就会找不到文件；
@@ -41,7 +42,7 @@ const callWith = (home) => {
   return m ? Number(m[1]) : null;
 };
 
-const root = mkdtempSync(join(tmpdir(), "yanshi_ti_"));
+const root = trackTemp(mkdtempSync(join(tmpdir(), "yanshi_ti_")));
 try {
   // 情况 A：目标目录存在 ⇒ 已安装 ⇒ 0
   const a = join(root, "a");

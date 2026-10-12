@@ -43,6 +43,7 @@ import { execSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 // ─────────────────────────── 参数 ───────────────────────────
 const argv = process.argv.slice(2);
@@ -240,7 +241,7 @@ if (has("--self-test")) {
 
 // ─────────────────────── 起服务 ＋ 建场景 ───────────────────────
 async function startServer(mode, tag, w, h, portOffset) {
-  const root = mkdtempSync(join(tmpdir(), `macosgpu-${tag}-`));
+  const root = trackTemp(mkdtempSync(join(tmpdir(), `macosgpu-${tag}-`)));
   const port = basePort + portOffset;
   const args = [
     "--root", root,

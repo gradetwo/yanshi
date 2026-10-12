@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "no
 import { execFileSync, spawn } from "node:child_process";
 import { join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const base = process.argv[2];
 if (!base) {
@@ -175,7 +176,7 @@ if (!existsSync(serveBin)) {
   console.error(`判据无法运行：找不到服务端可执行文件 ${serveBin}（先 cargo build --workspace --bins）`);
   process.exit(1);
 }
-const freshRoot = mkdtempSync(join(tmpdir(), "yanshi-import-cas-"));
+const freshRoot = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-import-cas-")));
 const serverB = spawn(serveBin, ["--bind", "127.0.0.1:0", "--root", freshRoot], {
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -218,7 +219,7 @@ if (!baseB) {
 /// **再起一个全新的服务端** ✓（工具面那一路要用**它自己的 CAS** ✗ ——
 /// 同一个根里"blob 其实没落盘"会被副本遮住 ✓，那正是本判据第一版的假绿来源 ✓）。
 const spawnFreshServer = async (tag) => {
-  const root = mkdtempSync(join(tmpdir(), `yanshi-import-${tag}-`));
+  const root = trackTemp(mkdtempSync(join(tmpdir(), `yanshi-import-${tag}-`)));
   const child = spawn(serveBin, ["--bind", "127.0.0.1:0", "--root", root], {
     stdio: ["ignore", "pipe", "pipe"],
   });

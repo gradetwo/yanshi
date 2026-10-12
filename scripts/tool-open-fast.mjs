@@ -27,6 +27,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const BIN = process.env.YANSHI_SERVE_BIN || "./target/debug/yanshi-serve";
 const ASSETS = process.env.YANSHI_ASSETS_DIR || "assets";
@@ -36,7 +37,7 @@ const check = (ok, label, detail) => {
   if (!ok) failures.push(label + (detail ? "：" + detail : ""));
 };
 
-const root = mkdtempSync(join(tmpdir(), "open-fast-"));
+const root = trackTemp(mkdtempSync(join(tmpdir(), "open-fast-")));
 const port = 21000 + Math.floor(Math.random() * 2000);
 const base = `http://127.0.0.1:${port}`;
 const stamp = Date.now().toString(36);

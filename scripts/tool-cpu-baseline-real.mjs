@@ -22,6 +22,7 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(name);
@@ -72,7 +73,7 @@ if (!BIN) { console.error("✗ 找不到 yanshi-serve ⇒ **∴ 本跑没有结�
 console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}）`);
 
 const port = 14300 + Math.floor(Math.random() * 80);
-const root = mkdtempSync(join(tmpdir(), "cpureal-"));
+const root = trackTemp(mkdtempSync(join(tmpdir(), "cpureal-")));
 const proc = spawn(BIN, ["--root", root, "--bind", `127.0.0.1:${port}`], { stdio: "ignore" });
 const base = `http://127.0.0.1:${port}`;
 

@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writ
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 // **用判据自身的位置解析仓库根** ✓（不许用相对路径 ✗ —— runner 可能在别处跑 ✓，
 // 那样"变异后仍绿"就可能是没读到我变异的那个文件 ✓，而不是判据真的能红 ✗）。
@@ -72,7 +73,7 @@ if (!existsSync(STAGER)) {
 } else if (!existsSync(SOURCE_BRUSHES) || !statSync(SOURCE_BRUSHES).isDirectory()) {
   failures.push(`仓库里没有笔刷源目录：${SOURCE_BRUSHES}（判据的前置不成立）`);
 } else {
-  const root = mkdtempSync(join(tmpdir(), "yanshi_pkgbrush_"));
+  const root = trackTemp(mkdtempSync(join(tmpdir(), "yanshi_pkgbrush_")));
   const stage = join(root, "stage");
   try {
     const expected = sourceNames(SOURCE_BRUSHES);
@@ -113,7 +114,7 @@ if (!existsSync(STAGER)) {
 
 // ------------------------------------------------- ② 反向控制：源目录缺失必须失败
 function negativeControl(label, prepare) {
-  const root = mkdtempSync(join(tmpdir(), "yanshi_pkgbrush_neg_"));
+  const root = trackTemp(mkdtempSync(join(tmpdir(), "yanshi_pkgbrush_neg_")));
   try {
     const repo = join(root, "repo");
     mkdirSync(join(repo, "assets", "textures"), { recursive: true });
