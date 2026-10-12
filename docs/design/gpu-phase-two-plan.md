@@ -12902,3 +12902,44 @@ criteria shard: —— 通过 27｜意外失败 0｜已知红 1｜跳过 1
 ⑦ 按实测**改默认值**（**并加一条**守那个决定**的判据 ✓）
 ```
 
+
+## 第 790 轮：**★★★ L4 基线（**目标第 1–2 项 ✓）＋ 一个决定后续优先级的事实 ★★★**
+
+### **∴ 环境（**第 1 项 ✅ ✓）★**
+- **会话**：`[dawang] gpu-l4-s-kkb-usw4a0-g913mwv5yq7i | **Hardware: L4** | Variant: GPU`
+- **`nvidia-smi`**：`**NVIDIA L4**, 580.82.07, 23034 MiB`
+- **`vulkaninfo`**：`deviceName = **NVIDIA L4**｜driverName = NVIDIA｜driverInfo = 580.82.07`
+- **适配器字符串（**服务端 ✓）**：`adapter:Vulkan:DiscreteGpu:**NVIDIA L4**:device=true`
+- **∴ 三处都打印了适配器名** ⇒ **∴ 不是 `llvmpipe`** ✓
+- **★ 一个坑（**值得记 ✓）★**：`scripts/l4.sh status` **会为了建 ssh 通道而**自动创建会话**✗
+  - **∴ 而 `colab new --gpu L4` **只在会话不存在时才生效**** ⇒ **∴ 于是**拿到的是 **CPU 运行时**
+  - **∴ 症状**：`Hardware: CPU | Variant: DEFAULT` ⇒ **∴ 而**它**仍然装了 `nvidia_icd.json`** ⇒ **∴ wgpu**回退 `llvmpipe`**
+  - **∴ 修法**：`colab stop -s dawang` ⇒ **再** `scripts/l4.sh up`（**它带 `--gpu L4` ✓）**
+
+### **∴ 4K 两本账（**第 2 项 ✅ ✓）★**
+**命令**：`YANSHI_GPU_VERIFY=1 node scripts/tool-render-cost-accounts.mjs --spawn --rounds 5 \
+  --baseline target/release/yanshi-serve --compare 'CPU=--gpu off' --compare 'GPU=--gpu on'`
+
+| 配置 | 墙钟 min／中位／max (ms) | 中位 95% CI | MAD | CPU time min／中位／max (ms) | CPU÷墙钟 | 峰值 RSS |
+|---|---|---|---|---|---|---|
+| CPU | 1414／1529／2030 | [1414–2030] | 66 | 2180／2245／2780 | 1.47× | 3105 MB |
+| GPU | 1295／1452／1665 | [1295–1665] | 129 | 1610／1780／2000 | 1.23× | 3334 MB |
+
+- **逐位一致**：`max_channel_delta = [null, **0**]`｜`verified_blobs = [0, **9**]`
+  - **∴ `null` = 未核对**（**CPU 路没有 GPU 快照 ✓）；**∴ `0` = 逐字节相同** ✓
+- **离散度**：**GPU 的 MAD 129 > CPU 的 66** ⇒ **∴ 本轮 GPU 噪声更大**（**4 有效轮，样本少 ✓）★
+- **★ 4K 上 GPU 只有 **1.05×**（1529 ⇒ 1452）** ⇒ **∴ 而**原因在分段里** ✓
+
+### **★★★ 决定后续优先级的事实 ★★★**
+**GPU 阶段分段（**微秒 ✓）**：
+| 配置 | calls | upload | submit | readback | gpu |
+|---|---|---|---|---|---|
+| CPU | 1 | 38 | 69 | 75 | 0 |
+| GPU | 10 | **33785** | 300 | **81694** | 0 |
+
+**⇒ 4K 上**传输 ＝ **33.8 ms（upload）＋ 81.7 ms（readback）＝ **115 ms****
+**⇒ 而它**正好抵消了 GPU 的计算优势** ⇒ **∴ 所以**：
+- **目标第 4 项（**分块按 `max_storage_buffer_binding_size` 自适应**）**对症**
+- **目标第 5 项（**GPU→CPU 读回批量化**）**对症**
+- **∴ 而**这两项的收益**必须用**这三个分段数**来证明**（**本表就是基线 ✓）
+- **`gpu = 0`** ⇒ **∴ 目标第 9 项（**`TIMESTAMP_QUERY`）**仍未做 ⇒ **∴ 所以**现在还**分不清**「传输贵」与「算得贵」的**精确边界** ✓
