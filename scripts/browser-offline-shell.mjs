@@ -389,10 +389,12 @@ try {
                applies: st.applies, lastArea: st.lastArea, lastRenderMs: st.lastRenderMs,
                localCalls: st.localCalls, serverCalls: st.serverCalls };
     })()`);
-  console.log("  前│  · 在线（断网前）对照 = " + JSON.stringify(onlineProbe));
+  onlineProbeRef = onlineProbe;
 } catch (e) {
   console.log("  前│  · 在线对照探针失败：" + e);
 }
+// **∴ 在线阶段的对照值（**供失败点那行一起打印 ✓）★**
+let onlineProbeRef = null;
 const setServiceWorkerFetch = async (broken) => {
   if (!swControl) return false;
   const value = await swControl.evaluate(
@@ -811,7 +813,12 @@ for (let i = 0; i < 32 && !(inkAfter && inkBefore && inkAfter.ink > inkBefore.in
   inkAfter = await evaluate(canvasSig);
 }
 console.log(`  · 离线落笔 = ${JSON.stringify(strokeResult)} ｜ 非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`
-  + ` ｜ 落笔前 brushNow=${JSON.stringify(beforeRef && beforeRef.brushNow)}`);
+  + ` ｜ 落笔前 brushNow=${JSON.stringify(beforeRef && beforeRef.brushNow)}`
+  // **★★★ 对照必须**同处打印** ✗ ★★★**（**第 749 轮实测教训 ✓）
+  //   **∴ 我**第一版**在**在线阶段**单独打一行**✗ ⇒ **∴ 而**判据的输出收集**有窗口**✗
+  //     ＋ **∴ 于是**：**那一行**被**挤出窗口**✗ ⇒ **∴ 白等一轮** ✓ ★
+  //       ＋ **∴ 所以 ✗**：**存进变量 ＋ **在**这个必然可见的行**里一起打** ✓ ★
+  + ` ｜ 在线对照=${JSON.stringify(onlineProbeRef)}`);
 // ① **事件确实进了笔画状态机** ✓（`points` 从 0 变成 > 0 ✓、`dragging` 为真 ✓）。
 if (!strokeResult || typeof strokeResult !== "object" || strokeResult.pointsAtDown <= 0 || !strokeResult.draggingAtDown) {
   failures.push(`落笔事件没有进入笔画状态机（tool=${strokeResult && strokeResult.tool}｜points@down=${strokeResult && strokeResult.pointsAtDown}｜dragging@down=${strokeResult && strokeResult.draggingAtDown}）⇒ 事件被平移那条吃掉了`);
