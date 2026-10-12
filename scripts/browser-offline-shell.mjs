@@ -396,7 +396,7 @@ const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now()
 //     **∴ ①** **桩在 ＋ 调用 reject ⇒ `failed: true` ⇒ **负对照**成立 ✓**** ✓✓
 //     **∴ ②** **桩不在 ⇒ `failed: false` ⇒ **离线机制**没生效** ⇒ **∴ 才**该 VOID ✓**** ✓✓
 //     **∴ ③** **桩在但调用**没 reject**✗ ⇒ **∴ 那**也是**机制错** ⇒ **∴ VOID** ✓**** ✓✓
-const controlProbe = swControl
+let controlProbe = swControl
   ? (await swControl.send("Runtime.evaluate", { 
       // **★ 必须显式 `returnByValue` ＋ `awaitPromise` ✗ ★**（第 334 轮 ✓；**实测换来的 ✓）：
       //   **∴ 第 333 轮的 CI 显示 ✗**：**`负对照 … = {}`** ✓
@@ -428,10 +428,41 @@ const controlProbe = swControl
       //       ＋ **∴ 而**第 130 轮测的是**同步表达式**✗ ⇒ **∴ 所以**两条规则**不矛盾** ✓ ★
       //         ＋ **∴ 正确规则 ✗**：**同步表达式 ⇒ 不带**✗ ／ **async 表达式 ⇒ 带** ✓ ★
       awaitPromise: true,
-    })).result?.value ?? { failed: false, why: "sw-evaluate-returned-nothing" }
+    }))
   : { failed: false, why: "no-sw-control-target" };
+// **★★★ 取不到值时**打印原文** ✗ ★★★**（**第 737 轮 ✓；**∴ 让下次 CI 自己说出原因 ✓）
+//   **∴ 为什么不再猜 ✗**（**已耗尽两次猜测 ✓）★**：
+//     **∴ ① 我猜** `awaitPromise` **✗ ⇒ **∴ CI **否证** ✓
+//       ＋ **∴ ② 我改**按表达式自动判断**✗ ⇒ **∴ CI **仍报同样的错** ✓
+//         ＋ **∴ 所以**：**必须**把**原始回包**打出来** ✓ ★
+//           ＋ **∴ 要打三样 ✗**：**① 包 keys**✗ ／ **② `result` keys**✗（**∴ 可能**是 `exceptionDetails` ✓）
+//             ＋ **③ 原始包前 600 字符**（**∴ 从而**看到**真正的错** ✓）★
+if (swControl) {
+  const raw = await swControl.send("Runtime.evaluate", {
+    expression: `(async () => {
+        const isStub = self.fetch !== self.__yanshiRealFetch;
+        if (!isStub) return { failed: false, why: "sw-fetch-is-not-stubbed" };
+        try {
+          await self.fetch("${NEGATIVE_CONTROL}");
+          return { failed: false, why: "stub-did-not-reject" };
+        } catch (error) {
+          return { failed: true, error: String(error) };
+        }
+      })()`,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  if (raw && raw.result && raw.result.result && "value" in raw.result.result) {
+    controlProbe = raw.result.result.value;
+  } else {
+    console.error("  ★ 负对照取不到值 ⇒ 打印原始回包（**诊断用 ✓）");
+    console.error("     包 keys = " + JSON.stringify(Object.keys(raw || {})));
+    console.error("     result keys = " + JSON.stringify(Object.keys((raw && raw.result) || {})));
+    console.error("     原始 = " + JSON.stringify(raw).slice(0, 600));
+    controlProbe = { failed: false, why: "sw-evaluate-returned-nothing" };
+  }
+}
 console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));
-// **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
 // **★ 「**没有答案**」不等于「**成功了**」 ✗ ★**（第 133 轮 ✓；**VOID 误报换来的 ✓）：
   //   **∴ 症状 ✗**：**那一次 evaluate 悬空**✗ ⇒ **∴ 结果**是 `undefined`** ✗
   //     ⇒ **∴ 而**判据**读 `controlProbe.failed`**✗ ⇒ **∴ 得到 `undefined`** ✓**** ✓✓
