@@ -115,7 +115,20 @@ SHARD="${SHARD:-1}"; SHARDS="${SHARDS:-1}"
 shard_index=0
 # ⚠️ **枚举是按前缀的** ✗ ⇒ 任何不匹配的判据**静默地永不运行** ✗（第 787 轮实测：74 个里 14 个没跑 ✓，
 # 其中含 (A)⑥ 的核心判据 `wasm-brush-parity` ✗）⇒ 本条按第 788 轮**显式补上它** ✓（接口与下面那条相同 ✓）。
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort); do
+#
+# **★★★ `tool-gate.mjs` 必须排除 ✗ ★★★**（**第 773 轮修；**CI 实测 `EXIT=124` ✓）
+#   **∴ 症状 ✗**：**`✗ tool-gate.mjs (EXIT=124)`**（**超时 ✓）
+#     ＋ **∴ 而**它**在**下面那 180 s 的预算里**✗ ⇒ **∴ 必然**被 `timeout` 砍** ✓ ★
+#   **∴ 根因 ✗**：** `tool-gate.mjs` **不是判据**✗ 而**是**本仓库的**白名单化门禁**（**第 644 轮 ✓）★
+#     ＋ **∴ 即**：**它**跑的是 `fmt` ＋ `clippy` ＋ `cargo test --workspace`** ✓
+#       ＋ **∴ 而**那三件**已经在**门禁自己**和** CI **的别的 job 里**跑**✗
+#         ＋ **∴ 于是**：**在判据里再跑一遍**既**重复**又**必然超时** ✓ ★★
+#   **∴ 覆盖没有缺口 ✗**：** `tool-gate.mjs` 由**门禁**（`node scripts/tool-gate.mjs` ✓）
+#     ＋ **∴ 和** CI **的 `clippy`／`test (stable)`／`test (beta)`／`rustfmt` job **各自覆盖** ✓ ★
+#       ＋ **∴ 所以**：**把它从判据枚举里排除**✗ 而**不是**给它更大的超时** ✓ ★★
+#         （**∴ 后者**会让**每个判据分片**都慢十几分钟 ⇒ **∴ 而且**和门禁重复 ✓）
+CRITERIA_LIST=$(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort | grep -v '/tool-gate\.mjs$')
+for script in $CRITERIA_LIST; do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
