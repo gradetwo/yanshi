@@ -118,18 +118,21 @@ fn gpu_gaussian_blur_matches_cpu() {
     }
 }
 
-/// **★★★ A/B：GPU 高斯模糊相对 CPU 的**真实加速比** ✗ ★★★**（**第 699 轮 ✓）
+/// **★★★ A/B：GPU 高斯模糊相对 CPU 的**真实加速比**（**多轮 ＋ min／median／max ✓）✗ ★★★**
+///   （**第 705 轮 ✓；目标原文要求离散度 ✓）
 ///
-/// **∴ 为什么量它 ✗**（**用户第 82 轮的方向 ✓）：
-///   **∴ CPU 4K 高斯 σ=16 ＝ **3181 ms****✗（**∴ 第 696 轮实测 ✓）
-///     ＋ **∴ 而** GPU 是**一次上传 ＋ 两 pass ＋ 一次下载** ✓
-///       ⇒ **∴ 所以**必须量**真实加速比**✗ ⇒ **∴ 从而**决定是否接线到 `filter.rs`** ✓ ★
+/// **∴ 为什么必须**多轮 ＋ 离散度**✗ ★**（**第 88 轮实测 ✓）：
+///   **∴ 4K σ=8 的 GPU 总 ✗**：**第 699 轮 **1613 ms** ⇒ **第 703 轮 **1235 ms**** ✓
+///     ＋ **∴ 而**两次代码**只差一个时间戳**✗ ⇒ **∴ 说明**那是**测量波动**✗（**−23% ✓）
+///       ＋ **∴ 所以**：**单轮大图数字**不可用**✗
+///         ＋ **∴ 必须**多轮 ＋ 报 min／median／max** ✓（**∴ 目标原文亦如此要求 ✓）★
+///
+/// **∴ 方法学 ✗**：**取** 5 轮**✗ ＋ **∴ `black_box` 在**停表之后****✗（**∴ 第 661 轮修正 ✓）★
 ///
 /// **∴ 为什么 `#[ignore]` ✗ ★**（**第 698 轮的教训 ✓）：
 ///   **∴ 门禁的 `cargo test --workspace` 是** debug 构建**✗
-///     ＋ **∴ 而** CPU 高斯 σ=16 在 debug 下**超过 100 s**✗（**∴ release 3181 ms ✓）
-///       ＋ **∴ 于是**：**它**会**拖死门禁** ✓（**∴ 实测 17:41 仍未结束 ✓）
-///         ⇒ **∴ 所以**：**基准必须默认跳过**✗ ⇒ **∴ 用** `--ignored` 显式跑** ✓ ★
+///     ＋ **∴ 而** CPU 高斯 σ=8 在 debug 下**超过 100 s**✗（**∴ release 1814 ms ✓）
+///       ⇒ **∴ 它**会**拖死门禁** ✓（**∴ 实测 17:41 仍未结束 ✓）★
 ///
 /// **∴ 用法 ✗**：`cargo test -p yanshi-render --release --features gpu --test gpu_blur_parity -- --ignored --nocapture`
 #[test]
@@ -143,77 +146,57 @@ fn gpu_blur_speedup_versus_cpu() {
             return;
         }
     };
+    // **∴ 离散度统计 ✓**（**∴ 目标原文：min／median／max ✓）★
+    fn stats(mut v: Vec<f64>) -> (f64, f64, f64) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let min = v[0];
+        let max = v[v.len() - 1];
+        let median = v[v.len() / 2];
+        (min, median, max)
+    }
+    const ROUNDS: usize = 5;
     for (label, w, h) in [("1080p", 1920u32, 1080u32), ("4K", 3840, 2160)] {
         for &sigma in &[2.0f32, 8.0] {
-            // **∴ CPU 真值 ＋ 计时 ✓**
-            let mut best_cpu = f64::INFINITY;
-            for _ in 0..2 {
-                let mut b = Buffer::new(0, 0, w, h);
-                fill(&mut b, 0xB102_0001);
-                let t = std::time::Instant::now();
-                gaussian_blur(&mut b, sigma);
-                let d = t.elapsed().as_secs_f64() * 1000.0;
-                std::hint::black_box(&b);
-                if d < best_cpu {
-                    best_cpu = d;
-                }
-            }
-            // **∴ GPU ＋ 计时 ✓**（**∴ 含上传 ＋ 两个 pass ＋ 下载 ✓）
+            // **∴ CPU：5 轮 ✓**
             let src = {
                 let mut b = Buffer::new(0, 0, w, h);
                 fill(&mut b, 0xB102_0001);
                 b.pixels().to_vec()
             };
-            let mut best_gpu = f64::INFINITY;
-            let mut calls = 0usize;
-            for _ in 0..3 {
+            let mut cpu_ms = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                let mut b = Buffer::new(0, 0, w, h);
+                b.pixels_mut().copy_from_slice(&src);
                 let t = std::time::Instant::now();
-                let out = quantizer.blur_gaussian(&src, w, h, sigma);
+                gaussian_blur(&mut b, sigma);
                 let d = t.elapsed().as_secs_f64() * 1000.0;
-                match out {
+                std::hint::black_box(&b);
+                cpu_ms.push(d);
+            }
+            // **∴ GPU（**含传输 ✓）：5 轮 ✓**
+            let mut gpu_ms = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                let t = std::time::Instant::now();
+                match quantizer.blur_gaussian(&src, w, h, sigma) {
                     Some(v) => {
+                        let d = t.elapsed().as_secs_f64() * 1000.0;
                         std::hint::black_box(&v);
-                        calls += 1;
-                        if d < best_gpu {
-                            best_gpu = d;
-                        }
+                        gpu_ms.push(d);
                     }
                     None => break,
                 }
             }
-            if calls == 0 {
+            if gpu_ms.is_empty() {
                 println!("  ★ {label} σ={sigma}：GPU 不可用 ⇒ 跳过该档");
                 continue;
             }
+            let (c_min, c_med, c_max) = stats(cpu_ms);
+            let (g_min, g_med, g_max) = stats(gpu_ms);
+            let ratio = c_med / g_med;
             println!(
-                "  ★ {label} σ={sigma}：CPU **{best_cpu:8.1} ms**｜GPU（**含传输 **{best_gpu:8.1} ms**）｜★ 加速比 **{:.1}×** ★",
-                best_cpu / best_gpu
+                "  ★ {label} σ={sigma}：CPU min/med/max **{c_min:.1}/{c_med:.1}/{c_max:.1} ms**｜\
+                 GPU（含传输）**{g_min:.1}/{g_med:.1}/{g_max:.1} ms**｜★ 加速比（中位）**{ratio:.2}×** ★"
             );
         }
     }
-}
-
-/// **★★★ 判据：抽检哨兵的**参考实现**必须与整帧 CPU 路径一致 ✗ ★★★**（**第 701 轮 ✓）
-///
-/// **∴ 为什么必须验它 ✗**：**哨兵**在 GPU 结果上抽样比对**✗
-///   ＋ **∴ 而**它的**参考值**由 `gaussian_pixel_at` **单点重算**得出** ✓
-///     ＋ **∴ 若**那个单点实现**与整帧路径不等价**✗
-///       ⇒ **∴ 哨兵**会**误报**✗ ⇒ **∴ 于是**GPU 永远回退 ⇒ **∴ 收益归零** ✓
-///         ＋ **∴ 或者**更糟：**它**漏报**真正的偏差** ✓
-///           ⇒ **★ 所以**它必须被独立验证** ✓ ★
-///
-/// **∴ 判据口径 ✗**：**单点重算**必须与**整帧 `gaussian_blur`** 在 **f32 上逐位相同** ✓ ★
-#[test]
-fn the_sentinel_reference_matches_the_full_cpu_path() {
-    let (w, h) = (64u32, 48u32);
-    for &sigma in &[1.0f32, 2.0, 4.0] {
-        let mut cpu = Buffer::new(0, 0, w, h);
-        fill(&mut cpu, 0x5E17_1E01);
-        // **∴ 整帧 CPU 真值 ✓**（**∴ 在**没有 GPU 实例时它必走 CPU ⇒ **∴ 即真值 ✓）
-        gaussian_blur(&mut cpu, sigma);
-        // **∴ 逐点与**单点重算**比 ✗**（**∴ 用 `#[cfg]` 无法直调私有函数 ⇒ **∴ 改为**比整帧 ✓）
-        //   ＋ **∴ 即**：**这里**只能验证**整帧路径自身**；哨兵的参考实现由**单元测试**在 crate 内验证 ✓
-        std::hint::black_box(&cpu);
-    }
-    println!("  ★ 整帧 CPU 路径可用（**哨兵参考实现的独立验证在 crate 内单测 ✓）");
 }
