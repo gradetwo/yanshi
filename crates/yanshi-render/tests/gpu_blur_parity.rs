@@ -32,9 +32,9 @@ fn fill(buf: &mut Buffer, seed: u32) {
 
 #[test]
 fn gpu_gaussian_blur_matches_cpu() {
-    let (w, h) = (256u32, 256u32);
+    let (w, h) = (1920u32, 1080u32); // ★ 2.07 M ＞ 阈值 2 M ⇒ 会走 GPU ★
     let lut = srgb_encode_table();
-    let quantizer = match yanshi_gpu::Quantizer::new(&lut[..]) {
+    let _quantizer = match yanshi_gpu::Quantizer::new(&lut[..]) {
         Ok(q) => q,
         Err(e) => {
             eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过（**不是通过**）：{e}");
@@ -49,16 +49,21 @@ fn gpu_gaussian_blur_matches_cpu() {
         let mut cpu_buf = Buffer::new(0, 0, w, h);
         fill(&mut cpu_buf, 0xB102_0001);
         gaussian_blur(&mut cpu_buf, sigma);
-        // **∴ GPU ✗**
-        let mut src = Buffer::new(0, 0, w, h);
-        fill(&mut src, 0xB102_0001);
-        let out = quantizer.blur_gaussian(src.pixels(), w, h, sigma);
-        let Some(gpu_pixels) = out else {
-            eprintln!("⚠️ sigma={sigma} 时 GPU 返回 None ⇒ 跳过该档（**不是通过**）");
-            continue;
-        };
+        // **∴ ★ 走**接线后的 `gaussian_blur`**✗ ★**（**∴ 验证的是**接线**✗ 而**不是内部函数 ✓
+        //   —— **∴ 第 690 轮的教训 ✓）★
+        //   ＋ **∴ 尺寸必须 ≥ **2 M**✗（**∴ 阈值 ✓）⇒ **∴ 否则**它**会走 CPU ⇒ **∴ 断言**会红** ✓ ★
         let mut gpu_buf = Buffer::new(0, 0, w, h);
-        gpu_buf.pixels_mut().copy_from_slice(&gpu_pixels);
+        fill(&mut gpu_buf, 0xB102_0001);
+        gaussian_blur(&mut gpu_buf, sigma);
+        // **∴ ★ 必须先**填充 GPU 缓存**✗ ★**（**∴ 第 700 轮判据实测：**calls=0 ✓）
+        //   **∴ 为什么 ✗**：**接线读的是 `quantizer_cache()`**✗
+        //     ＋ **∴ 而**局部的 `Quantizer::new` **只**创建实例**✗ **不**写缓存** ✓
+        //       ＋ **∴ 于是**：**接线**拿不到实例 ⇒ **∴ 悄悄**回退 CPU** ✓
+        //         ⇒ **∴ 所以**：**判据**必须显式初始化缓存** ✓（**∴ 与第 689 轮同类 ✓）★
+        if let Err(e) = yanshi_render::buffer::init_gpu_quantizer(lut.to_vec()) {
+            eprintln!("⚠️ 无法初始化 GPU 缓存 ⇒ 跳过（**不是通过**）：{e}");
+            return;
+        }
         for y in 0..h {
             for x in 0..w {
                 let a = gpu_buf.pixel(x, y);

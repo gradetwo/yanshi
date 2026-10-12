@@ -23,7 +23,7 @@ use yanshi_core::Bbox;
 //     报 `cannot find module or crate yanshi_gpu`** ✓
 //     ＋ **∴ 那**正是那条门禁存在的意义**（**抓非 feature 构建 ✓）★
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-fn quantizer_cache() -> &'static std::sync::Mutex<Option<yanshi_gpu::Quantizer>> {
+pub(crate) fn quantizer_cache() -> &'static std::sync::Mutex<Option<yanshi_gpu::Quantizer>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<yanshi_gpu::Quantizer>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
