@@ -112,3 +112,78 @@ fn gpu_gaussian_blur_matches_cpu() {
         );
     }
 }
+
+/// **★★★ A/B：GPU 高斯模糊相对 CPU 的**真实加速比** ✗ ★★★**（**第 699 轮 ✓）
+///
+/// **∴ 为什么量它 ✗**（**用户第 82 轮的方向 ✓）：
+///   **∴ CPU 4K 高斯 σ=16 ＝ **3181 ms****✗（**∴ 第 696 轮实测 ✓）
+///     ＋ **∴ 而** GPU 是**一次上传 ＋ 两 pass ＋ 一次下载** ✓
+///       ⇒ **∴ 所以**必须量**真实加速比**✗ ⇒ **∴ 从而**决定是否接线到 `filter.rs`** ✓ ★
+///
+/// **∴ 为什么 `#[ignore]` ✗ ★**（**第 698 轮的教训 ✓）：
+///   **∴ 门禁的 `cargo test --workspace` 是** debug 构建**✗
+///     ＋ **∴ 而** CPU 高斯 σ=16 在 debug 下**超过 100 s**✗（**∴ release 3181 ms ✓）
+///       ＋ **∴ 于是**：**它**会**拖死门禁** ✓（**∴ 实测 17:41 仍未结束 ✓）
+///         ⇒ **∴ 所以**：**基准必须默认跳过**✗ ⇒ **∴ 用** `--ignored` 显式跑** ✓ ★
+///
+/// **∴ 用法 ✗**：`cargo test -p yanshi-render --release --features gpu --test gpu_blur_parity -- --ignored --nocapture`
+#[test]
+#[ignore = "基准：用 --ignored 显式运行"]
+fn gpu_blur_speedup_versus_cpu() {
+    let lut = srgb_encode_table();
+    let quantizer = match yanshi_gpu::Quantizer::new(&lut[..]) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过（**不是通过**）：{e}");
+            return;
+        }
+    };
+    for (label, w, h) in [("1080p", 1920u32, 1080u32), ("4K", 3840, 2160)] {
+        for &sigma in &[2.0f32, 8.0] {
+            // **∴ CPU 真值 ＋ 计时 ✓**
+            let mut best_cpu = f64::INFINITY;
+            for _ in 0..2 {
+                let mut b = Buffer::new(0, 0, w, h);
+                fill(&mut b, 0xB102_0001);
+                let t = std::time::Instant::now();
+                gaussian_blur(&mut b, sigma);
+                let d = t.elapsed().as_secs_f64() * 1000.0;
+                std::hint::black_box(&b);
+                if d < best_cpu {
+                    best_cpu = d;
+                }
+            }
+            // **∴ GPU ＋ 计时 ✓**（**∴ 含上传 ＋ 两个 pass ＋ 下载 ✓）
+            let src = {
+                let mut b = Buffer::new(0, 0, w, h);
+                fill(&mut b, 0xB102_0001);
+                b.pixels().to_vec()
+            };
+            let mut best_gpu = f64::INFINITY;
+            let mut calls = 0usize;
+            for _ in 0..3 {
+                let t = std::time::Instant::now();
+                let out = quantizer.blur_gaussian(&src, w, h, sigma);
+                let d = t.elapsed().as_secs_f64() * 1000.0;
+                match out {
+                    Some(v) => {
+                        std::hint::black_box(&v);
+                        calls += 1;
+                        if d < best_gpu {
+                            best_gpu = d;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            if calls == 0 {
+                println!("  ★ {label} σ={sigma}：GPU 不可用 ⇒ 跳过该档");
+                continue;
+            }
+            println!(
+                "  ★ {label} σ={sigma}：CPU **{best_cpu:8.1} ms**｜GPU（**含传输 **{best_gpu:8.1} ms**）｜★ 加速比 **{:.1}×** ★",
+                best_cpu / best_gpu
+            );
+        }
+    }
+}
