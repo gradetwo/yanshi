@@ -76,9 +76,35 @@ if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
 fi
 
 token_for() {
-  curl -s -X POST "$BASE/api/documents" -H 'content-type: application/json' \
-    -d "{\"doc_id\":\"$1\",\"width\":320,\"height\":240}" |
-    python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])'
+  # **★★★ 建文档失败必须**立刻可见** ✗ ★★★**（**第 768 轮修；**CI 实测根因 ✓）
+  #   **∴ 症状 ✗**（**CI ✓）★**：
+  #     `✗ create_layer 的响应不是 JSON｜URL=…/api/tools?doc=crit_browserofflinereloadmjs
+  #      &token=…｜★status=404★｜前 80 字节="not found"`
+  #       ＋ **∴ 两条 `browser-offline-*` 判据**都这样红** ✓
+  #   **∴ 根因 ✗**：**本函数**把 `POST /api/documents` **的正文**直接喂给 `python3 json.load`** ✓
+  #     ＋ **∴ 若**那个请求**返回非 JSON（**出错／服务未起／字段变了 ✓）✗
+  #       ⇒ **∴ python **抛异常 ⇒ **输出空** ＋ **退出非零** ✓
+  #         ＋ **∴ 而**调用处 `tok="$(token_for "$doc")"` **不看退出码**✗
+  #           ⇒ **∴ 于是** `tok` **＝空字符串** ✓ ★★
+  #             ＋ **∴ 而**判据**带着空 token**去 `POST /api/tools` ✗
+  #               ⇒ **∴ 服务端**返回 **404 "not found"** ✗
+  #                 ＋ **∴ 而**那**在判据里**看起来像**「**产品坏了**」** ✗
+  #                   ⇒ **∴ 其实**是**基础设施没起来** ✓ ★★★
+  #   **∴ 修法 ✗**：**在这里**区分**✗ ⇒ **∴ 拿不到 token ⇒ **打印 ＋ 返回非零** ✓
+  #     ＋ **∴ 从而**调用处**能**认出**它是**建文档失败**✗ 而**不是**判据失败** ✓ ★
+  local body token
+  body="$(curl -s -X POST "$BASE/api/documents" -H 'content-type: application/json' \
+    -d "{\"doc_id\":\"$1\",\"width\":320,\"height\":240}")" || true
+  token="$(printf '%s' "$body" | python3 -c 'import sys,json
+try:
+    print(json.load(sys.stdin)["token"])
+except Exception:
+    pass' 2>/dev/null)"
+  if [ -z "$token" ]; then
+    echo "  ✗ 建文档失败（POST $BASE/api/documents 没返回 token）｜doc_id=$1｜正文前 200 字节=${body:0:200}" >&2
+    return 1
+  fi
+  printf '%s' "$token"
 }
 
 pass=0; fail=0; expected_red=0; skipped=0
@@ -104,7 +130,13 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
     echo "  ⊘ ${name}（没有 chromium，跳过）"; skipped=$((skipped+1)); continue
   fi
   doc="crit_$(echo "$name" | tr -cd 'a-z0-9')"
-  tok="$(token_for "$doc")"
+  # **∴ 建文档失败 ⇒ **这一条没有意义**✗ ⇒ **∴ 明确报出来**✗ 而**不是**让它去撞 404** ✓（**第 768 轮 ✓）★
+  if ! tok="$(token_for "$doc")"; then
+    echo "  ✗ ${name}（**基础设施失败：拿不到文档 token** ⇒ 本条本次没验，不是判据失败）"
+    fail=$((fail+1))
+    FAIL_SUMMARY="${FAIL_SUMMARY}\n  ✗ ${name}｜基础设施失败（建文档没返回 token）"
+    continue
+  fi
   # **心跳** ✓：卡住时一眼看出是**哪一条** ✓（以前只看到"Job 还在跑" ✗）。
   echo "  → $name"
   case "$name" in
