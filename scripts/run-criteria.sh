@@ -127,8 +127,7 @@ shard_index=0
 #     ＋ **∴ 和** CI **的 `clippy`／`test (stable)`／`test (beta)`／`rustfmt` job **各自覆盖** ✓ ★
 #       ＋ **∴ 所以**：**把它从判据枚举里排除**✗ 而**不是**给它更大的超时** ✓ ★★
 #         （**∴ 后者**会让**每个判据分片**都慢十几分钟 ⇒ **∴ 而且**和门禁重复 ✓）
-CRITERIA_LIST=$(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort | grep -v '/tool-gate\.mjs$')
-for script in $CRITERIA_LIST; do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort | grep -v '/tool-gate\.mjs$'); do
   shard_index=$((shard_index + 1))
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
