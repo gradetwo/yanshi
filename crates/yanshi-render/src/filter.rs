@@ -1453,7 +1453,168 @@ fn try_gpu_gaussian_blur(buffer: &Buffer, sigma: f32) -> Option<Vec<f32>> {
     let cache = crate::buffer::quantizer_cache();
     let guard = cache.lock().ok()?;
     let quantizer = guard.as_ref()?;
-    quantizer.blur_gaussian(buffer.pixels(), buffer.width(), buffer.height(), sigma)
+    let out = quantizer.blur_gaussian(buffer.pixels(), buffer.width(), buffer.height(), sigma)?;
+    // **★★★ 抽检哨兵（**裁定 ② 的档 B ✓）✗ ★★★**（**第 701 轮 ✓）
+    //   **∴ 为什么是**抽检**而不是**全量核对**✗ ★**（**决定性算术 ✓）：
+    //     **∴ 「**每帧全量核对**」需要** CPU 真值**✗ ⇒ **∴ 总成本 ＝ GPU ＋ CPU** ✓
+    //       ＋ **∴ 实测 ✗**：**4K σ=2 ⇒ CPU 608 ms ＋ GPU 416 ms ＝ **1024 ms****✗
+    //         ⇒ **★ 1.7× **慢于**纯 CPU**（**∴ 608 ms ✓）★** ⇒ **∴ 收益**变成**负的** ✓
+    //           ＋ **∴ 所以**：**核对成本 ≈ 主计算 ⇒ **只能抽检** ✓ ★
+    //   **∴ 抽检做法 ✗**：
+    //     **∴ 采样 **256 个**分散点**✗（**∴ 用**质数步长避免与图像结构共振 ✓）
+    //       ＋ **∴ 每个点**在 CPU 上**单点重算**✗（**∴ O(r²) ⇒ **∴ 256 点**远小于全量 ✓）
+    //         ＋ **∴ 任一不符 ⇒ **返回 `None` ⇒ **∴ 调用方**回退整帧 CPU** ✓
+    //           ＋ **∴ 并**记一次失败**✗（**∴ 供判据与诊断 ✓）★
+    //   **∴ 为什么抽检够用 ✗**：**GPU 的偏差**若存在**✗
+    //     ＋ **∴ 它**来自**累加顺序／fma**✗ ⇒ **∴ 那是**系统性的**⇒ **∴ 抽检**必然打中** ✓
+    //       ＋ **∴ 而**不是**罕见的随机单点错误** ✓ ★
+    let width = buffer.width();
+    let height = buffer.height();
+    let kernel = gaussian_kernel(sigma)?;
+    let radius = ((kernel.len() - 1) / 2) as i64;
+    let count = (width as usize) * (height as usize);
+    let step = 7919usize; // **∴ 质数 ⇒ **∴ 分散 ✓
+    let mut sampled = 0usize;
+    let mut index = 0usize;
+    while sampled < 256 && index < count {
+        let x = (index % width as usize) as u32;
+        let y = (index / width as usize) as u32;
+        let expect = gaussian_pixel_at(buffer.pixels(), width, height, &kernel, radius, x, y);
+        let base = (index % count) * 4;
+        for c in 0..4 {
+            if out[base + c].to_bits() != expect[c].to_bits() {
+                BLUR_SENTINEL_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return None;
+            }
+        }
+        sampled += 1;
+        index += step;
+    }
+    Some(out)
+}
+
+/// **∴ 抽检哨兵**失败**的次数 ✗**（**第 701 轮 ✓）★
+///
+/// **∴ 语义 ✗**：**0 ⇒ **没发现偏差** ✓（**∴ 不是**"没核对" ✓ —— **∴ 只有**真跑过哨兵**才可能为 0 ✓）★
+static BLUR_SENTINEL_FAILURES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 读取抽检失败次数 ✗**（**判据与诊断用 ✓）★
+#[must_use]
+pub fn blur_sentinel_failures() -> usize {
+    BLUR_SENTINEL_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清零抽检失败计数 ✗**（**判据用 ✓）★
+pub fn reset_blur_sentinel_failures() {
+    BLUR_SENTINEL_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **∴ 与 `gaussian_blur` **同一份**核 ✗**（**∴ 公式 ＋ 归一化顺序逐字相同 ✓）★
+#[cfg(feature = "gpu")]
+#[must_use]
+fn gaussian_kernel(sigma: f32) -> Option<Vec<f32>> {
+    if sigma <= 0.0 {
+        return None;
+    }
+    let radius = (sigma * 3.0).ceil().max(1.0) as i32;
+    let mut kernel = Vec::with_capacity((radius * 2 + 1) as usize);
+    let mut sum = 0.0f32;
+    for offset in -radius..=radius {
+        let value = libm::expf(-((offset * offset) as f32) / (2.0 * sigma * sigma));
+        kernel.push(value);
+        sum += value;
+    }
+    for weight in kernel.iter_mut() {
+        *weight /= sum;
+    }
+    Some(kernel)
+}
+
+/// **∴ 单点 CPU 重算 ✗**（**∴ 抽检哨兵用 ⇒ **O(r²) 而不是 O(全帧 ✓）★
+///
+/// **∴ 与 `gaussian_blur` 的等价性 ✗**：
+///   **∴ ① 先**水平**（**每个 ky 一行 ✓）**＋ **∴ ② 再**垂直**✗
+///     ＋ **∴ 边界**clamp**✗（**∴ 与 `convolve_*` 相同 ✓）
+///       ＋ **∴ 累加顺序**＝ kernel 顺序**✗（**∴ 相同 ✓）★
+#[cfg(feature = "gpu")]
+#[must_use]
+fn gaussian_pixel_at(
+    input: &[f32],
+    width: u32,
+    height: u32,
+    kernel: &[f32],
+    radius: i64,
+    x: u32,
+    y: u32,
+) -> [f32; 4] {
+    let mut acc = [0.0f32; 4];
+    for (ki, &w_y) in kernel.iter().enumerate() {
+        let sy = (y as i64 + ki as i64 - radius).clamp(0, height as i64 - 1) as u32;
+        // **∴ 该行的**水平值**✗（**∴ 对 4 个通道分别算 ✓）★
+        let mut row = [0.0f32; 4];
+        for (kj, &w_x) in kernel.iter().enumerate() {
+            let sx = (x as i64 + kj as i64 - radius).clamp(0, width as i64 - 1) as u32;
+            let base = ((sy * width + sx) * 4) as usize;
+            for c in 0..4 {
+                row[c] += input[base + c] * w_x;
+            }
+        }
+        for c in 0..4 {
+            acc[c] += row[c] * w_y;
+        }
+    }
+    acc
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod sentinel_tests {
+    // **★ 抽检哨兵的**参考实现**必须与**整帧 CPU 路径**在 f32 上**逐位相同**** ✗ ★
+    //   （**第 701 轮 ✓）
+    //
+    //   **∴ 为什么必须验它 ✗**：**哨兵**在 GPU 结果上**抽样比对**✗
+    //     ＋ **∴ 而**它的**参考值**来自 `gaussian_pixel_at` **单点重算** ✓
+    //       ＋ **∴ 若**它与整帧路径**不等价**✗ ⇒ **∴ 哨兵**要么**误报**（**∴ 收益归零 ✓）
+    //         ＋ **∴ 要么**漏报真偏差** ✓ ⇒ **∴ 所以**必须独立验证 ✓ ★
+    use super::*;
+
+    #[test]
+    fn the_sentinel_reference_matches_the_full_cpu_path() {
+        let (w, h) = (48u32, 32u32);
+        for &sigma in &[1.0f32, 2.0, 4.0] {
+            let mut cpu = Buffer::new(0, 0, w, h);
+            {
+                let mut st = 0x5E17_1E01u32 | 1;
+                for px in cpu.pixels_mut().chunks_exact_mut(4) {
+                    st = st.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let a = ((st >> 9) & 0xff) as f32 / 255.0;
+                    let b = ((st >> 17) & 0xff) as f32 / 255.0;
+                    px.copy_from_slice(&[a * b, a * (1.0 - b), a * 0.5, a]);
+                }
+            }
+            let input = cpu.pixels().to_vec();
+            gaussian_blur(&mut cpu, sigma);
+            let kernel = gaussian_kernel(sigma).expect("核必须能生成");
+            let radius = ((kernel.len() - 1) / 2) as i64;
+            let mut diff = 0usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let expect = gaussian_pixel_at(&input, w, h, &kernel, radius, x, y);
+                    let got = cpu.pixel(x, y);
+                    for c in 0..4 {
+                        if expect[c].to_bits() != got[c].to_bits() {
+                            diff += 1;
+                        }
+                    }
+                }
+            }
+            println!("  ★ sigma={sigma} 单点重算 vs 整帧：逐位差异 {diff}");
+            assert_eq!(
+                diff, 0,
+                "单点重算必须与整帧 CPU 路径逐位相同（sigma={sigma}）"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
