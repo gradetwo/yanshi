@@ -362,6 +362,26 @@ if (pageLog.length) {
 // **∴ 再**等一会儿 ✗（**∴ 内核**可能在**页面就绪之后**才完成预热 ✓）** ✓✓
 await sleep(2500);
 const kindsBeforeB = await serverAtomKinds();
+// **★★★ 前置断言：内核必须已加载 ✗ ★★★**（**第 713 轮 ✓）
+//
+// **∴ 为什么必须加 ✗**（**第 711／712 轮的实测教训 ✓）：
+//   **∴ 在本机复跑时 ✗**：**本条判据报「**本地渲染模式下画布没变**」** ✓
+//     ＋ **∴ 而**真因是**内核没加载**✗（**`window.yanshiStats.wasm === false` ✓）
+//       ＋ **∴ 因为**本机**缺** wasm32 ＋ wasm-bindgen**✗（**第 94 轮查明 ✓）
+//         ＋ **∴ 于是**：**那条红**把**环境缺失**当成了**产品缺陷** ✓ ★
+//           ＋ **∴ 所以**：**必须先断言前置条件**✗ ⇒ **∴ 否则**判据**会误导** ✓ ★
+//
+// **∴ 退出码约定（**照 AGENTS.md ✓）✗**：
+//   **∴ 3 ⇒ **判据自身的前置条件缺失**（**不是产品问题 ✓）★
+//     ＋ **∴ 而与** 1（**产品失败 ✓）／2（**用法错误 ✓）**区分开** ✓ ★
+const __wasmReady = await evaluate("JSON.stringify(!!((window.yanshiStats||{}).wasm))");
+if (__wasmReady !== "true") {
+  console.error("  ★ 判据自身的前置条件缺失（**不是产品问题**）：内核未加载"
+    + `（wasm=${__wasmReady}）`);
+  console.error("     可能原因：本机缺 wasm32／wasm-bindgen，或页面初始化被中断");
+  console.error("     ⇒ 本地渲染必然画不出来 ⇒ 本条判据在此时**不能**判定产品");
+  process.exit(3);
+}
 const countsBeforeB = await dispatchCounts();
 const strokeB = await drawStroke();
 const kindsAfterB = await serverAtomKinds();
