@@ -566,6 +566,13 @@ case "${1:-}" in
   tls)         shift; cmd_tls "$@" ;;
   tkill)       shift; cmd_tkill "$@" ;;
   accounts)    shift; cmd_accounts "$@" ;;
+  # **★ 平衡点扫描（**目标第 3 条 ✓）✗ ★**（**第 758 轮 ✓）
+  #   **∴ 它**扫一组像素数**✗ ⇒ **∴ 找**GPU 与 CPU 的交点** ✓
+  #     ＋ **∴ 并**强制**打印适配器名**✗（**∴ 第 318 轮的坑 ✓）
+  #       ＋ **∴ 退出码 ✗**：**0 找到｜1 没找到｜2 前置错｜3 本机无适配器（**不可判 ✓）★
+  break-even|breakeven|be)
+              shift
+              l4_ssh "cd ${L4_DIR} && node scripts/tool-break-even.mjs $*" ;;
   # **∴ 作业账（**机器可读 ✓）**：**bg／jobs／tail／rc** ✓
   bg)          shift; cmd_bg "$@" ;;
   jobs)        shift; cmd_jobs "$@" ;;
