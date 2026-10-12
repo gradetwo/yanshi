@@ -5,7 +5,7 @@
 //! - 缓存按字节预算做 LRU；客户端 WASM 侧另有「硬上限 90% 自动 evict」与
 //!   `evict_outside_viewport(bbox)` 的视口淘汰（设计文档 13.3）。
 
-use crate::color::{u8x4_to_linear_premul, LinearRgba};
+use crate::color::{u8x4_to_linear_premul_with_table, LinearRgba};
 use crate::half::{f16_bits_to_f32, f32_to_f16_bits};
 use std::collections::{HashMap, VecDeque};
 use yanshi_core::Bbox;
@@ -182,6 +182,7 @@ impl Tile {
 
     /// 用 u8 RGBA（显示空间，直通 alpha）覆盖写入，用于 RasterPatch / import_image。
     pub fn blit_rgba8(&mut self, x0: i64, y0: i64, width: u32, height: u32, rgba8: &[u8]) {
+        let decode_table = crate::color::srgb_decode_table();
         for row in 0..height {
             for col in 0..width {
                 let index = ((row * width + col) * 4) as usize;
@@ -204,7 +205,7 @@ impl Tile {
                     continue;
                 }
                 // 贴图按 source-over 覆盖（patch 自带 alpha）。
-                self.blend_over(x, y, u8x4_to_linear_premul(pixel));
+                self.blend_over(x, y, u8x4_to_linear_premul_with_table(decode_table, pixel));
             }
         }
     }

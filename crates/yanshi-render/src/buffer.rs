@@ -1397,6 +1397,17 @@ fn gpu_composite_note(reason: &str) {
 #[cfg(feature = "gpu")]
 const COMPOSITE_MIN_PIXELS: usize = 1_000_000;
 
+// **★ 为什么允许 `dead_code` ✗ ★**（**第 723 轮 ✓）：
+//   **∴ 症状 ✗**：**纯 lib 构建下** clippy 报**「**`static GPU_COMPOSITE_CALLS` is never used**」** ✓
+//     ＋ **∴ 而**真相 ✗**：**它在**生产路径里**自增**✗（**第 1257 行 ✓）
+//       ＋ **∴ 但**「**读**」只在**判据里**✗（**`gpu_composite_calls()` ✓）
+//         ＋ **∴ 于是**：**clippy 把**「**只写不读**」**判为 dead_code** ✓
+//           ＋ **∴ 而**它**在**测试构建下**不报**✗（**∴ 因为**那里有读 ✓）★
+//   **∴ 为什么不用 `#[cfg(test)]` ✗**：**两个 pub fn **是**对外 API**✗
+//     ＋ **∴ 别的 crate**（**如 `yanshi-http` 的判据 ✓）**要用** ✓
+//       ＋ **∴ 若** cfg 掉**✗ ⇒ **∴ 会**破坏那些判据** ✓ ★
+//         ＋ **∴ 所以**：**`allow` ＋ **写明用途**✗ 是**正确表达**✗ 而**不是**掩盖** ✓ ★
+#[allow(dead_code)]
 static GPU_COMPOSITE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// **∴ 读取 GPU 合成被采用的次数 ✗**（**仅 `gpu` feature ✓）★

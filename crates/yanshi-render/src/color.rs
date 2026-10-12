@@ -55,6 +55,37 @@ pub fn byte_to_linear(byte: u8) -> f32 {
     srgb_decode_lut()[byte as usize]
 }
 
+/// **取出解码查表**（供逐像素循环**只取一次**）。
+///
+/// 动机：`byte_to_linear()` 每次调用都要过一遍 `OnceLock` 的原子检查，
+/// 而 `u8x4_to_linear_premul` 每像素调 3 次 ⇒ 在 512² 循环里就是 78 万次原子检查。
+/// 表本身是 `'static` ⇒ 循环外取一次即可，**逐位等价**。
+/// （与 [`srgb_encode_table`] 同构，见其注释。）
+pub fn srgb_decode_table() -> &'static [f32; SRGB_DECODE_LUT_SIZE] {
+    srgb_decode_lut()
+}
+
+/// 用**已取好的表**做一次解码（与 [`byte_to_linear`] 逐位一致，只是省掉取表）。
+#[inline]
+pub fn decode_with_table(table: &[f32; SRGB_DECODE_LUT_SIZE], byte: u8) -> f32 {
+    table[byte as usize]
+}
+
+/// 用**已取好的表**做一次 u8x4 → 线性预乘（与 [`u8x4_to_linear_premul`] 逐位一致）。
+#[inline]
+pub fn u8x4_to_linear_premul_with_table(
+    table: &[f32; SRGB_DECODE_LUT_SIZE],
+    pixel: [u8; 4],
+) -> LinearRgba {
+    let alpha = pixel[3] as f32 / 255.0;
+    [
+        table[pixel[0] as usize] * alpha,
+        table[pixel[1] as usize] * alpha,
+        table[pixel[2] as usize] * alpha,
+        alpha,
+    ]
+}
+
 /// 显示编码用的 sRGB 查找表（**仅用于显示/预览/缩略图等输出编码**）。
 ///
 /// 设计 6.1 把「合成后端层、预览、缩略图」列为 **D1（允许 ±1 LSB）**，且设计方已批准显示路径

@@ -361,10 +361,15 @@ pub fn render_thumbnail(
         target.unwrap_or_else(|| Bbox::new(0.0, 0.0, state.width as f64, state.height as f64));
     let render = renderer.render_region(state, store, region)?;
     let mut buffer = Buffer::new(0, 0, render.width, render.height);
+    let decode_table = crate::color::srgb_decode_table();
     for y in 0..render.height {
         for x in 0..render.width {
             if let Some(pixel) = render.pixel(x, y) {
-                buffer.set_pixel(x, y, crate::color::u8x4_to_linear_premul(pixel));
+                buffer.set_pixel(
+                    x,
+                    y,
+                    crate::color::u8x4_to_linear_premul_with_table(decode_table, pixel),
+                );
             }
         }
     }
@@ -544,10 +549,15 @@ mod tests {
         let region = Bbox::new(0.0, 0.0, 64.0, 64.0);
         let render = renderer.render_region(&state, &store, region).unwrap();
         let mut buffer = Buffer::new(0, 0, render.width, render.height);
+        let decode_table = crate::color::srgb_decode_table();
         for y in 0..render.height {
             for x in 0..render.width {
                 if let Some(pixel) = render.pixel(x, y) {
-                    buffer.set_pixel(x, y, crate::color::u8x4_to_linear_premul(pixel));
+                    buffer.set_pixel(
+                        x,
+                        y,
+                        crate::color::u8x4_to_linear_premul_with_table(decode_table, pixel),
+                    );
                 }
             }
         }
