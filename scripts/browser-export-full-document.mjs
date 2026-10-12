@@ -264,15 +264,29 @@ const zoomSet = await evaluate(`(() => {
   return "set";
 })()`);
 // **设完要确认它真的生效** ✗ —— 只发事件而不核对 ⇒ **无法区分"设置了"与"被早退丢掉"** ✓。
-// 等 `#zoom` 标签离开适配档（**这是页面上真实显示的缩放 ✓**）⇒ 拿不到就说明设置没生效 ✓。
+//
+// **★★★ 但要看**状态**，不是看**标签文本** ✗ ★★★**（**第 789 轮修；**诊断实测 ✓）
+//   **∴ 症状 ✗**（**CI 诊断 ✓）★**：**四样真值一步说出真相** ✓
+//     `  设值前：docSize="1024x1024"｜state.zoom=0.3876953125｜#zoomInput="100"｜#zoom="100%"`
+//     `  设值后（失败时）：docSize="1024x1024"｜state.zoom=★2★｜#zoomInput="200"｜#zoom="★100%★"`
+//   **∴ 读法 ✗**：** `state.zoom` **0.3877 ⇒ 2**✗ ⇒ **∴ 缩放**真的生效了** ✓
+//     ＋ **∴ `#zoomInput` ＝ "200"**✗ ⇒ **∴ 判据设的值**在** ✓
+//       ＋ **∴ 只有 `#zoom` **标签文本**仍是 "100%"**✗ ⇒ **∴ 那是**读数没刷新** ✓ ★
+//   **∴ 根因 ✗**：**旧代码把 `#zoom` **标签文本**当成"页面上真实的缩放"**✗
+//     ＋ **∴ 而**产品里**状态**（`state.zoom` ✓）才是真值**✗
+//       ＋ **∴ 标签**只在**某些渲染路径**被更新**✗ ⇒ **∴ 于是**它**会落后** ✓ ★★
+//   **∴ 修法 ✗**：**以 `state.zoom` 为准**✗ ＋ **∴ `#zoom` **只当**旁证**（**上面 `zoomProbe` 会打印 ✓）★
+//     ＋ **∴ 行为不变 ✗**：**拿到就继续 ✗ 拿不到**仍然**报前置不成立** ✓ ★
+//       ＋ **∴ 门槛 ✗**：**适配档的 `state.zoom` 本仓实测 **0.3877**✗；**200% 得到 **2** ✓
+//         ⇒ **∴ 用 1.5** ⇒ **∴ 与**适配档**有 3.9 倍距离** ✓ ★
 let zoomTook = false;
 for (let i = 0; i < 20; i += 1) {
   await sleep(200);
   const shown = await evaluate(`(() => {
-    const label = document.getElementById("zoom");
-    return label ? parseInt(String(label.textContent).replace("%", ""), 10) : NaN;
+    const s = (window.yanshi && window.yanshi.state) ? window.yanshi.state() : null;
+    return s && typeof s.zoom === "number" ? s.zoom : NaN;
   })()`);
-  if (Number.isFinite(shown) && shown > 105) { zoomTook = true; break; }
+  if (Number.isFinite(shown) && shown > 1.5) { zoomTook = true; break; }
 }
 if (!zoomTook) {
   await zoomProbe("设值后（失败时）");
