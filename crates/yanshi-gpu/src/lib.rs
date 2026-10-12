@@ -516,7 +516,33 @@ impl Quantizer {
     /// **∴ 取值 ✗**：**256 MiB**✗
     ///   ＋ **∴ 而**它**对** 4K（**132.7 MB／张 ✓）⇒ **∴ 只留 **1 张**** ✓
     ///     ＋ **∴ 对小图（**如 960×540 ＝ 2 MB／张 ✓）⇒ **∴ 能留**很多** ✓ ⇒ **∴ 两全 ✓ ★
-    const POOL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+    // **★ 默认值 ＝ **1280 MB** ✗ ★**（**第 717 轮扫描 ✓）：
+    //   **∴ 扫描结果（**4K，5 轮中位 ✓）✗**：
+    //     **∴ 256 MB ✗**：**σ=2 **1.54×**｜σ=8 **1.64×**** ✓
+    //       ＋ **∴ 512 MB ✗**：**σ=2 2.06×｜σ=8 6.05×** ✓
+    //         ＋ **∴ 768 MB ✗**：**σ=2 2.68×｜σ=8 9.21×** ✓
+    //           ＋ **∴ 1280 MB ✗**：**σ=2 **2.70×**｜σ=8 **10.82×**** ✓ ⇒ **★ 最优 ★**
+    //     ⇒ **∴ 为什么越大越好（**真正的机理 ✓）✗**：
+    //       **∴ 第 101 轮的张数上限 12 **允许保留**多个不同尺寸**** ✗
+    //         ＋ **∴ 于是**：**总量**远超 664 MB**✗（**∴ 5 张 × 132.7 MB ✓）⇒ **∴ 那**才是压力来源** ✓
+    //           ＋ **∴ 而** 1280 MB **只允许**一个完整尺寸集 ＋ 冗余** ✓ ⇒ **∴ 重启**复用充分 ＋ **无压力** ✓ ★
+    const POOL_BUDGET_BYTES: u64 = 1280 * 1024 * 1024;
+
+    /// **∴ 读池的字节预算 ✗**（**`YANSHI_GPU_POOL_BUDGET_MB` 可覆盖 ⇒ **∴ 供扫描 ✓）★
+    ///
+    /// **∴ 为什么需要 ✗**（**第 716 轮的教训 ✓）：
+    ///   **∴ 256 MiB ⇒ 4K σ=8 **4.92×****✗ 但 **4K σ=2 **1.51×**** ✓
+    ///     ＋ **∴ 而**张数上限 12 ⇒ **∴ σ=2 **2.30×****✗ 但 **σ=8 **2.00×**** ✓
+    ///       ＋ **∴ 所以**：**最优在**两者之间**✗ ⇒ **∴ 需要**扫一遍** ✓
+    ///         ＋ **∴ 而**每次改常量**都要**重编**✗ ⇒ **∴ 所以**加环境覆盖 ✓ ★
+    #[must_use]
+    fn pool_budget_bytes() -> u64 {
+        std::env::var("YANSHI_GPU_POOL_BUDGET_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1024 * 1024))
+            .unwrap_or(Self::POOL_BUDGET_BYTES)
+    }
 
     /// **∴ 池是否启用 ✗**（**与既有读回池**同一开关 ✓）★
     #[must_use]
@@ -556,7 +582,8 @@ impl Quantizer {
         if let Ok(mut pool) = self.buffer_pool.lock() {
             // **∴ 双约束 ✗**：**张数 ≤ POOL_MAX**✗ ＋ **∴ 总字节 ≤ POOL_BUDGET_BYTES** ✓ ★
             let total: u64 = pool.iter().map(|(bytes, _, _)| *bytes).sum();
-            if pool.len() < Self::POOL_MAX && total.saturating_add(size) <= Self::POOL_BUDGET_BYTES
+            if pool.len() < Self::POOL_MAX
+                && total.saturating_add(size) <= Self::pool_budget_bytes()
             {
                 pool.push((size, usage.bits(), buffer));
             }
