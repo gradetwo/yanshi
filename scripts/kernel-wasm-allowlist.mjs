@@ -26,6 +26,23 @@ const ALLOWED = [
     why: "调试标签 object_probe_label：wasm 上返回空串（只是日志/诊断字符串，不参与像素）" },
   { file: "crates/yanshi-render/src/buffer.rs", anchor: "let _ = workers;",
     why: "量化行编码（encode_quantized_rows）的 wasm32 分支：wasm32 没有共享内存线程 ⇒ 该目标下整条并行路径被 cfg 掉、改为**纯串行** ✓。它**不改变像素** ✓：并行只是把同一份编码工作分块，每个输出字节只由该字节自己的输入决定 ⇒ 串行与并行**逐字节相同** ✓，而这一点已经有既有判据钉住（`crates/yanshi-render/tests/quantize_no_copy.rs` 与分块一致性判据 ✓）。⇒ 属于「按目标分叉但不影响像素」的登记范围 ✓。" },
+  // **★★★ 计时探针的 wasm 替身 ✗ ★★★**（**第 772 轮登记；**判据抓到未登记 ✓）
+  //   **∴ 它是什么 ✗**：** `crates/yanshi-core/src/probe.rs` **给 wasm32 提供的**哑计时器** ✓
+  //     ＋ **∴ 为什么需要 ✗**：** wasm32 **不支持 `std::time::Instant`** ✓
+  //       ＋ **∴ 所以 ✗**：**该目标下用**空结构体 ＋ 恒零实现**替代 ✓ ★
+  //         ＋ **∴ 为什么**不影响像素 ✗ ★**：
+  //           **∴ `now()` **返回 `Self`**✗ ／ `elapsed()` **恒为** `Duration::ZERO`**✗
+  //             ＋ **∴ `duration_since()` **也恒为** `Duration::ZERO`** ✓
+  //               ＋ **∴ 即**：**它**只**服务于**性能观测**✗ ⇒ **∴ 没有任何数值进入像素路径** ✓ ★★
+  //                 ＋ **∴ 与**既有白名单里 `stage_probe` 那条**同类** ✓（**∴ 都是**计时** ✓）★
+  // **∴ 锚点必须是 `cfg` 之后的**第一行** ✗**（**第 772 轮实测 ✓）：
+  //   **∴ 判据报的是「**未登记：probe.rs:50 …（**其后是 "#[derive(Clone, Copy)]"）」**✗
+  //     ＋ **∴ 即**：**它**用「**cfg 之后那一行**」当锚点**✗
+  //       ＋ **∴ 所以**：**这里必须写 `#[derive(Clone, Copy)]`**✗ 而**不是** `pub struct ProbeClock;`** ✓ ★
+  { file: "crates/yanshi-core/src/probe.rs", anchor: "#[derive(Clone, Copy)]",
+    why: "wasm32 的哑计时器（struct 之前的 derive）：该目标不支持 std::time::Instant ⇒ 用空结构体替代；它只服务于性能观测 ⇒ **没有任何数值进入像素路径** ✓" },
+  { file: "crates/yanshi-core/src/probe.rs", anchor: "impl ProbeClock {",
+    why: "wasm32 的哑计时器（impl）：now() 返回 Self、elapsed() 与 duration_since() 恒为 Duration::ZERO ⇒ 与上一条是同一件事的实现体；取值恒零 ⇒ **不改变任何像素** ✓" },
   { file: "crates/yanshi-render/src/render.rs", anchor: "mod parallel_impl",
     why: "并行分块渲染的执行器：wasm32 没有共享内存线程 ⇒ 该目标下 workers() 恒为 1、整条 std::thread 路径被 cfg 掉（不参与编译），回退是**纯串行**；并行只是把同一段 render_accumulation 分块，块的像素由该像素自己的输入决定 ⇒ 与串行逐字节一致（仅滑动窗口方框模糊有项目已批准的 ±1 LSB D1 例外）" },
 ];
