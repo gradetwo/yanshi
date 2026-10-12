@@ -1560,6 +1560,19 @@ pub fn reset_composite_sentinel_failures() {
     COMPOSITE_SENTINEL_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+// **★★★ 只在 `gpu` feature 下存在 ✗ ★★★**（**第 761 轮；**CI 抓到的真错误 ✓）
+//   **∴ 症状 ✗**：**CI 的 clippy（**`cargo clippy --workspace --all-targets`**✗
+//     **不带** `--features gpu`** ✓）报**：
+//     `error: function gpu_composite_note is never used` ＋ `-D dead-code implied by -D warnings`** ✓
+//   **∴ 根因 ✗**：**它**只在 `#[cfg(all(feature = "gpu", …))]` **的函数里被调用** ✓
+//     ＋ **∴ 而**无 feature 时**✗ ⇒ **∴ 它**就成了**孤立项** ✓ ★
+//       ＋ **∴ 我**本地**一直跑 `--features gpu`**✗ ⇒ **∴ 于是**那个配置**从未验过** ✓ ★★
+//   **∴ 修法选择 ✗**：**加 `#[cfg(...)]`**✗ 而**不是** `#[allow(dead_code)]`** ✓
+//     ＋ **∴ 因为**：**那个函数**本来就只服务于 GPU 路**✗
+//       ＋ **∴ 于是** `cfg` **表达的是**真实意图**✗ 而 **`allow` **只是**让它闭嘴** ✓ ★
+//         ＋ **∴ 代价（**两面都写 ✓）✗**：**每个「**只在 gpu 下用**」的项**都要**记得加 cfg**✗
+//           ＋ **∴ 换取**：**两种 feature 组合**都编译**✗ ⇒ **∴ 而** CI 正是查**无 feature 那一侧** ✓ ★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 fn gpu_composite_note(reason: &str) {
     if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
         eprintln!("PROBE GPU 合成：{reason}");
