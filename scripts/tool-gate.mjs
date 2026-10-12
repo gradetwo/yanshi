@@ -21,6 +21,18 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 const KNOWN = "scripts/known-reds.txt";
 const args = process.argv.slice(2);
 const quick = args.includes("--quick");
+// **★★★ `--scoped`：只跑**受影响的 crate** ✗ ★★★**（**第 729 轮 ✓）
+//
+// **∴ 为什么需要它 ✗**（**用户问：门禁为什么这么慢 ✓）：
+//   **∴ 本机实测 ✗**：**4 核 i5-4250U @ **1.30 GHz**（**2013 年超低压 ✓）＋ **内存 3 GB** ✓
+//     ＋ **∴ 而**门禁的 `clippy --workspace --all-targets` ＋ `test --workspace`**✗
+//       ⇒ **∴ 它们**编译**全部 crate 的全部目标**✗ ⇒ **∴ 在**这台机器上**要**数分钟** ✓ ★
+//         ＋ **∴ 而**瓶颈**主要是**内存换页**✗（**∴ 3 GB ✓）**不是**并行度** ✓
+//           ＋ **∴ 所以**：**本地只跑**受影响的 crate**✗ ＋ **∴ 全量交给** GitHub CI** ✓ ★
+//             ＋ **∴ 而**那**正好**就是**目标第 13 条**（**CI 真跑 ✓）的用法** ✓ ★
+//
+// **∴ 用法 ✗**：`node scripts/tool-gate.mjs --quick --scoped` ★
+const scoped = args.includes("--scoped");
 const update = args.includes("--update-known");
 
 function run(cmd) {
@@ -49,12 +61,47 @@ const known = new Set(
     : [],
 );
 
+// **∴ 从 git 找**受影响的 crate** ✗**（**∴ 用于 `--scoped` ✓）★
+function affectedPackages() {
+  if (!scoped) return "";
+  try {
+    const changed = execSync("git diff --name-only HEAD~1 HEAD", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\n")
+      .filter((l) => l.startsWith("crates/"));
+    const names = new Set();
+    for (const f of changed) {
+      const m = f.match(/^crates\/([^/]+)\//);
+      if (m) names.add(m[1]);
+    }
+    if (names.size === 0) return "";
+    return [...names].map((n) => `-p ${n}`).join(" ");
+  } catch {
+    return "";
+  }
+}
+const scope = affectedPackages();
+if (scoped) {
+  console.log(scope ? `== --scoped：只跑 ${scope} ==` : "== --scoped：没找到受影响的 crate ⇒ 跑全量 ==");
+}
+
 const steps = [
   ["fmt", "cargo fmt --all -- --check"],
-  ["clippy", "cargo clippy --workspace --all-targets --features gpu -- -D warnings"],
-  ["test (plain)", "cargo test --workspace"],
+  [
+    "clippy",
+    scope
+      ? `cargo clippy ${scope} --all-targets --features gpu -- -D warnings`
+      : "cargo clippy --workspace --all-targets --features gpu -- -D warnings",
+  ],
+  ["test (plain)", scope ? `cargo test ${scope}` : "cargo test --workspace"],
 ];
-if (!quick) steps.push(["test (gpu)", "cargo test --workspace --features gpu"]);
+if (!quick)
+  steps.push([
+    "test (gpu)",
+    scope ? `cargo test ${scope} --features gpu` : "cargo test --workspace --features gpu",
+  ]);
 
 const allFailed = new Set();
 let hardFail = [];
