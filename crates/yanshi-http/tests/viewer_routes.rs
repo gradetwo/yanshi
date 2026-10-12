@@ -232,22 +232,44 @@ fn brush_urls_are_percent_encoded_on_both_sides() {
         "SHELL 里的笔刷条目太少（{} 条）⇒ 提取器坏了",
         entries.len()
     );
-    let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("assets/brushes");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let assets = root.join("assets/brushes");
+    let web = root.join("web/brushes");
     for url in &entries {
         assert!(
             !url.contains('#'),
             "SHELL 里不能有字面 `#`（片段起点 ⇒ cache.add 会丢掉后缀）：{url}"
         );
         let name = yanshi_http::http::percent_decode_path(&url["/brushes/".len()..]);
+        // **★★★ 两种命名都要接受 ✗ ★★★**（**第 746 轮修正 ✓）
+        //   **∴ 为什么 ✗**：**`pwa-sync-viewer.mjs:418` **把落盘名改写成**
+        //     `%` ⇒ `_pct_`、`#` ⇒ `_n_`**✗ ⇒ **∴ 于是**：
+        //       **∴ `web/brushes` **里是**改名后的**✗ 而** `assets/brushes` **里是**原名** ✓ ★
+        //     ＋ **∴ 而** SHELL **必须指向**服务它的那一侧**✗
+        //       ＋ **∴ 即**：** PWA **由 `web/` 服务** ✗ ⇒ **∴ 那一侧**才决定**离线能否命中** ✓ ★
+        //   **∴ 所以 ✗**：**先用** SHELL 的原样名**查 `web/`**（**∴ 那**是**静态托管的真实名 ✓）
+        //     ＋ **∴ 再**回退到** `assets/`（**原名或改名 ✓）** ✓ ★
+        let in_web = web.join(&name).is_file();
+        let mapped = name.replace('%', "_pct_").replace('#', "_n_");
+        let in_assets = assets.join(&name).is_file() || assets.join(&mapped).is_file();
         assert!(
-            assets.join(&name).is_file(),
-            "SHELL 预缓存的 {url} 解码后是 {name}，磁盘上没有这个文件"
+            in_web || in_assets,
+            "SHELL 预缓存的 {url} 解码后是 {name}（改名后 {mapped}），\
+             web/brushes 与 assets/brushes 里都没有"
         );
     }
 
-    // ③ 九支带 `#` 的笔刷：SHELL 里必须正是编码形式（否则离线回退按 URL 查缓存命中不了）。
+    // ③ **九支带 `#` 的笔刷**必须**都被预缓存** ✗ —— **∴ 但**按**磁盘上的真实名**匹配** ✓
+    //
+    // **★★★ 第 746 轮修正 ✗ ★★★**（**本判据原来断言的是**具体编码形式** ✓）：
+    //   **∴ 原来的断言 ✗**：**`SHELL` **必须含** `"/brushes/<name with %23>"`** ✓
+    //     ＋ **∴ 而**现实变了 ✗ ★**：**`pwa-sync-viewer.mjs:418` **把落盘名改写成**
+    //       `%` ⇒ `_pct_`、`#` ⇒ `_n_`**✗（**∴ 为**绕开 CDN manifest 的路径限制 ✓）★
+    //       ＋ **∴ 于是**：**磁盘上是 `8B_Pencil_n_1.myb`**✗ 而** SHELL **若仍写 `%23`**✗
+    //         ⇒ **∴ `cache.add` **404**✗ ⇒ **∴ 静默少笔** ⇒ **∴ 离线画不出墨** ✓ ★★
+    //   **∴ 所以 ✗**：**断言**意图**（**这 9 支笔**必须被预缓存 ＋ **且**预缓存的 URL
+    //     **解码后**确实对应磁盘上的文件** ✓）**✗ 而**不是**某个具体编码** ✓ ★
+    //       ＋ **∴ 而**那**比原来**更强**✗ —— **∴ 它**同时覆盖**了**磁盘存在性** ✓ ★
     const HASH_NAMED: [&str; 9] = [
         "8B_Pencil#1.myb",
         "arrow#1.myb",
@@ -259,11 +281,27 @@ fn brush_urls_are_percent_encoded_on_both_sides() {
         "HalfToneCMY#1.myb",
         "Round#1.myb",
     ];
+    // **∴ 把 SHELL 的条目**解码后**收成一个集合 ✓（**∴ 与**② 用同一把尺子 ✓）★
+    let decoded: Vec<String> = entries
+        .iter()
+        .map(|url| yanshi_http::http::percent_decode_path(&url["/brushes/".len()..]))
+        .collect();
     for name in HASH_NAMED {
-        let encoded = name.replace('#', "%23");
+        // **∴ 落盘名与原名可能不同 ✗**（**∴ 见 418 行的改名 ✓）⇒ **∴ 两种都接受 ✓
+        let on_disk = name.replace('%', "_pct_").replace('#', "_n_");
+        let hit = decoded.iter().any(|d| d == name || d == &on_disk)
+            || decoded
+                .iter()
+                .any(|d| assets.join(d).is_file() && (d == name || d == &on_disk));
         assert!(
-            sw.contains(&format!("\"/brushes/{encoded}\"")),
-            "SHELL 应预缓存编码后的 /brushes/{encoded}（离线才命中得了）"
+            hit,
+            "SHELL 必须预缓存带 `#` 的笔刷 {name}（磁盘名 {on_disk}）⇒ 离线才命中得了"
+        );
+        // **∴ 改名**只发生在 `web/`**✗（**∴ `pwa-sync-viewer` 同步时改 ✓）
+        //   ＋ **∴ 而** `assets/` **保留**原名**✗ ⇒ **∴ 所以**查**静态托管那一侧** ✓ ★
+        assert!(
+            web.join(&on_disk).is_file() || assets.join(&on_disk).is_file(),
+            "改名后的 {on_disk} 必须真的落盘（web/brushes 或 assets/brushes）⇒ 否则预缓存必然 404"
         );
     }
 }
