@@ -1446,14 +1446,98 @@ pub fn display_byte_to_linear(byte: u8) -> f32 {
 #[cfg(feature = "gpu")]
 const GPU_BLUR_MIN_PIXELS: usize = 2_000_000;
 
+/// **∴ GPU 单帧的**时间预算**（**毫秒 ✓）✗**（**第 706 轮 ✓）★
+///
+/// **∴ 为什么需要 ✗**（**第 90 轮实测 ✓）：
+///   **∴ 核显的 GPU 时间**极不稳定**✗（**∴ 4K σ=2 ⇒ **434–2362 ms**，5.4× ✓）
+///     ＋ **∴ 而**最坏情况**比 CPU **慢 3.6×****✗（**∴ 2362 vs 671 ms ✓）
+///       ＋ **∴ 所以**：**「**中位 1.30×**」**掩盖了慢帧** ✓
+///         ＋ **∴ 对策 ✗**：**给 GPU 一个**墙钟预算**✗
+///           ＋ **∴ 超预算 ⇒ **本帧结果仍用（**数据已算好 ✓）但**标记降级**✗
+///             ＋ **∴ 降级期内**直接走 CPU**✗ ⇒ **∴ 从而**避免连续慢帧 ✓ ★
+///
+/// **∴ 取值的依据（**第 90 轮实测 ✓）**：
+///   **∴ 1080p σ=2 ⇒ **70–152 ms****✗（**∴ 中位 80 ✓）⇒ **∴ 预算 150 ms ⇒ **偶尔降级 ✓（**∴ 合理 ✓）
+///     ＋ **∴ 4K σ=8 ⇒ **907–2312 ms****✗ ⇒ **∴ 必然降级 ⇒ **自动走 CPU** ✓
+///       ⇒ **★ 即：**4K 的大图模糊自动退回 CPU**✗ ⇒ **∴ 避免最坏 0.28×** ✓ ★
+#[cfg(feature = "gpu")]
+const GPU_BLUR_BUDGET_MS: u128 = 150;
+
+/// **∴ 读预算 ✗**（**`YANSHI_GPU_BLUR_BUDGET_MS` 可覆盖 ⇒ **∴ 供判据 ✓）★
+#[cfg(feature = "gpu")]
+#[must_use]
+fn gpu_blur_budget_ms() -> u128 {
+    std::env::var("YANSHI_GPU_BLUR_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u128>().ok())
+        .unwrap_or(GPU_BLUR_BUDGET_MS)
+}
+
+/// **∴ 降级期的长度（**帧数 ✓）✗**（**第 706 轮 ✓）
+///
+/// **∴ 为什么是 60 ✗**：**约**一秒（**60 fps ✓）
+///   ＋ **∴ 从而**：**慢帧后**有一秒**不再试 GPU**✗（**∴ 避免**连续卡顿 ✓）
+///     ＋ **∴ 而**一秒后再试**✗ ⇒ **∴ 若**已恢复 ⇒ **∴ 自然回到 GPU** ✓ ★
+#[cfg(feature = "gpu")]
+const GPU_BLUR_COOLDOWN_FRAMES: u32 = 60;
+
+/// **∴ 降级剩余帧数 ✗**（**0 ⇒ 正常 ✓）★
+#[cfg(feature = "gpu")]
+static GPU_BLUR_COOLDOWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// **∴ 因超预算而降级的次数 ✗**（**判据与诊断用 ✓）★
+#[cfg(feature = "gpu")]
+static GPU_BLUR_DEGRADES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 读取降级次数 ✗** ★
+#[cfg(feature = "gpu")]
+#[must_use]
+pub fn blur_degrade_count() -> usize {
+    GPU_BLUR_DEGRADES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清零降级计数 ＋ 冷却 ✗**（**判据用 ✓）★
+#[cfg(feature = "gpu")]
+pub fn reset_blur_degrade() {
+    GPU_BLUR_DEGRADES.store(0, std::sync::atomic::Ordering::Relaxed);
+    GPU_BLUR_COOLDOWN.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **∴ 当前是否处于降级期 ✗**（**供判据与诊断 ✓）★
+#[cfg(feature = "gpu")]
+#[must_use]
+pub fn blur_degraded() -> bool {
+    GPU_BLUR_COOLDOWN.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
 /// **∴ 尝试用 GPU 做高斯模糊 ✗**（**失败 ⇒ `None` ⇒ 调用方回退 CPU ✓）★**（**第 700 轮 ✓）
 #[cfg(feature = "gpu")]
 fn try_gpu_gaussian_blur(buffer: &Buffer, sigma: f32) -> Option<Vec<f32>> {
     // **∴ 复用**同一个 GPU 实例**✗（**∴ 不重复初始化 ⇒ **∴ 不重复付设备创建成本 ✓）★
+    // **∴ 降级期内**直接放弃 GPU**✗（**∴ 从而**避免连续慢帧 ✓）★
+    //   **∴ 递减在这里做 ✗**：**每次**尝试**（**无论成功失败 ✓）都消耗一帧冷却** ✓
+    //     ＋ **∴ 从而**：**冷却**必然在 60 次尝试后结束**✗ ⇒ **∴ 不会**永久降级 ✓ ★
+    let remaining = GPU_BLUR_COOLDOWN.load(std::sync::atomic::Ordering::Relaxed);
+    if remaining > 0 {
+        GPU_BLUR_COOLDOWN.store(remaining - 1, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
     let cache = crate::buffer::quantizer_cache();
     let guard = cache.lock().ok()?;
     let quantizer = guard.as_ref()?;
+    // **∴ 量**墙钟**✗**（**∴ 超预算 ⇒ **降级 ✓）★
+    let started = crate::probe::ProbeClock::now();
     let out = quantizer.blur_gaussian(buffer.pixels(), buffer.width(), buffer.height(), sigma)?;
+    let elapsed_ms = started.elapsed().as_millis();
+    if elapsed_ms > gpu_blur_budget_ms() {
+        // **∴ 超预算 ✗**：**本帧结果**仍然使用**✗（**∴ 数据已算好 ⇒ **∴ 丢弃是浪费 ✓）
+        //   ＋ **∴ 但**标记**降级**✗ ⇒ **∴ 之后 60 帧**不再试 GPU** ✓ ★
+        GPU_BLUR_DEGRADES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        GPU_BLUR_COOLDOWN.store(
+            GPU_BLUR_COOLDOWN_FRAMES,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     // **★★★ 抽检哨兵（**裁定 ② 的档 B ✓）✗ ★★★**（**第 701 轮 ✓）
     //   **∴ 为什么是**抽检**而不是**全量核对**✗ ★**（**决定性算术 ✓）：
     //     **∴ 「**每帧全量核对**」需要** CPU 真值**✗ ⇒ **∴ 总成本 ＝ GPU ＋ CPU** ✓

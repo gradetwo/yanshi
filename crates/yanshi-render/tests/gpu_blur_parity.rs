@@ -200,3 +200,67 @@ fn gpu_blur_speedup_versus_cpu() {
         }
     }
 }
+
+/// **★★★ 判据：超预算 ⇒ **自适应降级**（**快速回退 ✓）✗ ★★★**（**第 706 轮 ✓）
+///
+/// **∴ 为什么需要 ✗**（**第 90 轮实测 ✓）：
+///   **∴ 核显的 GPU 时间**极不稳定**✗（**∴ 4K σ=2 ⇒ **434–2362 ms**，5.4× ✓）
+///     ＋ **∴ 最坏情况**比 CPU **慢 3.6×****✗（**∴ 2362 vs 671 ms ✓）
+///       ＋ **∴ 所以**：**若**不降级 ⇒ **∴ 用户会**遇到连续慢帧** ✓ ★
+///
+/// **∴ 判据设计（**内建变异检验 ✓）★★★**
+///   **∴ ① 预算 ＝ 0 ms ⇒ **∴ 一次调用后**必然降级** ✓
+///     ＋ **∴ ② 降级期内**下一次调用**不增加 GPU 调用数**✗（**∴ 走了 CPU ✓）
+///       ＋ **∴ ③ 反向**（**预算极大 ⇒ **∴ 不降级 ✓）⇒ **∴ 即**变异检验** ✓ ★
+#[test]
+fn an_over_budget_blur_degrades_to_the_cpu() {
+    let lut = srgb_encode_table();
+    if yanshi_render::buffer::init_gpu_quantizer(lut.to_vec()).is_err() {
+        eprintln!("⚠️ 无法初始化 GPU ⇒ 跳过（**不是通过**）");
+        return;
+    }
+    let (w, h) = (1920u32, 1080u32); // ★ 2.07 M ＞ 阈值 2 M ⇒ 会尝试 GPU ★
+    let mut src = Buffer::new(0, 0, w, h);
+    fill(&mut src, 0xB102_0001);
+    let pixels = src.pixels().to_vec();
+
+    // **∴ ① 预算极大 ⇒ **不应当**降级 ✓（**∴ 变异检验的反向 ✓）★
+    std::env::set_var("YANSHI_GPU_BLUR_BUDGET_MS", "1000000000");
+    yanshi_render::filter::reset_blur_degrade();
+    let before = yanshi_gpu::blur_gpu_calls();
+    gaussian_blur(&mut src, 2.0);
+    let used_gpu = yanshi_gpu::blur_gpu_calls() > before;
+    let degraded_hi = yanshi_render::filter::blur_degraded();
+    println!("  ★ 预算极大：用了 GPU={used_gpu}｜降级={degraded_hi}");
+    assert!(used_gpu, "预算极大时**应当**走 GPU（calls 未增加）");
+    assert!(!degraded_hi, "预算极大时**不应当**降级");
+
+    // **∴ ② 预算 ＝ 0 ms ⇒ **必然降级**✓** ★
+    std::env::set_var("YANSHI_GPU_BLUR_BUDGET_MS", "0");
+    yanshi_render::filter::reset_blur_degrade();
+    let mut img = Buffer::new(0, 0, w, h);
+    img.pixels_mut().copy_from_slice(&pixels);
+    gaussian_blur(&mut img, 2.0);
+    let count = yanshi_render::filter::blur_degrade_count();
+    let degraded = yanshi_render::filter::blur_degraded();
+    println!("  ★ 预算 0：降级次数={count}｜处于降级期={degraded}");
+    assert!(
+        count > 0,
+        "预算 0 ms 时**必然**超预算 ⇒ 应当降级（count={count}）"
+    );
+    assert!(degraded, "超预算后**应当**处于降级期");
+
+    // **∴ ③ 降级期内 ⇒ **不再调用 GPU**✓**（**∴ 快速回退 ✓）★
+    let before2 = yanshi_gpu::blur_gpu_calls();
+    let mut img2 = Buffer::new(0, 0, w, h);
+    img2.pixels_mut().copy_from_slice(&pixels);
+    gaussian_blur(&mut img2, 2.0);
+    let called_again = yanshi_gpu::blur_gpu_calls() > before2;
+    println!("  ★ 降级期内再调一次：是否又用了 GPU={called_again}");
+    assert!(
+        !called_again,
+        "降级期内**不应当**再调用 GPU（快速回退失效）"
+    );
+    std::env::remove_var("YANSHI_GPU_BLUR_BUDGET_MS");
+    yanshi_render::filter::reset_blur_degrade();
+}
