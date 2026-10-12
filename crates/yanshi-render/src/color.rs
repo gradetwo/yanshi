@@ -96,7 +96,7 @@ pub fn u8x4_to_linear_premul_with_table(
 /// **分块与整幅、服务端与内核仍然逐字节一致** ✓（两端共用同一张表）。
 ///
 /// 实测（同批次对照，1024² 合成到背景并编码）：135.9ms → **74.1ms（1.84×）**，最大字节差 1 ✓。
-const SRGB_ENCODE_LUT_SIZE: usize = 4097;
+pub const SRGB_ENCODE_LUT_SIZE: usize = 4097;
 
 fn srgb_encode_lut() -> &'static [f32; SRGB_ENCODE_LUT_SIZE] {
     static LUT: std::sync::OnceLock<[f32; SRGB_ENCODE_LUT_SIZE]> = std::sync::OnceLock::new();

@@ -147,6 +147,43 @@ pub fn encode_quantized_rows(
     }
 }
 
+/// **★★★ 量化的**单点真值 ✗ ★★★**（**第 759 轮 ✓；**目标第 11 条余项 ✓）
+///
+/// **∴ 为什么需要它 ✗**（**两条 GPU 路径的口径**不一致** ✓）★**：
+///   **∴ 合成路（**`buffer.rs` ✓）✗**：**核对 ＝ **抽 256 个点**✗ ⇒ **∴ 成本**0.02%** ⇒ **∴ 默认**开启** ✓
+///     ＋ **∴ 量化路 ✗**：**核对 ＝ **`encode_quantized_rows` 重算整幅** ＋ 逐字节比**✗
+///       ⇒ **∴ 成本**≈ CPU 全量**✗ ⇒ **∴ 于是**只能**默认关闭** ✓ ★★
+///         ＋ **∴ 所以**：**同一个仓库里**两条 GPU 路径**对「**逐位一致**」的**默认态度不同** ✓
+///           ＋ **∴ 而**接口不一致**不是**口味问题**✗ ⇒ **∴ 应当**统一到**廉价的那一侧** ✓ ★
+///   **∴ 本函数做什么 ✗**：**给一个像素下标**✗ ⇒ **∴ 走**与整幅版**逐字相同的 4 步** ✓
+///     ＋ **∴ ① 4 通道 `quantize_f16`**✗ ／**② 有背景 ⇒ `composite_over_linear_with`**
+///       ＋ **∴ ③ 否则 ⇒ `linear_premul_to_u8x4_with`** ✓ ★
+///         ＋ **∴ ④ 返回 4 字节** ✓
+///   **∴ 为什么写成 `pub` ✗**：**哨兵（**下一轮 ✓）在 `buffer.rs`**✗
+///     ＋ **∴ 而**判据在 `tests/`**✗ ⇒ **∴ 两边都要看得见** ✓ ★
+///   **∴ 判据 ✗**：**`rows_quantized_pixel_matches_the_bulk_encoder`**（**∴ 单点版 vs 整幅版**必须
+///     **逐字节相同** ✓；**变异：**改一处常量 ⇒ **∴ 必红** ✓）★
+#[inline]
+#[must_use]
+pub fn encode_quantized_pixel(
+    source: &[f32],
+    pixel_index: usize,
+    table: &[f32; crate::color::SRGB_ENCODE_LUT_SIZE],
+    bg_linear: Option<crate::color::LinearRgba>,
+) -> [u8; 4] {
+    let base = pixel_index * 4;
+    let pixel = [
+        crate::half::quantize_f16(source[base]),
+        crate::half::quantize_f16(source[base + 1]),
+        crate::half::quantize_f16(source[base + 2]),
+        crate::half::quantize_f16(source[base + 3]),
+    ];
+    match bg_linear {
+        Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+        None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+    }
+}
+
 /// **★ 「量化」这一段的**内部分布**✗ ★**（第 182 轮 ✓；**阶段一第 2 条的成本调查 ✓）。
 ///
 /// **∴ 为什么需要它 ✗**：**量化**是首帧的**第一或第二大项** ✓
