@@ -125,6 +125,25 @@ const serverMode = await evaluate(`(() => {
     return stored === null ? true : stored === "1";
   } catch (error) { return true; }
 })()`);
+// **★★★ 把模式判定的**输入与输出**都打出来 ✗ ★★★**（**第 786 轮；**CI 实测需要 ✓）
+//   **∴ 为什么 ✗**（**本会话的教训 ✓）★**：
+//     ＋ **∴ 我**补了第①档 URL 参数**✗ 而** CI **仍报「**首帧（服务端铺底）: 未记录」** ✓
+//       ⇒ **∴ 而**那**说明 `serverMode` **仍为 true**✗ 而**我**不知道**为什么** ✓
+//         ＋ **∴ 单看**结果**无法区分**✗**：**① 页面**真的**走服务端｜② 表达式**抛异常**落到 `catch`** ✓ ★★
+//           ＋ **∴ 所以 ✗**：**必须把**判定内部的每一步**都打出来** ✓ ★
+//             ＋ **∴ 而**这与本会话的**通用做法一致 ✗**：**先让输出**说出真相**，**再改代码** ✓ ★
+const modeProbe = await evaluate(`(() => {
+  const out = { search: String(location.search || ""), param: null, stored: null, pwaLocalOnly: null, error: null };
+  try {
+    out.pwaLocalOnly = (typeof window !== "undefined" && window.__pwaLocalOnly === true);
+    out.param = new URLSearchParams(location.search).get("render");
+    out.stored = localStorage.getItem("yanshi.serverRender");
+  } catch (error) { out.error = String(error && error.message); }
+  return out;
+})()`);
+console.log(`  ⓘ 模式判定的输入：search=${JSON.stringify(modeProbe?.search)}｜render 参数=${JSON.stringify(modeProbe?.param)}｜` +
+  `localStorage=${JSON.stringify(modeProbe?.stored)}｜pwaLocalOnly=${modeProbe?.pwaLocalOnly}｜错误=${modeProbe?.error}`);
+console.log(`  ⓘ 模式判定的结论：serverMode=${serverMode}（true ⇒ 服务端铺底；false ⇒ 客户端内核）`);
 const warmOk = serverMode === true
   ? Number(stats?.serverBlits || 0) > 0
   : Boolean(stats && typeof stats.kernelWarmMs === "number");
