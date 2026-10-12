@@ -1221,7 +1221,13 @@ impl Buffer {
     ///   **∴ 口径**未定**✗ —— **∴ 用户要裁定**「**逐位一致**是**每帧核对**还是**只验一次**」 ✓
     ///     ＋ **∴ 所以**本函数**不自行**加核对** ✓
     ///       ＋ **∴ 而**逐位一致**由**测试**保证**✗（**∴ `layer_composite_parity` ＋ **同会话 A/B ✓）★
-    #[cfg(feature = "gpu")]
+    // **★★★ 门控必须与 `quantizer_cache` 一致 ✗ ★★★**（**第 730 轮：**CI 抓到 ✓）
+    //   **∴ 症状 ✗**：**wasm32 ＋ gpu 构建**报**
+    //     `cannot find function quantizer_cache in this scope`** ✓
+    //     ＋ **∴ 因为** `quantizer_cache` 的门控是 `all(gpu, not(wasm32))`**✗
+    //       ＋ **∴ 而**下面这三处**只写了 `feature = "gpu"`** ✓ ⇒ **∴ 于是** wasm32 下**引用不存在的函数** ✓ ★
+    //         ＋ **∴ 而**本机**没有 wasm32 目标**✗ ⇒ **∴ 本地**永远测不到**✗ **∴ 只有 CI 能抓** ✓ ★
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     fn gpu_composite_with_layer(
         &self,
         layer: &Buffer,
@@ -1295,7 +1301,7 @@ impl Buffer {
         //               ＋ **★ 所以 ✗**：**默认**走 CPU**✗
         //                 ＋ **∴ 只有**显式设 `YANSHI_GPU_COMPOSITE=1`**才走 GPU ✓
         //                   ＋ **∴ 而**真正的 GPU 收益**需要**层缓冲**驻留显存**✗ ⇒ **∴ 那**是**大架构改动** ✓ ★
-        #[cfg(feature = "gpu")]
+        #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
         if std::env::var_os("YANSHI_GPU_COMPOSITE").is_some() {
             if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
                 self.pixels.copy_from_slice(&out);
@@ -1431,7 +1437,13 @@ pub fn reset_gpu_composite_calls() {
 ///
 /// # Errors
 /// **∴ 返回 `Err` ✗**：**GPU 不可用时**返回错误文本**（**调用方决定是否回退 ✓）★
-#[cfg(feature = "gpu")]
+// **★★★ 门控必须与 `quantizer_cache` 一致 ✗ ★★★**（**第 730 轮：**CI 抓到 ✓）
+//   **∴ 症状 ✗**：**wasm32 ＋ gpu 构建**报**
+//     `cannot find function quantizer_cache in this scope`** ✓
+//     ＋ **∴ 因为** `quantizer_cache` 的门控是 `all(gpu, not(wasm32))`**✗
+//       ＋ **∴ 而**下面这三处**只写了 `feature = "gpu"`** ✓ ⇒ **∴ 于是** wasm32 下**引用不存在的函数** ✓ ★
+//         ＋ **∴ 而**本机**没有 wasm32 目标**✗ ⇒ **∴ 本地**永远测不到**✗ **∴ 只有 CI 能抓** ✓ ★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 pub fn init_gpu_quantizer(lut: Vec<f32>) -> Result<(), String> {
     let cache = quantizer_cache();
     let mut guard = cache
