@@ -19,7 +19,36 @@
 // 用法：node scripts/tool-gpu-fallback-parity.mjs        （自己起三台服务）
 
 import { spawn } from "node:child_process";
-import { existsSync, statSync, mkdtempSync } from "node:fs";
+import { existsSync, statSync, mkdtempSync, rmSync } from "node:fs";
+
+// **★★★ 临时目录必须**自己收拾** ✗ ★★★**（**第 762 轮 ✓；**用户定期清理时发现 ✓）
+//   **∴ 为什么加 ✗**（**实测泄漏 ✓）★**：
+//     **∴ 本脚本**每跑一次泄漏一个 root**✗ ⇒ **∴ 实测** `/tmp` 累积了
+//       **54 个 `gpuprobe-*`**／**77 个 `gfp-{auto,on,off}-*`** ✓（**最老到 10 月 11 日 ✓）★★
+//         ＋ **∴ 而**根因 ✗**：**它**只 `mkdtempSync` 而**没有**注册清理** ✓
+//           ＋ **∴ 而**本仓库多数浏览器脚本**早有这套模板**✗（**第 53 轮 ✓）⇒ **∴ 这两条**漏了** ✓ ★
+//   **∴ 模板从 `browser-cs-render-switch.mjs` 照抄** ✗（**∴ 不自己发明 ✓）★**：
+//     **∴ ①** `__tempPaths` ＋ `trackTemp`** ✗ ／ **∴ ②** `__cleanupTemp` **删三遍**
+//       ＋ **∴ ③** `process.on("exit")` **＋** `SIGINT`／`SIGTERM`／`SIGHUP` **都走同一条** ✓ ★
+//         ＋ **∴ 为什么删三遍 ✗**：**进程**可能还在写那个目录**✗ ⇒ **∴ 一次 `rmSync`**会失败** ✓
+//           ＋ **∴ 而**失败**被 catch 吞掉**✗ ⇒ **∴ 于是**留下垃圾** ✓（**第 54 轮实测 ✓）★
+const __tempPaths = [];
+function trackTemp(path) { __tempPaths.push(path); return path; }
+function __cleanupTemp() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let left = 0;
+    for (const path of __tempPaths) {
+      try { rmSync(path, { recursive: true, force: true }); } catch { left += 1; }
+    }
+    if (left === 0) return;
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } catch { /* 忽略 */ }
+  }
+}
+process.on("exit", __cleanupTemp);
+for (const __signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(__signal, () => { __cleanupTemp(); process.exit(1); });
+}
+
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,7 +78,7 @@ const MODES = ["auto", "off", "on"];
 
 const start = async (mode, index) => {
   const port = BASE_PORT + index * 10;
-  const root = mkdtempSync(join(tmpdir(), `gfp-${mode}-`));
+  const root = trackTemp(mkdtempSync(join(tmpdir(), `gfp-${mode}-`)));
   const proc = spawn(BIN, ["--root", root, "--bind", `127.0.0.1:${port}`, "--gpu", mode], { stdio: "ignore" });
   for (let i = 0; i < 60; i += 1) {
     try { const r = await fetch(`http://127.0.0.1:${port}/health`); if (r.ok) return { mode, port, proc, health: await r.json() }; }
