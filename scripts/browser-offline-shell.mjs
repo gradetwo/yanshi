@@ -705,6 +705,45 @@ const canvasSig = `(() => {
   return { ink: ink, w: c.width, h: c.height };
 })()`;
 const inkBefore = await evaluate(canvasSig);
+// **★★★ 落笔之前**必须先选一支笔** ✗ ★★★**（**第 752 轮 ✓；**∴ 由对照 ＋ 全画布扫描推出 ✓）
+//   **∴ 证据链 ✗**（**决定性的 ✓）★**：
+//     **∴ ① `localCalls` 13 ⇒ 30**✗（**∴ 内核**被调用了 17 次 ✓）
+//       ＋ **∴ ② 而 `applies: 0`／`lastArea: 0`／`lastRenderMs: null`**✗
+//         ＋ **∴ ③ 全画布扫描 `inkAll: 0`**（**∴ 画布 1024² **整体**无墨 ✓）★
+//           ⇒ **∴ 所以**：**内核**被调用但**从不 apply** ✓ ★
+//     **∴ 最可能的原因 ✗**：**绘制请求里**没有笔刷**✗
+//       ＋ **∴ 而**判据**从不选笔**✗（**∴ 它**只 `brushBtn.click()` **打开面板 ✓）★
+//         ＋ **∴ 而** `brushNow` **在线／离线都**是 null**✗ ⇒ **∴ 说明**判据两趟都没选笔** ✓ ★★
+//   **∴ 修法 ✗**：**用**前端**唯一的选笔入口**✗ —— `window.yanshi.setBrush(name)`** ✓
+//     ＋ **∴ 为什么用它 ✗**：** `viewer-app.js:8748` **注明**「**选择只有一条路**：
+//       点一行 ⇒ 走 `window.yanshi.setBrush()` ⇒ 与下拉、与 MCP **同一个入口**」** ✓ ★
+//       ＋ **∴ 而**笔名**从**已打开的面板**取第一项**✗（**∴ 不**硬编码 ✓）★
+let brushedRef = null;
+try {
+  const brushed = await evaluate(`(async () => {
+      const w = window;
+      const btns = Array.from(document.querySelectorAll("#brushLibraryList [data-brush], #brushLibraryList button, #brushLibraryList li"));
+      const names = btns.map((b) => b.getAttribute("data-brush") || b.textContent || "").map((t) => t.trim()).filter(Boolean);
+      // **∴ 从**面板文本**取一个**像文件名的**（**∴ 如** Blender.myb ✓）
+      const guess = names.find((t) => /\\.myb$/.test(t)) || names[0] || null;
+      let applied = null, error = null;
+      if (guess) {
+        try { await w.yanshi.setBrush(guess); applied = guess; }
+        catch (e) { error = String(e); }
+      } else {
+        // **∴ 面板里没有名字 ⇒ **回退**到内置的第一支笔 ✓
+        try { await w.yanshi.setBrush("2B_pencil.myb"); applied = "2B_pencil.myb（回退）"; }
+        catch (e) { error = String(e); }
+      }
+      const s = (w.yanshi && w.yanshi.state) ? w.yanshi.state() : null;
+      return { candidateCount: names.length, applied: applied, error: error,
+               brushAfter: s ? (s.brush === undefined ? null : s.brush) : "no-state",
+               sample: names.slice(0, 3) };
+    })()`);
+  brushedRef = brushed;
+} catch (e) {
+  brushedRef = { probeError: String(e) };
+}
 // **∴ 落笔前的状态（**供「离线落笔」行引用 ✓）★
 let beforeRef = null;
 // **★★★ 落笔**之前**的笔刷状态 ✗ ★★★**（**第 748 轮 ✓；**∴ 一劳永逸区分两个候选 ✓）
@@ -826,7 +865,9 @@ console.log(`  · 离线落笔 = ${JSON.stringify(strokeResult)} ｜ 非背景�
   //   **∴ 我**第一版**在**在线阶段**单独打一行**✗ ⇒ **∴ 而**判据的输出收集**有窗口**✗
   //     ＋ **∴ 于是**：**那一行**被**挤出窗口**✗ ⇒ **∴ 白等一轮** ✓ ★
   //       ＋ **∴ 所以 ✗**：**存进变量 ＋ **在**这个必然可见的行**里一起打** ✓ ★
-  + ` ｜ 在线对照=${JSON.stringify(onlineProbeRef)}`);
+  + ` ｜ 在线对照=${JSON.stringify(onlineProbeRef)}`
+  // **∴ 选笔结果也必须在**可见行**里 ✗**（**∴ 否则**又是静默失败 ✓）★
+  + ` ｜ 选笔=${JSON.stringify(brushedRef)}`);
 // ① **事件确实进了笔画状态机** ✓（`points` 从 0 变成 > 0 ✓、`dragging` 为真 ✓）。
 if (!strokeResult || typeof strokeResult !== "object" || strokeResult.pointsAtDown <= 0 || !strokeResult.draggingAtDown) {
   failures.push(`落笔事件没有进入笔画状态机（tool=${strokeResult && strokeResult.tool}｜points@down=${strokeResult && strokeResult.pointsAtDown}｜dragging@down=${strokeResult && strokeResult.draggingAtDown}）⇒ 事件被平移那条吃掉了`);
