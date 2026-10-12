@@ -326,7 +326,25 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       #     ⇒ **∴ 编排**不能**替它们决定**✗
       #       ⇒ **∴ 而是**：`argv[2]` 给服务端**✗ ＋ **另导出 `YANSHI_VIEWER_URL`**✗
       #         ⇒ **∴ 需要查看器的判据**自己读它 ✓**** ✓✓
-      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      # **★★★ `argv[2]` 也要 `render=client` ✗ ★★★**（**第 780 轮修；**CI 实测 ✓）
+      #   **∴ 我上一轮（**第 778 轮／`dd39276` ✓）**只改了 `YANSHI_VIEWER_URL`**✗
+      #     ＋ **∴ 而**实测：**CI **shard 结果**没有变化**✗ ⇒ **∴ 那**说明假设不完整** ✓ ★★
+      #   **∴ 真正的缺口 ✗**：**这一族**多数判据**用的是 `process.argv[2]` 导航**✗
+      #     ＋ **∴ 实测（**本仓 ✓）✗**：
+      #       `browser-live-brush.mjs:23`          ⇒ `const url = process.argv[2];`（**第 130 行 `Page.navigate { url }` ✓）
+      #       `browser-export-full-document.mjs:22`⇒ `const url = process.argv[2];`（**第 215 行 `Page.navigate { url: viewerUrl }` ✓）
+      #         ＋ **∴ 而**本行给 `argv[2]` 的是**服务端 base**✗（**`$BASE/?doc=…&token=…` ✓）
+      #           ⇒ **∴ 于是**：**只改 `YANSHI_VIEWER_URL` **够不着它们** ✓ ★★★
+      #   **∴ 修法 ✗**：**给 `argv[2]` 也加 `render=client`**✗
+      #     ＋ **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／
+      #       `browser-cs-render-switch` **会**自己设偏好**来对比两种模式**✗
+      #         ⇒ **∴ 给它们加参数**会把开关钉死** ✗ ⇒ **∴ 所以**它们**保持现状** ✓ ★
+      case "$name" in
+        browser-render-switch.mjs|browser-cs-render-switch.mjs)
+          CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+        *)
+          CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
+      esac ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。
