@@ -33,11 +33,29 @@
 // **∴ 退出码 ✗**：**0 ⇒ 无可疑**｜**1 ⇒ 有可疑（**需要人看 ✓）｜**2 ⇒ 用法错** ✓ ★
 import { readFileSync } from "node:fs";
 
-const [, , file, onlyStruct] = process.argv;
-if (!file) {
-  console.error("用法：node scripts/tool-struct-mutation-census.mjs <rust文件> [结构名]");
-  process.exit(2);
+// **★★★ 契约不匹配 ⇒ **回退到默认目标** ✗ ★★★**（**第 770 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：
+//     `✗ tool-struct-mutation-census.mjs｜Error: ENOENT: no such file or directory,
+//      open 'http://127.0.0.1:13990'`
+//   **∴ 根因 ✗**：**运行器对 `tool-*` 的统一约定是 `$BASE $doc $tok`** ✓
+//     ＋ **∴ 而**本判据**期望 `<rust文件> [结构名]`**✗
+//       ⇒ **∴ 于是**它**把 `$BASE`（**一个 URL ✓）当成文件路径** ⇒ **∴ ENOENT** ✓ ★★
+//   **∴ 修法 ✗**：**参数不像文件就**用默认目标**✗（**∴ 而不是**报用法错 ✓）★
+//     ＋ **∴ 默认目标 ✗**：`crates/yanshi-render/src/tile.rs Tile`** —— **∴ 那**正是本工具诞生时
+//       **找到真缺陷的那个结构**（**`maybe_opaque` 漏更新 ✓）★
+//         ＋ **∴ 而**人**仍可**显式传文件**✗ ⇒ **∴ 行为不变** ✓ ★
+//   **∴ 注意 ✗**：**必须在**解构之前**改 `process.argv`**✗
+//     ＋ **∴ 因为** `const [, , file, …] = process.argv` **取的是**改之前的值** ✓ ★
+const looksLikeFile = (arg) => !!arg && !/^[a-z]+:\/\//i.test(arg) && !arg.startsWith("-");
+if (!looksLikeFile(process.argv[2])) {
+  console.error("  ⓘ 第一个参数不像文件（运行器的约定是 <base-url> <doc> <token>）⇒ 用默认目标：crates/yanshi-render/src/tile.rs Tile");
+  process.argv[2] = "crates/yanshi-render/src/tile.rs";
+  // **∴ `argv[3]` 也要用默认 ✗**（**第 770 轮实测 ✓）：**运行器给的是 `$doc`（**`crit_…` ✓）
+  //   ⇒ **∴ 而**那**会被当成**结构名**✗ ⇒ **∴ 于是**报「**找不到结构体 crit_…」 ✓ ★
+  process.argv[3] = "Tile";
 }
+const [, , file, onlyStruct] = process.argv;
+
 const lines = readFileSync(file, "utf8").split("\n");
 
 // **∴ 找结构体：`struct X {` ⇒ 跳到匹配的 `}` ✓
