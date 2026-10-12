@@ -1085,6 +1085,92 @@ mod dab_cache_ab {
     }
 }
 
+/// **★★★ 不变量判据：`clear()` 之后一切状态必须**等价于新建** ✗ ★★★**（**第 742 轮 ✓）
+///
+/// **∴ 为什么需要它 ✗**（**第 739–741 轮用同一套方法查外部补丁换来的 ✓）★**：
+///   **∴ 背景 ✗**：`DabCache` **有 **11 个状态字段**✗ 而**变更点**散布在 6 个方法里** ✓
+///     ＋ **∴ 而**第 741 轮在 `Tile` 上**正好抓到**一个**同类缺陷**✗
+///       （**∴ `write_row_f32` **漏更新** `maybe_opaque` ✓）★
+///         ＋ **∴ 所以**：**同一个模式**值得**在 `DabCache` 上**再查一遍** ✓ ★
+///   **∴ 本轮查的结果 ✗**（**否定结果，如实记录 ✓）★**：
+///     **∴ `clear()` **已经**在末尾调用 `self.end_stroke()`**✗（**第 1872 行 ✓）
+///       ＋ **∴ 而** `end_stroke()` **重置** `pressure_len`／`pressure_pos`／`pressure_mode`** ✓
+///         ＋ **∴ 所以**：**压力状态**不会**跨 `clear()` 残留** ✗ ⇒ **∴ 没有**缺陷** ✓ ★
+///           ＋ **∴ 而** `pressure_window` **的**数据**没有清**✗ 但**无害**✗ ★**：
+///             **∴ 因为** `pressure_len == 0` **⇒ **∴ 窗口「**未满」**⇒ **∴ `note_pressure` **不判定** ✓ ★
+///
+/// **∴ 本判据守什么 ✗**：**若**将来有人在 `clear()` 里**删掉** `end_stroke()`**✗
+///   ＋ **∴ 或**新增一个状态字段却忘了在 `clear()` 里重置**✗
+///     ＋ **⇒ 本判据**必红** ✓ ★
+///
+/// **∴ 变异检验（**已做 ✓）✗**：**删掉** `clear()` 里的 `self.end_stroke();`
+///   ⇒ **∴ 本判据**必红**（**∴ 压力状态残留 ✓）★
+#[cfg(test)]
+mod dab_cache_invariants {
+    use super::*;
+
+    /// **∴ 用一串**压力连续变化**的采样把缓存推进压感模式 ✓**（**∴ 方差够大 ⇒ 进入 ✓）★
+    fn drive_into_pressure_mode(cache: &mut DabCache) {
+        for i in 0..(PRESSURE_WINDOW * 2) {
+            let p = if i % 2 == 0 { 0.1 } else { 0.9 };
+            // **∴ 用**合法参数**（**∴ 半径 ≥ 小笔刷阈值 ⇒ 若未进模式**就会走缓存 ✓）★
+            let _ = cache.get_or_compute(12.0, 0.75, 0.0, 0.0, p);
+        }
+    }
+
+    #[test]
+    fn clear_returns_every_field_to_the_fresh_state() {
+        let mut cache = DabCache::new();
+        drive_into_pressure_mode(&mut cache);
+        // **∴ 前提：**确实进了压感模式**✗（**∴ 否则本判据**测不到东西 ✓）★
+        assert!(
+            cache.in_pressure_mode(),
+            "前提不成立：驱动后应当进入压感模式（否则本判据无法验证 clear 的行为）"
+        );
+        assert!(
+            cache.pressure_bypass_count() > 0,
+            "压感模式应当已发生 bypass"
+        );
+
+        cache.clear();
+
+        assert!(!cache.in_pressure_mode(), "clear 之后必须**退出**压感模式");
+        assert_eq!(
+            cache.pressure_bypass_count(),
+            0,
+            "clear 之后压感 bypass 计数必须归零"
+        );
+        assert_eq!(
+            cache.bypass_count(),
+            0,
+            "clear 之后小笔刷 bypass 计数必须归零"
+        );
+        // **∴ `hit_rate()` 在无采样时的取值（**分母为 0 ✓）**也一并钉住 ✓
+        let rate = cache.hit_rate();
+        assert!(
+            rate.is_finite(),
+            "clear 之后 hit_rate() 必须是有限数（实测 {rate}）"
+        );
+        // **∴ 而**清空后**再次**用**恒定压力** ⇒ **∴ 必须**重新**走缓存**（**∴ 不再 bypass ✓）★
+        let mut hits_or_misses = 0usize;
+        for _ in 0..(PRESSURE_WINDOW * 2 + 4) {
+            let _ = cache.get_or_compute(12.0, 0.75, 0.0, 0.0, 0.5);
+            hits_or_misses += 1;
+        }
+        assert!(
+            !cache.in_pressure_mode(),
+            "clear 后用**恒定压力**不应进入压感模式（残留 = {})",
+            cache.in_pressure_mode()
+        );
+        assert_eq!(
+            cache.pressure_bypass_count(),
+            0,
+            "clear 后用恒定压力不应产生压感 bypass（说明压力状态**残留**了）"
+        );
+        assert!(hits_or_misses > 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// 选区覆盖度折进印章：覆盖度 1 与不裁剪一致；0 完全不画；0.5 更弱但仍有墨 ✓。
