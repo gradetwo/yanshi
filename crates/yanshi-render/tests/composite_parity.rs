@@ -47,9 +47,20 @@ fn gpu_composite_normal_is_bit_exact_against_cpu() {
     let quantizer = match yanshi_gpu::Quantizer::new(lut) {
         Ok(q) => q,
         Err(e) => {
-            // **∴ 没有适配器 ⇒ 判据自己跑不了 ⇒ **exit 3**（**∴ 不是产品问题 ✓）★
-            eprintln!("  判据自身的求值失败（不是产品问题）：没有 GPU 适配器 ⇒ {e}");
-            std::process::exit(3);
+            // **★★★ 无适配器 ⇒ **打印 ＋ 正常返回** ✗ ★★★**（**第 764 轮修 ✓）
+            //   **∴ 原来 ✗**：** `std::process::exit(3)`** ✓
+            //     ＋ **∴ 而** `cargo test` **把**非零退出**一律当**失败**✗
+            //       ⇒ **∴ 于是**：**这一条判据**让 8 个 CI job 全红** ✓★★
+            //         ＋ **∴ 即**：**`test (stable)`／`test (beta)`／`GPU feature (build and size)`**
+            //           ＋ **6 个 `criteria shard`**（**∴ 实测：exit code 3 ✓）★
+            //   **∴ 而** CI 那一步的注释**明说**「**GPU 判据：**无适配器就**自行跳过**
+            //     ⇒ **∴ 不会**误红**」**✗ ⇒ **∴ 设计意图**与**本判据的实现**矛盾** ✓★★
+            //   **∴ 所以 ✗**：**无适配器时**打印一行 ＋ **返回**（**∴ 测试**通过 ✓）
+            //     ＋ **∴ 这不是**降低承诺 ✗**：**有适配器时**它仍然**真的核对** ✓
+            //       ＋ **∴ 而**「**判据自身的前置条件缺失**」**仍然被**说出来** ✗
+            //         ＋ **∴ 只是**不再用**退出码**表达**✗（**∴ 因为** cargo test **只认退出码 ✓）★
+            eprintln!("  ⏭ 跳过：本机没有 GPU 适配器 ⇒ 这条判据本次没验（不是产品问题）⇒ {e}");
+            return;
         }
     };
     let gpu = quantizer
@@ -189,8 +200,9 @@ fn gpu_composite_matches_cpu_for_all_modes() {
     let quantizer = match yanshi_gpu::Quantizer::new(lut) {
         Ok(q) => q,
         Err(e) => {
-            eprintln!("  判据自身的求值失败（不是产品问题）：没有 GPU 适配器 ⇒ {e}");
-            std::process::exit(3);
+            // **∴ 同上 ✗**：**无适配器 ⇒ **打印 ＋ 返回**✗ 而**不是** exit 3** ✓（**第 764 轮 ✓）★
+            eprintln!("  ⏭ 跳过：本机没有 GPU 适配器 ⇒ 这条判据本次没验（不是产品问题）⇒ {e}");
+            return;
         }
     };
     let to_u8 = |v: &[f32]| -> Vec<u8> {
