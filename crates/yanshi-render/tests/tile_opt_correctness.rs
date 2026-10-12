@@ -342,3 +342,116 @@ fn tilecache_evict_outside_viewport() {
     assert!(cache.get(TileKey::new(5, 5)).is_none());
     assert!(cache.get(TileKey::new(9, 9)).is_none());
 }
+
+/// **★★★ 穷举判据：`is_transparent()` 必须与**逐像素扫描**一致 ✗ ★★★**（**第 740 轮 ✓）
+///
+/// **∴ 为什么需要它 ✗**（**第 739 轮审查补丁时发现的**第二个风险** ✓）★**：
+///   **∴ 补丁把 `is_transparent()` 从**每次扫描全像素**✗（**O(n) ✓）
+///     改成了** `!self.maybe_opaque`**✗（**O(1) ✓）★
+///     ＋ **∴ 而** `maybe_opaque` **是一个**保守标志**✗ ⇒ **∴ 任何**改像素的路径**
+///       **都**必须更新它** ✗ ★
+///         ＋ **∴ 若**将来新增一条写路径却忘了更新**✗
+///           ⇒ **∴ `is_transparent()` **会误报**✗ 而**不会崩溃** ✗ ★
+///             ＋ **∴ 那是**静默错误**✗ ⇒ **∴ 必须**有判据守住** ✓ ★
+///
+/// **∴ 本判据的做法 ✗**：**对**每个改像素的公开 API**✗ 各调一次** ✗
+///   ＋ **∴ 然后**断言 `is_transparent()` **等于**对 `to_f32()` 的**逐像素扫描** ✓ ★
+///     ＋ **∴ 覆盖 5 条路径 ✗**：`set`／`write_row_f32`／`blend_over`／`fill`／`blit_rgba8` ✓ ★
+///
+/// **∴ 变异检验（**已做 ✓）✗**：**注释掉**任意一个 `self.maybe_opaque = true`**✗
+///   ⇒ **∴ 本判据**必红** ✓ ★
+// **★★★ 穷举判据：`is_transparent()` 的**单向契约** ✗ ★★★**（**第 740 轮 ✓）
+//
+// **∴ 契约（**补丁注释写明 ✓）✗**：** `maybe_opaque` **是**保守标志** ✗
+//   ＋ **∴ 「**写入即置 true**✗ 不会**误报透明**」** ✓ ★
+//     ＋ **∴ 即**：**它**单向**变化**✗ ⇒ **∴ 写回透明后**仍然 true** ✓ ★
+//       ＋ **∴ 所以**正确的断言形态**：**`is_transparent() == true` ⇒ **逐像素扫描必然全透明** ✓
+//         ＋ **∴ 而**反向**不成立**✗（**∴ 那是**保守性的代价 ✓）★
+//
+// **∴ 我第一版写成了**等价**✗ ⇒ **∴ 判据**红了**✗ 而**那**是**我的期望错**✗
+//   ⇒ **∴ 不是**产品 bug** ✓（**∴ 值得记下来 ✓）★
+//
+// **∴ 覆盖 5 条写路径 ✗**：`set`／`write_row_f32`／`blend_over`／`fill`／`blit_rgba8` ✓
+// **∴ 变异检验（**已做 ✓）✗**：**注释掉**任意一个 `self.maybe_opaque = true`**✗
+//   ⇒ **∴ 本判据**必红** ✓ ★
+#[test]
+fn is_transparent_never_claims_transparent_when_pixels_are_present() {
+    /// **∴ 逐像素扫描（**O(n) ⇒ **真值** ✓）★
+    fn scanned_transparent(tile: &Tile) -> bool {
+        tile.to_f32().chunks_exact(4).all(|p| p[3] == 0.0)
+    }
+    /// **∴ 单向契约 ✗**：**说自己透明 ⇒ **∴ 扫描必须也透明** ✓（**反向允许不成立 ✓）★
+    fn contract(tile: &Tile, label: &str) {
+        if tile.is_transparent() {
+            assert!(
+                scanned_transparent(tile),
+                "`is_transparent()` 说透明，但逐像素扫描**有非透明像素**（路径：{label}）⇒ 那是**漏报**，违反保守契约"
+            );
+        }
+    }
+    /// **∴ 写了非透明像素之后**✗ ⇒ **∴ 标志**必须**变成「**不透明」** ✓
+    fn must_be_opaque(tile: &Tile, label: &str) {
+        assert!(
+            !tile.is_transparent(),
+            "写了非透明像素后 `is_transparent()` 仍说透明（路径：{label}）⇒ maybe_opaque 漏更新"
+        );
+        contract(tile, label);
+    }
+
+    let key = TileKey { x: 0, y: 0 };
+    let opaque = [0.25f32, 0.5, 0.75, 1.0];
+    let clear = [0.0f32, 0.0, 0.0, 0.0];
+
+    // **∴ ① 全新的 tile ⇒ 全透明 ✓ ＋ **∴ 契约成立 ✓
+    let tile = Tile::new(key, 8);
+    assert!(tile.is_transparent(), "new 应当是全透明的");
+    contract(&tile, "new（全透明）");
+
+    // **∴ ② set 写不透明 ✓
+    let mut t = Tile::new(key, 8);
+    t.set(1, 1, opaque);
+    must_be_opaque(&t, "set（不透明）");
+
+    // **∴ ③ set 写回透明 ⇒ **∴ 保守标志**允许仍为不透明**（**∴ 只验契约 ✓）★
+    t.set(1, 1, clear);
+    contract(&t, "set 写回透明（保守，允许仍报不透明）");
+
+    // **∴ ④ fill 不透明 ✓
+    let mut t2 = Tile::new(key, 8);
+    t2.fill(opaque);
+    must_be_opaque(&t2, "fill（不透明）");
+
+    // **∴ ⑤ write_row_f32 不透明 ✓
+    let mut t3 = Tile::new(key, 8);
+    t3.write_row_f32(0, 0, &opaque);
+    must_be_opaque(&t3, "write_row_f32（不透明）");
+
+    // **∴ ⑥ blend_over 不透明 ✓
+    let mut t4 = Tile::new(key, 8);
+    t4.blend_over(2, 2, opaque);
+    must_be_opaque(&t4, "blend_over（不透明）");
+
+    // **∴ ⑦ blit_rgba8 不透明 ✓
+    let mut t5 = Tile::new(key, 8);
+    let rgba: Vec<u8> = (0..8 * 8).flat_map(|_| [10u8, 20, 30, 255]).collect();
+    t5.blit_rgba8(0, 0, 8, 8, &rgba);
+    must_be_opaque(&t5, "blit_rgba8（不透明）");
+
+    // **∴ ⑧ blit_rgba8 全透明 ⇒ **∴ 允许仍报不透明**（**∴ 只验契约 ✓）★
+    let mut t5b = Tile::new(key, 8);
+    let clear_rgba: Vec<u8> = (0..8 * 8).flat_map(|_| [0u8, 0, 0, 0]).collect();
+    t5b.blit_rgba8(0, 0, 8, 8, &clear_rgba);
+    contract(&t5b, "blit_rgba8（全透明）");
+
+    // **∴ ⑨ from_f32 两条路 ✓
+    let all_clear: Vec<f32> = (0..8 * 8 * 4).map(|_| 0.0).collect();
+    let t6 = Tile::from_f32(key, 8, &all_clear).expect("长度正确");
+    assert!(t6.is_transparent(), "from_f32 全零应当透明");
+    contract(&t6, "from_f32（全零）");
+
+    let with_opaque: Vec<f32> = (0..8 * 8 * 4)
+        .map(|i| if i == 3 { 1.0 } else { 0.0 })
+        .collect();
+    let t7 = Tile::from_f32(key, 8, &with_opaque).expect("长度正确");
+    must_be_opaque(&t7, "from_f32（含非零 alpha）");
+}

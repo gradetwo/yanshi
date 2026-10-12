@@ -142,6 +142,19 @@ impl Tile {
         for (offset, value) in self.pixels[base..base + src.len()].iter_mut().zip(src) {
             *offset = f32_to_f16_bits(*value);
         }
+        // **★★★ 必须更新 `maybe_opaque` ✗ ★★★**（**第 741 轮：**穷举判据抓到的真缺陷 ✓）
+        //   **∴ 症状 ✗**：**本函数**原来**只写像素**✗ 而**不更新标志** ✓
+        //     ＋ **∴ 而** `is_transparent()` **是** `!self.maybe_opaque`**✗
+        //       ＋ **∴ 于是**：**通过本函数写入的不透明像素**✗
+        //         ＋ **∴ 会**被 `is_transparent()` **误报为**透明**✗ ★★
+        //           ＋ **∴ 后果 ✗**：**任何**依赖 `is_transparent()` 做**跳过判定**的路径**✗
+        //             ＋ **∴ 会**错误地跳过这个 tile**✗ ⇒ **∴ 画面上**丢内容** ✓ ★★
+        //   **∴ 为什么用 `!= 0.0`（**而不是 `> 0.0` ✓）✗**：
+        //     **∴ 与 `from_f32` **一致**✗（**∴ 那里用 `p[3] != 0` ✓）★
+        //       ＋ **∴ 且**更**保守**✗ ⇒ **∴ 负 alpha（**语义不明 ✓）**也不会被漏掉** ✓ ★
+        if src.chunks_exact(4).any(|p| p[3] != 0.0) {
+            self.maybe_opaque = true;
+        }
     }
 
     /// 以 source-over 叠加像素。
