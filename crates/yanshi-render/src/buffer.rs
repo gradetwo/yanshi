@@ -731,21 +731,55 @@ impl Buffer {
         #[cfg(not(target_arch = "wasm32"))]
         let t_verify = crate::probe::ProbeClock::now();
         let (width, height) = (self.width as usize, self.height as usize);
-        let mut want = vec![0u8; width * height * 4];
-        // **★ CPU 对照**必须用**同一个背景** ✗ ★**（**第 459 轮 ✓）：
-        //   **∴ 否则**：**GPU 合成过、CPU 没合成**✗ ⇒ **∴ 两者**必然不同**
-        //     ⇒ **∴ 于是**：**永远**回退 CPU** ✓（**∴ 那个 bug 会**静默吃掉 GPU**）★**** ✓✓
-        crate::rows::encode_quantized_rows(&self.pixels, &mut want, 0, height, width, bg_linear);
-        if want.len() != gpu.len() {
+        let count = width * height;
+        if gpu.len() != count * 4 {
             eprintln!("GPU 结果长度不符 ⇒ 回退 CPU");
             return None;
         }
-        let bad = (0..want.len()).filter(|&i| want[i] != gpu[i]).count();
+        // **★★★ 抽检哨兵（**原来重算整幅 ✓）✗ ★★★**（**第 760 轮 ✓；**目标第 11 条 ✓）
+        //   **∴ 为什么改 ✗**（**本仓库两条 GPU 路径的**口径不一致** ✓）★**：
+        //     **∴ 合成路 ✗**：**抽 256 点 ⇒ **成本 0.02%** ⇒ **∴ 默认**开启核对** ✓
+        //       ＋ **∴ 而**量化路**原来 ✗**：**`encode_quantized_rows` **重算整幅** ✗
+        //         ＋ **∴ 成本 ≈ CPU 全量**✗ ⇒ **∴ 于是**只能**默认关闭** ✓ ★★
+        //           ＋ **∴ 同一个「**逐位一致**」承诺，两条路**默认态度不同** ✗ ⇒ **∴ 那**不是口味问题** ✓
+        //   **∴ 现在 ✗**：**抽 256 个像素下标**✗（**步长 7919 质数 ⇒ **∴ 分散 ＋ 不与结构共振 ✓）
+        //     ＋ **∴ 每点**由 `encode_quantized_pixel` **单点重算**（**O(1) ✓）
+        //       ＋ **∴ 逐字节比 4 个通道** ✓（**∴ 与合成哨兵**同形 ✓）★★
+        //   **∴ 为什么抽检够用 ✗**（**与合成／blur 同一论证 ✓）★**：
+        //     **∴ GPU 的偏差**若存在**✗ ⇒ **∴ 它**来自**累加顺序／f16 舍入／fma** ✓
+        //       ＋ **∴ 那是**系统性的**✗ ⇒ **∴ 抽检**必然打中** ✓
+        //         ＋ **∴ 而不是**等一个罕见的随机单点错误** ✓ ★
+        //   **∴ 代价（**如实写 ✓）✗**：**核对面从**全量**变成**抽样** ✗
+        //     ＋ **∴ 所以**：**`max_channel_delta ＝ Some(0)` 的含义**现在是
+        //       **「**抽到的 256 点逐字节相同**」**✗ 而**不是**「**全幅都相同**」 ✓ ★★
+        //         ＋ **∴ 全幅逐字节一致的证据**在哪**✗**：**仍在**判据里** ✓
+        //           （**`gpu_quantize_dispatch::dispatch_matches_the_pure_cpu_result_bit_for_bit` ✓
+        //             ＋ **流水线级**的 `--gpu off` vs `--gpu on` 比图 ✓）★
+        let table = crate::color::srgb_encode_table();
+        let step = 7919usize;
+        let mut sampled = 0usize;
+        let mut index = 0usize;
+        let mut bad = 0usize;
+        while sampled < 256 && index < count {
+            let one = crate::rows::encode_quantized_pixel(&self.pixels, index, table, bg_linear);
+            let base = index * 4;
+            if one[0] != gpu[base]
+                || one[1] != gpu[base + 1]
+                || one[2] != gpu[base + 2]
+                || one[3] != gpu[base + 3]
+            {
+                bad += 1;
+            }
+            sampled += 1;
+            index += step;
+        }
         // **∴ 记下核对耗时 ✗**（**∴ 在**任何返回之前**都记 ⇒ 早退也能量到 ✓）★
         #[cfg(not(target_arch = "wasm32"))]
         crate::set_verify_micros(t_verify.elapsed().as_micros() as u64);
         if bad > 0 {
-            eprintln!("GPU 与 CPU 有 {bad} 个字节不符 ⇒ 回退 CPU（**∴ 不许**交出不同的像素**）");
+            eprintln!(
+                "GPU 与 CPU 在 {bad} 个**抽检点**上不符（共抽 {sampled} 点）⇒ 回退 CPU（**∴ 不许**交出不同的像素**）"
+            );
             return None;
         }
         // **★ 只有**走到这里**（**逐位通过 ✓）才记成 GPU**✗ ★**（第 323 轮 ✓）：
