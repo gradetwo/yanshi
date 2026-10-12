@@ -29,6 +29,16 @@
 //     （**∴ 因为**静态部署**本来**就没有服务端 ✓）** ✓✓
 const url = process.env.YANSHI_VIEWER_URL || process.argv[2];
 const base = process.argv[3];
+// **★★★ 重新导航时也必须带 `render=client` ✗ ★★★**（**第 782 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：**本判据**两次重新导航**到**服务端 URL**✗
+//     ＋ **∴ 而**那**丢掉了 `render=client`**✗（**∴ 它**只在上文的 `url`（`YANSHI_VIEWER_URL`）里 ✓）
+//       ⇒ **∴ 于是**：**离线阶段**内核不加载**✗ ⇒ **∴ `kernelStats()` ＝ null** ✓ ★★
+//         ＋ **∴ 而**本判据的**全部断言**都依赖**离线时内核能画**✗ ⇒ **∴ 于是**它**恒红** ✓ ★
+//   **∴ 修法 ✗**：**`base` 是**服务端 base**（**`argv[3]` ✓）✗
+//     ＋ **∴ 所以**：**重新导航也要**显式带上 `render=client`** ✓ ★
+//       ＋ **∴ 而**为什么不能靠 `url` 的查询串 ✗**：** `base` **和** `url` **是两个不同的 URL** ✓ ★
+const VIEWER_RENDER = "render=client";
+
 const token = process.argv[4];
 const port = process.env.CDP_PORT || process.argv[5] || "9333";
 if (!url || !base) {
@@ -214,7 +224,7 @@ const PAINT = `(async () => {
   return "dispatched";
 })()`;
 const preparePage = async (docId, docToken) => {
-  await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${docToken}` });
+  await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${docToken}&${VIEWER_RENDER}` });
   await waitComplete();
   // **内核必须真的就绪** ✗ —— 判据后面所有断言都以它为前提 ✓。
   // 实测（本机高负载时）：`readyState` 完成 ≠ 内核装载完成 ✓ ⇒ 预热那一趟若提前离开 ✓，
@@ -277,7 +287,7 @@ for (const doc of [onlineDoc, offlineDoc]) {
 // **在线预热两份文档** ✗：离线时 `/api/atoms` 走浏览器本地缓存 ✓（`fetchOrLocal` ✓）
 // ⇒ 不预热就根本没有可折叠的日志 ✓。
 for (const doc of [onlineDoc, offlineDoc]) {
-  await send("Page.navigate", { url: `${base}/?doc=${doc.id}&token=${doc.token}` });
+  await send("Page.navigate", { url: `${base}/?doc=${doc.id}&token=${doc.token}&${VIEWER_RENDER}` });
   await waitComplete();
   // **预热必须等到内核真的装载完** ✗（见 `preparePage` 的说明 ✓）。
   for (let i = 0; i < 40; i += 1) {

@@ -400,7 +400,10 @@ if (!strokeOff || strokeOff.ok === false) {
   console.error("❌ 离线阶段的文档画不出笔迹 ⇒ 判据前置不成立：" + JSON.stringify(strokeOff).slice(0, 200));
   process.exit(1);
 }
-await send("Page.navigate", { url: `${base}/?doc=${DOC_OFF}&token=${createdOff.token}` });
+// **★★★ 离线阶段重新导航也必须带 `render=client` ✗ ★★★**（**第 782 轮 ✓）
+//   **∴ 同上 ✗**：** `base` **是**服务端 base**✗ ⇒ **∴ 只写 `base/?doc=…` **会丢掉** `render=client`** ✓
+//     ＋ **∴ 于是**：**离线阶段**内核不加载**✗ ⇒ **∴ 本判据的离线断言**拿不到内核** ✓ ★
+await send("Page.navigate", { url: `${base}/?doc=${DOC_OFF}&token=${createdOff.token}&render=client` });
 if (!(await waitFor(`document.readyState === "complete" && !!document.getElementById("exportPng") && window.yanshiStats.docId === "${DOC_OFF}"`, "离线阶段文档就绪", 40000))) {
   console.error("❌ 离线阶段文档没就绪 ⇒ 判据无效");
   process.exit(3);
