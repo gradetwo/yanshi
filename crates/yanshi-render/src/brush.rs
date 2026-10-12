@@ -2106,7 +2106,7 @@ mod dab_cache_tests {
         let mut cache = DabCache::new();
         // 模拟连续盖章：相同硬度，平滑变化的半径
         for i in 0..200 {
-            let radius = 15.0 + (i as f64 * 0.05).sin() * 2.0;
+            let radius = 15.0 + libm::sin(i as f64 * 0.05) * 2.0;
             cache.get_or_compute(radius, 0.75, 0.1, 0.2, 1.0);
         }
         // 至少 50% 命中（量化后半径重复）
@@ -2184,7 +2184,7 @@ mod dab_cache_tests {
         // Guard 0: 鼠标/MCP 的 pressure 恒为 1.0，方差为 0，不应进入压感模式。
         let mut cache = DabCache::new();
         for i in 0..100 {
-            let radius = 15.0 + (i as f64 * 0.05).sin() * 2.0;
+            let radius = 15.0 + libm::sin(i as f64 * 0.05) * 2.0;
             cache.get_or_compute(radius, 0.75, 0.1, 0.2, 1.0);
         }
         assert!(
@@ -2205,7 +2205,7 @@ mod dab_cache_tests {
         let mut cache = DabCache::new();
         for i in 0..100 {
             // 模拟压感：压力在 0.2~1.0 间连续变化，半径随压力调制
-            let pressure = 0.6 + 0.4 * (i as f64 * 0.3).sin();
+            let pressure = 0.6 + 0.4 * libm::sin(i as f64 * 0.3);
             let radius = 15.0 * (0.5 + 0.5 * pressure);
             cache.get_or_compute(radius, 0.75, 0.1, 0.2, pressure as f32);
         }
@@ -2225,7 +2225,7 @@ mod dab_cache_tests {
         let mut cache = DabCache::new();
         // 先变化 32 个，进入压感模式
         for i in 0..32 {
-            let pressure = 0.6 + 0.4 * (i as f64 * 0.3).sin();
+            let pressure = 0.6 + 0.4 * libm::sin(i as f64 * 0.3);
             cache.get_or_compute(15.0, 0.75, 0.1, 0.2, pressure as f32);
         }
         assert!(cache.in_pressure_mode());
@@ -2244,7 +2244,7 @@ mod dab_cache_tests {
         // end_stroke() 立即重置压感状态，下一笔重新检测。
         let mut cache = DabCache::new();
         for i in 0..32 {
-            let pressure = 0.6 + 0.4 * (i as f64 * 0.3).sin();
+            let pressure = 0.6 + 0.4 * libm::sin(i as f64 * 0.3);
             cache.get_or_compute(15.0, 0.75, 0.1, 0.2, pressure as f32);
         }
         assert!(cache.in_pressure_mode());
@@ -2264,7 +2264,7 @@ mod dab_cache_tests {
         let mut cache = DabCache::new();
         // 先进入压感模式
         for i in 0..32 {
-            let pressure = 0.6 + 0.4 * (i as f64 * 0.3).sin();
+            let pressure = 0.6 + 0.4 * libm::sin(i as f64 * 0.3);
             cache.get_or_compute(15.0, 0.75, 0.1, 0.2, pressure as f32);
         }
         assert!(cache.in_pressure_mode());
