@@ -17,3 +17,6 @@ categories.workspace = true
 #     ⇒ **∴ 它**会在**谁**把它接进 `yanshi-render`／`yanshi-wasm` 时**立刻红** ✓**** ✓✓
 [dependencies]
 wgpu = "26.0.1"
+# **∴ 用** workspace 版本**✗**（**∴ 与 `yanshi-render` **同一个 libm** ✓）
+#   ＋ **∴ 从而**：**高斯核的 `expf` **逐位相同** ✗ ⇒ **∴ f32 逐位一致才有机会成立** ✓ ★
+libm.workspace = true

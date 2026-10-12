@@ -929,6 +929,19 @@ fn f32s_to_bytes(v: &[f32]) -> Vec<u8> {
     out
 }
 
+/// **∴ `bytes → f32`（**`f32s_to_bytes` 的逆 ✓）✗**（**第 698 轮 ✓）
+///
+/// **∴ 与 `f32s_to_bytes` **逐字节对称**** ✗：
+///   **∴ 那边**用 `x.to_le_bytes()`**✗ ⇒ **∴ 这边**用 `f32::from_le_bytes`** ✓
+///     ＋ **∴ 所以**：**往返**逐位不变** ✓ ★
+fn bytes_to_f32s(data: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(data.len() / 4);
+    for c in data.chunks_exact(4) {
+        out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+    }
+    out
+}
+
 /// **∴ `u32` 版 ✗**（**同上，分块拷贝 ✓）
 fn u32s_to_bytes(v: &[u32]) -> Vec<u8> {
     let mut out = vec![0u8; v.len() * 4];
@@ -1280,6 +1293,219 @@ impl Quantizer {
         block_on(self.composite_async(src, dst, mode, opacity.clamp(0.0, 1.0)))
     }
 
+    /// **★★★ 可分离高斯模糊（**滤镜 GPU 化 ✓）✗ ★★★**（**第 698 轮 ✓）
+    ///
+    /// **∴ 为什么它能**有机会逐位一致**✗ ★**（**第 697 轮查明 ✓）：
+    ///   **∴ CPU 的 `convolve_horizontal` ✗**：**行快照 ＋ `clamp` 边界 ＋ **累加顺序 ＝ kernel 顺序**** ✓
+    ///     ＋ **∴ 而**本实现的 WGSL **逐字段对应**✗
+    ///       ⇒ **∴ 所以**：**理论上**f32 逐位相同** ✓ ★
+    ///
+    /// **∴ 核在** CPU 侧生成**✗**（**∴ 与 `filter.rs::gaussian_blur` **同一公式 ＋ 同一顺序 ✓）
+    ///   ⇒ **∴ GPU 只做**加权和** ✓ ★
+    ///
+    /// **∴ 调用形态 ✗**：**一次上传 ＋ 两个 pass ＋ 一次下载**✗
+    ///   ＋ **∴ 即**：**不与 CPU 频繁交换**✗（**∴ 用户第 82 轮的条件 ✓）★
+    ///
+    /// **∴ 失败 ⇒ `None`**✗ ⇒ **∴ 调用方**回退 CPU** ✓ ★
+    ///
+    /// # Errors
+    /// **∴ 不返回 `Err`**：**任何失败映射成 `None`** ✓
+    #[must_use]
+    pub fn blur_gaussian(
+        &self,
+        pixels: &[f32],
+        width: u32,
+        height: u32,
+        sigma: f32,
+    ) -> Option<Vec<f32>> {
+        if sigma <= 0.0 || width == 0 || height == 0 {
+            return None;
+        }
+        let count = (width as usize).checked_mul(height as usize)?;
+        if pixels.len() != count * 4 {
+            return None;
+        }
+        // **∴ 核：与 `filter.rs::gaussian_blur` **逐字相同**✗**（**∴ 公式 ＋ 归一化顺序 ✓）★
+        let radius = (sigma * 3.0).ceil().max(1.0) as i32;
+        let mut kernel = Vec::with_capacity((radius * 2 + 1) as usize);
+        let mut sum = 0.0f32;
+        for offset in -radius..=radius {
+            let value = libm::expf(-((offset * offset) as f32) / (2.0 * sigma * sigma));
+            kernel.push(value);
+            sum += value;
+        }
+        for weight in kernel.iter_mut() {
+            *weight /= sum;
+        }
+        block_on(self.blur_async(pixels, width, height, radius as u32, &kernel))
+    }
+
+    /// **∴ 两个 pass 的实际执行 ✗**（**∴ 水平 ⇒ 中间 ⇒ 垂直 ⇒ 输出 ✓）★
+    // **∴ `allow(too_many_lines)` ✗**（**∴ 第 698 轮 ✓）：
+    //   **∴ 为什么 ✗**：**本函数约 130 行**（**∴ 与 `composite_async` 同规模 ✓）
+    //     ＋ **∴ 而** clippy 默认阈值 100**✗ ⇒ **∴ 于是**它**会报** `too_many_lines`** ✓
+    //       ＋ **∴ 而**拆分它**会**打断 WGSL 与 host 的**逐字段对应**✗（**∴ 那**是逐位一致的前提 ✓）
+    //         ⇒ **∴ 所以**保留整体 ＋ **显式 allow** ✓（**∴ 与 `composite_async` 一致 ✓）★
+    #[allow(clippy::too_many_lines)]
+    async fn blur_async(
+        &self,
+        pixels: &[f32],
+        width: u32,
+        height: u32,
+        radius: u32,
+        kernel: &[f32],
+    ) -> Option<Vec<f32>> {
+        let bytes = (pixels.len() * 4) as u64;
+        let kernel_bytes = (kernel.len() * 4) as u64;
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("yanshi-gpu-blur"),
+                source: wgpu::ShaderSource::Wgsl(BLUR_WGSL.into()),
+            });
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    storage_entry(0, false),
+                    storage_entry(1, true),
+                    storage_entry(2, false),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let make = |label: &str, usage: wgpu::BufferUsages, size: u64| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let b_src = make(
+            "blur-src",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            bytes,
+        );
+        let b_mid = make(
+            "blur-mid",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            bytes,
+        );
+        let b_out = make(
+            "blur-out",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            bytes,
+        );
+        let b_read = make(
+            "blur-read",
+            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            bytes,
+        );
+        let b_kernel = make(
+            "blur-kernel",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            kernel_bytes,
+        );
+        // **∴ uniform ＝ 4×u32 ＝ 16 B ✓**（**与 WGSL 的 `Params` 逐字段对应 ✓）★
+        let b_params = make(
+            "blur-params",
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            16,
+        );
+        self.queue
+            .write_buffer(&b_src, 0, f32s_to_bytes(pixels).as_slice());
+        self.queue
+            .write_buffer(&b_kernel, 0, f32s_to_bytes(kernel).as_slice());
+        let params = u32s_to_bytes(&[width, height, radius, kernel.len() as u32]);
+        debug_assert_eq!(params.len(), 16);
+        self.queue.write_buffer(&b_params, 0, &params);
+        let bind = |src: &wgpu::Buffer, dst: &wgpu::Buffer| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: src.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: dst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: b_kernel.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: b_params.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let count = width as usize * height as usize;
+        let groups = (count as u32).div_ceil(64);
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // **∴ 两个 entry point ⇒ 两个 pipeline ✓** ★
+        for (entry, src, dst) in [("horizontal", &b_src, &b_mid), ("vertical", &b_mid, &b_out)] {
+            let pipeline = self
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("yanshi-gpu-blur"),
+                    layout: Some(&self.device.create_pipeline_layout(
+                        &wgpu::PipelineLayoutDescriptor {
+                            label: None,
+                            bind_group_layouts: &[&layout],
+                            push_constant_ranges: &[],
+                        },
+                    )),
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                });
+            let group = bind(src, dst);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(groups, 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&b_out, 0, &b_read, 0, bytes);
+        self.queue.submit(Some(enc.finish()));
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        let slice = b_read.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        if rx.recv().ok()?.is_err() {
+            return None;
+        }
+        let out = {
+            let data = slice.get_mapped_range();
+            bytes_to_f32s(&data)
+        };
+        b_read.unmap();
+        BLUR_GPU_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(out)
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn composite_async(
         &self,
@@ -1437,6 +1663,27 @@ impl Quantizer {
 
 #[cfg(not(target_arch = "wasm32"))]
 const COMPOSITE_WGSL: &str = include_str!("composite.wgsl");
+
+/// **∴ 可分离高斯卷积的 WGSL ✗**（**第 698 轮 ✓；目标：滤镜 GPU 化 ✓）★
+const BLUR_WGSL: &str = include_str!("blur.wgsl");
+
+/// **∴ GPU 高斯模糊**实际被采用**的次数 ✗**（**第 698 轮 ✓）★
+///
+/// **∴ 为什么需要 ✗**（**第 690／691 轮的教训 ✓）：
+///   **∴ 「**判据通过**」**不等于**「**被测路径真的被走到**」**✗
+///     ＋ **∴ 所以**：**判据必须能**断言它 ＞ 0** ✓ ★
+static BLUR_GPU_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 读取 GPU 模糊被采用的次数 ✗** ★
+#[must_use]
+pub fn blur_gpu_calls() -> usize {
+    BLUR_GPU_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清零 GPU 模糊计数 ✗**（**判据用 ✓）★
+pub fn reset_blur_gpu_calls() {
+    BLUR_GPU_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 const fn storage_entry(binding: u32, read_write: bool) -> wgpu::BindGroupLayoutEntry {

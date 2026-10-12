@@ -28,7 +28,7 @@ fn bench<F: FnMut(&mut Buffer)>(label: &str, w: u32, h: u32, rounds: usize, mut 
     let mut best = f64::INFINITY;
     for _ in 0..rounds {
         let mut buf = Buffer::new(0, 0, w, h);
-        fill(&mut buf, 0xF11A_E12);
+        fill(&mut buf, 0xF11A_0E12);
         let t = Instant::now();
         f(&mut buf);
         let d = t.elapsed().as_secs_f64() * 1000.0;
@@ -41,7 +41,15 @@ fn bench<F: FnMut(&mut Buffer)>(label: &str, w: u32, h: u32, rounds: usize, mut 
     best
 }
 
+/// **∴ 这是**基准**⇒ **默认跳过** ✓**（**第 698 轮教训 ✓）★
+///
+/// **∴ 为什么必须 `#[ignore]` ✗**（**实测代价 ✓）：
+///   **∴ 门禁的是** debug 构建**✗ ⇒ **∴ 而**模糊是**纯计算**
+///     ⇒ **∴ debug 下**可能慢 20–50×** ⇒ **∴ 实测**：**它让门禁跑了 17:41 仍未结束** ✓
+///
+/// **∴ 用法 ✗**：`cargo test --release -- --ignored` ★
 #[test]
+#[ignore = "基准：用 cargo test --release -- --ignored 显式运行"]
 fn filter_costs() {
     for (size_label, w, h) in [("1080p", 1920u32, 1080u32), ("4K", 3840, 2160)] {
         println!(
