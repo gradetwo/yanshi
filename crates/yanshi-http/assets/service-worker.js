@@ -262,6 +262,51 @@ self.addEventListener("install", (event) => {
         })
       )
     );
+    // **★★★ 笔刷预览图必须**按索引预缓存** ✗ ★★★**（**第 743 轮：**CI 诊断指出的真因 ✓）
+    //   **∴ 症状 ✗**（**CI 实测，用错误收集器抓到的 ✓）**：
+    //     **∴ 离线时**页面日志**✗**：
+    //       `error: 资源加载失败 .../brush-previews/Blender.myb.png`** ✓
+    //         ＋ **∴ 于是**判据**报**「**离线画不出墨：非背景像素 0 => 0**」** ✓ ★
+    //   **∴ 根因 ✗**：**SHELL **硬编码了 201 支 `.myb`**✗ ＋ **∴ 只列了
+    //     `/brush-previews/index.json`**✗ ⇒ **∴ 而**预览图**不在**其中** ✓ ★
+    //   **∴ 为什么用**索引驱动**（**而不是再硬编码 200 行 ✓）★**：
+    //     **∴ ① 新增笔刷**无需改 SW**✗ ／ **∴ ② 数量随索引**自动** ✓
+    //       ＋ **∴ ③ 失败**仍然**计入同一份报告**✗ ⇒ **∴ 判据**能看到 ✓ ★
+    //   **∴ 编码 ✗**：**文件名**含 `%`／`#`／`+`**✗ ⇒ **∴ 必须**逐段 `encodeURIComponent`** ✓
+    //     ＋ **∴ 与** SHELL 里 `/brushes/100%25_Opaque.myb` **同一把尺子** ✓
+    //       ＋ **∴ 否则**离线回退（**按 `request.url` 查缓存 ✓）**命中不了** ✓ ★
+    let previewCount = 0;
+    try {
+      const indexRes = await fetch("/brush-previews/index.json", { cache: "no-store" });
+      if (indexRes.ok) {
+        const index = await indexRes.json();
+        const names = Object.values((index && index.files) || {}).filter(
+          (v) => typeof v === "string" && v.length > 0
+        );
+        previewCount = names.length;
+        await Promise.all(
+          names.map((name) => {
+            const url = "/brush-previews/" + encodeURIComponent(name);
+            return cache.add(url).catch((error) => {
+              self.__swPrecacheFailures.push({
+                url,
+                error: String((error && error.message) || error),
+              });
+            });
+          })
+        );
+      } else {
+        self.__swPrecacheFailures.push({
+          url: "/brush-previews/index.json",
+          error: "索引不可读：HTTP " + indexRes.status,
+        });
+      }
+    } catch (error) {
+      self.__swPrecacheFailures.push({
+        url: "/brush-previews/index.json",
+        error: "读索引失败：" + String((error && error.message) || error),
+      });
+    }
     // **把报告也写进缓存** ✗ —— 判据跑在**页面**上下文里（`Runtime.evaluate` 指向页面 ✓），
     // 读不到 SW 的 `self.*` ✓ ⇒ 那样写只会得到 `undefined || []` 的**假空** ✗（2026-10-06 实测 ✓）。
     // ⇒ 写成一个**缓存条目** ✓ ⇒ 页面用 `caches.match` 就能读到 ✓（不需要额外建 SW 调试目标 ✓）。
@@ -271,7 +316,9 @@ self.addEventListener("install", (event) => {
         new Request("/__sw_precache_report"),
         new Response(
           JSON.stringify({
-            total: SHELL.length,
+            total: SHELL.length + previewCount,
+            shell: SHELL.length,
+            previews: previewCount,
             failed: self.__swPrecacheFailures,
             finished_at: Date.now(),
           }),
@@ -288,7 +335,9 @@ self.addEventListener("install", (event) => {
           new Request("/__sw_precache_report"),
           new Response(
             JSON.stringify({
-              total: SHELL.length,
+              total: SHELL.length + previewCount,
+              shell: SHELL.length,
+              previews: previewCount,
               failed: self.__swPrecacheFailures,
               finished_at: Date.now(),
               report_write_error: reason,
