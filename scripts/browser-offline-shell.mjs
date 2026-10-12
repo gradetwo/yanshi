@@ -378,6 +378,15 @@ console.log(`  · 断网前内核 = ${onlineKernel ? JSON.stringify({ head_seq: 
 //   **∴ 打四样（**与离线那份完全相同 ✓）✗**：
 //     **∴ ① `brushNow`／`toolNow`／`sizeNow`**✗ ／ **② `applies`／`lastArea`**
 //       ＋ **③ `localCalls`／`serverCalls`**✗ ／ **④ `lastRenderMs`** ✓ ★
+// **★★★ 声明**必须在赋值之前** ✗ ★★★**（**第 750 轮：**TDZ 陷阱 ✓）
+//   **∴ 我**上一版把 `let` 声明**放在探针之后**✗
+//     ＋ **∴ 于是**：**赋值处** `onlineProbeRef` 还在**暂时性死区（TDZ）** ✗
+//       ⇒ **∴ 抛** `ReferenceError`**✗ ⇒ **∴ 被**同一个 `try/catch` **吞掉** ✓ ★
+//         ＋ **∴ 而** `catch` **打印的那行**又**在收集窗口之外**✗
+//           ⇒ **∴ 于是**：**结果** `在线对照=null`**✗ 而**我**看不到任何错误** ✓ ★★
+//             ＋ **∴ 教训 ✗**：**`let` **必须**在赋值之前声明** ✓
+//               ＋ **∴ 且** `catch` **里的错误**也要**送到必然可见的地方** ✓ ★
+let onlineProbeRef = null;
 try {
   const onlineProbe = await evaluate(`(() => {
       const w = window;
@@ -391,10 +400,9 @@ try {
     })()`);
   onlineProbeRef = onlineProbe;
 } catch (e) {
-  console.log("  前│  · 在线对照探针失败：" + e);
+  // **∴ 错误也必须**可见** ✗**（**∴ 否则**又是静默失败 ✓）★
+  onlineProbeRef = { probeError: String(e) };
 }
-// **∴ 在线阶段的对照值（**供失败点那行一起打印 ✓）★**
-let onlineProbeRef = null;
 const setServiceWorkerFetch = async (broken) => {
   if (!swControl) return false;
   const value = await swControl.evaluate(
