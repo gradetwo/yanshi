@@ -402,9 +402,28 @@ console.log(
     `实时帧共 ${finalState.liveStroke ? finalState.liveStroke.frames : "—"}`,
 );
 if (finalObjects - objectsBefore !== 1) {
-  console.error(
-    `❌ 这一笔变成了 ${finalObjects - objectsBefore} 个对象 ⇒ 中间帧没有被 supersede ✗（应当只有 1 个 ✓）`,
-  );
+  // **★★★ 两种病必须**分开报** ✗ ★★★**（**第 783 轮修；**CI 实测 ✓）
+  //   **∴ 症状 ✗**（**CI ✓）★**：**本判据**只报**一句**✗**：
+  //     `❌ 这一笔变成了 0 个对象 ⇒ 中间帧没有被 supersede ✗（应当只有 1 个 ✓）`
+  //   **∴ 为什么那句话**会误导 ✗**（**我本人**被它带偏一轮 ✓）★**：
+  //     ＋ **∴ `0` 与 `>1` **是两种**不同的病**✗**：
+  //       ⇒ **∴ `>1` ✗**：**中间帧**真的**没有被 supersede** ✓（**∴ 那**是原话说的病 ✓）
+  //         ⇒ **∴ `0` ✗**：**这一笔**根本没有在服务端**创建**对象** ✓（**∴ 与 supersede 无关 ✓）
+  //           ＋ **∴ 而**旧措辞**把 `0` 也说成**「**没被 supersede」**✗ ⇒ **∴ 于是**人**去查错的代码** ✓ ★★
+  //   **∴ 修法 ✗**：**按数值**分支报**✗ ＋ **∴ 并**附上**本判据已知的旁证**（**出帧数 ✓）★
+  //     ＋ **∴ 行为不变 ✗**：**两种情况**都是失败**✗ 而**退出码**都是 1** ✓ ★
+  const delta = finalObjects - objectsBefore;
+  const frames = finalState.liveStroke ? finalState.liveStroke.frames : "—";
+  if (delta === 0) {
+    console.error(
+      `❌ 服务端对象数**根本没变**（${objectsBefore} ⇒ ${finalObjects}）⇒ **这一笔没有在服务端创建对象** ✗` +
+        `（**∴ 与 supersede 无关** ✗ —— **∴ 该查的是**提交路径**：本地渲染了 ${frames} 帧却一帧都没落成原子 ✓）`,
+    );
+  } else {
+    console.error(
+      `❌ 这一笔变成了 ${delta} 个对象（应当是 1 ⇒ **中间帧没有被 supersede** ✗）｜实时帧共 ${frames}`,
+    );
+  }
   await capture("live-brush-many-objects");
   process.exit(1);
 }
