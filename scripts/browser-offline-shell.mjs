@@ -902,6 +902,43 @@ if (panelOptions < 2) {
 if (ready !== "active") failures.push(`Service Worker 未激活（${ready}）`);
 if (!rendered.board) failures.push("离线重载后画布不存在");
 if (!rendered.hasShellText && !rendered.title) failures.push("离线重载后页面没有内容");
+// **★★★ 决定性诊断：**全画布**扫描 ✗ ★★★**（**第 751 轮 ✓；**∴ 由对照实验推出 ✓）
+//   **∴ 我的新怀疑 ✗**（**∴ 由**在线 vs 离线**的对照推出 ✓）★**：
+//     **∴ `canvasSig` **只读画布**左上角 4 个像素**✗（`getImageData(0, 0, 4, 1)` ✓）
+//       ＋ **∴ 而**笔**画在**落笔位置**✗（**∴ 可能**在画布中部 ✓）
+//         ＋ **∴ 若**画布**有滚动／缩放**✗ ⇒ **∴ 左上角**可能**永远是背景 ⇒ **∴ 计数**恒 0** ✓ ★★
+//           ＋ **∴ 于是**：**判据**报「**画不出墨**」**✗ 而**渲染**其实**发生了** ✓ ★
+//   **∴ 为什么先测不改 ✗**（**先测量再改 ✓）★**：
+//     **∴ 直接改 `canvasSig`** 会**改变判据语义** ✗ ⇒ **∴ 必须先**知道**画布上**到底有没有墨** ✓ ★
+//       ＋ **∴ 现在 ✗**：**全画布扫描**✗（**∴ 与**左上角**对照 ✓）＋ **∴ 并**打**本地调用增量**
+//         （**∴ 在线 13 ⇒ 落笔后**是否增长** ⇒ **∴ 那**直接回答「**渲染**有没有发生」 ✓）★
+try {
+  const full = await evaluate(`(() => {
+      const w = window;
+      const c = document.getElementById("board");
+      if (!c) return { canvas: "missing" };
+      const g = c.getContext("2d");
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let inkAll = 0, inkTop = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 8 && !(d[i] === 255 && d[i + 1] === 255 && d[i + 2] === 255)) inkAll += 1;
+      }
+      const top = g.getImageData(0, 0, 4, 1).data;
+      for (let i = 0; i < top.length; i += 4) {
+        if (top[i + 3] > 8 && !(top[i] === 255 && top[i + 1] === 255 && top[i + 2] === 255)) inkTop += 1;
+      }
+      const st = w.yanshiStats || {};
+      const sc = document.getElementById("boardScroll");
+      return { inkAll: inkAll, inkTop: inkTop, size: [c.width, c.height],
+               cssSize: [c.clientWidth, c.clientHeight],
+               scroll: sc ? [sc.scrollLeft, sc.scrollTop, sc.scrollWidth, sc.scrollHeight] : null,
+               localCalls: st.localCalls, serverCalls: st.serverCalls,
+               applies: st.applies, lastArea: st.lastArea, lastRenderMs: st.lastRenderMs };
+    })()`);
+  console.log("  后│  · 全画布扫描 = " + JSON.stringify(full));
+} catch (e) {
+  console.log("  后│  · 全画布扫描失败：" + e);
+}
 // **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
 if (!(controlProbe && (controlProbe.failed || controlProbe.hanging))) {
   failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
