@@ -117,7 +117,17 @@ const connectTarget = async (target) => {
       targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
     });
   const targetEvaluate = async (expression) => {
-    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
+    // **★★★ 按表达式自动决定要不要 `awaitPromise` ✗ ★★★**（**第 735 轮：**两条规则都要满足 ✓）
+    //   **∴ ① 同步表达式 ⇒ **不带** ✗**（**第 130 轮 ✓）：带了会让 worker 会话挂住（8 秒 vs 20 秒超时）★
+    //   **∴ ② async 表达式 ⇒ **必须带** ✗**（**AGENTS.md ✓）：不带时 CDP 无法序列化 Promise
+    //     ＋ **∴ 于是**静默返回空对象**✗ ⇒ **∴ 看起来像**产品 bug**✗（**曾**误导六轮 ✓）★
+    //   **∴ 我上轮的错 ✗**（**第 732 轮 ✓）✗**：**一律删掉**✗ ⇒ **∴ async 的那些**返回空** ✓ ★
+    const needsAwait = /\basync\b/.test(expression);
+    const message = await targetSend("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      ...(needsAwait ? { awaitPromise: true } : {}),
+    });
     const result = message.result || {};
     return result.result ? result.result.value : undefined;
   };

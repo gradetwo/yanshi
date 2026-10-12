@@ -194,6 +194,8 @@ const evaluateAsync = async (expression) => {
     //   **∴ 修法**：**去掉**它**✗ —— **∴ 而**本判据用的表达式
     //     （`self.fetch` 的替换 ✓）**都是**同步 IIFE**✗ ⇒ **∴ 不**需要它 ✓**** ✓✓
     const targetEvaluate = async (expression) => {
+      // **∴ 按表达式自动判断 ✓**（**第 735 轮 ✓；**理由见 assets／brush 同名注释 ✓）★
+      const needsAwait = /\basync\b/.test(expression);
       // **★★★ 不许带 `awaitPromise` ✗ ★★★**（**第 732 轮：**注释早就写了**✗ 而**代码没照做** ✓）
       //   **∴ 实测证据（**第 130 轮 ✓）✗**：**同一个目标 ＋ 同一条命令**✗
       //     ＋ **∴ 探针（**不带 ✓）⇒ **8 秒内有应答**✗ ｜ **∴ 判据（**带 ✓）⇒ **20 秒**超时** ✓ ★
@@ -202,7 +204,11 @@ const evaluateAsync = async (expression) => {
       //     ＋ **∴ 而**它**看起来像**产品 bug**✗ ⇒ **∴ 所以**容易**误导** ✓ ★
       //   **∴ 为什么可以不带 ✗**：**本判据的表达式**都是**同步 IIFE** ✓
       //     ＋ **∴ 所以**：**不需要** `Runtime.awaitPromise`** ✓ ★
-      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
+      const message = await targetSend("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        ...(needsAwait ? { awaitPromise: true } : {}),
+      });
       const result = message.result || {};
       return result.result ? result.result.value : undefined;
     };
@@ -409,7 +415,19 @@ const controlProbe = swControl
         }
       })()`,
       returnByValue: true,
-
+      // **★★★ `awaitPromise` 在这里**必须**有 ✗ ★★★**（**第 735 轮：**我上轮删错了 ✓）
+      //   **∴ 我上轮的错 ✗**（**第 732 轮 ✓）✗**：**我**按「**worker 会话不许带 `awaitPromise`**」
+      //     ＋ **∴ 把**这一处**也**删了**✗ ⇒ **∴ 于是** CI **两次都报**
+      //       `sw-evaluate-returned-nothing`** ✓ ★
+      //   **∴ 真因 ✗**（**AGENTS.md 明写 ✓）✗**：**上面那个表达式是**
+      //     `(async () => { … })()`**✗ ⇒ **∴ 它**返回 Promise** ✓
+      //       ＋ **∴ 而** `returnByValue: true` **单独用时**✗
+      //         ⇒ **∴ CDP **无法序列化 Promise**✗ ⇒ **∴ 静默返回空对象** ✓ ★★
+      //   **∴ 两难 ✗**：**带它 ⇒ worker 会话上**可能挂住**（**第 130 轮实测 ✓）**✗
+      //     ＋ **∴ 不带 ⇒ **async 表达式无法序列化**（**本次 ✓）★
+      //       ＋ **∴ 而**第 130 轮测的是**同步表达式**✗ ⇒ **∴ 所以**两条规则**不矛盾** ✓ ★
+      //         ＋ **∴ 正确规则 ✗**：**同步表达式 ⇒ 不带**✗ ／ **async 表达式 ⇒ 带** ✓ ★
+      awaitPromise: true,
     })).result?.value ?? { failed: false, why: "sw-evaluate-returned-nothing" }
   : { failed: false, why: "no-sw-control-target" };
 console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));
