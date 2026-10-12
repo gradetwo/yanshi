@@ -16,7 +16,7 @@
 //   `node scripts/tool-gate.mjs --quick`        # 只跑 fmt ＋ clippy ＋ plain（**快 ✓）
 //   `node scripts/tool-gate.mjs --update-known` # 把当前全部失败写进白名单
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 
 const KNOWN = "scripts/known-reds.txt";
 const args = process.argv.slice(2);
@@ -95,6 +95,40 @@ function affectedPackages() {
   }
 }
 const scope = affectedPackages();
+// **★★★ `--features gpu` **只能给**有该 feature 的 crate** ✗ ★★★**（**第 755 轮 ✓）
+//   **∴ 症状 ✗**（**实测 ✓）**：
+//     **∴ `node scripts/tool-gate.mjs --quick --scoped`**✗ 在**改到 `yanshi-server` 时**报**
+//       `error: the package 'yanshi-server' does not contain this feature: gpu`** ✓
+//     ＋ **∴ 于是**：**clippy **必然硬失败**✗ ⇒ **∴ 门禁**红**而**与代码无关** ✓ ★★
+//   **∴ 根因 ✗**：** `--scoped` **生成** `${scope} --features gpu`**✗
+//     ＋ **∴ 而** `scope` **是**改动涉及的 crate 列表**✗（**∴ 如** `-p yanshi-server` ✓）
+//       ＋ **∴ 那些 crate **未必**有 `gpu` feature** ✓ ★
+//   **∴ 修法 ✗**：**读每个 crate 的 `Cargo.toml`**✗
+//     ＋ **∴ 只对**确实声明了 `gpu` feature 的 crate**保留那个 flag** ✓
+//       ＋ **∴ 否则**去掉它**✗（**∴ 从而**命令**合法** ✓）★
+function cratesWithGpuFeature() {
+  const names = new Set();
+  try {
+    const dir = "crates";
+    for (const entry of readdirSync(dir)) {
+      const manifest = `${dir}/${entry}/Cargo.toml`;
+      if (!existsSync(manifest)) continue;
+      const text = readFileSync(manifest, "utf8");
+      if (/^gpu\s*=/m.test(text)) names.add(entry);
+    }
+  } catch {
+    /* 读不到 ⇒ 视为都没有 ⇒ 不加 flag ✓ */
+  }
+  return names;
+}
+const gpuCrates = cratesWithGpuFeature();
+function scopeHasGpu() {
+  if (!scope) return true;
+  const picked = scope.split(/\s+/).filter((t) => t && t !== "-p");
+  return picked.every((name) => gpuCrates.has(name));
+}
+const scopeWithGpuFlag = scope || "";
+const gpuFlag = !scope || scopeHasGpu() ? " --features gpu" : "";
 if (scoped) {
   console.log(scope ? `== --scoped：只跑 ${scope} ==` : "== --scoped：没找到受影响的 crate ⇒ 跑全量 ==");
 }
@@ -121,7 +155,7 @@ const steps = [
   [
     "clippy",
     scope
-      ? `cargo clippy ${scope} --all-targets --features gpu -- -D warnings`
+      ? `cargo clippy ${scopeWithGpuFlag} --all-targets${gpuFlag} -- -D warnings`
       : "cargo clippy --workspace --all-targets --features gpu -- -D warnings",
   ],
   ["test (plain)", scope ? `cargo test ${scope}` : "cargo test --workspace"],

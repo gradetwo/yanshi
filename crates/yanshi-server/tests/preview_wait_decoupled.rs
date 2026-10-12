@@ -63,7 +63,35 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
-fn temp_dir(name: &str) -> std::path::PathBuf {
+/// **★★★ RAII 临时目录：**Drop **时删除** ✗ ★★★**（**第 754 轮 ✓）
+///
+/// **∴ 原来的缺陷 ✗**（**实测：`/tmp` 累积 545 个条目 / 40 MB ✓）★**：
+///   **∴ 原代码 ✗**：**先 `remove_dir_all(&path)`**✗ 而**路径含
+///     `process::id()` ＋ 纳秒时间戳** ✓
+///     ＋ **∴ 于是**：**每次**都是**全新路径**✗ ⇒ **∴ 那次删除**永远删不到东西** ✓
+///       ＋ **∴ 而**真正 `create_dir_all` **出来的目录**✗ **从未**被删** ⇒ **∴ 每次泄漏约 1.3 MB** ✓ ★★
+/// **∴ 为什么用 RAII（**而不是**测试末尾显式删** ✓）✗**：
+///   **∴ 断言失败会 panic**✗ ⇒ **∴ 测试末尾那行**根本**不会执行** ✓
+///     ＋ **∴ 而** `Drop` **在 unwind **时**照样运行** ✓ ⇒ **∴ 失败时也清理** ✓ ★
+/// **∴ 为什么实现 `Deref<Target = Path>` ✗**：**5 个调用点**都写 `let root = temp_dir(…)`**✗
+///   ＋ **∴ 有了 Deref**✗ ⇒ **∴ `&root` **在需要** `&Path` **处**自动 deref** ✓
+///     ＋ **∴ 于是**调用点**一行都不用改** ✓ ★
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+fn temp_dir(name: &str) -> TempDir {
     let path = std::env::temp_dir().join(format!(
         "yanshi_preview_wait_{}_{}_{}",
         name,
@@ -73,8 +101,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
+    // **∴ 先删同名旧目录**（**∴ 路径唯一 ⇒ 通常不存在，无害 ✓）★
     let _ = std::fs::remove_dir_all(&path);
-    path
+    TempDir(path)
 }
 
 /// 落盘工作区 ＋ 仓库里的 `assets/`（`brush_stroke` 与 `texture_background` 都要真实资产 ✓）。
