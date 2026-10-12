@@ -670,6 +670,32 @@ const canvasSig = `(() => {
   return { ink: ink, w: c.width, h: c.height };
 })()`;
 const inkBefore = await evaluate(canvasSig);
+// **★★★ 落笔**之前**的笔刷状态 ✗ ★★★**（**第 748 轮 ✓；**∴ 一劳永逸区分两个候选 ✓）
+//   **∴ 为什么必须卡在这个时刻 ✗**（**第 747 轮的诊断只给了**落笔后**的状态 ✓）★**：
+//     **∴ 落笔后 `brushNow: null`**✗ ＋ **∴ `applies: 0`／`lastArea: 0`** ✓
+//       ＋ **∴ 而那**有两种解释 ✗ 而**两种**修法不同** ✓ ★
+//         ＋ **∴ 候选 ①（**产品缺陷 ✓）✗**：**页面**重载后**没恢复**选中的笔刷**✗
+//           ⇒ **∴ 于是** `brushNow` **本来就是** null** ✓ ⇒ **∴ 修产品**（**状态持久化 ✓）★
+//             ＋ **∴ 候选 ②（**判据缺陷 ✓）✗**：**判据**重载后**没先**选笔**✗
+//               ＋ **∴ 而**落笔**某处**把 `brushNow` **清成了** null** ✓ ⇒ **∴ 修判据** ✓ ★
+//   **∴ 现在 ✗**：**在**落笔**之前**把**同一组状态**打出来**✗
+//     ＋ **∴ 对比两行**就能立刻判定**是哪一种** ✓ ★
+try {
+  const before = await evaluate(`(() => {
+      const w = window;
+      const s = (w.yanshi && w.yanshi.state) ? w.yanshi.state() : null;
+      return { brushNow: s ? (s.brush === undefined ? null : s.brush) : "no-state",
+               toolNow: s ? (s.tool === undefined ? null : s.tool) : null,
+               sizeNow: s ? (s.size === undefined ? null : s.size) : null,
+               applies: (w.yanshiStats || {}).applies,
+               localCalls: (w.yanshiStats || {}).localCalls,
+               serverCalls: (w.yanshiStats || {}).serverCalls,
+               strokeKeys: s && s.stroke ? Object.keys(s.stroke) : null };
+    })()`);
+  console.error("  · 落笔**之前**的状态 = " + JSON.stringify(before));
+} catch (e) {
+  console.error("  · 落笔前状态求值失败：" + e);
+}
 // **★ 求值必须**自己报错** ✗ ★**（第 395 轮 ✓；**实测根因 ✓）：
 //   **∴ 症状 ✗**：**这段求值**在离线时抛异常**✗ ⇒ **∴ `evaluate` **吞掉它** ⇒ **∴ 返回 `undefined`
 //     ⇒ **∴ 打印成** `{}`** ✓ ⇒ **∴ 于是**判据**误判「**事件没进状态机**」 ✓
