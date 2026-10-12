@@ -65,12 +65,24 @@ const known = new Set(
 function affectedPackages() {
   if (!scoped) return "";
   try {
-    const changed = execSync("git diff --name-only HEAD~1 HEAD", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-      .split("\n")
-      .filter((l) => l.startsWith("crates/"));
+    // **∴ 必须同时看**工作树 ＋ 最后一次提交** ✗**（**第 730 轮的实测教训 ✓）：
+    //   **∴ 原来的错 ✗**：**只看 `HEAD~1..HEAD`**✗ ⇒ **∴ 若**改动**还没提交**（**∴ 最常见 ✓）
+    //     ＋ **∴ 它**就报「**没找到受影响的 crate ⇒ 跑全量**」✗ ⇒ **∴ 于是**慢** ✓ ★
+    //       ＋ **∴ 现在 ✗**：**三段合并**✗（**∴ 工作树 ＋ 暂存 ＋ 最后一次提交 ✓）★
+    const fromGit = (cmd) => {
+      try {
+        return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+          .split("\n")
+          .filter((l) => l.startsWith("crates/"));
+      } catch {
+        return [];
+      }
+    };
+    const changed = [
+      ...fromGit("git diff --name-only"),
+      ...fromGit("git diff --cached --name-only"),
+      ...fromGit("git diff --name-only HEAD~1 HEAD"),
+    ];
     const names = new Set();
     for (const f of changed) {
       const m = f.match(/^crates\/([^/]+)\//);
