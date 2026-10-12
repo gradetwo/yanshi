@@ -49,7 +49,20 @@ for (const side of sides) {
   try {
     out = execFileSync(
       process.execPath,
-      [TOOL, "--region", `${side}x${side}`, "--rounds", rounds, ...extra],
+      // **★★★ 必须传**两路 `--compare` ✗ ★★★**（**第 791 轮修；**L4 实测 ✓）
+      //   **∴ 症状 ✗**（**L4 实测 ✓）★**：**10 个尺寸**全部报**
+      //     `（本尺寸没拿到两路 ⇒ 见下方判读）`**✗
+      //       ＋ **∴ 而**同一份输出里**适配器名**却**打印正确**✗**：
+      //         `适配器 ＝ adapter:Vulkan:DiscreteGpu:**NVIDIA L4**:device=true`** ✓ ★★
+      //   **∴ 根因 ✗**：**这一行**只传了 `--region` 与 `--rounds`**✗
+      //     ＋ **∴ 而**子工具（**`tool-render-cost-accounts.mjs` ✓）**的缺省是**单路**✗
+      //       ⇒ **∴ 于是**它**只跑一路 ⇒ **∴ 解析器**找不到两路 ⇒ **∴ 报"没拿到两路"** ✓ ★
+      //         ＋ **∴ 而**那句报错**还把原因写成"本机没有可用的 GPU 适配器"**✗
+      //           ⇒ **∴ 于是**它**与**同一份输出里的适配器名**自相矛盾** ✓ ★★★
+      //   **∴ 修法 ✗**：**与 `scripts/l4.sh accounts` 用**同一对 `--compare`** ✓ ★
+      //     ＋ **∴ 证据 ✗**：**同一台 L4 上**那条命令**能拿到两路**（**CPU 1529 ms ／ GPU 1452 ms ✓）** ✓ ★
+      [TOOL, "--region", `${side}x${side}`, "--rounds", rounds,
+        "--compare", "CPU=--gpu off", "--compare", "GPU=--gpu on", ...extra],
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
   } catch (error) {
@@ -104,10 +117,25 @@ if (adapterSeen) {
 // **∴ 判定 ✗**：**需要**至少一对 (GPU, CPU) 才能谈交点** ✓ ★
 const paired = rows.filter((r) => r.gpuMs !== null && r.cpuMs !== null);
 if (paired.length < 2) {
+  // **★★★ 原因**必须按证据分开说 ✗ ★★★**（**第 791 轮修；**L4 实测 ✓）
+  //   **∴ 症状 ✗**：**旧文案**无条件**说**
+  //     `★ 没有拿到两路账 ⇒ **本机没有可用的 GPU 适配器**（或后端没走 GPU）`
+  //       ＋ **∴ 而**同一份输出里**刚刚**打印了**
+  //         `适配器 ＝ adapter:Vulkan:DiscreteGpu:**NVIDIA L4**:device=true`** ✓ ★★
+  //           ⇒ **∴ 于是**读的人**看到**两句矛盾的话**✗ 而**真因**在别处** ✓ ★
+  //   **∴ 修法 ✗**：**按**手上已有的证据**分三种情形说**✗：
+  //     ⇒ **∴ ①** 有真适配器名 ⇒ **∴ 那**不是"没有 GPU"**✗ 而**是**两路账没拿到** ✓
+  //       ⇒ **∴ ②** 没有真名字 ⇒ **∴ 那**才是"不可判"（**第 318 轮的坑 ✓）★
+  //         ⇒ **∴ ③** 一行都没有 ⇒ **∴ 子工具**根本没跑** ✓ ★
   console.error("");
-  console.error("  ★ 没有拿到两路账 ⇒ **本机没有可用的 GPU 适配器**（或后端没走 GPU）");
+  if (adapterSeen) {
+    console.error(`  ★ 没有拿到两路账 —— 而**适配器是有的**（${adapterSeen}）`);
+    console.error("    ⇒ 所以**不是**「本机没有 GPU」 ✗ 而是**这次调用没跑成两路** ✓");
+    console.error("    ⇒ 检查：子工具是否收到**两个** `--compare`（CPU=--gpu off ／ GPU=--gpu on）");
+  } else {
+    console.error("  ★ 没有拿到两路账 ⇒ **本机没有可用的 GPU 适配器**（或后端没走 GPU）");
+  }
   console.error("    ⇒ 这不是失败，是**判据自身的前置条件缺失** ⇒ exit 3");
-  console.error("    ⇒ 在 L4 上重跑（脚本已就绪）");
   process.exit(3);
 }
 // **∴ 找交点 ✗**：**GPU 首次**不慢于** CPU 的最小像素数** ✓ ★
