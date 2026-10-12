@@ -128,7 +128,8 @@ const firstDiff = (left, right) => {
   //     ⇒ **∴ 于是**判据**在**真正受控**之后**才断网** ✓ ★**** ✓✓
   //   **∴ 两面 ✗**：**收益**：**判据测的是**真正的 SW 离线能力** ✓
   //     ＋ **∴ 代价 ✗**：**多等一点时间**（**上限 20 秒 ✓）★**** ✓✓
-  const waitForPrecache = async (path, timeoutMs = 20000) => {
+  // **∴ 同上：等待预算可配置 ✓**（**第 777 轮 ✓）
+const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_MS || 120000)) => {
     const probe = `(async () => { try { const r = await caches.match(${JSON.stringify(path)}); return { hit: !!r, controlled: !!navigator.serviceWorker.controller }; } catch (e) { return { hit: false, controlled: false }; } })()`;
     const started = Date.now();
     for (;;) {

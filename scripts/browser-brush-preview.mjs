@@ -62,7 +62,16 @@ const send = (method, params = {}) =>
 const evaluate = async (expression) =>
   (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result
     ?.result?.value;
-const waitFor = async (expression, label, timeoutMs = 30000) => {
+// **★★★ 等待上限**必须可配置 ✗ ★★★**（**第 777 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：**`⏱ 等待超时：WASM 内核就绪`**✗
+//     ＋ **∴ 而**后续断言（**如**「设了 200% 但缩放仍在适配档」✓）**只是**后果** ✓ ★
+//   **∴ 根因 ✗**：**上限写死**（**本仓 11 处：**6×30000／4×25000／1×20000 ✓）✗
+//     ＋ **∴ 而** CI **的 runner **比开发机慢**✗ ⇒ **∴ 那些数字**都没有**产品依据** ✓ ★★
+//   **∴ 修法 ✗**：**统一读 `YANSHI_WAIT_MS`**✗ ＋ **∴ 默认 120 秒** ✓ ★
+//     ＋ **∴ 收益**：**判据测的是它真正要测的东西**（**产物是否就绪 ✓）而**不是**环境速度** ✓ ★
+//       ＋ **∴ 代价**：**真异常时要**多等**✗（**∴ 但**只在**真异常时** ✓）★
+const WAIT_MS = Number(process.env.YANSHI_WAIT_MS || 120000);
+const waitFor = async (expression, label, timeoutMs = WAIT_MS) => {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (await evaluate(expression)) return true;
