@@ -228,6 +228,33 @@ await waitFor(
   "文档尺寸就绪", 30000
 );
 
+// **★★★ 设值**前后**都把状态打出来 ✗ ★★★**（**第 788 轮；**与 `first-paint` 同一招 ✓）
+//   **∴ 为什么需要 ✗**（**本会话已两次验证有效 ✓）★**：
+//     ＋ **∴ 判据**做法全对**✗（**等 `docSize` ✓｜设值 ✓｜dispatch `change` ✓｜核对 `#zoom` ✓）
+//       ＋ **∴ 而** CI **上仍报「**设了 200% 但缩放仍在适配档」**✗
+//         ⇒ **∴ 单看结论无法区分**✗**：
+//           ＋ **∴ ①** `state.docSize` **在设值之后**被重置（**∴ 产品时序 ✓）｜
+//             ＋ **∴ ②** `#zoom` 标签**不反映** `state.zoom`（**∴ 读数不更新 ✓）｜
+//               ＋ **∴ ③** 第 10029 行的 `!state.docSize` **早退** ✓ ★★
+//   **∴ 做法 ✗**：**把**每一步的真值**打出来**✗ ⇒ **∴ 从而**一轮定位**，**不再猜** ✓ ★
+const zoomProbe = async (label) => {
+  const snap = await evaluate(`(() => {
+    const s = (window.yanshi && window.yanshi.state) ? window.yanshi.state() : null;
+    const box = document.getElementById("zoomInput");
+    const label0 = document.getElementById("zoom");
+    return {
+      docSize: s && s.docSize ? (s.docSize.w + "x" + s.docSize.h) : null,
+      zoomState: s ? s.zoom : null,
+      inputValue: box ? box.value : null,
+      label: label0 ? String(label0.textContent) : null,
+    };
+  })()`);
+  console.log(`  ⓘ ${label}：docSize=${zoomProbe0(snap)}｜state.zoom=${snap?.zoomState}｜` +
+    `#zoomInput=${JSON.stringify(snap?.inputValue)}｜#zoom=${JSON.stringify(snap?.label)}`);
+  return snap;
+};
+const zoomProbe0 = (s) => JSON.stringify(s?.docSize ?? null);
+await zoomProbe("设值前");
 // ③ 显示缩放设为 200%（**远离"适配"** ⇒ 视口的文档像素数必然远小于文档）。
 const zoomSet = await evaluate(`(() => {
   const box = document.getElementById("zoomInput");
@@ -248,9 +275,11 @@ for (let i = 0; i < 20; i += 1) {
   if (Number.isFinite(shown) && shown > 105) { zoomTook = true; break; }
 }
 if (!zoomTook) {
+  await zoomProbe("设值后（失败时）");
   console.error("❌ 设了 200% 但页面显示的缩放仍在适配档 ⇒ 设置那一步没生效（判据前置不成立）");
   process.exit(1);
 }
+await zoomProbe("设值后（成功时）");
 await sleep(300);
 // **前置条件要用"页面上真实的缩放"判定** ✗（CI 实测教训 ✓）：
 // 原先读 `window.yanshi.state().zoom` 并当成 `displayScale` ⇒ 得到的值像**适配档的 scale**
