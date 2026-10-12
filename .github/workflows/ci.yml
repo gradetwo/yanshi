@@ -198,6 +198,23 @@ jobs:
           cargo test -p yanshi-http --features gpu --test gpu_chunked_quantize
           cargo test -p yanshi-http --features gpu --test gpu_scale_sweep
           cargo test -p yanshi-http --features gpu --test gpu_batch_submit
+          # **★★★ `yanshi-render` 的 GPU 判据**也必须跑 ✗ ★★★**（**第 760 轮 ✓）
+          #   **∴ 为什么 ✗**（**这是一条**真实的缺口**，不是预防性补丁 ✓）★**：
+          #     **∴ 实测 ✗**：**`gpu_quantize_dispatch` 里那条**逐位一致**判据
+          #       **已经失效很久** ✗：
+          #       ＋ **∴ 它**假定阈值是 **30 000**✗ 而**现实是** 1 000 000** ✓
+          #         ＋ **∴ 于是** 256×256 ＝ 65 536 **远低于阈值 ⇒ **∴ 断言**当场红** ✓
+          #           ＋ **∴ 而**它**逃过了**本地门禁**✗（**`--quick` 跳过 `test (gpu)` ✓）
+          #             ＋ **∴ 和** CI**✗（**这里原来**只跑 `yanshi-http` 的 5 个** ✓）★
+          #               ＋ **∴ 所以**：**一次性失败**能藏几个月** ✓ ★★
+          #   **∴ 修法 ✗**：**把**有 `gpu` feature 的 crate**都覆盖**✗
+          #     ＋ **∴ 即**：**`yanshi-render`（**含量化／合成／哨兵 ✓）
+          #       ＋ **∴ 与** `yanshi-http`（**上面那 5 个 ✓）★
+          #   **∴ 代价（**两面都写 ✓）✗**：**这一步**多编译一个测试配置**✗
+          #     ＋ **∴ 实测（**本机 i5-4250U ✓）✗**：** `cargo test -p yanshi-render --features gpu`
+          #       **约 2 分钟**（**∴ CI **上更短 ✓）★
+          #       ＋ **∴ 换取**：**GPU 量化／合成／哨兵的判据**不再能**静默失效** ✓ ★★
+          cargo test -p yanshi-render --features gpu
 
   wasm-smoke:
     name: wasm smoke (node)
