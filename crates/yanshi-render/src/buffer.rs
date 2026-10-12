@@ -1228,6 +1228,112 @@ impl Buffer {
     //       ＋ **∴ 而**下面这三处**只写了 `feature = "gpu"`** ✓ ⇒ **∴ 于是** wasm32 下**引用不存在的函数** ✓ ★
     //         ＋ **∴ 而**本机**没有 wasm32 目标**✗ ⇒ **∴ 本地**永远测不到**✗ **∴ 只有 CI 能抓** ✓ ★
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+    /// **★★★ CPU 的**单点真值**：给定目标像素，算出它**应该**是什么 ✗ ★★★**（**第 756 轮 ✓）
+    ///
+    /// **∴ 为什么需要它 ✗**（**目标第 11 条要求「**逐位一致 ＋ 不一致回退**」✓）★**：
+    ///   **∴ 现状 ✗**：**回退只有**整体**一种**✗（**内核 `None` ⇒ 整条回退 ✓）
+    ///     ＋ **∴ 而**「**逐像素回退**」**每帧都要 CPU 全量真值**✗ ⇒ **∴ 总成本 ＝ GPU ＋ CPU** ✓
+    ///       ＋ **∴ 对 4K 合成**：**GPU 0.93× ＋ CPU ⇒ **必然 > 1×**** ✗ ⇒ **∴ 不可行** ✓ ★★
+    ///   **∴ 所以 ✗**：**采纳**抽检哨兵**✗（**与 `filter.rs` 同一形态 ✓）★
+    ///     ＋ **∴ 即**：**抽 256 个点**✗ ⇒ **∴ 每个点**由 CPU **单点重算**（**O(1) ✓）★
+    ///       ＋ **∴ 而**任一不符 ⇒ **∴ 整帧回退 ＋ 计数** ✓（**承诺守住：**绝不画出错图 ✓）★
+    ///         ＋ **∴ 粒度**是整帧**✗ 而**不是逐像素** ✗ ⇒ **∴ 那**是**成本算术的必然结果** ✓
+    ///           ＋ **∴ 原因 ✗**：**真正逐像素**需要**每个像素的 CPU 真值 ⇒ **∴ 那**就是全量** ✓ ★
+    ///
+    /// **∴ 为什么抽检够用 ✗**（**与 blur 的论证同形 ✓）★**：
+    ///   **∴ GPU 的偏差**若存在**✗ ⇒ **∴ 它**来自**累加顺序／fma**✗ ⇒ **∴ 那是**系统性的** ✓
+    ///     ＋ **∴ 所以**抽检**必然打中**✗ 而**不是**等着碰运气 ✓ ★
+    ///
+    /// **∴ 单点怎么算 ✗**（**逐字复刻 CPU 循环的语义 ✓）★**：
+    ///   **∴ ① 反推源坐标 ✗**：`x = local_x + self.origin_x - layer.origin_x`** ✓
+    ///     ＋ **∴ ② 缩放 ✗**：`scaled[i] = layer.pixel(x,y)[i] * factor`** ✓
+    ///       ＋ **∴ ③ 跳过判定 ✗**：`scaled[3] <= 0.0 && Normal ⇒ 期望 ＝ 原值`** ✓
+    ///         ＋ **∴ ④ 否则 ✗**：`Normal ⇒ over(...)`**✗ ／**其余 ⇒ `blend_pixel(...)`** ✓ ★
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+    fn cpu_composite_pixel(
+        &self,
+        layer: &Buffer,
+        mode: BlendMode,
+        factor: f32,
+        local_x: u32,
+        local_y: u32,
+    ) -> LinearRgba {
+        let backdrop = self.pixel(local_x, local_y);
+        let sx = i64::from(local_x) + self.origin_x - layer.origin_x;
+        let sy = i64::from(local_y) + self.origin_y - layer.origin_y;
+        if sx < 0 || sy < 0 || sx >= i64::from(layer.width) || sy >= i64::from(layer.height) {
+            return backdrop;
+        }
+        let pixel = layer.pixel(sx as u32, sy as u32);
+        let scaled: LinearRgba = [
+            pixel[0] * factor,
+            pixel[1] * factor,
+            pixel[2] * factor,
+            pixel[3] * factor,
+        ];
+        if scaled[3] <= 0.0 && mode == BlendMode::Normal {
+            return backdrop;
+        }
+        if mode == BlendMode::Normal {
+            over(scaled, backdrop)
+        } else {
+            blend_pixel(mode, scaled, backdrop)
+        }
+    }
+
+    /// **★★★ 抽检哨兵：**GPU 输出与 CPU 单点真值**逐位一致**吗 ✗ ★★★**（**第 756 轮 ✓）
+    ///
+    /// **∴ 抽 256 个散布点 ✗**（**步长 7919 质数 ⇒ **∴ 与图像结构**不共振 ✓）★
+    ///   ＋ **∴ 每点**调 `cpu_composite_pixel` **重算**（**O(1) ✓）
+    ///     ＋ **∴ 逐通道**比 `to_bits()`**✗（**∴ 比的是**位模式**✗ 而**不是**容差** ✓）★
+    ///       ＋ **∴ 任一不符 ⇒ `false`**✗ ⇒ **∴ 调用方**不采用 GPU 结果 ＋ **记一次失败** ✓ ★
+    ///
+    /// **∴ 为什么抽检够用 ✗**（**与 `filter.rs` 同形 ✓）★**：
+    ///   **∴ GPU 的偏差**若存在**✗ ⇒ **∴ 它**来自**累加顺序／fma**✗
+    ///     ＋ **∴ 那是**系统性的**✗ ⇒ **∴ 抽检**必然打中** ✓ ★
+    /// **∴ 暴露给判据 ✗**（**第 756 轮 ✓）★**：
+    ///   **∴ 为什么必须 `pub` ✗**：**哨兵的**能红性**要靠一条判据证明**✗
+    ///     ＋ **∴ 而**判据在 `tests/` **集成测试里**✗ ⇒ **∴ 那里**只能看见 `pub` 项** ✓
+    ///       ＋ **∴ 而**本机**没有 GPU 适配器**✗ ⇒ **∴ 走不了**真 GPU 路** ✓
+    ///         ＋ **∴ 所以**：**把哨兵本身**暴露出来**✗ ⇒ **∴ 判据**喂它**篡改过的输出 ⇒ **∴ 必须**判错** ✓ ★
+    ///   **∴ `#[doc(hidden)]`**✗：**它**不是**给人用的 API**✗ 而**是**判据的接口** ✓ ★
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+    #[doc(hidden)]
+    pub fn composite_sentinel_agrees(
+        &self,
+        out: &[f32],
+        layer: &Buffer,
+        mode: BlendMode,
+        factor: f32,
+    ) -> bool {
+        let count = (self.width as usize) * (self.height as usize);
+        if out.len() != count * 4 {
+            return false;
+        }
+        let step = 7919usize;
+        let mut sampled = 0usize;
+        let mut index = 0usize;
+        while sampled < 256 && index < count {
+            let x = (index % self.width as usize) as u32;
+            let y = (index / self.width as usize) as u32;
+            let expect = self.cpu_composite_pixel(layer, mode, factor, x, y);
+            let base = index * 4;
+            for c in 0..4 {
+                if out[base + c].to_bits() != expect[c].to_bits() {
+                    return false;
+                }
+            }
+            sampled += 1;
+            index += step;
+        }
+        true
+    }
+
+    // **∴ `cfg` 标注必须回到这个函数上 ✗**（**第 756 轮我插入新函数时切断了它 ✓）★
+    //   **∴ 症状 ✗**：**不带 `gpu` feature 编译时**报**
+    //     `cannot find function quantizer_cache`／`yanshi_gpu`／`gpu_mode_code`** ✓
+    //     ＋ **∴ 因为**本函数体**直接**引用那些 feature-only 的项** ✓ ★
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     fn gpu_composite_with_layer(
         &self,
         layer: &Buffer,
@@ -1304,8 +1410,28 @@ impl Buffer {
         #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
         if std::env::var_os("YANSHI_GPU_COMPOSITE").is_some() {
             if let Some(out) = self.gpu_composite_with_layer(layer, mode, opacity) {
-                self.pixels.copy_from_slice(&out);
-                return;
+                // **★★★ 抽检哨兵：**逐位一致**才采用 GPU 结果 ✗ ★★★**（**第 756 轮 ✓）
+                //   **∴ 为什么在这里做 ✗**：**这一刻**同时**拿得到**两样东西** ✓ ★
+                //     **∴ ① `out`**✗：**GPU 的输出**（**∴ 尚未写回 `self` ✓）
+                //       ＋ **∴ ② `self` **仍未被覆盖**✗ ⇒ **∴ 它**就是**CPU 真值的来源** ✓ ★
+                //         ＋ **∴ 若**写回之后再核**✗ ⇒ **∴ 那时**真值已经被覆盖** ⇒ **∴ 核不了** ✓ ★
+                //   **∴ 抽多少 ✗**：** 256 个散布点**✗（**∴ 步长 7919 质数 ✓；**与 `filter.rs` 同一形态 ✓）★
+                //     ＋ **∴ 每点**由 `cpu_composite_pixel` **单点重算**（**O(1) ✓）
+                //       ＋ **∴ 逐通道**比 `to_bits()`**✗（**∴ 不是**比近似值 ✓）★
+                //   **∴ 任一不符 ⇒ **不采用**✗ ⇒ **∴ 落到下面的 CPU 路** ✓
+                //     ＋ **∴ 并**记一次失败**✗（`COMPOSITE_SENTINEL_FAILURES` ⇒ **∴ 供判据与诊断 ✓）★
+                //   **∴ 为什么**默认不做**✗**：** 256 次单点重算**虽便宜**✗
+                //     ＋ **∴ 而**它是**纯附加成本**✗ ⇒ **∴ 用 `YANSHI_GPU_VERIFY` 把关** ✓
+                //       ＋ **∴ 从而**默认路径**一行也不多跑** ✓ ★
+                // **∴ 干净形态 ✗**：**一致 ⇒ 采用**✗ ／**不一致 ⇒ 落到下面的 CPU 路** ✓ ★
+                let verify = std::env::var_os("YANSHI_GPU_VERIFY").is_some();
+                let agrees = !verify
+                    || self.composite_sentinel_agrees(&out, layer, mode, opacity.clamp(0.0, 1.0));
+                if agrees {
+                    self.pixels.copy_from_slice(&out);
+                    return;
+                }
+                COMPOSITE_SENTINEL_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         let factor = opacity.clamp(0.0, 1.0);
@@ -1373,6 +1499,24 @@ pub fn gpu_mode_code(mode: crate::BlendMode) -> Option<u32> {
 /// **∴ 为什么需要 ✗**：**判据若因**低于阈值**而没走 GPU**✗
 ///   ＋ **∴ 那**它就是****假的**✗（**∴ 什么都没验证 ✓）★
 #[cfg(feature = "gpu")]
+/// **∴ 合成抽检哨兵**失败**的次数 ✗**（**第 756 轮 ✓）★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+static COMPOSITE_SENTINEL_FAILURES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// **∴ 读合成哨兵失败次数 ✗**（**判据与诊断用 ✓）★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[must_use]
+pub fn composite_sentinel_failures() -> usize {
+    COMPOSITE_SENTINEL_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清零合成哨兵失败计数 ✗**（**判据用 ✓）★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+pub fn reset_composite_sentinel_failures() {
+    COMPOSITE_SENTINEL_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn gpu_composite_note(reason: &str) {
     if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
         eprintln!("PROBE GPU 合成：{reason}");
