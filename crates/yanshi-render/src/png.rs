@@ -79,19 +79,26 @@ pub fn encode_png(width: u32, height: u32, rgba8: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    // 原始数据：每条扫描线前加一个 filter 字节（0 = None）。
-    let mut raw = Vec::with_capacity(expected + height as usize);
-    for row in 0..height as usize {
-        raw.push(0);
-        let start = row * width as usize * 4;
-        raw.extend_from_slice(&rgba8[start..start + width as usize * 4]);
-    }
-
-    let mut out = Vec::with_capacity(raw.len() + 128);
+    let mut out = Vec::with_capacity(expected / 4 + 128);
     out.extend_from_slice(&SIGNATURE);
     write_chunk(&mut out, b"IHDR", &ihdr(width, height));
-    // **`flate2`（zlib-rs ✓）+ 写死的级别 [`DEFLATE_LEVEL`]** ✓（不再手写固定 Huffman ✓）。
-    write_chunk(&mut out, b"IDAT", &zlib_compress(&raw));
+    // 流式写入：逐行喂 filter_byte + scanline 给 zlib 编码器，不构建完整 raw。
+    // 与 `zlib_compress` 同级别（DEFLATE_LEVEL）、同策略 ⇒ 逐位一致。
+    let idat = {
+        let reserve = (expected / 4 + 64).min(DEFLATE_RESERVE_MAX);
+        let mut encoder =
+            ZlibEncoder::new(Vec::with_capacity(reserve), Compression::new(DEFLATE_LEVEL));
+        let row_bytes = width as usize * 4;
+        let filter_zero: [u8; 1] = [0];
+        for row in 0..height as usize {
+            encoder.write_all(&filter_zero).expect("内存编码不会失败");
+            encoder
+                .write_all(&rgba8[row * row_bytes..(row + 1) * row_bytes])
+                .expect("内存编码不会失败");
+        }
+        encoder.finish().expect("结束 zlib 流不会失败")
+    };
+    write_chunk(&mut out, b"IDAT", &idat);
     write_chunk(&mut out, b"IEND", &[]);
     Some(out)
 }
@@ -127,10 +134,10 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) {
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(kind);
     out.extend_from_slice(payload);
-    let mut crc_input = Vec::with_capacity(4 + payload.len());
-    crc_input.extend_from_slice(kind);
-    crc_input.extend_from_slice(payload);
-    out.extend_from_slice(&yanshi_core::crc32(&crc_input).to_be_bytes());
+    // 增量 CRC：省去与 payload 等大的临时 Vec 分配。
+    let mut crc = yanshi_core::crc32_update(0xFFFF_FFFF, kind);
+    crc = yanshi_core::crc32_update(crc, payload);
+    out.extend_from_slice(&(!crc).to_be_bytes());
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +301,9 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             bytes[payload_end + 2],
             bytes[payload_end + 3],
         ]);
-        let mut crc_input = Vec::with_capacity(4 + length);
-        crc_input.extend_from_slice(kind);
-        crc_input.extend_from_slice(payload);
-        if yanshi_core::crc32(&crc_input) != expected {
+        let mut crc = yanshi_core::crc32_update(0xFFFF_FFFF, kind);
+        crc = yanshi_core::crc32_update(crc, payload);
+        if !crc != expected {
             return None;
         }
         match kind {

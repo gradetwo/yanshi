@@ -78,8 +78,8 @@ pub use ids::{
 pub use log::{AppendOutcome, AtomLog, CommitContext};
 pub use seq::{state_at, IncrementalFolder, StateAt, StateAtCache};
 pub use snapshot::{
-    crc32, snapshot_decision, Snapshot, SnapshotBase, SnapshotDecision, SnapshotStore,
-    SnapshotTrigger,
+    crc32, crc32_update, snapshot_decision, Snapshot, SnapshotBase, SnapshotDecision,
+    SnapshotStore, SnapshotTrigger,
 };
 pub use state::{
     Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, Object, ObjectRef,

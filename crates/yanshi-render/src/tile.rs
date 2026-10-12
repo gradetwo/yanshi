@@ -39,6 +39,8 @@ pub struct Tile {
     key: TileKey,
     size: u32,
     pixels: Vec<u16>,
+    /// 是否可能存在非透明像素（保守标志：写入即置 true，不会误报透明）。
+    maybe_opaque: bool,
 }
 
 impl Tile {
@@ -48,6 +50,7 @@ impl Tile {
             key,
             size,
             pixels: vec![0u16; (size * size * 4) as usize],
+            maybe_opaque: false,
         }
     }
 
@@ -56,8 +59,14 @@ impl Tile {
         if data.len() != (size * size * 4) as usize {
             return None;
         }
-        let pixels = data.iter().map(|value| f32_to_f16_bits(*value)).collect();
-        Some(Self { key, size, pixels })
+        let pixels: Vec<u16> = data.iter().map(|value| f32_to_f16_bits(*value)).collect();
+        let maybe_opaque = pixels.chunks_exact(4).any(|p| p[3] != 0);
+        Some(Self {
+            key,
+            size,
+            pixels,
+            maybe_opaque,
+        })
     }
 
     /// tile 坐标。
@@ -72,7 +81,7 @@ impl Tile {
 
     /// 是否全透明（渲染占位判断与空 tile 优化）。
     pub fn is_transparent(&self) -> bool {
-        self.pixels.chunks_exact(4).all(|pixel| pixel[3] == 0)
+        !self.maybe_opaque
     }
 
     /// 读取像素（越界返回全透明）。
@@ -93,6 +102,9 @@ impl Tile {
     pub fn set(&mut self, x: u32, y: u32, pixel: LinearRgba) {
         if x >= self.size || y >= self.size {
             return;
+        }
+        if pixel[3] > 0.0 {
+            self.maybe_opaque = true;
         }
         let base = ((y * self.size + x) * 4) as usize;
         for (offset, bits) in self.pixels[base..base + 4].iter_mut().zip(pixel) {
@@ -134,17 +146,26 @@ impl Tile {
 
     /// 以 source-over 叠加像素。
     pub fn blend_over(&mut self, x: u32, y: u32, source: LinearRgba) {
+        if source[3] > 0.0 {
+            self.maybe_opaque = true;
+        }
         let backdrop = self.get(x, y);
         self.set(x, y, crate::blend::over(source, backdrop));
     }
 
     /// 填充整块 tile。
     pub fn fill(&mut self, pixel: LinearRgba) {
-        for y in 0..self.size {
-            for x in 0..self.size {
-                self.set(x, y, pixel);
-            }
+        // 量化一次，然后按 4 通道一组填充整个切片。
+        let bits = [
+            f32_to_f16_bits(pixel[0]),
+            f32_to_f16_bits(pixel[1]),
+            f32_to_f16_bits(pixel[2]),
+            f32_to_f16_bits(pixel[3]),
+        ];
+        for chunk in self.pixels.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&bits);
         }
+        self.maybe_opaque = pixel[3] > 0.0;
     }
 
     /// 导出为 f32 线性预乘像素。
@@ -162,15 +183,19 @@ impl Tile {
         let table = crate::color::srgb_encode_table();
         let width = self.size as usize;
         let mut out = vec![0u8; width * width * 4];
-        for (row, line) in out.chunks_exact_mut(width * 4).enumerate() {
-            for (x, chunk) in line.chunks_exact_mut(4).enumerate() {
-                let pixel = self.get(x as u32, row as u32);
-                let bytes = match bg_linear {
-                    Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
-                    None => crate::color::linear_premul_to_u8x4_with(table, pixel),
-                };
-                chunk.copy_from_slice(&bytes);
-            }
+        // 直接遍历底层 f16 切片，消除逐像素 get() 的边界检查与重复索引计算。
+        for (src_pixel, dst_pixel) in self.pixels.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+            let pixel = [
+                f16_bits_to_f32(src_pixel[0]),
+                f16_bits_to_f32(src_pixel[1]),
+                f16_bits_to_f32(src_pixel[2]),
+                f16_bits_to_f32(src_pixel[3]),
+            ];
+            let bytes = match bg_linear {
+                Some(bg) => crate::color::composite_over_linear_with(table, pixel, bg),
+                None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+            };
+            dst_pixel.copy_from_slice(&bytes);
         }
         out
     }
@@ -182,30 +207,82 @@ impl Tile {
 
     /// 用 u8 RGBA（显示空间，直通 alpha）覆盖写入，用于 RasterPatch / import_image。
     pub fn blit_rgba8(&mut self, x0: i64, y0: i64, width: u32, height: u32, rgba8: &[u8]) {
+        // **★ 合并说明（**第 739 轮 ✓）★**：**两边改动**互不相关** ⇒ **∴ 两者都保留** ✓
+        //   ∴ ours：**查表优化**（第 723 轮 OnceLock 补丁）
+        //   ∴ theirs：**边界量预计算**（tile-opt 补丁）
         let decode_table = crate::color::srgb_decode_table();
+        let max_src_pixels = rgba8.len() / 4;
+        if max_src_pixels == 0 {
+            return;
+        }
+        let src_w = width as i64;
+        let tile_s = self.size as i64;
+
         for row in 0..height {
-            for col in 0..width {
-                let index = ((row * width + col) * 4) as usize;
-                if index + 3 >= rgba8.len() {
-                    return;
-                }
+            let row_start_pixel = (row * width) as usize;
+            // 严格复现原代码：源数据耗尽立即 return。
+            if row_start_pixel >= max_src_pixels {
+                return;
+            }
+            let max_cols_in_row = (max_src_pixels - row_start_pixel).min(width as usize);
+
+            let y = y0 + row as i64;
+            // 整行在 tile 垂直范围外：消耗源数据但不绘制。
+            if y < 0 || y >= tile_s {
+                continue;
+            }
+
+            // 预计算有效的目标列范围。
+            let col_start = if x0 < 0 {
+                x0.saturating_neg().min(src_w) as u32
+            } else {
+                0
+            };
+            let col_end = if x0 + src_w > tile_s {
+                (tile_s - x0).max(0).min(src_w) as u32
+            } else {
+                width
+            };
+            let draw_col_end = col_end.min(max_cols_in_row as u32);
+            if col_start >= draw_col_end {
+                continue;
+            }
+
+            let tile_y = y as u32;
+            let mut wrote_opaque = false;
+            for col in col_start..draw_col_end {
+                let index = (row_start_pixel + col as usize) * 4;
                 let pixel = [
                     rgba8[index],
                     rgba8[index + 1],
                     rgba8[index + 2],
                     rgba8[index + 3],
                 ];
-                let x = x0 + col as i64;
-                let y = y0 + row as i64;
-                if x < 0 || y < 0 {
-                    continue;
+                // 保守透明标志：源 alpha > 0 则 over() 结果 alpha 必 > 0
+                //（result_a = src_a + dst_a * (1 - src_a) >= src_a）。
+                if pixel[3] != 0 {
+                    wrote_opaque = true;
                 }
-                let (x, y) = (x as u32, y as u32);
-                if x >= self.size || y >= self.size {
-                    continue;
-                }
-                // 贴图按 source-over 覆盖（patch 自带 alpha）。
-                self.blend_over(x, y, u8x4_to_linear_premul_with_table(decode_table, pixel));
+                // **★ 合并说明（**第 739 轮 ✓）★**：**两边改了同一行** ⇒ **∴ 解法 ✗**：
+                //   ∴ 采纳补丁的**内联展开**（**它是本补丁的优化目标 ✓）
+                //   ∴ 但 `u8x4_to_linear_premul` **换成** `_with_table`（**保留我的查表优化 ✓）
+                let x = (x0 + col as i64) as u32;
+                let base = ((tile_y * self.size + x) * 4) as usize;
+                let backdrop = [
+                    f16_bits_to_f32(self.pixels[base]),
+                    f16_bits_to_f32(self.pixels[base + 1]),
+                    f16_bits_to_f32(self.pixels[base + 2]),
+                    f16_bits_to_f32(self.pixels[base + 3]),
+                ];
+                let source = u8x4_to_linear_premul_with_table(decode_table, pixel);
+                let result = crate::blend::over(source, backdrop);
+                self.pixels[base] = f32_to_f16_bits(result[0]);
+                self.pixels[base + 1] = f32_to_f16_bits(result[1]);
+                self.pixels[base + 2] = f32_to_f16_bits(result[2]);
+                self.pixels[base + 3] = f32_to_f16_bits(result[3]);
+            }
+            if wrote_opaque {
+                self.maybe_opaque = true;
             }
         }
     }
@@ -347,7 +424,12 @@ pub struct TileCacheStats {
 pub struct TileCache {
     grid: TileGrid,
     tiles: HashMap<TileKey, Tile>,
-    order: VecDeque<TileKey>,
+    /// LRU 队列：(key, generation)。同一 key 可能存在多个旧 generation 副本。
+    order: VecDeque<(TileKey, u64)>,
+    /// 每个 key 最近一次被 touch 的 generation。
+    last_touched: HashMap<TileKey, u64>,
+    /// 单调递增的 generation 计数器。
+    generation: u64,
     budget_bytes: usize,
     used_bytes: usize,
     hits: u64,
@@ -363,6 +445,8 @@ impl TileCache {
             grid,
             tiles: HashMap::new(),
             order: VecDeque::new(),
+            last_touched: HashMap::new(),
+            generation: 0,
             budget_bytes: budget_bytes.max(one_tile),
             used_bytes: 0,
             hits: 0,
@@ -459,7 +543,7 @@ impl TileCache {
         if let Some(tile) = &removed {
             self.used_bytes = self.used_bytes.saturating_sub(tile.byte_len());
         }
-        self.order.retain(|candidate| *candidate != key);
+        self.last_touched.remove(&key);
         removed
     }
 
@@ -478,13 +562,18 @@ impl TileCache {
     ///
     /// 与「dirty 失效」不同，这里丢掉的是仍然有效但不再可见的数据，因此计入淘汰统计（14.9）。
     pub fn evict_outside_viewport(&mut self, viewport: &Bbox) -> usize {
-        let keep: std::collections::HashSet<TileKey> =
-            self.grid.keys_for_bbox(viewport).into_iter().collect();
+        // 用 tile 边界与视口相交判定代替 HashSet。
         let doomed: Vec<TileKey> = self
             .tiles
             .keys()
-            .filter(|key| !keep.contains(key))
             .copied()
+            .filter(|key| {
+                let bounds = self.grid.bounds(*key);
+                bounds.x + bounds.w <= viewport.x
+                    || bounds.x >= viewport.x + viewport.w
+                    || bounds.y + bounds.h <= viewport.y
+                    || bounds.y >= viewport.y + viewport.h
+            })
             .collect();
         let removed = self.invalidate(&doomed);
         self.evictions += removed as u64;
@@ -495,12 +584,17 @@ impl TileCache {
     pub fn evict_to_bytes(&mut self, target_bytes: usize) -> usize {
         let mut evicted = 0;
         while self.used_bytes > target_bytes && !self.order.is_empty() {
-            let Some(victim) = self.order.pop_front() else {
+            let Some((victim_key, victim_gen)) = self.order.pop_front() else {
                 break;
             };
-            if let Some(tile) = self.tiles.remove(&victim) {
+            // stale entry：该 key 在之后又被 touch 过，或已被 remove。
+            if self.last_touched.get(&victim_key) != Some(&victim_gen) {
+                continue;
+            }
+            if let Some(tile) = self.tiles.remove(&victim_key) {
                 self.used_bytes = self.used_bytes.saturating_sub(tile.byte_len());
                 self.evictions += 1;
+                self.last_touched.remove(&victim_key);
                 evicted += 1;
             }
         }
@@ -519,6 +613,8 @@ impl TileCache {
     pub fn clear(&mut self) {
         self.tiles.clear();
         self.order.clear();
+        self.last_touched.clear();
+        self.generation = 0;
         self.used_bytes = 0;
     }
 
@@ -530,18 +626,43 @@ impl TileCache {
     }
 
     fn touch(&mut self, key: TileKey) {
-        self.order.retain(|candidate| *candidate != key);
-        self.order.push_back(key);
+        // O(1) 追加：只记录最新 generation，不扫描旧条目。
+        self.generation += 1;
+        self.last_touched.insert(key, self.generation);
+        self.order.push_back((key, self.generation));
+        // 防止内存泄漏：stale entry 过多时触发压缩。
+        if self.order.len() > self.tiles.len().max(1) * 2 + 64 {
+            self.compact_order();
+        }
+    }
+
+    /// 压缩 order，移除所有 stale entry 及已删除 key 的记录。
+    fn compact_order(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let mut new_order = VecDeque::with_capacity(self.tiles.len());
+        for item in self.order.iter().rev() {
+            // 只保留仍在 tiles 中且是该 key 最新 generation 的条目。
+            if self.tiles.contains_key(&item.0) && seen.insert(item.0) {
+                new_order.push_front(*item);
+            }
+        }
+        self.order = new_order;
     }
 
     fn evict_to_fit(&mut self) {
         while self.used_bytes > self.budget_bytes && !self.order.is_empty() {
-            let Some(victim) = self.order.pop_front() else {
+            let Some((victim_key, victim_gen)) = self.order.pop_front() else {
                 break;
             };
-            if let Some(tile) = self.tiles.remove(&victim) {
+            // stale entry：该 key 在之后又被 touch 过，或已被 remove。
+            if self.last_touched.get(&victim_key) != Some(&victim_gen) {
+                continue;
+            }
+            // fresh entry：执行真正的淘汰。
+            if let Some(tile) = self.tiles.remove(&victim_key) {
                 self.used_bytes = self.used_bytes.saturating_sub(tile.byte_len());
                 self.evictions += 1;
+                self.last_touched.remove(&victim_key);
             }
         }
     }

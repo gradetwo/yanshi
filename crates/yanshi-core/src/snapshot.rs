@@ -166,6 +166,37 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     crc ^ 0xFFFF_FFFF
 }
 
+/// 标准 CRC-32 (IEEE 802.3) 查找表（编译期常量，与 [`crc32`] 同表）。
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+            j += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+/// 增量 CRC-32：`crc` 为未取反的中间状态，初始调用传入 `0xFFFF_FFFF`，
+/// 最终输出时需取反 `!crc`。与 [`crc32`] 结果一致：
+/// `crc32(data) == !crc32_update(0xFFFF_FFFF, data)`。
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        crc = CRC32_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc
+}
+
 /// 快照触发原因（设计文档 6.5）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
