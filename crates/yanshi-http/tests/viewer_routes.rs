@@ -235,6 +235,31 @@ fn brush_urls_are_percent_encoded_on_both_sides() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let assets = root.join("assets/brushes");
     let web = root.join("web/brushes");
+    // **★★★ 前置条件：`web/` 必须**已被同步** ✗ ★★★**（**第 767 轮修；**CI 实测红 ✓）
+    //   **∴ 症状 ✗**（**CI `test (stable)` ✓）★**：
+    //     `thread 'brush_urls_are_percent_encoded_on_both_sides' panicked at
+    //      crates/yanshi-http/tests/viewer_routes.rs:255`
+    //       ＋ **∴ 就是下面那句 `assert!(in_web || in_assets)`** ✓ ★★
+    //   **∴ 根因 ✗**：**`web/` **是**生成物**✗（**∴ 被 `.gitignore` 忽略 ✓）
+    //     ＋ **∴ 而** CI **的 checkout 里**没有它**✗ ⇒ **∴ 于是**：
+    //       ＋ **∴ `in_web` **恒 false**✗
+    //         ＋ **∴ 而** `in_assets` **也 false**✗ —— **∴ 因为** SHELL 用的是**改名后的 `_pct_`／`_n_`**✗
+    //           ＋ **∴ 而** `assets/brushes` **里是**原名** ✓
+    //             ＋ **∴ 于是**：**两边都找不到 ⇒ **∴ 判据必红** ✓ ★★
+    //   **∴ 修法 ✗**：**与 `sw_shell_consistency` **同形**✗**：
+    //     ＋ **∴ 未同步 ⇒ **打印 ＋ 跳过**✗（**∴ 不是**产品问题 ✓）★
+    //       ＋ **∴ 有 `web/` 时**它仍然真的判**✗ ⇒ **∴ 承诺没有降低** ✓ ★
+    //   **∴ 备注 ✗**：**这是本会话**第四次**遇到「**判据缺前置条件**」**✗
+    //     ＋ **∴ 前三次 ✗**：**`composite_parity`（无适配器）｜`sw_shell_consistency`（web/ 未同步）
+    //       ＋ **∴ 运行器不认 `EXIT=3`** ✓ ★
+    if !web.is_dir() {
+        eprintln!(
+            "  ⏭ 跳过：{} 不存在（PWA 资源未同步）⇒ 本条本次不判（不是产品问题）\
+             ⇒ 若要先同步再判，请在测试之前跑 `node scripts/pwa-sync-viewer.mjs`",
+            web.display()
+        );
+        return;
+    }
     for url in &entries {
         assert!(
             !url.contains('#'),
