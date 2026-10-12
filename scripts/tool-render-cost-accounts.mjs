@@ -111,7 +111,27 @@ if (!compareSpecs.length) compareSpecs.push({ label: "默认", extra: [] });
 /** **∴ 读进程的**四元组**✗**（**∴ CPU 时间**用 utime+stime 的**时钟节拍 ✓）** ✓✓ */
 async function readProcess(pid) {
   const { readFileSync } = await import("node:fs");
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  // **★★★ 进程可能**在测量中途消失** ✗ ★★★**（**第 793 轮修；**L4 实测 ✓）
+  //   **∴ 症状 ✗**（**L4 实测 ✓）★**：**跑 `chunk=4194304` 与 `chunk=268435456` 时**两次都**
+  //     `Error: ENOENT: no such file or directory, open '/proc/31805/stat'`
+  //       ＋ **∴ 而**栈指向**这里**✗ ⇒ **∴ 判据**直接崩**（**Node 的未捕获异常 ✓）★
+  //   **∴ 为什么不行 ✗**：
+  //     ＋ **∴ ①** **判据**跑不了**（**服务进程死了 ✓）**≠**产品失败** ✗
+  //       ⇒ **∴ 它**必须**说出来 ＋ 用 `exit 3`**（**本仓库的统一约定 ✓）★
+  //         ＋ **∴ ②** **崩栈**对读的人**没有用**✗ ⇒ **∴ 它**不告诉我**哪个配置／哪一轮**出的问题** ✓
+  //           ＋ **∴ ③** **两个 chunk 配置**都死**✗ ⇒ **∴ 那**说明**不是 chunk 大小的问题** ✓
+  //   **∴ 修法 ✗**：**读不到就**打印诊断 ＋ `exit 3`**✗（**并带上 pid 与轮次上下文 ✓）★
+  const stat = (() => {
+    try {
+      return readFileSync(`/proc/${pid}/stat`, "utf8");
+    } catch (error) {
+      console.error("");
+      console.error(`  ⏭ 服务进程 ${pid} 在测量中途消失（${error && error.code}）⇒ **本次没验**，不是产品失败`);
+      console.error("     ⇒ 可能原因：进程被 OOM 杀掉／自行退出／被别的作业 `pkill -x yanshi-serve` 杀掉");
+      console.error("     ⇒ 要真跑：确认没有第二个测量作业在并行（它们会互相 `pkill`）");
+      process.exit(3);
+    }
+  })();
   // **∴ comm 可能带空格与括号 ✗** ⇒ **∴ 从最后一个 ')' 之后**切 ✓**** ✓✓
   const tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
   const utime = Number(tail[11]);
