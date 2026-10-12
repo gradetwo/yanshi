@@ -264,7 +264,8 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       # 而 :43 只起了 about:blank ✗ ⇒ 判据会去连别的页面 ⇒ 前置不成立（第 966 轮实测 ✓）。
       # CDP 的 /json/new 可以新开一个标签页并直接导航；新版 Chromium 要求 PUT ✓。
       if [ -n "${CHROME_PID:-}" ]; then
-        curl -sf -X PUT "http://127.0.0.1:$CDP_PORT/json/new?$BASE/?doc=$doc&token=$tok" >/dev/null 2>&1 ||
+        # **∴ 同上：调试浏览器也要求客户端渲染 ✓**（**第 778 轮 ✓）
+        curl -sf -X PUT "http://127.0.0.1:$CDP_PORT/json/new?$BASE/?doc=$doc&token=$tok&render=client" >/dev/null 2>&1 ||
           echo "  ⚠ 无法让浏览器打开被测地址（/json/new 失败）⇒ 浏览器判据可能报前置不成立"
         sleep 1
       fi
@@ -291,7 +292,31 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/kernel-brush
       #   **∴ 修法**：**有静态 PWA 就用它**✗（**＋ `doc`／`token`／`debug=1` ✓）
       #     ＋ **仍把服务端 base 当第 2 个参数**✗（**∴ 需要服务端的判据**照样能用 ✓）** ✓✓
       VIEWER_BASE="${YANSHI_LIVE_UI_URL:-$BASE}"
-      export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1"
+      # **★★★ `render=client` 必须加 ✗ ★★★**（**第 778 轮修；**CI 实测的共同根因 ✓）
+      #   **∴ 症状 ✗**（**CI ✓）★**：**7 条浏览器判据红**✗ 而**它们的失败都指向**同一件事**：
+      #     `browser-export-full-document`｜`⏱ 等待超时：WASM 内核就绪`
+      #     `browser-live-brush`          ｜`本地渲染 调用 5 / 出帧 0 / 报错 5`
+      #     `browser-offline-brush`       ｜`注意：… 的内核仍未就绪（kernelStats() = null）`
+      #   **∴ 根因 ✗**：**产品的缺省是**服务端渲染**✗（`viewer-app.js` 的 `serverRenderPreferred`
+      #     未设偏好时返回 `true` ✓）⇒ **∴ 于是** `initWasm()` **第一句就 `return`** ✗
+      #       ⇒ **∴ 内核**不加载** ✓ ⇒ **∴ `window.yanshi` **没有内核句柄**✗
+      #         ⇒ **∴ `kernelStats()` ＝ null**✗ ／ `window.yanshiStats.wasm` **恒 false** ✓ ★★
+      #   **∴ 而**本仓**已经知道**这件事**✗（**见上面 `ui-control-heights.mjs` 分支的注释，第 381 轮 ✓）
+      #     ＋ **∴ 但**那次修复**只加到了**那一个分支**✗ ⇒ **∴ `browser-*` 一族**全都漏了** ✓ ★★★
+      #   **∴ 我**先试过**把等待预算**从 30 秒提到 120 秒**✗（**`cc8f928`／`033e2ea` ✓）
+      #     ＋ **∴ 实测：**两轮 CI **shard 结果一字不变**✗ ⇒ **∴ 那**证明**不是等待问题** ✓ ★★
+      #       （**正确的排除法**：**先**排除环境／时间**✗ ⇒ **∴ 再**改代码 ✓）★
+      #   **∴ 修法 ✗**：**给 viewer URL 加 `render=client`**✗ —— **∴ 那**正是
+      #     `ui-control-heights` 分支**已在用的**同一个参数** ✓ ★
+      #     ＋ **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／
+      #       `browser-cs-render-switch` **会**自己设偏好**来对比两种模式**✗
+      #         ⇒ **∴ 给它们加参数**会把开关钉死** ✗ ⇒ **∴ 所以**它们**保持现状** ✓ ★
+      case "$name" in
+        browser-render-switch.mjs|browser-cs-render-switch.mjs)
+          export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1" ;;
+        *)
+          export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1&render=client" ;;
+      esac
       # **★ `argv[2]` **恢复**成**服务端 URL** ✗ ★**（第 87 轮 ✓；**上一轮一刀切错了 ✓）：
       #   **∴ 证据 ✗**：`browser-no-stale-read`／`browser-offline-reload` 报
       #     `SyntaxError: Unexpected token 'o', "not found" is not valid JSON`**✗
