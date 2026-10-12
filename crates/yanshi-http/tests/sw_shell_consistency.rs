@@ -65,6 +65,30 @@ fn every_shell_entry_exists_under_web() {
         entries.len(),
         sw.display()
     );
+    // **★★★ 前置条件：`web/` 必须**已被同步** ✗ ★★★**（**第 765 轮修；**CI 实测红 ✓）
+    //   **∴ 为什么 ✗**（**CI 实测 ✓）★**：
+    //     **∴ 症状 ✗**：**CI 的 `test (stable)` 报**
+    //       `failures: every_shell_entry_exists_under_web`
+    //       ＋ **`error: test failed, to rerun pass `-p yanshi-http --test sw_shell_consistency``** ✓
+    //   **∴ 根因 ✗**：**`web/` **是**生成物**✗（**∴ 被 `.gitignore` 忽略 ✓）
+    //     ＋ **∴ 而** CI **的 checkout 里**没有它**✗
+    //       ＋ **∴ 于是**：**本判据**找不到任何条目** ⇒ **∴ 必红** ✓ ★★
+    //         ＋ **∴ 而** `cargo test --workspace` **不会**先跑同步脚本** ✓
+    //   **∴ 修法 ✗**：**加**前置条件检查**✗ ⇒ **∴ 未同步就**打印 ＋ 跳过** ✓
+    //     ＋ **∴ 而不是**红**✗ —— **∴ 因为**那**不是产品问题** ✓ ★★
+    //       ＋ **∴ 与**我刚修的 `composite_parity`（**无适配器 ⇒ 跳过 ✓）**同形** ✓
+    //         ＋ **∴ 有 `web/` 时它**仍然真的判** ✗ ⇒ **∴ 承诺没有降低** ✓ ★
+    let web_dir = root.join("web");
+    let web_brushes = web_dir.join("brushes");
+    if !web_brushes.is_dir() {
+        eprintln!(
+            "  ⏭ 跳过：{} 不存在（PWA 资源未同步）⇒ 本条本次不判（不是产品问题）\
+             ⇒ CI 里若要先同步再判，请在测试之前跑 `node scripts/pwa-sync-viewer.mjs`",
+            web_brushes.display()
+        );
+        return;
+    }
+
     let mut missing = Vec::new();
     for (line, url) in &entries {
         if SERVER_ROUTES.contains(&url.as_str()) {
