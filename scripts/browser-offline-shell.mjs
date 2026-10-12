@@ -283,9 +283,39 @@ const cacheReport = await evaluateAsync(`(async () => {
                       hasCss: urls.includes("/viewer.css"), rootBytes: rootLen,
                       scope: reg ? reg.scope : null };
   }
+  // **★★★ 必须读 SW 的**预缓存报告** ✗ ★★★**（**第 745 轮 ✓）
+  //   **∴ 为什么 ✗**：**上面只统计每个缓存**有多少条**✗ ⇒ **∴ 看不到**谁失败了、为什么失败** ✓ ★
+  //     ＋ **∴ 而** SW **自己会把失败写进** `__sw_precache_report`**（**含 `url` 与 `error` ✓）★
+  //       ＋ **∴ 尤其重要 ✗**：**第 743 轮我给 SW 加了**索引驱动的预览图预缓存**✗
+  //         ＋ **∴ 而**它**的失败**也会进那份报告**✗ ⇒ **∴ 读它**就能知道**预览图到底缓存上了没有** ✓ ★
+  try {
+    const rep = await caches.match("/__sw_precache_report");
+    if (rep) {
+      const body = await rep.json();
+      out.precache = {
+        shell: body.shell,
+        previews: body.previews,
+        total: body.total,
+        failedCount: (body.failed || []).length,
+        failed: (body.failed || []).slice(0, 10),
+      };
+    } else {
+      out.precache = { missing: true };
+    }
+  } catch (error) {
+    out.precache = { error: String(error) };
+  }
   return out;
 })()`);
 console.log(`  · 断网前缓存报告 = ${JSON.stringify(cacheReport)}`);
+// **∴ 预缓存失败单独打一行 ✗**（**∴ 否则**它埋在长 JSON 里看不见 ✓）★
+if (cacheReport && cacheReport.precache) {
+  const p = cacheReport.precache;
+  console.log(`  · 预缓存：shell=${p.shell}｜预览图=${p.previews}｜失败 ${p.failedCount}`);
+  for (const f of (p.failed || []).slice(0, 6)) {
+    console.log(`      ✗ ${JSON.stringify(f)}`);
+  }
+}
 
 // ⚠️ **CDP 的网络模拟到不了 service worker 自己的 `fetch()`** ✗（本次审计复核 ✓）：
 // 页面 `navigator.onLine === false` 时，SW 里 `fetch(...)` 照样 200 ✓，
