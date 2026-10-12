@@ -670,6 +670,8 @@ const canvasSig = `(() => {
   return { ink: ink, w: c.width, h: c.height };
 })()`;
 const inkBefore = await evaluate(canvasSig);
+// **∴ 落笔前的状态（**供「离线落笔」行引用 ✓）★
+let beforeRef = null;
 // **★★★ 落笔**之前**的笔刷状态 ✗ ★★★**（**第 748 轮 ✓；**∴ 一劳永逸区分两个候选 ✓）
 //   **∴ 为什么必须卡在这个时刻 ✗**（**第 747 轮的诊断只给了**落笔后**的状态 ✓）★**：
 //     **∴ 落笔后 `brushNow: null`**✗ ＋ **∴ `applies: 0`／`lastArea: 0`** ✓
@@ -692,7 +694,13 @@ try {
                serverCalls: (w.yanshiStats || {}).serverCalls,
                strokeKeys: s && s.stroke ? Object.keys(s.stroke) : null };
     })()`);
-  console.error("  · 落笔**之前**的状态 = " + JSON.stringify(before));
+  // **★★★ 必须用判据的**标准标注格式** ✗ ★★★**（**第 748 轮实测教训 ✓）
+  //   **∴ 我第一版用 `console.error("  · …")`**✗ ⇒ **∴ 而** CI 的 criteria 运行器
+  //     **只收集**「**前│／后│／头│／体│／项│**」等**标注行** ✓
+  //     ＋ **∴ 于是**：**那一行**在日志里**根本看不到** ✗（**∴ 我**白等了一轮 ✓）★
+  //   **∴ 所以 ✗**：**改** `前│` **前缀**✗ ⇒ **∴ 它**与**已有的输出**同一格式** ⇒ **∴ 必被收集** ✓ ★
+  beforeRef = before;
+  console.log("  前│  · 落笔之前的状态 = " + JSON.stringify(before));
 } catch (e) {
   console.error("  · 落笔前状态求值失败：" + e);
 }
@@ -777,7 +785,8 @@ for (let i = 0; i < 32 && !(inkAfter && inkBefore && inkAfter.ink > inkBefore.in
   await sleep(250);
   inkAfter = await evaluate(canvasSig);
 }
-console.log(`  · 离线落笔 = ${JSON.stringify(strokeResult)} ｜ 非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`);
+console.log(`  · 离线落笔 = ${JSON.stringify(strokeResult)} ｜ 非背景像素 ${inkBefore && inkBefore.ink} => ${inkAfter && inkAfter.ink}`
+  + ` ｜ 落笔前 brushNow=${JSON.stringify(beforeRef && beforeRef.brushNow)}`);
 // ① **事件确实进了笔画状态机** ✓（`points` 从 0 变成 > 0 ✓、`dragging` 为真 ✓）。
 if (!strokeResult || typeof strokeResult !== "object" || strokeResult.pointsAtDown <= 0 || !strokeResult.draggingAtDown) {
   failures.push(`落笔事件没有进入笔画状态机（tool=${strokeResult && strokeResult.tool}｜points@down=${strokeResult && strokeResult.pointsAtDown}｜dragging@down=${strokeResult && strokeResult.draggingAtDown}）⇒ 事件被平移那条吃掉了`);
