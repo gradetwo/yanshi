@@ -2304,6 +2304,22 @@ fn wasm_available(state: &ServerState) -> bool {
 }
 
 /// 只允许取 `wasm-bindgen --target web` 生成的白名单文件，避免路径穿越。
+///
+/// **★★★ 必须同时提供 `snippets/` 子路径 ✗ ★★★**（**第 736 轮：**CI 与本地双双复现 ✓）
+///   **∴ 症状 ✗**：**内核加载失败 ⇒ `window.yanshiStats.wasm === false`** ✓
+///     ＋ **∴ 而**两条浏览器判据因此红**✗（**`browser-cs-render-switch` **EXIT=3** ／
+///       **`browser-offline-shell` **EXIT=1** ✓）★
+///   **∴ 根因（**实测响应体 ✓）✗**：**旧代码对含 `/` 的名字**一律** `bad_request("非法资源名")`** ✓
+///     ＋ **∴ 而** `wasm-bindgen --target web` **生成的 `yanshi_wasm.js`**
+///       **里有** `import * as import1 from "./snippets/yanshi-wasm-<hash>/inline0.js"`** ✓
+///       ＋ **∴ 于是**浏览器**请求那个 URL**✗ ⇒ **∴ 命中** 400**✗ ⇒ **∴ 整个 ES module 图**加载失败** ✓ ★
+///   **∴ 修法 ✗**：**顶层 4 个白名单照旧**✗ ＋ **∴ 额外**允许
+///     `snippets/<一段安全字符>/<安全名>.js`** ✓
+///     ＋ **∴ 安全边界（**比放行整个目录更窄 ✓）★**：
+///       **∴ ① 逐段校验字符集**（`[A-Za-z0-9._-]` ✓）✗ ⇒ **∴ 不可能**有绝对路径／`..`／反斜杠 ✓
+///         ＋ **∴ ② 段数**恰好 3**✗ ＋ **∴ 首段必须是** `snippets`** ✓
+///           ＋ **∴ ③ 末段必须以** `.js` **结尾** ✓
+///             ＋ **∴ ④ 仍然**再查一遍 `..`**✗（**∴ 纵深防御 ✓）★
 fn wasm_asset(state: &ServerState, file: &str) -> Response {
     const ALLOWED: [(&str, &str); 4] = [
         ("yanshi_wasm.js", "text/javascript; charset=utf-8"),
@@ -2311,10 +2327,34 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
         ("yanshi_wasm.d.ts", "text/plain; charset=utf-8"),
         ("yanshi_wasm_bg.wasm.d.ts", "text/plain; charset=utf-8"),
     ];
-    if file.contains("..") || file.contains('/') {
+    /// **∴ 一段路径是否安全 ✗**（**∴ 只允许** `[A-Za-z0-9._-]`**✗ ＋ 非空 ＋ 不是 `.`／`..` ✓）★
+    fn safe_segment(segment: &str) -> bool {
+        !segment.is_empty()
+            && segment != "."
+            && segment != ".."
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    }
+    /// **∴ `snippets/<hash>/<name>.js` 是否为**合法的 wasm-bindgen 内联脚本** ✓**★
+    fn is_snippet_asset(file: &str) -> bool {
+        let parts: Vec<&str> = file.split('/').collect();
+        parts.len() == 3
+            && parts[0] == "snippets"
+            && parts[1..].iter().all(|p| safe_segment(p))
+            && parts[2].ends_with(".js")
+    }
+    if file.contains("..") || file.contains('\\') {
         return crate::http::bad_request("非法资源名");
     }
-    let Some((_, content_type)) = ALLOWED.iter().find(|(name, _)| *name == file) else {
+    // **∴ 两条合法形态 ✗**：**顶层白名单**✗ ／ **`snippets/…` 内联脚本** ✓ ★
+    let content_type = if let Some((_, ct)) = ALLOWED.iter().find(|(name, _)| *name == file) {
+        *ct
+    } else if is_snippet_asset(file) {
+        "text/javascript; charset=utf-8"
+    } else if file.contains('/') {
+        return crate::http::bad_request("非法资源名");
+    } else {
         return crate::http::not_found(format!("未知 WASM 资源 {file}"));
     };
     let Some(dir) = &state.options.wasm_dir else {
