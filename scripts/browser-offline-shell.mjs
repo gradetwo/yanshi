@@ -194,7 +194,15 @@ const evaluateAsync = async (expression) => {
     //   **∴ 修法**：**去掉**它**✗ —— **∴ 而**本判据用的表达式
     //     （`self.fetch` 的替换 ✓）**都是**同步 IIFE**✗ ⇒ **∴ 不**需要它 ✓**** ✓✓
     const targetEvaluate = async (expression) => {
-      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      // **★★★ 不许带 `awaitPromise` ✗ ★★★**（**第 732 轮：**注释早就写了**✗ 而**代码没照做** ✓）
+      //   **∴ 实测证据（**第 130 轮 ✓）✗**：**同一个目标 ＋ 同一条命令**✗
+      //     ＋ **∴ 探针（**不带 ✓）⇒ **8 秒内有应答**✗ ｜ **∴ 判据（**带 ✓）⇒ **20 秒**超时** ✓ ★
+      //   **∴ 后果 ✗**：**CI 上**这一条报**
+      //     `sw-evaluate-returned-nothing`**✗ ⇒ **∴ 整个** criteria job **红** ✓ ★
+      //     ＋ **∴ 而**它**看起来像**产品 bug**✗ ⇒ **∴ 所以**容易**误导** ✓ ★
+      //   **∴ 为什么可以不带 ✗**：**本判据的表达式**都是**同步 IIFE** ✓
+      //     ＋ **∴ 所以**：**不需要** `Runtime.awaitPromise`** ✓ ★
+      const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
       const result = message.result || {};
       return result.result ? result.result.value : undefined;
     };
@@ -383,7 +391,7 @@ const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now()
 //     **∴ ②** **桩不在 ⇒ `failed: false` ⇒ **离线机制**没生效** ⇒ **∴ 才**该 VOID ✓**** ✓✓
 //     **∴ ③** **桩在但调用**没 reject**✗ ⇒ **∴ 那**也是**机制错** ⇒ **∴ VOID** ✓**** ✓✓
 const controlProbe = swControl
-  ? (await swControl.send("Runtime.evaluate", { awaitPromise: true,
+  ? (await swControl.send("Runtime.evaluate", { 
       // **★ 必须显式 `returnByValue` ＋ `awaitPromise` ✗ ★**（第 334 轮 ✓；**实测换来的 ✓）：
       //   **∴ 第 333 轮的 CI 显示 ✗**：**`负对照 … = {}`** ✓
       //     ⇒ **∴ 即**：**`swControl.evaluate` **没把对象取回来**✗（**∴ 只拿到空对象 ✓）
@@ -401,7 +409,7 @@ const controlProbe = swControl
         }
       })()`,
       returnByValue: true,
-      awaitPromise: true,
+
     })).result?.value ?? { failed: false, why: "sw-evaluate-returned-nothing" }
   : { failed: false, why: "no-sw-control-target" };
 console.log("  · 负对照（SW 桩必须让未缓存请求失败）= " + JSON.stringify(controlProbe));

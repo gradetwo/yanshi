@@ -1044,6 +1044,47 @@ mod dab_quantisation_impact {
     }
 }
 
+/// **★ 组件级 A/B：掩膜缓存的收益 ✗ ★**（**第 731 轮 ✓）
+///
+/// **∴ 为什么单测它 ✗**（**而不是端到端 ✓）：
+///   **∴ 端到端的加速比**还取决于**掩膜计算在整条盖章管线里的占比** ✓
+///     ＋ **∴ 而那**是**补丁作者自己声明的限定**（**「**端到端加速取决于盖章管线占比**」✓）★
+///       ＋ **∴ 所以**：**本基准**只量**掩膜这一层**✗ ⇒ **∴ 从而**给出**上界** ✓
+///         ＋ **∴ 而**端到端**必须**另量** ✓（**∴ 如实 ✓）★
+///
+/// **∴ 用法 ✗**：`cargo test -p yanshi-render --release -- --ignored --nocapture dab_cache_ab`
+#[cfg(test)]
+mod dab_cache_ab {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "基准：用 --ignored 显式运行"]
+    fn dab_cache_ab() {
+        // **∴ 场景 ✗**：**同一套参数**连续盖章**（**∴ 即** MCP／鼠标：**压力恒定 ＋ 半径不变 ✓）
+        //   ＋ **∴ 那**正是**缓存命中率最高的场景**✗ ⇒ **∴ 所以**它**给出**收益上界** ✓ ★
+        let buffer = Buffer::new(0, 0, 512, 512);
+        const STAMPS: usize = 4000;
+        let on = std::env::var_os("YANSHI_DAB_CACHE").is_none_or(|v| v != "0");
+        let t = Instant::now();
+        let mut total = 0.0f64;
+        for i in 0..STAMPS {
+            // **∴ 半径固定 ＋ 压力恒定 ⇒ **∴ 缓存**必然命中** ✓（**∴ 除第一次 ✓）
+            let cx = 100.0 + (i % 64) as f64;
+            let cy = 100.0 + (i % 37) as f64;
+            stamp_mask_cached(&buffer, cx, cy, 12.0, 0.75, 0.5, |_, _, coverage| {
+                total += f64::from(coverage);
+            });
+        }
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let ns = ms * 1_000_000.0 / STAMPS as f64;
+        println!(
+            "  ★ 掩膜缓存 {}：{STAMPS} 次盖章 ⇒ **{ms:.1} ms**（**{ns:.1} ns／次**）｜coverage 累加 {total:.1}",
+            if on { "开" } else { "关" }
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// 选区覆盖度折进印章：覆盖度 1 与不裁剪一致；0 完全不画；0.5 更弱但仍有墨 ✓。
@@ -1866,6 +1907,24 @@ fn stamp_mask_cached(
     pressure: f32,
     mut visit: impl FnMut(u32, u32, f32),
 ) {
+    // **★★★ A/B 开关：关掉掩膜缓存 ⇒ 走**原热路径** ✗ ★★★**（**第 731 轮 ✓）
+    //   **∴ 为什么需要 ✗**（**用户选了「**收益优先**」✗ ⇒ **∴ 而**收益**至今**没量** ✓）：
+    //     **∴ 掩膜缓存的收益**必须**在同轮 A/B 里量**✗ ⇒ **∴ 所以**要一个**能关掉它的开关** ✓ ★
+    //   **∴ 关掉时**走 `for_each_covered_pixel`**✗（**∴ 那**正是**接线之前**的行为 ✓）★
+    //     ＋ **∴ 所以**：**两条路**能在**同一进程 ＋ 同一输入**下比较** ✓（**∴ 那**才可信 ✓）★
+    //   **∴ 注意 ✗**：**它的回调收 `f64`**✗ 而** `visit` 收 `f32`** ✓
+    //     ＋ **∴ 所以**：**这里**要一次 `as f32`**✗（**∴ 与**接线前**的转换**完全一致 ✓）★
+    if std::env::var_os("YANSHI_DAB_CACHE").is_some_and(|v| v == "0") {
+        for_each_covered_pixel(
+            buffer,
+            center_x,
+            center_y,
+            radius,
+            hardness,
+            |lx, ly, coverage, _, _| visit(lx, ly, coverage as f32),
+        );
+        return;
+    }
     let x0 = (center_x - radius).floor() as i64;
     let y0 = (center_y - radius).floor() as i64;
     let sub_x = (center_x - radius) - x0 as f64;

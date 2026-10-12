@@ -93,7 +93,7 @@ const connectTarget = async (target) => {
       targetSocket.send(JSON.stringify({ id, method, params: params || {} }));
     });
   const targetEvaluate = async (expression) => {
-    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    const message = await targetSend("Runtime.evaluate", { expression, returnByValue: true });
     const result = message.result || {};
     return result.result ? result.result.value : undefined;
   };
