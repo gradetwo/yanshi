@@ -11708,3 +11708,55 @@ test result: ok. 1 passed（1.06 s）✓
 
 ### **∴ 门禁 ✗**：**`cargo check` 零警告 ✓｜降级判据 ✓｜已推 `l4-sync`** ✓ ★
 
+---
+
+## 第 707 轮：**★★★ 目标第 8 条**现状澄清：4 处调用点在**前端 JS 内核**；**WebGPU 仅探测、无绘制管线** ⇒ **尚未开始**** ★★★
+
+### **★★★ 定位过程（**如实 ✓）★★★**
+  ⇒ **∴ 先在 Rust crates 里找 ✗**：**`drawKernelRegion`／`drawKernelBoxDirect`／`pickColorAt`／`composeFullDocumentCanvas` **全部不存在** ✓
+    ＋ **∴ 再**全仓库找**✗**：**只在 `docs/design/implementation-notes.md` 里出现** ✗
+      ＋ **∴ 而**文档里的形态是** JavaScript**✗（`function drawKernelRegion(x, y, w, h) {` ✓）
+        ＋ **∴ 于是**在前端定位**✗ ⇒ **∴ 四处全在 `web/viewer-app.js`** ✓ ★
+```
+★ web/viewer-app.js:1866  function drawKernelRegion(x, y, w, h)
+★ web/viewer-app.js:1955  function drawKernelBoxDirect(bbox)
+★ web/viewer-app.js:6758  function pickColorAt(event)
+★ web/viewer-app.js:9894  function composeFullDocumentCanvas(tile = 512)
+```
+
+### **★★★ 关键事实：WebGPU **只有探测** ✗** ★★★
+```
+★ viewer-app.js:125  webgpu: { supported: false, adapter: false, reason: "尚未探测" }   ← **仅状态对象**
+★ viewer-app.js:132  if (!navigator.gpu) { … }｜138  const adapter = await navigator.gpu.requestAdapter();  ← **仅探测**
+★ api-local.js:4756  if (navigator.gpu && (await navigator.gpu.requestAdapter())) return "webgpu";  ← **仅报告后端名**
+★ 而**全部绘制上下文都是 Canvas 2D** ✗：
+   223 board.getContext("2d")｜224 overlay｜229 kernel｜3305／3315／3336／3394 … 全是 "2d"
+```
+  ⇒ **★ 所以：WebGPU **没有任何绘制管线**✗ ⇒ **∴ 目标第 8 条**尚未开始**（**4 处都还在 Canvas 2D ✓）★**
+
+### **★★★ 工作量评估（**如实 ✓）★★★**
+  ⇒ **∴ ① 建** WebGPU 设备／交换链**✗**（**∴ 与** Canvas 2D **完全不同的模型 ✓）
+    ＋ **∴ ② 把** 4 个绘制函数**重写成**渲染管线**✗
+      ＋ **∴ 其中** `composeFullDocumentCanvas` **是**整幅合成**✗（**∴ 最重 ✓）
+        ＋ **∴ ③ 而** `pickColorAt` **在** WebGPU **上需要** readback**✗ ⇒ **∴ 反而**可能更慢** ✓
+          ＋ **∴ ④ 且**它**属于**前端层**✗ ⇒ **∴ 需要**浏览器实测**（**∴ CDP ✓）★
+
+### **★★★ 关于目标原文的「**需先把外层函数变 `async`，级联到调用方**」✗** ★★★
+  ⇒ **∴ 那条**在 JS 里**天然成立**✗ —— **∴ JS 本来**全异步** ✓
+    ＋ **∴ 所以**：**「**级联**」在 JS 中**不是障碍**✗
+      ＋ **∴ 真正的工作量**是**：**写 WebGPU 管线 ＋ **把 4 处移植** ✓ ★
+
+### **★★★ 结论与建议 ✗** ★★★
+  ⇒ **∴ ① 第 8 条**属于**前端 GPU 工作面**✗ ⇒ **∴ 与**用户第 1 领域（**画布交互 ✓）**同层** ✓
+    ＋ **∴ ② 而**用户第 2 领域（**滤镜 ✓）**已完成**✗（**∴ Rust 层 ✓）★
+      ＋ **∴ ③ 建议 ✗**：**把**第 8 条 ＋ 第 1 领域**合并为**一个前端 GPU 工作面**✗
+        ＋ **∴ 且**它**应当**先立判据**✗（**∴ 如** CDP 测帧率／像素一致 ✓）**再动** ✓ ★
+
+### **★★★ 两面（**AGENTS.md ✓）★★★**
+  ⇒ **∴ 收益 ✗**：**澄清了第 8 条的**真实位置与现状**✗（**∴ 前端 ＋ 未开始 ✓）
+    ＋ **∴ 且**避免了**在错误的层（** Rust ✓）上做无用功** ✓
+      ＋ **∴ 并**给出了**合并工作面 ＋ 先立判据**的建议 ✓ ★
+  ⇒ **∴ 代价 ✗**：**两轮用于定位**（**∴ 707 ＋ 前述 ✓）＋ **∴ 第 8 条**仍然**未做**（**∴ 如实 ✓）★
+
+### **∴ 门禁 ✗**：**本轮只读码 ＋ 记录**（**无产品改动 ✓）｜已推 `l4-sync`** ✓ ★
+
