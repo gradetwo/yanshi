@@ -1355,7 +1355,7 @@ impl Quantizer {
         height: u32,
         radius: u32,
         kernel: &[f32],
-        sigma: f32,
+        _sigma: f32,
     ) -> Option<Vec<f32>> {
         let bytes = (pixels.len() * 4) as u64;
         let kernel_bytes = (kernel.len() * 4) as u64;
@@ -1431,39 +1431,6 @@ impl Quantizer {
         let params = u32s_to_bytes(&[width, height, radius, kernel.len() as u32]);
         debug_assert_eq!(params.len(), 16);
         self.queue.write_buffer(&b_params, 0, &params);
-        // **★★★ GPU 侧计时（**目标第 9 条的延伸 ✓）✗ ★★★**（**第 703 轮 ✓）
-        //   **∴ 为什么需要 ✗**（**第 699 轮的疑问 ✓）：
-        //     **∴ 4K σ=8 的 GPU 总耗时 ＝ **1612 ms****✗ 而**纯传输只 ~15 ms** ✓
-        //       ＋ **∴ 所以**：**瓶颈应当是**算力（**或两个 pass 的串行 ✓）
-        //         ＋ **∴ 但那**只是**算术推断**✗ ⇒ **∴ 必须**用时间戳**确认** ✓ ★
-        //   **∴ 门控 ✗**：**仅探针模式 ＋ 适配器支持**✗（**∴ 零生产开销 ✓）★
-        let ts_on = should_time_gpu(
-            self.device.features(),
-            std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
-        );
-        let ts_query = ts_on.then(|| {
-            self.device.create_query_set(&wgpu::QuerySetDescriptor {
-                label: Some("yanshi-gpu-blur-time"),
-                ty: wgpu::QueryType::Timestamp,
-                count: 2,
-            })
-        });
-        let ts_resolve = ts_on.then(|| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("yanshi-gpu-blur-resolve"),
-                size: 16,
-                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
-        });
-        let ts_read = ts_on.then(|| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("yanshi-gpu-blur-read"),
-                size: 16,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        });
         let bind = |src: &wgpu::Buffer, dst: &wgpu::Buffer| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -1512,36 +1479,15 @@ impl Quantizer {
                     cache: None,
                 });
             let group = bind(src, dst);
-            // **∴ 只在**第一个 pass（**horizontal ✓）上写时间戳**✗
-            //   ＋ **∴ 因为**两个 pass **共用同一对索引**✗ ⇒ **∴ 第二个会**覆盖** ✓
-            //     ＋ **∴ 所以**它 ＝ **水平 pass 的 GPU 纯计算时间** ✓ ★
-            let writes = if entry == "horizontal" {
-                ts_query
-                    .as_ref()
-                    .map(|query| wgpu::ComputePassTimestampWrites {
-                        query_set: query,
-                        beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: Some(1),
-                    })
-            } else {
-                None
-            };
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
-                timestamp_writes: writes,
+                timestamp_writes: None,
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(groups, 1, 1);
         }
         enc.copy_buffer_to_buffer(&b_out, 0, &b_read, 0, bytes);
-        // **∴ resolve 必须在**提交之前**✗（**∴ 它**也是编码命令 ✓）★
-        if let (Some(query), Some(resolve), Some(read)) =
-            (ts_query.as_ref(), ts_resolve.as_ref(), ts_read.as_ref())
-        {
-            enc.resolve_query_set(query, 0..2, resolve, 0);
-            enc.copy_buffer_to_buffer(resolve, 0, read, 0, 16);
-        }
         self.queue.submit(Some(enc.finish()));
         let _ = self.device.poll(wgpu::PollType::Wait);
         let slice = b_read.slice(..);
@@ -1558,29 +1504,6 @@ impl Quantizer {
             bytes_to_f32s(&data)
         };
         b_read.unmap();
-        // **∴ 读时间戳并打印 ✗**（**∴ 与量化路同一格式 ✓）★
-        if let Some(read) = ts_read.as_ref() {
-            let slice = read.slice(..);
-            let (tx2, rx2) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| {
-                let _ = tx2.send(r);
-            });
-            let _ = self.device.poll(wgpu::PollType::Wait);
-            if let Ok(Ok(())) = rx2.recv() {
-                let (gpu_ms, period) = {
-                    let data = slice.get_mapped_range();
-                    let t0 = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
-                    let t1 = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                    let period = f64::from(self.queue.get_timestamp_period());
-                    ((t1.saturating_sub(t0)) as f64 * period / 1e6, period)
-                };
-                read.unmap();
-                let _ = period;
-                eprintln!(
-                    "PROBE 滤镜 GPU 算：{gpu_ms:.3} ms（**仅水平 pass，时间戳 ✓）｜像素 {count}｜σ={sigma:.1}"
-                );
-            }
-        }
         BLUR_GPU_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(out)
     }
