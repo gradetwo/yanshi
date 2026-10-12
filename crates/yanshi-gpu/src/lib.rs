@@ -54,6 +54,22 @@ pub struct Quantizer {
     ///
     /// **∴ 开关 ✗**：`YANSHI_GPU_POOL_READBACK=0` **关掉**（**供 A/B ✓）★
     readback_pool: std::sync::Mutex<Option<(u64, wgpu::Buffer)>>,
+    /// **★★★ 通用缓冲池（**目标第 11 条后续 ✓）✗ ★★★**（**第 715 轮 ✓）
+    ///
+    /// **∴ 为什么需要 ✗**（**第 79 轮的实测结论 ✓）：
+    ///   **∴ 4K 合成 ✗**：**GPU 总 **570 ms** vs CPU **398 ms**** ✓
+    ///     ＋ **∴ 而**上传 ~67 ms ＋ 读回 ~165 ms**✗
+    ///       ⇒ **∴ 剩下约 **338 ms** 就是**分配 ＋ dispatch ＋ 等待**** ✓
+    ///         ＋ **∴ 所以**：**每次**新建 5 张 buffer**✗ 是**主要开销之一** ✓ ★
+    ///
+    /// **∴ 匹配键 ✗**：**(**字节数, usages 位 ✓）**✗
+    ///   ＋ **∴ 为什么必须带 usages ✗**：**`STORAGE` 与 `MAP_READ` 的 buffer **不可互换** ✓
+    ///     ＋ **∴ 若**只按字节数匹配 ⇒ **∴ 会**取错用途**✗ ⇒ **∴ 于是**创建失败或行为错 ✓ ★
+    ///
+    /// **∴ 上限 ✗**：**`POOL_MAX` 张**✗ ⇒ **∴ 超了就**丢弃**（**∴ 而不是**无限增长 ✓）★
+    ///
+    /// **∴ 开关 ✗**：**`YANSHI_GPU_POOL_READBACK=0` **一并关掉它**** ✓（**∴ 与**既有池同一开关 ⇒ **∴ A/B 可关 ✓）★
+    buffer_pool: std::sync::Mutex<Vec<(u64, u32, wgpu::Buffer)>>,
     adapter_note: String,
     /// **★ 适配器等级 ✗ ★**（**∴ 供**分档阈值**用 ✓ —— **第 322 轮 ✓）。
     device_class: DeviceClass,
@@ -461,6 +477,7 @@ impl Quantizer {
             lut_buf,
             // **∴ 池初始为空 ✗**（**∴ 第一次调用时按需建 ✓）★
             readback_pool: std::sync::Mutex::new(None),
+            buffer_pool: std::sync::Mutex::new(Vec::new()),
             adapter_note,
             device_class,
         })
@@ -482,6 +499,54 @@ impl Quantizer {
     }
 
     /// **∴ 单绑定的上限（**字节 ✓）✗**（**∴ 供调用方**自己核对分块 ✓）
+    /// **∴ 池上限 ✗**（**∴ 超过就**丢弃 ✓）★
+    const POOL_MAX: usize = 12;
+
+    /// **∴ 池是否启用 ✗**（**与既有读回池**同一开关 ✓）★
+    #[must_use]
+    fn pool_enabled() -> bool {
+        std::env::var_os("YANSHI_GPU_POOL_READBACK").is_none_or(|v| v != "0")
+    }
+
+    /// **∴ 从池取一张匹配的 buffer ✗**（**∴ 没有则**新建 ✓）★
+    #[must_use]
+    fn take_buffer(&self, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        let bits = usage.bits();
+        if Self::pool_enabled() {
+            if let Ok(mut pool) = self.buffer_pool.lock() {
+                // **∴ 从后往前找（**最近放回的最可能仍热 ✓）★
+                if let Some(index) = pool
+                    .iter()
+                    .rposition(|(bytes, u, _)| *bytes == size && *u == bits)
+                {
+                    let (_, _, buffer) = pool.swap_remove(index);
+                    return buffer;
+                }
+            }
+        }
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("yanshi-gpu-pooled"),
+            size,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// **∴ 把 buffer 放回池 ✗**（**∴ 超上限则**丢弃 ✓）★
+    fn put_buffer(&self, size: u64, usage: wgpu::BufferUsages, buffer: wgpu::Buffer) {
+        if !Self::pool_enabled() {
+            return;
+        }
+        if let Ok(mut pool) = self.buffer_pool.lock() {
+            if pool.len() < Self::POOL_MAX {
+                pool.push((size, usage.bits(), buffer));
+            }
+        }
+    }
+
+    /// **∴ 适配器允许的**单缓冲**上限（**字节 ✓）✗** ★
+    ///
+    /// **∴ 用途 ✗**：**分块大小的**四者取最小**之一** ✓（**∴ 另一个是** `max_buffer_bytes` ✓）★
     #[must_use]
     pub fn max_binding_bytes(&self) -> u64 {
         u64::from(self.device.limits().max_storage_buffer_binding_size)
@@ -1385,19 +1450,18 @@ impl Quantizer {
                     },
                 ],
             });
+        // **★ 走池 ✗ ★**（**第 715 轮 ✓）：**滤镜**是**唯一正向收益**的路**✗
+        //   ＋ **∴ 所以**：**池化**对它**最有用** ✓ ★
         let make = |label: &str, usage: wgpu::BufferUsages, size: u64| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage,
-                mapped_at_creation: false,
-            })
+            let _ = label;
+            self.take_buffer(size, usage)
         };
-        let b_src = make(
-            "blur-src",
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            bytes,
-        );
+        let usage_src = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let usage_mid = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        let usage_out = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        let usage_read = wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST;
+        let usage_kernel = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let b_src = make("blur-src", usage_src, bytes);
         let b_mid = make(
             "blur-mid",
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -1504,6 +1568,12 @@ impl Quantizer {
             bytes_to_f32s(&data)
         };
         b_read.unmap();
+        // **∴ 放回池 ✗**（**∴ 数据已拷进 `out` ⇒ **复用安全** ✓）★
+        self.put_buffer(bytes, usage_src, b_src);
+        self.put_buffer(bytes, usage_mid, b_mid);
+        self.put_buffer(bytes, usage_out, b_out);
+        self.put_buffer(bytes, usage_read, b_read);
+        self.put_buffer(kernel_bytes, usage_kernel, b_kernel);
         BLUR_GPU_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(out)
     }
@@ -1563,34 +1633,20 @@ impl Quantizer {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
+        // **★ 走池 ✗ ★**（**目标第 11 条后续 ✓；**第 715 轮 ✓）：
+        //   **∴ 为什么 ✗**：**第 79 轮实测 ⇒ **4K 合成 570 ms 里约 338 ms** 是**分配 ＋ dispatch ＋ 等待** ✓
+        //     ＋ **∴ 所以**：**每帧**新建 5 张 buffer**✗ 是**主要开销** ✓ ★
         let make = |label: &str, usage: wgpu::BufferUsages, size: u64| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage,
-                mapped_at_creation: false,
-            })
+            let _ = label;
+            self.take_buffer(size, usage)
         };
-        let b_src = make(
-            "composite-src",
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            bytes,
-        );
-        let b_dst = make(
-            "composite-dst",
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            bytes,
-        );
-        let b_out = make(
-            "composite-out",
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            bytes,
-        );
-        let b_read = make(
-            "composite-read",
-            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            bytes,
-        );
+        let usage_src = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let usage_out = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        let usage_read = wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST;
+        let b_src = make("composite-src", usage_src, bytes);
+        let b_dst = make("composite-dst", usage_src, bytes);
+        let b_out = make("composite-out", usage_out, bytes);
+        let b_read = make("composite-read", usage_read, bytes);
         // **∴ uniform 必须** 32 字节**✗（**与 `Params` 逐字段对应 ✓）★
         let b_params = make(
             "composite-params",
@@ -1659,6 +1715,11 @@ impl Quantizer {
         }
         drop(mapped);
         b_read.unmap();
+        // **∴ 放回池 ✗**（**∴ 数据已拷进 `out` ⇒ **复用安全** ✓）★
+        self.put_buffer(bytes, usage_src, b_src);
+        self.put_buffer(bytes, usage_src, b_dst);
+        self.put_buffer(bytes, usage_out, b_out);
+        self.put_buffer(bytes, usage_read, b_read);
         Some(out)
     }
 }
