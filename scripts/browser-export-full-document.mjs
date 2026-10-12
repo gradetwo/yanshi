@@ -183,7 +183,18 @@ const send = (method, params) =>
   new Promise((resolve) => { const id = nextId++; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params: params || {} })); });
 const evaluate = async (expr) =>
   (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
-const waitFor = async (expr, label, timeoutMs = 30000) => {
+// **★★★ 内核等待上限**必须可配置 ＋ 默认更高 ✗ ★★★**（**第 776 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：**`browser-export-full-document` 报**
+//     `⏱ 等待超时：WASM 内核就绪` ＋ **`❌ 设了 200% 但页面显示的缩放仍在适配档 ⇒ 设置那一步没生效（判据前置不成立）`**
+//   **∴ 根因 ✗**：**上限写死 **30 秒**✗
+//     ＋ **∴ 而** CI **的 runner **比开发机慢**✗（**∴ wasm **加载 ＋ 编译**都要时间 ✓）
+//       ＋ **∴ 于是**：**内核**还没就绪**✗ 而**判据**已经超时** ✓ ★★
+//         ＋ **∴ 而**那**不是**产品缺陷**✗ 而**是**环境敏感的上限** ✓ ★
+//   **∴ 修法 ✗**：**优先读环境变量**✗ ＋ **∴ 默认提到 120 秒**（**∴ 4 倍余量 ✓）★
+//     ＋ **∴ 为什么**120 秒写不出产品指标**✗：**内核就绪时间**不是**承诺**✗ 而**是**等待预算** ✓ ★
+//       ＋ **∴ 判据**真正要断言的东西**（**缩放生效／导出正确 ✓）在**它之后** ✓
+const KERNEL_WAIT_MS = Number(process.env.YANSHI_KERNEL_WAIT_MS || 120000);
+const waitFor = async (expr, label, timeoutMs = KERNEL_WAIT_MS) => {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (await evaluate(expr)) return true;
@@ -207,7 +218,7 @@ if (!(await waitFor(`document.readyState === "complete" && !!document.getElement
   process.exit(3);
 }
 // 内核就绪 = 本地导出那条路可用（离线优先的出口）。等不到也继续：在线还有服务端那条。
-await waitFor(`window.yanshiStats.wasm === true`, "WASM 内核就绪", 30000);
+await waitFor(`window.yanshiStats.wasm === true`, "WASM 内核就绪", KERNEL_WAIT_MS);
 // **还要等"文档尺寸就绪"** ✗ —— `applyZoomInput` 的第一句是
 // `if (!box || !state.docSize) return;`（早退 ✓）⇒ 若在 `state.docSize` 有值之前设值 ✓，
 // 那次 `change` 会被**静默丢掉** ✗ ⇒ 后面看到 `zoomPercent=39`（**∴ 适配档 ✓**）
@@ -394,7 +405,7 @@ if (!(await waitFor(`document.readyState === "complete" && !!document.getElement
   console.error("❌ 离线阶段文档没就绪 ⇒ 判据无效");
   process.exit(3);
 }
-await waitFor(`window.yanshiStats.wasm === true`, "离线阶段内核就绪", 30000);
+await waitFor(`window.yanshiStats.wasm === true`, "离线阶段内核就绪", KERNEL_WAIT_MS);
 // **先在线重载一次** ✗（必须 ✓）：`Network.emulateNetworkConditions{offline}` 对
 // **被 SW 接管的页面**是否生效，取决于这个页面**在断网那一刻是否已经由 SW 接管** ✓。
 // 实测（`/tmp/probe-offline-cut2.mjs` ✓）：单次导航后断网，POST 仍能出去（status=200 ✗）；
