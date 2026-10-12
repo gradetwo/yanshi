@@ -123,6 +123,31 @@ await send("Page.enable");
 //   **∴ 为什么 ✗**：**`initWasm()`**在**加载失败**时会**静默**（**∴ 只**设一个状态文本 ✓）
 //     ⇒ **∴ 光看 `wasm=false`**分不清**"**被跳过 ✓"与"**加载失败 ✓" ✓**** ✓✓
 const pageLog = [];
+// **★★★ 记录失败的资源请求 ✗ ★★★**（**第 734 轮：**CI 上只看到状态码、看不到 URL ✓）
+//   **∴ 为什么需要 ✗**（**CI 实测 ✓）：
+//     **∴ 症状 ✗**：**这条判据在 CI 上报 `EXIT=3`**✗（**∴ 即**「**前置条件缺失**」✓）
+//       ＋ **∴ 而**页面日志只有**
+//         `[error] Failed to load resource: … 400 (Bad Request)`**✗
+//         ＋ **∴ 连**两个 `404 (Not Found)`**✗ ⇒ **∴ 但**都**不带 URL** ✓
+//           ＋ **∴ 于是**：**我**知道**有资源没加载**✗ 而**不知道**缺什么** ✗ ★
+//             ＋ **∴ 所以**：**CI 无法自我诊断**✗ ⇒ **∴ 每次**都要**猜** ✓ ★
+//   **∴ 修法 ✗**：**`Network.enable` 已经开着**✗ ⇒ **∴ 听**
+//     `Network.responseReceived`（**status ≥ 400 ✓）＋ `Network.loadingFailed`** ✓
+//       ＋ **∴ 然后**在**失败报告里**打印 URL** ✓ ★
+const netFailures = [];
+socket.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
+  if (message.method === "Network.responseReceived") {
+    const r = message.params.response || {};
+    if (typeof r.status === "number" && r.status >= 400) {
+      netFailures.push(`HTTP ${r.status} ${r.url}`);
+    }
+  }
+  if (message.method === "Network.loadingFailed") {
+    const p = message.params || {};
+    netFailures.push(`FAILED ${p.errorText || "?"} ${p.type || ""}`);
+  }
+});
 socket.addEventListener("message", (event) => {
   const message = JSON.parse(event.data);
   if (message.method === "Runtime.consoleAPICalled") {
@@ -380,6 +405,16 @@ if (__wasmReady !== "true") {
     + `（wasm=${__wasmReady}）`);
   console.error("     可能原因：本机缺 wasm32／wasm-bindgen，或页面初始化被中断");
   console.error("     ⇒ 本地渲染必然画不出来 ⇒ 本条判据在此时**不能**判定产品");
+  // **★★★ 打印失败的资源 URL ✗ ★★★**（**第 734 轮 ✓；**∴ 让 CI 自我诊断 ✓）：
+  //   **∴ 为什么必须打印 ✗**：**CI 上**只看到状态码**✗（**400／404 ✓）**而**没有 URL** ✓
+  //     ＋ **∴ 于是**：**「**内核未加载**」**无法**进一步定位**✗（**∴ 缺哪个文件 ⇒ **∴ 不知道** ✓）★
+  //       ＋ **∴ 现在 ✗**：**把** 4xx／5xx 与**加载失败**的**完整 URL／原因**打出来** ✓ ★
+  if (netFailures.length > 0) {
+    console.error(`     ⇒ 页面共 ${netFailures.length} 个资源请求失败：`);
+    for (const line of netFailures.slice(0, 12)) console.error("        · " + line);
+  } else {
+    console.error("     ⇒ 未捕获到 4xx／5xx 或加载失败 ⇒ 内核可能是被跳过而非加载失败");
+  }
   process.exit(3);
 }
 const countsBeforeB = await dispatchCounts();
