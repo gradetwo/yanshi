@@ -135,9 +135,35 @@ if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window
 //       **∴ 且**它**同时**打印出 `serverBlits=3`**✗（**∴ 服务端**明明铺过底 ✓）
 //         ⇒ **★ 那**就是**两个信号矛盾**的来源 ✓ ★**** ✓✓
 //   **∴ 修法**：**照抄产品那套判断** ✓**** ✓✓
+//
+// **★★★ 但上面那次"照抄"漏了**最高优先级**的那一条 ✗ ★★★**（**第 784 轮修；**CI 实测 ✓）
+//   **∴ 症状 ✗**（**CI ✓）★**：**本判据报**
+//     `❌ 画布尺寸与首帧没就绪 ⇒ board.width=320 … 显示宽度="424px"（rect=344）height=240
+//      ｜★模式=服务端★ ⇒ 服务端模式需 serverBlits>0（★实测 0★）
+//      ｜客户端模式需内核画过（★wasm=true｜kernelReady=true｜lastArea=76800｜内核 tile 读写=8★，四者都需成立）`
+//   **∴ 矛盾 ✗**：**客户端模式的**四个条件**全满足**✗ 而**它**却说模式＝服务端** ✓ ★★
+//   **∴ 根因 ✗**：**本判据的 `serverRenderOn` **只读 `localStorage`**✗
+//     ＋ **∴ 而**产品的 `serverRenderPreferred()`（**`viewer-app.js:56` ✓）**有**三档**✗：
+//       ⇒ **∴ ① ★ URL 参数**最高优先**✗ ★**：** `?render=client` ⇒ **强制客户端内核** ✓（**页面第 71 行 ✓）
+//         ⇒ **∴ ②** 否则看 `localStorage.getItem("yanshi.serverRender")` ✓
+//           ⇒ **∴ ③** 否则 `pwaLocalOnly`／缺省 ✓
+//             ＋ **∴ 于是**：**URL 里有 `?render=client`**✗ 而**本判据**只看了第 ② 档**
+//               ⇒ **∴ 它**把客户端模式**误判成服务端** ✗
+//                 ⇒ **∴ 而**客户端模式下 `serverBlits` **本来就恒为 0** ✓（**∴ 见上文第 108 行 ✓）
+//                   ⇒ **∴ 所以**它**必然超时** ✓ ★★★
+//   **∴ 修法 ✗**：**把 URL 参数**加回判定**✗ ＋ **∴ 优先级与产品一致**（**URL ⇒ localStorage ⇒ 缺省 ✓）★
+//   **∴ 修法 ✗**：**把 URL 参数**加回判定**✗ ＋ **∴ 优先级与产品一致**（**URL ⇒ localStorage ⇒ 缺省 ✓）★
+//     ＋ **∴ 为什么**必须一致 ✗**：**判据**复制产品逻辑**时**漏一条**⇒ **∴ 于是**它**测的不是同一个模式** ✓ ★★
+//       ＋ **∴ 三档顺序 ✗**（**与 viewer-app 第 56–75 行一致 ✓）**★**：
+//         **∴ ①** `?render=client` ⇒ 强制客户端｜`?render=server` ⇒ 强制服务端 ✓
+//           **∴ ②** 否则 `localStorage["yanshi.serverRender"]`（**`"1"` ⇒ 服务端 ✓）
+//             **∴ ③** 否则 `__pwaLocalOnly` ⇒ 客户端；再否则 ⇒ 服务端 ✓
 const serverRenderOn = `(() => {
   try {
     if (typeof window !== "undefined" && window.__pwaLocalOnly === true) return false;
+    const param = new URLSearchParams(location.search).get("render");
+    if (param === "client") return false;
+    if (param === "server") return true;
     const stored = localStorage.getItem("yanshi.serverRender");
     return stored === null ? true : stored === "1";
   } catch (error) { return true; }
