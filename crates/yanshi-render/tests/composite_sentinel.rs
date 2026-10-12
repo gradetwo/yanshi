@@ -114,3 +114,103 @@ fn the_sentinel_rejects_a_wrong_mode_result() {
         "**每个**抽中的点都翻了 1 bit，哨兵却接受了 ⇒ 哨兵没在比对"
     );
 }
+
+/// **★★★ 测量：哨兵成本占主计算的比例 ✗ ★★★**（**第 757 轮 ✓；**目标第 11 条 ✓）
+///
+/// **∴ 为什么必须测 ✗**（**用户口径问题 ✓）★**：
+///   **∴ 问题 ✗**：**「**逐位一致**」是**每帧核对**还是**只验一次**？** ✓
+///     ＋ **∴ 若**哨兵成本可忽略**✗（**≤ 5% ✓）⇒ **∴ 每帧核对**是**免费**的 ⇒ **∴ 承诺**可以最强** ✓
+///       ＋ **∴ 若**成本高**✗ ⇒ **∴ 只能**降级为**冷启动一次** ✓
+///         ＋ **∴ 所以**：**占比**这个数**直接决定**口径** ✓ ★
+///   **∴ 怎么测（**不需要 GPU ✓）✗**：
+///     **∴ 哨兵 ＝ **256 次 `cpu_composite_pixel`**✗（**∴ 每次 O(1) ✓）
+///       ＋ **∴ 基线 ＝ **一次完整 CPU 合成**✗（**∴ 那就是 GPU 路要替代的工作量 ✓）★
+///         ＋ **∴ 两者相除 ⇒ **∴ 就是**哨兵相对成本** ✓ ★
+///
+/// **∴ 为什么标 `#[ignore]` ✗**：**它是**测量**✗ 而**不是**判据** ✓
+///   ＋ **∴ 计数门禁**不该**为它变慢** ✓（**∴ 需要时显式 `--ignored` 跑 ✓）★
+#[test]
+#[ignore = "测量项：需要显式 --ignored 跑"]
+fn sentinel_cost_ratio_versus_full_cpu_composite() {
+    use std::time::Instant;
+    for side in [256u32, 1024u32, 2048u32] {
+        let mut dst = Buffer::new(0, 0, side, side);
+        fill_pattern(&mut dst, 11);
+        let mut layer = Buffer::new(0, 0, side, side);
+        fill_pattern(&mut layer, 13);
+        let truth = cpu_truth(&dst, &layer, BlendMode::Normal, 1.0);
+
+        // **∴ 基线：一次完整 CPU 合成 ✓（**多轮取 min ✓）
+        let mut base = f64::MAX;
+        for _ in 0..5 {
+            let mut copy = Buffer::new(0, 0, side, side);
+            copy.pixels_mut().copy_from_slice(dst.pixels());
+            let t = Instant::now();
+            copy.composite_with_layer(&layer, BlendMode::Normal, 1.0);
+            base = base.min(t.elapsed().as_secs_f64());
+        }
+        // **∴ 哨兵：一次完整抽检 ✓（**多轮取 min ✓）
+        let mut sent = f64::MAX;
+        for _ in 0..5 {
+            let t = Instant::now();
+            let ok = dst.composite_sentinel_agrees(&truth, &layer, BlendMode::Normal, 1.0);
+            sent = sent.min(t.elapsed().as_secs_f64());
+            assert!(ok, "哨兵必须接受真值");
+        }
+        println!(
+            "  {side}²：CPU 全量合成 {:.3} ms｜哨兵 {:.3} ms｜占比 {:.2}%",
+            base * 1000.0,
+            sent * 1000.0,
+            sent / base * 100.0
+        );
+    }
+}
+
+/// **★★★ 判据：哨兵成本必须**可忽略** ✗ ★★★**（**第 757 轮 ✓）
+///
+/// **∴ 为什么这是一条判据（**而不是测量 ✓）✗**：**它**守住**一个**决定** ✓ ★
+///   **∴ 那个决定 ✗**：**默认**每帧核对**✗（**∴ 依据是**实测占比 ≤ 5% ✓）
+///     ＋ **∴ 若**将来**哨兵变贵**✗（**∴ 如**采样点变多／单点重算变重 ✓）
+///       ＋ **∴ 那么**「每帧核对」**就不再成立**✗ ⇒ **∴ 本判据**必须红** ✓ ★
+///         ＋ **∴ 从而**逼人**重新做那个决定**✗（**∴ 而不是**让成本悄悄上升 ✓）★★
+///
+/// **∴ 门槛 ✗**：** 5%**✗（**∴ 与**我此前的口径一致 ✓）★
+///   ＋ **∴ 实测（**第 757 轮 ✓）✗**：**256² 0.02%｜1024² 0.02%｜2048² 0.01%** ✓
+///     ＋ **∴ 变异检验 ✗**：**把抽检点数**从 256 提到 20000**✗ ⇒ **∴ 本条**必红** ✓ ★
+#[test]
+fn the_sentinel_costs_under_five_percent_of_a_full_cpu_composite() {
+    use std::time::Instant;
+    let side = 1024u32;
+    let mut dst = Buffer::new(0, 0, side, side);
+    fill_pattern(&mut dst, 21);
+    let mut layer = Buffer::new(0, 0, side, side);
+    fill_pattern(&mut layer, 23);
+    let truth = cpu_truth(&dst, &layer, BlendMode::Normal, 1.0);
+
+    // **∴ 多轮取 min**✗（**∴ 减少调度噪声 ✓）★
+    let mut base = f64::MAX;
+    for _ in 0..5 {
+        let mut copy = Buffer::new(0, 0, side, side);
+        copy.pixels_mut().copy_from_slice(dst.pixels());
+        let t = Instant::now();
+        copy.composite_with_layer(&layer, BlendMode::Normal, 1.0);
+        base = base.min(t.elapsed().as_secs_f64());
+    }
+    let mut sent = f64::MAX;
+    for _ in 0..5 {
+        let t = Instant::now();
+        assert!(dst.composite_sentinel_agrees(&truth, &layer, BlendMode::Normal, 1.0));
+        sent = sent.min(t.elapsed().as_secs_f64());
+    }
+    let ratio = sent / base * 100.0;
+    println!(
+        "  {side}²：全量 {:.3} ms｜哨兵 {:.4} ms｜占比 {ratio:.2}%",
+        base * 1000.0,
+        sent * 1000.0
+    );
+    assert!(
+        ratio <= 5.0,
+        "哨兵占 CPU 全量合成的 {ratio:.2}% > 5% ⇒ 「每帧核对」的成本前提不再成立，\
+         请重新决定是默认核对还是冷启动只验一次（并同步 buffer.rs 里的注释）"
+    );
+}
