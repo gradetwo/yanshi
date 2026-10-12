@@ -337,19 +337,16 @@ fn merge_by_rows(
         let (bw, bh) = (sb.w as i64, sb.h as i64);
         let dst = out.pixels_mut();
         let srcd = src.as_f32();
-        for row in 0..bh {
-            let dyi = oy + row;
-            if dyi < 0 || dyi >= oh {
-                continue;
-            }
-            for col in 0..bw {
-                let dxi = ox + col;
-                if dxi < 0 || dxi >= ow {
-                    continue;
-                }
-                let si = ((row * bw + col) * 4) as usize;
-                let di = ((dyi * ow + dxi) * 4) as usize;
-                dst[di..di + 4].copy_from_slice(&srcd[si..si + 4]);
+        let y_start = (-oy).max(0).min(bh);
+        let y_end = (oh - oy).max(0).min(bh);
+        let x_start = (-ox).max(0).min(bw);
+        let x_end = (ow - ox).max(0).min(bw);
+        if y_start < y_end && x_start < x_end {
+            for row in y_start..y_end {
+                let si = ((row * bw + x_start) * 4) as usize;
+                let di = (((oy + row) * ow + ox + x_start) * 4) as usize;
+                let len = ((x_end - x_start) * 4) as usize;
+                dst[di..di + len].copy_from_slice(&srcd[si..si + len]);
             }
         }
     }
@@ -1854,19 +1851,16 @@ impl Renderer {
                         let bh = bb.h as i64;
                         let dst = out.pixels_mut();
                         let src = buf.as_f32();
-                        for row in 0..bh {
-                            let dy = oy + row;
-                            if dy < 0 || dy >= oh {
-                                continue;
-                            }
-                            for col in 0..bw {
-                                let dx = ox + col;
-                                if dx < 0 || dx >= ow {
-                                    continue;
-                                }
-                                let si = ((row * bw + col) * 4) as usize;
-                                let di = ((dy * ow + dx) * 4) as usize;
-                                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                        let y_start = (-oy).max(0).min(bh);
+                        let y_end = (oh - oy).max(0).min(bh);
+                        let x_start = (-ox).max(0).min(bw);
+                        let x_end = (ow - ox).max(0).min(bw);
+                        if y_start < y_end && x_start < x_end {
+                            for row in y_start..y_end {
+                                let si = ((row * bw + x_start) * 4) as usize;
+                                let di = (((oy + row) * ow + ox + x_start) * 4) as usize;
+                                let len = ((x_end - x_start) * 4) as usize;
+                                dst[di..di + len].copy_from_slice(&src[si..si + len]);
                             }
                         }
                     }
@@ -2362,19 +2356,16 @@ impl Renderer {
                             let (bw, bh) = (bb.w as i64, bb.h as i64);
                             let dst = accumulation.pixels_mut();
                             let src = buf.as_f32();
-                            for row in 0..bh {
-                                let dy = oy + row;
-                                if dy < 0 || dy >= oh {
-                                    continue;
-                                }
-                                for col in 0..bw {
-                                    let dx = ox + col;
-                                    if dx < 0 || dx >= ow {
-                                        continue;
-                                    }
-                                    let si = ((row * bw + col) * 4) as usize;
-                                    let di = ((dy * ow + dx) * 4) as usize;
-                                    dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                            let y_start = (-oy).max(0).min(bh);
+                            let y_end = (oh - oy).max(0).min(bh);
+                            let x_start = (-ox).max(0).min(bw);
+                            let x_end = (ow - ox).max(0).min(bw);
+                            if y_start < y_end && x_start < x_end {
+                                for row in y_start..y_end {
+                                    let si = ((row * bw + x_start) * 4) as usize;
+                                    let di = (((oy + row) * ow + ox + x_start) * 4) as usize;
+                                    let len = ((x_end - x_start) * 4) as usize;
+                                    dst[di..di + len].copy_from_slice(&src[si..si + len]);
                                 }
                             }
                         }

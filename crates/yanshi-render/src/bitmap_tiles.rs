@@ -130,25 +130,30 @@ pub fn assemble_region(
     let out_w = (x1 - x0) as u32;
     let out_h = (y1 - y0) as u32;
     let mut out = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
-    let t = i64::from(BITMAP_TILE);
     let (tx, _ty) = BitmapIndex::grid(width, height);
+    let tile_shift = 8u32;
+    let tile_mask = 255u32;
     for row in 0..out_h {
-        let sy = y0 + i64::from(row);
-        let tile_cy = (sy / t) as u32;
-        let in_tile_y = (sy % t) as u32;
-        for col in 0..out_w {
-            let sx = x0 + i64::from(col);
-            let tile_cx = (sx / t) as u32;
-            let in_tile_x = (sx % t) as u32;
+        let sy = (y0 as u32) + row;
+        let tile_cy = sy >> tile_shift;
+        let in_tile_y = sy & tile_mask;
+        let mut col = 0u32;
+        while col < out_w {
+            let sx = (x0 as u32) + col;
+            let tile_cx = sx >> tile_shift;
+            let in_tile_x = sx & tile_mask;
             let ti = (tile_cy as usize) * (tx as usize) + (tile_cx as usize);
             let tile = tiles.get(ti)?;
-            let tile_w = (width - tile_cx * BITMAP_TILE).min(BITMAP_TILE);
+            let tile_w = (width - (tile_cx << tile_shift)).min(BITMAP_TILE);
+            let run = (BITMAP_TILE - in_tile_x).min(out_w - col);
             let src = ((in_tile_y * tile_w + in_tile_x) as usize) * 4;
             let dst = ((row as usize) * (out_w as usize) + (col as usize)) * 4;
-            if src + 4 > tile.len() || dst + 4 > out.len() {
+            let len = (run as usize) * 4;
+            if src + len > tile.len() || dst + len > out.len() {
                 return None;
             }
-            out[dst..dst + 4].copy_from_slice(&tile[src..src + 4]);
+            out[dst..dst + len].copy_from_slice(&tile[src..src + len]);
+            col += run;
         }
     }
     Some(out)
