@@ -93,8 +93,20 @@ pub struct Quantizer {
 ///   **∴ ①** **`/dev/dri`（**或 `/dev/nvidia*` ✓）**直通到容器** ✓
 ///   **∴ ②** **Vulkan ICD（**`nvidia_icd.json` ✓）** ＋ **`libvulkan`** ✓
 ///   ⇒ **∴ 然后** `adapter.get_info()` **才会报 `Vulkan｜DiscreteGpu｜NVIDIA L4`** ✓ ★**** ✓✓
-pub const GPU_MIN_PIXELS: usize = 30_000;
+pub const GPU_MIN_PIXELS: usize = 1_000_000;
 
+/// **★ 独显阈值**为什么保持 22 500 ✗ ★**（**第 722 轮的教训 ✓）
+///
+/// **∴ 我**差点用推理覆盖实测** ✗**：
+///   **∴ 我看到**核显的交叉点（**约 1 M ✓）**✗
+///     ＋ **∴ 于是**推理**：**独显带宽高 4× ⇒ **∴ 门槛**应当**更低**✗ ⇒ **∴ 我**写了 250 000** ✓
+///       ＋ **∴ 而**判据**当场红**✗ 并**打出**它的出处**：**「**独显按 L4 实测的平衡点（**第 584 轮重定 ✓）」** ✓
+///         ⇒ **★ 即：**22 500 **是**真 L4 实测**的结果**✗ ⇒ **∴ 我**不该覆盖它** ✓ ★
+///           ＋ **∴ 所以**：**核显**按本机数据改（**有双重依据 ✓）✗ 而**独显**保持实测值** ✓
+///             ＋ **∴ 而**那**正好**符合**目标第 3 条**（**按适配器类型**✗ 且**各自有依据 ✓）★
+///
+/// **∴ 教训 ✗**：**判据里的**出处文案**✗（**∴ 「**第 584 轮重定 ✓」）**比数值本身更重要** ✓
+///   ＋ **∴ 它**在**我**要用推理覆盖实测时**✗ **当场**拦住了** ✓ ★
 /// **★ 这个规模该不该走 GPU ✗ ★**（**纯函数 ⇒ 可单测 ✓）
 #[must_use]
 pub const fn should_use_gpu(pixels: usize) -> bool {
@@ -1163,9 +1175,15 @@ mod tests {
             DeviceClass::Integrated,
             GPU_MIN_PIXELS - 1
         ));
-        // **∴ 而在** 30 000 附近，独显与集显**结论不同**✗ ⇒ **∴ 那**正是分档的意义** ✓
-        assert!(should_use_gpu_on(DeviceClass::Discrete, 30_000));
-        assert!(should_use_gpu_on(DeviceClass::Integrated, 30_000));
+        // **★ 分档的意义 ✗ ★**（**第 722 轮改写 ✓）：
+        //   **∴ 核显阈值从 30 000 提到 **1 M** 后 ✗**：
+        //     **∴ 原来的 `30_000 ⇒ 集显也走` 断言**✗ 就**不再成立** ✓
+        //       ＋ **∴ 所以**：**改用**参数化 ＋ **显式的分档对照** ✓ ★
+        //   **∴ 分档对照（**100 000 ✓）✗**：
+        //     **∴ 独显（**阈值 22 500 ✓）⇒ **走** ✗ ＋ **∴ 核显（**阈值 1 M ✓）⇒ **不走** ✓
+        //       ⇒ **∴ 那**正是**分档的意义** ✓ ★
+        assert!(should_use_gpu_on(DeviceClass::Discrete, 100_000));
+        assert!(!should_use_gpu_on(DeviceClass::Integrated, 100_000));
         assert!(!should_use_gpu_on(DeviceClass::Discrete, 12_000));
         assert!(!should_use_gpu_on(DeviceClass::Integrated, 12_000));
         // **∴ 分档的意义 ✗**：**23 000 px** 上独显走 GPU、集显**不走** ✓

@@ -40,7 +40,7 @@ LOAD_MAX="${LOAD_MAX:-2.0}"
 for i in $(seq 1 30); do
   load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "9.9")
   if awk -v a="$load1" -v b="$LOAD_MAX" 'BEGIN { exit !(a <= b) }'; then
-    echo "  ✓ 负载 $load1 ≤ $LOAD_MAX（第 ${i} 次检查）"
+    echo "  ✓ 负载 $load1 ≤ ${LOAD_MAX}（第 ${i} 次检查）"
     break
   fi
   sleep 5
