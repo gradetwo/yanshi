@@ -944,7 +944,8 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     //   **∴ 回退 ✗**：**GPU 不可用／返回 `None` ⇒ **∴ 直接落到下面的 CPU 路** ✓ ★
     //   **∴ 逐位口径 ✗**：**GPU 与 CPU 在 **u8 上差 0.0011%**✗（**∴ 1 LSB ✓；**第 698 轮 ✓）
     //     ＋ **∴ 所以**：**严格逐位的调用方**必须自行回退**✗（**∴ 口径待用户裁定 ✓）★
-    #[cfg(feature = "gpu")]
+    // **∴ 同样必须**与实现一致的门控 ✗**（**第 729 轮 ✓）★
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     {
         let count = (buffer.width() as usize).saturating_mul(buffer.height() as usize);
         if count >= GPU_BLUR_MIN_PIXELS {
@@ -1511,7 +1512,15 @@ pub fn blur_degraded() -> bool {
 }
 
 /// **∴ 尝试用 GPU 做高斯模糊 ✗**（**失败 ⇒ `None` ⇒ 调用方回退 CPU ✓）★**（**第 700 轮 ✓）
-#[cfg(feature = "gpu")]
+// **★★★ 门控必须**与 `quantizer_cache` 一致 ✗ ★★★**（**第 729 轮：**CI 抓到 ✓）
+//   **∴ 症状 ✗**：**wasm32 ＋ gpu 构建**报**
+//     `cannot find function quantizer_cache in module crate::buffer`** ✓
+//     ＋ **∴ 因为** `quantizer_cache` 的门控是
+//       `all(feature = "gpu", not(target_arch = "wasm32"))`**✗
+//       ＋ **∴ 而**本函数**只写了 `feature = "gpu"`**✗ ⇒ **∴ 于是**在 wasm32 下**引用了不存在的函数** ✓ ★
+//         ＋ **∴ 而**本机**没有 wasm32 目标**✗ ⇒ **∴ 本地**永远测不到**✗
+//           ＋ **★ 所以：**只有 CI 能抓到它**✗ ⇒ **∴ 而那**正是目标第 13 条的价值** ✓ ★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 fn try_gpu_gaussian_blur(buffer: &Buffer, sigma: f32) -> Option<Vec<f32>> {
     // **∴ 复用**同一个 GPU 实例**✗（**∴ 不重复初始化 ⇒ **∴ 不重复付设备创建成本 ✓）★
     // **∴ 降级期内**直接放弃 GPU**✗（**∴ 从而**避免连续慢帧 ✓）★
