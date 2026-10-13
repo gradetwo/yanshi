@@ -3809,10 +3809,22 @@ pub(crate) mod parallel_impl {
                 //            **∴ 已排除**池预算**这个嫌疑（**§21.2 实测 ✓）★**** ✓✓
                 //   **∴ 只夹**默认 ✗**：**调用方**显式设的带数**仍然**被尊重 ✓**
                 //     （**∴ 因为**那是**用户的明确选择 ✓）** ✓✓
+                // **★★★ 第 247 轮：加一个**诊断开关**✗ ★★★**（**∴ 为了**跨机器复核**这条默认值** ✓）
+                //   ＋ **∴ 为什么需要它 ✗**：**上面那次 2／3／4 带的对照**是在**某台机器**上做的**✗
+                //     ⇒ **∴ 而**另一台机器（**12 核／更大带宽 ✓）的最优带数**可能不同** ✓
+                //       ＋ **∴ 而**在 L4 上复核需要**不改源码**就能换带数** ✗
+                //         （**∴ 否则**每档都要改常量 ⇒ **重建**✗ ⇒ **∴ 那**不是可复核的实验 ✓）★★
+                //   ＋ **∴ 语用 ✗**：**诊断开关 ✗ 与 `YANSHI_SKIP_REGION_CACHE` 同一档** ✓ ——
+                //     **∴ 不设 ⇒ 行为**一个字都不变**（**仍 `DEFAULT_BAND_CAP` ✓）★
+                let cap = std::env::var("YANSHI_BAND_CAP")
+                    .ok()
+                    .and_then(|raw| raw.trim().parse::<usize>().ok())
+                    .filter(|value| *value >= 1)
+                    .unwrap_or(DEFAULT_BAND_CAP);
                 std::thread::available_parallelism()
                     .map(|value| value.get())
                     .unwrap_or(1)
-                    .min(DEFAULT_BAND_CAP)
+                    .min(cap)
             })
             .max(1)
     }
