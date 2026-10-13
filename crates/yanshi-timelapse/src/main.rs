@@ -1,226 +1,190 @@
-//! yanshi-timelapse: 将 .yanshi 工程导出为绘画过程视频。
+//! yanshi-timelapse: 将 `.yanshi` 工程导出为**绘画过程视频**（timelapse）。
 //!
-//! 用法: yanshi-timelapse <输入.yanshi.zip> <输出.mp4> [每N个atom一帧]
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::Read;
+//! 用法：
+//! ```text
+//! yanshi-timelapse <输入.yanshi> [输出.mp4] [每N个atom一帧=10] [起始atom=0] [结束atom=全部]
+//! ```
+//!
+//! **★★★ 第 249 轮合入时改了设计 ✗：**复用仓库自己的东西 ✗ 不另写一套** ✓ ★★★**
+//!
+//! **∴ 为什么 ✗**（**交付包那版跑本仓夹具**直接失败** ✓）**：
+//!   ＋ **∴ 交付版自己解 `zip→tar`**✗ 而**本仓导出的是**裸 tar**（`file` 的结果就是
+//!     `POSIX tar archive` ✓）⇒ **∴ 实测** `Error: invalid Zip archive`** ✓；
+//!   ＋ **∴ 交付版把 blob 当**裸 RGBA**✗ 而**本仓 `blobs.encoding = zlib`** ⇒ **∴ 带图的工程**
+//!     **出乱码** ✓（**∴ 不是"画得不对"✗ 是**根本不是像素** ✓）；
+//!   ＋ **∴ 交付版只认 `import_image`**✗ 而**本仓的手绘笔触是 `draw_stroke`** ⇒ **∴ 一笔都不会
+//!     出现** ✓（**∴ JS 那版认 `brush_stroke` ✗ 而**本仓不叫这个名字** ✓）。
+//!
+//! **∴ 现在的分工（**每一件都是仓库里**已有且被测试过**的 ✓）★**：
+//!   * **∴ 读包 ✗**：`yanshi_server::archive::read_tar`（**本仓**零依赖**的手写 tar 读取器 ✓）
+//!     ⇒ **∴ 于是**`zip`／`tar` **两个依赖**整个去掉了** ✓ ★★
+//!   * **∴ 解 blob ✗**：`yanshi_render::zlib_decompress`（**`blobs.encoding = zlib` 时 ✓**
+//!     ＋ **∴ 不是 zlib ⇒ **原样用**✗ 两种编码都兼容 ✓）★
+//!   * **∴ replay ＋ 渲染 ✗**：`yanshi_wasm::Kernel`（`apply_atom_json` ＋ `render_region` ✓）
+//!     ⇒ **∴ 与浏览器**同一个引擎**✗ ⇒ **∴ 两端**不会画出不同东西** ✓ ★★
+//!       ＋ **∴ 而**它**认全部 atom 种类**（`draw_stroke`／`draw_shape`／`draw_text`／`erase`／… ✓）
+//!         ⇒ **∴ 手绘笔触**终于会出现在视频里** ✓ ★★★
+//!   * **∴ 编码 ✗**：外部 `ffmpeg`（**管道 ✗ 不落中间 PNG ✓）—— **∴ 这是运行期外部依赖 ✗
+//!     必须让人知道**（**∴ spawn 失败时**会给一句人话 ✓）★
+//!
+//! **∴ 参数与交付说明对齐 ✗**：只有输入必填 ✓ 其余都有默认 ✓
+//!   ＋ **∴ 尺寸从 `meta.json` 读 ✗**（**不再写死 1920×1080 ✓）⇒ **∴ 大图**按比例缩到
+//!     **≤1920×1080**（**只缩不放 ✓ 且**用盒平均 ✗ 比最近邻干净 ✓）★
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::process::{ChildStdin, Command, Stdio};
 use std::time::Instant;
 
-// 直接输出 1080p
-const W: u32 = 1920;
-const H: u32 = 1080;
-const SCALE: f64 = 0.5;
+// **∴ 坑（**合入时踩到的 ✓）✗**：**`KernelError` **没有 `Display`**✗（**它只给
+//   `code`／`detail` 两个**pub 字段** ＋ `to_json()` ✓）⇒ **∴ `{e}` 编不过** ✓
+//     ＋ **∴ 于是**：**错误信息必须**显式拼出来**✗ ⇒ **∴ 这样也**更诚实**（**码 ＋ 说明都留着 ✓）★
+use anyhow::{anyhow, bail, Context, Result};
+use serde_json::Value;
 
-#[derive(Debug)]
-struct Patch {
-    id: String,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-    blob_path: String,
-}
+/// 输出尺寸上限（**只缩不放 ✓**）。
+const MAX_W: u32 = 1920;
+/// 输出尺寸上限（**只缩不放 ✓**）。
+const MAX_H: u32 = 1080;
+/// 内核内存预算（**与浏览器同档 ✓**）：4K 工程 replay 需要它 ✓。
+const KERNEL_MEMORY_LIMIT: usize = 2 * 1024 * 1024 * 1024;
+/// 内核算术的 tile 尺寸（**与浏览器同一档 ✓**）。
+const TILE_SIZE: u32 = 256;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 || args.len() > 6 {
+    if !(2..=6).contains(&args.len()) {
         eprintln!(
-            "用法: {} <输入.yanshi.zip> [输出.mp4] [每N个atom一帧=10] [起始atom=0] [结束atom=全部]",
+            "用法: {} <输入.yanshi> [输出.mp4] [每N个atom一帧=10] [起始atom=0] [结束atom=全部]",
             args[0]
         );
-        eprintln!("示例: {} in.zip", args[0]);
-        eprintln!("      {} in.zip out.mp4 5 100 500", args[0]);
-        std::process::exit(1);
+        eprintln!("示例: {} in.yanshi", args[0]);
+        eprintln!("      {} in.yanshi out.mp4 5 100 500", args[0]);
+        std::process::exit(2);
     }
-    let zip_path = &args[1];
-    // 输出文件名默认: 输入文件名 + -timelapse.mp4
-    // 空字符串也视为未指定
+    let input = &args[1];
     let default_out = {
-        let p = std::path::Path::new(zip_path);
-        let stem = p.file_stem().unwrap_or_default().to_string_lossy();
-        let base = stem.strip_suffix(".yanshi").unwrap_or(&stem);
-        format!("{}-timelapse.mp4", base)
+        let stem = std::path::Path::new(input)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let base = stem.strip_suffix(".yanshi").unwrap_or(&stem).to_owned();
+        format!("{base}-timelapse.mp4")
     };
-    let out_mp4: &str = match args.get(2) {
-        Some(s) if !s.is_empty() => s,
-        _ => &default_out,
+    let out_mp4 = match args.get(2) {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => default_out,
     };
-    let frame_every: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
-    let start_atom: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let end_atom: Option<usize> = args.get(5).and_then(|s| s.parse().ok());
-    println!("输入: {}", zip_path);
-    println!("输出: {}", out_mp4);
+    let frame_every = args
+        .get(3)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10)
+        .max(1);
+    let start_atom = args
+        .get(4)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let end_atom = args.get(5).and_then(|s| s.parse::<usize>().ok());
+
+    println!("输入: {input}");
+    println!("输出: {out_mp4}");
     println!(
-        "每 {} 个 atom 一帧, 范围: {}..{}",
-        frame_every,
-        start_atom,
-        end_atom
-            .map(|e| e.to_string())
-            .unwrap_or("结束".to_string())
+        "每 {frame_every} 个 atom 一帧｜范围 {start_atom}..{}",
+        end_atom.map_or("结束".to_owned(), |e| e.to_string())
     );
 
     let t0 = Instant::now();
+    let bytes = std::fs::read(input).with_context(|| format!("读不到输入文件 {input}"))?;
+    let entries = yanshi_server::archive::read_tar(&bytes)
+        .map_err(|e| anyhow!("读包失败（本仓的 .yanshi 是**裸 tar**）：{e}"))?;
 
-    // 1. 读 atoms.jsonl
-    println!("读取 atoms...");
-    let zf = File::open(zip_path)?;
-    let mut zip = zip::ZipArchive::new(zf)?;
-    let tar_name = zip.file_names().next().unwrap().to_string();
-    let mut tar_data = Vec::new();
-    zip.by_name(&tar_name)?.read_to_end(&mut tar_data)?;
-    drop(zip);
-
-    let mut tar = tar::Archive::new(&tar_data[..]);
-    let mut atoms_json = String::new();
-    let mut seen = 0;
-    for entry in tar.entries()? {
-        let mut e = entry?;
-        let p = e.path()?;
-        let ps = p.to_str().unwrap_or("");
-        if seen < 3 {
-            seen += 1;
-        }
-        if ps == "atoms.jsonl" || ps.ends_with("/atoms.jsonl") || ps == "./atoms.jsonl" {
-            e.read_to_string(&mut atoms_json)?;
-            break;
-        }
-    }
-    if atoms_json.is_empty() {
-        anyhow::bail!("未找到 atoms.jsonl");
-    }
-    let t1 = Instant::now();
-
-    let mut patches: Vec<Patch> = Vec::new();
-    let mut reverted: HashSet<String> = HashSet::new();
-    let mut line_count = 0;
-    let mut parse_fail = 0;
-    for line in atoms_json.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        line_count += 1;
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => {
-                parse_fail += 1;
-                continue;
+    // **∴ 把包里我们认识的几样挑出来 ✗**（**其余**原样忽略 ✗ 但**报个数** ✓）
+    let mut atoms_text = String::new();
+    let mut meta_text = String::new();
+    let mut encoding = String::from("none");
+    let mut blobs: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut skipped_entries = 0usize;
+    for entry in &entries {
+        match entry.path.as_str() {
+            "atoms.jsonl" => atoms_text = String::from_utf8_lossy(&entry.bytes).into_owned(),
+            "meta.json" => meta_text = String::from_utf8_lossy(&entry.bytes).into_owned(),
+            "blobs.encoding" => {
+                encoding = String::from_utf8_lossy(&entry.bytes).trim().to_owned();
             }
-        };
-        match v.get("kind").and_then(|k| k.as_str()) {
-            Some("import_image") => {
-                let p = &v["payload"];
-                let reg = &p["region"];
-                let bh_raw = p["bitmap"]["blob_hash"].as_str().unwrap_or("");
-                if bh_raw.is_empty() {
-                    continue;
-                }
-                let bh = bh_raw.replace("sha256:", "");
-                let id = v["id"].as_str().unwrap_or("").to_string();
-                if id.is_empty() {
-                    continue;
-                }
-                let (x, y) = match (
-                    reg.get("x").and_then(|v| v.as_f64()),
-                    reg.get("y").and_then(|v| v.as_f64()),
-                ) {
-                    (Some(x), Some(y)) => (x as i32, y as i32),
-                    _ => continue,
+            path if path.starts_with("blobs/sha256/") => {
+                let hex = path.rsplit('/').next().unwrap_or_default().to_owned();
+                // **∴ zlib 就解 ✗ 不是就原样 ✓** ⇒ **∴ 两种编码都兼容 ✗ 而**不猜** ✓ ★
+                let raw = match encoding.as_str() {
+                    "zlib" => yanshi_render::zlib_decompress(&entry.bytes)
+                        .unwrap_or_else(|| entry.bytes.clone()),
+                    _ => entry.bytes.clone(),
                 };
-                let (w, h) = match (p["width"].as_u64(), p["height"].as_u64()) {
-                    (Some(w), Some(h)) => (w as u32, h as u32),
-                    _ => continue,
-                };
-                patches.push(Patch {
-                    id,
-                    x,
-                    y,
-                    w,
-                    h,
-                    blob_path: format!("blobs/sha256/{}/{}/{}", &bh[0..2], &bh[2..4], bh),
-                });
+                blobs.insert(hex, raw);
             }
-            Some("revert") => {
-                if let Some(t) = v["payload"].get("target").and_then(|t| t.as_str()) {
-                    reverted.insert(t.to_string());
-                }
-            }
-            _ => {}
+            _ => skipped_entries += 1,
         }
     }
-    let active: Vec<&Patch> = patches
-        .iter()
-        .filter(|p| !reverted.contains(&p.id))
-        .collect();
+    if atoms_text.is_empty() {
+        bail!("包里没有 atoms.jsonl ⇒ 这不像一个 .yanshi 工程包");
+    }
+
+    // **∴ 尺寸从 `meta.json` 读 ✗**（**交付版写死 1920×1080 ＋ `SCALE=0.5` ⇒ **900×640 的工程
+    //   只会画出左上角那一块** ✓）★
+    let meta: Value = serde_json::from_str(&meta_text).unwrap_or(Value::Null);
+    let doc_w = meta.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let doc_h = meta.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if doc_w == 0 || doc_h == 0 {
+        bail!("meta.json 里没有可用的 width/height ⇒ 判不了画布尺寸");
+    }
+    let doc_id = meta
+        .get("doc_id")
+        .and_then(Value::as_str)
+        .unwrap_or("timelapse")
+        .to_owned();
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            f64::from(MAX_W) / f64::from(doc_w),
+            f64::from(MAX_H) / f64::from(doc_h),
+        ),
+    );
+    let out_w = ((f64::from(doc_w) * scale).round() as u32).max(1);
+    let out_h = ((f64::from(doc_h) * scale).round() as u32).max(1);
     println!(
-        // **∴ 三个数都要报 ✗**（合入时 clippy 指出 `line_count`／`parse_fail` 算了没用 ✓）：
-        //   ＋ **∴ `line_count`** ＝ atoms.jsonl 的**真实行数**（含非图像类 atom ✓）；
-        //   ＋ **∴ `parse_fail`** ＝ **坏行数**（**∴ 非 0 ⇒ **这个工程可能不完整 ✗ 必须让人看见 ✓）；
-        //   ＋ **∴ `patches.len()`** ＝ **import_image 条数**（≠ 行数 ✗ 别的 kind 也占行 ✓）★
-        "  {} 行（{} 行解析失败）｜import_image {}｜有效 {}｜耗时 {:.1}s",
-        line_count,
-        parse_fail,
-        patches.len(),
-        active.len(),
-        t1.duration_since(t0).as_secs_f32()
+        "画布 {doc_w}×{doc_h} ⇒ 输出 {out_w}×{out_h}（缩放 {scale:.3}）｜blob {} 个（编码 {}）｜忽略条目 {}",
+        blobs.len(),
+        encoding,
+        skipped_entries
     );
 
-    // 2. 提取 blob (单线程, 实测比 rayon 更快)
-    println!("提取 blob...");
-    let t2 = Instant::now();
-    let need: HashSet<&str> = active.iter().map(|p| p.blob_path.as_str()).collect();
-    let mut tar2 = tar::Archive::new(&tar_data[..]);
-    let mut blob_cache: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut blob_dims: HashMap<String, (u32, u32)> = HashMap::new();
-    // path -> (w, h)
-    let dim_map: HashMap<&str, (u32, u32)> = active
-        .iter()
-        .map(|p| (p.blob_path.as_str(), (p.w, p.h)))
-        .collect();
-    for entry in tar2.entries()? {
-        let mut e = entry?;
-        let path = e.path()?.to_str().unwrap().to_string();
-        if need.contains(path.as_str()) {
-            let mut data = Vec::new();
-            e.read_to_end(&mut data)?;
-            // 降采样到目标分辨率
-            let (w, h) = dim_map[path.as_str()];
-            let w2 = (w as f64 * SCALE) as u32;
-            let h2 = (h as f64 * SCALE) as u32;
-            let mut dst = vec![0u8; (w2 * h2 * 4) as usize];
-            for yy in 0..h2 {
-                for xx in 0..w2 {
-                    let sx = ((xx * 2).min(w - 1)) as usize;
-                    let sy = ((yy * 2).min(h - 1)) as usize;
-                    let si = (sy * w as usize + sx) * 4;
-                    let di = (yy as usize * w2 as usize + xx as usize) * 4;
-                    if si + 4 <= data.len() && di + 4 <= dst.len() {
-                        dst[di..di + 4].copy_from_slice(&data[si..si + 4]);
-                    }
-                }
-            }
-            blob_cache.insert(path.clone(), dst);
-            blob_dims.insert(path, (w2, h2));
-            if blob_cache.len() % 200 == 0 {
-                println!("  {}/{}", blob_cache.len(), need.len());
-            }
-            if blob_cache.len() >= need.len() {
-                break;
-            }
+    // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）
+    let mut kernel =
+        yanshi_wasm::Kernel::new(&doc_id, TILE_SIZE, doc_w, doc_h, KERNEL_MEMORY_LIMIT)
+            .map_err(|e| anyhow!("建内核失败：{} {}", e.code, e.detail))?;
+    for (hex, data) in &blobs {
+        let got = kernel
+            .blob_put(data)
+            .map_err(|e| anyhow!("写 blob {hex} 失败：{} {}", e.code, e.detail))?;
+        // **∴ 顺手做一次**完整性核对**✗**：**包内路径名**就是它的内容哈希** ✓
+        //   ＋ **∴ 不一致 ⇒ **包坏了 / 我们解错了编码**✗ ⇒ **∴ 必须让人看见 ✗ 不许静默 ✓ ★★
+        if !got.ends_with(hex) {
+            eprintln!("⚠️ blob {hex} 的实际哈希是 {got} ⇒ 包或编码有问题");
         }
     }
-    drop(tar_data);
-    println!(
-        "  {} blobs, 耗时 {:.1}s",
-        blob_cache.len(),
-        t2.elapsed().as_secs_f32()
-    );
 
-    // 3+4. replay + 直接 pipe 给 ffmpeg (无中间 PNG 文件)
-    println!("replay + pipe to ffmpeg...");
-    let t3 = Instant::now();
-    let mut canvas = vec![255u8; (W * H * 4) as usize];
-    let mut ffmpeg = std::process::Command::new("ffmpeg")
+    // **∴ 逐行 apply ✗**：**保留原始行 ✗ 直接喂内核**（**∴ 不做"只认 import_image"那种过滤 ✓）★
+    let atom_lines: Vec<&str> = atoms_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let end_idx = end_atom.unwrap_or(atom_lines.len()).min(atom_lines.len());
+    let start_idx = start_atom.min(end_idx);
+    let t_replay = Instant::now();
+
+    // **∴ ffmpeg 起不来时要给一句人话 ✗**（**∴ 交付版只 `eprintln!("ffmpeg 失败")` ✓）★
+    let mut ffmpeg = Command::new("ffmpeg")
         .args([
             "-y",
             "-f",
@@ -228,7 +192,7 @@ fn main() -> anyhow::Result<()> {
             "-pix_fmt",
             "rgb24",
             "-s",
-            &format!("{}x{}", W, H),
+            &format!("{out_w}x{out_h}"),
             "-framerate",
             "30",
             "-i",
@@ -236,122 +200,134 @@ fn main() -> anyhow::Result<()> {
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast", // 最快 preset
+            "ultrafast",
             "-pix_fmt",
             "yuv420p",
             "-crf",
             "23",
-            out_mp4,
+            &out_mp4,
         ])
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    let mut stdin = ffmpeg.stdin.take().unwrap();
-    // RGBA -> 需要去掉 alpha, ffmpeg 要 yuv420p, 但我们先送 rgba 让 ffmpeg 转
-    // 实际上直接送 rgb24 更快, 这里先转
-    use std::io::Write;
-    let mut fi = 0;
-    let mut rgb_buf = vec![0u8; (W * H * 3) as usize];
-    // RGBA->RGB 转换 (单线程, 实测比 rayon 更快)
-    let rgba_to_rgb = |canvas: &[u8], rgb_buf: &mut [u8]| {
-        for j in 0..(W * H) as usize {
-            rgb_buf[j * 3] = canvas[j * 4];
-            rgb_buf[j * 3 + 1] = canvas[j * 4 + 1];
-            rgb_buf[j * 3 + 2] = canvas[j * 4 + 2];
-        }
-    };
-    // 应用 start 之前的所有 atom (不渲染, 只为建立正确画布状态)
-    // 然后在 [start, end) 范围内按 frame_every 渲染
-    let end_idx = end_atom.unwrap_or(active.len()).min(active.len());
-    let start_idx = start_atom.min(end_idx);
-    println!(
-        "  应用 {} 个 atoms, 渲染范围 {}..{}",
-        active.len(),
-        start_idx,
-        end_idx
-    );
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            anyhow!("起不来 ffmpeg（{e}）⇒ 这个导出需要一个**外部 ffmpeg**，请先装上或放进 PATH")
+        })?;
+    let mut stdin = ffmpeg.stdin.take().expect("stdin 是 piped");
 
-    for (i, p) in active.iter().enumerate() {
+    let mut frames = 0usize;
+    let mut apply_failures = 0usize;
+    let mut first_failure: Option<String> = None;
+
+    for (i, line) in atom_lines.iter().enumerate() {
         if i >= end_idx {
             break;
         }
-        if let Some(data) = blob_cache.get(p.blob_path.as_str()) {
-            let (w2, h2) = blob_dims[p.blob_path.as_str()];
-            let x = (p.x as f64 * SCALE) as i32;
-            let y = (p.y as f64 * SCALE) as i32;
-            composite(&mut canvas, data, w2, h2, x, y);
+        if let Err(error) = kernel.apply_atom_json(line) {
+            apply_failures += 1;
+            if first_failure.is_none() {
+                first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
+            }
         }
-        // 只在 [start, end) 范围内按 frame_every 渲染
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
-            fi += 1;
-            rgba_to_rgb(&canvas, &mut rgb_buf);
-            stdin.write_all(&rgb_buf)?;
+            push_frame(
+                &mut kernel,
+                &mut stdin,
+                &mut frames,
+                doc_w,
+                doc_h,
+                out_w,
+                out_h,
+            )?;
         }
     }
-    fi += 1;
-    rgba_to_rgb(&canvas, &mut rgb_buf);
-    stdin.write_all(&rgb_buf)?;
+    push_frame(
+        &mut kernel,
+        &mut stdin,
+        &mut frames,
+        doc_w,
+        doc_h,
+        out_w,
+        out_h,
+    )?;
     drop(stdin);
-    let status = ffmpeg.wait()?;
+    let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
-        eprintln!("ffmpeg 失败");
+        bail!("ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频", status.code());
+    }
+    if apply_failures > 0 {
+        eprintln!(
+            "⚠️ {apply_failures} 个 atom 没被内核接受（首个：{}）⇒ 视频可能缺内容",
+            first_failure.unwrap_or_default()
+        );
     }
     println!(
-        "  {} 帧, replay+编码 耗时 {:.1}s",
-        fi,
-        t3.elapsed().as_secs_f32()
+        "  {} 帧｜apply {}..{}｜replay+编码 {:.1}s｜总 {:.1}s",
+        frames,
+        start_idx,
+        end_idx,
+        t_replay.elapsed().as_secs_f32(),
+        t0.elapsed().as_secs_f32()
     );
-    println!("总耗时: {:.1}s (上一版 14.4s)", t0.elapsed().as_secs_f32());
     Ok(())
 }
 
-/// 整数 alpha 混合, dst 是 1920x1080 RGBA8
-fn composite(dst: &mut [u8], src: &[u8], sw: u32, sh: u32, x: i32, y: i32) {
-    let (sw, sh) = (sw as i32, sh as i32);
-    let (w, h) = (W as i32, H as i32);
-    let sx0 = 0.max(-x);
-    let sy0 = 0.max(-y);
-    let dx0 = 0.max(x);
-    let dy0 = 0.max(y);
-    let dx1 = w.min(x + sw);
-    let dy1 = h.min(y + sh);
-    if dx1 <= dx0 || dy1 <= dy0 {
-        return;
-    }
-    let sx1 = sx0 + (dx1 - dx0);
-    let sy1 = sy0 + (dy1 - dy0);
-    // **∴ 这两个端点不是摆设 ✗**（合入时 clippy 说它们没用 ✓）：
-    //   ＋ **∴ 它们**表达"**源矩形不越界**"✗ ⇒ **∴ 用断言把它变成**会红的事实** ✓ ★
-    debug_assert!(
-        sx1 <= sw && sy1 <= sh,
-        "源矩形越界: ({sx1},{sy1}) vs ({sw},{sh})"
-    );
+/// **∴ 渲一帧并送进 ffmpeg ✗**（**∴ 写成自由函数 ✗ 不用闭包 ✓）★
+///
+/// **∴ 为什么不用闭包 ✗**：**闭包要同时可变借用 `kernel`／`stdin`／`frames`**✗
+///   ＋ **∴ 而**外面那圈循环**也在用 `kernel`**✗ ⇒ **∴ 借用检查**不会过** ✓
+///     ⇒ **∴ 于是**：**显式传参 ✗ 借用关系写在签名里 ✓** ★
+fn push_frame(
+    kernel: &mut yanshi_wasm::Kernel,
+    stdin: &mut ChildStdin,
+    frames: &mut usize,
+    doc_w: u32,
+    doc_h: u32,
+    out_w: u32,
+    out_h: u32,
+) -> Result<()> {
+    let region = yanshi_core::Bbox::new(0.0, 0.0, f64::from(doc_w), f64::from(doc_h));
+    let rendered = kernel
+        .render_region(region)
+        .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
+    let rgb = to_rgb_scaled(&rendered.rgba8, doc_w, doc_h, out_w, out_h);
+    stdin.write_all(&rgb).context("写帧到 ffmpeg 失败")?;
+    *frames += 1;
+    Ok(())
+}
 
-    for row in 0..(dy1 - dy0) {
-        let dy = (dy0 + row) as usize;
-        let sy = (sy0 + row) as usize;
-        for col in 0..(dx1 - dx0) {
-            let dx = (dx0 + col) as usize;
-            let sx = (sx0 + col) as usize;
-            let di = (dy * W as usize + dx) * 4;
-            let si = (sy * sw as usize + sx) * 4;
-            let sa = src[si + 3] as u32;
-            if sa == 0 {
-                continue;
+/// **RGBA8 → RGB24 ✗ 并缩放到 `(out_w, out_h)` ✓**（**∴ 盒平均 ✗ 比最近邻干净 ✓）★
+///
+/// **∴ 为什么按盒平均 ✗**：**缩小时最近邻会**丢掉笔画**✗（**一条细线可能整条被抽掉 ✓）⇒
+///   **∴ 而**盒平均对每个目标像素取源矩形均值**✗ ⇒ **∴ 细线**会变淡 ✗ 而**不会消失** ✓ ★★
+fn to_rgb_scaled(src: &[u8], src_w: u32, src_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (out_w as usize) * (out_h as usize) * 3];
+    let (sw, sh) = (src_w as usize, src_h as usize);
+    for oy in 0..out_h as usize {
+        let y0 = oy * sh / out_h as usize;
+        let y1 = (((oy + 1) * sh) / out_h as usize).max(y0 + 1).min(sh);
+        for ox in 0..out_w as usize {
+            let x0 = ox * sw / out_w as usize;
+            let x1 = (((ox + 1) * sw) / out_w as usize).max(x0 + 1).min(sw);
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            let mut n = 0u32;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * sw + x) * 4;
+                    if i + 3 < src.len() {
+                        r += u32::from(src[i]);
+                        g += u32::from(src[i + 1]);
+                        b += u32::from(src[i + 2]);
+                        n += 1;
+                    }
+                }
             }
-            if sa == 255 {
-                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
-                continue;
-            }
-            let isa = 255 - sa;
-            // RGB
-            for c in 0..3 {
-                let v = (src[si + c] as u32 * sa + dst[di + c] as u32 * isa) / 255;
-                dst[di + c] = v as u8;
-            }
-            // A
-            let da = dst[di + 3] as u32;
-            dst[di + 3] = (sa + da * isa / 255) as u8;
+            let n = n.max(1);
+            let o = (oy * out_w as usize + ox) * 3;
+            out[o] = (r / n) as u8;
+            out[o + 1] = (g / n) as u8;
+            out[o + 2] = (b / n) as u8;
         }
     }
+    out
 }

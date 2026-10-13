@@ -10,8 +10,17 @@ description = "将 yanshi 工程文件导出为绘画过程视频 (timelapse)"
 name = "yanshi-timelapse"
 path = "src/main.rs"
 
+# **★ 依赖：**只用仓库自己的东西** ✗ 不引新的第三方解码器** ✓
+#
+# **∴ 交付版带的是 `zip 0.6` ＋ `tar 0.4`**✗ 而**本仓导出的是**裸 tar** ✓
+#   ＋ **∴ 于是**：**依赖整个去掉了**✗ 改用
+#     `yanshi_server::archive::read_tar`（**本仓零依赖的手写 tar 读取器 ✓）★★
+#   ＋ **∴ 而**解 blob 用 `yanshi_render::zlib_decompress`（**仓里已有 ✓）
+#     ⇒ **∴ 于是**这一版**没有引入任何新依赖** ✓ ★★
 [dependencies]
 anyhow = "1"
 serde_json.workspace = true
-tar = "0.4"
-zip = "0.6"
+yanshi-core = { path = "../yanshi-core" }
+yanshi-render = { path = "../yanshi-render" }
+yanshi-server = { path = "../yanshi-server" }
+yanshi-wasm = { path = "../yanshi-wasm" }
