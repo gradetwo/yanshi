@@ -47,6 +47,8 @@ export function checkStageAccounting({ health, wallMs }) {
   const sub = health.gpu_stage_submit_us;
   const rb = health.gpu_stage_readback_us;
   const vf = health.gpu_stage_verify_us;
+  // **∴ GPU 侧那两个是**可选**的 ✗**（**第 246 轮 ✓）：**∴ 只有**探针开着**才有值** ✓
+  const gpu = health.gpu_stage_gpu_us;
   const delta = health.max_channel_delta;
 
   // **∴ 字段必须在 ✗**（**∴ 缺字段 ⇒ **不可判**** ✓）
@@ -85,6 +87,16 @@ export function checkStageAccounting({ health, wallMs }) {
   if (backend === "cpu" && delta === 0) {
     bad.push("render_backend=cpu 却报 max_channel_delta=0 ⇒ 用 0 冒充比对过");
   }
+  // **⑤ GPU 侧拷贝与 GPU 侧计算**同源**✗**（**第 246 轮 ✓；待办 2b ✓）★
+  //   **∴ 语义 ✗**：**两者**都由**同一套时间戳**产出**✗
+  //     ⇒ **∴ 所以**：**copy > 0 而 gpu == 0** 是**不可能**的** ✓（**∴ 必有一条在撒谎 ✓）★
+  //   ＋ **∴ 而** `copy` **允许**在 `gpu > 0` 时为 0**✗
+  //     ⇒ **∴ 因为**适配器可能**没有** `TIMESTAMP_QUERY_INSIDE_ENCODERS`** ✓（**∴ 那时**如实为 0 ✓）★
+  //   ＋ **∴ 字段缺失**不算红**✗（**∴ 老版本服务端没有它 ✓）⇒ **∴ 只有**存在且 > 0**时才判** ✓★
+  const cp = health.gpu_stage_copy_us;
+  if (typeof cp === "number" && cp > 0 && !(typeof gpu !== "number" ? false : gpu > 0)) {
+    bad.push(`gpu_stage_copy_us=${cp} > 0 而 gpu_stage_gpu_us=${JSON.stringify(gpu)} ⇒ **同一套时间戳不可能只出一个**`);
+  }
   return bad;
 }
 
@@ -107,6 +119,9 @@ if (has("--self-test")) {
     { name: "缺字段", health: { ...base, gpu_stage_verify_us: undefined }, wallMs: 1200, wantRed: true },
     { name: "cpu 后端却报 delta=0", health: { ...base, render_backend: "cpu" }, wallMs: 1200, wantRed: true },
     { name: "正常：跳核对 ⇒ delta=null 且核对 0", health: { ...base, max_channel_delta: null, gpu_stage_verify_us: 0 }, wallMs: 600, wantRed: false },
+    // **∴ 第 246 轮加的两例 ✗**（**∴ 它**证明第 ⑤ 条有牙 ✓）★
+    { name: "正常：copy 与 gpu 都量到", health: { ...base, gpu_stage_gpu_us: 750, gpu_stage_copy_us: 320 }, wallMs: 1200, wantRed: false },
+    { name: "copy>0 而 gpu=0 ⇒ 撒谎", health: { ...base, gpu_stage_gpu_us: 0, gpu_stage_copy_us: 320 }, wallMs: 1200, wantRed: true },
   ];
   let wrong = 0;
   let red = 0;

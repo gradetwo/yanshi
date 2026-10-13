@@ -983,6 +983,8 @@ fn health(state: &ServerState) -> Response {
             "gpu_stage_readback_us": stage_timing_json()["readback_us"].clone(),
             "gpu_stage_verify_us": stage_timing_json()["verify_us"].clone(),
             "gpu_stage_gpu_us": stage_timing_json()["gpu_us"].clone(),
+            // **∴ GPU 侧拷贝（**第 246 轮 ✓）✗ —— **∴ 它**不并进上面几段**（**不能相加 ✓）★
+            "gpu_stage_copy_us": stage_timing_json()["copy_us"].clone(),
             "gpu_stage_calls": stage_timing_json()["calls"].clone(),
         "verified_blobs": stage_timing_len(),
             "selfcheck_max_channel_delta": gpu_selfcheck_delta(),
@@ -1141,6 +1143,10 @@ fn stage_timing_json() -> serde_json::Value {
         //   **∴ 语义 ✗**：**它不是 host 墙钟**✗ ⇒ **∴ 而**是 GPU 时间戳的差** ✓
         //     ＋ **∴ 只有**探针开启 ＋ 适配器支持**才有值**✗ ⇒ **∴ 否则**如实为 0** ✓ ★
         "gpu_us": gpu,
+        // **★ GPU 侧拷贝的时间（**微秒 ✓）✗ ★**（**第 246 轮 ✓；待办 2b ✓）
+        //   ＋ **∴ 它**单独一个字段**✗ 而**不并进上面那几段** ✓ —— **∴ 因为**它
+        //     **就在** `readback_us` 窗口里**✗ ⇒ **∴ 相加**就是重复计** ✓ ★★
+        "copy_us": yanshi_render::gpu_copy_timing(),
         "calls": calls,
     })
 }

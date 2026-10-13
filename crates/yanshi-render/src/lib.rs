@@ -177,5 +177,22 @@ pub fn gpu_stage_timing() -> (u64, u64, u64, u64, u64, u32) {
         (0, 0, 0, 0, 0, 0)
     }
 }
+
+/// **★ GPU 侧拷贝的时间（**微秒 ✓）✗ ★**（**第 246 轮 ✓；待办 2b ✓）
+///
+/// **∴ 它**故意**不并进 `gpu_stage_timing`**✗ ★**（**∴ 见那边的签名说明 ✓）**：
+///   ⇒ **∴ 因为** `copy` 是 **GPU 内部时间**✗ 而**它**就在 host 侧 `readback` 窗口里** ✓
+///     ＋ **∴ 所以**：**两者**不能相加**✗（**∴ 相加**就是重复计 ✓）★
+#[must_use]
+pub fn gpu_copy_timing() -> u64 {
+    #[cfg(feature = "gpu")]
+    {
+        yanshi_gpu::last_copy_timing_us()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        0
+    }
+}
 pub use crate::backend_note::verified_blobs_len;
 pub use yanshi_core::probe;

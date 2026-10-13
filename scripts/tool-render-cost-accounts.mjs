@@ -434,6 +434,12 @@ for (const spec of compareSpecs) {
     //   **∴ 语义 ✗**：**它不是 host 墙钟**✗ ⇒ **∴ 而**是 GPU 时间戳的差**（**需探针开 ✓）
     //     ＋ **∴ 若**未探针／不支持 ⇒ **如实为 0** ✓ ★
     stageGpuUs: after.gpu_stage_gpu_us,
+    // **★ GPU 侧**拷贝**的时间 ✗ ★**（**第 246 轮 ✓；待办 2b ✓）
+    //   ＋ **∴ 为什么单列 ✗**：**`stageGpuUs` 只含** compute pass**✗
+    //     ⇒ **∴ 而**同一帧还有 **20 次 `copy_buffer_to_buffer`**（**`lib.rs:949` ✓）
+    //       ⇒ **∴ 于是**：**没有它**就**分不清**"拷贝贵"与"读回等待贵"** ✓ ★★
+    //   ＋ **∴ 注意 ✗**：**它**落在 `stageReadbackUs` 窗口里**✗ ⇒ **∴ 不许**相加** ✓ ★
+    stageCopyUs: after.gpu_stage_copy_us,
     verifiedBlobs: after.verified_blobs,
     adapter: after.gpu_adapter_note,
     wallMs: median(usable.map((s) => s.wallMs)),
@@ -491,7 +497,7 @@ for (const row of rows) {
   for (const a of adapter) console.log(`    适配器 ＝ ${a}`);
   console.log("  ★ GPU 阶段分段（**微秒；**传输 vs 计算 ✓）★");
   for (const r of rows) {
-    console.log(`    ${r.label}：calls ＝ ${r.stageCalls}｜upload ＝ ${r.stageUploadUs}｜submit ＝ ${r.stageSubmitUs}｜readback ＝ ${r.stageReadbackUs}｜★gpu ＝ ${r.stageGpuUs}★`);
+    console.log(`    ${r.label}：calls ＝ ${r.stageCalls}｜upload ＝ ${r.stageUploadUs}｜submit ＝ ${r.stageSubmitUs}｜readback ＝ ${r.stageReadbackUs}｜★gpu ＝ ${r.stageGpuUs}★｜★copy ＝ ${r.stageCopyUs}★`);
   }
   // **★ 判据必须**忽略 null**✗ ★**（**第 581 轮实测 ✓）
   //   **∴ 为什么 ✗**：**CPU 路**不与 GPU 比对 ⇒ **∴ 它**正确地报 `null`**

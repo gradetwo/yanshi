@@ -323,6 +323,11 @@ static STAGE_READBACK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 ///   ⇒ **∴ 只在**门控满足时**才被写**✗（**`should_time_gpu` ✓）
 ///     ＋ **∴ 未测时**保持 0 ⇒ **∴ 与「量到 0」可区分**（**∴ 若**要区分，可看探针是否开着 ✓）★
 static STAGE_GPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// **★ GPU 执行 `copy_buffer_to_buffer` 的时间（**纳秒，时间戳 ✓）✗ ★**（**第 246 轮 ✓；待办 2b ✓）
+///   ⇒ **∴ 它**只含** GPU 侧的拷贝**✗（**∴ 20 次块拷贝 ✓）
+///     ＋ **∴ 而**它**落在** host 侧 `readback` 窗口**里** ✗ ⇒ **∴ 两者**不能相加** ✓ ★
+///       ＋ **∴ 需要** `TIMESTAMP_QUERY_INSIDE_ENCODERS`**✗ ⇒ **∴ 没有它**恒 0（**如实 ✓）★
+static STAGE_COPY_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// **★ 读最近一次的分段计时 ✗ ★**
@@ -344,6 +349,19 @@ pub fn last_stage_timing() -> (u64, u64, u64, u64, u32) {
         us(&STAGE_GPU_NS),
         STAGE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
     )
+}
+
+/// **★ GPU 侧拷贝的时间（**微秒 ✓）✗ ★**（**第 246 轮 ✓；待办 2b ✓）
+///
+/// **∴ 为什么单开一个访问器 ✗**（**∴ 而**不并进 `last_stage_timing` ✓）★**：
+///   ＋ **∴ 语义不同 ✗**：**`gpu` 与 `copy` 都是** GPU 内部时间**✗
+///     ⇒ **∴ 而** `last_stage_timing` 那三段是** host 侧墙钟** ✓
+///       ＋ **∴ 若**并成一个元组**✗ ⇒ **∴ 调用方**很容易把它们**相加**✗
+///         ⇒ **∴ 于是**：**重复计**（**∴ 因为** `copy` 就在 `readback` 窗口里 ✓）★
+///   ＋ **∴ 所以 ✗**：**分开两个函数**✗ ⇒ **∴ 让"不能相加"这件事**写在签名上** ✓ ★★
+#[must_use]
+pub fn last_copy_timing_us() -> u64 {
+    STAGE_COPY_NS.load(std::sync::atomic::Ordering::Relaxed) / 1000
 }
 
 /// **★ 本平台能不能用**同步**的 `Quantizer::new` ✗ ★**（**第 443 轮 ✓）
@@ -809,6 +827,33 @@ impl Quantizer {
             self.device.features(),
             std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
         );
+        // **★★★ 第 246 轮：把 `copy_buffer_to_buffer` 也纳入时间戳 ✗ ★★★**（**待办 2b ✓）
+        //   ＋ **∴ 为什么要它 ✗**：**`gpu` ＝ 750 µs 只含** compute pass** ✓
+        //     ＋ **∴ 而**同一帧还要做 **20 次** `copy_buffer_to_buffer`**（**`lib.rs:949` ✓）
+        //       ⇒ **∴ 于是**：**分不清**"拷贝贵"与"读回等待贵"** ✓ ★★
+        //   ＋ **∴ 门控（**关键 ✓）**：**在 encoder 里写时间戳**需要
+        //     `TIMESTAMP_QUERY_INSIDE_ENCODERS`**✗（**与 pass 里的 `TIMESTAMP_QUERY` 是**两个**特性 ✓）
+        //     ⇒ **∴ 没有它**就**一个都别写**✗ ⇒ **∴ 于是**：**行为与改动前**逐位一致** ✓ ★
+        //       ＋ **∴ 而** `STAGE_COPY_NS` **保持 0**✗ ⇒ **∴ 那是**如实的 0**（**没量 ✓）★
+        let time_copy = time_gpu
+            && self
+                .device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        // **∴ 探针开着时**说清"拷贝到底量没量"✗ ★**（**∴ 否则** `copy ＝ 0` 会被误读成"拷贝不花时间" ✓）
+        //   ⇒ **∴ 而**那**正是**本仓最忌的"用 0 撒谎"** ✓（**∴ 必须**可区分 ✓）★★
+        if time_gpu {
+            eprintln!(
+                "PROBE 时间戳：compute_pass={}｜inside_encoders（**拷贝 ✓）={} ⇒ 拷贝{}",
+                time_gpu,
+                time_copy,
+                if time_copy {
+                    "已纳入"
+                } else {
+                    "未纳入（适配器无 TIMESTAMP_QUERY_INSIDE_ENCODERS ⇒ 如实为 0）"
+                }
+            );
+        }
         // **★★★ 两张 buffer：resolve 目标 ＋ 可映射的中转 ✗ ★★★**（**第 603 轮 ✓；目标第 9 条后半 ✓）
         //   **∴ 原来的错（**实测 panic ✓）✗**：
         //     `MAP usage can only be combined with the opposite COPY,
@@ -826,11 +871,13 @@ impl Quantizer {
             let query = self.device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("yanshi-gpu-time"),
                 ty: wgpu::QueryType::Timestamp,
-                count: 2,
+                // **∴ 4 个时间戳 ✗**（**第 246 轮 ✓）：0／1 ＝ compute pass ✗ 2／3 ＝ **拷贝** ✓
+                //   ＋ **∴ 没有** `TIMESTAMP_QUERY_INSIDE_ENCODERS` 时只取前 2 个** ✓
+                count: if time_copy { 4 } else { 2 },
             });
             let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("yanshi-gpu-time-resolve"),
-                size: 16,
+                size: if time_copy { 32 } else { 16 },
                 // **★ 必须带 `COPY_SRC` ✗ ★**（**第 603 轮实测 ✓）：**它**要被
                 //   `copy_buffer_to_buffer` **当作源**拷进中转那张** ✓
                 //   ＋ **∴ 而** `COPY_DST` **不需要**（**它**不被写入 ✓）
@@ -840,7 +887,7 @@ impl Quantizer {
             });
             let read = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("yanshi-gpu-time-read"),
-                size: 16,
+                size: if time_copy { 32 } else { 16 },
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
@@ -946,8 +993,20 @@ impl Quantizer {
                 pass.dispatch_workgroups((take as u32).div_ceil(64), 1, 1);
             }
             // **∴ 拷到**大 buffer 的 `done*4` 偏移**✗（**∴ 此时 `done` ＝ 本块之前的像素数 ✓）★
+            // **∴ 时间戳 2 ✗**：**第一块拷贝**之前** ✓（**∴ 只写一次 ✓ —— 与 pass 同理 ✓）★
+            if time_copy && done == 0 {
+                if let Some(query) = ts_query.as_ref() {
+                    enc.write_timestamp(query, 2);
+                }
+            }
             enc.copy_buffer_to_buffer(&dst, 0, &readback, (done * 4) as u64, (take * 4) as u64);
             done += take;
+        }
+        // **∴ 时间戳 3 ✗**：**最后一次拷贝**之后** ✓ ⇒ **∴ 于是** `[2,3]` ＝ **全部拷贝的 GPU 时间** ✓ ★
+        if time_copy {
+            if let Some(query) = ts_query.as_ref() {
+                enc.write_timestamp(query, 3);
+            }
         }
         // **★ 一次提交 ＋ 一次等待 ✗ ★**（**∴ 第 284 轮：**快 88.6% ✓）
         // **∴ 分段②：提交（**submit ＋ 一次 poll ✓）★
@@ -956,9 +1015,11 @@ impl Quantizer {
         if let (Some(query), Some(resolve), Some(read)) =
             (ts_query.as_ref(), ts_resolve.as_ref(), ts_read.as_ref())
         {
-            enc.resolve_query_set(query, 0..2, resolve, 0);
+            // **∴ 数一数写了几个时间戳 ✗**（**∴ 4 个**＝ 含拷贝 ✓；**2 个**＝ 只有 compute ✓）★
+            let stamps = if time_copy { 4 } else { 2 };
+            enc.resolve_query_set(query, 0..stamps, resolve, 0);
             // **∴ 再拷进可映射的那张 ✗**（**∴ 因为** `resolve` **不能**同时可映射 ✓）★
-            enc.copy_buffer_to_buffer(resolve, 0, read, 0, 16);
+            enc.copy_buffer_to_buffer(resolve, 0, read, 0, stamps as u64 * 8);
         }
         self.queue.submit(Some(enc.finish()));
         // **★ 不阻塞 ✗ ★**（**第 471 轮 ✓）：**真正的同步在下面 `map_async` 的 await ✓
@@ -1030,11 +1091,25 @@ impl Quantizer {
                     let end = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
                     let ns = end.saturating_sub(start);
                     STAGE_GPU_NS.store(ns, std::sync::atomic::Ordering::Relaxed);
+                    // **∴ 时间戳 2／3 ✗**：**拷贝那一段** ✓（**∴ 第 246 轮 ✓；待办 2b ✓）★
+                    //   ＋ **∴ 语义 ✗**：**它是** GPU 执行全部 `copy_buffer_to_buffer` 的时间**✗
+                    //     ⇒ **∴ 而**它**落在** host 侧的 `readback` 窗口**里** ✓
+                    //       ⇒ **∴ 所以**：**两者**不能相加**✗（**∴ 那**会重复计 ✓）★
+                    let copy_ns = if data.len() >= 32 {
+                        let cs = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                        let ce = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                        ce.saturating_sub(cs)
+                    } else {
+                        0
+                    };
+                    STAGE_COPY_NS.store(copy_ns, std::sync::atomic::Ordering::Relaxed);
                     eprintln!(
-                        "PROBE GPU 算：{:.3} ms（**时间戳 ✓）｜host 侧提交 {:.3} ms ⇒ 驱动开销 {:.3} ms",
+                        "PROBE GPU 算：{:.3} ms（**时间戳 ✓）｜GPU 拷贝 {:.3} ms｜host 侧提交 {:.3} ms ⇒ 驱动开销 {:.3} ms｜host 侧读回 {:.3} ms",
                         ns as f64 / 1e6,
+                        copy_ns as f64 / 1e6,
                         submit_ns as f64 / 1e6,
-                        (submit_ns.saturating_sub(ns)) as f64 / 1e6
+                        (submit_ns.saturating_sub(ns)) as f64 / 1e6,
+                        readback_ns as f64 / 1e6
                     );
                 }
                 drop(data);
