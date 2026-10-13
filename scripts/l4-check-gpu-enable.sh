@@ -66,8 +66,13 @@ git checkout -- crates/yanshi-render/src/filter.rs
 
 echo ""
 echo "== ③ 高斯模糊提速基准（**release ＋ --ignored**）=="
-echo "   （**∴ 它**是 `#[ignore]` 的 ✗ ⇒ **∴ 手动跑**是唯一入口 ✓ —— 见那条测试的注释 ✓）"
-cargo test -p yanshi-render --release --features gpu --test gpu_blur_parity -- --ignored --nocapture 2>&1 | tail -16
+echo "   （**∴ 它**是 \`#[ignore]\` 的 ✗ ⇒ **∴ 手动跑**是唯一入口 ✓ —— 见那条测试的注释 ✓）"
+# **∴ 窗口要**够宽**✗ ★**（**∴ 实测教训 ✓）：**那条基准**每个尺寸 × 每个 σ 各一行**✗
+#   ⇒ **∴ 4 行 ＋ 汇总** ✓ ⇒ **∴ 我第一版写 `tail -16`**✗
+#     ⇒ **∴ 于是**：**1080p 那两行**被我自己丢掉**✗ 而**日志里**再也找不到** ✓ ★★
+#       ＋ **∴ 所以**：**取 `tail -40`**✗ ⇒ **∴ 两档**都在** ✓
+cargo test -p yanshi-render --release --features gpu --test gpu_blur_parity -- --ignored --nocapture 2>&1 |
+  tail -40
 
 echo ""
 echo "★ 三步完成：① 绿｜② 变异红｜③ 基准已打印 ★"
