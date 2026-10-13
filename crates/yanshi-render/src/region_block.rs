@@ -30,6 +30,14 @@ pub struct BlockKey {
     /// 区域高 ✓ —— **区域级用法必须有它** ✗：请求的 bbox 会被裁剪到画布内 ✓，
     /// 只按宽做键会让"被裁剪过的请求"与"存进去的那份"**永不匹配** ✗（我第一版就是这么写的 ✗）。
     pub h: u32,
+    /// **★★★ 第 247 轮：**这块字节是**哪个图层范围**渲出来的 ✗ ★★★**
+    ///   ＋ **∴ 为什么必须进键 ✗**（**`render_region_raw_layer` 的注释写着 ✓）**：
+    ///     **∴ 只画一层 ⇒ **像素与整幅合成不同**✗
+    ///       ＋ **∴ 若**与整幅共用一个键**✗ ⇒ **∴ 命中时会把**别的图层的像素**当成这一层的返回** ✓
+    ///         ⇒ **∴ 那正是"**缓存键少了一个维度**"的经典 bug ✗ 而且**只在命中时发作** ✓ ★★
+    ///   ＋ **∴ 取值 ✗**：**`0` ＝ **全幅合成**（**含 `active_layer` 切点那条 ✓ —— 它只改
+    ///     "**重算哪些**"✗ **不改像素 ✓）｜**非 0 ＝ **某一层 id 的稳定哈希**（`layer_scope()` ✓）★
+    pub scope: u64,
 }
 
 impl BlockKey {
@@ -40,6 +48,37 @@ impl BlockKey {
             y: y.round() as i64,
             w: w.round().max(0.0) as u32,
             h: h.round().max(0.0) as u32,
+            // **∴ 缺省是**全幅**✗ ⇒ **∴ 既有调用点的语义**一个字都不变** ✓（**第 247 轮 ✓）★
+            scope: 0,
+        }
+    }
+
+    /// **把键限定到「只渲染某一层」**✗ ★（**第 247 轮 ✓）
+    ///
+    /// **∴ 用法 ✗**：`BlockKey::from_bbox(..).with_scope(BlockKey::layer_scope(id))` ✓
+    /// **∴ 而**全幅那条**不要调它**✗（**`scope` 保持 0 ✓）★
+    #[must_use]
+    pub fn with_scope(mut self, scope: u64) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// **图层 id ⇒ 稳定的 scope 值 ✗**（**FNV-1a 64 ✓，与 `content_hash` 同一套常数 ✓）
+    ///
+    /// **∴ 为什么必须是稳定哈希 ✗**：**跨进程／跨重启**都要**同 id ⇒ 同值**✗
+    ///   ⇒ **∴ 不能用 `DefaultHasher`**（**它**每次运行可能不同**✓）★
+    /// **∴ 且**绝不允许返回 `0`**✗（**那是"全幅"的保留值 ✓）⇒ **∴ 撞上 0 就换成 1** ✓ ★★
+    #[must_use]
+    pub fn layer_scope(layer_id: &str) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in layer_id.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        if hash == 0 {
+            1
+        } else {
+            hash
         }
     }
 }

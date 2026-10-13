@@ -1004,6 +1004,62 @@ impl Document {
     }
 
     /// 渲染区域并输出 PNG 到 CAS（7.5：返回 URL 而非 base64）。
+    /// **★ 区域字节缓存的**查**✗ ★**（**第 247 轮抽出来 ✓：**两条路共用一份实现 ✓）
+    ///
+    /// **∴ 为什么必须抽出来 ✗**：**第 247 轮要给**单层渲染**也接上它**✗
+    ///   ＋ **∴ 若**各写一份**✗ ⇒ **∴ 两份**迟早漂移**（**本仓记过的头号病 ✓）★
+    /// **∴ 版本不符 ⇒ 不命中 ✗**（**`RegionBlockCache::get` 自己判 ✓）⇒ **∴ 绝不给旧像素** ✓ ★
+    /// **∴ 命中 ⇒ 顺手清告警 ✗**：**带告警的渲染**从不进缓存**（**见 put ✓）⇒
+    ///   **∴ 命中就等价于"完整"** ✓（**与原来那句注释同义 ✓）★
+    fn region_block_get(
+        &mut self,
+        key: yanshi_render::region_block::BlockKey,
+        version: u64,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        if std::env::var("YANSHI_SKIP_REGION_CACHE").is_ok() {
+            return None;
+        }
+        let found = self
+            .region_cache
+            .get(key, version)
+            .map(|block| (block.key.w, block.key.h, block.data.clone()));
+        if found.is_some() {
+            self.last_render_warnings.clear();
+        }
+        found
+    }
+
+    /// **★ 区域字节缓存的**存**✗ ★**（**第 247 轮 ✓）
+    ///
+    /// **∴ 两条硬规矩（**都从原来那份注释搬过来 ✓）✗**：
+    ///   **∴ ① 不完整的画面**绝不进缓存**✗ —— 缓存里没有"告警"这一维 ⇒
+    ///     **∴ 一旦缓存了 ✗ 之后命中就会把缺块的图**当成完整的**发出去**（**且无提示 ✓）★
+    ///   **∴ ② 用"请求的键"存**✗（**不是渲染后的尺寸 ✓）—— 查与存不一致 ⇒ **永不命中** ✓ ★
+    fn region_block_put(
+        &mut self,
+        key: yanshi_render::region_block::BlockKey,
+        version: u64,
+        stats: &yanshi_render::RenderStats,
+        data: Vec<u8>,
+    ) {
+        if std::env::var("YANSHI_SKIP_REGION_CACHE").is_ok() {
+            return;
+        }
+        if !stats.unsupported.is_empty() {
+            return;
+        }
+        let hash = yanshi_render::region_block::content_hash(&data);
+        self.region_cache
+            .put(yanshi_render::region_block::RegionBlock {
+                key,
+                hash,
+                data,
+                version_atom: version,
+                layers: self.state.alive_layers().len() as u32,
+                objects: self.state.alive_objects().len() as u32,
+            });
+    }
+
     /// 渲染区域并返回**原始 RGBA8**（sRGB 直通字节），供 `patch` 抓取源像素。
     ///
     /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
@@ -1032,7 +1088,8 @@ impl Document {
         // **★ 指纹代替裸 `head_seq` ✓ ★**（第 465 轮 ✓）：**∴ 只改最上层 ⇒ 子区域缓存仍有效 ✓**；
         // **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**外部报告：子区域 531 → 426 → 347 ms ✗**）。
         // **★ 诊断开关变量 ✓ ★**（第 554 轮 ✓）：**未设 ⇒ `false` ⇒ 行为不变 ✓**。
-        let skip_region_cache = std::env::var("YANSHI_SKIP_REGION_CACHE").is_ok();
+        // **∴ 第 247 轮 ✗**：**这一句**搬到 `region_block_get`／`region_block_put` 里了** ✓
+        //   ＋ **∴ 为什么 ✗**：**两条渲染路**都要同一套开关语义**✗ ⇒ **∴ 各读一次环境 ✗ 不各写一份判定 ✓ ★
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
         let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
         // **★ 探针 ✓**（第 552 轮 ✓，**查明后删 ✓**）：**打印**是否命中外层 ＋ 键 ＋ 版本**✗** ⇒
@@ -1059,16 +1116,9 @@ impl Document {
         // **★ 诊断开关 ✓ ★**（第 554 轮 ✓）：**跳过外层区域块缓存 ✓** ——
         // **∴ `YANSHI_SKIP_REGION_CACHE=1` ⇒ get 与 put 都跳 ⇒ **∴ 每次渲染都进 below ✓**；
         // **∴ 未设 ⇒ 行为完全不变 ✓**。**∴ 用途** ✓：**验证 below 的复用 ✓**（**判据需要它 ✗**）。
-        if !skip_region_cache {
-            if let Some(block) = self.region_cache.get(key, version) {
-                // **按缓存块自己的尺寸回** ✓（键里已经带着宽高 ✓ ⇒ 与请求的一致 ✓；
-                // 渲染时用了裁剪后的尺寸也没关系 ✓ —— 存与查用的是**同一个请求键** ✓）。
-                //
-                // **缓存命中 ⇒ 上次没有跳过任何东西** ✓：带告警的渲染**从不进缓存** ✗
-                //（见下面 `if rendered.stats.unsupported.is_empty()` ✓）⇒ 命中就等价于"完整" ✓。
-                self.last_render_warnings.clear();
-                return Ok((block.key.w, block.key.h, block.data.clone()));
-            }
+        // **★★★ 第 247 轮：**查缓存这件事**只留一份实现**✗ ★★★**（**∴ 两条路共用 ✓）
+        if let Some((cached_w, cached_h, cached_data)) = self.region_block_get(key, version) {
+            return Ok((cached_w, cached_h, cached_data));
         }
         let rendered = self
             .renderer
@@ -1079,19 +1129,8 @@ impl Document {
         // **不完整的画面绝不进缓存** ✗：缓存里没有"告警"这一维 ✓ ⇒ 一旦缓存了 ✓，
         // 之后**命中**就会把同一张缺块的图**当成完整的**发出去 ✓（而且没有任何提示 ✗）。
         // 缺块本身应当是**罕见**的 ✓ ⇒ 放弃这一次缓存**不影响**正常路径的性能 ✓。
-        if !skip_region_cache && rendered.stats.unsupported.is_empty() {
-            self.region_cache
-                .put(yanshi_render::region_block::RegionBlock {
-                    // **用"请求的键"存** ✓（不是渲染后的尺寸 ✗）：查的时候用的是请求键 ✓，
-                    // 两边不一致就会永远差一点点、永不命中 ✗ —— 我第一版正是这个错 ✗。
-                    key,
-                    hash: yanshi_render::region_block::content_hash(&data),
-                    data,
-                    version_atom: version,
-                    layers: self.state.alive_layers().len() as u32,
-                    objects: self.state.alive_objects().len() as u32,
-                });
-        }
+        // **∴ 写缓存也只有一份实现 ✗**（**∴ 与上面那份**成对 ✓）（**第 247 轮 ✓）★
+        self.region_block_put(key, version, &rendered.stats, data);
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
@@ -1142,6 +1181,23 @@ impl Document {
         bbox: Bbox,
         layer_id: &str,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        // **★★★ 第 247 轮：**单层渲染**也接上区域缓存**✗ 但**必须带图层 scope**✗ ★★★**
+        //   ＋ **∴ 判据（**`tool-region-cache-reuse.mjs` 场景二 ✓）✗**：
+        //     **∴ 同一层同一区域连渲两次 ⇒ **第二次必须快一个量级**（**`t4 <= t3 / 5` ✓）★
+        //       ＋ **∴ 实测（**接缓存之前 ✓）**：**93 ms ⇒ 92 ms（**比值 0.99× ✗）** ✓ ★★
+        //   ＋ **∴ 而**为什么**以前刻意绕过**✗（**上一段注释 ✓）：**那张缓存的键**不含图层**✗
+        //     ⇒ **∴ 直接复用会把**别的图层的像素**当成这一层的返回** ✓
+        //       ⇒ **∴ 所以**：**先给键**加上 scope**（`BlockKey::scope` ✓）✗ 再复用** ✓ ★★
+        //         ＋ **∴ 于是**：**"**能不能安全复用**"这个问题**在键里被回答了**✗
+        //           而**不是**靠"这条路径干脆别用缓存"** ✓ ★★★
+        //   ＋ **∴ 版本 ✗**：**仍是 `region_fingerprint(state)`**✗（**与全幅那条同一个口径 ✓）
+        //     ⇒ **∴ 内容一变 ⇒ 指纹变 ⇒ 不命中** ✓（**保守但绝不撒谎 ✓）★
+        let version = yanshi_render::region_block::region_fingerprint(&self.state);
+        let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h)
+            .with_scope(yanshi_render::region_block::BlockKey::layer_scope(layer_id));
+        if let Some((w, h, data)) = self.region_block_get(key, version) {
+            return Ok((w, h, data));
+        }
         let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
         let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
         // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
@@ -1157,6 +1213,9 @@ impl Document {
         }
         // **这条出口也带告警** ✓（它同样返回裸像素 ✓）。
         self.note_render_stats(&rendered.stats);
+        // **∴ 第 247 轮 ✗**：**这次渲染**也进缓存**✗（**键里带着图层 scope ✓ ⇒ 不会串层 ✓）★
+        //   ＋ **∴ 空的那些**在上面就 `return Err` 了**✗ ⇒ **∴ 缓存里**不会有空图** ✓
+        self.region_block_put(key, version, &rendered.stats, rendered.rgba8.clone());
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
