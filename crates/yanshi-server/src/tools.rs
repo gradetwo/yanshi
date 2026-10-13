@@ -4632,12 +4632,16 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 )
             })?;
             let state = document_state(ctx)?;
-            let target = state.layers.get(parent).filter(|l| !l.is_deleted()).ok_or_else(|| {
-                YanshiError::new(
-                    ErrorCode::ReferenceNotFound,
-                    ErrorContext::detail(format!("父图层组 {parent} 不存在")),
-                )
-            })?;
+            let target = state
+                .layers
+                .get(parent)
+                .filter(|l| !l.is_deleted())
+                .ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(format!("父图层组 {parent} 不存在")),
+                    )
+                })?;
             if target.layer_type != yanshi_core::LayerType::LayerGroup {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -13966,30 +13970,31 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             if nw > 0 && nh > 0 {
                 let mut merged = vec![0u8; nw * nh * 4];
                 // **∴ 贴一块位图（**可选翻转 ✓）✗ alpha 较大者胜** ✓
-                let mut paste = |src: &[u8], sw: usize, sh: usize, at_x: i64, at_y: i64, flip: bool| {
-                    for row in 0..sh {
-                        for col in 0..sw {
-                            let src_col = if flip { sw - 1 - col } else { col };
-                            let si = (row * sw + src_col) * 4;
-                            if si + 3 >= src.len() {
-                                continue;
-                            }
-                            let a = src[si + 3];
-                            if a == 0 {
-                                continue;
-                            }
-                            let dx = at_x - nx0 + col as i64;
-                            let dy = at_y - ny0 + row as i64;
-                            if dx < 0 || dy < 0 || dx >= nw as i64 || dy >= nh as i64 {
-                                continue;
-                            }
-                            let di = (dy as usize * nw + dx as usize) * 4;
-                            if a >= merged[di + 3] {
-                                merged[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                let mut paste =
+                    |src: &[u8], sw: usize, sh: usize, at_x: i64, at_y: i64, flip: bool| {
+                        for row in 0..sh {
+                            for col in 0..sw {
+                                let src_col = if flip { sw - 1 - col } else { col };
+                                let si = (row * sw + src_col) * 4;
+                                if si + 3 >= src.len() {
+                                    continue;
+                                }
+                                let a = src[si + 3];
+                                if a == 0 {
+                                    continue;
+                                }
+                                let dx = at_x - nx0 + col as i64;
+                                let dy = at_y - ny0 + row as i64;
+                                if dx < 0 || dy < 0 || dx >= nw as i64 || dy >= nh as i64 {
+                                    continue;
+                                }
+                                let di = (dy as usize * nw + dx as usize) * 4;
+                                if a >= merged[di + 3] {
+                                    merged[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                                }
                             }
                         }
-                    }
-                };
+                    };
                 let vertical = symmetry == yanshi_render::Symmetry::Vertical;
                 paste(&rgba, width, height, x0i, y0i, false);
                 paste(&rgba, width, height, mirror_x0, mirror_y0, vertical);
