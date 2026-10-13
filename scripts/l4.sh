@@ -554,6 +554,40 @@ for f in *.log; do
 done' 2>&1 | sed 's/^/  /'
 }
 
+# **★ 看远端**探针日志**（`/tmp/render-probe.log` ✓）✗ ★**（**第 246 轮 ✓）
+#
+# **∴ 为什么造它 ✗**（**用户指令「反复做的事要造工具」✓）★**：
+#   **∴ 本会话我**手工敲了 ≥4 次**同一串
+#     `l4.sh run "grep -E '…' /tmp/render-probe.log | tail -3"`**✗
+#     ＋ **∴ 而**每次都要**自己记得**三件事**：**① 文件在哪**✗ **② 服务端的 stderr
+#       被工具重定向到那里**（**`tool-render-cost-accounts.mjs` ✓）✗ **③ 探针没开时
+#       那个文件**根本不存在**（**∴ 于是** grep 空输出会被误读成"探针没打印" ✓）★★
+#   **∴ 所以 ✗**：**固化成一个子命令**✗ ⇒ **∴ 于是**它**自己**区分
+#     "没有日志（探针没开／还没跑）"与"有日志但没匹配" ✓ ★★
+#
+# **∴ 用法 ✗**：`scripts/l4.sh probe [行数=20] [grep 模式='.']` ✓
+#   ＋ **∴ 例 ✗**：`scripts/l4.sh probe 5 等待期并行度` ✓
+#   ＋ **∴ 退出码 ✗**：0 有日志（**匹配与否都 0 ✗ 而**打印会说明 ✓）｜**3 没有日志** ✓
+cmd_probe() {
+  local n="${1:-20}" pattern="${2:-.}"
+  # **∴ 模式里不许带引号 ✗**（**∴ 它**会被塞进远端命令 ⇒ **∴ 带引号就**把命令拆坏 ✓）★★
+  case "${pattern}" in
+    *"'"* | *'"'*) die "grep 模式里不要带引号（它会被拼进远端命令）" 2 ;;
+  esac
+  local out rc
+  out="$(l4_ssh_retry "if [ -s /tmp/render-probe.log ]; then grep -aE '${pattern}' /tmp/render-probe.log | tail -n ${n}; else echo '__NO_PROBE_LOG__'; fi" 2>&1)"
+  rc=$?
+  printf '%s\n' "${out}" | sed 's/^/  /'
+  case "${out}" in
+    *__NO_PROBE_LOG__*)
+      echo "  ⇒ **∴ 远端没有** `/tmp/render-probe.log`**✗ ⇒ **∴ 两种可能 ✓**：" >&2
+      echo "     **∴ ①** 还没跑过测量 ✗ **∴ ②** 跑了但**没设 `YANSHI_RENDER_PROBE=1`** ✓" >&2
+      echo "     ⇒ **∴ 服务端的 stderr** 由测量工具重定向到那个文件**（**见它的 `probeFd` ✓）★" >&2
+      return 3 ;;
+  esac
+  return "${rc}"
+}
+
 cmd_tail() {
   local name="${1:-}" n="${2:-20}"
   [ -n "${name}" ] || die "用法：scripts/l4.sh tail <名字> [行数]" 2
@@ -617,6 +651,8 @@ case "${1:-}" in
   jobs)        shift; cmd_jobs "$@" ;;
   tail)        shift; cmd_tail "$@" ;;
   rc)          shift; cmd_rc "$@" ;;
+  # **∴ 探针日志 ✗**（**第 246 轮 ✓）：**`probe [行数] [grep 模式]` ✓（**见 `cmd_probe` ✓）
+  probe)       shift; cmd_probe "$@" ;;
   down)        shift; cmd_down "$@" ;;
   sh|shell)    shift; cmd_sh "$@" ;;
   ""|-h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
