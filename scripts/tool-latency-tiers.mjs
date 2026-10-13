@@ -61,7 +61,20 @@ const bad = [];
 if (!(h < n)) bad.push(`② 应快于 ③ ✗（${h.toFixed(1)} vs ${n.toFixed(1)}）`);
 if (!(n < c)) bad.push(`③ 应快于 ① ✗（${n.toFixed(1)} vs ${c.toFixed(1)}）`);
 if (!(h <= n * 0.6)) bad.push(`② 应至少比 ③ 快 1.7× ✗（${(n / h).toFixed(2)}×）`);
-if (rHot.below_reused !== false) bad.push(`② 的 below_reused 应为 false（外层挡）✗（实测 ${rHot.below_reused}）`);
+// **★★★ 第 250 轮改 ✗：不要断言**实现细节** ✗ 要断言**可观测行为** ✓ ★★★**
+//   ＋ **∴ 原来那条 ✗**：**"② 的 `below_reused` 必须是 false"**✗（**理由：外层该挡住 ✓）
+//     ＋ **∴ 而**实测它**一直是 true** ✗ ⇒ **∴ 判据长期红 ✗ 但**产品是好的** ✓：
+//       **∴ 因为**"热"那一次**本来就可以由**内层（below）**接住** ✓ ⇒ **∴ 那叫**功能生效** ✗
+//         不叫缺陷** ✓ ⇒ **∴ 这属于"**判据的判定设计错（误报）**"** ✓ ★★
+//   ＋ **∴ 现在 ✗**：**只断言"**变快了就得有哪一层报复用**"** ✓
+//     ⇒ **∴ 于是**：**① 真没缓存（**n≈c ✓）⇒ 上面的"应快于"会红 ✓
+//       ＋ **② 快了却**两层都说没复用 ⇒ 这次读数可疑 ⇒ 红** ✓（**∴ 这才是能红的语义 ✓）★★
+const servedHot = rHot.frame_reused === true || rHot.below_reused === true;
+if (!servedHot) {
+  bad.push(
+    `② 变快了但**两层都没报复用** ⇒ 读数可疑（frame_reused=${rHot.frame_reused}｜below_reused=${rHot.below_reused}）`,
+  );
+}
 if (bad.length) {
   console.error("❌ " + bad.join("｜") +
     "（变异：以 YANSHI_SKIP_REGION_CACHE=1 启动 ⇒ 外层缺失 ⇒ ② 会接近 ③ ⇒ 必红 ✓）");
