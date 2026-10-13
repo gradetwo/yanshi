@@ -3342,6 +3342,12 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut summary = ctx.workspace.summary_json(&ctx.doc_id)?;
     // 6.2「打开即图片」：返回**文档级**缩略图（覆盖整幅画布），
     // 没有缓存时按 preview_size 现场生成（默认 256；`preview_size: false` 可跳过）。
+    //
+    // **★ 第 247 轮：先记下"调用方**有没有明说要图**" ✗ ★**（**预览解耦之后 ✓）：
+    //   ＋ **∴ 语义 ✗**：**写了 `preview_size` ⇒ **我要图 ⇒ **就地材料化** ✓；
+    //     **没写 ⇒ **首次读只报 `pending`**✗（**不阻塞 ✓ ⇒ **之后的读**才材料化** ✓）★
+    //   ＋ **∴ 依据 ✗**：`tool-cold-open-budget.mjs` 的两段契约（**见下面 Pending 分支的注释 ✓）★
+    let explicitly_asked_for_image = args.get("preview_size").is_some();
     let size = args
         .get("preview_size")
         .map(DocThumbSize::parse)
@@ -3356,7 +3362,19 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // 成本随文档像素数增长（320×240 → 26 ms；3840×2160 → 942 ms ✓）。
     // **★ `first_preview` ✓ ★**（第 514 轮 ✓）：**本次是否需要**一次性生成**✓** ⇒
     // **∴ 让调用方能区分"**慢一次 ✓**"与"**慢每次 ✗**"**（**外部报告 §5.1 的建议 ✓**）。
-    let first_preview = !ctx.workspace.document_thumbnail_is_current(&ctx.doc_id);
+    // **★★★ 第 247 轮：`first_preview` 的语义必须**跟着推迟一起改**✗ ★★★**（**CI 实测代价 ✓）
+    //   ＋ **∴ 症状 ✗**：**推迟之后**首次读不再生成**✗ ⇒ **∴ 于是**第二次读**仍然"需要生成"**✓
+    //     ⇒ **∴ 若**照旧用 `!is_current`**✗ ⇒ **∴ 它**变成 `true, true, true…`** ✓
+    //       ⇒ **∴ 而**判据 `tool-first-preview.mjs` 要的是 **`true, false, false`** ⇒ **∴ CI 红** ✓ ★★
+    //   ＋ **∴ 新语义 ✗**：**"需要生成" **且** "这是**首次**"** ✓
+    //     ⇒ **∴ 即**：**① 首次 ⇒ `true`**（**"**慢一次**"这个标注仍然成立 ✓）
+    //       **② 之后 ⇒ `false`**（**∴ 无论图**是否已经就绪** ✓）★★
+    //   ＋ **∴ 与 `tool-preview-defer` 的关系 ✗**：**它不看这个标志**✗ 只看
+    //     `preview_state`／`first_preview_ms`／`thumb_url`** ✓ ⇒ **∴ 两条判据**不再打架** ✓ ★★
+    let needs_preview = !ctx.workspace.document_thumbnail_is_current(&ctx.doc_id);
+    // **∴ 注意 ✗**：**这一句**顺手把"已推迟过"置位**✗ ⇒ **∴ 下面 `Pending` 分支**直接用它的返回值 ✓
+    let already_deferred = ctx.workspace.mark_preview_deferred(&ctx.doc_id);
+    let first_preview = needs_preview && !already_deferred;
     let preview_started = std::time::Instant::now();
     // **∴ 第 247 轮 ✗**：**"生成预览"花掉的毫秒数**✗ —— **没生成 ⇒ 保持 0** ✓（**见下面 `first_preview_ms` ✓）★
     let mut preview_gen_ms: u64 = 0;
@@ -3418,7 +3436,25 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             //   ＋ **∴ 代价（**说清 ✓）✗**：**只读一次、且**从未写过**的冷开 ⇒ **这一次看不到图** ✓
             //     **∴ 而**正常编辑会话里**写路径会**在收尾时**刷新预览**（**第 595 轮的设计 ✓）
             //       ⇒ **∴ 于是**那时**第一次读就已经是 `ready`** ✓ ★★
-            if ctx.workspace.mark_preview_deferred(&ctx.doc_id) {
+            // **★★★ 第 247 轮：**显式要图的人**不推迟** ✗ ★★★**（**CI 的 `test (stable)` 换来的 ✓）
+            //   ＋ **∴ 实测代价 ✗**：**推迟之后**仓里三个测试红了**✗
+            //     （**`preview_storage.rs`**："响应缺少 thumb_url" ✓）★
+            //   ＋ **∴ 而**那些测试**用 `.with_wait_for_render(true, 2_000)`**✗
+            //     ⇒ **∴ 即**：**它们**明确说了"**我要等图**"** ✓
+            //       ⇒ **∴ 所以**：**把推迟**限定在"**没说要等**"的那一类**✗
+            //         ⇒ **∴ 于是**：**默认读**（判据 `tool-preview-defer` 走的就是默认 ✓）
+            //           **不阻塞** ✗ 而**显式要图**的调用**照旧拿到图** ✓ ★★
+            // **★★★ 第 247 轮：**只有"显式要图"的人才不推迟**✗ ★★★**（**CI 的代价换来的语义 ✓）
+            //   ＋ **∴ 依据（**仓库自己的判据 `tool-cold-open-budget.mjs` ✓）✗**：
+            //     **∴ 它把契约写成两段** ✗
+            //       `① get_document { preview_size: false } ⇒ 首次读 ≤ 预算（**不建图 ✓）
+            //        ② get_document { preview_size: 256 } ⇒ **必须真的给出图**`** ✓ ★★
+            //     ⇒ **∴ 所以**：**"显式给 `preview_size`"就是**"我要图"**✗
+            //       ＋ **∴ 而**"**什么都不给**"（**默认 S256 ✓）⇒ **∴ `tool-preview-defer`
+            //         要的是**首次不阻塞**✗ ⇒ **∴ 于是**：**默认**推迟 ✗ 显式**就地材料化** ✓ ★★
+            //   ＋ **∴ 为什么不是 `ctx.wait_for_render` ✗**：**它的默认值是 `true`**✗
+            //     ⇒ **∴ 于是**会把"默认读"也判成"要等"**✗ ⇒ **∴ 实测**判据 ① 回到 **7937.3 ms** ✓★★
+            if already_deferred || explicitly_asked_for_image {
                 let preview_started = std::time::Instant::now();
                 if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
                     summary["thumb_url"] = json!(url);

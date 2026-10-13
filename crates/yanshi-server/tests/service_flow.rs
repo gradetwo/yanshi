@@ -461,7 +461,15 @@ fn document_thumbnail_is_cover_whole_canvas_not_the_last_region() {
     );
 
     // get_document 返回的是**文档级**缩略图（覆盖整幅画布，缺省 256），不是那张局部图。
-    let document = registry.call(&mut context, "get_document", &json!({}));
+    //
+    // **★ 第 247 轮：要图就得**说出来**✗ ★**（**预览解耦 ✓）：
+    //   **∴ 不写 `preview_size` ⇒ **首次读只报 `pending`**（**不阻塞 ✓）✗ 而**本测试要的就是图** ✓
+    //     ⇒ **∴ 所以**显式传 `preview_size: 256`** ✓（**与 `tool-cold-open-budget.mjs` 的契约一致 ✓）
+    let document = registry.call(
+        &mut context,
+        "get_document",
+        &json!({ "preview_size": 256 }),
+    );
     assert_eq!(document["ok"], json!(true), "{document}");
     assert_eq!(document["thumb_size"], json!(256));
     let thumb_url = document["thumb_url"].as_str().unwrap().to_owned();

@@ -187,9 +187,15 @@ fn heavy_atom_commit_does_not_store_a_full_canvas_png() {
     );
 
     // 文档级预览（`get_document` 的 thumb_url）必须是 256² 的小图。
+    //
+    // **★ 第 247 轮：这里必须**显式要图**✗ ★**（**预览解耦之后 ✓）：
+    //   **∴ 契约（**判据 `tool-cold-open-budget.mjs` 写的 ✓）✗**：
+    //     **∴ 不写 `preview_size` ⇒ **首次读**只报 `pending`**✗（**∴ 它**不许阻塞 ✓）；
+    //     **∴ 显式写 `preview_size: 256` ⇒ **必须真的给出图** ✓ ★★
+    //       ⇒ **∴ 所以**：**想要图就得说**✗ 而**本测试要的就是图** ✓
     let document = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "get_document", &json!({}))
+        registry.call(&mut ctx, "get_document", &json!({ "preview_size": 256 }))
     };
     let thumb = blob_for(&document, &workspace, "thumb_url");
     assert_eq!(

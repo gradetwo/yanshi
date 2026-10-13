@@ -170,12 +170,23 @@ fn stdio_handshake_draw_render_and_persist() {
         "--root", &root_str, "--doc", "doc_it", "--width", "48", "--height", "48",
     ]);
     restarted.request("initialize", json!({}));
-    let document = restarted.call_tool("get_document", json!({}));
+    // **★ 第 247 轮：把"**缓存可直接用**"验得更死 ✗ ★**（**预览解耦之后 ✓）
+    //   ＋ **∴ 语义变了 ✗**：**不写 `preview_size` ⇒ **首次读只报 `pending`**（**不阻塞 ✓）
+    //     ⇒ **∴ 想要图**必须**说出来**（**与 `tool-cold-open-budget.mjs` 的契约一致 ✓）★
+    //   ＋ **∴ 而且**这一条**本来就该**验两件事**✗**：
+    //     **∴ ① 有图**（**原来的断言 ✓）＋ **② **没有重渲**（**"缓存可直接用"的本意 ✓）★
+    //       ⇒ **∴ 若**只验 ① ✗ 那**重新渲一张**也能通过**✗ ⇒ **∴ 判据**抓不到"重启后不认缓存" ✓★★
+    let document = restarted.call_tool("get_document", json!({ "preview_size": 256 }));
     assert_eq!(document["doc_id"], json!("doc_it"));
     assert_eq!(document["head_seq"], json!(3));
     assert!(
         document["thumb_url"].as_str().is_some(),
         "打开即图片：渲染缓存可直接用（14.5）"
+    );
+    assert_eq!(
+        document["thumbnail_renders"],
+        json!(0),
+        "重启后**不该**重新渲染缩略图 ✗（**∴ 缓存**应当被认出来 ✓）：{document}"
     );
     let objects = restarted.call_tool("list_objects", json!({}));
     assert_eq!(objects["count"], json!(1));
