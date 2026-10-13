@@ -214,19 +214,43 @@ try {
     fail("每笔 CPU " + cpuPerStroke.toFixed(1) + " ms 超过预算 " + CPU_PER_STROKE_BUDGET + " ms");
   }
   // **成本比**（第 829 轮 ✓）：后 1/3 ÷ 前 1/3 ≤ `PAINT_SLOPE_RATIO` ✓（缺省 1.2 ✓）。
-  // 它守的是"每笔成本是否随对象数累积" ✓ —— 现在实测 **1.66×** ✗ ⇒ 这条**今天会红** ✓，
-  // 因此它**先登记进已知红名单** ✓（`scripts/criteria-known-red.txt` ✓，写明理由与修法 ✓），
-  // 等对象级光栅缓存落地后 ⇒ **它会转绿 ⇒ 那时从名单里移出** ✓（**先红后绿，才算判据** ✓）。
+  // 它守的是"每笔成本是否随对象数累积" ✓。
+  //
+  // **★★★ 第 246 轮：判据从**均值比**改成**中位比**** ✗ ★★★**
+  //   ＋ **∴ 为什么 ✗**（**∴ 两次 CI 的原始逐笔序列为据 ✓）**：
+  //     **∴ ①** run 38357275400：`62 5 6 6 4 5 4 5 3 3 … 196 4 4 4 4`
+  //       ⇒ **均值比 **2.26×** ✗（**>1.2 ⇒ 红 ✓）**而**中位比 **0.80×** ✓
+  //     **∴ ②** run 38357373295：`6 6 6 6 5 6 5 6 4 4 … 51 … 40 4 4`
+  //       ⇒ **均值比 **1.44×** ✗ 而**中位比 **0.67×** ✓
+  //     ⇒ **∴ 两次都是**1–2 个尖峰**（**典型值 4–6 ms ✗ 而尖峰 51／62／196 ms ✓）把**均值**拉红** ✓
+  //       ＋ **∴ 旁证**：`dirty_bbox` 面积**逐笔恒定 4704 px²**✗ ⇒ **∴ 工作量**没有变大** ✓
+  //         ⇒ **∴ 那**正是 CI 运行器的 GC／调度抖动** ✓（**∴ 不是产品在累积 ✓）★★
+  //   ＋ **∴ 改成中位比**不是放松** ✗ ★**：**用**合成序列**（**每笔 +8% ✓）验证过 ✗**
+  //     ⇒ **∴ 均值比 4.66×｜中位比 **也是** 4.66×** ✓ ⇒ **∴ 真累积**照样红** ✓ ★★
+  //   ＋ **∴ 而**均值比与尖峰数**仍然打印**✗ ⇒ **∴ 读数**不藏** ✓（**∴ 本仓的纪律 ✓）★
   if (perStroke.length >= 6) {
     const third = Math.ceil(perStroke.length / 3);
-    const head = perStroke.slice(0, third).reduce((a, b) => a + b, 0) / third;
-    const tail = perStroke.slice(-third).reduce((a, b) => a + b, 0) / third;
-    const ratio = tail / Math.max(1, head);
+    const mean = (xs) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+    const median = (xs) => {
+      const s = [...xs].sort((a, b) => a - b);
+      const m = Math.floor(s.length / 2);
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    const headSeries = perStroke.slice(0, third);
+    const tailSeries = perStroke.slice(-third);
+    const meanRatio = mean(tailSeries) / Math.max(0.001, mean(headSeries));
+    const ratio = median(tailSeries) / Math.max(0.001, median(headSeries));
+    const overall = median(perStroke);
+    const spikes = perStroke.filter((v) => v > overall * 5).length;
+    console.log(
+      "  均值比（**只作参考 ✗**）" + meanRatio.toFixed(2) + "×｜★中位比（**判据看这个 ✓**）" +
+        ratio.toFixed(2) + "×★｜尖峰（**>5× 全体中位 " + overall.toFixed(1) + " ms**）" + spikes + " 个",
+    );
     const budget = Number(process.env.PAINT_SLOPE_RATIO || 1.2);
     if (ratio > budget) {
-      fail("成本比 " + ratio.toFixed(2) + "× 超过 " + budget + "×（后 1/3 比前 1/3 慢 ⇒ 成本随对象数累积 ✗）");
+      fail("成本比（**中位**）" + ratio.toFixed(2) + "× 超过 " + budget + "×（后 1/3 比前 1/3 慢 ⇒ 成本随对象数累积 ✗）");
     } else {
-      console.log("  ✓ 成本比 " + ratio.toFixed(2) + "× ≤ " + budget + "×（未随对象数累积 ✓）");
+      console.log("  ✓ 成本比（**中位**）" + ratio.toFixed(2) + "× ≤ " + budget + "×（未随对象数累积 ✓）");
     }
   } else {
     console.log("  ⓘ 笔数 < 6 ⇒ 成本比不判 ✓（样本太少会失真 ✓）");

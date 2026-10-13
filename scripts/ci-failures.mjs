@@ -323,10 +323,19 @@ if (asJson) {
       console.log(`== ${job}（${list.length} 条）==`);
       for (const r of list) {
         const tags = [];
-        if (r.inLedger) tags.push("台账已登记");
+        if (r.inLedger) tags.push("台账已登记（**∴ 即**既有红 ✓）");
         if (r.gpuGate) tags.push("★ GPU 门禁 ★");
-        if (r.seenIn && r.seenIn.length) tags.push(`既有红（${r.seenIn.length}/${historyRuns.length} 次更早的 run 同名）`);
-        else if (historyRuns.length) tags.push("★ 更早的 run 里没有 ⇒ 疑似本轮引入 ★");
+        // **⚠️ 台账里的**不做历史判定** ✗ ★**（**∴ 实测教训 ✓）**：
+        //   **∴ 运行器对台账里的**不置红**✗ ⇒ **∴ 那些 shard**整片是"成功"** ✓
+        //     ＋ **∴ 而**本工具的历史回溯**只看**失败的 job**✗
+        //       ⇒ **∴ 于是**它**在更早的 run 里找不到这些名字**✗
+        //         ⇒ **∴ 标签写成**「更早的 run 里没有 ⇒ 疑似本轮引入」**✗
+        //           ⇒ **∴ 那**是**假的**警报** ✓（**∴ 第 246 轮实测：14 条里 11 条被误标 ✓）★★
+        //   **∴ 所以 ✗**：**台账已登记的**历史判定**跳过** ✓（**∴ 它本来就是"既有" ✓）★
+        if (!r.inLedger) {
+          if (r.seenIn && r.seenIn.length) tags.push(`既有红（${r.seenIn.length}/${historyRuns.length} 次更早的 run 同名）`);
+          else if (historyRuns.length) tags.push("★ 更早的 run 里没有 ⇒ 疑似本轮引入（**也可能只是**抖动** ✓）★");
+        }
         console.log(`  ✗ ${r.name}${r.exit !== null ? ` (EXIT=${r.exit})` : ""}｜${tags.join("｜")}`);
         if (r.reason) console.log(`      ↳ ${r.reason}`);
       }
