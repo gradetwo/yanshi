@@ -12833,7 +12833,9 @@ fn stamp_stroke_from(
     //     **∴ 提交一条笔触走的是**本文件这一份**（**`hokusai` 的 tile surface ✓）
     //       ＋ **∴ 而** `yanshi-render::brush::stamp_*` 是**渲染那条路**用的** ✓
     //         ⇒ **∴ 所以**：**给那边加计时 ⇒ **本场景**读到 0** ✓（**∴ 我**先就踩了这个 ✓）★★
-    //   ＋ **∴ 门控 ✗**：`YANSHI_RENDER_PROBE`（**∴ 生产路**零开销 ✓）
+    //   ＋ **∴ 门控 ✗**：`YANSHI_RENDER_PROBE`（**∴ 关着时**只留一次 `Instant::now`
+    //     （约 20 ns／次 ✓）✗ 而**不做**任何累加与打印** ✓ —— **∴ 所以**说"近似零开销"
+    //     而不是"零开销"** ✓（**∴ 本仓**不许把话说满** ✓）★
     //   ＋ **∴ 口径 ✗**：**它**只含**走 dab**的时间**✗ 不含解析笔刷／取底图／写 tile** ✓ ★
     let __t_stamp = std::time::Instant::now();
     let __stamp_probe = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
