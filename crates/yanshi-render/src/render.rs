@@ -1229,22 +1229,37 @@ impl Renderer {
             started: crate::probe::ProbeClock,
             label: String,
             on: bool,
+            // **★★★ 第 248 轮：**再分两段**✗ 给那 225–312 ms／带**命名** ★★★**
+            //   ＋ **∴ 为什么 ✗**：**闭合表量出**每带有 225–312 ms **不在五个探针里**✗
+            //     ＋ **∴ 而**它**在 2 带默认下是全帧最大的一项**（**624 ms ✗ 比量化 395／合成 328 都大 ✓）
+            //       ＋ **∴ 现有探针**没有一个盖住它**✗ ⇒ **∴ 于是**：**在**图层循环**两侧各打一个点 ✓
+            //         ⇒ **∴ 得到**建立（**循环之前 ✓）／循环／收尾（**循环之后 ✓）三段 ✓ ★★
+            //   ＋ **∴ 门控 ✗**：**与 `累计` 同一开关**（`YANSHI_RENDER_PROBE` ✓）★
+            setup: Option<std::time::Duration>,
+            after_loop: Option<std::time::Duration>,
         }
         impl Drop for AccTimer {
             fn drop(&mut self) {
                 if self.on {
-                    eprintln!(
-                        "PROBE 累计 区域={} 总={:?}",
-                        self.label,
-                        self.started.elapsed()
-                    );
+                    let total = self.started.elapsed();
+                    eprintln!("PROBE 累计 区域={} 总={:?}", self.label, total);
+                    // **∴ 分段只在两个点都打到时才印 ✗**（**∴ 中途 return ⇒ 只印总数 ✓）★
+                    if let (Some(setup), Some(after_loop)) = (self.setup, self.after_loop) {
+                        let tail = total.saturating_sub(after_loop);
+                        eprintln!(
+                            "PROBE 每带分段 区域={} 建立={setup:?}（**循环之前 ✓）｜循环={after_loop:?}｜收尾={tail:?}｜合计={total:?}",
+                            self.label
+                        );
+                    }
                 }
             }
         }
-        let _acc_timer = AccTimer {
+        let mut _acc_timer = AccTimer {
             started: crate::probe::ProbeClock::now(),
             label: format!("{}x{}", region.w as u32, region.h as u32),
             on: std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
+            setup: None,
+            after_loop: None,
         };
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -1954,6 +1969,9 @@ impl Renderer {
         //     **③** **临时禁用复用** ⇒ **∴ 它**立刻转绿 ✓（**∴ 所以**就是这里 ✓）** ✓✓
         //   **∴ 所以 ✗**：**在**切点处**留下一份**只含下方层**的缓冲 ✓ ⇒ **∴ 之后**用它写缓存 ✓**** ✓✓
         let mut below_snapshot: Option<Buffer> = None;
+        // **∴ 建立段到此结束 ✗**（**第 248 轮 ✓）：**循环之前的一切**（**可见层扫描 ／ below-above
+        //   准备 ／ 累积缓冲的建立 ✓）都在这一段里** ✓ ★
+        _acc_timer.setup = Some(crate::probe::ProbeClock::now().duration_since(_acc_timer.started));
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
                 // **指定了某一层 ⇒ 只画它** ✓，而且**不看它的可见性** ✓ ——
@@ -2051,6 +2069,9 @@ impl Renderer {
             }
             probe.composite += probe_stage.stop();
         }
+        // **∴ 循环段到此结束 ✗**（**第 248 轮 ✓）：**之后到 return 的一切**都算收尾** ✓ ★
+        _acc_timer.after_loop =
+            Some(crate::probe::ProbeClock::now().duration_since(_acc_timer.started));
         // **★ 存下"最上层以外"的合成 ✓**：**下次只改最上层时即可复用 ✓**。
         if cacheable && !reused {
             // **★ 用切点快照，**而不是**循环结束后的全量结果 ✗ ★**（第 926 轮 ✓）：
