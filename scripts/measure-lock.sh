@@ -28,6 +28,7 @@
 set -u
 
 LOCK="${YANSHI_MEASURE_LOCK:-/tmp/yanshi-measure.lock}"
+# **∴ safe-edit 对非 JS 文件**不做语法检查**✗ ⇒ **∴ 它**会明说** ✓
 SELF="$(basename "$0")"
 
 usage() {

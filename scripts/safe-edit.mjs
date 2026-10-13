@@ -166,8 +166,60 @@ if (!syntaxOk) {
   process.exit(1);
 }
 
+// **★★★ 闸⑤：**用到的标识符必须**在文件里被导入或定义**** ✗ ★★★**（**第 802 轮 ✓）
+//   **∴ 为什么需要它 ✗**（**实测 ✓）★**：
+//     ＋ **∴ 我**删掉 `rmSync` 的导入时**漏了一处调用**✗
+//       ⇒ **∴ 而** `node --check` **只查语法**✗ ⇒ **∴ 它**查不出**未定义的标识符** ✓ ★★
+//         ⇒ **∴ 于是**那个文件**语法全绿**✗ 而**一跑就崩** ✓
+//   **∴ 规则 ✗**：**对每个 `import { a, b } from` 里**没有**出现的名字**✗
+//     ＋ **∴ 若**它在代码里被**调用**（`name(` ✓）✗ ⇒ **∴ 记一条**可疑** ✓
+//       ＋ **∴ 白名单 ✗**：**JS 内建 ＋ 本文件里 `const`／`function` 定义的** ✓
+const JS_BUILTINS = new Set([
+  "console", "process", "JSON", "Math", "Number", "String", "Boolean", "Object", "Array",
+  "Promise", "Error", "Set", "Map", "Date", "RegExp", "Symbol", "Buffer", "URL", "URLSearchParams",
+  "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent",
+  "setTimeout", "setInterval", "clearTimeout", "clearInterval", "structuredClone", "fetch",
+  "require", "module", "exports", "__dirname", "__filename", "globalThis", "undefined", "NaN",
+  "Infinity", "BigInt", "WeakMap", "WeakSet", "Proxy", "Reflect", "Atomics", "TextEncoder",
+  "TextDecoder", "queueMicrotask", "AbortController", "AbortSignal", "FormData", "Blob", "File",
+]);
+if (ext === ".mjs" || ext === ".js" || ext === ".cjs") {
+  const imported = new Set();
+  for (const m of next.matchAll(/import\s*\{([^}]*)\}\s*from/g)) {
+    for (const nm of m[1].split(",")) {
+      const t = nm.trim().split(/\s+as\s+/).pop().trim();
+      if (t) imported.add(t);
+    }
+  }
+  for (const m of next.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from/g)) imported.add(m[1]);
+  const declared = new Set();
+  for (const m of next.matchAll(/(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(m[1]);
+  for (const m of next.matchAll(/(?:const|let|var)\s*\{([^}]*)\}/g)) {
+    for (const nm of m[1].split(",")) {
+      const t = nm.trim().split(":").pop().trim();
+      if (t) declared.add(t);
+    }
+  }
+  // **∴ 只看**调用形态**（`name(` ✓）✗ ⇒ **∴ 从而**少误报** ✓ ★
+  const suspicious = new Set();
+  for (const m of next.matchAll(/(^|[^\w.$])([a-z][\w$]*)\s*\(/g)) {
+    const name = m[2];
+    if (imported.has(name) || declared.has(name) || JS_BUILTINS.has(name)) continue;
+    if (/^(if|for|while|switch|catch|return|typeof|new|await|async|function|class|else|do|try|throw|delete|void|in|of|case|default)$/.test(name)) continue;
+    // **∴ 方法调用（**前面有点 ✓）不算** ✓
+    suspicious.add(name);
+  }
+  if (suspicious.size > 0) {
+    console.error("  ✗ 闸⑤ 可能用了**未导入**的标识符（**`node --check` 查不出这一类** ✓）：");
+    for (const n of suspicious) console.error(`     · ${n}(  ⇒ **∴ 它**既没 import 也没定义**`);
+    console.error("     ⇒ **∴ 原文件**未改动** ✓");
+    console.error("     ⇒ **∴ 若**是误报（**如**解构／内建 ✓）⇒ **∴ 加** `--allow-undeclared`** ✓");
+    if (!has("--allow-undeclared")) process.exit(1);
+    console.error("     （--allow-undeclared 已给 ⇒ **∴ 继续** ✓）");
+  }
+}
+
 writeFileSync(file, next, "utf8");
-rmSync(dir, { recursive: true, force: true });
 
 // **∴ 闸④（**写后再确认一次 ✓）：**从磁盘读回来**必须等于 next** ✓
 const back = readFileSync(file, "utf8");
