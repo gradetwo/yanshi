@@ -52,7 +52,15 @@ fn the_first_big_blur_uses_the_gpu_when_one_is_available() {
     let (w, h) = (1920u32, 1080u32);
     let lut = srgb_encode_table();
     // **∴ 先问一句"有没有适配器" ✗**（**∴ 用的是**临时实例**✗ **不写缓存 ✓）★
-    if yanshi_gpu::Quantizer::new(&lut[..]).is_err() {
+    //   ＋ **∴ 必须**把它留到测试结束**✗ ★**（**∴ L4 实测 ✓）**：
+    //     **∴ 早一步 drop 它**✗ ⇒ **∴ 进程**退出时** SIGABRT** ✓
+    //       ＋ **∴ 报错行 ✗**：`_glthread_: thread failed to set thread specific data: Success` ✓
+    //         ⇒ **∴ 那**是 Mesa／GL 的线程收尾问题**✗ 而**不是判据失败** ✓
+    //           （**∴ 判据本身**已经 `1 passed`**✗ 而** cargo 仍按进程退出码报错 ✓）★★
+    //     **∴ 而**同进程里**两个 device 都活着**（**如同 `gpu_blur_parity` 的 `_quantizer` ✓）
+    //       ⇒ **∴ 退出**干净** ✓ ⇒ **∴ 所以**：**留一个具名变量**✗ 而**不要**在 `if` 里临时判** ✓ ★★
+    let probe = yanshi_gpu::Quantizer::new(&lut[..]);
+    if probe.is_err() {
         eprintln!("⚠️ 本机 GPU 不可用 ⇒ 跳过（**不是通过**）");
         return;
     }
