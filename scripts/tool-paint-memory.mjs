@@ -170,7 +170,13 @@ try {
   }
   const token = await fetch(BASE + "/api/documents", { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc_id: "boot", width: 512, height: 512 }) }).then((r) => r.json()).then((v) => v.token);
+    // **★★★ 第 246 轮：**画布尺寸必须**跟着 `PAINT_DOC` 走**✗ ★★★**
+    //   ＋ **∴ 我第一版只改了服务端 spawn 的 `--width/--height`**✗
+    //     ＋ **∴ 而**文档是**这里**建的**✗ ⇒ **∴ 于是**：**画布**始终 512×512** ✓
+    //       ⇒ **∴ 而**大画布的笔触坐标**就落到画布外面**✗
+    //         ⇒ **∴ 服务端**如实拒绝**（`invalid_argument` ＋ 一句**写得很清楚**的 detail ✓）★★
+    //           ⇒ **∴ 那次"12 笔只成功 5 笔"**不是产品问题**✗ 而**是我**参数化漏了一处** ✓ ★★
+    body: JSON.stringify({ doc_id: "boot", width: DOC_SIZE, height: DOC_SIZE }) }).then((r) => r.json()).then((v) => v.token);
   if (!token) throw new Error("拿不到 token ⇒ 判据无法运行（不是通过 ✗）");
 
   await fetch(BASE + "/api/tools?doc=boot&token=" + token, { method: "POST",
