@@ -158,6 +158,12 @@ fn main() -> Result<()> {
         skipped_entries
     );
 
+    let layout = Layout {
+        doc_w,
+        doc_h,
+        out_w,
+        out_h,
+    };
     // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）
     let mut kernel =
         yanshi_wasm::Kernel::new(&doc_id, TILE_SIZE, doc_w, doc_h, KERNEL_MEMORY_LIMIT)
@@ -218,42 +224,51 @@ fn main() -> Result<()> {
     let mut frames = 0usize;
     let mut apply_failures = 0usize;
     let mut first_failure: Option<String> = None;
+    // **★★★ 第 249 轮：**先立账 ✗ 再谈优化** ★★★**（**门控 `YANSHI_TIMELAPSE_PROBE` ✓）
+    //   ＋ **∴ 分四段 ✗**：**apply（**喂 atom ✓）｜render（**内核渲 ✓）｜scale（**缩放＋去 alpha ✓）
+    //     ｜write（**写进 ffmpeg ✓）⇒ **∴ 一眼看出**钱花在哪一段** ✓ ★★
+    //   ＋ **∴ 为什么**必须自己量 ✗**：**交付版说"Rust 单线程 pipe 最快、rayon 反而慢 28%"** ✓
+    //     ＋ **∴ 而**那套数**是在**它自己的简化合成**上量的**✗ ⇒ **∴ 与真管线**不可比** ✓ ★★
+    let probe = std::env::var_os("YANSHI_TIMELAPSE_PROBE").is_some();
+    let mut account = Account::default();
 
     for (i, line) in atom_lines.iter().enumerate() {
         if i >= end_idx {
             break;
         }
+        let t_apply = Instant::now();
         if let Err(error) = kernel.apply_atom_json(line) {
             apply_failures += 1;
             if first_failure.is_none() {
                 first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
             }
         }
+        account.apply_ns += t_apply.elapsed().as_nanos();
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
-            push_frame(
-                &mut kernel,
-                &mut stdin,
-                &mut frames,
-                doc_w,
-                doc_h,
-                out_w,
-                out_h,
-            )?;
+            push_frame(&mut kernel, &mut stdin, &mut frames, layout, &mut account)?;
         }
     }
-    push_frame(
-        &mut kernel,
-        &mut stdin,
-        &mut frames,
-        doc_w,
-        doc_h,
-        out_w,
-        out_h,
-    )?;
+    push_frame(&mut kernel, &mut stdin, &mut frames, layout, &mut account)?;
     drop(stdin);
     let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
         bail!("ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频", status.code());
+    }
+    if probe {
+        let ms = |ns: u128| ns as f64 / 1e6;
+        account.frame_render_ns.sort_unstable();
+        let median = account
+            .frame_render_ns
+            .get(account.frame_render_ns.len() / 2)
+            .map_or(0.0, |v| ms(*v));
+        println!(
+            "  ★ 分段账（ms）★ apply {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
+            ms(account.apply_ns),
+            ms(account.render_ns),
+            median,
+            ms(account.scale_ns),
+            ms(account.write_ns)
+        );
     }
     if apply_failures > 0 {
         eprintln!(
@@ -277,21 +292,69 @@ fn main() -> Result<()> {
 /// **∴ 为什么不用闭包 ✗**：**闭包要同时可变借用 `kernel`／`stdin`／`frames`**✗
 ///   ＋ **∴ 而**外面那圈循环**也在用 `kernel`**✗ ⇒ **∴ 借用检查**不会过** ✓
 ///     ⇒ **∴ 于是**：**显式传参 ✗ 借用关系写在签名里 ✓** ★
+/// **★ 分段账 ✗**（**第 249 轮 ✓）：**四段纳秒 ＋ 每帧渲染耗时（**算中位 ✓）★
+///
+/// **∴ 为什么收成一个结构体 ✗**：**11 个参数**clippy 直接拒**✗（**`too_many_arguments` ✓）
+///   ＋ **∴ 而**我**不想用 `#[allow]` 盖住它**✗ ⇒ **∴ 于是**：**账目**本来就是一个东西** ✗
+///     ⇒ **∴ 收成 `Account` ✗ 参数回到 8 个 ✓** ★★
+/// **★ 帧的几何 ✗**（**第 249 轮 ✓）：**源画布 ＋ 目标尺寸 ✓
+///
+/// **∴ 为什么也收起来 ✗**：**`push_frame` 收到 8 个参数**clippy 仍然嫌多**✗（**7 是上限 ✓）
+///   ＋ **∴ 而**这四个数**本来就是一件事**（**一张帧的坐标变换 ✓）⇒ **∴ 于是**：**打包 ✓）
+///     ⇒ **∴ 参数回到 5 个 ✓** ★
+#[derive(Clone, Copy)]
+struct Layout {
+    /// 源画布宽 ✓。
+    doc_w: u32,
+    /// 源画布高 ✓。
+    doc_h: u32,
+    /// 目标宽 ✓。
+    out_w: u32,
+    /// 目标高 ✓。
+    out_h: u32,
+}
+
+#[derive(Default)]
+struct Account {
+    /// 喂 atom 的总纳秒 ✓。
+    apply_ns: u128,
+    /// 内核渲染的总纳秒 ✓。
+    render_ns: u128,
+    /// 缩放 ＋ 去 alpha 的总纳秒 ✓。
+    scale_ns: u128,
+    /// 写进 ffmpeg 的总纳秒 ✓。
+    write_ns: u128,
+    /// 每一帧的渲染纳秒（**用来算中位 ✗ 只看总和不看抖动 ✓）★
+    frame_render_ns: Vec<u128>,
+}
+
 fn push_frame(
     kernel: &mut yanshi_wasm::Kernel,
     stdin: &mut ChildStdin,
     frames: &mut usize,
-    doc_w: u32,
-    doc_h: u32,
-    out_w: u32,
-    out_h: u32,
+    layout: Layout,
+    account: &mut Account,
 ) -> Result<()> {
-    let region = yanshi_core::Bbox::new(0.0, 0.0, f64::from(doc_w), f64::from(doc_h));
+    let t_render = Instant::now();
+    let region = yanshi_core::Bbox::new(0.0, 0.0, f64::from(layout.doc_w), f64::from(layout.doc_h));
     let rendered = kernel
         .render_region(region)
         .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
-    let rgb = to_rgb_scaled(&rendered.rgba8, doc_w, doc_h, out_w, out_h);
+    let render_ns = t_render.elapsed().as_nanos();
+    account.render_ns += render_ns;
+    account.frame_render_ns.push(render_ns);
+    let t_scale = Instant::now();
+    let rgb = to_rgb_scaled(
+        &rendered.rgba8,
+        layout.doc_w,
+        layout.doc_h,
+        layout.out_w,
+        layout.out_h,
+    );
+    account.scale_ns += t_scale.elapsed().as_nanos();
+    let t_write = Instant::now();
     stdin.write_all(&rgb).context("写帧到 ffmpeg 失败")?;
+    account.write_ns += t_write.elapsed().as_nanos();
     *frames += 1;
     Ok(())
 }
