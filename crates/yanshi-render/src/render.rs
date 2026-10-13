@@ -4205,6 +4205,20 @@ pub(crate) mod parallel_impl {
         1
     }
 
+    /// **★ wasm：输出量化也**永远串行**✗ ★**（**第 247 轮 ✓）
+    ///
+    /// **∴ 为什么这条必须有 ✗**（**CI 换来的 ✓；那次两个 job 都红 ✓）**：
+    ///   ＋ **∴ 调用点（**`render_region` ✓）**在两个目标上都编译**✗
+    ///     ＋ **∴ 而**上面那个 `quantize_workers` **只在本机那个模块里**✗
+    ///       ⇒ **∴ 于是**：**wasm 构建**报 `cannot find function quantize_workers`** ✓
+    ///         ＋ **∴ 而**我只跑了本机测试与 clippy**✗ 没跑 wasm 目标** ✓ ★★
+    ///           ⇒ **∴ 教训 ✗**：**动了跨目标的代码 ⇒ **先跑
+    ///             `cargo check --target wasm32-unknown-unknown`**（**仓里就是
+    ///             `scripts/wasm-smoke.sh` ✓）★★
+    pub const fn quantize_workers(_explicit: Option<usize>) -> usize {
+        1
+    }
+
     /// 串行回退（本目标上 `workers()` 恒为 1，因此调用点不会走到这里；保留它是为了让
     /// 强行抬高 worker 数的调用仍然得到**正确画面**而不是 panic）。
     pub fn render_region(
