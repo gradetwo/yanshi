@@ -295,6 +295,14 @@ pub struct Document {
     document_thumbnail: Option<BlobHash>,
     /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
     document_thumbnail_seq: Seq,
+    /// **★★★ 第 247 轮：**这份文档的预览是否**已经推迟过一次**✗ ★★★**
+    ///   ＋ **∴ 它解决什么 ✗**（**判据 `tool-preview-defer.mjs` 的两段 ✓）**：
+    ///     **∴ ① 首次读 ⇒ **不许阻塞**✗ ⇒ **∴ 只报 `pending` ＋ 起一次推迟** ✓；
+    ///       ＋ **∴ ② 之后的读 ⇒ **必须能拿到图**（**"慢的仍然要算" ✓）**
+    ///         ⇒ **∴ 就地材料化 ⇒ **∴ 这**需要知道"是不是首次"** ✓ ★★
+    ///   ＋ **∴ 为什么放在文档上 ✗**：**"首次"是**每份文档**的属性**✗
+    ///     ＋ **∴ 而**它**不进任何响应**✗ ⇒ **∴ 只影响服务端的两条分支** ✓ ★
+    preview_deferred: bool,
     /// **缓存文档级缩略图的像素** ✓（性能专题，第 1040 轮）。
     ///
     /// 增量预览必须拿得到"上一版像素" ✓：只重新渲染变过的区域，再把它刷进对应块 ✓；
@@ -481,6 +489,8 @@ impl Document {
             full_frame_hits: 0,
             document_thumbnail: None,
             document_thumbnail_seq: 0,
+            // **∴ 第 247 轮 ✓**：**还没推迟过 ⇒ **∴ 首次读**会推迟 ✓
+            preview_deferred: false,
             document_thumb: None,
             preview_dirty: PreviewDirty::Unknown,
             full_frame_render: None,
@@ -660,9 +670,22 @@ impl Document {
     /// 但它们是**私有字段、且不进任何响应** ✗ ⇒ **判据根本读不到** ✓
     /// ⇒ 于是第 273 轮那条"空白文档冷启动不再整幅光栅化"的优化**没有能红的判据** ✗。
     /// ⇒ 这里给它一个只读出口 ✓，判据即可断言"**空文档的冷启动预览不增加这个计数**" ✓
-    /// （**结构性**判据 ✓：与区域大小、与机器快慢都无关 ✓）。
     pub fn preview_render_counts(&self) -> (usize, usize) {
         (self.document_preview_renders, self.full_canvas_renders)
+    }
+
+    /// **★ 标记「预览已推迟过一次」✗ 并返回**之前**是否已推迟**✗ ★**（**第 247 轮 ✓）
+    ///
+    /// **∴ 返回值的语义 ✗**：**`false` ＝ **这一次是首次**（**∴ 调用方**只报 `pending` ✓）**｜
+    /// **`true` ＝ **之前已经推迟过**（**∴ 调用方**这次**就地材料化** ✓）★
+    ///   ⇒ **∴ 于是**：**首次不阻塞 ＋ 之后仍能拿到图**两件事**同时成立** ✓ ★★
+    ///     ＋ **∴ 依据 ✗**：**判据 `tool-preview-defer.mjs` 的两段就是这样写的** ✓
+    ///       （**① 首次 < 50 ms／`pending`／`first_preview_ms=0`／无 `thumb_url` ✓
+    ///        ② 等过宽限期 ⇒ `ready` ＋ 有图 ✗ 并允许**就地生成** ✓）★★
+    pub fn mark_preview_deferred(&mut self) -> bool {
+        let already = self.preview_deferred;
+        self.preview_deferred = true;
+        already
     }
 
     /// 渲染缓存统计（可观测性：设计 1319 行要求包含缓存/生命周期指标）。

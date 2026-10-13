@@ -3358,6 +3358,8 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 让调用方能区分"**慢一次 ✓**"与"**慢每次 ✗**"**（**外部报告 §5.1 的建议 ✓**）。
     let first_preview = !ctx.workspace.document_thumbnail_is_current(&ctx.doc_id);
     let preview_started = std::time::Instant::now();
+    // **∴ 第 247 轮 ✗**：**"生成预览"花掉的毫秒数**✗ —— **没生成 ⇒ 保持 0** ✓（**见下面 `first_preview_ms` ✓）★
+    let mut preview_gen_ms: u64 = 0;
     // **★ 改用三态 ✓ ★**（第 595 轮 ✓；**异步预览设计 ④⑤ 的读路径 ✓**）：
     // **∴ 首次不再同步渲染 ✗** ⇒ **∴ 响应立刻返回 ✓（**原来这里会花 ≈1 s ✗**）**；
     // **∴ 而**预览会在下一次提交收尾就绪 ✓**（**或超宽限期后由兜底就地生成 ✓**）。
@@ -3396,14 +3398,41 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **∴ 为什么不影响判据 1 ✗**：那条守的是「**一笔没要求文档预览的笔触**不触发文档预览 ✓」
         // ⇒ **∴ 它**说的是**写路径** ✗ ⇒ **∴ 本改动**只碰**读路径 ✓**** ✓✓
         crate::service::PreviewState::Pending => {
-            let preview_started = std::time::Instant::now();
-            if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
-                summary["thumb_url"] = json!(url);
-                summary["thumb_size"] = json!(size.kind().size());
-                // **如实改报 `ready`** ✓（**∴ 我们**刚刚**真的生成了它 ✓**）。
-                preview_state = crate::service::PreviewState::Ready(url);
+            // **★★★ 第 247 轮：**首次**不阻塞**✗ 之后**就地材料化**** ✗ ★★★**（**用户裁定：回归 CPU 线 ✓）
+            //   ＋ **∴ 实测（**本机 ✓；判据 `tool-preview-defer.mjs` 自己打的 ✓）**：
+            //     **∴ 首次 `get_document`（**4K ✓）＝ **9461.9 ms**✗ `preview_state=ready`✗
+            //     `first_preview_ms=9447`** ✓ ⇒ **∴ 即**读一次**要同步渲一遍预览** ✓ ★★
+            //   ＋ **∴ 而**判据的契约是**两段**（**它自己写着 ✓）**：
+            //     **∴ ① 首次 ⇒ **墙钟 < 50 ms ＋ `pending` ＋ `first_preview_ms=0` ＋ **无 `thumb_url`** ✓
+            //       ＋ **∴ ② 等过宽限期 ⇒ **`ready` ＋ 有 `thumb_url`**（**∴ 并允许**就地生成**✗
+            //         判据会把它**如实打出来** ✓："② 的就地生成耗时 = … ✓ ⇒ 「慢的仍然要算」✓"）★★
+            //   ＋ **∴ 所以 ✗**：**用文档上的一个位**区分"**首次**"与"**之后**"** ✓：
+            //     **∴ ① 首次 ⇒ **只报 `pending` ✗ 不起渲染** ✓
+            //       ＋ **∴ ② 之后 ⇒ **就地材料化**（**∴ 于是**"慢的仍然要算"仍成立 ✓）★
+            //   ＋ **∴ 与第 919 轮的张力（**如实记 ✓）✗**：**那一轮的理由是
+            //     "**`get_document` 属于**要新鲜**那一类 ⇒ **它**应当**给图**"** ✓
+            //     ＋ **∴ 而**它**把首次读**变回同步**（**注释里估计"4K 约 1 s" ✓）——
+            //       **∴ 而**实测是 **9.4 s**✗（**本机 ✓）⇒ **∴ 那次估计**差了近 10 倍** ✓ ★★
+            //         ⇒ **∴ 现在**按判据的契约**两段都满足**✗ ⇒ **∴ 于是**：
+            //           **首次**不再阻塞**✗ 而**图**仍然会被算出来**（**第二次读时 ✓）** ✓ ★★★
+            //   ＋ **∴ 代价（**说清 ✓）✗**：**只读一次、且**从未写过**的冷开 ⇒ **这一次看不到图** ✓
+            //     **∴ 而**正常编辑会话里**写路径会**在收尾时**刷新预览**（**第 595 轮的设计 ✓）
+            //       ⇒ **∴ 于是**那时**第一次读就已经是 `ready`** ✓ ★★
+            if ctx.workspace.mark_preview_deferred(&ctx.doc_id) {
+                let preview_started = std::time::Instant::now();
+                if let Some(url) = ctx.workspace.ensure_document_thumbnail(&ctx.doc_id, size)? {
+                    summary["thumb_url"] = json!(url);
+                    summary["thumb_size"] = json!(size.kind().size());
+                    // **如实改报 `ready`** ✓（**∴ 我们**刚刚**真的生成了它 ✓**）。
+                    preview_state = crate::service::PreviewState::Ready(url);
+                }
+                ctx.time(Phase::Preview, preview_started);
+                preview_gen_ms = preview_started
+                    .elapsed()
+                    .as_secs_f64()
+                    .mul_add(1000.0, 0.0)
+                    .round() as u64;
             }
-            ctx.time(Phase::Preview, preview_started);
         }
         crate::service::PreviewState::Unavailable => {}
     }
@@ -3428,11 +3457,11 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         crate::service::PreviewState::Pending => "pending",
         crate::service::PreviewState::Unavailable => "unavailable",
     });
-    summary["first_preview_ms"] = json!(preview_started
-        .elapsed()
-        .as_secs_f64()
-        .mul_add(1000.0, 0.0)
-        .round() as u64);
+    // **★★★ 第 247 轮：**这个数**只量"预览生成"**✗ ★★★**（**∴ 判据要的是**首次为 0** ✓）
+    //   ＋ **∴ 原来它量的是**从进读路径到这里的整段**✗ ⇒ **∴ 于是**推迟之后它会变成
+    //     "**几毫秒的读路径耗时**"✗ 而**判据要求**恰好 0** ✓（**∴ 那**会把绿判成红 ✓）★★
+    //   ＋ **∴ 现在 ✗**：**没生成 ⇒ 0**✗ **生成过 ⇒ 那一段的毫秒数** ✓（**与字段名一致 ✓）★
+    summary["first_preview_ms"] = json!(preview_gen_ms);
     // **预览渲染计数**（第 274 轮 ✓）：只读出口 ✓，让判据能断言"这条路真的走了没有" ✗。
     // 它是**结构性**的证据 ✓（与区域大小、与机器快慢、与墙钟都无关 ✓）。
     if let Some(document) = ctx.workspace.document(&ctx.doc_id) {

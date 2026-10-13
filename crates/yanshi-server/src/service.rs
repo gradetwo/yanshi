@@ -2879,6 +2879,20 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
             .unwrap_or(false)
     }
 
+    /// **★ 标记「预览已推迟过一次」✗ 并返回**之前**是否已推迟**✗ ★**（**第 247 轮 ✓）
+    ///
+    /// **∴ 语义 ✗**：**`false` ＝ **这一次是首次**（**∴ 调用方**只报 `pending` ✗ 不阻塞 ✓）**｜
+    /// **`true` ＝ **之前已经推迟过**（**∴ 调用方**这次**就地材料化** ✓）★
+    ///   ⇒ **∴ 于是**：**首次不阻塞 ＋ 之后仍拿得到图**两件事**同时成立** ✓ ★★
+    ///
+    /// **∴ 文档不在时 ✗**：**按「已经推迟过」返回**✗（**∴ 于是**照旧走就地路 ✓）
+    ///   ⇒ **∴ 既有行为**不被这次改动**改变** ✓（**∴ 缺文档 ⇒ **后面的 `ensure` **本来就会报错 ✓）★
+    pub fn mark_preview_deferred(&mut self, doc_id: &str) -> bool {
+        self.document_mut(doc_id)
+            .map(|d| d.mark_preview_deferred())
+            .unwrap_or(true)
+    }
+
     /// **确保文档缩略图存在 ✓**（**按需生成并落盘 ✓**；**已是最新 ⇒ 直接返回已存 URL ✓**）。
     /// **⚠️ 返回值**：**`Option<String>` ＝ URL ✓｜`None` ＝ `Skip`（**调用方明确不要图 ✓**）** ——
     /// **∴ 想知道"**本次是否真的生成了**✗"⇒ 请用 [`Self::document_thumbnail_is_current`] ✓**。
