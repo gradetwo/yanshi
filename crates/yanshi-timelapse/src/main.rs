@@ -49,7 +49,7 @@ const MAX_H: u32 = 1080;
 /// 内核内存预算（**与浏览器同档 ✓**）：4K 工程 replay 需要它 ✓。
 const KERNEL_MEMORY_LIMIT: usize = 2 * 1024 * 1024 * 1024;
 /// 内核算术的 tile 尺寸（**与浏览器同一档 ✓**）。
-const TILE_SIZE: u32 = 256;
+const TILE_SIZE: u32 = 64;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -264,9 +264,9 @@ fn main() -> Result<()> {
             .get(account.frame_render_ns.len() / 2)
             .map_or(0.0, |v| ms(*v));
         // **∴ 语义证据 ✗**（**∴ 不看墙钟也能看出"脏区路真的走了" ✓）★
-        let (full_renders, dirty_renders, dirty_tiles) = timeline.stats();
+        let (full_renders, dirty_renders, dirty_tiles, dirty_runs) = timeline.stats();
         println!(
-            "  ★ 渲染账 ★ 整幅 {full_renders} 次｜脏区 {dirty_renders} 次（**共 {dirty_tiles} 个 tile ✓）★"
+            "  ★ 渲染账 ★ 整幅 {full_renders} 次｜脏区 {dirty_renders} 次（**共 {dirty_tiles} 个 tile ✗ {dirty_runs} 条 run ✓）★"
         );
         println!(
             "  ★ 分段账（ms）★ apply {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
