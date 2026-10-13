@@ -116,9 +116,27 @@ function parseJobLog(text) {
   const failed = new Map(); // name → { exit, reason, knownRed }
   const summary = [];
   let counts = null;
+  // **★ 判据自己的失败行 ✗ ★**（**∴ 比汇总行更可信 ✓）★
+  //   **∴ 为什么需要它 ✗**（**∴ 实测 ✓）：**汇总行有时**不是**判据的失败行** ✓
+  //     ＋ **∴ 例 ✗**：`browser-offline-brush` 的汇总行抓到的是一条
+  //       `· 负对照（SW 桩必须让未缓存请求失败）= {"failed":true,…}`
+  //       ⇒ **∴ 那**是**诊断**✗ 而**不是失败**（**`failed:true` ＝ 负对照**通过**✓）★
+  //         ⇒ **∴ 于是**：**只看汇总行 ⇒ **会把人**引到错的地方** ✓ ★★
+  //   **∴ 所以 ✗**：**同时收** `项│/头│/后│…` 那组行里**以 ✗／❌ 开头**的最后一条** ✓
+  //     ＋ **∴ 而**汇总行**不以 `·` 开头时**优先用它** ✓（**∴ 那是运行器**自己提炼的 ✓）★
+  //   **⚠️ 而那个回退**必须按判据分桶**✗（**∴ 我第一版用一个全局变量 ⇒ **抓到了别人的行** ✓）★
+  //     **∴ 实测（**第 246 轮 ✓）✗**：**全局写法下 `browser-offline-brush` 的原因变成了
+  //       「参考图功能不存在」✗（**∵ 那是**它后面那条判据**的诊断 ✓）⇒ **∴ 于是**：
+  //       **台账里会写下**张冠李戴的原因** ✗ ⇒ **∴ 比没有原因**更坏** ✓ ★★
+  //     **∴ 正确做法 ✗**：**诊断行**归属于**最近一条** `✗ <name> (EXIT=n)`** ✓
+  //       （**∴ 运行器**逐条跑**✗ ⇒ **∴ 顺序天然可用 ✓）★
+  const diagByName = new Map();
+  let current = null;
   for (const raw of text.split("\n")) {
     const line = strip(raw);
     if (line === null) continue;
+    const d = line.match(/^\s+(?:项|体|头|前|后)│\s*(?:✗|❌)\s*(.+)$/);
+    if (d && current) diagByName.set(current, d[1].trim());
     // **∴ 顺序要紧 ✗ ★**（**∴ 实测教训 ✓）：**汇总行**也以 `  ✗ <name>` 开头**✗
     //   ⇒ **∴ 若**先匹配"逐条执行行"**✗ 而**它的 `(EXIT=n)` 是可选的**✗
     //     ⇒ **∴ 汇总行**会被吃掉 ⇒ **∴ 于是**原因**永远为空** ✓（**本工具第一版就这样 ✓）★
@@ -127,7 +145,9 @@ function parseJobLog(text) {
     if (sumLine) {
       const [, name, reason] = sumLine;
       const entry = failed.get(name) || { exit: null, reason: "", knownRed: false };
-      entry.reason = reason.trim();
+      const trimmed = reason.trim();
+      // **∴ 以 `·` 开头的**是诊断行**✗ ⇒ **∴ 换成**该判据自己的失败行** ✓★
+      entry.reason = trimmed.startsWith("·") && diagByName.has(name) ? diagByName.get(name) : trimmed;
       failed.set(name, entry);
       summary.push(name);
       continue;
@@ -135,6 +155,8 @@ function parseJobLog(text) {
     const runLine = line.match(/^\s+([✓✗])\s+([A-Za-z0-9_.-]+\.(?:mjs|sh))\s*\(EXIT=(-?\d+)\)\s*$/);
     if (runLine) {
       const [, mark, name, exit] = runLine;
+      // **∴ 诊断归属**跟着它走**✗ ⇒ **∴ 下一条 `项│ ✗` 就算**这一条**的 ✓★
+      current = name;
       const entry = failed.get(name) || { exit: null, reason: "", knownRed: false };
       entry.exit = Number(exit);
       if (mark === "✗") failed.set(name, entry);
@@ -143,6 +165,11 @@ function parseJobLog(text) {
     const knownLine = line.match(/^\s+⚠\s+([A-Za-z0-9_.-]+\.(?:mjs|sh))/);
     if (knownLine) {
       const name = knownLine[1];
+      // **∴ 已知红那条**也要**接手"当前判据"** ✗ ★**（**∴ 实测教训 ✓）**：
+      //   **∴ 若**不接**✗ ⇒ **∴ 它自己的 `项│ ✗` 行**会被算进**前一条**判据的名字里** ✓
+      //     ＋ **∴ 实测（**第 246 轮 ✓）✗**：`browser-offline-brush` 于是拿到了
+      //       「参考图功能不存在」✗（**那**是**它后面那条**（**已知红 ✓）的诊断 ✓）★★
+      current = name;
       const entry = failed.get(name) || { exit: null, reason: "", knownRed: false };
       entry.knownRed = true;
       failed.set(name, entry);
