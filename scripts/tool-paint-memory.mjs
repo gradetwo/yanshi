@@ -207,8 +207,9 @@ try {
     //       ⇒ **∴ 若**不印原因**✗ ⇒ **∴ "笔触成本"里会混进**一批**失败调用** ✓
     //         ⇒ **∴ 于是**：**测出来的"占比"**没有意义** ✓ ★★
     if (!(reply && reply.ok)) {
-      const why = (reply && (reply.detail || reply.error_code || reply.error)) || JSON.stringify(reply);
-      failedReasons.push(`o_${i}: ${String(why).slice(0, 160)}`);
+      // **∴ 只印 `error_code` 不够 ✗**（**∴ 那是**分类**✗ 不是**原因** ✓）⇒ **∴ 留整段响应** ✓
+      const why = (reply && (reply.detail || reply.message)) || JSON.stringify(reply);
+      failedReasons.push(`o_${i}: ${String(why).slice(0, 220)}`);
     }
     // **把每笔的 dirty_bbox 记下来**（第 826 轮 ✓）：若它随对象数**变大** ✓ ⇒
     // 那么「区域渲染」就退化成「越来越大的区域」 ✓ ⇒ 正好解释 O(n^2) ✓。
