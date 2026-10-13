@@ -13906,3 +13906,54 @@ test result: FAILED. 0 passed; 1 failed        ⇒ EXIT=101
   ＋ **∴ 而**作为**能力**（**接线 ＋ 逐位一致 ✓）**它**是成立且已验证的** ✓ ★★
 ⇒ **∴ 而**那**正好说明**为什么新判据要单独存在**✗：
   **∴ 「**能不能**」与「**值不值**」是两件事**✗ ⇒ **∴ 判据也必须分成两条** ✓ ★★
+
+---
+
+# 二十八、★ 待办 4（收尾）：`/tmp` 已清 ✗ **L4 释放被**本地 DNS**挡住**★
+
+## 一、★ `/tmp` ✗ 已清 ✓
+
+**∴ 读数 ✗**：**清之前 **68 MB**（**其中 `/tmp/yanshi_*` 测试临时目录 **1525 个／50 MB ✓）
+⇒ **∴ 清之后 **18 MB**（**剩下的**是 harness 自己的日志 ＋ 系统目录 ⇒ **∴ 不碰 ✓）★
+**∴ 来源 ✗**：**本机跑 `cargo test --workspace`（**门禁 ✓）时每个测试建的临时目录** ✓
+  ⇒ **∴ 它们**跑完就没用了**✗ 而**以前**没人收** ✓
+    ⇒ **∴ 若**要根治 ⇒ **∴ 应当**让测试自己 `trackTemp` ＋ 退出时删**（**仓里已有这个模式 ✓）★
+
+## 二、★★★ L4 释放：**命令被本地 DNS 挡住**（**∴ 如实记 ✓）★★★
+
+**∴ 现象 ✗**：
+```
+$ bash scripts/l4.sh down
+== 停掉会话 dawang（释放配额 ✓）==
+  NameResolutionError("HTTPSConnection(host='colab.research.google.com', port=443):
+    Failed to resolve 'colab.research.google.com' ([Errno -5] No address associated with hostname)"))
+```
+**∴ 而同时 ✗**：
+- `getent hosts colab.research.google.com` ⇒ **解析失败** ✓
+- `curl -o /dev/null -w '%{http_code}' https://github.com` ⇒ **200** ✓（**∴ 外网**通 ✓）
+- `bash scripts/l4.sh run "echo alive"` ⇒ **alive** ✓
+  ⇒ **∴ 即**会话**还活着**✗ 而 `colab ssh --proxy-mode` **照样连得上** ✓
+    ⇒ **∴ 因为**它**走的是会话自己的 `prod.colab.dev` 端点**✗ **不**走那个被挡的 API 域** ✓ ★★
+- ＋ **∴ 我**也试了**运行时**自己那招（**`from google.colab import runtime; runtime.unassign()` ✓）
+  ⇒ **∴ 它**报 `RuntimeManagementError: Unable to find the runtime management service`** ✓
+    ⇒ **∴ 所以**：**这条路**在 CLI 会话里**不通** ✓ ★
+
+**∴ 结论（**如实 ✓）✗**：
+- **∴ 待办 4 的"释放配额"这一步**今天**做不到**✗ —— **∴ 挡住它的是**本机 DNS**✗
+  而**不是**脚本或产品** ✓；
+- ＋ **∴ 缓解 ✗**：**L4 **空闲会被自动回收**（**`l4.sh` 自己的注释里就写着这条实测 ✓）
+  ⇒ **∴ 所以**：**会话不会一直占着** ✓；
+- ＋ **∴ 下次网络恢复**✗ ⇒ **∴ 直接**再跑一次 `bash scripts/l4.sh down`** ✓ ★
+
+## 三、★ 这条失败**顺手换来一个工具修复**（**用户指令 ✓）★
+
+**∴ 被它骗过两次 ✗**：**`colab sessions` 失败时**输出为空**✗
+⇒ **∴ 而** `l4.sh status` **打印「**没有名为 dawang 的会话 ⇒ 先跑 up**」** ✓
+  ⇒ **∴ 于是**：**"查不了"与"没有"**被混成一件事** ✓ ★★
+**∴ 修法 ✗**：**新增 `colab_sessions_or_die`**✗（**∴ 认出**退出码非零／输出里有
+`Error|NameResolution|Traceback|Failed to resolve` ✓）⇒ **∴ 打印诊断 ＋ 返回 3** ✓
+  ＋ **∴ 而** `cmd_status` **改用它对** ✓（**∴ 实测：现在它明确说"**查不了**"＋给 DNS 提示 ✓）★
+**∴ 顺带 ✗**：**我在改它时**先写错了两处「双引号里嵌 ASCII 双引号」**✗
+  ⇒ **∴ 而** `bash -n` **查不出来**✗（**∴ 那两处会**静默拼成一个参数 ✗ **引号消失 ✓）
+    ⇒ **∴ 已改成「」**✗ ＋ **∴ 可移植性扫描（**`$VAR` 紧跟非 ASCII ✓）与 `bash -n` 都过** ✓ ★★
+      ⇒ **∴ 教训 ✗**：**`bash -n` 只查**语法**✗ 而**不查**引号被吃掉** ✓ ★
