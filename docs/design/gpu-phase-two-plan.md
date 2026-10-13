@@ -14268,3 +14268,23 @@ PROBE 印章：2.5 ms（43 枚 dab）｜累计 42.9 ms                  ← 每�
         `Stroke` 对象 ✓）用的** ✓
         ⇒ **★ 所以 ✗**：**"同一个名字"不等于"同一条路"** ✗
           ⇒ **∴ 这正是本仓第 546 轮那条教训的**同族**（**同名探针必须标明是哪一处 ✓）★★
+
+## 五、★ 收口：最后一次代码提交的 CI 为绿（**`ee2ba71f` ✓）★
+
+```
+run 38378890335｜HEAD ee2ba71f｜★ success ★
+node scripts/ci-failures.mjs --run 38378890335 --history 2 ⇒ 退出码 0（没有任何意外失败）
+```
+
+**∴ 而这一轮 CI 曾经**红过两个 job ✗ 原因是我自己造的 ✗**（**∴ 值得记 ✓）★**：
+- **∴ 症状 ✗**：`clippy` 与 `GPU feature (build and size)` 同一条错** ✗
+  `error: empty line after doc comment --> crates/yanshi-render/src/brush.rs:567` ✓
+- **∴ 根因 ✗**：**我插计时设施时把 `stamp_samples` 的文档注释**挤开了**✗
+  ⇒ **∴ 于是**变成「**一条孤立注释 ＋ 空行****✗
+    ＋ **∴ 而** clippy 的 `empty_line_after_doc_comments` **在 `-D warnings` 下**直接失败** ✓
+      （**∴ rustc 的 `missing_docs` **只报了另一半**✗ ⇒ **∴ 我本地 `cargo check` **没看出来** ✓）★★
+- **∴ 修法 ✗**：**删掉那条孤立注释**✗ ＋ **∴ 然后**按 CI 的两条命令**原样本地跑过** ✓：
+  `cargo clippy -p yanshi-render --all-targets -- -D warnings` ✓
+  `cargo clippy -p yanshi-http --features gpu --all-targets -- -D warnings` ✓ ★★
+- **∴ 教训 ✗**：**"本地 check 过" ≠ "clippy 过"**✗
+  ＋ **∴ 而**本仓把 clippy 提到了 `-D warnings`**✗ ⇒ **∴ 只有**跑那一条**才算过** ✓ ★★
