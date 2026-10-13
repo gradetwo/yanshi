@@ -1863,6 +1863,35 @@ async function kernelRenderRgba(x, y, w, h) {
   return kernel ? kernel.render_region_rgba(x, y, w, h) : null;
 }
 
+/// **★ 请求一次重绘（**route 乙 的"回调触发重绘" ✓）★★★**
+///
+/// **为什么需要它** ✓（**用户裁定 route 乙 ＋ 判据 `tool-kernel-async-sites.mjs` 的第三条** ✓）：
+/// 内核的**异步** GPU 路**返回 Promise** ✓（`render_region_rgba_async`，`yanshi-wasm/src/lib.rs:230` ✓），
+/// **不能**在调用点 `await` ✗（那会**改调用方** ✗，与乙不符 ✓）。
+/// ⇒ **所以**：结果到达后**主动请求一次重绘** ✓ ⇒ **画面才会更新** ✓。
+/// **不做**的话 ✗：**"异步"就等于"不画"** ✗（判据把这一条单列，正是为了防它 ✓）。
+///
+/// **合并同帧多次请求** ✓：`requestAnimationFrame` 天然按帧合并 ✓；
+/// 若一帧内被请求多次 ⇒ 只重绘一次 ✓（`repaintPending` 是闸 ✓）。
+let repaintPending = false;
+function requestRepaint() {
+  if (repaintPending) return;
+  repaintPending = true;
+  const run = () => {
+    repaintPending = false;
+    try {
+      redrawCanvasFromKernel();
+    } catch (error) {
+      reportPaintError("异步重绘", error);
+    }
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(run);
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
 function drawKernelRegion(x, y, w, h) {
   // 含 heavy 内容的文档里 ✓，内核那份像素是**空白**的 ✓ ⇒ 内核落笔之后用**服务端像素**补画 ✓
   //（整块绘制、脏区绘制、缩放重绘都走这里 ✓，WS 的 tiles 事件也不例外 ✓）。
@@ -1893,7 +1922,39 @@ function drawKernelRegion(x, y, w, h) {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  // **★★★ route 乙：先用**异步**入口 ✗ ★★★**（**第 809 轮；**用户裁定 ✓；判据第三条 ✓）
+  //   **∴ 为什么 ✗**：**GPU 路**本质异步**（`Quantizer::quantize_async` ✓）
+  //     ＋ **∴ 而**同步入口**在 GPU 上只能**空等**✗ 或**退回 CPU** ✓
+  //       ＋ **∴ 所以**：**用** `render_region_rgba_async`（**`yanshi-wasm/src/lib.rs:230` ✓）★
+  //         ＋ **∴ 与乙相符的三点 ✗**：
+  //           ⇒ **∴ ①** **本函数**返回可等待物**✗（**调用方**不必 await ✓）
+  //             ＋ **∴ ②** **调用点**0 改动**✗（**它们**现在就不 await ✓）
+  //               ＋ **∴ ③** **完成后**调 `requestRepaint()`**✗ ⇒ **∴ 结果**到达屏幕** ✓ ★★★
+  //   **∴ 回退 ✗**：**没有异步入口（**旧构建／未开 gpu feature ✓）⇒ **∴ 照旧**走同步** ✓
+  const asyncFn = state.kernel && state.kernel.render_region_rgba_async;
+  if (typeof asyncFn === "function") {
+    // **∴ 返回 Promise ✗**（**∴ 而**不 await ⇒ **∴ 调用方**不变** ✓）
+    return Promise.resolve()
+      .then(() => asyncFn.call(state.kernel, x0, y0, cw, ch))
+      .then((view) => {
+        paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);
+        // **∴ 回调触发重绘 ✗**（**route 乙 的第三条 ✓）
+        requestRepaint();
+      })
+      .catch((error) => {
+        reportPaintError("异步区域渲染", error);
+      });
+  }
   const rgbaView = state.kernel.render_region_rgba(x0, y0, cw, ch);
+  const rgba = rgbaView ? Uint8Array.from(rgbaView) : rgbaView;
+  return paintRegionPixels(rgba, x0, y0, cw, ch, vx, vy, w, h, started);
+}
+
+/// **★ 把一块像素**画上去**（**同步与异步两条路**共用** ✓）★★★**
+///
+/// **为什么抽出来** ✓：**两条路必须**逐位一致** ⇒ **∴ 共用同一段绘制代码**是最可靠的保证** ✓
+/// （本项目反复吃过"两条路径漏一条／不一致"的亏 ✗ ✓）。
+function paintRegionPixels(rgbaView, x0, y0, cw, ch, vx, vy, w, h, started) {
   const rgba = rgbaView ? Uint8Array.from(rgbaView) : rgbaView;
   if (!rgba || rgba.length < cw * ch * 4) {
     // **内核给不出这一块像素 ⇒ 用服务端像素补画** ✓ —— 这就是"重新打开含介质的文档是白板"的根因 ✓：
@@ -1924,6 +1985,7 @@ function drawKernelRegion(x, y, w, h) {
     window.yanshiStats.firstStrokeMs = elapsed;
     $("firstStroke").textContent = elapsed.toFixed(2) + "ms";
   }
+  return undefined;
 }
 
 // 拖动中的笔迹重绘：区域通常只有几十像素见方，直接渲染比「按 tile 组合」便宜得多
