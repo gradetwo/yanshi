@@ -95,6 +95,21 @@ const main = async () => {
   //     ⇒ **∴ 与"这台机器多快""是 debug 还是 release"**都无关** ✓ ★★
   const cacheHits = async () =>
     Number((await (await fetch(`${base}/health`)).json())?.region_cache?.hits ?? -1);
+  // **★★★ 读不到**就必须说"我判不了"✗ 而不是**谎报红／绿**✗ ★★★**（**本仓纪律 ✓；目标第 4 条 ✓）
+  //   ＋ **∴ 实测（**第 247 轮 ✓）✗**：**L4 上那个 release 二进制是**旧版本**✗
+  //     ⇒ **∴ `/health.region_cache` **根本不存在**✗ ⇒ **∴ 读到 `-1`** ✓
+  //       ＋ **∴ 而**旧版判据会把它**当成"没命中"⇒ 报红** ✗ ⇒ **∴ 那**是**假红**✗
+  //         （**∴ 真因是**二进制太旧**✗ 而**不是产品坏** ✓）★★
+  //           ⇒ **∴ 所以**：**先探一次**✗ 读不到就**退 3**（**"判据判不了"✗ 与产品失败区分开 ✓）★
+  const probe = await cacheHits();
+  if (probe < 0) {
+    console.error(
+      "❌ 判据判不了：`/health` 里没有 `region_cache.hits` ⇒ **服务端二进制太旧**（**第 247 轮才加的字段 ✓）" +
+        " ⇒ **∴ 请先重建服务端**（`cargo build --release -p yanshi-http --bin yanshi-serve` ✓）" +
+        " ⇒ **∴ 这不是产品失败** ✗ **∴ 退出码 3** ✓",
+    );
+    process.exit(3);
+  }
   const h3 = await cacheHits();
   const t3s = Date.now();
   await call(doc, token, "render_region", { region, raw: true });
