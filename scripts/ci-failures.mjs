@@ -181,6 +181,40 @@ function parseJobLog(text) {
   return { failed, counts };
 }
 
+/** **★ 一个 job 红了、但**一条判据都没解析出来** ✗ ★**（**∴ 最危险的一种 ✓）★
+ *
+ *  **★★★ 它为什么必须存在 ✗ ★★★**（**∴ 我自己踩的 ✓）**：
+ *    **∴ 实测（**run 38355714859 ✓）✗**：**`test (stable)`／`test (beta)` 因为
+ *      `cargo test -p yanshi-server --test script_portability` 失败 ⇒ **∴ 整个 run**红** ✓
+ *      ＋ **∴ 而**本工具**第一版**只找 `criteria shard` 的失败行**✗
+ *        ⇒ **∴ 于是**它**打印了「★ 没有任何意外失败 ⇒ 绿 ★」**✗ —— **∴ 对一次**真红的 run** ✓ ★★
+ *    **∴ 所以 ✗**：**失败的 job 里**解析不到判据**✗ ⇒ **∴ 必须**当成"无法归类"**✗
+ *      ＋ **∴ 而**"无法归类"**不能当成"不挡第 4–11 项"**✗（**∴ 我们**没证据 ✓）
+ *        ⇒ **∴ 所以**：**它也**走"必须修"那条（**退出码 1 ✓）★**** ✓✓
+ */
+function tailLines(text, n) {
+  const lines = text
+    .split("\n")
+    .map((l) => strip(l) ?? l)
+    .filter((l) => l.trim());
+  // **∴ 优先取**真失败行**✗ ★**（**∴ 日志尾部通常是**收尾命令**✗ ⇒ **∴ 它**帮不上判 ✓）★
+  //   ＋ **∴ 而** `##[error]Process completed` 也不算证据**✗（**∴ 那只说"这步红了" ✓）★
+  //   ＋ **⚠️ 别用大小写不敏感的 `failed`** ✗（**∴ 那会命中**"0 failed"这种**通过行** ✓
+  //     ⇒ **∴ 于是**证据里全是"test result: ok"✗ —— **∴ 我第一版就这样 ✓）★★
+  const evidence = lines.filter(
+    (l) =>
+      !/Process completed with exit code/.test(l) &&
+      !/^test result: ok\./.test(l) &&
+      (/\bFAILED\b/.test(l) ||
+        /panicked at/.test(l) ||
+        /^error(\[|:)/.test(l) ||
+        /##\[error\]/.test(l) ||
+        /^\s*failures:\s*$/.test(l) ||
+        /error: test failed/.test(l)),
+  );
+  return (evidence.length ? evidence : lines).slice(-n);
+}
+
 /** **★ 枚举一个 run 里**所有 job 红了的判据**（**∴ 供 --history 用 ✓）★ */
 function runFailures(runId) {
   const view = JSON.parse(gh(["run", "view", String(runId), "--json", "status,conclusion,headSha,displayTitle,jobs"]));
@@ -195,7 +229,14 @@ function runFailures(runId) {
     const parsed = parseJobLog(log);
     const list = [...parsed.failed.entries()].map(([name, info]) => ({ name, ...info }));
     for (const item of list) names.add(item.name);
-    perJob.push({ job: job.name, counts: parsed.counts, failures: list });
+    perJob.push({
+      job: job.name,
+      counts: parsed.counts,
+      failures: list,
+      // **∴ 红了却没有判据行 ⇒ **无法归类** ✓（**∴ 见上面那段说明 ✓）
+      unparsed: list.length === 0,
+      tail: list.length === 0 ? tailLines(log, 12) : [],
+    });
   }
   return { status: view.status, names, jobs: view.jobs, view, perJob };
 }
@@ -263,9 +304,20 @@ if (asJson) {
   );
 } else {
   console.log("");
-  if (!rows.length) {
+  // **★ 先报"无法归类"✗ ★**（**∴ 它**比任何判据红都**优先** ✓ —— **∴ 因为**它说明
+  //   **这个 run 的红**我根本没看懂**✗ ⇒ **∴ 那时**说"绿"就是撒谎** ✓）★★
+  const unparsedJobs = current.perJob.filter((j) => j.unparsed);
+  if (unparsedJobs.length) {
+    console.log(`★★ 有 ${unparsedJobs.length} 个 job 红了、但**解析不到任何判据行**✗ ⇒ **∴ 本工具**无法归类** ★★`);
+    for (const j of unparsedJobs) {
+      console.log(`  ✗ job「${j.job}」的日志尾部：`);
+      for (const l of j.tail) console.log(`      ${l}`);
+    }
+    console.log("");
+  }
+  if (!rows.length && !unparsedJobs.length) {
     console.log("★ 没有任何意外失败 ⇒ **∴ 就「CI 全绿」的定义（**第 4–11 项的判据无意外失败 ✓）而言：绿 ★");
-  } else {
+  } else if (rows.length) {
     for (const job of [...new Set(rows.map((r) => r.job))]) {
       const list = rows.filter((r) => r.job === job);
       console.log(`== ${job}（${list.length} 条）==`);
@@ -294,6 +346,15 @@ if (asJson) {
 // **∴ 判定 ✗**（**∴ 已知红台账里的**不算意外** ✓ —— 运行器也已经不阻塞它们 ✓）★
 const unexpected = rows.filter((r) => !r.inLedger);
 const gateRed = unexpected.filter((r) => r.gpuGate);
+// **★★ 无法归类的 job ⇒ **一律按"必须修"处理** ✗ ★★**（**∴ 我**没有证据说它不挡第 4–11 项** ✓）
+const unparsed = current.perJob.filter((j) => j.unparsed);
+if (unparsed.length) {
+  console.error(
+    `✗ **有 ${unparsed.length} 个 job 红了而本工具**无法归类** ⇒ **∴ 不能声称"绿"** ✗（**∴ 退出码 1 ✓）★：` +
+      unparsed.map((j) => j.job).join("、"),
+  );
+  process.exit(1);
+}
 if (unexpected.length === 0) process.exit(0);
 if (gateRed.length) {
   console.error(`✗ **有 ${gateRed.length} 条 GPU 门禁判据意外红 ⇒ **按裁定必须修** ✗：${gateRed.map((r) => r.name).join("、")}`);
