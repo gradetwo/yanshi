@@ -1160,7 +1160,14 @@ impl Renderer {
         // 这一段的成本随画布面积线性增长（4K 上实测约半秒）⇒ **同样按行并行**；
         // 每像素只由自己的输入决定 ⇒ 与串行逐字节一致。
         let mut probe_stage = stage_probe::Stage::start();
-        let rgba8 = parallel_impl::quantize_to_rgba8(&cropped, background, workers);
+        // **∴ 输出量化用自己的带数 ✗**（**第 247 轮 ✓）**：**它**不背渲染那份"每带一份全宽
+        //   累积缓冲"的代价**✗ ⇒ **∴ 实测 4K 上**量化 396.5 ⇒ 137.6 ms（**带数 2 ⇒ 8 ✓）✗
+        //   而**渲染那两条（**合成／图层 ✓）在带数 8 下反而**慢 53%／31%** ✓ ⇒ **∴ 所以**分开** ✓ ★★
+        let rgba8 = parallel_impl::quantize_to_rgba8(
+            &cropped,
+            background,
+            parallel_impl::quantize_workers(self.max_workers),
+        );
         stage_probe::report(
             background.is_some(),
             probe.fill,
@@ -3790,6 +3797,30 @@ pub(crate) mod parallel_impl {
     use super::*;
     // 分带切法与并发上限与 `Buffer::to_rgba8` 共用同一套（见 `crate::rows` 的说明）。
     use crate::rows::{split_bands, MAX_WORKERS, MIN_BAND_ROWS};
+
+    /// **★★★ 输出量化的**带数**✗ 与**渲染分带**分开** ★★★**（**第 247 轮 ✓；**实测驱动 ✓）
+    ///
+    /// **∴ 为什么可以分开 ✗**（**L4 release ／ 4K ／ 6 轮取中位 ✓）**：
+    ///   **∴ 带数 2 ⇒ **量化 396.5 ms**✗ 合成 308–336 ✗ 图层 239** ✓
+    ///   **∴ 带数 8 ⇒ **量化 137.6 ms（**快 2.9× ✓）✗ 合成 470（**慢 53% ✗）✗ 图层 313（**慢 31% ✗）★
+    ///     ⇒ **∴ 两条路的**最优带数**不同** ✓：
+    ///       **∴ 渲染**每带要一份**全宽累积缓冲**✗ ⇒ **∴ 带多了**内存流量↑ ⇒ **更慢** ✓
+    ///       **∴ 量化**是**纯流式核**（**读 f32 ✗ 写 u8 ✗ 无每带累积 ✓）⇒ **∴ 带数**跟着核数走 ✓ ★★
+    ///   ＋ **∴ 仓库自己早就写了这句话 ✗**：`rows.rs` 的 `MIN_BAND_ROWS` 注释——
+    ///     "**只用于**渲染**分带；**输出量化的每块固定成本小得多**✗ 不需要这么厚的块** ✓ ★
+    ///   ＋ **∴ 而 `workers()`（**渲染那条 ✓）**保持** `DEFAULT_BAND_CAP = 2` **一个字不变** ✓
+    ///     ＋ **∴ 那条默认值的两次对照（**1／2／3／4 带的本机实验 ＋ 第 247 轮 L4 上
+    ///       2／4／6／8／12 带的复核 ✓）都是**渲染总账**的口径**✗ ⇒ **∴ 它们**仍然成立** ✓ ★★
+    pub fn quantize_workers(explicit: Option<usize>) -> usize {
+        explicit
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|value| value.get())
+                    .unwrap_or(1)
+                    .min(MAX_WORKERS)
+            })
+            .clamp(1, MAX_WORKERS)
+    }
 
     /// 本次可用的 worker 上限（显式覆盖优先，其次可用核数）。
     pub fn workers(explicit: Option<usize>) -> usize {
