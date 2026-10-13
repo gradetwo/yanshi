@@ -966,10 +966,20 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     //   **∴ 逐位口径 ✗**：**GPU 与 CPU 在 **u8 上差 0.0011%**✗（**∴ 1 LSB ✓；**第 698 轮 ✓）
     //     ＋ **∴ 所以**：**严格逐位的调用方**必须自行回退**✗（**∴ 口径待用户裁定 ✓）★
     // **∴ 同样必须**与实现一致的门控 ✗**（**第 729 轮 ✓）★
+    // **★ 第 246 轮：门槛**按已有的设备等级**分档 ✗ ★**（**用户裁定 ✓）
+    //   ＋ **∴ 已经缓存里有设备 ✗** ⇒ **∴ 用它的等级**的档**（**∴ 不额外创建 ✓）
+    //     ＋ **∴ 缓存还是空 ✗** ⇒ **∴ 先用**保守档**判**✗
+    //       ⇒ **∴ 于是**：**不会**为了一个小图**去创建设备**（**∴ 那**要 ~32 ms ✓）★
+    //         ＋ **∴ 而**代价说清 ✗**：**独显的**低门槛**要等设备**已经被别的操作创建**
+    //           之后才生效** ✓（**∴ 典型：**输出量化（≥1 M px ✓）会先创建它 ✓）★★
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     {
         let count = (buffer.width() as usize).saturating_mul(buffer.height() as usize);
-        if count >= GPU_BLUR_MIN_PIXELS {
+        let min_pixels = match crate::buffer::quantizer_device_class() {
+            Some(class) => gpu_blur_min_pixels(class),
+            None => GPU_BLUR_MIN_PIXELS,
+        };
+        if count >= min_pixels {
             if let Some(out) = try_gpu_gaussian_blur(buffer, sigma) {
                 buffer.pixels_mut().copy_from_slice(&out);
                 return;
@@ -1458,15 +1468,100 @@ pub fn display_byte_to_linear(byte: u8) -> f32 {
     srgb_to_linear(byte as f32 / 255.0)
 }
 
-/// **∴ 滤镜走 GPU 的**最小像素数** ✗**（**第 700 轮 ✓；目标：滤镜 GPU 化 ✓）★
+/// **∴ 滤镜走 GPU 的**最小像素数（**保守档 ✓）✗**（**第 700 轮 ✓；目标：滤镜 GPU 化 ✓）★
 ///
 /// **∴ 为什么是 2 M ✗**（**据第 699 轮实测 ✓）：
 ///   **∴ 1080p（**2.07 M ✓）⇒ GPU **2.0–3.6×**✗
 ///     ＋ **∴ 4K（**8.29 M ✓）⇒ GPU **1.1–1.5×** ✓
 ///       ＋ **∴ 而**小图上**传输的固定成本（**~15 ms ✓）**会盖过收益** ✓
 ///         ⇒ **∴ 所以**：**低于 2 M 像素时**CPU 本来就快**✗ ⇒ **∴ 不值得**冒传输风险** ✓ ★
+///
+/// **★★★ 第 246 轮：它**降级成"保守档"**✗ 而**不是**唯一门槛**★★★**（**用户裁定 ✓）
+///   ＋ **∴ 用户裁定（**第 246 轮 ✓）✗**：**阈值**按适配器分档** ✓
+///   ＋ **∴ 依据 ✗**（**L4 实测 ✗ 5 轮取中位 ✗ GPU 含传输 ✓）**：
+///     **∴ 640×480（**0.31 M ✓）⇒ σ=2 **3.53×**｜σ=8 **11.52×** ✓
+///       ＋ **∴ 960×540 ⇒ **3.81×／12.34×**✗ **1280×720 ⇒ **2.01×／12.14×**** ✓
+///         ＋ **∴ 1600×900 ⇒ **1.64×／3.61×**✗ **1080p ⇒ **2.57×／6.46×**✗ **4K ⇒ **1.85×／5.24×**** ✓
+///           ⇒ **★ 每一档**都是正向 ✗ 连最小的 0.31 M 都赢 ⇒ **∴ 交点**在 0.31 M 以下** ✓ ★★
+///   ＋ **∴ 所以 ✗**：**独显**降到**实测过的最小尺寸**✗（**307 200 ＝ 640×480 ✓）
+///     ＋ **∴ 而**集成／虚拟／**软件渲染**没有实测**✗ ⇒ **∴ 它们**继续用这个 2 M 保守档** ✓
+///       ⇒ **∴ 那**正是本仓的纪律**：**不许把没量过的东西当收益** ✓ ★★
 #[cfg(feature = "gpu")]
 const GPU_BLUR_MIN_PIXELS: usize = 2_000_000;
+
+/// **∴ 独显档：实测过的**最小仍赢**尺寸 ✗**（**第 246 轮 ✓）★
+///
+/// **∴ 为什么取**实测点本身**✗ 而**不再往下探** ✓**：
+///   **∴ 640×480 是**这轮量到的最小尺寸**（**3.53×／11.52× ✓）
+///     ⇒ **∴ 比它更小的区间**没有数据**✗
+///       ⇒ **∴ 所以**：**门槛**就设在数据边界上**✗ ⇒ **∴ 门槛以上的每一个尺寸**都**有实测背书** ✓ ★★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+const GPU_BLUR_MIN_PIXELS_DISCRETE: usize = 307_200;
+
+/// **★ 模糊的规模门槛：**按适配器等级分档**✗ ★**（**第 246 轮 ✓；用户裁定 ✓）
+///
+/// **∴ 为什么不能一个常数 ✗**：**同一个 2 M**对**独显是**过保守**✗
+///   （**∴ 整段 0.31–2 M 白丢 1.6–12 倍 ✓）＋ **∴ 对**核显**又**没有依据** ✓ ★
+///     ⇒ **∴ 所以**：**分档 ✗ 而**且**每档都要有实测或明确说"没有"** ✓ ★★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[must_use]
+fn gpu_blur_min_pixels(class: yanshi_gpu::DeviceClass) -> usize {
+    match class {
+        // **∴ 有 L4 实测背书 ✓（**0.31 M 起每一档都赢 ✓）
+        yanshi_gpu::DeviceClass::Discrete => GPU_BLUR_MIN_PIXELS_DISCRETE,
+        // **∴ 其余**没有实测**✗ ⇒ **∴ 保守档** ✗ ＋ **∴ 而不是**"看起来也行" ✓ ★★
+        _ => GPU_BLUR_MIN_PIXELS,
+    }
+}
+
+/// **∴ 当前缓存设备的**模糊门槛**✗**（**`None` ＝ 还没有设备 ✓）**（**第 246 轮 ✓；判据用 ✓）
+///
+/// **∴ 为什么要暴露它 ✗**：**判据**没法**自己知道适配器是独显还是核显**✗
+///   ⇒ **∴ 而**"0.52 M 该不该走 GPU"**完全取决于那个等级** ✓
+///     ⇒ **∴ 于是**：**判据**按这个值来判断**✗ ⇒ **∴ 两个方向**都能有牙** ✓ ★★
+///       （**∴ 独显：**门槛低 ⇒ **必须走** ✗ **核显：**门槛高 ⇒ **必须不走** ✓）★★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+#[must_use]
+pub fn blur_min_pixels_for_cached_device() -> Option<usize> {
+    crate::buffer::quantizer_device_class().map(gpu_blur_min_pixels)
+}
+///
+/// **∴ 它守什么 ✗**（**∴ 两条都能红 ✓）★**：
+///   **∴ ①** 独显档**必须**低于**保守档** ✗
+///     ⇒ **∴ 否则**"分档"是句空话**✗（**∴ 而**用户裁定要的正是**独显放宽** ✓）；
+///   **∴ ②** 独显档**必须**是**实测过的最小尺寸**（**307 200 ✓）✗
+///     ⇒ **∴ 谁**改了它**✗ 或**把没量过的等级也放开**✗ ⇒ **∴ 本判据**必红** ✓ ★★
+#[cfg(all(test, feature = "gpu", not(target_arch = "wasm32")))]
+mod blur_threshold_tests {
+    use super::*;
+
+    #[test]
+    fn the_blur_threshold_is_per_device_class_and_backed_by_measurement() {
+        use yanshi_gpu::DeviceClass;
+        assert_eq!(
+            gpu_blur_min_pixels(DeviceClass::Discrete),
+            307_200,
+            "独显档应当是 640×480 ＝ 307 200（**L4 实测过的最小仍赢尺寸 ✓）"
+        );
+        for class in [
+            DeviceClass::Integrated,
+            DeviceClass::Virtual,
+            DeviceClass::Cpu,
+            DeviceClass::Other,
+        ] {
+            assert_eq!(
+                gpu_blur_min_pixels(class),
+                GPU_BLUR_MIN_PIXELS,
+                "**{class:?}** 没有实测 ⇒ 必须留在保守档（不许把没量过的当收益）"
+            );
+        }
+        assert!(
+            GPU_BLUR_MIN_PIXELS_DISCRETE < GPU_BLUR_MIN_PIXELS,
+            "独显档必须**严格低于**保守档 ⇒ 否则「分档」等于没做"
+        );
+    }
+}
 
 /// **∴ GPU 单帧的**时间预算**（**毫秒 ✓）✗**（**第 706 轮 ✓）★
 ///

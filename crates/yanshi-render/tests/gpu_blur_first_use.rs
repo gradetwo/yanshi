@@ -99,4 +99,27 @@ fn the_first_big_blur_uses_the_gpu_when_one_is_available() {
         !used_off,
         "`--gpu off` 之下仍然走了 GPU ⇒ **∴ 那个参数**说了假话**（目标第 7 条）"
     );
+
+    // ── 方向 ③：**门槛按适配器分档**（**第 246 轮 ✓；用户裁定 ✓）──
+    //   ＋ **∴ 这一档守的是 ✗**：**0.52 M（**960×540 ✓）**在**独显上必须走 GPU**✗
+    //     **而**在核显上必须**不走** ✓ ⇒ **∴ 判据**按缓存的门槛值自己选边** ✓（**∴ 两个方向都有牙 ✓）★★
+    let threshold = yanshi_render::filter::blur_min_pixels_for_cached_device()
+        .expect("方向①已经创建过设备 ⇒ 这里应当读得到门槛");
+    let (w2, h2) = (960u32, 540u32); // 0.52 M
+    let count2 = (w2 as usize) * (h2 as usize);
+    yanshi_render::filter::reset_blur_degrade();
+    let before_small = yanshi_gpu::blur_gpu_calls();
+    let mut buf = Buffer::new(0, 0, w2, h2);
+    fill(&mut buf, 0xB102_0003);
+    gaussian_blur(&mut buf, 2.0);
+    let used_small = yanshi_gpu::blur_gpu_calls() > before_small;
+    let should = count2 >= threshold;
+    println!(
+        "  ★ 门槛 {threshold} px｜960x540 ＝ {count2} px ⇒ 应当走 GPU：{should}｜实际走了：{used_small}"
+    );
+    assert_eq!(
+        used_small, should,
+        "960×540 的取舍与缓存设备的门槛不一致（门槛 {threshold}）⇒ \
+         分档没生效，或门槛与实现不同源"
+    );
 }

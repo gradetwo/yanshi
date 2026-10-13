@@ -70,6 +70,21 @@ pub(crate) fn ensure_quantizer(lut: &[f32]) -> bool {
     true
 }
 
+/// **∴ 看缓存里**已经有**的设备等级 ✗**（**第 246 轮 ✓；**滤镜门槛分档要用 ✓）
+///
+/// **∴ 语义 ✗**：**`Some(class)` ＝ 缓存里**已经有**设备**✗ **`None` ＝ 还没有** ✓
+///   ＋ **∴ 它**只读 ✗ **不创建** ✓（**∴ 于是**：**调用方**可以先按保守档判规模**✗
+///     而**不必为了一个小图付 ~32 ms 的设备创建** ✓）★★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[must_use]
+pub(crate) fn quantizer_device_class() -> Option<yanshi_gpu::DeviceClass> {
+    let cache = quantizer_cache();
+    let guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref().map(yanshi_gpu::Quantizer::device_class)
+}
+
 /// **∴ 测试用：清空进程级量化器缓存 ✗**（**第 246 轮 ✓）
 ///
 /// **∴ 为什么需要它 ✗**：**"第一帧"的语义就是**缓存为空**✗
