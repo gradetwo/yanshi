@@ -60,7 +60,7 @@ for rev in "$A" "$B"; do
   git fetch -q origin || { echo "✗ git fetch 失败" >&2; exit 3; }
   git checkout -q "$rev" || { echo "✗ 检出 $rev 失败（**∴ 该修订**没推上来？✓）" >&2; exit 3; }
   git log --oneline -1
-  echo "== 构建 $rev（release ＋ gpu feature）=="
+  echo "== 构建 ${rev}（release ＋ gpu feature）=="
   # **∴ 构建失败 ⇒ 立刻退 ✗**（**∴ 不要**拿着旧二进制去量**✗ —— 那会**把两个修订量成同一个** ✓）★
   if ! cargo build --release -p yanshi-http --bin yanshi-serve --features gpu; then
     echo "✗ $rev 构建失败 ⇒ ∴ 不许用旧二进制继续（那会把两个修订量成同一个 ✗）" >&2
@@ -70,7 +70,7 @@ for rev in "$A" "$B"; do
   #   ⇒ **∴ 这里先杀一次** ✗ ⇒ **∴ 于是**上一次的服务不会**被算进这一次的 CPU 账** ✓ ★★
   pkill -9 -x yanshi-serve 2>/dev/null
   sleep 1
-  echo "== 测量 $rev（轮数 $rounds｜区域 $region）=="
+  echo "== 测量 ${rev}（轮数 ${rounds}｜区域 ${region}）=="
   node scripts/tool-render-cost-accounts.mjs --spawn --rounds "$rounds" --region "$region" \
     --baseline target/release/yanshi-serve \
     --compare 'CPU=--gpu off' --compare 'GPU=--gpu on' 2>&1 | tee "$OUT_DIR/$rev.log"
