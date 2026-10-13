@@ -36,6 +36,10 @@ if (!url) {
 const fs = await import("node:fs");
 const os = await import("node:os");
 const path = await import("node:path");
+// **∴ 临时目录必须用仓库统一那个模块登记 ✗**（**∴ `crates/yanshi-http/tests/
+//   scripts_clean_their_temp_dirs.rs` **会红**✗ 而**它抓的正是**"跑一次泄漏一个 root"**
+//   ⇒ **∴ 实测被它抓过一次 ✗ 这就是它存在的意义 ✓）★★★
+const { trackTemp } = await import("./lib/temp-dirs.mjs");
 const parsed = new URL(url);
 // **★★★ 实测踩到的坑（**判据自己 ✗）★★★**：**`with-temp-server.sh` 会把**查看器地址
 // **追加为最后一个参数**✗（**它自己已经建好了 `check` 文档 ✓）⇒ **∴ 第一版**把 `argv[3]`
@@ -56,7 +60,9 @@ if (!base) cannotJudge("拿不到服务端 origin（argv 形状不对）");
 const doc = process.env.TIMELAPSE_DOC || parsed.searchParams.get("doc") || "crit_timelapse";
 const token = process.argv[4] || parsed.searchParams.get("token") || "";
 const port = process.env.CDP_PORT || process.argv[5] || "9333";
-const dlDir = process.env.TIMELAPSE_DL_DIR || fs.mkdtempSync(path.join(os.tmpdir(), "yanshi-timelapse-"));
+const dlDir =
+  process.env.TIMELAPSE_DL_DIR ||
+  trackTemp(fs.mkdtempSync(path.join(os.tmpdir(), "yanshi-timelapse-")));
 /** **∴ 每帧渲染都要过 wasm ＋ WebCodecs ✗ 给足预算 ✗ 但**必须可配**（CI 机器慢 ✓）★ */
 // **∴ 默认收紧到 90 秒 ✗**（**∴ `run-criteria.sh` 给 `browser-*` 的整段超时是
 //   `BROWSER_TIMEOUT:-420` 秒 ✓ ⇒ **∴ 两段各等 180 秒**可能把整段拖爆** ✓；
@@ -282,6 +288,25 @@ if (!hasWebCodecs) {
   console.log("  ⚠️ 这个浏览器没有 WebCodecs ⇒ 已装**假编码器**：验「接线＋结构」，**不验**真 H.264 能不能解");
 }
 
+
+// **★★★ 先问一句"这台机器能不能编 H.264"✗ ★★★**（**∴ CI 实测踩到 ✓**）
+//   ＋ **∴ 症状 ✗**：**CI 的 Chromium **有** `VideoEncoder`**✗ 但**编码时直接抛**
+//     `Failed to execute 'encode' on 'VideoEncoder'`** ✓ ⇒ **∴ 判据**把它当成了产品失败** ✗
+//       ⇒ **∴ 其实那是**环境没有 H.264 编码器**（**headless CI 常见 ✓）★
+//   ＋ **∴ 所以 ✗**：**先 `isConfigSupported`✗ 不支持就**退 3** ✗ 不栽给产品** ✓ ★★★
+const avcSupported = await evaluate(`(async () => {
+  try {
+    if (typeof VideoEncoder !== "function") return "no-encoder";
+    if (typeof VideoEncoder.isConfigSupported !== "function") return "no-probe";
+    const res = await VideoEncoder.isConfigSupported({ codec: "avc1.640028", width: 320, height: 240, bitrate: 800000, framerate: 30, avc: { format: "avc" } });
+    return res && res.supported ? "yes" : "unsupported";
+  } catch (error) {
+    return "error: " + (error && error.message ? error.message : error);
+  }
+})()`);
+if (avcSupported !== "yes") {
+  cannotJudge(`这台机器编不了 H.264（isConfigSupported ⇒ ${avcSupported}）⇒ 属环境能力，不是产品缺陷`);
+}
 
 // **∴ ⑤ 点它 ✗ 等文件落盘 ✓** ★
 // **∴ 必须等**页面自己的内核就绪**✗**（**∴ 实测踩到 ✓）**：**`state.wasm` 还是 null 时点按钮**✗

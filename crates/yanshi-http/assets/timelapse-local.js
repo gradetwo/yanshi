@@ -92,6 +92,30 @@
       throw error;
     }
 
+    // **∴ 先说人话 ✗**：**机器没有 H.264 编码器时**✗ `encode()` 会直接抛**
+    //   ＋ **∴ 而**那句原文（`Failed to execute 'encode' on 'VideoEncoder'` ✓）
+    //     **对用户**没有意义** ✓ ⇒ **∴ 所以**：**开编之前先问一句 ✗ 不支持就**明说** ✓ ★★
+    if (typeof globalThis.VideoEncoder.isConfigSupported === "function") {
+      try {
+        const probe = await globalThis.VideoEncoder.isConfigSupported({
+          codec: "avc1.640028",
+          width,
+          height,
+          bitrate: 8_000_000,
+          framerate: fps,
+          avc: { format: "avc" },
+        });
+        if (!probe || !probe.supported) {
+          const error = new Error("这个浏览器/这台机器编不了 H.264（avc1.640028）⇒ 换一台或换浏览器再试");
+          error.code = "avc_unsupported";
+          throw error;
+        }
+      } catch (error) {
+        if (error && error.code === "avc_unsupported") throw error;
+        console.warn("[timelapse] 探测 H.264 支持时出错 ⇒ 继续试", error);
+      }
+    }
+
     const startedAt = Date.now();
     const every = Math.max(1, Math.floor(frameEvery));
     const total = atoms.length;
