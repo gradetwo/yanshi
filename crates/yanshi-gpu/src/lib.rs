@@ -328,7 +328,39 @@ static STAGE_GPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 ///     ＋ **∴ 而**它**落在** host 侧 `readback` 窗口**里** ✗ ⇒ **∴ 两者**不能相加** ✓ ★
 ///       ＋ **∴ 需要** `TIMESTAMP_QUERY_INSIDE_ENCODERS`**✗ ⇒ **∴ 没有它**恒 0（**如实 ✓）★
 static STAGE_COPY_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// **★ 读回等待的累计墙钟 ＋ 等待期间本进程的累计 CPU ✗ ★**（**第 246 轮 ✓；待办 2c 的前置 ✓）
+///   ⇒ **∴ 两者的比 ＝**等待期的有效并行度** ✓
+///     ＋ **∴ ≈ 0 ⇒ **整机都在等**（**可重叠窗口 ≈ 等待全长 ✓）
+///       ＋ **∴ ≥ 1 ⇒ **别的线程在干活**⇒ **等待**已被掩盖** ✓（**∴ 2c 的收益 ≈ 0 ✓）★★
+///   ＋ **∴ 都是**累计（`fetch_add` ✓）✗ ⇒ **∴ 于是**：**比值是**整个进程的平均**✓
+///     ⇒ **∴ 而**那**正是**要的（**单次的 10 ms 太抖 ✓）★
+static WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WAIT_CPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// **★ 本进程的 CPU 时间（**utime+stime ⇒ 纳秒 ✓）✗ ★**（**第 246 轮 ✓）
+///
+/// **∴ 两个坑 ✗**：
+///   **∴ ①** **进程名（**字段 2 ✓）**里可能有空格与括号**✗
+///     ⇒ **∴ 不能**按空白切了再数**✗ ⇒ **∴ 要从**最后一个 `)` 之后**开始数** ✓★
+///   **∴ ②** **单位是**时钟滴答**✗（**`sysconf(_SC_CLK_TCK)` ＝ 100 ⇒ 10 ms ✓）
+///     ⇒ **∴ 与 `tool-render-cost-accounts.mjs` 的口径**一致** ✓（**它也按 100 Hz 换算 ✓）★
+#[cfg(target_os = "linux")]
+fn process_cpu_ns() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rest = text.rsplit_once(')')?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // **∴ `rest` 的第 0 项 ＝ 字段 3（**state ✓）✗ ⇒ **∴ utime（**字段 14 ✓）⇒ 索引 11** ✓
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some((utime + stime) * 10_000_000)
+}
+
+/// **∴ 非 Linux 上**如实返回 None ✗**（**∴ 于是**探针只说"量不到" ✓）★
+#[cfg(not(target_os = "linux"))]
+fn process_cpu_ns() -> Option<u64> {
+    None
+}
 
 /// **★ 读最近一次的分段计时 ✗ ★**
 ///
@@ -823,10 +855,9 @@ impl Quantizer {
         //   ⇒ **∴ 门控 ⇒ **生产路零开销**✗（`should_time_gpu` ✓）
         //     ＋ **∴ 只量**第一块**✗（**∴ 两个索引会被后续块覆盖 ✓）
         //       ⇒ **∴ 那**是**代表性的一块** ✓ ★
-        let time_gpu = should_time_gpu(
-            self.device.features(),
-            std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
-        );
+        // **∴ 探针开关单取一次 ✗**（**∴ 等待期的 CPU 采样也用同一个门 ✓ —— 生产路零开销 ✓）★
+        let probe_on = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let time_gpu = should_time_gpu(self.device.features(), probe_on);
         // **★★★ 第 246 轮：把 `copy_buffer_to_buffer` 也纳入时间戳 ✗ ★★★**（**待办 2b ✓）
         //   ＋ **∴ 为什么要它 ✗**：**`gpu` ＝ 750 µs 只含** compute pass** ✓
         //     ＋ **∴ 而**同一帧还要做 **20 次** `copy_buffer_to_buffer`**（**`lib.rs:949` ✓）
@@ -1045,10 +1076,35 @@ impl Quantizer {
             //     ＋ **∴ 且**没有**超时**✗ ⇒ **∴ GPU hang 了**就永远卡死** ✓ ★★
             //   ＋ **∴ 现在 ✗**：**200 µs 醒一次 ＋ **30 秒总上限** ✗
             //     ⇒ **∴ 超时 ⇒ **打印 ＋ 返回**已拿到的部分**✗（**∴ 调用方**按长度不足 ⇒ **∴ 回退 CPU** ✓）★
+            // **★★★ 第 246 轮：**读回等待期间**主机到底在不在等**** ✗ ★★★**（**待办 2c 的前置 ✓）
+            //   ＋ **∴ 为什么必须先量这个 ✗**：**2c（**双缓冲／in-flight ✓）**能省多少**✗
+            //     ⇒ **∴ 不取决于**等待有多长**✗ 而**取决于**：**等的时候**有没有别的事可做** ✓
+            //   ＋ **∴ 而**本仓的结构**已给出半个答案 ✗**：**量化是**按带并行**的**（`render.rs:3903`
+            //     的 `thread::scope` ⇒ 每个带各调一次 `render_accumulation` ✓）
+            //     ＋ **∴ 而**量化器**由一把**全局锁**串起来**（`buffer.rs:26` 的 `Mutex<Option<Quantizer>>` ✓）
+            //       ⇒ **∴ 于是**：**一个带在等 GPU 时 ⇒ **别的带**在跑自己的 CPU 活** ✓ ★
+            //         ⇒ **★ 所以**：**那 81 ms 有可能**已经被并行带**掩盖掉了** ✗
+            //           ⇒ **∴ 若**真是这样 ⇒ **∴ 2c 的收益 ≈ 0**✗ 而**不是**那个 6.4% 的上限** ✓ ★★
+            //   ＋ **∴ 量法 ✗**：**读 `/proc/self/stat` 的 `utime+stime`**（**全部线程之和 ✓）
+            //     ⇒ **∴ 等待期间它的增量 ÷ 等待时长 ＝**等待期的有效并行度** ✓
+            //       ⇒ **∴ ≈ 0 ⇒ **整机在等**（**可重叠窗口 ≈ 100% ✓）
+            //         ＋ **∴ ≈ 1 以上 ⇒ **别的线程在干活 ⇒ 等待**已被掩盖** ✓ ★★
+            let cpu_before = if probe_on { process_cpu_ns() } else { None };
+            let t_wait = std::time::Instant::now();
             let ok = signal.wait_timeout(
                 std::time::Instant::now() + std::time::Duration::from_secs(30),
                 std::time::Duration::from_micros(200),
             );
+            let wait_ns = t_wait.elapsed().as_nanos() as u64;
+            if cpu_before.is_some() {
+                if let (Some(before), Some(after)) = (cpu_before, process_cpu_ns()) {
+                    WAIT_NS.fetch_add(wait_ns, std::sync::atomic::Ordering::Relaxed);
+                    WAIT_CPU_NS.fetch_add(
+                        after.saturating_sub(before),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }
             if !ok {
                 // **∴ 超时 ⇒ **∴ 不**静默 ⇒ **∴ 说出来** ✓（**∴ 本会话的纪律 ✓）★★
                 eprintln!(
@@ -1103,13 +1159,29 @@ impl Quantizer {
                         0
                     };
                     STAGE_COPY_NS.store(copy_ns, std::sync::atomic::Ordering::Relaxed);
+                    let waited = WAIT_NS.load(std::sync::atomic::Ordering::Relaxed);
+                    let waited_cpu = WAIT_CPU_NS.load(std::sync::atomic::Ordering::Relaxed);
+                    let parallelism = if waited > 0 {
+                        waited_cpu as f64 / waited as f64
+                    } else {
+                        0.0
+                    };
                     eprintln!(
-                        "PROBE GPU 算：{:.3} ms（**时间戳 ✓）｜GPU 拷贝 {:.3} ms｜host 侧提交 {:.3} ms ⇒ 驱动开销 {:.3} ms｜host 侧读回 {:.3} ms",
+                        "PROBE GPU 算：{:.3} ms（**时间戳 ✓）｜GPU 拷贝 {:.3} ms｜host 侧提交 {:.3} ms ⇒ 驱动开销 {:.3} ms｜host 侧读回 {:.3} ms｜★读回等待（**累计 ✓）{:.1} ms｜等待期间本进程 CPU {:.1} ms ⇒ 等待期并行度 {:.2}×★{}",
                         ns as f64 / 1e6,
                         copy_ns as f64 / 1e6,
                         submit_ns as f64 / 1e6,
                         (submit_ns.saturating_sub(ns)) as f64 / 1e6,
-                        readback_ns as f64 / 1e6
+                        readback_ns as f64 / 1e6,
+                        waited as f64 / 1e6,
+                        waited_cpu as f64 / 1e6,
+                        parallelism,
+                        // **∴ 判读口径写在输出里 ✗**（**∴ 于是**读日志的人**不会误读 ✓）★
+                        if parallelism < 0.25 {
+                            "（**等待期整机基本在等 ⇒ **可重叠窗口 ≈ 等待全长** ✓）"
+                        } else {
+                            "（**等待期别的线程在干活 ⇒ **等待**已被部分掩盖** ✓）"
+                        }
                     );
                 }
                 drop(data);
@@ -1546,6 +1618,41 @@ mod chunk_cap_tests {
 #[must_use]
 pub const fn should_time_gpu(features: wgpu::Features, probe_on: bool) -> bool {
     probe_on && features.contains(wgpu::Features::TIMESTAMP_QUERY)
+}
+
+#[cfg(test)]
+mod process_cpu_tests {
+    // **★ `/proc/self/stat` 的解析**必须有牙**✗ ★**（**第 246 轮 ✓）
+    //   **∴ 为什么值得一条测试 ✗**：**字段索引错一位 ⇒ **读到的就是别的数**✗
+    //     而**函数签名（`Option<u64>` ✓）**照样是 Some** ✓ ⇒ **∴ 编译与类型都拦不住** ✓ ★
+    //   **∴ 判据 ✗**：**忙等 ~60 ms ⇒ 增量必须落在 [10 ms, 5 s] 之内** ✓
+    //     ⇒ **∴ 索引错**（**如读到 starttime／vsize ✓）⇒ **必然**落在区间外** ✓ ★★
+    use super::*;
+
+    #[test]
+    fn the_process_cpu_reading_moves_with_real_work() {
+        let Some(before) = process_cpu_ns() else {
+            // **∴ 非 Linux ⇒ **如实跳过**✗ 而**不是**假装通过** ✓（**∴ 本仓的纪律 ✓）★
+            eprintln!("⏭ 非 Linux ⇒ /proc/self/stat 不可用 ⇒ 本判据无可判");
+            return;
+        };
+        // **∴ 真的烧一点 CPU ✗**（**∴ 不能只看"变大了" ⇒ 那**睡眠也会通过 ✓）★
+        let started = std::time::Instant::now();
+        let mut acc: u64 = 1;
+        while started.elapsed() < std::time::Duration::from_millis(60) {
+            acc = acc
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+        }
+        std::hint::black_box(acc);
+        let after = process_cpu_ns().expect("第一次读到了 ⇒ 第二次也应当读到");
+        let delta_ms = after.saturating_sub(before) as f64 / 1e6;
+        assert!(
+            (10.0..5000.0).contains(&delta_ms),
+            "忙等 60 ms 之后进程 CPU 增量应当落在 10 ms–5 s，实测 {delta_ms:.1} ms \
+             ⇒ **∴ 字段索引或单位**错了** ✓"
+        );
+    }
 }
 
 #[cfg(test)]
