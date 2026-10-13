@@ -616,7 +616,13 @@ const PAGE_TAIL_A: &str = r##"</style>
         导出下载到本机 ｜ 导入从本机选文件
       </div>
       <label>服务器另存路径 <input id="projectPath" type="text" placeholder="留空 ⇒ 只下载到本机" style="width:200px" /></label>
-      <div class="toolbar"><button id="projectExport" type="button">导出工程</button></div>
+      <div class="toolbar">
+        <button id="projectExport" type="button">导出工程</button>
+        <!-- **★ 绘画过程视频 ✗ ★**（**第 249 轮 ✓）：**与工程包同一个卡片 ✗ 因为都是"把
+             现在这个文档变成文件" ✓；**∴ 它**不需要联网 ✗ 全靠本地内核 ＋ WebCodecs** ✓ -->
+        <button id="timelapseExport" type="button" title="把从第一笔到现在的过程渲染成视频（本地内核 ＋ WebCodecs，不需要联网）">导出过程视频</button>
+      </div>
+      <div class="hint" id="timelapseInfo"></div>
       <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">
         <button id="projectImport" type="button">导入 .yanshi…</button>
@@ -722,6 +728,17 @@ fn page_template() -> String {
         PAGE_HEAD,
         include_str!("../assets/viewer.css"),
         PAGE_TAIL_A,
+        // **★★★ 两份新资产 ✗ 各自一段 `<script>`** ✓（**第 249 轮 ✓）★★★
+        //   ＋ **∴ 为什么不能 `import` ✗**：**页面没有模块加载器**✗（**全是内联传统脚本 ✓）
+        //     ⇒ **∴ 于是**：**按**加载顺序**排 ✗ `mp4-lite` 先 ✗ `timelapse-local` 后**
+        //       ✗ 最后才是主脚本 ✓（**∴ 主脚本**用得上它们 ✓）★
+        //   ＋ **∴ 而**主脚本那一段**必须仍然逐字节等于 `viewer-app.js`**✗
+        //     ⇒ **∴ 所以**：**这里**显式补 `</script><script>`**✗ 而不是把三份拼成一块** ✓
+        //       （**∴ 有测试盯着这一条 ✓）★★
+        include_str!("../assets/mp4-lite.js"),
+        "</script><script>",
+        include_str!("../assets/timelapse-local.js"),
+        "</script><script>",
         include_str!("../assets/viewer-app.js"),
         PAGE_TAIL_B,
     ]
@@ -737,6 +754,19 @@ pub fn stylesheet() -> &'static str {
 /// **主脚本资产的对外出口** ✓（同上 ✓）。
 pub fn app_script() -> &'static str {
     include_str!("../assets/viewer-app.js")
+}
+
+/// **★ 极简 MP4 封装器资产 ✗ ★**（**第 249 轮 ✓）
+///
+/// **∴ 为什么单独一个出口 ✗**：**它要能被判据**单独读到**✗ 也能被**预缓存**
+/// （**离线 PWA ✓）—— **∴ 与 CSS／主脚本**同一条规矩** ✓ ★
+pub fn mp4_script() -> &'static str {
+    include_str!("../assets/mp4-lite.js")
+}
+
+/// **★ 过程视频（timelapse）资产 ✗ ★**（**第 249 轮 ✓；理由同上 ✓）★
+pub fn timelapse_script() -> &'static str {
+    include_str!("../assets/timelapse-local.js")
 }
 
 /// 页面长度（测试与可观测性）✓ —— **⚠️ 插入新函数时别把它的文档注释抢走** ✗
@@ -773,6 +803,46 @@ mod tests {
             found,
             "页面必须有一个 <script> 块**逐字节等于**独立 JS 资产 ✓（挪出 script 或漏拼 ⇒ 红 ✓）"
         );
+    }
+
+    /// **★★★ 过程视频的两份资产也必须**独立成块**内联** ✗ ★★★**（**第 249 轮 ✓）
+    ///
+    /// **∴ 为什么要单独立一条 ✗**：**它们不是主脚本**✗ 但**同样得在页面里** ✓
+    ///   ＋ **∴ 而**本仓页面**没有模块加载器**✗（**全是内联传统脚本 ✓）
+    ///     ⇒ **∴ 一旦有人**忘了拼接／把它们挪出 `<script>`**✗
+    ///       ⇒ **∴ 症状**不是报错 ✗ 而是**点下按钮才说"模块没加载"** ✓
+    ///         ⇒ **∴ 所以**要有一条**静态就能红**的判据 ✓
+    ///           （**变异 ✗ 删掉 `page_template` 里任一条 `include_str!` ⇒ 本测试红** ✓）★★
+    #[test]
+    fn the_timelapse_assets_are_inlined_as_their_own_script_blocks() {
+        for (path, asset, name) in [
+            ("assets/mp4-lite.js", mp4_script(), "MP4 封装器"),
+            (
+                "assets/timelapse-local.js",
+                timelapse_script(),
+                "过程视频模块",
+            ),
+        ] {
+            let on_disk = std::fs::read_to_string(path).expect("应能读取 JS 资产");
+            assert_eq!(on_disk, asset, "(A)①：{name} 应是**独立资产文件** ✓");
+            let page = page_template();
+            let mut rest = page.as_str();
+            let mut found = false;
+            while let Some((_, after_open)) = rest.split_once("<script>") {
+                let Some((block, after_close)) = after_open.split_once("</script>") else {
+                    break;
+                };
+                if block.trim() == asset.trim() {
+                    found = true;
+                    break;
+                }
+                rest = after_close;
+            }
+            assert!(
+                found,
+                "{name} 必须在页面里有一个 <script> 块**逐字节等于**它 ✓（挪出去或漏拼 ⇒ 红 ✓）"
+            );
+        }
     }
 
     /// **(A)①：CSS 是独立可打包资产** ✓ —— 断言 ① 资产文件存在 ✓；

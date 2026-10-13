@@ -6272,6 +6272,86 @@ async function setupAssetPanels() {
     }
   }
 
+  // **★★★ 绘画过程视频（timelapse）✗ ★★★**（**第 249 轮 ✓）
+  //
+  // **∴ 它要什么 ✗**：**① 这个文档的**真实尺寸**（**`state.docSize` ✓）✗
+  //   **② **全部** atom（`since=0` ✓ **∴ 一个都不筛 ✗ 手绘笔触也要 ✓）✗
+  //   **③ 每个位图的字节（`/api/blob/<hash>` ✓ 走到 Service Worker 的 cache-first ✓
+  //      ⇒ **∴ 离线也能导 ✓）✗ **④ 页面已加载的 `WasmKernel` 类（**快照 ✓）✓ ★★
+  //   ＋ **∴ 全程**不碰用户当前画布**✗ 因为 `YanshiTimelapse` 内部**另建一个内核** ✓ ★★★
+  {
+    const button = $("timelapseExport");
+    const info = $("timelapseInfo");
+    const say = (text, color) => {
+      if (!info) return;
+      info.textContent = text;
+      info.style.color = color || "";
+    };
+    // **∴ 一个按钮兼**开始／取消**✗（**∴ 导出慢 ⇒ 必须能停 ✗ 否则用户只能刷新页面 ✓）★★
+    let controller = null;
+    if (button) {
+      button.addEventListener("click", async () => {
+        if (controller) {
+          say("正在取消…");
+          controller.abort();
+          return;
+        }
+        const timelapse = globalThis.YanshiTimelapse;
+        if (!timelapse) {
+          say("过程视频模块没加载（`timelapse-local.js`）", "#c33");
+          return;
+        }
+        controller = new AbortController();
+        const previous = button.textContent;
+        button.textContent = "取消导出";
+        try {
+          const { w, h } = state.docSize;
+          const all = await fetchOrLocal(api("/api/atoms") + "&since=0").then((r) => r.json());
+          if (!all || !all.ok || !Array.isArray(all.atoms) || all.atoms.length === 0) {
+            say("读不到 atom ⇒ 这次导不了", "#c33");
+            return;
+          }
+          say(`共 ${all.atoms.length} 个 atom｜画布 ${w}×${h} ⇒ 开始…`);
+          const result = await timelapse.exportAndDownload({
+            WasmKernel: state.wasm.WasmKernel,
+            docId: state.docId,
+            width: w,
+            height: h,
+            atoms: all.atoms,
+            frameEvery: 10,
+            fps: 30,
+            signal: controller.signal,
+            // **∴ 位图走 HTTP ✗ 而**离线由 Service Worker 兜底** ✓（**`/api/blob/` 是
+            //   内容寻址 ⇒ **cache-first** ✓）⇒ **∴ 于是**这条路**联网与离线是同一条** ✓ ★★
+            fetchBlob: async (hash) => {
+              const response = await fetch(blobUrl(hash));
+              if (!response.ok) return null;
+              return new Uint8Array(await response.arrayBuffer());
+            },
+            onProgress: (done, total, phase) => {
+              say(`${phase}　${done}/${total}`);
+            },
+          });
+          say(
+            `✓ ${result.frames} 帧｜${(result.ms / 1000).toFixed(1)} 秒｜已下载 ${result.filename}`,
+            "#2a7",
+          );
+          log(`过程视频导出完成：${result.frames} 帧，用时 ${(result.ms / 1000).toFixed(1)} 秒 ✓`);
+        } catch (error) {
+          if (error && error.name === "Cancelled") {
+            say("已取消（没有生成文件）");
+          } else {
+            say("导出失败：" + ((error && error.message) || error), "#c33");
+            log("过程视频导出失败：" + ((error && error.message) || error), "#c33");
+          }
+        } finally {
+          controller = null;
+          button.textContent = previous;
+        }
+      });
+    }
+  }
+
   const gradApply = $("gradApply");
   if (gradApply) {
     gradApply.addEventListener("click", async () => {

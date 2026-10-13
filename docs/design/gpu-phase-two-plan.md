@@ -15199,3 +15199,28 @@ crates/yanshi-http/src/viewer.rs:  page_template() = PAGE_HEAD ++ viewer.css ++ 
 
 **∴ 覆盖率守卫也过了 ✗**：`tool-criteria-coverage` ⇒ 177 个脚本／164 个被枚举 ✓
   **∴ 新判据按 `tool-*` 前缀**自动被跑到** ✓（**退出码 0 ✓）★
+
+### 九、★ 第 249 轮（续）：**页面入口接上了** ✗ 真能出可播放文件还要看下一轮的 browser 判据** ✓ ★
+
+**∴ 落地了什么 ✗**：
+- **`assets/timelapse-local.js`**（**传统脚本 ✗ 只挂 `globalThis.YanshiTimelapse` ✓）：
+  **另建一个内核重放 ✗ 全量 atom 不过滤 ✗ 文档真实尺寸 ✗ 每 N 个 atom 渲一帧 ✗
+  `VideoEncoder`（**显式要 `avc: {format:"avc"}` ✓）⇒ 同仓的 `mp4-lite.js` ⇒ `Blob` ⇒ 下载** ✓
+  ＋ **∴ 支持**取消**（`AbortSignal` ✓）与**进度**（`(done,total,phase)` ✓）★
+- **`viewer.rs` ✗**：`page_template()` 里把两份资产**各自**放进一段 `<script>`** ✓
+  （**∴ 主脚本那一段**仍然逐字节等于 `viewer-app.js`**✗ 因为页面里有测试盯着 ✓）★
+  ＋ **∴ 新增两个对外出口 ✗**：`mp4_script()`／`timelapse_script()` ✓
+  ＋ **∴ 新增一条测试 ✗**：两份资产**必须各自成块内联** ✓
+    ⇒ **∴ 变异 ✗**：**`page_template` 里删掉任一条 `include_str!` ⇒ **当场 FAILED** ✓ ★★
+- **`viewer-app.js` ✗**：在「工程包」卡片里加**「导出过程视频」按钮** ＋
+  **一个按钮兼**开始／取消**✗ 进度写在自己的 hint 里 ✗ 失败红字 ＋ 进日志** ✓
+  ＋ **∴ 位图走 `/api/blob/<hash>` ✗ 而**离线由 Service Worker 的 cache-first 兜底**
+    ⇒ **∴ 联网与离线**同一条路** ✓ ★
+- **∴ 页面实测（**本机 ✓）✗**：`curl /` ⇒ **707705 字节**✗
+  `timelapseExport` **2 次**✗ `YanshiMp4` **5 次**✗ `YanshiTimelapse` **4 次**✗
+  「导出过程视频」**1 次** ✓ ⇒ **∴ 入口**真的在页面里** ✓
+  ＋ **∴ 三份 JS 都过 `node --check`** ✓；`cargo test -p yanshi-http` **42 项全过** ✓
+
+**∴ 还没证明的（**如实 ✗ 不写成结论 ✓）★**：**页面上真能产出一个**可播放的 mp4** ✗
+  **∴ 那要一条 `browser-*` 判据**（**开 Chromium ✗ 点按钮 ✗ 等下载 ✗ 再用 `<video>`
+  验它能解出帧 ✓）—— **∴ 下一轮做 ✓** ★★
