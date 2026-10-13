@@ -2886,6 +2886,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!("layer_id", String, true, "目标图层"),
+            // **★ 对称模式 ✗ ★**（**第 251 轮 ✓）：**画一笔同时在**镜像位置**再画一遍** ✓
+            //   ＋ **∴ 借鉴 ✗**：**Krita／Procreate 的对称是**工具态**✗ 不写进笔迹数据**
+            //     ⇒ **∴ 撤销／清画布**都不影响它 ✓ ★
+            //   ＋ **∴ 取值 ✗**：`none`（缺省）／`vertical`（**轴=画布竖直中线 ✓）／
+            //     `horizontal`（**轴=水平中线 ✓）✗ 别的值**报错 ✗ 不静默** ✓ ★★
+            param!("symmetry", String, false, "对称模式：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔压力相同）"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!("points", Array, true, "[[x,y,pressure],…]，压力 0..1（可省，缺省 0.5）"),
             param!("size", Number, false, "覆盖笔刷自带半径（直径像素；不给就用 .myb 里的设置）"),
@@ -13665,6 +13671,36 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let points = parse_brush_points(args)?;
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
     let points = apply_brush_style(points, args)?;
+    // **★★★ 对称模式 ✗ ★★★**（**第 251 轮 ✓）：**这一条路是**服务端自己栅格化**的** ✓
+    //   ＋ **∴ 仓库自己写明 ✗**：**"提交一条笔触走的是**本文件这一份**（**`hokusai` ✓）
+    //     ＋ **∴ 而** `yanshi-render::brush` 是**渲染那条路**用的** ✓
+    //       ⇒ **∴ 所以**：**两条都要接 ✗ 否则 UI 里**看不到对称** ✓ ★★
+    //   ＋ **∴ 这一条怎么接 ✗**：**把**点序列镜像一份**✗ 一起栅格化** ✓
+    //     （**∴ 对**只按位置盖章的路径 ✗ 镜像点序列与**逐 dab 镜像**等价 ✓ 且改动最小 ✓）★
+    //   ＋ **∴ 而** `source` 里要**记下 symmetry** ✗ ⇒ **∴ `update_stroke`**重跑时**才会同样镜像** ✓
+    //     （**∴ 本仓的确定性纪律：**位图不进包 ✗ 打开时按参数重放** ✓）★★
+    let symmetry_name = optional_str(args, "symmetry").unwrap_or_else(|| "none".to_owned());
+    // **∴ `String` 不能用 `&str` 字面量做模式 ✗**（**实测：expected String, found &str ✓）
+    //   ⇒ **∴ 先 `as_str()`** ✓ ★
+    let symmetry = match symmetry_name.as_str() {
+        "none" => yanshi_render::Symmetry::None,
+        "vertical" => yanshi_render::Symmetry::Vertical,
+        "horizontal" => yanshi_render::Symmetry::Horizontal,
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "symmetry 只支持 none／vertical／horizontal（给了 {other}）"
+                )),
+            ));
+        }
+    };
+    // **★★★ 实测踩到 ✗：不能把镜像点**接在同一条折线**上** ✓ ★★★**
+    //   ＋ **∴ 我第一版**就是这么写的 ✗ ⇒ **∴ 栅格化器**把两点之间的位移也画了**
+    //     ⇒ **∴ 量出来是**一条横穿画布的连续墨带**（**52..202 ✓）✗ 不是两个笔尖** ✓
+    //       ⇒ **∴ 教训 ✗**：**"点序列"是一条**连续笔画**✗** ⇒ **∴ 加两点 ≠ 画两笔** ✓ ★★
+    //   ＋ **∴ 正解（**本函数后面按**位图**做 ✓）**：**原样交给 `paint_brush` 只画一笔**✗
+    //     **再把这一笔自己的位图**翻转**✗ 摆到镜像位置** ✓ ★★★
     // **调用方给的原话** ✓（重跑时要用它 ✓，而不是"平滑之后的中间量" ✗）。
     let points_source = json!(points
         .iter()
@@ -13825,6 +13861,81 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
         eprintln!("  选区 {name} 裁剪：清掉 {dropped} 个选区外像素 ✓");
     }
+    // **★★★ 对称：按**位图**镜像并合并** ✗ ★★★**（**第 251 轮 ✓）
+    //   ＋ **∴ 做法 ✗**：**把这一笔自己的位图**翻转**✗ 摆到**镜像后的位置** ✓
+    //     ＋ **∴ 两半重叠时（**笔迹跨过中线 ✓）** ⇒ **∴ 逐像素取**alpha 较大**的那个**
+    //       （**∴ 不是相加 ✗ 否则中线上会**双倍变深** ✓ —— **∴ 与 Krita 的观感一致 ✓）★
+    //   ＋ **∴ 为什么在**位图**这一层做 ✗**：**① 它**只含这一笔**（**不碰图层已有内容 ✓）✗
+    //     **② 不碰 `points` ⇒ **不会连成一条线**（**上面那条实测教训 ✓）✗
+    //     **③ 与笔刷种类无关**（**纹理／抖动笔刷的镜像就是**翻转**✓ —— 正是对称的语义 ✓）★★
+    // **∴ 注意类型 ✗**：`paint_brush` 回来的 `x0/y0/width/height` 是 **`usize`** ✓
+    //   ⇒ **∴ 与画布尺寸做算术时**统一用 `i64`**✗ 避免符号/宽度混乱** ✓（**实测：混用报 E0308 ✓）★
+    let (mut rgba, mut x0, mut y0, mut width, mut height) = (rgba, x0, y0, width, height);
+    if symmetry != yanshi_render::Symmetry::None {
+        let (doc_w, doc_h) = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| {
+                (
+                    document.state().width as i64,
+                    document.state().height as i64,
+                )
+            })
+            .unwrap_or((0, 0));
+        if doc_w > 0 && doc_h > 0 {
+            let (x0i, y0i) = (x0 as i64, y0 as i64);
+            let (wi, hi) = (width as i64, height as i64);
+            let (mirror_x0, mirror_y0) = match symmetry {
+                yanshi_render::Symmetry::Vertical => (doc_w - (x0i + wi), y0i),
+                yanshi_render::Symmetry::Horizontal => (x0i, doc_h - (y0i + hi)),
+                yanshi_render::Symmetry::None => (x0i, y0i),
+            };
+            let nx0 = x0i.min(mirror_x0);
+            let ny0 = y0i.min(mirror_y0);
+            let nx1 = (x0i + wi).max(mirror_x0 + wi);
+            let ny1 = (y0i + hi).max(mirror_y0 + hi);
+            let nw = usize::try_from((nx1 - nx0).max(0)).unwrap_or(0);
+            let nh = usize::try_from((ny1 - ny0).max(0)).unwrap_or(0);
+            if nw > 0 && nh > 0 {
+                let mut merged = vec![0u8; nw * nh * 4];
+                // **∴ 贴一块位图（**可选翻转 ✓）✗ alpha 较大者胜** ✓
+                let mut paste = |src: &[u8], sw: usize, sh: usize, at_x: i64, at_y: i64, flip: bool| {
+                    for row in 0..sh {
+                        for col in 0..sw {
+                            let src_col = if flip { sw - 1 - col } else { col };
+                            let si = (row * sw + src_col) * 4;
+                            if si + 3 >= src.len() {
+                                continue;
+                            }
+                            let a = src[si + 3];
+                            if a == 0 {
+                                continue;
+                            }
+                            let dx = at_x - nx0 + col as i64;
+                            let dy = at_y - ny0 + row as i64;
+                            if dx < 0 || dy < 0 || dx >= nw as i64 || dy >= nh as i64 {
+                                continue;
+                            }
+                            let di = (dy as usize * nw + dx as usize) * 4;
+                            if a >= merged[di + 3] {
+                                merged[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                            }
+                        }
+                    }
+                };
+                let vertical = symmetry == yanshi_render::Symmetry::Vertical;
+                paste(&rgba, width, height, x0i, y0i, false);
+                paste(&rgba, width, height, mirror_x0, mirror_y0, vertical);
+                rgba = merged;
+                // **∴ `x0/y0` 是 **`i32`**✗ 而 `width/height` 是 `usize`** ✓
+                //   ⇒ **∴ 各按各的类型回转** ✓（**实测：混用会 E0308 ✓）★
+                x0 = i32::try_from(nx0).unwrap_or(0);
+                y0 = i32::try_from(ny0).unwrap_or(0);
+                width = nw;
+                height = nh;
+            }
+        }
+    }
     let composite = ctx.workspace.store().put(&rgba)?;
     ctx.time(Phase::Raster, composite_started);
     let import_args = json!({
@@ -13847,6 +13958,9 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             // 而"位图不进工程包、打开时按参数重放"正依赖这条确定性（第 1061 轮）。
             // 这里的默认值与引擎保持一致（0），调用方给了就用调用方的。
             "seed": args.get("seed").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            // **∴ 对称也要进 `source` ✗**（**∴ 否则 `update_stroke` 重跑出来的
+            //   是**没镜像的那一半** ✓）★
+            "symmetry": symmetry_name,
         },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),

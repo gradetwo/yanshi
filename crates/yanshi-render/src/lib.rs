@@ -121,7 +121,9 @@ pub mod thumb;
 pub mod tile;
 
 pub use blend::{blend_pixel, over, scale_alpha, BlendMode};
-pub use brush::{draw_stamp, stamp_stroke, BrushSpec, StrokeGeometry, StrokePoint};
+pub use brush::{
+    draw_stamp, stamp_stroke, stamp_stroke_on, BrushSpec, StrokeGeometry, StrokePoint, Symmetry,
+};
 pub use buffer::Buffer;
 pub use buffer_pool::{BufferLease, BufferPool, BufferPoolStats};
 pub use color::{
