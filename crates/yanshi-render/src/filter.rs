@@ -1531,6 +1531,20 @@ fn try_gpu_gaussian_blur(buffer: &Buffer, sigma: f32) -> Option<Vec<f32>> {
         GPU_BLUR_COOLDOWN.store(remaining - 1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
+    // **★★★ 第 246 轮：**别等量化路来创建设备**✗ ★★★**（**用户裁定 ✓）
+    //   ＋ **∴ 用户裁定（**原文 ✓）✗**：**「**如果有 gpu 用 ✗ 那么就**打开 gpu
+    //     能加速且确实有收益的功能**」 ✓
+    //   ＋ **∴ 缺口（**本仓的**渲染顺序**决定它是真的 ✓）★**：
+    //     **∴ 渲染**先画对象／滤镜**✗ **最后**才量化输出** ✓
+    //       ⇒ **∴ 而**创建量化器的**只有**量化路**✗
+    //         ⇒ **∴ 于是**：**第一帧的大滤镜**看到空缓存 ⇒ **∴ 回退 CPU** ✓
+    //           ⇒ **∴ 明明有 GPU ✗ 而**它**要等到**第二帧**才用得上** ✓ ★★
+    //   ＋ **∴ 修法 ✗**：**用与量化路**同一个**get-or-create**✗（`ensure_quantizer` ✓）
+    //     ⇒ **∴ 而**它**内部**已经查了 `gpu_disabled()`**✗
+    //       ⇒ **∴ 所以**：**`--gpu off` **不会**因此创建设备** ✓ ★★
+    if !crate::buffer::ensure_quantizer(crate::color::srgb_encode_table()) {
+        return None;
+    }
     let cache = crate::buffer::quantizer_cache();
     let guard = cache.lock().ok()?;
     let quantizer = guard.as_ref()?;

@@ -29,6 +29,69 @@ pub(crate) fn quantizer_cache() -> &'static std::sync::Mutex<Option<yanshi_gpu::
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// **★★★ 取（必要时**创建**）进程级 GPU 量化器 ✗ ★★★**（**第 246 轮 ✓）
+///
+/// **∴ 用户裁定（**原文 ✓）✗**：
+///   「**如果有 gpu 用 ✗ 那么就**打开 gpu 能加速且确实有收益的功能**」 ✓
+///
+/// **∴ 它解决什么 ✗**（**∴ 一个**真的缺口 ✗ 有测试为证 ✓）★**：
+///   **∴ 在此之前 ✗**：**只有**量化路（`try_quantize_on_gpu_keyed` ✓）会创建它** ✓
+///     ＋ **∴ 而**滤镜路（**`filter::try_gpu_gaussian_blur` ✓）**只**读缓存**✗
+///       ⇒ **∴ 于是**：**若**某一帧**先做大滤镜、后做输出量化**✗**（**∴ 那**正是
+///       渲染的**顺序**：先画对象／滤镜 ✗ 最后才量化输出 ✓）**
+///         ⇒ **∴ 滤镜**看到的是**空缓存** ⇒ **∴ 回退 CPU** ✗
+///           ⇒ **★ 而**明明有 GPU ✗ ★**（**∴ 只有****第二帧起**才用得上** ✓）★★
+///   **∴ 现在 ✗**：**创建逻辑**只有一处**✗ ⇒ **∴ 谁先要用**谁创建** ✓ ★
+///
+/// **∴ 门控 ✗**（**两条都必须 ✓）★**：
+///   **∴ ①** 与 `quantizer_cache` 同一个 `cfg`**✗（**∴ 否则**非 gpu 构建会编译不过 ✓）**；
+///   **∴ ②** `crate::gpu_disabled()`**✗ —— **∴ `--gpu off` **必须**连设备都不创建** ✓
+///     （**∴ 否则**那个参数**说了假话**✗ 而**判据 ② 正是守它的 ✓）★
+///
+/// **∴ 返回值 ✗**：**`true` ＝ 可用**｜**`false` ＝ 不可用（**模式／适配器／创建失败 ✓）** ✓
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+pub(crate) fn ensure_quantizer(lut: &[f32]) -> bool {
+    if crate::gpu_disabled() {
+        return false;
+    }
+    let cache = quantizer_cache();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        match yanshi_gpu::Quantizer::new(lut) {
+            Ok(q) => *guard = Some(q),
+            Err(e) => {
+                eprintln!("GPU 不可用 ⇒ 回退 CPU：{e}");
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// **∴ 测试用：清空进程级量化器缓存 ✗**（**第 246 轮 ✓）
+///
+/// **∴ 为什么需要它 ✗**：**"第一帧"的语义就是**缓存为空**✗
+///   ＋ **∴ 而**同一进程里**别的判据**可能已经填过它** ✓
+///     ⇒ **∴ 于是**：**判据要先**清一次**✗ 并**报告它原来是不是空的** ✓ ★
+///
+/// **∴ 为什么不用 `#[cfg(test)]` ✗**：**集成测试**把本 crate 当**普通依赖**链接**✗
+///   ⇒ **∴ `cfg(test)` 对它们**不生效** ✓
+///     ⇒ **∴ 所以**：**用 `#[doc(hidden)]` ＋ 名字带 `_for_test`** ✓（**与
+///       `gpu_composite_calls`／`reset_blur_degrade` 同一约定 ✓）★
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub fn clear_quantizer_cache_for_test() -> bool {
+    let cache = quantizer_cache();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let was_empty = guard.is_none();
+    *guard = None;
+    was_empty
+}
+
 /// 线性光、预乘 alpha 的区域缓冲区（行主序）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buffer {
@@ -616,18 +679,15 @@ impl Buffer {
         // **∴ 用 `unwrap_or_else` 而不是 `match` ✗**：**clippy 会要求把
         //   `match … { Ok(g) => g, Err(p) => p.into_inner() }` 换成 `?`** ✓
         //   ＋ **∴ 而**这里**不能**用 `?`**（**中毒锁要**继续用**而不是**向上抛 ✓）★
-        let mut guard = cache
+        // **★ 创建那一段**抽去了 `ensure_quantizer` ✗ ★**（**第 246 轮 ✓）：
+        //   **∴ 因为**滤镜路**也要能**在第一次使用时创建它**✗
+        //     ⇒ **∴ 而**两处各写一遍 ⇒ **∴ 迟早**漂移** ✓ ★★
+        if !ensure_quantizer(lut) {
+            return None;
+        }
+        let guard = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard.is_none() {
-            match yanshi_gpu::Quantizer::new(lut) {
-                Ok(q) => *guard = Some(q),
-                Err(e) => {
-                    eprintln!("GPU 不可用 ⇒ 回退 CPU：{e}");
-                    return None;
-                }
-            }
-        }
         // **∴ 用 `?` ✗**：**clippy 指出 `match … { Some(q) => q, None => return None }`
         //   就是 `?`** ✓（**∴ 函数返回 `Option` ⇒ `?` 合法 ✓）★
         let quantizer = guard.as_ref()?;
