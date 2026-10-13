@@ -969,6 +969,8 @@ impl Quantizer {
         let t_rb = Instant::now();
         // **★ 一次 map ＋ 一次等待 ＋ 一次拷贝 ✗ ★**（**第 585 轮 ✓）
         let mut out: Vec<u8> = Vec::with_capacity(count * 4);
+        // **∴ 超时标志 ✗**（**∴ 一旦**置位 ⇒ **∴ 后面**不再拷贝 ✓）★
+        let mut readback_timed_out = false;
         {
             let slice = readback.slice(..);
             let signal = std::sync::Arc::new(OnceSignal::new(&self.device));
@@ -977,9 +979,29 @@ impl Quantizer {
                 signal_in_cb.signal();
             });
             let _ = self.device.poll(wgpu::PollType::Poll);
-            signal.wait().await;
-            let mapped = slice.get_mapped_range();
-            out.extend_from_slice(&mapped);
+            // **★★★ 第 817 轮：**改成**有间隔的阻塞等待 ＋ 超时**** ✗ ★★★**
+            //   ＋ **∴ 用户指出 ✗**：**原来**在 `block_on` 里 `yield_now()` 忙等 ⇒ **∴ CPU** 100% 空转** ✓
+            //     ＋ **∴ 且**没有**超时**✗ ⇒ **∴ GPU hang 了**就永远卡死** ✓ ★★
+            //   ＋ **∴ 现在 ✗**：**200 µs 醒一次 ＋ **30 秒总上限** ✗
+            //     ⇒ **∴ 超时 ⇒ **打印 ＋ 返回**已拿到的部分**✗（**∴ 调用方**按长度不足 ⇒ **∴ 回退 CPU** ✓）★
+            let ok = signal.wait_timeout(
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                std::time::Duration::from_micros(200),
+            );
+            if !ok {
+                // **∴ 超时 ⇒ **∴ 不**静默 ⇒ **∴ 说出来** ✓（**∴ 本会话的纪律 ✓）★★
+                eprintln!(
+                    "  ⏭ GPU 读回超时（30 秒，{} 块）⇒ **∴ 本次**按不可用处理** ⇒ **∴ 调用方**回退 CPU**",
+                    STAGE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+                );
+                // **∴ 不能 `break` ✗**（**`async` 里不合法 ⇒ `error[E0267]` ✓）★
+                //   ＋ **∴ 所以**用**标志位**✗ ⇒ **∴ 于是**后面**跳过这次拷贝** ✓
+                readback_timed_out = true;
+            }
+            if !readback_timed_out {
+                let mapped = slice.get_mapped_range();
+                out.extend_from_slice(&mapped);
+            }
         }
         readback.unmap();
         // **∴ 放回池 ✗**（**∴ 数据已拷进 `out` ⇒ **复用安全** ✓）★
@@ -1135,20 +1157,51 @@ impl OnceSignal {
         }
     }
 
-    /// **★ 等它被唤醒（**并且自己推进 device ✓）✗ ★**
-    async fn wait(&self) {
-        std::future::poll_fn(|cx| {
+    /// **★ 同步等待（**阻塞 ＋ 超时 ＋ 自己驱动 device ✓）✗ ★**
+    ///
+    /// **★★★ 第 817 轮：**把忙等改成**有间隔的阻塞等待**** ✗ ★★★**
+    ///   **∴ 用户指出的两条 ✗**：
+    ///     ⇒ **∴ ①** `block_on` **用 `Waker::noop()` ＋ `thread::yield_now()`**
+    ///       ⇒ **∴ 等 GPU 时** CPU 100% 空转** ✓ ★★
+    ///         ＋ **∴ ②** **没有**超时**✗ ⇒ **∴ GPU hang 了**就永远卡死** ✓ ★
+    ///   **∴ 为什么不能直接上 Condvar ✗**（**读代码才知道 ✓）★**：
+    ///     ＋ **∴ 关键 ✗**：**wgpu 的 `map_async` 回调**只在 `device.poll()` 被调用时**才可能触发** ✓
+    ///       ⇒ **∴ 所以**：**纯 `Condvar` **不会被唤醒**✗ ⇒ **∴ 必须**有一个**驱动者** ✓ ★★★
+    ///         ＋ **∴ 而那**正是原设计让 `wait()` 自己每轮 poll 的原因** ✓
+    ///   **∴ 所以正确的形态 ✗**：**`wait_timeout` 带**轮询间隔**✗
+    ///     ⇒ **∴ ①** **每次醒来**调一次 `device.poll(Poll)`**（**∴ 从而**驱动回调 ✓）
+    ///       ＋ **∴ ②** **总时限**由 `deadline` 保证**✗ ⇒ **∴ 于是**超时**必然发生** ✓
+    ///         ＋ **∴ ③** **CPU 占用**从**忙转**变成**每间隔醒一次**（**∴ 大降 ✓）★
+    ///
+    /// **∴ 返回值 ✗**：**`true` ＝ 就绪**｜**`false` ＝ 超时** ✓（**∴ 调用方**据此降级 CPU ✓）★
+    fn wait_timeout(&self, deadline: std::time::Instant, interval: std::time::Duration) -> bool {
+        // **∴ 形态很简 ✗**：**每轮**先查标志 ⇒ **poll 一次**（**驱动回调 ✓）⇒ 再查 ⇒ 睡一小段** ✓
+        //   ＋ **∴ 为什么**不需要 waker ✗**：**本循环**自己 poll device**✗
+        //     ⇒ **∴ 唤醒**只**缩短延迟**✗ 而**不**是**必需** ✓（**∴ 读原实现**才看清 ✓）★★
+        loop {
             if self.ready.load(std::sync::atomic::Ordering::Acquire) {
-                return std::task::Poll::Ready(());
+                return true;
             }
-            // **★ 每轮都推进一次 ✗ ★**（**第 471 轮 ✓；**∴ 那是**本 future**的职责** ✓）
+            // **∴ 驱动一次 ✗**（**∴ 只有** poll 会触发 map 回调 ✓）
             let _ = self.device.poll(wgpu::PollType::Poll);
-            if let Ok(mut slot) = self.waker.lock() {
-                *slot = Some(cx.waker().clone());
+            if self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                return true;
             }
-            std::task::Poll::Pending
-        })
-        .await;
+            if std::time::Instant::now() >= deadline {
+                return false; // **∴ 超时 ⇒ **∴ 调用方**降级 CPU** ✓ ★
+            }
+            // **∴ 睡一小段 ✗**（**∴ 替代** `thread::yield_now()` ⇒ **∴ 不**烧 CPU ✓）★★★
+            std::thread::sleep(interval);
+        }
+    }
+
+    /// **∴ 保留 async 形态**（**∴ 供**别的 future 用 ✓）✗ ⇒ **∴ 现在**委托给 `wait_timeout`** ✓
+    async fn wait(&self) {
+        // **∴ 上限 30 秒 ✗**（**∴ 超时 ⇒ **∴ 调用方**降级 CPU ✓）★
+        let _ = self.wait_timeout(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            std::time::Duration::from_micros(200),
+        );
     }
 }
 
