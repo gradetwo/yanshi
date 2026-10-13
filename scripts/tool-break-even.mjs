@@ -43,6 +43,8 @@ console.log("");
 const rows = [];
 let adapterSeen = null;
 let adapterNote = null;
+// **∴ 软件/虚拟适配器 ⇒ 本判据在这台机器上**不适用**✗ 退 3** ✓（**第 248 轮 ✓）★
+let notEligibleAdapter = null;
 for (const side of sides) {
   const px = side * side;
   let out = "";
@@ -85,6 +87,22 @@ for (const side of sides) {
       continue;
     }
     if (!adapterSeen) adapterSeen = value;
+    // **★★★ 第 248 轮：**软件/虚拟适配器**不许当门禁**✗ ★★★**（**CI 同树两判换来的 ✓）
+    //   ＋ **∴ 症状（**可复核 ✓）✗**：**同一棵树（**`2e710046` ✓）✗
+    //     **∴ run 38404263957 ⇒ `✓ tool-break-even.mjs`**✗
+    //       ＋ **∴ run 38405967723 ⇒ `✗ … (EXIT=1)`｜"扫完整个区间都没找到显著更快的尺寸"** ✓
+    //         ⇒ **∴ 同一棵树两种结论 ⇒ **∴ 它**是**机器相关**的 ✗ 而**不是产品回归** ✓ ★★
+    //   ＋ **∴ 为什么该退 3 ✗**：**"这台机器上 GPU 一直更慢"**是**机器事实**✗
+    //     ＋ **∴ 而**它**与"GPU 该不该更快"**（**产品问题 ✓）**不是一回事** ✓
+    //       ＋ **∴ 仓里的约定**就是**判不了 ⇒ 退 3**（**本文件头部第 4 条 ✓）★★
+    //   ＋ **∴ 判据 ✗**：**适配器串形如 `adapter:Vulkan:DiscreteGpu:NVIDIA L4:device=true`** ✓
+    //     ⇒ **∴ 第三段是**设备类别**✗ ⇒ **∴ `Cpu`／`Virtual`（**软件光栅器／虚拟 ✓）
+    //       一律**不适用** ✓ ★
+    const parts = value.split(":");
+    const klass = parts.length >= 3 ? parts[2] : "";
+    if (klass === "Cpu" || klass === "Virtual") {
+      notEligibleAdapter = value;
+    }
   }
   // **★★★ 按**实际表格式**抓两本账 ✗ ★★★**（**第 792 轮修；**L4 实测 ✓）
   //   **∴ 症状 ✗**（**L4 实测 ✓）★**：**10 个尺寸**全部报**「**本尺寸没拿到两路**」**
@@ -124,6 +142,15 @@ for (const side of sides) {
 
 console.log("");
 // **∴ 适配器的**三种情形**要分开说 ✗**（**∴ 不许**把「没有名字」当成名字 ✓）★
+if (notEligibleAdapter) {
+  // **∴ 先说清"为什么这台机器不适用" ✗ 再退 3 ✗ 不许报红** ✓
+  console.log(`  适配器 ＝ ${notEligibleAdapter}   ← ★ 软件/虚拟适配器（设备类别是 Cpu/Virtual）★`);
+  console.error(
+    "  ★ 本判据在这台机器上**不适用**：适配器是**软件光栅器／虚拟设备** ⇒ " +
+      "「GPU 与 CPU 的交点」这个问题本身不成立 ⇒ **∴ 这不是产品失败** ✗ **∴ 退出码 3** ✓",
+  );
+  process.exit(3);
+}
 if (adapterSeen) {
   console.log(`  适配器 ＝ ${adapterSeen}            ← ★ 真适配器名（必须打印，第 318 轮）★`);
 } else if (adapterNote) {
