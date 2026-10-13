@@ -10590,6 +10590,9 @@ const I18N_EN_TEXT = {
   "工程包": "Project archive",
   "路径": "Path",
   "导出工程": "Export project",
+  // **∴ 第 249 轮 ✗**：**新按钮的文本**必须进这张表**✓ 否则 `ui-i18n-coverage` 判红
+  //   （**∴ 它只看**页面里的文本节点**✗ 而**按钮文字就是文本节点 ✓）★
+  "导出过程视频": "Export timelapse video",
   // **工程包卡片的重排文案**（第 1166 轮 ✓）：这四句是"导出下载到本机、导入从本机选文件"那次改动加的，
   // 当时**没进词表** ✗ ⇒ 英文模式下整张卡仍是中文 ✓。
   "导出下载到本机 ｜ 导入从本机选文件": "Export downloads to this machine ｜ Import picks a file from this machine",
