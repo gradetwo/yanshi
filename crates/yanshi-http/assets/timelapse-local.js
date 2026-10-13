@@ -75,7 +75,11 @@
       signal = null,
     } = opts || {};
 
-    if (typeof WasmKernel !== "function") throw new Error("缺少 WasmKernel");
+    if (typeof WasmKernel !== "function") {
+      // **∴ 实测踩到 ✗**：**页面内核**还没就绪**时 `state.wasm` 是 `null`** ✓
+      //   ⇒ **∴ 与其抛一句**读属性失败**✗ 不如**说人话 ✗ 并给出下一步** ✓ ★
+      throw new Error("页面的 WASM 内核还没就绪（等它加载完再点，或刷新一次）");
+    }
     if (!width || !height) throw new Error("缺少文档真实尺寸（width/height）");
     if (!Array.isArray(atoms) || atoms.length === 0) throw new Error("这个工程里没有 atom");
     if (typeof globalThis.YanshiMp4 !== "function") {

@@ -15224,3 +15224,22 @@ crates/yanshi-http/src/viewer.rs:  page_template() = PAGE_HEAD ++ viewer.css ++ 
 **∴ 还没证明的（**如实 ✗ 不写成结论 ✓）★**：**页面上真能产出一个**可播放的 mp4** ✗
   **∴ 那要一条 `browser-*` 判据**（**开 Chromium ✗ 点按钮 ✗ 等下载 ✗ 再用 `<video>`
   验它能解出帧 ✓）—— **∴ 下一轮做 ✓** ★★
+
+### 十、★ 第 249 轮（续）：**「页面能出可播放视频」这条判据 ✗ 它证明什么** ✓ ★
+
+**`scripts/browser-timelapse-export.mjs`（**`browser-*` ⇒ 被 `run-criteria.sh` 自动枚举 ✓）★**：
+
+**∴ 三步 ✗ 缺一不可 ✓**：
+1. **∴ 入口 ✗**：**页面上真有 `#timelapseExport`**✗ 点它**真的会落下一个 mp4** ✓
+   （**∴ 判据**不看日志文字 ✗ 看**落盘的文件** ✓）★
+2. **∴ 结构 ✗**：**`ftyp` 最前 ✗ `moov` 在 `mdat` 之前 ✗ `stbl` 里的样本表都在 ✗
+   样本数 ≥ 2 ✗ 且**每个样本的偏移＋长度都落在 `mdat` 之内** ✓ ★
+3. **∴ 真的能解 ✗ ★★★**：**把文件**喂回同一个 Chromium 的 `<video>`**✗
+   **∴ 等 `loadedmetadata` ✗ 断言 `videoWidth/videoHeight == 文档尺寸` ✗ `duration > 0`** ✓ ★★
+   ＋ **∴ 为什么非要有第 3 条 ✗**：**手写 MP4（`mp4-lite.js` ✓）最容易的错是**长度／偏移
+     差几个字节**✗ ⇒ **∴ 那种文件**大小正常 ✗ 甚至有 `moov`**✗ 但**解码器打不开** ✓
+        ⇒ **∴ 只有真让浏览器去解 ✗ 才算证到"可播放"** ✓ ★★★
+
+**∴ 判不了就退 3 ✗**（**与全仓约定一致 ✓）★**：**没有页面调试目标 ✗ 这个 Chromium
+  没有 WebCodecs ✗ 判据自己的求值拿不到结果**（**∴ 按 AGENTS.md ✗ `returnByValue` ＋
+  `awaitPromise` **成对给** ✓）⇒ **∴ 一律**退 3 ✗ 不栽给产品** ✓ ★★
