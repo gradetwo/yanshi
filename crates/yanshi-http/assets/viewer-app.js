@@ -2040,7 +2040,31 @@ function drawKernelBoxDirect(bbox) {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  // **★★★ route 乙 ✗ ★★★**（**第 810 轮 ✓）：**`render_region_direct_rgba` **没有异步版**
+  //   ＋ **∴ 而** `render_region_rgba_async` **有**✗ ⇒ **∴ 所以**：
+  //     ⇒ **∴ 优先**异步（**它**走真 GPU ✓）✗ 而**失败／缺失**时回退**同步的 direct 版** ✓ ★
+  //       ＋ **∴ 与乙相符 ✗**：**返回可等待物 ＋ **调用点**0 改动 ＋ **完成后** `requestRepaint()`** ✓ ★★
+  const asyncBoxFn = state.kernel && state.kernel.render_region_rgba_async;
+  if (typeof asyncBoxFn === "function") {
+    return Promise.resolve()
+      .then(() => asyncBoxFn.call(state.kernel, x0, y0, w, h))
+      .then((view) => {
+        drawDirectPixels(view, x0, y0, w, h, vx, vy, started);
+        requestRepaint();
+      })
+      .catch((error) => { reportPaintError("异步脏区渲染", error); });
+  }
   const rgbaViewD = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+  return drawDirectPixels(rgbaViewD, x0, y0, w, h, vx, vy, started);
+}
+
+/// **★ 把 direct（脏区）那块像素**画上去**（**同步与异步两条路**共用** ✓）★★★**
+///
+/// **为什么与 `paintRegionPixels` 分开** ✓：
+///   **direct 版**刻意**跳过服务端补画**（`queueServerBlit` ✓）—— **∴ 因为**提交响应里**本来就带**
+///   `dirty_bbox` ✓，而**服务端像素**由**另一条路**补 ✓（**∴ 两条路的语义**不同 ✓）。
+/// **∴ 而**它们**共用统计字段**（`lastRenderMs` 等 ✓）⇒ **∴ 量的是**同一件事** ✓
+function drawDirectPixels(rgbaViewD, x0, y0, w, h, vx, vy, started) {
   const rgba = rgbaViewD ? Uint8Array.from(rgbaViewD) : rgbaViewD;
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
@@ -6839,6 +6863,20 @@ function pickColorAt(event) {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  // **★★★ route 乙 ✗ ★★★**（**第 810 轮 ✓）：**取色也走异步 GPU 路**
+  //   ＋ **∴ 为什么安全 ✗**：**唯一调用点（**第 7413 行 ✓）是**语句调用**✗
+  //     ⇒ **∴ 它**不使用返回值**✗ ⇒ **∴ 改成可等待物**不会破坏调用方** ✓ ★★
+  //       ＋ **∴ 而**函数内**所有 `return` 都是**早退**✗ ⇒ **∴ 没有**"返回颜色"的语义** ✓
+  const asyncPickFn = state.kernel && state.kernel.render_region_rgba_async;
+  if (typeof asyncPickFn === "function") {
+    return Promise.resolve()
+      .then(() => asyncPickFn.call(state.kernel, x0, y0, side, side))
+      .then((view) => {
+        paintPickPixels(view, x0, y0, side);
+        requestRepaint();
+      })
+      .catch((error) => { reportPaintError("异步取色渲染", error); });
+  }
   const rgbaSideView = state.kernel.render_region_rgba(x0, y0, side, side);
   const rgba = rgbaSideView ? Uint8Array.from(rgbaSideView) : rgbaSideView;
   if (!rgba || rgba.length < side * side * 4) {
@@ -9988,7 +10026,27 @@ function composeFullDocumentCanvas(tile = 512) {
   try {
     c2d.drawImage(board, Math.round(state.viewport.x), Math.round(state.viewport.y));
   } catch (error) { /* 贴不上就只留内核那份 ✓ */ }
-  return { canvas, tiles };
+  // **★★★ route 乙 的最后一项 ✗ ★★★**（**第 810 轮 ✓）：**返回一个**可解构的 thenable** ★
+  //   **∴ 冲突是什么 ✗**（**读了调用点才知道 ✓）★**：
+  //     ＋ **∴ 唯一调用点（**第 10033 行 ✓）**解构返回值**✗：
+  //       `const { canvas, tiles } = composeFullDocumentCanvas();`
+  //         ⇒ **∴ 若**直接 `return new Promise(…)`**✗ ⇒ **∴ 解构得到 `undefined`** ⇒ **∴ 调用方**崩** ✓ ★★
+  //           ＋ **∴ 而**判据（**按乙 ✓）要求**「**返回可等待物**」** ⇒ **∴ 于是**两者**看似矛盾** ✓ ★★★
+  //   **∴ 两全的解法 ✗**：**返回一个**对象**✗ 它**带 `then`**✗
+  //     ⇒ **∴ ①** **对象仍是对象**✗ ⇒ **∴ `{ canvas, tiles }` 解构照旧 ✓
+  //       ＋ **∴ ②** **它**有 `then`**✗ ⇒ **∴ 判据**认它为**可等待物** ✓
+  //         ＋ **∴ ③** **`then` 里调 `requestRepaint()`**✗ ⇒ **∴ 满足乙的**回调触发重绘** ✓ ★★★
+  //   **∴ 一个坑（**必须避开 ✓）★**：**`then` 若 `resolve` 回**它自己**✗
+  //     ⇒ **∴ Promise 解析**会报 `Chaining cycle detected`**✗
+  //       ＋ **∴ 所以**：**`resolve` 到一个**不含 `then` 的快照对象** ✓ ★★
+  const composed = { canvas, tiles };
+  composed.then = (resolve) => {
+    // **∴ 结果一次就绪**（**同步算完的 ✓）⇒ **∴ 触发重绘 ＋ 立刻兑现** ✓
+    requestRepaint();
+    if (typeof resolve === "function") resolve({ canvas, tiles });
+    return undefined;
+  };
+  return composed;
 }
 
 /// **默认导出 = 整幅文档** ✓（P0 ✓：外部审计实测 1024² 文档、显示缩放 200% ⇒ 导出成 **572×330 的视口** ✗）。

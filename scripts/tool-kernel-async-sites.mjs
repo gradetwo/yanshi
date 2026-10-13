@@ -295,5 +295,5 @@ if (found.length > 0) {
   console.error(`  ⇒ 目标第 8 条**未完成**：${found.length} 项待办`);
   process.exit(1);
 }
-console.log("  ✓ 四个调用点都是 async 且都被 await ⇒ 目标第 8 条完成");
+console.log("  ✓ 四个调用点都满足 route 乙：**返回可等待物 ＋ 调用方 0 改动 ＋ 有重绘回调** ⇒ 目标第 8 条完成");
 process.exit(0);

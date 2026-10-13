@@ -5,7 +5,7 @@
 // every deployment (the name was a fixed string, so stale files were served forever).
 // It is derived from a build stamp that the sync step rewrites, which also means the
 // old cache is dropped by the cleanup below instead of lingering next to the new one.
-const CACHE = "yanshi-online-8469930105055";
+const CACHE = "yanshi-online-7705304227824";
 const CORE = ["/", "/index.html", "/manifest.webmanifest",
               "/wasm/yanshi_wasm.js", "/wasm/yanshi_wasm_bg.wasm"];
 
