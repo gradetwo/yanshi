@@ -201,8 +201,16 @@ if (ext === ".mjs" || ext === ".js" || ext === ".cjs") {
     }
   }
   // **∴ 只看**调用形态**（`name(` ✓）✗ ⇒ **∴ 从而**少误报** ✓ ★
+  // **★★★ 只看**新增／改动的行** ✗ ★★★**（**第 806 轮；**闸⑤ 的误报 ✓）
+  //   ＋ **∴ 实测误报 ✗**：**我用 `--old` 匹配一段**含 `gpu(`／`max(` 的文本**✗
+  //     ⇒ **∴ 而**闸⑤ **把 `--old` 里的片段也当代码**✗ ⇒ **∴ 于是**误报**
+  //       ＋ **∴ 而**那些名字**在原文件里本来就存在**✗ ⇒ **∴ 它**不可能是**新引入的** ✓ ★★
+  //         ＋ **∴ 所以**：**只扫**新文本**✗ 而**原文本里已有的片段**不参与** ✓
+  const oldLines = new Set(oldText.split("\n").map((l) => l.trim()));
+  const scanLines = next.split("\n").filter((l) => !oldLines.has(l.trim()));
+  const scan = scanLines.join("\n");
   const suspicious = new Set();
-  for (const m of next.matchAll(/(^|[^\w.$])([a-z][\w$]*)\s*\(/g)) {
+  for (const m of scan.matchAll(/(^|[^\w.$])([a-z][\w$]*)\s*\(/g)) {
     const name = m[2];
     if (imported.has(name) || declared.has(name) || JS_BUILTINS.has(name)) continue;
     if (/^(if|for|while|switch|catch|return|typeof|new|await|async|function|class|else|do|try|throw|delete|void|in|of|case|default)$/.test(name)) continue;
