@@ -37,13 +37,32 @@ const fs = await import("node:fs");
 const os = await import("node:os");
 const path = await import("node:path");
 const parsed = new URL(url);
-const base = (process.argv[3] && process.argv[3].startsWith("http") ? process.argv[3] : parsed.origin).replace(/\/$/, "");
+// **★★★ 实测踩到的坑（**判据自己 ✗）★★★**：**`with-temp-server.sh` 会把**查看器地址
+// **追加为最后一个参数**✗（**它自己已经建好了 `check` 文档 ✓）⇒ **∴ 第一版**把 `argv[3]`
+// **原样当 base**✗ 而**那个串带着 `?doc=…&token=…`** ✓ ⇒ **∴ `base + "/api/documents"`
+// **实际请求到的是 `/`**✗ ⇒ **∴ 服务端回**「`/` 不允许 POST」✗ ⇒ **∴ 判据**自己起不来** ✓ ★★
+//   ＋ **∴ 修法 ✗**：**只取 **origin**（`new URL(x).origin` 会把 query 丢掉 ✓）★
+const originOf = (value) => {
+  if (!value || !String(value).startsWith("http")) return "";
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
+};
+const base = originOf(process.argv[3]) || originOf(url);
+if (!base) cannotJudge("拿不到服务端 origin（argv 形状不对）");
+/** **∴ 默认用 runner 给的那份文档与 token**✗（**它已经建好 ✓）★ */
+const doc = process.env.TIMELAPSE_DOC || parsed.searchParams.get("doc") || "crit_timelapse";
 const token = process.argv[4] || parsed.searchParams.get("token") || "";
 const port = process.env.CDP_PORT || process.argv[5] || "9333";
-const doc = process.env.TIMELAPSE_DOC || parsed.searchParams.get("doc") || "crit_timelapse";
 const dlDir = process.env.TIMELAPSE_DL_DIR || fs.mkdtempSync(path.join(os.tmpdir(), "yanshi-timelapse-"));
 /** **∴ 每帧渲染都要过 wasm ＋ WebCodecs ✗ 给足预算 ✗ 但**必须可配**（CI 机器慢 ✓）★ */
-const WAIT_MS = Number(process.env.YANSHI_TIMELAPSE_WAIT_MS || 180000);
+// **∴ 默认收紧到 90 秒 ✗**（**∴ `run-criteria.sh` 给 `browser-*` 的整段超时是
+//   `BROWSER_TIMEOUT:-420` 秒 ✓ ⇒ **∴ 两段各等 180 秒**可能把整段拖爆** ✓；
+//   ＋ **∴ 而**这里等待的东西（**内核就绪 ✗ 文件落盘 ✓）**都不是产品指标** ✓
+//     ⇒ **∴ 需要更宽的机器**用环境变量调** ✓）★
+const WAIT_MS = Number(process.env.YANSHI_TIMELAPSE_WAIT_MS || 90000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
@@ -71,8 +90,15 @@ const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1;
 const pending = new Map();
 const consoleLines = [];
+const networkFailures = [];
 socket.onmessage = (event) => {
   const m = JSON.parse(event.data);
+  if (m.method === "Network.loadingFailed") {
+    networkFailures.push(`${m.params.type} ${m.params.errorText}${m.params.blockedReason ? " (" + m.params.blockedReason + ")" : ""}`);
+  }
+  if (m.method === "Network.responseReceived" && m.params.response && m.params.response.status >= 400) {
+    networkFailures.push(`HTTP ${m.params.response.status} ${m.params.response.url}`);
+  }
   if (m.method === "Runtime.consoleAPICalled") {
     consoleLines.push((m.params.args || []).map((a) => String(a.value ?? a.description ?? "")).join(" "));
   }
@@ -106,9 +132,114 @@ const evaluate = async (expression) => {
   return reply?.result?.result?.value;
 };
 await send("Runtime.enable");
+await send("Network.enable");
 await send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dlDir }).catch(() => undefined);
 await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dlDir, eventsEnabled: true }).catch(() => undefined);
 
+// **∴ ③ 造一点内容 ✗**：**走仓库自己的工具接口画几笔**✗ 不用判据私造原子** ✓ ★
+// **∴ 坑 ✗**：**第一版这里用了 URL 里的 `token`**✗ 而**判据自己新建的文档**是**另一个
+//   token** ✓ ⇒ **∴ 于是**24 笔**一笔都没画上** ✓（**∴ 判据自己先红 ✗ 还差点被当成产品错 ✓）★
+let docToken = token;
+/** **∴ 用哪份文档 ✗**：**自己建的那份（**或 runner 给的那份 ✓）★
+ *  ＋ **∴ 必须和 token 成对 ✗**（**∴ 第一版拿 runner 的 doc ＋ 我的 token ⇒ 内核起不来 ✓）★
+ */
+let docId = doc;
+const call = async (tool, args) => {
+  const response = await fetch(`${base}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(docToken)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  return response.json().catch(() => null);
+};
+let created = { ok: true, token };
+if (!docToken) {
+  created = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 320, height: 240 }),
+  }).then((r) => r.json()).catch(() => null);
+  if (!created) cannotJudge("建不了判据用的文档（服务端没起来？）");
+}
+// **∴ 诊断（**判据自己坏了要能说清 ✓）★**：**实测踩到过 token 为空 ⇒ 页面 bootstrap 400** ✓
+console.log(`  建文档回执：ok=${created.ok} 有 token=${Boolean(created.token)} 键=${Object.keys(created).join(",")}`);
+if (!created.ok || !created.token) {
+  console.error("  回执全文：" + JSON.stringify(created).slice(0, 300));
+  cannotJudge("建文档没有拿到 token ⇒ 判据自己起不来（CI 里由 runner 传的 token 兜底）");
+}
+docToken = created.token || token;
+docId = created.doc_id || doc;
+await call("create_layer", { layer_id: "L1", name: "L1" });
+let strokes = 0;
+for (let i = 0; i < 24; i++) {
+  const x = 30 + ((i * 11) % 240);
+  const y = 30 + ((i * 17) % 170);
+  const done = await call("brush_stroke", {
+    layer_id: "L1",
+    object_id: `tl${i}`,
+    brush: "100%_Opaque",
+    size: 12,
+    points: [[x, y, 1.0], [x + 24, y + 14, 1.0]],
+    color: { r: 30 + ((i * 9) % 200), g: 60 + ((i * 13) % 180), b: 200 - ((i * 7) % 160), a: 255 },
+    preview: false,
+  });
+  if (done && done.ok) strokes += 1;
+  if (i === 0) console.log("  第一笔回执：" + JSON.stringify(done).slice(0, 200));
+}
+check(strokes >= 20, "判据先在文档里画了 20+ 笔（这样视频里才有内容）", `${strokes} 笔`);
+
+// **∴ 画面尺寸要**问文档**✗ 不能写死** ✓（**∴ 实测踩到 ✗**：**我请求 320×240 ✗
+//   而那份 id 已存在 ⇒ **服务端给回**原来的 1024×1024** ⇒ **∴ 写死 320×240 的断言
+//     **把一条**完全正常**的导出判成了红** ✓）★★★
+let docW = 0;
+let docH = 0;
+{
+  const info = await fetch(`${base}/api/tools/get_document?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(docToken)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  }).then((r) => r.json()).catch(() => null);
+  const value = info && (info.value || info);
+  docW = Number(value && (value.width || (value.document && value.document.width))) || 0;
+  docH = Number(value && (value.height || (value.document && value.document.height))) || 0;
+  check(docW > 0 && docH > 0, "能问出文档真实尺寸（视频要按它解出来）", `${docW}×${docH}`);
+}
+
+// **∴ ④ 让页面换到这份文档 ✗**（**∴ 导出的 atom 取自 `/api/atoms` ✗ 页面自己会拉 ✓）★
+// **∴ 必须用**我建的那份文档**✗**（**∴ 第一版导航去了 runner 的 `check`**
+//   ＋ **∴ 却带着**我那份文档的 token**✗ ⇒ **∴ 页面 bootstrap 用错 token** ✓
+//     ⇒ **∴ 内核**根本没起来**✗ 而**表现**只是"一直没就绪" ✓）★★
+const url2 = new URL(url);
+url2.searchParams.set("doc", docId);
+url2.searchParams.set("token", docToken);
+// **∴ 必须显式要**客户端内核**✗**（**∴ 默认那一档页面**根本不用本地 wasm** ✓
+//   ⇒ **∴ `window.yanshiKernelReady` **永远不会被设**✗ 而**表现**只是"一直没就绪" ✓）
+//     ＋ **∴ 这条功能**只能用本地内核 ✗ 所以要 `render=client`** ✓ ★★
+url2.searchParams.set("render", "client");
+console.log(`  导航到：${url2.origin}${url2.pathname}?doc=${url2.searchParams.get("doc")}（我建的那份）&token=${url2.searchParams.get("token") ? "有" : "空"}`);
+await send("Page.navigate", { url: url2.toString() });
+const ready = await (async () => {
+  const until = Date.now() + WAIT_MS;
+  while (Date.now() < until) {
+    if (await evaluate('Boolean(document.getElementById("timelapseExport"))')) return true;
+    await sleep(250);
+  }
+  return false;
+})();
+if (!ready) {
+  // **∴ 按钮都没有 ⇒ 要么页面没加载完 ✗ 要么产品真的没接线 ✓** ⇒ **∴ 用**产品口径**报红 ✓
+  check(false, "页面上有「导出过程视频」按钮（`#timelapseExport`）");
+  console.error("❌ 页面上找不到那个按钮 ⇒ 接线没生效");
+  process.exit(1);
+}
+check(true, "页面上有「导出过程视频」按钮（`#timelapseExport`）");
+
+// **★★★ 实测踩到的坑（**本判据自己的 ✗）★★★**：**WebCodecs 必须先**进到页面**再问** ✓
+//   ＋ **∴ 第一版**把这个检查放在 `Page.navigate` **之前**✗ ⇒ **∴ 量到的其实是
+//     `about:blank`**✗ ⇒ **∴ 那里**不是安全上下文**✗ ⇒ **`VideoEncoder` 必然 undefined** ✓
+//       ⇒ **∴ 于是**判据**白白退 3**✗ 而**这台机器的 Chromium 其实**支持 avc 编码** ✓
+//         （**∴ 另起一个**真·localhost 页面**复测 ⇒ `secureContext: true` ✗
+//          `typeof VideoEncoder === "function"` ✗ `avc1.640028` **supported: true** ✓）★★
 // **∴ ② 环境支不支持 WebCodecs ✗**（**∴ 不支持 ⇒ 判不了 ✗ 不是产品错 ✓）★
 const hasWebCodecs = await evaluate('typeof VideoEncoder === "function"');
 if (hasWebCodecs === undefined) cannotJudge("取不到 `typeof VideoEncoder`（求值没回来）");
@@ -151,63 +282,6 @@ if (!hasWebCodecs) {
   console.log("  ⚠️ 这个浏览器没有 WebCodecs ⇒ 已装**假编码器**：验「接线＋结构」，**不验**真 H.264 能不能解");
 }
 
-// **∴ ③ 造一点内容 ✗**：**走仓库自己的工具接口画几笔**✗ 不用判据私造原子** ✓ ★
-// **∴ 坑 ✗**：**第一版这里用了 URL 里的 `token`**✗ 而**判据自己新建的文档**是**另一个
-//   token** ✓ ⇒ **∴ 于是**24 笔**一笔都没画上** ✓（**∴ 判据自己先红 ✗ 还差点被当成产品错 ✓）★
-let docToken = token;
-const call = async (tool, args) => {
-  const response = await fetch(`${base}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(docToken)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(args),
-  });
-  return response.json().catch(() => null);
-};
-const created = await fetch(`${base}/api/documents`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: doc, width: 320, height: 240 }),
-}).then((r) => r.json()).catch(() => null);
-if (!created) cannotJudge("建不了判据用的文档（服务端没起来？）");
-docToken = created.token || token;
-await call("create_layer", { layer_id: "L1", name: "L1" });
-let strokes = 0;
-for (let i = 0; i < 24; i++) {
-  const x = 30 + ((i * 11) % 240);
-  const y = 30 + ((i * 17) % 170);
-  const done = await call("brush_stroke", {
-    layer_id: "L1",
-    object_id: `tl${i}`,
-    brush: "100%_Opaque",
-    size: 12,
-    points: [[x, y, 1.0], [x + 24, y + 14, 1.0]],
-    color: { r: 30 + ((i * 9) % 200), g: 60 + ((i * 13) % 180), b: 200 - ((i * 7) % 160), a: 255 },
-    preview: false,
-  });
-  if (done && done.ok) strokes += 1;
-}
-check(strokes >= 20, "判据先在文档里画了 20+ 笔（这样视频里才有内容）", `${strokes} 笔`);
-
-// **∴ ④ 让页面换到这份文档 ✗**（**∴ 导出的 atom 取自 `/api/atoms` ✗ 页面自己会拉 ✓）★
-const url2 = new URL(url);
-url2.searchParams.set("doc", doc);
-url2.searchParams.set("token", docToken);
-await send("Page.navigate", { url: url2.toString() });
-const ready = await (async () => {
-  const until = Date.now() + WAIT_MS;
-  while (Date.now() < until) {
-    if (await evaluate('Boolean(document.getElementById("timelapseExport"))')) return true;
-    await sleep(250);
-  }
-  return false;
-})();
-if (!ready) {
-  // **∴ 按钮都没有 ⇒ 要么页面没加载完 ✗ 要么产品真的没接线 ✓** ⇒ **∴ 用**产品口径**报红 ✓
-  check(false, "页面上有「导出过程视频」按钮（`#timelapseExport`）");
-  console.error("❌ 页面上找不到那个按钮 ⇒ 接线没生效");
-  process.exit(1);
-}
-check(true, "页面上有「导出过程视频」按钮（`#timelapseExport`）");
 
 // **∴ ⑤ 点它 ✗ 等文件落盘 ✓** ★
 // **∴ 必须等**页面自己的内核就绪**✗**（**∴ 实测踩到 ✓）**：**`state.wasm` 还是 null 时点按钮**✗
@@ -223,6 +297,10 @@ const kernelReady = await (async () => {
 })();
 if (!kernelReady) {
   const info = await evaluate('(document.getElementById("timelapseInfo")||{}).textContent || ""');
+  console.error("  网络失败：" + (networkFailures.slice(-6).join("｜") || "（没有失败记录）"));
+  const interesting = consoleLines.filter((l) => /wasm|内核|exception|error|失败|Error/i.test(l));
+  console.error("  相关日志：" + (interesting.slice(-8).join("｜") || "（没有与内核/错误相关的日志）"));
+  console.error("  页面日志尾：" + (consoleLines.slice(-6).join("｜") || "（空）"));
   cannotJudge(`页面的 WASM 内核一直没就绪（info=${info}）⇒ 本环境跑不起这条功能（CI 里由 wasm 产物保证）`);
 }
 const before = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter((n) => n.endsWith(".mp4")) : [];
@@ -345,7 +423,11 @@ if (played && played.error) {
 } else if (!played) {
   check(false, "浏览器能解出这个 mp4 的元数据", "`loadedmetadata` 或 `error` 都没在 20 秒内到");
 } else {
-  check(played.w === 320 && played.h === 240, "解出来的画面尺寸等于文档尺寸 320×240", `${played.w}×${played.h}`);
+  check(
+    played.w === docW && played.h === docH,
+    `解出来的画面尺寸等于文档真实尺寸 ${docW}×${docH}`,
+    `${played.w}×${played.h}`,
+  );
   check(played.d > 0, "解出来的时长大于 0", `${played.d}s`);
 }
 

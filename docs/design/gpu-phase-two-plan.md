@@ -15278,3 +15278,39 @@ crates/yanshi-http/src/viewer.rs:  page_template() = PAGE_HEAD ++ viewer.css ++ 
   `codec=h264 900×640 nb_frames=11` ✓）＋ **∴ 页面侧**入口／结构判据全绿** ✓
     （**`tool-mp4-lite-structure` ✓ ＋ `cargo test -p yanshi-http` 42 项 ✓）★
 - **∴ 未证 ✗**：**页面里**真跑一次 WebCodecs**导出**✗ 以及**那个 mp4 能被解出来** ✓
+
+### 十二、★★★ 第 249 轮（续）：**④ 的"可播放"**证到了** ✗ 判据全绿** ✓ ★★★
+
+**∴ 实测原文（**本机 ✗ `with-temp-server.sh node scripts/browser-timelapse-export.mjs` ✓）★**：
+```
+✓ 判据先在文档里画了 20+ 笔（24 笔）
+✓ 页面上有「导出过程视频」按钮（#timelapseExport）
+✓ 点「导出过程视频」后落下一个 mp4（timelapse-check-…mp4）
+  文件：/tmp/yanshi-timelapse-…/timelapse-check-….mp4（4023 字节）
+✓ 第一个盒子是 ftyp｜✓ 每个顶层盒子的长度自洽｜✓ moov 在 mdat 之前
+✓ moov > trak > mdia > minf > stbl 都在｜✓ stbl 里 stsd/stts/stsc/stsz/stco 都在
+✓ 样本表里至少有 2 帧（3 帧）｜✓ 每个样本的偏移＋长度都落在 mdat 之内
+✓ 解出来的画面尺寸等于文档真实尺寸 1024×1024（1024×1024）
+✓ 解出来的时长大于 0（0.100001s）
+✓ 页面入口、MP4 结构、以及「同一个浏览器能解出元数据」三件都对 ⇒ 这条功能真的能用
+```
+⇒ **∴ 这条**真的能用**✗ 而且是**同一个浏览器**自己解出来的** ✓ ★★★
+
+**∴ 一路踩掉的五个坑（**全是**判据自己**✗ 记下来免得重犯 ✓）★★**：
+1. **∴ `WebCodecs` 检查放错了位置 ✗**：**放在 `Page.navigate` **之前**✗ ⇒ **∴ 量到的是
+   `about:blank`**✗ ⇒ **∴ 那里**不是安全上下文**✗ ⇒ `VideoEncoder` 必然 undefined** ✓
+     ⇒ **∴ 于是**判据**白白退 3**✗ 而**这台 Chromium**其实支持 avc 编码** ✓
+       （**∴ 另起真 localhost 页面复测 ⇒ `isSecureContext: true` ✗ `avc1.640028` supported ✓）★
+2. **∴ `base` 用了带 query 的串 ✗**：**`with-temp-server.sh` 把查看器地址**追加为最后一个
+   参数**✗（**它自己已经建好 `check` 文档 ✓）⇒ **∴ `base + "/api/documents"` **实际请求
+   到 `/`** ✗ ⇒ **∴ 服务端回**「`/` 不允许 POST」** ✓ ⇒ **∴ 只取 `new URL(x).origin`** ✓ ★
+3. **∴ 文档与 token 配错 ✗**：**拿了 runner 的 `check` ✗ 却带**我那份文档的 token** ✓
+   ⇒ **∴ 页面 bootstrap 用错 token**✗ ⇒ **∴ 内核**根本没起来**✗ 而**表现**只是"一直没就绪" ✓
+4. **∴ 少了 `render=client` ✗**：**默认那一档页面**根本不用本地 wasm**✗
+   ⇒ **∴ `window.yanshiKernelReady` **永远不会被设** ✓ ⇒ **∴ 加上它 ⇒ 内核起来了 ✗ 导出跑了** ✓ ★★
+5. **∴ 画面尺寸写死 320×240 ✗**：**我请求 320×240 ✗ 而那份 id 已存在 ⇒ **服务端给回
+   原来的 1024×1024** ✓ ⇒ **∴ 写死的断言**把一条完全正常的导出判成了红** ✓
+     ⇒ **∴ 改成**问 `get_document` 要真实尺寸** ✓ ★★
+
+**∴ 还顺手收紧了等待预算 ✗**：**默认 180 秒 ⇒ 90 秒** ✓（**∴ `run-criteria.sh` 给
+  `browser-*` 的整段超时是 420 秒 ✗ 两段各 180 会拖爆** ✓）＋ **∴ 环境变量仍可调** ✓ ★
