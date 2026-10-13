@@ -75,9 +75,51 @@ mod tests {
             should_use_gpu(4_000_000),
             "4 M 实测 GPU 快 99.2% ⇒ 必须走 GPU"
         );
-        // **∴ 边界 ✗**：**阈值本身走 GPU** ✓
-        assert!(should_use_gpu(GPU_MIN_PIXELS));
-        assert!(!should_use_gpu(GPU_MIN_PIXELS - 1));
+        // **★★★ 边界：必须按**实际阈值**写 ✗ ★★★**（**第 813 轮修；**完整门禁抓到 ✓）
+        //   **∴ 为什么原来那样写会红 ✗**：
+        //     ＋ **∴ 旧写法 ✗**：`should_use_gpu(GPU_MIN_PIXELS)`（**1 000 000 ✓）
+        //       ＋ **∴ 而**第 795 轮把**独显**阈值提到 **1 048 576**✗
+        //         ⇒ **∴ 于是** `1_000_000 >= 1_048_576` ＝ false ⇒ **∴ 旧断言**必红** ✓ ★★
+        //   **∴ 正确的写法 ✗**：**用**`threshold_for(Discrete)`**✗ 而**不假设它 ≤ `GPU_MIN_PIXELS`** ✓
+        //     ＋ **∴ 而那**正是**两档阈值**方向冲突**的体现**（**另见
+        //       `yanshi-gpu` 里 `#[ignore]` 的 `discrete_threshold_must_not_exceed_the_integrated_one` ✓）★
+        // **★★★ 必须用**两参数**的那个函数 ✗ ★★★**（**第 813 轮；**完整门禁 ＋ 我自己的错 ✓）
+        //   ＋ **∴ 我第一版写成 `should_use_gpu(discrete - 1)`**✗
+        //     ＋ **∴ 而**本 crate 的 `should_use_gpu(pixels)` 是**单参数**✗
+        //       ⇒ **∴ 它**用**一个固定的档**（**不是 `Discrete` ✓）
+        //         ＋ **∴ 于是** `should_use_gpu(1_048_575)` 用 **1_000_000** 判
+        //           ⇒ **∴ 返回**true**✗ ⇒ **∴ 断言 `!true`**必红** ✓ ★★
+        //   ⇒ **∴ 正确 ✗**：**用 `yanshi_gpu::should_use_gpu_on(档位, 像素数)`** ✓
+        // **★★★ 两种配置要**分开写** ✗ ★★★**（**第 813 轮；**完整门禁抓到 ✓）
+        //   ＋ **∴ 为什么 ✗**：**`yanshi_gpu` **只在 `--features gpu` 下是依赖** ✗
+        //     ⇒ **∴ 无 feature 时引用它**⇒ `error[E0433]: cannot find module or crate`** ✓ ★★
+        //       ＋ **∴ 而**本 crate **两种配置都要能跑**✗（**判据在任何配置下都要成立 ✓）★
+        //   ⇒ **∴ 所以 ✗**：**带 feature ⇒ 用 `should_use_gpu_on(档位, …)`**✗
+        //     ＋ **∴ 无 feature ⇒ 用**单参数的 `should_use_gpu`**（**它**用的是保守档 ✓）✓ ★★★
+        #[cfg(feature = "gpu")]
+        {
+            const D: yanshi_gpu::DeviceClass = yanshi_gpu::DeviceClass::Discrete;
+            let discrete = yanshi_gpu::threshold_for(D);
+            assert!(
+                yanshi_gpu::should_use_gpu_on(D, discrete),
+                "阈值本身必须走 GPU（**边界闭合 ✓）"
+            );
+            assert!(
+                !yanshi_gpu::should_use_gpu_on(D, discrete - 1),
+                "**∴ 独显阈值下一像素**必须走 CPU（**边界闭合 ✓）"
+            );
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            assert!(
+                should_use_gpu(GPU_MIN_PIXELS),
+                "阈值本身必须走 GPU（**边界闭合 ✓）"
+            );
+            assert!(
+                !should_use_gpu(GPU_MIN_PIXELS - 1),
+                "**∴ 阈值下一像素**必须走 CPU（**边界闭合 ✓）"
+            );
+        }
 
         // **★ 直接钉住阈值本身 ✗ ★**（第 282 轮 ✓；**∴ 由变异检验逼出来 ✓）：
         //   **∴ 为什么补 ✗**：**第 281 轮的变异②**（**阈值 250 000 ⇒ 100 000 ✓）**✗
@@ -85,6 +127,14 @@ mod tests {
         //       ⇒ **∴ 于是**：**把阈值挪到 100 000**✗ ⇒ **∴ 99 999 仍 < 100 000** ⇒ **∴ 断言**仍过** ✓
         //   **⇒ ★ 所以**：**必须有一条**直接说阈值是多少**的断言** ✓ ★**** ✓✓
         //   **∴ 而**它的**变异点**：**改阈值** ⇒ **∴ 必红** ✓**** ✓✓
+        // **★★★ 这条只在**没有 feature**时成立 ✗ ★★★**（**第 813 轮；**完整门禁抓到 ✓）
+        //   ＋ **∴ 为什么 ✗**：**带 `--features gpu` 时**✗ 本 crate 的 `GPU_MIN_PIXELS`
+        //     **re-export 自 `yanshi_gpu`**✗ ⇒ **∴ 它是 **1_000_000**（**不是 30_000 ✓）★
+        //       ＋ **∴ 而**旧断言**在两种配置下都跑**✗ ⇒ **∴ 于是**带 feature 时**必红** ✓ ★★
+        //   ⇒ **∴ 修法 ✗**：**把"钉住保守档的值"这件事**限定到** `not(feature = "gpu")`** ✓
+        //     ＋ **∴ 而**带 feature 时的**单一来源**是 `yanshi_gpu::GPU_MIN_PIXELS`**✗
+        //       ⇒ **∴ 那**由 `yanshi-gpu` 自己的测试钉住**（**`thresholds_follow_the_adapter_class` ✓）★
+        #[cfg(not(feature = "gpu"))]
         assert_eq!(
             GPU_MIN_PIXELS, 30_000,
             "阈值必须钉在第 285 轮八档实测的平衡点之上（3 倍余量）；**∴ 改它要**同时改实测依据**"
