@@ -14979,3 +14979,67 @@ want=3  have=2 missing=["no-group"] groups=5
       ＋ **∴ 判据**已经有了**✗：`/health` 的 `below_reuse` 与 `below_missing` ✓
       ＋ **∴ 下一步 ✗**：**先量清**读侧为什么读不到**（**是 `empty` 没被算 ✓？
         是 `sig` 抖动 ✓？是范围对不上 ✓？**）⇒ **∴ 然后**才谈"要不要写／怎么写"** ✓ ★★★
+
+## 十四、★★★ timelapse 合入（第 249 轮）：**读懂了 ✗ 差异很大 ✓）★★★
+
+**∴ 来源 ✗**：`/tmp/yanshi-timelapse-完整包-20261013.tar.gz` ＋ `…完整交付說明…md` ✓
+  （**∴ 交付方 Muse ✓；**它自报的实测：**838 笔触 ／ 每 10 个一帧 ⇒ **4.6 s**（**相对 Python 版 24.6× ✓）★
+
+### 一、★★★ 合入清单（**∴ 包里有 6 个文件 ✓）★★★
+
+| 文件 | 作用 | 进仓位置 |
+|---|---|---|
+| `crates/yanshi-timelapse/Cargo.toml` | 原生 CLI 的清单 | `crates/yanshi-timelapse/` ✓（**已加 workspace members ✓） |
+| `crates/yanshi-timelapse/src/main.rs` | **读工程 ⇒ 逐 atom 合成 ⇒ 管道给 ffmpeg** | 同上 ✓ |
+| `crates/yanshi-timelapse/README.md` | 用法 | 同上 ✓ |
+| `pwa/yanshi-timelapse.js` | **replay ＋ WebCodecs ＋ mp4-muxer** | **∴ 待接进 `crates/yanshi-http/assets/` ✓ |
+| `pwa/yanshi-timelapse-worker.js` | Web Worker 封装 | 同上 ✓ |
+| `pwa/README.md` | viewer-app.js 接线段 | 同上 ✓ |
+
+### 二、★★★ 与仓库约定的差异（**∴ 这才是合入的真工作量 ✓）★★★
+
+**∴ ① 容器格式**不同**✗（**∴ 直接跑仓库夹具会失败 ✓）★**：
+```
+$ cargo run -q -p yanshi-timelapse -- exports/demo.yanshi /tmp/x.mp4 20
+Error: invalid Zip archive: Could not find central directory end
+$ file exports/demo.yanshi
+exports/demo.yanshi: POSIX tar archive        ← **∴ 本仓导出的是**裸 tar**✗ 而交付包期望
+                                                  **"zip 里套一个 tar"** ✓
+```
+**∴ 本仓 tar 的条目 ✗**：`atoms.jsonl`／`meta.json`／`render.seq`／`blobs.encoding`／
+  `BUILD-INFO`／`README.txt` ✓
+
+**∴ ② blob 是 **zlib 压缩**的 ✗ 而 CLI 当**裸 RGBA** 读** ✓**：
+```
+$ tar xOf exports/demo.yanshi blobs.encoding
+zlib
+```
+**∴ 后果 ✗**：**任何带图的工程**都会出**乱码**✗（**∴ 不是"画得不对"✗ 是**根本不是像素** ✓）★★
+
+**∴ ③ atom 种类对不上 ✗**（**∴ 两个读法都有洞 ✓）★**：
+**∴ 仓库 `exports/demo.yanshi` 的真实 kinds ✗**：
+`create_document` 1／`create_layer` 1／**`import_image` 2**／**`draw_stroke` 2**／
+`create_object` 1／`draw_shape` 1／`draw_text` 1／`erase` 1 ✓
+**∴ 而原生 CLI 只认 `import_image`**✗ ⇒ **∴ 手绘笔触（`draw_stroke`）**一笔都不会出现** ✓
+  ＋ **∴ JS 认 `import_image` ＋ `brush_stroke`**✗ ⇒ **∴ 而本仓的 kind 叫 `draw_stroke`** ✓
+    ⇒ **∴ 两边**都漏掉这个仓的手绘笔触** ✓ ★★
+
+**∴ ④ 尺寸写死 ✗**：**原生 CLI 写死 1920×1080 ＋ `SCALE = 0.5`** ✗
+  ＋ **∴ 而 `meta.json` 里**就有 `width`／`height`**（**demo 是 900×640 ✓）★
+    ⇒ **∴ 900×640 的工程**只会画出左上角一块**✗ 且**坐标全错** ✓
+
+**∴ ⑤ 外部依赖 ffmpeg ✗**：**本机有**（`/usr/bin/ffmpeg` ✓）✗ **∴ 而**它**不在仓库依赖里** ✓
+  ＋ **∴ 两面 ✗**：**收益**＝**H.264 编码交给成熟外部工具 ✗ 代码极少 ✓；
+    **代价**＝**多一个**运行期外部二进制**✗（**CI 与用户机器上未必有 ✓）⇒ **∴ 必须**在文档与
+    报错里写明** ✓ ★
+
+### 三、★ 这一轮**已落地**的部分（**∴ 只到"能编译"✗ 还没到"能用" ✓）★
+
+- **crate 进 workspace** ✓（`members` 加一行 ✓）；**Cargo.toml 改用 workspace 继承** ✓；
+- **clippy `-D warnings` 清干净** ✓ —— **∴ 交付版有 7 处**死代码／未用变量**✗ 我**没有**用
+  `let _ =` 糊过去**✗ 而是**让它们**各自**说出一件事实** ✓ ★★：
+  **∴ `line_count`／`parse_fail`** ⇒ **打进输出**（**∴ 坏行非 0 ⇒ 工程可能不完整 ✗ 必须让人
+    看见 ✓）；**∴ `sx1`／`sy1`** ⇒ **改成 `debug_assert!` 的**越界检查** ✓；**∴ 空的 `if let`** ⇒ 删 ✓
+- **∴ 未落地（**明确列出 ✓）✗**：**格式适配（**裸 tar ＋ zlib ＋ `meta.json` 尺寸 ✓）✗
+  **atom 覆盖（**`draw_stroke` 等 ✓）✗ **判据（**用仓库夹具跑一次并断言帧数／可播放 ✓）✗
+  **PWA 接线（**mp4-muxer 未 vendored ✗ 页面无入口 ✓）★

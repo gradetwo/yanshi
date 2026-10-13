@@ -15,6 +15,8 @@ members = [
     "crates/yanshi-medium-marker",
     "crates/yanshi-medium-pencil",
     "crates/yanshi-medium-pixel",
+    # **★ timelapse ✗**：**绘画过程视频导出 CLI**（**合入自 /tmp 的交付包 ✓）★
+    "crates/yanshi-timelapse",
 ]
 
 [workspace.package]
