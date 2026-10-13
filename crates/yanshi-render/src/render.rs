@@ -3812,6 +3812,16 @@ pub(crate) mod parallel_impl {
     ///     ＋ **∴ 那条默认值的两次对照（**1／2／3／4 带的本机实验 ＋ 第 247 轮 L4 上
     ///       2／4／6／8／12 带的复核 ✓）都是**渲染总账**的口径**✗ ⇒ **∴ 它们**仍然成立** ✓ ★★
     pub fn quantize_workers(explicit: Option<usize>) -> usize {
+        // **★ 诊断开关 ✗ 与 `YANSHI_BAND_CAP` 同规** ★（**第 247 轮 ✓）：**∴ 为什么需要它 ✗**
+        //   ＋ **∴ 没有它 ⇒ "**改前**"就**复现不出来**✗（**∴ 只能**回退提交再重建 ✗
+        //     ⇒ **∴ 那**不是同二进制 A/B ✗ ⇒ **∴ 结论**会被"两次构建"污染 ✓）★★
+        //   ＋ **∴ 不设 ⇒ **跟着核数走**（**上限 `MAX_WORKERS` ✓）** ✓
+        let explicit = explicit.or_else(|| {
+            std::env::var("YANSHI_QUANTIZE_BANDS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .filter(|value| *value >= 1)
+        });
         explicit
             .unwrap_or_else(|| {
                 std::thread::available_parallelism()
