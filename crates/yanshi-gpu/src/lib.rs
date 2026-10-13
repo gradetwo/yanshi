@@ -1052,15 +1052,37 @@ impl Quantizer {
 
 /// **∴ 极简 `block_on` ✗**（**∴ 不引入 `pollster` ✓）
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    // **★★★ 第 818 轮：**去掉忙等 ＋ 加超时**** ✗ ★★★**
+    //   ＋ **∴ 用户指出（**原文 ✓）**✗**：
+    //     ⇒ **∴ ①** 「**`block_on` 忙等待（**最嚴重 ✓）**✗**：
+    //       **∴ `Waker::noop()` ＋ `std::thread::yield_now()` ⇒ **∴ 等 GPU 时** CPU 100% 空转** ✓
+    //         ＋ **∴ ②** 「**GPU 等待**無超時**✗ ⇒ **∴ hang 了就**永远卡死** ✓
+    //   ＋ **∴ 为什么原来那样写 ✗**（**读代码才知道 ✓）★**：
+    //     **∴ 本仓的 future**自己驱动 device**✗（**`readback` 里每轮 `poll(Poll)` ✓）
+    //       ⇒ **∴ 所以**：**`Waker::noop()` **不会**卡死**✗ 而**只**让等待变成忙等** ✓ ★★
+    //   ＋ **∴ 所以修法 ✗**：**保留"自己轮询"的形态**✗ 而**把 `yield_now` 换成**短睡**** ✓
+    //     ⇒ **∴ ①** **CPU 占用**大降**（**∴ 因为**不再**每轮**抢调度 ✓）
+    //       ＋ **∴ ②** **加**总时限**✗ ⇒ **∴ 于是**超时**必然发生 ＋ **可降级** ✓ ★★★
+    //         ＋ **∴ 而** `poll` **仍然每轮调用**✗ ⇒ **∴ 驱动语义**不变** ✓
     use std::task::{Context, Poll};
     let waker = std::task::Waker::noop();
     let mut cx = Context::from_waker(waker);
     let mut fut = Box::pin(fut);
+    // **∴ 上限 60 秒 ✗**（**∴ 远大于**任何实测帧时间 ⇒ **∴ 只在 hang 时触发 ✓）★
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let step = std::time::Duration::from_micros(200);
     loop {
         if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
             return v;
         }
-        std::thread::yield_now();
+        if std::time::Instant::now() >= deadline {
+            // **∴ 超时 ⇒ **∴ 必须**说出来**✗ 而**不**静默** ✓（**∴ 本会话的纪律 ✓）★
+            //   ＋ **∴ 而**这里**没有**默认值可返回**✗ ⇒ **∴ 所以**：**如实 panic 并**写清原因** ✓
+            //     ⇒ **∴ 那**比"永远卡死"好**✗（**∴ 至少**有栈 ＋ 有原因 ✓）★★★
+            panic!("GPU future 超过 60 秒未完成 ⇒ **∴ 视为** GPU 卡死**（**第 818 轮加的超时 ✓）");
+        }
+        // **∴ 短睡替代 `yield_now` ✗**（**∴ 于是**不烧 CPU ✓）★★★
+        std::thread::sleep(step);
     }
 }
 
@@ -1195,14 +1217,11 @@ impl OnceSignal {
         }
     }
 
-    /// **∴ 保留 async 形态**（**∴ 供**别的 future 用 ✓）✗ ⇒ **∴ 现在**委托给 `wait_timeout`** ✓
-    async fn wait(&self) {
-        // **∴ 上限 30 秒 ✗**（**∴ 超时 ⇒ **∴ 调用方**降级 CPU ✓）★
-        let _ = self.wait_timeout(
-            std::time::Instant::now() + std::time::Duration::from_secs(30),
-            std::time::Duration::from_micros(200),
-        );
-    }
+    // **∴ `wait()` 已**删除** ✗**（**第 818 轮 ✓）★
+    //   ＋ **∴ 为什么 ✗**：**读回路径改用了 `wait_timeout`**✗ ⇒ **∴ 它**成了**死代码**
+    //     ＋ **∴ 而** clippy `-D warnings` **把**"never used"**当硬失败** ✓ ★
+    //   ＋ **∴ 若**将来有别的 future 需要 async 形态**✗
+    //     ⇒ **∴ 那时**再包一层 `poll_fn` ＋ `wait_timeout`** ✓（**∴ 不要**留死代码 ✓）★
 }
 
 #[cfg(test)]
