@@ -154,6 +154,48 @@ pub fn catmull_rom_smooth(points: &[StrokePoint], subdivisions: usize) -> Vec<St
     out
 }
 
+/// **★ 对称模式 ✗ ★**（**第 251 轮 ✓）：**画一笔 ⇒ 自动在**镜像位置**再盖一遍** ✓
+///
+/// **∴ 为什么做在**盖章层**✗**（**而**不是改点序列／存成两个对象 ✓）★**：
+///   ＋ **∴ 借鉴成熟软件 ✗**：**Krita／Procreate 的对称都是**工具态**✗
+///     **不写进笔迹数据** ✓ ⇒ **∴ 于是**：**撤销一笔／清画布 ⇒ 对称跟着走 ✓** ★
+///   ＋ **∴ 而**本仓盖章**只有一条路径**（它自己注明"三条路径很容易漂移 ✗ 栽过一次" ✓）
+///     ⇒ **∴ 插在这里**一处就够** ✓ ★★
+///   ＋ **∴ 代价（**如实 ✓）✗**：**镜像轴要**画布尺寸**✗ ⇒ **∴ 它必须**由调用方给**
+///     （**∴ 不能拿 `buffer.bbox()` ✗** —— **∴ 分块渲染时那只是**一块 tile** ✓）★★
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symmetry {
+    /// 关（缺省 ✓）。
+    None,
+    /// **垂直镜像 ✗**：**轴 ＝ 画布**竖直中线** ✓（`x' = 宽 − x` ✓）★
+    Vertical,
+    /// **水平镜像 ✗**：**轴 ＝ 画布**水平中线** ✓（`y' = 高 − y` ✓）★
+    Horizontal,
+}
+
+impl Symmetry {
+    /// 由字符串解析（`none`／`vertical`／`horizontal` ✓；别的 ⇒ `None` ✓）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "vertical" => Self::Vertical,
+            "horizontal" => Self::Horizontal,
+            _ => Self::None,
+        }
+    }
+
+    /// **镜像一个点 ✗**（`canvas` 是**画布像素尺寸** ✓）★
+    #[must_use]
+    pub fn mirror(self, x: f64, y: f64, canvas: (u32, u32)) -> (f64, f64) {
+        let (cw, ch) = (f64::from(canvas.0), f64::from(canvas.1));
+        match self {
+            Self::None => (x, y),
+            Self::Vertical => (cw - x, y),
+            Self::Horizontal => (x, ch - y),
+        }
+    }
+}
+
 /// 笔刷参数。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrushSpec {
@@ -181,6 +223,8 @@ pub struct BrushSpec {
     pub seed: u64,
     /// 虚线长度（`None` 为实线）。
     pub dash: Option<f64>,
+    /// **对称模式 ✗**（缺省关 ✓）★
+    pub symmetry: Symmetry,
 }
 
 impl Default for BrushSpec {
@@ -198,6 +242,7 @@ impl Default for BrushSpec {
             blend_mode: BlendMode::Normal,
             seed: 0,
             dash: None,
+            symmetry: Symmetry::None,
         }
     }
 }
@@ -237,6 +282,10 @@ impl BrushSpec {
         }
         if let Some(min_ratio) = value.get("min_size_ratio").and_then(Value::as_f64) {
             spec.min_size_ratio = min_ratio.clamp(0.0, 1.0);
+        }
+        // **∴ 对称从对象的 `data` 读 ✗**（**∴ 于是**它**随原子重放 ✗ 不是隐藏状态** ✓）★
+        if let Some(symmetry) = value.get("symmetry").and_then(Value::as_str) {
+            spec.symmetry = Symmetry::from_name(symmetry);
         }
         if let Some(color) = value.get("color") {
             // 统一走 `color::parse_spec_color`：数组 > 0-1 视为 sRGB 字节，
@@ -320,6 +369,28 @@ pub fn stamp_stroke_configured(
     appearance: Option<&StrokeAppearance>,
     coverage: Option<&dyn Fn(f64, f64) -> f32>,
 ) -> usize {
+    // **★★★ 第 251 轮 ✗：不带画布的老入口 ✗ ★★★**
+    //   ＋ **∴ 为什么留它 ✗**：**调用点里有一大批是**测试**✗（**∴ 它们都没开对称 ✓）
+    //     ⇒ **∴ 于是**：**留着它 ⇒ 那些调用点**一个都不用改** ✓（**∴ 改动面小 ⇒ 好回退 ✓）★
+    //   ＋ **∴ 而**风险（**没用上对称却静默忽略 ✓）用**断言**挡住 ✗**：
+    //     ⇒ **∴ 谁**开了对称还走老入口 ⇒ **∴ 测试里**当场炸** ✓（**∴ 而不是"画出来少一半" ✓）★★
+    debug_assert_eq!(
+        brush.symmetry,
+        Symmetry::None,
+        "开了对称就必须走 `stamp_stroke_configured_on`（要画布尺寸）"
+    );
+    stamp_stroke_configured_on(buffer, brush, stroke, appearance, coverage, (0, 0))
+}
+
+/// **带画布的盖章入口 ✗**（**对称的镜像轴要 `canvas` ✓；关掉对称时它无关紧要 ✓）★
+pub fn stamp_stroke_configured_on(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stroke: &StrokeGeometry,
+    appearance: Option<&StrokeAppearance>,
+    coverage: Option<&dyn Fn(f64, f64) -> f32>,
+    canvas: (u32, u32),
+) -> usize {
     let spacing = brush.spacing_pixels();
     // **可选的笔迹平滑** ✓ —— 只发生在**渲染时** ✓，点序列本身不动 ✓（见 `catmull_rom_smooth` ✓）。
     // 细分 8 段足够 ✓：之后还会按 `spacing` 重新采样 ✓ ⇒ 再多只是白做功 ✓。
@@ -336,6 +407,23 @@ pub fn stamp_stroke_configured(
         .map(|point| (point.x, point.y, point.pressure))
         .collect();
     let stamps = dashed_line(&samples, spacing, brush.dash);
+    // **★★★ 对称：把每个印章**在镜像位置再盖一遍** ✗ ★★★**（**第 251 轮 ✓）
+    //   ＋ **∴ 点序列**一个字节都不改**✗ 只是**多喂一批镜像坐标**给盖章 ✓
+    //     ⇒ **∴ 于是**：**压力／间距／抖动**全跟着原样** ✓（**∴ 镜像 dab 的压力
+    //       等于原 dab ✓ —— 判据里那一条正是它 ✓）★
+    //   ＋ **∴ 轴 ✗**：**`x' = 宽 − x`**（竖直中线 ✓）／**`y' = 高 − y`**（水平 ✓）
+    //     ＋ **∴ 为什么不是 `宽−1−x` ✗**：**文档坐标**连续 ✗ 像素中心在 `k+0.5`**
+    //       ⇒ **∴ `宽 − x`**才是关于画布中线的镜像** ✓（**判据做逐像素镜像比对 ✓）★★
+    let stamps = if brush.symmetry == Symmetry::None {
+        stamps
+    } else {
+        let mut out = stamps.clone();
+        for (x, y, pressure) in &stamps {
+            let (mx, my) = brush.symmetry.mirror(*x, *y, canvas);
+            out.push((mx, my, *pressure));
+        }
+        out
+    };
     let Some(appearance) = appearance.filter(|appearance| appearance.active) else {
         // 无外观：保持旧路径（含选区裁剪分支 ✓）。
         return match coverage {
@@ -485,7 +573,23 @@ fn stamp_samples_with_appearance(
 
 /// 把笔迹整段盖章（无外观参数、无选区裁剪）✓ —— 等价于 [`stamp_stroke_configured`] 的两个 `None` ✓。
 pub fn stamp_stroke(buffer: &mut Buffer, brush: &BrushSpec, stroke: &StrokeGeometry) -> usize {
+    // **∴ 同上 ✗：不带画布的老入口留给（一大批判据里的）调用点 ✓ 并用断言挡住误用** ✓ ★
+    debug_assert_eq!(
+        brush.symmetry,
+        Symmetry::None,
+        "开了对称就必须走 `stamp_stroke_on`（要画布尺寸）"
+    );
     stamp_stroke_configured(buffer, brush, stroke, None, None)
+}
+
+/// **带画布的整段盖章 ✗**（**对称用 ✓）★
+pub fn stamp_stroke_on(
+    buffer: &mut Buffer,
+    brush: &BrushSpec,
+    stroke: &StrokeGeometry,
+    canvas: (u32, u32),
+) -> usize {
+    stamp_stroke_configured_on(buffer, brush, stroke, None, None, canvas)
 }
 
 /// 笔迹的**增量**盖章：只画上一帧之后新增的采样，并推进游标。
@@ -1447,6 +1551,76 @@ mod tests {
         let other = render(8);
         assert_eq!(first, again, "同 seed 必须逐位一致");
         assert_ne!(first, other, "不同 seed 应给出不同抖动");
+    }
+
+    /// **★★★ 对称模式 ✗ 判据（**第 251 轮 ✓）★★★**
+    ///
+    /// **∴ 判什么 ✗**：**垂直对称盖一笔 ⇒ 画布**左右两半逐位相等** ✓
+    ///   ＋ **∴ 且**先要一个**有效样本**✗（**盖上了几个章 ＋ 画布上有像素 ✓）——
+    ///     **∴ 否则**一张**全黑/全空**的图**天然满足镜像相等** ✗ ⇒ **∴ 判据会假绿** ✓ ★★
+    ///   ＋ **∴ 对照 ✗**：**关掉对称 ⇒ **左右不该相等** ✓（**∴ 排除"恒真" ✓）★★
+    ///
+    /// **∴ 为什么用**整数坐标**✗**：**镜像 `宽 − x` 在整数点上**精确**✗
+    ///   ＋ **∴ 而**f32 的分数部分在非整数点上**可能有末位差** ✓
+    ///     ⇒ **∴ 这条判据要的是"**逐位相等**"✗ 所以取整数点** ✓（**如实 ✓）★
+    ///
+    /// **∴ 变异（**能红的根据 ✓）✗**：**去掉镜像展开**（**或把轴写成 `宽−1−x` ✓）
+    ///   ⇒ **∴ 本判据**必红** ✓ ★★
+    #[test]
+    fn vertical_symmetry_mirrors_pixels_exactly() {
+        let (w, h) = (64u32, 48u32);
+        let stroke = StrokeGeometry {
+            points: vec![StrokePoint {
+                x: 12.0,
+                y: 20.0,
+                pressure: 0.8,
+            }],
+            smooth: false,
+        };
+        let render = |symmetry: Symmetry| -> (usize, Vec<f32>) {
+            let mut buffer = Buffer::new(0, 0, w, h);
+            let brush = BrushSpec {
+                size: 6.0,
+                symmetry,
+                ..BrushSpec::default()
+            };
+            let drawn = stamp_stroke_on(&mut buffer, &brush, &stroke, (w, h));
+            (drawn, buffer.as_f32().to_vec())
+        };
+        let (drawn, pixels) = render(Symmetry::Vertical);
+        assert!(drawn >= 2, "垂直对称应盖**两个**章（实测 {drawn}）");
+        assert!(
+            pixels.iter().any(|v| *v != 0.0),
+            "画布上得真有点像素 ⇒ 否则镜像比对是空话"
+        );
+        let worst = mirror_difference(&pixels, w, h);
+        assert_eq!(
+            worst, 0.0,
+            "垂直对称下左右必须**逐位**相等（实测最大差 {worst}）"
+        );
+        // **对照**：关掉对称 ⇒ 不该镜像相等 ✓
+        let (plain_drawn, plain) = render(Symmetry::None);
+        assert_eq!(plain_drawn, 1, "关掉对称只盖一个章");
+        assert!(
+            mirror_difference(&plain, w, h) > 0.0,
+            "对照：不开对称时左右**不该**相等（否则这条判据没有区分力）"
+        );
+    }
+
+    /// **逐位镜像差 ✗**（**返回左右两半对应像素的最大绝对差 ✓）★
+    fn mirror_difference(pixels: &[f32], w: u32, h: u32) -> f32 {
+        let mut worst = 0.0f32;
+        for y in 0..h as usize {
+            for x in 0..(w as usize / 2) {
+                let mirror_x = w as usize - 1 - x;
+                let a = (y * w as usize + x) * 4;
+                let b = (y * w as usize + mirror_x) * 4;
+                for channel in 0..4 {
+                    worst = worst.max((pixels[a + channel] - pixels[b + channel]).abs());
+                }
+            }
+        }
+        worst
     }
 
     #[test]

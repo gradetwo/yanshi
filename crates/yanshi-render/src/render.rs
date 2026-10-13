@@ -17,7 +17,7 @@
 //! 而不是让整次渲染失败。位图补丁目前只支持 `image/x-yanshi-raw`（内核内表示）。
 
 use crate::blend::BlendMode;
-use crate::brush::{stamp_stroke, BrushSpec, StrokeGeometry, StrokePoint};
+use crate::brush::{BrushSpec, StrokeGeometry, StrokePoint};
 use crate::buffer::Buffer;
 use crate::color::{premultiply, u8x4_to_linear_premul, LinearRgba};
 use crate::filter::{apply_adjustment, apply_filter, FilterKind};
@@ -2937,12 +2937,15 @@ impl Renderer {
                     //     ⇒ **∴ 于是**：**印章累计**恒为 **0** ✓（**实测 ✓）**
                     //       ⇒ **∴ 那**说明：**461 个 `import_image`** 走的是**这一条** ✓
                     //         ⇒ **★ 所以**：**计数必须装在这里** ✓ ★**** ✓✓
-                    let drawn = crate::brush::stamp_stroke_configured(
+                    let drawn = crate::brush::stamp_stroke_configured_on(
                         layer_buffer,
                         &brush,
                         &geometry,
                         Some(&appearance),
                         coverage_ref,
+                        // **∴ 镜像轴要**画布**尺寸 ✗ 不能拿 `layer_buffer` 的 bbox**
+                        //   （**∴ 分块渲染时那只是**一块 tile** ✓）★
+                        (self.grid.width(), self.grid.height()),
                     );
                     note_stamps(drawn);
                 }
@@ -3106,7 +3109,12 @@ impl Renderer {
                                     // **★ 记下**盖了几个章** ✗ ★**（第 204 轮 ✓）：
                                     //   **∴ `stamp_stroke` 的返回值**是 `drawn`** ✓
                                     //     ⇒ **∴ 于是**：**判据**能算**"每章多少时间 ✓"** ✓✓
-                                    let drawn = stamp_stroke(layer_buffer, &brush, &geometry);
+                                    let drawn = crate::brush::stamp_stroke_on(
+                                        layer_buffer,
+                                        &brush,
+                                        &geometry,
+                                        (self.grid.width(), self.grid.height()),
+                                    );
                                     note_stamps(drawn);
                                 }
                             }
