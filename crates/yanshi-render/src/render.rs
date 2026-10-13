@@ -1237,6 +1237,9 @@ impl Renderer {
             //   ＋ **∴ 门控 ✗**：**与 `累计` 同一开关**（`YANSHI_RENDER_PROBE` ✓）★
             setup: Option<std::time::Duration>,
             after_loop: Option<std::time::Duration>,
+            // **∴ 收尾里再分一刀 ✗**（**第 248 轮 ✓）：**below 缓存写**（**整带切块 ＋ 全局锁 ✓）
+            //   单独一段 ✗ ⇒ **∴ 于是**收尾 = **缓存写 ＋ 其余** ✓ ★
+            after_cache: Option<std::time::Duration>,
         }
         impl Drop for AccTimer {
             fn drop(&mut self) {
@@ -1250,6 +1253,15 @@ impl Renderer {
                             "PROBE 每带分段 区域={} 建立={setup:?}（**循环之前 ✓）｜循环={after_loop:?}｜收尾={tail:?}｜合计={total:?}",
                             self.label
                         );
+                        // **∴ 收尾再细分 ✗**（**第 248 轮 ✓）：**below 缓存写** 与 **其余** ✓
+                        if let Some(after_cache) = self.after_cache {
+                            let cache = after_cache.saturating_sub(after_loop);
+                            let rest = total.saturating_sub(after_cache);
+                            eprintln!(
+                                "PROBE 收尾细分 区域={} ★below缓存写={cache:?}★｜其余={rest:?}",
+                                self.label
+                            );
+                        }
                     }
                 }
             }
@@ -1260,6 +1272,7 @@ impl Renderer {
             on: std::env::var_os("YANSHI_RENDER_PROBE").is_some(),
             setup: None,
             after_loop: None,
+            after_cache: None,
         };
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -2272,6 +2285,10 @@ impl Renderer {
             }
         }
 
+        // **∴ below 缓存写到此结束 ✗**（**第 248 轮 ✓）：**之后到 return 的一切**都算"其余"**
+        //   ＋ **∴ 这一段（**整带切块 ＋ 全局锁 ✓）单独量 ✗ ⇒ **∴ 于是**收尾**被分成两半 ✓ ★
+        _acc_timer.after_cache =
+            Some(crate::probe::ProbeClock::now().duration_since(_acc_timer.started));
         // **★ `above` 的写入 ✗ ★**（第 700 轮 ✓；**目标第 4 条 ✓**）：**∴ 与 `below` **同一套**
         //   **结构与淘汰统计**（**∴ 同一预算常量 ＋ 同一 `merge_by_rows` ✓ ⇒ **不新起一套 ✓**）。
         //   **∴ 只在**当前层半透明**时需要 ✗**（**∴ 否则 `above_wanted` 为假 ⇒ 连切块都不做 ✓**）。
