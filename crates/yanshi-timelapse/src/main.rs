@@ -164,12 +164,14 @@ fn main() -> Result<()> {
         out_w,
         out_h,
     };
-    // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）
-    let mut kernel =
-        yanshi_wasm::Kernel::new(&doc_id, TILE_SIZE, doc_w, doc_h, KERNEL_MEMORY_LIMIT)
+    // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）★
+    //   ＋ **∴ 而**增量重放放在 `yanshi_timelapse::Timeline` 里 ✗**（**它**只渲脏区并集 ✓）
+    //     ＋ **∴ 逐行 apply ⇒ **脏 tile 并集**长起来 ⇒ **出帧时只渲那一块** ✓ ★★
+    let mut timeline =
+        yanshi_timelapse::Timeline::new(&doc_id, TILE_SIZE, doc_w, doc_h, KERNEL_MEMORY_LIMIT)
             .map_err(|e| anyhow!("建内核失败：{} {}", e.code, e.detail))?;
     for (hex, data) in &blobs {
-        let got = kernel
+        let got = timeline
             .blob_put(data)
             .map_err(|e| anyhow!("写 blob {hex} 失败：{} {}", e.code, e.detail))?;
         // **∴ 顺手做一次**完整性核对**✗**：**包内路径名**就是它的内容哈希** ✓
@@ -237,7 +239,7 @@ fn main() -> Result<()> {
             break;
         }
         let t_apply = Instant::now();
-        if let Err(error) = kernel.apply_atom_json(line) {
+        if let Err(error) = timeline.apply(line) {
             apply_failures += 1;
             if first_failure.is_none() {
                 first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
@@ -245,10 +247,10 @@ fn main() -> Result<()> {
         }
         account.apply_ns += t_apply.elapsed().as_nanos();
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
-            push_frame(&mut kernel, &mut stdin, &mut frames, layout, &mut account)?;
+            push_frame(&mut timeline, &mut stdin, &mut frames, layout, &mut account)?;
         }
     }
-    push_frame(&mut kernel, &mut stdin, &mut frames, layout, &mut account)?;
+    push_frame(&mut timeline, &mut stdin, &mut frames, layout, &mut account)?;
     drop(stdin);
     let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
@@ -261,6 +263,11 @@ fn main() -> Result<()> {
             .frame_render_ns
             .get(account.frame_render_ns.len() / 2)
             .map_or(0.0, |v| ms(*v));
+        // **∴ 语义证据 ✗**（**∴ 不看墙钟也能看出"脏区路真的走了" ✓）★
+        let (full_renders, dirty_renders, dirty_tiles) = timeline.stats();
+        println!(
+            "  ★ 渲染账 ★ 整幅 {full_renders} 次｜脏区 {dirty_renders} 次（**共 {dirty_tiles} 个 tile ✓）★"
+        );
         println!(
             "  ★ 分段账（ms）★ apply {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
             ms(account.apply_ns),
@@ -329,23 +336,24 @@ struct Account {
 }
 
 fn push_frame(
-    kernel: &mut yanshi_wasm::Kernel,
+    timeline: &mut yanshi_timelapse::Timeline,
     stdin: &mut ChildStdin,
     frames: &mut usize,
     layout: Layout,
     account: &mut Account,
 ) -> Result<()> {
     let t_render = Instant::now();
-    let region = yanshi_core::Bbox::new(0.0, 0.0, f64::from(layout.doc_w), f64::from(layout.doc_h));
-    let rendered = kernel
-        .render_region(region)
+    // **∴ 交给 `Timeline::frame()` ✗**：**它内部决定**只渲脏区并集还是整幅**✗
+    //   ＋ **∴ 并**把结果 blit 进持久缓冲**✗ ⇒ **∴ 这里拿到的是**整幅 RGBA** ✓ ★★
+    let frame = timeline
+        .frame()
         .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
     let render_ns = t_render.elapsed().as_nanos();
     account.render_ns += render_ns;
     account.frame_render_ns.push(render_ns);
     let t_scale = Instant::now();
     let rgb = to_rgb_scaled(
-        &rendered.rgba8,
+        frame,
         layout.doc_w,
         layout.doc_h,
         layout.out_w,
