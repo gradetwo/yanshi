@@ -15357,3 +15357,26 @@ crates/yanshi-http/src/viewer.rs:  page_template() = PAGE_HEAD ++ viewer.css ++ 
   判据时量到的是**旧二进制** ✗ 于是**白追一轮** ✓ ⇒ **∴ 现在的做法**：**改过源码就先
   `touch` 一下再跑 harness** ✓（**∴ 或**直接自己起 `target/release/yanshi-serve` 量 ✓
     —— 后者快得多 ✓ 这一轮的 A/B 就是自己起服务量的 ✓）★★
+
+## 十六、★ 第 251 轮：三项建议的**现状核查**（**先读代码 ✗ 不凭印象** ✓）★
+
+**∴ 建议里的三处前提**已经过时**✗ 或**不完整** ✓**：
+
+| 建议原文 | 实际（**本轮读代码 ✓） | 影响 |
+|---|---|---|
+| 「`atom.rs` 里没有 group 概念 ✗ 图层是扁平列表」 | **`LayerType::LayerGroup` **已存在**（`state.rs:80` ✓）**✗ 但**只在 `fold.rs:1179` 被**解析过**✗ 全仓**没有第二处使用** ⇒ **∴ 是个**占位** ✓ | **∴ 图层组**不是从零 ✗ 是**接线 ＋ 渲染继承 ＋ 三个工具** ✓ |
+| 「新增 3 个工具：`create_group`／`move_to_group`／`ungroup`」 | **`create_group`**已存在**（`tools.rs:2008` ✓）✗ 但**它组的是**对象**（`ObjectType::Group` ✓）**✗ 不是**图层** ✓ | **∴ 要分清**对象组**与**图层组** ✓ 别混名 ✓ |
+| 「PSD 只能取合成图 ⇒ 要引 `ag-psd`」 | **本仓**已有 400 行 `yanshi-render/src/psd.rs`**✗ **读**（`decode_psd` ✓）**与写**（`encode_psd` ✓）**都有**✗ 只是**读的时候**跳过图层段**（`psd.rs:98` ✓）★ | **∴ 先看**扩自己的解析器** ✗ 再谈引库** ✓（**且** `ag-psd` 是 **JS 库** ✗ 不是 crates.io 的 Rust 包 ✓ —— 建议那句写错了 ✓）★ |
+
+**∴ 现状（**本轮亲自读到的 ✓）✗**：
+- **∴ 图层工具只有** `create_layer`／`delete_layer`／`duplicate_layer`／`list_layers`／
+  `set_layer_blend`**✗ **没有**移动／改名／排序／图层组** ✓
+- **∴ 混合模式在 `yanshi-render/src/blend.rs`**✓（`Multiply`／`Screen`／`Overlay`／`ColorDodge`／… ✓
+  ＋ **字符串解析 ✓）⇒ **∴ PSD 的混合模式映射**有现成对表可用** ✓
+- **∴ 笔触盖章只有一条路径**✗ `yanshi-render/src/brush.rs` 的 `stamp_stroke_configured`**
+  （**∴ 它自己注明"**三条路径很容易漂移 ✗ 本会话已栽过一次**" ✓）⇒ **∴ 对称模式**插在这里最省事 ✓
+- **∴ 对称相关**：**全仓**零命中** ✓ ⇒ **∴ 这是**唯一真正的空白** ✓ ★★
+
+**∴ 于是顺序（**按投入产出比 ✓）✗**：**① 对称模式**（**dab 层坐标变换 ＋ 一个参数 ＋
+  逐字节镜像判据 ✓）→ **② 图层组**（**把 `LayerGroup` 接上 ✗ 渲染继承 ＋ 三工具 ✓）→
+  **③ PSD 图层级读写**（**先扩自己的 `psd.rs` ✗ 不够再谈引库 ✓）★
