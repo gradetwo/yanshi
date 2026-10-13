@@ -3108,6 +3108,30 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         (hits, misses)
     }
 
+    /// **★ 区域字节缓存的命中／未命中（**全文档求和 ✓）✗ ★**（**第 247 轮 ✓）
+    ///
+    /// **∴ 为什么需要它 ✗**（**∴ 判据的形式问题换来的 ✓）**：
+    ///   **∴ `tool-region-cache-reuse.mjs` 第 2 段原来拿**绝对耗时**判"有没有复用"**✗
+    ///     ＋ **∴ 而**绝对值随机器与构建档位变化**✗（**∴ 实测三档 ✗ 本机 debug 93 ms ⇒ 红 ✓
+    ///       CI 31 ms ⇒ 红 ✗ L4 release 10 ms ⇒ 判"不适用"⇒ 绿 ✓）★★
+    ///       ＋ **∴ 而**那 93／31 ms 里的**大头是**哈希 1 MB 裸像素**✗ 与复用**无关** ✓
+    ///         ⇒ **∴ 所以**：**要一个**与机器无关**的读数 ✗ ⇒ **∴ 它**就是这个 ✓ ★★
+    ///   ＋ **∴ 而**它**纯观测 ✗ 不参与任何渲染决策** ✓（**同 `bitmap_cache_hits_misses` ✓）★
+    pub fn region_cache_hits_misses(&self) -> (u64, u64, u64, u64) {
+        let mut hits = 0u64;
+        let mut misses = 0u64;
+        let mut stale = 0u64;
+        let mut evicted = 0u64;
+        for document in self.documents.values() {
+            let stats = document.region_cache_stats();
+            hits += stats.hits;
+            misses += stats.misses;
+            stale += stats.stale;
+            evicted += stats.evicted;
+        }
+        (hits, misses, stale, evicted)
+    }
+
     /// **位图缓存未命中字节之和（全文档）** ✓（第 133 轮 ✓，纯观测 ✓）。
     pub fn bitmap_cache_missed_bytes(&self) -> u64 {
         self.documents

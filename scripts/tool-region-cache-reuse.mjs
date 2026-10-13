@@ -15,11 +15,25 @@
 //   `raw: true` 的分支里被查**（`tools.rs` 的 `read_render_region` ✓：`if args["raw"] { … render_region_raw … }` ✓）
 //   ⇒ **∴ 不带 `raw` ⇒ 走另一条分支 ⇒ **永远不碰那个缓存 ✗****（**∴ 这解释了外部报告"子区域不命中 ✗"✓**）。
 //
-// **判据（可红 ✓）**：`t2 <= t1 / 5` ✓（**量级判据 ✓，不是绝对值 ✓ —— 绝对值依赖机器 ✗**）。
-// **今天的预期** ✗：**红 ✓**（**实测比值 ~1.5× ✗**）。
-// **转绿条件** ✓：**把 `version` 从**裸 `head_seq`**✗ 换成**影响该区域的内容指纹****
-//   （**＝ below 缓存那套 ✓：层参数 ＋ 对象 `current_version`／`data` ＋ 蒙版 ＋ 色彩空间 ✓**）。
-// **变异** ✗：**改回裸 `head_seq` ⇒ 比值回到 ~1.5× ⇒ 必红 ✓**。
+// **★★★ 第 247 轮：两处**过期**✗ 已改正 ★★★**
+//   ＋ **∴ ① 前提过期 ✗**：**原来这里写"`layer_id` ⇒ `render_region_raw_layer`"**✗
+//     ＋ **∴ 而**代码里 `render_region` 的 raw 分支读的是 **`active_layer`**（**切三段合成 ✓）
+//       ✗ **`layer_id` 这个键**根本没被读** ✓
+//         ⇒ **∴ 于是**：**那一段其实在量**整幅合成**两次** ✓
+//           ＋ **∴ 而** `render_region_raw_layer`（**只画一层 ✓）的调用方是
+//             `write_export_png`（**逐层导出 ✓）★
+//   ＋ **∴ ② 判据形式过期 ✗**：**原来拿**绝对耗时比**当通过条件**✗
+//     ＋ **∴ 实测三档 ✗**：**本机 debug 93 ms ⇒ 强制比值 ⇒ 红 ✓｜CI runner 31 ms ⇒ 红 ✓
+//       ｜L4 **release** 10 ms ⇒ 守卫判"不适用"⇒ 绿 ✓** ⇒ **∴ 同一份代码三种结论** ✓ ★★
+//       ＋ **∴ 而**那几十毫秒的**大头是 `BlobHash::from_bytes` 对 1 MB 裸像素做 SHA-256**
+//         （**存储自带探针：`hash=90ms` ＋ `exists_hit=0ms` ✓）✗ 与"有没有复用"**无关** ✓
+//         ⇒ **∴ 于是**：**改用 `/health.region_cache.hits` 的**增量**✗ ⇒ **∴ 与机器快慢无关** ✓ ★★
+//
+// **判据（可红 ✓，两条都是**语义**✓）**：
+//   **① 只改最上层后重渲同一子区域 ⇒ `below_reuse` **必须自增** ✓（**下面第一段 ✓）；
+//   **② 同一明文 raw 请求连做两次 ⇒ `region_cache.hits` **每次都必须自增** ✓（**第二段 ✓）。
+// **变异** ✗：**① 让"只改当前层"也清空 below ⇒ 必红 ✓；② 让区域缓存永不命中 ⇒ 必红 ✓**。
+// **绝对耗时只**打印**✗ 不作通过条件** ✓**（**∴ 它随机器与档位变化 ✗ 而且大头是哈希 ✓）。
 //
 // 用法：node scripts/tool-region-cache-reuse.mjs <base-url>
 const base = process.argv[2];
@@ -75,18 +89,25 @@ const main = async () => {
     console.error("❌ 第一次太快 ⇒ 量不出复用 ⇒ 判据无效 ⇒ 不许当通过 ✗（换更大的区域／更多层 ✓）");
     process.exit(1);
   }
-  // **★ 场景二：单层渲染（带 `layer_id` ✓）★** —— **∴ 走 `render_region_raw_layer` ✓**
-  //（`tools.rs`：`match optional_str(args, "layer_id") { Some => render_region_raw_layer ✓ }`）
-  // **∴ 它今天**没有任何缓存 ✗**（`set_only_layer` ⇒ `render_region` ⇒ 还原 ✓）⇒ **∴ 这是画家
-  // "只看当前层"的路 ✓** ⇒ **∴ 本判据要量它有没有复用 ✓**。
+  // **★ 场景二：同一明文 raw 请求连做两次 ⇒ 每次都必须**命中区域缓存**** ✗ ★**（第 247 轮改 ✓）
+  //   ＋ **∴ 为什么不再用"绝对耗时比" ✗**：**见头部 ②**✗（**三档机器三种结论 ✓）
+  //   ＋ **∴ 语义读数 ✗**：`/health.region_cache.hits` ✓（**第 247 轮加 ✗ 纯观测 ✓）
+  //     ⇒ **∴ 与"这台机器多快""是 debug 还是 release"**都无关** ✓ ★★
+  const cacheHits = async () =>
+    Number((await (await fetch(`${base}/health`)).json())?.region_cache?.hits ?? -1);
+  const h3 = await cacheHits();
   const t3s = Date.now();
-  await call(doc, token, "render_region", { region, raw: true, layer_id: "R0" });
+  await call(doc, token, "render_region", { region, raw: true });
   const t3 = Date.now() - t3s;
+  const h4 = await cacheHits();
   const t4s = Date.now();
-  await call(doc, token, "render_region", { region, raw: true, layer_id: "R0" });
+  await call(doc, token, "render_region", { region, raw: true });
   const t4 = Date.now() - t4s;
-  const ratio2 = t3 > 0 ? t4 / t3 : null;
-  console.log(`    单层渲染（layer_id=R0 ✓）第一次 ${t3} ms｜第二次 ${t4} ms｜比值 ${ratio2 === null ? "n/a" : ratio2.toFixed(2)}×`);
+  const h5 = await cacheHits();
+  console.log(
+    `    同一明文 raw 请求：第一次 ${t3} ms（region_cache.hits ${h3} ⇒ ${h4}）` +
+      `｜第二次 ${t4} ms（${h4} ⇒ ${h5}）`,
+  );
 
   // **★ 改为量**语义** ✓ ★**（第 476 轮 ✓）：**耗时只**打印**✗；**通过条件 ＝ `below_reuse` 自增 ✓**
   // **∴ 理由** ✓：**子区域**已经**在用 below 复用 ✓**（**块缓存 miss ⇒ `render_region` ⇒
@@ -114,20 +135,22 @@ const main = async () => {
     process.exit(1);
   }
   console.log(`  ✓ 子区域复用生效（比值 ${ratio.toFixed(2)}× ≤ 0.2）`);
-  // **★ 最小耗时守卫 ✓ ★**（第 473 轮**实测 ✓**）：**单层渲染只要 **1～2 ms** ✗** ⇒
-  // **∴ 在这个绝对值上比值是**噪声**✗**（**实测 1 → 2 ms ⇒ 2.00× ✓，**不是"没命中"✗**）
-  // ⇒ **∴ 必须先有足够的绝对耗时，比值才有意义 ✓**（**否则判据会**随机红 ✗**）。
-  if (t3 < 20) {
-    console.log(`  ⏭ 单层渲染只要 ${t3} ms ⇒ **绝对值太小 ⇒ 比值无意义 ⇒ 本场景不适用** ✓` +
-      `（**∴ 实测：单层渲染不慢 ⇒ **不给它加缓存**✓**）`);
-  } else if (ratio2 !== null && ratio2 > 0.2) {
-    console.error(`❌ 单层渲染第二次仍要 ${t4} ms（比值 ${ratio2.toFixed(2)}× > 0.2）` +
-      ` ⇒ **单层渲染没有复用** ✗（**它今天不走任何缓存 ✓**）` +
-      `（转绿条件：把已建好的指纹 ＋ region_cache 接进 render_region_raw_layer ✓）`);
+  // **∴ 语义判定 ✗**（**∴ 不再看墙钟 ✓）★**：
+  //   **∴ 两次都必须**命中**✗（**第一次也算命中 ✗ 因为上面那段刚渲过同一区域同一版本 ✓）★
+  if (h4 <= h3 || h5 <= h4) {
+    console.error(
+      `❌ 同一明文 raw 请求连做两次 ⇒ 区域缓存没有每次都命中（hits ${h3} ⇒ ${h4} ⇒ ${h5}）` +
+        ` ⇒ **同一区域同一版本**第二次必须命中** ✗` +
+        `（变异：让区域缓存永不命中（如键里塞进一个每次都变的量）⇒ 必红 ✓）` +
+        `｜耗时参考（**不作通过条件 ✗**）：第一次 ${t3} ms｜第二次 ${t4} ms` +
+        `（**∴ 它们的大头是**哈希 1 MB 裸像素**✗ 与复用无关 ✓）`,
+    );
     process.exit(1);
-  } else {
-    console.log(`  ✓ 单层渲染也复用（比值 ${ratio2 === null ? "n/a" : ratio2.toFixed(2)}× ≤ 0.2）`);
   }
+  console.log(
+    `  ✓ 区域缓存每次命中（hits ${h3} ⇒ ${h4} ⇒ ${h5} ⇒ **两次都自增** ✓）` +
+      `｜耗时参考（**不作通过条件 ✗**）：${t3} ms ⇒ ${t4} ms`,
+  );
 };
 
 main().catch((e) => { console.error("❌ 运行失败：" + String(e)); process.exit(2); });

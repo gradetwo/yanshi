@@ -906,6 +906,8 @@ fn health(state: &ServerState) -> Response {
             //（前者缓存"渲染出的 tile"✓，后者缓存"解码后的位图"✓）⇒ **∴ 要分开看** ✓。
             // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。
             "bitmap_cache": bitmap_cache_stats(state),
+            // **∴ 区域字节缓存的计数 ✗**（**∴ 给判据一个**与机器无关**的复用读数 ✓）★
+            "region_cache": region_cache_stats(state),
             "below_reuse": below_reuse_count(state),
             // below 的另外两个累计读数（第 342 轮，纯观测）：只有 below_reuse 时，
             // 判据分不清「真的没命中」与「没走 below 路径」。
@@ -1020,6 +1022,22 @@ fn below_reuse_count(state: &ServerState) -> serde_json::Value {
         return json!({"error": "工作区锁中毒"});
     };
     json!(workspace.below_reuse_count())
+}
+
+/// **★ 区域字节缓存的计数（**纯观测 ✓）✗ ★**（**第 247 轮 ✓）—— **照 `bitmap_cache_stats` 的写法** ✓
+///
+/// **∴ 为什么要有它 ✗**：**判据 `tool-region-cache-reuse.mjs` 第 2 段要判
+/// "**同一子区域第二次渲染**有没有复用**"**✗
+///   ＋ **∴ 原来它拿**绝对耗时比**✗ ⇒ **∴ 而**绝对值随机器与构建档位变化**✗
+///     （**∴ 实测三档：本机 debug 93 ms ⇒ 红 ✗ CI 31 ms ⇒ 红 ✗ L4 release 10 ms ⇒ 绿 ✓）★★
+///     ＋ **∴ 而**那几十毫秒的**大头是**哈希 1 MB 裸像素**✗ 与复用**无关** ✓
+///       ⇒ **∴ 于是**：**给它一个**语义读数**✗ **∴ 与机器快慢**无关** ✓ ★★
+fn region_cache_stats(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!({"error": "工作区锁中毒"});
+    };
+    let (hits, misses, stale, evicted) = workspace.region_cache_hits_misses();
+    json!({"hits": hits, "misses": misses, "stale": stale, "evicted": evicted})
 }
 
 /// **below 缓存累计缺了几格**（第 342 轮，纯观测）—— 照 `below_reuse_count` 的写法。
