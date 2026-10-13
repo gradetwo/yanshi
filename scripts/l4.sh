@@ -118,9 +118,48 @@ l4_ssh_tty() {
       "${L4_HOST}" "$@"
 }
 
+# **★★★ `colab sessions` 的**失败**必须说出来 ✗ ★★★**（**第 246 轮 ✓；**我**两次被它骗过 ✓）
+#
+# **∴ 症状（**本会话实测两次 ✓）✗**：
+#   **∴ `colab sessions` **因 DNS 失败**（**`NameResolutionError` ✗
+#     `colab.research.google.com` 解析不了 ✓）⇒ **∴ 它的**stderr 被 `2>&1` 混进输出**✗
+#       ⇒ **∴ 而** `grep -a "${SESSION}"` **一个都匹配不到**✗
+#         ⇒ **★ 于是**：**`status` 打印「**没有名为 dawang 的会话 ⇒ 先跑 up**」**✗
+#           而**真相是**「**CLI 连不上，会话查不了**」** ✓ ★★
+#   ＋ **∴ 而**本会话**还实测到更难看的后果 ✗**：**`colab sessions` **静默为空**
+#     ＋ **∴ 而** `colab ssh --proxy-mode` **照样能用**（**∴ 它**走的是会话自己的
+#     `prod.colab.dev` 端点 ✓）⇒ **∴ 于是**：**「列出会话失败」与「没有会话」**混在一起** ✓ ★★★
+#
+# **∴ 做法 ✗**：**把 `colab sessions` 的输出取一次**✗ ＋ **∴ 认出两类失败** ✓：
+#   **∴ ①** 退出码非零 ✗ 或 **∴ ②** 输出里出现 `Error`／`NameResolution`／`Traceback` ✓
+#     ⇒ **∴ 那就**打印诊断 ＋ **返回 3**✗（**∴ 前提不满足 ⇒ 不是产品失败 ⇒ 与仓库纪律一致 ✓）★
+colab_sessions_or_die() {
+  local out rc
+  out="$(colab sessions 2>&1)"
+  rc=$?
+  if [ "${rc}" != "0" ] ||
+    printf '%s' "${out}" | grep -qaE 'Error|NameResolution|Traceback|Failed to resolve'; then
+    echo "  ✗ **colab CLI 查不了会话**（**∴ 这**不是「没有会话」✗ 而**是**查不了** ✓）" >&2
+    printf '%s\n' "${out}" | head -4 | sed 's/^/     /' >&2
+    echo "     ⇒ **∴ 常见原因 ✗**：**DNS 解析不了 colab.research.google.com** ✓" >&2
+    echo "       ⇒ **∴ 而** `colab ssh` **可能仍然可用**（**它**走会话自己的端点 ✓）" >&2
+    echo "       ⇒ **∴ 所以 ✗**：**别**把这条当成「会话没了」**✗ ⇒ **∴ 先**修网络／DNS** ✓" >&2
+    return 3
+  fi
+  printf '%s\n' "${out}"
+  return 0
+}
+
 cmd_status() {
   echo "== 会话（本地查 ✓）=="
-  colab sessions 2>&1 | grep -a "${SESSION}" || echo "  （没有名为 ${SESSION} 的会话 ⇒ 先跑 scripts/l4.sh up ✓）"
+  # **∴ 失败要说出来 ✗ ⇒ **∴ 不许**让空输出冒充"没有会话"** ✓（**见上面那段说明 ✓）★
+  local sessions
+  if ! sessions="$(colab_sessions_or_die)"; then
+    echo "  （**∴ 会话状态**查不了**✗ ⇒ 见上面的诊断 ✓）"
+  else
+    printf '%s\n' "${sessions}" | grep -a "${SESSION}" ||
+      echo "  （没有名为 ${SESSION} 的会话 ⇒ 先跑 scripts/l4.sh up ✓）"
+  fi
   echo ""
   # **★ 远端检查**合并成一次 ssh ✗ ★**（**第 492 轮实测 ✓）：
   #   **∴ 为什么 ✗**：**colab 的 ssh 通道**一次只允许一个连接**✗
