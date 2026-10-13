@@ -3036,18 +3036,6 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         self.documents.values().map(|d| d.below_reuse_count()).sum()
     }
 
-    /// **★ 「below 缓存写被跳过」的次数（**纯观测 ✓）✗ ★**（**第 248 轮 ✓）
-    ///
-    /// **∴ 为什么要它 ✗**：**跳过写**是这次改动的**全部收益**✗ ⇒ **∴ 判据**需要一个
-    /// **不随机器变**的读数**（**∴ 否则**只能看墙钟 ⇒ **∴ 那**当不了门禁 ✓）★★
-    ///   ＋ **∴ 照 `below_reuse_count` 的写法 ✗ 对全文档求和** ✓（**∴ 虽然底层是全局 static ✓）★
-    pub fn below_write_skipped_count(&self) -> u64 {
-        self.documents
-            .values()
-            .map(|d| d.below_write_skipped_count())
-            .sum()
-    }
-
     /// **below 缓存累计缺了几格（全文档求和）**（第 342 轮，纯观测）。
     pub fn below_missing_count(&self) -> usize {
         self.documents

@@ -909,8 +909,6 @@ fn health(state: &ServerState) -> Response {
             // **∴ 区域字节缓存的计数 ✗**（**∴ 给判据一个**与机器无关**的复用读数 ✓）★
             "region_cache": region_cache_stats(state),
             "below_reuse": below_reuse_count(state),
-            // **∴ 第 248 轮 ✗**：**below 缓存写被跳过的次数**（**纯观测 ✓；判据用它 ✓）★
-            "below_write_skipped": below_write_skipped_count(state),
             // below 的另外两个累计读数（第 342 轮，纯观测）：只有 below_reuse 时，
             // 判据分不清「真的没命中」与「没走 below 路径」。
             "below_missing": below_missing_count(state),
@@ -1040,18 +1038,6 @@ fn region_cache_stats(state: &ServerState) -> serde_json::Value {
     };
     let (hits, misses, stale, evicted) = workspace.region_cache_hits_misses();
     json!({"hits": hits, "misses": misses, "stale": stale, "evicted": evicted})
-}
-
-/// **★ 「below 缓存写被跳过」的次数 ✗ ★**（**第 248 轮 ✓；**纯观测 ✓）—— **照 `below_reuse_count` 的写法** ✓
-///
-/// **∴ 为什么判据该用它 ✗**：**跳过写**是这次改动的**全部收益**✗ ⇒ **∴ 若**只看墙钟**
-///   ＋ **∴ 那**随机器变 ✗（**本会话已经栽过一次：同一份代码三档机器三种结论 ✓）★★
-///     ⇒ **∴ 于是**：**给一个**语义读数**✗ **∴ 与机器快慢无关** ✓ ★★
-fn below_write_skipped_count(state: &ServerState) -> serde_json::Value {
-    let Ok(workspace) = state.workspace.lock() else {
-        return json!({"error": "工作区锁中毒"});
-    };
-    json!(workspace.below_write_skipped_count())
 }
 
 /// **below 缓存累计缺了几格**（第 342 轮，纯观测）—— 照 `below_reuse_count` 的写法。
