@@ -69,14 +69,31 @@ const BRUSH_SIZE = Number.isFinite(__brush) && __brush >= 1 ? Math.floor(__brush
 const STROKES = Number.isFinite(__rawStrokes) && __rawStrokes > 0 ? Math.floor(__rawStrokes) : 30;
 // **端口要挑空闲的** ✗（第 829 轮实测 ✓）：固定端口一旦被上一次泄漏的实例占着 ✓，
 // 服务端就静默起不来 ✓ ⇒ 判据只报 `ENOENT: /proc/<pid>/status` ✗（**症状与真因相距很远** ✓）。
-const pickPort = (start) => {
+//
+// **★★★ 第 246 轮：这里原来**根本没在挑**✗ 而且**它自己会崩**** ✗ ★★★**
+//   ＋ **∴ 症状（**L4 实测 ✓）✗**：**留了一个上一次的 `yanshi-serve` 占着 15600**✗
+//     ⇒ **∴ 于是**：
+//       **∴ ①** `probe.listen()` **是**异步**的**✗ ⇒ **∴ `try/catch` **接不住** ✓
+//         ＋ **∴ 而**抛出来的是 **`EADDRINUSE` 的 **`error` 事件`**✗ ⇒ **∴ 没有监听者
+//           ⇒ **node 直接崩**（**`Unhandled 'error' event` ✓）★
+//         ＋ **∴ 而**崩溃发生在 **child 已经起来之后** ⇒ **∴ 那个服务端**变成孤儿** ✓ ★★
+//       **∴ ②** `pickPort` **照样返回 15600**✗ ⇒ **∴ "挑端口"**等于没挑** ✓ ★
+//   ＋ **∴ 修法 ✗**：**用**真异步**的探测**✗（**∴ 等 `listening` 或 `error` 真正发生 ✓）
+//     ⇒ **∴ 于是**：**端口忙 ⇒ **换下一个**✗ 而**不是**崩** ✓ ★★
+const pickPort = async (start) => {
+  const net = await import("node:net");
   for (let port = start; port < start + 40; port += 1) {
-    const probe = require("node:net").createServer();
-    try { probe.listen(port, "127.0.0.1"); probe.close(); return port; } catch { probe.close(); }
+    const free = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.once("error", () => resolve(false));
+      probe.once("listening", () => probe.close(() => resolve(true)));
+      probe.listen(port, "127.0.0.1");
+    });
+    if (free) return port;
   }
   return start;
 };
-const PORT = Number(process.env.PAINT_PORT || pickPort(15600));
+const PORT = Number(process.env.PAINT_PORT || (await pickPort(15600)));
 const BASE = "http://127.0.0.1:" + PORT;
 const RSS_GROWTH_BUDGET = process.env.PAINT_RSS_GROWTH_MB ? Number(process.env.PAINT_RSS_GROWTH_MB) : null;
 const CPU_PER_STROKE_BUDGET = process.env.PAINT_CPU_MS_PER_STROKE ? Number(process.env.PAINT_CPU_MS_PER_STROKE) : null;
