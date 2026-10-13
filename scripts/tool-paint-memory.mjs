@@ -183,6 +183,8 @@ try {
   // **每笔单独计时** ✓（第 825 轮 ✓ —— 这是 `needs` 里那条"对象数增长曲线" ✓）：
   // 若成本随对象数累积 ✓，这条曲线会**单调上升** ✓；若只是首笔重建 ✓，它会**很快变平** ✓。
   const perStroke = [];
+  // **∴ 失败原因（**最多留 3 条 ✓）✗**（**第 246 轮 ✓）★
+  const failedReasons = [];
   const bboxArea = [];
   for (let i = 0; i < STROKES; i += 1) {
     const strokeStarted = process.hrtime.bigint();
@@ -199,6 +201,15 @@ try {
         points: [[x, y, 0.4], [x + 40, y + 10, 0.8], [x + 80, y, 0.5]],
       } }) }).then((r) => r.json());
     if (reply && reply.ok) ok += 1;
+    // **★★★ 第 246 轮：**失败的那几笔必须**说出原因**✗ ★★★**（**L4 实测 ✓）
+    //   ＋ **∴ 症状 ✗**：**1920² 画布 ＋ size 256 下**12 笔只成功 6 笔**✗
+    //     ＋ **∴ 而**那 6 笔的墙钟是 **2–4 ms**（**∴ 明显**不是真画了一笔** ✓）
+    //       ⇒ **∴ 若**不印原因**✗ ⇒ **∴ "笔触成本"里会混进**一批**失败调用** ✓
+    //         ⇒ **∴ 于是**：**测出来的"占比"**没有意义** ✓ ★★
+    if (!(reply && reply.ok)) {
+      const why = (reply && (reply.detail || reply.error_code || reply.error)) || JSON.stringify(reply);
+      failedReasons.push(`o_${i}: ${String(why).slice(0, 160)}`);
+    }
     // **把每笔的 dirty_bbox 记下来**（第 826 轮 ✓）：若它随对象数**变大** ✓ ⇒
     // 那么「区域渲染」就退化成「越来越大的区域」 ✓ ⇒ 正好解释 O(n^2) ✓。
     const bbox = (reply && reply.dirty_bbox) || null;
@@ -245,6 +256,10 @@ try {
       color: { r: 40, g: 90, b: 200, a: 255 },
       points: [[300 + i, 300, 0.4], [340 + i, 310, 0.8], [380 + i, 300, 0.5]] } }) }).then((r) => r.json()), 5);
   console.log("  画笔数：" + STROKES + "（成功 " + ok + "）｜文档 " + DOC_SIZE + "×" + DOC_SIZE + "｜笔刷 size " + BRUSH_SIZE + "｜每笔 3 个点");
+  if (failedReasons.length) {
+    console.log(`  ⚠️ 有 ${STROKES - ok} 笔**没成功**（**∴ 它们的墙钟不是"笔触成本"✓）★`);
+    for (const r of failedReasons.slice(0, 3)) console.log("     ✗ " + r);
+  }
   console.log("  服务端 RSS：" + before.rssMb.toFixed(1) + " MB ⇒ " + after.rssMb.toFixed(1) + " MB" +
     "（增量 " + rssGrowth.toFixed(1) + " MB）");
   console.log("  服务端 CPU：" + cpuSeconds.toFixed(2) + " s（每笔 " + cpuPerStroke.toFixed(1) + " ms）" +
