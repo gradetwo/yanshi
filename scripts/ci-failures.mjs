@@ -88,14 +88,22 @@ const GPU_GATES = new Set([
 /** **∴ 已登记的已知红 ✗**（**四要素**在台账里 ✓ ⇒ **∴ 这里只取**名字** ✓）★ */
 function ledgerNames() {
   const path = "scripts/criteria-known-red.txt";
-  if (!existsSync(path)) return new Set();
-  return new Set(
-    readFileSync(path, "utf8")
-      .split("\n")
-      .map((line) => line.match(/^([A-Za-z0-9_.-]+\.(?:mjs|sh))\s/))
-      .filter(Boolean)
-      .map((m) => m[1]),
-  );
+  // **∴ 返回 Map（**名字 → 那一行的注释 ✓）✗ ★**（**第 247 轮 ✓）：
+  //   ＋ **∴ 为什么需要注释 ✗**：**审计要区分"**稳定通过 ⇒ 可移出**"与
+  //     "**抖动类（**通过属预期 ✓）**"** ✓
+  //     ＋ **∴ 而**后者**本来就该时红时绿**✗ ⇒ **∴ 不能**当成"台账过期"** ✓ ★★
+  if (!existsSync(path)) return new Map();
+  const map = new Map();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const m = line.match(/^([A-Za-z0-9_.-]+\.(?:mjs|sh))\s+(.*)$/);
+    if (m) map.set(m[1], m[2]);
+  }
+  return map;
+}
+
+/** **∴ 这一条是不是**抖动类**✗**（**∴ 通过属预期 ⇒ 不移出 ✓）★ */
+function isFlakyEntry(comment) {
+  return /抖动|flaky|时红时绿/.test(comment ?? "");
 }
 
 // **∴ 运行器日志的行形状 ✗**：`<job 名>\t<step>\t<时间戳>Z <内容>` ✓
@@ -114,6 +122,13 @@ const strip = (line) => {
  */
 function parseJobLog(text) {
   const failed = new Map(); // name → { exit, reason, knownRed }
+  // **★★★ 第 247 轮：**每一条判据的**最终标记**✗ ★★★**（**`✓`／`⚠`／`✗` ✓）
+  //   ＋ **∴ 为什么需要它 ✗**：**台账里的条目**即使**失败**也**不阻塞 CI**✗
+  //     ⇒ **∴ 于是**：**那一分片**整片是**成功**✗ ⇒ **∴ 只解析"失败的 job"**看不到它们** ✓
+  //       ＋ **∴ 而**那**正是"台账腐化"**（**功能早实现了 ✗ 条目还写着"未实现" ✓）**藏身之处** ✓ ★★
+  //         ⇒ **∴ 所以**：**无论成败**都把标记收下来**✗ ⇒ **∴ 于是**能问
+  //           "**台账里哪几条**其实已经绿了**" ✓ ★★
+  const marks = new Map(); // name → "pass" | "knownRed" | "fail"
   const summary = [];
   let counts = null;
   // **★ 判据自己的失败行 ✗ ★**（**∴ 比汇总行更可信 ✓）★
@@ -152,6 +167,13 @@ function parseJobLog(text) {
       summary.push(name);
       continue;
     }
+    // **∴ 通过那行**没有 `(EXIT=n)`**✗ ⇒ **∴ 单独一条** ✓（**∴ 否则**会与 `✗ … (EXIT=n)` 混 ✓）★
+    const passLine = line.match(/^\s+✓\s+([A-Za-z0-9_.-]+\.(?:mjs|sh))\s*$/);
+    if (passLine) {
+      marks.set(passLine[1], "pass");
+      current = passLine[1];
+      continue;
+    }
     const runLine = line.match(/^\s+([✓✗])\s+([A-Za-z0-9_.-]+\.(?:mjs|sh))\s*\(EXIT=(-?\d+)\)\s*$/);
     if (runLine) {
       const [, mark, name, exit] = runLine;
@@ -159,7 +181,10 @@ function parseJobLog(text) {
       current = name;
       const entry = failed.get(name) || { exit: null, reason: "", knownRed: false };
       entry.exit = Number(exit);
-      if (mark === "✗") failed.set(name, entry);
+      if (mark === "✗") {
+        failed.set(name, entry);
+        marks.set(name, "fail");
+      }
       continue;
     }
     const knownLine = line.match(/^\s+⚠\s+([A-Za-z0-9_.-]+\.(?:mjs|sh))/);
@@ -173,12 +198,13 @@ function parseJobLog(text) {
       const entry = failed.get(name) || { exit: null, reason: "", knownRed: false };
       entry.knownRed = true;
       failed.set(name, entry);
+      marks.set(name, "knownRed");
       continue;
     }
     const c = line.match(/^\s+——\s*通过\s*(\d+)｜意外失败\s*(\d+)｜已知红\s*(\d+)｜跳过\s*(\d+)/);
     if (c) counts = { pass: +c[1], unexpected: +c[2], knownRed: +c[3], skipped: +c[4] };
   }
-  return { failed, counts };
+  return { failed, counts, marks };
 }
 
 /** **★ 一个 job 红了、但**一条判据都没解析出来** ✗ ★**（**∴ 最危险的一种 ✓）★
@@ -215,20 +241,32 @@ function tailLines(text, n) {
   return (evidence.length ? evidence : lines).slice(-n);
 }
 
-/** **★ 枚举一个 run 里**所有 job 红了的判据**（**∴ 供 --history 用 ✓）★ */
-function runFailures(runId) {
+/** **★ 枚举一个 run 里**所有 job 红了的判据**（**∴ 供 --history 用 ✓）★
+ *
+ *  **★★★ 第 247 轮：`allCriteriaJobs` ✗ ★★★**（**∴ `--ledger-audit` 要用 ✓）**：
+ *    ＋ **∴ 为什么 ✗**：**台账里的条目**即使失败也**不阻塞**✗
+ *      ⇒ **∴ 于是**：**那种分片整片是**成功**✗ ⇒ **∴ 只看失败的 job**什么也看不到** ✓（**∴ 实测 ✓）★★
+ *        ⇒ **∴ 所以**：**审计时**把**所有 `criteria shard *` 的 job**都解析一遍** ✓ ★★
+ */
+function runFailures(runId, allCriteriaJobs = false) {
   const view = JSON.parse(gh(["run", "view", String(runId), "--json", "status,conclusion,headSha,displayTitle,jobs"]));
   if (view.status !== "completed") {
     return { status: view.status, names: null, jobs: view.jobs, view };
   }
   const names = new Set();
+  const marks = new Map();
   const perJob = [];
   for (const job of view.jobs) {
-    if (job.conclusion !== "failure") continue;
+    const isCriteriaShard = job.name.startsWith("criteria shard");
+    if (job.conclusion !== "failure" && !(allCriteriaJobs && isCriteriaShard)) continue;
     const log = gh(["run", "view", "--job", String(job.databaseId), "--log"]);
     const parsed = parseJobLog(log);
     const list = [...parsed.failed.entries()].map(([name, info]) => ({ name, ...info }));
     for (const item of list) names.add(item.name);
+    for (const [n, m] of parsed.marks) {
+      // **∴ 一条判据只跑一次 ⇒ **∴ 直接覆盖**也安全** ✓；**∴ 先来的**更可信（**失败**优先 ✓）★
+      if (!marks.has(n) || m !== "pass") marks.set(n, m);
+    }
     perJob.push({
       job: job.name,
       counts: parsed.counts,
@@ -238,7 +276,7 @@ function runFailures(runId) {
       tail: list.length === 0 ? tailLines(log, 12) : [],
     });
   }
-  return { status: view.status, names, jobs: view.jobs, view, perJob };
+  return { status: view.status, names, marks, jobs: view.jobs, view, perJob };
 }
 
 // —— 解析本地 HEAD 与分支 ——（**∴ 只读 git，不联网 ✓）
@@ -292,6 +330,93 @@ if (history > 0) {
   for (const row of rows) {
     row.seenIn = historyRuns.filter((h) => h.names.has(row.name)).map((h) => h.run);
   }
+}
+
+// **★★★ `--ledger-audit`：**台账腐化普查**✗ ★★★**（**第 247 轮 ✓）
+//   ＋ **∴ 它回答 ✗**：**`scripts/criteria-known-red.txt` 里的每一条 ✗
+//     今天**到底**是"还红着"还是"早就绿了"** ✓
+//   ＋ **∴ 为什么要它 ✗**（**∴ 第 247 轮实测 ✓）**：
+//     **∴ `tool-below-reuse` 与 `tool-composite-scaling` 已经**通过**✗
+//       而**台账还写着"below 缓存未实现"** ✓
+//       ＋ **∴ 而**运行器对已知红**不阻塞**✗ ⇒ **∴ 于是**：**谁把这两条**改坏**✗
+//         **CI 也**不会红** ✓ ★★
+//   ＋ **∴ 退出码 ✗**：0 ＝ 台账里没有"已绿却还挂着"的条目｜**4 ＝ 有**（**∴ 该移出 ✓）｜3 判不了 ✓
+if (argv.includes("--ledger-audit")) {
+  // **★★★ 一轮的"通过"**不足以判"台账过期"**✗ ★★★**（**第 247 轮实测 ✓）
+  //   ＋ **∴ 反例（**同一份台账 ✓）**：
+  //     **∴ `browser-cs-render-switch` 在本轮是 ✓**✗ 而**它在更早 3 个 run 里红过** ✓
+  //       ＋ **∴ `kernel-brush-parity` 在分片里是 ✓**✗ 而** CI 的 `all`（**199 支 ✓）那条是红的** ✓
+  //         ⇒ **★ 所以 ✗ ★**：**只看本轮 ⇒ **会把"抖动"或"另一配置下红"当成"过期"**✗
+  //           ⇒ **∴ 于是一刀切移出 ⇒ **把真回归放走** ✓ ★★
+  //   ＋ **∴ 做法 ✗**：**本轮 ✓ ＋ **更早 N 个 run 的标记**一起看** ✓：
+  //     **∴ 全绿 ⇒ "稳定通过 ⇒ 可移出"**✗
+  //     **∴ 更早红过 ⇒ "抖动／范围不同 ⇒ 先别移出"** ✓ ★★
+  const now = runFailures(runId, true);
+  const seen = now.marks ?? new Map();
+  // **∴ 回溯必须**跳过 cancelled**✗ ★**（**第 247 轮实测 ✓）：
+  //   ＋ **∴ 症状 ✗**：**我前一版取了"最近 8 个 completed"**✗
+  //     ＋ **∴ 而**本仓**连续推送**会产生一串 **cancelled**（**并发组替换 ✓）
+  //       ⇒ **∴ 那些 run**没有判据标记**✗（**日志被取消 ✓）
+  //         ⇒ **∴ 于是**：**B 类恒为 0**✗ ⇒ **∴ 抖动**看不出来** ✓（**实测：8 个窗口里 B=0 ✓）★★
+  //   ＋ **∴ 修法 ✗**：**只回溯**成功或失败**的 run** ✓（**∴ cancelled 没有信息 ✓）★
+  const histIds = JSON.parse(
+    gh(["run", "list", "--branch", branch, "--limit", "80", "--json", "databaseId,status,conclusion"]),
+  )
+    .filter(
+      (r) =>
+        r.status === "completed" &&
+        (r.conclusion === "success" || r.conclusion === "failure") &&
+        String(r.databaseId) !== String(runId),
+    )
+    .slice(0, Math.max(1, history));
+  const hist = [];
+  for (const r of histIds) {
+    const res = runFailures(r.databaseId, true);
+    if (res.marks) hist.push({ run: r.databaseId, marks: res.marks });
+  }
+  const ledger = ledgerNames();
+  const names = [...ledger.keys()].sort();
+  const stale = [];
+  const flaky = [];
+  const flakyDeclared = [];
+  const stillRed = [];
+  const unseen = [];
+  for (const n of names) {
+    const m = seen.get(n);
+    if (m !== "pass") {
+      if (m === "knownRed" || m === "fail") stillRed.push(n);
+      else unseen.push(n);
+      continue;
+    }
+    const redBefore = hist.filter((h) => {
+      const hm = h.marks.get(n);
+      return hm === "knownRed" || hm === "fail";
+    });
+    // **∴ 台账自己写明是"抖动"的 ⇒ **单看本轮的 ✓ 不作数** ✓（**∴ 通过**正是它该有的样子 ✓）★
+    if (isFlakyEntry(ledger.get(n))) flakyDeclared.push(n);
+    else if (redBefore.length) flaky.push({ name: n, runs: redBefore.map((h) => h.run) });
+    else stale.push(n);
+  }
+  console.log("");
+  console.log(`∴ 台账共 ${names.length} 条｜本轮跑到 ${names.length - unseen.length} 条｜回溯 ${hist.length} 个 run`);
+  console.log(`  ★ A. 稳定通过（**本轮 ✓ ＋ 回溯里没红过 ⇒ **可移出台账**）${stale.length} 条 ★`);
+  for (const n of stale) console.log(`     ✓ ${n}`);
+  console.log(`  ★ B. 本轮通过但**更早红过**（**抖动／另一配置 ⇒ 先别移出**）${flaky.length} 条 ★`);
+  for (const f of flaky) console.log(`     ~ ${f.name}（红过 ${f.runs.length}/${hist.length}：${f.runs.join(",")}）`);
+  console.log(`  ★ A'. 台账自标"抖动"（**本轮 ✓ 属预期 ⇒ **不移出**）${flakyDeclared.length} 条 ★`);
+  for (const n of flakyDeclared) console.log(`     ~ ${n}`);
+  console.log(`  · C. 仍然红（**台账有效**）${stillRed.length} 条`);
+  for (const n of stillRed) console.log(`     ⚠ ${n}`);
+  console.log(`  · D. 本次没看到（**没跑到／已改名**）${unseen.length} 条`);
+  for (const n of unseen) console.log(`     ? ${n}`);
+  if (stale.length) {
+    console.error(
+      `\n⚠ **A 类 ${stale.length} 条**稳定通过却还挂在台账里** ⇒ **∴ 它们**不再守回归** ✓（**按纪律移出 ✓）★`,
+    );
+    process.exit(4);
+  }
+  console.log("\n✓ 没有**稳定通过却还挂着**的条目（**B 类要人判：抖动／范围 ✓）★");
+  process.exit(0);
 }
 
 if (asJson) {
