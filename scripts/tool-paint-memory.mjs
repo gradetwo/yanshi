@@ -57,6 +57,15 @@ const BIN_IS_DEBUG = !process.env.YANSHI_SERVE_BIN && BIN === DEBUG_BIN;
 //       ⇒ **∴ 于是**：**循环**不跑／**等待**异常**✗ ⇒ **∴ 判据**崩溃或**误报 ✓**** ✓✓
 //   **∴ 修法**：**不是有限正整数就**用默认值 ✓**** ✓✓
 const __rawStrokes = Number(process.argv[2] || process.env.PAINT_STROKES);
+// **★★★ 第 246 轮：**画布与笔刷也参数化**✗ ★★★**（**用户裁定"先量笔触占比" ✓）
+//   ＋ **∴ 为什么必须 ✗**：**它们的缺省是**512×512 ＋ size 24**✗
+//     ⇒ **∴ 而**用户真正关心的是**大笔刷／大画布**（**∴ 短期口径里就写着"超大笔刷" ✓）
+//       ＋ **∴ 小画布小笔刷上**笔触占比**必然很小**✗ ⇒ **∴ 拿它下结论**会误判** ✓ ★★
+//   ＋ **∴ 用法 ✗**：`PAINT_DOC=1920 PAINT_BRUSH=256 node scripts/tool-paint-memory.mjs 10` ✓
+const __doc = Number(process.env.PAINT_DOC || 512);
+const DOC_SIZE = Number.isFinite(__doc) && __doc >= 64 ? Math.floor(__doc) : 512;
+const __brush = Number(process.env.PAINT_BRUSH || 24);
+const BRUSH_SIZE = Number.isFinite(__brush) && __brush >= 1 ? Math.floor(__brush) : 24;
 const STROKES = Number.isFinite(__rawStrokes) && __rawStrokes > 0 ? Math.floor(__rawStrokes) : 30;
 // **端口要挑空闲的** ✗（第 829 轮实测 ✓）：固定端口一旦被上一次泄漏的实例占着 ✓，
 // 服务端就静默起不来 ✓ ⇒ 判据只报 `ENOENT: /proc/<pid>/status` ✗（**症状与真因相距很远** ✓）。
@@ -96,11 +105,30 @@ const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-paint-")));
 // ⇒ 那正是"各个操作的占比" ✓ ⇒ 不能只在失败时才看它 ✓。
 const CHILD_LOG = process.env.PAINT_CHILD_LOG || "/tmp/yanshi-paint-child.log";
 const child = spawn(BIN, ["--bind", "127.0.0.1:" + PORT, "--root", work, "--doc", "boot",
-  "--width", "512", "--height", "512", "--assets-dir", "assets"], { stdio: ["ignore", "pipe", "pipe"] });
+  "--width", String(DOC_SIZE), "--height", String(DOC_SIZE), "--assets-dir", "assets"], { stdio: ["ignore", "pipe", "pipe"] });
 // ⚠️ **必须留住子进程的输出** ✗（第 823 轮实测 ✓）：原先两行 `on("data", () => {})` 把它们**丢掉** ✓
 // ⇒ 服务端启动失败时，判据只说"无法运行" ✗ ⇒ **真因一个字都没留下** ✓（`ENOENT: /proc/<pid>/status` ✓）。
 const childLog = [];
-const keep = (chunk) => { for (const line of String(chunk).split("\n")) if (line.trim()) childLog.push(line.trim()); if (childLog.length > 40) childLog.splice(0, childLog.length - 40); };
+// **★★★ 第 246 轮：**单独收**探针行**✗ ★★★**（**用户裁定：先量笔触占比 ✓）
+//   ＋ **∴ 为什么不能只靠 `childLog` ✗**：**它**只留最后 40 行**✗
+//     ＋ **∴ 而**每一笔**都可能**打几行探针**✗ ⇒ **∴ 40 行**瞬间被冲掉** ✓
+//       ⇒ **∴ 于是**：**看不到**笔触那一段的**阶段分解** ✗ 而**那**正是"占比"要的** ✓ ★★
+//   ＋ **∴ 做法 ✗**：**把含 `PROBE` 的行**另存一份**✗（**上限 400 行 ✓）✗
+//     ＋ **∴ 默认只打印**区域级的阶段行**（**那**才是"整帧"的口径 ✓）✗
+//       ⇒ **∴ 要全看 ⇒ **`PAINT_SHOW_PROBE=1`** ✓ ★
+const probeLines = [];
+const keep = (chunk) => {
+  for (const line of String(chunk).split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    childLog.push(t);
+    if (t.includes("PROBE")) {
+      probeLines.push(t);
+      if (probeLines.length > 400) probeLines.shift();
+    }
+  }
+  if (childLog.length > 40) childLog.splice(0, childLog.length - 40);
+};
 child.stdout.on("data", keep);
 child.stderr.on("data", keep);
 
@@ -142,12 +170,14 @@ try {
   for (let i = 0; i < STROKES; i += 1) {
     const strokeStarted = process.hrtime.bigint();
     // 每条笔触落在不同位置 ✓，避免"同一处重复覆盖"掩盖真实成本 ✓
-    const x = 40 + (i % 16) * 26;
-    const y = 40 + Math.floor(i / 16) * 26;
+    // **∴ 步长跟着画布走 ✗**（**∴ 否则**大画布上几十笔**全挤在左上角** ✓）★
+    const step = Math.max(26, Math.floor(DOC_SIZE / 16));
+    const x = 40 + (i % 16) * step;
+    const y = 40 + Math.floor(i / 16) * step;
     const reply = await fetch(BASE + "/api/tools?doc=boot&token=" + token, { method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ tool: "brush_stroke", arguments: {
-        layer_id: "L", object_id: "o_" + i, brush: "2B_pencil", size: 24,
+        layer_id: "L", object_id: "o_" + i, brush: "2B_pencil", size: BRUSH_SIZE,
         color: { r: 40, g: 90, b: 200, a: 255 },
         points: [[x, y, 0.4], [x + 40, y + 10, 0.8], [x + 80, y, 0.5]],
       } }) }).then((r) => r.json());
@@ -194,15 +224,32 @@ try {
   await timeIt("brush_stroke（全链 ✓）", (i) => fetch(BASE + "/api/tools?doc=boot&token=" + token, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ tool: "brush_stroke", arguments: {
-      layer_id: "L", object_id: "t_" + i, brush: "2B_pencil", size: 24,
+      layer_id: "L", object_id: "t_" + i, brush: "2B_pencil", size: BRUSH_SIZE,
       color: { r: 40, g: 90, b: 200, a: 255 },
       points: [[300 + i, 300, 0.4], [340 + i, 310, 0.8], [380 + i, 300, 0.5]] } }) }).then((r) => r.json()), 5);
-  console.log("  画笔数：" + STROKES + "（成功 " + ok + "）｜文档 512×512｜每笔 3 个点");
+  console.log("  画笔数：" + STROKES + "（成功 " + ok + "）｜文档 " + DOC_SIZE + "×" + DOC_SIZE + "｜笔刷 size " + BRUSH_SIZE + "｜每笔 3 个点");
   console.log("  服务端 RSS：" + before.rssMb.toFixed(1) + " MB ⇒ " + after.rssMb.toFixed(1) + " MB" +
     "（增量 " + rssGrowth.toFixed(1) + " MB）");
   console.log("  服务端 CPU：" + cpuSeconds.toFixed(2) + " s（每笔 " + cpuPerStroke.toFixed(1) + " ms）" +
     "｜墙钟 " + wallSeconds.toFixed(2) + " s");
   console.log("  ⇒ 覆盖率：服务端 RSS ✓、服务端 CPU 时间 ✓；**浏览器侧内存/CPU 不在本判据内** ✗（见说明 ✓）");
+
+  // **★ 服务端的**阶段分解**✗ ★**（**第 246 轮 ✓；**用户裁定"先量笔触占比" ✓）
+  //   **∴ 口径 ✗**：**区域级那行**（`PROBE 区域=… 填充=… 图层=… 合成=… 裁剪+存tile=… 量化=… ✓）
+  //     ⇒ **∴ 那**才是"整帧"的分母** ✓
+  //       ＋ **∴ 而** `对象耗时:` 那行**给出**逐算子**的时间**✗
+  //         ⇒ **∴ 若**里面有 `stamp:*`／`primitive:Stroke`**✗ ⇒ **∴ 那**就是笔触的分子** ✓ ★★
+  if (probeLines.length) {
+    const region = probeLines.filter((l) => l.includes("区域="));
+    const show = process.env.PAINT_SHOW_PROBE === "1" ? probeLines.slice(-40) : region.slice(-3);
+    console.log(
+      `  ★ 服务端探针：共 ${probeLines.length} 行（**区域级 ${region.length} 行 ✓）` +
+        `｜下面 ${show.length} 行${process.env.PAINT_SHOW_PROBE === "1" ? "" : "（**要全看 ⇒ PAINT_SHOW_PROBE=1 ✓）"}★`,
+    );
+    for (const l of show) console.log("     ｜" + l.slice(0, 240));
+  } else {
+    console.log("  ⓘ 没有探针行 ⇒ **∴ 要设** `YANSHI_RENDER_PROBE=1`**✗ 否则服务端不打印** ✓");
+  }
 
   if (after.rssMb > ABSOLUTE_RSS_BUDGET_MB) {
     fail("绝对 RSS " + after.rssMb.toFixed(0) + " MB 超过设计 14.10 的 " + ABSOLUTE_RSS_BUDGET_MB + " MB（4K/10 图层）");
