@@ -12800,6 +12800,11 @@ fn read_surface_region(
     (rgba, painted)
 }
 
+/// **★ 落笔 dab 循环的累计纳秒 ✗ ★**（**第 246 轮 ✓；用户裁定「先量笔触占比」✓）
+///
+/// **∴ 门控 ✗**：**只在 `YANSHI_RENDER_PROBE` 开着时累加 ✓（**∴ 生产路**零开销 ✓）★
+static STAMP_DAB_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// **把一条路径走成 dab** ✓（`brush.stroke_to` 的调用序列）—— 返回步数 ✓。
 ///
 /// **为什么抽出来** ✓：需要**走两遍** —— 一遍真正落墨 ✓、一遍只取**覆盖掩膜** ✓；
@@ -12823,6 +12828,15 @@ fn stamp_stroke_from(
     points: &[(f64, f64, f64)],
     previous: &mut Option<(f64, f64, f64)>,
 ) -> usize {
+    // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
+    //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
+    //     **∴ 提交一条笔触走的是**本文件这一份**（**`hokusai` 的 tile surface ✓）
+    //       ＋ **∴ 而** `yanshi-render::brush::stamp_*` 是**渲染那条路**用的** ✓
+    //         ⇒ **∴ 所以**：**给那边加计时 ⇒ **本场景**读到 0** ✓（**∴ 我**先就踩了这个 ✓）★★
+    //   ＋ **∴ 门控 ✗**：`YANSHI_RENDER_PROBE`（**∴ 生产路**零开销 ✓）
+    //   ＋ **∴ 口径 ✗**：**它**只含**走 dab**的时间**✗ 不含解析笔刷／取底图／写 tile** ✓ ★
+    let __t_stamp = std::time::Instant::now();
+    let __stamp_probe = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
     // **每一枚 dab 的时间步长** ✓（见下面关于"速度"的约定 ✓）。
     // **`dt` 是 `f64`** ✓（`stroke_to` 的签名：x/y/pressure/dx/dy 是 `f32`、`dt` 是 `f64` ✓）。
     const STEP_SECONDS: f64 = 0.01;
@@ -12892,6 +12906,18 @@ fn stamp_stroke_from(
             }
         }
         *previous = Some((*x, *y, *pressure));
+    }
+    if __stamp_probe {
+        let ms = __t_stamp.elapsed().as_secs_f64() * 1000.0;
+        STAMP_DAB_NS.fetch_add(
+            __t_stamp.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        eprintln!(
+            "PROBE 印章：{ms:.1} ms（{} 枚 dab ✓）｜累计 {:.1} ms",
+            steps,
+            STAMP_DAB_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6
+        );
     }
     steps
 }
