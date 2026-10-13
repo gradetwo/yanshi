@@ -289,23 +289,46 @@ if (!hasWebCodecs) {
 }
 
 
-// **★★★ 先问一句"这台机器能不能编 H.264"✗ ★★★**（**∴ CI 实测踩到 ✓**）
-//   ＋ **∴ 症状 ✗**：**CI 的 Chromium **有** `VideoEncoder`**✗ 但**编码时直接抛**
-//     `Failed to execute 'encode' on 'VideoEncoder'`** ✓ ⇒ **∴ 判据**把它当成了产品失败** ✗
-//       ⇒ **∴ 其实那是**环境没有 H.264 编码器**（**headless CI 常见 ✓）★
-//   ＋ **∴ 所以 ✗**：**先 `isConfigSupported`✗ 不支持就**退 3** ✗ 不栽给产品** ✓ ★★★
-const avcSupported = await evaluate(`(async () => {
-  try {
-    if (typeof VideoEncoder !== "function") return "no-encoder";
-    if (typeof VideoEncoder.isConfigSupported !== "function") return "no-probe";
-    const res = await VideoEncoder.isConfigSupported({ codec: "avc1.640028", width: 320, height: 240, bitrate: 800000, framerate: 30, avc: { format: "avc" } });
-    return res && res.supported ? "yes" : "unsupported";
-  } catch (error) {
-    return "error: " + (error && error.message ? error.message : error);
+// **★★★ 先问一句"这台机器有没有**任何一种**能编的编码器 ✗ ★★★**（**第 250 轮修 ✓）
+//   ＋ **∴ 为什么不能只问 H.264 ✗**（**实测 ✓）**：**CI 的浏览器是
+//     `setup-chrome` 装的 **Chrome for Testing**✗ ⇒ **∴ 它**不带专有编解码器**
+//     ⇒ `avc1.640028` **unsupported** ✓ ⇒ **∴ 而**页面这时会**自动退到 VP9／VP8
+//       ⇒ 产出**WebM** ✗ ⇒ **∴ 若判据只认 MP4 ✗ 就会把一条**正常**的导出判红** ✓
+//         ⇒ **∴ 所以**：**问"有没有能编的"✗ 不问"有没有 H.264"** ✓ ★★
+//   ＋ **∴ 三条都试不出来 ⇒ **判不了**（**环境能力 ✗ 不是产品缺陷 ✓）★
+const codecSupport = await evaluate(`(async () => {
+  const want = [
+    ["avc", { codec: "avc1.640028", avc: { format: "avc" } }],
+    ["vp9", { codec: "vp09.00.10.08" }],
+    ["vp8", { codec: "vp8" }],
+  ];
+  if (typeof VideoEncoder !== "function") return { any: false, tried: ["no-encoder"] };
+  const tried = [];
+  for (const [key, extra] of want) {
+    try {
+      if (typeof VideoEncoder.isConfigSupported !== "function") return { any: true, tried: ["no-probe"] };
+      const res = await VideoEncoder.isConfigSupported({ width: 320, height: 240, bitrate: 800000, framerate: 30, ...extra });
+      if (res && res.supported) return { any: true, which: key, tried };
+      tried.push(key);
+    } catch (error) {
+      tried.push(key + ":" + (error && error.message ? error.message : error));
+    }
   }
+  return { any: false, tried };
 })()`);
-if (avcSupported !== "yes") {
-  cannotJudge(`这台机器编不了 H.264（isConfigSupported ⇒ ${avcSupported}）⇒ 属环境能力，不是产品缺陷`);
+if (!codecSupport || codecSupport.any !== true) {
+  cannotJudge(`这台机器没有任何可用的视频编码器（试过 ${JSON.stringify(codecSupport && codecSupport.tried)}）⇒ 属环境能力`);
+}
+console.log(`  这台机器能编：${codecSupport.which || "（探测不了，直接试）"}`);
+
+// **∴ 本机验证用 ✗ 强制某条编码器**（**∴ CI 不设它 ⇒ 自动选 ✓）★
+//   ＋ **∴ 为什么需要它 ✗**：**本机 AVC 可用 ⇒ **自动**只会走 MP4** ✓
+//     ⇒ **∴ 而** WebM 那一路（**CI 实际走的那条 ✓）就**永远没在本机跑过** ✓
+//       ⇒ **∴ 所以**给一个开关 ✗ 两条路都验一遍** ✓ ★★
+const forceCodec = process.env.TIMELAPSE_FORCE_CODEC || "";
+if (forceCodec) {
+  await evaluate(`globalThis.__YANSHI_TIMELAPSE_CODEC = ${JSON.stringify(forceCodec)}, true`);
+  console.log(`  （本机验证：强制 codec = ${forceCodec}）`);
 }
 
 // **∴ ⑤ 点它 ✗ 等文件落盘 ✓** ★
@@ -328,24 +351,27 @@ if (!kernelReady) {
   console.error("  页面日志尾：" + (consoleLines.slice(-6).join("｜") || "（空）"));
   cannotJudge(`页面的 WASM 内核一直没就绪（info=${info}）⇒ 本环境跑不起这条功能（CI 里由 wasm 产物保证）`);
 }
-const before = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter((n) => n.endsWith(".mp4")) : [];
+// **∴ 产物可能是 `.mp4` 也可能是 `.webm` ✗**（**∴ 页面按这台机器有什么编码器选 ✓）
+//   ＋ **∴ 我第一版**只找 `.mp4`**✗ ⇒ **∴ 强制 vp9 那一次**明明落了盘 ✗ 判据却说
+//     "没有文件"** ✓ ⇒ **∴ 那是**判据自己瞎** ✗ 不是产品错 ✓）★★
+const isVideoFile = (name) =>
+  (name.endsWith(".mp4") || name.endsWith(".webm")) && !name.endsWith(".crdownload");
+const before = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(isVideoFile) : [];
 await evaluate('document.getElementById("timelapseExport").click(), true');
 const until = Date.now() + WAIT_MS;
 let files = [];
 while (Date.now() < until) {
-  files = fs.existsSync(dlDir)
-    ? fs.readdirSync(dlDir).filter((n) => n.endsWith(".mp4") && !n.endsWith(".crdownload"))
-    : [];
+  files = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(isVideoFile) : [];
   if (files.length > before.length) break;
   const info = await evaluate('(document.getElementById("timelapseInfo")||{}).textContent || ""');
   if (typeof info === "string" && info.startsWith("导出失败")) {
-    check(false, "点「导出过程视频」后**落下一个 mp4**", info.slice(0, 160));
+    check(false, "点「导出过程视频」后**落下一个视频文件**", info.slice(0, 160));
     console.error("❌ 页面自己报了失败 ⇒ 导出这条路走不通");
     process.exit(1);
   }
   await sleep(500);
 }
-check(files.length > before.length, "点「导出过程视频」后落下一个 mp4", files.join(","));
+check(files.length > before.length, "点「导出过程视频」后落下一个视频文件（mp4 或 webm）", files.join(","));
 if (files.length <= before.length) {
   const info = await evaluate('(document.getElementById("timelapseInfo")||{}).textContent || ""');
   console.error(`❌ 等了 ${Math.round(WAIT_MS / 1000)} 秒没有文件；页面提示是：${info}`);
@@ -356,61 +382,147 @@ const file = path.join(dlDir, files[files.length - 1]);
 const bytes = fs.readFileSync(file);
 console.log(`  文件：${file}（${bytes.length} 字节）`);
 
-// **∴ ⑥ 结构自洽 ✗**（**∴ 与 `tool-mp4-lite-structure` 同一套读法 ✓ 但这里读的是**真文件** ✓）★
-const u32 = (buf, at) => ((buf[at] << 24) | (buf[at + 1] << 16) | (buf[at + 2] << 8) | buf[at + 3]) >>> 0;
-const boxes = (buf, start = 0, end = buf.length) => {
-  const out = [];
-  let at = start;
-  while (at + 8 <= end) {
-    const size = u32(buf, at);
-    const type = buf.toString("ascii", at + 4, at + 8);
-    if (size < 8 || at + size > end) {
-      out.push({ type, size, at, bad: true });
-      break;
-    }
-    out.push({ type, size, at, body: at + 8, end: at + size });
-    at += size;
-  }
-  return out;
-};
-const find = (list, type) => list.find((b) => b.type === type);
-const top = boxes(bytes);
-const names = top.map((b) => b.type);
-check(names[0] === "ftyp", "第一个盒子是 ftyp", names.join(","));
-check(top.every((b) => !b.bad), "每个顶层盒子的长度自洽");
+// **∴ ⑥ 结构自洽 ✗**（**∴ 与 `tool-mp4-lite-structure` ／ `tool-webm-lite-structure`
+//   同一套读法 ✓ 但这里读的是**真文件** ✓）★
+//
+// **★★★ 第 250 轮修 ✗：**必须按**实际容器**分派** ✓ ★★★**
+//   ＋ **∴ 为什么 ✗**：**页面会**按这台机器有什么编码器**自动选容器** ✓
+//     （**∴ 而**CI 的 Chrome for Testing 没有 H.264 ⇒ **∴ 它**产出 WebM** ✓）
+//       ⇒ **∴ 若还写死按 MP4 解 ✗ 就会把一条**完全正常**的导出判红** ✓
+//         ⇒ **∴ 那是**判据自己造出来的假红** ✗ 比漏判更坏 ✓ ★★
+const isMp4 = bytes.length > 12 && bytes.toString("ascii", 4, 8) === "ftyp";
+const isWebm =
+  bytes.length > 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+check(isMp4 || isWebm, "产物是 MP4 或 WebM（按这台机器的编码器自动选）", isMp4 ? "MP4" : isWebm ? "WebM" : "都不是");
+const wantExt = isWebm ? ".webm" : ".mp4";
 check(
-  names.includes("moov") && names.includes("mdat") && names.indexOf("moov") < names.indexOf("mdat"),
-  "moov 在 mdat 之前",
+  file.endsWith(wantExt),
+  `落盘文件名的扩展名与容器一致（${wantExt}）`,
+  path.basename(file),
 );
-const moov = find(top, "moov");
-const trak = moov ? find(boxes(bytes, moov.body, moov.end), "trak") : null;
-const mdia = trak ? find(boxes(bytes, trak.body, trak.end), "mdia") : null;
-const minf = mdia ? find(boxes(bytes, mdia.body, mdia.end), "minf") : null;
-const stbl = minf ? find(boxes(bytes, minf.body, minf.end), "stbl") : null;
-check(Boolean(stbl), "moov > trak > mdia > minf > stbl 都在");
 let frameCount = 0;
-if (stbl) {
-  const stblBoxes = boxes(bytes, stbl.body, stbl.end);
-  for (const need of ["stsd", "stts", "stsc", "stsz", "stco"]) {
-    check(Boolean(find(stblBoxes, need)), `stbl 里有 ${need}`);
-  }
-  const stsz = find(stblBoxes, "stsz");
-  if (stsz) frameCount = u32(bytes, stsz.body + 8);
-  check(frameCount >= 2, "样本表里至少有 2 帧", `${frameCount} 帧`);
-  const mdat = find(top, "mdat");
-  const stco = find(stblBoxes, "stco");
-  if (mdat && stco && stsz) {
-    const count = u32(bytes, stco.body + 4);
-    let inside = true;
-    for (let i = 0; i < count; i++) {
-      const off = u32(bytes, stco.body + 8 + i * 4);
-      const size = u32(bytes, stsz.body + 12 + i * 4);
-      if (off < mdat.body || off + size > mdat.end) inside = false;
+if (isMp4) {
+  const u32 = (buf, at) => ((buf[at] << 24) | (buf[at + 1] << 16) | (buf[at + 2] << 8) | buf[at + 3]) >>> 0;
+  const boxes = (buf, start = 0, end = buf.length) => {
+    const out = [];
+    let at = start;
+    while (at + 8 <= end) {
+      const size = u32(buf, at);
+      const type = buf.toString("ascii", at + 4, at + 8);
+      if (size < 8 || at + size > end) {
+        out.push({ type, size, at, bad: true });
+        break;
+      }
+      out.push({ type, size, at, body: at + 8, end: at + size });
+      at += size;
     }
-    check(inside && count === frameCount, "每个样本的偏移＋长度都落在 mdat 之内");
+    return out;
+  };
+  const find = (list, type) => list.find((b) => b.type === type);
+  const top = boxes(bytes);
+  const names = top.map((b) => b.type);
+  check(names[0] === "ftyp", "第一个盒子是 ftyp", names.join(","));
+  check(top.every((b) => !b.bad), "每个顶层盒子的长度自洽");
+  check(
+    names.includes("moov") && names.includes("mdat") && names.indexOf("moov") < names.indexOf("mdat"),
+    "moov 在 mdat 之前",
+  );
+  const moov = find(top, "moov");
+  const trak = moov ? find(boxes(bytes, moov.body, moov.end), "trak") : null;
+  const mdia = trak ? find(boxes(bytes, trak.body, trak.end), "mdia") : null;
+  const minf = mdia ? find(boxes(bytes, mdia.body, mdia.end), "minf") : null;
+  const stbl = minf ? find(boxes(bytes, minf.body, minf.end), "stbl") : null;
+  check(Boolean(stbl), "moov > trak > mdia > minf > stbl 都在");
+  frameCount = 0;
+  if (stbl) {
+    const stblBoxes = boxes(bytes, stbl.body, stbl.end);
+    for (const need of ["stsd", "stts", "stsc", "stsz", "stco"]) {
+      check(Boolean(find(stblBoxes, need)), `stbl 里有 ${need}`);
+    }
+    const stsz = find(stblBoxes, "stsz");
+    if (stsz) frameCount = u32(bytes, stsz.body + 8);
+    check(frameCount >= 2, "样本表里至少有 2 帧", `${frameCount} 帧`);
+    const mdat = find(top, "mdat");
+    const stco = find(stblBoxes, "stco");
+    if (mdat && stco && stsz) {
+      const count = u32(bytes, stco.body + 4);
+      let inside = true;
+      for (let i = 0; i < count; i++) {
+        const off = u32(bytes, stco.body + 8 + i * 4);
+        const size = u32(bytes, stsz.body + 12 + i * 4);
+        if (off < mdat.body || off + size > mdat.end) inside = false;
+      }
+      check(inside && count === frameCount, "每个样本的偏移＋长度都落在 mdat 之内");
+    }
+  }
+
+} else if (isWebm) {
+  // **∴ WebM 那一路 ✗**（**同一套 EBML 读法 ✓ 见 `tool-webm-lite-structure` ✓）★
+  const readVint = (buf, at) => {
+    const first = buf[at];
+    if (first === undefined || first === 0) return null;
+    let len = 1;
+    while (len <= 8 && (first & (1 << (8 - len))) === 0) len++;
+    if (len > 8) return null;
+    let value = first & ((1 << (8 - len)) - 1);
+    for (let i = 1; i < len; i++) value = value * 256 + buf[at + i];
+    return { value, len };
+  };
+  const elements = (buf, from = 0, to = buf.length) => {
+    const out = [];
+    let at = from;
+    while (at < to) {
+      let idLen = 1;
+      while (idLen <= 4 && (buf[at] & (1 << (8 - idLen))) === 0) idLen++;
+      if (idLen > 4 || at + idLen > to) break;
+      const id = buf.subarray(at, at + idLen);
+      const size = readVint(buf, at + idLen);
+      if (!size) break;
+      const body = at + idLen + size.len;
+      if (body + size.value > to) break;
+      out.push({ id, body, end: body + size.value });
+      at = body + size.value;
+    }
+    return out;
+  };
+  const hex = (id) => Array.from(id).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const textOf = (buf, el) => {
+    let out = "";
+    for (let i = el.body; i < el.end; i++) out += String.fromCharCode(buf[i]);
+    return out;
+  };
+  const uintOf = (buf, el) => {
+    let value = 0;
+    for (let i = el.body; i < el.end; i++) value = value * 256 + buf[i];
+    return value;
+  };
+  const top = elements(bytes);
+  const ebml = top.find((e) => hex(e.id) === "1a45dfa3");
+  const segment = top.find((e) => hex(e.id) === "18538067");
+  check(Boolean(ebml), "WebM：顶层有 EBML 头");
+  check(Boolean(segment), "WebM：顶层有 Segment");
+  if (ebml && segment) {
+    const docType = elements(bytes, ebml.body, ebml.end).find((e) => hex(e.id) === "4282");
+    check(Boolean(docType) && textOf(bytes, docType) === "webm", "WebM：DocType = webm");
+    const segKids = elements(bytes, segment.body, segment.end);
+    const tracks = segKids.find((e) => hex(e.id) === "1654ae6b");
+    const entry = tracks ? elements(bytes, tracks.body, tracks.end).find((e) => hex(e.id) === "ae") : null;
+    const kids = entry ? elements(bytes, entry.body, entry.end) : [];
+    const type = kids.find((e) => hex(e.id) === "83");
+    const codecEl = kids.find((e) => hex(e.id) === "86");
+    check(Boolean(type) && uintOf(bytes, type) === 1, "WebM：TrackType = 1（视频）");
+    const codecId = codecEl ? textOf(bytes, codecEl) : "";
+    check(codecId === "V_VP8" || codecId === "V_VP9", "WebM：CodecID 是 VP8／VP9", codecId);
+    const clusters = segKids.filter((e) => hex(e.id) === "1f43b675");
+    let blocks = 0;
+    for (const cluster of clusters) {
+      blocks += elements(bytes, cluster.body, cluster.end).filter((e) => hex(e.id) === "a3").length;
+    }
+    frameCount = blocks;
+    check(blocks >= 2, "WebM：样本（SimpleBlock）至少 2 帧", `${blocks} 帧`);
+    check(clusters.length >= 1, "WebM：至少一个 Cluster", `${clusters.length} 个`);
   }
 }
-
 // **∴ ⑦ 让**同一个浏览器**真的把它解出来 ✗ ★★★**（**∴ 这一步才叫"可播放" ✓）★
 const base64 = bytes.toString("base64");
 const played = await evaluate(`(async () => {

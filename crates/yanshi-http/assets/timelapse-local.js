@@ -82,9 +82,6 @@
     }
     if (!width || !height) throw new Error("缺少文档真实尺寸（width/height）");
     if (!Array.isArray(atoms) || atoms.length === 0) throw new Error("这个工程里没有 atom");
-    if (typeof globalThis.YanshiMp4 !== "function") {
-      throw new Error("缺少 MP4 封装器（`mp4-lite.js` 没先加载）");
-    }
     const VideoEncoderCtor = globalThis.VideoEncoder;
     if (typeof VideoEncoderCtor !== "function") {
       const error = new Error("这个浏览器不支持 WebCodecs（VideoEncoder）⇒ 换 Chrome/Edge/Safari 16.4+");
@@ -92,29 +89,98 @@
       throw error;
     }
 
-    // **∴ 先说人话 ✗**：**机器没有 H.264 编码器时**✗ `encode()` 会直接抛**
-    //   ＋ **∴ 而**那句原文（`Failed to execute 'encode' on 'VideoEncoder'` ✓）
-    //     **对用户**没有意义** ✓ ⇒ **∴ 所以**：**开编之前先问一句 ✗ 不支持就**明说** ✓ ★★
-    if (typeof globalThis.VideoEncoder.isConfigSupported === "function") {
+    // **★★★ 选一个**这台机器真能编**的编解码器 ✗ ★★★**（**第 250 轮 ✓）
+    //
+    // **∴ 为什么要"选"而不是直接要 H.264 ✗**（**实测 ✓）★**：
+    //   ＋ **∴ CI 的浏览器是 `setup-chrome` 装的 **Chrome for Testing**✗
+    //     ⇒ **∴ 它**不带专有编解码器** ⇒ `avc1.640028` 的 `isConfigSupported`
+    //       **返回 unsupported** ✓（**∴ 而** headless Linux **没有 GPU** ⇒ **也没有
+    //         硬件编码器可退 ✓）⇒ **∴ 于是**：**那条路**在 CI 里根本走不通** ✓
+    //   ＋ **∴ 而** VP8／VP9 是 Chromium **一定自带**的（非专有 ✓）
+    //     ⇒ **∴ 任何 Chromium／Firefox／Safari 都能编** ✓ ★★
+    //   ＋ **∴ 且**交付说明自己就写了"Firefox 较晚 ⇒ 需 fallback" ✓
+    //     ⇒ **∴ 所以**这条路**不是权宜 ✗ 是**必需** ✓ ★★★
+    //
+    // **∴ 取舍（**两面 ✓）**：**MP4／H.264** ⇒ 兼容性最好 ✓ 体积小 ✓（**能用就用 ✓）；
+    //   **WebM／VP9** ⇒ 哪都能编 ✓ 但部分老播放器／剪辑软件要转一道 ✗ ⇒ **∴ 兜底 ✓** ★
+    const wantCodec = String(
+      (opts && opts.codec) || globalThis.__YANSHI_TIMELAPSE_CODEC || "auto",
+    ).toLowerCase();
+    const CODECS = [
+      {
+        key: "avc",
+        codec: "avc1.640028",
+        container: "mp4",
+        mime: "video/mp4",
+        ext: "mp4",
+        extra: { avc: { format: "avc" } },
+        muxer: "YanshiMp4",
+      },
+      {
+        key: "vp9",
+        codec: "vp09.00.10.08",
+        container: "webm",
+        mime: "video/webm",
+        ext: "webm",
+        extra: {},
+        muxer: "YanshiWebm",
+        webmCodec: "V_VP9",
+      },
+      {
+        key: "vp8",
+        codec: "vp8",
+        container: "webm",
+        mime: "video/webm",
+        ext: "webm",
+        extra: {},
+        muxer: "YanshiWebm",
+        webmCodec: "V_VP8",
+      },
+    ];
+    const candidates =
+      wantCodec === "auto" ? CODECS : CODECS.filter((c) => c.key === wantCodec);
+    if (!candidates.length) throw new Error(`不认识的 codec：${wantCodec}`);
+    const probeSupported = async (entry) => {
+      if (typeof VideoEncoderCtor.isConfigSupported !== "function") return true;
       try {
-        const probe = await globalThis.VideoEncoder.isConfigSupported({
-          codec: "avc1.640028",
+        const probe = await VideoEncoderCtor.isConfigSupported({
+          codec: entry.codec,
           width,
           height,
           bitrate: 8_000_000,
           framerate: fps,
-          avc: { format: "avc" },
+          ...entry.extra,
         });
-        if (!probe || !probe.supported) {
-          const error = new Error("这个浏览器/这台机器编不了 H.264（avc1.640028）⇒ 换一台或换浏览器再试");
-          error.code = "avc_unsupported";
-          throw error;
-        }
+        return Boolean(probe && probe.supported);
       } catch (error) {
-        if (error && error.code === "avc_unsupported") throw error;
-        console.warn("[timelapse] 探测 H.264 支持时出错 ⇒ 继续试", error);
+        console.warn(`[timelapse] 探测 ${entry.codec} 时出错`, error);
+        return false;
       }
+    };
+    let chosen = null;
+    const tried = [];
+    for (const entry of candidates) {
+      if (typeof globalThis[entry.muxer] !== "function") {
+        tried.push(`${entry.key}（缺封装器 ${entry.muxer}）`);
+        continue;
+      }
+      if (await probeSupported(entry)) {
+        chosen = entry;
+        break;
+      }
+      tried.push(entry.key);
     }
+    if (!chosen) {
+      const error = new Error(
+        `这台机器没有一个可用的视频编码器（试过：${tried.join("／")}）⇒ 换一台或换浏览器再试`,
+      );
+      error.code = "no_encoder";
+      throw error;
+    }
+    console.log(
+      `[timelapse] 编码器：${chosen.codec}（${chosen.container}）` +
+        (tried.length ? `｜跳过了 ${tried.join("／")}` : ""),
+    );
 
     const startedAt = Date.now();
     const every = Math.max(1, Math.floor(frameEvery));
@@ -174,13 +240,14 @@
       },
     });
     encoder.configure({
-      codec: "avc1.640028",
+      codec: chosen.codec,
       width,
       height,
       bitrate: 8_000_000,
       framerate: fps,
-      // **∴ 见文件头：必须显式要 AVCC ✗ 否则 MP4 里的样本是 Annex-B ⇒ 解不出来 ✓ ★★
-      avc: { format: "avc" },
+      // **∴ 见文件头：要 H.264 时必须显式要 AVCC ✗ 否则 MP4 里的样本是
+      //   Annex-B ⇒ 解不出来 ✓（**∴ WebM 那两档没有这个字段 ✓）★★
+      ...chosen.extra,
     });
 
     // **∴ ④ 逐 atom 重放 ✗ 每 N 个渲一帧 ✓** ★
@@ -239,37 +306,58 @@
     }
     if (!frames.length) throw new Error("一帧都没编出来 ⇒ 拿不到视频");
 
-    // **∴ ⑤ 拼 MP4 ✗**：**时长由相邻时间戳相减 ✗ 最后一帧沿用上一段 ✓** ★
-    muxer = new globalThis.YanshiMp4({
-      width,
-      height,
-      timescale: 1_000_000,
-      description,
-    });
-    for (let i = 0; i < frames.length; i++) {
-      const current = frames[i];
-      let duration = lastDuration;
-      if (i + 1 < frames.length) {
-        duration = Math.max(1, frames[i + 1].timestamp - current.timestamp);
-        lastDuration = duration;
+    // **∴ ⑤ 组装 ✗**：**时长由相邻时间戳相减 ✗ 最后一帧沿用上一段 ✓** ★
+    //   ＋ **∴ 两个容器的**时间单位不同 ✗**（**MP4 用 timescale 刻度 ✓
+    //     WebM 用**毫秒**（TimestampScale=1e6 ✓））⇒ **∴ 所以**分两条各自算 ✓ ★★
+    let finished;
+    if (chosen.container === "mp4") {
+      muxer = new globalThis.YanshiMp4({
+        width,
+        height,
+        timescale: 1_000_000,
+        description,
+      });
+      for (let i = 0; i < frames.length; i++) {
+        const current = frames[i];
+        let duration = lastDuration;
+        if (i + 1 < frames.length) {
+          duration = Math.max(1, frames[i + 1].timestamp - current.timestamp);
+          lastDuration = duration;
+        }
+        muxer.addSample(current.bytes, duration, current.type === "key");
       }
-      muxer.addSample(current.bytes, duration, current.type === "key");
+      finished = muxer.finish();
+    } else {
+      muxer = new globalThis.YanshiWebm({
+        width,
+        height,
+        codec: chosen.webmCodec,
+        fps,
+      });
+      for (const current of frames) {
+        muxer.addSample(current.bytes, Math.round(current.timestamp / 1000), current.type === "key");
+      }
+      finished = muxer.finish();
     }
     void chunks;
-    const mp4 = muxer.finish();
     return {
-      blob: new Blob([mp4], { type: "video/mp4" }),
+      blob: new Blob([finished], { type: chosen.mime }),
       frames: frames.length,
       ms: Date.now() - startedAt,
+      container: chosen.container,
+      codec: chosen.codec,
     };
   }
 
   /** **导出并下载 ✗**（**∴ UI 用的就是它 ✓）★ */
   async function exportAndDownload(opts) {
     const result = await exportTimelapse(opts);
+    // **∴ 扩展名必须跟**实际容器**一致 ✗**（**∴ WebM 存成 .mp4**会让播放器按错
+    //   容器去解 ✓）⇒ **∴ 用 `result.container` 决定 ✓ ★★
+    const ext = result.container === "webm" ? "webm" : "mp4";
     const name =
       (opts && opts.filename) ||
-      `timelapse-${(opts && opts.docId) || "doc"}-${Date.now()}.mp4`;
+      `timelapse-${(opts && opts.docId) || "doc"}-${Date.now()}.${ext}`;
     const url = URL.createObjectURL(result.blob);
     const link = document.createElement("a");
     link.href = url;

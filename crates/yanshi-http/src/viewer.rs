@@ -737,6 +737,10 @@ fn page_template() -> String {
         //       （**∴ 有测试盯着这一条 ✓）★★
         include_str!("../assets/mp4-lite.js"),
         "</script><script>",
+        // **∴ 第 250 轮 ✗**：**WebM 封装器**（**∴ 没有 H.264 编码器时走它 ✓
+        //   ＋ **∴ CI 的 Chrome for Testing 正是那种机器 ✓）★★
+        include_str!("../assets/webm-lite.js"),
+        "</script><script>",
         include_str!("../assets/timelapse-local.js"),
         "</script><script>",
         include_str!("../assets/viewer-app.js"),
@@ -762,6 +766,11 @@ pub fn app_script() -> &'static str {
 /// （**离线 PWA ✓）—— **∴ 与 CSS／主脚本**同一条规矩** ✓ ★
 pub fn mp4_script() -> &'static str {
     include_str!("../assets/mp4-lite.js")
+}
+
+/// **★ 极简 WebM 封装器资产 ✗ ★**（**第 250 轮 ✓；理由同 `mp4_script` ✓）★
+pub fn webm_script() -> &'static str {
+    include_str!("../assets/webm-lite.js")
 }
 
 /// **★ 过程视频（timelapse）资产 ✗ ★**（**第 249 轮 ✓；理由同上 ✓）★
@@ -817,6 +826,7 @@ mod tests {
     fn the_timelapse_assets_are_inlined_as_their_own_script_blocks() {
         for (path, asset, name) in [
             ("assets/mp4-lite.js", mp4_script(), "MP4 封装器"),
+            ("assets/webm-lite.js", webm_script(), "WebM 封装器"),
             (
                 "assets/timelapse-local.js",
                 timelapse_script(),
