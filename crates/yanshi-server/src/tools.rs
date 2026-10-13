@@ -4562,7 +4562,7 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     Ok(value)
 }
 
-const LAYER_PATCH_KEYS: [&str; 8] = [
+const LAYER_PATCH_KEYS: [&str; 9] = [
     "name",
     "visible",
     "opacity",
@@ -4571,6 +4571,18 @@ const LAYER_PATCH_KEYS: [&str; 8] = [
     "alpha_lock",
     "clipping_mask",
     "mask_id",
+    // **★ 第 252 轮 ✗**：**把图层移进／移出**图层组** ✓（比建议里"新增 3 个工具"省得多 ✓）
+    //   ＋ **∴ 为什么一行就够 ✗**：**应用侧**早就处理它了** ——
+    //     `yanshi-core/src/fold.rs` 的 `apply_property_to_layer` 里有
+    //     `"parent_id" => layer.parent_id = value.as_str().map(...)` ✓
+    //     ⇒ **∴ `null` ⇒ **清空 ⇒ **解散** ✓** ⇒ **∴ 于是**：
+    //       **建组 ＝ `create_layer{type:layer_group}`（**已有 ✓）
+    //       移入 ＝ `update_layer{patch:{parent_id}}`（**本行补上 ✓）
+    //       解散 ＝ `update_layer{patch:{parent_id:null}}`（**同一行 ✓）★★
+    //   ＋ **∴ 另一侧的证据 ✗**：**渲染器**早就为组写了三条缓存例外 ✓
+    //     （"**组内合成参与外层**"／"**组不透明度 ≠ 1 不能分配到各层**" ✓）
+    //     ⇒ **∴ 它**按组语义在合成** ✗ 只是**没人能把图层搬进去** ✓ ★★★
+    "parent_id",
 ];
 
 fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -4602,6 +4614,61 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                     yanshi_render::blend::BlendMode::NAMES.join(" / ")
                 )),
             ));
+        }
+    }
+    // **★★★ `parent_id` 必须**先校验** ✗ ★★★**（**第 252 轮 ✓；照 `blend_mode` 那条先例 ✓）
+    //   ＋ **∴ 为什么 ✗**：**它是**不可变原子日志**里的一条 ⇒ **∴ 写进去就改不掉** ✓
+    //     ＋ **∴ 而**渲染侧遇到**不存在的父**只会**静默当"没有父"** ✗ ⇒ **∴ 那正是
+    //       本仓最忌讳的"**接受了却没用**"** ✓ ⇒ **∴ 所以**：**宁可报错 ✗ 不静默** ✓ ★★
+    //   ＋ **∴ 校验三条 ✗**：**① 父必须存在 ✗ ② 父必须是**图层组**✗
+    //     **③ 不许成环**（**Phase 1 只有一层 ⇒ 父自己也不许有父 ✓ 但**成环检查照做 ✓
+    //       —— **∴ 它**更一般 ✗ 也**更便宜** ✓）★★
+    if let Some(value) = patch.get("parent_id") {
+        if !value.is_null() {
+            let parent = value.as_str().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("parent_id 必须是字符串（图层组 id）或 null（移出组）"),
+                )
+            })?;
+            let state = document_state(ctx)?;
+            let target = state.layers.get(parent).filter(|l| !l.is_deleted()).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("父图层组 {parent} 不存在")),
+                )
+            })?;
+            if target.layer_type != yanshi_core::LayerType::LayerGroup {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{parent} 的类型是 {:?} ⇒ parent_id 只能指向 layer_group",
+                        target.layer_type
+                    )),
+                ));
+            }
+            if parent == layer_id {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("图层不能以自己为父"),
+                ));
+            }
+            // **∴ 从候选父往上走 ✗ 撞见自己 ⇒ 成环** ✓（**∴ 走之前先限深 ✗ 免得死循环 ✓）★
+            let mut cursor = target.parent_id.clone();
+            let mut hops = 0;
+            while let Some(up) = cursor {
+                if up == layer_id {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("{parent} 已经在 {layer_id} 里面 ⇒ 会成环")),
+                    ));
+                }
+                hops += 1;
+                if hops > 64 {
+                    break;
+                }
+                cursor = state.layers.get(&up).and_then(|l| l.parent_id.clone());
+            }
         }
     }
     let mut atoms = Vec::new();

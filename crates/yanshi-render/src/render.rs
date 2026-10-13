@@ -302,6 +302,47 @@ const BELOW_TILE_BUDGET: usize = 256;
 ///   ⇒ **∴ 所以**：**保留显式覆盖**是**必要的出路 ✓**** ✓✓
 pub const DEFAULT_BAND_CAP: usize = 2;
 
+// **★★★ 第 252 轮：图层组的**向下继承** ✗ ★★★**（**用户建议的第 ② 项 ✓）
+//
+// **∴ 背景 ✗**：**模型与工具**早就有**（`Layer.parent_id` ＋ `LayerType::LayerGroup` ✓
+//   ＋ `create_layer{type:layer_group}` ✓）**✗ 渲染器也为组写了三条缓存例外 ✓
+//     **∴ 但**"**把已有图层移进组**"那条路**一直没接** ✗（**`update_layer` 的 patch
+//       白名单里没有 `parent_id` ✓ 第 252 轮补上 ✓）⇒ **∴ 于是**：**继承**也**从没被验证过** ✓
+//         ＋ **∴ 实测（**本机判据 ✓）**：**补上白名单后 ✗ 组不透明度 0.5 与组隐藏**
+//           **都**没有作用到子层**（**差 149／3 条带还在 ✓）⇒ **∴ 所以**这一块是**真缺的** ✓ ★★
+//
+// **∴ 语义（**Phase 1 ✗ 如实写明 ✓）★**：
+//   ＋ **∴ 可见性 ✗**：**层可见 ⇔ 它自己**与**所有祖先**都可见** ✓
+//   ＋ **∴ 不透明度 ✗**：**沿祖先链**相乘** ✓
+//   ＋ **∴ 已知简化（**不写成"完全等价" ✓）✗**：**子层**逐层乘** ≠ **把组当整体先合成再乘**
+//     ⇒ **∴ 两者只在**子层互不重叠**时严格相等** ✓ ⇒ **∴ 判据就是用"不重叠"构造的 ✓
+//        ＋ **∴ 真正的"组内先合成"是下一步 ✗ 现在先要**行为对得上、可解释** ✓）★★
+fn effective_layer_factors(
+    state: &yanshi_core::DocumentState,
+    layer: &yanshi_core::Layer,
+) -> (bool, f64) {
+    let mut visible = layer.visible;
+    let mut opacity = layer.opacity;
+    let mut cursor = layer.parent_id.clone();
+    let mut hops = 0usize;
+    while let Some(up) = cursor {
+        if hops > 64 {
+            break; // **∴ 防御：**日志里若真出现环（历史数据 ✓）✗ 也不许死循环** ✓
+        }
+        let Some(parent) = state.layers.get(&up) else {
+            break;
+        };
+        if parent.is_deleted() {
+            break;
+        }
+        visible = visible && parent.visible;
+        opacity *= parent.opacity;
+        cursor = parent.parent_id.clone();
+        hops += 1;
+    }
+    (visible, opacity.clamp(0.0, 1.0))
+}
+
 /// **★ `by_sig` 最多保留几组切点 ✗ ★**（第 984 轮 ✓；**目标第 4 条 ✓）。
 ///
 /// **∴ 为什么 ✗**：**`BELOW_TILE_BUDGET`**只管**旧字段的格数**✗ ⇒ **∴ 而** `by_sig`
@@ -2009,8 +2050,12 @@ impl Renderer {
                 if layer.id != only {
                     continue;
                 }
-            } else if !layer.visible && !self.options.include_hidden_layers {
-                continue;
+            } else {
+                // **∴ 组隐藏 ⇒ 子层一起消失 ✗**（**第 252 轮 ✓）★
+                let (inherited_visible, _) = effective_layer_factors(state, layer);
+                if !inherited_visible && !self.options.include_hidden_layers {
+                    continue;
+                }
             }
             let index_here = visited;
             visited += 1;
@@ -2064,7 +2109,8 @@ impl Renderer {
             //     ＋ **∴ 区域走 `composite_within(…, opacity, area)`**（**它本就支持 ✓）
             //       ＋ **∴ 整幅与 above 走 `composite_with_layer(…, opacity)`** ✓
             //         ⇒ **★ 从而省掉那一遍整层遍历，且不修改 `layer_buffer` ⇒ 一致性由构造保证 ★**
-            let opacity = layer.opacity.clamp(0.0, 1.0) as f32;
+            // **∴ 组不透明度 ⇒ 子层一起乘 ✗**（**第 252 轮 ✓）★
+            let opacity = effective_layer_factors(state, layer).1 as f32;
             let mode = BlendMode::from_name(&layer.blend_mode);
             let mut probe_stage = stage_probe::Stage::start();
             // **★ 部分复用：**下方层只在**缺块**内合成 ✗ ★**（第 10 轮 ✓）：
