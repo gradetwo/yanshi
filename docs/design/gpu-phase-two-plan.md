@@ -14467,3 +14467,35 @@ $ cargo test -p yanshi-server --test preview_wait_decoupled ⇒ 3 passed, 1 igno
   **∴ 总 CPU**不变**✗ **∴ 变的是**哪一次请求在等** ✓ ★★
 **∴ 未覆盖的部分（**如实 ✓）✗**：**② 的 8.1 s 里**有多少是"等锁"**✗ 有多少是"自己渲染"**
   **∴ 本轮的测量**分不出来**✗（**∴ 需要一个"锁等待时间"的读数 ✓）⇒ **∴ 留作待办 ✓** ★
+
+### 五、★★★ 第一次推上去就**红了**（**这正是判据有牙的证据 ✓）★★★
+
+**∴ CI 结果（**`c50c0478` ✓）✗**：`criteria shard 4/6` 红 ＋ `test (stable)` 红 ＋ `test (beta)` 红 ✓
+  ⇒ **∴ 三处**都指向同一件事**✗：**我把"首次读"改成推迟**✗ 而**仓里另有三份契约**说"要图"** ✓ ★★
+
+**∴ 逐条对账（**每一条都是"实测换来的语义" ✓）✗**：
+
+| 谁 | 它要什么 | 冲突怎么解 |
+|---|---|---|
+| `tool-first-preview.mjs` | `first_preview` ＝ **`true, false, false`** | **∴ 推迟之后"还没生成"**一直成立**✗ ⇒ **∴ 标志**会变成 `true,true,true`** ✓ ⇒ **∴ 改成**"需要生成 **且** 这是首次**" ✓ |
+| `crates/…/tests/preview_storage.rs`、`service_flow.rs` | **测试要图** | **∴ 它们**显式传 `preview_size: 256`**✗（**∴ 契约**变了：要图就说 ✓）★ |
+| `crates/yanshi-mcp/tests/stdio.rs` | **重启后"渲染缓存可直接用"** | **∴ 顺手**验得更死**✗：**除有图外**还断言 `thumbnail_renders == 0`** ✓ |
+
+**∴ 门槛到底该看什么（**这一条是**量出来的**✗ 不是想出来的 ✓）★**：
+- **∴ 先试 `ctx.wait_for_render` ✗** ⇒ **∴ 判据 ① 回到 **7937.3 ms** ✓
+  —— **∴ 因为**它的**默认值就是 `true`**✗（`ToolContext::new` ✓）⇒ **∴ 默认读**又被判成"要等" ✓ ★★
+- **∴ 最后看"调用方**有没有写 `preview_size`**"**✗ ⇒ **∴ 依据是仓库自己的判据
+  `tool-cold-open-budget.mjs`** ✓：
+  **∴ `preview_size: false` ⇒ **首次读 ≤ 预算**（**不建图 ✓）｜
+  **∴ `preview_size: 256` ⇒ **必须真的给出图** ✓ ★★
+    ⇒ **∴ 于是**：**什么都没写 ⇒ **默认推迟 ✗ 显式写了 ⇒ **就地材料化** ✓ ★★★
+
+### 六、★★★ 验证（**本机 ✓；这一轮是**三份契约一起过** ✓）★★★
+
+```
+cargo test -p yanshi-server -p yanshi-http -p yanshi-mcp ⇒ 109 个测试目标全绿，退出码 0
+tool-preview-defer    ⇒ ① 3.4 ms｜pending｜first_preview_ms=0｜无图；② ready ＋ 有图   ⇒ ✓（0）
+tool-first-preview    ⇒ first_preview = [true,false,false]                              ⇒ ✓（0）
+tool-cold-open-budget ⇒ preview_size:false 首次 2 ms；随后要 256 ⇒ 185 ms ＋ 有图        ⇒ ✓（0）
+```
+**∴ 三份契约**同时成立**✗ 而**不是"改了判据让它变绿"** ✓** —— **∴ 这是这一轮**最重要的一句话** ✓ ★★
