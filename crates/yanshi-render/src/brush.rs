@@ -354,6 +354,12 @@ fn stamp_samples_with_appearance(
     appearance: &StrokeAppearance,
     coverage: Option<&dyn Fn(f64, f64) -> f32>,
 ) -> usize {
+    // **∴ 计时这一段 ✗**（**第 246 轮 ✓）：**只累加**印章本身**✗ 不含调用方的别的活** ✓
+    let _t_stamp = StampTimer(if stamp_probe_on() {
+        Some(crate::probe::ProbeClock::now())
+    } else {
+        None
+    });
     let base_radius = brush.size / 2.0;
     let base_alpha = brush.color[3] * brush.flow as f32 * brush.opacity as f32;
     let mut drawn = 0usize;
@@ -559,6 +565,64 @@ pub fn feed_base(
 }
 
 /// **把一行 dab 盖到缓冲区上**（服务端与服务端预览共用 ✓；参数与语义保持原样 ✓）。
+
+/// **★★★ 印章热循环的**累计纳秒**✗ ★★★**（**第 246 轮 ✓；用户裁定「先量笔触占比」✓）
+///
+/// **∴ 为什么要它 ✗**：**探针里的 `印章累计` **只数个数**✗ 不记时间** ✓
+///   ⇒ **∴ 于是**：**"一笔 50 ms 里**落笔占多少**"**答不上来** ✓
+///     ＋ **∴ 而**那**正是**用户裁定要的那个分母／分子** ✓ ★★
+///
+/// **∴ 门控 ✗**：**只在 `YANSHI_RENDER_PROBE` 开着时**读时钟**✓
+///   ＋ **∴ 而**环境变量**每进程读一次**（`OnceLock` ✓）⇒ **∴ 生产路**零开销** ✓ ★
+static STAMP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// **∴ 探针开着吗 ✗**（**∴ 只读一次环境 ✓）★
+#[must_use]
+fn stamp_probe_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YANSHI_RENDER_PROBE").is_some())
+}
+
+/// **∴ 印章累计纳秒 ✗**（**供探针 ✓）★
+#[must_use]
+pub fn stamps_ns() -> u64 {
+    STAMP_NS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **∴ 清空印章计时 ✗**（**判据／测量用 ✓）★
+pub fn reset_stamps_ns() {
+    STAMP_NS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **★ 印章计时的**守卫**✗ ★**（**∴ 离开作用域即累加 ✓）**（**第 246 轮 ✓）
+///
+/// **∴ 为什么用守卫 ✗**（**∴ 而**不是在 `drawn` 前手写一遍 ✓）★**：
+///   **∴ 那三个函数**都有多处 `return` 与 `continue`**✗
+///     ⇒ **∴ 手写**迟早漏一处**✗（**∴ 而**漏了**不会报错 ✗ 只会**少算时间** ✓）★★
+///       ＋ **∴ 所以**：**让 `Drop` 负责**✗ ⇒ **∴ 每条出口**都被算上** ✓ ★★
+struct StampTimer(Option<crate::probe::ProbeClock>);
+
+impl Drop for StampTimer {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            note_stamp_time(t);
+        }
+    }
+}
+
+/// **∴ 把这一段的耗时累加进去 ✗**（**∴ 只有**探针开着才调用 ✓）★
+#[inline]
+fn note_stamp_time(started: crate::probe::ProbeClock) {
+    STAMP_NS.fetch_add(
+        started.elapsed().as_nanos() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// **把一行 dab 盖到缓冲区上**（服务端与服务端预览共用 ✓；参数与语义保持原样 ✓）。
+///
+/// **∴ 注 ✗**：**第 246 轮**把上面的印章计时设施插在了这里**✗
+///   ⇒ **∴ 于是**它的**原注释一度被吃掉**✓（**∴ 缺文档 ⇒ `missing_docs` 警告 ✓）⇒ **∴ 已补回** ✓ ★
 pub fn stamp_samples(buffer: &mut Buffer, brush: &BrushSpec, stamps: &[(f64, f64, f64)]) -> usize {
     stamp_samples_from(buffer, brush, stamps, 0)
 }
@@ -577,6 +641,12 @@ pub fn stamp_samples_clipped(
     stamps: &[(f64, f64, f64)],
     coverage: &dyn Fn(f64, f64) -> f32,
 ) -> usize {
+    // **∴ 计时这一段 ✗**（**第 246 轮 ✓）：**只累加**印章本身**✗ 不含调用方的别的活** ✓
+    let _t_stamp = StampTimer(if stamp_probe_on() {
+        Some(crate::probe::ProbeClock::now())
+    } else {
+        None
+    });
     let radius = brush.size / 2.0;
     let mut drawn = 0usize;
     for (offset, (x, y, pressure)) in stamps.iter().enumerate() {
@@ -627,6 +697,12 @@ pub fn stamp_samples_from(
     stamps: &[(f64, f64, f64)],
     base_index: u64,
 ) -> usize {
+    // **∴ 计时这一段 ✗**（**第 246 轮 ✓）：**只累加**印章本身**✗ 不含调用方的别的活** ✓
+    let _t_stamp = StampTimer(if stamp_probe_on() {
+        Some(crate::probe::ProbeClock::now())
+    } else {
+        None
+    });
     let radius = brush.size / 2.0;
     let mut rng = Prng::new(brush.seed);
     let mut drawn = 0usize;

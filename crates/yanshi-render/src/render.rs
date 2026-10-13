@@ -4323,9 +4323,14 @@ mod stage_probe {
             eprintln!(
                 "PROBE 区域={}x{}@{},{} 对象={} 裁掉={} 有背景={has_background} \
                  填充={fill:?} 图层={layers:?} 合成={composite:?} 裁剪+存tile={crop:?} 量化={quantize:?} \
-                 印章累计={}",
+                 印章累计={} ★印章耗时={:.1}ms★",
                 scope.2, scope.3, scope.0, scope.1, scope.4, scope.5,
-                crate::render::stamps_done()
+                crate::render::stamps_done(),
+                // **★ 第 246 轮：**印章热循环的累计时间**✗ ★**（**用户裁定"先量笔触占比" ✓）
+                //   ＋ **∴ 它是**累计值**✗（**∴ 从进程起来到现在 ✓）⇒ **∴ 于是**：
+                //     **∴ 最后一行减第一行 ⇒ **这一段有多少笔的印章时间** ✓
+                //       ＋ **∴ 而**分母**就是那几笔的墙钟（**测量工具每笔都记 ✓）★
+                crate::brush::stamps_ns() as f64 / 1e6
             );
         }
     }
