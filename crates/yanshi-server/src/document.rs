@@ -1948,6 +1948,15 @@ impl Document {
         self.renderer.below_reuse_count()
     }
 
+    /// **★ 「below 缓存写被跳过」的次数（**纯观测 ✓）✗ ★**（**第 248 轮 ✓）
+    ///
+    /// **∴ 为什么是**全局读**✗ 而不是走渲染器** ✓：**那个计数器在 `yanshi-render` 里是**
+    /// 模块级 static**（**不是每个渲染器一份 ✓）⇒ **∴ 从哪读都是同一个数 ✓
+    ///   ＋ **∴ 而**它**与 `below_reuse` 同一档 ✗ 纯观测 ✗ 不参与任何渲染决策** ✓ ★
+    pub fn below_write_skipped_count(&self) -> u64 {
+        yanshi_render::below_write_skipped_count()
+    }
+
     /// **below 缓存累计缺了几格**（第 342 轮，纯观测）：只读转发。
     pub fn below_missing_count(&self) -> usize {
         self.renderer.below_missing_count()

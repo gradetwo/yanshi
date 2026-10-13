@@ -147,9 +147,22 @@ pub use png::{
 };
 pub use prng::Prng;
 pub use render::{
-    coverage_from_shape, parse_background, render_region_unquantized, shape_coverage,
-    shape_outline, tile_from_buffer, RegionRender, RenderOptions, RenderStats, Renderer,
-    MAX_EFFECT_PADDING, RAW_RGBA_MIME,
+    // **★ 第 248 轮 ✗**：**「below 缓存写被跳过」的累计计数**（**纯观测 ✓
+    //   ＋ **∴ 要有它 ✗**：**`/health` 与判据需要**与机器无关**的读数** ✓）★
+    below_write_skipped_count,
+    coverage_from_shape,
+    note_below_write_skipped,
+    parse_background,
+    render_region_unquantized,
+    shape_coverage,
+    shape_outline,
+    tile_from_buffer,
+    RegionRender,
+    RenderOptions,
+    RenderStats,
+    Renderer,
+    MAX_EFFECT_PADDING,
+    RAW_RGBA_MIME,
 };
 pub use thumb::{render_thumbnail, Thumb, ThumbKind, ThumbStats, THUMB_BLOCK};
 pub use tile::{

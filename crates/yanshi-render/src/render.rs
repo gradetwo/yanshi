@@ -369,13 +369,41 @@ fn merge_by_rows(
 /// ⇒ **∴ `missing ≥ 1` ⇒ **永不命中 ✓**（**实测 `tool-below-retention` 只有 2／9 ✓**）。
 /// **∴ 修法** ✓：**末格用 `ceil() − 1`** ✓（**＝ 最后一个"被触碰"的格 ✓**）。
 /// **⚠️ 上限**：**`(x + w)` 必须 > `x`** ✓（**`w > 0` ⇒ 成立 ✓，否则上面已提前返回 ✓**）。
-#[allow(dead_code)] // **供 `want`／`store` 的注释引用 ✓；两处均已内联同一算式 ✓**
+/// **★ 第 248 轮：它**终于有调用方了**✗ ★** —— **∴ 原注释说"**两处均已内联同一算式**"** ✓
+///   ＋ **∴ 而**现在"**跳过判定**"与"**写块**"必须**用同一份**✗（**∴ 否则**会各算各的 ✓）
+///     ⇒ **∴ 于是**：**写侧那四行内联**换成了**调用它** ✓ ⇒ **∴ 这条**不再是死代码** ✓ ★★
 fn below_tile_range(b: &yanshi_core::Bbox) -> (i64, i64, i64, i64) {
     let tx0 = (b.x.floor() as i64).div_euclid(BELOW_TILE);
     let ty0 = (b.y.floor() as i64).div_euclid(BELOW_TILE);
     let tx1 = ((b.x + b.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
     let ty1 = ((b.y + b.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
     (tx0, ty0, tx1, ty1)
+}
+
+/// **★★★ 「below 缓存写被跳过」的累计计数 ✗ ★★★**（**第 248 轮 ✓；**纯观测 ✓）
+///
+/// **∴ 为什么必须有它 ✗**：**跳过**是这次改动的**全部收益**✗
+///   ＋ **∴ 若**不计数 ✗ 判据**就只能看墙钟**✗ ⇒ **∴ 而**墙钟**随机器变**（**本会话已栽过一次 ✓）
+///     ⇒ **∴ 于是**：**给它一个**语义读数**✗（**与 `BELOW_REUSE` 同一档 ✓）★★
+///   ＋ **∴ 而**它**同时是"跳过真的发生了"的**结构性证据** ✓（**不看耗时 ✓）★
+///
+/// **⚠️ 必须是**模块级**✗**：**函数内的 `static` **每次调用是同一个实例 ✓**但**跨函数不共享**✗
+///   ⇒ **∴ 我第一版**在两个函数里各写了一个 `static SKIPPED`**✗ ⇒ **∴ 写与读**各数各的** ✓
+///     ⇒ **∴ 那样**计数恒 0**✗ 而**判据会"永远看不到跳过"** ✓ ★★
+static BELOW_WRITE_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// **记一次「below 缓存写被跳过」** ✓（第 248 轮 ✓，**纯观测 ✓）。
+pub fn note_below_write_skipped() {
+    let total = BELOW_WRITE_SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if std::env::var_os("YANSHI_BELOW_PROBE").is_some() {
+        eprintln!("PROBE below 写跳过（**缓存已完整覆盖同一 sig ✓）累计={total}");
+    }
+}
+
+/// **★ 读「below 缓存写被跳过」的累计次数 ✗ ★**（**纯观测 ✓；供 `/health` 与判据 ✓）。
+#[must_use]
+pub fn below_write_skipped_count() -> u64 {
+    BELOW_WRITE_SKIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// **记一次 below 复用** ✓（第 95 轮 ✓）—— **∴ 已有调用方 ⇒ **∴ 不再是恒 0 ✓****（**第 681 轮实测 `below_reused=True` ✓ ⇒ 原注释已过时 ✓**）。
@@ -737,6 +765,36 @@ fn tiles_for_sig<'a>(
         return Some((cache.tiles.as_slice(), &cache.empty));
     }
     None
+}
+
+/// **★★★ 缓存里是否**已经完整覆盖**这一批块（**且 `sig` 相同 ✓）✗ ★★★**（**第 248 轮 ✓）
+///
+/// **∴ 为什么 ✗**（**实测换来的 ✓）**：**below 缓存写**在 4K 上**每带 238–783 ms**✗
+///   （**占全帧最大的一项 ✓）✗ 而**当**只有最上层变了**时 ✗ **下方内容一个字都没变** ✓
+///     ⇒ **∴ 那时**这次写是**纯浪费** ✗（**∴ 缓存里**已经是同一份 `sig` 的内容 ✓）★★
+///       ⇒ **∴ 所以**：**先问一句"**够不够**"**✗ **够 ⇒ **跳过一次写** ✓ ★★★
+///
+/// **∴ 判据是**覆盖**✗ 不是"sig 相同"** ✓：**∴ 因为**同一 `sig` 也可能**只写了**一半区域**✗
+///   ⇒ **∴ 那时**必须**接着写** ✓（**∴ 否则**读侧会 `missing ≥ 1` ⇒ **∴ 复用**永远不命中 ✓）★
+fn below_cache_covers(
+    cache: Option<&BelowTiles>,
+    sig: &[String],
+    range: (i64, i64, i64, i64),
+) -> bool {
+    let Some(cache) = cache else {
+        return false;
+    };
+    let Some((tiles, empty)) = tiles_for_sig(cache, sig) else {
+        return false;
+    };
+    // **∴ 先把已有键收成一个集合 ✗**：**∴ 否则**每个请求块都要线性扫一遍 ✓（**O(n²) ✗）★
+    let have: std::collections::HashSet<(i64, i64)> = tiles
+        .iter()
+        .map(|(key, _)| *key)
+        .chain(empty.iter().copied())
+        .collect();
+    let (x0, y0, x1, y1) = range;
+    (y0..=y1).all(|ty| (x0..=x1).all(|tx| have.contains(&(tx * BELOW_TILE, ty * BELOW_TILE))))
 }
 
 /// **★ 一组"**同 `sig`**"的格 ✗ ★**（第 975 轮 ✓）：**（**`tiles`, `empty` ✓）。
@@ -2097,13 +2155,30 @@ impl Renderer {
                 //（**∵ 区域太大 ⇒ 缓存它就要占几十 MB ✗ ⇒ **宁可不缓存 ✓****）。
                 // **∴ 块数由 `accumulation` 的 bbox 直接算 ✓**（**内层的 x0..y1 在花括号里 ✗**）。
                 let ob = accumulation.bbox();
-                let btx = ((ob.x + ob.w).ceil() as i64 - 1).div_euclid(BELOW_TILE)
-                    - (ob.x.floor() as i64).div_euclid(BELOW_TILE)
-                    + 1;
-                let bty = ((ob.y + ob.h).ceil() as i64 - 1).div_euclid(BELOW_TILE)
-                    - (ob.y.floor() as i64).div_euclid(BELOW_TILE)
-                    + 1;
+                // **★ 第 248 轮：范围改用**唯一那份**算式 ✗ ★**（**∴ 原来这里内联了四行 ✓
+                //   ＋ **∴ 而**"跳过判定"必须**与它同源**✗ ⇒ **∴ 否则**两边各算各的 ⇒ **∴ 迟早**错位 ✓）★
+                let (bt_x0, bt_y0, bt_x1, bt_y1) = below_tile_range(&ob);
+                let btx = bt_x1 - bt_x0 + 1;
+                let bty = bt_y1 - bt_y0 + 1;
                 let budget_ok = btx * bty <= BELOW_TILE_BUDGET as i64;
+                // **★★★ 第 248 轮：**缓存已完整覆盖同一 sig ⇒ 这次写是**纯浪费**✗ 跳过** ★★★**
+                //   ＋ **∴ 实测（**L4 release ／ 4K ／ 2 带 ✓）✗**：**below 缓存写**每带
+                //     **238–783 ms**✗ ⇒ **∴ 它是**全帧最大的一项**（**比量化 395／合成 328 都大 ✓）★★
+                //   ＋ **∴ 而**当**只有最上层变了**✗（**＝这个缓存存在的理由 ✓）**下方内容**一个字没变** ✓
+                //     ⇒ **∴ 那次写**把同一份内容**又切了 270 块**塞回缓存** ✗✗
+                //       ⇒ **∴ 所以**：**问一句"**够不够**"✗ 够 ⇒ **跳过** ✓
+                //   ＋ **∴ 判据是**覆盖**✗ 不是"sig 相同"** ✓（**∴ 同 sig 也可能只写了一半区域 ✓）
+                //   ＋ **∴ 两面（**如实 ✓）✗**：**收益**＝**少一次每带 238–783 ms 的纯重复劳动 ✓；
+                //     **代价**＝**多一次短锁 ＋ 一次覆盖判定**（**∴ 块数 ≲ 预算 ✓ 是 O(块数) ✓）★★
+                let below_covered = below
+                    .lock()
+                    .map(|guard| {
+                        below_cache_covers(guard.as_ref(), &sig, (bt_x0, bt_y0, bt_x1, bt_y1))
+                    })
+                    .unwrap_or(false);
+                if below_covered {
+                    note_below_write_skipped();
+                }
                 // **★ 写入侧探针 ✗ ★**（第 720 轮 ✓）：**∴ 打印**这次要不要写、**写哪些键**✗**
                 //   ⇒ **∴ 与读取侧（**`want=… have=… missing=…` ✓）对比 ⇒ **∴ 一次看出键是否一致 ✓****。
                 if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
@@ -2144,18 +2219,15 @@ impl Renderer {
                 //       ⇒ **∴ 于是**：**缓存里存的就是**它自称的那批层 ✓**** ✓✓
                 //   **∴ 若** `reused` 为真**✗（**下方已复用 ✓）⇒ **∴ 本点**根本走不到 ✓（**上面 `continue` 了 ✓）
                 //     ⇒ **∴ 而**那是**对的 ✗**：**缓存**已经是所需内容 ✓，**不必**再写 ✓**** ✓✓
-                if budget_ok {
+                if budget_ok && !below_covered {
                     if let Ok(mut guard) = below.lock() {
                         // **★ 跨渲染**保留** ＋ **丢最旧** ✓ ★**（目标明文"LRU"✓；第 494 轮 ✓）：
                         // **∴ 旧版每次**整体替换**✗ ⇒ **∴ 只保留"最后一次"的 tile 集 ✗**（**区域轮换时命中率低 ✓**）；
                         // **∴ 新版**合并**✓：**同键覆盖 ✓、新键追加 ✓、`sig` 变则整份清空 ✓**（**防撒谎 ✓**）**，
                         // **∴ 并按**块数预算**丢最旧的 ✓**（**`Vec` 的顺序即年龄 ✓**）。
-                        let origin = accumulation.bbox();
-                        let x0 = (origin.x.floor() as i64).div_euclid(BELOW_TILE);
-                        let y0 = (origin.y.floor() as i64).div_euclid(BELOW_TILE);
-                        // **★ 与 `want` 侧同一修正 ✓**（**两边必须一致否则 `missing ≥ 1` ✗**）。
-                        let x1 = ((origin.x + origin.w).ceil() as i64 - 1).div_euclid(BELOW_TILE);
-                        let y1 = ((origin.y + origin.h).ceil() as i64 - 1).div_euclid(BELOW_TILE);
+                        // **∴ 用上面那份**同源**的范围 ✗**（**第 248 轮 ✓）：**∴ 与跳过判定**
+                        //   与 `want` 侧**同一修正**（**`ceil() − 1` ✓）⇒ **∴ 三处**不再各算各的 ✓ ★
+                        let (x0, y0, x1, y1) = (bt_x0, bt_y0, bt_x1, bt_y1);
                         let mut fresh_empty: std::collections::HashSet<(i64, i64)> =
                             std::collections::HashSet::new();
                         let fresh: Vec<((i64, i64), crate::buffer::Buffer)> = {
