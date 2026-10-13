@@ -4006,15 +4006,31 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // `raw: true`：额外把**原始 RGBA8** 存入 CAS 并返回取回地址，供客户端做逐像素比对
     // （哈希相等无法说明差多少；跨客户端/服务端路径的差异属于 D1 的 ±1 LSB）。
     if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
+        // **★★★ 第 247 轮：**给 raw 路分段计时**✗ ★★★**（**∴ 因为缓存已经生效 ✗ 却还有 94 ms ✓）
+        //   ＋ **∴ 实测（**上一轮 ✓）✗**：**同一请求连做三次 **609 → 94 → 99 ms**✗
+        //     ＋ **∴ 而**带 `active_layer` 连做两次是 **94 → 94 ms** ✓
+        //       ⇒ **∴ 也就是说**区域字节缓存**已经命中**✗ 每次请求仍有**约 94 ms 的固定成本** ✓
+        //         ⇒ **∴ 而**它**不在 `render_region` 里** ✗（**∴ 否则命中后该是毫秒级 ✓）★★
+        //   ＋ **∴ 所以 ✗**：**在这里**分段**✗ 把 94 ms 归属清楚** ✓：
+        //     **∴ ① `render`（**含缓存命中 ✓）｜**② `store.put`（**1 MB 进 CAS ✓）
+        //       ｜**③ 其余（**几何 ＋ 组装 ＋ 序列化 ✓）★
+        //   ＋ **∴ 门控 ✗**：`YANSHI_RENDER_PROBE`（**∴ 生产路**只多几次 `Instant::now` ✓）★
+        let __probe = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
+        let __t_all = std::time::Instant::now();
         let region = parse_bbox(require_object(args, "region")?)?;
+        let __t_render = std::time::Instant::now();
         let (width, height, pixels) =
             ctx.workspace
                 .render_region_raw_active(&ctx.doc_id, region, active_layer.as_deref())?;
+        let __render_ms = __t_render.elapsed();
         // **裸像素出口也必须带告警** ✗：它返回的是 `(宽, 高, RGBA)` ✓，没有地方带告警 ✓
         // ⇒ 缺一个补丁时**必须**在这里读一次并报出去 ✓，否则就是"静默的不完整画面" ✗
         //（`Document::last_render_warnings` 的说明 ✓）。
         let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
+        let __t_put = std::time::Instant::now();
         let raw_hash = ctx.workspace.store().put(&pixels)?;
+        let __put_ms = __t_put.elapsed();
+        let __t_geom = std::time::Instant::now();
         let document = ctx.workspace.document_mut(&ctx.doc_id)?;
         // **越界区域是"被裁掉的"，不许静默** ✗（外部 agent 实测 ✓：900 宽画布上要 `{x:790,w:130}` ✓
         // ⇒ 实际只回 110 宽 ✓、**不报错** ✓ —— 它靠 `raw size != 期望字节数` 才发现 ✗，
@@ -4032,6 +4048,19 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             || actual_h != region.h
             || actual_x != region.x
             || actual_y != region.y;
+        if __probe {
+            // **∴ 一行说清"这 94 ms 花在哪"✗ ★**（**∴ 字节数也报 ✗ 免得把"图变大了"当成"变慢了" ✓）
+            eprintln!(
+                "PROBE raw 路 区域={}x{} 字节={} ｜render={:?}（**含命中 ✓）｜store.put={:?}｜几何+组装={:?}｜合计={:?}",
+                width,
+                height,
+                pixels.len(),
+                __render_ms,
+                __put_ms,
+                __t_geom.elapsed(),
+                __t_all.elapsed()
+            );
+        }
         return Ok(json!({
             "ok": true,
             "head_seq": document.head_seq(),
