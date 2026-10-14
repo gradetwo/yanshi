@@ -27960,3 +27960,17 @@ tool-carried-color.mjs  # **类型：功能缺口（纯揉合笔刷不动画面�
 #   ＋ **实测（512²，恒定压感，指标 = 每列首个暗像素位置的标准差）**：
 #     默认光边 2.86 => 半径随机 8.15（2.85×）=> 位置随机 13.53（4.73×，且平均笔段 1.35 真的分股）。
 #   ＋ **所以判据改成「守住已有能力」**：默认光边 < 4、旋钮一加 ≥ 2×、且至少一种组合能分股 > 1.2。
+
+# **★★★ tool-time-ms.mjs —— 已知红（第 254 轮；需求文档 P0 #3 的起点）★★★**
+#   ＋ **它量什么**：同一段几何、`brush_params{dabs_per_second:120}`（按时间出 dab 的设置），
+#     `time_ms` 间隔 10ms vs 500ms => 墨量必须差 ≥2×；不传 `time_ms` 时必须与今天逐字节相同。
+#   ＋ **现状（本机实测）**：两次的墨量/指纹**完全相同**（13236 / 3221472170）=> 第 4 个元素被
+#     静默忽略。
+#   ＋ **读代码的关键发现（这条几乎不用写引擎）**：`hokusai_core::Brush::stroke_to(…, dtime: f64)`
+#     的文档原话是 "dtime is seconds since the previous call" => 引擎早就接受真实时间；是**服务端**
+#     一直传恒定 `STEP_SECONDS = 0.01`（`stamp_stroke_from` 两处 stroke_to）=> 速度只能几何反演，
+#     `dabs_per_second` 形同虚设。
+#   ＋ **转绿条件**：把真实 dt 透传下去（`brush_points_from_json` 4 元组 + `parse_brush_points` 丢第 4 项
+#     保持老签名 + `stamp_stroke_from`/`paint_brush` 收 `dtimes` + `write_brush_stroke` 换算 ms->秒），
+#     细节与踩坑见提交信息；改完记得跑 clippy。
+tool-time-ms.mjs  # **类型：功能缺口（时间未透传；引擎侧已支持，只差服务端接线）**
