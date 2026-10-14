@@ -668,6 +668,145 @@ pub fn feed_base(
     true
 }
 
+// **★★★ 净室揉合：把"后方"的颜料拖进当前 dab（P0 #1 carried_color）★★★**（第 254 轮）
+//
+// **为什么自己写而不是改内核**（决策与证据都在这）：
+//   * 需求文档 P0 #1 要"脏笔拾取 ⇒ 湿画法（Blender 复活，只能 Source-Over 的问题）"；
+//   * 实测**排除**了三个可能：① 底图**确实喂进来了**（`brush_stroke` 回执 `fed_base=true`、
+//     `painted_pixels=5109`、`steps=51`）；② **不是参数问题**（`smudge`/`smudge_length`/
+//     `smudge_radius_log`/`smudge_transparency` 各种组合、含全开，跨色边界后**带外仍是纯白**）；
+//     ③ **不是"内核没写"**（`hokusai-core 0.3.0` 的 `brushmodes.rs` 有真的 smudge bucket cache）。
+//   => 缺口在这条落笔路径的接法上，而内核是 `crates.io` 的依赖（改它要 vendor + 维护 patch）
+//   => **决策：在我们自己的渲染层做净室实现**（确定性、可控、可判）。
+//
+// **语义（干净、可判、可红）**：
+//   * **只对 `amount > 0` 生效**（调用方只在笔刷 `smudge > 0` 时传）=> 既有像素级判据**一位都不动**；
+//   * 采样 = **把整个 dab 足迹沿运动方向的反方向平移 `length_px`**（经典"拖曳"）：
+//     于是笔尖**后方**的颜色被带进当前位置 => 跨色边界时边界色会被拖出来；
+//   * 混合是**线性**的（`out = dst*(1-a) + src*a`），无随机数 => 同输入同输出；
+//   * 颜色按 `u16`（`<<7` 缩放）与 `feed_base` 同一套表示，读写口径一致。
+//
+// 返回被改写的像素数（供判据/探针看"到底动了多少"）。
+
+/// 净室揉合：把 dab 足迹后方（沿运动反方向 `length_px`）的颜色按 `amount` 拖进当前位置。
+///
+/// 只读采样矩形与 dab 足迹两块，先读后写，因此与 tile 布局无关；
+/// 无随机数（确定性）；`amount <= 0` 或方向未知（第一枚 dab）时返回 0、不动任何像素。
+pub fn smudge_dab(
+    surface: &mut hokusai::tile_mem::MemSurface,
+    center: (f64, f64),
+    radius: f64,
+    direction: (f64, f64),
+    length_px: f64,
+    amount: f64,
+) -> usize {
+    if amount <= 0.0 || radius <= 0.0 {
+        return 0;
+    }
+    let amount = amount.clamp(0.0, 1.0) as f32;
+    // **方向未知（第一枚 dab）=> 直接返回 0（只播种、不动）**（第 254 轮定稿）
+    //   曾经写成"平移 0 做原地混匀"，但**平移 0 时每个像素采样的就是它自己** =>
+    //   `out = dst*(1-a) + dst*a = dst` => **数学上必然是空操作**（测试也是这样红的）。
+    //   => 物理上也对：第一枚 dab 后面没有"后方颜料"可拖 => 什么都不该发生。
+    if direction.0 == 0.0 && direction.1 == 0.0 {
+        return 0;
+    }
+    let (dx, dy) = {
+        let norm = (direction.0 * direction.0 + direction.1 * direction.1)
+            .sqrt()
+            .max(1e-9);
+        (direction.0 / norm, direction.1 / norm)
+    };
+    let back = length_px.max(0.0);
+    let (shift_x, shift_y) = (-dx * back, -dy * back);
+    let (cx, cy) = (center.0, center.1);
+    let r = radius;
+    let x0 = (cx - r).floor() as i32;
+    let y0 = (cy - r).floor() as i32;
+    let x1 = (cx + r).ceil() as i32;
+    let y1 = (cy + r).ceil() as i32;
+    if x1 < x0 || y1 < y0 {
+        return 0;
+    }
+    // **★★★ 必须两趟：先读、再写 ★★★**（第 254 轮实测修）
+    //   第一版是"一趟里直接读采样点"，但采样点会落到**别的 tile**，而一趟里只有当前
+    //   tile 可读 => 我加了"跨 tile 就跳过"的保守分支 => 结果**在 tile 边界上完全失效**
+    //   （64px 的 tile 边界到处都在）。单测当场把它钉住：色边界造在 x=64 => 红没被拖出来。
+    //   => 现在：先把**采样矩形**整块读进本地缓冲（半径量级，很小），再按 dab 足迹写回
+    //      => 与 tile 布局**完全无关**，任何边界都对。
+    let (sx0, sy0, sx1, sy1) = (
+        x0 + shift_x.floor() as i32,
+        y0 + shift_y.floor() as i32,
+        x1 + shift_x.floor() as i32,
+        y1 + shift_y.floor() as i32,
+    );
+    let sample_w = (sx1 - sx0 + 1).max(1) as usize;
+    let sample_h = (sy1 - sy0 + 1).max(1) as usize;
+    let mut sample = vec![[0u16; 4]; sample_w * sample_h];
+    {
+        use hokusai::TiledSurface;
+        for tile_y in sy0.div_euclid(64)..=sy1.div_euclid(64) {
+            for tile_x in sx0.div_euclid(64)..=sx1.div_euclid(64) {
+                let tile = surface.tile_request_start(tile_x, tile_y);
+                for row in 0..64i32 {
+                    for column in 0..64i32 {
+                        let px = tile_x * 64 + column;
+                        let py = tile_y * 64 + row;
+                        if px < sx0 || py < sy0 || px > sx1 || py > sy1 {
+                            continue;
+                        }
+                        let at = (py - sy0) as usize * sample_w + (px - sx0) as usize;
+                        sample[at] = tile[row as usize][column as usize];
+                    }
+                }
+                surface.tile_request_end(tile_x, tile_y);
+            }
+        }
+    }
+    let mut touched = 0usize;
+    {
+        use hokusai::TiledSurface;
+        for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
+            for tile_x in x0.div_euclid(64)..=x1.div_euclid(64) {
+                let tile = surface.tile_request_start(tile_x, tile_y);
+                for row in 0..64i32 {
+                    for column in 0..64i32 {
+                        let px = tile_x * 64 + column;
+                        let py = tile_y * 64 + row;
+                        if px < x0 || py < y0 || px > x1 || py > y1 {
+                            continue;
+                        }
+                        let ddx = px as f64 + 0.5 - cx;
+                        let ddy = py as f64 + 0.5 - cy;
+                        if ddx * ddx + ddy * ddy > r * r {
+                            continue;
+                        }
+                        let qx = (px as f64 + shift_x).floor() as i32;
+                        let qy = (py as f64 + shift_y).floor() as i32;
+                        if qx < sx0 || qy < sy0 || qx > sx1 || qy > sy1 {
+                            continue;
+                        }
+                        let src = sample[(qy - sy0) as usize * sample_w + (qx - sx0) as usize];
+                        let dst = tile[row as usize][column as usize];
+                        let mix = |i: usize| -> u16 {
+                            let a = f32::from(dst[i]);
+                            let b = f32::from(src[i]);
+                            (a * (1.0 - amount) + b * amount).clamp(0.0, 65535.0) as u16
+                        };
+                        let out = [mix(0), mix(1), mix(2), mix(3)];
+                        if out != dst {
+                            tile[row as usize][column as usize] = out;
+                            touched += 1;
+                        }
+                    }
+                }
+                surface.tile_request_end(tile_x, tile_y);
+            }
+        }
+    }
+    touched
+}
+
 /// **★★★ 印章热循环的**累计纳秒**✗ ★★★**（**第 246 轮 ✓；用户裁定「先量笔触占比」✓）
 ///
 /// **∴ 为什么要它 ✗**：**探针里的 `印章累计` **只数个数**✗ 不记时间** ✓
@@ -2527,5 +2666,120 @@ mod dab_cache_tests {
                 d
             );
         }
+    }
+}
+
+// **★ 净室揉合的单测（P0 #1）★**（第 254 轮）
+//
+// **为什么要单测而不是只靠端到端判据**：揉合是**纯几何 ＋ 固定公式**的像素变换
+// => 单测能把它钉得**决定性**、且一红就知道是它（端到端会被笔刷的其它设置搅浑 ✓，
+// 本轮已经在 `humanize` 上吃过一次这个亏 ✓）。
+//
+// **场景**：左半红（220,30,30）、右半白（255,255,255）；笔尖**从红往白走**（方向 +x）
+// => 采样点落在**后方**（红区）=> 边界处的 dab 必须把**红拖进白区**。
+// 反过来再验**阴性**：`amount = 0`（= 非揉合笔刷）时**一个像素都不许动**。
+#[cfg(test)]
+mod smudge_tests {
+    use super::smudge_dab;
+    use hokusai::TiledSurface;
+
+    const RED: [u8; 4] = [220, 30, 30, 255];
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+
+    /// 造一块 128×64 的表面：`split_x` 左侧红、右侧白。
+    fn surface_with_edge(split_x: usize) -> hokusai::tile_mem::MemSurface {
+        let (w, h) = (128usize, 64usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let at = (y * w + x) * 4;
+                let color = if x < split_x { RED } else { WHITE };
+                rgba[at..at + 4].copy_from_slice(&color);
+            }
+        }
+        let mut surface = hokusai::tile_mem::MemSurface::new();
+        assert!(super::feed_base(
+            &mut surface,
+            0,
+            0,
+            w as i32,
+            h as i32,
+            &rgba
+        ));
+        surface
+    }
+
+    /// 读一个像素（按 `feed_base` 的口径换算回 0..255）。
+    fn read(surface: &mut hokusai::tile_mem::MemSurface, x: i32, y: i32) -> [u16; 4] {
+        let tile = surface.tile_request_start(x.div_euclid(64), y.div_euclid(64));
+        let out = tile[(y.rem_euclid(64)) as usize][(x.rem_euclid(64)) as usize];
+        surface.tile_request_end(x.div_euclid(64), y.div_euclid(64));
+        out
+    }
+
+    fn is_reddish(px: [u16; 4]) -> bool {
+        // u16 表示是 `u8 << 7`：红 ≈ 220<<7 = 28160，白 = 255<<7 = 32640
+        px[0] > 26_000 && px[1] < 20_000 && px[2] < 20_000
+    }
+
+    #[test]
+    fn smudge_drags_the_rear_colour_across_the_edge() {
+        let split = 64;
+        let mut surface = surface_with_edge(split);
+        // 笔尖在边界上，**方向 +x**（从红往白走），拖曳长度 20px
+        let before = read(&mut surface, split as i32 + 6, 32);
+        assert!(!is_reddish(before), "边界右侧本该是白的：{before:?}");
+        let touched = smudge_dab(
+            &mut surface,
+            (split as f64, 32.0),
+            12.0,
+            (1.0, 0.0),
+            20.0,
+            1.0,
+        );
+        assert!(touched > 0, "揉合一个像素都没动");
+        let after = read(&mut surface, split as i32 + 6, 32);
+        assert!(
+            is_reddish(after),
+            "笔尖**后方**是红色、dab 又覆盖到了这一列 => 必须把红拖进来；实测 {after:?}"
+        );
+    }
+
+    #[test]
+    fn smudge_is_off_when_amount_is_zero() {
+        let split = 64;
+        let mut surface = surface_with_edge(split);
+        let touched = smudge_dab(
+            &mut surface,
+            (split as f64, 32.0),
+            12.0,
+            (1.0, 0.0),
+            20.0,
+            0.0,
+        );
+        assert_eq!(touched, 0, "amount=0（非揉合笔刷）时一个像素都不许动");
+        let untouched = read(&mut surface, split as i32 + 6, 32);
+        assert!(!is_reddish(untouched), "没动过就还是白的：{untouched:?}");
+    }
+
+    #[test]
+    fn smudge_without_direction_does_nothing() {
+        let split = 64;
+        let mut surface = surface_with_edge(split);
+        // 第一条 dab 没有"后方"（方向未知）=> 只播种、不动。
+        // 这条测试**曾经写错**：那时"方向未知"走的是"平移 0 的原地混匀"，而**平移 0 时
+        // 每个像素采样的就是它自己** => `out = dst*(1-a) + dst*a = dst` => 数学上必然是
+        // 空操作（测试因此红）。改成明确语义"方向未知 => 返回 0"之后才自洽。
+        let touched = smudge_dab(
+            &mut surface,
+            (split as f64, 32.0),
+            12.0,
+            (0.0, 0.0),
+            20.0,
+            1.0,
+        );
+        assert_eq!(touched, 0, "方向未知时不该动任何像素");
+        let edge = read(&mut surface, split as i32 + 6, 32);
+        assert!(!is_reddish(edge), "不该被拖动：{edge:?}");
     }
 }
