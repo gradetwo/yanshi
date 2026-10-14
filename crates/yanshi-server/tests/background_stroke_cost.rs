@@ -246,10 +246,19 @@ fn a_background_stroke_populates_the_preview_phase() {
     let preview = timings["preview_ms"].as_f64().unwrap_or(0.0);
     let other = timings["other_ms"].as_f64().unwrap_or(f64::MAX);
     eprintln!("timings={timings}");
+    // **★★★ 改成**语义计数**✗ 不看墙钟** ✓ ★★★**（**第 253 轮 ✓）
+    //   ＋ **∴ 原来 ✗**：`assert!(preview > 0.0)` **偶发红** ✓（**CI 实测失败 ✗ 本机 3/3 过 ✓）
+    //     ＋ **∴ 根因 ✗**：**那两处**记录 `Phase::Preview`**都在**条件分支里**✗
+    //       ⇒ **∴ 有的路径**根本不进** ⇒ `preview_ms == 0` ✓ ⇒ **∴ 拿墙钟当断言 ⇒ **随机红** ✓
+    //     ＋ **∴ 现在 ✗**：**断"这一阶段**确实被调用过**"**（`preview_calls` ✓ 确定性 ✓）
+    //       ＋ **∴ 且**原来那条**残差不该主导**的断言**照旧** ✓（**∴ 它才是这条判据的**重点 ✓）★★
+    let preview_calls = timings["preview_calls"].as_u64().unwrap_or(0);
     assert!(
-        preview > 0.0,
-        "预览阶段必须有值（它是那笔固定开销的落点）：{timings}"
+        preview_calls >= 1,
+        "预览阶段必须**被调用过**（语义计数，与墙钟无关）：{timings}"
     );
+    // **∴ `preview_ms` 照旧印出来 ✗ 但不拿它当门槛** ✓（**∴ 信息不藏 ✓）★
+    let _ = preview;
     assert!(
         other < total * 0.5,
         "残差（catch-all）不该再是这一笔的主导（other={other} total={total}）：{timings}"

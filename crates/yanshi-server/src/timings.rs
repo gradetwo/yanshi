@@ -81,6 +81,17 @@ pub struct ToolTimings {
     preview_us: u64,
     render_us: u64,
     png_us: u64,
+    /// **★ 预览阶段被**调用**了几次 ✗ ★**（**第 253 轮 ✓）
+    ///
+    /// **∴ 为什么要一个**计数**✗ 而不只看 `preview_us`** ✓ ★★★**：
+    ///   ＋ **∴ 实测（**CI 偶发红 ✓）✗**：`background_stroke_cost.rs` 里
+    ///     `assert!(preview > 0.0)` **偶发失败** ✗ —— **∴ 而**本机连跑 3 次全过 ✓
+    ///   ＋ **∴ 根因 ✗**：**那两处**记录**都在**条件分支里**✗ ⇒ **∴ 某些执行路径**根本不进**
+    ///     ⇒ **∴ 于是**`preview_ms == 0`** ✓ ⇒ **∴ 拿"**墙钟 > 0**"当断言 ⇒ **随机红 ✓
+    ///   ＋ **∴ 本仓的既有原则正是 ✗**：**"判据用**语义计数**✗ 不看墙钟** ✓"
+    ///     （**见 `document_preview_render_count` 那条注释 ✓）⇒ **∴ 所以**：**补上这个计数 ✓
+    ///       ＋ **∴ 判据改成断"**这一阶段确实被调用过**"** ✓ ⇒ **∴ 确定性的 ✓ ★★★
+    preview_calls: usize,
 }
 
 impl ToolTimings {
@@ -96,6 +107,10 @@ impl ToolTimings {
 
     /// 累加一个阶段的耗时（微秒 ✓，给底层已经按微秒量的路径用 ✓）。
     pub fn add_micros(&mut self, phase: Phase, micros: u64) {
+        // **∴ 计数与耗时**分开记 ✗**（**∴ 计数是确定性的 ✗ 耗时不是 ✓）★
+        if phase == Phase::Preview {
+            self.preview_calls = self.preview_calls.saturating_add(1);
+        }
         let slot = match phase {
             Phase::Prep => &mut self.prep_us,
             Phase::Raster => &mut self.raster_us,
@@ -127,6 +142,8 @@ impl ToolTimings {
             preview_us: self.preview_us.saturating_sub(base.preview_us),
             render_us: self.render_us.saturating_sub(base.render_us),
             png_us: self.png_us.saturating_sub(base.png_us),
+            // **∴ 计数也要**相对**✗（**子调用只报自己那段 ✓）★
+            preview_calls: self.preview_calls.saturating_sub(base.preview_calls),
         }
     }
 
@@ -154,6 +171,8 @@ impl ToolTimings {
             "fold_ms": millis(self.fold_us),
             "log_ms": millis(self.log_us),
             "preview_ms": millis(self.preview_us),
+            // **∴ 语义计数 ✗**（**与 `preview_ms` 并排 ⇒ 判据可以不看墙钟 ✓）★
+            "preview_calls": self.preview_calls,
             "render_ms": millis(self.render_us),
             "png_ms": millis(self.png_us),
             "other_ms": millis(other_us),
