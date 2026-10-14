@@ -45,6 +45,21 @@ libm = "0.2"
 #（`default-features = false` + `zlib-rs` ✓）：flate2 的默认后端是 `miniz_oxide` ✗ ⇒
 # 一旦打开默认 feature，锁文件里就会多出 `miniz_oxide`（正是要避免的 ✓）。
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+# **★ PSD 图层树：读 ＋ 写 ✗ ★**（**第 253 轮 ✓；**用户建议里点名的 `ag-psd` ✓）
+#
+# **∴ 两面（**按 AGENTS.md 的清单 ✓）✗**：
+#   ＋ **收益**：**图层树的**读与写一次到位**✗（**图层记录／通道数据／RLE／
+#     `luni`（Unicode 名 ✓）／`lsct`（**组的分节符 ✓）／engine data ✗
+#     ⇒ **∴ 手写是**一两周量级**✗ 而**本仓已有 400 行的 `psd.rs` 只做**压平图** ✓）★
+#   ＋ **体积／依赖 ✗**：**它只依赖 `flate2 ^1`**✗ 而**本仓**已经**因为这个原因
+#     把它显式钉成 `zlib-rs` 后端**（见上面那段注释 ✓）⇒ **∴ 代价**很小** ✓
+#   ＋ **平台 ✗**：**纯 Rust ✓ ⇒ **wasm32 可用**（**与 `zlib-rs` 同一条路 ✓）★
+#   ＋ **风险（**如实 ✓）✗**：**它**自称 "**vibe-coded port**"**✗
+#     文档覆盖 **43%** ✗ 且**列了 known limitations** ✓
+#     ⇒ **∴ 所以**：**必须先拿**真文件**验**（**本机有 ImageMagick ✓
+#       ＋ 判据用**PSD 自带的压平合成图**当答案键 ✓）✗ 不合格就退回扩自己的 ✓ ★★
+#   ＋ **确定性 ✗**：**我们只依赖它的**读**✗ 与写的**往返** ✓ ⇒ 由判据把关 ✓ ★
+ag-psd = { version = "0.3", default-features = false }
 
 [profile.release]
 lto = "thin"

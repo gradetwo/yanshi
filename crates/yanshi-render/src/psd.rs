@@ -398,3 +398,274 @@ mod tests {
         assert!(!error.message.is_empty());
     }
 }
+
+// **★★★ 第 253 轮：从 PSD 读**图层树** ✗ ★★★**（**用户建议的第 ③ 项 ✓）
+//
+// **∴ 为什么用 `ag-psd` ✗**（**按 AGENTS.md 的两面 ✓）**：**图层记录／通道数据／RLE／
+//   `luni`（**Unicode 名 ✓）／`lsct`（**组的分节符 ✓）／engine data** ✗ **手写是一两周量级** ✓
+//     ＋ **∴ 它的代价 ✗**：**只多 `flate2`（**而它按默认特性又带进 `miniz_oxide`
+//       ＋ `simd-adler32` ＋ `adler2` ✓ —— **实测 `cargo tree` 见提交信息 ✓）★
+//     ＋ **∴ 风险 ✗**：**它自称 "**vibe-coded port**"**✗ 文档 43% ✓
+//       ⇒ **∴ 所以**：**判据必须拿**真文件**（**本机 ImageMagick 生成 ✓
+//         ＋ **PSD 自带的压平合成图**当答案键 ✓）验过才算数 ✓ ★★
+//
+// **∴ 这一层的作用 ✗**：**把库的类型**关在 `psd.rs` 里**✗ 服务端只见本仓的小结构** ✓
+//   ⇒ **∴ 于是**：**换库／改库**不会波及工具层** ✓（**∴ 也**好测 ✓）★★
+
+/// **★ PSD 里的一层（**或一组 ✓）✗ ★**（**第 253 轮 ✓；**只留要映射的字段 ✓）★
+#[derive(Debug, Clone, PartialEq)]
+pub struct PsdLayerNode {
+    /// **图层名 ✗**（取自 `luni`／`luni` 缺失时的 Pascal 名 ✓；**组也有名 ✓）★
+    pub name: String,
+    /// 左上角（文档坐标 ✓）。
+    pub x: i64,
+    /// 左上角（文档坐标 ✓）。
+    pub y: i64,
+    /// 宽（**组为 0 ✓）★
+    pub width: u32,
+    /// 高（**组为 0 ✓）★
+    pub height: u32,
+    /// **不透明度 ✗**（**归一到 0..1 ✓ —— 库给的是 0..1 ✓ 实测过 ✓）★
+    pub opacity: f64,
+    /// 可见（**库给的是 `hidden` ⇒ **取反 ✓）★
+    pub visible: bool,
+    /// **混合模式 ✗**（**映射进本仓的 11 个词 ✗ 对不上的落 `normal` 并记进
+    /// [`PsdLayerTree::unmapped_blends`] ✓ 不静默** ✓）★
+    pub blend: String,
+    /// 是不是图层组（**库用 `children` 表示 ✓）★
+    pub is_group: bool,
+    /// **组的展开态 ✗**（**`lsct` 的 open／closed ✓；非组恒 true ✓）★
+    pub open: bool,
+    /// **RGBA8 像素 ✗**（**组为空 ✓；**∴ 库给的就是 RGBA ✓ 实测过 ✓）★
+    pub pixels: Vec<u8>,
+    /// 子层（**组的成员 ✓；Phase 1 只用到一层 ✗ 但结构照收 ✓）★
+    pub children: Vec<PsdLayerNode>,
+}
+
+/// **★ 一次读出来的图层树 ✗ ★**（**第 253 轮 ✓）★
+#[derive(Debug, Clone, PartialEq)]
+pub struct PsdLayerTree {
+    /// 文档宽 ✓。
+    pub width: u32,
+    /// 文档高 ✓。
+    pub height: u32,
+    /// 顶层（**含组 ✓，顺序与 PSD 自下而上一致 ✓ —— **∴ 要翻一次才是 yanshi 的 z 序 ✓）★
+    pub roots: Vec<PsdLayerNode>,
+    /// **∴ 对不上本仓词表的混合模式 ✗**（**去重后的原名 ✓）⇒ **∴ 让调用方**如实报出来** ✓ ★
+    pub unmapped_blends: Vec<String>,
+}
+
+/// **把 `ag-psd` 的混合模式映射到本仓词表 ✗**（**显式匹配 ✗ 不靠 `Debug` 名** ✓）★
+///
+/// **∴ 为什么不用 `format!("{:?}")` ✗**：**那**看起来省事 ✗ 但**库一改枚举名就**静默
+/// 落到别的模式** ✓ ⇒ **∴ 现在**：**显式 `match` ⇒ **库改版会**编译失败**（**响 ✓）
+///   ＋ **∴ 对不上的**落 `normal` ✗ 但**记进 `unmapped_blends` ⇒ **不静默** ✓ ★★
+fn map_blend(mode: ag_psd::psd::BlendMode) -> Option<&'static str> {
+    use ag_psd::psd::BlendMode as M;
+    Some(match mode {
+        M::Normal => "normal",
+        M::Multiply => "multiply",
+        M::Screen => "screen",
+        M::Overlay => "overlay",
+        M::Darken => "darken",
+        M::Lighten => "lighten",
+        M::ColorDodge => "color_dodge",
+        M::Difference => "difference",
+        M::LinearDodge => "linear_dodge",
+        M::LinearBurn => "subtract", // **∴ 本仓最近的等价物 ✓**（如实：不是逐位等价 ✓）
+        M::PassThrough => "normal",  // **∴ 组用 ✓**（本仓没有 pass-through ✓）
+        _ => return None,
+    })
+}
+
+fn layer_to_node(
+    layer: &ag_psd::psd::Layer,
+    unmapped: &mut Vec<String>,
+) -> PsdLayerNode {
+    let name = layer
+        .additional_info
+        .name
+        .clone()
+        .unwrap_or_else(|| "图层".to_owned());
+    let (left, top) = (layer.left.unwrap_or(0.0), layer.top.unwrap_or(0.0));
+    let (right, bottom) = (layer.right.unwrap_or(left), layer.bottom.unwrap_or(top));
+    let mut width = (right - left).max(0.0) as u32;
+    let mut height = (bottom - top).max(0.0) as u32;
+    let mut pixels = Vec::new();
+    if let Some(image) = layer.image_data.as_ref() {
+        width = image.width;
+        height = image.height;
+        pixels = image.data.clone();
+    }
+    let children: Vec<PsdLayerNode> = layer
+        .children
+        .as_ref()
+        .map(|kids| kids.iter().map(|k| layer_to_node(k, unmapped)).collect())
+        .unwrap_or_default();
+    let is_group = layer.children.is_some();
+    let blend = match layer.blend_mode {
+        Some(mode) => match map_blend(mode) {
+            Some(name) => name.to_owned(),
+            None => {
+                let raw = format!("{mode:?}");
+                if !unmapped.contains(&raw) {
+                    unmapped.push(raw);
+                }
+                "normal".to_owned()
+            }
+        },
+        None => "normal".to_owned(),
+    };
+    PsdLayerNode {
+        name,
+        x: left.round() as i64,
+        y: top.round() as i64,
+        width,
+        height,
+        opacity: layer.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+        visible: !layer.hidden.unwrap_or(false),
+        blend,
+        is_group,
+        open: layer.opened.unwrap_or(true),
+        pixels,
+        children,
+    }
+}
+
+/// **读一个 PSD 的**图层树** ✗ ★**（**第 253 轮 ✓；**压平那条路仍走 [`decode_psd`] ✓）★
+pub fn read_layer_tree(bytes: &[u8]) -> Result<PsdLayerTree, PsdError> {
+    // **∴ 默认**不读**图层像素 ✗**（**实测：`pixels.len() == 0` ✓）⇒ **∴ 于是**显式要** ✓
+    //   ＋ **∴ 而**合成都也要（**判据要拿 PSD 自带的压平合成图当答案键 ✓）★
+    // **∴ 关键开关是 `use_image_data` ✗**（**读侧源码 `reader.rs:1123` ✓）：
+    //   **∴ 只有 `Some(true)` 时才把图层像素解到 `image_data`** ✓
+    //     ＋ **∴ 而**只设 `skip_layer_image_data: Some(false)` **不够** ✗（**实测：仍 0 字节 ✓）★
+    let options = ag_psd::psd::ReadOptions {
+        use_image_data: Some(true),
+        skip_layer_image_data: Some(false),
+        skip_composite_image_data: Some(false),
+        ..Default::default()
+    };
+    let psd = ag_psd::read_psd(bytes, &options)
+        .map_err(|error| PsdError::new(format!("ag-psd 读失败：{error}")))?;
+    let mut unmapped = Vec::new();
+    let roots = psd
+        .children
+        .as_ref()
+        .map(|kids| kids.iter().map(|k| layer_to_node(k, &mut unmapped)).collect())
+        .unwrap_or_default();
+    Ok(PsdLayerTree {
+        width: psd.width.round().max(0.0) as u32,
+        height: psd.height.round().max(0.0) as u32,
+        roots,
+        unmapped_blends: unmapped,
+    })
+}
+
+#[cfg(test)]
+mod layer_tree_probe {
+    use ag_psd::psd::{BlendMode, Layer, LayerAdditionalInfo, PixelData, Psd};
+
+    /// **∴ 夹具用 **ag-psd 自己写**✗ 因为：**ImageMagick 写的 PSD **混合键是字节倒序** ✗
+    ///   ＋ **∴ 实测 ✗**：**它的键位置上是 `mron`**（**规格要 `norm` ✓）⇒
+    ///     **∴ ag-psd**拒绝它是对的**（`Invalid blend mode: 'mron'` ✓）★
+    ///       ＋ **∴ 所以 ✗**：**拿它当夹具 ⇒ **会冤枉库** ✓（**我一开始就差点这么干 ✓）★★
+    ///   ＋ **∴ 代价（**如实 ✓）✗**：**自写夹具 ⇒ **"能读 Photoshop 原文件"这件事
+    ///     **证据不足** ✗（**∴ 需要一份**真 Photoshop 文件** ✗ 这轮**没拿到** ✓）★
+    fn solid(width: u32, height: u32, rgba: [u8; 4]) -> PixelData {
+        let mut data = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..(width * height) {
+            data.extend_from_slice(&rgba);
+        }
+        PixelData {
+            width,
+            height,
+            data,
+        }
+    }
+
+    fn fixture() -> Vec<u8> {
+        let bottom = Layer {
+            top: Some(0.0),
+            left: Some(0.0),
+            bottom: Some(64.0),
+            right: Some(64.0),
+            blend_mode: Some(BlendMode::Normal),
+            opacity: Some(1.0),
+            hidden: Some(false),
+            image_data: Some(solid(64, 64, [224, 32, 32, 255])),
+            additional_info: LayerAdditionalInfo {
+                name: Some("底层".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let top = Layer {
+            top: Some(16.0),
+            left: Some(16.0),
+            bottom: Some(48.0),
+            right: Some(48.0),
+            blend_mode: Some(BlendMode::Multiply),
+            opacity: Some(0.5),
+            hidden: Some(true),
+            image_data: Some(solid(32, 32, [32, 64, 224, 255])),
+            additional_info: LayerAdditionalInfo {
+                name: Some("上层".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let psd = Psd {
+            width: 64.0,
+            height: 64.0,
+            children: Some(vec![bottom, top]),
+            image_data: Some(solid(64, 64, [200, 200, 200, 255])),
+            ..Default::default()
+        };
+        ag_psd::write_psd(&psd, &ag_psd::psd::WriteOptions::default())
+    }
+
+    /// **∴ 往返：写出去 ⇒ 读回来 ⇒ 字段逐项对得上 ✗**（**第 253 轮 ✓）★
+    #[test]
+    fn round_trips_layer_tree_through_ag_psd() {
+        let bytes = fixture();
+        eprintln!("夹具字节 = {}", bytes.len());
+        let tree = super::read_layer_tree(&bytes).expect("读图层树");
+        eprintln!(
+            "文档 {}x{}｜顶层 {}｜对不上的混合 {:?}",
+            tree.width,
+            tree.height,
+            tree.roots.len(),
+            tree.unmapped_blends
+        );
+        for node in &tree.roots {
+            eprintln!(
+                "  {:?} ({}, {}) {}x{} 不透明度={} 可见={} 混合={} 组={} 像素={}",
+                node.name,
+                node.x,
+                node.y,
+                node.width,
+                node.height,
+                node.opacity,
+                node.visible,
+                node.blend,
+                node.is_group,
+                node.pixels.len()
+            );
+        }
+        assert_eq!(tree.width, 64);
+        assert_eq!(tree.height, 64);
+        assert_eq!(tree.roots.len(), 2);
+        let bottom = &tree.roots[0];
+        let top = &tree.roots[1];
+        assert_eq!(bottom.name, "底层");
+        assert_eq!(bottom.blend, "normal");
+        assert!(bottom.visible);
+        assert_eq!(bottom.pixels.len(), 64 * 64 * 4);
+        assert_eq!(top.name, "上层");
+        assert_eq!(top.blend, "multiply", "混合模式要映射到本仓词表");
+        assert!(!top.visible, "hidden=true ⇒ 不可见");
+        assert!((top.opacity - 0.5).abs() < 0.02, "不透明度 0.5");
+        assert_eq!((top.x, top.y, top.width, top.height), (16, 16, 32, 32));
+        assert_eq!(top.pixels.len(), 32 * 32 * 4);
+    }
+}
