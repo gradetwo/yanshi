@@ -2929,6 +2929,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             //   ＋ **∴ 取值 ✗**：`none`（缺省）／`vertical`（**轴=画布竖直中线 ✓）／
             //     `horizontal`（**轴=水平中线 ✓）✗ 别的值**报错 ✗ 不静默** ✓ ★★
             param!("symmetry", String, false, "对称模式：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔压力相同）"),
+            // **P1 #12 视觉锚点**（第 254 轮）：回执里除了缩略图，再给**结构化锚点**（精确坐标），
+            // AI 据此接下一笔，不必从像素里估。
+            param!("anchor_mode", String, false, "视觉锚点：data（缺省，一张干净缩略图 + anchors 结构化数据）/ dual（两张图，本版未实现，传了会明确报错）"),
+            param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!(
                 "points",
@@ -14931,6 +14935,48 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
     value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
+    // **★ P1 #12 视觉锚点（data 模式）★**（第 254 轮）
+    //   需求："AI 看缩略图要能精准接下一笔，不能盲猜坐标"。文档自己说缩略图那一半**已经有了**
+    //   （框架在 `ctx.commit` 时附）=> 这里补的是**结构化锚点**那一半：
+    //     * `last_stroke.start/end`：这一笔的首末控制点（**精确坐标**，不用从像素里估）；
+    //     * `last_stroke.bbox`：这一笔的脏区（复用上面已经算好的 region）；
+    //     * `grid`：坐标标尺（`grid_spacing` 可调，缺省 200 —— 与需求文档里的示例一致）；
+    //     * `canvas`：画布尺寸（AI 好把锚点映射回缩略图）。
+    //   `dual`（两张图：干净 ＋ 带 Overlay）**本版未实现** => 明确报错，不静默当 data。
+    let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
+    match anchor_mode.as_str() {
+        "data" => {
+            let spacing = args
+                .get("grid_spacing")
+                .and_then(Value::as_f64)
+                .unwrap_or(200.0);
+            let (canvas_w, canvas_h) = ctx
+                .workspace
+                .document_mut(&ctx.doc_id)
+                .map(|document| (document.state().width, document.state().height))
+                .unwrap_or((0, 0));
+            value["anchors"] = json!({
+                "mode": "data",
+                "last_stroke": {
+                    "start": points.first().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
+                    "end": points.last().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
+                    "bbox": [x0, y0, width, height],
+                },
+                "grid": {"spacing": spacing, "origin": [0, 0]},
+                "canvas": {"width": canvas_w, "height": canvas_h},
+                "note": "锚点是**画布坐标**；缩略图与画布等比缩放，按 canvas 尺寸换算即可",
+            });
+        }
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "anchor_mode 只支持 data（缺省）—— {other} 还没实现：\
+                     dual（两张图：干净 ＋ 带 Overlay）需要额外的缩略图合成通道，已记录在需求文档 P1 #12"
+                )),
+            ));
+        }
+    }
     // **再报出这一笔是否吃了底图**（第 215 轮）：判据据此分类比对 ✓
     //（吃了 ⇒ 比"喂同样底图"；没吃 ⇒ 比"空表面"✓），不再自己猜名单 ✓。
     value["fed_base"] = json!(fed_base);
