@@ -2933,6 +2933,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // AI 据此接下一笔，不必从像素里估。
             param!("anchor_mode", String, false, "视觉锚点：data（缺省，一张干净缩略图 + anchors 结构化数据）/ dual（两张图，本版未实现，传了会明确报错）"),
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
+            // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
+            param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!(
                 "points",
@@ -13400,6 +13402,54 @@ fn parse_brush_point_times(args: &Value) -> Result<Vec<f64>> {
     Ok(out)
 }
 
+/// **★ 每个点都显式给了压力吗（P1 #11 humanize 的"爆炸半径开关"）★**（第 254 轮）
+///
+/// **为什么需要它**：需求要 `humanize` **默认 true**，但改了默认会动到既有的像素级判据。
+/// 所以约定：**显式给了压力 ⇒ 调用方在做精确控制 ⇒ humanize 什么都不做**；
+/// 只有"只给了坐标"（压力缺省 0.5）时才套拟人包络 —— 这正是「默认就好用」的落点。
+fn all_points_have_pressure(args: &Value) -> bool {
+    match args.get("points").and_then(Value::as_array) {
+        Some(items) if !items.is_empty() => items
+            .iter()
+            .all(|item| item.as_array().and_then(|pair| pair.get(2)).is_some()),
+        _ => false,
+    }
+}
+
+/// **★ 拟人起收笔包络（需求文档附录二）★**（第 254 轮）
+///
+/// 非对称：起笔 12% 快升、行笔 60% 平稳、收笔 28% 长尾衰减。
+/// **为什么收笔比起笔长**：起笔是"落笔"（手腕下落快 ✓）、收笔是"提笔"（手腕提起慢，
+/// 还要拉出笔锋 ✓）—— 文档把这句写得很清楚，这里照做。
+/// **确定性**：只依赖弧长参数，不用随机 ⇒ 同输入同输出 ✓。
+/// **就地改压力**（第三个分量）；几何不动（坐标不动 ⇒ 与 `time_ms`／`smooth` 都不冲突 ✓）。
+fn apply_humanize_envelope(points: &mut [(f64, f64, f64)]) {
+    if points.len() < 2 {
+        return;
+    }
+    // 累计弧长（不是点数 ✗）：点稀疏的地方也不能被当成"过渡很短" ✓
+    let mut arc = vec![0.0_f64; points.len()];
+    for i in 1..points.len() {
+        let dx = points[i].0 - points[i - 1].0;
+        let dy = points[i].1 - points[i - 1].1;
+        arc[i] = arc[i - 1] + (dx * dx + dy * dy).sqrt();
+    }
+    let total = arc[points.len() - 1].max(1e-9);
+    for (i, point) in points.iter_mut().enumerate() {
+        let t = (arc[i] / total).clamp(0.0, 1.0);
+        let envelope = if t < 0.12 {
+            // 起笔：指数型快升（0.12 处到 1.0），留 0.12 的下限，避免笔尖完全消失
+            (t / 0.12).powf(0.6).max(0.12)
+        } else if t > 0.72 {
+            // 收笔：幂函数长尾（占 28%），末端保底 0.06 拉出尖锋
+            (((1.0 - t) / 0.28).powf(1.6)).max(0.06)
+        } else {
+            1.0
+        };
+        point.2 = (point.2 * envelope).clamp(0.0, 1.0);
+    }
+}
+
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
     brush_points_from_json(args.get("points"))
 }
@@ -14708,6 +14758,17 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     } else {
         points
     };
+    // **★ P1 #11 humanize：拟人模式（默认 true）★**（第 254 轮）
+    //   需求文档附录二：非对称起收笔包络 —— 起笔 12%（快升）、行笔 60%（平稳）、收笔 28%（长尾）。
+    //   **爆炸半径怎么控住**（本轮的设计决定，写清楚免得后人踩）：
+    //     * **调用方显式给了每个点的压力** => `humanize` **什么都不做**（一个像素都不改）
+    //       => 既有的像素级判据不受影响；
+    //     * **没给压力（缺省 0.5）** => 才套包络 —— 这就是「默认就好用」：AI 通常只给坐标。
+    //   **包络施加在**平滑之后**的点上**：Catmull-Rom 已经把压力插值平滑过，再套包络才不会出折角。
+    let mut points = points;
+    if optional_bool(args, "humanize").unwrap_or(true) && !all_points_have_pressure(args) {
+        apply_humanize_envelope(&mut points);
+    }
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(
         ctx,
@@ -17252,6 +17313,53 @@ mod tests {
             fast_pixels, slow_pixels,
             "同一串点只改 dtimes（5ms vs 500ms）却产出**完全相同**的像素 \
              => 时间没有真正影响引擎（接线断了，或这套设置不吃时间）"
+        );
+    }
+
+    // **★ P1 #11 humanize：包络的形状与不对称（数据层，决定性）★**（第 254 轮）
+    //   `humanize` 在服务端是**纯数据变换**（把每个点的压力乘以包络）；
+    //   与其去图里猜"浓淡剖面"（实测不稳：`100%_Opaque` 的宽度不吃压感、`Clouds` 的墨斑驳），
+    //   不如**直接断言数据**：中段保持、两端下降、且**收笔侧的过渡长于起笔侧**（12% vs 28%）。
+    #[test]
+    fn humanize_envelope_is_asymmetric() {
+        // 一条 33 点的直线，压力恒为 1.0（这样包络本身一眼可读）
+        let mut points: Vec<(f64, f64, f64)> =
+            (0..33).map(|i| (i as f64 * 10.0, 100.0, 1.0)).collect();
+        let base = points.clone();
+        super::apply_humanize_envelope(&mut points);
+        // 中段（40%~60%）应当**保持不变**（包络为 1）
+        for (i, point) in points.iter().enumerate() {
+            let t = i as f64 / 32.0;
+            if (0.4..=0.6).contains(&t) {
+                assert!(
+                    (point.2 - 1.0).abs() < 1e-9,
+                    "中段压力不该被改：t={t} 得到 {}",
+                    point.2
+                );
+            }
+        }
+        // 两端必须下降
+        assert!(
+            points[0].2 < 0.3,
+            "起笔第一点压力应明显下降，实测 {}",
+            points[0].2
+        );
+        assert!(
+            points[32].2 < 0.3,
+            "收笔最后一点压力应明显下降，实测 {}",
+            points[32].2
+        );
+        // 几何绝不能被改（humanize 只改压力）
+        for (after, before) in points.iter().zip(base.iter()) {
+            assert_eq!(after.0, before.0);
+            assert_eq!(after.1, before.1);
+        }
+        // **不对称**：统计"压力 < 0.5 的点数"，收笔侧必须**多于**起笔侧
+        let head_low = (0..=16).filter(|i| points[*i].2 < 0.5).count();
+        let tail_low = (16..33).filter(|i| points[*i].2 < 0.5).count();
+        assert!(
+            tail_low > head_low,
+            "收笔侧的过渡应比起笔侧长（12% vs 28%）：起笔侧 {head_low} 个低压力点 vs 收笔侧 {tail_low}"
         );
     }
 
