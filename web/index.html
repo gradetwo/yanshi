@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7705304227824`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7548379309168`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -755,7 +755,6 @@
   <button data-tool="redo" disabled>重做</button>
   <button data-tool="refresh">刷新</button>
   <button data-tool="check">一致性自检</button>
-  <button id="addLayer">＋ 图层</button>
   <button id="exportPng">导出 PNG</button>
   <!-- **显式的"当前视图"导出** ✓：默认那颗导**整幅文档** ✓（P0：旧默认导的是视口 ✗）；
        裁剪成视口仍然有用，但必须由用户点名 ✓。 -->
@@ -1022,7 +1021,13 @@
         导出下载到本机 ｜ 导入从本机选文件
       </div>
       <label>服务器另存路径 <input id="projectPath" type="text" placeholder="留空 ⇒ 只下载到本机" style="width:200px" /></label>
-      <div class="toolbar"><button id="projectExport" type="button">导出工程</button></div>
+      <div class="toolbar">
+        <button id="projectExport" type="button">导出工程</button>
+        <!-- **★ 绘画过程视频 ✗ ★**（**第 249 轮 ✓）：**与工程包同一个卡片 ✗ 因为都是"把
+             现在这个文档变成文件" ✓；**∴ 它**不需要联网 ✗ 全靠本地内核 ＋ WebCodecs** ✓ -->
+        <button id="timelapseExport" type="button" title="把从第一笔到现在的过程渲染成视频（本地内核 ＋ WebCodecs，不需要联网）">导出过程视频</button>
+      </div>
+      <div class="hint" id="timelapseInfo"></div>
       <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">
         <button id="projectImport" type="button">导入 .yanshi…</button>
@@ -1078,7 +1083,986 @@
   <span class="spacer"></span>
   <span>画布 <b id="canvasSize">—</b></span>
 </footer>
-<script>// 执行进度标记（诊断，第 1072 轮）：一次实跑即可看出脚本"跑到哪里就断了"。
+<script>/**
+ * **★ yanshi 的**极简 MP4 封装器** ✗ ★**（**第 249 轮 ✓；**视频、H.264、无音频 ✓）
+ *
+ * **∴ 为什么要自己写 ✗**（**而**不是 `npm i mp4-muxer` ✓）★**：
+ *   ＋ **∴ 本仓的前端**没有打包器**✗：`viewer-app.js` 是 `include_str!` **整段内联**
+ *     进页面的**（`viewer.rs` 的 `page_template` ✓）⇒ **∴ 于是**：
+ *        **∴ ①** 页内**没有模块加载器**✗ ⇒ **`import … from 'mp4-muxer'` 这种**裸模块名**
+ *           在页面里**根本不成立** ✓
+ *        **∴ ②** 而**把一个 ESM 库**内联**进传统 `<script>`**✗ ⇒ **它的 `export` 会**直接报错** ✓
+ *          ⇒ **∴ 所以**：**要么**引入打包器（**∴ 本仓不要 ✓）✗ 要么**自己写一份小的 ✓ ★★
+ *   ＋ **∴ 而**本仓**已经在**手写格式**✗：`archive.rs` 手写 tar ✓ `png.rs` 手写 PNG ✓
+ *     ⇒ **∴ 于是**：**MP4 也只是**一种盒子格式**✗ 视频这一路**够小** ✓ ★★
+ *   ＋ **∴ 代价（**如实 ✓）✗**：**只支持**视频、单轨、H.264（`avc1` ✓）✗ 不写音频／字幕／
+ *     多轨** ✓ ⇒ **∴ 够**本功能用**✗ 但**不是**通用 MP4 库** ✓ ★★
+ *
+ * **∴ 怎么被两边用 ✗**：
+ *   ＋ **∴ 浏览器 ✗**：**传统 `<script>` 内联**✗ ⇒ **∴ 它**只往 `globalThis` 挂一个名字** ✓
+ *   ＋ **∴ node ✗**：**`await import()` 这个文件**✗ ⇒ **∴ 顶层赋值会执行**✗
+ *     ⇒ **∴ 测试**从 `globalThis` 取** ✓（**∴ 于是**一份代码**两边都能测 ✓）★★
+ */
+
+/** **把 big-endian 写进去的游标 ✗**（**∴ MP4 全是 BE ✓）★ */
+class Writer {
+  constructor() {
+    this.bytes = [];
+  }
+
+  u8(value) {
+    this.bytes.push(value & 0xff);
+  }
+
+  u16(value) {
+    this.u8(value >> 8);
+    this.u8(value);
+  }
+
+  u24(value) {
+    this.u8(value >> 16);
+    this.u8(value >> 8);
+    this.u8(value);
+  }
+
+  u32(value) {
+    this.u8(Math.floor(value / 0x1000000));
+    this.u8(value >> 16);
+    this.u8(value >> 8);
+    this.u8(value);
+  }
+
+  /** **无符号 64 位 ✗**（**JS 的安全整数够用到 8 PB ✓）★ */
+  u64(value) {
+    this.u32(Math.floor(value / 0x100000000));
+    this.u32(value >>> 0);
+  }
+
+  raw(bytes) {
+    for (const b of bytes) this.bytes.push(b & 0xff);
+  }
+
+  fourcc(text) {
+    for (let i = 0; i < 4; i++) this.u8(text.charCodeAt(i));
+  }
+
+  zeros(count) {
+    for (let i = 0; i < count; i++) this.u8(0);
+  }
+
+  get length() {
+    return this.bytes.length;
+  }
+
+  /** **取一段的字节 ✗**（**供盒子计算长度前先写好内容 ✓）★ */
+  slice(from, to) {
+    return this.bytes.slice(from, to === undefined ? this.bytes.length : to);
+  }
+
+}
+
+/** **写一个盒子 ✗**：**先把内容写到临时游标 ✓ 再补 8 字节头 ✓）★
+ *
+ *  **∴ 为什么先算内容 ✗**：**盒子的长度**不含头里的那 8 字节**✗（**`size` 是含头的总长 ✓）
+ *    ⇒ **∴ 于是**：**先写内容 ⇒ 长度已知 ⇒ 再把头插到前面 ✓** ★
+ */
+function box(writer, type, fill) {
+  const inner = new Writer();
+  fill(inner);
+  writer.u32(inner.length + 8);
+  writer.fourcc(type);
+  writer.raw(inner.slice(0));
+}
+
+/** **完整盒 ✗**（**内容已经写好时用 ✓）★ */
+function fullBox(writer, type, version, flags, fill) {
+  box(writer, type, (w) => {
+    w.u8(version);
+    w.u24(flags);
+    fill(w);
+  });
+}
+
+/** **★ 极简 MP4 封装器 ✗ ★**（**视频、单轨、H.264 ✓）
+ *
+ *  **用法 ✗**：
+ *  ```js
+ *  const muxer = new YanshiMp4({ width, height, timescale: 90000, description: avcC });
+ *  muxer.addSample(bytes, durationTicks, isKey);
+ *  const mp4 = muxer.finish();          // Uint8Array
+ *  ```
+ *  ＋ **∴ `description` ✗**：**来自 `VideoEncoder` 的
+ *    `metadata.decoderConfig.description`**（**就是 `avcC` 的内容 ✗ 不含盒子头 ✓）★
+ */
+class YanshiMp4 {
+  constructor(options) {
+    const opts = options || {};
+    this.width = opts.width || 0;
+    this.height = opts.height || 0;
+    this.timescale = opts.timescale || 90000;
+    /** **`avcC` 的**盒内内容**✗**（**∴ 不含 `avcC` 那 8 字节头 ✓）★ */
+    this.description = opts.description ? new Uint8Array(opts.description) : null;
+    this.samples = [];
+    this.totalTicks = 0;
+  }
+
+  /**
+   * **加一帧 ✗**（**`durationTicks` 用**同一个 timescale** ✓）
+   *
+   * **∴ 为什么必须显式给时长 ✗**：**WebCodecs 只给**时间戳**✗
+   *   ⇒ **∴ 时长**要由相邻时间戳**相减得到**✗ 而**最后一帧没有下一帧** ✓
+   *     ⇒ **∴ 所以**：**让调用方**把时长算好交进来**✗ 而不是在这里猜** ✓ ★
+   */
+  addSample(bytes, durationTicks, isKey) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const duration = Math.max(1, Math.round(durationTicks));
+    this.samples.push({ data, duration, key: Boolean(isKey) });
+    this.totalTicks += duration;
+    return this;
+  }
+
+  /** **出文件 ✗**（**返回 `Uint8Array` ✓）★
+   *
+   *  **★★★ 为什么**要两遍**✗ ★★★**（**∴ 这是**判据抓出来的真错** ✓）**：
+   *    ＋ **∴ `stco` 里要写的是**绝对文件偏移**✗ 而**它**依赖 `moov` 有多长** ✓
+   *      ＋ **∴ 而**`moov` 的长度**又只取决于**样本表的结构**✗ **与偏移的**数值**无关** ✓
+   *        （**每个偏移恒占 4 字节 ✓）⇒ **∴ 于是**：
+   *          **∴ 第一遍**用 `mdatBase = 0` 建一次 ⇒ **量出 `moov` 的长度** ✓
+   *          **∴ 第二遍**用真正的 `mdatBase` 再建一次 ⇒ **∴ 这回 `stco` 直接就是对的** ✓ ★★
+   *    ＋ **∴ 第一版怎么错的 ✗**：**我**一边建盒子一边记"待回填位置"**✗
+   *      ＋ **∴ 而**那些位置是**内层 Writer 的坐标**✗ 我却拿去**外层**回填** ✓
+   *        ⇒ **∴ 结果**`stco` 全是 0**✗ ⇒ **∴ 而**判据里"按偏移取字节"那一条
+   *          **当场红** ✓（**∴ 这就是那条判据的价值 ✗ 它抓的不是崩溃 ✗ 是**文件打不开** ✓）★★★
+   */
+  finish() {
+    // **∴ 第一遍 ✗**：**偏移全用 0**✗ 只为量长度 ✓
+    const probe = this.#build(0);
+    const ftypEnd = probe.ftypEnd;
+    const moovEnd = probe.moovEnd;
+    // **∴ `mdat` 的数据从**它的 8 字节头之后**开始 ✓** ✓
+    const mdatBase = moovEnd + 8;
+    void ftypEnd;
+    // **∴ 第二遍 ✗**：**真偏移 ✓**（**∴ 长度与第一遍**逐字节相同**✗ 因为只有数值变了 ✓）★
+    return this.#build(mdatBase).bytes;
+  }
+
+  /** **建一整份文件 ✗**（**`mdatBase` 用于 `stco` ✓ 返回各段末尾位置 ✓）★ */
+  #build(mdatBase) {
+    const w = new Writer();
+    // **∴ `ftyp` ✗**：**isom ＋ avc1 兼容位** ✓
+    box(w, "ftyp", (b) => {
+      b.fourcc("isom");
+      b.u32(512);
+      b.fourcc("isom");
+      b.fourcc("iso2");
+      b.fourcc("avc1");
+      b.fourcc("mp41");
+    });
+    const ftypEnd = w.length;
+    const offsets = [];
+    let at = mdatBase;
+    for (const sample of this.samples) {
+      offsets.push(at);
+      at += sample.data.length;
+    }
+    box(w, "moov", (moov) => {
+      this.#mvhd(moov);
+      box(moov, "trak", (trak) => {
+        this.#tkhd(trak);
+        box(trak, "mdia", (mdia) => {
+          this.#mdhd(mdia);
+          fullBox(mdia, "hdlr", 0, 0, (h) => {
+            h.u32(0);
+            h.fourcc("vide");
+            h.zeros(12);
+            h.raw([0]); // 名字以 NUL 结尾 ⇒ 空名字
+          });
+          box(mdia, "minf", (minf) => {
+            fullBox(minf, "vmhd", 0, 1, (v) => {
+              v.u16(0);
+              v.u16(0);
+              v.u16(0);
+              v.u16(0);
+            });
+            box(minf, "dinf", (dinf) => {
+              fullBox(dinf, "dref", 0, 0, (d) => {
+                d.u32(1);
+                fullBox(d, "url ", 0, 1, () => {});
+              });
+            });
+            box(minf, "stbl", (stbl) => {
+              this.#stsd(stbl);
+              this.#stts(stbl);
+              this.#stsc(stbl);
+              this.#stsz(stbl);
+              this.#stco(stbl, offsets);
+              this.#stss(stbl);
+            });
+          });
+        });
+      });
+    });
+    const moovEnd = w.length;
+    // **∴ `mdat` ✗**：**样本按顺序拼 ✓**
+    const sampleBytes = this.samples.reduce((sum, s) => sum + s.data.length, 0);
+    w.u32(sampleBytes + 8);
+    w.fourcc("mdat");
+    for (const sample of this.samples) w.raw(sample.data);
+    return { bytes: new Uint8Array(w.bytes), ftypEnd, moovEnd };
+  }
+
+  #mvhd(w) {
+    fullBox(w, "mvhd", 0, 0, (b) => {
+      b.u32(0); // creation
+      b.u32(0); // modification
+      b.u32(this.timescale);
+      b.u32(this.totalTicks);
+      b.u32(0x00010000); // rate 1.0
+      b.u16(0x0100); // volume 1.0
+      b.u16(0);
+      b.zeros(8);
+      b.u32(0x00010000);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0x00010000);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0x40000000);
+      b.zeros(24);
+      b.u32(2); // next track id
+    });
+  }
+
+  #tkhd(w) {
+    fullBox(w, "tkhd", 0, 3, (b) => {
+      b.u32(0);
+      b.u32(0);
+      b.u32(1);
+      b.u32(0);
+      b.u32(this.totalTicks);
+      b.zeros(8);
+      b.u16(0); // layer
+      b.u16(0); // alternate group
+      b.u16(0); // volume（视频为 0）
+      b.u16(0);
+      b.u32(0x00010000);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0x00010000);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0);
+      b.u32(0x40000000);
+      b.u32(this.width * 65536);
+      b.u32(this.height * 65536);
+    });
+  }
+
+  #mdhd(w) {
+    fullBox(w, "mdhd", 0, 0, (b) => {
+      b.u32(0);
+      b.u32(0);
+      b.u32(this.timescale);
+      b.u32(this.totalTicks);
+      b.u16(0x55c4); // 语言 und
+      b.u16(0);
+    });
+  }
+
+  #stsd(w) {
+    fullBox(w, "stsd", 0, 0, (b) => {
+      b.u32(1);
+      box(b, "avc1", (v) => {
+        v.zeros(6);
+        v.u16(1); // data reference index
+        v.zeros(16);
+        v.u16(this.width);
+        v.u16(this.height);
+        v.u32(0x00480000); // 72 dpi
+        v.u32(0x00480000);
+        v.u32(0);
+        v.u16(1); // frame count
+        v.zeros(32);
+        v.u16(0x0018); // depth
+        v.u16(0xffff); // 预定义 = -1
+        if (this.description && this.description.length) {
+          box(v, "avcC", (c) => c.raw(this.description));
+        }
+      });
+    });
+  }
+
+  #stts(w) {
+    // **∴ 把**相同时长**的样本并成一条 ✓**（**∴ 常见的定帧率 ⇒ 只有 1 条 ✓）★
+    const runs = [];
+    for (const s of this.samples) {
+      const last = runs[runs.length - 1];
+      if (last && last.duration === s.duration) last.count += 1;
+      else runs.push({ duration: s.duration, count: 1 });
+    }
+    fullBox(w, "stts", 0, 0, (b) => {
+      b.u32(runs.length);
+      for (const run of runs) {
+        b.u32(run.count);
+        b.u32(run.duration);
+      }
+    });
+  }
+
+  #stsc(w) {
+    // **∴ 每个样本**一个 chunk**✗ ⇒ **∴ 只有一条记录 ✓**（**∴ 简单 ✗ 但**足够**✓）★
+    fullBox(w, "stsc", 0, 0, (b) => {
+      b.u32(1);
+      b.u32(1);
+      b.u32(1);
+      b.u32(1);
+    });
+  }
+
+  #stsz(w) {
+    fullBox(w, "stsz", 0, 0, (b) => {
+      b.u32(0); // 每样本大小不同 ⇒ 逐条列
+      b.u32(this.samples.length);
+      for (const s of this.samples) b.u32(s.data.length);
+    });
+  }
+
+  /** **`stco` ✗**：**直接写**真偏移**✗ 不再回填** ✓（**∴ 两遍构建 ✓）★ */
+  #stco(w, offsets) {
+    fullBox(w, "stco", 0, 0, (b) => {
+      b.u32(offsets.length);
+      for (const off of offsets) b.u32(off);
+    });
+  }
+
+  #stss(w) {
+    const keys = [];
+    this.samples.forEach((s, i) => {
+      if (s.key) keys.push(i + 1);
+    });
+    if (!keys.length) return;
+    fullBox(w, "stss", 0, 0, (b) => {
+      b.u32(keys.length);
+      for (const k of keys) b.u32(k);
+    });
+  }
+}
+
+globalThis.YanshiMp4 = YanshiMp4;
+</script><script>/**
+ * **★ yanshi 的**极简 WebM 封装器** ✗ ★**（**第 250 轮 ✓；**视频、单轨、VP8／VP9 ✓）
+ *
+ * **∴ 为什么需要它 ✗**（**这不是"退而求其次" ✗ 是**必须有的兜底** ✓）★★★**：
+ *   ＋ **∴ 实测 ✗**：**CI 的浏览器是 `browser-actions/setup-chrome` 装出来的
+ *     **Chrome for Testing**✗ ⇒ **∴ 它**不带专有编解码器** ✓ ⇒ **∴ `avc1.640028`
+ *     **`isConfigSupported ⇒ unsupported`** ✓（**∴ 而** headless Linux **又没有 GPU**
+ *       ⇒ **∴ 也没有**硬件编码器可退** ✓）
+ *   ＋ **∴ 而**交付说明自己就写了：**Firefox 130+ **较晚 ✗ 需 fallback** ✓** ⇒
+ *     **∴ 所以**：**一条**不依赖专有编解码器**的路**本来就是需求** ✓ ★★
+ *   ＋ **∴ VP8／VP9 是 Chromium **一定自带**的（非专有 ✓）⇒ **∴ 任何 Chromium／
+ *     Firefox／Safari 都能编** ⇒ **∴ 于是**：**这条路**在 CI 里**真能跑** ✓ ★★★
+ *
+ * **∴ 形态与 `mp4-lite.js` 一致 ✗**：**传统脚本 ✗ 只往 `globalThis` 挂 `YanshiWebm`** ✓
+ *   ⇒ **∴ 浏览器内联可用 ✗ node `await import()` 也能测** ✓
+ *
+ * **∴ 代价（**如实 ✓）✗**：**WebM 这一路**没有 MP4 那么好的兼容性**（**部分老播放器／
+ *   剪辑软件要转一道 ✓）✗ 也没有音频／字幕／多轨** ✓ ⇒ **∴ 所以**：**有 H.264 时
+ *     仍然**优先 MP4**✗ 这一路只做兜底** ✓ ★★
+ *
+ * **∴ 为什么自己写 ✗**：**与 `mp4-lite` 同一个理由 ✗**（**页面没有模块加载器 ⇒
+ *   ESM 库装不进去 ✓）** ＋ **∴ 本仓已有手写 tar／PNG／MP4 的先例** ✓ ★★
+ */
+
+/** **EBML 的整数写法 ✗**（**`value` 用最小的长度 ✓；**全 1 是保留值 ⇒ 避开 ✓）★ */
+function vint(value) {
+  for (let len = 1; len <= 8; len++) {
+    // **∴ 保留值 ✗**：**长度 `len` 的 VINT 里，所有值位全 1 **是"未知长度"** ✓
+    //   ⇒ **∴ 所以**：**能表示的最大**普通值**是 `2^(7*len) - 2`** ✓
+    const max = Math.pow(2, 7 * len) - 2;
+    if (value <= max) {
+      const bytes = new Uint8Array(len);
+      let rest = value;
+      for (let i = len - 1; i >= 0; i--) {
+        bytes[i] = rest & 0xff;
+        rest = Math.floor(rest / 256);
+      }
+      bytes[0] |= 1 << (8 - len); // **∴ 长度标记位 ✓**
+      return bytes;
+    }
+  }
+  throw new Error("VINT 太长：" + value);
+}
+
+const concat = (parts) => {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+};
+
+const u8 = (v) => Uint8Array.from([v & 0xff]);
+
+/** **EBML 元素 ✗**：`id` 是**带长度位的原样字节**✓（**比如 `0x1A45DFA3` ⇒ 4 字节 ✓）★ */
+function element(idBytes, payload) {
+  return concat([idBytes, vint(payload.length), payload]);
+}
+
+const ID = {
+  EBML: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]),
+  EBMLVersion: Uint8Array.from([0x42, 0x86]),
+  EBMLReadVersion: Uint8Array.from([0x42, 0xf7]),
+  EBMLMaxIDLength: Uint8Array.from([0x42, 0xf2]),
+  EBMLMaxSizeLength: Uint8Array.from([0x42, 0xf3]),
+  DocType: Uint8Array.from([0x42, 0x82]),
+  DocTypeVersion: Uint8Array.from([0x42, 0x87]),
+  DocTypeReadVersion: Uint8Array.from([0x42, 0x85]),
+  Segment: Uint8Array.from([0x18, 0x53, 0x80, 0x67]),
+  Info: Uint8Array.from([0x15, 0x49, 0xa9, 0x66]),
+  TimestampScale: Uint8Array.from([0x2a, 0xd7, 0xb1]),
+  MuxingApp: Uint8Array.from([0x4d, 0x80]),
+  WritingApp: Uint8Array.from([0x57, 0x41]),
+  Duration: Uint8Array.from([0x44, 0x89]),
+  Tracks: Uint8Array.from([0x16, 0x54, 0xae, 0x6b]),
+  TrackEntry: Uint8Array.from([0xae]),
+  TrackNumber: Uint8Array.from([0xd7]),
+  TrackUID: Uint8Array.from([0x73, 0xc5]),
+  TrackType: Uint8Array.from([0x83]),
+  FlagLacing: Uint8Array.from([0x9c]),
+  CodecID: Uint8Array.from([0x86]),
+  DefaultDuration: Uint8Array.from([0x23, 0xe3, 0x83]),
+  Video: Uint8Array.from([0xe0]),
+  PixelWidth: Uint8Array.from([0xb0]),
+  PixelHeight: Uint8Array.from([0xba]),
+  Cluster: Uint8Array.from([0x1f, 0x43, 0xb6, 0x75]),
+  Timestamp: Uint8Array.from([0xe7]),
+  SimpleBlock: Uint8Array.from([0xa3]),
+};
+
+/** **把非负整数写成 EBML 整数 ✗**（**去掉多余的前导 0 ✓）★ */
+function uintBytes(value) {
+  if (value === 0) return u8(0);
+  const bytes = [];
+  let rest = value;
+  while (rest > 0) {
+    bytes.unshift(rest & 0xff);
+    rest = Math.floor(rest / 256);
+  }
+  return Uint8Array.from(bytes);
+}
+
+const text = (s) => {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+  return out;
+};
+
+/** **★ 极简 WebM 封装器 ✗ ★**（**视频、单轨、VP8／VP9 ✓）
+ *
+ * **用法 ✗**：
+ * ```js
+ * const muxer = new YanshiWebm({ width, height, codec: "V_VP9", fps: 30 });
+ * muxer.addSample(bytes, timestampMs, isKey);
+ * const webm = muxer.finish();          // Uint8Array
+ * ```
+ * ＋ **∴ `timestampMs` 是**毫秒整数**✗**（**WebM 的 TimestampScale 就取 1 ms ✓）
+ *   ⇒ **∴ 调用方**把微秒域的值除一千交进来** ✓ ★
+ */
+class YanshiWebm {
+  constructor(options) {
+    const opts = options || {};
+    this.width = opts.width || 0;
+    this.height = opts.height || 0;
+    /** **`V_VP8` 或 `V_VP9`** ✓。
+     */
+    this.codec = opts.codec === "V_VP8" ? "V_VP8" : "V_VP9";
+    this.fps = opts.fps || 30;
+    this.samples = [];
+  }
+
+  /** **加一帧 ✗**（**`timestampMs` 必须**单调不减**✓；**重复时间戳**允许**✓）★ */
+  addSample(bytes, timestampMs, isKey) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    this.samples.push({ data, ts: Math.max(0, Math.round(timestampMs)), key: Boolean(isKey) });
+    return this;
+  }
+
+  #header() {
+    const ebml = element(
+      ID.EBML,
+      concat([
+        element(ID.EBMLVersion, u8(1)),
+        element(ID.EBMLReadVersion, u8(1)),
+        element(ID.EBMLMaxIDLength, u8(4)),
+        element(ID.EBMLMaxSizeLength, u8(8)),
+        element(ID.DocType, text("webm")),
+        element(ID.DocTypeVersion, u8(2)),
+        element(ID.DocTypeReadVersion, u8(2)),
+      ]),
+    );
+    const info = element(
+      ID.Info,
+      concat([
+        // **∴ TimestampScale = 1 000 000 ns ✗**（**＝ 1 ms ✓ ⇒ **∴ 时间戳单位是毫秒** ✓）★
+        element(ID.TimestampScale, uintBytes(1_000_000)),
+        element(ID.MuxingApp, text("yanshi-webm-lite")),
+        element(ID.WritingApp, text("yanshi-webm-lite")),
+        // **∴ Duration ✗**：**浮点 8 字节 ✓（**最后一个时间戳 ＋ 一帧时长 ✓）★
+        element(
+          ID.Duration,
+          (() => {
+            const last = this.samples.length ? this.samples[this.samples.length - 1].ts : 0;
+            const buffer = new ArrayBuffer(8);
+            new DataView(buffer).setFloat64(0, last + 1000 / this.fps);
+            return new Uint8Array(buffer);
+          })(),
+        ),
+      ]),
+    );
+    const tracks = element(
+      ID.Tracks,
+      element(
+        ID.TrackEntry,
+        concat([
+          element(ID.TrackNumber, u8(1)),
+          element(ID.TrackUID, uintBytes(1)),
+          element(ID.TrackType, u8(1)), // 1 ＝ 视频 ✓
+          element(ID.FlagLacing, u8(0)),
+          element(ID.CodecID, text(this.codec)),
+          element(ID.DefaultDuration, uintBytes(Math.round(1e9 / this.fps))),
+          element(
+            ID.Video,
+            concat([
+              element(ID.PixelWidth, uintBytes(this.width)),
+              element(ID.PixelHeight, uintBytes(this.height)),
+            ]),
+          ),
+        ]),
+      ),
+    );
+    return { ebml, info, tracks };
+  }
+
+  /** **出文件 ✗**（**返回 `Uint8Array` ✓）★
+   *
+   * **∴ 为什么可以先算长度 ✗**：**样本已经在内存里**✗（**与 `mp4-lite` 同样的取舍 ✓）
+   *   ⇒ **∴ 于是**：**每个元素的**长度都已知**✗ ⇒ **∴ 不需要"未知长度"那种直播写法** ✓
+   *     （**∴ 它**虽然合法 ✗ 但**有些老播放器**处理得不好 ✓）★
+   */
+  finish() {
+    const { ebml, info, tracks } = this.#header();
+    // **∴ 按关键帧切 Cluster ✗**（**∴ 也是 seek 的最小单位 ✓）★
+    const clusters = [];
+    let current = null;
+    for (const sample of this.samples) {
+      if (!current || (sample.key && current.blocks.length > 0)) {
+        current = { ts: sample.ts, blocks: [] };
+        clusters.push(current);
+      }
+      // **∴ SimpleBlock ✗**：`[trackNumber=1][int16 相对时间戳][flags][帧字节]` ✓
+      const relative = Math.max(-32768, Math.min(32767, sample.ts - current.ts));
+      const head = new Uint8Array(4);
+      head[0] = 0x81; // track 1 的 VINT ✓
+      head[1] = (relative >> 8) & 0xff;
+      head[2] = relative & 0xff;
+      head[3] = sample.key ? 0x80 : 0x00;
+      current.blocks.push(
+        element(ID.SimpleBlock, concat([head, sample.data])),
+      );
+    }
+    const clusterBytes = clusters.map((cluster) =>
+      element(
+        ID.Cluster,
+        concat([element(ID.Timestamp, uintBytes(cluster.ts)), ...cluster.blocks]),
+      ),
+    );
+    const segment = element(ID.Segment, concat([info, tracks, ...clusterBytes]));
+    return concat([ebml, segment]);
+  }
+}
+
+globalThis.YanshiWebm = YanshiWebm;
+</script><script>/**
+ * **★ 页面侧：把当前工程导出成**绘画过程视频**✗ ★**（**第 249 轮 ✓）
+ *
+ * **∴ 形态 ✗**：**传统脚本 ✗ 只往 `globalThis` 挂 `YanshiTimelapse`** ✓
+ *   ＋ **∴ 为什么不是 ESM ✗**：**本仓页面**没有模块加载器**✗（`viewer.rs` 把
+ *     `viewer-app.js` 整段 `include_str!` 内联进一段 `<script>` ✓）⇒ **∴ `export` 会**语法错** ✓
+ *       ＋ **∴ 交付包那份 `pwa/yanshi-timelapse.js` 就是这么写的 ✗ 在本仓页面里装不进去 ✓ ★★
+ *
+ * **∴ 与交付版的三处不同（**都是本仓的实际情况 ✓）✗**：
+ *   ＋ **∴ ① 尺寸 ✗**：**取**文档真实尺寸**✗ 不再写死 1920×1080** ✓
+ *     （**∴ 交付版拿输出尺寸当画布尺寸 ⇒ **4K 工程只会导出左上角一块** ✓）★
+ *   ＋ **∴ ② atom 种类 ✗**：**一个都**不过滤**✗ 全喂给内核** ✓
+ *     （**∴ 交付版只认 `import_image` ＋ `brush_stroke` ✗ 而**本仓的手绘笔触叫
+ *       `draw_stroke`** ⇒ **∴ 那样导出**一笔都没有** ✓）★★
+ *   ＋ **∴ ③ 封装 ✗**：**用同仓的 `mp4-lite.js`**✗ 不用 `mp4-muxer`** ✓
+ *     （**∴ 页面没有 ESM ✗ 裸模块名无从解析 ✓）★
+ *
+ * **∴ 编码细节（**一个容易踩的坑 ✓）✗**：**H.264 必须显式要 **AVCC** 格式**
+ *   （`avc: { format: "avc" }` ✓）—— **∴ 默认可能是**Annex-B**（**带起始码 ✓）
+ *     ⇒ **∴ 而**MP4 的样本要的是**长度前缀**✗ 且 `avcC` 描述的是 AVCC** ✓
+ *       ⇒ **∴ 要错了 ⇒ 文件能生成 ✗ 但**解不出来** ✓ ★★
+ */
+
+(function () {
+  "use strict";
+
+  /** **默认每多少个 atom 出一帧 ✗**（**∴ 与原生 CLI 同一默认 ✓）★ */
+  const DEFAULT_FRAME_EVERY = 10;
+  /** **默认帧率 ✓。 */
+  const DEFAULT_FPS = 30;
+  /** **内核内存预算 ✗**（**∴ 与页面主内核同一档再放大些 ✓）★ */
+  const KERNEL_MEMORY = 2 * 1024 * 1024 * 1024;
+  /** **每帧渲染出来的 RGBA 是不透明的 ✗ 编码前合成到白底** ✓（**∴ 否则透明变黑 ✓）★ */
+  const WHITE = 255;
+
+  /** **中止错误 ✗**（**∴ 与"失败"分开 ✗ 便于 UI 区分 ✓）★ */
+  class Cancelled extends Error {
+    constructor() {
+      super("已取消");
+      this.name = "Cancelled";
+    }
+  }
+
+  const throwIfAborted = (signal) => {
+    if (signal && signal.aborted) throw new Cancelled();
+  };
+
+  /**
+   * **导出绘画过程视频 ✗**
+   *
+   * @param {object} opts
+   * @param {Function} opts.WasmKernel 页面已加载的 `WasmKernel` 类 ✓（**必填**）
+   * @param {string} opts.docId 文档 id ✓
+   * @param {number} opts.width 文档真实宽度 ✓（**必填 ⇒ 不再猜**）
+   * @param {number} opts.height 文档真实高度 ✓
+   * @param {Array} opts.atoms 全部 atom ✓（**按 seq 升序 ✗ 不筛种类 ✓）
+   * @param {Function} opts.fetchBlob `async (hash) => Uint8Array|null` ✓
+   * @param {number} [opts.frameEvery=10] 每 N 个 atom 一帧 ✓
+   * @param {number} [opts.fps=30] ✓
+   * @param {Function} [opts.onProgress] `(done, total, phase)` ✓
+   * @param {AbortSignal} [opts.signal] 取消 ✓
+   * @returns {Promise<{blob: Blob, frames: number, ms: number}>}
+   */
+  async function exportTimelapse(opts) {
+    const {
+      WasmKernel,
+      docId,
+      width,
+      height,
+      atoms,
+      fetchBlob,
+      frameEvery = DEFAULT_FRAME_EVERY,
+      fps = DEFAULT_FPS,
+      onProgress = () => {},
+      signal = null,
+    } = opts || {};
+
+    if (typeof WasmKernel !== "function") {
+      // **∴ 实测踩到 ✗**：**页面内核**还没就绪**时 `state.wasm` 是 `null`** ✓
+      //   ⇒ **∴ 与其抛一句**读属性失败**✗ 不如**说人话 ✗ 并给出下一步** ✓ ★
+      throw new Error("页面的 WASM 内核还没就绪（等它加载完再点，或刷新一次）");
+    }
+    if (!width || !height) throw new Error("缺少文档真实尺寸（width/height）");
+    if (!Array.isArray(atoms) || atoms.length === 0) throw new Error("这个工程里没有 atom");
+    const VideoEncoderCtor = globalThis.VideoEncoder;
+    if (typeof VideoEncoderCtor !== "function") {
+      const error = new Error("这个浏览器不支持 WebCodecs（VideoEncoder）⇒ 换 Chrome/Edge/Safari 16.4+");
+      error.code = "webcodecs_unsupported";
+      throw error;
+    }
+
+    // **★★★ 选一个**这台机器真能编**的编解码器 ✗ ★★★**（**第 250 轮 ✓）
+    //
+    // **∴ 为什么要"选"而不是直接要 H.264 ✗**（**实测 ✓）★**：
+    //   ＋ **∴ CI 的浏览器是 `setup-chrome` 装的 **Chrome for Testing**✗
+    //     ⇒ **∴ 它**不带专有编解码器** ⇒ `avc1.640028` 的 `isConfigSupported`
+    //       **返回 unsupported** ✓（**∴ 而** headless Linux **没有 GPU** ⇒ **也没有
+    //         硬件编码器可退 ✓）⇒ **∴ 于是**：**那条路**在 CI 里根本走不通** ✓
+    //   ＋ **∴ 而** VP8／VP9 是 Chromium **一定自带**的（非专有 ✓）
+    //     ⇒ **∴ 任何 Chromium／Firefox／Safari 都能编** ✓ ★★
+    //   ＋ **∴ 且**交付说明自己就写了"Firefox 较晚 ⇒ 需 fallback" ✓
+    //     ⇒ **∴ 所以**这条路**不是权宜 ✗ 是**必需** ✓ ★★★
+    //
+    // **∴ 取舍（**两面 ✓）**：**MP4／H.264** ⇒ 兼容性最好 ✓ 体积小 ✓（**能用就用 ✓）；
+    //   **WebM／VP9** ⇒ 哪都能编 ✓ 但部分老播放器／剪辑软件要转一道 ✗ ⇒ **∴ 兜底 ✓** ★
+    const wantCodec = String(
+      (opts && opts.codec) || globalThis.__YANSHI_TIMELAPSE_CODEC || "auto",
+    ).toLowerCase();
+    const CODECS = [
+      {
+        key: "avc",
+        codec: "avc1.640028",
+        container: "mp4",
+        mime: "video/mp4",
+        ext: "mp4",
+        extra: { avc: { format: "avc" } },
+        muxer: "YanshiMp4",
+      },
+      {
+        key: "vp9",
+        codec: "vp09.00.10.08",
+        container: "webm",
+        mime: "video/webm",
+        ext: "webm",
+        extra: {},
+        muxer: "YanshiWebm",
+        webmCodec: "V_VP9",
+      },
+      {
+        key: "vp8",
+        codec: "vp8",
+        container: "webm",
+        mime: "video/webm",
+        ext: "webm",
+        extra: {},
+        muxer: "YanshiWebm",
+        webmCodec: "V_VP8",
+      },
+    ];
+    const candidates =
+      wantCodec === "auto" ? CODECS : CODECS.filter((c) => c.key === wantCodec);
+    if (!candidates.length) throw new Error(`不认识的 codec：${wantCodec}`);
+    const probeSupported = async (entry) => {
+      if (typeof VideoEncoderCtor.isConfigSupported !== "function") return true;
+      try {
+        const probe = await VideoEncoderCtor.isConfigSupported({
+          codec: entry.codec,
+          width,
+          height,
+          bitrate: 8_000_000,
+          framerate: fps,
+          ...entry.extra,
+        });
+        return Boolean(probe && probe.supported);
+      } catch (error) {
+        console.warn(`[timelapse] 探测 ${entry.codec} 时出错`, error);
+        return false;
+      }
+    };
+    let chosen = null;
+    const tried = [];
+    for (const entry of candidates) {
+      if (typeof globalThis[entry.muxer] !== "function") {
+        tried.push(`${entry.key}（缺封装器 ${entry.muxer}）`);
+        continue;
+      }
+      if (await probeSupported(entry)) {
+        chosen = entry;
+        break;
+      }
+      tried.push(entry.key);
+    }
+    if (!chosen) {
+      const error = new Error(
+        `这台机器没有一个可用的视频编码器（试过：${tried.join("／")}）⇒ 换一台或换浏览器再试`,
+      );
+      error.code = "no_encoder";
+      throw error;
+    }
+    console.log(
+      `[timelapse] 编码器：${chosen.codec}（${chosen.container}）` +
+        (tried.length ? `｜跳过了 ${tried.join("／")}` : ""),
+    );
+
+    const startedAt = Date.now();
+    const every = Math.max(1, Math.floor(frameEvery));
+    const total = atoms.length;
+
+    // **∴ ① 独立内核 ✗**：**不碰用户正在画的那个** ✓（**∴ 交付版这一点做对了 ✗ 保留 ✓）★
+    onProgress(0, total, "准备");
+    const kernel = new WasmKernel(
+      `timelapse-${docId || "doc"}-${Date.now()}`,
+      256,
+      width,
+      height,
+      KERNEL_MEMORY,
+    );
+
+    // **∴ ② 先把所有 blob 放进去 ✗**：**它们**按内容哈希寻址**✗ 先放先能用 ✓**
+    const hashes = new Set();
+    for (const atom of atoms) {
+      const hash = atom && atom.payload && atom.payload.bitmap && atom.payload.bitmap.blob_hash;
+      if (typeof hash === "string" && hash) hashes.add(hash.replace(/^sha256:/, ""));
+    }
+    let loaded = 0;
+    for (const hash of hashes) {
+      throwIfAborted(signal);
+      try {
+        const bytes = await fetchBlob(hash);
+        if (bytes && bytes.length) kernel.blob_put(bytes);
+      } catch (error) {
+        console.warn(`[timelapse] blob ${hash.slice(0, 8)} 取不到 ⇒ 这一笔会缺内容`, error);
+      }
+      loaded += 1;
+      onProgress(loaded, hashes.size, "取位图");
+    }
+
+    // **∴ ③ 编码器 ＋ 封装器 ✗**：**`avcC` 要等第一块编码结果才知道**✗
+    //    ⇒ **∴ 于是**：**封装器**延迟创建** ✓（**在第一个 `output` 里 ✓）★★
+    const chunks = [];
+    let muxer = null;
+    let dropped = 0;
+    let lastDuration = Math.round(1_000_000 / fps);
+    let description = null;
+
+    const frames = [];
+    const encoder = new VideoEncoderCtor({
+      output: (chunk, metadata) => {
+        const bytes = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(bytes);
+        frames.push({ bytes, timestamp: chunk.timestamp, type: chunk.type });
+        if (!description && metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
+          const d = metadata.decoderConfig.description;
+          description = d instanceof Uint8Array ? d : new Uint8Array(d);
+        }
+      },
+      error: (error) => {
+        dropped += 1;
+        console.error("[timelapse] 编码器报错:", error);
+      },
+    });
+    encoder.configure({
+      codec: chosen.codec,
+      width,
+      height,
+      bitrate: 8_000_000,
+      framerate: fps,
+      // **∴ 见文件头：要 H.264 时必须显式要 AVCC ✗ 否则 MP4 里的样本是
+      //   Annex-B ⇒ 解不出来 ✓（**∴ WebM 那两档没有这个字段 ✓）★★
+      ...chosen.extra,
+    });
+
+    // **∴ ④ 逐 atom 重放 ✗ 每 N 个渲一帧 ✓** ★
+    let encoded = 0;
+    const canvas = new Uint8Array(width * height * 4);
+    for (let i = 0; i < total; i++) {
+      throwIfAborted(signal);
+      const atom = atoms[i];
+      try {
+        kernel.apply_atom_json(typeof atom === "string" ? atom : JSON.stringify(atom));
+      } catch (error) {
+        console.warn(`[timelapse] 第 ${i} 个 atom 没被内核接受`, error);
+      }
+      const isLast = i === total - 1;
+      if ((i + 1) % every === 0 || isLast) {
+        const rgba = kernel.render_region_rgba(0, 0, width, height);
+        // **∴ 透明像素要合到白底 ✗**（**∴ 否则编码出来是黑的 ✓）★
+        for (let p = 0; p < canvas.length; p += 4) {
+          const a = rgba[p + 3];
+          if (a === WHITE) {
+            canvas[p] = rgba[p];
+            canvas[p + 1] = rgba[p + 1];
+            canvas[p + 2] = rgba[p + 2];
+            canvas[p + 3] = 255;
+          } else {
+            const f = a / 255;
+            canvas[p] = Math.round(rgba[p] * f + WHITE * (1 - f));
+            canvas[p + 1] = Math.round(rgba[p + 1] * f + WHITE * (1 - f));
+            canvas[p + 2] = Math.round(rgba[p + 2] * f + WHITE * (1 - f));
+            canvas[p + 3] = 255;
+          }
+        }
+        const timestamp = Math.round((encoded * 1_000_000) / fps);
+        const frame = new VideoFrame(canvas, {
+          format: "RGBA",
+          codedWidth: width,
+          codedHeight: height,
+          timestamp,
+        });
+        // **∴ 每 2 秒一个关键帧 ✗**（**∴ 与交付版同一策略 ✓ 便于拖动 ✓）★
+        encoder.encode(frame, { keyFrame: encoded % (fps * 2) === 0 });
+        frame.close();
+        encoded += 1;
+        onProgress(i + 1, total, "渲染");
+      }
+      // **∴ 每 8 帧让一次主线程 ✗**（**∴ 否则进度条不动 ✗ 取消也点不动 ✓）★
+      if (i % 8 === 7) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    onProgress(total, total, "收尾");
+    await encoder.flush();
+    encoder.close();
+
+    if (dropped > 0) {
+      console.warn(`[timelapse] 有 ${dropped} 次编码报错 ⇒ 视频可能不完整`);
+    }
+    if (!frames.length) throw new Error("一帧都没编出来 ⇒ 拿不到视频");
+
+    // **∴ ⑤ 组装 ✗**：**时长由相邻时间戳相减 ✗ 最后一帧沿用上一段 ✓** ★
+    //   ＋ **∴ 两个容器的**时间单位不同 ✗**（**MP4 用 timescale 刻度 ✓
+    //     WebM 用**毫秒**（TimestampScale=1e6 ✓））⇒ **∴ 所以**分两条各自算 ✓ ★★
+    let finished;
+    if (chosen.container === "mp4") {
+      muxer = new globalThis.YanshiMp4({
+        width,
+        height,
+        timescale: 1_000_000,
+        description,
+      });
+      for (let i = 0; i < frames.length; i++) {
+        const current = frames[i];
+        let duration = lastDuration;
+        if (i + 1 < frames.length) {
+          duration = Math.max(1, frames[i + 1].timestamp - current.timestamp);
+          lastDuration = duration;
+        }
+        muxer.addSample(current.bytes, duration, current.type === "key");
+      }
+      finished = muxer.finish();
+    } else {
+      muxer = new globalThis.YanshiWebm({
+        width,
+        height,
+        codec: chosen.webmCodec,
+        fps,
+      });
+      for (const current of frames) {
+        muxer.addSample(current.bytes, Math.round(current.timestamp / 1000), current.type === "key");
+      }
+      finished = muxer.finish();
+    }
+    void chunks;
+    return {
+      blob: new Blob([finished], { type: chosen.mime }),
+      frames: frames.length,
+      ms: Date.now() - startedAt,
+      container: chosen.container,
+      codec: chosen.codec,
+    };
+  }
+
+  /** **导出并下载 ✗**（**∴ UI 用的就是它 ✓）★ */
+  async function exportAndDownload(opts) {
+    const result = await exportTimelapse(opts);
+    // **∴ 扩展名必须跟**实际容器**一致 ✗**（**∴ WebM 存成 .mp4**会让播放器按错
+    //   容器去解 ✓）⇒ **∴ 用 `result.container` 决定 ✓ ★★
+    const ext = result.container === "webm" ? "webm" : "mp4";
+    const name =
+      (opts && opts.filename) ||
+      `timelapse-${(opts && opts.docId) || "doc"}-${Date.now()}.${ext}`;
+    const url = URL.createObjectURL(result.blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    return { ...result, filename: name };
+  }
+
+  globalThis.YanshiTimelapse = { exportTimelapse, exportAndDownload, Cancelled };
+})();
+</script><script>// 执行进度标记（诊断，第 1072 轮）：一次实跑即可看出脚本"跑到哪里就断了"。
 window.__appMarks = window.__appMarks || [];
 window.__appMarks.push("script-start");
 
@@ -1432,9 +2416,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
+const LOCAL_READ_TOOLS = ["get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -2200,6 +3184,12 @@ function clampViewport(center) {
   // 显示缩放：整幅适配容器的比例 × 用户缩放。
   const fit = Math.min(available.w / docW, available.h / docH);
   state.displayScale = fit * state.zoom;
+  // **∴ 读数在这里就同步 ✗**（**UI-1 ✓；**外部独立测试 + 本机实测 ✓）★
+  //   ＋ **∴ 为什么放这里 ✗**：**`displayScale` **只有本函数**在写**✓
+  //     ⇒ **∴ 挂在**写它的地方**⇒ **首次加载 ✗ 适配 ✗ 数值框 ✗ 快捷键**全覆盖** ✓
+  //       ＋ **∴ 而**只在 `renderViewport()` 里同步 ⇒ **∴ 会漏掉"还没渲染就先算好"的那一段** ✓
+  //         （**∴ 实测：**初始 `displayScale=0.7002` 而读数写 100%** ✗）★★
+  syncZoomReadout();
   const viewW = Math.min(docW, Math.max(32, Math.floor(available.w / state.displayScale)));
   const viewH = Math.min(docH, Math.max(32, Math.floor(available.h / state.displayScale)));
   const focus = center || {
@@ -2249,7 +3239,36 @@ function toCanvas(point) {
 }
 
 /// 重新渲染当前视口（缩放/平移后调用）。
+/// **★ 把缩放读数与输入框**一次性对齐**到 `state.displayScale` ✗ ★**（**第 253 轮 ✓；UI-1 ✓）
+///
+/// **∴ 为什么要有这个函数 ✗**：**同一件事原来写在 `renderViewport()` 里**✗
+///   ＋ **∴ 而**那条函数**有一个提前 return 的分支**（**无内核时排队服务端补画 ✓）✗
+///     ⇒ **∴ 于是**：**只有**内核模式**会更新读数 ✗ **服务端渲染模式**永远停在 HTML 里的
+///       `100%`（**外部独立测试 UI-1 实测 ✓ ✗ 本机复现：`displayScale=0.7002` 而读数 100%）★★
+///   ＋ **∴ 现在 ✗**：**抽成一处 ✗ 由"**写 `displayScale` 的地方**"调用** ✓
+///     ⇒ **∴ 两条路 ✗ 首次加载 ✗ 适配 ✗ 数值框**全都盖到** ✓ ★★
+function syncZoomReadout() {
+  const percent = Math.round((state.displayScale || 1) * 100);
+  const zoomLabel = $("zoom");
+  if (zoomLabel) zoomLabel.textContent = percent + "%";
+  // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
+  const zoomInput = $("zoomInput");
+  if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
+}
+
 function renderViewport() {
+  // **★★★ 读数回填必须在**两条路**上都发生 ✗ ★★★**（**外部独立测试 UI-1 ✓；本机实测复现 ✓）
+  //   ＋ **∴ 症状（**实测 ✓）✗**：**服务端渲染模式（`kernelReady()=false` ✓）下 ✗
+  //     **初始 `displayScale=0.7002`（**70% ✓）而读数与标签都写 **100%** ✗
+  //     ＋ **∴ 点「适配」后视图**确实**归位（`displayScale` 变了 ✓）✗ **读数仍是 200** ✓
+  //   ＋ **∴ 根因 ✗**：**回填那两行原来**在 `if (!kernelReady())` 分支**之后**✗
+  //     ⇒ **∴ 而**那个分支**提前 return**（**它要排队服务端补画 ✓）⇒ **∴ 于是**
+  //       **只有**内核模式**会更新读数 ✗ **服务端渲染模式**永远停在 HTML 里的 `100%`** ✓ ★★
+  //   ＋ **∴ 为什么现在这样放 ✗**：**回填只依赖 `state.displayScale`**✗
+  //     **与内核**无关** ✓ ⇒ **∴ 放在分支之前 ⇒ **两条路都盖到** ✓
+  //     ＋ **∴ 这正是本仓自己的教训 ✗**：**"一处判定 ✗ 两处使用"**
+  //       （**同一件事写在两条路里 ⇒ 必然漂移 ✓）★★
+  syncZoomReadout();
   if (!kernelReady()) {
     // **没有内核 ⇒ 画布只能来自服务端** ✓ —— 这里原来**直接 return** ✗
     // ⇒ 每一次落笔之后画布都不更新 ✓（用户实测：普通笔刷"画了却看不见" ✓，
@@ -2272,12 +3291,6 @@ function renderViewport() {
     queueServerBlit();
     return;
   }
-  const zoomLabel = $("zoom");
-  const percent = Math.round((state.displayScale || 1) * 100);
-  if (zoomLabel) zoomLabel.textContent = percent + "%";
-  // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
-  const zoomInput = $("zoomInput");
-  if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
   const { x, y, w, h } = state.viewport;
   sizeBoards(w, h);
   state.kernel.set_viewport(x, y, w, h);
@@ -3120,7 +4133,31 @@ function drawKernelBoxDirect(bbox) {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  // **★★★ route 乙 ✗ ★★★**（**第 810 轮 ✓）：**`render_region_direct_rgba` **没有异步版**
+  //   ＋ **∴ 而** `render_region_rgba_async` **有**✗ ⇒ **∴ 所以**：
+  //     ⇒ **∴ 优先**异步（**它**走真 GPU ✓）✗ 而**失败／缺失**时回退**同步的 direct 版** ✓ ★
+  //       ＋ **∴ 与乙相符 ✗**：**返回可等待物 ＋ **调用点**0 改动 ＋ **完成后** `requestRepaint()`** ✓ ★★
+  const asyncBoxFn = state.kernel && state.kernel.render_region_rgba_async;
+  if (typeof asyncBoxFn === "function") {
+    return Promise.resolve()
+      .then(() => asyncBoxFn.call(state.kernel, x0, y0, w, h))
+      .then((view) => {
+        drawDirectPixels(view, x0, y0, w, h, vx, vy, started);
+        requestRepaint();
+      })
+      .catch((error) => { reportPaintError("异步脏区渲染", error); });
+  }
   const rgbaViewD = state.kernel.render_region_direct_rgba(x0, y0, w, h);
+  return drawDirectPixels(rgbaViewD, x0, y0, w, h, vx, vy, started);
+}
+
+/// **★ 把 direct（脏区）那块像素**画上去**（**同步与异步两条路**共用** ✓）★★★**
+///
+/// **为什么与 `paintRegionPixels` 分开** ✓：
+///   **direct 版**刻意**跳过服务端补画**（`queueServerBlit` ✓）—— **∴ 因为**提交响应里**本来就带**
+///   `dirty_bbox` ✓，而**服务端像素**由**另一条路**补 ✓（**∴ 两条路的语义**不同 ✓）。
+/// **∴ 而**它们**共用统计字段**（`lastRenderMs` 等 ✓）⇒ **∴ 量的是**同一件事** ✓
+function drawDirectPixels(rgbaViewD, x0, y0, w, h, vx, vy, started) {
   const rgba = rgbaViewD ? Uint8Array.from(rgbaViewD) : rgbaViewD;
   if (window.yanshiStats.tracePaints) log("direct 渲染 " + x0 + "," + y0 + " " + w + "x" + h + " len=" + (rgba ? rgba.length : "null") + " 期望=" + (w * h * 4));
   if (!rgba || rgba.length < w * h * 4) return;
@@ -5632,8 +6669,17 @@ async function refreshHistory() {
     seq.textContent = "#" + atom.seq;
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
-    kindLabel.textContent = atom.kind;
-    kindLabel.title = atom.kind; // 空间不够被省略时，悬停看全名 ✓
+    // **语义显示** ✓：喷枪/介质笔触在内核是 `import_image` 原子（位图块 + blob），
+    // 但用户看到的应该是"我画了一笔"而不是"我导了张图"。payload 里自带 `medium` 字段，
+    // 有它就是笔触，没有才是真正的图片导入。
+    const _kind = atom.kind;
+    const _payload = atom.payload || atom.args || {};
+    let _displayKind = _kind;
+    if (_kind === "import_image" && _payload && _payload.medium && _payload.medium.id) {
+      _displayKind = "喷枪笔触(" + _payload.medium.id + ")";
+    }
+    kindLabel.textContent = _displayKind;
+    kindLabel.title = _kind + (_displayKind !== _kind ? " → " + _displayKind : ""); // 悬停看原始 kind ✓
     // **★ 让每一行能**看出它属于哪个层 ✗**（用户报告 2026-10-09 ✓）：
     // **∴ 实测**（第 441 轮**解包 ✓**）：**`import_image` 的 `payload` 里**本来就有
     // `layer_id` ＋ `width`／`height`** ✓ ⇒ **∴ 这里**只把已有数据渲染出来 ✗，
@@ -7328,6 +8374,86 @@ async function setupAssetPanels() {
     }
   }
 
+  // **★★★ 绘画过程视频（timelapse）✗ ★★★**（**第 249 轮 ✓）
+  //
+  // **∴ 它要什么 ✗**：**① 这个文档的**真实尺寸**（**`state.docSize` ✓）✗
+  //   **② **全部** atom（`since=0` ✓ **∴ 一个都不筛 ✗ 手绘笔触也要 ✓）✗
+  //   **③ 每个位图的字节（`/api/blob/<hash>` ✓ 走到 Service Worker 的 cache-first ✓
+  //      ⇒ **∴ 离线也能导 ✓）✗ **④ 页面已加载的 `WasmKernel` 类（**快照 ✓）✓ ★★
+  //   ＋ **∴ 全程**不碰用户当前画布**✗ 因为 `YanshiTimelapse` 内部**另建一个内核** ✓ ★★★
+  {
+    const button = $("timelapseExport");
+    const info = $("timelapseInfo");
+    const say = (text, color) => {
+      if (!info) return;
+      info.textContent = text;
+      info.style.color = color || "";
+    };
+    // **∴ 一个按钮兼**开始／取消**✗（**∴ 导出慢 ⇒ 必须能停 ✗ 否则用户只能刷新页面 ✓）★★
+    let controller = null;
+    if (button) {
+      button.addEventListener("click", async () => {
+        if (controller) {
+          say("正在取消…");
+          controller.abort();
+          return;
+        }
+        const timelapse = globalThis.YanshiTimelapse;
+        if (!timelapse) {
+          say("过程视频模块没加载（`timelapse-local.js`）", "#c33");
+          return;
+        }
+        controller = new AbortController();
+        const previous = button.textContent;
+        button.textContent = "取消导出";
+        try {
+          const { w, h } = state.docSize;
+          const all = await fetchOrLocal(api("/api/atoms") + "&since=0").then((r) => r.json());
+          if (!all || !all.ok || !Array.isArray(all.atoms) || all.atoms.length === 0) {
+            say("读不到 atom ⇒ 这次导不了", "#c33");
+            return;
+          }
+          say(`共 ${all.atoms.length} 个 atom｜画布 ${w}×${h} ⇒ 开始…`);
+          const result = await timelapse.exportAndDownload({
+            WasmKernel: state.wasm.WasmKernel,
+            docId: state.docId,
+            width: w,
+            height: h,
+            atoms: all.atoms,
+            frameEvery: 10,
+            fps: 30,
+            signal: controller.signal,
+            // **∴ 位图走 HTTP ✗ 而**离线由 Service Worker 兜底** ✓（**`/api/blob/` 是
+            //   内容寻址 ⇒ **cache-first** ✓）⇒ **∴ 于是**这条路**联网与离线是同一条** ✓ ★★
+            fetchBlob: async (hash) => {
+              const response = await fetch(blobUrl(hash));
+              if (!response.ok) return null;
+              return new Uint8Array(await response.arrayBuffer());
+            },
+            onProgress: (done, total, phase) => {
+              say(`${phase}　${done}/${total}`);
+            },
+          });
+          say(
+            `✓ ${result.frames} 帧｜${(result.ms / 1000).toFixed(1)} 秒｜已下载 ${result.filename}`,
+            "#2a7",
+          );
+          log(`过程视频导出完成：${result.frames} 帧，用时 ${(result.ms / 1000).toFixed(1)} 秒 ✓`);
+        } catch (error) {
+          if (error && error.name === "Cancelled") {
+            say("已取消（没有生成文件）");
+          } else {
+            say("导出失败：" + ((error && error.message) || error), "#c33");
+            log("过程视频导出失败：" + ((error && error.message) || error), "#c33");
+          }
+        } finally {
+          controller = null;
+          button.textContent = previous;
+        }
+      });
+    }
+  }
+
   const gradApply = $("gradApply");
   if (gradApply) {
     gradApply.addEventListener("click", async () => {
@@ -7919,6 +9045,20 @@ function pickColorAt(event) {
       //     **∴ 代价 ✗**：**每次渲染**多一次内存拷贝**✗（**∴ 与**「零拷贝倾向」相反 ✓）
       //       ⇒ **∴ 而**那是**必需的**✗（**∴ 因为** wasm-bindgen 的借用语义**
       //         **不允许**视图**跨调用存活** ✓）** ★**** ✓✓
+  // **★★★ route 乙 ✗ ★★★**（**第 810 轮 ✓）：**取色也走异步 GPU 路**
+  //   ＋ **∴ 为什么安全 ✗**：**唯一调用点（**第 7413 行 ✓）是**语句调用**✗
+  //     ⇒ **∴ 它**不使用返回值**✗ ⇒ **∴ 改成可等待物**不会破坏调用方** ✓ ★★
+  //       ＋ **∴ 而**函数内**所有 `return` 都是**早退**✗ ⇒ **∴ 没有**"返回颜色"的语义** ✓
+  const asyncPickFn = state.kernel && state.kernel.render_region_rgba_async;
+  if (typeof asyncPickFn === "function") {
+    return Promise.resolve()
+      .then(() => asyncPickFn.call(state.kernel, x0, y0, side, side))
+      .then((view) => {
+        paintPickPixels(view, x0, y0, side);
+        requestRepaint();
+      })
+      .catch((error) => { reportPaintError("异步取色渲染", error); });
+  }
   const rgbaSideView = state.kernel.render_region_rgba(x0, y0, side, side);
   const rgba = rgbaSideView ? Uint8Array.from(rgbaSideView) : rgbaSideView;
   if (!rgba || rgba.length < side * side * 4) {
@@ -8642,7 +9782,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7705304227824irty-b98e236a")
+      caches.open("yanshi-shell-7548379309168irty-926aef16")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -10945,6 +12085,20 @@ initDockers();
 // **图层面板接线** ✓（面板本身由 `refreshLayers()` 渲染 ✓；这里只接**一次**监听器 ✓ ——
 // 写在重画里会让点一次触发多次 ✗，本项目抓到过同类问题 ✓）。
 void setupLayerPanel();
+
+// **★★★ UI-4a：**启动后就问一次只读的撤销状态 ✗ ★★★**（**外部独立测试 UI-4a ✓）
+//   ＋ **∴ 症状 ✗**：**页面重载后撤销按钮**即禁用**✗ 要等会话内产生新笔画才活** ✓
+//   ＋ **∴ 根因 ✗**：**`state.remainingUndo` 只在**落笔之后**（`afterMutation` ✓）
+//     与 **`undo_last` / `redo_last` 的响应里**被写 ✓ ✗
+//     ⇒ **∴ 于是**：**新开的页面**不知道**服务端其实还有可撤销的笔** ✓
+//       ＋ **∴ 而** `updateUndoStatus()` 的口径是"**计数未知也算不可用**" ✓（**保守 ✓）✗
+//         ⇒ **∴ 于是**按钮**一直禁用** ✓ ★★
+//   ＋ **∴ 修法 ✗**：**用的就是**已有的只读工具 `get_undo_status`**✗
+//     （`refreshUndoStatusFromServer()` ✓ —— **∴ 不新造轮子 ✓）✗
+//     ＋ **∴ 放在顶层 ✗**：**它**只依赖 URL 里的 doc/token**✓（**服务端此刻**已经知道这份文档 ✓）
+//       ⇒ **∴ 不必**等客户端的图层加载 ✓ ★
+//     ＋ **∴ 失败也安全 ✗**：**函数内部**catch 静默 ✓ ⇒ **∴ 最坏**维持原样（**禁用 ✓）★
+void refreshUndoStatusFromServer();
 // 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
 // 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
 updateUndoStatus();
@@ -10959,39 +12113,6 @@ updateUndoStatus();
   }
 }
 initQuickPanel();
-
-$("addLayer").addEventListener("click", async () => {
-  const layerId = "layer_" + ulid();
-  const created = await callTool("create_layer", { layer_id: layerId, name: "layer" }, { refresh: false });
-  if (!created.ok) {
-    log("新建图层失败：" + (created.error_code || "unknown"), "#c33");
-    return;
-  }
-  // **顺序是关键** ✗（真实用户报告："新建图层后，默认应该进入新图层，现在图层列表看还是选中老的" ✓）。
-  //
-  // **为什么"先选后刷"必然失败** ✓（这次读代码看清楚了 ✓，不是猜 ✓）：
-  // `refreshLayers()` 会 `select.innerHTML = ""` **重建全部 `<option>`** ✓，
-  // 并且结尾还有一句 `state.layerId = select.value || "layer_paint"` ✓ ——
-  // ⇒ 对着一个**还没有对应 option** 的 select 赋值 ✗ ⇒ 它落回**第一项** ✓
-  // ⇒ `onchange()` 把 `state.layerId` 写回**旧图层** ✓ ⇒ 新图层永远选不上 ✓。
-  // （既有 `#layerAdd` / `duplicate` 两条路是**先刷后选** ✓，所以它们是对的 ✓ ——
-  //  我又犯了"只改一条路、还把顺序写反"✗，这次用探针当场抓住 ✓。）
-  await refreshLayers();
-  const select = $("layer");
-  if (select) {
-    select.value = layerId;
-    select.onchange();
-  }
-  // **没切过去就说出来** ✗ —— 静默停在旧图层正是用户踩的那个坑 ✓（"以为在新层上画"✗）。
-  if (state.layerId !== layerId) {
-    log("⚠ 新图层 " + layerId + " 已建好，但界面没能切过去（当前 " + state.layerId +
-        "）—— 请在上面的图层列表里点它一下", "#c93");
-  } else {
-    log("已新建图层 " + layerId + "（已切到它 ✓）");
-  }
-  // **画布也要跟上** ✓：别让用户在新图层上画第一笔时才发现画面还是旧的 ✓。
-  await resync();
-});
 
 /// **触发一次浏览器下载** ✓（整幅 / 当前视图两条路共用一份 ✓ —— 不各写一套 ✗）。
 function triggerPngDownload(href, docId, revokeObjectUrl) {
@@ -11068,7 +12189,27 @@ function composeFullDocumentCanvas(tile = 512) {
   try {
     c2d.drawImage(board, Math.round(state.viewport.x), Math.round(state.viewport.y));
   } catch (error) { /* 贴不上就只留内核那份 ✓ */ }
-  return { canvas, tiles };
+  // **★★★ route 乙 的最后一项 ✗ ★★★**（**第 810 轮 ✓）：**返回一个**可解构的 thenable** ★
+  //   **∴ 冲突是什么 ✗**（**读了调用点才知道 ✓）★**：
+  //     ＋ **∴ 唯一调用点（**第 10033 行 ✓）**解构返回值**✗：
+  //       `const { canvas, tiles } = composeFullDocumentCanvas();`
+  //         ⇒ **∴ 若**直接 `return new Promise(…)`**✗ ⇒ **∴ 解构得到 `undefined`** ⇒ **∴ 调用方**崩** ✓ ★★
+  //           ＋ **∴ 而**判据（**按乙 ✓）要求**「**返回可等待物**」** ⇒ **∴ 于是**两者**看似矛盾** ✓ ★★★
+  //   **∴ 两全的解法 ✗**：**返回一个**对象**✗ 它**带 `then`**✗
+  //     ⇒ **∴ ①** **对象仍是对象**✗ ⇒ **∴ `{ canvas, tiles }` 解构照旧 ✓
+  //       ＋ **∴ ②** **它**有 `then`**✗ ⇒ **∴ 判据**认它为**可等待物** ✓
+  //         ＋ **∴ ③** **`then` 里调 `requestRepaint()`**✗ ⇒ **∴ 满足乙的**回调触发重绘** ✓ ★★★
+  //   **∴ 一个坑（**必须避开 ✓）★**：**`then` 若 `resolve` 回**它自己**✗
+  //     ⇒ **∴ Promise 解析**会报 `Chaining cycle detected`**✗
+  //       ＋ **∴ 所以**：**`resolve` 到一个**不含 `then` 的快照对象** ✓ ★★
+  const composed = { canvas, tiles };
+  composed.then = (resolve) => {
+    // **∴ 结果一次就绪**（**同步算完的 ✓）⇒ **∴ 触发重绘 ＋ 立刻兑现** ✓
+    requestRepaint();
+    if (typeof resolve === "function") resolve({ canvas, tiles });
+    return undefined;
+  };
+  return composed;
 }
 
 /// **默认导出 = 整幅文档** ✓（P0 ✓：外部审计实测 1024² 文档、显示缩放 200% ⇒ 导出成 **572×330 的视口** ✗）。
@@ -11532,6 +12673,9 @@ const I18N_EN_TEXT = {
   "工程包": "Project archive",
   "路径": "Path",
   "导出工程": "Export project",
+  // **∴ 第 249 轮 ✗**：**新按钮的文本**必须进这张表**✓ 否则 `ui-i18n-coverage` 判红
+  //   （**∴ 它只看**页面里的文本节点**✗ 而**按钮文字就是文本节点 ✓）★
+  "导出过程视频": "Export timelapse video",
   // **工程包卡片的重排文案**（第 1166 轮 ✓）：这四句是"导出下载到本机、导入从本机选文件"那次改动加的，
   // 当时**没进词表** ✗ ⇒ 英文模式下整张卡仍是中文 ✓。
   "导出下载到本机 ｜ 导入从本机选文件": "Export downloads to this machine ｜ Import picks a file from this machine",

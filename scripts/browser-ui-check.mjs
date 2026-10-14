@@ -316,7 +316,7 @@ const drawStroke = `(async () => {
 if (process.env.UI_TRACE === "1") await evaluate("window.yanshiStats.tracePaints = true");
 const before = await evaluate(blankCheck);
 const layerCountBefore = await evaluate(`document.getElementById("layer").options.length`);
-await evaluate(`document.getElementById("addLayer").click()`);
+await evaluate(`document.getElementById("layerAdd").click()`);
 await waitFor(`document.getElementById("layer").options.length >= 2`, "新建图层出现在下拉里");
 const layerCountAfter = await evaluate(`document.getElementById("layer").options.length`);
 await evaluate(drawStroke);

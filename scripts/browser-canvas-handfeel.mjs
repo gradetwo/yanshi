@@ -189,7 +189,7 @@ const shotPan = await capture("wheel-noop-zoomed");
 // ③ 新建图层 ⇒ **状态与面板高亮都必须落到新图层** ✓
 const beforeLayer = await evaluate("window.yanshi.state().layerId");
 const rowsBefore = await evaluate("document.querySelectorAll('.layer-row').length");
-await evaluate("document.getElementById('addLayer').click()");
+await evaluate("document.getElementById('layerAdd').click()");
 // **等面板真的多出一行** ✓（不是睡固定时长 ✗ —— 那会在慢机器上冤判 ✓）。
 await waitFor(`document.querySelectorAll('.layer-row').length > ${rowsBefore}`, "图层行增加", 8000);
 const logTail = await evaluate(`(() => {

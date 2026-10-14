@@ -5,7 +5,7 @@
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload || {}) });
     return r.json();
   };
-  document.getElementById("addLayer").click();
+  document.getElementById("layerAdd").click();
   await new Promise((r) => setTimeout(r, 1200));
   const layers = (await call("list_layers", {})).layers || [];
   const current = layers[layers.length - 1].layer_id;

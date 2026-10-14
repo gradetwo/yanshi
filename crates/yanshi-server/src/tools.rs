@@ -2757,10 +2757,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //（那是"隐藏"不是"缺失" ✓）：现在**两个面**都能真删 ✓，而且共用同一个实现 ✓。
         summary: "**真删**一份文档（磁盘上的原子日志与元数据目录一并移除）；有实时连接时拒绝；**只删只有它引用的 blob**，被别的文档或 Stash 引用的一律保留（其他来源的孤儿不在范围内）",
         mutating: true,
+        // **∴ `document_id` 标成**非必填**✗ 交给处理器给出可照着改的错误** ✓（**第 253 轮 ✓）
+        //   ＋ **∴ 为什么 ✗**：**框架那句"缺少必填参数 document_id"**看不出**它跟 `doc_id`
+        //     的区别** ✗（**外部独立测试 DEF-05 正是照着 `doc_id` 猜的 ✓）★
         params: &[param!(
             "document_id",
             String,
-            true,
+            false,
             "要删除的文档 id。**注意它跟 `doc_id` 不是一回事**：`doc_id` 是本次调用的会话文档（框架会按需创建），`document_id` 才是要被删掉的那一份"
         )],
     },
@@ -12172,7 +12175,32 @@ fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 ///
 /// **校验、占用检查、落盘删除**都在工作区那一份实现里 ✓ ⇒ 工具这一层只做**取名** ✓。
 fn write_delete_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let document_id = require_str(args, "document_id")?;
+    // **★★★ 这里**不能**把 `doc_id` 当别名 ✗ ★★★**（**外部独立测试 DEF-05 的处置 ✓）
+    //   ＋ **∴ 报告说 ✗**：**"`delete_document` 的参数名是 `document_id` 而非 `doc_id`"**
+    //     ⇒ **∴ 我第一版**顺手加了别名 ✗ **∴ 然后读 spec 才发现**它是有意的** ✓：
+    //       **∴ spec 原文 ✗**：**"**注意它跟 `doc_id` 不是一回事**✗ `doc_id` 是**本次调用的
+    //         会话文档**（**框架会按需创建 ✓）✗ `document_id` 才是**要被删掉的那一份**"** ✓✓
+    //       ⇒ **∴ 所以**：**加别名会把"**删会话文档**"与"**删另一份**"混起来** ✗
+    //         ⇒ **∴ 撤回 ✗ 只把**错误消息**变得可照着改** ✓ ★★
+    //   ＋ **∴ 报告这条怎么处置 ✗**：**它**不是缺陷**✗ 是**有理由的设计** ✓
+    //     ＋ **∴ 但报错确实可以更好 ✗**：**原来缺参只说"缺少必填参数 document_id"** ✗
+    //       ⇒ **∴ 猜了 `doc_id` 的人**看不出为什么** ✓
+    //       ＋ **∴ 现在 ✗**：**猜了 `doc_id` ⇒ **错误里直接讲清两者区别 ＋ 怎么改** ✓
+    //         （**∴ 而且**绝不**拿 doc_id 去删 ✓）★★
+    let document_id = match optional_str(args, "document_id") {
+        Some(id) => id,
+        None => {
+            let hint = if optional_str(args, "doc_id").is_some() {
+                "**这把工具要的是 `document_id` ✗ 不是 `doc_id`** ⇒ 两者不是一回事：                 `doc_id` 是**本次调用的会话文档**（框架按需创建 ✓），                 `document_id` 才是**要被删掉的那一份** ⇒ 要删当前会话这份，                 就把同一个值填进 `document_id` ✓"
+            } else {
+                "delete_document 需要 `document_id`（要被删掉的那一份文档 id）                 ⇒ 注意它跟框架级参数 `doc_id`（本次会话的文档）不是一回事 ✓"
+            };
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(hint),
+            ));
+        }
+    };
     ctx.workspace.delete_document(&document_id)
 }
 
@@ -14152,11 +14180,30 @@ fn paint_brush(
         let dabs_basic = brush
             .get(hokusai::BrushSetting::DabsPerBasicRadius)
             .base_value;
-        let hint = if dabs_basic <= 0.0 {
+        // **兜底消息要落在真实根因上**（外部独立测试 DEF-04）：调用方**往往已经给了 size**，
+        // "试试给 size" 会把人引向已经试过的路。真实机制是：dab 间距随 size 增大
+        // （间距 ≈ 半径 / dabs_per_basic_radius），路径总长撑不满一枚 dab 间距时就是 0 dab。
+        let hint: String = if dabs_basic <= 0.0 {
             "这支笔刷的 `dabs_per_basic_radius` 是 0（间距按基本半径算 ⇒ 趋于无穷 ⇒ 一枚印章都不落）\
              ⇒ 它在当前引擎下画不出来，**换一支**；`assets/brushes` 里绝大多数都能画 ✓"
+                .to_owned()
         } else {
-            "试试给 size，或换一支笔刷 ✓"
+            let n = points.len();
+            let path_len: f64 = points
+                .windows(2)
+                .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+                .sum();
+            match size {
+                Some(sz) => format!(
+                    "size 已经是 {sz}px ⇒ 问题不在缺参数，而在**路径撑不满 dab 间距**：\
+                     本笔 {n} 个点、路径总长 {:.0}px；dab 间距随 size 增大 \
+                     （≈ 笔刷半径 / dabs_per_basic_radius）⇒ 两条出路：\
+                     ① 加长路径 / 加密点数（让总长达到间距的数倍）；\
+                     ② 减小 size 或换 dab 更密的笔刷 ✓",
+                    path_len.max(0.0)
+                ),
+                None => "试试给 size，或换一支笔刷 ✓".to_owned(),
+            }
         };
         return Err(YanshiError::new(
             ErrorCode::PreconditionFailed,

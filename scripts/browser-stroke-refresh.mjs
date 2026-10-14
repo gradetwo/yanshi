@@ -137,7 +137,7 @@ const beforeLayer = await evaluate("window.yanshi.state().layerId");
 const before = await inkOnCanvas();
 const blitsBefore = await evaluate("window.yanshi.state().serverBlits");
 // **用户的操作顺序** ✓：点「＋ 图层」新建一层 ✓，然后**直接画** ✓。
-await evaluate("document.getElementById('addLayer').click()");
+await evaluate("document.getElementById('layerAdd').click()");
 await waitFor(
   `window.yanshi.state().layerId !== ${JSON.stringify(beforeLayer)}`,
   "切到新图层",

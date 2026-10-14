@@ -11,7 +11,7 @@
   };
   const objects = async () => (await call("list_objects", {})).objects || [];
   // ① 界面建图层 ✓ ⇒ 取**最后**一个作为当前图层 ✓（查看器会把新建的选中 ✓）
-  document.getElementById("addLayer").click();
+  document.getElementById("layerAdd").click();
   await new Promise((r) => setTimeout(r, 1200));
   const layers = (await call("list_layers", {})).layers || [];
   const current = layers[layers.length - 1].layer_id;

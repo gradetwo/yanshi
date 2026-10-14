@@ -349,7 +349,6 @@ const PAGE_TAIL_A: &str = r##"</style>
   <button data-tool="redo" disabled>重做</button>
   <button data-tool="refresh">刷新</button>
   <button data-tool="check">一致性自检</button>
-  <button id="addLayer">＋ 图层</button>
   <button id="exportPng">导出 PNG</button>
   <!-- **显式的"当前视图"导出** ✓：默认那颗导**整幅文档** ✓（P0：旧默认导的是视口 ✗）；
        裁剪成视口仍然有用，但必须由用户点名 ✓。 -->

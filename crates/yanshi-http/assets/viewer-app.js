@@ -1120,6 +1120,12 @@ function clampViewport(center) {
   // 显示缩放：整幅适配容器的比例 × 用户缩放。
   const fit = Math.min(available.w / docW, available.h / docH);
   state.displayScale = fit * state.zoom;
+  // **∴ 读数在这里就同步 ✗**（**UI-1 ✓；**外部独立测试 + 本机实测 ✓）★
+  //   ＋ **∴ 为什么放这里 ✗**：**`displayScale` **只有本函数**在写**✓
+  //     ⇒ **∴ 挂在**写它的地方**⇒ **首次加载 ✗ 适配 ✗ 数值框 ✗ 快捷键**全覆盖** ✓
+  //       ＋ **∴ 而**只在 `renderViewport()` 里同步 ⇒ **∴ 会漏掉"还没渲染就先算好"的那一段** ✓
+  //         （**∴ 实测：**初始 `displayScale=0.7002` 而读数写 100%** ✗）★★
+  syncZoomReadout();
   const viewW = Math.min(docW, Math.max(32, Math.floor(available.w / state.displayScale)));
   const viewH = Math.min(docH, Math.max(32, Math.floor(available.h / state.displayScale)));
   const focus = center || {
@@ -1169,7 +1175,36 @@ function toCanvas(point) {
 }
 
 /// 重新渲染当前视口（缩放/平移后调用）。
+/// **★ 把缩放读数与输入框**一次性对齐**到 `state.displayScale` ✗ ★**（**第 253 轮 ✓；UI-1 ✓）
+///
+/// **∴ 为什么要有这个函数 ✗**：**同一件事原来写在 `renderViewport()` 里**✗
+///   ＋ **∴ 而**那条函数**有一个提前 return 的分支**（**无内核时排队服务端补画 ✓）✗
+///     ⇒ **∴ 于是**：**只有**内核模式**会更新读数 ✗ **服务端渲染模式**永远停在 HTML 里的
+///       `100%`（**外部独立测试 UI-1 实测 ✓ ✗ 本机复现：`displayScale=0.7002` 而读数 100%）★★
+///   ＋ **∴ 现在 ✗**：**抽成一处 ✗ 由"**写 `displayScale` 的地方**"调用** ✓
+///     ⇒ **∴ 两条路 ✗ 首次加载 ✗ 适配 ✗ 数值框**全都盖到** ✓ ★★
+function syncZoomReadout() {
+  const percent = Math.round((state.displayScale || 1) * 100);
+  const zoomLabel = $("zoom");
+  if (zoomLabel) zoomLabel.textContent = percent + "%";
+  // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
+  const zoomInput = $("zoomInput");
+  if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
+}
+
 function renderViewport() {
+  // **★★★ 读数回填必须在**两条路**上都发生 ✗ ★★★**（**外部独立测试 UI-1 ✓；本机实测复现 ✓）
+  //   ＋ **∴ 症状（**实测 ✓）✗**：**服务端渲染模式（`kernelReady()=false` ✓）下 ✗
+  //     **初始 `displayScale=0.7002`（**70% ✓）而读数与标签都写 **100%** ✗
+  //     ＋ **∴ 点「适配」后视图**确实**归位（`displayScale` 变了 ✓）✗ **读数仍是 200** ✓
+  //   ＋ **∴ 根因 ✗**：**回填那两行原来**在 `if (!kernelReady())` 分支**之后**✗
+  //     ⇒ **∴ 而**那个分支**提前 return**（**它要排队服务端补画 ✓）⇒ **∴ 于是**
+  //       **只有**内核模式**会更新读数 ✗ **服务端渲染模式**永远停在 HTML 里的 `100%`** ✓ ★★
+  //   ＋ **∴ 为什么现在这样放 ✗**：**回填只依赖 `state.displayScale`**✗
+  //     **与内核**无关** ✓ ⇒ **∴ 放在分支之前 ⇒ **两条路都盖到** ✓
+  //     ＋ **∴ 这正是本仓自己的教训 ✗**：**"一处判定 ✗ 两处使用"**
+  //       （**同一件事写在两条路里 ⇒ 必然漂移 ✓）★★
+  syncZoomReadout();
   if (!kernelReady()) {
     // **没有内核 ⇒ 画布只能来自服务端** ✓ —— 这里原来**直接 return** ✗
     // ⇒ 每一次落笔之后画布都不更新 ✓（用户实测：普通笔刷"画了却看不见" ✓，
@@ -1192,12 +1227,6 @@ function renderViewport() {
     queueServerBlit();
     return;
   }
-  const zoomLabel = $("zoom");
-  const percent = Math.round((state.displayScale || 1) * 100);
-  if (zoomLabel) zoomLabel.textContent = percent + "%";
-  // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
-  const zoomInput = $("zoomInput");
-  if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
   const { x, y, w, h } = state.viewport;
   sizeBoards(w, h);
   state.kernel.set_viewport(x, y, w, h);
@@ -4576,8 +4605,17 @@ async function refreshHistory() {
     seq.textContent = "#" + atom.seq;
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
-    kindLabel.textContent = atom.kind;
-    kindLabel.title = atom.kind; // 空间不够被省略时，悬停看全名 ✓
+    // **语义显示** ✓：喷枪/介质笔触在内核是 `import_image` 原子（位图块 + blob），
+    // 但用户看到的应该是"我画了一笔"而不是"我导了张图"。payload 里自带 `medium` 字段，
+    // 有它就是笔触，没有才是真正的图片导入。
+    const _kind = atom.kind;
+    const _payload = atom.payload || atom.args || {};
+    let _displayKind = _kind;
+    if (_kind === "import_image" && _payload && _payload.medium && _payload.medium.id) {
+      _displayKind = "喷枪笔触(" + _payload.medium.id + ")";
+    }
+    kindLabel.textContent = _displayKind;
+    kindLabel.title = _kind + (_displayKind !== _kind ? " → " + _displayKind : ""); // 悬停看原始 kind ✓
     // **★ 让每一行能**看出它属于哪个层 ✗**（用户报告 2026-10-09 ✓）：
     // **∴ 实测**（第 441 轮**解包 ✓**）：**`import_image` 的 `payload` 里**本来就有
     // `layer_id` ＋ `width`／`height`** ✓ ⇒ **∴ 这里**只把已有数据渲染出来 ✗，
@@ -9983,6 +10021,20 @@ initDockers();
 // **图层面板接线** ✓（面板本身由 `refreshLayers()` 渲染 ✓；这里只接**一次**监听器 ✓ ——
 // 写在重画里会让点一次触发多次 ✗，本项目抓到过同类问题 ✓）。
 void setupLayerPanel();
+
+// **★★★ UI-4a：**启动后就问一次只读的撤销状态 ✗ ★★★**（**外部独立测试 UI-4a ✓）
+//   ＋ **∴ 症状 ✗**：**页面重载后撤销按钮**即禁用**✗ 要等会话内产生新笔画才活** ✓
+//   ＋ **∴ 根因 ✗**：**`state.remainingUndo` 只在**落笔之后**（`afterMutation` ✓）
+//     与 **`undo_last` / `redo_last` 的响应里**被写 ✓ ✗
+//     ⇒ **∴ 于是**：**新开的页面**不知道**服务端其实还有可撤销的笔** ✓
+//       ＋ **∴ 而** `updateUndoStatus()` 的口径是"**计数未知也算不可用**" ✓（**保守 ✓）✗
+//         ⇒ **∴ 于是**按钮**一直禁用** ✓ ★★
+//   ＋ **∴ 修法 ✗**：**用的就是**已有的只读工具 `get_undo_status`**✗
+//     （`refreshUndoStatusFromServer()` ✓ —— **∴ 不新造轮子 ✓）✗
+//     ＋ **∴ 放在顶层 ✗**：**它**只依赖 URL 里的 doc/token**✓（**服务端此刻**已经知道这份文档 ✓）
+//       ⇒ **∴ 不必**等客户端的图层加载 ✓ ★
+//     ＋ **∴ 失败也安全 ✗**：**函数内部**catch 静默 ✓ ⇒ **∴ 最坏**维持原样（**禁用 ✓）★
+void refreshUndoStatusFromServer();
 // 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
 // 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
 updateUndoStatus();
@@ -9997,39 +10049,6 @@ updateUndoStatus();
   }
 }
 initQuickPanel();
-
-$("addLayer").addEventListener("click", async () => {
-  const layerId = "layer_" + ulid();
-  const created = await callTool("create_layer", { layer_id: layerId, name: "layer" }, { refresh: false });
-  if (!created.ok) {
-    log("新建图层失败：" + (created.error_code || "unknown"), "#c33");
-    return;
-  }
-  // **顺序是关键** ✗（真实用户报告："新建图层后，默认应该进入新图层，现在图层列表看还是选中老的" ✓）。
-  //
-  // **为什么"先选后刷"必然失败** ✓（这次读代码看清楚了 ✓，不是猜 ✓）：
-  // `refreshLayers()` 会 `select.innerHTML = ""` **重建全部 `<option>`** ✓，
-  // 并且结尾还有一句 `state.layerId = select.value || "layer_paint"` ✓ ——
-  // ⇒ 对着一个**还没有对应 option** 的 select 赋值 ✗ ⇒ 它落回**第一项** ✓
-  // ⇒ `onchange()` 把 `state.layerId` 写回**旧图层** ✓ ⇒ 新图层永远选不上 ✓。
-  // （既有 `#layerAdd` / `duplicate` 两条路是**先刷后选** ✓，所以它们是对的 ✓ ——
-  //  我又犯了"只改一条路、还把顺序写反"✗，这次用探针当场抓住 ✓。）
-  await refreshLayers();
-  const select = $("layer");
-  if (select) {
-    select.value = layerId;
-    select.onchange();
-  }
-  // **没切过去就说出来** ✗ —— 静默停在旧图层正是用户踩的那个坑 ✓（"以为在新层上画"✗）。
-  if (state.layerId !== layerId) {
-    log("⚠ 新图层 " + layerId + " 已建好，但界面没能切过去（当前 " + state.layerId +
-        "）—— 请在上面的图层列表里点它一下", "#c93");
-  } else {
-    log("已新建图层 " + layerId + "（已切到它 ✓）");
-  }
-  // **画布也要跟上** ✓：别让用户在新图层上画第一笔时才发现画面还是旧的 ✓。
-  await resync();
-});
 
 /// **触发一次浏览器下载** ✓（整幅 / 当前视图两条路共用一份 ✓ —— 不各写一套 ✗）。
 function triggerPngDownload(href, docId, revokeObjectUrl) {
