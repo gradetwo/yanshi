@@ -351,6 +351,35 @@ fn effective_layer_factors(
 ///   ⇒ **∴ 于是**：**常见交替**仍命中 ✗，**而**内存**有界 ✓**** ✓✓
 const BELOW_SIG_GROUPS: usize = 8;
 
+/// **★ `by_sig` 到上限时：只淘汰**一组**（不再全清）★**（第 254 轮）
+///
+/// **原来**（`render.rs:2362`）：一撞上限就 `carried.clear()` —— 把**所有**分组记忆丢掉 ✗
+/// => 之后每一笔都要重新建组，命中率掉到 **0**，直到重新攒满。
+/// **现在**：只淘汰**一组** —— 取**字典序最小**的键 => **确定性** ✓
+/// （不看 `HashMap` 的迭代顺序 ✗，那种"淘汰谁"会随实现变化）。
+///
+/// **内存上界不变**（仍 ≤ `BELOW_SIG_GROUPS` = 8 ✓），而"保住的分组数"从 **0 变 n-1** ✓
+/// => 命中率**单调不降**（这是理论上**严格不差**的改动；但"回落到旧字段/重算"的代价仍要
+/// **两本账**实测 ✓）。
+///
+/// 返回 `true` 表示这次插入挤掉了一组。
+fn evict_one_sig_group(
+    by_sig: &mut std::collections::HashMap<Vec<String>, SigTiles>,
+    incoming: &[String],
+) -> bool {
+    if by_sig.contains_key(incoming) {
+        return false;
+    }
+    if by_sig.len() < BELOW_SIG_GROUPS {
+        return false;
+    }
+    let Some(oldest) = by_sig.keys().min().cloned() else {
+        return false;
+    };
+    by_sig.remove(&oldest);
+    true
+}
+
 /// **★ 按行合并两块 ✓ ★**（第 509 轮 ✓，**修"半块竞态"✗**）：**并行时相邻两带会各 `crop` 出
 /// **同一 tile 的一部分**✗ ⇒ **∴ "同键整体替换"⇒ **∴ 后写覆盖先写 ⇒ **∴ 只剩一半 ⇒ **∴ 命中后像素错 ✓****。
 /// **∴ 修法** ✓：**取两者 bbox 的**并集**建新缓冲 ✓ ⇒ **先拷 `old` ✓、再用 `new` 覆盖它自己的框 ✓**
@@ -2359,9 +2388,10 @@ impl Renderer {
                         //     ⇒ **∴ 而** `by_sig`**一个约束都没有 ✗** ⇒ **∴ 它**会**按切点种类
                         //       无界增长 ✓**（**实测 `groups` 已到 7 ✓）** ⇒ **★ 真实内存风险 ✓ ★**** ✓✓
                         //   **∴ 修法 ✗**：**组数达上限**✗ 且**当前 `sig` 不在里面时**只保留最近一组 ✓**
-                        if carried.len() >= BELOW_SIG_GROUPS && !carried.contains_key(&sig) {
-                            carried.clear();
-                        }
+                        // **★ 不再全清：只淘汰一组 ★**（第 254 轮；见 `evict_one_sig_group`）
+                        //   内存上界不变（≤ BELOW_SIG_GROUPS），但保住的分组从 0 变成 n-1
+                        //   => 命中率单调不降。淘汰谁由**字典序**决定（确定性）。
+                        evict_one_sig_group(&mut carried, &sig);
                         carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
                         *guard = Some(BelowTiles {
                             sig,
@@ -6553,5 +6583,60 @@ mod tests {
         assert_eq!(out.pixel(1, 1), Some([255, 255, 255, 255]));
         assert!(out.stats.unsupported.is_empty());
         assert!(state.is_consistent());
+    }
+}
+
+// **★ `by_sig` 上限触发时"只淘汰一组"的判据 ★**（第 254 轮）
+//
+// **能红能绿**：改之前（`carried.clear()`）撞上限会把 8 组**全清** => 下面第一条断言
+// （`len() == BELOW_SIG_GROUPS`）立刻红 ✓；改之后只掉一组、且**刚插入的那组必须在** ✓。
+#[cfg(test)]
+mod by_sig_budget_tests {
+    use super::{evict_one_sig_group, SigTiles, BELOW_SIG_GROUPS};
+
+    fn dummy() -> SigTiles {
+        (Vec::new(), std::collections::HashSet::new())
+    }
+
+    fn sig(name: &str) -> Vec<String> {
+        vec![name.to_owned()]
+    }
+
+    #[test]
+    fn hitting_the_limit_drops_one_group_not_all() {
+        let mut by_sig: std::collections::HashMap<Vec<String>, SigTiles> =
+            std::collections::HashMap::new();
+        // 先塞满上限
+        for index in 0..BELOW_SIG_GROUPS {
+            by_sig.insert(sig(&format!("g{index:02}")), dummy());
+        }
+        assert_eq!(by_sig.len(), BELOW_SIG_GROUPS);
+        // 再插一组新的 => 只该挤掉一组
+        let incoming = sig("zz-new");
+        assert!(
+            evict_one_sig_group(&mut by_sig, &incoming),
+            "撞上限时应挤掉一组"
+        );
+        assert_eq!(
+            by_sig.len(),
+            BELOW_SIG_GROUPS - 1,
+            "只许挤掉**一组**（改前是 clear() => 剩 0 组）"
+        );
+        by_sig.insert(incoming.clone(), dummy());
+        assert_eq!(by_sig.len(), BELOW_SIG_GROUPS, "插进去之后仍在上限内");
+        assert!(by_sig.contains_key(&incoming), "**刚插入的那组必须在**");
+        // 淘汰的是**字典序最小**的 => 确定性
+        assert!(
+            !by_sig.contains_key(&sig("g00")),
+            "应当淘汰字典序最小的 g00"
+        );
+        // 已在表里的 sig 不该触发淘汰
+        assert!(!evict_one_sig_group(&mut by_sig, &sig("g05")));
+        // 没到上限时也不淘汰
+        let mut small: std::collections::HashMap<Vec<String>, SigTiles> =
+            std::collections::HashMap::new();
+        small.insert(sig("only"), dummy());
+        assert!(!evict_one_sig_group(&mut small, &sig("another")));
+        assert_eq!(small.len(), 1);
     }
 }
