@@ -122,36 +122,6 @@ pub fn summary() -> String {
         .join("｜")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{record, reset, snapshot, AllocPoint};
-
-    /// **探针的本职**：记账要**分类准确**、**可以清零**、并且**关着的时候不许影响别的东西**。
-    /// 注意：本测试**不设环境变量**（探针多半是关的）=> 它只校验"关着时是安全的空操作"，
-    /// 以及"开了之后累加正确"（用 `YANSHI_ALLOC_PROBE` 跑一遍才算全验，见脚本）。
-    #[test]
-    fn probe_records_and_resets() {
-        reset();
-        let before = snapshot();
-        record(AllocPoint::Other, 123);
-        let after = snapshot();
-        // 关着时：什么都不动（生产零开销的口径）
-        if std::env::var_os("YANSHI_ALLOC_PROBE").is_none() {
-            assert_eq!(before, after, "探针关着时不许记账");
-        } else {
-            let (_, bytes, count) = after[4];
-            let (_, before_bytes, before_count) = before[4];
-            assert_eq!(bytes, before_bytes + 123);
-            assert_eq!(count, before_count + 1);
-        }
-        reset();
-        let cleared = snapshot();
-        assert!(cleared
-            .iter()
-            .all(|(_, bytes, count)| *bytes == 0 && *count == 0));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // **★ 调用点归因（`#[track_caller]`）★**（第 254 轮）
 //
@@ -202,7 +172,7 @@ pub fn sites_snapshot() -> Vec<(&'static str, u64, u64)> {
                 .collect()
         })
         .unwrap_or_default();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     out
 }
 
@@ -212,5 +182,35 @@ pub fn sites_reset() {
         if let Some(table) = guard.as_mut() {
             table.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{record, reset, snapshot, AllocPoint};
+
+    /// **探针的本职**：记账要**分类准确**、**可以清零**、并且**关着的时候不许影响别的东西**。
+    /// 注意：本测试**不设环境变量**（探针多半是关的）=> 它只校验"关着时是安全的空操作"，
+    /// 以及"开了之后累加正确"（用 `YANSHI_ALLOC_PROBE` 跑一遍才算全验，见脚本）。
+    #[test]
+    fn probe_records_and_resets() {
+        reset();
+        let before = snapshot();
+        record(AllocPoint::Other, 123);
+        let after = snapshot();
+        // 关着时：什么都不动（生产零开销的口径）
+        if std::env::var_os("YANSHI_ALLOC_PROBE").is_none() {
+            assert_eq!(before, after, "探针关着时不许记账");
+        } else {
+            let (_, bytes, count) = after[4];
+            let (_, before_bytes, before_count) = before[4];
+            assert_eq!(bytes, before_bytes + 123);
+            assert_eq!(count, before_count + 1);
+        }
+        reset();
+        let cleared = snapshot();
+        assert!(cleared
+            .iter()
+            .all(|(_, bytes, count)| *bytes == 0 && *count == 0));
     }
 }
