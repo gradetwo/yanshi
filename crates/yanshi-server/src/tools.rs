@@ -14119,6 +14119,15 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
     Ok(applied)
 }
 
+// **★ `#[allow(clippy::too_many_arguments)]` ✗ ★**（**第 254 轮 CI 抓到 ✓）
+//   ＋ **∴ 症状 ✗**：**给 `paint_brush` 加了 `brush_params`（P0 #4 ✓）之后**参数到 10 个**✗
+//     ⇒ **∴ CI 的 `clippy -D warnings` 报 `too-many-arguments`** ✓ ★★
+//   ＋ **∴ 为什么用属性而不是拆结构体 ✗**：**本仓已有同样的先例** ✓
+//     （**`draw_stamp_clipped_with_pressure` 就标了同一个属性 ✓）⇒ **∴ 保持一致 ✓
+//     ＋ **∴ 代价（**两面 ✓）✗**：**参数表长 ⇒ 调用点容易错位** ✓
+//       ⇒ **∴ 缓解 ✗**：**判据覆盖（**`tool-brush-params` ✓）＋ **我曾因"按位置猜"而补错调用点 ✓
+//       ⇒ **∴ 改这块时**先读实参顺序**✓ 别按位置猜 ✓）★★
+#[allow(clippy::too_many_arguments)]
 fn paint_brush(
     ctx: &mut ToolContext<'_>,
     brush_name: &str,
