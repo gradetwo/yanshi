@@ -12,14 +12,17 @@
 // **口径**：只读 `/health` 的 `rss_bytes`（进程 RSS），每步取**稳定值**（连续两次相同才算），
 // 不新增 API、不读 `/proc`、不改产品代码。
 //
-// 用法：node scripts/tool-render-memory-attribution.mjs <base-url> [--side 4096]
+// 用法：node scripts/tool-render-memory-attribution.mjs <base-url> [--side 2048]
 const base = (process.argv[2] || "").replace(/\/+$/, "");
 if (!base) {
-  console.error("用法: node scripts/tool-render-memory-attribution.mjs <base-url> [--side 4096]");
+  console.error("用法: node scripts/tool-render-memory-attribution.mjs <base-url> [--side 2048]");
   process.exit(2);
 }
 const sideArg = process.argv.indexOf("--side");
-const SIDE = sideArg > 0 ? Number(process.argv[sideArg + 1]) : 4096;
+// **默认 2048 而不是 4096**（第 254 轮实测）：本机 3.8 GB 下 4096 的四层扫描会 OOM
+// （整条命令被 SIGKILL、连带带走服务进程）。**这条脚本在 CI 里也会被跑到**
+// => 默认必须是"能安全跑完"的尺寸；要看 4K 就显式传 `--side 4096`，且**只做单次渲染前后**。
+const SIDE = sideArg > 0 ? Number(process.argv[sideArg + 1]) : 2048;
 
 const rss = async () => {
   for (let i = 0; i < 40; i += 1) {
