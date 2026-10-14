@@ -2475,7 +2475,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
-            param!("filter_name", String, true, "滤镜名（见工具说明）"),
+            param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**：`strength` **0.3–2.0** 有用（0.5 轻微／1–2 明显），**≥5 会整体提亮并压掉对比**（实测：均值 +11、标准差 −70% ⇒ 过曝 ✗）；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓"),
             param!("params", Object, false, "滤镜参数，如 {sigma:2.0}"),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(
@@ -2921,7 +2921,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "brush_params",
                 Object,
                 false,
-                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键（smudge／opaque／dabs_per_radius／elliptical_dab_angle…），拼错会报错并给候选"
+                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!("layer_id", String, true, "目标图层"),
@@ -2946,7 +2946,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("tremor_seed", Integer, false, "颤动噪声种子（缺省 0；同种子同波形 => 确定性）"),
             // **P1 #10 罩染**：opt-in（缺省不给 => 点列与透明度都不动）。
             param!("glaze", Boolean, false, "罩染（缺省 false）：true => 单笔自动拆成多遍**微偏移薄涂**（古典油画的透明罩染；整笔透明度按遍数摊薄），适合皮肤/暗部的丝滑渐变"),
-            param!("glaze_passes", Integer, false, "罩染遍数 1..8（缺省 3；只在 `glaze: true` 时有意义）"),
+            param!("glaze_passes", Integer, false, "罩染遍数 1..8（缺省 3；只在 `glaze: true` 时有意义）。**实测范围（第 254 轮）**：变暗随遍数增长、**8 遍即饱和**（8 与 12 逐像素**完全相同** ⇒ 再多没有意义）；常用 **2–3**（皮肤/暗部统一）／**5–8**（厚重罩染）✓"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!(
                 "points",
