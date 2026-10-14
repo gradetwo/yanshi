@@ -2913,6 +2913,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
             // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
+            // **★ P0 #4：覆盖 `.myb` 的任意字段 ✗ ★**（**名字用 libmypaint 规范名 ✓ ＝ `.myb` 的 JSON 键 ✓）
+            //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_radius` 这类** ✓ ★★★
+            param!(
+                "brush_params",
+                Object,
+                false,
+                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键（smudge／opaque／dabs_per_radius／elliptical_dab_angle…），拼错会报错并给候选"
+            ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!("layer_id", String, true, "目标图层"),
             // **★ 对称模式 ✗ ★**（**第 251 轮 ✓）：**画一笔同时在**镜像位置**再画一遍** ✓
@@ -5697,6 +5705,7 @@ fn restyle_baked_brush_stroke(
         opacity,
         hardness,
         false,
+        None,
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -13957,6 +13966,7 @@ pub(crate) fn replay_brush_bitmap(
         source.get("hardness").and_then(Value::as_f64),
         // **不喂底图** ✗（见函数头 ✓）。
         false,
+        None,
     )?;
     Ok(paint.rgba)
 }
@@ -13971,6 +13981,66 @@ pub(crate) fn replay_brush_bitmap(
 // 它们**都是"这一次落笔"的输入** ✓，不是"碰巧凑在一起的东西" ✓ ⇒ 显式放行这条 lint ✓
 //（拆成结构体只是把它们换个地方摆 ✓，可读性并没有变好 ✗）。
 #[allow(clippy::too_many_arguments)]
+/// **★ `brush_params`：覆盖 `.myb` 的**任意字段** ✗ ★**（**需求文档 P0 #4 ✓）★
+///
+/// **∴ 为什么可以这么短 ✗**（**读代码 ✓）**：**Hokusai 把设置做成了**枚举 ＋ 规范名** ✓
+///   ＋ `BrushSetting::ALL`（**可遍历 ✓）
+///   ＋ `cname()`（**它自己的注释：**"libmypaint canonical string name (matches `.myb` JSON keys)"** ✓）
+///   ＋ `brush.get_mut(setting).base_value`（**`brush_reads_the_canvas` 就是这么读的 ✓）
+///     ⇒ **∴ 于是**"覆盖任意字段"**就是一个循环**✗ 不用为每个字段写一遍** ✓ ★★★
+///
+/// **∴ 拼错**必须报错 ✗**（**判据 ③ ✓）**：**静默无效是最坏的**——用户以为调过了 ✓
+///   ⇒ **∴ 所以**报错时顺带给出**前缀相近的规范名**当候选 ✓ ★★
+fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usize> {
+    let object = params.as_object().ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("brush_params 必须是对象：{规范名: 数值}"),
+        )
+    })?;
+    let mut applied = 0usize;
+    for (key, value) in object {
+        let number = value.as_f64().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("brush_params.{key} 必须是数值")),
+            )
+        })? as f32;
+        match hokusai::BrushSetting::ALL.iter().find(|s| s.cname() == key) {
+            Some(setting) => {
+                brush.get_mut(*setting).base_value = number;
+                applied += 1;
+            }
+            None => {
+                // **∴ 给候选 ✗ 别只说"不认识"** ✓（**∴ 前缀 3 字相同就值得一看 ✓）★
+                let prefix: String = key.chars().take(3).collect();
+                let mut hints: Vec<&str> = hokusai::BrushSetting::ALL
+                    .iter()
+                    .map(|s| s.cname())
+                    .filter(|name| !prefix.is_empty() && name.starts_with(&prefix))
+                    .take(6)
+                    .collect();
+                if hints.is_empty() {
+                    hints = vec![
+                        "smudge",
+                        "opaque",
+                        "dabs_per_radius",
+                        "elliptical_dab_ratio",
+                    ];
+                }
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "brush_params 里没有「{key}」这个规范名（`.myb` 字段名）⇒ 相近的有：{}；完整清单见 list_brushes 的 params",
+                        hints.join("、")
+                    )),
+                ));
+            }
+        }
+    }
+    Ok(applied)
+}
+
 fn paint_brush(
     ctx: &mut ToolContext<'_>,
     brush_name: &str,
@@ -13984,6 +14054,7 @@ fn paint_brush(
     // **笔尖硬度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `hardness` ✓。
     hardness: Option<f64>,
     feed_base: bool,
+    brush_params: Option<&Value>,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     if let Some(opacity) = opacity {
@@ -14071,6 +14142,19 @@ fn paint_brush(
     //（否则会把**笔触的包围矩形**原样复制成一个新对象 ✗，见下面读回那一段的说明 ✓）。
     // **只有会读画布的笔刷才喂底图** ✓ —— 其余笔刷喂了反而要额外剔掉"没碰过的底图" ✓
     //（见 `brush_reads_the_canvas` ✓，以及 `paint_brush` 里读回时对"笔刷没碰过的像素"的剔除 ✓）。
+    // **★ P0 #4：`brush_params` **最后**应用 ⇒ **它优先** ✗ ★**（**第 254 轮自查修 ✓）
+    //   ＋ **∴ 为什么必须在最后 ✗**：**判据实测抓到的 ✓**——**我第一版放在 `load_brush` 之后 ✓
+    //     而 `size`／`color`／`opacity`／`hardness` 这几个**专用参数**是**之后**才写进笔刷的**✗
+    //     ⇒ **∴ 于是** `brush_params{opaque:0.15}` 被调用方传的 `opacity:1.0` **覆盖掉** ✓
+    //       ⇒ **∴ 判据里"传了却没变化" ✗ 看着像功能没做** ✓ ★★
+    //   ＋ **∴ 语义 ✗**：**`brush_params` 是**逃生舱**（覆盖 `.myb` 任意字段 ✓）
+    //     ⇒ **∴ 它**优先于那几个顺手参数**✓（**要通用覆盖就得说了算 ✓）★★
+    //   ＋ **∴ 顺序也影响**读画布判定**（`brush_reads_the_canvas` 读的就是这些字段 ✓）
+    //     ⇒ **∴ 放这里 ⇒ 判定看到的也是覆盖后的值 ✓ ★★★
+    if let Some(params) = brush_params {
+        let applied = apply_brush_params(&mut brush, params)?;
+        let _ = applied;
+    }
     let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
     // **光栅阶段之一：喂底图** ✓（P2）—— `render_region_raw` 是真正的渲染，
     // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
@@ -14458,6 +14542,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
+        // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
+        args.get("brush_params"),
     )?;
     let BrushPaint {
         name,
@@ -14737,6 +14823,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("opacity").and_then(Value::as_f64),
         args.get("hardness").and_then(Value::as_f64),
         false,
+        None,
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
