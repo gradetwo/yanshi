@@ -13926,33 +13926,31 @@ fn stamp_stroke_from(
                             STEP_SECONDS
                         },
                     );
+                    // **★ 净室揉合：**每一个插值 dab** 都拖一次 ★**（第 254 轮第二轮修）
+                    //   第一版只在**控制点**上拖 => 拖曳是"点状"的（实测：只有带边 1–2 行变色，
+                    //   因为两点笔迹只拖了 2 次、而中间的 dab 全没吃到）。
+                    //   挪进内循环后，整条笔迹**沿途**都在把"后方"的颜料搬过来 => 更像真实脏笔。
+                    //   方向用**这一段的运动方向**（`x-px, y-py`，`smudge_dab` 内部会归一化），
+                    //   长度 = `smudge_length × 像素半径`。只在 `smudge > 0` 的笔刷上生效。
+                    if smudge_amount > 0.0 {
+                        yanshi_render::brush::smudge_dab(
+                            surface,
+                            (ix, iy),
+                            stroke_radius,
+                            (x - px, y - py),
+                            smudge_length * stroke_radius,
+                            smudge_amount,
+                        );
+                    }
                     last_x = ix;
                     last_y = iy;
                     steps += 1;
                 }
             }
         }
-        // **★★★ 净室揉合（P0 #1 carried_color）：逐 dab 把"后方"的颜料拖过来 ★★★**（第 254 轮）
-        //   * **只在笔刷 `smudge > 0` 时动手** => 非揉合笔刷（绝大多数）**一位像素都不变**，
-        //     既有像素级判据因此不受影响；
-        //   * `previous` 此刻仍是**上一个点**（它在下面才更新）=> 方向 = 本段运动方向；
-        //   * 拖曳长度 = `smudge_length × 半径`（与 MyPaint 的语义一致），量 = `smudge`；
-        //   * 为什么放在 dab **之后**：我们的实现是"把后方的颜色搬进 dab 覆盖区"，
-        //     放在后面才看得见（内核那条路走的是"用拾取色替换笔尖色"，这里不重复那条）。
-        if smudge_amount > 0.0 {
-            let direction = match *previous {
-                Some((px, py, _)) => (*x - px, *y - py),
-                None => (0.0, 0.0),
-            };
-            yanshi_render::brush::smudge_dab(
-                surface,
-                (*x, *y),
-                stroke_radius,
-                direction,
-                smudge_length * stroke_radius,
-                smudge_amount,
-            );
-        }
+        // **揉合已挪进**内循环**（每个插值 dab 都拖一次）**（第 254 轮第二轮）：
+        //   早先放在这里（每个**控制点**一次）=> 两点笔迹只拖 2 次、中间 dab 没吃到
+        //   => 拖曳是"点状"的。挪进内循环后沿途都拖，见上面 `stroke_to` 之后的那段。
         *previous = Some((*x, *y, *pressure));
     }
     if __stamp_probe {
