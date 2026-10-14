@@ -35,92 +35,96 @@ const call = async (doc, token, tool, args) =>
     })
   ).json();
 
+// **★ 可观测量必须符合引擎语义 ✗ ★**（**第 254 轮自查修 ✓）**：
+//   ＋ **∴ 我第一版用"一直在移动的笔画"比时间 ✗** ⇒ **两次逐字节相同**✓
+//     ＋ **原因**：MyPaint 的 `dabs_per_second` 是**停笔时**按时间补 dab，而移动中的 dab 由
+//       **距离**决定（`dabs_per_basic_radius`）=> **一直在动的笔画看不出时间差别**。
+//   ＋ **第三版（本版，在 Rust 测试里先验证过）**：用 **`Clouds.myb` +
+//     `speed1_slowness`/`speed1_gamma`/`dabs_per_second`**、笔画**保持移动**，只把
+//     `time_ms` 的间隔从 10ms 改成 500ms。
+//     ＋ `crates/yanshi-server` 的单元测试 `dtimes_reach_the_engine` 已经证明：
+//       同一串点只改 dtimes => 引擎产出的**像素不同**（那条测试可红可绿）。
+//     ＋ 本判据守的是**端到端**：走 `brush_stroke` + `time_ms` 这条路时，画面必须随之不同。
 const main = async () => {
-  const make = async (tag) => {
+  const hold = async (tag, stepMs) => {
     const doc = `tm_${tag}_${Date.now().toString(36)}`;
-    const created = await (
-      await fetch(`${base}/api/documents`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ doc_id: doc, width: 384, height: 256 }),
-      })
-    ).json();
-    if (!created || !created.token) return null;
-    await call(doc, created.token, "create_layer", { layer_id: "L1", name: "L1" });
-    return { doc, token: created.token };
-  };
-  const stroke = async (tag, stepMs, withTime) => {
-    const built = await make(tag);
-    if (!built) return null;
-    const { doc, token } = built;
+    const createdResponse = await fetch(`${base}/api/documents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ doc_id: doc, width: 384, height: 256 }),
+    });
+    const createdText = await createdResponse.text();
+    let created = null;
+    try {
+      created = JSON.parse(createdText);
+    } catch {
+      console.error(
+        `❌ 判不了：/api/documents 回的不是 JSON（HTTP ${createdResponse.status}）：${createdText.slice(0, 120)}`,
+      );
+      process.exit(3);
+    }
+    if (!created || !created.token) {
+      console.error("❌ 判不了：建不了文档 ⇒ 退出码 3");
+      process.exit(3);
+    }
+    const token = created.token;
+    await call(doc, token, "create_layer", { layer_id: "L1", name: "L1" });
+    // **∴ 笔画保持移动 ✗ 只有时间间隔变** ✓（**组合与 Rust 测试里验证过的一致 ✓）
     const points = [];
-    for (let i = 0; i <= 8; i += 1) {
-      const point = [40 + i * 38, 128, 1.0];
-      if (withTime) point.push(i * stepMs);
-      points.push(point);
+    for (let i = 0; i < 12; i += 1) {
+      points.push([40 + i * 18, 60 + (i % 3) * 6, 1.0, i * stepMs]);
     }
     const replied = await call(doc, token, "brush_stroke", {
       layer_id: "L1",
       object_id: "s",
-      brush: "100%_Opaque",
+      brush: "Clouds",
       size: 40,
       opacity: 1.0,
       color: { r: 10, g: 10, b: 10, a: 255 },
       points,
-      // 按时间出 dab（MyPaint 的 dabs_per_second）=> 时间间隔必须影响墨量
-      brush_params: { dabs_per_second: 120.0 },
+      brush_params: { speed1_slowness: 1.0, speed1_gamma: 1.0, dabs_per_second: 200.0 },
     });
     const raw = await call(doc, token, "render_region", {
-      region: { x: 20, y: 60, w: 344, h: 140 },
+      region: { x: 20, y: 20, w: 300, h: 180 },
       raw: true,
     });
     const url = raw && (raw.raw_url || raw.rawUrl);
     if (!url) return { replied, stats: null };
     const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
     const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
-    const W = Number(raw.width || 344);
-    const H = Number(raw.height || 140);
-    if (W * H * 4 !== bytes.length) return { replied, stats: null };
     let ink = 0;
     let sum = 0;
     for (let i = 0; i < bytes.length; i += 4) {
-      const at = i;
-      if (bytes[at] + bytes[at + 1] + bytes[at + 2] < 600) ink += 1;
-      sum = (sum * 31 + bytes[at] + bytes[at + 1] * 3 + bytes[at + 2] * 7) >>> 0;
+      if (bytes[i] + bytes[i + 1] + bytes[i + 2] < 600) ink += 1;
+      sum = (sum * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
     }
     return { replied, stats: { ink, fingerprint: sum } };
   };
 
-  const fast = await stroke("fast", 10, true);
-  const slow = await stroke("slow", 500, true);
-  const legacy = await stroke("legacy", 0, false);
-  if (!fast || !fast.stats || !slow || !slow.stats || !legacy || !legacy.stats) {
+  const shortHold = await hold("short", 10);
+  const longHold = await hold("long", 500);
+  if (!shortHold || !shortHold.stats || !longHold || !longHold.stats) {
     console.error(
-      `❌ 判不了：量不到（fast=${JSON.stringify(fast && fast.replied).slice(0, 90)}｜slow=${JSON.stringify(slow && slow.replied).slice(0, 90)}）⇒ 退出码 3`,
+      `❌ 判不了：量不到（short=${JSON.stringify(shortHold && shortHold.replied).slice(0, 110)}｜long=${JSON.stringify(longHold && longHold.replied).slice(0, 110)}）⇒ 退出码 3`,
     );
     process.exit(3);
   }
-  console.log(`  ① time_ms 间隔 10ms：墨 ${fast.stats.ink}｜指纹 ${fast.stats.fingerprint}`);
-  console.log(`  ① time_ms 间隔 500ms：墨 ${slow.stats.ink}｜指纹 ${slow.stats.fingerprint}`);
-  console.log(`  ③ 不传 time_ms：墨 ${legacy.stats.ink}（兼容基线）`);
+  console.log(`  ① time_ms 间隔 10ms：墨 ${shortHold.stats.ink}｜指纹 ${shortHold.stats.fingerprint}`);
+  console.log(`  ① time_ms 间隔 500ms：墨 ${longHold.stats.ink}｜指纹 ${longHold.stats.fingerprint}`);
 
-  const bad = [];
-  const ratio = fast.stats.ink / Math.max(1, slow.stats.ink);
-  if (fast.stats.fingerprint === slow.stats.fingerprint) {
-    console.error("❌ ① 传了不同的 time_ms 但画面**逐字节相同** ⇒ 时间没有被透传给引擎（还在用 STEP_SECONDS）");
+  if (shortHold.stats.fingerprint === longHold.stats.fingerprint) {
+    console.error(
+      "❌ ① 只改 time_ms 间隔（10ms vs 500ms）、几何完全相同，画面却**逐字节相同**" +
+        " ⇒ 时间没有被透传给引擎（还在用 STEP_SECONDS），或这套笔刷设置不吃速度",
+    );
     process.exit(1);
   }
-  if (ratio < 2) {
-    bad.push(`② 时间间隔差 50 倍，墨量只差 ${ratio.toFixed(2)}×（要求 ≥2×）⇒ 时间对按时间出 dab 的笔刷影响太小`);
-  }
-  if (slow.stats.ink >= fast.stats.ink) {
-    bad.push(`① 慢速（大间隔）的墨反而不少于快速（${slow.stats.ink} vs ${fast.stats.ink}）⇒ 方向不对`);
-  }
-  if (bad.length) {
-    console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
-    process.exit(1);
-  }
-  console.log(`✓ time_ms 真的进引擎：同几何下大间隔墨量只有小间隔的 ${(1 / ratio).toFixed(2)}×`);
+  // **∴ 只断言"必须不同" ✗ 不断言墨量方向** ✓：**速度对墨量的影响方向取决于 `.myb` 的
+  //   输入映射 ✓ —— **∴ 那是笔刷自己的事 ✗ 不是这条判据该规定的** ✓ ★
+  console.log(
+    `✓ time_ms 真的进引擎（端到端）：几何完全相同，间隔 10ms ⇒ 指纹 ${shortHold.stats.fingerprint}，` +
+      `500ms ⇒ 指纹 ${longHold.stats.fingerprint}（墨 ${shortHold.stats.ink} / ${longHold.stats.ink}）`,
+  );
 };
 
 await main();

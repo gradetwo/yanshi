@@ -2930,7 +2930,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             //     `horizontal`（**轴=水平中线 ✓）✗ 别的值**报错 ✗ 不静默** ✓ ★★
             param!("symmetry", String, false, "对称模式：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔压力相同）"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
-            param!("points", Array, true, "[[x,y,pressure],…]，压力 0..1（可省，缺省 0.5）"),
+            param!(
+                "points",
+                Array,
+                true,
+                "[[x,y,pressure],…] 或 [[x,y,pressure,time_ms],…]：压力 0..1（可省，缺省 0.5）；\
+                 第 4 项是可选的**毫秒时间戳** ⇒ 引擎用它算**真实速度**（吃速度的笔刷设置如 \
+                 speed1_*／speed2_*／dabs_per_second 才有意义；不给 ⇒ 与以前逐字节相同）"
+            ),
             param!("size", Number, false, "覆盖笔刷自带半径（直径像素；不给就用 .myb 里的设置）"),
             // **AI 实测报的 P0 缺口** ✓：本工具**以前不能设颜色** ✗ ⇒
             // "有 myPaint 物理但不能画彩色" ✓，而能设色的 `medium_stroke` / `draw_stroke` **没有 myPaint 物理** ✗
@@ -5784,6 +5791,7 @@ fn restyle_baked_brush_stroke(
         hardness,
         false,
         None,
+        &[],
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -13354,6 +13362,40 @@ struct BrushPaint {
 }
 
 /// **采样点解析** ✓：`[[x,y], [x,y,pressure?], ...]` ✓（`brush_stroke` / `brush_preview` 共用 ✓）。
+/// **★ 读 `points` 里**可选**的第 4 个元素 `time_ms`（P0 #3 ✓）★**
+///
+/// **∴ 为什么不改 `brush_points_from_json` 的返回类型 ✗**（**上一轮就是这么回退的 ✓）**：
+///   **∴ 那一维会波及 11+ 处调用点**✗（**点数组到处都在用 ✓）
+///     ⇒ **∴ 这里**单独读一遍第 4 项**✗ **只影响需要时间的那条路** ✓ ★★★
+/// **∴ 返回 ✗**：**每个点相对**上一个点**的**秒数**；**没有时间戳的点给 `-1`**✗
+///   **由 `stamp_stroke_from` 落回 `STEP_SECONDS`** ⇒ **∴ 老调用方行为**逐字节不变** ✓ ★★
+fn parse_brush_point_times(args: &Value) -> Result<Vec<f64>> {
+    let Some(raw) = args.get("points").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<f64> = Vec::with_capacity(raw.len());
+    let mut previous_ms: Option<f64> = None;
+    for item in raw {
+        let time_ms = item
+            .as_array()
+            .and_then(|pair| pair.get(3))
+            .and_then(Value::as_f64);
+        let seconds = match (time_ms, previous_ms) {
+            // **∴ 有真实时间 ✗**：**与该点上一个事件之差（秒 ✓）** ✓
+            (Some(current), Some(previous)) => ((current - previous) / 1000.0).max(0.0),
+            // **∴ 第一个有时间戳的点 ✗**：**相对会话起点未知 ⇒ 0（引擎夹到 0.0001 ✓）** ✓
+            (Some(_), None) => 0.0,
+            // **∴ 没有时间戳 ✗**：**-1 ⇒ 用缺省步长 ✓** ✓
+            _ => -1.0,
+        };
+        if let Some(current) = time_ms {
+            previous_ms = Some(current);
+        }
+        out.push(seconds);
+    }
+    Ok(out)
+}
+
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
     brush_points_from_json(args.get("points"))
 }
@@ -13688,7 +13730,7 @@ fn stamp_stroke(
     points: &[(f64, f64, f64)],
 ) -> usize {
     let mut previous: Option<(f64, f64, f64)> = None;
-    stamp_stroke_from(brush, state, surface, points, &mut previous)
+    stamp_stroke_from(brush, state, surface, points, &mut previous, &[])
 }
 
 /// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
@@ -13699,6 +13741,8 @@ fn stamp_stroke_from(
     surface: &mut hokusai::tile_mem::MemSurface,
     points: &[(f64, f64, f64)],
     previous: &mut Option<(f64, f64, f64)>,
+    // **★ P0 #3：每个点的**真实时间步长**（秒；空切片 ⇒ 用 STEP_SECONDS ⇒ 老行为逐字节不变）★**
+    dtimes: &[f64],
 ) -> usize {
     // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
     //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
@@ -13715,7 +13759,14 @@ fn stamp_stroke_from(
     // **`dt` 是 `f64`** ✓（`stroke_to` 的签名：x/y/pressure/dx/dy 是 `f32`、`dt` 是 `f64` ✓）。
     const STEP_SECONDS: f64 = 0.01;
     let mut steps = 0usize;
-    for (x, y, pressure) in points {
+    for (index, (x, y, pressure)) in points.iter().enumerate() {
+        // **∴ 这个点相对**上一个点**的真实时间（秒）** ✓（**没有就给 -1 ⇒ 落回 STEP_SECONDS ✓）
+        let provided = dtimes.get(index).copied().unwrap_or(-1.0);
+        let segment_seconds = if provided >= 0.0 {
+            provided
+        } else {
+            STEP_SECONDS
+        };
         match *previous {
             None => {
                 // **第一笔只播种位置** ✓（Hokusai 的语义 ✓）；**没有上一枚 dab ⇒ 位移是 0** ✓。
@@ -13727,7 +13778,7 @@ fn stamp_stroke_from(
                     *pressure as f32,
                     0.0,
                     0.0,
-                    STEP_SECONDS,
+                    segment_seconds,
                 );
                 steps += 1;
             }
@@ -13771,7 +13822,7 @@ fn stamp_stroke_from(
                         ip as f32,
                         dx as f32,
                         dy as f32,
-                        STEP_SECONDS,
+                        segment_seconds / divisions.max(1) as f64,
                     );
                     last_x = ix;
                     last_y = iy;
@@ -14045,6 +14096,7 @@ pub(crate) fn replay_brush_bitmap(
         // **不喂底图** ✗（见函数头 ✓）。
         false,
         None,
+        &[],
     )?;
     Ok(paint.rgba)
 }
@@ -14142,6 +14194,8 @@ fn paint_brush(
     hardness: Option<f64>,
     feed_base: bool,
     brush_params: Option<&Value>,
+    // **★ P0 #3：每个点的真实时间步长（秒）★**（空切片 ⇒ 老行为不变）
+    dtimes: &[f64],
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     if let Some(opacity) = opacity {
@@ -14353,6 +14407,7 @@ fn paint_brush(
                     &mut surface,
                     &dense[cursor..=cursor + 1],
                     &mut previous,
+                    dtimes,
                 );
                 cursor += 1;
             }
@@ -14374,7 +14429,20 @@ fn paint_brush(
                 );
             }
             {
-                let steps = stamp_stroke(&brush, &mut state, &mut surface, points);
+                // **★ 第二条落笔路也要吃到真实时间（P0 #3）★**（第 254 轮实测修）
+                //   之前这里调的是 `stamp_stroke(...)`，那个包装内部固定传 `&[]`
+                //   => 走这条分支时 `time_ms` 白传了（判据实测：几何相同、只改间隔，画面
+                //   逐字节相同）。改成显式走 `stamp_stroke_from(..., dtimes)`，用局部
+                //   `previous` 保持「每次调用从头开始」的语义（与 `stamp_stroke` 一致）。
+                let mut previous_here = None;
+                let steps = stamp_stroke_from(
+                    &brush,
+                    &mut state,
+                    &mut surface,
+                    points,
+                    &mut previous_here,
+                    dtimes,
+                );
                 if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
                     eprintln!("stamp_steps side=server steps={steps}");
                 }
@@ -14544,6 +14612,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
+    // **★ P0 #3：取每个点的真实时间（没有就是 -1 ⇒ 落回 STEP_SECONDS）★**
+    let dtimes = parse_brush_point_times(args)?;
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
     let points = apply_brush_style(points, args)?;
     // **★★★ 对称模式 ✗ ★★★**（**第 251 轮 ✓）：**这一条路是**服务端自己栅格化**的** ✓
@@ -14631,6 +14701,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         true,
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
         args.get("brush_params"),
+        &dtimes,
     )?;
     let BrushPaint {
         name,
@@ -14911,6 +14982,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("hardness").and_then(Value::as_f64),
         false,
         None,
+        &[],
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -17041,6 +17113,85 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
+    // **★ P0 #3 的关键一问 ✗ `dtimes` 到底有没有到达引擎 ★**（第 254 轮 ✓）
+    //
+    // **∴ 为什么不能只靠 tool-* 判据 ✗**：**实测发现**判据层看不到差别**✗ ——
+    //   **因为服务端的分步逻辑按**距离**决定要不要调 `stroke_to`** ✓
+    //     ＋ **∴ 零位移时**一次都不调** ✗ **∴ 于是** `dabs_per_second`（**停笔按时间补 dab ✓）
+    //       在这条集成里**根本发不出声** ✓
+    //   ⇒ **∴ 所以**必须**直接**问：**同一串点、只改 `dtimes` ✗ 引擎产出的像素变不变** ✓ ★★★
+    //
+    // **∴ 这条测试的价值 ✗**：**它把"接线问题"与"引擎不响应"分开** ✓
+    //   ＋ **∴ 若它绿 ⇒ 接线对了 ✗ 剩下的是"怎么在判据层造出可观测量"** ✓
+    //   ＋ **∴ 若它红 ⇒ `time_ms` 光接线**不够**✗ 还要改分步逻辑（**这才是准确结论 ✓）★★★
+    #[test]
+    fn dtimes_reach_the_engine() {
+        // 用资产里的 .myb（文本格式；`read_list_brushes` 就是这么读的）
+        // **★ 路径必须相对 CARGO_MANIFEST_DIR ★**（第 254 轮实测踩到）：
+        //   单元测试的**当前目录是 crate 根**（crates/yanshi-server）=> 直接写
+        //   "assets/brushes/…" 会 panic「读不到测试用 .myb: No such file or directory」，
+        //   于是 A/B 比较**根本没跑**，白白怀疑了半天断言。用 env!("CARGO_MANIFEST_DIR")
+        //   拼绝对路径才是稳的。
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+        let text = std::fs::read_to_string(format!("{root}Clouds.myb"))
+            .or_else(|_| std::fs::read_to_string(format!("{root}Blender.myb")))
+            .or_else(|_| std::fs::read_to_string(format!("{root}blending.myb")))
+            .expect("读不到测试用 .myb");
+        let mut brush = hokusai::myb::from_str(&text).expect("解析 .myb 失败");
+        // **∴ 装一个"吃速度"的设置 ✗**：**让速度输入真的影响笔迹** ✓（否则时间再准也看不出 ✓）
+        brush
+            .get_mut(hokusai::BrushSetting::Speed1Slowness)
+            .base_value = 1.0;
+        brush.get_mut(hokusai::BrushSetting::Speed1Gamma).base_value = 1.0;
+        brush
+            .get_mut(hokusai::BrushSetting::DabsPerSecond)
+            .base_value = 200.0;
+
+        let points: Vec<(f64, f64, f64)> = (0..12)
+            .map(|i| (40.0 + i as f64 * 18.0, 60.0 + (i % 3) as f64 * 6.0, 1.0))
+            .collect();
+        let stamp = |dtimes: &[f64]| {
+            let mut state = hokusai::BrushState::default();
+            let mut surface = hokusai::tile_mem::MemSurface::new();
+            let mut previous = None;
+            let steps = super::stamp_stroke_from(
+                &brush,
+                &mut state,
+                &mut surface,
+                &points,
+                &mut previous,
+                dtimes,
+            );
+            // **∴ 用仓库自己的构造器 ✗ 别手填字段** ✓（**∴ 字段是 x0/y0/x1/y1/width/height ✓）
+            let region = super::PaintRegion::from_bounds((0, 0, 255, 159, 256, 160));
+            let (rgba, _) = super::read_surface_region(&surface, region);
+            (steps, rgba)
+        };
+        let fast: Vec<f64> = vec![0.005; points.len()];
+        let slow: Vec<f64> = vec![0.5; points.len()];
+        let (fast_steps, fast_pixels) = stamp(&fast);
+        let (slow_steps, slow_pixels) = stamp(&slow);
+        assert_eq!(
+            fast_steps, slow_steps,
+            "步数不该随 dtimes 变（真正的差别应当在像素上）"
+        );
+        // **★ 第二件（真正的结论）★**（第 254 轮实测）
+        //   ＋ **实测**：同一串点、只把 `dtimes` 从 5ms 改成 500ms => 引擎产出的像素**不同**
+        //     => **`time_ms` 的接线真的到达引擎、并且真的改变了输出**。
+        //   ＋ **踩过的坑（值得记）**：这条测试第一次「失败」其实是**路径**问题 ——
+        //     单元测试的当前目录是 crate 根，`"assets/brushes/…"` 找不到 =>
+        //     `.expect()` 先 panic，**A/B 比较根本没跑**，我却一度以为「引擎不响应时间」。
+        //     修成 `CARGO_MANIFEST_DIR` 之后才拿到真结论。
+        //   ＋ **配套**：`scripts/tool-time-ms.mjs` 用的是同一套组合（`Clouds.myb` +
+        //     `speed1_slowness`/`speed1_gamma`/`dabs_per_second`）；用不吃时间的笔刷
+        //     （例如 `100%_Opaque` + `dabs_per_second`：那个只在**停笔**时补 dab）是看不出差别的。
+        assert_ne!(
+            fast_pixels, slow_pixels,
+            "同一串点只改 dtimes（5ms vs 500ms）却产出**完全相同**的像素 \
+             => 时间没有真正影响引擎（接线断了，或这套设置不吃时间）"
+        );
+    }
+
     // 裸名 `ALL_TOOLS` 在本模块里解析不到 ⇒ 必须显式引进来（第 52 轮实测）。
     use super::ALL_TOOLS;
 
