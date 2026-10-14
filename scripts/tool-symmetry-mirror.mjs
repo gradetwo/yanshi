@@ -144,11 +144,96 @@ const main = async () => {
   console.log(`  ① 对称那一笔落在 ${inked} 个像素上`);
   console.log(`  ② 左右最大通道差 = ${worst}（要求 0）`);
   console.log(`  ③ 对照（不开对称）最大通道差 = ${controlWorst}（要求 > 0）`);
+  // **★ ④ 水平方向（**上下镜像 ✓）✗ ★**（**第 253 轮补上 ✓；建议里"先 vertical／horizontal"的另一半 ✓）
+  //   ＋ **∴ 为什么要单独测 ✗**：**两个方向的轴**不一样**（**一个翻 x ✗ 一个翻 y ✓）✗
+  //     ⇒ **∴ 只测一个方向 ⇒ **另一个方向写错也照样绿** ✓（**本仓库吃过的亏 ✓）★★
+  const lower = (rgba, width, height) => {
+    let worst = 0;
+    for (let y = 0; y < height / 2; y++) {
+      for (let x = 0; x < width; x++) {
+        const my = height - 1 - y;
+        const a = (y * width + x) * 4;
+        const b = (my * width + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          const d = Math.abs(rgba[a + c] - rgba[b + c]);
+          if (d > worst) worst = d;
+        }
+      }
+    }
+    return worst;
+  };
+  const docH = `symh_${Date.now().toString(36)}`;
+  const createdH = await (
+    await fetch(`${base}/api/documents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ doc_id: docH, width: 256, height: 256 }),
+    })
+  ).json();
+  if (!createdH || !createdH.token) {
+    console.error("❌ 判不了：第二个文档建不起来 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  const renderH = async () => {
+    const value = await call(docH, createdH.token, "render_region", {
+      region: { x: 0, y: 0, w: 256, h: 256 },
+      raw: true,
+    });
+    return fetchRaw(value);
+  };
+  const baseArgsH = {
+    layer_id: "L1",
+    object_id: "sym_h",
+    brush: "100%_Opaque",
+    size: 24,
+    points: [
+      [128, 60, 1.0],
+      [160, 60, 1.0],
+    ],
+    color: { r: 200, g: 20, b: 120, a: 255 },
+    preview: false,
+  };
+  // **∴ 第二个文档也要**先建图层**✗（**∴ 否则 L1 不存在 ⇒ 判据自己退 3 ✓）★
+  await call(docH, createdH.token, "create_layer", { layer_id: "L1", name: "L1" });
+  const hOn = await call(docH, createdH.token, "brush_stroke", { ...baseArgsH, symmetry: "horizontal" });
+  if (!hOn || hOn.ok !== true) {
+    console.error(`❌ 判不了：带 horizontal 的那一笔没成功（${JSON.stringify(hOn).slice(0, 160)}）⇒ 退出码 3`);
+    process.exit(3);
+  }
+  const hPixels = await renderH();
+  if (!hPixels) {
+    console.error("❌ 判不了：取不回 horizontal 的像素 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  const hWorst = lower(hPixels, 256, 256);
+  // **∴ 对照 ✗**：**换个图层 ✗ 不开对称画同一笔** ✓ ★
+  await call(docH, createdH.token, "create_layer", { layer_id: "L2", name: "L2", z_index: 9 });
+  await call(docH, createdH.token, "update_layer", { layer_id: "L1", patch: { visible: false } });
+  const hOff = await call(docH, createdH.token, "brush_stroke", {
+    ...baseArgsH,
+    object_id: "sym_h_off",
+    layer_id: "L2",
+    symmetry: "none",
+  });
+  if (!hOff || hOff.ok !== true) {
+    console.error(`❌ 判不了：对照那一笔没成功（${JSON.stringify(hOff).slice(0, 160)}）⇒ 退出码 3`);
+    process.exit(3);
+  }
+  const hControl = await renderH();
+  const hControlWorst = hControl ? lower(hControl, 256, 256) : null;
+  if (hControlWorst === null) {
+    console.error("❌ 判不了：取不回水平对照的像素 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  if (hWorst !== 0) bad.push(`④ 水平对称后上下最大通道差 ${hWorst}（要求 0）`);
+  if (hControlWorst === 0) bad.push("④ 水平对照不成立：不开对称时上下**也**相等 ⇒ 没有区分力");
+  console.log(`  ④ 水平：上下最大通道差 = ${hWorst}（要求 0）；对照 = ${hControlWorst}（要求 > 0）`);
+
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
-  console.log("✓ 垂直对称：左右逐位镜像相等；不开对称则不等（对照成立）");
+  console.log("✓ 垂直与水平对称：镜像方向逐位相等；两个方向的对照都不等（判据有区分力）");
 };
 
 await main();

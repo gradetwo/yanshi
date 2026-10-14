@@ -2711,6 +2711,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
             param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）"),
             param!("smooth", Boolean, false, "true ⇒ 控制点按 **Catmull-Rom** 重采样（与 brush_stroke / draw_stroke 同一条实现 ✓）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
+            param!("symmetry", String, false, "★ 对称模式（第 253 轮）：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔像素相同，轴取画布中心线）"),
             param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),
             param!("wetness", Number, false, "湿度 0..1（缺省 0.4）"),
             param!(
@@ -11829,6 +11830,48 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// 再用**同一个** `import_image` 提交 ✓（`bitmap` + `medium` 描述符 ✓）
 /// ⇒ 渲染路径、回放、撤销、以及"**插件 id + version 随对象记录**"全都自动一致 ✓
 ///（升级插件不会悄悄改变旧文档 ✓ —— 设计 11.1 的硬要求 ✓）。
+/// **★ 解析 `symmetry` 参数 ✗ ★**（**第 253 轮 ✓）：**brush_stroke 与 medium_stroke **共用一份** ✓
+///
+/// **∴ 为什么抽出来 ✗**：**两处各写一遍**必然漂移**✗（**本仓反复吃过的亏 ✓）
+///   ＋ **∴ 词表与报错文案只有一份 ⇒ **加模式只改一处** ✓ ★★
+fn parse_symmetry_arg(args: &Value) -> Result<yanshi_render::Symmetry> {
+    let name = optional_str(args, "symmetry").unwrap_or_else(|| "none".to_owned());
+    match name.as_str() {
+        "none" => Ok(yanshi_render::Symmetry::None),
+        "vertical" => Ok(yanshi_render::Symmetry::Vertical),
+        "horizontal" => Ok(yanshi_render::Symmetry::Horizontal),
+        other => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "symmetry 只支持 none／vertical／horizontal（给了 {other}）"
+            )),
+        )),
+    }
+}
+
+/// **★ 把一块 RGBA 按画布中心线镜像 ✗ ★**（**第 253 轮 ✓）
+///
+/// **∴ `vertical` ＝ 左右镜像 ✗ `horizontal` ＝ 上下镜像** ✓（**与 dab 层那套同名同义 ✓）★
+fn mirror_rgba(rgba: &[u8], width: u32, height: u32, symmetry: yanshi_render::Symmetry) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = match symmetry {
+                yanshi_render::Symmetry::Vertical => (w - 1 - x, y),
+                yanshi_render::Symmetry::Horizontal => (x, h - 1 - y),
+                yanshi_render::Symmetry::None => (x, y),
+            };
+            let dst = (y * w + x) * 4;
+            let src = (sy * w + sx) * 4;
+            if src + 4 <= rgba.len() && dst + 4 <= out.len() {
+                out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+            }
+        }
+    }
+    out
+}
+
 fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let medium = require_str(args, "medium")?;
@@ -11969,6 +12012,11 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         },
         base.as_deref(),
     )?;
+    // **★ 对称（**第 253 轮 ✓）：**与 brush_stroke 共用一份解析 ✓** ★
+    //   ＋ **∴ 做法 ✗**：**镜像作用在**插件产出的这块 rgba**上 ✗（**∴ 不碰插件内部 ✓）
+    //     ＋ **∴ 镜像那份作为**第二个对象**落在镜像位置 ✓（**∴ 与原笔像素相同 ✓）
+    //     位置：vertical（**左右 ✓）⇒ `x' = W - x - w` ✗ horizontal（**上下 ✓）⇒ `y' = H - y - h`** ✓ ★★
+    let symmetry = parse_symmetry_arg(args)?;
     // **blob 先行** ✓：先把像素写进存储 ✓，再提交引用它的原子 ✓（与 `import_psd` 同一套路 ✓）。
     let composite = ctx.workspace.store().put(&rgba)?;
     let spec = yanshi_medium_host::spec(&medium).expect("paint_stroke 已经校验过介质名");
@@ -11988,6 +12036,41 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         import_args["object_id"] = json!(object_id);
     }
     let mut value = write_import_image(ctx, &import_args)?;
+    if symmetry != yanshi_render::Symmetry::None {
+        // **∴ `planned.w/h` 是 `f64`（**区域用浮点 ✓）⇒ **取整再镜像** ✓ ★
+        let mirrored = mirror_rgba(&rgba, planned.w as u32, planned.h as u32, symmetry);
+        let mirrored_blob = ctx.workspace.store().put(&mirrored)?;
+        let mirrored_region = match symmetry {
+            yanshi_render::Symmetry::Vertical => json!({
+                "x": canvas_width - planned.x - planned.w,
+                "y": planned.y,
+                "w": planned.w,
+                "h": planned.h,
+            }),
+            _ => json!({
+                "x": planned.x,
+                "y": canvas_height - planned.y - planned.h,
+                "w": planned.w,
+                "h": planned.h,
+            }),
+        };
+        let mut mirrored_args = json!({
+            "layer_id": layer_id,
+            "bitmap": {
+                "blob_hash": mirrored_blob.to_string(),
+                "size": mirrored.len(),
+                "mime_type": "image/x-yanshi-raw",
+            },
+            "region": mirrored_region,
+            "medium": {"id": spec.id, "version": spec.version},
+        });
+        // **∴ 对象 id 要**区分开**✗（**否则第二次会覆盖第一次 ✓）★
+        if let Some(object_id) = optional_str(args, "object_id") {
+            mirrored_args["object_id"] = json!(format!("{object_id}_mirror"));
+        }
+        write_import_image(ctx, &mirrored_args)?;
+        value["symmetry"] = json!(format!("{symmetry:?}").to_ascii_lowercase());
+    }
     value["medium"] = json!({"id": spec.id, "version": spec.version});
     value["dabs"] = json!(points.len());
     // **画布尺寸每次都回** ✓（调用方据此对齐坐标 ✓）。
@@ -14157,19 +14240,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let symmetry_name = optional_str(args, "symmetry").unwrap_or_else(|| "none".to_owned());
     // **∴ `String` 不能用 `&str` 字面量做模式 ✗**（**实测：expected String, found &str ✓）
     //   ⇒ **∴ 先 `as_str()`** ✓ ★
-    let symmetry = match symmetry_name.as_str() {
-        "none" => yanshi_render::Symmetry::None,
-        "vertical" => yanshi_render::Symmetry::Vertical,
-        "horizontal" => yanshi_render::Symmetry::Horizontal,
-        other => {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "symmetry 只支持 none／vertical／horizontal（给了 {other}）"
-                )),
-            ));
-        }
-    };
+    // **∴ 解析抽到 `parse_symmetry_arg` ✗ 与 medium_stroke 共用一份词表** ✓（**第 253 轮 ✓）★
+    let symmetry = parse_symmetry_arg(args)?;
     // **★★★ 实测踩到 ✗：不能把镜像点**接在同一条折线**上** ✓ ★★★**
     //   ＋ **∴ 我第一版**就是这么写的 ✗ ⇒ **∴ 栅格化器**把两点之间的位移也画了**
     //     ⇒ **∴ 量出来是**一条横穿画布的连续墨带**（**52..202 ✓）✗ 不是两个笔尖** ✓
