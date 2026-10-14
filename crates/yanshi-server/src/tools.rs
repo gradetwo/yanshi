@@ -2910,7 +2910,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
         // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
         //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
-        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
@@ -2983,7 +2983,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         // **需求文档附录五（P0）**：画家术语「swatch」＝试色试笔。与 `brush_preview` 同一条落笔
         // 实现，但**批量**（笔刷 × 颜色 × 路径）且**不写文档、不生成 atom** => 可以放心试。
-        summary: "试笔触（swatch）：笔刷 × 颜色 × 路径批量试画，一次返回多张对比图；不写文档、不生成 atom => 满意了再用 brush_stroke 真画",
+        summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。",
         params: &[
             param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
             param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
@@ -15402,6 +15402,34 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //     * `last_stroke.bbox`：这一笔的脏区（复用上面已经算好的 region）；
     //     * `grid`：坐标标尺（`grid_spacing` 可调，缺省 200 —— 与需求文档里的示例一致）；
     //     * `canvas`：画布尺寸（AI 好把锚点映射回缩略图）。
+    // **★ 问题 1（P0）：`time_ms` 对"不吃时间"的笔刷要**明确报警**，不要静默忽略 ★**（第 254 轮）
+    //
+    // 只有配了 `dabs_per_second` 的笔刷（或速度敏感项 `speed1_*`/`speed2_*` 非 0）才吃时间戳；
+    // **默认笔刷按几何距离出 dab** ⇒ 时间戳被忽略 ✓。新功能实测的反馈是：
+    // **"静默无效果是最糟糕的 UX"** ✗（用户会以为 `time_ms` 没生效 ✓）。
+    // **只在用户真的给了 `time_ms` 时才查这支笔刷** ⇒ 其它情况**零开销** ✓。
+    if dtimes.iter().any(|seconds| *seconds > 0.0) {
+        let time_sensitive = load_brush(ctx.workspace, &brush_name)
+            // **只看 `dabs_per_second`** ✓ —— 实测教训：`100%_Opaque.myb` 的
+            // `dabs_per_second` 是 **0.0**（所以它**不按时间出 dab** ✓，正合用户报告 ✓），
+            // 但它的 `speed1_gamma = 2.87`／`speed1_slowness = 0.04` **非零** ✗
+            // => 我第一版把这三个"或"起来 => **漏报**了 ✗。
+            // **`speed1_*` 只是速度映射的形状参数** ✓，光有它不等于"按时间出 dab" ✓。
+            .map(|(_, brush)| brush.get(hokusai::BrushSetting::DabsPerSecond).base_value > 0.0)
+            // 查不到这支笔刷就别乱警告（后面会自己报"找不到笔刷" ✓）
+            .unwrap_or(true);
+        if !time_sensitive {
+            value["warning"] = json!(
+                "这支笔刷**不按时间出 dab** ✗：它的 `dabs_per_second` 是 0 ⇒ 它按**几何距离**出 dab，\
+                 你给的时间戳**不会改变 dab 的密度**（笔迹的疏密不听时间）。\
+                 **注意**：如果这支笔刷的 `speed1_*` 非零，时间仍会**通过速度映射**影响笔迹 \
+                 （那是另一条通路 ✓，不是这条警告说的东西）。\
+                 **想按时间出 dab** ⇒ 换一支 `dabs_per_second > 0` 的笔刷（`list_brushes` 可查），\
+                 或用 `brush_params` 给这支设上（例如 `{\"dabs_per_second\": 200}` ✓）。"
+            );
+        }
+    }
+    // **★ 视觉锚点（P1 ⑫）★**：`data`（缺省）＝ 一张干净图 ＋ 结构化锚点；
     //   `dual`（两张图：干净 ＋ 带 Overlay）**本版未实现** => 明确报错，不静默当 data。
     let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
     match anchor_mode.as_str() {

@@ -121,10 +121,92 @@ const main = async () => {
   }
   // **∴ 只断言"必须不同" ✗ 不断言墨量方向** ✓：**速度对墨量的影响方向取决于 `.myb` 的
   //   输入映射 ✓ —— **∴ 那是笔刷自己的事 ✗ 不是这条判据该规定的** ✓ ★
-  console.log(
-    `✓ time_ms 真的进引擎（端到端）：几何完全相同，间隔 10ms ⇒ 指纹 ${shortHold.stats.fingerprint}，` +
-      `500ms ⇒ 指纹 ${longHold.stats.fingerprint}（墨 ${shortHold.stats.ink} / ${longHold.stats.ink}）`,
+  // **★ 问题 1（P0）：`time_ms` 对"不吃时间"的笔刷必须**明确报警**，不许静默无效果 ★**
+  //
+  // 新功能实测的反馈：传了 `time_ms` 但笔刷不按时间出 dab ⇒ **静默无效果** ✗
+  //（只有配了 `dabs_per_second` / `speed1_*` 的笔刷才吃时间戳）。
+  // **④** 用一支**不吃时间**的笔刷（`100%_Opaque`，不给 `brush_params`）传 `time_ms`
+  //     ⇒ 返回值**必须带 `warning`** ✓，而且画面必须与"不传 `time_ms`"**逐字节相同** ✓
+  //    （警告归警告，行为不变 ✓ —— 向后兼容 ✓）。
+  // **⑤** 那支配了 `dabs_per_second` 的笔刷 ⇒ **不许**报这个 warning ✓（否则是误报 ✗）。
+  const probeStroke = async (tag, brush, brushParams, times) => {
+    const doc = `tm_${tag}_${Date.now().toString(36)}`;
+    const created = await (
+      await fetch(`${base}/api/documents`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ doc_id: doc, width: 340, height: 220 }),
+      })
+    ).json();
+    if (!created || !created.token) return null;
+    const token = created.token;
+    await call(doc, token, "create_layer", { layer_id: "L1", name: "L1" });
+    const points = [
+      [30, 60, 0.9],
+      [90, 70, 0.9],
+      [150, 60, 0.9],
+    ];
+    if (times) points.forEach((point, index) => point.push(index * 200));
+    const replied = await call(doc, token, "brush_stroke", {
+      layer_id: "L1",
+      object_id: "s",
+      brush,
+      size: 26,
+      color: { r: 20, g: 20, b: 20, a: 255 },
+      points,
+      ...(brushParams ? { brush_params: brushParams } : {}),
+    });
+    const raw = await call(doc, token, "render_region", {
+      region: { x: 0, y: 0, w: 340, h: 220 },
+      raw: true,
+    });
+    const url = raw && (raw.raw_url || raw.rawUrl);
+    if (!url) return { replied, fingerprint: null };
+    const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
+    const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
+    let fingerprint = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      fingerprint = (fingerprint * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
+    }
+    return { replied, fingerprint };
+  };
+
+  const plainWith = await probeStroke("plain_t", "100%_Opaque", null, true);
+  const plainWithout = await probeStroke("plain_f", "100%_Opaque", null, false);
+  const sensitive = await probeStroke(
+    "sens",
+    "Clouds",
+    { speed1_slowness: 1.0, speed1_gamma: 1.0, dabs_per_second: 200.0 },
+    true,
   );
+  if (!plainWith || !plainWithout || !sensitive) {
+    console.error("❌ 判不了：④⑤ 的探针没跑起来 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  const warned = plainWith.replied && typeof plainWith.replied.warning === "string";
+  const warnedSensitive = sensitive.replied && typeof sensitive.replied.warning === "string";
+  console.log(`  ④ 不吃时间的笔刷传 time_ms ⇒ warning=${warned ? "有 ✓" : "无 ✗"}`);
+  console.log(`  ⑤ 配了 dabs_per_second 的笔刷 ⇒ warning=${warnedSensitive ? "有（误报 ✗）" : "无 ✓"}`);
+  const bad = [];
+  if (!warned) {
+    bad.push("④ `time_ms` 对不吃时间的笔刷**静默无效果**（既不改画面、也不报警）⇒ 正是要修的那条 ✗");
+  }
+  if (warnedSensitive) {
+    bad.push("⑤ 对**吃时间**的笔刷也报了「不吃 time_ms」的警告 ⇒ 误报 ✗");
+  }
+  // **★ 不再断言"画面完全相同"（实测教训）★**：`100%_Opaque.myb` 的 `dabs_per_second` 是 0
+  //   （不按时间出 dab ✓），但它的 `speed1_gamma`/`speed1_slowness` **非零** ✓
+  //   => 时间仍会通过**速度映射**影响笔迹 ✓ => 画面**会**变 ✓，而那**不是 bug** ✓。
+  //   所以这条只**记录事实**，不作判红依据 ✓（判红的是"该报警却没报" ✗）。
+  console.log(
+    `  ④ 参考：不传/传 time_ms 的指纹 ${plainWithout.fingerprint} / ${plainWith.fingerprint}` +
+      `${plainWith.fingerprint === plainWithout.fingerprint ? "（相同）" : "（不同 —— 由 speed1_* 造成，正常 ✓）"}`,
+  );
+  if (bad.length) {
+    console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
+    process.exit(1);
+  }
+  console.log("✓ ④⑤ 成立：**不按时间出 dab** 的笔刷会**明确报警**（不再静默无效果）；**吃时间**的笔刷不误报");
 };
 
 await main();
