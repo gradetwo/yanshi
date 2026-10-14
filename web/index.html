@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7548379309168`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-9902202882239`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -140,6 +140,9 @@
      画布是内部一个可以独立上下和左右滚动的）"✓）——
      页面本身不滚 ✗；要滚的是**各自的面板**（右栏 `.aside` 自己滚 ✓）与**画布舞台**（`.stage` ✓）。 */
   html, body { height: 100%; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  body > main { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  body > .statusbar { flex: none; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
   /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
@@ -161,7 +164,8 @@
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; min-width: 0; }
+  header > * { flex-shrink: 1; min-width: 0; }
   header h1 { font-size: 16px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 8px; }
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
@@ -174,6 +178,15 @@
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
           overflow-x: clip; }
+  /* **iPad 豎屏適配** ✓：768px 寬時 320px 側欄會把畫布擠到 344px ✗。
+     窄屏下側欄改為浮層（不佔佈局寬度）✓，畫布拿滿剩餘空間 ✓。 */
+  @media (max-width: 900px) {
+    main { grid-template-columns: 56px minmax(0, 1fr); }
+    main > aside { position: fixed; right: 12px; top: 60px; z-index: 30;
+                   width: 300px; max-height: calc(100vh - 80px); overflow-y: auto;
+                   background: var(--bg, #fff); border: 1px solid var(--line);
+                   border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+  }
   /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
      不能一起收缩，否则工具按钮会溢出窗口。 */
   /* **舞台铺满可用区、画布在其中居中** ✓ —— 用户反馈："画布固定在左上角很难受，尤其缩放时" ✓。
@@ -212,7 +225,7 @@
   /* ★ 内核层必须**透明** ✓：它叠在 `#board` 之上 ✓ —— 若继承白底 ✗，
      就是把一块**不透明的白布**盖在服务端像素上 ⇒ **画面全白**✗（**＝审计 Y-01 的现象** ✓）。
      **∴ 白色只留给 `#board`** ✓（文档底色在那一层 ✓）。第 295 轮 ✓ */
-  #board { background: #fff; }
+  #board { background: #fff; margin: auto; }
   #kernel { background: transparent; }
   /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
      盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
@@ -234,7 +247,7 @@
   .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
              background: var(--surface); border-bottom: 1px solid var(--line); }
   .options .tool-name { font-weight: 600; min-width: 4em; }
-  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
+  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; white-space: nowrap; }
   .options input[type="range"] { width: 120px; }
   /* **粗细**独立成组（用户：滑杆"不显眼" ✗）。
      原来它与旁边的复选框同形同色 ✓，没有读数、也没有边界感 ✗。
@@ -282,6 +295,9 @@
   body.hide-dockers main { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
   body.hide-rail.hide-dockers main { grid-template-columns: minmax(0, 1fr); }
   body.hide-rail #tools, body.hide-dockers aside { display: none; }
+  /* **右侧面板滑入动画** ✓：显示时从右侧滑入 ✓（隐藏仍用 display:none 保布局 ✓） */
+  body:not(.hide-dockers) > main > aside { animation: slideInRight 0.25s ease; }
+  @keyframes slideInRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   /* **全屏画布模式** ✓：藏掉头部与选项条 ✓，画布占满窗口 ✓（不留内边距 ✓）。 */
   body.zen header, body.zen .options { display: none; }
   body.zen main { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
@@ -312,6 +328,12 @@
                            border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
   .layer-row .layer-flag:hover { border-color: currentColor; }
   .layer-row .layer-flag.off { opacity: .35; }
+  .layer-row .layer-blend { font-size: 11px; padding: 1px 2px; border-radius: 3px;
+                            background: transparent; border: 1px solid transparent; cursor: pointer;
+                            max-width: 70px; }
+  .layer-row .layer-blend:hover { border-color: currentColor; }
+  .layer-row.selected .layer-blend { color: #fff; }
+  .layer-row.selected .layer-blend option { color: #000; }
   .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
   .panel-toggles button { padding: 4px 8px; font-size: 12px; }
   /* **素材浮层** ✓：浮在画布上方 ✓、可滚动 ✓、不挡工具条 ✓。 */
@@ -413,12 +435,15 @@
   .doc-row .doc-actions { display: flex; gap: 4px; align-items: center; flex: none; }
   .doc-row .doc-actions button { padding: 0 8px; font-size: 11px; }
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #history .layer { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80px; flex: none; }
+  #history .size { flex: none; white-space: nowrap; }
   /* **历史行 kind 列** ✓（PWA 实测 P2 ✓）：给它弹性 ✓，有空间时不再被按钮挤成 "create_docu…" ✗ */
   #history .kind { flex: 1 1 auto; min-width: 0; }
-  #log { overflow-x: hidden; }
+  #log { overflow-x: auto; word-break: break-all; }
+  #log pre, #log code { white-space: pre-wrap; word-break: break-all; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
-  #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
-  #history .row button { padding: 0 8px; font-size: 11px; }
+  #history .row { display: flex; gap: 6px; align-items: center; padding: 4px 0; min-height: 24px; }
+  #history .row button { padding: 0 6px; font-size: 11px; flex: none; white-space: nowrap; }
   #history .seq { opacity: .6; min-width: 34px; }
   #history .kind { min-width: 86px; }
   /* **图层缩略图** ✓（PWA 实测 P1 ✓）：40px 方块 ✓，等比 contain ✓，取不到时隐藏 ✓ */
@@ -662,6 +687,12 @@
          下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
     <label class="brush-control">搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
     <button id="brushFavorite" class="brush-control" type="button" title="把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）">★ 收藏</button>
+    <span class="brush-control" title="笔刷压感动力学（MCP set_brush_dynamics 的 Web 入口）：压感→笔触大小的响应曲线">
+      压感
+      <button id="dynSoft" type="button" title="轻压细、重压粗（柔和）">柔</button>
+      <button id="dynLinear" type="button" title="线性响应">线性</button>
+      <button id="dynHard" type="button" title="轻压粗、重压变化小（硬）">硬</button>
+    </span>
     <span id="brushSearchHint" class="hint brush-control"></span>
     <span id="brushFavoriteHint" class="hint brush-control"></span>
     <!-- **懒加载与搜索的触发，必须写在这里** ✓ —— 不能写在页面主脚本里 ✗。
@@ -7757,9 +7788,40 @@ function renderLayerPanel(layers) {
     lock.dataset.action = "locked";
     const name = document.createElement("span");
     name.className = "layer-name";
-    name.textContent = layer.name + (layer.medium ? " · " + layer.medium : "");
+    // **同名图层加 ID 后缀区分** ✓：多个图层同名（如 5 个 source-parrot.png）时，
+    // 只靠名字分不出 ✓ ⇒ 统计重名，重名的显示短 ID 后缀 ✓
+    const nameCount = layers.filter((l) => l.name === layer.name).length;
+    const suffix = nameCount > 1 ? " #" + String(layer.layer_id).slice(-4) : "";
+    name.textContent = layer.name + suffix + (layer.medium ? " · " + layer.medium : "");
     name.title = layer.layer_id;
-    row.append(thumb, eye, lock, name);
+    // **混合模式下拉** ✓：MCP 有 `set_layer_blend`，Web 之前沒有入口。
+    // 7 種模式：normal/multiply/screen/overlay/darken/lighten/add
+    const blend = document.createElement("select");
+    blend.className = "layer-blend";
+    blend.title = "混合模式";
+    blend.dataset.action = "blend";
+    const modes = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "add"];
+    const modeLabels = { normal: "正常", multiply: "正片叠底", screen: "滤色", overlay: "叠加", darken: "变暗", lighten: "变亮", add: "相加" };
+    for (const mode of modes) {
+      const opt = document.createElement("option");
+      opt.value = mode;
+      opt.textContent = modeLabels[mode] || mode;
+      if ((layer.blend_mode || "normal") === mode) opt.selected = true;
+      blend.appendChild(opt);
+    }
+    blend.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const result = await callTool("set_layer_blend", { layer_id: layer.layer_id, mode: blend.value }, { refresh: false });
+      if (!result.ok) {
+        log("设置混合模式失败：" + (result.error_code || "unknown"), "#c33");
+        return;
+      }
+      await refreshLayers();
+      await resync();
+    });
+    // 點下拉不觸發行選中
+    blend.addEventListener("click", (e) => e.stopPropagation());
+    row.append(thumb, eye, lock, blend, name);
     list.appendChild(row);
   }
   // 面板重画后按需补缩略图 ✓（去抖：连续刷新只跑最后一次 ✓）。
@@ -9782,7 +9844,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7548379309168irty-926aef16")
+      caches.open("yanshi-shell-9902202882239irty-d13b378e")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -12112,6 +12174,42 @@ updateUndoStatus();
     syncStrengthLabel();
   }
 }
+
+// **笔刷动力学预设** ✓：MCP `set_brush_dynamics` 的 Web 入口。
+// curve 格式：{size_pressure: [[輸入值, 倍率], ...]}，倍率按 ln(倍率) 寫入 .myb。
+function setupBrushDynamics() {
+  const presets = {
+    dynSoft: { size_pressure: [[0, 0.3], [0.5, 0.8], [1, 1.5]] },   // 輕入重出
+    dynLinear: { size_pressure: [[0, 0.5], [1, 1.0]] },              // 線性
+    dynHard: { size_pressure: [[0, 0.8], [0.5, 1.1], [1, 1.2]] },    // 硬
+  };
+  for (const [id, curve] of Object.entries(presets)) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.addEventListener("click", async () => {
+      const brushSelect = $("brush");
+      const brush = brushSelect ? brushSelect.value : "";
+      // **★ 空值不是"没选" ✗ 而是"（内置画笔）"** ✓（**第 254 轮实测 ✓）★
+      //   ＋ **∴ `#brush` 的第一个选项是 `<option value="">（内置画笔）</option>`** ✓
+      //     ⇒ **∴ 空值 ⇒ 走的是**内置几何画笔**那条落笔路**（**它**没有 MyPaint 动力学 ✓）
+      //       ⇒ **∴ 所以**这里**不能**偷偷退回某支 .myb 笔刷** ✗
+      //         （**∴ 那会**改掉用户当前的选择**✗ 画出来的东西就不是他点的那支了 ✓）★★
+      //   ＋ **∴ 但消息要**可照着改**✗**：**说清"去哪选" ＋ 为什么内置画笔不行** ✓
+      //     （**∴ 实测踩到 ✗**：原来只说"请先选择一支笔刷" ⇒ 用户不知道该点哪里 ✓）★★
+      if (!brush) {
+        log("（内置画笔）没有压感曲线 ⇒ 请先在上面「笔刷」里选一支 .myb 笔刷（点开列表后选，再点这三个按钮）", "#c93");
+        return;
+      }
+      const result = await callTool("set_brush_dynamics", { brush, curve }, { refresh: false });
+      if (!result.ok) {
+        log("设置笔刷动力学失败：" + (result.error_code || "unknown"), "#c33");
+        return;
+      }
+      log("已设置「" + brush + "」压感曲线（" + btn.textContent + "）");
+    });
+  }
+}
+setupBrushDynamics();
 initQuickPanel();
 
 /// **触发一次浏览器下载** ✓（整幅 / 当前视图两条路共用一份 ✓ —— 不各写一套 ✗）。
@@ -12512,6 +12610,12 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **★ 笔刷压感动力学入口（第 254 轮）★**：三个预设按钮是**新界面元素**
+  //   ⇒ 必须有词条，否则英文模式下漏出中文（判据 `ui-i18n-coverage` 实测抓到）。
+  "压感": "Pressure",
+  "柔": "Soft",
+  "线性": "Linear",
+  "硬": "Hard",
   "检测中…": "checking…",
   "检测中": "checking",
   "用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。": "Samples painted with different media; open one to look at it, keep painting, or practise on it.",
@@ -12745,6 +12849,11 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  // 新按钮的 title 也要有词条（静态判据不查属性，但 browser-i18n 在英文模式下会看到）。
+  "笔刷压感动力学（MCP set_brush_dynamics 的 Web 入口）：压感→笔触大小的响应曲线": "Brush pressure dynamics (the web entry for MCP set_brush_dynamics): the pressure-to-size response curve",
+  "轻压细、重压粗（柔和）": "Light pressure thin, heavy pressure thick (soft)",
+  "线性响应": "Linear response",
+  "轻压粗、重压变化小（硬）": "Light pressure thick, little change under heavy pressure (hard)",
   "文件：新建 / 打开 / 导入 / 导出（顶栏这一个入口，信息面板里不再重复）": "File: new / open / import / export; this single entry point lives in the top bar and is not repeated in the info panel",
   "隐藏 / 显示左侧工具栏（快捷键 [ ）": "Show or hide the left toolbar (shortcut [ )",
   "隐藏 / 显示右侧面板（快捷键 ] ）": "Show or hide the right panels (shortcut ] )",

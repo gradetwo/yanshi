@@ -22,6 +22,9 @@
      画布是内部一个可以独立上下和左右滚动的）"✓）——
      页面本身不滚 ✗；要滚的是**各自的面板**（右栏 `.aside` 自己滚 ✓）与**画布舞台**（`.stage` ✓）。 */
   html, body { height: 100%; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  body > main { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  body > .statusbar { flex: none; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
   /* 键盘可达性 ✓：所有可聚焦控件都有**可见焦点环** ✓（纯键盘用户与快捷键提示配套 ✓）。 */
@@ -43,7 +46,8 @@
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; min-width: 0; }
+  header > * { flex-shrink: 1; min-width: 0; }
   header h1 { font-size: 16px; margin: 0 12px 0 0; display: flex; align-items: center; gap: 8px; }
   .brand-mark { width: 22px; height: 22px; border-radius: 5px; }
   /* justify-items: start 让舞台收缩到 canvas 自身尺寸：否则栅格会把 .stage 拉到整列宽，
@@ -56,6 +60,15 @@
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
           overflow-x: clip; }
+  /* **iPad 豎屏適配** ✓：768px 寬時 320px 側欄會把畫布擠到 344px ✗。
+     窄屏下側欄改為浮層（不佔佈局寬度）✓，畫布拿滿剩餘空間 ✓。 */
+  @media (max-width: 900px) {
+    main { grid-template-columns: 56px minmax(0, 1fr); }
+    main > aside { position: fixed; right: 12px; top: 60px; z-index: 30;
+                   width: 300px; max-height: calc(100vh - 80px); overflow-y: auto;
+                   background: var(--bg, #fff); border: 1px solid var(--line);
+                   border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+  }
   /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
      不能一起收缩，否则工具按钮会溢出窗口。 */
   /* **舞台铺满可用区、画布在其中居中** ✓ —— 用户反馈："画布固定在左上角很难受，尤其缩放时" ✓。
@@ -94,7 +107,7 @@
   /* ★ 内核层必须**透明** ✓：它叠在 `#board` 之上 ✓ —— 若继承白底 ✗，
      就是把一块**不透明的白布**盖在服务端像素上 ⇒ **画面全白**✗（**＝审计 Y-01 的现象** ✓）。
      **∴ 白色只留给 `#board`** ✓（文档底色在那一层 ✓）。第 295 轮 ✓ */
-  #board { background: #fff; }
+  #board { background: #fff; margin: auto; }
   #kernel { background: transparent; }
   /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
      盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
@@ -116,7 +129,7 @@
   .options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px;
              background: var(--surface); border-bottom: 1px solid var(--line); }
   .options .tool-name { font-weight: 600; min-width: 4em; }
-  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; }
+  .options label { display: flex; gap: 4px; align-items: center; min-width: 0; white-space: nowrap; }
   .options input[type="range"] { width: 120px; }
   /* **粗细**独立成组（用户：滑杆"不显眼" ✗）。
      原来它与旁边的复选框同形同色 ✓，没有读数、也没有边界感 ✗。
@@ -164,6 +177,9 @@
   body.hide-dockers main { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
   body.hide-rail.hide-dockers main { grid-template-columns: minmax(0, 1fr); }
   body.hide-rail #tools, body.hide-dockers aside { display: none; }
+  /* **右侧面板滑入动画** ✓：显示时从右侧滑入 ✓（隐藏仍用 display:none 保布局 ✓） */
+  body:not(.hide-dockers) > main > aside { animation: slideInRight 0.25s ease; }
+  @keyframes slideInRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   /* **全屏画布模式** ✓：藏掉头部与选项条 ✓，画布占满窗口 ✓（不留内边距 ✓）。 */
   body.zen header, body.zen .options { display: none; }
   body.zen main { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
@@ -194,6 +210,12 @@
                            border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
   .layer-row .layer-flag:hover { border-color: currentColor; }
   .layer-row .layer-flag.off { opacity: .35; }
+  .layer-row .layer-blend { font-size: 11px; padding: 1px 2px; border-radius: 3px;
+                            background: transparent; border: 1px solid transparent; cursor: pointer;
+                            max-width: 70px; }
+  .layer-row .layer-blend:hover { border-color: currentColor; }
+  .layer-row.selected .layer-blend { color: #fff; }
+  .layer-row.selected .layer-blend option { color: #000; }
   .panel-toggles { display: inline-flex; gap: 4px; margin-left: auto; }
   .panel-toggles button { padding: 4px 8px; font-size: 12px; }
   /* **素材浮层** ✓：浮在画布上方 ✓、可滚动 ✓、不挡工具条 ✓。 */
@@ -295,12 +317,15 @@
   .doc-row .doc-actions { display: flex; gap: 4px; align-items: center; flex: none; }
   .doc-row .doc-actions button { padding: 0 8px; font-size: 11px; }
   #history .kind, #history .actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #history .layer { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80px; flex: none; }
+  #history .size { flex: none; white-space: nowrap; }
   /* **历史行 kind 列** ✓（PWA 实测 P2 ✓）：给它弹性 ✓，有空间时不再被按钮挤成 "create_docu…" ✗ */
   #history .kind { flex: 1 1 auto; min-width: 0; }
-  #log { overflow-x: hidden; }
+  #log { overflow-x: auto; word-break: break-all; }
+  #log pre, #log code { white-space: pre-wrap; word-break: break-all; }
   #history { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 11px; }
-  #history .row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
-  #history .row button { padding: 0 8px; font-size: 11px; }
+  #history .row { display: flex; gap: 6px; align-items: center; padding: 4px 0; min-height: 24px; }
+  #history .row button { padding: 0 6px; font-size: 11px; flex: none; white-space: nowrap; }
   #history .seq { opacity: .6; min-width: 34px; }
   #history .kind { min-width: 86px; }
   /* **图层缩略图** ✓（PWA 实测 P1 ✓）：40px 方块 ✓，等比 contain ✓，取不到时隐藏 ✓ */

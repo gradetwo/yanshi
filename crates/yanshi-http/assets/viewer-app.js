@@ -5693,9 +5693,40 @@ function renderLayerPanel(layers) {
     lock.dataset.action = "locked";
     const name = document.createElement("span");
     name.className = "layer-name";
-    name.textContent = layer.name + (layer.medium ? " · " + layer.medium : "");
+    // **同名图层加 ID 后缀区分** ✓：多个图层同名（如 5 个 source-parrot.png）时，
+    // 只靠名字分不出 ✓ ⇒ 统计重名，重名的显示短 ID 后缀 ✓
+    const nameCount = layers.filter((l) => l.name === layer.name).length;
+    const suffix = nameCount > 1 ? " #" + String(layer.layer_id).slice(-4) : "";
+    name.textContent = layer.name + suffix + (layer.medium ? " · " + layer.medium : "");
     name.title = layer.layer_id;
-    row.append(thumb, eye, lock, name);
+    // **混合模式下拉** ✓：MCP 有 `set_layer_blend`，Web 之前沒有入口。
+    // 7 種模式：normal/multiply/screen/overlay/darken/lighten/add
+    const blend = document.createElement("select");
+    blend.className = "layer-blend";
+    blend.title = "混合模式";
+    blend.dataset.action = "blend";
+    const modes = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "add"];
+    const modeLabels = { normal: "正常", multiply: "正片叠底", screen: "滤色", overlay: "叠加", darken: "变暗", lighten: "变亮", add: "相加" };
+    for (const mode of modes) {
+      const opt = document.createElement("option");
+      opt.value = mode;
+      opt.textContent = modeLabels[mode] || mode;
+      if ((layer.blend_mode || "normal") === mode) opt.selected = true;
+      blend.appendChild(opt);
+    }
+    blend.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const result = await callTool("set_layer_blend", { layer_id: layer.layer_id, mode: blend.value }, { refresh: false });
+      if (!result.ok) {
+        log("设置混合模式失败：" + (result.error_code || "unknown"), "#c33");
+        return;
+      }
+      await refreshLayers();
+      await resync();
+    });
+    // 點下拉不觸發行選中
+    blend.addEventListener("click", (e) => e.stopPropagation());
+    row.append(thumb, eye, lock, blend, name);
     list.appendChild(row);
   }
   // 面板重画后按需补缩略图 ✓（去抖：连续刷新只跑最后一次 ✓）。
@@ -10048,6 +10079,42 @@ updateUndoStatus();
     syncStrengthLabel();
   }
 }
+
+// **笔刷动力学预设** ✓：MCP `set_brush_dynamics` 的 Web 入口。
+// curve 格式：{size_pressure: [[輸入值, 倍率], ...]}，倍率按 ln(倍率) 寫入 .myb。
+function setupBrushDynamics() {
+  const presets = {
+    dynSoft: { size_pressure: [[0, 0.3], [0.5, 0.8], [1, 1.5]] },   // 輕入重出
+    dynLinear: { size_pressure: [[0, 0.5], [1, 1.0]] },              // 線性
+    dynHard: { size_pressure: [[0, 0.8], [0.5, 1.1], [1, 1.2]] },    // 硬
+  };
+  for (const [id, curve] of Object.entries(presets)) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.addEventListener("click", async () => {
+      const brushSelect = $("brush");
+      const brush = brushSelect ? brushSelect.value : "";
+      // **★ 空值不是"没选" ✗ 而是"（内置画笔）"** ✓（**第 254 轮实测 ✓）★
+      //   ＋ **∴ `#brush` 的第一个选项是 `<option value="">（内置画笔）</option>`** ✓
+      //     ⇒ **∴ 空值 ⇒ 走的是**内置几何画笔**那条落笔路**（**它**没有 MyPaint 动力学 ✓）
+      //       ⇒ **∴ 所以**这里**不能**偷偷退回某支 .myb 笔刷** ✗
+      //         （**∴ 那会**改掉用户当前的选择**✗ 画出来的东西就不是他点的那支了 ✓）★★
+      //   ＋ **∴ 但消息要**可照着改**✗**：**说清"去哪选" ＋ 为什么内置画笔不行** ✓
+      //     （**∴ 实测踩到 ✗**：原来只说"请先选择一支笔刷" ⇒ 用户不知道该点哪里 ✓）★★
+      if (!brush) {
+        log("（内置画笔）没有压感曲线 ⇒ 请先在上面「笔刷」里选一支 .myb 笔刷（点开列表后选，再点这三个按钮）", "#c93");
+        return;
+      }
+      const result = await callTool("set_brush_dynamics", { brush, curve }, { refresh: false });
+      if (!result.ok) {
+        log("设置笔刷动力学失败：" + (result.error_code || "unknown"), "#c33");
+        return;
+      }
+      log("已设置「" + brush + "」压感曲线（" + btn.textContent + "）");
+    });
+  }
+}
+setupBrushDynamics();
 initQuickPanel();
 
 /// **触发一次浏览器下载** ✓（整幅 / 当前视图两条路共用一份 ✓ —— 不各写一套 ✗）。
@@ -10448,6 +10515,12 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **★ 笔刷压感动力学入口（第 254 轮）★**：三个预设按钮是**新界面元素**
+  //   ⇒ 必须有词条，否则英文模式下漏出中文（判据 `ui-i18n-coverage` 实测抓到）。
+  "压感": "Pressure",
+  "柔": "Soft",
+  "线性": "Linear",
+  "硬": "Hard",
   "检测中…": "checking…",
   "检测中": "checking",
   "用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。": "Samples painted with different media; open one to look at it, keep painting, or practise on it.",
@@ -10681,6 +10754,11 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  // 新按钮的 title 也要有词条（静态判据不查属性，但 browser-i18n 在英文模式下会看到）。
+  "笔刷压感动力学（MCP set_brush_dynamics 的 Web 入口）：压感→笔触大小的响应曲线": "Brush pressure dynamics (the web entry for MCP set_brush_dynamics): the pressure-to-size response curve",
+  "轻压细、重压粗（柔和）": "Light pressure thin, heavy pressure thick (soft)",
+  "线性响应": "Linear response",
+  "轻压粗、重压变化小（硬）": "Light pressure thick, little change under heavy pressure (hard)",
   "文件：新建 / 打开 / 导入 / 导出（顶栏这一个入口，信息面板里不再重复）": "File: new / open / import / export; this single entry point lives in the top bar and is not repeated in the info panel",
   "隐藏 / 显示左侧工具栏（快捷键 [ ）": "Show or hide the left toolbar (shortcut [ )",
   "隐藏 / 显示右侧面板（快捷键 ] ）": "Show or hide the right panels (shortcut ] )",

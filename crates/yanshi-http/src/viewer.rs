@@ -256,6 +256,12 @@ const PAGE_TAIL_A: &str = r##"</style>
          下拉里同时按**来源分组**（`classic-` / `deevad-` / `ramon-` / `brushkit-` ✓）。 -->
     <label class="brush-control">搜笔刷 <input id="brushSearch" type="search" placeholder="名字片段，如 knife / pen" style="width:150px" /></label>
     <button id="brushFavorite" class="brush-control" type="button" title="把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）">★ 收藏</button>
+    <span class="brush-control" title="笔刷压感动力学（MCP set_brush_dynamics 的 Web 入口）：压感→笔触大小的响应曲线">
+      压感
+      <button id="dynSoft" type="button" title="轻压细、重压粗（柔和）">柔</button>
+      <button id="dynLinear" type="button" title="线性响应">线性</button>
+      <button id="dynHard" type="button" title="轻压粗、重压变化小（硬）">硬</button>
+    </span>
     <span id="brushSearchHint" class="hint brush-control"></span>
     <span id="brushFavoriteHint" class="hint brush-control"></span>
     <!-- **懒加载与搜索的触发，必须写在这里** ✓ —— 不能写在页面主脚本里 ✗。
