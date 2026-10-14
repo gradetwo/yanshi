@@ -153,14 +153,34 @@ colab_sessions_or_die() {
 cmd_status() {
   echo "== 会话（本地查 ✓）=="
   # **∴ 失败要说出来 ✗ ⇒ **∴ 不许**让空输出冒充"没有会话"** ✓（**见上面那段说明 ✓）★
-  local sessions
+  local sessions have=0
   if ! sessions="$(colab_sessions_or_die)"; then
     echo "  （**∴ 会话状态**查不了**✗ ⇒ 见上面的诊断 ✓）"
+    have=-1
+  elif printf '%s\n' "${sessions}" | grep -aq "${SESSION}"; then
+    printf '%s\n' "${sessions}" | grep -a "${SESSION}" | sed 's/^/  /'
+    have=1
   else
-    printf '%s\n' "${sessions}" | grep -a "${SESSION}" ||
-      echo "  （没有名为 ${SESSION} 的会话 ⇒ 先跑 scripts/l4.sh up ✓）"
+    echo "  （没有名为 ${SESSION} 的会话 ⇒ 先跑 scripts/l4.sh up ✓）"
+    have=0
   fi
   echo ""
+  # **★★★ 没有会话 ⇒ **绝不 ssh** ✗ ★★★**（**第 253 轮实测踩到 ✓）
+  #   ＋ **∴ 症状（**我实测 ✓）✗**：**跑 `scripts/l4.sh status` **只是想看一眼**✗
+  #     ⇒ **∴ 它**竟然**把一台机器**开出来了**（**输出里 `[colab] Creating runtime 'dawang'...`
+  #       ＋ `Creating session 'dawang'...` ✓）✗ **∴ 而**开的还是**默认 CPU 机型** ✓
+  #   ＋ **∴ 根因 ✗**：**本文件里 `colab new` **只有 `cmd_up` 一处**✗
+  #     ⇒ **∴ 所以**是 **`colab ssh -s <不存在的名字>` **自己会创建** ✓ ★★
+  #       ＋ **∴ 于是**：**任何"顺手 ssh 一下"的只读命令**都可能开出机器** ✗
+  #         （**∴ 而**一轮里我正是被它坑出一台 CPU 机器 ✗ 随后手动 `colab stop` ✓）★
+  #   ＋ **∴ 修法 ✗**：**没有会话 ⇒ **远端检查整段跳过**✗ 并**把这条陷阱讲出来** ✓
+  #     ＋ **∴ 要看远端 ⇒ 显式跑 `up`**（**它会**明说要开机器** ✓）★★
+  if [ "${have}" != "1" ]; then
+    echo "== 远端检查：**跳过** ✗ =="
+    echo "  **∴ 为什么跳过 ✗**：**\`colab ssh\` 在会话不存在时会**自动创建**一台机器** ✓"
+    echo "    ⇒ **∴ "只看一眼状态"不该开出机器** ✓ ⇒ **∴ 要看远端就显式跑 scripts/l4.sh up** ✓ ★★"
+    return 0
+  fi
   # **★ 远端检查**合并成一次 ssh ✗ ★**（**第 492 轮实测 ✓）：
   #   **∴ 为什么 ✗**：**colab 的 ssh 通道**一次只允许一个连接**✗
   #     ⇒ **∴ 原来**分三次 ssh ⇒ **∴ 第三次**被 429 拒** ✓ ★**** ✓✓
