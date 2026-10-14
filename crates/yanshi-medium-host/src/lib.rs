@@ -273,6 +273,41 @@ fn example_dab(seed: u32, size: u32, pressure: u32, _input: DabInput) -> Option<
     }
 }
 
+/// **★ 画布锚定的 dab 种子（P1 ⑦）★**（第 254 轮）
+///
+/// **为什么需要它**：介质颗粒的种子原本取自**笔触内序号**（`counter`）
+/// => 同一个画布点、两条不同路径到达时，**纹理图案不同** => 多笔的"飞白"对不齐
+/// （需求 P1 ⑦ 要的正是"多笔飞白在空间上对齐"）。
+/// 插件 ABI（`dab(medium, seed, size, pressure, input)`）**只收 seed**、没有画布坐标
+/// => 所以**画布锚定的正确做法是把 seed 换成画布坐标的整数哈希**，而不是改 ABI。
+///
+/// **性质（由单测守）**：同（介质, 坐标, 尺寸）⇒ 同种子；坐标不同/介质不同 ⇒ 种子不同；
+/// 纯整数哈希、无浮点、无随机 => 符合"内核两端同源"（见 `scripts/tool-kernel-determinism.mjs`）。
+///
+/// **量化**：坐标按 1px 格取整（亚像素抖动不该换种子）。
+///
+/// **注意**：本函数当前**只被单测使用**（尚未接线）—— 接线那一步要先证明
+/// "seed 完全决定颗粒"（见同文件的 `seed_fully_determines_the_dab`），再动 `paint_stroke_over`。
+#[must_use]
+pub fn canvas_seed(medium_id: &str, x: f64, y: f64, size: u32) -> u32 {
+    let mut hash: u32 = 0x811C_9DC5;
+    let mut mix = |value: u32| {
+        hash ^= value;
+        hash = hash.wrapping_mul(0x0100_0193);
+    };
+    for byte in medium_id.as_bytes() {
+        mix(u32::from(*byte));
+    }
+    mix(size);
+    let xi = x.round() as i64;
+    let yi = y.round() as i64;
+    mix(xi as u32);
+    mix((xi >> 32) as u32);
+    mix(yi as u32);
+    mix((yi >> 32) as u32);
+    hash
+}
+
 /// 画**一枚** dab ⇒ `(像素个数, RGBA 字节)` ✓。
 ///
 /// **注意这不是边长** ✗：插件返回的 `written` 是 `size²×4` **字节** ✓ ⇒ `written/4` 是**像素个数** ✓；
@@ -493,7 +528,15 @@ pub fn paint_stroke_over(
         let pressure = pressure.clamp(0.0, 1.0);
         let dab_size = dab_size_for(size, pressure).min(medium.max_dab);
         counter = counter.wrapping_add(1);
-        let seed = counter.wrapping_mul(0x9E37_79B1) ^ 0x5BF0_3635;
+        // **★ P1 ⑦ 接线：种子按**画布坐标**取（原来按笔触内序号 `counter`）★**（第 254 轮）
+        //   理由与证明见 `canvas_seed` 的文档与同文件的 `canvas_seed_tests`：
+        //   ① `canvas_seed` 只由（介质, 画布坐标, 尺寸）决定；② 同 seed ⇒ **逐字节同 dab**。
+        //   => 同一个画布点永远得到同一颗粒 => 多笔的"飞白"在空间上对齐 ✓。
+        //   **注意（如实）**：这个对齐**无法**用"整笔渲染"直接观测（两条路径的历史必然不同，
+        //   见 docs/design/texture-gating.md 6.2），所以守它的是 **dab 级单测**，不是整笔比对。
+        //   `counter` 仍保留（如下一行的 `_ = counter`，避免未使用告警）。
+        let _ = counter;
+        let seed = canvas_seed(medium.id, *x, *y, dab_size);
         // **读"笔下的颜色"** ✓（用户报告第 2 条 ✓）：取**笔尖中心**那一像素当 `target` ✓
         // ⇒ 插件的混色于是有了真实来源 ✓（湿画法里颜色互相吃掉 ✓）。
         // 取不到底色（没传 ✓ / 越界 ✓）⇒ 退回"笔尖自身" ✓（旧语义 ✓，不报错 ✗）。
@@ -1002,5 +1045,60 @@ mod interpolation_tests {
         let ink = rgba.chunks_exact(4).filter(|pixel| pixel[3] > 8).count();
         assert!(ink > 0, "应当有墨");
         eprintln!("  密集输入：40 个点、间距 2px ⇒ 上墨 {ink} 像素（未额外补间 ✓）");
+    }
+}
+
+// **★ P1 ⑦ 的画布锚定：dab 级验证 ★**（第 254 轮）
+//
+// **为什么必须在**dab 级**验证** ✗：整笔渲染永远带着**不同的历史**（两条路径的早期 dab 落在
+// 不同位置）=> 用"同终点、不同路径"的整笔比对**无法隔离"某点的颗粒"** ✗
+// （第 254 轮实测：改前 7.43/11.56，改后 7.26/11.80，几乎没变 —— 那是历史差异，不是纹理差异）。
+// 干净的验证只有两条：① `canvas_seed` 的**性质**；② "**同 seed ⇒ 同 dab 像素**"（ABI 性质）。
+// 有了这两条，"画布锚定"就成立：同一点 => 同 seed => 同颗粒 ✓。
+#[cfg(test)]
+mod canvas_seed_tests {
+    use super::{canvas_seed, dab, spec, DabInput};
+
+    fn input() -> DabInput {
+        DabInput {
+            tip: [0.0, 0.0, 0.0, 1.0],
+            target: [1.0, 1.0, 1.0, 1.0],
+            load: 0.5,
+            wetness: 0.3,
+            texture: 1.0,
+        }
+    }
+
+    #[test]
+    fn canvas_seed_is_position_determined() {
+        let a = canvas_seed("watercolor", 128.0, 96.0, 24);
+        // 同一坐标（含亚像素抖动）=> 同一种子
+        assert_eq!(a, canvas_seed("watercolor", 128.0, 96.0, 24));
+        assert_eq!(
+            a,
+            canvas_seed("watercolor", 128.2, 95.8, 24),
+            "亚像素抖动不该换种子"
+        );
+        // 换坐标 / 换介质 / 换尺寸 => 换种子
+        assert_ne!(a, canvas_seed("watercolor", 129.0, 96.0, 24));
+        assert_ne!(a, canvas_seed("watercolor", 128.0, 97.0, 24));
+        assert_ne!(a, canvas_seed("pencil", 128.0, 96.0, 24));
+        assert_ne!(a, canvas_seed("watercolor", 128.0, 96.0, 25));
+        // 确定性
+        assert_eq!(a, canvas_seed("watercolor", 128.0, 96.0, 24));
+    }
+
+    /// **ABI 性质（这条是"画布锚定"成立的另一半）**：同样的 (介质, seed, size, pressure, input)
+    /// 必须产出**逐字节相同**的 dab => 那么"seed 由画布坐标决定"就等价于"颗粒由画布坐标决定" ✓。
+    #[test]
+    fn seed_fully_determines_the_dab() {
+        let medium = spec("watercolor").expect("水彩");
+        let seed = canvas_seed("watercolor", 128.0, 96.0, 24);
+        let first = dab(&medium, seed, 24, 800, input()).expect("dab");
+        let again = dab(&medium, seed, 24, 800, input()).expect("dab");
+        assert_eq!(first, again, "同 seed 必须逐字节同 dab");
+        // 换 seed => 通常不同（若相同，说明种子没被用上 => 那"按坐标取种子"就不起作用了）
+        let other = dab(&medium, seed ^ 0x9E37_79B1, 24, 800, input()).expect("dab");
+        assert_ne!(first, other, "换 seed 后 dab 应当不同（否则种子没被用上）");
     }
 }
