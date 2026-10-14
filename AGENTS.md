@@ -60,3 +60,23 @@ CDP 会**静默返回一个空对象 `{}`**。那看起来像"页面返回了空
 **配套纪律**：提交前先跑 `cargo clippy --workspace --all-targets -- -D warnings`，
 **并且让提交命令依赖它的结果**（`cargo clippy … || exit 1` 之后再 `git commit`）——
 第 254 轮我有两次"clippy 报错但提交照样发出去了"，都是因为命令链里没有设门。
+
+## 中文文本里一律用「」，不要用 ASCII 双引号（第 254 轮：同类错误六次）
+
+**规则**：写进**字符串字面量**（Rust 的 `"…"`、JS 的 `"…"`/模板串）里的**中文**内容，
+引用词语时一律用**「」**（或『』），**绝不要用 ASCII 的 `"`** ✗。
+
+**为什么**：ASCII 双引号会**提前结束字符串字面量** ⇒ 编译器报
+`expected ,`／`unknown start of token`／`prefix … is unknown`，
+而错误信息指向的往往是**后面几行**，很容易误判成别的问题 ✗。
+
+**实测代价（第 254 轮，六次）**：
+1. `scripts/tool-render-memory-attribution.mjs`（JS 串里的 `"同时在用"`）；
+2. `scripts/tool-vermeer-study.mjs`（`"没有神"`／`"锚在哪"`／`"确定性"`）；
+3. `scripts/tool-time-ms.mjs`（`"吃不吃时间"`／`"不吃 time_ms"`）；
+4. `crates/yanshi-server/src/tools.rs`（swatch summary 的 `"没有可抹的像素"`）；
+5. `crates/yanshi-server/src/tools.rs`（涂抹文案的 `"先铺后揉"`）；
+6. `crates/yanshi-server/src/tools.rs`（`preview_size` 的 `"这支笔长什么样"`／`"小图好看、大面积太透明"`）。
+
+**配套**：改完**立刻**跑一次 `cargo fmt --all`（它会先编译解析）或 `node --check` ✓，
+不要攒到最后一次编译才发现 ✗。

@@ -135,6 +135,144 @@ const main = async () => {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
+
+  // **★ 问题 6：`preview_size`（大面积预览）★**（第 254 轮）
+  //
+  //   **要证**：① `area` 的**真实覆盖率**明显高于 `single` ✓（这正是"覆盖力看得见" ✓）；
+  //   ② **缺省必须与显式 `single` 逐字节相同** ✓（缺省不变是硬要求 ✓）。
+  //
+  //   **★ 一次教训（写在这里）★**：我第一版用**缩略图字节数**当"墨多"的代理 ✗ —— 实测
+  //   `area` 是 **1429** 字节、`single` 是 **2311** ✗ => **方向完全相反**（密集平涂压缩得更好 ✓）。
+  //   => **代理量被自己的判据否掉** ⇒ 改成**解码 PNG、量真像素** ✓（`decodePngRgba` 在下面）。
+  const decodePngRgba = async (bytes) => {
+    const { inflateSync } = await import("node:zlib");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let at = 8;
+    let width = 0;
+    let height = 0;
+    let colorType = 6;
+    const idat = [];
+    while (at + 8 <= bytes.length) {
+      const length = view.getUint32(at, false);
+      const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
+      const body = bytes.subarray(at + 8, at + 8 + length);
+      if (type === "IHDR") {
+        width = view.getUint32(at + 8, false);
+        height = view.getUint32(at + 12, false);
+        colorType = bytes[at + 17];
+      } else if (type === "IDAT") {
+        idat.push(Buffer.from(body));
+      } else if (type === "IEND") {
+        break;
+      }
+      at += 12 + length;
+    }
+    const raw = inflateSync(Buffer.concat(idat));
+    const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
+    if (channels === 0 || width === 0) return null;
+    const stride = width * channels;
+    const out = new Uint8Array(width * height * 4);
+    let previous = new Uint8Array(stride);
+    for (let y = 0; y < height; y += 1) {
+      const filter = raw[y * (stride + 1)];
+      const line = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
+      const current = new Uint8Array(stride);
+      for (let i = 0; i < stride; i += 1) {
+        const left = i >= channels ? current[i - channels] : 0;
+        const up = previous[i];
+        const upLeft = i >= channels ? previous[i - channels] : 0;
+        let value = line[i];
+        if (filter === 1) value += left;
+        else if (filter === 2) value += up;
+        else if (filter === 3) value += (left + up) >> 1;
+        else if (filter === 4) {
+          const p = left + up - upLeft;
+          const pa = Math.abs(p - left);
+          const pb = Math.abs(p - up);
+          const pc = Math.abs(p - upLeft);
+          value += pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+        }
+        current[i] = value & 0xff;
+      }
+      for (let x = 0; x < width; x += 1) {
+        const source = x * channels;
+        const target = (y * width + x) * 4;
+        out[target] = current[source];
+        out[target + 1] = current[source + 1];
+        out[target + 2] = current[source + 2];
+        out[target + 3] = channels === 4 ? current[source + 3] : 255;
+      }
+      previous = current;
+    }
+    return { width, height, pixels: out };
+  };
+  /** **覆盖率** = 有颜料像素里"确实上了色"（明显暗于白底）的比例 ✓。 */
+  const coverage = (image) => {
+    if (!image) return null;
+    let painted = 0;
+    let inked = 0;
+    let darkness = 0;
+    const { pixels } = image;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = pixels[i + 3];
+      if (alpha < 40) continue;
+      painted += 1;
+      const luma = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+      // **平均浓度**（0 = 白、255 = 全黑）：半透明笔刷"来回 5 趟"会明显更暗
+      darkness += 255 - luma;
+      if (luma < 200) inked += 1;
+    }
+    if (painted === 0) return null;
+    return { painted, inked, ratio: inked / painted, darkness: darkness / painted };
+  };
+  const thumb = async (previewSize) => {
+    const extra = previewSize ? { preview_size: previewSize } : {};
+    // **★ 不能带 `args` 里的 `paths` ★**：本工具里"**显式 `paths` 优先于 `preview_size`**" ✓
+    //   => 带上 paths 的话 ⑥ 两条就变成**空操作**了（两次都用同一组点 ✗）。
+    // **必须用"半透明"的设置**：100%_Opaque 无论几趟都全不透明 => 指标**饱和**（实测过：
+    //   single 与 area 都是 100% 覆盖 ✗）。用 opaque: 0.2 才能看出**叠加**。
+    const replied = await call(doc, token, "swatch_brush_strokes", {
+      brushes: ["Classic_Paint"],
+      size: 40,
+      brush_params: { opaque: 0.12 },
+      ...extra,
+    });
+    const first = replied && Array.isArray(replied.swatches) ? replied.swatches[0] : null;
+    const url = first && first.thumb_url;
+    if (!url) return null;
+    const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
+    const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
+    return { size: bytes.length, image: await decodePngRgba(bytes) };
+  };
+  const single = await thumb("single");
+  const area = await thumb("area");
+  const dflt = await thumb(null);
+  const covSingle = single && coverage(single.image);
+  const covArea = area && coverage(area.image);
+  if (!single || !area || !dflt || !covSingle || !covArea) {
+    console.error("❌ 判不了：⑥ 的缩略图取不到或解不开 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  console.log(
+    `  ⑥ 平均浓度（解码 PNG 后的真像素，opaque=0.2 => 叠加才看得出来）：` +
+      `single ${covSingle.darkness.toFixed(1)}（覆盖 ${(covSingle.ratio * 100).toFixed(1)}%）｜` +
+      `area ${covArea.darkness.toFixed(1)}（覆盖 ${(covArea.ratio * 100).toFixed(1)}%）｜缺省 ${dflt.size}B`,
+  );
+  const areaBad = [];
+  if (!(covArea.darkness > covSingle.darkness * 1.15)) {
+    areaBad.push(
+      `⑥ \`preview_size:"area"\` 的平均浓度没有明显更高（${covArea.darkness.toFixed(1)} vs ` +
+        `${covSingle.darkness.toFixed(1)}）⇒ 来回 5 趟没生效`,
+    );
+  }
+  if (dflt.size !== single.size) {
+    areaBad.push(`⑥ 缺省与显式 single 的缩略图不同（${dflt.size}B vs ${single.size}B）⇒ 缺省行为被改了 ✗`);
+  }
+  if (areaBad.length) {
+    console.error(`❌ ${areaBad.length} 项没成立：${areaBad.join("｜")}`);
+    process.exit(1);
+  }
+  console.log("✓ ⑥ 成立：area 的**平均浓度**明显更高（来回 5 趟的叠加看得见 ✓）；缺省与 single 逐字节相同 ✓");
   console.log(`✓ 试笔触可用：${swatches.length} 个组合一次出图、不污染文档、图能取、可复现`);
 };
 

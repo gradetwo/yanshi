@@ -2986,6 +2986,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。",
         params: &[
             param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
+            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓）"),
+            param!("preview_size", String, false, "预览形态：**single**（缺省 = 单笔触，看「这支笔长什么样」✓）/ **area**（**同一区域来回 5 趟** ⇒ 看**覆盖力 / 叠加 / 透明度累积** ✓ —— 铺大色前用它，避免「小图好看、大面积太透明」✗）。给了 `paths` 时以 `paths` 为准 ✓"),
             param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
             param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
             param!("size", Number, false, "笔尖直径（像素，缺省 24，上限 512）"),
@@ -13911,6 +13913,39 @@ pub fn smooth_stroke_points(points: &[(f64, f64, f64)]) -> Vec<(f64, f64, f64)> 
         .collect()
 }
 
+/// **★ 大面积预览的点列（新功能问题 6）★**（第 254 轮）
+///
+/// **为什么需要它**：实测反馈 —— 某支水彩笔在**小图单笔**预览上看着轻盈好看 ✓，
+/// 但**大面积平涂时太透明**（6 笔下去几乎看不见 ✗）=> 只能改回另一支 ✗。
+/// **根因**：小图单笔看不出**覆盖力 / 叠加 / 透明度累积** ✓。
+/// **做法**：在同一块预览区域里**来回 5 趟** ✓ => 叠加效果就看得见了 ✓
+///（`preview_size: "single"` 是缺省、也就是今天的行为 ✓，`"area"` 才是这个 ✓）。
+///
+/// **几何**：横向跨度、起点与 `default_preview_points` 同一套 `margin` ✓
+/// （预览画布是按单笔那个尺寸开的 ✓，所以这里**只在它的范围内**来回 ✓）；
+/// 每趟 y 递增，5 趟都落在原单笔的纵向范围内 ✓ ⇒ **不会跑到画布外** ✓。
+fn area_preview_points(size: f64) -> Vec<(f64, f64, f64)> {
+    let length = (size * 5.0).clamp(64.0, 160.0);
+    let margin = size + 8.0;
+    let amplitude = (size * 0.6).clamp(4.0, 24.0);
+    let lanes: i32 = 5;
+    let mut points = Vec::with_capacity(lanes as usize * 2);
+    for lane in 0..lanes {
+        // 5 趟铺满原来的纵向范围（±amplitude）✓
+        let offset = (lane as f64 / (lanes - 1) as f64 - 0.5) * amplitude * 2.0;
+        let y = margin + amplitude + offset;
+        // 偶数列从左到右、奇数列从右到左 ⇒ 像真人来回平涂 ✓
+        let (x0, x1) = if lane % 2 == 0 {
+            (margin, margin + length)
+        } else {
+            (margin + length, margin)
+        };
+        points.push((x0, y, 0.85));
+        points.push((x1, y, 0.85));
+    }
+    points
+}
+
 /// **预览用的固定采样笔迹** ✓ —— 同一支笔刷 ⇒ **逐字节相同**的预览 ✓（判据要用它 ✓）。
 ///
 /// 一条**缓 S 形** ✓（不是直线 ✗）：笔尖的圆头 / 纹理 / 干湿只有在**转弯**处才看得出来 ✓。
@@ -15613,6 +15648,14 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
     if paths.is_empty() {
         paths = vec![None];
     }
+    // **★ `preview_size`（新功能问题 6）★**：`single`（缺省 = 今天的行为 ✓）
+    //   / `area`（同一区域来回 5 趟 ⇒ 看**覆盖力 / 叠加 / 透明度累积** ✓）。
+    let area_preview = matches!(
+        args.get("preview_size")
+            .and_then(Value::as_str)
+            .unwrap_or("single"),
+        "area" | "patch" | "large"
+    );
     let mut swatches: Vec<Value> = Vec::new();
     for brush in &brushes {
         for color in &colors {
@@ -15627,9 +15670,27 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                 }
                 if let Some(points) = path {
                     sub.insert("points".to_owned(), points.clone());
+                } else if area_preview {
+                    // **★ 大面积预览（问题 6）★**：显式给了 `paths` 就听调用方的 ✓，
+                    //   否则 `preview_size: "area"` 用"来回 5 趟"的点列 ✓（看得见覆盖力 ✓）。
+                    let preview_size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+                    sub.insert(
+                        "points".to_owned(),
+                        json!(area_preview_points(preview_size)
+                            .into_iter()
+                            .map(|(x, y, pressure)| json!([x, y, pressure]))
+                            .collect::<Vec<_>>()),
+                    );
                 }
                 if let Some(smooth) = args.get("smooth") {
                     sub.insert("smooth".to_owned(), smooth.clone());
+                }
+                // **★ 转发 `brush_params`（问题 5 的"批量试参数"）★**（第 254 轮）
+                //   需求文档写的是"试 3 支笔刷 × 2 种 opaque（0.5/0.9）= 6 张预览图" ✓
+                //   => 不给 `brush_params` 就没法"同一支笔刷、不同参数"地试 ✗（实测踩到：
+                //   `preview_size` 那条判据传了 `brush_params` 却拿不到图 => 退出码 3 ✗）。
+                if let Some(params) = args.get("brush_params") {
+                    sub.insert("brush_params".to_owned(), params.clone());
                 }
                 // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**
                 //   ＋ **∴ 实测踩到 ✗**：**第一支用了 `Blender`（**纯揉合 ✓）✗ 空画布上什么都不沉积**✗
