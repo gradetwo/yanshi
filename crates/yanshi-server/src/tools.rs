@@ -2937,6 +2937,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
             // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
+            // **P1 #10 罩染**：opt-in（缺省不给 => 点列与透明度都不动）。
+            param!("glaze", Boolean, false, "罩染（缺省 false）：true => 单笔自动拆成多遍**微偏移薄涂**（古典油画的透明罩染；整笔透明度按遍数摊薄），适合皮肤/暗部的丝滑渐变"),
+            param!("glaze_passes", Integer, false, "罩染遍数 1..8（缺省 3；只在 `glaze: true` 时有意义）"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!(
                 "points",
@@ -13616,6 +13619,55 @@ fn lerp_srgb(from: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
 ///
 /// **为什么是插值而不是逼近** ✓（Catmull-Rom 过控制点 ✓）：画的人给的点**就是他点的位置** ✓
 /// ⇒ 平滑**不许把线拉离**那些点 ✗（渲染层已有测试钉住这一条 ✓）。
+// **★ 罩染（P1 #10）：一笔拆成多遍微偏移薄涂 ★**（第 254 轮）
+//
+// **需求文档 P1 #10**："`brush_stroke` 加 `glaze: true` => 单笔自动拆为 3 遍微偏移薄涂
+// （每遍透明度低 0.08–0.16、每遍法向微偏移、越往后越集中）"——目的：**皮肤、头巾暗部的丝滑渐变**
+// （古典油画的"罩染"是把透明色一层层叠上去 ✓）。
+//
+// **本版怎么做（以及为什么这么做）**：
+//   * 一次 `brush_stroke` 只调一次 `paint_brush`（提交一个原子）=> 要"三遍"最省的做法是
+//     **在点列层面把三遍交错展开**：`p1(A), p2(B), p3(C), p4(A), …`。
+//   * **为什么不"先整遍 A、再整遍 B"**：`stamp_stroke_from` 是**按点序连续落笔**的
+//     => 那样会在两遍之间产生一条**回程跳线** ✗（画面上多一道）。
+//   * 交错之后，相邻点的偏移只有几像素（`spacing` 由 `size` 决定）=> 得到的是**加宽的柔带** ✓
+//     而不是跳线 ✓。
+//   * **透明度**：调用方把整笔的 `opacity` 除以遍数（三遍叠加 ≈ 原来的浓度）=> 由上层做 ✓，
+//     本函数只负责几何 ✓。
+//
+// **确定性**：偏移方向只由**局部切线**决定（相邻点差分），没有随机数；`passes <= 1` 或
+// `spacing <= 0` 时**原样返回**（=> `glaze` 不开时点列一个都不动 ✓）。
+fn apply_glaze_passes(
+    points: &[(f64, f64, f64)],
+    passes: usize,
+    spacing: f64,
+) -> Vec<(f64, f64, f64)> {
+    if passes <= 1 || points.len() < 2 || spacing <= 0.0 {
+        return points.to_vec();
+    }
+    let passes = passes.min(8);
+    let mut out = Vec::with_capacity(points.len() * passes);
+    for (index, point) in points.iter().enumerate() {
+        // 局部切线：用前后邻点差分（端点用单侧差分）
+        let prev = if index > 0 { points[index - 1] } else { *point };
+        let next = if index + 1 < points.len() {
+            points[index + 1]
+        } else {
+            *point
+        };
+        let (tx, ty) = (next.0 - prev.0, next.1 - prev.1);
+        let norm = (tx * tx + ty * ty).sqrt().max(1e-9);
+        // 法向 = 切线逆时针转 90°
+        let (nx, ny) = (-ty / norm, tx / norm);
+        for pass in 0..passes {
+            // 对称扇形：中间那遍在原位，两侧各偏移
+            let offset = (pass as f64 - (passes as f64 - 1.0) / 2.0) * spacing;
+            out.push((point.0 + nx * offset, point.1 + ny * offset, point.2));
+        }
+    }
+    out
+}
+
 // **★ 曲率驻留（P1 #8 的一半）：曲率大的地方多插点 ★**（第 254 轮）
 //
 // **需求文档 P1 #8** 的"曲率驻留三分之二幂律"：手在**转弯处**会天然减速 ⇒ 单位长度上采样点更密
@@ -14876,6 +14928,32 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     if optional_bool(args, "humanize").unwrap_or(true) && !all_points_have_pressure(args) {
         apply_humanize_envelope(&mut points);
     }
+    // **★ P1 #10 罩染（opt-in）★**（第 254 轮）
+    //   `glaze: true` => 3 遍（可调 `glaze_passes`）**微偏移薄涂**：几何由
+    //   `apply_glaze_passes` **交错展开**（p1(A),p2(B),p3(C),p4(A)…）—— 先整遍 A 再整遍 B 会在
+    //   两遍之间留一条**回程跳线** ✗；交错之后相邻点只差几像素 => 得到**加宽的柔带** ✓。
+    //   **透明度**：整笔除以遍数（三遍叠加 ≈ 原来的浓度 ✓）。
+    //   **不给 `glaze` / 给 false** => 遍数 1 => 点列与透明度**都不动**（逐字节不变 ✓）。
+    let (points, glaze_passes) = if optional_bool(args, "glaze").unwrap_or(false) {
+        let passes = args
+            .get("glaze_passes")
+            .and_then(Value::as_u64)
+            .unwrap_or(3)
+            .clamp(1, 8) as usize;
+        // "微偏移"：间距与笔尖尺寸成比例（缺省 size 24 => 间距约 4.3px）
+        let size = args
+            .get("size")
+            .and_then(Value::as_f64)
+            .unwrap_or(24.0)
+            .max(1.0);
+        (apply_glaze_passes(&points, passes, size * 0.18), passes)
+    } else {
+        (points, 1usize)
+    };
+    let glaze_opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .map(|value| value / glaze_passes as f64);
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(
         ctx,
@@ -14884,7 +14962,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         args.get("size").and_then(Value::as_f64),
         args.get("color"),
         args.get("color_to"),
-        args.get("opacity").and_then(Value::as_f64),
+        glaze_opacity,
         args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
@@ -17421,6 +17499,30 @@ mod tests {
             "同一串点只改 dtimes（5ms vs 500ms）却产出**完全相同**的像素 \
              => 时间没有真正影响引擎（接线断了，或这套设置不吃时间）"
         );
+    }
+
+    // **★ P1 #10 罩染（数据层，决定性）★**（第 254 轮）
+    #[test]
+    fn glaze_passes_are_interleaved_and_off_by_default() {
+        let line: Vec<(f64, f64, f64)> = (0..5).map(|i| (i as f64 * 10.0, 50.0, 0.5)).collect();
+        // 1 遍（或不给）=> 原样
+        assert_eq!(super::apply_glaze_passes(&line, 1, 3.0), line);
+        assert_eq!(super::apply_glaze_passes(&line, 3, 0.0), line);
+        // 3 遍 => 点数 ×3，且**交错**（前三个点是同一个原始点的三份偏移）
+        let glazed = super::apply_glaze_passes(&line, 3, 4.0);
+        assert_eq!(glazed.len(), line.len() * 3, "3 遍应当把点数乘 3");
+        // 水平线的法向是竖向 => 同一个原始点的三份偏移应当在 **y 上**分开、x 相同
+        assert!((glazed[0].0 - glazed[1].0).abs() < 1e-9);
+        assert!((glazed[1].0 - glazed[2].0).abs() < 1e-9);
+        assert!((glazed[0].1 - glazed[1].1).abs() > 1.0, "三遍必须真的错开");
+        // 对称扇形：中间那遍回到原位
+        assert!((glazed[1].1 - 50.0).abs() < 1e-9, "中间那遍应当在原位");
+        // 端点不被挪出太远（保守：偏移 <= spacing × passes/2）
+        for point in &glazed {
+            assert!((point.1 - 50.0).abs() <= 4.0 * 2.0 + 1e-9);
+        }
+        // 确定性
+        assert_eq!(glazed, super::apply_glaze_passes(&line, 3, 4.0));
     }
 
     // **★ P1 #8 曲率驻留（数据层，决定性）★**（第 254 轮）
