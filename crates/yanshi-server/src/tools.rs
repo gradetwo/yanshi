@@ -2935,6 +2935,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
+            // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
+            param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
             param!("brush", String, true, "笔刷名（assets/brushes 或工作区缓存里的 .myb；可省 .myb）"),
             param!(
                 "points",
@@ -13614,6 +13616,53 @@ fn lerp_srgb(from: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
 ///
 /// **为什么是插值而不是逼近** ✓（Catmull-Rom 过控制点 ✓）：画的人给的点**就是他点的位置** ✓
 /// ⇒ 平滑**不许把线拉离**那些点 ✗（渲染层已有测试钉住这一条 ✓）。
+// **★ 曲率驻留（P1 #8 的一半）：曲率大的地方多插点 ★**（第 254 轮）
+//
+// **需求文档 P1 #8** 的"曲率驻留三分之二幂律"：手在**转弯处**会天然减速 ⇒ 单位长度上采样点更密
+// ⇒ 笔触在拐角处颜料更足、边缘更实。经验关系是驻留量 ∝ **κ^(2/3)**。
+//
+// **为什么不默认开**（本仓纪律）：它会**改变点列** ⇒ 改变像素 ⇒ 既有像素级判据会动。
+// 所以做成**显式参数** `dwell`（缺省 0.0 ⇒ **一个点都不加、逐字节不变**）。
+//
+// **确定性**：只依赖几何（相邻三点的转角）与固定公式，没有随机数。
+fn apply_curvature_dwell(points: &[(f64, f64, f64)], strength: f64) -> Vec<(f64, f64, f64)> {
+    if strength <= 0.0 || points.len() < 3 {
+        return points.to_vec();
+    }
+    let strength = strength.clamp(0.0, 1.0);
+    let mut out: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len() * 2);
+    out.push(points[0]);
+    for window in points.windows(3) {
+        let (a, b, c) = (window[0], window[1], window[2]);
+        // 转角：0 = 直行，π = 掉头
+        let (v1x, v1y) = (b.0 - a.0, b.1 - a.1);
+        let (v2x, v2y) = (c.0 - b.0, c.1 - b.1);
+        let n1 = (v1x * v1x + v1y * v1y).sqrt().max(1e-9);
+        let n2 = (v2x * v2x + v2y * v2y).sqrt().max(1e-9);
+        let cos = ((v1x * v2x + v1y * v2y) / (n1 * n2)).clamp(-1.0, 1.0);
+        let turn = cos.acos();
+        // **三分之二幂律**：驻留量 ∝ (转角/π)^(2/3)
+        let normalized = (turn / std::f64::consts::PI).clamp(0.0, 1.0);
+        let extra = (strength * 8.0 * normalized.powf(2.0 / 3.0)).round() as usize;
+        out.push(b);
+        for step in 1..=extra {
+            let t = step as f64 / (extra + 1) as f64;
+            out.push((
+                b.0 + (c.0 - b.0) * t,
+                b.1 + (c.1 - b.1) * t,
+                b.2 + (c.2 - b.2) * t,
+            ));
+        }
+    }
+    out.push(points[points.len() - 1]);
+    out
+}
+
+/// **Catmull-Rom 平滑**（把控制点当样条重采样 ⇒ 手写折线不再有硬角）。
+///
+/// **注**（第 254 轮）：这条文档注释被 `dwell` 那次插入**挤掉**过一版 —— 我把新函数的
+/// 注释块插在了它和函数之间，于是 clippy 的 `missing_docs` 报错。现在补回来，
+/// 并把新块挪到**它前面**（见上面的 `apply_curvature_dwell`）。
 pub fn smooth_stroke_points(points: &[(f64, f64, f64)]) -> Vec<(f64, f64, f64)> {
     let points: Vec<yanshi_render::brush::StrokePoint> = points
         .iter()
@@ -14815,6 +14864,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //       => 既有的像素级判据不受影响；
     //     * **没给压力（缺省 0.5）** => 才套包络 —— 这就是「默认就好用」：AI 通常只给坐标。
     //   **包络施加在**平滑之后**的点上**：Catmull-Rom 已经把压力插值平滑过，再套包络才不会出折角。
+    // **★ P1 #8 曲率驻留（**opt-in**）★**（第 254 轮）
+    //   `dwell` 缺省 **不给** ⇒ `apply_curvature_dwell` 都不调用 ⇒ 点列**一个都不动**
+    //   （这是本仓纪律：会改像素的新行为必须显式打开 ✓）。
+    //   给了才按 κ^(2/3) 在**转弯处**多插点（手在拐角天然减速的物理 ✓）。
+    let points = match args.get("dwell").and_then(Value::as_f64) {
+        Some(strength) => apply_curvature_dwell(&points, strength),
+        None => points,
+    };
     let mut points = points;
     if optional_bool(args, "humanize").unwrap_or(true) && !all_points_have_pressure(args) {
         apply_humanize_envelope(&mut points);
@@ -17364,6 +17421,39 @@ mod tests {
             "同一串点只改 dtimes（5ms vs 500ms）却产出**完全相同**的像素 \
              => 时间没有真正影响引擎（接线断了，或这套设置不吃时间）"
         );
+    }
+
+    // **★ P1 #8 曲率驻留（数据层，决定性）★**（第 254 轮）
+    //   `dwell` 是**显式 opt-in**（缺省 0.0）=> 必须做到"不给就一个点都不加"。
+    #[test]
+    fn curvature_dwell_is_off_by_default_and_denser_at_corners() {
+        let straight: Vec<(f64, f64, f64)> = (0..5).map(|i| (i as f64 * 10.0, 0.0, 0.5)).collect();
+        // 缺省（0.0）⇒ 一个点都不加
+        assert_eq!(
+            super::apply_curvature_dwell(&straight, 0.0).len(),
+            straight.len(),
+            "dwell=0 时不许改点列"
+        );
+        // 直线（转角 0）⇒ 也不加
+        assert_eq!(
+            super::apply_curvature_dwell(&straight, 1.0).len(),
+            straight.len(),
+            "直线没有曲率，不该驻留"
+        );
+        // 直角拐弯 ⇒ 必须比直线多（曲率驻留生效）
+        let corner = vec![(0.0, 0.0, 0.5), (10.0, 0.0, 0.5), (10.0, 10.0, 0.5)];
+        let dwelled = super::apply_curvature_dwell(&corner, 1.0);
+        assert!(
+            dwelled.len() > corner.len(),
+            "拐角处应当多插点：{} vs {}",
+            dwelled.len(),
+            corner.len()
+        );
+        // 端点必须保住（几何整体不漂）
+        assert_eq!(dwelled.first().copied(), Some(corner[0]));
+        assert_eq!(dwelled.last().copied(), Some(corner[2]));
+        // 确定性
+        assert_eq!(dwelled, super::apply_curvature_dwell(&corner, 1.0));
     }
 
     // **★ P1 #11 humanize：包络的形状与不对称（数据层，决定性）★**（第 254 轮）
