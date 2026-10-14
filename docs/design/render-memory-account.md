@@ -281,7 +281,13 @@ for ty in y0..=y1 { for tx in x0..=x1 {
 `struct BelowTiles { sig, tiles: Vec<((i64,i64), Buffer)>, empty, by_sig: HashMap<Vec<String>, SigTiles> }`
 （`render.rs:738`）—— **按图层指纹（`by_sig`）记忆化**的 tile 快照，用来做**增量渲染**
 （"改某一层时它以下不变 ⇒ below 命中"）。而且它**只在 `clear_all_caches()` 里被置 `None`**
-（`render.rs:1021`）=> **没有任何尺寸上限** ✗。
+（`render.rs:1021`）=> 对 `by_sig` **没有任何尺寸上限** ✗。
+
+**★ 这条不是我推断的，代码自己写着 ★**：`render.rs:293` 有
+`const BELOW_TILE_BUDGET: usize = 256;`，它在 `render.rs:2303` 只对**旧字段 `tiles`** 生效
+（`if merged.len() > BELOW_TILE_BUDGET { … merged.drain(0..drop) }`）=> 套在旧字段上；
+而 `render.rs:348` 的注释**明说**：「**`BELOW_TILE_BUDGET` 只管旧字段的格数** ✗ ⇒ **而 `by_sig` …**」
+✓ —— 也就是"按指纹的那份记忆**没有被这个预算管住**" ✓。
 
 ### 12.1 这份账目与**所有实测**都对得上
 
