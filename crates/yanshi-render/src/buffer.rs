@@ -498,6 +498,10 @@ impl Buffer {
         true
     }
 
+    /// **把本缓冲编码成 sRGB RGBA8**（`background` 为 `None` 时用文档/透明底）。
+    ///
+    /// **注**（第 254 轮）：这条文档被"新增方法插在它和函数之间"坑掉过一次 => `missing_docs` 报错。
+    /// **规矩见 `AGENTS.md`**：新增代码要插在**整段文档注释之前**（本会话已因此踩坑**四次**）。
     pub fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
         self.to_rgba8_blocks(background, None).0
     }

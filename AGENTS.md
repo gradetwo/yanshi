@@ -32,3 +32,22 @@ CDP 会**静默返回一个空对象 `{}`**。那看起来像"页面返回了空
 1. **普查，不要只改一处**：本仓库曾有 **13 处**同类缺口（第 403 轮逐处查出的）。
 2. **判据必须能说"我自己坏了"**：求值返回空对象时，要用**与产品失败不同的退出码**报出来
    （现用 `exit(3)` ＋ 文案"判据自身的求值失败（不是产品问题）"）。
+
+## 新增代码的插入位置（第 254 轮：同一个坑踩了四次，所以写成规矩）
+
+**规则**：往一个已有文件里**新增函数/方法/模块**时，必须插在**整段文档注释（`///`/`//!`）之前**，
+**不能插在"文档注释与它描述的那个项之间"**。否则那条注释会**挂到新代码上**，原项变成
+"缺文档" => `cargo clippy -- -D warnings` 的 `missing_docs` 直接红。
+
+**同理**：**测试模块（`#[cfg(test)] mod …`）要留在文件的最后**。往后面追加代码之前，先看一眼
+文件末尾是不是测试模块；是的话，新代码要插在它**之前**。
+
+**实测代价**（第 254 轮，四次）：
+1. `crates/yanshi-server/src/tools.rs` 的 `smooth_stroke_points`；
+2. `crates/yanshi-render/src/filter.rs` 的 `apply_filter`；
+3. `crates/yanshi-render/src/alloc_probe.rs` 的 `mod tests`（`items after a test module`）；
+4. `crates/yanshi-render/src/buffer.rs` 的 `to_rgba8`。
+
+**配套纪律**：提交前先跑 `cargo clippy --workspace --all-targets -- -D warnings`，
+**并且让提交命令依赖它的结果**（`cargo clippy … || exit 1` 之后再 `git commit`）——
+第 254 轮我有两次"clippy 报错但提交照样发出去了"，都是因为命令链里没有设门。
