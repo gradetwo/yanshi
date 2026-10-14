@@ -529,7 +529,7 @@ boosts low-saturation pixels more than saturated ones.
 
 ## Filters (13)
 
-box_blur, gaussian_blur, motion_blur, sharpen, clarity, dehaze, film_grain, noise, vignette, glow,
+box_blur, gaussian_blur, motion_blur, sharpen, clarity, dehaze, film_grain, relief, noise, vignette, glow,
 brightness_contrast, saturation, invert.
 
 `dehaze` requires `air: [r,g,b]`; `estimate_dehaze` (read-only) suggests it. `film_grain` takes

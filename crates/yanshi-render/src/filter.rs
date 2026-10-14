@@ -1167,7 +1167,7 @@ pub const ADJUSTMENT_NAMES: [&str; 12] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 13] = [
+pub const FILTER_NAMES: [&str; 14] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
@@ -1181,6 +1181,9 @@ pub const FILTER_NAMES: [&str; 13] = [
     "brightness_contrast",
     "saturation",
     "invert",
+    // **P2 #15 厚涂浮雕**（第 254 轮）：**必须在这里登记** —— 工具侧用它做白名单，
+    // 漏了就会报"内核未实现该滤镜"（本轮实测踩到：`FilterKind` 加了变体还不够）。
+    "relief",
 ];
 
 /// 解析 `[r,g,b]` 形式的三元组，缺省为零（不改变该档）。

@@ -670,6 +670,7 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 滤镜 `dehaze` | `air` `[r,g,b]`（**必填**）、`omega` 0..1、`floor` 0.02..0.8 | 暗通道先验；大气光由参数给出，透射率图做 radius=4 模糊（外扩固定 8） |
 | 只读工具 `estimate_dehaze` | — | 整幅扫描后给出建议 `air`/`omega`，供 `add_filter(dehaze)` 使用 |
 | 滤镜 `film_grain` | `amount` 0..1、`size` 1..8、`seed` | 按**文档坐标**取块坐标生成确定性颗粒（同 [`noise`] 的纪律），按亮度加权（中间调最强），无邻域 |
+| 滤镜 `relief` | `azimuth`（缺省 135）、`elevation`（45）、`strength`（0.6）、`height_gain`（1） | **厚涂浮雕（P2 #15）**：把 **alpha 当高度场**，中心差分求法向，再按光向给**明度**加方向性偏置（迎光提亮、背光压暗）。`strength=0` ⇒ 不动像素；只处理 `alpha > 0`；邻居空白按"同高"（否则把笔画边界当坡面）。**确定性、无随机**。|
 | 修图 `clone_stamp`（对象类型 `retouch`） | `points`/`source_offset`/`size`/`hardness`/`opacity` | 从**应用本对象之前**的图层内容按偏移采样后盖回（经典仿制图章） |
 | 修图 `heal`（工具 `heal_stamp`） | 同上 | 复制源纹理的同时，按**源/目标局部均值差**把低频颜色对齐到目标处 |
 | 修图 `smudge`（工具 `smudge`） | `points`/`size`/`smudge_length`/`hardness`/`opacity` | 每 stamp 沿笔迹方向**后退** `smudge_length` 采样，把后方内容拖到前方 |
@@ -977,7 +978,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **12 种** / 滤镜 **13 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **12 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，
