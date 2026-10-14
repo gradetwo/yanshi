@@ -13760,12 +13760,21 @@ fn stamp_stroke_from(
     const STEP_SECONDS: f64 = 0.01;
     let mut steps = 0usize;
     for (index, (x, y, pressure)) in points.iter().enumerate() {
-        // **∴ 这个点相对**上一个点**的真实时间（秒）** ✓（**没有就给 -1 ⇒ 落回 STEP_SECONDS ✓）
+        // **★ 这个点相对**上一个点**的真实时间（秒）★**（第 254 轮）
+        //   ＋ **没有时间戳（-1）⇒ 每一步都用 STEP_SECONDS** —— **注意是"每一步"**！
+        //     实测回归：我第一版对没有时间戳的点也写成 `segment_seconds / divisions`，
+        //     而那时 `segment_seconds` 已经是 STEP_SECONDS => 每步被**除小了** =>
+        //     `stroke_smoothing::the_default_is_still_not_smoothed` 当场红
+        //     （"缺省行为逐字节不变"这条约束正是它守的）。
+        //   ＋ **有时间戳 ⇒ 把这一段的真实时间**均分**到各插值步**（总时长守恒）。
         let provided = dtimes.get(index).copied().unwrap_or(-1.0);
-        let segment_seconds = if provided >= 0.0 {
-            provided
+        // **∴ 每一步的步长在**调用点**算 ✗ 不能在这儿算** ✓ ——
+        //   **∴ 因为 `divisions`（这一段的插值步数）只在下面的插值分支里才有** ✓
+        //     （**∴ 我第一版在这里就用了 `divisions` ⇒ E0425 编译错 ✓）★
+        let (segment_seconds, distribute) = if provided >= 0.0 {
+            (provided, true)
         } else {
-            STEP_SECONDS
+            (STEP_SECONDS, false)
         };
         match *previous {
             None => {
@@ -13778,7 +13787,9 @@ fn stamp_stroke_from(
                     *pressure as f32,
                     0.0,
                     0.0,
-                    segment_seconds,
+                    // **第一笔只播种**：这里恒用 STEP_SECONDS（与老行为一致；
+                    // 第一个点的 provided 本来就是 0，用真实值反而会改变老行为）
+                    STEP_SECONDS,
                 );
                 steps += 1;
             }
@@ -13822,7 +13833,13 @@ fn stamp_stroke_from(
                         ip as f32,
                         dx as f32,
                         dy as f32,
-                        segment_seconds / divisions.max(1) as f64,
+                        // **有真实时间 ⇒ 段内均分（总时长守恒）；没有 ⇒ STEP_SECONDS/步**
+                        //   （`divisions` 在这个分支里才有 —— 这就是上一版 E0425 的原因）
+                        if distribute {
+                            segment_seconds / divisions.max(1) as f64
+                        } else {
+                            STEP_SECONDS
+                        },
                     );
                     last_x = ix;
                     last_y = iy;
