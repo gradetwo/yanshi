@@ -27976,15 +27976,8 @@ tool-render-memory-budget.mjs  # **类型：内存账目（DEF-03 的根因；�
 #     * 端到端 `tool-time-ms.mjs`：同一几何、`Clouds.myb` + `speed1_slowness`/`speed1_gamma`/
 #       `dabs_per_second`，间隔 10ms => 墨 3446，500ms => 墨 9130（指纹不同）。
 
-# **★ 第 254 轮：介质路径 `color_mixing` 的光谱分支（已知红，**待查**）★**
-#   现状（实测）：`medium_stroke` 的 `color_to` **渐变已生效** ✓
-#     （对照实验：不给 color_to 近/远差=6；给了=37 ⇒ 接线是对的 ✓）；
-#     但 `color_mixing:"pigment"` 与 `"rgb"` 的画面**逐字节相同** ✗ ⇒ 判据 ② 红。
-#   已排除：参数声明（运行中的服务认得 `color_mixing` ✓）、库本身
-#     （`yanshi-render` 的新单测 `medium_gradient_mixing_tests` 用同一对颜色断言 pigment≠rgb 并通过 ✓）。
-#   待验假设（下一条指令从这里开始）：
-#     ① 用**饱和**黄→蓝时，中段 rgb/pigment 在**渲染后**仍被量化抹平；
-#     ② `mix_colors` 的 Pigment 分支在**服务端这一次调用**里走了 `Rgb` 回落
-#        （下一步：在 `medium_point_colors` 里临时打印 `mixing.name()` 与两次 `mix_colors` 的返回值，
-#          直接看服务端拿到的是哪个模式、库给了什么 —— 这是唯一还没观测的一环 ✗）。
-tool-medium-color-mixing.mjs
+# **★ 第 254 轮：介质路径 `color_mixing` —— 已修好，不再是已知红 ★**
+#   修法：**先加密路径再混色**（`medium_gradient_points`）—— 根因是 host 自己的线性插值
+#   把中段颜色接管了，光谱混色只作用在控制点上（端点恒等）⇒ 两种模式全同。
+#   判据 `tool-medium-color-mixing.mjs` 现在**全绿**（渐变 ✓、pigment≠rgb ✓、缺省=rgb 逐字节 ✓）。
+#   端到端验收 `tool-vermeer-study.mjs` 的缺口清单也从 1 条变成 **0 条** ✓。

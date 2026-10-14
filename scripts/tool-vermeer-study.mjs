@@ -146,13 +146,9 @@ const main = async () => {
     if (!sclera || sclera.ok !== true) note("`medium_stroke` 失败 ⇒ 介质路径（载墨/湿度/纹理）用不上");
 
     // ⑤ 虹膜：深棕，用 `color_to` 做渐变
-    //    **★ 验收发现（真缺口）★**：`color_mixing`（P2 ⑯ 的光谱混色）**只在 `brush_stroke` 上**
-    //    ⇒ 介质路径（`medium_stroke`）**不接受**它 ✗（实测报 "medium_stroke 不接受参数 color_mixing"）。
-    //    所以这里**先用 `brush_stroke`** 画渐变（它是支持的那条路 ✓），并把缺口记下来 ✓。
-    note(
-      "`medium_stroke` 不接受 `color_mixing`（P2 ⑯ 只接进了 `brush_stroke` 的 `color_to` 渐变）" +
-        "⇒ 介质路径（油画/水彩）**画不出光谱混色的渐变**",
-    );
+    //    **★ 这里曾经是验收抓到的真缺口 ★**：`medium_stroke` 当时**不接受** `color_mixing`
+    //    （P2 ⑯ 的光谱混色只接进了 `brush_stroke` ✗）=> 第 254 轮已修（"先加密路径再混色" ✓）
+    //    => 现在这一步**应当成功** ✓；若失败就是**回归**，由下面的 `note` 报出来 ✓。
     const iris = await call(doc, token, "brush_stroke", {
       layer_id: "paint",
       object_id: "iris",
@@ -201,7 +197,8 @@ const main = async () => {
     if (!catchlight || catchlight.ok !== true) note("高光那笔失败 ⇒ 眼睛会「没有神」");
 
     // ⑦ 珍珠：柔球体（渐变）+ 主高光 + **二次反光**（珍珠的招牌）
-    // **这一步是故意的探针** ✓：把 `color_mixing` 交给 `medium_stroke` => 应当被拒（记成缺口 ✓）。
+    // **这一步现在是回归哨兵** ✓：介质路径**已经支持** `color_mixing`（第 254 轮修好 ✓）
+    // => 它必须成功；失败就记缺口 ✓。
     const pearl = await call(doc, token, "medium_stroke", {
       layer_id: "paint",
       object_id: "pearl",
@@ -219,6 +216,9 @@ const main = async () => {
       ],
     });
     steps.push(["珍珠本体（暗到亮的渐变）", pearl && pearl.ok === true, pearl]);
+    if (!pearl || pearl.ok !== true) {
+      note("`medium_stroke` 的 `color_to`/`color_mixing` 失败了 ⇒ 介质渐变（P2 ⑯）回归 ✗");
+    }
 
     const reflected = await call(doc, token, "brush_stroke", {
       layer_id: "paint",

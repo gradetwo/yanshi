@@ -12114,34 +12114,81 @@ fn mirror_rgba(rgba: &[u8], width: u32, height: u32, symmetry: yanshi_render::Sy
 /// => 于是**在这里先算好每一点的颜色**，host 只负责"按点用色" ✓。
 ///
 /// **默认不变**：没给 `color_to` => `None` => host 用整笔的 `color` ✓（老行为逐字节不变 ✓）。
-fn medium_point_colors(
+/// 加密后的路径点 ＋ 每点颜色（`medium_gradient_points` 的返回值 ✓）。
+type DenseStrokeGradient = (Vec<(f64, f64, f64)>, Vec<[f32; 4]>);
+
+fn medium_gradient_points(
     points: &[(f64, f64, f64)],
     color: [f32; 4],
-    color_to: Option<[u8; 3]>,
+    to: [u8; 3],
     mixing: yanshi_render::color::ColorMixing,
-) -> Option<Vec<[f32; 4]>> {
-    let to = color_to?;
+) -> DenseStrokeGradient {
     let from = [
         (color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
         (color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
         (color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
     ];
-    let last = points.len().saturating_sub(1).max(1) as f32;
-    Some(
-        points
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                let mixed = yanshi_render::color::mix_colors(mixing, from, to, index as f32 / last);
-                [
-                    f32::from(mixed[0]) / 255.0,
-                    f32::from(mixed[1]) / 255.0,
-                    f32::from(mixed[2]) / 255.0,
+    // **★ 必须"先加密、再混色"（第 254 轮：根因由日志确证）★**
+    //
+    // `yanshi-medium-host` 会把相邻控制点之间的路径**用它自己的线性插值**展开 ✗。
+    // 如果只给**控制点**的颜色，中段的颜色就是 host 的**线性混合**，
+    // 而光谱混色（`pigment`）**只作用在控制点上** ⇒ 端点处混色恒等于原色
+    // ⇒ **两种模式的中段一模一样** ✗（实测日志：`points=2`，只算了 index 0/1，
+    // `mix_colors(pigment, …)` 与 `mix_colors(rgb, …)` 结果完全相同 ✓）。
+    //
+    // **修法**：把每一段按固定步数**加密**（加密点都落在**原线段上** ⇒ **几何不变** ✓），
+    // 再对**加密后的每一点**混色 ⇒ host 的线性插值只作用在已经很接近的相邻色之间 ✓。
+    const SUBDIVISIONS: usize = 24;
+    let mut dense_points: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len() * SUBDIVISIONS);
+    let mut dense_colors: Vec<[f32; 4]> = Vec::with_capacity(points.len() * SUBDIVISIONS);
+    let total = points.len().saturating_sub(1).max(1) as f32;
+    for (index, point) in points.iter().enumerate() {
+        if index > 0 {
+            let previous = points[index - 1];
+            for step in 1..SUBDIVISIONS {
+                let t = step as f64 / SUBDIVISIONS as f64;
+                dense_points.push((
+                    previous.0 + (point.0 - previous.0) * t,
+                    previous.1 + (point.1 - previous.1) * t,
+                    previous.2 + (point.2 - previous.2) * t,
+                ));
+                // 这一小点对应"整笔"的比例：`index - 1 + t` ✓
+                dense_colors.push(mixed_color(
+                    mixing,
+                    from,
+                    to,
+                    ((index - 1) as f32 + t as f32) / total,
                     color[3],
-                ]
-            })
-            .collect(),
-    )
+                ));
+            }
+        }
+        dense_points.push(*point);
+        dense_colors.push(mixed_color(
+            mixing,
+            from,
+            to,
+            index as f32 / total,
+            color[3],
+        ));
+    }
+    (dense_points, dense_colors)
+}
+
+/// 一次混色（byte 空间 → 0..1 单位 ✓）；`alpha` 保持整笔的 alpha ✓。
+fn mixed_color(
+    mixing: yanshi_render::color::ColorMixing,
+    from: [u8; 3],
+    to: [u8; 3],
+    t: f32,
+    alpha: f32,
+) -> [f32; 4] {
+    let mixed = yanshi_render::color::mix_colors(mixing, from, to, t.clamp(0.0, 1.0));
+    [
+        f32::from(mixed[0]) / 255.0,
+        f32::from(mixed[1]) / 255.0,
+        f32::from(mixed[2]) / 255.0,
+        alpha,
+    ]
 }
 
 fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -12272,6 +12319,26 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         })
         .filter(|pixels| !pixels.is_empty());
 
+    // **★ 渐变：先"加密路径"再混色（P1 缺口修复）★**（第 254 轮）
+    //   **只在给了 `color_to` 时才动** ⇒ 默认与"只给 color"的路径**逐字节不变** ✓。
+    //   **加密必须同时换掉 `points` 与每点颜色**（上一轮我只换颜色 ⇒ host 展开后下标越界
+    //   ⇒ 渐变根本没出现 ✗；见 `medium_gradient_points` 的注释）。
+    let (points, point_colors) = match args.get("color_to") {
+        Some(value) if !value.is_null() => {
+            let bytes = brush_color_to_srgb_bytes(value)?;
+            let mixing = yanshi_render::color::ColorMixing::parse(
+                args.get("color_mixing")
+                    .and_then(Value::as_str)
+                    .unwrap_or("rgb"),
+            )
+            .unwrap_or(yanshi_render::color::ColorMixing::Rgb);
+            let (dense_points, colors) =
+                medium_gradient_points(&points, color, [bytes[0], bytes[1], bytes[2]], mixing);
+            (dense_points, Some(colors))
+        }
+        _ => (points, None),
+    };
+
     let (region, rgba) = yanshi_medium_host::paint_stroke_over(
         &medium,
         &points,
@@ -12281,25 +12348,7 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             load,
             wetness,
             texture,
-            // **每点颜色**（P1 缺口修复）：给了 `color_to` 就按点数比例混色
-            //   （`color_mixing` 缺省 rgb => 老行为不变 ✓；见 `medium_point_colors`）。
-            point_colors: medium_point_colors(
-                &points,
-                color,
-                match args.get("color_to") {
-                    Some(value) if !value.is_null() => {
-                        let bytes = brush_color_to_srgb_bytes(value)?;
-                        Some([bytes[0], bytes[1], bytes[2]])
-                    }
-                    _ => None,
-                },
-                yanshi_render::color::ColorMixing::parse(
-                    args.get("color_mixing")
-                        .and_then(Value::as_str)
-                        .unwrap_or("rgb"),
-                )
-                .unwrap_or(yanshi_render::color::ColorMixing::Rgb),
-            ),
+            point_colors,
         },
         base.as_deref(),
     )?;
