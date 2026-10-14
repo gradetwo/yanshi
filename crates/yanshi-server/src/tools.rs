@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 76 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 77 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（76 个）。
+    /// 核心层：默认注册（77 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -492,7 +492,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，76 个）。
+    /// 核心层（默认注册，77 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1285,7 +1285,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 76 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 77 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -5037,7 +5037,11 @@ fn read_list_fonts(_ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
 ///   ＋ **∴ 所以语义要说清 ✗**：**真字体画出来的是**位图**（`import_image` ✓）
 ///     **∴ 不是可编辑的文本对象**✗ ⇒ **要可编辑就用 `builtin`** ✓（**回执里 `rasterized: true` ✓）★★
 /// **∴ 找不到字体 ⇒ **直接报错**✗ 不静默退回位图** ✓（**否则用户以为换字体成功了 ✓）★★
-fn write_draw_text_with_font(ctx: &mut ToolContext<'_>, args: &Value, family: &str) -> Result<Value> {
+fn write_draw_text_with_font(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    family: &str,
+) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?.to_owned();
     let data = require_object(args, "data")?;
     let text = data.get("text").and_then(Value::as_str).unwrap_or_default();
@@ -5047,8 +5051,16 @@ fn write_draw_text_with_font(ctx: &mut ToolContext<'_>, args: &Value, family: &s
             ErrorContext::detail("data.text 不能为空（真字体那条路也要有文本 ✓）"),
         ));
     }
-    let size = data.get("size").and_then(Value::as_f64).unwrap_or(24.0).max(1.0) as f32;
-    let align = data.get("align").and_then(Value::as_str).unwrap_or("left").to_owned();
+    let size = data
+        .get("size")
+        .and_then(Value::as_f64)
+        .unwrap_or(24.0)
+        .max(1.0) as f32;
+    let align = data
+        .get("align")
+        .and_then(Value::as_str)
+        .unwrap_or("left")
+        .to_owned();
     let color = parse_color_arg(data.get("color"), "data.color").unwrap_or([0, 0, 0, 255]);
     let position = data
         .get("position")
@@ -5087,7 +5099,10 @@ fn write_draw_text_with_font(ctx: &mut ToolContext<'_>, args: &Value, family: &s
         map.insert("font".to_owned(), json!(family));
         map.insert("rasterized".to_owned(), json!(true));
         map.insert("font_pixels".to_owned(), json!([width, height]));
-        map.insert("note".to_owned(), json!("真字体在服务端栅格化成位图 ⇒ 对象是 import_image；要可编辑文本用 font=builtin"));
+        map.insert(
+            "note".to_owned(),
+            json!("真字体在服务端栅格化成位图 ⇒ 对象是 import_image；要可编辑文本用 font=builtin"),
+        );
     }
     Ok(reply)
 }
