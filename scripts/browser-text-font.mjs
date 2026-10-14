@@ -254,6 +254,43 @@ const main = async () => {
     else if (bytes < 20000) bad.push(`④ /fonts/${file} 只有 ${bytes} 字节 ⇒ 像是错误页而不是字体`);
   }
 
+  // **★ ⑤ 系统字体选择（字体方案 Phase 4）★**：**下拉里要出现**服务端枚举到的系统字体** ✓ ★★
+  //   ＋ **∴ 为什么 ✗**：**只有 5 个静态族名（builtin/sans-serif/serif/monospace/cursive ✓）
+  //     ＋ 2 个预置 ⇒ **∴ 用户**选不了自己机器上的字体**✗（**而 Phase 3 已经能画它们 ✓）
+  //       ⇒ **∴ 于是**："服务端会画"与"用户能选"**必须对上** ✓ ★★
+  //   ＋ **∴ 判据做法 ✗**：**点／聚焦那个下拉 ⇒ 触发**懒加载**（**与笔刷列表同一个取舍 ✓：
+  //     **别在启动时拉没人要的东西** ✓）⇒ **∴ 然后要求选项数**明显多于静态那 7 个** ✓
+  //     ＋ **∴ 并**至少有一个族名能在 `list_fonts` 的回执里找到** ✓（**∴ 证明它来自服务端 ✓）★★
+  //   ＋ **∴ 变异 ✗**：**去掉懒加载 ⇒ 仍是 7 个 ⇒ ⑤ 红** ✓ ★★★
+  const before = await evaluate(
+    `String(Array.from((document.getElementById("textFont")||{options:[]}).options).length)`,
+  );
+  await evaluate(
+    `(() => { const s = document.getElementById("textFont"); if (!s) return false; s.dispatchEvent(new FocusEvent("focus", { bubbles: true })); s.dispatchEvent(new Event("pointerdown", { bubbles: true })); return true; })()`,
+  );
+  let after = Number(before);
+  for (let i = 0; i < 40; i += 1) {
+    await new Promise((r) => setTimeout(r, 250));
+    const now = await evaluate(
+      `String(Array.from((document.getElementById("textFont")||{options:[]}).options).length)`,
+    );
+    after = Number(now);
+    if (after > 7) break;
+  }
+  const systemOptions = await evaluate(
+    `JSON.stringify(Array.from((document.getElementById("textFont")||{options:[]}).options).map((o) => o.value))`,
+  );
+  const sysOpts = typeof systemOptions === "string" ? JSON.parse(systemOptions) : [];
+  const serverFonts = await api("list_fonts", {});
+  const serverNames = new Set(((serverFonts && serverFonts.fonts) || []).map((f) => f.family));
+  const fromServer = sysOpts.filter((name) => serverNames.has(name));
+  console.log(`  ⑤ 下拉选项：懒加载前 ${before} 个 ⇒ 之后 ${after} 个｜其中来自服务端 list_fonts 的 ${fromServer.length} 个`);
+  if (after <= 7) {
+    bad.push(`⑤ 字体下拉里只有 ${after} 个选项 ⇒ 系统字体没被加载进来（用户选不到机器上的字体）`);
+  } else if (fromServer.length === 0) {
+    bad.push("⑤ 下拉里的选项没有一个来自 list_fonts ⇒ 它们不是服务端枚举出来的系统字体");
+  }
+
   const logText = await readLog();
   if (/endpoint_not_local/.test(logText)) {
     console.error("❌ 判不了：这个页面是本地/PWA 页面（日志里出现 endpoint_not_local）⇒ 退出码 3");

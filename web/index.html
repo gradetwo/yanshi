@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-3922796475248`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7979509510020`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -2488,9 +2488,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
+const LOCAL_READ_TOOLS = ["get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -9962,7 +9962,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-3922796475248irty-c3ee02b4")
+      caches.open("yanshi-shell-7979509510020irty-544d47b5")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -12429,7 +12429,53 @@ if (exportPsdBtn) {
 }
 
 }
+/// **★ 字体选择器：预置 ＋ **系统字体**（字体方案 Phase 4）★**（**第 254 轮 ✓）
+///
+/// **∴ 为什么懒加载 ✗**：**与笔刷列表**同一个取舍**（**仓库已有的先例 ✓）——
+///   **别在启动时做没人要的事** ✓：**首次聚焦时才问一次 `list_fonts`** ✓
+///   （**∴ 那次回执里是**几百个族名**✓ 一次性塞进 DOM 并不便宜 ✓）★★
+/// **∴ 为什么用 `<optgroup>` 分隔 ✗**：**系统字体有几百支**✗
+///   ⇒ **∴ 直接追加会把**预置那几支**冲到列表底部** ✓（**用户找不到 ✓）★
+/// **∴ 族名是**专有名词**✗ 不翻译** ✓（**∴ `data-i18n="off"` 显式写清 ✓
+///   ＋ **∴ 只有**分组标题**「系统字体」需要词条 ✓）★★
+function setupTextFontPicker() {
+  const select = $("textFont");
+  if (!select) return;
+  let started = false;
+  const load = async () => {
+    if (started) return;
+    // **∴ 先置位 ✗ 再发请求** ✓（**∴ 否则**focus + pointerdown 会各发一次 ✓）★
+    started = true;
+    const reply = await callTool("list_fonts", {}, { refresh: false }).catch(() => null);
+    if (!reply || !reply.ok) {
+      log("系统字体列表取不到（只有内置与预置的那几支可选）", "#c93");
+      return;
+    }
+    const known = new Set(Array.from(select.options).map((option) => option.value));
+    const group = document.createElement("optgroup");
+    group.label = i18nText("系统字体");
+    let added = 0;
+    for (const entry of reply.fonts || []) {
+      const family = entry && entry.family;
+      if (!family || known.has(family)) continue;
+      const option = document.createElement("option");
+      option.value = family;
+      option.textContent = family;
+      option.dataset.i18n = "off";
+      group.append(option);
+      known.add(family);
+      added += 1;
+    }
+    if (added > 0) select.append(group);
+    log("已载入系统字体 " + added + " 支");
+  };
+  // **∴ focus 与 pointerdown 都挂 ✗**：**鼠标点开与键盘聚焦是两条路 ✓（**哪条先来都行 ✓）★
+  select.addEventListener("focus", () => { void load(); });
+  select.addEventListener("pointerdown", () => { void load(); });
+}
+
 setupGapsEntries();
+setupTextFontPicker();
 
 setupBrushDynamics();
 initQuickPanel();
@@ -12832,6 +12878,8 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **∴ 字体选择器的分组标题（Phase 4 ✓）✗**：**族名不翻译 ✗ 只有这个标题要词条** ✓
+  "系统字体": "System fonts",
   // **∴ 预置字体名（**Inter／JetBrains Mono ✓）**不在这里** ✗ ★**：
   //   **∴ 它们是**专有名词**✗ 不该翻译 ✓**（**∴ 而**判据禁止 `zh == en` ✓ —— **∴ 那条规则是对的 ✓**
   //   **∴ 它**抓的正是"廉价占位翻译" ✓）⇒ **∴ 所以**：**用 `data-i18n="off"` 显式声明

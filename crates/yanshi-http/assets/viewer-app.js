@@ -10293,7 +10293,53 @@ if (exportPsdBtn) {
 }
 
 }
+/// **★ 字体选择器：预置 ＋ **系统字体**（字体方案 Phase 4）★**（**第 254 轮 ✓）
+///
+/// **∴ 为什么懒加载 ✗**：**与笔刷列表**同一个取舍**（**仓库已有的先例 ✓）——
+///   **别在启动时做没人要的事** ✓：**首次聚焦时才问一次 `list_fonts`** ✓
+///   （**∴ 那次回执里是**几百个族名**✓ 一次性塞进 DOM 并不便宜 ✓）★★
+/// **∴ 为什么用 `<optgroup>` 分隔 ✗**：**系统字体有几百支**✗
+///   ⇒ **∴ 直接追加会把**预置那几支**冲到列表底部** ✓（**用户找不到 ✓）★
+/// **∴ 族名是**专有名词**✗ 不翻译** ✓（**∴ `data-i18n="off"` 显式写清 ✓
+///   ＋ **∴ 只有**分组标题**「系统字体」需要词条 ✓）★★
+function setupTextFontPicker() {
+  const select = $("textFont");
+  if (!select) return;
+  let started = false;
+  const load = async () => {
+    if (started) return;
+    // **∴ 先置位 ✗ 再发请求** ✓（**∴ 否则**focus + pointerdown 会各发一次 ✓）★
+    started = true;
+    const reply = await callTool("list_fonts", {}, { refresh: false }).catch(() => null);
+    if (!reply || !reply.ok) {
+      log("系统字体列表取不到（只有内置与预置的那几支可选）", "#c93");
+      return;
+    }
+    const known = new Set(Array.from(select.options).map((option) => option.value));
+    const group = document.createElement("optgroup");
+    group.label = i18nText("系统字体");
+    let added = 0;
+    for (const entry of reply.fonts || []) {
+      const family = entry && entry.family;
+      if (!family || known.has(family)) continue;
+      const option = document.createElement("option");
+      option.value = family;
+      option.textContent = family;
+      option.dataset.i18n = "off";
+      group.append(option);
+      known.add(family);
+      added += 1;
+    }
+    if (added > 0) select.append(group);
+    log("已载入系统字体 " + added + " 支");
+  };
+  // **∴ focus 与 pointerdown 都挂 ✗**：**鼠标点开与键盘聚焦是两条路 ✓（**哪条先来都行 ✓）★
+  select.addEventListener("focus", () => { void load(); });
+  select.addEventListener("pointerdown", () => { void load(); });
+}
+
 setupGapsEntries();
+setupTextFontPicker();
 
 setupBrushDynamics();
 initQuickPanel();
@@ -10696,6 +10742,8 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **∴ 字体选择器的分组标题（Phase 4 ✓）✗**：**族名不翻译 ✗ 只有这个标题要词条** ✓
+  "系统字体": "System fonts",
   // **∴ 预置字体名（**Inter／JetBrains Mono ✓）**不在这里** ✗ ★**：
   //   **∴ 它们是**专有名词**✗ 不该翻译 ✓**（**∴ 而**判据禁止 `zh == en` ✓ —— **∴ 那条规则是对的 ✓**
   //   **∴ 它**抓的正是"廉价占位翻译" ✓）⇒ **∴ 所以**：**用 `data-i18n="off"` 显式声明
