@@ -126,6 +126,8 @@ pub enum FilterKind {
     Dehaze,
     /// 胶片颗粒。
     FilmGrain,
+    /// **厚涂浮雕（P2 #15）**：alpha 当高度场，法向 + 光源的明度偏置。
+    Relief,
 }
 
 impl FilterKind {
@@ -142,6 +144,7 @@ impl FilterKind {
             "clarity" => Some(Self::Clarity),
             "dehaze" => Some(Self::Dehaze),
             "film_grain" => Some(Self::FilmGrain),
+            "relief" | "emboss" | "impasto" => Some(Self::Relief),
             "brightness_contrast" => Some(Self::BrightnessContrast),
             "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
@@ -162,6 +165,7 @@ impl FilterKind {
             Self::Clarity => "clarity",
             Self::Dehaze => "dehaze",
             Self::FilmGrain => "film_grain",
+            Self::Relief => "relief",
             Self::BrightnessContrast => "brightness_contrast",
             Self::Saturation => "saturation",
             Self::Invert => "invert",
@@ -1331,6 +1335,91 @@ pub fn apply_adjustment(
 }
 
 /// 应用一个滤镜对象；返回是否被识别。
+/// 应用一个滤镜对象；返回是否被识别。
+/// **★ 厚涂浮雕（P2 #15）：用**高度场**给明度加光向偏置 ★**（第 254 轮）
+///
+/// **需求 P2 #15**："高度场（厚涂浮雕：法向 + 光源的明度偏置）"。
+///
+/// **高度从 alpha 来**：一层里每个笔触的 alpha 就是"这里堆了多少颜料" => 浮雕看**相对高差**，
+/// 取 alpha 作高度在本仓语义里是自洽的。**只处理 `alpha > 0`**；邻居空白时按"同高"处理
+/// （否则会把笔画**边界**当成坡面 —— 那是边缘，不是高差）。
+///
+/// **算法（确定性、无随机）**：`h = a`（可乘 `height_gain`）；
+/// 法向 `n = normalize(-gain·dh/dx, -gain·dh/dy, 1)`（中心差分）；
+/// 光向 `l = (cos e·cos a, cos e·sin a, sin e)`（`azimuth` 0°=+x 逆时针，`elevation` clamp 1..89°）；
+/// 明度偏置 `rgb' = rgb · (1 + strength · (n·l))` => 迎光坡提亮、背光压暗。
+///
+/// **读写口径**（本仓实测的坑）：`Buffer::pixel(x: u32, y: u32)`；**没有 `set_pixel`** =>
+/// 写回用 `pixels_mut()`；法向必须基于**同一时刻**的高度快照（否则边改边读）。
+pub fn relief(
+    buffer: &mut Buffer,
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    strength: f32,
+    height_gain: f32,
+) {
+    let (width, height) = (buffer.width(), buffer.height());
+    if width < 3 || height < 3 || strength <= 0.0 {
+        return;
+    }
+    let (az, el) = (
+        azimuth_deg.to_radians(),
+        elevation_deg.clamp(1.0, 89.0).to_radians(),
+    );
+    let light = [el.cos() * az.cos(), el.cos() * az.sin(), el.sin()];
+    let gain = height_gain.max(0.0);
+    let (w, h) = (width as i32, height as i32);
+    let snapshot: Vec<f32> = buffer.pixels().to_vec();
+    let alpha_at = |pixels: &[f32], x: i32, y: i32| -> f32 {
+        let cx = x.clamp(0, w - 1) as usize;
+        let cy = y.clamp(0, h - 1) as usize;
+        pixels[(cy * width as usize + cx) * 4 + 3].clamp(0.0, 1.0)
+    };
+    let mut shaded: Vec<(usize, [f32; 3])> = Vec::new();
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let a_here = alpha_at(&snapshot, x, y);
+            if a_here <= 0.0 {
+                continue;
+            }
+            let hx = |dx: i32, dy: i32| -> f32 {
+                let a = alpha_at(&snapshot, x + dx, y + dy);
+                if a > 0.0 {
+                    a
+                } else {
+                    a_here
+                }
+            };
+            let dhdx = (hx(1, 0) - hx(-1, 0)) * 0.5 * gain;
+            let dhdy = (hx(0, 1) - hx(0, -1)) * 0.5 * gain;
+            let (nx, ny) = (-dhdx, -dhdy);
+            let norm = (nx * nx + ny * ny + 1.0).sqrt();
+            let dot = (nx * light[0] + ny * light[1] + light[2]) / norm;
+            let factor = (1.0 + strength * dot).clamp(0.0, 4.0);
+            let base = (y as usize * width as usize + x as usize) * 4;
+            shaded.push((
+                base,
+                [
+                    (snapshot[base] * factor).clamp(0.0, 1.0),
+                    (snapshot[base + 1] * factor).clamp(0.0, 1.0),
+                    (snapshot[base + 2] * factor).clamp(0.0, 1.0),
+                ],
+            ));
+        }
+    }
+    let pixels = buffer.pixels_mut();
+    for (base, rgb) in shaded {
+        pixels[base] = rgb[0];
+        pixels[base + 1] = rgb[1];
+        pixels[base + 2] = rgb[2];
+    }
+}
+
+/// 应用一个滤镜对象；返回是否被识别。
+///
+/// **注**（第 254 轮）：这条注释今天被"新增函数插在它和函数之间"坑过**两次** ——
+/// 一次是 `smooth_stroke_points`（tools.rs），一次就是这里。**规矩**：新增函数要插在
+/// **整段文档注释之前**，不能插在"文档与函数之间"。
 pub fn apply_filter(
     buffer: &mut Buffer,
     filter_name: &str,
@@ -1363,6 +1452,25 @@ pub fn apply_filter(
                 .and_then(Value::as_f64)
                 .unwrap_or(8.0) as f32,
             params.get("samples").and_then(Value::as_u64).unwrap_or(16) as u32,
+        ),
+        FilterKind::Relief => relief(
+            &mut filtered,
+            params
+                .get("azimuth")
+                .and_then(Value::as_f64)
+                .unwrap_or(135.0) as f32,
+            params
+                .get("elevation")
+                .and_then(Value::as_f64)
+                .unwrap_or(45.0) as f32,
+            params
+                .get("strength")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.6) as f32,
+            params
+                .get("height_gain")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0) as f32,
         ),
         FilterKind::Sharpen => sharpen(
             &mut filtered,
@@ -2753,5 +2861,123 @@ mod tests {
         );
         assert_eq!(FilterKind::GaussianBlur.padding(&json!({"sigma": 2.0})), 6);
         assert_eq!(FilterKind::Invert.padding(&json!({})), 0);
+    }
+}
+
+/// **★ P2 #15 厚涂浮雕的决定性判据（数据层）★**（第 254 轮）
+///
+/// **要证的命题**：
+///   ① `strength = 0` => **一个像素都不许动**（opt-in 语义）；
+///   ② **光向真的起作用且有方向**：同一块"隆起"（钟形 alpha = 一堆厚涂颜料），
+///      光从**右**来 => **右坡（迎光）更亮**；光从**左**来 => **反号**。
+///   ③ 只作用在有颜料的地方（空白保持透明、不上色）；
+///   ④ 确定性（同参数逐位相同），且**整体亮度不该被抬走**（浮雕是有方向偏置，不是全局提亮）。
+///
+/// **★ 为什么样本必须是"隆起"而不是"线性坡面" ★**（本会话实测教训）：
+/// 恒定斜率的坡面**每一点法向相同** => 亮度差只在**边缘**出现 => 拿"左右亮度差"去量
+/// 其实是在量噪声（实测右光 −0.0063／左光 −0.0285，两次同号，我差点以为符号写反）。
+/// 只有**隆起**才有"迎光坡 vs 背光坡"的对比。
+#[cfg(test)]
+mod relief_tests {
+    use super::relief;
+    use crate::buffer::Buffer;
+
+    /// 中间隆起的"厚涂堆"：alpha 呈钟形，颜色恒为中性灰。
+    fn bump(w: u32, h: u32) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, w, h);
+        let pixels = buffer.pixels_mut();
+        for y in 0..h {
+            for x in 0..w {
+                let at = ((y * w + x) * 4) as usize;
+                let dx = x as f32 / (w - 1).max(1) as f32 - 0.5;
+                let dy = y as f32 / (h - 1).max(1) as f32 - 0.5;
+                let bell = (1.0 - (dx * dx + dy * dy) * 8.0).clamp(0.0, 1.0);
+                pixels[at] = 0.5;
+                pixels[at + 1] = 0.5;
+                pixels[at + 2] = 0.5;
+                pixels[at + 3] = bell;
+            }
+        }
+        buffer
+    }
+
+    /// 某一侧坡面的平均亮度（只看有颜料的像素）：`left = true` 取左半边靠外的一带。
+    fn flank_luma(buffer: &Buffer, left: bool) -> f32 {
+        let (w, h) = (buffer.width(), buffer.height());
+        let pixels = buffer.pixels();
+        let mut sum: f32 = 0.0;
+        let mut n: f32 = 0.0;
+        for y in 0..h {
+            for x in 0..w {
+                let in_band = if left {
+                    x >= w / 4 && x < w / 2
+                } else {
+                    x >= w / 2 && x < w * 3 / 4
+                };
+                if !in_band {
+                    continue;
+                }
+                let at = ((y * w + x) * 4) as usize;
+                if pixels[at + 3] > 0.05 {
+                    sum += (pixels[at] + pixels[at + 1] + pixels[at + 2]) / 3.0;
+                    n += 1.0;
+                }
+            }
+        }
+        sum / n.max(1.0)
+    }
+
+    fn mean_luma(buffer: &Buffer) -> f32 {
+        let pixels = buffer.pixels();
+        let mut sum: f32 = 0.0;
+        let mut n: f32 = 0.0;
+        for chunk in pixels.chunks_exact(4) {
+            if chunk[3] > 0.05 {
+                sum += (chunk[0] + chunk[1] + chunk[2]) / 3.0;
+                n += 1.0;
+            }
+        }
+        sum / n.max(1.0)
+    }
+
+    #[test]
+    fn relief_needs_light_direction_and_is_off_by_default() {
+        let base = bump(64, 32);
+        // ① strength = 0 => 原样
+        let mut untouched = base.clone();
+        relief(&mut untouched, 0.0, 45.0, 0.0, 30.0);
+        assert_eq!(untouched.pixels(), base.pixels(), "strength=0 不许动像素");
+        // ② 光从右 vs 从左
+        let mut from_right = base.clone();
+        relief(&mut from_right, 0.0, 45.0, 0.8, 30.0);
+        let mut from_left = base.clone();
+        relief(&mut from_left, 180.0, 45.0, 0.8, 30.0);
+        let right_light = flank_luma(&from_right, false) - flank_luma(&from_right, true);
+        let left_light = flank_luma(&from_left, false) - flank_luma(&from_left, true);
+        assert!(
+            right_light > 0.0,
+            "光从右侧来时**右坡（迎光）**应当更亮（右坡−左坡 = {right_light}）"
+        );
+        assert!(
+            left_light < 0.0,
+            "光从左侧来时右坡应当更暗（右坡−左坡 = {left_light}）"
+        );
+        assert!(
+            right_light * left_light < 0.0,
+            "换光源方向必须让明暗对比**反号**（右光 {right_light} / 左光 {left_light}）"
+        );
+        // ③ 空白处不上色
+        let pixels = from_right.pixels();
+        assert!(pixels[3] <= 1e-6, "左上角空白不该被上色");
+        // ④ 确定性 + 整体亮度不被抬走
+        let mut again = base.clone();
+        relief(&mut again, 0.0, 45.0, 0.8, 30.0);
+        assert_eq!(again.pixels(), from_right.pixels(), "同参数必须逐位相同");
+        assert!(
+            (mean_luma(&from_right) - mean_luma(&base)).abs() < 0.25,
+            "浮雕不该把整体亮度抬走（{} vs {}）",
+            mean_luma(&from_right),
+            mean_luma(&base)
+        );
     }
 }
