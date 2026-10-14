@@ -124,21 +124,32 @@ const main = async () => {
   //       "recursive use of an object …"** ✓ ⇒ **∴ 那**不是产品失败**✗ 是**环境编排** ✓ ★★
   //   ＋ **∴ 所以 ✗**：**动手断言之前**先问一句**：**页面的 `callTool` 能不能打通服务端** ✓
   //     ＋ **∴ 打不通 ⇒ 按本仓约定**打印 ＋ 退 3**✗（**∴ 绝不**误判成产品 bug** ✓）★★★
+  // **★ 判别页面模式的探针 ✗ ★**（**第 254 轮；**第一次改错了 ✓ 记下来 ✓）★
+  //   ＋ **∴ 我第一版用 `get_log` 探 ✗**（**CI 实测**仍然误判 ✓）✗
+  //     ＋ **∴ 原因 ✗**：**`get_log` **恰好在 `api-local.js` 里有本地实现** ✓
+  //       ⇒ **∴ 探针通过 ✗ 而 `set_layer_blend`／`set_brush_dynamics` 是**只有服务端才有**的**
+  //         ⇒ **∴ 它们回 `endpoint_not_local` ⇒ **判据还是把环境问题当产品问题** ✓ ★★
+  //   ＋ **∴ 现在 ✗**：**用一个**服务端才有、且不会改到任何东西**的调用 ✗**
+  //     （**`set_layer_blend` 指向一个**不存在的图层** ✓）✗
+  //     **∴ 本地 shim ⇒ 抛 `endpoint_not_local`**✗ **真服务端 ⇒ 回"图层不存在"一类的正常错误** ✓
+  //       ⇒ **∴ 两者可判别 ✗ 且**零副作用** ✓ ★★★
   const probe = await evaluate(
-    `(async () => { try { const r = await window.callTool("get_log", {}, { refresh: false }); return JSON.stringify({ ok: r && r.ok, error: r && r.error_code, detail: (r && r.context && r.context.detail) || "" }); } catch (e) { return "EXC:" + String((e && e.message) || e); } })()`,
+    `(async () => { try { const r = await window.callTool("set_layer_blend", { layer_id: "__yanshi_probe_no_such_layer__", mode: "multiply" }, { refresh: false }); return JSON.stringify({ kind: "reply", error: (r && r.error_code) || "", detail: (r && r.context && r.context.detail) || "" }); } catch (e) { return JSON.stringify({ kind: "throw", message: String((e && e.message) || e) }); } })()`,
   );
-  if (typeof probe !== "string" || /^EXC:/.test(probe) || /endpoint_not_local/.test(probe)) {
-    console.error(`❌ 判不了：这个页面连不到服务端 API（拿到的是本地/PWA 页面）⇒ 退出码 3｜探针回执：${String(probe).slice(0, 200)}`);
+  const probeText = typeof probe === "string" ? probe : String(probe);
+  if (/endpoint_not_local/.test(probeText)) {
+    console.error(`❌ 判不了：这个页面是本地/PWA 页面（工具调用被 api-local.js 接管，回 endpoint_not_local）⇒ 退出码 3｜探针：${probeText.slice(0, 200)}`);
     ws.close();
     process.exit(3);
   }
-  const probeOk = JSON.parse(probe);
-  if (!probeOk.ok) {
-    console.error(`❌ 判不了：页面调 get_log 没成功（${JSON.stringify(probeOk).slice(0, 160)}）⇒ 退出码 3`);
+  // **∴ 三条分支说清 ✗**：**① 本地模式 ⇒ 退 3 ✗ ② 页面侧抛异常 ⇒ 退 3（**那不是"产品失败"的判据 ✓）
+  //   **③ 正常回执（**含"图层不存在"这类**预期内**的错误 ✓）⇒ **继续** ✓ ★
+  if (!probeText || /"kind":"throw"/.test(probeText)) {
+    console.error(`❌ 判不了：页面里那次探针抛了异常（不是"产品失败"的判据）⇒ 退出码 3｜${probeText.slice(0, 200)}`);
     ws.close();
     process.exit(3);
   }
-  console.log(`  （前置）页面能连到服务端 API ✓`);
+  console.log(`  （前置）页面模式探针：${probeText.slice(0, 160)}`);
   // **∴ 先确保面板里**至少有一个图层行**✗（**默认文档有 `layer_default` ✓）
   await evaluate(`(async () => { if (window.refreshLayers) await window.refreshLayers(); return true; })()`);
   await new Promise((r) => setTimeout(r, 800));
@@ -176,12 +187,39 @@ const main = async () => {
     bad.push(`① 下拉显示 ${p.value}，而服务端是 ${first.blend_mode}（初始就不同步）`);
   }
 
+  // **★ 读**整段**日志文本 ✗ 不要按"最后 14 个节点"取** ✓ ★**（**第 254 轮实测修 ✓）
+  //   ＋ **∴ 我原来取 `slice(-14)` ✗**（**∴ 以为新行在后面 ✓）✗
+  //     ＋ **∴ 而** `log()` 是**把新行**插到最前**✗（**聊天式 ✓）⇒ **∴ 于是**我读到的
+  //       永远是**最旧的 14 行** ✗ ⇒ **∴ 新入口的日志**明明写了却"看不到"** ✓
+  //         ⇒ **∴ 差一点**把好功能判成坏** ✓ ⇒ **∴ 改成读整段文本 ✗ 与顺序无关** ✓ ★★★
+  const readLog = async () => {
+    const raw = await evaluate(`String((document.getElementById("log")||{}).textContent||"")`);
+    return typeof raw === "string" ? raw : "";
+  };
   // **② 改下拉 ⇒ 服务端真的变** ✓
   const changed = await evaluate(
     `(() => { const s = document.querySelector(".layer-row select.layer-blend"); if (!s) return "no-select"; const before = s.value; s.value = "multiply"; s.dispatchEvent(new Event("change", { bubbles: true })); return JSON.stringify({ before, after: s.value }); })()`,
   );
   console.log(`  ② 把下拉改成 multiply：${changed}`);
   await new Promise((r) => setTimeout(r, 1200));
+  // **★★★ 从**页面自己的日志**里认本地模式 ✗ ★★★**（**第 254 轮 ✓；**前两版探针都不够 ✓）★
+  //   ＋ **∴ 前两版错在哪 ✗**：
+  //     **∴ ① 用 `get_log` 探 ⇒ 它在 `api-local.js` 里**有本地实现** ⇒ 探针通过** ✓
+  //     **∴ ② 用"不存在的图层"探 ⇒ **静态 PWA 的 shim 也接受**它**（**排队到本地队列 ✓）✗
+  //       ⇒ **∴ 而**CI 的真实证据是**别的**：**工具调用回 `endpoint_not_local`** ✓✓
+  //   ＋ **∴ 所以 ✗**：**别再造探针 ✗ 直接读**页面自己写下的失败原因** ✓
+  //     （**∴ 那几个入口失败时都会 `log("…失败：" + error_code)` ✓）
+  //     ＋ **∴ 只要日志里出现 `endpoint_not_local` ⇒ **这就是本地/PWA 页面** ⇒ **退 3** ✓
+  //       **∴ 而不是**断言产品坏了** ✓ ★★★
+  const logAfterBlend = await readLog();
+  if (/endpoint_not_local/.test(logAfterBlend)) {
+    console.error(
+      "❌ 判不了：这个页面是本地/PWA 页面（页面日志里出现 endpoint_not_local，工具调用被 api-local.js 接管）" +
+        "⇒ 退出码 3（不是产品失败）",
+    );
+    ws.close();
+    process.exit(3);
+  }
   const layers1 = await api("list_layers", {});
   const after = findLayer(layers1, rowLayerId);
   if (!after) {
@@ -205,15 +243,7 @@ const main = async () => {
   //         动力学 ✓）⇒ **∴ 不能偷偷退回某支 .myb** ✗ **∴ 只能把"去哪选"讲清** ✓ ★★
   //   ＋ **∴ ③b（**真选一支 .myb ✓）✗**：**点「柔」必须**成功** ✗ 且服务端真的应用了** ✓
   //     ＋ **∴ 这一步才是"功能真的能用"的证据 ✗ 而不是"契约存在" ✓ ★★★
-  // **★ 读**整段**日志文本 ✗ 不要按"最后 14 个节点"取** ✓ ★**（**第 254 轮实测修 ✓）
-  //   ＋ **∴ 我原来取 `slice(-14)` ✗**（**∴ 以为新行在后面 ✓）✗
-  //     ＋ **∴ 而** `log()` 是**把新行**插到最前**✗（**聊天式 ✓）⇒ **∴ 于是**我读到的
-  //       永远是**最旧的 14 行** ✗ ⇒ **∴ 新入口的日志**明明写了却"看不到"** ✓
-  //         ⇒ **∴ 差一点**把好功能判成坏** ✓ ⇒ **∴ 改成读整段文本 ✗ 与顺序无关** ✓ ★★★
-  const readLog = async () => {
-    const raw = await evaluate(`String((document.getElementById("log")||{}).textContent||"")`);
-    return typeof raw === "string" ? raw : "";
-  };
+
   await evaluate(`(() => { const b = document.getElementById("dynSoft"); if (b) b.click(); return Boolean(b); })()`);
   await new Promise((r) => setTimeout(r, 1200));
   const logBuiltin = await readLog();
