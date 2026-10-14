@@ -2933,7 +2933,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("symmetry", String, false, "对称模式：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔压力相同）"),
             // **P1 #12 视觉锚点**（第 254 轮）：回执里除了缩略图，再给**结构化锚点**（精确坐标），
             // AI 据此接下一笔，不必从像素里估。
-            param!("anchor_mode", String, false, "视觉锚点：data（缺省，一张干净缩略图 + anchors 结构化数据）/ dual（两张图，本版未实现，传了会明确报错）"),
+            param!("anchor_mode", String, false, "视觉锚点：**`data`（缺省，也是当前唯一可用的值）** ⇒ 一张干净缩略图 ＋ `anchors` 结构化数据（笔画起止/包围盒/栅格/画布尺寸 ✓）。**本参数只提供 `data`** ✓；`dual`（两张图：干净 ＋ 带 Overlay）**本版未实现**，传了会**明确报错**（不静默降级 ✓），已记在需求文档 P1 #12。**`data` 已足够**：AI 按 `canvas` 尺寸等比换算即可在缩略图上定位 ✓"),
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
@@ -14919,8 +14919,12 @@ fn paint_brush(
                 ErrorCode::PreconditionFailed,
                 ErrorContext::detail(format!(
                     "这一笔没落下任何像素 ⇒ 笔刷「{name}」是**涂抹类**（smudge={smudge}）✓：\
-                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 \
-                     ⇒ 先在这块地方画点什么，或换一块区域 / 换一支笔刷 ✓"
+                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 ✓。\
+                     **怎么改（三条，按省事排序）**：\
+                     ① **先铺底色再抹** —— 用一支不透明的笔刷（如 `100%_Opaque`）在这块地方画一笔，\
+                        然后再用这支涂抹笔刷抹 ✓（湿画法里「先铺后揉」就是这个顺序 ✓）；\
+                     ② **用 `swatch_brush_strokes` 试它之前，也先铺一层底色** ✓（swatch 不写文档 ⇒ 铺底色那笔可以随便画 ✓）；\
+                     ③ 换一块**已经有颜色**的区域试，或换一支 **非涂抹**（`smudge = 0`）的笔刷 ✓。"
                 )),
             ));
         }
