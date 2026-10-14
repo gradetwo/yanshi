@@ -21,7 +21,7 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **74 core tools**, and with every implemented group enabled there are **130 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **75 core tools**, and with every implemented group enabled there are **131 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -393,6 +393,16 @@ blob-first like every other import: the PSD bytes are already uploaded, the deco
 and only then is the atom committed. Unsupported files are refused with specific reasons rather than being
 half-drawn, covering version two, sixteen and thirty-two bit depths, non-RGB colour modes including CMYK and
 grayscale, ZIP compression, and truncated data, because half a picture is worse than a clear error.
+
+`import_psd_layers` is the **layer-level** PSD import. It reads the layer tree with the
+`ag-psd` crate (pure Rust, only `flate2`; evaluated against the AGENTS.md checklist, including
+the measured cost of its default `flate2` backend) and maps every PSD layer onto a yanshi layer —
+name, position, opacity, visibility and blend mode — while PSD groups become yanshi **layer
+groups** (`create_layer{type:layer_group}` plus `parent_id`). Phase 1 is deliberately honest about
+its limits: adjustment, text-only and mask-only layers keep their layer but are **not** rasterized,
+and every such layer is listed in the reply's `skipped` field rather than dropped in silence.
+The acceptance criterion (`scripts/tool-psd-layers.mjs`) compares the composited import against the
+PSD's own flattened composite, pixel by pixel, over the inked area.
 
 `resample` completes the retouch group. The design lists the name without semantics, so the choice is
 recorded: it resamples a raster object's pixels to a new size, accepting only raw RGBA bitmaps, and produces a

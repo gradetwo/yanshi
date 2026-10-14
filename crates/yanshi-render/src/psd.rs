@@ -584,45 +584,88 @@ mod layer_tree_probe {
         }
     }
 
+    /// **∴ 夹具的布局要**让答案键可精确算出** ✗ ★**（**第 253 轮 ✓）：
+    ///   ＋ **∴ 全不透明 ✗ 互不重叠（除被上层完全盖住 ✓）✗ 且**隐藏层不进合成**
+    ///     ⇒ **∴ 于是**：**"PSD 自带的压平合成图"**只需要整数 over**✗ 没有浮点混合误差** ✓
+    ///       ⇒ **∴ 判据**拿它当答案键时 ⇒ **∴ 差值只来自**量化／四舍五入** ✓ ★★
     fn fixture() -> Vec<u8> {
-        let bottom = Layer {
-            top: Some(0.0),
-            left: Some(0.0),
-            bottom: Some(64.0),
-            right: Some(64.0),
+        let rect = |x: f64, y: f64, w: u32, h: u32, rgba: [u8; 4], name: &str| Layer {
+            top: Some(y),
+            left: Some(x),
+            bottom: Some(y + f64::from(h)),
+            right: Some(x + f64::from(w)),
             blend_mode: Some(BlendMode::Normal),
             opacity: Some(1.0),
             hidden: Some(false),
-            image_data: Some(solid(64, 64, [224, 32, 32, 255])),
+            image_data: Some(solid(w, h, rgba)),
             additional_info: LayerAdditionalInfo {
-                name: Some("底层".to_owned()),
+                name: Some(name.to_owned()),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let top = Layer {
-            top: Some(16.0),
-            left: Some(16.0),
-            bottom: Some(48.0),
-            right: Some(48.0),
-            blend_mode: Some(BlendMode::Multiply),
-            opacity: Some(0.5),
-            hidden: Some(true),
-            image_data: Some(solid(32, 32, [32, 64, 224, 255])),
+        // **∴ 自下而上 ✗ A ✗ B ✗ 组（内含 C）✗ 隐藏的 D** ✓
+        let a = rect(0.0, 0.0, 32, 64, [224, 32, 32, 255], "红");
+        let b = rect(32.0, 0.0, 32, 64, [32, 64, 224, 255], "蓝");
+        let c = rect(0.0, 32.0, 64, 16, [32, 200, 64, 255], "组内绿");
+        let group = Layer {
+            blend_mode: Some(BlendMode::PassThrough),
+            opacity: Some(1.0),
+            hidden: Some(false),
+            opened: Some(true),
+            children: Some(vec![c]),
             additional_info: LayerAdditionalInfo {
-                name: Some("上层".to_owned()),
+                name: Some("一组".to_owned()),
                 ..Default::default()
             },
             ..Default::default()
         };
+        // **∴ 隐藏层 ✗**：**它的属性用来验映射（**不透明度 0.5 ✓ 混合 multiply ✓）✗
+        //   而**它不进合成** ⇒ **∴ 答案键**不用管它** ✓ ★
+        let mut d = rect(48.0, 48.0, 16, 16, [200, 200, 32, 255], "隐藏层");
+        d.hidden = Some(true);
+        d.opacity = Some(0.5);
+        d.blend_mode = Some(BlendMode::Multiply);
+        // **∴ 合成图 ＝ 透明画布 ＋ A ＋ B ＋ C（**全是整数 over ✓ 无误差 ✓）★
+        let mut composite = vec![0u8; 64 * 64 * 4];
+        let mut paint = |x: f64, y: f64, w: u32, h: u32, rgba: [u8; 4]| {
+            for row in 0..h {
+                for col in 0..w {
+                    let px = x as u32 + col;
+                    let py = y as u32 + row;
+                    let at = ((py * 64 + px) * 4) as usize;
+                    composite[at..at + 4].copy_from_slice(&rgba);
+                }
+            }
+        };
+        paint(0.0, 0.0, 32, 64, [224, 32, 32, 255]);
+        paint(32.0, 0.0, 32, 64, [32, 64, 224, 255]);
+        paint(0.0, 32.0, 64, 16, [32, 200, 64, 255]);
         let psd = Psd {
             width: 64.0,
             height: 64.0,
-            children: Some(vec![bottom, top]),
-            image_data: Some(solid(64, 64, [200, 200, 200, 255])),
+            children: Some(vec![a, b, group, d]),
+            image_data: Some(PixelData {
+                width: 64,
+                height: 64,
+                data: composite,
+            }),
             ..Default::default()
         };
         ag_psd::write_psd(&psd, &ag_psd::psd::WriteOptions::default())
+    }
+
+    /// **∴ 生成可提交的夹具 ✗**（**第 253 轮 ✓）：**跑一次把 `fixture()` 写到
+    /// `tests/data/psd/agpsd-two-layers.psd`** ✗ 供**服务端判据**当输入** ✓
+    ///   ＋ **∴ 为什么用自写而不是 ImageMagick 的 ✗**：**后者的混合键是**字节倒序**
+    ///     （**实测 ✓）⇒ **∴ ag-psd**（正确地）拒绝它** ✓ ★
+    #[test]
+    fn write_fixture_for_criteria() {
+        let bytes = fixture();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/psd");
+        std::fs::create_dir_all(dir).expect("建目录");
+        std::fs::write(format!("{dir}/agpsd-two-layers.psd"), &bytes).expect("写夹具");
+        eprintln!("已写出 {} 字节", bytes.len());
     }
 
     /// **∴ 往返：写出去 ⇒ 读回来 ⇒ 字段逐项对得上 ✗**（**第 253 轮 ✓）★
@@ -655,18 +698,26 @@ mod layer_tree_probe {
         }
         assert_eq!(tree.width, 64);
         assert_eq!(tree.height, 64);
-        assert_eq!(tree.roots.len(), 2);
-        let bottom = &tree.roots[0];
-        let top = &tree.roots[1];
-        assert_eq!(bottom.name, "底层");
-        assert_eq!(bottom.blend, "normal");
-        assert!(bottom.visible);
-        assert_eq!(bottom.pixels.len(), 64 * 64 * 4);
-        assert_eq!(top.name, "上层");
-        assert_eq!(top.blend, "multiply", "混合模式要映射到本仓词表");
-        assert!(!top.visible, "hidden=true ⇒ 不可见");
-        assert!((top.opacity - 0.5).abs() < 0.02, "不透明度 0.5");
-        assert_eq!((top.x, top.y, top.width, top.height), (16, 16, 32, 32));
-        assert_eq!(top.pixels.len(), 32 * 32 * 4);
+        assert_eq!(tree.roots.len(), 4, "红 + 蓝 + 一组 + 隐藏层");
+        let red = &tree.roots[0];
+        assert_eq!(red.name, "红");
+        assert_eq!(red.blend, "normal");
+        assert!(red.visible);
+        assert_eq!(red.pixels.len(), 32 * 64 * 4);
+        let blue = &tree.roots[1];
+        assert_eq!((blue.x, blue.y, blue.width, blue.height), (32, 0, 32, 64));
+        let group = &tree.roots[2];
+        assert_eq!(group.name, "一组");
+        assert!(group.is_group, "有 children ⇒ 是组");
+        assert_eq!(group.children.len(), 1);
+        let kid = &group.children[0];
+        assert_eq!(kid.name, "组内绿");
+        assert_eq!((kid.x, kid.y, kid.width, kid.height), (0, 32, 64, 16));
+        assert_eq!(kid.pixels.len(), 64 * 16 * 4);
+        let hidden = &tree.roots[3];
+        assert_eq!(hidden.name, "隐藏层");
+        assert!(!hidden.visible, "hidden=true ⇒ 不可见");
+        assert_eq!(hidden.blend, "multiply", "混合模式要映射到本仓词表");
+        assert!((hidden.opacity - 0.5).abs() < 0.02, "不透明度 0.5");
     }
 }

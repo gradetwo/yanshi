@@ -1831,6 +1831,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "import_psd_layers",
+        profile: Profile::Core,
+        summary: "★ 按图层树导入 PSD（第 253 轮）：每层建一个 yanshi 图层，组建成图层组",
+        mutating: true,
+        params: &[
+            param!("blob_hash", String, true, "已上传的 PSD 字节（blob 先行）"),
+            param!("name_prefix", String, false, "给导入的图层名加统一前缀（便于辨认/清理）"),
+        ],
+    },
+    ToolSpec {
         name: "resample",
         profile: Profile::Retouch,
         summary: "重采样光栅对象的像素到新尺寸（非破坏：产出新 blob + supersede）",
@@ -3189,6 +3199,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "apply_stash" => write_apply_stash(ctx, args),
         "discard_stash" => write_discard_stash(ctx, args),
         "import_psd" => write_import_psd(ctx, args),
+        "import_psd_layers" => write_import_psd_layers(ctx, args),
         "resample" => write_resample(ctx, args),
         "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
@@ -8116,6 +8127,173 @@ fn write_import_psd(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     value["source"] = json!({"format": "psd", "width": width, "height": height,
                              "note": "只导入了合成图；图层结构与蒙版没有导入（只读）"});
     Ok(value)
+}
+
+/// **★★★ 按**图层树**导入 PSD ✗ ★★★**（**第 253 轮 ✓；**用户建议的第 ③ 项 ✓）
+///
+/// **∴ 与 `import_psd` 的分工 ✗**：**那条**只取合成图**（**一个图层 ✓ 简单 ✓）；
+///   **∴ 这条**读图层树**✗ 每层建一个 yanshi 图层 ✗ 组建成图层组** ✓ ★
+///
+/// **∴ 映射（**建议点名要对的四样 ✓）✗**：**名字 ✗ 不透明度 ✗ 可见性 ✗ 混合模式** ✓
+///   ＋ **∴ 位置与尺寸 ✗**：**用图层自己的 rect ⇒ **原样落在画布对应位置** ✓
+///     ＋ **∴ 组 ✗**：**PSD 的 `children` ⇒ yanshi 的 `layer_group` ＋ 子层 `parent_id`** ✓ ★★
+///
+/// **∴ Phase 1 的简化（**如实写进文档 ✓ 不假装完整 ✓）✗**：
+///   ＋ **∴ 调整层／文字层／只有蒙版的层 ✗**：**PSD 里它们**没有自己的像素** ✓
+///     ⇒ **∴ 本工具**建图层但不栅格化**✗ 并把每一层**列进 `skipped`** ✓（**不静默 ✓）★
+///   ＋ **∴ 蒙版／智能对象／效果 ✗**：**不导入** ✓（**同样列出来 ✓）
+///   ＋ **∴ z 序 ✗**：**按 PSD 的顺序**自下而上**编号 ✗ 接在现有图层之后** ✓ ★
+///
+/// **∴ 判据 ✗**：**`scripts/tool-psd-layers.mjs`** ⇒ **导入后自己合成一遍 ✗
+///   与 PSD **自带的压平合成图**逐像素比**（**建议里点名的"真实标准答案" ✓）★
+fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let blob_hash = require_str(args, "blob_hash")?;
+    let parsed: yanshi_core::BlobHash = blob_hash.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("blob_hash 不是合法哈希"),
+        )
+    })?;
+    let bytes = ctx.workspace.store().get(&parsed)?;
+    let tree = yanshi_render::psd::read_layer_tree(&bytes).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("PSD 图层树解析失败：{}", error.message)),
+        )
+    })?;
+    let prefix = optional_str(args, "name_prefix").unwrap_or_default();
+    // **∴ z 序接在**现有图层之后**✗ 按 PSD 顺序自下而上** ✓ ★
+    let mut next_z = {
+        let state = document_state(ctx)?;
+        state
+            .layers
+            .values()
+            .filter(|layer| !layer.is_deleted())
+            .map(|layer| layer.z_index)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    };
+    /// **∴ 计数与如实记账 ✗**（**内部小结构 ✓ 不进 JSON 之前不序列化 ✓）★
+    #[derive(Default)]
+    struct Stats {
+        layers: usize,
+        groups: usize,
+        pixels: usize,
+        skipped: Vec<Value>,
+        names: Vec<String>,
+    }
+    /// **∴ 取一个没被占用的图层 id ✗**（**不依赖回执字段 ⇒ 稳** ✓）★
+    fn free_layer_id(ctx: &mut ToolContext<'_>, used: &mut usize) -> Result<String> {
+        let taken: Vec<String> = document_state(ctx)?.layers.keys().cloned().collect();
+        loop {
+            let candidate = format!("psd_L{used}");
+            *used += 1;
+            if !taken.iter().any(|id| id == &candidate) {
+                return Ok(candidate);
+            }
+        }
+    }
+    fn walk(
+        ctx: &mut ToolContext<'_>,
+        nodes: &[yanshi_render::psd::PsdLayerNode],
+        parent: Option<&str>,
+        prefix: &str,
+        next_z: &mut i64,
+        used: &mut usize,
+        stats: &mut Stats,
+    ) -> Result<()> {
+        for node in nodes {
+            let name = format!("{prefix}{}", node.name);
+            let id = free_layer_id(ctx, used)?;
+            let kind = if node.is_group {
+                "layer_group"
+            } else {
+                "raster"
+            };
+            write_create_layer(
+                ctx,
+                &json!({
+                    "layer_id": id,
+                    "name": name,
+                    "type": kind,
+                    "parent_id": parent,
+                    "z_index": *next_z,
+                }),
+            )?;
+            *next_z += 1;
+            if node.is_group {
+                stats.groups += 1;
+            } else {
+                stats.layers += 1;
+                // **∴ 属性 ✗**：**不透明度／可见性／混合模式**（**映射已保证词表合法 ✓）★
+                write_update_layer(
+                    ctx,
+                    &json!({
+                        "layer_id": id,
+                        "patch": {
+                            "opacity": node.opacity,
+                            "visible": node.visible,
+                            "blend_mode": node.blend,
+                        },
+                    }),
+                )?;
+                if !node.pixels.is_empty() && node.width > 0 && node.height > 0 {
+                    let blob = ctx.workspace.store().put(&node.pixels)?;
+                    write_import_image(
+                        ctx,
+                        &json!({
+                            "layer_id": id,
+                            "bitmap": {
+                                "blob_hash": blob.to_string(),
+                                "size": node.pixels.len(),
+                                "mime_type": "image/x-yanshi-raw",
+                            },
+                            "region": {
+                                "x": node.x as f64,
+                                "y": node.y as f64,
+                                "w": node.width as f64,
+                                "h": node.height as f64,
+                            },
+                        }),
+                    )?;
+                    stats.pixels += 1;
+                } else {
+                    stats.skipped.push(json!({
+                        "name": name,
+                        "why": "这一层在 PSD 里没有像素（调整层／文字层／只有蒙版）⇒ Phase 1 保留图层但不栅格化",
+                    }));
+                }
+            }
+            stats.names.push(name);
+            if !node.children.is_empty() {
+                walk(ctx, &node.children, Some(&id), prefix, next_z, used, stats)?;
+            }
+        }
+        Ok(())
+    }
+    let mut stats = Stats::default();
+    let mut used = 0usize;
+    walk(
+        ctx,
+        &tree.roots,
+        None,
+        &prefix,
+        &mut next_z,
+        &mut used,
+        &mut stats,
+    )?;
+    Ok(json!({
+        "ok": true,
+        "canvas": {"w": tree.width, "h": tree.height},
+        "layers_created": stats.layers,
+        "groups_created": stats.groups,
+        "layers_with_pixels": stats.pixels,
+        "imported": stats.names,
+        "skipped": stats.skipped,
+        "unmapped_blends": tree.unmapped_blends,
+        "note": "Phase 1：调整层／文字层不栅格化（列在 skipped）；蒙版、智能对象、图层效果不导入",
+    }))
 }
 
 /// **重采样一个光栅对象** ✓（设计 777 的 `resample` ✓）。
@@ -16116,6 +16294,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // ⚠️ `document_id` 与 `doc_id` **不是一回事**：`doc_id` 是本次调用的会话文档（框架按需创建），
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
+    ),
+    (
+        "import_psd_layers",
+        // **★ 图层级导入 ✗ ★**（**第 253 轮 ✓）：**同一份 PSD ✗ 它按**图层树**建 yanshi 的
+        //   图层与图层组**（**图层名／不透明度／可见性／混合模式／位置都对着搬 ✓）★
+        //   ＋ **∴ 与 `import_psd` 的分工 ✗**：**那条**只要合成图**（**一个图层 ✓）★
+        r##"{"blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "name_prefix": "PSD·"}"##,
     ),
     (
         "import_psd",
