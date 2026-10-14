@@ -911,6 +911,17 @@ fn health(state: &ServerState) -> Response {
             "tools": state.registry.len(),
             "wasm": wasm_available(state),
             "cache": cache_stats(state),
+            // **分配探针**（DEF-03 的前置条件）：只在 `YANSHI_ALLOC_PROBE` 开着时才有数字，
+            // 关着时全是 0（生产零开销）。用来回答"这一帧的字节是**谁**分配的、新分配还是复用"。
+            "alloc_probe": yanshi_render::alloc_probe::snapshot()
+                .iter()
+                .map(|(name, bytes, count)| {
+                    (
+                        String::from(*name),
+                        serde_json::json!({"bytes": bytes, "count": count}),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
             // **位图缓存的命中率** ✓（第 93 轮 ✓，纯观测 ✓）—— tile 缓存与它**是两套** ✓
             //（前者缓存"渲染出的 tile"✓，后者缓存"解码后的位图"✓）⇒ **∴ 要分开看** ✓。
             // ⚠️ 教训 ✓：**`json!` 里不能写语句块** ✗（`unexpected end of macro invocation` ✓）⇒ **∴ 照 `cache_stats` 写成函数调用** ✓。

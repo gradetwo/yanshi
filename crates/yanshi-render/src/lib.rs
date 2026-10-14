@@ -90,6 +90,7 @@ pub use backend_note::{
     Backend,
 };
 
+pub mod alloc_probe;
 /// **位图分块（(b1) 数据层 ✓）** —— 目标第 1 条"懒解码"的地基 ✓。
 pub mod bitmap_tiles;
 pub mod blend;

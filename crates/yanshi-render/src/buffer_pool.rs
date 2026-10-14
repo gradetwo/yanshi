@@ -332,6 +332,11 @@ impl BufferPool {
                 inner.counters.reused += 1;
                 inner.in_use.insert(id);
                 inner.counters.max_in_use = inner.counters.max_in_use.max(inner.in_use.len());
+                // **分配探针**（DEF-03 的前置条件）：命中已有块 => 复用，不产生新分配。
+                crate::alloc_probe::record(
+                    crate::alloc_probe::AllocPoint::PoolReuse,
+                    buffer.capacity_bytes(),
+                );
                 return BufferLease {
                     pool: self,
                     id,
@@ -342,6 +347,11 @@ impl BufferPool {
         }
 
         let buffer = Buffer::new(origin_x, origin_y, width, height);
+        // **分配探针**：池里没有合适的块 => 这里才是**真的新分配**。
+        crate::alloc_probe::record(
+            crate::alloc_probe::AllocPoint::PoolFresh,
+            buffer.capacity_bytes(),
+        );
         inner.counters.allocated += 1;
         inner.in_use.insert(id);
         inner.counters.max_in_use = inner.counters.max_in_use.max(inner.in_use.len());
@@ -365,6 +375,8 @@ impl BufferPool {
         }
         inner.counters.released += 1;
         let bytes = buffer.capacity_bytes();
+        // **分配探针**：归还（用来对照"借/还"是否配对）。
+        crate::alloc_probe::record(crate::alloc_probe::AllocPoint::PoolRelease, bytes);
         // 个数上限始终生效；字节预算 = "本轮并发数 × 本轮最大单块"（下界 MIN_POOLED_BYTES），
         // 见 `retained_byte_budget`。预算对**除第一张以外**的缓冲生效 ——
         // 空闲表为空时允许保留一张、可突破预算（否则超过预算的画布池化完全失效，

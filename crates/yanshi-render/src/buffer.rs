@@ -126,7 +126,15 @@ impl Buffer {
             origin_y,
             width,
             height,
-            pixels: vec![0.0; (width * height * 4) as usize],
+            pixels: {
+                // **分配探针**：`Buffer::new` 绕过池的那些路径（直接 `vec!`）。
+                let len = (width * height * 4) as usize;
+                crate::alloc_probe::record(
+                    crate::alloc_probe::AllocPoint::BufferFresh,
+                    len * std::mem::size_of::<f32>(),
+                );
+                vec![0.0; len]
+            },
         }
     }
 
