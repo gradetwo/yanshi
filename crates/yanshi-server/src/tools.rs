@@ -2719,6 +2719,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size", Number, false, "笔尖大小（缺省 24）"),
             // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
             param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）"),
+            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（**介质也能画渐变了** ✓，第 254 轮补：验收实测过它缺失 ✗）；给了它就必须同时给 color ✓"),
+            param!("color_mixing", String, false, "颜色混合模式：rgb（缺省，sRGB 线性插值）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰）；**与 `brush_stroke` 是同一处实现** ✓"),
             param!("smooth", Boolean, false, "true ⇒ 控制点按 **Catmull-Rom** 重采样（与 brush_stroke / draw_stroke 同一条实现 ✓）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("symmetry", String, false, "★ 对称模式（第 253 轮）：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔像素相同，轴取画布中心线）"),
             param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),
@@ -12101,6 +12103,47 @@ fn mirror_rgba(rgba: &[u8], width: u32, height: u32, symmetry: yanshi_render::Sy
     out
 }
 
+/// **★ 介质笔触的"每点颜色"（P1 缺口修复）★**（第 254 轮）
+///
+/// **为什么需要它**：端到端验收（`scripts/tool-vermeer-study.mjs`）实测报出
+/// "`medium_stroke` 不接受参数 `color_mixing`" ✗ —— 也就是说 **P2 ⑯ 的光谱混色只接进了
+/// `brush_stroke` 的 `color_to` 渐变**，而**介质路径（油画/水彩/马克笔/铅笔）画不出渐变** ✗。
+///
+/// **做法**：混色住在 `yanshi_render::color::mix_colors`（与本仓其它路径**同一处实现** ✓），
+/// 而 `yanshi-medium-host` **刻意不依赖内核**（那会把滤镜/瓦片拖进介质宿主 ✗）
+/// => 于是**在这里先算好每一点的颜色**，host 只负责"按点用色" ✓。
+///
+/// **默认不变**：没给 `color_to` => `None` => host 用整笔的 `color` ✓（老行为逐字节不变 ✓）。
+fn medium_point_colors(
+    points: &[(f64, f64, f64)],
+    color: [f32; 4],
+    color_to: Option<[u8; 3]>,
+    mixing: yanshi_render::color::ColorMixing,
+) -> Option<Vec<[f32; 4]>> {
+    let to = color_to?;
+    let from = [
+        (color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
+    ];
+    let last = points.len().saturating_sub(1).max(1) as f32;
+    Some(
+        points
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let mixed = yanshi_render::color::mix_colors(mixing, from, to, index as f32 / last);
+                [
+                    f32::from(mixed[0]) / 255.0,
+                    f32::from(mixed[1]) / 255.0,
+                    f32::from(mixed[2]) / 255.0,
+                    color[3],
+                ]
+            })
+            .collect(),
+    )
+}
+
 fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let medium = require_str(args, "medium")?;
@@ -12238,6 +12281,25 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             load,
             wetness,
             texture,
+            // **每点颜色**（P1 缺口修复）：给了 `color_to` 就按点数比例混色
+            //   （`color_mixing` 缺省 rgb => 老行为不变 ✓；见 `medium_point_colors`）。
+            point_colors: medium_point_colors(
+                &points,
+                color,
+                match args.get("color_to") {
+                    Some(value) if !value.is_null() => {
+                        let bytes = brush_color_to_srgb_bytes(value)?;
+                        Some([bytes[0], bytes[1], bytes[2]])
+                    }
+                    _ => None,
+                },
+                yanshi_render::color::ColorMixing::parse(
+                    args.get("color_mixing")
+                        .and_then(Value::as_str)
+                        .unwrap_or("rgb"),
+                )
+                .unwrap_or(yanshi_render::color::ColorMixing::Rgb),
+            ),
         },
         base.as_deref(),
     )?;

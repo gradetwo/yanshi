@@ -819,3 +819,27 @@ mod pigment_mixing_tests {
         assert_eq!(ColorMixing::Pigment.name(), "pigment");
     }
 }
+
+// **★ 介质渐变用的那对颜色：`pigment` 与 `rgb` 必须不同 ★**（第 254 轮）
+//
+// 背景：端到端判据 `tool-medium-color-mixing.mjs` 报"pigment 与 rgb **逐字节相同**" ✗。
+// 库本身有测试（黄+蓝差别很大 ✓），但**判据用的那对颜色**（低饱和的暖黄 → 冷蓝）没被钉过
+// => 这里把它钉住：如果这条红了，说明**这对颜色**在光谱路径上退化了（例如 K-S 反解失败后回落 rgb）。
+#[cfg(test)]
+mod medium_gradient_mixing_tests {
+    use super::{mix_colors, ColorMixing};
+
+    #[test]
+    fn the_medium_gradient_pair_differs_between_pigment_and_rgb() {
+        // 与 `scripts/tool-medium-color-mixing.mjs` 用的是同一对颜色
+        let warm = [240_u8, 210, 60];
+        let cool = [60_u8, 90, 210];
+        let rgb = mix_colors(ColorMixing::Rgb, warm, cool, 0.5);
+        let pigment = mix_colors(ColorMixing::Pigment, warm, cool, 0.5);
+        assert_ne!(
+            rgb, pigment,
+            "中段颜色：pigment 与 rgb 不该相同（rgb={rgb:?} / pigment={pigment:?}）\
+             —— 若相同，说明光谱路径在这对颜色上退化了（回落 rgb）"
+        );
+    }
+}

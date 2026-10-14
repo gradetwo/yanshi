@@ -78,7 +78,9 @@ pub fn medium_names() -> String {
 /// **为什么要这个结构** ✓：clippy 报 `paint_stroke_over` **参数 8 个超限** ✗。
 /// 而"允许它"（`#[allow(...)]`）只是把问题藏起来 ✗ —— 这些参数**本来就同属一组** ✓
 ///（笔尖大小 / 颜色 / 载墨 / 湿度 / 纹理 ✓）⇒ 打包成一个结构 ✓ 既过 lint ✓ 也更好读 ✓。
-#[derive(Clone, Copy, Debug)]
+// **注意**：这里**不能再有 `Copy`** 了 —— `point_colors` 是 `Option<Vec<_>>`（P1 缺口修复）。
+// 需要复制的调用方改用 `.clone()` ✓。
+#[derive(Clone, Debug)]
 pub struct StrokeSettings {
     /// 笔尖大小 ✓。
     pub size: f64,
@@ -90,6 +92,14 @@ pub struct StrokeSettings {
     pub wetness: f64,
     /// **纹理强度** ✓（0..=1 ✓；`0.0` 与"宿主不写它"逐字节等同 ✓）。
     pub texture: f64,
+    /// **每一点的笔尖色（可选；P1 缺口修复）**：给 `Some` 时**按点**决定 dab 的颜色
+    /// （长度应与 `points` 一致；短了就回落到 `color` ✓）。
+    ///
+    /// **为什么放在这里而不是在 host 里混色**：混色（含 P2 ⑯ 的光谱 K/S）住在
+    /// `yanshi-render::color`，而本 crate **刻意不依赖 `yanshi-render`**
+    /// （那会把整个内核连同滤镜/瓦片拖进介质宿主 ✗）=> 于是由**调用方**（server，
+    /// 它本来就依赖内核 ✓）先算好每点颜色，这里只负责"按点用色" ✓。
+    pub point_colors: Option<Vec<[f32; 4]>>,
 }
 
 impl StrokeSettings {
@@ -98,6 +108,7 @@ impl StrokeSettings {
         Self {
             size,
             color,
+            point_colors: None,
             load: 1.0,
             wetness: 0.4,
             texture: 0.0,
@@ -442,6 +453,7 @@ pub fn paint_stroke(
         load,
         wetness,
         texture: 0.0,
+        point_colors: None,
     };
     paint_stroke_over(medium_name, points, settings, None)
 }
@@ -458,6 +470,7 @@ pub fn paint_stroke_over(
         load,
         wetness,
         texture,
+        point_colors,
     } = settings;
     let medium = spec(medium_name).ok_or_else(|| {
         YanshiError::new(
@@ -497,6 +510,11 @@ pub fn paint_stroke_over(
     // **间距取 `size/4`** ✓：与主流笔刷一致 ✓（相邻印章重叠 3/4 ✓ ⇒ 看不出接缝 ✓，
     // 又不至于密到白刷一遍 ✓）。**上限** ✓：点数不让它爆掉 ✓。
     let mut path: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len() * 4);
+    // **★ 与路径**同步展开**的颜色（P1 缺口修复）★**：`point_colors` 是**按控制点**给的
+    // （长度 == `points.len()` ✓），而这里会把路径**插值展开**成更多点 ⇒
+    // 颜色也必须**按同一个 `t` 插值展开** ✓，否则展开后的下标就对不上了 ✗
+    //（第 254 轮实测：不对齐时越过长度 => 回落到整笔色 => **渐变根本没出现** ✗）。
+    let mut path_colors: Vec<[f32; 4]> = Vec::with_capacity(points.len() * 4);
     for (index, point) in points.iter().enumerate() {
         if index > 0 {
             let (px, py, pp) = points[index - 1];
@@ -517,9 +535,31 @@ pub fn paint_stroke_over(
             for step in 1..steps {
                 let t = step as f64 / steps as f64;
                 path.push((px + (cx - px) * t, py + (cy - py) * t, pp + (cp - pp) * t));
+                // 颜色按**同一个 t** 在相邻控制点之间插值 ✓
+                let (c0, c1) = match point_colors.as_ref() {
+                    Some(colors) if colors.len() == points.len() => {
+                        (colors[index - 1], colors[index])
+                    }
+                    _ => (color, color),
+                };
+                let tf = t as f32;
+                path_colors.push([
+                    c0[0] + (c1[0] - c0[0]) * tf,
+                    c0[1] + (c1[1] - c0[1]) * tf,
+                    c0[2] + (c1[2] - c0[2]) * tf,
+                    c0[3] + (c1[3] - c0[3]) * tf,
+                ]);
             }
         }
         path.push(*point);
+        // 控制点自身的颜色 ✓（`point_colors` 长度不符时回落到整笔色 ✓）
+        path_colors.push(
+            point_colors
+                .as_ref()
+                .filter(|colors| colors.len() == points.len())
+                .map(|colors| colors[index])
+                .unwrap_or(color),
+        );
     }
     let points = &path[..];
     let mut counter: u32 = 0;
@@ -557,8 +597,10 @@ pub fn paint_stroke_over(
                 })
             })
             .unwrap_or(color);
+        // **按点取色**（P1 缺口修复）：用**与路径同步展开**的颜色表 ✓，否则整笔色 ✓。
+        let dab_color = path_colors.get(index).copied().unwrap_or(color);
         let input = DabInput {
-            tip: color,
+            tip: dab_color,
             // **笔下的颜色** ✓（有底色 ✓）或**笔尖自身** ✓（没底色 ✓）。
             target,
             // **载墨沿笔触缓降，而不是按点数线性烧完** ✗ —— 用户报告的"颜色发灰" ✓：
@@ -758,6 +800,7 @@ mod readback_tests {
                 load: 1.0,
                 wetness,
                 texture: 0.0,
+                point_colors: None,
             },
             Some(&base_of(&bbox, [0, 0, 0, 255])),
         )
@@ -771,6 +814,7 @@ mod readback_tests {
                 load: 1.0,
                 wetness,
                 texture: 0.0,
+                point_colors: None,
             },
             Some(&base_of(&bbox, [255, 255, 255, 255])),
         )
@@ -822,6 +866,7 @@ mod readback_tests {
                 load: 0.9,
                 wetness: 0.8,
                 texture: 0.0,
+                point_colors: None,
             },
             Some(&base),
         )
@@ -835,6 +880,7 @@ mod readback_tests {
                 load: 0.9,
                 wetness: 0.8,
                 texture: 0.0,
+                point_colors: None,
             },
             Some(&base),
         )
@@ -856,6 +902,7 @@ mod readback_tests {
                 load: 1.0,
                 wetness: 0.9,
                 texture: 0.0,
+                point_colors: None,
             },
             Some(&[0u8; 4]),
         )
@@ -889,11 +936,14 @@ mod stroke_continuity_tests {
             load: 1.0,
             wetness: 0.5,
             texture: 1.0,
+            point_colors: None,
         };
         // **按值传 settings** ✓、**`Bbox` 的字段是公开的 `w`/`h`** ✓（没有 `width()` ✗）——
         // 又是两处"我以为是那样" ✓；**每次都以文件里的真实签名为准** ✓，这条纪律今天已经救了三次 ✓。
         let (bbox, pixels) =
-            paint_stroke_over("watercolor", &points, settings, None).expect("水彩笔触应当成功");
+            // **按值传要克隆** ✓（`StrokeSettings` 现在含 `Option<Vec<_>>` => 不再 `Copy`，
+        //   而下面还要读 `settings.size` ✓）。
+        paint_stroke_over("watercolor", &points, settings.clone(), None).expect("水彩笔触应当成功");
         let width = bbox.w as usize;
         let height = bbox.h as usize;
         assert!(
