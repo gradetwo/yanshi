@@ -478,10 +478,7 @@ fn map_blend(mode: ag_psd::psd::BlendMode) -> Option<&'static str> {
     })
 }
 
-fn layer_to_node(
-    layer: &ag_psd::psd::Layer,
-    unmapped: &mut Vec<String>,
-) -> PsdLayerNode {
+fn layer_to_node(layer: &ag_psd::psd::Layer, unmapped: &mut Vec<String>) -> PsdLayerNode {
     let name = layer
         .additional_info
         .name
@@ -551,7 +548,11 @@ pub fn read_layer_tree(bytes: &[u8]) -> Result<PsdLayerTree, PsdError> {
     let roots = psd
         .children
         .as_ref()
-        .map(|kids| kids.iter().map(|k| layer_to_node(k, &mut unmapped)).collect())
+        .map(|kids| {
+            kids.iter()
+                .map(|k| layer_to_node(k, &mut unmapped))
+                .collect()
+        })
         .unwrap_or_default();
     Ok(PsdLayerTree {
         width: psd.width.round().max(0.0) as u32,
