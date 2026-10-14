@@ -27987,6 +27987,14 @@ tool-render-memory-budget.mjs  # **类型：内存账目（DEF-03 的根因；�
 #     被"这一笔没落下任何像素"的前置检查（tools.rs:14635）**误伤**（连"这块没颜色可抹"的提示
 #     都印出来了，而那块明明有红）。修法：把 `smudge_dab` 抹过的像素数也计进 `painted`
 #     （让 `stamp_stroke_from` 把 smudge 计数一并回传，或让 `paint_brush` 单独累加）。
+#   ＋ **★ 真正的根因（第 254 轮定位）★**：`paint_brush` 在落笔之后有一段 **canvas-drift 修正** ——
+#     对"既**没沉积**（`deposited`）也**没位移**（`moved`）"的像素**直接清零**（`rgba[index..+3] = 0`，
+#     还 `painted -= 1`）。而我的 `smudge_dab` 是在 `stamp_stroke_from` 里跑的 => **发生在这段修正之前**
+#     => 它抹过的像素被判成"没变" => **改动被抹掉**、`painted` 归零 => 触发
+#     "这一笔没落下任何像素"的前置检查（tools.rs:14635）。
+#     **⇒ 所以转绿的正确修法是**：让揉合被认成**合法位移** —— 把 `smudge_dab` 的 dab 足迹并进
+#     `moved` 的判定（或把揉合挪到 drift 修正**之后**、并把揉合足迹计进 `painted`），
+#     而不是简单地在 `painted` 上加个数。**这一段要在专门一轮里改**（改的是渲染记账内核）。
 tool-carried-color.mjs  # **类型：功能缺口（纯揉合不拖曳；带色揉合已生效——文档那句已过时）**
 
 # **★★★ tool-bristle.mjs —— 已转绿，从台账移出（第 254 轮）★★★**
