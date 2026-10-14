@@ -3032,6 +3032,22 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     /// **∴ 这是纯观测补充** ✓：**不参与任何渲染决策** ✗ ⇒ 输出像素一个都不变 ✓。
     /// **位图缓存的命中／未命中（全文档聚合）** ✓（第 93 轮 ✓，纯观测 ✓）。
     /// **below 复用次数（全文档求和）** ✓（第 95 轮 ✓，纯观测 ✓）。
+    /// **`by_sig` 分组数（进程级观测；第 254 轮）** —— 用来判断"某个场景有没有把
+    /// 分组数顶到 `BELOW_SIG_GROUPS` 上限"，从而判断淘汰策略有没有生效的机会。
+    pub fn below_groups_count(&self) -> usize {
+        yanshi_render::render::below_groups_count()
+    }
+
+    /// **`by_sig` 分组数的峰值（进程级观测；第 254 轮）**。
+    pub fn below_groups_peak(&self) -> usize {
+        yanshi_render::render::below_groups_peak()
+    }
+
+    /// **below 复用的累计次数**（所有文档求和）—— 与 `below_missing_count`/`below_wanted_count`
+    /// 配对，判据据此算自洽性。
+    ///
+    /// **注**（第 254 轮）：这条文档被"新增方法插进它和函数之间"坑掉过一次（本会话**第六次** ✗）
+    /// => 规矩见 `AGENTS.md`：新增方法要插在**整段文档注释之前**。
     pub fn below_reuse_count(&self) -> usize {
         self.documents.values().map(|d| d.below_reuse_count()).sum()
     }

@@ -943,6 +943,9 @@ fn health(state: &ServerState) -> Response {
             // 判据分不清「真的没命中」与「没走 below 路径」。
             "below_missing": below_missing_count(state),
             "below_wanted": below_wanted_count(state),
+            // **`by_sig` 分组数与峰值**（第 254 轮，纯观测）。
+            "below_groups": below_groups_count(state),
+            "below_groups_peak": below_groups_peak_count(state),
             // **★ 渲染后端必须**如实报出** ✓ ★**（第 602 轮 ✓；**部署矩阵 ＋ GPU 优先决策 ✓**）：
             // **∴ 现在**没有 GPU 后端 ✗**（**∴ 全部走 CPU ✓**）⇒ **∴ 这里**永远**如实写 `cpu` ✓**
             // **★ 而**"**环境有没有 GPU**"**是另一个问题**✗ ⇒ **∴ 见下面的 `gpu_probe` ✓ ★**
@@ -1047,6 +1050,20 @@ fn health(state: &ServerState) -> Response {
 /// 前者缓存"**渲染出的 tile**" ✓，后者缓存"**解码后的位图**" ✓ ⇒ **∴ 混在一起就看不出是谁的问题** ✓。
 /// **below 复用次数** ✓（第 95 轮 ✓，纯观测 ✓）—— 目标第 4 条的判据用它问
 /// "**只改当前层时，下方合成有没有被复用**" ✓（现在还没有缓存 ⇒ **恒 0** ✓）。
+fn below_groups_count(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!(0);
+    };
+    json!(workspace.below_groups_count())
+}
+
+fn below_groups_peak_count(state: &ServerState) -> serde_json::Value {
+    let Ok(workspace) = state.workspace.lock() else {
+        return json!(0);
+    };
+    json!(workspace.below_groups_peak())
+}
+
 fn below_reuse_count(state: &ServerState) -> serde_json::Value {
     let Ok(workspace) = state.workspace.lock() else {
         return json!({"error": "工作区锁中毒"});

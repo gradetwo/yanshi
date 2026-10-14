@@ -236,6 +236,24 @@ static BELOW_MISSING: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 ///       **正是**这条不变式** ✓ ⇒ **∴ 它**此前**只能**从**单次 stats** 拿 ✓ ⇒ **∴ 现在**有**累计**口径** ✓）★**** ✓✓
 static BELOW_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **`by_sig` 分组数的"当前值"与"峰值"**（观测用，第 254 轮）：
+/// 淘汰策略的收益只有在"分组数真的顶到上限 `BELOW_SIG_GROUPS`"时才可能出现
+/// => 先把它变成**可观测**的（第 253 轮的 A/B 就是因为看不见它而无法证伪 ✗）。
+static BELOW_GROUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static BELOW_GROUPS_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **读 `by_sig` 当前分组数**（进程级观测；第 254 轮）。
+#[must_use]
+pub fn below_groups_count() -> usize {
+    BELOW_GROUPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **读 `by_sig` 分组数峰值**（进程级观测；第 254 轮）。
+#[must_use]
+pub fn below_groups_peak() -> usize {
+    BELOW_GROUPS_PEAK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// **★ 渲染序号 ✓ ★**（第 723 轮 ✓，**纯观测 ✓**）：**∴ 给每次 `render_accumulation` 一个 id ✗**
 /// ⇒ **∴ 于是**探针的**多行输出**可以**按 id 配对**✗** ——
 /// **∴ 因为**第 717／718 两轮我**配错了行**（**`tail` 取到别的渲染 ✓）⇒ **∴ 这一次**不再靠猜 ✓**。
@@ -2392,6 +2410,15 @@ impl Renderer {
                         //   内存上界不变（≤ BELOW_SIG_GROUPS），但保住的分组从 0 变成 n-1
                         //   => 命中率单调不降。淘汰谁由**字典序**决定（确定性）。
                         evict_one_sig_group(&mut carried, &sig);
+                        // **观测**（纯读，不改行为）：把当前分组数与峰值记下来。
+                        {
+                            use std::sync::atomic::Ordering;
+                            let now = carried.len();
+                            BELOW_GROUPS.store(now, Ordering::Relaxed);
+                            if now > BELOW_GROUPS_PEAK.load(Ordering::Relaxed) {
+                                BELOW_GROUPS_PEAK.store(now, Ordering::Relaxed);
+                            }
+                        }
                         carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
                         *guard = Some(BelowTiles {
                             sig,
