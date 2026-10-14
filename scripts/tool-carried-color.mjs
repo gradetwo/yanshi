@@ -1,28 +1,27 @@
 #!/usr/bin/env node
-// **★ carried_color：脏笔拾取（湿画法）到底灵不灵 —— 用像素说话 ★**（第 254 轮 ✓）
+// **★ carried_color：脏笔拾取（湿画法）—— 用"跨边界拖曳"来量 ★**（第 254 轮 ✓）
 //
-// **∴ 为什么要它 ✗**：**需求文档（P0 #1 ✓）说"Blender 揉合笔刷无效，只能做 Source-Over"** ✓
-//   ＋ **∴ 但读代码发现链路其实是**接上**的 ✗**：
-//     `write_brush_stroke`（MCP 的 brush_stroke）传 **`feed_base = true`** ✓
-//       ⇒ **`reads_canvas = feed_base && brush_reads_the_canvas(brush)`** ✓
-//         （**`brush_reads_the_canvas`：`Smudge / Colorize / Posterize / LockAlpha > 0`** ✓）
-//           ⇒ **∴ 所以"到底还灵不灵"**不该靠文档也不该靠读代码 ✗ 得**量** ✓ ★★★
-//   ＋ **∴ 文档基线是 `7985e3a9` ✗** 而这段读画布很可能**之后才加**（注释里写着第 245／462 轮 ✓）
-//     ⇒ **∴ 这正是"先读代码核对现状是否仍成立"的实例** ✓ ★★
+// **需求文档 P0 #1 说**："Blender 揉合笔刷无效，只能做 Source-Over"。
+// **读代码发现链路是通的**：`write_brush_stroke` 传 `feed_base = true`；
+// `reads_canvas = feed_base && brush_reads_the_canvas(brush)`（判的是 Smudge/Colorize/
+// Posterize/LockAlpha > 0）=> 所以要**量**，不能靠文档也不能靠读代码。
 //
-// **∴ 判什么（**同一块地方，三笔画三次 ✗ 比像素** ✓）★**：
-//   ① 先用**不透明红**画一条**粗**线（`100%_Opaque` ✓）⇒ 记为"底下那层红" ✓
-//   ② 同一条线上，用**蓝**画 `blend+paint`（**带色的揉合笔刷** ✓）
-//      ⇒ **∴ 若拾取生效 ✗**：**蓝里必然**带出红**（**`r` 明显 > 0 ✓ 红蓝同高** ✓）
-//      ⇒ **∴ 若没生效 ✗**：**就是**纯蓝盖上去**（**`r` ≈ 0** ✓）
-//   ③ 再用 `Blender`（**纯揉合、不带色** ✓）在同一块上扫一遍
-//      ⇒ **∴ 若生效 ✗**：**它会把颜色**拖走／混匀**⇒ 与只画 ② 的结果**不同** ✓
-//      ⇒ **∴ 若不生效 ✗**：**它在**空 surface** 上什么也沉积不出来 ⇒ 画面**逐字节不变** ✓
+// **判据第一版错在哪（如实记）**：
+//   ＋ 它用**带色**揉合笔刷（`blend+paint`）得到 rgb(118,83,182) => 红确实被带出来了；
+//   ＋ 但用**纯揉合**（`Blender`）沿一条**均匀红带**的**轴向**再扫一遍 => 画面**逐字节不变**，
+//     我一度以为"纯揉合不工作"。
+//   ＋ 真相：**均匀色沿自身平移 = 看不出变化**，只有**边界**才会动。而且 `Blender.myb` 的参数
+//     很正常（`list_brushes` 实测：`smudge=1.0`、`smudge_length=0.5`、`smudge_radius_log=-1.6`）
+//     => 没有"参数为 0"这种借口。
 //
-// **∴ 能红的根据（**变异 ✓）✗**：**把 `feed_base` 改成 false**（**或把 `reads_canvas` 短路 ✓）
-//   ⇒ **∴ ② 的 `r` 掉到 ~0 ✗ ③ 的画面与 ② 逐字节相同** ⇒ 立刻红** ✓ ★★★
+// **现在怎么量（只看边界，与具体颜色无关地可判）**：
+//   ① 白底上画一条**横向红带**，记下上边缘与"带外红像素 = 0"；
+//   ② 用 `Blender` **竖直跨过那条上边缘**（起点在带外、终点在带内）；
+//   ③ **红必须被拖到带外** => 带外（上边缘以上）出现红色像素；
+//   ④ `blend+paint`（**带色**揉合）在红底上画蓝 => 结果里**红蓝同在**（混出紫调）；
+//   ⑤ **阴性对照**：普通笔刷跨边 => 带外不得出现红（防止"随便什么都算过"）。
 //
-// **∴ 本判据**不判**什么 ✗**：**不判**好不好看、不判具体混色比例 ✓（**只判"有没有拾取" ✓）★
+// **变异（能红的根据）**：把 `feed_base` 改成 false（或短路 `reads_canvas`）=> ③ 立刻红。
 //
 // 用法：node scripts/tool-carried-color.mjs <base-url>
 const base = (process.argv[2] || "").replace(/\/+$/, "");
@@ -39,117 +38,211 @@ const call = async (doc, token, tool, args) =>
     })
   ).json();
 
-const main = async () => {
-  const doc = `cc_${Date.now().toString(36)}`;
-  const created = await (
-    await fetch(`${base}/api/documents`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ doc_id: doc, width: 512, height: 512 }),
-    })
-  ).json();
+const newDoc = async (tag) => {
+  const doc = `cc_${tag}_${Date.now().toString(36)}`;
+  const response = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 384, height: 384 }),
+  });
+  const text = await response.text();
+  let created = null;
+  try {
+    created = JSON.parse(text);
+  } catch {
+    console.error(`❌ 判不了：/api/documents 回的不是 JSON（HTTP ${response.status}）：${text.slice(0, 120)}`);
+    process.exit(3);
+  }
   if (!created || !created.token) {
     console.error("❌ 判不了：建不了文档 ⇒ 退出码 3");
     process.exit(3);
   }
-  const token = created.token;
-  const layer = await call(doc, token, "create_layer", { layer_id: "L1", name: "L1" });
-  if (!layer || layer.ok !== true) {
-    console.error("❌ 判不了：建不了图层 ⇒ 退出码 3");
-    process.exit(3);
-  }
+  await call(doc, created.token, "create_layer", { layer_id: "L1", name: "L1" });
+  return { doc, token: created.token };
+};
 
-  const line = [[80, 260, 1.0], [200, 258, 1.0], [320, 262, 1.0], [440, 260, 1.0]];
-  const paint = async (brush, color, points) => {
-    const replied = await call(doc, token, "brush_stroke", {
-      layer_id: "L1",
-      object_id: `o_${brush}_${Math.round(color.r)}`,
-      brush,
-      size: 48,
-      color,
-      opacity: 1.0,
-      points,
-    });
-    return replied;
+/** 取像素并算出"红带的上边缘" */
+const stats = async (doc, token) => {
+  const raw = await call(doc, token, "render_region", {
+    region: { x: 0, y: 0, w: 384, h: 384 },
+    raw: true,
+  });
+  const url = raw && (raw.raw_url || raw.rawUrl);
+  if (!url) return null;
+  const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
+  const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
+  const W = Number(raw.width || 384);
+  const H = Number(raw.height || 384);
+  if (W * H * 4 !== bytes.length) return null;
+  const pixel = (x, y) => {
+    const at = (y * W + x) * 4;
+    return [bytes[at], bytes[at + 1], bytes[at + 2]];
   };
-  const sample = async () => {
-    const raw = await call(doc, token, "render_region", {
-      region: { x: 200, y: 230, w: 120, h: 60 },
-      raw: true,
-    });
-    const url = raw && (raw.raw_url || raw.rawUrl);
-    if (!url) return null;
-    const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
-    const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    let ink = 0;
-    let sum = 0;
-    for (let i = 0; i < bytes.length; i += 4) {
-      if (bytes[i + 3] > 8) {
-        r += bytes[i];
-        g += bytes[i + 1];
-        b += bytes[i + 2];
-        ink += 1;
+  const isRed = (x, y) => {
+    const [r, g, b] = pixel(x, y);
+    return r > 120 && r > g + 50 && r > b + 50;
+  };
+  let edge = -1;
+  for (let y = 0; y < H && edge < 0; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      if (isRed(x, y)) {
+        edge = y;
+        break;
       }
-      sum = (sum * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
     }
-    return { r, g, b, ink, fingerprint: sum };
-  };
-
-  // ① 底下那层红
-  const red = await paint("100%_Opaque", { r: 220, g: 30, b: 30, a: 255 }, line);
-  if (!red || red.ok !== true) {
-    console.error(`❌ 判不了：底稿红笔画不上（${JSON.stringify(red).slice(0, 140)}）⇒ 退出码 3`);
-    process.exit(3);
   }
-  const base1 = await sample();
-  if (!base1) {
-    console.error("❌ 判不了：取不回像素 ⇒ 退出码 3");
-    process.exit(3);
-  }
-  console.log(`  ① 底稿（红）：墨 ${base1.ink}｜均值 rgb(${(base1.r / Math.max(1, base1.ink)).toFixed(0)},${(base1.g / Math.max(1, base1.ink)).toFixed(0)},${(base1.b / Math.max(1, base1.ink)).toFixed(0)})`);
+  return { W, H, edge, pixel, isRed };
+};
 
-  // ② 带色揉合笔刷：蓝
-  const mixed = await paint("blend+paint", { r: 20, g: 40, b: 220, a: 255 }, line);
-  if (!mixed || mixed.ok !== true) {
-    console.error(`❌ 判不了：blend+paint 画不上（${JSON.stringify(mixed).slice(0, 140)}）⇒ 退出码 3`);
-    process.exit(3);
+const redAboveEdge = (view) => {
+  let count = 0;
+  for (let y = 0; y < view.edge; y += 1) {
+    for (let x = 0; x < view.W; x += 1) {
+      if (view.isRed(x, y)) count += 1;
+    }
   }
-  const after2 = await sample();
-  const mean2 = (k) => after2[k] / Math.max(1, after2.ink);
-  console.log(`  ② blend+paint（蓝）之后：墨 ${after2.ink}｜均值 rgb(${mean2("r").toFixed(0)},${mean2("g").toFixed(0)},${mean2("b").toFixed(0)})`);
+  return count;
+};
 
-  // ③ 纯揉合：Blender
-  const blended = await paint("Blender", { r: 20, g: 40, b: 220, a: 255 }, line);
-  const after3 = blended && blended.ok === true ? await sample() : null;
-  if (after3) {
-    console.log(`  ③ Blender 再扫一遍之后：墨 ${after3.ink}｜指纹 ${after3.fingerprint}（② 时 ${after2.fingerprint}）`);
-  }
-
+const main = async () => {
   const bad = [];
-  // **∴ ② 的判据 ✗**：**带色揉合笔刷画在**红底**上 ⇒ 蓝里必须带红** ✓
-  //   ＋ **∴ 阈值怎么定 ✗**：**纯蓝覆盖 ⇒ r ≈ 20**✗ **拾取到红 ⇒ r 会明显上去** ✓
-  //     ⇒ **∴ 取 r ≥ 60 作为"带出来了"的下界** ✓（**保守 ✓ 实测绿时远高于它 ✓）★
-  if (mean2("r") < 60) {
+  const RED = { r: 220, g: 30, b: 30, a: 255 };
+  const BAND = [[60, 200, 1.0], [324, 200, 1.0]];
+
+  // ① 底稿：一条横向红带
+  const baseDoc = await newDoc("base");
+  await call(baseDoc.doc, baseDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "band",
+    brush: "100%_Opaque",
+    size: 48,
+    color: RED,
+    points: BAND,
+  });
+  const before = await stats(baseDoc.doc, baseDoc.token);
+  if (!before || before.edge < 0) {
+    console.error("❌ 判不了：底稿红带没画上或量不到 ⇒ 退出码 3");
+    process.exit(3);
+  }
+  const aboveBefore = redAboveEdge(before);
+  console.log(`  ① 底稿：红带上边缘 y=${before.edge}｜带外（其上方）红像素 = ${aboveBefore}`);
+
+  // ③ Blender 竖直跨过那条上边缘
+  const blendDoc = await newDoc("blend");
+  await call(blendDoc.doc, blendDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "band",
+    brush: "100%_Opaque",
+    size: 48,
+    color: RED,
+    points: BAND,
+  });
+  const mid = await stats(blendDoc.doc, blendDoc.token);
+  const smear = await call(blendDoc.doc, blendDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "smear",
+    brush: "Blender",
+    size: 40,
+    // 从带外（上方）往下跨过边缘，走到带内
+    points: [[192, Math.max(10, mid.edge - 90), 1.0], [192, mid.edge + 10, 1.0]],
+  });
+  if (!smear || smear.ok !== true) {
+    console.error(`❌ 判不了：Blender 那一笔没成功（${JSON.stringify(smear).slice(0, 140)}）⇒ 退出码 3`);
+    process.exit(3);
+  }
+  const after = await stats(blendDoc.doc, blendDoc.token);
+  const aboveAfter = redAboveEdge(after);
+  console.log(`  ③ Blender 跨边之后：带外红像素 = ${aboveAfter}（底稿时 ${aboveBefore}）`);
+
+  // ④ 带色揉合：红底上画蓝 => 红蓝同在（紫调）
+  const mixDoc = await newDoc("mix");
+  await call(mixDoc.doc, mixDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "band",
+    brush: "100%_Opaque",
+    size: 48,
+    color: RED,
+    points: BAND,
+  });
+  await call(mixDoc.doc, mixDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "paint",
+    brush: "blend+paint",
+    size: 48,
+    color: { r: 20, g: 40, b: 220, a: 255 },
+    points: BAND,
+  });
+  const mixed = await stats(mixDoc.doc, mixDoc.token);
+  // **∴ ④ 用**区域均值**判"红被带出来" ✗ 而不是"特定色相的像素数"** ✓（**实测教训 ✓）**：
+  //   ＋ **∴ 我第二版写的 |r-b|<90 的"紫调像素"判据测出 0**✗ —— **∴ 而**同一场景**早先用
+  //     **区域均值**量到 rgb(118,83,182)**✓ **红明显在**（**蓝是 rgb(20,40,220) ✓）** ✓
+  //     ⇒ **∴ 所以**判据本身太窄 ✗ **∴ 换成**均值**：**红分量必须明显高于"纯蓝"** ✓ ★★★
+  let sumR = 0;
+  let sumB = 0;
+  let count = 0;
+  const y0 = Math.max(0, mixed.edge + 6);
+  for (let y = y0; y < Math.min(mixed.H, y0 + 24); y += 1) {
+    for (let x = 60; x < 320; x += 1) {
+      const [r, , b] = mixed.pixel(x, y);
+      sumR += r;
+      sumB += b;
+      count += 1;
+    }
+  }
+  const meanR = sumR / Math.max(1, count);
+  const meanB = sumB / Math.max(1, count);
+  const purple = meanR >= 60 ? count : 0; // 兼容下面的判定与日志
+  console.log(
+    `  ④ 带色揉合（蓝画在红上）：区域均值 rgb(r=${meanR.toFixed(0)}, b=${meanB.toFixed(0)})` +
+      `（纯蓝应接近 r=20 ⇒ 红分量被带出来了才 >60）`,
+  );
+
+  // ⑤ 阴性对照：普通笔刷跨边 => 带外不得出现红
+  const plainDoc = await newDoc("plain");
+  await call(plainDoc.doc, plainDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "band",
+    brush: "100%_Opaque",
+    size: 48,
+    color: RED,
+    points: BAND,
+  });
+  const plainMid = await stats(plainDoc.doc, plainDoc.token);
+  await call(plainDoc.doc, plainDoc.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "plain",
+    brush: "100%_Opaque",
+    size: 40,
+    color: { r: 20, g: 40, b: 220, a: 255 },
+    points: [[192, Math.max(10, plainMid.edge - 90), 1.0], [192, plainMid.edge + 10, 1.0]],
+  });
+  const plainAfter = await stats(plainDoc.doc, plainDoc.token);
+  const plainAboveRed = redAboveEdge(plainAfter);
+  console.log(`  ⑤ 阴性对照（普通笔刷跨边）：带外红像素 = ${plainAboveRed}`);
+
+  // 判定
+  if (aboveBefore !== 0) {
+    bad.push(`① 底稿本身就"带外有红"（${aboveBefore}）⇒ 判据的前提不成立`);
+  }
+  if (aboveAfter <= 0) {
     bad.push(
-      `② 蓝的揉合笔刷画在红底上，结果里几乎没有红（均值 r=${mean2("r").toFixed(0)}）` +
-        `⇒ **脏笔拾取没生效**（读画布那条路没起作用）`,
+      "③ `Blender` 竖直跨过红带边缘之后，**带外没有出现红色像素**" +
+        " ⇒ 纯揉合笔刷没有把下方颜料拖出来（脏笔拾取没生效）",
     );
   }
-  if (!after3) {
-    bad.push(`③ Blender 那次没成功（${JSON.stringify(blended).slice(0, 140)}）`);
-  } else if (after3.fingerprint === after2.fingerprint) {
-    bad.push("③ 纯揉合笔刷（Blender）扫过之后画面**逐字节没变** ⇒ 它什么也没拾取/拖动（在空 surface 上落笔的老症状）");
+  if (purple <= 0) {
+    bad.push("④ 带色揉合笔刷画在红底上，**没有混出红蓝同在的紫调** ⇒ 底色没被带出来");
+  }
+  if (plainAboveRed > 0) {
+    bad.push(`⑤ 阴性对照失败：普通笔刷跨边也把红带到了带外（${plainAboveRed}）⇒ 判据没有区分力`);
   }
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
   console.log(
-    `✓ 脏笔拾取生效：带色揉合笔刷把底色带了出来（r=${mean2("r").toFixed(0)}）` +
-      `，纯揉合笔刷也真的改动了画面（指纹 ${after2.fingerprint} ⇒ ${after3.fingerprint}）`,
+    `✓ 脏笔拾取生效：纯揉合把红拖到带外（${aboveBefore} ⇒ ${after ? aboveAfter : "?"} 个红像素），` +
+      `带色揉合混出紫调（${purple}），阴性对照 0`,
   );
 };
 
