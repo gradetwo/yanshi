@@ -28,10 +28,15 @@ if (!base) {
 const fs = await import("node:fs");
 const path = await import("node:path");
 const url = await import("node:url");
-const FIXTURE = path.resolve(
-  path.dirname(url.fileURLToPath(import.meta.url)),
-  "../crates/yanshi-render/tests/data/psd/agpsd-two-layers.psd",
-);
+// **∴ 夹具可覆盖 ✗**（**第 253 轮 ✓）：**给第二个参数就拿它当输入** ✓
+//   ＋ **∴ 为什么需要 ✗**：**往返那条链出问题时 ✗ 要能问"**导出的 PSD 自己**自洽吗**"
+//     ⇒ **∴ 于是**：**`node scripts/tool-psd-layers.mjs <base> <某个.psd>`** ✓ ★★
+const FIXTURE = process.argv[3]
+  ? path.resolve(process.argv[3])
+  : path.resolve(
+      path.dirname(url.fileURLToPath(import.meta.url)),
+      "../crates/yanshi-render/tests/data/psd/agpsd-two-layers.psd",
+    );
 
 const call = async (doc, token, tool, args) =>
   (
@@ -97,9 +102,15 @@ const main = async () => {
   const green = byName("组内绿");
   const group = byName("一组");
   const hidden = byName("隐藏层");
+  const overridden = Boolean(process.argv[3]);
+  if (overridden) {
+    console.log("  （覆盖夹具模式：只比合成图，跳过按名字写死的那几条断言）");
+  }
   const mine = ["红", "蓝", "组内绿", "一组", "隐藏层"].map(byName).filter(Boolean);
-  if (mine.length !== 5) bad.push(`① 导入的那 5 个（4 光栅 ＋ 1 组）应都在，实测 ${mine.length}`);
-  if (!red || !blue || !green || !group || !hidden) {
+  if (!overridden && mine.length !== 5) {
+    bad.push(`① 导入的那 5 个（4 光栅 ＋ 1 组）应都在，实测 ${mine.length}`);
+  }
+  if (!overridden && (!red || !blue || !green || !group || !hidden)) {
     bad.push(`① 名字对不上（缺 ${[red, blue, green, group, hidden].filter((x) => !x).length} 个）`);
   }
   if (group) {

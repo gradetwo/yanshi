@@ -855,6 +855,18 @@ impl Renderer {
         std::mem::replace(&mut self.options.active_layer, layer)
     }
 
+    /// **★ 临时改输出底色 ✗ ★**（**第 253 轮 ✓；**单层导出要**透明底** ✓）
+    ///
+    /// **∴ 为什么需要它 ✗**：**`Options::background` 是私有字段**✗
+    ///   ＋ **∴ 而**`with_options` 是**消费式 builder** ✗（**∴ 临时改一下再改回来**用不了 ✓）★
+    ///   ＋ **∴ 不加它 ⇒ **每层位图都带白底**✗ ⇒ **∴ PSD 里每层都是不透明白 ✗
+    ///     ⇒ **∴ 叠起来**把合成毁掉** ✓（**实测：导入导出的 PSD 与它**自带的合成图**
+    ///       差 159 ✓ ✗ 而**同样这条判据**对 ag-psd 写的夹具是**差 0** ✓）★★
+    ///   ＋ **∴ 所以 ✗**：**与 `set_only_layer` 同一形状**（**返回旧值 ✓ 调用方负责还原 ✓）★★
+    pub fn set_background(&mut self, background: Option<[u8; 4]>) -> Option<[u8; 4]> {
+        std::mem::replace(&mut self.options.background, background)
+    }
+
     /// **覆盖并行度**（`1` ⇒ 强制串行；`0` 视为 `1`），返回原值。
     /// `None` 恢复自动（可用核数）。
     pub fn set_max_workers(&mut self, workers: Option<usize>) -> Option<usize> {

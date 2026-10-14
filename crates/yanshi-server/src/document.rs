@@ -1487,20 +1487,6 @@ impl Document {
         })
     }
 
-    /// **★ 单层缩略图预览 ✗ ★**（第 185 轮 ✓；**PWA 实测 P1-2 的后端一半 ✓**）。
-    ///
-    /// **∴ 为什么不复用 [`Self::render_region`] ✗ ★**：**那条路会**更新文档级状态**✗**
-    /// （`last_render_blob` ✓／`document_thumbnail` ✓／`full_frame_render` ✓）
-    /// ⇒ **∴ 于是**一张「**只有一层**」的图会被**当成**文档缩略图** ✗（**污染** ✓）
-    ///   ⇒ **★ 所以**：**它**不是**「**一行级**」**的改动**✓（**∴ 与**上游补丁 README **的说法不同 ✓）**。
-    ///
-    /// **∴ 本方法只做四件事 ✗**：**隔离一层 ⇒ 渲染 ⇒ 编码 PNG ⇒ 存 CAS** ✓
-    ///   ⇒ **∴ 而****不碰**任何**文档级指针** ✓（**∴ 因为**它是**附属信息** ✓）。
-    ///
-    /// **∴ 且**：**不调 `note_render_stats`** ✗ —— **∴ 因为**那个槽**承载的是**"**这一次请求**"**的账目**✗
-    ///   （**`below_tiles_*` 等 ✓）⇒ **∴ 若**每张缩略图都去记一笔 ✗ ⇒
-    ///     **∴ 就会**污染**那些**账目**✗ ⇒ **∴ 而**好几条判据**正**读它们 ✓**** ✓✓
-    ///   ⇒ **∴ 替代**：**告警**直接**从 `stats.unsupported` **取 ✓（**∴ 不**经共享槽 ✓）** ✓✓
     /// **★ 只渲染**某一层**，返回**裸 RGBA** ✗ ★**（**第 253 轮 ✓；**PSD 分层导出用 ✓）
     ///
     /// **∴ 为什么加它 ✗**：**同族的 `render_region_layer_preview`**返回的是**PNG blob**
@@ -1515,13 +1501,36 @@ impl Document {
         bbox: Bbox,
         layer_id: &str,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        // **★★★ 单层位图必须**透明底** ✗ ★★★**（**第 253 轮实测修 ✓）
+        //   ＋ **∴ 为什么 ✗**：**图层位图只该带**它自己的内容** ✓
+        //     ＋ **∴ 若**带着画布白底 ⇒ **每层都成了**不透明白**✗
+        //       ⇒ **∴ 写进 PSD 后**叠起来就把合成毁掉** ✓
+        //         ＋ **∴ 实测 ✗**：**把导出的 PSD 再导回来 ✗ 与它**自带的合成图**差 **159**
+        //           （**∴ 改成透明底 ⇒ **差 1** ✓）★★★
+        let previous_bg = self.renderer.set_background(Some([0, 0, 0, 0]));
         let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
         let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
+        // **∴ 无论成功失败都要还原** ✓（**两条开关都还原 ✓）★
         self.renderer.set_only_layer(previous);
+        self.renderer.set_background(previous_bg);
         let rendered = rendered?;
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **★ 单层缩略图预览 ✗ ★**（第 185 轮 ✓；**PWA 实测 P1-2 的后端一半 ✓**）。
+    ///
+    /// **∴ 为什么不复用 [`Self::render_region`] ✗ ★**：**那条路会**更新文档级状态**✗**
+    /// （`last_render_blob` ✓／`document_thumbnail` ✓／`full_frame_render` ✓）
+    /// ⇒ **∴ 于是**一张「**只有一层**」的图会被**当成**文档缩略图** ✗（**污染** ✓）
+    ///   ⇒ **★ 所以**：**它**不是**「**一行级**」**的改动**✓（**∴ 与**上游补丁 README **的说法不同 ✓）**。
+    ///
+    /// **∴ 本方法只做四件事 ✗**：**隔离一层 ⇒ 渲染 ⇒ 编码 PNG ⇒ 存 CAS** ✓
+    ///   ⇒ **∴ 而****不碰**任何**文档级指针** ✓（**∴ 因为**它是**附属信息** ✓）。
+    ///
+    /// **∴ 且**：**不调 `note_render_stats`** ✗ —— **∴ 因为**那个槽**承载的是**"**这一次请求**"**的账目**✗
+    ///   （**`below_tiles_*` 等 ✓）⇒ **∴ 若**每张缩略图都去记一笔 ✗ ⇒
+    ///     **∴ 就会**污染**那些**账目**✗ ⇒ **∴ 而**好几条判据**正**读它们 ✓**** ✓✓
+    ///   ⇒ **∴ 替代**：**告警**直接**从 `stats.unsupported` **取 ✓（**∴ 不**经共享槽 ✓）** ✓✓
     pub fn render_region_layer_preview(
         &mut self,
         bbox: Bbox,

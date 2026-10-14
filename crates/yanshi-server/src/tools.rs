@@ -8173,18 +8173,21 @@ fn write_import_psd(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 ///     （**"能被 Photoshop 打开"至少要有它 ✓）★
 fn write_export_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **∴ 先把要用的字段**拷成自有值** ✗ 再放开对文档的可变借用** ✓（**渲染要可变 ✓）★
+    /// **∴ 一层要用的字段 ✗**（**`clippy::type_complexity` ✓）★
+    /// （**`id ✗ name ✗ 类型 ✗ 可见 ✗ 不透明度 ✗ 混合 ✗ 父 ✗ z` ✓）★
+    type LayerRow = (
+        String,
+        String,
+        String,
+        bool,
+        f64,
+        String,
+        Option<String>,
+        i64,
+    );
     let (doc_w, doc_h, snapshot) = {
         let state = document_state(ctx)?;
-        let mut rows: Vec<(
-            String,
-            String,
-            String,
-            bool,
-            f64,
-            String,
-            Option<String>,
-            i64,
-        )> = state
+        let mut rows: Vec<LayerRow> = state
             .alive_layers()
             .iter()
             .map(|layer| {
@@ -8272,30 +8275,39 @@ fn write_export_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             _ => children_of.entry(String::new()).or_default().push(layer),
         }
     }
+    // **★★★ roots 必须**按 z 序**生成 ✗ 不能"先所有组 ✗ 再所有顶层"** ✓ ★★★**
+    //   ＋ **∴ 我第一版就是这么写的 ✗**（**一个循环挑组 ✗ 另一个循环挑顶层 ✓）**
+    //     ⇒ **∴ 于是**：**组**掉到最底层**（**红层反而在上面 ✓）★
+    //       ＋ **∴ 症状极具误导性 ✗**：**导回来以后**组内那一层在合成里**看不见** ✓
+    //         （**∴ 被**它上面的默认图层**压住 ✓ ✗ 而**它自己**有内容** ✓）
+    //         ＋ **∴ 我先后改了**only_layer ✗ 组属性 ✗ z 槽位 ✗ 三处
+    //           **∴ 数字**一字不差（25.80／49.0% ✓）⇒ **∴ 说明**都没动到这个顺序** ✓
+    //             ＋ **∴ 教训 ✗**：**症状在同一处反复出现而不变 ⇒ **先怀疑**没被改到的那一环** ✓ ★★★
+    //   ＋ **∴ 现在 ✗**：**按 z 序**走一遍 snapshot**✗ 遇到组就**把它收集好的 children 一起带出** ✓
+    //     ＋ **∴ 是别人孩子的层跳过**（**它们已经在组里了 ✓）★
     let mut roots: Vec<yanshi_render::psd::PsdOutLayer> = Vec::new();
     for (id, name, kind, visible, opacity, blend, parent, _z) in &snapshot {
-        if !kind.contains("group") {
-            continue;
+        let is_child_of_group = parent
+            .as_ref()
+            .is_some_and(|parent_id| group_ids.contains(parent_id));
+        if is_child_of_group {
+            continue; // **∴ 已经在所属组的 children 里 ✓）★
         }
-        // **∴ 嵌套组 Phase 1 不导 ✗ 如实写进回执** ✓（**∴ 它自己的子层会**留在顶层** ✓
-        //   而不是**丢掉** —— **∴ 宁可能丢结构 ✗ 不可丢像素** ✓）★★
-        if let Some(parent_id) = parent {
-            if group_ids.contains(parent_id) {
-                continue;
-            }
+        if kind.contains("group") {
+            let kids = children_of.remove(id).unwrap_or_default();
+            roots.push(make_layer(
+                id,
+                name,
+                kind,
+                *visible,
+                *opacity,
+                blend,
+                Some(kids),
+            ));
+        } else {
+            roots.push(make_layer(id, name, kind, *visible, *opacity, blend, None));
         }
-        let kids = children_of.remove(id).unwrap_or_default();
-        roots.push(make_layer(
-            id,
-            name,
-            kind,
-            *visible,
-            *opacity,
-            blend,
-            Some(kids),
-        ));
     }
-    roots.extend(children_of.remove("").unwrap_or_default());
     let bytes = yanshi_render::psd::write_layer_tree(doc_w, doc_h, &composite, &roots);
     let blob = ctx.workspace.store().put(&bytes)?;
     let filename = optional_str(args, "filename").unwrap_or_else(|| format!("{}.psd", ctx.doc_id));
@@ -8360,6 +8372,21 @@ fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             }
         }
     }
+    // **★★★ z 序要**按 PSD 的层序**✗ 不是遍历顺序** ✓ ★★★**（**第 253 轮实测修 ✓）
+    //
+    // **∴ 我第一版错在哪 ✗**：**按**遍历顺序**逐个 +1**✗（**组 → 它的子层 → 下一个顶层 ✓）
+    //   ＋ **∴ 于是**：**组内子层拿到的 z **比后一个顶层还小** ✗
+    //     ⇒ **∴ 它**被那个顶层盖住** ✓★
+    //   ＋ **∴ 症状极具误导性 ✗**：**层本身**有内容**（**用"把导回来的文档再导出一次
+    //     ＋ ImageMagick 拆层"证明 ✓）✗ 而**合成里看不到** ✓
+    //       ⇒ **∴ 差点误判成"像素没导进来"** ✓（**∴ 实际是**叠放次序** ✓）★★
+    //   ＋ **∴ 现在 ✗**：**每个顶层占一个**槽**（间距 `ROOT_SLOT` ✓）
+    //     ＋ **∴ 子层留在**自己组的槽内**（`组的 z + 1 …` ✓）**
+    //       ⇒ **∴ "组那一段"整体落在 PSD 给它的位置** ✓ 且**组内顺序也保住** ✓ ★★
+    // **∴ 试过又撤回的方案（**记下来 ✓）✗**：**给顶层留**大间距**（如 1024 ✓）
+    //   让子层待在槽里** ✗ ⇒ **∴ 实测**数字**一字不差** ✓
+    //     （**∴ 因为**渲染只看**相对次序** ✗ 而两种编号的相对次序**完全一样** ✓）
+    //       ⇒ **∴ 撤回 ✗ 只留连续编号** ✓ ★★
     fn walk(
         ctx: &mut ToolContext<'_>,
         nodes: &[yanshi_render::psd::PsdLayerNode],
@@ -8377,6 +8404,8 @@ fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             } else {
                 "raster"
             };
+            // **∴ 这一层自己的 z ✗**：**子层要用它当基准 ✓** ★
+            let node_z = *next_z;
             write_create_layer(
                 ctx,
                 &json!({
@@ -8384,7 +8413,7 @@ fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
                     "name": name,
                     "type": kind,
                     "parent_id": parent,
-                    "z_index": *next_z,
+                    "z_index": node_z,
                 }),
             )?;
             *next_z += 1;
@@ -8448,7 +8477,23 @@ fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             }
             stats.names.push(name);
             if !node.children.is_empty() {
-                walk(ctx, &node.children, Some(&id), prefix, next_z, used, stats)?;
+                // **∴ 子层用自己的计数器 ✗ 从"组的 z + 1"开始 ✗ 步长 1** ✓
+                //   ⇒ **∴ 它们**不会跑到下一个顶层的上面去** ✓ ★★
+                // **∴ 连续编号 ✗**：**组的子层接着它往下编** ✓
+                //   ＋ **∴ 为什么不再用大间距 ✗**：**实测 ✗** **间距 1024 ⇒ **红层变淡**
+                //     （`[238,189,189]` ✗ 源是 `[220,30,30]` ✓）⇒ **∴ 怀疑**渲染器的
+                //       **三段分解**（"**层的 opacity 决定**上方**各层透不透**" ✓）
+                //       **对 z 的**连续性**有预期** ✓ ⇒ **∴ 改用连续编号后复验** ✓ ★★
+                let mut child_z = node_z + 1;
+                walk(
+                    ctx,
+                    &node.children,
+                    Some(&id),
+                    prefix,
+                    &mut child_z,
+                    used,
+                    stats,
+                )?;
             }
         }
         Ok(())
