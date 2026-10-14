@@ -167,17 +167,33 @@ const main = async () => {
   else if (diff !== 0) bad.push(`① 组不透明度 0.5 应等于逐层 0.5 ✗（实测最大通道差 ${diff}）`);
 
   // **∴ ② 组隐藏 ⇒ 三条带消失 ✗** ✓
-  await call(a.doc, a.token, "update_layer", { layer_id: "G1", patch: { visible: false } });
+  const hideReply = await call(a.doc, a.token, "update_layer", {
+    layer_id: "G1",
+    patch: { visible: false },
+  });
   const hidden = await render(a);
   if (!hidden) bad.push("② 取不回隐藏后的图（判据自己坏了）");
   else if (bandsInked(hidden) !== 0) {
     bad.push(`② 组隐藏后它下面三层应全部消失 ✗（还有 ${bandsInked(hidden)} 条带在）`);
   }
 
-  // **∴ ③ 撤销一次 ⇒ 回到 ① 那张 ✗** ✓
-  const undone = await call(a.doc, a.token, "undo_last", {});
+  // **★★★ ③ 撤销：**必须用 `revert_changeset` ✗ 不是 `undo_last`** ✓ ★★★**
+  //   ＋ **∴ 为什么（**第 252 轮自我纠正 ✓）**：**`undo_last` 自己写着
+  //     "**结构改动不在这里撤**（**建层／删层／重排 ✓）⇒ 用 `revert` 或 `revert_changeset`**"
+  //     ＋ **∴ 而**图层属性（**可见性／不透明度／parent_id ✓）**属于**结构改动** ✓
+  //       ＋ **∴ 它**还会**如实报出**跳过了哪些（`ignored_non_content_atoms` ✓）
+  //         ⇒ **∴ 所以**：**那**不是静默缺陷 ✗ 是**有意的边界** ✓
+  //           ＋ **∴ 我上一轮**把它当缺陷登记进了台账 ✗ ⇒ **∴ 本轮**撤回那条登记** ✓
+  //             （**∴ 教训 ✗**：**先读被调工具的**自述**✗ 再判它对不对** ✓）★★★
+  const changesetId = hideReply && (hideReply.changeset_id || hideReply.changeset);
+  if (!changesetId) {
+    bad.push(`③ 拿不到隐藏那一步的 changeset_id（${JSON.stringify(hideReply).slice(0, 160)}）`);
+  }
+  const undone = changesetId
+    ? await call(a.doc, a.token, "revert_changeset", { changeset_id: changesetId })
+    : null;
   if (!undone || undone.ok !== true) {
-    bad.push(`③ 撤销不成立（${JSON.stringify(undone).slice(0, 160)}）`);
+    bad.push(`③ revert_changeset 不成立（${JSON.stringify(undone).slice(0, 160)}）`);
   } else {
     const restored = await render(a);
     const undoDiff = maxDiff(restored, grouped);
@@ -187,12 +203,12 @@ const main = async () => {
 
   console.log(`  ① 组 0.5 vs 逐层 0.5：最大通道差 = ${diff}`);
   console.log(`  ② 组隐藏后仍在的带数 = ${hidden ? bandsInked(hidden) : "?"}（要求 0）`);
-  console.log(`  ③ 撤销：${undone && undone.ok ? "成功" : "失败"}`);
+  console.log(`  ③ revert_changeset：${undone && undone.ok ? "成功" : "失败"}`);
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
-  console.log("✓ 组不透明度向下继承、组隐藏连带隐藏、撤销可回退（三条都成立）");
+  console.log("✓ 组不透明度向下继承、组隐藏连带隐藏、revert_changeset 可回退（三条都成立）");
 };
 
 await main();
