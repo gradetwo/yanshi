@@ -32,6 +32,10 @@ yanshi-gpu = { version = "0.1.0", path = "../yanshi-gpu", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
+# **P2 #16 颜料混色的**选型验证**（第 254 轮）**：**只当 dev-dependency**（不进 `[dependencies]`）
+# => **不进出厂依赖、不影响 wasm 体积**；等判据（黄+蓝必须偏绿）绿了再做"是否采纳"的正式决定，
+# 并按 AGENTS.md 把**好处与代价两面**都写进提交与报告。
+neco-pigment = "0.1"
 
 [features]
 gpu = ["dep:yanshi-gpu"]

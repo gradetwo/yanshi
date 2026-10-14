@@ -731,6 +731,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "neco-color"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8929a2e429561b67078f190a849ded6526a377a89ad6b9b5a950c3bd31c24a3a"
+
+[[package]]
+name = "neco-pigment"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840c4b21e0aec9af8345e1a3b8075bceef39e9eacece6c3adfa536bd6238c2c1"
+dependencies = [
+ "neco-color",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1742,6 +1757,7 @@ dependencies = [
  "flate2",
  "hokusai",
  "libm",
+ "neco-pigment",
  "proptest",
  "serde",
  "serde_json",

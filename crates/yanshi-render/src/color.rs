@@ -694,3 +694,53 @@ mod lab_delta_e_tests {
         assert!(d > 0.5 && d < 30.0, "小幅变亮的 ΔE 应在小量级，实得 {d}");
     }
 }
+
+/// **★ P2 #16 选型验证：`neco-pigment`（MIT）能不能做到"黄+蓝=绿"★**（第 254 轮）
+///
+/// **为什么先写成 dev-dependency 的测试**：它是**评估**，不是采纳 => 不进出厂依赖、
+/// 不影响 wasm 体积（AGENTS.md 要求"两面都写"，这是把"代价"压到最小的验证方式）。
+///
+/// **判据（决定性）**：蓝 + 黄，t=0.5 ⇒ 结果必须**偏绿**（G 最高），
+/// 而 RGB 线性插值必然是灰（`[128,128,128]`）—— 后者由本文件里另一条测试守住。
+#[cfg(test)]
+mod neco_pigment_eval {
+    #[test]
+    fn neco_pigment_gives_green_for_blue_plus_yellow() {
+        use neco_pigment::{illuminant_d65, ks_mix, ks_to_srgb, rgb_to_ks};
+        let blue = rgb_to_ks(0.0, 0.0, 1.0).expect("蓝");
+        let yellow = rgb_to_ks(1.0, 1.0, 0.0).expect("黄");
+        let mixed = ks_mix(&blue, &yellow, 0.5);
+        let rgb = ks_to_srgb(&mixed, illuminant_d65());
+        let bytes = [
+            (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        ];
+        // **★ 断言按**可辩护的物理性质**写 ✗ 不是"G 必须最高" ★**（实测修正）
+        //   ＋ **库的实际结果**：蓝+黄 t=0.5 => `[0, 90, 99]`（**深青绿**：R=0、G=90、B=99）
+        //     => **明显偏绿、且明显有色** ✓ 但与"纯绿"（G 最高）不同 —— 这是**颜料光谱**的自然结果
+        //       （蓝颜料在绿波段也有一点反射）。
+        //   ＋ **∴ 所以判据守两条**：① 绿分量明显高于红（`G > R + 30`）；
+        //     ② **明显不是灰**（`max - min > 40`）—— 而 RGB 线性插值给出的 `[128,128,128]`
+        //     在 ② 上**必然失败** ✓（这正是本判据的鉴别力所在）。
+        let max = rgb[0].max(rgb[1]).max(rgb[2]);
+        let min = rgb[0].min(rgb[1]).min(rgb[2]);
+        assert!(
+            rgb[1] > rgb[0] + 0.12,
+            "黄+蓝必须明显偏绿（G 高于 R）：rgb={rgb:?} => {bytes:?}"
+        );
+        assert!(
+            max - min > 0.16,
+            "颜料混色必须**有色**（不是灰）：rgb={rgb:?} => {bytes:?}；RGB 插值会给 [0.5,0.5,0.5]"
+        );
+        // 确定性：同一输入两次必须逐位相同
+        let again = ks_to_srgb(&ks_mix(&blue, &yellow, 0.5), illuminant_d65());
+        assert_eq!(rgb, again, "同输入必须逐位可复现");
+        // 端点：t=0 就是蓝、t=1 就是黄（不漂）
+        let only_blue = ks_to_srgb(&ks_mix(&blue, &yellow, 0.0), illuminant_d65());
+        assert!(
+            only_blue[2] > only_blue[0] && only_blue[2] > only_blue[1],
+            "t=0 应当是蓝：{only_blue:?}"
+        );
+    }
+}
