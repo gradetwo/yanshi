@@ -466,6 +466,38 @@ impl Buffer {
     ///
     /// 本机（非 `wasm32`）上**按行并行**，细节见 [`Buffer::to_rgba8_blocks`]；
     /// `wasm32` 没有共享内存线程 ⇒ 那条路径整体不参与编译，这里走串行循环。
+    /// **★ `copy_region_into`：把本缓冲的一块**拷进已有缓冲**（内存修的接口）★**（第 254 轮）
+    ///
+    /// **为什么需要它**：`crop` 每次调用都 `Buffer::new`（**绕过缓冲池**）—— 实测一帧 2048² 渲染里
+    /// 有 **66 次 `Buffer::new`、合计 128 MB 全部来自 `crop`**（`docs/design/render-memory-account.md`
+    /// 第十节）。要池化，就得让调用方先 `pool.acquire(x0, y0, w, h)` 借一块**正好尺寸**的缓冲，
+    /// 再把像素**拷进去** => 于是有了本函数。
+    ///
+    /// **与 `crop` 的语义必须逐字节一致**：裁剪框先按本缓冲的 `origin/size` **同一套** `floor/ceil/min/max`
+    /// 夹紧，然后把 `out` 的 `(0,0)..(w,h)` 填成对应像素。
+    /// **目标尺寸必须正好等于夹紧后的尺寸**，否则返回 `false`（不猜、不越界）——
+    /// 那正是"从池里按这个尺寸借"要保证的事。
+    /// **本函数自己不分配** ✓（这就是重点）。
+    pub fn copy_region_into(&self, bbox: &Bbox, out: &mut Buffer) -> bool {
+        let x0 = (bbox.x.floor() as i64).max(self.origin_x);
+        let y0 = (bbox.y.floor() as i64).max(self.origin_y);
+        let x1 = ((bbox.x + bbox.w).ceil() as i64).min(self.origin_x + self.width as i64);
+        let y1 = ((bbox.y + bbox.h).ceil() as i64).min(self.origin_y + self.height as i64);
+        let width = (x1 - x0).max(0) as u32;
+        let height = (y1 - y0).max(0) as u32;
+        if out.width() != width || out.height() != height {
+            return false;
+        }
+        for y in 0..height {
+            for x in 0..width {
+                let source_x = (x0 + x as i64 - self.origin_x) as u32;
+                let source_y = (y0 + y as i64 - self.origin_y) as u32;
+                out.set_pixel(x, y, self.pixel(source_x, source_y));
+            }
+        }
+        true
+    }
+
     pub fn to_rgba8(&self, background: Option<[u8; 4]>) -> Vec<u8> {
         self.to_rgba8_blocks(background, None).0
     }
@@ -1741,4 +1773,76 @@ pub fn init_gpu_quantizer(lut: Vec<f32>) -> Result<(), String> {
         *guard = Some(yanshi_gpu::Quantizer::new(&lut)?);
     }
     Ok(())
+}
+
+// **★ `copy_region_into` 与 `crop` 逐字节等价（内存修的接口判据）★**（第 254 轮）
+//
+// **为什么这条"有牙"**：内存修的前提是"把 `crop` 换成 `pool.acquire` + `copy_region_into`
+// **不改画面**" => 必须**逐字节**证明等价。同时要证明：尺寸不匹配时返回 `false`（不猜不越界）、
+// 夹紧规则与 `crop` 一致（框越界时按 origin/size 夹）、以及**它自己不分配**（探针 `buffer_fresh` 不增）。
+#[cfg(test)]
+mod copy_region_tests {
+    use super::Buffer;
+    use crate::alloc_probe;
+    use yanshi_core::Bbox;
+
+    fn sample(w: u32, h: u32) -> Buffer {
+        let mut buffer = Buffer::new(10, 20, w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let t = (x * 7 + y * 13) as f32;
+                buffer.set_pixel(x, y, [t / 100.0, (t % 17.0) / 17.0, (t % 5.0) / 5.0, 1.0]);
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn copy_region_into_matches_crop_and_allocates_nothing() {
+        let source = sample(40, 30);
+        // 故意**部分越界**的框：顺带验证"夹紧规则与 crop 一致"
+        let bbox = Bbox {
+            x: 5.0,
+            y: 25.0,
+            w: 60.0,
+            h: 40.0,
+        };
+        let expected = source.crop(&bbox);
+        let mut out = Buffer::new(
+            expected.origin_x,
+            expected.origin_y,
+            expected.width(),
+            expected.height(),
+        );
+        // **探针口径**：调用前后 `buffer_fresh` 不该增加（本函数不分配）
+        alloc_probe::reset();
+        let before = alloc_probe::snapshot();
+        assert!(
+            source.copy_region_into(&bbox, &mut out),
+            "尺寸对得上就该成功"
+        );
+        let after = alloc_probe::snapshot();
+        assert_eq!(
+            before[2].1, after[2].1,
+            "copy_region_into 不许自己分配（BufferFresh 计数不该变）"
+        );
+        // **逐字节等价**
+        assert_eq!(out.width(), expected.width());
+        assert_eq!(out.height(), expected.height());
+        for y in 0..out.height() {
+            for x in 0..out.width() {
+                assert_eq!(
+                    out.pixel(x, y),
+                    expected.pixel(x, y),
+                    "第 ({x},{y}) 个像素与 crop 不一致"
+                );
+            }
+        }
+        // **尺寸不匹配 => false**
+        let mut wrong = Buffer::new(0, 0, 1, 1);
+        assert!(
+            !source.copy_region_into(&bbox, &mut wrong),
+            "目标尺寸不对时必须返回 false"
+        );
+    }
 }
