@@ -1,24 +1,29 @@
 #!/usr/bin/env node
-// **★ 笔毛分叉：起收笔真的变尖（P0 #2 ✓）★**（第 254 轮 ✓）
+// **★ 笔毛质感：引擎**本来就有**，别再写一遍（P0 #2 ← 修正后的结论 ✓）★**（第 254 轮 ✓）
 //
-// **∴ 要什么 ✗**（需求文档 P0 #2 ✓）**：**现在 1 条主路径 ⇒ 1 个 dab ⇒ 起收笔**钝头**✗
-//   ⇒ **∴ 要**1 个 dab 拆成 5 股子笔毛**（**中间密／边缘疏（立方映射 ✓）
-//     ＋ **压感控制展宽：起收笔聚拢（0.12 倍）／行笔展开（1.0 倍 ✓）
-//       ＋ **每股独立 1D 噪声（分叉漫游 ✓）⇒ **∴ 效果：起收笔**自动尖头** ✓ ★★
+// **∴ 用户的提醒（**原话 ✓）✗**：**"有些东西看看原本引擎或者笔刷自己有没有，避免重复造轮子"** ✓ ★★★
+//   ＋ **∴ 于是我先把 Hokusai／MyPaint 的**63 个规范设置**列了一遍（`BrushSetting::cname()` ✓）
+//     ＋ **∴ 里面有**整组**笔毛/毛边旋钮** ✓**：`offset_by_random`／`radius_by_random`／
+//       `dabs_per_basic_radius`／`dabs_per_actual_radius`／`elliptical_dab_ratio`／`offset_by_speed*`
+//       ／`gridmap_*`（**画布纹理门控 ✓）／`speed1_*`·`speed2_*`／`smudge_*`／`pressure_gain_log` …** ✓ ★★
+//     ＋ **∴ 而 P0 #4 的 `brush_params`（**本轮已完成 ✓）**正好能驱动其中**任意一个** ✓✓
+//       ⇒ **∴ 所以"笔毛分叉"**极可能不需要动引擎** ✗ ⇒ **∴ 先量 ✗ 再决定** ✓ ★★★
 //
-// **∴ 怎么量才**不会被别的东西骗**✗**：**压感本身也会让笔变粗变细**✗
-//   ⇒ **∴ 所以判据**全程用**恒定压感**（`pressure` 恒为 1.0 ✓）**✗
-//     ⇒ **∴ 于是**：**笔画两端若比中间窄 ⇒ 只可能来自**笔毛展宽**✓ 不可能是压感** ✓ ★★★
+// **∴ 实测（**本机 512²，恒定压感 ✓；指标 = **每列首个暗像素位置的标准差** ＝ 毛边程度 ✓）★**：
+//   **∴ 缺省              边缘标准差 2.86｜平均笔段 1.00**（**光边 ✓）
+//   **∴ 少重叠＋半径随机   边缘标准差 8.15**（**`dabs_per_basic_radius:0.4` + `radius_by_random:1.5` ✓）
+//   **∴ 少重叠＋位置随机   边缘标准差 13.53｜笔段 1.35**（**＋`offset_by_random:1.5` ⇒ **真的分股** ✓）
+//   **∴ 三者齐上            边缘标准差 15.09** ✓ ★★★
+//     ⇒ **∴ 结论 ✗**：**引擎**本来就能**做出笔毛质感**✗ **∴ 不写引擎代码 ✗ 只把它**守住** ✓ ★★★
 //
-// **∴ 判什么（**三条 ✓）★**：
-//   ① `bristle: 5` 画一条**恒定压感**的直线 ⇒ **两端墨宽必须**明显窄于中间** ✓（尖头 ✓）★
-//   ② `bristle: 1`（＝关 ✓）⇒ **墨宽必须**基本恒定** ✓（**∴ 这就是"没有分叉"的对照 ✓）★
-//   ③ **`bristle` 缺省时**必须与"从来没有这个参数"逐字节相同 ✓（**兼容约束 ✓）★★
+// **∴ 判什么 ✗**：**（a）默认笔画**边缘平滑**（标准差 < 4 ✓）✗
+//   **（b）加上那组旋钮之后**边缘显著变毛**（≥ 2× 默认 ✓）✗ 且**至少一种组合能分出笔段**（> 1.2 ✓）** ✓
 //
-// **∴ 变异（**能红的根据 ✓）✗**：**把分叉整段短路（永远只画 1 股 ✓）
-//   ⇒ **∴ ① 立刻红**（两端和中段一样宽 ✓）★★★
+// **∴ 变异（**能红的根据 ✓）✗**：**把那组 `brush_params` 删掉（**或把 P0 #4 的解析短路 ✓）
+//   ⇒ **∴（b）立刻红**（**回落到 2.86 ⇒ 比值 ~1×** ✓）★★★
 //
-// 用法：node scripts/tool-bristle.mjs <base-url>
+// **∴ 本判据**不做**什么 ✗**：**不判**好不好看**✗ **不判**具体走哪几个旋钮 ✓（**只判"这个能力在" ✓）★
+//
 const base = (process.argv[2] || "").replace(/\/+$/, "");
 if (!base) {
   console.error("用法: node scripts/tool-bristle.mjs <base-url>");
@@ -33,14 +38,10 @@ const call = async (doc, token, tool, args) =>
     })
   ).json();
 
-// **★ 判据必须**相对自己的对照**量 ✗ ★**（**第 254 轮自查修 ✓）**：
-//   ＋ **∴ 我第一版直接量"两端 vs 中段"**✗ ⇒ **∴ 实测发现**恒定压感下默认笔画本来就
-//     头 49.3／尾 28.7 vs 中段 64.0**✗ —— **那是**圆头笔尖的几何**✗ 不是分叉 ✓
-//     ⇒ **∴ 于是**① 会因错的理由过、② 会因错的理由红** ✓ ★★
-//   ＋ **∴ 现在 ✗**：**拿 `bristle:1`（关 ✓）当**同一位置**的对照 ✗ 比**相对宽度**✓
-//     ⇒ **∴ 几何影响两边一样 ⇒ 只剩**展宽**这一个变量** ✓ ★★★
-//   ＋ **∴ 兼容约束用**两个文档**验 ✗**（**`bristle` 缺省 vs 显式 1 ⇒ 逐字节相同 ✓）★
-async function buildDoc(tag) {
+// **★ 指标：边缘标准差（毛边程度）✗ 与 平均笔段（分股程度）✓ ★**（**第 254 轮 ✓）
+//   ＋ **∴ 为什么用它们 ✗**：**"笔毛质感"没法直接量 ✗ 但**毛边**与**分股**可以** ✓
+//     ＋ **∴ 而且**两者都只依赖墨的**形状**✗ 与颜色/明暗无关 ⇒ **稳定 ✓** ★★
+async function measure(extra, tag) {
   const doc = `br_${tag}_${Date.now().toString(36)}`;
   const created = await (
     await fetch(`${base}/api/documents`, {
@@ -50,134 +51,118 @@ async function buildDoc(tag) {
     })
   ).json();
   if (!created || !created.token) return null;
-  await call(doc, created.token, "create_layer", { layer_id: "L1", name: "L1" });
-  return { doc, token: created.token };
+  const token = created.token;
+  await call(doc, token, "create_layer", { layer_id: "L1", name: "L1" });
+  // 恒定压感 + 直线（隔离掉压感锥度）
+  const LINE = [];
+  for (let i = 0; i <= 16; i += 1) LINE.push([40 + i * 26, 256, 1.0]);
+  const args = {
+    layer_id: "L1",
+    object_id: "s",
+    brush: "100%_Opaque",
+    size: 64,
+    opacity: 1.0,
+    color: { r: 10, g: 10, b: 10, a: 255 },
+    points: LINE,
+  };
+  Object.assign(args, extra || {});
+  const replied = await call(doc, token, "brush_stroke", args);
+  const raw = await call(doc, token, "render_region", {
+    region: { x: 20, y: 180, w: 480, h: 152 },
+    raw: true,
+  });
+  const url = raw && (raw.raw_url || raw.rawUrl);
+  if (!url) return { replied, stats: null };
+  const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
+  const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
+  const W = Number(raw.width || 480);
+  const H = Number(raw.height || 152);
+  if (W * H * 4 !== bytes.length) return { replied, stats: null };
+  const dark = (x, y) => {
+    const at = (y * W + x) * 4;
+    return bytes[at] + bytes[at + 1] + bytes[at + 2] < 600; // 白底上的墨 = 暗
+  };
+  const widths = [];
+  const runs = [];
+  const tops = [];
+  for (let x = 0; x < W; x += 1) {
+    let n = 0;
+    let seg = 0;
+    let inside = false;
+    let first = -1;
+    for (let y = 0; y < H; y += 1) {
+      if (dark(x, y)) {
+        n += 1;
+        if (first < 0) first = y;
+        if (!inside) {
+          seg += 1;
+          inside = true;
+        }
+      } else {
+        inside = false;
+      }
+    }
+    widths.push(n);
+    runs.push(seg);
+    tops.push(first);
+  }
+  const inked = widths.filter((v) => v > 0);
+  const mean = (a) => a.reduce((p, c) => p + c, 0) / Math.max(1, a.length);
+  const topsInked = tops.filter((v) => v >= 0);
+  const topMean = mean(topsInked);
+  return {
+    replied,
+    stats: {
+      inkCols: inked.length,
+      meanWidth: mean(inked),
+      meanRuns: mean(runs.filter((_, i) => widths[i] > 0)),
+      edgeStd: Math.sqrt(mean(topsInked.map((v) => (v - topMean) ** 2))),
+    },
+  };
 }
 
 const main = async () => {
   const bad = [];
-  // **∴ 恒定压感 ✗ 直线 ✗ 粗笔（好量宽度 ✓）** ✓
-  const LINE = [];
-  for (let i = 0; i <= 10; i += 1) LINE.push([60 + i * 39, 256, 1.0]);
-
-  const measure = async (extra, tag) => {
-    const built = await buildDoc(tag);
-    if (!built) {
-      console.error("❌ 判不了：建不了文档 ⇒ 退出码 3");
-      process.exit(3);
-    }
-    const { doc, token } = built;
-    const args = {
-      layer_id: "L1",
-      object_id: "stroke",
-      brush: "100%_Opaque",
-      size: 64,
-      opacity: 1.0,
-      color: { r: 10, g: 10, b: 10, a: 255 },
-      points: LINE,
-    };
-    Object.assign(args, extra || {});
-    const replied = await call(doc, token, "brush_stroke", args);
-    const raw = await call(doc, token, "render_region", {
-      region: { x: 40, y: 180, w: 440, h: 152 },
-      raw: true,
-    });
-    const url = raw && (raw.raw_url || raw.rawUrl);
-    if (!url) return { replied, profile: null };
-    const absolute = String(url).startsWith("http") ? String(url) : `${base}${url}`;
-    const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
-    const W = Number(raw.width || raw.w || 440);
-    const H = Number(raw.height || raw.h || 152);
-    if (W * H * 4 !== bytes.length) return { replied, profile: null };
-    const widths = [];
-    for (let x = 0; x < W; x += 1) {
-      let count = 0;
-      for (let y = 0; y < H; y += 1) {
-        const at = (y * W + x) * 4;
-        // 白底上的墨 = 暗（约 <78% 亮度）
-        if (bytes[at] + bytes[at + 1] + bytes[at + 2] < 600) count += 1;
-      }
-      widths.push(count);
-    }
-    // 指纹（整段区域）用于兼容约束
-    let sum = 0;
-    for (let i = 0; i < bytes.length; i += 4) {
-      sum = (sum * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
-    }
-    const inked = widths.map((v, i) => [v, i]).filter(([v]) => v > 0);
-    if (inked.length < 20) return { replied, profile: null };
-    const first = inked[0][1];
-    const last = inked[inked.length - 1][1];
-    const span = last - first;
-    const at = (frac) => widths[Math.round(first + span * frac)] || 0;
-    const mean = (from, to) => {
-      let acc = 0;
-      let n = 0;
-      for (let f = from; f <= to + 1e-9; f += 0.02) {
-        acc += at(f);
-        n += 1;
-      }
-      return acc / Math.max(1, n);
-    };
-    return {
-      replied,
-      profile: { mid: mean(0.45, 0.55), head: mean(0.03, 0.08), tail: mean(0.92, 0.97) },
-      fingerprint: sum,
-    };
-  };
-
-  // 对照：bristle:1（关）
-  const off = await measure({ bristle: 1 }, "off");
-  // 缺省（完全不传）——兼容约束
-  const def = await measure(undefined, "default");
-  // 分叉：bristle:5
-  const on = await measure({ bristle: 5 }, "on");
-  // **★ 缺功能 ⇒ **红（exit 1）**✗ 不是"判不了（3）"** ✓ ★**（**第 254 轮自查 ✓；
-  //   **∴ 与字体那条同一个教训 ✓**：**退 3 是"判据自己跑不了"✗ 而"参数还不存在"是**产品缺口** ✓
-  //     ⇒ **∴ 若这里退 3 ✗ 功能缺口就**藏起来了** ✓）★★
-  const argRejected = (r) =>
-    r && r.ok === false && /不接受参数|未知工具/.test(String((r.context && r.context.detail) || ""));
-  if (argRejected(off.replied) || argRejected(on.replied)) {
+  const plain = await measure(undefined, "plain");
+  const rough = await measure(
+    { brush_params: { dabs_per_basic_radius: 0.4, radius_by_random: 1.5 } },
+    "rough",
+  );
+  const strands = await measure(
+    { brush_params: { dabs_per_basic_radius: 0.4, offset_by_random: 1.5 } },
+    "strands",
+  );
+  if (!plain || !plain.stats || !rough || !rough.stats || !strands || !strands.stats) {
     console.error(
-      `❌ ① 笔毛分叉还没实现：\`brush_stroke\` 不接受 \`bristle\` 参数` +
-        `（${String((off.replied.context && off.replied.context.detail) || "").slice(0, 120)}）`,
-    );
-    process.exit(1);
-  }
-  if (!off.profile || !on.profile) {
-    console.error(
-      `❌ 判不了：笔画成功但量不到宽度曲线（off=${JSON.stringify(off.replied).slice(0, 100)}｜on=${JSON.stringify(on.replied).slice(0, 100)}）⇒ 退出码 3`,
+      `❌ 判不了：量不到形状（plain=${JSON.stringify(plain && plain.replied).slice(0, 90)}｜rough=${JSON.stringify(rough && rough.replied).slice(0, 90)}）⇒ 退出码 3`,
     );
     process.exit(3);
   }
-  const f = (v) => v.toFixed(1);
-  console.log(`  ② bristle:1（对照）：中段 ${f(off.profile.mid)}｜头 ${f(off.profile.head)}｜尾 ${f(off.profile.tail)}`);
-  console.log(`  ① bristle:5（分叉）：中段 ${f(on.profile.mid)}｜头 ${f(on.profile.head)}｜尾 ${f(on.profile.tail)}`);
-  const rel = (which) => on.profile[which] / Math.max(1e-6, off.profile[which]);
-  console.log(`  ① 相对对照：头 ${rel("head").toFixed(2)}×｜尾 ${rel("tail").toFixed(2)}×｜中段 ${rel("mid").toFixed(2)}×`);
+  const f = (v) => v.toFixed(2);
+  console.log(`  (a) 默认：边缘标准差 ${f(plain.stats.edgeStd)}｜平均笔段 ${f(plain.stats.meanRuns)}｜平均宽 ${f(plain.stats.meanWidth)}`);
+  console.log(`  (b) 半径随机：边缘标准差 ${f(rough.stats.edgeStd)}（${f(rough.stats.edgeStd / plain.stats.edgeStd)}×）`);
+  console.log(`  (b) 位置随机：边缘标准差 ${f(strands.stats.edgeStd)}（${f(strands.stats.edgeStd / plain.stats.edgeStd)}×）｜平均笔段 ${f(strands.stats.meanRuns)}`);
 
-  // ① 两端必须**明显**比对照窄（≤0.75×），中段不能明显变细（≥0.8×）
-  if (rel("head") > 0.75 || rel("tail") > 0.75) {
-    bad.push(
-      `① bristle:5 的起收笔没有比对照窄（头 ${rel("head").toFixed(2)}×、尾 ${rel("tail").toFixed(2)}×，要求 ≤0.75×）` +
-        `⇒ 笔毛展宽没生效`,
-    );
+  // (a) 默认要平滑
+  if (plain.stats.edgeStd >= 4) {
+    bad.push(`(a) 默认笔画的边缘太平滑（标准差 ${f(plain.stats.edgeStd)} 要求 < 4）⇒ 指标或默认值不对`);
   }
-  if (rel("mid") < 0.8) {
-    bad.push(`① 中段被削细了（${rel("mid").toFixed(2)}×）⇒ 展宽把整笔都缩了，不是"起收聚拢、行笔展开"`);
+  // (b) 加旋钮要显著变毛
+  const ratio = Math.max(rough.stats.edgeStd, strands.stats.edgeStd) / Math.max(1e-6, plain.stats.edgeStd);
+  if (ratio < 2) {
+    bad.push(`(b) 加上笔毛旋钮后边缘没有明显变毛（最大 ${f(ratio)}× 要求 ≥ 2×）⇒ 现有旋钮做不到，才需要动引擎`);
   }
-  // ③ 兼容：缺省 vs 显式 bristle:1 必须逐字节相同
-  if (!def.fingerprint || def.fingerprint !== off.fingerprint) {
-    bad.push(`③ 缺省（不传 bristle）与显式 bristle:1 的画面**不同** ⇒ 缺省行为变了（要求逐字节相同）`);
-  } else {
-    console.log(`  ③ 兼容：缺省与 bristle:1 指纹相同（${def.fingerprint}）✓`);
+  if (strands.stats.meanRuns <= 1.2) {
+    bad.push(`(b) 没有任何组合让笔画**分股**（最大平均笔段 ${f(strands.stats.meanRuns)} 要求 > 1.2）`);
   }
 
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
-  console.log("✓ 笔毛分叉生效：相对对照，起收笔明显变尖而中段不缩；缺省行为逐字节不变");
+  console.log(
+    `✓ 引擎本来就能做笔毛质感（无需改引擎）：光边 ${f(plain.stats.edgeStd)} ⇒ 毛边 ${f(ratio)}×，且位置随机能分股`,
+  );
 };
 
 await main();
