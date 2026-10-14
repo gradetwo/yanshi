@@ -356,6 +356,7 @@ const PAGE_TAIL_A: &str = r##"</style>
   <button data-tool="refresh">刷新</button>
   <button data-tool="check">一致性自检</button>
   <button id="exportPng">导出 PNG</button>
+  <button id="exportPsdLayers" type="button" title="导出成分层 PSD（图层/组/不透明度/可见性/混合模式都带出去）">导出分层 PSD</button>
   <!-- **显式的"当前视图"导出** ✓：默认那颗导**整幅文档** ✓（P0：旧默认导的是视口 ✗）；
        裁剪成视口仍然有用，但必须由用户点名 ✓。 -->
   <button id="exportPngView">导出当前视图</button>
@@ -494,6 +495,7 @@ const PAGE_TAIL_A: &str = r##"</style>
         <button id="objectResample" type="button">重采样</button>
         <button id="objectPath" type="button">执行路径算子</button>
         <button id="objectRestyle" type="button">改笔触</button>
+        <button id="objectHistory" type="button" title="查看选中对象的版本历史（原子版本链）">版本历史</button>
       </div>
       <div style="display:flex; gap:8px; margin:8px 0; flex-wrap:wrap; align-items:center">
         <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
@@ -603,7 +605,7 @@ const PAGE_TAIL_A: &str = r##"</style>
       </select></label>
       <label>角度 <input id="gradAngle" type="number" value="90" step="15" style="width:64px" /></label>
       <label class="hint"><input id="gradUseSelection" type="checkbox" /> 只作用于选区</label>
-      <div class="toolbar"><button id="gradApply" type="button">填充</button></div>
+      <div class="toolbar"><button id="gradApply" type="button">填充</button> <button id="gradBlend" type="button" title="用笔触自动生成渐变过渡（替代手动拼笔）">渐变混合</button></div>
       <div id="gradInfo" class="hint"></div>
     </div>
     <!-- **工程包** ✓（目标 ⑧ ✓）—— 工具层早就有 `export_project` / `import_project` ✓。

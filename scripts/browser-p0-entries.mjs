@@ -205,16 +205,19 @@ const main = async () => {
   //         动力学 ✓）⇒ **∴ 不能偷偷退回某支 .myb** ✗ **∴ 只能把"去哪选"讲清** ✓ ★★
   //   ＋ **∴ ③b（**真选一支 .myb ✓）✗**：**点「柔」必须**成功** ✗ 且服务端真的应用了** ✓
   //     ＋ **∴ 这一步才是"功能真的能用"的证据 ✗ 而不是"契约存在" ✓ ★★★
+  // **★ 读**整段**日志文本 ✗ 不要按"最后 14 个节点"取** ✓ ★**（**第 254 轮实测修 ✓）
+  //   ＋ **∴ 我原来取 `slice(-14)` ✗**（**∴ 以为新行在后面 ✓）✗
+  //     ＋ **∴ 而** `log()` 是**把新行**插到最前**✗（**聊天式 ✓）⇒ **∴ 于是**我读到的
+  //       永远是**最旧的 14 行** ✗ ⇒ **∴ 新入口的日志**明明写了却"看不到"** ✓
+  //         ⇒ **∴ 差一点**把好功能判成坏** ✓ ⇒ **∴ 改成读整段文本 ✗ 与顺序无关** ✓ ★★★
   const readLog = async () => {
-    const raw = await evaluate(
-      `JSON.stringify(Array.from(document.querySelectorAll("#log *")).slice(-14).map(n=>n.textContent))`,
-    );
+    const raw = await evaluate(`String((document.getElementById("log")||{}).textContent||"")`);
     return typeof raw === "string" ? raw : "";
   };
   await evaluate(`(() => { const b = document.getElementById("dynSoft"); if (b) b.click(); return Boolean(b); })()`);
   await new Promise((r) => setTimeout(r, 1200));
   const logBuiltin = await readLog();
-  console.log(`  ③a 内置画笔时点「柔」：${logBuiltin.slice(-150)}`);
+  console.log(`  ③a 内置画笔时点「柔」：${logBuiltin.slice(0, 200)}`);
   if (/设置笔刷动力学失败/.test(logBuiltin)) {
     bad.push("③a 内置画笔时点「柔」报的是「设置失败」，而不是可照着改的提示");
   } else if (!/（内置画笔）没有压感曲线/.test(logBuiltin)) {
@@ -244,10 +247,78 @@ const main = async () => {
     await evaluate(`(() => { const b = document.getElementById("dynSoft"); if (b) b.click(); return Boolean(b); })()`);
     await new Promise((r) => setTimeout(r, 1500));
     const logReal = await readLog();
-    console.log(`  ③b 真笔刷时点「柔」：${logReal.slice(-150)}`);
+    console.log(`  ③b 真笔刷时点「柔」：${logReal.slice(0, 200)}`);
     if (!/压感曲线/.test(logReal) || /设置笔刷动力学失败/.test(logReal)) {
       bad.push("③b 选了真笔刷后点「柔」仍未成功（入口没接上或参数不对）");
     }
+  }
+
+  // **④ gaps 补丁的另外三个入口** ✓（**第 254 轮 ✓）：**版本历史 ／ 渐变混合 ／ 导出分层 PSD**
+  //   ＋ **∴ 为什么必须写进来 ✗**：**这三个都是"接了但可能没生效"的形态 ✗**
+  //     而**本轮实测抓到两处真 bug** ✓：
+  //       **∴ ① `export_psd_layers` 的回执字段是 `url` ✗ 补丁读的是 `download_url`**
+  //         ⇒ **∴ 照原样永远走 else ⇒ 只打印"已导出（无下载链接）"✗ 点了什么都不下载** ✓
+  //       **∴ ② `gradient_blend.brush` 是必填 ✗ 补丁用 `|| "basic"` 兜底**
+  //         ⇒ **∴ 而 "basic" 不是资产里的笔刷 ⇒ 请求必失败** ✓ ★★
+  const buttons = await evaluate(
+    `JSON.stringify({ history: Boolean(document.getElementById("objectHistory")), blend: Boolean(document.getElementById("gradBlend")), psd: Boolean(document.getElementById("exportPsdLayers")) })`,
+  );
+  const btn = typeof buttons === "string" ? JSON.parse(buttons) : {};
+  console.log(`  ④ 新按钮：#objectHistory=${btn.history}｜#gradBlend=${btn.blend}｜#exportPsdLayers=${btn.psd}`);
+  if (!btn.history || !btn.blend || !btn.psd) bad.push("④ gaps 补丁的三个按钮没有全部出现在页面上");
+
+  // **④a 对象版本历史：**真的画一个对象 ⇒ 调 `get_object_history` 读它的链** ✓
+  const stroke = await api("brush_stroke", {
+    layer_id: (await evaluate(`(window.yanshi.state().layerId)||"layer_default"`)) || "layer_default",
+    object_id: "hist_probe",
+    brush: picked || "classic-brush",
+    size: 24,
+    points: [[120, 120, 1.0], [240, 240, 1.0]],
+    color: { r: 200, g: 40, b: 40, a: 255 },
+  });
+  const history = await api("get_object_history", { object_id: "hist_probe" });
+  const versions = history && (history.atoms || history.history || []);
+  console.log(`  ④a 版本历史：画一笔 ok=${stroke && stroke.ok}｜get_object_history ok=${history && history.ok}｜版本 ${Array.isArray(versions) ? versions.length : "?"} 个`);
+  if (!stroke || stroke.ok !== true) bad.push(`④a 探针笔画没成功（${JSON.stringify(stroke).slice(0, 120)}）`);
+  if (!history || history.ok !== true) bad.push(`④a get_object_history 契约不成立（${JSON.stringify(history).slice(0, 140)}）`);
+
+  // **④b 渐变混合：**用真笔刷调契约**（**∴ 并断言"缺笔刷时页面给的是可照着改的消息" ✓）★
+  const gradInfo = await evaluate(
+    `(() => { const b = document.getElementById("gradBlend"); if (b) b.click(); return true; })()`,
+  );
+  await new Promise((r) => setTimeout(r, 1200));
+  const gradLog = await readLog();
+  console.log(`  ④b 点「渐变混合」（当前笔刷=${picked || "?"}）：${gradLog.slice(0, 200)}`);
+  const gradContract = await api("gradient_blend", {
+    layer_id: (await evaluate(`(window.yanshi.state().layerId)||"layer_default"`)) || "layer_default",
+    from: { x: 40, y: 400, color: { r: 255, g: 255, b: 255, a: 255 } },
+    to: { x: 400, y: 400, color: { r: 0, g: 0, b: 0, a: 255 } },
+    brush: picked || "classic-brush",
+    size: 20,
+    steps: 5,
+  });
+  console.log(`  ④b gradient_blend 契约：ok=${gradContract && gradContract.ok}`);
+  if (!gradContract || gradContract.ok !== true) {
+    bad.push(`④b gradient_blend 契约不成立（${JSON.stringify(gradContract).slice(0, 140)}）`);
+  }
+  if (!gradInfo) bad.push("④b 点不到 #gradBlend");
+
+  // **④c 导出分层 PSD：**点它 ⇒ 日志必须是"已导出：<文件名>"✗ 不是"无下载链接"** ✓ ★★★
+  //   ＋ **∴ 这一条就是那个 bug 的**回归守卫** ✓（**改回 `download_url` ⇒ 立刻红 ✓）★
+  await evaluate(`(() => { const b = document.getElementById("exportPsdLayers"); if (b) b.click(); return true; })()`);
+  await new Promise((r) => setTimeout(r, 2500));
+  const psdLog = await readLog();
+  console.log(`  ④c 点「导出分层 PSD」：${psdLog.slice(0, 200)}`);
+  if (/无下载链接/.test(psdLog)) {
+    bad.push("④c 导出分层 PSD 落了「无下载链接」分支 ⇒ 回执字段名又对不上了（应为 url）");
+  } else if (!/分层 PSD 已导出：/.test(psdLog)) {
+    bad.push("④c 点「导出分层 PSD」后日志里没有「已导出：<文件名>」（入口没接上或请求失败）");
+  }
+  const psdReply = await api("export_psd_layers", {});
+  const hasUrl = psdReply && typeof psdReply.url === "string" && psdReply.url.length > 0;
+  console.log(`  ④c export_psd_layers 回执：ok=${psdReply && psdReply.ok}｜url=${hasUrl}｜filename=${psdReply && psdReply.filename}`);
+  if (!psdReply || psdReply.ok !== true || !hasUrl) {
+    bad.push(`④c export_psd_layers 回执里没有 url（${JSON.stringify(psdReply).slice(0, 160)}）`);
   }
 
   ws.close();

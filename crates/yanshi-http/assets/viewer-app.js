@@ -10114,6 +10114,110 @@ function setupBrushDynamics() {
     });
   }
 }
+/// **★ gaps 补丁的三个入口，统一在**启动时**绑定 ✗ ★**（**第 254 轮实测修 ✓）
+///
+/// **∴ 为什么必须提到顶层 ✗**（**∴ 判据 `browser-p0-entries` 实测抓到两处"接了却没生效" ✓）★**：
+///   ＋ **∴ ① `#exportPsdLayers` 的处理器**被插在 `#exportPng` 的**点击回调里**✗**
+///     ⇒ **∴ 用户**不先点一次导出 PNG ✗ 点分层 PSD 就**完全没有反应** ✓（**静默 ✓）★★
+///   ＋ **∴ ② `#gradBlend` 挂在**异步的** `setupAssetPanels()` 里**✗**
+///     **∴ ③ `#objectHistory` 在 `setupObjectPanel()` 里**✗** ⇒ **∴ 都要等别的路径先跑到** ✓
+///   ＋ **∴ 现在 ✗**：**与**已经验证可用的 `setupBrushDynamics()`** 放在同一处**✗
+///     **∴ 按钮在 `PAGE_TAIL_A` 里 ⇒ **本段执行时它们已经在 DOM 上** ✓（**∴ 早绑是安全的 ✓）★
+///   ＋ **∴ 教训 ✗**：**"接了"要看**绑定点**在不在**每次启动**都会走到的路径上** ✗
+///     **∴ 而不是**代码里有那几行** ✓（**∴ 本仓的老毛病 ✓）★★
+function setupGapsEntries() {
+  // **对象版本历史** ✓：MCP `get_object_history` 的 Web 入口。显示选中对象的原子版本链。
+  const objHistory = $("objectHistory");
+  if (objHistory) objHistory.addEventListener("click", async () => {
+    const checked = Array.from(document.querySelectorAll("#objectList input[type=checkbox]:checked"));
+    if (checked.length === 0) { log("请先勾选一个对象", "#c93"); return; }
+    if (checked.length > 1) { log("一次只看一个对象的历史", "#c93"); return; }
+    const objectId = checked[0].dataset.objectId || checked[0].value;
+    const result = await callTool("get_object_history", { object_id: objectId }, { refresh: false });
+    if (!result.ok) { log("获取对象历史失败：" + (result.error_code || "unknown"), "#c33"); return; }
+    const atoms = result.atoms || result.history || [];
+    log(`对象 ${objectId} 版本历史：${atoms.length} 个版本`);
+    // 在日志区显示版本链
+    for (const atom of atoms.slice(0, 20)) {
+      log(`  seq=${atom.seq} kind=${atom.kind} ts=${atom.timestamp || ""}`);
+    }
+    if (atoms.length > 20) log(`  ...还有 ${atoms.length - 20} 个版本`);
+  });
+
+  // **渐变混合** ✓：MCP `gradient_blend` 的 Web 入口。用笔触自动生成渐变过渡，
+  // 替代手动拼笔。用渐变面板的起终点颜色，从画布左侧到右侧画一条过渡线。
+  const gradBlend = $("gradBlend");
+  if (gradBlend) {
+    gradBlend.addEventListener("click", async () => {
+      const fromHex = ($("gradFrom") || {}).value || "#ffffff";
+      const toHex = ($("gradTo") || {}).value || "#000000";
+      // **∴ `gradient_blend` 的 `brush` 是**必填**✗ 而"（内置画笔）"的空值不能当名字送** ✓
+      //   ＋ **∴ 照补丁原样会送 `"basic"` ✗**（**∴ 那**不是资产里的笔刷** ⇒ **请求必失败** ✓）
+      //   ＋ **∴ 与压感预设同一口径 ✗**：**给出**可照着改**的消息** ✓（**第 254 轮 ✓）★
+      const brushSelectNow = $("brush");
+      const brush = brushSelectNow ? brushSelectNow.value : "";
+      if (!brush) {
+        log("渐变混合需要一支 .myb 笔刷⇒ 请先在上面「笔刷」里选一支（（内置画笔）没有 MyPaint 笔触）", "#c93");
+        return;
+      }
+      const size = Number(($("size") || {}).value || 20);
+      const { w, h } = state.docSize || { w: 1024, h: 1024 };
+      const toRgb = (hex) => ({
+        r: parseInt(hex.slice(1, 3), 16),
+        g: parseInt(hex.slice(3, 5), 16),
+        b: parseInt(hex.slice(5, 7), 16),
+        a: 255,
+      });
+      const result = await callToolChecked("gradient_blend", {
+        layer_id: state.layerId,
+        from: { x: 0, y: h / 2, color: toRgb(fromHex) },
+        to: { x: w, y: h / 2, color: toRgb(toHex) },
+        brush,
+        size,
+        steps: 10,
+      }, "渐变混合");
+      if ($("gradInfo")) $("gradInfo").textContent = "已生成渐变混合笔触：" + fromHex + " → " + toHex;
+      void result;
+      await resync();
+    });
+  }
+
+
+// **导出分层 PSD** ✓：MCP `export_psd_layers` 的 Web 入口。
+// 图层/组/不透明度/可见性/混合模式都带出去，含压平合成图。
+const exportPsdBtn = $("exportPsdLayers");
+if (exportPsdBtn) {
+  exportPsdBtn.addEventListener("click", async () => {
+    const result = await callTool("export_psd_layers", {}, { refresh: false });
+    if (!result.ok) {
+      log("导出分层 PSD 失败：" + (result.error_code || "unknown"), "#c33");
+      return;
+    }
+    // **★★★ 回执字段是 `url` ✗ 不是 `download_url`** ✓（**第 254 轮实测修 ✓）★
+    //   ＋ **∴ 症状（**照补丁原样 ✓）✗**：**永远走 else ⇒ 只打印"已导出（无下载链接）"** ✗
+    //     ⇒ **∴ 用户**点了却**什么都没下载** ✓（**∴ "看起来接上了 ✗ 其实没生效"** ✓）
+    //   ＋ **∴ 解析方式照仓库既有那条 ✗**（**`export_project` 那段 ✓ 第 6297 行 ✓）：
+    //     **HTTP 层会把 `yanshi://blob/<hash>` 改写成可直接 GET 的地址**✗
+    //     ⇒ **∴ 兜底**再自己拼 `/api/blob/<hash>`** ✓（**∴ 不另造一套 ✓）★★
+    const raw = typeof result.url === "string" ? result.url : "";
+    const href = raw.startsWith("yanshi://blob/")
+      ? api("/api/blob/" + raw.slice("yanshi://blob/".length))
+      : raw;
+    if (!href) {
+      log("分层 PSD 已导出，但回执里没有可下载的 url", "#c93");
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = result.filename || (state.docId + ".psd");
+    a.click();
+    log("分层 PSD 已导出：" + (result.filename || href));
+  });
+}
+
+}
+setupGapsEntries();
+
 setupBrushDynamics();
 initQuickPanel();
 
@@ -10515,6 +10619,11 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **★ gaps 补丁新增的三个入口（第 254 轮）★**：按钮文本会成为文本节点
+  //   => 必须在词表里（判据 `ui-i18n-coverage` 实测抓到这 3 条）。
+  "导出分层 PSD": "Export layered PSD",
+  "版本历史": "Version history",
+  "渐变混合": "Gradient blend",
   // **★ 笔刷压感动力学入口（第 254 轮）★**：三个预设按钮是**新界面元素**
   //   ⇒ 必须有词条，否则英文模式下漏出中文（判据 `ui-i18n-coverage` 实测抓到）。
   "压感": "Pressure",
@@ -10754,6 +10863,9 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  "导出成分层 PSD（图层/组/不透明度/可见性/混合模式都带出去）": "Export as a layered PSD (layers, groups, opacity, visibility and blend modes included)",
+  "查看选中对象的版本历史（原子版本链）": "Show the version history of the selected object (its atom version chain)",
+  "用笔触自动生成渐变过渡（替代手动拼笔）": "Generate a gradient transition from brush strokes instead of dabbing it by hand",
   // 新按钮的 title 也要有词条（静态判据不查属性，但 browser-i18n 在英文模式下会看到）。
   "笔刷压感动力学（MCP set_brush_dynamics 的 Web 入口）：压感→笔触大小的响应曲线": "Brush pressure dynamics (the web entry for MCP set_brush_dynamics): the pressure-to-size response curve",
   "轻压细、重压粗（柔和）": "Light pressure thin, heavy pressure thick (soft)",
