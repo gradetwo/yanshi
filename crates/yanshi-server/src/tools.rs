@@ -2937,6 +2937,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
             // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
+            // **P1 #8 生理颤动**：opt-in（缺省不给 => 点列一个都不动）。
+            param!("tremor", Number, false, "生理颤动 0..1（**缺省不给 => 点列一个都不动**）：叠一层**带限** 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）—— 与仓库既有的白噪声抖动不同，它相邻点相关 => 像手而不是像砂纸"),
+            param!("tremor_seed", Integer, false, "颤动噪声种子（缺省 0；同种子同波形 => 确定性）"),
             // **P1 #10 罩染**：opt-in（缺省不给 => 点列与透明度都不动）。
             param!("glaze", Boolean, false, "罩染（缺省 false）：true => 单笔自动拆成多遍**微偏移薄涂**（古典油画的透明罩染；整笔透明度按遍数摊薄），适合皮肤/暗部的丝滑渐变"),
             param!("glaze_passes", Integer, false, "罩染遍数 1..8（缺省 3；只在 `glaze: true` 时有意义）"),
@@ -13619,6 +13622,81 @@ fn lerp_srgb(from: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
 ///
 /// **为什么是插值而不是逼近** ✓（Catmull-Rom 过控制点 ✓）：画的人给的点**就是他点的位置** ✓
 /// ⇒ 平滑**不许把线拉离**那些点 ✗（渲染层已有测试钉住这一条 ✓）。
+// **★ 生理颤动（P1 #8 的最后一块）：**带限** 1D value noise ★**（第 254 轮）
+//
+// **需求文档 P1 #8**："2–5Hz 手腕 + 8–12Hz 震颤的 1D value noise"。
+//
+// **为什么不是"随便加点随机"**：仓库 `apply_brush_style` 里**已经有**逐点白噪声抖动
+// （`scatter_next`，相邻点**独立**）=> 那是**白噪声**，视觉上像"砂纸"；而人的手是**带限**的：
+// 低频（2–5Hz）是手腕摆动、高频（8–12Hz）是生理性震颤 => 位移必须**沿笔迹缓慢变化**
+// （相邻点**相关**）才像手。本函数就是补这一块。
+//
+// **怎么做**：沿**弧长 s**（像素）采样 1D **value noise**：格点 `i = floor(s / λ)` 的值由
+// 确定性哈希给出，格点之间用**余弦插值**（=> 连续、可导、无尖角）。两个八度叠加：
+//   * 手腕：`λ_wrist` ≈ 90px（在常见落笔速度下落在几 Hz 量级）；
+//   * 震颤：`λ_tremor` ≈ 28px（更快、更小）。
+//   **∴ 频率与 Hz 的换算取决于落笔速度**（`time_ms` 已打通 ⇒ 真速度可得）；这里先用**像素波长**
+//   表达（几何量、可复现），并把这条换算关系写在注释里，避免假装精确。
+// 偏移方向取**局部法向**（与罩染同一套差分），再叠一个很小的压力调制（±3%）。
+//
+// **确定性与 opt-in**：格点值只由 `seed` 决定（无随机源、不读时钟）；**`amount <= 0` 或点数 < 2
+// 时原样返回** => 不给 `tremor` 参数时**点列一个都不动**（逐字节不变）。
+fn apply_tremor(points: &[(f64, f64, f64)], amount: f64, seed: u64) -> Vec<(f64, f64, f64)> {
+    if amount <= 0.0 || points.len() < 2 {
+        return points.to_vec();
+    }
+    let amount = amount.clamp(0.0, 1.0);
+    // 格点值：确定性哈希 => [-1, 1]
+    let lattice = |index: i64| -> f64 {
+        let mut x = (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 31;
+        (x as f64 / u64::MAX as f64) * 2.0 - 1.0
+    };
+    // 1D value noise（余弦插值）：λ = 波长（像素）
+    let noise = |s: f64, lambda: f64| -> f64 {
+        let t = s / lambda.max(1e-6);
+        let i = t.floor();
+        let f = t - i;
+        let smooth = 0.5 - 0.5 * (std::f64::consts::PI * f).cos();
+        let a = lattice(i as i64);
+        let b = lattice(i as i64 + 1);
+        a + (b - a) * smooth
+    };
+    // 累计弧长
+    let mut arc = vec![0.0_f64; points.len()];
+    for i in 1..points.len() {
+        let dx = points[i].0 - points[i - 1].0;
+        let dy = points[i].1 - points[i - 1].1;
+        arc[i] = arc[i - 1] + (dx * dx + dy * dy).sqrt();
+    }
+    let mut out = Vec::with_capacity(points.len());
+    for (index, point) in points.iter().enumerate() {
+        let prev = if index > 0 { points[index - 1] } else { *point };
+        let next = if index + 1 < points.len() {
+            points[index + 1]
+        } else {
+            *point
+        };
+        let (tx, ty) = (next.0 - prev.0, next.1 - prev.1);
+        let norm = (tx * tx + ty * ty).sqrt().max(1e-9);
+        let (nx, ny) = (-ty / norm, tx / norm);
+        let s = arc[index];
+        let wrist = noise(s, 90.0);
+        let tremor = noise(s, 28.0);
+        // 两个八度的幅度：手腕为主、震颤为辅（合成后仍在 ±amount×2.5px 内）
+        let offset = amount * (wrist * 1.8 + tremor * 0.7);
+        // 压力：很小的调制（±3%）—— 手抖也会让压力轻微起伏
+        let pressure = (point.2 * (1.0 + 0.03 * wrist * amount)).clamp(0.0, 1.0);
+        out.push((point.0 + nx * offset, point.1 + ny * offset, pressure));
+    }
+    out
+}
+
 // **★ 罩染（P1 #10）：一笔拆成多遍微偏移薄涂 ★**（第 254 轮）
 //
 // **需求文档 P1 #10**："`brush_stroke` 加 `glaze: true` => 单笔自动拆为 3 遍微偏移薄涂
@@ -14922,6 +15000,18 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   给了才按 κ^(2/3) 在**转弯处**多插点（手在拐角天然减速的物理 ✓）。
     let points = match args.get("dwell").and_then(Value::as_f64) {
         Some(strength) => apply_curvature_dwell(&points, strength),
+        None => points,
+    };
+    // **★ P1 #8 生理颤动（opt-in）★**（第 254 轮）
+    //   `tremor: 0..1` 缺省不给 => `apply_tremor` 都不调用 => 点列一个都不动（逐字节不变 ✓）。
+    //   给了才叠**带限**的 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）——
+    //   与仓库既有的**白噪声**抖动（`apply_brush_style` 的 `scatter_next`）不同：
+    //   白噪声相邻点独立（像砂纸），带限噪声相邻点相关（像手）。
+    let points = match args.get("tremor").and_then(Value::as_f64) {
+        Some(amount) => {
+            let seed = args.get("tremor_seed").and_then(Value::as_u64).unwrap_or(0);
+            apply_tremor(&points, amount, seed)
+        }
         None => points,
     };
     let mut points = points;
@@ -17499,6 +17589,48 @@ mod tests {
             "同一串点只改 dtimes（5ms vs 500ms）却产出**完全相同**的像素 \
              => 时间没有真正影响引擎（接线断了，或这套设置不吃时间）"
         );
+    }
+
+    // **★ P1 #8 生理颤动（数据层，决定性）★**（第 254 轮）
+    //   这条判据的**鉴别力**在于"带限"：它必须与仓库既有的**白噪声**抖动区分开 ——
+    //   白噪声相邻点**独立**（差分会很大），带限噪声相邻点**相关**（差分很小）。
+    #[test]
+    fn tremor_is_band_limited_and_off_by_default() {
+        let line: Vec<(f64, f64, f64)> = (0..40).map(|i| (i as f64 * 8.0, 100.0, 0.5)).collect();
+        // 不给 amount => 原样
+        assert_eq!(super::apply_tremor(&line, 0.0, 7), line);
+        let jittered = super::apply_tremor(&line, 1.0, 7);
+        assert_eq!(jittered.len(), line.len());
+        // **带限**：相邻点的**法向位移增量**必须小（白噪声会给到像素级跳变）
+        let mut max_step: f64 = 0.0;
+        for pair in jittered.windows(2) {
+            let d = (pair[1].1 - pair[0].1).abs();
+            max_step = max_step.max(d);
+        }
+        assert!(
+            max_step < 1.2,
+            "带限噪声的相邻位移增量应当很小（白噪声会跳几像素）：最大 {max_step}"
+        );
+        // 但它**确实**不是直线（位移非零）
+        let moved = jittered
+            .iter()
+            .zip(line.iter())
+            .filter(|(a, b)| (a.1 - b.1).abs() > 0.05)
+            .count();
+        assert!(moved > 5, "颤动能动起来的点太少：{moved}");
+        // 幅度有界（<= amount × 2.5px）
+        for point in &jittered {
+            assert!((point.1 - 100.0).abs() <= 2.5 + 1e-9, "偏移越界：{point:?}");
+        }
+        // 确定性：同种子逐位相同；换种子必须不同
+        assert_eq!(jittered, super::apply_tremor(&line, 1.0, 7));
+        assert_ne!(
+            jittered,
+            super::apply_tremor(&line, 1.0, 8),
+            "换种子应当换波形"
+        );
+        // 几何端点也不漂（首末点位移仍在界内）
+        assert!((jittered[0].1 - 100.0).abs() <= 2.5 + 1e-9);
     }
 
     // **★ P1 #10 罩染（数据层，决定性）★**（第 254 轮）
