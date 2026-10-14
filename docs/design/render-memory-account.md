@@ -196,3 +196,40 @@ RSS: 7 MB => 311 MB    （增量 +304 MB，与第八节层数扫描的 +319 MB �
 2. 把它们**收进池**（或确保帧末 `drop` 并及时 `malloc_trim` 级别的归还策略）；
 3. 复量：`alloc_probe.buffer_fresh` 应当接近 0、且 `rss` 在一帧后回落；同时量两本账（墙钟 + CPU），
    因为"池化更多东西"可能改变速度。
+
+## 十、★ 第 254 轮：归因**精确到函数** —— 那 69 次是 `Buffer::crop` ★
+
+第九节的探针只能给出"哪个分配点、多少字节"（"256 MB / 69 次绕过池"），但**不知道是哪 69 次**。
+本轮给探针加了 **`#[track_caller]` + `Location::caller()`** 的**调用点维度**（只在探针开着时进表 =>
+生产仍是一次 `OnceLock` 读 ✓），`/health` 新增 `alloc_probe_sites`（按文件聚合）。
+
+**复量（2048² 单层单次整幅渲染）**：
+
+```text
+alloc_probe:       buffer_fresh 268,435,456 B / 69 次
+alloc_probe_sites: crates/yanshi-render/src/buffer.rs       134,217,728 B / 66 次   <-- 主犯
+                   crates/yanshi-render/src/buffer_pool.rs   67,108,864 B /  2 次
+                   crates/yanshi-render/src/render.rs        67,108,864 B /  1 次
+```
+
+再顺着"`buffer.rs` 内部哪里会 `Buffer::new`"查下去 ⇒ **生产代码里只有一处**：
+
+```rust
+// crates/yanshi-render/src/buffer.rs:454
+pub fn crop(&self, bbox: &Bbox) -> Buffer {
+    let mut out = Buffer::new(x0, y0, width, height);
+    ...
+```
+
+=> **66 次（128 MB）全部来自 `Buffer::crop`** ✓✓ —— 渲染路径在**大量裁剪缓冲**，
+而每次 `crop` 都**新分配一个 `Buffer`、绕过缓冲池** ✗（池只管着 2 个 64 MB 的 band 块）。
+
+**这就是"每次整幅渲染 +240–320 MB 且不回落"的可操作根因** ✓（第一次是在数据上看到它、
+第二次是在文件上看到它、这次是在**函数**上看到它）。
+
+**下一步（已可执行）**：
+1. `crop` 目前返回**独占**的 `Buffer` => 要池化它，得让热路径改用一个**可复用的 scratch**
+   （或让 `crop` 有 `crop_into(&mut Buffer)` 的变体、由调用方从池里借）=> 先数清热路径有哪几处调它；
+2. 复量：`alloc_probe.buffer_fresh` 应接近 0、且一帧后 `rss` 回落；
+3. **同时量两本账**（墙钟 + CPU）—— 池化会改变内存流量，可能影响速度；
+4. 别忘了那条硬约束：**4K 上一笔 ≤ ~100ms**。

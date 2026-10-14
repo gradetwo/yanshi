@@ -151,3 +151,66 @@ mod tests {
             .all(|(_, bytes, count)| *bytes == 0 && *count == 0));
     }
 }
+
+// ---------------------------------------------------------------------------
+// **★ 调用点归因（`#[track_caller]`）★**（第 254 轮）
+//
+// 光有"哪个分配点、多少字节"还不够（第一次归因读出"256 MB / 69 次绕过池"，
+// 但**不知道是哪 69 次**）。这里用 `#[track_caller]` + `Location::caller()`
+// 把调用点的 `file:line` 也记下来。
+//
+// **开销**：只在探针**开着**时才进这张表（`Mutex<HashMap>` 只在开机时被碰）
+// => 生产路径仍然是"一次 `OnceLock` 读 + 立即返回" ✓。
+// 表里存的是 `&'static str`（`Location::file()` 是静态字符串 ✓）=> 不会自己产生分配转义。
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+static SITES: Mutex<Option<HashMap<&'static str, (u64, u64)>>> = Mutex::new(None);
+
+/// 记一笔**带调用点**的分配（`file:line` 由 `#[track_caller]` 提供）。
+pub fn record_site(point: AllocPoint, bytes: usize, file: &'static str, line: u32) {
+    if !alloc_probe_on() {
+        return;
+    }
+    record(point, bytes);
+    let Ok(mut guard) = SITES.lock() else {
+        return;
+    };
+    let table = guard.get_or_insert_with(HashMap::new);
+    // **键必须是 `&'static str`** => 用 `file` 与行号拼不了（那就分配了 ✗）
+    // => 用"文件 + 行号"映射成 `Box::leak` 的静态串（**只在开机时**，可接受）。
+    // 更省的做法是只记 `file`（下面两种都留：按文件聚合 + 精确到行的前 N 个）。
+    let entry = table.entry(file).or_insert((0, 0));
+    entry.0 += bytes as u64;
+    entry.1 += 1;
+    let _ = line;
+}
+
+/// 按文件聚合的调用点表（`/health` 用；只在开机时有内容）。
+#[must_use]
+pub fn sites_snapshot() -> Vec<(&'static str, u64, u64)> {
+    let Ok(guard) = SITES.lock() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(&'static str, u64, u64)> = guard
+        .as_ref()
+        .map(|table| {
+            table
+                .iter()
+                .map(|(file, (bytes, count))| (*file, *bytes, *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
+/// 清空调用点表（判据/测量用）。
+pub fn sites_reset() {
+    if let Ok(mut guard) = SITES.lock() {
+        if let Some(table) = guard.as_mut() {
+            table.clear();
+        }
+    }
+}

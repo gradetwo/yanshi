@@ -913,6 +913,16 @@ fn health(state: &ServerState) -> Response {
             "cache": cache_stats(state),
             // **分配探针**（DEF-03 的前置条件）：只在 `YANSHI_ALLOC_PROBE` 开着时才有数字，
             // 关着时全是 0（生产零开销）。用来回答"这一帧的字节是**谁**分配的、新分配还是复用"。
+            // **按文件聚合的调用点**（`#[track_caller]`）：回答"这 256 MB 是哪几个文件分配的"。
+            "alloc_probe_sites": yanshi_render::alloc_probe::sites_snapshot()
+                .iter()
+                .map(|(file, bytes, count)| {
+                    (
+                        String::from(*file),
+                        serde_json::json!({"bytes": bytes, "count": count}),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
             "alloc_probe": yanshi_render::alloc_probe::snapshot()
                 .iter()
                 .map(|(name, bytes, count)| {

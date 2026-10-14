@@ -120,6 +120,7 @@ pub struct Buffer {
 
 impl Buffer {
     /// 全透明缓冲区，原点为文档坐标 `(origin_x, origin_y)`。
+    #[track_caller]
     pub fn new(origin_x: i64, origin_y: i64, width: u32, height: u32) -> Self {
         Self {
             origin_x,
@@ -129,9 +130,12 @@ impl Buffer {
             pixels: {
                 // **分配探针**：`Buffer::new` 绕过池的那些路径（直接 `vec!`）。
                 let len = (width * height * 4) as usize;
-                crate::alloc_probe::record(
+                let location = std::panic::Location::caller();
+                crate::alloc_probe::record_site(
                     crate::alloc_probe::AllocPoint::BufferFresh,
                     len * std::mem::size_of::<f32>(),
+                    location.file(),
+                    location.line(),
                 );
                 vec![0.0; len]
             },
