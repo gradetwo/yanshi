@@ -30,12 +30,14 @@ libm.workspace = true
 flate2.workspace = true
 yanshi-gpu = { version = "0.1.0", path = "../yanshi-gpu", optional = true }
 
+# **P2 #16 颜料混色（Clean-Room）**：MIT 的 `neco-pigment`（光谱 K/S 混合）。
+# **代价已核**：`.crate` 压缩 19,972 字节、源码 1505 行、传递依赖 +1（`neco-color`）、
+# MSRV 1.82（本机 1.99）、源码无 unsafe/rand/时间 => 纯函数确定性。
+# **风险如实记**：供应链年轻（单作者、单版本、下载 27 次）；**采纳后对 wasm 的体积增量本机量不了**
+# （本机没装 wasm32 target）=> 由 CI 的 wasm job 覆盖构建，体积增量待测。
+neco-pigment = "0.1"
 [dev-dependencies]
 proptest.workspace = true
-# **P2 #16 颜料混色的**选型验证**（第 254 轮）**：**只当 dev-dependency**（不进 `[dependencies]`）
-# => **不进出厂依赖、不影响 wasm 体积**；等判据（黄+蓝必须偏绿）绿了再做"是否采纳"的正式决定，
-# 并按 AGENTS.md 把**好处与代价两面**都写进提交与报告。
-neco-pigment = "0.1"
 
 [features]
 gpu = ["dep:yanshi-gpu"]

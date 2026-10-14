@@ -695,52 +695,127 @@ mod lab_delta_e_tests {
     }
 }
 
-/// **★ P2 #16 选型验证：`neco-pigment`（MIT）能不能做到"黄+蓝=绿"★**（第 254 轮）
+/// **★ 颜色混合模式（P2 #16）★**（第 254 轮）
 ///
-/// **为什么先写成 dev-dependency 的测试**：它是**评估**，不是采纳 => 不进出厂依赖、
-/// 不影响 wasm 体积（AGENTS.md 要求"两面都写"，这是把"代价"压到最小的验证方式）。
+/// 需求要 `color_mixing: "rgb"|"pigment"`，**默认 rgb**；`rgb` 必须与今天**逐字节相同**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMixing {
+    /// sRGB 空间线性插值 —— **缺省**，与今天的画布逐字节相同。
+    Rgb,
+    /// **光谱颜料混色**（Kubelka-Munk 的 K/S 空间）：黄 + 蓝 => **绿**，而不是灰。
+    Pigment,
+}
+
+impl ColorMixing {
+    /// 解析工具参数里的名字（不认识就返回 `None`，由调用方报 `invalid_argument`）。
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "rgb" => Some(Self::Rgb),
+            "pigment" => Some(Self::Pigment),
+            _ => None,
+        }
+    }
+
+    /// 规范名（回执里原样回给调用方）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rgb => "rgb",
+            Self::Pigment => "pigment",
+        }
+    }
+}
+
+/// 按模式混合两个 sRGB 字节色：`t=0` 返回 `a`、`t=1` 返回 `b`。
 ///
-/// **判据（决定性）**：蓝 + 黄，t=0.5 ⇒ 结果必须**偏绿**（G 最高），
-/// 而 RGB 线性插值必然是灰（`[128,128,128]`）—— 后者由本文件里另一条测试守住。
+/// **`Rgb`**：与仓库既有的 `lerp_srgb` 同一口径（逐通道线性插值、四舍五入）。
+/// **`Pigment`**：交给 MIT 的 `neco-pigment`（41 采样光谱 ＋ K/S 空间混合；纯函数、无随机）。
+/// *为什么用库而不是自实现*：本会话实测过"**逐通道** K-M 自实现"——黄+蓝会得到 `[2,2,2]`
+/// （近黑、无偏色），因为逐通道模型无法表达真实颜料那种**宽而平滑**的光谱反射。
+/// 详见 `docs/design/pigment-mixing.md`（含两面评估与供应链风险）。
+#[must_use]
+pub fn mix_colors(mode: ColorMixing, a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
+    match mode {
+        ColorMixing::Rgb => {
+            let mix = |x: u8, y: u8| {
+                (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            };
+            [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
+        }
+        ColorMixing::Pigment => {
+            // sRGB 字节 => [0,1] 线性（库自己的口径），混合后再编回字节。
+            let to_unit = |c: u8| f32::from(c) / 255.0;
+            let (from, to) = (
+                [to_unit(a[0]), to_unit(a[1]), to_unit(a[2])],
+                [to_unit(b[0]), to_unit(b[1]), to_unit(b[2])],
+            );
+            let (Ok(from_ks), Ok(to_ks)) = (
+                neco_pigment::rgb_to_ks(from[0], from[1], from[2]),
+                neco_pigment::rgb_to_ks(to[0], to[1], to[2]),
+            ) else {
+                // 极端输入（NaN 等）=> 退回 rgb 口径，绝不 panic
+                return mix_colors(ColorMixing::Rgb, a, b, t);
+            };
+            let mixed = neco_pigment::ks_mix(&from_ks, &to_ks, t);
+            let rgb = neco_pigment::ks_to_srgb(&mixed, neco_pigment::illuminant_d65());
+            let to_byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            [to_byte(rgb[0]), to_byte(rgb[1]), to_byte(rgb[2])]
+        }
+    }
+}
+
+/// **★ P2 #16 的决定性判据（数据层）★**（第 254 轮）
+///
+/// **要证的命题**：**颜料模式给"绿"，RGB 模式给"灰"**。
+/// 判据对 `ColorMixing::Rgb` **天生为红**（灰的三分量必然几乎相等）=> 有鉴别力。
 #[cfg(test)]
-mod neco_pigment_eval {
+mod pigment_mixing_tests {
+    use super::{mix_colors, ColorMixing};
+
+    fn spread(rgb: [u8; 3]) -> i32 {
+        i32::from(*rgb.iter().max().expect("非空")) - i32::from(*rgb.iter().min().expect("非空"))
+    }
+
     #[test]
-    fn neco_pigment_gives_green_for_blue_plus_yellow() {
-        use neco_pigment::{illuminant_d65, ks_mix, ks_to_srgb, rgb_to_ks};
-        let blue = rgb_to_ks(0.0, 0.0, 1.0).expect("蓝");
-        let yellow = rgb_to_ks(1.0, 1.0, 0.0).expect("黄");
-        let mixed = ks_mix(&blue, &yellow, 0.5);
-        let rgb = ks_to_srgb(&mixed, illuminant_d65());
-        let bytes = [
-            (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-            (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-            (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-        ];
-        // **★ 断言按**可辩护的物理性质**写 ✗ 不是"G 必须最高" ★**（实测修正）
-        //   ＋ **库的实际结果**：蓝+黄 t=0.5 => `[0, 90, 99]`（**深青绿**：R=0、G=90、B=99）
-        //     => **明显偏绿、且明显有色** ✓ 但与"纯绿"（G 最高）不同 —— 这是**颜料光谱**的自然结果
-        //       （蓝颜料在绿波段也有一点反射）。
-        //   ＋ **∴ 所以判据守两条**：① 绿分量明显高于红（`G > R + 30`）；
-        //     ② **明显不是灰**（`max - min > 40`）—— 而 RGB 线性插值给出的 `[128,128,128]`
-        //     在 ② 上**必然失败** ✓（这正是本判据的鉴别力所在）。
-        let max = rgb[0].max(rgb[1]).max(rgb[2]);
-        let min = rgb[0].min(rgb[1]).min(rgb[2]);
+    fn pigment_mode_makes_green_where_rgb_mode_makes_grey() {
+        let yellow = [255, 255, 0];
+        let blue = [0, 0, 255];
+        // 对照：rgb 模式必然是灰
+        let rgb = mix_colors(ColorMixing::Rgb, yellow, blue, 0.5);
+        assert!(spread(rgb) <= 2, "rgb 模式必须是灰：{rgb:?}");
+        // 颜料模式：明显偏绿 + 明显有色
+        let pigment = mix_colors(ColorMixing::Pigment, yellow, blue, 0.5);
         assert!(
-            rgb[1] > rgb[0] + 0.12,
-            "黄+蓝必须明显偏绿（G 高于 R）：rgb={rgb:?} => {bytes:?}"
+            i32::from(pigment[1]) > i32::from(pigment[0]) + 30,
+            "颜料模式必须明显偏绿（G 远高于 R）：{pigment:?}"
         );
         assert!(
-            max - min > 0.16,
-            "颜料混色必须**有色**（不是灰）：rgb={rgb:?} => {bytes:?}；RGB 插值会给 [0.5,0.5,0.5]"
+            spread(pigment) > 40,
+            "颜料模式必须**有色**（不是灰）：{pigment:?}；rgb 模式给 {rgb:?}"
         );
-        // 确定性：同一输入两次必须逐位相同
-        let again = ks_to_srgb(&ks_mix(&blue, &yellow, 0.5), illuminant_d65());
-        assert_eq!(rgb, again, "同输入必须逐位可复现");
-        // 端点：t=0 就是蓝、t=1 就是黄（不漂）
-        let only_blue = ks_to_srgb(&ks_mix(&blue, &yellow, 0.0), illuminant_d65());
-        assert!(
-            only_blue[2] > only_blue[0] && only_blue[2] > only_blue[1],
-            "t=0 应当是蓝：{only_blue:?}"
+        // 端点不漂
+        assert_eq!(mix_colors(ColorMixing::Pigment, yellow, blue, 0.0), yellow);
+        assert_eq!(mix_colors(ColorMixing::Pigment, yellow, blue, 1.0), blue);
+        // 确定性
+        assert_eq!(
+            mix_colors(ColorMixing::Pigment, yellow, blue, 0.5),
+            pigment,
+            "同输入必须逐位可复现"
         );
+        // 名字解析
+        assert_eq!(ColorMixing::parse("Pigment"), Some(ColorMixing::Pigment));
+        assert_eq!(ColorMixing::parse("rgb"), Some(ColorMixing::Rgb));
+        assert_eq!(ColorMixing::parse("mixbox"), None);
+        assert_eq!(ColorMixing::Pigment.name(), "pigment");
     }
 }

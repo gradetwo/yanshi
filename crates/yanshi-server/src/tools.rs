@@ -2936,6 +2936,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
             // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
+            // **P2 #16 混色模式**：缺省 rgb（逐字节不变）；pigment 走光谱 K/S。
+            param!("color_mixing", String, false, "颜色混合模式：rgb（缺省，sRGB 线性插值）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰；用于 `color_to` 一笔多色的渐变）"),
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
             // **P1 #8 生理颤动**：opt-in（缺省不给 => 点列一个都不动）。
             param!("tremor", Number, false, "生理颤动 0..1（**缺省不给 => 点列一个都不动**）：叠一层**带限** 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）—— 与仓库既有的白噪声抖动不同，它相邻点相关 => 像手而不是像砂纸"),
@@ -5805,6 +5807,7 @@ fn restyle_baked_brush_stroke(
         hardness,
         false,
         None,
+        yanshi_render::color::ColorMixing::Rgb,
         &[],
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
@@ -13600,20 +13603,9 @@ fn densify_for_ramp(
     }
     out
 }
-
-/// 两个 sRGB 颜色按 `t` 线性插值 ✓（显示空间 ✓，见 [`brush_color_to_srgb_bytes`] ✓）。
-fn lerp_srgb(from: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
-    let mix = |a: u8, b: u8| {
-        (f64::from(a) + (f64::from(b) - f64::from(a)) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    [
-        mix(from[0], to[0]),
-        mix(from[1], to[1]),
-        mix(from[2], to[2]),
-    ]
-}
+// **`lerp_srgb` 已删除**（第 254 轮）：它的逻辑统一到了
+// `yanshi_render::color::mix_colors(ColorMixing::Rgb, …)` —— **一处实现**，
+// 并且与 `color_mixing: "pigment"` 走同一条入口（`Rgb` 分支逐字节等价于原来的它）。
 
 /// **把控制点按 Catmull-Rom 重采样** ✓ —— 复用**渲染层那一份**插值 ✗（不自己写第二份 ✓）。
 ///
@@ -14396,6 +14388,7 @@ pub(crate) fn replay_brush_bitmap(
         // **不喂底图** ✗（见函数头 ✓）。
         false,
         None,
+        yanshi_render::color::ColorMixing::Rgb,
         &[],
     )?;
     Ok(paint.rgba)
@@ -14494,6 +14487,8 @@ fn paint_brush(
     hardness: Option<f64>,
     feed_base: bool,
     brush_params: Option<&Value>,
+    // **★ P2 #16：`color_to` 渐变的混色模式 ★**（缺省 `Rgb` ⇒ 与今天逐字节相同）
+    color_mixing: yanshi_render::color::ColorMixing,
     // **★ P0 #3：每个点的真实时间步长（秒）★**（空切片 ⇒ 老行为不变）
     dtimes: &[f64],
 ) -> Result<BrushPaint> {
@@ -14686,7 +14681,10 @@ fn paint_brush(
                 } else {
                     cursor as f64 / seats as f64
                 };
-                let bytes = lerp_srgb(from_bytes, to_bytes, t);
+                // **P2 #16**：`Rgb` => 与仓库既有的 `lerp_srgb` 同口径（逐字节相同）；
+                // `Pigment` => 光谱 K/S 混色（黄+蓝=绿，而不是灰）。
+                let bytes =
+                    yanshi_render::color::mix_colors(color_mixing, from_bytes, to_bytes, t as f32);
                 let (hue, saturation, value) =
                     yanshi_render::color::rgb_to_hsv(bytes[0], bytes[1], bytes[2]);
                 brush.set(
@@ -15024,6 +15022,20 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   两遍之间留一条**回程跳线** ✗；交错之后相邻点只差几像素 => 得到**加宽的柔带** ✓。
     //   **透明度**：整笔除以遍数（三遍叠加 ≈ 原来的浓度 ✓）。
     //   **不给 `glaze` / 给 false** => 遍数 1 => 点列与透明度**都不动**（逐字节不变 ✓）。
+    // **★ P2 #16 混色模式 ★**（第 254 轮）
+    //   `rgb`（**缺省**）=> 与仓库既有的 `lerp_srgb` 完全同口径 => **逐字节不变**；
+    //   `pigment` => 光谱 K/S 混色（黄+蓝=绿，而不是灰）。
+    let color_mixing = match optional_str(args, "color_mixing") {
+        Some(name) => yanshi_render::color::ColorMixing::parse(&name).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知 color_mixing {name} ⇒ 可用：rgb（缺省）/ pigment"
+                )),
+            )
+        })?,
+        None => yanshi_render::color::ColorMixing::Rgb,
+    };
     let (points, glaze_passes) = if optional_bool(args, "glaze").unwrap_or(false) {
         let passes = args
             .get("glaze_passes")
@@ -15058,6 +15070,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         true,
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
         args.get("brush_params"),
+        color_mixing,
         &dtimes,
     )?;
     let BrushPaint {
@@ -15381,6 +15394,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("hardness").and_then(Value::as_f64),
         false,
         None,
+        yanshi_render::color::ColorMixing::Rgb,
         &[],
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
