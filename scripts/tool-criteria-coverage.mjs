@@ -37,6 +37,13 @@ const enumerated = (name) => patterns.some((re) => re.test(name));
 
 // **生成器** ✓：它们改源码/产物，本就不该当判据 ✓。
 const NOT_CRITERIA = [
+  // **∴ `tool-psd-cost-accounts.mjs` ✓**（**第 253 轮 ✓）：**它**只做**测量**✗
+  //   ＋ **∴ 做什么 ✗**：**按目标里"**同机两本账（**墙钟 ＋ CPU ✗ 多次取中位 ＋ 极差 ✓）**"
+  //     量 **PSD 图层级导入／导出** ✓ ⇒ **∴ 它要 `--pid` 才能读服务进程的 CPU 账** ✓
+  //   ＋ **∴ 为什么不该当判据 ✗**：**它**不产红／绿**✗（**∴ 没有门槛 ✓ 只有数字 ✓）
+  //     ＋ **∴ 而**"导入对不对"由 `tool-psd-layers.mjs` 判 ✗
+  //       **"导出对不对"由 `tool-psd-export.mjs` 判** ✓ ⇒ **∴ 红绿那两条出 ✓** ★★
+  "tool-psd-cost-accounts.mjs",
   "generate-brush-previews.mjs",
   "generate-tool-examples.mjs",
   "make-samples.mjs",
