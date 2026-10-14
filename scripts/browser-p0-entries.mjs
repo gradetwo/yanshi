@@ -136,9 +136,21 @@ const main = async () => {
   if (p.selects < 1) bad.push("① 图层行里没有混合模式下拉（新入口没接上）");
   if (p.options !== 7) bad.push(`① 混合下拉应有 7 个模式，实测 ${p.options}`);
   if (p.dyn !== 3) bad.push(`① 压感预设按钮应有 3 个（柔/线性/硬），实测 ${p.dyn}`);
+  // **★ 必须按**行的 layer id**配对 ✗ 不能拿 `list_layers[0]`** ✓ ★★★**（**CI 实测踩到 ✓）
+  //   ＋ **∴ 症状 ✗**：**本地（只有一层 ✓）一切正常 ✗ CI 上"改成 multiply 却没生效"** ✓
+  //   ＋ **∴ 根因 ✗**：**图层面板按 **z 降序** 画（**最上面的层在第一行 ✓）✗
+  //     而 `list_layers` 按 **z 升序** 返回** ✓ ⇒ **∴ 两边"第一项"**不是同一层** ✓ ★★
+  //   ＋ **∴ 现在 ✗**：**从行里读出它的 layer id ✗ 再去接口里找**那一层** ✓
+  //     （**∴ 行里的 `name.title` 就是 `layer_id` ✓ 见 `renderLayerPanel` ✓）★★
+  const rowLayerId = await evaluate(
+    `(() => { const row = document.querySelector(".layer-row"); if (!row) return ""; const span = row.querySelector(".layer-name"); return (span && span.title) || row.dataset.layerId || ""; })()`,
+  );
+  const findLayer = (list, id) => (((list || {}).layers) || []).find((l) => l.layer_id === id) || null;
+  if (!rowLayerId) bad.push("① 拿不到第一行的 layer id（判据自己坏了）");
   const layers0 = await api("list_layers", {});
-  const first = ((layers0 && layers0.layers) || [])[0];
-  if (first && p.value && first.blend_mode && p.value !== first.blend_mode) {
+  const first = findLayer(layers0, rowLayerId);
+  if (!first) bad.push(`① 接口里找不到行里的那一层（${rowLayerId}）`);
+  else if (p.value && first.blend_mode && p.value !== first.blend_mode) {
     bad.push(`① 下拉显示 ${p.value}，而服务端是 ${first.blend_mode}（初始就不同步）`);
   }
 
@@ -149,7 +161,7 @@ const main = async () => {
   console.log(`  ② 把下拉改成 multiply：${changed}`);
   await new Promise((r) => setTimeout(r, 1200));
   const layers1 = await api("list_layers", {});
-  const after = ((layers1 && layers1.layers) || [])[0];
+  const after = findLayer(layers1, rowLayerId);
   if (!after) {
     bad.push("② 读不回图层列表（判据自己坏了）");
   } else if (String(after.blend_mode).toLowerCase() !== "multiply") {

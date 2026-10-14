@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-9902202882239`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7886354389771`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -141,7 +141,11 @@
      页面本身不滚 ✗；要滚的是**各自的面板**（右栏 `.aside` 自己滚 ✓）与**画布舞台**（`.stage` ✓）。 */
   html, body { height: 100%; overflow: hidden; }
   body { display: flex; flex-direction: column; }
-  body > main { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  /* **∴ `main` **不做滚动容器** ✗**（**第 254 轮实测修 ✓）：**`overflow:auto` 会把舞台自己的
+     独立滚动吃掉 ✗ ⇒ **∴ 判据 `browser-layout` 当场红**：
+     "**放大之后画布没有超出舞台 / 舞台滚不动**" ✓ ⇒ **∴ 只留 flex 那两句**（**它们才是"状态栏
+     固定在底部"需要的 ✓**）★★ */
+  body > main { flex: 1 1 auto; min-height: 0; }
   body > .statusbar { flex: none; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 13px/1.5 system-ui, "Noto Sans CJK SC", sans-serif; }
@@ -225,7 +229,10 @@
   /* ★ 内核层必须**透明** ✓：它叠在 `#board` 之上 ✓ —— 若继承白底 ✗，
      就是把一块**不透明的白布**盖在服务端像素上 ⇒ **画面全白**✗（**＝审计 Y-01 的现象** ✓）。
      **∴ 白色只留给 `#board`** ✓（文档底色在那一层 ✓）。第 295 轮 ✓ */
-  #board { background: #fff; margin: auto; }
+  /* **∴ 不要给 `#board` 加 `margin: auto` ✗**（**第 254 轮实测修 ✓）：
+     **∴ 它在**溢出方向**会吞掉可滚动区域** ✗ ⇒ **∴ 放大后舞台**滚不动**✗
+     而仓库**本来就**在舞台里做了居中** ✓ ⇒ **∴ 这条是多加的 ✗ 有害的** ✓（**判据抓到 ✓）★★ */
+  #board { background: #fff; }
   #kernel { background: transparent; }
   /* **放大之后不许再被 CSS 顶回去** ✗（第 49 轮查明 ✓）：`max-width: 100%` 会把**内联宽度**
      盖回舞台宽度 ✓（实测：400% 时画布 844px = 舞台 ✓，内联宽度白设了 ✗）
@@ -9844,7 +9851,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-9902202882239irty-d13b378e")
+      caches.open("yanshi-shell-7886354389771irty-8d3dd65a")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
