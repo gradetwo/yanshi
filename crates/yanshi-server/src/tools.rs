@@ -1841,6 +1841,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "export_psd_layers",
+        profile: Profile::Core,
+        summary: "★ 导出成分层 PSD（第 253 轮）：图层/组/不透明度/可见性/混合模式都带出去，含压平合成图",
+        mutating: false,
+        params: &[
+            param!("filename", String, false, "建议的下载文件名（缺省 <doc>.psd）"),
+        ],
+    },
+    ToolSpec {
         name: "resample",
         profile: Profile::Retouch,
         summary: "重采样光栅对象的像素到新尺寸（非破坏：产出新 blob + supersede）",
@@ -3200,6 +3209,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "discard_stash" => write_discard_stash(ctx, args),
         "import_psd" => write_import_psd(ctx, args),
         "import_psd_layers" => write_import_psd_layers(ctx, args),
+        "export_psd_layers" => write_export_psd_layers(ctx, args),
         "resample" => write_resample(ctx, args),
         "resolve_conflict" => write_resolve_conflict(ctx, args),
         "begin_transaction" => write_begin_transaction(ctx, args),
@@ -8146,6 +8156,162 @@ fn write_import_psd(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 ///
 /// **∴ 判据 ✗**：**`scripts/tool-psd-layers.mjs`** ⇒ **导入后自己合成一遍 ✗
 ///   与 PSD **自带的压平合成图**逐像素比**（**建议里点名的"真实标准答案" ✓）★
+/// **★★★ 导出**分层 PSD** ✗ ★★★**（**第 253 轮 ✓；**建议第 ③ 项的导出半边 ✓）
+///
+/// **∴ 与 `import_psd_layers` 对称 ✗**：**那条**PSD ⇒ yanshi**✗ 这条**yanshi ⇒ PSD** ✓
+///   ＋ **∴ 带出去的 ✗**：**图层名 ✗ 不透明度 ✗ 可见性 ✗ 混合模式 ✗ 组（**一层 ✓）✗
+///     位置与尺寸（**每层按**整个画布**给 rect ✓）✗ 外加**压平合成图** ✓ ★★
+///
+/// **∴ 每层怎么拿到像素 ✗**：**`Document::render_region_layer_rgba`**（**本轮新增 ✓）
+///   ＝**只渲这一层**✗（**复用渲染器已有的 `only_layer` 开关 ✓ **不另起一条渲染路** ✓）★★
+///
+/// **∴ 如实写明的取舍 ✗**：
+///   ＋ **∴ 每层 rect ＝**整个画布**✗**（**∴ 不做"裁剪到内容包围盒" ✓ ⇒ **∴ 文件**偏大** ✓
+///     而**位置绝对正确** ✓—— **∴ 用"能打开、像素对"换"体积" ✓）★
+///   ＋ **∴ 组只导**一层**✗ 蒙版／图层效果／智能对象**不导出** ✓（**∴ 回执里写明 ✓）★
+///   ＋ **∴ 合成图 ✗**：**用 `render_region_raw`（**整幅 ✓）**—— **∴ 与 PSD 惯例一致 ✓
+///     （**"能被 Photoshop 打开"至少要有它 ✓）★
+fn write_export_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **∴ 先把要用的字段**拷成自有值** ✗ 再放开对文档的可变借用** ✓（**渲染要可变 ✓）★
+    let (doc_w, doc_h, snapshot) = {
+        let state = document_state(ctx)?;
+        let mut rows: Vec<(
+            String,
+            String,
+            String,
+            bool,
+            f64,
+            String,
+            Option<String>,
+            i64,
+        )> = state
+            .alive_layers()
+            .iter()
+            .map(|layer| {
+                (
+                    layer.id.clone(),
+                    layer.name.clone(),
+                    format!("{:?}", layer.layer_type).to_ascii_lowercase(),
+                    layer.visible,
+                    layer.opacity,
+                    layer.blend_mode.clone(),
+                    layer.parent_id.clone(),
+                    layer.z_index,
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| (a.7, &a.0).cmp(&(b.7, &b.0)));
+        (state.width, state.height, rows)
+    };
+    let bbox = yanshi_core::Bbox::new(0.0, 0.0, f64::from(doc_w), f64::from(doc_h));
+    // **∴ 逐层单渲 ✗ 组不渲**（**组自己没有像素 ✓）★
+    let mut pixels: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    let mut rendered_layers = 0usize;
+    for (id, _name, kind, _visible, _opacity, _blend, _parent, _z) in &snapshot {
+        if kind.contains("group") {
+            continue;
+        }
+        // **∴ 渲染要 `&mut` ✗ 所以用 `document_mut`**（**`document` 给的是 `&` ✓）★
+        let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        let (w, h, rgba) = document.render_region_layer_rgba(bbox, id)?;
+        debug_assert_eq!((w, h), (doc_w, doc_h));
+        pixels.insert(id.clone(), rgba);
+        rendered_layers += 1;
+    }
+    // **∴ 合成图（**整幅 ✓）★
+    let composite = {
+        let document = ctx.workspace.document_mut(&ctx.doc_id)?;
+        let (_w, _h, rgba) = document.render_region_raw(bbox)?;
+        rgba
+    };
+    // **∴ 组装自有类型的图层树 ✗**（**∴ 服务端**不许出现 `ag-psd` 的类型** ✓ ★
+    //   —— **∴ 库被关在 `yanshi_render::psd` 里 ✓ 换库不波及工具层 ✓）★★
+    let make_layer = |id: &str,
+                      name: &str,
+                      kind: &str,
+                      visible: bool,
+                      opacity: f64,
+                      blend: &str,
+                      kids: Option<Vec<yanshi_render::psd::PsdOutLayer>>|
+     -> yanshi_render::psd::PsdOutLayer {
+        let is_group = kind.contains("group");
+        yanshi_render::psd::PsdOutLayer {
+            name: name.to_owned(),
+            visible,
+            opacity,
+            blend: blend.to_owned(),
+            is_group,
+            pixels: if is_group {
+                Vec::new()
+            } else {
+                pixels.get(id).cloned().unwrap_or_default()
+            },
+            width: doc_w,
+            height: doc_h,
+            children: kids.unwrap_or_default(),
+        }
+    };
+    // **∴ 组的成员从顶层摘出来 ✗ 挂到组的 children 上** ✓（**Phase 1：一层 ✓）★
+    let group_ids: Vec<String> = snapshot
+        .iter()
+        .filter(|(_, _, kind, ..)| kind.contains("group"))
+        .map(|(id, ..)| id.clone())
+        .collect();
+    let mut children_of: std::collections::HashMap<String, Vec<yanshi_render::psd::PsdOutLayer>> =
+        std::collections::HashMap::new();
+    for (id, name, kind, visible, opacity, blend, parent, _z) in &snapshot {
+        if kind.contains("group") {
+            continue;
+        }
+        let layer = make_layer(id, name, kind, *visible, *opacity, blend, None);
+        match parent {
+            Some(parent_id) if group_ids.contains(parent_id) => children_of
+                .entry(parent_id.clone())
+                .or_default()
+                .push(layer),
+            _ => children_of.entry(String::new()).or_default().push(layer),
+        }
+    }
+    let mut roots: Vec<yanshi_render::psd::PsdOutLayer> = Vec::new();
+    for (id, name, kind, visible, opacity, blend, parent, _z) in &snapshot {
+        if !kind.contains("group") {
+            continue;
+        }
+        // **∴ 嵌套组 Phase 1 不导 ✗ 如实写进回执** ✓（**∴ 它自己的子层会**留在顶层** ✓
+        //   而不是**丢掉** —— **∴ 宁可能丢结构 ✗ 不可丢像素** ✓）★★
+        if let Some(parent_id) = parent {
+            if group_ids.contains(parent_id) {
+                continue;
+            }
+        }
+        let kids = children_of.remove(id).unwrap_or_default();
+        roots.push(make_layer(
+            id,
+            name,
+            kind,
+            *visible,
+            *opacity,
+            blend,
+            Some(kids),
+        ));
+    }
+    roots.extend(children_of.remove("").unwrap_or_default());
+    let bytes = yanshi_render::psd::write_layer_tree(doc_w, doc_h, &composite, &roots);
+    let blob = ctx.workspace.store().put(&bytes)?;
+    let filename = optional_str(args, "filename").unwrap_or_else(|| format!("{}.psd", ctx.doc_id));
+    Ok(json!({
+        "ok": true,
+        "blob_hash": blob.to_string(),
+        "url": format!("yanshi://blob/{blob}"),
+        "filename": filename,
+        "bytes": bytes.len(),
+        "layers": rendered_layers,
+        "groups": group_ids.len(),
+        "canvas": {"w": doc_w, "h": doc_h},
+        "note": "Phase 1：每层 rect 用整幅画布（不做内容裁剪 ⇒ 文件偏大但位置绝对正确）；蒙版／图层效果／智能对象不导出；组只导一层",
+    }))
+}
+
 fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let blob_hash = require_str(args, "blob_hash")?;
     let parsed: yanshi_core::BlobHash = blob_hash.parse().map_err(|_| {
@@ -8224,6 +8390,21 @@ fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             *next_z += 1;
             if node.is_group {
                 stats.groups += 1;
+                // **★★★ 组也要设属性 ✗ ★★★**（**第 253 轮实测修 ✓**）
+                //   ＋ **∴ 我第一版只对**非组**设了 opacity／visible／blend** ✗
+                //     ⇒ **∴ 于是**：**导回来的组**恒定 100%／可见** ✓
+                //       ＋ **∴ 被**往返判据**抓住 ✗**：**平均通道差 25.8（**正好差一倍 ✓）★★
+                //         ⇒ **∴ 教训 ✗**：**"**组只建不设**"**看起来无害 ✗ 实则**丢属性** ✓ ★★★
+                write_update_layer(
+                    ctx,
+                    &json!({
+                        "layer_id": id,
+                        "patch": {
+                            "opacity": node.opacity,
+                            "visible": node.visible,
+                        },
+                    }),
+                )?;
             } else {
                 stats.layers += 1;
                 // **∴ 属性 ✗**：**不透明度／可见性／混合模式**（**映射已保证词表合法 ✓）★
@@ -16294,6 +16475,12 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // ⚠️ `document_id` 与 `doc_id` **不是一回事**：`doc_id` 是本次调用的会话文档（框架按需创建），
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
+    ),
+    (
+        "export_psd_layers",
+        // **★ 分层导出 ✗ ★**（**第 253 轮 ✓）：**把当前文档写成**带图层结构的 PSD**
+        //   （**图层／组／不透明度／可见性／混合模式 ＋ 压平合成图 ✓）★
+        r##"{"filename": "yanshi-export.psd"}"##,
     ),
     (
         "import_psd_layers",

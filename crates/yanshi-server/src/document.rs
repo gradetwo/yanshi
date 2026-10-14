@@ -1501,6 +1501,27 @@ impl Document {
     ///   （**`below_tiles_*` 等 ✓）⇒ **∴ 若**每张缩略图都去记一笔 ✗ ⇒
     ///     **∴ 就会**污染**那些**账目**✗ ⇒ **∴ 而**好几条判据**正**读它们 ✓**** ✓✓
     ///   ⇒ **∴ 替代**：**告警**直接**从 `stats.unsupported` **取 ✓（**∴ 不**经共享槽 ✓）** ✓✓
+    /// **★ 只渲染**某一层**，返回**裸 RGBA** ✗ ★**（**第 253 轮 ✓；**PSD 分层导出用 ✓）
+    ///
+    /// **∴ 为什么加它 ✗**：**同族的 `render_region_layer_preview`**返回的是**PNG blob**
+    ///   （**`rgba8: None` ✓ —— **它**为省内存**不把裸像素带出来 ✓）✗
+    ///     ＋ **∴ 而**写 PSD 需要**裸 RGBA**（**库要的是通道数据 ✓）⇒ **∴ 所以**：
+    ///       **照那条写一条**只差返回类型**的** ✓（**∴ 不重复造渲染路径 ✗ 只复用 ✓）★★
+    ///
+    /// **∴ 同样的关键一步 ✗**：**渲完**必须把 `only_layer` 还原**✗
+    ///   （**∴ 否则**那个开关会**泄漏到下一次渲染**✗ ⇒ **∴ 别人**莫名其妙只看到一层** ✓）★
+    pub fn render_region_layer_rgba(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
     pub fn render_region_layer_preview(
         &mut self,
         bbox: Bbox,

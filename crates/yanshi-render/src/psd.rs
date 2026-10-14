@@ -529,6 +529,118 @@ fn layer_to_node(layer: &ag_psd::psd::Layer, unmapped: &mut Vec<String>) -> PsdL
     }
 }
 
+/// **★ 要写出去的一层 ✗ ★**（**第 253 轮 ✓）：**与 `PsdLayerNode` 对称 ✓
+///
+/// **∴ 为什么另立一个类型 ✗**：**写的时候只关心**要带出去的字段** ✓
+///   ＋ **∴ 而**"库的类型"只允许出现在本模块里 ⇒ **∴ 服务端**见不到 `ag-psd`** ✓ ★★
+#[derive(Debug, Clone, PartialEq)]
+pub struct PsdOutLayer {
+    /// 图层名 ✓。
+    pub name: String,
+    /// 可见（**写出时取反成 `hidden` ✓）★
+    pub visible: bool,
+    /// 不透明度（**0..1 ✓）★
+    pub opacity: f64,
+    /// **本仓词表的混合模式 ✗**（**未知的按 `normal` 处理 ✓）★
+    pub blend: String,
+    /// 是不是组（**组没有像素 ✗ 只有 children ✓）★
+    pub is_group: bool,
+    /// **RGBA8 ✗ 尺寸与 `width/height` 对应**（**组为空 ✓）★
+    pub pixels: Vec<u8>,
+    /// 像素宽 ✓。
+    pub width: u32,
+    /// 像素高 ✓。
+    pub height: u32,
+    /// 子层（**Phase 1：一层 ✓）★
+    pub children: Vec<PsdOutLayer>,
+}
+
+/// **本仓词表 ⇒ ag-psd 枚举 ✗**（**显式匹配 ✗ 与读方向对称 ✓）★
+fn to_ag_blend(name: &str) -> ag_psd::psd::BlendMode {
+    use ag_psd::psd::BlendMode as M;
+    match name {
+        "multiply" => M::Multiply,
+        "screen" => M::Screen,
+        "overlay" => M::Overlay,
+        "darken" => M::Darken,
+        "lighten" => M::Lighten,
+        "color_dodge" => M::ColorDodge,
+        "difference" => M::Difference,
+        "linear_dodge" => M::LinearDodge,
+        "subtract" => M::LinearBurn,
+        _ => M::Normal,
+    }
+}
+
+fn out_to_ag(layer: &PsdOutLayer) -> ag_psd::psd::Layer {
+    use ag_psd::psd::{Layer, LayerAdditionalInfo, PixelData};
+    let hidden = !layer.visible;
+    Layer {
+        top: Some(0.0),
+        left: Some(0.0),
+        bottom: Some(f64::from(layer.height)),
+        right: Some(f64::from(layer.width)),
+        // **∴ 组的默认混合要写**穿透** ✗**（**∴ 本仓的 `normal` 组若写成 Normal ⇒
+        //   在 Photoshop 里会**把组隔离**✗ 与 yanshi 的语义不符 ✓）★★
+        blend_mode: Some(if layer.is_group && layer.blend == "normal" {
+            ag_psd::psd::BlendMode::PassThrough
+        } else {
+            to_ag_blend(&layer.blend)
+        }),
+        opacity: Some(layer.opacity.clamp(0.0, 1.0)),
+        hidden: Some(hidden),
+        children: if layer.children.is_empty() {
+            None
+        } else {
+            Some(layer.children.iter().map(out_to_ag).collect())
+        },
+        image_data: if layer.is_group || layer.pixels.is_empty() {
+            None
+        } else {
+            Some(PixelData {
+                width: layer.width,
+                height: layer.height,
+                data: layer.pixels.clone(),
+            })
+        },
+        additional_info: LayerAdditionalInfo {
+            name: Some(layer.name.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// **★ 把一棵（自有类型的）图层树**写成 PSD 字节** ✗ ★**（**第 253 轮 ✓）★
+///
+/// **∴ `composite` 必填 ✗**：**PSD 惯例上带压平合成图**✗ 而**别的软件（**含
+///   Photoshop ✓）**打开时**先读它** ✓ ⇒ **∴ 少它 ⇒ **"能打开"都成问题** ✓ ★★
+#[must_use]
+pub fn write_layer_tree(
+    width: u32,
+    height: u32,
+    composite: &[u8],
+    roots: &[PsdOutLayer],
+) -> Vec<u8> {
+    use ag_psd::psd::{PixelData, Psd};
+    let psd = Psd {
+        width: f64::from(width),
+        height: f64::from(height),
+        children: if roots.is_empty() {
+            None
+        } else {
+            Some(roots.iter().map(out_to_ag).collect())
+        },
+        image_data: Some(PixelData {
+            width,
+            height,
+            data: composite.to_vec(),
+        }),
+        ..Default::default()
+    };
+    ag_psd::write_psd(&psd, &ag_psd::psd::WriteOptions::default())
+}
+
 /// **读一个 PSD 的**图层树** ✗ ★**（**第 253 轮 ✓；**压平那条路仍走 [`decode_psd`] ✓）★
 pub fn read_layer_tree(bytes: &[u8]) -> Result<PsdLayerTree, PsdError> {
     // **∴ 默认**不读**图层像素 ✗**（**实测：`pixels.len() == 0` ✓）⇒ **∴ 于是**显式要** ✓

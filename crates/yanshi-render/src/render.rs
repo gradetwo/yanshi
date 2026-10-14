@@ -2052,7 +2052,18 @@ impl Renderer {
                 }
             } else {
                 // **∴ 组隐藏 ⇒ 子层一起消失 ✗**（**第 252 轮 ✓）★
-                let (inherited_visible, _) = effective_layer_factors(state, layer);
+                //   ＋ **∴ 而"只渲这一层"时**不继承** ✗**（**第 253 轮实测修 ✓）：
+                //     **∴ 为什么 ✗**：**PSD 分层导出要的是**这一层自己的内容**
+                //       （**∴ 组的 opacity 在 PSD 里**另存一份** ✓）✗
+                //       ⇒ **∴ 若这里也继承 ⇒ **导出时乘一次 ✗ 回来再乘一次 ⇒ **0.25** ✓
+                //         ＋ **∴ 实测 ✗**：**往返平均差 25.8（**正好是一倍**）✓ ★★
+                //     ＋ **∴ 所以 ✗**：**`only_layer` 存在 ⇒ **只用自己的值** ✓
+                //       （**∴ 这也让 `*_layer_preview` 的语义**更干净** ✓）★★
+                let (inherited_visible, _) = if self.only_layer.is_some() {
+                    (layer.visible, layer.opacity)
+                } else {
+                    effective_layer_factors(state, layer)
+                };
                 if !inherited_visible && !self.options.include_hidden_layers {
                     continue;
                 }
@@ -2110,7 +2121,12 @@ impl Renderer {
             //       ＋ **∴ 整幅与 above 走 `composite_with_layer(…, opacity)`** ✓
             //         ⇒ **★ 从而省掉那一遍整层遍历，且不修改 `layer_buffer` ⇒ 一致性由构造保证 ★**
             // **∴ 组不透明度 ⇒ 子层一起乘 ✗**（**第 252 轮 ✓）★
-            let opacity = effective_layer_factors(state, layer).1 as f32;
+            //   ＋ **∴ 但"只渲这一层"不继承 ✗**（理由同上 ✓）★
+            let opacity = if self.only_layer.is_some() {
+                layer.opacity.clamp(0.0, 1.0) as f32
+            } else {
+                effective_layer_factors(state, layer).1 as f32
+            };
             let mode = BlendMode::from_name(&layer.blend_mode);
             let mut probe_stage = stage_probe::Stage::start();
             // **★ 部分复用：**下方层只在**缺块**内合成 ✗ ★**（第 10 轮 ✓）：
