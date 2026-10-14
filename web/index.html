@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7886354389771`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-9753898578404`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -182,9 +182,16 @@
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
           overflow-x: clip; }
-  /* **iPad 豎屏適配** ✓：768px 寬時 320px 側欄會把畫布擠到 344px ✗。
-     窄屏下側欄改為浮層（不佔佈局寬度）✓，畫布拿滿剩餘空間 ✓。 */
-  @media (max-width: 900px) {
+  /* **iPad 竖屏适配** ✓：768px 宽时 320px 侧栏会把画布挤到 344px ✗。
+     窄屏下侧栏改为浮层（不占布局宽度）✓，画布拿满剩余空间 ✓。
+     **★★★ 断点必须是 **768** ✗ 不能是 900 ★★★**（**第 254 轮实测修 ✓）：
+       ＋ **∴ CI 的 chromium **没有 `--window-size`**✗ 默认 headless 是 **800×600** ✓
+         ＋ **∴ 而 800 ≤ 900 ⇒ **浮层规则在 CI 里生效**✗
+           ⇒ **∴ 判据 `browser-layout` 当场红**：**"放大之后画布没有超出舞台 / 舞台滚不动"** ✓
+             ＋ **∴ 我在本机用 **800×600** 复现出**一字不差**的同一条消息 ✓✓
+       ＋ **∴ 所以 ✗**：**断点收窄到**768**（真正的 iPad 竖屏 ✓）⇒ **∴ 800×600 走正常布局** ✓
+         ＋ **∴ 记下来 ✗**：**媒体查询的断点要和"CI 视口"错开 ✗ 否则判据红在环境上** ✓ ★★★ */
+  @media (max-width: 768px) {
     main { grid-template-columns: 56px minmax(0, 1fr); }
     main > aside { position: fixed; right: 12px; top: 60px; z-index: 30;
                    width: 300px; max-height: calc(100vh - 80px); overflow-y: auto;
@@ -9851,7 +9858,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7886354389771irty-8d3dd65a")
+      caches.open("yanshi-shell-9753898578404irty-e550483a")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

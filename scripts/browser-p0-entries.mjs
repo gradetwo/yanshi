@@ -117,6 +117,28 @@ const main = async () => {
     ws.close();
     process.exit(3);
   }
+  // **★★★ 先确认页面上真的能连到**服务端 API** ✗ ★★★**（**CI 实测踩到 ✓；第 254 轮 ✓）
+  //   ＋ **∴ 症状 ✗**：**CI 里这条判据报"改成 multiply 却没生效"** ✗ **但本地一切正常** ✓
+  //     ＋ **∴ 真相（**CI 日志 ✓）✗**：**页面拿到的是**本地/PWA 页面**✗ 工具调用被
+  //       `api-local.js` 接管 ⇒ 回 `endpoint_not_local` ＋ wasm-bindgen 那句
+  //       "recursive use of an object …"** ✓ ⇒ **∴ 那**不是产品失败**✗ 是**环境编排** ✓ ★★
+  //   ＋ **∴ 所以 ✗**：**动手断言之前**先问一句**：**页面的 `callTool` 能不能打通服务端** ✓
+  //     ＋ **∴ 打不通 ⇒ 按本仓约定**打印 ＋ 退 3**✗（**∴ 绝不**误判成产品 bug** ✓）★★★
+  const probe = await evaluate(
+    `(async () => { try { const r = await window.callTool("get_log", {}, { refresh: false }); return JSON.stringify({ ok: r && r.ok, error: r && r.error_code, detail: (r && r.context && r.context.detail) || "" }); } catch (e) { return "EXC:" + String((e && e.message) || e); } })()`,
+  );
+  if (typeof probe !== "string" || /^EXC:/.test(probe) || /endpoint_not_local/.test(probe)) {
+    console.error(`❌ 判不了：这个页面连不到服务端 API（拿到的是本地/PWA 页面）⇒ 退出码 3｜探针回执：${String(probe).slice(0, 200)}`);
+    ws.close();
+    process.exit(3);
+  }
+  const probeOk = JSON.parse(probe);
+  if (!probeOk.ok) {
+    console.error(`❌ 判不了：页面调 get_log 没成功（${JSON.stringify(probeOk).slice(0, 160)}）⇒ 退出码 3`);
+    ws.close();
+    process.exit(3);
+  }
+  console.log(`  （前置）页面能连到服务端 API ✓`);
   // **∴ 先确保面板里**至少有一个图层行**✗（**默认文档有 `layer_default` ✓）
   await evaluate(`(async () => { if (window.refreshLayers) await window.refreshLayers(); return true; })()`);
   await new Promise((r) => setTimeout(r, 800));
