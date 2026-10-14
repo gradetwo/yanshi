@@ -18,6 +18,21 @@ yanshi-render = { path = "../yanshi-render", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 hokusai = "0.3"
+# **★ 服务端真字体（字体方案 Phase 3）★**：`fontdb` 枚举系统字体（**它在 Linux 用 fontconfig、
+# macOS 用 Core Text、Windows 用 DirectWrite** ⇒ 正是方案点名的那三样，**已经打包好了** ✓），
+# `ab_glyph` 把字形光栅化成覆盖度（**成熟、纯 Rust、MIT** ✓）。
+#
+# **∴ 两面（**按 AGENTS.md 的清单 ✓）**：
+#   ＋ **收益**：**MCP／无头侧**终于能用**系统与预置字体**画字**（**现状：只有一套 16×16 位图 ✓）
+#   ＋ **体积**：**只加在 `yanshi-server`** ✗ **不进 `yanshi-render`／`yanshi-wasm`** ✓
+#     ⇒ **∴ 内核与 wasm 包**一个字节都不涨** ✓（**∴ 用 wasm 冒烟与产物核对 ✓）★★
+#   ＋ **确定性**：**方案已明确**放弃"字体渲染跨端一致"** ✓ ⇒ **∴ `builtin` 仍是**默认**✗
+#     老文档的像素**零变更** ✓（**∴ 真字体只在你点名时才走 ✓）★★
+#   ＋ **平台**：**桌面可用**✗ **wasm 不参与**（**服务端才栅格化 ✓）★
+#   ＋ **供应链**：**两个都广泛使用**（`fontdb` 是 resvg 的字体后端 ✓ MIT ✓）★
+#   ＋ **构建时间**：**实测首次编译见提交信息 ✓（**∴ 不如实报就不写 ✓）★
+fontdb = { version = "0.24", default-features = false, features = ["fs"] }
+ab_glyph = "0.2"
 # **诊断包的 zip 容器** —— 取舍见 `src/diagnostics.rs` 头部：
 # 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
 # zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。

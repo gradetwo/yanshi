@@ -1606,6 +1606,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_fonts",
+        profile: Profile::Core,
+        mutating: false,
+        // **字体方案 Phase 3**：让 MCP／无头侧**先知道有哪些字体**（否则 `draw_text{font:…}`
+        // 只能靠猜 ✓）。**∴ 列的是**系统字体 + 预置字体**（`assets/fonts/` ✓）★
+        summary: "列出可用字体族（系统字体 + assets/fonts 里的预置字体）⇒ 给 draw_text 的 font 参数用",
+        params: &[],
+    },
+    ToolSpec {
         name: "draw_text",
         profile: Profile::Core,
         // **实测纠正** ✓（外部绘画 agent 报 ✓）：它用 `draw_text{"text":"YANSHI 黄昏 ab"}` 一次就
@@ -3187,7 +3196,22 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "draw_stroke" => write_draw(ctx, args, AtomKind::DrawStroke),
         "draw_shape" => write_draw(ctx, args, AtomKind::DrawShape),
         "fill_region" => write_fill_region(ctx, args),
-        "draw_text" => write_draw(ctx, args, AtomKind::DrawText),
+        // **★ 真字体分流（字体方案 Phase 3）★**：`font` 不是 `builtin` ⇒ **服务端自己栅格化**
+        // 成位图 ⇒ `import_image` ✓。**∴ 内核（`yanshi-render`）与 wasm 包一行不改** ✓ ★★★
+        "draw_text" => {
+            let family = args
+                .get("data")
+                .and_then(|data| data.get("font"))
+                .and_then(Value::as_str)
+                .unwrap_or("builtin")
+                .to_owned();
+            if family.is_empty() || family == "builtin" {
+                write_draw(ctx, args, AtomKind::DrawText)
+            } else {
+                write_draw_text_with_font(ctx, args, &family)
+            }
+        }
+        "list_fonts" => read_list_fonts(ctx, args),
         "fill" => write_draw(ctx, args, AtomKind::Fill),
         "erase" => write_draw(ctx, args, AtomKind::Erase),
         "update_object" => write_update_object(ctx, args),
@@ -4988,6 +5012,84 @@ fn build_bitmap_tile_index(
     }
     let encoded = serde_json::to_vec(&index).ok()?;
     store.put(&encoded).ok().map(|h| h.to_string())
+}
+
+/// **★ `list_fonts`：列出可用字体族 ✗ ★**（**字体方案 Phase 3 ✓）★
+///
+/// **∴ 为什么要有它 ✗**：**没有它 ⇒ `draw_text{font:…}` 的族名只能靠**猜**✗
+///   ⇒ **∴ 猜错的后果是**一句"找不到字体"**✓ 用户不知道有哪些可选 ✓）★
+/// **∴ 预置字体目录 ✗**：**`assets/fonts/`**（**Phase 2 那两支 ✓）—— **∴ 工具上下文里
+///   拿不到 `--assets-dir`**（**实测：`ToolContext` 只有 workspace／doc_id／session 等 ✓）**
+///   ⇒ **∴ 所以**按**默认相对路径**预加载**✗ 并**如实记档**：**自定义 `--assets-dir` 时
+///   预置字体要放到系统字体目录，或用绝对路径注册** ✓ ★★
+fn read_list_fonts(_ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let db = crate::fonts::database(&[std::path::PathBuf::from("assets/fonts")]);
+    let families = crate::fonts::families(db);
+    Ok(json!({
+        "fonts": families.iter().map(|f| json!({ "family": f })).collect::<Vec<_>>(),
+        "count": families.len(),
+    }))
+}
+
+/// **★ `draw_text` 的真字体路径 ✗ ★**（**字体方案 Phase 3 ✓）：**服务端栅格化 ⇒ 位图入库** ✓
+///
+/// **∴ 与 Phase 1（**Web 侧用 Canvas ✓）**完全同构** ✓：**两条路都产出**位图对象** ✓
+///   ＋ **∴ 所以语义要说清 ✗**：**真字体画出来的是**位图**（`import_image` ✓）
+///     **∴ 不是可编辑的文本对象**✗ ⇒ **要可编辑就用 `builtin`** ✓（**回执里 `rasterized: true` ✓）★★
+/// **∴ 找不到字体 ⇒ **直接报错**✗ 不静默退回位图** ✓（**否则用户以为换字体成功了 ✓）★★
+fn write_draw_text_with_font(ctx: &mut ToolContext<'_>, args: &Value, family: &str) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?.to_owned();
+    let data = require_object(args, "data")?;
+    let text = data.get("text").and_then(Value::as_str).unwrap_or_default();
+    if text.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("data.text 不能为空（真字体那条路也要有文本 ✓）"),
+        ));
+    }
+    let size = data.get("size").and_then(Value::as_f64).unwrap_or(24.0).max(1.0) as f32;
+    let align = data.get("align").and_then(Value::as_str).unwrap_or("left").to_owned();
+    let color = parse_color_arg(data.get("color"), "data.color").unwrap_or([0, 0, 0, 255]);
+    let position = data
+        .get("position")
+        .and_then(Value::as_array)
+        .map(|pair| {
+            (
+                pair.first().and_then(Value::as_f64).unwrap_or(0.0).round() as i64,
+                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0).round() as i64,
+            )
+        })
+        .unwrap_or((0, 0));
+    let db = crate::fonts::database(&[std::path::PathBuf::from("assets/fonts")]);
+    let (width, height, rgba) = crate::fonts::rasterize(db, text, family, size, color, &align)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "找不到字体族「{family}」⇒ 先用 list_fonts 看有哪些可用（builtin 是内置位图图集 ✓）"
+                )),
+            )
+        })?;
+    // **∴ blob 先行 ✗**（**∴ 原子只能引用已经存在的 blob ✓ —— 与 Web 侧同一个次序 ✓）★
+    let hash = ctx.workspace.store().put(&rgba)?;
+    // **∴ `optional_str` 回来的**就是 `String`** ✗ 不用再 `.map(str::to_owned)`** ✓（**编译期就抓到 ✓）★
+    let object_id = optional_str(args, "object_id")
+        .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+    let import_args = json!({
+        "layer_id": layer_id,
+        "object_id": object_id,
+        "bitmap": { "blob_hash": hash, "size": rgba.len(), "mime_type": "image/x-yanshi-raw" },
+        "region": { "x": position.0, "y": position.1, "w": width, "h": height },
+    });
+    let mut reply = write_import_image(ctx, &import_args)?;
+    // **∴ 回执里把"这是位图"说清楚 ✗**（**∴ 否则用户以为拿到了可编辑文本 ✓）★
+    if let Some(map) = reply.as_object_mut() {
+        map.insert("font".to_owned(), json!(family));
+        map.insert("rasterized".to_owned(), json!(true));
+        map.insert("font_pixels".to_owned(), json!([width, height]));
+        map.insert("note".to_owned(), json!("真字体在服务端栅格化成位图 ⇒ 对象是 import_image；要可编辑文本用 font=builtin"));
+    }
+    Ok(reply)
 }
 
 fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
