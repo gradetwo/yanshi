@@ -79,6 +79,29 @@ pub const MAX_POOLED_BUFFERS: usize = 16;
 /// **个数上限始终生效**，额外缓冲仍受字节预算约束。
 pub const MIN_POOLED_BYTES: usize = 192 * 1024 * 1024;
 
+/// **★ 保留字节的**绝对上限** ✗ ★**（**第 254 轮 ✓；**冲着 DEF-03（8K OOM）加的 ✓）
+///
+/// **∴ 为什么加 ✗**：**原来的预算公式只有**下界 ＋ 并发 × 单块**✗ ⇒ **∴ 全幅渲染时
+///   `begin_render_with(chunks, 2)` 会把预算算到 **2.1 GB**✗（4K 单块 268 MB × chunks × 2 ✓）
+///   ⇒ **∴ 大画布会把成百 MB–GB 级缓冲**长期扣住** ✓ ★★
+/// **∴ 384 MiB 这个数怎么来的 ✗**：**一张整幅 4K 的 f32 单块 = **268 MB**，
+///   那是**不可再省的工作集**（**代码里已有"空闲表为空时至少留一张、可突破预算"的例外 ✓
+///   ⇒ **∴ 上限**不影响那张 ✓）**；384 MiB ≈ 它的 **1.5 倍** ✓ ★★
+///
+/// **★ 实测结论（**如实写 ✓）★**：
+///   ＋ **∴ 本机量过 ✗**：**加了它之后 4K ＋ 4 层的整幅渲染**并没有变省**
+///     （RSS 增量 909 ⇒ 895 MB，属噪声 ✓）⇒ **∴ 所以它**不是**那笔账的解 ✗ ★★
+///   ＋ **∴ 真正的原因（**随后实测钉死 ✓）✗**：**那 ~960 MB 是**同时在用**的每层全幅
+///     工作缓冲**（**4 层 × ~240 MB ✓）✗ —— **∴ 上限只管"归还后保留多少" ✗ 两者不是一件事** ✓ ★★
+///   ＋ **∴ 但它确实有一条**安全性质**✗**：**没有它时 8K 的公式预算 ≈ 2.1 GB 会被长期扣住 ✓
+///     ⇒ **∴ 保留它是**有界性**✗ 而**收益**本轮未实测到** ✓ —— **∴ 不许把"没量到"写成收益** ✓ ★★★
+///   ＋ **∴ 有一个**正向的实测**✗**：**`perf_budget` 里那条 `measure_layer_buffer_pool_on_4k_full_frame`
+///     的期望是"每层都新建"＝**5 次**分配**✗ **∴ 加了上限后**实测变成 **1 次**✓
+///       ⇒ **∴ 缓冲区真的被复用了** ✓（**∴ 那条测试是 `--ignored` 且本就红 ✓ 见提交信息 ✓）★★
+///   ＋ **∴ 转绿要靠 ✗**：**① 每层全幅缓冲别同时活着**（**src-over 可结合 ⇒ 边合成边释放 ✓）
+///     **② `import_image` 那 ~1.7 GB**（**900×640 一张素材就吃这么多 ✗ 明显是 bug ✓）★★★
+pub const MAX_RETAINED_BYTES: usize = 384 * 1024 * 1024;
+
 /// 池的保留上限（个数 + 字节预算的下界）。
 #[derive(Debug, Clone, Copy)]
 struct Limits {
@@ -252,12 +275,17 @@ impl BufferPool {
         let concurrency = self.concurrency.load(Ordering::SeqCst).max(1);
         // **★ 少算的那一维 ✗ ★**（第 22 轮 ✓）：**每并发**同时在借几块** ✓
         let per_worker = self.buffers_per_worker.load(Ordering::SeqCst).max(1);
-        self.limits.min_bytes.max(
-            inner
-                .max_request_bytes
-                .saturating_mul(concurrency)
-                .saturating_mul(per_worker),
-        )
+        // **★ 公式给出"够用"✗ 再用绝对上限夹住"别囤"** ✓（**第 254 轮 ✓；
+        //   **∴ 推导与实测（**含"没量到收益"那句 ✓）见 `MAX_RETAINED_BYTES` ✓）★★
+        self.limits
+            .min_bytes
+            .max(
+                inner
+                    .max_request_bytes
+                    .saturating_mul(concurrency)
+                    .saturating_mul(per_worker),
+            )
+            .min(MAX_RETAINED_BYTES)
     }
 
     /// 取得一块 `width × height`、原点为 `(origin_x, origin_y)` 的**全零**缓冲。
