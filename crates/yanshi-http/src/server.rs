@@ -1368,7 +1368,24 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     let Ok(mut workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
-    let spec = NewDocument::new(doc_id.clone(), width, height);
+    // **★ `POST /api/documents` 必须能设底色（P1 #14 纸张底纹）★**（第 254 轮实测补）
+    //
+    // 需求 P1 #14 要"画布初始化铺 #faf7f0 暖米色"。`new_document` **工具**早就支持
+    // `background`（spec 在 tools.rs:2707、落到 CreateDocument 原子在 document.rs:445），
+    // 但**这个端点从来没读它** => 用 HTTP 建"暖米色底"的文档，回读 `get_document` 发现
+    // 存的仍是纯白 => 判据 `tool-paper.mjs` 红，我一度以为"文档底色没生效"。
+    // **同一件事两条路，必须行为一致**（本仓反复踩过的坑）=> 在这里转发。
+    let mut spec = NewDocument::new(doc_id.clone(), width, height);
+    if let Some(background) = body.get("background") {
+        if !background.is_null() {
+            if !background.is_object() {
+                return crate::http::bad_request(
+                    "background 必须是对象 {r,g,b,a}（0..255；缺省不透明白）".to_owned(),
+                );
+            }
+            spec.background = background.clone();
+        }
+    }
     if let Err(error) = workspace.open_or_create(spec, &actor, "session:web") {
         return Response::from_error(&error);
     }
