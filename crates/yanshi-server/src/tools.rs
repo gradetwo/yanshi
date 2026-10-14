@@ -16307,6 +16307,8 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
     ("get_undo_status", r#"{}"#),
+    // **字体方案 Phase 3**：只读查询 ⇒ 无参数 ✓（先问有哪些字体，再把族名交给 draw_text ✓）。
+    ("list_fonts", r#"{}"#),
     // **示例必须是"语法合法"的哈希** ✗（第 41 轮实测 ✓）：原来是占位符 `"x"` ✗
     // ⇒ 被 `write_set_reference` 的**形状校验**拒掉（"blob_hash 必须是 sha256:<64 位十六进制>" ✓）
     // ⇒ 而 `scripts/tool-example-acceptance.mjs` 把"**形状／类型不对**"判成**红** ✗
