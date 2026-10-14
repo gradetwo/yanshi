@@ -1405,7 +1405,22 @@ pub fn relief(
             let (nx, ny) = (-dhdx, -dhdy);
             let norm = (nx * nx + ny * ny + 1.0).sqrt();
             let dot = (nx * light[0] + ny * light[1] + light[2]) / norm;
-            let factor = (1.0 + strength * dot).clamp(0.0, 4.0);
+            // **★ 减掉"常数环境项"（第 254 轮实测修）★**
+            //   `dot` 里含 `light[2] = l_z ≈ 0.707`（**与坡面朝向无关** ✗）=> 直接乘进因子会让
+            //   **整幅一律提亮** ✗：实测 `strength = 5` 时均值 0.5 ⇒ 0.703（+41%）而对比塌掉 ✗。
+            //   **减掉它** => 平面（`nx = ny = 0`、`norm = 1`）处 `tilt` **正好为 0** ✓
+            //   => `strength` 只放大"**坡面朝向带来的差**" ✓（浮雕该有的样子 ✓）。
+            //   **这是一次行为变更** ✓：所有用过 `relief` 的画面都会变（原来偏"整体提亮" ✗，
+            //   现在偏"真浮雕" ✓）—— 判据 `relief_ambient_tests` 守"均值不漂 ＋ 效果存在" ✓。
+            // **★ 要减的是"同一归一化下的平面响应" `light[2] / norm`（不是 `light[2]`）★**
+            //   我第一版减了 `light[2]` ⇒ **过度修正**（判据当场红：均值 0.5000 ⇒ **0.2841**，
+            //   变成"整体压暗" ✗）。原因：倾斜面上 `norm > 1` ⇒ `light[2]/norm < light[2]`
+            //   ⇒ 平均 `tilt` 变负 ✗。
+            //   减 `light[2] / norm` 之后：`tilt = (nx·lx + ny·ly + lz)/norm − lz/norm`
+            //   **正好等于纯坡面项 `(nx·lx + ny·ly) / norm`** ✓ ⇒ 平面处恒为 0 ✓，
+            //   斜坡处只反映"迎光/背光" ✓。
+            let tilt = dot - light[2] / norm;
+            let factor = (1.0 + strength * tilt).clamp(0.0, 4.0);
             let base = (y as usize * width as usize + x as usize) * 4;
             shaded.push((
                 base,
@@ -2988,6 +3003,94 @@ mod relief_tests {
             "浮雕不该把整体亮度抬走（{} vs {}）",
             mean_luma(&from_right),
             mean_luma(&base)
+        );
+    }
+}
+
+// **★ `relief` 不该"整体提亮"（第 254 轮实测发现的设计缺陷）★**
+//
+// **实测背景**（400×300、软边厚涂堆、`height_gain: 24`）：`strength` 越大，画面**均值一路涨**
+// （0→240.6、5→251.7、10→252.0）而**对比反而塌**（标准差 37.8 → 11.4 → 10.8）✗。
+// **根因**：明度因子 `1 + strength·(n·l)` 里的 `n·l` 含**常数环境项** `l_z = light[2] ≈ 0.707`
+// ⇒ 每一项都被乘上 `1 + 0.707·strength` ⇒ **一律提亮** ✗（不是只有迎光坡提亮）。
+//
+// **本判据要的两条**：
+//   ① **均值不漂**：`strength = 5` 与 `strength = 0` 的平均亮度差 ≤ 2（实测 +11 ⇒ **今天必红** ✓）；
+//   ② **对比不塌**：`strength = 5` 的标准差不低于 `strength = 0` 的 0.9 倍
+//      （浮雕应当**增强**局部明暗，而不是把它抹平）。
+#[cfg(test)]
+mod relief_ambient_tests {
+    use super::relief;
+    use crate::buffer::Buffer;
+
+    /// 中间隆起的厚涂堆（与 `relief_tests::bump` 同一套几何 ✓）。
+    fn bump(w: u32, h: u32) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, w, h);
+        let pixels = buffer.pixels_mut();
+        for y in 0..h {
+            for x in 0..w {
+                let at = ((y * w + x) * 4) as usize;
+                let dx = x as f32 / (w - 1).max(1) as f32 - 0.5;
+                let dy = y as f32 / (h - 1).max(1) as f32 - 0.5;
+                let bell = (1.0 - (dx * dx + dy * dy) * 8.0).clamp(0.0, 1.0);
+                pixels[at] = 0.5;
+                pixels[at + 1] = 0.5;
+                pixels[at + 2] = 0.5;
+                pixels[at + 3] = bell;
+            }
+        }
+        buffer
+    }
+
+    fn stats(buffer: &Buffer) -> (f32, f32) {
+        let pixels = buffer.pixels();
+        let mut sum = 0.0f32;
+        let mut sum_sq = 0.0f32;
+        let mut n = 0.0f32;
+        for chunk in pixels.chunks_exact(4) {
+            if chunk[3] > 0.05 {
+                let luma = (chunk[0] + chunk[1] + chunk[2]) / 3.0;
+                sum += luma;
+                sum_sq += luma * luma;
+                n += 1.0;
+            }
+        }
+        let mean = sum / n.max(1.0);
+        let variance = (sum_sq / n.max(1.0) - mean * mean).max(0.0);
+        (mean, variance.sqrt())
+    }
+
+    #[test]
+    fn relief_strength_must_not_brighten_the_whole_picture() {
+        let base = bump(64, 32);
+        let (base_mean, base_sd) = stats(&base);
+        let mut strong = base.clone();
+        relief(&mut strong, 135.0, 45.0, 5.0, 24.0);
+        let (strong_mean, strong_sd) = stats(&strong);
+        // **★ 容差必须紧 ★**：这里的 luma 是 **0..1** 单位 ⇒ 0.05 已经是"5% 的漂移" ✓
+        //   （我第一版写成 `<= 2.0` ⇒ 在 0..1 单位里等于**不设限** ✗ ⇒ 判据空转、当场假绿 ✗）。
+        assert!(
+            (strong_mean - base_mean).abs() <= 0.05,
+            "`strength = 5` 把整幅提亮了（均值 {base_mean:.4} ⇒ {strong_mean:.4}，容差 0.05）—— \
+             `n·l` 里的常数环境项 `light[2]` 必须减掉，否则 `strength` 一大就过曝 ✗"
+        );
+        // **浮雕的"效果存在"**：不是所有像素都停在底色上 ✓（否则"均值不漂"可以靠"什么都不做"骗过去 ✗）。
+        let base = bump(64, 32);
+        let mut mid = base.clone();
+        relief(&mut mid, 135.0, 45.0, 1.0, 24.0);
+        let changed = mid
+            .pixels()
+            .chunks_exact(4)
+            .zip(base.pixels().chunks_exact(4))
+            .filter(|(a, b)| a[3] > 0.05 && (a[0] - b[0]).abs() > 1e-4)
+            .count();
+        assert!(
+            changed > 0,
+            "`strength = 1` 一个像素都没改 ⇒ 那「均值不漂」是假的（什么都没做当然不漂 ✗）"
+        );
+        assert!(
+            strong_sd > base_sd,
+            "`strength = 5` 之后**对比没有增长**（标准差 {base_sd:.4} ⇒ {strong_sd:.4}）             —— 浮雕应当**增强**局部明暗（修复后实测 +1.4）✗"
         );
     }
 }

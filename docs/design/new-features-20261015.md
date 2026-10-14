@@ -73,6 +73,9 @@
 **根因是我自己的设计缺陷**：`1 + strength·(n·l)` 里的 `n·l` 含**常数环境项** `l_z ≈ 0.707`
 => 一律提亮 ✗（修法与代价见 `docs/design/impasto-relief.md` 第六节 ✓，**未改** ✓）。
 
+**②补 `relief` 的缺陷修复后重测** ✓：均值不再漂（strength=10 也只 +0.4）、对比单调上升（+0.0 ⇒ +2.2）
+⇒ 范围从"0.3–2.0 且 ≥5 过曝"改成"**0.5–10 都可用、越大只是浮雕越强**" ✓（见 `docs/design/impasto-relief.md` 第六节）。
+
 **③ `brush_params` 的字段范围**：写进了参数文档 ✓（`opaque`／`smudge`／`smudge_length` 0..5／
 `dabs_per_radius` 1..20／**`dabs_per_second` 0..500（>0 才按时间出 dab ⇒ 决定 `time_ms` 有没有用）**／
 `speed1_*`／`hardness`／`elliptical_dab_angle`；并点明 **`radius` 是对数**，改大小要用 `size` ✓）。

@@ -2475,7 +2475,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
-            param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**：`strength` **0.3–2.0** 有用（0.5 轻微／1–2 明显），**≥5 会整体提亮并压掉对比**（实测：均值 +11、标准差 −70% ⇒ 过曝 ✗）；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓"),
+            param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**（第 254 轮修过一处设计缺陷后**重测** ✓）：`strength` **0.5–10** 都可用且**均值不漂**（实测漂移 ≤0.4/255 ✓），**越大只是浮雕越强**（对比 +0.0 ⇒ +2.2 ✓）—— **0.5 轻微／2 明显／5–10 强烈** ✓；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓"),
             param!("params", Object, false, "滤镜参数，如 {sigma:2.0}"),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(
