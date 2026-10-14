@@ -1369,7 +1369,14 @@ pub fn relief(
         azimuth_deg.to_radians(),
         elevation_deg.clamp(1.0, 89.0).to_radians(),
     );
-    let light = [el.cos() * az.cos(), el.cos() * az.sin(), el.sin()];
+    // **必须用 `libm`**（本仓 D0 规矩：内核要"两端同源" ⇒ 不许出现各平台各自实现的浮点函数 ✗）。
+    // **实测踩到**：我第一版用了 std 的 `.cos()/.sin()` ⇒ `tool-kernel-determinism.mjs` 当场红：
+    // "内核里出现了 1 处『各平台各自实现』的浮点调用" ✓。`.sqrt()` 是允许的（IEEE 要求正确舍入）✓。
+    let light = [
+        libm::cosf(el) * libm::cosf(az),
+        libm::cosf(el) * libm::sinf(az),
+        libm::sinf(el),
+    ];
     let gain = height_gain.max(0.0);
     let (w, h) = (width as i32, height as i32);
     let snapshot: Vec<f32> = buffer.pixels().to_vec();
