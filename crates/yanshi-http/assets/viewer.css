@@ -1,3 +1,13 @@
+/* **★ 预置字体（字体方案 Phase 2）★**：自托管 OFL 字体 ⇒ 离线也有、且不依赖系统装了什么。
+   **∴ 体积（实测 ✓）**：Inter **0.84 MB** ＋ JetBrains Mono **0.18 MB** ≈ **1 MB** ✓（可接受 ✓）。
+   **∴ 为什么**不预置** CJK 字体（方案原本点名 5 支 ✓）**：**实测 Noto Sans SC／Serif SC 各
+   **18–20 MB**、马善政毛笔体 **5.6 MB** ⇒ 三支加起来 **40+ MB** ⇒ 仓库与 PWA 预缓存都吃不消 ✓
+   ⇒ **∴ 所以**：**中文走**系统字体**（Phase 1 已通 ✓、本机 1450 支里含 Noto CJK／Sarasa ✓）
+   ＋ **离线兜底**用内嵌的 16×16 位图图集**（`assets/fonts/yanshi-bitmap-16.bin` ✓）★
+   ＋ **∴ 将来要离线 CJK ✗**：**做**子集**（那时再按 AGENTS.md 算体积 ✓）—— 已记档 ✓ ★★ */
+@font-face { font-family: "Inter"; src: url("/fonts/Inter.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/JetBrainsMono.ttf") format("truetype"); font-display: swap; }
+
   /* **配色令牌集中在这里** ✓ —— 之前只有一个 `--line` ✓，其余颜色散落硬编码 ✗
      （`#171a1f`、`#1b1f26`、`#222`… ✓），改主题要满文件找 ✓。
      现在收敛成一套语义令牌 ✓：底色 / 面板 / 面板浮层 / 分隔线 / 正文 / 次要文字 / 强调色 ✓。

@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-4784988146723`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-3922796475248`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -116,7 +116,17 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
 <link rel="apple-touch-icon" href="/brand/png/favicon-180.png" />
-<style>  /* **配色令牌集中在这里** ✓ —— 之前只有一个 `--line` ✓，其余颜色散落硬编码 ✗
+<style>/* **★ 预置字体（字体方案 Phase 2）★**：自托管 OFL 字体 ⇒ 离线也有、且不依赖系统装了什么。
+   **∴ 体积（实测 ✓）**：Inter **0.84 MB** ＋ JetBrains Mono **0.18 MB** ≈ **1 MB** ✓（可接受 ✓）。
+   **∴ 为什么**不预置** CJK 字体（方案原本点名 5 支 ✓）**：**实测 Noto Sans SC／Serif SC 各
+   **18–20 MB**、马善政毛笔体 **5.6 MB** ⇒ 三支加起来 **40+ MB** ⇒ 仓库与 PWA 预缓存都吃不消 ✓
+   ⇒ **∴ 所以**：**中文走**系统字体**（Phase 1 已通 ✓、本机 1450 支里含 Noto CJK／Sarasa ✓）
+   ＋ **离线兜底**用内嵌的 16×16 位图图集**（`assets/fonts/yanshi-bitmap-16.bin` ✓）★
+   ＋ **∴ 将来要离线 CJK ✗**：**做**子集**（那时再按 AGENTS.md 算体积 ✓）—— 已记档 ✓ ★★ */
+@font-face { font-family: "Inter"; src: url("/fonts/Inter.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/JetBrainsMono.ttf") format("truetype"); font-display: swap; }
+
+  /* **配色令牌集中在这里** ✓ —— 之前只有一个 `--line` ✓，其余颜色散落硬编码 ✗
      （`#171a1f`、`#1b1f26`、`#222`… ✓），改主题要满文件找 ✓。
      现在收敛成一套语义令牌 ✓：底色 / 面板 / 面板浮层 / 分隔线 / 正文 / 次要文字 / 强调色 ✓。
      对比度按 WCAG 正文标准取 ≥4.5:1 ✓（检查脚本会**实测**这一条 ✓，见 browser-ui-check ✓）。 */
@@ -661,6 +671,11 @@
     <option value="serif">衬线</option>
     <option value="monospace">等宽</option>
     <option value="cursive">手写</option>
+    <!-- **预置 OFL 字体（自托管 ✓ 见 viewer.css 的 @font-face 与 assets/fonts ✓）** -->
+    <!-- **∴ `data-i18n="off"` ✗**：**字体名是**专有名词**✗ 不翻译 ✓
+         ⇒ **∴ 显式告诉判据"这不是文案"**（**∴ 否则它会合理地要求一个"翻译" ✓）★ -->
+    <option value="Inter" data-i18n="off">Inter</option>
+    <option value="JetBrains Mono" data-i18n="off">JetBrains Mono</option>
   </select></label>
     <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
       <option value="paint">绘画</option>
@@ -9947,7 +9962,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-4784988146723irty-90884370")
+      caches.open("yanshi-shell-3922796475248irty-c3ee02b4")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -12817,6 +12832,10 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **∴ 预置字体名（**Inter／JetBrains Mono ✓）**不在这里** ✗ ★**：
+  //   **∴ 它们是**专有名词**✗ 不该翻译 ✓**（**∴ 而**判据禁止 `zh == en` ✓ —— **∴ 那条规则是对的 ✓**
+  //   **∴ 它**抓的正是"廉价占位翻译" ✓）⇒ **∴ 所以**：**用 `data-i18n="off"` 显式声明
+  //   "这不是可翻译文案"** ✗（**∴ 判据的跳过规则里就有它 ✓）★★
   // **★ 字体选择（字体方案 Phase 1）★**：标签与 5 个选项都是文本节点 => 必须有词条。
   "字体": "Font",
   "内置点阵": "Built-in bitmap",

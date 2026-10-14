@@ -213,6 +213,47 @@ const main = async () => {
       bad.push("② 两种字体画出来的墨迹**逐字节相同** ⇒ 字体参数没有真的生效（还是内置位图？）");
     }
   }
+  // **★ ④ 预置字体（字体方案 Phase 2）★**：**自托管的 `@font-face` 必须**真的可用** ✓ ★★
+  //   ＋ **∴ 为什么用 `document.fonts` 而不是"画出来比比看" ✗**：
+  //     **∴ 在**默认 sans-serif 恰好就是 Inter**的机器上 ✗ "画出来不同"会**假红** ✓
+  //       ⇒ **∴ 于是**：**先 `document.fonts.load` ✗ 再 `check`** ✓ —— **∴ 它**直接回答
+  //         "这支字体到底装上了没有"** ✓（**∴ 不依赖系统默认字体是什么 ✓）★★
+  //   ＋ **∴ 变异（**能红的根据 ✓）✗**：**把 `@font-face` 去掉（或文件 404 ✓）
+  //     ⇒ **`check` 变 false ⇒ **④ 立刻红** ✓★★
+  // **★ ④ 预置字体（字体方案 Phase 2）★**：**用两条**谁也冒充不了**的证据** ✓ ★★★
+  //   ＋ **∴ 我第一版用 `document.fonts.check('21px "Inter"')` ✗ 当场被证伪**：
+  //     **∴ 这台机器**本来就装了 Inter**✗ ⇒ **`check` 恒 true** ✗ 区分不出"自托管装上了没有" ✓ ★★
+  //       （**∴ 而且**规范上 `check` 对"能不能用**某个回退**渲染"也返回 true ✓ ⇒ 它**不适合**当这件事的判据 ✓）
+  //   ＋ **∴ 现在两条 ✗**：
+  //     **∴ ① `document.fonts` 里**有没有我的 `@font-face` 声明** ✓**（**∴ 系统字体**不会**出现在这里 ✓✓）
+  //     **∴ ② HTTP 探 `/fonts/<file>` ⇒ 必须 200** ✓（**∴ 文件**真的在、路由**真的通** ✓✓）
+  //   ＋ **∴ 变异 ✗**：**去掉 `@font-face`（或路由／文件 ✓）⇒ ① 或 ② 立刻红** ✓ ★★★
+  const bundled = [
+    { family: "Inter", file: "Inter.ttf" },
+    { family: "JetBrains Mono", file: "JetBrainsMono.ttf" },
+  ];
+  const declared = await evaluate(
+    `JSON.stringify(Array.from(document.fonts || []).map((f) => String(f.family).replace(/["']/g, "")))`,
+  );
+  const families = typeof declared === "string" ? JSON.parse(declared) : [];
+  const options = await evaluate(
+    `JSON.stringify(Array.from((document.getElementById("textFont")||{options:[]}).options).map((o) => o.value))`,
+  );
+  const opts = typeof options === "string" ? JSON.parse(options) : [];
+  console.log(`  ④ @font-face 声明：${JSON.stringify(families)}`);
+  console.log(`  ④ #textFont 选项：${JSON.stringify(opts)}`);
+  for (const { family, file } of bundled) {
+    if (!families.includes(family)) {
+      bad.push(`④ 没有「${family}」的 @font-face 声明（document.fonts 里看不到）`);
+    }
+    if (!opts.includes(family)) bad.push(`④ #textFont 里没有「${family}」这个选项`);
+    const probe = await fetch(`${base}/fonts/${encodeURIComponent(file)}`, { method: "GET" });
+    const bytes = probe.ok ? (await probe.arrayBuffer()).byteLength : 0;
+    console.log(`  ④ GET /fonts/${file} ⇒ HTTP ${probe.status}｜${(bytes / 1048576).toFixed(2)} MB`);
+    if (!probe.ok) bad.push(`④ 字体文件 /fonts/${file} 取不到（HTTP ${probe.status}）⇒ 路由或文件缺`);
+    else if (bytes < 20000) bad.push(`④ /fonts/${file} 只有 ${bytes} 字节 ⇒ 像是错误页而不是字体`);
+  }
+
   const logText = await readLog();
   if (/endpoint_not_local/.test(logText)) {
     console.error("❌ 判不了：这个页面是本地/PWA 页面（日志里出现 endpoint_not_local）⇒ 退出码 3");

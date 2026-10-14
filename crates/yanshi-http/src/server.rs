@@ -696,6 +696,15 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    if let Some(file) = path.strip_prefix("/fonts/") {
+        // **★ 预置字体（字体方案 Phase 2）★**：`@font-face` 的 `src: url("/fonts/…")` 由服务端发 ✓
+        // （**∴ 浏览器读不到服务器上的文件 ✓) —— 与 `/textures/`、`/mediums/` **同一形状** ✓。
+        let file = decode_asset_segment(file);
+        return match method {
+            "GET" => font_asset(state, &file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(file) = path.strip_prefix("/mediums/") {
         // 笔刷介质插件（设计 11.1）：宿主实例化 wasm 插件时来取 ✓。
         let file = decode_asset_segment(file);
@@ -2547,6 +2556,40 @@ fn texture_asset(state: &ServerState, file: &str) -> Response {
     crate::http::not_found(format!(
         "没有这张纹理：{file} ⇒ 先跑 list_assets 看有哪些（或 scripts/fetch-textures.sh 抓一批 ✓）"
     ))
+}
+
+/// **`GET /fonts/{file}`：发一支**自托管的预置字体**（字体方案 Phase 2）** ✓。
+///
+/// **∴ 为什么要这条路由 ✗**：**`@font-face` 里的 `src` 必须能从 HTTP 拿到** ✓
+///   （**∴ 浏览器**读不到**服务器上的文件 ✓）⇒ **∴ 与 `/textures/`／`/mediums/` **同一形状** ✓ ★
+/// **∴ 只接受直接位于 `assets/fonts` 下的 `.ttf`／`.woff2`** ✓（**挡 `..`、`/`、其它扩展名 ✓）★
+/// **∴ 长缓存 ✗**：**字体是**随版本走的资产**（**文件名不带哈希也能长缓存 ✓ —— 换字体就换名 ✓）★
+fn font_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..")
+        || file.contains('/')
+        || file.contains('\\')
+        || !(file.ends_with(".ttf") || file.ends_with(".woff2"))
+    {
+        return crate::http::bad_request("非法字体名（只接受 assets/fonts 下的 *.ttf / *.woff2）");
+    }
+    let dir = state
+        .options
+        .assets_dir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("assets"));
+    let path = dir.join("fonts").join(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mime = if file.ends_with(".woff2") {
+                "font/woff2"
+            } else {
+                "font/ttf"
+            };
+            Response::bytes(200, mime, bytes)
+                .with_header("Cache-Control", "public, max-age=31536000, immutable")
+        }
+        Err(_) => crate::http::not_found(format!("没有这支字体：{file}")),
+    }
 }
 
 fn medium_asset(state: &ServerState, file: &str) -> Response {

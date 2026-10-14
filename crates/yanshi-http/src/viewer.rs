@@ -216,6 +216,11 @@ const PAGE_TAIL_A: &str = r##"</style>
     <option value="serif">衬线</option>
     <option value="monospace">等宽</option>
     <option value="cursive">手写</option>
+    <!-- **预置 OFL 字体（自托管 ✓ 见 viewer.css 的 @font-face 与 assets/fonts ✓）** -->
+    <!-- **∴ `data-i18n="off"` ✗**：**字体名是**专有名词**✗ 不翻译 ✓
+         ⇒ **∴ 显式告诉判据"这不是文案"**（**∴ 否则它会合理地要求一个"翻译" ✓）★ -->
+    <option value="Inter" data-i18n="off">Inter</option>
+    <option value="JetBrains Mono" data-i18n="off">JetBrains Mono</option>
   </select></label>
     <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
       <option value="paint">绘画</option>

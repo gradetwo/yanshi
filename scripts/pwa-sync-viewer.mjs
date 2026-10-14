@@ -451,6 +451,16 @@ if (existsSync(MEDIUM_SRC)) {
 //         （**∴ 只有**真的用到纹理时**才下载 ✓）** ✓✓
 const PALETTE_SRC = "assets/palettes";
 const PALETTE_DST = join(DST, "palettes");
+// **★ 预置字体（字体方案 Phase 2）★**：与纹理同一形状 —— **PWA 侧也要有** ✓
+//   （**∴ 否则**离线时 `@font-face` 404 ⇒ 静默回退 ⇒ **看起来"字体没生效"** ✓）。
+const FONT_SRC = "assets/fonts";
+const FONT_DST = join(DST, "fonts");
+for (const f of readdirSync(FONT_SRC).filter((n) => n.endsWith(".ttf") || n.endsWith(".woff2"))) {
+  mkdirSync(FONT_DST, { recursive: true });
+  copyFileSync(join(FONT_SRC, f), join(FONT_DST, f));
+}
+console.log(`  OK: 预置字体 ${readdirSync(FONT_DST).length} 个 => web/fonts`);
+
 const TEXTURE_SRC = "assets/textures";
 const TEXTURE_DST = join(DST, "textures");
 const assetIndex = { palette: [], texture: [], brush: [], medium: [] };
