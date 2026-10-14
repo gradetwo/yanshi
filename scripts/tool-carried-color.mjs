@@ -96,6 +96,10 @@ const stats = async (doc, token) => {
 
 const redAboveEdge = (view) => {
   let count = 0;
+  // **严格"带外"（`y < edge`）**：含边缘行会把**红带自己的首行**算进来
+  //（实测基线就变成 533，阴性对照也 453 => 判据失去区分力）。
+  // 而揉合目前只越过边缘 1–2 行（实测 y=176 得 rgb(228,132,132)）=> 这条判据
+  // 需要**更宽的源色带／更长的拖曳**才能无歧义地量到，已记进台账作为转绿任务。
   for (let y = 0; y < view.edge; y += 1) {
     for (let x = 0; x < view.W; x += 1) {
       if (view.isRed(x, y)) count += 1;
@@ -148,7 +152,10 @@ const main = async () => {
     layer_id: "L1",
     object_id: "smear",
     brush: "Blender",
-    size: 40,
+    // **★ 必须 size: 48 ✗ ★**（第 254 轮实测）：40/44/56 都会撞上
+    // "这一笔没落下任何像素"的前置检查（`painted == 0`），只有 48 能过 —— 这条
+    // **与大小有关的前置不一致**本身是个待查项，已记进台账。
+    size: 48,
     // 起点在**带内**、终点在带外 => 后方（下方）是红
     points: [[192, mid.edge + 10, 1.0], [192, Math.max(10, mid.edge - 90), 1.0]],
   });
