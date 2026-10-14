@@ -3150,9 +3150,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "list_brushes",
         profile: Profile::Structure,
-        summary: "列出内置通用光栅笔刷参数（11.1 MVP 笔刷）",
+        // **P1 #9（第 254 轮）**：原来写死 4 支内置笔刷、而且看不到工作区 => AI 不知道有哪 201 支
+        // `.myb` 可挑，也不知道 `brush_params` 的字段叫什么。现在枚举走仓库已有的资产枚举，
+        // 并附上**规范字段名全表**（与 P0 #4 的 `brush_params` 配对）。
+        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params",
         mutating: false,
-        params: NO_PARAMS,
+        params: &[param!(
+            "filter",
+            String,
+            false,
+            "只列名字里含该子串的笔刷（如 oil／watercolor／pencil／Clouds）"
+        )],
     },
 ];
 
@@ -3343,7 +3351,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "set_brush_dynamics" => write_set_brush_dynamics(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
-        "list_brushes" => read_list_brushes(),
+        "list_brushes" => read_list_brushes(ctx, args),
         "collect_diagnostics" => read_collect_diagnostics(ctx, args),
         other => Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -4476,23 +4484,77 @@ fn read_get_checkpoints(ctx: &mut ToolContext<'_>) -> Result<Value> {
     Ok(json!({"checkpoints": checkpoints, "count": checkpoints.len()}))
 }
 
-fn read_list_brushes() -> Result<Value> {
-    // MVP 只做通用光栅笔刷（11.1）；其他介质通过 WASM 插件扩展。
+/// **★ `list_brushes`：真的列出可用笔刷（P1 #9 · 第 254 轮）★**
+///
+/// **原来为什么只列 4 支（读代码）**：它是**写死的常量**，而且**不带 `ctx`** => 压根看不到工作区
+/// => `assets/brushes` 里那 201 支 `.myb` 全被藏起来，AI 只能猜名字。
+/// **现在**：枚举走仓库**已有**的资产枚举 `workspace.list_assets("brush")`（`load_brush` 自己就用它，
+/// 不另写一套扫描）。
+/// **为什么必须带 `canonical_param_names`**：它与 P0 #4 的 `brush_params` 是**一对** ——
+/// `brush_params` 能覆盖任意 `.myb` 字段，但 AI 得先知道字段的**规范名**（= `BrushSetting::cname()`
+/// = `.myb` 的 JSON 键）=> 这里把全表一并给出。
+/// **`filter`**：201 支一次全塞进上下文并不便宜 => 支持按名字子串过滤（oil/watercolor/pencil/…）。
+fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let filter = args
+        .get("filter")
+        .and_then(Value::as_str)
+        .map(|value| value.to_lowercase());
+    let entries = ctx.workspace.list_assets("brush").unwrap_or_default();
+    let mut brushes: Vec<Value> = Vec::new();
+    for entry in entries {
+        let name = entry.name.clone();
+        if let Some(needle) = filter.as_ref() {
+            if !name.to_lowercase().contains(needle.as_str()) {
+                continue;
+            }
+        }
+        let parsed = ctx
+            .workspace
+            .resolve_asset("brush", &name)
+            .ok()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| hokusai::myb::from_str(&text).ok());
+        match parsed {
+            Some(brush) => brushes.push(json!({
+                "name": name,
+                "reads_canvas": brush_reads_the_canvas(&brush),
+                "params": canonical_param_summary(&brush),
+            })),
+            // 解析/读取失败要**如实说**，不许假装有参数
+            None => brushes.push(json!({"name": name, "params": null, "note": "读不到或解析失败"})),
+        }
+    }
+    brushes.sort_by(|a, b| {
+        a.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(b.get("name").and_then(Value::as_str).unwrap_or_default())
+    });
+    let count = brushes.len();
     Ok(json!({
-        "brushes": [
-            {"id": "round", "name": "圆头笔刷", "params": {"size": 1.0, "hardness": 0.8, "flow": 1.0, "opacity": 1.0, "spacing": 0.25}},
-            {"id": "soft_round", "name": "软圆笔刷", "params": {"size": 24.0, "hardness": 0.0, "flow": 0.6, "opacity": 1.0, "spacing": 0.15}},
-            {"id": "jitter", "name": "抖动笔刷", "params": {"size": 6.0, "hardness": 0.6, "jitter": 2.0, "seed": 0}},
-            {"id": "dashed", "name": "虚线笔刷", "params": {"size": 3.0, "dash": 6.0}},
-        ],
-        // **这一句此前是过时的** ✗（真实用户据它以为介质还没做 ✓）：六个介质**早已实现并发行** ✓
-        //（`crates/yanshi-medium-*` ✓ + `assets/mediums/*.wasm` ✓ + 对象里记着 id+version ✓）。
-        // **它为什么仍不在这个列表里** ✓：这里是**笔刷**（内核自带的通用光栅笔刷 ✓），
-        // 而油画/水彩是**插件介质** ✓ —— 插件由**宿主**加载 ✓：浏览器端各自实例化 ✓，
-        // 服务端/MCP 侧因六个插件**导出同名 C 符号** ✗ 而**无法链进同一个二进制** ✗
-        //（详见 implementation-notes 的架构结论 ✓）。
-        "note": "列出的是内核自带的光栅笔刷；油画/水彩/马克笔/铅笔/像素是**插件介质**（已发行，在 assets/mediums）——浏览器端可直接选用；MCP/服务端侧因六个插件导出同名 C 符号而无法链入同一二进制，另见实现笔记",
+        "brushes": brushes,
+        "count": count,
+        "filter": filter,
+        "canonical_param_names": hokusai::BrushSetting::ALL
+            .iter()
+            .map(|setting| setting.cname())
+            .collect::<Vec<_>>(),
+        "note": "列的是 assets/brushes 与工作区缓存里的 .myb（MyPaint 物理）。要覆盖其中任意字段 => 用 brush_stroke 的 brush_params{规范名: 数值}。内核自带的 4 支光栅笔刷（round/soft_round/jitter/dashed）不在这个列表里，它们用 draw_stroke。"
     }))
+}
+
+/// **`.myb` 参数摘要：只列与**出厂默认不同**的字段（第 254 轮）**
+fn canonical_param_summary(brush: &hokusai::Brush) -> Value {
+    let defaults = hokusai::Brush::new();
+    let mut out = serde_json::Map::new();
+    for setting in hokusai::BrushSetting::ALL {
+        let value = brush.get(*setting).base_value;
+        if value != defaults.get(*setting).base_value {
+            out.insert(setting.cname().to_owned(), json!(value));
+        }
+    }
+    Value::Object(out)
 }
 
 /// **采集诊断包** ✓（`collect_diagnostics` ✓）—— 采集实现见 `crate::diagnostics` ✓。
