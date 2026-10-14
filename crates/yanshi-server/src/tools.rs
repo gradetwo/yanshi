@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 77 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 78 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（77 个）。
+    /// 核心层：默认注册（78 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -492,7 +492,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，77 个）。
+    /// 核心层（默认注册，78 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1285,7 +1285,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 77 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 78 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -2953,6 +2953,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "swatch_brush_strokes",
+        profile: Profile::Core,
+        mutating: false,
+        // **需求文档附录五（P0）**：画家术语「swatch」＝试色试笔。与 `brush_preview` 同一条落笔
+        // 实现，但**批量**（笔刷 × 颜色 × 路径）且**不写文档、不生成 atom** => 可以放心试。
+        summary: "试笔触（swatch）：笔刷 × 颜色 × 路径批量试画，一次返回多张对比图；不写文档、不生成 atom => 满意了再用 brush_stroke 真画",
+        params: &[
+            param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
+            param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
+            param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
+            param!("size", Number, false, "笔尖直径（像素，缺省 24，上限 512）"),
+            param!("smooth", Boolean, false, "把路径当 Catmull-Rom 平滑（同 brush_stroke.smooth）"),
+        ],
+    },
+    ToolSpec {
         name: "brush_preview",
         profile: Profile::Core,
         // **不改文档 ⇒ mutating: false** ✓（它只画一张小图并存进 blob CAS ✓）；
@@ -3332,6 +3347,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
         "brush_preview" => write_brush_preview(ctx, args),
+        "swatch_brush_strokes" => write_swatch_brush_strokes(ctx, args),
         "save_palette" => write_save_palette(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "analyze_region" => read_analyze_region(ctx, args),
@@ -14919,6 +14935,96 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }
     Ok(value)
 }
+
+/// **★ `swatch_brush_strokes`：试笔触（P0 #6 · 需求文档附录五）★**
+///
+/// **为什么要有它**：`brush_preview` 这名字**误导** —— AI 以为是「看笔刷外观」，
+/// 其实是「用这支笔画一条曲线试试」；而且它不能批量，试 3 个组合要 3 次调用，
+/// 试错成本高（画错了要 undo）。所以给一个**画家术语**的名字 + **批量**：
+/// 笔刷 × 颜色 × 路径一次出图对比，**不写文档、不生成 atom** => 可以放心试。
+///
+/// **怎么做到零重复**：每个组合**直接调用** `write_brush_preview`（合成一份它的参数），
+/// 于是「试画」与「预览」共用同一条落笔实现 —— 与 `brush_stroke` 也是同一条（只是
+/// `feed_base = false`、不提交）=> **试画效果 = 真画效果**。
+fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let names = |key: &str| -> Vec<Value> {
+        match args.get(key) {
+            Some(Value::Array(items)) => items.clone(),
+            Some(Value::String(one)) => vec![Value::String(one.clone())],
+            _ => Vec::new(),
+        }
+    };
+    let brushes = names("brushes");
+    let colors = names("colors");
+    if brushes.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "brushes 不能为空（给一个字符串数组，如 [\"Blender\",\"blending\"]）",
+            ),
+        ));
+    }
+    let colors = if colors.is_empty() {
+        vec![Value::Null]
+    } else {
+        colors
+    };
+    let mut paths: Vec<Option<Value>> = match args.get("paths") {
+        Some(Value::Array(items)) if !items.is_empty() => items.iter().cloned().map(Some).collect(),
+        _ => vec![None],
+    };
+    if paths.is_empty() {
+        paths = vec![None];
+    }
+    let mut swatches: Vec<Value> = Vec::new();
+    for brush in &brushes {
+        for color in &colors {
+            for (path_index, path) in paths.iter().enumerate() {
+                let mut sub = serde_json::Map::new();
+                sub.insert("brush".to_owned(), brush.clone());
+                if let Some(size) = args.get("size") {
+                    sub.insert("size".to_owned(), size.clone());
+                }
+                if !color.is_null() {
+                    sub.insert("color".to_owned(), color.clone());
+                }
+                if let Some(points) = path {
+                    sub.insert("points".to_owned(), points.clone());
+                }
+                if let Some(smooth) = args.get("smooth") {
+                    sub.insert("smooth".to_owned(), smooth.clone());
+                }
+                // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**
+                //   ＋ **∴ 实测踩到 ✗**：**第一支用了 `Blender`（**纯揉合 ✓）✗ 空画布上什么都不沉积**✗
+                //     ⇒ **`brush_preview` 回 `precondition_failed` ⇒ **整个批量被一个组合拖垮** ✓
+                //   ＋ **∴ 而文档要的是**"试 3–5 个组合，选最好的"**✗ ⇒ **∴ 一个失败不该毁掉整批** ✓ ★★★
+                match write_brush_preview(ctx, &Value::Object(sub)) {
+                    Ok(rendered) => swatches.push(json!({
+                        "brush": brush,
+                        "color": color,
+                        "path_index": path_index,
+                        "ok": true,
+                        "thumb_url": rendered.get("thumb_url").cloned().unwrap_or(Value::Null),
+                        "mime_type": rendered.get("mime_type").cloned().unwrap_or(Value::Null),
+                    })),
+                    Err(error) => swatches.push(json!({
+                        "brush": brush,
+                        "color": color,
+                        "path_index": path_index,
+                        "ok": false,
+                        "error": format!("{error}"),
+                    })),
+                }
+            }
+        }
+    }
+    let count = swatches.len();
+    Ok(json!({
+        "swatches": swatches,
+        "count": count,
+        "note": "试笔触：不写文档、不生成 atom（可放心试）。满意之后用同一组参数调 brush_stroke 真画；两者共用同一条落笔实现。"
+    }))
+}
 fn write_list_assets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let kind = require_str(args, "kind")?;
     let entries = ctx.workspace.list_assets(&kind)?;
@@ -16458,6 +16564,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_undo_status", r#"{}"#),
     // **字体方案 Phase 3**：只读查询 ⇒ 无参数 ✓（先问有哪些字体，再把族名交给 draw_text ✓）。
     ("list_fonts", r#"{}"#),
+    // **附录五（P0）**：试笔触 —— 批量但只给一支也能跑（示例拿最小可用形状）。
+    (
+        "swatch_brush_strokes",
+        r#"{"brushes":["Blender"],"size":24}"#,
+    ),
     // **示例必须是"语法合法"的哈希** ✗（第 41 轮实测 ✓）：原来是占位符 `"x"` ✗
     // ⇒ 被 `write_set_reference` 的**形状校验**拒掉（"blob_hash 必须是 sha256:<64 位十六进制>" ✓）
     // ⇒ 而 `scripts/tool-example-acceptance.mjs` 把"**形状／类型不对**"判成**红** ✗
