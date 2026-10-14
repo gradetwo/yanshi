@@ -15571,7 +15571,11 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("opacity").and_then(Value::as_f64),
         args.get("hardness").and_then(Value::as_f64),
         false,
-        None,
+        // **★ 必须转发 `brush_params`（第 254 轮实测的真 bug）★**：这里原先**硬写 `None`** ✗
+        //   => 预览/swatch **无视参数覆盖** ✗ => "改 `brush_params` 前先用 swatch 试"
+        //   （新功能问题 5）**根本做不到** ✗（我自己的判据就撞在这上面：传了 `opaque: 0.2`
+        //   想看出"来回 5 趟的叠加"，结果两种模式都是全黑 ⇒ 指标饱和 ⇒ 查到这里 ✓）。
+        args.get("brush_params"),
         yanshi_render::color::ColorMixing::Rgb,
         &[],
     )?;

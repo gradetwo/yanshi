@@ -27982,14 +27982,10 @@ tool-render-memory-budget.mjs  # **类型：内存账目（DEF-03 的根因；�
 #   判据 `tool-medium-color-mixing.mjs` 现在**全绿**（渐变 ✓、pigment≠rgb ✓、缺省=rgb 逐字节 ✓）。
 #   端到端验收 `tool-vermeer-study.mjs` 的缺口清单也从 1 条变成 **0 条** ✓。
 
-# **★ 第 254 轮：`swatch` 的 `preview_size` 判据 ⑥（已知红，**度量未解决**）★**
-#   **实现已完成** ✓：`swatch_brush_strokes` 支持 `preview_size: "single"（缺省）/ "area"（来回 5 趟）` ✓，
-#   并**转发了 `brush_params`** ✓（兑现需求文档"试 3 支 × 2 种 opaque"那条 ✓）；
-#   **缺省与显式 single 逐字节相同** ✓（这条判据**通过** ✓）。
-#   **红的是"面积模式更浓"这条断言** ✗：判据已经**解码 PNG 量真像素** ✓（第一版用字节数是错的 ✗
-#   —— 实测 area 1429B < single 2311B，方向相反），但解出来的缩略图**两种模式都是全黑**
-#   （平均浓度 255.0/255.0 ⇒ 饱和 ✗）=> 可能原因：**预览路径不认 `brush_params`** ✗
-#   （我加了转发，但 `write_brush_preview` 那一层可能没把它传给落笔 ✓）、或缩略图是**合到黑底**的 ✗。
-#   **下一步**：先确认 `write_brush_preview` 有没有把 `brush_params` 传下去 ✓；
-#   若有 ⇒ 换一个**真正半透明**的预览设置（或量 alpha 而不是 luma ✓）；若没有 ⇒ 补上 ✓。
-tool-swatch.mjs
+# **★ 第 254 轮：`swatch` 的 `preview_size` 判据 —— 已修好，不再是已知红 ★**
+#   实现：`preview_size: single（缺省）/ area（来回 5 趟）` ✓ ＋ **转发 `brush_params`** ✓
+#     （顺带修了一个**真 bug**：`write_brush_preview` 原先硬写 `brush_params: None` ✗
+#      => 预览/swatch **无视参数覆盖** ✗ => "改 brush_params 前先 swatch 试"根本做不到 ✗）。
+#   度量：**解码 PNG ＋ 按 alpha 合到白底**再量平均浓度 ✓
+#     （前两版都错：字节数代理方向相反 ✗；不解 alpha 会把透明背景当黑 ⇒ 两种模式都 255 ✗）。
+#   实测：single 38.6（覆盖 26.9%）vs area 58.5（覆盖 57.5%）✓；缺省与 single 逐字节相同 ✓。

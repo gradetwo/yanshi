@@ -215,10 +215,16 @@ const main = async () => {
     const { pixels } = image;
     for (let i = 0; i < pixels.length; i += 4) {
       const alpha = pixels[i + 3];
-      if (alpha < 40) continue;
+      if (alpha < 8) continue;
       painted += 1;
-      const luma = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
-      // **平均浓度**（0 = 白、255 = 全黑）：半透明笔刷"来回 5 趟"会明显更暗
+      // **★ 必须先按 alpha 合到白底（第 254 轮实测）★**：缩略图是**透明背景**的 ✗
+      //   => 直接读 RGB 会把"没画的地方"当成**黑色** ✗ => 两种模式都量出 255.0（饱和 ✗）。
+      const a = alpha / 255;
+      const luma =
+        ((pixels[i] * a + 255 * (1 - a)) +
+          (pixels[i + 1] * a + 255 * (1 - a)) +
+          (pixels[i + 2] * a + 255 * (1 - a))) /
+        3;
       darkness += 255 - luma;
       if (luma < 200) inked += 1;
     }
