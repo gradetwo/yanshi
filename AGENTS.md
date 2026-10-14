@@ -42,6 +42,10 @@ CDP 会**静默返回一个空对象 `{}`**。那看起来像"页面返回了空
 **同理**：**测试模块（`#[cfg(test)] mod …`）要留在文件的最后**。往后面追加代码之前，先看一眼
 文件末尾是不是测试模块；是的话，新代码要插在它**之前**。
 
+**第 254 轮追加实测**：写完这条规矩**之后**我又踩了**第五次** ——
+把两个新方法插进了 `below_reuse_count` 的文档与函数之间，编译器第一行就报
+`missing documentation for a method --> render.rs:989`。**规矩写了也要每次都照做** ✗。
+
 **实测代价**（第 254 轮，四次）：
 1. `crates/yanshi-server/src/tools.rs` 的 `smooth_stroke_points`；
 2. `crates/yanshi-render/src/filter.rs` 的 `apply_filter`；
