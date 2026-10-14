@@ -138,13 +138,19 @@ const main = async () => {
     points: BAND,
   });
   const mid = await stats(blendDoc.doc, blendDoc.token);
+  // **★ 笔画方向：必须"从带内往上走" ★**（第 254 轮实测修 —— 两个方向都量过）
+  //   揉合搬的是**后方**（运动反方向）的颜色 => 方向决定"带出红"还是"带进白"：
+  //     * **向下**跨边（带外→带内）：后方是**带外的白** => 效果是**把白拖进红带**（侵蚀上边缘），
+  //       带外**不会**有红 ✗ —— 我第一版就是这样，于是误判"揉合没生效"；
+  //     * **向上**跨边（带内→带外）：后方是**红** => 红被拖到**带外**
+  //       （实测 y=176 处出现 rgb(232,143,143) 的粉痕）。
   const smear = await call(blendDoc.doc, blendDoc.token, "brush_stroke", {
     layer_id: "L1",
     object_id: "smear",
     brush: "Blender",
     size: 40,
-    // 从带外（上方）往下跨过边缘，走到带内
-    points: [[192, Math.max(10, mid.edge - 90), 1.0], [192, mid.edge + 10, 1.0]],
+    // 起点在**带内**、终点在带外 => 后方（下方）是红
+    points: [[192, mid.edge + 10, 1.0], [192, Math.max(10, mid.edge - 90), 1.0]],
   });
   if (!smear || smear.ok !== true) {
     console.error(`❌ 判不了：Blender 那一笔没成功（${JSON.stringify(smear).slice(0, 140)}）⇒ 退出码 3`);
@@ -214,7 +220,8 @@ const main = async () => {
     brush: "100%_Opaque",
     size: 40,
     color: { r: 20, g: 40, b: 220, a: 255 },
-    points: [[192, Math.max(10, plainMid.edge - 90), 1.0], [192, plainMid.edge + 10, 1.0]],
+    // 与上面**同方向**（带内 → 带外）：普通笔刷若也拖曳，带外就会出现红 => 对照更有力
+    points: [[192, plainMid.edge + 10, 1.0], [192, Math.max(10, plainMid.edge - 90), 1.0]],
   });
   const plainAfter = await stats(plainDoc.doc, plainDoc.token);
   const plainAboveRed = redAboveEdge(plainAfter);

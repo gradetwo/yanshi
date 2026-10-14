@@ -13437,12 +13437,18 @@ fn apply_humanize_envelope(points: &mut [(f64, f64, f64)]) {
     let total = arc[points.len() - 1].max(1e-9);
     for (i, point) in points.iter_mut().enumerate() {
         let t = (arc[i] / total).clamp(0.0, 1.0);
-        let envelope = if t < 0.12 {
+        // **★ 跨度按"像素预算"夹住 ✗ ★**（第 254 轮实测驱动）：12%/28% 是**长笔画**的模型；
+        // 两点短笔画时整条都落在过渡段里 => 探针实测压力被压到 0.06/0.03，几乎看不见。
+        // 所以：过渡段的**绝对长度**不超过 24px（起）/56px（收）=> 长笔画行为不变（它的 12%/28%
+        // 本来就更长），短笔画不会被压垮。
+        let head_span = (0.12 * total).clamp(1e-6, 24.0);
+        let tail_span = (0.28 * total).clamp(1e-6, 56.0);
+        let envelope = if t < 0.12 && arc[i] < head_span {
             // 起笔：指数型快升（0.12 处到 1.0），留 0.12 的下限，避免笔尖完全消失
-            (t / 0.12).powf(0.6).max(0.12)
-        } else if t > 0.72 {
-            // 收笔：幂函数长尾（占 28%），末端保底 0.06 拉出尖锋
-            (((1.0 - t) / 0.28).powf(1.6)).max(0.06)
+            ((arc[i] / head_span).powf(0.6)).max(0.12)
+        } else if t > 0.72 && (total - arc[i]) < tail_span {
+            // 收笔：幂函数长尾，末端保底 0.06 拉出尖锋
+            (((total - arc[i]) / tail_span).powf(1.6)).max(0.06)
         } else {
             1.0
         };
@@ -13812,6 +13818,31 @@ fn stamp_stroke_from(
     // **每一枚 dab 的时间步长** ✓（见下面关于"速度"的约定 ✓）。
     // **`dt` 是 `f64`** ✓（`stroke_to` 的签名：x/y/pressure/dx/dy 是 `f32`、`dt` 是 `f64` ✓）。
     const STEP_SECONDS: f64 = 0.01;
+    // **净室揉合要用的三个量：只读一次**（笔刷自己的设置；`smudge = 0` 时下面整段都不执行）
+    // **注意**：`BrushSetting::base_value` 是 **f32**（`hokusai` 的口径）=> 转成 f64 再算
+    //（第一版直接传 f32 给要 f64 的 `smudge_dab`，编译报 E0308 三个参数全不匹配）。
+    let smudge_amount = f64::from(
+        brush
+            .get(hokusai::BrushSetting::Smudge)
+            .base_value
+            .clamp(0.0, 1.0),
+    );
+    let smudge_length = f64::from(
+        brush
+            .get(hokusai::BrushSetting::SmudgeLength)
+            .base_value
+            .max(0.0),
+    );
+    // **半径**：**必须取 exp ✗** —— `Radius` 的 `base_value` 存的是 **ln(半径)**（本仓注释
+    // 早写过："`size` 是直径像素，而 MyPaint 的设置叫 `radius_logarithmic`，存的是 ln(半径)"）。
+    // **实测踩到**：`size: 40`（直径）时探针报 `radius=2.9957` = **ln(20)**；
+    // 我第一版直接把它当半径 => 拖曳长度只有 3px => 判据与探针都看不出效果。
+    let stroke_radius = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+    let stroke_radius = if stroke_radius.is_finite() && stroke_radius > 0.0 {
+        stroke_radius
+    } else {
+        0.0
+    };
     let mut steps = 0usize;
     for (index, (x, y, pressure)) in points.iter().enumerate() {
         // **★ 这个点相对**上一个点**的真实时间（秒）★**（第 254 轮）
@@ -13900,6 +13931,27 @@ fn stamp_stroke_from(
                     steps += 1;
                 }
             }
+        }
+        // **★★★ 净室揉合（P0 #1 carried_color）：逐 dab 把"后方"的颜料拖过来 ★★★**（第 254 轮）
+        //   * **只在笔刷 `smudge > 0` 时动手** => 非揉合笔刷（绝大多数）**一位像素都不变**，
+        //     既有像素级判据因此不受影响；
+        //   * `previous` 此刻仍是**上一个点**（它在下面才更新）=> 方向 = 本段运动方向；
+        //   * 拖曳长度 = `smudge_length × 半径`（与 MyPaint 的语义一致），量 = `smudge`；
+        //   * 为什么放在 dab **之后**：我们的实现是"把后方的颜色搬进 dab 覆盖区"，
+        //     放在后面才看得见（内核那条路走的是"用拾取色替换笔尖色"，这里不重复那条）。
+        if smudge_amount > 0.0 {
+            let direction = match *previous {
+                Some((px, py, _)) => (*x - px, *y - py),
+                None => (0.0, 0.0),
+            };
+            yanshi_render::brush::smudge_dab(
+                surface,
+                (*x, *y),
+                stroke_radius,
+                direction,
+                smudge_length * stroke_radius,
+                smudge_amount,
+            );
         }
         *previous = Some((*x, *y, *pressure));
     }
