@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-8200397240917`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-4784988146723`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -652,6 +652,16 @@
   <label><span id="strengthLabel">强度</span> <input id="strength" type="range" min="1" max="100" value="40" /></label>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
+  <!-- **★ 字体选择（字体方案 Phase 1）★**
+       值是**真实的 font-family 名** ⇒ 浏览器用它渲染 ⇒ 系统字体/emoji/大字号都跟着有了。
+       `builtin` 是原来的内嵌 16×16 位图图集（服务端 `draw_text`）⇒ 保持默认，行为零变更。 -->
+  <label>字体 <select id="textFont" title="文本字体：内置点阵走服务端位图图集；其余走浏览器 Canvas 渲染系统字体（支持中文、emoji、任意字号）">
+    <option value="builtin">内置点阵</option>
+    <option value="sans-serif">无衬线</option>
+    <option value="serif">衬线</option>
+    <option value="monospace">等宽</option>
+    <option value="cursive">手写</option>
+  </select></label>
     <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
       <option value="paint">绘画</option>
       <option value="retouch">修图</option>
@@ -9337,6 +9347,74 @@ async function clearSelection() {
   await refreshPreview();
 }
 
+/// **★ 文本位图入库 ✗ ★**（**字体方案 Phase 1 ✓）：**与 `commitMediumBitmap` 同构** ✓
+///   ＋ **∴ 只有一处不同 ✗**：**不带 `medium` 描述符** ✓（**∴ 它是文本 ✗ 不是介质笔触 ✓）★
+///   ＋ **∴ blob 先行 ✗**：**先把 RGBA 写进存储 ✗ 再提交引用它的原子** ✓（**否则校验会拒 ✓）★
+async function commitTextBitmap(rgba, region) {
+  const upload = await fetchOrLocal(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: rgba,
+  }).then((response) => response.json()).catch(() => ({ ok: false, error_code: "network" }));
+  if (!upload.ok) {
+    log("文本上传失败：" + (upload.error_code || "unknown"), "#c33");
+    return null;
+  }
+  // **∴ 画进"当前选中的图层" ✗ 只在它不存在时兜底新建** ✓（**与介质那条同一口径 ✓）★
+  let layerId = state.layerId || "layer_paint";
+  const existing = await callTool("list_layers", {}, { refresh: false }).catch(() => ({}));
+  const known = (existing.layers || []).some((layer) => layer.layer_id === layerId);
+  if (!known) {
+    const fallback = "text_" + ulid();
+    const created = await callTool("create_layer", { layer_id: fallback, name: "文本" }, { refresh: false });
+    if (!created.ok) {
+      log("输入文本失败（新建图层）：" + (created.error_code || "unknown"), "#c33");
+      return null;
+    }
+    layerId = fallback;
+    state.layerId = fallback;
+  }
+  const imported = await callTool("import_image", {
+    layer_id: layerId,
+    object_id: "text_" + ulid(),
+    bitmap: { blob_hash: upload.blob_hash, size: upload.size, mime_type: "image/x-yanshi-raw" },
+    region,
+  }, { refresh: false });
+  if (!imported.ok) {
+    log("输入文本失败：" + (imported.error_code || "unknown") + " " +
+        ((imported.context && imported.context.detail) || ""), "#c33");
+    return null;
+  }
+  return imported;
+}
+
+/// **★ 用浏览器 Canvas 渲染文本 ✗ ★**（**字体方案 Phase 1 ✓）
+///   ＋ **∴ 为什么用它 ✗**：**系统字体、emoji、任意字号**都在浏览器里现成** ✓
+///     ＋ **∴ 代价（**两面 ✓）✗**：**渲染随平台而异 ✗ 与方案里"放弃跨端像素一致"一致** ✓ ★★
+///   ＋ **∴ 关键细节 ✗**：**改 `canvas.width/height` 会**重置上下文**✗ ⇒ **∴ 必须在设尺寸**之后
+///     再设 `font`**（**否则字体静默退回默认 ✓ —— 那正是"看起来接上了其实没生效" ✓）★★
+async function commitTextWithFont(text, family, size, docX, docY) {
+  const measure = document.createElement("canvas").getContext("2d");
+  const spec = size + "px " + family;
+  measure.font = spec;
+  const width = Math.max(1, Math.ceil(measure.measureText(text).width) + 4);
+  const height = Math.max(1, Math.ceil(size * 1.4) + 4);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  // **∴ 设尺寸之后再设 font ✗**（**见上面那条细节 ✓）★
+  ctx.font = spec;
+  ctx.textBaseline = "top";
+  ctx.fillStyle = colorCss();
+  ctx.fillText(text, 2, 2);
+  const rgba = new Uint8Array(ctx.getImageData(0, 0, width, height).data.buffer);
+  const imported = await commitTextBitmap(rgba, { x: docX, y: docY, w: width, h: height });
+  if (!imported) return;
+  log("已输入文本 " + JSON.stringify(text) + "（字体 " + family + "，字号 " + size + "）");
+  await refreshPreview();
+}
+
 /// 文本工具：点击位置 + 输入文字 ⇒ `draw_text`（内核用内置 5×7 ASCII 位图字体 ✓）。
 async function commitText(point) {
   // **文案要与实现一致** ✓ —— 此前写着"CJK 为后续项" ✗，而 CJK 早已由内嵌 OFL 图集渲染 ✓
@@ -9345,6 +9423,15 @@ async function commitText(point) {
     "要输入的文本（内置 ASCII 点阵 + 内嵌中日韩图集；图集之外的字形显示为 ?）", "");
   if (text === null || text === "") return;
   const size = Number($("textSize").value) || 21;
+  // **★ 字体分流（字体方案 Phase 1）★**：`builtin` 仍走服务端位图图集（行为零变更），
+  // 其余一律**由浏览器 Canvas 渲染**再按**笔触那条路**入库 ⇒ 系统字体、emoji、任意字号都跟着有了。
+  // **∴ 为什么不改服务端 ✗**：**服务端要懂字体就得引入 fontconfig/FreeType/字形缓存** ✗
+  // 而**浏览器本来就有**（方案原话："不造轮子" ✓）⇒ **∴ 而且**这条路上传的是位图 ✗
+  // 与介质笔触 `commitMediumBitmap` **完全同构** ✓（**实现只差一个 `medium` 字段 ✓）★★
+  const family = (($("textFont") || {}).value || "builtin").trim();
+  if (family && family !== "builtin") {
+    return commitTextWithFont(text, family, size, Math.round(point.x), Math.round(point.y));
+  }
   const drawn = await callTool("draw_text", {
     layer_id: state.layerId,
     data: {
@@ -9860,7 +9947,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-8200397240917irty-dfcbcbf9")
+      caches.open("yanshi-shell-4784988146723irty-90884370")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -12730,6 +12817,13 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **★ 字体选择（字体方案 Phase 1）★**：标签与 5 个选项都是文本节点 => 必须有词条。
+  "字体": "Font",
+  "内置点阵": "Built-in bitmap",
+  "无衬线": "Sans serif",
+  "衬线": "Serif",
+  "等宽": "Monospace",
+  "手写": "Cursive",
   // **★ gaps 补丁新增的三个入口（第 254 轮）★**：按钮文本会成为文本节点
   //   => 必须在词表里（判据 `ui-i18n-coverage` 实测抓到这 3 条）。
   "导出分层 PSD": "Export layered PSD",
@@ -12974,6 +13068,7 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  "文本字体：内置点阵走服务端位图图集；其余走浏览器 Canvas 渲染系统字体（支持中文、emoji、任意字号）": "Text font: the built-in bitmap uses the server-side glyph atlas; the others render system fonts with the browser canvas (Chinese, emoji and any size)",
   "导出成分层 PSD（图层/组/不透明度/可见性/混合模式都带出去）": "Export as a layered PSD (layers, groups, opacity, visibility and blend modes included)",
   "查看选中对象的版本历史（原子版本链）": "Show the version history of the selected object (its atom version chain)",
   "用笔触自动生成渐变过渡（替代手动拼笔）": "Generate a gradient transition from brush strokes instead of dabbing it by hand",

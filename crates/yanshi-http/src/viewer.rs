@@ -207,6 +207,16 @@ const PAGE_TAIL_A: &str = r##"</style>
   <label><span id="strengthLabel">强度</span> <input id="strength" type="range" min="1" max="100" value="40" /></label>
   <label>羽化 <input id="feather" type="number" min="0" max="256" value="8" style="width:64px" /></label>
   <label>字号 <input id="textSize" type="number" min="7" max="128" value="21" style="width:64px" /></label>
+  <!-- **★ 字体选择（字体方案 Phase 1）★**
+       值是**真实的 font-family 名** ⇒ 浏览器用它渲染 ⇒ 系统字体/emoji/大字号都跟着有了。
+       `builtin` 是原来的内嵌 16×16 位图图集（服务端 `draw_text`）⇒ 保持默认，行为零变更。 -->
+  <label>字体 <select id="textFont" title="文本字体：内置点阵走服务端位图图集；其余走浏览器 Canvas 渲染系统字体（支持中文、emoji、任意字号）">
+    <option value="builtin">内置点阵</option>
+    <option value="sans-serif">无衬线</option>
+    <option value="serif">衬线</option>
+    <option value="monospace">等宽</option>
+    <option value="cursive">手写</option>
+  </select></label>
     <label>工作区 <select id="workspace" title="布局预设（绘画 / 修图 / 校对）">
       <option value="paint">绘画</option>
       <option value="retouch">修图</option>

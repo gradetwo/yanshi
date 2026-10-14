@@ -1,0 +1,235 @@
+#!/usr/bin/env node
+// **★ 字体选择必须**真的影响画面**（Phase 1 ✓）★**（**第 254 轮 ✓）
+//
+// **∴ 为什么要这条判据 ✗**：**现状是**只有一套内嵌 16×16 位图图集**✗（`font_atlas.rs` ✓）
+//   ＋ **∴ 客户端**已经在传 `font: "builtin"`**✗（`commitText` ✓）⇒ **∴ 于是**：
+//     **∴ 用户**选不了字体**✗ **大字号**只能是位图✗ **emoji 画不出** ✓ ★★
+//   ＋ **∴ 方案（`~/patch/yanshi-字体方案-20261014.md` ✓）的 Phase 1 ✗**：
+//     **Web 侧自己用 Canvas `fillText` 渲染系统字体 ✗ 再把位图按**笔触那条路**上传** ✓
+//     ＋ **∴ 所以**判据要断的核心是：**字体参数**真的改变了像素** ✓ ★★★
+//
+// **∴ 判什么（**三条 ✓）★**：
+//   ① **字体选择入口存在**（`#textFont` ✓ 且至少有 2 个可选字体 ✓）
+//   ② **同一段字 ✗ 用两种**明显不同**的字体画 ⇒ **墨迹指纹必须不同** ✓ ★★★
+//      （**∴ 还是 `builtin` 位图 ⇒ 两次必然**逐字节相同** ⇒ **红** ✓）
+//   ③ **两次都真的画上了**（**∴ 否则"都画不上"也会让指纹相同 ⇒ 假绿** ✓）★
+//
+// **∴ 变异（**能红的根据 ✓）✗**：**把 `#textFont` 的选择读掉／忽略（**永远用 builtin ✓）
+//   ⇒ **∴ ② 立刻红** ✓
+//
+// **∴ 这条判据**不做**什么（**如实说 ✓）✗**：**不判**字形好不好看**✗
+//   **不判**具体是哪个字体文件** ✓（**∴ 只判"参数真的起作用" ✓）★
+//
+// 用法：node scripts/browser-text-font.mjs <viewer-url> [base-url] [token]
+const viewerUrl = process.argv[2];
+const baseArg = process.argv[3];
+const tokenArg = process.argv[4];
+if (!viewerUrl) {
+  console.error("用法: node scripts/browser-text-font.mjs <viewer-url> [base-url] [token]");
+  process.exit(2);
+}
+const cdpPort = process.env.CDP_PORT || "9333";
+const parsed = new URL(viewerUrl);
+const base = baseArg || parsed.origin;
+const token = tokenArg || parsed.searchParams.get("token") || "";
+const doc = parsed.searchParams.get("doc") || "";
+
+const api = async (tool, args) => {
+  const reply = await fetch(
+    `${base}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args || {}),
+    },
+  );
+  return reply.json();
+};
+
+const main = async () => {
+  const target = await (
+    await fetch(`http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(viewerUrl)}`, { method: "PUT" })
+  ).json();
+  if (!target || !target.webSocketDebuggerUrl) {
+    console.error("❌ 判不了：开不了标签页（CDP 不可达）⇒ 退出码 3");
+    process.exit(3);
+  }
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  let seq = 0;
+  const pending = new Map();
+  const CALL_TIMEOUT_MS = Number(process.env.CDP_CALL_TIMEOUT_MS || "15000");
+  const send = (method, params) =>
+    new Promise((resolve, reject) => {
+      const id = ++seq;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`CDP ${method} 超时（${CALL_TIMEOUT_MS}ms）`));
+      }, CALL_TIMEOUT_MS);
+      pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      ws.send(JSON.stringify({ id, method, params }));
+    });
+  ws.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id && pending.has(message.id)) {
+      const entry = pending.get(message.id);
+      pending.delete(message.id);
+      message.error ? entry.reject(new Error(JSON.stringify(message.error))) : entry.resolve(message.result);
+    }
+  });
+  await new Promise((resolve) => ws.addEventListener("open", resolve));
+  await send("Runtime.enable", {});
+  // **∴ AGENTS.md 的铁律 ✗**：`returnByValue` 与 `awaitPromise` **必须成对** ✓
+  const evaluate = async (expression) => {
+    const reply = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    if (reply.exceptionDetails) return { error: JSON.stringify(reply.exceptionDetails).slice(0, 200) };
+    return reply.result && reply.result.value;
+  };
+  const readLog = async () => {
+    const raw = await evaluate(`String((document.getElementById("log")||{}).textContent||"")`);
+    return typeof raw === "string" ? raw : "";
+  };
+
+  let ready = false;
+  for (let i = 0; i < 80; i++) {
+    const marks = await evaluate(`JSON.stringify((window.__appMarks||[]).slice(-1))`);
+    if (typeof marks === "string" && /fetch-ok|refreshLayers-ok/.test(marks)) {
+      ready = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!ready) {
+    console.error("❌ 判不了：页面没就绪 ⇒ 退出码 3");
+    ws.close();
+    process.exit(3);
+  }
+
+  const bad = [];
+  // **① 字体选择入口** ✓
+  const fontUi = await evaluate(
+    `JSON.stringify({ has: Boolean(document.getElementById("textFont")), options: (document.getElementById("textFont")||{options:[]}).options.length })`,
+  );
+  const ui = typeof fontUi === "string" ? JSON.parse(fontUi) : {};
+  console.log(`  ① 字体选择：#textFont=${ui.has}｜可选 ${ui.options} 项`);
+  if (!ui.has) {
+    bad.push("① 没有字体选择入口（#textFont）⇒ 字体功能还没接上");
+  } else if (ui.options < 2) {
+    bad.push(`① #textFont 只有 ${ui.options} 个选项 ⇒ 选不出两种字体`);
+  }
+
+  // **∴ 判据自己驱动：**把同一个字符串用两种字体各画一次 ✗ 比墨迹指纹** ✓ ★
+  //   ＋ **∴ `commitText` 用 `window.prompt` ✗ ⇒ 判据里先把它**换成固定返回** ✓
+  //     （**∴ 这是**测试替身**✗ 不是改产品 ✓ —— 产品仍走 prompt ✓）★
+  const draft = "FontAB";
+  const draw = async (family) => {
+    const before = await api("get_render_status", {});
+    await evaluate(
+      `(() => {
+         window.prompt = () => ${JSON.stringify(draft)};
+         const sel = document.getElementById("textFont");
+         if (sel) { sel.value = ${JSON.stringify(family)}; sel.dispatchEvent(new Event("change", { bubbles: true })); }
+         return true;
+       })()`,
+    );
+    // **∴ 切到文本工具（**键盘 t ✓ 与 UI 同一条路 ✓）并点画布** ✓
+    await evaluate(
+      `(() => {
+         window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+         return true;
+       })()`,
+    );
+    await new Promise((r) => setTimeout(r, 400));
+    const tool = await evaluate(`window.yanshi.state().tool`);
+    const box = await evaluate(
+      `JSON.stringify((() => { const b = document.getElementById("board"); const r = b.getBoundingClientRect(); return { x: r.left + 120, y: r.top + 120 }; })())`,
+    );
+    const point = JSON.parse(box);
+    await evaluate(
+      `(() => {
+         const b = document.getElementById("board");
+         const opts = { bubbles: true, clientX: ${point.x}, clientY: ${point.y}, button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true };
+         b.dispatchEvent(new PointerEvent("pointerdown", opts));
+         b.dispatchEvent(new PointerEvent("pointerup", opts));
+         return true;
+       })()`,
+    );
+    await new Promise((r) => setTimeout(r, 2500));
+    const after = await api("get_render_status", {});
+    // **∴ 取"文本那一块"的像素指纹 ✗**（**画布左上角附近 ✓）★
+    // **★ 按**刚画出来的那个对象的 bbox** 取样 ✗ ★**（**第 254 轮实测修 ✓）
+    //   ＋ **∴ 原来固定取 (0,0,400,300) ✗** 而**文本落在点下去的位置**✗
+    //     ⇒ **∴ 于是**我量到的只是整块画布的一角 ⇒ **墨只有 26** ⇒ **∴ 差点把自己的判据判红** ✓ ★★
+    //   ＋ **∴ 现在 ✗**：**先问对象列表 ✗ 拿最后一个对象的 bbox ✗ 四周留 8px 边** ✓ ★
+    const objects = await api("list_objects", {});
+    const list = (objects && (objects.objects || objects.items)) || [];
+    const mine = list.filter((o) => String(o.object_id || o.id || "").startsWith("text_"));
+    const last = mine[mine.length - 1] || list[list.length - 1];
+    let region = { x: 0, y: 0, w: 400, h: 300 };
+    const bb = last && (last.bbox || last.bounds);
+    if (Array.isArray(bb) && bb.length === 4) {
+      region = {
+        x: Math.max(0, Math.floor(bb[0]) - 8),
+        y: Math.max(0, Math.floor(bb[1]) - 8),
+        w: Math.max(1, Math.ceil(bb[2]) + 16),
+        h: Math.max(1, Math.ceil(bb[3]) + 16),
+      };
+    }
+    const raw = await api("render_region", { region, raw: true });
+    if (!raw || !(raw.raw_url || raw.rawUrl)) return { ok: false, why: "取不回像素", tool, head: after && after.head_seq };
+    const absolute = String(raw.raw_url || raw.rawUrl).startsWith("http")
+      ? String(raw.raw_url || raw.rawUrl)
+      : `${base}${raw.raw_url || raw.rawUrl}`;
+    const bytes = new Uint8Array(await (await fetch(absolute)).arrayBuffer());
+    let ink = 0;
+    let sum = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      const isWhite = bytes[i] >= 250 && bytes[i + 1] >= 250 && bytes[i + 2] >= 250;
+      if (!isWhite) ink += 1;
+      sum = (sum * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
+    }
+    return { ok: true, tool, ink, fingerprint: sum, head: after && after.head_seq, before: before && before.head_seq };
+  };
+
+  const first = await draw("serif");
+  const second = await draw("monospace");
+  console.log(`  ③ 第一次（serif）：tool=${first.tool}｜ok=${first.ok}｜墨 ${first.ink}｜指纹 ${first.fingerprint}`);
+  console.log(`  ③ 第二次（monospace）：tool=${second.tool}｜ok=${second.ok}｜墨 ${second.ink}｜指纹 ${second.fingerprint}`);
+  if (!first.ok || !second.ok) {
+    bad.push(`③ 有画不上的（${JSON.stringify(first.why || second.why || "")}）`);
+  } else {
+    if (first.tool !== "text") bad.push(`③ 没能切到文本工具（tool=${first.tool}）⇒ 判据自己坏了`);
+    if (first.ink < 50 || second.ink < 50) {
+      bad.push(`③ 有画面上没有墨（${first.ink} / ${second.ink}）⇒ 这条比较没有说服力`);
+    } else if (first.fingerprint === second.fingerprint) {
+      bad.push("② 两种字体画出来的墨迹**逐字节相同** ⇒ 字体参数没有真的生效（还是内置位图？）");
+    }
+  }
+  const logText = await readLog();
+  if (/endpoint_not_local/.test(logText)) {
+    console.error("❌ 判不了：这个页面是本地/PWA 页面（日志里出现 endpoint_not_local）⇒ 退出码 3");
+    ws.close();
+    process.exit(3);
+  }
+  ws.close();
+  if (bad.length) {
+    console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
+    process.exit(1);
+  }
+  console.log("✓ 字体选择真的影响画面（两种字体墨迹不同），且两次都真的画上了");
+};
+
+try {
+  await main();
+} catch (error) {
+  console.error(`❌ 判不了：判据自身出错（${error && error.message ? error.message : String(error)}）⇒ 退出码 3`);
+  process.exit(3);
+}
