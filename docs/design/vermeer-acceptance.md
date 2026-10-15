@@ -2317,3 +2317,36 @@ server.rs:3187                          .set_viewport(subscriber, viewport, zoom
      **判据必须红** ✓（第 3 种变异最能证明"**保守规则**"这条设计被守住了 ✓）。
 **⇒ 与上次失败的关系** ✓：`a152e034` 那次**跳过判据直接接线** ✗ 且**语义按单视口** ✗
 ⇒ 弄红 8 条 ✓ ⇒ 已回退 ✓。这次**先判据、再接线、取并集、`None` 不淘汰** ✓。
+
+### 四十九之补二十五：**判据里不许硬编码本机路径**（补持久文档 ✓，2026-10-15 ✓）
+
+**为什么补这条** ✗✓：本轮核对交接文档时发现 ✓ —— 这条规矩**只写在提交信息里** ✓、
+**没进持久文档** ✗（`grep os.tmpdir docs/design/vermeer-acceptance.md` ⇒ **0** 次 ✗）
+⇒ ⇒ 那下次很可能**再犯一次** ✗ ⇒ 补进文档 ✓。
+
+**事故与修法（实测 ✓）**：
+```
+CI：criteria shard 3/6
+  ✗ serve-watch-ws.mjs｜Error: EACCES: permission denied, mkdir '/home/crow/yanshi-tmp/svc-watch-on'
+```
+**根因** ✗：我自己写的两条判据**硬编码了本机路径** ✓：
+```
+scripts/serve-watch-ws.mjs:39     "/home/crow/yanshi-tmp/svc-watch-" + tag
+scripts/mcp-watch-external.mjs:25 "/home/crow/yanshi-tmp/watch-ext"
+```
+CI 的 runner 是 `runner@…` ✓ ⇒ `mkdir /home/crow/...` **必然 EACCES** ✗ ⇒ **本机绿、CI 红** ✗
+—— 这条教训我**记过**（四十六之补 ✓），却**犯在自己的判据上** ✗✓。
+**修法** ✓（两条**普查**都改 ✓，不只改已经红的那条 ✗）：
+```js
+const root = process.env.YANSHI_WATCH_DIR || path.join(os.tmpdir(), "yanshi-watch-" + tag);
+```
+（`os.tmpdir()` 在 CI 里是 `/tmp` ✓ ⇒ 可写 ✓；保留显式覆盖入口 ✓。）
+
+**⇒ 规矩（写进本仓做法 ✓）**：
+  1. **判据／脚本里一律不许出现 `/home/crow`（或任何本机绝对路径）** ✗
+     —— 要目录就用 `os.tmpdir()`／`process.env.TMPDIR`／显式环境变量覆盖 ✓；
+  2. **加一条新判据后，先问一句"它在别人的机器上跑得起来吗"** ✓
+     （CI 的 user、HOME、/tmp 都与我这里不同 ✓）；
+  3. **同类问题要普查** ✓（`grep -rn '/home/crow' scripts/` ✓），**不是**只修已经红的那一条 ✗。
+**顺带一条取证技巧** ✓（本轮之前用它两分钟定位到根因 ✓）：**只取失败作业的日志** ✓
+⇒ 在 `==== 失败清单（N 条）====` **之后**取行 ✓ ⇒ 不会被"枚举出来的几十条判据名"淹没 ✗。
