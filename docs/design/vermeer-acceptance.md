@@ -3899,3 +3899,43 @@ let merged = merge_by_rows(&old, &fresh);
   3. **实测三件** ✓：① 探针关着时**不拖慢**（对比 4K 一笔耗时 ✓）；
      ② 探明**"哪几块同时活着"**✗（本次真正的目的 ✓）；
      ③ **`humanize:false` 逐字节不变** ✓ 仍绿 ✓。
+
+### 四十九之补七十六：live/peak 的确切改动清单（2026-10-15 ✓）
+
+**已读清** ✓（`crates/yanshi-render/src/alloc_probe.rs` ✓）：
+```rust
+pub enum AllocPoint { PoolReuse, PoolFresh, BufferFresh, PoolRelease, Other }   // 5 个 ✓
+const POINTS: usize = 5;        // **字面量** ✗ ⇒ 加变体必须一起改 ✓
+fn slot(point: AllocPoint) -> usize { match point { … } }                        // 要加 arm ✓
+```
+⇒ ⇒ **所以"加一个 `BufferRelease`"不是一处改动** ✗ ⇒ 要动这**四处** ✓：
+  1. `enum AllocPoint` 加 **`BufferRelease`** ✓（带 `///` 文档 ✓ —— AGENTS.md：新代码要**整段文档**✓）；
+  2. **`const POINTS: usize = 5` ⇒ `6`** ✓（否则数组长度与枚举不符 ⇒ 编译错 ✓）；
+  3. **`fn slot()`** 加一条 arm ✓（与枚举**同序** ✓）；
+  4. **各标签表** ✓（`snapshot()` ✓／`sites_snapshot()` ✓ 的 `&'static str` 列表 ✓）加
+     `"buffer_release"` ✓（否则下标错位 ✗ ⇒ 读数**张冠李戴** ✗✓）。
+  ⇒ 第 4 条**最容易漏** ✗✓（编译**可能照样过** ✗ ⇒ 而读数会错 ✓）。
+
+**⇒ 还要加的一处（产品侧 ✓）**：`crates/yanshi-render/src/buffer.rs` 加
+```rust
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        crate::alloc_probe::record(
+            crate::alloc_probe::AllocPoint::BufferRelease,
+            self.pixels.len() * std::mem::size_of::<f32>(),
+        );
+    }
+}
+```
+⇒ **探针关着时零成本** ✓（`record` 第一句就是 `if !alloc_probe_on() { return; }` ✓）；
+⇒ **`Buffer` 不是 `Copy`** ✓（§49 之补七十五 ✓）⇒ 加 `Drop` **不违反**任何约束 ✓。
+
+**★ live/peak 不用改探针 API** ✓✓（这是本轮想通的一处简化 ✓）：
+  * **live ＝ `BufferFresh.bytes − BufferRelease.bytes`** ✓（＋池那侧的账另算 ✓）
+    ⇒ ⇒ **在读取脚本里算** ✓（`/health` 的数据已经够 ✓）；
+  * **peak 需要"过程采样"** ✗ ⇒ 由**探针外**的采样循环给 ✓（每隔一小段读一次 `/health` ✓ 取最大 ✓）
+    ⇒ ⇒ 同样**不用**改探针 ✓。
+
+**⇒ 下一步（机械 ✓）**：按上面 5 处改 ✓ ⇒ `cargo build` ✓ ⇒
+跑内存判据（**默认预算** ✓）＋ **`humanize:false` 逐字节不变**那条 ✓ ⇒ 再采样看 live/peak ✓。
+**★ 提醒** ✓：第 4 条（标签表）**必须**一起改 ✓ —— 它不报错 ✗，但会让读数**张冠李戴** ✗。
