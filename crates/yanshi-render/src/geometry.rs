@@ -849,7 +849,7 @@ fn box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<
     //     而带内每一行要读的 `±radius` 都**落在切片内** ✓ ⇒ 越界分支**永不触发** ✓
     //     ⇒ ⇒ 与整幅实现在**位**上完全一致 ✓（由黄金哈希 ＋ 等价性判据**双重**守住 ✓）。
     const BAND_ROWS: usize = 64;
-    let halo = 2 * radius; // **变异** ✗
+    let halo = 2 * radius;
     let mut out = vec![0.0f32; data.len()];
     let mut y0 = 0usize;
     while y0 < height {
