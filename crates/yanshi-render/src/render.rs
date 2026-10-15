@@ -2272,6 +2272,48 @@ impl Renderer {
             //   **∴ 已有格**由**预填**负责 ✗ ⇒ **∴ 对它们**不重做合成 ✓** ✓✓
             //   **∴ 逐位一致 ✗**：**子块内的混合**与**整幅做同样的混合**逐字节相同 ✓
             //     （**论证见 `composite_within` 的文档 ✓）** ✓✓
+            // **★ 合成前后的采样：段带缓冲里的东西有没有进 accumulation（2026-10-15 ✓）★**
+            //   **为什么需要** ✗：数据追踪已经证明**缝合是对的**（拼出 10219 个不透明像素 ✓，
+            //   见 `docs/design/vermeer-acceptance.md` §23 ✓）⇒ 那我就得看**它有没有被合成进输出** ✓。
+            //   **注意** ✓：`Buffer::pixel()` 收**局部**坐标 ✗（这格我上一轮踩过 ✗）
+            //   ⇒ 采样点用**画布坐标减去 accumulation 的原点** ✓。
+            if std::env::var_os("YANSHI_TRACE_COMPOSITE").is_some() {
+                let (sx, sy) = (277i64, 325i64); // 虹膜中心（画布坐标 ✓）
+                let b = accumulation.bbox();
+                let before = if sx >= b.x as i64
+                    && sx < (b.x + b.w) as i64
+                    && sy >= b.y as i64
+                    && sy < (b.y + b.h) as i64
+                {
+                    let px = accumulation.pixel((sx - b.x as i64) as u32, (sy - b.y as i64) as u32);
+                    Some((px[0], px[1], px[2], px[3]))
+                } else {
+                    None
+                };
+                eprintln!(
+                    "COMPOSITE layer={} acc_bbox=({},{},{},{}) before={:?} layer_mid={:?}",
+                    layer.id,
+                    b.x,
+                    b.y,
+                    b.w,
+                    b.h,
+                    before,
+                    {
+                        let lb = layer_buffer.bbox();
+                        if sx >= lb.x as i64
+                            && sx < (lb.x + lb.w) as i64
+                            && sy >= lb.y as i64
+                            && sy < (lb.y + lb.h) as i64
+                        {
+                            let px = layer_buffer
+                                .pixel((sx - lb.x as i64) as u32, (sy - lb.y as i64) as u32);
+                            Some((px[0], px[1], px[2], px[3]))
+                        } else {
+                            None
+                        }
+                    }
+                );
+            }
             match partial_below.as_ref().filter(|_| index_here < split) {
                 Some(area) => {
                     composite_within(&mut accumulation, &layer_buffer, mode, opacity, area);
