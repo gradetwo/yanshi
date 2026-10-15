@@ -1220,3 +1220,49 @@ self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps
 （`pool_reuse`／`layer_buffers_reused` ✓）⇒ ⇒ 改完必须**同时**证明：
 **① 4K 峰值过预算 ✓；② 正常尺寸的复用率不下降 ✓**（这正是上次栽的那一面 ✗）。
 
+## 四十二、★ 乙(iii) 的**可执行计划**：杠杆、模板、接口、两条断言（2026-10-15）★
+
+§39 查清了"缺什么" ✓（`evict_outside_viewport` 有能力、有测试、有绑定，**但没人调用** ✗）。
+本节把**怎么开工**钉死 ✓ —— 免得下次还要重新侦察 ✓。
+
+### 42.1 验证环境的杠杆 ✓
+
+判据要跑的是**本地内核那条路**（否则它压根不经过 wasm 的 `TileCache` ✗）。杠杆是页面上的 ✓：
+* `window.__pwaLocalOnly === true` ⇒ **一律走本地内核** ✓
+  （`web/viewer-app.js` 里 ✓：`localOnly` 时**一律本地** ✓ —— 那是用户报告的 P0 回归修复 ✓）；
+* **判据必须用查看器（静态 PWA ✓）而不是纯服务端页面** ✓ ——
+  `scripts/browser-offline-draw.mjs` 的头部写着理由与**诊断证据** ✓：
+  "断网后本地内核没有就绪（`kernelStats()` 为 null ✓）／断网前内核 = null" ✓。
+
+### 42.2 模板 ✓：照 `browser-offline-draw.mjs` 写
+
+它正是**驱动本地内核并读内核计数**的那一条 ✓（看 `localBrushFrames` ✓／`localBrushErrors` ✓）。
+**新判据要断言两件事** ✓（缺第二件就不算完成 ✗）：
+1. **确实逐出** ✓：远处平移（视口换到另一端 ✓）之后，内核的逐出计数 **> 0** ✓；
+2. **可见区仍然正确、且没有抖动** ✓：平移回原处后画面**逐像素/逐哈希一致** ✓，
+   且**没有出现反复分配**（否则就是"逐出同一帧还要用的 tile" ✗ ⇒ **CPU↑ 而内存没省** ✗，
+   正是 §35 记的那次 prior ✓）。
+
+### 42.3 接口 ✓：要加在哪、叫什么
+
+* 内核实例在 **`web/api-local.js`** ✓：`new mod.WasmKernel(doc, 256, w, h, 256 * 1024 * 1024)` ✓，
+  由 `withKernel(doc, fn)` ✓ 串行化访问 ✓；该文件**目前没有任何视口方法** ✗。
+* 查看器与它之间的桥 ✓：`web/viewer-app.js` 约 **1291** 行
+  `const { makeLocalApi } = await import("/api-local.js"); return await makeLocalApi();` ✓
+  ⇒ ⇒ 所以**新方法要挂在 `makeLocalApi()` 返回的那个对象上** ✓（名字建议 `setViewport(doc, x, y, w, h)` ✓）。
+* 调用点 ✓：`web/viewer-app.js` 的视口变更处 ✓（约 **1137** 行 `state.viewport = { x, y, w: viewW, h: viewH }` ✓）
+  —— **注意**那里附近的 `kernel` 是 **DOM canvas** ✗（`getContext("2d")` ✓），**不是** wasm 内核 ✓。
+* 绑定已经存在 ✓：`web/wasm/yanshi_wasm.js:149` 的 `evict_outside_viewport(x, y, w, h)` ✓
+  ⇒ **不需要改 wasm** ✓（这是件**纯 JS** 的活 ✓）。
+
+### 42.4 为什么这一轮仍不动手（与上一轮的对照 ✓）
+
+上一轮（DEF-03 ✓）我**以为**要多轮 ✗，结果"先看一眼"发现**判据本机跑得完 ✓、改动是一条常量 ✓"
+⇒ **一轮做完 ✓**（872 → 621 MB ✓、判据转绿 ✓）。
+这一轮我把同样的"先看一眼"做完了 ✓ —— 结论是它**确实**需要
+**新 API ＋ 调用点 ＋ 一条新的 CDP 判据** ✓（三者缺一件就是**死代码** ✗）
+⇒ ⇒ 在 ~445 小时的尾部起头，**半成品风险是真的** ✗ ⇒ 按纪律留到一次**干净的开场** ✓。
+
+**但接手成本已经压到最低** ✓：杠杆（42.1 ✓）、模板（42.2 ✓）、接口与行号（42.3 ✓）、
+两条必须同时成立的断言（42.2 ✓）、以及**被撤回的先例**（§35／§41 ✓）——**全在这一节里** ✓。
+
