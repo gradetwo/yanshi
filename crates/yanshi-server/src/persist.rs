@@ -201,6 +201,64 @@ impl FileStore {
         Ok(atoms)
     }
 
+    /// **★ 只读"某一 seq 之后"的原子（待办 ① 的"快照 ＋ 尾巴"要用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么** ✗：`load_atoms` 会把**整份日志**读进来 ✓；有了**快照**之后 ✓，
+    /// 快照已经覆盖到某个 `seq_at` ✓ ⇒ 前面那一段**不必再读** ✓
+    /// ⇒ ⇒ 本函数只返回 `seq > since` 的那些 ✓ ⇒ **打开时读入的原子数自然变小** ✓
+    /// （这正是 `Document::atoms_read_on_open` 观测的量 ✓，判据 `tests/open_readout.rs` 断言它 ✓）。
+    ///
+    /// **语义与 `load_atoms` 逐条一致** ✓（只有一处不同：多了一道 `seq > since` 的门 ✓）：
+    ///   * 文件不存在 ⇒ 空列表 ✓；跳过空行 ✓；**只有最后一行**损坏才容忍 ✓（判法＝"后面还有没有内容" ✓）；
+    ///   * 中间任何一行损坏 ⇒ 报错并指出**行号** ✓；
+    ///   * **流式**逐行 ✓（峰值 ≈ 1× 原子 ＋ 一行 ✓）。
+    ///
+    /// **注意** ✓：`since = 0` 时它与 `load_atoms` **等价** ✓ —— 保留两个入口是为了不打断既有调用 ✓；
+    /// 将来可让 `load_atoms` 直接委托给本函数（那时只剩一份实现 ✓）。
+    pub fn load_atoms_since(&self, doc_id: &str, since: Seq) -> Result<Vec<Atom>> {
+        let path = self.atoms_path(doc_id);
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io_error(&path, error)),
+        };
+        let mut atoms = Vec::new();
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        let mut index: usize = 0;
+        let mut broken: Option<(usize, String)> = None;
+        loop {
+            line.clear();
+            let read = reader
+                .read_line(&mut line)
+                .map_err(|error| io_error(&path, error))?;
+            if read == 0 {
+                break;
+            }
+            index += 1;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((broken_index, message)) = &broken {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("原子日志第 {broken_index} 行损坏: {message}")),
+                ));
+            }
+            match serde_json::from_str::<Atom>(trimmed) {
+                Ok(atom) => {
+                    // **唯一的差别** ✓：只收 `seq > since` 的 ✓（快照已覆盖的那一段跳过 ✓）。
+                    if atom.seq > since {
+                        atoms.push(atom);
+                    }
+                }
+                Err(error) => broken = Some((index, error.to_string())),
+            }
+        }
+        Ok(atoms)
+    }
+
     /// 写入文档元数据。
     pub fn save_meta(&self, meta: &DocumentMeta) -> Result<()> {
         let dir = self.doc_dir(&meta.doc_id);

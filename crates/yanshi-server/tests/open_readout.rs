@@ -56,3 +56,35 @@ fn atoms_read_on_open_equals_the_whole_log_without_a_snapshot() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **`load_atoms_since` 本身的行为** ✓（待办 ① 的"尾巴"就是靠它 ✓）：
+/// 只收 `seq > since` 的那些 ✓ ⇒ `since = 0` 时与 `load_atoms` **等价** ✓。
+#[test]
+fn load_atoms_since_returns_only_the_tail() {
+    let root = temp_root("since7");
+    let doc = "doc_since";
+    let store = FileStore::open(&root).unwrap();
+    store
+        .append_atom(doc, &atom("a0", 1, AtomKind::CreateDocument))
+        .unwrap();
+    for seq in 2..=9 {
+        store
+            .append_atom(doc, &atom(&format!("a{seq}"), seq, AtomKind::CreateLayer))
+            .unwrap();
+    }
+    let all = store.load_atoms(doc).unwrap();
+    assert_eq!(all.len(), 9, "全部应当是 9 颗 ✓");
+    let since0 = store.load_atoms_since(doc, 0).unwrap();
+    assert_eq!(since0.len(), 9, "since=0 ⇒ 与 load_atoms 等价 ✓");
+    let tail = store.load_atoms_since(doc, 7).unwrap();
+    assert_eq!(
+        tail.len(),
+        2,
+        "seq>7 ⇒ 只剩 8／9 两颗 ✓（实测 {} ✓）",
+        tail.len()
+    );
+    assert!(tail.iter().all(|a| a.seq > 7), "尾巴里不许混进旧原子 ✗");
+    let none = store.load_atoms_since(doc, 9).unwrap();
+    assert!(none.is_empty(), "since=最末 ⇒ 空 ✓");
+    let _ = std::fs::remove_dir_all(&root);
+}
