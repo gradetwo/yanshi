@@ -28146,6 +28146,21 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #      * **仍缺的那一半** ✗：`--watch` 接线后 —— ① **正向必须转绿** ✓（外部追加 1.5 s 内可见 ✓）；
 #        ② 再做一次**变异**（让接线在"无 `--watch`"时也轮询 ✓）证明负对照**真的会红** ✓
 #        ⇒ 这两个拿到之前，**本判据不算有牙** ✓。
-#    **接线锚点** ✓（已侦察 ✓）：`yanshi-mcp/src/lib.rs:62`（`McpOptions.root` ✓）／`:118`（手工解析 ✓）／
-#      `:167`（help ✓）／`:539`（`serve<R,W>` —— **每行处理前先 poll** ✓）；
+#    **★★ 接线计划与确切锚点（2026-10-15 侦察完成 ✓，动手时照这个做 ✓）★★**：
+#      ① 开关 ✓：`McpOptions`（`lib.rs:62` 一带 ✓）加 `pub watch: bool` ✓；
+#         解析（`lib.rs:118` 的 `match arg` ✓）加 `"--watch" => options.watch = true` ✓；
+#         help（`lib.rs:167` 一带 ✓）加一行 ✓。**默认 false** ✓（用户裁定：默认关 ✗）。
+#      ② 钩子点 ✓：`serve()`（`lib.rs:539` ✓，全函数只有 16 行 ✓）——
+#         在 `server.handle_line(&line)` **之前**先 `poll()` 一次 ✓（`let mut server = Server::new(options);` 之后 ✓）。
+#      ③ 拿到可变状态 ✓：`Server` 有 **`workspace_mut()`**（`lib.rs:250` ✓）；
+#         `Workspace`（`crates/yanshi-server/src/service.rs:543` ✓）上有
+#         **`open_document(doc_id) -> Result<&mut Document>`**（`:1173` ✓）与
+#         **`document_mut(doc_id)`**（`:1469` ✓）。
+#      ④ 增量应用 ✓：引擎侧入口 = **`yanshi_core::fold::apply(state: &mut DocumentState, atom)`**
+#         （`crates/yanshi-core/src/fold.rs:793` ✓）—— 与磁盘加载**共用同一条** ✓（不许另写一遍 ✗）。
+#      ⑤ **★ 最后一格尚未侦察（下一段先查这个 ✓）★**：从 `Document` 怎么拿 `&mut DocumentState` ✗
+#         —— 我这次 `grep 'pub fn state|state_mut|apply_atom'` **没有命中** ✓
+#         ⇒ 要么名字不同 ✓、要么得走别的取法 ✓ ⇒ **动手前先看 `Document` 的定义与它的方法 ✓**。
+#      ⑥ 每个文档一个 `TailFollower` ✓（`crates/yanshi-core/src/watch.rs` ✓，已带 5 个单测 ✓ ＋ 分块读 ＋ 防卡死 ✓）；
+#         换文档时重建 ✓；`new_after(path, last_seq)` 可用于"先加载、后跟随" ✓。
 #      serve 侧另走浏览器判据 ✓（`crates/yanshi-http/src/server.rs:88` 已有 WS 推送轮询 ✓）。
