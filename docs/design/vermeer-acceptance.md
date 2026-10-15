@@ -4967,3 +4967,33 @@ await send("Emulation.setDeviceMetricsOverride", {
   * **好处** ✓：判据**不再依赖环境** ✓ ⇒ CI 上这个"**已知会红**"✗ 的根因被拔掉 ✓；
   * **代价** ✓：判据多一次 CDP 调用 ✓（可忽略 ✓）；且**只修了这一条** ✗ ——
     同类"依赖窗口"✗ 的判据若还有 ✓，需要**同样处理** ✓（下一步用 grep 普查 ✓）。
+
+### 四十九之补一百一十：普查结果（另有 4 条待修，2026-10-15 ✓）
+
+**普查** ✓（`grep -rln "board.width\|innerWidth" scripts/browser-*.mjs` ✓）：
+| 判据 | 状态 |
+|---|---|
+| `browser-layout.mjs` | **已修** ✓（§49 之补一百零九 ✓，320×240 ⇒ 绿 ✓）|
+| `browser-brush-preview.mjs` | **待修** ✗ |
+| `browser-export-full-document.mjs` | **待修** ✗ |
+| `browser-live-brush.mjs` | **待修** ✗ |
+| `browser-new-doc-size.mjs` | **待修** ✗ |
+⇒ ⇒ **另 4 条**按同法处理 ✓ ⇒ 否则"**依赖窗口大小**"✗ 会在 CI 上**以同样方式复发** ✓
+（AGENTS 的"**普查，不要只改一处**"✓ —— 本会话在 `Runtime.evaluate` 那两个开关上
+已经吃过一次"**13 处同类缺口**"的教训 ✓）。
+
+**⇒ 配方（每条都一样 ✓，但**必须先看该文件的 CDP 建立处**✗）**：
+```js
+await send("Runtime.enable");
+await send("Page.enable");
+await send("Emulation.setDeviceMetricsOverride", {   // ← 插在这两行之后 ✓
+  width: 1280, height: 900, deviceScaleFactor: 1, mobile: false,
+});
+await send("Page.navigate", { url: … });
+```
+**⇒ 每条的验证方式也一致 ✓**：用 `--window-size=320,240` 起 chromium ✓
+⇒ 该判据**必须仍绿** ✓（改前应是红的 ✓ ⇒ 构成 A/B ✓）。
+
+**★ 一个提醒** ✓：`Emulation.setDeviceMetricsOverride` 会**改视口**✗ ⇒
+若某条判据**本来就在测"窗口很小时的表现"**✗ ⇒ 覆盖它会**改变被测语义** ✗✓
+⇒ ⇒ 这类要先读它的**断言**再决定 ✓（本会话的教训：**输入必须落在要测的分支上**✗ ✓）。
