@@ -115,6 +115,50 @@ jobs:
             tar -tzf "$f" >/dev/null
           done
 
+      # **★ 冒烟：真的把包跑起来（2026-10-15 补上）★**
+      #
+      # **为什么必须有这一步** ✗（实测教训 ✓）：本工作流原先**只打包、不运行** ✗
+      # ⇒ v0.2.0 的 Linux 静态包**起服务后立刻崩溃**（`SIGFPE` / `FPE_INTDIV`：静态链接的进程去
+      # `dlopen` 系统图形栈，被加载库的 glibc 初始化在本进程是静态 glibc 时除以零 ✓）
+      # 而 CI **照样绿** ✗✗ —— 坏包就这么发出去了 ✓。
+      # 取证与控制变量实验见 `docs/design/release-packaging.md` ✓；当时的补救是另发了一个
+      # 实测可用的 `-static-nogpu` 包 ✓。
+      #
+      # **这一步做什么** ✓：解包 → 用**包里的** `yanshi.sh` 起服务 → 轮询 `/health` → 杀掉 ✓；
+      # **起不来就红** ✓，并把服务日志的最后若干行打出来（给人看的现场 ✓）。
+      # **为什么用包里的 `yanshi.sh`** ✗：它会把资产路径指到包内 ✓（直接跑 `bin/yanshi-serve`
+      # 会用相对的 `assets` ⇒ 在别的目录里取不到 ✓，那是**另一个**问题 ✗，不该混进这次冒烟 ✓）。
+      - name: Smoke-test the package (start it and hit /health)
+        run: |
+          set -euo pipefail
+          archive=$(ls dist/*.tar.gz | head -1)
+          echo "-- 冒烟归档：$archive"
+          work=$(mktemp -d)
+          tar -xzf "$archive" -C "$work"
+          root=$(find "$work" -maxdepth 1 -type d -name 'yanshi-*' | head -1)
+          test -n "$root" || { echo "✗ 解包后找不到 yanshi-* 目录"; exit 1; }
+          port=21987
+          log="$work/serve.log"
+          ( cd "$root" && ./yanshi.sh --bind "127.0.0.1:$port" --root "$work/root" \
+              --doc smoke --width 64 --height 64 ) >"$log" 2>&1 &
+          pid=$!
+          ok=no
+          for _ in $(seq 1 40); do
+            if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          if [ "$ok" != yes ]; then
+            echo "✗ 包起来了但 /health 没响应 ⇒ 这个包不能发 ✗"
+            echo "---- 服务日志（最后 40 行）----"
+            tail -40 "$log" || true
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✓ 冒烟通过：包能起服务，/health 有响应 ✓"
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+
       - name: Upload the package as an artifact
         uses: actions/upload-artifact@v4
         with:
