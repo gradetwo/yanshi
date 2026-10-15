@@ -62,7 +62,14 @@ jobs:
         # 不做交叉编译 ✗ —— 那样"真跑一次"的冒烟就失去意义了 ✓。
         include:
           - { os: ubuntu-latest,  label: linux-x86_64,   target: x86_64-unknown-linux-gnu }
-          - { os: macos-13,       label: macos-x86_64,   target: x86_64-apple-darwin }
+          # **★ macOS x86_64 用 `macos-14` 交叉编，不再依赖 `macos-13` ★**（2026-10-15 实测 ✓）：
+          #   第一次跑时 `macos-13` 那个作业**排队 6 分钟以上仍不开始** ✗（其它三个平台同时在跑 ✓），
+          #   与"Intel 镜像已退役／极稀缺"的迹象一致 ✓ ⇒ 不能把发布挂在它上面 ✗。
+          #   **Apple 的工具链原生支持 x86_64↔arm64 交叉** ✓ ⇒ 在 Apple Silicon runner 上
+          #   加 `--target x86_64-apple-darwin` 就得到**真正的 Intel Mach-O** ✓；
+          #   而这类 runner 带 **Rosetta** ⇒ 下面那步"真跑一次 /health"的冒烟**照样跑得起来** ✓
+          #   （所以这里用交叉**没有**牺牲掉冒烟的意义 ✓ —— 它仍然会启动那个 x86_64 二进制 ✓）。
+          - { os: macos-14,       label: macos-x86_64,   target: x86_64-apple-darwin }
           - { os: macos-14,       label: macos-arm64,    target: aarch64-apple-darwin }
           # **用 MSVC 而不是 GNU** ✓：`windows-latest` runner 的**原生**目标就是 msvc ✓，
           # 而 `-gnu` 要额外的 MinGW 工具链 ✗（实机验证时脚本也会以"目标未安装"直接失败 ✗）。
