@@ -4733,3 +4733,28 @@ crates/yanshi-render/src/filter.rs:918    ⚠️「这不是唯一的方框模�
 （像 `YANSHI_ALLOC_PROBE` ✓／`YANSHI_BELOW_SIG_GROUPS` ✓ 那样的 ✓）
 ⇒ 有 ⇒ **零代码**做对照实验 ✓（改一次、量一次 ✓）；没有 ⇒ 再考虑加一个**可关闭**的旋钮 ✓
 （默认保持现状 ✓ ⇒ **零行为变化** ✓，符合本仓纪律 ✓）。
+
+### 四十九之补一百零二：池的杠杆 MIN_POOLED_BYTES（2026-10-15 ✓）
+
+**grep 结果** ✓（`crates/yanshi-render/src/buffer_pool.rs` ✓）：
+```
+:213   Self::with_limits(MAX_POOLED_BUFFERS, MIN_POOLED_BYTES)   ← **默认参数** ✓
+:220   pub fn with_limits(max_buffers, min_bytes)                 ✓
+:241   pub fn set_enabled(&self, enabled: bool)                   ✓
+:517   pool.set_enabled(false);                                   ← 测试里用过 ✓
+:536   BufferPool::with_limits(MAX_POOLED_BUFFERS, **0**)         ← **测试里验证过 min_bytes = 0 合法** ✓
+```
+⇒ ⇒ **池没有环境变量旋钮** ✗（不像 `YANSHI_ALLOC_PROBE` ✓／`YANSHI_BELOW_SIG_GROUPS` ✓）
+⇒ ⇒ 所以池的对照实验要**临时改代码** ✗（同 §49 之补一百零一 的手法 ✓：改一处 ✓ ⇒ 量一次 ✓ ⇒ 恢复 ✓）。
+
+**⇒ 下一轮的实验（明确 ✓）**：把 **`MIN_POOLED_BYTES` 临时改成 `0`** ✗
+（`:536` 已证明这是**合法配置** ✓）⇒ 若增量**明显下降** ✓
+⇒ ⇒ **池的"最小保留字节"就是那 ~600 MB 的来源** ✗✓ ⇒ 再按纪律做**可关闭旋钮**＋**同机 A/B** ✓；
+若**不动** ✗ ⇒ 池不是主因 ⇒ 继续排除 ✓（下一个候选：`render.rs` 自身的整幅缓冲 ✓）。
+
+**★ 同时记录一个已确认的事实** ✓：
+`MIN_POOLED_BYTES` 与 `MAX_POOLED_BUFFERS` 是**两个不同维度** ✓
+（前者＝**最少保留多少字节** ✓、后者＝**最多缓存几块** ✓）；
+`retained_byte_budget() = max(min_bytes, 并发 × 最大单块)` ✓（§49 之补八十四 ✓）
+⇒ ⇒ 改 `min_bytes` **只影响下限** ✓ ⇒ 若目前预算由**后者**决定 ✗ ⇒ 改它**不会有用** ✓
+—— 这正是本实验要分辨的 ✓。
