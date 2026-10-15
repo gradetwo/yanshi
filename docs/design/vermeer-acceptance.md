@@ -2504,3 +2504,42 @@ return (stats.lastArea | 0) > 0
 
 **★ 这一轮的教训** ✓：**读日志不要截断** ✗ —— 最关键的那半截（**判据自己打的四项诊断** ✓）
 就在被 `cut` 掉的部分里 ✗✓；**判据把诊断写全了，是我没读全** ✗。
+
+### 四十九之补三十一：下一层假设 —— 判据条件可能与查看器设计矛盾（2026-10-15 ✓）
+
+**读到的调用图** ✓（`crates/yanshi-http/assets/viewer-app.js` ✓）：
+```
+:1015  function sizeBoards(width, height)        ← 有 changed 门 ✓（只在真变了才碰 backing store ✓）
+:1023  注释：赋 board.width 会**重建 backing store ⇒ 清空画布** ✓（第 43 轮修过"每笔抖一下" ✓）
+:1218  **服务端优先模式**分支：`sizeBoards(__rv.w, __rv.h); needsServerPixels = true; queueServerBlit(); return;`
+       ↑ 这段注释**记着同型的历史缺陷** ✗：「服务端优先模式下缩放 400% ⇒ 画布仍是 961px ✗
+         ⇒ 根因：本分支原来只排队一次补画、然后 return ⇒ `sizeBoards(w,h)` **永远不会被调用** ✗」
+         ⇒ **已修** ✓（"这里也调用它"✓）
+:1231  （另一条分支）sizeBoards(w, h) ✓
+:1509  sizeBoards(next.w, next.h) ✓
+:4014  sizeBoards(1024, 1024) ✓          ← 默认尺寸 ✓
+:4050  sizeBoards(state.docSize.w, state.docSize.h) ✓
+:6686  sizeBoards(state.viewport.w, state.viewport.h) ✓   ← **客户端路径用的是"视口"** ✓
+```
+
+**★★ 关键矛盾（假设 ✓，读码所得 ✓）**：`sizeBoards` 的文档（`:1012`–`:1014` ✓）写着
+> **画布内部分辨率 = 视口的文档像素数**（内核 1:1 渲染 ✓），**CSS 显示尺寸**由 `applyDisplaySize` 决定 ✓
+> ⇒ **缩放后画布像素变少、显示尺寸不变** ✓
+
+⇒ ⇒ 而判据要求 `board.width`「**与显示宽度同量级、且不是默认 300**」✗
+⇒ ⇒ **按这条设计，两者本来就可以不同** ✗✓（`board.width = 视口文档像素` ✓；`style.width = 显示像素` ✓）
+⇒ ⇒ ⇒ 现场 `board.width=320` ✓ vs `显示宽度=424px`（rect 354 ✓）**完全可能是正常的** ✓。
+
+**⇒ 于是修法可能**根本不在产品** ✗✓**（这与 §49 补二十九"不登记"的先验**相反** ✓ —— 现在倾向：
+**判据的条件本身写错了/写窄了** ✗）：
+  * 判据真正该要的是"**当前模式的渲染器画过一帧**" ✓（第 4 项 ✓），
+    而**不该**要求"`board.width` 与**显示**宽度同量级"✗（那是 `style.width` 的语义 ✓）；
+  * 第 4 项（`cache_misses + cache_hits > 0` ✓）也可能过严 ✗ —— 若**还没有任何落笔/视口变化** ✓，
+    内核**本就不该**渲染 ✗ ⇒ ⇒ 那这条判据就**依赖"先发生点什么"**✗，而它自己**没做那件事** ✗。
+
+**⇒ 下一步（需 CDP ✓，但已很窄 ✓）**：
+  1. 本地起 chromium ✓ ⇒ 打印 `board.width`／`style.width`／`state.viewport`／`state.docSize` **四个值** ✓
+     ⇒ 看 `board.width=320` 是否**恰好等于** `state.viewport.w` ✓（若是 ⇒ **产品正确** ✓、**判据错** ✗）；
+  2. 再打印 `kernelStats()` ✓ ⇒ 看内核**是否本就该**有 tile 活动 ✓（无落笔时为零是否正常 ✓）；
+  3. 若 1、2 成立 ⇒ **改判据**（按设计语义取基准 ✓）⇒ 然后它**自然绿** ✓
+     —— 那才是"从台账出来"的正路 ✓（而不是登记 ✗）。
