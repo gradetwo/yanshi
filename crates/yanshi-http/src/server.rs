@@ -283,6 +283,8 @@ impl HttpOptions {
            --bind <addr>      监听地址（缺省 127.0.0.1:8080）\n\
            --root <dir>       持久化根目录（缺省纯内存）\n\
            --doc <id>         默认文档 id（缺省 default）\n\
+           --watch            监视 --root/docs/*/atoms.jsonl；别的进程追加的原子也**推**给 WS 客户端\n\
+                              （**缺省关**；增量解析，冲突最后写赢；不监视 blob）\n\
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
            --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure\n\
