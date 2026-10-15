@@ -2320,6 +2320,28 @@ impl Renderer {
                 }
                 None => accumulation.composite_with_layer(&layer_buffer, mode, opacity),
             }
+            // **★ 合成**之后**再采一次（2026-10-15 ✓）★**
+            //   **为什么** ✗：上一轮我只打了 `before` ✓、**没打 `after`** ✗ ⇒ 读到眼白就误判
+            //   "颜料不在那个点" ✗（而并轨追踪已经证明**段带缓冲里有** ✓）。
+            //   ⇒ **规矩**：探针放在被观察的改动**之后** ✓，且**之前与之后都要打** ✓。
+            if std::env::var_os("YANSHI_TRACE_COMPOSITE").is_some() {
+                let (sx, sy) = (277i64, 325i64);
+                let b = accumulation.bbox();
+                let px = if sx >= b.x as i64
+                    && sx < (b.x + b.w) as i64
+                    && sy >= b.y as i64
+                    && sy < (b.y + b.h) as i64
+                {
+                    let p = accumulation.pixel((sx - b.x as i64) as u32, (sy - b.y as i64) as u32);
+                    Some((p[0], p[1], p[2], p[3]))
+                } else {
+                    None
+                };
+                eprintln!(
+                    "COMPOSITE_AFTER layer={} acc_bbox=({},{},{},{}) after={:?}",
+                    layer.id, b.x, b.y, b.w, b.h, px
+                );
+            }
             // **∴ 切点 ✗**：**`index_here` 从 0 数已合成的可见层 ✓ ⇒ **∴ `+ 1 == split`**
             //   ⇒ **∴ 此刻 `accumulation` **正好**只有下方层 ✓ ⇒ **∴ 这就是缓存要存的内容 ✓**** ✓✓
             if cacheable && below_snapshot.is_none() && index_here + 1 == split {
