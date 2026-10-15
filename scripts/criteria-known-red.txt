@@ -28264,3 +28264,41 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #        （这一轮我两次插桩因此失败过 ✓）；另外**删除插桩**要用 `git checkout --` 回到已提交版 ✓
 #        （比手写删除脚本稳 ✓ —— 我的脚本崩过一次 ✗）。
 
+#    **★★★★★ 根因确定（2026-10-15 ✓）⇒ `reload_document` 会把订阅者一起丢掉 ★★★★★**
+#      **先纠正我上一条猜测** ✗：订阅**确实建在连接的文档上** ✓ ——
+#      `server.rs:3021` 是 `match workspace.document_mut(&doc_id) { Ok(document) => document.subscribe(&session, PushChannel::WebSocket) … }` ✓
+#      （`&doc_id` ＝ 连接 query 里那个 ✓，与 `push_doc`／`publish_atom` **同一个文档** ✓）⇒ 不是"文档不同" ✗。
+#      **真因** ✓✓：`Workspace::reload_document` 的实现是
+#        `self.close_document(doc_id); self.open_document(doc_id)`
+#        ⇒ **把缓存里的那个 `Document` 丢掉、重新建一个** ✓
+#        ⇒ ⇒ **新 `Document` 的广播器里没有任何订阅者** ✗✗
+#        ⇒ 我接线里的顺序是"**先重载、再 publish**" ✗ ⇒ `publish_atom` 找不到订阅者
+#        ⇒ **`deliveries=0`** ✓✓ —— 与插桩实测**完全对上** ✓。
+#      ⇒ **为什么 MCP 侧不受影响** ✓：MCP 没有 WS 订阅者 ✓ ⇒ 只重载就够 ✓（所以那边一次就绿 ✓）。
+#      **★ 修法（下一段照做 ✓）★**：重载之后**重新订阅一次** ✓ —— 在同一个 `workspace` 锁内 ✓：
+#        ```rust
+#        if workspace.reload_document(&push_doc).is_ok() {
+#            if let Ok(document) = workspace.document_mut(&push_doc) {
+#                // **重载丢掉了订阅者** ✗ ⇒ 用**同一个 session**再订阅一次 ✓
+#                //   （同一个 session ⇒ 期望拿回**同一个 subscriber id** ✓，
+#                //     这样上面推送线程里那个 `subscriber` 仍然有效 ✓ —— **这一点必须实测确认** ✗）
+#                document.subscribe(&session, PushChannel::WebSocket);
+#                for atom in &polled.atoms {
+#                    document.broadcaster_mut().publish_atom(atom);
+#                }
+#            }
+#        }
+#        ```
+#        **要先确认的两件事** ✗✓：① `subscribe` 对**同一个 session** 是否**幂等** ✓（返回同一个 id ✓）
+#          —— 看 `crates/yanshi-server/src/broadcast.rs` 里 `subscribe` 的实现 ✓；
+#          ② `session` 在那个位置**是否仍在作用域内** ✓（它在 `:3006` 定义 ✓、`subscriber` 用掉了它 ✓
+#             ⇒ 可能已被 move ✗ ⇒ 需要 `session.clone()` ✓）。
+#        ⇒ ⇒ **若 ① 不成立**（每次订阅给新 id ✗）⇒ 就得换修法 ✓：
+#          在推送线程里**每当重载后重新取一次 subscriber** ✓（把它挪进循环 ✓，用同一 session 订阅 ✓
+#          ＋ 用**刚拿到的** id 去 `drain` ✓）✓ —— 反正**不能让"重载"与"订阅"分家** ✗。
+#      **门禁照旧** ✓：判据转绿 ✓ ⇒ 变异（`if state.options.watch` ⇒ `if true`）⇒ 必须红 ✓
+#        ⇒ `cargo fmt` ＋ `clippy -D warnings` ＋ `cargo test -p yanshi-http -p yanshi-server` ✓ ⇒ 划台账 ✓。
+#      **★ 这一条的普适教训（值得单记 ✓）★**：**"重载/重建"这类操作会把"挂在旧对象上的登记"一起丢掉** ✗
+#        （订阅者 ✓、缓存 ✓、水位 ✓……）⇒ 凡是"重建对象"的路径 ✓，都要问一句
+#        **"有哪些东西是挂在它上面的？"** ✗ —— 我这次就是漏问了这一句 ✓。
+
