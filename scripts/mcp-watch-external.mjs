@@ -30,50 +30,76 @@ const docDirOf = (doc) => join(root, "docs", doc);
 const logOf = (doc) => join(docDirOf(doc), "atoms.jsonl");
 
 // 起一个 MCP 进程；`watch` 为真时加 `--watch` ✓
+//
+// **★ 客户端照 `scripts/mcp-document-switch.mjs` 的**已验证**写法（2026-10-15 修 ✓）★**
+//   我之前用的是"promise ＋ 即时超时" ✗ ⇒ 实测**连 `initialize` 都走不过** ✗
+//   （探针空日志、退出码 124 ✓）⇒ 换成模板的 **`seen` 映射 ＋ `waitFor` 轮询** ✓。
 function startServer(doc, watch) {
   const argv = ["--root", root, "--doc", doc, "--width", "160", "--height", "120"];
   if (watch) argv.push("--watch");
   const child = spawn(BIN, argv, { stdio: ["pipe", "pipe", "pipe"] });
-  const state = { child, nextId: 1, pending: new Map(), stderr: "", dead: false, exitCode: null };
+  const state = { child, seen: new Map(), stderr: "", dead: false, exitCode: null, nextId: 10 };
   child.stderr.on("data", (b) => { state.stderr += String(b); });
   child.on("exit", (code) => { state.dead = true; state.exitCode = code; });
-  let buf = "";
-  child.stdout.on("data", (b) => {
-    buf += String(b);
-    let i;
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-      if (!line) continue;
-      let msg; try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.id !== undefined && msg.id !== null && state.pending.has(msg.id)) {
-        state.pending.get(msg.id)(msg); state.pending.delete(msg.id);
-      }
+  // **写一个已退出的子进程会抛 EPIPE** ✗ ⇒ 吞掉它 ✓（否则 node 会崩 ✗、退出码就变成"崩溃" ✓）
+  child.stdin.on("error", () => { /* 忽略 ✓ */ });
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += String(chunk);
+    let index;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+      try {
+        const message = JSON.parse(line);
+        if (message.id) state.seen.set(message.id, message);
+      } catch { /* 忽略非 JSON ✓ */ }
     }
   });
-  const send = (method, params) => new Promise((resolve, reject) => {
-    const id = state.nextId++;
-    state.pending.set(id, resolve);
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }) + "\n");
-    setTimeout(() => {
-      if (state.pending.has(id)) {
-        state.pending.delete(id);
-        reject(new Error(state.dead
-          ? `进程已退出（码 ${state.exitCode}）：${state.stderr.trim().slice(0, 300)}`
-          : `等 ${method} 超时`));
-      }
-    }, 8000);
-  });
-  return { state, send };
+  const send = (object) => child.stdin.write(JSON.stringify(object) + "\n");
+  const waitFor = async (id, ms = 8000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (state.seen.has(id)) return state.seen.get(id);
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    return null;
+  };
+  const call = async (tool, args) => {
+    const id = ++state.nextId;
+    send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: args || {} } });
+    return await waitFor(id);
+  };
+  return { state, send, waitFor, call };
 }
 async function open(doc, watch) {
   const s = startServer(doc, watch);
-  await s.send("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "watch-ext", version: "1" } });
-  await s.send("notifications/initialized", {});
-  const call = async (tool, args) => {
-    const r = await s.send("tools/call", { name: tool, arguments: args || {} });
-    return r;
-  };
-  return { ...s, call };
+  // **★ 先等一小会儿，看它是不是当场就退了（2026-10-15 ✓）★**
+  //   服务器不认识 `--watch` 时会**立刻打印用法并退出** ✓ ⇒ 这时**不能**再往 stdin 写 ✗
+  //   （写了就是 EPIPE ✗ ⇒ node 崩 ✗ ⇒ 退出码变成"崩溃"而不是"产品红" ✗）。
+  await new Promise((r) => setTimeout(r, 400));
+  const early = (s.state.stderr || "").trim();
+  if (s.state.dead && /usage|用法|unknown|unexpected|invalid|--watch/i.test(early)) {
+    console.log("  ✗ 服务器不接受 `--watch` ⇒ 该特性尚未实现 ⇒ **产品红** ✓（不是判据问题 ✓）");
+    console.log("    实测 stderr：" + early.replace(/\s+/g, " ").slice(0, 300));
+    process.exit(1);
+  }
+  s.send({ jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "watch-ext", version: "1" } } });
+  const hello = await s.waitFor(1);
+  if (!hello) {
+    // **区分两头** ✓：启动就被拒（不认识 `--watch` 等 ✓）⇒ **产品不达标**（红 ✓）；否则判据自身坏了 ✓
+    const why = (s.state.stderr || "").trim();
+    if (/usage|用法|unknown|unexpected|invalid|--watch/i.test(why) || s.state.dead) {
+      console.log("  ✗ 服务器不接受 `--watch`（或直接退出）⇒ 该特性尚未实现 ⇒ **产品红** ✓");
+      console.log("    实测 stderr：" + why.replace(/\s+/g, " ").slice(0, 260));
+      process.exit(1);
+    }
+    console.log("❌ 判不了：`initialize` 没有回复（客户端自身的问题 ✓）");
+    process.exit(3);
+  }
+  s.send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+  await new Promise((r) => setTimeout(r, 300));
+  return s;
 }
 const asText = (r) => {
   const c = (r && r.result && r.result.content) || [];
