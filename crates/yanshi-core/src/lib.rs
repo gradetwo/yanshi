@@ -56,6 +56,7 @@ pub mod seq;
 pub mod snapshot;
 pub mod state;
 pub mod testkit;
+pub mod watch;
 
 pub use atom::{
     payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind, BlobHash, BlobRef,

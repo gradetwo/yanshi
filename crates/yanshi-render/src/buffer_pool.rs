@@ -93,6 +93,13 @@ pub const MIN_POOLED_BYTES: usize = 192 * 1024 * 1024;
 /// **取 64 MiB 的理由** ✓：2K 整幅 ＝ 4096×... 见下 —— 2048² × 4ch × 4B ≈ **67 MB** ✓，
 /// 略高于本值 ⇒ **2K 及以下的整幅缓冲仍被保留** ✓（常见画布尺寸 ✓），
 /// 而 **4K／8K 的整幅（268 MB／1 GB）与半幅都不留** ✗ ⇒ 峰值可降约 268 MB／张 ✓。
+/// **★ 已回退、暂未启用（2026-10-15 ✓）★**
+///
+/// 试过：单个缓冲超过它就**不保留** ✓ ⇒ 4K 峰值 872 → 621 MB ✓、预算判据转绿 ✓；
+/// **但 CI 的 4K 一笔延迟判据变红** ✗（4K 下每次重新分配 268 MB ✗）。
+/// **硬约束优先** ⇒ **回退** ✓；保留此常量是为了让下一版**不必重新推导**这个数 ✓，
+/// 但**启用它之前必须**：① 设计一个**不牺牲复用**的峰值削减法 ✓；
+/// ② 判据里**加上 `tool-stroke-latency-4k.mjs`** ✓（本轮漏了它 ✗ ⇒ 代价没在本机暴露 ✓）。
 pub const MAX_RETAINED_PER_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
 // **★ 保留字节的绝对上限 —— **试过、已撤**（第 254 轮 A/B 实测）★**
@@ -401,12 +408,21 @@ impl BufferPool {
         let count_ok = inner.free.len() < self.limits.max_buffers.max(1);
         let bytes_ok =
             inner.free.is_empty() || inner.retained_bytes.saturating_add(bytes) <= budget;
-        // **★ 按尺寸分级（2026-10-15 ✓）★**：**单个**缓冲超过
-        // [`MAX_RETAINED_PER_BUFFER_BYTES`] 就**不保留** ✓（直接还给操作系统 ✓），
-        // 小缓冲照旧保留 ✓ ⇒ 常见尺寸的复用不受影响 ✓。
-        // **这不是**第 254 轮那次被撤回的一刀切 ✗（那次给保留字节加绝对上限 ⇒ 所有尺寸复用一起坏 ✗）。
-        let size_ok = bytes <= MAX_RETAINED_PER_BUFFER_BYTES;
-        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok && size_ok;
+        // **★★ 2026-10-15：这里**试过"按尺寸分级"（超过 64 MiB 就不保留）⇒ **已回退** ✗ ★★**
+        //   **账目** ✓：4K 内存预算判据确实从 **872 MB 降到 621 MB** ✓、判据转绿 ✓；
+        //   但 **CI 的 `tool-stroke-latency-4k.mjs` 变红** ✗（`88a748ff` 那次是 11/11 全绿 ✓
+        //   ⇒ 那是**我的改动引入的** ✓）—— 因为 4K 下图层缓冲不再保留 ⇒
+        //   **每次都要重新分配 268 MB** ✓ ⇒ **CPU／延迟**吃到这笔账 ✓。
+        //   **本机测不出** ✗：本机同一判据是 **中位 23.9 ms／预算 100 ms**（4 倍余量 ✓）
+        //   ⇒ 而 CI runner 更慢 ⇒ 在那边就超了 ✓ ⇒ **只有 CI 能看见这笔代价** ✓。
+        //   **判决** ✓：**硬约束优先** ✗ —— 「4K 一笔 ≤ ~100 ms」是**用户硬要求** ✓，
+        //   而内存预算只是一条**可登记的**判据 ✓ ⇒ ⇒ **回退**这项改动 ✓，
+        //   把 `tool-render-memory-budget.mjs` 退回**已知红**（诚实 ✓）。
+        //   **下一版要做的事** ✓：找一个**不牺牲复用**的峰值削减法 ——
+        //   例如保留**一张**整幅（沿用本文件既有的"至少保留一张"例外 ✓）、
+        //   或**边合成边释放**（把峰值降在**持有**那一侧，而不是靠"不保留" ✗）✓；
+        //   并且**验证必须包含 `tool-stroke-latency-4k.mjs`** ✓（本轮漏了它 ✗）。
+        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok;
         if retain {
             inner.retained_bytes += bytes;
             inner.free.push((id, buffer));
