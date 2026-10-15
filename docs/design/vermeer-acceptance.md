@@ -328,3 +328,46 @@ node scripts/tool-psd-layers.mjs <base>
 **下一步（修正后 ✓）**：把**介质路径**造出的那个 `raster_patch` 与 **PSD 路径**造出来的逐字段比 ✓
 （`width`/`height`／`tiles`／`refs`／`region` 的类型与含义 ✓）⇒ 差异点就是答案 ✓。
 
+## 十五、★ 二分定位：**`import_image` 造的对象不渲染**，而 `import_psd` 的在**同一图层**上画得好（2026-10-15）★
+
+**方法** ✓（这一步才是决定性的 ✓）：把两个**已知会画／不会画**的东西放在**同一文档、同一类图层**上，
+用**同一个手段**（`render_region` 取原始像素 → `undo_last` → 再取 ✓）量"这一笔到底改了多少像素" ✓：
+
+| 对照组（都在**我 `create_layer` 建的层**上 ✓）| 撤销前后改动像素 |
+|---|---|
+| `import_psd`（PSD 压平图 ⇒ 一个 `raster_patch` ✓）| **4096** ✓✓ **会画** |
+| `import_image`（PNG ⇒ 一个 `raster_patch` ✓）| **0** ✗✗ **不画** |
+
+⇒ ⇒ **不是图层的问题** ✗、**不是"`raster_patch` 这条路"** ✗（第 94 轮已用仓库判据否掉 ✓）
+⇒ ⇒ **是 `import_image` 这个工具造出的对象有问题** ✓。
+
+**载荷并排 dump（同一份代码、同一个文档 ✓）** ✓：
+```
+只有 A(import_psd，会画 ✓) 有的键：['tiles']      ← ★ 唯一的结构差异
+只有 B(import_image，不画 ✗) 有的键：[]
+共有键：bitmap / height / layer_id / object_id / refs / region / type / width
+```
+⇒ **`import_image` 不写 `tiles`** ✗，而 `import_psd` 写 ✓（内容是一份索引：
+`{"v":1,"tile":256,"width":…,"height":…,"tiles":["sha256:…"]}` ⇒ 指向**同一个** bitmap blob ✓）。
+
+**★ 但机理尚未确认 —— 两面都写 ★** ✗：
+  * `parse_raster_patch`（`object.rs:597` ✓）把 `tiles` 当 **`Option`** ✓ ⇒ 解析**不要求**它 ✗；
+  * 我在 `render.rs` 里 grep `tiles` ✓，命中的**几乎都是瓦片缓存的统计字段** ✓，
+    **没有**看到"按对象的 `tiles` 枚举补丁"那一步 ✗；
+  ⇒ ⇒ 所以**还不能说"缺 `tiles` 就是不画的原因"** ✗ —— 它只是**目前唯一的结构差异** ✓。
+  另一个未排除的候选 ✓：**解码路径**（`fetch_raster_patch` ✓ 按 blob 的 `mime_type` 解码 ✓；
+  `import_psd` 的那份与 `import_image` 的那份 mime 可能不同 ✓）。
+
+**下一步（三条，按代价从低到高 ✓）**：
+  1. **比 blob 的 mime 与实际解码** ✓：把两个对象的 `bitmap.blob_hash` 都取出来 ✓，
+     看 `import_image` 那份的 `mime_type`／尺寸与解码结果 ✓（若解码失败 ⇒ `fetch_raster_patch`
+     会 `Ok(None)` **静默跳过** ✓ ⇒ 那就是它 ✓）；
+  2. **照 `import_psd` 的样子给 `import_image` 也写 `tiles`** ✓ ⇒ 用上面这套二分**当场验证** ✓
+     （同一个对照表 ✓：改了之后 PNG 那一格应当从 0 变成非 0 ✓）；
+  3. 若 ① 命中 ⇒ 修**解码/取图**那条 ✓（并让它**出声** ✗ —— `fetch_raster_patch` 现在失败时
+     返回 `Ok(None)` ✓ 是"静默无效果"的又一处 ✓）。
+
+**这一轮的意义** ✓：把"介质那一笔不渲染"这件事，从"介质的问题" ✗ 收窄成了
+"**`import_image` 造的对象不渲染**" ✓ —— 而**整条"静默 no-op"家族**（含虹膜 ✓、含验收图 ✓）
+都落在这一条上 ✓。
+
