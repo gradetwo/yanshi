@@ -635,3 +635,36 @@ if carried.len() >= BELOW_SIG_GROUPS && !carried.contains_key(&sig) { … }
 **给后来人** ✓：改这个常量之前，**先跑那四条判据** ✓ ——
 尤其 `tool-below-sig-alternate` ✓（它守的正是"切点切走再切回来必须复用" ✓）。
 
+## §36 ★ 用测量**退掉**计划里那一步："先造复用观测判据"——**复用本来就是对的**（2026-10-15 ✓）
+
+**原计划** ✓（写在本文件与验收档里 ✓）：DEF-03 那条（4K 下 **302 个未走池的 tile 缓冲** ✓）
+"**先造一个"这些缓冲会不会被复用"的观测判据** ✓，再谈把它们路由到 `buffer_pool` ✓"。
+
+**测量（先量再改 ✓）**：让服务端带 `YANSHI_ALLOC_PROBE=1` ✓，**同一区域连续渲染 6 次** ✓，
+每次都读 `/health.alloc_probe` 的两个桶 ✓：
+```
+第 1 次：buffer_fresh count=37 (Δ+37)   pool_fresh count=4 (Δ+4)
+第 2 次：buffer_fresh count=37 (Δ 0)    pool_fresh count=4 (Δ 0)
+第 3 次：buffer_fresh count=37 (Δ 0)    pool_fresh count=4 (Δ 0)
+第 4 次：buffer_fresh count=37 (Δ 0)    pool_fresh count=4 (Δ 0)
+第 5 次：buffer_fresh count=37 (Δ 0)    pool_fresh count=4 (Δ 0)
+第 6 次：buffer_fresh count=37 (Δ 0)    pool_fresh count=4 (Δ 0)
+```
+⇒ ⇒ **重复渲染**时**一个缓冲都不再分配** ✓（`by_sig` 快照 ＋ 帧缓存命中 ✓ ——
+这也与 §20 的结论一致：**切点切回来要复用**那条由 `tool-below-sig-alternate` 守着 ✓）。
+
+**结论（如实退掉那一步 ✓）**：
+  * **"复用观测判据"不需要新造** ✗ —— 复用**已经是对的** ✓；造出来只会是一条**空转的绿灯** ✗
+    （本会话已经吃过"判据没有牙"的教训 ✓，不该再造一条 ✓）；
+  * DEF-03 的 302 个缓冲来自**冷启动那一趟**（4K ＋ 4 层的**首次整幅**渲染 ✓）
+    ⇒ 那个场景**已经有判据守着** ✓：`scripts/tool-render-memory-budget.mjs`（**已登记已知红** ✓）；
+  * ⇒ 所以 DEF-03 真正缺的**不是观测** ✗，而是**结构改动** ✓
+    （"每层缓冲别同时活着" ✓：`src-over` 可结合 ⇒ 边合成边释放 ✓，或分块 ✓）
+    —— 那正是纪律要求"**不在长会话尾端动**"的那一类 ✗。
+
+**留下的可复用数字** ✓（以后要谈这笔账的人直接用 ✓）：
+```
+760² 冷渲染一次：buffer_fresh 37 次分配｜pool_fresh 4 次分配
+同一区域重复渲染：两者**均为 0** ✓
+```
+
