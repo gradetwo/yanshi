@@ -87,6 +87,20 @@ jobs:
           #   ⇒ 改成下面**单独一步显式 `rustup target add`** ✓：不含糊 ✓，装不上就明着失败 ✓。
           targets: wasm32-unknown-unknown
 
+      # **★ macOS 必须先装 Homebrew 的 `lld`（2026-10-15 CI 实测 ✓）★**
+      #   现象 ✓：`error: linking with \`rust-lld\` failed: signal: 6 (SIGABRT)` ✗ ⇒
+      #   `yanshi-medium-marker` / `yanshi-medium-oil` 都编不出来 ⇒ 打包 `tar: wasm-ld: Cannot stat` ✗。
+      #   **根因** ✓：macOS 上 rustup 的 `rust-lld` 缺 `libLLVM.dylib` ✓（**脚本自己的提示里就写着** ✓，
+      #   而 `docs/guide.md` 也记着这条 ✓）⇒ 装 Homebrew 的 **`lld`**（**单独的 formula** ✗，
+      #   `brew install llvm` 里**没有**它 ✓）⇒ 脚本会自动改用它 ✓（`CARGO_TARGET_WASM32_…_LINKER` ✓）。
+      #   **只在 macOS 上跑** ✓（Linux/Windows 的 runner 不需要 ✓）。
+      - name: Install lld on macOS (the wasm kernel needs it)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install lld
+          ls -la "$(brew --prefix lld)/bin" || true
+
       - name: Add the matrix target explicitly
         run: |
           set -euo pipefail
