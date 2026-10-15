@@ -171,7 +171,7 @@ while [ $# -gt 0 ]; do
     --static) static_build=1; shift ;;   # 已是默认 ✓，保留是为了让脚本可读 ✓
     --dynamic) static_build=0; shift ;;  # **退出开关** ✓：确实需要动态链接时才用 ✓
     --target) target_triple="$2"; shift 2 ;;        # **指定目标平台** ✓（交叉编译 ✓）
-    --gpu) gpu_server=1; shift ;;                   # **服务端带 GPU** ✓（已是默认 ✓）
+    --gpu) gpu_server=1; gpu_explicit=1; shift ;;   # **服务端带 GPU** ✓（静态包下要**显式**给 ✓，见下面 ✓）
     --no-gpu) gpu_server=0; shift ;;                # **纯 CPU 包** ✓（体积小 ✓）
     --kernel-gpu) gpu_kernel=1; shift ;;            # **内核也带 GPU** ✓（+131 包 ✓）
     --all-targets|--all) all_targets=1; shift ;;    # **全平台** ✓（逐个试 ✓，没装的跳过 ✓）
@@ -180,6 +180,25 @@ while [ $# -gt 0 ]; do
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
+
+# **★ 静态包 ＋ GPU ⇒ **必崩**（2026-10-15 实测 ✓）⇒ 静态缺省关掉 GPU ★**
+#
+# **实测**（本机，两个包的真跑对照 ✓；取证与控制变量实验见 `docs/design/release-packaging.md` ✓）：
+#   * 静态 ＋ `--gpu`（**旧的缺省** ✓）⇒ 起服务后 **`SIGFPE` / `FPE_INTDIV`**
+#     —— 静态链接的进程去 `dlopen` 系统图形栈，被加载库的 glibc 初始化在本进程是静态 glibc 时除以零 ✓；
+#   * 静态 ＋ `--no-gpu` ⇒ **正常服务** ✓（/health 有响应 ✓）。
+# ⇒ **不能让"缺省"发出一个起不来的包** ✗ ⇒ 静态构建下**缺省 `gpu_server=0`** ✓。
+# **仍然尊重显式请求** ✓：想要 GPU 的人给 `--gpu` ✓（脚本会照做 ✓，但**明确警告** ✓）。
+# **动态构建不受影响** ✓（那里 GPU 是好的 ✓，仍是缺省 ✓）。
+if [ "${static_build}" = 1 ] && [ "${gpu_server}" = 1 ]; then
+  if [ "${gpu_explicit:-0}" = 1 ]; then
+    echo "⚠️  你显式要了 --gpu ＋ 静态包：**实测这条路会 SIGFPE**（静态链接 ＋ dlopen 系统图形栈 ✓）" >&2
+    echo "    仍按你的要求打（但请在目标机上先跑一次 --version 与 /health ✓）。" >&2
+  else
+    gpu_server=0
+    echo "ⓘ 静态包：**缺省关掉 GPU** ✓（实测「静态 ＋ GPU」起服务即 SIGFPE ✓；要硬开请显式 --gpu ✓）"
+  fi
+fi
 
 # **`--list-targets`：看看本机装了哪些目标** ✓（不编、不打，只回答"能编哪些" ✓）。
 if [ "${list_targets}" = 1 ]; then
