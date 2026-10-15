@@ -63,3 +63,28 @@
 ⇒ 效果：**发布包的纹理体积从 ~13 MB 变成 ~104 KB** ✓（本机若已抓过缓存，`assets/textures/` 里仍会有那些大图 ✓
 —— 那是**本地便利** ✓，不是版本控制内容 ✓）。
 
+---
+
+## ★ 更正（2026-10-15 当天二次修正 ✗→✓）★：**有三张大图必须进 git**
+
+我早上按策略把**全部**大图移出了版本控制 ✗ ⇒ **CI 立刻变红** ✗：
+```
+test (stable)／test (beta)／criteria shard 1 全红
+assertion failed: "找不到 texture 「Paper001.png」⇒ 可用的有：TileCanvas128.png / …"
+```
+⇒ 根因 ✓：`crates/yanshi-server/tests/background_stroke_cost.rs` ✓、`tests/texture_background.rs` ✓
+与判据 `scripts/tool-paper.mjs` ✓ **按名字**用 `Paper001.png`（25 处 ✓）／`Paper003.png`（4 ✓）／
+`Paper006.png`（2 ✓）当**画布尺寸夹具** ✓ ⇒ 它们不在 git 里 ⇒ **干净克隆上那些测试跑不了** ✗。
+**本机当时是绿的** ✗ —— 因为**缓存还在** ✓（这正是"单条绿 ≠ 真实约定下绿"那条教训 ✓）。
+
+**现在的规则（三档 ✓）**：
+
+| | 进 git？ | 说明 |
+|---|---|---|
+| `NOTICE.md` ✓ | **是** ✓ | 这份说明 |
+| 四张 `Tile*128.png`（128² ✓，约 **104 KB** ✓）| **是** ✓ | **随仓库发出**的可平铺资产 ✓（引擎可见 ✓）|
+| `Paper001`／`Paper003`／`Paper006`（1024² ✓，约 **2.3 MB** ✓）| **是** ✓ | **测试与判据的夹具** ✓（按名字引用 ✓，见上）|
+| 其余 `Cardboard*`／`Paper004`／`Paper005`（约 **11 MB** ✓）| **否** ✗ | 属**每工作区缓存** ✓，由 `scripts/fetch-textures.sh` 抓 ✓ |
+
+⇒ **随仓库发出的纹理合计约 2.4 MB** ✓（原来 13 MB ✗）；**干净克隆上测试与判据都能跑** ✓（已用干净克隆模拟验证 ✓）。
+

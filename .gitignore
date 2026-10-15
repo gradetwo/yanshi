@@ -101,3 +101,12 @@ node_modules/
 assets/textures/Cardboard*.png
 assets/textures/Paper*.png
 !assets/textures/Tile*.png
+# **★ 但这三张必须进 git（2026-10-15 CI 变红之后补 ✓）★**：它们是
+#   `crates/yanshi-server/tests/background_stroke_cost.rs`／`texture_background.rs`
+#   与判据 `scripts/tool-paper.mjs` 用的**画布尺寸**夹具 ✓（按名字引用 ✓，共 25+4+2 处 ✓）
+#   ⇒ 不随仓库发出去，"干净克隆"上那些测试**根本跑不了** ✗
+#     （实测：CI 上 `test (stable)`／`test (beta)`／`criteria shard 1` 全红 ✗，
+#      报「找不到 texture 「Paper001.png」✗」）。
+!assets/textures/Paper001.png
+!assets/textures/Paper003.png
+!assets/textures/Paper006.png
