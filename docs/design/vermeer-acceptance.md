@@ -4934,3 +4934,36 @@ scripts/run-criteria.sh:64   chromium … **--window-size=1280,900** \   ✓ **�
   3. 顺带核对 ✓：`--window-size` 与 `--headless=new` 的**兼容性** ✗
      （也许要 `--window-size` 配 `--force-device-scale-factor` ✓ 或干脆用 CDP 的
      `Emulation.setDeviceMetricsOverride` ✓ **由判据自己定视口** ✓ —— 这条路**与 CI 环境无关** ✓✓）。
+
+### 四十九之补一百零九：判据自己定视口（A/B：320×240 从红转绿，2026-10-15 ✓）
+
+**为什么** ✗✓（§49 之补一百零八 实测 ✓）：
+  * `--window-size=1280,900` **在本机有效** ✓（§49 之补三十七 的双向验证 ✓）；
+  * 但 **CI 上无效** ✗ —— `12b1185` 的 CI 仍报 `board.width=320` ✓，
+    而参数**确实在** `scripts/run-criteria.sh:64` ✓（`git diff 49d7f1c..HEAD` **为空** ✓）；
+  * ⇒ ⇒ **判据若依赖"窗口多大"✗ ⇒ 它的结果就取决于环境** ✗✓
+    （"**本机绿 ≠ CI 绿**"✓ 的第 2 个实例 ✓）。
+
+**改了什么** ✓（`scripts/browser-layout.mjs` ✓，在 `Page.enable` 之后、`Page.navigate` 之前 ✓）：
+```js
+await send("Emulation.setDeviceMetricsOverride", {
+  width: 1280, height: 900, deviceScaleFactor: 1, mobile: false,
+});
+```
+⇒ ⇒ **由判据自己强制一个已知视口** ✓ ⇒ ⇒ **与窗口无关 ✓、与本机/CI 差异无关** ✓✓；
+⇒ 尺寸取 **1280×900** ✓ 与 `run-criteria.sh` 给 chromium 的 `--window-size` **一致** ✓
+⇒ **本机行为不变** ✓，只是**不再依赖它** ✓ —— 按 AGENTS"**引擎已有的不做第二遍**"✓
+的反面也成立 ✓：**已经能被判据自己控制的事，就不要寄希望于环境** ✓。
+
+**★ 实测（A/B ✓，同场景只改判据 ✓）**：
+| | 小窗口 `--window-size=320,240` |
+|---|---|
+| **改之前**（§49 之补三十六 ✓） | 退出码 **1** ✗（`board.width=320` ✗）|
+| **改之后**（本笔 ✓） | 退出码 **0** ✓✓ |
+⇒ ⇒ **改前红、改后绿** ✓ ⇒ **就是这个改动起的作用** ✓。
+另：`node --check scripts/browser-layout.mjs` **通过** ✓。
+
+**★ 本笔的两本账** ✓：
+  * **好处** ✓：判据**不再依赖环境** ✓ ⇒ CI 上这个"**已知会红**"✗ 的根因被拔掉 ✓；
+  * **代价** ✓：判据多一次 CDP 调用 ✓（可忽略 ✓）；且**只修了这一条** ✗ ——
+    同类"依赖窗口"✗ 的判据若还有 ✓，需要**同样处理** ✓（下一步用 grep 普查 ✓）。
