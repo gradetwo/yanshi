@@ -2934,3 +2934,35 @@ kernel.rs:1059  单测 `evict_outside_viewport_is_driven_by_js_and_reports_count
 
 **⇒ 下一步（很小 ✓）**：读 `viewer-app.js` 里调 `kernel.evictOutsideViewport(...)` 的地方 ✓
 ⇒ 把返回值累加进 `yanshiStats.viewportEvictions` ✓ ⇒ 本机重跑判据 ✓ ⇒ 期望**绿** ✓。
+
+### 四十九之补四十五：客户端那条的完整规格（2026-10-15 ✓）
+
+**缺口** ✓（三处互证 ✓）：
+  1. 内核**已导出**给 JS ✓：`crates/yanshi-wasm/src/lib.rs:337`
+     **`pub fn evict_outside_viewport(&mut self, x, y, w, h) -> usize`** ✓（返回**淘汰块数** ✓）；
+  2. JS 的 `kernel.*` 方法清单里**有** `set_viewport(` ✓、**没有** `evict_outside_viewport(` ✗
+     （`grep -oE "kernel\.[a-zA-Z_]+\(" | sort -u` ✓ 实测 ✓）；
+  3. `yanshiStats`（`viewer-app.js:101` ✓）里**没有** `viewportEvictions` ✗。
+⇒ ⇒ **判据断言①读的正是 `yanshiStats.viewportEvictions`** ✓ ⇒ 没人给它赋值 ✗ ⇒ **永远红** ✗✓。
+
+**视口变化的两处调用点** ✓（挂上去的位置 ✓）：
+```
+viewer-app.js:1232   state.kernel.set_viewport(x, y, w, h);   ← 主路径 ✓
+viewer-app.js:1847   state.kernel.set_viewport(0, 0, w, h);   ← 另一处 ✓
+```
+
+**⇒ 规格（两处编辑 ✓）**：
+  * **`viewer-app.js:101`** 的 `window.yanshiStats = { … }` 里加一个字段 ✓
+    **`viewportEvictions: 0,`** ✓（判据读它 ✓；也便于人看 ✓）；
+  * **两处 `set_viewport` 之后** ✓ 各加一句 ✓：
+    **`window.yanshiStats.viewportEvictions += state.kernel.evict_outside_viewport(x, y, w, h);`** ✓
+    （**同一个视口** ✓ ⇒ 与推送过滤／服务的口径一致 ✓）。
+**为什么放在 `set_viewport` 旁边** ✓：**视口变 ⇒ 才需要淘汰** ✓（与 §49 之补二十四 的设计同源 ✓）；
+**两处都要加** ✗（不然 `:1847` 那条路漏掉 ✓ —— "普查，不只改一处" ✓）。
+
+**⇒ 验证方式（本机 CDP ✓，已有现成流程 ✓）**：
+  1. 改完 ✓ ⇒ 起服务 ＋ chromium（`--window-size=1280,900` ✓）⇒ 跑 `browser-viewport-evict.mjs` ✓
+     ⇒ ⇒ 期望 **退出码 0** ✓（**这是"能绿"的证据** ✓）；
+  2. **变异** ✓：把 `+=` 改成 `= 0`（或干脆删掉那一句 ✓）⇒ 判据**必须红** ✓（"有牙" ✓）。
+**⇒ 服务端那条（乙(iii) 的内存账）另算** ✓（§49 之补四十四 ✓）——
+本笔只管**客户端内核**这条 ✓（判据测的就是它 ✓）。
