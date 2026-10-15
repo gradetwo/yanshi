@@ -206,6 +206,19 @@ const waitFor = async (expr, label, timeoutMs = KERNEL_WAIT_MS) => {
 
 await send("Runtime.enable");
 await send("Page.enable");
+// **★ 由判据**自己**定视口 ✗★**（2026-10-15 ✓；§49 之补一百零八／一百一十 ✓）：
+//   **∴ 为什么** ✗：`--window-size` **本机有效 ✓、CI 无效** ✗（实测：`12b1185` 的 CI 仍报
+//     `board.width=320` ✓，而参数**确实在** `run-criteria.sh:64` ✓）
+//     ⇒ 判据依赖窗口 ⇒ **结果依赖环境** ✗✓（"**本机绿 ≠ CI 绿**"✓ 的实例 ✓）；
+//   **∴ 改成** ✓：CDP 的 `Emulation.setDeviceMetricsOverride` **强制**已知视口 ✓
+//     ⇒ ⇒ **与窗口无关** ✓、与本机/CI 差异**无关** ✓✓；
+//   **∴ 1280×900** ✓：与 `run-criteria.sh` 给 chromium 的 `--window-size` **一致** ✓。
+await send("Emulation.setDeviceMetricsOverride", {
+  width: 1280,
+  height: 900,
+  deviceScaleFactor: 1,
+  mobile: false,
+});
 await send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dir }).catch(() => undefined);
 await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true }).catch(() => undefined);
 fs.rmSync(dir, { recursive: true, force: true });

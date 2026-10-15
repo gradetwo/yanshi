@@ -5023,3 +5023,28 @@ await send("Page.navigate", { url: … });
     ＋ "**这 2 条本来就红（台账有记录）**"✓ ⇒ **风险可控** ✓ —— 但**仍应补做逐条 A/B** ✗（记为待办 ✓）。
   * 另：我那次测量命令里 `echo "exit=$?"` 抓的是 `tail` 的退出码 ✗（shell 疏漏 ✓ ⇒ **真实码未知** ✗）——
     记下来 ✓：**量退出码时不要把它接在管道后面** ✗。
+
+### 四十九之补一百一十二：第 3 条也修（`export` ✓），第 4 条须再读（2026-10-15 ✓）
+
+**为什么它前两次没打上** ✗✓（诚实记 ✓）：我先按"**三行连续**"（`Runtime.enable`／`Page.enable`／
+`Page.navigate` ✗）的模式匹配 ✓ ⇒ 而它中间**多了 `Page.setDownloadBehavior`** ✗
+（`:209` ✓，导出判据当然要设下载目录 ✓）⇒ ⇒ **模式不匹配 ⇒ 静默跳过** ✓
+（我的脚本会打印"未打"✓ ⇒ 没被漏掉 ✓，但**原因**是本笔才看清的 ✓）。
+
+**改法** ✓：把 `Emulation.setDeviceMetricsOverride`（1280×900 ✓）
+插在 **`Page.enable` 之后** ✓（`Page.setDownloadBehavior` **之前** ✓）；
+`node --check` **通过** ✓。
+
+**⇒ 普查进度** ✓：
+| 判据 | 状态 |
+|---|---|
+| `browser-layout.mjs` | 已修 ✓（**A/B 已证**：320×240 ⇒ 绿 ✓）|
+| `browser-brush-preview.mjs` | 已修 ✓ |
+| `browser-live-brush.mjs` | 已修 ✓ |
+| `browser-export-full-document.mjs` | **本次已修** ✓ |
+| `browser-new-doc-size.mjs` | **仍未修** ✗ ⇒ **它没有 `Runtime.enable`／`Page.enable`** ✗（读码所见 ✓）⇒ **换了导航机制** ✓ ⇒ **须再读一层** ✓（下一步 ✓）|
+
+**★ 教训（本会话第 N 次同族，但这次是**匹配模式**的版本 ✗✓）**：
+**按"连续多行"匹配时，中间多一行就会静默不中** ✗ ⇒
+⇒ ⇒ 所以**匹配要尽量短**（一到两行 ✓），**且必须打印"打了几处"**✓ ——
+本笔的脚本正是靠打印才发现 `export` 没中 ✓（否则会以为三条都打了 ✓）。
