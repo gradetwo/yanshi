@@ -33,10 +33,45 @@ if (!existsSync(BINARY)) {
 }
 
 const src = readFileSync(LAUNCHER, "utf8").split("\n");
-const start = src.findIndex((line) => line.includes('exec "$here/bin/yanshi-serve"'));
+// **★ 匹配放宽到"前缀"，因为 Windows 的 `.exe` 后缀是**占位符**（2026-10-15 ✓）★**
+//   原来是精确匹配 `exec "$here/bin/yanshi-serve"` ✗ ⇒ 我为了 Windows 把那一行改成
+//   `exec "$here/bin/yanshi-serve__BIN_SUFFIX__"` 之后，这条判据**当场红了** ✓
+//   （原文：「找不到 exec 行」✓）—— 又是判据先发现 ✓。
+//   ⇒ 匹配**前缀** ✓，并在下面**把新机制也断言掉** ✓（这样它比原来更强 ✓，而不是放松 ✗）。
+const start = src.findIndex((line) => line.includes('exec "$here/bin/yanshi-serve'));
 if (start < 0) {
   console.error("❌ 发布启动脚本判据无法运行：在 " + LAUNCHER + " 里找不到 exec 行");
   process.exit(1);
+}
+// **★ 新机制的两条断言（Windows 的 `.exe` 后缀）★**：
+//   包内 `yanshi.sh` 是**引号 heredoc**（不做变量展开 ✗）⇒ 打包时必须用 `sed` 把占位符替换掉 ✓；
+//   而"后缀为空就不替换"是**错的** ✗（那样 Linux 包里会留着字面占位符 ⇒ 起来就找不到二进制 ✗✗，
+//   2026-10-15 CI 的冒烟当场抓到过 ✓）⇒ 这里要求：**替换无条件执行** ＋ **有"占位符必须消失"的自检** ✓。
+{
+  const execLine = src[start];
+  const hasPlaceholder = execLine.includes("__BIN_SUFFIX__");
+  const whole = src.join("\n");
+  if (hasPlaceholder) {
+    if (!/sed[^\n]*__BIN_SUFFIX__/.test(whole)) {
+      console.error(
+        "❌ 包内 yanshi.sh 的 exec 行带占位符 __BIN_SUFFIX__，但 scripts/package-release.sh 里找不到替换它的 sed",
+      );
+      process.exit(1);
+    }
+    if (/if \[ -n "\$\{bin_suffix\}" \][\s\S]{0,120}sed/.test(whole)) {
+      console.error(
+        "❌ 替换被 `if [ -n \"${bin_suffix}\" ]` 包着 ⇒ **后缀为空时不会替换** ✗" +
+          "（Linux/macOS 上后缀就是空 ✓ ⇒ 包里会留下字面占位符 ⇒ 起来找不到二进制 ✗）",
+      );
+      process.exit(1);
+    }
+    if (!whole.includes("grep -q \"__BIN_SUFFIX__\"")) {
+      console.error(
+        "❌ 缺少「替换后不许再出现 __BIN_SUFFIX__」的自检 ⇒ 一旦替换失效，坏包会照样发出去 ✗",
+      );
+      process.exit(1);
+    }
+  }
 }
 let end = start;
 while (end < src.length && !src[end].includes('"$@"')) end += 1;
