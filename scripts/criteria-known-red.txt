@@ -28032,7 +28032,7 @@ browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗
 #   ＋ **∴ 转绿证据 ✗**：本机 `node scripts/tool-bitmap-tiles-render.mjs` ⇒ 退出码 **0**
 #     ＋ **∴ ② 那一格改了 10380 个像素** ✓ ＝ 虹膜位图里**不透明像素的个数** ✓（整个虹膜都上画布了 ✓）
 
-browser-viewport-evict.mjs  # 类型：**待定位（判据的驱动方式，不是产品）** —— 见下四要素
+browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ 驱动）** —— 见下四要素
 #   **★ 本条守什么（乙(iii) 视口淘汰接线 ✓，2026-10-15 新加 ✓）★**：
 #     内核**早就有** `evict_outside_viewport` ✓（`yanshi-wasm/src/kernel.rs` ✓，
 #     还有一条测试叫「**is driven by JS** and reports counts」✓），绑定也在
@@ -28073,4 +28073,29 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的驱动方式，不
 #     ② **`/json/new` 只接受 PUT** ✗（GET 会报 "Using unsafe HTTP verb" ✓）。
 #   **★ 必须照 harness 的方式跑** ✓（§43 ✓）：`run-criteria.sh` 自己起 chromium ✓
 #     并在 URL 上带 **`render=client`** ✓（第 780 轮修 ✓）；**别即席跑** ✗。
+
+
+#   **★★ 2026-10-15 续查：两个真陷阱（都已修 ✓，但判据尚未跑绿 ✗）★★**
+#   **[陷阱一] 我改错了文件** ✗ ★★：`web/` 是**生成目录** ✗
+#     （提交 `45d0a75c`：「build: untrack **the generated web directory**…」✓；
+#      `git ls-files` 只跟踪 `crates/yanshi-http/assets/viewer-app.js` ✓）；
+#     服务器用 **`include_str!("../assets/viewer-app.js")`** ✓ **编译期内嵌** ✓
+#     ⇒ ⇒ **改 `web/viewer-app.js` 一行都不会生效** ✗（我为此白花了好几轮 ✓）。
+#     **规矩** ✓：改查看器 ⇒ 改 **`crates/yanshi-http/assets/`** ✓ ＋ **重新编译** ✓。
+#   **[陷阱二] 视口有**两个**写入点，我钩错了** ✗ ★★：
+#     * `clampViewport`（缩放/复位/resize ✓）；
+#     * **`clampViewportAt`（**平移走的就是这里** ✓ —— 实测 `state().viewport` 从 (459,463) 到 (564,538) ✓
+#       而 `viewportChanges` **恒为 0** ✗ ⇒ 说明钩子没跑到 ✓）。**
+#     ⇒ 现在两处**共用** `notifyKernelViewport()` ✓。
+#   **[修好之后的状态]** ✓：源文件里已有 ✓（`api-local.js` 的 `local.setViewport` ✓ ＋
+#     `viewer-app.js` 的 `notifyKernelViewport` ✓ 定义 1 ＋ 调用 2 ✓），已**重新编译** ✓。
+#   **[现在为什么还红]** ✗：**判据自己的 CDP 管道** ✓ ——
+#     `Runtime.enable` 报「10 秒内没有回复（已发出 35 条）」✗
+#     ⇒ 而**同一个页面、同一套操作**在独立脚本里 3 秒内就有回复 ✓
+#     ⇒ ⇒ 这仍是**判据的管道问题** ✗（不是产品 ✓），**待定位** ✓。
+#   **[转绿条件]** ✓：① 把判据的 CDP 层与 `browser-pan-vs-paint.mjs` **逐字对齐** ✓
+#     （它不仅连得上、还能读到 `state().viewport` ✓，且不在台账里 ⇒ 管道是对的 ✓）；
+#     ② 走通后应当看到 ①「累计逐出 > 0 ✓」与 ②「移回后画面一致 ✓」两条读数 ✓。
+#   **[另一处待修]** ✗：判据的断言②目前把"平移前"的像素和取在**放大之前** ✓
+#     ⇒ 放大本身就会改变它 ✓ ⇒ 会**误报**"画面变了" ✗ ⇒ 要在**放大之后**再取基准 ✓。
 

@@ -1114,6 +1114,40 @@ function availableArea() {
 }
 
 /// 按当前缩放与文档尺寸重新计算视口（以 `center` 为中心，缺省用视口中心）。
+// **★ 把当前视口告诉本地内核（乙(iii) 接线 ✓，2026-10-15 ✓）★**
+//
+// **为什么抽成函数** ✗：视口有**两个**写入点 ——
+//   * `clampViewport`（缩放/复位/resize ✓）；
+//   * **`clampViewportAt`（**平移**走的就是这里 ✓！）**
+// ⇒ 我第一版**只钩了前者** ✗ ⇒ 实测：拖动**确实改了视口** ✓，而 `viewportChanges` **一直是 0** ✗
+//   ⇒ **钩错了地方** ✓。两个写入点共用这一个助手 ✓ 才不会漏 ✓。
+// **为什么静默** ✓：纯属缓存优化 ⇒ **绝不能让平移因为它报错** ✗。
+// **为什么按 `serverRenderPreferred()` 惰性建** ✓：内核可能由**别的路**（`initWasm`）起来 ✓
+//   ⇒ 那时 `__csLocalApiPromise` 还是 null ✗ ⇒ 只看它**会漏掉整条路** ✓。
+// **★ 改的是**被跟踪的源文件**（2026-10-15 ✓）★**：`web/` 是**生成目录** ✗
+//   （`45d0a75c`：untrack the generated web directory ✓）⇒ 改 `web/` **不生效** ✗
+//   —— 我为此白花了好几轮 ✓（服务器用 `include_str!("../assets/viewer-app.js")` ✓）。
+async function notifyKernelViewport() {
+  if (serverRenderPreferred() || !state.docId) return;
+  try {
+    if (!__csLocalApiPromise) {
+      __csLocalApiPromise = (async () => {
+        const { makeLocalApi } = await import("/api-local.js");
+        return await makeLocalApi();
+      })();
+    }
+    const api = await __csLocalApiPromise;
+    const evicted = api && api.setViewport
+      ? await api.setViewport(state.docId, state.viewport.x, state.viewport.y, state.viewport.w, state.viewport.h)
+      : 0;
+    const st = (window.yanshiStats = window.yanshiStats || {});
+    st.viewportEvictions = (st.viewportEvictions || 0) + (Number(evicted) || 0);
+    st.viewportChanges = (st.viewportChanges || 0) + 1;
+  } catch (_) {
+    /* 静默：缓存优化失败不该影响平移 ✓ */
+  }
+}
+
 function clampViewport(center) {
   const { w: docW, h: docH } = state.docSize;
   const available = availableArea();
@@ -1135,6 +1169,7 @@ function clampViewport(center) {
   const x = Math.max(0, Math.min(docW - viewW, Math.round(focus.x - viewW / 2)));
   const y = Math.max(0, Math.min(docH - viewH, Math.round(focus.y - viewH / 2)));
   state.viewport = { x, y, w: viewW, h: viewH };
+  void notifyKernelViewport();
 }
 
 /// 把某个**文档点**钉在指定的**画布像素位置**上 ✓（缩放锚点用 ✓）。
@@ -1167,6 +1202,9 @@ function clampViewportAt(docPoint, pixel) {
   const perPixelY = state.viewport.h / Math.max(1, rect.height);
   state.viewport.x = Math.max(0, Math.min(maxX, Math.round(docPoint.x - pixel.x * perPixelX)));
   state.viewport.y = Math.max(0, Math.min(maxY, Math.round(docPoint.y - pixel.y * perPixelY)));
+  // **★ 平移这条路也要通知内核（2026-10-15 实测补 ✓）★**：第一版只钩了 `clampViewport` ✗，
+  //   而**拖动走的是这里** ✓ ⇒ 视口明明动了而逐出计数一直是 0 ✗（钩错了地方 ✓）。
+  void notifyKernelViewport();
 }
 
 /// 文档坐标 → 画布坐标。

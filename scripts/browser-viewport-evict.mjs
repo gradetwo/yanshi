@@ -185,6 +185,14 @@ for (let i = 0; i < 40; i += 1) {
 if (!stats || !stats.calls) voidRun("本地内核没有起来（__kernelStats.calls 为 0）⇒ 这条线测不到");
 console.log(`  内核已就绪：__kernelStats.calls = ${stats.calls}`);
 
+// **★ 记下接线为何没触发的现场（2026-10-15 ✓）★**
+//   `clampViewport` 里的门是 `if (__csLocalApiPromise && state.docId)` ✓
+//   ⇒ 哪一个为假就**一个都不会调用** ✓ ⇒ 直接把两个值读出来 ✓。
+const wiring = await evaluate(
+  "(() => { const st = (window.yanshi || {}).state ? window.yanshi.state() : {}; return { docId: st.docId || null, kernelCalls: ((window.__kernelStats||{}).calls)||0 }; })()",
+);
+console.log(`  接线前置：state.docId = ${JSON.stringify(wiring.docId)}｜内核调用 ${wiring.kernelCalls}`);
+
 // ② 取画布像素和 ✓（查看器里那个 `kernel` 是 **DOM canvas** ✓ ⇒ 可以直接读像素 ✓）
 const PIXEL_SUM = `(() => {
   const canvases = Array.from(document.querySelectorAll("canvas"));
@@ -202,7 +210,29 @@ const before = await evaluate(PIXEL_SUM);
 if (!before) voidRun("读不到画布像素（canvas 或 2d 上下文缺失）");
 console.log(`  平移前：画布 ${before.w}×${before.h}｜采样像素和 ${before.sum}｜非零 ${before.nonZero}`);
 
-// ③ 选中手形工具并平移 ✓（照 `browser-pan-vs-paint.mjs` 的做法 ✓）
+// **★★ 先放大到 400%（2026-10-15 实测修 ✓ —— 这是我漏掉的关键一步 ✗）★★**
+//
+// **为什么必须** ✗：默认是"适配窗口"的缩放 ✓ ⇒ `viewW == docW` ✓
+//   ⇒ `clampViewport` 把 `x` 钳在 `[0, docW − viewW] = [0, 0]` ✓
+//   ⇒ **视口根本动不了** ✗ ⇒ 平移后"视图没变"是**正常**的 ✓（不是产品问题 ✓）。
+//   `browser-pan-vs-paint.mjs` 的注释就写着这句 ✓：
+//   「**先放大到 400%** —— 让画布**超出**窗口，平移才有余量（**否则"视图没变"是正常的** ✓）」。
+//   **我照抄了它的拖拽形状 ✗，却漏了这一步** ✓ ⇒ 白花好几轮 ✓（同族教训：**逐字对照** ✓）。
+await evaluate(`(() => { const input = document.getElementById("zoomInput");
+  if (!input) return false; input.value = "400"; input.dispatchEvent(new Event("change", { bubbles: true }));
+  input.blur(); return true; })()`);
+await sleep(900);
+
+// **读视口** ✓（`window.yanshi.state().viewport` ✓）—— 比像素和**更能说明"视图动没动"** ✓
+const viewBefore = await evaluate("((window.yanshi || {}).state ? window.yanshi.state().viewport : null)");
+if (!viewBefore) voidRun("读不到 window.yanshi.state().viewport");
+console.log(`  放大后视口 = (${viewBefore.x}, ${viewBefore.y}) ${viewBefore.w}×${viewBefore.h}`);
+// **前置条件** ✓：放大之后视口必须**有余量** ✓，否则下面的平移断言没有意义 ✗
+if (viewBefore.w >= 4096 && viewBefore.x === 0 && viewBefore.y === 0) {
+  voidRun("放大之后视口仍然铺满文档（没有平移余量）⇒ 这条判据此刻测不了 ✗");
+}
+
+// ③ 选中手形工具并平移 ✓
 const picked = await evaluate(
   `(() => { const b = document.querySelector('button[data-tool="pan"]'); if (!b) return null; b.click(); return b.dataset.tool; })()`,
 );
@@ -281,8 +311,18 @@ if (!backSum) voidRun("移回来之后读不到画布像素");
 console.log(`  移回后：采样像素和 ${backSum.sum}｜非零 ${backSum.nonZero}`);
 
 const fails = [];
+// **★ 视口是否真的动了（读状态，最直接 ✓）★**
+const viewAfter = await evaluate("((window.yanshi || {}).state ? window.yanshi.state().viewport : null)");
+const moved = !!viewAfter && (viewAfter.x !== viewBefore.x || viewAfter.y !== viewBefore.y);
+console.log(`  平移后视口 = (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"})｜动了 = ${moved}`);
+
 // **① 确实逐出** ✓
-if (!(afterPan.ev > 0)) {
+if (!moved) {
+  fails.push(
+    `① **视口压根没动** ✗：(${viewBefore.x}, ${viewBefore.y}) ⇒ (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"})` +
+      ` ⇒ 这是**判据的驱动**问题（不是产品）✗：平移手势没走到 \`clampViewport\` ✓`,
+  );
+} else if (!(afterPan.ev > 0)) {
   fails.push(
     `① **没有发生任何逐出** ✗：平移后 \`yanshiStats.viewportEvictions\` = ${afterPan.ev}` +
       `（视口变更 ${afterPan.ch} 次）⇒ \`evict_outside_viewport\` 仍然**没被调用** ✗`,
