@@ -3958,6 +3958,15 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **冷加载耗时** ✓（第 71 轮 ✓）：**独立读数** ✗ —— 加载在工具开始之前 ✓
         // ⇒ 装不进 `total_ms` ✗（用户实测：2.2 s 的加载 vs `total_ms` 1.7 ms ✗）。
         summary["open_ms"] = json!(document.open_ms());
+        // **★ 服务端 tile 缓存的读数（2026-10-15 ✓；服务端那条视口淘汰判据要用 ✓）★**
+        //   **∴ 为什么加** ✗：`evict_outside_viewport` 的**服务端**那条**没有任何判据守着** ✗
+        //     （唯一那条 `browser-viewport-evict.mjs` 测的是**客户端内核** ✓，见 §49 之补四十七 ✓）
+        //     ⇒ ⇒ 判据要能断言"**逐出 > 0**"✓ 与"**缓存字节下降**"✓ ⇒ 先得有读数 ✓。
+        //   **∴ 复用什么** ✓：`Document::cache_stats()`（`document.rs:752` ✓）
+        //     ⇒ **引擎已有的不做第二遍** ✓；字段名**核对过**（`tile.rs:422` 的 `TileCacheStats` ✓）。
+        let cache = document.cache_stats();
+        summary["cache_evictions"] = json!(cache.evictions);
+        summary["cache_used_bytes"] = json!(cache.used_bytes);
     }
     Ok(summary)
 }
