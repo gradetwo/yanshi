@@ -1946,3 +1946,51 @@ pub fn open_from_snapshot(
   4. 打开后把 `atoms_read_on_open` 设成 **`tail.len()`** ✓
      ⇒ 有快照 ⇒ 它**明显变小** ✓ ⇒ 判据第 2 段成立 ✓。
 
+### 四十九之补十二：第③步的**关键技术事实**（2026-10-15 读码 ✓）—— `rebuild()` 不能用 ✗
+
+**事实一** ✓：`Document::rebuild()`（`document.rs:646` ✓）第一句就是
+```rust
+self.state = self.folder.fold_head(&self.log)?.state;   // ← **覆盖状态** ✗
+```
+⇒ ⇒ **它从零折、并覆盖 `self.state`** ✗ ⇒ **"先把快照状态塞进 `self.state` 再调 `rebuild()`"这招不成立** ✗✓
+（我上一轮的设计就是那样 ✓ ⇒ **在本轮被读码否掉了** ✓ —— 幸好先读再写 ✓）。
+
+**事实二** ✓：正确的工具是 **`yanshi_core::fold_atoms(base: DocumentState, atoms: &[Atom]) -> FoldResult`** ✓
+（`crates/yanshi-core/src/fold.rs:289` ✓）—— **从给定状态续折一段原子** ✓ ⇒ 正是"快照 ＋ 尾巴"要的 ✓。
+
+**⇒ `Document::open_from_snapshot` 的写法（借用安全的顺序 ✓）**：
+```rust
+pub fn open_from_snapshot(
+    store: Arc<dyn BlobStore>,
+    doc_id: impl Into<String>,
+    base: Option<(Seq, DocumentState)>,
+    tail: Vec<Atom>,
+    settings: DocumentSettings,
+) -> Result<Self> {
+    let id = doc_id.into();
+    let mut document = Self::empty(store, id, settings, yanshi_core::now_ms());
+    match base {
+        // **没有快照 ⇒ 与今天完全一样** ✓
+        None => {
+            document.log = AtomLog::with_atoms(tail)?;
+            document.rebuild()?;
+        }
+        // **有快照 ⇒ 从它续折尾巴** ✓
+        Some((_seq_at, state)) => {
+            let folded = yanshi_core::fold_atoms(state, &tail)?;   // ← **先折**（此时 tail 还没被移动 ✓）
+            document.log = AtomLog::with_atoms(tail)?;            // ← 再装日志 ✓
+            document.state = folded.state;
+            document.render_watermark = document.state.head_seq;
+            let grid = document.grid_for_state()?;
+            document.renderer = Renderer::with_budget(grid, settings.render_cache_bytes);
+        }
+    }
+    Ok(document)
+}
+```
+**为什么这个顺序** ✓：`fold_atoms` 需要 `&tail` ✓，而 `AtomLog::with_atoms` **要拿走 `tail`** ✗
+⇒ 若先装日志、再想折 ✓ 就会撞上借用（`document.log` 被不可变借用 ✗ 同时要改 `document.state` ✗）
+⇒ ⇒ **先折、后装** 就绕开了 ✓（而且 `folded.state` 是**拥有所有权**的 ✓）。
+**注意** ✓：不调 `rebuild()` 的那条分支里 ✓，我自己做了 `rebuild()` 做的三件事（状态 ✓、水位 ✓、渲染器 ✓）
+—— 若漏掉渲染器 ✓，之后一渲染就会用**建文档时的 1×1 网格** ✗（`Self::empty` 给的是 1×1 ✓）。
+
