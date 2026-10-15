@@ -339,3 +339,63 @@ fn load_latest_snapshot_returns_the_newest_one() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **★ 待办 ① 的收官判据（第 2 段）★** ✓：**有快照时，打开文档读入的原子数必须变少** ✓。
+///
+/// 这是"**用户要的那件事**" ✓：前面每一步各自有判据 ✓，本条断言它们**合起来真的省了读取量** ✓。
+#[test]
+fn opening_with_a_snapshot_reads_less() {
+    let root = temp_root("shrinks");
+    let doc = "doc_shrinks";
+    let store = FileStore::open(&root).unwrap();
+    let total: Seq = 10;
+    store
+        .append_atom(doc, &atom("a0", 1, AtomKind::CreateDocument))
+        .unwrap();
+    for seq in 2..=total {
+        store
+            .append_atom(doc, &atom(&format!("a{seq}"), seq, AtomKind::CreateLayer))
+            .unwrap();
+    }
+    let settings = DocumentSettings::default();
+
+    // ① **慢路（无快照）**：冷开一次 ⇒ 读数**必须等于全量** ✓
+    let mut first = Workspace::with_file_store(root.clone(), settings.clone()).unwrap();
+    let before = first
+        .open_document(doc)
+        .expect("冷开应当成功 ✓")
+        .atoms_read_on_open();
+    assert_eq!(
+        before, total as u64,
+        "**还没有快照** ⇒ 必须读入全量 {total} ✓（实测 {before} ✓）"
+    );
+
+    // ② 让文档产出一份快照，并**直接落盘** ✓（不靠"提交一颗合法原子" ✗）
+    let snapshot = {
+        first.open_document(doc).unwrap().snapshot_now(0).unwrap();
+        first
+            .open_document(doc)
+            .unwrap()
+            .latest_usable_snapshot()
+            .expect("刚打过快照 ✓")
+            .clone()
+    };
+    assert!(
+        store.save_snapshot(doc, &snapshot).unwrap(),
+        "快照应当落盘 ✓"
+    );
+
+    // ③ **快路（有快照）**：**换一个新的 `Workspace`** 再冷开 ✓
+    //    （同一个 `Workspace` 里文档已经打开了 ✓ ⇒ 再取只是 map 查找 ✗ ⇒ 测不到读入量 ✓）
+    let mut second = Workspace::with_file_store(root.clone(), settings).unwrap();
+    let after = second
+        .open_document(doc)
+        .expect("从快照冷开应当成功 ✓")
+        .atoms_read_on_open();
+    println!("  有快照 ⇒ 打开读入 {after}／{total} 颗 ✓（全量时是 {before} ✓）");
+    assert!(
+        after < before,
+        "**有快照必须读得更少** ✓（实测 {after} vs 全量 {before} ✗）—— 快照没被用上 ✗"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
