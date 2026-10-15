@@ -3329,3 +3329,26 @@ B 渲染 **256×256**（或把 B 的视口声明成 512×512 ✓）⇒ 那时 B 
   3. 每改一处 ⇒ **本机跑 `tool-render-memory-budget.mjs`** ✓ ⇒ 看增量是否下降 ✓
      ⇒ 达标（≤ 800 MB ✓）⇒ 它**自己从台账里出来** ✓（本仓先例 ✓）；
   4. **不许**为了数字牺牲确定性/画质 ✓（确定性 PRNG ✓、逐字节不变的那条判据 ✓ 仍是底线 ✓）。
+
+### 四十九之补五十八：归因读数本来就有（/health，2026-10-15 ✓）
+
+**查法** ✓（先读码 ✗ 没读准，改用**经验法** ✓ ⇒ 一次命中 ✓）：
+```
+$ for P in /health /api/health /debug …; do curl -s "$BASE$P" | grep -q alloc_probe && echo $P; done
+  ✓ **/health** 里有 alloc_probe ✓（响应长度 1357 ✓）
+$ curl -s $BASE/health | python3 -c 'print(sorted(keys))'
+  ['**alloc_probe**', '**alloc_probe_sites**', 'below_groups', 'below_groups_peak', 'bitmap_cache', 'cache', …]
+```
+⇒ ⇒ **服务端早就把归因露出来了** ✓（`crates/yanshi-http/src/server.rs:930` `sites_snapshot()` ✓、
+`:939` `snapshot()` ✓）⇒ ⇒ **本笔不用改任何代码** ✓。
+
+**⇒ 下一步（一次实测即可归因 ✓）**：
+  1. 用 `tool-render-memory-budget.mjs` 的**同一场景**（4K ＋ 4 层 ✓）渲染 ✓；
+  2. 渲染**前后**各读一次 `/health` ✓ ⇒ 取 `alloc_probe_sites` 的**差** ✓
+     ⇒ ⇒ 就知道 **897 MB 落在哪几个 `文件:行`** ✓（每个全幅 f32 ＝ **67 MB** ✓，
+     所以"差距 ≈ 67 MB 的整数倍"能直接读出**同时活着几个** ✓）；
+  3. 按归因决定动作 ✓：
+     · **能边合成边释放**的（src-over ✓）⇒ 就地释放 ✓；
+     · **必须多层同读**的 ⇒ **分块** ✓；
+  4. 每改一处 ⇒ 重跑内存判据 ✓ ⇒ 增量下降 ✓ ⇒ ≤ 800 MB ⇒ **它自己从台账里出来** ✓。
+**★ 纪律** ✓：**先归因，后动手** ✗ —— 归因读数既然现成 ✓，就没有理由去猜 ✗。
