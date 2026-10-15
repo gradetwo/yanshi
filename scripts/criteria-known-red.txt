@@ -28140,3 +28140,8 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #   **判据数据来源** ✓：`GET /health` 的 `rss_bytes` ✓（不必新增 API ✓、不必读 `/proc` ✓）；
 #     **口径是"增量"** ✓（渲染后 − 渲染前 ✓），不是绝对值 ✓。
 tool-render-memory-budget.mjs  # 已知红（实测 ✓）：4K＋4层整幅渲染**增量 897 MB > 预算 800** ✗；根因 f32 全幅工作缓冲（4096² 一个 268 MB）⇒ DEF-03（8K OOM ×3）；修法：每层缓冲别同时活着（边合成边释放／分块）
+tool-viewport-evict-server.mjs  # 已知红（**实测 ✓**）：服务端 tile 视口淘汰**尚未接线** ✗
+#   实测：render_region 之后 `cache_used_bytes` = **2097152** ✓（tile 真在缓存里 ✓），
+#   随后 WS `subscribe` 声明视口 256×256 ✓ ⇒ `cache_evictions` **0 ⇒ 0** ✗、`cache_used_bytes` **没降** ✗
+#   ⇒ 退 1（**产品缺接线** ✗，不是判据自身问题 ✓）。接线（§49 之补二十四 的**保守并集** ✓）后**删除本行** ✓。
+

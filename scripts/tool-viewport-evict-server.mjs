@@ -44,6 +44,17 @@ const tool = async (name, args) => post(`/api/tools?doc=vpev&token=${token}`, { 
 
 // ② 落一笔并**整幅渲染一次** ✓ ⇒ 让 tile **真的进缓存** ✓（否则 `used_bytes` 恒为 0 ✓，判据没意义 ✗）。
 await tool("brush_stroke", { points: [[200, 200], [1200, 900]], brush: "round", color: "#204060" });
+// **★ 必须**真的渲染一次**✗★**（2026-10-15 实测 ✓）：`get_document` **只读状态、不渲染** ✗
+//   ⇒ 我第一次写完它 ⇒ 缓存**恒为 0 字节** ⇒ 判据只好退 3（"我自己跑不了"✓，§49 之补五十 ✓）。
+//   **∴ 用** `render_region` ✓ —— 它会走渲染路径 ⇒ **tile 真的进缓存** ✓
+//     （其它候选：`export_psd_layers` ✓／`export_project` ✓）。
+//   **参数名以服务端为准** ✓（它会自己报"可用参数"✓ —— 这是本仓的好习惯 ✓）：
+//     实测 `h` 不接受 ✗ ⇒ 正确是 **`region`** ✓（`{x,y,w,h}` ✓）。
+const rendered = await tool("render_region", { region: { x: 0, y: 0, w: 512, h: 512 } });
+console.log(`  渲染调用：render_region ⇒ ${JSON.stringify(rendered).slice(0, 120)}`);
+if (rendered && rendered.ok === false) {
+  voidRun(`render_region 调用失败（形状可能不对）：${JSON.stringify(rendered).slice(0, 220)}`);
+}
 const pre = await tool("get_document", {});
 if (pre && pre.ok === false) voidRun(`get_document 失败：${JSON.stringify(pre).slice(0, 200)}`);
 if (pre.cache_used_bytes === undefined) {
