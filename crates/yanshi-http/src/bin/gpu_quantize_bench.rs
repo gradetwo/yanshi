@@ -36,18 +36,39 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     }
 }
 
-/// **★ 进程 CPU 时间（秒）✗ ★**：`getrusage(RUSAGE_SELF)` 的 utime+stime ✓
-/// ⇒ **∴ macOS／Linux 通用** ✓
-fn proc_cpu_seconds() -> f64 {
+/// **★ 进程 CPU 时间（秒）★**：`getrusage(RUSAGE_SELF)` 的 utime+stime ✓
+///
+/// **★ 这是 Unix 专属，Windows 上编不过（2026-10-15 实测 ✓）★**：
+/// 它原先写着"**macOS／Linux 通用**" ✓ —— 那句话**漏了 Windows** ✗，
+/// 而 Windows 的 `libc` crate **根本没有** `rusage`／`getrusage`／`RUSAGE_SELF` ✓
+/// ⇒ 多平台发布时 **`windows-x86_64` 那一档在 Build 就红** ✗：
+/// ```
+/// error[E0425]: cannot find type `rusage` in crate `libc`
+/// error[E0425]: cannot find function `getrusage` in crate `libc`
+/// error: could not compile `yanshi-http` (bin "gpu_quantize_bench")
+/// ```
+/// ⇒ 用 `#[cfg(unix)]` 分开 ✓：非 Unix 返回 **`None`** ✓（**不是** `0.0` ✗ ——
+/// 0 会被读成"CPU 时间真的是 0" ✓，而真相是"**这个平台量不了**" ✓ ⇒ 调用方据此**明说** ✓，
+/// 这也是本仓库"不许静默"的一贯做法 ✓）。
+#[cfg(unix)]
+fn proc_cpu_seconds() -> Option<f64> {
     unsafe {
         let mut usage: libc::rusage = std::mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
-            return 0.0;
+            return None;
         }
         let u = usage.ru_utime;
         let s = usage.ru_stime;
-        (u.tv_sec as f64 + u.tv_usec as f64 / 1e6) + (s.tv_sec as f64 + s.tv_usec as f64 / 1e6)
+        Some(
+            (u.tv_sec as f64 + u.tv_usec as f64 / 1e6) + (s.tv_sec as f64 + s.tv_usec as f64 / 1e6),
+        )
     }
+}
+
+/// 非 Unix（Windows ✓）：**这个平台量不了进程 CPU 时间** ✓ ⇒ 返回 `None` ✓，由调用方如实说明 ✓。
+#[cfg(not(unix))]
+fn proc_cpu_seconds() -> Option<f64> {
+    None
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -135,7 +156,11 @@ fn main() {
             }
             cpu_out = b.to_rgba8_quantized(None);
             cpu_ms.push(t.elapsed().as_secs_f64() * 1000.0);
-            cpu_used.push((proc_cpu_seconds() - c0) * 1000.0);
+            // **量不到就不报** ✓（非 Unix 上 `proc_cpu_seconds()` 是 `None` ✓）——
+            // 不许拿 0 冒充 ✓：那会被读成"CPU 时间真的是 0" ✗。
+            if let (Some(c0), Some(c1)) = (c0, proc_cpu_seconds()) {
+                cpu_used.push((c1 - c0) * 1000.0);
+            }
         }
 
         // **∴ GPU（**5 次 ✓）**
@@ -150,7 +175,9 @@ fn main() {
                 Ok(v) => {
                     gpu_out = v;
                     gpu_ms.push(t.elapsed().as_secs_f64() * 1000.0);
-                    gpu_used.push((proc_cpu_seconds() - c0) * 1000.0);
+                    if let (Some(c0), Some(c1)) = (c0, proc_cpu_seconds()) {
+                        gpu_used.push((c1 - c0) * 1000.0);
+                    }
                 }
                 Err(e) => {
                     gpu_err = Some(e);

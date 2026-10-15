@@ -393,7 +393,7 @@ const BELOW_SIG_GROUPS: usize = 4;
 /// （`docs/design/render-memory-account.md` §20 ✓）⇒ 我判定"这笔内存买到的命中是 0" ✓。
 ///
 /// **★ 判据把这个结论纠正了 ✓ ★**：`scripts/tool-below-sig-alternate.mjs` 红 ✗，原文是
-/// ```
+/// ```text
 /// ③ 回到原切点必须复用（`by_sig` 里那一组还在）
 /// ```
 /// ⇒ 有一个**设计好的**行为依赖它 ✓：**切点切走再切回来，必须复用那一组** ✓；

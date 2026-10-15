@@ -67,7 +67,12 @@ wgpu = { version = "26.0.1", optional = true }
 # **★ 可选：**GPU 加速层** ✗ ★**（**∴ 只在 `--features gpu` 时进依赖树 ✓）
 #   **∴ 而** `yanshi-wasm` **不**依赖它** ✗ ⇒ **∴ 判据** `tool-wasm-tree-no-wgpu.mjs` **守住它** ✓
 yanshi-gpu = { path = "../yanshi-gpu", optional = true }
-# **∴ 微基准的 CPU 时间口径** ✓（`gpu_quantize_bench` 用 `getrusage` ✓，macOS/Linux 通用 ✓）
+# **∴ 微基准的 CPU 时间口径** ✓（`gpu_quantize_bench` 用 `getrusage` ✓）
+# **★ 那句话原先写着「macOS/Linux 通用」✗ —— 漏了 Windows ★**（2026-10-15 实测 ✓）：
+# Windows 的 `libc` **没有** `rusage`/`getrusage`/`RUSAGE_SELF` ✓ ⇒ 多平台发布时那一档
+# **在 Build 就红** ✗（`cannot find type rusage in crate libc` ✓）。
+# 现已用 `#[cfg(unix)]` 分开 ✓：非 Unix 返回 `None` ✓（**不是 0** ✗ —— 0 会被读成"真的是 0" ✓），
+# 由调用方**如实不报**那一项 ✓。
 libc = { version = "0.2", optional = true }
 
 # **★ 微基准只在 gpu 特性下有 main ✗ ★**（**第 497 轮实测 ✓）
