@@ -1372,3 +1372,18 @@ tip 的 run 一直排不上 ✓，而我这一会话**推送次数很多、还�
 **与已有纪律的关系** ✓：这条与"**CI 绿了才合 main**" ✗ 是一对 ——
 **推得少** ⇒ 队列才排得动 ⇒ **那道门才等得到** ✓。
 
+### 四十四之补：视口淘汰那笔的**回退已被 CI 验证** ✓（2026-10-15 ✓）
+
+**结论** ✓：`a152e034`（把 `viewer-app.js` / `api-local.js` 整文件还原到接线之前 ✓ ＋ 重编译 ✓）
+的 CI run `38763157381` ⇒ **6 个判据分片全部 success ✓、失败作业 0** ✓。
+**对照** ✗：接线那笔之后跑到的 CI 是 **`shard 1–5` 全红** ✗（8 条未登记的 `browser-*`：`browser-kernel-perf`／
+`browser-live-ui`／`browser-offline-assets`／`browser-offline-draw`／`browser-offline-shell`／
+`browser-pixel-check`／`browser-project-import`／`browser-pwa-local` ✓）。
+
+⇒ ⇒ **本条的"接线"状态：已回退 ＋ 回退已验证 ✓**；**重做的四条硬要求全部有效** ✓
+（判据先行含负对照 ✓／门禁是那 8 条已有的 `browser-*` ✓／按 §43 的方式跑 ✓／分析别丢 ✓ ⇒ 见 §42／§43 ✓）。
+
+**顺带被证伪的一条** ✓：`browser-live-ui` 在**本机**是红的 ✗（`list_palette_colors` 404 ✓），
+而 CI 里它所在的**分片是 success** ✓ ⇒ ⇒ **那是我即席调用产生的假红** ✗，**不是产品红** ✓
+（第 182 轮我"推断"过 ✓ ⇒ 这里落成 CI **证据** ✓；两本账分得清 ✓）。
+

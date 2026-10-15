@@ -28047,7 +28047,11 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #     **回退方式** ✓（照 §45 ✓）：`git checkout 4307ad58 -- crates/yanshi-http/assets/{viewer-app.js,api-local.js}`
 #       **整文件还原** ✓ ＋ **重新编译** ✓（服务器 `include_str!` 内嵌 ✓）⇒ 残留 0 处 ✓、两份 `node --check` 通过 ✓；
 #       **本机复跑**：`browser-pixel-check` ⇒ 0 ✓、`browser-pwa-local` ⇒ 0 ✓（那 8 条里的两条已恢复 ✓）。
-#   **★★ 2026-10-15 回退的 CI 验证（部分已到手 ✓）★★**：
+#   **★★★ 2026-10-15 回退的 CI 验证：**全部闭合** ✓✓✓ ★★★**：
+#     `a152e034`（回退那笔）的 run `38763157381` ⇒ **6 个判据分片全部 success ✓、失败作业 0 ✓**
+#       （接线那次是 `shard 1–5` 全红 ✗ ⇒ 现在 **6/6 全绿** ✓）⇒ **回退确实修掉了那 8 条红** ✓。
+#     ⇒ ⇒ **本条的"接线"状态确定为：已回退、且回退已验证 ✓**；下面那批"重做硬要求"**仍然全部有效** ✓。
+#   **★★ 2026-10-15 回退的 CI 验证（过程记录 ✓）★★**：
 #     * `shard 1／4／6` = **success** ✓、**失败 0** ✓，`shard 2／3／5` 仍在跑 ✓；
 #     * **近似复刻 harness 的枚举**（文件名排序取模 ✓）⇒ 那 8 条里落在"已绿分片"的有 **5 条** ✓：
 #       `browser-kernel-perf`／`browser-live-ui`／`browser-offline-assets`／
