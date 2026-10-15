@@ -1994,3 +1994,39 @@ pub fn open_from_snapshot(
 **注意** ✓：不调 `rebuild()` 的那条分支里 ✓，我自己做了 `rebuild()` 做的三件事（状态 ✓、水位 ✓、渲染器 ✓）
 —— 若漏掉渲染器 ✓，之后一渲染就会用**建文档时的 1×1 网格** ✗（`Self::empty` 给的是 1×1 ✓）。
 
+### 四十九之补十三：红判据的**修法方向**（2026-10-15 读码 ✓）
+
+**红判据** ✓：`crates/yanshi-server/tests/open_readout.rs::fast_open_matches_a_full_open` ✓（现标 `#[ignore]` ✓）
+—— 断言"快照开出来的文档与从头折出来的逐字段一致" ✓ ⇒ **HEAD 不一致** ✗（快路是 0 ✓、慢路是 10 ✓）。
+
+**读到的关键事实** ✓：`crates/yanshi-core/src/log.rs:139` 的
+```rust
+pub struct AtomLog {
+    atoms: Vec<Atom>,
+    #[serde(skip)] by_id: HashMap<AtomId, usize>,
+    next_seq: Seq,          // ← **它本来就记着"下一个 seq 是多少"** ✓
+}
+```
+⇒ ⇒ **空尾巴时 `head_seq()` 退回 0** ✗（实测 ✓）—— **不是** `AtomLog` 不会记账 ✓，
+而是**没人告诉它"你从 `seq_at` 开始"** ✗ ✓。
+
+**修法（最小改动 ✓）**：
+  1. 给 `AtomLog` 加一个 **`base_seq: Seq`** 字段 ✓，并标 **`#[serde(default)]`** ✓
+     （**必须** ✓：`AtomLog` 里有 `#[serde(skip)]` ✓ ⇒ 说明它会被反序列化 ✓
+     ⇒ 加字段就要有默认值 ✓，否则读旧数据会失败 ✗）；
+  2. 加构造器 **`AtomLog::with_base_seq(base_seq, atoms)`** ✓：
+     `next_seq = max(base_seq, 最后一个原子的 seq) + 1` ✓；
+  3. **`head_seq()` 改成 `max(base_seq, atoms.last().seq)`** ✓
+     —— 语义仍然是"**最新原子所在的 seq**" ✓，只在**尾巴为空**时由 `base_seq` 顶上 ✓
+     （而快照的状态**正是**在 `seq_at` 那个位置 ✓ ⇒ 这样"日志的水位"与"状态的水位"就对上了 ✓）；
+  4. `Document::open_from_snapshot` 的 `Some(...)` 分支改用 `with_base_seq(seq_at, tail)` ✓
+     ⇒ ⇒ **红判据应当变绿** ✓（去掉 `#[ignore]` 即可验证 ✓）。
+
+**为什么这个方向对** ✓：它**不是**给测试打补丁 ✗，而是补上**真正的缺失语义** ✓ ——
+"**内存里的日志从哪一段开始**" ✓。这正是 `--watch` 那次选择"**重载 ＝ 磁盘为准**"的同一个问题 ✓：
+**日志不完整就会让后续 `seq` 分配出错** ✗。补上 `base_seq` 之后 ✓，"快照 ＋ 尾巴"的日志才**自洽** ✓。
+**风险清单** ✓（改 `AtomLog` 要想到的 ✓）：
+  * `head_seq()` 的**调用方很多** ✗ ⇒ 语义变化（空尾巴时不再返回 0 ✓）要**先看调用方** ✓；
+  * serde：`#[serde(default)]` ✓；
+  * `log.rs` 的单测里若断言过"空日志 head_seq == 0" ✓ ⇒ 那条**仍然成立** ✓（`base_seq` 默认 0 ✓）。
+
