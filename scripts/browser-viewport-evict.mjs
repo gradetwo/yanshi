@@ -228,7 +228,14 @@ const viewBefore = await evaluate("((window.yanshi || {}).state ? window.yanshi.
 if (!viewBefore) voidRun("读不到 window.yanshi.state().viewport");
 console.log(`  放大后视口 = (${viewBefore.x}, ${viewBefore.y}) ${viewBefore.w}×${viewBefore.h}`);
 // **前置条件** ✓：放大之后视口必须**有余量** ✓，否则下面的平移断言没有意义 ✗
-if (viewBefore.w >= 4096 && viewBefore.x === 0 && viewBefore.y === 0) {
+// **★ 前置条件别写死 `4096` ✗★**（2026-10-15 修 ✓）：
+//   **∴ 为什么** ✗：`4096` 是**本仓默认文档宽** ✓ ⇒ 换成 **1024 宽的文档**时
+//     `viewBefore.w >= 4096` **永远为假** ✓ ⇒ 这条"没有平移余量 ⇒ 此刻测不了"的守卫
+//     **静默失效** ✗ ✓ ⇒ 判据会去测一个**根本没有余量**的场景 ✓ ⇒ 手势动不了 ⇒
+//     报"驱动问题" ✗（§49 之补四十 ✓）。**∴ 改成**按**实际文档尺寸**判断 ✓。
+const docW =
+  (await evaluate("((window.yanshi || {}).state ? window.yanshi.state().docSize.w : null)")) || 4096;
+if (viewBefore.w >= docW && viewBefore.x === 0 && viewBefore.y === 0) {
   voidRun("放大之后视口仍然铺满文档（没有平移余量）⇒ 这条判据此刻测不了 ✗");
 }
 
@@ -261,14 +268,27 @@ const box = await evaluate(
      const c = cs.sort((a, b) => b.width * b.height - a.width * a.height)[0];
      if (!c) return null;
      const r = c.getBoundingClientRect();
-     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+     return {
+       x: Math.round(r.left + r.width / 2),
+       y: Math.round(r.top + r.height / 2),
+       // **★ 把画布尺寸也带回来 ✗★**（2026-10-15 ✓）：拖拽距离要**按它缩放** ✓
+       //   ⇒ 否则写死的 420×300 会让指针**跑出窗口** ✗ ⇒ 手势丢失 ✗（§49 之补四十一 ✓）。
+       w: Math.round(r.width),
+       h: Math.round(r.height),
+     };
    })()`,
 );
 if (!box) voidRun("拿不到画布的位置");
 
 // **平移很远** ✓：视口换到别处 ⇒ 旧位置的 tile 应当落在视口外 ✓
-const DX = -420;
-const DY = -300;
+// **★ 拖拽距离按**画布尺寸**缩放 ✗★**（2026-10-15 修 ✓）：
+//   **∴ 为什么** ✗：原来写死 `-420/-300` ✓ ⇒ 而视口常常只有 **231×179** 或 **329×256** ✓
+//     ⇒ 从**中心**拖 420×300 ⇒ 终点落在 **(-256, -172)** 一带 ✗ ⇒ **指针跑出浏览器窗口** ✗
+//     ⇒ 窗外的事件**丢失** ✗ ⇒ 视口**纹丝不动** ⇒ 判据报"① 视口压根没动"✗
+//       （**它报得对** ✓：那是**驱动**问题，不是产品 ✗ —— 见 §49 之补三十九／四十一 ✓）。
+//   **∴ 改成** ✓：**0.6 倍画布** ⇒ 一定落在窗口内 ✓，又足够远（0.6 倍视口 ⇒ 必然移动视口 ✓）。
+const DX = -Math.max(24, Math.round((box.w || 400) * 0.6));
+const DY = -Math.max(24, Math.round((box.h || 300) * 0.6));
 await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", buttons: 1, clickCount: 1 });
 for (let i = 1; i <= 8; i += 1) {
   await send("Input.dispatchMouseEvent", {
