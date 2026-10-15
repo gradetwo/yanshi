@@ -1798,3 +1798,34 @@ if document.open_ms() == 0 { document.set_open_ms(ms); }   // ★ 只在"冷开"
 （而且它天然进 CI 的 `test` 作业 ✓，不受"判据枚举前缀"那套约束 ✗ —— 见四十六之补 ✓）。
 **⇒ 顺序** ✓：先写第 1 段（**现在就能绿** ✓）⇒ 再做快照（③）⇒ 再补第 2 段 ＋ 变异 ✓。
 
+### 四十九之补七：快照**本来就可序列化** ⇒ 落盘是小事（2026-10-15 侦察 ✓）
+
+**查到了什么** ✓（`crates/yanshi-core/src/snapshot.rs` ✓）：
+```rust
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub id: SnapshotId,
+    pub base_ref: SnapshotBase,
+    pub seq_at: Seq,
+    pub state: DocumentState,      // ← 也能序列化 ✓
+    pub manifest: Vec<BlobHash>,
+    pub crc: String,
+}
+```
+并且它已经有 **`from_state(seq_at, base_ref, state)`** ✓／**`create_at_head(…)`** ✓／
+**`compute_crc()`** ✓／**`verify()`** ✓／**`restore() -> DocumentState`** ✓ —— 内存里那套**是完整的** ✓。
+`SnapshotStore`（`:274` ✓）有 `new(max_entries)`／`len()`／`is_empty()` ✓。
+
+**⇒ 结论** ✓：**落盘／读盘是小事** ✓ —— `serde_json::to_vec(&snapshot)` 写
+`docs/<doc>/snapshot-<seq>.json` ✓、读回 `from_slice` ＋ **`verify()`**（校验 CRC ✓）再用 ✓
+（与仓库既有风格一致 ✓：原子用 `serde_json` 逐行 ✓、meta 用 `to_string_pretty` ✓）。
+
+**⇒ 待办 ① 的实施现在**全机械** ✓**（三步 ✓）：
+  1. **写** ✓：在 `Document` 已经产出快照的地方（`SnapshotStore` 入栈处 ✓）顺手把它**写到盘上** ✓
+     （原子数达到 `SNAPSHOT_LAG_ATOMS = 1000` 时 ✓ —— 那条策略已经存在 ✓）；
+  2. **读** ✓：`open_document_inner` 里**先试**最近的快照 ⇒ `verify()` 通过 ⇒ `restore()` 得到 `seq_at` 的状态 ✓；
+  3. **尾巴** ✓：加一个 **`FileStore::load_atoms_since(doc_id, seq)`** ✓ ——
+     **直接复用刚改好的流式循环** ✓（我这一轮已把 `load_atoms` 改成逐行 ✓ ⇒ 加一个 seq 门即可 ✓）
+     ⇒ 只折叠尾巴 ✓ ⇒ 最后把 `atoms_read_on_open` 设成**尾巴的条数** ✓
+     ⇒ ⇒ **判据第 2 段**（断言它明显变小 ✓）**自然成立** ✓；**变异**（改回全量读）⇒ **红** ✓。
+
