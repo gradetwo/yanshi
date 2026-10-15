@@ -386,6 +386,50 @@ fn effective_layer_factors(
 ///   ⇒ **∴ 于是**：**常见交替**仍命中 ✗，**而**内存**有界 ✓**** ✓✓
 const BELOW_SIG_GROUPS: usize = 4;
 
+/// **★ 默认**是否启用 `by_sig` 快照：**不启用**（第 254 轮直接干预实验后改 ✓）★**
+///
+/// **依据（`docs/design/render-memory-account.md` §20 ✓）**：把上限设成 0（**完全不建快照** ✓）
+/// 与默认（4 ✓）在**四种渲染形状**上逐一对跑 ✓：
+/// | 形状 | 墙钟 开/关 | 命中 开/关 | RSS 开/关 |
+/// |---|---|---|---|
+/// | 子区域 512² ＋ active 3 切点 | 31.81 / **31.55** ms | 14.2% / **14.2%** | 78 / **60** MB |
+/// | 子区域 512² ＋ active 4 切点 | 31.76 / **31.67** ms | 15.4% / **15.4%** | 78 / **60** MB |
+/// | 整幅 ＋ active 4 切点 | 2.34 / 2.4 ms | 15.0% / **15.0%** | 176 / **156** MB |
+/// | 子区域 512² 不带 active | 31.93 / **31.87** ms | 15.5% / **15.5%** | 176 / **156** MB |
+///
+/// ⇒ **命中率逐位相同、墙钟在噪声内** ✓，而那些命中**全部来自旧 `tiles` 字段** ✓
+/// ⇒ `by_sig` **一次都没贡献** ✓ 而每组在 4K 下约 **256 MB**（4 层 ⇒ **约 1 GB** ✓）
+/// ⇒ 这笔账不划算 ✓ ⇒ **默认不建** ✓。
+///
+/// **两面都写** ✓：本机无法在 **4K × 4 层**上复验（3.8 GB 内存 ⇒ OOM ✗）⇒
+/// 上面的结论覆盖的是 **1024²、≤4 层、≤4 切点、4 种渲染形状** ✓；
+/// 想要那 1 GB 换命中的人可以 `YANSHI_BELOW_SIG_GROUPS=4` 打开 ✓（旋钮保留 ✓）。
+const BELOW_SIG_ENABLED_BY_DEFAULT: bool = false;
+
+/// **★ `by_sig` 分组上限的**运行时**旋钮（第 254 轮；默认 = 常数 ⇒ 行为零变化 ✓）★**
+///
+/// **为什么要它** ✓：内存账目（`docs/design/render-memory-account.md` ✓）说 4K 下**每组 ≈ 256 MB**
+/// ⇒ 4 层 ⇒ 约 **1 GB** ✓；而实测的 `by_sig` 命中率只有 **10–15%** ✓
+/// ⇒ "**这 1 GB 买到的 10–15% 命中，值不值**"是一个**必须用数据回答**的问题 ✓
+/// （乙(i) ✓）——**而这个数据只能在"关掉它"的情况下量** ✗ ⇒ 所以先要一个能关它的旋钮 ✓。
+///
+/// **默认行为绝不变** ✓：读不到/解析失败/为 0 以外的值都会回落到 [`BELOW_SIG_GROUPS`] ✓；
+/// 只有显式设成 `YANSHI_BELOW_SIG_GROUPS=0` 时才会**完全不建 `by_sig` 快照** ✓（省下那 1 GB ✓）。
+/// **每进程读一次** ✓（`OnceLock`，与 `alloc_probe` 同一做法 ✓）。
+pub fn below_sig_group_limit() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("YANSHI_BELOW_SIG_GROUPS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(if BELOW_SIG_ENABLED_BY_DEFAULT {
+                BELOW_SIG_GROUPS
+            } else {
+                0
+            })
+    })
+}
+
 /// **★ `by_sig` 到上限时：只淘汰**一组**（不再全清）★**（第 254 轮）
 ///
 /// **原来**（`render.rs:2362`）：一撞上限就 `carried.clear()` —— 把**所有**分组记忆丢掉 ✗
@@ -402,10 +446,25 @@ fn evict_one_sig_group(
     by_sig: &mut std::collections::HashMap<Vec<String>, SigTiles>,
     incoming: &[String],
 ) -> bool {
+    // **走**运行时**旋钮**：缺省值由 [`BELOW_SIG_ENABLED_BY_DEFAULT`] 决定 ✓
+    //（第 254 轮直接干预实验后**默认不建** ✓；`YANSHI_BELOW_SIG_GROUPS=4` 可打开 ✓）。
+    evict_one_sig_group_with(by_sig, incoming, below_sig_group_limit())
+}
+
+/// **★ 带显式上限的淘汰（测试用 ✓，与默认值解耦 ✓）★**
+///
+/// **为什么要拆出来** ✗：单测需要"上限恰好是 N"这个前提 ✓，而**默认值会随实测结论变** ✓
+///（第 254 轮就把它从 4 改成了 0 ✗）⇒ 如果测试写死读默认，那么**每次调默认都会连带弄红测试** ✗
+/// ⇒ 拆出带参数的形式，测试传**自己**要的上限 ✓（逻辑被测到 ✓，默认值可以自由调整 ✓）。
+fn evict_one_sig_group_with(
+    by_sig: &mut std::collections::HashMap<Vec<String>, SigTiles>,
+    incoming: &[String],
+    limit: usize,
+) -> bool {
     if by_sig.contains_key(incoming) {
         return false;
     }
-    if by_sig.len() < BELOW_SIG_GROUPS {
+    if by_sig.len() < limit {
         return false;
     }
     let Some(oldest) = by_sig.keys().min().cloned() else {
@@ -6636,7 +6695,7 @@ mod tests {
 // （`len() == BELOW_SIG_GROUPS`）立刻红 ✓；改之后只掉一组、且**刚插入的那组必须在** ✓。
 #[cfg(test)]
 mod by_sig_budget_tests {
-    use super::{evict_one_sig_group, SigTiles, BELOW_SIG_GROUPS};
+    use super::{evict_one_sig_group_with, SigTiles, BELOW_SIG_GROUPS};
 
     fn dummy() -> SigTiles {
         (Vec::new(), std::collections::HashSet::new())
@@ -6658,7 +6717,7 @@ mod by_sig_budget_tests {
         // 再插一组新的 => 只该挤掉一组
         let incoming = sig("zz-new");
         assert!(
-            evict_one_sig_group(&mut by_sig, &incoming),
+            evict_one_sig_group_with(&mut by_sig, &incoming, BELOW_SIG_GROUPS),
             "撞上限时应挤掉一组"
         );
         assert_eq!(
@@ -6679,12 +6738,20 @@ mod by_sig_budget_tests {
         //   这里原写的 `g05` 已经**不在表里**了 ✗ => 断言当场红 ✓。改成"从表里自己取一个键"，
         //   与常量无关 ✓。
         let present = by_sig.keys().next().cloned().expect("表非空（上面刚插过）");
-        assert!(!evict_one_sig_group(&mut by_sig, &present));
+        assert!(!evict_one_sig_group_with(
+            &mut by_sig,
+            &present,
+            BELOW_SIG_GROUPS
+        ));
         // 没到上限时也不淘汰
         let mut small: std::collections::HashMap<Vec<String>, SigTiles> =
             std::collections::HashMap::new();
         small.insert(sig("only"), dummy());
-        assert!(!evict_one_sig_group(&mut small, &sig("another")));
+        assert!(!evict_one_sig_group_with(
+            &mut small,
+            &sig("another"),
+            BELOW_SIG_GROUPS,
+        ));
         assert_eq!(small.len(), 1);
     }
 }
