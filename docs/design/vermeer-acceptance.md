@@ -3417,3 +3417,38 @@ alloc_probe 汇总 ✓：
     ⇒ 之后一律**用默认预算** ✓（本次就是默认 ✓ ⇒ 红 ✓，与台账一致 ✓）；
   * 同一场景两次的增量是 **788 MB／887 MB** ✗ ⇒ **有波动**（约 100 MB ✓）⇒
     判断"达标"时要把波动算进去 ✓（不能贴着 800 说"过了"✓）。
+
+### 四十九之补六十一：按站点归因代码早就有（空的是我的打印器，2026-10-15 ✓）
+
+**读码结果** ✓（`crates/yanshi-render/src/buffer.rs:133`–`:141` ✓）：
+```rust
+// **分配探针**：`Buffer::new` 绕过池的那些路径（直接 `vec!`）。
+let len = (width * height * 4) as usize;
+let location = std::panic::Location::caller();
+crate::alloc_probe::record_site(
+    crate::alloc_probe::AllocPoint::BufferFresh,   // 变体名核对过 ✓（`alloc_probe.rs` 的枚举 ✓）
+    len * std::mem::size_of::<f32>(),              // 字节数 ✓
+    location.file(), location.line(),              // **调用者**的 文件:行 ✓✓
+);
+vec![0.0; len]
+```
+⇒ ⇒ **我上一轮打算"补"的东西，仓库里已经有了** ✓✓ —— 又一次"**清单/计划说没有 ≠ 文件里没有**"✓
+（本会话第 N 次 ✓：`calibrate` ✓、`get_stroke_log` ✓、`show_coords` ✓、`list_brushes` ✓、
+release 冒烟 ✓ …… 都是这样 ✓）。
+
+**⇒ 那 `alloc_probe_sites` 为什么是空的** ✗✓（排除了代码之后 ✓）：
+  * **闸门是开的** ✓ —— 汇总级 `alloc_probe.buffer_fresh = 2221.7 MB ×412` ✓ 就是证据 ✓
+    （`record_site` 与 `record` 共用同一道 `alloc_probe_on()` 门 ✓）；
+  * ⇒ ⇒ **所以空的是我的读取方式** ✗✓：我那个 `python3` 打印器**假定** `alloc_probe_sites`
+    是"**列表套元组**"✗（`isinstance(x,(list,tuple))` ✓）⇒ 若它其实是
+    **列表套对象**（`[{"site":…,"bytes":…}]` ✗）⇒ 我一条都匹配不上 ⇒ 打印"仍为空"✗
+    —— **正是"我的工具错了、却看起来像产品错了"**✗（§49 之补四十九 同型 ✓，**第二次** ✗✓）。
+
+**⇒ 下一步（这次**先打原始 JSON**✓，不先写解析器 ✗）**：
+  1. 起服务时带 `YANSHI_ALLOC_PROBE=1` ✓ ⇒ 跑判据场景 ✓ ⇒
+     **`curl -s $BASE/health | python3 -m json.tool | grep -A20 alloc_probe_sites`** ✓
+     —— **先看它长什么样** ✓；
+  2. 看清形状后再排序取头几名 ✓ ⇒ 那才是**真正的**`文件:行`级归因 ✓；
+  3. 照归因改 ✓（能走池的走池 ✓；不能的就地释放/分块 ✓）。
+**★ 纪律（第二次吃到同一个亏 ✓）**：**打印/解析之前，先看一眼原始数据** ✓ ——
+"**解析器写错**"✗ 会伪装成"**产品没做**"✗，而这两者的后续动作**完全相反** ✓。
