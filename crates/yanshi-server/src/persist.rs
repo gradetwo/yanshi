@@ -401,6 +401,46 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// **★ 中间损坏 ⇒ 必须报错，并指出行号（2026-10-15 补 ✓）★**
+    ///
+    /// **为什么补它** ✗：原来只测了"**半行被容忍**"那一半 ✓ ⇒ 另一半
+    /// （「只有**最后一行**可以坏；**中间**坏了必须报错」✓）**没有测试** ✓ ——
+    /// 而流式改写（`fs::read_to_string` ⇒ `BufReader` 逐行 ✓）动的正是**这条判定** ✓
+    /// ⇒ 必须有东西钉住它 ✗（否则哪天悄悄变成"什么都容忍"也没人知道 ✓）。
+    #[test]
+    fn corrupt_middle_line_fails_with_the_line_number() {
+        let root = temp_root("mid");
+        let store = FileStore::open(&root).unwrap();
+        store.append_atom("doc_1", &atom("a1", 1)).unwrap();
+        let path = store.doc_dir("doc_1").join("atoms.jsonl");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "not json").unwrap(); // 第 2 行坏
+        drop(file);
+        // **后面还有内容** ⇒ 它不是"崩溃残留的半行" ⇒ 必须报错 ✓
+        store.append_atom("doc_1", &atom("a2", 2)).unwrap();
+        let error = store.load_atoms("doc_1").unwrap_err();
+        let text = format!("{error:?} {error}");
+        assert!(text.contains("第 2 行"), "报错应当指出行号，实测：{text}");
+    }
+
+    /// **★ 末尾**完整的一行**坏（带换行）也被容忍 ✓ —— 流式改写的**等价性边界** ✓**
+    ///
+    /// 旧实现按"**是不是最后一行**"判 ✓；新实现按"**后面还有没有内容**"判 ✓
+    /// ⇒ ⇒ 两者在"末尾整行坏（带 `\n`）"这一格上**必须一致** ✓（都容忍 ✓）。
+    /// **这一格最容易在改写时走偏** ✗（新实现若只看"行尾有没有 `\n`"就会**报错** ✗）⇒ 钉住它 ✓。
+    #[test]
+    fn corrupt_final_line_with_newline_is_tolerated() {
+        let root = temp_root("fin");
+        let store = FileStore::open(&root).unwrap();
+        store.append_atom("doc_1", &atom("a1", 1)).unwrap();
+        let path = store.doc_dir("doc_1").join("atoms.jsonl");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "not json").unwrap(); // 完整一行（带 \n）且是**最后**一行
+        drop(file);
+        let atoms = store.load_atoms("doc_1").unwrap();
+        assert_eq!(atoms.len(), 1, "末尾坏行应当被容忍（与旧实现一致）");
+    }
+
     #[test]
     fn meta_and_tokens_round_trip() {
         let root = temp_root("meta");
