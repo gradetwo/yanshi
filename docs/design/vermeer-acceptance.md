@@ -3637,3 +3637,42 @@ for (k, piece) in fresh {                              // fresh: Vec<Buffer> ✓
   1. 读 `:5373` 的 `mod tests` 的**结尾**在哪 ✓（下一个顶层 `}` ✓）⇒ 在那里插入新测试 ✓；
   2. 写完**先跑它** ✓（本机 `cargo test -p yanshi-render` ✓）⇒ 绿 ✓ ⇒ **再做变异** ✓ ⇒ 红 ✓
      ⇒ 恢复 ⇒ 绿 ✓ —— 然后才动 `merge_by_rows` 本身 ✓。
+
+### 四十九之补六十八：merge_by_rows 判据的可落地规格（2026-10-15 ✓）
+
+**接口核实** ✓（`crates/yanshi-render/src/buffer.rs` ✓，全是我要用的 ✓）：
+```
+:124  new(origin_x: i64, origin_y: i64, width: u32, height: u32) -> Self ✓
+:146  filled(origin_x, origin_y, width, height, pixel: LinearRgba, …) -> Self ✓
+:159  width()  :164 height()  :169 origin() -> (i64, i64) ✓
+:174  bbox() -> Bbox ✓        :184 len()  :189 is_empty() ✓
+:204  **pixels() -> &[f32]** ✓✓（**逐字节比对就用它** ✓）  :212 pixels_mut() ✓
+:245  pixel(x, y) -> LinearRgba ✓   :259 set_pixel(x, y, pixel) ✓   :298 fill(pixel) ✓
+```
+
+**函数的合并语义** ✓（读 `:507`–`:520` ✓）：先算 `old`∪`new` 的包围盒 ✓ ⇒
+再 `for (src, dx, dy) in [(old, ob.x, ob.y), (new, nb.x, nb.y)]` ✓
+⇒ ⇒ **先 blit `old`、后 blit `new`** ✓ ⇒ **重叠处 `new` 胜** ✓。
+
+**⇒ 判据的四条不变量（有判别力 ✓，且不重复实现 ✓）**：
+  1. **包围盒 ＝ 并集** ✓：`merged.bbox() == old.bbox().union(&new.bbox())` ✓
+     （用**已有**的 `Bbox::union` ✓ `conflict.rs:70` ✓ ⇒ 不新起一套 ✓）；
+  2. **尺寸自洽** ✓：`merged.pixels().len() == merged.bbox().w * merged.bbox().h * 4` ✓；
+  3. **`new` 覆盖处归 `new`** ✓：在 `new` 的 bbox 内取一点 ⇒
+     `merged.pixel(...) == new.pixel(...)` ✓（**blit 顺序**的可观测后果 ✓）；
+  4. **`old` 独有处归 `old`** ✓：在 `old` 的 bbox 内、**且不在** `new` 的 bbox 内的点 ⇒
+     `merged.pixel(...) == old.pixel(...)` ✓。
+  ⇒ ⇒ 四条合起来**钉住**"并集 ＋ blit 顺序 ＋ 谁胜"✓ ——
+  改名/签名/写入语义若**悄悄改掉**其中任何一条 ⇒ **必红** ✓。
+
+**★ 设计要点（为什么这样写 ✓）**：
+  * **颜色取值要能区分两层** ✓（例如 `old` 用 (1,0,0,1) ✓、`new` 用 (0,1,0,1) ✓）
+    ⇒ 断言里直接比像素 ✓，不依赖"手工算 blend" ✓（那会**重复实现**✗、反而脆弱 ✗）；
+  * **两个 bbox 故意不同且部分重叠** ✓（如 old=(0,0,4,4) ✓、new=(2,2,4,4) ✓）
+    ⇒ 同时覆盖"并集 ✓／重叠 ✓／各自独有 ✓"三种情形 ✓；
+  * **放在**已有 `mod tests`（`:5373`–`:6880` ✓）的**内部末尾** ✓（`:6880` 之前 ✓）
+    ⇒ 不是文件末尾追加 ✗（AGENTS.md ✓）。
+
+**⇒ 下一步** ✓：照这份规格写测试 ⇒ `cargo test -p yanshi-render` ⇒ 绿 ✓
+⇒ **再做变异**（把 blit 顺序对调 ✗ 或少写一行 ✓）⇒ **必红** ✓ ⇒ 恢复 ⇒ 绿 ✓
+⇒ ⇒ **然后**才动 `merge_by_rows` 的签名/写入语义 ✓（此时"行为不变"已有判据背书 ✓）。
