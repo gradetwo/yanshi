@@ -2289,3 +2289,31 @@ crates/yanshi-render/src/tile.rs:577      pub fn evict_outside_viewport(&mut sel
 
 **⇒ 第 3–5 步不变** ✓：判据先行（`browser-viewport-evict.mjs` ✓ 已在台账 ✓）⇒
 接线时**取并集** ✓ ⇒ 门禁＝那 **8 条 `browser-*`** ✓ ⇒ **变异**（去掉调用／改成按单视口淘汰 ⇒ 判据必须红 ✓）。
+
+### 四十九之补二十四：视口淘汰设计**完全封闭**（2026-10-15 ✓）
+
+**最后一块前置** ✓：
+```
+crates/yanshi-http/src/server.rs:3177   let viewport = message.get("viewport").and_then(Bbox::from_value); ✓
+server.rs:3187                          .set_viewport(subscriber, viewport, zoom) ✓   ← **WS 视口处理器** ✓
+```
+⇒ ⇒ **淘汰挂在这条视口消息的处理路径上** ✓；**并集**由 `Broadcaster` 自己算最干净 ✓（订阅者视口都在它手里 ✓）。
+
+**⇒ 完整设计（下一步照做 ✓，顺序不变：判据先行 ⇒ 接线 ⇒ 8 条门禁 ⇒ 变异 ✓）**：
+  1. **`Broadcaster` 加一个只读小方法** ✓：`pub fn viewport_union(&self) -> Option<Bbox>` ✓
+     —— 把所有订阅者的视口取并集 ✓；
+     **★ 保守规则（关键 ✗✓）**：**只要有一个订阅者没声明视口**（`None` ✓）⇒ **返回 `None`** ✓
+     ⇒ 调用处**什么都不淘汰** ✓。
+     **为什么这条规则是对的** ✓：推送过滤那边对 `None` 的语义就是
+     「**未声明视口：按需全量**」✓（`broadcast.rs` 那段的注释原文 ✓）
+     ⇒ ⇒ 淘汰必须**与它一致** ✓ —— 否则"你以为没人看"的那部分，恰恰是那个没声明视口的人要的 ✗。
+  2. **在 `server.rs:~3187` 之后调一次** ✓：
+     `if let Some(vp) = broadcaster.viewport_union() { render.cache_mut().evict_outside_viewport(&vp); }` ✓
+     （**`Some` 才淘汰** ✓；`None` ⇒ 不淘汰 ✓ —— 安全优先 ✓）；
+  3. **判据先行** ✓：`scripts/browser-viewport-evict.mjs` ✓（已在台账 ✓；它的输出就是验收标准 ✓：
+     「② 平移回来之后画面变了 ✗」⇒ 接线后必须变成"**平移回来画面不变**" ✓）；
+  4. **门禁 ＝ 那 8 条 `browser-*`** ✓（**不是**新加那条 ✗）⇒ 按 §43 跑 ✓；
+  5. **变异** ✓：去掉调用／改成"按单个订阅者视口淘汰"／把 `None` 当成"没人看" ⇒
+     **判据必须红** ✓（第 3 种变异最能证明"**保守规则**"这条设计被守住了 ✓）。
+**⇒ 与上次失败的关系** ✓：`a152e034` 那次**跳过判据直接接线** ✗ 且**语义按单视口** ✗
+⇒ 弄红 8 条 ✓ ⇒ 已回退 ✓。这次**先判据、再接线、取并集、`None` 不淘汰** ✓。
