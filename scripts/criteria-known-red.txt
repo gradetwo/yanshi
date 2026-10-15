@@ -27948,8 +27948,8 @@ browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗
 #     ＝ **∴ 这正是记录在案、从未修的 DEF-03（8K OOM ×3）** ✓ ★★
 #   ＋ **∴ 转绿条件 ✗**（**两笔都解决、或把增量压到预算以内 ✓）**：
 #     **① 每层全幅缓冲别同时活着**（**src-over 可结合 ⇒ 边合成边释放 ✓；或分块 ✓）
+#   ＋ **∴ 原条目（已移除 ✓）**：**类型：内存账目（DEF-03 的根因；两笔已实测钉死）**
 #     **② 查 `import_image` 为什么一张小图就吃 ~1.7 GB**（**优先，疑似真 bug ✓）★★★
-tool-render-memory-budget.mjs  # **类型：内存账目（DEF-03 的根因；两笔已实测钉死）**
 
 # **★★★ tool-carried-color.mjs —— 已转绿，从台账移出（第 254 轮）★★★**
 #   ＋ **净室揉合已实现并接线**：`yanshi-render::brush::smudge_dab`（确定性、只对 `smudge > 0`
