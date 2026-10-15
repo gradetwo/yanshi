@@ -23,12 +23,22 @@
 // **变异（能红的根据 ✓）**：把任意一张换成 `assets/textures/` 里的**原图**（1024² 照片 ✓）
 //   ⇒ ②（体积 > 64 KB ✓）与 ③（边缘差远大于内部 ✓）**都会红** ✓。
 //
-// 用法：node scripts/tool-tileable-textures.mjs [仓库根]
+// 用法：node scripts/tool-tileable-textures.mjs [忽略的参数，例如 harness 传的 base URL] ✓
+//   **仓库根从判据自身的位置推** ✓ ⇒ 传什么进来都不影响 ✓。
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
-const root = process.argv[2] || ".";
+// **★ 仓库根：从**判据自身的位置**推 ✓（2026-10-15 修 ✓）★**
+//   **为什么必须这样** ✗：CI 的 harness 会按统一约定传**第一个参数 = base URL** ✓
+//   （`scripts/run-criteria.sh` ✓），而我第一版把第一个参数当**仓库根** ✗
+//   ⇒ 于是它拿到 `http://127.0.0.1:7884` 去拼路径 ✓ ⇒ `ENOENT` ⇒ **退出 3**
+//   ⇒ ⇒ **在 CI 上它永远"跑不了"** ✗ —— 是我本机那次回归扫抓到它的 ✓。
+//   **做法** ✓（照 `tool-release-launcher.mjs` 的先例 ✓：**用它自己文件的位置**解析 ✓，
+//   这样从任何 cwd 跑都对 ✓，也不受 harness 传参约定影响 ✓）。
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "..");
 // **★ 位置（2026-10-15 改 ✓）★**：这 4 张**搬进了 `assets/textures/`** ✓ ——
 //   因为引擎的 `list_textures` **只列那个目录 ＋ 工作区缓存** ✓
 //   ⇒ 放在别的目录里**引擎看不见** ✗（那它们就不是"可用纹理"了 ✗）。
