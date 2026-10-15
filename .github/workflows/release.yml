@@ -36,6 +36,16 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      # **★ 只跑哪些平台（2026-10-15 加 ✓）★**：留空 = **全部四个** ✓；
+      #   写逗号/空格分隔的 label ⇒ **只起那几台 runner** ✓。
+      #   **为什么加** ✗：需求文档的实现期我为了验证多平台，反复跑**整个四平台矩阵** ✓
+      #   ⇒ 实测账：8 次手动触发里 **6 次被取消** ✗（＝起了 ~24 个平台构建、扔掉 ~18 个 ✗）
+      #   ⇒ 想"只验 macOS"以前做不到 ✗（`targets` 输入只会让**四台**都去编同一个目标 ✗）。
+      #   **用法** ✓：`platforms: macos-arm64` ⇒ 只起一台 ✓。
+      platforms:
+        description: "只跑哪些平台（逗号分隔；留空 = 全部）：linux-x86_64 / macos-x86_64 / macos-arm64 / windows-x86_64"
+        required: false
+        default: ""
       targets:
         description: "要打的目标平台；留空 = 当前平台；all = 逐个目标（没装的目标会跳过并说明）"
         required: false
@@ -66,6 +76,44 @@ permissions:
   contents: write
 
 jobs:
+  # **★ 矩阵的唯一来源（2026-10-15 ✓）★**：以前 `package` 里写死一份 `include` ✓，
+  #   现在改成这里**算一份 JSON** ✓ ⇒ 既支持"只跑某个平台" ✓，又**不会出现两份清单漂移** ✗。
+  #   **用 python3** ✓（`ubuntu-latest` 自带 ✓，不必额外装东西 ✓）。
+  #   **tag 推送时** ✓：`platforms` 输入为空 ⇒ **全部四个** ✓（发布永远是四平台 ✓）。
+  prepare:
+    name: prepare the matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      picked: ${{ steps.m.outputs.picked }}
+    steps:
+      - id: m
+        shell: bash
+        env:
+          WANT: ${{ github.event.inputs.platforms }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          ALL = [
+              {"os": "ubuntu-latest", "label": "linux-x86_64", "target": "x86_64-unknown-linux-gnu"},
+              {"os": "macos-14", "label": "macos-x86_64", "target": "x86_64-apple-darwin"},
+              {"os": "macos-14", "label": "macos-arm64", "target": "aarch64-apple-darwin"},
+              {"os": "windows-latest", "label": "windows-x86_64", "target": "x86_64-pc-windows-msvc"},
+          ]
+          want = [w for w in os.environ.get("WANT", "").replace(",", " ").split() if w]
+          picked = [e for e in ALL if not want or e["label"] in want]
+          unknown = [w for w in want if w not in {e["label"] for e in ALL}]
+          if unknown:
+              print(f"::error::未知平台 {unknown} ⇒ 可选：{[e['label'] for e in ALL]}")
+              raise SystemExit(1)
+          if not picked:
+              print("::error::过滤后一个平台都不剩 ⇒ 拒绝跑一个空矩阵")
+              raise SystemExit(1)
+          print("matrix=" + json.dumps({"include": picked}))
+          print("picked=" + " ".join(e["label"] for e in picked))
+          PY
+
   package:
     name: package (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
@@ -76,27 +124,11 @@ jobs:
     defaults:
       run:
         shell: bash
+    # **矩阵来自 `prepare`** ✓（唯一来源 ⇒ 不会漂移 ✗）
+    needs: prepare
     strategy:
       fail-fast: false
-      matrix:
-        # **★ 多平台发布包（用户 2026-10-15 要求）★**：macOS 的 x86_64 与 arm64 **分开**跑 ✓
-        #（`macos-13` 是 Intel ✓，`macos-14` 起是 Apple Silicon ✓）⇒ 各自**原生**编译 ✓；
-        # 不做交叉编译 ✗ —— 那样"真跑一次"的冒烟就失去意义了 ✓。
-        include:
-          - { os: ubuntu-latest,  label: linux-x86_64,   target: x86_64-unknown-linux-gnu }
-          # **★ macOS x86_64 用 `macos-14` 交叉编，不再依赖 `macos-13` ★**（2026-10-15 实测 ✓）：
-          #   第一次跑时 `macos-13` 那个作业**排队 6 分钟以上仍不开始** ✗（其它三个平台同时在跑 ✓），
-          #   与"Intel 镜像已退役／极稀缺"的迹象一致 ✓ ⇒ 不能把发布挂在它上面 ✗。
-          #   **Apple 的工具链原生支持 x86_64↔arm64 交叉** ✓ ⇒ 在 Apple Silicon runner 上
-          #   加 `--target x86_64-apple-darwin` 就得到**真正的 Intel Mach-O** ✓；
-          #   而这类 runner 带 **Rosetta** ⇒ 下面那步"真跑一次 /health"的冒烟**照样跑得起来** ✓
-          #   （所以这里用交叉**没有**牺牲掉冒烟的意义 ✓ —— 它仍然会启动那个 x86_64 二进制 ✓）。
-          - { os: macos-14,       label: macos-x86_64,   target: x86_64-apple-darwin }
-          - { os: macos-14,       label: macos-arm64,    target: aarch64-apple-darwin }
-          # **用 MSVC 而不是 GNU** ✓：`windows-latest` runner 的**原生**目标就是 msvc ✓，
-          # 而 `-gnu` 要额外的 MinGW 工具链 ✗（实机验证时脚本也会以"目标未安装"直接失败 ✗）。
-          # 非 Linux 上本来就不做 static ✓ ⇒ msvc 完全够用 ✓。
-          - { os: windows-latest, label: windows-x86_64, target: x86_64-pc-windows-msvc }
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
