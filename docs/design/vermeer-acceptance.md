@@ -2030,3 +2030,26 @@ pub struct AtomLog {
   * serde：`#[serde(default)]` ✓；
   * `log.rs` 的单测里若断言过"空日志 head_seq == 0" ✓ ⇒ 那条**仍然成立** ✓（`base_seq` 默认 0 ✓）。
 
+### 四十九之补十四：★ 策略更正 —— **不动 `head_seq()`**（实测 128 个调用方 ✗）★（2026-10-15 ✓）
+
+**实测** ✓：`grep -rn "head_seq()" crates/ --include=*.rs` ⇒ **128 处** ✗
+⇒ ⇒ 补十三 里"把 `head_seq()` 改成 `max(base_seq, last)`"这一条**风险过大** ✗
+—— 那是**改一个 128 处都在用的语义** ✗（空尾巴时从 0 变 `seq_at` ✓）✓。
+
+**于是策略改成"**只保证真正要紧的两件事**"** ✓：
+  1. **状态逐字段一致** ✓（`fast.state() == slow.state()` ✓）—— 这是**正确性** ✓；
+  2. **下一次提交的 `seq` 不许撞** ✓ —— 这才是**真危险** ✗：
+     空尾巴 ⇒ `next_seq` 退成 **1** ✗ ⇒ 下一次提交会**重用 seq 1** ✗ ⇒
+     日志里出现**两个 seq 1** ✗ ⇒ 之后所有按 seq 的查找／折叠都会错 ✗。
+**⇒ 实现（最小且不碰 `head_seq` ✓）**：
+  * `AtomLog` 加 **`base_seq: Seq`** ✓（`#[serde(default)]` ✓）—— **只影响新加的方法** ✓
+    （`with_base_seq` ✓ 与一个只读的 `base_seq()` ✓），**不改 `head_seq()`** ✗；
+  * **`with_base_seq(base_seq, atoms)`** ✓：把 `next_seq` 设成 `max(base_seq, 末个 seq) + 1` ✓
+    ⇒ ⇒ **seq 不会撞** ✓（上面第 2 条 ✓）；
+  * `open_from_snapshot` 的快照分支改用 `with_base_seq(seq_at, tail)` ✓。
+**⇒ 判据相应改成断言"要紧的那两件"** ✓（**不是**为了迁就实现而放宽 ✗，而是我上一版**断言错了重点** ✗✓）：
+  * 断言 `fast.state() == slow.state()` ✓（逐字段 ✓）；
+  * 断言 **`fast` 之后提交一颗原子 ⇒ 它的 `seq` 是 `seq_at + 1`** ✓（**不撞** ✓）。
+**`head_seq()` 返回 0 这件小事** ✓：**记成已知瑕疵** ✗（`AtomLog` 知道 `base_seq` 却不在 `head_seq()` 里用 ✓），
+修它要动 128 个调用方 ✗ ⇒ 留作**单独一笔**（那时要**逐个看调用方** ✓）—— **不在本任务里顺手做** ✗。
+
