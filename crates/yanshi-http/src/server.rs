@@ -3182,9 +3182,24 @@ fn handle_ws_message(
                 .ok()
                 .and_then(|mut workspace| {
                     workspace.document_mut(doc_id).ok().map(|document| {
-                        document
+                        let applied = document
                             .broadcaster_mut()
-                            .set_viewport(subscriber, viewport, zoom)
+                            .set_viewport(subscriber, viewport, zoom);
+                        // **★ 视口变了 ⇒ 按**保守并集**淘汰服务端 tile 缓存（2026-10-15 ✓）★**
+                        //   **判据** ✓：`scripts/tool-viewport-evict-server.mjs`（**先红后绿** ✓，
+                        //     红的那次实测见 §49 之补五十一 ✓：`cache_used_bytes` 2097152 不动 ✗）。
+                        //   **保守规则** ✗✓：**只在"所有订阅者都声明了视口"时才淘汰** ✓
+                        //     （`viewport_union()` 返回 `None` ⇒ **一个都不淘汰** ✓）；
+                        //   **为什么** ✗：推送过滤对 `None` 的语义是「**未声明视口：按需全量**」✓
+                        //     ⇒ 淘汰必须与它一致 ✓ —— 否则"你以为没人看"的那部分，
+                        //       恰恰是那个**没声明视口**的人要的 ✗（§49 之补二十四 ✓）。
+                        //   **为什么用并集而不是"某一个订阅者"** ✗：按单个视口淘汰会扔掉
+                        //     别人还要用的 tile ✗ —— 那正是 `a152e034` 弄红 8 条的根因 ✓。
+                        if let Some(union) = document.broadcaster().viewport_union() {
+                            // 返回值先不用 ✗（判据读的是 `get_document` 暴露的那两个读数 ✓）。
+                            let _ = document.evict_cache_outside(&union);
+                        }
+                        applied
                     })
                 })
                 .unwrap_or(false);
