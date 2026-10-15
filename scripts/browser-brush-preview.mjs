@@ -94,6 +94,21 @@ const capture = async (name) => {
 
 await send("Runtime.enable");
 await send("Page.enable");
+// **★ 由判据**自己**定视口 ✗★**（2026-10-15 ✓；§49 之补一百零八／一百零九／一百一十 ✓）：
+//   **∴ 为什么** ✗：`--window-size` 在**本机**有效 ✓、在 **CI 上无效** ✗
+//     （实测：`12b1185` 的 CI 仍报 `board.width=320` ✓，而参数**确实在** `run-criteria.sh:64` ✓）
+//     ⇒ ⇒ 判据若依赖"窗口多大"✗ ⇒ **它的结果就取决于环境** ✗✓
+//     （"**本机绿 ≠ CI 绿**"✓ 的实例 ✓）；
+//   **∴ 改成** ✓：用 CDP 的 `Emulation.setDeviceMetricsOverride` **强制**一个已知视口 ✓
+//     ⇒ ⇒ **与窗口无关** ✓、与本机/CI 的差异**无关** ✓✓；
+//   **∴ 尺寸 1280×900** ✓：与 `run-criteria.sh` 给 chromium 的 `--window-size` **一致** ✓
+//     （§49 之补三十七 ✓）⇒ 本机行为**不变** ✓，只是**不再依赖它** ✓。
+await send("Emulation.setDeviceMetricsOverride", {
+  width: 1280,
+  height: 900,
+  deviceScaleFactor: 1,
+  mobile: false,
+});
 await send("Page.navigate", { url });
 // **必须强制重新取页面** ✗ —— 实测教训 ✓：调试浏览器里常常已经有同一个 URL 的页面 ✓，
 // 只 `navigate` 会命中**内存缓存** ✓ ⇒ 跑的是**旧界面的 JS** ✓
