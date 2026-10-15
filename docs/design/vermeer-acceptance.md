@@ -1914,3 +1914,35 @@ docs/w/meta.json      248 字节
 **⇒ 为什么要显式 `snapshot_now`** ✓：不然要等 `SNAPSHOT_LAG_ATOMS = 1000` 颗原子 ✓
 （测试会慢且笨 ✓）—— **不许**为了迁就判据去改策略默认值 ✗（那是产品行为 ✓）。
 
+### 四十九之补十一：第③步（读快照）的**接口取舍**（2026-10-15 读码 ✓）
+
+**两个关键事实** ✓：
+1. **`Document::open`（`document.rs:461` ✓）构造时状态是空的** ✓：
+   `let log = AtomLog::with_atoms(atoms)?;` ✓ ⇒ 结构体里 `state: DocumentState::empty()` ✓
+   ⇒ ⇒ **折叠不在构造里** ✓（在调用方 `open_document_inner` ✓）
+   ⇒ 所以"只传尾巴"会得到一个**缺了快照覆盖那段**的状态 ✗ ⇒ 除非**先把快照 `restore()` 出来** ✓、
+     再把尾巴折上去 ✓。
+2. **`Document::open(` 的调用点只有 2 处** ✓（**全量 grep** ✓，不带 `head` ✗ —— 上一轮的教训 ✓）
+   ⇒ ⇒ 改签名／加参数**比我担心的便宜得多** ✓。
+
+**⇒ 取舍（定案 ✓）**：**加**一个**新构造器** ✓，不改老的 ✗：
+```rust
+/// 用"快照恢复出来的状态 ＋ 尾巴上的那些原子"打开（待办 ① ✓）
+pub fn open_from_snapshot(
+    store: Arc<dyn BlobStore>,
+    settings: DocumentSettings,
+    base: Option<(Seq, DocumentState)>,   // None ⇒ 退化成老的 open ✓
+    tail: Vec<Atom>,
+) -> Result<Self>
+```
+**为什么加新的而不是改 `open`** ✓：① 老 `open` 有 2 个调用点 ✓、语义清晰（"**从头折**" ✓）；
+② 新语义（"**从快照起折**" ✓）值得单独一个名字 ✓ ⇒ 读代码的人不必追参数分支 ✓；
+③ 符合"**一笔只做一件事**" ✓（这一步只加能力 ✓、不改既有行为 ✓）。
+**⇒ 于是第③步的落点** ✓（`service.rs` 的 `open_document_inner` ✓，`:1211` 一带 ✓）：
+  1. 试着读**最新**快照文件 ✓（`docs/<doc>/snapshot-*.json` 里 `seq_at` 最大的那个 ✓）
+     ⇒ `from_slice` ⇒ **`verify()`** ✓ ⇒ 任何失败都**当没有** ✓（回退全量 ✓，本笔的"最小风险"原则 ✓）；
+  2. 有 ⇒ `restore()` 得到 `(seq_at, state)` ✓ ⇒ `load_atoms_since(doc_id, seq_at)` ✓ ⇒ 尾巴 ✓；
+  3. 无 ⇒ `(None, load_atoms(doc_id)?)` ✓（**与今天完全一样** ✓ ⇒ 默认行为不变 ✓）；
+  4. 打开后把 `atoms_read_on_open` 设成 **`tail.len()`** ✓
+     ⇒ 有快照 ⇒ 它**明显变小** ✓ ⇒ 判据第 2 段成立 ✓。
+
