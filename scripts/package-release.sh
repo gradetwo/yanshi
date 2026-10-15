@@ -496,10 +496,16 @@ if [ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]; then
   elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
     # **macOS 上提前把话说出来** ✓（用户实测已确认这条路能修好 ✓）：否则等的是一屏 dyld 路径 ✓
     # ——那时人只会觉得"这个仓库的构建坏了"✗，而真正缺的是一条 `brew install lld` ✓。
-    echo "    提示：macOS 上 rustup 的 `rust-lld` 常缺 `libLLVM.dylib` ⇒ 这一步（以及 wasm 内核）可能失败；"
-    echo "          装 Homebrew 的 **`lld`** 即可 —— 它是**单独的 formula** ✓，`brew install llvm` 里**没有**它 ✗："
+    # **★ 这里原来有反引号，会把打包整个弄死（2026-10-15 CI 上实测 ✓）★**
+    #   `echo "… `rust-lld` …"` 里的反引号在**双引号内是命令替换** ✗ ⇒ shell **真去执行**
+    #   `rust-lld` 与 `libLLVM.dylib` ✗ ⇒ 两行 "command not found" ✓ ⇒ 在 `set -e` 下
+    #   **打包当场中止** ✗（CI 的 macOS 两档就是这样红的 ✓，日志原文：
+    #   `scripts/package-release.sh: line 499: rust-lld: command not found` ✓）。
+    #   而这一段**只是提示** ✓ ⇒ 提示**绝不该有副作用** ✗。按仓库约定（中文串里用「」✓）改掉 ✓。
+    echo "    提示：macOS 上 rustup 的「rust-lld」常缺「libLLVM.dylib」⇒ 这一步（以及 wasm 内核）可能失败；"
+    echo "          装 Homebrew 的「lld」即可 —— 它是**单独的 formula** ✓，「brew install llvm」里**没有**它 ✗："
     echo "            brew install lld"
-    echo "          装完重跑 `make release` ✓（脚本会自动用它 ✓）；也可显式指定："
+    echo "          装完重跑「make release」✓（脚本会自动用它 ✓）；也可显式指定："
     echo "            YANSHI_WASM_LINKER=/opt/homebrew/opt/lld/bin/lld make release"
   fi
 fi
