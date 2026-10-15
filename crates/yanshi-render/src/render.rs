@@ -2297,7 +2297,8 @@ impl Renderer {
                     None
                 };
                 eprintln!(
-                    "COMPOSITE pass={pass_no} layer={} acc_bbox=({},{},{},{}) before={:?} layer_mid={:?}",
+                    "COMPOSITE pass={pass_no} buf={:?} layer={} acc_bbox=({},{},{},{}) before={:?} layer_mid={:?}",
+                    layer_buffer.pixels().as_ptr() as usize,
                     layer.id,
                     b.x,
                     b.y,
@@ -3557,10 +3558,11 @@ impl Renderer {
                                         } else {
                                             None
                                         };
+                                        let buf = layer_buffer.pixels().as_ptr() as usize;
                                         eprintln!(
                                             "BLIT_JOIN_AFTER pass={} dst=({x0},{y0},{rw},{rh}) centre=({cx},{cy}) \
                                              band=({},{},{},{}) in_band={local_ok} \
-                                             stitched_centre={src:?} band_after={got:?}",
+                                             stitched_centre={src:?} band_after={got:?} buf={buf:?}",
                                             PASS_SEQ.load(std::sync::atomic::Ordering::Relaxed),
                                             b.x,
                                             b.y,
