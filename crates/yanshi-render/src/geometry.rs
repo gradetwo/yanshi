@@ -1364,12 +1364,19 @@ mod box_blur_golden_tests {
 /// **★ 自断言前提 ✗★**：输入必须**非平凡** ✓（§49 之补七十一 ✓）。
 #[test]
 fn box_blur_2d_banded_matches_whole_frame() {
-    let (w, h) = (37usize, 23usize);
+    let (w, h) = (37usize, 135usize);
     let data: Vec<f32> = (0..w * h)
         .map(|i| ((i * 53 % 199) as f32) / 199.0)
         .collect();
     let nonzero = data.iter().filter(|v| **v != 0.0).count();
     assert!(nonzero > data.len() / 2, "前提：输入必须非平凡（否则判据空洞 ✗）");
+        // **★ 自断言"跨带" ✗★**（§49 之补九十二／九十七 ✓）：`h <= BAND_ROWS`
+        //   ⇒ 只走**一个带** ✗ ⇒ `halo` 从不参与 ✗ ⇒ 判据对带边界**完全瞎** ✗✓
+        //   （实测：把 `halo` 压到 `radius - 1` ✗ ⇒ 判据**照样绿** ✗）。
+        assert!(
+            h > 64,
+            "前提：输入高度必须**跨过 BAND_ROWS（64）** ✗，否则判据对带边界是瞎的 ✗"
+        );
     let radius = 3usize;
     // **整幅**参考：把带高设成整幅高 ✓ ⇒ 与 `BAND_ROWS = 64` 的默认路径不同 ✓
     //   ⇒ 这里直接比对**同一函数**在不同 `BAND_ROWS` 下的结果是不可能的 ✗
