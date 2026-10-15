@@ -232,6 +232,17 @@ if (viewBefore.w >= 4096 && viewBefore.x === 0 && viewBefore.y === 0) {
   voidRun("放大之后视口仍然铺满文档（没有平移余量）⇒ 这条判据此刻测不了 ✗");
 }
 
+// **★ ② 的基准必须**在放大之后**取（2026-10-15 修 ✓）★**
+//   **为什么** ✗：上面那个 `before.sum`（`:196` 一带 ✓）是**放大之前**的像素和 ✓ ⇒
+//   **放大本身就会改变画面** ✗ ⇒ 拿它当基准 ⇒ 断言②**必然误报**"画面变了" ✗
+//   （台账里那条「**[另一处待修]** …要在**放大之后**再取基准 ✓」说的就是这件事 ✓）。
+//   **正确基准** ✓：**同一缩放状态下、平移之前**的像素和 ✓。
+const baseSum = await evaluate(PIXEL_SUM);
+if (!baseSum) voidRun("放大之后读不到画布像素和");
+console.log(
+  `  平移前基准（**放大后** ✓）：采样像素和 ${baseSum.sum}｜非零 ${baseSum.nonZero}`,
+);
+
 // ③ 选中手形工具并平移 ✓
 const picked = await evaluate(
   `(() => { const b = document.querySelector('button[data-tool="pan"]'); if (!b) return null; b.click(); return b.dataset.tool; })()`,
@@ -329,10 +340,11 @@ if (!moved) {
   );
 }
 // **② 回来之后画面一致** ✓
-if (before.sum !== backSum.sum) {
+if (baseSum.sum !== backSum.sum) {
   fails.push(
-    `② **平移回来之后画面变了** ✗：像素和 ${before.sum} → ${backSum.sum}` +
-      `（非零 ${before.nonZero} → ${backSum.nonZero}）⇒ 逐出把**还要用的** tile 扔了 ✗（抖动）`,
+    `② **平移回来之后画面变了** ✗：像素和 ${baseSum.sum} → ${backSum.sum}` +
+      `（非零 ${baseSum.nonZero} → ${backSum.nonZero}）⇒ 逐出把**还要用的** tile 扔了 ✗（抖动）` +
+      `（基准取在**放大之后、平移之前** ✓ —— 放大本身会改变像素和 ✗）`,
   );
 }
 
@@ -342,6 +354,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `✓ 视口淘汰接线成立：平移触发了 ${afterPan.ev} 块逐出 ✓，且移回后画面逐像素一致（${before.sum}）✓`,
+  `✓ 视口淘汰接线成立：平移触发了 ${afterPan.ev} 块逐出 ✓，且移回后画面逐像素一致（${baseSum.sum}）✓`,
 );
 process.exit(0);
