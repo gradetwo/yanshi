@@ -3409,13 +3409,43 @@ impl Renderer {
                                     let th: yanshi_core::atom::BlobHash = text.parse().ok()?;
                                     parts.push(store.get(&th).ok()?);
                                 }
-                                crate::bitmap_tiles::assemble_region_sparse(
+                                let stitched = crate::bitmap_tiles::assemble_region_sparse(
                                     index.width,
                                     index.height,
                                     &slots,
                                     &parts,
                                     (src_x, src_y, rw, rh),
-                                )
+                                );
+                                // **★ 数据追踪：这条路上到底拿到了什么（2026-10-15 ✓）★**
+                                //   **为什么需要** ✗：整条缝合路径**逐段读过、纸面全对** ✓
+                                //   （`tiles_for_rect` ✓／逐块解码 ✓／`assemble_region_sparse` ✓／
+                                //    `assemble_region` ✓，见 `docs/design/vermeer-acceptance.md` §22 ✓）
+                                //   ⇒ 那就只剩"**数据是空的 / 算错了**"两种可能 ✓ ⇒ 把数据打出来 ✓。
+                                if std::env::var_os("YANSHI_TRACE_TILE_STITCH").is_some() {
+                                    let part_info: Vec<String> = parts
+                                        .iter()
+                                        .map(|b| {
+                                            let nz = b.iter().filter(|v| **v != 0).count();
+                                            format!("{}B/nz{}", b.len(), nz)
+                                        })
+                                        .collect();
+                                    let out_info = stitched.as_ref().map(|o| {
+                                        (
+                                            o.len(),
+                                            o.iter().filter(|v| **v != 0).count(),
+                                            o.chunks_exact(4).filter(|px| px[3] > 0).count(),
+                                        )
+                                    });
+                                    eprintln!(
+                                        "TILE_STITCH bitmap={}x{} rect=({src_x},{src_y},{rw},{rh}) \
+                                         slots={:?} parts=[{}] out={out_info:?}",
+                                        index.width,
+                                        index.height,
+                                        slots,
+                                        part_info.join(" ")
+                                    );
+                                }
+                                stitched
                             })();
                             if let Some(rgba) = stitched {
                                 // **★ 拼出来若是"什么都没画"的缓冲 ⇒ 不许信它（2026-10-15 实测 ✓）★**
