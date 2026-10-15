@@ -100,7 +100,13 @@ for (const side of sides) {
     //       一律**不适用** ✓ ★
     const parts = value.split(":");
     const klass = parts.length >= 3 ? parts[2] : "";
-    if (klass === "Cpu" || klass === "Virtual") {
+    // **★ `host_has_no_render_node` 也必须挡掉（2026-10-15 ✓ 实测逮到 ✓）★**
+    //   **证据** ✗：CI（run `38768555926` 的 shard 2 ✓）打印的是
+    //     `适配器 ＝ host_has_no_render_node` ✓ —— **这台机器没有 render node（没有 GPU）** ✓
+    //   而 `NOT_A_NAME` 里有 `render_node_present`／`none`／`software` ✓ **却没有这一条** ✗
+    //   ⇒ 它被当成"真适配器名" ✓ ⇒ 扫描跑完 ⇒ **exit 1** ✗（把**机器事实**当成产品红 ✗）。
+    //   **所以** ✓：凡"没有渲染节点"这一族名字，一律**不适用** ⇒ 退 3 ✓（与 `Cpu`／`Virtual` 同类 ✓）。
+    if (klass === "Cpu" || klass === "Virtual" || /no_render_node|no_gpu|host_has_no/.test(value)) {
       notEligibleAdapter = value;
     }
   }
