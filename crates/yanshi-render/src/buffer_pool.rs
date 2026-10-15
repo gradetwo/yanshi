@@ -58,7 +58,12 @@ use std::sync::Mutex;
 /// 取 16 是为了覆盖并行渲染的 worker 上限（`render.rs::parallel_impl::MAX_WORKERS = 16`）：
 /// 每个 worker 的图层循环同时最多只需要一块图层缓冲。真正的规模仍由**实际并发取用**决定
 /// ——这里只是"最多保留多少"的上限，它同时把字节预算里的并发因子夹在 ≤ 16。
-pub const MAX_POOLED_BUFFERS: usize = 2;
+/// **★ 为什么是 4（而不是更小）✗★**（2026-10-15 ✓；§49 之补一百一十五 ✓）：
+/// **不变量**是「**缓存上限 ≥ 并发数**」✓ —— 单元判据
+/// `byte_budget_covers_every_concurrent_worker` 用 **4 个并发 worker** 把它钉住了 ✓：
+/// 上限小于 4 ⇒ 并发下**每轮重新分配** ✗（抖动 ✗）⇒ 判据**必红** ✓。
+/// ⇒ ⇒ 所以 4 是"**在并发不变量之内能取的最小值**"✓（16 ⇒ 4 已省 12 块 ✓）。
+pub const MAX_POOLED_BUFFERS: usize = 4;
 
 /// 池保留字节预算的**下界（floor）**——不是硬上限。
 ///
