@@ -1796,6 +1796,25 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_stroke_log",
+        profile: Profile::History,
+        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。",
+        mutating: false,
+        params: &[
+            param!("limit", Number, false, "返回条数（缺省 50 ✓，上限 500 ✓）"),
+            param!("offset", Number, false, "偏移（缺省 0 ✓，配 `next_offset` 翻页 ✓）"),
+            param!("since_seq", Number, false, "只看序号大于它的原子（缺省 0 ✓）"),
+            param!("layer_id", String, false, "只看某图层 ✓"),
+            param!("object_id", String, false, "只看某个对象 ✓"),
+            param!(
+                "order",
+                String,
+                false,
+                "`oldest`（缺省 ✓）或 `newest`（最近的在前面 ✓）"
+            ),
+        ],
+    },
+    ToolSpec {
         name: "find_atom",
         profile: Profile::History,
         summary: "按条件检索原子（设计 776）",
@@ -3334,6 +3353,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "restore_object" => write_restore_object(ctx, args),
         "get_object_history" => read_get_object_history(ctx, args),
         "find_atom" => read_find_atom(ctx, args),
+        "get_stroke_log" => read_get_stroke_log(ctx, args),
         "get_diff" => read_get_diff(ctx, args),
         "get_ancestors" => read_get_ancestors(ctx, args),
         "get_descendants" => read_get_descendants(ctx, args),
@@ -7715,6 +7735,142 @@ fn read_get_object_history(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
 /// 与 `get_log` 的差别 ✓：这里多了 **`object_id` / `layer_id`** 两个过滤 ✓，
 /// 并且**报告匹配总数** ✓（`get_log` 只按 `limit` 返回 ✓，调用方无法知道还有多少 ✓）；
 /// 这两点正是"找某个对象到底经历了什么"时最需要的 ✓。
+/// **★ 笔触日志（Muse 建议 3，P1）★** —— 把原子日志里**笔触那一面**摊平成一行一笔 ✓。
+///
+/// **实现要点（都是实测确定的 ✓，不是猜的 ✗）**：
+///   * 笔触落盘时是 **`import_image`** 原子 ✓（`brush_stroke` 在服务端栅格化 ✓），
+///     它的 `source` 里才有坐标 ✓：`{kind:"brush", brush, color, points:[[x,y,pressure],…], size, …}` ✓，
+///     而 `region` 就是**笔触的包围盒** ✓ ⇒ 两者都要报 ✓；
+///   * **只列笔触** ✓：用 `source.kind` 判定（`brush`／`medium`／`draw` ✓），
+///     不靠 `kind == import_image` 一条 ✗（真正的 `import_image` 也会落成那个 kind ✗）；
+///   * **过滤 + 分页** ✓：`limit`（上限 500 ✓）/`offset`/`since_seq`/`layer_id`/`object_id`/`order` ✓；
+///   * **逐点 `time_ms` 拿不到** ✗（实测被丢掉 ✓）⇒ 只报**原子时间戳** ✓，不假装有 ✓。
+fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let limit = optional_u64(args, "limit").unwrap_or(50).min(500) as usize;
+    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
+    let since = optional_u64(args, "since_seq").unwrap_or(0);
+    let layer_filter = optional_str(args, "layer_id");
+    let object_filter = optional_str(args, "object_id");
+    let newest_first = optional_str(args, "order").as_deref() == Some("newest");
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let mut all: Vec<Value> = Vec::new();
+    for atom in document.log().iter() {
+        if atom.seq <= since {
+            continue;
+        }
+        let Some(source) = atom.payload.get("source").filter(|value| value.is_object()) else {
+            continue;
+        };
+        let source_kind = source
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(source_kind, "brush" | "medium" | "draw") {
+            continue;
+        }
+        if layer_filter
+            .as_deref()
+            .is_some_and(|want| atom_layer_id(atom) != Some(want))
+        {
+            continue;
+        }
+        if object_filter
+            .as_deref()
+            .is_some_and(|want| atom_object_id(atom) != Some(want))
+        {
+            continue;
+        }
+        // 点列：**原样报回** ✓（`[x,y]`／`[x,y,p]`／`[x,y,p,t]` 都可能是调用方给的形状 ✓）。
+        let points = source
+            .get("points")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let point_list: Vec<&Value> = points
+            .as_array()
+            .map(|items| items.iter().collect())
+            .unwrap_or_default();
+        let coordinate = |item: Option<&&Value>| -> Value {
+            let Some(item) = item else {
+                return Value::Null;
+            };
+            let pair = item.as_array();
+            match pair {
+                Some(pair) => json!({
+                    "x": pair.first().and_then(Value::as_f64),
+                    "y": pair.get(1).and_then(Value::as_f64),
+                }),
+                None => Value::Null,
+            }
+        };
+        let pressures: Vec<f64> = point_list
+            .iter()
+            .filter_map(|item| {
+                item.as_array()
+                    .and_then(|pair| pair.get(2))
+                    .and_then(Value::as_f64)
+            })
+            .collect();
+        let pressure = if pressures.is_empty() {
+            Value::Null
+        } else {
+            let min = pressures.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = pressures.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            json!({
+                "min": min,
+                "max": max,
+                "first": pressures.first(),
+                "last": pressures.last(),
+            })
+        };
+        let region = atom.payload.get("region").cloned().unwrap_or(Value::Null);
+        all.push(json!({
+            "seq": atom.seq,
+            "atom_id": atom.id,
+            "kind": source_kind,
+            "layer_id": atom_layer_id(atom),
+            "object_id": atom_object_id(atom),
+            "brush": source.get("brush"),
+            "medium": source.get("medium"),
+            "size": source.get("size"),
+            "color": source.get("color"),
+            "color_to": source.get("color_to"),
+            "hardness": source.get("hardness"),
+            "opacity": source.get("opacity"),
+            "smooth": source.get("smooth"),
+            "seed": source.get("seed"),
+            "points": points,
+            "points_count": point_list.len(),
+            "bbox": region,
+            "first_point": coordinate(point_list.first()),
+            "last_point": coordinate(point_list.last()),
+            "pressure": pressure,
+            "timestamp": atom.timestamp,
+        }));
+    }
+    if newest_first {
+        all.reverse();
+    }
+    let total = all.len();
+    let page: Vec<Value> = all.into_iter().skip(offset).take(limit).collect();
+    let returned = page.len();
+    Ok(json!({
+        "ok": true,
+        "entries": page,
+        "returned": returned,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": if offset + returned < total { json!(offset + returned) } else { Value::Null },
+        "truncated": offset + returned < total,
+        "note": "这是**原子日志**的视图 ✓ ⇒ 跟文档走（清 /tmp、换 session、重启都在 ✓）。                 `bbox` 是原子里的 `region` ✓；逐点 `time_ms` **没有**保存在原子里 ✗ ⇒ 只有原子时间戳 ✓。",
+    }))
+}
+
 fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let since = optional_u64(args, "since_seq").unwrap_or(0);
     let limit = optional_u64(args, "limit").unwrap_or(200).min(2000) as usize;
@@ -17927,6 +18083,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_anchors", r#"{}"#),
     ("delete_anchor", r#"{"name": "left_eye"}"#),
     ("calibrate", r#"{}"#),
+    ("get_stroke_log", r#"{"limit": 10}"#),
     (
         "new_document",
         r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
