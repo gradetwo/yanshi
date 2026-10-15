@@ -3417,6 +3417,30 @@ impl Renderer {
                                     (src_x, src_y, rw, rh),
                                 )
                             })();
+                            // **★ 追踪：分块拼出来的东西到底 blit 到哪、缓冲区多大（2026-10-15 ✓）★**
+                            //   **为什么需要** ✗：`YANSHI_TRACE_CACHE_KEY` 已经证明**分块路走进了**
+                            //   （`TILE_PATH` ✓）且**拼出来的缓冲不是全透明的** ✗（否则下面的守卫会触发 ✓）
+                            //   —— **可画布就是不变** ✗ ⇒ 那就要看**坐标**：`layer_buffer.bbox()` 与
+                            //   `(offset, width, height)` 的**交集**若为空 ⇒ 整块被跳过 ✓ ✓。
+                            if std::env::var_os("YANSHI_TRACE_RASTER_BLIT").is_some() {
+                                eprintln!(
+                                    "RASTER_BLIT object={} offset=({},{}) wh=({},{}) layer_bbox=({},{},{},{}) \
+                                     clip=({},{})-({},{})",
+                                    object.id,
+                                    offset.0,
+                                    offset.1,
+                                    width,
+                                    height,
+                                    layer_buffer.bbox().x,
+                                    layer_buffer.bbox().y,
+                                    layer_buffer.bbox().w,
+                                    layer_buffer.bbox().h,
+                                    x0,
+                                    y0,
+                                    x1,
+                                    y1,
+                                );
+                            }
                             if let Some(rgba) = stitched {
                                 // **★ 拼出来若是"什么都没画"的缓冲 ⇒ 不许信它（2026-10-15 实测 ✓）★**
                                 //
@@ -3433,6 +3457,35 @@ impl Renderer {
                                 // **没覆盖"取到了、但是空的"** ✗ ⇒ 这里补上 ✓。
                                 if rgba.chunks_exact(4).any(|pixel| pixel[3] > 0) {
                                     layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    // **★ 最后一格二分：blit 刚写完，缓冲区里那个像素是什么（2026-10-15 ✓）★**
+                                    //   **要分清两件事** ✗：是"**没写进去**"（拼出来的像素本身是空的 ✓）
+                                    //   还是"**写进去了、但读不回来**"（合成/读回丢了 ✓）✓。
+                                    if std::env::var_os("YANSHI_TRACE_RASTER_BLIT").is_some() {
+                                        let mid = (((rh / 2) as usize) * (rw as usize)
+                                            + (rw / 2) as usize)
+                                            * 4;
+                                        let src = rgba
+                                            .get(mid..mid + 4)
+                                            .map(|p| (p[0], p[1], p[2], p[3]))
+                                            .unwrap_or((0, 0, 0, 0));
+                                        let got = layer_buffer.pixel(
+                                            (x0 + (rw / 2) as i64) as u32,
+                                            (y0 + (rh / 2) as i64) as u32,
+                                        );
+                                        eprintln!(
+                                            "RASTER_AFTER object={} stitched_mid=({},{},{},{}) \
+                                             layer_mid_rgba=({:.3},{:.3},{:.3},{:.3})",
+                                            object.id,
+                                            src.0,
+                                            src.1,
+                                            src.2,
+                                            src.3,
+                                            got[0],
+                                            got[1],
+                                            got[2],
+                                            got[3]
+                                        );
+                                    }
                                     continue;
                                 }
                                 track.unsupported.push(format!(
