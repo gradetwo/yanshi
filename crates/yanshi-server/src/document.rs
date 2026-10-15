@@ -472,6 +472,53 @@ impl Document {
         Ok(document)
     }
 
+    /// **★ 从"快照 ＋ 尾巴"打开文档（待办 ① ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么需要它** ✗：`rebuild()`（`document.rs:646` ✓）第一句就是
+    /// `self.state = self.folder.fold_head(&self.log)?.state;` ✓ —— 它**从零折、覆盖状态** ✗
+    /// ⇒ ⇒ "先把快照状态塞进去、再 `rebuild()`"**不成立** ✗ ✓（见 §49 之补十二 ✓）。
+    /// 正确的做法是用 **`yanshi_core::fold_atoms(base, atoms)`** ✓（`fold.rs:289` ✓）
+    /// —— 从给定状态**续折**一段原子 ✓。
+    ///
+    /// **参数** ✓：
+    ///   * `base = None` ⇒ **退化成老 `open` 的行为** ✓（从头折 ✓、与今天逐字一样 ✓）；
+    ///   * `base = Some((seq_at, state))` ⇒ 从快照恢复出来的那个状态起折 ✓，
+    ///     而 `tail` 里只放 **`seq > seq_at`** 的那些原子 ✓（`FileStore::load_atoms_since` ✓）。
+    ///
+    /// **★ 注意：这里必须自己做 `rebuild()` 的另外两件事** ✓ ——
+    /// 它除了折状态 ✓，还会设 `render_watermark` ✓ 并按状态**重建渲染器** ✓；
+    /// 漏掉渲染器的话 ✓，会留着 `Self::empty` 给的 **1×1 网格** ✗ ⇒ 之后一渲染就错 ✗。
+    pub fn open_from_snapshot(
+        store: Arc<dyn BlobStore>,
+        doc_id: impl Into<String>,
+        base: Option<(Seq, DocumentState)>,
+        tail: Vec<Atom>,
+        settings: DocumentSettings,
+    ) -> Result<Self> {
+        let id = doc_id.into();
+        let mut document = Self::empty(store, id, settings, yanshi_core::now_ms());
+        match base {
+            // **没有快照 ⇒ 与今天的老 `open` 完全一样** ✓
+            None => {
+                document.log = AtomLog::with_atoms(tail)?;
+                document.rebuild()?;
+            }
+            // **有快照 ⇒ 从它续折尾巴** ✓
+            Some((_seq_at, state)) => {
+                // **先折** ✓：`fold_atoms` 要 `&tail` ✓，而 `AtomLog::with_atoms` **要拿走 `tail`** ✗
+                //   ⇒ 先装日志再折会撞借用 ✗ ⇒ **先折、后装** ✓。
+                let folded = yanshi_core::fold_atoms(state, &tail);
+                document.log = AtomLog::with_atoms(tail)?;
+                document.state = folded.state;
+                document.render_watermark = document.state.head_seq;
+                let grid = document.grid_for_state()?;
+                let cache_bytes = document.settings.render_cache_bytes;
+                document.renderer = Renderer::with_budget(grid, cache_bytes);
+            }
+        }
+        Ok(document)
+    }
+
     fn empty(
         store: Arc<dyn BlobStore>,
         id: String,
