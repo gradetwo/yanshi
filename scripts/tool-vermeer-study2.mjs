@@ -114,23 +114,15 @@ const main = async () => {
     await call(doc, token, "create_layer", { layer_id: "ground", name: "ground" });
     // **★ 平涂要用 `draw_stroke`（纯几何、实心）★**：v2c 的教训 —— 用 `medium_stroke` 铺底
     //   得到的是**一串圆点** ✗（介质只在控制点落 dab ✓）=> 平涂/实心形状该用几何笔迹 ✓。
-    const ground = await call(doc, token, "draw_stroke", {
+    // **★ 铺底改用 `fill_region`（实心矩形）★**（2026-10-15 ✓）：原来用 `draw_stroke`
+    //   三笔宽笔 ✓ ⇒ 每笔两头是**圆头笔帽** ✗ ⇒ 画面上留下**花瓣状叠痕** ✗（第 68 轮记下的硬伤 ✓）。
+    //   平铺本来就该用"填充" ✓ ⇒ 一次调用、**无边角** ✓、也更快 ✓。
+    //   （参数是上一轮试出来的 ✓：`{layer_id, shape:{kind:"rect",x,y,w,h}, color, opacity}` ✓。）
+    const ground = await call(doc, token, "fill_region", {
       layer_id: "ground",
-      object_id: "ground_wash",
-      data: {
-        points: [
-          [S * 0.2, S * 0.06],
-          [S * 0.2, S * 0.94],
-          [S * 0.5, S * 0.94],
-          [S * 0.5, S * 0.06],
-          [S * 0.8, S * 0.06],
-          [S * 0.8, S * 0.94],
-        ],
-        size: S * 0.5,
-        hardness: 1.0,
-        opacity: 0.92,
-        color: { r: 30, g: 25, b: 22, a: 255 },
-      },
+      shape: { kind: "rect", x: 0, y: 0, w: S, h: S },
+      opacity: 1.0,
+      color: { r: 30, g: 25, b: 22, a: 255 },
     });
     steps.push(["深暖底（暗背景）", ground && ground.ok === true, ground]);
 
