@@ -1338,6 +1338,19 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[param!("name", String, true, "要删的锚点名")],
     },
     ToolSpec {
+        name: "calibrate",
+        profile: Profile::Core,
+        summary: "**★ 坐标校准（Muse 建议 2）★**：在四角与中心画品红实心方块 ⇒ **渲染整幅** ⇒ **在像素里把每个标记量回来** ⇒ 回报每点的 `expected`/`actual`/`dx`/`dy`/像素数 ✓。**它测的是整条链** ✓（写原子 → 折叠 → 栅格化 → 取原始像素 → 定位 ✓）⇒ 任何环节引入平移/缩放/翻转都会被它抓到 ✓。**定位是「排除工具」** ✓（不是找 bug：MCP 坐标系已被实测证明无误 ✓）—— 它回报偏差在容差内时 ✓，错位就该回到**你自己的估算**上 ✓。**缺省自清理**（`cleanup: true` ✓）⇒ 跑完画布对象数回到原样 ✓（不污染正要画的画 ✓）。",
+        mutating: true,
+        params: &[
+            param!("size", Number, false, "标记边长（像素，缺省 16 ✓；限 4–96 ✓）"),
+            param!("points", Any, false, "自定义测点 `[[x,y],…]`（缺省＝四角 + 中心共 5 点 ✓，按 size 内缩 ✓）"),
+            param!("tolerance", Number, false, "容差（像素，缺省 1.0 ✓）"),
+            param!("layer_id", String, false, "标记放哪个图层（缺省自建 `__calibration` ✓）"),
+            param!("cleanup", Boolean, false, "跑完是否撤掉标记（缺省 true ✓）"),
+        ],
+    },
+    ToolSpec {
         // **只读的"观察口"** ✓（第 856 轮 ✓）：外部实测报告 #13 —— "一旦落笔，画布就变成
         // **完全不透明的黑盒**" ✗ ⇒ agent 只能"导出 PNG 再解析" ✓。
         // 本工具**不改动画面的任何像素** ✓（只渲染 1×1 区域并读出 ✓）⇒
@@ -3276,6 +3289,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "set_anchor" => write_set_anchor(ctx, args),
         "get_anchors" => read_get_anchors(ctx, args),
         "delete_anchor" => write_delete_anchor(ctx, args),
+        "calibrate" => write_calibrate(ctx, args),
         "get_state" => read_get_state(ctx, args),
         "list_documents" => read_list_documents(ctx),
         "list_layers" => read_list_layers(ctx),
@@ -3551,6 +3565,183 @@ fn write_delete_anchor(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }
     let result = ctx.commit(AtomKind::DeleteAnchor, json!({"name": name}))?;
     finish_mutation(ctx, &result, None)
+}
+
+/// **★ 坐标校准（Muse 建议 2，P1）★** —— 画标记、渲染、**在像素里量回来** ✓。
+///
+/// **为什么要「量回来」而不是相信坐标** ✓：这条链上有**四个**可能引入偏移的环节 ✓
+/// （写原子 → 折叠 → 栅格化 → 取原始像素 ✓），任何一处平移/缩放/翻转都会让画的东西**整体错位** ✗
+/// ⇒ 而 AI 无法自证「是工具错了」还是「我估错了」✓（用户原话 ✓）
+/// ⇒ 本工具把闭环跑一遍 ✓：**偏差在容差内 ⇒ 这条链没有引入偏移** ✓。
+///
+/// **品红**是刻意选的 ✓：画布上几乎不可能自然出现 ✓ ⇒ 阈值判定稳健 ✓。
+fn write_calibrate(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let (width, height) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        (
+            document.state().width as f64,
+            document.state().height as f64,
+        )
+    };
+    if width <= 0.0 || height <= 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("画布尺寸为 0 ⇒ 先建文档"),
+        ));
+    }
+    let size = args
+        .get("size")
+        .and_then(Value::as_f64)
+        .unwrap_or(16.0)
+        .clamp(4.0, 96.0);
+    let tolerance = args
+        .get("tolerance")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
+        .max(0.0);
+    let cleanup = args.get("cleanup").and_then(Value::as_bool).unwrap_or(true);
+    let inset = size * 2.0;
+    let expected: Vec<(f64, f64)> = match args.get("points").and_then(Value::as_array) {
+        Some(items) if !items.is_empty() => items
+            .iter()
+            .filter_map(|item| {
+                let pair = item.as_array()?;
+                Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+            })
+            .collect(),
+        _ => vec![
+            (inset, inset),
+            (width - inset, inset),
+            (width / 2.0, height / 2.0),
+            (inset, height - inset),
+            (width - inset, height - inset),
+        ],
+    };
+    if expected.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("points 解析后为空 ⇒ 每项要是 [x, y]"),
+        ));
+    }
+    // **图层名要每次唯一** ✓（实测发现 ✗）：我第一版固定用 `__calibration` ⇒ **第二次调用**
+    //   时那个图层已被上一次的清理**墓碑化** ✗ ⇒ `create_layer` 同名失败 ⇒ `calibrate` 不幂等 ✗
+    //   （判据第 ④ 条当场抓到：`两次结果一致=false` ✓）。
+    //   用 `head_seq` 做后缀 ✓：**确定**（同一状态同一次调用同名 ✓）、**唯一** ✓、
+    //   且仍被同一次清理撤掉 ✓（不累积 ✗）。
+    let layer_id = match optional_str(args, "layer_id") {
+        Some(explicit) => explicit,
+        None => {
+            let seq = ctx
+                .workspace
+                .document(&ctx.doc_id)
+                .map(|document| document.state().head_seq)
+                .unwrap_or(0);
+            format!("__calibration_{seq}")
+        }
+    };
+    ctx.commit(
+        AtomKind::CreateLayer,
+        json!({"layer_id": layer_id, "name": "__calibration"}),
+    )?;
+    for (index, (x, y)) in expected.iter().enumerate() {
+        ctx.commit(
+            AtomKind::DrawShape,
+            json!({
+                "layer_id": layer_id,
+                "object_id": format!("{layer_id}_{index}"),
+                "data": {
+                    "geometry": {
+                        "kind": "rect",
+                        "bbox": {"x": x - size / 2.0, "y": y - size / 2.0, "w": size, "h": size},
+                    },
+                    "color": {"r": 255, "g": 0, "b": 255, "a": 255},
+                },
+            }),
+        )?;
+    }
+    // **整幅**取原始像素 ✓（`sample_color` 就是这么读的 ✓ ⇒ 不另造一条路 ✗）。
+    let region = Bbox::new(0.0, 0.0, width, height);
+    let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    let stride = width.max(1.0) as usize;
+    let mut marks: Vec<Value> = Vec::new();
+    let mut worst = 0.0f64;
+    for (x, y) in &expected {
+        let radius = size * 2.0;
+        let x0 = ((x - radius).floor().max(0.0)) as usize;
+        let x1 = ((x + radius).ceil().min(width)) as usize;
+        let y0 = ((y - radius).floor().max(0.0)) as usize;
+        let y1 = ((y + radius).ceil().min(height)) as usize;
+        let (mut sum_x, mut sum_y, mut pixels) = (0.0f64, 0.0f64, 0u32);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let at = (py * stride + px) * 4;
+                if at + 2 >= raw.len() {
+                    continue;
+                }
+                // 品红判据：R 高、G 低、B 高 ✓
+                if raw[at] > 160 && raw[at + 1] < 96 && raw[at + 2] > 160 {
+                    sum_x += px as f64 + 0.5;
+                    sum_y += py as f64 + 0.5;
+                    pixels += 1;
+                }
+            }
+        }
+        let actual = if pixels > 0 {
+            Some((sum_x / f64::from(pixels), sum_y / f64::from(pixels)))
+        } else {
+            None
+        };
+        let (dx, dy, ok) = match actual {
+            Some((ax, ay)) => {
+                let dx = ax - x;
+                let dy = ay - y;
+                let ok = dx.abs() <= tolerance && dy.abs() <= tolerance;
+                if dx.abs().max(dy.abs()) > worst {
+                    worst = dx.abs().max(dy.abs());
+                }
+                (Some(dx), Some(dy), ok)
+            }
+            None => (None, None, false),
+        };
+        marks.push(json!({
+            "expected": {"x": x, "y": y},
+            "actual": actual.map(|(ax, ay)| json!({"x": ax, "y": ay})),
+            "dx": dx,
+            "dy": dy,
+            "pixels": pixels,
+            "ok": ok,
+        }));
+    }
+    let passed = marks
+        .iter()
+        .all(|mark| mark.get("ok").and_then(Value::as_bool) == Some(true));
+    // **自清理** ✓：标记是本工具刚落的**最后 N 个原子** ✓ ⇒ 一次撤销撤干净 ✓
+    //   （不清就会污染正要画的画 ✗ —— 判据第 ③ 条钉的就是这个 ✓）。
+    let mut undone = 0u64;
+    if cleanup {
+        let count = (expected.len() + 1) as u64;
+        let undone_result = write_undo_last(ctx, &json!({"count": count}))?;
+        if undone_result.get("ok").and_then(Value::as_bool) == Some(true) {
+            undone = count;
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "canvas": {"width": width, "height": height},
+        "size": size,
+        "tolerance": tolerance,
+        "marks": marks,
+        "max_deviation": worst,
+        "passed": passed,
+        "layer_id": layer_id,
+        "cleanup": {"requested": cleanup, "undone": undone},
+        "note": "偏差在 tolerance 内 ⇒ 这条链（写原子→折叠→栅格化→取像素）没有引入偏移 ✓；                 超出 ⇒ 先看 marks 里哪个点偏、偏多少 ✓（这就是排查的起点 ✓）。                 校准通过而画面仍错位 ⇒ 问题在调用方的坐标估算上 ✓。",
+    }))
 }
 
 /// **★ 命名锚点：读全部 ★** —— 从**文档状态**读 ✓（所以跨会话、跨重启都在 ✓）。
@@ -17735,6 +17926,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("get_anchors", r#"{}"#),
     ("delete_anchor", r#"{"name": "left_eye"}"#),
+    ("calibrate", r#"{}"#),
     (
         "new_document",
         r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
