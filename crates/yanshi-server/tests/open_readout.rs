@@ -88,3 +88,52 @@ fn load_atoms_since_returns_only_the_tail() {
     assert!(none.is_empty(), "since=最末 ⇒ 空 ✓");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **待办 ① 第②步（落盘）** ✓：`FileStore::save_snapshot` 真写盘 ✓、**幂等** ✓、
+/// 而且**读回来能过程序自己的 CRC 校验** ✓（`Snapshot::verify` ✓）。
+#[test]
+fn save_snapshot_is_idempotent_and_lands_on_disk() {
+    let root = temp_root("snapw");
+    let doc = "doc_snap";
+    let store = FileStore::open(&root).unwrap();
+    store
+        .append_atom(doc, &atom("a0", 1, AtomKind::CreateDocument))
+        .unwrap();
+    let mut workspace =
+        Workspace::with_file_store(root.clone(), DocumentSettings::default()).unwrap();
+    // 让文档真产出一份快照 ✓（`snapshot_now` 是 `pub` ✓）
+    let snapshot_id = workspace
+        .open_document(doc)
+        .unwrap()
+        .snapshot_now(0)
+        .unwrap();
+    // 取到那份快照并**克隆出来**（结束对 workspace 的借用 ✓）
+    let snapshot = workspace
+        .open_document(doc)
+        .unwrap()
+        .latest_usable_snapshot()
+        .expect("刚打过快照 ⇒ 必须能取到 ✓")
+        .clone();
+    assert_eq!(snapshot.id, snapshot_id, "取到的应当就是刚打的那份 ✓");
+
+    let wrote = store.save_snapshot(doc, &snapshot).unwrap();
+    assert!(wrote, "第一次保存应当真的写了 ✓");
+    let path = root
+        .join("docs")
+        .join(doc)
+        .join(format!("snapshot-{}.json", snapshot.seq_at));
+    assert!(path.exists(), "快照文件必须落盘 ✓（{}）", path.display());
+
+    let again = store.save_snapshot(doc, &snapshot).unwrap();
+    assert!(
+        !again,
+        "第二次必须**幂等** ⇒ 返回 false ✓（同一 seq_at 只写一次 ✓）"
+    );
+
+    // **读回并校验** ✓：证明写出来的东西**是程序自己认得的** ✓（不是一堆自造字节 ✓）。
+    let bytes = std::fs::read(&path).unwrap();
+    let back: yanshi_core::Snapshot = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(back.id, snapshot.id, "读回来的 id 必须一致 ✓");
+    assert!(back.verify(), "读回来的快照必须通过 CRC 校验 ✓");
+    let _ = std::fs::remove_dir_all(&root);
+}

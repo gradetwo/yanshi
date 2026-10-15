@@ -123,6 +123,39 @@ impl FileStore {
         self.doc_dir(doc_id).join("meta.json")
     }
 
+    /// **★ 快照文件路径（待办 ① ✓）：`docs/<doc>/snapshot-<seq_at>.json` ★**
+    ///
+    /// **为什么把 `seq_at` 放进文件名** ✓：这样"**文件是否存在**"就等于"**写没写过**" ✓
+    /// ⇒ 调用处**不需要任何新状态** ✓（见 `docs/design/vermeer-acceptance.md` §49 之补九 ✓）。
+    fn snapshot_path(&self, doc_id: &str, seq_at: Seq) -> PathBuf {
+        self.doc_dir(doc_id).join(format!("snapshot-{seq_at}.json"))
+    }
+
+    /// **★ 把一份快照写到盘上（待办 ① ✓）：幂等 ⇒ 已存在就返回 `false` ★**
+    ///
+    /// **语义** ✓：写 `docs/<doc>/snapshot-<seq_at>.json` ✓（`serde_json::to_vec` ✓，
+    /// `Snapshot` 本身就 `derive(Serialize)` ✓）；
+    /// **幂等** ✓：同一 `seq_at` 的文件已存在 ⇒ **不重写**、直接 `Ok(false)` ✓；
+    /// 真写了 ⇒ `Ok(true)` ✓（返回 `bool` 是给调用处记账／打日志用的 ✓）。
+    /// **失败怎么办** ✓：**由调用处决定** ✗ —— 落盘失败**不该让提交失败** ✓
+    /// （快照只是**加速**用的 ✓）⇒ 调用处记 stderr ＋ 继续 ✓。
+    pub fn save_snapshot(&self, doc_id: &str, snapshot: &yanshi_core::Snapshot) -> Result<bool> {
+        let dir = self.doc_dir(doc_id);
+        fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
+        let path = self.snapshot_path(doc_id, snapshot.seq_at);
+        if path.exists() {
+            return Ok(false); // **幂等** ✓：同一 `seq_at` 只写一次 ✓
+        }
+        let bytes = serde_json::to_vec(snapshot).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("快照序列化失败: {error}")),
+            )
+        })?;
+        fs::write(&path, bytes).map_err(|error| io_error(&path, error))?;
+        Ok(true)
+    }
+
     /// 追加一个原子（JSONL）。
     pub fn append_atom(&self, doc_id: &str, atom: &Atom) -> Result<()> {
         let dir = self.doc_dir(doc_id);
