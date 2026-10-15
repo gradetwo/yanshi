@@ -81,6 +81,13 @@ pub struct McpOptions {
     pub wait_budget_ms: u64,
     /// 是否在 `tools/call` 结果里内嵌图像（≤512px）。
     pub inline_images: bool,
+    /// **★ 是否监视 `--root/docs/*/atoms.jsonl`（`--watch`，默认 false ✗）★**
+    ///
+    /// **语义** ✓（用户 2026-10-15 裁定）：别的进程直接往原子日志追加的内容，本进程也要**看得见** ✓；
+    /// **增量解析** ✓；冲突用**最后写赢** ✓（不做合并 ✗）；**不监视 blob** ✗。
+    /// **落地方式** ✓（设计定案 ✓）：轮询到日志前进 ⇒ **重载该文档**（磁盘当真相 ✓）——
+    /// 不走"增量折叠" ✗，理由是 `seq` 一致性 ✗（详见台账里 `mcp-watch-external` 那条 ✓）。
+    pub watch: bool,
 }
 
 impl Default for McpOptions {
@@ -94,6 +101,8 @@ impl Default for McpOptions {
             wait_for_render: true,
             wait_budget_ms: 500,
             inline_images: true,
+            // **默认关** ✓（用户裁定 ✓）—— 判据 `mcp-watch-external` 的**负对照**就靠这一格 ✓。
+            watch: false,
         }
     }
 }
@@ -127,6 +136,7 @@ impl McpOptions {
                         .parse()
                         .map_err(|_| "--height 必须是整数".to_owned())?
                 }
+                "--watch" => options.watch = true,
                 "--profile" | "--profiles" => {
                     let list = take_value("--profile")?;
                     let mut profiles = Vec::new();
@@ -177,6 +187,8 @@ impl McpOptions {
                                  要新鲜就调 get_document，它会当场重建；\n\
                                  get_render_status.thumbnail_current 会告诉你它是否落后）\n\
            --no-inline-images    关掉内嵌图像；**缺省是内嵌**（图片在 MCP 的 image 内容块里）\n\
+           --watch               监视 --root/docs/*/atoms.jsonl；别的进程追加的原子也看得见\n\
+                                 （**缺省关**；轮询到前进就重载该文档 ⇒ 磁盘当真相）\n\
            --list-tools          打印工具清单后退出\n\
            --help                显示帮助\n\
            --version             显示版本\n"
