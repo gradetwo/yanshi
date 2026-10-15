@@ -1266,3 +1266,34 @@ self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps
 **但接手成本已经压到最低** ✓：杠杆（42.1 ✓）、模板（42.2 ✓）、接口与行号（42.3 ✓）、
 两条必须同时成立的断言（42.2 ✓）、以及**被撤回的先例**（§35／§41 ✓）——**全在这一节里** ✓。
 
+## 四十三、★ 最后一件的验证环境：**本机跑得通**，但必须**照 harness 的方式跑**（2026-10-15）★
+
+### 43.1 好消息 ✓：本机浏览器链路成立
+
+```
+$ chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9333     --user-data-dir=<tmp> about:blank &
+$ curl -s http://127.0.0.1:9333/json/version
+  ⇒ CDP 就绪 ✓ Chrome/153.0.8010.52
+$ node scripts/browser-offline-draw.mjs http://127.0.0.1:7868
+  ⇒ 判据**跑到底**并给出**真读数** ✓：localBrushCalls=15｜localBrushErrors=15
+  ⇒ ✗ 离线还画不了：离线这一笔的增量 0 达不到门槛 200
+```
+⇒ ⇒ **浏览器判据在本机是能跑的** ✓（`/usr/bin/chromium` ✓ ＋ Playwright 的 `chromium-1217` ✓ 都在 ✓）
+⇒ ⇒ 所以 §42 那件**是可验证的** ✓ —— 这是开工前必须确认的一条 ✓。
+
+### 43.2 但**必须照 harness 的方式跑** ✗（我即席那次的读数是不可信的 ✓）
+
+上面那次"离线画不了" ✗ 是**我的调用方式不对** ✓，证据是：**CI 最近几次全绿** ✓
+⇒ 而 `scripts/run-criteria.sh:329` 明写：
+> **★ `argv[2]` 也要 `render=client` ★**（第 780 轮修；CI 实测）
+
+⇒ ⇒ 也就是说 ✓：harness 给浏览器判据的 URL 上**带 `render=client`** ✓，
+而 `run-criteria.sh:55-56` **自己起 chromium**（`--headless=new --no-sandbox --disable-gpu
+--remote-debugging-port="$CDP_PORT"` ✓）⇒ ⇒ **端口与参数都由 harness 决定** ✓。
+
+**给接手的人** ✓（两条，都是踩过才知道的 ✓）：
+1. **别即席跑浏览器判据** ✗ —— 要么让 harness 跑 ✓，要么**照它的旗标与 URL 参数**跑 ✓
+   （尤其 URL 上的 `render=client` ✓）；
+2. 判据的红要**先分辨**是"产品红"还是"我调用错了" ✓ —— 这次就是后者 ✓
+   （同族教训：§40.3 我的 `printf` 取错 `$rc` ✓／"测量脚本本身也要先验" ✓）。
+
