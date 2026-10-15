@@ -1888,3 +1888,29 @@ if let Some(snapshot) = document.latest_usable_snapshot() {   // 第①步已备
 ```
 **⇒ 第②步到此封闭** ✓（钩子点 ✓、格式 ✓、幂等 ✓、失败策略 ✓、不需新状态 ✓）。
 
+### 四十九之补十：**行为验证的实测结果**（2026-10-15 ✓）—— 钩子没问题，是还没有快照 ✓
+
+**怎么验的** ✓：起 `yanshi-serve` ⇒ `POST /api/documents` 建 `w` ⇒ 看
+`docs/w/` 里有什么 ✓（**端到端，不是单测** ✓）。
+**实测** ✓：
+```
+docs/w/atoms.jsonl   276 字节（1 行 ＝ 建文档那一颗 ✓）
+docs/w/meta.json      248 字节
+⇒ **没有 snapshot-*.json** ✗
+```
+**怎么读** ✓：**不是**钩子没生效 ✓ —— 而是**当时根本没有快照可写** ✓：
+`Document` 的快照由**策略**触发（时间／`SNAPSHOT_LAG_ATOMS = 1000` ✓），
+建文档 ＋ 一颗原子**够不到**那条线 ✓ ⇒ `latest_usable_snapshot()` 是 `None` ✓
+⇒ 钩子**正确地什么都没做** ✓（这也顺手证明了"默认行为不变" ✓）。
+**顺带** ✗：我那条即席 `brush_stroke` 收到 **HTTP 400** ✓（payload 不对 ✓，与本题无关 ✓）。
+
+**⇒ 判据第 2 段的**正确构造**（据此更正 ✓）**：
+  1. 用 `Workspace` ＋ `FileStore` 建文档 ✓；
+  2. **显式**让文档产出一份快照 ✓ —— `Document::snapshot_now(0)` ✓（`pub` ✓，第①步与②步的测试里已经用过 ✓）；
+  3. 再走**一次 `Workspace::commit`**（普通提交路径 ✓ ⇒ 挂在 `service.rs:3294` 的钩子 ✓）
+     ⇒ 此时盘上**必须出现** `snapshot-<seq_at>.json` ✓；
+  4. 然后（第③步做完后）**再开一次文档** ⇒ 断言 `atoms_read_on_open()` **明显小于**原子总数 ✓
+     ⇒ **变异**（把加载改回 `load_atoms` 全量）⇒ **必须红** ✓。
+**⇒ 为什么要显式 `snapshot_now`** ✓：不然要等 `SNAPSHOT_LAG_ATOMS = 1000` 颗原子 ✓
+（测试会慢且笨 ✓）—— **不许**为了迁就判据去改策略默认值 ✗（那是产品行为 ✓）。
+
