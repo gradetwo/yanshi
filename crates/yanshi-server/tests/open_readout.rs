@@ -137,3 +137,57 @@ fn save_snapshot_is_idempotent_and_lands_on_disk() {
     assert!(back.verify(), "读回来的快照必须通过 CRC 校验 ✓");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **待办 ① 第②′步（行为）** ✓：**显式产出快照之后再提交一次** ⇒ 盘上**必须出现**快照文件 ✓。
+///
+/// 这一条正是 §49 之补十 那个缺口的补丁 ✓ —— 端到端探针显示"建文档 ＋ 一颗原子"时
+/// **没有快照文件** ✓，那是因为**根本没有快照被产出** ✓（策略要 1000 颗原子 ✓）；
+/// 本测试**显式**产出 ✓（`snapshot_now` ✓）⇒ 提交时钩子**必须**把它写到盘上 ✓。
+#[test]
+fn a_commit_after_a_snapshot_writes_it_to_disk() {
+    let root = temp_root("snapcommit");
+    let doc = "doc_sc";
+    // ① 预置一颗 CreateDocument（用 FileStore 直接写 ✓ —— 不依赖 create_document 的签名 ✓）
+    let store = FileStore::open(&root).unwrap();
+    store
+        .append_atom(doc, &atom("a0", 1, AtomKind::CreateDocument))
+        .unwrap();
+    // ② 打开它，并**显式**产出一份快照 ✓
+    let mut workspace =
+        Workspace::with_file_store(root.clone(), DocumentSettings::default()).unwrap();
+    let snapshot_id = workspace
+        .open_document(doc)
+        .unwrap()
+        .snapshot_now(0)
+        .unwrap();
+    // ③ 再提交一颗原子 ⇒ 走普通提交路径 ⇒ `service.rs:3294` 的钩子应当落盘 ✓
+    let next = atom("a1", 2, AtomKind::CreateLayer);
+    workspace
+        .commit(doc, next, "human:1", true)
+        .expect("提交应当成功 ✓");
+    // ④ 断言：盘上出现快照文件 ✓，且**读回来能过校验** ✓
+    let dir = root.join("docs").join(doc);
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("文档目录应当在 ✓")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("snapshot-") && n.ends_with(".json"))
+        })
+        .collect();
+    found.sort();
+    assert!(
+        !found.is_empty(),
+        "提交之后必须出现 snapshot-*.json ✓（实测目录里只有：{:?} ✓）",
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect::<Vec<_>>()
+    );
+    let bytes = std::fs::read(&found[0]).unwrap();
+    let back: yanshi_core::Snapshot = serde_json::from_slice(&bytes).unwrap();
+    assert!(back.verify(), "落盘的快照必须通过 CRC 校验 ✓");
+    assert_eq!(back.id, snapshot_id, "落盘的应当就是刚产出的那一份 ✓");
+    let _ = std::fs::remove_dir_all(&root);
+}
