@@ -16,6 +16,11 @@
 //! WebP/AVIF 位图编解码尚未实现：这些对象被跳过并记入 [`RenderStats::unsupported`]，
 //! 而不是让整次渲染失败。位图补丁目前只支持 `image/x-yanshi-raw`（内核内表示）。
 
+// **★ 渲染趟编号（2026-10-15 ✓）**：同一趟分层渲染里 blit 与 composite 打**同一个号** ✓
+//   **为什么需要** ✗：同一个画布点上，blit 追踪看到虹膜 ✓、合成追踪看到眼白 ✗
+//   ⇒ 怀疑它们**不是同一趟**（两个 `layer_buffer` 实例 ✓）⇒ 编号一眼就能确认 ✓。
+static PASS_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 use crate::blend::BlendMode;
 use crate::brush::{BrushSpec, StrokeGeometry, StrokePoint};
 use crate::buffer::Buffer;
@@ -2222,6 +2227,7 @@ impl Renderer {
             // **★ 每层三处门控计时（第 553 轮）★**：后半段未归入 ~1650 ms 的嫌疑
             let t_layer = crate::probe::ProbeClock::now();
             let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
+            let pass_no = PASS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let d_acquire = t_layer.elapsed();
             let t_objects = crate::probe::ProbeClock::now();
             if layer_buffer.was_reused() {
@@ -2291,7 +2297,7 @@ impl Renderer {
                     None
                 };
                 eprintln!(
-                    "COMPOSITE layer={} acc_bbox=({},{},{},{}) before={:?} layer_mid={:?}",
+                    "COMPOSITE pass={pass_no} layer={} acc_bbox=({},{},{},{}) before={:?} layer_mid={:?}",
                     layer.id,
                     b.x,
                     b.y,
@@ -3552,10 +3558,14 @@ impl Renderer {
                                             None
                                         };
                                         eprintln!(
-                                            "BLIT_JOIN_AFTER dst=({x0},{y0},{rw},{rh}) centre=({cx},{cy}) \
+                                            "BLIT_JOIN_AFTER pass={} dst=({x0},{y0},{rw},{rh}) centre=({cx},{cy}) \
                                              band=({},{},{},{}) in_band={local_ok} \
                                              stitched_centre={src:?} band_after={got:?}",
-                                            b.x, b.y, b.w, b.h
+                                            PASS_SEQ.load(std::sync::atomic::Ordering::Relaxed),
+                                            b.x,
+                                            b.y,
+                                            b.w,
+                                            b.h
                                         );
                                     }
                                     continue;
