@@ -28173,10 +28173,22 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #           `head_seq`／`atom_count` 之类的记账 ✓，**绝不写盘** ✗）；
 #         * 相关可用件 ✓：`Document::log()`（`:529` ✓）／`head_seq()`（`:539` ✓）／`atom_count()`（`:544` ✓）／
 #           `log_since(since)`（`:1002` ✓）／`state_at(seq)`（`:996` ✓，返回 `StateAt` ✓）。
-#         * **另一条路（更省事，但语义要定）** ✓：既然**加载路径**本来就会从磁盘折叠 ✓
-#           ⇒ 也许该加的是"**重新加载尾部**"（`Workspace::open_document` 之后再 fold 尾巴 ✓）
-#           ⇒ ⇒ 两条路的取舍要**先想清楚再动手** ✓：`--watch` 的语义是"**外部写入也要看见**" ✓，
-#             而"重载"与"增量折叠"在**并发写**下的差别（最后写赢 ✓）要一次定清 ✓。
+#         * **★★ 设计定案（2026-10-15 ✓）：走"重载" ✗，不走"增量折叠" ✗✗** ★★
+#           **为什么** ✓：`seq` 的一致性 ✗ —— 若把外部原子**折叠进内存** ✓，磁盘上的日志就有了
+#             内存里 `AtomLog` **不知道**的行 ✓ ⇒ 之后工具侧再 `commit` 一笔时，它按自己的记账发 `seq`
+#             ⇒ ⇒ **可能和外部那笔撞号** ✗（两条不同的原子共用一个 `seq` ✗ ⇒ 折叠语义都会乱 ✗）。
+#             而"**重载**"让**磁盘当真相** ✓ ⇒ `AtomLog` 与 state 一起更新 ✓ ⇒ 工具侧后续发号自然正确 ✓。
+#           **实测支撑** ✓：`Workspace::open_document`（`service.rs:1173`）**不会重载已打开的文档** ✗ ——
+#             它转 `open_document_inner`（`:1186`）✓，后者只在 **`!self.documents.contains_key(doc_id)`**
+#             时才真加载 ✓ ⇒ ⇒ "直接再调一次 open_document" **看不见外部原子** ✗。
+#           ⇒ ⇒ **要加的 API** ✓：`Workspace::reload_document(doc_id) -> Result<&mut Document>`
+#             （把缓存里的那个 `Document` **丢掉再重新加载** ✓；若已有 `close_document` 之类就复用 ✓）
+#             —— **比 `Document::apply_foreign` 更简单也更安全** ✓（没有记账要保持一致 ✓）。
+#           ⇒ **接线就变成** ✓：`serve()` 每行处理前先 `follower.poll()` ✓ ⇒ 有新原子 ⇒
+#             `workspace_mut().reload_document(&doc_id)` ✓ ⇒ 下一次 `get_document` 自然看得见 ✓。
+#           **要守的** ✗：`reload` 不能把**未落盘的**东西弄丢 ✓ 以及**性能** ✓ ——
+#             大文档重载是**全量**的 ✗（这正是"大文件治本"那条待办 ✓：快照落盘 ＋ 加载走快照+尾巴 ✓）
+#             ⇒ ⇒ **两件事在这里交汇** ✓：`--watch` 的重载代价 ＝ 加载路径的代价 ✓。
 #      ⑥ 每个文档一个 `TailFollower` ✓（`crates/yanshi-core/src/watch.rs` ✓，已带 5 个单测 ✓ ＋ 分块读 ＋ 防卡死 ✓）；
 #         换文档时重建 ✓；`new_after(path, last_seq)` 可用于"先加载、后跟随" ✓。
 #      serve 侧另走浏览器判据 ✓（`crates/yanshi-http/src/server.rs:88` 已有 WS 推送轮询 ✓）。
