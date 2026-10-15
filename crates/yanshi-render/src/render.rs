@@ -6877,6 +6877,50 @@ mod tests {
         assert!(out.stats.unsupported.is_empty());
         assert!(state.is_consistent());
     }
+    /// **★ `merge_by_rows` 的行为判据（2026-10-15 ✓）★**
+    ///
+    /// **为什么需要它** ✗：`merge_by_rows`（`render.rs:503` ✓）里的 `Buffer::new`（`:514` ✓）
+    /// 是 4K ＋ 4 层渲染内存增量（**887 MB** ✓）中 `buffer_fresh` **1.58 GB／365 次**的**主源** ✗
+    /// （§49 之补六十／六十三 ✓）⇒ 要把它改成「复用一块暂存缓冲」（省内存 ✓）
+    /// ⇒ ⇒ **必须先钉住行为** ✓，否则「省内存」✗ 与「画错」✗ 分不开 ✓。
+    ///
+    /// **★ 第一版是**空洞**的 ✗★**（§49 之补七十 ✓）：我让两块缓冲的像素**同一个值** ✗
+    /// ⇒ 对调 blit 顺序**结果不变** ✗ ⇒ 判据**测不出**它要测的东西 ✓
+    /// ⇒ ⇒ **所以本版第一件事就是自断言前提** ✓（两块颜色**必须不同** ✓）。
+    #[test]
+    fn merge_by_rows_keeps_the_union_and_the_blit_order() {
+        // **用 `from_f32` 喂 raw f32** ✓（`buffer.rs:220` ✓）⇒ **不必构造 `LinearRgba`** ✓
+        //   又能让两块颜色**真的不同** ✓（这才是上一版空洞的原因 ✗）。
+        let red: Vec<f32> = [1.0f32, 0.0, 0.0, 1.0].repeat(4 * 4);
+        let green: Vec<f32> = [0.0f32, 1.0, 0.0, 1.0].repeat(4 * 4);
+        let old = crate::buffer::Buffer::from_f32(0, 0, 4, 4, &red).unwrap();
+        let fresh = crate::buffer::Buffer::from_f32(2, 2, 4, 4, &green).unwrap();
+        // **★ ① 自断言前提 ✗★**（§49 之补七十一 ✓）：颜色**必须不同** ✓
+        //   ⇒ 否则后面的 ③④ 退化成「**零 == 零**」✗（上一版的教训 ✓）。
+        assert_ne!(
+            old.pixel(0, 0),
+            fresh.pixel(0, 0),
+            "前提：两块颜色必须不同（否则判据空洞 ✗）"
+        );
+        let merged = merge_by_rows(&old, &fresh);
+        // ② 包围盒 ＝ 并集 ✓（复用已有的 `Bbox::union` ✓）
+        assert_eq!(
+            merged.bbox(),
+            old.bbox().union(&fresh.bbox()),
+            "包围盒应当是两块的并集"
+        );
+        // ③ 尺寸自洽 ✓（**`Bbox.w/h` 是 `f64`** ✗ —— 先乘再转 ✓）
+        let b = merged.bbox();
+        assert_eq!(
+            merged.pixels().len(),
+            ((b.w * b.h) as usize) * 4,
+            "像素数应当 = 宽 × 高 × 4"
+        );
+        // ④ 重叠处取 `new` ✓（`fresh` 局部 (0,0) ↔ `merged` 局部 (2,2) ✓）
+        assert_eq!(merged.pixel(2, 2), fresh.pixel(0, 0), "重叠处应当取 new");
+        // ⑤ `old` 独有处取 `old` ✓
+        assert_eq!(merged.pixel(0, 0), old.pixel(0, 0), "old 独有处应当取 old");
+    }
 }
 
 // **★ `by_sig` 上限触发时"只淘汰一组"的判据 ★**（第 254 轮）
