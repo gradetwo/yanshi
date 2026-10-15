@@ -286,3 +286,56 @@ fn fast_open_matches_a_full_open() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **待办 ① 第③″-a 步** ✓：`load_latest_snapshot` —— "**有就用、没有／坏了就算了**" ✓。
+///
+/// **它把的是加载路径的**正确性关** ✗：坏快照**绝不能**让文档打不开 ✓
+/// ⇒ 所以它**必须** `verify()`（CRC ✓）⇒ 校验不过一律 `None` ✓（调用处随即回退全量读 ✓）。
+#[test]
+fn load_latest_snapshot_returns_the_newest_one() {
+    let root = temp_root("latest");
+    let doc = "doc_latest";
+    let store = FileStore::open(&root).unwrap();
+    store
+        .append_atom(doc, &atom("a0", 1, AtomKind::CreateDocument))
+        .unwrap();
+    // ① 还没有快照 ⇒ `None` ✓（**不是**报错 ✗）
+    assert!(
+        store.load_latest_snapshot(doc).is_none(),
+        "还没有快照 ⇒ 必须是 None ✓（快照只是加速 ⇒ 不许因此报错 ✗）"
+    );
+    // ② 真造一份 ⇒ 必须能读回来、且 id 一致 ✓
+    let mut workspace =
+        Workspace::with_file_store(root.clone(), DocumentSettings::default()).unwrap();
+    let snapshot_id = workspace
+        .open_document(doc)
+        .unwrap()
+        .snapshot_now(0)
+        .unwrap();
+    let snapshot = workspace
+        .open_document(doc)
+        .unwrap()
+        .latest_usable_snapshot()
+        .expect("刚打过快照 ✓")
+        .clone();
+    assert!(
+        store.save_snapshot(doc, &snapshot).unwrap(),
+        "第一次应当真写 ✓"
+    );
+    let back = store
+        .load_latest_snapshot(doc)
+        .expect("存过之后必须能读到 ✓");
+    assert_eq!(back.id, snapshot_id, "读回来的必须就是那一份 ✓");
+    assert!(back.verify(), "读回来的必须过 CRC 校验 ✓");
+    // ③ **坏快照 ⇒ 当没有** ✓（写成垃圾字节 ✓）
+    let path = root
+        .join("docs")
+        .join(doc)
+        .join(format!("snapshot-{}.json", snapshot.seq_at));
+    std::fs::write(&path, b"{ this is not a snapshot }").unwrap();
+    assert!(
+        store.load_latest_snapshot(doc).is_none(),
+        "坏快照必须当成**没有** ✓（⇒ 调用处回退全量读 ✓，**绝不能**让文档打不开 ✗）"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

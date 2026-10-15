@@ -123,6 +123,44 @@ impl FileStore {
         self.doc_dir(doc_id).join("meta.json")
     }
 
+    /// **★ 找这份文档"最新可用的快照"（待办 ① ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么返回 `Option` 而不是 `Result`** ✓：调用处（`open_document_inner` ✓）要的语义是
+    /// "**有就用、没有／坏了就算了**" ✓ —— 快照只是**加速** ✓。
+    /// 若返回 `Result` ✗，调用处很容易写成 `?` ✗ ⇒ **一个坏快照就能让文档打不开** ✗（那是倒退 ✗）。
+    ///
+    /// **语义** ✓：列 `docs/<doc>/` ✓ ⇒ 挑 `snapshot-<seq>.json` 里 **`seq` 最大**的那个 ✓
+    /// ⇒ 反序列化 ✓ ⇒ **`verify()`**（CRC ✓）⇒ 任一步失败一律 **`None`** ✓（**不报错、不 panic** ✓）。
+    pub fn load_latest_snapshot(&self, doc_id: &str) -> Option<yanshi_core::Snapshot> {
+        let dir = self.doc_dir(doc_id);
+        let entries = fs::read_dir(&dir).ok()?;
+        let mut best: Option<(Seq, std::path::PathBuf)> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let Some(rest) = name.strip_prefix("snapshot-") else {
+                continue;
+            };
+            let Some(digits) = rest.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(seq) = digits.parse::<Seq>() else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(current, _)| seq > *current) {
+                best = Some((seq, entry.path()));
+            }
+        }
+        let (_, path) = best?;
+        let bytes = fs::read(&path).ok()?;
+        let snapshot: yanshi_core::Snapshot = serde_json::from_slice(&bytes).ok()?;
+        // **必须校验** ✓：坏快照 ⇒ 当没有 ✓ ⇒ 回退全量读 ✓（绝不让打开失败 ✗）。
+        if !snapshot.verify() {
+            return None;
+        }
+        Some(snapshot)
+    }
+
     /// **★ 快照文件路径（待办 ① ✓）：`docs/<doc>/snapshot-<seq_at>.json` ★**
     ///
     /// **为什么把 `seq_at` 放进文件名** ✓：这样"**文件是否存在**"就等于"**写没写过**" ✓
