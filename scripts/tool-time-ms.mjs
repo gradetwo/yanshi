@@ -179,12 +179,24 @@ const main = async () => {
     { speed1_slowness: 1.0, speed1_gamma: 1.0, dabs_per_second: 200.0 },
     true,
   );
+  // **★ ⑥ 用 `brush_params` 把它**改成**时间敏感（真机报告 P0 #1）★**
+  //   `100%_Opaque` 磁盘上的 `dabs_per_second` 是 **0** ✗，但调用方用 `brush_params`
+  //   把它设成了 200 ✓ => 这时**不该再警告** ✓。
+  //   我的第一版警告只看**磁盘上的原始值** ✗ => **误报**（用户最想骂的那条 ✓）。
+  const overridden = await probeStroke(
+    "ovr",
+    "100%_Opaque",
+    { dabs_per_second: 200.0 },
+    true,
+  );
   if (!plainWith || !plainWithout || !sensitive) {
     console.error("❌ 判不了：④⑤ 的探针没跑起来 ⇒ 退出码 3");
     process.exit(3);
   }
   const warned = plainWith.replied && typeof plainWith.replied.warning === "string";
   const warnedSensitive = sensitive.replied && typeof sensitive.replied.warning === "string";
+  const warnedOverridden =
+    overridden.replied && typeof overridden.replied.warning === "string";
   console.log(`  ④ 不吃时间的笔刷传 time_ms ⇒ warning=${warned ? "有 ✓" : "无 ✗"}`);
   console.log(`  ⑤ 配了 dabs_per_second 的笔刷 ⇒ warning=${warnedSensitive ? "有（误报 ✗）" : "无 ✓"}`);
   const bad = [];
@@ -193,6 +205,15 @@ const main = async () => {
   }
   if (warnedSensitive) {
     bad.push("⑤ 对**吃时间**的笔刷也报了「不吃 time_ms」的警告 ⇒ 误报 ✗");
+  }
+  console.log(
+    `  ⑥ 用 brush_params 设 dabs_per_second=200 ⇒ warning=${warnedOverridden ? "有（误报 ✗）" : "无 ✓"}`,
+  );
+  if (warnedOverridden) {
+    bad.push(
+      "⑥ **误报**：调用方已用 `brush_params` 把 `dabs_per_second` 设成 200，" +
+        "警告却仍说「这支笔刷不按时间出 dab」⇒ 判断没合并 `brush_params` 覆盖 ✗（真机报告 P0 #1）",
+    );
   }
   // **★ 不再断言"画面完全相同"（实测教训）★**：`100%_Opaque.myb` 的 `dabs_per_second` 是 0
   //   （不按时间出 dab ✓），但它的 `speed1_gamma`/`speed1_slowness` **非零** ✓
@@ -206,7 +227,7 @@ const main = async () => {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
   }
-  console.log("✓ ④⑤ 成立：**不按时间出 dab** 的笔刷会**明确报警**（不再静默无效果）；**吃时间**的笔刷不误报");
+  console.log("✓ ④⑤⑥ 成立：**不按时间出 dab** 的笔刷会**明确报警**（不再静默无效果）；**吃时间**的笔刷不误报");
 };
 
 await main();

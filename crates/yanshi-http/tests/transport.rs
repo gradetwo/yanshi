@@ -258,16 +258,24 @@ fn tool_call_renders_region_and_serves_png_from_cas() {
     assert_eq!(status, 200, "{stroke}");
     assert_eq!(stroke["dirty_kind"], json!("geometry"));
     let thumb_url = stroke["preview"]["thumb_url"].as_str().unwrap().to_owned();
+    // **第 254 轮：`thumb_url` 现在是**绝对 URL**（可直接 GET ✓）**
+    //   —— 原来是 `/api/blob/…` 相对路径 ✓。断言与取回都**两种形式都认** ✓
+    //   （真机报告 P1 #1 明确要求绝对 URL ✓：相对路径 + 内嵌 token 让调用方拼 host 很麻烦 ✓）。
     assert!(
-        thumb_url.starts_with("/api/blob/"),
+        thumb_url.starts_with("/api/blob/") || thumb_url.contains("/api/blob/sha256:"),
         "yanshi://blob/ 已被改写成可直接 GET 的 URL：{thumb_url}"
     );
     assert!(thumb_url.contains("doc=doc_render"));
     assert!(thumb_url.contains("token="));
+    // 下面这个测试客户端接的是**路径** ✓ => 取回时把 origin 去掉 ✓
+    let thumb_path = match thumb_url.find("/api/blob/") {
+        Some(index) => thumb_url[index..].to_owned(),
+        None => thumb_url.clone(),
+    };
 
     // 从 CAS 取回 PNG。
     let mut blob_client = HttpClient::new(addr);
-    let (status, headers, bytes) = blob_client.request("GET", &thumb_url, None, None);
+    let (status, headers, bytes) = blob_client.request("GET", &thumb_path, None, None);
     assert_eq!(status, 200);
     assert_eq!(headers["content-type"], "image/png");
     assert_eq!(

@@ -2229,7 +2229,13 @@ fn tool_call_with(
     .with_diagnostics_facts(diagnostics_facts);
     let value = state.registry.call(&mut context, name, &arguments);
     let value = if state.options.rewrite_blob_urls {
-        rewrite_blob_urls(value, &doc_id, request.token().as_deref())
+        let origin = request_origin(state, request);
+        rewrite_blob_urls(
+            value,
+            &doc_id,
+            request.token().as_deref(),
+            origin.as_deref(),
+        )
     } else {
         value
     };
@@ -2339,36 +2345,66 @@ fn control_plane(
 }
 
 /// 把 `yanshi://blob/<hash>` 改写成可直接 GET 的 URL（带 doc 与 token，12.7）。
-fn rewrite_blob_urls(value: Value, doc_id: &str, token: Option<&str>) -> Value {
-    fn rewrite_string(text: &str, doc_id: &str, token: Option<&str>) -> Option<String> {
+/// **★ 从请求里取 origin（真机报告 P1 #1）★**：优先用 `Host` 头 ✓（反代/自定义端口都对 ✓），
+/// 退回 bind 地址 ✓。**注意** bind 若是 `0.0.0.0` 这种"监听全部"的写法，拼出来的 URL 客户端用不了 ✗
+/// —— 所以**优先 Host 头** ✓（正常请求都有 ✓）。
+fn request_origin(state: &ServerState, request: &Request) -> Option<String> {
+    if let Some(host) = request.header("host") {
+        return Some(format!("http://{host}"));
+    }
+    let bind = state.options.bind.as_str();
+    if bind.is_empty() {
+        return None;
+    }
+    Some(format!("http://{bind}"))
+}
+
+fn rewrite_blob_urls(
+    value: Value,
+    doc_id: &str,
+    token: Option<&str>,
+    origin: Option<&str>,
+) -> Value {
+    /// **★ 生成**绝对**URL（真机报告 P1 #1：`thumb_url` 一直是相对路径 ✗）★**
+    /// 传了 `origin`（来自请求的 `Host` 头 ✓）就拼成 `http://host/api/blob/…` ✓；
+    /// 没传就保持原来的相对路径 ✓（向后兼容 ✓）。
+    fn rewrite_string(
+        text: &str,
+        doc_id: &str,
+        token: Option<&str>,
+        origin: Option<&str>,
+    ) -> Option<String> {
         let hash = text.strip_prefix("yanshi://blob/")?;
-        let mut url = format!("/api/blob/{hash}?doc={doc_id}");
+        let mut url = match origin {
+            Some(origin) => format!("{origin}/api/blob/{hash}?doc={doc_id}"),
+            None => format!("/api/blob/{hash}?doc={doc_id}"),
+        };
         if let Some(token) = token {
             url.push_str(&format!("&token={token}"));
         }
         Some(url)
     }
-    fn walk(value: Value, doc_id: &str, token: Option<&str>) -> Value {
+    fn walk(value: Value, doc_id: &str, token: Option<&str>, origin: Option<&str>) -> Value {
         match value {
-            Value::String(text) => match rewrite_string(&text, doc_id, token) {
+            Value::String(text) => match rewrite_string(&text, doc_id, token, origin) {
                 Some(url) => Value::String(url),
                 None => Value::String(text),
             },
             Value::Array(items) => Value::Array(
                 items
                     .into_iter()
-                    .map(|item| walk(item, doc_id, token))
+                    .map(|item| walk(item, doc_id, token, origin))
                     .collect(),
             ),
             Value::Object(map) => Value::Object(
                 map.into_iter()
-                    .map(|(key, item)| (key, walk(item, doc_id, token)))
+                    .map(|(key, item)| (key, walk(item, doc_id, token, origin)))
                     .collect(),
             ),
             other => other,
         }
     }
-    walk(value, doc_id, token)
+    walk(value, doc_id, token, origin)
 }
 
 /// 取 `doc` 参数（缺失或为空都算参数错误）。
@@ -2818,7 +2854,13 @@ fn atom_submit(state: &ServerState, request: &Request) -> Response {
             {
                 value["atom"] = json!(appended);
             }
-            let value = rewrite_blob_urls(value, &doc_id, request.token().as_deref());
+            let origin = request_origin(state, request);
+            let value = rewrite_blob_urls(
+                value,
+                &doc_id,
+                request.token().as_deref(),
+                origin.as_deref(),
+            );
             Response::json(200, &value)
         }
         Err(error) => Response::from_error(&error),
@@ -3132,7 +3174,8 @@ fn handle_ws_message(
 
 fn rewrite_blob_urls_value(value: Value, doc_id: &str, rewrite: bool) -> Value {
     if rewrite {
-        rewrite_blob_urls(value, doc_id, None)
+        // 这条路径没有请求上下文（工具层内部用）=> 保持**相对路径** ✓（传 `None` ✓）
+        rewrite_blob_urls(value, doc_id, None, None)
     } else {
         value
     }
@@ -3783,7 +3826,8 @@ mod tests {
             "list": ["yanshi://blob/sha256:def"],
             "other": "yanshi://doc/1",
         });
-        let rewritten = rewrite_blob_urls(value, "doc_1", Some("tok"));
+        // **不给 origin ⇒ 保持相对路径** ✓（这一条单测断的就是相对形式 ✓）
+        let rewritten = rewrite_blob_urls(value, "doc_1", Some("tok"), None);
         assert_eq!(
             rewritten["preview"]["thumb_url"],
             json!("/api/blob/sha256:abc?doc=doc_1&token=tok")

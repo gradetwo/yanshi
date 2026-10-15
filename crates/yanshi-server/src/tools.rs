@@ -591,6 +591,15 @@ impl ToolRegistry {
     pub fn call(&self, ctx: &mut ToolContext<'_>, name: &str, args: &Value) -> Value {
         // **整个工具调用的起表** ✓：`total_ms` 与 `prep_ms` 都由它量 ✓（P2）。
         let call_started = std::time::Instant::now();
+        // **★ 工具名别名（真机报告 P0 #2）★**：`undo` / `redo` 是"最自然的写法" ✓ ——
+        //   实测反馈：想撤销时调 `undo` 拿到"未知工具 undo" ✗，而真名是 `undo_last` ✓。
+        //   ⇒ 这里把**无歧义的短名**映射到规范名 ✓（只加**已存在**工具的同义短名 ✓，
+        //     不改规范名本身 ✓，也不做模糊匹配 ✗ —— 那会把拼错也悄悄接受 ✗）。
+        let name = match name {
+            "undo" => "undo_last",
+            "redo" => "redo_last",
+            other => other,
+        };
         let Some(spec) = self.get(name) else {
             return error_response(&YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -13580,6 +13589,42 @@ fn apply_humanize_envelope(points: &mut [(f64, f64, f64)]) {
     }
 }
 
+/// **★ 退化成"一个点"的笔触自动展开（真机报告 P2 #1）★**（第 254 轮）
+///
+/// **现象**：画"点"是最常见的操作 ✓，但 `points: [[x,y],[x,y]]`（两个**相同坐标**）会被
+/// 判成"这一笔没落下任何像素" ✗ —— 报错信息很好 ✓（它给了两条出路 ✓），
+/// 但**每次画点都要记得"要给 3 个点"**很烦 ✓（用户原话："有点烦" ✓）。
+///
+/// **做法**：只在**所有点几乎同坐标**时（退化成一枚点）自动展开成三个**微偏移**点 ✓
+/// （位移 1px 量级 ⇒ 视觉上仍是一个点 ✓，但引擎能落下 dab ✓）。
+/// **正常笔触零影响** ✓（有位移就不动 ✓）；**确定性** ✓（偏移是固定值 ✓，不引入随机 ✓）。
+fn expand_degenerate_points(
+    points: Vec<(f64, f64, f64)>,
+    size: Option<f64>,
+) -> Vec<(f64, f64, f64)> {
+    const EPSILON: f64 = 0.01;
+    let Some(first) = points.first().copied() else {
+        return points;
+    };
+    let degenerate = points
+        .iter()
+        .all(|(x, y, _)| (x - first.0).abs() <= EPSILON && (y - first.1).abs() <= EPSILON);
+    if !degenerate || points.len() > 8 {
+        return points;
+    }
+    // **偏移要跟着 `size` 走** ✓ —— 第一次我用固定 1px，实测仍报"路径撑不满 dab 间距" ✗
+    //   （日志原话："本笔 3 个点、路径总长 3px" ⇒ 而 30px 笔尖的 dab 间距约 2.6px ✓ ⇒ 差一点点 ✗）。
+    //   取 `size × 0.6`（下限 2px）⇒ 路径总长 ≈ 1.2×size ⇒ 一定能落下 dab ✓，
+    //   而视觉上仍是"一枚点"（路径只有笔尖的尺度 ✓）。
+    let reach = size.unwrap_or(24.0).mul_add(0.6, 0.0).max(2.0);
+    let pressure = first.2;
+    vec![
+        (first.0, first.1 - reach, pressure),
+        (first.0, first.1 + reach, pressure),
+        (first.0, first.1, pressure),
+    ]
+}
+
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
     brush_points_from_json(args.get("points"))
 }
@@ -15060,6 +15105,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let layer_id = require_str(args, "layer_id")?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
+    // **★ 退化成"一个点"就自动展开（真机报告 P2 #1）★** —— 画"点"不该报错 ✓。
+    let points = expand_degenerate_points(points, args.get("size").and_then(Value::as_f64));
     // **★ P0 #3：取每个点的真实时间（没有就是 -1 ⇒ 落回 STEP_SECONDS）★**
     let dtimes = parse_brush_point_times(args)?;
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
@@ -15454,7 +15501,17 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             // 但它的 `speed1_gamma = 2.87`／`speed1_slowness = 0.04` **非零** ✗
             // => 我第一版把这三个"或"起来 => **漏报**了 ✗。
             // **`speed1_*` 只是速度映射的形状参数** ✓，光有它不等于"按时间出 dab" ✓。
-            .map(|(_, brush)| brush.get(hokusai::BrushSetting::DabsPerSecond).base_value > 0.0)
+            // **★ 必须**先合并 `brush_params` 的覆盖**（真机报告 P0 #1 的修法）★**
+            //   只读磁盘 `.myb` 的**原始值**会**误报** ✗ —— 实测：`100%_Opaque` 磁盘上
+            //   `dabs_per_second = 0` ✗，但调用方用 `brush_params` 把它设成了 **200** ✓，
+            //   这时**不该**再警告 ✓（用户最想骂的就是这条误报 ✓）。
+            //   覆盖失败（字段名拼错之类）就按原值判断 —— 真正的报错由落笔那条路给出 ✓。
+            .map(|(_, mut brush)| {
+                if let Some(params) = args.get("brush_params") {
+                    let _ = apply_brush_params(&mut brush, params);
+                }
+                brush.get(hokusai::BrushSetting::DabsPerSecond).base_value > 0.0
+            })
             // 查不到这支笔刷就别乱警告（后面会自己报"找不到笔刷" ✓）
             .unwrap_or(true);
         if !time_sensitive {

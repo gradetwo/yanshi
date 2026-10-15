@@ -66,9 +66,27 @@ impl FromStr for BlobHash {
     type Err = YanshiError;
 
     fn from_str(s: &str) -> Result<Self> {
-        let valid = s.len() == 71
-            && s.starts_with("sha256:")
-            && s[7..]
+        // **★ 也认"把 URL 原样传回来"（真机报告 P1 #1 的配套修）★**（第 254 轮）
+        //
+        // 服务端返回的 `thumb_url` / `raw_url` 现在是**绝对 URL** ✓
+        //（`http://host/api/blob/sha256:…?doc=…&token=…` ✓）=> 调用方很自然会把它**原样**喂回
+        // `import_image` 的 `blob` 一类参数 ✓。以前那样做会报"非法 blob hash" ✗
+        // （**是 yanshi-http 的单测当场抓到的** ✓：`uploaded_blob_can_be_imported_and_renders_pixels` ✓）。
+        //
+        // **认这四种写法** ✓：`sha256:…`（规范 ✓）／`yanshi://blob/sha256:…` ✓／
+        // `/api/blob/sha256:…?…` ✓／`http(s)://host/api/blob/sha256:…?…` ✓。
+        // **只取最后一个 `sha256:` 之后的 64 位十六进制** ✓（其余当装饰丢掉 ✓）。
+        let candidate: String = match s.rsplit_once("sha256:") {
+            Some((_, tail)) => format!("sha256:{tail}"),
+            None => s.to_owned(),
+        }
+        .chars()
+        .take_while(|c| !matches!(c, '?' | '#' | '&' | '/'))
+        .take(71)
+        .collect();
+        let valid = candidate.len() == 71
+            && candidate.starts_with("sha256:")
+            && candidate[7..]
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
         if !valid {
@@ -77,7 +95,7 @@ impl FromStr for BlobHash {
                 crate::error::ErrorContext::detail(format!("非法 blob hash: {s:?}")),
             ));
         }
-        Ok(Self(s.to_owned()))
+        Ok(Self(candidate))
     }
 }
 
