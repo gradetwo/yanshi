@@ -28158,9 +28158,25 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #         **`document_mut(doc_id)`**（`:1469` ✓）。
 #      ④ 增量应用 ✓：引擎侧入口 = **`yanshi_core::fold::apply(state: &mut DocumentState, atom)`**
 #         （`crates/yanshi-core/src/fold.rs:793` ✓）—— 与磁盘加载**共用同一条** ✓（不许另写一遍 ✗）。
-#      ⑤ **★ 最后一格尚未侦察（下一段先查这个 ✓）★**：从 `Document` 怎么拿 `&mut DocumentState` ✗
-#         —— 我这次 `grep 'pub fn state|state_mut|apply_atom'` **没有命中** ✓
-#         ⇒ 要么名字不同 ✓、要么得走别的取法 ✓ ⇒ **动手前先看 `Document` 的定义与它的方法 ✓**。
+#      ⑤ **★★ 已查出（2026-10-15 ✓）—— 而且查出**一个陷阱** ✗✗**：
+#         * `crates/yanshi-server/src/document.rs:534` = **`pub const fn state(&self) -> &DocumentState`**
+#           ⇒ ⇒ **只有不可变的** ✗（**没有** `state_mut` ✗）；
+#         * `document.rs:661` = `pub fn commit(&mut self, atom: Atom) -> Result<CommitResult>`
+#           ⇒ 它是**工具侧提交**：会**把原子写回磁盘** ✗；
+#         * **★★ 陷阱 ✗✗：外部原子已经在磁盘上了** ✓ ⇒ 若拿 `commit` 去"应用"它
+#           ⇒ **会再追加一行** ✗（重复原子 ✗、日志被污染 ✗、`seq` 也会乱 ✗）
+#           ⇒ ⇒ **绝对不能用 `commit` 来做 `--watch` 的应用** ✗。
+#         * **正确做法** ✓：走**内存折叠** ＝ `yanshi_core::fold::apply(state, atom)`
+#           （`fold.rs:793` ✓，与磁盘加载**同一条** ✓）⇒ **但需要一个 `&mut DocumentState` 的入口** ✗
+#           —— 今天**没有**公开这个入口 ✓ ⇒ ⇒ **接线时要先加一个**（例如
+#           `Document::apply_foreign(&mut self, atom) -> Result<()>` ✓：内部只 `fold::apply` ＋ 更新
+#           `head_seq`／`atom_count` 之类的记账 ✓，**绝不写盘** ✗）；
+#         * 相关可用件 ✓：`Document::log()`（`:529` ✓）／`head_seq()`（`:539` ✓）／`atom_count()`（`:544` ✓）／
+#           `log_since(since)`（`:1002` ✓）／`state_at(seq)`（`:996` ✓，返回 `StateAt` ✓）。
+#         * **另一条路（更省事，但语义要定）** ✓：既然**加载路径**本来就会从磁盘折叠 ✓
+#           ⇒ 也许该加的是"**重新加载尾部**"（`Workspace::open_document` 之后再 fold 尾巴 ✓）
+#           ⇒ ⇒ 两条路的取舍要**先想清楚再动手** ✓：`--watch` 的语义是"**外部写入也要看见**" ✓，
+#             而"重载"与"增量折叠"在**并发写**下的差别（最后写赢 ✓）要一次定清 ✓。
 #      ⑥ 每个文档一个 `TailFollower` ✓（`crates/yanshi-core/src/watch.rs` ✓，已带 5 个单测 ✓ ＋ 分块读 ＋ 防卡死 ✓）；
 #         换文档时重建 ✓；`new_after(path, last_seq)` 可用于"先加载、后跟随" ✓。
 #      serve 侧另走浏览器判据 ✓（`crates/yanshi-http/src/server.rs:88` 已有 WS 推送轮询 ✓）。
