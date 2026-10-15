@@ -162,6 +162,23 @@ CPU path currently serves both tiers within budget, and a GPU backend could be a
 later without changing the architecture.
 
 
+
+## Memory and the below snapshot
+
+The compositor caches the composite of everything below a layer and reuses it when the same cut point comes back, which
+is what makes alternating between two layers cheap. Each retained variant, called a group, is a full canvas buffer in
+thirty two bit floats, so at four thousand pixels square one group is about two hundred and fifty six megabytes. The
+environment variable `YANSHI_BELOW_SIG_GROUPS` caps how many groups are kept; more groups buy more reuse and cost more
+memory.
+
+The default is two, changed from four on 2026-10-15 after measuring both settings on the same machine with the same
+four criteria. The hit counters reported by `/health` were identical (`below_wanted` eight hundred and twenty eight and
+`below_reuse` one hundred and sixty eight in both runs) and the peak group count halved, from four to two. One honest
+caveat: the saving at four thousand pixels square is inferred from that peak group count, because this machine cannot
+hold a four thousand pixel four layer render. To verify a change here, run `tool-below-sig-alternate`,
+`tool-below-invalidation`, `tool-below-retention` and `tool-below-reuse`; the first one is the one that checks that
+coming back to a cut point really does reuse, which is exactly what a naive hit rate measurement misses.
+
 ## Path operators
 
 The object panel drives the path operators from design 792: reverse, close, join, merge, split and boolean, the
