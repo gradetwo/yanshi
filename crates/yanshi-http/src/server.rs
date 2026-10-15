@@ -3004,7 +3004,10 @@ fn handle_websocket(
 
     // 订阅推送（6.8）：控制流全局、数据流按视口过滤。
     let session = format!("session:ws:{}", yanshi_core::Ulid::new().encode());
-    let subscriber = {
+    // **★ 它必须可更新（2026-10-15 ✓）：`reload_document` 会把旧 `Document`（连同订阅者与它的队列）
+    //   一起丢掉** ✗ ⇒ 重载之后要**重新订阅** ✓，并且下面的 `drain` 必须用**新的** id ✓
+    //   （`Broadcaster::subscribe` **不幂等** ✗：同一 session 也会拿到新 id ✓）。
+    let mut subscriber = {
         let Ok(mut workspace) = state.workspace.lock() else {
             return Ok(());
         };
@@ -3067,6 +3070,10 @@ fn handle_websocket(
                         if let Ok(mut workspace) = push_state.workspace.lock() {
                             if workspace.reload_document(&push_doc).is_ok() {
                                 if let Ok(document) = workspace.document_mut(&push_doc) {
+                                    // **重载丢了订阅者** ✗ ⇒ 重新订阅 ✓ 并**更新 id** ✓
+                                    //   （用**同一个 `session`** ✓：这样语义上还是"同一条连接" ✓）
+                                    subscriber =
+                                        document.subscribe(&session, PushChannel::WebSocket);
                                     for atom in &polled.atoms {
                                         document.broadcaster_mut().publish_atom(atom);
                                     }
