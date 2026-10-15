@@ -152,6 +152,24 @@ resolve_is_linux() {
   esac
 }
 is_linux="$(resolve_is_linux "${target_triple}")"
+
+# **★ Windows 的二进制带 `.exe`（2026-10-15，为多平台发布加 ✓）★**
+#
+# **为什么必须显式处理** ✗：`cargo` 在 `*-pc-windows-*` 上产出的名字是 **`yanshi-serve.exe`** ✓，
+# 而本脚本原先到处写死 `yanshi-serve` ✗ ⇒ 在 Windows 上会先在"必需文件"那一步就失败 ✓
+# （第 391 行附近的 `for required in …` ✓），后面的 `install`／包内包装脚本／自测也都会找不到 ✓。
+# ⇒ 统一按**目标平台**推一个后缀 ✓，把那几处都改成 `yanshi-serve${bin_suffix}` ✓。
+resolve_is_windows() {
+  local os
+  os="${target_os_override:-$(printf '%s' "$1" | cut -d- -f3-)}"
+  case "${os}" in
+    *windows*) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+is_windows="$(resolve_is_windows "${target_triple}")"
+bin_suffix=""
+if [ "${is_windows}" = 1 ]; then bin_suffix=".exe"; fi
 # **给消息用的"目标平台"名字** ✓ —— 我上一轮把 `host_os` 改名成 `target_triple` 时
 # **漏改了一处引用** ✗ ⇒ 在 macOS 上以 `set -u` 直接死在 "host_os: unbound variable" ✗ ✓
 #（**"改名要一次改全"** 这条我刚写进笔记 ✓，这次是自己撞上 ✓）。
@@ -388,7 +406,7 @@ if [ "$skip_build" = 0 ]; then
 fi
 
 # **硬要求：只有那两个二进制** ✓ —— 少了它们包**真的跑不起来** ✗，必须就地报错 ✓。
-for required in "$bin_dir/yanshi-serve" "$bin_dir/yanshi-mcp"; do
+for required in "$bin_dir/yanshi-serve${bin_suffix}" "$bin_dir/yanshi-mcp${bin_suffix}"; do
   [ -e "$required" ] || { echo "缺少必需产物：$required" >&2; exit 1; }
 done
 # **软要求：wasm 计算内核与介质插件** ✓（真实用户报告 ✓：**新克隆里直接跑打包会失败** ✗ ——
@@ -652,8 +670,8 @@ rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/yanshi"
 
 echo "--> 组装目录树"
-install -m 0755 "$bin_dir/yanshi-serve" "$stage/bin/yanshi-serve"
-install -m 0755 "$bin_dir/yanshi-mcp" "$stage/bin/yanshi-mcp"
+install -m 0755 "$bin_dir/yanshi-serve${bin_suffix}" "$stage/bin/yanshi-serve${bin_suffix}"
+install -m 0755 "$bin_dir/yanshi-mcp${bin_suffix}" "$stage/bin/yanshi-mcp${bin_suffix}"
 # **资产树** ✓：用 `cp -R` 保留目录结构 ✓；介质只带 `*.wasm` ✓（源码不属于运行期 ✓）。
 # **存在才拷** ✓（缺失时上面已经警告过 ✓ ⇒ 这里不能因为"没有"就整个失败 ✗）。
 if [ -e "$repo/crates/yanshi-wasm/pkg" ]; then
@@ -727,13 +745,19 @@ fi
 # 有就什么都不做、没有就传一个"关闭门面"的开关。该开关与那个文件都已从产品里删除，
 # 所以它既永远不成立、又会把已删的开关传给二进制 ⇒ 打包后的启动脚本会直接退出。
 # 本轮整块删除（保留这条注记说明为什么这里不再需要判断）。
-exec "$here/bin/yanshi-serve" \
+exec "$here/bin/yanshi-serve__BIN_SUFFIX__" \
   "${wasm_args[@]}" \
   --medium-dir "$here/share/yanshi/mediums" \
   --assets-dir "$here/share/yanshi" \
   --brand-dir "$here/share/yanshi/brand" \
   "$@"
 WRAP
+
+# **占位符换成真实后缀** ✓（上面那段 heredoc 是**引号**的 ⇒ 里面不会做变量展开 ✗
+# ⇒ 所以在这里用 `sed` 补 ✓：Linux/macOS 上后缀为空 ✓、Windows 上是 `.exe` ✓）。
+if [ -n "${bin_suffix}" ]; then
+  sed -i.bak "s/__BIN_SUFFIX__/${bin_suffix}/" "$stage/yanshi.sh" && rm -f "$stage/yanshi.sh.bak"
+fi
 chmod 0755 "$stage/yanshi.sh"
 
 # **包内说明** ✓（就地说明怎么用 ✓，不必上网查 ✓）。
@@ -848,7 +872,7 @@ fi
 reported=""
 if [ "${target_triple}" = "${host_triple}" ]; then
   # **同平台** ⇒ 运行一次取版本 ✓（最可靠 ✓）。
-  reported="$(timeout 10 "$stage/bin/yanshi-serve" --version 2>/dev/null || true)"
+  reported="$(timeout 10 "$stage/bin/yanshi-serve${bin_suffix}" --version 2>/dev/null || true)"
 else
   # **交叉：既不运行、也不去二进制里读** ✗ —— 用户明确要求 ✓：
   # "**直接从代码库中去就好了，不要从 binary 中取**" ✓。

@@ -45,12 +45,26 @@ permissions:
 
 jobs:
   package:
-    name: package (${{ matrix.os }})
+    name: package (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    # **★ Windows 也要用 bash ★**（2026-10-15 加 ✓）：`package-release.sh` 是 bash 脚本 ✓，
+    # 而 `windows-latest` 的缺省 shell 是 **pwsh** ✗ ⇒ 不声明就会被当成 PowerShell 而立刻失败 ✓。
+    # Git Bash 在 runner 上**预装** ✓（`install`/`sha256sum`/`shasum` 都在 ✓）；
+    # `objdump`/`ldd` 那套 **Linux 专属检查在非 Linux 上本来就会跳过** ✓（见脚本顶部说明 ✓）。
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # **★ 多平台发布包（用户 2026-10-15 要求）★**：macOS 的 x86_64 与 arm64 **分开**跑 ✓
+        #（`macos-13` 是 Intel ✓，`macos-14` 起是 Apple Silicon ✓）⇒ 各自**原生**编译 ✓；
+        # 不做交叉编译 ✗ —— 那样"真跑一次"的冒烟就失去意义了 ✓。
+        include:
+          - { os: ubuntu-latest,  label: linux-x86_64,   target: x86_64-unknown-linux-gnu }
+          - { os: macos-13,       label: macos-x86_64,   target: x86_64-apple-darwin }
+          - { os: macos-14,       label: macos-arm64,    target: aarch64-apple-darwin }
+          - { os: windows-latest, label: windows-x86_64, target: x86_64-pc-windows-gnu }
     steps:
       - uses: actions/checkout@v4
 
@@ -81,21 +95,28 @@ jobs:
       - name: Build the release package
         run: |
           set -euo pipefail
+          # **矩阵里的目标**（多平台发布 ✓）；手工触发时 `targets` 输入**优先** ✓（便于临时指定 ✓）。
+          MATRIX_TARGET="${{ matrix.target }}"
           TARGETS="${{ github.event.inputs.targets }}"
           DYNAMIC="${{ github.event.inputs.dynamic }}"
           FLAGS=""
           if [ "$DYNAMIC" = "true" ]; then FLAGS="--dynamic"; fi
-          if [ -z "$TARGETS" ]; then
-            echo "== 只打当前平台 =="
-            scripts/package-release.sh $FLAGS --out dist
-          elif [ "$TARGETS" = "all" ]; then
-            echo "== 逐个目标 =="
-            scripts/package-release.sh --all-targets $FLAGS --out dist
+          if [ -n "$TARGETS" ]; then
+            if [ "$TARGETS" = "all" ]; then
+              echo "== 逐个目标（手工指定 ✓）=="
+              scripts/package-release.sh --all-targets $FLAGS --out dist
+            else
+              echo "== 指定目标（手工指定 ✓）：$TARGETS =="
+              for t in $TARGETS; do
+                scripts/package-release.sh --target "$t" $FLAGS --out dist
+              done
+            fi
+          elif [ -n "$MATRIX_TARGET" ]; then
+            echo "== 本平台目标（矩阵 ✓）：$MATRIX_TARGET =="
+            scripts/package-release.sh --target "$MATRIX_TARGET" $FLAGS --out dist
           else
-            echo "== 指定目标：$TARGETS =="
-            for t in $TARGETS; do
-              scripts/package-release.sh --target "$t" $FLAGS --out dist
-            done
+            echo "== 只打当前平台（未指定目标 ✓）=="
+            scripts/package-release.sh $FLAGS --out dist
           fi
 
       # **自检** ✓：产物必须存在、校验和必须能验过 ✓ ⇒ 否则这一步就红，别把坏包发出去 ✗。
@@ -162,7 +183,7 @@ jobs:
       - name: Upload the package as an artifact
         uses: actions/upload-artifact@v4
         with:
-          name: yanshi-release-${{ matrix.os }}
+          name: yanshi-release-${{ matrix.label }}
           path: |
             dist/*.tar.gz
             dist/SHA256SUMS
@@ -197,7 +218,7 @@ jobs:
           echo "== 已上传本平台的归档 ✓（校验和见各 artifact；如需汇总请用 artifact 下载 ✓）=="
 
       - name: Attach the checksums to the release
-        if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'ubuntu-latest'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.label == 'linux-x86_64'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
