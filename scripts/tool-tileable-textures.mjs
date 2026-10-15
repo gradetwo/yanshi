@@ -29,7 +29,16 @@ import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
 const root = process.argv[2] || ".";
-const dir = join(root, "assets", "tileable");
+// **★ 位置（2026-10-15 改 ✓）★**：这 4 张**搬进了 `assets/textures/`** ✓ ——
+//   因为引擎的 `list_textures` **只列那个目录 ＋ 工作区缓存** ✓
+//   ⇒ 放在别的目录里**引擎看不见** ✗（那它们就不是"可用纹理"了 ✗）。
+const dir = join(root, "assets", "textures");
+const WANTED = [
+  "TilePaperFine128.png",
+  "TilePaperFiber128.png",
+  "TileCardboard128.png",
+  "TileCanvas128.png",
+];
 
 /** 极小 PNG 解码（只支持 8 位、无隔行、颜色类型 0/2/4/6 ✓ —— 与仓库自写解码器同一集合 ✓）。 */
 function decodePng(buf) {
@@ -146,16 +155,21 @@ function edgeStats(img) {
   return { lr, tb, inner: Math.max(0.001, Math.max(innerX, innerYv)) };
 }
 
-let files;
+let present;
 try {
-  files = readdirSync(dir).filter((f) => f.endsWith(".png"));
+  const all = new Set(readdirSync(dir));
+  present = WANTED.filter((f) => all.has(f));
 } catch (e) {
   console.error(`❌ 判不了：读不到 ${dir}（${e.message}）⇒ 退出码 3`);
   process.exit(3);
 }
 
 const fails = [];
-if (files.length < 2) fails.push(`① ${dir} 里的 png 少于 2 张（现在 ${files.length} 张）`);
+// **★ 只守这 4 张具名瓦片** ✓：同目录里还有 ambientCG 的 1024² 大图（0.6–2 MB ✓）
+//   ⇒ 不能拿 64 KB 的限制去套它们 ✗（那不是这条判据的对象 ✓）。
+const missing = WANTED.filter((f) => !present.includes(f));
+if (missing.length) fails.push(`① 缺少瓦片：${missing.join("、")} ⇒ 引擎里就少了这几张可用纹理 ✗`);
+const files = present;
 const MAX_BYTES = 64 * 1024;
 for (const f of files.sort()) {
   const path = join(dir, f);

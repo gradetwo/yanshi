@@ -952,3 +952,32 @@ assets/textures/Cardboard003.png
 **读到"某目录不在 git/不可用"这类陈述时，先跑一条命令核实** ✗
 （`git ls-files` ✓ 只要一秒 ✓）；我整轮的推理都建在一句**过时的注释**上 ✗。
 
+## 三十四、★ 「二选一」定了：把 4 张瓦片**搬进 `assets/textures/`** ⇒ 引擎**看得见**它们（2026-10-15）★
+
+**为什么选"接进引擎"而不是"删掉"** ✓（有证据 ✓）：
+  * 引擎的 `list_textures` **只列 `assets/textures/` ＋ 工作区缓存** ✓
+    （`tools.rs:3134` 的说明 ＋ `write_list_textures` ✓）
+    ⇒ 瓦片原来放在 `assets/tileable/` 里**引擎看不见** ✗ ⇒ 那就**不是可用纹理** ✗；
+  * 搬进去之后它们就是**真正可选的纹理** ✓ —— 而且**又小又无缝** ✓，
+    正是"画布飞白对齐"（⑦）要的东西 ✓。
+
+**改动** ✓：
+  * `git mv` 四张 ⇒ `assets/textures/TilePaperFine128.png`／`TilePaperFiber128.png`／
+    `TileCardboard128.png`／`TileCanvas128.png` ✓（`assets/tileable/` 目录撤销 ✓）；
+  * 派生说明并进 **`assets/textures/NOTICE.md`** ✓（CC0 ✓ ＋ 等距抽样 ✓ ＋ 判据指向 ✓）；
+  * 判据改成**守这 4 张具名瓦片** ✓（不再扫"另一个目录" ✓）——
+    **只套 64 KB 给它们** ✓，因为同目录里还有 ambientCG 的 1024² 大图（0.6–2 MB ✓），
+    那些**不是**这条判据的对象 ✗。
+
+**★ 验证（引擎侧，客观 ✓）★**：
+```
+list_textures ⇒ **15 条** ✓（原来是 11 条 ✓）
+  其中 Tile* ＝ [TileCanvas128, TileCardboard128, TilePaperFiber128, TilePaperFine128] ✓✓
+```
+⇒ ⇒ **引擎真的看得见这 4 张** ✓ —— 这一条是"资产侧接上了"的**客观证据** ✓（不是我口头说的 ✓）。
+
+**打包侧** ✓：`scripts/stage-asset-kinds.sh` 是**按目录逐名**装 `assets/textures/` 的 ✓
+（源与包内**逐名一致**才放行 ✓）⇒ 这 4 张**自动**随包发出 ✓（不需要改打包脚本 ✓）。
+
+**判决** ✓：§33 里那个"待定"**已定** ✓ —— 选"接进引擎" ✓，并**留了判据**守它 ✓。
+
