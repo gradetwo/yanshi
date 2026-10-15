@@ -89,3 +89,15 @@ web/.index.export.html
 
 # **★ 依赖目录** ✗ ★**（第 197 轮 ✓；**∴ 我**误提交过 683 个文件 ✓）
 node_modules/
+
+# **★ 纹理：大图是"缓存"、小瓦片是"内置资产"（2026-10-15 ✓）★**
+#   **为什么** ✗：`docs/guide.md` 的 "Paper and canvas textures" 一直写着
+#   「纹理放在**每工作区缓存**里、**不进仓库** ✓，因为 ambientCG 最小可用变体就有 **13 MB** ✓，
+#     提交一套会把树撑胖 ✗」—— 但**实测**：那 11 张**一直在 git 里**（`git ls-files` = 11 ✓，共 **13 MB** ✓）
+#   ⇒ ⇒ **仓库违反了自己写下的策略** ✓ ⇒ 现在按策略改回来 ✓：
+#     * `Cardboard*`／`Paper*`（抓取脚本的命名 ✓）⇒ **忽略** ✓（它们属于缓存 ✓，
+#       `scripts/fetch-textures.sh --root <工作区>` 仍然会把它们抓到 `<工作区>/textures/` ✓）；
+#     * `Tile*128.png` ⇒ **不忽略** ✓（128²、四张共 **104 KB** ✓，是**随仓库发出**的可平铺资产 ✓）。
+assets/textures/Cardboard*.png
+assets/textures/Paper*.png
+!assets/textures/Tile*.png

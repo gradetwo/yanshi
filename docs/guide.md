@@ -383,10 +383,14 @@ the renderers, the storage layer and the medium plugins are still written by han
 
 ## Paper and canvas textures
 
-Textures are CC0 and live in a per workspace cache rather than in the repository, because the smallest useful variant
-from ambientCG is thirteen megabytes and committing a set would bloat the tree. `scripts/fetch-textures.sh --root
-<workspace>` downloads the colour map of a few paper and cardboard assets into `<workspace>/textures/` and writes a
-`NOTICE.md` recording the source and the CC0 licence. The `list_textures` tool then reports what is cached, with each
+Textures are CC0. The **large** ambientCG colour maps (a thousand and twenty four pixels square, thirteen megabytes
+for the set) live in a per workspace cache rather than in the repository, because committing the set would bloat the
+tree; `scripts/fetch-textures.sh --root <workspace>` downloads them into `<workspace>/textures/` and writes a
+`NOTICE.md` recording the source and the CC0 licence. What **is** committed, in `assets/textures/`, is four small
+**tileable** tiles (`TilePaperFine128`, `TilePaperFiber128`, `TileCardboard128`, `TileCanvas128`; one hundred and
+twenty eight pixels square, about one hundred kilobytes for all four). They are deterministic downsamples of the same
+CC0 sources, so a fresh clone and a release package both carry a usable canvas texture without any download. A test,
+`scripts/tool-tileable-textures.mjs`, keeps them small and actually seamless. The `list_textures` tool then reports what is cached, with each
 entry marked usable or not, since the pixel decoder handles PNG only. Because that tool is in the tool layer, MCP and
 the viewer both reach it, which is the rule for every capability here.
 
