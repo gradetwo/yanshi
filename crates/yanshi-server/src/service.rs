@@ -1480,6 +1480,18 @@ impl Workspace {
         self.documents.remove(doc_id).is_some()
     }
 
+    /// **★ 重新从磁盘加载某文档（`--watch` 用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **语义** ✓：把内存里那份**丢掉**再重新打开 ⇒ **磁盘当真相** ✓。
+    /// **为什么不是"把外部原子折叠进内存"** ✗：那会让磁盘日志里出现内存 `AtomLog` **不知道**的行 ✓
+    /// ⇒ 之后工具侧再提交时按**自己的记账**发 `seq` ⇒ **可能撞号** ✗（两条不同原子共用一个 `seq` ✗）。
+    /// **代价** ✓：这是**全量**加载 ✗ ⇒ 大文档下不便宜 ⇒ 与"快照落盘 ＋ 加载走快照+尾巴"那条待办**交汇** ✓。
+    /// **没打开过也不报错** ✓（`close_document` 丢掉一个不存在的东西只是返回 `false` ✓）。
+    pub fn reload_document(&mut self, doc_id: &str) -> Result<&mut Document> {
+        self.close_document(doc_id);
+        self.open_document(doc_id)
+    }
+
     /// **真正删掉一份文档** ✓（原子日志与元数据从磁盘上一并移除 ✓）。
     ///
     /// **与 `close_document` 的区别必须保留** ✗：关闭只把它从**内存**里放下 ✓

@@ -553,10 +553,42 @@ pub fn serve<R: Read, W: Write>(
     mut writer: W,
     options: McpOptions,
 ) -> std::io::Result<()> {
+    // **先把 `--watch` 需要的东西取出来** ✓（`Server::new` 会把 `options` **拿走** ✗ ⇒ 之后就取不到了 ✓）。
+    let watch_on = options.watch;
+    let watch_root = options.root.clone();
+    let watch_doc = options.doc_id.clone();
     let mut server = Server::new(options);
+    // **★ `--watch`（2026-10-15 ✓）：每行处理前先看原子日志有没有前进 ✓ ★**
+    //   **语义** ✓（用户裁定）：别的进程直接往 `docs/<doc>/atoms.jsonl` 追加的内容，本进程也要看得见 ✓；
+    //     **增量解析** ✓（`TailFollower` 只读新增的那段 ✓）；冲突**最后写赢** ✓；**不监视 blob** ✗。
+    //   **落地** ✓：轮询到前进 ⇒ **重载该文档**（磁盘当真相 ✓）——
+    //     不走"增量折叠" ✗，理由是 `seq` 一致性 ✗（见 `Workspace::reload_document` 的文档 ✓）。
+    //   **默认关** ✗：`options.watch == false` 时**一行都不多做** ✓（判据的负对照就靠这一格 ✓）。
+    let mut follower: Option<yanshi_core::watch::TailFollower> = None;
+    if watch_on {
+        if let Some(root) = watch_root.clone() {
+            let log = root
+                .join("docs")
+                .join(watch_doc.clone())
+                .join("atoms.jsonl");
+            follower = Some(yanshi_core::watch::TailFollower::new(&log));
+        }
+    }
     let reader = BufReader::new(reader);
     for line in reader.lines() {
         let line = line?;
+        // **每行之前**先 poll 一次 ✓（`serve` 是"轮到我们了"的地方 ✓，不需要额外线程 ✓）。
+        if let Some(tail) = follower.as_mut() {
+            if let Ok(polled) = tail.poll() {
+                if !polled.atoms.is_empty() || polled.skipped > 0 {
+                    let doc_id = watch_doc.clone();
+                    // 失败也不致命 ✓（下一行还会再试 ✓）；但**不吞掉**：写进 stderr ✓。
+                    if let Err(error) = server.workspace_mut().reload_document(&doc_id) {
+                        eprintln!("yanshi-mcp --watch: 重载 {doc_id} 失败: {error}");
+                    }
+                }
+            }
+        }
         if let Some(response) = server.handle_line(&line) {
             writeln!(writer, "{response}")?;
             writer.flush()?;

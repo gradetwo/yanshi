@@ -1420,3 +1420,30 @@ serve 侧走浏览器判据 ✓（`crates/yanshi-http/src/server.rs:88` 已有 W
 
 **接线锚点** ✓：`yanshi-mcp/src/lib.rs:62`／`:118`／`:167`／`:539`；serve 侧 `crates/yanshi-http/src/server.rs:88` ✓。
 
+### 四十四之补四：MCP 侧 `--watch` **完成且有牙** ✓✓（2026-10-15 ✓）
+
+**用户裁定** ✓（2026-10-15）：`yanshi-serve` 与 `yanshi-mcp` 都加 `--watch`、**默认关** ✗、
+监视 `--root/docs/*/atoms.jsonl`、**增量解析** ✓、冲突**最后写赢** ✓（不做合并 ✗）、**不监视 blob** ✗。
+
+**MCP 侧已实现** ✓：
+  * 开关 ✓：`McpOptions.watch`（默认 `false` ✓）＋ `"--watch"` 解析臂 ＋ help 两行 ✓；
+  * 落地 ✓：`serve()`（`crates/yanshi-mcp/src/lib.rs` ✓）每行处理前 `TailFollower::poll()` ✓
+    ⇒ 日志前进 ⇒ **`Workspace::reload_document(doc_id)`**（新加 ✓，`service.rs`：
+    `close_document` ＋ `open_document` ✓ ⇒ **磁盘当真相** ✓）；**默认关时一行都不多做** ✓。
+  * **为什么是"重载"而不是"增量折叠"** ✗：折叠会让磁盘日志出现内存 `AtomLog` 不知道的行 ✓
+    ⇒ 之后工具侧按自己记账发 `seq` ⇒ **可能撞号** ✗（两条不同原子共用一个 `seq` ✗）。
+  * **代价** ✓：重载是**全量** ✗ ⇒ 大文档下不便宜 ⇒ 与"快照落盘 ＋ 加载走快照+尾巴"**交汇** ✓。
+
+**有牙证明（两条都拿到 ✓✓）** ✓：
+  ① **正向** ✓：`scripts/mcp-watch-external.mjs` 退出 **0** ✓ —— 外部追加的原子 **1.5 s 内**
+     出现在 `get_document` 里 ✓；
+  ② **负对照 ＋ 变异** ✓：把接线改成"**不管有没有 `--watch` 都轮询**" ✗ ⇒ 判据退出 **1** ✓、
+     负对照**变红** ✓ ⇒ 证明负对照**真能挡住**"其实全量重读／没接 watcher"的假绿 ✓。
+  **残留检查** ✓：变异代码 **0** 处 ✓；`clippy -D warnings` ✓、`fmt --check` ✓、
+  受影响两 crate 测试 **399 passed / 0 failed** ✓。
+  ⇒ ⇒ **该判据已从已知红台账移除** ✓ ⇒ 从此它是**必须绿**的门禁 ✓。
+
+**serve 侧仍未做** ✗（用户要求的另一半 ✓）：`crates/yanshi-http/src/server.rs` 已有 WS 推送轮询（`:88` ✓）
+⇒ 把同一件事（日志前进 ⇒ 重载 ⇒ 推送）接上 ✓，并由**浏览器判据**守（用户验收 #3：刷新前 1 s 内看到 ✓）。
+⇒ 与既有那条"视口淘汰"是**不同的两件事** ✗，别混 ✓。
+
