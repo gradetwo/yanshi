@@ -24,11 +24,16 @@ pub enum AllocPoint {
     BufferFresh,
     /// 归还给池（`release`）—— 用来对照"借/还"是否配对。
     PoolRelease,
+
+    /// `Buffer` 被丢弃（`Drop`）—— **绕过池那条路的「释放侧」** ✓
+    /// （池那侧早有 `PoolRelease` ✓ ⇒ 补上这一半之后 ✓
+    ///  `buffer_fresh − buffer_release` ＝ **当前活着**的字节数 ✓）。
+    BufferRelease,
     /// 其他显式登记的点（当前未用，留位）。
     Other,
 }
 
-const POINTS: usize = 5;
+const POINTS: usize = 6;
 
 fn slot(point: AllocPoint) -> usize {
     match point {
@@ -36,6 +41,7 @@ fn slot(point: AllocPoint) -> usize {
         AllocPoint::PoolFresh => 1,
         AllocPoint::BufferFresh => 2,
         AllocPoint::PoolRelease => 3,
+        AllocPoint::BufferRelease => 5,
         AllocPoint::Other => 4,
     }
 }
@@ -46,8 +52,10 @@ static BYTES: [AtomicU64; POINTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 static COUNTS: [AtomicU64; POINTS] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -100,6 +108,11 @@ pub fn snapshot() -> [(&'static str, u64, u64); POINTS] {
             "other",
             BYTES[4].load(Ordering::Relaxed),
             COUNTS[4].load(Ordering::Relaxed),
+        ),
+        (
+            "buffer_release",
+            BYTES[5].load(Ordering::Relaxed),
+            COUNTS[5].load(Ordering::Relaxed),
         ),
     ]
 }
