@@ -1216,21 +1216,38 @@ impl Workspace {
                 }
             };
             mark("open");
-            let (atoms, render, preview) = match &self.persist {
+            let (atoms, base, render, preview) = match &self.persist {
                 Some(persist) => {
                     mark("load_atoms");
-                    let atoms = persist.load_atoms(doc_id)?;
+                    // **★ 先试"快照 ＋ 尾巴"（待办 ① ✓，2026-10-15 ✓）★**
+                    //   **有快照** ✓ ⇒ 只读 `seq > seq_at` 的那段 ✓（`load_atoms_since` ✓）
+                    //     ＋ 把快照恢复出的状态交给 `open_from_snapshot` ✓；
+                    //   **没有／快照坏了** ✓ ⇒ `load_atoms` **全量** ✓ ＋ `None` ✓
+                    //     ⇒ ⇒ **与今天逐字一样** ✓（`load_latest_snapshot` 返回 `Option` ✓
+                    //        就是为了"坏了当没有" ✓，绝不让打开失败 ✗）。
+                    let (atoms, base) = match persist.load_latest_snapshot(doc_id) {
+                        Some(snapshot) => {
+                            let seq_at = snapshot.seq_at;
+                            (
+                                persist.load_atoms_since(doc_id, seq_at)?,
+                                Some((seq_at, snapshot.restore())),
+                            )
+                        }
+                        None => (persist.load_atoms(doc_id)?, None),
+                    };
                     mark("load_render");
                     let render = persist.load_render(doc_id)?;
                     mark("load_preview");
                     let preview = persist.load_preview(doc_id)?;
                     mark("loads_done");
-                    (atoms, render, preview)
+                    (atoms, base, render, preview)
                 }
-                None => (Vec::new(), None, None),
+                None => (Vec::new(), None, None, None),
             };
             let atoms_len = atoms.len();
-            if atoms.is_empty() {
+            // **★ 有快照时尾巴可以是空的** ✗✓：只按 `atoms.is_empty()` 判会把**好文档误报成不存在** ✗
+            //   ⇒ 判据是"**既没尾巴、也没快照**" ✓（`§49 之补十六` ✓）。
+            if atoms.is_empty() && base.is_none() {
                 return Err(YanshiError::new(
                     ErrorCode::ReferenceNotFound,
                     ErrorContext::detail(format!("文档 {doc_id} 不存在")),
@@ -1239,9 +1256,12 @@ impl Workspace {
             if timing {
                 mark("before_doc_open");
             }
-            let mut document = Document::open(
+            // **`base = None` 时与老 `open` 等价** ✓ ⇒ 没持久化存储那条路**行为不变** ✓
+            //   （`Document::open` 本身**没动** ✗ ✓）。
+            let mut document = Document::open_from_snapshot(
                 Arc::clone(&self.store),
                 doc_id,
+                base,
                 atoms,
                 self.settings.clone(),
             )?;
