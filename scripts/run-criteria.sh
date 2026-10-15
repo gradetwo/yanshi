@@ -53,8 +53,17 @@ fi
 
 
 if [ "${SKIP_BROWSER:-0}" != "1" ] && command -v chromium >/dev/null 2>&1; then
-  chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CDP_PORT" \
-    --user-data-dir="$PROFILE" about:blank >"$ROOT_DIR/chrome.log" 2>&1 &
+  # **★ 固定窗口尺寸 ✗ ★**（2026-10-15 ✓；**受控 A/B 实测 ✓**）：
+  #   **∴ 为什么** ✗：查看器**按窗口算视口** ✓ ⇒ 窗口小 ⇒ 视口小 ⇒ 画布 backing store 小 ✓
+  #     ⇒ 内核没有可用视口 ⇒ **一个 tile 都不渲染** ✗
+  #     ⇒ `browser-layout.mjs` 的**四项合取**不成立 ⇒ 红 ✗。
+  #   **∴ 实测（同机同服务同判据，只改这一个变量 ✓）**：
+  #     · chromium **默认**窗口 ⇒ `browser-layout.mjs` **退出码 0** ✓
+  #     · `--window-size=320,240` ⇒ **退出码 1** ✗（形态与 CI 一致：`board.width=320` ✗ ＋ 内核 tile 读写 0 ✗）
+  #     ⇒ ⇒ **变量就是窗口尺寸** ✓ ⇒ 不固定它 ⇒ **CI 的窗口多大全看运气** ✗（本轮 CI 那次就是小的 ✓）。
+  chromium --headless=new --no-sandbox --disable-gpu --window-size=1280,900 \
+    --remote-debugging-port="$CDP_PORT" --user-data-dir="$PROFILE" about:blank \
+    >"$ROOT_DIR/chrome.log" 2>&1 &
   CHROME_PID=$!
   for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1 && break; sleep 0.5; done
   # **★ 给浏览器判据预置「客户端渲染」偏好 ✗ ★**（第 359 轮 ✓；**一大批红灯的根因 ✓）：
