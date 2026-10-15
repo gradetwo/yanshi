@@ -4309,3 +4309,42 @@ retained_byte_budget() = max(limits.min_bytes, **并发 worker 数 × 本轮最�
 **实测** ✓：`cargo test -p yanshi-render box_blur_2d_output_is_pinned` ⇒ `test result: ok. 1 passed` ✓。
 **⇒ 下一步** ✓：把它改成**按带实现** ✓ ⇒ 本判据**必须仍绿**✓（逐字节一致 ✓）
 ⇒ 再**变异**（故意少一行 halo ✗ ⇒ **必红** ✓）⇒ 再跑内存判据看工作集是否下降 ✓。
+
+### 四十九之补八十八：box_blur_2d 的按带改法（2026-10-15 ✓）
+
+**读到的结构** ✓（`geometry.rs:836` ✓）：
+```rust
+fn box_blur_2d(data, width, height, radius) -> Vec<f32> {
+    if radius == 0 || width == 0 || height == 0 { return data.to_vec(); }
+    let mut cur = data.to_vec();            // 整幅 #1 ✗
+    let mut tmp = vec![0.0f32; cur.len()];  // 整幅 #2 ✗
+    for _ in 0..2 {
+        box_blur_horizontal(&cur, &mut tmp, width, height, radius);   // ① 横：读 cur 写 tmp
+        box_blur_vertical(&tmp, &mut cur, width, height, radius);     // ② 纵：读 tmp 写 cur
+    }
+    cur
+}
+```
+**⇒ 三条有利事实** ✓✓：
+  1. 两个 helper **签名统一**（`src, dst, width, height, radius` ✓）
+     ⇒ ⇒ **按带调用是天然的** ✓（传**子切片**即可 ✓，**不必改 helper** ✓）；
+  2. `box_blur_horizontal` 的 `prefix` 只有 `width + 1` 个 `f64` ✓
+     ⇒ **与高度无关** ✓ ⇒ 带处理**不影响它** ✓（它逐行独立 ✓ ⇒ **横向完全不需要 halo** ✓）；
+  3. `box_blur_vertical` **已经在按 `COLUMN_STRIP` 分条** ✓ ⇒ 它**本来就是分块的** ✓
+     ⇒ ⇒ 我们只是把"整幅高"换成"带高" ✓（**同一条代码路径** ✓）。
+
+**★ 两个必须想清的细节** ✗：
+  1. **纵向要 halo** ✗：`box_blur_vertical` 读 `y ± radius` ✓
+     ⇒ ⇒ 带必须**多取上下各 `radius` 行** ✓，且**只写回带内** ✓（halo 行是"读过就算"✗）；
+  2. **因为是两遍** ✗（`for _ in 0..2` ✓，每遍都 ①横②纵 ✓）⇒
+     第二遍的纵向 halo 要用**第一遍的输出** ✓ ⇒ ⇒ 于是 halo 得按 **`2 × radius`** 取 ✓
+     （或按"每遍各自扩一次"✓，等价 ✓）。
+**⇒ 结论** ✓：实现上是**重排现有两趟** ✓ ＋**带循环**✓ ＋**halo 子切片**✓ ——
+**没有新数学** ✓ ⇒ 风险主要在**边界**✗（正是黄金哈希判据要守的东西 ✓）。
+
+**⇒ 下一步（顺序明确 ✓）**：
+  1. 先加**第二个黄金判据**：**带高取极端值**（如 `1` 行 ✓、`height` 行 ✓、`height-1` ✓）
+     ⇒ 输出**都必须**与整幅实现**逐字节一致** ✓ —— 这比单一哈希更能抓**边界**错误 ✗✓；
+  2. 再实现按带 ✓ ⇒ 两个判据**都必绿** ✓；
+  3. **变异** ✓：故意把 halo 少取一行 ✗ ⇒ **必红** ✓；
+  4. 最后跑内存判据 ✓ ⇒ 看工作集是否下降 ✓（这才是目的 ✓）。
