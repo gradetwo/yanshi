@@ -279,12 +279,44 @@ jobs:
           done
           echo "== 已上传本平台的归档 ✓（校验和见各 artifact；如需汇总请用 artifact 下载 ✓）=="
 
-      - name: Attach the checksums to the release
-        if: startsWith(github.ref, 'refs/tags/') && matrix.label == 'linux-x86_64'
+      # **校验和的汇总挪到下面单独的 `checksums` 作业** ✓ —— 见那里的说明 ✓
+      # （原来在这里只附 `linux-x86_64` 那一份 ✗ ⇒ 别的平台用户没法校验 ✗）。
+
+  # **★ 汇总校验和：四个平台各一份 ⇒ 合成一份（2026-10-15 ✓）★**
+  #
+  # **为什么要它** ✗：原来只有 `linux-x86_64` 那一档会把 `dist/SHA256SUMS` 附到 Release 上 ✓
+  # ⇒ 实测 v0.2.1 的 `SHA256SUMS` **只有一行**（126 字节 ⇒ 只有 Linux 包 ✓）
+  # ⇒ **macOS 与 Windows 的包，用户拿不到校验和** ✗ —— 而"多平台发布"里那三档**正是这次新加的** ✓
+  # ⇒ 新加的东西反而**没法校验** ✗ ⇒ 必须补 ✓。
+  checksums:
+    name: checksums (all platforms)
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yanshi-release-*
+          path: artifacts
+
+      - name: Merge, self-check and upload the checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" dist/SHA256SUMS --clobber
-          echo "== 校验和已上传 ✓ =="
+          # 每个 artifact 里都有一份**该平台自己算的** SHA256SUMS ✓ ⇒ 合并去重 ✓
+          find artifacts -name SHA256SUMS -print -exec cat {} \; > merged.txt
+          sort -k2 merged.txt | uniq > SHA256SUMS
+          echo "== 合并后的校验和 =="
+          cat SHA256SUMS
+          # **自检** ✓：条目数必须等于**归档数** ✓（少一条 ⇒ 某个平台没把校验和带上来 ✗）
+          n_entries=$(wc -l < SHA256SUMS)
+          n_archives=$(find artifacts -name '*.tar.gz' | wc -l)
+          echo "条目 $n_entries ｜归档 $n_archives"
+          if [ "$n_entries" -ne "$n_archives" ]; then
+            echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" SHA256SUMS --clobber
+          echo "== 全部 $n_entries 个平台的校验和已汇总上传 ✓ =="
