@@ -28140,7 +28140,7 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #   **判据数据来源** ✓：`GET /health` 的 `rss_bytes` ✓（不必新增 API ✓、不必读 `/proc` ✓）；
 #     **口径是"增量"** ✓（渲染后 − 渲染前 ✓），不是绝对值 ✓。
 tool-render-memory-budget.mjs  # 已知红（实测 ✓）：4K＋4层整幅渲染**增量 897 MB > 预算 800** ✗；根因 f32 全幅工作缓冲（4096² 一个 268 MB）⇒ DEF-03（8K OOM ×3）；修法：每层缓冲别同时活着（边合成边释放／分块）
-tool-viewport-evict-server.mjs  # 已知红（**实测 ✓**）：**多订阅者时并集没生效** ✗ —— **产品缺陷** ✗
+tool-viewport-evict-server.mjs  # 已知红（**实测 ✓**）：判据**自身几何不一致** ✗（**不是产品缺陷** ✓ —— 已平反 ✓）
 #   实测（两个订阅者 A=0,0 与 B=3584,3584，各渲染 512×512 进缓存）：两者都在时 `cache_used_bytes` = **4194304** ✓，
 #   只平移 A 之后 ⇒ `cache_evictions` = **10**、`cache_used_bytes` = **524288** ✗（B 那一块 2 MB 被误删 ✗）。
 #   ⇒ 淘汰实际按**单个订阅者**的视口 ✗，而不是 `viewport_union()` 的**并集** ✓ —— 正是 `a152e034` 弄红 8 条的那个缺陷 ✗。
