@@ -133,6 +133,15 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
     continue
   fi
   name="$(basename "$script")"
+  # **★ `serve-web.mjs` 是**辅助服务**，不是判据 ✗✓（2026-10-15 ✓）★**
+  #   **∴ 为什么** ✗：它在第 48 行被**后台起起来** ✓（`node scripts/serve-web.mjs "$STATIC_PORT" web` ✓）；
+  #   而我在枚举里加的那条 `scripts/serve-*.mjs`（为了让 `serve-watch-ws.mjs` 被跑到 ✓）
+  #   **会把它也枚举进来** ✗ ⇒ 它拿到的 `argv[2]` 是**一个 URL** ✗
+  #   ⇒ 它那句 `Number(process.argv[2] || 8899)` ⇒ `Number("http://…")` = NaN ✗
+  #   ⇒ `ERR_SOCKET_BAD_PORT` ✗ ⇒ **CI 红**（criteria shard 4/6 实测 ✓）。
+  #   **∴ 照先例** ✓：`tool-gate.mjs` 也是"从判据枚举里排除" ✓ ⇒ 这里用**显式跳过** ✓
+  #   （不改成别的前缀 ✗：`serve-*` 这个形状将来还会有真判据 ✓）。
+  [ "$name" = "serve-web.mjs" ] && continue
   [ -f "$script" ] || continue
   # 浏览器判据没有 chromium 就跳过（本地环境常见；CI 里一定装了）。
   # ⚠️ `ui-control-heights.mjs` 也**需要真浏览器** ✓（第 794 轮 ✓）⇒ 显式并进来 ✓。
