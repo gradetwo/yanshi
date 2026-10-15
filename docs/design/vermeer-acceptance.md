@@ -1031,3 +1031,35 @@ list_textures ⇒ **15 条** ✓（原来是 11 条 ✓）
 * 打包：`scripts/package-release.sh --out <dir>` ✓（**要求工作区干净** ✗ —— 脏树会被 commit 戳守卫拦下 ✓）；
 * 发布：`platforms` 输入可只跑一个平台 ✓（`prepare` 作业算矩阵 ✓）；**tag 推送 ⇒ 永远四平台** ✓。
 
+## 三十八、★ 补一条**必须做**的验证：**干净克隆模拟**（2026-10-15，用 main 变红换来的 ✓）★
+
+**事故** ✓：我按策略把大图移出版本控制 ✓ ⇒ **CI 立刻变红** ✗（`test (stable)`／`test (beta)`／`criteria shard 1` ✓），
+报「找不到 texture 「Paper001.png」✗」✓ —— 而**本机全绿** ✗，因为**磁盘缓存还在** ✓。
+
+**根因** ✓：`tests/background_stroke_cost.rs` ✓／`tests/texture_background.rs` ✓ 与 `scripts/tool-paper.mjs` ✓
+**按名字**引用 `Paper001`／`Paper003`／`Paper006` ✓ 当**画布尺寸夹具** ✓（25+4+2 处 ✓）
+⇒ 它们**必须进 git** ✓（已修 ✓：现在跟踪 7 张、共 **2.4 MB** ✓）。
+
+**★ 以后每次动 `assets/` 或 `.gitignore`，都要做这一步 ★**（可复现 ✓）：
+```bash
+# 1) 把"未跟踪"的资产挪走，只留 git 里那些 —— 这就是干净克隆的样子 ✓
+BK=/tmp/tex-backup; mkdir -p "$BK"
+KEEP=$(git ls-files assets/textures/*.png | xargs -n1 basename | tr '\n' ' ')
+for f in assets/textures/*.png; do b=$(basename "$f"); case " $KEEP " in *" $b "*) ;; *) mv "$f" "$BK/" ;; esac; done
+
+# 2) 在这个状态下跑**会读资产**的东西 ✓
+cargo test --workspace                     # ⇒ 期望 **passed 1029 / failed 0** ✓（实测 ✓）
+node scripts/tool-paper.mjs <base>         # ⇒ 期望退出 0 ✓（实测 ✓）
+
+# 3) 还原（本机行为不变 ✓）
+mv "$BK"/*.png assets/textures/
+```
+**为什么值得写成规矩** ✗：**本机有缓存 ⇒ 绿是假绿** ✓；
+这条与"单条判据绿 ≠ 真实调用约定下绿" ✗、"探针要放在改动之后" ✗ 是同一族 ——
+**验证必须在"真实环境"里做** ✓，而"真实环境"＝**干净克隆** ✓。
+
+**顺带一个数字** ✓：`scripts/tool-offline-asset-coverage.mjs` 报本机 `textures 12.1 MiB` ✓，
+而**干净克隆/CI 上只有 2.4 MB** ✓ ⇒ 离线占重小了一个量级 ✓（它按需缓存 ⇒ 判据照样绿 ✓）。
+**注意** ✗：那条判据管的是 **Service Worker 的离线覆盖** ✓，**不是**"文件在不在 git" ✗ ——
+所以它**抓不到**这次的事故 ✓（抓到的确实是**测试**本身 ✓）。
+
