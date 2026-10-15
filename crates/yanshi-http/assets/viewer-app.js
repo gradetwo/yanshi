@@ -100,6 +100,11 @@ const serverRenderPreferred = () => {
 
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
+  // **★ 视口淘汰累计块数（2026-10-15 ✓；判据 `browser-viewport-evict.mjs` 读它 ✓）★**
+  //   **∴ 为什么需要它** ✗：内核**早就**会按视口淘汰 ✓（`yanshi-wasm/src/lib.rs:337` ✓
+  //     `evict_outside_viewport(x,y,w,h) -> usize` ✓）⇒ 但 JS **从来没调它、也没记账** ✗
+  //     ⇒ 判据断言①（"没有发生任何逐出"✗）读的正是这个计数 ✓ ⇒ **永远是 0** ✗（§49 之补四十五 ✓）。
+  viewportEvictions: 0,
   // 当前打开的文档与令牌 ✓ —— 自动化验收需要知道"查看器此刻在编辑哪一个文档" ✓
   //（本会话就栽过：检查脚本凭早先的 doc/token 去查对象 ✓，而页面早已切到另一个文档 ✗）。
   docId: null, token: null,
@@ -1230,6 +1235,12 @@ function renderViewport() {
   const { x, y, w, h } = state.viewport;
   sizeBoards(w, h);
   state.kernel.set_viewport(x, y, w, h);
+  // **★ 视口变了 ⇒ 顺手让内核按**同一个视口**淘汰，并记账（2026-10-15 ✓）★**
+  //   **∴ 为什么在这里** ✓：视口变**才**需要淘汰 ✓（与 `§49 之补二十四` 的设计同源 ✓）；
+  //   **∴ 为什么用**同一个视口** ✓：与推送过滤／服务端的口径一致 ✓。
+  //   **∴ 为什么要记账** ✗：判据断言①读 `yanshiStats.viewportEvictions` ✓
+  //     ⇒ 不记账 ⇒ 它**永远红** ✗（不是产品没做 ✓，是**没人报** ✗）。
+  window.yanshiStats.viewportEvictions += state.kernel.evict_outside_viewport(x, y, w, h);
   drawKernelRegion(x, y, w, h);
   subscribeViewport();
   redraw();
@@ -1845,6 +1856,12 @@ async function loadKernel(since = 0) {
   window.yanshiStats.serverHead = atoms.head_seq;
   if (typeof refreshContactLink === "function") refreshContactLink();
   state.kernel.set_viewport(0, 0, w, h);
+  // **★ 视口变了 ⇒ 顺手让内核按**同一个视口**淘汰，并记账（2026-10-15 ✓）★**
+  //   **∴ 为什么在这里** ✓：视口变**才**需要淘汰 ✓（与 `§49 之补二十四` 的设计同源 ✓）；
+  //   **∴ 为什么用**同一个视口** ✓：与推送过滤／服务端的口径一致 ✓。
+  //   **∴ 为什么要记账** ✗：判据断言①读 `yanshiStats.viewportEvictions` ✓
+  //     ⇒ 不记账 ⇒ 它**永远红** ✗（不是产品没做 ✓，是**没人报** ✗）。
+  window.yanshiStats.viewportEvictions += state.kernel.evict_outside_viewport(0, 0, w, h);
   // 内核就绪 ⇒ 判断这份文档内核表示得了吗 ✓（否则首屏是白板 ✓）。
   void detectHeavyContent();
   // **离线落笔必须能挺过一次"断网重载"** ✓ —— 队列里**还没补交**的 `.myb` 笔触在本地重放一遍 ✓。
