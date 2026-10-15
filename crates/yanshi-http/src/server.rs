@@ -3031,10 +3031,51 @@ fn handle_websocket(
     let push_closed = Arc::clone(&closed);
     let push_writer = Arc::clone(&write_stream);
     let push_doc = doc_id.clone();
+    // **★ `--watch`（2026-10-15 ✓）：本条连接的"日志跟随器" ✓ ★**
+    //   **对齐到当前 head** ✗✓（`new_after` ✓）：连接建立时**不重放历史原子** ✗
+    //     —— 否则客户端一连上就会收到整部历史 ✓（那不是 `--watch` 的意思 ✓）。
+    //   **默认关** ✗：`watch == false` ⇒ `None` ⇒ 循环里**一次都不多做** ✓（负对照靠这一格 ✓）。
+    let mut watch_tail = if state.options.watch {
+        state.options.root.clone().map(|root| {
+            let log = root.join("docs").join(push_doc.clone()).join("atoms.jsonl");
+            let head = state
+                .workspace
+                .lock()
+                .ok()
+                .and_then(|mut workspace| {
+                    workspace
+                        .document_mut(&push_doc)
+                        .ok()
+                        .map(|document| document.head_seq())
+                })
+                .unwrap_or(0);
+            yanshi_core::watch::TailFollower::new_after(&log, head)
+        })
+    } else {
+        None
+    };
     let interval = Duration::from_millis(state.options.push_interval_ms.max(5));
     let pusher = thread::spawn(move || {
         while !push_closed.load(Ordering::SeqCst) && !push_state.shutdown.load(Ordering::SeqCst) {
             thread::sleep(interval);
+            // **★ `--watch`：每拍先看原子日志有没有前进（2026-10-15 ✓）★**
+            //   前进 ⇒ **重载该文档**（磁盘当真相 ✓）⇒ **照 `document.rs:869` 的用法**
+            //   `publish_atom` ✓ ⇒ 下面那段 drain 自然把它发出去 ✓（**不新写发送逻辑** ✗）。
+            if let Some(tail) = watch_tail.as_mut() {
+                if let Ok(polled) = tail.poll() {
+                    if !polled.atoms.is_empty() {
+                        if let Ok(mut workspace) = push_state.workspace.lock() {
+                            if workspace.reload_document(&push_doc).is_ok() {
+                                if let Ok(document) = workspace.document_mut(&push_doc) {
+                                    for atom in &polled.atoms {
+                                        document.broadcaster_mut().publish_atom(atom);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let events = {
                 let Ok(mut workspace) = push_state.workspace.lock() else {
                     break;
