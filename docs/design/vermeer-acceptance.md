@@ -3676,3 +3676,31 @@ for (k, piece) in fresh {                              // fresh: Vec<Buffer> ✓
 **⇒ 下一步** ✓：照这份规格写测试 ⇒ `cargo test -p yanshi-render` ⇒ 绿 ✓
 ⇒ **再做变异**（把 blit 顺序对调 ✗ 或少写一行 ✓）⇒ **必红** ✓ ⇒ 恢复 ⇒ 绿 ✓
 ⇒ ⇒ **然后**才动 `merge_by_rows` 的签名/写入语义 ✓（此时"行为不变"已有判据背书 ✓）。
+
+### 四十九之补六十九：判据的最后两个未知（2026-10-15 ✓）
+
+**① `mod tests` 的导入** ✓：`render.rs:5375` 就是 **`use super::*;`** ✓
+⇒ ⇒ 我在 `render.rs` 里能用的东西**测试里都能用** ✓ ⇒ **不用补任何 `use`** ✓。
+
+**② `LinearRgba` 怎么构造** ✗（`render.rs` 里没找到 `LinearRgba::new(` ✓，`color.rs` 那次 grep 也没命中 ✓）
+⇒ ⇒ **但我不需要知道它** ✓✓ —— **改用"从 Buffer 里取一个像素、再放到另一个 Buffer"** ✓：
+```rust
+let mut a = Buffer::new(0, 0, 4, 4);        // 已有 ✓（:124）
+let pb = a.pixel(0, 0);                     // 取一个**真实**像素值 ✓（:245）
+let mut b = Buffer::new(2, 2, 4, 4);
+b.set_pixel(0, 0, pb);                      // 放进去 ✓（:259）⇒ **类型自动对齐** ✓
+```
+⇒ ⇒ **零猜测** ✓：`pixel()` 返回什么类型，`set_pixel()` 就收什么类型 ✓ ⇒
+我**不需要**构造 `LinearRgba` ✓，也**不需要**知道它的字段/构造器 ✓。
+
+**⇒ 判据的完整骨架（下一轮照抄即可 ✓）**：
+  1. `a = Buffer::new(0,0,4,4)` ✓ ⇒ `a.fill_or_set…` 用 `set_pixel` 让 a **有一个可辨识的值** ✓；
+  2. `b = Buffer::new(2,2,4,4)` ✓（**与 a 部分重叠** ✓）⇒ `b.set_pixel(0,0, a.pixel(0,0))` ✓；
+  3. `let m = merge_by_rows(&a, &b);` ✓；
+  4. **四条不变量** ✓（§49 之补六十八 ✓）：
+     · `m.bbox() == a.bbox().union(&b.bbox())` ✓；
+     · `m.pixels().len() == m.bbox().w * m.bbox().h * 4` ✓；
+     · 重叠处取 `b` ✓；`a` 独有处取 `a` ✓（**用 `pixel()` 比 ✓，不手算 blend** ✗）。
+**★ 这一轮的价值** ✓：**把"必须知道的 API"减到零** ✗✓ ——
+我本来卡在 `LinearRgba` 的构造上 ✓，而**换个写法就不需要它** ✓
+⇒ ⇒ 与其继续查 API ✓，不如**调整写法** ✓（后者更省、也更稳 ✓）。
