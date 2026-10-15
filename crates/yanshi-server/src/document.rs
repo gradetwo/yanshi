@@ -2373,6 +2373,20 @@ impl Document {
     }
 
     /// 最近一次快照结论（可观测性 / 测试）。
+    /// **★ 按视口淘汰 tile 缓存（待办 ② 的接线用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么在这里加一层** ✗：`TileCache::evict_outside_viewport`（`tile.rs:577` ✓）
+    /// 挂在 `Renderer` 上 ✓，而 `Document` 的 `renderer` 字段是**私有**的 ✓
+    /// ⇒ 调用方（`yanshi-http` 的 WS 处理）够不到 ✗ ⇒ 这里开一个**只做转发**的口子 ✓
+    /// （`Renderer::cache_mut` 早就是 `pub` ✓ ⇒ **引擎已有的不做第二遍** ✓）。
+    ///
+    /// **调用方必须传"保守视口"** ✗✓：**所有订阅者视口的并集** ✓
+    /// —— 按**单个**订阅者淘汰会把别人还要用的 tile 扔掉 ✗（`a152e034` 的教训 ✓，
+    /// 见 `docs/design/vermeer-acceptance.md` §49 之补二十四 ✓）。
+    pub fn evict_cache_outside(&mut self, viewport: &Bbox) -> usize {
+        self.renderer.cache_mut().evict_outside_viewport(viewport)
+    }
+
     /// **★ 取"最新可用的快照"（待办 ① 的加载路径要用 ✓，2026-10-15 ✓）★**
     ///
     /// **为什么** ✗：快照是 `Document` 自己**造**的（`snapshot_now` ✓）⇒ 但**落盘／读盘**
