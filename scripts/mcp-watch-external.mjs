@@ -13,6 +13,8 @@
 //   * 正向 ✓：**带 `--watch`** ⇒ 外部追加的原子**必须**在 ~1.5 s 内出现在 `get_document` 里 ✓；
 //   * **负对照** ✓：**不带 `--watch`**（默认关 ✗）⇒ 外部追加的原子**必须看不见** ✓
 //     —— 这一半挡住"其实一直是全量重读、根本没接 watcher"的假绿 ✓。
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +24,9 @@ if (!existsSync(BIN)) {
   console.log("❌ 判不了：找不到 " + BIN + "（先 cargo build --release -p yanshi-mcp）⇒ 判据自身跑不了");
   process.exit(3);
 }
-const root = process.argv[2] || "/home/crow/yanshi-tmp/watch-ext";
+// **不写死本机路径** ✗✓（2026-10-15 ✓；CI 里写死 ⇒ EACCES ✗）
+const root =
+  process.argv[2] || process.env.YANSHI_WATCH_DIR || path.join(os.tmpdir(), "yanshi-watch-ext");
 rmSync(root, { recursive: true, force: true });
 mkdirSync(root, { recursive: true });
 

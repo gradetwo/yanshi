@@ -14,6 +14,8 @@
 //
 // **两头都看** ✓：① **带 `--watch`** ⇒ 外部追加 ⇒ **1.5 s 内**必须收到一帧、其中出现该原子 id ✓；
 //               ② **负对照**（不加 `--watch` ✓）⇒ **不许**收到它 ✓。
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +38,10 @@ async function health(base) {
 
 /** 起一个服务；`watch` 为真时加 `--watch` ✓；返回 {child, base, root, logOf, token, doc, ws, frames} */
 async function startSide(port, watch, tag) {
-  const root = "/home/crow/yanshi-tmp/svc-watch-" + tag;
+  // **不写死本机路径** ✗✓（2026-10-15 ✓）：CI 的 runner 不是 crow ✓ ⇒
+  //   写死会让 `mkdir` 直接 EACCES ✗（实测：criteria shard 3/6 就红在这 ✓）。
+  const root =
+    process.env.YANSHI_WATCH_DIR || path.join(os.tmpdir(), "yanshi-watch-" + tag);
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
   const argv = ["--bind", "127.0.0.1:" + port, "--root", root, "--doc", "seed",
