@@ -165,13 +165,23 @@ impl TailFollower {
     /// 从**头**开始跟 ✓（第一次轮询会把已有原子全收进来 ✓ ⇒
     /// 调用方若已经有内存状态 ✓，应当**先** `new_at(path, last_seq)` ✗ 或自行忽略 ✓）。
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), offset: 0, last_seq: 0, skipped_lines: 0 }
+        Self {
+            path: path.into(),
+            offset: 0,
+            last_seq: 0,
+            skipped_lines: 0,
+        }
     }
 
     /// 从**已知的 `seq` 之后**开始跟 ✓（两个进程启动时最常用 ✓：
     /// 自己已经加载到 `last_seq` ✓ ⇒ 只关心**之后**的新原子 ✓）。
     pub fn new_after(path: impl Into<PathBuf>, last_seq: Seq) -> Self {
-        Self { path: path.into(), offset: 0, last_seq, skipped_lines: 0 }
+        Self {
+            path: path.into(),
+            offset: 0,
+            last_seq,
+            skipped_lines: 0,
+        }
     }
 
     /// 文件路径 ✓。
@@ -276,7 +286,10 @@ mod tests {
         // 第二次没有新东西 ✓（幂等 ✓）
         assert!(f.poll().unwrap().atoms.is_empty(), "没有新行时不该重复收");
         // 对方追加 ✓
-        let mut fh = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut fh = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(fh, "{}", atom_line(2, "a2")).unwrap();
         drop(fh);
         let second = f.poll().unwrap();
@@ -310,10 +323,17 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("atoms.jsonl");
         let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, format!("{}\n{}\n", atom_line(1, "a1"), atom_line(2, "a2"))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", atom_line(1, "a1"), atom_line(2, "a2")),
+        )
+        .unwrap();
         let mut f = TailFollower::new_after(&path, 2);
         assert!(f.poll().unwrap().atoms.is_empty(), "seq ≤ 2 的都不该再收");
-        let mut fh = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut fh = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(fh, "{}", atom_line(3, "a3")).unwrap();
         drop(fh);
         assert_eq!(f.poll().unwrap().atoms.len(), 1, "seq 3 应当收到");
@@ -326,7 +346,11 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("atoms.jsonl");
         let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, format!("{}\n{}\n", atom_line(1, "a1"), atom_line(2, "a2"))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", atom_line(1, "a1"), atom_line(2, "a2")),
+        )
+        .unwrap();
         let mut f = TailFollower::new(&path);
         assert_eq!(f.poll().unwrap().atoms.len(), 2);
         // 整体重写（更短 ✓）＋ 一行坏的 ✓

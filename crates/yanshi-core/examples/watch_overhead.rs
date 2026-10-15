@@ -25,7 +25,11 @@ use yanshi_core::watch::TailFollower;
 
 fn arg(name: &str, default: u64) -> u64 {
     let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(default)
+    a.iter()
+        .position(|x| x == name)
+        .and_then(|i| a.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn main() {
@@ -50,8 +54,8 @@ fn main() {
 
     println!(
         "  跟 {docs} 个文档｜间隔 {interval_ms} ms（{:.1} Hz）｜跑 {seconds} 秒 ⇒ 共 {} 次 poll",
-       1000.0 / interval_ms as f64,
-       docs as u64 * seconds * 1000 / interval_ms
+        1000.0 / interval_ms as f64,
+        docs as u64 * seconds * 1000 / interval_ms
     );
     let t0 = Instant::now();
     let mut ticks = 0u64;
