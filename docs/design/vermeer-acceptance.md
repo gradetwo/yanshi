@@ -3028,3 +3028,28 @@ $ grep -nE "tile|by_sig|evict" scripts/tool-render-memory-budget.mjs
 
 **★ 这一轮的教训** ✓：**"验收判据待定"✗ 不是一个可以带着往前走的模糊状态** ✓ ——
 一次 grep 就能变成**确定的"没有判据"**✗ ⇒ 于是行动也随之确定（**先写判据**✓）✓。
+
+### 四十九之补四十八：服务端那条判据的落点（2026-10-15 ✓）
+
+**读码结果** ✓（`crates/yanshi-server/src/tools.rs` ✓）：
+```
+:16831   let c = document.cache_stats();                                ← **缓存统计已经有人在读** ✓
+:4401    ctx.workspace.document_below_reuse_count(&ctx.doc_id)           ← 已有可观测项 ✓
+:4615    ctx.workspace.document_below_tiles(&ctx.doc_id).2 > 0          ← **tile 级可观测已存在** ✓
+:3960    summary["open_ms"] = json!(document.open_ms());                ← **读数就往这儿加** ✓
+```
+⇒ ⇒ **判据怎么写** ✓（三小步 ✓）：
+  1. 在 `get_document` 的 `summary`（`:3960` 一带 ✓）里暴露**一个只读读数** ✓ ——
+     例如 `cache_bytes`（`cache_stats()` 里已有的字节数 ✓）与/或 `viewport_evictions` ✓；
+  2. 写 `scripts/tool-viewport-evict-server.mjs` ✓（**新文件** ✓ ⇒ 安全 ✓）：
+     建 4K 文档 ⇒ 用 `subscribe`/`set_viewport` 声明一个**小视口** ✓ ⇒ 平移 ⇒
+     断言"**逐出 > 0**"✓ 且"**缓存字节下降**"✓；
+  3. **变异** ✓：去掉淘汰调用（或按单视口淘汰 ✓）⇒ 读数不动 ⇒ **红** ✓。
+**⇒ 注意** ✓：这条与客户端那条（`browser-viewport-evict.mjs` ✓）**互不替代** ✗ ——
+它们守**两个不同的缓存** ✓（客户端内核 ✓ vs 服务端 `Renderer` ✓）。
+
+**⇒ 顺序** ✓（本仓纪律 ✓）：**先写判据（现在它能红** ✓，因为接线还没做 ✓）
+⇒ 再接线（§49 补二十四 ✓：**保守并集** ✓ ＋ `None` 不淘汰 ✓；helper 已备好 ✓ `e40d89ed` ✓）
+⇒ 判据**变绿** ✓ ⇒ **变异** ✓。
+**★ 好处** ✓：判据**先在"没接线"的状态下红** ✓ ⇒ 这正是"能红能绿"的**先后顺序** ✓
+（而我上次把接线先写出来 ✗ ⇒ 只好撤回 ✓：**没有判据就没有验收** ✗）。
