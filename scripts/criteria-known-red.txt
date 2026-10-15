@@ -28038,9 +28038,21 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #     还有一条测试叫「**is driven by JS** and reports counts」✓），绑定也在
 #     `web/wasm/yanshi_wasm.js:149` ✓ —— 但**没有任何手写代码调用它** ✗
 #     ⇒ 视口外的 tile **永远留着** ✓（设计文档 13.3 那条没接上 ✓）。
-#   **★ 已经接上了（本轮 ✓）★**：`api-local.js` 的返回函数上挂了 `setViewport` ✓
-#     （函数也是对象 ⇒ 不破坏 fetch 式契约 ✓）＋ `viewer-app.js` 的 `clampViewport` 末尾调用它 ✓
-#     ＋ 把读数记到 `window.yanshiStats.viewportEvictions／viewportChanges` ✓（判据据此断言 ✓）。
+#   **★★ 2026-10-15：接线**已被回退** ✗（提交 `a152e034` ✓）—— 本条回到"未接线"状态 ✓ ★★**
+#     **为什么回退** ✗：接上之后 CI 里 **8 条未登记的 `browser-*` 判据一起变红** ✓
+#       （`browser-kernel-perf`／`browser-live-ui`／`browser-offline-assets`／`browser-offline-draw`／
+#        `browser-offline-shell`／`browser-pixel-check`／`browser-project-import`／`browser-pwa-local` ✓）
+#       —— 它们此前是绿的 ✓、又都不在台账里 ✗ ⇒ 那就是"**我的改动弄红了它们**"的签名 ✓
+#       （暴露得晚是因为接线那笔之后的几次 run 都被取消过 ✓）。
+#     **回退方式** ✓（照 §45 ✓）：`git checkout 4307ad58 -- crates/yanshi-http/assets/{viewer-app.js,api-local.js}`
+#       **整文件还原** ✓ ＋ **重新编译** ✓（服务器 `include_str!` 内嵌 ✓）⇒ 残留 0 处 ✓、两份 `node --check` 通过 ✓；
+#       **本机复跑**：`browser-pixel-check` ⇒ 0 ✓、`browser-pwa-local` ⇒ 0 ✓（那 8 条里的两条已恢复 ✓）。
+#   **★★ 重做时的硬要求（写死，别再犯 ✗）★★**：
+#     ① **判据先行** ✓ —— 新判据必须带**负对照**（不加开关 ⇒ 必须看不见 ✓）；
+#     ② **门禁是那 8 条已有的 `browser-*`** ✓ —— **不是**新加的这一条 ✗；
+#     ③ 按 **§43** 的方式在本机跑它们 ✓（`run-criteria.sh` 自己起 chromium ✓、URL 上带 `render=client` ✓、
+#        离线类要**静态 PWA** ✓；**别即席跑** ✗）；
+#     ④ 分析别丢 ✓：§39（侦察 ✓）／§42（杠杆＋模板＋接口＋行号 ✓）／§43（怎么跑 ✓）都还在 ✓。
 #   **★ 判据现在怎么红 ✗**（实测读数 ✓）：
 #     ```
 #     内核已就绪：__kernelStats.calls = 2 ✓      ← 本地内核**确实起来了** ✓
