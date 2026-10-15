@@ -1720,3 +1720,23 @@ new WebSocket("ws://…/ws?doc=w&token=<64 字符>")    ⇒ **连上了** ✓✓
 **变异**（退化成全量读 ⇒ 计数变大）⇒ **红** ✓。**实现三步** ✓：① 快照**落盘**；
 ② 加载走"**快照 ＋ 尾巴**"；③ 那个**读数** ✓（顺序：③ 与 ① 同批做 ✓，因为判据要用它 ✓）。
 
+### 四十九之补三：待办 ① 的**改动点已定**（2026-10-15 读码 ✓）
+
+**读到了什么** ✓：`crates/yanshi-server/src/document.rs:273` 的 `pub struct Document` 字段依次是
+`id`／`settings`／`authority`／`log`（`AtomLog` ✓）／`store`／**`state`（`DocumentState` ✓）**／
+`folder`（`IncrementalFolder` ✓）／**`snapshots`（`SnapshotStore` ✓ —— 内存里那个 ✓）**／
+`renderer`／`jobs`／`broadcaster`／`annotations`／`render_watermark`／`last_render_blob`／
+……**以及一个"整幅缓存命中次数"的计数字段** ✓（其读数就是 `:1977` 的 `below_reuse_count()` ✓）。
+
+**⇒ 三条结论** ✓：
+  1. **计数挂 `Document` 上是有先例的** ✓ ⇒ 待办 ① 要加的那个"打开时读入量"读书 ✓
+     照**同一个样式**加即可 ✓（字段 ＋ 初始化 ＋ 只读访问器 ✓）；
+  2. **`snapshots: SnapshotStore` 已经挂在 `Document` 上** ✓ ⇒ ① 的"**快照落盘**"只需
+     给这个已有的 `SnapshotStore` 补一条**写盘／读盘**的路 ✓（不必新造结构 ✓）；
+  3. **`state` 与 `log` 也都在** ✓ ⇒ "加载走**快照 ＋ 尾巴**"的落点就是
+     用快照恢复 `state` ✓ ＋ 从 `log` 只折叠**快照之后**的那一段 ✓。
+
+**下一步（照此做 ✓）**：① 给 `Document` 加读数（字段 ＋ 访问器 ✓，样式照 `below_reuse_count` ✓）；
+② 给 `SnapshotStore` 补落盘／读盘 ✓；③ 打开时先试快照、再折叠尾巴、并把"读了多少"记进读数 ✓；
+④ 判据断言"**打开时读入 ≤ 快照 ＋ 尾巴上界**" ✓ ＋ **变异**（退化成全量读 ⇒ 红 ✓）。
+
