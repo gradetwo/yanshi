@@ -1756,3 +1756,28 @@ new WebSocket("ws://…/ws?doc=w&token=<64 字符>")    ⇒ **连上了** ✓✓
 ⇒ ⇒ 加读数时可以**顺手复用那套埋点** ✓（`mark` 已经在测"这一段花了多久" ✓，
 我们要的是"**这一段读了多少**" ✓ —— 两者同源 ✓）。
 
+### 四十九之补五：待办 ① 的读数**有现成款式可抄**（2026-10-15 读码 ✓）
+
+**读到了什么** ✓（`crates/yanshi-server/src/service.rs` 的 `pub fn open_document` ✓）：
+```rust
+let started = std::time::Instant::now();
+self.open_document_inner(doc_id)?;                 // 第一次 = 真正加载 ✓
+let ms = started.elapsed().as_millis() as u64;
+let document = self.open_document_inner(doc_id)?;  // 第二次 = 取出来（极快 ✓）
+if document.open_ms() == 0 { document.set_open_ms(ms); }   // ★ 只在"冷开"时写读数 ✓ ★
+```
+**⇒ ⇒ 这就是"引擎自己报一个打开读数"的现成款式** ✓✓ —— 连"**只在冷开时写、别被复用路径覆盖**"这条
+细节都已经处理好了 ✓ ⇒ ⇒ 新读数照抄即可 ✓：
+  * `Document` 上加 `open_ms()`／`set_open_ms()` 的**兄弟**：`atoms_read_on_open()`／`set_atoms_read_on_open()` ✓；
+  * **数值来源**就在同一个函数族里 ✓：`open_document_inner` 里的
+    `mark("load_atoms"); let atoms = persist.load_atoms(doc_id)?;` ✓ ⇒ `let atoms_len = atoms.len();` ✓（**已经算好了** ✓）；
+  * **写点** ✓：在新 `Document` 构造之后调一次 setter ✓（**比改 `Document::new` 的签名安全** ✓
+    —— 后者会牵动所有构造点 ✗）。
+
+**⇒ ⇒ 待办 ① 的实施路径现在**完全落地** ✓**：
+  ① `Document`：字段 ＋ `atoms_read_on_open()` ＋ `set_atoms_read_on_open()` ✓（款式照 `open_ms` ✓）；
+  ② 在 `open_document_inner` 构造出新文档处，用 `atoms_len` 调一次 setter ✓；
+  ③ 给 `SnapshotStore` 补落盘／读盘 ⇒ 打开时**先试快照、只折叠尾巴** ⇒ 那时 `atoms_len` 自然变小 ✓
+     （**这正是判据要观测的量** ✓）；
+  ④ 判据断言"**打开时读入 ≤ 快照 ＋ 尾巴上界**" ✓ ＋ **变异**（退化成全量读 ⇒ `atoms_len` 变大 ⇒ **红** ✓）。
+
