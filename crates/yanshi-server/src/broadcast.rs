@@ -59,6 +59,34 @@ fn default_zoom() -> f64 {
     1.0
 }
 
+impl Broadcaster {
+    /// **★ 所有订阅者视口的**并集**（视口淘汰要用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **★ 保守规则 ★**：**只要有一个订阅者没声明视口（`None`）⇒ 返回 `None`** ✓；
+    /// **零订阅者**也返回 `None` ✓（没有信息 ⇒ 不淘汰 ✓，安全优先 ✓）
+    /// ⇒ ⇒ 调用处的语义因此只有两种 ✓：`Some(vp)` ⇒ 按它淘汰 ✓；`None` ⇒ **什么都不淘汰** ✓。
+    ///
+    /// **为什么必须这样** ✗：推送过滤那边对 `None` 的语义是「**未声明视口：按需全量**」✓
+    /// ⇒ 淘汰**必须与它一致** ✓ —— 否则"你以为没人看"的那部分，
+    /// 恰恰是那个**没声明视口**的人要的 ✗（`docs/design/vermeer-acceptance.md` §49 之补二十四 ✓）。
+    ///
+    /// **为什么用并集而不是"某一个订阅者"** ✗：按单视口淘汰会把**别人还要用的** tile 扔掉 ✗
+    /// —— 那正是判据报的「平移回来之后画面变了 ✗」，也是 `a152e034` 弄红 8 条的原因 ✓。
+    pub fn viewport_union(&self) -> Option<Bbox> {
+        let mut union: Option<Bbox> = None;
+        for subscriber in self.subscribers.values() {
+            // **有一个 `None` ⇒ 整体 `None`** ✓（保守规则 ✓，见上面文档 ✓）。
+            let viewport = subscriber.viewport?;
+            union = Some(match union {
+                // **复用已有的** `Bbox::union` ✓（`yanshi-core/src/conflict.rs:70` ✓）。
+                Some(current) => current.union(&viewport),
+                None => viewport,
+            });
+        }
+        union
+    }
+}
+
 /// 广播事件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
