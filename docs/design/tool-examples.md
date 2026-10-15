@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 146 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 150 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -159,6 +159,12 @@
   ],
   "size": 40
 }
+```
+
+## `calibrate`
+
+```json
+{}
 ```
 
 ## `cancel_job`
@@ -364,6 +370,14 @@
 }
 ```
 
+## `delete_anchor`
+
+```json
+{
+  "name": "left_eye"
+}
+```
+
 ## `delete_annotation`
 
 ```json
@@ -549,6 +563,12 @@
 {
   "object_id": "o1"
 }
+```
+
+## `get_anchors`
+
+```json
+{}
 ```
 
 ## `get_annotation`
@@ -1224,6 +1244,17 @@
     }
   ],
   "seed": 1
+}
+```
+
+## `set_anchor`
+
+```json
+{
+  "name": "left_eye",
+  "note": "外眼角偏 2px",
+  "x": 268,
+  "y": 286
 }
 ```
 
