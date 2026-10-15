@@ -2543,3 +2543,33 @@ return (stats.lastArea | 0) > 0
   2. 再打印 `kernelStats()` ✓ ⇒ 看内核**是否本就该**有 tile 活动 ✓（无落笔时为零是否正常 ✓）；
   3. 若 1、2 成立 ⇒ **改判据**（按设计语义取基准 ✓）⇒ 然后它**自然绿** ✓
      —— 那才是"从台账出来"的正路 ✓（而不是登记 ✗）。
+
+### 四十九之补三十二：CDP 本机可跑 ＋ 小探针计划（2026-10-15 ✓）
+
+**两条实测** ✓：
+```
+$ ls -l /usr/bin/chromium   ⇒ /usr/bin/chromium ✓（在 ✓）
+$ grep -nE "SKIP|FILTER|ONLY" scripts/run-criteria.sh
+  :27   case "${SKIP_SERVER:-0}" in          ⇒ 可跳过服务 ✓
+  :47/:55 if [ "${SKIP_BROWSER:-0}" != "1" ] … command -v chromium   ⇒ 可跳过浏览器 ✓
+  ⇒ **但没有任何"只跑一条判据"的过滤** ✗（跑一条只能整分片跑 ✗ ⇒ 太慢 ✗）
+```
+⇒ ⇒ **结论** ✓：**CDP 本机跑得动** ✓ —— 我此前说"需要预算充足的开场"✗ 是**过度保守** ✗✓；
+真正的障碍是"**harness 不能只跑一条**"✗ ⇒ 所以要**自己写一个最小探针** ✓（而不是整分片 ✗）。
+
+**⇒ 小探针计划（下一步 ✓，约 40 行 ✓）** ✓：
+  1. 起 `yanshi-serve`（本机 ✓，与其它判据同法 ✓）；
+  2. 起 `chromium --headless --remote-debugging-port=$CDP_PORT about:blank` ✓
+     （harness 就是这么起的 ✓，见 `:55` 一带 ✓）；
+  3. `PUT /json/new?about:blank` 拿 WS ✓（**照既有 `browser-*.mjs` 的骨架 ✓，别自创** ✗）；
+  4. 导航到 `http://127.0.0.1:<port>/?doc=…&token=…&render=client` ✓
+     （**注意**：`browser-*` 的 `argv[2]` 是**查看器 URL** ✓，而 `render=client` 另有讲究 ✓
+       —— `run-criteria.sh:338` 那条注释写着「`argv[2]` 也要 `render=client`」✓）；
+  5. ★ **`Runtime.evaluate` 必须**同时给 `returnByValue: true` **和** `awaitPromise: true`** ✓
+     （AGENTS.md 那条：只给前者时 async 表达式会**静默返回 `{}`** ✗ —— 六轮教训 ✓）；
+  6. 读四个值 ✓：`board.width`、`board.style.width`、`state.viewport`、`state.docSize` ✓
+     ＋ `kernelStats()` ✓ ⇒ ⇒ **判据**：`board.width` 是否**恰好等于** `state.viewport.w` ✓
+     · **是** ⇒ **产品对、判据错** ✗ ⇒ 改判据 ✓（按设计语义 ✓）
+     · **不是** ⇒ **产品可能真错** ✗ ⇒ 继续查 ✓。
+**⇒ 这条探针的价值** ✓：它把 §49 补三十一 那个"假设"**一次判定** ✓，
+而不是继续在两条可能性之间摇摆 ✗。
