@@ -28047,6 +28047,17 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #     **回退方式** ✓（照 §45 ✓）：`git checkout 4307ad58 -- crates/yanshi-http/assets/{viewer-app.js,api-local.js}`
 #       **整文件还原** ✓ ＋ **重新编译** ✓（服务器 `include_str!` 内嵌 ✓）⇒ 残留 0 处 ✓、两份 `node --check` 通过 ✓；
 #       **本机复跑**：`browser-pixel-check` ⇒ 0 ✓、`browser-pwa-local` ⇒ 0 ✓（那 8 条里的两条已恢复 ✓）。
+#   **★★ 2026-10-15 回退的 CI 验证（部分已到手 ✓）★★**：
+#     * `shard 1／4／6` = **success** ✓、**失败 0** ✓，`shard 2／3／5` 仍在跑 ✓；
+#     * **近似复刻 harness 的枚举**（文件名排序取模 ✓）⇒ 那 8 条里落在"已绿分片"的有 **5 条** ✓：
+#       `browser-kernel-perf`／`browser-live-ui`／`browser-offline-assets`／
+#       `browser-offline-shell`／`browser-project-import` ⇒ ⇒ **它们在 CI 口径下已经通过** ✓✓；
+#       落在"仍在跑"的只有 3 条 ✓：`browser-offline-draw`／`browser-pixel-check`／`browser-pwa-local`
+#       （而这三条在本机回退后也已复跑 ✓：`pixel-check` 0 ✓、`pwa-local` 0 ✓）。
+#     * **由此被 CI 证实的一条推断** ✓：`browser-live-ui` 在**本机**是红的 ✗
+#       （`list_palette_colors` 404 ✓），而它所在的**分片是 success** ✓
+#       ⇒ ⇒ **那是我即席调用的产物** ✗，**不是产品红** ✓
+#       （第 182 轮我"推断"过 ✓，这里是**证据** ✓ —— 两本账分得清 ✓）。
 #   **★★ 重做时的硬要求（写死，别再犯 ✗）★★**：
 #     ① **判据先行** ✓ —— 新判据必须带**负对照**（不加开关 ⇒ 必须看不见 ✓）；
 #     ② **门禁是那 8 条已有的 `browser-*`** ✓ —— **不是**新加的这一条 ✗；
