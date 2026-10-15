@@ -2902,3 +2902,35 @@ const DX = -420; const DY = -300;     // 从中心往**左上**拖 420×300 ✗
 
 **两本账** ✓：`cargo build --release -p yanshi-server` ⇒ **通过** ✓（helper 无调用者 ✓）；
 接线那一版也**编译过** ✓（实测 ✓），但**没有保留** ✗（理由如上 ✓）。
+
+### 四十九之补四十四：关键转向 —— 判据测的是客户端内核（2026-10-15 ✓）
+
+**读码发现** ✓：
+```
+crates/yanshi-wasm/src/kernel.rs:11    //! 并暴露 [Kernel::evict_outside_viewport] 给 JS 侧按视口联动 ✓
+kernel.rs:320   pub fn evict_outside_viewport(&mut self, viewport: Bbox) -> usize ✓
+kernel.rs:322       self.renderer.cache_mut().evict_outside_viewport(&viewport) ✓
+kernel.rs:918       .evict_outside_viewport(&self.viewport);        ← **内核内部已在用** ✓
+kernel.rs:1059  单测 `evict_outside_viewport_is_driven_by_js_and_reports_counts` ✓ ← **"reports counts"** ✓
+```
+⇒ ⇒ ⇒ **内核侧三件俱全** ✓：**暴露给 JS** ✓、**内部已在按视口调** ✓、**有单测且会报计数** ✓。
+
+**⇒ 所以缺的只是一件小事** ✗：**JS 没把内核的淘汰计数写进 `yanshiStats.viewportEvictions`** ✗
+（`window.yanshiStats` 定义在 `crates/yanshi-http/assets/viewer-app.js:101` ✓，
+字段有 `wasm`／`lastArea`／`applies`／`localCalls`… ✓ ⇒ **没有** `viewportEvictions` ✗）。
+
+**★★ 这纠正了 item ② 的目标 ✗✓ ★★**：
+  * 这条判据跑的是 **`render=client`** ✓、读的是**客户端** `yanshiStats` ✓
+    ⇒ ⇒ 它要的是"**客户端内核**按视口淘汰"✓ —— 而**那件事早就做好了** ✓；
+  * 我上一轮写、又**撤回**的那个"**服务端** `TileCache` 接线"✗ ⇒ **与这条判据无关** ✓
+    （它测不到服务端 ✓）；
+  * **⇒ 真正的缺口只有一行** ✓：在 JS 调用内核淘汰的地方 ✓，
+    把返回的计数累加进 `yanshiStats.viewportEvictions` ✓。
+
+**⇒ 服务端那条仍然要做** ✓（但**另一个理由** ✓）：目标 乙(iii) 说的是
+"**4K 下每组约 256 MB**"的内存账 ✓ ⇒ 那是**服务端**的 `by_sig`/tile 缓存 ✓
+⇒ ⇒ 与服务端 `evict_outside_viewport` 接线有关 ✓ ⇒ **两件事都要做，但别混在一起** ✓
+（一个由 `browser-viewport-evict.mjs` 守 ✓、另一个由内存判据守 ✓）。
+
+**⇒ 下一步（很小 ✓）**：读 `viewer-app.js` 里调 `kernel.evictOutsideViewport(...)` 的地方 ✓
+⇒ 把返回值累加进 `yanshiStats.viewportEvictions` ✓ ⇒ 本机重跑判据 ✓ ⇒ 期望**绿** ✓。
