@@ -28302,3 +28302,56 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #        （订阅者 ✓、缓存 ✓、水位 ✓……）⇒ 凡是"重建对象"的路径 ✓，都要问一句
 #        **"有哪些东西是挂在它上面的？"** ✗ —— 我这次就是漏问了这一句 ✓。
 
+#    **★★★★★ 修法定案（2026-10-15 读码确认 ✓）⇒ 订阅必须挪进循环 ★★★★★**
+#      **确认①的答案** ✓：`crates/yanshi-server/src/broadcast.rs:158` 的 `subscribe` **不幂等** ✗ ——
+#        ```rust
+#        pub fn subscribe(&mut self, session: impl Into<SessionId>, channel: PushChannel) -> SubscriberId {
+#            let id = self.next_id;  self.next_id += 1;      // ← **每次都新建 id** ✗
+#            self.subscribers.insert(id, Subscriber { id, session: session.into(), channel, … });
+#            self.queues.insert(id, Vec::new());
+#            id
+#        }
+#        ```
+#        ⇒ ⇒ 用**同一个 session** 再订阅**拿不回旧 id** ✗ ⇒ 推送线程里那个旧 id 会失效 ✗
+#        ⇒ ⇒ **所以不能"重载后顺手补一次订阅"** ✗ ⇒ 必须让**订阅与 drain 用同一个（时刻更新的）id** ✓。
+#        顺带 ✓：它也说明"订阅者 ＋ 它的队列"都是**挂在 Document 上的** ✓
+#        ⇒ 丢弃 Document ＝ 连**未读的队列**一起丢 ✓（与那条普适教训一致 ✓）。
+#      **★ 定案的修法（下一段照做 ✓）★**：把 `subscriber` 变成**循环里可更新**的变量 ✓：
+#        ```rust
+#        let mut subscriber = { … 建连接时那次订阅（照旧 ✓）… };   // ← 加 `mut` ✓，并**移进闭包** ✓
+#        let session_for_loop = session.clone();                    // ← 循环里还要用 ✓（原 session 可能已被 move ✗）
+#        …
+#        while !closed && !shutdown {
+#            thread::sleep(interval);
+#            if let Some(tail) = watch_tail.as_mut() {
+#                if let Ok(polled) = tail.poll() {
+#                    if !polled.atoms.is_empty() {
+#                        if let Ok(mut workspace) = push_state.workspace.lock() {
+#                            if workspace.reload_document(&push_doc).is_ok() {
+#                                if let Ok(document) = workspace.document_mut(&push_doc) {
+#                                    // **重载把订阅者连同队列一起丢了** ✗ ⇒ 重新订阅 ✓ 并**更新 id** ✓
+#                                    subscriber = document.subscribe(session_for_loop.clone(), PushChannel::WebSocket);
+#                                    for atom in &polled.atoms {
+#                                        document.broadcaster_mut().publish_atom(atom);
+#                                    }
+#                                }
+#                            }
+#                        }
+#                    }
+#                }
+#            }
+#            let events = { … document.broadcaster_mut().drain(subscriber) … };   // ← 用**更新过的** id ✓
+#            …
+#        }
+#        ```
+#        **要留意的两点** ✗✓：① `subscriber` 原本是 `let subscriber = …` ✓ ⇒ 要改 `let mut subscriber` ✓，
+#          且它已 move 进闭包 ✓ ⇒ 在闭包里可写 ✓；② `session` 在 `:3006` 建 ✓，
+#          上面订阅时被 `session` **用掉**（`impl Into<SessionId>` ⇒ 可能 move ✗）⇒ 先 `clone()` ✓。
+#      **⚠ 还要看一件事** ✗（下一段 ✓）：**旧订阅者会留在旧 Document 里** ✓ ⇒ 那个 Document 被丢掉 ⇒
+#        `subscribers`／`queues` 随之释放 ✓（**不会泄漏** ✓）；但**新 Document 每重载一次就多一个订阅者** ✗
+#        ⇒ 若同一条连接**反复触发重载** ✓ ⇒ 旧的那些（在同一条连接内）会被下一次重载丢掉 ✓
+#        ⇒ ⇒ 每次只留**一个** ✓（因为每次都是"丢掉整个 Document" ✓）⇒ **不累积** ✓ —— 结论：**不会泄漏** ✓
+#        （但这一点值得在实现后用一次多点几次的实验确认 ✓）。
+#      **门禁照旧** ✓：判据**转绿** ✓ ⇒ 变异（`if state.options.watch` ⇒ `if true`）⇒ **必须红** ✓
+#        ⇒ `cargo fmt` ＋ `clippy -D warnings` ＋ `cargo test -p yanshi-http -p yanshi-server` ✓ ⇒ 划台账 ✓。
+
