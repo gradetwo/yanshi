@@ -508,7 +508,9 @@ impl Document {
                 // **先折** ✓：`fold_atoms` 要 `&tail` ✓，而 `AtomLog::with_atoms` **要拿走 `tail`** ✗
                 //   ⇒ 先装日志再折会撞借用 ✗ ⇒ **先折、后装** ✓。
                 let folded = yanshi_core::fold_atoms(state, &tail);
-                document.log = AtomLog::with_atoms(tail)?;
+                // **用 `with_base_seq`** ✓：空尾巴时也要让 `next_seq` 从 `seq_at + 1` 起 ✓
+                //   ⇒ 否则下一次提交会**重用 seq** ✗（`§49 之补十四` ✓）。
+                document.log = AtomLog::with_base_seq(_seq_at, tail)?;
                 document.state = folded.state;
                 document.render_watermark = document.state.head_seq;
                 let grid = document.grid_for_state()?;

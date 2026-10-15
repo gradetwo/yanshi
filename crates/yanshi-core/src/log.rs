@@ -156,6 +156,29 @@ impl AtomLog {
     /// 由已带 seq 的原子恢复日志（服务端重启恢复、测试构造）。
     ///
     /// 原子按 seq 排序；id 与 seq 必须唯一。
+    /// **★ 从"某个起点之后"的原子建日志（待办 ① 的"快照 ＋ 尾巴"用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么需要它** ✗：`with_atoms` 会把 `next_seq` 算成"**最后一个原子 + 1**" ✓
+    /// （`log.rs:193` 的 `log.next_seq.max(atom.seq + 1)` ✓）——
+    /// **尾巴为空**时它停在 **1** ✗ ⇒ 下一次提交会**重用 `seq`** ✗
+    /// ⇒ 日志里出现**两个同 seq 的行** ✗ ⇒ 之后按 seq 的查找／折叠全错 ✗。
+    /// **⇒ 本构造器把 `next_seq` 抬到 `base_seq + 1`** ✓（`base_seq = 0` 时与 `with_atoms` 等价 ✓）。
+    ///
+    /// **注意** ✓：`head_seq()` **不**知道 `base_seq` ✗（空尾巴时仍返回 0 ✓）——
+    /// 那是**已知瑕疵** ✗：修它要动 **128 个调用方** ✗ ⇒ 留作**单独一笔** ✓
+    /// （见 `docs/design/vermeer-acceptance.md` §49 之补十四 ✓）。
+    pub fn with_base_seq(base_seq: Seq, atoms: Vec<Atom>) -> Result<Self> {
+        let mut log = Self::with_atoms(atoms)?;
+        log.next_seq = log.next_seq.max(base_seq + 1);
+        Ok(log)
+    }
+
+    /// **从一批原子建日志** ✓（会按 `(seq, id)` 排序 ✓、查重复 ✓、并把 `next_seq` 推到"末个 + 1" ✓）。
+    ///
+    /// **为什么补这条注释** ✗：我插入 `with_base_seq` 时**只锚在函数签名那一行** ✓
+    /// ⇒ 把它**原有的文档注释"吃"进了我的新块** ✗ ⇒ `clippy -D warnings` 直接报
+    /// `missing documentation for an associated function` ✓ —— **AGENTS.md 那条坑的第 8 次** ✗✓
+    /// （规矩：新增项必须插在**整段 `///` 之前** ✓，不能插在"文档与它描述的项之间" ✗）。
     pub fn with_atoms(mut atoms: Vec<Atom>) -> Result<Self> {
         // 按 (seq, id) 排序，但**不在 key 里 clone id** ✓ —— 原先 `(a.seq, a.id.clone())`
         // 会在每次比较时分配一个字符串 ✗（n log n 次）⇒ 大日志上纯属浪费 ✓。
