@@ -3505,6 +3505,37 @@ impl Renderer {
                                 // **没覆盖"取到了、但是空的"** ✗ ⇒ 这里补上 ✓。
                                 if rgba.chunks_exact(4).any(|pixel| pixel[3] > 0) {
                                     layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    // **★ 采样必须在 blit **之后**（2026-10-15 实测：我第一次插在之前 ✗，
+                                    //   于是读到 0 就误判"写不进去" ✗ —— 这是本会话第 2 次栽在同一处 ✓）★**
+                                    if std::env::var_os("YANSHI_TRACE_BLIT_JOIN").is_some() {
+                                        let (cx, cy) = (x0 + (rw / 2) as i64, y0 + (rh / 2) as i64);
+                                        let mid = (((rh / 2) as usize) * (rw as usize)
+                                            + (rw / 2) as usize)
+                                            * 4;
+                                        let src = rgba
+                                            .get(mid..mid + 4)
+                                            .map(|p| (p[0], p[1], p[2], p[3]));
+                                        let b = layer_buffer.bbox();
+                                        let local_ok = cx >= b.x as i64
+                                            && cx < (b.x + b.w) as i64
+                                            && cy >= b.y as i64
+                                            && cy < (b.y + b.h) as i64;
+                                        let got = if local_ok {
+                                            let px = layer_buffer.pixel(
+                                                (cx - b.x as i64) as u32,
+                                                (cy - b.y as i64) as u32,
+                                            );
+                                            Some((px[0], px[1], px[2], px[3]))
+                                        } else {
+                                            None
+                                        };
+                                        eprintln!(
+                                            "BLIT_JOIN_AFTER dst=({x0},{y0},{rw},{rh}) centre=({cx},{cy}) \
+                                             band=({},{},{},{}) in_band={local_ok} \
+                                             stitched_centre={src:?} band_after={got:?}",
+                                            b.x, b.y, b.w, b.h
+                                        );
+                                    }
                                     continue;
                                 }
                                 track.unsupported.push(format!(
