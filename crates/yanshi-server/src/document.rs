@@ -2324,6 +2324,23 @@ impl Document {
     }
 
     /// 最近一次快照结论（可观测性 / 测试）。
+    /// **★ 取"最新可用的快照"（待办 ① 的加载路径要用 ✓，2026-10-15 ✓）★**
+    ///
+    /// **为什么** ✗：快照是 `Document` 自己**造**的（`snapshot_now` ✓）⇒ 但**落盘／读盘**
+    /// 得由同时拥有 `FileStore` 的 `Workspace` 做 ✓（`Document` 只有 `Arc<dyn BlobStore>` ✓，
+    /// 够不到 `docs/<doc>/` ✗）⇒ ⇒ 所以这里只暴露一个**只读**入口 ✓。
+    /// **语义** ✓：直接转发 `SnapshotStore::latest_usable()` ✓（`snapshot.rs:317` ✓）——
+    /// 它已经处理了"哪些快照是可用的" ✓（不必在这里重判 ✗）。
+    pub fn latest_usable_snapshot(&self) -> Option<&yanshi_core::Snapshot> {
+        self.snapshots.latest_usable()
+    }
+
+    /// **按 `now` 决定要不要打快照** ✓（只转发引擎的 `snapshot_decision` ✓）。
+    ///
+    /// **为什么补这条注释** ✗：我插入 `latest_usable_snapshot` 时**只锚在函数签名那一行** ✓
+    /// ⇒ 把它**原有的文档注释"吃"进了我的新块** ✗ ⇒ `clippy -D warnings` 直接报
+    /// `missing documentation for a method` ✓ —— **AGENTS.md 里那条坑的第 7 次** ✗✓
+    /// （"新增函数必须插在整段 `///` **之前**，不能插在文档与它描述的项之间" ✓）。
     pub fn snapshot_decision(&self, now: i64) -> SnapshotDecision {
         yanshi_core::snapshot::snapshot_decision(
             &self.log,
