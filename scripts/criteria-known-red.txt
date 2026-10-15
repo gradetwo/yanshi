@@ -28194,4 +28194,40 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #      **测试要点** ✓：判据只看"帧里出现外部原子的 id" ✓ ⇒ 所以 publish 的事件里**必须带 id** ✓；
 #        若事件只带一个"变了"的标记 ✗ ⇒ 判据会红 ✗ ⇒ 那时要么改判据 ✓、要么让事件带 id ✓
 #        —— **这条要在接线时一次定清** ✗（别等判据红了再猜 ✓）。
+#    **★★★★ 写入侧 API 也找到了（2026-10-15 ✓）⇒ 接线现在是"机械照做" ★★★★**
+#      `crates/yanshi-server/src/broadcast.rs:220` = **`pub fn publish_atom(&mut self, atom: &Atom) -> Vec<Delivery>`** ✓
+#      —— 而 `document.rs` **已经在用**它两次 ✓（**:869** 与 **:987**，两条追加路径 ✓）
+#      ⇒ ⇒ **引擎已有的不做第二遍** ✓：接线只需**照它调用** ✓。
+#      **★ 悬着的那个测试要点因此定清 ✓**：`publish_atom` **收 `&Atom`** ✓
+#      ⇒ ⇒ 事件里**必然带原子** ✓ ⇒ 判据"帧里出现该 id"**一定成立** ✓（不必改判据 ✓、也不必自己造事件 ✓）。
+#      **★ 接线片段（照此做 ✓，别即兴 ✗）★**：
+#        ```
+#        // ① 开关（三处小改 ✓，照 MCP 侧的做法 ✓）：
+#        //    ServerOptions 加 `pub watch: bool`（`server.rs:88` 一带 ✓）；
+#        //    解析 match 加 `"--watch" => options.watch = true`（`:157` 一带 ✓）；
+#        //    help（`:267` 一带 ✓）加一行；`Default` 里 `watch: false` ✓（**默认关** ✗）。
+#        // ② 推送线程里（`server.rs:3018`–`3026` 的循环体开头 ✓，`thread::sleep(interval)` 之后 ✓）：
+#        if watch_on {
+#            if let Ok(polled) = follower.poll() {
+#                if !polled.atoms.is_empty() {
+#                    let Ok(mut workspace) = push_state.workspace.lock() else { break };
+#                    if workspace.reload_document(&push_doc).is_ok() {
+#                        if let Ok(document) = workspace.document_mut(&push_doc) {
+#                            // **照 document.rs:869 的用法** ✓（引擎已有的不做第二遍 ✓）
+#                            for atom in &polled.atoms {
+#                                document.broadcaster_mut().publish_atom(atom);
+#                            }
+#                        }
+#                    }
+#                }
+#            }
+#        }
+#        ```
+#        （`follower` 在**每条连接**里建一个 ✓ —— 它只需要 `<root>/docs/<doc>/atoms.jsonl` ✓；
+#          `new_after(path, last_seq)` 可用于"连接建立时先对齐到当前 head" ✓，避免把历史原子**重放**一遍 ✗✓
+#          —— **这一点要在接线时明确** ✗：不重放 ⇒ 只推"连接之后新来的" ✓。）
+#      **门禁** ✓：接线后必须 ① `node scripts/serve-watch-ws.mjs` **转绿** ✓；
+#        ② **变异**（`if watch_on` ⇒ `if true` ✓）⇒ 判据**必须红** ✓（证明负对照有牙 ✓）；
+#        ③ `cargo fmt --all` ＋ `cargo clippy --workspace --all-targets -- -D warnings` ＋
+#           `cargo test -p yanshi-http -p yanshi-server` ✓；④ 再把本条**从台账移除** ✓。
 
