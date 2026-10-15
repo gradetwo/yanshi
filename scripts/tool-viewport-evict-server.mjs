@@ -80,9 +80,9 @@ await sleep(1500);
 socket.close();
 
 // ④ 断言 ✓
+const fails = [];
 const post2 = await tool("get_document", {});
 console.log(`  平移后（视口 256×256）：cache_evictions=${post2.cache_evictions}｜cache_used_bytes=${post2.cache_used_bytes}`);
-const fails = [];
 if (!(post2.cache_evictions > pre.cache_evictions)) {
   fails.push(
     `① **没有发生任何视口淘汰** ✗：cache_evictions ${pre.cache_evictions} ⇒ ${post2.cache_evictions}` +
@@ -100,8 +100,62 @@ if (fails.length) {
   for (const f of fails) console.error(`   ${f}`);
   process.exit(1);
 }
+// ⑤ **★ 第二个订阅者：并集 vs 单个订阅者（2026-10-15 补 ✓）★**
+//   **为什么必须补** ✗（§49 之补五十二 里我自己记下的缺口 ✓）：
+//     上面 ③④ 只有**一个**订阅者 ✓ ⇒ **按单个视口淘汰也会逐出那 3 块** ✓
+//     ⇒ ⇒ 那个变异**测不出**"并集 vs 单个"✗ ⇒ 而 `a152e034` 弄红 8 条**正是**这个缺陷 ✗。
+//   **怎么测** ✓：让 A（左上）与 B（右下）**同时**声明各自的视口 ✓ ⇒ 两边都渲染进缓存 ✓
+//     ⇒ 再**只平移 A** ⇒ ⇒ **并集**（A′ ∪ B）⇒ B 的 tile **应当活着** ✓；
+//        按**单个 A**淘汰 ⇒ B 的 tile **被扔掉** ✗ ⇒ 缓存**明显变小** ✗。
+//   **判别性断言** ✓：平移 A 之后，缓存里**至少**还剩 B 那一块的大小 ✓
+//     （实测：512×512 的一块 ≈ **2 MB** ⇒ 取 **1 MB** 当地板 ✓ ⇒ 2 MB vs 0 的差别**两倍余量** ✓）。
+const wsOpen = (viewport) =>
+  new Promise((resolve, reject) => {
+    const s2 = new WebSocket(wsUrl);
+    s2.onopen = () => {
+      s2.send(JSON.stringify({ type: "subscribe", viewport, zoom: 1 }));
+      resolve(s2);
+    };
+    s2.onerror = () => reject(new Error("WS 连不上"));
+    setTimeout(() => reject(new Error("WS 超时")), 10000);
+  });
+const A_VP = { x: 0, y: 0, w: 256, h: 256 };
+const B_VP = { x: 3584, y: 3584, w: 256, h: 256 };
+let wsA; let wsB;
+try {
+  wsA = await wsOpen(A_VP);
+  wsB = await wsOpen(B_VP);
+} catch (e) {
+  voidRun(`第二个订阅者起不来：${e.message}`);
+}
+// 两边都**渲染进缓存** ✓（各 512×512 ⇒ 各约 2 MB ✓）。
+await tool("render_region", { region: { x: 0, y: 0, w: 512, h: 512 } });
+await tool("render_region", { region: { x: 3584, y: 3584, w: 512, h: 512 } });
+await sleep(600);
+const both = await tool("get_document", {});
+console.log(`  两个订阅者都在：cache_used_bytes=${both.cache_used_bytes}`);
+// 只平移 A ✓ ⇒ 并集仍然覆盖 B ✓
+wsA.send(JSON.stringify({ type: "subscribe", viewport: { x: 1024, y: 1024, w: 256, h: 256 }, zoom: 1 }));
+await sleep(1500);
+const afterA = await tool("get_document", {});
+console.log(`  只平移 A 之后：cache_evictions=${afterA.cache_evictions}｜cache_used_bytes=${afterA.cache_used_bytes}`);
+wsA.close(); wsB.close();
+const FLOOR = 1024 * 1024; // B 那一块 ≈ 2 MB ⇒ 地板取 1 MB ✓
+if (!(afterA.cache_used_bytes >= FLOOR)) {
+  fails.push(
+    `③ **B 的 tile 被误删了** ✗：只平移 A 之后缓存只剩 ${afterA.cache_used_bytes} 字节` +
+      `（< 地板 ${FLOOR} ✓）⇒ 淘汰用的是**单个订阅者的视口**✗，` +
+      `而不是**所有订阅者视口的并集** ✓ —— 这正是 \`a152e034\` 弄红 8 条的那个缺陷 ✗`,
+  );
+}
+if (fails.length) {
+  console.error("❌ 没通过：");
+  for (const f of fails) console.error(`   ${f}`);
+  process.exit(1);
+}
 console.log(
   `✓ 服务端视口淘汰成立：逐出 ${pre.cache_evictions} ⇒ ${post2.cache_evictions} ✓，` +
-    `缓存字节 ${pre.cache_used_bytes} ⇒ ${post2.cache_used_bytes} ✓`,
+    `缓存字节 ${pre.cache_used_bytes} ⇒ ${post2.cache_used_bytes} ✓；` +
+    `**两个订阅者时**平移 A ⇒ 缓存仍余 ${afterA.cache_used_bytes} 字节（≥ ${FLOOR} ✓＝B 还在 ✓）`,
 );
 process.exit(0);
