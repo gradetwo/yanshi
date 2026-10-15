@@ -80,7 +80,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
-          targets: wasm32-unknown-unknown
+          # **★ 矩阵目标也要装 ★**（2026-10-15 实测 ✓）：原来只装 `wasm32-unknown-unknown` ✓，
+          # 而 `macos-x86_64` 那一档是**在 Apple Silicon 上交叉编** ✓ ⇒ 需要 `x86_64-apple-darwin` ✗
+          # ⇒ 缺它就**在 Build 那一步早期失败** ✗（实测：2 分钟就红 ✓，而且报的是"目标没装" ✓，
+          #    正是 `target_installed()` 那道三态检查拦下的 ✓ —— 它不是误导性错误 ✓）。
+          # 原生档上多装一个宿主目标无副作用 ✓（`rustup target add <host>` 是空操作 ✓）。
+          targets: |
+            wasm32-unknown-unknown
+            ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
