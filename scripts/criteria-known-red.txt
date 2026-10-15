@@ -28136,8 +28136,15 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #    **为什么不用浏览器** ✓（2026-10-15 实测 ✓）：Node **v26 原生带 `WebSocket`** ✓
 #      ⇒ 不必 CDP ✗、不必 chromium ✗ ⇒ 也避开本仓浏览器判据偶发的"内核就绪超时" ✗
 #      （台账里 `browser-export-full-document.mjs` 那条自己就写着它**环境敏感** ✓）。
-#    **现状** ✓：跑出 **退出码 1** ✓，文案「服务器不接受 `--watch` ⇒ 该特性尚未实现（产品红 ✓）」✓
-#      ⇒ 实测 stderr 就是 `yanshi-serve` 的**用法** ✓ ⇒ 因为 `--watch` 这个开关**还不存在** ✓。
+#    **★★ 现状（2026-10-15 更新 ✓）：开关已接上，行为还没做 ⇒ 判据红在"正确的那一半" ✓★**
+#      * **开关已就绪** ✓：`ServerOptions.watch` 字段 ✓＋`"--watch"` 解析臂 ✓＋`Default` 里 `watch: false` ✓
+#        （**默认关** ✗）；`cargo build --release -p yanshi-http` **通过** ✓ ⇒ 服务器**接受** `--watch` 了 ✓。
+#        （help 那一行**还没加** ✗ —— 纯文案 ✓，等行为做完一起补 ✓。）
+#      * **判据两半都端到端跑通** ✓：`WS 已连上 ✓（带 token ✓）` ⇒ 外部追加 `foreign-serve-1` ✓ ⇒
+#        **① 正向 ✗ 未达成**（1.5 s 内没收到帧 ✓ —— 因为**推送还没接** ✗）；
+#        **② 负对照 ✓ 通过**（默认时看不见 ✓）⇒ ⇒ **负对照在判据内部得到实测** ✓（与 MCP 侧同形 ✓）。
+#      * ⇒ ⇒ **只剩行为** ✗：在推送线程（`:3018`–`3026`）里轮询 ＋ `reload_document` ＋
+#        **照 `document.rs:869`** `broadcaster_mut().publish_atom(atom)` ✓（片段见本条目上面那段 ✓）。
 #    **token 怎么来** ✓（2026-10-15 查清 ✓）：**`POST <base>/api/documents`** ✓，
 #      从正文取 `json["token"]` ✓（长度 64 ✓）—— 照 `run-criteria.sh:78` 的 `token_for()` ✓。
 #      **★ 拿不到 token ⇒ 退出 3 ★** ✓，**绝不冒充产品红** ✗（`token_for()` 的注释里记着一次真事故：

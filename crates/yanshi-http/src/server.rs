@@ -87,6 +87,14 @@ pub struct HttpOptions {
     pub max_connections: usize,
     /// WebSocket 推送轮询间隔（毫秒）。
     pub push_interval_ms: u64,
+    /// **★ 是否监视 `--root/docs/*/atoms.jsonl`（`--watch`，默认 false ✗）★**
+    ///
+    /// **语义** ✓（用户 2026-10-15 裁定）：别的进程直接往原子日志追加的内容，也要**看得见** ✓
+    /// （serve 侧的落点是**推给已连接的 WS 客户端** ✓）。**增量解析** ✓；冲突**最后写赢** ✓；
+    /// **不监视 blob** ✗。**落地** ✓：推送线程每拍轮询 ⇒ 前进 ⇒ 重载该文档 ⇒
+    /// **照 `document.rs:869` 的用法** `broadcaster_mut().publish_atom(atom)` ✓
+    /// ⇒ ⇒ 推送线程下一拍自然把它发出去 ✓（**不新写发送逻辑** ✗）。
+    pub watch: bool,
     /// 是否在工具响应里把 `yanshi://blob/<hash>` 改写成可直接访问的 URL。
     pub rewrite_blob_urls: bool,
     /// WASM 计算内核产物目录（`/wasm/*` 从这里取；`None` 表示不提供）。
@@ -155,6 +163,8 @@ impl Default for HttpOptions {
             ],
             max_connections: 64,
             push_interval_ms: 25,
+            // **默认关** ✗（用户裁定 ✓）—— serve 侧判据 `serve-watch-ws.mjs` 的**负对照**靠它 ✓。
+            watch: false,
             rewrite_blob_urls: true,
             // 默认指向仓库内 `wasm-bindgen --target web` 的输出目录（相对当前工作目录）。
             wasm_dir: Some(PathBuf::from("crates/yanshi-wasm/pkg")),
@@ -224,6 +234,7 @@ impl HttpOptions {
                     let _ = GPU_MODE.set(mode);
                 }
                 "--doc" => options.doc_id = value_of("--doc")?,
+                "--watch" => options.watch = true,
                 "--width" => {
                     options.width = value_of("--width")?
                         .parse()
