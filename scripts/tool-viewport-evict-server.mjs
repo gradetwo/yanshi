@@ -119,8 +119,8 @@ const wsOpen = (viewport) =>
     s2.onerror = () => reject(new Error("WS 连不上"));
     setTimeout(() => reject(new Error("WS 超时")), 10000);
   });
-const A_VP = { x: 0, y: 0, w: 256, h: 256 };
-const B_VP = { x: 3584, y: 3584, w: 256, h: 256 };
+const A_VP = { x: 0, y: 0, w: 512, h: 512 };
+const B_VP = { x: 3584, y: 3584, w: 512, h: 512 };
 let wsA; let wsB;
 try {
   wsA = await wsOpen(A_VP);
@@ -135,12 +135,18 @@ await sleep(600);
 const both = await tool("get_document", {});
 console.log(`  两个订阅者都在：cache_used_bytes=${both.cache_used_bytes}`);
 // 只平移 A ✓ ⇒ 并集仍然覆盖 B ✓
-wsA.send(JSON.stringify({ type: "subscribe", viewport: { x: 1024, y: 1024, w: 256, h: 256 }, zoom: 1 }));
+wsA.send(JSON.stringify({ type: "subscribe", viewport: { x: 1024, y: 1024, w: 512, h: 512 }, zoom: 1 }));
 await sleep(1500);
 const afterA = await tool("get_document", {});
 console.log(`  只平移 A 之后：cache_evictions=${afterA.cache_evictions}｜cache_used_bytes=${afterA.cache_used_bytes}`);
 wsA.close(); wsB.close();
-const FLOOR = 1024 * 1024; // B 那一块 ≈ 2 MB ⇒ 地板取 1 MB ✓
+// **★ 地板 1 MB ✓**（实测：512×512 的一块 ≈ **2 MB** ✓ ⇒ 两倍余量 ✓）。
+// **★ 几何必须自洽 ✗★**（2026-10-15 实测教训 ✓，§49 之补五十五 ✓）：
+//   **渲染范围必须 ⊆ 声明视口** ✓ —— 我第一版给 B **渲染** 512×512 ✓
+//   却只**声明** 256×256 视口 ✗ ⇒ 多出的 3/4 合法落在视口外 ⇒ **被淘汰是对的** ✓
+//   ⇒ 判据于是把自己的几何错**报成了产品缺陷** ✗（幸好实测平反了 ✓）。
+//   ⇒ 所以这里三处（A、B、平移后的 A′）**统一用 512×512** ✓，与渲染范围一致 ✓。
+const FLOOR = 1024 * 1024;
 if (!(afterA.cache_used_bytes >= FLOOR)) {
   fails.push(
     `③ **B 的 tile 被误删了** ✗：只平移 A 之后缓存只剩 ${afterA.cache_used_bytes} 字节` +
