@@ -64,7 +64,10 @@ jobs:
           - { os: ubuntu-latest,  label: linux-x86_64,   target: x86_64-unknown-linux-gnu }
           - { os: macos-13,       label: macos-x86_64,   target: x86_64-apple-darwin }
           - { os: macos-14,       label: macos-arm64,    target: aarch64-apple-darwin }
-          - { os: windows-latest, label: windows-x86_64, target: x86_64-pc-windows-gnu }
+          # **用 MSVC 而不是 GNU** ✓：`windows-latest` runner 的**原生**目标就是 msvc ✓，
+          # 而 `-gnu` 要额外的 MinGW 工具链 ✗（实机验证时脚本也会以"目标未安装"直接失败 ✗）。
+          # 非 Linux 上本来就不做 static ✓ ⇒ msvc 完全够用 ✓。
+          - { os: windows-latest, label: windows-x86_64, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
 
