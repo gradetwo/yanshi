@@ -3871,3 +3871,31 @@ let merged = merge_by_rows(&old, &fresh);
 
 **⇒ 下一步** ✓：确认 `Buffer` 的 `Copy`/`Clone`/`Drop` 现状 ✓（一次 grep ✓）
 ⇒ 再决定走 (A) 还是 (B) ✓ —— **仍不动手** ✗（先读 ✓）。
+
+### 四十九之补七十五：live/peak 读数可行（2026-10-15 ✓）
+
+**读到的** ✓（`crates/yanshi-render/src/buffer.rs:111` ✓）：
+```rust
+#[derive(Debug, Clone, PartialEq)]     // **`Clone` ✓，不是 `Copy`** ✓✓
+```
+且**没有** `impl Drop for Buffer` ✗ ⇒ ⇒ ⇒ **加 `Drop` 钩子不会与 `Copy` 冲突** ✓（没有 `Copy` ✓）
+⇒ **(A) 方案可行** ✓：`impl Drop for Buffer { … record(BufferRelease, bytes) … }`
+⇒ live/peak 便可算 ✓ —— 这正是 §49 之补七十三 要的"**看清瞬时并存**"✗。
+
+**★ 随之而来、要一起想清的两件小事** ✓：
+  1. **`Clone` 的会计** ✗：`Clone` 是 `derive` 的 ✓ ⇒ **不会**走探针 ✗
+     ⇒ ⇒ 克隆出来的缓冲**不被计入** ✗ ⇒ live 会**偏低** ✗；
+     **取舍** ✓：偏低**不影响**"哪几块同时活着"的**相对判断** ✓（只要主路径都计入 ✓）
+     ⇒ ⇒ **可接受** ✓，但**必须写进文档** ✓（免得将来有人拿它当"绝对占用"✗）；
+  2. **`Drop` 进热路径** ✗：`Buffer` 是热类型 ✓ ⇒ `Drop` 会进**每条释放路径** ✓
+     ⇒ ⇒ 需确认**不影响**两项 ✓：**性能**（4K 一笔 ≤ 100ms ✓）与
+     **`humanize:false` 逐字节不变** ✓（本仓有判据守 ✓）
+     ⇒ ⇒ 若它只是**一次 `OnceLock` 读 ＋ 一次原子加** ✓（探针关着时 ✓）⇒ 影响可忽略 ✓
+     —— **但要**实测**✓，不能只说"应该没事"✗。
+
+**⇒ 下一步（三步 ✓）**：
+  1. 加 `AllocPoint::BufferRelease` ＋ `Drop for Buffer` ✓（**探针关着时零成本** ✓：一次 `OnceLock` 读 ✓）；
+  2. 加 **live/peak** 两个口径 ✓ 到 `snapshot()`／`/health` ✓；
+  3. **实测三件** ✓：① 探针关着时**不拖慢**（对比 4K 一笔耗时 ✓）；
+     ② 探明**"哪几块同时活着"**✗（本次真正的目的 ✓）；
+     ③ **`humanize:false` 逐字节不变** ✓ 仍绿 ✓。
