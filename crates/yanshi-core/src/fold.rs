@@ -512,6 +512,50 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 }
             }
         }
+        // **★ 命名锚点（真机报告 2026-10-15）★**
+        //
+        // 写进**文档状态** ⇒ 随原子日志持久化 ✓ ⇒ **跨会话、跨重启都不漂移** ✓ ——
+        // 这正是"草稿层的脸和彩色层的五官对不齐"的解药 ✓（用户的根因分析 ✓：
+        // 每个新会话都重新目测估算 ⇒ 必然漂移 ✗；而 MCP 坐标系本身没有问题 ✓）。
+        //
+        // **空名字要拒** ✗：没有名字的锚点谁也引用不到 ⇒ 那是调用方的错 ✓（要报清楚 ✓）。
+        AtomKind::SetAnchor => {
+            let name = payload_str(&atom.payload, "name").unwrap_or_default();
+            if name.is_empty() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{} 需要非空的 name", atom.kind)),
+                )
+                .with_atom(atom.id.clone()));
+            }
+            let Some(x) = payload_f64(&atom.payload, "x") else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{} 需要数值 x", atom.kind)),
+                )
+                .with_atom(atom.id.clone()));
+            };
+            let Some(y) = payload_f64(&atom.payload, "y") else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{} 需要数值 y", atom.kind)),
+                )
+                .with_atom(atom.id.clone()));
+            };
+            // **只校验，不改状态** ✓ —— 改状态在 `apply` 那一趟 ✓（两趟分工 ✓）。
+            let _ = (x, y);
+        }
+        // 删除一个锚点：**不存在就报错** ✓（静默成功会让调用方以为"删掉了" ✗）。
+        AtomKind::DeleteAnchor => {
+            let name = payload_str(&atom.payload, "name").unwrap_or_default();
+            if !state.anchors.contains_key(name) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{} 找不到锚点 {name}", atom.kind)),
+                )
+                .with_atom(atom.id.clone()));
+            }
+        }
         AtomKind::Supersede
         | AtomKind::Move
         | AtomKind::Transform
@@ -749,6 +793,23 @@ fn check_auxiliary_refs(state: &DocumentState, atom: &Atom) -> Result<()> {
 pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
     let blobs: Vec<crate::atom::BlobHash> = atom.all_blob_refs().into_iter().collect();
     match atom.kind {
+        // **★ 命名锚点（真机报告 2026-10-15）★**：写进**文档状态** ⇒ 随原子日志持久化 ✓
+        //   ⇒ 跨会话、跨重启都不漂移 ✓（校验已在 `precondition` 那一趟做过 ✓）。
+        AtomKind::SetAnchor => {
+            let name = payload_str(&atom.payload, "name").unwrap_or_default();
+            state.anchors.insert(
+                name.to_owned(),
+                crate::state::Anchor {
+                    x: payload_f64(&atom.payload, "x").unwrap_or(0.0),
+                    y: payload_f64(&atom.payload, "y").unwrap_or(0.0),
+                    note: payload_str(&atom.payload, "note").map(str::to_owned),
+                },
+            );
+        }
+        AtomKind::DeleteAnchor => {
+            let name = payload_str(&atom.payload, "name").unwrap_or_default();
+            state.anchors.remove(name);
+        }
         AtomKind::CreateDocument => {
             state.doc_id = payload_str(&atom.payload, "doc_id").map(str::to_owned);
             state.width = payload_u64(&atom.payload, "width").unwrap_or(0) as u32;

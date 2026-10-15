@@ -328,6 +328,15 @@ pub enum AtomKind {
     Transform,
     /// 设置属性。
     SetProperty,
+    /// **★ 命名锚点：新增/更新一个（真机报告 2026-10-15）★**。
+    ///
+    /// 载荷：`{name, x, y, note?}` ✓。锚点存在**文档状态**里（见 `DocumentState::anchors` ✓）
+    /// ⇒ 随原子日志持久化 ✓ ⇒ **跨会话、跨重启都不漂移** ✓（这正是要解决的问题 ✓）。
+    SetAnchor,
+    /// **★ 命名锚点：删除一个 ★**。载荷：`{name}` ✓。
+    /// **单独一个变体而不是在 `SetAnchor` 里加 `removed` 标志** ✗：删除与写入在**撤销**
+    /// 语义上是两件事 ✓ ⇒ 分开才能在日志里各自回退 ✓。
+    DeleteAnchor,
     /// 重排图层（携带完整目标 z 序）。
     ReorderLayers,
     // 删除类
@@ -378,6 +387,8 @@ impl AtomKind {
             Self::Move => "move",
             Self::Transform => "transform",
             Self::SetProperty => "set_property",
+            Self::SetAnchor => "set_anchor",
+            Self::DeleteAnchor => "delete_anchor",
             Self::ReorderLayers => "reorder_layers",
             Self::Tombstone => "tombstone",
             Self::Revert => "revert",

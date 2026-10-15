@@ -1309,6 +1309,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             "缩略图档位 64/128/256 或 false 跳过（缺省 256）"
         )],
     },
+    // **★ 命名锚点（真机报告 2026-10-15）★**：解决"跨会话坐标漂移 ⇒ 草稿层与彩色层错位" ✓。
+    //   三个工具刻意用**最小**接口（Muse 的方案原文 ✓）：set / get / delete ✓。
+    ToolSpec {
+        name: "set_anchor",
+        profile: Profile::Core,
+        summary: "**★ 在文档里钉死一个命名锚点 ★**（真机报告 2026-10-15：解决跨会话「错位」✓）。起稿阶段把关键点定死（left_eye／right_eye／nose_tip／mouth_left…✓），之后**每个新会话**（以及**重启之后** ✓）都用 `get_anchors` 读回**同一组坐标** ✓，**不许重新估算** ✗ —— 那正是草稿层与彩色层对不齐的根因 ✓（用户已实测：MCP 坐标系本身没有问题 ✓）。**锚点存在文档里** ⇒ 随原子日志持久化 ✓ ⇒ 清 `/tmp`、换 session、重启服务都**不丢** ✓。同名再设 = **覆盖** ✓（改主意时直接覆盖，不必先删 ✓）。",
+        mutating: true,
+        params: &[
+            param!("name", String, true, "锚点名（建议用能自解释的英文名 ✓，如 left_eye ✓）"),
+            param!("x", Number, true, "画布坐标 x（逻辑像素，与 points 同一坐标系 ✓）"),
+            param!("y", Number, true, "画布坐标 y"),
+            param!("note", String, false, "可选备注（如「往外眼角偏 2px」✓）"),
+        ],
+    },
+    ToolSpec {
+        name: "get_anchors",
+        profile: Profile::Core,
+        summary: "**★ 读回全部命名锚点 ★**（配 `set_anchor` ✓）。**开画前先读它** ✓：拿到的是**这份文档定死过的**坐标 ✓，不是要你重新目测的估计值 ✗。返回 `{anchors: {名字: {x, y, note?}}, count}` ✓。空文档返回空表（不是错误 ✓）。",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
+        name: "delete_anchor",
+        profile: Profile::Core,
+        summary: "删掉一个命名锚点（**不存在就报错** ✓，不静默成功 ✗ —— 免得你以为删掉了 ✓）。",
+        mutating: true,
+        params: &[param!("name", String, true, "要删的锚点名")],
+    },
     ToolSpec {
         // **只读的"观察口"** ✓（第 856 轮 ✓）：外部实测报告 #13 —— "一旦落笔，画布就变成
         // **完全不透明的黑盒**" ✗ ⇒ agent 只能"导出 PNG 再解析" ✓。
@@ -3245,6 +3273,9 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
     match spec.name {
         "sample_color" => read_sample_color(ctx, args),
         "get_document" => read_get_document(ctx, args),
+        "set_anchor" => write_set_anchor(ctx, args),
+        "get_anchors" => read_get_anchors(ctx, args),
+        "delete_anchor" => write_delete_anchor(ctx, args),
         "get_state" => read_get_state(ctx, args),
         "list_documents" => read_list_documents(ctx),
         "list_layers" => read_list_layers(ctx),
@@ -3453,6 +3484,88 @@ fn read_sample_color(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "height": rendered.height,
         "mime_type": rendered.mime_type,
         "blob_hash": rendered.blob_hash.to_string(),
+    }))
+}
+
+/// 取一个必需的数值参数（缺/类型不对都报清楚 ✓）。
+///
+/// **为什么要这个帮手** ✗：仓库里没有 `require_f64` ✓（只有 `require_str` 一类 ✓），
+/// 而"类型不对"要给的**不是**泛泛的 invalid_argument，而是**指名道姓说哪个字段** ✓。
+fn require_f64(args: &Value, key: &str) -> Result<f64> {
+    args.get(key).and_then(Value::as_f64).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{key} 必须是数值")),
+        )
+    })
+}
+
+/// **★ 命名锚点：写一个（真机报告 2026-10-15）★** —— 同名覆盖 ✓。
+fn write_set_anchor(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let name = require_str(args, "name")?;
+    if name.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("name 不能为空"),
+        ));
+    }
+    let x = require_f64(args, "x")?;
+    let y = require_f64(args, "y")?;
+    let mut payload = json!({"name": name, "x": x, "y": y});
+    if let Some(note) = optional_str(args, "note") {
+        payload["note"] = json!(note);
+    }
+    let result = ctx.commit(AtomKind::SetAnchor, payload)?;
+    finish_mutation(ctx, &result, None)
+}
+
+/// **★ 命名锚点：删一个 ★**（不存在则 `precondition` 已经会拒 ✓）。
+fn write_delete_anchor(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let name = require_str(args, "name")?;
+    // **★ 必须在工具层先查（实测发现）★**：折叠是**容错**的 ✓ —— 原子的 `precondition`
+    //   失败只产生一条 `FoldWarning` ✓、**不会**让工具调用失败 ✗ ⇒ 我第一版只靠
+    //   `fold::precondition` 里的检查 ⇒ 实测"删不存在的锚点"返回了 **`ok=true`** ✗✗
+    //   （端到端当场抓到 ✓）。⇒ 想在**调用方**看到错误，就得在这里自己查 ✓。
+    {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        if !document.state().anchors.contains_key(&name) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "找不到锚点 {name} ⇒ 现有锚点：{}",
+                    document
+                        .state()
+                        .anchors
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            ));
+        }
+    }
+    let result = ctx.commit(AtomKind::DeleteAnchor, json!({"name": name}))?;
+    finish_mutation(ctx, &result, None)
+}
+
+/// **★ 命名锚点：读全部 ★** —— 从**文档状态**读 ✓（所以跨会话、跨重启都在 ✓）。
+fn read_get_anchors(ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let anchors = document.state().anchors.clone();
+    Ok(json!({
+        "ok": true,
+        "anchors": anchors,
+        "count": anchors.len(),
     }))
 }
 
@@ -17615,6 +17728,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("list_layers", r#"{}"#),
     ("sample_color", r#"{"x": 120, "y": 64}"#),
     ("get_document", r#"{}"#),
+    // **★ 命名锚点（真机报告 2026-10-15）★**：起稿定死关键点 ⇒ 跨会话不再重估 ✓。
+    (
+        "set_anchor",
+        r#"{"name": "left_eye", "x": 268, "y": 286, "note": "外眼角偏 2px"}"#,
+    ),
+    ("get_anchors", r#"{}"#),
+    ("delete_anchor", r#"{"name": "left_eye"}"#),
     (
         "new_document",
         r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,

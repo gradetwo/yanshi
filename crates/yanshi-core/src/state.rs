@@ -414,6 +414,28 @@ pub struct DeclareHead {
     pub reason: Option<String>,
 }
 
+/// **★ 命名锚点（真机报告 2026-10-15：跨会话"错位"的解药）★**
+///
+/// **问题**：每个新会话都**重新目测**估算五官位置 ⇒ 草稿层与彩色层**必然漂移** ✗
+///（用户的根因分析 ✓，并已在 Railway 上验证"MCP 坐标系本身没有 bug" ✓）。
+///
+/// **做法**：把"关键点"**存进文档**（而不是存在 AI 的记忆或 /tmp 里 ✓）：
+/// 起稿阶段 `set_anchor` 定死左眼/右眼/鼻尖/嘴角 ✓，之后**所有会话**（以及**重启之后** ✓）
+/// 都用 `get_anchors` 读回**同一组坐标** ✓，不许重新估算 ✓。
+///
+/// **持久性从哪来** ✓：它挂在 [`DocumentState`] 上 ⇒ 随**原子日志**走 ✓
+/// ⇒ `/tmp` 被清空也**不会丢** ✓（用户明确要求的一条 ✓）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    /// 画布坐标 x（逻辑像素 ✓，与 `points` 同一坐标系 ✓）。
+    pub x: f64,
+    /// 画布坐标 y。
+    pub y: f64,
+    /// 可选备注（例如"这里往外眼角偏 2px" ✓）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// 文档状态：折叠原子日志的结果（设计文档 4.1 – 4.5）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentState {
@@ -432,6 +454,13 @@ pub struct DocumentState {
     /// 背景。
     #[serde(default)]
     pub background: Value,
+    /// **★ 命名锚点（2026-10-15 真机报告）★**：`名称 => 坐标`，随文档持久化 ✓。
+    ///
+    /// `serde(default)` ＋ `skip_serializing_if` 是**必须的** ✓：
+    /// 老文档里没有这个键 ⇒ 反序列化要成空表 ✓；空表时**不写这个键** ⇒
+    /// **既有文档逐字节不变** ✓（本仓的"默认行为不变"纪律 ✓）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub anchors: BTreeMap<String, Anchor>,
     /// 介质。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub medium: Option<String>,
@@ -570,6 +599,7 @@ impl DocumentState {
             height: 0,
             color_space: default_color_space(),
             background: Value::Null,
+            anchors: BTreeMap::new(),
             medium: None,
             style: None,
             layers: BTreeMap::new(),
