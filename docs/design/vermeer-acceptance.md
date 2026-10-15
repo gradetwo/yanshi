@@ -3840,3 +3840,34 @@ let merged = merge_by_rows(&old, &fresh);
 **★ 纪律** ✓：**动手前把计划本身验一遍** ✗ ——
 本轮如果直接照 §49 补六十六 改 ✓，会在**编译/生命周期**上撞很久 ✗，
 而且**可能压根不省**✗（因为输出尺寸每轮都变 ✓）。
+
+### 四十九之补七十四：live/peak 读数与"释放只记了一半"（2026-10-15 ✓）
+
+**记账点全貌** ✓（一次 grep ✓）：
+| 位置 | 记什么 | 有释放吗 ✗ |
+|---|---|---|
+| `alloc_probe.rs:146` | `record(point, bytes)` —— `record_site` 的转发 ✓ | — |
+| `buffer_pool.rs:359` / `:374` | 池的分配（`PoolFresh`／`PoolReuse` ✓） | **有** ✓ |
+| `buffer_pool.rs:402` | **`record(AllocPoint::PoolRelease, bytes)`** ✓✓ | — |
+| `buffer.rs:134` | `record_site(BufferFresh, …)`（**绕过池**的分配 ✗） | **没有** ✗✓ |
+| `render.rs:3192`＋ 的 `probe_objects.record(…)` | **另一套**（**耗时**探针 ✗，与分配无关 ✓） | — |
+
+**⇒ 由此得出两件事** ✓：
+  1. **池那一侧** ✓：分配 ✓＋释放 ✓ 都有记录 ⇒ **live/peak 可算** ✓；
+  2. **`BufferFresh` 那一侧** ✗：**只有分配、没有释放** ✗ ⇒
+     ⇒ 若直接按 `AllocPoint` 加减 ✓ ⇒ 这个计数会**只增不减** ✗
+     ⇒ ⇒ **不能**直接用它当 live ✗✓。
+
+**⇒ 所以"live/peak 读数"的正确加法** ✓（两条路 ✓，都不大但要选 ✓）：
+  * **(A) 给 `Buffer` 加 `Drop` 钩子** ✓：`impl Drop for Buffer { fn drop(&mut self) { record(BufferRelease, self.pixels.len()*4) } }`
+    ⇒ ⇒ live 与 peak 都准 ✓；**代价** ✓：`Buffer` 是**热**类型 ✓ ⇒ `Drop` 会进**每条释放路径** ✓
+    ⇒ ⇒ 需确认**不影响性能与逐字节判据** ✓（本仓有 `humanize:false` 逐字节那条 ✓）；
+  * **(B) 只统计池那一侧** ✓：不碰 `Buffer` ✓ ⇒ **零风险** ✓
+    ⇒ ⇒ 但只看得到"池里驻留多少"✗ ⇒ **看不到** `BufferFresh` 那 1.58 GB 的**瞬时并存** ✗
+    ⇒ ⇒ 对本次目的（"**哪几块同时活着**"✗）**不够** ✗。
+**⇒ 倾向 (A)** ✓ —— 因为 §49 之补七十三 的结论正是"**必须看清瞬时并存**"✗；
+但**先**核对一件事 ✓：`Buffer` 是不是 `Copy`／有没有别的 `Drop` 约束 ✗
+（有 `Drop` 就不能 `Copy` ✗ ⇒ 若现在依赖 `Copy` ⇒ 改动会外溢 ✗）。
+
+**⇒ 下一步** ✓：确认 `Buffer` 的 `Copy`/`Clone`/`Drop` 现状 ✓（一次 grep ✓）
+⇒ 再决定走 (A) 还是 (B) ✓ —— **仍不动手** ✗（先读 ✓）。
