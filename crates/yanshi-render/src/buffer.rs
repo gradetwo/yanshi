@@ -1164,6 +1164,23 @@ impl Buffer {
     }
 }
 
+/// **★ `Buffer` 丢弃时登记（2026-10-15 ✓）★**
+///
+/// **为什么需要它** ✗：探针原先只记了**分配**（`record_site(BufferFresh, …)` ✓）
+/// **没有**记"绕过池"那一侧的**释放** ✗ ⇒ "**当前活着**"算不出来 ✓（§49 之补七十四 ✓）。
+/// **⇒ 加上之后** ✓：`buffer_fresh − buffer_release` ＝ **当前活着**的字节数 ✓（脚本里算 ✓）。
+///
+/// **成本** ✓：探针**关着**时只是一次 `OnceLock` 读 ＋ 立即返回 ✓
+/// （`record` 首句即 `if !alloc_probe_on() { return; }` ✓）；
+/// **`Buffer` 不是 `Copy`** ✓ ⇒ 加 `Drop` **不违反**任何约束 ✓（§49 之补七十五 ✓）。
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        crate::alloc_probe::record(
+            crate::alloc_probe::AllocPoint::BufferRelease,
+            self.pixels.len() * std::mem::size_of::<f32>(),
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
