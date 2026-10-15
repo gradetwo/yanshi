@@ -1237,6 +1237,10 @@ impl Workspace {
             if timing {
                 mark("after_doc_open");
             }
+            // **★ 记下"打开时读了多少原子"（2026-10-15 ✓；待办 ①）★**
+            //   现在它**等于全量** ✓（因为还没有快照 ✓）⇒ ⇒ 将来加了"快照 ＋ 尾巴"后
+            //   它应当**明显变小** ✓ —— 判据就断言这一点 ✓（变异：退化成全量读 ⇒ 变大 ⇒ 红 ✓）。
+            document.set_atoms_read_on_open(atoms_len as u64);
             if let Some((seq, png)) = render {
                 // 打开即图片（14.5/6.2）：**复用持久化渲染**，不重放历史。
                 //

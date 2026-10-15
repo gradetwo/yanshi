@@ -291,6 +291,14 @@ pub struct Document {
     ///   ⇒ **∴ 于是** **tile 级 `below_reused`／`above_reused`** 在那条路上**永远为假 ✓**
     ///   ⇒ **∴ 这个计数**才是**用户实际走的快路径**的指标 ✓**（**∴ 判据**要用它 ✓）**。
     full_frame_hits: u64,
+    /// **★ 打开时从磁盘**读入**的原子数（2026-10-15 ✓；待办 ① 的判据要它 ✓）★**
+    ///   **为什么** ✗：判据要断言"打开**读了什么**"而不是"花了多久" ✓
+    ///   （时间／内存都易抖 ✗ ⇒ 那种断言在 CI 与本机之间不可比 ✓，见 §49 之补 ✓）。
+    ///   **有了它** ✓：让"加载走**快照 ＋ 尾巴**"之后这个数**自然变小** ✓；
+    ///   **变异**（退化成全量读）⇒ 它变大 ⇒ 判据**红** ✓ —— 这就是这条读数的用处 ✓。
+    ///   **写入点** ✓：`Workspace::open_document_inner` 构造完 `Document` 后写一次 ✓
+    ///   （款式照 `open_ms` ✓：**只在真加载那条路上写** ✓）。
+    atoms_read_on_open: u64,
     /// 文档级缩略图（覆盖整幅画布），6.2/7.3「打开即图片」用它。
     document_thumbnail: Option<BlobHash>,
     /// 上述缩略图对应的 seq（用于判定是否已落后于 HEAD）。
@@ -487,6 +495,9 @@ impl Document {
             render_watermark: 0,
             last_render_blob: None,
             full_frame_hits: 0,
+            // **先给 0** ✓：真正的值由 `open_document_inner` 在构造后立刻写入 ✓
+            //   （款式与 `open_ms` 一致 ✓ —— 那条也是"构造时 0、冷开后写" ✓）。
+            atoms_read_on_open: 0,
             document_thumbnail: None,
             document_thumbnail_seq: 0,
             // **∴ 第 247 轮 ✓**：**还没推迟过 ⇒ **∴ 首次读**会推迟 ✓
@@ -1944,6 +1955,16 @@ impl Document {
     /// 由 `Workspace::open_document` 写入 ✓（**唯一写入点** ✓）。
     pub(crate) fn set_open_ms(&mut self, ms: u64) {
         self.open_ms = ms;
+    }
+
+    /// **打开时从磁盘读入的原子数** ✓（纯观测 ✓；待办 ① 的判据用它 ✓）。
+    pub const fn atoms_read_on_open(&self) -> u64 {
+        self.atoms_read_on_open
+    }
+
+    /// 由 `Workspace::open_document_inner` 写入 ✓（**唯一写入点** ✓）。
+    pub(crate) fn set_atoms_read_on_open(&mut self, atoms: u64) {
+        self.atoms_read_on_open = atoms;
     }
 
     /// **文档级缩略图是否已经是最新** ✓（第 75 轮 ✓）—— 保存点据此**跳过**重复生成 ✓。
