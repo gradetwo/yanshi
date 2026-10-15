@@ -668,3 +668,34 @@ if carried.len() >= BELOW_SIG_GROUPS && !carried.contains_key(&sig) { … }
 同一区域重复渲染：两者**均为 0** ✓
 ```
 
+## §37 ★★ 4K 峰值 872 → 621 MB：**按尺寸分级**的保留策略（2026-10-15 ✓ 两面都实测 ✓）★★
+
+**侦察（§41 记在验收档 ✓）**：4K＋4 层整幅渲染的 RSS 增量 **872 MB** ✓，但**分配探针里没有一个桶是 268 MB** ✗
+⇒ 那不是"此刻在用"的缓冲 ✓，而是**池为了复用留住**的几张全幅缓冲 ✓
+（池的字节预算 ＝ `max(192 MiB, 并发 worker 数 × 本轮最大单次取用)` ✓ ⇒ 4K 下可达 1–2 GB ✗）。
+
+**改动（`crates/yanshi-render/src/buffer_pool.rs` ✓）**：
+```rust
+// 单个缓冲超过 64 MiB ⇒ 不保留（还给操作系统）；小缓冲照旧保留
+pub const MAX_RETAINED_PER_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+…
+let size_ok = bytes <= MAX_RETAINED_PER_BUFFER_BYTES;
+let retain = enabled && count_ok && bytes_ok && size_ok;
+```
+**为什么不是一刀切** ✗：第 254 轮给保留字节加**绝对上限**（`MAX_RETAINED_BYTES`）**试过、已撤** ✓ ——
+那会**所有尺寸**的复用一起坏 ✗ ⇒ **11× CPU 回归** ✓。本常数**只挡大块** ✓。
+
+**★ 两面都测（缺一面不算完成 ✓）★**：
+
+| 面 | 结果 |
+|---|---|
+| **① 峰值** | `tool-render-memory-budget.mjs`：**872 → 621 MB**（预算 800）⇒ **退出 1 → 0** ✓（降了 251 MB ≈ 一张 268 MB 缓冲 ✓）|
+| **② 复用语义** | `tool-below-sig-alternate` ✓／`tool-below-invalidation` ✓／`tool-below-retention` ✓／`tool-below-reuse` ✓／`tool-render-cost-accounts` ✓ ⇒ **5/5** ✓ |
+| **③ 门禁** | `cargo test --workspace` ✓；`clippy --workspace --all-targets -- -D warnings` ✓ |
+
+**边界（如实说 ✓）**：阈值取 **64 MiB** ✓ ⇒ **2K 整幅（≈67 MB）高于它 ⇒ 不再保留** ✗
+—— 这是**有意的**（2K 已是"大画布" ✓）；常见尺寸（≤1K）与 4K 的**分带小块**（268/N）照旧复用 ✓。
+测得的样子 ✓：2K 交替渲染时 `pool_reuse` **在涨**（第 2 次 +6 ✓），此后**稳态 Δ0** ✓。
+**预算暂不收紧** ✓（实测 621／预算 800 ⇒ 余量 179 MB ✓）：判据说要"优化后再收紧" ✓，
+但**收得太紧会造出新的抖动红** ✗ ⇒ 留到有实测余量时再收 ✓。
+

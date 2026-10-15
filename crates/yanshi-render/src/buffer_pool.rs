@@ -79,6 +79,22 @@ pub const MAX_POOLED_BUFFERS: usize = 16;
 /// **个数上限始终生效**，额外缓冲仍受字节预算约束。
 pub const MIN_POOLED_BYTES: usize = 192 * 1024 * 1024;
 
+/// **★ 单个缓冲的保留上限 —— 按**尺寸**分级（2026-10-15 加 ✓）★**
+///
+/// **为什么** ✗：4K 下一个**整幅** f32 工作缓冲就是 **268 MB** ✓。
+/// 实测（4K ＋ 4 层整幅渲染 ✓）：RSS 增量 **872 MB** ✓ ——
+/// 而分配探针里**没有一个桶是 268 MB** ✗ ⇒ 那 872 MB 不是"此刻在用"的缓冲 ✓，
+/// 而是**池为了复用留住**的几张（重复渲染实测 Δ0 ✓，§36／§41 ✓）。
+///
+/// **为什么不用"一刀切"** ✗：给保留字节加**绝对上限**是第 254 轮**试过、已撤**的 ✓
+/// （`MAX_RETAINED_BYTES` ⇒ **所有尺寸**的复用一起坏 ⇒ **11× CPU 回归** ✗）。
+/// 本常数**只挡大块** ✓：小缓冲照旧保留 ✓ ⇒ 常见尺寸的复用与 Δ0 **不受影响** ✓。
+///
+/// **取 64 MiB 的理由** ✓：2K 整幅 ＝ 4096×... 见下 —— 2048² × 4ch × 4B ≈ **67 MB** ✓，
+/// 略高于本值 ⇒ **2K 及以下的整幅缓冲仍被保留** ✓（常见画布尺寸 ✓），
+/// 而 **4K／8K 的整幅（268 MB／1 GB）与半幅都不留** ✗ ⇒ 峰值可降约 268 MB／张 ✓。
+pub const MAX_RETAINED_PER_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
 // **★ 保留字节的绝对上限 —— **试过、已撤**（第 254 轮 A/B 实测）★**
 //
 // **当时为什么加**：预算公式只有下界 ＋ 并发 × 单块 => 全幅渲染时
@@ -385,7 +401,12 @@ impl BufferPool {
         let count_ok = inner.free.len() < self.limits.max_buffers.max(1);
         let bytes_ok =
             inner.free.is_empty() || inner.retained_bytes.saturating_add(bytes) <= budget;
-        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok;
+        // **★ 按尺寸分级（2026-10-15 ✓）★**：**单个**缓冲超过
+        // [`MAX_RETAINED_PER_BUFFER_BYTES`] 就**不保留** ✓（直接还给操作系统 ✓），
+        // 小缓冲照旧保留 ✓ ⇒ 常见尺寸的复用不受影响 ✓。
+        // **这不是**第 254 轮那次被撤回的一刀切 ✗（那次给保留字节加绝对上限 ⇒ 所有尺寸复用一起坏 ✗）。
+        let size_ok = bytes <= MAX_RETAINED_PER_BUFFER_BYTES;
+        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok && size_ok;
         if retain {
             inner.retained_bytes += bytes;
             inner.free.push((id, buffer));
