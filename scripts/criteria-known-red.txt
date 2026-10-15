@@ -28171,4 +28171,27 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #      * **另一条更省的路（备选 ✓）**：既然推送线程本来就是"每 25 ms 把队列里的事件发出去" ✓
 #        ⇒ 也许 `--watch` 只需要**触发一次"该文档有新原子"的事件** ✓（而不是自己搬运原子 ✓）
 #        ⇒ 两条路都要先看清队列的语义再选 ✓（**别猜** ✗）。
+#    **★★★ 队列与帧格式已看清（2026-10-15 ✓）⇒ 接线只差最后一步 ★★★**
+#      推送线程（`:3018`–`3051` ✓）每 `push_interval_ms`（缺省 **25 ms** ✓）做：
+#        ```
+#        let document = workspace.document_mut(&push_doc)?;      // ← 该文档 ✓
+#        document.broadcaster_mut().drain(subscriber)            // ← **队列就在这** ✓
+#        …
+#        json!({"type": "event", "event": event})                // ← **帧格式** ✓
+#        write_frame(&mut *stream, &Frame::text(payload))        // ← WS 文本帧 ✓
+#        ```
+#      ⇒ **队列 ＝ 该文档的广播器** ✓（`Document::broadcaster_mut()` ＋ `drain(subscriber)` ✓）；
+#        **帧 ＝ `{"type":"event","event":<event>}`** ✓ ⇒ 我的判据"帧里出现该原子 id"**方向正确** ✓
+#        （模块头也写着控制流是"全部原子元数据" ✓）。
+#      **★ 接线只差最后一步 ✗**：找出**谁往广播器里放**（工具路径 `POST /api/tools` 那条 ✓）✓ ——
+#        大概是 `broadcaster_mut().publish(…)`／`push(…)` 之类 ✓ ⇒ **照它做** ✓（引擎已有的不做第二遍 ✓）。
+#        **查法** ✓：`grep -n "broadcaster" crates/yanshi-server/src/document.rs crates/yanshi-http/src/server.rs`
+#        ⇒ 看写入侧的方法名与它需要的参数（尤其是 event 的**类型** ✓，例如"新增原子"那一类 ✓）。
+#      **接线因此是两件事** ✗✓：① 在推送循环里轮询该文档的原子日志 ✓（`TailFollower` ✓）
+#        ⇒ 前进 ⇒ `Workspace::reload_document(&push_doc)` ✓；
+#        ② **把新读到的原子（或一条"有新原子"事件）publish 进该文档的广播器** ✓
+#        ⇒ ⇒ 推送线程下一拍自然就把它发出去了 ✓（不新写发送逻辑 ✗）。
+#      **测试要点** ✓：判据只看"帧里出现外部原子的 id" ✓ ⇒ 所以 publish 的事件里**必须带 id** ✓；
+#        若事件只带一个"变了"的标记 ✗ ⇒ 判据会红 ✗ ⇒ 那时要么改判据 ✓、要么让事件带 id ✓
+#        —— **这条要在接线时一次定清** ✗（别等判据红了再猜 ✓）。
 
