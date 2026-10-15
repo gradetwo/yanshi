@@ -2946,7 +2946,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
-            // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
+            param!("pressure_curve", String, false, "**压感曲线**：`auto`（缺省 ✓）＝「没给 pressure」或「给了但整笔恒定（如全程 0.8）」时**自动加起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（程序生成的坐标最容易犯这个 ✗）；`flat` ＝ **永不动你的 pressure** ✓（技术绘图/需要精确控制时用 ✓）。**给了有起伏的 pressure 时 `auto` 也会原样尊重** ✓（不叠两层 ✓）；**`humanize:false` 时两者都不动** ✓"),            // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
             // **P2 #16 混色模式**：缺省 rgb（逐字节不变）；pigment 走光谱 K/S。
             param!("color_mixing", String, false, "颜色混合模式：rgb（缺省，sRGB 线性插值）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰；用于 `color_to` 一笔多色的渐变）"),
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
@@ -13549,6 +13549,22 @@ fn all_points_have_pressure(args: &Value) -> bool {
     }
 }
 
+/// **★ 整笔压力"几乎恒定"吗（真机报告 P1：`pressure_curve`）★**（第 254 轮）
+///
+/// **为什么需要它**：真机反馈"**笔触太硬**"——根因是**程序生成的压感是恒定值** ✓
+///（`0.8` 这种"正确但没感觉"的值 ✗）；人手下笔天生有"起轻行重收轻" ✓。
+/// **判据**：所有点的 pressure 与第一点之差 ≤ `0.06` ⇒ 视为"恒定" ✓
+///（容差取 6% 是为了**包住 `tremor` 的 ±3%** ✓ —— 包络在 tremor **之后**执行 ✓）。
+fn points_are_flat(points: &[(f64, f64, f64)]) -> bool {
+    let Some(first) = points.first() else {
+        return true;
+    };
+    const EPSILON: f64 = 0.06;
+    points
+        .iter()
+        .all(|(_, _, pressure)| (pressure - first.2).abs() <= EPSILON)
+}
+
 /// **★ 拟人起收笔包络（需求文档附录二）★**（第 254 轮）
 ///
 /// 非对称：起笔 12% 快升、行笔 60% 平稳、收笔 28% 长尾衰减。
@@ -15210,7 +15226,22 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         None => points,
     };
     let mut points = points;
-    if optional_bool(args, "humanize").unwrap_or(true) && !all_points_have_pressure(args) {
+    // **★ 压感包络的开关（真机报告 P1：`pressure_curve`）★**（第 254 轮）
+    //
+    // 真机反馈"**笔触太硬，压力变化没用**"✗ —— 根因是**程序生成的 pressure 是恒定值**
+    //（`0.8` 这种 ✓），而包络原来**只在"完全没给 pressure"时**才加 ✓ => 给了恒定值就绕过了 ✓。
+    // **现在**：
+    //   * `auto`（缺省 ✓）：**没给 pressure** ⇒ 加包络（老行为 ✓）；**给了但整笔恒定** ⇒ **也加** ✓；
+    //     **给了有起伏的** ⇒ **原样尊重** ✓（不叠两层 ✗）；
+    //   * `flat`（`none`/`off` 同义 ✓）：**永不动** ✓（技术绘图 ✓）；
+    //   * **`humanize: false` ⇒ 一律不动** ✓ —— 这是硬约束
+    //     （"`humanize:false` 时老行为逐字节不变" ✓），所以它**优先于** `pressure_curve` ✓。
+    let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "auto".to_owned());
+    let envelope_wanted = match pressure_curve.as_str() {
+        "flat" | "none" | "off" => false,
+        _ => !all_points_have_pressure(args) || points_are_flat(&points),
+    };
+    if optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted {
         apply_humanize_envelope(&mut points);
     }
     // **★ P1 #10 罩染（opt-in）★**（第 254 轮）
