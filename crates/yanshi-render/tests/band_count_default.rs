@@ -53,6 +53,7 @@ fn layer(id: &str, z: i64) -> Layer {
 
 fn object(id: &str, layer_id: &str, z: i64, data: serde_json::Value) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: layer_id.to_owned(),
         object_type: ObjectType::Shape,

@@ -66,6 +66,7 @@ fn background_document(side: u32) -> (DocumentState, MemoryBlobStore) {
     state.objects.insert(
         "obj_bg".to_owned(),
         Object {
+            seq: 0,
             id: "obj_bg".to_owned(),
             layer_id: "layer_bg".to_owned(),
             object_type: ObjectType::RasterPatch,

@@ -17,6 +17,7 @@ use yanshi_render::tile::TileGrid;
 
 fn stroke_object(points: serde_json::Value, size: f64) -> Object {
     Object {
+        seq: 0,
         id: "s1".to_owned(),
         layer_id: "L".to_owned(),
         object_type: ObjectType::Stroke,

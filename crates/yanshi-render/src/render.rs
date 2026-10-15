@@ -5394,6 +5394,7 @@ mod tests {
 
     fn object(id: &str, layer_id: &str, object_type: ObjectType, z: i64, data: Value) -> Object {
         Object {
+            seq: 0,
             id: id.to_owned(),
             layer_id: layer_id.to_owned(),
             object_type,

@@ -419,6 +419,7 @@ mod tests {
         state.objects.insert(
             "obj_1".to_owned(),
             Object {
+                seq: 0,
                 id: "obj_1".to_owned(),
                 layer_id: "layer_1".to_owned(),
                 object_type: ObjectType::Shape,

@@ -45,6 +45,7 @@ fn layer(id: &str, z: i64) -> Layer {
 
 fn shape(id: &str, layer_id: &str, z: i64, bbox: [f64; 4], color: serde_json::Value) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: layer_id.to_owned(),
         object_type: ObjectType::Shape,
@@ -71,6 +72,7 @@ fn shape(id: &str, layer_id: &str, z: i64, bbox: [f64; 4], color: serde_json::Va
 
 fn stroke(id: &str, layer_id: &str, z: i64, points: Vec<(f64, f64)>, size: f64) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: layer_id.to_owned(),
         object_type: ObjectType::Stroke,

@@ -61,6 +61,7 @@ fn layer(id: &str) -> Layer {
 
 fn base_object(id: &str, layer_id: &str, object_type: ObjectType, created_by: &str) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: layer_id.to_owned(),
         object_type,

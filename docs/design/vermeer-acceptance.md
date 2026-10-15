@@ -825,3 +825,34 @@ objects.sort_by_key(|o| (o.z_index, o.id.clone()));
 **为什么此事值得更谨慎** ✗：`Object` 是**持久化结构** ✓ ⇒ 加字段必须走 `serde(default)` ✓ 且要跑
 **序列化往返**判据 ✓（老工程打开后**逐字节**不变 ✓）—— 这正是纪律里"改语义/结构要能回退、要有判据守"的场景 ✓。
 
+## 三十、★★★★★ 修好并验证：给 `Object` 加 `seq` ⇒ **虹膜与瞳孔出现在画布上了**（2026-10-15）★
+
+**改动三处** ✓（结构与排序 ✓）：
+  1. `crates/yanshi-core/src/state.rs`：`Object` 加 **`#[serde(default)] pub seq: crate::ids::Seq`** ✓
+     （来自创建它的原子的序号 ✓ = **真正的加入顺序** ✓；`serde(default)` ⇒ **老文档逐字节不变** ✓）；
+  2. `crates/yanshi-core/src/fold.rs`：两处生产构造点写 `seq: atom.seq` ✓
+     （`CreateObject`／`ImportImage` ✓）；`yanshi-wasm` 的**预览对象**给 `u64::MAX` ✓（预览本就该在最上面 ✓）；
+     其余 **15 处**（测试与示例的构造点）补 `seq: 0` ✓ —— 全部由**编译器**逐一指出 ✓（`--workspace --all-targets` ✓）；
+  3. `objects_in_layer`：排序改成 **`(z_index, seq, id)`** ✓（`id` 只做最后的兜底 ✓）。
+
+**★ 验证（三处，都是实测 ✓）★**：
+  * **那条已知红判据转绿** ✓（`scripts/tool-bitmap-tiles-render.mjs` ✓，退出码 **0** ✓）：
+    ```
+    ✓ ① 正对照：draw_stroke 改了 29508 个像素
+    ✓ ② 带索引的 medium_stroke 改了 **10380** 个像素
+    ✓ 带 tiles 索引的位图确实画到了画布上（两条都过 ✓）
+    ```
+    ⇒ **10380 正是虹膜位图里不透明像素的个数** ✓ ⇒ **整个虹膜都上画布了** ✓；
+  * **验收图人眼可见** ✓：`docs/design/evidence/vermeer-study2.png` 现在**有虹膜（暖棕环 ✓）、瞳孔（深色中心 ✓）、
+    高光（白点 ✓）** ✓ —— 这一条正是验收 v2 的两处硬伤之一 ✓；
+  * **门禁** ✓：`cargo test --workspace` = 0 ✓、`cargo clippy --workspace --all-targets -- -D warnings` = 0 ✓、
+    `cargo check --workspace --all-targets` = 0 ✓。
+
+**★ 一句话总结这条线索是怎么破的 ✓ ★**（二十几轮 ✓，写下来给后来人 ✓）：
+"介质那一笔不渲染" ✗ → 介质 ✗（否掉）→ `raster_patch` 这条路 ✗（否掉）→ `import_image` ✗（**我的探针 mime 错**，否掉）→
+`tiles` 缺失 ✗（否掉）→ 缝合 ✗（**数据证明缝合是对的** ✓）→ blit ✗（**并轨追踪证明三段带都写进去了** ✓）→
+合成 ✗（**合成采样"之前/之后"读数矛盾** ✓）→ 内存身份 ✓（**同一趟同一块内存、前后读数不同** ✓）⇒
+**"中间有人写过它"** ✓ ⇒ **对象顺序反了** ✓ ⇒ **`Object` 没有序号字段** ✓ ⇒ **加 `seq`** ✓ ⇒ 转绿 ✓。
+**最贵的一课** ✓：我前面有**好几轮**都在怀疑"**没写进去**" ✗，而真相一直是"**写了、随后被盖掉**" ✓ ——
+**指针与"前后两次读数"比任何单点判断都值钱** ✓。
+

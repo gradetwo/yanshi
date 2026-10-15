@@ -47,6 +47,7 @@ fn base_object(
     data: serde_json::Value,
 ) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: layer_id.to_owned(),
         object_type: kind,
@@ -376,6 +377,7 @@ fn perf_overdraw_and_cache_hit_rate() {
 
 fn effects_object(id: &str, object_type: ObjectType, z: i64, data: serde_json::Value) -> Object {
     Object {
+        seq: 0,
         id: id.to_owned(),
         layer_id: "layer_1".to_owned(),
         object_type,

@@ -898,6 +898,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             let layer_id = required(atom, "layer_id")?.to_owned();
             let object_type = parse_object_type(payload_str(&atom.payload, "type"));
             let object = Object {
+                seq: atom.seq,
                 id: object_id.clone(),
                 layer_id,
                 object_type,
@@ -933,6 +934,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                 let layer_id = required(atom, "layer_id")?.to_owned();
                 let object_type = object_type_for(atom.kind, payload_str(&atom.payload, "type"));
                 let object = Object {
+                    seq: atom.seq,
                     id: object_id.clone(),
                     layer_id,
                     object_type,

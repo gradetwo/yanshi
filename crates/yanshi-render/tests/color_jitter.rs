@@ -59,6 +59,7 @@ fn render_stroke(jitter: Option<f64>) -> Vec<u8> {
         data["appearance"] = json!({ "dynamics": { "color_jitter": jitter } });
     }
     let object = Object {
+        seq: 0,
         id: "s1".to_owned(),
         layer_id: "L".to_owned(),
         object_type: ObjectType::Stroke,

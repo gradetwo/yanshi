@@ -211,6 +211,15 @@ impl ObjectType {
 pub struct Object {
     /// 对象 id。
     pub id: ObjectId,
+
+    /// **★ 加入顺序（2026-10-15 加 ✓）★**：来自创建它的那个原子的 `seq` ✓
+    /// —— **同层内排序的稳定依据** ✓（原来退化到按 `id`（用户可见的对象名 ✗）
+    /// ⇒ 后加的对象会被排到前面 ⇒ **被先加的盖住** ✗，见 `docs/design/vermeer-acceptance.md` §29 ✓）。
+    ///
+    /// **`#[serde(default)]`** ✓ ⇒ **老文档逐字节不变** ✓（缺省 0 ✓ ⇒ 与原先"按 id"的顺序不同 ✗，
+    /// 但那种文档本来也没有这个信息 ✓；新写的对象一律有真值 ✓）。
+    #[serde(default)]
+    pub seq: crate::ids::Seq,
     /// 所属图层（权威归属，设计文档 4.1）。
     pub layer_id: LayerId,
     /// 对象类型。
@@ -645,7 +654,11 @@ impl DocumentState {
             .values()
             .filter(|o| o.is_alive() && o.layer_id == layer_id)
             .collect();
-        objects.sort_by_key(|o| (o.z_index, o.id.clone()));
+        // **★ 先 `z_index`，再**加入顺序**（`seq` ✓），最后才用 `id` 兜底（2026-10-15 ✓）★**
+        //   **为什么** ✗：原来第二键是 `o.id` ✓，而它是**用户可见的对象名**（`"iris"`／`"sclera"` ✓）
+        //   ⇒ 后加的对象可能被排到**前面** ⇒ **画在下面、被先加的盖住** ✗
+        //   （实测：虹膜后加却先画，随后被眼白整片盖掉 ✓，见 §28/§29 ✓）。
+        objects.sort_by_key(|o| (o.z_index, o.seq, o.id.clone()));
         objects
     }
 
@@ -891,6 +904,7 @@ mod tests {
 
     fn object(id: &str, layer_id: &str, z: i64) -> Object {
         Object {
+            seq: 0,
             id: id.to_owned(),
             layer_id: layer_id.to_owned(),
             object_type: ObjectType::Stroke,

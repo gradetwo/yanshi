@@ -14,6 +14,7 @@ use yanshi_render::tile::TileGrid;
 
 fn object_with_flat_geometry() -> Object {
     Object {
+        seq: 0,
         id: "flat".to_owned(),
         layer_id: "L".to_owned(),
         object_type: ObjectType::Shape,

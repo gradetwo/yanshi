@@ -241,6 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5) dirty 传播演示：模拟一次笔触编辑，看看失效了哪些 tile。
     let mut edited = state.clone();
     let new_object = yanshi_core::Object {
+        seq: 0,
         id: "stroke_edit".to_owned(),
         layer_id: "layer_ink".to_owned(),
         object_type: yanshi_core::ObjectType::Stroke,

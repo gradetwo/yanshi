@@ -826,6 +826,7 @@ mod tests {
 
     fn shape(id: &str, layer: &str, z: i64, x: f64, y: f64, w: f64, h: f64) -> Object {
         Object {
+            seq: 0,
             id: id.to_owned(),
             layer_id: layer.to_owned(),
             object_type: ObjectType::Shape,

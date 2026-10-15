@@ -377,6 +377,7 @@ impl Kernel {
         };
 
         let object = yanshi_core::Object {
+            seq: u64::MAX, // 预览对象：**画在最上面** ✓
             id: PREVIEW_OBJECT_ID.to_owned(),
             layer_id,
             object_type,
