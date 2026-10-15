@@ -981,3 +981,53 @@ list_textures ⇒ **15 条** ✓（原来是 11 条 ✓）
 
 **判决** ✓：§33 里那个"待定"**已定** ✓ —— 选"接进引擎" ✓，并**留了判据**守它 ✓。
 
+## 三十七、★ 接手清单（2026-10-15 封卷 ✓）
+
+### 一、已完成（都有实测证据 ✓）
+
+| 项 | 证据落在哪 |
+|---|---|
+| 需求文档 **P0①–⑥**（`carried_color`／笔毛分叉／`time_ms`／`brush_params`／`medium_params`／`swatch_brush_strokes`）| 各自判据 ＋ `docs/tools.md` ✓ |
+| **P1⑦–⑭**（纹理门控／压感生物力学／`list_brushes`／`glaze`／`humanize`／视觉锚点／草稿-正稿／纸张底纹）| 同上 ✓ |
+| **P2⑮⑯**（高度场／颜料混色，⑯ 走 **Clean-Room** `color_mixing` ✓）| 同上 ✓ |
+| **Muse 四条**：命名锚点 ✓／`calibrate()` ✓／`get_stroke_log()` ✓／`render_region{show_coords}` ✓ | `tool-named-anchors`／`tool-calibrate`／`tool-stroke-log`／`tool-show-coords` ✓ |
+| **验收 v2 两处硬伤**：花瓣痕 → `fill_region` ✓；**虹膜/瞳孔** → `Object.seq` 排序修复 ✓ | 本文件 §11／§28–§30 ＋ 证据图 ✓ |
+| **多平台发布**（linux／macOS x86_64／macOS arm64／Windows ✓）＋ **v0.2.1 已发布** ✓ | GitHub Release ＋ 四平台全绿那次 run ✓ |
+| **乙(i)** 旋钮 ＋ A/B ⇒ 写进两个 guide ✓；**乙(ii)** `BELOW_SIG_GROUPS` 4→**2**（命中数逐位相同 ✓）| §35／§36 ＋ guide ✓ |
+| **丙(i)** `release.yml` 真跑冒烟 ✓（它**当场抓过一个真 bug** ✓）；**丙(ii)** 静态包缺省不带 GPU ✓ | `release.yml` ＋ `docs/design/release-packaging.md` ✓ |
+| **丁⑦** 可平铺纹理资产（4 张 128² ✓、CC0 ✓、**引擎可见** ✓、随包发出 ✓、判据三条 ✓）| `assets/textures/NOTICE.md` ＋ `tool-tileable-textures.mjs` ✓ |
+| **戊** release-packaging 的过重结论已改正 ✓ | `c82573a2` ✓ |
+
+### 二、唯一剩下的（**结构改动** ✗，要清醒时做 ✓）
+
+**DEF-03／乙(iii)**：4K 冷渲染那一趟里 **302 个未走池的 tile 缓冲（541 MB）** ✗；
+方向：**每层缓冲别同时活着**（`src-over` 可结合 ⇒ 边合成边释放 ✓，或分块 ✓）。
+
+**动手前已知的事实** ✓（省得重走）：
+  * **复用不是问题** ✗（§36 实测：重复渲染同一区域，分配数 **Δ0** ✓）；
+  * **观测手段现成** ✓：`YANSHI_ALLOC_PROBE=1` ⇒ `/health.alloc_probe` ✓
+    （`buffer_fresh` 就是"未走池"那一桶 ✓；760² 冷渲染 = **37** 次 ✓）；
+  * **判据现成** ✓：`scripts/tool-render-memory-budget.mjs`（**已登记已知红** ✓）；
+  * **前车之鉴** ✗：给池加 `MAX_RETAINED_BYTES` 曾造成 **11× CPU 回归且没换来内存收益** ✗
+    ⇒ **必须先造出能红的观测，再动** ✓。
+
+### 三、方法与纪律（本会话用血换来的 ✓，按"最贵"排序）
+
+1. **探针必须放在被观察的那次改动**之后** ✗**，且**"之前/之后"都要打** ✓（只打之前等于没打 ✗）；
+2. **改一个函数的调用之前，先读那个函数的实现** ✗（`blit_rgba8` 收**绝对**坐标 ✓ —— 我猜错过一次 ✓）；
+3. **先 `grep` 出"调用方真正调用的那个"** ✗（稠密 `assemble_region` vs 稀疏 `assemble_region_sparse` ✓）；
+4. **两个探针在同一坐标/同一趟上矛盾时，先问"它们摸的是不是同一块内存"** ✗
+   （**指针**比读数根本 ✓ —— 这一条破的案 ✓）；
+5. **变异体本身也要先量** ✗（"我以为它不平铺" vs "实测 12.95 vs 12.84" ✓）；
+6. **读到"某目录不在 git／不可用"这类陈述，先跑一条命令核实** ✗（`git ls-files` 一秒 ✓）；
+7. **单条判据绿 ≠ 在真实调用约定下绿** ✗（`tool-tileable-textures` 的 argv 约定 ✓）；
+8. **判据没红过就不算有牙** ✗（宁可说"这一格的牙没被证明" ✓）。
+
+### 四、环境与入口（省得重新发现 ✓）
+
+* 本机服务器：`./target/release/yanshi-serve --bind 127.0.0.1:79XX --root <tmp> --doc boot --width 320 --height 240 --assets-dir assets` ✓
+  （**8080 是别人的进程** ✗，别用 ✓）；
+* 判据：`node scripts/<name>.mjs http://127.0.0.1:79XX` ✓；`scripts/criteria-known-red.txt` 是已知红台账 ✓；
+* 打包：`scripts/package-release.sh --out <dir>` ✓（**要求工作区干净** ✗ —— 脏树会被 commit 戳守卫拦下 ✓）；
+* 发布：`platforms` 输入可只跑一个平台 ✓（`prepare` 作业算矩阵 ✓）；**tag 推送 ⇒ 永远四平台** ✓。
+
