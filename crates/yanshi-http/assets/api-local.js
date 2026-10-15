@@ -461,11 +461,7 @@ async function withKernel(doc, fn) {
     return null;
   }
 
-  // **★ 起个名字：视口入口要挂在**函数对象**上（2026-10-15 ✓）★**
-  //   **为什么挂在函数上而不是新开一个导出** ✗：本文件的契约是**fetch 式**的 ✓
-  //   （`installLocalApi` 用它覆写 `window.fetch` ✓）⇒ 改契约会牵动 148 个端点 ✓
-  //   ⇒ ⇒ 而 **JS 函数也是对象** ✓ ⇒ 挂一个属性**不破坏任何既有调用** ✓。
-  const local = async function local(req) {
+  return async function local(req) {
     const url = new URL(req.url, location.origin);
     // **★ 路径归一化：去掉**尾部斜杠** ✗ ★**（第 858 轮 ✓；**用户报"还是落笔失败" ✓**）：
     //   **∴ 根因 ✗**：**落笔**把像素 **POST 到 `/api/blob/` ✗**（**带尾斜杠 ✓）
@@ -4699,21 +4695,6 @@ async function withKernel(doc, fn) {
 
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
     throw new Error(`endpoint_not_local: ${url.pathname}`);
-
-  // **★ 视口淘汰入口（乙(iii) 接线 ✓，2026-10-15 ✓）★**
-  // **为什么需要** ✗：内核**早就有** `evict_outside_viewport` ✓（`yanshi-wasm/src/kernel.rs`，
-  //   还有一条测试叫「**is driven by JS** and reports counts」✓），绑定也在
-  //   `web/wasm/yanshi_wasm.js:149` ✓ —— 但**没有任何手写代码调用它** ✗
-  //   ⇒ 视口外的 tile **永远留着** ✓（设计文档 13.3 那条没接上 ✓）。
-  // **谁调** ✓：本地渲染模式下查看器的 `notifyKernelViewport()` ✓。
-  //   服务端渲染时**没有内核** ✓ ⇒ 空操作 ✓（不报错 ✓）。
-  // **参数** ✓：文档坐标的视口矩形 ✓（与 `TileCache::evict_outside_viewport(&Bbox)` 一致 ✓）；
-  //   返回**实际逐出的块数** ✓ ⇒ 调用方据此断言"确实逐出了" ✓（判据用它 ✓）。
-  local.setViewport = async function setViewport(doc, x, y, w, h) {
-    const entry = kernels.get(doc);
-    if (!entry) return 0; // 没有内核实例 ⇒ 服务端在渲染 ⇒ 空操作（不是错误）
-    return withKernel(doc, () => entry.k.evict_outside_viewport(x, y, w, h));
-  };
   };
 }
 
