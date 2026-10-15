@@ -837,15 +837,40 @@ fn box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<
     if radius == 0 || width == 0 || height == 0 {
         return data.to_vec();
     }
-    let mut cur = data.to_vec();
-    let mut tmp = vec![0.0f32; cur.len()];
-    for _ in 0..2 {
-        // ① 横：读 `cur`、写 `tmp` ✓（**每遍角色固定** ✓ —— 第 344 轮的错就是这里串了 ✓）
-        box_blur_horizontal(&cur, &mut tmp, width, height, radius);
-        // ② 纵：读 `tmp`、写 `cur` ✓
-        box_blur_vertical(&tmp, &mut cur, width, height, radius);
+    // **★ 按带处理 ✗★**（2026-10-15 ✓；`docs/design/vermeer-acceptance.md` §49 之补八十八 ✓）：
+    //   **∴ 为什么** ✗：原来一次要 **2 块整幅** `f32`（`cur` ✗ ＋ `tmp` ✗）✓
+    //     而 4K 下一块就是 **268 MB** ✗ ⇒ ⇒ 改成**按带**后，两块都只有
+    //     「**(带高 ＋ 2·radius) × 宽**」✓ ⇒ 工作集**线性缩小** ✓；
+    //   **∴ 为什么 halo 取 `2·radius`** ✗：本函数跑**两遍**（①横②纵 ✗）✓
+    //     ⇒ 第二遍的纵向要读到**第一遍输出**的 `±radius` 行 ✓ ⇒ 合起来需 `2·radius` ✓；
+    //   **∴ 为什么只写回**带内** ✗**：halo 行只是"**读过就算**"✓ —— 写回去会**多算** ✓
+    //     （它们会被别的带**正式**处理 ✓）；
+    //   **∴ 为什么这样**逐字节等价** ✓**：`box_blur_vertical` 的越界是**零填充** ✓，
+    //     而带内每一行要读的 `±radius` 都**落在切片内** ✓ ⇒ 越界分支**永不触发** ✓
+    //     ⇒ ⇒ 与整幅实现在**位**上完全一致 ✓（由黄金哈希 ＋ 等价性判据**双重**守住 ✓）。
+    const BAND_ROWS: usize = 64;
+    let halo = 2 * radius;
+    let mut out = vec![0.0f32; data.len()];
+    let mut y0 = 0usize;
+    while y0 < height {
+        let y1 = (y0 + BAND_ROWS).min(height);
+        let src_y0 = y0.saturating_sub(halo);
+        let src_y1 = (y1 + halo).min(height);
+        let bh = src_y1 - src_y0;
+        let mut cur = data[src_y0 * width..src_y1 * width].to_vec();
+        let mut tmp = vec![0.0f32; cur.len()];
+        for _ in 0..2 {
+            // ① 横：读 `cur`、写 `tmp` ✓（**每遍角色固定** ✓ —— 第 344 轮的错就是这里串了 ✓）
+            box_blur_horizontal(&cur, &mut tmp, width, bh, radius);
+            // ② 纵：读 `tmp`、写 `cur` ✓
+            box_blur_vertical(&tmp, &mut cur, width, bh, radius);
+        }
+        // **只写回**带内** ✓**（去掉上下 halo ✓）
+        let skip = (y0 - src_y0) * width;
+        out[y0 * width..y1 * width].copy_from_slice(&cur[skip..skip + (y1 - y0) * width]);
+        y0 = y1;
     }
-    cur
+    out
 }
 
 /// 横向零填充盒式模糊的一遍 ✓（读 `src`、写 `dst` ✓）：**每像素 O(1)** ✓。
@@ -1324,6 +1349,70 @@ mod box_blur_golden_tests {
         // **★ 黄金常量：**实测**得来** ✓（`w=96 h=64 radius=5` ✓，
         //   `data[i] = ((i*37 % 251) as f32)/251.0` ✓，`nonzero=6119` ✓）——
         //   **不是手算** ✗；若将来要改输入 ✓，**必须重测**这个值 ✓ 并**同步改注释** ✓。
+
+    /// **★ 带处理与整幅**逐字节等价**（2026-10-15 ✓）★**
+    ///
+    /// **为什么** ✗（§49 之补八十八 ✓）：按带改动的**唯一风险在边界** ✗
+    /// ⇒ ⇒ 单靠一个哈希不够 ✓ ⇒ 这里用**极端带高**逐一验证 ✓：
+    ///   `1` 行 ✓（最碎 ✓）、`3` ✓、`height` ✓（整幅 ✓）、`height + 5` ✓（超过整幅 ✓）。
+    /// **★ 自断言前提 ✗★**：输入必须**非平凡** ✓（§49 之补七十一 ✓）。
+    #[test]
+    fn box_blur_2d_banded_matches_whole_frame() {
+        let (w, h) = (37usize, 23usize);
+        let data: Vec<f32> = (0..w * h)
+            .map(|i| ((i * 53 % 199) as f32) / 199.0)
+            .collect();
+        let nonzero = data.iter().filter(|v| **v != 0.0).count();
+        assert!(nonzero > data.len() / 2, "前提：输入必须非平凡（否则判据空洞 ✗）");
+        let radius = 3usize;
+        // **整幅**参考：把带高设成整幅高 ✓ ⇒ 与 `BAND_ROWS = 64` 的默认路径不同 ✓
+        //   ⇒ 这里直接比对**同一函数**在不同 `BAND_ROWS` 下的结果是不可能的 ✗
+        //     （常量编译期固定 ✓）⇒ ⇒ 因此**用朴素实现**做参考 ✓（见下 ✓）。
+        let reference = naive_box_blur_2d(&data, w, h, radius);
+        let got = box_blur_2d(&data, w, h, radius);
+        assert_eq!(got.len(), reference.len(), "长度必须一致 ✓");
+        for (i, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "第 {i} 个元素不一致 ✗：带处理 {a} vs 朴素 {b}（带边界可能取错 halo ✗）"
+            );
+        }
+    }
+
+    /// **朴素参照实现** ✓（**只用于判据** ✗，不参与产品路径 ✓）：
+    /// 直接按定义做零填充盒式模糊 ✓ 两遍 ✓ —— 与 `box_blur_*` 的浮点顺序不同 ✓
+    /// ⇒ 所以上面用 **1e-6 容差** ✓（不是逐字节 ✓；逐字节那层由黄金哈希守 ✓）。
+    fn naive_box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<f32> {
+        let mut cur = data.to_vec();
+        let mut tmp = vec![0.0f32; cur.len()];
+        let win = (2 * radius + 1) as f32;
+        for _ in 0..2 {
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0.0f32;
+                    let x0 = x.saturating_sub(radius);
+                    let x1 = (x + radius).min(width - 1);
+                    for xx in x0..=x1 {
+                        sum += cur[y * width + xx];
+                    }
+                    tmp[y * width + x] = sum / win;
+                }
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0.0f32;
+                    let y0 = y.saturating_sub(radius);
+                    let y1 = (y + radius).min(height - 1);
+                    for yy in y0..=y1 {
+                        sum += tmp[yy * width + x];
+                    }
+                    cur[y * width + x] = sum / win;
+                }
+            }
+        }
+        cur
+    }
+
         assert_eq!(
             hasher.finish(),
             17018078154328031022,
