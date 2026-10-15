@@ -136,6 +136,15 @@ use crate::fold;
 use crate::ids::Seq;
 use crate::state::DocumentState;
 
+/// **★ 单次 `poll` 最多读多少字节（2026-10-15 加 ✓）★**
+///
+/// **为什么** ✗：原来 `read_to_end` 把"自上次以来的**全部**新增"一次读进一个 `Vec` ✓
+/// ⇒ 若轮询停了很久、期间涨了 100 MB ⇒ **那一次吃 100 MB** ✗（大日志场景 ✓）。
+/// 现在按块读 ✓：**内存上限 ＝ 本常数** ✓，剩下的留给**下一次** poll ✓（天然背压 ✓）。
+/// **取 4 MiB** ✓：常见间隔下根本读不满 ✓；真读满了，下一次 poll 继续 ✓，
+/// 延迟只差一个周期 ✓（实测一次 poll ≈ 16 µs ✓）。
+pub const MAX_POLL_BYTES: usize = 4 * 1024 * 1024;
+
 /// **★ 尾部跟随器（可替换 ✓）★**
 ///
 /// 用法 ✓：`new(path)` ⇒ 周期性 `poll()`（收新原子 ✓／或 `apply_new()` 直接套进状态 ✓）。
@@ -226,15 +235,33 @@ impl TailFollower {
             self.offset = 0;
             return Ok(out);
         }
-        let mut buf = Vec::new();
-        if file.read_to_end(&mut buf).is_err() {
+        // **★ 带上限地读（2026-10-15 ✓）★**：最多 `MAX_POLL_BYTES` ✓ ⇒ 不再一次吃下整段新增 ✓。
+        let mut buf = vec![0u8; MAX_POLL_BYTES];
+        let read = match file.read(&mut buf) {
+            Ok(read) => read,
+            Err(_) => return Ok(out),
+        };
+        if read == 0 {
             return Ok(out);
         }
+        buf.truncate(read);
         // **纪律 1** ✓：只消费到**最后一个 `\n`** —— 后面那截可能是半行 ✓。
-        let Some(last_nl) = buf.iter().rposition(|b| *b == b'\n') else {
-            return Ok(out);
+        let complete: &[u8] = match buf.iter().rposition(|b| *b == b'\n') {
+            Some(last_nl) => &buf[..=last_nl],
+            None => {
+                // **★ 病态：整块都没有换行（2026-10-15 ✓）★**
+                //   若"什么都不消费"⇒ 每次只读同样大小 ⇒ **永远卡在同一处** ✗
+                //   ⇒ 所以：**读满了上限就整块跳过并计数** ✓（不致命 ✓、也不把进程带崩 ✗）；
+                //     没读满 ⇒ 只是"半行还没写完" ✓ ⇒ 等下一次 ✓（正常情形 ✓）。
+                if read < MAX_POLL_BYTES {
+                    return Ok(out);
+                }
+                self.offset += read as u64;
+                self.skipped_lines += 1;
+                out.skipped += 1;
+                return Ok(out);
+            }
         };
-        let complete = &buf[..=last_nl];
         for raw in complete.split(|b| *b == b'\n') {
             if raw.iter().all(|b| b.is_ascii_whitespace()) {
                 continue;
@@ -360,6 +387,79 @@ mod tests {
         assert_eq!(again.atoms[0].seq, 7);
         assert_eq!(again.skipped, 1, "坏行应当被计数");
         assert_eq!(f.skipped_lines, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **★ ⑥ 超过单次上限的一大段 ⇒ 要**跨多次 poll**吃完（2026-10-15 ✓）★**
+    ///
+    /// **守什么** ✗：`MAX_POLL_BYTES` 是"**单次内存上限**" ✓ ⇒ 一次 poll **不许**把整段吃进内存 ✓，
+    /// 剩下的必须留给下一次 ✓（这正是修掉"漏久了会一次吃 100 MB"✗ 的方式 ✓）。
+    #[test]
+    fn a_gap_larger_than_the_cap_is_consumed_across_polls() {
+        let dir = std::env::temp_dir().join(format!("yanshi-watch-cap-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("atoms.jsonl");
+        let _ = std::fs::remove_file(&path);
+        // 造一段**大于上限**的合法日志 ✓（每行约 300 字节 ⇒ 约 1.5 万行 ✓）。
+        let line = atom_line(1, "a1");
+        let per_line = line.len() + 1;
+        let target = MAX_POLL_BYTES + MAX_POLL_BYTES / 2;
+        let count = target / per_line + 1;
+        let mut text = String::new();
+        for seq in 1..=count {
+            text.push_str(&atom_line(seq as Seq, &format!("a{seq}")));
+            text.push('\n');
+        }
+        std::fs::write(&path, &text).unwrap();
+        let mut f = TailFollower::new(&path);
+        let first = f.poll().unwrap();
+        assert!(!first.atoms.is_empty(), "第一次应当吃到东西 ✓");
+        assert!(
+            (first.atoms.len() as u64) < count as u64,
+            "**一次 poll 不许把整段吃完** ✗（实测吃了 {} / {} 条）",
+            first.atoms.len(),
+            count
+        );
+        // 反复 poll 直到吃完 ✓（每次都有进展 ✓）
+        let mut total = first.atoms.len();
+        for _ in 0..64 {
+            let more = f.poll().unwrap();
+            if more.atoms.is_empty() && f.last_seq() as usize >= count {
+                break;
+            }
+            total += more.atoms.len();
+        }
+        assert_eq!(total, count, "多次 poll 之后应当把整段吃完 ✓");
+        assert_eq!(f.last_seq(), count as Seq);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **★ ⑦ 整块都没有换行的病态输入 ⇒ 跳过 ＋ 计数 ＋ **必须前进**（不许卡死 ✓）★**
+    ///
+    /// **守什么** ✗：若"找不到换行就什么都不消费" ✓，那么每次只读同样大小 ⇒ **永远卡在同一处** ✗
+    /// ⇒ 所以读满上限时必须**整块跳过并计数** ✓，让后面的正常内容仍能被看到 ✓。
+    #[test]
+    fn a_full_block_without_any_newline_is_skipped_and_does_not_wedge() {
+        let dir = std::env::temp_dir().join(format!("yanshi-watch-nowedge-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("atoms.jsonl");
+        let _ = std::fs::remove_file(&path);
+        // 一整块都**没有换行** ✓（病态：某进程写了一个超大"行"却一直没结束 ✓）。
+        std::fs::write(&path, "x".repeat(MAX_POLL_BYTES)).unwrap();
+        let mut f = TailFollower::new(&path);
+        let first = f.poll().unwrap();
+        assert_eq!(first.skipped, 1, "读满上限又无换行 ⇒ 应当计一次跳过 ✓");
+        assert!(f.last_seq() == 0, "没有合法原子 ✓");
+        // **关键**：它**前进了** ✓ ⇒ 后面追加的正常内容必须能被看到 ✓（不卡死 ✓）。
+        let mut fh = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(fh, "{}", atom_line(9, "a9")).unwrap();
+        drop(fh);
+        let next = f.poll().unwrap();
+        assert_eq!(next.atoms.len(), 1, "病态块之后的内容应当仍能被读到 ✓");
+        assert_eq!(next.atoms[0].seq, 9);
         let _ = std::fs::remove_file(&path);
     }
 
