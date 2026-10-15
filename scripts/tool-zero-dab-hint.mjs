@@ -63,10 +63,13 @@ const main = async () => {
 
   const bad = [];
   // **① size 已给 ✗ 单点** ✓
-  const one = await stroke({ object_id: "z1", size: 400, points: [[500, 500, 1.0]] });
+  // **场景已改（2026-10-15，真机报告 P2 #1）**：**单点现在会自动展开、能落墨** ✓
+  //   => 想测"太大的 size 落不下"这条提示，必须用**非退化**的点列：
+  //   两点相距 3px ＋ size 400 ⇒ 路径仍撑不满 dab 间距 ✓（而它**不会**被自动展开 ✓）。
+  const one = await stroke({ object_id: "z1", size: 400, points: [[500, 500, 1.0], [503, 503, 1.0]] });
   const oneText = detail(one);
   if (one && one.ok === true) {
-    bad.push("① size=400 单点竟然落墨了（这条场景不成立了）");
+    bad.push("① size=400 ＋ 3px 路径竟然落墨了（这条场景不成立了）");
   } else if (!oneText.includes("400")) {
     bad.push(`① 消息里没有报出调用方给的 size=400 ✗ 原文：${oneText.slice(0, 160)}`);
   } else if (oneText.includes("试试给 size")) {
@@ -87,10 +90,11 @@ const main = async () => {
   }
 
   // **③ size 未给 ⇒ 原来那条建议**是对的**** ✓
-  const none = await stroke({ object_id: "z3", points: [[500, 500, 1.0]] });
+  // 同上：③ 也换成非退化但太短的路径 ✓
+  const none = await stroke({ object_id: "z3", points: [[500, 500, 1.0], [503, 503, 1.0]] });
   const noneText = detail(none);
   if (none && none.ok === true) {
-    bad.push("③ 不给 size 的单点竟然落墨了（这条场景不成立了）");
+    bad.push("③ 不给 size ＋ 3px 路径竟然落墨了（这条场景不成立了）");
   } else if (!noneText.includes("试试给 size")) {
     bad.push(`③ size 未给时**应当**保留"试试给 size"（此时它是对的）✗ 原文：${noneText.slice(0, 160)}`);
   }

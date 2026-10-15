@@ -57,14 +57,33 @@ const stroke = (id, points, size) => ({
 });
 
 // —— ① 单点必须被响亮拒绝（多档尺寸都试 ✓ —— 免得不小心只守住一档）——
-for (const size of [1, 8, 20]) {
+// **★ 行为已反转（2026-10-15，真机报告 P2 #1）★**
+//   原来这里断言"**单点必须被拒绝**" ✓ —— 那是一条**有意**的产品决策（"报错要指出真实根因" ✓）。
+//   但真机反馈说：画"点"是最常见的操作 ✓，"每次都要记得要给 3 个点"很烦 ✓
+//   （原话："有点烦" ✓）=> 现在的行为是：**退化成一点时自动展开成 3 个微偏移点** ✓
+//   （`expand_degenerate_points` ✓，偏移随 `size` 走 ✓）。
+//   => 这条判据**随之反转** ✓，但**保留**真正重要的那条不变式：
+//      **真的落不下 dab 时，必须给出非空的 error_code ＋ 说得清原因的理由** ✓。
+// **size 从 1 起试没有意义** ✓：实测 `size = 1` 时那支笔刷**本来就落不下**（`precondition_failed` ✓，
+//   与"单点"无关 ✓）=> 用 8/20/40 ✓（真机报告里用的正是 8/30/90 ✓）。
+for (const size of [8, 20, 40]) {
   const r = await call("brush_stroke", stroke("one" + size, [[300, 300, 1]], size));
   const code = r.error_code || r.error || null;
   console.log(`  size ${String(size).padStart(2)} 单点 ⇒ ok=${r.ok}｜error_code=${code}`);
-  check(r.ok === false, `size ${size} 的**单点**必须被拒绝（ok === false）`, "ok=" + r.ok);
-  check(code !== null && String(code).length > 0,
-    `size ${size} 的**单点**被拒时必须给出**非空 error_code**（说得出原因 ✓）`,
-    "error_code=" + code);
+  check(r.ok === true, `size ${size} 的**单点**现在应当**落下**（自动展开 ✓）`, "ok=" + r.ok);
+  check(code === null, `落墨时不该有 error_code`, "error_code=" + code);
+}
+
+// **不变式（仍要守）**：真正落不下 dab 的情形（两点太短、笔尖太大 ✓）
+//   ⇒ 必须给**非空 error_code** ＋ 说得出原因 ✓（这条**从来没有**被反转 ✓）。
+{
+  const r = await call("brush_stroke", stroke("short", [[300, 300, 1], [305, 305, 1]], 400));
+  const code = r.error_code || r.error || null;
+  const text = JSON.stringify(r.context || r);
+  console.log(`  两点 5px ＋ size 400 ⇒ ok=${r.ok}｜error_code=${code}`);
+  check(r.ok === false, "落不下 dab 的情形必须仍然报错（不许静默成功 ✓）", "ok=" + r.ok);
+  check(code !== null && String(code).length > 0, "报错必须带非空 error_code ✓", "error_code=" + code);
+  check(/个点|路径总长/.test(text), "报错必须说清**真实根因**（点数／路径总长 ✓）", text.slice(0, 120));
 }
 
 // —— ② 两点必须照常画出（防"一律拒绝"✗）——

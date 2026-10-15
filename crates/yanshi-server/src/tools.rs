@@ -2946,7 +2946,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
-            param!("pressure_curve", String, false, "**压感曲线**：`flat`（**缺省 ✓ ＝ 与以前逐字节相同**）/ `auto`（**推荐 ✓**）＝「没给 pressure」或「给了但整笔恒定（如全程 0.8）」时**自动补上起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（**程序生成的坐标最容易犯这个 ✗**）；给了有起伏的 pressure 时 `auto` 也会**原样尊重** ✓（不叠两层 ✓）；**`humanize:false` 时两者都不动** ✓"),
+            param!("pressure_curve", String, false, "**只影响「给了恒定压感」这一种情况** ✓：`flat`（**缺省** ⇒ 不动你给的 pressure ✓）/ `auto`（**推荐** ✓）＝当你给的是**整笔恒定**的 pressure（如全程 0.8）时**自动补上起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（程序生成的坐标最容易犯 ✗）；给了**有起伏**的 pressure 时 `auto` 也**原样尊重** ✓。**没给 pressure 时**由 `humanize` 决定（开着就加包络 ✓，与本参数无关 ✓）；**`humanize:false` 时一律不动** ✓"),
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
             // **P1 #8 生理颤动**：opt-in（缺省不给 => 点列一个都不动）。
             param!("tremor", Number, false, "生理颤动 0..1（**缺省不给 => 点列一个都不动**）：叠一层**带限** 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）—— 与仓库既有的白噪声抖动不同，它相邻点相关 => 像手而不是像砂纸"),
@@ -15242,9 +15242,19 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   **要不要把它变成默认** —— 那是一次**产品决策** ✓，需要同时更新上面那几条笔刷判据
     //   并说清代价 ✓，不该顺手做掉 ✗。
     let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "flat".to_owned());
-    let envelope_wanted = match pressure_curve.as_str() {
-        "flat" | "none" | "off" => false,
-        _ => !all_points_have_pressure(args) || points_are_flat(&points),
+    // **★ `pressure_curve` 只该管"新增的那一半"（2026-10-15 的教训）★**
+    //   我第一版写成"`flat` ⇒ 什么都不做" ✗ ⇒ 连**"完全没给 pressure"时 humanize 的包络**
+    //   也一起没了 ✗✗ ⇒ CI 的 `tool-humanize.mjs` 当场红 ✓
+    //   （判据原话：**默认指纹 == `humanize:false` 指纹** ⇒ 那就等于 humanize 失效 ✗）。
+    //   **正确语义**：
+    //     * **完全没给 pressure** ⇒ 老行为：`humanize` 开着就加包络 ✓（与 `pressure_curve` 无关 ✓）；
+    //     * **给了 pressure** ⇒ 只有 `pressure_curve: "auto"` 才在"整笔恒定"时**补**包络 ✓
+    //       （缺省 `flat` ⇒ 不动你的 pressure ✓）；
+    //     * **`humanize: false`** ⇒ 一律不动 ✓（硬约束 ✓）。
+    let envelope_wanted = if !all_points_have_pressure(args) {
+        true
+    } else {
+        matches!(pressure_curve.as_str(), "auto") && points_are_flat(&points)
     };
     if optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted {
         apply_humanize_envelope(&mut points);
