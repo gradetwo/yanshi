@@ -27989,4 +27989,3 @@ tool-render-memory-budget.mjs  # **类型：内存账目（DEF-03 的根因；�
 #   度量：**解码 PNG ＋ 按 alpha 合到白底**再量平均浓度 ✓
 #     （前两版都错：字节数代理方向相反 ✗；不解 alpha 会把透明背景当黑 ⇒ 两种模式都 255 ✗）。
 #   实测：single 38.6（覆盖 26.9%）vs area 58.5（覆盖 57.5%）✓；缺省与 single 逐字节相同 ✓。
-tool-show-coords.mjs  Muse 建议 4（P2，`render_region {show_coords}`）**尚未实现** ⇒ 判据红得有理：今天传该参数会被「不接受参数 show_coords」拒掉（本仓库拒绝未知参数 ✓）。判据已写好（① 缺省逐字节不变 ② 打开后确实变了 ③ 只动角落），实现后**必须从本名单删除** ✓。

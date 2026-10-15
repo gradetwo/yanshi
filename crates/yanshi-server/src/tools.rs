@@ -1424,6 +1424,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]"),
             param!("raw", Boolean, false, "返回未编码的直通 RGBA8（写入 CAS 并返回 raw_url），供逐像素自检"),
             param!(
+                "show_coords",
+                Boolean,
+                false,
+                "**把实际导出范围叠成水印**（Muse 建议 4 ✓，缺省 `false` ✓）。只为**看图时自证「取到的是哪一块」** ✓ —— `requested_region`／`rendered_region`／`clipped` 已经能给数据 ✓，但图上原先看不出来 ✗。**缺省与以前逐字节相同** ✓；打开后**只动左上角那条带** ✓（其余像素逐字节不变 ✓）；**只影响导出的像素** ✓，不写文档、不落原子 ✓。仅对 `raw: true` 有效 ✓。"
+            ),
+            param!(
                 "include_image",
                 Boolean,
                 false,
@@ -4469,6 +4475,76 @@ fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         // ⇒ 缺一个补丁时**必须**在这里读一次并报出去 ✓，否则就是"静默的不完整画面" ✗
         //（`Document::last_render_warnings` 的说明 ✓）。
         let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
+        // **★ `show_coords`：把实际导出范围**叠在水印上**（Muse 建议 4，P2）★**
+        //
+        // **为什么要有它** ✓：`requested_region`／`rendered_region`／`clipped` **早就回报了** ✓
+        //   ⇒ "取偏了"能靠**数据**发现 ✓ —— 但**从图上看不出来** ✗（像"把眉毛切在边缘"这种，
+        //     人眼/AI 看图的当下就该看见 ✓）⇒ 所以把范围**画进像素** ✓。
+        //
+        // **三条硬性约束** ✓（判据 `tool-show-coords.mjs` 逐条钉着 ✓）：
+        //   ① **缺省不叠** ✓ ⇒ 与"完全不传该参数"**逐字节相同** ✓（默认出图要干净 ✓）；
+        //   ② 传了 `true` ⇒ **必须真的变** ✓（"参数被静默忽略"是本仓库最恨的 UX 之一 ✗）；
+        //   ③ **只动左上角那条带** ✓ ⇒ 带外像素**逐字节不变** ✓（加个水印不该把画改了 ✗）。
+        //
+        // **实现只碰"导出像素"** ✓：不写文档、不落额外原子 ✓ ⇒ 画面本身与历史都不受影响 ✓。
+        let mut pixels = pixels;
+        if args
+            .get("show_coords")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let width_u = width.max(1);
+            let height_u = height.max(1);
+            let label = format!(
+                "x={}..{} y={}..{}  {}x{}",
+                region.x.round(),
+                (region.x + region.w).round(),
+                region.y.round(),
+                (region.y + region.h).round(),
+                width_u,
+                height_u
+            );
+            // ① 半透明底条（让白字在任何画面上都读得出来 ✓）——只压暗，不改色相 ✓
+            let band = 20u32.min(height_u);
+            for y in 0..band {
+                for x in 0..width_u {
+                    let at = ((y * width_u + x) * 4) as usize;
+                    if at + 3 < pixels.len() {
+                        pixels[at] = (u32::from(pixels[at]) * 45 / 100) as u8;
+                        pixels[at + 1] = (u32::from(pixels[at + 1]) * 45 / 100) as u8;
+                        pixels[at + 2] = (u32::from(pixels[at + 2]) * 45 / 100) as u8;
+                    }
+                }
+            }
+            // ② 用**内核既有的位图字体**画字 ✓（不另造一套 ✗）
+            let mut overlay = yanshi_render::Buffer::new(0, 0, width_u, height_u);
+            yanshi_render::font::draw_text(
+                &mut overlay,
+                &label,
+                6.0,
+                14.0,
+                1,
+                [1.0, 1.0, 1.0, 1.0],
+                "left",
+                0.0,
+            );
+            let glyphs = overlay.to_rgba8(None);
+            let mut changed = 0u32;
+            for (index, chunk) in glyphs.chunks_exact(4).enumerate() {
+                // 字是**不透明白** ✓；其余像素 alpha=0 ⇒ 不动原图 ✓（约束 ③ ✓）
+                if chunk[3] > 0 {
+                    let at = index * 4;
+                    if at + 3 < pixels.len() {
+                        pixels[at] = chunk[0];
+                        pixels[at + 1] = chunk[1];
+                        pixels[at + 2] = chunk[2];
+                        pixels[at + 3] = 255;
+                        changed += 1;
+                    }
+                }
+            }
+            let _ = changed;
+        }
         let __t_put = std::time::Instant::now();
         let raw_hash = ctx.workspace.store().put(&pixels)?;
         let __put_ms = __t_put.elapsed();
