@@ -2231,3 +2231,32 @@ ac3c54b  run=38779429627  ⇒ completed/**failure** ✗
 **⇒ 本会话"清单过时"累计 8 项** ✗✓：发布冒烟 ✓、`list_brushes` ✓、乙(i) ✓、甲.2 ✓、甲.3 ✓、甲.4 ✓、
 丙(ii) ✓、丁-纹理 ✓（＋乙(ii) 常数已是目标值 ✓）。
 **⇒ 这条纪律（动手前先读代码）本会话省下的重复劳动：8 笔** ✓。
+
+### 四十九之补二十二：视口淘汰的**接线点**（2026-10-15 侦察 ✓，只读不动手 ✓）
+
+**侦察结果** ✓（`grep -rn viewport crates/` 共 **59** 处 ✓）——**视口信息早已在流动** ✓：
+```
+crates/yanshi-server/src/broadcast.rs:52    pub viewport: Option<Bbox>,     ← 每个 Subscriber 自带视口 ✓
+broadcast.rs:195–199  /// 设置视口（WS 的 viewport/zoom 订阅消息）✓
+                      pub fn set_viewport(&mut self, id: SubscriberId, viewport: Option<Bbox>, zoom: …) ✓
+broadcast.rs:261–264  let viewport = … .and_then(|subscriber| subscriber.viewport);   ← **已经有人读它** ✓
+crates/yanshi-http/assets/viewer-app.js:172   viewport: { x: 0, y: 0, w: 1024, h: 1024 } ✓
+viewer-app.js:1067–1068                       state.viewport.w = width; state.viewport.h = height; ✓
+```
+**⇒ 结论** ✓：**链路已经通了** ✓ —— viewer 上报 ⇒ WS 消息 ⇒ `Broadcaster::set_viewport` ⇒
+每个 `Subscriber.viewport: Option<Bbox>` ✓ ⇒ 而且**已经被读用**（`broadcast.rs:261` ✓）。
+⇒ ⇒ **所以"接线"缺的只是** ✓：在**视口变化**时对 `TileCache` 调一次
+**`evict_outside_viewport(&viewport)`** ✓ —— **不必**新造协议／消息／类型 ✓（这一点先前估计得过重了 ✗✓）。
+
+**下一步（留给预算充足的开场 ✓，顺序写死 ✓）**：
+  1. **先读** `broadcast.rs:255–275` 一带 ✓ —— 搞清那里"读 viewport 之后拿它做什么" ✓
+     （那多半就是渲染路径 ✓ ⇒ 淘汰调用应当落在**同一个知道视口的地方** ✓）；
+  2. 找**谁拥有** `TileCache` ✓（`YanshiRender` 侧 ✓）⇒ 在**视口变化**那条路上调它 ✓；
+  3. **判据先行** ✓（`scripts/browser-viewport-evict.mjs` **已存在且在台账** ✓）——
+     它自己的输出就是验收标准 ✓：
+     「② **平移回来之后画面变了** ✗：像素和 195585 → 26775 ⇒ 逐出把**还要用的**瓷砖扔了 ✗（抖动）」
+     ⇒ 接线必须做到"**平移回来画面不变**" ✓；
+  4. **门禁 ＝ 那 8 条 `browser-*`** ✓（**不是**新加那条 ✗）⇒ 按 §43 的方式跑 ✓；
+  5. **变异** ✓（把淘汰调用去掉／改成扔错范围 ⇒ 判据必须红 ✓）⇒ 才允许推 ✓。
+**前车之鉴** ✓：`a152e034` 那次我**跳过判据直接接线** ✗ ⇒ 弄红 **8 条** `browser-*` ✓ ⇒ 已回退 ✓
+（§44 记着 ✓）⇒ **这一次按上面 5 步走** ✓。
