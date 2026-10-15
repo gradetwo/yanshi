@@ -3973,3 +3973,49 @@ impl Drop for Buffer {
 **没有任何半成品留在仓库里** ✓（宁可撤回，也不留破树 ✓）。
 **⇒ 下一步** ✓：**先读** `alloc_probe.rs` 那张表的**完整形状** ✓（`snapshot()` ✓／`sites_snapshot()` ✓）
 ＋ **读** `buffer.rs` 末尾**有没有**测试模块 ✓ ⇒ **再**改 ✓（认清结构再动手 ✓）。
+
+### 四十九之补七十八：两张表的形状与最终清单（2026-10-15 ✓）
+
+**① `snapshot()`** ✓（`alloc_probe.rs` ✓）——**形状是三元组** ✗✓（我上次插裸字符串 ✗ ⇒ `E0308` ✓）：
+```rust
+pub fn snapshot() -> [(&'static str, u64, u64); POINTS] {
+    [ ("pool_reuse",  BYTES[0].load(…), COUNTS[0].load(…)),
+      ("pool_fresh",  BYTES[1].load(…), COUNTS[1].load(…)),
+      ("buffer_fresh",BYTES[2].load(…), COUNTS[2].load(…)),
+      ("pool_release",BYTES[3].load(…), COUNTS[3].load(…)),
+      ("other",       BYTES[4].load(…), COUNTS[4].load(…)) ]
+}
+```
+⇒ ⇒ **正确插法** ✓（在 `]` 之前 ✓，**下标 5** ✓，与 `slot()` 的 arm 对齐 ✓）：
+```rust
+        (
+            "buffer_release",
+            BYTES[5].load(Ordering::Relaxed),
+            COUNTS[5].load(Ordering::Relaxed),
+        ),
+```
+
+**② `sites_snapshot()`** ✓：`Vec<(&'static str, u64, u64)>` ✓，**由 `SITES` 表推导** ✓
+⇒ 元素名是**文件路径** ✓（`"crates/yanshi-render/src/buffer.rs"` ✓）**不是点名** ✓
+⇒ ⇒ **这一处不用改** ✓✓（我上次担心的"标签错位"✗ **在这里不存在** ✓ —— 又是**没先读**✗ 导致的误判 ✓）。
+
+**③ `impl Drop for Buffer` 的位置** ✓ —— 上次失败的**真正原因** ✗✓：
+  * 我用"往前找 `#[cfg(test)]`"✗ 定位 ✓ ⇒ 而那个 `#[cfg(test)]` **前面还有它自己的 `///` 文档** ✓
+    ⇒ ⇒ 我把新块插在了**文档与属性之间** ✗ ⇒ 文档**挂到了新块上** ✗ ⇒
+    而那段文档里的中文标点 ⇒ `unknown start of token: \u{ff1a}` ✗✓ —— **完全对上** ✓。
+  * **⇒ 正确做法** ✓（AGENTS.md 的原话 ✓）：**从 `#[cfg(test)]` 往上，先把连续的 `///`／`//!` 行全部吃掉** ✓
+    ⇒ 插在**那段文档的第一行之前** ✓；
+  * **或者更省事** ✓：找到**某个顶层项的行首** ✓（`pub fn`／`impl`／`struct`／`pub struct` ✓，
+    且该行**前面没有** `///` ✗）⇒ 插在它之前 ✓。
+    ⇒ 更稳的判据 ✓：**插入点上方一行不能是 `///`、`//!` 或 `#[`** ✗（否则会切进文档/属性 ✓）。
+
+**⇒ 最终清单（5 处 ✓）**：
+  1. `enum AllocPoint` 加 `BufferRelease` ✓（带整段文档 ✓）；
+  2. `const POINTS: usize = 5 ⇒ 6` ✓；
+  3. `fn slot()` 加 `AllocPoint::BufferRelease => 5,` ✓；
+  4. **`snapshot()` 在 `]` 前加那个三元组** ✓（下标 5 ✓）；
+  5. `buffer.rs` 加 `impl Drop for Buffer` ✓（**插入点上/下一行不得是 `///`／`#[`** ✗）。
+
+**★ 一条可机械执行的插入规矩 ✓（本轮挣来的 ✓）**：
+**插入点必须满足：上方一行不是 `///`／`//!`、不是 `#[…]`、且为空行或 `}` 结尾** ✓ ——
+满足它 ⇒ 不会切进文档 ✗、不会切进属性 ✗、不会被"文档挂错项"✗ 咬到 ✓。
