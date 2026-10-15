@@ -1472,3 +1472,11 @@ serve 侧走浏览器判据 ✓（`crates/yanshi-http/src/server.rs:88` 已有 W
 **负对照** ✓：**不加 `--watch`** ⇒ **不许**收到由外部追加触发的帧 ✓。
 **两本账** ✓：`--watch` 是**全量重载** ✗ ⇒ 大文档下不便宜 ⇒ 与"快照落盘 ＋ 加载走快照+尾巴"**交汇** ✓。
 
+**★ 补：WS 的 token 契约（2026-10-15 探针实测 ✓）★** —— 我起服务后直连 `ws://…/ws?doc=p` **被拒** ✗
+（收到 `error`、无消息 ✓）。查 `yanshi-serve --help` ✓ ⇒ 明写「**URL 中的 token 即文档 capability**」✓
+⇒ ⇒ `/ws` 要带 **`token`** ✓；而其它浏览器判据的接口正是
+`node scripts/browser-*.mjs <viewer-url> <server-base> <token> [cdpPort]` ✓（`browser-pan-vs-paint.mjs:8` ✓）
+⇒ ⇒ **新的 `serve-watch-ws.mjs` 必须对齐同一套参数契约** ✓（这样 `run-criteria.sh` 能照常喂它 ✓，§43 ✓）。
+**仍未知的一格** ✗：WS 帧的**具体 JSON 形状**（我只查到推送含"全部原子元数据" ✓、`push_interval_ms: 25` ✓）
+⇒ 动手写断言前，先带 token 连一次、**打印头几帧**即可 ✓（比翻代码省 ✓）。
+
