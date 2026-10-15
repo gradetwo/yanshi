@@ -755,8 +755,16 @@ WRAP
 
 # **占位符换成真实后缀** ✓（上面那段 heredoc 是**引号**的 ⇒ 里面不会做变量展开 ✗
 # ⇒ 所以在这里用 `sed` 补 ✓：Linux/macOS 上后缀为空 ✓、Windows 上是 `.exe` ✓）。
-if [ -n "${bin_suffix}" ]; then
-  sed -i.bak "s/__BIN_SUFFIX__/${bin_suffix}/" "$stage/yanshi.sh" && rm -f "$stage/yanshi.sh.bak"
+# **必须无条件跑** ✗→✓（2026-10-15 实测 ✓）：`bin_suffix` 在 Linux/macOS 上是**空串** ✓，
+# 我第一版写成 `if [ -n "${bin_suffix}" ]` ⇒ **跳过替换** ✗ ⇒ 包里的 `yanshi.sh` 留着**字面量**
+# `__BIN_SUFFIX__` ⇒ 解包后一跑就是"没有那个文件或目录" ✗✗ —— 也就是说**我把 Linux 包弄坏了** ✗。
+# **是 CI 上刚加的冒烟步骤当场抓到的** ✓（它第一次运行就还了本 ✓）：
+#   `./yanshi.sh: 行 19: …/bin/yanshi-serve__BIN_SUFFIX__: 没有那个文件或目录`
+# ⇒ 无条件替换：后缀为空就是"替换成空" ✓。
+sed -i.bak "s/__BIN_SUFFIX__/${bin_suffix}/" "$stage/yanshi.sh" && rm -f "$stage/yanshi.sh.bak"
+if grep -q "__BIN_SUFFIX__" "$stage/yanshi.sh"; then
+  echo "✗ 包内 yanshi.sh 里还留着占位符 __BIN_SUFFIX__ ⇒ 这个包起来会找不到二进制" >&2
+  exit 1
 fi
 chmod 0755 "$stage/yanshi.sh"
 
