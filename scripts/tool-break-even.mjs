@@ -239,6 +239,23 @@ if (cross) {
   console.log("    ⇒ 与 `yanshi-gpu/src/lib.rs::threshold_for` 的现行值对照后决定是否重定");
   process.exit(0);
 }
+// **★ 末段：区分「本机答不了」与「真 GPU 确实不更快」（2026-10-15 实测修 ✓）★**
+//
+// **为什么** ✗：本判据要问的是"GPU 从哪个尺寸起比 CPU 快" ✓ —— 而**软件光栅器**（llvmpipe 之类 ✓）
+//   或**根本拿不到真适配器名**的机器**答不了这个问题** ✗。
+//   原来这里一律 `exit 1` ✗ ⇒ ⇒ 本机实测 **5 次里 4 次红、1 次绿** ✗（擦线过了 ✓）
+//   ⇒ **CI 随机变红** ✗ ⇒ **真红会被淹没** ✓ —— 正是台账存在的理由 ✓。
+//   本文件**上面**已经有一条正确的先例 ✓（"这不是失败，是**判据自身的前置条件缺失** ⇒ exit 3" ✓）
+//   ⇒ 这里按**同一条纪律**（"**判据跑不了就退 3**" ✓）补齐 ✓。
+const softwareAdapter = adapterSeen !== null && /llvmpipe|softpipe|swrast|software|zink on llvmpipe/i.test(adapterSeen);
+if (!adapterSeen || softwareAdapter) {
+  console.log("  ⚠ 扫完整个区间都没找到**显著更快**的尺寸 —— 但这**不是失败** ✗：");
+  console.log(`    ⇒ 适配器 ＝ ${adapterSeen ? `\`${adapterSeen}\`（软件光栅器）` : "**没有拿到真名字**（只有渲染节点）"}`);
+  console.log("    ⇒ **本机答不了这个问题**（软件光栅器不能当成硬件 ⇒ 第 318 轮的坑）");
+  console.log("    ⇒ ⇒ 按纪律**退出 3**（判据跑不了，不是产品红）✓ —— **不要**把它登记成产品缺陷 ✗");
+  process.exit(3);
+}
 console.log("  ✗ 扫完整个区间都没找到**显著更快**的尺寸（GPU 一直更慢，或优势不到 10%）⇒ exit 1");
-console.log("    ⇒ 扩大 --sides 区间后重跑");
+console.log("    ⇒ 这条是**真结论** ✓：适配器是真的（" + adapterSeen + "）⇒ GPU 在这个区间确实没有优势 ✓");
+console.log("    ⇒ 与 `yanshi-gpu/src/lib.rs::threshold_for` 的现行值对照后决定是否重定 ✓");
 process.exit(1);
