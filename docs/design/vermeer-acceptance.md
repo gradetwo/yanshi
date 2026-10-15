@@ -1829,3 +1829,29 @@ pub struct Snapshot {
      ⇒ 只折叠尾巴 ✓ ⇒ 最后把 `atoms_read_on_open` 设成**尾巴的条数** ✓
      ⇒ ⇒ **判据第 2 段**（断言它明显变小 ✓）**自然成立** ✓；**变异**（改回全量读）⇒ **红** ✓。
 
+### 四十九之补八：待办 ① 剩下的活**精确到行**（2026-10-15 侦察完成 ✓）
+
+**查到的三件关键事实** ✓：
+1. **`Document::snapshot_now(&mut self, now) -> Result<String>`** ✓（`crates/yanshi-server/src/document.rs:2309` 一带 ✓）——
+   它**造快照**并**入栈**（`self.snapshots.insert(snapshot);` 在 `:2319` ✓）⇒ **返回 id** ✓；
+   `snapshot_now` **不在 `service.rs` 里被调** ✓ ⇒ 由 `Document` 自己（提交路径 ✓）调 ✓。
+2. **`Document` 够不到磁盘目录** ✗ —— 它只有 **`store: Arc<dyn BlobStore>`** ✓（`document.rs:278` ✓），
+   没有 `FileStore` ✓ ⇒ ⇒ **落盘必须由同时拥有两者的 `Workspace` 做** ✓
+   （`Workspace` 正好有 `persist: Option<FileStore>` ✓）。
+3. **`SnapshotStore` 已经有取用接口** ✓（`crates/yanshi-core/src/snapshot.rs` ✓）：
+   **`get(&self, id) -> Option<&Snapshot>`**（`:312` ✓）＋ **`latest_usable(&self) -> Option<&Snapshot>`**（`:317` ✓）
+   ⇒ ⇒ 加载路径要的正是 `latest_usable` ✓。
+
+**⇒ 剩下的四步（照此做 ✓）**：
+  ① **`Document` 加一个只读转发** ✓：`pub fn latest_usable_snapshot(&self) -> Option<&Snapshot>` ✓
+     （内部就是 `self.snapshots.latest_usable()` ✓，款式照 `document.rs:1977` 那批转发 ✓）；
+  ② **`Workspace` 落盘** ✓：在文档**产出快照之后**（提交路径 ✓）写
+     `docs/<doc>/snapshot-<seq_at>.json` ✓ —— `serde_json::to_vec(&snapshot)` ✓（它 `derive(Serialize)` ✓）；
+     **注意** ✓：写盘**失败不该让提交失败** ✗（快照是**加速**用的 ✓）⇒ 记 stderr ＋ 继续 ✓；
+  ③ **`Workspace::open_document_inner` 读** ✓（`service.rs:1186` 一带 ✓，那里同时有 `persist` 与 `doc_id` ✓）：
+     先找**最新**的快照文件 ✓ ⇒ `from_slice` ＋ **`verify()`**（校验 CRC ✓）⇒ 失败就**当没有** ✓（回退全量 ✓）
+     ⇒ `restore()` 得到 `seq_at` 的状态 ✓ ⇒ **`load_atoms_since(doc_id, seq_at)`** ✓（本笔已实现 ✓）
+     ⇒ 只折叠尾巴 ✓ ⇒ `atoms_read_on_open` ＝ **尾巴条数** ✓（不再等于全量 ✓）；
+  ④ **判据第 2 段 ＋ 变异** ✓（`crates/yanshi-server/tests/open_readout.rs` ✓）：
+     再开一次 ⇒ 断言读数**明显小于 N** ✓；**变异**（把加载改回 `load_atoms` 全量）⇒ **必须红** ✓。
+
