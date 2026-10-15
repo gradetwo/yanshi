@@ -1855,3 +1855,36 @@ pub struct Snapshot {
   ④ **判据第 2 段 ＋ 变异** ✓（`crates/yanshi-server/tests/open_readout.rs` ✓）：
      再开一次 ⇒ 断言读数**明显小于 N** ✓；**变异**（把加载改回 `load_atoms` 全量）⇒ **必须红** ✓。
 
+### 四十九之补九：第②步（落盘）的**钩子点与省状态的技巧**（2026-10-15 ✓）
+
+**钩子点** ✓：`crates/yanshi-server/src/service.rs` 的 **`:1119`** ——
+**`persist.append_atom(&doc_id, atom)?;`** ✓（紧接着 `save_meta`（`:1121` ✓））。
+**为什么选它** ✓：`Workspace` 有**多个**提交入口（`commit` `:1755` ✓／`commit_timed` `:1769` ✓／
+`commit_changeset` `:1790` ✓ …）⇒ 逐个挂钩会重复 ✗；
+而"**往磁盘追加原子**"这件事**只有这一处** ✓ ⇒ 这是天然的**单一咽喉** ✓。
+
+**★ 省掉新状态的技巧** ✓：不必记"上次写的是哪个快照" ✗ ——
+快照文件名里**带 `seq_at`** ✓（`snapshot-<seq_at>.json` ✓）⇒ ⇒
+**"文件是否已存在"就是"写没写过"** ✓（同一 `seq_at` 只会有一份 ✓）
+⇒ 判据也简单 ✓：`if !path.exists() { 写 }` ✓。
+
+**`FileStore` 要加的一个小方法** ✓：
+```rust
+pub fn save_snapshot(&self, doc_id: &str, snapshot: &Snapshot) -> Result<()>
+// 写 docs/<doc>/snapshot-<seq_at>.json（serde_json::to_vec ✓）；
+// **幂等**：已存在就直接 Ok ✓（同名同内容 ✓）；
+// **失败不许让提交失败** ✗：调用处只记 stderr ＋ 继续 ✓（快照只是加速 ✓）。
+```
+**调用处** ✓（`service.rs:1119` 之后 ✓）：
+```rust
+if let Some(snapshot) = document.latest_usable_snapshot() {   // 第①步已备好 ✓
+    let path = persist.snapshot_path(&doc_id, snapshot.seq_at);
+    if !path.exists() {
+        if let Err(error) = persist.save_snapshot(&doc_id, snapshot) {
+            eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
+        }
+    }
+}
+```
+**⇒ 第②步到此封闭** ✓（钩子点 ✓、格式 ✓、幂等 ✓、失败策略 ✓、不需新状态 ✓）。
+
