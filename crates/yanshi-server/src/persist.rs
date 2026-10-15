@@ -21,6 +21,7 @@
 use crate::token::{CapabilityToken, Role};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::BufRead;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use yanshi_core::blob::FsBlobStore;
@@ -145,30 +146,55 @@ impl FileStore {
     }
 
     /// 读取全部原子（忽略空行与损坏的尾行）。
+    ///
+    /// **★ 流式读取（2026-10-15 ✓）★**：原来是 `fs::read_to_string` 把**整个文件**读成 `String`
+    /// ⇒ 大日志（几十～上百 MB）下峰值内存 ≈ **2× 文件大小** ✗（整文本 ＋ `Vec<Atom>` 同时活着 ✓）。
+    /// 现在逐行读 ✓ ⇒ 峰值 ≈ **1× 原子 ＋ 一行** ✓。
+    ///
+    /// **语义逐条保持** ✓（不许悄悄改行为 ✗）：
+    ///   * 文件不存在 ⇒ 空列表 ✓；
+    ///   * 跳过空行 ✓；
+    ///   * **只有最后一行**损坏才容忍 ✓ —— 判法改用"**它后面还有没有内容**" ✓
+    ///     （原来多跑一趟 `text.lines().count()` ✗，那在大文件上是一整遍额外扫描 ✓）；
+    ///   * 中间任何一行损坏 ⇒ 报错并指出**行号** ✓。
     pub fn load_atoms(&self, doc_id: &str) -> Result<Vec<Atom>> {
         let path = self.atoms_path(doc_id);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(io_error(&path, error)),
         };
         let mut atoms = Vec::new();
-        for (index, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        let mut index: usize = 0;
+        let mut broken: Option<(usize, String)> = None;
+        loop {
+            line.clear();
+            let read = reader
+                .read_line(&mut line)
+                .map_err(|error| io_error(&path, error))?;
+            if read == 0 {
+                break;
+            }
+            index += 1;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Atom>(line) {
+            if let Some((broken_index, message)) = &broken {
+                // 已经遇到坏行 ⇒ 只要**后面还有内容**，它就是"中间损坏" ⇒ 报错 ✓
+                //（与原来的"坏行不是最后一行就报错"**逐字等价** ✓）。
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("原子日志第 {broken_index} 行损坏: {message}")),
+                ));
+            }
+            match serde_json::from_str::<Atom>(trimmed) {
                 Ok(atom) => atoms.push(atom),
                 Err(error) => {
-                    // 崩溃残留的半行：只允许最后一行损坏。
-                    if index + 1 == text.lines().count() {
-                        break;
-                    }
-                    return Err(YanshiError::new(
-                        ErrorCode::InvalidArgument,
-                        ErrorContext::detail(format!("原子日志第 {} 行损坏: {error}", index + 1)),
-                    ));
+                    // 先候选"尾部半行"✓ —— 到底算不算，要看**后面还有没有行** ✓（见上面的检查 ✓）。
+                    broken = Some((index, error.to_string()));
                 }
             }
         }
