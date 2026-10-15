@@ -1282,3 +1282,52 @@ mod feather_coverage_tests {
         assert!(centre > 0.9, "中心应接近满覆盖 ⇒ {centre}");
     }
 }
+
+#[cfg(test)]
+mod box_blur_golden_tests {
+    use super::*;
+    use std::hash::{Hash, Hasher};
+
+    /// **★ `box_blur_2d` 的黄金哈希探针（2026-10-15 ✓）★**
+    ///
+    /// **为什么** ✗（§49 之补八十六 ✓）：要把它改成「按带处理」以缩小工作集 ✓
+    /// ⇒ 而"新实现 == 旧实现"✗ 是**同义反复** ✓（旧实现一删就没依据 ✓）
+    /// ⇒ ⇒ **改用黄金哈希** ✓：**固定输入** ⇒ **输出哈希** ⇒ 断言常量 ✓。
+    ///
+    /// **★ 常量是**实测**来的** ✓★**（先用 `println!` 跑一次抄下来 ✓，再钉成断言 ✓）——
+    /// **不是手算** ✗；**改输入必须重测** ✓ 并同步改注释 ✓。
+    /// **输入（必须记下来 ✓，否则将来没人能重算 ✓）**：
+    ///   * `w = 96, h = 64` ✓（**非平凡** ✓：既不是 1×1 ✓ 也不是全零 ✓）；
+    ///   * `data[i] = ((i * 37 % 251) as f32) / 251.0` ✓（**确定性** ✓、**无随机** ✓）；
+    ///   * `radius = 5` ✓。
+    /// **★ 为什么用 `DefaultHasher` 而不是 `sha2` ✗★**：`sha2` **不是** `yanshi-render`
+    /// 的依赖 ✗（实测：加它会编译失败 ✓）⇒ 用 **std** 的 ✓ ⇒ **零新依赖** ✓
+    /// （用途只是"**钉住同一份字节**"✗ ⇒ 非加密强度**够用** ✓）。
+    #[test]
+    fn box_blur_2d_output_is_pinned() {
+        let (w, h) = (96usize, 64usize);
+        let data: Vec<f32> = (0..w * h)
+            .map(|i| ((i * 37 % 251) as f32) / 251.0)
+            .collect();
+        // **★ 自断言前提 ✗★**（§49 之补七十一 ✓）：输入必须**非平凡** ✓
+        let nonzero = data.iter().filter(|v| **v != 0.0).count();
+        assert!(
+            nonzero > data.len() / 2,
+            "前提：输入必须非平凡（否则判据空洞 ✗）"
+        );
+        let out = box_blur_2d(&data, w, h, 5);
+        assert_eq!(out.len(), data.len(), "长度应当不变 ✓");
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for v in &out {
+            v.to_bits().hash(&mut hasher);
+        }
+        // **★ 黄金常量：**实测**得来** ✓（`w=96 h=64 radius=5` ✓，
+        //   `data[i] = ((i*37 % 251) as f32)/251.0` ✓，`nonzero=6119` ✓）——
+        //   **不是手算** ✗；若将来要改输入 ✓，**必须重测**这个值 ✓ 并**同步改注释** ✓。
+        assert_eq!(
+            hasher.finish(),
+            17018078154328031022,
+            "box_blur_2d 的输出字节变了 ✗ ⇒ 改成「按带处理」时必须**逐字节一致** ✓（§49 之补八十六 ✓）"
+        );
+    }
+}
