@@ -28238,3 +28238,29 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #        ③ `cargo fmt --all` ＋ `cargo clippy --workspace --all-targets -- -D warnings` ＋
 #           `cargo test -p yanshi-http -p yanshi-server` ✓；④ 再把本条**从台账移除** ✓。
 
+#    **★★★★ 下游诊断完成（2026-10-15 插桩实测 ✓）⇒ 病因确定：投递数为 0 ★★★★**
+#      ```
+#      [wp2] reload ⇒ Ok("ok")                          ← 重载**成功** ✓
+#      [wp2] publish_atom ⇒ deliveries=0 id=foreign-dbg3 ← **没有任何订阅者匹配** ✗✓
+#      ```
+#      ⇒ ⇒ **上游全通** ✓（开关 ✓／follower ✓／`poll` 吃到原子 ✓／`reload_document` 成功 ✓）
+#        ⇒ 病在**投递** ✓：`publish_atom` **一个订阅者都没匹配到** ✓。
+#      **★ 头号嫌疑（下一段第一件事 ✓）★**：`handle_websocket` 里创建订阅者那一段
+#        （`server.rs` **`:3007`–`:3021`** ✓：`document.subscribe(&session, PushChannel::WebSocket)` ✓）
+#        用的**可能不是本条连接的文档** ✗ —— 例如取的是**服务器默认文档**（启动参数 `--doc seed` ✓）
+#        而我 `publish_atom` 发给了**连接的文档**（`push_doc = "w"` ✓，来自 `?doc=w` ✓）
+#        ⇒ ⇒ 两边**不是同一个文档** ⇒ 订阅者当然匹配不上 ✓✓。
+#        **判据的现场正好能区分这两者** ✓：我起服务用 `--doc seed` ✓、连接用 `?doc=w` ✓
+#        （`serve-watch-ws.mjs` 就是这么做的 ✓）—— 真机上"两边一致"时（浏览器总是连自己的文档 ✓）
+#        这个 bug **不会显形** ✗ ⇒ ⇒ **判据的取法本身逮住了一个真实缺陷** ✓（这正是判据先行的价值 ✓）。
+#      **改成什么** ✓（二选一，**先读代码再定** ✗，别猜 ✓）：
+#        ① 订阅者建在**连接的文档**上 ✓（`push_doc` ✓）—— 与 `publish_atom`／`drain` 对齐 ✓；
+#        ② 或 `publish_atom` 发到**订阅者所在的文档** ✗（不推荐 ✓：`--watch` 的语义是"这条连接关心的文档" ✓）。
+#        ⇒ 倾向 **①** ✓，但**必须先看清 `:3000`–`:3022` 那段用的是哪个 doc_id** ✓。
+#      **门禁照旧** ✓：改完 ⇒ `serve-watch-ws.mjs` **转绿** ✓ ⇒ **变异**（`if state.options.watch` ⇒ `if true` ✓）
+#        ⇒ 判据**必须红** ✓ ⇒ `cargo fmt` ＋ `clippy -D warnings` ＋ `cargo test -p yanshi-http -p yanshi-server` ✓
+#        ⇒ 再把本条**从台账移除** ✓。
+#      **教训（已付学费 ✓）**：`cargo fmt` 会**重排代码** ✗ ⇒ **改完再改时必须重读锚点** ✓
+#        （这一轮我两次插桩因此失败过 ✓）；另外**删除插桩**要用 `git checkout --` 回到已提交版 ✓
+#        （比手写删除脚本稳 ✓ —— 我的脚本崩过一次 ✗）。
+
