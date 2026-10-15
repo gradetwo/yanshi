@@ -1700,3 +1700,23 @@ new WebSocket("ws://…/ws?doc=w&token=<64 字符>")    ⇒ **连上了** ✓✓
 「**先用探针量、再断言**」路子一致 ✓（`alloc_probe` ✓、`below_*_count` ✓ 都是这类"引擎自己报计数" ✓）。
 **顺带** ✓：这条也解释了为什么待办 ① 迟迟没动 ✓ —— 不是实现难 ✓，是**判据没设计好** ✗。
 
+### 四十九之补二：待办 ① 的**计数设施现状**（2026-10-15 查证 ✓）
+
+**查了什么** ✓：既然判据要走"**断言读了什么**"（§49 之补 ① ✓），
+那引擎里**有没有**现成的计数可用 ✗？
+
+**结果** ✓：
+  * **加载路径上没有任何计数／探针** ✗ —— `crates/yanshi-server/src/persist.rs` 与 `document.rs` 里
+    grep `bytes_read`／`counter`／`AtomicU64` **一无所获** ✓；
+  * **但"引擎自己报计数"的先例就在旁边** ✓，而且**成体系** ✓：
+    `crates/yanshi-render/src/render.rs:252` `below_groups_count()` ✓／
+    `:1088` `below_reuse_count()` ✓／`:1097` `below_missing_count()` ✓／`:1104` `below_wanted_count()` ✓；
+    `crates/yanshi-render/src/alloc_probe.rs:60` `alloc_probe_on()` ✓；
+    **尤其**：`crates/yanshi-server/src/document.rs:1977` **已经有一个 `Document` 级别的 `below_reuse_count()`** ✓
+    ⇒ ⇒ 说明"**在 `Document` 上挂一个读数**"这条路是**通的** ✓、且**有先例可抄** ✓。
+
+**⇒ 待办 ① 的"判据先行"准备到此完整** ✓：要加的是一个**同风格的小读数**（例如
+`Document::atoms_read_on_open()` ✓／`load_bytes()` ✓）⇒ 断言"打开时读入 ≤ 快照 ＋ 尾巴上界" ✓，
+**变异**（退化成全量读 ⇒ 计数变大）⇒ **红** ✓。**实现三步** ✓：① 快照**落盘**；
+② 加载走"**快照 ＋ 尾巴**"；③ 那个**读数** ✓（顺序：③ 与 ① 同批做 ✓，因为判据要用它 ✓）。
+
