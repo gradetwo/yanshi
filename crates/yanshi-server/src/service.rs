@@ -1125,6 +1125,17 @@ impl Workspace {
                 created_at: yanshi_core::now_ms(),
                 tokens: Vec::new(),
             })?;
+            // **★ 顺手把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
+            //   **为什么在这儿** ✓：这里是"往磁盘追加原子"的**唯一咽喉** ✓
+            //     （`Workspace` 的提交入口有多个 ✓ ⇒ 逐个挂钩会重复 ✗）。
+            //   **调用处不写"存不存在"的判断** ✓：`save_snapshot` **自带幂等** ✓（已存在 ⇒ `Ok(false)` ✓）
+            //     —— 引擎已有的不做第二遍 ✓。
+            //   **失败只记 stderr** ✗✓：快照只是**加速**用的 ✓ ⇒ **绝不让提交失败** ✓。
+            if let Some(snapshot) = document.latest_usable_snapshot() {
+                if let Err(error) = persist.save_snapshot(&doc_id, snapshot) {
+                    eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
+                }
+            }
         }
         self.document_mut(&doc_id)
     }
@@ -3281,6 +3292,16 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         })?;
         if let Some(atom) = document.log().by_seq(result.seq) {
             persist.append_atom(doc_id, atom)?;
+        }
+        // **★ 普通提交路径也要把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
+        //   **为什么这一处也要** ✗：建文档处（`service.rs:1119` ✓）只覆盖"建文档"那一刻 ✓；
+        //     普通提交走的是**这里** ✓ ⇒ 少挂一处 ⇒ 快照永远只覆盖开头 ✗ ⇒ 尾巴依旧很长 ✗。
+        //   **与建文档处同一块逻辑** ✓（那里有更详细的说明 ✓；两处借用形态不同 ⇒
+        //     暂时照抄 ✓，合并成一处留作单独的小重构 ✓）。
+        if let Some(snapshot) = document.latest_usable_snapshot() {
+            if let Err(error) = persist.save_snapshot(doc_id, snapshot) {
+                eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
+            }
         }
         Ok(())
     }
