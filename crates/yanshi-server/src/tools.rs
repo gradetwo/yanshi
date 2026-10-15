@@ -2919,7 +2919,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
         // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
         //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
-        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **★ 压感指南 ★**：`points` 的第三个分量是 **pressure 0..1** ✓，它**按点生效**（不是整笔一个值 ✓）。**每一笔都该起伏**：起笔 **0.2–0.3** → 行笔 **0.8–1.0** → 收笔 **0.2–0.3** ✓；转折/顿笔处可以**短距离内压低再抬起**（形成「顿」✓）。**全程 0.8 会让笔触像矢量图** ✗（粗细一致、边缘生硬 ✓）—— 可直接抄的示例：`points: [[40,100,0.25],[110,96,0.9],[180,104,0.95],[250,100,0.3]]` ✓。**⚠️ `pressure_curve: 「auto」` 只对「压感敏感」的笔刷有效** ✓ —— 先用 `list_brushes` 的 `pressure_sensitive`／`pressure_settings` 确认（实测 `2B_pencil` 墨量 **1023→3470** ✓，而 `100%_Opaque` 几乎看不出差别 ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
             // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
@@ -2946,7 +2946,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
-            param!("pressure_curve", String, false, "**只影响「给了恒定压感」这一种情况** ✓：`flat`（**缺省** ⇒ 不动你给的 pressure ✓）/ `auto`（**推荐** ✓）＝当你给的是**整笔恒定**的 pressure（如全程 0.8）时**自动补上起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（程序生成的坐标最容易犯 ✗）；给了**有起伏**的 pressure 时 `auto` 也**原样尊重** ✓。**没给 pressure 时**由 `humanize` 决定（开着就加包络 ✓，与本参数无关 ✓）；**`humanize:false` 时一律不动** ✓"),
+            param!("pressure_curve", String, false, "**只影响「给了恒定压感」这一种情况** ✓：`flat`（**缺省** ⇒ 不动你给的 pressure ✓）/ `auto`（**推荐** ✓）＝当你给的是**整笔恒定**的 pressure（如全程 0.8）时**自动补上起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（程序生成的坐标最容易犯 ✗）；给了**有起伏**的 pressure 时 `auto` 也**原样尊重** ✓。**没给 pressure 时**由 `humanize` 决定（开着就加包络 ✓，与本参数无关 ✓）；**`humanize:false` 时一律不动** ✓。**⚠️ 只对「压感敏感」的笔刷有效** ✓ —— 用 `list_brushes` 看每支的 `pressure_sensitive`／`pressure_settings` ✓（实测 `2B_pencil` 墨量 1023→3470 ✓，而 `100%_Opaque` 几乎看不出差别 ✗：它的压感只作用在 `opaque_multiply` 的阶跃上 ✓）"),
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
             // **P1 #8 生理颤动**：opt-in（缺省不给 => 点列一个都不动）。
             param!("tremor", Number, false, "生理颤动 0..1（**缺省不给 => 点列一个都不动**）：叠一层**带限** 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）—— 与仓库既有的白噪声抖动不同，它相邻点相关 => 像手而不是像砂纸"),
@@ -4566,13 +4566,29 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .and_then(|text| hokusai::myb::from_str(&text).ok());
         match parsed {
-            Some(brush) => brushes.push(json!({
-                "name": name,
-                "reads_canvas": brush_reads_the_canvas(&brush),
-                "params": canonical_param_summary(&brush),
-            })),
+            Some(brush) => {
+                // **★ 压感敏感度（真机报告 2026-10-15）★**：调用方据此判断
+                //   `pressure_curve`／按 pressure 画的笔触**会不会有可见效果** ✓
+                //   （实测：`2B_pencil` 有、`100%_Opaque` 几乎没有 ✓）。
+                let (pressure_sensitive, pressure_settings) = brush_pressure_response(&brush);
+                brushes.push(json!({
+                    "name": name,
+                    "reads_canvas": brush_reads_the_canvas(&brush),
+                    "pressure_sensitive": pressure_sensitive,
+                    "pressure_settings": pressure_settings,
+                    "params": canonical_param_summary(&brush),
+                }))
+            }
             // 解析/读取失败要**如实说**，不许假装有参数
-            None => brushes.push(json!({"name": name, "params": null, "note": "读不到或解析失败"})),
+            // **解析失败时字段也要在**（值给 `null` ✓）—— 免得调用方要区分"字段不存在"与"值未知" ✗
+            None => brushes.push(json!({
+                "name": name,
+                "params": null,
+                "reads_canvas": null,
+                "pressure_sensitive": null,
+                "pressure_settings": null,
+                "note": "读不到或解析失败",
+            })),
         }
     }
     brushes.sort_by(|a, b| {
@@ -14360,6 +14376,30 @@ pub fn myb_text_reads_the_canvas(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// **★ 这支笔刷的压感映射（真机报告 2026-10-15：`pressure_curve` 只对敏感笔刷有效）★**
+///
+/// **为什么要报出来**：真机实测同一笔在 `pressure_curve: 「auto」` 下的差别——
+/// `2B_pencil` 墨量 **1023 → 3470**（差别巨大 ✓），而 `100%_Opaque` **完全看不出差别** ✗
+///（它的压感只挂在 `opaque_multiply` 的**阶跃**上 ⇒ 中段恒为 1 ✓）。
+/// => 与其让调用方自己猜"为什么没效果" ✗，不如**直接告诉它** ✓。
+///
+/// **判据（纯结构 ✓、不需要渲染 ✓、确定 ✓）**：某个设置的 `inputs` 里有 `pressure` ✓
+///（就是 `.myb` 的原始结构 ✓）。返回 `(是否吃压感, 哪些设置吃压感)` ✓。
+fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) {
+    let settings: Vec<&'static str> = hokusai::BrushSetting::ALL
+        .iter()
+        .filter(|setting| {
+            brush
+                .get(**setting)
+                .inputs
+                .iter()
+                .any(|mapping| mapping.input == hokusai::BrushInput::Pressure)
+        })
+        .map(|setting| setting.cname())
+        .collect();
+    (!settings.is_empty(), settings)
+}
+
 /// **这支笔刷会不会读画布** ✓（涂抹 / colorize / posterize / lock_alpha ✓）—— 公开出来，
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
@@ -15238,7 +15278,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   **默认行为变了** ✗ ⇒ CI 里 `kernel-brush-parity`／`tool-brush-parity-jitter`／
     //   `tool-brush-style`／`tool-brush-dynamics` **同时红** ✗（它们正是比"同一笔触"的 ✓）。
     //   => 按本仓纪律（**改默认行为要极慎重** ✓）**缺省改回 `flat`（＝与以前逐字节相同 ✓）** ✓，
-    //   **想要"起轻行重收轻"请显式传 `pressure_curve: "auto"`** ✓（summary 里已写明 ✓）。
+    //   **想要"起轻行重收轻"请显式传 `pressure_curve: 「auto」`** ✓（summary 里已写明 ✓）。
     //   **要不要把它变成默认** —— 那是一次**产品决策** ✓，需要同时更新上面那几条笔刷判据
     //   并说清代价 ✓，不该顺手做掉 ✗。
     let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "flat".to_owned());
@@ -15248,7 +15288,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   （判据原话：**默认指纹 == `humanize:false` 指纹** ⇒ 那就等于 humanize 失效 ✗）。
     //   **正确语义**：
     //     * **完全没给 pressure** ⇒ 老行为：`humanize` 开着就加包络 ✓（与 `pressure_curve` 无关 ✓）；
-    //     * **给了 pressure** ⇒ 只有 `pressure_curve: "auto"` 才在"整笔恒定"时**补**包络 ✓
+    //     * **给了 pressure** ⇒ 只有 `pressure_curve: 「auto」` 才在"整笔恒定"时**补**包络 ✓
     //       （缺省 `flat` ⇒ 不动你的 pressure ✓）；
     //     * **`humanize: false`** ⇒ 一律不动 ✓（硬约束 ✓）。
     let envelope_wanted = if !all_points_have_pressure(args) {

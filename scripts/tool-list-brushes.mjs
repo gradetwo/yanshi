@@ -73,6 +73,30 @@ const main = async () => {
       bad.push(`③ canonical_param_names 里没有「${needed}」⇒ brush_params 的字段名无从发现`);
     }
   }
+  // **★ 压感敏感度字段（真机报告 2026-10-15）★**：调用方据此判断 `pressure_curve` 会不会有效 ✓。
+  //   **注意**：这个字段是「**结构上有没有 pressure 输入**」✓ —— 实测它会把 `100%_Opaque`
+  //   也算成敏感 ✗（它的压感只挂在 `opaque_multiply` 的**阶跃**上 ⇒ 中段恒为 1 ⇒ 看不出效果 ✓）
+  //   => 判据只断言「字段在、类型对、已知敏感的那支是 true」✓，
+  //      **不**断言「结构敏感 == 有可见效果」✗（那要逐支渲染，成本太高 ✓）。
+  const withField = list.filter((b) => typeof b.pressure_sensitive === "boolean");
+  console.log(`  ⑤ pressure_sensitive 字段：${withField.length}/${list.length} 条有`);
+  if (withField.length < list.length - 5) {
+    bad.push(`⑤ 只有 ${withField.length}/${list.length} 条带 pressure_sensitive 布尔字段`);
+  }
+  const pencil = list.find((b) => String(b.name).startsWith("2B_pencil"));
+  if (!pencil) {
+    console.error("❌ 判不了：列表里没有 2B_pencil（判据自身前置不成立）⇒ 退出码 3");
+    process.exit(3);
+  }
+  console.log(
+    `  ⑤ 2B_pencil：sensitive=${pencil.pressure_sensitive}｜settings=${JSON.stringify(pencil.pressure_settings)}`,
+  );
+  if (pencil.pressure_sensitive !== true) {
+    bad.push("⑤ 2B_pencil 应当被标成压感敏感（实测墨量 1023→3470 ✓）");
+  }
+  if (!Array.isArray(pencil.pressure_settings) || !pencil.pressure_settings.includes("opaque")) {
+    bad.push("⑤ pressure_settings 应当列出吃压感的设置（2B_pencil 里含 opaque）");
+  }
   if (!filtered || filtered.ok !== true) {
     bad.push(`④ 带 filter 的调用失败（${JSON.stringify(filtered).slice(0, 140)}）`);
   } else if (flist.length >= list.length) {
