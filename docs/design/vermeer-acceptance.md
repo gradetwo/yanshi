@@ -1063,3 +1063,39 @@ mv "$BK"/*.png assets/textures/
 **注意** ✗：那条判据管的是 **Service Worker 的离线覆盖** ✓，**不是**"文件在不在 git" ✗ ——
 所以它**抓不到**这次的事故 ✓（抓到的确实是**测试**本身 ✓）。
 
+## 三十九、★ 乙(iii) 的"视口淘汰尚未接线"——侦察到底：**真的缺，接线点也明确**（2026-10-15）★
+
+**目标原文** ✓：「"一组的大小"（4K 下每组约 256 MB）—— **视口淘汰**（`TileCache::evict_outside_viewport`
+**尚未接线** ✓）」。
+
+**逐格查实** ✓（都是 `grep` 出来的事实 ✓，不是推测 ✓）：
+
+| 事实 | 证据 |
+|---|---|
+| `TileCache::evict_outside_viewport` **存在** ✓，且**有**单元/集成测试 ✓ | `crates/yanshi-render/src/tile.rs:577` ✓；同文件 `798`／`843` ✓；`crates/yanshi-render/tests/tile_opt_correctness.rs:329` ✓ |
+| wasm 侧**也有** ✓，且其测试名直说"**is driven by JS** and reports counts" ✓ | `crates/yanshi-wasm/src/kernel.rs:320` ✓／`1059` ✓ |
+| 生成的**绑定**确实暴露了它 ✓ | `web/wasm/yanshi_wasm.js:149` ✓ |
+| ⇒ 但**没有任何手写代码调用它** ✗ | `web/` 下 grep 只命中生成物 ✓；`crates/yanshi-server/`／`yanshi-http/` **零命中** ✓ |
+| 服务端**也没有**视口概念 ✓（它的渲染 API 是**区域**式的 ✓）| 同上 ✓ |
+
+⇒ ⇒ 所以"**尚未接线**"的准确含义是 ✓：**能力有 ✓、测试有 ✓、绑定有 ✓，但查看器从不调用** ✗。
+
+**接线点（也已查实 ✓）**：
+  * `web/api-local.js` **持有** `WasmKernel` ✓（`withKernel(doc, fn)` ✓；
+    `new mod.WasmKernel(doc, 256, w, h, 256 * 1024 * 1024)` ✓ 见 `767`／`1301` ✓）；
+  * 该文件里**没有任何 viewport API** ✗（`grep viewport` 无相关命中 ✓）；
+  * `web/viewer-app.js` 在**视口变更**处更新 `state.viewport` ✓（约 `1137` 行 ✓）
+    —— 注意：这里的 `kernel` 是 **DOM canvas** ✗（`getContext("2d")` ✓），**不是** wasm 内核 ✓。
+  ⇒ **范围** ✓：`api-local.js` 加一条"设置视口"的入口 ✓ ＋ `viewer-app.js` 在视口变更时调用 ✓
+    ＋ 一条**浏览器判据** ✓。
+
+**★ 为什么这一轮**不**动手（哪怕它是 JS 而不是渲染内核）✗ ★**：
+  * **风险是真的** ✗：逐出**同一帧还要用**的 tile ⇒ **重渲染抖动** ✗ ——
+    正是本仓库被烧过的那种失败形态（"**CPU↑ 而内存没省**" ✗，见 §35 的 prior ✓）；
+  * 所以按纪律：**判据先行** ✓ —— 而这条判据需要 **CDP ＋ wasm 内核**（较重 ✓），
+    并且要同时断言**两件事** ✓：① 远处平移后**确实逐出** ✓；② **可见区仍然正确** ＋ **没有抖动** ✓；
+  * 会话已 **~416 小时** ✗ ⇒ **不在尾部加行为改动** ✓（与 DEF-03 同一条纪律 ✓）。
+
+**留给接手的人** ✓：三格事实（能力/绑定/缺调用 ✓）、两个接线点（`api-local.js` ✓／
+`viewer-app.js` 的视口变更处 ✓）、一条风险（抖动 ✗）、判据要断言的两件事 ✓ —— 都在这一节里 ✓。
+
