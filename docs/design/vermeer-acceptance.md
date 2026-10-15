@@ -2053,3 +2053,25 @@ pub struct AtomLog {
 **`head_seq()` 返回 0 这件小事** ✓：**记成已知瑕疵** ✗（`AtomLog` 知道 `base_seq` 却不在 `head_seq()` 里用 ✓），
 修它要动 128 个调用方 ✗ ⇒ 留作**单独一笔**（那时要**逐个看调用方** ✓）—— **不在本任务里顺手做** ✗。
 
+### 四十九之补十五：变异证明 —— 判据 `fast_open_matches_a_full_open` **有牙** ✓（2026-10-15 ✓）
+
+**做法** ✓（一次干净的变异实验 ✓）：把 `Document::open_from_snapshot` 里那一行
+`document.log = AtomLog::with_base_seq(_seq_at, tail)?;` ✓
+**临时改回** `AtomLog::with_atoms(tail)?;` ✓（＝**退回修之前的行为** ✓）⇒ 跑判据 ⇒ 再 `git checkout --` 恢复 ✓。
+
+**实测结果** ✓：
+```
+assertion `left == right` failed: 快照打开后 `next_seq` 必须从 seq_at+1 起 ✓（否则下一颗会撞旧 seq ✗）
+test result: FAILED. 4 passed; 1 failed; 0 ignored
+```
+⇒ ⇒ **缺陷一回来，判据立刻红，而且报的正是要防的那件事** ✓ ⇒ **有牙** ✓。
+恢复后 **5 passed / 0 failed / 0 ignored** ✓（工作区干净 ✓、变异残留 0 ✓）。
+
+**这一圈到此完整** ✓：判据先红（真缺陷 ✗）⇒ 修产品（`with_base_seq` ✓）⇒ 判据绿 ✓
+⇒ **变异**（退回）⇒ **再红** ✓ ⇒ 恢复 ⇒ 绿 ✓ —— 本仓"能红能绿 ＋ 变异证明"的标准闭环 ✓。
+
+**仍然开着的口子** ✗（不许当成已完成 ✓）：
+  * `head_seq()` 对空尾巴仍返回 0 ✓ —— **已知瑕疵** ✗（修它要动 **128 个调用方** ✗ ⇒ 单独一笔 ✓）；
+  * 待办 ① 未完 ✓：**③″** `open_document_inner` 真正**用**快照 ✓（现在只是"能打开" ✓、**还没接线** ✗）；
+    **④** "**打开时读入量变小**"的判据 ＋ 它的变异 ✓。
+
