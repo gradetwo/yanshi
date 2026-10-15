@@ -398,6 +398,54 @@ mod tests {
         atom
     }
 
+    /// **★ `viewport_union` 的**保守规则**（2026-10-15 ✓）★**
+    ///
+    /// 这条规则是整个视口淘汰设计的**要害** ✗✓：`None`（有人没声明视口）的语义是
+    /// 「**未声明视口：按需全量**」✓ ⇒ 此时**谁都不许淘汰** ✓
+    /// ⇒ 否则"你以为没人看"的那部分，恰恰是那个没声明视口的人要的 ✗（§49 之补二十四 ✓）。
+    #[test]
+    fn viewport_union_is_conservative() {
+        let mut broadcaster = Broadcaster::new();
+        // ① **零订阅者** ⇒ None ✓（没有信息 ⇒ 不淘汰 ✓）
+        assert!(
+            broadcaster.viewport_union().is_none(),
+            "没有观看者 ⇒ 必须是 None ✓（不淘汰 ✓）"
+        );
+        // ② **一个**声明了视口 ⇒ Some(它) ✓
+        let a = broadcaster.subscribe("session:a", PushChannel::WebSocket);
+        broadcaster.set_viewport(a, Some(Bbox::new(0.0, 0.0, 10.0, 10.0)), 1.0);
+        let one = broadcaster
+            .viewport_union()
+            .expect("有视口 ⇒ 应当是 Some ✓");
+        assert!(
+            one.x == 0.0 && one.y == 0.0 && one.w == 10.0 && one.h == 10.0,
+            "单个观看者 ⇒ 并集就是它本身 ✓（实测 {one:?} ✗）"
+        );
+        // ③ **两个都声明** ⇒ **并集** ✓（必须同时覆盖两块 ✓）
+        let b = broadcaster.subscribe("session:b", PushChannel::WebSocket);
+        broadcaster.set_viewport(b, Some(Bbox::new(20.0, 30.0, 10.0, 10.0)), 1.0);
+        let both = broadcaster
+            .viewport_union()
+            .expect("都有视口 ⇒ 应当是 Some ✓");
+        assert!(
+            both.x <= 0.0 && both.y <= 0.0 && both.x + both.w >= 30.0 && both.y + both.h >= 40.0,
+            "并集必须**同时覆盖**两块 ✓（实测 {both:?} ✗）"
+        );
+        // ④ ★ **保守规则**：再来一个**没声明视口**的 ⇒ 必须变回 None ✓ ★
+        let c = broadcaster.subscribe("session:c", PushChannel::WebSocket);
+        assert!(
+            broadcaster.viewport_union().is_none(),
+            "**有人没声明视口 ⇒ 必须 None** ✓（那是「按需全量」✓ ⇒ 谁都不许淘汰 ✓）"
+        );
+        // ⑤ 他一旦声明 ⇒ 又回到并集 ✓（证明上一条不是"永远 None" ✗）
+        broadcaster.set_viewport(c, Some(Bbox::new(-5.0, -5.0, 1.0, 1.0)), 1.0);
+        let again = broadcaster.viewport_union().expect("三人都声明 ⇒ Some ✓");
+        assert!(
+            again.x <= -5.0 && again.y <= -5.0 && again.x + again.w >= 30.0,
+            "第三人加入后并集要**变大** ✓（实测 {again:?} ✗）"
+        );
+    }
+
     #[test]
     fn control_flow_reaches_every_pushing_subscriber_regardless_of_viewport() {
         let mut broadcaster = Broadcaster::new();
