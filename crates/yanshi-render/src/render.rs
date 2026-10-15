@@ -3126,7 +3126,23 @@ impl Renderer {
         // 语义细节：选区只约束**在其创建之后创建的对象** ✓（ULID 单调 ⇒ 比较 `created_by` ✓）。
         // 设计未规定先后语义 ✓，已记入 implementation-notes ✓。
         // 覆盖范围：**笔触**已接入 ✓；形状/填充/文本/擦除尚未接入 ✓（如实记录，不是静默缺口 ✗）。
-        for object in state.objects_in_layer(&layer.id) {
+        let __order = state.objects_in_layer(&layer.id);
+        if std::env::var_os("YANSHI_TRACE_OBJECT_ORDER").is_some() {
+            for (i, o) in __order.iter().enumerate() {
+                eprintln!(
+                    "OBJ_ORDER layer={} #{i} id={} z={} type={:?} created_by={:?} meta_keys={:?}",
+                    layer.id,
+                    o.id,
+                    o.z_index,
+                    o.object_type,
+                    o.metadata.get("created_by").and_then(Value::as_str),
+                    o.metadata
+                        .as_object()
+                        .map(|m| m.keys().take(6).cloned().collect::<Vec<_>>())
+                );
+            }
+        }
+        for object in __order {
             if !object.visible {
                 continue;
             }

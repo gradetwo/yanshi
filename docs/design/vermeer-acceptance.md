@@ -791,3 +791,37 @@ composite  pass=7  buf=139714145600816  layer_mid  = (0.68669, 0.63076)   ← **
 当**同一块内存、同一趟**里前后两个读数不同时，答案只可能是**中间有人写过它** ✓；
 而我前面几轮一直在怀疑"**没写进去**" ✗（方向错了 ✓）。
 
+## 二十九、★ 修法钉到行：`objects_in_layer` 的第二排序键是**用户可见的对象名** ✗（2026-10-15）★
+
+**顺序追踪** ✓（`YANSHI_TRACE_OBJECT_ORDER=1` ✓，在 `render_layer_objects` 的循环前打 ✓）：
+```
+OBJ_ORDER layer=L1 #0 id=iris   z=0 type=RasterPatch created_by=None
+OBJ_ORDER layer=L1 #1 id=sclera z=0 type=Stroke      created_by=None
+```
+⇒ **`iris` 排在 `sclera` 前面** ✗ ⇒ **虹膜先画 ✓、眼白随后盖住它** ✗（与 §28 的结论一致 ✓）。
+
+**机制（`crates/yanshi-core/src/state.rs:648` ✓）**：
+```rust
+objects.sort_by_key(|o| (o.z_index, o.id.clone()));
+```
+  * 两者 `z_index` 都是 **0** ✓ ⇒ 退化到第二键 **`o.id`** ✗；
+  * 而 `ObjectId = String` ✓ = **调用方给的对象名**（`"iris"`／`"sclera"` ✓）
+    ⇒ **`"iris" < "sclera"`** ✗ ⇒ 后加的反而排在前面 ✓。
+
+**★ 我第一次的修法没生效，已回退 ✗→✓ ★**：我想改用 `metadata.created_by` ✓
+—— 但**实测追踪显示 `created_by=None`** ✗：那个字段在 `fold.rs` 里是写在**原子载荷的那个结构**上 ✓
+（与 `metadata` **并列** ✓），**不是** `Object.metadata` ✓ ⇒ 于是排序退化成按 `id` ✓ ⇒ **顺序没变** ✗ ⇒ **已回退** ✓。
+
+**★ 真正的修法（下一轮，需谨慎，属结构改动 ✓）★**：
+`Object`（`state.rs:211` ✓）上**没有任何时间/序号字段** ✗（只有 `id/layer_id/object_type/z_index/visible/locked/metadata/transform` ✓）
+⇒ **加一个 `seq: u64`** ✓：
+  1. 在 `fold.rs` 里建对象时写 `seq: atom.seq`（原子序号 ✓ = **真正的加入顺序** ✓）；
+  2. 加 `#[serde(default)]` ✓ ⇒ **老文档逐字节不变** ✓（仓库既有做法 ✓）；
+  3. `objects_in_layer` 改成 `sort_by_key(|o| (o.z_index, o.seq, o.id.clone()))` ✓；
+  4. **判据** ✓：`scripts/tool-bitmap-tiles-render.mjs`（已在已知红台账 ✓）⇒ **它应当变绿** ✓；
+     另补一条**独立判据** ✓：**"后加的不透明对象必须盖住先加的"** ✓（两笔重叠、颜色不同、看最终是谁 ✓）。
+  5. **回归网** ✓：`tool-psd-layers`（逐像素一致 ✓）＋ 既有图层/排序相关判据必须照旧绿 ✓。
+
+**为什么此事值得更谨慎** ✗：`Object` 是**持久化结构** ✓ ⇒ 加字段必须走 `serde(default)` ✓ 且要跑
+**序列化往返**判据 ✓（老工程打开后**逐字节**不变 ✓）—— 这正是纪律里"改语义/结构要能回退、要有判据守"的场景 ✓。
+
