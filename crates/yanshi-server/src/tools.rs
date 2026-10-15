@@ -2946,9 +2946,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("grid_spacing", Number, false, "anchors.grid.spacing（画布坐标的标尺间距，缺省 200）"),
             // **P1 #11 humanize**（第 254 轮）：默认拟人（非对称起收笔包络）；只在调用方**没给压力**时生效。
             param!("humanize", Boolean, false, "拟人模式（缺省 true）：点里**没给压力**时套上非对称起收笔包络（起 12%／行 60%／收 28%）；显式给了压力则一位像素都不改；传 false 走精确坐标"),
-            param!("pressure_curve", String, false, "**压感曲线**：`auto`（缺省 ✓）＝「没给 pressure」或「给了但整笔恒定（如全程 0.8）」时**自动加起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（程序生成的坐标最容易犯这个 ✗）；`flat` ＝ **永不动你的 pressure** ✓（技术绘图/需要精确控制时用 ✓）。**给了有起伏的 pressure 时 `auto` 也会原样尊重** ✓（不叠两层 ✓）；**`humanize:false` 时两者都不动** ✓"),            // **P1 #8 曲率驻留**：opt-in（缺省不改点列），转弯处按 κ^(2/3) 多插点。
-            // **P2 #16 混色模式**：缺省 rgb（逐字节不变）；pigment 走光谱 K/S。
-            param!("color_mixing", String, false, "颜色混合模式：rgb（缺省，sRGB 线性插值）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰；用于 `color_to` 一笔多色的渐变）"),
+            param!("pressure_curve", String, false, "**压感曲线**：`flat`（**缺省 ✓ ＝ 与以前逐字节相同**）/ `auto`（**推荐 ✓**）＝「没给 pressure」或「给了但整笔恒定（如全程 0.8）」时**自动补上起轻行重收轻的包络** ⇒ 笔触不再像矢量图 ✓（**程序生成的坐标最容易犯这个 ✗**）；给了有起伏的 pressure 时 `auto` 也会**原样尊重** ✓（不叠两层 ✓）；**`humanize:false` 时两者都不动** ✓"),
             param!("dwell", Number, false, "曲率驻留 0..1（**缺省不给 ⇒ 点列一个都不动**）：转弯处按 κ^(2/3) 多插点 ⇒ 拐角颜料更足（P1 #8 的一半；刻意 opt-in，免得动到既有像素判据）"),
             // **P1 #8 生理颤动**：opt-in（缺省不给 => 点列一个都不动）。
             param!("tremor", Number, false, "生理颤动 0..1（**缺省不给 => 点列一个都不动**）：叠一层**带限** 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）—— 与仓库既有的白噪声抖动不同，它相邻点相关 => 像手而不是像砂纸"),
@@ -15236,7 +15234,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   * `flat`（`none`/`off` 同义 ✓）：**永不动** ✓（技术绘图 ✓）；
     //   * **`humanize: false` ⇒ 一律不动** ✓ —— 这是硬约束
     //     （"`humanize:false` 时老行为逐字节不变" ✓），所以它**优先于** `pressure_curve` ✓。
-    let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "auto".to_owned());
+    // **★ 缺省是 `flat`（2026-10-15 真机报告后的修正）★**：我第一版把缺省设成 `auto` ⇒
+    //   **默认行为变了** ✗ ⇒ CI 里 `kernel-brush-parity`／`tool-brush-parity-jitter`／
+    //   `tool-brush-style`／`tool-brush-dynamics` **同时红** ✗（它们正是比"同一笔触"的 ✓）。
+    //   => 按本仓纪律（**改默认行为要极慎重** ✓）**缺省改回 `flat`（＝与以前逐字节相同 ✓）** ✓，
+    //   **想要"起轻行重收轻"请显式传 `pressure_curve: "auto"`** ✓（summary 里已写明 ✓）。
+    //   **要不要把它变成默认** —— 那是一次**产品决策** ✓，需要同时更新上面那几条笔刷判据
+    //   并说清代价 ✓，不该顺手做掉 ✗。
+    let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "flat".to_owned());
     let envelope_wanted = match pressure_curve.as_str() {
         "flat" | "none" | "off" => false,
         _ => !all_points_have_pressure(args) || points_are_flat(&points),

@@ -2368,17 +2368,15 @@ fn rewrite_blob_urls(
     /// **★ 生成**绝对**URL（真机报告 P1 #1：`thumb_url` 一直是相对路径 ✗）★**
     /// 传了 `origin`（来自请求的 `Host` 头 ✓）就拼成 `http://host/api/blob/…` ✓；
     /// 没传就保持原来的相对路径 ✓（向后兼容 ✓）。
-    fn rewrite_string(
-        text: &str,
-        doc_id: &str,
-        token: Option<&str>,
-        origin: Option<&str>,
-    ) -> Option<String> {
+    fn rewrite_string(text: &str, doc_id: &str, token: Option<&str>) -> Option<String> {
         let hash = text.strip_prefix("yanshi://blob/")?;
-        let mut url = match origin {
-            Some(origin) => format!("{origin}/api/blob/{hash}?doc={doc_id}"),
-            None => format!("/api/blob/{hash}?doc={doc_id}"),
-        };
+        // **★ `*_url` 必须**保持相对**（2026-10-15 的教训）★**：我第一版把它改成绝对 URL ✗
+        //   => **既有消费者全坏** ✗ —— 很多判据/client 写的是 `base + url` ✓ ⇒ 立刻变成
+        //   `http://hosthttp://host/api/blob/…` ⇒ `ERR_INVALID_URL` ✗（CI 里四条笔刷判据同时红 ✓，
+        //   本地也复现了同样的 URL ✓）。**结论**：**绝不改已有字段的语义** ✗。
+        //   用户要的是"**不用自己拼 host**" ✓ => 由下面的 `walk` **另加**一个
+        //   `{key}_absolute` 字段 ✓（新增 ✓、不动老的 ✓）。
+        let mut url = format!("/api/blob/{hash}?doc={doc_id}");
         if let Some(token) = token {
             url.push_str(&format!("&token={token}"));
         }
@@ -2386,7 +2384,7 @@ fn rewrite_blob_urls(
     }
     fn walk(value: Value, doc_id: &str, token: Option<&str>, origin: Option<&str>) -> Value {
         match value {
-            Value::String(text) => match rewrite_string(&text, doc_id, token, origin) {
+            Value::String(text) => match rewrite_string(&text, doc_id, token) {
                 Some(url) => Value::String(url),
                 None => Value::String(text),
             },
@@ -2396,11 +2394,28 @@ fn rewrite_blob_urls(
                     .map(|item| walk(item, doc_id, token, origin))
                     .collect(),
             ),
-            Value::Object(map) => Value::Object(
-                map.into_iter()
-                    .map(|(key, item)| (key, walk(item, doc_id, token, origin)))
-                    .collect(),
-            ),
+            Value::Object(map) => {
+                let mut out = serde_json::Map::with_capacity(map.len());
+                for (key, item) in map {
+                    // **★ `*_url` 的**绝对**兄弟字段（真机报告 P1 #1）★**：老字段保持相对 ✓，
+                    //   另给 `{key}_absolute` ✓（有 origin 才给 ✓）—— 这样"不用自己拼 host" ✓
+                    //   而**任何既有消费者都不受影响** ✓（本次最大的教训 ✓）。
+                    // **先改写，再据"改写后的值"加兄弟字段** ✓ —— 我第一次写成"改写前检查
+                    //   `/api/blob/` 前缀" ✗，而那时值还是 `yanshi://blob/…` ⇒ 前缀永不匹配 ⇒
+                    //   `*_absolute` **一个都没出现** ✗（实测当场抓到 ✓）。
+                    let walked = walk(item, doc_id, token, origin);
+                    if let (Some(origin), Value::String(text)) = (origin, &walked) {
+                        if key.ends_with("_url") && text.starts_with("/api/blob/") {
+                            out.insert(
+                                format!("{key}_absolute"),
+                                Value::String(format!("{origin}{text}")),
+                            );
+                        }
+                    }
+                    out.insert(key, walked);
+                }
+                Value::Object(out)
+            }
             other => other,
         }
     }

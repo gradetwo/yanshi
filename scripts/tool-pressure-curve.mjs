@@ -107,12 +107,17 @@ const main = async () => {
   ];
   const bad = [];
 
-  const autoFlat = await paint("auto_flat", {}, flat);
+  const autoFlat = await paint("auto_flat", { pressure_curve: "auto" }, flat);
   const explicitFlat = await paint("flat_flat", { pressure_curve: "flat" }, flat);
-  const autoVaried = await paint("auto_var", {}, varied);
+  const autoVaried = await paint("auto_var", { pressure_curve: "auto" }, varied);
   const flatVaried = await paint("flat_var", { pressure_curve: "flat" }, varied);
-  const humanizeOff = await paint("hz_off", { humanize: false }, flat);
+  const humanizeOff = await paint("hz_off", { humanize: false, pressure_curve: "auto" }, flat);
   const humanizeOffFlat = await paint("hz_off_flat", { humanize: false, pressure_curve: "flat" }, flat);
+  // **★ ④ 缺省必须与 `flat` 逐字节相同 ★**（2026-10-15 真机报告后的修正 ✓）：
+  //   我第一版把缺省设成 `auto` ⇒ **默认行为变了** ✗ ⇒ CI 里四条笔刷判据同时红 ✗
+  //   （`kernel-brush-parity`／`tool-brush-parity-jitter`／`tool-brush-style`／`tool-brush-dynamics` ✓）。
+  //   => **缺省改回 `flat`** ✓；这一条就是那个决定的守卫 ✓。
+  const defaultFlat = await paint("default_flat", {}, flat);
 
   console.log(
     `  ① 恒定 0.8：auto 墨 ${autoFlat.ink}｜flat 墨 ${explicitFlat.ink}（` +
@@ -135,6 +140,12 @@ const main = async () => {
   if (autoVaried.fingerprint !== flatVaried.fingerprint) {
     bad.push("② 对**有起伏**的 pressure 也动了手 ⇒ 叠了两层包络（应当**原样尊重** ✗）");
   }
+  console.log(
+    `  ④ 缺省 vs flat（${defaultFlat.fingerprint === explicitFlat.fingerprint ? "相同 ✓" : "不同 ✗"}）`,
+  );
+  if (defaultFlat.fingerprint !== explicitFlat.fingerprint) {
+    bad.push("④ **缺省行为被改了**：不传 `pressure_curve` 与传 `flat` 的画面不同 ⇒ 违反「默认与以前逐字节相同」✗");
+  }
   if (humanizeOff.fingerprint !== humanizeOffFlat.fingerprint) {
     bad.push("③ `humanize:false` 时仍然动了 pressure ⇒ 违反硬约束（老行为必须逐字节不变 ✗）");
   }
@@ -143,7 +154,7 @@ const main = async () => {
     process.exit(1);
   }
   console.log(
-    "✓ 压感包络成立：恒定压感被补上起收笔（①）、有起伏的原样尊重（②）、humanize:false 一律不动（③）",
+    "✓ 压感包络成立：`auto` 给恒定压感补起收笔（①）、有起伏的原样尊重（②）、humanize:false 一律不动（③）、**缺省仍与以前逐字节相同（④）**",
   );
 };
 
