@@ -49,9 +49,15 @@ env:
 #       ＋ **∴ 所以 ✗**：**改成 `false`**✗ ⇒ **∴ 让**每个推送**都跑完** ✓
 #         ＋ **∴ 而**人工取消**只在**真的堆积时**才做** ✓ ★
 #   **∴ 与 release.yml 一致 ✗**：**那里本来就是 `cancel-in-progress: false`** ✓（**∴ 现在两者统一 ✓）★
+# **★ 分两种引用（2026-10-15，用户指出"CI/CD 跑得有点重复"后改 ✓）★**
+#   * **`main`** ✓ ⇒ **保持 `false`** ✓（保留文件头那条理由：`main` 上的每次推送都应当**跑完** ✓，
+#     这样"某个提交的判据结果"永远是完整的 ✓，不会因为被后来的推送取代而消失 ✓）；
+#   * **其它分支**（我的工作分支 `l4-sync` ✓）⇒ **`true`** ✓：一个分支上"最新的那次"才作数 ✓
+#     ⇒ 旧的**已被取代** ✗ ⇒ 让它继续占 6 个分片的 runner 只是浪费 ✓
+#     （2026-10-15 的实测账 ✓：最近 40 次里 `CI|push` 有 **28 次** ✓，多数互相比稿 ✗）。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   fmt:
