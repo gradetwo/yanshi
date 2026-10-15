@@ -3418,8 +3418,29 @@ impl Renderer {
                                 )
                             })();
                             if let Some(rgba) = stitched {
-                                layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
-                                continue;
+                                // **★ 拼出来若是"什么都没画"的缓冲 ⇒ 不许信它（2026-10-15 实测 ✓）★**
+                                //
+                                // **实测** ✓：虹膜那一笔（`medium_stroke` ⇒ 落盘成**带 `tiles` 索引**的
+                                // 位图 ✓）就是走到这里的：`stitched` 返回 `Some` ✓，而拼出来的缓冲
+                                // **全透明** ✗ ⇒ 原来这里直接 `blit; continue;` ✓ ⇒
+                                // ⇒ **永远走不到下面那条整幅回退** ✗ ⇒ 画面**一处都没变** ✗，
+                                // 而调用方拿到 `ok=true` ✓、对象数据完整 ✓、`warnings` 为空 ✓
+                                // ⇒ 正是本仓库最恨的那一类：**静默无效果** ✗。
+                                // （判据：`scripts/tool-bitmap-tiles-render.mjs` ✓ —— 它会红在这一条上 ✓。）
+                                //
+                                // **与上面第 3383 行那句注释对齐** ✓：「**不撒谎**：索引缺失／版本不符／
+                                // **块取不到** ⇒ 落回下面的既有整幅路」✓ —— 原来只覆盖了"**取不到**" ✗，
+                                // **没覆盖"取到了、但是空的"** ✗ ⇒ 这里补上 ✓。
+                                if rgba.chunks_exact(4).any(|pixel| pixel[3] > 0) {
+                                    layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    continue;
+                                }
+                                track.unsupported.push(format!(
+                                    "位图补丁的**分块索引拼出了一张全透明缓冲**（对象 {}，blob {blob}）\
+                                     ⇒ **落回整幅路** ✓（索引可能过期，或块内容为空 ✓）；\
+                                     若整幅路也画不出来，下面还会再报一次 ✓",
+                                    object.id
+                                ));
                             }
                         }
                     }
