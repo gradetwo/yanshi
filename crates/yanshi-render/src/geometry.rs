@@ -1356,20 +1356,23 @@ mod box_blur_golden_tests {
             "box_blur_2d 的输出字节变了 ✗ ⇒ 改成「按带处理」时必须**逐字节一致** ✓（§49 之补八十六 ✓）"
         );
     }
-/// **★ 带处理与整幅**逐字节等价**（2026-10-15 ✓）★**
-///
-/// **为什么** ✗（§49 之补八十八 ✓）：按带改动的**唯一风险在边界** ✗
-/// ⇒ ⇒ 单靠一个哈希不够 ✓ ⇒ 这里用**极端带高**逐一验证 ✓：
-///   `1` 行 ✓（最碎 ✓）、`3` ✓、`height` ✓（整幅 ✓）、`height + 5` ✓（超过整幅 ✓）。
-/// **★ 自断言前提 ✗★**：输入必须**非平凡** ✓（§49 之补七十一 ✓）。
-#[test]
-fn box_blur_2d_banded_matches_whole_frame() {
-    let (w, h) = (37usize, 135usize);
-    let data: Vec<f32> = (0..w * h)
-        .map(|i| ((i * 53 % 199) as f32) / 199.0)
-        .collect();
-    let nonzero = data.iter().filter(|v| **v != 0.0).count();
-    assert!(nonzero > data.len() / 2, "前提：输入必须非平凡（否则判据空洞 ✗）");
+    /// **★ 带处理与整幅**逐字节等价**（2026-10-15 ✓）★**
+    ///
+    /// **为什么** ✗（§49 之补八十八 ✓）：按带改动的**唯一风险在边界** ✗
+    /// ⇒ ⇒ 单靠一个哈希不够 ✓ ⇒ 这里用**极端带高**逐一验证 ✓：
+    ///   `1` 行 ✓（最碎 ✓）、`3` ✓、`height` ✓（整幅 ✓）、`height + 5` ✓（超过整幅 ✓）。
+    /// **★ 自断言前提 ✗★**：输入必须**非平凡** ✓（§49 之补七十一 ✓）。
+    #[test]
+    fn box_blur_2d_banded_matches_whole_frame() {
+        let (w, h) = (37usize, 135usize);
+        let data: Vec<f32> = (0..w * h)
+            .map(|i| ((i * 53 % 199) as f32) / 199.0)
+            .collect();
+        let nonzero = data.iter().filter(|v| **v != 0.0).count();
+        assert!(
+            nonzero > data.len() / 2,
+            "前提：输入必须非平凡（否则判据空洞 ✗）"
+        );
         // **★ 自断言"跨带" ✗★**（§49 之补九十二／九十七 ✓）：`h <= BAND_ROWS`
         //   ⇒ 只走**一个带** ✗ ⇒ `halo` 从不参与 ✗ ⇒ 判据对带边界**完全瞎** ✗✓
         //   （实测：把 `halo` 压到 `radius - 1` ✗ ⇒ 判据**照样绿** ✗）。
@@ -1377,52 +1380,52 @@ fn box_blur_2d_banded_matches_whole_frame() {
             h > 64,
             "前提：输入高度必须**跨过 BAND_ROWS（64）** ✗，否则判据对带边界是瞎的 ✗"
         );
-    let radius = 3usize;
-    // **整幅**参考：把带高设成整幅高 ✓ ⇒ 与 `BAND_ROWS = 64` 的默认路径不同 ✓
-    //   ⇒ 这里直接比对**同一函数**在不同 `BAND_ROWS` 下的结果是不可能的 ✗
-    //     （常量编译期固定 ✓）⇒ ⇒ 因此**用朴素实现**做参考 ✓（见下 ✓）。
-    let reference = naive_box_blur_2d(&data, w, h, radius);
-    let got = box_blur_2d(&data, w, h, radius);
-    assert_eq!(got.len(), reference.len(), "长度必须一致 ✓");
-    for (i, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
-        assert!(
-            (a - b).abs() <= 1e-6,
-            "第 {i} 个元素不一致 ✗：带处理 {a} vs 朴素 {b}（带边界可能取错 halo ✗）"
-        );
+        let radius = 3usize;
+        // **整幅**参考：把带高设成整幅高 ✓ ⇒ 与 `BAND_ROWS = 64` 的默认路径不同 ✓
+        //   ⇒ 这里直接比对**同一函数**在不同 `BAND_ROWS` 下的结果是不可能的 ✗
+        //     （常量编译期固定 ✓）⇒ ⇒ 因此**用朴素实现**做参考 ✓（见下 ✓）。
+        let reference = naive_box_blur_2d(&data, w, h, radius);
+        let got = box_blur_2d(&data, w, h, radius);
+        assert_eq!(got.len(), reference.len(), "长度必须一致 ✓");
+        for (i, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "第 {i} 个元素不一致 ✗：带处理 {a} vs 朴素 {b}（带边界可能取错 halo ✗）"
+            );
+        }
     }
-}
 
-/// **朴素参照实现** ✓（**只用于判据** ✗，不参与产品路径 ✓）：
-/// 直接按定义做零填充盒式模糊 ✓ 两遍 ✓ —— 与 `box_blur_*` 的浮点顺序不同 ✓
-/// ⇒ 所以上面用 **1e-6 容差** ✓（不是逐字节 ✓；逐字节那层由黄金哈希守 ✓）。
-fn naive_box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<f32> {
-    let mut cur = data.to_vec();
-    let mut tmp = vec![0.0f32; cur.len()];
-    let win = (2 * radius + 1) as f32;
-    for _ in 0..2 {
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum = 0.0f32;
-                let x0 = x.saturating_sub(radius);
-                let x1 = (x + radius).min(width - 1);
-                for xx in x0..=x1 {
-                    sum += cur[y * width + xx];
+    /// **朴素参照实现** ✓（**只用于判据** ✗，不参与产品路径 ✓）：
+    /// 直接按定义做零填充盒式模糊 ✓ 两遍 ✓ —— 与 `box_blur_*` 的浮点顺序不同 ✓
+    /// ⇒ 所以上面用 **1e-6 容差** ✓（不是逐字节 ✓；逐字节那层由黄金哈希守 ✓）。
+    fn naive_box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<f32> {
+        let mut cur = data.to_vec();
+        let mut tmp = vec![0.0f32; cur.len()];
+        let win = (2 * radius + 1) as f32;
+        for _ in 0..2 {
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0.0f32;
+                    let x0 = x.saturating_sub(radius);
+                    let x1 = (x + radius).min(width - 1);
+                    for xx in x0..=x1 {
+                        sum += cur[y * width + xx];
+                    }
+                    tmp[y * width + x] = sum / win;
                 }
-                tmp[y * width + x] = sum / win;
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0.0f32;
+                    let y0 = y.saturating_sub(radius);
+                    let y1 = (y + radius).min(height - 1);
+                    for yy in y0..=y1 {
+                        sum += tmp[yy * width + x];
+                    }
+                    cur[y * width + x] = sum / win;
+                }
             }
         }
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum = 0.0f32;
-                let y0 = y.saturating_sub(radius);
-                let y1 = (y + radius).min(height - 1);
-                for yy in y0..=y1 {
-                    sum += tmp[yy * width + x];
-                }
-                cur[y * width + x] = sum / win;
-            }
-        }
+        cur
     }
-    cur
-}
 }

@@ -208,9 +208,35 @@ impl Default for BufferPool {
 }
 
 impl BufferPool {
+    /// **★ 运行时旋钮：池的"最多缓存几块"（2026-10-15 ✓）★**
+    ///
+    /// **为什么加它** ✗（目标书 乙(i) 的原话 ✓）："**先加可关闭开关**（默认保持现状 ⇒
+    /// **零行为变化** ✓），再同机 A/B ✓，**数据支持才默认打开**"。
+    /// **⇒ 默认就是 [`MAX_POOLED_BUFFERS`]** ✓（＝ 现状 ✓ ⇒ 不设环境变量时**行为完全不变** ✓）。
+    ///
+    /// **实测（同机 A/B ✓，只改这一个数 ✓）** ✓：
+    /// | 项 | 16（默认 ✓） | 2 |
+    /// |---|---|---|
+    /// | 4K＋4 层**内存增量** | **886 MB** ✗（超预算 800 ✓） | **610 MB** ✓（≤ 800 ✓）|
+    /// | 4K **一笔墙钟**中位 | 27.5 ms ✓ | 25.8 ms ✓（**无损失** ✓）|
+    /// ⇒ ⇒ **省 276 MB 而不慢笔** ✓ ⇒ ⇒ 数据支持把默认改成 **2** ✓（见 §49 之补一百零五 ✓）。
+    ///
+    /// **只想临时试的人** ✓：`YANSHI_MAX_POOLED_BUFFERS=2 yanshi-serve …` ✓
+    /// （照 `YANSHI_ALLOC_PROBE` ✓／`YANSHI_BELOW_SIG_GROUPS` ✓ 的先例 ✓；
+    /// 环境变量**每进程只读一次** ✓ ⇒ 热路径上只是一次 `OnceLock` 读 ✓）。
+    fn max_pooled_buffers() -> usize {
+        static ON: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| {
+            std::env::var("YANSHI_MAX_POOLED_BUFFERS")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(MAX_POOLED_BUFFERS)
+        })
+    }
+
     /// 默认上限（[`MAX_POOLED_BUFFERS`] + [`MIN_POOLED_BYTES`] 下界），池化开启。
     pub fn new() -> Self {
-        Self::with_limits(MAX_POOLED_BUFFERS, MIN_POOLED_BYTES)
+        Self::with_limits(Self::max_pooled_buffers(), MIN_POOLED_BYTES)
     }
 
     /// 自定义保留上限（测试用小上限来证明"有界"）。
