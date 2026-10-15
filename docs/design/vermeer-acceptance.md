@@ -1583,3 +1583,55 @@ new WebSocket("ws://…/ws?doc=w&token=<64 字符>")    ⇒ **连上了** ✓✓
 **另记** ✓：本机这条路径同时也说明"**没有真名字**"是**常态** ✓ ⇒
 所以**不能**把"没名字"当成"默认合格" ✗（那正是这次的假绿 ✓）。
 
+### 四十七、发布冒烟（待办 ③）的执行方案 —— 命令**已实测** ✓（2026-10-15 ✓）
+
+**用户的技术债** ✗：「`release.yml` 只打包、**不运行** ⇒ 坏了也照样绿」✓
+⇒ 要在 `package (…)` 作业里、**"Build the release package"（`.github/workflows/release.yml:189` 起 ✓）之后**，
+插一个**真跑**的冒烟步骤 ✓。
+
+**两条命令已在本机实测 ✓**（所以写进工作流的不是猜的 ✓）：
+```
+./target/release/yanshi-serve --version   ⇒ "yanshi 0.2.1 (commit …)"，退出码 0 ✓
+起服务（--bind 127.0.0.1:8099 --root <tmp> --doc seed …）⇒ curl /health ⇒ 通了 ✓（返回 JSON ✓）
+```
+
+**建议的步骤（粘贴位置：`:214` 那个 `run:` 块之后 ✓）**：
+```yaml
+      - name: Smoke-test the package (打包后**真跑**一次 ✓)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for f in dist/*.tar.gz dist/*.zip; do
+            echo "== 试 $f =="
+            tmp="$(mktemp -d)"
+            case "$f" in
+              *.tar.gz) tar -xzf "$f" -C "$tmp" ;;
+              *.zip) unzip -q "$f" -d "$tmp" ;;
+            esac
+            bin="$(find "$tmp" -type f \( -name 'yanshi-serve' -o -name 'yanshi-serve.exe' \) | head -1)"
+            [ -n "$bin" ] || continue
+            found=1; chmod +x "$bin" 2>/dev/null || true
+            "$bin" --version
+            "$bin" --bind 127.0.0.1:8099 --root "$tmp/root" --doc seed --width 160 --height 120 &
+            pid=$!; ok=0
+            for _ in $(seq 1 40); do
+              if curl -fsS --max-time 1 http://127.0.0.1:8099/health > /dev/null 2>&1; then ok=1; break; fi
+              sleep 0.25
+            done
+            kill "$pid" 2>/dev/null || true
+            if [ "$ok" != "1" ]; then echo "✗ 打包出来的服务起不来或 /health 不通 ⇒ 这个包不能发 ✗"; exit 1; fi
+            echo "✓ $f：--version 可跑 ＋ /health 通 ✓"
+          done
+          if [ "$found" = "0" ]; then echo "✗ 没找到任何可执行包 ⇒ 打包环节坏了 ✗"; exit 1; fi
+```
+**几处刻意的设计** ✓：
+  * **`shell: bash`** ✓ —— Windows runner 默认是 `pwsh` ✗，而这段是 bash ✓（GH 的 Windows 镜像带 bash ✓）；
+  * **"没找到包"也算红** ✗ ⇒ 打包环节坏了不会被静默放过 ✓；
+  * **/health 有超时兜底** ✓（40×0.25s ✓）⇒ 起不来就红 ✓、**绝不静默** ✓；
+  * 只跑**本矩阵打出来的那个包** ✓（`dist/` 里通常只有一个 ✓）。
+**未做** ✗：**没有**在本地完整跑一遍"打包 ⇒ 解包 ⇒ 冒烟" ✓（那要跑 `scripts/package-release.sh` ✓，代价大 ✓）
+⇒ ⇒ 所以这一步是**待验证**的 ✓：贴进工作流后，**必须先手动触发一次 release 工作流** ✓
+（`workflow_dispatch` ✓），看它**真的红过／绿过** ✓（判据要有牙 ✓）。
+
