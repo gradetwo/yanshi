@@ -75,6 +75,9 @@ console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}�
 const port = 14300 + Math.floor(Math.random() * 80);
 const root = trackTemp(mkdtempSync(join(tmpdir(), "cpureal-")));
 const proc = spawn(BIN, ["--root", root, "--bind", `127.0.0.1:${port}`], { stdio: "ignore" });
+// **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ✗ ⇒ 判据退出后若不杀它 ⇒
+//   **进程一直活着 ⇒ CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（`main` 那轮"11 绿 0 红却到不了终态"同形 ✓）。
+process.on("exit", () => { try { proc.kill(); } catch { /* 已退出 */ } });
 const base = `http://127.0.0.1:${port}`;
 
 const call = async (doc, token, tool, args) => {

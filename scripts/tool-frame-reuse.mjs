@@ -41,6 +41,8 @@ if (OWNS_SERVER) {
   }
   srv = spawn(BIN, ["--bind", `127.0.0.1:${PORT}`, "--root", "/tmp/yt-frame-reuse",
     "--assets-dir", `${process.cwd()}/assets`, "--profile", "all"], { stdio: "ignore" });
+  // **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：起的是**长期服务** ⇒ 判据退出后不杀它 ⇒ 分片可能永不结束 ✗。
+  process.on("exit", () => { try { srv.kill(); } catch { /* 已退出 */ } });
   // **∴ 必须挂 error 处理 ✗**（**∴ 否则**未处理的 error 事件会杀进程 ✓）** ✓✓
   srv.on("error", (error) => {
     console.error("✗ 起服务失败：" + String(error && error.message || error));
