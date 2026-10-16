@@ -54,6 +54,16 @@ const skipped = results.reduce((a, r) => a + (r.ignored || 0), 0);
 if (failed > 0) {
   console.error(`❌ ${runs} 次里有 ${failed} 次失败 ⇒ **增量与整段不一致 ⇒ 缓存**撒谎了** ✗**` +
     `（常见根因：参照组只清了 tile 缓存 ⇒ 请改用 \`clear_all_caches()\` ✓）`);
+  // **★ 陈旧提示已更正 ✗ ★**（第 1000+ 轮 ✓）：**∴ 原文案说「修复"增量盖章丢内容"后删掉该 \`ignore\`」✗，
+  //   而**事实是：该缺陷**第 600 轮已修**✓（`render.rs:5623` 记了根因 ＝ \`blit_rgba8\` 用 \`buffer.width()\`
+  //   读 \`size×size\` 源 ⇒ 边缘 tile 行错位 ✓），**且 \`#[ignore]\` 早已移除 ✓** ⇒ **∴ 它现在是**真红线**✓
+  //   （**实测：它就在本轮 10/10 全绿的 291 条里 ✓**）。
+  //   **∴ 所以这句提示会**误导后人去修一个已修好的东西**✗ ⇒ **∴ 改成事实 ✓**（**∴ 判据的文案也是判据的一部分 ✓**）★
+  console.error(
+    `  ∴ 附注（第 1000+ 轮更正 ✓）：\`incremental_stamp_matches_full_tile_re_render\` 的缺陷` +
+      `（增量盖章丢 tile 内容 ✓）**第 600 轮已修**✓，\`#[ignore]\` 已移除 ✓ ⇒ **它是真红线 ✓**；` +
+      `上述"修好后删 ignore"的旧提示**不再适用**✗。`
+  );
   // **∴ 把失败测试名列出来 ✓**（**∴ 这是本判据以前缺的那一块 ✓** —— 没有它就无法定性 ✗）
   for (const r of results) {
     if (r.ok || !r.detail) continue;
