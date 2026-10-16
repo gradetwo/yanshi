@@ -393,9 +393,34 @@ fn opening_with_a_snapshot_reads_less() {
         .expect("从快照冷开应当成功 ✓")
         .atoms_read_on_open();
     println!("  有快照 ⇒ 打开读入 {after}／{total} 颗 ✓（全量时是 {before} ✓）");
-    assert!(
-        after < before,
-        "**有快照必须读得更少** ✓（实测 {after} vs 全量 {before} ✗）—— 快照没被用上 ✗"
+    // **★★★ 2026-10-16：这条断言**反过来了** ✗ ★★★**（**先读代码 ＋ 本机复现 ＋ 第三方同报 ✓**）
+    //
+    // **∴ 为什么 ✗**：「快照 ＋ 尾巴」用来**打开可编辑文档**是**不安全**的 ✓ ——
+    //   快照只喂给 `open_from_snapshot`（状态 ✓），而日志只装快照之后的 tail ✓ ⇒
+    //   后续提交走 `IncrementalFolder` 时**从 tail 的零基础折叠** ✗ ⇒
+    //   **快照里那些图层在第一次提交后就没了** ✗（本机实测：1000 原子落快照 ⇒ 冷开后
+    //   `head_seq=0` ✗、再提交 `ok=false`「渲染区域 … 与文档 0×0 不相交」✗、
+    //   `get_document` 随后取不到 ✗）。
+    //   **∴ 代价**是冷开多读多折 ✗ —— 但"**打开就能用**"优先于"打开快" ✓。
+    //   **∴ 所以现在断言**读满全量** ✓ 而**不是**读得更少 ✓。
+    //
+    // **∴ 这条何时能反向 ✗**：当 `IncrementalFolder` 能**以快照为基座**折叠 ✓
+    //   （或提交路径能区分"快照基座 ＋ tail"✓）⇒ 那时把这条断言**改回** `after < before` ✓，
+    //   并且必须同时保持 `scripts/tool-snapshot-reopen.mjs` 绿 ✓（它就是这条路的端到端判据 ✓）。
+    assert_eq!(
+        after, before,
+        "**现在**冷开必须读满全量 {before} ✓（实测 {after} ✗）—— \
+         因为「快照 ＋ 尾巴」打开会让**第一次提交丢掉快照里的图层** ✗（见上；端到端判据 `tool-snapshot-reopen.mjs` ✓）"
+    );
+
+    // ④ **真正要守的东西** ✓：这么开出来的文档**是可用的、完整的** ✓（而不是"读对了字节数"而已 ✗）。
+    //    **∴ 对照物就用**没有快照时那次冷开** ✓**（`first` ✓）—— **∴ 不写魔数 ✗**：
+    //    磁盘上多了一份快照，**不该让打开后的状态有任何差别** ✓ ⇒ 两次的层/对象数必须相等 ✓。
+    let layers_plain = first.open_document(doc).unwrap().state().layers.len();
+    let layers_after = second.open_document(doc).unwrap().state().layers.len();
+    assert_eq!(
+        layers_after, layers_plain,
+        "磁盘上多一份快照**不该改变打开后的状态** ✓（有快照 {layers_after} vs 无快照 {layers_plain} ✗）"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

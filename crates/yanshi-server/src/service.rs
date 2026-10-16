@@ -1219,22 +1219,32 @@ impl Workspace {
             let (atoms, base, render, preview) = match &self.persist {
                 Some(persist) => {
                     mark("load_atoms");
-                    // **★ 先试"快照 ＋ 尾巴"（待办 ① ✓，2026-10-15 ✓）★**
-                    //   **有快照** ✓ ⇒ 只读 `seq > seq_at` 的那段 ✓（`load_atoms_since` ✓）
-                    //     ＋ 把快照恢复出的状态交给 `open_from_snapshot` ✓；
-                    //   **没有／快照坏了** ✓ ⇒ `load_atoms` **全量** ✓ ＋ `None` ✓
-                    //     ⇒ ⇒ **与今天逐字一样** ✓（`load_latest_snapshot` 返回 `Option` ✓
-                    //        就是为了"坏了当没有" ✓，绝不让打开失败 ✗）。
-                    let (atoms, base) = match persist.load_latest_snapshot(doc_id) {
-                        Some(snapshot) => {
-                            let seq_at = snapshot.seq_at;
-                            (
-                                persist.load_atoms_since(doc_id, seq_at)?,
-                                Some((seq_at, snapshot.restore())),
-                            )
-                        }
-                        None => (persist.load_atoms(doc_id)?, None),
-                    };
+                    // **★★★ 「快照 ＋ 尾巴」打开**暂时停用** ✗ ★★★**（2026-10-16 ✓；**本机独立复现 ＋ 第三方同报** ✓）
+                    //
+                    // **∴ 症状 ✗**（**本机实测 ✓**）：文档原子数 ≥ `SNAPSHOT_LAG_ATOMS`（**1000** ✓）时
+                    //   磁盘上会出现 `snapshot-<seq>.json` ✓ ⇒ 之后**换一个进程重开** ✓ 就走下面那条
+                    //   「快照 ＋ 尾巴」✓ ⇒ **开出来 `head_seq` 是 0** ✗、**再提交一笔直接失败** ✗：
+                    //   `渲染区域 Bbox {0,0,1,1} 与文档 0×0 不相交` ✓，此后 `get_document` 取不到 ✗。
+                    //   （实测脚本：造 1000 原子 ⇒ 落快照 ⇒ 新进程重开 ⇒ `layers=3/objects=997` 但
+                    //    `head_seq=0` ✓ ⇒ 再画一笔 `ok=false` ✓。）
+                    //
+                    // **∴ 根因 ✗**（与第三方报告的诊断一致 ✓）：快照只喂给 `open_from_snapshot`（**状态** ✓），
+                    //   而**日志**只装了快照之后的 tail ✓ ⇒ 后续提交走 `IncrementalFolder` 时
+                    //   **从 tail 的零基础开始折叠** ✗ ⇒ **快照里那些图层在第一次提交后就没了** ✗
+                    //   ⇒ **∴ 这不是"慢"** ✗ 而**是"可编辑文档被开坏"** ✓ ★
+                    //   **∴ 原子日志本身没丢 ✓**（磁盘上 `atoms.jsonl` 是完整的 ✓）—— 丢的是"这一进程理解的状态" ✓。
+                    //
+                    // **∴ 处置 ✗**：**可编辑的文档一律从完整权威日志打开** ✓（`load_atoms` 全量 ＋ `base=None` ✓），
+                    //   直到**折叠与历史操作都支持"快照基座"**为止 ✓ —— 也就是第三方验证过的那条路 ✓
+                    //   （它实测：冷开续画、撤销、再次冷开都保留原内容 ✓、PNG 逐字节一致 ✓）。
+                    //   **∴ 代价如实说 ✗**：**冷开要多读多折历史** ✓（大文档上这是实打实的 I/O ✗）——
+                    //   **∴ 但"打开就能用"优先于"打开快"** ✓。
+                    //   **∴ 什么时候能把它放回来 ✗**：当 `IncrementalFolder` 能**以快照为基座**折叠 ✓
+                    //   （或提交路径能区分"快照基座 ＋ tail" ✓）⇒ 那时**带着判据**（冷开 ⇒ 续写 ⇒ 层/对象/锚点
+                    //   一个不少 ＋ 两次冷开出图逐字节一致 ✓）再打开 ✓。
+                    //   **∴ `open_from_snapshot` 与 `load_atoms_since` 先留着** ✓（都是 `pub` ✓，
+                    //   将来恢复这条路要用 ✓；现在没有调用点 ✓）。
+                    let (atoms, base) = (persist.load_atoms(doc_id)?, None);
                     mark("load_render");
                     let render = persist.load_render(doc_id)?;
                     mark("load_preview");
