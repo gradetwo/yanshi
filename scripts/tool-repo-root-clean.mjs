@@ -26,6 +26,13 @@ const ALLOWED = new Set([
   "AGENTS.md", "CONTRIBUTING.md", "LICENSE", "Makefile", "README.md", "README.zh-CN.md",
   "SECURITY.md", "Cargo.toml", "Cargo.lock", "rustfmt.toml", "rust-toolchain.toml",
   "assets", "crates", "deploy", "docs", "scripts", "target",
+  // **★ `skills` 加进白名单 ✗ ★**（第 1000+ 轮 ✓）：
+  //   **∴ 它是什么 ✗**：**仓库自带的绘画 skill** ✓（`skills/yanshi-painting/` ✓）——
+  //     **∴ 由用户明确要求写成** ✓（「就是写一个 skill」✓）⇒ **∴ 它是**有意提交的顶层条目**✓ ★
+  //   ＋ **∴ 两条改动即证据 ✓**：`3da20fca docs(skill): 补"笔法不能只有大小：柔／薄／堆／刀"` ✓
+  //     ＋ **两版 README 都已指向它** ✓（`skills/yanshi-painting/SKILL.md` ✓）。
+  //   **∴ 代价 ✗**：**白名单多一项**✗ ⇒ **∴ 而它**有明确理由 ✓（**与上面 `package-lock.json` 同一处理 ✓**）。
+  "skills",
     // **★ PWA 部署的四件套 ✗ ★**（第 66 轮 ✓；**∴ 它们都是**有意提交的 ✓）：
     //   **∴ `wrangler.toml`／`worker/`**✗：**638025e2 feat(pwa): add the workers configuration…** ✓
     //   **∴ `package.json`**✗：**a29d7ede chore(pwa): check for wrangler before deploying…** ✓
