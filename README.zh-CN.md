@@ -64,11 +64,9 @@ make help       # 全部目标
 **没有导入任何原作位图**，因此每一个像素都是笔刷或介质的笔触，以普通原子记录在文档里。
 
 
-[![后台舞者](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png)
+<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="后台舞者" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="四位舞者" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="芭蕾参考研究（4K 成品）" width="260"></a>
 
 
-[![四位舞者](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png)
-[![芭蕾参考研究（4K 成品）](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png)
 
 
 以上数字出自**对方自己的作品包**；它的报告里也写了**它没有**做的事（**没有**跑本仓自带的判据）✗

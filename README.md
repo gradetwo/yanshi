@@ -70,11 +70,9 @@ study style only: **no reference bitmap was imported**, so every pixel is a brus
 recorded as ordinary atoms.
 
 
-[![Backstage](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png)
+<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="Backstage" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="Four dancers" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="Ballet reference study (4K)" width="260"></a>
 
 
-[![Four dancers](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png)
-[![Ballet reference study (4K)](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png)
 
 
 These paintings were produced by an outside agent driving the same MCP tools; the per-painting numbers (canvas size, layer/anchor counts) come from its own package.
