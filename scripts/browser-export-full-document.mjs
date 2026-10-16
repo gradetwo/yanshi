@@ -119,11 +119,21 @@ async function waitForFile(listDir, timeoutMs) {
 }
 
 // ① 造一份 1024×1024 的文档并画一笔（空文档导出来全是背景，分不清"整幅"与"空白视口"）。
-const created = await fetch(`${base}/api/documents`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: DOC, width: W, height: H }),
-}).then((r) => r.json());
+// **★ 服务端连接守卫 ✗ ★**（2026-10-16 ✓）：**这文件的第一次网络调用** ✓ —— 服务端不可达时它先抛 ✓
+//   ⇒ 未捕获 ⇒ **退 1 ✗，看着像产品失败** ✗。**∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，
+//   用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」⇒ 包住它；**注意**：下面「服务端给了 token 才算前置成立」那条
+//   仍是**退 1** ✓（那是**服务端可达但出错** ✓，属于产品/前置失败 ✓，不该冒充"我判不了"✗）。
+let created;
+try {
+  created = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: DOC, width: W, height: H }),
+  }).then((r) => r.json());
+} catch (error) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上服务端：" + error.message + " ⇒ 退出码 3");
+  process.exit(3);
+}
 if (!created || !created.token) {
   console.error("❌ 无法创建 " + W + "×" + H + " 文档（服务端没给 token）⇒ 判据前置不成立：" + JSON.stringify(created));
   process.exit(1);
