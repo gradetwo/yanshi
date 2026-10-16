@@ -100,7 +100,7 @@ for (let i = 0; i < 80; i += 1) {
 if (!targets || !targets.length) {
   console.error("❌ chromium 未就绪 ⇒ 本次实测无效");
   chrome.kill();
-  process.exit(1);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 1 ✗：那是"产品失败"码 ✓）
 }
 
 const page = targets.find((t) => t.type === "page") || targets[0];

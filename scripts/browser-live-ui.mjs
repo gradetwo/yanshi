@@ -88,7 +88,7 @@ if (!targets || !targets.length) {
   console.error("❌ chromium 未就绪 ⇒ 本次实测无效");
   chrome.kill();
 await sleep(400); // **∴ 给它时间退出 ⇒ **∴ 否则 profile 删不掉 ✓
-  process.exit(1);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 1 ✗：那是"产品失败"码 ✓）
 }
 const page = targets.find((t) => t.type === "page") || targets[0];
 const socket = new WebSocket(page.webSocketDebuggerUrl);
