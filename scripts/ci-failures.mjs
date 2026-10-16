@@ -61,7 +61,7 @@ const unusable = (why) => {
 
 function gh(args) {
   try {
-    return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: 600_000 });
   } catch (e) {
     unusable("gh 调用失败：" + (e.stderr || e.message).split("\n")[0]);
   }
@@ -280,8 +280,8 @@ function runFailures(runId, allCriteriaJobs = false) {
 }
 
 // —— 解析本地 HEAD 与分支 ——（**∴ 只读 git，不联网 ✓）
-const branch = branchArg || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim();
-const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const branch = branchArg || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 600_000 }).trim();
+const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 600_000 }).trim();
 
 let runId = runArg;
 if (!runId) {
