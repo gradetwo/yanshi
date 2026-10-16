@@ -5751,7 +5751,7 @@ mod tests {
     //     ⇒ **∴ 单机 30 次绿**排除不了 ② ✗ ⇒ **∴ 删错 ⇒ CI 偶发红 ⇒ **掩盖真回归**✗**
     //     ⇒ **∴ 按纪律：**记录事实、不擅自删**✓（**同附二十三"无收益如实回退"的精神 ✓**）★
     //   **∴ 下一步（谁接手谁做 ✓）**：**先解释"当初为什么红"✗（查 git 历史／找那次复现的提交 ✓）⇒ 再决定删不删 ✓。**
-    #[ignore = "已知红：tile 与整幅在抗锯齿边缘差 1/255；诊断见 scripts/criteria-known-red.txt（**第 1000+ 轮实测 30/30 绿 ⇒ 疑似已过时 ✗；未解释"当初为何红"前不删 ✓**）"]
+    #[ignore = "已知红：tile 与整幅在抗锯齿边缘差 1/255；诊断见 scripts/criteria-known-red.txt（**第 1000+ 轮实测 30/30 绿 ⇒ 疑似已过时 ✗；未解释「当初为何红」前不删 ✓**）"]
     fn partial_region_render_preserves_untouched_tile_pixels() {
         let mut state = white_document();
         state.width = 64;
