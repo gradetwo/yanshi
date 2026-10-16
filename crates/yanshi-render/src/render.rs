@@ -3527,6 +3527,25 @@ impl Renderer {
                                     let th: yanshi_core::atom::BlobHash = text.parse().ok()?;
                                     parts.push(store.get(&th).ok()?);
                                 }
+                                // **★ 重复度探针 ✗ ★**（第 1000+ 轮 ✓）：**∴ 要不要给取块加缓存 ✗，
+                                //   **完全取决于"同一块被取几次"**✓ ⇒ **∴ 先量它 ✓，别先猜 ✗**
+                                //   （**∴ 收益上限 ＝ 去重率 × 每块耗时 ✓**；**∴ 若几乎不重复 ⇒ 缓存没用 ✗**）
+                                if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                                    let mut seen: std::collections::HashMap<&str, u32> =
+                                        std::collections::HashMap::new();
+                                    for slot in &slots {
+                                        if let Some(text) = index.tiles.get(*slot) {
+                                            *seen.entry(text.as_str()).or_insert(0) += 1;
+                                        }
+                                    }
+                                    let hot = seen.values().copied().max().unwrap_or(0);
+                                    eprintln!(
+                                        "PROBE raster parts 块数={} 去重={} 最热={}",
+                                        slots.len(),
+                                        seen.len(),
+                                        hot
+                                    );
+                                }
                                 {
                                     let __d = t_parts.stop();
                                     if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
