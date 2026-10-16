@@ -7025,3 +7025,23 @@ shard 3/6 success ✓｜shard 4/6 success ✓｜**shard 5/6 success ✓**｜shar
 ⇒ **∴ 这两条不是我"声称修好"✗，而是 CI 判的 ✓**（**∴ 两本账里"官方那本"已经结清这两笔 ✓**）。
 **★ ③ 剩下的 ✓**：**`shard 2`**（**已从"永不收"变成"慢但收"** ✓ —— **§362 记过它 16 支已知红的代价 ✓**）
 ⇒ **∴ 它一收 ⇒ 顶端也绿 ⇒ 目标可标完成 ✓**（**∴ 上限 9999 ⇒ 时间充足 ✓**）。
+
+### 四十九之补一百八十四：**B 条三件全部核实过** ✓（B③ 接线 ✓）（2026-10-16 ✓）
+
+**★ ① B③ 的接线（读 `.github/workflows/pwa.yml:224` ✓）**：
+```
+**`verify-live:`** ✓
+  `if: github.event_name == 'workflow_dispatch'` ✓（**只手动跑 ⇒ **不进构建门**✓ —— 与我在覆盖率清单里写的理由一致 ✓**）
+  **`needs: deploy`** ✓（**部署后才跑 ✓**）
+  步骤 ✓：「**核对线上展示图（HTTP 200 ＋ 合法 PNG ＋ 字节数与 `assets/showcase/` 逐值相同）**」✓
+     ⇒ `node scripts/verify-live-showcase.mjs https://yanshi.wangda.today` ✓
+⇒ **∴ 目标原话是"核对四个展示 URL 返回 200"✓ ⇒ 而它**做得更多**✓：还查**PNG 合法性**＋**字节逐值相同** ✓**
+```
+**★ ② B 条三件的最终状态 ✓**：
+| 子项 | 实物 | 状态 |
+|---|---|---|
+| **B①** | `scripts/tool-showcase-assets.mjs` ✓ | **本机退出码 0** ✓（四图 ＋ 两版 README ＋ 首页都引用 ✓） |
+| **B②** | `tool-snapshot-reopen` ✓（自造 ✓）＋ `tool-cold-open-foreign` ✓（真作品 ✓，4 分支 ✓） | **各覆盖一半 ✓ ⇒ 组合缺口如实记 ✓（§178／§179 ✓）** |
+| **B③** | `pwa.yml` 的 **`verify-live`** ✓ ＋ `scripts/verify-live-showcase.mjs` ✓ | **接线核实 ✓（本轮 ✓）** —— **手动 dispatch ＋ `needs: deploy` ✓；查 200 ＋ PNG ＋ 字节 ✓** |
+**★ ③ 一句话 ✓**：**B 条不是"我建了文件"✗，而是"每件都指得出它做什么、何时跑、查什么"✓** ——
+**∴ 而 B② 的缺口也**没被这三件的完整性掩盖**✓（**§178 单列 ✓**）**。
