@@ -108,22 +108,45 @@ const main = async () => {
     if (!sketch || sketch.ok !== true) note("草稿层的 `brush_stroke` 失败（可能是笔刷名不存在）");
 
     // ③ 正稿层（P1 ⑬）：正式勾线（黑、硬、细）
+    //    **★★★ 2026-10-16 修：眼形此前是**折线（多边形）** ✗ ★★★**（由新的像素级验收量到 ✓）：
+    //      **∴ 症状 ✗**：旧 recipe 只有 **4 个控制点**、**没开 `smooth`** ✓ ⇒ 量出
+    //        **上眼睑一步转 38.9°** ✗（在折线的角 x=0.561 处 ✓）⇒ 画出来是个**六边形** ✗。
+    //      **∴ 修法 ✗**：沿**正弦弧**给 9 个控制点 ✓ ＋ `smooth: true`（Catmull-Rom ✓，
+    //        曲线过控制点 ✓）⇒ 一步 ≈1.6° ✓；**再补一条下眼睑** ✓ ⇒ 杏仁形是**闭**的 ✓。
     await call(doc, token, "create_layer", { layer_id: "ink", name: "ink" });
+    const eyeLeft = 0.3;
+    const eyeRight = 0.66;
+    const eyeCornerY = 0.46;
+    const upperLid = [];
+    const lowerLid = [];
+    for (let index = 0; index <= 8; index += 1) {
+      const t = index / 8;
+      const x = eyeLeft + t * (eyeRight - eyeLeft);
+      upperLid.push([SIDE * x, SIDE * (eyeCornerY - Math.sin(Math.PI * t) * 0.125)]);
+      lowerLid.push([SIDE * x, SIDE * (eyeCornerY + Math.sin(Math.PI * t) * 0.07)]);
+    }
     const ink = await call(doc, token, "brush_stroke", {
       layer_id: "ink",
       object_id: "eye_ink",
       brush: "classic-pen.myb",
       size: 3,
+      smooth: true,
       color: { r: 30, g: 22, b: 18, a: 255 },
-      points: [
-        [SIDE * 0.30, SIDE * 0.46],
-        [SIDE * 0.42, SIDE * 0.35],
-        [SIDE * 0.56, SIDE * 0.35],
-        [SIDE * 0.66, SIDE * 0.46],
-      ],
+      points: upperLid,
     });
-    steps.push(["正稿勾线", ink && ink.ok === true, ink]);
+    steps.push(["正稿勾线（上眼睑弧）", ink && ink.ok === true, ink]);
     if (!ink || ink.ok !== true) note("正稿勾线失败（笔刷名或参数）");
+    const inkLower = await call(doc, token, "brush_stroke", {
+      layer_id: "ink",
+      object_id: "eye_ink_lower",
+      brush: "classic-pen.myb",
+      size: 2,
+      smooth: true,
+      color: { r: 46, g: 36, b: 30, a: 255 },
+      points: lowerLid,
+    });
+    steps.push(["正稿勾线（下眼睑弧）", inkLower && inkLower.ok === true, inkLower]);
+    if (!inkLower || inkLower.ok !== true) note("下眼睑那笔失败 ⇒ 杏仁形不闭");
 
     // ④ 油画层：眼白（巩膜）—— 介质落笔（载墨/湿度/纹理），**净室揉合**由引擎做
     await call(doc, token, "create_layer", { layer_id: "paint", name: "paint" });
@@ -424,10 +447,97 @@ const main = async () => {
   const [pearlBodyX, pearlBodyY] = at(0.703, 0.702);
   const pearlLum = pearlPeak;
   const pearlBodyLum = lum(pearlBodyX, pearlBodyY);
+
+  // **★ 眼形必须是一条**平滑的弧**，不是多边形 ✗ ★**（2026-10-16 ✓；台账 §七"眼形是多边形" ✗）
+  //   **∴ 怎么量 ✗**：取**上眼睑轮廓** ✓（眼框范围内每一列**最上面那个暗像素** ✓）
+  //     ⇒ 固定步长（5px）采样 ⇒ 算**相邻两段的转角**（度 ✓）。
+  //   **∴ 阈值凭什么 ✗**（**不是拟合出来的 ✓**）：一条跨度 ≈0.36×边长的弧 ✓ 总转角量级 ≈95° ✓
+  //     ⇒ 均摊到全程 ⇒ **每段 ≈2°** ✓；而**折线的一个角**是 **20–60° 一步** ✗
+  //     ⇒ ⇒ 取 **12°/步** 当门 ✓ —— 两者差一个数量级 ✓（∴ 阈值不敏感 ✓）。
+  //   **★ 但基线必须是 15px、不能是 5px ✗ ★**（**本机实测 ✓，2026-10-16 ✓**）：
+  //     **∴ 症状 ✗**：平滑弧在 5px 基线下量出 **11.3°/步** ✓ —— 而那**正是 `atan2(1,5)`** ✓
+  //       ⇒ **∴ 它不是"弧不平滑"** ✗ 而**是"最上面那个暗像素"跳了 1 个像素的量化噪声** ✗
+  //         ⇒ **∴ 门（12°）离噪声只有 0.7°** ✗ ⇒ **那是**脆判据**✗**（阈值变成拟合 ✗）。
+  //     **∴ 修法 ✗**：**基线拉长到 15px** ✓ ⇒ 1px 量化最多 `atan2(1,15)=3.8°` ✓
+  //       而折线的角**不随基线变小** ✓（实测 38.9° ✓ ⇒ 仍是门的 3 倍 ✓）
+  //       ⇒ ⇒ **∴ 两侧各有 ≈3 倍余量** ✓（这才是"阈值不敏感"该有的样子 ✓）。
+  //   **∴ 采样区间取 0.36–0.60 ✗**：**两端**在笔尖收锋处会**淡到取不到暗像素** ✓（本机实测：
+  //     0.32–0.64 会断成 1 段 ✓ ⇒ 判据**如实报"判不了"并退 3** ✓ —— 那是对的行为 ✓）；
+  //     而**这个区间的两个角都在里面** ✓（折线的角在 0.42 与 0.56 ✓）⇒ **判据的牙一颗没少** ✓。
+  const LID_STEP = 15;
+  const lidDark = scleraLum - 60;
+  const lidFrom = Math.round(0.36 * width);
+  const lidTo = Math.round(0.6 * width);
+  const lidTop = (x) => {
+    for (let y = Math.round(0.29 * height); y < Math.round(0.5 * height); y += 1) {
+      if (lum(x, y) < lidDark) return y;
+    }
+    return null;
+  };
+  const lidSlopes = [];
+  for (let x = lidFrom; x + LID_STEP <= lidTo; x += LID_STEP) {
+    const y0 = lidTop(x);
+    const y1 = lidTop(x + LID_STEP);
+    lidSlopes.push(y0 === null || y1 === null ? null : (Math.atan2(y1 - y0, LID_STEP) * 180) / Math.PI);
+  }
+  const lidGaps = lidSlopes.filter((slope) => slope === null).length;
+  let lidMaxTurn = 0;
+  let lidMaxTurnAt = lidFrom;
+  for (let index = 1; index < lidSlopes.length; index += 1) {
+    if (lidSlopes[index] === null || lidSlopes[index - 1] === null) continue;
+    const turn = Math.abs(lidSlopes[index] - lidSlopes[index - 1]);
+    if (turn > lidMaxTurn) {
+      lidMaxTurn = turn;
+      lidMaxTurnAt = lidFrom + index * LID_STEP;
+    }
+  }
+  if (lidGaps > 0) {
+    console.error(
+      `❌ 判不了：上眼睑轮廓断成 ${lidGaps} 段（取不到连续的「最上面那个暗像素」）⇒ 量不出转角 ⇒ 退出码 3`,
+    );
+    process.exit(3);
+  }
+  // **★ 真正用来断言的量：轮廓的**最大二阶差分**（"有多折" ✓）★**（2026-10-16 ✓）
+  //   **∴ 为什么换掉"最大转角" ✗**（**本机实测两次都栽在阈值上 ✓**）：
+  //     ① 基线 5px ⇒ 平滑弧量出 **11.3°** ✓ 而那**正好是** 1 像素量化 `atan2(1,5)` ✗；
+  //     ② 基线改 15px ⇒ 平滑弧量出 **11.4°** ✓ —— 这次**不是噪声** ✗ 而**是弧顶真正的曲率** ✓
+  //        （正弦弧 A/L≈0.35 ⇒ 顶点处 10.7°/15px ✓ —— **算出来的与量到的对得上** ✓）
+  //        ⇒ **∴ 门（12°）离它只有 1.3°** ✗ ⇒ **还是脆判据** ✗ ★
+  //   **∴ 换成"二阶差分"为什么就稳 ✗**：折线的二阶差分**集中在折点**（一个尖峰 ✓），
+  //     平滑弧的二阶差分**处处都很小** ✓ ⇒ **∴ 取"最大二阶差分"就分得开** ✓
+  //     ＋ **∴ 但幅度我要**实测**、不许拿角度当像素 ✗**（**我第一版把它写成"20–40px"✗ 是错的 ✓**）：
+  //       实测 ⇒ **折线 5px** ✓（≈ 折角 39° 摊在 5px 步长上的 `Δtan·5 ≈ 4–5px` ✓，**对得上** ✓）
+  //              **平滑弧 1px** ✓（1 像素量化的量级 ✓）
+  //       ⇒ ⇒ **∴ 门取 3px** ✓ ⇒ 折线一侧 **1.7 倍** ✓、平滑一侧 **3 倍** ✓
+  //         （**∴ 不是"一个数量级"** ✗ —— **∴ 如实说 5:1** ✓；**它的牙由"变异能红"来证 ✓**，
+  //          不靠"余量很大"这句话 ✓）。
+  //   **∴ 这条判据**对画布尺寸敏感 ✗ ★**（**本机实测 ✓**）：**折线的折点是**固定像素**的** ✓
+  //     （折角 39° 摊在 5px 步长上 ⇒ 与画布大小**无关** ✓），而**弧的曲率像素值随画布变小而变大** ✓
+  //     （曲率 ∝ 1/边长² ✓）⇒ 实测 **768 时弧 1px** ✓、**512 时弧 2px** ✗（门 3px ✓ 仍过 ✓）
+  //     ⇒ ⇒ **∴ 小画布上两者的差距会缩小 ✓**（**∴ 它在 CI 的默认 768 上最灵 ✓**，
+  //        换更小的尺寸要**重新标定** ✓ —— **不假装它与尺寸无关** ✗）。
+  const lidSamples = [];
+  for (let x = lidFrom; x <= lidTo; x += 5) lidSamples.push(lidTop(x));
+  let lidKink = 0;
+  let lidKinkAt = lidFrom;
+  for (let index = 1; index + 1 < lidSamples.length; index += 1) {
+    const a = lidSamples[index - 1];
+    const b = lidSamples[index];
+    const c = lidSamples[index + 1];
+    if (a === null || b === null || c === null) continue;
+    const second = Math.abs(c - 2 * b + a);
+    if (second > lidKink) {
+      lidKink = second;
+      lidKinkAt = lidFrom + index * 5;
+    }
+  }
+
   console.log(
     `\n▶ 像素级验收（只看相对关系与面积，不比对参考图 ✓）：\n` +
       `   眼白 ${scleraLum.toFixed(0)} ⇒ 虹膜 ${irisLum.toFixed(0)} ⇒ 瞳孔 ${pupilLum.toFixed(0)}` +
       `｜角膜高光 ${lightLum.toFixed(0)}｜虹膜面积 ${irisArea}px（眼框内比眼白暗 30+ ✓）\n` +
+      `   上眼睑**最大二阶差分** ${lidKink}px（在 x=${lidKinkAt} ✓；实测：平滑弧 1px／折线 5px ⇒ 门 3px ✓）` +
+      `｜参考：最大转角 ${lidMaxTurn.toFixed(1)}°/15px（在 x=${lidMaxTurnAt} ✓）\n` +
       `   珍珠珠体 ${pearlBodyLum.toFixed(0)}｜珍珠最亮 ${pearlLum.toFixed(0)}（在 ${pearlPeakAt.join(",")} ✓）`,
   );
   const looksWrong = [];
@@ -451,6 +561,14 @@ const main = async () => {
   // **⑤ 珍珠必须有高光** ✓（"像塑料球"与"有二次反光"的分界 ✓）
   if (!(pearlLum > pearlBodyLum + 25)) {
     looksWrong.push(`珍珠高光 ${pearlLum.toFixed(0)} 不比珠体 ${pearlBodyLum.toFixed(0)} 亮 25 以上 ⇒ 珍珠会像塑料球 ✗`);
+  }
+  // **⑥ 上眼睑不许是多边形** ✓（§七 记的"眼形是多边形"✗ ⇒ 这一格把它判据化 ✓）
+  //   **∴ 断言用**二阶差分**（"有多折" ✓）而不是转角** ✗ —— 理由见上面那段实测 ✓。
+  if (!(lidKink < 3)) {
+    looksWrong.push(
+      `上眼睑在 x=${lidKinkAt} 处的**二阶差分到了 ${lidKink}px** ✗（门是 3px；平滑弧实测 1px ✓）` +
+        ` ⇒ 眼形是**折线/多边形** ✗（台账 §七 那条 ✓）⇒ 用 smooth: true 把它画成弧 ✓`,
+    );
   }
 
   const raw = Buffer.alloc((width * 4 + 1) * height);
