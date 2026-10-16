@@ -6292,3 +6292,29 @@ CDP 连接守卫（`fetch(.../json/list)` 那处）        **30 支** ✓
 ⇒ 差点让我自己的判据弄红 CI ✗）｜**用文件名 grep**没找到就断言"执行者不存在" ✗（§259 ⇒ 其实逻辑在 `exit 3` 上 ✓，§260 撤回 ✓）｜
 **又用管道取 `$?`** ✗（§163 记过、§255 再踩 ✓）。
 **∴ 元结论（第 N 次）✓**：**"我做了" ≠ "它生效了"** ✗；**"我没找到" ≠ "它不存在"** ✗ —— **∴ 提交前回读自己刚写的文件 ✓**。
+
+### 四十九之补一百五十五：**目标收尾账**（交付物清单 ＋ CI 判定现状）（2026-10-16 ✓）
+
+**★ ① 三个包（＋用户后给的第四个包）都逐条定性过 ✓**：
+- **oil 包**：90 KB 补丁逐条 ⇒ **7 条修复** ✓／**3 条有据否决** ✓（多原子"空组"✗／缩略图脏块✗／`region_block` 性能✗）／**2 项不收** ✋；
+- **ballet 包**：`snapshot-edit-reopen` ✓（快照＋尾巴开坏文档 ⇒ 已修 ✓ ＋ 判据 ✓）｜`creates_own_document` ✓（`import_project` 预建假文档 ⇒ 已修 ✓ ＋ 判据 ✓）；
+- **技能包**：缺陷清单（`type:"any"` 12→0 ✓／校准清理 ✓／矢量笔触进日志 ✓／POLY-CLIP ✓）＋ **兼容性事实核对** ✓
+  （同层绘制顺序**逐字吻合** ✓／纹理脆弱性**实测为零可执行硬依赖** ✓／内存口径**文档较旧** ✗）；
+- **Ballet Reference Study 包**（用户后给 ✓ 296 MB ✓）：**独立复核** ✓ —— 日志自洽已复现 ✓（head_atom／seq／行数一致 ✓、
+  末行 `create_checkpoint` ✓）｜**本仓冷开已复现** ✓（层 4／对象 2751／head_seq 2774／2304×4096 ✓）｜
+  **像素面（逐通道差 0）判不了** ✗（**缺 capability token，属设计使然** ✓，**我不绕鉴权** ✗）。
+
+**★ ② 交付的工程/判据（都在顶端 ✓）**：`tool-snapshot-reopen` ✓｜`mcp-schema-no-any` ✓｜`mcp-import-project-rename` ✓｜
+`tool-revert-changeset-mixed` ✓｜`tool-calibrate-cleanup` ✓｜`tool-stroke-log-vector` ✓｜`tool-selection-clip-polygon` ✓｜
+`yanshi-render/tests/polygon_coverage_correctness.rs` ✓｜**CDP/服务端连接守卫（33 支）** ✓｜**同步子进程 `timeout`（16 支）** ✓｜
+**"起服务不杀"退出收尾（10 支）** ✓｜**`verify-live-showcase.mjs`（部署后核对 ＋ 仅手动 job）** ✓｜
+**`tool-cold-open-foreign.mjs`（真作品冷开 ＋ 三分支 0／3／1 本机验过 ✓）** ✓｜**内层预算降到 shell 之下（90 s，45 文件）** ✓。
+
+**★ ③ 展示（已落地并推送 ✓）**：四张作品图在 **README 中英** ✓、**应用首页** ✓、**应用内 `/showcase/` 路由** ✓
+（线上/服务端都 200 ＋ **字节与 `assets/showcase/` 逐值相同** ✓）；判据 `tool-showcase-assets.mjs` 在守 ✓。
+**★ ④ 决定（含边界 ✓）**：内置作品**不入库** ✓（45–90 MB／296 MB ⇒ 不宜进仓库 ✓；**图片已内置并展示** ✓）；
+**B②** 由 `tool-snapshot-reopen`（自造 ≥1000 原子 ✓）＋ `tool-cold-open-foreign`（**真作品 ✓**）共同满足 ✓。
+
+**★ ⑤ CI 判定现状（截至本轮 ✓）**：`5d60b379` 那轮 —— **六片里五片 `success`** ✓、**失败项：无** ✓、**只差 `shard 2`** ✗
+⇒ **∴ 一旦 `shard 2` 收尾且过 ⇒ 整轮 `success` ⇒ "CI 绿了"达成** ✓✓。
+**∴ 并且"分片会跑完"已被直接观测坐实** ✓（5 片已完成 ✓）⇒ **∴ 此前"永久挂"的框定是错的** ✗✓（§151 ✓）。
