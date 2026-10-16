@@ -80,6 +80,9 @@ if (!BIN) { console.error("  ✗ 找不到 yanshi-serve ⇒ **∴ 本跑没有�
 const readHealth = async (args) => {
   const port = 19900 + Math.floor(Math.random() * 80);
   const proc = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port}`, ...args], { stdio: "ignore" });
+// **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+//   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（"11 绿 0 红却到不了终态"同形 ✓）。
+process.on("exit", () => { try { proc.kill(); } catch { /* 已退出 */ } });
   try {
     for (let i = 0; i < 80; i += 1) {
       try { if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) break; } catch { /* 未起 */ }
