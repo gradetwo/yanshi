@@ -29,10 +29,20 @@ const hash = "sha256:" + "a".repeat(64);
 // ① 先经 API 设参考图（拿页面 URL 里的 doc/token ✓）
 const parsed = new URL(url);
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
-const post = async (tool, args) => (await fetch(`${parsed.origin}/api/tools?doc=${doc}&token=${token}`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ tool, arguments: args }),
-})).json();
+// **★ 服务端连接守卫 ✗ ★**（2026-10-16 ✓）：包在 helper 本体上 ⇒ **所有调用点一次性受保护** ✓
+//   （本仓约定：判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）；
+//    否则服务端不可达时抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗）
+const post = async (tool, args) => {
+  try {
+    return (await fetch(`${parsed.origin}/api/tools?doc=${doc}&token=${token}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool, arguments: args }),
+    })).json();
+  } catch (error) {
+    console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上服务端：" + error.message + " ⇒ 退出码 3");
+    process.exit(3);
+  }
+};
 const set = await post("set_reference", { blob_hash: hash, opacity: 0.5, position: { x: 12, y: 14, w: 120, h: 90 } });
 if (set.ok !== true) { console.log("  ✗ set_reference 失败 ⇒ 判据无效 ⇒ " + JSON.stringify(set.context || set.error_code)); process.exit(1); }
 // **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
