@@ -24,7 +24,7 @@ const SRC_OF_WEB = (name) => `crates/yanshi-http/assets/${name}`;
 
 function gitIgnored(p) {
   try {
-    execFileSync("git", ["check-ignore", "-q", p], { stdio: "ignore" });
+    execFileSync("git", ["check-ignore", "-q", p], { stdio: "ignore", timeout: 600_000 });
     return true;
   } catch {
     return false;
