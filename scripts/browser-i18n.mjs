@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // 为什么这条能红：把开关的处理器去掉、或把词典删空 ⇒ 第 2 步立刻不成立（英文没出现 / 中文仍在）。
 // 用法：CDP_PORT=9xxx node scripts/browser-i18n.mjs "<viewer-url>"
 const url = process.argv[2];

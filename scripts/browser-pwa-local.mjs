@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // **★ PWA 的**真实浏览器**判据 ✓ ★**（第 620 轮 ✓；**部署矩阵 §13 ✓**）
 //
 // **∴ 它补上最后一块证据 ✗**：**静态（**文件／结构 ✓**）＋ 行为（**node 里真调用 ✓**）

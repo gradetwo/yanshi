@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // **「撤销在空栈上必须不可点」判据** ✓（(B)② 里定位到的真缺陷 ✓）。
 // 背景 ✓：`undo.disabled = undoCount === 0` ✗ —— 而**计数未知**时 `undoCount` 是 `null` ✓
 // ⇒ `null === 0` 为**假** ✗ ⇒ 按钮**保持可点** ✓ ⇒ 用户点了没反应 ✓（判据实测：`撤销/重做栈深度：null`）。

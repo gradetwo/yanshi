@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // **手形工具：不落笔 ✓ + 仍能平移 ✓**判据（用户报告："平移画布功能异常，小手会像画笔一样画上去" ✓）。
 //
 // 为什么必须**双向** ✓：只验"不落笔"是不够的 ✗ —— 把平移一起关掉也能让那一半变绿 ✗。

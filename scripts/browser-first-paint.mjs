@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // 测量「打开文档」的两段体验预算，并给出退出码（可接 CI）：
 //
 //   * 首帧（服务端铺底，不依赖 WASM）  —— 设计 14.10：view 模式 < 100ms；edit 模式 < 1s

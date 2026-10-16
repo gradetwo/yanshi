@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // 在真实 Chromium 里测量「拖动笔迹」的成本：走真实 pointer 事件与真实重绘路径。
 //
 // 关键点：**只测同步处理耗时**（dispatchEvent 返回即代表处理器完成）。

@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // 在真实 Chromium 里做「内核 vs 服务端」逐像素自检，按设计 6.1 的 D1 口径判定：
 // 差异像素数极少（≤16）且最大通道差 ≤1 LSB 记为通过（判定逻辑在编辑器内的 checkBitExact）。
 //

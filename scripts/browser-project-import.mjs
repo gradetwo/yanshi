@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 //! **`yanshi-pwa-online-fix2.patch` 的**未覆盖项**换来的 ✓**）。
 //!
 //! **∴ 为什么需要它 ✗ ★**：**那份补丁**给 `api-local.js` **补上了**

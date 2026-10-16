@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // **离线写队列（journal / outbox）判据** ✓ —— 离线优先里"**写**"的那一半 ✓。
 //
 // **为什么必须有这一条** ✗：`browser-offline-shell.mjs` 只证明了"断网还能画" ✓

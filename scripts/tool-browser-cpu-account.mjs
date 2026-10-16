@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 //!
 //! **∴ 依据（**用户第 594 轮 ✓）★**：
 //!   **∴ ② CPU 占用账 ✗**：**（浏览器内核 ✓）**用 CDP `Performance.getMetrics` 的

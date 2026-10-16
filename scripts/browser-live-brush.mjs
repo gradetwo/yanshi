@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 // **第 53 轮起：按 600ms 节流 + 每帧直接补小块实现** ✓（判据不变 ✓）。
 // ⚠ 第 50–52 轮它记录的是"未做到"✗ ——
 //   服务端那半边**已经通了** ✓（实测：拖动中提交 2 帧 ✓、抬手后对象仍只有 1 个 ✓），

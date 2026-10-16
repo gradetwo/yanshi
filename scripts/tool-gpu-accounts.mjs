@@ -8,7 +8,6 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 150000);
-if (typeof __judgeTimeout.unref === "function") __judgeTimeout.unref();
 //!
 //! **∴ 依据 ✗**：**用户第 594 轮**要求 GPU 的收益**必须**记两本账**✗：
 //!   **∴ ① 时间账 ✗**：**墙钟**
