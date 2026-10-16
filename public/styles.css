@@ -80,3 +80,12 @@ footer {
   border-top: 1px solid var(--rule); font-size: 0.875rem; color: var(--muted);
 }
 footer a { color: var(--muted); text-decoration: underline; }
+
+/* 展示区：横向滚动（scroll-snap）轮播 */
+.showcase .rail { display:flex; gap:16px; overflow-x:auto; scroll-snap-type:x mandatory;
+  padding:8px 2px 14px; -webkit-overflow-scrolling:touch; }
+.showcase .rail .slide { flex:0 0 auto; scroll-snap-align:center; line-height:0;
+  border-radius:10px; overflow:hidden; }
+.showcase .rail img { height:260px; width:auto; display:block; }
+.showcase .hint { opacity:.75; font-size:.92em; }
+@media (max-width:640px){ .showcase .rail img { height:180px; } }
