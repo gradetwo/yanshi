@@ -30,6 +30,10 @@ const BASE = "http://127.0.0.1:" + PORT;
 const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-sample-")));
 const child = spawn(BIN, ["--bind", "127.0.0.1:" + PORT, "--root", work, "--doc", "boot",
   "--width", "256", "--height", "256", "--assets-dir", "assets"], { stdio: ["ignore", "pipe", "pipe"] });
+// **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+//   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗
+//   —— **∴ 运行器实测会打出 `Terminate orphan process (yanshi-serve)`** ✓（§309 ✓）。
+process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
 const log = [];
 const keep = (c) => { for (const l of String(c).split("\n")) if (l.trim()) log.push(l.trim()); if (log.length > 30) log.splice(0, log.length - 30); };
 child.stdout.on("data", keep);
