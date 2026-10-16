@@ -62,6 +62,24 @@ make release    # build the release package
 make help       # every target
 ```
 
+## Gallery
+
+Paintings made **by an AI agent driving this app's own MCP tools** (no UI scripting, no manual
+retouching). The references — public-domain Degas paintings at the Met and the NGA — were used to
+study style only: **no reference bitmap was imported**, so every pixel is a brush or medium stroke
+recorded as ordinary atoms.
+
+| oil studies | dry pastel studies |
+|---|---|
+| [![Backstage](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png) | [![Rehearsal morning](web/showcase/degas-rehearsal-morning.png)](web/showcase/degas-rehearsal-morning.png) |
+| *Backstage* · 3114×4096 · oil medium | *Rehearsal morning* · 3072×3840 · 13 layers, 7 anchors |
+| [![Four dancers](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png) | [![Blue dancers](web/showcase/degas-blue-dancers.png)](web/showcase/degas-blue-dancers.png) |
+| *Four dancers* · 4096×3427 · oil medium | *Blue dancers* · 3840×3072 · 13 layers, 8 anchors |
+
+These four are the work of an outside agent; the numbers above are the ones its own package reports.
+Its reports also list what it did **not** verify (it did not run this repo's own criteria), so treat
+the pictures as a showcase rather than as acceptance evidence.
+
 ## Credits
 
 

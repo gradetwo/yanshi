@@ -57,6 +57,22 @@ make release    # 打出发布包
 make help       # 全部目标
 ```
 
+## 作品
+
+下面四幅是**另一个 AI 通过本应用自己的 MCP 工具**画出来的（不是脚本操控界面，也没有人工补笔）。
+参照对象是 Met／NGA 的**公有领域**德加原作，**只用来观察风格**：
+**没有导入任何原作位图**，因此每一个像素都是笔刷或介质的笔触，以普通原子记录在文档里。
+
+| 油画习作 | 干性粉彩习作 |
+|---|---|
+| [![后台舞者](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png) | [![排练室的晨光](web/showcase/degas-rehearsal-morning.png)](web/showcase/degas-rehearsal-morning.png) |
+| 《后台舞者》· 3114×4096 · 油画介质 | 《排练室的晨光》· 3072×3840 · 13 图层、7 锚点 |
+| [![四位舞者](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png) | [![幕边的蓝色舞者](web/showcase/degas-blue-dancers.png)](web/showcase/degas-blue-dancers.png) |
+| 《四位舞者》· 4096×3427 · 油画介质 | 《幕边的蓝色舞者》· 3840×3072 · 13 图层、8 锚点 |
+
+以上数字出自**对方自己的作品包**；它的报告里也写了**它没有**做的事（**没有**跑本仓自带的判据）✗
+⇒ 因此这四幅图这里是**展示**，**不算**本仓的验收证据。
+
 ## 致谢
 
 
