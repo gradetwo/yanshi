@@ -139,7 +139,7 @@ for (let i = 0; i < 80; i += 1) {
 }
 if (!ready) {
   console.error("✗ 前置不成立：页面脚本没就绪（`window.yanshiCallTool` 一直不是函数）⇒ 判据无法运行（不是通过）");
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码，两类不能混 ✓）
 }
 
 console.log("① 新建对话框里有尺寸入口");
