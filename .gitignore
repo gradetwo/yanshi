@@ -65,7 +65,12 @@ web/mediums/
 web/viewer-app.js
 web/viewer.css
 web/service-worker.js
-web/showcase/
+# **★ 例外：`web/showcase/` **必须入库**✗ ★**（第 1000+ 轮 ✓；**用户报告：README 的 4 张图在 GitHub 上是 404 ✗ ✓**）
+#   **∴ 根因 ✓**：**它被本行忽略了 ✗ ⇒ `git ls-files web/showcase` ＝ 0 ✗ ⇒ 远端也没有 ✓**（**∴ 实测：`origin/main` 里 showcase 数 ＝ 0 ✓**）
+#   **∴ 两面 ✓**：**好处 ＝ README 的 4 张展示图在 GitHub 上能看到 ✓**；**代价 ＝ 仓库多约 880 KB ✗（4 张 PNG：146–298 KB ✓）**
+#   **∴ 与上面 `web/wasm/`／`web/brushes/`／`web/mediums/` 的区别 ✗**：**那三类是**构建产物**✗（**∴ 部署时总是新鲜 ⇒ 不该入库 ✓**）；
+#     **而展示图是**给人看的静态资产**✗，**没有生成步骤 ⇒ 不入库就等于不存在 ✓** ⇒ **∴ 所以只放行它 ✓**
+# web/showcase/
 
 
 # **★ `web/index.html` **故意重新入库** ✗ ★**（第 747 轮 ✓；**用户报告 404 ✓**）：
