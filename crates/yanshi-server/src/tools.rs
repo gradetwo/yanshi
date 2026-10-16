@@ -3701,6 +3701,13 @@ fn write_calibrate(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             format!("__calibration_{seq}")
         }
     };
+    // **★ 记下"调用前的水位线" ✗ ★**（2026-10-16 ✓）：清理要**精确**撤掉"本次调用创建的原子" ✓，
+    //   判据就是 `seq > seq_before` ✓ —— **∴ 与"用户画了几笔"完全无关** ✓（旧写法正是在这儿出的事 ✓）。
+    let seq_before = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| document.state().head_seq)
+        .unwrap_or(0);
     ctx.commit(
         AtomKind::CreateLayer,
         json!({"layer_id": layer_id, "name": "__calibration"}),
@@ -3777,14 +3784,43 @@ fn write_calibrate(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let passed = marks
         .iter()
         .all(|mark| mark.get("ok").and_then(Value::as_bool) == Some(true));
-    // **自清理** ✓：标记是本工具刚落的**最后 N 个原子** ✓ ⇒ 一次撤销撤干净 ✓
-    //   （不清就会污染正要画的画 ✗ —— 判据第 ③ 条钉的就是这个 ✓）。
+    // **★ 自清理：**只撤本次自己创建的那些原子** ✗ ★**（2026-10-16 ✓；**本机实测过那条病 ✓**）
+    //
+    // **∴ 旧写法错在哪 ✗**（**这段注释原来自己就写错了** ✓）：它写着"标记是本工具刚落的
+    //   **最后 N 个原子** ⇒ 一次撤销撤干净" ✓ —— **∴ 而 `undo_last` 是**按绘制笔迹计数**的** ✗，
+    //   且 `count = 标记数 + 1` **把"建层"也算成了一笔** ✗ ⇒ **∴ 于是它多撤一笔** ✗。
+    //   **∴ 实测（修前 ✓）**：调用前 L1 有 `keep_me` ⇒ 校准后 L1 **空** ✗（用户的笔被吃 ✓），
+    //     而**校准自己的 `__calibration_4` 图层**反而**没被撤掉** ✗、回执还报 `undone=0`／`passed=true` ✗ ★
+    //   ⇒ **∴ 一条"自清理"同时犯了两个错**：**吃了用户的** ✓、**没清自己的** ✓。
+    //   **∴ 根子上是**注释把"最后 N 个原子"当成了"最后 N 笔"** ✗** —— **注释错也是 bug 的一部分** ✓。
+    //
+    // **∴ 现在 ✗**：按**调用前水位线**精确取"本次创建的原子" ✓（`seq > seq_before` ✓），
+    //   再**逐个** `revert{atom_id}` ✓（**不删原原子** ✓、可被 reapply ✓、级联失效由折叠报告 ✓）
+    //   ⇒ **∴ 与"用户画了几笔""建层算不算一笔"全都无关** ✓（真不变量 ✓）。
     let mut undone = 0u64;
     if cleanup {
-        let count = (expected.len() + 1) as u64;
-        let undone_result = write_undo_last(ctx, &json!({"count": count}))?;
-        if undone_result.get("ok").and_then(Value::as_bool) == Some(true) {
-            undone = count;
+        let targets: Vec<String> = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| {
+                document
+                    .log()
+                    .iter()
+                    .filter(|atom| atom.seq > seq_before)
+                    .map(|atom| atom.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for atom_id in targets.iter().rev() {
+            let undone_result = write_history_atom(
+                ctx,
+                &json!({"atom_id": atom_id}),
+                AtomKind::Revert,
+                "atom_id",
+            )?;
+            if undone_result.get("ok").and_then(Value::as_bool) == Some(true) {
+                undone += 1;
+            }
         }
     }
     Ok(json!({

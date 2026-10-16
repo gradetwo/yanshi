@@ -5644,3 +5644,39 @@ Comment／Suggest／AcceptSuggestion／RejectSuggestion ✓）；而 `create_ann
 
 **回归** ✓：本仓**没有**别的 revert/undo 判据 ✗（只有 UI 侧 `browser-undo-disabled.mjs` ✓）
 ⇒ 这一条正好补上那个缺口 ✓；`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
+
+### 四十九之补一百二十七：**校准的"自清理"吃掉用户的笔**（静默毁内容 ✗）＋ 顺带修掉它的姊妹错（2026-10-16 ✓）
+
+**来源** ✓：第三方 skill 的 CAL-CLEANUP ✓ ＋ **本机独立复现** ✓（`tools.rs:3780-3789` 就是它 ✓）。
+
+**★ 实测（修前 ✓）——**一条自清理同时犯了两个错**✗**：
+```
+调用前：对象 ["keep_me"]｜图层 ["L1","layer_default"]｜锚点 ["keep_anchor"]
+calibrate{cleanup:true} ⇒ {ok:true, passed:true, cleanup:{undone:0}, layer_id:"__calibration_4"}
+调用后：对象 **[]** ✗（**用户的笔被吃了** ✓）
+        图层 **["L1","__calibration_4","layer_default"]** ✗（**它自己的图层反而没清掉** ✓）
+        锚点 ["keep_anchor"] ✓
+```
+**∴ 机制 ✗**（**代码里那句注释就是病根** ✓）：注释写"标记是本工具刚落的**最后 N 个原子** ⇒ 一次撤销撤干净" ✓，
+而 `undo_last` **按绘制笔迹计数** ✗、`count = 标记数 + 1` **把"建层"也算成一笔** ✗
+⇒ **多撤一笔** ⇒ 恰好把**调用前那一笔**吃掉 ✓；而建层**从来不是笔迹** ⇒ 它**永远清不掉** ✓
+⇒ **∴ "吃了用户的、没清自己的"是同一个错误的两个面** ✓ ★
+**∴ 注释把"最后 N 个原子"当成了"最后 N 笔"** ✓ —— **注释错也是 bug 的一部分** ✓（已改 ✓）。
+
+**修法** ✓（**不数数，按水位线 ✓**）：落层前记 `seq_before` ✓ ⇒ 清理时取 `seq > seq_before` 的原子 ✓
+（**就是本次调用自己创建的** ✓，与"用户画了几笔""建层算不算一笔"全无关 ✓），再逐个 `revert{atom_id}` ✓
+（**不删原原子** ✓、可 reapply ✓）。
+
+**★ 判据** ✓ `scripts/tool-calibrate-cleanup.mjs`（`tool-*` 已被枚举 ✓）——**两半都要** ✓
+（只判"没吃掉"会被"什么都不做"骗过 ✗）：
+```
+① 调用前的**对象／图层／锚点一个都没少** ✓
+② 校准自己的 `__calibration*` 图层**清干净** ✓
+修前 ⇒ EXIT=1（**两项同时红** ✓：keep_me 没了 ✗ ＋ __calibration_4 还在 ✗）
+修后 ⇒ EXIT=0，且回执 `undone=6` ✓（**数字也变诚实了** ✓：它真的撤了 6 个原子 ✓）
+```
+**∴ 我自己在这次改动里又踩了两次已写明的坑 ✗**（都在台账/AGENTS 里，照做就不会 ✗）：
+① **模板串里用了反引号** ✗（`node --check` 当场红 ✓）② Rust 补丁的**锚点没对上** ⇒ python 断言中止 ✓
+——**幸亏写盘在最后一步** ✓ ⇒ **源码一个字节没动** ✓（**∴ 半成品没入库 ✓**），核对 `git status` 确认后才重打 ✓。
+
+**回归** ✓：`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
