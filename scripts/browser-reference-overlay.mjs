@@ -35,7 +35,15 @@ const post = async (tool, args) => (await fetch(`${parsed.origin}/api/tools?doc=
 })).json();
 const set = await post("set_reference", { blob_hash: hash, opacity: 0.5, position: { x: 12, y: 14, w: 120, h: 90 } });
 if (set.ok !== true) { console.log("  ✗ set_reference 失败 ⇒ 判据无效 ⇒ " + JSON.stringify(set.context || set.error_code)); process.exit(1); }
-const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+// **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
+//   **∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」
+let targets;
+try {
+  targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+} catch (error) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP：" + error.message + " ⇒ 退出码 3");
+  process.exit(3);
+}
 const page = targets.find((t) => t.type === "page");
 if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);

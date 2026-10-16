@@ -159,7 +159,15 @@ if (!stroke || stroke.ok === false) {
 }
 
 // ② 连 CDP（页面由 runner 打开；这里自己导航到 1024×1024 那份文档）。
-const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+// **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
+//   **∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」
+let targets;
+try {
+  targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+} catch (error) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP：" + error.message + " ⇒ 退出码 3");
+  process.exit(3);
+}
 const page = targets.find((t) => t.type === "page" && t.url.startsWith(parsed.origin)) || targets.find((t) => t.type === "page");
 if (!page) {
   console.error("❌ 没有页面调试目标（Chromium 是否以 --remote-debugging-port=" + port + " 启动？）⇒ 判据无效");

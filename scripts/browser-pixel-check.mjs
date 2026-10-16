@@ -32,8 +32,23 @@ if (!url) {
   console.error("用法: node scripts/browser-pixel-check.mjs <viewer-url>");
   process.exit(2);
 }
+// **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
 
-const list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+//   **∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」
+
+let list;
+
+try {
+
+  list = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+
+} catch (error) {
+
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP：" + error.message + " ⇒ 退出码 3");
+
+  process.exit(3);
+
+}
 const target = list.find((t) => t.type === "page");
 if (!target) {
   console.error(`未找到可用的调试目标（Chromium 是否以 --remote-debugging-port=${debugPort} 启动？）`);
