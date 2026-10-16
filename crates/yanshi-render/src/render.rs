@@ -3501,13 +3501,24 @@ impl Renderer {
                                 //   **∴ 段名沿用既有惯例 ✗**（`shape:clip`／`shape:coverage`／`shape:fill` ✓）
                                 //   ＋ **∴ 探针关时零开销 ✓**（`Stage::start()` 是空操作 ✓，`stop()` 返回 `ZERO` ✓，
                                 //     `record` 在 `!enabled()` 时直接返回 ✓）★
+                                // **★ 为什么不走 `ObjectTimings` ✗ ★**（第 1000+ 轮 ✓）：
+                                //   **∴ 实测（本机 release ＋ 服务端路 ✓）：`ObjectTimings::report()` 在这条路上**一行都没打**✗
+                                //     而同一个循环体**确实执行了 28 次**✓（花括号配对 ＋ 直接在二进制里 grep 到探针字符串 ✓）
+                                //     ⇒ **∴ 原因未定 ✗ ⇒ **∴ 改为**直接 `eprintln!` ＋ 直接读 `YANSHI_RENDER_PROBE`**✓
+                                //       （**∴ 与 `PROBE 每层` 那行同一写法 ✓ —— 而那行**确实能打出来**✓）★
+                                //   ＋ **∴ 不带任何字段 ✗**（**不碰 `object.id`／`layer.id`**✓ ⇒ 规避借用检查 ✓）
                                 let mut t_index = stage_probe::Stage::start();
                                 let index: crate::bitmap_tiles::BitmapIndex =
                                     serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
                                 if !index.is_consistent() {
                                     return None;
                                 }
-                                probe_objects.record("raster:tile-index", t_index.stop());
+                                {
+                                    let __d = t_index.stop();
+                                    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                                        eprintln!("PROBE raster tile-index={:?}", __d);
+                                    }
+                                }
                                 let mut t_parts = stage_probe::Stage::start();
                                 let slots = index.tiles_for_rect(src_x, src_y, rw, rh);
                                 let mut parts = Vec::with_capacity(slots.len());
@@ -3516,7 +3527,12 @@ impl Renderer {
                                     let th: yanshi_core::atom::BlobHash = text.parse().ok()?;
                                     parts.push(store.get(&th).ok()?);
                                 }
-                                probe_objects.record("raster:parts", t_parts.stop());
+                                {
+                                    let __d = t_parts.stop();
+                                    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                                        eprintln!("PROBE raster parts={:?}", __d);
+                                    }
+                                }
                                 let mut t_asm = stage_probe::Stage::start();
                                 let stitched = crate::bitmap_tiles::assemble_region_sparse(
                                     index.width,
@@ -3525,7 +3541,12 @@ impl Renderer {
                                     &parts,
                                     (src_x, src_y, rw, rh),
                                 );
-                                probe_objects.record("raster:assemble", t_asm.stop());
+                                {
+                                    let __d = t_asm.stop();
+                                    if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                                        eprintln!("PROBE raster assemble={:?}", __d);
+                                    }
+                                }
                                 // **★ 数据追踪：这条路上到底拿到了什么（2026-10-15 ✓）★**
                                 //   **为什么需要** ✗：整条缝合路径**逐段读过、纸面全对** ✓
                                 //   （`tiles_for_rect` ✓／逐块解码 ✓／`assemble_region_sparse` ✓／
@@ -3642,7 +3663,12 @@ impl Renderer {
                         continue;
                     };
                     // **★ 命中缓存时这一段近似为 0 ✗ ★** ⇒ **∴ 它正是判"解码是否真被摊掉"的那一段 ✓**
-                    probe_objects.record("raster:decode", t_decode.stop());
+                    {
+                        let __d = t_decode.stop();
+                        if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                            eprintln!("PROBE raster decode={:?}", __d);
+                        }
+                    }
                     let mut t_blit = stage_probe::Stage::start();
                     layer_buffer.blit_rgba8(
                         offset.0 as i64,
@@ -3652,7 +3678,12 @@ impl Renderer {
                         &entry.2,
                         opacity,
                     );
-                    probe_objects.record("raster:blit", t_blit.stop());
+                    {
+                        let __d = t_blit.stop();
+                        if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
+                            eprintln!("PROBE raster blit={:?}", __d);
+                        }
+                    }
                 }
                 Primitive::Text {
                     text,
