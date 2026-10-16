@@ -82,7 +82,7 @@ for (let i = 0; i < 80; i += 1) {
 if (!targets || !targets.length) {
   console.error("❌ chromium 未就绪 ⇒ 本次实测无效");
   chrome.kill(); server.kill();
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 const page = targets.find((t) => t.type === "page") || targets[0];
 const socket = new WebSocket(page.webSocketDebuggerUrl);
