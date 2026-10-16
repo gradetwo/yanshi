@@ -11,9 +11,22 @@ const url = process.argv[2];
 const port = process.argv[3] || "9222";
 if (!url) { console.error("用法: node scripts/ui-control-heights.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
+// **★ 连不上 CDP ⇒ **判据自己跑不了** ⇒ 退 3 ✗ ★**（2026-10-16 ✓；本仓约定见 AGENTS.md：
+//   「判据必须能说**我自己坏了**✗，用**与产品失败不同的退出码**报出来 ✓（现用 `exit(3)` ✓）」；
+//   同族的 `browser-*`／`ui-*` 判据都这么做 ✓ —— 本判据原来**直接抛未捕获异常 ⇒ 退 1** ✗，
+//   看起来与"产品失败"一模一样 ✓。**红证据**：无浏览器时修前 `EXIT=1` ✗、修后 `EXIT=3` ✓。）
+let targets;
+try {
+  targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
+} catch (error) {
+  console.error(
+    `❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP（127.0.0.1:${port}）：${error.message} ⇒ 退出码 3`,
+  );
+  process.exit(3);
+}
 const page = targets.find((t) => t.type === "page");
-if (!page) { console.error("没有可用的页面目标 ⇒ 判据无法运行（不是通过）"); process.exit(1); }
+// 判据自己跑不了（拿不到页面目标）⇒ 按本仓约定退 3 ✓（原来退 1 ✗，与"产品失败"无法区分 ✓）
+if (!page) { console.error("没有可用的页面目标 ⇒ 判据无法运行（不是通过）"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1;
 const pending = new Map();
@@ -50,7 +63,8 @@ const measured = await evaluate(`(() => {
   }
   return out;
 })()`);
-if (!measured || !measured.length) { console.error("页面上量不到控件 ⇒ 判据无法运行（不是通过）"); process.exit(1); }
+// 同上：量不到控件 ⇒ 判据自己跑不了 ⇒ 退 3 ✓
+if (!measured || !measured.length) { console.error("页面上量不到控件 ⇒ 判据无法运行（不是通过）"); process.exit(3); }
 const byHeight = new Map();
 for (const item of measured) byHeight.set(item.h, (byHeight.get(item.h) || 0) + 1);
 const heights = [...byHeight.keys()].sort((a, b) => a - b);
