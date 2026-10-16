@@ -123,6 +123,9 @@ const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-paint-")));
 const CHILD_LOG = process.env.PAINT_CHILD_LOG || "/tmp/yanshi-paint-child.log";
 const child = spawn(BIN, ["--bind", "127.0.0.1:" + PORT, "--root", work, "--doc", "boot",
   "--width", String(DOC_SIZE), "--height", String(DOC_SIZE), "--assets-dir", "assets"], { stdio: ["ignore", "pipe", "pipe"] });
+// **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+//   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（"11 绿 0 红却到不了终态"同形 ✓）。
+process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
 // ⚠️ **必须留住子进程的输出** ✗（第 823 轮实测 ✓）：原先两行 `on("data", () => {})` 把它们**丢掉** ✓
 // ⇒ 服务端启动失败时，判据只说"无法运行" ✗ ⇒ **真因一个字都没留下** ✓（`ENOENT: /proc/<pid>/status` ✓）。
 const childLog = [];
