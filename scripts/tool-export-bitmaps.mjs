@@ -85,7 +85,7 @@ try {
   console.log(`  已导出 ⇒ ${path}`);
 
   // **∴ 查包里的 blobs/ 条目 ✓**
-  const list = spawnSync("tar", ["-tzf", path], { encoding: "utf8", timeout: 600_000 }).stdout || "";
+  const list = spawnSync("tar", ["-tzf", path], { encoding: "utf8", timeout: 90_000 }).stdout || "";
   // **★ 路径匹配要**容忍前缀** ✗ ★**（第 229 轮 ✓；**∴ 判据自己的 bug ✓）：
   //   **∴ 症状 ✗**：**`tar -tzf` **的输出可能带 `./` 前缀**✗
   //     ⇒ **∴ 于是** `startsWith("blobs/")` **匹配不到** ✓
@@ -114,11 +114,11 @@ try {
   // **★ 决定性检查：**按路径提取** ✗ ★**（**∴ 不依赖列表 ✓）
   const wantSuffix0 = up.blob_hash.replace(/^sha256:/, "");
   const memberPath = `blobs/sha256/${wantSuffix0.slice(0, 2)}/${wantSuffix0.slice(2, 4)}/${wantSuffix0}`;
-  const extracted = spawnSync("tar", ["-xOf", path, memberPath], { encoding: "buffer", maxBuffer: 1 << 28, timeout: 600_000 });
+  const extracted = spawnSync("tar", ["-xOf", path, memberPath], { encoding: "buffer", maxBuffer: 1 << 28, timeout: 90_000 });
   const extractOk = extracted.status === 0 && (extracted.stdout || Buffer.alloc(0)).length > 0;
   console.log(`  按路径提取 ${memberPath.slice(0, 40)}… ⇒ ${extractOk ? "成功" : "失败"}（${(extracted.stdout || Buffer.alloc(0)).length} B）`);
   console.log("  ── BUILD-INFO ──");
-  const bi = spawnSync("tar", ["-xOf", path, "BUILD-INFO"], { encoding: "utf8", timeout: 600_000 }).stdout || "";
+  const bi = spawnSync("tar", ["-xOf", path, "BUILD-INFO"], { encoding: "utf8", timeout: 90_000 }).stdout || "";
   for (const l of bi.split("\n").filter((x) => /blob|bitmap/i.test(x))) console.log(`    ${l}`);
   check(blobEntries.length > 0 || extractOk,
     "导出 `include_bitmaps: true` 时，包内必须有 blobs/（不可重放的位图必须照装）",

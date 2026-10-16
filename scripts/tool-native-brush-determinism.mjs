@@ -35,7 +35,7 @@ function fail(message) {
 const run = spawnSync(
   "cargo",
   ["test", "-p", "yanshi-wasm", "--test", "native_brush_bytes", "--", "--nocapture"],
-  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 600_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 同步 ⇒ 挂住会占住事件循环 ⇒ setTimeout 守卫烧不到 ✗
+  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 90_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 同步 ⇒ 挂住会占住事件循环 ⇒ setTimeout 守卫烧不到 ✗
 );
 
 if (run.error) {

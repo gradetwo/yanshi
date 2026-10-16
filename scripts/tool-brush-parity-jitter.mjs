@@ -63,7 +63,7 @@ const BRUSHES = [
 const child = spawnSync(
   process.execPath,
   ["scripts/kernel-brush-parity.mjs", base, doc, token, pkg, ...BRUSHES],
-  { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 600_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 是**同步**的 ⇒ 子进程挂住会**占住事件循环** ⇒ 上面的 setTimeout 守卫**烧不到** ✗ ⇒ 分片会永久挂住 ✓
+  { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 90_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 是**同步**的 ⇒ 子进程挂住会**占住事件循环** ⇒ 上面的 setTimeout 守卫**烧不到** ✗ ⇒ 分片会永久挂住 ✓
 );
 
 const out = (child.stdout || "") + (child.stderr || "");

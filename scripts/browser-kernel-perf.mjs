@@ -7,7 +7,7 @@
 const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
-}, 150000);
+}, 90000);
 // 测量**客户端 WASM 内核**的区域渲染成本（与服务端同口径，便于横向对比）。
 //
 // 为什么必须单独测：客户端预览走的是内核的 render_region_direct，

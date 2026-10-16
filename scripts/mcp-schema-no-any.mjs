@@ -34,7 +34,7 @@ const BIN = process.env.YANSHI_MCP_BIN || "target/debug/yanshi-mcp";
 const listTools = (profile) => {
   let raw;
   try {
-    raw = execFileSync(BIN, ["--list-tools", "--profiles", profile], { timeout: 600_000, encoding: "utf8", maxBuffer: 64 << 20 });
+    raw = execFileSync(BIN, ["--list-tools", "--profiles", profile], { timeout: 90_000, encoding: "utf8", maxBuffer: 64 << 20 });
   } catch (error) {
     console.error(`❌ 判不了：${BIN} --list-tools --profiles ${profile} 跑不起来（${error.message}）⇒ 退出码 3`);
     process.exit(3);

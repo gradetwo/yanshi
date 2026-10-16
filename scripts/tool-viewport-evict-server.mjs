@@ -7,7 +7,7 @@
 const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
-}, 150000);
+}, 90000);
 // **★ 服务端 tile 缓存的**视口淘汰**（2026-10-15 ✓；乙(iii) 的验收判据 ✓）★**
 //
 // **为什么需要它** ✗（`docs/design/vermeer-acceptance.md` §49 之补四十七 ✓）：

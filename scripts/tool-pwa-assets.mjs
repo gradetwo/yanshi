@@ -305,7 +305,7 @@ check(webMissing.length === 0,
 //   **∴ 本判据**直接问 git「**它被跟踪吗**」✗ ⇒ **∴ 于是**这类 404**在提交前就会被抓到 ✓**。
 let indexTracked = false;
 try {
-  execFileSync("git", ["ls-files", "--error-unmatch", "web/index.html"], { stdio: "pipe", timeout: 600_000 });
+  execFileSync("git", ["ls-files", "--error-unmatch", "web/index.html"], { stdio: "pipe", timeout: 90_000 });
   indexTracked = true;
 } catch (e) { indexTracked = false; }
 check(indexTracked,

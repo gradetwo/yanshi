@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-examples-doc-check.mjs <server-base>"); process.exit(2); }
 const run = spawnSync("node", ["scripts/tool-examples-doc.mjs", base, "--check"], {
-  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 600_000,
+  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 90_000,
 });
 const out = `${run.stdout || ""}${run.stderr || ""}`.trim();
 if (out) console.log(out.split("\n").slice(-6).map((l) => `     ${l}`).join("\n"));

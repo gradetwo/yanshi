@@ -36,7 +36,7 @@ function stamp() {
 }
 
 function runSync() {
-  const result = spawnSync("node", [SYNC], { encoding: "utf8", timeout: 600_000 });
+  const result = spawnSync("node", [SYNC], { encoding: "utf8", timeout: 90_000 });
   return { code: result.status, output: (result.stdout || "") + (result.stderr || "") };
 }
 

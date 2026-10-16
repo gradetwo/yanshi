@@ -65,7 +65,7 @@ for (const side of sides) {
       //     ＋ **∴ 证据 ✗**：**同一台 L4 上**那条命令**能拿到两路**（**CPU 1529 ms ／ GPU 1452 ms ✓）** ✓ ★
       [TOOL, "--region", `${side}x${side}`, "--rounds", rounds,
         "--compare", "CPU=--gpu off", "--compare", "GPU=--gpu on", ...extra],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 600_000 },
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 90_000 },
     );
   } catch (error) {
     out = String((error && error.stdout) || "") + String((error && error.stderr) || "");

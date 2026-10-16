@@ -54,7 +54,7 @@ const entries = readdirSync(root).filter((name) => name !== ".git");
 
 const run = (args) => {
   try {
-    return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 600_000 });
+    return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 90_000 });
   } catch {
     return "";
   }

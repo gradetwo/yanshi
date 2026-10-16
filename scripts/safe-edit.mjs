@@ -147,9 +147,9 @@ let syntaxOk = true;
 let syntaxMsg = "";
 try {
   if (ext === ".mjs" || ext === ".js" || ext === ".cjs") {
-    execFileSync(process.execPath, ["--check", tmp], { stdio: "pipe", timeout: 600_000 });
+    execFileSync(process.execPath, ["--check", tmp], { stdio: "pipe", timeout: 90_000 });
   } else if (ext === ".py") {
-    execFileSync("python3", ["-m", "py_compile", tmp], { stdio: "pipe", timeout: 600_000 });
+    execFileSync("python3", ["-m", "py_compile", tmp], { stdio: "pipe", timeout: 90_000 });
   } else if (ext === ".json") {
     JSON.parse(next);
   } else {

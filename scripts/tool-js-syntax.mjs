@@ -16,7 +16,7 @@ const files = readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort();
 const bad = [];
 for (const f of files) {
   try {
-    execFileSync(process.execPath, ["--check", `${dir}/${f}`], { stdio: "pipe", timeout: 600_000 });
+    execFileSync(process.execPath, ["--check", `${dir}/${f}`], { stdio: "pipe", timeout: 90_000 });
   } catch (error) {
     const out = String((error && error.stderr) || (error && error.message) || error);
     bad.push({ file: f, first: out.split("\n").slice(0, 3).join(" | ").slice(0, 200) });

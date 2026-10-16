@@ -24,7 +24,7 @@ const SRC_OF_WEB = (name) => `crates/yanshi-http/assets/${name}`;
 
 function gitIgnored(p) {
   try {
-    execFileSync("git", ["check-ignore", "-q", p], { stdio: "ignore", timeout: 600_000 });
+    execFileSync("git", ["check-ignore", "-q", p], { stdio: "ignore", timeout: 90_000 });
     return true;
   } catch {
     return false;
@@ -32,7 +32,7 @@ function gitIgnored(p) {
 }
 function gitTracked(p) {
   try {
-    const out = execFileSync("git", ["ls-files", "--error-unmatch", p], { stdio: ["ignore", "pipe", "ignore"], timeout: 600_000 });
+    const out = execFileSync("git", ["ls-files", "--error-unmatch", p], { stdio: ["ignore", "pipe", "ignore"], timeout: 90_000 });
     return out.length > 0;
   } catch {
     return false;

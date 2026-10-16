@@ -29,7 +29,7 @@ for (let i = 1; i <= runs; i++) {
   let ok = true;
   try {
     out = execFileSync("cargo", ["test", "-p", "yanshi-render", "--lib"], {
-      env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 600_000,
+      env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 90_000,
     });
   } catch (e) {
     ok = false;

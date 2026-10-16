@@ -234,7 +234,7 @@ for (const dir of targetDirs) {
     continue;
   }
   try {
-    execFileSync(cand, ["--export-viewer-html", tmp], { stdio: "pipe", timeout: 600_000 });
+    execFileSync(cand, ["--export-viewer-html", tmp], { stdio: "pipe", timeout: 90_000 });
     bin = cand;
     break;
   } catch (e) {
@@ -289,7 +289,7 @@ if (!bin) {
 } else {
   console.log(`  静态页导出用的二进制：${bin} ✓`);
   const tmp = join(DST, ".index.export.html");
-  execFileSync(bin, ["--export-viewer-html", tmp], { stdio: "pipe", timeout: 600_000 });
+  execFileSync(bin, ["--export-viewer-html", tmp], { stdio: "pipe", timeout: 90_000 });
   const size = statSync(tmp).size;
   if (size < 1000) {
     console.error(`✗ 导出的页面只有 ${size} 字节 ⇒ **∴ 疑似失败 ✗**`);
