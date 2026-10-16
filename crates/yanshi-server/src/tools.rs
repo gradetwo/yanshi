@@ -9886,6 +9886,21 @@ fn revert_changeset_atoms(
             .log()
             .iter()
             .filter(|atom| atom.changeset_id.as_deref() == Some(changeset_id))
+            // **★ 协作原子（评论／建议 ✓）跳过 ✗ ★**（2026-10-16 ✓；**本机独立复现 ✓**）
+            //
+            // **∴ 症状 ✗**（实测 ✓）：一个变更集里**既有画笔原子又有评论原子** ✓ 时（实测组里是
+            //   `["import_image","comment"]` ✓）⇒ `revert_changeset` 回 **`ok=false`** ✗：
+            //     「不能 revert 协作原子 …（comment）—— **只有产生状态效果的原子与 revert/reapply 本身可以撤销**」✓
+            //   ＋ **∴ 而画布其实**已经被撤干净了** ✓**（实测：撤销后像素与"落笔之前"**逐字节相同** ✓、
+            //     对象数也回到 0 ✓）⇒ ⇒ **∴ 于是**：**一件其实做成的事被判成失败** ✗ ★
+            //     （调用方只会看到 `ok=false` ✓ ⇒ 它没法知道画布已经回去了 ✓。）
+            //
+            // **∴ 为什么"跳过"就是对的 ✗**：评论／建议**没有可撤销的画布状态** ✓ ——
+            //   它们是**独立通道** ✓（与 `create_annotation` 自述的"**独立 append-only 通道，不进原子日志**" ✓
+            //   同一设计取向 ✓）⇒ **∴ 撤销画布时**不看它们**✓，也**不删它们**✓（评论不该因为撤销一笔画就消失 ✓）。
+            //   **∴ 判据** ✓：`scripts/tool-revert-changeset-mixed.mjs` ✓（**三件：组里真混成 ✓、
+            //   `ok=true` ✓、画布逐字节回到落笔之前 ✓、**评论仍在** ✓**）。
+            .filter(|atom| !atom.kind.is_collab())
             .map(|atom| atom.id.clone())
             .collect()
     };

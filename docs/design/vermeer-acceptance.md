@@ -5608,3 +5608,39 @@ tail ✓ ⇒ 后续提交走 `IncrementalFolder` 时**从 tail 的零基础折�
 `fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
 
 **∴ 剩余待办 ✗**（**不冒充** ✓）：`doc_id` 参数与那个空目录那一族 ⇒ 记为**未决** ✗，等语义裁定再动 ✓。
+
+### 四十九之补一百二十六：**混合变更集**的撤销：一件其实做成的事被判成失败（2026-10-16 ✓）
+
+**来源** ✓：第三方 90 KB 补丁里 `revert_changeset_atoms` 加了 `.filter(|atom| !atom.kind.is_collab())` ✓，
+注释"评论/标注没有可撤销的画布状态；跳过它们才能完整撤销混合变更集" ✓ ⇒ **我独立复现** ✓（**不照抄结论** ✗）。
+
+**★ 实测（修前 ✓）**：
+```
+begin_changeset ⇒ brush_stroke ⇒ comment ⇒ commit_changeset
+  变更集里 2 条原子：**["import_image","comment"]** ✓（**真混成了** ✓ —— `brush_stroke` 落的是 `import_image` ✓）
+revert_changeset ⇒ **ok=false** ✗
+  「不能 revert 协作原子 …（comment）——**只有产生状态效果的原子与 revert/reapply 本身可以撤销**」✓
+而画布**其实已经撤干净了** ✓：撤销后像素与"落笔之前"**逐字节相同** ✓、对象数 1 ⇒ 0 ✓
+```
+⇒ **∴ 定性 ✗**：**一件其实做成的事被判成失败** ✗ ★ —— 调用方只看到 `ok=false` ✓，
+**没法知道画布已经回去了** ✓（而且组里的评论原子还留着 ✓）。
+⇒ **∴ 这与 §补一百一十九 那条"笔触自己不知道落没落墨"是**同族**✓**：**回执与事实不一致** ✗。
+
+**∴ 修法 ✗**（**跳过、而不是删除** ✓）：评论／建议**没有可撤销的画布状态** ✓ ——
+它们是**独立通道** ✓（与 `create_annotation` 自述的"独立 append-only 通道，**不进原子日志**" ✓ 同一取向 ✓）
+⇒ **撤销画布时**不看它们 ✓，也**不删它们** ✓（不该因为撤销一笔画就让评论消失 ✓）。
+
+**★ 判据** ✓ `scripts/tool-revert-changeset-mixed.mjs`（`tool-*` 已被枚举 ✓）：
+```
+① 组里**真的**同时有画笔原子与评论原子 ✓（没混成 ⇒ **退 3** ✓，不许当"通过" ✗）
+② revert_changeset ⇒ **ok=true** ✓（修前 ok=false ✗）
+③ **画布逐字节回到落笔之前** ✓ ＋ 对象数回到 0 ✓（**"撤干净"的唯一硬证据** ✓，不是看回执说撤了几条 ✓）
+④ **评论仍在** ✓（撤销画布不该带走评论 ✓ —— 这条**钉住语义** ✓）
+修前 ⇒ EXIT=1（ok=false ✓）；修后 ⇒ EXIT=0 ✓
+```
+**∴ 顺带核清一个易混点 ✗**：**评论是原子** ✓（`comment{text}` ⇒ `AtomKind::Comment` ✓，`is_collab()` ＝
+Comment／Suggest／AcceptSuggestion／RejectSuggestion ✓）；而 `create_annotation` **不是**原子 ✗
+（自述独立通道 ✓）⇒ **两者别混** ✓ —— 我先去查了注释才写判据 ✓（**没拿"标注"当原子测** ✗）。
+
+**回归** ✓：本仓**没有**别的 revert/undo 判据 ✗（只有 UI 侧 `browser-undo-disabled.mjs` ✓）
+⇒ 这一条正好补上那个缺口 ✓；`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
