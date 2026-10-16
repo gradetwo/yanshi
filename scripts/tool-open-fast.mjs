@@ -48,6 +48,9 @@ let child = null;
 async function start(label) {
   child = spawn(BIN, ["--bind", `127.0.0.1:${port}`, "--root", root,
     "--assets-dir", ASSETS, "--profile", "all"], { stdio: ["ignore", "ignore", "pipe"] });
+  // **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+  //   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（"11 绿 0 红却到不了终态"同形 ✓）。
+  process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
   let stderr = "";
   child.stderr.on("data", (d) => { stderr += d.toString(); });
   child.on("error", () => {});
