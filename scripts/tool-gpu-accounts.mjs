@@ -109,7 +109,7 @@ if (!targets || !targets.length) {
   console.error(`   ∴ 二进制：${process.env.CHROME_BIN || "chromium"}｜CDP 端口 ${cdpPort}`
     + `｜退出码 ${chrome.exitCode}｜stderr：${chromeStderr.slice(-400) || "（空）"}`);
   chrome.kill();
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 
 const page = targets.find((t) => t.type === "page") || targets[0];
