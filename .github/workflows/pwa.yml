@@ -210,3 +210,22 @@ jobs:
           npx --yes wrangler deploy
           echo "### ✅ 已部署到 yanshi-online.wangda.today" >> "$GITHUB_STEP_SUMMARY"
           echo "skipped=0" >> "$GITHUB_OUTPUT"
+
+  # **★ 部署后核对线上四张作品展示图 ✗ ★**（2026-10-16 ✓）
+  #
+  # **∴ 为什么**只在这个 job 里**、且只手动触发 ✗**：
+  #   `pwa.yml` **也随 push 触发** ✓ ⇒ **∴ 若**在这里无条件 curl 活域名**✗**
+  #     ⇒ **∴ 那**网络抖动／Cloudflare 抖动／DNS 都会**把 CI 弄红** ✗（本仓 7 条 known-red 就是这么来的 ✓）。
+  #   **∴ 所以 ✗**：**手动发版之后**才跑它 ✓ —— **∴ 于是它**可以响亮地失败**✓ */
+  #     （**∴ 真有问题**就该红 ✓），而**push 触发的 CI 一个字节都不受影响** ✓★。
+  #
+  # **∴ 判什么 ✗**：四张图各要 **HTTP 200 ＋ 合法 PNG ＋ 字节数与 `assets/showcase/` **逐值相同**** ✓
+  #   （**∴ 连不上 ⇒ 退 3** ✗ —— "**我判不了**"不冒充"线上内容错" ✓；**HTTP 错／不是 PNG／字节不符 ⇒ 退 1** ✓）。
+  verify-live:
+    if: github.event_name == 'workflow_dispatch'
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 核对线上展示图（HTTP 200 ＋ 合法 PNG ＋ 字节数与 assets/showcase/ 逐值相同）
+        run: node scripts/verify-live-showcase.mjs https://yanshi.wangda.today
