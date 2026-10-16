@@ -39,7 +39,14 @@ for (let i = 1; i <= runs; i++) {
   // **★ 必须同时看 `ignored` ✓ ★**（第 566 轮 ✓）：**∴ 一个"数失败数"的判据**分不清
   // "通过 ✓"与"没跑 ✗"** ⇒ **∴ 若不看它 ⇒ **∴ 就会把"红线被关闭"说成"红线守住" ✗****。
   const ignored = Number((line.match(/(\d+) ignored/) ?? [0, "0"])[1]);
-  results.push({ i, ok, line, ignored });
+  // **★ 失败时把**明细**留下 ✗ ★**（第 1000+ 轮 ✓）：**∴ 原来 `out` 已经拿到完整输出 ✓，
+  //   却只 `find` 了 `test result` 那一行 ✗ ⇒ **∴ 报"1 failed"却**说不出是哪条 ✗**
+  //     ⇒ **∴ 于是这条缺陷**不可诊断**✓（**实测：日志里连一个测试名都没有 ✓**）
+  //   ⇒ **∴ 现在截出 `failures:` 之后的段落 ✓，失败时打印 ✓** —— **∴ 只加诊断 ✓，不改判定 ✓**。
+  const detail = ok
+    ? ""
+    : (out.split(/^failures:\s*$/m)[1] ?? "").split("\n").slice(0, 14).join("\n").trim();
+  results.push({ i, ok, line, ignored, detail });
   if (!ok) failed++;
 }
 for (const r of results) console.log(`  第 ${r.i} 次: ${r.line}${r.ok ? " ✓" : " ✗"}`);
@@ -47,6 +54,11 @@ const skipped = results.reduce((a, r) => a + (r.ignored || 0), 0);
 if (failed > 0) {
   console.error(`❌ ${runs} 次里有 ${failed} 次失败 ⇒ **增量与整段不一致 ⇒ 缓存**撒谎了** ✗**` +
     `（常见根因：参照组只清了 tile 缓存 ⇒ 请改用 \`clear_all_caches()\` ✓）`);
+  // **∴ 把失败测试名列出来 ✓**（**∴ 这是本判据以前缺的那一块 ✓** —— 没有它就无法定性 ✗）
+  for (const r of results) {
+    if (r.ok || !r.detail) continue;
+    console.error(`  第 ${r.i} 次的失败明细：\n${r.detail}`);
+  }
   process.exit(1);
 }
 if (skipped > 0) {
