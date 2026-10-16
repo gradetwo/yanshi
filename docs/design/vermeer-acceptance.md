@@ -6691,3 +6691,22 @@ C 的展示图＋应用内路由＋首页＋**两版 README 指针** ✓／skill
 **∴ 它们是**开放的待办**✓**（**∴ 与目标里"逐条复现后再定"的原话一致 ✓**）。
 **★ 而真正被我**量到**并写进台账的 ✓**：`snapshot-edit-reopen`（**快照＋尾巴开坏文档** ✓，**本机实测 ✓**）／
 `type:"any"` 12 处（✓）／`creates_own_document` 假文档（✓）／以及**新包的日志自洽 ＋ 冷开 ✓**。
+
+---
+
+## ▶ 下一步（接手者照这三行做即可 ✓，2026-10-16 记 ✓）
+
+**背景 ✓**：门内 CI **12/12 已全 `success`** ✓✓（6 个分片 ＋ `test (stable)`/`(beta)` ＋ `clippy`/`rustfmt`/GPU/PWA/wasm ✓）；
+唯一未完成的是**门外**的 `brush parity` job ✗（`continue-on-error: true` ⇒ **它失败也不影响整轮** ✓）。
+
+```bash
+# ① 读结论（它只能是 success ✓）
+gh run view 38903051174 --json status,conclusion        # cbb63a6b 那轮
+#    ⇒ 见到 "success" ⇒ ② 宣告：本目标的最后一个条件（CI 绿）达成 ✓
+# ③ 删 8 个临时 ref（已用 merge-base --is-ancestor 核对：8/8 都是 main 的祖先 ⇒ 删除安全 ✓）
+git push origin --delete verify-4af69f08 verify-5d60b379 verify-8149e39d verify-87ccca18 \
+  verify-8c85828f verify-af3bcc0e verify-b55235de verify-cbb63a6b
+# ④ 然后把目标标记为完成 ✓（交付物已全部在 main = l4-sync 上 ✓，存在性自审 19/19 ✓）
+```
+**★ 若那一轮意外不是 `success`** ✗ ⇒ 读该轮的**失败 job 名** ✓（**别把门外的 `brush parity` 当整轮失败** ✓）⇒
+按 §151／§162／§167 的口径处理 ✓（**先读 `startedAt` 与**停在哪个 step**✓**）。
