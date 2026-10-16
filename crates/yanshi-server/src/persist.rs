@@ -364,17 +364,28 @@ impl FileStore {
     }
 
     /// 记录一个令牌。
+    ///
+    /// **★ 尺寸必须由**调用方**给 ✗ ★**（**2026-10-16 ✓**）：`meta.json` **缺失**时，
+    /// 旧代码会**凭空写一份 `width: 0, height: 0`** ✗ —— 那是一个**谎** ✓：
+    /// 它把「**我不知道尺寸**」写成了「**尺寸是 0×0**」✗ ⇒ 之后**所有**读 `meta.json` 的地方
+    /// （例如 `list_documents` 的**未打开**分支 ✓）都跟着报 **0×0** ✗
+    /// —— 而这正是真实用户报告里 `yanshi-mcp` 报 0×0、`yanshi-serve` 报对的那条分叉 ✓。
+    ///
+    /// **∴ 为什么让调用方给 ✗**：调用方 [`crate::service::Workspace::issue_token`] **手里正拿着那份文档** ✓
+    /// ⇒ 尺寸是**已知的** ✓ ⇒ 传进来 ✓，**不要让持久层去猜** ✗（猜出来的 0 会被写进盘 ✓）。
     pub fn record_token(
         &self,
         doc_id: &str,
+        width: u32,
+        height: u32,
         token: &CapabilityToken,
         actor: &str,
         role: Role,
     ) -> Result<()> {
         let mut meta = self.load_meta(doc_id)?.unwrap_or(DocumentMeta {
             doc_id: doc_id.to_owned(),
-            width: 0,
-            height: 0,
+            width,
+            height,
             created_at: yanshi_core::now_ms(),
             tokens: Vec::new(),
         });
@@ -585,8 +596,9 @@ mod tests {
             })
             .unwrap();
         let token = CapabilityToken::generate();
+        // **meta 已存在 ⇒ 传进来的尺寸不参与** ✓（真正的尺寸从 `meta.json` 读 ✓）。
         store
-            .record_token("doc_1", &token, "human:1", Role::Editor)
+            .record_token("doc_1", 64, 32, &token, "human:1", Role::Editor)
             .unwrap();
         let meta = store.load_meta("doc_1").unwrap().unwrap();
         assert_eq!((meta.width, meta.height), (64, 32));
@@ -596,11 +608,30 @@ mod tests {
 
         // 重复记录同一 token 不产生重复条目。
         store
-            .record_token("doc_1", &token, "human:1", Role::Owner)
+            .record_token("doc_1", 64, 32, &token, "human:1", Role::Owner)
             .unwrap();
         let meta = store.load_meta("doc_1").unwrap().unwrap();
         assert_eq!(meta.tokens.len(), 1);
         assert_eq!(meta.tokens[0].role, Role::Owner);
+        // **★ `meta.json` **缺失**时不许凭空写 `0×0` ✗ ★**（2026-10-16 ✓）：
+        //   **∴ 旧行为 ✗**：`unwrap_or(DocumentMeta{ width: 0, height: 0, … })` ✓
+        //     ⇒ **∴ 于是**它把「我不知道尺寸」写成「尺寸是 0×0」✗ ⇒
+        //       **之后所有读 `meta.json` 的地方都跟着报 0×0** ✗
+        //       （真实用户报告：`yanshi-mcp` 报 0×0 而 `yanshi-serve` 报对 ✓）。
+        //   **∴ 判据 ✗**：删掉 meta 再记令牌 ⇒ 盘上写的必须是**调用方给的**真实尺寸 ✓。
+        let root_missing = temp_root("meta-missing");
+        let store_missing = FileStore::open(&root_missing).unwrap();
+        let token_missing = CapabilityToken::generate();
+        store_missing
+            .record_token("doc_2", 200, 150, &token_missing, "human:2", Role::Owner)
+            .unwrap();
+        let meta_missing = store_missing.load_meta("doc_2").unwrap().unwrap();
+        assert_eq!(
+            (meta_missing.width, meta_missing.height),
+            (200, 150),
+            "meta 缺失时不许写 0×0（那会让 list_documents 永久报 0×0 ✗）"
+        );
+        let _ = fs::remove_dir_all(&root_missing);
         let _ = fs::remove_dir_all(&root);
     }
 

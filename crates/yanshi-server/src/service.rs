@@ -1757,8 +1757,30 @@ impl Workspace {
                     doc_id.clone(),
                     DocumentSummary {
                         doc_id: doc_id.clone(),
-                        width: meta.as_ref().map(|meta| meta.width).unwrap_or(0),
-                        height: meta.as_ref().map(|meta| meta.height).unwrap_or(0),
+                        // **★ 尺寸也必须从**折叠结果**取 ✗ ★**（**真实用户报告 ✓，2026-10-16 ✓）：
+                        //   **∴ 症状 ✗**：`yanshi-mcp` 对**已存在**的文档报 **0×0** ✗
+                        //     而 `yanshi-serve` 报对 ✓（**同一份磁盘** ✓）⇒ 后续 `brush_stroke` 无法继续 ✗。
+                        //   **∴ 根因 ✗**：这里原先**只读 `meta.json`** ✓ 且缺失时 `unwrap_or(0)` ✗
+                        //     ＋ **∴ 而**上面几行**已经为 `layers`/`objects` 折过原子了** ✓
+                        //       ⇒ **∴ 于是**同一个响应里出现「`width:0,height:0` ✗＋`layers:2,objects:1` ✓」
+                        //         这种**自相矛盾** ✓（本机实测 ✓）。
+                        //   **∴ 为什么 serve 正常 ✗**：**serve 每个请求都按需打开文档** ✓
+                        //     ⇒ 走"已打开"分支 ⇒ 尺寸来自**状态** ✓；
+                        //     **MCP 只**预打开自己的 `--doc`**✗ ⇒ 别的文档走"未打开"这一支 ✗
+                        //       ⇒ **∴ 会话挂在 A 上时 B 就报 0×0** ✗（实测 ✓）。
+                        //   **∴ 修法 ✗**：与 `layers`/`objects` **同一个来源** ✓ ——
+                        //     **原子里的 `new_document` 本来就带着真实尺寸** ✓
+                        //     ⇒ **引擎已有的不做第二遍** ✓；折叠给不出（空日志 ✓）才回落到 `meta.json` ✓。
+                        width: if folded.state.width > 0 {
+                            folded.state.width
+                        } else {
+                            meta.as_ref().map_or(0, |meta| meta.width)
+                        },
+                        height: if folded.state.height > 0 {
+                            folded.state.height
+                        } else {
+                            meta.as_ref().map_or(0, |meta| meta.height)
+                        },
                         atoms: atoms.len(),
                         head_seq: atoms.last().map(|atom| atom.seq).unwrap_or(0),
                         layers: folded
@@ -3024,12 +3046,17 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         actor: &str,
         role: Role,
     ) -> Result<CapabilityToken> {
-        let token = {
+        // **尺寸在这里一并取出** ✓（`meta.json` 缺失时 `record_token` **不许**凭空写 0×0 ✗，
+        // 见 `persist.rs::record_token` 的说明 ✓）：`document` 就在手里 ✓ ⇒ 尺寸是已知的 ✓。
+        let (token, width, height) = {
             let document = self.document_mut(doc_id)?;
-            document.issue_token(actor, role)
+            let width = document.state().width;
+            let height = document.state().height;
+            let token = document.issue_token(actor, role);
+            (token, width, height)
         };
         if let Some(persist) = &self.persist {
-            persist.record_token(doc_id, &token, actor, role)?;
+            persist.record_token(doc_id, width, height, &token, actor, role)?;
         }
         Ok(token)
     }
