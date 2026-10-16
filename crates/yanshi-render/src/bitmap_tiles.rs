@@ -259,6 +259,162 @@ mod tests {
         }
     }
 
+    /// **判据（CPU 线 ✓）：`raster_patch` 的每对象固定开销**分在哪四段** ✓**
+    ///
+    /// **∴ 为什么必须有它 ✗**：附二十五 把"**每对象 ~4.5 ms 固定开销**"定为优化机会 ✓
+    ///   ⇒ **∴ 但**不知道钱花在哪一段**就**不能改**✓（**附十五 那次就是"改了但没收益"✓**）★
+    ///
+    /// **∴ 量四段 ✗**（**与 `render.rs` 里新加的 5 段探针同名同义 ✓**）：
+    ///   **① 取＋解析索引 JSON** ② 逐块取 ③ `assemble_region_sparse` ④ `blit_rgba8` ✓
+    ///
+    /// **∴ 断言两件 ✗ ★**：
+    ///   1. **四段各自 > 0** ✓ —— **∴ 防的是"循环被优化掉"** ✗（**与 `rows.rs` 的 `split_probe` 同一条 ✓**：
+    ///      **∴ 不**断言具体占比 ✗ —— **∴ 那会因机器而抖 ✓**）；
+    ///   2. **四段之和 ≈ 整段（±10% ✓）** —— **∴ 这条才有意义 ✗**：**它证明"没有一大块没被计到"** ✓
+    ///      （**∴ 即**：**外层的总时间**确实**由这四段构成 ✓**）★
+    ///
+    /// **∴ 变异 ✗**：**把任一段清零 ⇒ **第 2 条必红** ✓（**∴ 本判据**有牙**✓**）。
+    ///
+    /// **∴ 口径（**如实 ✓）★**：**这是**合成夹具**上的**段间分布**✗ ⇒ **∴ 不是**真实 4K 画作的绝对数 ✓
+    ///   （**∴ 那要另跑真语料 ✓ —— 附八／附九 ✓**）；**∴ 而**分布**与**规模**大体无关 ✓（**∴ 逐块/逐行 ✓**）。
+    #[test]
+    fn raster_patch_fixed_cost_splits_into_four_segments() {
+        use crate::buffer::Buffer;
+        use std::time::{Duration, Instant};
+        use yanshi_core::blob::{BlobStore, MemoryBlobStore};
+
+        // **∴ 规模 ✗**：1024² 画布 ＋ 256² 的补丁 ✓（**∴ 与 4K 同一形状的固定活 ✓，而测试很快 ✓**）
+        let (doc_w, doc_h) = (1024u32, 1024u32);
+        let (patch_w, patch_h) = (256u32, 256u32);
+        let store = MemoryBlobStore::default();
+
+        // **∴ 真实的块字节 ✗**（**每块 64²×4 ＝ 16 KB ✓**）＋ **索引存进 store ✓**（**与渲染时同一形态 ✓**）
+        let tile_len = (BITMAP_TILE * BITMAP_TILE * 4) as usize;
+        let tile_bytes = vec![0x7fu8; tile_len];
+        let count = BitmapIndex::count(doc_w, doc_h);
+        let mut hashes = Vec::with_capacity(count);
+        for _ in 0..count {
+            hashes.push(
+                store
+                    .put(&tile_bytes)
+                    .expect("内存 store 不会写失败")
+                    .to_string(),
+            );
+        }
+        let index = BitmapIndex {
+            v: BITMAP_INDEX_VERSION,
+            tile: BITMAP_TILE,
+            width: doc_w,
+            height: doc_h,
+            tiles: hashes,
+        };
+        let index_json = serde_json::to_vec(&index).expect("索引可序列化");
+        let index_hash = store.put(&index_json).expect("内存 store 不会写失败");
+        let rect = (0i64, 0i64, patch_w, patch_h);
+
+        // **∴ 整段 ✗**：**外层一个计时包住四段全部 ✓**（**∴ 用来做第 2 条断言的**分母**✓**）
+        let whole_run = || -> Duration {
+            let t = Instant::now();
+            let raw = store.get(&index_hash).expect("索引可取");
+            let parsed: BitmapIndex = serde_json::from_slice(&raw).expect("索引可解析");
+            let slots = parsed.tiles_for_rect(rect.0, rect.1, rect.2, rect.3);
+            let mut parts = Vec::with_capacity(slots.len());
+            for slot in &slots {
+                let text = parsed.tiles.get(*slot).expect("块号在表内");
+                let th = text
+                    .parse::<yanshi_core::atom::BlobHash>()
+                    .expect("块哈希可解析");
+                parts.push(store.get(&th).expect("块可取"));
+            }
+            let stitched =
+                assemble_region_sparse(doc_w, doc_h, &slots, &parts, rect).expect("拼接应当成功");
+            let mut buffer = Buffer::new(0, 0, doc_w, doc_h);
+            buffer.blit_rgba8(0, 0, patch_w, patch_h, &stitched, 1.0);
+            t.elapsed()
+        };
+
+        // **∴ 分段 ✗**：**同一段活，四段各自计时 ✓**（**∴ 顺序与整段完全一致 ✓**）
+        let segmented_run = || -> [Duration; 4] {
+            let mut d = [Duration::ZERO; 4];
+            let t0 = Instant::now();
+            let raw = store.get(&index_hash).expect("索引可取");
+            let parsed: BitmapIndex = serde_json::from_slice(&raw).expect("索引可解析");
+            d[0] = t0.elapsed();
+
+            let t1 = Instant::now();
+            let slots = parsed.tiles_for_rect(rect.0, rect.1, rect.2, rect.3);
+            let mut parts = Vec::with_capacity(slots.len());
+            for slot in &slots {
+                let text = parsed.tiles.get(*slot).expect("块号在表内");
+                let th = text
+                    .parse::<yanshi_core::atom::BlobHash>()
+                    .expect("块哈希可解析");
+                parts.push(store.get(&th).expect("块可取"));
+            }
+            d[1] = t1.elapsed();
+
+            let t2 = Instant::now();
+            let stitched =
+                assemble_region_sparse(doc_w, doc_h, &slots, &parts, rect).expect("拼接应当成功");
+            d[2] = t2.elapsed();
+
+            let t3 = Instant::now();
+            let mut buffer = Buffer::new(0, 0, doc_w, doc_h);
+            buffer.blit_rgba8(0, 0, patch_w, patch_h, &stitched, 1.0);
+            d[3] = t3.elapsed();
+            d
+        };
+
+        // **∴ 3 轮取**最小**✗**（**∴ 守"单次测量不算数"✓ —— 与附二十／二十一 同一条纪律 ✓**）
+        let mut whole = Duration::MAX;
+        let mut seg = [Duration::MAX; 4];
+        for round in 0..3 {
+            let w = whole_run();
+            let s = segmented_run();
+            if round == 0 {
+                // **∴ 第一轮是**热身**✗** ⇒ **∴ 丢掉 ✓**（**与既有工具一致 ✓**）
+                continue;
+            }
+            whole = whole.min(w);
+            for i in 0..4 {
+                seg[i] = seg[i].min(s[i]);
+            }
+        }
+        let sum: Duration = seg.iter().sum();
+        println!(
+            "RASTER_PATCH 块数={} 整段={:.3}ms ①索引={:.3}ms ②取块={:.3}ms ③拼接={:.3}ms ④blit={:.3}ms \
+             ⇒ 四段合={:.3}ms（占整段 {:.1}%）",
+            count,
+            whole.as_secs_f64() * 1000.0,
+            seg[0].as_secs_f64() * 1000.0,
+            seg[1].as_secs_f64() * 1000.0,
+            seg[2].as_secs_f64() * 1000.0,
+            seg[3].as_secs_f64() * 1000.0,
+            sum.as_secs_f64() * 1000.0,
+            sum.as_secs_f64() / whole.as_secs_f64() * 100.0
+        );
+
+        // **★ 第 1 条 ✗**：**四段各自 > 0** ✓（**∴ 任何一段为 0 ⇒ **要么**那段没干**✗、**要么**测量被优化掉了 ✗**）
+        for (i, name) in ["①索引 JSON", "②逐块取", "③拼接", "④blit"]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                seg[i] > Duration::ZERO,
+                "第 {name} 段量为 0 ⇒ **∴ 要么**这段真的没干活 ✓、**要么**循环被优化掉了 ✗ ⇒ \
+                 **∴ 两者都**必须先查清 ✓**（**∴ 不许**当「它很快」放过 ✗）"
+            );
+        }
+        // **★ 第 2 条 ✗**：**四段之和 ≈ 整段（±10% ✓）** —— **∴ 它证明**没有一大块没被计到**✓**
+        let share = sum.as_secs_f64() / whole.as_secs_f64();
+        assert!(
+            (0.90..=1.10).contains(&share),
+            "四段之和占整段的 {:.1}% ⇒ **∴ 不在 ±10% ⇒ **∴ 说明**有一段没被计到 ✗ ⇒ \
+             **∴ 先找它 ✗，不要**先优化 ✓",
+            share * 100.0
+        );
+    }
+
     /// **判据 1** ✓：**8K 的块数 ＝ 510** ✓（与既有渲染缓存的 510 tile 口径一致 ✓）。
     #[test]
     fn eight_k_yields_five_hundred_ten_tiles() {
