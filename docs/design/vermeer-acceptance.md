@@ -5572,3 +5572,39 @@ tail ✓ ⇒ 后续提交走 `IncrementalFolder` 时**从 tail 的零基础折�
 服务端渲染首页含 **5** 处 `showcase/` 引用 ✓；`tool-showcase-assets` ⇒ 0 ✓；`tool-pwa-assets` ⇒ 0 ✓
 （顺手把先前那个"两条部署分叉"的本地红也修掉了 ✓ —— 重新同步过 ✓）；
 `fmt`／`clippy -D warnings`／`cargo test -p yanshi-http`（含那条约定测试 ✓）⇒ 全绿 ✓。
+
+### 四十九之补一百二十五：**改名导入**那条 defect 的真相 + `import_project` 的预建假文档（2026-10-16 ✓）
+
+**结论先行** ✓：**两个不同的东西混在一条报告里** ✗ —— 我按纪律**先复现**，把**能修的那半**修掉 ✓，
+**修不动的那半**如实标注 ✗（**不冒充** ✓）。
+
+**∴ 第三方 README 的原话 ✗**："当前版本改名导入有元数据路径缺陷 ✓；建议**保留包内文档 ID** 并导入到空的新工作区 ✓。
+实测新 ID 重开像素也完整 ✓，问题不是画作丢失 ✓，而是**旧 ID 元数据可能被覆盖** ✗。"
+
+**① 能修的那半 ⇒ ✅ 已修** ✓：**MCP 会先按 CLI 缺省替导入目标"预建"一份文档** ✗
+（`creates_own_document()` 只认 `new_document` ✗）⇒ 真 `import_project` 撞上"已存在" ✗：
+```
+修前（本机实测 ✓）：import_project(doc_id=renamed) ⇒ **ok=false**
+  「文档 renamed 已经存在 ⇒ **不会覆盖** ✗ ⇒ 请换一个 doc_id」
+  导入 root：["renamed"]，meta=**64×64** ✗（源包是 200×150 ✓）⇒ **导入根本没发生** ✗ ＋ 多一份假文档 ✗
+修后（同一支判据 ✓）：["import_src","renamed"]，`import_src`=**200×150** ✓、**没有 64×64 的假文档** ✓ ⇒ EXIT=0 ✓
+```
+**修法** ✓：`creates_own_document()` ＋ `"import_project"` ✓（**与 `new_document` 同一条理由** ✓：
+落点由**包里的 doc_id** 决定 ⇒ 调用方不该先按 CLI 缺省建一个 ✗）。
+
+**② 修不动/不该由这条判据断的那半** ✗：**`doc_id` 参数不被采纳** ✓（`import_project` 按**包内 id** 落点 ✓ ——
+**这正是对方建议的用法** ✓"保留包内文档 ID"✓）＋ 会留下一个**空目录** `renamed/`（没有 meta.json ✗）。
+⇒ **∴ 判据**只断言 ① 那半** ✓，②那半**打印为附注、不断言** ✗（对方也标为未修 ✓）。
+**∴ 我在这里先错了两次 ✗**（**都是判据错，不是产品 ✗**）：先假设"改名后新 id 该拿到 200×150" ✗、
+又把"包内 id 出现"当成污染 ✗ ⇒ 实测校准后才写对 ✓。**∴ 又一次印证：判据要先测清语义再断言** ✓。
+
+**★ 判据** ✓ `scripts/mcp-import-project-rename.mjs`（`mcp-*` 已被 `run-criteria.sh` 枚举 ✓）：
+① HTTP 侧造**200×150** 的源文档 ⇒ `export_project{path}` 出真包 ✓（**必须显式给 `path`** ✗ ——
+不给只回一个下载 url ✓，而 MCP 要本地路径 ✓；我又在这儿退过一次 3 ✗）；
+② 全新 root 起 MCP ⇒ `import_project{path, doc_id}` ✓；③ 包内那份必须真的落进来且 **200×150** ✓
+＋ **任何目录都不许是 CLI 缺省的 64×64** ✗（**修前那条假文档就是这一条在守** ✓）。
+
+**回归** ✓：`tool-import-project`（HTTP 侧跨 root 导入 ✓）／`mcp-tool-descriptions`／`mcp-document-switch` ⇒ 全 0 ✓；
+`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
+
+**∴ 剩余待办 ✗**（**不冒充** ✓）：`doc_id` 参数与那个空目录那一族 ⇒ 记为**未决** ✗，等语义裁定再动 ✓。

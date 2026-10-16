@@ -225,7 +225,24 @@ impl ToolSpec {
     /// **一处定义、两个入口共用** ✓（MCP `tools_call` ✓ 与 HTTP `/api/tools/*` ✓）——
     /// 各写一份 `name == "new_document"` 必然漂移 ✗。
     pub fn creates_own_document(&self) -> bool {
-        matches!(self.name, "new_document")
+        // **★ `import_project` 也算"自己建文档" ✗ ★**（2026-10-16 ✓；**本机独立复现 ✓**）
+        //
+        // **∴ 症状 ✗**（实测 ✓）：MCP 侧对**不改名以外**的导入会**先替它预建**一份文档 ✗
+        //   （按 CLI 的 `--width/--height` 缺省 ✓）⇒ 之后真正的 `import_project` 撞上"已存在" ✗：
+        //   ```
+        //   import_project(doc_id=renamed) ⇒ ok=false：
+        //     「文档 renamed 已经存在 ⇒ **不会覆盖** ✗ ⇒ 请换一个 doc_id」✓
+        //   导入 root 里留下的是一份 **64×64** 的空文档 ✗（源包是 200×150 ✓）
+        //   ```
+        //   ⇒ **∴ 结果是"改名导入"**整件事没发生**✗** ＋ 目标 id 上**多了一份假文档** ✗ ★
+        //   （第三方德加作品包 README 自己写的"**改名导入有元数据路径缺陷** ✓"就是这一族 ✓。）
+        //
+        // **∴ 为什么它属于"自己建文档" ✗**：`import_project` 的落点由**包里的 doc_id**（或它显式给的
+        //   `doc_id` 参数 ✓）决定 ✓ ⇒ **调用方不该先按 CLI 缺省建一个** ✗ ——
+        //   与 `new_document` 是**同一条**理由 ✓（`creates_own_document` 就是为这条理由存在的 ✓）。
+        //   **∴ 判据** ✓：`scripts/mcp-import-project-rename.mjs` ✓（改名导入 ⇒ 元数据必须跟包走 ✓、
+        //   不许留下源 id ✗、也不许留预建假文档 ✗）。
+        matches!(self.name, "new_document" | "import_project")
     }
 }
 
