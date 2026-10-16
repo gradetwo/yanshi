@@ -12983,6 +12983,18 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }
     value["medium"] = json!({"id": spec.id, "version": spec.version});
     value["dabs"] = json!(points.len());
+    // **★ 这一笔到底落了多少墨 ✗ ★**（2026-10-16 ✓；台账 §九／§十 的诊断 ✓）：
+    //   **∴ 为什么必须有 ✗**：验收 v2 图里"**虹膜/瞳孔没显出来**"✗ 与"**底色三笔的花瓣痕**"✗
+    //     **同属一族** ✓ —— **笔触自己不知道自己有没有落墨** ✗
+    //     ⇒ `medium_stroke` 回 `ok=true` ✓ 而画面上可能**一个像素都没变** ✗
+    //       ⇒ **∴ 那是本仓库反复定性为"最糟糕的 UX"的**静默无效果**✗**。
+    //   **∴ 为什么现在能给 ✗**：`base`（笔触之前那块原始像素 ✓）与 `rgba`（插件产出 ✓）
+    //     **都在手里** ✓ ⇒ **逐字节比一次就知道** ✓（**引擎已有的不做第二遍** ✓）★
+    //   **∴ 语义 ✗**：**"这一笔在自己的区域里改了多少个像素"** ✓ ——
+    //     与 `brush_stroke` 的 `painted_pixels` 同一个意思 ✓（两族工具报同一件事 ✓）。
+    //   **∴ 只报不判 ✗**：**绝不用它改变返回语义** ✗（台账 §十 记录过：那条"变了就报错"的检查
+    //     上过一次、**从未生效**、已回退 ✓）⇒ 这里**只补一个数** ✓，**像素逐字节不变** ✓。
+    value["painted_pixels"] = json!(count_painted_pixels(base.as_deref(), &rgba));
     // **画布尺寸每次都回** ✓（调用方据此对齐坐标 ✓）。
     value["canvas"] = json!({"width": canvas_width, "height": canvas_height});
     value["outside_fraction"] = json!((outside_fraction * 1000.0).round() / 1000.0);
@@ -13001,6 +13013,34 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         ));
     }
     Ok(value)
+}
+
+/// **这一笔改了多少个像素** ✓（`medium_stroke` 的 `painted_pixels` ✓；2026-10-16 ✓）。
+///
+/// **为什么需要它** ✗：介质笔触此前**只有 `ok`** ✓ ⇒ 画面上**一个像素都没变**时也回 `ok=true` ✗
+/// ⇒ 调用方**无从判断**这一笔到底落没落墨 ✓（台账 §九 记的"静默无效果" ✓，它就是验收 v2 里
+/// "虹膜没显出来"✗ 与"底色花瓣痕"✗ 的**同一族**根因 ✓）。
+///
+/// **语义** ✓：`base` 是**这一笔之前**那块区域的原始 RGBA ✓（取不到 ⇒ `None` ✓），
+/// `produced` 是插件产出 ✓ ⇒ 返回**逐字节不同**的像素数 ✓。
+/// `base` 为 `None`（区域读失败／尺寸对不上 ✓）时退化为"**非全零**的像素数" ✓ ——
+/// 那是"笔触把墨落在空处"的最近似答案 ✓，且**不会**因为底色本身非零而虚高 ✗。
+///
+/// **只是报数** ✓：调用方可以据此报警 ✓，但**不改变** `ok` 语义 ✗
+///（台账 §十：那条"变了就报错"的检查上过又回退 ✓，因为它**从未生效**过 ✓）。
+fn count_painted_pixels(base: Option<&[u8]>, produced: &[u8]) -> usize {
+    produced
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(index, pixel)| match base {
+            Some(before) => {
+                let at = index * 4;
+                // **越界一律算"变了"** ✓（尺寸对不上时宁可报大 ✗ 也不静默少报 ✗）。
+                before.get(at..at + 4).is_none_or(|old| old != *pixel)
+            }
+            None => pixel.iter().any(|byte| *byte != 0),
+        })
+        .count()
 }
 
 /// **`export_project`** ✓ —— 一键打成 `.yanshi` 工程包 ✓（真实用户提的缺口 ✓）。
