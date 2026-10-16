@@ -820,7 +820,21 @@ fn input_schema(tool: &ToolSpec) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
     for param in tool.params {
-        let mut schema = json!({"type": param.kind.json_type(), "description": param.description});
+        // **★ `Any` 不许输出 `"type": "any"` ✗ ★**（2026-10-16 ✓；第三方实测 ＋ 我复现 ✓）：
+        //   **∴ 症状 ✗**：核心 profile 82 个工具的 `inputSchema` 里**有 12 处 `"type":"any"`** ✓
+        //     （`brush_stroke.color`／`brush_stroke.color_to`／`analyze_region.region`／
+        //      `brush_preview.color`／`calibrate.points` … ✓，实测命令见判据 ✓）。
+        //   **∴ 为什么是缺陷 ✗**：**JSON Schema 没有 `any` 这个类型** ✓（合法类型只有
+        //     string/number/integer/boolean/object/array/null ✓，或**省略 `type`** ＝ 任意 ✓）
+        //     ⇒ **严格客户端**（含部分 MCP 客户端 ✓）会因此**拒绝整份 schema／拒绝工具发现** ✗
+        //       ⇒ **∴ 那不是"参数少个类型"** ✗ 而**是"整批工具都用不了"** ✓ ★
+        //   **∴ 修法 ✗**：`Any` ⇒ **不写 `type`** ✓ —— 这**正是**"任意 JSON 值"在 JSON Schema 里的
+        //     正确表达 ✓（**不是**换个名字糊过去 ✗）。
+        //   **∴ 行为不变 ✓**：校验那边对 `Any` 恒为真 ✓（`tools.rs:17921` ✓）⇒ 收哪些值一位没变 ✓。
+        let mut schema = match param.kind {
+            ParamKind::Any => json!({"description": param.description}),
+            _ => json!({"type": param.kind.json_type(), "description": param.description}),
+        };
         if let Value::Object(map) = &mut schema {
             if param.kind == ParamKind::Object {
                 map.insert("additionalProperties".to_owned(), Value::Bool(true));
