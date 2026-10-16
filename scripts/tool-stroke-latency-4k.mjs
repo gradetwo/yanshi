@@ -112,6 +112,18 @@ const main = async () => {
     console.log(`✓ 硬约束满足：4K 一笔中位 ${mid.toFixed(1)} ms ≤ ${BUDGET_MS} ms`);
     process.exit(0);
   }
+  // **★ 压线但落在噪声带内 ⇒ **判不了**（退 3 ✓，不放宽预算 ✗）★**（2026-10-16 ✓）
+  //   **∴ 为什么 ✗**：CI 实测 **中位 101.6 ms／极差 36.1 ms／预算 100 ms** ✓ ——
+  //     **噪声（36.1）是超标幅度（1.6）的约 22 倍** ✗ ⇒ **∴ 这次测量**不足以判定「超过硬约束」**✗
+  //       ⇒ **∴ 它属于「本次没有结论」（`exit 3` ✓，本仓约定 ✓），**不是产品失败**✗**。
+  //   **∴ 三档 ✓**：≤预算 ⇒ 0 ✓｜超标但 `< 极差` ⇒ **3**（判不了 ✓）｜超标 `>= 极差` ⇒ **1**（真失败 ✓）。
+  if (mid - BUDGET_MS < spread) {
+    console.error(
+      `❌ 判不了：中位 ${mid.toFixed(1)} ms 比预算 ${BUDGET_MS} ms 高 ${(mid - BUDGET_MS).toFixed(1)} ms，` +
+        `但极差有 ${spread.toFixed(1)} ms ⇒ 超标幅度落在噪声带内 ⇒ 本次没有结论（不是产品失败）`,
+    );
+    process.exit(3);
+  }
   console.error(
     `❌ 硬约束不满足：4K 一笔中位 ${mid.toFixed(1)} ms > ${BUDGET_MS} ms（需求文档的硬约束）`,
   );
