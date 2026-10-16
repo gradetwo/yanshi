@@ -69,7 +69,6 @@ retouching). The references — public-domain Degas paintings at the Met and the
 study style only: **no reference bitmap was imported**, so every pixel is a brush or medium stroke
 recorded as ordinary atoms.
 
-| oil studies | dry pastel studies |
 |---|---|
 | [![Backstage](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png) | |
 | *Backstage* · 3114×4096 · oil medium | *Rehearsal morning* · 3072×3840 · 13 layers, 7 anchors |
