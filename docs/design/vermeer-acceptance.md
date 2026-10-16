@@ -5701,3 +5701,31 @@ calibrate{cleanup:true} ⇒ {ok:true, passed:true, cleanup:{undone:0}, layer_id:
 **∴ 教训（写给下一次的我 ✓）**：**往 `web/`／界面加东西，至少要跑三族判据** ✓ ——
 `tool-showcase-assets`（资产接线 ✓）、`ui-i18n-coverage`（文案双语 ✓）、`tool-offline-asset-coverage`（离线路径 ✓）
 ＋ `tool-pwa-assets`（两条部署不分叉 ✓）。**这三族这一轮各抓了我一次** ✓ ★
+
+### 四十九之补一百二十九：**矢量笔触不进 `get_stroke_log`**（2026-10-16 ✓）
+
+**来源** ✓：第三方 skill 的 VECTOR-LOG ＋ **本机独立复现** ✓（**先读规格再测** ✓ —— 上一轮我把
+`color` 放顶层 ⇒ `draw_stroke` 回 `ok=false` ✗ ⇒ 我据此打印的"复现"**作废** ✓；本轮改对后是**有效复现** ✓）。
+
+**★ 病根 ✗**：`read_get_stroke_log` 原来**只认 `payload.source`** ✓：
+```rust
+7918  let Some(source) = atom.payload.get("source").filter(|v| v.is_object()) else { continue };
+7925  if !matches!(source_kind, "brush" | "medium" | "draw") { continue }
+7941  let points = source.get("points")…        // ← 只从 source 取点 ✗
+```
+⇒ **而普通 `DrawStroke` 的点列在 `payload.data` 里** ✗ ⇒ **整条原子被 `continue` 掉** ✓
+⇒ **∴ 后果 ✗**：`get_stroke_log` 是**画布历史的可读窗口** ✓ —— 拿它做**重放／时间轴／撤销核对**的客户端
+会**静默漏掉所有矢量笔触** ✗ ＝ 又一次「**回执／日志与事实不一致**」✗（笔落了墨 ✓，日志说没有 ✓）。
+
+**★ 修法 ✗（只改"从哪取" ✓，不动"认不认" ✗）**：`source` 不是对象 ⇒ **回落 `payload.data`** ✓，
+`kind` 给 **`"draw"`** ✓ —— **它本来就在下面的允许名单里** ✓；**笔刷那条路一个字节不动** ✗。
+
+**★ 判据** ✓ `scripts/tool-stroke-log-vector.mjs` —— **三道护栏** ✓：
+```
+① draw_stroke／brush_stroke 必须 **ok=true** ✓（否则**退 3** ✓ —— 不许拿"日志里没有"当证据 ✗）
+② 矢量笔触必须按 object_id 出现在日志里 ✓
+③ **对照物**：笔刷那笔也必须在 ✓（否则"日志整个坏了"会冒充"矢量漏了" ✗）
+修前 ⇒ get_stroke_log **1 条**｜vec1=**false** ✗｜br1=true ⇒ EXIT=1 ✓
+修后 ⇒ get_stroke_log **2 条**｜vec1=**true** ✓｜br1=true ✓ ⇒ EXIT=0 ✓
+```
+**回归** ✓：`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。

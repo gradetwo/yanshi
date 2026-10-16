@@ -7915,8 +7915,30 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         if atom.seq <= since {
             continue;
         }
-        let Some(source) = atom.payload.get("source").filter(|value| value.is_object()) else {
-            continue;
+        // **★ 普通矢量笔触也必须进日志 ✗ ★**（2026-10-16 ✓；**本机复现过那条病 ✓**）
+        //   **∴ 病根 ✗**：这里原来**只认 `payload.source`** ✓（`brush`／`medium` 那两族 ✓）——
+        //     而**普通 `DrawStroke` 的点列在 `payload.data` 里** ✗ ⇒ **整条原子被 `continue` 掉** ✓。
+        //   **∴ 后果 ✗**：`get_stroke_log` 是**画布历史的可读窗口** ✓ ⇒ 拿它做**重放／时间轴／撤销核对**
+        //     的客户端会**静默漏掉所有矢量笔触** ✗（实测 ✓：`vec1` 不在日志里 ✓、`br1` 在 ✓）。
+        //   **∴ 修法 ✗**：`source` 不是对象时**回落到 `payload.data`** ✓ —— **只改"从哪取"** ✓：
+        //     `kind` 仍给 `"draw"` ✓（**它本来就在下面的允许名单里** ✓），
+        //     **笔刷那条路一个字节不动** ✗（判据第 ③ 条的对照物 `br1` 守的就是这个 ✓）。
+        //   **∴ 判据** ✓：`scripts/tool-stroke-log-vector.mjs` ✓（修前 `vec1=false｜br1=true` ⇒ 红 ✓）。
+        let owned_source;
+        let source = match atom.payload.get("source").filter(|value| value.is_object()) {
+            Some(source) => source,
+            None => {
+                let Some(data) = atom.payload.get("data").filter(|value| value.is_object()) else {
+                    continue;
+                };
+                owned_source = json!({
+                    "kind": "draw",
+                    "points": data.get("points").cloned().unwrap_or(Value::Null),
+                    "color": data.get("color").cloned().unwrap_or(Value::Null),
+                    "size": data.get("size").cloned().unwrap_or(Value::Null),
+                });
+                &owned_source
+            }
         };
         let source_kind = source
             .get("kind")
