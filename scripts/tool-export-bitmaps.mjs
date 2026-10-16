@@ -50,6 +50,9 @@ const port = 18700 + Math.floor(Math.random() * 120);
 const ROOT = trackTemp(mkdtempSync(join(tmpdir(), "expbm-")));
 const base = `http://127.0.0.1:${port}`;
 const proc = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port}`], { stdio: "ignore" });
+// **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒ 进程一直活着 ⇒
+//   **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（`main` 那轮"11 绿 0 红却到不了终态"同形 ✓）。
+process.on("exit", () => { try { proc.kill(); } catch { /* 已退出 */ } });
 let failed = 0;
 const check = (ok, name, detail) => {
   console.log(`  ${ok ? "✓" : "✗"} **${name}**${detail ? `（${detail}）` : ""}`);
