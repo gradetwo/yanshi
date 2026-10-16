@@ -226,6 +226,10 @@ const spawnFreshServer = async (tag) => {
   const child = spawn(serveBin, ["--bind", "127.0.0.1:0", "--root", root], {
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // **★ 防御性收尾 ✗ ★**（2026-10-16 ✓）：这里起的是**长期服务** ⇒ 万一调用方忘了杀它 ⇒
+  //   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（"11 绿 0 红却到不了终态"同形 ✓）。
+  //   **∴ 与调用方可能已有的 kill 并存** ✓（`try/catch` 兜住"已退出" ✓，不会因此报错 ✓）。
+  process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
   let seen = "";
   let address = "";
   const read = (chunk) => {
