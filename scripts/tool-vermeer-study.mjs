@@ -301,18 +301,24 @@ const main = async () => {
     steps.push(["珍珠主高光（珠光）", specular && specular.ok === true, specular]);
     if (!specular || specular.ok !== true) note("珍珠的主高光没落上 ⇒ 珍珠会像灰塑料球");
 
-    // ⑧ 罩染（P1 ⑩）：在阴影侧压一层暖褐，让过渡"油"起来
+    // ⑧ 罩染（P1 ⑩）：在**眼内**的阴影侧压一层暖褐，让过渡"油"起来
+    //    **★★★ 2026-10-16 修：它此前**把背景划花了** ✗ ★★★**（由新的"背景保持干净"判据量到 ✓）：
+    //      **∴ 症状 ✗**：旧参数是 `size: 70` ＋ `opacity: 0.12` ✓ 而落点 (0.36,0.60)→(0.52,0.66)
+    //        **在眼睛下方**（本来就是干净纸 ✓）⇒ 量出**最暗 194 vs 干净纸角 230（差 36）** ✗
+    //        ⇒ **∴ 那就是 §七 记的"软灰团/花瓣痕"** ✓ ★
+    //      **∴ 修法 ✗**：**① 落到该落的地方** ✓（沿**下眼睑内侧** ✓ 而不是背景 ✓）
+    //        ＋ **② 更淡** ✓（`opacity 0.12 → 0.05` ✓、`size 70 → 44` ✓）⇒ 罩染本来就是"薄薄一层" ✓。
     const glaze = await call(doc, token, "brush_stroke", {
       layer_id: "paint",
       object_id: "glaze_shadow",
       brush: "100%_Opaque",
-      size: 70,
-      opacity: 0.12,
+      size: 44,
+      opacity: 0.05,
       glaze: true,
       color: { r: 74, g: 56, b: 38, a: 255 },
       points: [
-        [SIDE * 0.36, SIDE * 0.60],
-        [SIDE * 0.52, SIDE * 0.66],
+        [SIDE * 0.4, SIDE * 0.487],
+        [SIDE * 0.53, SIDE * 0.5],
       ],
     });
     steps.push(["罩染（glaze:true）", glaze && glaze.ok === true, glaze]);
@@ -532,13 +538,36 @@ const main = async () => {
     }
   }
 
+  // **★ 背景必须保持"没被划过的纸" ✗ ★**（2026-10-16 ✓；§七"底色三笔…花瓣痕"✗ 的那一族 ✓）
+  //   **∴ 判什么 ✗**：画面里有一块**本该是纸**的地方（眼睛下方 ✓）——
+  //     它的**最暗像素**不该比**同材质的干净角落**暗出可观的量 ✓。
+  //   **∴ 为什么"最暗对最暗"而不是比平均 ✗**：
+  //     ① 纸有**颗粒**（`Paper001.png` ✓）⇒ 平均会被纹理的起伏掩盖 ✓；
+  //     ② 两个框**取自同一张纸** ✓ ⇒ 纹理统计同源 ✓ ⇒ **最暗对最暗**才是可比的两个数 ✓ ★
+  //   **∴ 阈值 8/255 凭什么 ✗**：它要挡的是**一笔看得见的笔痕** ✓（实测：`opacity 0.12` 的暖褐
+  //     压在纸上差 **36 个灰阶** ✓ —— **本机实测** ✓）；而纸自身的颗粒起伏只有 1–2 个灰阶 ✓（实测 230 vs 230 ✓）
+  //     ⇒ **∴ 8 落在两者之间** ✓（离两侧都远 ✓ —— 不是拟合出来的门 ✓）。
+  const boxMin = (fx0, fy0, fx1, fy1) => {
+    let min = 255;
+    for (let y = Math.round(fy0 * height); y < Math.round(fy1 * height); y += 1) {
+      for (let x = Math.round(fx0 * width); x < Math.round(fx1 * width); x += 1) {
+        const value = lum(x, y);
+        if (value < min) min = value;
+      }
+    }
+    return min;
+  };
+  const paperMin = boxMin(0.02, 0.02, 0.14, 0.14); // 干净的角落（recipe 从不在这里落笔 ✓）
+  const belowEyeMin = boxMin(0.34, 0.57, 0.54, 0.68); // 眼睛下方：本该是纸 ✓
+
   console.log(
     `\n▶ 像素级验收（只看相对关系与面积，不比对参考图 ✓）：\n` +
       `   眼白 ${scleraLum.toFixed(0)} ⇒ 虹膜 ${irisLum.toFixed(0)} ⇒ 瞳孔 ${pupilLum.toFixed(0)}` +
       `｜角膜高光 ${lightLum.toFixed(0)}｜虹膜面积 ${irisArea}px（眼框内比眼白暗 30+ ✓）\n` +
       `   上眼睑**最大二阶差分** ${lidKink}px（在 x=${lidKinkAt} ✓；实测：平滑弧 1px／折线 5px ⇒ 门 3px ✓）` +
       `｜参考：最大转角 ${lidMaxTurn.toFixed(1)}°/15px（在 x=${lidMaxTurnAt} ✓）\n` +
-      `   珍珠珠体 ${pearlBodyLum.toFixed(0)}｜珍珠最亮 ${pearlLum.toFixed(0)}（在 ${pearlPeakAt.join(",")} ✓）`,
+      `   珍珠珠体 ${pearlBodyLum.toFixed(0)}｜珍珠最亮 ${pearlLum.toFixed(0)}（在 ${pearlPeakAt.join(",")} ✓）\n` +
+      `   眼睛下方"本该是纸"的最暗 ${belowEyeMin.toFixed(0)} vs 干净纸角 ${paperMin.toFixed(0)}（差 ${(paperMin - belowEyeMin).toFixed(0)}，门 ≤8 ✗）`,
   );
   const looksWrong = [];
   // **① 虹膜必须真的显出来** ✓（台账 §九 那一格的**判据化** ✓：中心不再是眼白色 ✓）
@@ -561,6 +590,13 @@ const main = async () => {
   // **⑤ 珍珠必须有高光** ✓（"像塑料球"与"有二次反光"的分界 ✓）
   if (!(pearlLum > pearlBodyLum + 25)) {
     looksWrong.push(`珍珠高光 ${pearlLum.toFixed(0)} 不比珠体 ${pearlBodyLum.toFixed(0)} 亮 25 以上 ⇒ 珍珠会像塑料球 ✗`);
+  }
+  // **⑦ 背景不许被划花** ✓（§七"花瓣痕"那一族 ✓）
+  if (!(belowEyeMin >= paperMin - 8)) {
+    looksWrong.push(
+      `眼睛下方的背景被划花了：最暗 ${belowEyeMin.toFixed(0)} vs 干净纸角 ${paperMin.toFixed(0)}（差 ${(paperMin - belowEyeMin).toFixed(0)} > 8）` +
+        ` ⇒ 那一带留下**看得见的笔痕/软灰团** ✗（§七"花瓣痕"同族 ✓）⇒ 罩染要更淡、或别落在背景上 ✓`,
+    );
   }
   // **⑥ 上眼睑不许是多边形** ✓（§七 记的"眼形是多边形"✗ ⇒ 这一格把它判据化 ✓）
   //   **∴ 断言用**二阶差分**（"有多折" ✓）而不是转角** ✗ —— 理由见上面那段实测 ✓。
