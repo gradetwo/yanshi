@@ -70,9 +70,14 @@ study style only: **no reference bitmap was imported**, so every pixel is a brus
 recorded as ordinary atoms.
 
 |---|---|
-| [![Backstage](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png) | |
+
+[![Backstage](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png)
+
 | *Backstage* · 3114×4096 · oil medium | *Rehearsal morning* · 3072×3840 · 13 layers, 7 anchors |
-| [![Four dancers](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png) | [![Ballet reference study (4K)](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png) |
+
+[![Four dancers](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png)
+[![Ballet reference study (4K)](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png)
+
 | *Four dancers* · 4096×3427 · oil medium | *Blue dancers* · 3840×3072 · 13 layers, 8 anchors |
 
 These four are the work of an outside agent; the numbers above are the ones its own package reports.

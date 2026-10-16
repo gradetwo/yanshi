@@ -65,9 +65,14 @@ make help       # 全部目标
 
 | 油画习作 | 干性粉彩习作 |
 |---|---|
-| [![后台舞者](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png) | |
+
+[![后台舞者](web/showcase/degas-backstage-oil.png)](web/showcase/degas-backstage-oil.png)
+
 | 《后台舞者》· 3114×4096 · 油画介质 | 《芭蕾参考研究（预览）》· 3072×3840 · 13 图层、7 锚点 |
-| [![四位舞者](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png) | [![芭蕾参考研究（4K 成品）](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png) |
+
+[![四位舞者](web/showcase/degas-four-dancers-oil.png)](web/showcase/degas-four-dancers-oil.png)
+[![芭蕾参考研究（4K 成品）](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png)
+
 | 《四位舞者》· 4096×3427 · 油画介质 | 《芭蕾参考研究（4K 成品）》· 3840×3072 · 13 图层、8 锚点 |
 
 以上数字出自**对方自己的作品包**；它的报告里也写了**它没有**做的事（**没有**跑本仓自带的判据）✗
