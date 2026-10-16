@@ -334,8 +334,8 @@ mod tests {
         };
 
         // **∴ 分段 ✗**：**同一段活，四段各自计时 ✓**（**∴ 顺序与整段完全一致 ✓**）
-        let segmented_run = || -> [Duration; 4] {
-            let mut d = [Duration::ZERO; 4];
+        let segmented_run = || -> [Duration; 5] {
+            let mut d = [Duration::ZERO; 5];
             let t0 = Instant::now();
             let raw = store.get(&index_hash).expect("索引可取");
             let parsed: BitmapIndex = serde_json::from_slice(&raw).expect("索引可解析");
@@ -358,16 +358,21 @@ mod tests {
                 assemble_region_sparse(doc_w, doc_h, &slots, &parts, rect).expect("拼接应当成功");
             d[2] = t2.elapsed();
 
+            // **★ 拆开 ✗ ★**（第 1000+ 轮 ✓）：**上版把 `Buffer::new`（4 MB 分配 ✓）与**纯 blit**混在一段 ✗
+            //   ⇒ **∴ 那会**指错优化对象**✗** ⇒ **∴ 现在分 ④a（分配）／④b（纯 blit）✓**
             let t3 = Instant::now();
             let mut buffer = Buffer::new(0, 0, doc_w, doc_h);
-            buffer.blit_rgba8(0, 0, patch_w, patch_h, &stitched, 1.0);
             d[3] = t3.elapsed();
+
+            let t4 = Instant::now();
+            buffer.blit_rgba8(0, 0, patch_w, patch_h, &stitched, 1.0);
+            d[4] = t4.elapsed();
             d
         };
 
         // **∴ 3 轮取**最小**✗**（**∴ 守"单次测量不算数"✓ —— 与附二十／二十一 同一条纪律 ✓**）
         let mut whole = Duration::MAX;
-        let mut seg = [Duration::MAX; 4];
+        let mut seg = [Duration::MAX; 5];
         for round in 0..3 {
             let w = whole_run();
             let s = segmented_run();
@@ -376,26 +381,27 @@ mod tests {
                 continue;
             }
             whole = whole.min(w);
-            for i in 0..4 {
+            for i in 0..5 {
                 seg[i] = seg[i].min(s[i]);
             }
         }
         let sum: Duration = seg.iter().sum();
         println!(
-            "RASTER_PATCH 块数={} 整段={:.3}ms ①索引={:.3}ms ②取块={:.3}ms ③拼接={:.3}ms ④blit={:.3}ms \
-             ⇒ 四段合={:.3}ms（占整段 {:.1}%）",
+            "RASTER_PATCH 块数={} 整段={:.3}ms ①索引={:.3}ms ②取块={:.3}ms ③拼接={:.3}ms \
+             ④a分配={:.3}ms ④b纯blit={:.3}ms ⇒ 五段合={:.3}ms（占整段 {:.1}%）",
             count,
             whole.as_secs_f64() * 1000.0,
             seg[0].as_secs_f64() * 1000.0,
             seg[1].as_secs_f64() * 1000.0,
             seg[2].as_secs_f64() * 1000.0,
             seg[3].as_secs_f64() * 1000.0,
+            seg[4].as_secs_f64() * 1000.0,
             sum.as_secs_f64() * 1000.0,
             sum.as_secs_f64() / whole.as_secs_f64() * 100.0
         );
 
         // **★ 第 1 条 ✗**：**四段各自 > 0** ✓（**∴ 任何一段为 0 ⇒ **要么**那段没干**✗、**要么**测量被优化掉了 ✗**）
-        for (i, name) in ["①索引 JSON", "②逐块取", "③拼接", "④blit"]
+        for (i, name) in ["①索引 JSON", "②逐块取", "③拼接", "④a缓冲分配", "④b纯 blit"]
             .iter()
             .enumerate()
         {
