@@ -129,12 +129,21 @@ if (!created || !created.token) {
   process.exit(1);
 }
 const token = created.token;
-const post = async (tool, args) =>
-  (await fetch(`${base}/api/tools?doc=${DOC}&token=${token}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ tool, arguments: args }),
-  })).json();
+// **★ 服务端连接守卫 ✗ ★**（2026-10-16 ✓）：包在 helper 本体上 ⇒ **所有调用点一次性受保护** ✓
+//   （本仓约定：判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）；
+//    否则服务端不可达时抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗）
+const post = async (tool, args) => {
+  try {
+    return (await fetch(`${base}/api/tools?doc=${DOC}&token=${token}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool, arguments: args }),
+    })).json();
+  } catch (error) {
+    console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上服务端：" + error.message + " ⇒ 退出码 3");
+    process.exit(3);
+  }
+};
 // 新建文档通常**自带的就有一个图层** ✓ ⇒ `create_layer` 会以 `precondition_failed` 被拒 ✓
 //（"已存在"不是失败 ✗ —— 只要下面能真的画出笔迹 ✓）。真正的前置是"有图层可画" ✓。
 const layer = await post("create_layer", { layer_id: "layer_default", name: "l" });
