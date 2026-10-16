@@ -63,14 +63,23 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 rmSync(dir, { recursive: true, force: true });
 mkdirSync(dir, { recursive: true });
 
-const postTool = async (name, args) =>
-  (
-    await fetch(`${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(args || {}),
-    })
-  ).json();
+// **★ 服务端连接守卫 ✗ ★**（2026-10-16 ✓）：包在**这个 helper 本体**上 ⇒ **所有调用点一次性都受保护** ✓
+//   （本仓约定：判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）；
+//    否则服务端不可达时这里抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗）
+const postTool = async (name, args) => {
+  try {
+    return (
+      await fetch(`${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args || {}),
+      })
+    ).json();
+  } catch (error) {
+    console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上服务端：" + error.message + " ⇒ 退出码 3");
+    process.exit(3);
+  }
+};
 
 // ① 先给文档**真内容** ✓（空文档的包也能下载 ✓，但那测不到 blob 那条路 ✓）。
 await postTool("create_layer", { layer_id: "dl_layer", name: "dl" });
