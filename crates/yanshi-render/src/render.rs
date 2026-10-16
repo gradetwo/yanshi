@@ -3497,11 +3497,18 @@ impl Renderer {
                                 if std::env::var_os("YANSHI_TRACE_CACHE_KEY").is_some() {
                                     eprintln!("TILE_PATH {hash}");
                                 }
+                                // **★ 分段计时（第 1000+ 轮 ✓）：`raster_patch` 的每对象固定开销到底在哪 ✗ ★**
+                                //   **∴ 段名沿用既有惯例 ✗**（`shape:clip`／`shape:coverage`／`shape:fill` ✓）
+                                //   ＋ **∴ 探针关时零开销 ✓**（`Stage::start()` 是空操作 ✓，`stop()` 返回 `ZERO` ✓，
+                                //     `record` 在 `!enabled()` 时直接返回 ✓）★
+                                let mut t_index = stage_probe::Stage::start();
                                 let index: crate::bitmap_tiles::BitmapIndex =
                                     serde_json::from_slice(&store.get(&hash).ok()?).ok()?;
                                 if !index.is_consistent() {
                                     return None;
                                 }
+                                probe_objects.record("raster:tile-index", t_index.stop());
+                                let mut t_parts = stage_probe::Stage::start();
                                 let slots = index.tiles_for_rect(src_x, src_y, rw, rh);
                                 let mut parts = Vec::with_capacity(slots.len());
                                 for slot in &slots {
@@ -3509,6 +3516,8 @@ impl Renderer {
                                     let th: yanshi_core::atom::BlobHash = text.parse().ok()?;
                                     parts.push(store.get(&th).ok()?);
                                 }
+                                probe_objects.record("raster:parts", t_parts.stop());
+                                let mut t_asm = stage_probe::Stage::start();
                                 let stitched = crate::bitmap_tiles::assemble_region_sparse(
                                     index.width,
                                     index.height,
@@ -3516,6 +3525,7 @@ impl Renderer {
                                     &parts,
                                     (src_x, src_y, rw, rh),
                                 );
+                                probe_objects.record("raster:assemble", t_asm.stop());
                                 // **★ 数据追踪：这条路上到底拿到了什么（2026-10-15 ✓）★**
                                 //   **为什么需要** ✗：整条缝合路径**逐段读过、纸面全对** ✓
                                 //   （`tiles_for_rect` ✓／逐块解码 ✓／`assemble_region_sparse` ✓／
@@ -3616,6 +3626,7 @@ impl Renderer {
                         eprintln!("CACHE_KEY {blob}|{width}x{height}|{mime_type}");
                     }
                     let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
+                    let mut t_decode = stage_probe::Stage::start();
                     let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
                         fetch_raster_patch(
                             store,
@@ -3630,6 +3641,9 @@ impl Renderer {
                     else {
                         continue;
                     };
+                    // **★ 命中缓存时这一段近似为 0 ✗ ★** ⇒ **∴ 它正是判"解码是否真被摊掉"的那一段 ✓**
+                    probe_objects.record("raster:decode", t_decode.stop());
+                    let mut t_blit = stage_probe::Stage::start();
                     layer_buffer.blit_rgba8(
                         offset.0 as i64,
                         offset.1 as i64,
@@ -3638,6 +3652,7 @@ impl Renderer {
                         &entry.2,
                         opacity,
                     );
+                    probe_objects.record("raster:blit", t_blit.stop());
                 }
                 Primitive::Text {
                     text,
