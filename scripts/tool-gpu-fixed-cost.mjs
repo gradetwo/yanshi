@@ -102,6 +102,9 @@ async function start(mode, port) {
      "--width", "512", "--height", "512", "--assets-dir", "assets", "--gpu", mode],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+  // **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+  //   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗（"11 绿 0 红却到不了终态"同形 ✓）。
+  process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
   let log = "";
   child.stdout.on("data", (d) => { log += d; });
   child.stderr.on("data", (d) => { log += d; });
