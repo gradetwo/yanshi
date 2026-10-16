@@ -449,6 +449,21 @@ if (existsSync(MEDIUM_SRC)) {
 //     **代价**＝**部署体积 ＋13 M ✗**（**纹理 ✓）——
 //       **∴ 而**静态托管**按需取 ✗ ⇒ **∴ 运行时不付代价 ✓**
 //         （**∴ 只有**真的用到纹理时**才下载 ✓）** ✓✓
+// **★ 作品展示图 ✓**（2026-10-16 ✓）：与笔刷/纹理/调色板**同一形状** ✓ ——
+//   **∴ 单一源**是 `assets/showcase/` ✓**（服务端也在发它 ✓，见 `server.rs::showcase_asset` ✓）
+//   ⇒ **∴ `web/showcase/` 是导出产物** ✓（已在 `.gitignore` 里 ✓）。
+const SHOWCASE_SRC = "assets/showcase";
+const SHOWCASE_DST = join(DST, "showcase");
+if (!existsSync(SHOWCASE_SRC)) {
+  console.warn("  WARN: 找不到 assets/showcase ⇒ 跳过作品展示图同步");
+} else {
+  mkdirSync(SHOWCASE_DST, { recursive: true });
+  for (const f of readdirSync(SHOWCASE_SRC)) {
+    if (f.endsWith(".png")) copyFileSync(join(SHOWCASE_SRC, f), join(SHOWCASE_DST, f));
+  }
+  console.log(`  OK: 作品展示图 => web/showcase（${readdirSync(SHOWCASE_DST).length} 张 ✓）`);
+}
+
 const PALETTE_SRC = "assets/palettes";
 const PALETTE_DST = join(DST, "palettes");
 // **★ 预置字体（字体方案 Phase 2）★**：与纹理同一形状 —— **PWA 侧也要有** ✓

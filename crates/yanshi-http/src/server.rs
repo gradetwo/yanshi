@@ -709,6 +709,19 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    if let Some(file) = path.strip_prefix("/showcase/") {
+        // **★ 作品展示图 ✓ ★**（2026-10-16 ✓）：页面上那四幅德加习作 ✓ ——
+        //   **∴ 为什么必须由服务端发 ✗**：它们是**随版本走的资产** ✓（`assets/showcase/` ✓），
+        //     而**浏览器读不到服务器上的文件** ✓ —— 与 `/textures/`、`/fonts/`、`/mediums/` **同一形状** ✓。
+        //   **∴ 我踩过的坑 ✗**：第一版我只把图放进静态站目录（`web/` ✓）⇒
+        //     **服务端渲染的首页里那四张图全 404** ✗（`web/` 是**导出产物** ✓、不在服务端的资产树里 ✓）
+        //     ⇒ **∴ 判据现在会**真的去 fetch 这四个 URL**✗**（`scripts/tool-showcase-assets.mjs` ✓）✓。
+        let file = decode_asset_segment(file);
+        return match method {
+            "GET" => showcase_asset(state, &file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(file) = path.strip_prefix("/fonts/") {
         // **★ 预置字体（字体方案 Phase 2）★**：`@font-face` 的 `src: url("/fonts/…")` 由服务端发 ✓
         // （**∴ 浏览器读不到服务器上的文件 ✓) —— 与 `/textures/`、`/mediums/` **同一形状** ✓。
@@ -2644,6 +2657,34 @@ fn sample_asset(file: &str) -> Response {
             .with_header("Cache-Control", "public, max-age=31536000, immutable"),
         Err(_) => crate::http::not_found(format!("示例画面缺失：{}", path.display())),
     }
+}
+
+/// **`GET /showcase/{file}`：发一张**作品展示图** ✓**（2026-10-16 ✓）。
+///
+/// **查找顺序与 `/textures/` 逐字一致** ✓（**工作区缓存优先 ✓、内置其次 ✓**）——
+/// **∴ 为什么必须一致 ✗**：两处各写一套 ⇒ 迟早漂移 ✓（那正是"界面显示的 A 与真铺上去的 B 不一样" ✗）。
+/// **∴ 只接受直接位于目录下的 `.png`** ✓（挡 `..`／`/`／别的扩展名 ✓ ⇒ 不暴露仓库任意文件 ✓）。
+/// **∴ 资产是随版本走的** ✓ ⇒ 长缓存 ✓（与 `/textures/`、`/samples/` 同一取舍 ✓）。
+fn showcase_asset(state: &ServerState, file: &str) -> Response {
+    if file.contains("..") || file.contains('/') || file.contains('\\') || !file.ends_with(".png") {
+        return crate::http::bad_request("非法展示图名（只接受展示目录下的 *.png）");
+    }
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = state.options.root.as_ref() {
+        candidates.push(root.join("showcase").join(file));
+    }
+    if let Some(assets) = state.options.assets_dir.as_ref() {
+        candidates.push(assets.join("showcase").join(file));
+    }
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Response::bytes(200, "image/png", bytes)
+                .with_header("Cache-Control", "public, max-age=31536000, immutable");
+        }
+    }
+    crate::http::not_found(format!(
+        "没有这张展示图：{file} ⇒ 内置的在 assets/showcase/ ✓"
+    ))
 }
 
 /// **`GET /textures/{file}`：发一张纹理（用于界面预览缩略图 ✓）** ✓。

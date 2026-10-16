@@ -17,9 +17,13 @@
 //
 // 用法：node scripts/tool-snapshot-reopen.mjs [--atoms 1100] [--keep]
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// **∴ 临时目录必须用**共享清理模块**✗**（本仓约定 ✓，判据 `scripts_clean_their_temp_dirs.rs` ✓）：
+//   **∴ 教训 ✗**：我第一版自己写 `rmSync` ✓ ⇒ 那条约定测试**当场红** ✗（`__cleanupTemp`／`temp-dirs.mjs` 二者必居其一 ✓）
+//   ⇒ **∴ 用推荐路径** ✓：`trackTemp` **顺带注册**清理 ＋ 信号处理 ✓（调用方不用再写 ✓）。
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -29,7 +33,7 @@ const flag = (name, fallback) => {
 const ATOMS = flag("--atoms", 1100);
 const BIN = process.env.YANSHI_SERVE_BIN || "target/debug/yanshi-serve";
 const PORT = 8600 + (process.pid % 300);
-const root = mkdtempSync(join(tmpdir(), "yanshi-snapshot-reopen-"));
+const root = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-snapshot-reopen-")));
 const DOC = "coldopen";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -157,9 +161,9 @@ if (!beforePixelsRef || !afterPixels) {
   console.log(`  ⑤ 冷开前后出图逐字节一致 ✓（${afterPixels.length} 字节 ✓）`);
 }
 
-// **∴ 先记下原子数再删临时目录 ✗**（我第一版删完才读 ⇒ 打印成「0 原子」✗ —— 自己的输出也不许撒谎 ✓）。
+// **∴ 先记下原子数 ✗**（我第一版删完才读 ⇒ 打印成「0 原子」✗ —— 自己的输出也不许撒谎 ✓）。
+//   **∴ 清理交给模块** ✓（它在 exit／信号时删三遍 ✓）—— **∴ 所以我这里不再自己 rmSync** ✗。
 const finalAtoms = atomCount();
-if (!argv.includes("--keep")) rmSync(root, { recursive: true, force: true });
 if (failures.length) {
   console.error(`❌ ${failures.length} 项没成立：`);
   for (const item of failures) console.error(`   · ${item}`);

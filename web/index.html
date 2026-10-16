@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-7979509510020`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-4440016787806`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -595,7 +595,8 @@
   <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
   <!-- **作品展示** ✓（2026-10-16 ✓）：另一个 AI 用**本应用的 MCP 工具**画的德加习作 ✓。
        **∴ 与上面的「示例作品」不同 ✗**：上面那些是**这个工作区里能打开继续画**的样例文档 ✓；
-       这里是**静态图**（只用于看 ✓）—— 原图 6–25 MB ✗、这里是 900px 的展示副本 ✓。 -->
+       这里是**静态图**（只用于看 ✓）—— 原图 6–25 MB ✗、这里是 900px 的展示副本 ✓。
+       **∴ 图在 `web/showcase/` ✓**（**三处引用同一个相对路径** ⇒ 判据 `tool-showcase-assets.mjs` 守着 ✓）。 -->
   <h3 style="margin:16px 0 4px">作品展示</h3>
   <p style="opacity:.75;font-size:12px;margin:0 0 8px"
      title="参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。">
@@ -2266,6 +2267,11 @@ const serverRenderPreferred = () => {
 
 window.yanshiStats = {
   wasm: false, kernelHead: 0, serverHead: 0,
+  // **★ 视口淘汰累计块数（2026-10-15 ✓；判据 `browser-viewport-evict.mjs` 读它 ✓）★**
+  //   **∴ 为什么需要它** ✗：内核**早就**会按视口淘汰 ✓（`yanshi-wasm/src/lib.rs:337` ✓
+  //     `evict_outside_viewport(x,y,w,h) -> usize` ✓）⇒ 但 JS **从来没调它、也没记账** ✗
+  //     ⇒ 判据断言①（"没有发生任何逐出"✗）读的正是这个计数 ✓ ⇒ **永远是 0** ✗（§49 之补四十五 ✓）。
+  viewportEvictions: 0,
   // 当前打开的文档与令牌 ✓ —— 自动化验收需要知道"查看器此刻在编辑哪一个文档" ✓
   //（本会话就栽过：检查脚本凭早先的 doc/token 去查对象 ✓，而页面早已切到另一个文档 ✗）。
   docId: null, token: null,
@@ -2518,9 +2524,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
+const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -3396,6 +3402,12 @@ function renderViewport() {
   const { x, y, w, h } = state.viewport;
   sizeBoards(w, h);
   state.kernel.set_viewport(x, y, w, h);
+  // **★ 视口变了 ⇒ 顺手让内核按**同一个视口**淘汰，并记账（2026-10-15 ✓）★**
+  //   **∴ 为什么在这里** ✓：视口变**才**需要淘汰 ✓（与 `§49 之补二十四` 的设计同源 ✓）；
+  //   **∴ 为什么用**同一个视口** ✓：与推送过滤／服务端的口径一致 ✓。
+  //   **∴ 为什么要记账** ✗：判据断言①读 `yanshiStats.viewportEvictions` ✓
+  //     ⇒ 不记账 ⇒ 它**永远红** ✗（不是产品没做 ✓，是**没人报** ✗）。
+  window.yanshiStats.viewportEvictions += state.kernel.evict_outside_viewport(x, y, w, h);
   drawKernelRegion(x, y, w, h);
   subscribeViewport();
   redraw();
@@ -4011,6 +4023,12 @@ async function loadKernel(since = 0) {
   window.yanshiStats.serverHead = atoms.head_seq;
   if (typeof refreshContactLink === "function") refreshContactLink();
   state.kernel.set_viewport(0, 0, w, h);
+  // **★ 视口变了 ⇒ 顺手让内核按**同一个视口**淘汰，并记账（2026-10-15 ✓）★**
+  //   **∴ 为什么在这里** ✓：视口变**才**需要淘汰 ✓（与 `§49 之补二十四` 的设计同源 ✓）；
+  //   **∴ 为什么用**同一个视口** ✓：与推送过滤／服务端的口径一致 ✓。
+  //   **∴ 为什么要记账** ✗：判据断言①读 `yanshiStats.viewportEvictions` ✓
+  //     ⇒ 不记账 ⇒ 它**永远红** ✗（不是产品没做 ✓，是**没人报** ✗）。
+  window.yanshiStats.viewportEvictions += state.kernel.evict_outside_viewport(0, 0, w, h);
   // 内核就绪 ⇒ 判断这份文档内核表示得了吗 ✓（否则首屏是白板 ✓）。
   void detectHeavyContent();
   // **离线落笔必须能挺过一次"断网重载"** ✓ —— 队列里**还没补交**的 `.myb` 笔触在本地重放一遍 ✓。
@@ -9992,7 +10010,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7979509510020irty-544d47b5")
+      caches.open("yanshi-shell-4440016787806irty-814dc6be")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

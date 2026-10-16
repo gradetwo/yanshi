@@ -5537,3 +5537,38 @@ tail ✓ ⇒ 后续提交走 `IncrementalFolder` 时**从 tail 的零基础折�
 ＋ **多一份快照不该改变打开后的状态** ✓（**对照物＝无快照那次冷开** ✓，不是魔数 ✓）。
 另有 `tool-cold-open-budget` ✓／`tool-open-fast` ✓（它测的是**预览惰性** ✓ 与这条无关 ✓）／
 `tool-snapshot-roundtrip` ✓ ⇒ 全 0 ✓；`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ **0／0／0** ✓。
+
+### 四十九之补一百二十四：德加作品上图（README ＋ 网站）＋ 两个"生成产物"的坑（2026-10-16 ✓）
+
+**做了** ✓：四幅德加习作（对方 AI 用本应用 MCP 工具所画 ✓）900px 展示副本 ⇒
+**README 中英两版** ＋ **应用首页**各一节 ✓；新增判据 `scripts/tool-showcase-assets.mjs` ✓；
+并把图**内置进应用**：`assets/showcase/`（单一源 ✓）＋ `server.rs` 的 **`/showcase/{file}`** 路由 ✓
+（与 `/textures/`、`/fonts/`、`/mediums/` **同一形状** ✓：工作区缓存优先、内置其次、只收目录下的 `.png` ✓、长缓存 ✓）。
+
+**★ 我在这一笔里踩了三个坑，全是**生成产物**这一类 ✗**（**都留档 ✓**）：
+
+1. **改了生成的页面 ✗**：我先把展示块写进 `web/index.html` ✓ ⇒ **本机绿、CI 红** ✗ ——
+   CI 会**重新生成**它（`yanshi-serve --export-viewer-html` ＋ 注入 ✓，见 `pwa-sync-viewer.mjs` ✓）
+   ⇒ **∴ 单一源是 `crates/yanshi-http/src/viewer.rs`** ✓（服务端渲的就是它 ✓）。
+   **∴ 判据据此改成**两处都查**✓**：源里必须有 ✓（否则下次导出就丢 ✗）＋ 产物若在也必须有 ✓。
+2. **差点把"故意入库"的文件移出仓库 ✗**：`web/` 整体是生成目录（第 674 轮取消跟踪 ✓），
+   **但 `web/index.html` 是**例外**✗**（第 747 轮**故意重新入库** ✓：它是唯一入口页 ✓，
+   缺了它 `wrangler deploy` 上传的目录里没有 index ⇒ **Cloudflare 404** ✓，用户实测 ✓）。
+   我 `git rm --cached` 之后**读了 `.gitignore:70` 的说明才发现** ✗ ⇒ **已恢复跟踪** ✓。
+   **∴ 教训 ✗**：**改"该不该入库"之前，先读它为什么在那儿** ✓。
+3. **只有静态站能用 ⇒ 服务端首页四张图全 404 ✗**：我第一版只把图放进 `web/` ✓ ⇒
+   **服务端渲染的首页里四张图全 404** ✗（服务端发的是**它自己的资产树** ✓）——
+   **∴ 而判据当时是绿的** ✗（它只查"引用了没有" ✓）★
+   ⇒ **∴ 修法** ✓：图挪到 `assets/showcase/` ✓（单一源 ✓）＋ 加 `/showcase/` 路由 ✓
+     ＋ `pwa-sync-viewer.mjs` 同步到 `web/showcase/` ✓（生成物 ✓ ⇒ 进 `.gitignore` ✓）；
+   ⇒ **∴ 判据补第 ④ 条 ✗**：**真的去服务端 `GET /showcase/<name>`** ✓
+     ⇒ 必须 **200 且字节数与本地逐值相同** ✓（**两本账** ✓ —— 就是这条会挡住我上面那个漏 ✓）。
+
+**∴ 顺带满足的一条仓库约定 ✗**：用 `mkdtempSync` 的脚本**必须导入** `scripts/lib/temp-dirs.mjs` ✓
+（判据 `scripts_clean_their_temp_dirs.rs` ✓）—— 我第一版自己写 `rmSync` ⇒ **当场红** ✗
+⇒ 改用推荐路径 `trackTemp` ✓（**它顺带注册**清理与信号处理 ✓）⇒ 实测跑完**零残留** ✓。
+
+**实测** ✓：`GET /showcase/*.png` ⇒ 四张全 **200**、字节数与 `assets/showcase/` **逐值相同** ✓；
+服务端渲染首页含 **5** 处 `showcase/` 引用 ✓；`tool-showcase-assets` ⇒ 0 ✓；`tool-pwa-assets` ⇒ 0 ✓
+（顺手把先前那个"两条部署分叉"的本地红也修掉了 ✓ —— 重新同步过 ✓）；
+`fmt`／`clippy -D warnings`／`cargo test -p yanshi-http`（含那条约定测试 ✓）⇒ 全绿 ✓。

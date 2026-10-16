@@ -65,6 +65,7 @@ web/mediums/
 web/viewer-app.js
 web/viewer.css
 web/service-worker.js
+web/showcase/
 
 
 # **★ `web/index.html` **故意重新入库** ✗ ★**（第 747 轮 ✓；**用户报告 404 ✓**）：

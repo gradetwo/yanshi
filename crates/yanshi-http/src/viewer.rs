@@ -138,6 +138,37 @@ const PAGE_TAIL_A: &str = r##"</style>
     用不同介质画出来的样例，可以直接打开查看、继续画或拿来练手。
   </p>
   <div id="sampleList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px"></div>
+  <!-- **作品展示** ✓（2026-10-16 ✓）：另一个 AI 用**本应用的 MCP 工具**画的德加习作 ✓。
+       **∴ 与上面的「示例作品」不同 ✗**：上面那些是**这个工作区里能打开继续画**的样例文档 ✓；
+       这里是**静态图**（只用于看 ✓）—— 原图 6–25 MB ✗、这里是 900px 的展示副本 ✓。
+       **∴ 图在 `web/showcase/` ✓**（**三处引用同一个相对路径** ⇒ 判据 `tool-showcase-assets.mjs` 守着 ✓）。 -->
+  <h3 style="margin:16px 0 4px">作品展示</h3>
+  <p style="opacity:.75;font-size:12px;margin:0 0 8px"
+     title="参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。">
+    另一个 AI 用本应用的 MCP 工具画的德加习作（只参照风格，未导入原作位图）
+  </p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+    <figure style="margin:0">
+      <img src="showcase/degas-rehearsal-morning.png" alt="排练室的晨光"
+           loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
+      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">排练室的晨光 · 干性粉彩 · 3072×3840</figcaption>
+    </figure>
+    <figure style="margin:0">
+      <img src="showcase/degas-blue-dancers.png" alt="幕边的蓝色舞者"
+           loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
+      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">幕边的蓝色舞者 · 干性粉彩 · 3840×3072</figcaption>
+    </figure>
+    <figure style="margin:0">
+      <img src="showcase/degas-backstage-oil.png" alt="后台舞者"
+           loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
+      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">后台舞者 · 油画介质 · 3114×4096</figcaption>
+    </figure>
+    <figure style="margin:0">
+      <img src="showcase/degas-four-dancers-oil.png" alt="四位舞者"
+           loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
+      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">四位舞者 · 油画介质 · 4096×3427</figcaption>
+    </figure>
+  </div>
   <hr />
   <h2>导入本地图片</h2>
   <p style="opacity:.75;font-size:12px;margin:4px 0"
