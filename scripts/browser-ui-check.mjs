@@ -58,7 +58,7 @@ const target =
   list.find((t) => t.type === "page");
 if (!target) {
   console.error(`未找到调试目标（Chromium 是否以 --remote-debugging-port=${debugPort} 启动？）`);
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 if (!target.url.startsWith(viewerBase)) {
   // 第 962 轮：这里原本只打一句"注意…复用"就继续跑，于是整条判据在 about:blank 上执行 ——
