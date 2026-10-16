@@ -111,10 +111,27 @@ if (!(await waitFor("typeof window.yanshiRightTabs === 'object' && typeof window
 // **等画布真的被设过尺寸再量** ✗ —— 第 47 轮就是在这里栽的 ✓：启动瞬间 `<canvas>` 还是默认的
 // 300×150 ✓、`style.width` 为空 ✓ ⇒ 我据此得出"尺寸没落到元素上"✗，而真相只是"还没轮到它"✓。
 // ⇒ 判据必须**等被测对象稳定** ✓（`board.width` 走出默认值 ✓ + **当前模式的渲染器真的画过一帧** ✓）。
-// **不要用写死的像素阈值** ✗（第 430 轮 ✓）：`board.width` 是**位图**宽度 ✓，它按
-// **显示尺寸 × 设备缩放** 来设 ✓（实测：`style.width = "424px"` 而 `board.width = 320` ✓，
-// 比值 0.755 就是缩放 ✓）⇒ 拿它去卡一个"CSS 像素"的常数（原来的 `> 400` ✗）会在缩放 ≠ 1 时**假红** ✓。
-// ⇒ 改成与**该元素自己的显示宽度**比较 ✓（缩放无关 ✓），并保留"不是默认 300×150"这一层 ✓。
+// **★★★ 但「≥ 自己显示宽度的一半」**还是错的** ✗ ★★★**（**第 456 轮修；**CI ＋ 本机受控复现 ✓）
+//   **∴ 症状 ✗**（**CI `38817240353` ／ 本机复现 ✓，两边**逐字节同形**✓）★：
+//     `❌ 画布尺寸与首帧没就绪 ⇒ board.width=320（应与显示宽度同量级）显示宽度="924px"（rect=844）
+//      height=240｜模式=客户端优先｜wasm=true kernelReady=true lastArea=76800 内核 tile 读写=8`
+//   **∴ 关键 ✗**：**模式那一边**四项**全真**✓ ⇒ **红的不是"首帧"** ✗ 而**是"尺寸"** ✓ ★★
+//   **∴ 根因 ✗**：**`320 >= floor(844 × 0.5) = 422`** ⇒ **假** ✗
+//     ＋ **∴ 而**那个 **844** 是**视口宽 1280** 下 `zoom-fit` 把 320px 文档**放大** 2.8875× 的结果 ✓
+//       （`style.width = 924px = 320 × 2.8875` ✓）
+//     ⇒ ⇒ **∴ 于是**「**位图 ≥ 显示宽度一半**」这个**比值**✗
+//       **∴ 它其实**是**窗口宽度**的代理** ✓：**窗口越宽 ⇒ 显示越放大 ⇒ 分母越大 ⇒ 假红** ✗
+//         ＋ **∴ 而**我要的恰恰是"**判据不依赖窗口大小**" ✓ ⇒ **∴ 这个比值**把刚删掉的依赖**请回来了** ✗ ★★★
+//   **∴ 真正的契约 ✗**（**读产品代码 ✓**，`viewer-app.js:1013` ✓ 原话）★：
+//     **"画布内部分辨率 = **视口的文档像素数**（内核 1:1 渲染），CSS 显示尺寸由 `applyDisplaySize` 决定"**
+//     ＋ **∴ 本机实测 ✓**（判据文档 = `320×240`，视口 1280×900 ✓）：
+//       **`board 320×240｜overlay 320×240｜kernel 320×240`** ✓
+//       ＋ **`state().viewport = {x:0,y:0,w:320,h:240}`** ✓ ⇒ **与 backing store 逐值相等** ✓ ★★
+//     ⇒ ⇒ **∴ 所以**判据要断的是「**backing store == 视口的文档像素数**」✓
+//       ⇒ **∴ 它与**缩放（2.8875 ✓）／窗口宽（1280 ✓）／DPR **全都无关** ✓ ★★★
+//   **∴ 强度没有放松 ✗**：**默认的 `300×150`** 仍然**必红** ✓
+//     （**∴ 它 ≠ 视口 320×240** ✓）—— 原来那层"不是默认值"的护栏**被相等性蕴含** ✓，
+//     而且**不再**把"文档恰好 300 宽"这种**合法**情况误判成红 ✗（那正是**同一类**假红 ✓）。
 //
 // **"画过一帧"的判据必须按当前渲染模式分开** ✓（本轮 ✓）：本仓缺省是**客户端优先** ✓
 //（`yanshi.serverRender` 不在 `localStorage` 里 ⇒ 加载内核 ✓），此时"服务端补过一次像素"**不是**
@@ -182,11 +199,23 @@ const serverRenderOn = `(() => {
     return stored === null ? true : stored === "1";
   } catch (error) { return true; }
 })()`;
+// **★★★ 尺寸这一层必须**只有一个出处** ✗ ★★★**（**第 456 轮 ✓）：**判据的等待条件**与
+// **失败诊断**都在问"backing store 对不对" ✓ ⇒ **∴ 若各写一遍**✗ ⇒ **∴ 两处会**漂移**✓
+// （**实测：**我把期望值变异 ＋8 之后，等待条件**红了** ✓ 而诊断**还印「尺寸这一层成立 ✓」**✗ ——
+// **∴ 于是**失败信息**指向了错的一边** ✗）⇒ **∴ 抽成一个串** ✓，**两边都插它** ✓。
+const sizeOkExpr = [
+  "(() => {",
+  "  const b = document.getElementById('board');",
+  "  const st = window.yanshi.state();",
+  "  const vp = st.viewport || {};",
+  "  return !!(vp.w > 0 && vp.h > 0 && b.width === vp.w && b.height === vp.h);",
+  "})()",
+].join("\n");
 if (!(await waitFor(
   `(() => {
-     const b = document.getElementById("board");
-     const shown = b.getBoundingClientRect().width;
-     if (!(b.width !== 300 && b.width >= Math.floor(shown * 0.5))) return false;
+     // **契约**（viewer-app.js:1013 ✓）：backing store = **视口的文档像素数**（内核 1:1 ✓）
+     // ⇒ 与缩放／窗口宽／DPR **无关** ✓；默认 300×150 不满足相等 ⇒ 仍然必红 ✓。
+     if (!(${sizeOkExpr})) return false;
      const st = window.yanshi.state();
      if (${serverRenderOn}) return st.serverBlits > 0;
      const stats = window.yanshiStats || {};
@@ -206,7 +235,15 @@ if (!(await waitFor(
     const out = { width: b && b.width, height: b && b.height, styleWidth: b && b.style.width,
                   shownWidth: b ? Math.round(b.getBoundingClientRect().width) : null,
                   mode: ${serverRenderOn} ? "服务端" : "客户端优先" };
-    try { out.serverBlits = window.yanshi.state().serverBlits; } catch (e) { out.serverBlits = "取不到: " + e; }
+    try {
+      const st = window.yanshi.state();
+      out.viewport = st.viewport;
+      out.docSize = st.docSize;
+      out.zoom = st.displayScale;
+      // **与等待条件同一个出处** ✓（sizeOkExpr ✓）⇒ ∴ 不可能漂移 ✓。
+      out.sizeOk = ${sizeOkExpr};
+      out.serverBlits = st.serverBlits;
+    } catch (e) { out.serverBlits = "取不到: " + e; }
     out.wasm = stats.wasm === true;
     out.kernelReady = window.yanshiKernelReady === true;
     out.lastArea = stats.lastArea | 0;
@@ -216,7 +253,7 @@ if (!(await waitFor(
     } catch (e) { out.kernelTiles = "取不到: " + e; }
     return out;
   })()`);
-  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board.width=${diag.width}（应与显示宽度同量级、且不是默认 300 ✓）显示宽度=${JSON.stringify(diag.styleWidth)}（rect=${diag.shownWidth}）height=${diag.height}｜模式=${diag.mode} ⇒ 服务端模式需 serverBlits>0（实测 ${diag.serverBlits} ✓）｜客户端模式需内核画过（wasm=${diag.wasm} kernelReady=${diag.kernelReady} lastArea=${diag.lastArea} 内核 tile 读写=${diag.kernelTiles}，四者都需成立 ✓）`);
+  console.error(`❌ 画布尺寸与首帧没就绪 ⇒ board=${diag.width}×${diag.height}（应 == 视口的**文档像素数** ✓；默认 300×150 必红 ✓）视口=${JSON.stringify(diag.viewport)}（文档=${JSON.stringify(diag.docSize)} 缩放=${diag.zoom} CSS=${JSON.stringify(diag.styleWidth)}／rect=${diag.shownWidth}）⇒ 尺寸这一层${diag.sizeOk ? "成立 ✓" : "不成立 ✗"}｜模式=${diag.mode} ⇒ 服务端模式需 serverBlits>0（实测 ${diag.serverBlits} ✓）｜客户端模式需内核画过（wasm=${diag.wasm} kernelReady=${diag.kernelReady} lastArea=${diag.lastArea} 内核 tile 读写=${diag.kernelTiles}，四者都需成立 ✓）`);
   process.exit(1);
 }
 
