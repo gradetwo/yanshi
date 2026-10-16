@@ -28,7 +28,15 @@ const segments = Number.isFinite(__rawSeg) && __rawSeg > 0 ? Math.floor(__rawSeg
 // **`Number(...)` 必须包在 `${}` 里** ✓：它在**普通字符串**里只是字面文本 ✗ ⇒ 拼出来的 URL 是
 // `http://127.0.0.1:Number(process.env.CDP_PORT || 9333)/json/list` ✗ ⇒ 取目标列表必失败 ✓
 //（这是我早先"去掉硬编码端口"时留下的 ✗ —— **改完必须看拼出来的东西** ✓）。
-const list = await fetch(`http://127.0.0.1:${Number(process.env.CDP_PORT || 9333)}/json/list`).then((r) => r.json());
+// **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
+//   **∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」
+let list;
+try {
+  list = await fetch(`http://127.0.0.1:${Number(process.env.CDP_PORT || 9333)}/json/list`).then((r) => r.json());
+} catch (error) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP：" + error.message + " ⇒ 退出码 3");
+  process.exit(3);
+}
 let target = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1:8110"));
 if (!target) {
   // **同一处的第二个实例** ✗（第 534 轮 ✓）：`:16` 在更早一轮修成了模板串 ✓，
