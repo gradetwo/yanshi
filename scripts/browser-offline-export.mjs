@@ -35,9 +35,19 @@ const fs = await import("node:fs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 fs.rmSync(dir, { recursive: true, force: true });
 fs.mkdirSync(dir, { recursive: true });
-const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+// **★ 连不上 CDP ⇒ **判据自己跑不了** ⇒ 退 3 ✗ ★**（2026-10-16 ✓；本仓约定：
+//   「判据必须能说**我自己坏了**✗，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」；
+//   与 `ui-control-heights`／同族 `browser-*` 一致 ✓ —— 原来**直接抛未捕获异常 ⇒ 退 1** ✗。）
+let targets;
+try {
+  targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+} catch (error) {
+  console.error(`❌ 判据自身的求值失败（不是产品问题）⇒ 连不上 CDP（127.0.0.1:${port}）：${error.message} ⇒ 退出码 3`);
+  process.exit(3);
+}
 const page = targets.find((t) => t.type === "page");
-if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
+// 判据自己跑不了（拿不到页面目标）⇒ 退 3 ✓（原来退 1 ✗，与产品失败无法区分 ✓）
+if (!page) { console.error("没有页面目标 ⇒ 判据无效（不是产品问题）⇒ 退出码 3"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map(); const logs = [];
 socket.onmessage = (event) => { const m = JSON.parse(event.data);
@@ -136,7 +146,12 @@ if (clicked !== "clicked") failures.push("找不到导出按钮 ⇒ 判据无效
 if (files.length === 0) failures.push("断网后点导出，**没有任何文件落盘** ⇒ 离线导出不可用 ✗");
 // **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
 if (!(controlProbe && controlProbe.failed)) {
-  failures.push(`负对照失败：断网后未缓存的 ${NEGATIVE_CONTROL} 仍然成功（${JSON.stringify(controlProbe)}）⇒ 断网模拟没有生效 ⇒ 判据作废（VOID）`);
+  // **★ 负对照不成立 ＝ 判据作废（VOID）⇒ 这是"**我判不了**"✗，不是"产品错"✗ ★**
+  //   （本仓自己的笔记写过：「负对照读不到结果时**要报**无法判断**」✓ —— 这里就是实现它 ✓）
+  console.error("❌ 判据自身的求值失败（不是产品问题）：负对照（断网后未缓存接口仍成功）⇒ 断网模拟没生效 ⇒ 无法判断 ⇒ 退出码 3");
+  console.error("   controlProbe = " + JSON.stringify(controlProbe));
+  socket.close();
+  process.exit(3);
 }
 if (failures.length) { console.log("  ✗ " + failures.join("；")); socket.close(); process.exit(1); }
 console.log("  ✓ 离线导出：断网时仍然导出了 " + files.join(", "));
