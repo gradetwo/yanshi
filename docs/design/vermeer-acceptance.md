@@ -5729,3 +5729,15 @@ calibrate{cleanup:true} ⇒ {ok:true, passed:true, cleanup:{undone:0}, layer_id:
 修后 ⇒ get_stroke_log **2 条**｜vec1=**true** ✓｜br1=true ✓ ⇒ EXIT=0 ✓
 ```
 **回归** ✓：`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
+
+### 四十九之补一百三十：**多边形覆盖度的"正确性"判据**（补上"只验一致、不验对错"的缺口 ✓）（2026-10-16 ✓）
+
+**∴ 由来 ✗**：追 POLY-CLIP（第三方那条）时发现本仓的对拍判据 `polygon_coverage_fast_path` **只验"快路＝旧路"** ✗，
+**不验"算得对不对"** ✗ ⇒ **两条路可以"一致地错"** ✗。**本轮实测**：三角形上它报「逐位一致=true」✓，
+而真正的答案要靠**独立测量**才知道 ✓（三角形覆盖度之和＝bbox 面积的一半 ＝ **8800/17600** ✓ ⇒ 引擎其实是**对的** ✓，
+问题在**服务端下游** ✓）。
+**∴ 新增** `crates/yanshi-render/tests/polygon_coverage_correctness.rs` ✓（三条，各自能独立红 ✓）：
+① 三角形覆盖度之和 ≈ **bbox 面积的一半** ✓（矩形则**全满** ✓）；② 内点内、**bbox 内但三角形外**的点外 ✓；
+③ 最大覆盖度 **= 1.0** ✓（否则"整块偏淡"会冒充"画了" ✗）。
+**∴ 顺带记一条纪律 ✗**：本轮我又把**ASCII 双引号写进中文串** ✗（第 N 次 ✓）⇒ 编译器当场报 `expected ,` ✓
+⇒ 照 AGENTS.md 换成「」后 3 条全绿 ✓。
