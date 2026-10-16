@@ -55,7 +55,7 @@ const PY_LIST = [
   "print(json.dumps({'names':z.namelist(),'bad':b}))",
 ].join("\n");
 const zipNames = (path) => {
-  const out = execFileSync("python3", ["-c", PY_LIST, path], { encoding: "utf8" });
+  const out = execFileSync("python3", ["-c", PY_LIST, path], { encoding: "utf8", timeout: 600_000 });
   return JSON.parse(out);
 };
 
