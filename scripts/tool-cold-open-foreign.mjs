@@ -10,8 +10,7 @@
 // **用法**：node scripts/tool-cold-open-foreign.mjs <含 docs/<doc_id>/ 的 root> [期望的最小 head_seq]
 // **退出码**：0 ⇒ 冷开正确 ✓；1 ⇒ **产品失败**（层/对象/seq 丢了 ✗）；3 ⇒ **判不了**
 //   （没给目录／目录里没有 docs/* ／服务起不来 ✓ —— 与产品失败不同的码 ✓，本仓约定 ✓）。
-import { existsSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -33,10 +32,9 @@ if (!ids.length) {
 }
 const bin = process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve";
 const port = Number(process.env.YANSHI_FOREIGN_PORT || 8840);
-const work = mkdtempSync(join(tmpdir(), "yanshi-foreign-"));
 const srv = spawn(bin, ["--bind", `127.0.0.1:${port}`, "--root", root, "--no-wasm"], { stdio: "ignore" });
 process.on("exit", () => { try { srv.kill(); } catch { /* 已退出 */ } });
-const cleanup = () => { try { srv.kill(); } catch { /* 已退出 */ } rmSync(work, { recursive: true, force: true }); };
+const cleanup = () => { try { srv.kill(); } catch { /* 已退出 */ } };
 
 let list = null;
 for (let i = 0; i < 80; i += 1) {
