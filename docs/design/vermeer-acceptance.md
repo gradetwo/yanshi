@@ -6657,3 +6657,19 @@ D｜诚实边界 ✓：对方没跑本仓判据 ✓（他们自己写明 ✓）�
 **★ ④ 交付物的存在性 ✓（自审 19/19 ✓，见 §165／本轮前一步 ✓）**：A 的 8 支判据 ✓／B 的三件 ✓／
 C 的展示图＋应用内路由＋首页＋**两版 README 指针** ✓／skill 两个文件 ✓／`pwa.yml` 的 `verify-live` ✓
 —— **∴ 全部在 `main ＝ l4-sync` 上 ✓**（**∴ 不是"我说有"✗，是"树里有"✓**）。
+
+### 四十九之补一百六十九：**8 个临时 ref 已核对"可安全删除"** ✓（2026-10-16 ✓）
+
+**★ 做法 ✓（用 `git merge-base --is-ancestor` ✓，不是假设 ✓）**：
+```
+逐个检查 `origin/verify-*` 指向的提交是否是 `origin/main` 的祖先 ✓ ⇒ **8/8 全是** ✓✓
+  `verify-4af69f08` ⇒ 4af69f08 ✓｜`verify-5d60b379` ⇒ 5d60b379 ✓｜`verify-8149e39d` ⇒ 8149e39d ✓
+  `verify-87ccca18` ⇒ 87ccca18 ✓｜`verify-8c85828f` ⇒ 8c85828f ✓｜`verify-af3bcc0e` ⇒ af3bcc0e ✓
+  `verify-b55235de` ⇒ b55235de ✓｜`verify-cbb63a6b` ⇒ cbb63a6b ✓
+⇒ **∴ 每一个都已被 `main` 包含 ✓ ⇒ 删除**不丢任何提交**✓**（**∴ 这一步是**不可逆操作**✓，所以先核对 ✓**）。
+⇒ **∴ 接手者可**直接删**✓，不必重查**：
+   `git push origin --delete verify-4af69f08 verify-5d60b379 verify-8149e39d verify-87ccca18 \
+     verify-8c85828f verify-af3bcc0e verify-b55235de verify-cbb63a6b`
+```
+**★ 为什么把这条写下来 ✓**：**删除是不可逆的 ✓ —— 而本会话的纪律是"**动手前先把目标核对清楚**✓"**
+（**∴ 与 §387 那句"先算副作用"同一条 ✓**）⇒ **∴ 我把核对结果固化，让下一步只做"删"这一个动作 ✓**。
