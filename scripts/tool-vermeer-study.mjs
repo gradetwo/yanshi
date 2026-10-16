@@ -145,22 +145,43 @@ const main = async () => {
     steps.push(["眼白（介质）", sclera && sclera.ok === true, sclera]);
     if (!sclera || sclera.ok !== true) note("`medium_stroke` 失败 ⇒ 介质路径（载墨/湿度/纹理）用不上");
 
-    // ⑤ 虹膜：深棕，用 `color_to` 做渐变
-    //    **★ 这里曾经是验收抓到的真缺口 ★**：`medium_stroke` 当时**不接受** `color_mixing`
-    //    （P2 ⑯ 的光谱混色只接进了 `brush_stroke` ✗）=> 第 254 轮已修（"先加密路径再混色" ✓）
-    //    => 现在这一步**应当成功** ✓；若失败就是**回归**，由下面的 `note` 报出来 ✓。
-    const iris = await call(doc, token, "brush_stroke", {
+    // ⑤ 虹膜：深棕，用 `color_to` 做渐变 ＋ `color_mixing: pigment` 光谱混色
+    //    **★★★ 2026-10-16 修：这一笔此前**每次都失败** ✗ ★★★**（**由新的像素级验收抓到 ✓**）：
+    //      **∴ 症状 ✗**：脚本把 `color_mixing` 传给了 **`brush_stroke`** ✗ ——
+    //        而那个参数**只有 `medium_stroke` 有** ✓ ⇒ 回执是
+    //        「**brush_stroke 不接受参数 color_mixing**」✓ ⇒ **虹膜**一个像素都没画上**✗**。
+    //      **∴ 为什么长期没被发现 ✗**：旧验收**只判 `ok`** ✓，而这一笔的失败被记进"缺口清单"后
+    //        **仍然 exit 0** ✗ ⇒ **∴ 于是**"虹膜没显出来"✗ 被当成"画质问题"记在台账里 ✓
+    //        （§九 甚至去查过"是不是被后画的东西盖住／被 relief 吃掉"✗）★
+    //      **∴ 修法 ✗**：**改用 `medium_stroke`（它两个参数都支持 ✓）** ⇒ 正好也是"湿画法"的用法 ✓；
+    //        并且把**两个点**改成**同心环填实** ✓ —— 台账 §七 诊断过"2 个相距 0.04×边长的点
+    //        去画虹膜 ⇒ 那本来就只是一小笔" ✓ ⇒ **平涂/实心形状要填实** ✓。
+    const irisCenter = [SIDE * 0.441, SIDE * 0.4575];
+    const irisRadius = SIDE * 0.028;
+    const irisPoints = [];
+    for (let ring = 1; ring <= 4; ring += 1) {
+      const radius = (irisRadius * ring) / 4;
+      for (let index = 0; index < 24; index += 1) {
+        const angle = (index / 24) * Math.PI * 2;
+        irisPoints.push([
+          irisCenter[0] + Math.cos(angle) * radius,
+          irisCenter[1] + Math.sin(angle) * radius,
+          1.0,
+        ]);
+      }
+    }
+    const iris = await call(doc, token, "medium_stroke", {
       layer_id: "paint",
       object_id: "iris",
-      brush: "2B_pencil.myb",
-      size: 34,
+      medium: "oil",
+      size: 30,
+      load: 0.8,
+      wetness: 0.2,
+      texture: 0.3,
       color: { r: 92, g: 62, b: 34, a: 255 },
       color_to: { r: 150, g: 118, b: 70, a: 255 },
       color_mixing: "pigment",
-      points: [
-        [SIDE * 0.42, SIDE * 0.46],
-        [SIDE * 0.462, SIDE * 0.455],
-      ],
+      points: irisPoints,
     });
     steps.push(["虹膜（渐变/颜料混色）", iris && iris.ok === true, iris]);
     if (!iris || iris.ok !== true) note("虹膜那笔失败（`color_to`/`color_mixing` 走不通）");
@@ -235,6 +256,27 @@ const main = async () => {
     });
     steps.push(["珍珠二次反光", reflected && reflected.ok === true, reflected]);
     if (!reflected || reflected.ok !== true) note("珍珠的二次反光没落上 ⇒ 珍珠会像塑料球");
+
+    // **★ 主高光（珠光） ✓**（2026-10-16 补 ✓）：**二次反光之外还必须有**一个亮点** ✓**
+    //   **∴ 为什么补 ✗**：新的像素级验收量出"珠体 180／最亮 187" ✓ ⇒ **只差 7** ✗
+    //     ⇒ **∴ 珍珠看着像**灰塑料球**✗**（台账 §七 记过"珍珠是**软灰团**"✗）★
+    //   **∴ 定法 ✗**：珠体是**从暗到亮的渐变**（肌理 ✓），而**点状镜面高光**是**纯几何/硬边** ✓
+    //     ⇒ 前者用 `medium_stroke` ✓、后者用 `brush_stroke` 的硬边小笔 ✓（§八 的取舍 ✓）。
+    const specular = await call(doc, token, "brush_stroke", {
+      layer_id: "paint",
+      object_id: "pearl_highlight",
+      brush: "100%_Opaque",
+      size: 13,
+      hardness: 0.95,
+      opacity: 1.0,
+      color: { r: 253, g: 251, b: 246, a: 255 },
+      points: [
+        [SIDE * 0.723, SIDE * 0.693],
+        [SIDE * 0.728, SIDE * 0.697],
+      ],
+    });
+    steps.push(["珍珠主高光（珠光）", specular && specular.ok === true, specular]);
+    if (!specular || specular.ok !== true) note("珍珠的主高光没落上 ⇒ 珍珠会像灰塑料球");
 
     // ⑧ 罩染（P1 ⑩）：在阴影侧压一层暖褐，让过渡"油"起来
     const glaze = await call(doc, token, "brush_stroke", {
@@ -326,6 +368,91 @@ const main = async () => {
   const { writeFileSync } = await import("node:fs");
   const width = Number(first.rendered.width || SIDE);
   const height = Number(first.rendered.height || SIDE);
+
+  // ---------------------------------------------------------------------------
+  // **★ 像素级验收：画出来的到底像不像"眼睛 ＋ 珍珠" ✗ ★**（2026-10-16 ✓）
+  //
+  // **∴ 为什么非有不可 ✗**：上面那些 `ok === true` **只能证明"工具没报错"** ✓ ——
+  //   而验收 v2 抓到的那处硬伤（**虹膜/瞳孔没显出来** ✗，台账 §九 ✓）**恰恰是 `ok` 全绿** ✓
+  //   ⇒ **∴ 只判 `ok` 的验收**看不见它**✗**（这正是"静默无效果"那一族 ✓）。
+  // **∴ 所以这里直接量像素 ✓**：原始字节本来就在手里 ✓（`render_region {raw:true}` ✓）。
+  // **∴ 判据口径 ✗**：**只看**相对亮度关系**与**面积**✓**（**不比对参考图** ✗ ——
+  //   "不作弊"那条硬约束就是不许从参考图取像素 ✓）。
+  // ---------------------------------------------------------------------------
+  const lum = (x, y) => {
+    const at = ((y | 0) * width + (x | 0)) * 4;
+    return 0.299 * first.bytes[at] + 0.587 * first.bytes[at + 1] + 0.114 * first.bytes[at + 2];
+  };
+  const at = (fx, fy) => [Math.round(fx * width), Math.round(fy * height)];
+  const [scleraX, scleraY] = at(0.37, 0.44);
+  // **∴ 采样点必须落在**它自己要量的那个东西**上 ✗**（第 456 轮的教训 ✓）：
+  //   **瞳孔画在虹膜**里面** ✓（中心 ≈0.44, 半径 ≈7px ⇒ 跨度 ≈0.431–0.449 ✓）
+  //   ⇒ **∴ 虹膜必须取**瞳孔之外**的一点** ✓（0.418 ✓）；两者相差只有 0.001 就会量成同一个东西 ✗。
+  const [irisX, irisY] = at(0.418, 0.4575);
+  const [pupilX, pupilY] = at(0.44, 0.458);
+  const [lightX, lightY] = at(0.454, 0.4415);
+  const scleraLum = lum(scleraX, scleraY);
+  const irisLum = lum(irisX, irisY);
+  const pupilLum = lum(pupilX, pupilY);
+  const lightLum = lum(lightX, lightY);
+  // **虹膜面积** ✓：眼框里比眼白暗 30 以上的像素数 ⇒ **"一个小点"过不了这一关** ✓
+  let irisArea = 0;
+  for (let y = Math.round(0.4 * height); y < Math.round(0.52 * height); y += 1) {
+    for (let x = Math.round(0.36 * width); x < Math.round(0.54 * width); x += 1) {
+      if (lum(x, y) < scleraLum - 30) irisArea += 1;
+    }
+  }
+  // **珍珠**：招牌是"主高光 ＋ 二次反光" ⇒ 高光必须**明显亮于**珠体 ✓
+  //   **∴ 判法不能只取一个坐标 ✗**（我第一版就栽在这上面 ✓：取到的两点都在珠体上 ⇒ 187 vs 180 ✗）
+  //   ⇒ **∴ 改成"珠体包围盒里**最亮的那一点**"** ✓ —— 那才是"有没有高光"这个问题 ✓
+  //     （**∴ 与坐标无关 ✓** ⇒ 编排把高光画在哪儿都算 ✓）。
+  const pearlBox = [
+    [Math.round(0.65 * width), Math.round(0.64 * height)],
+    [Math.round(0.79 * width), Math.round(0.79 * height)],
+  ];
+  let pearlPeak = 0;
+  let pearlPeakAt = [0, 0];
+  for (let y = pearlBox[0][1]; y < pearlBox[1][1]; y += 1) {
+    for (let x = pearlBox[0][0]; x < pearlBox[1][0]; x += 1) {
+      const value = lum(x, y);
+      if (value > pearlPeak) {
+        pearlPeak = value;
+        pearlPeakAt = [x, y];
+      }
+    }
+  }
+  const [pearlBodyX, pearlBodyY] = at(0.703, 0.702);
+  const pearlLum = pearlPeak;
+  const pearlBodyLum = lum(pearlBodyX, pearlBodyY);
+  console.log(
+    `\n▶ 像素级验收（只看相对关系与面积，不比对参考图 ✓）：\n` +
+      `   眼白 ${scleraLum.toFixed(0)} ⇒ 虹膜 ${irisLum.toFixed(0)} ⇒ 瞳孔 ${pupilLum.toFixed(0)}` +
+      `｜角膜高光 ${lightLum.toFixed(0)}｜虹膜面积 ${irisArea}px（眼框内比眼白暗 30+ ✓）\n` +
+      `   珍珠珠体 ${pearlBodyLum.toFixed(0)}｜珍珠最亮 ${pearlLum.toFixed(0)}（在 ${pearlPeakAt.join(",")} ✓）`,
+  );
+  const looksWrong = [];
+  // **① 虹膜必须真的显出来** ✓（台账 §九 那一格的**判据化** ✓：中心不再是眼白色 ✓）
+  if (!(irisLum < scleraLum - 20)) {
+    looksWrong.push(`虹膜中心 ${irisLum.toFixed(0)} 不比眼白 ${scleraLum.toFixed(0)} 暗 20 以上 ⇒ 虹膜**没显出来** ✗`);
+  }
+  // **② 瞳孔必须比虹膜更暗** ✓（"眼睛有没有神"的最低要求 ✓）
+  if (!(pupilLum < irisLum - 20)) {
+    looksWrong.push(`瞳孔 ${pupilLum.toFixed(0)} 不比虹膜 ${irisLum.toFixed(0)} 暗 20 以上 ⇒ 瞳孔糊在虹膜里 ✗`);
+  }
+  // **③ 角膜高光必须**明显亮于**瞳孔** ✓（否则"没有神" ✗）
+  if (!(lightLum > pupilLum + 60)) {
+    looksWrong.push(`角膜高光 ${lightLum.toFixed(0)} 不比瞳孔 ${pupilLum.toFixed(0)} 亮 60 以上 ⇒ 眼睛没神 ✗`);
+  }
+  // **④ 虹膜不许是"一个小点"** ✓（§七 的诊断 ✓）：面积必须 ≥ 边长的 0.3%（768² ⇒ 1770px 的 0.3% ≈ 1770）
+  const irisFloor = Math.round(0.003 * width * height);
+  if (!(irisArea >= irisFloor)) {
+    looksWrong.push(`虹膜只有 ${irisArea}px < ${irisFloor}px ⇒ 那一笔只是**一个小点** ✗（§七 诊断过同一形态 ✓）`);
+  }
+  // **⑤ 珍珠必须有高光** ✓（"像塑料球"与"有二次反光"的分界 ✓）
+  if (!(pearlLum > pearlBodyLum + 25)) {
+    looksWrong.push(`珍珠高光 ${pearlLum.toFixed(0)} 不比珠体 ${pearlBodyLum.toFixed(0)} 亮 25 以上 ⇒ 珍珠会像塑料球 ✗`);
+  }
+
   const raw = Buffer.alloc((width * 4 + 1) * height);
   for (let y = 0; y < height; y += 1) {
     raw[y * (width * 4 + 1)] = 0;
@@ -378,7 +505,17 @@ const main = async () => {
     console.error("❌ 两遍结果不一致 ⇒ 违反「确定性」硬约束（产品问题）");
     process.exit(1);
   }
-  console.log("✓ 验收：能画出来、且逐字节可复现");
+  // **★ 像素级验收**不过**就不许报"验收通过" ✗**（2026-10-16 ✓）：
+  //   **∴ 为什么放在最后 ✗**：它必须**压过**那句"能画出来" ✓ ——
+  //     验收 v2 的教训就是"**能画出来**✓"与"**画出来像不像**✗"是两件事 ✓。
+  if (looksWrong.length > 0) {
+    console.error(`\n❌ 像素级验收不过（${looksWrong.length} 项）—— 画出来了，但**不像眼睛/珍珠** ✗：`);
+    for (const text of looksWrong) console.error(`   · ${text}`);
+    console.error("   ⇒ 这是**产品问题**（落笔链路）还是**编排问题**（这一支笔/这个坐标 ✗）？");
+    console.error("   ⇒ 台账 §七／§八 的判法：**平涂/实心形状用 `draw_stroke`，肌理/渐变才用物理笔** ✓");
+    process.exit(1);
+  }
+  console.log("✓ 验收：能画出来、逐字节可复现、且**像素级看像眼睛 ＋ 珍珠** ✓");
   process.exit(0);
 };
 
