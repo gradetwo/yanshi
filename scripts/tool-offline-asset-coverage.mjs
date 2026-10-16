@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // **离线资产覆盖判据**（目标 (A)② 的"六类资产"那一半 ✓）。
 //
-// **为什么需要它** ✗：`assets/` 下共 **8 类**（brand / brushes / brush-previews / fonts /
-// mediums / palettes / samples / textures ✓），而 SW 的 `SHELL` 预缓存只列了 207 条
+// **为什么需要它** ✗：`assets/` 下共 **9 类**（brand / brushes / brush-previews / fonts /
+// mediums / palettes / samples / **showcase** / textures ✓），而 SW 的 `SHELL` 预缓存只列了 207 条
 // （`/`、`/favicon.svg`、一张品牌图、`/brush-previews/index.json`、`/viewer.css`、
 // `/viewer-app.js`、两件内核、199 支笔刷 ✓）—— 其余**一类都没进** ✗。
 // 更糟的是：普通静态资产**从不写进任何缓存** ✗（fetch 分支只在 `request.mode === "navigate"`
@@ -201,6 +201,18 @@ const KINDS = {
     route: "/textures/",
     served: (file) => !file.includes("/") && file.endsWith(".png"),
     url: (file) => "/textures/" + file,
+  },
+  // **★ 作品展示图（2026-10-16 ✓）★**：`assets/showcase/` 是**第 9 类** ✓ ——
+  //   **∴ 记录一笔 ✗**：我加这一类时**没登记离线机制** ✓ ⇒ 这条判据**当场红** ✓
+  //   （"assets/showcase 是一个没有登记离线机制的种类 ⇒ 判据不知道它怎么离线可用" ✓）。
+  //   **∴ 机制选 runtime（用到就存 ✓）而不是 install 期预缓存 ✗**：
+  //     四张图合计 **≈ 880 KB** ✓（256 色 900px 副本 ✓）—— **∴ 把它塞进 install 预缓存
+  //     会拖慢首次安装 ✗**，而它们**只在首页看一眼** ✓ ⇒ **用到再存** ✓ 就够（离线也能再看 ✓）。
+  showcase: {
+    mechanism: "runtime",
+    route: "/showcase/",
+    served: (file) => !file.includes("/") && file.endsWith(".png"),
+    url: (file) => "/showcase/" + file,
   },
 };
 

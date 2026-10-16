@@ -5680,3 +5680,24 @@ calibrate{cleanup:true} ⇒ {ok:true, passed:true, cleanup:{undone:0}, layer_id:
 ——**幸亏写盘在最后一步** ✓ ⇒ **源码一个字节没动** ✓（**∴ 半成品没入库 ✓**），核对 `git status` 确认后才重打 ✓。
 
 **回归** ✓：`fmt`／`clippy -D warnings`／`cargo test -p yanshi-server` ⇒ 0／0／0 ✓。
+
+### 四十九之补一百二十八：**我自己两处漏**被本仓判据抓住（2026-10-16 ✓）
+
+**∴ 事实 ✗**：`1664f58e` 之后 CI 连红两片 ✓ —— **两条都是我的漏 ✓，而且两条都是本仓现成判据抓的 ✓**：
+
+1. **shard 1 ✗ `ui-i18n-coverage.mjs`**：我在 `viewer.rs` 加了「作品展示」＋ 四句图注（**只有中文** ✓）
+   ⇒ 判据列出**6 条漏词条**（逐条给 `文件:行` ✓）⇒ **修**：在
+   `crates/yanshi-http/assets/viewer-app.js` 的 `I18N_EN_TEXT` 补 6 条英文 ✓
+   ⇒ 修后 **208 条文案／228 条词条 ⇒ 全绿 ✓**。
+   **∴ 我的流程错 ✗**：改界面文案时我跑了 showcase／pwa 判据 ✓，**偏偏没跑 i18n 那条** ✗ ——
+   "**本机先跑受影响判据**"这条纪律，我漏在最明显受影响的一条上 ✓ ★
+2. **shard 5 ✗ `tool-offline-asset-coverage.mjs`**：它把 `assets/` 下**每一类**都过一遍 ✓，
+   而我的新 `assets/showcase/` 是**第 9 类且没登记离线机制** ✗
+   ⇒ 报"判据不知道它怎么离线可用" ✓ ⇒ **修**：登记为 **runtime（用到就存 ✓）** 而不是 install 预缓存 ✗ ——
+   四张图合计 **≈ 880 KB** ✓，塞进 install 会把首次安装拖慢 ✗，而它们**只在首页看一眼** ✓
+   ⇒ 修后 `✓ showcase runtime /showcase/degas-backstage-oil.png` ✓、**全绿 ✓**
+   （未预缓存体量 19.1 ⇒ **19.9 MiB** ✓ —— 这个数**如实记** ✓）。
+
+**∴ 教训（写给下一次的我 ✓）**：**往 `web/`／界面加东西，至少要跑三族判据** ✓ ——
+`tool-showcase-assets`（资产接线 ✓）、`ui-i18n-coverage`（文案双语 ✓）、`tool-offline-asset-coverage`（离线路径 ✓）
+＋ `tool-pwa-assets`（两条部署不分叉 ✓）。**这三族这一轮各抓了我一次** ✓ ★

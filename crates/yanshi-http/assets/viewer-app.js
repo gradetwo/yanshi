@@ -10846,6 +10846,18 @@ const I18N_EN_TEXT = {
   "用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）":
     "Render on the server (on by default; clear the box to use the offline kernel instead)",
   "用服务端渲染（弱设备回退）": "Use server rendering (fallback for weak devices)",
+  // **★ 作品展示（2026-10-16 ✓）★**：首页新加的那一节 ✓ —— **∴ 界面文案必须双语** ✓
+  //   （判据 `ui-i18n-coverage.mjs` 只看**文本节点** ✓ ⇒ 「作品展示」＋ 四句图注都要词条 ✓；
+  //    `title` 属性归 `I18N_EN_ATTR` ✗，这里不放 ✓）。
+  //   **∴ 记录一笔 ✗**：我加这一节时**只加了中文** ✓ ⇒ CI 的 shard 1 **当场红** ✓
+  //   （判据没漏 ✓，是**我改界面文案却没跑 i18n 判据** ✓）⇒ 现在补齐 ✓。
+  "作品展示": "Gallery",
+  "另一个 AI 用本应用的 MCP 工具画的德加习作（只参照风格，未导入原作位图）":
+    "Degas studies painted by another AI with this app's MCP tools (style reference only; no source bitmap imported)",
+  "排练室的晨光 · 干性粉彩 · 3072×3840": "Morning rehearsal · dry pastel · 3072×3840",
+  "幕边的蓝色舞者 · 干性粉彩 · 3840×3072": "Blue dancers at the wings · dry pastel · 3840×3072",
+  "后台舞者 · 油画介质 · 3114×4096": "Dancers backstage · oil medium · 3114×4096",
+  "四位舞者 · 油画介质 · 4096×3427": "Four dancers · oil medium · 4096×3427",
   "适配": "Fit",
   "调整 / 滤镜": "Adjustments / filters",
   "调整": "Adjustment",
