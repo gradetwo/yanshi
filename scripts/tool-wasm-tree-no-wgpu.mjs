@@ -46,12 +46,14 @@ const WASM_ARTIFACT = "crates/yanshi-wasm/pkg/yanshi_wasm_bg.wasm";
 //       ⇒ **★ 所以**：**判据会**误绿** ✓ ★**** ✓✓
 spawnSync("cargo", ["metadata", "--format-version", "1"], {
   encoding: "utf8",
+  timeout: 600_000,
   maxBuffer: 1 << 28,
   env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || "target" },
 });
 
 const r = spawnSync("cargo", ["tree", "-p", "yanshi-wasm", "-e", "normal", "--prefix", "none"], {
   encoding: "utf8",
+  timeout: 600_000,
   maxBuffer: 1 << 28,
   env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || "target" },
 });

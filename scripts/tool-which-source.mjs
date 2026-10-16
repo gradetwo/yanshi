@@ -32,7 +32,7 @@ function gitIgnored(p) {
 }
 function gitTracked(p) {
   try {
-    const out = execFileSync("git", ["ls-files", "--error-unmatch", p], { stdio: ["ignore", "pipe", "ignore"] });
+    const out = execFileSync("git", ["ls-files", "--error-unmatch", p], { stdio: ["ignore", "pipe", "ignore"], timeout: 600_000 });
     return out.length > 0;
   } catch {
     return false;
