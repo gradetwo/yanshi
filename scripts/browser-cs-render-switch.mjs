@@ -46,7 +46,7 @@ const binary = ["target/debug/yanshi-serve", "target/release/yanshi-serve"]
   .filter(Boolean).sort((a, b) => b.m - a.m).map((e) => e.path)[0];
 if (!binary) {
   console.error("✗ 找不到 yanshi-serve ⇒ 先构建");
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 
 const failures = [];
