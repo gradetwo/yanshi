@@ -363,6 +363,12 @@ jobs:
           WORK="$(mktemp -d)"
           ./target/debug/yanshi-serve --bind "127.0.0.1:$PORT" --root "$WORK" \
             --doc boot --width 320 --height 240 --assets-dir "$PWD/assets" >"$WORK/server.log" 2>&1 &
+          # **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：上面那个服务是**长期服务** ⇒ 本步骤退出后若不杀它 ✗
+          #   ⇒ 它变成**孤儿** ✓ ⇒ **∴ runner 实测会打出 `Terminate orphan process (pid …) (yanshi-serve)`** ✓✓
+          #     ＋ **∴ 该 job 可能一直等 ⇒ 整轮 run 到不了终态** ✗（本 job 自己的注释里记过这个症状 ✓）。
+          #   **∴ 用 `trap … EXIT` 收尾 ✓**（**∴ 与我在 10 余支判据里补的 `process.on("exit", …kill…)` 同理 ✓**）。
+          SRV_PID=$!
+          trap 'kill "$SRV_PID" 2>/dev/null || true' EXIT
           for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/api/documents" >/dev/null 2>&1 && break; sleep 0.5; done
           TOKEN="$(curl -s -X POST "http://127.0.0.1:$PORT/api/documents" -H 'content-type: application/json' \
             -d '{"doc_id":"boot","width":320,"height":240}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
