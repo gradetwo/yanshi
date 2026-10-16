@@ -25,8 +25,23 @@ if (!existsSync(BIN)) {
   process.exit(3);
 }
 // **不写死本机路径** ✗✓（2026-10-15 ✓；CI 里写死 ⇒ EACCES ✗）
+// **★ 守卫：`argv[2]` 若**看起来像 URL**✗ ⇒ **绝不当作路径**✗ ★**（第 1000+ 轮 ✓；**实测抓到的 ✓**）：
+//   **∴ 现象 ✗**：**运行器会给判据**追加一个 `http://…` 参数 ✗**（**`browser-*` 收查看器 URL ✓、
+//     `tool-*` 收 base-url ✓**）⇒ **∴ 它落进了本判据的 `argv[2]` ✗** ⇒ **∴ `root` ＝ `http://127.0.0.1:PORT` ✗**
+//     ⇒ **∴ 接下来的 `rmSync`／`mkdirSync` 就**就地在仓库顶层**造出 `http:/127.0.0.1:PORT/{docs,blobs,…}` ✗✓**
+//       （**∴ 那是**一个 server 的 root 结构**✓ ⇒ **∴ 白名单判据抓到它 ✓；而那正是它存在的意义 ✓**）
+//   ⇒ **∴ 修法（**判据侧 ✓，风险最小 ✓）**：**含 `://` 的参数一律**不当路径**✗ ⇒ **回落到临时目录 ✓，
+//     并**打印一句**（**∴ 不静默 ✗ —— 静默会让下次更难查 ✓**）★
+const looksLikeUrl = (v) => typeof v === "string" && /^[a-z][a-z0-9+.-]*:\/\//i.test(v);
+if (looksLikeUrl(process.argv[2])) {
+  console.log(
+    `  ⚠️ argv[2] 看起来是 URL（${String(process.argv[2]).slice(0, 48)}）⇒ **∴ 不当路径用**✗ ⇒ 回落临时目录 ✓`
+  );
+}
 const root =
-  process.argv[2] || process.env.YANSHI_WATCH_DIR || path.join(os.tmpdir(), "yanshi-watch-ext");
+  (looksLikeUrl(process.argv[2]) ? undefined : process.argv[2]) ||
+  process.env.YANSHI_WATCH_DIR ||
+  path.join(os.tmpdir(), "yanshi-watch-ext");
 rmSync(root, { recursive: true, force: true });
 mkdirSync(root, { recursive: true });
 
