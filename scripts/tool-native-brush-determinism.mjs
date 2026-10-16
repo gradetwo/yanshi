@@ -35,7 +35,7 @@ function fail(message) {
 const run = spawnSync(
   "cargo",
   ["test", "-p", "yanshi-wasm", "--test", "native_brush_bytes", "--", "--nocapture"],
-  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 600_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 同步 ⇒ 挂住会占住事件循环 ⇒ setTimeout 守卫烧不到 ✗
 );
 
 if (run.error) {
@@ -43,7 +43,7 @@ if (run.error) {
     "✗ 前置不成立：起不了 `cargo` ⇒ 判据无法运行（**不是通过** ✗）⇒ " + run.error.message +
     "（CI 的判据分片本来就要 `cargo build` ⇒ 那里应当有 cargo ✓）",
   );
-  process.exit(2);
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 const out = (run.stdout || "") + (run.stderr || "");
 

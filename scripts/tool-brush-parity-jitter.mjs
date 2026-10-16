@@ -63,13 +63,13 @@ const BRUSHES = [
 const child = spawnSync(
   process.execPath,
   ["scripts/kernel-brush-parity.mjs", base, doc, token, pkg, ...BRUSHES],
-  { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 600_000 },   // ★ 加超时（10 分钟 ✓）：spawnSync 是**同步**的 ⇒ 子进程挂住会**占住事件循环** ⇒ 上面的 setTimeout 守卫**烧不到** ✗ ⇒ 分片会永久挂住 ✓
 );
 
 const out = (child.stdout || "") + (child.stderr || "");
 if (child.error) {
-  console.error("✗ 前置不成立：子判据起不来 ⇒ " + child.error.message);
-  process.exit(2);
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 子判据起不来或超时 ⇒ " + child.error.message + " ⇒ 退出码 3");
+  process.exit(3);   // ★ 判据跑不了 ⇒ 退 3（原退 2 ✗：那是"用法错"码 ✓）
 }
 // 把每支的判定行照印 ✓（读的人一眼看到"相同/有差异" ✓）。
 for (const line of out.split("\n")) {
