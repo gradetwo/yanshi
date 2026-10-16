@@ -80,6 +80,11 @@ These four are the work of an outside agent; the numbers above are the ones its 
 Its reports also list what it did **not** verify (it did not run this repo's own criteria), so treat
 the pictures as a showcase rather than as acceptance evidence.
 
+How these were painted — and how to paint so that a picture does not read as **filling in a
+colouring book** (large brush first, one stroke = one mass, `smudge`/`classic-knife` to blend the
+seams, thin `glaze` vs thick `impasto`) — is written up in
+[`skills/yanshi-painting/`](skills/yanshi-painting/SKILL.md).
+
 ## Credits
 
 
