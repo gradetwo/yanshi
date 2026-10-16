@@ -16071,7 +16071,30 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             .values()
             .filter(|selection| !selection.is_deleted())
             .filter_map(|selection| {
-                let bbox = selection.shape.get("bbox")?;
+                // 第一层：缺 bbox 的选区（纯点列多边形 ✓）不许被丢掉 ✓
+                let owned_bbox;
+                let bbox = match selection.shape.get("bbox") {
+                    Some(bbox) => bbox,
+                    None => {
+                        let points = selection.shape.get("points")?.as_array()?;
+                        let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
+                        let (mut bx, mut by) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+                        for point in points {
+                            let pair = point.as_array()?;
+                            let x = pair.first()?.as_f64()?;
+                            let y = pair.get(1)?.as_f64()?;
+                            ax = ax.min(x);
+                            ay = ay.min(y);
+                            bx = bx.max(x);
+                            by = by.max(y);
+                        }
+                        if !ax.is_finite() || !bx.is_finite() {
+                            return None;
+                        }
+                        owned_bbox = json!({"x": ax, "y": ay, "w": bx - ax, "h": by - ay});
+                        &owned_bbox
+                    }
+                };
                 let number = |key: &str| bbox.get(key).and_then(Value::as_f64).unwrap_or(0.0);
                 Some((
                     selection.id.clone(),
@@ -16103,7 +16126,33 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             ));
         };
         let clip = yanshi_core::Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64);
-        let coverage = yanshi_render::geometry::rect_coverage_clipped(bbox, &clip);
+        // 第二层：覆盖度按形状分派 ✓（原来硬编码矩形 ✗）
+        let shape = state
+            .selections
+            .get(&name)
+            .map(|s| s.shape.clone())
+            .unwrap_or(Value::Null);
+        let shape_kind = shape.get("kind").and_then(Value::as_str).unwrap_or("rect");
+        let shape_points: Vec<(f64, f64)> = shape
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let pair = item.as_array()?;
+                        Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let coverage = match shape_kind {
+            "polygon" if shape_points.len() >= 3 => {
+                yanshi_render::geometry::polygon_coverage_clipped(&shape_points, 4, &clip)
+            }
+            "ellipse" => yanshi_render::geometry::ellipse_coverage_clipped(bbox, 4, &clip),
+            _ => yanshi_render::geometry::rect_coverage_clipped(bbox, &clip),
+        };
         let mut dropped = 0usize;
         for index in (0..rgba.len()).step_by(4) {
             let pixel = index / 4;

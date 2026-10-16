@@ -58,7 +58,16 @@ if (!selection || selection.ok !== true) {
 }
 
 // 三个探针点：① 三角形内 ✓ ② bbox 内、三角形外 ✗ ③ 完全在外 ✗
-const probes = [[100, 40], [30, 120], [5, 140]];
+// **★ 取样点必须落在**这一笔墨上**✗ ★**（2026-10-16 ✓；**这条判据第一版就栽在这里 ✓**）
+//   **∴ 我原来的取样 ✗**：`(100,40)` 距笔心 `y=60` **20px** ⇒ 而 `size=24` 的笔在 15–20px 处**已经没有墨** ✗
+//     ⇒ 判据于是报「三角形内**没落墨**」✗ ⇒ **我把"自己的取样点到不了墨"当成了"产品没落墨"** ✗★
+//     （实测：`(100,60)` 变了=true ✓，`(100,45)/(100,75)`（15px）变了=false ✓。）
+//   **∴ 现在 ✗**：三个点都放在**笔心上**（`y=60` ✓），只让"在不在三角形里"变化 ✓：
+//     ① `(100,60)` 三角形内 ✓ ⇒ **必须变** ✓
+//     ② `(30,60)` **三角形外、但仍在笔上、且在其 bbox 内** ✓ ⇒ **必须不变** ✓★
+//        （三角形左斜边在 y=60 处 x≈49.1 ✓ ⇒ x=30 在外 ✓；**若裁剪其实按矩形算 ✗ ⇒ 这点会变色** ✓）
+//     ③ `(5,140)` 完全在外 ✓ ⇒ 必须不变 ✓
+const probes = [[100, 60], [30, 60], [5, 140]];
 const before = [];
 for (const p of probes) before.push(await px(token, p[0], p[1]));
 if (before.some((bytes) => !bytes)) {
@@ -77,13 +86,13 @@ if (!stroke || stroke.ok !== true) {
 const after = [];
 for (const p of probes) after.push(await px(token, p[0], p[1]));
 const changed = probes.map((p, i) => !before[i].equals(after[i]));
-console.log("  ② 三角形内 (100,40) 变了=" + changed[0] + "（需 true）");
-console.log("  ② bbox 内、三角形外 (30,120) 变了=" + changed[1] + "（需 false）");
-console.log("  ③ 完全在外 (5,140) 变了=" + changed[2] + "（需 false）");
+console.log("  ① 三角形内、笔心 (100,60) 变了=" + changed[0] + "（需 true ✓）");
+console.log("  ② 三角形外、仍在笔上 (30,60) 变了=" + changed[1] + "（需 false ✓ —— 若 true ⇒ 裁剪其实按矩形 ✗）");
+console.log("  ③ 完全在外 (5,140) 变了=" + changed[2] + "（需 false ✓）");
 
 const failures = [];
-if (!changed[0]) failures.push("**三角形内没落墨** ✗ ⇒ 判据无效（不能证明任何事 ✓）");
-if (changed[1]) failures.push("**三角形外（bbox 内）落了墨** ✗ ⇒ 裁剪其实只按 bbox 算 ⇒ 只覆盖矩形 ✓");
+if (!changed[0]) failures.push("**三角形内、笔心上没落墨** ✗ ⇒ 判据无效（不能证明任何事 ✓）—— 先确认笔心取样确实在墨上 ✓");
+if (changed[1]) failures.push("**三角形外、但仍在笔上的那点落了墨** ✗ ⇒ 裁剪其实按矩形（或 bbox）算 ⇒ 只覆盖矩形 ✓");
 if (changed[2]) failures.push("完全在外的点也变了 ✗");
 if (failures.length) {
   console.error("❌ " + failures.length + " 项没成立：");

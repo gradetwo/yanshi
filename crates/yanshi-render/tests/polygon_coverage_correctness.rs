@@ -40,13 +40,22 @@ fn triangle_coverage_is_exactly_half_of_its_bbox() {
 #[test]
 fn triangle_interior_and_exterior_are_classified() {
     let triangle = [(20.0, 20.0), (180.0, 20.0), (100.0, 130.0)];
-    assert!(point_in_polygon(100.0, 40.0, &triangle), "三角形内的点必须判为**内** ✓");
-    assert!(point_in_polygon(100.0, 110.0, &triangle), "靠近底边的内点也必须判为**内** ✓");
+    assert!(
+        point_in_polygon(100.0, 40.0, &triangle),
+        "三角形内的点必须判为**内** ✓"
+    );
+    assert!(
+        point_in_polygon(100.0, 110.0, &triangle),
+        "靠近底边的内点也必须判为**内** ✓"
+    );
     assert!(
         !point_in_polygon(30.0, 120.0, &triangle),
         "**bbox 内、但三角形外**的点必须判为**外** ✓（这条正是「只按矩形」会漏掉的那类点 ✓）"
     );
-    assert!(!point_in_polygon(5.0, 140.0, &triangle), "完全在外的点必须判为**外** ✓");
+    assert!(
+        !point_in_polygon(5.0, 140.0, &triangle),
+        "完全在外的点必须判为**外** ✓"
+    );
 }
 
 #[test]
