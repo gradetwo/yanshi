@@ -253,6 +253,10 @@ async function startServer(mode, tag, w, h, portOffset) {
     "--gpu", mode,
   ];
   const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
+  // **★ 必须收尾 ✗ ★**（2026-10-16 ✓）：它起的是**长期服务** ⇒ 判据退出后不杀它 ⇒
+  //   进程一直活着 ⇒ **CI 的 step 可能一直等 ⇒ 分片永不结束** ✗
+  //   —— ★ 而这一支正是 `shard 2` 里**唯一** spawn 不配对的那一支 ✓（两轮 run 都卡在这一片 ✓）。
+  process.on("exit", () => { try { child.kill(); } catch { /* 已退出 */ } });
   let log = "";
   child.stdout.on("data", (d) => { log += d; });
   child.stderr.on("data", (d) => { log += d; });
