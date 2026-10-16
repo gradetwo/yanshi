@@ -77,7 +77,7 @@ recorded as ordinary atoms.
 [![Ballet reference study (4K)](web/showcase/ballet-reference-study-4k.png)](web/showcase/ballet-reference-study-4k.png)
 
 
-These four are the work of an outside agent; the numbers above are the ones its own package reports.
+These paintings were produced by an outside agent driving the same MCP tools; the per-painting numbers (canvas size, layer/anchor counts) come from its own package.
 Its reports also list what it did **not** verify (it did not run this repo's own criteria), so treat
 the pictures as a showcase rather than as acceptance evidence.
 
