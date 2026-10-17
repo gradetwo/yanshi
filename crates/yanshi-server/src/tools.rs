@@ -10663,6 +10663,13 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
         "example_mediums": ["example"],
         "brush_aliases": BRUSH_ALIASES,
+        // **需要额外参数的滤镜** ✓（第 1000+ 轮 ✓）：**∴ 只报 `FILTER_NAMES` 不够 ✗** ——
+        // `dehaze` 可用 ✓，但**必须给 `air: [r,g,b]`** ✓（`filter.rs:1518` 的 `triple(params.get("air"))` ✓），
+        // 不给就报「dehaze 需要 air: [r,g,b]（可用 estimate_dehaze 估计）」✓。
+        // **∴ 判据 `tool-engine-capabilities.mjs` 会**读源码**校验这一栏 ✓**（**∴ 源码去掉 `air` ⇒ 必红 ✓**）。
+        "filters_needing_params": {
+            "dehaze": ["air"],
+        },
         // **介质那条路的参数** ✓（**∴ 与 `brush_stroke` 的 `.myb` 63 项是两套 ✓**）。
         // **∴ 判据 `tool-engine-capabilities.mjs` 会读 `medium_stroke` 的 schema 与这里逐项比 ✓**（防漂移 ✓）。
         "medium_params": {
