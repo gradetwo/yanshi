@@ -52,6 +52,7 @@
 - `change_color_hsl_s`
 - `change_color_v`
 - `change_color_hsv_s`
+- `smudge`
 - `smudge_length`
 - `smudge_length_log`
 - `smudge_radius_log`
