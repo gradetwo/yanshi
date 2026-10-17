@@ -1003,3 +1003,43 @@ detail = **dehaze 需要 air: [r,g,b]（可用 estimate_dehaze 估计）**
 
 **H2 ✓**：那个"尚未接线 1"是 **`pwa-check-wrangler.mjs`** ✗（**∴ 它是部署前的环境探测 ✓，不是产品判据 ✓**）
    ⇒ **∴ 归入 `NOT_CRITERIA` ✓ ⇒ 复算「尚未接线 = 0」✓**。
+
+## 二十二、Muse 清单的核对（一）—— **P0-1 `color_variance` 确认是真 bug** ✓✗
+
+### 22.1 代码 ✓
+
+```rust
+// crates/yanshi-server/src/tools.rs:15615
+"color_variance" => Some(&["change_color_h", "change_color_v", "change_color_hsl_s"]),
+
+// :15639（消费处）
+if let Some(group) = semantic_brush_alias(key) {
+    for name in group {
+        brush.get_mut(setting).base_value = number;   // ← **同一个值、零缩放** ✗
+```
+⇒ **∴ 四组别名都走这条路 ✗**（**∴ `hand_jitter`／`speed_gain`／`color_variance`／`smudge_amount` ✓**）
+   ⇒ **∴ 而 `color_variance` 里 `change_color_h` 是**色相**✓ ⇒ 后果最重 ✓**
+
+### 22.2 实测（Muse 的构型 ✓，**我也独立复现了** ✓）
+
+```
+配置：brush "100%_Opaque"、color rgb(120,80,40)（棕）、笔从 (40,40) 到 (360,160)、
+      brush_params {"color_variance": 0.15}
+sample_color(220,105) ⇒ **rgba [117,165,46,255]** ✗
+色相：起始 **30.0°** ⇒ 之后 **84.2°** ⇒ **漂移 54.2°** ✓
+解析：colorsys.rgb_to_hsv：(120,80,40) ⇒ hue 30.0°、sat 0.667、val 0.471；
+      (117,165,46) ⇒ hue 84.2°、sat 0.721、val 0.647
+```
+⇒ **∴ 棕 → 绿 ✓（Muse 的原话"0.15 把棕色画成绿色"**完全成立** ✓）**
+
+**∴ 顺带确认观测面 ✓**：`analyze_region` **看得到**这一层 ✓
+（笔上 24×24 ⇒ 0.5376 ✓；笔外 ⇒ **1.0** ✓；整幅 ⇒ 0.9162 ✓）⇒ **∴ 而沿笔 5 个方块**完全相同**✗
+   ⇒ **∴ 说明色相是**整笔一次性**变的 ✓（**∴ 不是逐 dab 抖动 ✓**）⇒ **∴ 这正是"飘"的形态 ✓**）
+
+### 22.3 修法方向（下一轮 ✓）
+
+```
+**∴ 给每组别名一个**缩放向量**✗：`color_variance` 的三项各乘一个小系数 ✓
+   ⇒ **∴ 若 `change_color_h` 乘 0.2 ⇒ 0.15 ⇒ 0.03 ⇒ 色相抖动约 **±11°** ✓（**∴ 在"一笔之内变色"的合理范围 ✓**）
+**∴ 必须先量后改 ✓**：`0.15` 修前 **54.2°**、修后应 **< 15°** ✓ ⇒ **∴ 判据就用这个 ✓**
+```
