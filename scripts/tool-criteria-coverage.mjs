@@ -37,6 +37,10 @@ const enumerated = (name) => patterns.some((re) => re.test(name));
 
 // **生成器** ✓：它们改源码/产物，本就不该当判据 ✓。
 const NOT_CRITERIA = [
+  // ****（第 1000+ 轮 ✓）：**它是生成器 ＋ 校验库** ✗，不是判据 ✓ ——
+  //   **∴ 它有 write/check 两种模式** ✓，真正的**判据入口**是  ✓
+  //   （**∴ 那个名字符合 tool-* glob ⇒ 会被枚举 ✓**）⇒ **∴ 它属于本清单 ✓**。
+  "brush-params-doc.mjs",
   // **∴ `verify-live-showcase.mjs` ✓**（第 1000+ 轮 ✓）：**它**在**部署之后**核对线上 ✓
   //   ＋ **做什么 ✗**：对 `yanshi.wangda.today` 的**四个展示 URL** 发请求 ⇒ **断言 200
   //     ＋ 字节与 `assets/showcase/` 里的一致** ✓ ⇒ **∴ 判不了（连不上）退 3** ✓，**字节不对退 1** ✓。
