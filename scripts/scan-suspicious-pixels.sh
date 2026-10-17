@@ -18,7 +18,7 @@ command -v convert >/dev/null 2>&1 || { echo "  ✗ 需要 ImageMagick 的 conve
 
 W=$(identify -format "%w" "$PNG" 2>/dev/null) || { echo "  ✗ identify 读不了 $PNG"; exit 3; }
 H=$(identify -format "%h" "$PNG" 2>/dev/null) || exit 3
-echo "  扫描 $PNG（${W}×${H}，判定 max>=${HI} 且 min<=${LO}）✓"
+echo "  扫描 ${PNG}（${W}×${H}，判定 max>=${HI} 且 min<=${LO}）✓"
 
 convert "$PNG" -depth 8 rgb:- | python3 -c "
 import sys
