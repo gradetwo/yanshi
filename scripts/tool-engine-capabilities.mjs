@@ -56,11 +56,40 @@ check(
   body.counts?.brush_settings === (body.brush_settings ?? []).length,
   `brush_settings: 工具报 ${body.counts?.brush_settings}、列出 ${(body.brush_settings ?? []).length}（应一致）`,
 );
-// 示例介质不能混进成品介质 ✓
+// 示例介质不能混进成品介质 ✓（**真名是 `example` ✓，不是文件名 `example-dab` ✗**）
 check(
-  !(body.mediums ?? []).includes("example-dab") && (body.example_mediums ?? []).includes("example-dab"),
-  "example-dab 只在 example_mediums 里，不在 mediums 里",
+  !(body.mediums ?? []).includes("example") && (body.example_mediums ?? []).includes("example"),
+  "示例介质 example 只在 example_mediums 里，不在 mediums 里",
 );
+// ★ 介质清单：**从引擎自己的错误消息里取候选** ✓（最不漂移 —— 那是服务端在用的那份 ✓）
+{
+  const probe = await fetch(
+    `${base}/api/tools/medium_stroke?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ layer_id: "layer_default", medium: "__definitely_not_a_medium__", points: [[10, 10]] }),
+    },
+  );
+  const body2 = await probe.json();
+  const detail = body2?.context?.detail ?? "";
+  const after = detail.split("可用：")[1] ?? "";
+  const candidates = after.split("/").map((entry) => entry.trim()).filter(Boolean);
+  if (!candidates.length) {
+    console.log(`  ✗ 拿不到介质候选（错误消息：${detail.slice(0, 120)}）⇒ 判据无法判定`);
+    process.exit(3);
+  }
+  const toolAll = [...(body.mediums ?? []), ...(body.example_mediums ?? [])].sort();
+  const engineAll = [...candidates].sort();
+  check(
+    JSON.stringify(toolAll) === JSON.stringify(engineAll),
+    `介质清单与引擎候选一致：工具 ${JSON.stringify(toolAll)}｜引擎 ${JSON.stringify(engineAll)}`,
+  );
+  check(
+    !(body.mediums ?? []).some((entry) => entry.includes("example")),
+    "示例介质没有混进 mediums",
+  );
+}
 if (bad) {
   console.log(`  ✗ 能力清单有 ${bad} 处与引擎常量不一致`);
   process.exit(1);
