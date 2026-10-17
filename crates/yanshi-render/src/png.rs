@@ -788,4 +788,99 @@ mod png_bench {
             full.len()
         );
     }
+
+    /// **★ 四种 filter 的端到端判据 ✗ ★**（第 1000+ 轮 ✓）：
+    ///
+    /// **为什么必须加这一条** ✗（实测 ✓）：**现有的 12 条 `png` 判据**对反滤波**没有牙**✗ ——
+    /// 我把 `Average`（filter 3）的 `/2` 去掉（**合法且语义错** ✓），测试**仍然 12 passed**✗
+    /// ⇒ **∴ 在那 12 条下面优化反滤波（占真 4K 的 **54%**✗）⇒ **改错了也没有判据告诉我**✗✓
+    /// ⇒ **∴ 所以先补这一条 ✓，它的**变异有牙**：同样去掉 `/2` ⇒ **本条必红**✓。
+    ///
+    /// **为什么不是循环论证** ✓：**这里用**前向滤波**（PNG 编码侧的标准公式）构造扫描线 ✓，
+    /// **再断言解码结果等于**原始像素**（存在单独的 `PIXELS` 里 ✓）—— 两条独立路径互校 ✓，
+    /// **∴ 不是拿解码器自己的反滤波去算期望 ✓。
+    #[test]
+    fn every_png_filter_type_round_trips_to_the_original_pixels() {
+        // 5 行 × 4 像素 × RGBA ⇒ 五种 filter 各用一行（0..=4 ✓）
+        const W: usize = 4;
+        const H: usize = 5;
+        const CH: usize = 4;
+        let stride = W * CH;
+        let mut pixels: Vec<u8> = Vec::with_capacity(stride * H);
+        for row in 0..H {
+            for col in 0..W {
+                for c in 0..CH {
+                    pixels.push((row * 37 + col * 11 + c * 5 + 17) as u8);
+                }
+            }
+        }
+        // **前向滤波**（编码侧 ✓）：每行一种 filter
+        let mut raw: Vec<u8> = Vec::with_capacity((stride + 1) * H);
+        for row in 0..H {
+            let filter = row as u8; // 0=None 1=Sub 2=Up 3=Average 4=Paeth ✓
+            raw.push(filter);
+            let cur = &pixels[row * stride..(row + 1) * stride];
+            let prev = if row == 0 {
+                None
+            } else {
+                Some(&pixels[(row - 1) * stride..row * stride])
+            };
+            for i in 0..stride {
+                let x = cur[i];
+                let a = if i >= CH { cur[i - CH] } else { 0 };
+                let b = prev.map(|p| p[i]).unwrap_or(0);
+                let c = if i >= CH {
+                    prev.map(|p| p[i - CH]).unwrap_or(0)
+                } else {
+                    0
+                };
+                let pred = match filter {
+                    0 => 0u8,
+                    1 => a,
+                    2 => b,
+                    3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                    _ => {
+                        let p = i32::from(a) + i32::from(b) - i32::from(c);
+                        let pa = (p - i32::from(a)).abs();
+                        let pb = (p - i32::from(b)).abs();
+                        let pc = (p - i32::from(c)).abs();
+                        if pa <= pb && pa <= pc {
+                            a
+                        } else if pb <= pc {
+                            b
+                        } else {
+                            c
+                        }
+                    }
+                };
+                raw.push(x.wrapping_sub(pred));
+            }
+        }
+        // 压成一个最小 PNG：IHDR + IDAT + IEND ✓（CRC 用本仓的 ✓）
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &raw).expect("压缩扫描线");
+        let idat = z.finish().expect("结束 zlib 流");
+        let mut png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut chunk = |kind: &[u8; 4], payload: &[u8]| {
+            png.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            png.extend_from_slice(kind);
+            png.extend_from_slice(payload);
+            let mut crc = yanshi_core::crc32_update(0xFFFF_FFFF, kind);
+            crc = yanshi_core::crc32_update(crc, payload);
+            png.extend_from_slice(&(crc ^ 0xFFFF_FFFF).to_be_bytes());
+        };
+        let mut ihdr: Vec<u8> = Vec::new();
+        ihdr.extend_from_slice(&(W as u32).to_be_bytes());
+        ihdr.extend_from_slice(&(H as u32).to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8 位、RGBA、无隔行 ✓
+        chunk(b"IHDR", &ihdr);
+        chunk(b"IDAT", &idat);
+        chunk(b"IEND", &[]);
+        let (w, h, got) = decode_png(&png).expect("四种 filter 的 PNG 应当能解开");
+        assert_eq!((w as usize, h as usize), (W, H));
+        assert_eq!(
+            got, pixels,
+            "反滤波结果必须逐字节等于原始像素（含 Average/Paeth ✓）"
+        );
+    }
 }
