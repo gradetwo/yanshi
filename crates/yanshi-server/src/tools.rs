@@ -3254,6 +3254,34 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_brush_settings",
+        profile: Profile::Core,
+        // **为什么需要它**：引擎（`hokusai`）实现了 **63 项** MyPaint 动力学 ✓，
+        // 而 MCP 侧此前只有 `size`/`opacity`/`hardness`/`color` 四个旋钮 ✗
+        // ⇒ agent 无法逐项调 `speed1_gamma`／`slow_tracking`／`change_color_*`／`smudge_length` 等
+        // ⇒ 只能从 199 支固定预设里挑 ⇒ **画不出真实笔速、手抖与一笔内变色** ✗
+        // **本工具把 63 项全部读出来** ✓，并**单独列出引擎不认识的项** ✓
+        //（`hokusai` 会保留未知项做无损往返 ✓ ⇒ 那一栏就是「引擎忽略了什么」的实测证据 ✓）。
+        summary: "读出一支笔刷的全部 MyPaint 动力学（63 项 base_value），并单独列出引擎不认识的设置",
+        mutating: false,
+        params: &[param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）")],
+    },
+    ToolSpec {
+        name: "set_brush_setting",
+        profile: Profile::Core,
+        // **只写 `base_value`**（基准值 ✓），**不动 `inputs` 动力学曲线** ✗ —— 曲线归 `set_brush_dynamics` ✓。
+        // 名字用 `BrushSetting::from_cname` 校验 ✓（那是 `.myb` 的官方标识符 ✓）⇒ **未知名报错并给候选** ✓。
+        // 落盘沿用 `set_brush_dynamics` 的手法 ✓：写临时文件 ⇒ `import_asset(overwrite)` ⇒ 覆盖工作区缓存里的同名笔刷 ✓
+        //（内置资产一个字节不动 ✓）。
+        summary: "设一笔刷的单项 MyPaint 动力学基准值（名字用 .myb 的规范名，如 smudge / speed1_gamma / change_color_h）",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）"),
+            param!("setting", String, true, "设置的规范名（.myb 里的键，如 radius_logarithmic / smudge / slow_tracking）"),
+            param!("value", Number, true, "基准值（原样写入 settings[设置].base_value）"),
+        ],
+    },
+    ToolSpec {
         name: "set_layer_blend",
         profile: Profile::Core,
         // **AI 画家需求 P1-4**：`multiply` 是**罩染**的基础 ✓（报告："现在只能调 opacity 硬叠 ⇒ 颜色发脏"✗）。
@@ -3500,6 +3528,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "set_layer_blend" => write_set_layer_blend(ctx, args),
+        "get_brush_settings" => read_get_brush_settings(ctx, args),
+        "set_brush_setting" => write_set_brush_setting(ctx, args),
         "set_brush_dynamics" => write_set_brush_dynamics(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
@@ -10592,6 +10622,139 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         "applied": applied,
         "imported": imported,
         "note": "倍率已按 ln(倍率) 写进对数域偏移 ✓；改的是工作区缓存里的同名笔刷（预设覆盖内置 ✓）",
+    }))
+}
+
+/// **`get_brush_settings`** ✓：把引擎真正实现的 **63 项**动力学读出来 ✓。
+///
+/// **为什么要它**：MCP 侧此前只能控 `size`/`opacity`/`hardness`/`color` 四项 ✗，
+/// 而 `hokusai` 实现了 63 项 ✓ ⇒ agent 无法逐项调笔速、手抖、一笔内变色、厚涂涂抹
+/// ⇒ **画出来的笔迹"数学般干净"** ✗。本工具把能力面**完整暴露** ✓。
+///
+/// **未知项单列** ✓：`hokusai` 解析时把不认识的设置存进 `unknown_settings`（无损往返 ✓），
+/// 但那是从**结构体**读的；这里改从**原始 JSON** 比对 ✓ —— 更直接：`settings` 里有、而 63 项里没有的键
+/// ⇒ **就是引擎忽略的** ✓（**∴ 这就是「高级特效没被使用」的实测证据 ✓**）。
+fn read_get_brush_settings(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    let (name, _brush) = load_brush(ctx.workspace, &brush_name)?;
+    let source = ctx.workspace.resolve_asset("brush", &name)?;
+    let text = std::fs::read_to_string(&source).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到笔刷 {}：{error}", source.display())),
+        )
+    })?;
+    let parsed = hokusai::myb::from_str(&text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 不是合法的 .myb：{error}")),
+        )
+    })?;
+    let raw: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+    let mut settings = serde_json::Map::new();
+    let mut known: Vec<&str> = Vec::new();
+    for setting in hokusai::BrushSetting::ALL {
+        let cname = setting.cname();
+        known.push(cname);
+        settings.insert(
+            cname.to_owned(),
+            json!({"base_value": parsed.get(*setting).base_value}),
+        );
+    }
+    // **引擎不认识的（原始 JSON 里有、63 项里没有）** ✓
+    let mut unknown: Vec<Value> = Vec::new();
+    if let Some(map) = raw.get("settings").and_then(Value::as_object) {
+        for key in map.keys() {
+            if !known.contains(&key.as_str()) {
+                unknown.push(json!(key));
+            }
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "brush": name,
+        "count": settings.len(),
+        "settings": settings,
+        "unknown": unknown,
+        "note": "63 项即引擎（hokusai）实现的全部 MyPaint 动力学 ✓；unknown 是引擎不认识、会被忽略的键 ✓",
+    }))
+}
+
+/// **`set_brush_setting`** ✓：写一项 `base_value`（**不动 `inputs` 曲线** ✗）。
+fn write_set_brush_setting(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    let setting = require_str(args, "setting")?;
+    let value = args.get("value").and_then(Value::as_f64).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("value 必须是数字".to_string()),
+        )
+    })?;
+    // **名字校验用引擎自己的映射** ✓（`.myb` 的官方标识符 ✓）
+    let canonical = hokusai::BrushSetting::from_cname(&setting).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知笔刷设置 {setting} ⇒ 用 get_brush_settings 看可用名字（共 {} 项）",
+                hokusai::BrushSetting::ALL.len()
+            )),
+        )
+    })?;
+    let (name, _brush) = load_brush(ctx.workspace, &brush_name)?;
+    let source = ctx.workspace.resolve_asset("brush", &name)?;
+    let text = std::fs::read_to_string(&source).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到笔刷 {}：{error}", source.display())),
+        )
+    })?;
+    let mut data: Value = serde_json::from_str(&text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 不是合法的 .myb JSON：{error}")),
+        )
+    })?;
+    let Some(settings) = data.get_mut("settings").and_then(Value::as_object_mut) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("这份 .myb 里没有 settings 对象".to_string()),
+        ));
+    };
+    let entry = settings
+        .entry(canonical.cname().to_string())
+        .or_insert_with(|| json!({"base_value": 0.0, "inputs": {}}));
+    let Some(slot) = entry.get_mut("base_value") else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("settings.{} 里没有 base_value", canonical.cname())),
+        ));
+    };
+    *slot = json!(value);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let path =
+        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
+    std::fs::write(&path, serde_json::to_vec_pretty(&data).unwrap_or_default()).map_err(
+        |error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
+            )
+        },
+    )?;
+    let imported = write_import_asset(
+        ctx,
+        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "brush": name,
+        "setting": canonical.cname(),
+        "value": value,
+        "imported": imported,
+        "note": "只改了 base_value ✓；inputs 动力学曲线未动 ✓（那归 set_brush_dynamics）",
     }))
 }
 
@@ -18289,6 +18452,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "update_layer",
         r#"{"layer_id": "layer_default", "patch": {"blend_mode": "multiply"}}"#,
     ),
+    ("get_brush_settings", r#"{"brush": "oil_paint_01"}"#),
     ("list_assets", r#"{"kind": "brush", "tag": "fur"}"#),
     // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**写 ✓（`browser-ui-check.mjs` 的 fill/draw_shape ✓），
     // 不凭记忆编参数 ✗（示例会被 `tool-example-acceptance.mjs` **真的执行** ✓，编错就红 ✓）。
