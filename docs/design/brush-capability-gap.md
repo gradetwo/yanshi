@@ -1143,3 +1143,43 @@ calls = [ {create_layer L}, {**no_such_tool**} ]
 不准 1：P2-9（**∴ 实测两种都不可靠 ✓**）
 未能复现 1 ⚠：P3-11（**∴ 只给推断 ✗**）
 ```
+
+## 二十四、P0-3 的修复（`batch` 不再静默吞错）✓
+
+### 24.1 修前实测 ✓
+
+```
+calls = [{create_layer L}, {**no_such_tool**}] ⇒ **带不带 `silent` 都 `ok = True`** ✗
+返回 keys = atom_ids, calls, changeset_id, count, execution, head, ok, preview, timings
+   ⇒ **∴ 没有 `failed_calls`／`failed_ops`／`detail`** ✗ ⇒ **∴ agent 以为全成了 ✓**
+```
+
+### 24.2 根因**两处** ✗
+
+```rust
+// ① Err 分支（子调用返回 Err）
+Err(error) => error_response(&error),      // 转成 JSON 存进 results ✓，但没进最终返回、也不影响 ok ✗
+// ② None 分支（工具名不存在）
+None => error_response(&YanshiError::new(… "batch 中的工具 {name} 不存在" …)),
+                                          // **连 results 都没进** ✗
+```
+⇒ **∴ 我第一版只补了 ① ⇒ 验的时候 `failed_calls` 有 1 条 ✓ ⇒ **∴ 差点收工 ✗**
+   ⇒ **∴ 但那条是**「图层 L 已存在」**✗（上一次运行的残留 ✓）⇒ **∴ 真正的坏 op 没被收集 ✗**
+   ⇒ **∴ "有一条"✗ ≠ "收集对了"✓ ⇒ **∴ 看 `name` 才发现 ✓**
+   ⇒ **∴ 所以 ② 也补了 ✓**
+
+### 24.3 修法 ✓
+
+返回里加 `"failed_calls"` ✓（**∴ 空数组 = 全成功 ✓；非空 = 有失败 ✓，每条含 `index`／`name`／`error` ✓**）
+   ⇒ **∴ `ok` 语义**不动**✓**（**∴ 避免破坏兼容 ✓**），由新字段承担"有没有失败" ✓
+
+### 24.4 判据 ＋ 变异 ✓（`scripts/tool-batch-error-reporting.mjs`）
+
+```
+① 坏 op 被发现（1 条）✓  ② name = no_such_tool_xyz ✓  ③ index = 1 ✓
+④ 带原因（detail 含"不存在"）✓  ⑤ 全成功 ⇒ [] ✓   ⇒ 退出码 0 ✓
+变异：从返回里删掉 `failed_calls` ⇒ 重建 ⇒ **退出码 1** ✓，报
+   「没有 failed_calls 数组（keys: …）⇒ 子调用失败会被静默吞掉」✓；恢复后重建 ✓
+```
+**∴ 一个刻意的退码选择 ✓**：**缺这个字段 ⇒ 退 1** ✗（不是退 3 ✓）—— **∴ 因为"缺字段"就是 bug 本身 ✗，
+   **∴ 退 3 会说"判据跑不了"✗ ⇒ **∴ 把问题掩盖了 ✓**（**∴ 与这一整场"退 3 vs 退 1"之分同一道理 ✓**）。
