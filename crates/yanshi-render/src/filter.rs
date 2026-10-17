@@ -1167,7 +1167,7 @@ pub const ADJUSTMENT_NAMES: [&str; 12] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 14] = [
+pub const FILTER_NAMES: [&str; 16] = [
     "box_blur",
     "gaussian_blur",
     "motion_blur",
@@ -1183,7 +1183,12 @@ pub const FILTER_NAMES: [&str; 14] = [
     "invert",
     // **P2 #15 厚涂浮雕**（第 254 轮）：**必须在这里登记** —— 工具侧用它做白名单，
     // 漏了就会报"内核未实现该滤镜"（本轮实测踩到：`FilterKind` 加了变体还不够）。
+    // **★ 别名也要登记 ★**（第 1000+ 轮 ✓）：`from_name` 早已把 `emboss`／`impasto` 映射到
+    // `Relief` ✓，但**白名单没列它们** ✗ ⇒ **∴ `add_filter` 会拒绝**✗ ⇒ **∴ agent 照 `FILTER_NAMES`
+    // （含别名 ✓）去试就失败 ✓。**∴ 这里补齐，两套清单才对得上 ✓。**
     "relief",
+    "emboss",
+    "impasto",
 ];
 
 /// 解析 `[r,g,b]` 形式的三元组，缺省为零（不改变该档）。
