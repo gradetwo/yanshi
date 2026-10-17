@@ -1652,3 +1652,18 @@ const [base, doc, token, wasmPath, ...brushes] = process.argv.slice(2);
 2. 每片的 `timeout` 从 `2400` 改 **`900`** ✓
 3. `tool-ci-parity-budget.mjs`：断言从「`timeout ≥ 2400`」改成「**每片 `timeout` ≥ 900 且 × 片数 ≈ 全量**」✓ ＋ 断言 **parity 有 4 个 job** ✓
 4. **变异**：把片数从 4 改成 1 ⇒ 每片工作量 ×4 ⇒ 判据（若它检查片数）必红 ✓
+
+### 34.5 ✓ H3 四件齐（**缩规模阶段**）：机制 ＋ 分片 ＋ 判据 ＋ 变异
+
+```
+**∴ 落地 ✓**（`0cec5ecd`）：`ci.yml` 加 `strategy.matrix.shard: [1,2,3,4]` ＋ `fail-fast: false` ✓；
+   每片 `mapfile` 读笔刷、按步长取 1/4 ✓、传具体名字给脚本（**∴ 不改脚本 ✓**）；
+   每片 `timeout 900` ✓、job `timeout-minutes 25` ✓、`continue-on-error` 不动 ✓
+**∴ 判据 ✓**：`tool-ci-parity-budget.mjs` 四条 ——
+   ✓ `timeout = 900s ≥ 900s` ✓  ✓ `15 + 5 ≤ 25` ✓  ✓ `continue-on-error` 仍 true ✓
+   ✓ **`parity 分了 4 片 ≥ 4 片`** ✓
+**∴ 变异 ✓**：`shard: [1,2,3,4]` → `[1]` ⇒ **退出码 1** ✓，报「**parity 分了 1 片 ≥ 4 片**」✗ ✓
+   （**∴ 判据读 YAML ✓ ⇒ 不用重建 ✓**）；恢复后退出码 0 ✓（5 条绿 ✓）
+```
+
+**∴ 所以 H3 现在的状态 ✓**：**机制 ✓ ＋ 分片 ✓ ＋ 判据 ✓ ＋ 变异 ✓** —— **∴ 只差**真跑一次**✗**（**∴ dispatch ✓**）
