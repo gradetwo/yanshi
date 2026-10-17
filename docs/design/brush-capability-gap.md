@@ -674,3 +674,34 @@ tools.rs:11512  data 里写 "deposit": deposit   ← **确认在同一处 `"data
 **∴ 新的语义（下一轮的方向 ✓）**：**既然 `base` 恒为 1，任何"改 alpha"的语义都无效** ✗
 ⇒ **∴ `deposit` 只能**改颜色**✓：把采到的色往**更实/更暗**推一点（`lerp(sampled, darken(sampled), deposit)` ✓）
 ⇒ **∴ 不引入新色相 ✓、只在原位加深 ✓ ⇒ 「既带色、又不造新边」✓。**
+
+### 17.10 G2 新语义的实现配方（**改颜色，不改 alpha** ✓，未动代码 ✗）
+
+**为什么不能改 alpha ✓**：`base = opacity × sampled.a` **恒为 1**（`smudge` 的 `opacity` 参数本身不生效 ✓，见 17.9）
+⇒ **∴ 任何 over 叠加都恒等** ✗。
+
+**改法 ✓**：在 `crates/yanshi-render/src/render.rs` 的 `sampled` 采样段（约 `:3748`），
+把**颜色三通道**整体往暗推 `deposit` 的份量：
+
+```rust
+// 采样后、写回前（smudge 分支）
+let sampled = source.pixel(sx, sy);
+if sampled[3] <= 0.0 { … }
+// **★ deposit ＝ 把被拖过去的色往"更实"推一点 ★**
+// **∴ 不改 alpha** ✗（base 恒 1，改了也恒等）；**∴ 改颜色** ✓。
+let darken = if deposit > 0.0 {
+    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35   // 0.35 ＝ 最大压暗幅度，可调
+} else {
+    1.0                                             // **∴ 缺省**乘 1.0 ⇒ **逐字节不变** ✓✓
+};
+[ sampled[0] / sampled[3] * darken, … ]
+```
+
+**★★ 浮点安全 ✓**：`deposit = 0` 时**必须乘 1.0** ✗ 而不是跳过乘法 ✓ —— **∴ `x * 1.0 == x` 在 IEEE 754 下**逐位成立**✓**（**∴ 与 `1-(1-a)` 那种**不成立**的情况不同 ✓**）✓ ⇒ **∴ 兼容性有保证 ✓。
+
+**判据预期 ✓**：
+- ①（不给 vs 给 0）⇒ **逐字节相同 ✓**（乘 1.0 ✓）
+- ②（`deposit=0.6`）⇒ **哈希必须变 ✓**（**∴ 颜色真的变暗 ✓**）
+- ③（方向）⇒ **亮度下降 ✓**（**∴ 压暗 ✓**）
+
+**其余四处与 17.3 相同 ✓**（`object.rs` 字段 ＋ 解析 `.unwrap_or(0.0)` ✓、`tools.rs` 的 schema ＋ `data` ✓）。
