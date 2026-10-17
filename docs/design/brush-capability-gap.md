@@ -792,3 +792,16 @@ tool-surface-coverage     ⇒ 退出码 0 ✓
 tool-engine-capabilities  ⇒ 退出码 0 ✓
 tool-smudge-deposit       ⇒ 退出码 0 ✓（重建后 ✓）
 ```
+
+### 17.15 ★ CI 全绿 ✓（`66866572`，run `39026876418`）
+
+```
+✓ main CI · 39026876418      **12 个 job 全绿、0 红** ✓
+✓ test (stable) ✓  ✓ test (beta) ✓  ✓ rustfmt ✓  ✓ clippy ✓
+✓ criteria shard 1/6 ✓ 2/6 ✓ 3/6 ✓ 4/6 ✓ 5/6 ✓ 6/6 ✓
+✓ GPU feature ✓  ✓ wasm smoke ✓
+```
+⇒ **∴ G1（可发现性）与 G2（低沉积涂抹）的代码**都在 CI 上通过** ✓✓**
+   ＋ **∴ `install.sh` 的 `${var}` 修复**过关**（`test (stable)/(beta)` 绿 ✓）** ✓
+
+**∴ 目标进度 ✓**：**G1 ✓ 完成 ／ G2 ✓ 完成 ／ G3 ✗ ／ G4 ✗**（**∴ 前两格都带判据 ＋ 变异 ＋ CI 绿 ✓**）
