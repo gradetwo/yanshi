@@ -19,6 +19,35 @@
 
 An MCP server and a web viewer sit on top of that engine, so an agent and a person work on the same document.
 
+## Install
+
+Prebuilt binaries, **no Rust toolchain needed** — Linux x86_64 (static), Intel macOS, Apple Silicon.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh
+```
+
+That resolves the release asset for your platform, **verifies its SHA256** against the published
+`SHA256SUMS`, unpacks it to `~/.local/share/yanshi/<version>`, and puts `yanshi-serve` and `yanshi-mcp`
+into `~/.local/bin` as thin wrappers.
+
+The tarball is **self-contained**: brushes, brush previews, mediums, palettes, textures, brand assets and
+the WASM kernel all ship inside it, and the binaries locate them through the package layout
+(`bin/…` next to `share/yanshi/…`), so nothing depends on where you unpack it.
+
+```bash
+yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # then open http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # stdio MCP server, for MCP clients
+yanshi-mcp   --list-tools --profiles core                        # just show the tool surface
+```
+
+Knobs: `YANSHI_VERSION=v0.2.1` (default `latest`), `YANSHI_PREFIX`, `YANSHI_BIN_DIR`, and
+`YANSHI_DRY_RUN=1` to print the plan without touching the disk.
+
+**Not covered by a prebuilt package:** Linux arm64, and Windows. On those, build from source
+(`cargo build --release -p yanshi-http -p yanshi-mcp`, or `make release`) — or unpack the
+`…-x86_64-pc-windows-msvc.tar.gz` asset from the [releases page](../../releases) by hand.
+
 ## Quick start
 
 **Requirements**

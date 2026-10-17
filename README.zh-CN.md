@@ -18,6 +18,32 @@
 
 在这套引擎之上是一个 MCP 服务端与一个 Web 查看器 ⇒ **Agent 与人操作的是同一份文档**。
 
+## 一键安装
+
+**不用装 Rust 工具链** ✓ —— 官方发布 Linux x86_64（静态链接）、Intel macOS、Apple Silicon 三个平台的包。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh
+```
+
+它会认出你的平台、取对应的发布资产、**用官方 `SHA256SUMS` 校验**、解到 `~/.local/share/yanshi/<版本>`，
+再把 `yanshi-serve` 与 `yanshi-mcp` 两个薄包装放进 `~/.local/bin`。
+
+包是**自包含**的 ✓：笔刷、笔刷预览图、介质、调色板、纸纹、品牌资源与 WASM 内核都在里面，
+二进制按包内布局（`bin/…` 与 `share/yanshi/…` 并列）自己找资产 ⇒ **∴ 解到哪儿都能跑** ✓。
+
+```bash
+yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # 然后打开 http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # stdio MCP 服务器，给 MCP 客户端用
+yanshi-mcp   --list-tools --profiles core                        # 只列出工具面
+```
+
+可调：`YANSHI_VERSION=v0.2.1`（缺省 `latest`）、`YANSHI_PREFIX`、`YANSHI_BIN_DIR`，
+以及 `YANSHI_DRY_RUN=1`（只打印计划、不写盘 ✓）。
+
+**没有预编译包的平台**：Linux arm64 与 Windows ✓ —— 从源码编（`cargo build --release -p yanshi-http -p yanshi-mcp`，
+或 `make release`），或从 [releases 页](../../releases) 手动解 `…-x86_64-pc-windows-msvc.tar.gz`。
+
 ## 快速开始
 
 **前置要求**
