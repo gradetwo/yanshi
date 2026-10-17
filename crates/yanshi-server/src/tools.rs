@@ -10544,10 +10544,17 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         )
     })?;
     // **三条曲线的落点** ✓（键路径来自真实 `.myb`：`settings[设置].inputs[输入]` ✓）
-    const MAPPING: [(&str, &str, &str); 3] = [
+    // 真实 .myb 里只有 4 个设置带 inputs（oil-06-paint：opaque→speed1／opaque_multiply→pressure／
+    // radius_logarithmic→pressure,speed1／smudge→stroke）⇒ 所以组合一共 5 个，而这里原本只写了 2 个。
+    // 补到 7 条（含 tilt，虽然这份 .myb 没有 tilt 曲线，但别的笔可能有）。
+    const MAPPING: [(&str, &str, &str); 7] = [
         ("size_pressure", "radius_logarithmic", "pressure"),
         ("opacity_pressure", "opaque", "pressure"),
         ("tilt_size", "radius_logarithmic", "tilt"),
+        ("size_speed", "radius_logarithmic", "speed1"),
+        ("opacity_speed", "opaque", "speed1"),
+        ("opacity_multiply_pressure", "opaque_multiply", "pressure"),
+        ("smudge_stroke", "smudge", "stroke"),
     ];
     let mut applied: Vec<Value> = Vec::new();
     for (key, setting, input) in MAPPING {
