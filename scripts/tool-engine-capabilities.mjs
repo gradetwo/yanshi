@@ -56,6 +56,21 @@ check(
   body.counts?.brush_settings === (body.brush_settings ?? []).length,
   `brush_settings: 工具报 ${body.counts?.brush_settings}、列出 ${(body.brush_settings ?? []).length}（应一致）`,
 );
+// ★ 介质那条路的参数：**读 `medium_stroke` 的 schema，与工具返回的 medium_params.names 逐项比** ✓
+//   **∴ 为什么读源码** ✗：这样 Rust 侧加了参数而这里没跟上（或反过来）都会红 ✓（**∴ 硬编码清单必漂移 ✗**）
+{
+  const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
+  const start = src.indexOf('name: "medium_stroke"');
+  if (start < 0) { console.log("  ✗ 源码里找不到 medium_stroke"); process.exit(3); }
+  const next = src.indexOf('name: "', start + 10);
+  const block = src.slice(start, next > 0 ? next : start + 20000);
+  const declared = [...block.matchAll(/param!\(\s*"([a-z_]+)"/g)].map((m) => m[1]).sort();
+  if (!declared.length) { console.log("  ✗ medium_stroke 的 schema 里没解析出参数 ⇒ 判据无法判定"); process.exit(3); }
+  const reported = [...(body.medium_params?.names ?? [])].sort();
+  check(JSON.stringify(declared) === JSON.stringify(reported),
+    `medium_params 与 medium_stroke schema 一致：工具 ${JSON.stringify(reported)}｜源码 ${JSON.stringify(declared)}`);
+}
+
 // 示例介质不能混进成品介质 ✓（**真名是 `example` ✓，不是文件名 `example-dab` ✗**）
 check(
   !(body.mediums ?? []).includes("example") && (body.example_mediums ?? []).includes("example"),
