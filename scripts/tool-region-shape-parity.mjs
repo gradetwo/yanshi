@@ -41,7 +41,9 @@ console.log(`  源码里带 region 的工具：${tools.length} 个 ✓`);
 for (const { name } of tools) {
   const reply = await call(name, { region: [0, 0, 8, 8] });
   const detail = JSON.stringify(reply.context ?? reply).slice(0, 160);
-  const rejectsRegion = /region/.test(detail) && /不接受|必须是|invalid type|expected/i.test(detail);
+  // 判定的关键词要含**中文**！`validate_args` 的原话是「参数 region 类型应为 object，实际为 array」，
+// 我第一次漏了「类型应为」，于是变异明明红了行为、判据却没认出来（退 0）。
+const rejectsRegion = /region/.test(detail) && /不接受|必须是|类型应为|invalid type|expected/i.test(detail);
   console.log(`  ${rejectsRegion ? "✗" : "✓"} ${name}：${rejectsRegion ? "**拒绝数组形状** ✗" : "接受数组形状 ✓"}（${detail.slice(0, 80)}）`);
   if (rejectsRegion) bad += 1;
 }
