@@ -1073,3 +1073,22 @@ sample_color(220,105) ⇒ **rgba [117,165,46,255]** ✗
    · `tool-export-idempotent` 报的是**它自己的前置**（没跑到重放 ⇒ `omitted = 0`）✗
      ⇒ **∴ 可能是**该步被跳过或超时**✗**。
 **∴ 待查 ✓**（**∴ 我没把它算成"我的锅"✗，也没说"本机绿所以没事"✗ —— 记在这里 ✓**）。
+
+## 二十三、Muse 清单的核对（二）—— 5 条核完，**4 真 1 假** ✓✗
+
+| # | Muse 的说法 | 我的核对 | 判定 |
+|---|---|---|---|
+| **P0-1** | `color_variance` 别名飘色相 | `:15615` 展开 3 项、`:15639` 同值零缩放；实测色相 **30.0° → 84.2°**（**54.2°** ✗） | ✓ **真**（**已修** ✓，见 22 节） |
+| **P1-4** | `set_brush_dynamics` 只支持 3 条映射 | `tools.rs:10548-10550` **正好 3 条**（`size_pressure`／`opacity_pressure`／`tilt_size` ✓），其余 60 项的 inputs 曲线**不可写** ✗ | ✓ **真** |
+| **P2-10** | `dabs_per_second` 默认 0 ⇒ `speed_gain` 静默无效 | `assets/brushes/oil-06-paint.myb`：`settings.dabs_per_second = {'base_value': **0.0**, 'inputs': {}}` ✗ | ✓ **真** |
+| **P1-6** | 无扇形 dab 形状 | `crates/yanshi-render/src/brush*.rs` 里 **`fan`／`sector`／`dab_shape` 零命中** ✗ | ✓ **很可能真**（**∴ 无该形状 ✓**） |
+| **wetness/load** | 「未暴露　仍缺」 | `:2834` 有 `param!("wetness", …)`；`:10676` 的 `medium_params.names` 含 `load` 与 `wetness` ✓ | ✗ **假**（**∴ 它只在 `medium_stroke` 上 ✓**） |
+
+**还剩 6 条未核 ✗**：P0-2（MCP 内存模式跨进程状态丢失 ✓ 架构 ✓）／P0-3（batch 静默丢错）／
+   P1-5（`get/set_brush_setting` 只写 `base_value` —— **Muse 自己也标了 by design ✓ ⇒ **∴ 不是 bug ✓**）／
+   P2-7（`new_document` 的 `height` 疑似被忽略 ✓ —— **∴ 参数**有**（`:2813` required ✓），是否被用**未定 ✗**）／
+   P2-8（`render_region` 参数格式不一致）／P2-9（`batch` 必须 `silent=True`）／P3-11（4,400 笔崩溃后拒笔）。
+
+**∴ 一个态度问题 ✓**：**Muse 这份清单**比我预期的准**✓**（**∴ 5 条里 4 条真 ✓，且都给了行号与构型 ✓**）
+   ⇒ **∴ 所以它那条"wetness/load 未暴露"✗ 更值得重视 ✓：**它说明 G1 的信息**没到达**从 `brush_params` 看过去的人**✗
+   ⇒ **∴ 待办 ✓：在 `brush_params` 的说明里**显式指向 `medium_stroke`**✗**（**∴ 而不是只在 `medium_stroke` 上说"我有"✓**）。
