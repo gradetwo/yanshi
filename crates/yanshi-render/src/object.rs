@@ -131,6 +131,9 @@ pub enum Primitive {
         jitter: f64,
         /// 涂抹半径（仅 `smudge` 使用：每 stamp 沿笔迹后退多少像素采样）。
         smudge_length: f64,
+        /// **沉积量**（0..1，缺省 0 ＝ 只拖不补）✓：`> 0` 时把被拖过去的色往**更实**压一点 ✓
+        /// （**∴ 压的是颜色**，不是 alpha ✗ —— `base` 恒为 1，改 alpha 恒等 ✓）。
+        deposit: f64,
     },
     /// 基础液化：把笔迹范围内的像素按方向推开（推力）。
     ///
@@ -318,6 +321,11 @@ pub fn parse_object(object: &Object) -> Primitive {
                         .get("smudge_length")
                         .and_then(Value::as_f64)
                         .unwrap_or(12.0),
+                    deposit: object
+                        .data
+                        .get("deposit")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0),
                 }
             }
         }

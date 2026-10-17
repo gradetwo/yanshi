@@ -3750,6 +3750,7 @@ impl Renderer {
                     opacity,
                     jitter,
                     smudge_length,
+                    deposit,
                 } => {
                     if !crate::object::RETOUCH_KINDS.contains(&kind.as_str()) {
                         track
@@ -3880,10 +3881,15 @@ impl Renderer {
                         if sampled[3] <= 0.0 {
                             continue;
                         }
+                        let darken = if deposit > 0.0 {
+                            1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
+                        } else {
+                            1.0
+                        };
                         let mut straight = [
-                            sampled[0] / sampled[3],
-                            sampled[1] / sampled[3],
-                            sampled[2] / sampled[3],
+                            sampled[0] / sampled[3] * darken,
+                            sampled[1] / sampled[3] * darken,
+                            sampled[2] / sampled[3] * darken,
                         ];
                         if healing {
                             // 修复画笔：保留源纹理，但把低频颜色/明度对齐到目标处。
