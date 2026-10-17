@@ -10749,6 +10749,15 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
             "affected_brush_count": 55,
             "note": "dab 是各向同性的圆；.myb 里声明的椭圆（ratio≠1）不生效。55 支笔受影响，最扁 7.1:1。",
         },
+        // **retouch 的 kind 与工具名不一致**（第 1000+ 轮 ✓）：`RETOUCH_KINDS` 里是 `heal` ✗，
+        //   而工具叫 `heal_stamp` ✓ ⇒ **∴ agent 照 `retouch_kinds` 找工具会找不到 ✓**
+        //   ⇒ **∴ 不能改 `RETOUCH_KINDS`**（渲染侧用 `kind == "heal"` 判断 ✓）⇒ **∴ 在这里给映射 ✓**。
+        "retouch_kind_tools": {
+            "clone_stamp": "clone_stamp",
+            "heal": "heal_stamp",
+            "smudge": "smudge",
+            "erase": "erase",
+        },
         "brush_aliases": BRUSH_ALIASES,
         // **需要额外参数的滤镜** ✓（第 1000+ 轮 ✓）：**∴ 只报 `FILTER_NAMES` 不够 ✗** ——
         // `dehaze` 可用 ✓，但**必须给 `air: [r,g,b]`** ✓（`filter.rs:1518` 的 `triple(params.get("air"))` ✓），
