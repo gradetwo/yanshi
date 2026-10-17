@@ -10660,7 +10660,7 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "retouch_kinds": yanshi_render::object::RETOUCH_KINDS,
         "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
         "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
-        "example_mediums": ["example-dab"],
+        "example_mediums": ["example"],
         "brush_settings": brush_settings,
         "counts": {
             "blend_modes": yanshi_render::blend::BlendMode::NAMES.len(),
