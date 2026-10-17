@@ -568,3 +568,23 @@ ci.yml 的 brush parity：**`if: github.event_name != 'push'`** ✗（**∴ push
 
 - G2 **判据 ✓ 红了（红得对 ✓）／实现 ✗ 未做**（四处改动待落）；
 - G1／G3／G4 **未开始** ✗。
+
+### 17.6 G1 完成 ✓（`472ab905`）＋ 变异证明 ✓
+
+**做了什么** ✓：`brush_stroke` 与 `medium_stroke` 的 summary 互相点明分工（要载墨量／湿度／光谱混色 ⇒
+`medium_stroke` 的 `load`／`wetness`／`color_mixing=pigment`，**不是** `brush_params` ✓，∵ `.myb` 63 项里没有这两项 ✓）；
+`list_engine_capabilities` 增 `medium_params`；判据加一条**读 `medium_stroke` 的 schema 与工具返回的 `names` 逐项比** ✓。
+
+**判据当场打回我一次** ✓：我第一版手写 11 项、漏了 `layer_id` 与 `object_id` ✗ ⇒ 判据报「工具 [...]｜源码 [...]」
+⇒ 从源码抽出 **13 项**对齐后才绿 ✓ —— **∴ 这正是"读源码、不硬编码"的价值** ✓（**∴ 若两边都手写同一个错清单，会双双错误地绿 ✗**）。
+
+**变异证明** ✓（按目标：删掉 schema 里一个参数）：
+```
+删掉 `param!("wetness", …)` ⇒ **不重建**（判据读源码 ✓）⇒ 跑判据：
+  ✗ medium_params 与 medium_stroke schema 一致：工具 [13 项]｜源码 [12 项]
+  **退出码 1** ✓
+恢复后 脏=0、`param!("wetness"` 回来 1 处 ✓
+```
+⇒ **∴ G1 完整 ✓**：实现 ✓ ＋ 判据绿 ✓ ＋ 变异红 ✓。
+
+**G2／G3／G4 仍未开始** ✗（G2 判据已红得对 ✓，四处改点与陷阱已记在 17.3 ✓）。
