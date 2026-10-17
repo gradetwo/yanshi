@@ -1021,11 +1021,21 @@ fn validate_shape_geometry(data: &Value) -> Result<()> {
                     ))
                 } else {
                     let object = bbox.as_object()?;
+                    // bbox 里既接受 w/h，也接受 width/height（第 1000+ 轮 ✓）：
+                    // 同仓的 `create_selection` 用的是顶层 x/y/width/height ✗，而这里要 bbox.{x,y,w,h} ✗
+                    // ⇒ 两种约定并存 ⇒ 写错名字时得到「bbox 宽高必须大于 0（实测 w=0、h=0）」✗，
+                    // 完全看不出是**字段名**的问题 ✓（Muse 报告 §1 的同类坑 ✓）。
+                    let pick = |long: &str, short: &str| {
+                        object
+                            .get(long)
+                            .or_else(|| object.get(short))
+                            .and_then(Value::as_f64)
+                    };
                     Some((
-                        object.get("x")?.as_f64()?,
-                        object.get("y")?.as_f64()?,
-                        object.get("w")?.as_f64()?,
-                        object.get("h")?.as_f64()?,
+                        pick("x", "x")?,
+                        pick("y", "y")?,
+                        pick("width", "w")?,
+                        pick("height", "h")?,
                     ))
                 }
             });
