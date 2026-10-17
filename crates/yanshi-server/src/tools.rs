@@ -18539,7 +18539,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "layer_default", "patch": {"blend_mode": "multiply"}}"#,
     ),
     ("get_brush_settings", r#"{"brush": "Clouds"}"#),
-    ("set_brush_setting", r#"{"brush": "Clouds", "setting": "smudge", "value": 0.5}"#),
+    (
+        "set_brush_setting",
+        r#"{"brush": "Clouds", "setting": "smudge", "value": 0.5}"#,
+    ),
     ("list_engine_capabilities", r#"{}"#),
     ("list_assets", r#"{"kind": "brush", "tag": "fur"}"#),
     // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**写 ✓（`browser-ui-check.mjs` 的 fill/draw_shape ✓），
