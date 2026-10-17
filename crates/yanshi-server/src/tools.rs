@@ -16471,23 +16471,41 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 let bbox = match selection.shape.get("bbox") {
                     Some(bbox) => bbox,
                     None => {
-                        let points = selection.shape.get("points")?.as_array()?;
-                        let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
-                        let (mut bx, mut by) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-                        for point in points {
-                            let pair = point.as_array()?;
-                            let x = pair.first()?.as_f64()?;
-                            let y = pair.get(1)?.as_f64()?;
-                            ax = ax.min(x);
-                            ay = ay.min(y);
-                            bx = bx.max(x);
-                            by = by.max(y);
+                        // ★ rect／ellipse 的形状是 x/y/width/height 或 cx/cy/rx/ry，**没有 points** ✗ ★
+                        // ⇒ 原来这里只读 `points` ⇒ `?` 静默返回 None ⇒ filter_map 丢掉该选区 ✗
+                        // ⇒ **∴ 于是 clip 报"找不到选区 ⇒ 现有：（一个都没有）"** ✗（Muse 的 §13「幽灵选区」✓）
+                        // ⇒ **∴ 这里先把 rect／ellipse 的矩形算出来 ✓，再退回 points ✓**。
+                        let num = |k: &str| selection.shape.get(k).and_then(Value::as_f64);
+                        if let (Some(x), Some(y), Some(w), Some(h)) =
+                            (num("x"), num("y"), num("width"), num("height"))
+                        {
+                            owned_bbox = json!({"x": x, "y": y, "w": w, "h": h});
+                            &owned_bbox
+                        } else if let (Some(cx), Some(cy), Some(rx), Some(ry)) =
+                            (num("cx"), num("cy"), num("rx"), num("ry"))
+                        {
+                            owned_bbox =
+                                json!({"x": cx - rx, "y": cy - ry, "w": rx * 2.0, "h": ry * 2.0});
+                            &owned_bbox
+                        } else {
+                            let points = selection.shape.get("points")?.as_array()?;
+                            let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
+                            let (mut bx, mut by) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+                            for point in points {
+                                let pair = point.as_array()?;
+                                let x = pair.first()?.as_f64()?;
+                                let y = pair.get(1)?.as_f64()?;
+                                ax = ax.min(x);
+                                ay = ay.min(y);
+                                bx = bx.max(x);
+                                by = by.max(y);
+                            }
+                            if !ax.is_finite() || !bx.is_finite() {
+                                return None;
+                            }
+                            owned_bbox = json!({"x": ax, "y": ay, "w": bx - ax, "h": by - ay});
+                            &owned_bbox
                         }
-                        if !ax.is_finite() || !bx.is_finite() {
-                            return None;
-                        }
-                        owned_bbox = json!({"x": ax, "y": ay, "w": bx - ax, "h": by - ay});
-                        &owned_bbox
                     }
                 };
                 let number = |key: &str| bbox.get(key).and_then(Value::as_f64).unwrap_or(0.0);
