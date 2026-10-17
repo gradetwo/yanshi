@@ -34,6 +34,12 @@ if (wanted.size === 0) { console.log("  ✗ 没从 .myb 里读到任何 inputs �
 // 名字解析器存在吗（`set_brush_dynamics` 里按 {设置}_{输入} 解析）⇒ 存在则可覆盖全部。
 const resolver = /match_indices\('_'\)/.test(src) && src.includes("from_cname(setting_name)");
 const missing = resolver ? [] : [...wanted].filter((w) => !have.has(w));
+// 名字解析器必须在：否则覆盖率掉回 7/187，而 MAPPING 条数不变 => 只数条数发现不了。
+if (!resolver) {
+  console.log("  ✗ 源码里没有 {设置}_{输入} 的名字解析器 => 覆盖率只有 7/187（3.7%）");
+  process.exit(1);
+}
+console.log("  ✓ 名字解析器在（按 {设置}_{输入} 解析）");
 console.log(`  .myb 里真实存在的 (setting,input) 组合：**${wanted.size}** 个 ✓`);
 console.log(`  MAPPING：**${mapped.length}** 条 ✓`);
 if (mapped.length < MIN_MAPPED) {
