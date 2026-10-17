@@ -10550,7 +10550,10 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
     const MAPPING: [(&str, &str, &str); 7] = [
         ("size_pressure", "radius_logarithmic", "pressure"),
         ("opacity_pressure", "opaque", "pressure"),
-        ("tilt_size", "radius_logarithmic", "tilt"),
+        // tilt 的**真实输入名**是 `tilt_declination`（86 支笔用）✗ —— 原来写的 `"tilt"` 在 199 支笔里
+        // **一支都对不上**（实测：`tilt_declination` 86／`tilt_ascension` 10／`"tilt"` **0**）
+        // ⇒ **∴ 那一条映射**从未生效**✗（Muse 的 P0 需求，已确认 ✓）
+        ("tilt_size", "radius_logarithmic", "tilt_declination"),
         ("size_speed", "radius_logarithmic", "speed1"),
         ("opacity_speed", "opaque", "speed1"),
         ("opacity_multiply_pressure", "opaque_multiply", "pressure"),
