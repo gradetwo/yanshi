@@ -308,3 +308,44 @@ medium_stroke(medium: "example-dab") ⇒ {"detail":"**未知介质 example-dab**
 **∴ 我按**文件名**推**介质 id**✗**（`example-dab.wasm` ⇒ 以为是 `example-dab` ✓）—— **∴ 而 id 是 `example` ✓**
    ⇒ **∴ 前两次是"没读到就当成没有"✗，这次是"看到文件名就当成了 id"✗** ⇒ **∴ 同一个病：**拿推断代替读取**✗** ✓
    ⇒ **∴ 而这次是**一次 curl 就抓住了**✓**（**∴ 成本最低的一次 ✓**）。
+
+## 十四、P2 落地与证据：四组**语义别名** ✓（第 1000+ 轮 ✓）
+
+### 14.1 做了什么 ✓
+
+**∴ 在 `apply_brush_params` 的 `match` **之前**加别名展开** ✓（**∴ 四个调用点全自动受益 ✓**）：
+
+| 别名 | 展开成（`.myb` 真名 ✓） |
+|---|---|
+| **`hand_jitter`** | `slow_tracking` ＋ `tracking_noise` ＋ `offset_by_random` |
+| **`speed_gain`** | `speed1_gamma` ＋ `speed2_gamma` ＋ `speed1_slowness` ＋ `speed2_slowness` |
+| **`color_variance`** | `change_color_h` ＋ `change_color_v` ＋ `change_color_hsl_s` |
+| **`smudge_amount`** | `smudge` ＋ `smudge_length` ＋ `smudge_transparency` |
+
+**∴ 展开仍走 `BrushSetting::from_cname` ✓** ⇒ **∴ 不可能写出引擎不认识的名字 ✓**；
+**∴ 组内每项都设成给的那个值 ✓**（**∴ 简单、可预测、可判据 ✓**）
+
+### 14.2 判据的**两层** ✓（**互补，缺一层都不行**）
+
+| 层 | 证明什么 | 变异时 |
+|---|---|---|
+| **结构断言**（读 `tools.rs` 里的别名表 ✓） | **展开**完整** ✓** | **删一项 ⇒ 红 ✓** |
+| **像素断言**（`swatch_brush_strokes` 跑两次比字节 ✓） | **展开**有效** ✓** | **真名写错 ⇒ 红 ✓** |
+
+**本机实测 ✓**：8 项全过（4 结构 ＋ 4 像素），退出码 0 ✓。
+**变异 ✓**：删 `hand_jitter` 的 `offset_by_random` ⇒
+`源码 [slow_tracking, tracking_noise]｜期望 [offset_by_random, slow_tracking, tracking_noise]` ⇒ **红 ✓，退出码 1** ✓。
+
+### 14.3 ★★ 这一笔最值钱的发现：**只比像素有盲区** ✗
+
+```
+**∴ 我第一版判据只比像素 ✗ ⇒ 变异（删 `offset_by_random`）**活下来了**✗✓（**判据仍绿 ✓**）
+   ⇒ **∴ 原因 ✓**：**那项在 `oil-mop` 上**本来就不生效**✗ ⇒ **∴ 删掉它 ⇒ 像素不变 ⇒ 判据看不出来 ✓**
+   ⇒ **∴ 结论 ✓**：**像素等价只能证明「生效的项一致」✗，证明不了「展开完整」✗✓**
+**∴ 而修法 ✓**：**再加一层"读源码别名表、逐项比对"的结构断言 ✓**（**∴ 它不需要重建 ✓，因为读的是文件 ✓**）
+```
+
+### 14.4 ★ 又犯一次的错（**如实 ✓**）
+
+**∴ 取退出码时写成 `node … | head -4` ✗ ⇒ `$?` 拿到的是 `head` 的 ✓** ⇒ **∴ 重跑一次不带管道的才拿到真的 `1` ✓**
+   ⇒ **∴ 这条本 session 已第三次 ✓**（**∴ 前两次：`png` 计数、`brush-settings` 判据 ✓**）
