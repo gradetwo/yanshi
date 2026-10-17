@@ -338,7 +338,7 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
           # 每个 artifact 里都有一份**该平台自己算的** SHA256SUMS ✓ ⇒ 合并去重 ✓
-          find artifacts -name SHA256SUMS -print -exec cat {} \; > merged.txt
+          find artifacts -name SHA256SUMS -exec cat {} \; > merged.txt
           sort -k2 merged.txt | uniq > SHA256SUMS
           echo "== 合并后的校验和 =="
           cat SHA256SUMS
