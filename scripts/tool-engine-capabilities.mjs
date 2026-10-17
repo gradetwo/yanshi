@@ -22,7 +22,8 @@ const body = await reply.json();
 // 从源码里抠常量长度 ✓（每条都要求**恰好一处**匹配 ✗ ⇒ 找不到就退 3，不假装通过 ✓）
 const expected = (file, pattern) => {
   const text = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
-  const hits = [...text.matchAll(pattern)];
+  // **`matchAll` 要求全局正则** ✗（缺 `g` 会 TypeError）⇒ 这里补上 ✓
+  const hits = [...text.matchAll(new RegExp(pattern.source, "g"))];
   if (hits.length !== 1) {
     console.log(`  ✗ 在 ${file} 里找不到唯一的常量声明（命中 ${hits.length} 处）⇒ 判据无法判定`);
     process.exit(3);
