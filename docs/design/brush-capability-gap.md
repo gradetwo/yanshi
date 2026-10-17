@@ -11,7 +11,7 @@
 | **图元** | **9 种**：`Stroke`／`Shape`／`Text`／`Adjustment`／`Filter`／`RasterPatch`／`Retouch`／`Liquify`／`Unsupported` | `object.rs:25` |
 | **滤镜** | **14 个名字**（`FILTER_NAMES: [&str; 14]`）：invert／levels／exposure／curves／posterize／saturation／sharpen／noise／vignette／glow／clarity／dehaze／**relief**（**别名 `emboss`、`impasto` 都指向它**） | `filter.rs:1170`、`:147` |
 | **调整** | **12 个名字**（`ADJUSTMENT_NAMES: [&str; 12]`） | `filter.rs:1154` |
-| **混合模式** | **10 个**：Normal／Multiply／Screen／Overlay／Darken／Lighten／Add／Subtract／Difference／ColorDodge | `blend.rs`，`BlendMode::NAMES` |
+| **混合模式** | **11 个**（`BlendMode::NAMES: [&'static str; 11]`） | `blend.rs:58` |
 | **修图（Retouch）** | **4 种**：`clone_stamp`／`heal`／`smudge`／`erase`（**其余进 `unsupported` ✓**） | `render.rs:3745-3760` |
 | **液化（Liquify）** | **3 种**：`push`／`twirl`／`pinch`（负强度＝膨胀 ✓） | `object.rs:127` |
 | **形状（Shape）** | 矩形／椭圆／多边形 | `tools.rs:1682`（`draw_shape` summary） |
@@ -120,3 +120,34 @@
 ### 7.4 恢复 ✓
 
 变异已撤销（`cp` 回原文件 + 重建 ✓），`git status` 干净 ✓；判据在**未变异**版本上仍是 7 条全过 ✓。
+
+## 八、★ 更正与追加实测（第 1000+ 轮，第二轮核对 ✓）
+
+### 8.1 更正：混合模式是 **11 个**，不是 10 ✗
+
+`blend.rs:58` 写着 **`pub const NAMES: [&'static str; 11]`** ✓ —— 我早先按
+`^\s+[A-Z][A-Za-z]+` 数枚举变体，**数漏了一个** ✗ ⇒ 表格里写成了 10 ✗。
+**∴ 这是"用正则数枚举"这种做法的固有风险 ✓** —— **∴ 权威数应当读 `NAMES` 的数组长度 ✗**（写给后来者 ✓）。
+
+### 8.2 追加：P1（真实时间）**其实早就接通了** ✓，我上一轮说"缺 MCP→dtimes"是**错的** ✗
+
+```
+`tools.rs:14377`  `fn parse_brush_point_times(args)` ⇒ 从 **`points` 的第 4 个元素**读时间（秒）✓
+`tools.rs:16017`  `let dtimes = parse_brush_point_times(args)?;` ✓
+`tools.rs:15838`  `stamp_stroke_from(…, points, &mut previous_here, dtimes)`（注释「第 254 轮实测修」）✓
+`tools.rs:18803`  判据 `dtimes_reach_the_engine` 专门守着它 ✓
+```
+⇒ **∴ `brush_stroke` 的 `points: [[x, y, pressure, time_seconds], …]` ✓ —— **时间已经到达引擎** ✓
+   ⇒ **∴ 我上一轮的结论是错的 ✓**（**∵ 我只读了 `stamp_stroke()` 那个包装（内部传 `&[]` ✗），漏读了 800 行外的显式传参 ✓**）
+   ⇒ **∴ 教训 ✓：**"某个包装函数传空"≠"整条链没接"✗ —— **∴ 要顺着**真实调用点**读，不是顺着名字读 ✓**
+
+### 8.3 追加：P4 的真实成本 —— 三个列表**没有常量** ✗
+
+| 列表 | 权威处 | 有常量吗 |
+|---|---|---|
+| 修图 4 型 | `render.rs:3754-3757` 四个字符串比较 | ✗ **没有** |
+| 液化 3 型 | `object.rs:127` 的文档注释 ＋ `:342` 缺省 `"push"` | ✗ **没有** |
+| 形状类型 | `ShapeKind` 枚举（`object.rs`） | ✓ 有枚举 |
+| 滤镜 14 / 调整 12 / 混合 11 | `filter.rs:1170`／`:1154`／`blend.rs:58` | ✓ **都有** |
+
+⇒ **∴ P4 要"不漂移地导出"，必须**先把前两个提成常量**✗，并让渲染器引用它 ✓** —— **∴ 那是下一轮的正事 ✓**。
