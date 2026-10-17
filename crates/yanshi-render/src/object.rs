@@ -25,13 +25,13 @@ pub enum ShapeKind {
 /// **为什么要有这个常量** ✗：这 4 个名字此前**只散落在渲染器的四个字符串比较里**
 /// （`kind != "clone_stamp" && …`）✗ ⇒ **∴ 既没法导出给 MCP，也没法防漂移** ✗。
 /// **∴ 现在渲染器与 MCP 都引用这一处 ✓**。
-pub const RETOUCH_KINDS: [&'static str; 4] = ["clone_stamp", "heal", "smudge", "erase"];
+pub const RETOUCH_KINDS: [&str; 4] = ["clone_stamp", "heal", "smudge", "erase"];
 
 /// **液化（Liquify）引擎侧真正实现的模式** ✓（第 1000+ 轮 ✓）。
 ///
 /// `push`（推力）／`twirl`（旋转）／`pinch`（收缩，负强度即膨胀 ✓）——
 /// 此前只写在文档注释与一个 `.unwrap_or("push")` 里 ✗ ⇒ **∴ 提成常量，供 MCP 导出 ✓**。
-pub const LIQUIFY_KINDS: [&'static str; 3] = ["push", "twirl", "pinch"];
+pub const LIQUIFY_KINDS: [&str; 3] = ["push", "twirl", "pinch"];
 
 /// 渲染图元。
 #[derive(Debug, Clone, PartialEq)]
