@@ -3027,7 +3027,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "brush_params",
                 Object,
                 false,
-                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
+                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!("layer_id", String, true, "目标图层"),
@@ -10661,6 +10661,7 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
         "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
         "example_mediums": ["example"],
+        "brush_aliases": BRUSH_ALIASES,
         "brush_settings": brush_settings,
         "counts": {
             "blend_modes": yanshi_render::blend::BlendMode::NAMES.len(),
@@ -15567,6 +15568,14 @@ pub(crate) fn replay_brush_bitmap(
 ///
 /// **每组取的都是**同一件事的若干面**✗**：例如手抖 = 慢跟踪 ＋ 跟踪噪声 ＋ 随机偏移 ✓
 /// ⇒ **∴ 组名给一个值 ⇒ 组内每一项都设成它 ✓**（**∴ 简单、可预测、可判据 ✓**）。
+/// **四组语义别名的名字** ✓（`list_engine_capabilities` 与 `brush_params` 的说明共用这一处 ✓）。
+pub const BRUSH_ALIASES: [&str; 4] = [
+    "hand_jitter",
+    "speed_gain",
+    "color_variance",
+    "smudge_amount",
+];
+
 fn semantic_brush_alias(key: &str) -> Option<&'static [&'static str]> {
     match key {
         // 手抖与笔势：慢跟踪 ＋ 跟踪噪声 ＋ 随机偏移 ✓

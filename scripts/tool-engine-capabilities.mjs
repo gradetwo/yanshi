@@ -31,11 +31,11 @@ const expected = (file, pattern) => {
   return Number(hits[0][1]);
 };
 const wants = [
-  ["blend_modes", "crates/yanshi-render/src/blend.rs", /pub const NAMES: \[&'static str; (\d+)\]/],
+  ["blend_modes", "crates/yanshi-render/src/blend.rs", /pub const NAMES: \[(?:&(?:'static )?)?str; (\d+)\]/],
   ["filters", "crates/yanshi-render/src/filter.rs", /pub const FILTER_NAMES: \[&str; (\d+)\]/],
   ["adjustments", "crates/yanshi-render/src/filter.rs", /pub const ADJUSTMENT_NAMES: \[&str; (\d+)\]/],
-  ["retouch_kinds", "crates/yanshi-render/src/object.rs", /pub const RETOUCH_KINDS: \[&'static str; (\d+)\]/],
-  ["liquify_kinds", "crates/yanshi-render/src/object.rs", /pub const LIQUIFY_KINDS: \[&'static str; (\d+)\]/],
+  ["retouch_kinds", "crates/yanshi-render/src/object.rs", /pub const RETOUCH_KINDS: \[(?:&(?:'static )?)?str; (\d+)\]/],
+  ["liquify_kinds", "crates/yanshi-render/src/object.rs", /pub const LIQUIFY_KINDS: \[(?:&(?:'static )?)?str; (\d+)\]/],
 ];
 let bad = 0;
 const check = (ok, why) => {
