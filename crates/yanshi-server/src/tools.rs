@@ -17956,6 +17956,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **协作式取消** ✓（P1）：置位后**不再开始新的子调用** ✓，
     // 并把这一批**整体回滚** ✓（"一半的批次"比"什么都没做"更难收拾 ✗）。
     let mut cancelled: Option<YanshiError> = None;
+    // 失败要留痕（第 1000+ 轮）：子调用失败时 ok 仍是 true ⇒ 静默吞掉 ⇒ 收集它们，返回里给 failed_calls。
+    let mut failed_calls: Vec<Value> = Vec::new();
     for (call_index, call) in calls.iter().enumerate() {
         // **安全点** ✓：每个子调用之前检查一次 ✓ ——
         // `batch` 正是"长任务"的典型形态 ✓（报告实测 300 笔 ⇒ 4~6 分钟 ✓）
@@ -17995,12 +17997,29 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             Some(spec) => match dispatch(spec, ctx, &arguments) {
                 Ok(value) => ok_response(value),
                 // 单个调用失败不回滚已提交的原子（append-only），逐项报告 5.7 错误。
-                Err(error) => error_response(&error),
+                Err(error) => {
+                    let rendered = error_response(&error);
+                    failed_calls.push(serde_json::json!({
+                        "index": call_index,
+                        "name": name,
+                        "error": rendered,
+                    }));
+                    rendered
+                }
             },
-            None => error_response(&YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("batch 中的工具 {name} 不存在")),
-            )),
+            None => {
+                // 工具不存在也走这里 ⇒ 同样要留痕（第 1000+ 轮）。
+                let rendered = error_response(&YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("batch 中的工具 {name} 不存在")),
+                ));
+                failed_calls.push(serde_json::json!({
+                    "index": call_index,
+                    "name": name,
+                    "error": rendered,
+                }));
+                rendered
+            }
         };
         if let Some(atom_id) = value.get("atom_id").and_then(Value::as_str) {
             atom_ids.push(json!(atom_id));
@@ -18095,6 +18114,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         Value::Null
     };
     Ok(json!({
+        // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（ok 仍是 true）。
+        "failed_calls": failed_calls,
+
         "preview": preview_value,
         "changeset_id": changeset,
         "calls": results,
