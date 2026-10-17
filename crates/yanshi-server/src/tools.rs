@@ -5951,7 +5951,15 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let geometry = match kind.as_str() {
         "rect" => json!({
             "kind": "rect",
-            "bbox": {"x": number("x", 0.0), "y": number("y", 0.0), "w": number("w", 0.0), "h": number("h", 0.0)},
+            // 宽高**两个名字都认**（第 1000+ 轮 ✓）：这里原来只读 `w`/`h` ✗，
+            // 而 `create_selection` 用的是 `width`/`height` ✗ ⇒ **∴ 同一个 rect，两个工具要不同字段名 ✗**
+            // ⇒ 写错时得到「bbox 宽高必须大于 0（实测 w=0、h=0）」✗，看不出是字段名问题 ✓（与报告 §1 同型 ✓）。
+            "bbox": {
+                "x": number("x", 0.0),
+                "y": number("y", 0.0),
+                "w": shape.get("width").and_then(Value::as_f64).unwrap_or_else(|| number("w", 0.0)),
+                "h": shape.get("height").and_then(Value::as_f64).unwrap_or_else(|| number("h", 0.0)),
+            },
             "feather": feather,
         }),
         "ellipse" => {
