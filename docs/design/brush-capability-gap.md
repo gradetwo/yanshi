@@ -275,3 +275,36 @@ param!("brush_params", Object, false,
 
 ⇒ **∴ 共同来源 ✓**：**读代码时**截断**✗** ⇒ **∴ 而代价都是**先写错结论、再花一轮改账**✗✓**。
 ⇒ **∴ 给自己记一条 ✓**：**在写"缺什么"之前，先把那一处的**完整函数体**读到它的结尾 `}` ✓**（**∴ 用 `awk` 找 `^}` ✓，就像这一轮 ✓**）。
+
+## 十三、★★ 实测两件事：② 不是缺口 ✓；但**我把示例介质的名写错了** ✗
+
+### 13.1 `medium` 有校验、**也给候选** ✓ —— ② 完全不是缺口
+
+```
+错介质名 ⇒ {"detail":"**未知介质 definitely_not_a_medium ⇒ 可用：oil / watercolor / marker / pencil / pixel / example**",
+            "error_code":"invalid_argument"}
+```
+⇒ **∴ 校验在 ✓、候选在 ✓** ⇒ **∴ 原表 ② 「未枚举化」**彻底不成立**✗✓**（**∴ 我上一轮说"待核"✓，这一轮**实测**✓**）
+
+### 13.2 ★ 但 `example-dab` 这个名字是**我编的** ✗ —— 真名是 `example`
+
+```
+medium_stroke(medium: "example-dab") ⇒ {"detail":"**未知介质 example-dab** ⇒ 可用：… / example"}
+```
+⇒ **∴ 真名 `example` ✓、我叫 `example-dab` ✗**（**∴ 我是按 `web/mediums/example-dab.wasm` 的**文件名**推的 ✗**）
+⇒ **∴ 而 `list_engine_capabilities` 里我写的 `example_mediums: ["example-dab"]` **是错的**✗✓**
+   ＋ **`mediums` 硬编码 5 个（oil/watercolor/marker/pencil/pixel）**✗ **漏了 `example`** ✗
+   ⇒ **∴ 两处都是**硬编码**✗ ⇒ **∴ 而它们都是**我手写的**✗ ⇒ **∴ 这恰好是"漂移"的典型 ✗**
+
+### 13.3 ∴ 由此产生的两条修正（**下一轮做 ✓**）
+
+| # | 修正 | 说明 |
+|---|---|---|
+| **1** | `list_engine_capabilities` 的介质清单**改成从引擎取** ✗ | 不再硬编码 5 个 ＋ 不再编 `example-dab` ✓；**∴ 若 `yanshi_medium_host` 没导出清单 ⇒ 至少改成 6 个真名 ✓**（oil/watercolor/marker/pencil/pixel/**example** ✓） |
+| **2** | **标注 `example` 是示例** ✗ | 它现在**混在"可用"清单里 ✓** ⇒ **∴ agent 会把它当成品用 ✗** ⇒ **∴ 在 `medium_stroke` 的候选消息里标成 `example（示例，别用于成品）` ✓** |
+
+### 13.4 ★ 又一次"我以为"（**本目标第 3 次** ✗）
+
+**∴ 我按**文件名**推**介质 id**✗**（`example-dab.wasm` ⇒ 以为是 `example-dab` ✓）—— **∴ 而 id 是 `example` ✓**
+   ⇒ **∴ 前两次是"没读到就当成没有"✗，这次是"看到文件名就当成了 id"✗** ⇒ **∴ 同一个病：**拿推断代替读取**✗** ✓
+   ⇒ **∴ 而这次是**一次 curl 就抓住了**✓**（**∴ 成本最低的一次 ✓**）。
