@@ -962,3 +962,44 @@ detail = **dehaze 需要 air: [r,g,b]（可用 estimate_dehaze 估计）**
 
 **∴ 所以 `FILTER_NAMES` 那 14 个**没有高报** ✓** —— **∴ 而这提醒我 ✓：
 **判定"未实现"之前，必须读 `detail` ✗**（**∴ `ok:false` 至少有三种原因：未实现 ✓、缺参数 ✓、参数越界 ✓**）。
+
+## 二十一、H3 的根因与修法 ✓（`brush parity` 的 32 分钟）
+
+### 21.1 根因**不是** `timeout-minutes` ✗
+
+```
+**∴ 我先猜的是**job 的 `timeout-minutes` 太小** ✗ —— **∴ 而它**是 40 分钟** ✓（**∴ 够 ✓**）
+**∴ 真正的凶器 ✓：`ci.yml:377` 那一行的** `timeout 1800 node scripts/kernel-brush-parity.mjs …` **✗**
+   ⇒ **∴ 1800 秒 ＝ 30 分钟 ✓ ⇒ **∴ 而实测跑 **32m1s** ✗ ⇒ **∴ `timeout(1)` 杀它 ⇒ 退出码 **124** ✓✓**
+   ⇒ **∴ 124 正是 GNU `timeout` 的"超时"退出码 ✓，与 GH Actions 的 `timeout-minutes` 无关 ✓**
+```
+
+**∴ 而它**差得很少**✗（30 vs 32m1s ✓）⇒ **∴ 这种"差 2 分钟"最像"偶发"✗ ⇒ **∴ 但它是**确定性**的 ✗（**∴ 每轮都 32 分钟 ✓**）
+
+### 21.2 修法 ✓
+
+| 项 | 改前 | 改后 | 依据 |
+|---|---|---|---|
+| 内部 `timeout` | `1800`（30 min ✗） | **`2400`（40 min）** | 实测 32m1s ⇒ **8 分钟余量** ✓ |
+| job `timeout-minutes` | `40` | **`50`** | 给内部 40 min 留出前面 `cargo build` 的时间 ✓ |
+| `continue-on-error` | `true` | **`true`（不动）** | **∴ 门禁语义不变 ✓** |
+
+### 21.3 判据 ✓（`scripts/tool-ci-parity-budget.mjs`，**变异已证会红 ✓**）
+
+```
+① 内部 timeout = 2400s（40 分钟）≥ 2400s 下限 ✓
+② 内部 40 分钟 + 余量 5 分钟 ≤ job 的 timeout-minutes（50） ✓
+③ continue-on-error 仍是 true ✓
+变异：`timeout 2400` → `1800` ⇒ **退出码 1**，报「内部 timeout = 1800s（30 分钟）≥ 2400s 下限」✓
+```
+
+**∴ 这条判据存在的理由 ✓**：`brush parity` 是 `continue-on-error: true` ✓ ⇒ **∴ 它被杀时整个 run 仍 `success`** ✗
+   ⇒ **∴ 没人会注意 ✗** ⇒ **∴ 只能靠判据盯住那两个数字 ✓**。
+
+### 21.4 H1／H2 也在此记一笔 ✓
+
+**H1 ✓**：`dehaze` 可用但**需要 `air: [r,g,b]`** ✓（**∴ 见第二十节的更正 ✓**）⇒ 三处可发现 ✓：
+`list_engine_capabilities.filters_needing_params` ✓／`add_filter` 的 `filter_name` 说明 ✓／`tool-engine-capabilities.mjs` 的两向判据 ✓。
+
+**H2 ✓**：那个"尚未接线 1"是 **`pwa-check-wrangler.mjs`** ✗（**∴ 它是部署前的环境探测 ✓，不是产品判据 ✓**）
+   ⇒ **∴ 归入 `NOT_CRITERIA` ✓ ⇒ 复算「尚未接线 = 0」✓**。
