@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 /// 允许出现的宿主时间 API 用法（文件 → 次数 → 理由）。
 fn allowlist() -> Vec<(&'static str, usize, &'static str)> {
     vec![
+        (
+            "crates/yanshi-render/src/bitmap_tiles.rs",
+            6,
+            "**`#[cfg(test)]` 里的 6 处 `Instant::now()`**（都在 `raster_patch_fixed_cost_splits_into_four_segments` \
+             这一条测试里，做四段分段计时：索引/分块/装配/解码与位块拷贝）—— **只在测试里、不进 wasm 目标代码** ✓。\
+             这条白名单是**补登记** ✗：该测试是早期加的，当时没同步更新白名单 ⇒ **从那以后这条 guard 一直红** ✗ \
+             （而它红在**只改 README** 的提交上也能复现 ⇒ 与本轮改动无关 ✓）。",
+        ),
+
         // **★ 第 733 轮新增 ✓**：**掩膜缓存的**组件级 A/B 基准**（`YANSHI_DAB_CACHE` 开关配套 ✓）。
         // **∴ 它**做什么 ✗**：**同一套参数连续盖章 4000 次**✗
         //   ⇒ **∴ 于是**量出**缓存开／关的墙钟**✦（**实测 8.6 ms vs 13.1 ms ⇒ **1.51×** ✓）
