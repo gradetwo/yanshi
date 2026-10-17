@@ -15619,6 +15619,20 @@ fn semantic_brush_alias(key: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// **别名展开的缩放系数** ✓（第 1000+ 轮 ✓）：**∴ 组名**不是"把同一个值复制到 N 个参数"✗** ——
+/// 各参数的**量纲不同** ✓ ⇒ **∴ 得各给一个系数 ✓**。
+///
+/// **∴ 为什么 `color_variance` 要 0.2 ✗**：实测（棕色 rgb(120,80,40) ＋ `color_variance: 0.15`）
+/// 色相从 **30.0°** 漂到 **84.2°**（**∴ 54.2° ✗，棕变绿 ✓**）⇒ **∴ 因为 `change_color_h` 拿到的是 0.15** ✓
+/// ⇒ **∴ 乘 0.2 ⇒ 0.03 ⇒ 约 ±11° ✓**（**∴ "一笔之内变色"的合理范围 ✓**）。
+/// **∴ 其余三组保持 1.0 ✓**：它们的成员量纲接近 ✓ ⇒ **∴ 不动 ⇒ 行为不变 ✓**（**∴ 只有 `color_variance` 变了 ✓**）。
+fn alias_scale(group_key: &str, name: &str) -> f32 {
+    match (group_key, name) {
+        ("color_variance", _) => 0.2,
+        _ => 1.0,
+    }
+}
+
 fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usize> {
     let object = params.as_object().ok_or_else(|| {
         YanshiError::new(
@@ -15639,7 +15653,7 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
         if let Some(group) = semantic_brush_alias(key) {
             for name in group {
                 if let Some(setting) = hokusai::BrushSetting::from_cname(name) {
-                    brush.get_mut(setting).base_value = number;
+                    brush.get_mut(setting).base_value = number * alias_scale(key, name);
                     applied += 1;
                 }
             }
