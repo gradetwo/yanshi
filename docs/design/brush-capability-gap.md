@@ -151,3 +151,49 @@
 | 滤镜 14 / 调整 12 / 混合 11 | `filter.rs:1170`／`:1154`／`blend.rs:58` | ✓ **都有** |
 
 ⇒ **∴ P4 要"不漂移地导出"，必须**先把前两个提成常量**✗，并让渲染器引用它 ✓** —— **∴ 那是下一轮的正事 ✓**。
+
+## 九、P4 落地与证据（第 1000+ 轮 ✓）
+
+### 9.1 新增 `list_engine_capabilities` ✓（`82d1a93b`，工具数 153 → 154）
+
+一次返回：`blend_modes`（11）／`filters`（14）／`adjustments`（12）／`retouch_kinds`（4）／
+`liquify_kinds`（3）／`mediums`（5）／`example_mediums`（`example-dab` ✓）／`brush_settings`（63 个 cname）／`counts`。
+
+**每个列表都引用引擎自己的常量** ✓：`BlendMode::NAMES`／`FILTER_NAMES`／`ADJUSTMENT_NAMES`／
+`RETOUCH_KINDS`／`LIQUIFY_KINDS`／`BrushSetting::ALL` ⇒ **∴ 加一种只改一处 ✓**。
+**`example-dab` 单独一栏** ✓（**∴ 它不是成品介质 ✓**）。
+
+### 9.2 判据 ✓（`scripts/tool-engine-capabilities.mjs`）
+
+**★ 设计要点 ✓**：**判据不写死 11/14/12/4/3** ✗ —— 它**直接读源码**里 `[&str; N]` / `[&'static str; N]` 的 N，
+要求每处**恰好一处**匹配（否则**退 3**，不假装通过 ✓），再与工具输出比 `counts` 与**数组长度** ✓。
+**∴ 这样它证明的不是"工具没坏"✗，而是"工具**没漂移**"✗✓** —— **∴ 真正的风险是有人加了一种修图而工具还报 4 ✓**。
+
+本机实测（真 server ✓）：
+```
+✓ blend_modes：工具报 11、列表长 11、源码常量 11
+✓ filters：14 / 14 / 14
+✓ adjustments：12 / 12 / 12
+✓ retouch_kinds：4 / 4 / 4
+✓ liquify_kinds：3 / 3 / 3
+✓ brush_settings：工具报 63、列出 63
+✓ example-dab 只在 example_mediums 里，不在 mediums 里
+✓ 退出码 0
+```
+### 9.3 ★ 变异证明（**有牙 ✓**）
+
+**变异**：把工具里的 `retouch_kinds` 写死成 `["clone_stamp", "heal", "smudge"]` ✗（源码常量是 4）⇒
+```
+✗ retouch_kinds：工具报 4、列表长 3、源码常量 4（不一致）   ← **红 ✓**
+✗ 能力清单有 1 处与引擎常量不一致                        ← 判据自报 ✓
+**退出码 1**（**直接取 ✓，没穿管道 ✓**）
+```
+⇒ **∴ 判据对「列表被写死/漂移」有牙 ✓✓**。
+
+### 9.4 ★ 两处我自己的错（**如实记 ✓，都在这一轮内被自己抓住**）
+
+1. **中文串里用了 ASCII 双引号** ✗（`…（含"示例介质不混入成品"这层语义）`）⇒ `node --check` 直接 `SyntaxError`
+   ⇒ **∴ 又踩了 AGENTS.md 那条「中文文本里一律用「」」✗**（改成「」后语法通过 ✓）；
+2. **`text.matchAll(pattern)` 但 `pattern` 没有 `g` 标志** ✗ ⇒ `TypeError: … non-global RegExp argument` ⇒ **判据根本没跑起来** ✗✓
+   ⇒ **∴ 而这一笔我**已经提交了**✗**（`92765145`）⇒ **∴ 下一笔 `76d8fa33` 是"修上一笔的坏判据"✓**
+   ⇒ **∴ 教训 ✓：语法通过 ≠ 跑得起来 ✗ ⇒ 判据必须**实跑一次**再提交 ✓**（**∴ 这条比"写判据"本身更贵 ✓**）。
