@@ -918,3 +918,21 @@ export_png post.png ⇒ **13486 字节**      ⇒ **差 2341 字节（约 15%）
 4. `get_document` **不含对象 `data`** ✗（搜不到是当然 ✓）；
 5. `git checkout` 恢复源码后**没重建** ✗ ⇒ 读到**旧二进制的假红** ✓；
 6. **`avg_brightness` 量不出浮雕** ✗（1e-6 ✓）⇒ 该用**字节差／差异像素数** ✓。
+
+### 19.3 ★ 别名修复**回退**了 ✗ —— 因为动了 `FILTER_NAMES` 的长度（破坏了契约 ✓）
+
+```
+**∴ 我做的 ✓**：把 `"emboss"`／`"impasto"` 加进 `FILTER_NAMES`（14 → 16 ✓），实测 `add_filter` 真的接受了
+   （`emboss ⇒ ok:true`、`impasto ⇒ ok:true` ✓）
+**∴ 但 CI 红了 ✗**：`test (stable)`／`test (beta)`／`GPU feature`
+   ⇒ **∴ 根因 ✓**：`crates/yanshi-render/tests/doc_consistency.rs:82` 用 **`FILTER_NAMES.len()`** 与文档**对账** ✗
+   ⇒ **∴ 改长度 = 改契约 ✓ ⇒ **∴ 文档里写的 14 与新 16 不符 ⇒ 红 ✓
+⇒ **∴ 已 `git revert 933517f3`** ✓（`7ee7bd80`）⇒ `FILTER_NAMES: [&str; 14]` 恢复 ✓、编译通过 ✓
+
+**∴ 更稳的修法（下一步 ✓）**：**不动常量** ✗ ⇒ **在 `add_filter` 的入口把别名归一化**✗
+   （`emboss`／`impasto` → `relief` ✓）⇒ **∴ 这样 `FILTER_NAMES` 仍是 14 ✓、`doc_consistency` 不动 ✓、
+   而 `add_filter` 也接受别名 ✓ ⇒ **∴ 三个目标同时满足 ✓✓**
+```
+
+**∴ 教训 ✓**：**"加两个名字"看起来最省 ✗，但它改的是**被别人对账的契约**✗** ——
+**∴ 所以改常量前要先 `grep` 谁在读它的 `len()` ✓**（**∴ 这一步我跳过了 ✗**）。
