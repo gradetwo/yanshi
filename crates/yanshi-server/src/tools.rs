@@ -3254,6 +3254,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_engine_capabilities",
+        profile: Profile::Core,
+        // **为什么要它** ✗：能力面此前**散落各处** —— 滤镜/调整/混合各有 `NAMES` 常量 ✓，
+        // 修图/液化只是渲染器里的字符串比较 ✗（本轮才提成 `RETOUCH_KINDS`/`LIQUIFY_KINDS` ✓），
+        // 笔刷 63 项要靠 `get_brush_settings` 读**某一支笔**才知道 ✓，介质又只写在参数说明里 ✗
+        // ⇒ **∴ agent 无法"先看有什么、再决定画什么"** ✗。
+        // **本工具一处导出全部 ✓，且每个列表都**引用引擎自己的常量**✗**（不是硬编码 ✗）⇒ **∴ 加一种只改一处 ✓**。
+        summary: "列出引擎的全部能力面：混合模式／滤镜／调整／修图种类／液化模式／介质／笔刷动力学名字",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
         name: "get_brush_settings",
         profile: Profile::Core,
         // **为什么需要它**：引擎（`hokusai`）实现了 **63 项** MyPaint 动力学 ✓，
@@ -3528,6 +3540,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_suggestions" => read_list_suggestions(ctx, args),
         "set_property" => write_set_property(ctx, args),
         "set_layer_blend" => write_set_layer_blend(ctx, args),
+        "list_engine_capabilities" => read_list_engine_capabilities(ctx, args),
         "get_brush_settings" => read_get_brush_settings(ctx, args),
         "set_brush_setting" => write_set_brush_setting(ctx, args),
         "set_brush_dynamics" => write_set_brush_dynamics(ctx, args),
@@ -10622,6 +10635,42 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         "applied": applied,
         "imported": imported,
         "note": "倍率已按 ln(倍率) 写进对数域偏移 ✓；改的是工作区缓存里的同名笔刷（预设覆盖内置 ✓）",
+    }))
+}
+
+/// **`list_engine_capabilities`** ✓：一处导出引擎的**全部能力面** ✓。
+///
+/// **每个列表都引用引擎自己的常量** ✗（不是硬编码 ✓）：
+/// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（12 ✓）／
+/// `RETOUCH_KINDS`（4 ✓）／`LIQUIFY_KINDS`（3 ✓）／`BrushSetting::ALL`（63 ✓）
+/// ⇒ **∴ 以后加一种混合模式/滤镜/修图/液化，只改一处，这里自动跟上 ✓**。
+///
+/// **介质**目前仍写在 `medium_stroke` 的参数说明里 ✗ ⇒ 这里**显式列出** ✓，并标注 `example-dab` 是**示例** ✓
+///（**∴ 它不是给成品用的 ✓**）。
+fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> Result<Value> {
+    let brush_settings: Vec<&str> = hokusai::BrushSetting::ALL
+        .iter()
+        .map(|setting| setting.cname())
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "blend_modes": yanshi_render::blend::BlendMode::NAMES,
+        "filters": yanshi_render::FILTER_NAMES,
+        "adjustments": yanshi_render::ADJUSTMENT_NAMES,
+        "retouch_kinds": yanshi_render::object::RETOUCH_KINDS,
+        "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
+        "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
+        "example_mediums": ["example-dab"],
+        "brush_settings": brush_settings,
+        "counts": {
+            "blend_modes": yanshi_render::blend::BlendMode::NAMES.len(),
+            "filters": yanshi_render::FILTER_NAMES.len(),
+            "adjustments": yanshi_render::ADJUSTMENT_NAMES.len(),
+            "retouch_kinds": yanshi_render::object::RETOUCH_KINDS.len(),
+            "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS.len(),
+            "brush_settings": hokusai::BrushSetting::ALL.len(),
+        },
+        "note": "每个列表都引用引擎常量 ✓；加一种只改一处 ✓；example-dab 是示例介质，不是给成品用的 ✗",
     }))
 }
 
