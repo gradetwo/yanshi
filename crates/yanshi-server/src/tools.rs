@@ -10609,6 +10609,77 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         inputs.insert(input.to_string(), Value::Array(points));
         applied.push(json!({"curve": key, "setting": setting, "input": input}));
     }
+    // 任意 {设置}_{输入} 键：静态表只覆盖 3.7%（7/187），这里按名字解析，覆盖率直接到 100%。
+    // 规则：从键里找 `_`，取前缀当设置名；前缀必须在 63 个规范名里，且该设置真的带这个 inputs 键。
+    {
+        let rest: Vec<(String, Value)> = curve
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .filter(|(k, _)| !MAPPING.iter().any(|(key, _, _)| key == &k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (key, knots) in rest {
+            let mut splits = key.match_indices('_').map(|(i, _)| i).collect::<Vec<_>>();
+            splits.reverse();
+            for pos in splits {
+                let (setting_name, input_name) = (&key[..pos], &key[pos + 1..]);
+                if input_name.is_empty() {
+                    continue;
+                }
+                if hokusai::BrushSetting::from_cname(setting_name).is_none() {
+                    continue;
+                }
+                let has_input = data
+                    .get("settings")
+                    .and_then(|v| v.get(setting_name))
+                    .and_then(|v| v.get("inputs"))
+                    .and_then(Value::as_object)
+                    .map(|o| o.contains_key(input_name))
+                    .unwrap_or(false);
+                if !has_input {
+                    continue;
+                }
+                let mut points: Vec<Value> = Vec::new();
+                let mut ok = true;
+                for pair in knots.as_array().map(|v| v.as_slice()).unwrap_or(&[]) {
+                    let Some(pair) = pair.as_array() else {
+                        ok = false;
+                        break;
+                    };
+                    let (Some(at), Some(factor)) = (
+                        pair.first().and_then(Value::as_f64),
+                        pair.get(1).and_then(Value::as_f64),
+                    ) else {
+                        ok = false;
+                        break;
+                    };
+                    if factor <= 0.0 {
+                        ok = false;
+                        break;
+                    }
+                    points.push(json!([at, factor.ln()]));
+                }
+                if !ok || points.is_empty() {
+                    continue;
+                }
+                if let Some(inputs) = data
+                    .get_mut("settings")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|m| m.get_mut(setting_name))
+                    .and_then(|v| v.get_mut("inputs"))
+                    .and_then(Value::as_object_mut)
+                {
+                    inputs.insert(input_name.to_string(), json!({ "points": points }));
+                    applied
+                        .push(json!({"curve": key, "setting": setting_name, "input": input_name}));
+                }
+                break;
+            }
+        }
+    }
     if applied.is_empty() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
