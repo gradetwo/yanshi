@@ -57,15 +57,35 @@ for (let round = 0; round < ROUNDS; round += 1) {
   singleTimes.push(Number(process.hrtime.bigint() - started) / 1e6);
 }
 
+// **规模判据** ✓（这一场补的 ✓）：光比"一次 vs N 次"不够 ✗ ——
+//   **∴ 因为任何"一次调用"都能省掉 49 次 HTTP 往返 ✗ ⇒ **∴ 即使内部逐点渲染也照样快 7 倍**✗（实测 0.133× ✓）
+//   ⇒ **∴ 真正能区分"一次渲染"与"内部循环"的**是**耗时怎么随点数涨**✗：
+//      · 一次渲染 ⇒ 1 个点的包围盒 vs 50 个点的包围盒 ⇒ 面积涨 20 倍，但**没有 N 次固定开销** ⇒ 涨得**亚线性** ✓
+//      · 内部循环 ⇒ **严格线性** ✗（10 点时 t，50 点时约 5t ✗）
+//   ⇒ **∴ 断言：50 点的耗时 / 10 点的耗时 < 2.5**✗（**∴ 线性增长会是 5 ✓**）✓
+const small = points.slice(0, 10);
+const smallTimes = [];
+for (let round = 0; round < ROUNDS; round += 1) {
+  const r = await call("sample_colors", { points: small });
+  if (r.body.ok !== true) { console.log("  ✗ sample_colors（10 点）失败"); process.exit(1); }
+  smallTimes.push(r.ms);
+}
 const batchMs = median(batchTimes);
+const smallMs = median(smallTimes);
+const scale = batchMs / smallMs;
+console.log(`  10 点 ⇒ **${smallMs.toFixed(1)} ms**｜50 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 5×）`);
 const singleMs = median(singleTimes);
 const ratio = batchMs / singleMs;
 console.log(`  ${ROUNDS} 轮交替，取中位数 ✓`);
 console.log(`  sample_colors（50 点，一次）  ⇒ **${batchMs.toFixed(1)} ms**`);
 console.log(`  50 次 sample_color            ⇒ **${singleMs.toFixed(1)} ms**`);
 console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓）`);
+if (scale >= 2.5) {
+  console.log("  ✗ 耗时随点数线性增长（50点/10点 ≈ 5×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
+  process.exit(1);
+}
 if (!(ratio < 0.5)) {
   console.log("  ✗ sample_colors 没有比逐点显著快 —— 最可能是内部循环调了单点（那样必然省不了）");
   process.exit(1);
 }
-console.log("  ✓ sample_colors 比 50 次 sample_color 快一倍以上");
+console.log("  ✓ sample_colors 比 50 次 sample_color 快一倍以上，且耗时**亚线性**（不是逐点渲染）");
