@@ -516,3 +516,55 @@ ci.yml 的 brush parity：**`if: github.event_name != 'push'`** ✗（**∴ push
    · **"全部"＝ **142**（注册表口径 ✓）** ✗ 而**不是 `/api/tools` 的 154** ✗
    ⇒ **∴ 断言原文把它并排打出来 ✓：`core 85 vs 85，全部 154 vs 142` ✓** —— **∴ 我按 154 写过一次，被它打回 ✓**
 ```
+
+## 十七、外部报告（油画 AI）的逐条核对与 G2 设计（第 1000+ 轮 ✓）
+
+### 17.1 核对结果：三条真、一条误判 ✓
+
+| 报告条目 | 结论 | 依据 |
+|---|---|---|
+| **#6** `load`/`wetness` 拿不到 ✗ | **误判** ✗ | `medium_stroke` 早有 `load`／`wetness`／`texture`／`color_mixing=rgb\|pigment`（`tools.rs:2829-2834`）；`DabInput` 在 `crates/yanshi-medium-host/src/lib.rs:204/218/235/249/263` 被构造 **5 次**（报告 grep 的是 `yanshi/crates` ✗、且在 `medium-oil` 里找 ✗） |
+| **#7** 只能糊不能融 ✓ | **真缺口** ✓ | `smudge` 的参数只有 `layer_id/points/size/smudge_length/hardness/opacity/object_id/z_index`（报错原文 ✓），**没有 deposit** |
+| **#8** 没有厚涂/浮雕 ✓（需限定 ✓） | **真缺口**（限定后 ✓） | 有 `impasto`＝`relief` 别名（在 `FILTER_NAMES` 14 个里 ✓），是亮/暗边缘伪浮雕；**没有高度场** ✓ |
+| **#10** 规范名清单只能从 `list_brushes` 拿 ✓ | **真缺口**（可发现性）✓ | 63 项只在 `list_brushes.canonical_param_names` 与 `list_engine_capabilities.brush_settings` 里 |
+
+**∴ #6 之所以被误判，恰好证明可发现性不足** ✓（G1 要修的就是这个 ✓）。
+
+### 17.2 G2 的设计：`deposit` 补的是**采到的色**，不是用户给的色 ✓
+
+| 方案 | 后果 |
+|---|---|
+| A. 补用户给的色 ✗ | **那就是 `rub`** ⇒ 落新色 ⇒ **造新硬边** ✗（报告自己否掉了 ✓） |
+| **B. 补该 stamp 采到的后方色 ✓** | **不引入任何新色** ✓ ⇒ 只把已有的色压实一点 ⇒ **"既带色、又不造新边"** ✓ |
+
+⇒ **∴ 采用 B ✓**；`deposit=0` ⇒ 不补 ⇒ 与今天完全一样 ✓；`deposit=1` ⇒ 每 stamp 都补 ⇒ 接近"用源色画一遍" ✓。
+
+### 17.3 要改的四处 ✓（**写回处不用动** ✓）
+
+```
+① crates/yanshi-render/src/object.rs:117 区   Retouch 结构体加 deposit: f64
+② 同文件 :292 区                              deposit: object.data.get("deposit").and_then(Value::as_f64).unwrap_or(0.0)
+   ⇒ **∴ 旧对象没有这个键 ⇒ 得 0.0 ⇒ 与今天一致 ✓✓**
+③ crates/yanshi-render/src/render.rs:3846 区  「采到色之后、写回之前」按 deposit × pressure 补一层
+④ crates/yanshi-server/src/tools.rs           write_retouch 把参数写进 data（**只在非零时写 ✓**）＋ schema 加 param
+```
+
+**★ 陷阱 ✓（第 1 轮发现 ✓）**：若在写回处**无条件**写出 `"deposit": 0.0` ⇒ 旧对象的 `data` 会**多一个键** ✗
+⇒ **∴ atom 内容变了 ⇒ "逐字节不变"当场破功** ✗ ✓ ⇒ **∴ 只在非零时写 ✓**。
+
+### 17.4 判据已就绪、且**红在正确的地方** ✓
+
+`scripts/tool-smudge-deposit.mjs`（三条断言 ✓；手法：**一变体一层** → 铺斑块 → 涂抹 → `export_png(layer_id, region, path)` 落盘 → 比 sha256 ＋ 比亮度 ✓；**∴ 三层互不干扰，不需要 undo（仓库没有 undo 工具 ✗）** ✓）：
+
+```
+**判据退出码 = 1** ✓
+✗ dep_zero: smudge 失败
+  {"detail":"smudge 不接受参数 deposit（拼写错误？）；可用参数：layer_id, points, size, smudge_length,
+   hardness, opacity, object_id, z_index"}
+⇒ **∴ 红在"参数不存在"，而不是"像素没变"** ✓ ⇒ **∴ 缺口是接线，不是算法 ✓✓**
+```
+
+### 17.5 进度（**如实 ✓**）
+
+- G2 **判据 ✓ 红了（红得对 ✓）／实现 ✗ 未做**（四处改动待落）；
+- G1／G3／G4 **未开始** ✗。
