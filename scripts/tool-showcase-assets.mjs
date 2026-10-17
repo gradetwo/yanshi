@@ -18,8 +18,6 @@
 import { readFileSync, existsSync, statSync } from "node:fs";
 
 const SHOWCASE = [
-  "degas-rehearsal-morning.png",
-  "degas-blue-dancers.png",
   "degas-backstage-oil.png",
   "degas-four-dancers-oil.png",
 ];
