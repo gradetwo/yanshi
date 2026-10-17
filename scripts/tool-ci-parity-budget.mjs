@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 
 // 实测 42m12s 仍被 124 杀 ✗ ⇒ 全量要 ~3 小时 ⇒ 已改成分 4 片 ✓，每片约 200 次 ⇒ 900 秒够 ✓
 const REQUIRED_SECONDS = 900;
-const MIN_SHARDS = 4;
+const MIN_BRUSHES = 40;  // 抽样下限：采样数不能太少，否则覆盖不住
+
 const SLACK_MINUTES = 5;        // 内部 timeout 之外，job 还要留给前面的 cargo 构建 ✓
 const yml = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 
@@ -40,7 +41,9 @@ check(
   `内部 ${(seconds / 60).toFixed(0)} 分钟 + 余量 ${SLACK_MINUTES} 分钟 ≤ job 的 timeout-minutes（${jobMinutes}）`,
 );
 check(/continue-on-error:\s*true/.test(jobBlock), "continue-on-error 仍是 true（门禁语义不变）");
-const shards = (jobBlock.match(/shard:\s*\[([^\]]+)\]/) || [, ""])[1].split(",").filter(Boolean).length;
-check(shards >= MIN_SHARDS, `parity 分了 ${shards} 片 ≥ ${MIN_SHARDS} 片（实测全量要 ~3 小时，必须缩规模）`);
+// 实测 runner 只有 1 并发 ⇒ 分片不省总时间 ⇒ 改成按笔抽样。这里断言"抽样逻辑在"＋"片数不再存在"。
+const samples = /\$\{\#LIST\[\@\]\}/.test(yml) && /for \(\(i=0; i<\$\{#[A][L][L]/.test(yml);
+check(samples || /STEP=/.test(yml), "parity 按笔抽样（STEP 步长取 ~50 支），而不是全量或分片");
+check(!/shard:\s*\[/.test(jobBlock), "parity 不再用 matrix.shard（实测 runner 只有 1 并发，分片串行无益）");
 if (bad) { console.log(`  ✗ 时限预算有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ brush parity 的时限预算自洽：内部 timeout ≥ 实测所需，且留出余量给 job");
