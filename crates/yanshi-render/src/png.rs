@@ -367,51 +367,60 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     for row in 0..height as usize {
         let filter = raw[row * (stride + 1)];
         let start = row * (stride + 1) + 1;
-        line.copy_from_slice(&raw[start..start + stride]);
-        for index in 0..stride {
-            let left = if index >= channels {
-                line[index - channels]
-            } else {
-                0
-            };
-            let up = previous[index];
-            let up_left = if index >= channels {
-                previous[index - channels]
-            } else {
-                0
-            };
-            let value = match filter {
-                0 => line[index],
-                1 => line[index].wrapping_add(left),
-                2 => line[index].wrapping_add(up),
-                3 => line[index].wrapping_add(((u16::from(left) + u16::from(up)) / 2) as u8),
-                4 => {
-                    // Paeth ✓（RFC 2083 §6.6 ✓）。
-                    let p = i32::from(left) + i32::from(up) - i32::from(up_left);
-                    let pa = (p - i32::from(left)).abs();
-                    let pb = (p - i32::from(up)).abs();
-                    let pc = (p - i32::from(up_left)).abs();
-                    let predictor = if pa <= pb && pa <= pc {
-                        left
-                    } else if pb <= pc {
-                        up
-                    } else {
-                        up_left
-                    };
-                    line[index].wrapping_add(predictor)
+        let src = &raw[start..start + stride];
+        match filter {
+            0 => line.copy_from_slice(src),
+            1 => {
+                line[..channels].copy_from_slice(&src[..channels]);
+                for i in channels..stride {
+                    line[i] = src[i].wrapping_add(line[i - channels]);
                 }
-                _ => return None,
-            };
-            line[index] = value;
+            }
+            2 => {
+                for i in 0..stride {
+                    line[i] = src[i].wrapping_add(previous[i]);
+                }
+            }
+            3 => {
+                for i in 0..channels {
+                    line[i] = src[i].wrapping_add((u16::from(previous[i]) / 2) as u8);
+                }
+                for i in channels..stride {
+                    let pred = ((u16::from(line[i - channels]) + u16::from(previous[i])) / 2) as u8;
+                    line[i] = src[i].wrapping_add(pred);
+                }
+            }
+            4 => {
+                for i in 0..channels {
+                    line[i] = src[i].wrapping_add(previous[i]);
+                }
+                for i in channels..stride {
+                    let a = line[i - channels];
+                    let b = previous[i];
+                    let c = previous[i - channels];
+                    let p = i32::from(a) + i32::from(b) - i32::from(c);
+                    let pa = (p - i32::from(a)).abs();
+                    let pb = (p - i32::from(b)).abs();
+                    let pc = (p - i32::from(c)).abs();
+                    let predictor = if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    };
+                    line[i] = src[i].wrapping_add(predictor);
+                }
+            }
+            _ => return None,
         }
-        for column in 0..width as usize {
-            let base = column * channels;
-            let (r, g, b, a) = if channels == 4 {
-                (line[base], line[base + 1], line[base + 2], line[base + 3])
-            } else {
-                (line[base], line[base + 1], line[base + 2], 255)
-            };
-            pixels.extend_from_slice(&[r, g, b, a]);
+        if channels == 4 {
+            pixels.extend_from_slice(&line);
+        } else {
+            for column in 0..width as usize {
+                let base = column * channels;
+                pixels.extend_from_slice(&[line[base], line[base + 1], line[base + 2], 255]);
+            }
         }
         previous.copy_from_slice(&line);
     }
