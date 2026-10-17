@@ -2650,7 +2650,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("layer_id", String, true, "目标图层"),
             param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
             param!("direction", Array, true, "推力方向 [dx,dy]（非零）"),
-            param!("size", Number, false, "影响直径（缺省 80）"),
+            param!("size", Number, false, "影响**直径**（缺省 80；没有 radius 参数，直径＝半径 ×2 ⇒ 想要半径 20 就传 40）"),
             param!("strength", Number, false, "强度 0-2（缺省 0.5）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
             param!("z_index", Integer, false, "层内 z 序（缺省放到同层最上方）"),
