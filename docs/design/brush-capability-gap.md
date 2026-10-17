@@ -616,3 +616,33 @@ let alpha = if deposit > 0.0 {
 
 **其余三处改动** ✓（`object.rs` 结构体 ＋ `:292` 解析 `.unwrap_or(0.0)` ＋ `tools.rs` 的 schema 与 `write_retouch` 写 `data`，
 **只在非零时写** ✓）：**∴ 都没动 ✓。**
+
+### 17.8 G2 实现进度（**编译过、判据②仍红，一处待查** ✗，第 1000+ 轮 ✓）
+
+**五处改动已落** ✓（`cargo build --release` 通过 ✓，1m33s 真重建 ✓）：
+```
+object.rs:136   Retouch 加 deposit: f64
+object.rs:324   解析 .data.get("deposit").unwrap_or(0.0)
+render.rs:3753  解构里绑定 deposit
+render.rs:3942  if deposit > 0.0 { 1-(1-base)(1-d) } else { base }   ← 缺省路径不进运算 ✓
+tools.rs:2701   schema param!("deposit", …)
+tools.rs:11512  data 里写 "deposit": deposit   ← **确认在同一处 `"data": {` 里 ✓**
+```
+
+**判据状态** ✓：
+```
+✓ 不给 deposit 与给 0 **逐字节相同**（40b9ce636c83 vs 40b9ce636c83）
+✗ deposit=0.6 改变了输出（哈希仍相同）
+✓ deposit=0.6 让那片更实（亮度 0.3730 → 0.3689）   ← **这条不可信 ✗**（见下）
+```
+
+**★ 两条自我纠错 ✓**：
+1. **③ 那条"亮度变了"不可信** ✗ —— `analyze_region` **不支持 `layer_id`** ✓（本 session 早先实测过 ✓）
+   ⇒ **∴ 它量的是**整幅**✗ ⇒ **∴ 差 0.0041 不能归因于 `deposit`** ✓
+   ⇒ **∴ 判据③必须改成**单层文档**（每变体一个新文档 ✓）或**互不重叠的三块区域**✓**；
+2. **"工程包里没有 `deposit`"是假证据** ✗ —— `export_project` 那次**根本没生成文件**（`ls` 报
+   `No such file or directory` ✓）⇒ **∴ 不能据此判断数据链断了** ✓。
+
+**已确认的** ✓：`smudge` **接受** `deposit: 0.6`（`ok: true` ✓）；`data` 里**确实写了** `"deposit": deposit`（`tools.rs:11512` ✓）；
+**渲染像素没变** ✗ ⇒ **∴ 疑点收敛到一处 ✓：`object.rs:295` 那个构造块，是否就是 `smudge` atom 实际走的路** ✗
+   （**∴ `tools.rs` 写的键是 `retouch_type` / `source_offset`，而 `object.rs` 读的是 `smudge_length` ✓ ⇒ **∴ 两者键名并不完全一致 ⇒ **∴ 说明中间可能有映射层 ✓ ⇒ **∴ 下一个要看的就是它 ✓**）

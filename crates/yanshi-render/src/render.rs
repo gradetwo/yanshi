@@ -3750,6 +3750,7 @@ impl Renderer {
                     opacity,
                     jitter,
                     smudge_length,
+                    deposit,
                 } => {
                     if !crate::object::RETOUCH_KINDS.contains(&kind.as_str()) {
                         track
@@ -3932,12 +3933,19 @@ impl Renderer {
                                 }
                             }
                         }
-                        let color = [
-                            straight[0],
-                            straight[1],
-                            straight[2],
-                            (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
-                        ];
+                        let color = [straight[0], straight[1], straight[2], {
+                            // **★ deposit ＝ 用同一个色再叠一层 ✓ ★**（**∴ 不是用户给的色 ✗**，
+                            // 那等于 `rub`、会造新硬边 ✗）。**∴ 缺省 0 时**不进运算**✗** ⇒
+                            // **∴ "逐字节不变"由结构保证** ✓（**∴ 写成 1-(1-a)(1-0) 在 f32 下
+                            // 不保证逐位回到 a ✗**）。
+                            let base = (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0);
+                            if deposit > 0.0 {
+                                let d = (deposit as f32).clamp(0.0, 1.0);
+                                1.0 - (1.0 - base) * (1.0 - d)
+                            } else {
+                                base
+                            }
+                        }];
                         // 选区「约束落笔」✓：印章的 alpha 本身就是"增量权重" ✓ ——
                         // 逐像素乘以覆盖度即等价于"按覆盖度衰减该笔的改动" ✓，
                         // 且**从不触碰选区外像素** ✓（无需 delta 记账 ✓）。
