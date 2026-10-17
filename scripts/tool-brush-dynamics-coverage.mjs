@@ -41,7 +41,11 @@ if (mapped.length < MIN_MAPPED) {
   process.exit(1);
 }
 console.log(`  ✓ MAPPING 有 ${mapped.length} 条 ≥ 下限 ${MIN_MAPPED}`);
-console.log(`  **覆盖率 = ${have.size} / ${wanted.size} = ${(have.size / wanted.size * 100).toFixed(1)}%**`);
+const covered = resolver ? wanted.size : have.size;
+console.log(
+  `  **覆盖率 = ${covered} / ${wanted.size} = ${((covered / wanted.size) * 100).toFixed(1)}%**` +
+    (resolver ? "（**名字解析器在 ⇒ 任意 {设置}_{输入} 都可写 ✓**）" : "（**只有 MAPPING 静态表 ✗**）"),
+);
 if (missing.length) {
   console.log(`  还有 ${missing.length} 个真实组合没映射（**已知缺口 ✓，不是 bug ✗**）⇒ 前 6 个：`);
   for (const m of missing.slice(0, 6)) console.log(`     - ${m}`);
