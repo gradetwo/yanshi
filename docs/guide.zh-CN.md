@@ -145,6 +145,34 @@ agent 拿到的是**文件** ✓，不是 base64 ✓，也不再受 `include_ima
       "size": 24, "color": [0.8, 0.2, 0.1, 1.0]}}
 
 
+## 笔速与手抖（MyPaint 动力学）
+
+`.myb` 里有 **63 项**动力学 ✓，而 `brush_stroke` 的 `brush_params` 可以**逐笔**覆盖任意一项 ✓：
+键就是 `.myb` 里的规范名 ✓，拼错会报错并给候选 ✓。
+
+最常用的四件事，现在可以用**一个词**说 ✓（语义别名，展开成下面那几项）：
+
+| 想要 | 写 | 展开成 |
+|---|---|---|
+| 手抖／笔势 | `hand_jitter` | `slow_tracking` ＋ `tracking_noise` ＋ `offset_by_random` |
+| 笔速 | `speed_gain` | `speed1_gamma`／`speed2_gamma`／`speed1_slowness`／`speed2_slowness` |
+| 一笔之内变色 | `color_variance` | `change_color_h`／`change_color_v`／`change_color_hsl_s` |
+| 厚涂涂抹 | `smudge_amount` | `smudge`／`smudge_length`／`smudge_transparency` |
+
+**笔速是真的会改变墨量的** ✓，但 `points` 的**第 4 个分量是毫秒时间戳** ✓ —— 不是"每段几秒" ✗。
+同一笔画，每段 5 ms 与每段 500 ms，半透明笔刷下平均亮度实测 **0.7616 对 0.3734** ✓（慢笔墨明显更多 ✓）。
+前提是这支笔的 `dabs_per_second` 大于 0（时间基间距 ✓）；它为 0 时纯按距离落 dab ✓，时间怎么给都一样 ✓。
+
+    {"layer_id": "L", "brush": "Clouds",
+     "brush_params": {"dabs_per_second": 200, "hand_jitter": 0.8, "speed_gain": 1.6},
+     "points": [[20, 40, 1, 0], [60, 44, 1, 500], [100, 48, 1, 1000]]}
+
+要查某一支笔现在的 63 项是什么、哪些名字可用：
+
+    {"brush": "Clouds"}                                      → get_brush_settings
+    {"brush": "Clouds", "setting": "smudge", "value": 0.5}    → set_brush_setting（写回 .myb 文件）
+    {}                                                        → list_engine_capabilities（一次看全部能力面）
+
 ## 形状几何
 
 形状的几何是 `{"kind": "rect" | "ellipse" | "polygon", …}` ✓，尺寸字段用 `bbox`（`x`/`y`/`w`/`h` ✓）或 `points` ✓。

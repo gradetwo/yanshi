@@ -143,6 +143,36 @@ description did not mention it, which is why generated artwork tended to come ou
       "size": 24, "color": [0.8, 0.2, 0.1, 1.0]}}
 
 
+## Brush dynamics (speed and hand jitter)
+
+A `.myb` file carries **63 dynamics settings**, and `brush_params` on `brush_stroke` can override any of them
+**per stroke**: the keys are the canonical `.myb` names, and a typo is rejected with candidates.
+
+Four common intents now take **one word** each (semantic aliases that expand into the settings beside them):
+
+| Intent | Write | Expands to |
+|---|---|---|
+| hand jitter / gesture | `hand_jitter` | `slow_tracking` + `tracking_noise` + `offset_by_random` |
+| brush speed | `speed_gain` | `speed1_gamma` / `speed2_gamma` / `speed1_slowness` / `speed2_slowness` |
+| colour drift within one stroke | `color_variance` | `change_color_h` / `change_color_v` / `change_color_hsl_s` |
+| thick smearing | `smudge_amount` | `smudge` / `smudge_length` / `smudge_transparency` |
+
+**Speed really does change how much ink lands**, but the **fourth component of each point is a millisecond
+timestamp** — not "seconds per segment". On one stroke, 5 ms per segment versus 500 ms per segment measured
+**0.7616 vs 0.3734** average brightness with a semi-transparent brush (the slow stroke is markedly darker).
+This holds when the brush has `dabs_per_second` above zero (time-based spacing); at zero it spaces dabs by
+distance only, and the timestamps make no difference.
+
+    {"layer_id": "L", "brush": "Clouds",
+     "brush_params": {"dabs_per_second": 200, "hand_jitter": 0.8, "speed_gain": 1.6},
+     "points": [[20, 40, 1, 0], [60, 44, 1, 500], [100, 48, 1, 1000]]}
+
+To see what a given brush currently has, or which names exist:
+
+    {"brush": "Clouds"}                                      -> get_brush_settings
+    {"brush": "Clouds", "setting": "smudge", "value": 0.5}    -> set_brush_setting (writes the .myb file)
+    {}                                                        -> list_engine_capabilities (the whole surface)
+
 ## Shape geometry
 
 A shape's geometry is `{"kind": "rect" | "ellipse" | "polygon", ...}` with either a `bbox` of `x`, `y`, `w` and `h`
