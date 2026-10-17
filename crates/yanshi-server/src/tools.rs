@@ -15560,6 +15560,32 @@ pub(crate) fn replay_brush_bitmap(
 ///
 /// **∴ 拼错**必须报错 ✗**（**判据 ③ ✓）**：**静默无效是最坏的**——用户以为调过了 ✓
 ///   ⇒ **∴ 所以**报错时顺带给出**前缀相近的规范名**当候选 ✓ ★★
+/// **语义别名 → `.myb` 真名组** ✓（第 1000+ 轮 ✓）。
+///
+/// **为什么要有** ✗：`brush_params` 早已能覆盖全部 63 项 ✓，但 agent 必须记住
+/// `slow_tracking`／`speed1_gamma`／`change_color_hsl_s` 这些**规范名** ✗ —— **∴ 这层糖就是为这个 ✓**。
+///
+/// **每组取的都是**同一件事的若干面**✗**：例如手抖 = 慢跟踪 ＋ 跟踪噪声 ＋ 随机偏移 ✓
+/// ⇒ **∴ 组名给一个值 ⇒ 组内每一项都设成它 ✓**（**∴ 简单、可预测、可判据 ✓**）。
+fn semantic_brush_alias(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        // 手抖与笔势：慢跟踪 ＋ 跟踪噪声 ＋ 随机偏移 ✓
+        "hand_jitter" => Some(&["slow_tracking", "tracking_noise", "offset_by_random"]),
+        // 笔速：两档 gamma ＋ 两档 slowness ✓
+        "speed_gain" => Some(&[
+            "speed1_gamma",
+            "speed2_gamma",
+            "speed1_slowness",
+            "speed2_slowness",
+        ]),
+        // 一笔之内变色：色相／明度／HSL 饱和度 ✓
+        "color_variance" => Some(&["change_color_h", "change_color_v", "change_color_hsl_s"]),
+        // 厚涂涂抹：涂抹量／长度／透明度 ✓
+        "smudge_amount" => Some(&["smudge", "smudge_length", "smudge_transparency"]),
+        _ => None,
+    }
+}
+
 fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usize> {
     let object = params.as_object().ok_or_else(|| {
         YanshiError::new(
@@ -15575,6 +15601,17 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
                 ErrorContext::detail(format!("brush_params.{key} 必须是数值")),
             )
         })? as f32;
+        // **★ 语义别名 ✗ ★**（第 1000+ 轮 ✓）：`hand_jitter` 这类**组名**展开成 `.myb` 的真名组 ✓
+        // ⇒ **∴ agent 不必记住 63 个规范名 ✓**；**∴ 而底层仍是同一套 `base_value` ⇒ 行为可判据 ✓**。
+        if let Some(group) = semantic_brush_alias(key) {
+            for name in group {
+                if let Some(setting) = hokusai::BrushSetting::from_cname(name) {
+                    brush.get_mut(setting).base_value = number;
+                    applied += 1;
+                }
+            }
+            continue;
+        }
         match hokusai::BrushSetting::ALL.iter().find(|s| s.cname() == key) {
             Some(setting) => {
                 brush.get_mut(*setting).base_value = number;
