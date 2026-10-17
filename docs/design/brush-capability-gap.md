@@ -1546,3 +1546,42 @@ ParamKind::Any    => true,                // ← 全收 ✓
 变异（改回 ⇒ 红 ✓）／根因（`validate_args` 的 `ParamKind::Object => value.is_object()` ✓）
 
 **∴ 而 32.2 那个"修复可能无效果"✗ 的怀疑，**已被 32.4 ＋ 32.6 完全排除**✓** ✓
+
+## 三十三、新反馈的核对 ✓（**一半真、一半假** ✗）
+
+### 33.1 反馈说「7 个名字 capabilities 里有、实际调不到」✗ —— **不成立** ✗
+
+**我逐个**实调**（只传 `{}` ✓，看它认不认这个名字 ✓）**：
+```
+smudge          ⇒ 已注册｜缺少必填参数 layer_id ✓
+clone_stamp     ⇒ 已注册｜缺少必填参数 layer_id ✓
+heal_stamp      ⇒ 已注册｜缺少必填参数 layer_id ✓
+create_mask     ⇒ 已注册｜缺少必填参数 mask_id  ✓
+duplicate_layer ⇒ 已注册｜缺少必填参数 layer_id ✓
+create_selection⇒ 已注册｜缺少必填参数 selection_id ✓
+checkpoint      ⇒ 已注册｜（成功，无需参数）✓
+erase           ⇒ 已注册｜缺少必填参数 layer_id ✓
+```
+⇒ **∴ 8 个工具**全部可调**✓** ⇒ **∴ 而"缺少必填参数"正是**注册成功的证明**✓（**∴ 未注册会报"未知工具"✓**）
+   **∴ 代码侧也一致 ✓**：7 个都有 `name: "…"` 注册 ✓ **且有 `"…" => …` 的 dispatch 分支**✓
+
+### 33.2 反馈说「`retouch_kinds` 宣称 4 种，实际只有 `erase` 有工具」✗ —— **一半对** ✓✗
+
+**源码 ✓**：`crates/yanshi-render/src/object.rs:28`
+```rust
+pub const RETOUCH_KINDS: [&str; 4] = ["clone_stamp", "heal", "smudge", "erase"];
+```
+**∴ 4 种里 3 种有同名工具 ✓**：`clone_stamp` ✓／`smudge` ✓／`erase` ✓
+**∴ 而 `heal` **没有同名工具**✗** —— **∴ 工具叫 `heal_stamp`** ✓✓
+⇒ **∴ 所以"只有 `erase` 有工具"✗ 是错的 ✓，但**真缺口在 `heal` vs `heal_stamp` 的名字不一致**✓** ✓
+
+### 33.3 ∴ 真缺口 ✓：`retouch_kinds` 里的 `heal` 与工具名 `heal_stamp` 不一致
+
+```
+**∴ agent 的路径 ✓**：读 `retouch_kinds` ⇒ 看到 `heal` ⇒ 去找工具名 `heal` ⇒ **∴ 找不到**✗（**∴ 实际叫 `heal_stamp` ✓**）
+⇒ **∴ 这是**可发现性缺口 ✓**（**∴ 与 G1／H1 同型 ✓：**清单里的名字在另一侧对不上**✗**）
+**∴ 修法 ✓**：**不能改 `RETOUCH_KINDS` 的 `heal`** ✗（**∴ 渲染侧用 `kind == "heal"` 判断 ✓，改了要动渲染 ✓**）
+   ⇒ **∴ 正确修法 ✓**：在 `list_engine_capabilities` 里加**映射**✗：
+   `"retouch_kind_tools": { "clone_stamp": "clone_stamp", "heal": "heal_stamp", "smudge": "smudge", "erase": "erase" }` ✓
+   ⇒ **∴ agent 拿到这张表就不会猜 ✓**
+```
