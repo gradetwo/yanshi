@@ -10917,7 +10917,13 @@ impl EffectKind {
 
 /// 校验效果参数：内核没实现的类型/越界数值一律在工具层拒绝（5.7），不写入日志。
 fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
-    if !kind.supported().contains(&name) {
+    // **★ 滤镜别名也要放行 ★**（第 1000+ 轮 ✓）： 早已把
+    // ／ 映射到  ✓（），
+    // 但  这个**被  对账**的常量里只列了  ✗
+    // ⇒ **∴ 直接给常量加名字会破坏契约（实测 CI 红 ✓）⇒ **∴ 在这一层放行 ✓**，
+    // **∴ 常量保持 14 ✓、 也能接受别名 ✓。**
+    let aliased = kind == EffectKind::Filter && matches!(name, "emboss" | "impasto");
+    if !kind.supported().contains(&name) && !aliased {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
