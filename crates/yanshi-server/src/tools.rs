@@ -15664,18 +15664,6 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
                     applied += 1;
                 }
             }
-            // **★ `speed_gain` 要 `dabs_per_second` 才生效 ★**（第 1000+ 轮 ✓；Muse 的 P2-10 ✓）：
-            // **∴ 实测 `oil-06-paint.myb` 里 `dabs_per_second.base_value = 0.0`** ✗
-            // ⇒ **∴ 那四档 gamma／slowness 就**静默无效**✗**（**∴ 设了不生效 ✓**）
-            // ⇒ **∴ 所以在设这一组时，若它还是 0 ⇒ 补一个默认 60 ✓**（**∴ 只补 0 ✓，不覆盖用户的值 ✗**）。
-            if key == "speed_gain" {
-                if let Some(setting) = hokusai::BrushSetting::from_cname("dabs_per_second") {
-                    if brush.get(setting).base_value <= 0.0 {
-                        brush.get_mut(setting).base_value = 60.0;
-                        applied += 1;
-                    }
-                }
-            }
             continue;
         }
         match hokusai::BrushSetting::ALL.iter().find(|s| s.cname() == key) {
