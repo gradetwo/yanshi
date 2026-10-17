@@ -1920,3 +1920,19 @@ let bbox = match selection.shape.get("bbox") {
 
 **∴ 必须说清的局限 ✗**：**裁剪用的是 **bbox**** ✓ ⇒ **∴ `rect` 是**精确**的 ✓，而 `ellipse` 实际按它的**外接矩形**裁 ✗**（**∴ 不是椭圆本身 ✓**）
    ⇒ **∴ 真正的椭圆裁剪要改裁剪的掩膜生成 ✓，与 §8 的高度图同类 ✓**（**∴ 独立特性 ✓**）
+
+### 39.5 ✓ §13 四件齐（修复 ＋ 判据 ＋ 变异 ＋ 根因）
+
+```
+**判据 ✓**（`scripts/tool-selection-shapes.mjs`）：三种形状各建一个选区 ⇒ 都要能 `clip` ✓
+   本机全绿 ✓（`rect`／`ellipse`／`polygon` 各 `create ✓／list 看得见 ✓／clip ok` ✓）
+**变异 ✓**：把 `rect` 分支的键名改坏（`num("width")` → `num("widthX")`）⇒ 重建
+   ⇒ **退出码 1** ✓，报
+     「✗ rect：create ✓／list 看得见 ✓／**clip 失败**｜**找不到可裁剪的选区 sel_rect ⇒ 现有：（一个都没有 ✓）**」✓
+   ⇒ **∴ 正是那句误导性的错误 ✓**；而 `ellipse`／`polygon` 仍通 ✓
+   恢复后重建 ✓（脏 0 ✓）
+**根因 ✓**：`clip_to_selection` 的 `filter_map` 里两个 `?` 把没有 `points` 的形状静默丢掉 ✓
+```
+
+**∴ 判据自己错过一次 ✗**：`list_selections` 的字段名是 **`selection_id`** ✓（我写成 `s.id` ✗）
+   ⇒ **∴ 于是三种形状全部显示"看不见"✗，而 `clip` 其实是通的 ✓** ⇒ **∴ 本 session 判据自身的错累计 **3 次** ✓**
