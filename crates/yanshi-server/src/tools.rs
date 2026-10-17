@@ -3091,7 +3091,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。",
         params: &[
             param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
-            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓）"),
+            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓） ★**这里没有 `load`／`wetness`／`color_mixing`！** 要载墨量／湿度／光谱混色 ⇒ 用 **`medium_stroke`** 的 `load`／`wetness`／`color_mixing=pigment`（清单见 `list_engine_capabilities.medium_params` ✓）；这 63 项是 `.myb`（MyPaint 动力学）的，见 `docs/design/brush-params.md` ✓。"),
             param!("preview_size", String, false, "预览形态：**single**（缺省 = 单笔触，看「这支笔长什么样」✓）/ **area**（**同一区域来回 5 趟** ⇒ 看**覆盖力 / 叠加 / 透明度累积** ✓ —— 铺大色前用它，避免「小图好看、大面积太透明」✗）。给了 `paths` 时以 `paths` 为准 ✓"),
             param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
             param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
