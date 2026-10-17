@@ -71,6 +71,23 @@ check(
     `medium_params 与 medium_stroke schema 一致：工具 ${JSON.stringify(reported)}｜源码 ${JSON.stringify(declared)}`);
 }
 
+// ★ 「需要额外参数的滤镜」两向检查 ✓（第 1000+ 轮 ✓）：
+//   ① 清单里声明的每个参数，源码里必须真的有 `params.get("<名>")` ✓；
+//   ② 源码里 `dehaze` 读 `air` ⇒ 清单也必须声明它 ✓（**∴ 否则 agent 只会看到"dehaze 可用"✗**）。
+{
+  const fsrc = readFileSync(new URL("../crates/yanshi-render/src/filter.rs", import.meta.url), "utf8");
+  const needs = body.filters_needing_params ?? {};
+  for (const [name, params] of Object.entries(needs)) {
+    for (const p of params) {
+      check(fsrc.includes(`params.get("${p}")`), `${name} 的 ${p}：清单声明了，源码里确有 params.get("${p}")`);
+    }
+  }
+  check(
+    !fsrc.includes('params.get("air")') || (needs.dehaze ?? []).includes("air"),
+    `源码里 dehaze 读 air ⇒ 清单必须声明 dehaze: [air]（实际 ${JSON.stringify(needs.dehaze)}）`,
+  );
+}
+
 // 示例介质不能混进成品介质 ✓（**真名是 `example` ✓，不是文件名 `example-dab` ✗**）
 check(
   !(body.mediums ?? []).includes("example") && (body.example_mediums ?? []).includes("example"),
