@@ -1406,6 +1406,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        // **批量取色** ✓（YANSHI_ISSUES §18.2 ✓）：`sample_color` 每个点要渲染**两次**
+        // （`render_region` ＋ `render_region_raw` ✗）⇒ 一笔一取色要付 N 倍代价 ✗。
+        // 这里**一次调用、一次渲染**（覆盖所有点的包围盒 ✓），再按坐标索引像素 ✓。
+        name: "sample_colors",
+        profile: Profile::Core,
+        summary: "一次读多个点的颜色（只读 ✓）：一次渲染覆盖所有点的包围盒，再逐点索引 ⇒ 比 N 次 sample_color 省得多",
+        mutating: false,
+        params: &[
+            param!("points", Array, true, "[[x,y], …] 画布坐标（文档坐标，像素 ✓）；一次调用取 N 个点，只渲染一次"),
+        ],
+    },
+    ToolSpec {
         name: "get_state",
         profile: Profile::Core,
         summary: "读取当前 HEAD 状态摘要与预览地址",
@@ -3392,6 +3404,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     match spec.name {
         "sample_color" => read_sample_color(ctx, args),
+        "sample_colors" => read_sample_colors(ctx, args),
         "get_document" => read_get_document(ctx, args),
         "set_anchor" => write_set_anchor(ctx, args),
         "get_anchors" => read_get_anchors(ctx, args),
@@ -3575,6 +3588,78 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
 /// **为什么必须有它** ✗：外部实测报告 #13 的原话是"一旦落笔，画布就变成了**完全不透明的黑盒**" ✓
 /// ⇒ agent 只能"**导出 PNG 再解析**" ✓ —— 而那是**慢、且有副作用**（写文件 ✓）的观察方式 ✓。
 /// 本函数渲染 **1×1** 区域并读回该像素 ✓（与"区域渲染"同一实现 ✓ ⇒ 与客户端所见同源 ✓）。
+fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let raw_points = args
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("缺少 points ⇒ 形如 [[120,64], [200,80]]（画布坐标，像素）"),
+            )
+        })?;
+    let mut points: Vec<(f64, f64)> = Vec::with_capacity(raw_points.len());
+    for (index, point) in raw_points.iter().enumerate() {
+        let pair = point.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}] 应为 [x,y]，实际 {point}")),
+            )
+        })?;
+        let x = pair.first().and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}][0] 不是数字")),
+            )
+        })?;
+        let y = pair.get(1).and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}][1] 不是数字")),
+            )
+        })?;
+        points.push((x, y));
+    }
+    if points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("points 不能为空"),
+        ));
+    }
+    let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
+    let (mut bx, mut by) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (x, y) in &points {
+        ax = ax.min(*x);
+        ay = ay.min(*y);
+        bx = bx.max(*x);
+        by = by.max(*y);
+    }
+    let x0 = ax.floor().max(0.0);
+    let y0 = ay.floor().max(0.0);
+    let w = ((bx.floor() - x0) + 1.0).max(1.0);
+    let h = ((by.floor() - y0) + 1.0).max(1.0);
+    let region = Bbox::new(x0, y0, w, h);
+    let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    let stride = (w as usize) * 4;
+    let mut samples = Vec::with_capacity(points.len());
+    for (index, (x, y)) in points.iter().enumerate() {
+        let px = ((x.floor() as i64) - (x0 as i64)).max(0) as usize;
+        let py = ((y.floor() as i64) - (y0 as i64)).max(0) as usize;
+        let offset = py * stride + px * 4;
+        let rgba = match raw.get(offset..offset + 4) {
+            Some(chunk) => json!([chunk[0], chunk[1], chunk[2], chunk[3]]),
+            None => Value::Null,
+        };
+        samples.push(json!({"index": index, "x": x, "y": y, "rgba": rgba}));
+    }
+    Ok(json!({
+        "ok": true,
+        "count": samples.len(),
+        "region": {"x": x0, "y": y0, "w": w, "h": h},
+        "samples": samples,
+    }))
+}
+
 fn read_sample_color(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let number = |key: &str| -> Result<f64> {
         args.get(key).and_then(Value::as_f64).ok_or_else(|| {
