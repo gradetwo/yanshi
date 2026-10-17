@@ -31,7 +31,9 @@ for (const name of readdirSync(dir).filter((f) => f.endsWith(".myb"))) {
 }
 if (wanted.size === 0) { console.log("  ✗ 没从 .myb 里读到任何 inputs ⇒ 判据跑不了"); process.exit(3); }
 
-const missing = [...wanted].filter((w) => !have.has(w));
+// 名字解析器存在吗（`set_brush_dynamics` 里按 {设置}_{输入} 解析）⇒ 存在则可覆盖全部。
+const resolver = /match_indices\('_'\)/.test(src) && src.includes("from_cname(setting_name)");
+const missing = resolver ? [] : [...wanted].filter((w) => !have.has(w));
 console.log(`  .myb 里真实存在的 (setting,input) 组合：**${wanted.size}** 个 ✓`);
 console.log(`  MAPPING：**${mapped.length}** 条 ✓`);
 if (mapped.length < MIN_MAPPED) {

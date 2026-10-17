@@ -10684,7 +10684,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "curve 里没有可识别的键 ⇒ 可用：size_pressure / opacity_pressure / tilt_size"
+                "curve 里没有可识别的键 ⇒ 两种写法：① 七个语义键 size_pressure ／ opacity_pressure ／ tilt_size ／ size_speed ／ opacity_speed ／ opacity_multiply_pressure ／ smudge_stroke ✓；② **任意 `{设置}_{输入}`**（例 `radius_logarithmic_speed1`、`hardness_pressure`）✓ —— 设置名取自 63 个规范名（见 `docs/design/brush-params.md`），输入名沿用该笔 `inputs` 里的键 ✓"
                     .to_string(),
             ),
         ));
