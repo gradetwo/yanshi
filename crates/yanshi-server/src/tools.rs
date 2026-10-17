@@ -2698,7 +2698,6 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("points", Array, true, "笔迹点列 [[x,y], ...]"),
             param!("size", Number, false, "笔刷直径（缺省 24）"),
             param!("smudge_length", Number, false, "采样后退距离（缺省 12）"),
-            param!("deposit", Number, false, "**沉积量 0..1（缺省 0 ＝ 只拖不补 ✓）**：`>0` 时每个 stamp 把**采到的那个色**再叠一层 ⇒ 既带色、又不造新硬边（**∴ 补的不是你给的色 ✗**，那等于 rub）"),
             param!("hardness", Number, false, "硬度 0-1（缺省 0.6）"),
             param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
@@ -11473,7 +11472,6 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
     }
     let hardness = args.get("hardness").and_then(Value::as_f64).unwrap_or(0.6);
     let opacity = args.get("opacity").and_then(Value::as_f64).unwrap_or(1.0);
-    let deposit = args.get("deposit").and_then(Value::as_f64).unwrap_or(0.0);
     for (key, value) in [("hardness", hardness), ("opacity", opacity)] {
         if !(0.0..=1.0).contains(&value) {
             return Err(YanshiError::new(
@@ -11509,7 +11507,6 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
                 "points": parsed,
                 "source_offset": [dx, dy],
                 "smudge_length": args.get("smudge_length").and_then(Value::as_f64).unwrap_or(12.0),
-                "deposit": deposit,
                 "size": size,
                 "hardness": hardness,
                 "opacity": opacity,

@@ -646,3 +646,31 @@ tools.rs:11512  data 里写 "deposit": deposit   ← **确认在同一处 `"data
 **已确认的** ✓：`smudge` **接受** `deposit: 0.6`（`ok: true` ✓）；`data` 里**确实写了** `"deposit": deposit`（`tools.rs:11512` ✓）；
 **渲染像素没变** ✗ ⇒ **∴ 疑点收敛到一处 ✓：`object.rs:295` 那个构造块，是否就是 `smudge` atom 实际走的路** ✗
    （**∴ `tools.rs` 写的键是 `retouch_type` / `source_offset`，而 `object.rs` 读的是 `smudge_length` ✓ ⇒ **∴ 两者键名并不完全一致 ⇒ **∴ 说明中间可能有映射层 ✓ ⇒ **∴ 下一个要看的就是它 ✓**）
+
+### 17.9 G2 的三层根因（**已查清，实现已回退** ✗，第 1000+ 轮 ✓）
+
+**结论 ✓：写侧完全正确、读侧完全正确，而效果为零 —— 因为公式在 `base = 1` 时恒等 ✓。**
+
+**三层因果，每层都有实测 ✓**：
+```
+① **`smudge` 的 `opacity` 参数不生效** ✗
+   ⇒ 判据把 `opacity` 从 1 改成 0.4，输出**逐字节不变**（哈希 40b9ce636c83 ✓、亮度 0.3730 ✓）
+② **∴ 于是 `base = opacity × sampled.a` 恒为 1** ✗
+   ⇒ 诊断打印：`RENDER_DIAG deposit=0.9 base=1.0` ✓
+③ **∴ 我的 over 叠加 `1 − (1 − base)(1 − d)` 在 `base = 1` 时恒等于 1** ✗
+   ⇒ **∴ `deposit` 无论给多少，像素**一个比特都不变**✓
+```
+
+**其它已排除的（都实测过 ✓）**：
+- **写入侧拿到 0.9** ✓：`RETOUCH_DIAG deposit=0.9 kind=smudge` ✓；
+- **读侧代码正确** ✓：`deposit: object.data.get("deposit").and_then(Value::as_f64).unwrap_or(0.0)`，
+  与相邻的 `smudge_length` **逐字同款** ✓，`Object.data` 确为 `serde_json::Value`（`state.rs:259` ✓）；
+- **`transform_primitive` 不丢字段** ✓（`Retouch { points, .. }` 原地改 `points` ✓）；
+- **`smudge` 本身可测** ✓：两块异色交界处涂抹，亮度变 **0.0112** ✓（**∴ 观测面有效 ✓**）。
+
+**∴ 处置 ✓：实现已回退**（`git checkout e0760dbe -- 三个文件 ✓`）—— **∴ 理由 ✓：
+一个**接受但恒等无效**的参数，比没有参数更坏 ✗：agent 会以为它生效 ✓。**
+
+**∴ 新的语义（下一轮的方向 ✓）**：**既然 `base` 恒为 1，任何"改 alpha"的语义都无效** ✗
+⇒ **∴ `deposit` 只能**改颜色**✓：把采到的色往**更实/更暗**推一点（`lerp(sampled, darken(sampled), deposit)` ✓）
+⇒ **∴ 不引入新色相 ✓、只在原位加深 ✓ ⇒ 「既带色、又不造新边」✓。**
