@@ -3751,11 +3751,7 @@ impl Renderer {
                     jitter,
                     smudge_length,
                 } => {
-                    if kind != "clone_stamp"
-                        && kind != "heal"
-                        && kind != "smudge"
-                        && kind != "erase"
-                    {
+                    if !crate::object::RETOUCH_KINDS.contains(&kind.as_str()) {
                         track
                             .unsupported
                             .push(format!("修图类型未实现: {kind}（对象 {}）", object.id));
