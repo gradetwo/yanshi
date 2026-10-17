@@ -76,3 +76,47 @@
 
 **滤镜 14/14 ✓｜调整 12/12 ✓｜混合模式 10/10 ✓｜修图 4/4 ✓｜液化 3/3 ✓｜形状 3/3 ✓**
 ⇒ **∴ 真正该动的是**笔刷动力学（59 项）＋ 时间基间距**✗**
+
+## 七、P0 落地与证据（第 1000+ 轮 ✓）
+
+### 7.1 新增两个工具 ✓
+
+| 工具 | 作用 |
+|---|---|
+| **`get_brush_settings { brush }`** | 返回 `{ count, settings: { "<cname>": { base_value } }, unknown }`；**63 项由 `BrushSetting::ALL` 逐项遍历** ✓（不硬编码 ✗）；`unknown` ＝ 原始 JSON 里有、而 63 项里没有的键 ⇒ **引擎会忽略的设置** ✓ |
+| **`set_brush_setting { brush, setting, value }`** | 只写 `settings[setting].base_value` ✓；名字用 **`BrushSetting::from_cname`** 校验 ✓；落盘沿用 `set_brush_dynamics` 的手法 ✓（临时文件 ⇒ `import_asset(overwrite:true)`） |
+
+**工具数 151 → 153** ✓（`95ecb484` ✓）。
+
+### 7.2 判据 ✓（`scripts/tool-brush-settings.mjs`，7 条断言）
+
+本机实测（真 server，全新工作区 ✓）：
+```
+✓ 项数 = 63（引擎权威项数是 63）
+✓ smudge 的 base_value 是数字（读到 0）
+✓ radius_logarithmic 的 base_value 是数字（读到 3.009999990463257）
+✓ set_brush_setting 成功（HTTP 200）
+✓ 读回一致：smudge = 0.375（写入 0.375）
+✓ 其它项没被牵连：radius_logarithmic = 3.009999990463257（原 3.009999990463257）
+✓ 未知设置名被拒（HTTP 400）
+✓ 笔刷动力学读写：… 未知名被拒
+```
+### 7.3 ★ 变异证明（**有牙 ✓**）
+
+**变异**：把 setter 的落点写死成 `"radius_logarithmic"` ✗（设 `smudge` 时实际写到 `radius`）⇒ 重建 ⇒ 跑同一判据：
+```
+✓ set_brush_setting 成功（HTTP 200）              ← 这一步本来就该过 ✓
+✗ 读回一致：smudge = 0（写入 0.375）              ← **红 ✓**
+✗ 其它项没被牵连：radius_logarithmic = 0.375（原 3.01） ← **红 ✓**
+✗ 笔刷动力学读写有 2 处问题                        ← **判据自己判红并 process.exit(1) ✓**
+```
+⇒ **∴ 判据对"写错键"这类错**有牙 ✓**（**∴ 而它正是 `set_brush_setting` 最可能出的错 ✓**）。
+
+**★ 一处**我的观测错**✗（如实记 ✓）**：**那轮我写的是 `node … | tail -5; echo "退出码=$?"`** ✗ ——
+**`$?` 取的是 `tail` 的退出码，不是 node 的** ✗ ⇒ **∴ 屏幕上那个"退出码=0"**不作数**✗**。
+**∴ 真正作数的是判据自己的输出**（两行 `✗` ＋ 一行 `✗ 笔刷动力学读写有 2 处问题` ✓，其代码路径必然 `exit(1)` ✓）。
+**∴ 教训**：**不要读穿过管道的 `$?`** ✗（**∴ 这条我在本 session 早先记过一次 ✓，这次又犯 ✓**）。
+
+### 7.4 恢复 ✓
+
+变异已撤销（`cp` 回原文件 + 重建 ✓），`git status` 干净 ✓；判据在**未变异**版本上仍是 7 条全过 ✓。
