@@ -9,7 +9,9 @@
 //   ⇒ **∴ 所以只能靠这条判据**盯住那两个数字 ✓**。
 import { readFileSync } from "node:fs";
 
-const REQUIRED_SECONDS = 2400; // 实测 32m1s ⇒ 40 分钟有 8 分钟余量 ✓
+// 实测 42m12s 仍被 124 杀 ✗ ⇒ 全量要 ~3 小时 ⇒ 已改成分 4 片 ✓，每片约 200 次 ⇒ 900 秒够 ✓
+const REQUIRED_SECONDS = 900;
+const MIN_SHARDS = 4;
 const SLACK_MINUTES = 5;        // 内部 timeout 之外，job 还要留给前面的 cargo 构建 ✓
 const yml = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 
@@ -38,5 +40,7 @@ check(
   `内部 ${(seconds / 60).toFixed(0)} 分钟 + 余量 ${SLACK_MINUTES} 分钟 ≤ job 的 timeout-minutes（${jobMinutes}）`,
 );
 check(/continue-on-error:\s*true/.test(jobBlock), "continue-on-error 仍是 true（门禁语义不变）");
+const shards = (jobBlock.match(/shard:\s*\[([^\]]+)\]/) || [, ""])[1].split(",").filter(Boolean).length;
+check(shards >= MIN_SHARDS, `parity 分了 ${shards} 片 ≥ ${MIN_SHARDS} 片（实测全量要 ~3 小时，必须缩规模）`);
 if (bad) { console.log(`  ✗ 时限预算有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ brush parity 的时限预算自洽：内部 timeout ≥ 实测所需，且留出余量给 job");

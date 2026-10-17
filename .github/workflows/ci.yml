@@ -307,7 +307,7 @@ jobs:
     #   **它会红，而"红"本身就是要收集的数据** ✓（差异有多大、哪些笔刷 ✓），
     #   不是"故障"✗ ⇒ 用与 `scripts/criteria-known-red.txt` **同一套机制**（照跑、照印、不阻塞 ✓）。
     # ⇒ **待内核换成两端同源实现后** ✓（第 801 轮记录的方案 ✓），把这一行删掉 ⇒ **改为阻塞** ✓。
-    name: brush parity (arm64 vs wasm32, all brushes)
+    name: brush parity (arm64 vs wasm32, shard ${{ matrix.shard }}/4)
     # **只在手动／定时时跑** ✓（第 42 轮实测为据 ✓）：
     #   它跑 `all`（199 支 × 4 色 ＝ 796 次 ✓），实测 **32m1s** ✗ —— 而每次推送都会**新起一个 run** ✓
     #   ⇒ `cancel-in-progress` 会在它跑完前把整个 run 取消 ✗ ⇒ **∴ 我连续多轮都拿不到"完成"的结论** ✗
@@ -318,13 +318,21 @@ jobs:
     #   代价＝跨平台比对**不再随每次推送自动跑** ✗ ⇒ 靠**定时／手动** ✓（它本来就 `continue-on-error` ✓、
     #   且是**已知红** ✓ ⇒ 随推送跑**不产生任何门禁价值** ✗，只拖长 run ✓）。
     if: github.event_name != 'push'
+    # ★ 分 4 片 ✗ ★（第 1000+ 轮 ✓）：实测 **42m12s** 被 `timeout` 杀 ✗（**∴ 40 分钟也不够 ✓**），
+    #   且只推进到 `charcoal-blur1` ✗（199 支里的前 40-50 支 ✓）⇒ **∴ 全跑完要 ~3 小时 ✗**
+    #   ⇒ **∴ 缩规模 ✓**：按笔刷列表**步长取 1/4** ⇒ 每片约 50 支 × 4 色 ＝ 200 次 ⇒ 约 10 分钟 ✓
+    #   （**∴ 脚本的 `brushes` 是位置参数 ✓，传具体名字就只比那几支 ✓ ⇒ **不用改脚本** ✓）
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04-arm
     continue-on-error: true
     # ⚠️ **job 级超时** ✗（第 818 轮 ✓）：这一条原本**没有**超时 ✓，而它跑的是
     # `node … all`（**没有 `timeout` 包住** ✗）⇒ 一旦卡住就**永远不结束** ✓
     # ⇒ **整个 run 永远不完成** ✓ ⇒ `gh` 在整轮完成前**拒绝给日志** ✗ ⇒
     # **我连别的 job 的失败都读不到** ✓（实测：卡了约 45 分钟 ✓）。
-    timeout-minutes: 50
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -377,8 +385,14 @@ jobs:
           # ★ 1800 秒（30 分钟）**不够** ✗ —— 实测这一轮跑了 **32m1s** ⇒ `timeout` 杀它 ⇒ **`exit code 124`** ✗
           #   （**∴ 124 是 GNU `timeout` 的退出码 ✓，不是 job 的 `timeout-minutes: 40` ✓**）。
           #   **∴ 现在给 2400 秒（40 分钟）✓**：实测 32m1s ＋ 一轮 CI 的负载波动 ⇒ 40 分钟有 8 分钟余量 ✓。
-          timeout 2400 node scripts/kernel-brush-parity.mjs "http://127.0.0.1:$PORT" boot "$TOKEN" \
-            "$PWD/crates/yanshi-wasm/pkg/yanshi_wasm.js" all
+          # 本片只跑自己的那 1/4 支笔刷（步长切片）✓ ⇒ 约 200 次比较 ⇒ 10 分钟够 ✓
+          mapfile -t ALL < <(ls assets/brushes/*.myb | xargs -n1 basename | sed 's/\.myb$//' | sort)
+          SHARD="${{ matrix.shard }}"; TOTAL=4
+          LIST=()
+          for ((i=SHARD-1; i<${#ALL[@]}; i+=TOTAL)); do LIST+=("${ALL[i]}"); done
+          echo "  本片 $SHARD/$TOTAL：${#LIST[@]} 支（共 ${#ALL[@]} 支）✓"
+          timeout 900 node scripts/kernel-brush-parity.mjs "http://127.0.0.1:$PORT" boot "$TOKEN" \
+            "$PWD/crates/yanshi-wasm/pkg/yanshi_wasm.js" "${LIST[@]}"
 
   criteria:
     # **并行分片** ✓：判据约 55 条，串行跑要十几分钟 ✗ ⇒ 拆 6 片并发 ✓（免费额度下这是纯赚 ✓）。
