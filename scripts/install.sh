@@ -58,7 +58,7 @@ fetch() {  # fetch <url>  → stdout
 }
 
 say "→ 查 $REPO 的 $VERSION 版本…"
-manifest=$(fetch "$release_url") || die "拿不到 release 信息（$release_url）"
+manifest=$(fetch "$release_url") || die "拿不到 release 信息（${release_url}）"
 
 # 不依赖 jq ✓：直接把 `"browser_download_url": "…"` 抓出来再按后缀筛 ✓
 urls=$(printf '%s' "$manifest" | tr ',' '\n' | grep -o 'https://[^"]*' | grep -E '\.tar\.gz$|/SHA256SUMS$' || true)
@@ -67,11 +67,11 @@ sums_url=$(printf '%s\n' "$urls" | grep -E '/SHA256SUMS$' | head -1)
 [ -n "$pkg_url" ] && [ -n "$sums_url" ] || die "这一版没有 $target 的包（也许还没发布完）"
 
 ver_tag=$(printf '%s' "$pkg_url" | sed 's|.*/yanshi-\([^-]*\)-.*|\1|')
-say "  找到 yanshi $ver_tag（$target）"
+say "  找到 yanshi ${ver_tag}（${target}）"
 
 if [ "$DRY" = 1 ]; then
   say "→ 干跑：会下载 $(basename "$pkg_url")"
-  say "→ 干跑：会装到 $PREFIX/share/yanshi/$ver_tag，可执行软链进 $BIN_DIR"
+  say "→ 干跑：会装到 $PREFIX/share/yanshi/${ver_tag}，可执行软链进 $BIN_DIR"
   exit 0
 fi
 
@@ -90,7 +90,7 @@ want=$(grep -E -- "-$target\.tar\.gz$" "$tmp/SHA256SUMS" | awk '{print $1}' | he
 if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/pkg.tar.gz" | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$tmp/pkg.tar.gz" | awk '{print $1}')
 else die "需要 sha256sum 或 shasum 之一"; fi
-[ "$want" = "$got" ] || die "校验不通过：期望 $want，实际 $got（包可能被截断或被改动 ✗）"
+[ "$want" = "$got" ] || die "校验不通过：期望 ${want}，实际 ${got}（包可能被截断或被改动 ✗）"
 say "  ✓ 校验通过"
 
 # ---- 4. 解包并装 ----------------------------------------------------------------
