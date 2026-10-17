@@ -1106,3 +1106,21 @@ sample_color(220,105) ⇒ **rgba [117,165,46,255]** ✗
 
 **还剩 3 条未核 ✗**：P0-2（MCP 内存模式跨进程丢失 —— **∴ 架构问题 ✓，`memory` 后端本来就不持久 ✓ ⇒ **∴ 需要看它是否**确实**如此 ✗**）／
    P0-3（batch 静默丢错）／P2-9（batch 必须 `silent=True`）／P3-11（4,400 笔崩溃后拒笔）。
+
+### 23.2 P0-3 确认（**真** ✓✗）：`batch` 静默吞掉坏 op —— **与 `silent` 无关** ✗
+
+**实测 ✓**（`batch` 的参数名是 **`calls`** ✓，不是 `ops` ✗ —— **∴ 第一次我用 `ops` 被明确拒绝 ✓，而那条错误信息很帮忙 ✓**）：
+```
+calls = [ {create_layer L}, {**no_such_tool**} ]
+
+① 不带 silent ⇒ **ok = True** ✗（**∴ 坏 op 无影无踪 ✓**）
+② 带 silent=true ⇒ **ok = True** ✗，返回里有 atom_ids／changeset_id／count／execution／head／preview，
+   但 **没有 failed_ops、没有 detail** ✗
+```
+⇒ **∴ Muse 的 P0-3「batch 错误静默丢失」**成立** ✓✗**
+⇒ **∴ 而它的 P2-9「必须 `silent=True` 否则不可靠」✗ 说法不准 ✓：**两种都不可靠**✗**
+   ⇒ **∴ 准确的说法 ✓：`batch` **无论 `silent` 与否**，坏 op 都不报 ✓（**∴ 差别只在 `silent` 会不会把中间步骤的预览压掉 ✓**）
+
+**∴ 这比 P2-9 更严重 ✓**：**∴ 一个 agent 用 `batch` 批量画 20 笔 ✓，其中 1 笔参数错 ✗
+   ⇒ **∴ 它得到 `ok=True` ✓，然后以为 20 笔都画上了 ✗** ⇒ **∴ 而 `list_layers`／`analyze_region` 才不会告诉它 ✗**
+   ⇒ **∴ 这是"可发现性"的反面 ✓：**不是找不到 ✓，是**找错了还被告知成功**✗** ✓✓
