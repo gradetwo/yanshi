@@ -3939,9 +3939,24 @@ impl Renderer {
                             }
                         }
                         let color = [
-                            straight[0],
-                            straight[1],
-                            straight[2],
+                            straight[0]
+                                * (if deposit > 0.0 {
+                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
+                                } else {
+                                    1.0
+                                }),
+                            straight[1]
+                                * (if deposit > 0.0 {
+                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
+                                } else {
+                                    1.0
+                                }),
+                            straight[2]
+                                * (if deposit > 0.0 {
+                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
+                                } else {
+                                    1.0
+                                }),
                             (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
                         ];
                         // 选区「约束落笔」✓：印章的 alpha 本身就是"增量权重" ✓ ——
