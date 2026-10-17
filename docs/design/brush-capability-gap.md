@@ -1892,3 +1892,31 @@ brush-params-doc.mjs + 薄壳           ✓ 变异：删一个名字 ⇒ 红 ✓
    ⇒ **∴ 建议 ✓：把两节的**像素样本**并排放 ✗（**∴ 若 §11 的 `[255,5,1]` 与 §12 的 `[253,8,3]`
       是同一族 ✓ ⇒ **∴ 同源 ✓**）✓
 ```
+
+### 39.4 ★★★ §13 复现并修好 ✓（`crates/yanshi-server/src/tools.rs`）
+
+**复现 ✓**（200×200 ✓，与报告同构型 ✓）：
+```
+create_selection(rect) ⇒ ok=True ✓；list_selections ⇒ count=1 ✓（**∴ 看得见 ✓**）
+brush_stroke(clip_to_selection="s_rect") ⇒ **ok=False** ✗
+   「找不到可裁剪的选区 s_rect ⇒ 现有：（一个都没有 ✓）（也可用 "latest" 取最新那个 ✓）」
+create_selection(polygon) + clip ⇒ **ok=True** ✓
+```
+⇒ **∴ 报告**完全成立**✓**（**∴ 同一个 id 在"存在"与"不存在"并存 ✓，且错误信息说"一个都没有"✗ ✓**）
+
+**根因 ✓**：`clip_to_selection` 把 `selections` 映射成 `(id, bbox)` 时 ✓
+```rust
+let bbox = match selection.shape.get("bbox") {
+    Some(bbox) => bbox,
+    None => {
+        let points = selection.shape.get("points")?.as_array()?;   // ← 只认 points ✗
+```
+⇒ **∴ `rect`／`ellipse` 既无 `bbox` 又无 `points`** ✗（**∴ 它们的形状是 `x/y/width/height` 或 `cx/cy/rx/ry` ✓**）
+   ⇒ **∴ 两个 `?` 静默返回 None** ✗ ⇒ **∴ `filter_map` 丢掉该选区 ✓ ⇒ **∴ `alive` 为空 ⇒ 报"一个都没有"✗** ✓✓
+
+**修法 ✓**：`None` 分支**先试 `rect` 的 `{x,y,width,height}`** ✓、**再试 `ellipse` 的 `{cx,cy,rx,ry}`** ✓、都没有才退回 `points` ✓
+
+**实测 ✓**：`clip rect ⇒ ok=True` ✓｜`clip ellipse ⇒ ok=True` ✓｜`clip polygon ⇒ ok=True`（**∴ 无回归 ✓**）
+
+**∴ 必须说清的局限 ✗**：**裁剪用的是 **bbox**** ✓ ⇒ **∴ `rect` 是**精确**的 ✓，而 `ellipse` 实际按它的**外接矩形**裁 ✗**（**∴ 不是椭圆本身 ✓**）
+   ⇒ **∴ 真正的椭圆裁剪要改裁剪的掩膜生成 ✓，与 §8 的高度图同类 ✓**（**∴ 独立特性 ✓**）
