@@ -7,6 +7,8 @@
 //   （**∴ 后者只证明写进去了，前者证明**画出来一样**✓✓**）。
 //
 // 用法：node scripts/tool-brush-aliases.mjs <server-base> <doc-id> <token>
+import { readFileSync } from "node:fs";
+
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-brush-aliases.mjs <base> <doc> <token>");
@@ -34,6 +36,27 @@ const strip = (value) => {
   return JSON.stringify(copy, Object.keys(copy).sort());
 };
 let bad = 0;
+// ★ 结构断言：**读源码里的别名表，逐项比对** ✓（第 1000+ 轮 ✓）
+//   **为什么必须加** ✗：实测发现**只比像素**有盲区 —— 把 `hand_jitter` 的展开删掉一项
+//   （`offset_by_random`），**判据仍然绿** ✗ ⇒ **∵ 那项在 `oil-mop` 上本来就不生效 ✓**
+//   ⇒ **∴ 像素等价只能证明「生效的项一致」✗，证明不了「展开完整」✗** ⇒ **∴ 这里直接读源码 ✓**。
+{
+  const source = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
+  for (const [alias, real] of GROUPS) {
+    const pattern = new RegExp(`"${alias}"\\s*=>\\s*Some\\(&\\[([^\\]]*)\\]\\)`);
+    const hit = source.match(pattern);
+    if (!hit) {
+      console.log(`  ✗ ${alias}：源码里找不到别名声明`);
+      bad += 1;
+      continue;
+    }
+    const declared = hit[1].split(",").map((entry) => entry.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
+    const expected = Object.keys(real).sort();
+    const same = JSON.stringify(declared) === JSON.stringify(expected);
+    console.log(`  ${same ? "✓" : "✗"} ${alias} 的展开项：源码 ${JSON.stringify(declared)}｜期望 ${JSON.stringify(expected)}`);
+    if (!same) bad += 1;
+  }
+}
 for (const [alias, real] of GROUPS) {
   const viaAlias = await swatch({ [alias]: 0.8 });
   const value = Object.values(real)[0];
