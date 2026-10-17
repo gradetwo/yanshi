@@ -10740,6 +10740,15 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
         "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
         "example_mediums": ["example"],
+        // **dab 只有圆形**（第 1000+ 轮 ✓）：`draw_stamp` 只收 `radius`／`hardness` ✗ ⇒ 没有角度／长宽比 ✓
+        //   ⇒ **`.myb` 的 `elliptical_dab_ratio`／`elliptical_dab_angle` **被读但不影响渲染**✗**
+        //   ⇒ **55 支笔**（`ratio ≠ 1`，最扁 7.1:1）**画出来都是圆的**✗ ⇒ **先让 agent 知道 ✓**。
+        "dab_shape": {
+            "supported": ["circle"],
+            "ignored_settings": ["elliptical_dab_ratio", "elliptical_dab_angle"],
+            "affected_brush_count": 55,
+            "note": "dab 是各向同性的圆；.myb 里声明的椭圆（ratio≠1）不生效。55 支笔受影响，最扁 7.1:1。",
+        },
         "brush_aliases": BRUSH_ALIASES,
         // **需要额外参数的滤镜** ✓（第 1000+ 轮 ✓）：**∴ 只报 `FILTER_NAMES` 不够 ✗** ——
         // `dehaze` 可用 ✓，但**必须给 `air: [r,g,b]`** ✓（`filter.rs:1518` 的 `triple(params.get("air"))` ✓），
