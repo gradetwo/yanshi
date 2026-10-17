@@ -237,3 +237,21 @@ param!("brush_params", Object, false,
 **∴ 我把"没在这个工具里看到"✗ 当成了"没有这个能力"✗** —— **∴ 而 `brush_params` 就在**同一个 `ToolSpec` 的**相邻几行**（`:3026` ✗），
    **∴ 我上一轮读 `brush_stroke` 的 schema 时**只读了前 12 行**✗（`head -12` ✗）⇒ **∴ 恰好切掉了它 ✓**
    ⇒ **∴ 教训 ✓：**读 schema 要读到 `},` 为止 ✗，不要用 `head -N` 截断 ✓**（**∴ 这条与"漏读 800 行外的 dtimes"同源 ✓**）✓
+
+## 十一、第 1000+ 轮补充核实（③ 已满足 ✓；② 仍待核 ✗）
+
+### 11.1 ★ ③ 已满足：`brush_params` 既有校验、也有判据在用 ✓
+
+```
+`crates/yanshi-server/src/tools.rs:15563`  `fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usize>`
+   —— **∴ 有专门的校验/应用函数 ✓**（**∴ 「拼错报错并给候选」就在它里面 ✓，`:5124` 的 `canonical_param_names` 提供候选清单 ✓**）
+`scripts/tool-bristle.mjs:128`  `{ brush_params: { dabs_per_basic_radius: 0.4, radius_by_random: 1.5 } }`
+   —— **∴ 已有判据**实跑**这个参数 ✓**（**∴ 而且是**变异有牙**的设计 ✓：注释明写「把那组 brush_params 删掉 ⇒ 必红」✓**）
+```
+⇒ **∴ 原表里「③ 判据覆盖：待核 ✗」⇒ **改为**已满足 ✓**（**∴ 但"拼错给候选"这一条**具体**有没有判据守着，仍**待核** ✗ ✓**）
+
+### 11.2 ② 仍待核：`medium` 的校验点没找到 ✗
+
+`write_medium_stroke`（`:13080`）第一行就是 `let medium = require_str(args, "medium")?;` ✓，
+但**我这一轮的 grep 窗口没看到它拿 `medium` 去做什么校验** ✗ ⇒ **∴ 不能断言"没校验"✗，只能说**没看到**✓**
+   ⇒ **∴ 下一轮第一件事：把 `write_medium_stroke` 读到它真正用 `medium` 的那一行 ✓**（**∴ 不用 `head -N` 截断 ✗**）
