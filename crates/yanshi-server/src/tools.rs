@@ -1595,7 +1595,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层"),
             param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
-            param!("region", Object, true, "放置区域 {x,y,w,h}"),
+            param!("region", Any, true, "放置区域 {x,y,w,h}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
             // **加参数就必须同时登记** ✓ —— 这个错我犯过三次 ✗（`at`、`right_id`、`shape_id`、
             // `path_id` ✓），每次都是框架先报错、测试后失败 ✓。这次先写参数表 ✓。
@@ -2933,7 +2933,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("angle", Number, false, "linear 的方向角（度；0 = 从左到右，90 = 从上到下）"),
             param!("center", Object, false, "radial 的中心 {x,y}（缺省取区域中心）"),
             param!("radius", Number, false, "radial 的半径（缺省取区域对角线的一半）"),
-            param!("region", Object, false, "只填这块 {x,y,w,h}；不给就整层（按画布尺寸）"),
+            param!("region", Any, false, "只填这块 {x,y,w,h}；不给就整层（按画布尺寸）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -2948,7 +2948,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("texture", String, true, "纹理名（assets/textures 或工作区缓存里的 .png）"),
             param!("mode", String, false, "tile（缺省）/ stretch / cover"),
-            param!("region", Object, false, "只铺这块区域 {x,y,w,h}；不给就铺满整幅（并沉到底当背景）"),
+            param!("region", Any, false, "只铺这块区域 {x,y,w,h}；不给就铺满整幅（并沉到底当背景）"),
             param!("layer_id", String, false, "铺到哪个图层（缺省新建一个并沉到最底）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
@@ -3182,7 +3182,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 true,
                 "输出文件路径（含 .png）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\n                 或系统临时目录 ✓；也可以给相对路径 ✓；**不接受其它绝对路径** ✗（安全沙箱：见 0b862a4 审计 P0#1 \n                 —— 原先可写任意路径，等于一个文件写漏洞 ✗）。要放到别处请自己 `cp` ✓，\n                 推荐设 `YANSHI_EXPORT_DIR` 指向你的交付目录 ✓（那样就不必再 cp ✓）"
             ),
-            param!("region", Object, false, "只导出该区域 {x,y,w,h}；缺省整幅"),
+            param!("region", Any, false, "只导出该区域 {x,y,w,h}；缺省整幅"),
             param!("width", Integer, false, "输出宽（与 height 一起给；不给就按原尺寸）"),
             param!("height", Integer, false, "输出高"),
             param!("max_edge", Integer, false, "限制最长边（按比例缩放；与 width/height 二选一）"),
