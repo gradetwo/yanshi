@@ -588,3 +588,31 @@ ci.yml 的 brush parity：**`if: github.event_name != 'push'`** ✗（**∴ push
 ⇒ **∴ G1 完整 ✓**：实现 ✓ ＋ 判据绿 ✓ ＋ 变异红 ✓。
 
 **G2／G3／G4 仍未开始** ✗（G2 判据已红得对 ✓，四处改点与陷阱已记在 17.3 ✓）。
+
+### 17.7 G2 的实现配方（**已定位到行，含一个浮点陷阱** ✓，未动代码 ✗）
+
+**落点** ✓：`crates/yanshi-render/src/render.rs` 的 retouch 采样段（约 `:3748-3753`）：
+```rust
+:3748  let sampled = source.pixel(sx, sy);
+:3749  if sampled[3] <= 0.0 { … }                       // 采样透明 ⇒ 跳过
+:3750  [sampled[0] / sampled[3], sampled[1] / sampled[3], sampled[2] / sampled[3],
+:3753   (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0)]   // ← **这一项就是"涂抹的强度"**
+```
+⇒ **∴ `deposit` 的语义 ＝ 用**同一个色**再叠一层** ✓ ⇒ **∴ 标准 over 合成 ✓**：
+`a' = 1 − (1 − a)(1 − deposit × pressure)`
+
+**★★ 浮点陷阱 ✓**：**不能**写成无条件的 `1.0 - (1.0 - a) * (1.0 - d*p)` ✗ ——
+在 `f32` 下 `1.0 - (1.0 - a) * 1.0` **不保证**逐位等于 `a` ✗ ⇒ **∴ `deposit=0` 的"逐字节不变"当场破功** ✗✓
+⇒ **∴ 必须写成条件分支 ✓**：
+```rust
+let base = (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0);
+let alpha = if deposit > 0.0 {
+    let d = (deposit as f32 * pressure).clamp(0.0, 1.0);
+    1.0 - (1.0 - base) * (1.0 - d)
+} else {
+    base                       // ⇒ **∴ 缺省路径**完全相同**✓✓**
+};
+```
+
+**其余三处改动** ✓（`object.rs` 结构体 ＋ `:292` 解析 `.unwrap_or(0.0)` ＋ `tools.rs` 的 schema 与 `write_retouch` 写 `data`，
+**只在非零时写** ✓）：**∴ 都没动 ✓。**
