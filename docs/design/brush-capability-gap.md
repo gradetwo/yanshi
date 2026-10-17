@@ -805,3 +805,39 @@ tool-smudge-deposit       ⇒ 退出码 0 ✓（重建后 ✓）
    ＋ **∴ `install.sh` 的 `${var}` 修复**过关**（`test (stable)/(beta)` 绿 ✓）** ✓
 
 **∴ 目标进度 ✓**：**G1 ✓ 完成 ／ G2 ✓ 完成 ／ G3 ✗ ／ G4 ✗**（**∴ 前两格都带判据 ＋ 变异 ＋ CI 绿 ✓**）
+
+## 十八、G4 厚涂可行性（#8）——**实测数据** ✓
+
+### 18.1 ★ `impasto` **加不上**：`add_filter` 拒绝它 ✗
+
+**实测 ✓**（`add_filter {layer_id, filter_name}`，1024×1024 有笔触的画布）：
+```
+✗ 内核未实现该滤镜：impasto；支持 box_blur / gaussian_blur / motion_blur / sharpen / noise /
+  vignette / glow / clarity / dehaze / film_grain / brightness_contrast / saturation / invert / relief
+```
+
+**逐个试 `FILTER_NAMES` 的 14 个 ✓**：
+| 名字 | `add_filter` |
+|---|---|
+| box_blur / gaussian_blur / motion_blur / sharpen / noise / vignette / glow / clarity / film_grain / brightness_contrast / saturation / **relief** | ✓ `ok:true` |
+| **emboss** ✗ | `ok:false` |
+| **impasto** ✗ | `ok:false` |
+| **dehaze** ✗ | `ok:false` ← **∴ 这个也是**内核不支持**✗** |
+
+### 18.2 两套清单**不一致** ✗（**∴ 这是可发现性的新缺口 ✓**）
+
+| 清单 | 数量 | 内容差异 |
+|---|---|---|
+| `FILTER_NAMES`（引擎常量，我的 `list_engine_capabilities` 报的就是它 ✓） | 14 | 含 `emboss`／`impasto`（**`relief` 的别名 ✓**）；**不含 `invert`** ✗ |
+| `add_filter` **实际可用** | 14 | 含 **`invert`** ✓；**不含别名** ✗；**也不含 `dehaze`** ✗ |
+
+⇒ **∴ 所以"14 vs 14"但**内容不同**✗✓** —— **∴ 而 agent 按 capabilities 去试 `impasto`／`emboss`／`dehaze`
+   都会失败 ✓**（**∴ 报告 #8 说"有伪浮雕滤镜"✗ ⇒ **∴ 更准确的说法是：**有 `relief` ✓，没有 `impasto` ✗**）✓✓
+
+### 18.3 对报告 #8 的**修正结论** ✓
+
+```
+**∴ 「有伪浮雕滤镜」**成立，但**要用 `relief`** ✓，`impasto` 这个名字在 `add_filter` 上**不存在** ✗**
+**∴ 「没有高度场」**成立 ✓**（**∴ `relief` 是亮/暗边缘的伪浮雕 ✓，不是高度图 ✓**）
+**∴ 高度图方案的**两面**：**（**∴ 待补实测 CPU 数字 ✓**）
+```
