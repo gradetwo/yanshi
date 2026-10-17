@@ -255,3 +255,23 @@ param!("brush_params", Object, false,
 `write_medium_stroke`（`:13080`）第一行就是 `let medium = require_str(args, "medium")?;` ✓，
 但**我这一轮的 grep 窗口没看到它拿 `medium` 去做什么校验** ✗ ⇒ **∴ 不能断言"没校验"✗，只能说**没看到**✓**
    ⇒ **∴ 下一轮第一件事：把 `write_medium_stroke` 读到它真正用 `medium` 的那一行 ✓**（**∴ 不用 `head -N` 截断 ✗**）
+
+## 十二、更正 ②：`medium` **是有校验的** ✓（在 `yanshi_medium_host` 里）
+
+**证据**（`write_medium_stroke`，`tools.rs:13080..13332`，252 行 ✓）：
+```
+:149  let (region, rgba) = yanshi_medium_host::paint_stroke_over(&medium, …)
+:169  let spec = yanshi_medium_host::spec(&medium).expect("paint_stroke 已经校验过介质名");
+```
+⇒ **∴ 介质名由 `yanshi_medium_host` 校验** ✓（**∴ 不是"接受任意字符串"✗**）
+   ⇒ **∴ 原表「② `medium` 未枚举化（仍接受任意字符串、`example-dab` 可被当真）」✗ 要改口径 ✓**：
+     **∴ 不是能力缺口 ✓，而是「错误消息是否给候选」的**友好度**问题 ✗**（**∴ 这点仍待核 ✓**）
+
+### 12.1 ★★ 一个模式（**本目标里第 2 次** ✗）
+
+**∴ 我已经**两次**把"我没读过"✗ 当成"没有"✗**：
+1. `brush_params`（**∴ 用了 `head -12` 截断 ✓**）
+2. `medium` 的校验（**∴ 只看了函数前 8 行 ✓**）
+
+⇒ **∴ 共同来源 ✓**：**读代码时**截断**✗** ⇒ **∴ 而代价都是**先写错结论、再花一轮改账**✗✓**。
+⇒ **∴ 给自己记一条 ✓**：**在写"缺什么"之前，先把那一处的**完整函数体**读到它的结尾 `}` ✓**（**∴ 用 `awk` 找 `^}` ✓，就像这一轮 ✓**）。
