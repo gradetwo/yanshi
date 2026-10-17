@@ -41,6 +41,22 @@
 </ul>
 <p>在这套引擎之上是一个 <strong>MCP 服务端</strong>与一个 <strong>Web 查看器</strong> ⇒ Agent 与人操作的是同一份文档。</p>
 
+<h2>一键安装</h2>
+<p><strong>不用装 Rust 工具链</strong> ✓ —— 官方发布 Linux x86_64（静态）、Intel macOS、Apple Silicon 三个平台的预编译包：</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh</code></pre>
+<p>脚本认出你的平台、取对应的发布资产、<strong>用官方 <code>SHA256SUMS</code> 校验</strong>，解到
+<code>~/.local/share/yanshi/&lt;版本&gt;</code>，再把 <code>yanshi-serve</code> 与 <code>yanshi-mcp</code>
+两个薄包装放进 <code>~/.local/bin</code>。包是<strong>自包含</strong>的 ✓：笔刷、笔刷预览图、介质、调色板、纸纹、
+WASM 内核都在里面，二进制按包内布局（<code>bin/…</code> 与 <code>share/yanshi/…</code> 并列）自己找资产
+⇒ <strong>解到哪儿都能跑</strong> ✓。</p>
+<pre><code>yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # 然后打开 http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # stdio MCP 服务器，给 MCP 客户端用
+yanshi-mcp   --list-tools --profiles core                        # 只列出工具面</code></pre>
+<p>可调 <code>YANSHI_VERSION</code>／<code>YANSHI_PREFIX</code>／<code>YANSHI_BIN_DIR</code>／
+<code>YANSHI_DRY_RUN=1</code>。<strong>没有预编译包的平台</strong>（Linux arm64、Windows）：从源码编
+（<code>cargo build --release -p yanshi-http -p yanshi-mcp</code>，或 <code>make release</code>），
+或从 releases 手动解 Windows 包。</p>
+
 <h2>快速开始</h2>
 <p>需要 <strong>Rust</strong>（<code>rust-toolchain.toml</code> 固定的 stable ✓，含 <code>rustfmt</code>/<code>clippy</code>）与 <strong><code>make</code></strong>。
 要用<strong>浏览器端内核</strong>（客户端渲染）再装 <code>rustup target add wasm32-unknown-unknown</code> 与
@@ -56,7 +72,7 @@ make serve PORT=9000</code></pre>
 
 <h2>当前状态</h2>
 <ul>
-<li>版本 0.1.0，<strong>尚无已发布的发行版</strong>；源码从 GitHub 取得，<code>make release</code> 自行打包。</li>
+<li>版本 <strong>0.2.2</strong>，已有<strong>三个平台的预编译发布包</strong>（<code>curl</code> 一行可装，见上）；源码从 GitHub 取得，<code>make release</code> 也能自行打包。</li>
 <li><code>semantic</code> 工具组按既定裁定只作预留，未实现。</li>
 <li>浏览器端内核是构建产物，新克隆里没有它；缺了不报错，查看器退回服务端渲染。</li>
 </ul>

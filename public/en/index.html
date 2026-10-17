@@ -41,6 +41,23 @@
 </ul>
 <p>An <strong>MCP server</strong> and a <strong>web viewer</strong> sit on top of that engine, so an agent and a person work on the same document.</p>
 
+<h2>Install</h2>
+<p>Prebuilt binaries, <strong>no Rust toolchain needed</strong> — Linux x86_64 (static), Intel macOS and Apple Silicon:</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh</code></pre>
+<p>The script resolves the release asset for your platform, <strong>verifies its SHA256</strong> against the
+published <code>SHA256SUMS</code>, unpacks it to <code>~/.local/share/yanshi/&lt;version&gt;</code>, and drops thin
+wrappers for <code>yanshi-serve</code> and <code>yanshi-mcp</code> into <code>~/.local/bin</code>. The tarball is
+<strong>self-contained</strong>: brushes, brush previews, mediums, palettes, textures and the WASM kernel are
+inside, and the binaries find them through the package layout (<code>bin/…</code> beside
+<code>share/yanshi/…</code>), so it runs wherever you unpack it.</p>
+<pre><code>yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # then open http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # stdio MCP server, for MCP clients
+yanshi-mcp   --list-tools --profiles core                        # just show the tool surface</code></pre>
+<p>Knobs: <code>YANSHI_VERSION</code>, <code>YANSHI_PREFIX</code>, <code>YANSHI_BIN_DIR</code>,
+<code>YANSHI_DRY_RUN=1</code>. <strong>Platforms without a prebuilt package</strong> — Linux arm64 and Windows:
+build from source (<code>cargo build --release -p yanshi-http -p yanshi-mcp</code>, or <code>make release</code>),
+or unpack the Windows tarball from the releases page by hand.</p>
+
 <h2>Quick start</h2>
 <p>You need <strong>Rust</strong> (the stable toolchain pinned by <code>rust-toolchain.toml</code>, with <code>rustfmt</code> and <code>clippy</code>) and <strong><code>make</code></strong>.
 For the <strong>browser kernel</strong> (client-side rendering) also add <code>rustup target add wasm32-unknown-unknown</code> and
@@ -57,7 +74,7 @@ make serve PORT=9000</code></pre>
 
 <h2>Current state</h2>
 <ul>
-<li>Version 0.1.0, with <strong>no published release yet</strong>; take the source from GitHub and build the package with <code>make release</code>.</li>
+<li>Version <strong>0.2.2</strong>, with <strong>prebuilt release packages for three platforms</strong> (one <code>curl</code> line, see above); the source is on GitHub and <code>make release</code> still packages it yourself.</li>
 <li>The <code>semantic</code> tool group is reserved by decision and not implemented.</li>
 <li>The browser-side kernel is a build artefact and a fresh clone does not have it; nothing fails without it and the viewer falls back to server-side rendering.</li>
 </ul>
