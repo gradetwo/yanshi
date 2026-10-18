@@ -3641,20 +3641,50 @@ fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let region = Bbox::new(x0, y0, w, h);
     let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
     let stride = (w as usize) * 4;
+    // **画布尺寸** ✓：用来判断"这个点根本不在画布上"✗ ——
+    //   不能靠 `region` 判断 ✗（因为 `region` 是**夹过**的包围盒 ✓）⇒ 否则画布外的点会被
+    //   **夹到边缘**✗ 并返回一个**看起来正常的假值**✗（**∴ 单点 `sample_color` 对外面的点是**报错**✓**）。
+    let (canvas_w, canvas_h) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            (
+                document.state().width as f64,
+                document.state().height as f64,
+            )
+        })
+        .unwrap_or((0.0, 0.0));
     let mut samples = Vec::with_capacity(points.len());
+    let mut outside_count = 0usize;
     for (index, (x, y)) in points.iter().enumerate() {
-        let px = ((x.floor() as i64) - (x0 as i64)).max(0) as usize;
-        let py = ((y.floor() as i64) - (y0 as i64)).max(0) as usize;
-        let offset = py * stride + px * 4;
-        let rgba = match raw.get(offset..offset + 4) {
-            Some(chunk) => json!([chunk[0], chunk[1], chunk[2], chunk[3]]),
-            None => Value::Null,
+        let outside = *x < 0.0 || *y < 0.0 || *x >= canvas_w || *y >= canvas_h;
+        let rgba = if outside {
+            outside_count += 1;
+            Value::Null
+        } else {
+            let px = ((x.floor() as i64) - (x0 as i64)).max(0) as usize;
+            let py = ((y.floor() as i64) - (y0 as i64)).max(0) as usize;
+            let offset = py * stride + px * 4;
+            match raw.get(offset..offset + 4) {
+                Some(chunk) => json!([chunk[0], chunk[1], chunk[2], chunk[3]]),
+                None => Value::Null,
+            }
         };
-        samples.push(json!({"index": index, "x": x, "y": y, "rgba": rgba}));
+        samples.push(json!({"index": index, "x": x, "y": y, "rgba": rgba, "outside": outside}));
     }
+    let warnings = if outside_count > 0 {
+        vec![format!(
+            "{outside_count} 个点在画布**外面** ⇒ 它们的 rgba 是 null ✓（画布 {canvas_w}×{canvas_h}，\
+             原点在**左上角** ✓）。这不是「画布边缘的颜色」✗ —— 那会让人以为取色成功 ✓。"
+        )]
+    } else {
+        Vec::new()
+    };
     Ok(json!({
         "ok": true,
         "count": samples.len(),
+        "outside_count": outside_count,
+        "warnings": warnings,
         "region": {"x": x0, "y": y0, "w": w, "h": h},
         "samples": samples,
     }))
@@ -18680,6 +18710,7 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
     ("get_undo_status", r#"{}"#),
