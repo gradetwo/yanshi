@@ -11710,6 +11710,50 @@ fn write_retouch(ctx: &mut ToolContext<'_>, args: &Value, retouch_type: &str) ->
         (dx, dy)
     };
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    // ★ retouch 是"提交 atom"，不是"即时渲染" ✗ ★（第 1000+ 轮 ✓）
+    //   ⇒ 这里拿不到 painted_pixels（那一刻没有像素 ✓）
+    //   ⇒ 但"会不会触到画布"是提交前就能算的 ✓ ⇒ 在这里判 ✓，否则会留下一个空 atom ✗
+    //   ⇒ 与 brush_stroke 的「整条笔迹都在画布外面 ⇒ 一枚 dab 都不会落上」同型 ✓
+    //     （YANSHI_ISSUES §22-24 的统一规则：改 0 像素就要说 ✓）
+    {
+        let (canvas_w, canvas_h) = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| {
+                (
+                    document.state().width as f64,
+                    document.state().height as f64,
+                )
+            })
+            .unwrap_or((0.0, 0.0));
+        if canvas_w > 0.0 && canvas_h > 0.0 && !parsed.is_empty() {
+            let half = size * 0.5;
+            let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
+            let (mut bx, mut by) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for point in &parsed {
+                ax = ax.min(point[0]);
+                ay = ay.min(point[1]);
+                bx = bx.max(point[0]);
+                by = by.max(point[1]);
+            }
+            let entirely_outside = bx + half <= 0.0
+                || by + half <= 0.0
+                || ax - half >= canvas_w
+                || ay - half >= canvas_h;
+            if entirely_outside {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "这次 {retouch_type} 完全在画布**外面** ⇒ 不会有任何像素被揉到 ✓。画布是 {canvas_w}×{canvas_h}（原点在**左上角** ✓），而这条路径的范围是 x {}..{}、y {}..{}（含半径 {half}）",
+                        ax - half,
+                        bx + half,
+                        ay - half,
+                        by + half
+                    )),
+                ));
+            }
+        }
+    }
     if !(1.0..=1024.0).contains(&size) {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
