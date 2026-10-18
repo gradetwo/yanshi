@@ -1114,8 +1114,30 @@ function availableArea() {
   const padding = styles ? parseFloat(styles.paddingLeft || "12") * 2 : 24;
   const asideWidth = aside ? aside.getBoundingClientRect().width : 320;
   const width = (main ? main.clientWidth : window.innerWidth) - asideWidth - gap - padding;
-  const height = Math.max(240, window.innerHeight - 96);
-  return { w: Math.max(160, Math.floor(width)), h: Math.floor(height) };
+  // ★ **高度必须来自**真实画布宿主的可见高度**✗** ★**（外部复测 QY-D04 ✓）
+  //
+  // **∴ 原来 ✗**：`window.innerHeight - 96` ✗** ⇒ **∴ 那个 96 是**猜的**✗**
+  //   ⇒ **∴ 而**工具栏**换行**✗ 或**面板／状态栏**出现时**✗ ⇒ **∴ 真实可用高度**更小**✗**
+  //   ⇒ **∴ 于是**"适配"**把画面缩到**溢出的容器**里**✗** ⇒ **∴ 底部色条**看不见**✗**
+  //     （**∴ 他们实测 ✓**：**∴ 约 13% ✗、顶见底不见 ✓；而全屏模式同 13% 两个都见 ✓**）
+  //
+  // **∴ 现在 ✓**：**∴ 先用**含 `canvas` 的宿主**✗ 的 `clientHeight`** ✓
+  //   ⇒ **∴ 取不到才**退回 ✓**：**∴ `main.clientHeight` ✗（**∴ 比 `innerHeight` 准 ✓**）
+  //     ⇒ **∴ 再退回 ✓**：**∴ `window.innerHeight − 96` ✗（**∴ 最终兜底 ✓**）
+  const height = (() => {
+    // **∴ ① 真实画布宿主 ✓**（**∴ 它**通常就是舞台容器 ✓**）
+    const host = document.querySelector("main canvas")?.parentElement;
+    if (host) {
+      const rect = host.getBoundingClientRect();
+      // **∴ 只要它**有高度且**不是整页**✗**（**∴ 避免选到 `body` 之类 ✓**）
+      if (rect.height > 240 && rect.height < window.innerHeight) return rect.height;
+    }
+    // **∴ ② `main` 的可见高度 ✓**（**∴ 已经去掉了页面级头尾 ✓**）
+    if (main && main.clientHeight > 240) return main.clientHeight;
+    // **∴ ③ 兜底 ✓**
+    return Math.max(240, window.innerHeight - 96);
+  })();
+  return { w: Math.max(160, Math.floor(width)), h: Math.floor(Math.max(240, height)) };
 }
 
 /// 按当前缩放与文档尺寸重新计算视口（以 `center` 为中心，缺省用视口中心）。
