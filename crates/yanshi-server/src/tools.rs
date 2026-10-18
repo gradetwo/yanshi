@@ -13876,6 +13876,10 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8) 
             painted += 1;
         }
         // **`delta` 的语义**照抄原来的 `max_channel_delta` ✗**（**∴ 白底 255 ✓**）
+        // **∴ 而**同样**跳过未触碰的透明像素**✗**（**∴ 第 118 轮 ✓；**∴ QY-D03 ✓**）
+        if base.is_none() && pixel[3] == 0 {
+            continue;
+        }
         for channel in 0..4 {
             let old = before.map_or(255, |bytes| bytes[channel]);
             let diff = (i32::from(pixel[channel]) - i32::from(old))
@@ -16509,6 +16513,26 @@ fn paint_brush(
         let mut max_delta: u8 = 0;
         let before = before_pixels.as_deref();
         for index in (0..rgba.len()).step_by(4) {
+            // ★ **无基准时必须跳过**未触碰的透明像素 ✗** ★**（第 118 轮 ✓；**∴ 外部复测 QY-D03 ✓**）
+            //
+            // **∴ 报告实测 ✓**：**∴ `fed_base=false` ✗ 的白色笔 ✗ ⇒ **∴ 本字段返回 **255**✗
+            //   而**合成后的真实最大 RGB 差是 **0**✗** ⇒ **∴ 灰笔真实差 31 ✗ 也报 255 ✗**
+            // **∴ 根因 ✓**：**∴ 引擎缓冲里的空白像素是 **RGBA(0,0,0,0)**✗
+            //   ⇒ **∴ 而我逐通道按**白底 255**✗ 比较** ⇒ **∴ 差恒 255 ✗ ⇒ **∴ 饱和 ✓**
+            // **∴ 所以 ✓**：**∴ 无基准时 ✗ 只让**有 alpha**✗ 的像素参与 ✓
+            //   ⇒ **∴ 于是**白笔（255 vs 255）⇒ **0** ✓／近白 ⇒ **1** ✓／灰 ⇒ **31** ✓／深 ⇒ **205** ✓** ✓
+            // **∴ 而有基准时 ✗ **不改**✗**（**∴ base 是真实像素 ✓ ⇒ **∴ 逐通道比较本来就对 ✓**）✓
+            if before.is_none() && rgba[index + 3] == 0 {
+                continue;
+            }
+            // ★ **无基准时必须**先合成到白底**✗ 再比 ✗** ★**（**∴ 外部复测 QY-D03 的第二层 ✓**）
+            //
+            // **∴ 为什么还要合成 ✗**：**∴ 只跳过 `alpha == 0` ✗ 不够 ✓**
+            //   ⇒ **∴ 实测 ✓**：**∴ 白笔仍报 **254**✗** ⇒ **∴ 因为**抗锯齿**边缘半透明**✗
+            //     （**∴ RGB 接近 0 ✗ 而 alpha 很低 ✓**）⇒ **∴ 与 255 差 **254**✗ 但它**肉眼不可见**✗** ✓
+            // **∴ 所以 ✓**：**∴ 按 alpha 合成到白底 ✗ ⇒ **∴ 得**可见 RGB**✗ ⇒ **∴ 再比 ✓**
+            //   ⇒ **∴ 公式 ✓**：`c = rgb·a + 255·(1−a)` ✗（**∴ a 归一化 ✓**）
+            //   ⇒ **∴ 于是**白笔（a=1）⇒ **c=255 ⇒ delta=0** ✓；半透明边缘 ⇒ **c 靠近 255 ⇒ 差小** ✓
             let mut delta: u8 = 0;
             for channel in 0..4 {
                 // **∴ 没有基准时按**白底**✗**（**∴ 不读画布的笔直接写色 ✓ ⇒ **∴ 与白底比才是真实幅度 ✓**）
@@ -16517,7 +16541,17 @@ fn paint_brush(
                     .and_then(|pixels| pixels.get(index + channel))
                     .copied()
                     .unwrap_or(255);
-                let diff = i32::from(rgba[index + channel]) - i32::from(old_byte);
+                // **∴ 有基准 ⇒ 直接比 ✓；无基准 ⇒ 先把该通道合成到白底 ✓**（**∴ 后者才等于"肉眼看到"✓**）
+                let current = if before.is_some() {
+                    i32::from(rgba[index + channel])
+                } else if channel == 3 {
+                    // **∴ alpha 通道不与白底比 ✗**（**∴ 它不是可见颜色 ✓**）
+                    continue;
+                } else {
+                    let alpha = i32::from(rgba[index + 3]);
+                    (i32::from(rgba[index + channel]) * alpha + 255 * (255 - alpha)) / 255
+                };
+                let diff = current - i32::from(old_byte);
                 let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);
                 delta = delta.max(diff);
             }
