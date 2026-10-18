@@ -78,7 +78,7 @@ try {
 
 }
 const page = targets.find((target) => target.type === "page");
-if (!page) { console.error("没有页面目标 ⇒ 判据无效（不是通过 ✗）"); process.exit(1); }
+if (!page) { console.error("没有页面目标 ⇒ 判据自身前提不成立（不是产品问题，也不是通过）"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1;
 const pending = new Map();

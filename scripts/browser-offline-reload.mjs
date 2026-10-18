@@ -160,7 +160,7 @@ try {
 
 }
 const page = targets.find((t) => t.type === "page");
-if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
+if (!page) { console.error("没有页面目标 ⇒ 判据自身前提不成立（不是产品问题）"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map();
 socket.onmessage = (event) => { const m = JSON.parse(event.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
@@ -186,7 +186,7 @@ const reload = async (offline) => {
 const blank = await reload(false);
 console.log("  正对照（未落笔）：" + JSON.stringify(blank));
 const failures = [];
-if (!blank || blank.error) { console.log("  ✗ 取样器不可用 ⇒ 判据无效 ⇒ " + JSON.stringify(blank)); socket.close(); process.exit(1); }
+if (!blank || blank.error) { console.log("  ✗ 取样器不可用 ⇒ 判据自身前提不成立（不是产品问题）⇒ " + JSON.stringify(blank)); socket.close(); process.exit(3); }
 if (blank.dark > 50) failures.push(`未落笔的画布上就有 ${blank.dark} 个深色像素 ⇒ 量法不可信 ✗`);
 
 // ① 画一笔 ✓
