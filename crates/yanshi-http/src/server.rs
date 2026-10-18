@@ -525,6 +525,15 @@ fn handle_connection(state: Arc<ServerState>, stream: TcpStream) -> std::io::Res
         };
         state.requests.fetch_add(1, Ordering::Relaxed);
         if request.is_websocket_upgrade() {
+            // ★ **WS 升级后不该继承 HTTP 的空闲读超时 ✗** ★**（外部复测 QY-D05 ✓）
+            //
+            // **∴ 他们实测 ✓**：**∴ 空闲连接 3/3 在 **30.016～30.026 秒**✗ 收到 **TCP EOF ✗
+            //   而**没有 close 帧** ✓** ⇒ **∴ 而**页面显示「已断开」＋ 重连 ✓
+            // **∴ 根因 ✓**：**∴ `:511` 给 TCP 流设了 30 秒**读超时**✗**（**∴ 为 HTTP keep-alive ✓**）
+            //   ⇒ **∴ 而**升级到 WS 时**把同一条流**交给 `handle_websocket`✗ ⇒ **∴ 超时**没清**✗** ✓
+            // **∴ 所以 ✓**：**∴ 清掉它 ✗** ⇒ **∴ WS 自己负责**心跳／失活**✗**（**∴ 协议层 ping/pong ✓**）
+            // **∴ 而**读超时是 **socket 级**✗ ⇒ **∴ 两侧共享 ✓ ⇒ **∴ 清一次就够 ✓** ✓
+            writer.set_read_timeout(None).ok();
             return handle_websocket(state, request, writer, reader);
         }
         let keep_alive = !request
