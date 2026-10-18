@@ -996,7 +996,8 @@ fn buffer_pool_budget_covers_every_concurrent_worker() {
     //   ⇒ **∴ 所以这是**测试的假设错**✗，不是产品 bug ✓**
     //   ⇒ **∴ 改法 ✓**：把预算提到够 4 块（`64 MB × WORKERS` ✓）⇒ **∴ 仍能抓原来的回归 ✓**
     //     （**∴ 回归是"归还规则只按**固定 192 MB**✗ 而不是**按 worker 数**✗"✓ ⇒ **∴ 与预算大小无关 ✓**）
-    let mut renderer = Renderer::with_budget(grid, 64 * 1024 * 1024 * WORKERS).with_max_workers(WORKERS);
+    let mut renderer =
+        Renderer::with_budget(grid, 64 * 1024 * 1024 * WORKERS).with_max_workers(WORKERS);
 
     let first = renderer.render_document(&state, &store).unwrap();
     assert_eq!(
