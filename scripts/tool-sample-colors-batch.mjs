@@ -118,6 +118,7 @@ console.log(`  （参考）比值 = ${ratio.toFixed(3)}×（墙钟比，只作�
 //   ⇒ **∴ 逐点渲染会让它变成 N ✗ ⇒ **∴ 而这个计数**与机器快慢无关 ✓**
 const smallTimings = (await call("sample_colors", { points: small })).body?.timings ?? {};
 const bigTimings = (await call("sample_colors", { points })).body?.timings ?? {};
+let bad = 0;
 const callsSmall = smallTimings.region_render_calls;
 const callsBig = bigTimings.region_render_calls;
 console.log(`  区域渲染次数：100 点 ⇒ **${callsSmall}**｜1600 点 ⇒ **${callsBig}**（**必须都是 1**）`);
@@ -126,5 +127,26 @@ if (callsSmall !== 1 || callsBig !== 1) {
   process.exit(1);
 }
 // **∴ 计时只作参考 ✗**（**∴ 它随机器飘 ✓，不当门槛 ✓**）
+// ★ **那次区域渲染必须**被计时**✗ ★**（第 15 轮 ✓）
+//
+// **∴ 以前它不计时 ✗** ⇒ **∴ 成本全落在 `other_ms`**✗ ⇒ **∴ 实测 `other_ms` 与对象数线性
+//   （2000 对象 ⇒ 43 ms ✓）⇒ **∴ 报告 §36 看到"全在 other"✗ 是对的观察 ✓，但看不清归因 ✓**
+// ⇒ **∴ 现在记到 `Phase::Render`**✗ ⇒ **∴ 守恒 ✓**：`other_ms` 43.0 → **0.019**、`render_ms` 0 → **40.325** ✓
+// ⇒ **∴ 断言两条，都是**布尔**✗（**∴ 不是阈值 ✓**）：
+//   ⇒ **∴ ① `render_ms > 0`**✗（**∴ 它计了时间就一定 > 0 ✓，与机器快慢无关 ✓**）
+//   ⇒ **∴ ② `other_ms < render_ms`**✗（**∴ 计时**盖住了**原来在 other 的那块 ✓）**
+const callsExtra = bigTimings.render_ms;
+const otherExtra = bigTimings.other_ms;
+const rendered = typeof callsExtra === "number" && callsExtra > 0;
+console.log(`  ${rendered ? "✓" : "✗"} 取色时那次区域渲染**被计时**了（render_ms = ${callsExtra}）`);
+if (!rendered) bad += 1;
+// **∴ 不加"other < render"那条 ✗**：**∴ 它只在**大画布 ＋ 多对象**时才成立 ✓**
+//   ⇒ **∴ 实测 600×1066／2000 对象 ✓**：`other` 43.0 → **0.019**、`render` 0 → **40.325** ✓（**∴ 守恒 ✓**）
+//   ⇒ **∴ 而在 320×240 小画布上 `other`(4.5) > `render`(3.0) ✗** ⇒ **∴ 那条断言会**随构型变**✗**
+//     ⇒ **∴ 所以**判据只断**"它真的被计时了"**✗（**∴ 布尔 ✓，与构型无关 ✓**）；
+//       守恒用**台账里的实测数字**记录 ✓，不进判据 ✓
+console.log(`  （参考）other_ms = ${otherExtra}｜render_ms = ${callsExtra}`);
+
 console.log(`  （参考）100 点 ${smallMs.toFixed(1)} ms｜1600 点 ${batchMs.toFixed(1)} ms｜规模比 ${scale.toFixed(2)}×`);
 console.log("  ✓ sample_colors 一次只向渲染层要**一次**区域（与点数无关）⇒ 不是逐点渲染");
+if (bad) { console.log(`  ✗ 有 ${bad} 处不满足`); process.exit(1); }

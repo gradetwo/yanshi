@@ -3693,9 +3693,17 @@ fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .max(1.0)
         .min((canvas_h - y0).max(1.0));
     let region = Bbox::new(x0, y0, w, h);
-    // ★ **计数**✗：**一次 `sample_colors` 只该要一次区域**✗（**∴ 逐点渲染会让它变成 N ✓**）
+    // ★ **计数 ＋ 计时**✗ ★**（第 15 轮 ✓）
+    //   **∴ 计数**：一次 `sample_colors` 只该要一次区域 ✗（**∴ 逐点渲染会让它变成 N ✓**）
+    //   **∴ 计时**：**以前这次渲染**不计时**✗** ⇒ **∴ 它的成本全落在 `other_ms`**✗
+    //     ⇒ **∴ 而实测 `other_ms` 与对象数**线性**✗**（**∴ 2000 对象 ⇒ 43 ms ✓**）
+    //     ⇒ **∴ 所以报告 §36 看到"全在 other"✗ 是对的观察 ✓，但归因不容易看清 ✓**
+    //     ⇒ **∴ 现在记到 `Phase::Render`**✗（**∴ 它就是一次渲染 ✓**）
+    //       ⇒ **∴ 于是**`render_ms` > 0 ✓、`other_ms` → ≈0 ✓（**∴ 守恒 ✓**）
     ctx.count_region_render();
+    let render_started = std::time::Instant::now();
     let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    ctx.time(Phase::Render, render_started);
     let stride = (w as usize) * 4;
     // **画布尺寸** ✓：用来判断"这个点根本不在画布上"✗ ——
     //   不能靠 `region` 判断 ✗（因为 `region` 是**夹过**的包围盒 ✓）⇒ 否则画布外的点会被
