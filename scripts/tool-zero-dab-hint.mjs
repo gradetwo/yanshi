@@ -109,9 +109,15 @@ const main = async () => {
     bad.push(`④ 正常笔画被弄坏了（${JSON.stringify(good).slice(0, 160)}）`);
   }
 
-  console.log(`  ① size=400 单点：${oneText.slice(0, 110)}…`);
-  console.log(`  ② size=300 两点：${twoText.slice(0, 110)}…`);
-  console.log(`  ③ 不给 size：${noneText.slice(0, 80)}…`);
+  // ★ **诊断行 ✗**（第 49 轮 ✓）：**∴ 这条在 CI 上**偶发红**✗**
+  //   ⇒ **∴ 症状 ✓**：**∴ 「① `size=400` ＋ 3px 路径**竟然落墨了**✗」** ⇒ **∴ 而本机不落 ✓**
+  //   ⇒ **∴ 所以**加上**落墨量 ＋ 最大通道差**✗ ⇒ **∴ 下次红时能判断那是**真落墨**✗
+  //      还是**亚像素抖动**✗**（**∴ 差 1 就是抖动 ✓、差几十就是真落 ✓**）
+  //   ⇒ **∴ 而**这两个字段都是**语义量**✗（**∴ 不是时间 ✓**）⇒ **∴ 与机器快慢无关 ✓**
+  const diag = (r) => `painted=${r?.painted_pixels}｜max_channel_delta=${r?.max_channel_delta}`;
+  console.log(`  ① size=400 单点：${oneText.slice(0, 110)}…（${diag(one)}）`);
+  console.log(`  ② size=300 两点：${twoText.slice(0, 110)}…（${diag(two)}）`);
+  console.log(`  ③ 不给 size：${noneText.slice(0, 80)}…（${diag(none)}）`);
   console.log(`  ④ 正常笔画：ok=${good && good.ok}`);
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
