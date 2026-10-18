@@ -34,6 +34,7 @@ const call = async (name, args) => {
 await call("create_layer", { layer_id: "dc_a", name: "A" });
 await call("create_layer", { layer_id: "dc_b", name: "B" });
 await call("create_selection", { selection_id: "dc_s", shape: { kind: "rect", x: 20, y: 20, width: 40, height: 40 } });
+await call("create_mask", { mask_id: "dc_m", shape: { kind: "ellipse", cx: 100, cy: 100, rx: 20, ry: 20 } });
 
 const canvas = await call("describe_canvas", {});
 if (canvas.ok !== true) { console.log(`  ✗ describe_canvas 返回 ok!=true：${JSON.stringify(canvas).slice(0, 140)}`); process.exit(1); }
@@ -58,6 +59,16 @@ const canvasLayers = (canvas.layers ?? []).length;
 const match = listedCount === canvasLayers;
 console.log(`  ${match ? "✓" : "✗"} layers 长度 ${canvasLayers} 与 list_layers.count ${listedCount} ${match ? "一致" : "**不一致** ✗"}`);
 if (!match) bad += 1;
+
+// ★ **`masks` 必须是**对象数组**✗ ★**（报告 §31② ✓：他们按对象解析，遇到字符串就崩
+//   `'str' object has no attribute 'get'` ✓）⇒ **∴ 断言每一项都是对象 ✓、且含 `mask_id` ✓**。
+const masksShape = (canvas.masks ?? []).map((m) => (m && typeof m === "object" && !Array.isArray(m) ? "object" : typeof m));
+const masksAllObjects = masksShape.every((kind) => kind === "object");
+console.log(`  ${masksAllObjects ? "✓" : "✗"} masks 每一项都是对象（实测 ${JSON.stringify(masksShape)}）`);
+if (!masksAllObjects) bad += 1;
+const masksHaveIds = (canvas.masks ?? []).every((m) => m && typeof m.mask_id === "string");
+console.log(`  ${masksHaveIds ? "✓" : "✗"} masks 每一项都含字符串 \`mask_id\``);
+if (!masksHaveIds) bad += 1;
 
 const selOk = (canvas.selections ?? []).some((s) => s.selection_id === "dc_s");
 console.log(`  ${selOk ? "✓" : "✗"} selections 里能找到刚建的 dc_s`);

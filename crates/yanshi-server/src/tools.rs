@@ -4378,14 +4378,29 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
         .map(|document| (document.state().width, document.state().height))
         .unwrap_or((0, 0));
     let state = document_state(ctx)?;
-    // 掩码：从图层的 `mask_id` 汇总（**∴ 本仓没有独立的 masks 表 ✓**）
-    let mut masks: Vec<String> = state
-        .alive_layers()
-        .into_iter()
-        .filter_map(|layer| layer.mask_id.clone())
+    // ★ **掩码：一律输出**对象数组**✗ ★**（报告 §31② ✓）
+    //   ⇒ **∴ 原来我输出的是**字符串数组**✗**（从图层的 `mask_id` 汇总 ✓），
+    //     **∴ 而调用方按对象解析 ⇒ `'str' object has no attribute 'get'` ✗** ✓
+    //   ⇒ **∴ 现在直接从 `state.masks`（`BTreeMap<MaskId, Selection>` ✓）取**全部**掩码 ✓，
+    //     **∴ 每一项都是对象 ✓、且比"只列挂到图层上的"✗ 更完整 ✓**。
+    let mut masks: Vec<Value> = state
+        .masks
+        .values()
+        .map(|mask| {
+            json!({
+                "mask_id": mask.id,
+                "mode": mask.mode,
+                "feather": mask.feather,
+                "shape": mask.shape,
+            })
+        })
         .collect();
-    masks.sort();
-    masks.dedup();
+    masks.sort_by(|a, b| {
+        a.get("mask_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(b.get("mask_id").and_then(Value::as_str).unwrap_or(""))
+    });
     let mut selections: Vec<Value> = state
         .selections
         .values()
