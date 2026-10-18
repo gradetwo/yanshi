@@ -100,6 +100,15 @@ pub struct ToolTimings {
     /// ⇒ **∴ 而真正该断的是**语义**✗**：**一次 `sample_colors` 只应**要一次区域**✗**
     ///   ⇒ **∴ 逐点渲染会让它变成 N ✗ ⇒ **∴ 而这个计数**与机器快慢无关 ✓**
     region_render_calls: usize,
+    /// **`Phase::Raster` 被调用了几次** ✓（**∴ 与 `preview_calls` 对称 ✓**）。
+    ///
+    /// **∴ 为什么需要它 ✗**：`background_stroke_cost` 有一条"残差（catch-all）不该成为主导"✗
+    /// 的断言，它比的是**时间占比**✗ ⇒ **∴ 而 CI 的调度抖动会让 `total` 漂 ✓**
+    /// （**∴ 实测偶发红 ✓、本机全过 ✓**）⇒ **∴ 只能把门槛从 0.5 放宽到 0.8 ✓**。
+    /// ⇒ **∴ 而**那条断言的意图**✗ 是抓"某阶段根本没被调用"**✗**（**∴ 历史上真出现过 ✓**）
+    ///   ⇒ **∴ 用计数就能**精确**抓它 ✗**（**∴ 调用次数 0 就是 0 ✓，不会飘 ✓**）
+    ///   ⇒ **∴ 所以**加这个计数 ✓，测试里同时断"`raster_calls > 0`"✗ ✓
+    raster_calls: usize,
 }
 
 impl ToolTimings {
@@ -123,6 +132,9 @@ impl ToolTimings {
         // **∴ 计数与耗时**分开记 ✗**（**∴ 计数是确定性的 ✗ 耗时不是 ✓）★
         if phase == Phase::Preview {
             self.preview_calls = self.preview_calls.saturating_add(1);
+        }
+        if phase == Phase::Raster {
+            self.raster_calls = self.raster_calls.saturating_add(1);
         }
         let slot = match phase {
             Phase::Prep => &mut self.prep_us,
@@ -160,6 +172,7 @@ impl ToolTimings {
             region_render_calls: self
                 .region_render_calls
                 .saturating_sub(base.region_render_calls),
+            raster_calls: self.raster_calls.saturating_sub(base.raster_calls),
         }
     }
 
@@ -189,6 +202,7 @@ impl ToolTimings {
             "preview_ms": millis(self.preview_us),
             // **∴ 语义计数 ✗**（**与 `preview_ms` 并排 ⇒ 判据可以不看墙钟 ✓）★
             "preview_calls": self.preview_calls,
+            "raster_calls": self.raster_calls,
             "region_render_calls": self.region_render_calls,
             "render_ms": millis(self.render_us),
             "png_ms": millis(self.png_us),
