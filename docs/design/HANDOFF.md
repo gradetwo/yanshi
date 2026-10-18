@@ -7,7 +7,8 @@
 ```
 HEAD              = b39c341f（main == l4-sync）
 外部复测 8 项      = 7 个四件齐 ＋ G02 5/7（第 3 项已自陈且被验）
-判据              = tool-preview-read-canvas **13 条断言**、tool-swatch-include-image **8 条**（21 条）
+判据              = tool-preview-read-canvas **13 条断言（12 条有变异，① 与 ② 重叠）**、
+                    tool-swatch-include-image **8 条（8 条有变异）**（共 21 条）
 AGENTS.md         = 9 条行为规矩
 CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md 有记录）
 ```
