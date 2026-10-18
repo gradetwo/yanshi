@@ -38,7 +38,7 @@ try {
   process.exit(3);
 }
 const page = targets.find((t) => t.type === "page");
-if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
+if (!page) { console.error("没有页面目标 ⇒ 判据自身前提不成立（不是产品问题）"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map(); const seen = [];
 socket.onmessage = (event) => { const m = JSON.parse(event.data);

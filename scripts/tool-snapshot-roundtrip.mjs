@@ -13,7 +13,7 @@ const created = await (await fetch(`${base}/api/documents`, {
   body: JSON.stringify({ doc_id: docId, width: 200, height: 150 }),
 })).json();
 const token = created.token;
-if (!token) { console.error("判据无效：拿不到 token"); process.exit(1); }
+if (!token) { console.error("判据自身前提不成立：拿不到 token（不是产品问题）"); process.exit(3); }
 const call = async (tool, args) => (await fetch(`${base}/api/tools?doc=${docId}&token=${token}`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ tool, arguments: args }),

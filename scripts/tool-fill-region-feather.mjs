@@ -16,7 +16,7 @@ const mk = async (docId) => {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc_id: docId, width: 300, height: 200 }),
   })).json();
-  if (!created.token) { console.error("判据无效：拿不到 token"); process.exit(1); }
+  if (!created.token) { console.error("判据自身前提不成立：拿不到 token（不是产品问题）"); process.exit(3); }
   return created.token;
 };
 const call = (docId, token) => async (tool, args) =>

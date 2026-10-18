@@ -13,7 +13,7 @@ const makeDoc = async (id) => {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc_id: id, width: 200, height: 150 }),
   })).json();
-  if (!created.token) { console.error("判据无效：拿不到 token"); process.exit(1); }
+  if (!created.token) { console.error("判据自身前提不成立：拿不到 token（不是产品问题）"); process.exit(3); }
   return created.token;
 };
 const call = async (id, token, tool, args) => (await fetch(`${base}/api/tools?doc=${id}&token=${token}`, {

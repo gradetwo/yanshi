@@ -19,7 +19,7 @@ const created = await (await fetch(`${base}/api/documents`, {
   body: JSON.stringify({ doc_id: docId, width: 300, height: 200 }),
 })).json();
 const token = created.token;
-if (!token) { console.error("判据无效：拿不到 token"); process.exit(1); }
+if (!token) { console.error("判据自身前提不成立：拿不到 token（不是产品问题）"); process.exit(3); }
 const layer = await call("create_layer", { layer_id: "layer_default", name: "底色" }, token);
 console.log("  建图层：" + JSON.stringify(layer).slice(0, 80));
 const result = await call("gradient_blend", {
