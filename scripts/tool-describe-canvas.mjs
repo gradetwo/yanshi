@@ -70,6 +70,35 @@ const masksHaveIds = (canvas.masks ?? []).every((m) => m && typeof m.mask_id ===
 console.log(`  ${masksHaveIds ? "✓" : "✗"} masks 每一项都含字符串 \`mask_id\``);
 if (!masksHaveIds) bad += 1;
 
+// ★ **`estimated_memory_bytes` 必须随对象数**线性**增长**✗ ★**（报告 §33 第 3 点 ✓）
+//   ⇒ **∴ 他们要它来**长跑前预估**✗ ⇒ **∴ 若它不随对象数涨 ⇒ **∴ 那字段就是死的 ✗**
+//   ⇒ **∴ 断言 ✓**：画 N 笔后字节数**约等于** N 的倍数（**∴ 每笔 ~1.18 KB ✓**）
+//     ⇒ **∴ 用**翻倍**判定 ✓（**∴ 不写死绝对值 ✓ ⇒ **∴ 不随机器／版本变 ✓**）
+const memBefore = canvas.estimated_memory_bytes;
+const objectsBefore = (canvas.layers ?? []).reduce((n, l) => n + (l.objects ?? 0), 0);
+console.log(`  ${Number.isFinite(memBefore) ? "✓" : "✗"} estimated_memory_bytes = ${memBefore}（画之前，objects=${objectsBefore}）`);
+if (!Number.isFinite(memBefore)) bad += 1;
+
+const strokeCount = 20;
+for (let i = 0; i < strokeCount; i += 1) {
+  await call("brush_stroke", {
+    layer_id: "dc_a", brush: "100%_Opaque",
+    color: { r: 90, g: 70, b: 50, a: 255 },
+    points: [[20, 20 + i * 4, 1], [180, 20 + i * 4, 1]],
+    size: 8, preview: false,
+  });
+}
+const after = await call("describe_canvas", {});
+const memAfter = after.estimated_memory_bytes;
+const objectsAfter = (after.layers ?? []).reduce((n, l) => n + (l.objects ?? 0), 0);
+const grew = objectsAfter > objectsBefore && memAfter > memBefore;
+console.log(`  ${grew ? "✓" : "✗"} 画 ${strokeCount} 笔后 ⇒ objects ${objectsBefore}→${objectsAfter}｜字节 ${memBefore}→${memAfter}（**必须都增长**）`);
+if (!grew) bad += 1;
+const perStroke = (memAfter - memBefore) / (objectsAfter - objectsBefore);
+const plausible = perStroke > 100 && perStroke < 100_000;
+console.log(`  ${plausible ? "✓" : "✗"} 每笔字节 ≈ ${Number.isFinite(perStroke) ? perStroke.toFixed(0) : "NaN"}（**合理区间 100..100000**）`);
+if (!plausible) bad += 1;
+
 const selOk = (canvas.selections ?? []).some((s) => s.selection_id === "dc_s");
 console.log(`  ${selOk ? "✓" : "✗"} selections 里能找到刚建的 dc_s`);
 if (!selOk) bad += 1;
