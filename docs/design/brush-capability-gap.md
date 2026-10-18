@@ -2675,3 +2675,60 @@ pub masks: BTreeMap<MaskId, Selection>,
    ⇒ **∴ 所以我的真实毛病 ✓**：**加新字段时**没定死它的类型**✗**
    ⇒ **∴ 这是 §31② 的意义 ✓：**外部按自己的解析代码去用它 ✗，于是**类型不稳**✗ 立刻崩 ✓** ✓
 ```
+
+## 五十三、§31 两条都闭合 ✓ ＋ `sample-colors` 换度量 ✓ ＋ §32 撤回 ✓
+
+### 53.1 §31① `create_layer(..., if_exists="reuse")` ✓ **四件齐**
+
+```
+**∴ 报告说什么 ✗**：他们每次启动都 `create_layer("subject_paint")` ✓ ＋ `try/except: pass` ✓
+   ⇒ **∴ 于是 stderr 每次打印 `precondition_failed`✗** ⇒ **∴ 而它与"真失败"✗ 无法区分 ✓**
+**实现 ✓**（`5f2018e6`）：在 `ctx.commit` **之前**查 `if_exists == "reuse"` ＋ 该层已存在
+   ⇒ **∴ 直接回 `{ok:true, reused:true, layer_id, name, detail}`✓，不 commit ✓**
+   ⇒ **∴ 缺省仍是 `error` ✓（**∴ 既有语义不变 ✓**）**
+**判据 ✓**（`scripts/tool-create-layer-if-exists.mjs`，**四条断言** ✓）：
+   首次建 ✓／缺省重名 `precondition_failed` ✓／`reuse` ⇒ `ok:true reused:true` ✓／**`list_layers.count == 2`** ✓
+**实测 ✓**：`ok=true`／`ok=false precondition_failed`／`ok=true reused=true name=subject_paint`／`count=2` ✓
+**变异 ✓**：`if if_exists == "reuse"` ⇒ `if false && …` ⇒ **退出码 1** ✓
+   ⇒ 报「✗ if_exists=reuse ⇒ ok=false｜reused=undefined」✓
+```
+
+### 53.2 §31② `describe_canvas` 的 `masks` ✓ **四件齐**（**∴ 见 §52 ✓**）
+
+### 53.3 `sample-colors` 的判据**换了度量** ✓ —— **推翻了我前两轮的调参** ✗
+
+```
+**∴ 历史 ✓**：这条判据在 CI 上**红过三次** ✗，我调过**两次规模**（25→100 ✗、100→400 ✗）＋ **一次阈值**（3.0→8.0 ✗）
+   ⇒ **∴ 而每次都只是**把墙挪了一点**✗** ⇒ **∴ CI 上 25 点只用 **1.0 ms**✗（计时精度下限 ✓）⇒ 规模比 **8.24×** ✗
+**∴ 病根 ✓**：**规模比 ＝ `t_big / t_small` ✗，分子分母**都含固定开销**✗**（HTTP 往返 ＋ 建上下文 ✓）
+   ⇒ **∴ 固定开销占比越大 ⇒ 比值越被压高 ✗ ⇒ **∴ 换任何固定阈值，下一次更快的机器都会再打破它 ✗**
+**∴ 新度量 ✓**（`dc9f7263`）：
+   · `smallPerPoint = t_small / small`
+   · `netPerPoint   = (t_big − t_small) / (big − small)`
+   · **`netRatio = netPerPoint / smallPerPoint`** ⇒ **∴ 阈值 0.8 ✓**
+   ⇒ **∴ 逐点渲染 ⇒ 两者相等 ⇒ 净比 ≈ 1.00 ✗；一次渲染 ⇒ 净成本 ≈ 0 ✓**
+   ⇒ **∴ 两边同时随机器速度缩放 ⇒ **净比与机器快慢无关 ✓**
+**实测 ✓**：正常 **0.33×** ✓（`0.0184` / `0.0061` ms/点 ✓）
+**变异 ✓**（把 `sample_colors` 改成逐点渲染）⇒ **1.18×** ✗ ⇒ **退出码 1** ✓
+**∴ CI 验证 ✓**：`criteria 6/6` **绿** ✓（run `39098516597` ✓）
+```
+
+### 53.4 §32 **被报告方自己撤回** ✓ —— **不是引擎问题**
+
+```
+**∴ 报告原文（`:1099`）✗**：「**§32 撤回：该阶段（`背景飞白` / `scumble`）实际 `enabled=False`，从未执行**」✓
+   ⇒ **∴ 所以那次"3.5+ 分钟／7 分钟未结束"✗ **不在 `scumble`**✗** ✓
+**∴ 而我上一轮的处置 ✓**：**判"待他们打点笔数 ＋ 缺 `.myb`"✗ ⇒ **∴ 不猜着复现 ✓**
+   ⇒ **∴ 结果证明这是对的 ✓**：**∴ 若我猜"引擎慢"✗ 就会**去修一个不存在的问题**✗** ✓
+**∴ 顺带记 ✓**：`brush_params` 是**正确参数** ✓（`tools.rs:3068`：「覆盖 .myb 字段：{规范名: 数值}」✓）
+   ⇒ **∴ 但它要的是**规范名**✗，而 `dabs_per_actual_radius` 是 **`.myb` 名**✗ ⇒ **∴ 直接传 ⇒ HTTP 400** ✗
+   ⇒ **∴ 所以复现那类问题**需要他们的 `.myb`**✗** ✓
+```
+
+### 53.5 CI ✓（**五个 commit 一起验** ✓）
+
+```
+**∴ run `39098516597`（HEAD `5f2018e6`）⇒ `completed:success`** ✓
+   · **绿 = 12** ✓｜**红 = 1** ✗（`brush parity` ✓，**已知红 ＋ `continue-on-error: true`** ✓）
+   · **`criteria 1/6`／`2/6`／`3/6`／`4/6`／`5/6`／`6/6` 全部 `success`** ✓✓
+```
