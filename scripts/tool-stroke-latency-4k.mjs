@@ -159,8 +159,17 @@ const main = async () => {
       `${SIDE}² ⇒ ${lastTimings.raster_ms.toFixed(2)} ms ＝ ${rate4k.toFixed(3)} ms/MP｜` +
       `按 ${BUDGET_MS} ms 预算 ⇒ 最大可达 ${maxSide.toFixed(0)}²`,
     );
-    const linear = rate4k > 0 && rate > 0 && Math.max(rate, rate4k) / Math.min(rate, rate4k) < 2;
-    console.log(`  ${linear ? "✓" : "✗"} 两个尺寸的 ms/MP 应接近（${rate.toFixed(3)} vs ${rate4k.toFixed(3)}）—— 差 2 倍以上说明光栅非线性`);
+    // **∴ 光栅可能**与面积无关**✗**（**∴ 第 111 轮实测 ✓**：**∴ 本机 1024² **4.68 ms**✗／4096² **4.11 ms**✗
+    //   ⇒ **∴ 面积 16 倍、时间不变 ✓**）⇒ **∴ 那**时 "ms/MP" **没有意义**✗** ⇒ **∴ 所以**这里**不判对错**✗
+    //   ⇒ **∴ 只**说出属于哪种情形**✗** ⇒ **∴ 于是**读者**知道 100 ms 该怎么解释**✗** ✓
+    const ratio = rate > 0 && rate4k > 0 ? Math.max(rate, rate4k) / Math.min(rate, rate4k) : Infinity;
+    const regime =
+      ratio < 2
+        ? `与面积近似线性（${rate.toFixed(3)} vs ${rate4k.toFixed(3)} ms/MP）`
+        : rate > rate4k
+          ? `与面积**无关**（固定开销）：1024² 每 MP 反而更贵 ⇒ 4K 的 ${lastTimings.raster_ms.toFixed(2)} ms 主要是常量成本`
+          : `大画布更贵（超线性）`;
+    console.log(`  光栅情形：${regime}`);
     if (SIDE > maxSide) {
       console.error(
         `❌ 判不了（不是产品失败）：本机光栅速率 ${rate.toFixed(3)} ms/MP ⇒ ${SIDE}² 需 ` +
