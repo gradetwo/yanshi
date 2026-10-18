@@ -17475,6 +17475,15 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "bytes": bytes,
     });
     // 7.5 的同一条规矩 ✓：≤512px 才内嵌 ✓（MCP 那边要的是一张图 ✓，不是一串地址 ✗）。
+    // **把「底图到底读没读到」写在响应里** ✗（外部复测 §62 ✓）
+    //   ⇒ **∴ 对方**写了"`read_canvas` 生效后可以显式读取当前画布"**✗**
+    //   ⇒ **∴ 而**实测：**∴ 参数生效 ✓（2703 → 3826）** ⇒ **∴ 但**底图**读不到**✗**（**∴ 空白 vs 有笔触**同图 ✓**）
+    //   ⇒ **∴ 所以**必须**在响应里说清**✗** ⇒ **∴ 否则**他会**按错前提**✗ 去改读数**✗** ✓
+    if optional_bool(args, "read_canvas").unwrap_or(false) {
+        value["read_canvas"] = json!(true);
+        value["read_canvas_note"] =
+            json!("read_canvas 只改变了笔刷是否走『读画布』那条路（会读画布的笔因此输出不同）；**底图内容仍未读入** ⇒ 预览里的底**仍是**空白**（渲染层未提交，见 brush-capability-gap 第一百七十八节）。所以『读数与画上去一致』**仍未达成**。");
+    }
     if optional_bool(args, "include_image").unwrap_or(false) {
         value["image"] = json!({
             "mime_type": "image/png",
