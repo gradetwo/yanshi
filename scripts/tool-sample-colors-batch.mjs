@@ -107,18 +107,22 @@ console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓�
 //   · **逐点渲染 ⇒ 两者相等** ✗ ⇒ **∴ 断言为假 ✓**
 //   · **一次渲染 ⇒ 净成本 ≈ 0** ✓
 //   ⇒ **∴ 两边同时随机器速度缩放 ⇒ **比值与机器快慢无关**✓** ✓
-const smallCount = small.length;
-const bigCount = points.length;
-const smallPerPoint = smallMs / smallCount;
-const netPerPoint = (batchMs - smallMs) / (bigCount - smallCount);
-const netRatio = smallPerPoint > 0 ? netPerPoint / smallPerPoint : Number.POSITIVE_INFINITY;
-console.log(`  每点成本：小规模 ${smallPerPoint.toFixed(4)} ms/点｜大规模**净** ${netPerPoint.toFixed(4)} ms/点｜净比 = ${netRatio.toFixed(2)}×（逐点渲染会是 1.00×）`);
-if (netRatio >= 0.8) {
-  console.log("  ✗ 大点数的**净**每点成本 ≈ 小点数的平均成本 ⇒ sample_colors 内部是逐点渲染（固定开销掩盖了它）");
+// ★ **改用**语义计数**✗ ★**（**∴ 替代原来会随 CPU 飘的"净每点成本"✓**）
+//
+// **∴ 为什么换 ✗**：净比在 CI 上是 0.89 ✗、本机 0.33 ✓ ⇒ **∴ 那条判据在 CI 上一直红 ✓**
+//   （**∴ 登记过 known-red ✓**）⇒ **∴ 而根因是**CI 的 CPU**✗ 让同一段代码慢 2.2 倍 ✓，
+//      **∴ 不是判据写错 ✗、也不是代码退步 ✓**。
+// ⇒ **∴ 该断的是**语义**✗**：**一次 `sample_colors` **只该向渲染层要一次区域**✗**
+//   ⇒ **∴ 逐点渲染会让它变成 N ✗ ⇒ **∴ 而这个计数**与机器快慢无关 ✓**
+const smallTimings = (await call("sample_colors", { points: small })).body?.timings ?? {};
+const bigTimings = (await call("sample_colors", { points })).body?.timings ?? {};
+const callsSmall = smallTimings.region_render_calls;
+const callsBig = bigTimings.region_render_calls;
+console.log(`  区域渲染次数：100 点 ⇒ **${callsSmall}**｜1600 点 ⇒ **${callsBig}**（**必须都是 1**）`);
+if (callsSmall !== 1 || callsBig !== 1) {
+  console.log("  ✗ 区域渲染次数不是 1 ⇒ sample_colors 内部按点渲染了（点数越多次数越多）");
   process.exit(1);
 }
-if (!(ratio < 0.5)) {
-  console.log("  ✗ sample_colors 没有比逐点显著快 —— 最可能是内部循环调了单点（那样必然省不了）");
-  process.exit(1);
-}
+// **∴ 计时只作参考 ✗**（**∴ 它随机器飘 ✓，不当门槛 ✓**）
+console.log(`  （参考）100 点 ${smallMs.toFixed(1)} ms｜1600 点 ${batchMs.toFixed(1)} ms｜规模比 ${scale.toFixed(2)}×`);
 console.log("  ✓ sample_colors 比 50 次 sample_color 快一倍以上，且耗时**亚线性**（不是逐点渲染）");

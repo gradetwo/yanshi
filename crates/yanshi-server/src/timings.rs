@@ -92,12 +92,25 @@ pub struct ToolTimings {
     ///     （**见 `document_preview_render_count` 那条注释 ✓）⇒ **∴ 所以**：**补上这个计数 ✓
     ///       ＋ **∴ 判据改成断"**这一阶段确实被调用过**"** ✓ ⇒ **∴ 确定性的 ✓ ★★★
     preview_calls: usize,
+    /// **数"向渲染层要了一块区域"的次数** ✓（**∴ 与墙钟无关 ✓**）。
+    ///
+    /// **∴ 为什么要有它 ✗**：`sample_colors` 的判据原来比**净每点成本**✗（时间），
+    /// 而 CI 的 CPU 让净比从本机 0.33 变成 0.89 ✗ ⇒ **∴ 那条判据在 CI 上一直红 ✓**
+    /// （**∴ 已登记 known-red ✓，见 `scripts/criteria-known-red.txt` ✓**）。
+    /// ⇒ **∴ 而真正该断的是**语义**✗**：**一次 `sample_colors` 只应**要一次区域**✗**
+    ///   ⇒ **∴ 逐点渲染会让它变成 N ✗ ⇒ **∴ 而这个计数**与机器快慢无关 ✓**
+    region_render_calls: usize,
 }
 
 impl ToolTimings {
     /// 清零（每次顶层调用开始时调用 ✓）。
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// 记一次"向渲染层要区域" ✓（**∴ 计数是确定性的 ✗ 墙钟不是 ✓**）。
+    pub fn count_region_render(&mut self) {
+        self.region_render_calls = self.region_render_calls.saturating_add(1);
     }
 
     /// 累加一个阶段的耗时。
@@ -144,6 +157,9 @@ impl ToolTimings {
             png_us: self.png_us.saturating_sub(base.png_us),
             // **∴ 计数也要**相对**✗（**子调用只报自己那段 ✓）★
             preview_calls: self.preview_calls.saturating_sub(base.preview_calls),
+            region_render_calls: self
+                .region_render_calls
+                .saturating_sub(base.region_render_calls),
         }
     }
 
@@ -173,6 +189,7 @@ impl ToolTimings {
             "preview_ms": millis(self.preview_us),
             // **∴ 语义计数 ✗**（**与 `preview_ms` 并排 ⇒ 判据可以不看墙钟 ✓）★
             "preview_calls": self.preview_calls,
+            "region_render_calls": self.region_render_calls,
             "render_ms": millis(self.render_us),
             "png_ms": millis(self.png_us),
             "other_ms": millis(other_us),

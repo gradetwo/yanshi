@@ -465,6 +465,11 @@ impl<'a> ToolContext<'a> {
         self.timings.add(phase, started.elapsed());
     }
 
+    /// 记一次"向渲染层要区域" ✓（**∴ 供判据用语义计数替代墙钟 ✓**）。
+    pub fn count_region_render(&mut self) {
+        self.timings.count_region_render();
+    }
+
     /// 本次调用已累计的阶段耗时（观察用 ✓）。
     pub fn timings(&self) -> &ToolTimings {
         &self.timings
@@ -3673,6 +3678,8 @@ fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .max(1.0)
         .min((canvas_h - y0).max(1.0));
     let region = Bbox::new(x0, y0, w, h);
+    // ★ **计数**✗：**一次 `sample_colors` 只该要一次区域**✗（**∴ 逐点渲染会让它变成 N ✓**）
+    ctx.count_region_render();
     let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
     let stride = (w as usize) * 4;
     // **画布尺寸** ✓：用来判断"这个点根本不在画布上"✗ ——
