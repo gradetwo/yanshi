@@ -14895,6 +14895,11 @@ struct BrushPaint {
     steps: usize,
     /// 真正落下的像素数 ✓（0 ⇒ 由 `paint_brush` 统一报错 ✓，不静默 ✓）。
     painted: usize,
+    /// **这一笔最多把某个通道改了多少** ✓（0..255 ✓；**∴ 与 `painted` 互补 ✗**）。
+    ///
+    /// **∴ 薄涂笔的信号 ✗**：`thin_watercolor` 实测中位 **1**✗、最大 **6**✗（`pointy_ink` 是 **62**✓）。
+    /// ⇒ **∴ 所以**调用方能靠它区分「**画了**」✗ 与「**看得见**」✓ —— 后者才是用户要的 ✓。
+    max_delta: u8,
     /// **这一笔是否吃了底图** ✓（第 215 轮 ✓）：等值于
     /// `feed_base && brush_reads_the_canvas(&brush)` ✓。
     ///
@@ -16453,6 +16458,36 @@ fn paint_brush(
     // **光栅阶段之三：读回与掩膜** ✓（P2）。
     let read_started = std::time::Instant::now();
     let (mut rgba, mut painted) = read_surface_region(&surface, region);
+    // ★ **`max_channel_delta` ✗**（第 20 轮 ✓；**∴ 用户报的薄涂笔零落笔 ✓**）
+    //
+    // **∴ 为什么需要它 ✗**：`painted_pixels` 只数"字节变了"✗ ⇒ **∴ 差 1 LSB 也算 ✓**
+    //   ⇒ **∴ 实测 `thin_watercolor` 在 size=20 下 `painted_pixels=146` ✗ 而**最大单通道只差 6**✗、
+    //      中位差 **1**✗ ⇒ **∴ 肉眼全白 ✗，而 `ok=true` ＋ `painted_pixels>0` ⇒ **∴ 静默失败 ✓**
+    //   ⇒ **∴ 而现在下一行那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
+    //      ⇒ **∴ 所以这一项不仅是诊断 ✓，它也是**识别"薄涂笔"**✗ 的依据 ✓**。
+    //
+    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 在清零点之前量，才是**原始**落墨幅度 ✓**
+    //   ⇒ **∴ 于是**它报的是"引擎到底改了多少"✗，与后续掩膜无关 ✓
+    let max_delta = {
+        let mut max_delta: u8 = 0;
+        let before = before_pixels.as_deref();
+        for index in (0..rgba.len()).step_by(4) {
+            let mut delta: u8 = 0;
+            for channel in 0..4 {
+                // **∴ 没有基准时按**白底**✗**（**∴ 不读画布的笔直接写色 ✓ ⇒ **∴ 与白底比才是真实幅度 ✓**）
+                //   ⇒ **∴ 否则**这类笔会报 0 ✗**（**∴ `pointy_ink` 实测就是 0 ✗ ⇒ **∴ 那会误导 ✓**）
+                let old_byte = before
+                    .and_then(|pixels| pixels.get(index + channel))
+                    .copied()
+                    .unwrap_or(255);
+                let diff = i32::from(rgba[index + channel]) - i32::from(old_byte);
+                let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);
+                delta = delta.max(diff);
+            }
+            max_delta = max_delta.max(delta);
+        }
+        max_delta
+    };
     // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
     // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
     // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
@@ -16555,6 +16590,7 @@ fn paint_brush(
         rgba,
         steps,
         painted,
+        max_delta,
         fed_base: reads_canvas,
     })
 }
@@ -16822,6 +16858,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         mut rgba,
         steps,
         painted,
+        max_delta,
         fed_base,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
@@ -17090,6 +17127,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["brush"] = json!(name);
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
+    value["max_channel_delta"] = json!(max_delta);
     value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
     // **★ P1 #12 视觉锚点（data 模式）★**（第 254 轮）
     //   需求："AI 看缩略图要能精准接下一笔，不能盲猜坐标"。文档自己说缩略图那一半**已经有了**
@@ -17261,6 +17299,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "width": width,
         "height": height,
         "painted_pixels": paint.painted,
+        "max_channel_delta": paint.max_delta,
         "steps": paint.steps,
         "blob_hash": hash,
         "thumb_url": format!("yanshi://blob/{hash}"),
