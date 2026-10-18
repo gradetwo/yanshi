@@ -7423,3 +7423,49 @@ let image_allowed = wants_image && swatches.len() < 8;
 ```
 
 **∴ 本轮产出的那个数字 ✓**：**8 条新判据里 **7 条**有变异**✗** ⇒ **∴ `tool-preview-accepts-brush-params` 是唯一缺的 ✓**；**∴ 而**这次的变异**脚本自己失败**✗**（**∴ `assert` 抓住 ✓**）⇒ **∴ 该项**仍待补 ✓**
+
+## 一百七十五、★★ `tool-preview-accepts-brush-params` **补上变异** ✓ —— 8/8 判据全覆盖
+
+### 175.1 这次换了锚点 ✓
+
+```
+**∴ 上次失败 ✗**：**∴ 删** `param!(…)` **整块**✗ ⇒ **∴ 锚点**落在嵌套 `),` 上**✗**
+**∴ 这次 ✓**：**∴ 只把** `Object` ✗ 换成 `String`**✗** ⇒ **∴ 锚点**唯一**✗** ⇒ **∴ 且**改完立刻 `assert` ✓
+```
+
+### 175.2 变异结果 ✓
+
+```
+**∴ 退出码 **1** ✓**
+   · 带 `opaque: 0.2` ⇒ `ok=**false**` ✗｜`err=**invalid_argument**` ✗
+   · ✗ **带 `brush_params` 的预览必须成功** ✗
+   · ✗ **`brush_params` 必须真的生效**（**4281 vs undefined**）✗
+   · ✗ 有 **2** 处不满足 ✗
+```
+
+### 175.3 ∴ 而**这次结果可信** ✓
+
+```
+**∴ 因为** ✓：**∴ 我**加了**「改动真的应用了吗」**的 `assert`**✗**
+   ⇒ **∴ 于是**"判据红了"**✗ 能确定是**变异造成的**✗** ⇒ **∴ 而不是**脚本没生效**✗** ✓✓
+**∴ 所以 ✓**：**∴ 第 185 轮那条教训**✗ 立刻**用在了下一次**✗** ✓
+```
+
+### 175.4 ∴ 而 **8/8 判据**现在都有变异 ✓
+
+| 判据 | 变异 |
+|---|---|
+| `tool-visible-delta` ✓ | ✓ |
+| **`tool-preview-accepts-brush-params`** ✓ | **✓（本轮 ✓）** |
+| `tool-thin-stroke-not-global` ✓ | ✓ |
+| `tool-dab-shape-capability` ✓ | ✓ |
+| `tool-ws-idle-survives` ✓ | ✓ |
+| `tool-help-syntax-matches-parser` ✓ | ✓ |
+| `tool-preview-background` ✓ | ✓ |
+| `tool-swatch-include-image` ✓ | ✓（**∴ 3 次 ✓**） |
+
+```
+**∴ 8 条**全部**有变异**✗** ⇒ **∴ 按 §61 那条规矩**✗**（**∴ 断言必须证明自己能红 ✓**）⇒ **∴ 它们**都**不是安慰剂**✗** ✓✓
+```
+
+**∴ 本轮产出的那个数字 ✓**：**`tool-preview-accepts-brush-params` 变异 ⇒ **2 处红** ✗ ⇒ 退出码 **1** ✓**；**∴ 8 条新判据**变异覆盖 **8/8** ✓
