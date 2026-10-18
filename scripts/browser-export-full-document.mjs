@@ -189,8 +189,8 @@ try {
 }
 const page = targets.find((t) => t.type === "page" && t.url.startsWith(parsed.origin)) || targets.find((t) => t.type === "page");
 if (!page) {
-  console.error("❌ 没有页面调试目标（Chromium 是否以 --remote-debugging-port=" + port + " 启动？）⇒ 判据无效");
-  process.exit(1);
+  console.error("❌ 没有页面调试目标（Chromium 是否以 --remote-debugging-port=" + port + " 启动？）⇒ 判据自身前提不成立（不是产品问题）");
+  process.exit(3);
 }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1;
