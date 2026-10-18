@@ -10,6 +10,12 @@ import { spawn } from "node:child_process";
 const BIN = process.env.YANSHI_MCP_BIN || "target/debug/yanshi-mcp";
 const child = spawn(BIN, ["--root", "/tmp/mcp-desc-judge", "--doc", "desc", "--width", "200", "--height", "150"],
   { stdio: ["pipe", "pipe", "pipe"] });
+
+// **∴ 兜底 ✗**：**∴ 判据中途抛错也要收掉这个子进程 ✓**
+//   ⇒ **∴ 因为**正常路径的 kill 不会执行 ✗ ⇒ **∴ 实测漏过一个活了 **3 小时 56 分**的 serve ✗**
+//   ⇒ **∴ 所以**每个 spawn 都挂一条 exit 监听 ✓（**∴ 已死的进程 kill 抛错 ⇒ catch 掉 ✓**）
+process.on("exit", () => { try { child.kill("SIGKILL"); } catch { /* 已经没了 */ } });
+
 let buffer = "";
 const seen = new Map();
 child.stdout.on("data", (chunk) => {
