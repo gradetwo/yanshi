@@ -13802,6 +13802,36 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   **∴ 只报不判 ✗**：**绝不用它改变返回语义** ✗（台账 §十 记录过：那条"变了就报错"的检查
     //     上过一次、**从未生效**、已回退 ✓）⇒ 这里**只补一个数** ✓，**像素逐字节不变** ✓。
     value["painted_pixels"] = json!(count_painted_pixels(base.as_deref(), &rgba));
+    // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
+    //
+    // **∴ 为什么叫 `paint_delta` 而不叫 `max_channel_delta` ✗**：**∴ 因为 `medium_stroke` 里
+    //   已经有同名字段 ✗**（`tools.rs` 里写死 `Value::Null` ✓，语义是**CPU vs GPU 的逐位差**✗）
+    //   ⇒ **∴ 两个语义共用一个名字 ✗ ⇒ **∴ 会被误读 ✓**（**∴ 报告方 §40 若走这条会拿到 `Null` ✗，
+    //      而那**不是**"零幅度"✗**）
+    //   ⇒ **∴ 所以**这里用**新名字**✗ ⇒ **∴ 歧义消失 ✓、旧字段不动 ✓**（**∴ 零破坏 ✓**）
+    //
+    // **∴ 语义 ✗**：**这一笔最多把某个通道改了多少（0..255）✓** —— **∴ 与 `brush_stroke` 的
+    //   `max_channel_delta` **同一个意思**✗** ⇒ **∴ 于是**调用方可以**用同一套阈值**✗ 判薄涂 ✓
+    // **∴ 只报不判 ✗**：**∴ 绝不用它改变返回语义 ✓**（**∴ 同上一条注释的纪律 ✓**）
+    {
+        let before = base.as_deref();
+        let mut delta_max: u8 = 0;
+        for index in (0..rgba.len()).step_by(4) {
+            let mut delta: u8 = 0;
+            for channel in 0..4 {
+                // **∴ 没有基准时按**白底**✗**（**∴ 与 `brush_stroke` 一致 ✓**）
+                let old = before
+                    .and_then(|pixels| pixels.get(index + channel))
+                    .copied()
+                    .unwrap_or(255);
+                let diff = i32::from(rgba[index + channel]) - i32::from(old);
+                let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);
+                delta = delta.max(diff);
+            }
+            delta_max = delta_max.max(delta);
+        }
+        value["paint_delta"] = json!(delta_max);
+    }
     // **画布尺寸每次都回** ✓（调用方据此对齐坐标 ✓）。
     value["canvas"] = json!({"width": canvas_width, "height": canvas_height});
     value["outside_fraction"] = json!((outside_fraction * 1000.0).round() / 1000.0);
