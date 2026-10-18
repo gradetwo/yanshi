@@ -79,5 +79,36 @@ check(
   `read_canvas_effective 必须是布尔、恒存在（实测 ${typeof on?.read_canvas_effective}）—— 对方要写 assert ... is True`,
 );
 
+// **∴ ⑥ 互斥时**必须说清谁赢**✗**（**∴ 第 185 节实测 `background` 被静默忽略 ✓**）
+//   ⇒ **∴ 两个参数**同时给**✗** ⇒ **∴ `background` **不生效**✗** ⇒ **∴ 响应**必须写明**✗**
+//   ⇒ **∴ 而**只给 `background` 时**✗** ⇒ **∴ 那个字段**必须**不出现**✗**（**∴ "只在该出现时出现" ✓**）
+const bg = { r: 200, g: 40, b: 40 };
+const onlyBg = await post(
+  "/api/tools/brush_preview",
+  { brush: "thin_watercolor", size: 30, include_image: false, read_canvas: false, background: bg },
+  doc,
+  token,
+);
+const both = await post(
+  "/api/tools/brush_preview",
+  { brush: "thin_watercolor", size: 30, include_image: false, read_canvas: true, background: bg },
+  doc,
+  token,
+);
+console.log(`  只有背景 ⇒ background_applied=${JSON.stringify(onlyBg?.background_applied ?? null)}`);
+console.log(`  背景+读画布 ⇒ background_applied=${JSON.stringify(both?.background_applied ?? null)}｜note 非空=${!!both?.background_note}`);
+check(
+  onlyBg?.background_applied == null,
+  `只给 background 时 background_applied 不许出现（它是"被覆盖"的信号；实测 ${JSON.stringify(onlyBg?.background_applied ?? null)}）`,
+);
+check(
+  both?.background_applied === false,
+  `两个都给时 background_applied 必须是 false（background 被 read_canvas 覆盖；实测 ${JSON.stringify(both?.background_applied ?? null)}）`,
+);
+check(
+  typeof both?.background_note === "string" && both.background_note.includes("覆盖"),
+  `两个都给时必须自陈被覆盖（实测 ${JSON.stringify(String(both?.background_note ?? "").slice(0, 50))}）`,
+);
+
 if (bad) { console.log(`  ✗ read_canvas 有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ read_canvas 参数生效（改了渲染）；底图内容是否读入不在本判据范围");
