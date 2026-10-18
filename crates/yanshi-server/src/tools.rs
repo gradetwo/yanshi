@@ -17609,9 +17609,25 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
         }
     }
     let count = swatches.len();
+    // **顶层也要能一眼看出"有没有被跳过"** ✗（外部复测 §60 ✓）
+    //   ⇒ **∴ 对方写的断言是** `assert not resp.get("image_skipped")`**✗**
+    //   ⇒ **∴ 而**我原来把 `image_skipped` 只放在**每个 swatch** 里**✗**
+    //   ⇒ **∴ 于是**那个断言**恒为真**✗**（**∴ 顶层没这个键 ✓**）⇒ **∴ 它**测不出任何东西**✗** ✓
+    //   ⇒ **∴ 所以**在顶层给 `image_skipped_count` ✓ ＋ **`image_skipped`**（**∴ 有跳过时才是数组 ✓**）
+    let skipped_reasons: Vec<&Value> = swatches
+        .iter()
+        .filter_map(|entry| entry.get("image_skipped"))
+        .filter(|reason| !reason.is_null())
+        .collect();
     Ok(json!({
         "swatches": swatches,
         "count": count,
+        "image_skipped_count": skipped_reasons.len(),
+        "image_skipped": if skipped_reasons.is_empty() {
+            Value::Null
+        } else {
+            json!(skipped_reasons)
+        },
         "note": "试笔触：不写文档、不生成 atom（可放心试）。满意之后用同一组参数调 brush_stroke 真画；两者共用同一条落笔实现。"
     }))
 }
