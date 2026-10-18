@@ -375,6 +375,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       # **这一条要自己的预算** ✓（第 288 轮 ✓）：它跑的是 **Rust 测试目标** ✓
       # ⇒ 分片里要先**编译**那个目标 ✓ ⇒ 180 s 对冷编译偏紧 ✗（它自己实测几秒，但编译不是 ✗）。
       [ "$name" = "tool-native-brush-determinism.mjs" ] && to=600
+      # **∴ 这一条要**可执行文件路径**✗ 而不是 `<base>`**（报告 §48.4 的后续 ✓）：
+      #   **∴ 它自己起一个临时 server ✓** —— **∴ 因为要造"旧 atom"✗ 必须在起 server 之前写盘 ✓**
+      if [ "$name" = "tool-stroke-log-color-legacy.mjs" ]; then
+        timeout 300 node "$script" "$ROOT/target/release/yanshi-serve" >"$ROOT_DIR/out.txt" 2>&1
+      else
       timeout "$to" node "$script" "$BASE" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
