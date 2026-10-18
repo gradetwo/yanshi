@@ -50,5 +50,20 @@ if (off?.blob_hash === on?.blob_hash) {
   console.log("  ⚠ 注意：两者哈希相同 ⇒ 底图仍未读入（渲染层，边界外）");
 }
 
+// **∴ ③ 响应必须**自己说清"还没好"**✗**（**∴ §62 ✓**）：
+//   ⇒ **∴ 否则**对方**只读响应**✗ ⇒ **∴ 会**以为能用**✗** ⇒ **∴ 于是**按错前提改读数**✗** ✓
+console.log(`  read_canvas 回显=${JSON.stringify(on?.read_canvas ?? null)}`);
+console.log(`  read_canvas_note=${String(on?.read_canvas_note ?? "(缺)").slice(0, 90)}…`);
+check(
+  on?.read_canvas === true,
+  `read_canvas=true 时必须回显 read_canvas: true（实测 ${JSON.stringify(on?.read_canvas ?? null)}）`,
+);
+check(
+  typeof on?.read_canvas_note === "string" &&
+    on.read_canvas_note.includes("底图") &&
+    /仍未|未读入|未达成/.test(on.read_canvas_note),
+  `响应必须自陈"底图仍未读入"（实测 ${JSON.stringify(String(on?.read_canvas_note ?? "").slice(0, 60))}）`,
+);
+
 if (bad) { console.log(`  ✗ read_canvas 有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ read_canvas 参数生效（改了渲染）；底图内容是否读入不在本判据范围");
