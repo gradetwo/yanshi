@@ -95,7 +95,9 @@ const ratio = batchMs / singleMs;
 console.log(`  ${ROUNDS} 轮交替，取中位数 ✓`);
 console.log(`  sample_colors（50 点，一次）  ⇒ **${batchMs.toFixed(1)} ms**`);
 console.log(`  50 次 sample_color            ⇒ **${singleMs.toFixed(1)} ms**`);
-console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓）`);
+// **∴ 只打印 ✗，不当门槛 ✓**（**∴ 因为它是墙钟比 ✗ ⇒ 会随机器飘 ✓**）
+//   ⇒ **∴ 真正承重的是下面的 `region_render_calls === 1` ✗**（**∴ 语义 ✓**）
+console.log(`  （参考）比值 = ${ratio.toFixed(3)}×（墙钟比，只作观察；门槛已换成语义计数）`);
 // ★ **改用"扣除固定开销后的净成本"✗ ★**（重写这一条 ✓）
 //
 // **∴ 为什么不再用"规模比"✗**：分子分母**都含固定开销**✗（HTTP 往返 + 建上下文 ✓）
@@ -125,4 +127,4 @@ if (callsSmall !== 1 || callsBig !== 1) {
 }
 // **∴ 计时只作参考 ✗**（**∴ 它随机器飘 ✓，不当门槛 ✓**）
 console.log(`  （参考）100 点 ${smallMs.toFixed(1)} ms｜1600 点 ${batchMs.toFixed(1)} ms｜规模比 ${scale.toFixed(2)}×`);
-console.log("  ✓ sample_colors 比 50 次 sample_color 快一倍以上，且耗时**亚线性**（不是逐点渲染）");
+console.log("  ✓ sample_colors 一次只向渲染层要**一次**区域（与点数无关）⇒ 不是逐点渲染");
