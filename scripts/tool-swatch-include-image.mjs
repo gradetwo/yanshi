@@ -147,5 +147,17 @@ check(
   `失败项必须带可识别的错误码（实测 ${JSON.stringify(failed.map((s) => String(s?.error).slice(0, 30)))}）`,
 );
 
+// **∴ ⑪ image 模式必须有**成功的**✗**（**∴ 外部 §72 的第二条断言：**若是作画阶段，成功落笔数必须 > 0** ✓**）
+//   ⇒ **∴ 只报数不够**✗** ⇒ **∴ 还要**断言非零**✗** ⇒ **∴ 否则**"0 张图"会**看起来像**"不需要图"**✗** ✓
+console.log(`  image 模式的 ok_count=${many?.ok_count}｜image 张数=${(manySwatches || []).filter((s) => s?.image).length}`);
+check(
+  many?.ok_count > 0,
+  `include_image=true 时必须至少一支成功（实测 ok_count=${JSON.stringify(many?.ok_count)}）—— 否则"0 张图"会被当成"不需要图"`,
+);
+check(
+  (manySwatches || []).some((s) => s?.image),
+  `include_image=true 时必须至少有一张 image（实测 ${(manySwatches || []).filter((s) => s?.image).length} 张）`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
