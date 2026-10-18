@@ -295,8 +295,10 @@ impl HttpOptions {
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
            --brand-dir <dir>  品牌资源目录（缺省 assets/brand）\n\
            --no-brand         不提供品牌资源（favicon/logo）\n\
-           ★ --cache-bust [<token>] ★ 附一个唯一后缀到 SW 缓存名 ⇒ 客户端必然重装外壳 ⇒
+           ★ --cache-bust[=<token>] ★ 附一个唯一后缀到 SW 缓存名 ⇒ 客户端必然重装外壳 ⇒
                               「改了代码却看不出变化」不再可能（不给 token ⇒ 用启动时间；测试用）
+                              ⚠ token 只能用**等号**给：`--cache-bust=abc` ✓；
+                              `--cache-bust abc` ✗ 会被当成未知参数（外部复测 QY-D06 ✓）
            --help             显示帮助\n\
          \n\
          打开 http://127.0.0.1:8080/ 使用最小 Web 查看器（URL 中的 token 即文档 capability）。\n"
