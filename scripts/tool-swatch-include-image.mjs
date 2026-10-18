@@ -58,5 +58,27 @@ check(
 check(sizes.every((n) => n <= 64 * 1024), `每张 base64 ≤ 64 KB（最大 ${Math.max(0, ...sizes)} 字符）`);
 check(total <= 256 * 1024, `总 base64 ≤ 256 KB（实测 ${total} 字符）`);
 
+// **∴ ⑤ 上限真的生效 ✗**（**∴ 第 174 轮补 ✓**）：**∴ 9 支笔 ⇒ **只有前 8 支**有 image 块**✗**
+//   ⇒ **∴ 因为**代码是 `if … && swatches.len() < 8` ✗** ⇒ **∴ 第 9 个**应该没有 ✓
+//   ⇒ **∴ 而**这条**之前没测**✗** ⇒ **∴ 所以**"8 张上限"✗ 一直只是**我说的**✗** ✓
+const many = await post(
+  "/api/tools/swatch_brush_strokes",
+  {
+    brushes: ["pointy_ink", "calligraphy", "thin_watercolor", "pointy_ink", "calligraphy", "thin_watercolor", "pointy_ink", "calligraphy", "thin_watercolor"],
+    size: 24,
+    preview_size: "single",
+    include_image: true,
+  },
+  doc,
+  token,
+);
+const manySwatches = many?.swatches ?? [];
+const withImage9 = manySwatches.filter((x) => x?.image && typeof x.image.data === "string").length;
+console.log(`  9 支笔 ⇒ swatches=${manySwatches.length}｜有 image 的=${withImage9}（上限 8）`);
+check(
+  manySwatches.length === 9 && withImage9 === 8,
+  `上限必须真的生效：9 支笔里只有前 8 支带 image 块（实测 ${withImage9}/${manySwatches.length}）`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
-console.log("  ✓ 批量试笔能直接交付图片（有上限），缺省行为不变");
+console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
