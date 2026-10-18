@@ -7,7 +7,7 @@
 ```
 HEAD              = b39c341f（main == l4-sync）
 外部复测 8 项      = 7 个四件齐 ＋ G02 5/7（第 3 项已自陈且被验）
-判据              = tool-preview-read-canvas 10/10、tool-swatch-include-image 8/8
+判据              = tool-preview-read-canvas **13 条断言**、tool-swatch-include-image **8 条**（21 条）
 AGENTS.md         = 9 条行为规矩
 CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md 有记录）
 ```
@@ -83,7 +83,7 @@ CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md �
 
 | 我改了什么 | 必须改哪张表 |
 |---|---|
-| 判据的断言数 | **一、状态** 里的「10/10 / 8/8」 |
+| 判据的断言数 | **一、状态** 里的「13 条 / 8 条」 |
 | `AGENTS.md` 加/改规矩 | **四、9 条规矩** ＋ **一、状态** 里的「9 条」 |
 | 外部复测某一项有进展 | **二、8 项定案** 对应行 |
 | G02 某个子项变了 | **三、G02 的 7 项** 对应行 |
@@ -94,7 +94,7 @@ CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md �
 ```bash
 cd /home/crow/yanshi
 echo "HEAD=$(git rev-parse --short HEAD)"
-grep -c 'check(' scripts/tool-preview-read-canvas.mjs   # 应为 10
-grep -c 'check(' scripts/tool-swatch-include-image.mjs   # 应为 8
+grep -cE '^ *check\(' scripts/tool-preview-read-canvas.mjs   # 应为 13
+grep -cE '^ *check\(' scripts/tool-swatch-include-image.mjs   # 应为 8
 grep -c '^## [^判]' AGENTS.md                            # 规矩段数
 ```
