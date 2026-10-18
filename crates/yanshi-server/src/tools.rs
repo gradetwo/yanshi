@@ -1575,6 +1575,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             ),
             param!("parent_id", String, false, "父图层（图层组）"),
             param!("z_index", Integer, false, "z 序"),
+            param!(
+                "if_exists",
+                String,
+                false,
+                "重名时的行为：缺省 error（返回 precondition_failed）；**reuse** = 已存在就复用、不报错也不新建（返回 reused: true）"
+            ),
         ],
     },
     ToolSpec {
@@ -5470,6 +5476,32 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     if let Some(z_index) = args.get("z_index").and_then(Value::as_i64) {
         payload["z_index"] = json!(z_index);
+    }
+    // ★ **`if_exists` ✗ ★**（报告 §31① ✓）
+    //   ⇒ **∴ 他们的场景 ✓**：每次启动都 `create_layer("subject_paint")` ✓ 且用 `try/except: pass` 吞掉失败 ✓
+    //     ⇒ **∴ 于是 stderr 每次都打印 `precondition_failed`✗** ⇒ **∴ 而它**与"真失败"✗ 无法区分 ✓
+    //   ⇒ **∴ 所以给一个**显式**的复用选项 ✓**：`if_exists="reuse"` ⇒ 已存在就**不 commit**、直接回 `reused: true` ✓
+    //     ⇒ **∴ 而缺省仍是**报错**✓（**∴ 不改既有语义 ✓**）✓
+    let if_exists = optional_str(args, "if_exists").unwrap_or_default();
+    if if_exists == "reuse" {
+        let existing = ctx.workspace.document(&ctx.doc_id).and_then(|document| {
+            document
+                .state()
+                .layers
+                .get(&layer_id)
+                .map(|layer| layer.name.clone())
+        });
+        if let Some(name) = existing {
+            return Ok(json!({
+                "ok": true,
+                "reused": true,
+                "layer_id": layer_id,
+                "name": name,
+                "detail": format!(
+                    "图层 {layer_id} 已存在 ⇒ 按 if_exists=reuse **复用**它 ✓（没有新建、也没有报错 ✓）"
+                ),
+            }));
+        }
     }
     let result = ctx.commit(AtomKind::CreateLayer, payload)?;
     let region = region_of(&result);
