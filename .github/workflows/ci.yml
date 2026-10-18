@@ -141,6 +141,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.rust }}
+      # ★ **环境诊断 ✗**（第五十七节 ✓）
+      #   **∴ 为什么加 ✗**：有 **3 条**红只在 runner 上出现 ✓（本机全绿 ✓、且我没改过相关代码 ✓）：
+      #     · `background_stroke_cost` 的 `other_ms`（CI 486ms vs 本机 7.3ms ✓）
+      #     · `buffer_pool_budget_covers_every_concurrent_worker`（按并发 worker 数算 ✓）
+      #     · 两条浏览器判据（i18n 切换／Service Worker 脏读 ✓）
+      #   ⇒ **∴ 而它们都需要**runner 的核数／内存／chromium 版本**✗ ⇒ **∴ 这里先打印出来 ✓**
+      #   ⇒ **∴ 不改任何断言 ✗**（**∴ 那会掩盖真问题 ✓**）✓
+      - name: Runner environment
+        if: always()
+        run: |
+          echo "nproc=$(nproc)"
+          echo "--- meminfo ---"
+          free -m || true
+          echo "--- uname ---"
+          uname -a || true
+          echo "--- chromium ---"
+          (chromium --version || chromium-browser --version || echo "（没有 chromium）") 2>&1 || true
+          echo "--- cpu model ---"
+          (grep -m1 "model name" /proc/cpuinfo || true)
+
       - name: Run tests
         # 不含 `--ignored`：长任务在 heavy.yml。
         run: cargo test --workspace
@@ -491,6 +511,26 @@ jobs:
       #       ⇒ **∴ 而** rust-cache **命中后**只有增量**✗ ⇒ **∴ 实测**待 CI 报** ✓**** ✓✓
       - name: Build the release server for cost criteria
         run: cargo build --release -p yanshi-http --bin yanshi-serve
+      # ★ **环境诊断 ✗**（第五十七节 ✓）
+      #   **∴ 为什么加 ✗**：有 **3 条**红只在 runner 上出现 ✓（本机全绿 ✓、且我没改过相关代码 ✓）：
+      #     · `background_stroke_cost` 的 `other_ms`（CI 486ms vs 本机 7.3ms ✓）
+      #     · `buffer_pool_budget_covers_every_concurrent_worker`（按并发 worker 数算 ✓）
+      #     · 两条浏览器判据（i18n 切换／Service Worker 脏读 ✓）
+      #   ⇒ **∴ 而它们都需要**runner 的核数／内存／chromium 版本**✗ ⇒ **∴ 这里先打印出来 ✓**
+      #   ⇒ **∴ 不改任何断言 ✗**（**∴ 那会掩盖真问题 ✓**）✓
+      - name: Runner environment
+        if: always()
+        run: |
+          echo "nproc=$(nproc)"
+          echo "--- meminfo ---"
+          free -m || true
+          echo "--- uname ---"
+          uname -a || true
+          echo "--- chromium ---"
+          (chromium --version || chromium-browser --version || echo "（没有 chromium）") 2>&1 || true
+          echo "--- cpu model ---"
+          (grep -m1 "model name" /proc/cpuinfo || true)
+
       - name: Run criteria
         # 已知红名单在 scripts/criteria-known-red.txt：仍会运行、结果照印，但不阻塞 CI。
         run: |
