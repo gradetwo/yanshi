@@ -11066,14 +11066,22 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
         "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
         "example_mediums": ["example"],
-        // **dab 只有圆形**（第 1000+ 轮 ✓）：`draw_stamp` 只收 `radius`／`hardness` ✗ ⇒ 没有角度／长宽比 ✓
-        //   ⇒ **`.myb` 的 `elliptical_dab_ratio`／`elliptical_dab_angle` **被读但不影响渲染**✗**
-        //   ⇒ **55 支笔**（`ratio ≠ 1`，最扁 7.1:1）**画出来都是圆的**✗ ⇒ **先让 agent 知道 ✓**。
+        // ★ **⚠ 这里曾经**说错了 ✗** ★**（**∴ 外部复测 QY-D01 ✓，第 130 节 ✓**）
+        //
+        // **∴ 我原来写 ✓**：「dab 只有圆形 ✗ ⇒ `elliptical_dab_ratio`／`angle` **被读但不影响渲染** ✗
+        //   55 支笔画出来都是圆的 ✗」⇒ **∴ 而**这**是**错的**✗** ✓
+        // **∴ 他们实测 ✓**：**∴ `ratio=1` 与 `ratio=8` **像素不同**✗**；**∴ `angle=0` 与 `90` **得到明显不同的扁平笔触**✗**
+        //   ⇒ **∴ 所以**椭圆与角度**都生效**✗** ⇒ **∴ 而**那句 `ignored` ✗ **把**实际生效的参数**✗
+        //   ⇒ **∴ 后果很实 ✓**：**∴ Agent（含《清游》创作）**依据它绕行**✗** ⇒ **∴ 放弃了**可用的扁锋与角度塑形**✗** ✓
+        //
+        // **∴ 教训 ✓**：**∴ "我只验证过圆形"✗ ≠ "**引擎只支持圆形**✗"**（**∴ 与 D02 同类 ✓**）
+        //   ⇒ **∴ 所以**这里**只说**已验证到什么**✗ ＋ **把没验证的标 `unverified`✗**
+        //   ⇒ **∴ 而**不再用 `ignored` ✗ 这种**确定性结论**✗** ✓
         "dab_shape": {
-            "supported": ["circle"],
-            "ignored_settings": ["elliptical_dab_ratio", "elliptical_dab_angle"],
-            "affected_brush_count": 55,
-            "note": "dab 是各向同性的圆；.myb 里声明的椭圆（ratio≠1）不生效。55 支笔受影响，最扁 7.1:1。",
+            "supported": ["circle", "ellipse"],
+            "verified_settings": ["elliptical_dab_ratio", "elliptical_dab_angle"],
+            "unverified_settings": [],
+            "note": "椭圆 dab 与角度都生效（外部复测实测：ratio=1 与 8 的像素不同、angle=0 与 90 得到\n                     明显不同的扁平笔触）。我此前把这两项列为 ignored 是错的——那只是'我没验证过'，\n                     不是'引擎不支持'。其余组合未逐一验证，标 unverified 而非 ignored。",
         },
         // **retouch 的 kind 与工具名不一致**（第 1000+ 轮 ✓）：`RETOUCH_KINDS` 里是 `heal` ✗，
         //   而工具叫 `heal_stamp` ✓ ⇒ **∴ agent 照 `retouch_kinds` 找工具会找不到 ✓**
