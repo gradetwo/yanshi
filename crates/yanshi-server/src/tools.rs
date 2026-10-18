@@ -3176,6 +3176,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // 现在补上 ✓ —— 与 `brush_stroke` 的语义**完全一致** ✓（都是"这一笔用多少不透明度 / 多硬的边"✓）。
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
+            param!("background", Any, false, "预览的底色（同 `color` 的写法 ✓）：**给了就先把它铺满预览区** ✓ ⇒ 能看「落在深色底上是什么样」✓（不给 ⇒ 纯白底，与以前逐字节相同 ✓）"),
             // ★ **`brush_params` 必须声明 ✗** ★**（外部复测 QY-G02 ✓）
             //
             // **∴ 而 handler **早就**转发它了**✗**（**∴ `:17396` 的 `args.get("brush_params")` ✓，
@@ -6659,6 +6660,7 @@ fn restyle_baked_brush_stroke(
         None,
         yanshi_render::color::ColorMixing::Rgb,
         &[],
+        None,
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -16089,6 +16091,7 @@ pub(crate) fn replay_brush_bitmap(
         None,
         yanshi_render::color::ColorMixing::Rgb,
         &[],
+        None,
     )?;
     Ok(paint.rgba)
 }
@@ -16231,6 +16234,25 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
 //       ⇒ **∴ 缓解 ✗**：**判据覆盖（**`tool-brush-params` ✓）＋ **我曾因"按位置猜"而补错调用点 ✓
 //       ⇒ **∴ 改这块时**先读实参顺序**✓ 别按位置猜 ✓）★★
 #[allow(clippy::too_many_arguments)]
+fn preview_background(args: &Value) -> Option<[u8; 4]> {
+    let value = args.get("background")?;
+    let channel = |name: &str, index: usize| -> Option<u8> {
+        let raw = value
+            .get(name)
+            .and_then(Value::as_f64)
+            .or_else(|| value.get(index).and_then(Value::as_f64))?;
+        let byte = if raw > 1.0 { raw } else { raw * 255.0 };
+        Some(byte.round().clamp(0.0, 255.0) as u8)
+    };
+    Some([
+        channel("r", 0)?,
+        channel("g", 1)?,
+        channel("b", 2)?,
+        channel("a", 3).unwrap_or(255),
+    ])
+}
+
+#[allow(clippy::too_many_arguments)] // 13 个实参：笔刷渲染的完整上下文，拆结构体反而更难读
 fn paint_brush(
     ctx: &mut ToolContext<'_>,
     brush_name: &str,
@@ -16249,6 +16271,7 @@ fn paint_brush(
     color_mixing: yanshi_render::color::ColorMixing,
     // **★ P0 #3：每个点的真实时间步长（秒）★**（空切片 ⇒ 老行为不变）
     dtimes: &[f64],
+    background: Option<[u8; 4]>,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     if let Some(opacity) = opacity {
@@ -16321,6 +16344,25 @@ fn paint_brush(
         .unwrap_or((0, 0));
     let seed_region = PaintRegion::from_bounds(brush_stroke_region(points, size))
         .clamped(canvas_width, canvas_height);
+    // **预览的底色 ✗**（外部复测 QY-G02）：给了就先把 seed_region 铺满它
+    // ⇒ 预览能反映"落在深色底上是什么样"，而不是永远白底
+    if let Some([r, g, b, a]) = background {
+        let (w, h) = (seed_region.width as i32, seed_region.height as i32);
+        if w > 0 && h > 0 {
+            let mut flat = Vec::with_capacity(w as usize * h as usize * 4);
+            for _ in 0..(w * h) {
+                flat.extend_from_slice(&[r, g, b, a]);
+            }
+            yanshi_render::brush::feed_base(
+                &mut surface,
+                seed_region.x0,
+                seed_region.y0,
+                w,
+                h,
+                &flat,
+            );
+        }
+    }
     // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
     //
     // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
@@ -16953,6 +16995,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         args.get("brush_params"),
         color_mixing,
         &dtimes,
+        None,
     )?;
     let BrushPaint {
         name,
@@ -17404,6 +17447,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("brush_params"),
         yanshi_render::color::ColorMixing::Rgb,
         &[],
+        preview_background(args),
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
