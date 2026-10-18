@@ -92,6 +92,11 @@ const main = async () => {
   }
 
   const samples = [];
+  // ★ **留住最后一次的 `timings` ✗**（第 104 轮 ✓）：**∴ 只看墙钟 ✗ 不知道那 240 ms 花在哪 ✓**
+  //   ⇒ **∴ 于是**超标时**能看出是**光栅**✗ 还是**落盘**✗ 还是**其它**✗** ✓
+  //   （**∴ 台账第 115 节 ✓**：CI 240 ms／本机 21.7 ms ✗，差 11 倍，而 CI 的 EPYC 更快 ✓
+  //     ⇒ **∴ 所以**原因既不在算力也不在负载 ⇒ **∴ 需要**阶段级证据**✗**）
+  let lastTimings = null;
   for (let index = 0; index < RUNS; index += 1) {
     const started = performance.now();
     const result = await stroke(index);
@@ -100,7 +105,14 @@ const main = async () => {
       console.error(`❌ 判不了：第 ${index + 1} 笔失败 => 退出码 3`);
       process.exit(3);
     }
+    if (result.timings && typeof result.timings === "object") lastTimings = result.timings;
     samples.push(elapsed);
+  }
+  if (lastTimings) {
+    // **只打几个关键阶段** ✓（**∴ 不打印全部，避免噪声 ✓**）
+    const keys = ["total_ms", "raster_ms", "log_ms", "preview_ms", "other_ms", "raster_calls", "preview_calls"];
+    const parts = keys.filter((k) => lastTimings[k] !== undefined).map((k) => `${k}=${lastTimings[k]}`);
+    if (parts.length) console.log(`  服务端 timings（最后一次）：${parts.join("｜")}`);
   }
   const mid = median(samples);
   const spread = Math.max(...samples) - Math.min(...samples);
