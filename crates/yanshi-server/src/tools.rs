@@ -8152,6 +8152,34 @@ fn read_get_object_history(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
 ///     不靠 `kind == import_image` 一条 ✗（真正的 `import_image` 也会落成那个 kind ✗）；
 ///   * **过滤 + 分页** ✓：`limit`（上限 500 ✓）/`offset`/`since_seq`/`layer_id`/`object_id`/`order` ✓；
 ///   * **逐点 `time_ms` 拿不到** ✗（实测被丢掉 ✓）⇒ 只报**原子时间戳** ✓，不假装有 ✓。
+///
+/// 把 `color` 归一成 `{r,g,b,a}` 对象 ✓（YANSHI_ISSUES §22-24 的同类 ✓）
+///
+/// ∴ 为什么需要 ✗**：`get_stroke_log` 里 `color` **直接透传存储**✗，而存储里有**两种**形状 ✓ ——
+/// `{"a":255.0,"b":46,"g":73,"r":86}`（新 atom ✓）与 `[176,152,103]`（旧 atom ✓）。
+/// ⇒ **∴ 同一个接口、同一次返回里两种都有**✗ ⇒ **∴ 调用方必须两种都处理 ✗**。
+/// ∴ 而我的第一版分析就因此崩了**（`KeyError: 0` ✓）⇒ **∴ 所以**统一成对象 ✗（与 `sample_color` 等一致 ✓）。
+fn normalize_color(value: Option<&Value>) -> Value {
+    let Some(value) = value else {
+        return Value::Null;
+    };
+    match value {
+        Value::Array(items) if items.len() >= 3 => {
+            let channel = |index: usize, fallback: u64| {
+                items.get(index).and_then(Value::as_u64).unwrap_or(fallback)
+            };
+            let alpha = items.get(3).and_then(Value::as_u64).unwrap_or(255);
+            serde_json::json!({
+                "r": channel(0, 0),
+                "g": channel(1, 0),
+                "b": channel(2, 0),
+                "a": alpha,
+            })
+        }
+        other => other.clone(),
+    }
+}
+
 fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let limit = optional_u64(args, "limit").unwrap_or(50).min(500) as usize;
     let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
@@ -8189,7 +8217,7 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
                 owned_source = json!({
                     "kind": "draw",
                     "points": data.get("points").cloned().unwrap_or(Value::Null),
-                    "color": data.get("color").cloned().unwrap_or(Value::Null),
+                    "color": normalize_color(data.get("color")),
                     "size": data.get("size").cloned().unwrap_or(Value::Null),
                 });
                 &owned_source
@@ -8266,7 +8294,7 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             "brush": source.get("brush"),
             "medium": source.get("medium"),
             "size": source.get("size"),
-            "color": source.get("color"),
+            "color": normalize_color(source.get("color")),
             "color_to": source.get("color_to"),
             "hardness": source.get("hardness"),
             "opacity": source.get("opacity"),
