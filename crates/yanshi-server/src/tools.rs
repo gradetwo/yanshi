@@ -17569,7 +17569,11 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                     sub.insert("brush_params".to_owned(), params.clone());
                 }
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**（超了不说"没有"，说原因）
-                if optional_bool(args, "include_image").unwrap_or(false) && swatches.len() < 8 {
+                // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**
+                // **超限要说原因**（spec 承诺过 `image_skipped`）⇒ 不静默丢
+                let wants_image = optional_bool(args, "include_image").unwrap_or(false);
+                let image_allowed = wants_image && swatches.len() < 8;
+                if image_allowed {
                     sub.insert("include_image".to_owned(), Value::Bool(true));
                 }
                 // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**
@@ -17586,6 +17590,12 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                         "mime_type": rendered.get("mime_type").cloned().unwrap_or(Value::Null),
                         // 外部复测 QY-G01：透传 image 块（没有就 null，不伪装成功）
                         "image": rendered.get("image").cloned().unwrap_or(Value::Null),
+                        // 要图但没给（超了 8 张上限）⇒ 说原因，不假装
+                        "image_skipped": if wants_image && !image_allowed {
+                            json!("超过 8 张上限，用 thumb_url 取图")
+                        } else {
+                            Value::Null
+                        },
                     })),
                     Err(error) => swatches.push(json!({
                         "brush": brush,

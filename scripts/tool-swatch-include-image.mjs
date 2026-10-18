@@ -79,6 +79,14 @@ check(
   manySwatches.length === 9 && withImage9 === 8,
   `上限必须真的生效：9 支笔里只有前 8 支带 image 块（实测 ${withImage9}/${manySwatches.length}）`,
 );
+// **∴ ⑥ 超限必须**说原因**✗**（**∴ spec 承诺过 `image_skipped` ✓**）
+//   ⇒ **∴ 否则**调用方**只看到**"这 5 张没图"**✗** ⇒ **∴ 不知道**是真的没图还是超限**✗** ✓
+const skipped9 = manySwatches.filter((x) => typeof x?.image_skipped === "string");
+console.log(`  9 支笔里带 image_skipped 的=${skipped9.length}（应 = 超限的那 1 支）`);
+check(
+  skipped9.length === 1 && /8|上限/.test(skipped9[0].image_skipped),
+  `超限的那一支必须给出 image_skipped 与原因（实测 ${skipped9.length} 支，文案 ${JSON.stringify(skipped9[0]?.image_skipped ?? null)}）`,
+);
 
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
