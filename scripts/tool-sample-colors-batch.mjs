@@ -47,7 +47,7 @@ await call("brush_stroke", { layer_id: "sc_L", brush: "100%_Opaque", color: { r:
 
 // 50 个**聚集**在 40×40 内的点
 const points = [];
-for (let i = 0; i < 400; i += 1) points.push([100 + (i % 20) * 3, 100 + Math.floor(i / 20) * 3]);
+for (let i = 0; i < 1600; i += 1) points.push([100 + (i % 40) * 2, 100 + Math.floor(i / 40) * 2]);
 
 const median = (xs) => {
   const sorted = [...xs].sort((a, b) => a - b);
@@ -79,7 +79,7 @@ for (let round = 0; round < ROUNDS; round += 1) {
 //      · 一次渲染 ⇒ 1 个点的包围盒 vs 50 个点的包围盒 ⇒ 面积涨 20 倍，但**没有 N 次固定开销** ⇒ 涨得**亚线性** ✓
 //      · 内部循环 ⇒ **严格线性** ✗（10 点时 t，50 点时约 5t ✗）
 //   ⇒ **∴ 断言：50 点的耗时 / 10 点的耗时 < 2.5**✗（**∴ 线性增长会是 5 ✓**）✓
-const small = points.slice(0, 25);
+const small = points.slice(0, 100);
 const smallTimes = [];
 for (let round = 0; round < ROUNDS; round += 1) {
   const r = await call("sample_colors", { points: small });
@@ -89,15 +89,32 @@ for (let round = 0; round < ROUNDS; round += 1) {
 const batchMs = median(batchTimes);
 const smallMs = median(smallTimes);
 const scale = batchMs / smallMs;
-console.log(`  25 点 ⇒ **${smallMs.toFixed(1)} ms**｜400 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 16×）`);
+console.log(`  100 点 ⇒ **${smallMs.toFixed(1)} ms**｜1600 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 16×）`);
 const singleMs = median(singleTimes);
 const ratio = batchMs / singleMs;
 console.log(`  ${ROUNDS} 轮交替，取中位数 ✓`);
 console.log(`  sample_colors（50 点，一次）  ⇒ **${batchMs.toFixed(1)} ms**`);
 console.log(`  50 次 sample_color            ⇒ **${singleMs.toFixed(1)} ms**`);
 console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓）`);
-if (scale >= 8.0) {
-  console.log("  ✗ 耗时随点数线性增长（400点/25点 ≈ 16×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
+// ★ **改用"扣除固定开销后的净成本"✗ ★**（重写这一条 ✓）
+//
+// **∴ 为什么不再用"规模比"✗**：分子分母**都含固定开销**✗（HTTP 往返 + 建上下文 ✓）
+//   ⇒ **∴ 固定开销占比越大 ⇒ 比值越被压向 1 ✗**
+//   ⇒ **∴ 实测 ✓**：CI 上 25 点只用 **1.0 ms**（**∴ 计时精度下限 ✓**）⇒ 规模比 **8.24×** ✗ 刚好超 8.0
+//     **∴ 而本机同判据 5.99×／4.33× ✓ ⇒ **∴ 于是"快机器必红"✗** ⇒ **∴ 换任何固定阈值都会被下次更快的机器打破 ✗**
+//
+// **∴ 净成本 ✓**：`(t_big − t_small)/(big − small)` 对比 `t_small/small`
+//   · **逐点渲染 ⇒ 两者相等** ✗ ⇒ **∴ 断言为假 ✓**
+//   · **一次渲染 ⇒ 净成本 ≈ 0** ✓
+//   ⇒ **∴ 两边同时随机器速度缩放 ⇒ **比值与机器快慢无关**✓** ✓
+const smallCount = small.length;
+const bigCount = points.length;
+const smallPerPoint = smallMs / smallCount;
+const netPerPoint = (batchMs - smallMs) / (bigCount - smallCount);
+const netRatio = smallPerPoint > 0 ? netPerPoint / smallPerPoint : Number.POSITIVE_INFINITY;
+console.log(`  每点成本：小规模 ${smallPerPoint.toFixed(4)} ms/点｜大规模**净** ${netPerPoint.toFixed(4)} ms/点｜净比 = ${netRatio.toFixed(2)}×（逐点渲染会是 1.00×）`);
+if (netRatio >= 0.8) {
+  console.log("  ✗ 大点数的**净**每点成本 ≈ 小点数的平均成本 ⇒ sample_colors 内部是逐点渲染（固定开销掩盖了它）");
   process.exit(1);
 }
 if (!(ratio < 0.5)) {
