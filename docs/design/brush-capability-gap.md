@@ -3707,3 +3707,15 @@ if ctx.preview && !ctx.silent {
 ```
 
 **∴ 本轮产出的那个数字 ✓**：**变异后 `2 passed; 1 failed` ✗；恢复后 `3 passed` ✓**；**`crates/` 变更 **27 行**✗**
+
+## 七十八、`raster_calls` 上线**无回归** ✓ —— CI `success`（绿 12／红 1）
+
+```
+**∴ run `39115675446`（`79ed7d9b`）⇒ **`completed:success`** ✓**
+**∴ 绿 = **12** ✓｜红 = **1** ✗（`brush parity` ✓，`continue-on-error` ✓）｜跑 = 0 ✓**
+**∴ 而 `test (stable)` 与 `test (beta)` 都绿 ✓** ⇒ **∴ 那 27 行（14 timings ＋ 13 测试）**
+   没有引入回归 ✓
+**∴ 且**那条 486ms ✗ 这一轮**没触发** ✓ ⇒ **∴ 又一次印证它是**偶发**✗（**∴ 而现在有语义兜底 ✓**）
+```
+
+**∴ 本轮产出的那个数字 ✓**：**CI 绿 **12** ✓／红 **1** ✗**；**而 `background_stroke_cost` 的语义断言从 **1 → 2** ✗**
