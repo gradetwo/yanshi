@@ -159,5 +159,15 @@ check(
   `include_image=true 时必须至少有一张 image（实测 ${(manySwatches || []).filter((s) => s?.image).length} 张）`,
 );
 
+// **∴ ⑫ 第 4 个恒等式：**image 张数 ≤ ok_count**✗**（**∴ 第 269 轮的变异暴露的 ✓**）
+//   ⇒ **∴ 因为**"有 N 张图"必须**蕴含**"至少 N 支成功"✗** ⇒ **∴ 而**两者**是两个独立字段**✗**
+//   ⇒ **∴ 所以**它们**可能**互相矛盾**✗** ⇒ **∴ 而**这个恒等式**能抓到**✗** ✓
+const imgCount = (manySwatches || []).filter((s) => s?.image).length;
+console.log(`  恒等式：image 张数=${imgCount} ≤ ok_count=${many?.ok_count}`);
+check(
+  imgCount <= many?.ok_count,
+  `image 张数必须 ≤ ok_count（实测 ${imgCount} vs ${many?.ok_count}）—— 有图的必须有 ok=true`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
