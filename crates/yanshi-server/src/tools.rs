@@ -17165,6 +17165,18 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
     value["max_channel_delta"] = json!(max_delta);
+    // ★ **`render_backend`：这台机器走的是哪条渲染路** ✗**（第 108 轮 ✓）
+    //
+    // **∴ 为什么加 ✗**：**∴ 4K 单笔的墙钟预算 100 ms ✗ 只在**有 GPU**✗ 的机器上可达 ✓
+    //   ⇒ **∴ 实测 ✓**：**∴ 本机（有 GPU）`raster_ms` **3.47**✗；CI（无 GPU）**165.07**✗ ⇒ **∴ **47.6 倍**✗**
+    //     （**∴ 台账第 118 节 ✓**）
+    //   ⇒ **∴ 而**判据 `tool-stroke-latency-4k` **无法**从墙钟看出这一点**✗**
+    //     ⇒ **∴ 于是**它**在 CI 上**稳定假红**✗**（**∴ 235／240／224 ms ✓**）✓
+    // ⇒ **∴ 所以**把后端**明说出来**✗ ⇒ **∴ 判据就能**按后端决定这条预算是否适用**✗**
+    //
+    // **∴ 与 `medium_stroke` 的 `render_backend` **同一个函数**✗**（`backend_label` ✓）⇒ **∴ 两族一致 ✓**
+    // **∴ 只报不判 ✗**：**∴ 不改变任何返回语义**✓
+    value["render_backend"] = json!(backend_label());
     value["region"] = json!({"x": x0, "y": y0, "w": width, "h": height});
     // **★ P1 #12 视觉锚点（data 模式）★**（第 254 轮）
     //   需求："AI 看缩略图要能精准接下一笔，不能盲猜坐标"。文档自己说缩略图那一半**已经有了**
