@@ -3176,6 +3176,14 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // 现在补上 ✓ —— 与 `brush_stroke` 的语义**完全一致** ✓（都是"这一笔用多少不透明度 / 多硬的边"✓）。
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
+            // ★ **`brush_params` 必须声明 ✗** ★**（外部复测 QY-G02 ✓）
+            //
+            // **∴ 而 handler **早就**转发它了**✗**（**∴ `:17396` 的 `args.get("brush_params")` ✓，
+            //   **∴ 第 254 轮修过的真 bug ✓**）
+            //   ⇒ **∴ 但** spec **没声明**✗** ⇒ **∴ schema 校验**直接拒绝**✗**
+            //   ⇒ **∴ 于是**"用预览试 `brush_params`"✗ **做不到**✗ ✓
+            // **∴ 所以**只是**补个声明**✗ ⇒ **∴ 实现与落笔完全同一套**✓**（**∴ 天然一致 ✓**）✓
+            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` **同一套** ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`{\"opaque\": 0.2}` ✓；不给 ⇒ 用 .myb 自带 ✓）"),
             param!(
                 "include_image",
                 Boolean,
