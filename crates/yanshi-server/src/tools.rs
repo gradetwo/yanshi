@@ -17487,6 +17487,14 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         //   ⇒ **∴ 所以**加一个**布尔**：**∴ `read_canvas_effective`**✗（**∴ 底图读入成功才为 true ✓**）
         //   ⇒ **∴ 而现在**它**恒 false**✗**（**∴ 底图未读入 ✓**）⇒ **∴ 于是**note **只在** false 时给**✗**
         value["read_canvas_effective"] = json!(false);
+        // **两个参数互斥时要**说清谁赢**✗**（**∴ 第 185 节实测：`background` 被静默忽略 ✓**）
+        //   ⇒ **∴ 因为** `read_canvas` **会**用底图覆盖**✗** ⇒ **∴ 而** `background` **只在**它之前铺**✗**
+        //   ⇒ **∴ 所以**两个都给时 ✗ ⇒ **∴ `background` **不生效**✗** ⇒ **∴ 必须**说出来**✗** ✓
+        if args.get("background").is_some_and(|v| !v.is_null()) {
+            value["background_applied"] = json!(false);
+            value["background_note"] = json!("`background` 被 `read_canvas` 覆盖：读画布会用文档的可见像素，
+所以传进来的纯色底不会出现在预览里（两个参数互斥，`read_canvas` 优先）。要纯色底就别传 `read_canvas`。");
+        }
         value["read_canvas_note"] =
             json!("read_canvas 只改变了笔刷是否走『读画布』那条路（会读画布的笔因此输出不同）；**底图内容仍未读入** ⇒ 预览里的底**仍是**空白**（渲染层未提交，见 brush-capability-gap 第一百七十八节）。所以『读数与画上去一致』**仍未达成**。");
     }

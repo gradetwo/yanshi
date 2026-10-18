@@ -7892,3 +7892,45 @@ value["read_canvas_effective"] = json!(false);
 ```
 
 **∴ 本轮产出的那个数字 ✓**：**§64 他们承认**`read_canvas_note` 恒非 None ⇒ 自己的断言恒失败**✗**；**∴ 而**我**下一项待交付**✗**：**`background_applied`（**∴ 现在会被静默忽略 ✓**）
+
+## 一百八十七、★★ `background_applied` ✓ —— 互斥时**说清谁赢**
+
+### 187.1 实现 ✓
+
+```
+**∴ 条件 ✗**：**∴ `read_canvas=true` ✗ 且** `background` 有值**✗** ⇒ **∴ 给**：
+   · `background_applied: false` ✓
+   · `background_note` ✓：**「`background` 被 `read_canvas` 覆盖：读画布会用文档的可见像素，
+     所以传进来的纯色底不会出现在预览里（两个参数互斥，`read_canvas` 优先）。要纯色底就别传 `read_canvas`」**
+```
+
+### 187.2 实测 ✓
+
+| 情形 | `background_applied` | `background_note` |
+|---|---|---|
+| **只有背景** ✓ | **`null`** ✓（**∴ 没被覆盖 ⇒ 不出现 ✓**） | 空 ✓ |
+| **背景＋读画布** ✓ | **`false`** ✓ | **有** ✓ |
+
+```
+**∴ 所以 ✓**：**∴ 它**只在**被覆盖时**出现**✗** ⇒ **∴ 而那时**它**说清原因**✗** ✓✓
+**∴ 而**那**符合**「只在该出现时出现」✗** ⇒ **∴ 与 §63 的教训相反**✗**
+   （**∴ §63**：note **恒出现**✗ ⇒ **∴ 对方**的 `is None` **恒失败**✗**）✓
+```
+
+### 187.3 ∴ 而**三个字段的语义现在分明** ✓
+
+| 字段 | 何时出现 | 谁读 |
+|---|---|---|
+| `read_canvas` ✓ | 给了且为 true ✓ | 回显 ✓ |
+| **`read_canvas_effective`** ✓ | 同上 ✓ | **∴ 机器判**（**∴ 恒有真值 ✓**） |
+| `read_canvas_note` ✓ | 同上 ✓ | **∴ 人读** ✓ |
+| **`background_applied`** ✓ | **∴ 只在被覆盖时** ✓ | **∴ 机器判**（**∴ 出现即 false ✓**） |
+| `background_note` ✓ | 同上 ✓ | **∴ 人读** ✓ |
+
+```
+**∴ 所以 ✓**：**∴ 每个字段**都有**明确的出现条件**✗** ⇒ **∴ 而**对方**能写**两种断言**✗**：
+   · `assert r.get("read_canvas_effective") is False` ✓（**∴ 恒有真值 ✓**）
+   · `assert "background_applied" not in r` ✓（**∴ 只有被覆盖才出现 ✓**）✓
+```
+
+**∴ 本轮产出的那个数字 ✓**：**只有背景 ⇒ `background_applied=null` ✓；背景＋读画布 ⇒ `false` ＋ note ✓** ⇒ **∴ 静默互斥**变成**明说**✗** ✓
