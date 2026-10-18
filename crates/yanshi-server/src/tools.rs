@@ -3154,6 +3154,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
             param!("size", Number, false, "笔尖直径（像素，缺省 24，上限 512）"),
             param!("smooth", Boolean, false, "把路径当 Catmull-Rom 平滑（同 brush_stroke.smooth）"),
+            param!("include_image", Boolean, false, "true ⇒ 每个 swatch 额外给一个 `image` 块（base64 PNG ✓）⇒ **MCP Agent 能直接看到图** ✓（外部复测 QY-G01；**最多 8 张**，超了给 `image_skipped` ✓）"),
         ],
     },
     ToolSpec {
@@ -17567,6 +17568,10 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                 if let Some(params) = args.get("brush_params") {
                     sub.insert("brush_params".to_owned(), params.clone());
                 }
+                // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**（超了不说"没有"，说原因）
+                if optional_bool(args, "include_image").unwrap_or(false) && swatches.len() < 8 {
+                    sub.insert("include_image".to_owned(), Value::Bool(true));
+                }
                 // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**
                 //   ＋ **∴ 实测踩到 ✗**：**第一支用了 `Blender`（**纯揉合 ✓）✗ 空画布上什么都不沉积**✗
                 //     ⇒ **`brush_preview` 回 `precondition_failed` ⇒ **整个批量被一个组合拖垮** ✓
@@ -17579,6 +17584,8 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                         "ok": true,
                         "thumb_url": rendered.get("thumb_url").cloned().unwrap_or(Value::Null),
                         "mime_type": rendered.get("mime_type").cloned().unwrap_or(Value::Null),
+                        // 外部复测 QY-G01：透传 image 块（没有就 null，不伪装成功）
+                        "image": rendered.get("image").cloned().unwrap_or(Value::Null),
                     })),
                     Err(error) => swatches.push(json!({
                         "brush": brush,
