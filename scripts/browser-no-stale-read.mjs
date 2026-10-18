@@ -55,7 +55,10 @@ try {
   process.exit(3);
 }
 const page = targets.find((t) => t.type === "page");
-if (!page) { console.error("没有页面目标 ⇒ 判据无效"); process.exit(1); }
+// **∴ 退出码必须是 3 ✗**（第 84 轮 ✓）：**∴ 说"判据无效"✗ 就必须**说自己是判据的错**✗
+//   ⇒ **∴ 否则** `run-criteria.sh` 会把它算成**意外失败**✗ ⇒ **∴ 汇总里"意外失败 N"✗
+//      就混了**产品问题**✗ 与**判据自身前提不成立**✗（**∴ AGENTS.md 明文要求用不同退出码 ✓**）
+if (!page) { console.error("没有页面目标 ⇒ 判据自身前提不成立（不是产品问题）"); process.exit(3); }
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 let nextId = 1; const pending = new Map(); const seen = [];
 socket.onmessage = (event) => { const m = JSON.parse(event.data);
