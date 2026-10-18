@@ -3644,16 +3644,6 @@ fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         bx = bx.max(*x);
         by = by.max(*y);
     }
-    let x0 = ax.floor().max(0.0);
-    let y0 = ay.floor().max(0.0);
-    let w = ((bx.floor() - x0) + 1.0).max(1.0);
-    let h = ((by.floor() - y0) + 1.0).max(1.0);
-    let region = Bbox::new(x0, y0, w, h);
-    let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
-    let stride = (w as usize) * 4;
-    // **画布尺寸** ✓：用来判断"这个点根本不在画布上"✗ ——
-    //   不能靠 `region` 判断 ✗（因为 `region` 是**夹过**的包围盒 ✓）⇒ 否则画布外的点会被
-    //   **夹到边缘**✗ 并返回一个**看起来正常的假值**✗（**∴ 单点 `sample_color` 对外面的点是**报错**✓**）。
     let (canvas_w, canvas_h) = ctx
         .workspace
         .document(&ctx.doc_id)
@@ -3664,6 +3654,24 @@ fn read_sample_colors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             )
         })
         .unwrap_or((0.0, 0.0));
+    let x0 = ax.floor().max(0.0);
+    let y0 = ay.floor().max(0.0);
+    // ★ **包围盒必须先裁到画布内** ✗ ★（报告 §27 ✓）
+    //   ⇒ **∴ 否则 `render_region_raw` 返回的是**裁剪后**的字节 ✗，而 `w` 还是**未裁剪**的值 ✗
+    //     ⇒ **∴ `stride = w*4` 偏大 ✗ ⇒ **∴ 画布内靠右／靠下的点算出的 offset 越界 ⇒ `rgba: null`** ✗
+    //       （**∴ 实测：点 (100,100) 在 200×200 画布内，却因为同批里有一个 (900,900) 而变成 null ✗**）
+    let w = ((bx.floor() - x0) + 1.0)
+        .max(1.0)
+        .min((canvas_w - x0).max(1.0));
+    let h = ((by.floor() - y0) + 1.0)
+        .max(1.0)
+        .min((canvas_h - y0).max(1.0));
+    let region = Bbox::new(x0, y0, w, h);
+    let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, region)?;
+    let stride = (w as usize) * 4;
+    // **画布尺寸** ✓：用来判断"这个点根本不在画布上"✗ ——
+    //   不能靠 `region` 判断 ✗（因为 `region` 是**夹过**的包围盒 ✓）⇒ 否则画布外的点会被
+    //   **夹到边缘**✗ 并返回一个**看起来正常的假值**✗（**∴ 单点 `sample_color` 对外面的点是**报错**✓**）。
     let mut samples = Vec::with_capacity(points.len());
     let mut outside_count = 0usize;
     for (index, (x, y)) in points.iter().enumerate() {
