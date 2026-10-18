@@ -51,27 +51,14 @@ await sleep(4000);
 const problems = [];
 const check = (ok, why) => { console.log(`  ${ok ? "✓" : "✗"} ${why}`); if (!ok) problems.push(why); };
 
-// **∴ 载入一幅**上下都有标记**✗ 的文档 ✓** —— 用 API 画两条横贯全宽的色带 ✓
-const setup = await evaluate(`(async () => {
-  const tok = new URL(location.href).searchParams.get("token") || "";
-  const doc = (await (await fetch("/api/documents", {method:"POST",headers:{"content-type":"application/json"},
-    body: JSON.stringify({ doc_id: "fitprobe_" + Date.now(), width: 1200, height: 900 })})).json());
-  const d = new URL(doc.url || location.href).searchParams.get("doc") || "";
-  const call = (n, a) => fetch("/api/tools/" + n + "?doc=" + encodeURIComponent(d) + "&token=" + encodeURIComponent(doc.token || tok),
-    { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(a) }).then(r => r.json());
-  await call("create_layer", { layer_id: "L", name: "L" });
-  // 顶部红带 + 底部蓝带（各占 8% 高，横贯全宽）
-  for (const [y, color] of [[40, {r:220,g:40,b:40,a:255}], [860, {r:40,g:80,b:220,a:255}]]) {
-    await call("fill_region", { layer_id: "L", rect: [0, y-40, 1200, 80], color });
-  }
-  return { doc: d, token: doc.token || tok };
-})()`);
-if (!setup?.token) {
-  console.log("  ❌ 判据自身前提不成立（建文档失败）⇒ 退出码 3");
+// ★ **不需要画内容 ✗** ★**（第 141 轮 ✓）：**∴ 那个 bug **与画什么无关**✗** ⇒ **∴ 它是**容器高度算错**✗**
+//   ⇒ **∴ 所以**判据**只**打开页面 ✗ ⇒ **∴ 点适配 ✗ ⇒ **∴ 比画布 rect 与宿主 rect**✗** ✓
+//   ⇒ **∴ 前提 ✓**：**∴ 调用方给一个**已存在的 doc + token**✗**（**∴ 本判据**不自己建 ✓**）
+const tokenForPage = new URL(url).searchParams.get("token") || "";
+if (!tokenForPage) {
+  console.log("  ❌ 判据自身前提不成立（URL 里没有 token）⇒ 退出码 3");
   process.exit(3);
 }
-await send("Page.navigate", { url: `${url}${url.includes("?") ? "&" : "?"}doc=${encodeURIComponent(setup.doc)}&token=${encodeURIComponent(setup.token)}` });
-await sleep(4000);
 
 // **∴ 点「适配」✗**（**∴ 找那个按钮 ✓**）
 const clicked = await evaluate(`(() => {
