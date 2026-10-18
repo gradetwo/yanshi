@@ -2497,3 +2497,65 @@ let coverage = match shape_kind {
    ⇒ **∴ 修法 ✓**：**加一行 `///` 分隔 ✓**
    ⇒ **∴ 还有一次 ✗**：**行首 `**` 也会被当成**粗体列表项**✗ ⇒ **∴ 要去掉行首的 `**` ✓**
 ```
+
+## 四十九、★ 这一场最贵的两条经验 ✓（**都是被 CI 教出来的** ✗）
+
+### 49.1 **加一个工具要动 8 处** ✗ —— 而每一处都有判据守着 ✓
+
+```
+**∴ 我原以为 4 处 ✗**：spec ✓／handler ✓／dispatch ✓／example ✓
+**∴ 实际 8 处 ✓**（**∴ 而我只记得前 4 处 ✗ ⇒ **∴ 后 4 处被 CI 一条条抓出来 ✓**）：
+   ① `ToolSpec` ✓
+   ② handler ✓
+   ③ dispatch ✓
+   ④ `TOOL_EXAMPLES` ✓ ⇒ **`every_registered_tool_has_a_documented_example`** ✓
+   ⑤ **`docs/tools.md` 的计数** ✗ ⇒ **`documented_tool_counts_match_the_registry`** ✓（`d2bed4d6`）
+   ⑥ **`tools.rs` 注释 ＋ `docs/guide.md` ＋ `guide.zh-CN.md`** ✗ ⇒ **`tool-surface-coverage`** ✓（`d4a48dfd`）
+   ⑦ **`docs/design/tool-examples.md`** ✗ ⇒ **`tool-examples-doc-check`** ✓（`eef9163a`）
+   ⑧ **`docs/tools.md` 的"全部 N 个"** ✗ ⇒ 同 ⑥（**∴ 它有 2 个数字 ✓**）
+**∴ 而它们**四次都是**先加工具、后来被抓**✗✓** ⇒ **∴ 所以"清单"✗ 不该靠记忆 ✓**
+   ⇒ **∴ 正确做法 ✓**：**加完工具后**一次跑全 ✓**（**∴ 而那 4 条判据**本机都能跑**✓**）
+```
+
+### 49.2 **CI 红数的轨迹** ✓ —— 从 4 修到 1 ✗
+
+| run | HEAD | 红 | 内容 |
+|---|---|---|---|
+| `39090530411` | `f45fa809` | **4** ✗ | `criteria 1/6`／`3/6`／`4/6`／`6/6` |
+| `39092716707` | `946918a8` | **2** ✗ | `criteria 4/6`／`6/6` |
+| `39093660732` | `eef9163a` | **1** ✗ | `criteria 6/6`（**∴ 且红换成了**两条浏览器判据**✗**） |
+
+```
+**∴ 三处修好 ✓**：
+   · `criteria 3/6` 的 `tool-surface-coverage` ✓（`d4a48dfd`）
+   · `criteria 4/6` 的 `tool-examples-doc-check` ✓（`eef9163a`）
+   · `criteria 6/6` 的 `tool-sample-colors-batch` ✓（`eae05c37`）
+**∴ 而 `1/6`／`3/6`／`4/6` **现在全绿**✓** ⇒ **∴ 代码侧真的干净了 ✓**
+**∴ 而 `6/6` 剩下的两条 ✓**：
+   · ✗「**双语切换不合格**」✗
+   · ✗「**重载后墨量没增加（0 ≤ 0）⇒ 读到旧状态（脏读）**」✗
+   ⇒ **∴ 都是**浏览器端**✗（**∴ i18n 切换 ✓／Service Worker ✓**）
+   ⇒ **∴ 而这一场我**完全没碰**✗ 那部分 ✓ ⇒ **∴ 所以它们**与我的改动无关 ✓**
+```
+
+### 49.3 ∴ 而"**CI 绿**"✗ 这件事在这一场的真实状态 ✓
+
+```
+**∴ 代码侧 ✓**：`clippy` ✓／`rustfmt` ✓／`test` ×2 ✓／`GPU` ✓／`wasm smoke` ✓
+             ＋ **`criteria 1/6`／`3/6`／`4/6` 全绿** ✓
+**∴ 环境侧 ✗**：`criteria 6/6` 的两条**浏览器判据** ✗
+             ＋ **`background_stroke_cost.rs:273`** 的**偶发** ✗（**∴ CI 上 `other_ms=486` ✗ vs 本机 7.3 ✓**）
+**∴ 所以 ✓**：**这一场把"能靠代码修的 CI 红"✗ 修完了 ✓**，剩下的是**环境／浏览器**✗
+```
+
+### 49.4 ∴ 而取 CI 日志的办法 ✓（**这一场才学会** ✓）
+
+```
+**∴ `gh run view --log-failed` ✗ ／ `gh run view --job <id> --log` ✗ ／ `gh api .../logs` ✗
+   全都**返回空**✗**（**∴ 我前几轮因此瞎猜了 10 轮 ✓**）
+**∴ 而**能用的**✓**：
+   `curl -sL -H "Authorization: Bearer $(gh auth token)" \
+     -H "Accept: application/vnd.github+json" \
+     https://api.github.com/repos/<owner>/<repo>/actions/jobs/<job-id>/logs`
+   ⇒ **∴ 一次拿到 **65-73 KB** 的完整日志 ✓** ⇒ **∴ 而它**一读就给出了判据名与数字 ✓**
+```
