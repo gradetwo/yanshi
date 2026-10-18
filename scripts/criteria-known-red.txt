@@ -28150,3 +28150,4 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
   不同于 `incremental_stamp_matches_full_tile_re_render` 那条 ✓）；② 触发条件与环境/时序相关
   ⇒ **∴ 删错会让 CI 偶发红 ⇒ **掩盖真回归**✗** ⇒ 按纪律**只记录事实** ✓
 - **∴ 下一步**：**先解释"当初为什么红"**（查 git 历史／找那次复现的提交）⇒ 再决定删不删 ✓
+tool-sample-colors-batch.mjs  CI 的 CPU 特性让净每点成本接近小规模平均（CI 净比 0.89 / 本机 0.33）；本机绿、CI 红，见台账第六十节；等 runner 上能测 CPU 缓存/带宽的人复核。
