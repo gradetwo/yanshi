@@ -3178,6 +3178,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓；不给则用 .myb 自带 ✓）"),
             param!("background", Any, false, "预览的底色（同 `color` 的写法 ✓）：**给了就先把它铺满预览区** ✓ ⇒ 能看「落在深色底上是什么样」✓（不给 ⇒ 纯白底，与以前逐字节相同 ✓）"),
+            param!("read_canvas", Boolean, false, "true ⇒ **预览会读文档已有的可见像素** ✓（同 `brush_stroke` 的 `feed_base`）⇒ 能看「落在**已画的画面**上是什么样」✓（**外部复测 G02 的第三项** ✓；缺省 false ⇒ 与以前逐字节相同 ✓）"),
             // ★ **`brush_params` 必须声明 ✗** ★**（外部复测 QY-G02 ✓）
             //
             // **∴ 而 handler **早就**转发它了**✗**（**∴ `:17396` 的 `args.get("brush_params")` ✓，
@@ -17440,7 +17441,8 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("color_to"),
         args.get("opacity").and_then(Value::as_f64),
         args.get("hardness").and_then(Value::as_f64),
-        false,
+        // **`feed_base`：读了底图就对**（外部复测 G02 第三项）
+        optional_bool(args, "read_canvas").unwrap_or(false),
         // **★ 必须转发 `brush_params`（第 254 轮实测的真 bug）★**：这里原先**硬写 `None`** ✗
         //   => 预览/swatch **无视参数覆盖** ✗ => "改 `brush_params` 前先用 swatch 试"
         //   （新功能问题 5）**根本做不到** ✗（我自己的判据就撞在这上面：传了 `opaque: 0.2`
