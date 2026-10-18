@@ -136,7 +136,7 @@ shard_index=0
 #     ＋ **∴ 和** CI **的 `clippy`／`test (stable)`／`test (beta)`／`rustfmt` job **各自覆盖** ✓ ★
 #       ＋ **∴ 所以**：**把它从判据枚举里排除**✗ 而**不是**给它更大的超时** ✓ ★★
 #         （**∴ 后者**会让**每个判据分片**都慢十几分钟 ⇒ **∴ 而且**和门禁重复 ✓）
-for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort | grep -v '/tool-gate\.mjs$'); do
+for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs scripts/check-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs scripts/build-warnings-check.sh scripts/medium-abi-check.mjs scripts/server-ws-origin.mjs scripts/ui-layout-grid.mjs scripts/ui-text-density.mjs scripts/ui-i18n-coverage.mjs scripts/mcp-document-switch.mjs scripts/mcp-tool-descriptions.mjs scripts/ui-control-heights.mjs scripts/server-token-policy.mjs 2>/dev/null | sort | grep -v '/tool-gate\.mjs$'); do
   # **∴ 每轮必须清空 ✗**：`ARG1` 只在"要 bin 路径"的那一条里设 ✓
   #   而它是**全局变量**✗ ⇒ 不清就会**泄漏给后面的每一条**✗（我第一次就漏了 ✓，`tool-time-ms` 因此红 ✗）
   ARG1=""
