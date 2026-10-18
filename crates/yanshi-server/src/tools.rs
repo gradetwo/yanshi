@@ -1448,6 +1448,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: NO_PARAMS,
     },
     ToolSpec {
+        // **一次拿画布状态** ✓（YANSHI_ISSUES §18.4 ✓）
+        //   ⇒ **∴ 报告里说"一次调用拿到尺寸 ＋ 层列表 ＋ 选区 ＋ 掩码"✗ ⇒ **∴ 免得 agent 打四五次 ✓**
+        name: "describe_canvas",
+        profile: Profile::Core,
+        summary: "一次返回画布状态：尺寸、层列表、选区、掩码（只读 ✓）。省掉分别调 get_document／list_layers／list_selections",
+        mutating: false,
+        params: &[],
+    },
+    ToolSpec {
         name: "list_objects",
         profile: Profile::Core,
         summary: "列出对象（可按图层与类型过滤）",
@@ -3413,6 +3422,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "get_state" => read_get_state(ctx, args),
         "list_documents" => read_list_documents(ctx),
         "list_layers" => read_list_layers(ctx),
+        "describe_canvas" => read_describe_canvas(ctx),
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
         "render_region" => read_render_region(ctx, args),
@@ -4351,6 +4361,66 @@ fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "documents": documents, "count": documents.len() }))
+}
+
+fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let (width, height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .unwrap_or((0, 0));
+    let state = document_state(ctx)?;
+    // 掩码：从图层的 `mask_id` 汇总（**∴ 本仓没有独立的 masks 表 ✓**）
+    let mut masks: Vec<String> = state
+        .alive_layers()
+        .into_iter()
+        .filter_map(|layer| layer.mask_id.clone())
+        .collect();
+    masks.sort();
+    masks.dedup();
+    let mut selections: Vec<Value> = state
+        .selections
+        .values()
+        .filter(|selection| !selection.is_deleted())
+        .map(|selection| {
+            json!({
+                "selection_id": selection.id,
+                "mode": selection.mode,
+                "feather": selection.feather,
+                "invert": selection.invert,
+                "shape": selection.shape,
+            })
+        })
+        .collect();
+    selections.sort_by(|a, b| {
+        a.get("selection_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(b.get("selection_id").and_then(Value::as_str).unwrap_or(""))
+    });
+    Ok(json!({
+        "ok": true,
+        "width": width,
+        "height": height,
+        "layers": state.alive_layers().into_iter().map(|layer| json!({
+            "layer_id": layer.id,
+            "name": layer.name,
+            "type": layer.layer_type,
+            "visible": layer.visible,
+            "opacity": layer.opacity,
+            "blend_mode": layer.blend_mode,
+            "locked": layer.locked,
+            "mask_id": layer.mask_id,
+            "objects": state.objects_in_layer(&layer.id).len(),
+        })).collect::<Vec<_>>(),
+        "selections": selections,
+        "masks": masks,
+        "counts": {
+            "layers": state.alive_layers().len(),
+            "selections": selections.len(),
+            "masks": masks.len(),
+        },
+    }))
 }
 
 fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
