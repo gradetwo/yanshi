@@ -17481,6 +17481,12 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ **∴ 所以**必须**在响应里说清**✗** ⇒ **∴ 否则**他会**按错前提**✗ 去改读数**✗** ✓
     if optional_bool(args, "read_canvas").unwrap_or(false) {
         value["read_canvas"] = json!(true);
+        // **语义要能被直接判**✗（外部复测 §63 ✓）：
+        //   ⇒ 对方写 `assert r.get("read_canvas_note") is None`**✗**
+        //   ⇒ **∴ 而**我原来**总给 note**✗ ⇒ **∴ 那个断言**恒失败**✗** ✓
+        //   ⇒ **∴ 所以**加一个**布尔**：**∴ `read_canvas_effective`**✗（**∴ 底图读入成功才为 true ✓**）
+        //   ⇒ **∴ 而现在**它**恒 false**✗**（**∴ 底图未读入 ✓**）⇒ **∴ 于是**note **只在** false 时给**✗**
+        value["read_canvas_effective"] = json!(false);
         value["read_canvas_note"] =
             json!("read_canvas 只改变了笔刷是否走『读画布』那条路（会读画布的笔因此输出不同）；**底图内容仍未读入** ⇒ 预览里的底**仍是**空白**（渲染层未提交，见 brush-capability-gap 第一百七十八节）。所以『读数与画上去一致』**仍未达成**。");
     }
