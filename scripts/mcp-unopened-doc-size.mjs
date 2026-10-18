@@ -54,10 +54,10 @@ mkdirSync(root, { recursive: true });
 const session = (args) => {
   const child = spawn(BIN, args, { stdio: ["pipe", "pipe", "pipe"] });
 
-// **∴ 兜底 ✗**：**∴ 判据中途抛错也要收掉这个子进程 ✓**
-//   ⇒ **∴ 因为**正常路径的 kill 不会执行 ✗ ⇒ **∴ 实测漏过一个活了 **3 小时 56 分**的 serve ✗**
-//   ⇒ **∴ 所以**每个 spawn 都挂一条 exit 监听 ✓（**∴ 已死的进程 kill 抛错 ⇒ catch 掉 ✓**）
-process.on("exit", () => { try { child.kill("SIGKILL"); } catch { /* 已经没了 */ } });
+  // **∴ 兜底 ✗**：**∴ 判据中途抛错也要收掉这个子进程 ✓**
+  //   ⇒ **∴ 因为**正常路径的 kill 不会执行 ✗ ⇒ **∴ 实测漏过一个活了 **3 小时 56 分**的 serve ✗**
+  //   ⇒ **∴ 所以**每个 spawn 都挂一条 exit 监听 ✓（**∴ 已死的进程 kill 抛错 ⇒ catch 掉 ✓**）
+  process.on("exit", () => { try { child.kill("SIGKILL"); } catch { /* 已经没了 */ } });
 
   let buffer = "";
   const seen = new Map();
