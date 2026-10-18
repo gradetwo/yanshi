@@ -13801,7 +13801,11 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //     与 `brush_stroke` 的 `painted_pixels` 同一个意思 ✓（两族工具报同一件事 ✓）。
     //   **∴ 只报不判 ✗**：**绝不用它改变返回语义** ✗（台账 §十 记录过：那条"变了就报错"的检查
     //     上过一次、**从未生效**、已回退 ✓）⇒ 这里**只补一个数** ✓，**像素逐字节不变** ✓。
-    value["painted_pixels"] = json!(count_painted_pixels(base.as_deref(), &rgba));
+    // ★ **一遍遍历同时算两个量** ✗**（第 100 轮 ✓；**∴ 原来 `paint_delta` 自己又扫了一遍 ✓
+    //   ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗ ⇒ **∴ 实测 `brush_stroke` 中位 101.6 → 235.0 ms ✗**）
+    let (painted_pixels, paint_delta) = count_painted_and_delta(base.as_deref(), &rgba);
+    value["painted_pixels"] = json!(painted_pixels);
+    value["paint_delta"] = json!(paint_delta);
     // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
     //
     // **∴ 为什么叫 `paint_delta` 而不叫 `max_channel_delta` ✗**：**∴ 因为 `medium_stroke` 里
@@ -13813,25 +13817,7 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **∴ 语义 ✗**：**这一笔最多把某个通道改了多少（0..255）✓** —— **∴ 与 `brush_stroke` 的
     //   `max_channel_delta` **同一个意思**✗** ⇒ **∴ 于是**调用方可以**用同一套阈值**✗ 判薄涂 ✓
     // **∴ 只报不判 ✗**：**∴ 绝不用它改变返回语义 ✓**（**∴ 同上一条注释的纪律 ✓**）
-    {
-        let before = base.as_deref();
-        let mut delta_max: u8 = 0;
-        for index in (0..rgba.len()).step_by(4) {
-            let mut delta: u8 = 0;
-            for channel in 0..4 {
-                // **∴ 没有基准时按**白底**✗**（**∴ 与 `brush_stroke` 一致 ✓**）
-                let old = before
-                    .and_then(|pixels| pixels.get(index + channel))
-                    .copied()
-                    .unwrap_or(255);
-                let diff = i32::from(rgba[index + channel]) - i32::from(old);
-                let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);
-                delta = delta.max(diff);
-            }
-            delta_max = delta_max.max(delta);
-        }
-        value["paint_delta"] = json!(delta_max);
-    }
+
     // **画布尺寸每次都回** ✓（调用方据此对齐坐标 ✓）。
     value["canvas"] = json!({"width": canvas_width, "height": canvas_height});
     value["outside_fraction"] = json!((outside_fraction * 1000.0).round() / 1000.0);
@@ -13865,19 +13851,40 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 ///
 /// **只是报数** ✓：调用方可以据此报警 ✓，但**不改变** `ok` 语义 ✗
 ///（台账 §十：那条"变了就报错"的检查上过又回退 ✓，因为它**从未生效**过 ✓）。
-fn count_painted_pixels(base: Option<&[u8]>, produced: &[u8]) -> usize {
-    produced
-        .chunks_exact(4)
-        .enumerate()
-        .filter(|(index, pixel)| match base {
-            Some(before) => {
-                let at = index * 4;
-                // **越界一律算"变了"** ✓（尺寸对不上时宁可报大 ✗ 也不静默少报 ✗）。
-                before.get(at..at + 4).is_none_or(|old| old != *pixel)
-            }
+/// ★ **一遍遍历同时算两个量** ✗**（第 100 轮 ✓；**∴ 性能修复 ✓**）
+///
+/// **∴ 为什么要合并 ✗**：`max_channel_delta` 原先**自己又扫了一遍**✗ 整块区域
+/// ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗** ⇒ **∴ 实测 `brush_stroke` 中位
+/// **101.6 → 235.0 ms** ✗（**∴ +133 ms ✓，台账第一百一十三节 ✓**）
+/// ⇒ **∴ 而 `count_painted_pixels` **本来就在扫同一块**✗** ⇒ **∴ 合并后**零额外遍历 ✓**。
+///
+/// **∴ 两个量的语义**各自不变 ✗**（**∴ 不能因为合并而改 ✓**）：
+/// · **`painted`** ✓ ⇒ **有 `base` 逐字节比较 ✓／无 `base` 判 `!= [0,0,0,0]` ✓**（**∴ 原语义 ✓**）
+/// · **`delta`** ✓ ⇒ **有 `base` 用之 ✓／无 `base` 按**白底 255**✗**（**∴ 与 `brush_stroke` 一致 ✓**）
+fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8) {
+    let mut painted = 0usize;
+    let mut delta_max = 0u8;
+    for (index, pixel) in produced.chunks_exact(4).enumerate() {
+        let at = index * 4;
+        let before = base.and_then(|pixels| pixels.get(at..at + 4));
+        // **`painted` 的语义**照抄 `count_painted_pixels` ✗**（**∴ 一字不改 ✓**）
+        let is_painted = match base {
+            Some(_) => before.is_none_or(|old| old != pixel),
             None => pixel.iter().any(|byte| *byte != 0),
-        })
-        .count()
+        };
+        if is_painted {
+            painted += 1;
+        }
+        // **`delta` 的语义**照抄原来的 `max_channel_delta` ✗**（**∴ 白底 255 ✓**）
+        for channel in 0..4 {
+            let old = before.map_or(255, |bytes| bytes[channel]);
+            let diff = (i32::from(pixel[channel]) - i32::from(old))
+                .unsigned_abs()
+                .min(255) as u8;
+            delta_max = delta_max.max(diff);
+        }
+    }
+    (painted, delta_max)
 }
 
 /// **`export_project`** ✓ —— 一键打成 `.yanshi` 工程包 ✓（真实用户提的缺口 ✓）。
