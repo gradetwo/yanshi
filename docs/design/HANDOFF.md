@@ -7,7 +7,8 @@
 ```
 HEAD              = b39c341f（main == l4-sync）
 外部复测 8 项      = 7 个四件齐 ＋ G02 5/7（第 3 项已自陈且被验）
-判据              = tool-preview-read-canvas **14 条**、tool-swatch-include-image **13 条**（共 27 条）
+判据              = tool-preview-read-canvas 与 tool-swatch-include-image
+                    **条数用命令数**：`grep -cE '^ *check\(' scripts/tool-*-*.mjs`
                     每条四层齐：实现／输入能触发／断言／变异
 AGENTS.md         = 行为规矩（**数它用命令**：`grep -c '^## ' AGENTS.md`，别信硬编码的数字）
 CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md 有记录）
