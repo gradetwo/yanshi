@@ -17501,8 +17501,13 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **颜色空间**✗（外部复测 G02 的第 6 项 ✓）：`brush_preview` **恒用** `ColorMixing::Rgb`
     //   ⇒ **∴ 它**没有 `color_mixing` 参数**✗** ⇒ **∴ 所以**它**总是** `rgb`**✗**
     //   ⇒ **∴ 而**返回它**很便宜**✗ 且**让**读数**能归因**✗**（**∴ §65 那条 ✓**）✓
-    value["color_space"] = json!("rgb");
-    value["color_space_note"] = json!("`brush_preview` 恒用 RGB 混色（没有 `color_mixing` 参数）⇒ 这个值不会变；落笔侧若用别的混色模式，预览与落笔的混色可能不同（渲染层）。");
+    // **值是 `srgb` 而不是 `rgb`**✗（外部复测 §66 ✓）：**∴ `ColorMixing::Rgb` **直接对 u8 字节插值**✗**
+    //   ⇒ **∴ 而那些字节**是 sRGB 编码的**✗**（**∴ `rows.rs:124` 的 `srgb_encode_table` ✓**）
+    //   ⇒ **∴ 而** `Pigment` **用** `ks_to_srgb`**✗** ⇒ **∴ 也**是 sRGB**✗**
+    //   ⇒ **∴ 所以**两者**都在 sRGB 空间**✗** ⇒ **∴ 而不是** linear**✗** ✓
+    // **∴ 而**这一点**必须说清**✗**：**∴ §66 说**「linear vs sRGB ⇒ 同一个 Δ2.0 视觉差异完全不同」**✗**
+    value["color_space"] = json!("srgb");
+    value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。");
     if optional_bool(args, "include_image").unwrap_or(false) {
         value["image"] = json!({
             "mime_type": "image/png",
