@@ -65,5 +65,19 @@ check(
   `响应必须自陈"底图仍未读入"（实测 ${JSON.stringify(String(on?.read_canvas_note ?? "").slice(0, 60))}）`,
 );
 
+// **∴ ④ 必须有一个**有明确真值的布尔**✗**（**∴ §63 ✓**）：**∴ 对方写的 `is None` 断言恒失败**✗**
+//   ⇒ **∴ 因为** `note` 在成功时也有**✗** ⇒ **∴ 所以**机器**该读** `read_canvas_effective`**✗**
+//   ⇒ **∴ 而**它**现在**必须**是 `false`**✗**（**∴ 底图确实没读入 ✓**）⇒ **∴ 若**有人**谎报** `true`**✗**
+//     ⇒ **∴ 判据**红 ✓（**∴ 那**正是**保护对方**✗ 的东西 ✓）
+console.log(`  read_canvas_effective=${JSON.stringify(on?.read_canvas_effective ?? null)}（现状：底图未读入 ⇒ 应为 false）`);
+check(
+  on?.read_canvas_effective === false,
+  `read_canvas_effective 必须是 false（底图确实没读入）；若是 true 则是谎报（实测 ${JSON.stringify(on?.read_canvas_effective ?? null)}）`,
+);
+check(
+  typeof on?.read_canvas_effective === "boolean",
+  `read_canvas_effective 必须是布尔、恒存在（实测 ${typeof on?.read_canvas_effective}）—— 对方要写 assert ... is True`,
+);
+
 if (bad) { console.log(`  ✗ read_canvas 有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ read_canvas 参数生效（改了渲染）；底图内容是否读入不在本判据范围");
