@@ -70,23 +70,47 @@ const clicked = await evaluate(`(() => {
 if (clicked !== "clicked") { console.log(`  ❌ 判据自身前提不成立（找不到「适配」按钮：${clicked}）⇒ 退出码 3`); process.exit(3); }
 await sleep(1200);
 
+// **∴ 独立基准 ✗**：**∴ 不再比**画布 vs 它爹**✗**（**∴ 那是循环 ✓**，第 142 节实测差恒为 2px ✓）
+//   ⇒ **∴ 而是**用 **`main.clientHeight` 减去**其它子元素**的实际高度**✗** ⇒ **∴ 那**就是**真实可用高度**✗**
+//   ⇒ **∴ 关键 ✗**：**∴ `window.innerHeight - 96` ✗ 会**大于**这个数**✗**（**∴ 工具栏／状态栏占掉了 ✓**）
 const measured = await evaluate(`(() => {
   const canvas = document.querySelector("main canvas");
   if (!canvas) return null;
   const host = canvas.parentElement;
-  const c = canvas.getBoundingClientRect(), h = host.getBoundingClientRect();
-  return { c: { x: c.x, y: c.y, w: c.width, h: c.height },
-           h: { x: h.x, y: h.y, w: h.width, h: h.height },
-           tolerance: 2 };
+  const main = document.querySelector("main");
+  const c = canvas.getBoundingClientRect();
+  // 独立基准：main 的可见高度 − 除画布宿主之外的所有子元素高度
+  let other = 0;
+  if (main) {
+    for (const child of main.children) {
+      if (child === host) continue;
+      other += child.getBoundingClientRect().height;
+    }
+  }
+  const mainH = main ? main.clientHeight : window.innerHeight;
+  return {
+    canvasH: c.height,
+    hostH: host.getBoundingClientRect().height,
+    independentBudget: Math.max(0, mainH - other),
+    mainH,
+    otherH: other,
+    innerMinus96: window.innerHeight - 96,
+  };
 })()`);
 if (!measured) { console.log("  ❌ 判据自身前提不成立（找不到 main canvas）⇒ 退出码 3"); process.exit(3); }
 
-const { c, h } = measured;
-console.log(`  画布 rect：y=${c.y.toFixed(1)} h=${c.h.toFixed(1)}（底 ${(c.y + c.h).toFixed(1)}）`);
-console.log(`  宿主 rect：y=${h.y.toFixed(1)} h=${h.h.toFixed(1)}（底 ${(h.y + h.h).toFixed(1)}）`);
-check(c.y >= h.y - 2, `画布顶端不高于宿主顶端（${c.y.toFixed(1)} vs ${h.y.toFixed(1)}）`);
-check(c.y + c.h <= h.y + h.h + 2, `画布底端不超出宿主底端（${(c.y + c.h).toFixed(1)} vs ${(h.y + h.h).toFixed(1)}）`);
-check(h.h > 240 ? c.h >= h.h * 0.9 : true, `画面高度用满宿主 90% 以上（${c.h.toFixed(1)} vs ${h.h.toFixed(1)}）`);
+console.log(`  画布 h=${measured.canvasH.toFixed(1)}｜宿主 h=${measured.hostH.toFixed(1)}`);
+console.log(`  独立基准 = main.clientHeight(${measured.mainH}) − 其它子元素(${measured.otherH.toFixed(1)}) = ${measured.independentBudget.toFixed(1)}`);
+console.log(`  旧公式 innerHeight−96 = ${measured.innerMinus96}`);
+// 断言：画布高度不得超过独立基准（超了就是适配算大了 → 底部会被裁）
+check(
+  measured.canvasH <= measured.independentBudget + 2,
+  `画布高度不得超过独立基准（${measured.canvasH.toFixed(1)} vs ${measured.independentBudget.toFixed(1)}）`,
+);
+check(
+  measured.canvasH >= measured.independentBudget - 2,
+  `画布高度应基本用满独立基准（${measured.canvasH.toFixed(1)} vs ${measured.independentBudget.toFixed(1)}）`,
+);
 
 socket.close();
 if (problems.length) { console.log(`  ✗ 适配没有落在真实可见宿主内（${problems.length} 处）`); process.exit(1); }
