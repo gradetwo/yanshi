@@ -57,5 +57,18 @@ if (selection.ok !== true) {
 }
 if (leftDiff === 0) failures.push("选区内也没落墨 ⇒ 判据无效或选区把整笔都挡了 ✗");
 if (rightDiff !== 0) failures.push(`选区外落了 ${rightDiff} 字节的墨 ⇒ 落笔没有认选区 ✗（需求的核心正是这一条）`);
+// **⑤ 传错名字时的报错必须可诊断** ✗**（外部 §77 表扬的正是这条 ✓**
+//    ⇒ **∴ 它**列出**全部现有选区**＋提示**也可用 `latest`**✗** ⇒ **∴ 而**没有**判据**守着**✗** ✓
+const badName = await call("brush_stroke", {
+  layer_id: "layer_default", brush: "classic-brush",
+  points: [[10, 50, 0.6], [190, 50, 0.6]], size: 18, color: { r: 30, g: 60, b: 200, a: 255 },
+  clip_to_selection: "sel-不存在",
+});
+const badText = JSON.stringify(badName);
+console.log(`  传错名字 ⇒ ok=${badName.ok}｜${badText.slice(0, 180)}`);
+if (badName.ok !== false) failures.push("传错选区名却成功了 ⇒ 非法输入被静默接受 ✗");
+if (!badText.includes("现有")) failures.push("报错里没列出「现有」选区 ⇒ 不可诊断 ✗（§77 表扬的正是这条）");
+if (!badText.includes("latest")) failures.push("报错里没提示「latest」 ⇒ 用户不知道有捷径 ✗");
+
 if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
 console.log("  ✓ 选区：内落墨、外零字节 ⇒ 落笔认选区");
