@@ -2214,3 +2214,39 @@ ptrue_dx     ⇒ total **29.0ms**｜raster 6.1ms｜preview 18.7ms
 ```
 
 **∴ 所以这条判据的**承重部分**是规模断言 ✓，不是总耗时 ✗** —— **∴ 而两次变异就是专门用来证明这一点的 ✓**
+
+## 四十二、§22-24 的统一规则：**retouch 一族四件齐** ✓
+
+### 42.1 规则本身 ✓（报告给的）✓
+
+> **任何"会改变像素"的接口，如果将要改变 0 个像素，就返回 `ok: true` + `context:{affected_pixels: 0, reason: "..."}`，或者直接报错。**
+
+**∴ 而 retouch 这一族的特殊性 ✓**：**它**不即时渲染**✗**（`write_retouch` 只 `ctx.commit(AtomKind::Retouch, …)` ✓）
+   ⇒ **∴ `painted_pixels` 无从谈起**✗（**∴ 提交那一刻没有像素 ✓**）
+   ⇒ **∴ 但"会不会触到画布"是**提交前能算**的 ✓ ⇒ **∴ 就判它 ✓**（**∴ 且必须在 `ctx.commit` **之前**✗ —— 否则留下空 atom ✗**）✓
+
+### 42.2 四件 ✓
+
+```
+**实现 ✓**（`4e2faa23`）：在 `write_retouch` 的 `ctx.commit` 之前算包围盒 vs 画布 ✓
+   ⇒ **∴ 一处改动覆盖三个工具 ✓**（`smudge`／`clone_stamp`／`heal` ✓）
+**判据 ✓**（`17ad20b7`，`scripts/tool-retouch-outside.mjs` ✓）：**两向** ✓
+   · 画布外（900,900）⇒ **必须 `ok=false`** ✗（**∴ 修复前是 `ok=true` ✓**）
+   · 画布内（100,100）⇒ **必须 `ok=true`** ✗（**∴ 防止修过头 ✓**）
+   ⇒ **∴ 3 工具 × 2 向 ＝ 6 个断言 ✓，本机全绿 ✓**
+**变异 ✓**：`if entirely_outside` → `if false && entirely_outside` ⇒ 重建
+   ⇒ **退出码 1** ✓，报
+     「✗ smudge 画布外 ⇒ ok=true（**必须 false** ✗）／✗ clone_stamp …／✗ heal_stamp …」✓
+   ⇒ **∴ 而三个"画布内"仍 `ok=true` ✓ ⇒ **∴ 说明变异**只影响了画布外**✓**（**∴ 而不是把整个函数弄坏 ✓**）✓
+**恢复 ✓**：脏 0 ✓
+```
+
+### 42.3 还没做的 ✓（同一规则的其余部分）
+
+```
+**∴ `write_liquify`（`push`／`pinch`／`twirl`）** ✗ —— **∴ 同样"提交型"✓，同样可用包围盒判 ✓
+   ⇒ **∴ 但我没找到它的提交点 ✗**（**∴ `:11873`–`:11960` 区间 `grep ctx.commit` 零命中 ✓**）
+**∴ `create_mask`／`create_selection`／`fill_region`** ✗ —— **∴ 它们改的是**结构**不是像素 ✓
+   ⇒ **∴ 判"与画布有交集吗"同法 ✓**
+**∴ `liquify_push` 现在仍静默** ✗（**∴ 实测 `ok=true` ✓**）
+```
