@@ -125,5 +125,27 @@ check(
   `fail_count 与 ok_count 必须都是数字（实测 ${typeof many?.fail_count}/${typeof many?.ok_count}）`,
 );
 
+// **∴ ⑩ 失败项必须**带 `error`**✗**（**∴ 第 259 轮：接口早给了原因，而我三轮没读 ✓**）
+//   ⇒ **∴ 若** `ok=false` 而**没有** `error`**✗** ⇒ **∴ 调用方**就只能**猜**✗** ⇒ **∴ 于是**编错因果**✗** ✓
+// **∴ 但 9 支都存在 ⇒ 上面那 0 个失败项会让断言**恒绿**✗** ⇒ **∴ 所以**另建一个**必有一支不存在**的请求 ✓
+const withBogus = await post(
+  "/api/tools/swatch_brush_strokes",
+  { brushes: ["thin_watercolor", "round_soft"], include_image: false, size: 30 },
+  doc,
+  token,
+);
+const bogusSwatches = withBogus?.swatches || [];
+const failed = bogusSwatches.filter((s) => s?.ok === false);
+console.log(`  失败项 ${failed.length} 个｜带 error 的 ${failed.filter((s) => typeof s?.error === "string" && s.error).length} 个`);
+check(
+  failed.length === 0 ||
+    failed.every((s) => typeof s?.error === "string" && s.error.length > 0),
+  `每个 ok=false 的项必须带 error（实测 ${failed.filter((s) => !s?.error).length} 个没有）—— 否则调用方只能猜原因`,
+);
+check(
+  failed.length === 0 || failed.some((s) => /reference_not_found|invalid_argument/.test(String(s?.error))),
+  `失败项必须带可识别的错误码（实测 ${JSON.stringify(failed.map((s) => String(s?.error).slice(0, 30)))}）`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
