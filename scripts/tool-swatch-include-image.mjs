@@ -88,5 +88,20 @@ check(
   `超限的那一支必须给出 image_skipped 与原因（实测 ${skipped9.length} 支，文案 ${JSON.stringify(skipped9[0]?.image_skipped ?? null)}）`,
 );
 
+// **∴ ⑦ 顶层汇总必须能用 ✗**（**∴ §60 ✓**）：**∴ 对方写的是** `assert not resp.get("image_skipped")`**✗**
+//   ⇒ **∴ 若**只把 `image_skipped` 放在每个 swatch 里 ✗ ⇒ **∴ 顶层没那个键 ✗ ⇒ **∴ 断言**恒通过**✗**
+//   ⇒ **∴ 所以**顶层必须有 `image_skipped_count`（**∴ 2 支 ⇒ 0 ✓**）与 `image_skipped`（**∴ 有跳过 ⇒ 数组 ✓**）
+const plainSkipped = plain?.image_skipped_count;
+const manySkipped = many?.image_skipped_count;
+console.log(`  顶层 image_skipped_count：2 支 ⇒ ${plainSkipped}｜9 支 ⇒ ${manySkipped}`);
+check(
+  plainSkipped === 0 && (plain?.image_skipped === null || plain?.image_skipped === undefined),
+  `2 支笔时顶层必须说"没跳过"（count=${plainSkipped}、image_skipped=${JSON.stringify(plain?.image_skipped ?? null)}）`,
+);
+check(
+  manySkipped === 1 && Array.isArray(many?.image_skipped),
+  `9 支笔时顶层必须说"跳过 1 张"且给出原因数组（count=${manySkipped}、image_skipped=${JSON.stringify(many?.image_skipped ?? null)}）`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
