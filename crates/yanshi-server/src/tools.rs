@@ -3136,7 +3136,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("smooth", Boolean, false, "true ⇒ 把 points 当 **Catmull-Rom 平滑样条的控制点**（曲线过这些点，不把它们拉走）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
             param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
-            param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪"),
+            param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪。注意：传的 id 必须与建选区时用的名字完全一致（不要自己加 sel- 之类前缀；不确定就用 latest 取最新那个）"),
         ],
     },
     ToolSpec {
