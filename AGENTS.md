@@ -46,6 +46,7 @@ CDP 会**静默返回一个空对象 `{}`**。那看起来像"页面返回了空
 | 2 ✓ | `read_canvas_note` **恒非 None** | 对方的 `is None` 恒失败 ✗ | **加 `read_canvas_effective` 布尔** ✓ |
 | 3 ✓ | `background` **被 `read_canvas` 覆盖而不说** | 调用方**以为**背景生效 ✗ | **`background_applied: false`** ✓ |
 | 4 ✓ | `read_canvas: "yes"` **静默当 `false`** | 非法输入**看起来正常** ✗ | **报 `invalid_argument`** ✓ |
+| 5 ✓ | **「做了 0 次」冒充「不需要做」**（外部 §71：393 笔 `TypeError` 被写成「刷回底色 0 块」） | **失败被当成「没事」** ✗ | **报告同时给 `ok_count` 与 `fail_count`** ✓ |
 
 ⇒ 四种形态**根因相同**：**失败没有信号** ✗ ⇒ 于是**调用方**只能**猜** ✗ ⇒ 猜到错 ✗
 
