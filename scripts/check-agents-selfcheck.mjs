@@ -34,5 +34,15 @@ check(noCheck.length === 0, `可机检的规矩段都要有自检或命令（实
 //    **∴ 而**下面这句**是**诚实的边界**✗**：**∴ 9 段**里**只有 4 段**能机检**✗** ✓
 console.log(`  可机检 ${targets.length} 段／全部 ${ruled.length} 段 ⇒ 其余靠人（内核 ②·自检）`);
 
+// ④ **循环引用**：A 指向 B 而 B 又指回 A（内核 ②·消除重复要连元信息一起消除）
+//    **∴ 第 300 轮实测**✗：**∴ AGENTS.md** 说「与 HANDOFF 第六节必须一致」✗
+//    ⇒ **∴ 而** HANDOFF 说「见 AGENTS.md」✗ ⇒ **∴ 于是**成了**循环**✗** ✓
+const aPointsToH = /HANDOFF\.md.*必须一致/.test(agents);
+const hPointsToA = /见.*AGENTS\.md.*已知红/.test(handoff);
+check(
+  !(aPointsToH && hPointsToA),
+  `不许循环引用（AGENTS→HANDOFF=${aPointsToH}｜HANDOFF→AGENTS=${hPointsToA}）`,
+);
+
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
 process.exit(fail.length ? 1 : 0);
