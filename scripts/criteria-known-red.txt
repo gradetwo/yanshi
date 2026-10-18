@@ -28151,3 +28151,4 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
   ⇒ **∴ 删错会让 CI 偶发红 ⇒ **掩盖真回归**✗** ⇒ 按纪律**只记录事实** ✓
 - **∴ 下一步**：**先解释"当初为什么红"**（查 git 历史／找那次复现的提交）⇒ 再决定删不删 ✓
 tool-export-idempotent.mjs  CI 上 3 笔 100%_Opaque 全都没记可重放 recipe（kept_no_recipe 本机 0 / CI 3 ⇒ omitted 0），属引擎侧可重放构造；最小构型见台账第九十三节。转绿条件：kept_no_recipe 回到 0。
+tool-single-point-rejected.mjs  CI 上「两点 5px + size 400」会落墨（应报错），4/6 次出现；与 tool-zero-dab-hint 同根——极短路径落墨判定在 CI(AMD EPYC 7763) 与本机(i5-4250U) 相反。最小构型见台账第九十七节。转绿条件：两点 5px + size 400 在 CI 上也返回 ok=false。
