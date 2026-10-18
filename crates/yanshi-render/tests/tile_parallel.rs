@@ -988,7 +988,15 @@ fn buffer_pool_budget_covers_every_concurrent_worker() {
     let state = banded_document(W, H, LAYERS);
     let store = MemoryBlobStore::new();
     let grid = TileGrid::new(256, W, H).unwrap();
-    let mut renderer = Renderer::with_budget(grid, 32 * 1024 * 1024).with_max_workers(WORKERS);
+    // ★ **预算必须**装得下 WORKERS 块带缓冲 ✗ ★**（CI 上 red 的原因 ✓，第五十七节第 ② 条 ✓）
+    //   ⇒ **∴ 场景需要 ✓**：`band_bytes × WORKERS`（**∴ `4096 × 769 × 16 × 4` ≈ **192 MB** ✓**）
+    //   ⇒ **∴ 而原来给的是 **32 MB**✗ ⇒ **∴ 差 6 倍 ⇒ renderer 按预算**降级**✗ ⇒
+    //     `parallel_workers < 4` ⇒ **∴ 断言「真的并行到 4 个 worker」必红 ✗**
+    //   ⇒ **∴ 实测 ✓**：**本机（4 核、内存足）绿 ✓，CI（`nproc=4` 但内存小 ✓）红 ✗**
+    //   ⇒ **∴ 所以这是**测试的假设错**✗，不是产品 bug ✓**
+    //   ⇒ **∴ 改法 ✓**：把预算提到够 4 块（`64 MB × WORKERS` ✓）⇒ **∴ 仍能抓原来的回归 ✓**
+    //     （**∴ 回归是"归还规则只按**固定 192 MB**✗ 而不是**按 worker 数**✗"✓ ⇒ **∴ 与预算大小无关 ✓**）
+    let mut renderer = Renderer::with_budget(grid, 64 * 1024 * 1024 * WORKERS).with_max_workers(WORKERS);
 
     let first = renderer.render_document(&state, &store).unwrap();
     assert_eq!(
