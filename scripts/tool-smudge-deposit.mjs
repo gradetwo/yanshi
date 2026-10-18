@@ -59,6 +59,8 @@ const variant = async (layer, deposit) => {
 const omitted = await variant("dep_omitted", null);
 const zero = await variant("dep_zero", 0);
 const some = await variant("dep_some", 0.6);
+// **∴ 中间档 ✗**：**∴ 用来验证**单调**✗ 而不只是"更暗"✓**
+const mid = await variant("dep_mid", 0.3);
 let bad = 0;
 const check = (ok, why) => { console.log(`  ${ok ? "✓" : "✗"} ${why}`); if (!ok) bad += 1; };
 const same = (a, b) => Math.abs(a - b) < 1e-9;
@@ -66,7 +68,15 @@ check(same(omitted.after, zero.after),
   `不给 deposit 与给 0 涂后亮度相同（${omitted.after} vs ${zero.after}）`);
 check(!same(omitted.after, some.after),
   `deposit=0.6 改变了涂后亮度（${omitted.after} vs ${some.after}）`);
-const darker = omitted.after - some.after;
-check(darker > 0.0005, `deposit=0.6 更暗（差 ${darker.toFixed(5)}）`);
+// ★ **改看**方向**✗ 不看数值**✗ ★**（**∴ 原来断 `darker > 0.0005` ✗ —— 那是**绝对差**✗，
+//   **∴ 而实测只有 0.00092 ⇒ 余量 1.84 倍 ✗** ⇒ **∴ CI 的浮点/SIMD 差一点就翻 ✓**）
+//   ⇒ **∴ 现在断**单调**✗**：**`omitted > 0.3 > 0.6` 的亮度必须**严格递减**✗**
+//     ⇒ **∴ 它只看**方向**✓，**与渲染的绝对亮度无关 ✓** ⇒ **∴ 换机器也成立 ✓**
+//     ⇒ **∴ 而且它比原来**更强**✗**：**∴ 原来只验了一档 ✗，现在验了**随参数单调**✓**
+const mono = omitted.after > mid.after && mid.after > some.after;
+check(
+  mono,
+  `越大的 deposit 越暗（${omitted.after.toFixed(6)} > ${mid.after.toFixed(6)} > ${some.after.toFixed(6)}）`,
+);
 if (bad) { console.log(`  ✗ 低沉积涂抹有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 低沉积涂抹：缺省路径不变、deposit>0 生效且方向正确（更暗）");
