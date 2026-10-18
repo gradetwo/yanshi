@@ -4,6 +4,12 @@
 //   ⇒ **∴ 用户实测 ✓**：`thin_watercolor` 在 size=20 下 `painted_pixels=146` ✗ 而**肉眼全白**✗
 //      ⇒ **∴ 那是**静默失败**✗** ✓
 // **∴ 而真正的信号 ✓**：**∴ 落墨幅度 ✓** —— 水彩最大只差 **8~9/255** ✗、实心笔 **255/255** ✓
+// ★ **⚠ 语义已改 ✗**（**∴ 外部复测 QY-D03 ✓，第 126 节 ✓**）
+//   ⇒ **∴ 现在 `max_channel_delta` 是**可见 RGB 差**✗**（**∴ 按 alpha 合成到白底后再比 ✓**）
+//   ⇒ **∴ 于是**半透明的 `pointy_ink` ✗ ⇒ **∴ 从 **255** 变成 **126**✗**
+//     （**∴ 255 是**引擎缓冲差**✗（含 alpha 通道 ✓）；**∴ 126 才是**肉眼看到的**✗** ✓）
+//   ⇒ **∴ 所以**这里的门槛**从 ≥200 改为 ≥100**✗ ⇒ **∴ 而**这**不是**放宽**✗**：
+//     **∴ 旧门槛量的不是可见幅度**✗ ⇒ **∴ 它**本来就不该是 200 ✓
 //
 // **∴ 断言（两个都是**数量级**断言 ✗，不是精确值 ✓）**：
 //   ① 薄涂笔：`painted_pixels > 0` ✗ 但 `max_channel_delta <= 16` ✗（**∴ 画了、看不见 ✓**）
@@ -79,8 +85,8 @@ check(
   `薄涂笔：画了（painted>0）但幅度很小（max_channel_delta ≤ 16，实测 ${thin.max_channel_delta}）`,
 );
 check(
-  typeof ink.max_channel_delta === "number" && ink.max_channel_delta >= 200,
-  `实心笔：幅度很大（max_channel_delta ≥ 200，实测 ${ink.max_channel_delta}）`,
+  typeof ink.max_channel_delta === "number" && ink.max_channel_delta >= 100,
+  `实心笔：可见幅度很大（max_channel_delta ≥ 100，实测 ${ink.max_channel_delta}）`,
 );
 check(
   typeof thin.max_channel_delta === "number" &&
