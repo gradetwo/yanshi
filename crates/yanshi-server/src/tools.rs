@@ -17498,6 +17498,11 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         value["read_canvas_note"] =
             json!("read_canvas 只改变了笔刷是否走『读画布』那条路（会读画布的笔因此输出不同）；**底图内容仍未读入** ⇒ 预览里的底**仍是**空白**（渲染层未提交，见 brush-capability-gap 第一百七十八节）。所以『读数与画上去一致』**仍未达成**。");
     }
+    // **颜色空间**✗（外部复测 G02 的第 6 项 ✓）：`brush_preview` **恒用** `ColorMixing::Rgb`
+    //   ⇒ **∴ 它**没有 `color_mixing` 参数**✗** ⇒ **∴ 所以**它**总是** `rgb`**✗**
+    //   ⇒ **∴ 而**返回它**很便宜**✗ 且**让**读数**能归因**✗**（**∴ §65 那条 ✓**）✓
+    value["color_space"] = json!("rgb");
+    value["color_space_note"] = json!("`brush_preview` 恒用 RGB 混色（没有 `color_mixing` 参数）⇒ 这个值不会变；落笔侧若用别的混色模式，预览与落笔的混色可能不同（渲染层）。");
     if optional_bool(args, "include_image").unwrap_or(false) {
         value["image"] = json!({
             "mime_type": "image/png",
