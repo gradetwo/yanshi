@@ -17506,6 +17506,12 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ **∴ 而** `Pigment` **用** `ks_to_srgb`**✗** ⇒ **∴ 也**是 sRGB**✗**
     //   ⇒ **∴ 所以**两者**都在 sRGB 空间**✗** ⇒ **∴ 而不是** linear**✗** ✓
     // **∴ 而**这一点**必须说清**✗**：**∴ §66 说**「linear vs sRGB ⇒ 同一个 Δ2.0 视觉差异完全不同」**✗**
+    // **G02 的第 3 项：`target-layer` ✗**（**∴ 预览**不能只读某一层**✗**）
+    //   ⇒ **∴ 而它**与"底图读不到"**同源**✗**：**∴ `render_region_raw` 读的是**文档合成**✗**
+    //   ⇒ **∴ 所以**它**在**渲染层**✗** ⇒ **∴ 我**不做，但**必须**说清**✗** ✓
+    //   ⇒ **∴ 否则**调用方会**以为**"我传了 layer_id 就能只看那层"**✗** ✓
+    value["target_layer_supported"] = json!(false);
+    value["target_layer_note"] = json!("预览不支持只读某一层（没有 layer_id 参数）：`render_region_raw` 读的是文档合成。要做这种预览，需要渲染层提供按层读取；这与「底图内容仍未读入」是同一处限制。要只看一层，用 export_png 的 layer_id（它走文档合成，能按层导出）。");
     value["color_space"] = json!("srgb");
     value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。");
     if optional_bool(args, "include_image").unwrap_or(false) {
