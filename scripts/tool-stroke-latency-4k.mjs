@@ -108,6 +108,68 @@ const main = async () => {
     if (result.timings && typeof result.timings === "object") lastTimings = result.timings;
     samples.push(elapsed);
   }
+  // ★ **归一化：基线速率 ⇒ 最大可达画布 ✗** ★**（第 111 轮 ✓；**∴ 台账第 122 节 ✓**）
+  //
+  // **∴ 为什么需要它 ✗**：**∴ `4K ≤ 100 ms` ✗ 这条预算**只在够快的机器上成立**✗
+  //   ⇒ **∴ 实测 ✓**：**∴ 本机 `raster_ms` **3.47**✗ ⇒ **0.21 ms/MP**✗
+  //     **∴ CI **165.07**✗ ⇒ **9.9 ms/MP**✗（**∴ 47 倍 ✓**）**
+  //   ⇒ **∴ 于是** 100 ms 在本机够 **474 MP**✗、在 CI 只够 **10 MP**✗（**∴ 约 3200² ✓**）
+  //     ⇒ **∴ 所以** 4K 在 CI 上**物理不可达**✗ ⇒ **∴ 而**判据**只会说"超标"✗**，看不出**原因 ✓**
+  // **∴ 做法 ✓**：**∴ 另建一个 **1024²** 的文档 ✗** ⇒ **∴ 量它的 `raster_ms` ✗** ⇒ **∴ 得 ms/MP ✓**
+  //   ⇒ **∴ 然后**按预算算**最大可达边长**✗** ⇒ **∴ 若** 4K 超过 ⇒ **∴ 报可解释结论 ＋ `exit(3)`** ✓
+  //   ⇒ **∴ 而**这**自带判据**✗：**∴ 两个尺寸的 ms/MP **应接近**✗**（**∴ 若差 2 倍 ⇒ 非线性 ✓**）
+  const BASE_SIDE = 1024;
+  let baseline = null;
+  try {
+    const bdoc = `latbase_${Date.now().toString(36)}`;
+    const bcreated = await (
+      await fetch(`${base}/api/documents`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ doc_id: bdoc, width: BASE_SIDE, height: BASE_SIDE }),
+      })
+    ).json();
+    if (bcreated && bcreated.token) {
+      await post("/api/tools/create_layer", { layer_id: "B1", name: "B1" }, bdoc, bcreated.token);
+      const bstroke = (i) =>
+        post("/api/tools/brush_stroke", {
+          layer_id: "B1",
+          object_id: `bb${i}`,
+          brush: "pointy_ink",
+          color: { r: 20, g: 40, b: 80, a: 255 },
+          points: [[8, BASE_SIDE / 2, 1], [BASE_SIDE - 8, BASE_SIDE / 2 + 20, 1]],
+          size: 18,
+          preview: false,
+        }, bdoc, bcreated.token);
+      await bstroke(0); // 热身
+      const bt = await bstroke(1);
+      if (bt && bt.timings && typeof bt.timings.raster_ms === "number") baseline = bt.timings.raster_ms;
+      if (bt && bt.timings && typeof bt.timings.raster_calls === "number" && bt.timings.raster_calls === 0) baseline = null;
+    }
+  } catch {
+    baseline = null;
+  }
+  const mp = (side) => (side * side) / 1e6;
+  if (baseline !== null && baseline > 0 && lastTimings && typeof lastTimings.raster_ms === "number") {
+    const rate = baseline / mp(BASE_SIDE);              // ms per megapixel（基线 ✓）
+    const rate4k = lastTimings.raster_ms / mp(SIDE);     // 4K 的速率（对照 ✓）
+    const maxSide = Math.sqrt((BUDGET_MS / rate) * 1e6);
+    console.log(
+      `  光栅速率：${BASE_SIDE}² ⇒ ${baseline.toFixed(2)} ms ＝ ${rate.toFixed(3)} ms/MP｜` +
+      `${SIDE}² ⇒ ${lastTimings.raster_ms.toFixed(2)} ms ＝ ${rate4k.toFixed(3)} ms/MP｜` +
+      `按 ${BUDGET_MS} ms 预算 ⇒ 最大可达 ${maxSide.toFixed(0)}²`,
+    );
+    const linear = rate4k > 0 && rate > 0 && Math.max(rate, rate4k) / Math.min(rate, rate4k) < 2;
+    console.log(`  ${linear ? "✓" : "✗"} 两个尺寸的 ms/MP 应接近（${rate.toFixed(3)} vs ${rate4k.toFixed(3)}）—— 差 2 倍以上说明光栅非线性`);
+    if (SIDE > maxSide) {
+      console.error(
+        `❌ 判不了（不是产品失败）：本机光栅速率 ${rate.toFixed(3)} ms/MP ⇒ ${SIDE}² 需 ` +
+        `${(rate * mp(SIDE)).toFixed(1)} ms > 预算 ${BUDGET_MS} ms ⇒ 按此预算最大只够 ${maxSide.toFixed(0)}²` +
+        ` => 退出码 3`,
+      );
+      process.exit(3);
+    }
+  }
   if (lastTimings) {
     // **只打几个关键阶段** ✓（**∴ 不打印全部，避免噪声 ✓**）
     const keys = ["total_ms", "raster_ms", "log_ms", "preview_ms", "other_ms", "raster_calls", "preview_calls"];
