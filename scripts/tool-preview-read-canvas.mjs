@@ -41,6 +41,20 @@ console.log(`  read_canvas=false ⇒ bytes=${off?.bytes}｜hash=${String(off?.bl
 console.log(`  read_canvas=true  ⇒ bytes=${on?.bytes}｜hash=${String(on?.blob_hash ?? "").slice(0, 18)}`);
 
 check(off?.ok === true && on?.ok === true, `两种取值都必须成功（false=${off?.ok}｜true=${on?.ok}）`);
+
+// **∴ ① 原本与 ② 重叠 ⇒ **在当前构型下不可能单独红**✗ ⇒ **∴ 它是装饰**✗**（**∴ 第 248 轮 ✓**）
+//   ⇒ **∴ 所以**加一条**能单独红**的：**∴ 给非法值 ⇒ 必须失败**✗**（**∴ 而不是**静默当 false ✓**）
+const badRc = await post(
+  "/api/tools/brush_preview",
+  { brush: "thin_watercolor", size: 30, include_image: false, read_canvas: "yes" },
+  doc,
+  token,
+);
+console.log(`  read_canvas="yes" ⇒ ok=${badRc?.ok}｜err=${badRc?.error_code ?? "-"}`);
+check(
+  badRc?.ok === false && badRc?.error_code === "invalid_argument",
+  `read_canvas 的非法值必须报 invalid_argument，不许静默当 false（实测 ok=${badRc?.ok}｜err=${badRc?.error_code}）`,
+);
 check(
   typeof off?.bytes === "number" && typeof on?.bytes === "number" && off.bytes !== on.bytes,
   `read_canvas 必须真的改变渲染（false=${off?.bytes} B vs true=${on?.bytes} B）—— 若相等，说明参数被忽略`,
