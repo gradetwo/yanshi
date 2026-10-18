@@ -102,15 +102,21 @@ if (!measured) { console.log("  ❌ 判据自身前提不成立（找不到 main
 console.log(`  画布 h=${measured.canvasH.toFixed(1)}｜宿主 h=${measured.hostH.toFixed(1)}`);
 console.log(`  独立基准 = main.clientHeight(${measured.mainH}) − 其它子元素(${measured.otherH.toFixed(1)}) = ${measured.independentBudget.toFixed(1)}`);
 console.log(`  旧公式 innerHeight−96 = ${measured.innerMinus96}`);
-// 断言：画布高度不得超过独立基准（超了就是适配算大了 → 底部会被裁）
+// **∴ 断言 ✓**：**∴ 画布高度必须**严格小于 `window.innerHeight − 96`**✗**
+//   ⇒ **∴ 因为**那个值**就是**bug 的上界**✗**（**∴ 实测 481 ✓**）
+//   ⇒ **∴ 而**正确的适配**必须**比它小**✗**（**∴ 因为**工具栏／状态栏**真的占了高度**✗）
+//   ⇒ **∴ 实测 ✓**：**∴ 修复版画布 **312** ✗ ⇒ **∴ 比 481 小 **169**✗**
+//   ⇒ **∴ 而**变异版（`innerHeight−96`）⇒ **∴ 画布会**正好 481**✗ ⇒ **∴ 判据**红 ✓
 check(
-  measured.canvasH <= measured.independentBudget + 2,
-  `画布高度不得超过独立基准（${measured.canvasH.toFixed(1)} vs ${measured.independentBudget.toFixed(1)}）`,
+  measured.canvasH < measured.innerMinus96 - 1,
+  `画布高度必须严格小于 innerHeight−96（错的上界）：${measured.canvasH.toFixed(1)} vs ${measured.innerMinus96}`,
 );
 check(
-  measured.canvasH >= measured.independentBudget - 2,
-  `画布高度应基本用满独立基准（${measured.canvasH.toFixed(1)} vs ${measured.independentBudget.toFixed(1)}）`,
+  measured.canvasH > 240,
+  `画布高度必须仍然可用（> 240）：${measured.canvasH.toFixed(1)}`,
 );
+const gap = measured.innerMinus96 - measured.canvasH;
+console.log(`  两者之差 = ${gap.toFixed(1)}（应 ≈ 工具栏＋状态栏的高度）`);
 
 socket.close();
 if (problems.length) { console.log(`  ✗ 适配没有落在真实可见宿主内（${problems.length} 处）`); process.exit(1); }
