@@ -125,5 +125,17 @@ check(
   `color_space_note 必须说清它是恒定的（实测 ${JSON.stringify(String(on?.color_space_note ?? "").slice(0, 50))}）`,
 );
 
+// **∴ ⑨ G02 第 3 项必须**自陈不支持**✗**（**∴ 「说清未做」也要能被验 ✓**）
+//   ⇒ **∴ 若**有人**悄悄**加了 layer_id 却**忘了**改这个字段**✗** ⇒ **∴ 判据**红 ✓
+console.log(`  target_layer_supported=${JSON.stringify(on?.target_layer_supported ?? null)}｜note 非空=${!!on?.target_layer_note}`);
+check(
+  on?.target_layer_supported === false,
+  `target_layer_supported 必须是 false（预览读的是文档合成，不能只读一层；实测 ${JSON.stringify(on?.target_layer_supported ?? null)}）`,
+);
+check(
+  typeof on?.target_layer_note === "string" && /layer_id|不支持/.test(on.target_layer_note),
+  `target_layer_note 必须说清不支持并指向替代（实测 ${JSON.stringify(String(on?.target_layer_note ?? "").slice(0, 50))}）`,
+);
+
 if (bad) { console.log(`  ✗ read_canvas 有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ read_canvas 参数生效（改了渲染）；底图内容是否读入不在本判据范围");
