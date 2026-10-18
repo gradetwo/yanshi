@@ -2855,3 +2855,40 @@ pub masks: BTreeMap<MaskId, Selection>,
 **∴ 而证据比代码更有用 ✓**：**∴ 它把他们的下一步从**压实对象**✗ 导向**查缓存**✗** ✓
 **∴ 顺带 ✓**：**∴ `estimated_memory_bytes`（§54）正是这次能分开量**对象**✗ 与**总 RSS**✗ 的工具 ✓**
    ⇒ **∴ 所以 §33 第 3 点那个字段，**先于**他们的第 1／2 点产生了价值 ✓** ✓
+
+## 五十七、★ CI **特有**的红有 3 条 ✓ —— **本机全绿、与我改动无关、只在 runner 上出现**
+
+### 57.1 三条 ✓
+
+| # | 红 | 本机 | 判据 |
+|---|---|---|---|
+| ① | `crates/yanshi-server/tests/background_stroke_cost.rs:273` ✗ | **绿** ✓ | **`other_ms=486`（CI）vs `7.3`（本机）** ⇒ **∴ 66 倍 ✓** |
+| ② | `crates/yanshi-render/tests/tile_parallel.rs:998` `buffer_pool_budget_covers_every_concurrent_worker` ✗ | **绿** ✓（`1 passed` ✓） | **∴ 我没改过 `yanshi-render`** ✓（`git log` 为证 ✓） |
+| ③ | 两条浏览器判据（**双语切换**✗／**脏读**✗） | **绿** ✓ | **∴ 我没碰过 i18n／SW** ✓ |
+
+### 57.2 ∴ 共同形态 ✓
+
+```
+**∴ 三条都是 ✓**：**本机绿 ✓ ＋ 我都没改过相关代码 ✓ ＋ 只在 CI runner 上出现 ✗**
+**∴ 而它们的性质不同 ✗**：
+   ① **∴ 时间**：CI 的 `other_ms` 是本机的 **66 倍** ✗ ⇒ **∴ 慢的不是已量的 phase ✓**
+   ② **∴ 核数**：缓冲池预算按**并发 worker 数**算 ✗ ⇒ **∴ runner 的核数／内存不同 ✓**
+   ③ **∴ 浏览器**：i18n 切换／Service Worker 脏读 ✗ ⇒ **∴ runner 的 chromium 行为 ✓**
+**∴ 所以 ✓**：**不是"逐个修"✗ ⇒ **∴ 而是**查 runner 的配置**✗**（**∴ 核数 ✓／内存 ✓／chromium 版本 ✓**）✓
+```
+
+### 57.3 ∴ 而我**不能**修它们 ✓
+
+```
+**∴ 我只有本机 ✗** ⇒ **∴ 本机三条**全绿** ✓** ⇒ **∴ 所以**复现不了**✗ ⇒ **∴ 而"改断言"✗ 会掩盖真问题 ✓**
+**∴ 按目标纪律 ✓**：**∴ 不许说"不存在"'✗ ⇒ **∴ 我写的是**"这三条只在 CI 上出现"✗ ＋ 每条的实测数字 ✓** ✓
+```
+
+### 57.4 ∴ 建议给能上 runner 的人 ✓
+
+```
+**∴ ①** 跑 `ps -o rss= -p <serve>` 与 `nproc` ✗（**∴ 看 CI 的核数／内存 ✓**）
+**∴ ②** 在 CI 上跑一次 `background_stroke_cost` ✗ 并打印 **完整 `timings`**✗（**∴ 我有 CI 那份 486ms ✓，
+   但缺 `raster_ms`／`preview_ms` 的对照 ✓**）⇒ **∴ 而 `estimaed_memory_bytes` 现在也能帮 ✓**
+**∴ ③** 跑 `chromium --version` ✗ ＋ `run-criteria.sh` 的浏览器判据**逐条**话 ✓
+```
