@@ -4444,6 +4444,13 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "selections": selections,
         "masks": masks,
+        // ★ **`estimated_memory_bytes` ✗**（报告 §33 的第 3 点 ✓）
+        //   ⇒ **∴ 他们要它来**长跑前预估内存**✗**（**∴ "一幅 600×1066 在 20 分钟时占 1 GB" ✓**）
+        //   ⇒ **∴ 而**我不编常数**✗**（**∴ 例如"每对象 70KB"✗ 是他们估的 ✓）
+        //     ⇒ **∴ 而是**真把状态序列化一次量大小 ✓**（**∴ 这是**字节数下界**✗：不含堆分配开销 ✓**）
+        //   ⇒ **∴ 代价 ✓**：**一次 `to_vec` ✓ ⇒ **∴ 大文档会有几十毫秒 ✓**（**∴ 而 `describe_canvas`
+        //     本来就是"一次拿全状态"✗ ⇒ **∴ 可接受 ✓**）
+        "estimated_memory_bytes": serde_json::to_vec(&state).map(|bytes| bytes.len()).unwrap_or(0),
         "counts": {
             "layers": state.alive_layers().len(),
             "selections": selections.len(),
